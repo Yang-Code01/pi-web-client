@@ -5182,7 +5182,7 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 
 1. **正文 HTML 进 sandbox iframe，不直接 `innerHTML`。** `web/src/mailhtml.ts` 先做白名单清理（去 script/iframe/form/svg/object/embed/meta/base、`on*`、`srcset`、`javascript:`，CSS 去 `@import` / `expression` / 远程 `url()`），再套 `sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"`（不给 `allow-scripts`）+ CSP `default-src 'none'`。邮件自带的 `<head><style>` 保留，否则营销邮件整页布局会散。
 2. **内嵌图分两条路：** 面板口 `readMessage()` 用 mailparser 默认行为，把 `cid:` 换成 `data:image/...`——一次 IMAP FETCH 就够，不用为 11 张图各拉一遍整封信；工具口 `mail_read` 用 `keepCidLinks: true`，正文保持 20k 级、附件清单带 `contentId` / `inline`，图片另走 `mail_image`；截断前先去掉 head/style，别让营销邮件前 20k 的 CSS 把正文切没。cid 对不上时（服务器写法怪）前端再退回 `/api/mail/attachment?...&inline=1`；CSS 里的 `url(cid:)` 也走同一张映射表。
-3. **远程图片默认不加载，且不占正文高度。** 先把 `src` 换成 1×1 透明 GIF、原地址记 `data-mc-remote-src`，同时 CSP 的 `img-src` 只给 `data: blob: 'self'`（`'self'` 留给 cid 兜底的附件直链）；用户点「显示图片（N）」才重画并放行 `https: http:`。图片关掉时 `display:none`，否则 92 张 600×300 的占位会把正文撑到近万像素、看着像空白。
+3. **远程图片默认不加载，且不占正文高度。** 先把 `src` 换成 1×1 透明 GIF、原地址记 `data-mc-remote-src`，同时 CSP 的 `img-src` 只给 `data: blob: 'self'`（`'self'` 留给 cid 兜底的附件直链）；用户点「显示图片（N）」才重画并放行 `https: http:`。按钮的 N 只数远程 `<img>`（`remoteImages`），CSS 背景图另算 `remoteCss`；只有 `srcset` 没有 `src` 的图先取第一个候选补成 `src`。图片关掉时 `display:none`，否则 92 张 600×300 的占位会把正文撑到近万像素、看着像空白。
 4. **附件区不再列内嵌图。** `MailAttachmentInfo` 加 `contentId` / `inline`；列表 📎（`countParts`）只认 `Content-Disposition: attachment`，内嵌图属于正文。PDF 等真附件照旧在附件区下载。
 5. **AI 侧补 `mail_image`。** `mail_read` 把内嵌图列成 `#index / 文件名 / 大小 / cid`，提示用 `mail_image`；`mail_image` 返回 `ImageContent`（png/jpeg/gif/webp，单张 ≤3MB），让视觉模型真的看到图。`htmlToText()` 把 `<img>` 保留成 `[图片：alt]`，不再让图片静默消失。
 
@@ -5198,4 +5198,5 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - `npm run test:mail`：`bridge/tests/mail-unit.mjs` 68/68、`mail-list-unit.mjs` 43/43（新增 cid 元数据、`keepCidLinks`、`htmlToText` 图片标记、无 disposition 的内嵌图、截断前去掉 head/style）、`web/tests/mail-unit.mjs` 14/14（新增 `cidKey`、`inlineImageMap`、CSP 默认/放行远程图）。
 - 真信箱（1304049579@qq.com）：uid=1328 面板渲染 11 张内嵌图（naturalWidth 800、iframe 高度 4,703px），附件区只列 `Jenil_Soni_-_Resume.pdf · 152 KB`；uid=1321 远程图 92 张，默认 `img[data-mc-blocked]` 全部收起、iframe 419px，点「显示图片（92）」后 92 张 `src` 全部恢复为原 `https://...`。
 - `mail_image` 工具口实测 uid=1328 index=0：`image/jpeg`、61,660 字节、base64 82,216 字符；`mail_read` 回 12 个附件（11 inline + 1 PDF），HTML 保留 `cid:` 且截断在 20,029 字。
+- `npm run test:mail:html`（真 Chromium）：script/iframe/on*/javascript: 清理、`cid:` 映射、`srcset`-only 图、远程图拦截与放行 CSP 全绿。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3180 键 × 3 + viewport）、`npm run build` 全绿。

@@ -20,7 +20,7 @@ const tools = [
   { name: "mcp__db__drop_table", annotations: { destructiveHint: true } },
   { name: "todo_write" },
 ];
-approvalGate({ on: (ev, fn) => (handlers[ev] = fn), getAllTools: () => tools });
+approvalGate({ on: (ev, fn) => (handlers[ev] = fn), getAllTools: () => tools, registerTool: () => {} });
 const asked = [];
 const ctx = { cwd: dir, hasUI: true, ui: { confirm: async (title, message) => (asked.push(`${title} | ${message}`), false) } };
 const call = async (toolName, input = {}) => {
@@ -43,6 +43,10 @@ expect(await call("grep", { pattern: "x" }), { blocked: false, asked: false }, "
 expect(await call("question", {}), { blocked: false, asked: false }, "the web's question tool passes");
 expect(await call("mcp__docs__search", {}), { blocked: false, asked: false }, "MCP tool with readOnlyHint passes");
 expect(await call("codemode", { code: "…" }), { blocked: false, asked: false }, "codemode passes (its inner calls come through this hook)");
+expect(await call("mail_read", { uid: 1 }), { blocked: false, asked: false }, "mail_read passes (read-only mail)");
+expect(await call("mail_image", { uid: 1, index: 0 }), { blocked: false, asked: false }, "mail_image passes (reads inline image, no disk)");
+expect(await call("mail_attachment", { uid: 1, index: 0 }), { blocked: true, asked: false }, "mail_attachment blocked (writes disk)");
+expect(await call("mail_send", { to: "a@b.com", subject: "x", text: "y" }), { blocked: true, asked: false }, "mail_send blocked (talks outward)");
 expect(await call("bash", { command: "ls" }), { blocked: true, asked: false }, "bash blocked");
 expect(await call("write", { path: "a.txt" }), { blocked: true, asked: false }, "write blocked");
 expect(await call("mcp__db__drop_table", {}), { blocked: true, asked: false }, "MCP tool without the hint blocked (used to pass)");

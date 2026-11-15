@@ -218,10 +218,10 @@ const mailReadTool = {
       if (!reply.ok) return textResult(`没读出来：${explain(reply, "原因不明")}`, { ok: false, code: reply.code });
       const m = reply.message as any;
       const all: any[] = m.attachments ?? [];
-      // 有 Content-ID 的图片都算正文内嵌图：服务器偶尔不写 Content-Disposition，不能只认 inline。
-      const images = all.filter((a) => a.contentId && String(a.contentType ?? "").toLowerCase().startsWith("image/"));
-      const imageIndexes = new Set(images.map((a) => a.index));
-      const files = all.filter((a) => !imageIndexes.has(a.index));
+      // `inline` 是桥按 Content-Disposition / related 判出来的；带 Content-ID 的普通图片附件
+      // （disposition=attachment）仍应留在附件清单里，不能只看 cid。
+      const images = all.filter((a) => a.inline && a.contentId && String(a.contentType ?? "").toLowerCase().startsWith("image/"));
+      const files = all.filter((a) => !a.inline);
       const attach = files.length
         ? `\n\n附件（${files.length}）：\n${files.map((a: any) => `- #${a.index} ${a.filename}（${Math.round((a.size ?? 0) / 1024)}KB，${a.contentType}）`).join("\n")}`
         : "";

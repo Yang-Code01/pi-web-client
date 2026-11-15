@@ -211,8 +211,8 @@ export class MailPanel {
   private detailUid = -1;
   private detailLoading = false;
   private detailError = "";
-  /** 当前这封信是否已放行远程图片；换一封 / 关面板都回到 false。 */
-  private detailRemote = false;
+  /** 哪封信放行过远程图片（按 uid）；换一封信自然失效，关面板时清掉。 */
+  private remoteImagesUid = -1;
 
   private compose: Compose | null = null;
   private form: AccountForm | null = null;
@@ -249,7 +249,7 @@ export class MailPanel {
     this.detailUid = -1;
     this.detailLoading = false;
     this.detailError = "";
-    this.detailRemote = false;
+    this.remoteImagesUid = -1;
     this.compose = null;
     this.form = null;
     this.saving = false;
@@ -269,7 +269,7 @@ export class MailPanel {
     this.reloadSeq += 1;
     this.listSeq += 1;
     this.detailSeq += 1;
-    this.detailRemote = false;
+    this.remoteImagesUid = -1;
     this.confirmDeleteId = "";
     if (this.deleteTimer) window.clearTimeout(this.deleteTimer);
     this.deleteTimer = 0;
@@ -381,7 +381,6 @@ export class MailPanel {
     const seq = this.seq;
     const token = ++this.detailSeq;
     const folder = this.folder;
-    if (this.detailUid !== uid) this.detailRemote = false;
     this.detailUid = uid;
     this.detailLoading = true;
     this.detailError = "";
@@ -688,7 +687,6 @@ export class MailPanel {
         this.detailSeq += 1;
         this.detail = null;
         this.detailUid = -1;
-        this.detailRemote = false;
         this.render();
         void this.loadFolders(this.seq);
       };
@@ -705,7 +703,6 @@ export class MailPanel {
         this.folder = f.path;
         this.detail = null;
         this.detailUid = -1;
-        this.detailRemote = false;
         this.compose = null;
         this.messages = [];
         this.listHasMore = false;
@@ -825,7 +822,8 @@ export class MailPanel {
     acts.append(reply, draft, analyze, aiReply);
     box.append(acts);
 
-    const files = m.attachments.filter((a) => !a.inline && !(a.contentId && String(a.contentType ?? "").toLowerCase().startsWith("image/")));
+    // 「附件」只认真正被标成附件的部分；带 Content-ID 但 disposition=attachment 的图仍是附件。
+    const files = m.attachments.filter((a) => !a.inline);
     if (files.length) {
       const att = el("div", "mc-attach");
       // 页面上的附件是**人自己**在下载：不受「取附件」（那是 AI 的开关）管，永远给直链（D264）。
@@ -856,9 +854,10 @@ export class MailPanel {
    * 本机 IP 和阅读行为送给发件人的追踪像素。
    */
   private htmlBodyEl(m: MailDetailView): HTMLElement | null {
+    const allowRemote = this.remoteImagesUid === m.uid;
     const rendered = renderMailHtml(m.html ?? "", {
       attachments: m.attachments,
-      allowRemote: this.detailRemote,
+      allowRemote,
       inlineUrl: (a) =>
         api.mailAttachmentUrl({
           account: this.activeAccount()?.id,
@@ -872,18 +871,24 @@ export class MailPanel {
     // 只有 <style> / 空 body 的信：清理完什么都没有，退回纯文本，别给一块空白。
     if (!rendered.html.trim()) return null;
     const wrap = el("div", "mc-body");
-    if (rendered.remote > 0) {
+    const remoteCount = rendered.remoteImages || rendered.remoteCss;
+    if (remoteCount > 0) {
       const bar = el("div", "mc-body__bar");
       const hint = el(
         "span",
         "mc-body__hint",
-        this.detailRemote ? tr("远程图片已显示") : tr("为保护隐私，远程图片默认不加载"),
+        allowRemote ? tr("远程图片已显示") : tr("为保护隐私，远程图片默认不加载"),
       );
       bar.append(hint);
-      const toggle = el("button", "mc-mini", this.detailRemote ? tr("不显示图片") : tr("显示图片（{n}）", { n: String(rendered.remote) })) as HTMLButtonElement;
+      const label = allowRemote
+        ? tr("不显示图片")
+        : rendered.remoteImages > 0
+          ? tr("显示图片（{n}）", { n: String(rendered.remoteImages) })
+          : tr("显示远程图片");
+      const toggle = el("button", "mc-mini", label) as HTMLButtonElement;
       toggle.type = "button";
       toggle.onclick = () => {
-        this.detailRemote = !this.detailRemote;
+        this.remoteImagesUid = allowRemote ? -1 : m.uid;
         this.render();
       };
       bar.append(toggle);
@@ -895,7 +900,7 @@ export class MailPanel {
     frame.setAttribute("referrerpolicy", "no-referrer");
     frame.setAttribute("title", tr("邮件正文"));
     frame.setAttribute("scrolling", "no");
-    frame.srcdoc = buildMailFrameHtml(rendered, this.detailRemote);
+    frame.srcdoc = buildMailFrameHtml(rendered, allowRemote);
     frame.onload = () => this.fitMailFrame(frame);
     wrap.append(frame);
     // iframe 的内容高度只有在 onload 之后才知道；图片是后加载的，再补两次。

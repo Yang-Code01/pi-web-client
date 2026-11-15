@@ -27,8 +27,10 @@ export interface MailHtmlOptions {
 export interface MailHtmlRender {
   /** 清理后的正文 HTML（含邮件自带的 <style>）。 */
   html: string;
-  /** 被拦下的远程图片 / 背景图数量。 */
-  remote: number;
+  /** 远程 `<img>` 数量，按钮上的 N 用它，别把 CSS 背景图也算成图张数。 */
+  remoteImages: number;
+  /** 远程 CSS `url()` 数量；只有背景图时也要给「显示远程图片」的入口。 */
+  remoteCss: number;
 }
 
 /** 1×1 透明 GIF：远程图被拦时替换 src，避免浏览器请求远程；实际显示由 CSS 收起。 */
@@ -81,6 +83,11 @@ function isDataImage(raw: string): boolean {
   return /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);base64,/i.test(String(raw ?? "").trim());
 }
 
+/** `srcset` 的第一个候选 URL；`srcset` 只有图、没有 `src` 时拿它补位。 */
+export function firstSrcsetUrl(srcset: string): string {
+  return String(srcset ?? "").trim().match(/^(\S+)/)?.[1] ?? "";
+}
+
 function cleanColor(raw: string | null): string {
   const v = String(raw ?? "").trim();
   return /^#[0-9a-f]{3,8}$/i.test(v) || /^[a-z]{3,20}$/i.test(v) ? v : "";
@@ -121,27 +128,28 @@ function cleanCss(
  */
 export function renderMailHtml(raw: string, opts: MailHtmlOptions): MailHtmlRender {
   const source = String(raw ?? "");
-  if (!source.trim()) return { html: "", remote: 0 };
+  if (!source.trim()) return { html: "", remoteImages: 0, remoteCss: 0 };
   const doc = new DOMParser().parseFromString(source, "text/html");
   const body = doc.body;
-  if (!body) return { html: "", remote: 0 };
+  if (!body) return { html: "", remoteImages: 0, remoteCss: 0 };
   const cids = inlineImageMap(opts.attachments);
   const resolveCid = (value: string): string | null => {
     const hit = cids.get(cidKey(value));
     return hit && String(hit.contentType ?? "").toLowerCase().startsWith("image/") ? opts.inlineUrl(hit) : null;
   };
-  let remote = 0;
+  let remoteImages = 0;
+  let remoteCss = 0;
 
   // <head> 里的样式不能丢：营销邮件几乎所有布局都在这里。
   const headStyles: string[] = [];
   for (const style of Array.from(doc.head?.querySelectorAll("style") ?? [])) {
     const cleaned = cleanCss(style.textContent ?? "", opts.allowRemote, resolveCid);
-    remote += cleaned.remote;
+    remoteCss += cleaned.remote;
     if (cleaned.css) headStyles.push(`<style>${cleaned.css}</style>`);
   }
 
   const styleAttr = cleanCss(body.getAttribute("style") ?? "", opts.allowRemote, resolveCid);
-  remote += styleAttr.remote;
+  remoteCss += styleAttr.remote;
   if (styleAttr.css) headStyles.push(`<style>body{${styleAttr.css}}</style>`);
   const bg = cleanColor(body.getAttribute("bgcolor"));
   if (bg) headStyles.push(`<style>body{background-color:${bg}}</style>`);
@@ -156,9 +164,15 @@ export function renderMailHtml(raw: string, opts: MailHtmlOptions): MailHtmlRend
 
       if (tag === "style") {
         const cleaned = cleanCss(child.textContent ?? "", opts.allowRemote, resolveCid);
-        remote += cleaned.remote;
+        remoteCss += cleaned.remote;
         child.textContent = cleaned.css;
         continue;
+      }
+
+      // 有些邮件只写 srcset、不写 src；先补一个 src，后面的远程拦截 / 显示图片才能生效。
+      if (tag === "img" && !child.getAttribute("src")) {
+        const first = firstSrcsetUrl(child.getAttribute("srcset") ?? "");
+        if (first) child.setAttribute("src", first);
       }
 
       for (const attr of Array.from(child.attributes)) {
@@ -170,7 +184,7 @@ export function renderMailHtml(raw: string, opts: MailHtmlOptions): MailHtmlRend
         }
         if (name === "style") {
           const cleaned = cleanCss(value, opts.allowRemote, resolveCid);
-          remote += cleaned.remote;
+          remoteCss += cleaned.remote;
           if (cleaned.css) child.setAttribute("style", cleaned.css);
           else child.removeAttribute("style");
           continue;
@@ -198,7 +212,7 @@ export function renderMailHtml(raw: string, opts: MailHtmlOptions): MailHtmlRend
             child.removeAttribute("src");
             child.setAttribute("data-mc-missing", "1");
           } else if (src) {
-            remote += 1;
+            remoteImages += 1;
             child.setAttribute("data-mc-remote-src", src);
             if (!opts.allowRemote) {
               child.setAttribute("src", TRANSPARENT_GIF);
@@ -219,7 +233,7 @@ export function renderMailHtml(raw: string, opts: MailHtmlOptions): MailHtmlRend
   };
   walk(body);
 
-  return { html: headStyles.join("") + body.innerHTML, remote };
+  return { html: headStyles.join("") + body.innerHTML, remoteImages, remoteCss };
 }
 
 const BASE_CSS = `

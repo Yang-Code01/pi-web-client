@@ -62,9 +62,9 @@ export interface MailAttachmentView {
   contentType: string;
   size: number;
   /** `Content-ID`（去掉尖括号）；内嵌图片才有。 */
-  contentId?: string | null;
+  contentId: string | null;
   /** 正文引用的内嵌资源（multipart/related / Content-Disposition: inline）。 */
-  inline?: boolean;
+  inline: boolean;
 }
 
 export interface MailDetailView {

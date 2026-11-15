@@ -3036,6 +3036,7 @@ export const en: Dict = {
   "为保护隐私，远程图片默认不加载": "Remote images are blocked by default to protect your privacy",
   "不显示图片": "Hide images",
   "显示图片（{n}）": "Show images ({n})",
+  "显示远程图片": "Show remote images",
   "正在读这封信…": "Reading this message…",
   "发送中…": "Sending…",
   "拿不到邮件夹": "Could not load folders",

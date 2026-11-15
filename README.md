@@ -207,6 +207,7 @@ node probes/manage-ui.mjs                                              # 会话�
 node probes/pin-auto-open.mjs                                          # 打开不置顶（D146）+ 置顶横栏折成「＋N」（桩桥 + 真 Chromium）
 node probes/workspace-migrate.mjs                                      # 迁移预览：首次弹、数字与左栏一致、确认后不再弹（桩桥 + 真 Chromium，7907）
 npm run test:mail                                                     # 邮箱：取数口径（按时间挑/未读/翻页）、地址口径、HTML/内嵌图、权限只管 AI、坏配置拒写、确认队列（不碰真邮箱）
+npm run test:mail:html                                                # 邮箱 HTML：真 Chromium 跑清理 / cid 映射 / srcset / 远程图片拦截（需 Playwright）
 npm run test:ask                                                      # 提问通道：HTTP 三道闸 + 真模型作答/取消（自带隔离桥 7891）
 npm run test:ask:ui                                                   # 提问抽屉：真 Chromium，刷新补发/多题/自己写/停止运行（7892）
 node probes/readme-shots.mjs                                          # 重拍 README 那六张图（临时桥 + fixture 会话，不碰 ~/.pi/agent）

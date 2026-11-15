@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { auditOutcome, cidKey, inlineImageMap, joinAddress, localPartFor, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, presetDomain, retargetAddress, secureForPort, sizeText, splitAddress, whenText } from "../src/mail-shared.ts";
-import { buildMailFrameHtml } from "../src/mailhtml.ts";
+import { buildMailFrameHtml, firstSrcsetUrl } from "../src/mailhtml.ts";
 
 test("权限表覆盖六个开关，键与桥端一致", () => {
   assert.deepEqual(
@@ -220,8 +220,15 @@ test("内嵌图片：Content-ID → 附件行，普通附件不进来", () => {
   assert.equal(map.get("logo@x")?.index, 0);
 });
 
+test("srcset：只有 srcset 的图也能找到第一个候选 URL", () => {
+  assert.equal(firstSrcsetUrl("https://x.test/a.png 1x, https://x.test/b.png 2x"), "https://x.test/a.png");
+  assert.equal(firstSrcsetUrl("  https://x.test/a.png  "), "https://x.test/a.png");
+  assert.equal(firstSrcsetUrl("data:image/png;base64,AAAA 1x"), "data:image/png;base64,AAAA");
+  assert.equal(firstSrcsetUrl(""), "");
+});
+
 test("邮件 HTML 外壳：默认 CSP 不放远程图片，点「显示图片」才放行", () => {
-  const rendered = { html: "<p>hi</p>", remote: 2 };
+  const rendered = { html: "<p>hi</p>", remoteImages: 2, remoteCss: 0 };
   const blocked = buildMailFrameHtml(rendered, false);
   assert.match(blocked, /script-src 'none'/);
   assert.match(blocked, /frame-src 'none'/);
