@@ -4968,3 +4968,70 @@ D
 - 单元测试（新建，`npm run test:sheet`）：`sheet-numfmt-unit.mjs` 60 条（两位数小数、千分位、缩放逗号、科学记数、分数、中文数字、日期时刻、1904、文本段、`isDateCode`）；`sheet-calc-unit.mjs` 148 条（17 类函数的真值 + 错误码 + 通配 + 日期条件）；`sheet-style-unit.mjs` 9 条（自定义 numFmt 写回：代码去重、id 从 164 起、引号转义、`<numFmts>` 位置、二次写入不新增）。
 - 老行为的护栏没动：`probes/xlsx.mjs` 里 356 条断言照旧跑（`¥1,234.50` / `(400.00)` / `12.3%` / `2025-01-21` 这些显示串逐条比过），并新增 **10 条**：填充柄拖出等差序列、`Ctrl+↓` 跳连续区末尾、底栏求和/计数、清除菜单、边框菜单只加下边框、色板 26 格、点色板立刻换底色、数字格式菜单选「中文大写数字」当场变字、函数库把 `=SUM(` 填进公式栏、存盘重开后中文大写还在。整轮 **244 ok**（改前 234 ok）。
 - 这台 macOS 上 `probes/xlsx.mjs` 有 3 条本来就红（`千分位整数` 量出 `#######`、`Tab 提交并往右走` / `重开还看得到新写的数` 读到 `7.5¥114.00`），**main 上未改动的构建同样红**——是字体度量差异，不是这一轮引入的（对比方式：在 main 检出上 `npm run build && node probes/xlsx.mjs`，失败集合逐条相同）。
+## D267 插件市场照本机 DeepSeek 的 dshmarket 1.73.19 重画（用户要求「用 rea 逆向本机 deepseek 里面的插件市场 dshmarket，一比一复刻」）
+
+**问题：** 输入框下那颗「扩展」按钮打开的管家里，「扩展商店」一直是 2015 年式的清单：一行一个包、月下载量、安装按钮。用户要求把入口改叫「插件」、把「扩展商店」改叫「插件市场」，并按本机 DeepSeek Harness 里的 dshmarket 1:1 重画插件市场。
+
+**逆向来源（可复核）：**
+
+- 本机 `/Applications/DeepSeek Harness.app` 0.2.2-rc.3（安装于 2026-11-13），桌面 profile 的插件在
+  `~/.dsh/profiles/desktop/node_modules/dshmarket`，版本 **1.73.19**。真正的界面在
+  `client/client.js`：React 18 bundle，`Market.module.css` 被内联成一条 79,886 字节的字符串，
+  482 个选择器，类名前缀 `nUhMVa_`。这不是猜的：`node -e` 把 `const css = "…"` 解出来存到
+  `/tmp/dshmarket.css` 后逐条读的。
+- `rea analyze-javascript-application ~/.dsh/profiles/desktop/node_modules/dshmarket --source-path
+  client/client.js --detail summary --evidence_output /tmp/dshmarket-rea`：REA 6.9.0，20,802 条
+  semantic node、47.8 MB 的 Evidence，确认了 Masonry 的分列公式和卡片字段。
+- 在 1440×900 的 `dsh web`（DeepSeek Harness 的 web 入口）里用 Playwright 实测宿主页：内容宽
+  **960**；三列卡片各 **310.66**、列距 **10**；卡片圆角 **20**、内边距 **12/14**；标题
+  **14/20·500**；正文 **12/18**；标签 **11/17**（圆角 999、内边距 1/8）；搜索框高 **32**、圆角
+  **12**；内层页签高 **32**、字号 **13/20**；最近收录横条高 **80**、宽 `min(320px, 30.7692% - 7.38462px)`；
+  卡片列数 `min(3, max(2, floor((width + 10) / 290)))`，≤680px 退成单列。
+
+**决定：**
+
+1. **只改入口这一层，不把整个仓库的「扩展」做全局改名。** 输入框下按钮 → 「插件」，管理器标题 →
+   「插件与 MCP」，设置页那一栏 → 「插件与 MCP」，页签 → 「插件市场」，空态指向「插件市场」。
+   代码里的 `ext` / `extension` 标识、pi 自己的 `--no-extensions`、MCP 的「扩展」语义都不动 ——
+   用户要的是界面上这两个词，不是一次有风险的全局重命名。
+2. **插件市场照 dshmarket 的「发现」页重画，但数据仍是 pi 的 npm 商店。** 卡片结构、三列瀑布流、
+   搜索框 + 筛选、分类胶囊、最近收录、卡片内部的「名字 / 作者 / 版本 / ↓月下载 / 三段描述 /
+   未声明要求 / 分类标签 / 收藏 / 评论 / ··· / 安装」全部按 dshmarket 的 DOM 顺序与几何来；颜色换成本项目
+   的暗色令牌（`--panel-2` / `--line-soft` / `--dim` / `--faint` / `--accent`），因为本仓库没有亮色主题，
+   硬塞一块白底会在暗色聊天里像另一个程序。**不伪造 DSH 的 star 数、宿主兼容结论与截图**：卡片上写
+   「未声明 pi 要求」，没有 star 就不排 star 行，截图区不放假图。
+3. **Masonry 用 dshmarket 的原公式和交替分列。** `distributeColumns()` 按 0,3,6… / 1,4,7… / 2,5,8…
+   分桶，保证排序仍是「从左到右、再下一行」；`ResizeObserver` 只在列数真的变了才重排，
+   ≤680px 走单列，和 dshmarket 的 JS 断点一致。
+4. **内层页签做成真的：发现 / 主题 / 收藏 / 已安装 / 已屏蔽 / 高级。** 「已安装」不重复画一份列表，
+   点它切回外层「已安装」页；「主题」从同一批 pi 包里挑 `ui` / `theme` / `skin` 类插件，用按名字
+   生成的色卡代替 dshmarket 的主题截图（`shadcn` 式色条，零网络请求）；「收藏」「已屏蔽」写
+   `localStorage`（`pi.pluginMarket.favorites` / `pi.pluginMarket.blocked`），刷新和重启都还在；
+   「高级」保留按来源安装、安装位置、刷新目录、导出日志。
+5. **数据侧只补字段，不新增安装协议。** `StorePackage` 多带 `owner` / `repository` / `homepage` /
+   `published` / `keywords`：npm search 本来就返回这些字段，桥端只是之前丢掉了。安装仍走
+   `pkg.install`，和「扩展商店」时代完全同一条路。`ext.store` 的 `limit` 上限从 100 提到 250，
+   这样分类、排序、最近收录在客户端有足够的样本；超出 250 的长尾仍靠 npm 搜索。
+6. **分类从作者标签推，不写死目录。** `categoriesOf()` 先用包的 `keywords`（`context`、`mcp`、
+   `theme`、`workflow`…），没有标签再看名字 / 描述里的中英文关键词；最多两个标签，兜底「其他」。
+   这样新包不用改代码就能进分类。
+
+**代价 / 可改：**
+
+- 没有 DSH 的 star、截图、评论、宿主兼容结论和「已屏蔽 11k」那套目录；「评论」直接开 npm 页面。
+- 主题卡是色卡，不是真截图；要真图得再抓 README 图片并处理防盗链，这一轮不做。
+- 「最近收录」只在这 250 条里按 npm `date` 排；不是全量 npm 的最近发布。真要做全量，得再加一条
+  按发布时间抓 npm 的后台索引，和 MCP 商店那套索引一样重。
+- 分类是启发式，不是作者填的目录；同一插件可能进两个分类。好在只影响筛选，不影响安装。
+- 颜色是暗色映射，不是 dshmarket 的浅色像素级配色。几何、字号、间距、圆角与 DOM 顺序是 1:1 的。
+- 内层「已安装」不画卡片，点一下切外层；这是为了让「已安装」只有一处真源，避免两份列表状态不同步。
+
+**验证：**
+
+- `node web/tests/pluginmarket-unit.mjs`：6 条纯函数单测（`formatCount`、`categoriesOf`、排序、筛选、
+  交替分列、列数公式）。
+- `npm --prefix web run typecheck`：tsc + i18n-check（3105 键 × 3 语言）+ `test:viewport` 全绿。
+- `npm --prefix bridge run typecheck`、`npm --prefix web run build` 绿。
+- Playwright 冒烟（worktree 的桥 + 生产构建，1440×900 与 1920×1080·150% 字号）：三列 30 张卡片、
+  搜索 `subagent` 回 `pi-subagents`、分类筛选、「收藏」计数与列表、`··· → 屏蔽` 后从发现页消失并在
+  「已屏蔽」出现、内层「已安装 (4)」切回外层、主题 13 款、高级页表单、视口底栏仍在屏内。

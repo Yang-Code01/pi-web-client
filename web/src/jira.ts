@@ -2173,7 +2173,7 @@ export class JiraPanel {
   /** 底部固定一行 MCP 提示：本单不探测 MCP 装没装，只把人送到设置页（D202）。 */
   private footEl(): HTMLElement {
     const foot = el("footer", "jc-foot");
-    foot.append(el("span", "jc-foot__hint", tr("读工单描述和评论要用 Jira MCP：在「设置 → 扩展与 MCP」里安装。")));
+    foot.append(el("span", "jc-foot__hint", tr("读工单描述和评论要用 Jira MCP：在「设置 → 插件与 MCP」里安装。")));
     const go = el("button", "btn ghost", tr("打开设置"));
     go.onclick = () => {
       this.host.settings("ext");

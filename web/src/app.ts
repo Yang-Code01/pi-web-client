@@ -28,6 +28,19 @@ import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
 import { MailConfirmDialog } from "./mailconfirm.ts";
 import type { MailConfirmFrame } from "./mail-shared.ts";
+import {
+  BLOCKED_KEY,
+  FAVORITES_KEY,
+  RECENT_HIDDEN_KEY,
+  loadMarketSet,
+  renderPluginMarket,
+  saveMarketSet,
+  type MarketActions,
+  type MarketDir,
+  type MarketSort,
+  type MarketTab,
+  type MarketViewState,
+} from "./pluginmarket.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { openHotdeploy } from "./hotdeploy.ts";
@@ -481,7 +494,23 @@ export class App {
   private extCheckLoading = false;
   /** An inventory was asked for while one was still streaming; re-ask when it lands. */
   private extReloadPending = false;
-  private extStore: { query: string; limit: number; items: StorePkg[] | null; error?: string; inflight?: string | null } = { query: "", limit: 20, items: null };
+  private extStore: { query: string; limit: number; items: StorePkg[] | null; error?: string; inflight?: string | null } = { query: "", limit: 250, items: null };
+  /** 插件市场（照 dshmarket 重画）：内层页签 / 分类 / 排序 / 收藏与屏蔽都只存在本机。 */
+  private marketTab: MarketTab = "discover";
+  private marketCategory = "all";
+  private marketSort: MarketSort = "downloads";
+  private marketDir: MarketDir = "desc";
+  private marketOnlyInstalled = false;
+  private marketVisible = 30;
+  private marketFavorites: Set<string> = loadMarketSet(FAVORITES_KEY);
+  private marketBlocked: Set<string> = loadMarketSet(BLOCKED_KEY);
+  private marketRecentHidden = (() => {
+    try {
+      return localStorage.getItem(RECENT_HIDDEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  })();
   private mcpStore: { query: string; limit: number; items: StoreMcpItem[] | null; error?: string; building?: boolean; starsComplete?: boolean; hasToken?: boolean; truncated?: boolean; inflight?: string | null } = { query: "", limit: 20, items: null };
   private extScope: "global" | "project" = "global";
   private extArm: { key: string; until: number } | null = null;
@@ -10902,8 +10931,8 @@ export class App {
     chip.onclick = () => this.openModelSheet();
     chip.append(el("span", "chip-model", ""), el("span", "chip-ctx", ""), el("span", "chip-rate", ""), el("span", "chip-level", ""));
     this.modelChip = chip;
-    const extBtn = el("button", "btn ghost ext-btn", tr("扩展")) as HTMLButtonElement;
-    extBtn.title = tr("已安装的扩展与 MCP、扩展商店、MCP 商店（可在 pi 设置 → 扩展与 MCP 里隐藏这个按钮）");
+    const extBtn = el("button", "btn ghost ext-btn", tr("插件")) as HTMLButtonElement;
+    extBtn.title = tr("已安装的插件与 MCP、插件市场、MCP 商店（可在 pi 设置 → 插件与 MCP 里隐藏这个按钮）");
     extBtn.onclick = () => this.openExtManager();
     this.extButton = extBtn;
     this.paintExtButton();
@@ -11095,7 +11124,7 @@ export class App {
       case "passphrase":
         return tr("口令");
       case "ext":
-        return tr("扩展与 MCP");
+        return tr("插件与 MCP");
       case "subagents":
         return tr("子代理");
       case "notify":
@@ -11415,7 +11444,7 @@ export class App {
         items: [
           ["login", tr("登录·凭据"), 0],
           ["passphrase", tr("口令"), 0],
-          ["ext", tr("扩展与 MCP"), extCount],
+          ["ext", tr("插件与 MCP"), extCount],
           ["subagents", tr("子代理"), agentCount],
           ["notify", tr("通知"), 0],
           ["preview", tr("预览与翻译"), 0],
@@ -12833,7 +12862,7 @@ export class App {
     // #290：勾选状态就是 `chrome.ext`（与下沿那颗同一个判断），改动写的也是同一个字段。
     box.checked = isChromeVisible("ext", this.uiPrefs.chrome, this.chromeCtx());
     box.onchange = () => this.act(() => this.socket.send({ type: "ui.set", chrome: { ext: box.checked } }));
-    row.append(box, el("span", "", tr("在输入框下方显示「扩展」按钮（点开就是下面这套管理界面）")));
+    row.append(box, el("span", "", tr("在输入框下方显示「插件」按钮（点开就是下面这套管理界面）")));
     body.append(row);
     const host = el("div", "ext-host");
     body.append(host);
@@ -13103,7 +13132,7 @@ export class App {
     };
     const sheet = el("div", "sheet settings-sheet ext-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("扩展与 MCP")));
+    head.append(el("div", "sheet-title", tr("插件与 MCP")));
     const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
@@ -13168,7 +13197,7 @@ export class App {
     const tabs = el("div", "settings-tabs ext-tabs");
     const def: ["installed" | "ext" | "mcp" | "market", string][] = [
       ["installed", this.extUpdates ? tr("已安装（{p1} 个可更新）", { p1: this.extUpdates }) : tr("已安装")],
-      ["ext", tr("扩展商店")],
+      ["ext", tr("插件市场")],
       ["mcp", tr("MCP 商店")],
       ["market", tr("局域网市场")],
     ];
@@ -13207,7 +13236,7 @@ export class App {
       );
     }
     if (this.extTab === "installed") this.paintExtInstalled(host);
-    else if (this.extTab === "ext") this.paintExtStore(host);
+    else if (this.extTab === "ext") this.paintPluginMarket(host);
     else if (this.extTab === "mcp") this.paintMcpStore(host);
     else this.paintLanMarket(host);
     // console of the last command
@@ -13274,11 +13303,11 @@ export class App {
 
     host.append(el("div", "settings-label", tr("pi 包")));
     const pkgs = el("div", "login-list");
-    if (!inv.packages.length) pkgs.append(el("div", "empty", tr("还没有装任何包，去「扩展商店」看看")));
+    if (!inv.packages.length) pkgs.append(el("div", "empty", tr("还没有装任何包，去「插件市场」看看")));
     for (const p of inv.packages) pkgs.append(this.pkgRow(p, ro));
     host.append(pkgs);
 
-    host.append(el("div", "settings-label", tr("扩展（内置 / 单独的文件）")));
+    host.append(el("div", "settings-label", tr("插件（内置 / 单独的文件）")));
     const exts = el("div", "login-list");
     for (const x of inv.extensions) exts.append(this.extRow(x, ro, cwd));
     host.append(exts);
@@ -13516,46 +13545,138 @@ export class App {
     this.socket.send({ type: "mcp.store", query: store.query, limit: store.limit });
   }
 
-  private paintExtStore(host: HTMLElement): void {
+  /** 插件市场：照 dshmarket 的发现页重画。数据仍是 pi 的 npm 商店。 */
+  private paintPluginMarket(host: HTMLElement): void {
     const store = this.extStore;
-    const run = () => {
-      this.requestExtStore();
-      this.paintExtIfOpen();
-    };
     // Painting never sends by itself; this is the same 「opened with nothing to show yet」 case.
-    if (store.items === null && !store.error) this.requestExtStore();
-    this.storeHeader(host, store, tr("搜索 pi 扩展（npm 上带 pi-package 关键字的包）"), run);
-    host.append(el("div", "settings-hint", tr("来源是 npm（和 pi.dev/packages 画廊同一批包），按月下载量排序。装包等于让它的代码在这台电脑上运行，只装你信得过的。")));
-    const list = el("div", "login-list");
-    if (store.error) list.append(el("div", "empty", store.error));
-    else if (!store.items) list.append(el("div", "empty", tr("查询中…")));
-    else if (!store.items.length) list.append(el("div", "empty", tr("没有找到")));
-    const installed = new Set((this.extInv?.packages ?? []).map((p) => p.name).filter(Boolean));
-    const ro = Boolean(this.me.public);
-    (store.items ?? []).forEach((p, i) => {
-      const row = el("div", "login-row");
-      const name = el("div", "login-name");
-      const link = el("a", "", p.name) as HTMLAnchorElement;
-      link.href = p.link;
-      link.target = "_blank";
-      link.rel = "noopener";
-      name.append(el("span", "ext-rank", `${i + 1}`), link, el("span", "settings-hint", ` v${p.version}${p.publisher ? ` · ${p.publisher}` : ""}`));
-      row.append(name, el("span", "login-status", tr("月下载 {p1}", { p1: p.monthly.toLocaleString("en-US") })));
-      const acts = el("div", "login-acts");
-      if (p.description) acts.append(el("span", "settings-hint ext-desc", p.description));
-      if (installed.has(p.name)) acts.append(el("span", "login-status ok", tr("已安装")));
-      else {
-        const key = `install:${p.name}`;
-        const label = this.opLabel(key, tr("安装中…"));
-        const b = el("button", "btn primary", label ?? tr("安装")) as HTMLButtonElement;
-        b.disabled = ro || Boolean(label);
-        b.onclick = () => this.piCli({ op: "pkg.install", source: `npm:${p.name}`, local: this.extScope === "project" }, key);
-        acts.append(b);
-      }
-      row.append(acts);
-      list.append(row);
-    });
-    host.append(list);
+    if (store.items === null && !store.error && !store.inflight) this.requestExtStore();
+    const installed = new Set((this.extInv?.packages ?? []).map((p) => p.name).filter((name): name is string => Boolean(name)));
+    const state: MarketViewState = {
+      tab: this.marketTab,
+      query: store.query,
+      category: this.marketCategory,
+      sort: this.marketSort,
+      dir: this.marketDir,
+      onlyInstalled: this.marketOnlyInstalled,
+      items: store.items,
+      error: store.error ?? null,
+      loading: Boolean(store.inflight) || (store.items === null && !store.error),
+      installed,
+      favorites: this.marketFavorites,
+      blocked: this.marketBlocked,
+      visible: this.marketVisible,
+      scope: this.extScope,
+      canProject: Boolean(this.session?.cwd),
+      readOnly: Boolean(this.me.public),
+      updates: this.extUpdates,
+      ops: [...this.cliOps.values()],
+      recentHidden: this.marketRecentHidden,
+    };
+    const actions: MarketActions = {
+      onTab: (tab) => {
+        this.marketTab = tab;
+        this.paintExtIfOpen();
+      },
+      onQuery: (query) => {
+        this.extStore.query = query;
+        this.marketVisible = 30;
+        this.requestExtStore();
+        this.paintExtIfOpen();
+      },
+      onCategory: (category) => {
+        this.marketCategory = category;
+        this.marketVisible = 30;
+        this.paintExtIfOpen();
+      },
+      onSort: (sort, dir) => {
+        if (this.marketSort === sort && this.marketDir === dir) return;
+        this.marketSort = sort;
+        this.marketDir = dir;
+        this.paintExtIfOpen();
+      },
+      onOnlyInstalled: (only) => {
+        this.marketOnlyInstalled = only;
+        this.paintExtIfOpen();
+      },
+      onVisible: (n) => {
+        this.marketVisible = n;
+        this.paintExtIfOpen();
+      },
+      onInstall: (pkg) => {
+        this.piCli({ op: "pkg.install", source: `npm:${pkg.name}`, local: this.extScope === "project" }, `install:${pkg.name}`);
+      },
+      onToggleFavorite: (name) => {
+        if (this.marketFavorites.has(name)) this.marketFavorites.delete(name);
+        else this.marketFavorites.add(name);
+        saveMarketSet(FAVORITES_KEY, this.marketFavorites);
+        this.paintExtIfOpen();
+      },
+      onToggleBlock: (name) => {
+        if (this.marketBlocked.has(name)) this.marketBlocked.delete(name);
+        else this.marketBlocked.add(name);
+        saveMarketSet(BLOCKED_KEY, this.marketBlocked);
+        this.paintExtIfOpen();
+      },
+      onUnblock: (name) => {
+        this.marketBlocked.delete(name);
+        saveMarketSet(BLOCKED_KEY, this.marketBlocked);
+        this.paintExtIfOpen();
+      },
+      onOpenInstalled: () => {
+        this.extTab = "installed";
+        this.paintExtIfOpen();
+      },
+      onRefresh: () => {
+        this.extStore.items = null;
+        this.extStore.error = undefined;
+        this.extStore.inflight = null;
+        this.requestExtStore();
+        this.paintExtIfOpen();
+      },
+      onScope: (scope) => {
+        this.extScope = scope;
+        this.paintExtIfOpen();
+      },
+      onInstallSource: (source) => {
+        this.piCli({ op: "pkg.install", source, local: this.extScope === "project" }, `install:${source}`);
+      },
+      onExportLog: () => this.exportPluginMarketLog(),
+      onToggleRecent: (hidden) => {
+        this.marketRecentHidden = hidden;
+        try {
+          localStorage.setItem(RECENT_HIDDEN_KEY, hidden ? "1" : "");
+        } catch {
+          // Private mode: the choice only lasts this page.
+        }
+        this.paintExtIfOpen();
+      },
+    };
+    host.append(renderPluginMarket(state, actions));
+  }
+
+  /** 插件市场的「导出日志」：当前目录 + 已装清单 + 在途操作，纯文本，不上传。 */
+  private exportPluginMarketLog(): void {
+    const lines: string[] = [
+      "# pi plugin market",
+      `generated: ${new Date().toISOString()}`,
+      `query: ${this.extStore.query || "(empty)"}`,
+      `tab: ${this.marketTab}`,
+      `category: ${this.marketCategory}`,
+      `installed: ${(this.extInv?.packages ?? []).map((p) => `${p.name}@${p.version ?? "?"}`).join(", ") || "(none)"}`,
+      `ops: ${[...this.cliOps.values()].map((op) => `${op.op}:${op.state}`).join(", ") || "(none)"}`,
+      `catalog: ${this.extStore.items?.length ?? 0} packages`,
+      "",
+    ];
+    for (const p of this.extStore.items ?? []) {
+      lines.push(`${p.name}\t${p.version}\t${p.monthly}\t${p.owner ?? p.publisher ?? ""}\t${p.link}`);
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "pi-plugin-market.txt";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   private paintMcpStore(host: HTMLElement): void {
@@ -17988,6 +18109,11 @@ interface StorePkg {
   weekly: number;
   link: string;
   publisher: string | null;
+  owner?: string | null;
+  repository?: string | null;
+  homepage?: string | null;
+  published?: number;
+  keywords?: string[];
 }
 interface McpFieldView {
   name: string;
