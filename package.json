@@ -81,6 +81,8 @@
     "probe:preview": "node probes/preview-open.mjs",
     "probe:translate": "node probes/translate-ui.mjs",
     "probe:extstore": "node probes/ext-store-paint.mjs",
+    "probe:rail": "node probes/rail-click.mjs && node probes/round20-turns.mjs && node probes/turn-rail-last.mjs && node probes/rail-ghost.mjs",
+    "probe:rail-click": "node probes/rail-click.mjs",
     "test:history": "node --experimental-strip-types bridge/tests/history-page-unit.mjs",
     "test:head": "node --experimental-strip-types bridge/tests/session-head-unit.mjs",
     "test:paging": "node bridge/tests/paging-scope.mjs",
