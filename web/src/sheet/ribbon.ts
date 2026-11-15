@@ -292,7 +292,7 @@ export class Ribbon {
     const top = (box.bottom - host.top) / scale;
     menu.style.left = `${Math.max(0, Math.min(left, this.el.offsetWidth - menu.offsetWidth - 4))}px`;
     menu.style.top = `${top}px`;
-    if (host.top + top * scale + menu.offsetHeight > window.innerHeight - 8) {
+    if (host.top + top * scale + menu.offsetHeight * scale > window.innerHeight - 8) {
       menu.style.top = `${Math.max(0, (box.top - host.top) / scale - menu.offsetHeight - 2)}px`;
     }
     const off = (ev: Event): void => {

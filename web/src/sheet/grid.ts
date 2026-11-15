@@ -70,10 +70,22 @@ interface EditEntry {
   after: SheetCell | null;
 }
 
+/** 跨 SheetGrid 实例保留的按表视图状态：切到「只给清单」的大表再回来也不丢。 */
+export interface SheetGridState {
+  colOverBySheet: Map<string, Map<number, number>>;
+  rowOverBySheet: Map<string, Map<number, number>>;
+  freezeBySheet: Map<string, { rows: number; cols: number } | null>;
+  fmtOverBySheet: Map<string, Map<string, string>>;
+}
+
 export interface SheetGridHost {
   meta: SheetMeta;
   sheet: string;
   fetchWindow: (sheet: string, r0: number, r1: number, c0: number, c1: number) => Promise<SheetWindow>;
+  /** `#app` 的界面缩放（CSS zoom）：指针 clientX/Y 是视觉 px，行高/列宽是布局 px。 */
+  scale?: () => number;
+  /** 由浮窗持有：改表后仍要保留的按表视图状态（列宽/行高/冻结/本地格式）。 */
+  state?: SheetGridState;
   /** #106：文件在预览之后被改过，桥端不认旧凭据了。 */
   onStale?: () => void;
   /** #427：表里的图片（`/api/sheet/media` 的地址由浮窗拼，网格只负责摆位置）。 */
@@ -249,7 +261,9 @@ export class SheetGrid {
   private base: number[] = [];
   private widths: number[] = [];
 
-  /** #435 拖出来的列宽 / 行高：先盖在文件值上，保存成功后由 meta 接管。 */
+  /** #435 拖出来的列宽 / 行高：先盖在文件值上，保存成功后由 meta 接管。按表分账。 */
+  private colOverBySheet = new Map<string, Map<number, number>>();
+  private rowOverBySheet = new Map<string, Map<number, number>>();
   private colOver = new Map<number, number>();
   private rowOver = new Map<number, number>();
 
@@ -291,9 +305,11 @@ export class SheetGrid {
   private edits = new Map<string, SheetCell | null>();
   /** #433：只改样式、没改内容的格子（保存时并进 editOps）。 */
   private styleOver = new Map<string, SheetStylePatch>();
-  /** #437：本地改过的数字格式（代码），画格子时立刻按它显示，不用等存盘。 */
+  /** #437：本地改过的数字格式（代码），画格子时立刻按它显示，不用等存盘。按表分账。 */
+  private fmtOverBySheet = new Map<string, Map<string, string>>();
   private fmtOver = new Map<string, string>();
-  /** #433：功能区「冻结窗格」改的冻结位置，优先于文件里的。 */
+  /** #433：功能区「冻结窗格」改的冻结位置，优先于文件里的。按表分账。 */
+  private freezeBySheet = new Map<string, { rows: number; cols: number } | null>();
   private freezeOver: { rows: number; cols: number } | null = null;
   /** #433：公式视图——格子里显示 `=SUM(...)` 而不是结果。 */
   private showFormulas = false;
@@ -309,7 +325,15 @@ export class SheetGrid {
 
   constructor(host: SheetGridHost) {
     this.host = host;
+    if (host.state) {
+      this.colOverBySheet = host.state.colOverBySheet;
+      this.rowOverBySheet = host.state.rowOverBySheet;
+      this.freezeBySheet = host.state.freezeBySheet;
+      this.fmtOverBySheet = host.state.fmtOverBySheet;
+    }
     this.sheet = host.sheet;
+    this.restoreSheetState(host.sheet);
+    this.stashSheetState();
     this.root = el("div", "sd-grid");
     this.root.append(el("div", "sd-corner"));
 
@@ -353,11 +377,13 @@ export class SheetGrid {
     this.view.tabIndex = 0;
     this.view.setAttribute("role", "grid");
     this.view.setAttribute("aria-label", tr("表格"));
-    this.view.addEventListener("pointerdown", this.onPointerDown);
+    // 指针事件挂 root：冻结带是 view 之外的一层覆盖（`.sd-frz`），挂在 view 上时点冻结行/列
+    // 根本到不了这里。`pointCell` 用 view 的矩形判界，点表头仍然会返回 null。
     this.root.addEventListener("pointerdown", this.onHeadDown);
-    this.view.addEventListener("pointermove", this.onPointerMove);
-    this.view.addEventListener("pointerup", this.onPointerUp);
-    this.view.addEventListener("pointercancel", this.onPointerUp);
+    this.root.addEventListener("pointerdown", this.onPointerDown);
+    this.root.addEventListener("pointermove", this.onPointerMove);
+    this.root.addEventListener("pointerup", this.onPointerUp);
+    this.root.addEventListener("pointercancel", this.onPointerUp);
     this.view.addEventListener("keydown", this.onKeyDown);
     this.view.addEventListener("copy", this.onCopy);
     this.view.addEventListener("paste", this.onPaste);
@@ -376,8 +402,10 @@ export class SheetGrid {
   /** 切到另一张表：位置归零、缓存清掉，文件里的结构按那张表重算。 */
   setSheet(name: string): void {
     if (name === this.sheet) return;
+    this.stashSheetState();
     this.sheet = name;
     this.host.sheet = name;
+    this.restoreSheetState(name);
     this.epoch++;
     this.cellsByKey.clear();
     this.chunks = [];
@@ -387,6 +415,14 @@ export class SheetGrid {
     this.autoH = new Map();
     this.anchor = { r: 0, c: 0 };
     this.focus = { r: 0, c: 0 };
+    this.lastTap = { t: 0, r: -1, c: -1 };
+    // 改动账目只按 "r:c" 记，不带表名；切表前由 dialog 挡住未保存的改动。
+    // 本地格式预览随 fmtOverBySheet 走，不能在这里清掉。
+    this.edits.clear();
+    this.styleOver.clear();
+    this.undoStack = [];
+    this.redoStack = [];
+    this.notifyDirty();
     this.view.scrollTop = 0;
     this.view.scrollLeft = 0;
     this.measure();
@@ -397,20 +433,36 @@ export class SheetGrid {
     void this.ensure();
   }
 
+  /** 把当前表的视图状态收进按表账本；`SheetGrid` 被销毁重建时账本由浮窗持有。 */
+  private stashSheetState(): void {
+    this.colOverBySheet.set(this.sheet, this.colOver);
+    this.rowOverBySheet.set(this.sheet, this.rowOver);
+    this.freezeBySheet.set(this.sheet, this.freezeOver);
+    this.fmtOverBySheet.set(this.sheet, this.fmtOver);
+  }
+
+  private restoreSheetState(name: string): void {
+    this.colOver = this.colOverBySheet.get(name) ?? new Map();
+    this.rowOver = this.rowOverBySheet.get(name) ?? new Map();
+    this.freezeOver = this.freezeBySheet.get(name) ?? null;
+    this.fmtOver = this.fmtOverBySheet.get(name) ?? new Map();
+  }
+
   get activeSheet(): string {
     return this.sheet;
   }
 
   destroy(): void {
+    this.stashSheetState();
     this.destroyed = true;
     this.epoch++;
     if (this.frame) cancelAnimationFrame(this.frame);
     this.view.removeEventListener("scroll", this.onScroll);
-    this.view.removeEventListener("pointerdown", this.onPointerDown);
     this.root.removeEventListener("pointerdown", this.onHeadDown);
-    this.view.removeEventListener("pointermove", this.onPointerMove);
-    this.view.removeEventListener("pointerup", this.onPointerUp);
-    this.view.removeEventListener("pointercancel", this.onPointerUp);
+    this.root.removeEventListener("pointerdown", this.onPointerDown);
+    this.root.removeEventListener("pointermove", this.onPointerMove);
+    this.root.removeEventListener("pointerup", this.onPointerUp);
+    this.root.removeEventListener("pointercancel", this.onPointerUp);
     this.view.removeEventListener("keydown", this.onKeyDown);
     this.view.removeEventListener("copy", this.onCopy);
     this.view.removeEventListener("paste", this.onPaste);
@@ -1003,6 +1055,15 @@ export class SheetGrid {
       this.cancelEdit();
       return;
     }
+    if (ev.key === "Enter" && ev.altKey) {
+      // Alt+Enter：格子里换行（Excel/WPS 的同一个手法），不提交。必须放在普通 Enter 前面。
+      ev.preventDefault();
+      const node = ev.target as HTMLTextAreaElement;
+      const at = node.selectionStart ?? node.value.length;
+      node.value = `${node.value.slice(0, at)}\n${node.value.slice(at)}`;
+      node.setSelectionRange(at + 1, at + 1);
+      return;
+    }
     if (ev.key === "Enter") {
       ev.preventDefault();
       this.commitEdit(ev.shiftKey ? "up" : "down");
@@ -1011,15 +1072,6 @@ export class SheetGrid {
     if (ev.key === "Tab") {
       ev.preventDefault();
       this.commitEdit(ev.shiftKey ? "left" : "right");
-      return;
-    }
-    if (ev.key === "Enter" && ev.altKey) {
-      // Alt+Enter：格子里换行（Excel/WPS 的同一个手法），不提交
-      ev.preventDefault();
-      const node = ev.target as HTMLTextAreaElement;
-      const at = node.selectionStart ?? node.value.length;
-      node.value = `${node.value.slice(0, at)}\n${node.value.slice(at)}`;
-      node.setSelectionRange(at + 1, at + 1);
       return;
     }
   }
@@ -1466,25 +1518,44 @@ export class SheetGrid {
     void this.ensure();
   }
 
-  /** 屏幕坐标落在哪一格：冻结带里的格子滚动时不动，其余按滚动偏移加回去。 */
+  /** `#app` 的界面缩放：指针 / getBoundingClientRect 是视觉 px，网格内部是布局 px。 */
+  private uiScale(): number {
+    return this.host.scale?.() ?? 1;
+  }
+
+  /** 视觉 px → 布局 px。 */
+  private toLayoutPx(px: number): number {
+    return px / this.uiScale();
+  }
+
+  /** 屏幕坐标落在哪一格：冻结带里的格子滚动时不动，其余按滚动偏移加回去。
+   *  指针 clientX/Y 是视觉 px，行高/列宽是布局 px：先换回布局 px 再查行列。WPS 那边也是
+   *  先把设备坐标 DP 换成逻辑坐标 LP（`KAxOleObject::DPtoLP(IKViewportService*, ...)`）再做命中的，
+   *  见 docs/SHEET-WPS.md。 */
   private pointCell(clientX: number, clientY: number): { r: number; c: number } | null {
     const info = this.info();
     if (!info.rows || !info.cols) return null;
+    const scale = this.uiScale();
     const rect = this.view.getBoundingClientRect();
-    // 用 clientWidth/Height 判界：滚动条那条缝不该被当成格子。
-    const left = rect.left + this.view.clientLeft;
-    const top = rect.top + this.view.clientTop;
-    if (clientX < left || clientY < top || clientX > left + this.view.clientWidth || clientY > top + this.view.clientHeight) {
+    const left = rect.left + this.view.clientLeft * scale;
+    const top = rect.top + this.view.clientTop * scale;
+    // clientWidth/Height 是布局 px，要乘回界面缩放才是视觉 px；滚动条那条缝不算格子。
+    const w = this.view.clientWidth * scale;
+    const h = this.view.clientHeight * scale;
+    if (clientX < left || clientY < top || clientX > left + w || clientY > top + h) {
       return null;
     }
     const f = this.freeze();
-    let x = clientX - left;
-    let y = clientY - top;
+    let x = this.toLayoutPx(clientX - left);
+    let y = this.toLayoutPx(clientY - top);
     if (x >= this.leftOf(f.cols)) x += this.view.scrollLeft;
     if (y >= this.topOf(f.rows)) y += this.view.scrollTop;
     const r = this.rowAt(Math.max(0, y));
     const c = this.colAt(Math.max(0, x));
     if (r < 0 || r >= info.rows || c < 0 || c >= info.cols) return null;
+    // 合并区是一个格子：点它的任何位置都归到左上角，否则选区会变成 A1:G1 这种半截。
+    const span = this.spans.get(`${r}:${c}`);
+    if (span) return { r: span.r0, c: span.c0 };
     return { r, c };
   }
 
@@ -1793,18 +1864,19 @@ export class SheetGrid {
     if (!gv && !gh) return;
     ev.preventDefault();
     ev.stopPropagation();
-    const z = this.zoomLevel;
+    const zoom = this.zoomLevel;
     const c = gv ? Number(gv.dataset.c) : -1;
     const r = gh ? Number(gh.dataset.r) : -1;
     const x0 = ev.clientX;
     const y0 = ev.clientY;
-    const w0 = gv ? (this.base[c] ?? COL_W) * z : 0;
-    const h0 = gh ? this.heightOf(r) : 0;
+    const w0 = gv ? (this.base[c] ?? COL_W) : 0;
+    const h0 = gh ? (this.rowOver.get(r) ?? this.heightBase(r)) : 0;
     let moved = false;
     const move = (e: PointerEvent): void => {
       moved = true;
-      if (gv) this.dragCol(c, (w0 + e.clientX - x0) / z);
-      else this.dragRow(r, h0 + e.clientY - y0);
+      // 指针是视觉 px：列宽先换回未缩放的字符宽度，行高也只在布局 px 里改。
+      if (gv) this.dragCol(c, w0 + this.toLayoutPx(e.clientX - x0) / zoom);
+      else this.dragRow(r, h0 + this.toLayoutPx(e.clientY - y0) / zoom);
     };
     // 拖动过程中会重画表头（握把节点被换掉），所以监听挂在 window 上，别挂在握把上。
     const up = (): void => {
@@ -1947,8 +2019,8 @@ export class SheetGrid {
     };
 
     const move = (e: PointerEvent): void => {
-      const y = e.clientY - origin.top + view.scrollTop;
-      const x = e.clientX - origin.left + view.scrollLeft;
+      const y = this.toLayoutPx(e.clientY - origin.top) + view.scrollTop;
+      const x = this.toLayoutPx(e.clientX - origin.left) + view.scrollLeft;
       const r = this.rowAt(y);
       const c = this.colAt(x);
       const vSpan = r - start.r1;
@@ -2141,7 +2213,8 @@ export class SheetGrid {
       if (node.dataset.wrap !== "1") continue;
       const span = node.querySelector(".sd-txt");
       if (!span) continue;
-      const need = Math.ceil(span.getBoundingClientRect().height) + Math.round(5 * this.zoomLevel);
+      // rect.height 同时含表格缩放与 #app 缩放；autoH 是未缩放的基数，除回去再加 5px 基础留白。
+      const need = Math.ceil(this.toLayoutPx(span.getBoundingClientRect().height) / this.zoomLevel) + 5;
       const r = Number(node.dataset.r);
       if (this.fileH.has(r)) continue;
       if (need > (this.grow.get(r) ?? 0)) this.grow.set(r, need);
