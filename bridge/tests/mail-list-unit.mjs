@@ -131,7 +131,43 @@ check(
   JSON.stringify(ext.htmlToText("<p>你好</p><p>第二段</p>")),
 );
 check("script / style 整段丢掉", !ext.htmlToText("<style>a{}</style><script>x()</script><div>正文</div>").includes("x()"));
+check("带属性的 style 也不漏 CSS", !ext.htmlToText('<style type="text/css">.x{color:red}</style><div>正文</div>').includes(".x{"));
 check("实体还原", ext.htmlToText("<div>a &amp; b &lt;c&gt;</div>").includes("a & b <c>"));
+check("图片不静默消失：保留 alt", ext.htmlToText('<p>看图</p><img src="x" alt="报价单">').includes("[图片：报价单]"));
+check("图片没有 alt 也留标记", ext.htmlToText('<img src="x">').includes("[图片]"));
+
+// ---------------------------------------------------------------- 内嵌图片（cid）
+
+const inlineRaw = Buffer.from(
+  [
+    'From: "Alice" <alice@example.com>',
+    "To: bob@example.com",
+    "Subject: inline",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/related; boundary="rel"',
+    "",
+    "--rel",
+    'Content-Type: text/html; charset=utf-8',
+    "",
+    '<html><body><p>hi</p><img src="cid:logo@x" alt="logo"></body></html>',
+    "--rel",
+    'Content-Type: image/png; name="logo.png"',
+    "Content-Transfer-Encoding: base64",
+    "Content-ID: <logo@x>",
+    'Content-Disposition: inline; filename="logo.png"',
+    "",
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==",
+    "--rel--",
+    "",
+  ].join("\n"),
+);
+const cidDetail = await t.parseMailSource(inlineRaw, 7, { keepCidLinks: true });
+check("内嵌图片有 cid、标成 inline", cidDetail.attachments.length === 1 && cidDetail.attachments[0].contentId === "logo@x" && cidDetail.attachments[0].inline === true, JSON.stringify(cidDetail.attachments));
+check("工具口保留 cid:，不把 base64 塞进正文", cidDetail.html?.includes("cid:logo@x") === true && !cidDetail.html?.includes("data:image"));
+const richDetail = await t.parseMailSource(inlineRaw, 7);
+check("面板口换 data URI，图片不用再拉一遍 IMAP", richDetail.html?.includes("data:image/png;base64") === true && !richDetail.html?.includes("cid:logo@x"));
+check("没有 Content-Disposition 的 image/* + Content-ID 也算内嵌", t.isInlineAttachment({ contentId: "<x@y>", contentType: "image/png" }));
+check("普通附件不算内嵌", !t.isInlineAttachment({ filename: "a.pdf", contentType: "application/pdf" }));
 
 // ---------------------------------------------------------------- 收尾
 

@@ -179,7 +179,9 @@ function addrText(a: any): string {
 
 function countParts(node: any): number {
   if (!node) return 0;
-  if (node.disposition === "attachment" || (node.disposition === "inline" && node.filename)) return 1;
+  // 📎 只算真正的附件。内嵌图片（`Content-Disposition: inline` + Content-ID）属于正文，
+  // 以前把它们也算进去，营销邮件每封都挂一个回形针，反而看不出哪封真带文件。
+  if (String(node.disposition ?? "").toLowerCase() === "attachment") return 1;
   let n = 0;
   for (const child of node.childNodes ?? []) n += countParts(child);
   return n;
@@ -361,6 +363,10 @@ export interface MailAttachmentInfo {
   filename: string;
   size: number;
   contentType: string;
+  /** `Content-ID`（去掉尖括号）；内嵌图片才有。 */
+  contentId: string | null;
+  /** 正文里引用的内嵌资源（`multipart/related` / `Content-Disposition: inline`）。 */
+  inline: boolean;
 }
 
 export interface MailDetail {
@@ -406,6 +412,24 @@ interface AddrBox {
   address?: string;
 }
 
+/** `Content-ID` 在不同解析器里带不带尖括号都见过；统一成裸值，`cid:` 匹配才稳。 */
+export function contentIdOf(part: any): string {
+  return String(part?.contentId ?? part?.cid ?? "")
+    .trim()
+    .replace(/^<|>$/g, "")
+    .trim();
+}
+
+/** 内嵌图片：有 Content-ID，且被标成 related / inline。正文里的 `cid:` 就靠它找回来。 */
+export function isInlineAttachment(part: any): boolean {
+  const cid = contentIdOf(part);
+  if (!cid) return false;
+  const disposition = String(part?.contentDisposition ?? "").toLowerCase();
+  // 有的服务器把内嵌图写成 image/* + Content-ID、不写 Content-Disposition；也算内嵌，
+  // 否则它会同时出现在「附件」里，正文里的 cid: 又找不到。
+  return part?.related === true || disposition === "inline" || (!disposition && String(part?.contentType ?? "").startsWith("image/"));
+}
+
 /** mailparser 的地址是 `AddressObject[]`，每项再包一层 `value`；这里摊平成 {name,address}。 */
 function flattenAddress(addr: unknown): AddrBox[] {
   const boxes = Array.isArray(addr) ? addr : addr ? [addr] : [];
@@ -424,8 +448,21 @@ function listOf(addr: unknown): string[] {
     .filter(Boolean);
 }
 
-async function parseInto(raw: Buffer, uid: number): Promise<MailDetail & { _attachments: any[] }> {
-  const parsed = await simpleParser(raw);
+export interface ParsedMailSource extends MailDetail {
+  _attachments: any[];
+}
+
+/**
+ * 原始 MIME → 详情。`keepCidLinks` 留给工具口：HTML 里保留 `cid:` 引用，正文不会因为
+ * 内嵌图片的 base64 变成几十万字；面板口用默认值，mailparser 会把 `cid:` 换成 data URI，
+ * 一张图只下载一次，不用为每张图重新拉整封信。
+ */
+export async function parseMailSource(
+  raw: Buffer,
+  uid: number,
+  opts: { keepCidLinks?: boolean } = {},
+): Promise<ParsedMailSource> {
+  const parsed = await simpleParser(raw, { keepCidLinks: opts.keepCidLinks === true });
   const from = flattenAddress(parsed.from)[0];
   return {
     uid,
@@ -438,19 +475,26 @@ async function parseInto(raw: Buffer, uid: number): Promise<MailDetail & { _atta
     messageId: String(parsed.messageId ?? ""),
     text: String(parsed.text ?? ""),
     html: parsed.html === false || parsed.html == null ? null : String(parsed.html),
-    attachments: (parsed.attachments ?? []).map((a, i) => ({
+    attachments: (parsed.attachments ?? []).map((a: any, i: number) => ({
       index: i,
-      filename: String(a.filename ?? `attachment-${i + 1}`),
+      filename: String(a.filename ?? a.contentId ?? "").replace(/^<|>$/g, "").trim() || `attachment-${i + 1}`,
       size: Number(a.size ?? 0),
       contentType: String(a.contentType ?? "application/octet-stream"),
+      contentId: contentIdOf(a) || null,
+      inline: isInlineAttachment(a),
     })),
     _attachments: parsed.attachments ?? [],
   };
 }
 
-export async function readMessage(account: MailAccount, folder: string, uid: number): Promise<MailDetail> {
+export async function readMessage(
+  account: MailAccount,
+  folder: string,
+  uid: number,
+  opts: { keepCidLinks?: boolean } = {},
+): Promise<MailDetail> {
   const raw = await fetchRaw(account, folder, uid);
-  const { _attachments, ...detail } = await parseInto(raw, uid);
+  const { _attachments, ...detail } = await parseMailSource(raw, uid, opts);
   void _attachments;
   return detail;
 }
@@ -462,7 +506,7 @@ export async function readAttachment(
   index: number,
 ): Promise<{ filename: string; size: number; contentType: string; content: Buffer }> {
   const raw = await fetchRaw(account, folder, uid);
-  const parsed = await parseInto(raw, uid);
+  const parsed = await parseMailSource(raw, uid);
   const hit = (parsed._attachments ?? [])[index];
   if (!hit) throw new MailError("not-found", `没有第 ${index + 1} 个附件`, `这封信的附件清单只有 ${parsed.attachments.length} 项，刷新一下再试。`);
   const content = Buffer.isBuffer(hit.content) ? hit.content : Buffer.from(hit.content ?? []);

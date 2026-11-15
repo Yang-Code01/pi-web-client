@@ -5167,3 +5167,35 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - AGENTS.md / issue-tracker 里「直连失败才加 `HTTPS_PROXY=18791`」是 `gh` CLI 的手工代理约定，不适用于热部署 worker；worker 的规则以本条为准。
 
 **验证：** `bridge/tests/hotdeploy-unit.mjs` 新增 `proxyCandidates()` 单测（显式代理优先、去空白、URL 正规化后去重、默认兜底、`ALL_PROXY` 顺序）；`npm run test:hotdeploy` 通过。真实代理切换仍建议重启 bridge 后点一次热部署验证。
+
+## D273 邮箱正文按 HTML 渲染：内嵌图直接显示、远程图默认拦下、AI 能单独看内嵌图（用户报障 2026-11-15）
+
+**问题：** 面板只把 `MailDetail.text` 放进 `<pre>`，完全不看 `html`。纯 HTML 的信（本机真信箱里两封：Sony 营销 120,005 字符、92 张远程图；Jenil 求职信 11 张 `cid:` 内嵌图 + 1 个 PDF）在面板里只剩「（没有纯文本正文）」或一段被剥光的文字，图片内容读不到；`mail_read` 的 `htmlToText()` 又把 `<img>` 静默删掉，模型连「这里有图」都不知道。更糟的是工具口返回带 data URI 的 HTML，20,000 字截断会先被图片 base64 吃掉，正文反而没了。
+
+**逆向来源（可复核）：**
+
+- 本机 `/Applications/MailMaster.app` 4.17.24（`com.netease.macmail`）的正文页在 `Contents/Resources/webui/js/viewer/viewer.js`：`resetInlineAttachment` 把 `img[src^="cid:"]` 按 `Content-ID` 换成内嵌附件 URL；未下载完的图先用 `mailmaster://static.dashi.163.com/style/img/loading.gif` 占位并缩到 16×16；`readMailImgAdapt.js` 再按容器宽度适配图片。
+- 原生侧同一套路的符号（`strings -a Contents/MacOS/MailMaster`）：`MailMasterURLSchemeHandler`、`WKURLSchemeHandler`、`inlineAttachmentWithAccountId:contentId:url:filename:`、`mailmaster://static.dashi.163.com/mailpart/`。即 MailMaster 用自定义 scheme 提供内嵌图，而不是把 base64 塞回正文。
+- REA 6.9.0：`rea analyze-javascript-application /Applications/MailMaster.app/Contents/Resources/webui --source-path js/viewer/viewer.js --source-path js/viewer/readMailImgAdapt.js --source-path js/viewer/viewTmpl.js --source-path js/common.js --detail summary --evidence_output /tmp/rea-mailmaster/webui.evidence.json`，得到 183 条 finding、88 MB Evidence；确认了 cid→附件的映射、`loading.gif` 占位与图片适配三条行为。REA 的 native provider（Ghidra/Hopper/IDA/Kuna）在本机不可用，原生符号靠 `strings` 补。
+
+**决定：**
+
+1. **正文 HTML 进 sandbox iframe，不直接 `innerHTML`。** `web/src/mailhtml.ts` 先做白名单清理（去 script/iframe/form/svg/object/embed/meta/base、`on*`、`srcset`、`javascript:`，CSS 去 `@import` / `expression` / 远程 `url()`），再套 `sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"`（不给 `allow-scripts`）+ CSP `default-src 'none'`。邮件自带的 `<head><style>` 保留，否则营销邮件整页布局会散。
+2. **内嵌图分两条路：** 面板口 `readMessage()` 用 mailparser 默认行为，把 `cid:` 换成 `data:image/...`——一次 IMAP FETCH 就够，不用为 11 张图各拉一遍整封信；工具口 `mail_read` 用 `keepCidLinks: true`，正文保持 20k 级、附件清单带 `contentId` / `inline`，图片另走 `mail_image`。cid 对不上时（服务器写法怪）前端再退回 `/api/mail/attachment?...&inline=1`；CSS 里的 `url(cid:)` 也走同一张映射表。
+3. **远程图片默认不加载，且不占正文高度。** 先把 `src` 换成 1×1 透明 GIF、原地址记 `data-mc-remote-src`，同时 CSP 的 `img-src` 只给 `data: blob: 'self'`（`'self'` 留给 cid 兜底的附件直链）；用户点「显示图片（N）」才重画并放行 `https: http:`。图片关掉时 `display:none`，否则 92 张 600×300 的占位会把正文撑到近万像素、看着像空白。
+4. **附件区不再列内嵌图。** `MailAttachmentInfo` 加 `contentId` / `inline`；列表 📎（`countParts`）只认 `Content-Disposition: attachment`，内嵌图属于正文。PDF 等真附件照旧在附件区下载。
+5. **AI 侧补 `mail_image`。** `mail_read` 把内嵌图列成 `#index / 文件名 / 大小 / cid`，提示用 `mail_image`；`mail_image` 返回 `ImageContent`（png/jpeg/gif/webp，单张 ≤3MB），让视觉模型真的看到图。`htmlToText()` 把 `<img>` 保留成 `[图片：alt]`，不再让图片静默消失。
+
+**代价 / 可改：**
+
+- 面板口 HTML 带 data URI，25MB 的原始邮件最坏膨胀到 ~33MB JSON；仍受 `MAX_RAW_BYTES` 25MB 闸门。真遇到大图邮件，后续可改成 `/api/mail/attachment?inline=1` + 服务端短期缓存。
+- 远程图片开关是**每封信**的，不持久化；换一封信回到默认拦截。和邮件客户端「本次显示」一个口径。
+- 清理是白名单近似，不是 MailMaster 的完整 WebKit 排版；复杂 CSS（`mso-`、浮动）会有差异。`mail_image` 只支持四种位图格式，超过 3MB 让用户走 `mail_attachment`。
+- `mail_image` 每看一张图会重新拉整封原始邮件（低频，先不缓存）；要连看多张时可再合并成一次取多张。
+
+**验证：**
+
+- `npm run test:mail`：`bridge/tests/mail-unit.mjs` 68/68、`mail-list-unit.mjs` 42/42（新增 cid 元数据、`keepCidLinks`、`htmlToText` 图片标记、无 disposition 的内嵌图）、`web/tests/mail-unit.mjs` 14/14（新增 `cidKey`、`inlineImageMap`、CSP 默认/放行远程图）。
+- 真信箱（1304049579@qq.com）：uid=1328 面板渲染 11 张内嵌图（naturalWidth 800、iframe 高度 4,703px），附件区只列 `Jenil_Soni_-_Resume.pdf · 152 KB`；uid=1321 远程图 92 张，默认 `img[data-mc-blocked]` 全部收起、iframe 419px，点「显示图片（92）」后 92 张 `src` 全部恢复为原 `https://...`。
+- `mail_image` 工具口实测 uid=1328 index=0：`image/jpeg`、61,660 字节、base64 82,216 字符；`mail_read` 回 12 个附件（11 inline + 1 PDF），HTML 保留 `cid:` 且截断在 20,029 字。
+- `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3180 键 × 3 + viewport）、`npm run build` 全绿。
