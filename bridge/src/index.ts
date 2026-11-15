@@ -1197,7 +1197,13 @@ async function main(): Promise<void> {
       const items = raw
         .filter((it: any) => it && typeof it.path === "string")
         .slice(0, 500)
-        .map((it: any) => ({ path: String(it.path), tool: String(it.tool ?? "write"), writes: Number(it.writes) || 1 }));
+        .map((it: any) => ({
+          path: String(it.path),
+          tool: String(it.tool ?? "write"),
+          writes: Number(it.writes) || 1,
+          // D275：交付工具（open_preview）记下的行，没有基线时要说「脚本产物」而不是「桥没在运行」。
+          ...(it.delivered === true ? { delivered: true } : {}),
+        }));
       try {
         return json(res, 200, await listArtifacts(sessionId, where.cwd, items));
       } catch (err: any) {

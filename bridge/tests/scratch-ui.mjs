@@ -99,7 +99,7 @@ await new Promise((r) => ws.on("open", r));
 
 const browser = await chromium.launch();
 try {
-  // D275：新 profile 的登录页和 App 都该是 125%。这条用例后面要把基线钉回 100%，
+  // D276：新 profile 的登录页和 App 都该是 125%。这条用例后面要把基线钉回 100%，
   // 先在这个干净 context 里验默认值 —— 登录页在 App 之前渲染，不能只验登录后的 App。
   const defaults = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "zh-CN" });
   const defaultsPage = await defaults.newPage();
