@@ -3102,6 +3102,7 @@ export const en: Dict = {
   "收件人和主题都得填": "To and subject are required",
   "邮箱地址不能空": "Email address is required",
   "邮箱地址要填 @ 前面的部分": "Enter the part before @ in the email address",
+  "邮箱地址要以 @{domain} 结尾": "The email address must end with @{domain}",
   "填 @ 前面的部分": "Part before @",
   "已放进输入框，回车前可以再改": "Put in the composer — edit it before pressing Enter",
   "让 AI 分析": "Ask the AI to analyze",

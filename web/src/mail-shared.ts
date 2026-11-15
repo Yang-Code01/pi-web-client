@@ -136,6 +136,28 @@ export function presetDomain(presets: Record<string, MailPresetView>, preset: st
   return presets[preset]?.domain ?? "";
 }
 
+export interface MailAddressParts {
+  /** `@` 前面的本地部分；可能是空串（例如只填了 `@163.com`）。 */
+  local: string;
+  /** `@` 后面的域名；可能是空串（例如只填了 `alice@`）。 */
+  domain: string;
+}
+
+/** 按最后一个 `@` 拆分地址；没有 `@` 时返回 `null`。 */
+export function splitAddress(address: string): MailAddressParts | null {
+  const addr = String(address ?? "").trim();
+  const at = addr.lastIndexOf("@");
+  if (at < 0) return null;
+  return { local: addr.slice(0, at), domain: addr.slice(at + 1) };
+}
+
+/** 把本地部分和域名拼回去；域名为空时只留本地部分。 */
+export function joinAddress(local: string, domain: string): string {
+  const l = String(local ?? "");
+  const d = String(domain ?? "").trim();
+  return d ? `${l}@${d}` : l;
+}
+
 /**
  * 把地址拆成「@ 前面的本地部分」+ 预设域名。返回 `null` 表示不能拆（地址是别的域名 /
  * 手动填的完整地址），表单要退回整框输入。空地址返回空串 —— 新账号还没填本地部分，
@@ -146,21 +168,41 @@ export function localPartFor(address: string, domain: string): string | null {
   if (!dom) return null;
   const addr = String(address ?? "").trim();
   if (!addr) return "";
-  const suffix = `@${dom}`;
-  return addr.toLowerCase().endsWith(suffix) ? addr.slice(0, -suffix.length) : null;
+  const parts = splitAddress(addr);
+  // 只填了本地部分（没有 @）也当作可拆；表单会补上当前预设的域名。
+  if (!parts) return addr;
+  return parts.domain.toLowerCase() === dom ? parts.local : null;
 }
 
 /**
- * 换邮箱类型时把默认域名跟着换掉。只换「本来就是预设域名」的地址；手动填的
- * `foo@corp.com` 不碰。新类型没有固定域名（企业邮 / 自定义）时保持原样。
+ * 换邮箱类型时把默认域名跟着换掉。
+ *
+ * - 地址是旧预设域名（或 `knownDomains` 里任一预设域名）时，换成新域名；
+ * - 新类型没有固定域名（企业邮 / 自定义）时，只留 `@` 前的本地部分，避免把旧服务商
+ *   的地址悄悄存到新预设上；
+ * - 手动填的其他域名不碰。
  */
-export function retargetAddress(address: string, fromDomain: string, toDomain: string): string {
+export function retargetAddress(
+  address: string,
+  fromDomain: string,
+  toDomain: string,
+  knownDomains: readonly string[] = [],
+): string {
   const addr = String(address ?? "").trim();
+  if (!addr) return "";
+  const to = String(toDomain ?? "").trim().toLowerCase();
+  const parts = splitAddress(addr);
+  if (!parts) return to ? joinAddress(addr, to) : addr;
   const from = String(fromDomain ?? "").trim().toLowerCase();
-  const to = String(toDomain ?? "").trim();
-  if (!addr || !from || !to) return addr;
-  const suffix = `@${from}`;
-  return addr.toLowerCase().endsWith(suffix) ? `${addr.slice(0, -suffix.length)}@${to}` : addr;
+  const current = parts.domain.trim().toLowerCase();
+  const known = new Set<string>();
+  if (from) known.add(from);
+  for (const d of knownDomains) {
+    const normalized = String(d ?? "").trim().toLowerCase();
+    if (normalized) known.add(normalized);
+  }
+  if (!known.has(current)) return addr;
+  return to ? joinAddress(parts.local, to) : parts.local;
 }
 
 export interface MailConfirmFrame {
