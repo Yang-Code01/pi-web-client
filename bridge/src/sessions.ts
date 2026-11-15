@@ -766,9 +766,9 @@ export interface SessionSnapshot {
   plan: PlanSnapshot | null;
 }
 
-/** #384：context-log 扩展落盘的一行（见 bridge/ext/context-log.ts）。三类行共用一个 seq：
- *  request（六类组成估算）/ event（压缩、换模型）/ activity（文件、命令）。这里只负责搬运，
- *  字段按 kind 取用，向前兼容 PR #386 初版只有 cats 的旧行。 */
+/** #384：context-log 扩展落盘的一行（见 bridge/ext/context-log.ts）。五类行共用一个 seq：
+ *  request（七类组成估算 + 条目快照）/ usage（provider 用量）/ event（压缩、换模型、注入）/
+ *  activity（工具、文件、命令）。这里只负责搬运，字段按 kind 取用，向前兼容 PR #386 初版的旧行。 */
 export interface CtxLine {
   seq: number;
   ts?: number;

@@ -48,7 +48,7 @@ test("session_start 建目录、写 request 行；shutdown 后不再写", async 
   await request(h, "abc123");
   const r = rows("abc123");
   assert.equal(r.length, 1, "一次 LLM 调用写一行");
-  assert.equal(r[0].v, 1);
+  assert.equal(r[0].v, 2);
   assert.equal(r[0].seq, 1);
   assert.equal(r[0].kind, "request");
   assert.ok(r[0].ts > 0);
@@ -59,7 +59,7 @@ test("session_start 建目录、写 request 行；shutdown 后不再写", async 
   assert.equal(rows("abc123").length, 1, "shutdown 后不再写");
 });
 
-test("六类分类：system / toolsAdded / user / assistant / toolResult / 块数组都吃", async () => {
+test("七类分类：system / toolsAdded / user / assistant / toolResult / 块数组都吃", async () => {
   const h = load();
   await h.session_start({ reason: "startup" }, ctx("cat123"));
   await request(h, "cat123", msgs([
@@ -80,7 +80,10 @@ test("六类分类：system / toolsAdded / user / assistant / toolResult / 块�
   assert.equal(x.cats.inject, 0, "没有注入");
   assert.equal(x.messages, 4, "perMessage 计数");
   assert.equal(x.perMessage.length, 4);
-  assert.equal(x.total, x.cats.sys + x.cats.tools + x.cats.user + x.cats.inject + x.cats.asst + x.cats.toolr);
+  assert.equal(x.total, x.cats.sys + x.cats.tools + x.cats.user + x.cats.inject + x.cats.skill + x.cats.asst + x.cats.toolr);
+  assert.ok(x.header.system.length > 0, "header.system 带系统提示分段");
+  assert.ok(x.header.tools.length > 0, "header.tools 带工具定义");
+  assert.ok(x.items.length >= 5, "items 逐条落盘");
 });
 
 test("三类行共用一个 seq；换会话归零，pending 工具调用也清掉", async () => {
@@ -158,7 +161,7 @@ test("工具活动：命令只留程序名、文件只留路径与行数，正�
   const craw = JSON.stringify(c);
   assert.deepEqual(
     Object.keys(c).sort(),
-    ["activity", "atSeq", "durationMs", "kind", "program", "seq", "status", "ts", "v"].sort(),
+    ["activity", "atSeq", "durationMs", "kind", "program", "seq", "status", "tool", "ts", "v"].sort(),
     "命令活动只落这些字段，没有 args / result / 完整命令行",
   );
   for (const secret of ["SECRET_TOKEN", "--verbose", "super secret output"]) {
@@ -195,12 +198,65 @@ test("工具活动：命令只留程序名、文件只留路径与行数，正�
   assert.equal(fw.added, 3);
   assert.equal(fw.removed, 0);
 
-  // 没登记在 FILE_TOOLS / 命令白名单里的工具不写行；没有 start 的 end 也不写行。
+  // 其它工具也要进工具账本；没有 start 的 end 仍然不写行。
   const before = rows("act111").length;
   await h.tool_execution_start({ toolCallId: "c5", toolName: "custom", args: { path: "x" } }, ctx("act111"));
-  await h.tool_execution_end({ toolCallId: "c5", isError: false, result: "ok" }, ctx("act111"));
+  await h.tool_execution_end({ toolCallId: "c5", isError: false, durationMs: 7, result: "ok" }, ctx("act111"));
   await h.tool_execution_end({ toolCallId: "ghost", isError: false, result: "ok" }, ctx("act111"));
-  assert.equal(rows("act111").length, before, "未知工具 / 无 start 的调用不落盘");
+  assert.equal(rows("act111").length, before + 1, "未知工具也记一条 tool activity");
+  const ft = rows("act111").at(-1);
+  assert.equal(ft.activity, "tool");
+  assert.equal(ft.tool, "custom");
+  assert.equal(ft.durationMs, 7);
+});
+
+test("usage / items / turn+step：message_end 记 provider 用量，逐请求快照能还原浏览器", async () => {
+  const h = load();
+  await h.session_start({ reason: "new" }, ctx("use111"));
+  await request(h, "use111", msgs([
+    { role: "system", sections: { preamble: "p".repeat(40), rules: "r".repeat(30), skills: "s".repeat(20) }, toolsAdded: [{ name: "read", description: "Read", parameters: { type: "object" } }] },
+    { role: "user", content: "first question" },
+  ]));
+  await h.message_end({ message: { role: "assistant", model: "m1", timestamp: Date.now() - 10, durationMs: 120, stopReason: "toolUse", usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 4, reasoning: 8, totalTokens: 64 }, content: [{ type: "thinking", thinking: "hmm" }, { type: "toolCall", name: "read", arguments: { path: "a.ts" } }] } });
+  await request(h, "use111", msgs([
+    { role: "system", sections: { preamble: "p".repeat(40), rules: "r".repeat(30), skills: "s".repeat(20) }, toolsAdded: [{ name: "read", description: "Read", parameters: { type: "object" } }] },
+    { role: "user", content: "first question" },
+    { role: "assistant", content: [{ type: "text", text: "answer" }] },
+    { role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "file body" }] },
+  ]));
+  const a = rows("use111");
+  assert.equal(a[0].kind, "request");
+  assert.equal(a.at(-1).kind, "request");
+  assert.ok(a.some((x) => x.kind === "usage"), "usage 行落在请求之间");
+  assert.ok(a.filter((x) => x.kind === "event" && x.event === "inject").length >= 2, "sections 首次出现记为注入事件");
+  const u = a.find((x) => x.kind === "usage");
+  assert.equal(u.atSeq, 1);
+  assert.equal(u.usage.totalTokens, 64);
+  assert.equal(u.usage.cacheRead, 30);
+  assert.ok(u.out.reasoning > 0 && u.out.calls > 0, "out 分块估算");
+  assert.ok(u.waitMs >= 0);
+  const reqs = a.filter((x) => x.kind === "request");
+  const r1 = reqs[0], r2 = reqs[1];
+  assert.equal(r1.turn, 1);
+  assert.equal(r1.step, 1);
+  assert.equal(r2.turn, 1, "同一个 user 消息仍是同一轮");
+  assert.equal(r2.step, 2);
+  assert.ok(r1.cats.sys > 0 && r1.cats.inject > 0 && r1.cats.skill > 0, "sections 拆成 sys / inject / skill");
+  assert.ok(r1.header.system.some((i) => i.label === "skills"), "header.system 保留 skills 段");
+  assert.ok(r1.items.some((i) => i.cat === "skill"));
+  assert.ok(r2.items.some((i) => i.kind === "result" && i.label === "read"));
+  assert.ok(r2.items.some((i) => i.kind === "answer"));
+});
+
+test("usage 缺少 durationMs 时用本地 elapsed 兜底，耗时卡不塌成 0", async () => {
+  const h = load();
+  await h.session_start({ reason: "new" }, ctx("dur111"));
+  await request(h, "dur111", msgs([{ role: "user", content: "q" }]));
+  await new Promise((r) => setTimeout(r, 8));
+  await h.message_end({ message: { role: "assistant", model: "m1", timestamp: Date.now() - 1, stopReason: "stop", usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3 }, content: [{ type: "text", text: "ok" }] } });
+  const u = rows("dur111").find((x) => x.kind === "usage");
+  assert.ok(u.durationMs >= 1, "durationMs 由 requestStartedAt 到 message_end 的 elapsed 兜底");
+  assert.ok(u.durationMs < 2000);
 });
 
 test("CJK 与 ASCII 的估算权重不同（中文 ÷1.5、英文 ÷4）", async () => {

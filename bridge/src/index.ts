@@ -2274,7 +2274,10 @@ async function main(): Promise<void> {
             const snap = sessions.pagedSnapshot(sid);
             (ws as any).watching = sid;
             send(frameFor(ws, { ...sessionFrameOf(snap), trust: await trustFor(snap.state.cwd) }));
-            void sessions.get(String(msg.sessionId))?.refreshStats();
+            const opened = sessions.get(String(msg.sessionId));
+            void opened?.refreshStats();
+            // #384：ctxlog 是 per-session 文件，不跟着 session 帧走；新打开一个页面时补一次全量。
+            void opened?.emitContextLog(true);
             return;
           }
           /**

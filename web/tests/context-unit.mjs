@@ -9,7 +9,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   CTX_CATS,
-  ctxCatLabel,
   ctxCommandRows,
   ctxCompactAfterSeq,
   ctxCompRows,
@@ -19,6 +18,16 @@ import {
   ctxKpis,
   ctxRequests,
   ctxTotal,
+  ctxBillRows,
+  ctxBrowserView,
+  ctxDur,
+  ctxPct,
+  ctxSummary,
+  ctxTiming,
+  ctxTokenStats,
+  ctxToolRows,
+  ctxTrendRows,
+  ctxUsageMap,
   isCtxRequest,
 } from "../src/context.ts";
 
@@ -29,7 +38,7 @@ const req = (over = {}) => ({
   ts: 0,
   cwd: "/tmp",
   total: 0,
-  cats: { sys: 0, tools: 0, user: 0, inject: 0, asst: 0, toolr: 0 },
+  cats: { sys: 0, tools: 0, user: 0, inject: 0, skill: 0, asst: 0, toolr: 0 },
   messages: 0,
   perMessage: [],
   ...over,
@@ -39,12 +48,9 @@ const ev = (seq, event, over = {}) => ({ v: 1, seq, ts: 0, kind: "event", event,
 const file = (seq, over = {}) => ({ v: 1, seq, ts: 0, kind: "activity", activity: "file", ...over });
 const cmd = (seq, over = {}) => ({ v: 1, seq, ts: 0, kind: "activity", activity: "command", ...over });
 
-test("六类：顺序稳定、id 与色类一一对应", () => {
-  assert.deepEqual(CTX_CATS.map((c) => c.id), ["sys", "tools", "user", "inject", "asst", "toolr"]);
+test("七类：顺序稳定、id 与色类一一对应", () => {
+  assert.deepEqual(CTX_CATS.map((c) => c.id), ["sys", "tools", "user", "inject", "skill", "asst", "toolr"]);
   for (const c of CTX_CATS) assert.match(c.cls, /^c-[a-z]+$/);
-  assert.equal(ctxCatLabel("sys"), "系统提示");
-  assert.equal(ctxCatLabel("toolr"), "工具结果");
-  assert.equal(ctxCatLabel("nope"), "其它", "未知 id 兜底");
 });
 
 test("ctxRequests：只收请求行，旧日志（没有 kind）按 request 兼容", () => {
@@ -61,16 +67,16 @@ test("ctxRequests：只收请求行，旧日志（没有 kind）按 request 兼�
   assert.deepEqual(ctxRequests(all).map((l) => l.seq), [1, 3]);
 });
 
-test("ctxTotal：优先信扩展写的 total，缺失 / 0 时六类求和兜底", () => {
-  const l = req({ total: 100, cats: { sys: 1, tools: 2, user: 3, inject: 4, asst: 5, toolr: 6 } });
+test("ctxTotal：优先信扩展写的 total，缺失 / 0 时七类求和兜底", () => {
+  const l = req({ total: 100, cats: { sys: 1, tools: 2, user: 3, inject: 4, skill: 5, asst: 6, toolr: 7 } });
   assert.equal(ctxTotal(l), 100, "写了 total 就用它");
   assert.equal(ctxTotal(req({})), 0, "全零兜底也是 0");
-  assert.equal(ctxTotal(req({ total: 0, cats: { sys: 10, tools: 0, user: 0, inject: 0, asst: 0, toolr: 0 } })), 10, "total=0 时重算");
+  assert.equal(ctxTotal(req({ total: 0, cats: { sys: 10, tools: 0, user: 0, inject: 0, skill: 0, asst: 0, toolr: 0 } })), 10, "total=0 时重算");
 });
 
-test("ctxCompRows：六行、百分比按六类内部占比算", () => {
-  const rows = ctxCompRows(req({ cats: { sys: 50, tools: 50, user: 0, inject: 0, asst: 0, toolr: 0 } }));
-  assert.equal(rows.length, 6);
+test("ctxCompRows：七行、百分比按七类内部占比算", () => {
+  const rows = ctxCompRows(req({ cats: { sys: 50, tools: 50, user: 0, inject: 0, skill: 0, asst: 0, toolr: 0 } }));
+  assert.equal(rows.length, 7);
   assert.equal(rows[0].id, "sys");
   assert.equal(rows[0].tokens, 50);
   assert.equal(rows[0].pct, 50);
@@ -145,8 +151,8 @@ test("ctxFileRows：按路径聚合读 / 写 / 检索、+/− 行与失败，按
     cmd(5, { program: "git" }), // 命令行不能混进文件活动
   ]);
   assert.equal(rows.length, 2);
-  assert.deepEqual(rows[0], { path: "a.ts", ops: 3, reads: 1, writes: 2, searches: 0, added: 15, removed: 5, failed: 0 });
-  assert.deepEqual(rows[1], { path: "b.ts", ops: 1, reads: 0, writes: 0, searches: 1, added: 0, removed: 0, failed: 1 });
+  assert.deepEqual(rows[0], { path: "a.ts", ops: 3, reads: 1, writes: 2, searches: 0, added: 15, removed: 5, failed: 0, lastTs: 0 });
+  assert.deepEqual(rows[1], { path: "b.ts", ops: 1, reads: 0, writes: 0, searches: 1, added: 0, removed: 0, failed: 1, lastTs: 0 });
   assert.deepEqual(ctxFileRows([req({ seq: 1 })]), [], "没有活动行就是空");
 });
 
@@ -158,8 +164,8 @@ test("ctxCommandRows：按程序名聚合次数、失败、平均耗时；缺耗
     file(4, { op: "read", path: "a.ts" }),
   ]);
   assert.equal(rows.length, 2);
-  assert.deepEqual(rows[0], { program: "git", runs: 2, failed: 1, avgMs: 200 });
-  assert.deepEqual(rows[1], { program: "node", runs: 1, failed: 0, avgMs: null });
+  assert.deepEqual(rows[0], { program: "git", runs: 2, failed: 1, avgMs: 200, totalMs: 400, lastTs: 0 });
+  assert.deepEqual(rows[1], { program: "node", runs: 1, failed: 0, avgMs: null, totalMs: 0, lastTs: 0 });
   assert.deepEqual(ctxCommandRows([req({ seq: 1 })]), []);
 });
 
@@ -170,4 +176,125 @@ test("ctxFmt：k / 万两级缩写", () => {
   assert.equal(ctxFmt(99500), "100k", "≥10000 四舍五入到整 k（99.5k 进位 100k）");
   assert.equal(ctxFmt(100000), "100k");
   assert.equal(ctxFmt(178400), "178k");
+});
+
+
+// ---------------------------------------------------------------- dsh-context 口径的派生视图
+
+const usage = (atSeq, over = {}) => ({
+  v: 2,
+  seq: 100 + atSeq,
+  ts: atSeq * 1000,
+  kind: "usage",
+  atSeq,
+  model: "m1",
+  stopReason: "toolUse",
+  durationMs: 100,
+  waitMs: 5,
+  usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 4, reasoning: 8, totalTokens: 64 },
+  out: { reasoning: 8, answer: 6, calls: 4 },
+  ...over,
+});
+
+const item = (id, cat, tokens, over = {}) => ({ id, cat, label: id, tokens, kind: "text", ...over });
+
+test("ctxUsageMap / ctxTokenStats：provider 用量与 billed 八类分开算", () => {
+  const lines = [
+    req({ seq: 1, turn: 1, step: 1, cats: { sys: 10, tools: 20, user: 30, inject: 40, skill: 5, asst: 50, toolr: 60 } }),
+    usage(1),
+    req({ seq: 2, turn: 2, step: 1, cats: { sys: 1, tools: 2, user: 3, inject: 4, skill: 5, asst: 6, toolr: 7 } }),
+    usage(2, { usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, reasoning: 1, totalTokens: 10 }, out: { reasoning: 1, answer: 2, calls: 3 } }),
+  ];
+  const map = ctxUsageMap(lines);
+  assert.equal(map.size, 2);
+  assert.equal(map.get(1).usage.totalTokens, 64);
+  const t = ctxTokenStats(lines);
+  assert.equal(t.bill.sys, 11);
+  assert.equal(t.bill.toolCalls, 60 + 4 + 7 + 3, "工具结果 + assistant 工具参数");
+  assert.equal(t.bill.reasoning, 9);
+  assert.equal(t.bill.answers, 8);
+  assert.equal(t.actual, 74);
+  assert.equal(t.input, 11);
+  assert.equal(t.output, 22);
+  assert.equal(t.cacheRead, 33);
+  assert.equal(t.cacheWrite, 8);
+  assert.ok(t.cacheHit > 60 && t.cacheHit < 70);
+  const rows = ctxBillRows(t);
+  assert.equal(rows.length, 8);
+  assert.equal(rows.find((r) => r.id === "toolCalls").label, "工具调用");
+});
+
+test("ctxTiming：等待 / 生成 / 工具执行按 usage 与 activity 汇总，TPS 用生成时长", () => {
+  const lines = [
+    req({ seq: 1 }),
+    usage(1, { waitMs: 5, durationMs: 100, usage: { input: 0, output: 20, cacheRead: 0, cacheWrite: 0, reasoning: 8, totalTokens: 20 }, out: { reasoning: 8, answer: 6, calls: 6 } }),
+    cmd(2, { durationMs: 20, status: "ok" }),
+    file(3, { op: "read", path: "a.ts", durationMs: 10 }),
+  ];
+  const t = ctxTiming(lines);
+  assert.equal(t.total, 135, "5 等待 + 100 生成 + 20 工具");
+  assert.equal(t.rows.find((r) => r.id === "wait").ms, 5);
+  assert.equal(t.rows.find((r) => r.id === "tool").ms, 30);
+  assert.equal(t.tps, 200, "20 tokens / 0.1s");
+  assert.equal(t.calls, 1);
+  assert.equal(t.tools, 2);
+  assert.equal(ctxDur(0), "0");
+  assert.equal(ctxDur(1500), "1.5s");
+  assert.equal(ctxDur(68000), "1m8s");
+  assert.equal(ctxPct(0.05), "<0.1%");
+});
+
+test("ctxTrendRows：步骤逐请求；轮次取末步；delta 只保留增长部分", () => {
+  const lines = [
+    req({ seq: 1, turn: 1, step: 1, cats: { sys: 10, tools: 0, user: 10, inject: 0, skill: 0, asst: 0, toolr: 0 } }),
+    req({ seq: 2, turn: 1, step: 2, cats: { sys: 10, tools: 20, user: 10, inject: 0, skill: 0, asst: 0, toolr: 0 } }),
+    req({ seq: 3, turn: 2, step: 1, cats: { sys: 5, tools: 10, user: 4, inject: 0, skill: 0, asst: 0, toolr: 0 } }),
+  ];
+  const step = ctxTrendRows(lines, "step", "full");
+  assert.equal(step.length, 3);
+  assert.equal(step[1].total, 40);
+  const delta = ctxTrendRows(lines, "step", "delta");
+  assert.equal(delta[1].cats.tools, 20, "新增的 tools 20");
+  assert.equal(delta[2].cats.sys, 0, "sys 少了，delta 不画负数");
+  const turn = ctxTrendRows(lines, "turn", "full");
+  assert.equal(turn.length, 2);
+  assert.equal(turn[0].seq, 2, "第一轮取第 2 步");
+  assert.equal(turn[1].total, 19);
+});
+
+test("ctxBrowserView：条目分组、基线 delta、旧日志 perMessage 兜底", () => {
+  const lines = [
+    req({ seq: 1, turn: 1, step: 1, cats: { sys: 10, tools: 20, user: 10, inject: 0, skill: 0, asst: 0, toolr: 0 }, items: [item("sys", "sys", 10), item("tool", "tools", 20), item("u1", "user", 10)] }),
+    req({ seq: 2, turn: 1, step: 2, cats: { sys: 10, tools: 20, user: 10, inject: 0, skill: 0, asst: 0, toolr: 30 }, items: [item("sys", "sys", 10), item("tool", "tools", 20), item("u1", "user", 10), item("t1", "toolr", 30)] }),
+  ];
+  const full = ctxBrowserView(lines, 2, "step", "full");
+  assert.equal(full.total, 70);
+  assert.equal(full.cats.find((c) => c.id === "toolr").count, 1);
+  const delta = ctxBrowserView(lines, 2, "step", "delta");
+  assert.deepEqual(delta.items.map((i) => i.id), ["t1"], "只留新增的 toolResult");
+  const fallback = ctxBrowserView([req({ seq: 1, cats: { sys: 10, tools: 20, user: 5, inject: 0, skill: 0, asst: 7, toolr: 0 }, perMessage: [{ role: "user", tokens: 5 }, { role: "assistant", tokens: 7 }] })], 1, "step", "full");
+  assert.equal(fallback.items.length, 4, "没有 items 时 header + user + assistant 兜底");
+  const v1 = ctxBrowserView([req({ seq: 2, cats: { sys: 10, tools: 20, user: 5, inject: 0, skill: 0, asst: 7, toolr: 0 }, perMessage: [{ role: "system", tokens: 10, blocks: 1, toolCalls: 0 }, { role: "user", tokens: 5, blocks: 1, toolCalls: 0 }] })], 2, "step", "full");
+  assert.equal(v1.items.filter((i) => i.cat === "sys").length, 1, "旧日志 system 只出现一次");
+  assert.equal(v1.items.filter((i) => i.cat === "inject").length, 0, "system 行不再算成注入");
+  assert.equal(ctxBrowserView([], null, "step", "full").selected, null);
+});
+
+test("ctxSummary / ctxToolRows：工具账本含 bash / read / 其它工具，事件按 kind 计数", () => {
+  const lines = [
+    req({ seq: 1, turn: 1, step: 1, users: 2, cats: { sys: 0, tools: 0, user: 5, inject: 0, skill: 0, asst: 0, toolr: 0 } }),
+    ev(2, "inject", { label: "skill:x", tokens: 12, atSeq: 1 }),
+    ev(3, "model", { model: "b", previous: "a", atSeq: 1 }),
+    cmd(4, { program: "git", status: "ok" }),
+    file(5, { op: "read", path: "a.ts" }),
+    { v: 2, seq: 6, ts: 0, kind: "activity", activity: "tool", tool: "plugin_manager", status: "failed" },
+  ];
+  const s = ctxSummary(lines);
+  assert.equal(s.turns, 1);
+  assert.equal(s.steps, 1);
+  assert.equal(s.users, 2);
+  assert.equal(s.events.inject, 1);
+  assert.equal(s.events.model, 1);
+  assert.deepEqual(s.toolRows.map((r) => [r.tool, r.runs]).sort(), [["bash", 1], ["plugin_manager", 1], ["read", 1]].sort());
+  assert.equal(ctxToolRows(lines).find((r) => r.tool === "plugin_manager").failed, 1);
 });

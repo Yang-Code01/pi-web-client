@@ -5121,3 +5121,26 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **后续（2026-11-15 用户看过测试环境后）：** 用户要求三件事：① 检索有 bug；② 内层「已安装」不要跳回左侧外层，把左侧清单嵌进插件市场；③ 主题页不需要，删掉。检索有两层根因：输入只存在 DOM、防抖期间点分类/排序会用旧的 `query` 重画；以及客户端按月下载量重排把精确匹配压到后面。现在输入立刻写进 `extStore.query`，请求仍防抖 300ms；`rankSearchResults()` 把精确包名（含 scoped 尾名）排第一，再前缀，再按所选排序；桥端在切 250 条前也先保留精确匹配。内层「已安装」改为调用 `paintExtInstalled()` 把清单直接挂进市场页。主题页、主题卡与对应 CSS / 文案全部删除。
 
 **再后续（同日晚些）：** 外层的「已安装」页签删除，「插件市场 / MCP 市场 / 局域网市场」三颗；「MCP 商店」改名「MCP 市场」并按同一套 `.mk-*` 卡片 / 瀑布流重画（搜索、npm / PyPI / Docker / 远程分类、star / 名称排序、安装表单在卡片上方展开）。
+## D271 Context 面板按 dsh-context 复刻：七类组成、逐请求快照、趋势与上下文浏览器（用户要求「用 rea 逆向本机的 dsh-context」）
+
+**问题：** 原来的 #384 面板只有 KPI + 六类估算 + 一张轮次柱状图；`context-log.ts` 只统计 `text` 块，assistant 的 thinking / toolCall 全记成 0，system 的 `sections` 也没拆，导致面板上看不到系统提示、工具定义、技能注入和助手回复。用户说「现在做的很垃圾」，要求照本机 `dsh-context@0.84.1` 重做。
+
+**做法：**
+
+- 用 REA 的 `analyze-javascript-application` 分析 `~/.dsh/profiles/desktop/node_modules/dsh-context`（REA Evidence：`ev_d91ebab2bc6bb023a4fab24b88c998c03fd337b22b267c4f4c1fff6f16ce9763`（summary `ev_743a245f1e3871866b4ace0506c5b7e7f1d61917cac8b7373d453f1eaef1c170`）），并从 DSH 临时实例的 Context tab、`/context` 弹窗截图核对布局；只复刻 **Context 面板**（stat / token / timing / current / trend / browser / events / files / commands），不搬 Fleet / 跨会话 Insights / 插件偏好页。
+- `bridge/ext/context-log.ts` 升到 v2：系统 `sections` 拆成 sys / inject / skill；assistant 的 thinking、toolCall 参数、text 分别计入 asst；每条请求写 `items`（最多 400 条，160 字预览）、`header.system` / `header.tools`、`turn/step`；`message_end` 写 `usage` 行；`tool_execution_end` 为所有工具记 `tool` activity，注入变化记 `inject` event。命令仍只留程序名，文件只留路径与行数，正文/输出不落盘。
+- 前端把纯函数集中到 `web/src/context.ts`：七类组成、billed 八类、usage 合并、Timing、step/turn 粒度、browser delta；渲染拆到新 `web/src/context-panel.ts` + `context-panel.css`，`app.ts` 只负责开/关 sheet 和传数据。
+- 兼容旧 ctxlog：没有 `kind` 的行仍按 request 处理，缺少 `skill` / items 时用 `perMessage` 兜底，不会把旧会话画崩。
+- `subscribe` 时补一次 `emitContextLog(true)`：ctxlog 是 per-session 文件，之前新开页面拿不到已落盘的组成行。
+
+**代价：**
+
+- `context-log.ts` 的 request 行会变大（每条请求最多 400 条预览 + 80 个工具定义）；换来浏览器能按请求看条目。预览不是完整正文，点开完整内容仍需后续接会话日志。
+- 组成仍是本地 CJK/ASCII 估算，provider 真值只在 usage / stats 里并列显示，不混算。
+- 只做了 dsh-context 的 Context 面；Fleet 的多 Agent 时间线、跨会话 Insights、DNA 模式、插件设置页未复刻。
+
+**验证：**
+
+- `node --experimental-transform-types --test bridge/tests/context-log-unit.mjs`（8/8）与 `web/tests/context-unit.mjs`（15/15）覆盖 v2 行、usage、items、turn/step、七类、billed、timing、trend、browser、旧日志兜底。
+- `npm run typecheck` 通过（i18n 3175 键 × 3、viewport 守卫）。
+- 临时 bridge + 合成 ctxlog 的 Playwright 截图核对：1360px sheet、1600/1000px 视口、展开手风琴、增量、轮次、文件筛选均正常。
