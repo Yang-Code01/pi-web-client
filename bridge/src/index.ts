@@ -2985,7 +2985,7 @@ async function main(): Promise<void> {
             return;
           }
           case "ext.store": {
-            const limit = Math.min(100, Math.max(1, Number(msg.limit) || 20));
+            const limit = Math.min(250, Math.max(1, Number(msg.limit) || 20));
             try {
               send({ type: "ext.store", query: String(msg.query ?? ""), items: await searchPackages(String(msg.query ?? ""), limit) });
             } catch (err: any) {

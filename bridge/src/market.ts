@@ -413,10 +413,36 @@ export interface StorePackage {
   weekly: number;
   link: string;
   publisher: string | null;
+  /** GitHub / git host owner parsed from the repository link; null when npm gives no repo. */
+  owner: string | null;
+  /** Browser URL of the package repository, when npm knows one. */
+  repository: string | null;
+  homepage: string | null;
+  /** Last publish time, ms since epoch (0 when npm did not say). */
+  published: number;
+  keywords: string[];
+}
+
+/** Turn `git+https://github.com/owner/repo.git` (and the other shapes npm returns) into a browser URL. */
+function repoWebUrl(raw: unknown): string | null {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) return null;
+  const cleaned = text.replace(/^git\+/, "").replace(/\.git$/, "");
+  const gh = /github\.com[/:]([^/]+)\/([^/#?]+)/i.exec(cleaned);
+  if (gh) return `https://github.com/${gh[1]}/${gh[2]}`;
+  return /^https?:\/\//i.test(cleaned) ? cleaned : null;
+}
+
+function repoOwner(repo: string | null, publisher: string | null): string | null {
+  const m = repo ? /github\.com\/([^/]+)\//i.exec(repo) : null;
+  return m?.[1] ?? publisher ?? null;
 }
 
 function toStore(o: any): StorePackage {
   const p = o.package ?? {};
+  const repository = repoWebUrl(p.links?.repository);
+  const publisher = p.publisher?.username ?? null;
+  const published = Date.parse(String(p.date ?? ""));
   return {
     name: String(p.name),
     version: String(p.version ?? ""),
@@ -424,7 +450,12 @@ function toStore(o: any): StorePackage {
     monthly: Number(o.downloads?.monthly ?? 0),
     weekly: Number(o.downloads?.weekly ?? 0),
     link: p.links?.npm ?? `https://www.npmjs.com/package/${p.name}`,
-    publisher: p.publisher?.username ?? null,
+    publisher,
+    owner: repoOwner(repository, publisher),
+    repository,
+    homepage: typeof p.links?.homepage === "string" ? p.links.homepage : null,
+    published: Number.isFinite(published) ? published : 0,
+    keywords: Array.isArray(p.keywords) ? p.keywords.map(String).filter(Boolean) : [],
   };
 }
 
@@ -434,8 +465,15 @@ export function searchPackages(query: string, limit: number): Promise<StorePacka
   return cached(`store:${q}`, 10 * 60_000, async () => {
     const text = encodeURIComponent(`keywords:pi-package${q ? ` ${q}` : ""}`);
     // Ask npm to weigh popularity so the 250 it returns are the popular ones, then rank by downloads.
+    // With a query, exact package names come first and the rest keep npm's relevance order; the web
+    // side re-sorts the rest, but exact must survive the bridge's slice even for low-download packages.
     const data = await getJson<{ objects?: any[] }>(`https://registry.npmjs.org/-/v1/search?text=${text}&size=250&popularity=1.0&quality=0.0&maintenance=0.0`);
-    return (data.objects ?? []).map(toStore).sort((a, b) => b.monthly - a.monthly);
+    const list = (data.objects ?? []).map(toStore);
+    if (!q) return list.sort((a, b) => b.monthly - a.monthly);
+    const lower = q.toLowerCase();
+    const exact = list.filter((p) => p.name.toLowerCase() === lower || (p.name.toLowerCase().split("/").pop() ?? "") === lower);
+    const exactNames = new Set(exact.map((p) => p.name));
+    return [...exact, ...list.filter((p) => !exactNames.has(p.name))];
   }).then((list) => list.slice(0, limit));
 }
 
