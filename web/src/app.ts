@@ -4100,7 +4100,7 @@ export class App {
   }
 
   /**
-   * 「连接与设置」那一页：从「需要你」栏搬过来的通道、快捷键，加上关于。
+   * 「连接与设置」那一页：从「需要你」栏搬过来的通道、工具，加上关于。
    *
    * 这三块以前在左栏底部，隧道一开一关会顺带重画整栏；搬进抽屉之后没有 `renderQueue()` 那条路了，
    * 所以隧道点完要自己重画（抽屉没开时 `paintConnPage` 直接返回）。
@@ -4149,11 +4149,9 @@ export class App {
     if (this.tunnel.error) chan.append(el("div", "notice warn", errText(this.tunnel)));
     page.append(chan);
 
-    const keys = el("div", "levels");
-    keys.append(el("div", "levels-label", tr("工具")));
-    const keysTools = el("div", "set-tools");
-    const keysBtn = el("button", "btn", Object.keys(this.keys).length ? tr("快捷键（已设 {p1} 个）", { p1: Object.keys(this.keys).length }) : tr("设置快捷键"));
-    keysBtn.onclick = () => this.openKeysSheet();
+    const tools = el("div", "levels");
+    tools.append(el("div", "levels-label", tr("工具")));
+    const toolButtons = el("div", "set-tools");
     const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
     piSettings.title = tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）");
     piSettings.onclick = () => this.openSettingsSheet("global");
@@ -4169,9 +4167,9 @@ export class App {
       this.closeSheet();
       openHotdeploy();
     };
-    keysTools.append(keysBtn, piSettings, sysmanage, hotdeploy);
-    keys.append(keysTools);
-    page.append(keys);
+    toolButtons.append(piSettings, sysmanage, hotdeploy);
+    tools.append(toolButtons);
+    page.append(tools);
 
     // 关于贴底：两行都能点一下复制（版本、会话目录），报问题时直接粘。
     const about = el("div", "sheet-foot set-about");
