@@ -248,8 +248,8 @@ export function aggregateCtxLog(lines: Line[]): Agg {
         output: n(u.output),
         cacheRead: n(u.cacheRead),
         cacheWrite: n(u.cacheWrite),
-        cost: n(cost),
-        costKnown: typeof cost === "number",
+        cost: typeof cost === "number" && Number.isFinite(cost) ? cost : 0,
+        costKnown: typeof cost === "number" && Number.isFinite(cost),
         out: {
           reasoning: n(l.out?.reasoning),
           answer: n(l.out?.answer),
