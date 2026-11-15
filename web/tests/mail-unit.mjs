@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { auditOutcome, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, secureForPort, sizeText, whenText } from "../src/mail-shared.ts";
+import { auditOutcome, localPartFor, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, presetDomain, retargetAddress, secureForPort, sizeText, whenText } from "../src/mail-shared.ts";
 
 test("权限表覆盖六个开关，键与桥端一致", () => {
   assert.deepEqual(
@@ -152,4 +152,31 @@ test("审计里的失败原因：翻译成人话，认不出来的码不往外�
   for (const [code, text] of Object.entries(MAIL_ERROR_TEXT)) {
     assert.match(text, /[\u4e00-\u9fa5]/, `${code} 的文案不像中文原文`);
   }
+});
+
+test("邮箱地址：预设域名跟着邮箱类型走，只拆本地部分", () => {
+  const presets = {
+    "163": { label: "网易 163", domain: "163.com", imap: { host: "imap.163.com", port: 993, secure: true }, smtp: { host: "smtp.163.com", port: 465, secure: true } },
+    qq: { label: "QQ 邮箱", domain: "qq.com", imap: { host: "imap.qq.com", port: 993, secure: true }, smtp: { host: "smtp.qq.com", port: 465, secure: true } },
+    custom: { label: "自定义", imap: { host: "", port: 993, secure: true }, smtp: { host: "", port: 465, secure: true } },
+  };
+  assert.equal(presetDomain(presets, "163"), "163.com");
+  assert.equal(presetDomain(presets, "custom"), "");
+  assert.equal(presetDomain(presets, "nope"), "");
+
+  // 本类型的地址：拆出 @ 前面的部分；大小写不敏感。
+  assert.equal(localPartFor("alice@163.com", "163.com"), "alice");
+  assert.equal(localPartFor("Alice@163.COM", "163.com"), "Alice");
+  // 新账号还没填：空串，不是 null —— 表单要显示固定域名。
+  assert.equal(localPartFor("", "163.com"), "");
+  // 别的域名 / 没有固定域名：退回整框输入。
+  assert.equal(localPartFor("alice@qq.com", "163.com"), null);
+  assert.equal(localPartFor("alice@163.com", ""), null);
+
+  // 换类型时只换本来就是预设域名的地址。
+  assert.equal(retargetAddress("alice@163.com", "163.com", "qq.com"), "alice@qq.com");
+  assert.equal(retargetAddress("alice@corp.com", "163.com", "qq.com"), "alice@corp.com");
+  assert.equal(retargetAddress("", "163.com", "qq.com"), "");
+  assert.equal(retargetAddress("alice@163.com", "", "qq.com"), "alice@163.com");
+  assert.equal(retargetAddress("alice@163.com", "163.com", ""), "alice@163.com");
 });

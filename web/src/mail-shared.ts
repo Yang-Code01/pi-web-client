@@ -90,6 +90,8 @@ export interface MailAuditRow {
 
 export interface MailPresetView {
   label: string;
+  /** 个人邮箱的默认域名；企业邮与自定义没有。 */
+  domain?: string;
   imap: MailEndpoint;
   smtp: MailEndpoint;
 }
@@ -129,7 +131,38 @@ export interface MailSendInput {
   draft?: boolean;
 }
 
-/** 确认弹窗要回答的东西：桥端的 `mail.confirm` 帧带 `reqId` + `mail`。 */
+/** 预设的默认域名；没有就返回空串。 */
+export function presetDomain(presets: Record<string, MailPresetView>, preset: string): string {
+  return presets[preset]?.domain ?? "";
+}
+
+/**
+ * 把地址拆成「@ 前面的本地部分」+ 预设域名。返回 `null` 表示不能拆（地址是别的域名 /
+ * 手动填的完整地址），表单要退回整框输入。空地址返回空串 —— 新账号还没填本地部分，
+ * 但域名已经由当前邮箱类型带出来了。
+ */
+export function localPartFor(address: string, domain: string): string | null {
+  const dom = String(domain ?? "").trim().toLowerCase();
+  if (!dom) return null;
+  const addr = String(address ?? "").trim();
+  if (!addr) return "";
+  const suffix = `@${dom}`;
+  return addr.toLowerCase().endsWith(suffix) ? addr.slice(0, -suffix.length) : null;
+}
+
+/**
+ * 换邮箱类型时把默认域名跟着换掉。只换「本来就是预设域名」的地址；手动填的
+ * `foo@corp.com` 不碰。新类型没有固定域名（企业邮 / 自定义）时保持原样。
+ */
+export function retargetAddress(address: string, fromDomain: string, toDomain: string): string {
+  const addr = String(address ?? "").trim();
+  const from = String(fromDomain ?? "").trim().toLowerCase();
+  const to = String(toDomain ?? "").trim();
+  if (!addr || !from || !to) return addr;
+  const suffix = `@${from}`;
+  return addr.toLowerCase().endsWith(suffix) ? `${addr.slice(0, -suffix.length)}@${to}` : addr;
+}
+
 export interface MailConfirmFrame {
   reqId: string;
   sessionId?: string;

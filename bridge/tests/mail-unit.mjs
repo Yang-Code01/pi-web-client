@@ -127,6 +127,8 @@ let r = await call("GET", "/api/mail/config");
 check("GET config 被认领", r.handled === true);
 check("config 初始没有账号", Array.isArray(r.body?.accounts) && r.body.accounts.length === 0, JSON.stringify(r.body?.accounts));
 check("config 带回预设表", Array.isArray(r.body?.presetIds) && r.body.presetIds.includes("163"));
+check("个人邮箱预设带回默认域名", r.body?.presets?.["163"]?.domain === "163.com" && r.body?.presets?.gmail?.domain === "gmail.com");
+check("企业邮与自定义不猜域名", !r.body?.presets?.qiye163?.domain && !r.body?.presets?.custom?.domain);
 
 r = await call("POST", "/api/mail/accounts", { address: "me@163.com", preset: "163", secret: "abcdefghijklmnop", label: "工作" });
 check("加账号 200", r.status === 200 && r.body?.ok === true, String(r.status));
