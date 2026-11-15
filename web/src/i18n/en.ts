@@ -1078,6 +1078,7 @@ export const en: Dict = {
   "立即压缩": "Compact now",
   "端口被占用": "Port in use",
   "第 {p1} 轮：{p2}": "Turn {p1}: {p2}",
+  "对话轮次": "Conversation turns",
   "第 {p1} 轮（未载入）：{p2}": "Turn {p1} (not loaded): {p2}",
   "没翻到第 {p1} 轮": "Couldn't reach turn {p1}",
   "等了 60 秒还没启动起来，看看服务端日志": "Still not started after 60 seconds — check the server logs",

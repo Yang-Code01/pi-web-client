@@ -1,5 +1,5 @@
 /**
- * 公式求值器的函数表（D265）：在 `calc.ts` 那 51 个的基础上，按 WPS 表格自己的函数清单
+ * 公式求值器的函数表（D266）：在 `calc.ts` 那 51 个的基础上，按 WPS 表格自己的函数清单
  * （`Resources/office6/mui/zh_CN/config/etfunctionhelp.cfg` 里那 406 个名字）补齐常用的一批。
  *
  * 取舍和 `calc.ts` 一致：只做「标量语义」——数组公式、动态数组（FILTER / SORT / UNIQUE /

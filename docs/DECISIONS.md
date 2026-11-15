@@ -4815,7 +4815,77 @@ D
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（tsc + i18n-check 3040 键 × 3 + `test:viewport`）全绿。
 - **复审（两轴：标准 / 需求）之后补的一轮**，对着 `git diff main...HEAD` 逐条核：页面口补上 `account.enabled`（以前停用账号在面板里照样能读能发，CHANGELOG 那句「页面只受账号停用限制」才成立）；草稿不再占 AI 的日上限；`mutate` 真的从 `mail_accounts` 回包里去掉（不只是文案）；审计失败改成「错误码 → 人话」的映射（`MAIL_ERROR_TEXT`，认不出来的码只说「失败」）；详情的 `finally` 也比 `detailSeq`（先发的慢详情不会提前收掉后发请求的「正在读」）；确认框挂进 `#app`；超时只留一份 `MAIL_CONFIRM_PAGE_MS`；删掉没人读的 `downloadable`、页面上的「附件（取附件权限关着）」死分支与 `MailConfirmFrame` 的 `as any`；`normalizeAccount` 改用 `mailaddr.isEmailAddress`；`mailconfig.ts` 头部注释改成「`policyDenial` 是给 AI 的唯一判据」；GLOSSARY 补「邮箱面板 / AI 权限 / 发送前确认」、README 补邮箱一条与 `test:mail`。
 - **没做的：** 确认框只有 `MailConfirmQueue` 的单测，没有 playwright 的点击用例（这台机器上要临时装 chromium）；`mail_send` 真发一封的路径仍靠肉眼。
-## D265 表格预览照本机 WPS 的资源补齐：格式引擎重写、函数表 51→215、功能区真菜单（用户要求「用 rea 逆向本机的 wps」，D256–D262 的延伸）
+
+## D265 轮次缩略图照 WorkBuddy 重写：收起是短横、展开是同一批节点（用户口径 2026-11-15）
+
+用户口径：**「聊天记录右侧那个对话刻度表做得不太好，照着本机 WorkBuddy 里同样的功能重写一下。」**
+
+**逆向来源（可复核）**：本机 `/Applications/WorkBuddy.app` 5.9.3（Electron 应用，
+`Contents/Resources/app.asar` → `renderer/assets/`）。功能是
+`contexts-B8WkfybU.js` 里的 `ConversationHistoryNavigation`，样式在同名 `contexts-O760BA_R.css`
+（类名前缀 `conversation-history-navigation`，21 条规则）。拿到的几何、时长、阈值都是它写死的常量：
+一格 14px（收起）/ 28px（展开）、行高 26、展开上限 400px、收起带最宽 40px、面板宽 96–320px、
+展开 543ms（`cubic-bezier(.16,1,.3,1)`）/ 收起 343ms、悬停意图 60ms 进 / 180ms 出、
+超过 120 条只画看得见的那几十行、行文字截 160 字符、宽度靠一个隐形「尺子」撑。
+
+**决定：**
+
+1. **收起和展开画同一批节点**，不再「一列刻度 + 一个列表」两套 DOM（旧的 Q-028 实现是两套，点刻度
+   和点行是两个处理器、两种坐标）。现在一个 `.turn-row` 里同时有 `.txt` 和 `.dash`：收起时文字
+   `opacity: 0`、`transform: translateY(--turn-compact-y)`，展开时同一节点改成
+   `translateY(--turn-expanded-y + --turn-expanded-scroll-offset)`。面板用 `clip-path` 从「右缘一条
+   40px 宽、只覆盖带子高度」的窄条张开成整块（`round 16px`），底下那层 `.turn-surface` 同时淡入 ——
+   用户看到的是「同一块东西长大」，不是「弹出一个新框」。
+2. **两套坐标靠一次滚动补偿接上**（这是整套东西的核心，也是最容易做错的一步）：同一个滚动容器，
+   收起时它的 `scrollTop` 是「短横滚到哪儿」，展开时是「所有行滚到哪儿」。展开前先算出「那一轮在
+   展开坐标里的 `scrollTop`」，差多少先用 CSS 变量 `--turn-expanded-scroll-offset` 把行推回原来的
+   视线；等 543ms 动画放完，在**关掉过渡的那一帧**（`.scroll-commit`）里把 `scrollTop` 改到位、把偏移
+   清零（`commitScroll()`）。收起同理，用 `--turn-scroll-compensation` 反向补一次。实测 200 轮的会话里
+   「当前」那一行展开前后屏幕纵坐标差 **0.0px**（先量收起态、再量 +120ms、+680ms）。
+3. **收起时那一列不再是「抽样后的刻度」**。旧实现把 200 轮按比例抽成能放下的几十根，抽掉的那些从
+   此点不到。现在最多摆 28 根、摆不下就在那一条带子里跟着「当前」滚（`keepCurrentInBand()`），
+   一根都不少；行也不再全画，超过 120 轮只画「收起坐标」和「展开坐标」两段可见区间并起来的那批
+   下标（`shownRange()` 返回**下标集合**，不是 min..max —— 刚换会话时两套坐标离得很远，取区间会把
+   中间几百条一起画出来，窗口化就等于没做）。
+4. **交互：悬停 / 聚焦才展开，点行才跳。** 收起时接指针的是一块盖在短横上的透明按钮
+   （`.turn-hit`，WorkBuddy 的 `rail-hit`），进 60ms 展开、出 180ms 收起 —— 扫过去不算。键盘：聚焦即
+   展开、Esc / 焦点离开带子收起。**「点一根短横直接跳」这条没有了**：指针扫上去 60ms 就已展开，
+   点下去的时候指针底下已经是行；短横本身只有 8×2px，硬要它可点反而更难点中。
+5. **行节点复用，不每帧重建**：展开着的时候谁被拆掉，拿着它的焦点就会收到一次 `focusout`
+   （顺带把刚点出来的高亮抹掉）。窗口化滚动时该增删的只是差额，而且行是绝对定位的，DOM 顺序
+   不影响摆放 —— 复用 + 不重排。同理，`focusout` 的 `relatedTarget` 为 null（焦点掉回 body，多半是
+   那一行被窗口化删了）不算「用户走了」；`pointerout` 的 `relatedTarget` 为 null 且指针坐标仍落在
+   带子里，也不算离开。这两条不写，长会话里面板会「开 → 收 → 开」抖个不停（真踩到了）。
+6. **顺手修掉一个老坑**：`#app` 上有 `zoom: var(--ui-scale)`，`getBoundingClientRect()` 是**视觉** px、
+   `style.top` 是**布局** px。旧的 `frame()` 直接拿前者写后者，字号 125% / 150% 下带子会往下漂
+   **69px / 97px**（不会报错，只是慢慢偏）。现在除一次 `--ui-scale`，三个档位的居中误差都在 0.5px 内。
+
+**代价（接受）：**
+
+- 长会话里想点很早以前那一轮，得先把面板往上滚（旧实现是抽好样、一眼点得到）。这是 WorkBuddy 的
+  取舍 —— 换来的是「一根不少」和「不会点到被抽掉的轮」。带子跟着「当前」自动滚，读的时候几乎用不上。
+- 收起时那 40px 走廊里没有可点的东西，点击落到 `.turn-hit` 上（展开了才有行可点）。
+- 面板展开时先有一次 543ms 的生长动画；`prefers-reduced-motion` 下没有专门分支（WorkBuddy 有，这里
+  暂未接 —— 真要接，是给 `.turn-rail` 加一条 media query 把 `--turn-open-dur` 归零 + 跳过等待）。
+
+**验证（真 Chrome，playwright-core）：**
+
+- `probes/round20-turns.mjs`（12 轮 + 200 轮两条会话）：一根短横一轮、滚到底最后那根是 `cur`、悬停
+  展开、点行跳转顶对齐并停跟流、键盘焦点展开、200 轮时行被窗口化到 48 行而带子仍在正文视口内、
+  展开后「当前」那一轮在列表视口里。**改了三处断言**：`isVisible()` 在 `clip-path` 裁掉时也是 true
+  （旧实现靠 `display:none`），改成看 `.open` / `.settled` 两个 class；`.turn-tick` 全部换成 `.turn-row`；
+  「200 根刻度被抽样」改成「行被窗口化」。
+- `probes/turn-rail-last.mjs`：点最后一根短横 / 最后一行都落在最后一轮的输入上（`top = 视口顶 + 6`），
+  下面还留着 `>200px` 可滚，跟流停掉。
+- `probes/rail-ghost.mjs`：320 轮里 300 轮未载入 → 展开、滚到顶、点第 4 轮 → 自动翻 15 页取回来、
+  顶对齐、亮一下、不 busy；索引里多一条正文没有的轮次 →「没翻到第 5 轮」3 秒自收。
+- `bridge/tests/history-ui.mjs`（`npm run test:loadolder:ui`）**67/67 全绿**：ghost 占位 / 分界线 /
+  「当前」不落在 ghost 上 / 真鼠标点行不被拽走 / 翻页后带子总高不变。为窗口化补了两个 dataset
+  （`.turn-rail` 的 `data-turns` / `data-ghosts` / `data-rendered`）：DOM 里只有看得见的那几十行，
+  全量数字得有个地方读。
+- `npm --prefix web run typecheck`（tsc + i18n 3022 键 × 3 + 视图单位守卫）、`node scripts/build.mjs
+  --only bridge` 通过。
+## D266 表格预览照本机 WPS 的资源补齐：格式引擎重写、函数表 51→215、功能区真菜单（用户要求「用 rea 逆向本机的 wps」，D256–D262 的延伸）
 
 **问题：** 上一轮的表格浮窗已经「照 WPS 排过一次」，但排法是靠记忆 + 截图：功能区只有 6 个页签、每页十来颗按钮，字色/填充是「红/黄 一按切换」，数字格式只有 6 个写死的 id，边框 3 种，没有色板、没有下拉、没有格式刷、没有填充柄；公式只算了 51 个函数。用户的话是「不完善，用 rea 逆向一下本机的 wps，把 Excel 的功能都完善一下」。
 
@@ -4836,7 +4906,7 @@ D
 - **填充柄是真的能拖。** 之前那个小方块只是画着好看（`pointer-events: none`）。现在按住往四个方向拖：数字两格以上按等差、其余按循环复制、带尾号的文本（`Q1`→`Q2`）自增，松手落成**一条**撤销记录。拖的时候只画虚框，不预写。
 - **键盘补到 Excel 的手感**：`Ctrl/Cmd + 方向键`（先跳过空格、再走到连续区尽头）、`Ctrl+Shift+方向键` 扩选、`Ctrl+A` 选整块、`Tab`/`Shift+Tab`、`Enter`/`Shift+Enter`、编辑框里 `Alt+Enter` 换行。
 - **底栏报选区的求和 / 平均值 / 计数**（WPS 那条），超过 5 万格不算。
-- **数字格式选完立刻改样子**：`web/src/sheet/fmt.ts` 是一份**只认功能区那 20 来个代码**的前端预览，认不出来就退回桥端给的显示串。这一份重复是有意的：桥端才是口径（读文件里的代码），前端这份只为「点完不用等存盘」。写进 D265 的代价里。
+- **数字格式选完立刻改样子**：`web/src/sheet/fmt.ts` 是一份**只认功能区那 20 来个代码**的前端预览，认不出来就退回桥端给的显示串。这一份重复是有意的：桥端才是口径（读文件里的代码），前端这份只为「点完不用等存盘」。写进 D266 的代价里。
 
 **代价 / 可改：**
 

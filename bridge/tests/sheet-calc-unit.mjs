@@ -1,5 +1,5 @@
 /**
- * 公式求值器的单元测试（D265）：只看「这条公式算出什么」。
+ * 公式求值器的单元测试（D266）：只看「这条公式算出什么」。
  *
  *   node --experimental-strip-types bridge/tests/sheet-calc-unit.mjs
  */
