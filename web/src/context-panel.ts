@@ -226,6 +226,10 @@ export class ContextPanel {
   private base: "step" | "turn" = "step";
   private browserMode: "full" | "delta" = "full";
   private readonly openCats = new Set<string>();
+  private readonly openItems = new Set<string>();
+  private readonly catQuery = new Map<string, string>();
+  private readonly asstKind = new Map<string, string>();
+  private toolSort: "size" | "name" = "size";
   private fileFilter: "all" | "read" | "write" | "search" = "all";
   private fileSort: "count" | "lines" | "latest" | "path" | "name" = "count";
   private fileQuery = "";
@@ -250,8 +254,9 @@ export class ContextPanel {
     const scroller = this.host.closest<HTMLElement>(".settings-body");
     const top = scroller?.scrollTop ?? 0;
     const active = document.activeElement;
+    const focusKey = active instanceof HTMLInputElement && this.host.contains(active) ? active.dataset.cxKey ?? null : null;
     const focusPlaceholder = active instanceof HTMLInputElement && this.host.contains(active) ? active.placeholder : null;
-    const focusCaret = focusPlaceholder ? (active as HTMLInputElement).selectionStart : null;
+    const focusCaret = focusPlaceholder || focusKey ? (active as HTMLInputElement).selectionStart : null;
     this.host.replaceChildren();
     if (!data) return;
     if (!data.owned) {
@@ -281,8 +286,10 @@ export class ContextPanel {
     );
     this.host.append(root);
     if (scroller) scroller.scrollTop = top;
-    if (focusPlaceholder) {
-      const next = [...this.host.querySelectorAll<HTMLInputElement>("input.cx-search")].find((i) => i.placeholder === focusPlaceholder);
+    if (focusKey || focusPlaceholder) {
+      const next =
+        (focusKey ? this.host.querySelector<HTMLInputElement>(`input[data-cx-key="${focusKey}"]`) : null) ??
+        [...this.host.querySelectorAll<HTMLInputElement>("input.cx-search")].find((i) => i.placeholder === focusPlaceholder);
       if (next) {
         next.focus();
         if (focusCaret != null) next.setSelectionRange(focusCaret, focusCaret);
@@ -536,21 +543,100 @@ export class ContextPanel {
     wrap.append(head);
     if (open) {
       const body = div("cx-acc-body");
-      if (!cat.items.length) body.append(empty(tr("没有匹配当前过滤条件的行")));
-      for (const item of cat.items.slice(0, 80)) body.append(this.browserItem(item));
-      if (cat.items.length > 80) body.append(div("cx-note", tr("另有 {p1} 项未显示", { p1: String(cat.items.length - 80) })));
+      const bar = div("cx-browser-filters");
+      const query = this.catQuery.get(cat.id) ?? "";
+      const search = el("input", "cx-search");
+      search.type = "search";
+      search.dataset.cxKey = `cat:${cat.id}`;
+      search.placeholder = tr("过滤条目…");
+      search.value = query;
+      search.oninput = () => {
+        this.catQuery.set(cat.id, search.value);
+        this.render();
+      };
+      bar.append(search);
+      if (cat.id === "asst") {
+        const counts = { reasoning: 0, call: 0, answer: 0 } as Record<string, number>;
+        for (const it of cat.items) if (it.kind && it.kind in counts) counts[it.kind] += 1;
+        const picked = this.asstKind.get(cat.id) ?? "";
+        for (const [id, label] of [["reasoning", tr("思考")], ["call", tr("工具")], ["answer", tr("回答")]] as const) {
+          bar.append(
+            button(`cx-seg${picked === id ? " on" : ""}`, `${label} ${counts[id]}`, () => {
+              this.asstKind.set(cat.id, picked === id ? "" : id);
+              this.render();
+            }),
+          );
+        }
+      }
+      if (cat.id === "tools") {
+        for (const [id, label] of [["size", tr("按大小")], ["name", tr("按名称")]] as const) {
+          bar.append(
+            button(`cx-seg${this.toolSort === id ? " on" : ""}`, label, () => {
+              this.toolSort = id;
+              this.render();
+            }),
+          );
+        }
+      }
+      body.append(bar);
+      const needle = query.trim().toLowerCase();
+      const kind = this.asstKind.get(cat.id) ?? "";
+      let items = cat.items.filter((it) => {
+        if (kind && it.kind !== kind) return false;
+        if (!needle) return true;
+        return [it.label, it.sub, it.preview, it.content].filter(Boolean).some((v) => String(v).toLowerCase().includes(needle));
+      });
+      if (cat.id === "tools") {
+        items = [...items].sort((a, b) => (this.toolSort === "name" ? a.label.localeCompare(b.label) : b.tokens - a.tokens || a.label.localeCompare(b.label)));
+      }
+      if (!items.length) body.append(empty(tr("没有匹配当前过滤条件的行")));
+      for (const item of items.slice(0, 80)) body.append(this.browserItem(item));
+      if (items.length > 80) body.append(div("cx-note", tr("另有 {p1} 项未显示", { p1: String(items.length - 80) })));
+      if (query || kind) body.append(div("cx-note", tr("已过滤：{p1} / {p2} 项", { p1: String(items.length), p2: String(cat.items.length) })));
       wrap.append(body);
     }
     return wrap;
   }
 
+  /** 一行条目：收起时是预览，展开显示 prompt / schema / 消息 / 参数 / 结果正文。 */
   private browserItem(item: CtxItem): HTMLElement {
-    const row = div("cx-item");
+    const open = this.openItems.has(item.id);
+    const wrap = div(`cx-item-wrap${open ? " open" : ""}`);
+    const row = button("cx-item", "", () => {
+      if (this.openItems.has(item.id)) this.openItems.delete(item.id);
+      else this.openItems.add(item.id);
+      this.render();
+    });
     const main = div("cx-item-main", span("cx-item-label", item.label || item.kind || "?"), item.sub ? span("cx-item-sub", item.sub) : null);
     if (item.preview) main.append(span("cx-item-preview", item.preview));
-    row.append(main, span("cx-item-tokens", `≈${ctxFmt(item.tokens)}`));
+    row.append(span("cx-caret", open ? "⌄" : "›"), main, span("cx-item-tokens", `≈${ctxFmt(item.tokens)}`));
     if (item.kind) row.title = `${item.label} · ${item.kind}`;
-    return row;
+    wrap.append(row);
+    if (open) {
+      const detail = div("cx-item-detail");
+      const meta = div("cx-item-meta");
+      if (item.body?.tool) meta.append(span("cx-item-tag", tr("工具 · {p1}", { p1: item.body.tool })));
+      if (item.body?.status) meta.append(span(`cx-item-tag ${item.body.status === "failed" ? "bad" : "ok"}`, item.body.status === "failed" ? tr("失败") : "OK"));
+      if (item.body?.command) meta.append(span("cx-item-tag mono", item.body.command));
+      if (item.body?.exitCode != null) meta.append(span("cx-item-tag mono", `exit ${item.body.exitCode}`));
+      if (item.body?.path) meta.append(span("cx-item-tag mono", item.body.path));
+      if (meta.childNodes.length) detail.append(meta);
+      if (item.body?.args) {
+        detail.append(div("cx-item-section", tr("参数")));
+        detail.append(el("pre", "cx-item-body", item.body.args));
+      }
+      if (item.content) {
+        if (item.body?.args) detail.append(div("cx-item-section", tr("结果")));
+        detail.append(el("pre", "cx-item-body", item.content));
+      } else if (item.preview) {
+        detail.append(el("pre", "cx-item-body", item.preview));
+        detail.append(div("cx-note", tr("旧版日志只保留了预览；下一次请求起可以展开正文")));
+      } else {
+        detail.append(div("cx-item-missing", tr("这条没有可显示的正文（图片或空消息）")));
+      }
+      wrap.append(detail);
+    }
+    return wrap;
   }
 
   // ---------------------------------------------------------------- trend

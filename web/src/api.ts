@@ -3,6 +3,7 @@ import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, 
 import type { MailAccountInput, MailAccountView, MailConfigView, MailDetailView, MailFolderView, MailPolicyView, MailSendInput, MailSummary } from "./mail-shared.ts";
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 import type { HotdeployRemoveResult, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
+import type { CtxInsightData } from "./context-insight-types.ts";
 
 /** 上传暂存区落盘后回给页面的那份文件。 */
 export type UploadedFile = { path: string; name: string; size: number };
@@ -106,6 +107,8 @@ export const api = {
     req<{ ok: true }>("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ passphrase }) }),
   logout: () => req<{ ok: true }>("/api/logout", { method: "POST" }),
   sessions: () => req<{ sessions: SessionState[]; tunnel: TunnelState }>("/api/sessions"),
+  /** 设置 → 工具 → 上下文洞察：跨会话聚合（全体 / 分项目共用一份快照）。 */
+  contextInsights: () => req<CtxInsightData>("/api/context/insights"),
   dirs: (path: string, files = false) =>
     req<{
       path: string;

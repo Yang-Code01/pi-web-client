@@ -5123,6 +5123,8 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **再后续（同日晚些）：** 外层的「已安装」页签删除，「插件市场 / MCP 市场 / 局域网市场」三颗；「MCP 商店」改名「MCP 市场」并按同一套 `.mk-*` 卡片 / 瀑布流重画（搜索、npm / PyPI / Docker / 远程分类、star / 名称排序、安装表单在卡片上方展开）。
 ## D271 Context 面板按 dsh-context 复刻：七类组成、逐请求快照、趋势与上下文浏览器（用户要求「用 rea 逆向本机的 dsh-context」）
 
+**修订（2026-11-15）：** 本条「只留预览、不镜像 transcript」的约束由 D278 取代；v3 的 `body` 行让浏览器能展开真实正文，并补上跨会话「上下文洞察」页与技能加载计数。
+
 **问题：** 原来的 #384 面板只有 KPI + 六类估算 + 一张轮次柱状图；`context-log.ts` 只统计 `text` 块，assistant 的 thinking / toolCall 全记成 0，system 的 `sections` 也没拆，导致面板上看不到系统提示、工具定义、技能注入和助手回复。用户说「现在做的很垃圾」，要求照本机 `dsh-context@0.84.1` 重做。
 
 **做法：**
@@ -5266,3 +5268,29 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **代价 / 可改：** 快捷键面板不再有可见的设置入口，只能记 `/hotkeys` 或继续用已绑定的键。若以后又需要一个可见入口，应把它放回动作表或命令面板，而不是设置抽屉。
 
 **验证：** `npm --prefix web run typecheck`（i18n 3194 键 × 3）、`npm run build:web`、`node probes/round6-keys.mjs` 全绿。
+## D278 上下文洞察页 + 技能加载计数修复 + Context Browser 正文落盘（用户要求，2026-11-15）
+
+**问题：** ① 会话内 Context 面板只能看当前会话；设置 → 工具里没有跨会话入口。② 用户用了 `/skill:`，Token 统计里技能注入有占比，但「上下文统计 → 技能加载」一直是 0。③ Context Browser 只有 160 字预览，原版 dsh-context 可以展开系统提示词、工具 JSON schema、消息正文、思考、工具参数和工具结果；用户说「表现和原版差别很大」。
+
+**REA 逆向：** 用 `rea analyze-javascript-application ~/.dsh/profiles/desktop/node_modules/dsh-context --source-path lib/client.js --source-path lib/index.js --detail summary` 复核本轮 0.84.1；Evidence `ev_2c02d565005601ee745b41c4d1e880a3f1ccd5e99df0a66de31c00b4c0111195`（summary `ev_743a245f1e3871866b4ace0506c5b7e7f1d61917cac8b7373d453f1eaef1c170` 为 D271 那轮）。原版 Insights 的区块是 KPI / 近 7 天用量 / 活跃度热力图 / 技能加载 / 工具调用 / 命令执行 / Context Composition / 按项目分组的会话卡片；Context Stats 的 `skills` 是**去重技能名数量**（`totals.skills` / inject `sub:"skill"`），不是「每次请求都重数一遍」。
+
+**决定：**
+
+1. **设置 → 工具 → 热部署右侧新增「上下文洞察」**，打开 1320px 的 sheet；数据走新 `GET /api/context/insights`。桥端 `collectContextInsight()` 扫所有会话的 ctxlog，只回会话级聚合（Token / 费用 / bill 八类 / 每日 / 技能 / 工具 / 命令 / 文件），按文件 mtime+size 缓存；不把逐请求正文搬出桥。
+2. **页面分「全体 / 分项目」**：顶部范围（今天 / 近 7 天 / 近 30 天 / 全部）与项目 chip；KPI、近 7 天用量、8 周活跃度、技能 / 工具 / 命令账本、Context Composition、分项目表、会话卡片。项目按桥的 workspace 组（`ws`）分组，没进组的按 cwd 的 basename 分。点会话卡片关 sheet 并切到该会话。
+3. **skills 计数改为去重技能名**：`bridge/ext/context-log.ts` 把 `/skill:` 展开的 `<skill name="…">…</skill>` 从 user 正文里拆出来，计入 `cats.skill`，请求行写 `skills: ["name"]`，并且每条技能消息只写一次 `event: inject, label: skill:<name>`；`ctxSummary` 取「请求行 skills ∪ skill 事件 ∪ skill 工具活动 ∪ 旧日志 user preview 里的 `<skill name>`」去重，修掉「技能注入有占比但技能加载 0」。
+4. **Context Browser 正文**：ctxlog 升 v3，新增 `kind:"body"` 行，按 item id + 内容 digest 只写变化（单条上限 64 KB）。系统提示词段、工具 schema、user / assistant / thinking / toolCall 参数 / toolResult 正文、skill 正文都落到 body；`ctxBodyMap()` 在 `ctxBrowserView` 里按 id 合并。前端条目可展开：工具结果显示参数、OK / error、命令 / exit code / 路径与结果正文；助手条目按思考 / 工具 / 回答筛选；工具定义按大小 / 名称排序；旧日志没有 body 时明确写「旧版日志只保留了预览」。
+5. **隐私口径修订：** D271 写的「previews only，不镜像 transcript」由本条取代。body 只写本机桥状态目录，内容和 pi 自己的会话 JSONL 同源；activity 行仍然只留程序名 / 路径 / 行数，不写命令行正文和工具输出到 activity。
+
+**代价 / 可改：**
+
+- 首次打开洞察页要扫一遍 ctxlog（本机 126 MB / 29 个会话实测约 0.6 秒），之后按 mtime/size 缓存；文件多到几 GB 时可改增量索引。
+- 费用依赖 `usage.cost.total`，旧日志没有这一项只能显示「–」；新会话从下一条 `message_end` 起有值。
+- body 只覆盖升级后的新请求；旧日志无法凭空恢复正文，界面明确标注，不伪造。
+- 未复刻原版的 Fleet / DNA 模式 / 附件卡片 / 自定义日期范围；Insights 的「全部」范围只保留最近 80 天按日，早期只在会话总计里。
+
+**验证：**
+
+- `npm run test:context`：`context-log-unit`（v3 body、skill 拆分、usage cost、活动行仍脱敏）、`context-insight-unit`（聚合 / 费用 / 技能去重 / 旧日志 preview 兜底）、`context-unit`（`ctxSummary` 技能三种来源、`ctxBodyMap` 合并）、`chrome-unit` 全绿。
+- `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3246 键 × 3 + viewport）、`npm run build` 全绿。
+- 真桥 7871 + 真 Chromium：设置 → 连接与设置 → 工具里按钮顺序为「pi 设置 / 本机管理 / 热部署 / 上下文洞察」，点开 KPI / 近 7 天 / 活跃度 / 三个账本 / Context Composition / 分项目 / 会话卡片都出来；点项目 chip 过滤 KPI，点会话卡片回到该会话。
