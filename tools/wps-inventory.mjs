@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 把本机 WPS 的**表格**界面资源读成一份 Markdown 清单（D264）。
+ * 把本机 WPS 的**表格**界面资源读成一份 Markdown 清单（D265）。
  *
  * 我们这份表格浮窗的功能区是照着 WPS 排的，可「WPS 到底有哪几个页签、每个组里有哪些项、
  * 哪些是下拉」这件事不该靠记忆。WPS 的界面是声明式的：`Contents/Resources/office6/res/`

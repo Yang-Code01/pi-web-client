@@ -1,5 +1,5 @@
 /**
- * 数字格式（#108 / D264）：把文件里 `styles.xml` 的 numFmt 代码套到数字上，得到该显示的字。
+ * 数字格式（#108 / D265）：把文件里 `styles.xml` 的 numFmt 代码套到数字上，得到该显示的字。
  *
  * 这一版按 WPS（`Resources/office6/mui/zh_CN/config/numberformat.cfg`、
  * `datetimeformat.cfg`）里那一套格式代码重写过：分区（正;负;零;文本）、

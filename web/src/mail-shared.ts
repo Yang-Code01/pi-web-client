@@ -101,6 +101,10 @@ export interface MailConfigView {
   presets: Record<string, MailPresetView>;
   presetIds: string[];
   audit: MailAuditRow[];
+  /** config.json 读不出来时的原因（此时 `accounts` 是空的，且桥会拒写）。 */
+  configError?: string | null;
+  /** 配置文件的本机路径，横幅里给人指路。 */
+  configPath?: string;
 }
 
 export interface MailAccountInput {
@@ -123,6 +127,21 @@ export interface MailSendInput {
   subject: string;
   text: string;
   draft?: boolean;
+}
+
+/** 确认弹窗要回答的东西：桥端的 `mail.confirm` 帧带 `reqId` + `mail`。 */
+export interface MailConfirmFrame {
+  reqId: string;
+  sessionId?: string;
+  mail: MailConfirmRequest;
+}
+
+/** 页面对一条确认请求的回答，走同一条 ws 回给桥。 */
+export interface MailConfirmAck {
+  reqId: string;
+  ok: boolean;
+  reason?: string;
+  text?: string;
 }
 
 /** 桥推给页面的「这封信发不发」。正文只带前 800 字，够认出来是哪封。 */
@@ -188,3 +207,103 @@ export function whenText(ms: number, now = Date.now()): string {
 export function sizeText(n: number): string {
   return formatBytes(n);
 }
+
+/*************************************************************** 自定义服务器的端口与 TLS
+
+   以前面板里写死 `secure: !port.startsWith("587")`（SMTP）与恒 `true`（IMAP）：自定义服务器填 143
+   / 25 / 110 这些走 STARTTLS 的端口永远连不上。判据收到这里，能单测（D264）。 */
+
+/**
+ * 自定义服务器时 TLS 怎么算：先看端口，认不出来再用 IMAP 默认开、SMTP 默认关。
+ *
+ * 以前是 `secure: !port.startsWith("587")` 一句拍了 SMTP、IMAP 恒 true —— 143 / 25 / 110
+ * 这些明文（STARTTLS 升级）的端口永远连不上。
+ */
+export function secureForPort(port: number, kind: "imap" | "smtp"): boolean {
+  if (port === 993 || port === 465) return true;
+  if (port === 143 || port === 25 || port === 110 || port === 587) return false;
+  return kind === "imap";
+}
+
+/** 端口输入框的值 → 端口号：空 / 非数字就用预设的默认值。 */
+export function portOf(text: string, fallback: number): number {
+  const n = Number(String(text ?? "").trim());
+  return Number.isFinite(n) && n > 0 && n < 65536 ? Math.floor(n) : fallback;
+}
+
+/**
+ * 「这封发不发」的排队与回执 —— 不带任何 DOM，面板画不画都归它说了算。
+ *
+ * 桥一封一个 `reqId`，同时可能压着两封（AI 连着发两封）。规则：
+ *   1. 一次只摊开一封，按到达顺序来；
+ *   2. 结掉当前那封（点发送 / 不发 / Esc / 超时）之后自动进入下一封；
+ *   3. 回执只回给**当前**那封的 `reqId` —— 迟到的点击不会替另一封点头。
+ */
+export class MailConfirmQueue {
+  private readonly send: (ack: MailConfirmAck) => void;
+  private readonly onChange: () => void;
+  private items: { reqId: string; mail: MailConfirmRequest }[] = [];
+
+  constructor(send: (ack: MailConfirmAck) => void, onChange: () => void = () => {}) {
+    this.send = send;
+    this.onChange = onChange;
+  }
+
+  push(reqId: string, mail: MailConfirmRequest): void {
+    if (!reqId || !mail) return;
+    this.items.push({ reqId, mail });
+    this.onChange();
+  }
+
+  /** 正在等回答的那封。 */
+  get current(): { reqId: string; mail: MailConfirmRequest } | null {
+    return this.items[0] ?? null;
+  }
+
+  /** 还压着几封（含当前那封）。 */
+  get size(): number {
+    return this.items.length;
+  }
+
+  /** 结掉当前那封。队列空了 `current` 就是 null。 */
+  settle(ok: boolean, reason?: string, text?: string): void {
+    const cur = this.items.shift();
+    if (!cur) return;
+    this.send({ reqId: cur.reqId, ok, reason, text });
+    this.onChange();
+  }
+}
+
+/**
+ * 审计行里的失败原因：桥给的是稳定错误码，**别把 `smtp-error` 这种码铺到用户脸上**（B20 / D264）。
+ * 键是错误码，值是中文原文（使用处 `tr()`）。认不出来的码一律显示「失败」，不露原文。
+ */
+export const MAIL_ERROR_TEXT: Record<string, string> = {
+  "smtp-error": "发送失败：服务器拒收",
+  "auth-failed": "授权码不对，或者没开 IMAP/SMTP",
+  "imap-id": "邮箱把这次登录当成不安全客户端",
+  "imap-error": "邮箱服务器出错了",
+  net: "连不上邮箱服务器",
+  timeout: "邮箱服务器没有及时回应",
+  "not-found": "这封信已经不在了",
+  "too-large": "邮件太大，超过了 25MB",
+  "bad-input": "参数不对",
+  recipients: "收件人不在白名单里",
+  "rate-limited": "当天发信额度用完了",
+  declined: "没有确认，没发出去",
+  "no-page": "没有页面能确认，没发出去",
+  "no-ack": "确认弹窗没有回音，没发出去",
+  // 页面 5 分钟没点，和「服务器没回应」不是一回事，别混成一个。
+  "confirm-timeout": "放了 5 分钟没点确认，没发出去",
+};
+
+/** 认不出来的码只回空串，调用方用「失败」。 */
+export function mailErrorText(code: unknown): string {
+  return MAIL_ERROR_TEXT[String(code ?? "").trim()] ?? "";
+}
+
+/**
+ * 页面等用户点「发送」的上限。桥那边默认等 300 秒（`PI_WEB_MAIL_CONFIRM_MS`），这里提前 20 秒
+ * 收摊，别让两边同时超时。**只此一份** —— 以前桥里 300_000、页面里 280_000 各写一通。
+ */
+export const MAIL_CONFIRM_PAGE_MS = 280_000;

@@ -1,5 +1,5 @@
 /**
- * 写回一条**自定义**数字格式（D264）：WPS 的「中文大写数字 / 单位：万元 / 正负号」都不是
+ * 写回一条**自定义**数字格式（D265）：WPS 的「中文大写数字 / 单位：万元 / 正负号」都不是
  * Excel 的内置 id，得在 `xl/styles.xml` 里造一条 `<numFmt>` 再让格子指过去。
  *
  *   node --experimental-strip-types bridge/tests/sheet-style-unit.mjs

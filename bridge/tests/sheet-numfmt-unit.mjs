@@ -1,5 +1,5 @@
 /**
- * 数字格式引擎（D264）的单元测试：只看「这个数字按这段代码显示成什么字」。
+ * 数字格式引擎（D265）的单元测试：只看「这个数字按这段代码显示成什么字」。
  *
  *   node --experimental-strip-types bridge/tests/sheet-numfmt-unit.mjs
  */
