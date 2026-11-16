@@ -138,6 +138,35 @@ const accId = r.body?.account?.id;
 r = await call("POST", "/api/mail/accounts", { address: "me@163.com", preset: "163", secret: "abcdefghijklmnop" });
 check("重复地址 400 duplicate", r.status === 400 && r.body?.code === "duplicate", `${r.status} ${r.body?.code}`);
 
+// ---------------------------------------------------------------- OAuth 路由
+//
+// 这几个口子不做网络请求就能验：账号不对 / 不是 oauth 账号 / 方法不对，都在发请求之前就回。
+r = await call("POST", "/api/mail/oauth/start", { accountId: accId });
+check("授权码账号去登录 → 400 bad_input", r.status === 400 && r.body?.code === "bad_input", `${r.status} ${r.body?.code}`);
+r = await call("POST", "/api/mail/oauth/start", { accountId: "nope" });
+check("没有这个账号 → 404", r.status === 404 && r.body?.code === "not_found", `${r.status} ${r.body?.code}`);
+r = await call("GET", "/api/mail/oauth/start", undefined);
+check("登录只收 POST（405）", r.status === 405 && r.body?.code === "bad_method", `${r.status} ${r.body?.code}`);
+
+r = await call("POST", "/api/mail/accounts", {
+  address: "me@corp.com",
+  preset: "m365",
+  auth: "oauth",
+  oauthClientId: "11111111-2222-3333-4444-555555555555",
+  oauthTenant: "common",
+});
+check("存一个 oauth 账号 200", r.status === 200 && r.body?.account?.auth === "oauth", `${r.status} ${r.body?.code ?? ""}`);
+check("刚存的 oauth 账号还没登录（hasToken false）", r.body?.account?.hasToken === false);
+check("oauth 账号不用给授权码", r.body?.account?.hasSecret === false);
+const oauthId = r.body?.account?.id;
+r = await call("POST", "/api/mail/oauth/nope", { accountId: oauthId });
+check("未知 oauth 动作 → 404", r.status === 404 && r.body?.code === "not_found", `${r.status} ${r.body?.code}`);
+r = await call("POST", "/api/mail/accounts", { address: "me2@corp.com", preset: "m365", auth: "oauth" });
+check("新建 oauth 账号不给客户端 ID 就是 400", r.status === 400 && r.body?.code === "bad_input", `${r.status} ${r.body?.code}`);
+r = await call("POST", "/api/mail/accounts", { id: oauthId, address: "me@corp.com", preset: "m365" });
+check("改存时不给客户端 ID 就沿用原来的（不是 400）", r.status === 200 && r.body?.account?.oauthClientId === "11111111-2222-3333-4444-555555555555", `${r.status} ${r.body?.account?.oauthClientId}`);
+await call("DELETE", `/api/mail/accounts/${oauthId}`);
+
 r = await call("POST", "/api/mail/policy", { send: false });
 check("改权限 200", r.status === 200 && r.body?.policy?.send === false, JSON.stringify(r.body?.policy));
 r = await call("GET", "/api/mail/config");

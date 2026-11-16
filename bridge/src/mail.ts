@@ -48,6 +48,7 @@ import {
   testAccount,
   type OutgoingMail,
 } from "./mailtransport.ts";
+import { cancelDeviceLogin, logoutOAuth, pollDeviceLogin, startDeviceLogin } from "./mailoauth.ts";
 
 const MAX_BODY = 2 * 1024 * 1024;
 /** 回给模型的单张内嵌图片上限（base64 后约 4MB，pi 的图片通道还能接住）。 */
@@ -347,8 +348,16 @@ export async function handleMail(req: http.IncomingMessage, res: http.ServerResp
         return true;
       }
       account.id = prev?.id ?? newAccountId();
-      // 换了授权码 / 服务器，之前的验证结论作废。
-      if (prev && (prev.secret !== account.secret || prev.imap.host !== account.imap.host || prev.smtp.host !== account.smtp.host)) {
+      // 换了授权码 / 认证方式 / Microsoft 应用 / 服务器，之前的验证结论作废。
+      if (
+        prev &&
+        (prev.secret !== account.secret ||
+          prev.auth !== account.auth ||
+          prev.oauth?.clientId !== account.oauth?.clientId ||
+          prev.oauth?.tenant !== account.oauth?.tenant ||
+          prev.imap.host !== account.imap.host ||
+          prev.smtp.host !== account.smtp.host)
+      ) {
         account.verifiedAt = null;
         account.lastError = null;
       }
@@ -362,6 +371,62 @@ export async function handleMail(req: http.IncomingMessage, res: http.ServerResp
       config.defaultAccount = config.defaultAccount ?? account.id;
       writeMailConfig(config);
       json(res, 200, { ok: true, account: publicAccount(account) });
+      return true;
+    }
+
+    // ---------------------------------------------------------------- Microsoft OAuth
+    //
+    // 三个动作都是「对着一个已经存下的 oauth 账号」做的：先把账号（与客户端 ID）存好，再登录。
+    // 令牌只能从这条进来（`saveOAuthTokens`），页面从头到尾看不到令牌值。
+    if (url.pathname.startsWith("/api/mail/oauth/")) {
+      const action = url.pathname.slice("/api/mail/oauth/".length);
+      if (method !== "POST") {
+        fail(res, 405, "bad_method", "不支持这个请求方法");
+        return true;
+      }
+      if (!writeGuard(res)) return true;
+      const body = (await readJsonBody(req)) ?? {};
+      const config = readMailConfig();
+      const account = config.accounts.find((a) => a.id === String(body.accountId ?? ""));
+      if (!account) {
+        fail(res, 404, "not_found", "没有这个账号（先保存账号再登录）");
+        return true;
+      }
+      if (account.auth !== "oauth" || !account.oauth) {
+        fail(res, 400, "bad_input", "这个账号不是 Microsoft 登录账号");
+        return true;
+      }
+      if (action === "start") {
+        const login = await startDeviceLogin(account.id, account.oauth);
+        json(res, 200, { ok: true, login });
+        return true;
+      }
+      if (action === "poll") {
+        const state = await pollDeviceLogin(account.id);
+        // 登录成功就把账号的新状态顺手带上：页面不用再拉一遍 /config。
+        const fresh = state.status === "done" ? findAccount(readMailConfig(), account.id) : null;
+        json(res, 200, { ok: true, ...state, account: fresh ? publicAccount(fresh) : undefined });
+        return true;
+      }
+      if (action === "cancel") {
+        cancelDeviceLogin(account.id);
+        json(res, 200, { ok: true });
+        return true;
+      }
+      if (action === "logout") {
+        logoutOAuth(account.id);
+        // 重新读一遍再写：上面那份 `config` 是退出登录之前的快照，写回去会把刚清掉的令牌又写回来。
+        const after = readMailConfig();
+        const fresh = after.accounts.find((a) => a.id === account.id) ?? null;
+        if (fresh) {
+          fresh.verifiedAt = null;
+          fresh.lastError = null;
+          writeMailConfig(after);
+        }
+        json(res, 200, { ok: true, account: fresh ? publicAccount(fresh) : undefined });
+        return true;
+      }
+      fail(res, 404, "not_found", "没有这个操作");
       return true;
     }
 

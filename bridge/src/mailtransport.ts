@@ -12,6 +12,9 @@ import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
 import { simpleParser } from "mailparser";
 import type { MailAccount } from "./mailconfig.ts";
+// 与 mailoauth 的循环依赖只在函数体里用（`accessTokenFor` / `MailError` 都是模块级导出的值），
+// ESM 的循环绑定在这里是安全的：没有任何一侧在模块求值时用到对方。
+import { accessTokenFor } from "./mailoauth.ts";
 
 export type MailErrorCode =
   | "auth-failed"
@@ -23,7 +26,11 @@ export type MailErrorCode =
   | "not-found"
   | "too-large"
   /** 参数不对（收件人不是地址、缺 uid 这种）—— 路由按 400 回，别混进 500。 */
-  | "bad-input";
+  | "bad-input"
+  /** 账号需要用户重新走一次 Microsoft 登录（没登录过 / 刷新令牌失效）—— 页面据此弹「用 Microsoft 登录」。 */
+  | "oauth-needed"
+  /** Microsoft 授权本身没走通（应用 ID、租户、权限没同意）—— 提示里带着可行动的那一步。 */
+  | "oauth";
 
 export class MailError extends Error {
   code: MailErrorCode;
@@ -85,12 +92,21 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   });
 }
 
-function clientFor(account: MailAccount): ImapFlow {
+/**
+ * IMAP 的认证块。OAuth 账号用 access token（imapflow 会发 AUTHENTICATE XOAUTH2），
+ * 授权码账号还是 LOGIN。令牌在每次连接时现拿（过期就顺手刷新）。
+ */
+async function imapAuth(account: MailAccount): Promise<{ user: string; pass?: string; accessToken?: string }> {
+  if (account.auth === "oauth") return { user: account.user, accessToken: await accessTokenFor(account) };
+  return { user: account.user, pass: account.secret };
+}
+
+async function clientFor(account: MailAccount): Promise<ImapFlow> {
   return new ImapFlow({
     host: account.imap.host,
     port: account.imap.port,
     secure: account.imap.secure,
-    auth: { user: account.user, pass: account.secret },
+    auth: await imapAuth(account),
     clientInfo: CLIENT_INFO,
     logger: false,
     socketTimeout: OP_MS,
@@ -100,10 +116,10 @@ function clientFor(account: MailAccount): ImapFlow {
 
 /** 开一条连接跑 fn，无论成败都 logout。错误统一翻成 MailError。 */
 export async function withImap<T>(account: MailAccount, fn: (client: ImapFlow) => Promise<T>): Promise<T> {
-  if (!account.secret) {
+  if (account.auth !== "oauth" && !account.secret) {
     throw new MailError("auth-failed", "没有授权码", "这个账号还没填授权码。在邮箱设置里补上，或重新生成一个。");
   }
-  const client = clientFor(account);
+  const client = await clientFor(account);
   try {
     await withTimeout(client.connect(), CONNECT_MS, "连接 IMAP");
     return await fn(client);
@@ -557,12 +573,20 @@ export function splitRecipients(raw: unknown): string[] {
   return out.map((x) => x.trim()).filter(Boolean);
 }
 
-function transportFor(account: MailAccount) {
+/**
+ * SMTP 的认证块。OAuth 账号走 `type: OAuth2`（nodemailer 发 AUTH XOAUTH2），令牌同样现拿。
+ * 以前这是同步的，加了 OAuth 之后要等令牌，所以整条发信链路改成 await 它。
+ */
+async function transportFor(account: MailAccount) {
+  const auth =
+    account.auth === "oauth"
+      ? { type: "OAuth2" as const, user: account.user, accessToken: await accessTokenFor(account) }
+      : { user: account.user, pass: account.secret };
   return nodemailer.createTransport({
     host: account.smtp.host,
     port: account.smtp.port,
     secure: account.smtp.secure,
-    auth: { user: account.user, pass: account.secret },
+    auth,
     connectionTimeout: CONNECT_MS,
     greetingTimeout: CONNECT_MS,
     socketTimeout: OP_MS,
@@ -591,7 +615,7 @@ export async function sendOutgoing(
       const info: any = await t.sendMail({ ...msg, attachments });
       return { messageId: String(info.messageId ?? ""), response: "draft", raw: Buffer.isBuffer(info.message) ? info.message : Buffer.from(info.message) };
     }
-    const transport = transportFor(account);
+    const transport = await transportFor(account);
     const info: any = await withTimeout(transport.sendMail({ ...msg, attachments }), OP_MS, "发送邮件");
     return { messageId: String(info.messageId ?? ""), response: String(info.response ?? "") };
   } catch (err) {
@@ -635,7 +659,7 @@ export async function testAccount(account: MailAccount): Promise<TestResult> {
     out.imap = { ok: false, error: String(err?.message ?? err), code: err?.code ?? "imap-error" };
   }
   try {
-    const transport = transportFor(account);
+    const transport = await transportFor(account);
     await withTimeout(transport.verify(), CONNECT_MS, "SMTP 握手");
     out.smtp = { ok: true };
   } catch (err: any) {

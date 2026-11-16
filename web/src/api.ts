@@ -1,6 +1,6 @@
 import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetEditOp, SheetMatches, SheetMeta, SheetStructOp, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
-import type { MailAccountInput, MailAccountView, MailConfigView, MailDetailView, MailFolderView, MailPolicyView, MailSendInput, MailSummary } from "./mail-shared.ts";
+import type { MailAccountInput, MailAccountView, MailConfigView, MailDetailView, MailFolderView, MailOAuthLoginView, MailOAuthPollView, MailPolicyView, MailSendInput, MailSummary } from "./mail-shared.ts";
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 import type { HotdeployRemoveResult, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
 import type { CtxInsightData } from "./context-insight-types.ts";
@@ -332,6 +332,13 @@ export const api = {
       `/api/mail/accounts/${encodeURIComponent(id)}/test`,
       {},
     ),
+  // Microsoft 登录：start 拿设备码，poll 问一次「授权完了吗」，logout 清令牌。
+  // 令牌始终在桥那边，这三条请求与响应里都不含它。
+  mailOAuthStart: (accountId: string) => postJson<{ ok: true; login: MailOAuthLoginView }>("/api/mail/oauth/start", { accountId }),
+  mailOAuthPoll: (accountId: string) =>
+    postJson<{ ok: true } & MailOAuthPollView>("/api/mail/oauth/poll", { accountId }),
+  mailOAuthCancel: (accountId: string) => postJson<{ ok: true }>("/api/mail/oauth/cancel", { accountId }),
+  mailOAuthLogout: (accountId: string) => postJson<{ ok: true; account?: MailAccountView }>("/api/mail/oauth/logout", { accountId }),
   mailSavePolicy: (patch: Partial<MailPolicyView>) => postJson<{ ok: true; policy: MailPolicyView }>("/api/mail/policy", patch),
   mailFolders: (account?: string) =>
     req<{ folders: MailFolderView[] }>(`/api/mail/folders${account ? `?account=${encodeURIComponent(account)}` : ""}`),

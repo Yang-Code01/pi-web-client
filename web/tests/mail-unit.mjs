@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { auditOutcome, cidKey, inlineImageMap, joinAddress, localPartFor, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, presetDomain, retargetAddress, secureForPort, sizeText, splitAddress, whenText } from "../src/mail-shared.ts";
+import { auditOutcome, cidKey, inlineImageMap, joinAddress, localPartFor, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, presetAuths, presetDomain, presetNeedsOAuth, retargetAddress, secureForPort, sizeText, splitAddress, whenText } from "../src/mail-shared.ts";
 import { buildMailFrameHtml, firstSrcsetUrl } from "../src/mailhtml.ts";
 
 test("权限表覆盖六个开关，键与桥端一致", () => {
@@ -218,6 +218,29 @@ test("内嵌图片：Content-ID → 附件行，普通附件不进来", () => {
   const map = inlineImageMap(atts);
   assert.equal(map.size, 1);
   assert.equal(map.get("logo@x")?.index, 0);
+});
+
+test("预设的登录方式：Outlook / Microsoft 365 只能 OAuth，其余仍是授权码", () => {
+  const presets = {
+    outlook: { host: "outlook.office365.com", port: 993, secure: true, auth: ["oauth"] },
+    m365: { host: "outlook.office365.com", port: 993, secure: true, auth: ["oauth"] },
+    custom: { host: "", port: 993, secure: true },
+  };
+  assert.deepEqual(presetAuths(presets, "outlook"), ["oauth"]);
+  assert.deepEqual(presetAuths(presets, "m365"), ["oauth"]);
+  // 老桥 / 老预设不带 auth 字段：一律当授权码，面板不能因此打不开。
+  assert.deepEqual(presetAuths(presets, "custom"), ["password"]);
+  assert.deepEqual(presetAuths(presets, "163"), ["password"]);
+  assert.equal(presetNeedsOAuth(presets, "outlook"), true);
+  assert.equal(presetNeedsOAuth(presets, "163"), false);
+});
+
+test("OAuth 的错误码有人话，且不是空字符串", () => {
+  for (const code of ["oauth-needed", "oauth"]) {
+    assert.ok(MAIL_ERROR_TEXT[code].length > 0, `${code} 缺人话`);
+    assert.match(MAIL_ERROR_TEXT[code], /[\u4e00-\u9fa5]/, `${code} 不像中文原文`);
+  }
+  assert.match(mailErrorText("oauth-needed"), /Microsoft/);
 });
 
 test("srcset：只有 srcset 的图也能找到第一个候选 URL", () => {
