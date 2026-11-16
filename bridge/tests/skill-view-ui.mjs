@@ -238,6 +238,26 @@ try {
   check((await page.locator(".skill-sheet").count()) === 0, "查看之后商店关掉");
   await page.screenshot({ path: path.join(SHOTS, "4-store.png") });
 
+  // ---- F. 桥这一侧：`skill:` 只在 /api/preview 认，公网不递技能目录 ----------------
+  log("F. 桥：skill: 的归属与公网遮掩");
+  const callPreview = async (body, headers = {}) => {
+    const r = await fetch(`${BASE}/api/preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie, ...headers },
+      body: JSON.stringify({ sessionId: SID, ...body }),
+    });
+    return { status: r.status, body: await r.json().catch(() => null) };
+  };
+  const local = await callPreview({ path: "skill:panel-skill" });
+  check(local.status === 200 && local.body?.kind === "markdown", `本机 /api/preview 认得 skill:panel-skill：${JSON.stringify(local.body?.error ?? local.body?.kind)}`);
+  check(String(local.body?.abs ?? "").endsWith("SKILL.md"), `本机回的是那份 SKILL.md 的路径：${JSON.stringify(local.body?.abs)}`);
+  // 公网页签与回环页签吃同一张 cookie（token 只签了过期时间），所以这个头一挂就是公网那一路。
+  const pub = await callPreview({ path: "skill:panel-skill" }, { "cf-connecting-ip": "203.0.113.9" });
+  check(pub.status === 200 && pub.body?.kind === "markdown", `公网也能看正文：${JSON.stringify(pub.body?.error ?? pub.body?.kind)}`);
+  check((pub.body?.abs ?? "x") === "" && (pub.body?.root ?? "x") === "", `公网不递技能目录：abs=${JSON.stringify(pub.body?.abs)} root=${JSON.stringify(pub.body?.root)}`);
+  const gone = await callPreview({ path: "skill:phantom-skill" });
+  check(gone.status === 400 && /不在盘上/.test(String(gone.body?.error ?? "")), `盘上没有的名字被拒：${JSON.stringify(gone.body?.error)}`);
+
   await ctx.close();
 } catch (e) {
   failed = true;

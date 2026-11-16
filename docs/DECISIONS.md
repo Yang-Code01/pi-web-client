@@ -5349,8 +5349,9 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 3. **「查看」把名字交给桥，路径不下发。** 页面发 `skill:<名字>`，桥在 `openPreview()` 里按 `scanSkillEntries()` 的顺序解析成那份 `SKILL.md`（项目先于用户，同名取先找到的，和 pi 的遮蔽规则一致）。名字是逐一比对盘上的扫描结果，不拼路径。文件不在盘上（扩展自己带进来的技能）时：桥报「这个技能的 SKILL.md 不在盘上」，页面把按钮置灰并在行里写明原因。
 4. **`SkillInfo` 加 `viewable`**，由桥在有 pi 回答时用盘上扫描的结果标注（`skills()` 里 `onDisk.has(name)`）；磁盘兜底那一份天然全是 `true`。
 5. **技能商店「已安装」行也加「查看」**，但用它自己那份绝对路径（`entry.path + "/SKILL.md"`），不走 `skill:`。两个来源故意不同：面板只有名字，商店手里有确切目录；同名遮蔽时按名字解析会开到别人那份。
-6. **`skill:` 只在 `openPreview()` 里认**，不进 `resolvePreviewPath()`。后者还兼着 `/api/dirs`、`/api/image` 和 `open_preview` 工具的信任检查，前缀属于面板专用语法，在那里获得含义只会让「路径」这个词变得不可预测。
-7. **看不算用**：`uses` 只在 `sendPrompt()` 里数，点「查看」不动计数，也不影响面板排序。
+6. **`skill:` 只在 `/api/preview` 上认**，由专门的 `openSkillPreview()` 接手（它把名字换成文件后照旧调 `openPreview()`）。`openPreview()` 与 `resolvePreviewPath()` 都不认这个前缀：前者还被 `open_preview` 工具口调用，那个口子先自己 `resolvePreviewPath()` 再做 D190 的信任检查，要是 `openPreview` 认了 `skill:`，就等于拿一个自己没检查过的文件（用户技能目录，在会话目录外）绕过了那道检查。`, `/api/dirs`、`/api/image` 也就不会多出「前缀」这层含义。
+7. **公网不递技能目录**：`publicReq` 下这一条 `skill:` 预览把 `abs` 与 `root` 一起抹掉（和 binary/pdf 同一条口径）。页面 `v.path = v.info.abs || path` 正好留着 `skill:<名字>`，刷新时还能重解析。
+8. **看不算用**：`uses` 只在 `sendPrompt()` 里数，点「查看」不动计数，也不影响面板排序。
 
 **为什么：**
 
@@ -5363,4 +5364,6 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - 磁盘兜底那份清单不区分来源，`viewable` 一律 `true`；真要看技能商店里的完整来源信息还是去商店。
 - 以后若给「查看」加键盘入口，得先定它和 `Enter`（使用）谁优先。
 
-**验证：** `bridge/tests/skill-view-ui.mjs`（真桥 + Chromium，`locale: zh-CN`，`npm run test:skill:ui`）走完 5 段：每行两枚按钮且文字是「使用」「查看」；点「使用」插 `/skill:<名字>` 且面板关；点「查看」在 viewer 里渲染出 `SKILL.md` 正文、面板关、`skill-usage.json` 里没有这次计数；`fake-pi` 多报的 `phantom-skill` 查看置灰、行内有说明、使用照常；商店「已安装」里同名技能打开的是项目里那份（正文含「项目版本-PROJECT」、不含「用户版本-USER」）。`npm run typecheck`、`npm run build`、`npm test` 全绿。
+**验证：** `bridge/tests/skill-view-ui.mjs`（真桥 + Chromium，`locale: zh-CN`，`npm run test:skill:ui`）走完 6 段：每行两枚按钮且文字是「使用」「查看」；点「使用」插 `/skill:<名字>` 且面板关；点「查看」在 viewer 里渲染出 `SKILL.md` 正文、面板关、`skill-usage.json` 里没有这次计数；`fake-pi` 多报的 `phantom-skill` 查看置灰、行内有说明、使用照常；商店「已安装」里同名技能打开的是项目里那份（正文含「项目版本-PROJECT」、不含「用户版本-USER」）；F 段打 `/api/preview`：本机拿得到 `abs`、挂上 `cf-connecting-ip` 装成公网后 `abs`/`root` 都是空的、盘上没有的名字报「不在盘上」。回归：`npm run typecheck`（含 i18n 3251 键 ×3、viewport 守卫）、`npm run build`、`npm run test:skill`（14 条）、`npm run test:skillblock`（15 条）、`bridge/tests/preview-tool.mjs`（33 条，`PREVIEW_PORT=7802 PI_PEER=0`）、`bridge/tests/open-preview-unit.mjs`（23 条）全绿。`npm test`（`bridge/tests/e2e.mjs`）没跑：它要 7867 上活着的真桥 + 真 pi，且全文不含 skills/preview，与本改动无关。
+
+**复审修正（同样这次提交）：** 第一版把 `skill:` 解析写进了 `openPreview()`，被两个轴同时抓到：`open_preview` 工具口会先 `resolvePreviewPath(\`skill:x\`)` 当成「会话目录下的相对路径」通过 D190 检查，再进 `openPreview()` 才换成目录外的真文件 —— 信任检查白做；公网预览 md 时 `abs` 也没被抹（那条规则当时只覆盖 binary/pdf）。改法即上面第 6、7 条。
