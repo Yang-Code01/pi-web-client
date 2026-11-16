@@ -366,6 +366,15 @@ export class MailPanel {
     return [p?.imap ?? fallback, p?.smtp ?? { host: "", port: 465, secure: true }];
   }
 
+  /**
+   * 预设名是桥给的中文原文（`PRESETS[id].label`），直接用只有中文。需要翻译的在这里列一项，
+   * 其余照旧显示桥给的名字：`tr()` 找不到键就把键原样吐回来，所以不列也不会变成空字符串。
+   */
+  private presetLabel(id: string, label: string): string {
+    if (id === "m365") return tr("Microsoft 365（公司/学校）");
+    return label;
+  }
+
   /** 新表单的默认认证方式：预设列表的第一个（Outlook / Microsoft 365 只有 oauth）。 */
   private defaultAuth(config: MailConfigView, preset: string): MailAuth {
     return presetAuths(config.presets, preset)[0] ?? "password";
@@ -1074,6 +1083,8 @@ export class MailPanel {
     head.append(el("div", "mc-section__label", tr("账号")));
     head.append(el("div", "mc-section__meta", tr("授权码与登录令牌只存本机；页面只拿掩码")));
     sec.append(head);
+    // 登录 / 退出失败时卡片已经收了，错误得留在这页上，否则右上角的转圈一停就什么都没发生。
+    if (this.oauthError) sec.append(el("div", "mc-hint mc-hint--bad", this.oauthError));
 
     if (!cfg.accounts.length) sec.append(el("div", "mc-empty", tr("加一个邮箱账号，AI 才有邮可读")));
     else {
@@ -1206,23 +1217,22 @@ export class MailPanel {
     sec.append(head);
 
     const steps = el("ol", "mc-oauth__steps");
-    const one = el("li", "");
-    one.append(el("span", "", tr("在浏览器里打开：")));
+    const openStep = el("li", "");
+    openStep.append(el("span", "", tr("在浏览器里打开：")));
     const link = el("a", "mc-oauth__link", pending.login.verificationUri) as HTMLAnchorElement;
     link.href = pending.login.verificationUri;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    one.append(link, el("span", "", tr("（手机也能开）")));
-    const two = el("li", "");
-    two.append(el("span", "", tr("输入这个码：")));
-    two.append(el("code", "mc-oauth__code", pending.login.userCode));
-    const three = el("li", "", tr("用要加进来的那个邮箱账号登录并同意。这一步完成以后下面会自动消失。"));
-    steps.append(one, two, three);
+    openStep.append(link, el("span", "", tr("（手机也能开）")));
+    const codeStep = el("li", "");
+    codeStep.append(el("span", "", tr("输入这个码：")));
+    codeStep.append(el("code", "mc-oauth__code", pending.login.userCode));
+    const signInStep = el("li", "", tr("用要加进来的那个邮箱账号登录并同意。这一步完成以后下面会自动消失。"));
+    steps.append(openStep, codeStep, signInStep);
     sec.append(steps);
 
     const mins = Math.max(1, Math.round((pending.login.expiresAt - Date.now()) / 60000));
     sec.append(el("div", "mc-hint", tr("这个码 {mins} 分钟内有效；关掉面板或点取消就等于这次不登了。", { mins })));
-    if (this.oauthError) sec.append(el("div", "mc-hint mc-hint--bad", this.oauthError));
 
     const acts = el("div", "mc-acts");
     const cancel = el("button", "mc-btn", tr("取消登录")) as HTMLButtonElement;
@@ -1379,7 +1389,7 @@ export class MailPanel {
     presetRow.append(el("span", "mc-field__label", tr("邮箱类型")));
     const pick = el("select", "mc-select") as HTMLSelectElement;
     for (const id of cfg.presetIds) {
-      const opt = el("option", "", id === "custom" ? tr("自定义（手动填服务器）") : (cfg.presets[id]?.label ?? id)) as HTMLOptionElement;
+      const opt = el("option", "", id === "custom" ? tr("自定义（手动填服务器）") : this.presetLabel(id, cfg.presets[id]?.label ?? id)) as HTMLOptionElement;
       opt.value = id;
       opt.selected = f.preset === id;
       pick.append(opt);
@@ -1416,6 +1426,10 @@ export class MailPanel {
         formInput(tr("租户（留空 = common）"), f.oauthTenant, "text", (v) => (f.oauthTenant = v)),
       );
       box.append(creds);
+      const who = el("div", "mc-form__grid");
+      who.append(formInput(tr("登录账号（留空 = 地址）"), f.user, "text", (v) => (f.user = v), "username"));
+      box.append(who);
+      box.append(el("div", "mc-hint", tr("登录账号多数就是地址全称；公司邮箱的登录名（UPN）和地址不一样时填那个。")));
       box.append(
         el(
           "div",

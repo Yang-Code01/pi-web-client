@@ -55,6 +55,9 @@ export type MailAuth = "password" | "oauth";
  * `refreshToken` / `accessToken` 跟授权码一个档次（只在本机、页面拿不到，`publicAccount()`
  * 只给 `hasToken`）；设备码登录与刷新在 `bridge/src/mailoauth.ts`，这一层不碰网络。
  */
+/** 租户留空时用这个：多租户应用与个人账号都能登（单租户应用要自己填租户 ID / 域名）。 */
+export const DEFAULT_TENANT = "common";
+
 export interface MailOAuth {
   /** Entra 应用的 Application (client) ID。公共客户端，不需要 client secret。 */
   clientId: string;
@@ -321,7 +324,7 @@ function oauthOf(raw: any): MailOAuth | null {
   const expiresAt = Number(raw.expiresAt);
   return {
     clientId,
-    tenant: str(raw.tenant) || "common",
+    tenant: str(raw.tenant) || DEFAULT_TENANT,
     refreshToken: str(raw.refreshToken),
     accessToken: str(raw.accessToken),
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
@@ -649,7 +652,7 @@ export function normalizeAccount(input: AccountInput, prev?: MailAccount | null)
     if (!clientId) return { error: "要填 Microsoft 应用的客户端 ID（Application ID）" };
     if (!CLIENT_ID_RE.test(clientId)) return { error: "客户端 ID 应该是一串 GUID（xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx）" };
     // 留空走 common：多租户应用与个人账号都能登；单租户应用要自己填租户 ID / 域名（页面提示里写着）。
-    const tenant = str(input.oauthTenant) || prev?.oauth?.tenant || "common";
+    const tenant = str(input.oauthTenant) || prev?.oauth?.tenant || DEFAULT_TENANT;
     // 换应用 / 换租户：旧令牌属于上一个应用，留着只会在连接时报 invalid_grant。
     const sameApp = prev?.auth === "oauth" && prev.oauth?.clientId === clientId && prev.oauth?.tenant === tenant;
     oauth = {

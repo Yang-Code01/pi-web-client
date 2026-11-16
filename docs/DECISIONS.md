@@ -5352,6 +5352,15 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 6. **`expiresAt - 90s` 内就提前刷新**：一次读信可能几分钟，别拿一个马上过期的令牌去连。刷新失败按错误分类翻译：`invalid_grant` / `AADSTS70008|50173|50196|7000215` → `oauth-needed`（「在面板里重新登录」）；`invalid_client` / `AADSTS700016|900023|50059` → 指向「客户端 ID 或租户」；`AADSTS65001|90094` / consent → 指向「管理员同意」；`invalid_scope` / `AADSTS70011` → 指向「权限」。
 7. **传输层不加新依赖**：IMAP 用 imapflow 原有的 `auth: { user, accessToken }`（XOAUTH2），SMTP 用 nodemailer 的 `auth: { type: "OAuth2", user, accessToken }`。
 
+**为什么：**
+
+- **为什么不干脆让用户填个「应用密码」：** 没有这条路了。微软对 Exchange Online（2022-10）和个人 Outlook（2024-09-16）都关掉了 IMAP/SMTP 基础认证，应用密码同样被拒 —— 原来那个 `outlook` 预设只能报 `auth-failed`，不是配置问题。
+- **为什么是设备码而不是 OAuth 回调：** 回调要预先在 Entra 登记重定向 URI，桥的端口一换就得回去改应用；设备码一个 URI 都不要，用户在 `microsoft.com/devicelogin` 输一段码就行，用的还是他自己那套被 IT 管着的浏览器会话 —— 我们不碰他的密码与 cookie，也不用在他机器上装东西。
+- **为什么令牌放桥、不放页面也不放浏览器：** 页面是网页客户端，令牌落在 `localStorage` 就等于任何同源脚本都能拿走；放桥里则与授权码同级（本机配置文件、0600），页面与 AI 工具都只看得到「登录过没有、是谁」。
+- **为什么不自带一个仓库级 client ID：** 那等于让所有用户的邮件授权挂到同一个应用上，出事时谁也分不清是谁在访问。多一步注册换来「每个人自己的应用、自己的租约」。
+- **为什么改传输层而不是另写一条收信通道：** 收信/发信的行为（分页、附件、审计、策略）已经都在 IMAP/SMTP 那套里，XOAUTH2 只是换一种「怎么证明你是谁」；换通道等于把那些规则再实现一遍。
+- **为什么并发刷新要合并（单飞）：** 微软每刷新一次就把 refresh token 轮换掉，两个读信请求同时刷新，后到的那个必然 `invalid_grant` —— 人会看到「登录已失效」，而其实刚刚刷新成功。
+
 **代价 / 可改：**
 
 - 多了一步「先建 Entra 应用」：这是微软的硬要求（设备码流也要一个公共客户端 ID），面板里写了注册步骤的 hint，完整步骤见 [`docs/MAIL-OAUTH-SETUP.md`](MAIL-OAUTH-SETUP.md)。想省这一步，只能由本仓库提供一个公共 client ID —— 那等于把所有人的邮件授权挂到同一个应用上，没做。
@@ -5360,6 +5369,6 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 
 **验证：**
 
-- `bridge/tests/mail-oauth-unit.mjs`（9 条，已挂进 `npm run test:mail`）：预设只给 OAuth、oauth 必带 GUID 客户端 ID、租户默认 `common`、换应用/换租户作废旧令牌、`publicAccount` 不含令牌、设备码 pending→done（真等 2×2 秒，断言 upn 从 id_token 解出、令牌落盘）、取消/过期、`accessTokenFor` 三条路径（无令牌、撤销、能刷新）、令牌端点错误翻译。
+- `bridge/tests/mail-oauth-unit.mjs`（12 条，已挂进 `npm run test:mail`）：预设只给 OAuth、oauth 必带 GUID 客户端 ID、租户默认 `common`、换应用/换租户作废旧令牌、`publicAccount` 不含令牌、设备码 pending→done（真等 2×2 秒，断言 upn 从 id_token 解出、令牌落盘）、取消/过期、`accessTokenFor` 三条路径（无令牌、撤销、能刷新）、令牌端点错误翻译（四类分开验）、并发刷新只发一次请求、OAuth 账号被服务器拒令牌时翻成 `oauth-needed` 而不是「重新生成授权码」。
 - `bridge/tests/mail-unit.mjs` 加 HTTP 面：授权码账号调 `/api/mail/oauth/start` → 400、未知账号 → 404、非 POST → 405、未知动作 → 404、存 oauth 账号 200 且 `hasToken:false`/`hasSecret:false`、新建 oauth 账号不给客户端 ID → 400、改存时沿用原客户端 ID。
-- `npm run test:mail` 全绿（bridge 单测 50 + oauth 9 + 列表 50 + web 17）。
+- `npm run test:mail` 全绿（bridge 单测 50 + oauth 12 + 列表 50 + web 17）。

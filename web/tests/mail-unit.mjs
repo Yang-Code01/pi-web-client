@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { auditOutcome, cidKey, inlineImageMap, joinAddress, localPartFor, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, presetAuths, presetDomain, presetNeedsOAuth, retargetAddress, secureForPort, sizeText, splitAddress, whenText } from "../src/mail-shared.ts";
+import { auditOutcome, cidKey, inlineImageMap, joinAddress, localPartFor, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, presetAuths, presetDomain,  retargetAddress, secureForPort, sizeText, splitAddress, whenText } from "../src/mail-shared.ts";
 import { buildMailFrameHtml, firstSrcsetUrl } from "../src/mailhtml.ts";
 
 test("权限表覆盖六个开关，键与桥端一致", () => {
@@ -231,8 +231,6 @@ test("预设的登录方式：Outlook / Microsoft 365 只能 OAuth，其余仍�
   // 老桥 / 老预设不带 auth 字段：一律当授权码，面板不能因此打不开。
   assert.deepEqual(presetAuths(presets, "custom"), ["password"]);
   assert.deepEqual(presetAuths(presets, "163"), ["password"]);
-  assert.equal(presetNeedsOAuth(presets, "outlook"), true);
-  assert.equal(presetNeedsOAuth(presets, "163"), false);
 });
 
 test("OAuth 的错误码有人话，且不是空字符串", () => {

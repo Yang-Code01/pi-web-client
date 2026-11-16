@@ -76,6 +76,19 @@ function classify(err: any): MailError {
   return new MailError("imap-error", text || "IMAP 操作失败", text || "IMAP 操作失败了。");
 }
 
+/**
+ * OAuth 账号报「认证失败」时，下一步永远是「重新登录」而不是「重新生成授权码」——
+ * 后者对 Outlook / Microsoft 365 根本不存在。只在服务器真的拒了令牌时才翻译，其余错误原样走。
+ */
+export function authFailureFor(account: MailAccount, e: MailError): MailError {
+  if (account.auth !== "oauth" || (e.code !== "auth-failed" && e.code !== "imap-id")) return e;
+  return new MailError(
+    "oauth-needed",
+    e.message,
+    "Microsoft 登录已经不被服务器接受了（令牌过期或被撤销）。在邮箱面板里点「重新登录」。",
+  );
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new MailError("timeout", `${what}超时（${Math.round(ms / 1000)}s）`, `${what}没有及时回应，过一会儿再试。`)), ms);
@@ -124,7 +137,7 @@ export async function withImap<T>(account: MailAccount, fn: (client: ImapFlow) =
     await withTimeout(client.connect(), CONNECT_MS, "连接 IMAP");
     return await fn(client);
   } catch (err) {
-    throw classify(err);
+    throw authFailureFor(account, classify(err));
   } finally {
     try {
       await client.logout();
@@ -619,7 +632,7 @@ export async function sendOutgoing(
     const info: any = await withTimeout(transport.sendMail({ ...msg, attachments }), OP_MS, "发送邮件");
     return { messageId: String(info.messageId ?? ""), response: String(info.response ?? "") };
   } catch (err) {
-    const e = classify(err);
+    const e = authFailureFor(account, classify(err));
     // SMTP 的失败给 SMTP 的码：页面按它区分「授权码错」和「发信被限」。
     if (e.code === "imap-error") throw new MailError("smtp-error", e.message, "SMTP 拒绝了这封信。常见原因是日发信量超限，或收件人被退信策略拦下。");
     throw e;

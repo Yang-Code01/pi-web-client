@@ -167,10 +167,6 @@ export function presetAuths(presets: Record<string, MailPresetView>, preset: str
 }
 
 /** 这个预设是不是只能走 Microsoft 登录（Outlook 个人账号 / Microsoft 365）。 */
-export function presetNeedsOAuth(presets: Record<string, MailPresetView>, preset: string): boolean {
-  const kinds = presetAuths(presets, preset);
-  return kinds.length === 1 && kinds[0] === "oauth";
-}
 
 export interface MailSendInput {
   account?: string;

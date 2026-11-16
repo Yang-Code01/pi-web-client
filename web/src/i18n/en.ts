@@ -640,6 +640,7 @@ export const en: Dict = {
   "打不开文件管理器：{p1}": "Can't open the file manager: {p1}",
   "打包中…": "Packaging…",
   "打开": "Open",
+  "打开 ": "Open ",
   "打开终端": "Open terminal",
   "扩展": "Extensions",
   "扩展小部件：{p1}": "Extension widget: {p1}",
@@ -3133,7 +3134,6 @@ export const en: Dict = {
   "没退出成": "Could not sign out",
   "登录没走通": "Sign-in did not complete",
   "设备码过期了，重新点一次「Microsoft 登录」": "The device code expired — click “Sign in with Microsoft” again",
-  "打开 ": "Open ",
   "（手机也能开）": " (works on your phone too)",
   "输入这个码：": "Enter this code: ",
   "用要加进来的那个邮箱账号登录并同意。这一步完成以后下面会自动消失。": "Sign in with the mailbox you are adding and approve access. This card goes away by itself once that is done.",
@@ -3386,4 +3386,7 @@ export const en: Dict = {
   "旧版日志只保留了预览；下一次请求起可以展开正文": "Old log kept only a preview; newer requests can expand the body",
   "这条没有可显示的正文（图片或空消息）": "No body to show (image or empty message)",
   "工具 · {p1}": "Tool · {p1}",
+  "登录账号（留空 = 地址）": "Sign-in name (blank = the address)",
+  "登录账号多数就是地址全称；公司邮箱的登录名（UPN）和地址不一样时填那个。": "The sign-in name is usually the full address; when your work UPN differs from the address, put the UPN here.",
+  "Microsoft 365（公司/学校）": "Microsoft 365 (work or school)",
 };

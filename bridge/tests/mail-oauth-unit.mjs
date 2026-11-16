@@ -224,3 +224,50 @@ test("令牌端点错误翻译：客户端 ID 不对 / 没同意 / 权限被拒"
     return true;
   });
 });
+
+test("失败分类：刷新失效 / 应用不对 / 没同意 / 权限不对各走各的下一步", () => {
+  assert.equal(oa.oauthFailureKind("invalid_grant", ""), "revoked");
+  assert.equal(oa.oauthFailureKind("", "AADSTS70008: The grant expired"), "revoked");
+  assert.equal(oa.oauthFailureKind("invalid_client", ""), "client");
+  assert.equal(oa.oauthFailureKind("", "AADSTS700016: Application not found"), "client");
+  assert.equal(oa.oauthFailureKind("", "AADSTS65001: consent required"), "consent");
+  assert.equal(oa.oauthFailureKind("invalid_scope", ""), "scope");
+  assert.equal(oa.oauthFailureKind("temporarily_unavailable", ""), "other");
+});
+
+test("并发读信只刷新一次：微软每次刷新都会作废旧 refresh token", async () => {
+  const account = seedOAuthAccount();
+  mc.saveOAuthTokens(account.id, { accessToken: "OLD", refreshToken: "RT", expiresAt: 1, upn: "me@corp.com" });
+  const stored = () => mc.findAccount(mc.readMailConfig(), account.id);
+  let served = 0;
+  const fetcher = async () => {
+    served += 1;
+    // 故意慢一点：两个调用方都在等这一次刷新。
+    await new Promise((r) => setTimeout(r, 30));
+    return new Response(JSON.stringify({ access_token: "NEW", refresh_token: "RT2", expires_in: 3600 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const [a, b] = await Promise.all([oa.accessTokenFor(stored(), fetcher), oa.accessTokenFor(stored(), fetcher)]);
+  assert.equal(served, 1, "同一账号的并发刷新应该合并成一次请求");
+  assert.equal(a, "NEW");
+  assert.equal(b, "NEW");
+  assert.equal(stored().oauth.accessToken, "NEW");
+  assert.equal(stored().oauth.refreshToken, "RT2");
+});
+
+test("OAuth 账号被服务器拒了令牌：下一步是重新登录，不是重新生成授权码", async () => {
+  const mt = await import("../src/mailtransport.ts");
+  const oauthAcc = seedOAuthAccount();
+  const passwordAcc = { ...oauthAcc, auth: "password" };
+  const bad = new mt.MailError("auth-failed", "AUTHENTICATIONFAILED", "去邮箱设置里重新生成一个授权码。");
+  const fixed = mt.authFailureFor(oauthAcc, bad);
+  assert.equal(fixed.code, "oauth-needed");
+  assert.ok(fixed.hint.includes("重新登录"), fixed.hint);
+  // 授权码账号的行为一个字都不能变。
+  assert.equal(mt.authFailureFor(passwordAcc, bad).code, "auth-failed");
+  // 不是认证类的错误原样传出去（别把断网说成要重新登录）。
+  const net = new mt.MailError("net", "ENOTFOUND", "检查网络");
+  assert.equal(mt.authFailureFor(oauthAcc, net).code, "net");
+});
