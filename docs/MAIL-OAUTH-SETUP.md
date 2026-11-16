@@ -1,6 +1,6 @@
 # 给邮箱面板配好 Microsoft 登录（Entra 应用注册）
 
-邮箱面板里选 **Outlook（个人账号）** 或 **Microsoft 365（公司 / 学校）** 时，认证只能走 Microsoft 登录（OAuth）——微软已经关掉了这两类信箱的 IMAP/SMTP 基础认证，应用密码也不行（D281）。桥不需要内置任何密钥，用的是**你自己在 Microsoft Entra 里注册的一个公共客户端应用**。
+邮箱面板里选 **Outlook（个人账号）** 或 **Microsoft 365（公司 / 学校）** 时，认证只能走 Microsoft 登录（OAuth）——微软已经关掉了这两类信箱的 IMAP/SMTP 基础认证，应用密码也不行（D282）。桥不需要内置任何密钥，用的是**你自己在 Microsoft Entra 里注册的一个公共客户端应用**。
 
 下面这套步骤只需要做一次，十分钟以内，全部在浏览器里点。你没有权限做某一步时会写清该找谁。
 
@@ -14,7 +14,7 @@
    - 公司/学校信箱只知道一个组织 → 选 **Accounts in this organizational directory only (Single tenant)**；
    - 个人 Outlook 账号，或想同时登多个组织 → 选 **Accounts in any organizational directory and personal Microsoft accounts**。
    这一步决定后面「租户」填什么（见第三节）。
-4. **Redirect URI**：**留空**。设备码登录不需要回调地址，这也是选它的原因之一（D281）。
+4. **Redirect URI**：**留空**。设备码登录不需要回调地址，这也是选它的原因之一（D282）。
 5. 点 **Register**。注册完的概览页上有一串 **Application (client) ID**，形如 `11111111-2222-3333-4444-555555555555` —— 这是要填进邮箱面板的那个。
 
 ## 二、打开设备码流

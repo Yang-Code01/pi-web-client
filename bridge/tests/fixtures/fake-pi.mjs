@@ -745,8 +745,11 @@ async function handle(cmd) {
         })),
       });
     }
-    case "get_commands":
-      return ok(id, type, { commands: [] });
+    case "get_commands": {
+      // 技能面板的 UI 测试要一个「pi 报了、盘上没有」的技能（扩展自带的那种），用 env 塞进来。
+      const extra = process.env.FAKE_PI_COMMANDS;
+      return ok(id, type, { commands: extra ? JSON.parse(extra) : [] });
+    }
     case "set_steering_mode":
     case "set_follow_up_mode":
       note({ t: type, mode: cmd.mode });

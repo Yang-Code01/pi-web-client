@@ -4,6 +4,7 @@ import type http from "node:http";
 import path from "node:path";
 import { registerFileGrant } from "./sheet/index.ts";
 import { gbkEncode, utf8Bytes } from "./sheet/gbk.ts";
+import { scanSkillEntries } from "./skills.ts";
 
 /**
  * File preview for session artifacts (md / html / images / pdf / text).
@@ -246,6 +247,35 @@ export function isTrustedPreviewPath(
   if (!session.file) return false;
   const tail = transcriptTail(session.file);
   return tail !== null && mentionForm(tail).includes(mentionForm(abs));
+}
+
+/** 技能面板「查看」交给桥的是名字（`skill:<名字>`），不是路径 —— 公网那一侧因此拿不到技能目录。
+ * 按 pi 的目录顺序解析（项目先于用户，同名取先找到的那份），和 pi 自己认的是同一份。 */
+function skillViewFile(session: { cwd: string }, name: string): string | null {
+  const wanted = name.trim();
+  if (!wanted) return null;
+  const hit = scanSkillEntries(session.cwd || null).find((s) => s.name === wanted);
+  return hit ? path.join(hit.path, "SKILL.md") : null;
+}
+
+/** 面板专用语法（#462）：`skill:<名字>`。**只有 `/api/preview` 认它** —— `openPreview` 本身不认，
+ * 所以 `open_preview` 工具那个口子拿不到这套语义（它先自己算一遍路径去做信任检查，认了就等于
+ * 用一个自己没检查过的文件绕过 D190）。 */
+export function isSkillPreviewPath(rawPath: string): boolean {
+  return /^skill:/i.test(rawPath.trim());
+}
+
+/** 面板「查看」的入口：名字 → 那份 SKILL.md，再照旧交给 `openPreview`（stat / root / token / kind
+ * 还是同一条路）。名字逐一比对盘上的扫描结果，从不拼路径，也没有越界一说。 */
+export function openSkillPreview(
+  session: { cwd: string; file: string | null },
+  rawPath: string,
+  pinRoots: string[] = [],
+): PreviewInfo {
+  const name = rawPath.trim().replace(/^skill:/i, "").trim();
+  const file = skillViewFile(session, name);
+  if (!file) throw new Error(`这个技能的 SKILL.md 不在盘上：${name || "（空名字）"}`);
+  return openPreview(session, file, pinRoots);
 }
 
 /** Throws a user-facing (Chinese) message when the path may not be previewed. */
