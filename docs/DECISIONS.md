@@ -5337,3 +5337,33 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 
 - `bridge/tests/mail-list-unit.mjs` 新增 7 条（关键词命中/不命中、注册成不激活、无关的话不动清单、扩展消息不算、命中后 8 个挂上且原有不丢、已挂上不重复改）：`npm run test:mail` 67 + 50 全绿；`npm --prefix bridge run typecheck`、`npm run test:permission` 全绿。
 - 真 pi（`pi -p -e bridge/ext/mail.ts`，deepseek-flash）三步：第一句「只回复 OK」→ 首条 system 的 36 个工具里没有 `mail_*`；续聊「我有几封邮件？」→ stderr `[mail] tools on: …`，会话里多一条 `toolsAdded` 正好 8 个 `mail_*`；再续聊无关的话 → 没有新 system 消息。
+
+## D281 技能面板每行加「使用」「查看」，查看按名字交给桥解析（用户要求 2026-11-16）
+
+**问题：** 对话输入框下面那颗「技能」按钮打开的面板只是一个选择器：点一下把 `/skill:<名字>` 插进输入框，想看某个技能到底写了什么，只能去技能商店的「已安装」里翻目录。对话流里的技能卡（D199）早就带一个「SKILL.md」出口，两个地方的行为不该不一样。
+
+**决定：**
+
+1. **每行右端两枚按钮：「使用」「查看」，一直是文字，不做图标。** 整行点击、数字键 `1-9`、`↑↓` 加 `Enter` 仍是老行为（插入 `/skill:<名字> `）。两枚按钮各自 `stopPropagation`，不触发整行。
+2. **行本身从 `<button>` 换成容器**（`div.skill-row` + `tabindex=0`）：按钮不能嵌按钮。Tab 到行本身时 `Enter` / 空格仍等于「使用」，键盘可达性与原来一致。`查看` 没有键盘快捷键 —— 面板的按键面已经够满了。
+3. **「查看」把名字交给桥，路径不下发。** 页面发 `skill:<名字>`，桥在 `openPreview()` 里按 `scanSkillEntries()` 的顺序解析成那份 `SKILL.md`（项目先于用户，同名取先找到的，和 pi 的遮蔽规则一致）。名字是逐一比对盘上的扫描结果，不拼路径。文件不在盘上（扩展自己带进来的技能）时：桥报「这个技能的 SKILL.md 不在盘上」，页面把按钮置灰并在行里写明原因。
+4. **`SkillInfo` 加 `viewable`**，由桥在有 pi 回答时用盘上扫描的结果标注（`skills()` 里 `onDisk.has(name)`）；磁盘兜底那一份天然全是 `true`。
+5. **技能商店「已安装」行也加「查看」**，但用它自己那份绝对路径（`entry.path + "/SKILL.md"`），不走 `skill:`。两个来源故意不同：面板只有名字，商店手里有确切目录；同名遮蔽时按名字解析会开到别人那份。
+6. **`skill:` 只在 `/api/preview` 上认**，由专门的 `openSkillPreview()` 接手（它把名字换成文件后照旧调 `openPreview()`）。`openPreview()` 与 `resolvePreviewPath()` 都不认这个前缀：前者还被 `open_preview` 工具口调用，那个口子先自己 `resolvePreviewPath()` 再做 D190 的信任检查，要是 `openPreview` 认了 `skill:`，就等于拿一个自己没检查过的文件（用户技能目录，在会话目录外）绕过了那道检查。`, `/api/dirs`、`/api/image` 也就不会多出「前缀」这层含义。
+7. **公网不递技能目录**：`publicReq` 下这一条 `skill:` 预览把 `abs` 与 `root` 一起抹掉（和 binary/pdf 同一条口径）。页面 `v.path = v.info.abs || path` 正好留着 `skill:<名字>`，刷新时还能重解析。
+8. **看不算用**：`uses` 只在 `sendPrompt()` 里数，点「查看」不动计数，也不影响面板排序。
+
+**为什么：**
+
+- 名字解析留在桥里，公网页面上就没有技能目录可读；顺带把「同名取哪份」的规则收到一处，和 pi 自己的目录顺序对齐 —— 页面自己拼路径早晚会和 pi 分叉。
+- 商店行用自带路径不只为省事：它列的是「盘上有哪几份」，遮蔽掉的那份也要能打开，按名字解析正好做不到。
+
+**代价 / 可改：**
+
+- 面板里点「查看」时页面不知道目标是什么，viewer 标题要等桥回来才变成 `SKILL.md`；公网下 `abs` 为空，`v.path` 保留 `skill:<名字>` 而不是绝对路径（本来也不该给）。
+- 磁盘兜底那份清单不区分来源，`viewable` 一律 `true`；真要看技能商店里的完整来源信息还是去商店。
+- 以后若给「查看」加键盘入口，得先定它和 `Enter`（使用）谁优先。
+
+**验证：** `bridge/tests/skill-view-ui.mjs`（真桥 + Chromium，`locale: zh-CN`，`npm run test:skill:ui`）走完 6 段：每行两枚按钮且文字是「使用」「查看」；点「使用」插 `/skill:<名字>` 且面板关；点「查看」在 viewer 里渲染出 `SKILL.md` 正文、面板关、`skill-usage.json` 里没有这次计数；`fake-pi` 多报的 `phantom-skill` 查看置灰、行内有说明、使用照常；商店「已安装」里同名技能打开的是项目里那份（正文含「项目版本-PROJECT」、不含「用户版本-USER」）；F 段打 `/api/preview`：本机拿得到 `abs`、挂上 `cf-connecting-ip` 装成公网后 `abs`/`root` 都是空的、盘上没有的名字报「不在盘上」。回归：`npm run typecheck`（含 i18n 3251 键 ×3、viewport 守卫）、`npm run build`、`npm run test:skill`（14 条）、`npm run test:skillblock`（15 条）、`bridge/tests/preview-tool.mjs`（33 条，`PREVIEW_PORT=7802 PI_PEER=0`）、`bridge/tests/open-preview-unit.mjs`（23 条）全绿。`npm test`（`bridge/tests/e2e.mjs`）没跑：它要 7867 上活着的真桥 + 真 pi，且全文不含 skills/preview，与本改动无关。
+
+**复审修正（同样这次提交）：** 第一版把 `skill:` 解析写进了 `openPreview()`，被两个轴同时抓到：`open_preview` 工具口会先 `resolvePreviewPath(\`skill:x\`)` 当成「会话目录下的相对路径」通过 D190 检查，再进 `openPreview()` 才换成目录外的真文件 —— 信任检查白做；公网预览 md 时 `abs` 也没被抹（那条规则当时只覆盖 binary/pdf）。改法即上面第 6、7 条。

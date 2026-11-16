@@ -2459,14 +2459,17 @@ export class Session extends EventEmitter {
           if (c?.source !== "skill") continue;
           const name = String(c.name ?? "").replace(/^skill:/, "");
           if (!name) continue;
-          list.push({ name, description: String(c.description ?? ""), source: "user", uses: 0, lastUsed: 0 });
+          list.push({ name, description: String(c.description ?? ""), source: "user", uses: 0, lastUsed: 0, viewable: false });
         }
       } catch {
         /* fall through to the disk scan */
       }
     }
     if (!list.length) list = scanSkills(this.state.cwd || process.cwd());
-    const ranked = rankSkills(list);
+    // #462：pi 的清单里也有盘上没有文件的（扩展自己带进来的技能）。「查看」能不能点按盘上的扫描算：
+    // 两边认的是同一个名字（frontmatter 的 `name:`，没有就用目录名），对得上就能开它那份 SKILL.md。
+    const onDisk = new Set(this.skillsHere().map((s) => s.name));
+    const ranked = rankSkills(list.map((s) => ({ ...s, viewable: onDisk.has(s.name) })));
     // Only pi's own answer is worth keeping; a fallback list is retried on the next open.
     this.skillsCache = fromPi ? { at: Date.now(), list: ranked } : null;
     return ranked;

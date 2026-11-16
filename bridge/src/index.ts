@@ -96,7 +96,7 @@ function runningSessions(sessions: { list(): { running: boolean }[] }): number {
   return sessCountCache.n;
 }
 import { piLatest } from "./piupdate.ts";
-import { isTrustedPreviewPath, kindOf, openPreview, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
+import { isSkillPreviewPath, isTrustedPreviewPath, kindOf, openPreview, openSkillPreview, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
 import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
 import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
@@ -1163,8 +1163,12 @@ async function main(): Promise<void> {
       const sessionId = String(body.sessionId ?? "");
       const where = sessions.locate(sessionId);
       if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
+      const raw = String(body.path ?? "");
+      // #462：「查看技能」递过来的是名字（`skill:<名字>`），不是路径 —— 只有这个口子认这个前缀。
+      // open_preview 工具口不认（它先自己 resolve 一遍去做 D190 的信任检查，认了就能绕过那道检查）。
+      const bySkill = isSkillPreviewPath(raw);
       try {
-        const info = openPreview(where, String(body.path ?? ""), previewPins());
+        const info = bySkill ? openSkillPreview(where, raw, previewPins()) : openPreview(where, raw, previewPins());
         // 公网不读表内容（US 46）：xlsx 与 csv/tsv 的字节都不给；.xls/.ods 走二进制分支本就只给「用默认程序打开」，open 已另拒。
         const ext = path.extname(info.abs).toLowerCase();
         if (publicReq && (info.kind === "sheet" || ext === ".csv" || ext === ".tsv")) {
@@ -1179,6 +1183,12 @@ async function main(): Promise<void> {
         // 公网也不泄本机绝对路径（US 46 延伸）：binary 分支（.xls/.ods/加密包）内容与 open 都已拒，路径一并抹掉。
         // PDF 现在有自己的 kind（浏览器内嵌看），路径同样不给。
         if (publicReq && (info.kind === "binary" || info.kind === "pdf")) info.abs = "";
+        // #462：技能目录也不往公网递 —— abs 是 `<用户的技能根>/<名字>/SKILL.md`，root 是它所在那层；
+        // 页面留着 `skill:<名字>` 就能刷新重开（`v.info.abs || path`）。
+        if (publicReq && bySkill) {
+          info.abs = "";
+          info.root = "";
+        }
         // Text files opened here become writable for this session (D50).
         rememberEditable(sessionId, info);
         return json(res, 200, info);
