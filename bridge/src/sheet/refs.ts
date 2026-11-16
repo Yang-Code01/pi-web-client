@@ -55,6 +55,35 @@ function relsOf(part: string): string {
   return part.replace(/([^/]+)$/, "_rels/$1.rels");
 }
 
+/** XML 里的链接目标可能是百分号转义的（`%20` / `%E4%B8%AD`），还原成能对表名比对的样子。 */
+function decodeTarget(raw: string): string {
+  const t = raw.trim();
+  try {
+    return decodeURIComponent(t);
+  } catch {
+    return t;
+  }
+}
+
+/**
+ * 把一条超链接归一成前端认的两种形状：外部地址原样，页内跳转一律 `#…`。
+ * openpyxl 把页内链接写成 relationship 的 `Target="#'表名'!A1"`（还带 TargetMode=External），
+ * WPS / Excel 也可能写成 `<hyperlink location="'表名'!A1"/>`，两种都要落到同一条路上。
+ */
+function linkTarget(relTarget: string | null | undefined, location: string | null | undefined): string {
+  const target = relTarget?.trim() ?? "";
+  if (target) {
+    if (target.startsWith("#")) return decodeTarget(target);
+    // 只有表名 + !A1 的形状才是页内链接；`https:` / `mailto:` / `file:` 原样留着，
+    // 不能 decode —— 外链里的 %20 / %26 是地址的一部分。
+    if (/^[^/\\:]+!/.test(target)) return `#${decodeTarget(target)}`;
+    return target;
+  }
+  if (!location) return "";
+  const loc = decodeTarget(location);
+  return loc ? `#${loc.replace(/^#+/, "")}` : "";
+}
+
 export function readSheetRefs(buf: Uint8Array, dir: Map<string, ZipEntry>, sheetPart: string): SheetRefs {
   const links = new Map<string, string>();
   const notes = new Map<string, string>();
@@ -76,7 +105,7 @@ export function readSheetRefs(buf: Uint8Array, dir: Map<string, ZipEntry>, sheet
     const rid = attrOf(`<h ${a}`, "r:id");
     const loc = attrOf(`<h ${a}`, "location");
     const rel = rid ? byId.get(rid) : null;
-    const url = rel?.target ? rel.target : loc ? `#${loc}` : "";
+    const url = linkTarget(rel?.target, loc);
     if (!url) continue;
     // 一个 ref 可能是 "A1:B3"：整块都算链接。
     const box = /^\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?$/.exec(ref.trim().toUpperCase());
