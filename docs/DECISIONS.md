@@ -5313,3 +5313,27 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **代价 / 可改：** 对照分支的菜单原来点到外面不会收，现在两处都用 document 的 pointerdown 收起（顺带修了对照那一处）；`paintCmpMenu()` 的类字段 `cmpAllOpen` / `cmpFoldKey` 移进了 picker 闭包，每个选择器各记各的折叠状态。
 
 **验证：** `bridge/tests/git-history-ui.mjs` 的 AI 段改成：无 `select.go-select`、默认当前分支、开卡不弹菜单、菜单无「自动」项、候选回填与预览联动、手输 `HEAD~1`、回车收起；`npm run typecheck`、`npm run build`、`npm run test:githist`、`npm run test:githist:ui` 全绿。
+## D280 邮箱工具默认不挂，用户提到邮件才挂上（用户报障 2026-11-16）
+
+**问题：** 用户在一个 11-13 建的老会话（`C:\api`，模型 `github-copilot/claude-opus-5.5`）里 11-16 续聊，第一句就 400：`messages.123: role 'system' must precede an 'assistant' message or end the array; the directive-only form (content: [] with output_config) is accepted at any position`。翻会话文件：报错前一条是 pi 补的 system 消息，`toolsAdded` 正好是 8 个 `mail_*` —— 11-15 合进来的邮箱扩展（`bridge/ext/mail.ts`）对每个网页会话**无条件** `registerTool`，老会话一续聊工具清单就变了。11-11 另一个会话的同款 400（`messages.273`）是中途多了 `todo` 引起的，所以根子不在邮箱。
+
+根子在 pi-ai 1.5.0 的 `anthropic-messages.js`：中途的 system 更新被 `convertMessages` 压到下一条 assistant 前或数组末尾；能中途调思考强度的模型（`supportsMidConvoEffort`）又被 `insertThinkingLevelMessages` 在**末尾**追加一条 `{role:"system", content:[], output_config:{effort}}`，于是「system(更新)」后面跟的是另一条 system，既不是 assistant 也不在末尾。先切过模型再变工具的几次没报错，原因未核实。上游 bug 本轮不修。
+
+用户的原话是这和他的设计相违：邮箱工具应该**默认不挂、按需加载**。
+
+**决定：**
+
+1. **8 个 `mail_*` 一律 `defaultActive: false` 注册。** 没提邮件的会话一个都不带，系统提示与工具清单里都没有它们。
+2. **触发：用户这一句提到邮件。** `input` 钩子看用户原话（`/skill:` 展开前），命中 `邮件|邮箱|收件箱|发件箱|草稿箱|e-?mail|\bmail|inbox|メール` 就 `setActiveTools(现有 + mail_*)`，本轮请求就带上。`source === "extension"`（后台通知等扩展发的消息）不算。宁可漏判：「发信息」「gmailer」不命中；漏了用户再说一句「看邮件」就行。
+3. **挂上不卸。** 卸了再挂又是一次中途改清单；pi 把清单记在会话里，续聊（`--session`）自己恢复，不会再补 system 消息。已经带着 `mail_*` 的老会话保持原样。
+4. 没选「模型用 `tool_search` 自己找」：要多一个常驻工具，老会话第一次加它同样是一次中途改清单；也没选「点按钮才开」：要加 UI，多一步。
+
+**代价 / 可改：**
+
+- 没提关键词时模型想不到去用邮箱（比如「把刚才的报告发给张三」）。要补就往正则里加词，别改成常驻。
+- 挂上那一刻本身仍是一次中途改工具清单：pi-ai 那个 bug 不修，用 opus-5.5 这类模型在**老会话中途**第一次提邮件还可能 400；新会话第一句就提邮件不受影响（初始清单在首条 system 消息里，不算中途改动）。只是把触发面从「每个老会话」缩到「真要用邮箱的那一下」。
+
+**验证：**
+
+- `bridge/tests/mail-list-unit.mjs` 新增 7 条（关键词命中/不命中、注册成不激活、无关的话不动清单、扩展消息不算、命中后 8 个挂上且原有不丢、已挂上不重复改）：`npm run test:mail` 67 + 50 全绿；`npm --prefix bridge run typecheck`、`npm run test:permission` 全绿。
+- 真 pi（`pi -p -e bridge/ext/mail.ts`，deepseek-flash）三步：第一句「只回复 OK」→ 首条 system 的 36 个工具里没有 `mail_*`；续聊「我有几封邮件？」→ stderr `[mail] tools on: …`，会话里多一条 `toolsAdded` 正好 8 个 `mail_*`；再续聊无关的话 → 没有新 system 消息。
