@@ -413,9 +413,36 @@ const TOOLS = [
   mailAttachmentTool,
 ];
 
+const MAIL_TOOL_NAMES = TOOLS.map((tool) => tool.name);
+
+/**
+ * 用户这一句提到邮件了吗。只看用户原话（`input` 事件拿到的是展开 `/skill:` 之前的文本）。
+ * 宁可漏判也别乱开：漏了用户再说一句「看邮件」就行，乱开会往一个跟邮件无关的会话中途塞 8 个工具。
+ */
+const MAIL_INTENT = /邮件|邮箱|收件箱|发件箱|草稿箱|e-?mail|\bmail|inbox|メール/i;
+
+export function mentionsMail(text: unknown): boolean {
+  return typeof text === "string" && MAIL_INTENT.test(text);
+}
+
+/**
+ * 邮箱工具默认不挂，用户提到邮件时才挂上（D280）。
+ *
+ * 每个工具都占系统提示与工具清单；更要紧的是工具清单在会话中途一变，pi 就要补一条 system 消息，
+ * 碰上能中途调思考强度的模型（opus-5.5）会被 Anthropic 400 拒掉（pi-ai 1.5.0 的排序问题）。
+ * 所以：没提邮件的会话一个 `mail_*` 都不带；一旦挂上就留到会话结束，不来回卸，
+ * pi 把清单记在会话里，续聊时自己恢复。
+ */
 export default function mailTools(pi: any): void {
-  for (const tool of TOOLS) pi.registerTool(tool);
-  pi.on("session_start", async () => {
-    console.error("[mail] active");
+  for (const tool of TOOLS) pi.registerTool({ ...tool, defaultActive: false });
+  pi.on("input", async (event: any) => {
+    if (event?.source === "extension" || !mentionsMail(event?.text)) return { action: "continue" };
+    const active: string[] = pi.getActiveTools();
+    const missing = MAIL_TOOL_NAMES.filter((name) => !active.includes(name));
+    if (missing.length > 0) {
+      pi.setActiveTools([...active, ...missing]);
+      console.error(`[mail] tools on: ${missing.join(",")}`);
+    }
+    return { action: "continue" };
   });
 }

@@ -173,6 +173,33 @@ check("普通附件不算内嵌", !t.isInlineAttachment({ filename: "a.pdf", con
 const compacted = mail.htmlForModel('<html><head><style type="text/css">body{color:red}</style></head><body><p>正文</p><img src="cid:x"></body></html>');
 check("工具口先去掉 head/style 再截断", !compacted.includes("color:red") && compacted.includes("<p>正文</p>") && compacted.includes("cid:x"), compacted.slice(0, 120));
 
+// ---------------------------------------------------------------- 按需挂工具（D280）
+
+check("提到邮件才挂", ext.mentionsMail("帮我看看最新的邮件") && ext.mentionsMail("查一下 Email") && ext.mentionsMail("/skill:x 收件箱里有啥") && ext.mentionsMail("メールを確認して"));
+check("没提邮件不挂", !ext.mentionsMail("修一下这个 bug") && !ext.mentionsMail("给他发信息") && !ext.mentionsMail("gmailer 是个变量名") && !ext.mentionsMail(undefined));
+{
+  const registered = [];
+  const handlers = {};
+  let active = ["read", "bash"];
+  let setCalls = 0;
+  const fakePi = {
+    registerTool: (t) => registered.push(t),
+    on: (ev, fn) => { handlers[ev] = fn; },
+    getActiveTools: () => [...active],
+    setActiveTools: (names) => { setCalls++; active = names; },
+  };
+  ext.default(fakePi);
+  check("8 个工具都注册成默认不激活", registered.length === 8 && registered.every((t) => t.defaultActive === false && t.name.startsWith("mail_")));
+  await handlers.input({ text: "修一下这个 bug", source: "rpc" });
+  check("无关的话不动工具清单", setCalls === 0 && active.length === 2);
+  await handlers.input({ text: "看看邮件", source: "extension" });
+  check("扩展自己发的消息不算", setCalls === 0);
+  const r = await handlers.input({ text: "看看邮件", source: "rpc" });
+  check("提到邮件后 8 个都挂上、原有的不丢", r?.action === "continue" && active.length === 10 && active.includes("read") && active.includes("mail_send"), JSON.stringify(active));
+  await handlers.input({ text: "再看一封邮件", source: "rpc" });
+  check("已挂上不再重复改清单", setCalls === 1);
+}
+
 // ---------------------------------------------------------------- 收尾
 
 const bad = results.filter((x) => !x.ok);
