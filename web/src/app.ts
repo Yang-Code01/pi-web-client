@@ -5014,13 +5014,39 @@ export class App {
     }
     this.skillSel = Math.min(this.skillSel, items.length - 1);
     items.forEach((skill, index) => {
-      const row = el("button", `skill-row${index === this.skillSel ? " on" : ""}`);
+      // 行是 div 而不是 button：它里面现在还要装两枚按钮，按钮不能嵌按钮（#462）。整行点击、
+      // 数字键、↑↓+Enter 的老行为都在，Tab 到行本身仍是 Enter / 空格「用」一下。
+      const row = el("div", `skill-row${index === this.skillSel ? " on" : ""}`);
+      row.tabIndex = 0;
       row.append(el("span", "sk-num", String(index + 1)));
       const body = el("span", "sk-body");
       body.append(el("span", "sk-name", skill.name));
       if (skill.description) body.append(el("span", "sk-desc", skill.description));
+      if (skill.viewable === false) body.append(el("span", "sk-note", tr("扩展提供的技能，本机没有它的 SKILL.md")));
       row.append(body);
+      const acts = el("span", "sk-acts");
+      const use = el("button", "sk-use", tr("使用")) as HTMLButtonElement;
+      use.type = "button";
+      use.onclick = (ev) => {
+        ev.stopPropagation();
+        this.pickSkill(skill);
+      };
+      const view = el("button", "sk-view", tr("查看")) as HTMLButtonElement;
+      view.type = "button";
+      view.disabled = skill.viewable === false;
+      view.onclick = (ev) => {
+        ev.stopPropagation();
+        this.openSkillView(skill);
+      };
+      acts.append(use, view);
+      row.append(acts);
       row.onclick = () => this.pickSkill(skill);
+      // 按钮上的回车会把 keydown 冒上来：只认落在行本身上的那一下，否则「查看」会窜成「使用」。
+      row.onkeydown = (ev) => {
+        if (ev.target !== row || (ev.key !== "Enter" && ev.key !== " ")) return;
+        ev.preventDefault();
+        this.pickSkill(skill);
+      };
       row.onmouseenter = () => {
         this.skillSel = index;
         this.markSkillRows();
@@ -5032,6 +5058,16 @@ export class App {
   private markSkillRows(): void {
     const rows = this.skillPop?.querySelectorAll<HTMLElement>(".skill-row") ?? [];
     rows.forEach((row, index) => row.classList.toggle("on", index === this.skillSel));
+  }
+
+  /**
+   * 面板「查看」（#462）：把名字交给桥解析成那份 SKILL.md —— 页面不知道技能目录，商店行才用它
+   * 自己那份路径（同名遮蔽时按名字会开错文档）。看不算用：`uses` 只在 `sendPrompt()` 里数。
+   */
+  private openSkillView(skill: SkillInfo): void {
+    if (skill.viewable === false) return;
+    this.closeSkillPalette();
+    void this.openPreview(`skill:${skill.name}`);
   }
 
   /** Drop `/skill:<name> ` where the caret is. A pick is not a use yet: `sendPrompt()` counts it. */
@@ -5517,6 +5553,13 @@ export class App {
         acts.append(el("span", "skill-path", entry.path));
         if (entry.description) acts.append(el("span", "settings-hint ext-desc", entry.description));
         if (entry.from) acts.append(el("span", "settings-hint", tr("来自 {p1}", { p1: entry.from })));
+        // 商店这一行用它自己那份路径：同名技能可能被遮蔽，按名字去解析会开到别的目录里那份。
+        const view = el("button", "btn ghost sk-view", tr("查看")) as HTMLButtonElement;
+        view.onclick = () => {
+          this.closeSheet();
+          void this.openPreview(`${entry.path}/SKILL.md`);
+        };
+        acts.append(view);
         if (entry.removable) {
           const key = `remove:${entry.path}`;
           const label = this.skillOpLabel(key);

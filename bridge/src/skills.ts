@@ -11,6 +11,11 @@ export interface SkillInfo {
   /** How often `/skill:<name>` was actually sent from the web client (drives the "common" list). */
   uses: number;
   lastUsed: number;
+  /**
+   * 这个技能的 SKILL.md 在盘上（#462）：pi 也会报扩展自带的技能，那些没有文件可看。页面据此
+   * 决定「查看」能不能点 —— 文件路径本身不下发，公网那一侧看不到技能目录。
+   */
+  viewable: boolean;
 }
 
 type UsageMap = Record<string, { count?: number; last?: number }>;
@@ -129,7 +134,7 @@ function scanDir(dir: string, scope: SkillRoot["scope"], out: Map<string, SkillE
     } catch {
       /* vanished between readdir and lstat: treat as a plain directory */
     }
-    out.set(name, { name, description: fm.description ?? "", source: scope === "user" ? "user" : "project", uses: 0, lastUsed: 0, path: abs, root: dir, link, removable: scope === "user" });
+    out.set(name, { name, description: fm.description ?? "", source: scope === "user" ? "user" : "project", uses: 0, lastUsed: 0, viewable: true, path: abs, root: dir, link, removable: scope === "user" });
   }
 }
 

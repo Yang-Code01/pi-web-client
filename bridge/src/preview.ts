@@ -4,6 +4,7 @@ import type http from "node:http";
 import path from "node:path";
 import { registerFileGrant } from "./sheet/index.ts";
 import { gbkEncode, utf8Bytes } from "./sheet/gbk.ts";
+import { scanSkillEntries } from "./skills.ts";
 
 /**
  * File preview for session artifacts (md / html / images / pdf / text).
@@ -248,13 +249,28 @@ export function isTrustedPreviewPath(
   return tail !== null && mentionForm(tail).includes(mentionForm(abs));
 }
 
+/** 技能面板「查看」交给桥的是名字（`skill:<名字>`），不是路径 —— 公网那一侧因此拿不到技能目录。
+ * 按 pi 的目录顺序解析（项目先于用户，同名取先找到的那份），和 pi 自己认的是同一份。 */
+export function skillViewFile(session: { cwd: string }, name: string): string | null {
+  const wanted = name.trim();
+  if (!wanted) return null;
+  const hit = scanSkillEntries(session.cwd || null).find((s) => s.name === wanted);
+  return hit ? path.join(hit.path, "SKILL.md") : null;
+}
+
 /** Throws a user-facing (Chinese) message when the path may not be previewed. */
 export function openPreview(
   session: { cwd: string; file: string | null },
   rawPath: string,
   pinRoots: string[] = [],
 ): PreviewInfo {
-  const abs = resolvePreviewPath(session, rawPath);
+  // #462：`skill:<名字>` 只在这里认 —— resolvePreviewPath 还被 /api/dirs、/api/image 和
+  // open_preview 的信任检查共用，前缀属于面板专用语法，不该在那里获得含义。名字逐一比对盘上
+  // 的扫描结果，从不拼路径，也没有越界一说。
+  const asSkill = /^skill:(.*)$/.exec(rawPath.trim());
+  const skillFile = asSkill ? skillViewFile(session, asSkill[1]) : null;
+  if (asSkill && !skillFile) throw new Error(`这个技能的 SKILL.md 不在盘上：${asSkill[1].trim() || "（空名字）"}`);
+  const abs = skillFile ?? resolvePreviewPath(session, rawPath);
   // Reads follow /api/dirs, which already lists any drive: a second, narrower rule here only made
   // the same path openable in one place and not the other (D50).
   const inCwd = isUnder(abs, session.cwd);

@@ -382,6 +382,8 @@ export interface SkillInfo {
   source: "user" | "project" | "other";
   uses: number;
   lastUsed: number;
+  /** 盘上有它的 SKILL.md，「查看」才能点（#462）。扩展自带的技能只有名字，没有文件。 */
+  viewable: boolean;
 }
 
 /** 技能商店 (D126): one row of skills.sh's search results. */
