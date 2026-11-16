@@ -4676,7 +4676,7 @@ D
 - **列宽/行高拖动只在编辑态出现，拖的是「未缩放的像素」。** 列头与行号右侧各挂一个 6px 握把（`.sd-grip-v` / `.sd-grip-h`），`pointerdown` 在 `root` 上委托，`pointermove/up` 挂在 `window` 上——拖动过程中表头会重画，握把节点会被换掉，监听挂在握把上只能收到第一下（踩过）。拖动时先改 `colOver`/`rowOver` 两张本地覆盖表就地重排，**松手才写回**：`colWidth` 的 `w` 是字符数（`(px-5)/7`），`rowHeight` 的 `h` 是磅（`px*0.75`），跟 Excel 的换算一致。保存失败也不回滚，重开时以文件为准。
 - **名称框是可编辑的 `<input>`，认 `A1` 与 `A1:C5`。** 回车后 `jumpTo()` 解析成行列号、设 anchor/focus、`afterSelect()` + `reveal()` 滚到可见；非法输入直接不响应（不报错、不跳）。
 - **公式栏在编辑态可改，回车写入焦点格。** 只读态仍只显示；`readOnly` 随 `setEditMode` 切换；正在输入时不被选区变化覆盖（`document.activeElement` 判断），Esc 还原。
-- **超链接与批注只读展示，不写回。** 两者都不在 `<sheetData>` 里：超链接是 `<hyperlinks>` + sheet rels，批注是单独的 `xl/commentsN.xml`（靠同一份 rels 的 `Type` 结尾 `/comments` 找）。新 `bridge/src/sheet/refs.ts` 一次读完、按 `"r:c"` 贴到窗口内的格子上（`lnk` / `note`），`readWindow` 里缓存整表结果。前端：链接格画成蓝色下划线，**Ctrl/Cmd + 点击**才开（拖选不会误触），页内 `#表!A1` 只挂在 `title` 上不跳（跨表要重载）；批注格右上角画红色小三角，正文进 `title`。
+- **超链接与批注只读展示，不写回。** 两者都不在 `<sheetData>` 里：超链接是 `<hyperlinks>` + sheet rels，批注是单独的 `xl/commentsN.xml`（靠同一份 rels 的 `Type` 结尾 `/comments` 找）。新 `bridge/src/sheet/refs.ts` 一次读完、按 `"r:c"` 贴到窗口内的格子上（`lnk` / `note`），`readWindow` 里缓存整表结果。前端：链接格画成蓝色下划线，**Ctrl/Cmd + 点击**才开（拖选不会误触），页内 `#表!A1` 只挂在 `title` 上不跳（跨表要重载；D283 已把页内跳转补上，点击语义也改成只读态单击就跳）；批注格右上角画红色小三角，正文进 `title`。
 - **这几样都不进撤销栈。** 尺寸拖动直接落盘，超链接与批注不可改——只有格子内容和样式走 `edits` / `styleOver` 那套撤销。
 
 **代价 / 可改：** 拖出来的尺寸没有「双击自适应」与「按内容最佳宽度」；批注只读，批注框/作者/时间不展示；超链接只开 `http(s)/mailto` 这类外链，页内跳转与 `file://` 不处理；名称框不支持命名区域与多选区（`A1,B2`）；公式栏只写不显示函数提示。这些都不影响「能改一张表」的主路径。
@@ -5402,3 +5402,32 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - `bridge/tests/mail-oauth-unit.mjs`（12 条，已挂进 `npm run test:mail`）：预设只给 OAuth、oauth 必带 GUID 客户端 ID、租户默认 `common`、换应用/换租户作废旧令牌、`publicAccount` 不含令牌、设备码 pending→done（真等 2×2 秒，断言 upn 从 id_token 解出、令牌落盘）、取消/过期、`accessTokenFor` 三条路径（无令牌、撤销、能刷新）、令牌端点错误翻译（四类分开验）、并发刷新只发一次请求、OAuth 账号被服务器拒令牌时翻成 `oauth-needed` 而不是「重新生成授权码」。
 - `bridge/tests/mail-unit.mjs` 加 HTTP 面：授权码账号调 `/api/mail/oauth/start` → 400、未知账号 → 404、非 POST → 405、未知动作 → 404、存 oauth 账号 200 且 `hasToken:false`/`hasSecret:false`、新建 oauth 账号不给客户端 ID → 400、改存时沿用原客户端 ID。
 - `npm run test:mail` 全绿（bridge 单测 50 + oauth 12 + 列表 50 + web 17）。
+
+## D283 表格颜色按 Excel / WPS 的主题色索引排，sheet 标签色与页内超链接真能跳（用户报障 2026-11-16）
+
+**问题：** 用户拿 openpyxl 生成的练习簿预览时看到两处不对：「sheet 里原来的 Excel 里面有颜色，现在没有」「单元格里面有 link 点击能跳到对应的 sheet，现在也不起作用」。靶子是 `~/Excel全能教学练习簿.xlsx` 与 `~/excel-demo/Excel功能演示大全.xlsx`。
+
+**原因（排查出四个问题：1、3 解释「颜色没了」，4 解释「链接不跳」，2 是顺手补的）：**
+
+1. **主题色索引按 XML 顺序读了。** `styles.ts` 的 `THEME_SLOTS` 抄的是 `clrScheme` 的 XML 顺序（`dk1, lt1, dk2, lt2, accent1…`），但 Excel / WPS 的 `theme="N"` 用的是「背景 1、文字 1、背景 2、文字 2、强调色…」顺序，前四档两两对调。openpyxl 的默认字体就是 `<color theme="1"/>`：我们解析成 `lt1` 白色，`Excel功能演示大全.xlsx` 里有 352 个格子变成白字，看起来像「颜色没了」；主题底纹的 0/2/3 也分别错成黑 / 深蓝 / 浅灰。
+2. **边框的另一种写法没认全。** Excel 与本机 WPS 都写属性 `<left style="thin">`，但有些导出器 / 旧版样张把线型写成子元素 `<left><color …/><style val="thin"/></left>`；`readBorders()` 只读属性，遇到这种整张表一条边框都没有。
+3. **`<sheetPr><tabColor>` 从来没读。** 两个练习簿每张表都设了标签色（`rgb="00…"` / `FF…`），前端 `renderTabs()` 也只会画同样的灰按钮，所以底部一排标签全无颜色。
+4. **页内链接被当成「不能开的链接」丢掉了。** 桥端本来已经解析 `<hyperlinks>`，但 openpyxl 把页内链接写成 relationship 的 `Target="#'01 基础格式'!A1"`（还带 `TargetMode="External"`），WPS 写成 `<hyperlink location="'第二页'!A1"/>`；前端只认 `#` 以外的外链、而且必须按 Ctrl/Cmd 才开，于是「单击跳到对应 sheet」这条主路径整条失效。
+
+**决定：**
+
+- **主题索引改成 Excel / WPS 的顺序**：`lt1, dk1, lt2, dk2, accent1…`。这一条是拿 WPS 实测出来的：openpyxl 造一张 `theme 0…11` 的样张，用 WPS 打开逐格看颜色——0 是白（背景 1）、1 是黑（文字 1）、2 是浅灰（背景 2）、3 是深蓝（文字 2）、4 起是强调色 1…6。`readTheme()` 按这个顺序装数组，`colorOf()` 直接按 `theme="N"` 取。
+- **调色板以文件为准**：`<colors><indexedColors>` 覆盖过就用文件里的，没有再退回 ECMA 的 64 色；这样 `Color(indexed=…)` 不会再按别的调色板解释。
+- **边框两种写法都认**：`style` 属性优先，没有就看子元素 `<style val="…"/>`；`none` 当没有边。
+- **sheet 标签色进 `SheetInfo`**：从表前缀的 `<sheetPr><tabColor>` 读（支持 `rgb` 8 位 ARGB、`theme` + `tint`、`indexed`），前端在标签底部画一条 2px 色带。只画色带、不把整颗标签染色：标签文字的可读性不受深色影响。
+- **页内链接归一成 `#…`**：桥端 `linkTarget()` 把 `location` 统一加一个 `#`，relationship 的 `Target` 本身以 `#` 开头就原样保留；外链不 decode（`%20` 是地址的一部分），页内表名才 decode。前端新增 `web/src/sheet/links.ts` 解析 `#'表名'!A1:B2`（去引号、`''` 反转义、`$`、反向区域、只给表名落 A1、忽略大小写匹配），`SheetDialog.followLink()` 负责切表 + `jumpTo()` 选区。
+- **点击语义照 Excel / WPS**：只读态**单击**链接格就跳；编辑态单击是选中该格去改，**Ctrl/Cmd + 单击**才跳。外链交给 `window.open`，页内链接切表后选中目标区域；找不到表或目标位置不合法时在底栏闪一条说明，不静默失败。
+
+**代价 / 可改：**
+
+- 页内链接只支持「工作表 + A1 式区域」；命名区域（`#税率`）、外部工作簿（`#'[book.xlsx]Sheet1'!A1`）、`file://` 目标仍不跳，底栏会明说打不开。
+- 标签色画成底部色带，不是 Excel 那种整块染色的标签；深色标签也不做自动反白。
+- 主题色只认 `clrScheme` 的 12 个槽位和 tint；渐变、图片填充、条件格式里的主题色仍按近似处理。
+- 编辑态要 Ctrl/Cmd 才跳是刻意的：不然想选一格改字就会误开链接；这个键盘约定和 Excel 一致。
+
+**验证：** 新增 `bridge/tests/sheet-theme-unit.mjs`（主题 0–11 顺序、openpyxl 默认字体黑色、theme=2 浅灰、WPS 子元素边框、自定义 indexed 调色板、标签色 rgb/theme）与 `bridge/tests/sheet-refs-unit.mjs`（location / relationship / 百分号转义 / 不叠 `##` / 外链不 decode），`web/tests/sheet-links-unit.mjs`（引号表名、区域与反向区域、`''`、命名区域拒绝、大小写匹配），一并挂进 `npm run test:sheet`。两处 typecheck、`npm run build` 全绿。真 Chromium + 隔离桥打开用户两个文件：标签色 `#1F3864` / `#8EA9DB` / `#2F5597` 都对；`00 目录` 的正文从白字变黑字；单击 B6 跳到 `01 基础格式` 并选中 A1；演示文件 `05 图片与超链接` 的 B19 跳到 `09 排序与汇总`。WPS 侧另存一份带边框 / 标签色 / 页内链接的样张，读回 `#2E75B6` 标签色、`1px solid #D9D9D9` 边框、`#'第二页'!A1` 链接。

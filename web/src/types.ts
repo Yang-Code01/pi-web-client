@@ -793,6 +793,8 @@ export interface SheetInfo {
   tier?: "full" | "light" | "none";
   /** 藏起来的表：不出现在底部，只在状态条上提示个数。 */
   hidden?: boolean;
+  /** #438：sheet 标签色（文件里的 `<tabColor>`），`#RRGGBB`；没写就不带。 */
+  tabColor?: string;
   merges?: SheetMerge[];
   /** 每列宽度（px），长度等于 cols。 */
   colWidths?: number[];

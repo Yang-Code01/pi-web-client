@@ -10,6 +10,7 @@ import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../f
 import { SheetGrid, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP, type SheetGridState } from "./grid.ts";
 import { Ribbon } from "./ribbon.ts";
 import { SheetPage } from "./page.ts";
+import { isExternalLink, matchSheetName, parseSheetLink } from "./links.ts";
 
 const KEY = "pi.sheetGeom";
 const SPLIT_KEY = "pi.sheetSplit";
@@ -134,6 +135,8 @@ export class SheetDialog {
   private dirty = 0;
   private editBtn: HTMLButtonElement | null = null;
   private gridSave: HTMLButtonElement | null = null;
+  /** #438：页内链接跳失败时底栏那条提示的定时器。 */
+  private linkTimer = 0;
 
   constructor(opts: SheetDialogOpts) {
     this.opts = opts;
@@ -618,6 +621,8 @@ export class SheetDialog {
       btn.type = "button";
       btn.setAttribute("role", "tab");
       btn.setAttribute("aria-selected", info.name === active ? "true" : "false");
+      // #438：文件里的标签色画成底部一条色带（Excel / WPS 的标签色就是这个位置）。
+      if (info.tabColor) btn.style.setProperty("--sd-tab-color", info.tabColor);
       btn.onclick = () => void this.pickSheet(info.name);
       this.wsTabs.append(btn);
     }
@@ -672,6 +677,47 @@ export class SheetDialog {
       return;
     }
     await this.grid.setSheet(name);
+  }
+
+  /** #438：点超链接。外链交给浏览器，页内 `#表!A1` 切表并跳过去。 */
+  private async followLink(lnk: string): Promise<void> {
+    if (isExternalLink(lnk)) {
+      window.open(lnk, "_blank", "noopener");
+      return;
+    }
+    const target = parseSheetLink(lnk);
+    if (!target) {
+      this.flashLink(tr("这个超链接指向的位置打不开"));
+      return;
+    }
+    const from = this.grid?.activeSheet ?? this.meta?.name ?? "";
+    const dest = target.sheet ? matchSheetName(this.sheets, target.sheet) : from;
+    if (!dest) {
+      this.flashLink(tr("找不到工作表「{p1}」", { p1: target.sheet ?? "" }));
+      return;
+    }
+    if (dest !== from) {
+      await this.pickSheet(dest);
+      // 有未保存改动会被 pickSheet 挡住，或者目标表太大只给清单：这时别跳一半。
+      if (!this.grid || this.grid.activeSheet !== dest) return;
+    }
+    this.grid?.jumpTo(target.ref);
+    this.grid?.focusView();
+  }
+
+  /** 底栏闪一条链接提示；几秒后回到「这张表是什么样」的原内容。 */
+  private flashLink(text: string): void {
+    this.status.textContent = text;
+    this.status.hidden = false;
+    window.clearTimeout(this.linkTimer);
+    this.linkTimer = window.setTimeout(() => {
+      const name = this.grid?.activeSheet;
+      if (name) this.paintStatus(this.sheets, name);
+      else {
+        this.status.textContent = "";
+        this.status.hidden = true;
+      }
+    }, 2400);
   }
 
   /** #110：这一档只给清单和尺寸，不建网格、不取窗口。 */
@@ -733,6 +779,7 @@ export class SheetDialog {
       onResize: (kind, index, size) => void this.resize(kind, index, size),
       onFilter: (c, value) => void this.filterBy(c, value),
       onStats: (st) => this.showStats(st),
+      onLink: (lnk) => void this.followLink(lnk),
     });
     this.grid = grid;
     this.pane.replaceChildren(grid.root);

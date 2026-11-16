@@ -133,7 +133,7 @@ MAKEARRAY / LAMBDA / LET）、外部工作簿引用、迭代计算、宏表函�
 | 开始 · 格式（条件格式 / 套用表格 / 单元格样式） | 🔶 只清条件格式（清格式按钮） | 新建规则/样式表要整块新引擎 |
 | 开始 · 数据处理（自动求和 ▾ / 筛选 / 排序 ▾ / 填充） | ✅ 求和 ▾ / 筛选 / 排序 ▾；✅ 填充柄（拖拽） | 序列对话框不做，拖拽够日常 |
 | 开始 · 单元格（行高列宽、插删行列、隐藏、工作表） | 🔶 插删行列 + 拖列宽行高；❌ 隐藏行列 / 工作表增删 | 工作表增删要改 workbook.xml 与 rels |
-| 插入 · 表格/插图/图表/迷你图/符号/超链接 | ❌ 全部禁用（悬停说明原因） | 预览画的是文件里**已有**的图和图表；新插要会写 drawing XML |
+| 插入 · 表格/插图/图表/迷你图/符号/超链接 | 🔶 已有链接能跳（页内 / 外链），新建仍禁用 | 预览画的是文件里**已有**的图和图表；新插要会写 drawing XML。页内跳转见第 9 节（D283） |
 | 页面 · 打印设置（页边距/方向/纸张/打印区域/页眉页脚/预览） | 🔶 只做了纸张视图与缩放 | 打印设置属于「输出」，预览里不做 |
 | 公式 · 快捷函数与函数库 | ✅ 函数库七个类目 + 自动求和 ▾ | 点一个函数把 `=SUM(` 填进公式栏 |
 | 公式 · 定义名称 / 公式审核 / 计算 | ❌ | 名称管理器要读写 `definedNames` |
@@ -214,3 +214,38 @@ nm /Applications/wpsoffice.app/Contents/Frameworks/office6/etmain.framework/Vers
   仍用 `.sd-view` 的矩形判界。
 - WPS 的合并区命中天然是 pane 里的一格；我们按坐标先查 `spans`，把合并区归到左上角，
   这样选区框和名称框都是整块（`A1`），不会出现点到 `C1` 就选 `A1:C1` 的半截选区。
+
+## 9. 颜色与页内跳转：这一轮从用户的两个练习簿反推（D283）
+
+用户报「sheet 里原来的 Excel 里面有颜色，现在没有」「单元格里面有 link 点击能跳到对应的 sheet，现在也不起作用」。靶子是本机两个 openpyxl 生成的文件：`~/Excel全能教学练习簿.xlsx` 和 `~/excel-demo/Excel功能演示大全.xlsx`。这一轮没有只读文档，而是拿 WPS 当对照物逐项对：
+
+```bash
+# ① 再跑一遍 REA，确认本机 WPS 的版本 / 条目没变
+rea inspect-desktop-application /Applications/wpsoffice.app --detail summary \
+  --evidence_output .scratch/wps/app-inventory.json
+
+# ② 主题色：openpyxl 造一张 theme 0…11 的样张，用 WPS 打开截图逐格对色
+#   0 = 白（背景 1）、1 = 黑（文字 1）、2 = 浅灰（背景 2）、3 = 深蓝（文字 2）、4…9 = 强调色、10/11 = 超链接
+# ③ 边框 / 标签色 / 页内链接：同一个样张在 WPS 里 Cmd+S 存回 xlsx，解包看 WPS 自己怎么写
+unzip -p /tmp/wps-border-test.xlsx xl/styles.xml | head -c 3000
+unzip -p /tmp/wps-border-test.xlsx xl/worksheets/sheet1.xml | head -c 1200
+```
+
+反推出来的四件事：
+
+| 现象 | 文件里的写法 | 我们以前怎么读 | 这一轮改成 |
+| --- | --- | --- | --- |
+| 正文 / 底纹颜色错 | `<color theme="1"/>`（openpyxl 的默认字体） | 按 `clrScheme` 的 XML 顺序取，`theme=1` → `lt1` 白色 | 按 Excel 索引顺序 `lt1, dk1, lt2, dk2…` 取，`theme=1` → `dk1` 黑色 |
+| 有些导出器存的表一条边框都没有 | `<left><color …/><style val="thin"/></left>` | 只读 `<left style="thin">` 属性 | 属性没有就读子元素 `<style val="thin"/>` |
+| 底部工作表标签全灰 | `<sheetPr><tabColor rgb="001F3864"/></sheetPr>` | 完全不读 | 进 `SheetInfo.tabColor`，前端画底部色带 |
+| 点链接不跳 sheet | `<hyperlink location="'第二页'!A1"/>`；openpyxl 写成 rel 的 `Target="#'01 基础格式'!A1"` | 只认 `#` 以外的外链，而且必须 Ctrl 点击 | 统一归一成 `#表!A1`；只读态单击跳、编辑态 Ctrl/Cmd 跳，跳完选中目标区域 |
+
+WPS 自己存出来的那一段可以直接对照：
+
+```xml
+<sheetPr><tabColor rgb="FF2E75B6"/></sheetPr>
+<hyperlinks><hyperlink ref="B2" location="'第二页'!A1" display="跳到第二页"/></hyperlinks>
+<borders><border><left style="thin"><color rgb="FFD9D9D9"/></left>…</border></borders>
+```
+
+`etxmlrw` 里也能读到 `TabColorIndex`，`excelrw` 里有 `Hyperlink` / `Followed Hyperlink` 样式名——和「标签色 + 页内跳转」是同一套模型。细节与取舍见 D283；回归用例在 `bridge/tests/sheet-theme-unit.mjs`、`bridge/tests/sheet-refs-unit.mjs`、`web/tests/sheet-links-unit.mjs`。

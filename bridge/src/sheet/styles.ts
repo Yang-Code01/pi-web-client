@@ -59,6 +59,8 @@ export interface StyleTable {
   index: number[];
   /** 去重后的样式表，`styles[0]` 是默认样式（空对象）。 */
   styles: WireStyle[];
+  /** 文件里 `<colors><indexedColors>` 覆盖过的调色板；没有就是 ECMA 默认值。 */
+  palette: string[];
 }
 
 /** 老式索引色（ECMA-376 §18.8.27）。只到 63；64 是「自动」。 */
@@ -73,8 +75,15 @@ const INDEXED = [
   "003366", "339966", "003300", "333300", "993300", "993366", "333399", "333333",
 ];
 
-/** 主题色槽位顺序（Excel 的 `theme="N"` 指这个数组）。 */
-const THEME_SLOTS = ["dk1", "lt1", "dk2", "lt2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"];
+/**
+ * 主题色槽位顺序（Excel 的 `theme="N"` 指这个数组）。
+ *
+ * 注意不是 `clrScheme` 的 XML 顺序：Excel / WPS 的索引是「背景 1（lt1）、文字 1（dk1）、
+ * 背景 2（lt2）、文字 2（dk2）…」，前四档两两对调。openpyxl 的默认字体就是
+ * `<color theme="1"/>`，按 XML 顺序会解析成白色，整张表的正文会消失（2026-11-16 用 WPS
+ * 打开 `theme 0…11` 的样张逐格对色确认）。
+ */
+const THEME_SLOTS = ["lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"];
 
 /** `#RRGGBB` → 按 Excel 的 tint 算法调亮/调暗（在 HLS 的亮度上做）。 */
 export function tint(rgb: string, t: number): string {
@@ -135,14 +144,14 @@ export function readTheme(xml: string | null): string[] {
 const H_ALIGN: Record<string, "l" | "c" | "r" | "j"> = { left: "l", center: "c", right: "r", justify: "j" };
 
 /** 一个 `<color>` 标签 → `#RRGGBB`；认不出（auto / 越界 theme）返回 null，交给默认色。 */
-function colorOf(tag: string | undefined, theme: string[]): string | null {
+function colorOf(tag: string | undefined, theme: string[], palette: string[] = INDEXED): string | null {
   if (!tag) return null;
   const rgb = attr(tag, "rgb");
   if (rgb && /^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(rgb)) return `#${(rgb.length === 8 ? rgb.slice(2) : rgb).toUpperCase()}`;
   const idx = attr(tag, "indexed");
   if (idx !== null && /^\d+$/.test(idx)) {
     // 64 及以后是「自动 / 系统色」，别自作主张。
-    return idx === "64" || idx === "65" ? null : `#${INDEXED[Number(idx)] ?? "000000"}`;
+    return idx === "64" || idx === "65" ? null : `#${palette[Number(idx)] ?? "000000"}`;
   }
   const th = attr(tag, "theme");
   if (th !== null && /^\d+$/.test(th)) {
@@ -152,6 +161,23 @@ function colorOf(tag: string | undefined, theme: string[]): string | null {
     return tint(base, Number.isFinite(t) ? Math.max(-1, Math.min(1, t)) : 0);
   }
   return null;
+}
+
+/** 表格之外也要认颜色（sheet 标签色）：和 `<color>` 走同一套 theme / indexed / rgb 规则。 */
+export function resolveColor(tag: string | undefined, theme: string[], palette: string[] = INDEXED): string | null {
+  return colorOf(tag, theme, palette);
+}
+
+/** `<colors><indexedColors>` 覆盖调色板（openpyxl / WPS 都会写，和 ECMA 默认值不一定相同）。 */
+function readPalette(xml: string): string[] | null {
+  const block = /<colors\b[^>]*>([\s\S]*?)<\/colors>/.exec(xml)?.[1] ?? "";
+  if (!block) return null;
+  const list: string[] = [];
+  for (const m of block.matchAll(/<rgbColor\b[^>]*\brgb\s*=\s*"([0-9A-Fa-f]{6,8})"/g)) {
+    const hex = m[1] ?? "";
+    list.push((hex.length === 8 ? hex.slice(2) : hex).toUpperCase());
+  }
+  return list.length ? list : null;
 }
 
 /** 边框线型 → CSS 的 `宽 线型`；认不出就按细实线。 */
@@ -190,7 +216,7 @@ interface RawFont {
   color: string | null;
 }
 
-function readFonts(xml: string, theme: string[]): RawFont[] {
+function readFonts(xml: string, theme: string[], palette: string[]): RawFont[] {
   const block = /<fonts\b[^>]*>([\s\S]*?)<\/fonts>/.exec(xml)?.[1] ?? "";
   const out: RawFont[] = [];
   for (const m of block.matchAll(/<font\b[^>]*?(?:\/>|>([\s\S]*?)<\/font>)/g)) {
@@ -210,13 +236,13 @@ function readFonts(xml: string, theme: string[]): RawFont[] {
       i: flag("i"),
       u: flag("u"),
       st: flag("strike"),
-      color: colorOf(/<color\b[^>]*\/?>/.exec(body)?.[0], theme),
+      color: colorOf(/<color\b[^>]*\/?>/.exec(body)?.[0], theme, palette),
     });
   }
   return out;
 }
 
-function readFills(xml: string, theme: string[]): (string | null)[] {
+function readFills(xml: string, theme: string[], palette: string[]): (string | null)[] {
   const block = /<fills\b[^>]*>([\s\S]*?)<\/fills>/.exec(xml)?.[1] ?? "";
   const out: (string | null)[] = [];
   for (const m of block.matchAll(/<fill\b[^>]*?(?:\/>|>([\s\S]*?)<\/fill>)/g)) {
@@ -228,8 +254,8 @@ function readFills(xml: string, theme: string[]): (string | null)[] {
       continue;
     }
     const inner = pattern[2] ?? "";
-    const fg = colorOf(/<fgColor\b[^>]*\/?>/.exec(inner)?.[0], theme);
-    const bg = colorOf(/<bgColor\b[^>]*\/?>/.exec(inner)?.[0], theme);
+    const fg = colorOf(/<fgColor\b[^>]*\/?>/.exec(inner)?.[0], theme, palette);
+    const bg = colorOf(/<bgColor\b[^>]*\/?>/.exec(inner)?.[0], theme, palette);
     // 纯色填充：Excel 把颜色写在 fgColor 上；花纹填充只在超过 50% 密度的花纹上才算「看得出底色」。
     if (kind === "solid") out.push(fg ?? bg);
     else out.push(fg && /^(dark|medium)/i.test(kind) ? fg : bg ?? fg);
@@ -239,7 +265,7 @@ function readFills(xml: string, theme: string[]): (string | null)[] {
 
 type Side = "left" | "right" | "top" | "bottom";
 
-function readBorders(xml: string, theme: string[]): WireBorders[] {
+function readBorders(xml: string, theme: string[], palette: string[]): WireBorders[] {
   const block = /<borders\b[^>]*>([\s\S]*?)<\/borders>/.exec(xml)?.[1] ?? "";
   const out: WireBorders[] = [];
   for (const m of block.matchAll(/<border\b[^>]*?(?:\/>|>([\s\S]*?)<\/border>)/g)) {
@@ -247,9 +273,12 @@ function readBorders(xml: string, theme: string[]): WireBorders[] {
     const bd: WireBorders = {};
     for (const side of ["top", "right", "bottom", "left"] as Side[]) {
       const el = new RegExp(`<${side}\\b([^>]*?)(?:/>|>([\\s\\S]*?)</${side}>)`).exec(body);
-      const style = attr(el?.[1] ?? "", "style");
-      if (!el || !style) continue;
-      bd[side[0] as "t" | "r" | "b" | "l"] = edgeCss(style, colorOf(/<color\b[^>]*\/?>/.exec(el[2] ?? "")?.[0], theme));
+      if (!el) continue;
+      // Excel / 本机 WPS 把线型写成属性 `<left style="thin">`；有些导出器（及旧版样张）
+      // 写成子元素 `<left><style val="thin"/></left>`（顺序还可能是 color 在前）。两种都得认。
+      const style = attr(el[1] ?? "", "style") ?? attr(/<style\b[^>]*\/?>/.exec(el[2] ?? "")?.[0] ?? "", "val");
+      if (!style || style === "none") continue;
+      bd[side[0] as "t" | "r" | "b" | "l"] = edgeCss(style, colorOf(/<color\b[^>]*\/?>/.exec(el[2] ?? "")?.[0], theme, palette));
     }
     out.push(bd);
   }
@@ -262,9 +291,10 @@ function readBorders(xml: string, theme: string[]): WireBorders[] {
  */
 export function readStyles(stylesXml: string | null, themeXml: string | null): StyleTable {
   const theme = readTheme(themeXml);
-  const defaults: StyleTable = { codes: [null], index: [0], styles: [{}] };
+  const defaults: StyleTable = { codes: [null], index: [0], styles: [{}], palette: INDEXED };
   if (!stylesXml) return defaults;
   const xml = stylesXml;
+  const palette = readPalette(xml) ?? INDEXED;
 
   const custom = new Map<number, string>();
   for (const m of xml.matchAll(/<numFmt\b[^>]*>/g)) {
@@ -272,9 +302,9 @@ export function readStyles(stylesXml: string | null, themeXml: string | null): S
     const code = attr(m[0], "formatCode");
     if (Number.isFinite(id) && code) custom.set(id, code);
   }
-  const fonts = readFonts(xml, theme);
-  const fills = readFills(xml, theme);
-  const borders = readBorders(xml, theme);
+  const fonts = readFonts(xml, theme, palette);
+  const fills = readFills(xml, theme, palette);
+  const borders = readBorders(xml, theme, palette);
 
   const block = /<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/.exec(xml)?.[1] ?? "";
   const codes: (string | null)[] = [];
@@ -332,5 +362,5 @@ export function readStyles(stylesXml: string | null, themeXml: string | null): S
     index.push(at);
   }
   if (!styles.length) return defaults;
-  return { codes, index, styles };
+  return { codes, index, styles, palette };
 }

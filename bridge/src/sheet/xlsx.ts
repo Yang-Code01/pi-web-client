@@ -7,7 +7,7 @@
 import { entryBytes, entryStream, zipIndex, type ZipEntry } from "./zip.ts";
 import { formatValue } from "./numfmt.ts";
 import { buildCf, readDxfs, type CellFx, type SheetCf } from "./cf.ts";
-import { readStyles, type StyleTable, type WireStyle } from "./styles.ts";
+import { readStyles, readTheme, resolveColor, type StyleTable, type WireStyle } from "./styles.ts";
 import { readSheetRefs, type SheetRefs } from "./refs.ts";
 import { readRichRuns, type WireRun } from "./rich.ts";
 import { readValidations, valuesInXml, type WireValid } from "./valid.ts";
@@ -81,6 +81,8 @@ export interface SheetInfo {
   tier?: SheetTier;
   /** 文件里藏起来的表：不列在底部，只在状态条上提示。 */
   hidden?: boolean;
+  /** sheet 标签色（`<sheetPr><tabColor>`）：`#RRGGBB`；没写就不带。 */
+  tabColor?: string;
   /** 合并区，左上角优先。 */
   merges?: MergedRange[];
   /** 每列宽度（px），长度等于 cols；文件没写就是默认宽度。 */
@@ -368,7 +370,10 @@ export function readBook(buf: Uint8Array): Book {
     }
   };
   // 样式是工作簿级的：解析一次，所有表共用（meta 只发一张去重后的小表）。
-  book.styles = readStyles(partText(buf, dir, "xl/styles.xml"), partText(buf, dir, "xl/theme/theme1.xml"));
+  const stylesXml = partText(buf, dir, "xl/styles.xml");
+  const themeXml = partText(buf, dir, "xl/theme/theme1.xml");
+  book.styles = readStyles(stylesXml, themeXml);
+  const theme = readTheme(themeXml);
   for (const m of workbook.matchAll(/<sheet\b[^>]*>/g)) {
     const name = attr(m[0], "name");
     const rid = attr(m[0], "r:id") ?? attr(m[0], "id");
@@ -378,8 +383,12 @@ export function readBook(buf: Uint8Array): Book {
     const entry = dir.get(part);
     if (!entry) continue;
     // 尺寸从表前缀里的 <dimension> 拿；没有才解整张表退而求其次。
-    let size = dimension(sheetPrefix(buf, entry));
+    const prefix = sheetPrefix(buf, entry);
+    let size = dimension(prefix);
     if (!size.rows && !size.cols) size = extentOf(partText(buf, dir, part) ?? "");
+    // 标签色也在表前缀的 `<sheetPr>` 里，蹭同一段前缀读，不必解整张表。
+    const tabTag = /<tabColor\b[^>]*\/?>/.exec(prefix)?.[0];
+    const tabColor = tabTag ? resolveColor(tabTag, theme, book.styles.palette) ?? undefined : undefined;
     const cells = Math.max(0, size.rows) * Math.max(0, size.cols);
     const tier = tierOf(cells);
     tiers.set(name, tier);
@@ -421,6 +430,7 @@ export function readBook(buf: Uint8Array): Book {
       cells,
       tier,
       ...(state === "hidden" || state === "veryHidden" ? { hidden: true } : {}),
+      ...(tabColor ? { tabColor } : {}),
       ...(extras.merges.length ? { merges: extras.merges } : {}),
       colWidths: Array.from({ length: Math.max(size.cols, ...[...extras.widths.keys()].map((c) => c + 1)) }, (_, c) => extras.widths.get(c) ?? extras.defaultW),
       defaultRowH: extras.defaultH,

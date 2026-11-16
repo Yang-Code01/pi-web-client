@@ -4494,7 +4494,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   color: #1f2430; font: 12px/1.5 var(--sans); text-align: left; cursor: pointer;
 }
 .sd-list-i:hover { background: #eef4f8; }
-/* #435 超链接 / 批注。链接只在悬停或按住 Ctrl 时听话，避免拖选误触。 */
+/* #435 超链接 / 批注。只读态单击链接就跳，编辑态才要按住 Ctrl/Cmd 避免拖选误触。 */
+.sd-cell.is-lnk { cursor: pointer; }
 .sd-cell.is-lnk > .sd-txt { color: #0b57d0; text-decoration: underline; text-underline-offset: 2px; }
 .sd-cell.is-note::after {
   content: ""; position: absolute; top: 0; right: 0; border: 5px solid transparent;
@@ -4598,7 +4599,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-wstab {
   flex: none; padding: 3px 10px; border: 1px solid transparent; border-radius: 6px;
   background: transparent; color: #5b6472; font: 12px/1.3 var(--sans); cursor: pointer;
-  white-space: nowrap;
+  white-space: nowrap; position: relative;
+}
+/* #438：文件里的工作表标签色（`<tabColor>`）画成底部一条色带。 */
+.sd-wstab::after {
+  content: ""; position: absolute; left: 6px; right: 6px; bottom: 0; height: 2px;
+  border-radius: 2px; background: var(--sd-tab-color, transparent); pointer-events: none;
 }
 .sd-wstab:hover { background: #eef1f5; }
 .sd-wstab[aria-selected="true"] { background: #fff; border-color: #d8dde4; color: #1f2430; font-weight: 600; }

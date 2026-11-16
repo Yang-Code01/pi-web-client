@@ -102,6 +102,8 @@ export interface SheetGridHost {
   onFilter?: (c: number, value: string | null) => void;
   /** #437 选区统计（WPS 底栏那条「求和 / 平均值 / 计数」）；单格或没数字时给 null。 */
   onStats?: (stats: { sum: number; count: number; num: number } | null) => void;
+  /** #438 点了超链接格：外链 / `#表!A1` 都由浮窗决定怎么打开。 */
+  onLink?: (lnk: string) => void;
 }
 
 /** 四个绘制层：主体、冻结行、冻结列、冻结角。 */
@@ -1173,14 +1175,14 @@ export class SheetGrid {
     const pos = this.pointCell(ev.clientX, ev.clientY);
     if (!pos) return;
     const anchor = this.snap(pos);
-    // #435 Ctrl/Cmd + 点超链接：只开外链；页内 `#表!A1` 不跳（跨表要重载，留给下一步）。
-    if (ev.ctrlKey || ev.metaKey) {
-      const cell = this.cellAt(pos.r, pos.c);
-      if (cell?.lnk && !cell.lnk.startsWith("#")) {
-        ev.preventDefault();
-        window.open(cell.lnk, "_blank", "noopener");
-        return;
-      }
+    // #435 / #438 超链接格：只读态单击就跳（Excel / WPS 的肌肉记忆），编辑态按住
+    // Ctrl/Cmd 才跳、否则选中该格去改。外链与页内 `#表!A1` 都交给浮窗。
+    const cell = this.cellAt(pos.r, pos.c);
+    const openMod = ev.ctrlKey || ev.metaKey;
+    if (cell?.lnk && (this.editMode ? openMod : !openMod)) {
+      ev.preventDefault();
+      this.host.onLink?.(cell.lnk);
+      return;
     }
     const now = Date.now();
     // 自己认双击：pointer capture 下浏览器不派 dblclick（踩过）。
@@ -2181,10 +2183,11 @@ export class SheetGrid {
           });
           node.append(dd);
         }
-        // #435 超链接与批注：链接画成蓝色下划线（Ctrl/Cmd 点开），批注画右上角小红角。
+        // #435 超链接与批注：链接画成蓝色下划线（只读态单击就跳，编辑态 Ctrl/Cmd 点击）。
         if (cell?.lnk) {
           node.classList.add("is-lnk");
-          node.title = cell.lnk;
+          const hint = this.editMode ? tr("Ctrl/Cmd + 点击打开链接") : tr("点击打开链接");
+          node.title = `${cell.lnk}\n${hint}`;
         }
         if (cell?.note) {
           node.classList.add("is-note");
