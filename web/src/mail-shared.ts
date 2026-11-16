@@ -11,7 +11,10 @@ export interface MailEndpoint {
   secure: boolean;
 }
 
-/** `publicAccount()` 的镜像：没有 `secret`，只有 `secretMask` / `hasSecret`。 */
+/** 认证方式：授权码，或 Microsoft OAuth2（Outlook / Microsoft 365 只剩这一种）。 */
+export type MailAuth = "password" | "oauth";
+
+/** `publicAccount()` 的镜像：没有 `secret`，也没有 OAuth 令牌（只有 `hasToken`）。 */
 export interface MailAccountView {
   id: string;
   label: string;
@@ -20,8 +23,15 @@ export interface MailAccountView {
   imap: MailEndpoint;
   smtp: MailEndpoint;
   user: string;
+  auth: MailAuth;
   secretMask: string;
   hasSecret: boolean;
+  /** 有没有 refresh token —— 「已用 Microsoft 登录」/「还没登录」。 */
+  hasToken: boolean;
+  oauthClientId: string;
+  oauthTenant: string;
+  /** 授权时登进来的账号（UPN）；只拿来显示。 */
+  oauthUpn: string;
   enabled: boolean;
   verifiedAt: number | null;
   lastError: string | null;
@@ -98,6 +108,8 @@ export interface MailPresetView {
   domain?: string;
   imap: MailEndpoint;
   smtp: MailEndpoint;
+  /** 允许的认证方式，第一个是默认；不写就是只能填授权码。 */
+  auth?: MailAuth[];
 }
 
 export interface MailConfigView {
@@ -122,8 +134,39 @@ export interface MailAccountInput {
   secret: string;
   imap?: MailEndpoint;
   smtp?: MailEndpoint;
+  /** 不传就按预设的默认方式。 */
+  auth?: MailAuth;
+  /** OAuth 账号的 Entra 应用 ID 与租户；令牌不从页面传（登录流程直接写进桥）。 */
+  oauthClientId?: string;
+  oauthTenant?: string;
   enabled?: boolean;
 }
+
+/** 设备码登录：桥给页面「抄这个码、去这个网址」。 */
+export interface MailOAuthLoginView {
+  userCode: string;
+  verificationUri: string;
+  /** 码的过期时间（毫秒时间戳）。 */
+  expiresAt: number;
+  /** 下一次可以问的时间（毫秒时间戳）。 */
+  nextPollAt: number;
+  intervalMs: number;
+  message: string;
+}
+
+/** 轮询结果：`pending` 按 `waitMs` 再来问；`done` 时带上登录进来的 UPN。 */
+export type MailOAuthPollView =
+  | { status: "pending"; waitMs: number }
+  | { status: "done"; upn: string; account?: MailAccountView }
+  | { status: "expired" };
+
+/** 预设允许的认证方式；没写就是只能填授权码。 */
+export function presetAuths(presets: Record<string, MailPresetView>, preset: string): MailAuth[] {
+  const list = presets[preset]?.auth;
+  return list && list.length ? list : ["password"];
+}
+
+/** 这个预设是不是只能走 Microsoft 登录（Outlook 个人账号 / Microsoft 365）。 */
 
 export interface MailSendInput {
   account?: string;
@@ -389,6 +432,8 @@ export const MAIL_ERROR_TEXT: Record<string, string> = {
   "not-found": "这封信已经不在了",
   "too-large": "邮件太大，超过了 25MB",
   "bad-input": "参数不对",
+  "oauth-needed": "需要重新用 Microsoft 登录",
+  oauth: "Microsoft 授权没走通",
   recipients: "收件人不在白名单里",
   "rate-limited": "当天发信额度用完了",
   declined: "没有确认，没发出去",

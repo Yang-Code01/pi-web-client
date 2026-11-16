@@ -5367,3 +5367,38 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **验证：** `bridge/tests/skill-view-ui.mjs`（真桥 + Chromium，`locale: zh-CN`，`npm run test:skill:ui`）走完 6 段：每行两枚按钮且文字是「使用」「查看」；点「使用」插 `/skill:<名字>` 且面板关；点「查看」在 viewer 里渲染出 `SKILL.md` 正文、面板关、`skill-usage.json` 里没有这次计数；`fake-pi` 多报的 `phantom-skill` 查看置灰、行内有说明、使用照常；商店「已安装」里同名技能打开的是项目里那份（正文含「项目版本-PROJECT」、不含「用户版本-USER」）；F 段打 `/api/preview`：本机拿得到 `abs`、挂上 `cf-connecting-ip` 装成公网后 `abs`/`root` 都是空的、盘上没有的名字报「不在盘上」。回归：`npm run typecheck`（含 i18n 3251 键 ×3、viewport 守卫）、`npm run build`、`npm run test:skill`（14 条）、`npm run test:skillblock`（15 条）、`bridge/tests/preview-tool.mjs`（33 条，`PREVIEW_PORT=7802 PI_PEER=0`）、`bridge/tests/open-preview-unit.mjs`（23 条）全绿。`npm test`（`bridge/tests/e2e.mjs`）没跑：它要 7867 上活着的真桥 + 真 pi，且全文不含 skills/preview，与本改动无关。
 
 **复审修正（同样这次提交）：** 第一版把 `skill:` 解析写进了 `openPreview()`，被两个轴同时抓到：`open_preview` 工具口会先 `resolvePreviewPath(\`skill:x\`)` 当成「会话目录下的相对路径」通过 D190 检查，再进 `openPreview()` 才换成目录外的真文件 —— 信任检查白做；公网预览 md 时 `abs` 也没被抹（那条规则当时只覆盖 binary/pdf）。改法即上面第 6、7 条。
+
+## D282 邮箱加 Outlook / Microsoft 365：走 OAuth（设备码），不再指望授权码（用户要求 2026-11-16）
+
+**问题：** 用户要在邮箱面板里加一个公司/学校的 Microsoft 365 信箱。面板原本只支持「用户名 + 授权码」的 IMAP/SMTP 基础认证，而微软已经关掉了它：Exchange Online 2022-10 起（`Deprecation of Basic authentication in Exchange Online`），Outlook 个人账号（outlook.com / hotmail / live）2024-09-16 起，**连应用密码也不行**。所以旧的 `outlook` 预设必然回 `auth-failed`。
+
+**决定：**
+
+1. **给账号加第二种认证：`auth: "password" | "oauth"`。** 其余十几个预设一律还是授权码，行为不变；`outlook` 与新增的 `m365` 预设只能 OAuth（`PRESETS[x].auth = ["oauth"]`，`presetAuthMethods()` 是唯一判据，`custom` 只有授权码）。`m365` 不猜域名（公司地址各种后缀），IMAP `outlook.office365.com:993`、SMTP `smtp.office365.com:587`（`secure: false`，STARTTLS）。
+2. **用设备码（device authorization grant），不用浏览器回调。** 回调要求先在 Entra 应用里登记重定向 URI，桥的端口还会变；设备码一个重定向都不要，用户在面板里点「用 Microsoft 登录」→ 打开 `microsoft.com/devicelogin` 输码即可，且用的就是他被管理员管着的那套浏览器会话 —— 我们不碰他的 cookie。代价：页面上要显示码并轮询（`POST /api/mail/oauth/{start,poll,cancel,logout}`），轮询间隔不得低于微软给的 `interval`（下限 2 秒，`slow_down` 再 +5 秒）。
+3. **令牌只存桥、只由设备码流程写。** `MailOAuth { clientId, tenant, refreshToken, accessToken, expiresAt, upn }` 存在邮箱配置文件里（与授权码同级），`publicAccount()` 只给 `hasToken / oauthUpn / oauthClientId / oauthTenant`，页面与 AI 都看不到令牌值。`saveOAuthTokens()` / `clearOAuthTokens()` 是仅有的两个写入口。
+4. **应用由用户自己在 Entra 里注册（公共客户端，允许设备码流）。** 面板收「应用（客户端）ID」与「租户」，租户留空默认 `common`（多租户应用与个人账号都登得上；单租户应用填自己的租户 ID 或域名）。权限是三个委派作用域：`openid profile email offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send` —— 不用 Microsoft Graph 的 Mail.Read/Mail.Send，因为桥是用 IMAP/SMTP 连的。
+5. **换应用或换租户就作废旧令牌**（`normalizeAccount()` 比较 clientId/tenant），换授权码/服务器也一并清 `verifiedAt`。刷新时如果微软没回新的 refresh token，**沿用旧的**（轮换不总能拿到新的）。
+6. **`expiresAt - 90s` 内就提前刷新**：一次读信可能几分钟，别拿一个马上过期的令牌去连。刷新失败按错误分类翻译：`invalid_grant` / `AADSTS70008|50173|50196|7000215` → `oauth-needed`（「在面板里重新登录」）；`invalid_client` / `AADSTS700016|900023|50059` → 指向「客户端 ID 或租户」；`AADSTS65001|90094` / consent → 指向「管理员同意」；`invalid_scope` / `AADSTS70011` → 指向「权限」。
+7. **传输层不加新依赖**：IMAP 用 imapflow 原有的 `auth: { user, accessToken }`（XOAUTH2），SMTP 用 nodemailer 的 `auth: { type: "OAuth2", user, accessToken }`。
+
+**为什么：**
+
+- **为什么不干脆让用户填个「应用密码」：** 没有这条路了。微软对 Exchange Online（2022-10）和个人 Outlook（2024-09-16）都关掉了 IMAP/SMTP 基础认证，应用密码同样被拒 —— 原来那个 `outlook` 预设只能报 `auth-failed`，不是配置问题。
+- **为什么是设备码而不是 OAuth 回调：** 回调要预先在 Entra 登记重定向 URI，桥的端口一换就得回去改应用；设备码一个 URI 都不要，用户在 `microsoft.com/devicelogin` 输一段码就行，用的还是他自己那套被 IT 管着的浏览器会话 —— 我们不碰他的密码与 cookie，也不用在他机器上装东西。
+- **为什么令牌放桥、不放页面也不放浏览器：** 页面是网页客户端，令牌落在 `localStorage` 就等于任何同源脚本都能拿走；放桥里则与授权码同级（本机配置文件、0600），页面与 AI 工具都只看得到「登录过没有、是谁」。
+- **为什么不自带一个仓库级 client ID：** 那等于让所有用户的邮件授权挂到同一个应用上，出事时谁也分不清是谁在访问。多一步注册换来「每个人自己的应用、自己的租约」。
+- **为什么改传输层而不是另写一条收信通道：** 收信/发信的行为（分页、附件、审计、策略）已经都在 IMAP/SMTP 那套里，XOAUTH2 只是换一种「怎么证明你是谁」；换通道等于把那些规则再实现一遍。
+- **为什么并发刷新要合并（单飞）：** 微软每刷新一次就把 refresh token 轮换掉，两个读信请求同时刷新，后到的那个必然 `invalid_grant` —— 人会看到「登录已失效」，而其实刚刚刷新成功。
+
+**代价 / 可改：**
+
+- 多了一步「先建 Entra 应用」：这是微软的硬要求（设备码流也要一个公共客户端 ID），面板里写了注册步骤的 hint，完整步骤见 [`docs/MAIL-OAUTH-SETUP.md`](MAIL-OAUTH-SETUP.md)。想省这一步，只能由本仓库提供一个公共 client ID —— 那等于把所有人的邮件授权挂到同一个应用上，没做。
+- 设备码有 15 分钟有效期，过了要重新点；登录状态存在桥这边，换机器要重新登。
+- 令牌在配置文件里是明文（和授权码同一处境）；配置文件本来就只在本机、权限 0600，暂不加密。
+
+**验证：**
+
+- `bridge/tests/mail-oauth-unit.mjs`（12 条，已挂进 `npm run test:mail`）：预设只给 OAuth、oauth 必带 GUID 客户端 ID、租户默认 `common`、换应用/换租户作废旧令牌、`publicAccount` 不含令牌、设备码 pending→done（真等 2×2 秒，断言 upn 从 id_token 解出、令牌落盘）、取消/过期、`accessTokenFor` 三条路径（无令牌、撤销、能刷新）、令牌端点错误翻译（四类分开验）、并发刷新只发一次请求、OAuth 账号被服务器拒令牌时翻成 `oauth-needed` 而不是「重新生成授权码」。
+- `bridge/tests/mail-unit.mjs` 加 HTTP 面：授权码账号调 `/api/mail/oauth/start` → 400、未知账号 → 404、非 POST → 405、未知动作 → 404、存 oauth 账号 200 且 `hasToken:false`/`hasSecret:false`、新建 oauth 账号不给客户端 ID → 400、改存时沿用原客户端 ID。
+- `npm run test:mail` 全绿（bridge 单测 50 + oauth 12 + 列表 50 + web 17）。

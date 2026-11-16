@@ -20,15 +20,17 @@ import { errText, tr } from "./i18n/index.ts";
 import type {
   MailAccountInput,
   MailAccountView,
+  MailAuth,
   MailConfigView,
   MailDetailView,
   MailEndpoint,
   MailFolderView,
+  MailOAuthLoginView,
   MailPolicyView,
   MailSummary,
 } from "./mail-shared.ts";
 import { buildMailFrameHtml, renderMailHtml } from "./mailhtml.ts";
-import { joinAddress, localPartFor, presetDomain, retargetAddress, splitAddress } from "./mail-shared.ts";
+import { joinAddress, localPartFor, presetAuths, presetDomain, retargetAddress, splitAddress } from "./mail-shared.ts";
 import { auditOutcome, MAIL_POLICY_LABELS, mailErrorText, parseRecipients, portOf, secureForPort, sizeText, whenText } from "./mail-shared.ts";
 
 export interface MailHandoff {
@@ -83,6 +85,10 @@ interface AccountForm {
   preset: string;
   user: string;
   secret: string;
+  /** `oauth` 的账号不填授权码，改用 Entra 应用 + 设备码登录。 */
+  auth: MailAuth;
+  oauthClientId: string;
+  oauthTenant: string;
   imapHost: string;
   imapPort: string;
   smtpHost: string;
@@ -90,13 +96,16 @@ interface AccountForm {
   advanced: boolean;
 }
 
-function emptyForm(preset: string, imap: MailEndpoint, smtp: MailEndpoint): AccountForm {
+function emptyForm(preset: string, imap: MailEndpoint, smtp: MailEndpoint, auth: MailAuth = "password"): AccountForm {
   return {
     label: "",
     address: "",
     preset,
     user: "",
     secret: "",
+    auth,
+    oauthClientId: "",
+    oauthTenant: "",
     imapHost: imap.host,
     imapPort: String(imap.port),
     smtpHost: smtp.host,
@@ -113,6 +122,9 @@ function formOf(account: MailAccountView): AccountForm {
     preset: account.preset,
     user: account.user,
     secret: "",
+    auth: account.auth === "oauth" ? "oauth" : "password",
+    oauthClientId: account.oauthClientId,
+    oauthTenant: account.oauthTenant,
     imapHost: account.imap.host,
     imapPort: String(account.imap.port),
     smtpHost: account.smtp.host,
@@ -228,6 +240,12 @@ export class MailPanel {
   private saving = false;
   private formError = "";
   private testing = "";
+  /** 正在等用户去 Microsoft 页面上输码的设备码登录（一次只允许一个）。 */
+  private oauth: { accountId: string; login: MailOAuthLoginView } | null = null;
+  /** 正在对哪个账号发登录/退出请求（按钮转圈）。 */
+  private oauthBusy = "";
+  private oauthError = "";
+  private oauthTimer = 0;
   /** 「删」的第一下：等第二下才算数（空串 = 没有待确认的）。 */
   private confirmDeleteId = "";
   private deleteTimer = 0;
@@ -266,6 +284,11 @@ export class MailPanel {
     this.saving = false;
     this.formError = "";
     this.testing = "";
+    this.oauth = null;
+    this.oauthBusy = "";
+    this.oauthError = "";
+    if (this.oauthTimer) window.clearTimeout(this.oauthTimer);
+    this.oauthTimer = 0;
     this.confirmDeleteId = "";
     this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.untrap = trapEscape(() => this.close());
@@ -285,6 +308,11 @@ export class MailPanel {
     this.confirmDeleteId = "";
     if (this.deleteTimer) window.clearTimeout(this.deleteTimer);
     this.deleteTimer = 0;
+    // 关面板就当取消这次设备码登录：留着只会让桥那边多一条不会被用的轮询状态。
+    if (this.oauthTimer) window.clearTimeout(this.oauthTimer);
+    this.oauthTimer = 0;
+    if (this.oauth) void api.mailOAuthCancel(this.oauth.accountId).catch(() => {});
+    this.oauth = null;
     this.root?.remove();
     this.root = null;
     const back = this.lastFocus;
@@ -317,7 +345,8 @@ export class MailPanel {
       if (!config.accounts.length) {
         // 一个账号都没有：直接摊开账号页的新增表单，别让人先找按钮。
         this.section = "accounts";
-        this.form = emptyForm(config.presetIds[0] ?? "163", ...this.presetEndpoints(config, config.presetIds[0] ?? "163"));
+        const preset = config.presetIds[0] ?? "163";
+        this.form = emptyForm(preset, ...this.presetEndpoints(config, preset), this.defaultAuth(config, preset));
         this.render();
         this.focusFirst();
         return;
@@ -335,6 +364,20 @@ export class MailPanel {
     const p = config.presets[preset];
     const fallback: MailEndpoint = { host: "", port: 993, secure: true };
     return [p?.imap ?? fallback, p?.smtp ?? { host: "", port: 465, secure: true }];
+  }
+
+  /**
+   * 预设名是桥给的中文原文（`PRESETS[id].label`），直接用只有中文。需要翻译的在这里列一项，
+   * 其余照旧显示桥给的名字：`tr()` 找不到键就把键原样吐回来，所以不列也不会变成空字符串。
+   */
+  private presetLabel(id: string, label: string): string {
+    if (id === "m365") return tr("Microsoft 365（公司/学校）");
+    return label;
+  }
+
+  /** 新表单的默认认证方式：预设列表的第一个（Outlook / Microsoft 365 只有 oauth）。 */
+  private defaultAuth(config: MailConfigView, preset: string): MailAuth {
+    return presetAuths(config.presets, preset)[0] ?? "password";
   }
 
   private async loadFolders(seq: number, load = this.reloadSeq): Promise<void> {
@@ -1038,8 +1081,10 @@ export class MailPanel {
     const sec = el("section", "mc-section");
     const head = el("div", "mc-section__head");
     head.append(el("div", "mc-section__label", tr("账号")));
-    head.append(el("div", "mc-section__meta", tr("授权码只存本机；页面只拿掩码")));
+    head.append(el("div", "mc-section__meta", tr("授权码与登录令牌只存本机；页面只拿掩码")));
     sec.append(head);
+    // 登录 / 退出失败时卡片已经收了，错误得留在这页上，否则右上角的转圈一停就什么都没发生。
+    if (this.oauthError) sec.append(el("div", "mc-hint mc-hint--bad", this.oauthError));
 
     if (!cfg.accounts.length) sec.append(el("div", "mc-empty", tr("加一个邮箱账号，AI 才有邮可读")));
     else {
@@ -1062,6 +1107,14 @@ export class MailPanel {
             : el("span", "mc-tag", a.lastError ? tr("连接失败") : tr("未验证")),
         );
         if (a.lastError) status.append(el("div", "mc-table__err", a.lastError));
+        // OAuth 账号（Outlook / Microsoft 365）没有授权码，「已验证」之外还要看登录过没有。
+        if (a.auth === "oauth") {
+          status.append(
+            a.hasToken
+              ? el("span", "mc-tag mc-tag--ok", a.oauthUpn ? tr("已登录 {upn}", { upn: a.oauthUpn }) : tr("已登录"))
+              : el("span", "mc-tag", tr("未登录")),
+          );
+        }
         tr1.append(status);
         const ops = el("td", "mc-table__ops");
         const test = el("button", "mc-mini", this.testing === a.id ? tr("正在连…") : tr("验证")) as HTMLButtonElement;
@@ -1076,6 +1129,23 @@ export class MailPanel {
           this.render();
           this.focusFirst();
         };
+        // 微软登录：没登录过的叫「Microsoft 登录」，登录过的叫「重新登录」（换账号 / 重装后令牌失效）。
+        if (a.auth === "oauth") {
+          const busy = this.oauthBusy === a.id || this.oauth?.accountId === a.id;
+          const login = el(
+            "button",
+            "mc-mini mc-mini--primary",
+            busy && this.oauthBusy === a.id
+              ? tr("正在要码…")
+              : a.hasToken
+                ? tr("重新登录")
+                : tr("Microsoft 登录"),
+          ) as HTMLButtonElement;
+          login.type = "button";
+          login.disabled = busy;
+          login.onclick = () => void this.startOAuth(a.id);
+          ops.append(login);
+        }
         const del = el("button", this.confirmDeleteId === a.id ? "mc-mini mc-mini--bad on" : "mc-mini mc-mini--bad", this.confirmDeleteId === a.id ? tr("真删？") : tr("删")) as HTMLButtonElement;
         del.type = "button";
         // 一点就没（连同授权码）太狠：第一下只是「真删？」，6 秒内再点才删。
@@ -1097,7 +1167,15 @@ export class MailPanel {
           }, 6000);
           this.render();
         };
-        ops.append(test, edit, del);
+        ops.append(test, edit);
+        if (a.auth === "oauth" && a.hasToken) {
+          const out = el("button", "mc-mini", this.oauthBusy === a.id ? tr("正在退出…") : tr("退出登录")) as HTMLButtonElement;
+          out.type = "button";
+          out.disabled = this.oauthBusy === a.id;
+          out.onclick = () => void this.logoutOAuth(a.id);
+          ops.append(out);
+        }
+        ops.append(del);
         tr1.append(ops);
         tbody.append(tr1);
       }
@@ -1109,7 +1187,8 @@ export class MailPanel {
       const add = el("button", "btn mc-section__action", tr("添加账号")) as HTMLButtonElement;
       add.type = "button";
       add.onclick = () => {
-        this.form = emptyForm(cfg.presetIds[0] ?? "163", ...this.presetEndpoints(cfg, cfg.presetIds[0] ?? "163"));
+        const preset = cfg.presetIds[0] ?? "163";
+        this.form = emptyForm(preset, ...this.presetEndpoints(cfg, preset), this.defaultAuth(cfg, preset));
         this.formError = "";
         this.render();
         this.focusFirst();
@@ -1117,8 +1196,140 @@ export class MailPanel {
       sec.append(add);
     }
     wrap.append(sec);
+    const card = this.oauthCardEl();
+    if (card) wrap.append(card);
     if (this.form) wrap.append(this.formEl(this.form));
     return wrap;
+  }
+
+  /**
+   * 设备码登录那张卡：微软让用户到网页上输一段码，桥按微软给的节奏轮询。
+   * 卡只在这次登录进行中才在，取消或成功就消失（不留一个空壳）。
+   */
+  private oauthCardEl(): HTMLElement | null {
+    const pending = this.oauth;
+    if (!pending) return null;
+    const account = this.config?.accounts.find((a) => a.id === pending.accountId);
+    const sec = el("section", "mc-section mc-oauth");
+    const head = el("div", "mc-section__head");
+    head.append(el("div", "mc-section__label", tr("用 Microsoft 登录")));
+    head.append(el("div", "mc-section__meta", account ? account.address : ""));
+    sec.append(head);
+
+    const steps = el("ol", "mc-oauth__steps");
+    const openStep = el("li", "");
+    openStep.append(el("span", "", tr("在浏览器里打开：")));
+    const link = el("a", "mc-oauth__link", pending.login.verificationUri) as HTMLAnchorElement;
+    link.href = pending.login.verificationUri;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    openStep.append(link, el("span", "", tr("（手机也能开）")));
+    const codeStep = el("li", "");
+    codeStep.append(el("span", "", tr("输入这个码：")));
+    codeStep.append(el("code", "mc-oauth__code", pending.login.userCode));
+    const signInStep = el("li", "", tr("用要加进来的那个邮箱账号登录并同意。这一步完成以后下面会自动消失。"));
+    steps.append(openStep, codeStep, signInStep);
+    sec.append(steps);
+
+    const mins = Math.max(1, Math.round((pending.login.expiresAt - Date.now()) / 60000));
+    sec.append(el("div", "mc-hint", tr("这个码 {mins} 分钟内有效；关掉面板或点取消就等于这次不登了。", { mins })));
+
+    const acts = el("div", "mc-acts");
+    const cancel = el("button", "mc-btn", tr("取消登录")) as HTMLButtonElement;
+    cancel.type = "button";
+    cancel.onclick = () => this.cancelOAuth(pending.accountId);
+    acts.append(cancel);
+    sec.append(acts);
+    return sec;
+  }
+
+  // -------------------------------------------------------------- Microsoft 登录
+
+  private async startOAuth(accountId: string): Promise<void> {
+    if (this.oauthBusy) return;
+    this.oauthBusy = accountId;
+    this.oauthError = "";
+    this.render();
+    const seq = this.seq;
+    try {
+      const { login } = await api.mailOAuthStart(accountId);
+      if (seq !== this.seq) return;
+      this.oauth = { accountId, login };
+      this.scheduleOAuthPoll(seq, accountId, Math.max(0, (login.nextPollAt || 0) - Date.now()));
+    } catch (err) {
+      if (seq !== this.seq) return;
+      this.oauthError = failText(tr("没拿到登录码"), err);
+    } finally {
+      if (seq === this.seq) {
+        this.oauthBusy = "";
+        this.render();
+      }
+    }
+  }
+
+  /** 按桥给的节奏问一次；微软对间隔敏感，问快了码会作废（slow_down）。 */
+  private scheduleOAuthPoll(seq: number, accountId: string, waitMs: number): void {
+    if (this.oauthTimer) window.clearTimeout(this.oauthTimer);
+    this.oauthTimer = window.setTimeout(() => void this.pollOAuth(seq, accountId), Math.max(0, waitMs));
+  }
+
+  private async pollOAuth(seq: number, accountId: string): Promise<void> {
+    this.oauthTimer = 0;
+    if (seq !== this.seq || this.oauth?.accountId !== accountId || !this.root) return;
+    try {
+      const res = await api.mailOAuthPoll(accountId);
+      if (seq !== this.seq || this.oauth?.accountId !== accountId) return;
+      if (res.status === "pending") {
+        this.scheduleOAuthPoll(seq, accountId, res.waitMs);
+        return;
+      }
+      this.oauth = null;
+      if (res.status === "done") {
+        this.notice = tr("已用 Microsoft 登录 {upn}", { upn: res.upn || accountId });
+        this.oauthError = "";
+      } else {
+        this.oauthError = tr("设备码过期了，重新点一次「Microsoft 登录」");
+      }
+      this.render();
+      await this.reload();
+    } catch (err) {
+      if (seq !== this.seq) return;
+      this.oauth = null;
+      this.oauthError = failText(tr("登录没走通"), err);
+      this.render();
+    }
+  }
+
+  private cancelOAuth(accountId: string): void {
+    if (this.oauthTimer) window.clearTimeout(this.oauthTimer);
+    this.oauthTimer = 0;
+    if (this.oauth?.accountId !== accountId) return;
+    this.oauth = null;
+    this.oauthError = "";
+    void api.mailOAuthCancel(accountId).catch(() => {});
+    this.render();
+  }
+
+  private async logoutOAuth(accountId: string): Promise<void> {
+    if (this.oauthBusy) return;
+    const seq = this.seq;
+    this.oauthBusy = accountId;
+    this.oauthError = "";
+    this.render();
+    try {
+      await api.mailOAuthLogout(accountId);
+      if (seq !== this.seq) return;
+      this.notice = tr("已退出，令牌从本机删掉了");
+      await this.reload();
+    } catch (err) {
+      if (seq !== this.seq) return;
+      this.oauthError = failText(tr("没退出成"), err);
+    } finally {
+      if (seq === this.seq) {
+        this.oauthBusy = "";
+        this.render();
+      }
+    }
   }
 
   /** 邮箱地址：个人邮箱只填 @ 前面的部分，域名由邮箱类型带出来；企业邮 / 自定义整框输入。 */
@@ -1171,14 +1382,14 @@ export class MailPanel {
     const box = el("section", "mc-section mc-section--form");
     const head = el("div", "mc-section__head");
     head.append(el("div", "mc-section__label", f.id ? tr("改账号") : tr("新账号")));
-    head.append(el("div", "mc-section__meta", tr("授权码不是登录密码")));
+    head.append(el("div", "mc-section__meta", f.auth === "oauth" ? tr("用 Microsoft 账号登录，不填授权码") : tr("授权码不是登录密码")));
     box.append(head);
 
     const presetRow = el("label", "mc-field");
     presetRow.append(el("span", "mc-field__label", tr("邮箱类型")));
     const pick = el("select", "mc-select") as HTMLSelectElement;
     for (const id of cfg.presetIds) {
-      const opt = el("option", "", id === "custom" ? tr("自定义（手动填服务器）") : (cfg.presets[id]?.label ?? id)) as HTMLOptionElement;
+      const opt = el("option", "", id === "custom" ? tr("自定义（手动填服务器）") : this.presetLabel(id, cfg.presets[id]?.label ?? id)) as HTMLOptionElement;
       opt.value = id;
       opt.selected = f.preset === id;
       pick.append(opt);
@@ -1190,6 +1401,8 @@ export class MailPanel {
       const knownDomains = Object.values(cfg.presets).flatMap((p) => (p.domain ? [p.domain] : []));
       f.address = retargetAddress(f.address, presetDomain(cfg.presets, f.preset), presetDomain(cfg.presets, next), knownDomains);
       f.preset = next;
+      // 认证方式跟着预设走：Outlook / Microsoft 365 只有 OAuth，别的默认授权码。
+      f.auth = this.defaultAuth(cfg, next);
       const [imap, smtp] = this.presetEndpoints(cfg, next);
       f.imapHost = imap.host;
       f.imapPort = String(imap.port);
@@ -1206,20 +1419,42 @@ export class MailPanel {
     box.append(grid);
 
     const creds = el("div", "mc-form__grid");
-    creds.append(
-      formInput(tr("登录账号（多数就是地址全称）"), f.user, "text", (v) => (f.user = v), "username"),
-      formInput(tr("客户端授权码"), f.secret, "password", (v) => (f.secret = v), "new-password"),
-    );
-    box.append(creds);
-    box.append(
-      el(
-        "div",
-        "mc-hint",
-        f.id && this.config?.accounts.find((a) => a.id === f.id)?.hasSecret
-          ? tr("留空 = 不改授权码。密码不是授权码：要到邮箱网页版的「设置 → POP3/SMTP/IMAP」里单独生成。")
-          : tr("要填客户端授权码（16 位），不是登录密码。到邮箱网页版的「设置 → POP3/SMTP/IMAP」里开启服务并生成。"),
-      ),
-    );
+    if (f.auth === "oauth") {
+      // OAuth 账号：填的是 Entra 里的应用，不碰密码。令牌由「账号」页的登录按钮写进桥。
+      creds.append(
+        formInput(tr("Microsoft 应用 ID"), f.oauthClientId, "text", (v) => (f.oauthClientId = v)),
+        formInput(tr("租户（留空 = common）"), f.oauthTenant, "text", (v) => (f.oauthTenant = v)),
+      );
+      box.append(creds);
+      const who = el("div", "mc-form__grid");
+      who.append(formInput(tr("登录账号（留空 = 地址）"), f.user, "text", (v) => (f.user = v), "username"));
+      box.append(who);
+      box.append(el("div", "mc-hint", tr("登录账号多数就是地址全称；公司邮箱的登录名（UPN）和地址不一样时填那个。")));
+      box.append(
+        el(
+          "div",
+          "mc-hint",
+          this.config?.accounts.find((a) => a.id === f.id)?.hasToken
+            ? tr("应用 ID / 租户改了就要重新登录（旧令牌会作废）。登录令牌只存本机，页面拿不到。")
+            : tr("Outlook 个人账号与 Microsoft 365 已经关掉了密码 / 授权码登录，只能用 OAuth。先到 Entra 门户「应用注册」建一个应用（允许公共客户端），把「应用程序(客户端) ID」填到这里；保存后点账号那一行的「Microsoft 登录」完成一次设备码登录。"),
+        ),
+      );
+    } else {
+      creds.append(
+        formInput(tr("登录账号（多数就是地址全称）"), f.user, "text", (v) => (f.user = v), "username"),
+        formInput(tr("客户端授权码"), f.secret, "password", (v) => (f.secret = v), "new-password"),
+      );
+      box.append(creds);
+      box.append(
+        el(
+          "div",
+          "mc-hint",
+          f.id && this.config?.accounts.find((a) => a.id === f.id)?.hasSecret
+            ? tr("留空 = 不改授权码。密码不是授权码：要到邮箱网页版的「设置 → POP3/SMTP/IMAP」里单独生成。")
+            : tr("要填客户端授权码（16 位），不是登录密码。到邮箱网页版的「设置 → POP3/SMTP/IMAP」里开启服务并生成。"),
+        ),
+      );
+    }
 
     const adv = el("button", "mc-mini", f.advanced ? tr("收起服务器设置") : tr("服务器设置")) as HTMLButtonElement;
     adv.type = "button";
@@ -1430,12 +1665,22 @@ export class MailPanel {
       smtp: { host: f.smtpHost.trim(), port: portOf(f.smtpPort, 465), secure: secureForPort(portOf(f.smtpPort, 465), "smtp") },
     };
     if (f.id) body.id = f.id;
+    if (f.auth === "oauth") {
+      body.auth = "oauth";
+      body.oauthClientId = f.oauthClientId.trim();
+      // 留空就交给桥按 common 处理；单租户应用必须自己填租户 ID / 域名。
+      body.oauthTenant = f.oauthTenant.trim();
+    } else {
+      body.auth = "password";
+    }
     try {
-      await api.mailSaveAccount(body);
+      const { account } = await api.mailSaveAccount(body);
       if (seq !== this.seq) return;
       this.form = null;
       this.notice = tr("账号已保存");
       await this.reload();
+      // OAuth 账号保存完还没令牌：直接接上登录，省得人再回头找那个按钮。
+      if (seq === this.seq && account.auth === "oauth" && !account.hasToken) await this.startOAuth(account.id);
     } catch (err) {
       if (seq !== this.seq) return;
       this.formError = failText(tr("没保存成"), err);

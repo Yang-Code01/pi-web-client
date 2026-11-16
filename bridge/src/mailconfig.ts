@@ -4,6 +4,7 @@
  * 三件事分开：
  *   1. `MailConfig` 落 `<状态目录>/mail/config.json`，照 Jira 的惯例存明文凭据 —— 页面只拿掩码，
  *      日志不带凭据（`bridge/src/jira.ts` 同一口径）。想换成 DPAPI 加密是后续的事，别在路由里散着判。
+ *      OAuth 账号的 refresh/access token 与授权码同档：也只在本机，页面只拿 `hasToken`。
  *   2. `policyDenial()` 是**给 AI 的唯一判据**（agent 工具走它）。页面口是人自己动手，不过它 ——
  *      两边各拦各的：AI 看策略与白名单，人只看「账号停用 / 隧道访客」（D264）。
  *   3. 审计只追加、不进模型上下文 —— 它存在的理由是「谁在什么时候用哪个账号发了什么」能事后查，
@@ -28,6 +29,7 @@ export type MailPreset =
   | "189"
   | "gmail"
   | "outlook"
+  | "m365"
   | "icloud"
   | "yahoo"
   | "zoho"
@@ -40,6 +42,35 @@ export interface MailEndpoint {
   secure: boolean;
 }
 
+/** 认证方式：授权码（IMAP LOGIN / SMTP AUTH PLAIN）或 Microsoft OAuth2（XOAUTH2 / OAuth2）。 */
+export type MailAuth = "password" | "oauth";
+
+/**
+ * Microsoft OAuth2 的配置与令牌。
+ *
+ * 为什么非要有这条路：微软 2024-09-16 起关掉了 Outlook 个人账号（outlook.com / hotmail）的
+ * IMAP/POP/SMTP 基础认证，应用密码也不例外；公司 Microsoft 365 更早在 2022 年就关了。
+ * 授权码填得再对，服务器也只会回 `AUTHENTICATIONFAILED` —— 所以这两个预设只能走 OAuth。
+ *
+ * `refreshToken` / `accessToken` 跟授权码一个档次（只在本机、页面拿不到，`publicAccount()`
+ * 只给 `hasToken`）；设备码登录与刷新在 `bridge/src/mailoauth.ts`，这一层不碰网络。
+ */
+/** 租户留空时用这个：多租户应用与个人账号都能登（单租户应用要自己填租户 ID / 域名）。 */
+export const DEFAULT_TENANT = "common";
+
+export interface MailOAuth {
+  /** Entra 应用的 Application (client) ID。公共客户端，不需要 client secret。 */
+  clientId: string;
+  /** `organizations`（公司/学校）、`common`（也可以是个人的），或具体租户 id / 域名。 */
+  tenant: string;
+  refreshToken: string;
+  accessToken: string;
+  /** access token 到期时间（毫秒时间戳）；0 = 没有或未知（当成过期）。 */
+  expiresAt: number;
+  /** 授权时登进来的账号（UPN）；只给页面看「登录成了谁」，不参与任何判定。 */
+  upn: string;
+}
+
 export interface MailAccount {
   id: string;
   label: string;
@@ -49,8 +80,12 @@ export interface MailAccount {
   smtp: MailEndpoint;
   /** 登录名：网易就是整个地址，但企业邮有别名的情况，所以单独存一份。 */
   user: string;
-  /** 客户端授权码（不是登录密码）。页面只看得到掩码。 */
+  /** 客户端授权码（不是登录密码）。页面只看得到掩码。OAuth 账号留空。 */
   secret: string;
+  /** 认证方式；老配置里没有这个字段时按 `password` 读。 */
+  auth: MailAuth;
+  /** 只有 `auth === "oauth"` 时有值。 */
+  oauth: MailOAuth | null;
   enabled: boolean;
   verifiedAt: number | null;
   /** 上次验证失败的原因，只留一行；页面用它解释「为什么没连上」。 */
@@ -99,12 +134,15 @@ export const DEFAULT_POLICY: MailPolicy = {
  * `domain` 是个人邮箱的默认域名，新账号选完类型后表单把 `@域名` 直接带出来；企业邮
  * （qiye163 / exmail / aliyunqy）的域名随公司走，不能猜，所以不写。
  *
- * 只列 993/465 这两组「隐式 TLS」的端口，唯一例外是 Outlook 与 iCloud：它们把 587 留给
- * STARTTLS，`secure: false` 时 nodemailer 会自己升级。
+ * 只列 993/465 这两组「隐式 TLS」的端口，唯一例外是 Outlook / Microsoft 365 与 iCloud：它们把 587
+ * 留给 STARTTLS，`secure: false` 时 nodemailer 会自己升级。
+ *
+ * `auth` 是这类邮箱允许的认证方式，第一个是表单默认值；不写就是只能填授权码。
+ * Outlook 个人账号与 Microsoft 365 只能走 OAuth（基础认证被微软关了，见 `MailOAuth`）。
  */
 export const PRESETS: Record<
   Exclude<MailPreset, "custom">,
-  { label: string; domain?: string; imap: MailEndpoint; smtp: MailEndpoint }
+  { label: string; domain?: string; imap: MailEndpoint; smtp: MailEndpoint; auth?: MailAuth[] }
 > = {
   "163": {
     label: "163 邮箱",
@@ -172,6 +210,15 @@ export const PRESETS: Record<
   outlook: {
     label: "Outlook / Hotmail",
     domain: "outlook.com",
+    // 个人账号的基础认证 2024-09-16 起被微软关了，应用密码也不行。
+    auth: ["oauth"],
+    imap: { host: "outlook.office365.com", port: 993, secure: true },
+    smtp: { host: "smtp.office365.com", port: 587, secure: false },
+  },
+  m365: {
+    label: "Microsoft 365（公司/学校）",
+    // 地址跟着公司域名走，不猜；认证同样只剩 OAuth。
+    auth: ["oauth"],
     imap: { host: "outlook.office365.com", port: 993, secure: true },
     smtp: { host: "smtp.office365.com", port: 587, secure: false },
   },
@@ -218,6 +265,7 @@ export const PRESET_IDS: MailPreset[] = [
   "189",
   "gmail",
   "outlook",
+  "m365",
   "icloud",
   "yahoo",
   "zoho",
@@ -268,6 +316,22 @@ function presetOf(raw: unknown): MailPreset {
   return PRESET_IDS.includes(p) ? p : "custom";
 }
 
+/** 读回来的 OAuth 块：缺字段就当空，`clientId` 为空视为「没配」。 */
+function oauthOf(raw: any): MailOAuth | null {
+  if (!raw || typeof raw !== "object") return null;
+  const clientId = str(raw.clientId);
+  if (!clientId) return null;
+  const expiresAt = Number(raw.expiresAt);
+  return {
+    clientId,
+    tenant: str(raw.tenant) || DEFAULT_TENANT,
+    refreshToken: str(raw.refreshToken),
+    accessToken: str(raw.accessToken),
+    expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
+    upn: str(raw.upn),
+  };
+}
+
 /** 坏文件（半截 / 非 JSON / 字段丢失）当「没有这个账号」丢掉，别把面板卡在错误态。 */
 export function readMailConfig(): MailConfig {
   return readMailConfigChecked().config;
@@ -292,6 +356,7 @@ export function readMailConfigChecked(): { config: MailConfig; error: string | n
     const preset = presetOf(a.preset);
     const fallback = preset === "custom" ? { host: "", port: 993, secure: true } : PRESETS[preset].imap;
     const smtpFallback = preset === "custom" ? { host: "", port: 465, secure: true } : PRESETS[preset].smtp;
+    const oauth = oauthOf(a.oauth);
     accounts.push({
       id: str(a.id) || `m${randomUUID().slice(0, 8)}`,
       label: str(a.label) || address,
@@ -301,6 +366,9 @@ export function readMailConfigChecked(): { config: MailConfig; error: string | n
       smtp: endpointOf(a.smtp, smtpFallback),
       user: str(a.user) || address,
       secret,
+      // 老配置没这个字段：有 OAuth 令牌就按 oauth 读，否则就是授权码。
+      auth: a.auth === "oauth" || (a.auth !== "password" && !!oauth?.refreshToken) ? "oauth" : "password",
+      oauth,
       enabled: bool(a.enabled, true),
       verifiedAt: typeof a.verifiedAt === "number" ? a.verifiedAt : null,
       lastError: a.lastError ? str(a.lastError) : null,
@@ -352,8 +420,9 @@ export function findAccount(config: MailConfig, id?: string | null): MailAccount
   return config.accounts.find((a) => a.id === def) ?? config.accounts.find((a) => a.enabled) ?? config.accounts[0] ?? null;
 }
 
-/** 发给页面的形状：永远不含 `secret`。 */
+/** 发给页面的形状：永远不含 `secret`，也不含 OAuth 令牌。 */
 export function publicAccount(a: MailAccount) {
+  const auth: MailAuth = a.auth === "oauth" ? "oauth" : "password";
   return {
     id: a.id,
     label: a.label,
@@ -362,8 +431,14 @@ export function publicAccount(a: MailAccount) {
     imap: a.imap,
     smtp: a.smtp,
     user: a.user,
+    auth,
     secretMask: maskSecret(a.secret),
     hasSecret: a.secret.length > 0,
+    /** 有没有 refresh token —— 页面上写「已登录 / 未登录」，不给令牌本身。 */
+    hasToken: !!a.oauth?.refreshToken,
+    oauthClientId: a.oauth?.clientId ?? "",
+    oauthTenant: a.oauth?.tenant ?? "",
+    oauthUpn: a.oauth?.upn ?? "",
     enabled: a.enabled,
     verifiedAt: a.verifiedAt,
     lastError: a.lastError,
@@ -533,21 +608,63 @@ export interface AccountInput {
   user?: string;
   secret?: string;
   enabled?: boolean;
+  /** `password` / `oauth`；不给就看预设与旧值。 */
+  auth?: string;
+  /** OAuth 账号的 Entra 应用 id 与租户（令牌不从页面收）。 */
+  oauthClientId?: string;
+  oauthTenant?: string;
 }
+
+/** 这类预设允许的认证方式；`custom` 只给授权码——要 OAuth 就选 Microsoft 365。 */
+export function presetAuthMethods(preset: MailPreset): MailAuth[] {
+  if (preset === "custom") return ["password"];
+  return PRESETS[preset].auth ?? ["password"];
+}
+
+const CLIENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * 把页面/工具递来的账号输入合成一份完整账号。`secret` 传空或传回掩码 = 保留原值（编辑时不重填授权码）。
  * 返回 `{ error }` 时调用方原样回 400，别自己拼提示。
+ *
+ * OAuth 账号：令牌只能由 `saveOAuthTokens()` 写（设备码登录换回来的），这里**不接受**页面传来的
+ * 令牌 —— 只保留旧值。换认证方式 / 换应用 / 换租户时旧令牌作废（换应用后它已经不适用了）。
  */
 export function normalizeAccount(input: AccountInput, prev?: MailAccount | null): { account?: MailAccount; error?: string } {
   const preset = presetOf(input.preset ?? prev?.preset);
   const address = str(input.address) || prev?.address || "";
   // 地址口径只有 `mailaddr.ts` 一份（带显示名 / 引号都由它判）。
   if (!isEmailAddress(address)) return { error: "邮箱地址不像一个地址（例如 you@163.com）" };
-  const secretRaw = str(input.secret);
-  const masked = prev ? maskSecret(prev.secret) : "";
-  const keepSecret = !secretRaw || (masked && (secretRaw === masked || secretRaw.includes("****")));
-  const secret = keepSecret ? (prev?.secret ?? "") : secretRaw.replace(/\s+/g, "");
+  const methods = presetAuthMethods(preset);
+  const asked = str(input.auth) as MailAuth;
+  const auth: MailAuth = asked === "oauth" || asked === "password" ? asked : (prev?.auth ?? methods[0] ?? "password");
+  if (!methods.includes(auth)) return { error: "这个邮箱类型不支持这种认证方式" };
+
+  let secret = "";
+  let oauth: MailOAuth | null = null;
+  if (auth === "password") {
+    const secretRaw = str(input.secret);
+    const masked = prev ? maskSecret(prev.secret) : "";
+    const keepSecret = !secretRaw || (masked && (secretRaw === masked || secretRaw.includes("****")));
+    secret = keepSecret ? (prev?.secret ?? "") : secretRaw.replace(/\s+/g, "");
+  } else {
+    const clientId = str(input.oauthClientId) || prev?.oauth?.clientId || "";
+    if (!clientId) return { error: "要填 Microsoft 应用的客户端 ID（Application ID）" };
+    if (!CLIENT_ID_RE.test(clientId)) return { error: "客户端 ID 应该是一串 GUID（xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx）" };
+    // 留空走 common：多租户应用与个人账号都能登；单租户应用要自己填租户 ID / 域名（页面提示里写着）。
+    const tenant = str(input.oauthTenant) || prev?.oauth?.tenant || DEFAULT_TENANT;
+    // 换应用 / 换租户：旧令牌属于上一个应用，留着只会在连接时报 invalid_grant。
+    const sameApp = prev?.auth === "oauth" && prev.oauth?.clientId === clientId && prev.oauth?.tenant === tenant;
+    oauth = {
+      clientId,
+      tenant,
+      refreshToken: sameApp ? (prev?.oauth?.refreshToken ?? "") : "",
+      accessToken: sameApp ? (prev?.oauth?.accessToken ?? "") : "",
+      expiresAt: sameApp ? (prev?.oauth?.expiresAt ?? 0) : 0,
+      upn: sameApp ? (prev?.oauth?.upn ?? "") : "",
+    };
+  }
+
   const base = preset === "custom" ? null : PRESETS[preset];
   const imap = endpointOf(input.imap, base?.imap ?? prev?.imap ?? { host: "", port: 993, secure: true });
   const smtp = endpointOf(input.smtp, base?.smtp ?? prev?.smtp ?? { host: "", port: 465, secure: true });
@@ -563,6 +680,8 @@ export function normalizeAccount(input: AccountInput, prev?: MailAccount | null)
       smtp,
       user: str(input.user) || prev?.user || address,
       secret,
+      auth,
+      oauth,
       enabled: typeof input.enabled === "boolean" ? input.enabled : (prev?.enabled ?? true),
       verifiedAt: prev?.verifiedAt ?? null,
       lastError: prev?.lastError ?? null,
@@ -572,6 +691,43 @@ export function normalizeAccount(input: AccountInput, prev?: MailAccount | null)
 
 export function newAccountId(): string {
   return `m${randomUUID().slice(0, 8)}`;
+}
+
+/**
+ * 把设备码登录换回来的令牌写进账号。返回 false 表示没写成（账号不在了 / 文件坏了）。
+ *
+ * 整份重读再写，不拿调用方手里的快照回写：刷新令牌可能发生在一次读信/发信的中间，
+ * 用旧快照写回会把别的页面刚改的权限开关抹掉。
+ */
+export function saveOAuthTokens(
+  id: string,
+  tokens: { accessToken: string; refreshToken: string; expiresAt: number; upn?: string },
+): boolean {
+  const { config, error } = readMailConfigChecked();
+  if (error) return false;
+  const account = config.accounts.find((a) => a.id === id);
+  if (!account || account.auth !== "oauth" || !account.oauth) return false;
+  account.oauth = {
+    ...account.oauth,
+    accessToken: tokens.accessToken,
+    // 微软不一定每次都回新的 refresh token；回了就用新的（旧的可能已被轮换作废）。
+    refreshToken: tokens.refreshToken || account.oauth.refreshToken,
+    expiresAt: tokens.expiresAt,
+    upn: tokens.upn || account.oauth.upn,
+  };
+  writeMailConfig(config);
+  return true;
+}
+
+/** 退出登录：只清令牌，账号与服务器配置留着（下一次点「用 Microsoft 登录」重新拿）。 */
+export function clearOAuthTokens(id: string): boolean {
+  const { config, error } = readMailConfigChecked();
+  if (error) return false;
+  const account = config.accounts.find((a) => a.id === id);
+  if (!account || !account.oauth) return false;
+  account.oauth = { ...account.oauth, accessToken: "", refreshToken: "", expiresAt: 0, upn: "" };
+  writeMailConfig(config);
+  return true;
 }
 
 export { configFile as mailConfigFile, auditFile as mailAuditFile };
