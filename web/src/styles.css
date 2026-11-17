@@ -2422,6 +2422,14 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .viewer-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 2; }
 .viewer-grip:hover, .viewer.resizing .viewer-grip { background: linear-gradient(90deg, transparent 3px, var(--accent-dim) 3px, var(--accent-dim) 5px, transparent 5px); }
 .viewer.full .viewer-grip { display: none; }
+/* 内网通的文件预览窗口（`/?peerpreview=<id>`，D300）：这个页面只为一伤文件而来 ——
+   除了预览面板什么都不画，面板撑满整屏（不写 vw/vh：`#app` 上的 zoom 会再乘一次，D123）。 */
+body.peer-preview { background: var(--bg); }
+body.peer-preview #app > *:not(.viewer):not(.sd) { display: none !important; }
+/* 表格与幻灯片是自己一扇「不抢焦点」的浮窗（.sd）：预览窗口就是它们的容器，得留着。 */
+body.peer-preview .sd { z-index: 48; }
+body.peer-preview .viewer { position: fixed; inset: 0; width: auto; max-width: none; border-left: 0; box-shadow: none; animation: none; }
+body.peer-preview .viewer-grip { display: none; }
 .viewer-head {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px calc(8px + env(safe-area-inset-top, 0px));
   border-bottom: 1px solid var(--line-soft); background: var(--panel); min-width: 0;

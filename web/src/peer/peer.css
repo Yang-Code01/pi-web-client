@@ -359,7 +359,17 @@ body.embedded .brand .nm { display: none; }
 .fcard .nm { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fcard .sz { font: 10.5px var(--mono); color: var(--faint); }
 .fbot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font: 10.5px var(--mono); color: var(--faint); }
-.fbot .act { margin-left: auto; color: var(--accent); }
+.fbot .lbl { margin-right: auto; }
+.fbot .act {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.fbot .act:hover { text-decoration: underline; }
 
 /* 输入区 */
 .compose { border-top: 1px solid var(--line-soft); padding: 10px 14px 12px; background: var(--panel); }
@@ -594,6 +604,11 @@ body.embedded .brand .nm { display: none; }
 .crumbs button:hover { background: rgb(255 255 255 / 6%); color: var(--text); }
 .crumbs .crumb-root { width: 24px; height: 24px; border: 0; }
 .pbody { flex: 1; min-height: 0; display: flex; }
+.pmain { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.jump { margin: 7px 8px 3px; padding: 6px 9px; background: var(--sunken); color: var(--text); border: 1px solid var(--line); border-radius: 7px; font: 11.5px var(--mono); }
+.jump::placeholder { color: var(--faint); }
+.jump:focus { outline: none; border-color: var(--accent-dim); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.jump.bad { border-color: var(--danger); }
 .pside { width: 168px; flex: none; overflow-y: auto; padding: 8px; border-right: 1px solid var(--line-soft); }
 .pside p { margin: 9px 6px 4px; font-size: 11px; letter-spacing: 0.4px; color: var(--faint); }
 .pside ul { list-style: none; margin: 0; padding: 0; }
@@ -607,6 +622,14 @@ body.embedded .brand .nm { display: none; }
 .files li svg { width: 14px; height: 14px; color: var(--faint); }
 .files li.on svg { color: var(--accent); }
 .files li .sz { font: 10.5px var(--mono); color: var(--faint); }
+.files li { grid-template-columns: 17px minmax(0, 1fr) auto auto; }
+.files li .acts { display: flex; gap: 4px; opacity: 0; }
+.files li:hover .acts,
+.files li.on .acts { opacity: 1; }
+.files li .act { padding: 2px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--dim); font: 10.5px var(--mono); cursor: pointer; }
+.files li .act:hover { color: var(--text); border-color: var(--line-strong); }
+.files li.hit { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+.files li.empty { display: block; color: var(--faint); cursor: default; }
 .pfoot { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line-soft); }
 .pfoot .sel { flex: 1; font: 11px var(--mono); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -805,3 +828,69 @@ body.embedded .brand .nm { display: none; }
   text-decoration: underline dotted;
 }
 .hintline { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--faint); }
+
+/* ------------------------------------------------------------------ 会话列表折叠 */
+
+/* 折起来：292px 让给消息。窄版（≤900px）本来就是「列表一屏 / 消息一屏」，不参与。 */
+@container (min-width: 901px) {
+  .app[data-fold="1"] { grid-template-columns: 60px 0 minmax(0, 1fr); }
+}
+.list { transition: opacity var(--dur-1) var(--ease); }
+.app[data-fold="1"] .list {
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border-right-color: transparent;
+}
+
+/* 折叠按钮钉在栏底，跟四个页签分开。 */
+.rail .fold-btn { margin-top: auto; }
+
+/* ------------------------------------------------------------------ 文件预览弹窗 */
+
+.modal.viewer {
+  display: flex;
+  flex-direction: column;
+  width: min(920px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+}
+.modal.viewer header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modal.viewer header .icon-btn { margin-left: auto; }
+.modal.viewer .vbody {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  background: var(--sunken);
+}
+.modal.viewer .vbody img { display: block; max-width: 100%; max-height: calc(100vh - 190px); }
+.modal.viewer .vbody video { max-width: 100%; max-height: calc(100vh - 190px); }
+.modal.viewer .vbody audio { width: min(560px, 88%); margin: 40px 0; }
+.modal.viewer .vbody .vpdf { width: 100%; height: calc(100vh - 190px); border: 0; background: #fff; }
+/* 预览的正文交给客户端的渲染（`/?peerpreview=`）：iframe 铺满，不要内边距。 */
+.modal.viewer .vbody .vframe { width: 100%; height: calc(100vh - 190px); border: 0; background: var(--sunken); }
+.modal.viewer .vtext {
+  align-self: stretch;
+  justify-self: stretch;
+  margin: 0;
+  padding: 16px 18px;
+  font: 12px/1.65 var(--mono);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.modal.viewer .vnone {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 46px 20px;
+  text-align: center;
+  color: var(--dim);
+}
+.modal.viewer .vnone svg { width: 26px; height: 26px; opacity: 0.6; }
+.modal.viewer .vnone .t { color: var(--text); font-size: 13px; }

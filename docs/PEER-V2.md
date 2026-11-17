@@ -208,6 +208,12 @@ interface ConvState {
 - **未读角标 / 系统通知**：客户端每 6s 拉一次 `/api/peer/threads`，把各会话 `unread` 求和画到内网通按钮上；总数变大时给最新一条非免打扰会话发浏览器通知（点击聚焦并打开面板）。
 - **发文件的会话错位**：会话 key 改成 conv 之后，选择器把 nodeId 塞回 `S.thread`，界面看起来「跳到了一个没选好友的空会话」—— 现在 `pickerPeer` 单独记住这次发给谁，`convTarget()` 兜底。
 
+### 5.2 2026-11-18 追加（D302）
+
+- **预览不再自己写**：弹窗里只放一个指向网页客户端的 iframe（`/?peerpreview=<id>` 或 `/?peerpreviewpath=<绝对路径>`），客户端用 `openPeerPreview()` 拿到与 `/api/preview` 同形的 `PreviewInfo`，再走 `showPreviewInfo()` —— 表格浮窗、幻灯片、Markdown、代码高亮、PDF、HTML、图片全都与「点会话里的文件」同一条渲染路径。
+- **选文件对话框**：保留自己的暗色版式，加上「输入路径回车跳转」（`/api/stat` 判是目录还是文件）与每行「预览 / 选择」；预览用 `?peerpreviewpath=`，所以文件还没发出去也能看。
+- **Esc 分层**：预览弹窗盖在选择器上时，Esc 只关最上面那层（`layerEl.children.length` 优先），不会把选到一半的选择器一起关掉。
+
 ## 6. 分期
 
 见 `.scratch/qq-align/PLAN.md`（本地）。顺序按依赖排：存储 fold → 状态机 → 已读未读 → 会话列表 →

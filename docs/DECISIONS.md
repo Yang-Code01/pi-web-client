@@ -5800,3 +5800,17 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍。** 收件不设「拒收某个人」的名单：要挡人只能删关系 + 忽略名单，粒度不够，但再加一套 ACL 与 UI 不值得 —— 局域网文件的真实威胁模型是「同一网段里谁都能 POST」，不是「好友列表里的某个人」。下载与预览走两套语义（`dl=1` vs 不带）而不是两个路由，是为了让旧链接继续能内联预览。未读角标每 6s 轮询一次而不是推事件：桥已有 WS 通道，但内网通在 `PI_PEER=0` 时整块不存在，轮询失败静默比在 WS 协议里加一类消息便宜。
 
 **验证。** `bridge/tests/peer-e2e.mjs` 两处断言翻过来（quick 与非好友发文件现在必须成功，且对端真收到文件卡片；新增「冒名 begin 仍 409 可重试」）；`bridge/tests/peer-ui.mjs` 的按钮文案与「陌生人能不能传文件」跟着改；`npm run test:peer`、`node bridge/tests/peer-ui.mjs`、`npm run typecheck` 全过。真机：隔离实例两台（A 17864 / B 17870），A 从联系人（非好友）走「传文件 → 选择文件 → 发送」，会话不再跳走，B 的卡片出现「下载 / 预览」；`curl` 验 `download=1` 得 `attachment`、不带得 `inline`；客户端里点「预览」发出 `/api/peer/meta` 请求；角标 4 → 3（读掉一个会话）。
+
+## D302 内网通的文件预览直接用客户端那套渲染，选文件对话框自己长（2026-11-18）
+
+**背景。** D301 之后内网通文件卡片的「预览」是一个自己写的弹窗：按扩展名分派到 `<img>` / `<iframe>` / `<pre>`，只认图片、PDF、音视频与一小撮文本，Excel、PPT、CSV、Markdown、代码高亮、HTML 全都不在里面 —— 而这些客户端本来就会（表格浮窗、幻灯片浮窗、`renderMarkdown`、`highlight`、sandbox iframe）。同一份能力维护两套实现，注定一套先烂。同时选文件对话框只能一层层点目录，长路径要开资源管理器；用户明确要求补「输入路径跳转」和每行的「预览 / 选择」。
+
+**怎么定的。**
+1. **渲染只留一份**：桥端把 `openPreview()` 里「拿到绝对路径之后」那段抽成 `previewInfo(abs, root, stat)`，`/api/peer/preview` 用它返回与 `/api/preview` 同形的 `PreviewInfo`（token / rel / kind / slides）。客户端新增 `openPeerPreview()`：拿到信息后 `ensureViewer()` + `showPreviewInfo()`，而 `showPreviewInfo()` 正是 `openPreview()` 现在也在用的那一段（sheet / slides / csv / markdown / text / pdf / html / image / binary）。
+2. **预览窗口是一个独立的客户端页面**：`/?peerpreview=<id>`（收到的文件）或 `/?peerpreviewpath=<绝对路径>`（还没发出去的文件）。这个页面**不连 WS、不恢复会话**，只打开一个 viewer —— 多开一份客户端会抢会话与进程。`body.peer-preview` 只留 `.viewer`（与表格/幻灯片浮窗），其余界面隐藏。
+3. **选文件对话框不整块换成 `dirpicker`**：`mountDirPicker()` 的骨架绑定在附件控制台的表格版式上（`.fc-*`、`.sys-table` 两百来行 CSS 只为那个场景调过），搬进暗色选择器要连带搬样式、还得改它的 `autoStart` / 行结构。所以这里只补它缺的两件事 —— 路径框（`/api/stat` 判目录还是文件）与逐行「预览 / 选择」—— 交互对齐文件管理器，实现留在选择器里。
+4. **层级**：选择器 `z-index: 60` 比弹层高，从选择器里预览时先把选择器 `hidden`，弹层关掉再放回来（`afterLayer`）；Esc 也改成「先关最上面那层」，不再把选到一半的选择器一起关掉。
+
+**取舍。** 预览页多一次整页加载（iframe 里那份客户端），换来的是零重复渲染代码；本地 HTTP，代价是几百毫秒。`?peerpreviewpath=` 只对回环开放、且要求登录 cookie —— 它读的是本机任意文件，与文件管理器同级信任。预览页里不提供「编辑 / 保存」：内网通的文件是别人发来的一份副本，编辑它只会让人以为改动会同步回去。
+
+**验证。** `.scratch/qq-align/check-preview2.mjs`（A 发 7 种样本给 B，B 点卡片「预览」）—— markdown、`code.ts`（高亮）、csv（表格浮窗）、html（sandbox iframe）、txt、xlsx（表格浮窗）、pdf（内嵌）全部渲染成功；`.scratch/qq-align/check-picker.mjs` —— 输入绝对路径回车跳到父目录并高亮该文件、行内「预览」弹的是同一套渲染（xlsx 进表格浮窗）、「选择」回填文件名并启用发送。`npm --prefix web run typecheck`（tsc + i18n 三语 + viewport 守卫）、`npm run build`、`node bridge/tests/peer-ui.mjs` 全过。

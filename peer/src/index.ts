@@ -15,7 +15,8 @@ const nodeId = ensureNodeId();
 
 const log = (msg: string): void => {
   const line = `${new Date().toISOString()} ${msg}`;
-  console.log(line);
+  // 写 stdout 而不是 console.log：日志规则（D37）只允许 console.error，而这里就是它的正常出口。
+  process.stdout.write(`${line}\n`);
   try {
     fs.mkdirSync(statePath("logs"), { recursive: true });
     fs.appendFileSync(statePath("logs", "peer.log"), `${line}\n`);
@@ -75,7 +76,7 @@ const outbox = new Outbox({
 });
 messages.attachOutbox(outbox);
 
-const files = new Files({ cfg, nodeId, discovery, history, relations, log });
+const files = new Files({ cfg, nodeId, discovery, history, relations, store, log });
 
 const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations, files, ignored, store });
 

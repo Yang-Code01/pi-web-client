@@ -300,6 +300,22 @@ export function openPreview(
   // file actually sits in: the page gets no wider a read grant than the list it was clicked from.
   const pinned = pinRoots.find((root) => root && isUnder(abs, root)) ?? null;
   const root = pinned ?? (inCwd ? path.resolve(session.cwd) : path.dirname(abs));
+  return previewInfo(abs, root, st);
+}
+
+/**
+ * 同一份文件信息，但**不经过会话**：`/api/peer/preview` 用它把内网通收到的文件交给页面上
+ * 已有的预览渲染（表格 / 幻灯片 / Markdown / PDF / HTML / 图片）。会话那条路仍然先过
+ * `resolvePreviewPath` 的信任检查，这里由调用方保证 `abs` 是自己认识的文件。
+ */
+export function previewInfo(abs: string, root = path.dirname(abs), stat?: fs.Stats): PreviewInfo {
+  let st: fs.Stats;
+  try {
+    st = stat ?? fs.statSync(abs);
+  } catch {
+    throw new Error(`文件不存在：${abs}`);
+  }
+  if (!st.isFile()) throw new Error(`不是文件：${abs}`);
   const rel = path.relative(root, abs).split(path.sep).map(encodeURIComponent).join("/");
   const kind = kindOf(abs);
   const token = issue(root);

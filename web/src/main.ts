@@ -51,6 +51,7 @@ function loginScreen(onSuccess: (me: Me) => void): void {
 }
 
 async function boot(): Promise<void> {
+  // 预览窗口：没登录就直接回登录页（cookie 是 /api/peer/preview 的凭据）。
   let me: Me | null = null;
   try {
     me = await api.me();
@@ -67,7 +68,13 @@ async function boot(): Promise<void> {
 }
 
 async function start(me: Me): Promise<void> {
-  new App(me);
+  // 内网通的「预览」：同一个页面、同一套预览渲染，只是只显示那一份文件（D300）。
+  // 不连 WS、不开会话 —— 它是个一次性的展示窗口，不该在后台多开一份客户端。
+  const params = new URLSearchParams(location.search);
+  const peerPreview = params.get("peerpreview") ?? "";
+  const peerPreviewPath = params.get("peerpreviewpath") ?? "";
+  if (peerPreview || peerPreviewPath) document.body.classList.add("peer-preview");
+  new App(me, { peerPreview, peerPreviewPath });
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {
       /* push is optional */

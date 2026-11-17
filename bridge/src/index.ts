@@ -100,7 +100,7 @@ function runningSessions(sessions: { list(): { running: boolean }[] }): number {
   return sessCountCache.n;
 }
 import { piLatest } from "./piupdate.ts";
-import { isSkillPreviewPath, isTrustedPreviewPath, kindOf, openPreview, openSkillPreview, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
+import { isSkillPreviewPath, isTrustedPreviewPath, kindOf, openPreview, openSkillPreview, previewInfo, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
 import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
 import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
@@ -1020,6 +1020,25 @@ async function main(): Promise<void> {
       if (!meta) return json(res, 404, { error: "取不到这个文件（可能已经被挪走了）" });
       return json(res, 200, { ok: true, ...meta });
     }
+    // 内网通的文件用同一套预览：给出与 /api/preview 同形的信息（token / rel / kind），
+    // 页面把它交给已有的渲染（表格浮窗、幻灯片浮窗、Markdown、代码高亮、PDF、HTML、图片）。
+    if (url.pathname === "/api/peer/preview" && req.method === "GET") {
+      if (!authorized(req.headers.cookie)) return json(res, 401, { error: "要登录" });
+      if (publicReq) return fail(res, 403, "peer_preview_public", "公网不给内网通文件内容");
+      const id = url.searchParams.get("id") ?? "";
+      const raw = url.searchParams.get("path") ?? "";
+      // `id` 走内网通的收件 / 发件登记表；`path` 是选文件对话框里还没发出去的那一条（本机绝对路径）。
+      const abs = id ? await peer.filePath(id) : raw ? path.resolve(raw) : "";
+      if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
+      try {
+        const info = previewInfo(abs, path.dirname(abs));
+        // 页数与本机能不能转，与 /api/preview 一样提前告诉页面（D209）。
+        if (info.kind === "slides") info.slides = { pages: await countSlides(abs), engine: slidesAvailable() };
+        return json(res, 200, info);
+      } catch (err: any) {
+        return fail(res, 400, "peer_preview", err?.message ?? "打不开这个文件");
+      }
+    }
     // D209：内网通收到的文件，点卡片就用本机程序打开（收件目录里的那份真文件，不是下载副本）。
     if (url.pathname === "/api/peer/open" && req.method === "POST") {
       if (publicReq) return fail(res, 403, "open_public", "公网不能打开本机程序");
@@ -1027,6 +1046,15 @@ async function main(): Promise<void> {
       const abs = await peer.filePath(String(body?.id ?? ""));
       if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
       return json(res, 200, await openWithApp(abs));
+    }
+    if (url.pathname === "/api/peer/reveal" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "peer_reveal_public", "公网不能打开本机文件管理器");
+      const body = await readBody(req).catch(() => ({}));
+      const abs = await peer.filePath(String(body?.id ?? ""));
+      if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
+      const out = revealInFileManager(abs);
+      log(`peer reveal ${abs} → ${out.ok ? "ok" : out.message}`);
+      return out.ok ? json(res, 200, out) : json(res, 400, { error: out.message });
     }
     if (url.pathname === "/api/peer/add" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));

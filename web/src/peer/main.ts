@@ -137,6 +137,7 @@ interface Browse {
   entries: BrowseEntry[];
 }
 
+
 type Page = "msg" | "contacts" | "transfers" | "me";
 
 const MAX_TEXT_BYTES = 32 * 1024;
@@ -215,6 +216,8 @@ const S = {
   quote: null as Entry | null,
   /** 搜索命中的消息（跨会话）。 */
   hits: [] as { conv: string; msg: Entry }[],
+  /** 会话列表折起来没有：折起来就把宽度让给消息。 */
+  fold: localStorage.getItem("peer.fold") === "1",
 };
 
 // ---- 会话 key：`n:<nodeId>` 单聊、`g:<groupId>` 群聊。S.thread 一直存 conv。
@@ -239,16 +242,22 @@ const crumbsEl = document.querySelector("#crumbs") as HTMLElement;
 const placesEl = document.querySelector("#places") as HTMLUListElement;
 const rootsEl = document.querySelector("#roots") as HTMLUListElement;
 const filesEl = document.querySelector("#files") as HTMLUListElement;
+const pickerJump = document.querySelector("#picker-jump") as HTMLInputElement;
 const pickerSel = document.querySelector("#picker-sel") as HTMLElement;
 const pickerUp = document.querySelector("#picker-up") as HTMLButtonElement;
 const pickerSendBtn = document.querySelector("#picker-send") as HTMLButtonElement;
 const pickerClose = document.querySelector("#picker-close") as HTMLButtonElement;
 
+/** 上一次停在哪（打开选择器时回到这里）。 */
 let pickerDir = "";
 let pickerParent: string | null = null;
+/** 跳转命中的文件名（列表回来之后给它加个静态高亮）。 */
+let rowHit = "";
 /** 这次选文件要发给谁（nodeId）；S.thread 是 conv，不能拿来当收件人。 */
 let pickerPeer = "";
-let picked: BrowseEntry | null = null;
+/** 选中的那一条（绝对路径 + 文件名）。 */
+let pickedAbs = "";
+let pickedName = "";
 let composeEl: HTMLElement | null = null;
 let composeFor = "";
 /** 消息列重画前的滚动位置：贴着底就继续贴底，翻历史就停在原处。 */
@@ -619,6 +628,23 @@ function renderRail(): void {
     b.addEventListener("click", () => go(p.id));
     railEl.append(b);
   }
+  // 折叠会话列表：窄窗口下这条按钮也在媒体查询里隐掉（那时候列表本来就单独一屏）。
+  const fold = h("button", "fold-btn");
+  fold.type = "button";
+  fold.title = S.fold ? tr("展开会话列表") : tr("折叠会话列表");
+  fold.setAttribute("aria-label", fold.title);
+  fold.setAttribute("aria-expanded", S.fold ? "false" : "true");
+  fold.append(ic(S.fold ? "forward" : "back"));
+  fold.addEventListener("click", toggleFold);
+  railEl.append(fold);
+}
+
+/** 折叠/展开会话列表，顺手记住（下次打开还照这个来）。 */
+function toggleFold(): void {
+  S.fold = !S.fold;
+  localStorage.setItem("peer.fold", S.fold ? "1" : "0");
+  app.dataset.fold = S.fold ? "1" : "0";
+  renderRail();
 }
 
 function renderMobnav(): void {
@@ -1108,7 +1134,12 @@ function renderChat(): void {
   if (t.typing) stream.append(typingRow(t.nickname));
   if (!msgs.length) stream.append(h("div", "empty", tr("还没有消息，说点什么吧")));
   mainEl.append(stream);
+  // 贴底要「瞬移」：`.stream` 上挂着 scroll-behavior: smooth，重画后直接赋 scrollTop
+  // 会从顶上一条条滑下来（发消息时尤其明显）。赋完再还给 CSS，手动滚动还是顺滑的。
+  const smooth = stream.style.scrollBehavior;
+  stream.style.scrollBehavior = "auto";
   stream.scrollTop = stickBottom ? stream.scrollHeight : prevScroll;
+  stream.style.scrollBehavior = smooth;
 
   mainEl.append(composeBox(t));
 }
@@ -1243,22 +1274,69 @@ function forwardMsg(e: Entry): void {
 }
 
 /**
- * 收到的文件「预览」：嵌在客户端弹框里时把路径交给父页面，用本工程的预览面板打开；
- * 单独开一个 /peer 标签页（没有父页面）时退回浏览器内置查看的 inline 流。
+ * 文件预览：页内弹窗，内容交给网页客户端已有的预览渲染。
+ * 表格浮窗、幻灯片、Markdown、代码高亮、PDF、HTML、图片都在那一套里 —— 这里不再自己判断类型、
+ * 也不再重写一遍渲染（D300）。弹窗只负责外框和出口。
  */
-async function previewFile(e: Entry): Promise<void> {
-  if (window.parent && window.parent !== window) {
-    try {
-      const meta = await getJson<{ ok: boolean; path: string }>(`/api/peer/meta?id=${encodeURIComponent(e.id)}`);
-      if (meta.path) {
-        window.parent.postMessage({ type: "peer.preview", id: e.id, path: meta.path }, location.origin);
-        return;
-      }
-    } catch {
-      // 落回新标签：预览面板打不了的（PDF / 大文件）本来就该走浏览器自己的查看器。
-    }
+function previewFile(e: Entry): void {
+  const f = e.file;
+  if (!f) return;
+  closeLayer();
+  const src = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
+  const where = h("button", "btn", tr("打开文件所在位置"));
+  where.type = "button";
+  where.addEventListener("click", () => void revealFile(e.id));
+  const dl = h("a", "btn pri", tr("下载"));
+  dl.href = `${src}&download=1`;
+  dl.setAttribute("download", f.name);
+  previewBox(f.name, `/?peerpreview=${encodeURIComponent(e.id)}`, [where, dl]);
+}
+
+/** 选文件时「预览这一条」：文件还在盘上、没有消息 id，让客户端按路径渲染同一套预览。 */
+function previewPath(abs: string, name: string): void {
+  const pick = h("button", "btn pri", tr("选择这个文件"));
+  pick.type = "button";
+  pick.addEventListener("click", () => {
+    pickFile(abs, name);
+    closeLayer();
+  });
+  // 选择器的 z-index 比弹层高，不把选择器收起来就只能看到选择器挡在预览前面。
+  closeLayer();
+  picker.hidden = true;
+  afterLayer = () => {
+    picker.hidden = false;
+    if (!filesEl.children.length) void browse(pickerDir);
+  };
+  previewBox(name, `/?peerpreviewpath=${encodeURIComponent(abs)}`, [pick]);
+}
+
+/** 弹窗外框：标题、iframe（客户端整页接管）、底部几个出口。 */
+function previewBox(title: string, frameSrc: string, foot: HTMLElement[]): void {
+  const scrim = h("div", "scrim");
+  scrim.addEventListener("click", closeLayer);
+  const dlg = h("div", "modal viewer");
+  const head = h("header");
+  head.append(h("strong", "nm", title), iconBtn("close", tr("关掉"), closeLayer));
+  const body = h("div", "vbody");
+  const frame = h("iframe", "vframe");
+  frame.src = frameSrc;
+  frame.title = title;
+  frame.addEventListener("load", () => dlg.classList.add("ready"));
+  body.append(frame);
+  const footer = h("footer");
+  footer.append(...foot);
+  dlg.append(head, body, footer);
+  layerEl.append(scrim, dlg);
+}
+
+/** 「打开文件所在位置」：调本机文件管理器选到这个文件（bridge 侧的 reveal，跟预览面板同一个出口）。 */
+async function revealFile(id: string): Promise<void> {
+  try {
+    const out = await postJson<{ message?: string }>("/api/peer/reveal", { id });
+    toast(out.message || tr("已在文件管理器里打开"));
+  } catch (err) {
+    toast((err as Error).message);
   }
-  window.open(`/api/peer/file?id=${encodeURIComponent(e.id)}`, "_blank", "noopener");
 }
 
 function fileCard(e: Entry, mine: boolean): HTMLElement {
@@ -1275,18 +1353,30 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
   if (mine) {
     const failed = status === "failed";
     const label = failed ? tr("发送失败") : status === "sending" ? tr("发送中") : tr("已发出");
-    const act = h("span", "act", failed ? tr("重试") : tr("打开"));
-    foot.append(h("span", "", label), act);
-    card.style.cursor = "pointer";
-    card.addEventListener("click", () => {
-      if (failed) void resend(e);
-      else toast(tr("文件已经在你自己的盘上"));
+    foot.append(h("span", "lbl", label));
+    if (failed) {
+      const retry = h("button", "act", tr("重试"));
+      retry.type = "button";
+      retry.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        void resend(e);
+      });
+      foot.append(retry);
+    }
+    const where = h("button", "act", tr("所在位置"));
+    where.type = "button";
+    where.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void revealFile(e.id);
     });
+    foot.append(where);
+    card.style.cursor = "pointer";
+    card.addEventListener("click", () => previewFile(e));
   } else {
-    // D301：收到的文件给两个出口 ——「预览」进本工程的预览面板，「下载」走强制 attachment 的流落盘。
+    // 收到的文件三个出口：预览（页内弹窗）、下载（强制 attachment）、所在位置（本机文件管理器）。
     card.title = tr("点一下预览");
     card.style.cursor = "pointer";
-    card.addEventListener("click", () => void previewFile(e));
+    card.addEventListener("click", () => previewFile(e));
     const dl = h("a", "act", tr("下载"));
     dl.href = `/api/peer/file?id=${encodeURIComponent(e.id)}&download=1`;
     dl.addEventListener("click", (ev) => ev.stopPropagation());
@@ -1294,9 +1384,15 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
     pv.type = "button";
     pv.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      void previewFile(e);
+      previewFile(e);
     });
-    foot.append(h("span", "", tr("对方发来")), dl, pv);
+    const where = h("button", "act", tr("所在位置"));
+    where.type = "button";
+    where.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void revealFile(e.id);
+    });
+    foot.append(h("span", "lbl", tr("对方发来")), dl, pv, where);
   }
   body.append(foot);
   card.append(icon, body);
@@ -1849,7 +1945,14 @@ async function refreshAll(): Promise<void> {
 
 function closeLayer(): void {
   layerEl.replaceChildren();
+  // 从选文件对话框里打开的预览：关掉预览就把选择器放回来，别让用户重选一遍。
+  const after = afterLayer;
+  afterLayer = null;
+  if (after) after();
 }
+
+/** 预览关掉之后要恢复的那一层（目前只有选文件对话框用）。 */
+let afterLayer: (() => void) | null = null;
 
 function openMenu(x: number, y: number, items: { label: string; icon?: string; danger?: boolean; run: () => void }[]): void {
   closeLayer();
@@ -1994,31 +2097,53 @@ async function openPicker(nodeId: string, direct = false): Promise<void> {
     app.dataset.mview = "chat";
   }
   picker.hidden = false;
-  await browse("");
+  await browse(pickerDir);
+  pickerJump.value = "";
+  resetPick();
 }
 
 function closePicker(): void {
   picker.hidden = true;
-  picked = null;
+  resetPick();
 }
 
-async function browse(dir: string): Promise<void> {
+async function browse(dir: string, hit = ""): Promise<void> {
   try {
     const data = await getJson<Browse & { ok: boolean }>(`/api/peer/fs?path=${encodeURIComponent(dir)}`);
     pickerDir = data.path ?? dir;
     pickerParent = data.parent ?? null;
-    picked = null;
+    rowHit = hit;
     renderCrumbs();
     placesEl.replaceChildren(...(data.places ?? []).map((p) => placeItem(p.name, p.path)));
     rootsEl.replaceChildren(...(data.roots ?? []).map((p) => placeItem(p.name, p.path)));
     filesEl.replaceChildren();
-    if (!data.entries?.length) filesEl.append(h("li", "", tr("这个文件夹是空的")));
+    if (!data.entries?.length) filesEl.append(h("li", "empty", tr("这个文件夹是空的")));
     for (const entry of data.entries ?? []) filesEl.append(fileItem(entry));
-    pickerSendBtn.disabled = true;
-    pickerSel.textContent = tr("还没选文件");
     pickerUp.disabled = !pickerParent;
     pickerUp.onclick = () => pickerParent && void browse(pickerParent);
   } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
+/** 跳到输入框里的路径：文件夹就进去，文件就进它的目录并选中它。 */
+async function jumpTo(): Promise<void> {
+  const typed = pickerJump.value.trim().replace(/^"(.*)"$/, "$1");
+  if (!typed) return;
+  pickerJump.classList.remove("bad");
+  try {
+    const stat = await getJson<{ path: string; kind: string; parent: string | null }>(`/api/stat?path=${encodeURIComponent(typed)}`);
+    if (stat.kind === "dir") return await browse(stat.path);
+    if (stat.kind === "file") {
+      const name = stat.path.split(/[\\/]/).pop() ?? "";
+      await browse(stat.parent ?? "", name);
+      const row = [...filesEl.children].find((li) => li.getAttribute("data-name") === name) as HTMLElement | undefined;
+      row?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    pickerJump.classList.add("bad");
+  } catch (err) {
+    pickerJump.classList.add("bad");
     toast((err as Error).message);
   }
 }
@@ -2033,6 +2158,8 @@ function placeItem(name: string, path: string): HTMLLIElement {
 
 function fileItem(entry: BrowseEntry): HTMLLIElement {
   const li = h("li");
+  li.dataset.name = entry.name;
+  if (entry.name === rowHit) li.classList.add("hit");
   li.append(ic(entry.dir ? "folder" : "file"), h("span", "ell", entry.name));
   li.append(h("span", "sz", entry.dir ? "" : sizeOf(entry.size)));
   li.addEventListener("click", () => {
@@ -2040,13 +2167,39 @@ function fileItem(entry: BrowseEntry): HTMLLIElement {
       void browse(entry.path);
       return;
     }
-    for (const other of filesEl.children) other.classList.remove("on");
-    li.classList.add("on");
-    picked = entry;
-    pickerSendBtn.disabled = false;
-    pickerSel.textContent = entry.name;
+    pickFile(entry.path, entry.name);
   });
+  if (!entry.dir) {
+    const acts = h("div", "acts");
+    acts.append(rowButton(tr("预览"), () => previewPath(entry.path, entry.name)), rowButton(tr("选择"), () => pickFile(entry.path, entry.name)));
+    li.append(acts);
+  }
   return li;
+}
+
+function rowButton(label: string, run: () => void): HTMLButtonElement {
+  const b = h("button", "act", label);
+  b.type = "button";
+  b.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    run();
+  });
+  return b;
+}
+
+function resetPick(): void {
+  pickedAbs = "";
+  pickedName = "";
+  pickerSendBtn.disabled = true;
+  pickerSel.textContent = tr("还没选文件");
+}
+
+function pickFile(abs: string, name: string): void {
+  pickedAbs = abs;
+  pickedName = name;
+  pickerSendBtn.disabled = false;
+  pickerSel.textContent = name;
+  for (const row of filesEl.children) row.classList.toggle("on", row.getAttribute("data-name") === name);
 }
 
 function renderCrumbs(): void {
@@ -2067,16 +2220,23 @@ function renderCrumbs(): void {
 }
 
 pickerClose.addEventListener("click", closePicker);
+pickerJump.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter") return;
+  ev.preventDefault();
+  void jumpTo();
+});
+pickerJump.addEventListener("click", () => pickerJump.classList.remove("bad"));
 pickerSendBtn.addEventListener("click", () => {
-  if (picked) void sendPath(picked.path);
+  if (pickedAbs) void sendPath(pickedAbs, pickedName);
 });
 picker.addEventListener("click", (ev) => {
   if (ev.target === picker) closePicker();
 });
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
+  // 预览弹窗盖在选择器上面：Esc 先关中间那层，不能把选到一半的选择器一起关掉。
+  if (layerEl.children.length) return closeLayer();
   if (!picker.hidden) return closePicker();
-  closeLayer();
 });
 
 // ---------------------------------------------------------------- 启动 / 轮询
@@ -2086,6 +2246,7 @@ async function boot(): Promise<void> {
   for (const node of document.querySelectorAll<HTMLElement>("[data-i18n]")) node.textContent = tr(node.dataset.i18n ?? "");
   for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-title]")) node.title = tr(node.dataset.i18nTitle ?? "");
   for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-aria]")) node.setAttribute("aria-label", tr(node.dataset.i18nAria ?? ""));
+  pickerJump.placeholder = tr("输入路径，回车跳转");
   (pickerClose as HTMLElement).append(ic("close"));
   await loadStatus();
   await loadThreads();
@@ -2094,6 +2255,7 @@ async function boot(): Promise<void> {
   if (S.threads.length && !S.thread) S.thread = S.threads[0].conv;
   app.dataset.page = S.page;
   app.dataset.mview = S.mview;
+  app.dataset.fold = S.fold ? "1" : "0";
   renderAll();
   if (S.thread) void loadMessages().then(() => renderMain());
 }

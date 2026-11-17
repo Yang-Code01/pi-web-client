@@ -777,7 +777,7 @@ export class App {
    *  之后的普通重画（改名、收推送…）不再抢焦点。 */
   private pendingFocus: PendingFocusState = { card: null, ws: null };
 
-  constructor(me: Me) {
+  constructor(me: Me, opts: { peerPreview?: string; peerPreviewPath?: string } = {}) {
     this.me = me;
     this.tunnel = me.tunnel;
     applyLang(this.prefs.lang);
@@ -803,6 +803,15 @@ export class App {
       if (path) this.insertPaths([path]);
     });
     this.startClock();
+    // 内网通预览窗口：一个文件、一屏，不连 WS —— 多开一份客户端会在后台抢会话与进程。
+    // 两种入口：收到的文件用消息 id（`?peerpreview=`），选文件时还没发出去，只能用路径（`?peerpreviewpath=`）。
+    if (opts.peerPreview || opts.peerPreviewPath) {
+      const target = opts.peerPreview ? { id: opts.peerPreview } : { path: opts.peerPreviewPath ?? "" };
+      void this.openPeerPreview(target).then((ok) => {
+        if (!ok) this.warn(tr("打不开这个文件"));
+      });
+      return;
+    }
     this.socket.connect();
     this.routeFromHash();
   }
@@ -1535,13 +1544,6 @@ export class App {
         return;
       }
       void this.trackRawNav(String(d.rel ?? ""), String(d.href ?? ""), Number(d.y) || 0, String(d.tk ?? ""));
-    });
-    // 内网通弹框里的「预览」（D301）：iframe 自己打不开预览面板，把收件路径递上来由这里开。
-    window.addEventListener("message", (ev) => {
-      if (ev.origin !== location.origin) return;
-      const d = ev.data as { type?: string; id?: string; path?: string } | null;
-      if (d?.type !== "peer.preview" || !d.path) return;
-      void this.openPeerFile(String(d.path));
     });
     this.installShortcuts();
     this.startPeerUnread();
@@ -4700,28 +4702,10 @@ export class App {
    * session stays put. The body is an iframe of the standalone `/peer` document, so the peer page
    * keeps its own entry (openable directly) without a second implementation; the iframe is removed
    * on close, which also stops its polling.
+   *
+   * 文件预览不在这里：D301 之后预览是内网通页面自己的弹窗（它知道文件类型，页内看完就关），
+   * 不再绕回这个壳层的预览面板。
    */
-  /**
-   * 内网通收到的文件「预览」（D301）：收到的东西在 ~/.pi-peer 收件箱里，会话目录之外；
-   * 预览面板本来就给收件目录开了一条 pin（D209），所以直接交给它。
-   * **没有会话可挂时不替用户开外部程序** —— 面板是预览的唯一出口，缺的只是「挂哪」；
-   * 想落到磁盘上按「下载」就够了。
-   */
-  private async openPeerFile(path: string): Promise<void> {
-    if (!this.currentId) {
-      this.showPeerNote(tr("先打开一个会话，预览就用它的预览面板"));
-      return;
-    }
-    if (await this.openPreview(path)) return;
-    this.showPeerNote(tr("打不开这个文件（可能已经被挪走了）"));
-  }
-
-  private showPeerNote(text: string): void {
-    const box = el("div", "peer-note", text);
-    this.overlay(box);
-    window.setTimeout(() => box.classList.add("gone"), 3200);
-    window.setTimeout(() => box.remove(), 4000);
-  }
 
   /**
    * 顶栏「内网通」的未读角标与系统通知（D301）：弹框关着时 iframe 不在，未读只有在这里能看见。
@@ -8248,29 +8232,69 @@ export class App {
     v.path = v.info.abs || path;
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
     if (!replace) this.retargetTop(path, v.path, sessionId);
+    return this.showPreviewInfo(v, v.info);
+  }
+
+  /**
+   * 已经拿到 PreviewInfo 之后的一切：表格 / 幻灯片 / CSV 各自另开浮窗，其余在这个面板里画。
+   * 会话里的文件与内网通收到的文件走同一条路（D300）——预览能力只有一份。
+   */
+  private async showPreviewInfo(v: Viewer, info: PreviewInfo): Promise<boolean> {
     // D166: spreadsheet files leave the binary branch and open in their own dialog, not the viewer.
-    if (v.info.kind === "sheet") {
-      const info = v.info;
+    if (info.kind === "sheet") {
       this.closeViewer();
       this.openSheet(info);
       return true;
     }
-    // D209: 演示文稿也走自己的浮窗 —— viewer 面板只有 min(760px, 55vw)，一页幻灯片在那儿只能当缩略图。
-    if (v.info.kind === "slides") {
-      const info = v.info;
+    // D209: 演示文稿也走自己的浮窗。
+    if (info.kind === "slides") {
       this.closeViewer();
       this.openSlides(info);
       return true;
     }
     // #113: CSV / TSV 也在浮窗里，但没有 xlsx 那种元数据——字节由页面自己解码、切格。
-    if (/\.(csv|tsv)$/i.test(v.info.name)) {
-      const info = v.info;
+    if (/\.(csv|tsv)$/i.test(info.name)) {
       this.closeViewer();
-      void this.openCsvSheet(info, sessionId);
+      void this.openCsvSheet(info, v.sessionId);
       return true;
     }
     await this.loadViewerText();
     return true;
+  }
+
+  /**
+   * 内网通里的文件：向桥要一份与 `/api/preview` 同形的信息（token / rel / kind），之后
+   * 表格、幻灯片、Markdown、代码高亮、PDF、HTML、图片全部复用同一个渲染路径。
+   */
+  async openPeerPreview(target: { id?: string; path?: string }): Promise<boolean> {
+    let info: PreviewInfo;
+    try {
+      const q = target.id ? `id=${encodeURIComponent(target.id)}` : `path=${encodeURIComponent(target.path ?? "")}`;
+      const res = await fetch(`/api/peer/preview?${q}`, { credentials: "same-origin" });
+      const body: any = await res.json().catch(() => null);
+      if (!res.ok || !body?.token) throw new Error(body?.error ?? tr("打不开这个文件"));
+      info = body as PreviewInfo;
+    } catch {
+      return false;
+    }
+    const v = this.ensureViewer();
+    // 这个页面只为看一份文件而来：面板撑满整屏（D300）。
+    this.viewerFull(true, false);
+    this.raiseWindow(v.root);
+    v.sessionId = "";
+    v.pane = "preview";
+    v.draft = null;
+    v.dirty = false;
+    v.conflict = null;
+    v.ext = null;
+    v.path = info.abs;
+    v.info = info;
+    v.error = "";
+    v.text = null;
+    v.mode = "render";
+    v.tr = null;
+    this.paintViewer();
+    return this.showPreviewInfo(v, info);
   }
 
   /** #113：CSV / TSV 的浮窗——表格 / 源码两个 tab，编码嗅探在前端（D166），保存仍走文本通道。 */

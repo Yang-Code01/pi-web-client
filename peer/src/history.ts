@@ -179,11 +179,15 @@ export class History {
     const { lines } = this.readLines(conv);
     const byId = new Map<string, Msg>();
     const msgs: Msg[] = [];
+    // 旧行（v1 的 append，文件卡片还在走这条路）没有 seq：给它一个「和上一条真实消息同号」的 seq，
+    // 这样它在 sorted() 里按 at 落在上一条之后，而不是因为 seq 0 永远排在对话最上面。
+    let lastSeq = 0;
     for (const line of lines) {
       if ("op" in line) {
         if (line.op === "msg") {
           byId.set(line.msg.id, line.msg);
           msgs.push(line.msg);
+          if (line.msg.seq > lastSeq) lastSeq = line.msg.seq;
         } else if (line.op === "patch") {
           const target = byId.get(line.id);
           if (target) Object.assign(target, line.patch);
@@ -200,7 +204,7 @@ export class History {
       const msg: Msg = {
         v: 2,
         id: line.id,
-        seq: 0,
+        seq: lastSeq,
         conv,
         from: line.from,
         at: line.at,

@@ -7,8 +7,10 @@ import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import type { Entry, History, PeerIdentity } from "./history.ts";
+import { convOfNode } from "./model.ts";
 import { uuidv7 } from "./messages.ts";
 import type { Relations } from "./peers.ts";
+import type { Store } from "./store.ts";
 
 /** 分块大小：1 MB。局域网里 TCP 已经帮我们做了分片，再切细只多几个 RTT。 */
 export const CHUNK = 1024 * 1024;
@@ -86,6 +88,7 @@ export class Files {
       discovery: Discovery;
       history: History;
       relations: Relations;
+      store: Store;
       log: (msg: string) => void;
     },
   ) {
@@ -261,13 +264,29 @@ export class Files {
     this.tokens.delete(token);
     this.stored[waiting.messageId] = { path: final, name: path.basename(final), size: waiting.size, mime: waiting.mime };
     this.saveStored();
-    this.ctx.history.append(waiting.peerId, {
+    // v2 的消息（有 seq）—— 文件卡片的顺序才能跟文字消息一致，不会因为旧行 seq 0 跑到最上面。
+    const conv = convOfNode(waiting.peerId);
+    const at = Date.now();
+    this.ctx.history.appendMsg({
+      v: 2,
       id: waiting.messageId,
-      at: Date.now(),
+      seq: this.ctx.store.nextSeq(conv),
+      conv,
       from: { nodeId: waiting.peerId },
-      to: { kind: "node", id: this.ctx.nodeId },
-      kind: "file",
-      file: { name: path.basename(final), size: waiting.size, mime: waiting.mime, sha256: waiting.sha256 || undefined },
+      at,
+      saveAt: at,
+      sendType: "recv",
+      sendStatus: "success",
+      elements: [
+        {
+          type: "file",
+          name: path.basename(final),
+          size: waiting.size,
+          mime: waiting.mime,
+          sha256: waiting.sha256 || undefined,
+          transferId: waiting.messageId,
+        },
+      ],
     });
     const transfer = this.transfers.get(waiting.messageId);
     if (transfer) {
@@ -311,6 +330,10 @@ export class Files {
   async send(peerId: string, localPath: string, name: string): Promise<{ ok: true; id: string }> {
     const stat = fs.statSync(localPath);
     const id = uuidv7();
+    // 自己发出去的文件也记一张「本地位置」：卡片上的「打开文件所在位置」和预览都靠它，
+    // 不然 `stored` 里只有收到的文件，自己的卡片点了只会得到 404。
+    this.stored[id] = { path: path.resolve(localPath), name, size: stat.size, mime: mimeOf(name) };
+    this.saveStored();
     this.transfers.set(id, {
       id,
       peerId,
@@ -371,13 +394,21 @@ export class Files {
     if (!endRes.ok) throw new Error(end.error ?? `收尾失败（HTTP ${endRes.status}）`);
 
     // 自己这边也留一张卡片：发出去的东西在对话里要看得见。
-    this.ctx.history.append(peerId, {
+    const conv = convOfNode(peerId);
+    const at = Date.now();
+    this.ctx.history.appendMsg({
+      v: 2,
       id,
-      at: Date.now(),
+      seq: this.ctx.store.nextSeq(conv),
+      conv,
       from: { nodeId: this.ctx.nodeId, nickname: this.ctx.cfg.nickname, port: this.ctx.cfg.port },
-      to: { kind: "node", id: peerId },
-      kind: "file",
-      file: { name: end.name ?? name, size, mime: mimeOf(name), sha256 },
+      at,
+      saveAt: at,
+      sendType: "self",
+      sendStatus: "success",
+      elements: [
+        { type: "file", name: end.name ?? name, size, mime: mimeOf(name), sha256, transferId: id },
+      ],
     });
     const transfer = this.transfers.get(id);
     if (transfer) {
