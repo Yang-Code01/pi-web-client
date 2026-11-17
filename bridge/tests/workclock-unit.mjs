@@ -12,11 +12,13 @@
  */
 import assert from "node:assert/strict";
 import {
+  autostartValueName,
   dedupeEvents,
   localDateKey,
   normalizeSettings,
   parseEventLines,
   parseLogEvents,
+  parseRegQueryValue,
   summarizeCoverage,
   summarizeDays,
   summarizeToday,
@@ -260,6 +262,37 @@ check("summarizeCoverage：按来源数天数，from/to 取首末解锁", () => 
   assert.equal(coverage.agentDays, 2);
   assert.equal(coverage.from, at(2026, 3, 8, 9));
   assert.equal(coverage.to, at(2026, 3, 10, 9));
+});
+
+check("parseRegQueryValue：从 reg query 的输出里取出我们那个值", () => {
+  // 真实输出：CRLF、值名与类型之间是补到列宽的空白，长命令行里带引号。
+  const out = [
+    "",
+    "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+    "    OneDrive                REG_SZ    \"C:\\Users\\me\\OneDrive.exe\" /background",
+    '    pi-web-client-workclock    REG_SZ    powershell.exe -NoProfile -File "C:\\a b\\x.ps1" -Dir "C:\\c d"',
+    "",
+  ].join("\r\n");
+  assert.equal(
+    parseRegQueryValue(out, "pi-web-client-workclock"),
+    'powershell.exe -NoProfile -File "C:\\a b\\x.ps1" -Dir "C:\\c d"',
+  );
+  // 短名字靠长串空白对齐，取出来的值名不能被拖上空格
+  assert.equal(parseRegQueryValue(out, "OneDrive"), '"C:\\Users\\me\\OneDrive.exe" /background');
+  // 没这个值（卸载后 / 首次安装前）与空输出
+  assert.equal(parseRegQueryValue(out, "pi-web-client-workclock-ab12cd"), null);
+  assert.equal(parseRegQueryValue("", "pi-web-client-workclock"), null);
+  assert.equal(parseRegQueryValue("  错误: 系统找不到指定的注册表项或值。", "pi-web-client-workclock"), null);
+});
+
+check("autostartValueName：正式实例用原名，测试实例带状态目录哈希", () => {
+  assert.equal(autostartValueName({}, "C:\\Users\\me\\AppData\\Local\\pi-web-client"), "pi-web-client-workclock");
+  const a = autostartValueName({ PI_WEB_STATE: "C:\\tmp\\wk-a" }, "C:\\tmp\\wk-a");
+  const b = autostartValueName({ PI_WEB_STATE: "C:\\tmp\\wk-b" }, "C:\\tmp\\wk-b");
+  // 测试实例（带 PI_WEB_STATE）不能顶掉正式实例的自启项：名字带 6 位哈希后缀，且不同目录互不相撞
+  assert.match(a, /^pi-web-client-workclock-[0-9a-f]{6}$/);
+  assert.notEqual(a, b);
+  assert.equal(a, autostartValueName({ PI_WEB_STATE: "C:\\tmp\\wk-a" }, "C:\\tmp\\wk-a"));
 });
 
 if (failures) {

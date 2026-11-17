@@ -159,8 +159,10 @@ export interface WorkclockAgent {
   locksSeen: number;
   heartbeatAt: number | null;
   scriptPath: string;
-  taskName: string;
-  taskState: string;
+  /** 注册表值名（测试实例带状态目录哈希后缀）。 */
+  autostartName: string;
+  /** 已注册的自启命令行；没注册时为空串。 */
+  autostartCommand: string;
   error: string | null;
 }
 

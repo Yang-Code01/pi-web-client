@@ -296,6 +296,36 @@ check("今日明细有解锁行", (await page.locator(".sys-wk-event").count()) 
 check("30 天表有行", (await page.locator(".sys-wk-table tbody tr").count()) >= 1);
 const agentText = (await page.locator(".sys-wk-agent").innerText()).trim();
 check("记录器卡片说未安装", agentText.includes("未安装"), agentText.replace(/\s+/g, " ").slice(0, 80));
+
+// D286 的核心：自启项在、进程没起来时，卡片必须说「没在跑」，不能因为自启项在就报运行中。
+// 自启项名带状态目录哈希后缀，跟正式实例（pi-web-client-workclock）不撞；删不干净也只是个死值。
+const waitAgent = async (text, ms = 15_000) => {
+  const t0 = Date.now();
+  let last = "";
+  while (Date.now() - t0 < ms) {
+    last = (await page.locator(".sys-wk-agent").innerText()).trim();
+    if (last.includes(text)) return last;
+    await page.waitForTimeout(200);
+  }
+  return last;
+};
+const wkName = (await (await ctx.request.get(`${BASE}/api/sys?section=workclock`)).json()).agent?.autostartName;
+check("自启项名带测试实例后缀", typeof wkName === "string" && wkName.startsWith("pi-web-client-workclock-"), String(wkName));
+const regRun = (args) => execFileSync("reg.exe", args, { stdio: "ignore" });
+try {
+  regRun(["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", wkName, "/t", "REG_SZ", "/d", "powershell.exe -NoProfile -File C:\\nowhere\\workclock-agent.ps1", "/f"]);
+  await page.getByRole("button", { name: /^刷新$/ }).click();
+  const zombie = await waitAgent("已注册自启，但没在跑");
+  check("自启项在、进程没起 → 说没在跑", zombie.includes("已注册自启，但没在跑"), zombie.replace(/\s+/g, " ").slice(0, 120));
+  check("没在跑时心跳是 —", /心跳\s*—/.test((await page.locator(".sys-wk-facts").innerText()).replace(/\s+/g, " ")), (await page.locator(".sys-wk-facts").innerText()).replace(/\s+/g, " ").slice(0, 160));
+  const agentPanelText = await page.locator(".sys-wk-panel", { has: page.locator(".sys-wk-agent") }).innerText();
+  check("没在跑时给出自救提示", agentPanelText.includes("自启项在，但记录器没在跑"), agentPanelText.replace(/\s+/g, " ").slice(0, 200));
+} finally {
+  regRun(["delete", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", wkName, "/f"]);
+}
+await page.getByRole("button", { name: /^刷新$/ }).click();
+const backToNone = await waitAgent("未安装");
+check("删掉自启项回到未安装", backToNone.includes("未安装"), backToNone.replace(/\s+/g, " ").slice(0, 80));
 const hoursInput = page.locator(".sys-wk-input").first();
 check("工时输入默认 9", (await hoursInput.inputValue()).trim() === "9", await hoursInput.inputValue());
 await checkLayout("上下班");

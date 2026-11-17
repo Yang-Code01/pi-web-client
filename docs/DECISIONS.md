@@ -4331,6 +4331,8 @@ D
 6. **公网只读：** `/api/sys?section=workclock` 在隧道下照常返回但 `public:true`；`/api/sys/workclock/{settings,agent,backfill}` 一律 403 —— 装记录器、导入历史都是本机才能做的事。
 7. **提醒分两条：** 页面 toast 默认开（`settings.notify`）；系统通知要用户点一下「允许系统通知」（浏览器权限必须手势）。
 
+> **被 D286 取代的部分（2026-11-17）：** 第 2 条「每用户计划任务」不成立 —— 标准用户机器上 `Register-ScheduledTask` 一律 `Access is denied`，而且它报的是 CIM 非终止错误，脚本照样打 `{"ok":true}`。登录自启改成 HKCU 的 Run 项，装完回读验证，见 **D286**。其余口径（三级取证、第一次解锁、来源优先级、公网只读）不变。
+
 **为什么：** 轮询做不到「准确」——15 s 的采样丢掉的正是用户输密码那几秒；事件驱动能拿到精确时刻但不能追历史；Security 日志能追 90 天却要 UAC。三条合起来才对得上用户那句「要准确」：日常靠事件，漏了靠轮询，历史靠一次性 UAC。至于「从第一次解锁起算 N 小时」而不是累计在线，是因为用户问的是「几点下班」，累计口径一午休就答不上来。
 
 **踩到的坑（都在真机端到端才暴露，单测看不见）：** ① PS 里 `$line + "\n"` 得到字面反斜杠 n，`agent.jsonl` 全是坏行 —— 改 `[IO.File]::AppendAllLines($path, [string[]]@($line), $utf8)`；② PowerShell 5.1 按 ANSI 读无 BOM 的 `.ps1`，脚本里一加中文注释就 `缺少右「}」` —— 落盘统一 `\ufeff` 前缀；③ `String.raw` 模板里写反引号会截断模板块（报 537 个假 TS 错误），PS 正文与注释里都不出现反引号；④ `Add-Event 'start' 'event'` 写成 `k="start"` 被解析器丢掉，今天直接没有上班时间 —— 改成 `k="unlock" src="start"`；⑤ bash 里拼 `Get-CimInstance … | ForEach-Object { $_… }` 会被 MSYS 吃掉 `$_` 报 127，复杂 PS 一律走 `.ps1` 或 `-EncodedCommand`。
@@ -5476,3 +5478,34 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 - 选区只在焦点确实在输入框时恢复；用户此时若正在用鼠标拖选别处（焦点已不在 textarea），概不干预。
 
 **验证：** 新增 `bridge/tests/composer-focus.mjs`（端口默认 7870，`COMPOSER_FOCUS_PORT` 覆盖）：`FAKE_PI_BOOT_MS=5000` 让假 pi 握住第一条命令模拟慢启动，走真实 UI 开新会话、进输入框，每 80ms 用真键盘敲一个字，一直敲到「正在启动」消失；断言焦点始终是 composer 里的 `TEXTAREA`、字数一个不少、之后再敲的字照样进输入框。修复前红：`activeElement=BODY inComposer=false`、末字丢失（`len=53 want≥54`）；修复后绿（`flippedAt=45`）。`npm run typecheck`（含 i18n-check、viewport-units 守卫）与 `npm run build` 全过。
+
+## D286 记录器登录自启改用 HKCU 的 Run 项，装完必须回读验证（用户报障 2026-11-17）
+
+**问题：** 用户报「我今天解锁了，但是没有看到信息」。查下去是三件事叠在一起：
+
+1. **计划任务从没注册成功。** 这台机器的账号 `HYRON-JS\yangqm` 不在 Administrators 组，`Register-ScheduledTask` 一律回 `Access is denied`；而它是 CIM 的非终止错误，`-ErrorAction Stop` 也拦不住，脚本照到底、照打 `{"ok":true}`。页面于是显示「装上 / 运行中」，`agent-status.json` 却是上一次手动跑留下的心跳。
+2. **就算装上也没有数据。** 非管理员读不到 Security 日志的 4800/4801，这台机器连审核策略都没开（`log-events.json` 是 `[]`），回填也就永远是 0 条。
+3. **0 条还给了绿条。** 「导入历史」把 0 条也算成功，用户看到的是「导入了 0 条」这种假绿灯。
+
+**决定：** 登录自启换成 **HKCU 的 Run 项**（`AUTOSTART_KEY` / `AUTOSTART_NAME` = `pi-web-client-workclock`），装/卸用 `reg.exe`，装完**回读注册表**判断成败，再靠心跳确认进程真起来了。计划任务那条路整条删掉。
+
+- 测试实例（有 `PI_WEB_STATE`）的值名带状态目录哈希后缀：`pi-web-client-workclock-<6 位>`，取哈希**低位**（djb2 末尾字符的差异只落在低位，取前 6 位会让 `wk-a` / `wk-b` 撞名）。这样两个测试实例、以及测试实例与正式实例之间不会互相顶掉自启项。卸载时 CIM 兜底杀进程只匹配 `*<本实例脚本完整路径>*`，同理不误杀别的实例。
+- 拉起进程用「短命 powershell 里 `Start-Process -FilePath <powershell 绝对路径> -ArgumentList <脚本参数> -WindowStyle Hidden`」，**不用 node 的 `detached: true`**：Windows 上那是 `DETACHED_PROCESS`（没有控制台），PS 5.1 启动即退。
+- 自启项与 `Start-Process` 都写 **PowerShell 的绝对路径**（`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`，找不到才退回裸名字）：Run 项在登录时由 explorer 拉起、靠 PATH 解析，用户把 PATH 改坏或前面有条冒牌的 `powershell.exe` 就会跑错东西。Run 项是 CreateProcess 语义，路径带空格才用双引号包（**不能**用 PowerShell 的单引号 `psQuote`）。
+- 装了但没心跳时报错要把脚本路径写出来（「直接跑一次 <script> 看报什么错」），不能让用户猜。
+- 装/卸的结果一律读回真实状态决定 `ok`，不信子进程的退出码。
+- 页面文案跟着分档：`运行中` / `已注册自启，但没在跑` / `未安装`，并显示心跳时间；回填 0 条改成明确的坏消息（「这台机器没开审核策略（4800/4801），只能用记录器从现在开始记」）。
+
+**实测（本机，Windows 11 + PS 5.1）：**
+
+- 标准用户 `Register-ScheduledTask` → `Access is denied`；改成 `-File` 模式后语句级错误仍不中止。
+- node `spawn` 的 `detached: true`（`stdio` ignore / pipe 都试）启动 PS 5.1 → 立刻 exit 0，脚本一行没跑。
+- 不 detached 又会跟着父进程死：父进程退出 5 秒后 `tasklist /FI "PID eq <子进程>"` → `No tasks are running`，心跳文件停住不动。
+- `Start-Process` 那条路：父进程退出后 20 秒心跳仍在推进（`updatedAt` 1794881304 → 1794881318）。
+- `reg query HKCU\...\Run` 的真实输出（`OneDrive` / `ctfmon` / `Docker Desktop` / `Teams` 都在）解析器实测能取回含空格的值名与带引号的命令行；值不存在时返回 null。
+
+**验证：** `bridge/tests/workclock-unit.mjs` 新增 `parseRegQueryValue`（真实格式：CRLF、值名补到列宽、含空格的值名、命令带引号、缺值 / 空输出 / 中文报错行）与 `autostartValueName`（正式实例原名、测试实例带后缀且不撞）两组用例；两处 typecheck 全绿。
+
+**代价 / 局限：** Run 项在登录后几秒才拉起（不是「一登录就绪」），开机后立刻锁屏的那一小段会漏；Windows「启动应用」列表里显示的是 `powershell.exe` 而不是好认的名字；非管理员仍读不到 Security 日志，历史回填依旧要 UAC 或另开审核策略。
+
+**追加（同一次改动，代码评审后）：** `readAgent` 的 running 与 `installAgent` 的「已在跑就别再起一份」原本各写一份判定，抽成 `statusRunning(status, now)` 共用 —— 两处各写一遍早晚会漂成「装的时候觉得在跑、页面觉得是死的」。
