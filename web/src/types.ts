@@ -953,7 +953,10 @@ export interface GitDiffFile {
   additions: number;
   deletions: number;
   truncated: boolean;
-  lines: { left: string; right: string; tag: "same" | "add" | "del" | "mod" }[];
+  /** `hunk` 是 `@@ -a,b +c,d @@` 那一条分隔（只有提交详情按块分页时才会有）。 */
+  lines: { left: string; right: string; tag: "same" | "add" | "del" | "mod" | "hunk" }[];
+  /** 提交详情按块分页：这一页拿了第 from 块起的 count 块，总共 total 块。 */
+  hunks?: { total: number; from: number; count: number };
   images?: { base: string | null; target: string | null };
   note: string;
 }
@@ -963,6 +966,29 @@ export interface GitDiff {
   target: string;
   files: GitDiffFile[];
   limit: { lines: number; bytes: number };
+}
+/** D289: 历史里点一行弹出的提交详情（`/api/git/commit`）。不含 blob，文件内容单独拉。 */
+export interface GitCommitDetail {
+  repo: string;
+  sha: string;
+  short: string;
+  subject: string;
+  /** `%B` 去掉标题行；桥端按 400 行 / 2 万字封顶。 */
+  body: string;
+  bodyTruncated: boolean;
+  author: string;
+  /** 毫秒，与 `GitCommit.at` 同单位。 */
+  at: number;
+  parents: string[];
+  merge: boolean;
+  /** `%D`：`HEAD -> main, origin/main, tag: v1.2`，可能为空串。 */
+  decorations: string;
+  onHead: boolean;
+  pushed: boolean;
+  files: { path: string; old?: string; status: string; kind: GitDiffFile["kind"]; additions: number; deletions: number; binary: boolean }[];
+  more: boolean;
+  total: number;
+  limit: { files: number; bodyLines: number };
 }
 export interface GitOpParams { [key: string]: string | boolean | string[] | undefined }
 export interface GitExecResult {

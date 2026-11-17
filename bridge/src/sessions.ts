@@ -14,7 +14,8 @@ import { forgetSession } from "./artifacts.ts";
 import { agentDir, ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
-import { Workspaces, type WsGroup } from "./workspaces.ts";
+import { Workspaces, groupId, normalizePath, type PlaceContext, type WsGroup } from "./workspaces.ts";
+import { dayKey } from "./wsorder.ts";
 import { rankSkills, scanSkillEntries, scanSkills, type SkillEntry, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
 import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresholds } from "./lifecycle.ts";
@@ -3002,7 +3003,14 @@ export class SessionManager extends EventEmitter {
     const out: SessionState[] = [];
     const manage = this.manage.snapshot();
     // 工作区：override 优先，否则跟 cwd 的工程根走（只查缓存，不跑 git）。
-    const flag = (id: string, cwd?: string) => ({ pinned: manage.pin.includes(id), archived: manage.archived.includes(id), ws: this.workspaces.groupFor(id, cwd ?? "") });
+    // #478：新组出现时按「组 → 最近活动天」插位，锚点是触发它的那个会话（R2/R5）；表惰性算一次。
+    let days: Map<string, number> | null = null;
+    const dayOf = (groupId: string) => (days ??= this.dayMap()).get(groupId) ?? -Infinity;
+    const flag = (id: string, cwd: string, updatedAt: number) => ({
+      pinned: manage.pin.includes(id),
+      archived: manage.archived.includes(id),
+      ws: this.workspaces.groupFor(id, cwd, { anchorDay: dayKey(updatedAt), dayOf }),
+    });
     for (const s of this.sessions.values()) {
       seen.add(s.state.id);
       // 随手问 is not one of the user's sessions (#86): it has no place in any listing, not even
@@ -3010,7 +3018,7 @@ export class SessionManager extends EventEmitter {
       if (s.state.scratch) continue;
       const lock = readLock(s.state.id);
       // Copy: these flags must not leak into the live state a session broadcasts.
-      out.push({ ...s.state, ...flag(s.state.id, s.state.cwd), locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))) });
+      out.push({ ...s.state, ...flag(s.state.id, s.state.cwd, s.state.updatedAt), locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))) });
     }
     for (const meta of this.discover()) {
       if (seen.has(meta.id)) continue;
@@ -3031,7 +3039,7 @@ export class SessionManager extends EventEmitter {
         origin: originOf(meta.id),
         permission: readPermission(meta.id),
         ...(meta.firstUserText ? { preview: meta.firstUserText } : {}),
-        ...flag(meta.id, meta.cwd),
+        ...flag(meta.id, meta.cwd, Math.round(meta.mtime)),
         ...(readTtyLock(meta.id) ? { locked: true } : {}),
       });
     }
@@ -3113,7 +3121,7 @@ export class SessionManager extends EventEmitter {
     await session.pinPermission();
     this.wire(session);
     this.sessions.set(id, session);
-    await session.startLive({ resume: false, cwd, ws: this.workspaces.groupFor(id, cwd), name });
+    await session.startLive({ resume: false, cwd, ws: this.workspaces.groupFor(id, cwd, this.place()), name });
     this.emit("ws", { type: "session.state", session: session.state });
     return session;
   }
@@ -3509,7 +3517,7 @@ export class SessionManager extends EventEmitter {
       }
     }
     await session.pinPermission();
-    await session.startLive({ resume: Boolean(session.state.file), ws: this.workspaces.groupFor(id, session.state.cwd ?? "") });
+    await session.startLive({ resume: Boolean(session.state.file), ws: this.workspaces.groupFor(id, session.state.cwd ?? "", this.place()) });
     this.emit("ws", { type: "session.state", session: session.state });
     if (session.state.origin !== "web") {
       // pi's TUI reads the session file once at startup: an open terminal will not see what the web adds.
@@ -3537,7 +3545,64 @@ export class SessionManager extends EventEmitter {
     const cwds: string[] = [];
     for (const s of this.sessions.values()) if (!s.state.scratch) cwds.push(s.state.cwd);
     for (const m of this.metas()) cwds.push(m.cwd);
-    return this.workspaces.resolve(cwds);
+    // #478：启动时补出来的组按「它下面会话的最大活动日」定位（取不到就按启动当天）。
+    return this.workspaces.resolve(cwds, { ...this.place(), cwdDay: (cwd) => this.cwdDay(cwd) });
+  }
+
+  /**
+   * #478：按天插位要的两样东西 —— 今天（新建组的锚点）与「每个组最后活动的天」。
+   * `dayOf` 在返回前就把 `dayMap()` 算成一回：`insertByDay` 会对 `order` 里每一项回调它，
+   * 在回调里重算就是 O(n²) 次全量扫会话。
+   */
+  place(): PlaceContext {
+    const days = this.dayMap();
+    return { anchorDay: dayKey(Date.now()), dayOf: (groupId) => days.get(groupId) ?? -Infinity };
+  }
+
+  /**
+   * #478「组 → 最近活动天」。给工作区按天插位用的口径，纯读：只查缓存，不建组、不跑 git
+   * （`Workspaces` 的状态写会重放两遍，锚点查询必须两遍一致）。
+   * 口径与左栏一致：可见会话（含子会话）里最新的那个 `updatedAt`；归档是全局分区、不进任何
+   * 工作区（见 `tree.ts`），所以跳过；随手问本来就不在列表里。
+   */
+  dayMap(): Map<string, number> {
+    const archived = new Set(this.manage.snapshot().archived);
+    const ws = this.workspaces.snapshot();
+    const known = new Set(ws.groups.map((g) => g.id));
+    const groupOf = (id: string, cwd: string) => {
+      const override = ws.overrides[id];
+      if (override && known.has(override)) return override;
+      return groupId(this.workspaces.keyOf(cwd));
+    };
+    const days = new Map<string, number>();
+    const note = (id: string, cwd: string, updatedAt: number) => {
+      if (archived.has(id)) return;
+      const gid = groupOf(id, cwd);
+      if (!gid) return;
+      const key = dayKey(updatedAt);
+      const seen = days.get(gid);
+      if (seen === undefined || key > seen) days.set(gid, key);
+    };
+    for (const s of this.sessions.values()) {
+      if (s.state.scratch) continue;
+      note(s.state.id, s.state.cwd, s.state.updatedAt);
+    }
+    for (const meta of this.discover()) note(meta.id, meta.cwd, meta.mtime);
+    return days;
+  }
+
+  /** #478：某个 cwd 下会话的最大活动日；一个会话都没有 = undefined（按最旧）。 */
+  private cwdDay(cwd: string): number | undefined {
+    const want = normalizePath(cwd).toLowerCase();
+    let day: number | undefined;
+    const note = (dir: string, updatedAt: number) => {
+      if (normalizePath(dir).toLowerCase() !== want) return;
+      const key = dayKey(updatedAt);
+      if (day === undefined || key > day) day = key;
+    };
+    for (const s of this.sessions.values()) if (!s.state.scratch) note(s.state.cwd, s.state.updatedAt);
+    for (const meta of this.discover()) note(meta.cwd, meta.mtime);
+    return day;
   }
 
   /** Legacy empty-only operation: newer clients use deleteWorkspace after an explicit confirmation. */
