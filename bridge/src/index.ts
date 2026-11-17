@@ -47,7 +47,7 @@ import { removePidFile, writePidFile } from "./pidfile.ts";
 import { clipboardFiles, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
 import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
-import { executeGitOp, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
+import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
 import { selfChangelog } from "./whatsnew.ts";
@@ -1106,7 +1106,7 @@ async function main(): Promise<void> {
 
     // D235: 分支操作工作台。D240: 不再按 publicReq / 回环地址分流 —— cookie 闸（上面 `ok`）
     // 是唯一边界，登录后的公网隧道与局域网访客和本机同样能读状态、执行白名单动词。
-    if (url.pathname.startsWith("/api/git/") && ["/api/git/state", "/api/git/refs", "/api/git/diff", "/api/git/op", "/api/git/probe"].includes(url.pathname) && req.method === "POST") {
+    if (url.pathname.startsWith("/api/git/") && ["/api/git/state", "/api/git/refs", "/api/git/diff", "/api/git/op", "/api/git/probe", "/api/git/commit", "/api/git/commit-file"].includes(url.pathname) && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       const dir = String(body?.dir ?? "").trim();
       if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空");
@@ -1125,6 +1125,14 @@ async function main(): Promise<void> {
             String(body?.target ?? "HEAD"),
             String(body?.commit ?? ""),
           ));
+        }
+        // D289: 历史里点一行 → 提交详情小窗。两个都只读：一个给清单，一个给单文件并排内容。
+        // 分开的理由：详情要是直接复用 gitDiff(commit)，几十个文件就是上百次 `git show ref:path`。
+        if (url.pathname === "/api/git/commit") {
+          return json(res, 200, await gitCommitDetail(dir, String(body?.sha ?? "")));
+        }
+        if (url.pathname === "/api/git/commit-file") {
+          return json(res, 200, await gitCommitFile(dir, String(body?.sha ?? ""), String(body?.path ?? ""), String(body?.old ?? "")));
         }
         const id = String(body?.id ?? "").trim();
         const params = (body?.params && typeof body.params === "object" && !Array.isArray(body.params) ? body.params : {}) as GitOpParams;
