@@ -205,6 +205,8 @@
   color: var(--dim); font-size: 11px; cursor: pointer;
 }
 .nc-rail-tab[hidden] { display: none; }
+/* 正文头这颗只在列表收起时出现，贴右边，别和分区头那颗箭头挤在一起。 */
+.nc-doc-head > .nc-rail-tab { margin-left: auto; }
 .nc-rail-tab:hover { color: var(--text); border-color: var(--line-strong); }
 .nc-doc-scroll { overflow: auto; min-height: 0; }
 

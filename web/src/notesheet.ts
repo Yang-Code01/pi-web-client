@@ -272,7 +272,7 @@ export class NotesSheet {
     this.statusBtn.hidden = true;
     this.statusBtn.onclick = () => this.statusMenu(this.statusBtn);
     this.docTimeEl = el("span", "nc-doc-time", "");
-    head.append(this.railList, this.statusBtn, this.docTimeEl, el("div", "grow"));
+    head.append(this.statusBtn, this.docTimeEl, this.railList);
     return head;
   }
 
