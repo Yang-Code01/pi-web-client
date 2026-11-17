@@ -762,6 +762,19 @@ async function handle(cmd) {
       return ok(id, type);
     case "prompt": {
       const text = String(cmd.message ?? "");
+      // #484：假 pi 也能演「交接」——把桥指定的绝对路径当成文档写出来（交接冒烟用）。
+      // 只在 FAKE_PI_WRITE_HANDOFF=1 时生效，别的用例照旧不会碰文件。
+      const handoffDoc = /交接文档写到这个绝对路径：([^\n]+)/.exec(text);
+      if (handoffDoc && process.env.FAKE_PI_WRITE_HANDOFF === "1") {
+        const doc = handoffDoc[1].trim();
+        try {
+          fs.mkdirSync(path.dirname(doc), { recursive: true });
+          fs.writeFileSync(doc, `# 交接文档\n\n${"假 pi 写出的交接文档，用来验证「交接完成后页面切到新会话」。\n".repeat(6)}`, "utf8");
+          note({ t: "handoff-doc", doc });
+        } catch (error) {
+          note({ t: "handoff-doc-failed", doc, error: String(error) });
+        }
+      }
       if (text.startsWith("REFUSE") && refusedOnce++ === 0) {
         note({ t: "prompt-rejected", text, why: "refused" });
         return ok(id, type, { disposition: "handled", error: "fake: this prompt is refused" });

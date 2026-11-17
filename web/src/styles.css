@@ -650,7 +650,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* 「重新接管」横幅平时 hidden（display:none 不占网格格子）。三行模板只在它露出来时才用，
    否则消息列表会掉进 auto 行、输入框掉进 1fr 行：新会话输入框飘到中间、长会话外层多出一条滚动条。 */
 .chat-pane:has(> .session-reclaim:not([hidden])) { grid-template-rows: auto minmax(0, 1fr) auto; }
-.chat-pane:has(> .composer > .chat-empty):not(:has(> .session-reclaim:not([hidden]))) { grid-template-rows: 1fr; place-items: center; }
+/* 空对话也要看两条横幅：任一条露出来就不能再用单行居中模板（否则横幅把输入框挤出 1fr）。 */
+.chat-pane:has(> .composer > .chat-empty):not(:has(> .session-reclaim:not([hidden]))):not(:has(> .handoff-banner:not([hidden]))) { grid-template-rows: 1fr; place-items: center; }
 .session-reclaim[hidden] { display: none; }
 .session-reclaim {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
@@ -659,6 +660,16 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .session-reclaim-text { flex: 1; min-width: 0; }
 .session-reclaim .btn { flex: 0 0 auto; padding: 4px 9px; font-size: 11px; }
 .session-reclaim-close { min-width: 28px; }
+/* #484：旧会话顶部的「已交给新会话」条 —— 和 reclaim 同样只在露出来时才多占一行，
+   两条同时出现时是四行模板（否则消息列表会掉进 auto 行，底栏被拉进 1fr）。 */
+.handoff-banner[hidden] { display: none; }
+.handoff-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--accent-bg); border-bottom: 1px solid var(--accent-dim); color: var(--text); font-size: 12px; }
+.handoff-banner-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.handoff-banner .btn { flex: 0 0 auto; padding: 4px 9px; font-size: 11px; }
+.chat-pane:has(> .handoff-banner:not([hidden])):not(:has(> .session-reclaim:not([hidden]))) { grid-template-rows: auto minmax(0, 1fr) auto; }
+.chat-pane:has(> .handoff-banner:not([hidden])):has(> .session-reclaim:not([hidden])) { grid-template-rows: auto auto minmax(0, 1fr) auto; }
+/* 「已交接」徽标：和源标签同一行，点一下跳到接棒的会话。 */
+.handoff-tag { flex: none; font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--accent-dim); color: var(--accent); cursor: pointer; }
 /* 没打开会话时中栏原本整片空、那句提示贴在底边（它挂在 .composer 里）—— 看着像界面坏了。
    这一刻整块居中成一枚安静的空状态，输入框那块也不再假装可用。 */
 .chat-pane:has(> .composer > .chat-empty) > .chat-scroll { display: none; }
@@ -1854,7 +1865,36 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 /* 标题栏里的按钮按内容宽（flex:none）排：让它们参与收缩的话，挤到 min-content 时两字标签会折成两行，
    一条 38px 高的按钮变成 58px，整条标题栏跟着变高、看着像坏了。要收也是标题和提示去收。 */
 .sheet-head > .btn { flex: none; }
+/* #484：标题栏右侧的一组入口（自动压缩 / 压缩 / 交接 / 关闭）。用 flex 列而不是 grid：
+   这里没有会隐藏的子元素，窄屏时按钮可以整体换行，不会把标题挤成两行。 */
+.sheet-actions { display: flex; align-items: center; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+.sheet-actions > .btn { flex: none; }
 .sheet-title { font-size: 14px; font-weight: 500; color: var(--text); }
+
+/* #484：盖在上下文面板上的子弹窗。挂在 #app 里、跟着字号缩放，所以尺寸一律走 --vw1；
+   层号比 .sheet-back(60) 高一层，Esc 先关它再关面板。 */
+.sheet-sub-back { position: fixed; inset: 0; z-index: 61; background: rgba(3, 5, 8, 0.5); display: grid; place-items: center; padding: 16px; }
+.sub-sheet { width: min(520px, calc(var(--vw1) * 92)); max-height: calc(var(--vh1) * 86); display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.sub-body { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding: 12px 16px 16px; }
+.sub-row { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--panel-2); }
+.sub-label { font-size: 12px; font-weight: 500; color: var(--text); }
+.sub-right { display: flex; align-items: center; gap: 6px; }
+.sub-input { width: 72px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-variant-numeric: tabular-nums; }
+.sub-select { padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+.sub-unit { font-size: 12px; color: var(--muted); }
+.sub-mini { padding: 2px 8px; font-size: 12px; }
+.sub-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.sub-value { font-size: 12px; color: var(--text); }
+.sub-note { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.sub-note-dim { opacity: 0.8; }
+.sub-error { color: var(--danger, #e0645a); font-size: 12px; min-height: 0; }
+.sub-error:empty { display: none; }
+.sub-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.sub-wide { width: 100%; }
+
+/* #484：面板里的两条阈值线（压缩 / 交接），窄到放不下就换行。 */
+.cx-lines { display: flex; flex-wrap: wrap; gap: 4px 12px; font-variant-numeric: tabular-nums; }
+.cx-line { white-space: nowrap; }
 /* 抽屉里没有第二套聚焦语言：浏览器默认的「白 outline」比信号色环还响（新建会话的会话名输入框
    聚焦时就是一圈白）。这里用 :where() 把优先级压到 0，控件自己写了 :focus 规则的照旧走自己的。 */
 .sheet :where(input:not([type="checkbox"]):not([type="radio"]), textarea, select) { font-size: 13px; }
