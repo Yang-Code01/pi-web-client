@@ -6,6 +6,7 @@
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
+import { paintAttendance } from "./attendance.ts";
 import { errText, fmtTime, tr } from "./i18n/index.ts";
 import {
   DNS_PRESETS,
@@ -84,6 +85,7 @@ const EMPTY_LOADING: Record<SysSection, boolean> = {
   ports: false,
   services: false,
   workclock: false,
+  attendance: false,
 };
 
 const EMPTY_ERROR: Record<SysSection, string> = {
@@ -92,6 +94,7 @@ const EMPTY_ERROR: Record<SysSection, string> = {
   ports: "",
   services: "",
   workclock: "",
+  attendance: "",
 };
 
 let current: SysPanel | null = null;
@@ -133,6 +136,9 @@ class SysPanel {
   private nav: HTMLElement | null = null;
   private pane: HTMLElement | null = null;
   private customInput: HTMLInputElement | null = null;
+  /** 考勤页的清理函数：切页或关面板时调，别让它在后台继续拉数据。 */
+  private attendanceDispose: (() => void) | null = null;
+  private attendanceRefresh: (() => void) | null = null;
   private noticeTimer: number | null = null;
   private countdownTimer: number | null = null;
   private countdownNodes: { digits: HTMLElement; caption: HTMLElement; worked: HTMLElement; bar: HTMLElement } | null = null;
@@ -157,6 +163,8 @@ class SysPanel {
   }
 
   close(): void {
+    this.attendanceDispose?.();
+    this.attendanceDispose = null;
     document.removeEventListener("keydown", this.keyHandler, true);
     if (this.noticeTimer !== null) window.clearTimeout(this.noticeTimer);
     this.stopCountdown();
@@ -222,10 +230,13 @@ class SysPanel {
   // ---------------------------------------------------------------- 数据
 
   private data(section: SysSection): SysOverview | SysNetwork | SysPorts | SysServices | SysWorkclock | null {
+    // 考勤页的数据在它自己的模块里，不归这张表管。
+    if (section === "attendance") return null;
     return this.state[section];
   }
 
   private async load(section: SysSection, force = false): Promise<void> {
+    if (section === "attendance") return;
     if (this.state.loading[section]) return;
     if (!force && this.data(section)) {
       this.render();
@@ -254,6 +265,10 @@ class SysPanel {
 
   private async refresh(): Promise<void> {
     const section = this.state.section;
+    if (section === "attendance") {
+      this.attendanceRefresh?.();
+      return;
+    }
     if (section === "overview") await Promise.all([this.load("overview", true), this.load("network", true)]);
     else await this.load(section, true);
   }
@@ -264,7 +279,8 @@ class SysPanel {
     this.state.notice = null;
     this.state.draft = null;
     this.render();
-    if (!this.data(section)) void this.load(section);
+    // 考勤页自己拉 /api/attendance/state，不走 sys 那批接口。
+    if (section !== "attendance" && !this.data(section)) void this.load(section);
   }
 
   private ensureSelection(): void {
@@ -360,6 +376,7 @@ class SysPanel {
       ports: ports ? String(ports.summary.external) : "",
       services: services ? String(services.summary.nonMicrosoft) : "",
       workclock: this.state.workclock ? `${this.state.workclock.settings.hours}h` : "",
+      attendance: "",
     };
     const labels: Record<SysSection, string> = {
       overview: tr("概况"),
@@ -367,9 +384,10 @@ class SysPanel {
       ports: tr("端口与服务"),
       services: tr("服务"),
       workclock: tr("上下班"),
+      attendance: tr("考勤"),
     };
     this.nav.replaceChildren();
-    (["overview", "network", "ports", "services", "workclock"] as SysSection[]).forEach((section) => {
+    (["overview", "network", "ports", "services", "workclock", "attendance"] as SysSection[]).forEach((section) => {
       const button = el("button", `sys-nav__item${this.state.section === section ? " on" : ""}`);
       button.type = "button";
       button.onclick = () => this.select(section);
@@ -383,8 +401,14 @@ class SysPanel {
   private paintPane(): void {
     if (!this.pane) return;
     const section = this.state.section;
+    // 考勤页的页签、表单、展开的那一行都住在它自己的闭包里：别的分区拉完数据显示时
+    // 不能把它重画一遍，否则正在填的加班申请会凭空清空。它自己会刷。
+    if (section === "attendance" && this.renderedSection === "attendance" && this.attendanceDispose) return;
     this.stopCountdown();
     if (this.renderedSection !== null) this.scrollBySection.set(this.renderedSection, this.pane.scrollTop);
+    this.attendanceDispose?.();
+    this.attendanceDispose = null;
+    this.attendanceRefresh = null;
     this.pane.replaceChildren();
     this.renderedSection = section;
     if (this.state.loading[section] && !this.data(section)) {
@@ -399,10 +423,19 @@ class SysPanel {
       this.paintPorts();
     } else if (section === "services") {
       this.paintServices();
+    } else if (section === "attendance") {
+      this.paintAttendancePane();
     } else {
       this.paintWorkclock();
     }
     this.pane.scrollTop = this.scrollBySection.get(section) ?? 0;
+  }
+
+  private paintAttendancePane(): void {
+    if (!this.pane) return;
+    const page = paintAttendance(this.pane);
+    this.attendanceDispose = page.dispose;
+    this.attendanceRefresh = page.refresh;
   }
 
   // ---------------------------------------------------------------- 概况
