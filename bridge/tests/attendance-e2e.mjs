@@ -2,7 +2,7 @@
  * 考勤面板的桥端：假 OA + 临时状态目录，真跑 HTTP。
  *
  * 覆盖那几条「说话算数」：没配过不给数据、密码只进不出（页面只见掩码）、
- * 记录只查自己（keyword 永远是登录态里的 user_id）、上游 NG 不许当成功、
+ * 记录只查自己（keyword 用工号，且行要再按 user_id / work_no 过一道）、上游 NG 不许当成功、
  * 提交要二次确认、十分钟内不许重复提交、隧道访客整个模块 404。
  *
  *   node bridge/tests/attendance-e2e.mjs
@@ -43,6 +43,10 @@ let seenCancel = null;
 const seenTokens = [];
 /** 上游登录收到的 query。 */
 let seenLogin = null;
+/** 上游被登录了几次（断言「偷偷重登」）。 */
+let loginCount = 0;
+/** 模拟 token 被踢：第一次取数给 401。 */
+let kicked = false;
 
 const ROWS = [
   { user_id: 1001, name: "张三", work_no: "TS0001", day: "2026-11-13(五)", day_type: 0, start: "09:05", end: "18:31", ov: 0, code: "0", c_hours: 8, t_hours: 0 },
@@ -70,6 +74,7 @@ const oa = http.createServer((req, res) => {
     }
 
     if (url.pathname === "/in/login/check") {
+      loginCount += 1;
       seenLogin = { account: url.searchParams.get("user_account"), password: url.searchParams.get("user_password") };
       if (loginMode === "500") return send(500, { detail: "boom" });
       if (loginMode === "ng") return send(200, { status: "NG", error: "账号或密码错误" });
@@ -78,6 +83,22 @@ const oa = http.createServer((req, res) => {
 
     if (url.pathname === "/in/record/query") {
       seenQueries.push({ token, body });
+      if (kicked) {
+        kicked = false;
+        return send(401, { detail: { code: 5000, message: "无效token", data: "Token Error" } });
+      }
+      if (recordsMode === "other") {
+        return send(200, {
+          status: "OK",
+          data_list: [{ user_id: 9999, name: "旁人", work_no: "TS00019", day: "2026-11-12(四)", day_type: 0, start: "09:00", end: "18:00", ov: 0 }],
+          max_day: "2026-11-12",
+        });
+      }
+      if (recordsMode === "html") {
+        // 把网页地址填成接口地址时的真实样子：200 + 一堆 HTML。
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        return res.end("<!DOCTYPE html><html><body>登录</body></html>");
+      }
       if (recordsMode === "500") return send(500, { detail: "boom" });
       if (recordsMode === "ng") return send(200, { status: "NG", error: "查不到" });
       return send(200, { status: "OK", data_list: ROWS, max_day: "2026-11-16" });
@@ -294,7 +315,8 @@ test("记录：只查自己，query_type 必须是 3", async () => {
   assert.equal(rec.json.stale, false);
   const q = seenQueries.at(-1);
   assert.equal(q.token, TOKEN, "带的是登录态里的 token");
-  assert.deepEqual(q.body, { keyword: "1001", query_type: 3, start_dt: "2026-11-10", end_dt: "2026-11-16" });
+  // keyword 用工号：user_id 当关键字会被工号里含这几个数字的同事命中（实测 640 → JS1640）。
+  assert.deepEqual(q.body, { keyword: "TS0001", query_type: 3, start_dt: "2026-11-10", end_dt: "2026-11-16" });
 
   const rows = rec.json.rows;
   assert.equal(rows.length, 3);
@@ -348,6 +370,36 @@ test("记录：上游 HTTP 200 但 body 是 NG，也说清楚是哪段没取到"
   assert.equal(rec.status, 502);
   assert.equal(rec.json.code, "records_ng");
   assert.match(rec.json.error, /查不到/);
+  recordsMode = "ok";
+});
+
+test("记录：接口地址指到网页上（回 HTML）时，说出是地址填错了", async () => {
+  recordsMode = "html";
+  const rec = await call("GET", "/api/attendance/records?start=2026-01-01&end=2026-01-05");
+  assert.equal(rec.status, 502);
+  assert.equal(rec.json.code, "bad_json");
+  // 说的是「地址填错了」，不是一句没用的「不是 JSON」。
+  assert.match(rec.json.error, /指到了网页/);
+  recordsMode = "ok";
+});
+
+test("上游把 token 踢了（人在别处又登一次）：偷偷重登一次，用户看不到「过期了」", async () => {
+  const before = loginCount;
+  kicked = true;
+  const rec = await call("GET", "/api/attendance/records?start=2026-11-10&end=2026-11-16");
+  assert.equal(rec.status, 200);
+  assert.equal(rec.json.source, "live");
+  assert.equal(rec.json.stale, false);
+  assert.equal(loginCount, before + 1);
+  assert.equal(rec.json.rows.length, 3);
+});
+
+test("记录：上游模糊匹配回别人的行，一条都不当自己的显示", async () => {
+  recordsMode = "other";
+  const rec = await call("GET", "/api/attendance/records?start=2026-01-01&end=2026-01-05");
+  assert.equal(rec.status, 502);
+  assert.equal(rec.json.code, "wrong_user");
+  assert.match(rec.json.error, /不是本人/);
   recordsMode = "ok";
 });
 

@@ -162,6 +162,27 @@
   outline-offset: 1px;
 }
 
+/* 下拉框：单选要跟输入框一路货色，多选（审批人）别用系统那身白底黑字。 */
+select.at-input {
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+select.at-input option {
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+select.at-input[multiple] {
+  padding: 2px 0;
+  /* 列表撑满整格，别缩成一小条。 */
+  width: 100%;
+}
+
+select.at-input[multiple] option {
+  padding: 3px 8px;
+}
+
 /* 日期框在窄栏里不能被压到看不见选日期的按钮。 */
 input.at-input[type="date"] {
   min-width: 148px;
@@ -415,4 +436,30 @@ input.at-input[type="date"] {
   .at-kv dd {
     margin-bottom: 6px;
   }
+}
+
+/* 加班格：平日 / 周末 两个色，跟 OA 那张表对得上 */
+.at-ov {
+  white-space: nowrap;
+}
+.at-ov-tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--bg);
+  background: color-mix(in srgb, var(--accent) 78%, var(--text));
+}
+.at-ov-tag.weekend {
+  background: color-mix(in srgb, var(--ok) 70%, var(--text));
+}
+.at-ov-tag.quiet {
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--line);
+}
+.at-ov-hours {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
 }

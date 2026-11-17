@@ -10,7 +10,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dateKey, defaultRange, hoursText, reasonText, spanText, stepState } from "../src/attendance-shared.ts";
+import { overtimeSplit, dateKey, defaultRange, hoursText, reasonText, spanText, stepState } from "../src/attendance-shared.ts";
 
 test("dateKey 用本地日期补零，不跟 UTC 走", () => {
   assert.equal(dateKey(new Date(2026, 10, 7)), "2026-11-07");
@@ -97,4 +97,17 @@ test("reasonText 把事由拼成一行，缺什么就少什么", () => {
   assert.equal(reasonText({}), "");
   assert.equal(reasonText(null), "");
   assert.equal(reasonText(undefined), "");
+});
+
+test("overtimeSplit 把总数拆成平时与周末，浮点尾巴要削掉", () => {
+  // 12.3 里含周末 7.5 → 平时 4.8，别出现 4.799999999999999。
+  assert.deepEqual(overtimeSplit({ overtime: 12.3, weekendOvertime: 7.5 }), { workday: 4.8, weekend: 7.5 });
+  assert.deepEqual(overtimeSplit({ overtime: 5, weekendOvertime: 5 }), { workday: 0, weekend: 5 });
+  assert.deepEqual(overtimeSplit({ overtime: 3, weekendOvertime: 0 }), { workday: 3, weekend: 0 });
+  assert.deepEqual(overtimeSplit({ overtime: 0, weekendOvertime: 0 }), { workday: 0, weekend: 0 });
+  // 缺字段 / 脏数据一律按 0，且周末不会大于总数（负数被夹到 0）。
+  assert.deepEqual(overtimeSplit(undefined), { workday: 0, weekend: 0 });
+  assert.deepEqual(overtimeSplit({}), { workday: 0, weekend: 0 });
+  assert.deepEqual(overtimeSplit({ overtime: 2, weekendOvertime: 3 }), { workday: 0, weekend: 3 });
+  assert.deepEqual(overtimeSplit({ overtime: Number.NaN, weekendOvertime: -2 }), { workday: 0, weekend: 0 });
 });

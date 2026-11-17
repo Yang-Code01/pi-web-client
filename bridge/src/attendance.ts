@@ -283,7 +283,16 @@ async function oaFetch(
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw new OaError("bad_json", 502, "OA 返回的不是 JSON");
+    // 最常踩的：把网页地址（登录页那些）填进了「接口地址」，拿回来一堆 HTML。
+    const kind = (res.headers.get("content-type") ?? "").toLowerCase();
+    const looksHtml = kind.includes("html") || /^\s*</.test(text);
+    throw new OaError(
+      "bad_json",
+      502,
+      looksHtml
+        ? "接口地址指到了网页，不是 OA 的后端（返回的是 HTML）"
+        : "OA 返回的不是 JSON",
+    );
   }
 }
 
@@ -357,6 +366,30 @@ async function session(cfg: AttendanceConfig, ctx: OaCtx): Promise<Credentials> 
   return next;
 }
 
+/**
+ * 跑一次要登录态的操作。上游说 token 无效时偷偷用存着的密码重登一次再重试：
+ * 同一个账号在 OA 网页上又登一次，OA 会把旧 token 踢掉（exp 明明还没到），
+ * 不重试的话用户就会看到「登录过期了」+ 一屏旧缓存，而他什么都没做错。
+ */
+async function withSession<T>(
+  cfg: AttendanceConfig,
+  ctx: OaCtx,
+  run: (cred: Credentials) => Promise<T>,
+): Promise<T> {
+  const cred = await session(cfg, ctx);
+  try {
+    return await run(cred);
+  } catch (err) {
+    if (!(err instanceof OaError) || err.code !== "login_expired") throw err;
+    if (!cred.password) throw err;
+    // token 自己没过期（exp 还没到），只是被上游踢了：清掉逼 session 重登。
+    await writeCredentials({ ...cred, token: "", tokenExp: 0 });
+    const fresh = await session(cfg, ctx);
+    audit({ kind: "relogin", account: maskAccount(fresh.account) });
+    return await run(fresh);
+  }
+}
+
 // ---------------------------------------------------------------- 缓存
 
 interface CacheFile {
@@ -377,13 +410,21 @@ function readCache(): CacheFile {
   return v;
 }
 
-function writeCache(cache: CacheFile): void {
-  ensureDir(dir());
+function writeCache(cache: CacheFile): void {  ensureDir(dir());
   const floor = todayKey(new Date(Date.now() - (CACHE_KEEP_DAYS - 1) * 86_400_000));
   for (const key of Object.keys(cache.days)) {
     if (key < floor) delete cache.days[key];
   }
   fs.writeFileSync(cacheFile(), JSON.stringify(cache), { mode: 0o600 });
+}
+
+/** 缓存是跟着账号的：账号换了，旧人的行一条都不许再露出来。 */
+function readCacheFor(account: string): CacheFile {
+  const cache = readCache();
+  if (account && cache.account && cache.account !== account) {
+    return { account, fetchedAt: 0, maxDay: "", days: {} };
+  }
+  return cache;
 }
 
 function mergeRows(cache: CacheFile, rows: AttendanceRow[], maxDay: string, account: string): CacheFile {
@@ -419,13 +460,17 @@ async function fetchRecords(
   end: string,
 ): Promise<{ rows: AttendanceRow[]; maxDay: string }> {
   if (!cred.userId) throw new OaError("no_user", 400, "登录信息里没有 user_id，重新登录一次");
+  // 上游这个 keyword 是「模糊找个人」，不是精确匹配：拿 user_id 当关键字会被工号里
+  // 恰好含这几个数字的同事命中（实测 640 命中了 JS1640，拉回一整页别人的考勤）。
+  // 工号是唯一的，优先发工号；上面回来的行再按 user_id / work_no 过一道。
+  const keyword = cred.workNo || String(cred.userId);
   const data = await oaFetch(cfg, ctx, {
     method: "POST",
     endpoint: cfg.endpoints.records,
     token: cred.token,
     body: {
-      // 只查自己：keyword 永远是登录态里的 user_id，页面传什么都不参与。
-      keyword: String(cred.userId),
+      // 只查自己：keyword 来自登录态，页面传什么都不参与。
+      keyword,
       query_type: 3, // 3 = 认 start_dt/end_dt；0/1 会被上游忽略成固定窗口
       start_dt: start,
       end_dt: end,
@@ -434,8 +479,17 @@ async function fetchRecords(
   if (!okStatus(data)) throw new OaError("records_ng", 502, ngReason(data, "考勤记录取不到"));
   const v = data as { data_list?: unknown; max_day?: unknown };
   const list = Array.isArray(v.data_list) ? (v.data_list as Record<string, unknown>[]) : [];
+  const mine = list.filter((item) => {
+    const id = Number(item.user_id ?? 0) || 0;
+    const no = typeof item.work_no === "string" ? item.work_no : "";
+    return (Boolean(cred.workNo) && no === cred.workNo) || (id > 0 && id === cred.userId);
+  });
+  // 一条都不是自己的：宁可报错，也不能把别人的考勤当自己的显示。
+  if (list.length > 0 && mine.length === 0) {
+    throw new OaError("wrong_user", 502, "OA 返回的不是本人的考勤（工号对不上），这份数据不要用");
+  }
   return {
-    rows: list.map((item) => mapRow(item, cfg.fields)),
+    rows: mine.map((item) => mapRow(item, cfg.fields)),
     maxDay: typeof v.max_day === "string" ? v.max_day.slice(0, 10) : "",
   };
 }
@@ -673,25 +727,22 @@ export async function handleAttendance(
       if (range.problem && !url.searchParams.get("start")) {
         return stop(res, 400, "bad_range", range.problem);
       }
-      const cred = await session(config, oaCtx).catch((err) => err as Error);
-      if (!(cred && "token" in cred)) {
-        // 拿不到登录态就用缓存顶上：面板至少能看历史，不至于整页空白。
-        const cache = readCache();
-        const rows = rowsInRange(cache, range.start, range.end);
-        json(res, 200, {
-          rows,
-          summary: summarize(rows, cache.maxDay),
-          range,
-          source: "cache",
-          fetchedAt: cache.fetchedAt,
-          stale: true,
-          problem: (cred as Error)?.message ?? "没登录",
-        });
-        return true;
-      }
+      // 用盒子装：在回调里赋值的 let 会被 TS 收窄成 null（回调不算赋值路径）。
+      const box: { cred: Credentials | null } = { cred: null };
+      let live: { rows: AttendanceRow[]; maxDay: string } | null = null;
+      let failure: unknown = null;
       try {
-        const live = await fetchRecords(config, oaCtx, cred as Credentials, range.start, range.end);
-        const cache = mergeRows(readCache(), live.rows, live.maxDay, (cred as Credentials).account);
+        live = await withSession(config, oaCtx, (cred) => {
+          box.cred = cred;
+          return fetchRecords(config, oaCtx, cred, range.start, range.end);
+        });
+      } catch (err) {
+        if (!(err instanceof OaError) && !(err instanceof SecretError)) throw err;
+        failure = err;
+      }
+      if (live) {
+        const account = box.cred?.account ?? "";
+        const cache = mergeRows(readCacheFor(account), live.rows, live.maxDay, account);
         writeCache(cache);
         json(res, 200, {
           rows: live.rows,
@@ -702,21 +753,23 @@ export async function handleAttendance(
           stale: false,
           problem: null,
         });
-      } catch (err) {
-        if (!(err instanceof OaError)) throw err;
-        const cache = readCache();
-        const rows = rowsInRange(cache, range.start, range.end);
-        if (rows.length === 0) throw err;
-        json(res, 200, {
-          rows,
-          summary: summarize(rows, cache.maxDay),
-          range,
-          source: "cache",
-          fetchedAt: cache.fetchedAt,
-          stale: true,
-          problem: err.message,
-        });
+        return true;
       }
+      // 没登录态：拿缓存顶（面板至少能看历史）；有登录态但取数失败：
+      // 这个区间没缓存可顶就把真话抛出去，别拿旧数据充数。
+      const used = box.cred;
+      const cache = used ? readCacheFor(used.account) : readCache();
+      const rows = rowsInRange(cache, range.start, range.end);
+      if (used && rows.length === 0) throw failure;
+      json(res, 200, {
+        rows,
+        summary: summarize(rows, cache.maxDay),
+        range,
+        source: "cache",
+        fetchedAt: cache.fetchedAt,
+        stale: true,
+        problem: (failure as Error | null)?.message || "没登录",
+      });
       return true;
     }
 
@@ -725,7 +778,7 @@ export async function handleAttendance(
       if (!config.apiBase) return stop(res, 400, "not_configured", "先配好 OA 地址");
       const cred = await session(config, oaCtx);
       if (method === "GET") {
-        const init = await fetchOvertimeInit(config, oaCtx, cred);
+        const init = await withSession(config, oaCtx, (fresh) => fetchOvertimeInit(config, oaCtx, fresh));
         json(res, 200, {
           // reason 在 OA 里是一段 JSON 字符串，解析好一起给页面，省得两边各写一份。
           applyList: init.applyList.map((item) => {
@@ -778,20 +831,22 @@ export async function handleAttendance(
         return true;
       }
 
-      const data = await oaFetch(config, oaCtx, {
-        method: "POST",
-        endpoint: config.endpoints.overtimeAdd,
-        token: cred.token,
-        body: {
-          use_type: Number(body.useType ?? 0) || 0,
-          user_id: cred.userId,
-          agent_user_id: 0,
-          reason: formatOvertimeReason(reason),
-          start_time: startTime,
-          end_time: endTime,
-          workflow_list: workflow,
-        },
-      });
+      const data = await withSession(config, oaCtx, (fresh) =>
+        oaFetch(config, oaCtx, {
+          method: "POST",
+          endpoint: config.endpoints.overtimeAdd,
+          token: fresh.token,
+          body: {
+            use_type: Number(body.useType ?? 0) || 0,
+            user_id: fresh.userId,
+            agent_user_id: 0,
+            reason: formatOvertimeReason(reason),
+            start_time: startTime,
+            end_time: endTime,
+            workflow_list: workflow,
+          },
+        }),
+      );
       const ok = okStatus(data);
       const message = ok ? "" : ngReason(data, "提交被拒了");
       receipts = [
@@ -814,13 +869,14 @@ export async function handleAttendance(
         json(res, 200, { needConfirm: true, code });
         return true;
       }
-      const cred = await session(config, oaCtx);
-      const data = await oaFetch(config, oaCtx, {
-        method: "POST",
-        endpoint: config.endpoints.overtimeCancel,
-        token: cred.token,
-        query: { code },
-      });
+      const data = await withSession(config, oaCtx, (fresh) =>
+        oaFetch(config, oaCtx, {
+          method: "POST",
+          endpoint: config.endpoints.overtimeCancel,
+          token: fresh.token,
+          query: { code },
+        }),
+      );
       const ok = okStatus(data);
       audit({ kind: "overtime_cancel", ok, code });
       if (!ok) return stop(res, 502, "rejected", ngReason(data, "撤回被拒了"));

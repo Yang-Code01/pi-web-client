@@ -16,7 +16,7 @@ import { errText, tr } from "./i18n/index.ts";
 import type { AttendanceState, AttendanceRecords, AttendanceOvertime } from "./sysmanage-types.ts";
 // 日期 → 「周五」这件事本机管理已经做过一遍（sysmanage-model.ts:207），别再写一张中文星期表。
 import { weekdayOf } from "./sysmanage-model.ts";
-import { defaultRange, hoursText, reasonText, spanText, stepState } from "./attendance-shared.ts";
+import { defaultRange, hoursText, overtimeSplit, reasonText, round1, spanText, stepState } from "./attendance-shared.ts";
 import "./attendance.css";
 
 type Tab = "records" | "overtime" | "settings";
@@ -31,6 +31,9 @@ interface OvertimeForm {
   l1: string[];
   l2: string[];
 }
+
+const L1_KEY = "pi-web-attendance:l1";
+const L2_KEY = "pi-web-attendance:l2";
 
 export interface AttendancePane {
   /** 切走 / 关面板时调它：停掉正在跑的请求，把 DOM 摘掉。 */
@@ -65,10 +68,13 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
   /** 撤回要点两次：第一次记在这儿，第二次才真发。 */
   let cancelPending: number | null = null;
 
+  // 人手动改过时长就不再自动覆盖；没改过就跟着起止时间走。
+  let hoursTouched = false;
+
   const form: OvertimeForm = {
     start: "",
     end: "",
-    hours: "2",
+    hours: "",
     reasonType: "",
     project: "",
     detail: "",
@@ -128,7 +134,8 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
       overtime = await api.attendanceOvertime();
       overtimeError = "";
       if (!form.reasonType && overtime.reasons.length) form.reasonType = overtime.reasons[0]!;
-      if (form.l1.length === 0 && overtime.candidates.l1.length === 1) form.l1 = [String(overtime.candidates.l1[0]!.userId)];
+      if (form.l1.length === 0) form.l1 = recallApprovers(overtime.candidates.l1, L1_KEY);
+      if (form.l2.length === 0) form.l2 = recallApprovers(overtime.candidates.l2, L2_KEY);
     } catch (err) {
       overtimeError = fail(err);
     } finally {
@@ -252,7 +259,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
         el("span", "at-chip", tr("出勤 {p1} 天").replace("{p1}", String(s.attended))),
         el("span", "at-chip", tr("记录 {p1} 天").replace("{p1}", String(s.days))),
         el("span", `at-chip${s.missing ? " warn" : ""}`, tr("缺卡 {p1} 天").replace("{p1}", String(s.missing))),
-        el("span", "at-chip", tr("加班 {p1} 小时").replace("{p1}", String(s.overtime))),
+        ...overtimeChips(s),
       );
       wrap.append(chips);
       if (records.rows.length === 0) wrap.append(el("div", "at-empty", tr("这段时间没有记录")));
@@ -283,7 +290,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
         el("td", "at-day", weekdayOf(row.date) ? `${row.date} ${weekdayOf(row.date)}` : row.date),
         el("td", "", row.clockIn ?? "—"),
         el("td", "", row.clockOut ?? "—"),
-        el("td", "", row.overtime ? String(row.overtime) : ""),
+        overtimeCell(row),
         el("td", "at-note", noteOf(row)),
       );
       const open = el("button", "at-detail", opened === row.date ? tr("收起") : tr("详情"));
@@ -312,9 +319,37 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     return table;
   }
 
+  // 加班要分开看：平日和周末两套算头，混成一个总数等于没算。
+  function overtimeChips(s: AttendanceRecords["summary"]): HTMLElement[] {
+    const { workday, weekend } = overtimeSplit(s);
+    const out: HTMLElement[] = [];
+    if (workday > 0) {
+      out.push(el("span", "at-chip", tr("平时加班 {p1} 小时").replace("{p1}", String(workday))));
+    }
+    if (weekend > 0) {
+      out.push(el("span", "at-chip", tr("周末加班 {p1} 小时").replace("{p1}", String(weekend))));
+    }
+    if (!out.length) out.push(el("span", "at-chip", tr("没有加班")));
+    return out;
+  }
+
+  function overtimeCell(row: AttendanceRecords["rows"][number]): HTMLElement {
+    const td = el("td", "at-ov");
+    if (row.overtime) {
+      const kind = row.weekend ? tr("周末") : tr("平时");
+      td.append(
+        el("span", row.weekend ? "at-ov-tag weekend" : "at-ov-tag", kind),
+        el("span", "at-ov-hours", String(row.overtime)),
+      );
+    } else if (row.weekend) {
+      // 周末没加班也标一下，免得看成数据漏了。
+      td.append(el("span", "at-ov-tag quiet", tr("周末")));
+    }
+    return td;
+  }
+
   function noteOf(row: AttendanceRecords["rows"][number]): string {
     const parts: string[] = [];
-    if (row.weekend) parts.push(tr("周末"));
     if (row.overtimeEdited) parts.push(tr("加班时长被改过"));
     if (row.editedBy && row.editedBy !== "Batch") parts.push(row.editedBy);
     return parts.join(" · ");
@@ -340,15 +375,35 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     const card = el("div", "at-card");
     card.append(el("h3", "at-card__title", tr("新的加班申请")));
     const grid = el("div", "at-grid");
-    grid.append(field(tr("开始"), datetime("start", form.start, (v) => (form.start = v))));
-    grid.append(field(tr("结束"), datetime("end", form.end, (v) => (form.end = v))));
+    grid.append(
+      field(
+        tr("开始"),
+        datetime("start", form.start, (v) => {
+          form.start = v;
+          autofillHours();
+        }),
+      ),
+    );
+    grid.append(
+      field(
+        tr("结束"),
+        datetime("end", form.end, (v) => {
+          form.end = v;
+          autofillHours();
+        }),
+      ),
+    );
     const hours = document.createElement("input");
     hours.type = "number";
     hours.min = "0.5";
     hours.step = "0.5";
     hours.className = "at-input";
+    hours.placeholder = tr("自动算");
     hours.value = form.hours;
-    hours.oninput = () => (form.hours = hours.value);
+    hours.oninput = () => {
+      hoursTouched = true;
+      form.hours = hours.value;
+    };
     grid.append(field(tr("时长（小时）"), hours));
 
     const typeSel = document.createElement("select");
@@ -484,6 +539,41 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     return input;
   }
 
+  // 起止时间填齐就自己算时长；人改过就不插手。
+  function autofillHours(): void {
+    if (hoursTouched) return;
+    const a = new Date(form.start).getTime();
+    const b = new Date(form.end).getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) {
+      form.hours = "";
+      return;
+    }
+    form.hours = String(round1((b - a) / 3_600_000));
+  }
+
+  // 审批人记住上次的选择：同一批人天天要选，每次从头挑太烦。
+  function rememberApprovers(): void {
+    try {
+      localStorage.setItem(L1_KEY, JSON.stringify(form.l1));
+      localStorage.setItem(L2_KEY, JSON.stringify(form.l2));
+    } catch {
+      /* 隐私模式下没有 localStorage，记不住就算了 */
+    }
+  }
+
+  function recallApprovers(list: { userId: number }[], key: string): string[] {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const ids = JSON.parse(raw);
+      if (!Array.isArray(ids)) return [];
+      const known = new Set(list.map((p) => String(p.userId)));
+      return ids.map(String).filter((id) => known.has(id));
+    } catch {
+      return [];
+    }
+  }
+
   function leaderSelect(list: { userId: number; name: string; workNo: string }[], chosen: string[], multi: boolean): HTMLElement {
     const wrap = el("div", "at-leaders");
     if (list.length === 0) {
@@ -496,6 +586,12 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
       sel.multiple = true;
       // 多选默认会把整个列表铺开成一个大盒子，限高到 3 行；列表更长时自己滚。
       sel.size = Math.min(Math.max(list.length, 2), 3);
+    } else {
+      // 单选没有占位项时，浏览器会把第一个候选画成「已选中」——看着像选了，其实没有。
+      const blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = tr("请选择");
+      sel.append(blank);
     }
     for (const p of list) {
       const opt = document.createElement("option");
@@ -506,9 +602,10 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     }
     sel.dataset.role = multi ? "l2" : "l1";
     sel.onchange = () => {
-      const picked = Array.from(sel.selectedOptions).map((o) => o.value);
+      const picked = Array.from(sel.selectedOptions).map((o) => o.value).filter(Boolean);
       if (multi) form.l2 = picked;
       else form.l1 = picked;
+      rememberApprovers();
     };
     wrap.append(sel);
     return wrap;
@@ -606,6 +703,13 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
       field(tr("密码"), password),
     );
     card.append(grid);
+    card.append(
+      el(
+        "p",
+        "at-hint",
+        tr("接口地址填 OA 的后端（一般带端口），网页地址填你平时打开页面的那个；两个常常只差端口。"),
+      ),
+    );
 
     const actions = el("div", "at-actions");
     const save = el("button", "btn", tr("保存配置"));

@@ -60,3 +60,20 @@ export function reasonText(reason: { type?: string; project?: string } | null | 
   if (!type) return project;
   return project ? `${type} / ${project}` : type;
 }
+
+/** 小时数只留一位小数：0.30000000000000004 这种浮点尾巴不要出现在界面上。 */
+export function round1(n: number): number {
+  return Math.round((Number(n) || 0) * 10) / 10;
+}
+
+/**
+ * 加班拆成「平时 / 周末」两笔。
+ * OA 只给总时长和周末时长，平时是减出来的；两天里的 0.30000000000000004 都是这么来的。
+ */
+export function overtimeSplit(
+  summary: { overtime?: number; weekendOvertime?: number } | null | undefined,
+): { workday: number; weekend: number } {
+  const total = round1(Math.max(0, Number(summary?.overtime) || 0));
+  const weekend = round1(Math.max(0, Number(summary?.weekendOvertime) || 0));
+  return { workday: round1(Math.max(0, total - weekend)), weekend };
+}
