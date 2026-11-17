@@ -15,8 +15,29 @@ import { tr } from "./i18n/index.ts";
 export interface AskQuestion {
   /** 卡片左侧的标签：新工具是 `header`，旧问卷是 `label`，都没有就 `Qn`。 */
   label: string;
+  /** 刻度带上说的那句：`header` 优先，没有就用题面（旧单题的题面在 `question` 里）。 */
+  title: string;
   prompt: string;
   options: unknown[];
+}
+
+/** 刻度带上问卷标题的长度上限，与 `turnLabel` 和桥的 `TURN_TEXT_MAX` 对齐。 */
+const ASK_TITLE_MAX = 80;
+
+/**
+ * 一条问卷在刻度带上的一行字：`问卷概况：第一题 · 等 N 题`。
+ *
+ * 一份问卷（包括多题）只占一格，所以只取第一题开头那几个字；多题时补一句题数，单题不补。
+ * 桥下发的 ghost 索引里文字已经截到 80 字，这里再折一次是为了**实时**那种还没经过桥的手；
+ * 两边的结果必须一样，否则同一份问卷载入前后会显示成两句。
+ */
+export function askTurnLabel(title: string, questions: number): string {
+  const one = String(title ?? "").replace(/\s+/g, " ").trim();
+  const brief = one.length > ASK_TITLE_MAX ? `${one.slice(0, ASK_TITLE_MAX - 1)}…` : one;
+  const n = Number(questions) > 0 ? Math.floor(Number(questions)) : 0;
+  if (!brief) return n > 1 ? tr("问卷概况 · 等 {p1} 题", { p1: n }) : tr("问卷概况");
+  if (n > 1) return tr("问卷概况：{p1} · 等 {p2} 题", { p1: brief, p2: n });
+  return tr("问卷概况：{p1}", { p1: brief });
 }
 
 /** 把一次提问的参数归一成同一形状：新工具是 `questions[]`，旧 `question` 是平铺的单个问题。 */
@@ -24,11 +45,16 @@ export function askQuestions(args: unknown): AskQuestion[] {
   const a = (args ?? {}) as Record<string, unknown>;
   const raw = Array.isArray(a.questions) ? (a.questions as any[]) : [];
   const list = raw.length ? raw : a.question !== undefined || a.options !== undefined ? [a] : [];
-  return list.map((q, i) => ({
-    label: String(q?.header ?? q?.label ?? `Q${i + 1}`),
-    prompt: String(q?.question ?? q?.prompt ?? ""),
-    options: Array.isArray(q?.options) ? q.options : [],
-  }));
+  return list.map((q, i) => {
+    const header = String(q?.header ?? q?.label ?? "").trim();
+    const prompt = String(q?.question ?? q?.prompt ?? "");
+    return {
+      label: header || `Q${i + 1}`,
+      title: header || prompt,
+      prompt,
+      options: Array.isArray(q?.options) ? q.options : [],
+    };
+  });
 }
 
 /** 结果里 `"问题"="答案"` 的成对文本（键和值都可以带转义引号）。 */

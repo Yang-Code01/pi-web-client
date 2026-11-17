@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { askQuestions, parseAskResult } from "../src/ask-result.ts";
+import { askQuestions, askTurnLabel, parseAskResult } from "../src/ask-result.ts";
 
 const ask = (prompt, header = "Q1") => ({ label: header, prompt, options: [] });
 
@@ -65,4 +65,23 @@ test("askQuestions：旧单题的平铺参数也归一成一条；空参数不�
   assert.deepEqual([q.label, q.prompt, q.options.length], ["Q1", "要哪个？", 2]);
   assert.deepEqual(askQuestions(undefined), []);
   assert.deepEqual(askQuestions({}), []);
+});
+
+test("askQuestions：title 给刻度带用 —— header 优先，没有 header 就是题面", () => {
+  assert.equal(askQuestions({ questions: [{ header: "日志", question: "调到哪个级别？" }] })[0].title, "日志");
+  assert.equal(askQuestions({ question: "要哪个？", options: [] })[0].title, "要哪个？");
+});
+
+test("askTurnLabel：一份问卷一行字，多题补「等 N 题」，单题不补", () => {
+  assert.equal(askTurnLabel("日志", 1), "问卷概况：日志");
+  assert.equal(askTurnLabel("日志", 3), "问卷概况：日志 · 等 3 题");
+  // 没有 header 时桥给的 title 就是题面；题面也没有就只剩「问卷概况」。
+  assert.equal(askTurnLabel("", 1), "问卷概况");
+  assert.equal(askTurnLabel("", 4), "问卷概况 · 等 4 题");
+});
+
+test("askTurnLabel：折成一行，标题最多 80 字（79 字 + …）", () => {
+  assert.equal(askTurnLabel("  第一行\n 第二行  ", 1), "问卷概况：第一行 第二行");
+  const long = "x".repeat(200);
+  assert.equal(askTurnLabel(long, 1), `问卷概况：${"x".repeat(79)}…`);
 });

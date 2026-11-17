@@ -1806,7 +1806,10 @@ export class App {
         this.queue = msg.queue ? { steering: msg.queue.steering ?? [], followUp: msg.queue.followUp ?? [] } : { steering: [], followUp: [] };
         this.execPlan = msg.plan && typeof msg.plan === "object" ? msg.plan as ExecPlanSnapshot : null;
         this.execPlanRounds = Array.isArray((msg.history as SessionHistory | undefined)?.turns)
-          ? (msg.history as SessionHistory).turns!.map((turn, index) => ({ id: turn.id, ordinal: index + 1 }))
+          ? (msg.history as SessionHistory).turns!
+              // 问卷卡也占刻度带（#rail-ask），但「执行→计划」的轮次编号只数用户消息，不然 round 全部错位。
+              .filter((turn) => turn.kind !== "ask")
+              .map((turn, index) => ({ id: turn.id, ordinal: index + 1 }))
           : [];
         this.stats = { tokens: null, cost: null };
         // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
@@ -1865,7 +1868,9 @@ export class App {
         // `history` 仍然要传：整页替换完，顶端那一行才知道后面还有没有更早的（#220）。
         // 这是 #221 的既定取舍：整页替换意味着重连后回到最后一页，已经翻出来的更早内容不保留。
         const turns = (msg.history as SessionHistory | undefined)?.turns;
-        if (Array.isArray(turns)) this.execPlanRounds = turns.map((turn, index) => ({ id: turn.id, ordinal: index + 1 }));
+        // 同上：刻度带上的问卷卡不进计划轮次（`kind` 缺省的老桥当 user）。
+        if (Array.isArray(turns))
+          this.execPlanRounds = turns.filter((turn) => turn.kind !== "ask").map((turn, index) => ({ id: turn.id, ordinal: index + 1 }));
         this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
         if (this.queueTab === "exec") this.renderQueue();
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。

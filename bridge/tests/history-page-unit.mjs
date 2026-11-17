@@ -151,4 +151,26 @@ assert.ok("turns" in itemsFrame([assistant("a1")]).history, "字段必须在帧�
 // `history.before` 的分页响应形状不变：不带 turns（老前端与协议契约都不受影响）。
 assert.deepEqual(Object.keys(pageBefore(transcript, transcript[10].id)).sort(), ["hasMore", "items"], "history.before 的响应形状不变");
 
+
+// ---------------------------------------------------------------- 问卷（问答卡）也是一轮
+
+// 一份问卷 = 一个工具调用 = 刻度带上一格（多题不拆）；旧工具名同样认；别的工具不算。
+const askArgs = { questions: [{ header: "数据库", question: "用哪个？", options: [] }, { header: "端口", question: "几号？", options: [] }] };
+const askSession = [
+  user("u1"),
+  assistant("a1"),
+  { id: "s1:c1", kind: "tool", toolCallId: "c1", name: "ask_user_question", args: askArgs, result: "" },
+  user("u2"),
+  { id: "s1:c2", kind: "tool", toolCallId: "c2", name: "question", args: { question: "旧的单题？", options: [] }, result: "" },
+  tool("t9"),
+];
+const askTurns = itemsFrame(askSession).history.turns;
+assert.deepEqual(askTurns.map((t) => t.id), ["u1", "s1:c1", "u2", "s1:c2"], "问卷各占一条，普通工具不占；多题仍是同一条");
+assert.equal(askTurns[0].kind, "user", "用户消息标 user");
+assert.equal(askTurns[1].kind, "ask", "问卷标 ask");
+assert.equal(askTurns[1].text, "数据库", "问卷标题取第一题 header");
+assert.equal(askTurns[1].questions, 2, "多题的题数带上，前端补「等 N 题」");
+assert.equal(askTurns[3].text, "旧的单题？", "旧 question 没有 header，就用题面");
+assert.equal(askTurns[3].questions, 1, "旧单题是 1 题");
+
 console.log("history-page-unit: ok");

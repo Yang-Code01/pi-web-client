@@ -3224,6 +3224,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* 悬停预览：正文里对应那条用户消息描一圈边（点完那一下也会亮一下再退掉） */
 .msg.user .body { transition: border-color 0.16s ease, box-shadow 0.16s ease; }
 .msg.user.turn-flash .body { border-color: rgba(125, 211, 252, 0.55); }
+/* 问卷卡也是刻度带上的一格（用户的回答也是输入），悬停 / 点击同样描一圈 */
+.qa-card { transition: border-color 0.16s ease, box-shadow 0.16s ease; }
+.qa-card.turn-flash { border-color: rgba(125, 211, 252, 0.55); }
 
 /* 窄屏 / 没有指针设备（手机）：这条带子没地方放，也没法悬停 —— 不显示 */
 /* 触屏或窄版都没有 hover，那条竖排的回合刻度带只会挤占宽度。 */

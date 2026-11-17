@@ -5573,3 +5573,20 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 代价是多两个接口、多一层缓存失效判断；跨仓库的缓存不复用（键里带 repo，只在本会话内）；merge 提交的摘/回滚暂时禁用（操作卡没有 `-m` 入口，与其让人跑出一条红字，不如先说清）。没选「点行就跳到差异 tab」：那会覆盖用户当前的对照与筛选，回不去。三个候选原型留在丢弃分支 `proto/commit-detail`（`web/prototype/commit-detail.html`，`?variant=A|B|C`），不进 main。
 
 **验证：** `npm run test:githist` 里的新单元 `bridge/tests/git-commit-unit.mjs` 用真 git 仓库断言：短/全长 SHA、标题取 `%B` 首行、正文为空、根提交 `parents === []` 且对照空树、merge 报两个父且差异只列第一父侧的文件、rename 带 `old`、`onHead` / `pushed`（`update-ref refs/remotes/...` 之后才为真）、500 行正文截到 400 行、`limits.files === 300`、参数清洗（`--evil` / `../outside` / `deadbeef` 各自报对码）；另有一组「400 行文件里改 40 处不相邻的位置」断言 `hunks.total === 40`、首页 `count === 20` 且首行是 `@@` 块头、块与块之间的上下文行不出现、`from = 20` 从第 21 块起、`from = 40` 返回空页，以及「整篇 4100 行都改」时单块截到 4000 行并写明原因。`npm run test:githist:ui`（Playwright，`GITOPS_UI_PORT` 要避开 Hyper-V 保留段，本机用 8300）点一遍：行是 `role=button` 且在 Tab 序列、点开小窗且工作台还在下面、完整 40 位 SHA、父提交、自动展开第一个文本文件的并排差异、**差异里有 `@@` 块头且不是整篇文件**、高亮唯一、文件清单带增删数、点另一个文件换右侧、摘提交关窗改开操作卡且哈希预填、Enter 也能开、Esc 关掉后焦点回到那一行、点遮罩同样关、顶点提交的摘提交是禁用的。续拉另用一次性探针验过：造一个「300 行文件改在 25 处」的临时仓库，首屏 `已显示 20/25 个变更块`，滚到底自动补到 25 块、提示消失。`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）通过。
+
+## D290 问卷也进轮次缩略图：一份问卷一格，文字是「问卷概况：第一题 · 等 N 题」（用户要求 2026-11-17）
+
+**问题：** 右侧刻度带原来只认 `item.kind === "user"`（`web/src/chat.ts` 的 `noteTurn` 与 `bridge/src/history.ts` 的 `turnIndex`），问答卡（`ask_user_question` / 旧 `question` / `questionnaire`）不进带子。用户要求：问卷也是用户输入，要进刻度表；同一份问卷的多道题只显示一次；行文用「问卷概况：…」。不做 ghost 的话，只有已经滚到过的那几张问卷能出现，整段会话的问卷位置与编号都对不上（#243 的索引本来就是全量的）。
+
+**决定：**
+
+- **桥上把问卷条目录进全量索引**：`turnIndex` 里 `ASK_TOOLS` 命中的工具条目 push `{ id, kind: "ask", text: 第一题标题, images: 0, questions: 题数 }`；`HistoryTurn.kind` 老条目缺省按 `user` 读（新前端 + 老桥仍然只画用户消息）。标题取 `header`，没有就取题面（`question` / `prompt` / `label`），与 `askQuestions` 同序。
+- **一份问卷一格，按工具调用去重**：同一份多题问卷只对应一个 toolCall，因此天然一条；前端另按 `toolCallId` 去重，实时卡（id `live-tool:<callId>`）在结果/回放到达被重建时，把带子上的 id 与节点一起换成新的，点它才不会指向已经 remove 的节点。
+- **文案**：`askTurnLabel(title, questions)` 固定前缀「问卷概况：」；多题补「 · 等 N 题」，单题不补；没有标题只说「问卷概况」；整行沿用 80 字上限（`ASK_TITLE_MAX` 与桥的 `TURN_TEXT_MAX`、缩略图的 `TURN_LABEL_MAX` 对齐）。桥上送 `text` 时已折行截短，前端再折一次，两边同一句话。
+- **点它回到卡**：ghost 行同样可点（#244 的自动往回翻页），已载入的悬停 / 点击给 `.qa-card` 描边（原来只给 `.msg.user .body`）。
+- **「执行→计划」的 round 只数用户消息**：`app.ts` 两处 `execPlanRounds` 过滤 `turn.kind !== "ask"`，否则计划的 `listedRound` 与 `ordinal` 全错位。
+- **旧会话也认**：`question` / `questionnaire` 与 `ask_user_question` 一视同仁（`isAskTool` 与桥的 `ASK_TOOLS` 对齐）；取消 / 一题没答的问卷照样占一格。
+
+**取舍：** 刻度带的行号从此数的是「用户输入」而不是「用户消息」—— 问卷后面那条消息的「第 N 轮」会比以前大 1（点计划跨轮引用的仍是用户消息编号，两者不再完全相同，这是「问卷也是输入」的直接代价）。实时卡重建的时机依赖 `add()` / `replace()` 两条路径，别处若再重建问答卡要记得也走 `noteAskTurn`。
+
+**验证：** `bridge/tests/history-page-unit.mjs` 断言索引里 ask 的 kind / 标题 / 题数、旧工具名、普通工具不占格、多题只有一条；`web/tests/ask-card-unit.mjs` 断言 `title` 回退与 `askTurnLabel` 四种文案、折行与 80 字截断；`probes/rail-ask.mjs` 验四格（2 用户 + 2 问卷，多题只占一格）、ghost 行文字、悬停亮问答卡、点 ghost 翻页到货；`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）与 `npm --prefix bridge run typecheck` 通过。

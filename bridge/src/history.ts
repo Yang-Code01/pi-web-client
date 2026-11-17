@@ -6,13 +6,22 @@ export const HISTORY_PAGE_SIZE = 60;
 /** 轮次索引里一行文字的宽度：刻度带旁边只放得下一句短话（#242）。 */
 const TURN_TEXT_MAX = 80;
 
-/** 整段会话的一轮（#242）：一条用户消息算一轮，`items` 里的用户条目按原顺序各占一条。 */
+/**
+ * 整段会话的一轮（#242）：一条用户消息算一轮，`items` 里的用户条目按原顺序各占一条。
+ * 一次提问（问答卡）也算一轮 —— 用户回答问题同样是「用户的输入」，但**一份问卷只占一条**，
+ * 不管它问了几题。
+ */
 export interface HistoryTurn {
-  /** 这条用户消息在条目流里的 id，与 `items` 里的 id 对得上。 */
+  /** 这一轮在条目流里的 id，与 `items` 里的 id 对得上。 */
   id: string;
-  /** 折成一行、超过 `TURN_TEXT_MAX` 截断后的正文；图片只报张数，不占字。 */
+  /** `user` = 一条用户消息；`ask` = 一次提问（一张问答卡）。 */
+  kind: "user" | "ask";
+  /** 折成一行、超过 `TURN_TEXT_MAX` 截断后的正文；图片只报张数，不占字。
+   *  `ask` 是**第一题的 header（没有就题面）**，网页在前面补「问卷概况：」。 */
   text: string;
   images: number;
+  /** 仅 `ask`：题目数 —— 网页据此决定补不补「等 N 题」。 */
+  questions?: number;
 }
 
 /** `session` 帧里跟着 `items` 一起下发的元数据。 */
@@ -32,12 +41,69 @@ export interface SessionHistory {
   turns?: HistoryTurn[];
 }
 
-/** 整段会话的轮次索引：`items` 里的用户消息按原顺序，每条一轮。 */
+/** 提问工具的三种名字（与网页 `web/src/chat.ts` 的 `isAskTool` 对齐，旧会话也认）。 */
+const ASK_TOOLS = new Set(["question", "questionnaire", "ask_user_question"]);
+
+type Fields = Record<string, unknown>;
+
+function asFields(value: unknown): Fields | null {
+  let v = value;
+  if (typeof v === "string") {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return null;
+    }
+  }
+  return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Fields) : null;
+}
+
+function asArray(value: unknown): unknown[] | null {
+  let v = value;
+  if (typeof v === "string") {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return null;
+    }
+  }
+  return Array.isArray(v) ? v : null;
+}
+
+function firstText(values: unknown[]): string {
+  for (const value of values) if (typeof value === "string" && value.trim()) return value.trim();
+  return "";
+}
+
+/**
+ * 一条问卷在轮次索引里的那一行：第一题的 header（没有就题面）+ 题目数。
+ * 形状与网页的 `askQuestions` 一致：新工具是 `questions[]`，旧 `question` 是平铺的单个问题。
+ */
+function askSummary(args: unknown): { title: string; questions: number } {
+  const a = asFields(args);
+  const list = asArray(a?.questions) ?? (a && (a.question !== undefined || a.options !== undefined) ? [a] : []);
+  const first = asFields(list[0]);
+  return {
+    title: firstText([first?.header, first?.question, first?.prompt, first?.label]),
+    questions: list.length,
+  };
+}
+
+/**
+ * 整段会话的轮次索引：`items` 里的用户消息按原顺序每条一轮；夹在中间的提问（问答卡）也各占一条，
+ * 一份问卷只有一条（它的多道题是同一个工具调用）。
+ */
 function turnIndex(items: Item[]): HistoryTurn[] {
   const turns: HistoryTurn[] = [];
   for (const item of items) {
-    if (item.kind !== "user") continue;
-    turns.push({ id: item.id, text: oneLine(item.text, TURN_TEXT_MAX), images: item.images.length });
+    if (item.kind === "user") {
+      turns.push({ id: item.id, kind: "user", text: oneLine(item.text, TURN_TEXT_MAX), images: item.images.length });
+      continue;
+    }
+    if (item.kind === "tool" && ASK_TOOLS.has(item.name)) {
+      const ask = askSummary(item.args);
+      turns.push({ id: item.id, kind: "ask", text: oneLine(ask.title, TURN_TEXT_MAX), images: 0, questions: ask.questions });
+    }
   }
   return turns;
 }
