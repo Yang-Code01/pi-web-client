@@ -45,6 +45,8 @@ bash .pi/skills/pi-web-test-html/bin/env.sh fresh <仓库或 worktree 绝对路�
 node .pi/skills/pi-web-test-html/bin/run-book.mjs --case <用例集> [--base http://127.0.0.1:17876]
 ```
 
+加 `--video` 就把整个跑书过程录下来（Playwright `recordVideo` → ffmpeg 转 `run.mp4`，默认 1440×940，`--size 1280x800` 可改），连同 `shots/poster.png`、每步时间戳（`spec.video.marks`，给 HTML 的章节用）一起写进 spec；`--cwd <目录>` 会在跑用例前先建一个 cwd 指向该目录的会话（预览类用例要用）。录屏只为回看，**不替代截图**：截图是 100% 原始像素贴进表格的那份证据。
+
 产物：`<主检出>/.scratch/testbook/<用例集>/spec.json` + `shots/*.png`。摘要会打印每条用例的判定；有「失败」时退出码 1 —— **先看失败再往下做**，失败可能是产品 bug、也可能是用例写错了（本轮就出现过三处：选择器读到兄弟节点、时间种子落在未来、元素截图撞上重渲染）。
 
 ### 4. 生成 xlsx
@@ -61,7 +63,7 @@ python .pi/skills/pi-web-test-html/bin/build-xlsx.py --dir .scratch/testbook/<�
 node .pi/skills/pi-web-test-html/bin/build-html.mjs --dir .scratch/testbook/<用例集>
 ```
 
-照 `layout.json` 渲染 Excel 观感（绿标题栏、名称框 + fx 栏、A–G 列标与行号、格线、底部工作表页签），截图与 xlsx 全部内联成 data URI —— 一个 `.html` 单独拷走就能看。
+照 `layout.json` 渲染 Excel 观感（绿标题栏、名称框 + fx 栏、A–G 列标与行号、格线、底部工作表页签），截图与 xlsx 全部内联成 data URI —— 一个 `.html` 单独拷走就能看。跑书时带了 `--video`，末尾会多一个「测试录像」页签：mp4 也内联（几分钟的片子会到几十 MB，交付前先看一眼体积），下面一排按步骤时间点切片的章节按钮。
 
 ### 6. 交付、收尾
 
@@ -73,14 +75,15 @@ node .pi/skills/pi-web-test-html/bin/build-html.mjs --dir .scratch/testbook/<用
 ## 目录
 
 ```
-bin/run-book.mjs      驱动：浏览器、登录、按步截图、写 spec.json（--case/--base/--out/--root）
+bin/run-book.mjs      驱动：浏览器、登录、按步截图、写 spec.json（--case/--base/--out/--root/--cwd/--video/--size）
 bin/build-xlsx.py     spec.json → xlsx + layout.json（openpyxl，可选 LibreOffice 重算）
-bin/build-html.mjs    layout.json → 单文件 HTML（图片与 xlsx 内联）
+bin/build-html.mjs    layout.json → 单文件 HTML（图片、xlsx、录像都内联）
 bin/env.sh            up / fresh / down，包一层 pi-web-client-test-dev
 cases/<name>.mjs      用例集（只写用例，不写驱动）
 setup/<name>.sh       该模块的系统级清场（可选）
 references/writing-cases.md  用例集怎么写、判定口径、截图对象
 references/pitfalls.md       已经踩过的坑（时区、未来事件、i18n 选择器、截图重试…）
+notes/translate-sync.md      本次「预览翻译 → 同步回原文」用例集：桩 pi 的行为、两处断言口径（旧代码应红）
 ```
 
 ## 写新用例集

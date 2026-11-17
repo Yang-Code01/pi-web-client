@@ -18,12 +18,44 @@ const arg = (name, fallback) => {
 const ROOT = path.resolve(arg("dir", ".scratch/testbook/workclock"));
 const layout = JSON.parse(fs.readFileSync(path.join(ROOT, "layout.json"), "utf8"));
 const spec = JSON.parse(fs.readFileSync(path.join(ROOT, "spec.json"), "utf8"));
-const NAME = arg("name", spec.output ?? spec.module ?? "测试书");
+const NAME = arg("name", spec.output ?? spec.module ?? "测试书").replace(/[\\/:*?"<>|]/g, "-").trim();
 const OUT = path.join(ROOT, `${NAME}.html`);
 const XLSX = path.join(ROOT, `${NAME}.xlsx`);
 const xlsxHref = fs.existsSync(XLSX)
   ? `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${fs.readFileSync(XLSX).toString("base64")}`
   : `./${NAME}.xlsx`;
+
+const IMG_CACHE = new Map();
+/** 截图内嵌成 data URI：HTML 单文件就能带着图走，预览/转发都不会丢图。 */
+function dataUri(rel) {
+  if (IMG_CACHE.has(rel)) return IMG_CACHE.get(rel);
+  const file = path.join(ROOT, rel);
+  let out = rel;
+  try {
+    out = `data:image/png;base64,${fs.readFileSync(file).toString("base64")}`;
+  } catch {
+    console.warn("missing image", rel);
+  }
+  IMG_CACHE.set(rel, out);
+  return out;
+}
+
+/** 录屏（run-book.mjs --video 的产物）：整段 mp4 内嵌，章节用 spec.video.marks 定位。 */
+const REEL = (() => {
+  const v = spec.video;
+  if (!v?.file) return null;
+  const file = path.join(ROOT, v.file);
+  if (!fs.existsSync(file)) return null;
+  const bytes = fs.readFileSync(file);
+  const mime = v.file.endsWith(".webm") ? "video/webm" : "video/mp4";
+  return {
+    ...v,
+    src: `data:${mime};base64,${bytes.toString("base64")}`,
+    mb: (bytes.length / 1048576).toFixed(1),
+    poster: v.poster && fs.existsSync(path.join(ROOT, v.poster)) ? dataUri(v.poster) : null,
+  };
+})();
+const REEL_TAB = "测试录像";
 
 const PT_TO_PX = 4 / 3;
 const px = (pt) => Math.round(pt * PT_TO_PX);
@@ -46,21 +78,6 @@ const STYLE = {
   "verdict-manual": "background:#fff1d6;color:#92400e;font-weight:700;align-items:center;justify-content:center;display:flex;text-align:center",
   td: "display:block;align-items:flex-start",
 };
-
-const IMG_CACHE = new Map();
-/** 截图内嵌成 data URI：HTML 单文件就能带着图走，预览/转发都不会丢图。 */
-function dataUri(rel) {
-  if (IMG_CACHE.has(rel)) return IMG_CACHE.get(rel);
-  const file = path.join(ROOT, rel);
-  let out = rel;
-  try {
-    out = `data:image/png;base64,${fs.readFileSync(file).toString("base64")}`;
-  } catch {
-    console.warn("missing image", rel);
-  }
-  IMG_CACHE.set(rel, out);
-  return out;
-}
 
 function renderSheet(sheet, index) {
   const cols = sheet.cols;
@@ -112,7 +129,27 @@ function renderSheet(sheet, index) {
 
 const tabs = layout.sheets
   .map((s, i) => `<button class="tab${i === 0 ? " on" : ""}" data-tab="${esc(s.name)}">${esc(s.name)}</button>`)
-  .join("");
+  .join("") +
+  (REEL ? `<button class="tab" data-tab="${REEL_TAB}">${REEL_TAB}</button>` : "");
+
+/** 录像工作表：一段能直接放的视频 + 按用例步骤排的章节（点一下跳过去）。 */
+function renderReel() {
+  const chapters = (REEL.marks ?? []).length
+    ? `<div class="reel-chapters">${(REEL.marks ?? [])
+        .map(
+          (m) =>
+            `<button class="chap" data-t="${m.t.toFixed(2)}"><b>${esc(m.case)} · ${m.no}</b>${esc(m.label)}</button>`,
+        )
+        .join("")}</div>`
+    : "";
+  return `<section class="sheet reel-sheet" data-sheet="${REEL_TAB}">
+  <div class="reel">
+    <div class="reel-head"><b>测试录像</b><span>${esc(spec.title)} · ${REEL.seconds}s · ${REEL.mb} MB · ${REEL.w}×${REEL.h}</span></div>
+    <video id="reel" controls autoplay muted playsinline ${REEL.poster ? `poster="${esc(REEL.poster)}"` : ""} src="${esc(REEL.src)}"></video>
+    ${chapters}
+  </div>
+</section>`;
+}
 
 const html = `<!doctype html>
 <html lang="zh-CN">
@@ -161,6 +198,16 @@ const html = `<!doctype html>
   .badge.pass { background:#ddf3e1; color:#166534; }
   .badge.fail { background:#fce4e2; color:#9f1239; }
   .badge.manual { background:#fff1d6; color:#92400e; }
+  .reel-sheet { height:100%; }
+  .reel { height:100%; display:flex; flex-direction:column; gap:10px; padding:14px; background:#0f172a; }
+  .reel-head { display:flex; align-items:baseline; gap:10px; color:#e2e8f0; font-size:12px; }
+  .reel-head b { font-size:13px; }
+  .reel-head span { color:#94a3b8; font-size:11px; }
+  #reel { flex:1; min-height:0; width:100%; background:#000; border-radius:6px; box-shadow:0 0 0 1px #1e293b; }
+  .reel-chapters { display:flex; flex-wrap:wrap; gap:6px; max-height:112px; overflow:auto; }
+  .chap { display:flex; gap:6px; align-items:baseline; border:1px solid #334155; background:#1e293b; color:#cbd5e1; border-radius:5px; padding:4px 8px; font:11px Arial,"Microsoft YaHei",sans-serif; cursor:pointer; }
+  .chap:hover { background:#273449; color:#fff; }
+  .chap b { color:#7dd3fc; font-weight:700; }
 </style>
 </head>
 <body>
@@ -176,11 +223,12 @@ const html = `<!doctype html>
   </div>
   <div class="pane" id="pane">
     ${layout.sheets.map(renderSheet).join("\n")}
+    ${REEL ? renderReel() : ""}
   </div>
   <div class="tabs">${tabs}</div>
   <div class="status">
-    <span>${layout.sheets.length} 个工作表</span>
-    <span>18 张截图</span>
+    <span>${layout.sheets.length + (REEL ? 1 : 0)} 个工作表</span>
+    <span>${spec.summary.shots} 张截图</span>
     <span class="grow"></span>
     <span class="badge pass">通过 ${spec.summary.pass}</span>
     <span class="badge fail">失败 ${spec.summary.fail}</span>
@@ -205,6 +253,13 @@ const html = `<!doctype html>
       if (!cell) return;
       namebox.textContent = cell.dataset.ref;
       fxtxt.textContent = cell.dataset.val;
+    });
+    const reel = document.getElementById("reel");
+    document.querySelectorAll(".chap").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        reel.currentTime = Number(btn.dataset.t) || 0;
+        reel.play().catch(() => {});
+      });
     });
   </script>
 </body>
