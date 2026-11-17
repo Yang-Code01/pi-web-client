@@ -5400,9 +5400,14 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .bc-row { cursor: pointer; }
 .bc-row:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: -2px; }
 .bc-row.is-open { background: var(--panel-3); box-shadow: inset 2px 0 0 var(--accent); }
-.go-commit { width: min(900px, 97%); height: min(86%, 780px); }
+/* 高度必须用 --vh1 给死：opLayer 是 `display:grid; place-items:center`，百分比高度对着「由内容
+   决定高度」的网格区域解析 = 无效，卡会跟着内容一路涨（实测一条提交 21830px），里面的
+   `.go-commit-diff` 于是永远不滚、差异看起来是空白。.branch-sheet 也是同一个理由这么写的。 */
+.go-commit { width: min(900px, calc(var(--vw1) * 94)); height: min(calc(var(--vh1) * 78), 720px); max-height: calc(var(--vh1) * 78); }
 .go-commit .go-card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.go-commit-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); }
+/* 行模板必须写死 minmax(0, 1fr)：只给列不给行时，隐式行是 auto，右边那半截会照内容涨
+   （实测一屏 720 的卡里 main 撑到 6109px），文件清单与差异区就都变成了「看不见的空白」。 */
+.go-commit-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 .go-commit-side { min-width: 0; overflow: auto; padding: 12px 14px; border-right: 1px solid var(--line-soft); display: grid; gap: 12px; align-content: start; }
 .go-commit-meta { display: grid; gap: 5px; }
 .go-meta-row { display: grid; grid-template-columns: 3.4rem minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: 11.5px; }
@@ -5437,7 +5442,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .go-fpath { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .go-fnum { font-size: 10.5px; white-space: nowrap; color: var(--faint); }
 .go-commit-diff { min-height: 0; overflow: auto; padding: 10px 14px; }
-.go-commit-foot-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.go-commit-foot { justify-content: flex-end; }
 .go-commit-foot .go-acts { flex: none; }
 
 /* 窄版一律按**卡片自己的宽度**判，不按视口：嵌进「目录与仓库」右栏时卡只有 800（字号 150% 时
@@ -5469,8 +5474,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .go-img-pair, .go-codegrid { grid-template-columns: minmax(0, 1fr); }
   .go-code:nth-child(odd) { border-right: 0; }
   .go-frames { grid-template-columns: minmax(0, 1fr); }
-  .go-commit-body { grid-template-columns: minmax(0, 1fr); }
-  .go-commit-side { border-right: 0; border-bottom: 1px solid var(--line-soft); max-height: 44%; }
+  .go-commit-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 44%) minmax(0, 1fr); }
+  .go-commit-side { border-right: 0; border-bottom: 1px solid var(--line-soft); }
   .go-commit-msg { max-height: 6.4em; }
   .go-arrow { text-align: center; transform: rotate(90deg); }
   .go-card, .go-card.wide { width: 98%; max-height: 94%; }

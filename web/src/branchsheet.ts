@@ -383,10 +383,24 @@ export class BranchSheet {
     this.fetchBtn.hidden = keep ? keep.branches.length === 0 : true;
   }
 
+  /**
+   * D289: 后台每次刷新都会把顶部对照栏整条重画 —— 正在里面打字的人会被清空，
+   * 展开着的对照菜单也会被换掉（点下去那一刻正好被替换就点了个空）。
+   * 对照栏长什么样只取决于这几个字段，没变就别重画。
+   */
+  private cmpSig = "";
+
   private paint(): void {
     if (!this.data) return;
     this.fetchBtn.hidden = this.data.branches.length === 0;
-    this.paintCmp(this.data);
+    const cmpSig = [
+      this.data.head, this.data.base, this.data.ahead, this.data.behind,
+      this.data.mergeBase?.h ?? "", JSON.stringify(this.data.branches),
+    ].join("");
+    if (cmpSig !== this.cmpSig) {
+      this.cmpSig = cmpSig;
+      this.paintCmp(this.data);
+    }
     this.paintTabs();
     this.paintTabBody();
     const when = this.data.fetchedAt ? fmtRelative(this.data.fetchedAt) : tr("不知道（还没 fetch 过）");
@@ -612,9 +626,24 @@ export class BranchSheet {
 
   // ---------------------------------------------------------------- 历史
 
+  /**
+   * D289: 后台每几秒重拉一次历史，`paintHistory()` 会把整批 `.bc-row` 换掉 —— 高亮、
+   * 键盘焦点、滚动位置全跟着旧节点一起消失（test:githist:ui 就是被这个绊住的）。
+   * 数据与这一屏长得一样时干脆别重画。
+   */
+  private historySig = "";
+
   private paintHistory(): void {
     const data = this.data;
     if (!data) return;
+    // 侧栏的折叠状态 / 选中的分支也决定这一屏长什么样（组头、选中高亮都是本地状态）。
+    const sig = `${this.side}${this.selectedBranch}${JSON.stringify(this.foldedGroups)}${JSON.stringify(this.refs)}${JSON.stringify(data)}`;
+    const same = this.colsEl.firstElementChild?.classList.contains("go-history") === true;
+    if (sig === this.historySig && same) {
+      this.keepCommitRow();
+      return;
+    }
+    this.historySig = sig;
     const wrap = el("div", "go-history");
     const sideTabs = el("div", "go-side-tabs");
     const makeSide = (side: "left" | "right", text: string): HTMLButtonElement => {
@@ -935,6 +964,7 @@ export class BranchSheet {
         return;
       }
       const d = detail;
+      filesHead.replaceChildren();
       const add = d.files.reduce((n, f) => n + f.additions, 0);
       const del = d.files.reduce((n, f) => n + f.deletions, 0);
       filesHead.append(
@@ -978,7 +1008,9 @@ export class BranchSheet {
     };
 
     const paintFoot = (): void => {
-      foot.replaceChildren(el("span", "go-commit-foot-hint", tr("Esc / ✕ / 点遮罩都关掉它，回到工作台")));
+      // 底栏不放「Esc / ✕ / 点遮罩都关掉它」那句提示：说明展开全文时会压到内容上，
+      // 而且三种关法本来就套在 ✕ 与遮罩上，写在按钮旁边是废话。
+      foot.replaceChildren();
       const acts = el("div", "go-acts");
       const copy = btn(tr("复制 SHA"));
       copy.dataset.commitCopy = "1";
@@ -1026,7 +1058,9 @@ export class BranchSheet {
         paintFiles();
         void loadFile(first);
       } else pane.replaceChildren(el("div", "go-diff-empty", tr("这条提交没有可显示的文本差异")));
-      fileList.querySelector<HTMLElement>("[data-commit-file]")?.focus();
+      const on = fileList.querySelector<HTMLElement>(`[data-commit-file="${Math.max(picked, 0)}"]`);
+      on?.focus();
+      on?.scrollIntoView({ block: "nearest" });
     };
 
     pane.append(el("div", "go-diff-empty", tr("正在读这条提交…")));

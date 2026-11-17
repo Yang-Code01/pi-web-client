@@ -3432,7 +3432,6 @@ export const en: Dict = {
   "读不到这条提交的详情": "Could not read this commit",
   "（空树）": "(empty tree)",
   "本提交 · {p1}": "This commit · {p1}",
-  "Esc / ✕ / 点遮罩都关掉它，回到工作台": "Esc / ✕ / clicking the backdrop all close it and return to the workbench",
   "复制 SHA": "Copy SHA",
   "回滚": "Revert",
   "这条已经在当前分支上，摘过来会是一个空提交": "Already on the current branch — cherry-picking it would be an empty commit",
