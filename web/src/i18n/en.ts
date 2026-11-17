@@ -312,6 +312,8 @@ export const en: Dict = {
   "＋ 新建工作区": "+ New workspace",
   "新建工作区": "New workspace",
   "已新建，收在 ＋{p1} 里": "Created — it's filed under ＋{p1}",
+  "已建在 {p1}，横条第 {p2} 位": "Created {p1} — tab {p2} in the row",
+  "已建在 {p1}，收在 ＋{p2} 里（第 {p3} 位）": "Created {p1} — filed under ＋{p2} (position {p3})",
   "先建一个空组，再把会话拖进去": "Creates an empty group; drag sessions into it afterwards",
   "会话信息：用量、费用、文件": "Session info: usage, cost, files",
   "会话列表": "Session list",

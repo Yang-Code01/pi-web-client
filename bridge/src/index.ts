@@ -3652,7 +3652,8 @@ async function main(): Promise<void> {
               // 不带 dir = 老规矩，建一个空壳手动组、由页面接着进入改名。
               const dir = typeof msg.dir === "string" ? msg.dir : "";
               if (dir) {
-                const result = await sessions.workspaces.createDir(dir);
+                // #478：建组当天按天插位（今天这一档的末尾），不看显示名。
+                const result = await sessions.workspaces.createDir(dir, sessions.place());
                 if (!result.ok || !result.group) {
                   send({ type: "notice", text: result.reason ?? "这个目录没能建成工作区", level: "warn" });
                   return;
@@ -3662,7 +3663,7 @@ async function main(): Promise<void> {
                 send({ type: "ws.created", id: result.group.id, created: result.created === true });
                 return;
               }
-              sessions.workspaces.create(String(msg.name ?? ""));
+              sessions.workspaces.create(String(msg.name ?? ""), sessions.place());
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
               return;
             }
