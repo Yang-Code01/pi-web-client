@@ -5431,3 +5431,21 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - 编辑态要 Ctrl/Cmd 才跳是刻意的：不然想选一格改字就会误开链接；这个键盘约定和 Excel 一致。
 
 **验证：** 新增 `bridge/tests/sheet-theme-unit.mjs`（主题 0–11 顺序、openpyxl 默认字体黑色、theme=2 浅灰、WPS 子元素边框、自定义 indexed 调色板、标签色 rgb/theme）与 `bridge/tests/sheet-refs-unit.mjs`（location / relationship / 百分号转义 / 不叠 `##` / 外链不 decode），`web/tests/sheet-links-unit.mjs`（引号表名、区域与反向区域、`''`、命名区域拒绝、大小写匹配），一并挂进 `npm run test:sheet`。两处 typecheck、`npm run build` 全绿。真 Chromium + 隔离桥打开用户两个文件：标签色 `#1F3864` / `#8EA9DB` / `#2F5597` 都对；`00 目录` 的正文从白字变黑字；单击 B6 跳到 `01 基础格式` 并选中 A1；演示文件 `05 图片与超链接` 的 B19 跳到 `09 排序与汇总`。WPS 侧另存一份带边框 / 标签色 / 页内链接的样张，读回 `#2E75B6` 标签色、`1px solid #D9D9D9` 边框、`#'第二页'!A1` 链接。
+
+## D284 补全只替换光标左边已经敲的那一截，不再吃掉右边的字（用户报障 2026-11-17）
+
+**问题：** 输入框里已经写了一段话，光标回到最前面，敲 `/` 再挑一条命令 / 技能，原来的内容就没了；换个位置也一样（比如在句子中间敲 `@` 选文件）。用户原话：「当用户在输入框中已经输入一些内容后，然后回到最前面，用/ 然后选择一个skill 后，会导致已经输入的内容被清空」。
+
+**原因：** `web/src/app.ts` 的 `updateComplete()` 用 `const before = text.slice(0, caret)` 匹配 `/^\/([^\s]*)$/`，但替换终点取的是 `tokenEnd(caret)` —— 「从光标一直吃到下一个空白」。光标停在开头那个 `/` 时，`tokenEnd` 会把 `/` 后面整段用户文本当成待替换的 token 一起切掉：`/new ` + 用户原文整段消失；原文里恰好有空格时，只从第一个空格往后幸存，变成 `/new bug` 这种残句。`@` 文件补全同一个 `end = tokenEnd(caret)`，症状一样。技能面板的「使用」走的是另一条路（`pickSkill()` 按 `selectionStart` 插入），没有这个问题。
+
+**决定：**
+
+- **匹配和替换都只看光标左边。** `web/src/commands.ts` 新增 `slashSpan(text, caret)` / `atSpan(text, caret)`：`start` 是 token 起点，`end` **就是 caret**，`query` 是 token 里光标之前的那一截。`updateComplete()` 改用它们（`web/src/app.ts:14065` / `web/src/app.ts:14075`），`tokenEnd()` 与旧的 `before` 拼接一起删掉。
+- **光标右边的文本一律不归补全管。** 这条是不丢内容的唯一保证：不管用户在多早的位置敲 `/`，替换范围都不会越过光标。
+
+**代价 / 可改：**
+
+- 光标停在一条**已经敲完**的命令词中间（`/new` 里光标在 `e` 和 `w` 之间）再补全时，只替换到光标，右边那个 `w` 会留着变成 `/newX w` 之类的拼接 —— 旧行为是整词替换，看起来更「干净」，但它正是清空用户文本的那把刀。选了宁可留残字也不丢话。
+- `@` 文件补全同理：路径中间补全只换光标左边那截。
+
+**验证：** `web/tests/commands-unit.mjs` 新增 5 个用例（`applyPick()` 切片模拟真插入）：光标回开头选候选后原文完整保留、无空格整段保留、词中间补全只换到光标、`/` 只认行首、`@` 同样只到光标 —— `npm run test:commands` 20 pass。真 Chromium 探针 `probes/complete-insert-keeps-text.mjs`（隔离桥 17876，用内建命令行代替技能行，路径相同）：修复前输入框变成 `/new ` 与 `/new bug`（红），重建后 `/new 帮我看看这个bug`、`/new 帮我看看这个 bug`（绿）。`npm --prefix web run typecheck`、`npm --prefix web run build` 全绿。

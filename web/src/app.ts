@@ -5,7 +5,7 @@ import "./settings-console.css";
 import { api, type DepPackageId, type DepsReport } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
-import { filterCommands, PANEL_COMMANDS, type CommandItem } from "./commands.ts";
+import { atSpan, filterCommands, PANEL_COMMANDS, slashSpan, type CommandItem } from "./commands.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
@@ -14062,26 +14062,19 @@ export class App {
     const text = field.value;
     const caret = field.selectionStart ?? text.length;
     if (caret !== (field.selectionEnd ?? caret)) return this.closeComplete();
-    const before = text.slice(0, caret);
-    const tokenEnd = (from: number) => {
-      const m = /^[^\s]*/.exec(text.slice(from));
-      return from + (m ? m[0].length : 0);
-    };
-    const cmd = /^\/([^\s]*)$/.exec(before);
+    const cmd = slashSpan(text, caret);
     if (cmd) {
-      const query = cmd[1];
+      const query = cmd.query;
       if (!this.piCommands || this.piCommands.sessionId !== this.currentId || Date.now() - this.piCommands.at > 60_000) {
         this.piCommands = { sessionId: this.currentId, at: Date.now(), list: this.piCommands?.sessionId === this.currentId ? this.piCommands.list : [] };
         this.socket.send({ type: "commands", sessionId: this.currentId, cwd: this.session?.cwd });
       }
-      this.showComplete("cmd", 0, tokenEnd(caret), query, this.commandItems(query));
+      this.showComplete("cmd", cmd.start, cmd.end, query, this.commandItems(query));
       return;
     }
-    const at = /(?:^|\s)@([^\s@]*)$/.exec(before);
+    const at = atSpan(text, caret);
     if (at) {
-      const query = at[1];
-      const start = caret - query.length - 1;
-      const end = tokenEnd(caret);
+      const { start, end, query } = at;
       const seq = ++this.fileQuerySeq;
       const sessionId = this.currentId;
       // Keep the old rows while the next answer is on its way: no flicker per keystroke.
