@@ -5595,3 +5595,20 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 轮询 30 秒而不是按「下一个点」算精确定时器 —— 规则的每次改动都要重排定时器，而 30 秒的误差在这个场景里没人能感知；代价是每天至多 2880 次空转（读一个 JSON），实测可以忽略。补发只限当天，不回溯昨天以前 —— 隔天提醒「上周该交加班了」没有意义。
 
 **验证：** `bridge/tests/attendance-unit.mjs` 44 条（新增 8 条：`weekdayOfDate` 周日=7、`minutesOf`/`clockOfMinutes` 往返与坏值、`normalizeRule` 回落与夹取、`ruleProblem` 关着放行、`reminderDue` 四种不发的情形与补发偏移、`reminderBody` 补发文案、规范化后再校验）；`bridge/tests/attendance-e2e.mjs` 30 条（新增 6 条：默认关着且通道状态照实说、开着不选星期 400、规范化后读回一致、关着不挑毛病、没有通道试发 500、定时器到点只发一次且重启不补第二遍、挪时间后清掉当天标记）；`web/tests/attendance-unit.mjs` 12 条不变。i18n 增 26 个键（en/ja 齐）；`npm --prefix web run typecheck`（含 `i18n-check` 3394 键 × 3 语言、`test:viewport`）、`npm --prefix bridge run typecheck`、`npm --prefix web run build`、`npm run build:bridge` 全过；测试实例 17876 上真界面截过三张（记录/加班申请/提醒），提醒页的七个星期按钮在 1400px 下排成一行、窄容器改四列。
+
+## D291 加班申请的默认值从「我上一次的申请」推，二级审批人只读（用户要求 2026-11-17）
+
+**问题：** 用户比着 OA 的新建单据说三件事：时间要按日期类型给默认值（工作日 18:00–22:00、周末 09:00–18:00）；一级审批人要有默认值；二级审批人该是固定的、不可改，"应该有 api"。
+
+**决定：**
+
+- **时间窗由日期类型算，不记住上次。** `defaultWindow(dateKey)`：周六日 `09:00–18:00`、其余 `18:00–22:00`。换日期就整段重给、时长跟着自动算；人手动改过 `start`/`end` 就不再覆盖。理由是 OA 自己也是这个规律，而"上次用过的时间"在跨周末时几乎总是错的。
+- **一级审批人的默认值取「我上一次加班申请的 idx1」。** 实测最新一条 117477 的 idx1 `江伟晨-JS0654` 与 OA 新建单据的默认值逐字一致 —— 这说明 OA 的默认值就是"上一单的那一位"，而不是某个组织架构接口。页面仍可改，选择按工号记在 `localStorage`（`pi-web-attendance:l1`），下次优先用它（前提是还在候选里）。
+- **二级审批人取「上一次申请的 idx2 的完整名单」，只读展示。** `workflow_list[code]` 里 `workflow_user_name` 是这一级"应该是谁"的完整名单（`李庆-JS0031,徐凯-JS0716`），`handle_user_name` 只有真正点过的那一个。用前者，与 OA 弹窗的两枚只读框一致。删掉原来的多选 + `L2_KEY`。
+- **`GET /in/roles/depart_leader_data` 只当兜底，绝不当权威。** 同一天同一 token 连取该端点，`last.depart_manager` 从 `[李庆-JS0031, 徐凯-JS0716]` 变成了 `[王俊-JS0055, 刘琳-SH0355, 姜祯-SH0654]`（连打三次都一样），说明它跟"我这个部门审批谁"不是一回事。只有在历史申请里找不到 idx2 时才用它，且面板上写明「OA 没给这级的固定审批人，提交前先在 OA 网页上确认一次」。
+- **审批人名字按工号对 id，对不上就丢，绝不猜。** `parsePerson` / `resolvePeople` 逐字比对工号，名字只在没有工号时才用来兜底 —— 工号是唯一键，名字会重。
+- **这些都在桥端算，前端只拿结果。** `GET /api/attendance/overtime` 直接回 `fixedL2` / `defaultL1`；页面不再自己拼"上一单"的逻辑，免得两处口径不一致。
+
+**取舍：** 一级审批人没有真正"系统给的默认值"这件事本身有点可疑 —— 如果哪天 OA 改成按当前时间点的组织架构算，这个推断会滞后。但三个可能的来源（`apply_approvers` 空数组、`workflow/*` 全部 `权限不足`、`depart/user/c` 只有人数）都试过，历史单据目前是唯一能验证与 OA 一致的口径。二级审批人固定名单一旦变了（比如换了部门负责人），我们的展示会滞后到下一次申请 —— 这可以接受：提交那一刻 OA 自己会按最新组织架构重算，我们显示的只是"应该是谁"。
+
+**验证：** `bridge/tests/attendance-unit.mjs` 49 条（新增 `parsePerson` 7 种切法、`resolvePeople` 五种匹配、`readDepartManagers`、`lastStepPeople`）；`bridge/tests/attendance-e2e.mjs` 30 条（假 OA 审批链补 idx2，`roles` 端点的 `last.depart_manager` **故意给一个不在候选表里的人**当路标，断言 `fixedL2` 仍是历史里的两位 —— 证明没走 roles）；`web/tests/attendance-unit.mjs` 14 条（新增 `defaultWindow`）。`sysmanage-ui` 90 项 ok。测试实例 17876 上改日期实测：11-17（周二）自动 18:00–22:00 / 4 小时，11-21（周六）自动 09:00–18:00 / 9 小时，11-18（周三）又回 18:00–22:00；一级选中上一单那位、二级两枚只读标签，`select[multiple]` 计数为 0。
