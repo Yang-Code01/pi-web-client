@@ -5,7 +5,7 @@
  *  - 气泡挂在 body 上（条是 overflow-x:auto，挂在里面会被裁掉），位置在胶囊下方
  *  - 悬停 180ms 才出、移开 220ms 才收（扫过不算）
  *  - 重命名在气泡里就地变输入框，回车提交发 rename
- *  - 归档：条尾出现抽屉 → 胶囊压扁滑进去 → 发 manage/archive，随后条里没它了
+ *  - 归档：条下滑出抽屉 → 胶囊落进槽里 → 发 manage/archive，随后条里没它了
  *  - 删除：胶囊被克隆带走 → 左栏自动展开露出🗑 → 飞进桶 → 发 manage/delete，桶计数 +1
  *  - 左栏那颗🗑 直接打开会话管理的垃圾箱视图
  *
@@ -225,18 +225,23 @@ try {
   assert(ren.sessionId === "probe-a" && ren.name === "改过的名字", `rename 帧不对：${JSON.stringify(ren)}`);
   await until(async () => (await count(page, ".pin-menu")) === 0, 1000, "menu closed after rename");
 
-  /* ---------------------------------------------------------------- 4. 归档：抽屉 + 压扁滑入 */
+  /* ---------------------------------------------------------------- 4. 归档：抽屉 + 落进槽里 */
   log("4) archive");
   await until(async () => (await chipAt(page, 0).textContent())?.includes("改过的名字"), 2000, "chip to show the new name");
   await chipAt(page, 0).hover();
   await until(async () => (await count(page, ".pin-menu")) === 1, 1500, "pin menu for archive");
   await page.click('.pm-item[data-act="archive"]');
-  await until(async () => (await count(page, ".pin-tray")) === 1, 1200, "archive tray to appear");
+  await until(async () => (await count(page, ".pin-shelf")) === 1 && (await page.evaluate(() => !document.querySelector(".pin-shelf")?.hidden)), 1200, "archive shelf to appear");
   const moving = await page.evaluate(() => {
-    const chip = document.querySelector(".pin-chip .pin-open")?.closest(".pin-chip");
-    return { anims: chip?.getAnimations().length ?? 0, tray: !!document.querySelector(".pin-tray") };
+    const slot = document.querySelector(".pin-slot");
+    return {
+      slotAnims: slot?.getAnimations().length ?? 0,
+      flyer: !!document.querySelector(".pin-flyer"),
+      shelf: !!document.querySelector(".pin-shelf") && !document.querySelector(".pin-shelf").hidden,
+    };
   });
-  assert(moving.anims > 0, "归档时胶囊应该在播动画（压扁 + 滑入）");
+  assert(moving.slotAnims > 0 && moving.flyer, "归档时应该有外壳收拢 + 飞行体（落进抽屉）");
+  assert(moving.shelf, "归档时应从条下滑出抽屉");
   await sleep(200);
   await page.screenshot({ path: `${OUT}/4-archive.png` });
   await sleep(280);
@@ -246,9 +251,10 @@ try {
   assert(arc.ids.length === 1 && arc.ids[0] === "probe-a" && arc.on === true, `archive 帧不对：${JSON.stringify(arc)}`);
   await until(async () => (await count(page, ".pin-chip.pin-new")) === 1 && !(await page.evaluate(() => [...document.querySelectorAll(".pin-name")].some((n) => n.textContent === "改过的名字"))), 3000, "archived chip to leave the strip");
   const stripW = await page.evaluate(() => document.querySelector(".pin-strip")?.clientWidth ?? 0);
-  assert(stripW > 600, `归档动画只能压扁那一颗胶囊：整条置顶条被挤成 ${stripW}px 了`);
+  assert(stripW > 600, `归档动画只能收那一颗外壳：整条置顶条被挤成 ${stripW}px 了`);
   const note = await page.evaluate(() => document.querySelector(".pin-note")?.textContent ?? "");
   assert(note.includes("已归档"), `归档后应有一句去向提示，实际「${note}」`);
+  await until(async () => page.evaluate(() => !document.querySelector(".pin-shelf") || document.querySelector(".pin-shelf").hidden), 2000, "archive shelf to retract");
 
   /* ---------------------------------------------------------------- 5. 删除：飞进左栏的🗑 */
   log("5) delete flies into the bin");

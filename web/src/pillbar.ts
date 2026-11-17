@@ -216,8 +216,12 @@ export class PillBar<S extends PillSession = PillSession> {
       open.onclick = () => this.opts.onOpen(c.id);
       chip.append(star, open);
       this.opts.decorate?.(chip, sessions[i]);
-      nodes.push(chip);
-      host.append(chip);
+      // 归档动效只收这个外壳：胶囊自己的宽度不变，文字就不会在收窄时换行、把行撑高。
+      const slot = el("span", "pin-slot");
+      slot.dataset.pinId = c.id;
+      slot.append(chip);
+      nodes.push(slot);
+      host.append(slot);
     });
     if (!chips.length && this.opts.empty) host.append(el("span", "pin-empty", this.opts.empty));
 
@@ -252,8 +256,10 @@ export class PillBar<S extends PillSession = PillSession> {
     let folded = 0;
     for (let i = nodes.length - 1; i >= 0; i--) {
       if (this.host.scrollWidth <= this.host.clientWidth) break;
-      const chip = nodes[i];
+      const chip = nodes[i].querySelector<HTMLElement>(".pin-chip") ?? nodes[i];
       if (chip.classList.contains("cur")) continue;
+      nodes[i].hidden = true;
+      // 探针与折叠逻辑都还在看胶囊自己的 hidden；外壳负责真正让位。
       chip.hidden = true;
       folded += 1;
     }

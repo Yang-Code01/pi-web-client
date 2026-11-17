@@ -5769,3 +5769,18 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 删预算后旧的 `budget.json` 成了无主文件（不迁移，因为那个数没有任何意义）；百分比必须在有窗口信息时才生效，冷会话打开面板只能显示「还没拿到窗口大小」，要等一次 stats；交接文档落在桥的 `state/handoff/` 而不是工作区，翻历史要去状态目录找；`/skill:handoff` 是用户技能（`disable-model-invocation`），没装时开关会被拦住，但「装没装」是在打开开关/触发那一刻才查。
 
 **验证：** `node --test bridge/tests/context-policy-unit.mjs`（7 条：三层优先级、5/90 边界、差 4 点、32K/200K/1M 夹取、交接优先、未设百分比不压制压缩）；`node --test bridge/tests/context-session-unit.mjs`（9 条：交接只发事件、到压缩线只压一次、运行中不压、scratch/已交接/占位中/失败退避全早退）；`npm run test:context`（桥 30 + web 33）通过；`node bridge/tests/context-policy-ui.mjs`（假 pi + Chromium，口令 `context-ui-pass`，端口 `CONTEXT_UI_PORT`，默认 7914 会被 Windows 保留段占掉，实测用 8934）20 项通过：四个头栏按钮、横幅隐藏时底栏仍贴底、窗口/默认 70%≈140K、差 2 点被拦且不发帧、保存后 `layer.session` 正确（保存前查 `/handoff` 技能，假 pi 用 `FAKE_PI_COMMANDS` 报一条）、生效来源变 session、140K→80K 夹取、Esc 只关子弹窗、交接说明与两次点击才发、压缩按钮不炸页面；`npm --prefix web run typecheck`（tsc + i18n 3489 键 × 3 语 + viewport 守卫）与 `npm --prefix bridge run typecheck`、`npm run build:bridge`、`npm run build:web` 通过。
+
+## D300 归档动效改为「条下滑出抽屉 + 只收外壳」：不再动胶囊宽度（用户选择 03，2026-11-18）
+
+**问题：** 旧实现（D64 的 A 方案）直接对归档那颗胶囊做 width 动画。胶囊里的文字没有 nowrap，宽度一收就换行，把置顶条从 35.25px 撑到 54.63px，正文整体下移；动画结束又移除临时 `.pin-tray`（约占 30px），桥回声 `renderSessionRow` 整条 replaceChildren，剩余胶囊在一帧里左跳 46px。实测 1280×860 下归档当前会话时最大单帧位移 51.3px。
+
+**决定：**
+
+- `PillBar` 每颗 chip 外包 `span.pin-slot`；归档只动画外壳的 `width + margin-right`（340ms，delay 220ms），胶囊自身宽度与字号不变；`.pin-chip` 高度固定、文字 nowrap，行高锁死。
+- 抽屉 `.pin-shelf` 常驻 `sessionRow`、绝对定位覆盖正文，不占 flex；胶囊用 fixed 克隆（挂 `#app` 内，避免 zoom 把字号缩一号），坐标与宽度都除 `uiScale()`，沿三次贝塞尔先竖直掉出条外再横滑进槽。
+- 600ms 时先移除空外壳再发 `manage/archive` 并给底部提示；800ms 抽屉收回。克隆在飞行结束（440ms）移除，槽位计数在此时出现。
+- 保留 D64 的删除动效（飞向🗑）与气泡方案，只替换归档这一段。
+
+**取舍：** 抽屉会在正文上方压 0.8 秒，一次只演一个（`pinAnim` 期间不接第二个归档）；归档 RPC 在动画第 600ms 发出，桥失败时提示仍会显示「已归档」（与旧实现一样先演后发，不新增确认）；新增一层 DOM 外壳，`fold()` / 拖拽 / 焦点查询都要同时看外壳与胶囊。
+
+**验证：** `npm --prefix web run typecheck`、`npm run build:web`、`node web/tests/pillbar-unit.mjs`（20 通过）、`node probes/round16-pin.mjs`（ALL OK）通过；`probes/round24-pinactions.mjs` 归档段通过（删除段在 main 上同样失败，属既有）；`diagnose.mjs` 归档当前/非当前会话行高恒定 51.25px，无方向反转，最大单帧 18.5px（平滑收拢中段），reduced-motion 下无抽屉/飞行体、提示正常。

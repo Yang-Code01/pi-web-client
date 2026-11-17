@@ -1016,7 +1016,18 @@ export class App {
     const sessionRow = el("div", "ws-session-row");
     const nowSlotRow = el("div", "now-chip-slot");
     const pinStrip = el("div", "pin-strip");
-    sessionRow.append(nowSlotRow, pinStrip);
+    // 归档的落点：条下滑出来的抽屉。挂在 sessionRow 里、绝对定位覆盖正文一层 ——
+    // 它不占布局，所以滑出/收起都不会推动任何一颗胶囊。
+    const pinShelf = el("div", "pin-shelf");
+    pinShelf.hidden = true;
+    pinShelf.setAttribute("aria-hidden", "true");
+    const pinShelfText = el("span", "pin-shelf-text");
+    const pinShelfWell = el("span", "pin-shelf-well");
+    const pinShelfCount = el("span", "pin-shelf-count", "1");
+    pinShelfCount.hidden = true;
+    pinShelfWell.append(pinShelfCount);
+    pinShelf.append(pinShelfText, pinShelfWell);
+    sessionRow.append(nowSlotRow, pinStrip, pinShelf);
 
     // #98：竖列（C）与收起时的色点条（D）挂在 `main` 外面这条 flex 上 —— `main` 自己的三列网格
     // （连 no-left / no-right 四种组合）一格都不动，两套壳只是在这条 flex 里多一列。
@@ -1043,7 +1054,7 @@ export class App {
     shell.append(topbar, wsTabsRow, sessionRow, mainWrap, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, wsTabsRow, wsTabs, wsTabsAdd, wsTabsMore, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, wsTabsRow, wsTabs, wsTabsAdd, wsTabsMore, sessionRow, pinStrip, pinShelf, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     // #315: the composer's cap is half of this pane, so any change to the pane's height (a window
     // drag, collapsing the right column, another tab on a narrow screen) has to re-measure it.
     // Observe the pane, not the composer: the composer grows inside the pane, so watching it would
@@ -18011,11 +18022,11 @@ export class App {
 
     /** 这一条里按 DOM 序排的会话 id（拖完按它算新顺序）。 */
     const local = (): string[] =>
-      [...strip.querySelectorAll<HTMLElement>(".pin-chip[data-pin-id]")].map((n) => n.dataset.pinId ?? "").filter(Boolean);
+      [...strip.querySelectorAll<HTMLElement>(".pin-slot[data-pin-id]")].map((n) => n.dataset.pinId ?? "").filter(Boolean);
 
     /** 其余胶囊的横向占位：拖动源自己剔掉，否则它永远吸住落点。 */
     const rects = (): TabRect[] =>
-      [...strip.querySelectorAll<HTMLElement>(".pin-chip[data-pin-id]")]
+      [...strip.querySelectorAll<HTMLElement>(".pin-slot[data-pin-id]")]
         .filter((n) => n.dataset.pinId && n.dataset.pinId !== id && !n.hidden)
         .map((n) => {
           const r = n.getBoundingClientRect();
@@ -18149,58 +18160,150 @@ export class App {
   }
 
   /**
-   * 归档动效：胶囊压扁 → 横着滑进条尾的抽屉 → 抽屉合盖计数 +1 → 塌缩让位，然后才真的发归档。
-   * 先演后发：归档是幂等的，而桥的回声会重建整条置顶条，抽屉就跟着没了。
+   * 归档动效：条下滑出一只抽屉，胶囊的 fixed 克隆沿弧线落进抽屉里的槽，随后收拢外壳让位。
+   * 先演后发：归档是幂等的，而桥的回声会重建整条置顶条；抽屉挂在 `.pin-strip` 外面，
+   * 所以回声把胶囊换掉时它还在。
+   *
+   * 不直接动胶囊宽度：那会让文字换行、把整行从 23px 撑到 54px（实测）。只收 `.pin-slot`
+   * 外壳的 width + margin-right，胶囊本身保持原宽；收到 0 后再移除外壳，邻居不会跳。
    */
   private archiveFromPin(id: string, chip: HTMLElement): void {
     if (this.pinAnim) return;
     this.closePinMenu();
+    const note = tr("已归档 1 个 · 在左栏「已归档」里");
     if (this.calm()) {
       this.archiveIds([id], true);
-      this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
+      this.pinNote(note);
       return;
     }
     const host = this.els.pinStrip;
-    if (!host.contains(chip)) return;
+    const shelf = this.els.pinShelf;
+    if (!host.contains(chip) || !shelf) return;
     this.pinAnim = id;
     const ease = "cubic-bezier(.22,.68,0,1)";
-    const tray = el("div", "pin-tray");
-    tray.append(el("div", "pin-tray-lid"), el("div", "pin-tray-body"), el("span", "pin-tray-count", "1"));
-    host.insertBefore(tray, host.querySelector(".pin-new"));
     const r = chip.getBoundingClientRect();
-    const t = tray.getBoundingClientRect();
-    const dx = t.left + t.width / 2 - (r.left + r.width / 2);
-    const dy = t.top + t.height / 2 - (r.top + r.height / 2);
-    const w = r.width;
-    tray.animate([{ opacity: "0", transform: "translateY(-4px)" }, { opacity: "1", transform: "none" }], { duration: 140, easing: ease });
-    const lid = tray.querySelector(".pin-tray-lid");
-    lid?.animate(
-      [{ transform: "rotate(0deg)" }, { transform: "rotate(-46deg)", offset: 0.45 }, { transform: "rotate(0deg)" }],
-      { duration: 460, easing: ease },
-    );
-    const fly = chip.animate(
+    const slot = chip.closest<HTMLElement>(".pin-slot");
+    const collapse = slot ?? chip;
+    // rect 是屏幕 px（#app 上有 zoom）；width 动画吃的是布局 px，不除 scale 会先撑宽 25% 再收。
+    const w = collapse.getBoundingClientRect().width / this.uiScale();
+
+    // 飞行体：fixed 克隆，不参与布局；原胶囊先隐着，等外壳收拢时一起移除。
+    // 克隆挂进 #app：那里的字号/描边都按 zoom 渲染，挂在 body 上会瞬间缩一号。
+    const root = document.getElementById("app");
+    const u = root ? this.uiScale() : 1;
+    const clone = chip.cloneNode(true) as HTMLElement;
+    clone.classList.add("pin-flyer");
+    clone.removeAttribute("data-pin-key");
+    Object.assign(clone.style, {
+      left: `${r.left / u}px`,
+      top: `${r.top / u}px`,
+      width: `${r.width / u}px`,
+      height: `${r.height / u}px`,
+    });
+    (root ?? document.body).append(clone);
+    chip.style.visibility = "hidden";
+
+    // 抽屉：先按最终位置量槽位，再让它从条下露出来。
+    const text = shelf.querySelector<HTMLElement>(".pin-shelf-text");
+    const well = shelf.querySelector<HTMLElement>(".pin-shelf-well");
+    const count = shelf.querySelector<HTMLElement>(".pin-shelf-count");
+    if (text) text.textContent = tr("已归档");
+    if (count) {
+      count.hidden = true;
+      count.textContent = "1";
+    }
+    shelf.hidden = false;
+    shelf.style.transform = "none";
+    const wr = well?.getBoundingClientRect();
+    shelf.style.transform = "translateY(-100%)";
+    shelf.animate(
       [
-        { transform: "none", opacity: "1", offset: 0 },
-        { transform: "scale(1.07, .66)", opacity: "1", offset: 0.34 },
-        { transform: `translate(${dx}px, ${dy}px) scale(.22, .22)`, opacity: "0", offset: 0.92 },
-        { transform: `translate(${dx}px, ${dy}px) scale(.22, .22)`, opacity: "0", offset: 1 },
+        { opacity: "0", transform: "translateY(-100%)" },
+        { opacity: "1", transform: "translateY(0)" },
       ],
-      { duration: 520, easing: ease, fill: "forwards" },
+      { duration: 130, easing: ease, fill: "forwards" },
     );
-    fly.onfinish = () => {
-      tray.querySelector(".pin-tray-count")?.animate(
-        [{ opacity: "0", transform: "translateX(-50%) scale(.4)" }, { opacity: "1", transform: "translateX(-50%) scale(1)" }],
-        { duration: 220, easing: ease, fill: "both" },
+
+    // 外壳收拢：宽 + 多出来的那一个 flex gap 一起归零，收到 0 时移除即可无缝。
+    if (slot) {
+      collapse.style.width = `${w}px`;
+      collapse.style.overflow = "hidden";
+      collapse.animate(
+        [
+          { width: `${w}px`, marginRight: "0px" },
+          { width: "0px", marginRight: "-4px" },
+        ],
+        { duration: 340, delay: 220, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" },
       );
-      // 塌缩让位只动这一颗胶囊：chip.parentElement 就是 .pin-strip 本身，
-      // 早先版本动的就是它，结果整条缩成 24px（只剩左右 padding）并横向溢出。
-      chip.animate([{ width: `${w}px` }, { width: "0px" }], { duration: 240, easing: ease, fill: "forwards" });
-      window.setTimeout(() => {
-        this.pinAnim = null;
-        this.archiveIds([id], true);
-        this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
-      }, 240);
+    }
+
+    // 落点：抽屉槽的中心（换成 #app 里的布局 px，与克隆的坐标同一套）。
+    const sx = (r.left + r.width / 2) / u;
+    const sy = (r.top + r.height / 2) / u;
+    const tx = wr ? (wr.left + wr.width / 2) / u : sx;
+    const ty = wr ? (wr.top + wr.height / 2) / u : sy + 40 / u;
+    // 三次贝塞尔：先竖直掉出条外，再横向滑进槽里 —— 不在行高上横穿邻居。
+    const c1y = sy + 60 / u;
+    const c2y = ty - 24 / u;
+    const at = (t: number) => {
+      const v = 1 - t;
+      return {
+        x: v * v * v * sx + 3 * v * v * t * sx + 3 * v * t * t * tx + t * t * t * tx,
+        y: v * v * v * sy + 3 * v * v * t * c1y + 3 * v * t * t * c2y + t * t * t * ty,
+      };
     };
+    const frames: Keyframe[] = [0, 0.2, 0.45, 0.75, 1].map((t, i) => {
+      const p = at(t);
+      return {
+        transform: `translate(${p.x - sx}px, ${p.y - sy}px) scale(${i === 4 ? 0.42 : 1.03 - 0.61 * t}) rotate(${-6 * t}deg)`,
+        opacity: i === 4 ? "0" : "1",
+        offset: t,
+      };
+    });
+    const fly = clone.animate(frames, { duration: 360, delay: 80, easing: "cubic-bezier(.4,0,.25,1)", fill: "forwards" });
+    fly.onfinish = () => {
+      clone.remove();
+      if (count) {
+        count.hidden = false;
+        count.animate(
+          [
+            { opacity: "0", transform: "translateY(-2px) scale(.4)" },
+            { opacity: "1", transform: "translateY(0) scale(1)" },
+          ],
+          { duration: 220, easing: ease, fill: "both" },
+        );
+      }
+      well?.classList.add("hit");
+      window.setTimeout(() => well?.classList.remove("hit"), 320);
+    };
+
+    // 先把外壳移除再发 RPC：回声重建整条时，这一格已经不在了，不会多跳一次。
+    window.setTimeout(() => {
+      collapse.remove();
+      this.archiveIds([id], true);
+      this.pinNote(note);
+    }, 600);
+
+    // 抽屉收回去；底部提示在归档发出时已经给了，这里只负责把动画收尾。
+    window.setTimeout(() => {
+      if (!shelf.isConnected) {
+        this.pinAnim = null;
+        return;
+      }
+      const out = shelf.animate(
+        [
+          { opacity: "1", transform: "translateY(0)" },
+          { opacity: "0", transform: "translateY(-100%)" },
+        ],
+        { duration: 140, easing: ease, fill: "forwards" },
+      );
+      out.onfinish = () => {
+        shelf.hidden = true;
+        shelf.getAnimations().forEach((a) => a.cancel());
+        shelf.style.transform = "";
+        this.pinAnim = null;
+      };
+    }, 800);
   }
 
   /**
