@@ -2877,7 +2877,10 @@ export const en: Dict = {
   "未注册": "Not registered",
   "见过锁屏": "Locks seen",
   "最后事件": "Last event",
-  "已安装但没有心跳": "Installed but not reporting",
+  "已注册自启，但没在跑": "Autostart registered, but nothing running",
+  "心跳": "Heartbeat",
+  "自启项在，但记录器没在跑：点下面的「重新启动记录器」。还起不来就手动跑一次 {p1}，它会把报错直接打出来":
+    "The autostart entry is there but the recorder is not running: press “Restart recorder” below. If it still won't start, run {p1} once by hand — it prints the error.",
   "历史覆盖 {p1} 天：记录器 {p2} 天，日志回填 {p3} 天":
     "History covers {p1} days: {p2} from the recorder, {p3} from the log import",
   "还没有历史：先装记录器，或者导入历史": "No history yet: install the recorder, or import the log",
@@ -2888,6 +2891,8 @@ export const en: Dict = {
   "导入历史（需管理员）": "Import history (needs admin)",
   "等 UAC 点是…": "Waiting for the UAC prompt…",
   "导入了 {p1} 条解锁记录": "Imported {p1} unlock records",
+  "日志里没有解锁记录：这台机器没开审核策略（4800/4801），只能用记录器从现在开始记":
+    "No unlock records in the log: this machine has audit policy 4800/4801 turned off, so only the recorder can track from now on",
   "导入历史失败": "Import failed",
   "记录器已启动": "Recorder started",
   "记录器已移除": "Recorder removed",

@@ -23,7 +23,7 @@
 ## Windows / PowerShell
 
 - 在 MSYS bash 里拼内联 PS 管道（`Get-CimInstance … | ForEach-Object { $_.ProcessId }`）会被 bash 吃掉 `$_`，报 127/空输出。写成 `.ps1` 文件再执行，或用单引号把整段包住、内部用 `''` 转义。
-- 计划任务：`Stop-ScheduledTask` + `Unregister-ScheduledTask -Confirm:$false`，两步都要 `-ErrorAction SilentlyContinue`，否则首次运行时任务不存在会中断脚本。
+- 自启项在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（值名 `pi-web-client-workclock`，测试实例带哈希后缀）：删它用 `Remove-ItemProperty -ErrorAction SilentlyContinue`，枚举时找 `Name -like 'pi-web-client-workclock*'`。别用 `Get-ScheduledTask`——记录器早就不走计划任务了（D286）。
 - 非管理员读不到 Security 4801（回填要 UAC）；`ConsentPromptBehaviorAdmin=5` 的机器上 UAC 会弹框，这类步骤只能标「人工」。
 
 ## 产物与目录

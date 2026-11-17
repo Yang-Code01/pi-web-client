@@ -67,7 +67,7 @@ node .pi/skills/pi-web-test-html/bin/build-html.mjs --dir .scratch/testbook/<用
 
 - 用 `question` 问「要不要在预览里打开」（推荐「打开」），选打开才 `open_preview(<HTML 绝对路径>)`；同一份文件只问一次。
 - xlsx 能让用户自己从 HTML 里下载（HTML 里有 `下载 xlsx` 按钮），不必单独再问一次。
-- `bash .pi/skills/pi-web-test-html/bin/env.sh down wk`；确认没有残留：记录器计划任务（`Get-ScheduledTask -TaskName 'pi-web-client-workclock'`）、记录器进程、测试实例端口。
+- `bash .pi/skills/pi-web-test-html/bin/env.sh down wk`；确认没有残留：记录器自启项（`reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" | findstr workclock`，应为空）、记录器进程、测试实例端口。
 - 在回复里给出三个路径：HTML、xlsx、`spec.json`（含原始截图目录）。
 
 ## 目录

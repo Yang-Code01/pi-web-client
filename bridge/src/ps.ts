@@ -2,11 +2,16 @@
  * 桥里跑 PowerShell / 走 UAC 的公共小件：本机管理（`sysmanage.ts`）与上下班记录器（`workclock.ts`）共用。
  *
  * 两条来历：
- * - 脚本从 stdin 进（`-Command -`），避免命令行长度与引号问题；不 detached —— D52 的教训是 Windows 上
- *   detached 会变成 DETACHED_PROCESS，`Start-Process -Verb RunAs` 拿不到桌面会话，UAC 静默失败。
+ * - 脚本落到临时 `.ps1` 再 `-File` 跑：`-Command -`（stdin）是**逐条语句**执行的，某条语句抛的参数绑定
+ *   错误不会中止后面的语句，脚本照样打印 `{"ok":true}`、退出 0 —— 「点了装上记录器，页面说成功，
+ *   其实什么都没注册」就是从这里来的（2026-11-17 真机实测）。`-File` 会在参数绑定错误处停下、非 0 退出。
+ *   文件必须 UTF-8 **with BOM**：PS 5.1 按 ANSI 读无 BOM 的 `.ps1`，中文会把语法拆坏。
+ * - 不 detached —— D52 的教训是 Windows 上 detached 会变成 DETACHED_PROCESS，`Start-Process -Verb RunAs`
+ *   拿不到桌面会话，UAC 静默失败。要脱离父进程（记录器）走 `Start-Process`，见 `workclock.ts`。
  * - 提权助手写回执文件给桥读：桥自己的 stdout 拿不到提权进程的输出。
  */
 import fs from "node:fs";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { statePath } from "./paths.ts";
@@ -22,10 +27,26 @@ export interface PsResult {
   timedOut: boolean;
 }
 
-/** 跑一段 Windows PowerShell；脚本走 stdin，见文件头的理由。 */
+/** 临时脚本的落点：探针与单测会看它，别挪到系统临时目录去。 */
+export function psTempFile(): string {
+  return statePath(`ps-${randomUUID()}.ps1`);
+}
+
+/** 跑一段 Windows PowerShell；脚本走临时 `.ps1` + `-File`，见文件头的理由。 */
 export function runPowerShell(script: string, timeoutMs = PS_TIMEOUT): Promise<PsResult> {
+  const file = psTempFile();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      `\ufeff$ErrorActionPreference='Stop'\n$ProgressPreference='SilentlyContinue'\n[Console]::OutputEncoding=[Text.Encoding]::UTF8\n${script}\n`,
+      "utf8",
+    );
+  } catch (err) {
+    return Promise.resolve({ code: -1, stdout: "", stderr: `写临时脚本失败：${String((err as Error).message)}`, timedOut: false });
+  }
   return new Promise((resolve) => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"], {
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file], {
       windowsHide: true,
     });
     let stdout = "";
@@ -35,6 +56,11 @@ export function runPowerShell(script: string, timeoutMs = PS_TIMEOUT): Promise<P
       if (done) return;
       done = true;
       clearTimeout(timer);
+      try {
+        fs.rmSync(file, { force: true });
+      } catch {
+        /* 下一次启动时同名的不会再有；留着也只是几十 KB */
+      }
       resolve(result);
     };
     const timer = setTimeout(() => {
@@ -53,9 +79,6 @@ export function runPowerShell(script: string, timeoutMs = PS_TIMEOUT): Promise<P
     });
     child.on("error", (err: Error) => finish({ code: -1, stdout, stderr: err.message, timedOut: false }));
     child.on("close", (code: number | null) => finish({ code: code ?? -1, stdout, stderr, timedOut: false }));
-    child.stdin.end(
-      `$ErrorActionPreference='Stop'\n$ProgressPreference='SilentlyContinue'\n[Console]::OutputEncoding=[Text.Encoding]::UTF8\n${script}\n`,
-    );
   });
 }
 
@@ -110,7 +133,8 @@ export async function runElevated(kind: string, body: string, failCode: string):
     `[IO.File]::WriteAllText($receipt,(@{ok=$false;code='uac_denied';error=$m}|ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))\n` +
     `exit 1\n}\n`;
   try {
-    fs.writeFileSync(helper, helperScript, "utf8");
+    // 同 `-File` 的理由：body 里有中文（`没有找到` 之类的匹配串），无 BOM 会被按 ANSI 解坏。
+    fs.writeFileSync(helper, `\ufeff${helperScript}`, "utf8");
     const result = await runPowerShell(wrapperScript, UAC_TIMEOUT);
     if (result.timedOut) {
       return { ok: false, code: "uac_timeout", error: "等了 120 秒还没有回执：UAC 可能还开着，或者提权助手还在跑" };

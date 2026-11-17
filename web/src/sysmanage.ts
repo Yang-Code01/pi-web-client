@@ -1076,11 +1076,17 @@ class SysPanel {
     panel.append(this.sectionHead(tr("记录器"), tr("零权限，跟着你登录")));
     const line = el("div", "sys-wk-agent");
     line.append(this.toneDot(agent.running ? "ok" : agent.installed ? "warn" : "dim"));
-    line.append(el("span", "sys-wk-agent__state", agent.running ? tr("运行中") : agent.installed ? tr("已安装但没有心跳") : tr("未安装")));
+    const stateText = agent.running
+      ? tr("运行中")
+      : agent.autostart
+        ? tr("已注册自启，但没在跑")
+        : tr("未安装");
+    line.append(el("span", "sys-wk-agent__state", stateText));
     if (agent.pid !== null && agent.running) line.append(el("span", "sys-wk-agent__meta", `pid ${agent.pid}`));
     panel.append(line);
     const facts = el("div", "sys-wk-facts");
     facts.append(this.fact(tr("登录时自启"), agent.autostart ? tr("已注册") : tr("未注册")));
+    facts.append(this.fact(tr("心跳"), agent.heartbeatAt === null ? "—" : clockText(agent.heartbeatAt)));
     facts.append(this.fact(tr("见过锁屏"), tr("{p1} 次", { p1: agent.locksSeen })));
     let lastEvent = "—";
     if (agent.lastEventAt !== null) {
@@ -1089,6 +1095,10 @@ class SysPanel {
     }
     facts.append(this.fact(tr("最后事件"), lastEvent));
     panel.append(facts);
+    if (agent.autostart && !agent.running) {
+      panel.append(this.note(tr("自启项在，但记录器没在跑：点下面的「重新启动记录器」。还起不来就手动跑一次 {p1}，它会把报错直接打出来", { p1: agent.scriptPath })));
+    }
+    if (agent.error) panel.append(this.note(agent.error));
     const coverage = data.coverage;
     panel.append(
       this.note(
@@ -1278,8 +1288,11 @@ class SysPanel {
     this.render();
     try {
       const res = await api.sysWorkclockBackfill();
-      if (res.ok) this.setNotice("ok", tr("导入了 {p1} 条解锁记录", { p1: res.count ?? 0 }));
-      else this.setNotice("bad", tr("导入历史失败"));
+      if (!res.ok) this.setNotice("bad", tr("导入历史失败"));
+      else if (!res.count) {
+        // 0 条不是成功提示：这台机器没开审核策略（4800/4801），日志里根本没有可读的解锁记录。
+        this.setNotice("bad", tr("日志里没有解锁记录：这台机器没开审核策略（4800/4801），只能用记录器从现在开始记"));
+      } else this.setNotice("ok", tr("导入了 {p1} 条解锁记录", { p1: res.count }));
       await this.load("workclock", true);
     } catch (err) {
       this.setNotice("bad", errText(err));

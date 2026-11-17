@@ -178,14 +178,16 @@ openCase({
   if (!facts.includes("已注册")) fail(s, "登录时自启没变已注册");
   await shot(s, ".sys-wk-cols", "agent-running");
 
-  s = step("用 PowerShell 核对计划任务与记录器进程（页面之外的真状态）", "任务 pi-web-client-workclock 存在、State=Running；记录器进程在跑；agent.jsonl 有第一行");
-  const task = ps("if (Get-ScheduledTask -TaskName 'pi-web-client-workclock' -ErrorAction SilentlyContinue) { (Get-ScheduledTask -TaskName 'pi-web-client-workclock').State } else { 'MISSING' }");
+  s = step("用 reg query 核对自启项与记录器进程（页面之外的真状态）", "HKCU…\\Run 里有 <autostartName> 且命令行指向记录器脚本；记录器在跑；agent.jsonl 有第一行");
   const st = await api("/api/sys?section=workclock");
+  const name = st.agent.autostartName || "pi-web-client-workclock";
+  const runValue = ps(`(Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name '${name}' -ErrorAction SilentlyContinue).'${name}'`);
   const dir = await workclockDir();
   const jsonl = fs.existsSync(path.join(dir, "agent.jsonl")) ? fs.readFileSync(path.join(dir, "agent.jsonl"), "utf8").trim().split(/\r?\n/) : [];
-  ok(s, `计划任务 State=${task}；agent.running=${st.agent.running} pid=${st.agent.pid}；agent.jsonl ${jsonl.length} 行：${jsonl[0] ?? "—"}`);
-  s.evidence.push(`Get-ScheduledTask → ${task}`, `agent.pid → ${st.agent.pid}`, `agent.jsonl[0] → ${jsonl[0] ?? "（空）"}`);
-  if (task !== "Running") fail(s, `计划任务状态 ${task}`);
+  ok(s, `Run\\${name} = ${runValue || "MISSING"}；agent.running=${st.agent.running} pid=${st.agent.pid}；agent.jsonl ${jsonl.length} 行：${jsonl[0] ?? "—"}`);
+  s.evidence.push(`Run\\${name} → ${runValue || "（没有）"}`, `agent.pid → ${st.agent.pid}`, `agent.jsonl[0] → ${jsonl[0] ?? "（空）"}`);
+  if (!st.agent.autostart || !runValue) fail(s, "HKCU 的 Run 项没写进去");
+  if (runValue && !runValue.includes(st.agent.scriptPath)) fail(s, `Run 项没指向记录器脚本：${runValue}`);
   if (!st.agent.running) fail(s, "状态接口说没在跑");
   if (jsonl.length === 0) fail(s, "agent.jsonl 是空的（记录器没写初始事件）");
 }
@@ -418,22 +420,24 @@ openCase({
 // ---------------------------------------------------------------- TC-09 卸下记录器
 openCase({
   id: "TC-09",
-  title: "卸下记录器：任务、进程、自启一起清掉",
+  title: "卸下记录器：自启项、进程、脚本一起清掉",
   module: "上下班 / 记录器",
   priority: "P0",
   precondition: "TC-02 装着记录器",
 });
 {
-  const s = step("点「卸下」", "卡片回到「未安装 / 未注册」；计划任务被删除；记录器进程退出");
+  const s = step("点「卸下」", "卡片回到「未安装 / 未注册」；HKCU Run 项被删；记录器进程退出");
   await openWorkclock();
   const before = (await page.locator(".sys-wk-agent").innerText()).replace(/\s+/g, " ").trim();
   await page.locator(".sys-wk-actions button", { hasText: "停止并移除" }).first().click();
   await page.locator(".sys-wk-agent").filter({ hasText: "未安装" }).first().waitFor({ timeout: 60_000 });
-  const task = ps("if (Get-ScheduledTask -TaskName 'pi-web-client-workclock' -ErrorAction SilentlyContinue) { 'STILL-THERE' } else { 'GONE' }");
   const st = await api("/api/sys?section=workclock");
-  ok(s, `操作前「${before.slice(0, 30)}…」；任务 ${task}；agent.installed=${st.agent.installed} running=${st.agent.running}`);
-  s.evidence.push(`Get-ScheduledTask → ${task}`, `agent.installed → ${st.agent.installed}`);
-  if (task !== "GONE") fail(s, "计划任务没删掉");
+  const name = st.agent.autostartName || "pi-web-client-workclock";
+  const left = ps(`(Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name '${name}' -ErrorAction SilentlyContinue).'${name}'`);
+  const runValue = left ? "STILL-THERE" : "GONE";
+  ok(s, `操作前「${before.slice(0, 30)}…」；Run\\${name} ${runValue}；agent.installed=${st.agent.installed} running=${st.agent.running}`);
+  s.evidence.push(`Run\\${name} → ${left || "（已删除）"}`, `agent.installed → ${st.agent.installed}`);
+  if (runValue !== "GONE") fail(s, "HKCU 的 Run 项没删掉");
   if (st.agent.installed || st.agent.running) fail(s, "状态还说是装的");
   await shot(s, ".sys-wk-cols", "uninstalled");
 }

@@ -20,8 +20,9 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { readJsonChecked, statePath, writeJson } from "./paths.ts";
-import { parseJson, psQuote, runElevated, runPowerShell } from "./ps.ts";
+import { spawn } from "node:child_process";
+import { readJsonChecked, stateDir, statePath, writeJson } from "./paths.ts";
+import { psQuote, runElevated, runPowerShell } from "./ps.ts";
 
 /** 页面上的历史窗口。 */
 export const WORKCLOCK_DAYS = 30;
@@ -29,10 +30,13 @@ export const WORKCLOCK_DAYS = 30;
 export const MAX_LOG_DAYS = 90;
 /** 记录器心跳超过这么久没动静就算没在跑。 */
 const HEARTBEAT_STALE_MS = 90_000;
-/** 计划任务状态的缓存时间：读一次要起一次 PowerShell，别每次 GET 都问。 */
-const TASK_CACHE_MS = 20_000;
 
-const TASK_NAME = "pi-web-client-workclock";
+/**
+ * 自启项落在 HKCU 的 Run 里，不是计划任务（D286）：`Register-ScheduledTask` 在这台标准用户机器上
+ * 一律 `Access is denied`（未提权的桥进程注册每用户任务也要管理员），Run 项标准用户可写、登录即起。
+ */
+const AUTOSTART_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const AUTOSTART_NAME = "pi-web-client-workclock";
 const AGENT_SCRIPT = "workclock-agent.ps1";
 const DEFAULT_HOURS = 9;
 const DEFAULT_WORKDAYS = [1, 2, 3, 4, 5];
@@ -74,6 +78,7 @@ export interface WorkclockToday extends WorkclockDay {
 }
 
 export interface WorkclockAgent {
+  /** 自启项已注册、或者进程正在跑 —— 页面据此决定显示「装上」还是「重新启动」。 */
   installed: boolean;
   running: boolean;
   autostart: boolean;
@@ -85,8 +90,10 @@ export interface WorkclockAgent {
   locksSeen: number;
   heartbeatAt: number | null;
   scriptPath: string;
-  taskName: string;
-  taskState: string;
+  /** 注册表值名（测试实例带状态目录哈希后缀，不碰真实自启项）。 */
+  autostartName: string;
+  /** 已注册的命令行；没注册时为空串，排障时能直接看出 `-Dir` 指到哪。 */
+  autostartCommand: string;
   error: string | null;
 }
 
@@ -354,31 +361,91 @@ interface AgentStatus {
   lastLockSeen?: number;
 }
 
-interface TaskInfo {
+interface AutostartInfo {
   exists: boolean;
-  state: string;
-  lastRun: string;
-  lastResult: number;
+  /** 注册的命令行；没注册时为空串。 */
+  command: string;
 }
 
-let taskCache: { at: number; value: TaskInfo } | null = null;
+interface RegResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
 
-async function readTaskInfo(force = false): Promise<TaskInfo> {
-  if (!force && taskCache && Date.now() - taskCache.at < TASK_CACHE_MS) return taskCache.value;
-  const script =
-    `$t = Get-ScheduledTask -TaskName ${psQuote(TASK_NAME)} -ErrorAction SilentlyContinue\n` +
-    `$i = Get-ScheduledTaskInfo -TaskName ${psQuote(TASK_NAME)} -ErrorAction SilentlyContinue\n` +
-    `[pscustomobject]@{ exists = [bool]$t; state = [string]$t.State; lastRun = [string]$i.LastRunTime; lastResult = [int]$i.LastTaskResult } | ConvertTo-Json -Compress`;
-  const result = await runPowerShell(script, 20_000);
-  const parsed = parseJson<TaskInfo>(result.stdout);
-  const value: TaskInfo = {
-    exists: parsed?.exists === true,
-    state: typeof parsed?.state === "string" ? parsed.state : "",
-    lastRun: typeof parsed?.lastRun === "string" ? parsed.lastRun : "",
-    lastResult: typeof parsed?.lastResult === "number" ? parsed.lastResult : 0,
-  };
-  taskCache = { at: Date.now(), value };
-  return value;
+/** 直接跑 `reg.exe`：比开机 PowerShell 快一个数量级，而且参数据精确传递（不经过命令行拼接）。 */
+function runReg(args: string[], timeoutMs = 10_000): Promise<RegResult> {
+  return new Promise((resolve) => {
+    const child = spawn("reg.exe", args, { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+    const finish = (result: RegResult) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* already gone */
+      }
+      finish({ code: -1, stdout, stderr: `${stderr}超时` });
+    }, timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (err: Error) => finish({ code: -1, stdout, stderr: err.message }));
+    child.on("close", (code: number | null) => finish({ code: code ?? -1, stdout, stderr }));
+  });
+}
+
+/**
+ * 自启项的值名。默认就一个；测试实例（`PI_WEB_STATE` 改了状态目录）按目录哈希后缩——
+ * 否则隔离实例一装就把用户真实的自启项覆盖成指向测试目录。
+ */
+export function autostartValueName(env: NodeJS.ProcessEnv = process.env, state: string = stateDir()): string {
+  if (!env.PI_WEB_STATE) return AUTOSTART_NAME;
+  // 取哈希的低位：djb2 末尾字符的差异只落在低位上，拿前 6 位会让 wk-a / wk-b 撞名。
+  return `${AUTOSTART_NAME}-${agentHash(state).padStart(6, "0").slice(-6)}`;
+}
+
+/**
+ * 解析 `reg query <key> /v <name>` 的输出（`    Name    REG_SZ    data`），没有这一项就 null。
+ * 纯函数，单测直接喂文本。
+ */
+export function parseRegQueryValue(stdout: string, name: string): string | null {
+  for (const line of stdout.split(/\r?\n/)) {
+    // reg.exe 把值名补到列宽，短名字后面是一串空格，所以中间不能要求正好四个：
+    // 名字与类型至少隔两个空白，类型与内容至少隔两个（内容里的空白原样保留）。
+    const match = /^\s+(.+?)\s{2,}(REG_[A-Z_]+)\s{2,}(.*)$/.exec(line);
+    if (!match || match[1].trim() !== name) continue;
+    return match[3].replace(/\s+$/, "");
+  }
+  return null;
+}
+
+async function readAutostart(): Promise<AutostartInfo> {
+  if (process.platform !== "win32") return { exists: false, command: "" };
+  const name = autostartValueName();
+  const result = await runReg(["query", `HKCU\\${AUTOSTART_KEY}`, "/v", name]);
+  const command = parseRegQueryValue(result.stdout, name);
+  return { exists: command !== null, command: command ?? "" };
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM = 进程在、只是不是我们能发的；ESRCH 才是真没了。
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 function readStatus(): AgentStatus | null {
@@ -386,17 +453,31 @@ function readStatus(): AgentStatus | null {
   return parsed && typeof parsed === "object" ? (parsed as AgentStatus) : null;
 }
 
+/**
+ * 心跳新鲜 + 进程真在 —— 两个都成立才算在跑。刚死的进程在 90 秒内还留着新鲜心跳，只看时间会骗人。
+ *
+ * `readAgent`（页面要不要说运行中）与 `installAgent`（要不要再起一份）共用这一个判定：两边各写一份，
+ * 早晚会漂成「装的时候觉得在跑、页面觉得是死的」。
+ */
+function statusRunning(status: AgentStatus | null, now: number): boolean {
+  if (typeof status?.updatedAt !== "number" || now - status.updatedAt >= HEARTBEAT_STALE_MS) return false;
+  const pid = typeof status.pid === "number" ? status.pid : null;
+  return pid === null || pidAlive(pid);
+}
+
 async function readAgent(now: number): Promise<WorkclockAgent> {
   const scriptPath = agentScriptFile();
-  const installed = fs.existsSync(scriptPath);
   const status = readStatus();
   const heartbeatAt = typeof status?.updatedAt === "number" ? status.updatedAt : null;
-  const task = installed && process.platform === "win32" ? await readTaskInfo() : { exists: false, state: "", lastRun: "", lastResult: 0 };
+  const pid = typeof status?.pid === "number" ? status.pid : null;
+  // 心跳新鲜还得进程真在 —— 判定只有一份，见 statusRunning。
+  const running = statusRunning(status, now);
+  const autostart = await readAutostart();
   return {
-    installed,
-    running: heartbeatAt !== null && now - heartbeatAt < HEARTBEAT_STALE_MS,
-    autostart: task.exists,
-    pid: typeof status?.pid === "number" ? status.pid : null,
+    installed: autostart.exists || running,
+    running,
+    autostart: autostart.exists,
+    pid,
     startedAt: typeof status?.startedAt === "number" ? status.startedAt : null,
     lastEventAt: typeof status?.lastEventAt === "number" ? status.lastEventAt : null,
     lastEventKind: typeof status?.lastEventKind === "string" ? status.lastEventKind : "",
@@ -404,9 +485,9 @@ async function readAgent(now: number): Promise<WorkclockAgent> {
     locksSeen: typeof status?.locksSeen === "number" ? status.locksSeen : 0,
     heartbeatAt,
     scriptPath,
-    taskName: TASK_NAME,
-    taskState: task.state,
-    error: fs.existsSync(scriptPath) ? null : "记录器还没装上",
+    autostartName: autostartValueName(),
+    autostartCommand: autostart.command,
+    error: fs.existsSync(scriptPath) || autostart.exists ? null : "记录器还没装上",
   };
 }
 
@@ -441,8 +522,8 @@ function emptyAgent(): WorkclockAgent {
     locksSeen: 0,
     heartbeatAt: null,
     scriptPath: agentScriptFile(),
-    taskName: TASK_NAME,
-    taskState: "",
+    autostartName: autostartValueName(),
+    autostartCommand: "",
     error: "这个系统没有记录器（只支持 Windows）",
   };
 }
@@ -562,8 +643,57 @@ interface AgentAction {
   agent: WorkclockAgent;
 }
 
+/** 记录器自己的命令行（不含 `powershell.exe`）；自启项与 `Start-Process` 共用一份。 */
 function agentArgs(): string {
   return `-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${agentScriptFile()}" -Dir "${dir()}"`;
+}
+
+/**
+ * PowerShell 的可执行文件绝对路径。
+ *
+ * 写绝对路径是因为登录时的 Run 项由 explorer 拉起、靠 PATH 解析：System32 正常在 PATH 里，但用户把 PATH
+ * 改坏、或者前面有条冒牌的 `powershell.exe`，就会跑到别的东西上。找不到就退回裸名字（至少在 PATH 里）。
+ */
+function powershellExe(): string {
+  const root = process.env.SystemRoot ?? process.env.windir ?? "";
+  const abs = root ? path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : "";
+  return abs && fs.existsSync(abs) ? abs : "powershell.exe";
+}
+
+/** Windows 命令行里的程序路径：Run 项走 CreateProcess，只认双引号，不认 PowerShell 的单引号。 */
+function winQuote(text: string): string {
+  return text.includes(" ") ? `"${text}"` : text;
+}
+
+/** 自启项里注册的整行命令。 */
+function agentCommandLine(): string {
+  return `${winQuote(powershellExe())} ${agentArgs()}`;
+}
+
+/**
+ * 立刻拉起记录器，与桥、与这层 PowerShell 都脱钩。
+ *
+ * 不能用 node 的 `detached`：Windows 上它是 DETACHED_PROCESS + 无控制台，PS 5.1 会启动即退（实测 exit 0、
+ * 什么都没做）；不 detached 又会跟着桥一起死（实测桥一退，记录器进程跟心跳一起停）。走 `Start-Process`：
+ * 内层进程自成一体，桥重启后记录器继续跑。`-ArgumentList` 必须是一整条**带引号**的字符串
+ * （Start-Process 用空格拼接数组，路径带空格会断），所以直接塞 `agentArgs()`。
+ */
+async function launchAgent(): Promise<void> {
+  const ps =
+    `$ErrorActionPreference='Stop'\n` +
+    `Start-Process -FilePath ${psQuote(powershellExe())} -ArgumentList ${psQuote(agentArgs())} -WindowStyle Hidden\n`;
+  await runPowerShell(ps, 20_000);
+}
+
+/** 等记录器自己写下一份心跳；带上限，没等到就返回 false。 */
+async function waitHeartbeat(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const status = readStatus();
+    if (typeof status?.updatedAt === "number" && Date.now() - status.updatedAt < HEARTBEAT_STALE_MS) return true;
+  }
+  return false;
 }
 
 export async function installAgent(now = Date.now()): Promise<AgentAction> {
@@ -576,32 +706,32 @@ export async function installAgent(now = Date.now()): Promise<AgentAction> {
   const target = agentScriptFile();
   const current = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : "";
   if (current !== script) fs.writeFileSync(target, script, "utf8");
-  // 只由本机拼出来、没有外部输入的命令；用单个脚本块注册 + 立刻拉起，不需要管理员。
-  const ps =
-    `$ErrorActionPreference='Stop'\n` +
-    `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ${psQuote(agentArgs())}\n` +
-    `$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME\n` +
-    `$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable\n` +
-    `Register-ScheduledTask -TaskName ${psQuote(TASK_NAME)} -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null\n` +
-    `Start-ScheduledTask -TaskName ${psQuote(TASK_NAME)}\n` +
-    `[pscustomobject]@{ ok = $true } | ConvertTo-Json -Compress`;
-  const result = await runPowerShell(ps, 40_000);
-  if (result.timedOut) {
-    return { ok: false, code: "agent_timeout", error: "注册计划任务超时", agent: await readAgent(now) };
+
+  // ① 自启项。写完回读一次——reg.exe 的退出码靠不住，注册表里真有了才算装上。
+  const name = autostartValueName();
+  const add = await runReg(["add", `HKCU\\${AUTOSTART_KEY}`, "/v", name, "/t", "REG_SZ", "/d", agentCommandLine(), "/f"]);
+  const after = await readAutostart();
+  if (!after.exists) {
+    const message = (add.stderr || add.stdout || "写自启项失败").trim();
+    return { ok: false, code: "agent_autostart_failed", error: message, agent: await readAgent(now) };
   }
-  const parsed = parseJson<{ ok?: boolean; error?: string }>(result.stdout);
-  if (parsed?.ok !== true) {
-    const message = (result.stderr || parsed?.error || "注册计划任务失败").trim();
-    return { ok: false, code: "agent_install_failed", error: message, agent: await readAgent(now) };
+
+  // ② 已经在跑就别再起一份（不然两个记录器抢同一个 agent.jsonl）。
+  const alive = statusRunning(readStatus(), Date.now());
+  if (!alive) await launchAgent();
+
+  // ③ 心跳为证：起没起来不靠退出码，靠记录器自己写的那份 `agent-status.json`。
+  const beat = alive || (await waitHeartbeat(8_000));
+  const agent = await readAgent(Date.now());
+  if (!beat || !agent.running) {
+    return {
+      ok: false,
+      code: "agent_not_running",
+      error: `自启项写好了，但记录器没起来。直接跑一次 ${target} 看报什么错，或者看 ${agentStatusFile()} 的时间戳`,
+      agent,
+    };
   }
-  // 心跳要等记录器自己写第一份；这里给它 1.5 秒，免得刚点完就显示「没在跑」。
-  for (let i = 0; i < 6; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    const status = readStatus();
-    if (typeof status?.updatedAt === "number" && now - status.updatedAt < HEARTBEAT_STALE_MS) break;
-  }
-  taskCache = null;
-  return { ok: true, agent: await readAgent(Date.now()) };
+  return { ok: true, agent };
 }
 
 export async function uninstallAgent(now = Date.now()): Promise<AgentAction> {
@@ -609,17 +739,17 @@ export async function uninstallAgent(now = Date.now()): Promise<AgentAction> {
     return { ok: false, code: "not_windows", error: "记录器只支持 Windows", agent: emptyAgent() };
   }
   const script = agentScriptFile();
+  const name = autostartValueName();
+  await runReg(["delete", `HKCU\\${AUTOSTART_KEY}`, "/v", name, "/f"]);
+  const status = readStatus();
+  const pid = typeof status?.pid === "number" ? status.pid : null;
+  // 先按心跳里的 pid 收，再按完整脚本路径兜底（只匹配本实例的 `-Dir`，不会误杀测试实例或真实记录器）。
   const ps =
     `$ErrorActionPreference='SilentlyContinue'\n` +
-    `Stop-ScheduledTask -TaskName ${psQuote(TASK_NAME)}\n` +
-    `Unregister-ScheduledTask -TaskName ${psQuote(TASK_NAME)} -Confirm:$false\n` +
-    `Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like ${psQuote(`*${AGENT_SCRIPT}*`)} } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }\n` +
+    (pid !== null ? `Stop-Process -Id ${pid} -Force\n` : "") +
+    `Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like ${psQuote(`*${script}*`)} -and $_.CommandLine -like ${psQuote(`*-Dir*${dir()}*`)} } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }\n` +
     `[pscustomobject]@{ ok = $true } | ConvertTo-Json -Compress`;
   const result = await runPowerShell(ps, 30_000);
-  taskCache = null;
-  if (result.timedOut) {
-    return { ok: false, code: "agent_timeout", error: "停止记录器超时", agent: await readAgent(now) };
-  }
   // 卸掉后心跳文件还在，清掉它，免得页面把「已停」读成「在跑」。
   try {
     fs.rmSync(agentStatusFile(), { force: true });
@@ -631,7 +761,14 @@ export async function uninstallAgent(now = Date.now()): Promise<AgentAction> {
   } catch {
     /* 文件被占用时留着，装上时会覆盖 */
   }
-  return { ok: true, agent: await readAgent(Date.now()) };
+  const agent = await readAgent(now);
+  if (agent.autostart || agent.running) {
+    const message = result.timedOut
+      ? "停止记录器超时"
+      : (result.stderr || "自启项或记录器进程还在（可能有别的窗口又把它拉起来了）").trim();
+    return { ok: false, code: "agent_uninstall_failed", error: message, agent };
+  }
+  return { ok: true, agent };
 }
 
 export function agentFingerprint(): string {
