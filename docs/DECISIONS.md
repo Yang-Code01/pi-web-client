@@ -5597,3 +5597,24 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 每个 ws 辅助函数多两行样板；换来的是测试进程的存活时间等于它真正干活的时间，CI 里按「整条命令跑多久」看回归也不会再有这种隐形尾巴。
 
 **验证：** 只删 `skill-view-ui.mjs:137` 那一行的副本（`.scratch/skill-ui-fast.mjs`）跑出 **11 s**；四个文件都改完后 `node bridge/tests/skill-view-ui.mjs` 稳定在 **17.5–19 s**（在 main 上是 65–67 s），末条日志与进程退出同一秒，连跑两次一致。刚 `npm run build` 完的第一次仍要 ~60 s —— 那是另一个成本：桥启动时 `pinAll()` 要扫 452 个会话，冷缓存下几十秒才回 `/healthz`，这次没动它。
+
+## D292 端到端测试按 CPU 并发跑，一个测试一份桥（2026-11-17）
+
+**问题：** `bridge/tests` 有 131 个端到端用例，每个都自己 `spawn` 一份 `bridge/dist/index.js`、自己开一个 Chromium。串行跑一遍，把各用例耗时相加是 **2704 s（45 分钟）**，而这台机器有 12 个核 —— 绝大部分时间是在等各自的进程起来、等页面加载，CPU 基本空着。D290 修好端口、D291 修好定时器之后，单个用例已经快了不少，但「一条命令跑完整个套件」仍然是件没法在改完东西后随手做的事，实际结果就是没人跑。
+
+**决定：** 新增 `tools/run-tests.mjs`，`npm run test:all` 就是它。
+
+- **并发**：默认 `min(6, CPU-1)` 路；`--jobs N` 调、`--only a,b` 只跑几个、`--skip` 跳过、`--timeout <秒>` 改单测上限、`--list` 先看计划、`--json` 把逐条耗时写进 `.scratch/tests/results.json`。
+- **一个用例一份桥**：不给多个用例共享一份长驻桥。`probes/run-all.mjs` 早就实测过共享一个 Chromium 反而更慢（8 路 62–64 s vs 各起各的 58 s），浏览器进程本身成了争用点；桥同理，而且共享桥还要解决会话/状态隔离，收益不抵复杂度。
+- **每份桥一个自己的内网通端口**：`PI_PEER_PORT` 由 `freePort()` 给。桥默认都去绑 `0.0.0.0:7865`，并发时除了满屏 `EADDRINUSE`，还真的会让 `boot-queue-merge` 这类用例挂掉（实测过）。测试自己设了 `PI_PEER` / `PI_PEER_PORT` 的照旧覆盖。
+- **必须串行的 7 个**写进 `SERIAL` 表并逐条写理由：`rename-check`、`session-dirs`（读写真的 `~/.pi/agent`）、`ext-manager`（netsh / sc.exe 看本机服务）、`sysmanage-ui`（系统管理页读真实磁盘与进程数）、`peer-e2e` / `peer-ui` / `peer-history`（同机多份内网通会互相发现、抢好友关系）。它们排在并行波之后单独跑。
+- **默认不跑的**：`e2e`、`browser`、`model-check`（连的是手工起在 7867 的那份实例，还要 `.scratch/test-state` 的口令文件，不是自起桥）、`dbg*`（一次性脚本）。
+- **node flag 别另维护一份**：从 `package.json` 的 scripts 里抽「文件 → `node --xxx` 参数」；抽到现装 node 不认的 flag 就先问 `node <flag> -e ""`，不认就丢掉并提示（`--experimental-transform-types` 在 node 26 已被移除，而 `test:context` 还写着它，照抄会让一个好用例 0.1 秒就死）。
+- **超时杀整棵进程树**：`child.kill()` 只杀直接子进程，用例拉起的桥、真 pi、Chromium 都是孙进程，会留在那儿继续吃 CPU、占端口，把后跑的用例成片挤成 `timeout waiting for bridge up` —— 看着像「并行让测试变慢」，其实是没清干净。Windows 走 `taskkill /PID <pid> /T /F`，POSIX 用 `detached` 起的进程组 `kill(-pid)`。杀完最多再等 5 秒 —— 用例被杀了，它拉起的桥可能还拿着 stdout 管道，`close` 永远不来，不放这个兜底的话跑套件的进程会被一个用例拖死。
+- **输出**：每个用例的完整输出落 `.scratch/tests/<name>.log`，终端一行一个结果（`ok [ 12/129] ask-ui 116.6s`），最后打通过数与总用时、最慢五个、失败用例的尾巴。
+
+**取舍：** 并发会让慢用例更慢（`session-flags` 要跑真实的 pi turn，4 路时 219.5 s、6 路时 201 s），所以拿它看「某个用例变慢没」要 `--jobs 1`；并发也让个别用例偶发挂（`scratch-ui` 第一遍挂、第二遍过），所以失败要用 `--jobs 1 --only <name>` 复跑一次再判断是不是回归。**跑套件的机器要空着**：各用例等 `/healthz` 都有上限（十来秒），机器一挤就成片变成 `timeout waiting for bridge up` —— 我自己一边跑全量一边插队单跑三个用例，那次 6 路就掉到 85/129、761.8 s，失败清一色是这句。有 14 个用例在这台机器上本来就跑不过（端口原本落在 Windows 保留区、或断言早就对不上实际行为），跑套件会一直看到它们 —— 别把「套件不是全绿」当成这次改动弄坏的。
+
+**验证：** 4 路全量 **706.8 s**、6 路全量 **633.5 s**（各用例耗时之和 2704.2 s，即串行下限），129 个用例里 113 个通过。18 个失败逐个查过：串行（`--jobs 1`）复跑仍有 17 个挂 —— 其中端口原本落在保留区（7877–8635）的那批，main 上压根没在这台机器跑通过；`manage-check`（原端口 7876，不在保留区）用 `git show origin/main:bridge/tests/manage-check.mjs` 的原文件复跑，失败文本一字不差。剩下的 `context-log-unit` 是 node 26 已移除 `--experimental-transform-types`（顺手改成 `node --test`）、`browser` / `model-check` 要手工起的实例（改成默认不跑）。真正被并发碰到的只有 `boot-queue-merge`（`EADDRINUSE 0.0.0.0:7865`）和 `exec-child-subscribe`，加上 `PI_PEER_PORT` 后 `--jobs 1` 复跑都过。
+
+**这个数是量级不是常数**：同一份代码在机器上同时开着别的 pi / lens / 浏览器进程时，6 路全量会掉到 **889.8 s、93/129**，失败清一色是各用例自带的『等桥起来』超时（那些等待只有十来秒，机器一挤就到点）——并发本身没错，错在机器不空。所以拿这个数对外说「快了多少」时说 4–6 倍墙钟（633–890 s 对 2704 s 的耗时和），别说成一个准确值；要稳定复现单测快慢就用 `--jobs 1`。
