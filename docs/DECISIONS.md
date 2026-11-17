@@ -5749,3 +5749,20 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **验证：** 4 路全量 **706.8 s**、6 路全量 **633.5 s**（各用例耗时之和 2704.2 s，即串行下限），当时 129 个用例里 113 个通过（合并 main 之后 bridge/tests 有 133 个，多出考勤与 ws 排序那四个，数字没重测）。18 个失败逐个查过：串行（`--jobs 1`）复跑仍有 17 个挂 —— 其中端口原本落在保留区（7877–8635）的那批，main 上压根没在这台机器跑通过；`manage-check`（原端口 7876，不在保留区）用 `git show origin/main:bridge/tests/manage-check.mjs` 的原文件复跑，失败文本一字不差。剩下的 `context-log-unit` 是 node 26 已移除 `--experimental-transform-types`（顺手改成 `node --test`）、`browser` / `model-check` 要手工起的实例（改成默认不跑）。真正被并发碰到的只有 `boot-queue-merge`（`EADDRINUSE 0.0.0.0:7865`）和 `exec-child-subscribe`，加上 `PI_PEER_PORT` 后 `--jobs 1` 复跑都过。
 
 **这个数是量级不是常数**：同一份代码在机器上同时开着别的 pi / lens / 浏览器进程时，6 路全量会掉到 **889.8 s、93/129**，失败清一色是各用例自带的『等桥起来』超时（那些等待只有十来秒，机器一挤就到点）——并发本身没错，错在机器不空。所以拿这个数对外说「快了多少」时说 4–6 倍墙钟（633–890 s 对 2704 s 的耗时和），别说成一个准确值；要稳定复现单测快慢就用 `--jobs 1`。
+
+## D299 内网通 v2 照 QQ 的聊天模型补四片：会话元数据、消息状态机、控制面（撤回/引用/输入中）、在线与通知（2026-11-18）
+
+**问题：** 内网通的传输层已经够用（组播发现 + HTTP 直达 + Outbox 补投），但**聊天模型几乎是空的**：一条消息就是 `{text}`（`peer/src/history.ts:21`），一个会话只是「历史目录里的一个 jsonl 文件名」，会话列表就是按最后一条消息时间倒排（`peer/src/history.ts:150`）。于是用户在页面上看不到：有多少条没读、哪条还在发、发的失败了能不能原地重发、对方是不是正在打字、发错了能不能撤回。这些不是「界面没画」，是**数据里没有**——要补就得动 `Entry`、`/threads`、`/peer/inbox` 三处。
+
+**决定：**
+
+- **拿 QQ 当参照系，但只抄它的分层，不抄它的体积。** QQ 把每件事都做成了独立管理器（`nt::im_core::MsgUnreadCntMgr` / `MsgRecallMgr` / `IRecentContactTopMgr` / `MsgDraftMgr` / `AioInputStateWorker`），而不是往消息结构里堆字段。我们照这个分层拆成四片：P1 会话元数据（`threads.json`）+ 未读，P2 `seq` + 三态 + 原 id 重发，P3 `kind:"recall"` + `replyTo` + typing 心跳，P4 `away` 状态 + 通知。方案与逐片验收见 `docs/PLAN-peer-qq.md`。
+- **撤回不删原消息，追加一条灰条。** 这是 QQ 的做法（`GrayTipsMsgElem` + `GrayTipMsgManager`，文案「X 撤回了一条消息」/「原消息已被撤回」），也是唯一跟 JSONL append-only 兼容的做法：历史文件里留着原文，渲染层不显示，撤回本身是第三条记录。删除式撤回会让「对端离线时缓存的那份」和「我这份」永远对不齐。
+- **未读水位用 `{at, id}` 双键，不用单个时间戳。** `uuidv7` 同一毫秒内剩余位是随机的（`peer/src/messages.ts:14` 自己写了），单键会让同一毫秒里后到的那条永远算未读。判定用字典序，纯本地比较，对时钟漂移只影响本机。
+- **状态派生、不落盘。** 「发送中」由 `outbox.pendingFor(peerId)` 现算，「已送达 / 失败」仍由既有 receipt entry 折出来（`peer/src/index.ts:31`）。历史文件格式不动，旧版本读新文件不会炸；`Entry` 只加可选字段。
+- **`PROTO` 保持 1。** 新 `kind`（`recall`、`typing`）与新增字段都是加性的，旧对端对未知 kind 回 `400 {retryable:false}` 直接丢掉（`peer/src/messages.ts:124`），这正是 D234 用过的「混合版本尽力而为」。代价要认：**撤回只在新版之间生效**，旧版看到的是被撤回的原消息。
+- **逆向的边界写清楚。** QQ 7.0.3 的 `application.asar` 1436 个文件逐文件加密（`isByteCodeShell: true`），渲染层代码静态不可得；fuses 上 `EnableNodeCliInspectArguments` / `EnableNodeOptionsEnvironmentVariable` 都写着 enabled，但实测 `--remote-debugging-port`、`NODE_OPTIONS=--require`、`NODE_OPTIONS=--inspect` **三条全都不生效**（端口不监听、hook 不执行）。所以这次没有「QQ 的明文代码」可引，能引的是 `wrapper.node` 里没剥掉的 `nt::im_core::*` 符号表（26 373 个 demangle 名）+ 同文件里的灰条文案 + 运行中 QQ 的会话列表截图。**这不是「逆完了」，是「能证到的这一层」**——把它写进方案，是为了后面谁说「QQ 明明是这样」时能指出证据来源。
+
+**取舍：** 不抄 QQ 的元素列表（`*MsgElem`）、云端漫游（`IRoamMsgManager`）与群——我们没有富媒体渲染链、没有中心存储，`GLOSSARY.md` 也把群排在 v1.1。`seq` 只用于排序与「本机发现缺号时提示」，因为 QQ 的 `MsgSeqPullApi` 是向服务端要漏掉的消息，我们无服务端可问。混跑期间撤回能力不对称，这是不升 `PROTO` 的固定成本。
+
+**验证：** 未实施。落地顺序与逐片验收见 `docs/PLAN-peer-qq.md` §8：每片一个 PR，合之前 `npm run build` + `node bridge/tests/peer-e2e.mjs` + `node bridge/tests/peer-ui.mjs`（串行跑，同机多份内网通会互相发现）。
