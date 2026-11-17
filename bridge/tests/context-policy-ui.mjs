@@ -39,6 +39,8 @@ const env = {
   PI_BIN: FAKE_PI,
   // #484：自动交接要求 `/handoff` 技能存在（保存开关时查一次），假 pi 用 env 报一条给它。
   FAKE_PI_COMMANDS: JSON.stringify([{ name: "skill:handoff", description: "交接", source: "user" }]),
+  // #484：交接全流程要用假 pi 把交接文档真的写到桥指定的路径上，好让「交接完成 → 页面切到新会话」能被验到。
+  FAKE_PI_WRITE_HANDOFF: "1",
 };
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 const bridge = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -169,6 +171,25 @@ try {
   // 桥收到 compact 之后 fake-pi 会回 compaction_start / end；页面至少不该报错。
   check("compact button does not blow up the page", pageErrors.length === 0, pageErrors.join("; "));
   console.log(`  info   compact frames seen: ${frames.filter((f) => f.type === "compacted" || f.type === "compaction").length}`);
+
+  // --- 手动交接全流程（假 pi 会把交接文档写出来）---------------------------
+  // #484 回归：交接完成后新会话建出来了，页面却没切过去，停在空白（用户实报）。
+  await page.locator('[data-act="context-handoff"]').click();
+  await page.waitForSelector('.sub-sheet [data-act="handoff-now"]', { timeout: 5000 });
+  const sourceId = sessionId;
+  await page.locator('[data-act="handoff-now"]').click();
+  await page.locator('[data-act="handoff-now"]').click();
+  let doneFrame = null;
+  for (let i = 0; i < 300 && !doneFrame; i += 1) {
+    doneFrame = frames.find((f) => f.type === "handoff.state" && f.sessionId === sourceId && f.phase === "done") ?? null;
+    if (!doneFrame) await sleep(100);
+  }
+  check("handoff reports done with a new session", Boolean(doneFrame?.newId), JSON.stringify(doneFrame ?? null));
+  const newId = String(doneFrame.newId);
+  await page.waitForFunction((id) => location.hash.endsWith(id) && !!document.querySelector(".composer-input textarea"), newId, { timeout: 20000 });
+  check("page follows the handoff into the new session", (await page.evaluate(() => location.hash)).endsWith(newId));
+  check("the new session shows a working composer (not the blank state)", await page.locator(".composer-input textarea").isVisible());
+  check("the old session is archived after handoff", frames.some((f) => f.type === "manage" && Array.isArray(f.manage?.archived) && f.manage.archived.includes(sourceId)));
 
   check("page has no uncaught errors", pageErrors.length === 0, pageErrors.join("; "));
   console.log("All context-policy smoke checks passed.");

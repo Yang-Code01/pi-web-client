@@ -3677,6 +3677,8 @@ export class SessionManager extends EventEmitter {
     const started = Date.now();
     let lastSize = -1;
     let stableAt = 0;
+    /** 这一轮结束时的那一秒：写文档的 Write 可能就落在最后一次轮询之后，结束时再多看几眼。 */
+    let endedAt = 0;
     while (Date.now() - started < timeoutMs) {
       let size = -1;
       try {
@@ -3693,7 +3695,13 @@ export class SessionManager extends EventEmitter {
         }
       } else if (!session.state.running && Date.now() - started > 2000) {
         // 这一轮已经结束，文件却没长出来：不用傻等满 5 分钟。
-        return false;
+        // 但 `running` 变 false 和文档落盘可能是同一毫秒的两件事（技能写完立刻收轮），
+        // 直接判死会把已经写好的文档当成没写（真 e2e 里就撞上过：文档 22:33:57 落盘，
+        // 同一秒判了失败）—— 所以先给它 3 秒的缓冲再看。
+        if (!endedAt) endedAt = Date.now();
+        else if (Date.now() - endedAt > 3000) return false;
+      } else {
+        endedAt = 0;
       }
       await pause(400);
     }
@@ -3800,11 +3808,13 @@ export class SessionManager extends EventEmitter {
       // 接棒的会话置顶：交接刚发生，用户下一步要看的十有八九是它。
       this.manage.pinLast(next.state.id);
       this.emit("ws", { type: "session.state", session: session.state });
+      // 先报完成，再收旧会话：归档回声会让页面「当前会话被归档 → 切邻居 / 回空态」，
+      // 排在 done 前面的话，done 到达时页面已经不在旧会话上，看起来就是「交接完成了但页面空白」。
+      emitPhase("done", { newId: next.state.id });
       // 旧会话到此为止：停 pi、归档。它不再自动压缩/交接，翻回去只是读历史。
       void session.close({ quiet: true }).catch(() => {});
       this.manage.setArchived([id], true);
       this.emit("ws", { type: "manage", manage: this.manage.snapshot() });
-      emitPhase("done", { newId: next.state.id });
     } catch (error) {
       session.noteHandoffFailure();
       const message = error instanceof Error ? error.message : String(error);

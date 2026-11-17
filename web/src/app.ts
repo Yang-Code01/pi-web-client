@@ -261,6 +261,11 @@ export class App {
   private handoffBannerEl: HTMLElement | null = null;
   /** #484：交接进行到哪一步（interrupting/writing/forking/starting），子弹窗据此显示状态。 */
   private handoffPhase: string | null = null;
+  /**
+   * #484：这次离开当前会话是因为它刚被归档 —— 交接成功后桥收走旧会话就是这个形状。
+   * 归档回声可能比 done 先到，那时 `currentId` 已经不再是它；done 到了就据此把页面接到新会话。
+   */
+  private leftForArchiveId: string | null = null;
   private handoffBannerText: HTMLElement | null = null;
   private sessionReclaimTextEl: HTMLElement | null = null;
   private sessionReclaimId: string | null = null;
@@ -2057,9 +2062,13 @@ export class App {
       case "handoff.state": {
         const phase = String(msg.phase ?? "");
         const mine = msg.sessionId === this.currentId;
+        // 结束信号可能比「旧会话被归档」的回声晚：那时页面已经被 switchAfterArchive 带走了。
+        // 所以除了 currentId，「刚刚因为它归档而离开的那颗」也算这次交接的现场。
+        const ours = mine || msg.sessionId === this.leftForArchiveId;
         // 结束信号不管在不在当前会话都收：手动交接期间用户可能已经点到别处去了，
         // 那张「交接进行中」的子弹窗不能因此永远留在屏幕上。
         if (phase === "done" || phase === "failed") {
+          this.leftForArchiveId = null;
           this.handoffPhase = null;
           this.closeSubSheet();
         } else if (mine) {
@@ -2067,11 +2076,15 @@ export class App {
           this.paintHandoffSheetIfOpen();
         }
         if (phase === "done" && msg.newId) {
-          if (!mine) break; // 别的会话的交接不把用户拽走
+          // 别的会话的交接不把用户拽走；但页面已经被归档回声带进空态（currentId=null）时，
+          // 接上总比停在一片空白好。
+          if (!ours && this.currentId) break;
           this.flashToast(tr("交接完成，已切到新会话"), false, 4000);
           this.closeSheet();
           this.openSession(String(msg.newId));
-        } else if (phase === "failed" && mine) {
+          // 地址栏跟上（`openSession()` 只换中栏，不碰 hash）：刷新后应该回接棒会话，而不是已归档的旧会话。
+          this.go(this.tab);
+        } else if (phase === "failed" && ours) {
           this.flashToast(tr("交接没有完成：{p1}", { p1: String(msg.message ?? "") }), true, 6000);
         }
         break;
@@ -17918,6 +17931,15 @@ export class App {
     if (!id || this.session?.id !== id) return;
     if (before.has(id) || !this.manage.archived.includes(id)) return;
     // 本次回声新变归档的整批（含它自己）：批量里刚被一起收起来的那几颗不再是邻居。
+    // #484：交接过的会话被归档时，落点是它的接棒者，而不是「邻居 / 空态」。
+    // 晚到的 done 靠 leftForArchiveId 认出「这次见面已经换了人」，不能只看 currentId。
+    this.leftForArchiveId = id;
+    const heir = this.sessions.find((x) => x.id === id)?.handoffTo;
+    if (heir && this.sessions.some((x) => x.id === heir)) {
+      this.openSession(heir);
+      this.go(this.tab);
+      return;
+    }
     const alsoArchived = this.manage.archived.filter((x) => !before.has(x));
     // 当前会话没点 ★ 时它自己就是第 1 格（#188 的口径）：补上去，右邻不因这一格而变。
     const next = neighborAfterArchive(this.rowIds.includes(id) ? this.rowIds : [id, ...this.rowIds], id, alsoArchived);
