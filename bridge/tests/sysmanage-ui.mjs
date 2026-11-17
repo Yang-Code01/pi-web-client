@@ -6,7 +6,7 @@
  * 自带丢弃式 bridge（端口由系统分配），不碰 7864；只读本机数据，不真的改 DNS / 重启 WinNAT——
  * 两者都会弹 UAC 并动整机网络，留本机手验。截图落在 .scratch/shots/sysmanage-ui.png。
  * 末尾另开几个放大字号的上下文，验三套控制台都不会被 #app 的 zoom 顶出视口，
- * 本机管理五个分区及概况跳转也不会横向穿出面板。
+ * 本机管理六个分区及概况跳转也不会横向穿出面板。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -106,7 +106,7 @@ check("「连接与设置」页有本机管理按钮（pi 设置旁边）", (awa
 await open.click();
 await page.locator(".sys-console").waitFor({ timeout: 10_000 });
 check("控制台打开", (await page.locator(".sys-console").count()) === 1);
-check("五个分区", (await page.locator(".sys-nav__item").count()) === 5, String(await page.locator(".sys-nav__item").count()));
+check("六个分区", (await page.locator(".sys-nav__item").count()) === 6, String(await page.locator(".sys-nav__item").count()));
 
 await page.locator(".sys-card").first().waitFor({ timeout: 20_000 });
 await page.locator(".sys-adapter").first().waitFor({ timeout: 20_000 });
@@ -114,6 +114,29 @@ const hostname = (await page.locator(".sys-title").innerText()).trim();
 check("概况显示主机名", hostname.length > 2, hostname);
 check("概况有磁盘", (await page.locator(".sys-disk").count()) > 0, String(await page.locator(".sys-disk").count()));
 check("概况有网卡", (await page.locator(".sys-adapter").count()) > 0, String(await page.locator(".sys-adapter").count()));
+
+// 考勤（第六页，D289）：没配置时落在「还没配置」，但「设置」页必须能进去 ——
+// 那是唯一的配置入口，点不开就等于这个功能装不上手。
+await page.locator(".sys-nav__item").nth(5).click();
+await page.locator(".at-page").first().waitFor({ timeout: 20_000 });
+check("考勤页能打开", (await page.locator(".at-page").count()) === 1);
+check("考勤页四个页签", (await page.locator(".at-tab").count()) === 4, String(await page.locator(".at-tab").count()));
+const toSettings = page.getByRole("button", { name: "去设置", exact: true });
+// 进页先显示「正在读状态…」，未配置态要等 /api/attendance/state 回来才画。
+await toSettings.first().waitFor({ timeout: 10_000 });
+check("未配置时给出去设置的出口", (await toSettings.count()) > 0);
+await toSettings.first().click();
+await page.locator('.at-input[data-field="apiBase"]').waitFor({ timeout: 10_000 });
+check("「去设置」真能到设置页", (await page.locator('.at-input[data-field="apiBase"]').count()) === 1);
+check("设置页有地址/账号/密码四个输入框", (await page.locator(".at-input").count()) >= 4, String(await page.locator(".at-input").count()));
+// 提醒页跟 OA 配置无关：没配过也该打得开（它是本地规则）。
+await page.locator(".at-tab", { hasText: "提醒" }).click();
+await page.locator(".at-week__btn").first().waitFor({ timeout: 10_000 });
+check("提醒页没配置也能开", (await page.locator(".at-week__btn").count()) === 7, String(await page.locator(".at-week__btn").count()));
+await page.locator(".at-page").screenshot({ path: path.join(OUT, "sysmanage-attendance.png") });
+// 回到概况，后面的用例还指望它。
+await page.locator(".sys-nav__item").nth(0).click();
+await page.locator(".sys-card").first().waitFor({ timeout: 20_000 });
 
 /**
  * 布局不变量：头 / 主体 / 页脚都在控制台圆角框里，主体不压页脚。
@@ -195,7 +218,7 @@ async function checkZoomLayout(scale, width, height) {
       JSON.stringify(g),
     );
     if (name === "本机管理") {
-      // 外壳没顶出视口还不够：五个分区各自有网格/表格，放大字号后布局 px 变少，
+      // 外壳没顶出视口还不够：六个分区各自有网格/表格，放大字号后布局 px 变少，
       // 原生 @media 看的是视口宽度（D158），不触发窄版折叠时内容会横向穿出 .sys-pane。
       const nav = zoomPage.locator(".sys-nav__item");
       const SECTIONS = [
@@ -204,6 +227,7 @@ async function checkZoomLayout(scale, width, height) {
         { wait: ".sys-table tbody tr" },
         { wait: ".sys-table--services tbody tr" },
         { wait: ".sys-wk-hero" },
+        { wait: ".at-page" },
       ];
       const paneGeometry = () => zoomPage.evaluate(() => {
         const pane = document.querySelector(".sys-pane");

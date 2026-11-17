@@ -4,7 +4,7 @@
  *
  * 为什么要有这个：135 个测试每个都自己起一份桥 + 一个 Chromium，串行跑一遍要一个多小时，
  * 而它们大多数彼此独立（各自的端口由 freePort() 向系统要，各自的状态目录在 `.scratch/<自己名字>`）。
- * 实测串行 vs 6 路并行的对比见 docs/DECISIONS.md D292。
+ * 实测串行 vs 6 路并行的对比见 docs/DECISIONS.md D298。
  *
  *   node tools/run-tests.mjs                      # 默认并发 min(6, CPU-1)
  *   node tools/run-tests.mjs --jobs 4             # 机器吃紧时降并发
@@ -94,7 +94,13 @@ const everything = argv.includes("--parallel-everything");
 
 /** node 的 flag 从 package.json 的 scripts 里抄，别在这儿再维护一份。 */
 function flagsByFile() {
-  const pkg = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8"));
+  let pkg;
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8"));
+  } catch (err) {
+    console.error(`读不了 ${path.join(REPO, "package.json")}：${err.message}`);
+    process.exit(2);
+  }
   const map = new Map();
   for (const cmd of Object.values(pkg.scripts ?? {})) {
     // 有些脚本是 `npm run build:bridge && node --experimental-strip-types bridge/tests/x.mjs`，所以别用 ^ 锚在开头

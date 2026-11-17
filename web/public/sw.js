@@ -19,7 +19,8 @@ self.addEventListener("push", (event) => {
     // notification; the page already shows the question. Chromium does not demand a notification
     // for a push while a focused client exists.
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
-      if (list.some((c) => c.focused && c.visibilityState === "visible")) return;
+      // force：调用方明确要求「就算页面在眼前也要弹」（加班提醒、测试通知）。
+      if (!payload.force && list.some((c) => c.focused && c.visibilityState === "visible")) return;
       return self.registration.showNotification(payload.title || "pi", {
         body: payload.body || "",
         data: { url: payload.url || "/" },

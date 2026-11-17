@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { gitRoot } from "./git.ts";
 import { statePath } from "./paths.ts";
 import { StateFile, type StateFailure } from "./statefile.ts";
+import { insertByDay } from "./wsorder.ts";
 
 /**
  * 工作区（#72 / #94）= 工程 = 会话列表的一级分组。它不是 pi 的会话，也不是磁盘上某个目录的别名：
@@ -46,6 +47,24 @@ export interface WorkspaceState {
 export interface WorkspacesOptions {
   /** Test seam: count or stub the git call. Defaults to `gitRoot` from git.ts. */
   root?: (dir: string) => Promise<string | null>;
+}
+
+/**
+ * #478 新组第一次出现时的落点。
+ *
+ * `dayOf` 必须是纯读（只查缓存、不建组、不跑 git）：`StateFile.update()` 会先在缓存上跑一遍、
+ * 读盘后再重放一遍，两遍必须算出同一个下标。
+ */
+export interface PlaceContext {
+  /** 锚点：显式新建 = 创建当天；自动建组 = 触发它的那个会话那天（`dayKey`）。 */
+  anchorDay: number;
+  /** 「组 → 最近活动的天」（`dayKey`）；查不到按最旧处理。 */
+  dayOf: (groupId: string) => number;
+}
+
+/** `resolve()` 一次可能补好几个组：每个 cwd 自己的天，按工程根取最大值当锚点。 */
+export interface ResolvePlace extends PlaceContext {
+  cwdDay?: (cwd: string) => number | undefined;
 }
 
 /** #278 `createDir()` 的结果：成功时带组，`created:false` = 这个目录原来就在列表里。 */
@@ -187,13 +206,32 @@ function pruneOrder(d: WorkspaceState): void {
   if (next.length !== (d.order ?? []).length) d.order = next;
 }
 
+/**
+ * #478：把新组放到它该在的位置 —— 第一个比它旧的组之前（也就是同一天那一档的末尾）。
+ * 不带定位上下文 = 老行为「追加到末尾」，老调用方与老单测零改动。
+ */
+function placeIn(d: WorkspaceState, id: string, place?: PlaceContext): void {
+  const order = readOrder(d.order, d.groups);
+  if (!place) {
+    d.order = order;
+    return;
+  }
+  // `readOrder()` 会把刚 push 进来的组补到末尾；先剔掉它再按天插 —— 否则插位函数看到「已在」就直接返回。
+  d.order = insertByDay(
+    order.filter((x) => x !== id),
+    id,
+    place.anchorDay,
+    place.dayOf,
+  );
+}
+
 /** 工程根 `key` 的组不在就补一个（名字留空，显示时取目录名）。在一次 `state.update` 里调。 */
-function ensureIn(d: WorkspaceState, key: string): void {
+function ensureIn(d: WorkspaceState, key: string, place?: PlaceContext): void {
   const id = groupId(key);
   if (d.groups.some((g) => g.id === id)) return;
   d.groups.push({ id, name: "", key, manual: false, inRow: true });
-  // #173 新出现的组追加到末尾：这是「补一个」，不能插队改用户顺序。
-  d.order = readOrder(d.order, d.groups);
+  // #478：新出现的组按天插位（#173 的「追加到末尾」退役）；不带上下文时仍追加。
+  placeIn(d, id, place);
 }
 
 /**
@@ -261,19 +299,19 @@ export class Workspaces {
    * 这个会话属于哪个工作区（组 id）。override 优先，钉死了就不再跟 cwd 走；否则按工程根找组，
    * 找不到就建（名字留空，显示时取目录名）。空 cwd（脏会话文件）不属于任何工作区 → `""`。
    */
-  groupFor(sessionId: string, cwd: string): string {
+  groupFor(sessionId: string, cwd: string, place?: PlaceContext): string {
     const override = this.state.value().overrides[sessionId];
     if (override && this.group(override)) return override;
     const key = this.keyOf(cwd);
     if (!key) return "";
-    return this.ensure(key).id;
+    return this.ensure(key, place).id;
   }
 
-  private ensure(key: string): WsGroup {
+  private ensure(key: string, place?: PlaceContext): WsGroup {
     const id = groupId(key);
     const existing = this.group(id);
     if (existing) return existing;
-    this.state.update((d) => ensureIn(d, key));
+    this.state.update((d) => ensureIn(d, key, place));
     return this.group(id) ?? { id, name: "", key, manual: false, inRow: true };
   }
 
@@ -285,7 +323,7 @@ export class Workspaces {
    * 以前新组要等下一次 `list()` 调 `groupFor()` 才被动补，而 `index.ts` 先广播 `workspaces` 再算 `list()`：
    * 页面拿到那份快照时当前会话的组找不到了，按「当前组被删」（#279）跳到邻组的会话去。
    */
-  async resolve(cwds: string[]): Promise<boolean> {
+  async resolve(cwds: string[], place?: ResolvePlace): Promise<boolean> {
     const known = this.state.value().keys;
     const pending = new Map<string, string>();
     for (const cwd of cwds) {
@@ -306,10 +344,24 @@ export class Workspaces {
       }
       found.set(key, normalizePath(root ?? dir));
     }
+    // #478：补出来的组按「它下面会话的最大活动日」定位（同一个根可能有几个 cwd，取最晚那天）。
+    const rootDay = new Map<string, number>();
+    if (place?.cwdDay) {
+      for (const [key, dir] of pending) {
+        const day = place.cwdDay(dir);
+        if (day === undefined || !Number.isFinite(day)) continue;
+        const gid = groupId(found.get(key) ?? dir);
+        const seen = rootDay.get(gid);
+        rootDay.set(gid, seen === undefined ? day : Math.max(seen, day));
+      }
+    }
     this.state.update((d) => {
       for (const [key, value] of found) d.keys[key] = value;
       prune(d);
-      for (const value of found.values()) ensureIn(d, value);
+      for (const value of found.values()) {
+        const day = rootDay.get(groupId(value));
+        ensureIn(d, value, place && (day === undefined ? place : { ...place, anchorDay: day }));
+      }
     });
     return true;
   }
@@ -342,13 +394,13 @@ export class Workspaces {
   }
 
   /** 手建一个组（比如「客户 A 的三个仓库」）：v1 里它只是会话的集合，不绑工程根。 */
-  create(name: string): WsGroup {
+  create(name: string, place?: PlaceContext): WsGroup {
     const id = `manual:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const group: WsGroup = { id, name: String(name ?? "").trim().slice(0, 80), key: "", manual: true, inRow: true };
     this.state.update((d) => {
       d.groups.push({ ...group });
-      // #173 新组排到末尾，不按显示名插队。
-      d.order = readOrder(d.order, d.groups);
+      // #478：新组按天插位（不带上下文仍排末尾），不按显示名插队。
+      placeIn(d, id, place);
     });
     return { ...group };
   }
@@ -359,7 +411,7 @@ export class Workspaces {
    *
    * 失败（没选、打不开、不是目录）不落任何东西，只回一句给人看的原因。
    */
-  async createDir(dir: string): Promise<WsCreateResult> {
+  async createDir(dir: string, place?: PlaceContext): Promise<WsCreateResult> {
     const picked = normalizePath(dir);
     if (!picked) return { ok: false, reason: "没有选目录" };
     let info;
@@ -388,7 +440,9 @@ export class Workspaces {
       if (created) d.groups.push({ ...group });
       // 手指点的那个目录（可能是 worktree / 子目录）也记一笔，下次 groupFor 直接命中真工程根。
       d.keys[picked.toLowerCase()] = key;
-      d.order = readOrder(d.order, d.groups);
+      // #478：真的新建才按天插位；命中已有组（created:false）一个格子都不动（R7）。
+      if (created) placeIn(d, id, place);
+      else d.order = readOrder(d.order, d.groups);
     });
     return { ok: true, group: { ...(this.group(id) ?? group) }, created };
   }

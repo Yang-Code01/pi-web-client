@@ -67,7 +67,7 @@ import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
 import { execView, type ExecChildRunInput, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
-import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
+import { TABS_DEFAULT, TABS_MAX, TABS_MIN, birthReveal, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type BirthReveal, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { stickMenu } from "./menuplace.ts";
@@ -629,6 +629,12 @@ export class App {
   private wsCreateFromTabs = false;
   /** #175：刚从横条 ＋ 建出来的组，下一次画横条时核一眼它在不在 ＋N 里（画完清掉）。 */
   private wsNewNoteId: string | null = null;
+  /** #478：刚建 / 刚被「带过去」的组：下一帧画横条时滚到它、在 ＋N 上标亮（消费即清）。 */
+  private wsBirthId: string | null = null;
+  /** #478：同一件事在左栏那一份 —— 横条先画、树后画，所以分开两笔。 */
+  private wsBirthInTree: string | null = null;
+  /** #478：＋N 上那颗「新」标记挂着的组；点开下拉 / 它不再被折叠时清掉。 */
+  private wsMoreFresh: string | null = null;
   /** #278：桥在 hello 里声明的能力。没有 `ws.create.dir` 的旧桥，＋ 退回「空壳组 + 就地改名」。 */
   private bridgeCaps: string[] = [];
   /** #278：按目录新建的请求在飞 —— 按钮先别让人连点。 */
@@ -1806,7 +1812,10 @@ export class App {
         this.queue = msg.queue ? { steering: msg.queue.steering ?? [], followUp: msg.queue.followUp ?? [] } : { steering: [], followUp: [] };
         this.execPlan = msg.plan && typeof msg.plan === "object" ? msg.plan as ExecPlanSnapshot : null;
         this.execPlanRounds = Array.isArray((msg.history as SessionHistory | undefined)?.turns)
-          ? (msg.history as SessionHistory).turns!.map((turn, index) => ({ id: turn.id, ordinal: index + 1 }))
+          ? (msg.history as SessionHistory).turns!
+              // 问卷卡也占刻度带（#rail-ask），但「执行→计划」的轮次编号只数用户消息，不然 round 全部错位。
+              .filter((turn) => turn.kind !== "ask")
+              .map((turn, index) => ({ id: turn.id, ordinal: index + 1 }))
           : [];
         this.stats = { tokens: null, cost: null };
         // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
@@ -1865,7 +1874,9 @@ export class App {
         // `history` 仍然要传：整页替换完，顶端那一行才知道后面还有没有更早的（#220）。
         // 这是 #221 的既定取舍：整页替换意味着重连后回到最后一页，已经翻出来的更早内容不保留。
         const turns = (msg.history as SessionHistory | undefined)?.turns;
-        if (Array.isArray(turns)) this.execPlanRounds = turns.map((turn, index) => ({ id: turn.id, ordinal: index + 1 }));
+        // 同上：刻度带上的问卷卡不进计划轮次（`kind` 缺省的老桥当 user）。
+        if (Array.isArray(turns))
+          this.execPlanRounds = turns.filter((turn) => turn.kind !== "ask").map((turn, index) => ({ id: turn.id, ordinal: index + 1 }));
         this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
         if (this.queueTab === "exec") this.renderQueue();
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
@@ -2710,13 +2721,38 @@ export class App {
         break;
       }
       case "ws.created": {
-        // #278：按目录建组的回执（快照已经先到）。建没建成都是同一组，直接切过去；
-        // `created:false` = 这个目录原来就在列表里 —— 说一声，不让人以为又建了一个。
+        // #278/#478：按目录建组的回执（快照已经先到，顺序已经按天插好）。这里负责「让它在眼前」：
+        // 横排滚到它 / 真的收进 ＋N 就把那颗标亮 / 左栏滚到它 —— 空组再直接把「开新会话」摆出来。
         this.wsNewBusy = false;
         if (this.sheetKind === "wsnew") this.closeSheet();
         const id = String(msg.id ?? "");
-        if (id) this.switchToWsGroup(id);
-        if (msg.created === false) this.flashToast(tr("这个工作区已经在列表里"), false, 3600);
+        const created = msg.created !== false;
+        if (id) {
+          const group = buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === id);
+          this.wsBirthId = id;
+          this.wsBirthInTree = id;
+          this.switchToWsGroup(id);
+          // 位置按「切过去之后」的第一行算：切完它多半就是当前组，占位会把它拉回横条，
+          // 拿切换前那一格算会误报「收在 ＋N 里」。
+          const where = this.wsBirthPosition(id);
+          if (created && (where.where === "more" || where.where === "off")) {
+            // 真的收进 ＋N 才提示（在横条上已经能看见、滚动过又标亮了，不必再弹）。
+            this.flashToast(tr("已新建，收在 ＋{p1} 里", { p1: where.outside }), false, 4000);
+          }
+          if (created && group && !group.manual && !group.sessions.length) {
+            const name = group.name;
+            let note = "";
+            if (where.where === "row") {
+              note = tr("已建在 {p1}，横条第 {p2} 位", { p1: name, p2: where.row ?? 0 });
+            } else if (where.where !== "unknown") {
+              note = tr("已建在 {p1}，收在 ＋{p2} 里（第 {p3} 位）", { p1: name, p2: where.outside, p3: where.folded ?? 0 });
+            }
+            // 空组：直接开新会话、目录已填（取消就停在原会话，不回滚、不揣进空对话）。
+            this.openNewSessionSheet(false, { cwd: cleanDirPath(group.key), note });
+          }
+        }
+        if (!created) this.flashToast(tr("这个工作区已经在列表里"), false, 3600);
+        this.renderSessions();
         break;
       }
       case "ws.resolved": {
@@ -5696,7 +5732,7 @@ export class App {
     return list;
   }
 
-  private openNewSessionSheet(autoPin = false): void {
+  private openNewSessionSheet(autoPin = false, preset?: { cwd?: string; note?: string }): void {
     this.closeSheet();
     this.sheetKind = "new";
     const back = el("div", "sheet-back");
@@ -5715,7 +5751,8 @@ export class App {
     nameField.maxLength = 120;
     const cwdField = el("input", "ns-input mono") as HTMLInputElement;
     cwdField.placeholder = tr("例如 E:\\yqm\\pi-web-client");
-    cwdField.value = this.defaultCwd();
+    // #478：从空工作区建完会话时，这里已经是那个组的目录，并写明它在横条的哪一颗。
+    cwdField.value = preset?.cwd?.trim() ? preset.cwd : this.defaultCwd();
     cwdField.setAttribute("list", "pi-recent-cwds");
     const browseBtn = el("button", "btn ghost", tr("📁 浏览"));
     const cwdRow = el("div", "ns-row");
@@ -5768,6 +5805,7 @@ export class App {
 
     sheet.append(
       head,
+      ...(preset?.note ? [el("div", "ns-note", preset.note)] : []),
       el("label", "ns-label", tr("会话名称")),
       nameField,
       el("label", "ns-label", tr("工作目录")),
@@ -6101,6 +6139,45 @@ export class App {
     // #102：键盘动作（Alt+方向键、折叠）换掉的 DOM 到此全部就位，把焦点还给该在的地方。
     this.consumePendingFocus();
     this.maybeWorkspaceIntro(tree);
+    // #478：刚建 / 刚被带过去的组在左栏里滚到并闪一下（横条那一半已经在 renderWorkspaceTabs 里做完）。
+    this.revealWsInTree();
+  }
+
+  /**
+   * #478：横条几何与「新建组落在哪」（`wsBirthPosition`）共用这一份输入 —— 顺序、名额、折叠名单
+   * 两边各抄一遍就会漂（一边改了口径，位置提示就和真正画出来的横条对不上）。`order` 没按树过滤，
+   * 横条那边自己滤掉树里没有的组。
+   */
+  private wsRowInput(tree: ReturnType<typeof buildTree>): { order: string[]; max: number; members: string[] | null; ordered: boolean } {
+    // #173：标签行与左栏用同一份 `order`（含折叠组），不再按名字或最近活动另排一套。
+    // 旧桥没下发 order 时退回树的组序（此时树自己也是按名字排的）。
+    const bridgeOrder = this.wsOrder();
+    const order = bridgeOrder?.length ? bridgeOrder : tree.groups.map((group) => group.id);
+    // #276：旧桥的组没有 inRow → 全员都在横条里，也不画 ⊙ / 左侧菜单项。
+    const rowAware = hasRowMembership(this.workspaces.groups);
+    const members = rowAware ? this.workspaces.groups.filter((group) => group.inRow !== false).map((group) => group.id) : null;
+    // 旧桥没下发 order 时顺序只是页面兜底，拖了也无处落库（#178 R34）。
+    return { order, max: this.workspaces.max ?? TABS_DEFAULT, members, ordered: Boolean(bridgeOrder?.length) };
+  }
+
+  /** #478：横条几何与「落在哪」共用一份 `birthReveal()`，不另算一套。 */
+  private wsBirthPosition(id: string): BirthReveal {
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, "");
+    return birthReveal({ ...this.wsRowInput(tree), current: this.currentWsId() ?? undefined, id });
+  }
+
+  /** #478：左栏里把刚建 / 刚被带过去的组滚到眼前，并把组头闪一下。 */
+  private revealWsInTree(): void {
+    const id = this.wsBirthInTree;
+    if (!id) return;
+    this.wsBirthInTree = null;
+    const row = Array.from(this.els.sessList.querySelectorAll<HTMLElement>(".ws-sec")).find((node) => node.dataset.ws === id);
+    if (!row) return;
+    row.scrollIntoView({ block: "nearest" });
+    const head = row.querySelector<HTMLElement>(".ws-head");
+    if (!head) return;
+    head.classList.add("ws-fresh");
+    setTimeout(() => head.classList.remove("ws-fresh"), 1600);
   }
 
   /** 重画后焦点归还：卡片优先（移动 / 重排后），组头次之（折叠 / 展开后）。状态机在 `focusfollow.ts`。 */
@@ -6764,7 +6841,11 @@ export class App {
       if (!action.dir) return;
       if (action.existing) {
         this.closeSheet();
+        // #478：已经在列表里也把「它在哪」指出来（与新建同一套定位指示，只是不说位置文案）。
+        this.wsBirthId = action.existing.id;
+        this.wsBirthInTree = action.existing.id;
         this.switchToWsGroup(action.existing.id);
+        this.renderSessions();
         this.flashToast(tr("这个工作区已经在列表里"), false, 3600);
         return;
       }
@@ -6781,6 +6862,8 @@ export class App {
       start: picked,
       filter: true,
       fallback: true,
+      // #478：与文件管理器同一行「跳到路径」—— 粘绝对路径回车就定位选中，打不开在框下报错。
+      pathBox: true,
       onState: (state: DirPickerState) => {
         picked = state.path;
         this.wsNewPicked = cleanDirPath(picked);
@@ -16879,35 +16962,32 @@ export class App {
     wsTabsAdd.hidden = !tabsAddShown(parts);
     wsTabsRow.hidden = !parts.tabsRow || !tree.groups.length;
     if (wsTabsRow.hidden) {
-      // 横条不画时这句提示没有出口，别攒到下一次渲染。
+      // 横条不画时这些提示没有出口，别攒到下一次渲染（B/C/D 的「在左栏指出它」另走 `wsBirthInTree`）。
       this.wsNewNoteId = null;
+      this.wsBirthId = null;
       this.cancelWsTabRename();
       return;
     }
     const byId = new Map(tree.groups.map((group) => [group.id, group]));
-    // #173：标签行与左栏用同一份 `order`（含折叠组），不再按名字或最近活动另排一套。
-    // 旧桥没下发 order 时退回树的组序（此时树自己也是按名字排的）。
-    const bridgeOrder = this.wsOrder();
-    const order = (bridgeOrder?.length ? bridgeOrder : tree.groups.map((group) => group.id)).filter((id) => byId.has(id));
-    // #276：旧桥的组没有 inRow → 全员都在横条里，也不画 ⊙ / 左侧菜单项。
-    const rowAware = hasRowMembership(this.workspaces.groups);
-    const members = rowAware
-      ? this.workspaces.groups.filter((group) => group.inRow !== false).map((group) => group.id)
-      : null;
-    const model = rowModel({ order, max: this.workspaces.max ?? TABS_DEFAULT, current: cur ?? undefined, members });
-    // #175：刚在横条 ＋ 上建的组：`order` 末尾、名额已满时它直接进 ＋N —— 说一声，
-    // 否则横条看起来没变，像是没建成（新组仍按 #173 的规则留在 order 末尾）。
-    const born = this.wsNewNoteId;
-    if (born) {
+    const { order: rawOrder, max, members, ordered } = this.wsRowInput(tree);
+    const order = rawOrder.filter((id) => byId.has(id));
+    // #276：旧桥的组没有 inRow（`members === null`）→ 全员都在横条里，也不画 ⊙ / 左侧菜单项。
+    const rowAware = members !== null;
+    const model = rowModel({ order, max, current: cur ?? undefined, members });
+    // #175：旧桥（没有 `ws.create.dir`）从横条 ＋ 建的组仍是追加在末尾 —— 落在 ＋N 里就说一声。
+    const legacyBorn = this.wsNewNoteId;
+    if (legacyBorn) {
       this.wsNewNoteId = null;
-      const folded = newTabFold(order, this.workspaces.max ?? TABS_DEFAULT, born, members);
+      const folded = newTabFold(order, max, legacyBorn, members);
       if (folded != null) this.flashToast(tr("已新建，收在 ＋{p1} 里", { p1: folded }), false, 4000);
     }
+    // #478：刚建 / 刚被「带过去」的组：等一下标签槽建完再滚（槽没建时查不到节点，平白丢一下）。
     for (const id of model.visible) {
       const group = byId.get(id);
       if (!group) continue;
       const offRow = model.currentOffRow && group.id === cur;
       const slot = el("div", `ws-tab-slot${rowAware ? " row" : ""}`);
+      slot.dataset.ws = group.id;
       const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}${offRow ? " off-row" : ""}`);
       tab.dataset.ws = group.id;
       tab.title = offRow ? tr("当前组被移出横条，临时占最后一格") : tr("切到这个工作区");
@@ -16925,7 +17005,7 @@ export class App {
       // #174：画出来的每一颗都能拖；拖完不误当点击。
       // #178 R34：旧桥没有 `order`，顺序只是页面按名字兜底，拖了也无处落库 —— 不绑拖动。
       // 过滤态只画命中组：此时拖出来的 order 会缺项、被桥按创建序补到末尾 —— 搜索时不绑拖。
-      if (bridgeOrder?.length && !this.filter) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model, order);
+      if (ordered && !this.filter) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model, order);
       // #277：两下规则 —— 第一下照常切组，第二下（同一颗、够快）才进编辑。双击当前组时第一下是
       // 原地切组，所以直接进编辑；双击非当前组时第一下已经切过去，浮层出现时组一定已经是它。
       // 用 click 的 detail + 上一次点击判断，不另绑 dblclick：拖动过的第一下已经被 tabDragMoved 吞掉。
@@ -16962,6 +17042,19 @@ export class App {
       }
       wsTabs.append(slot);
     }
+    // #478：刚建 / 刚被「带过去」的组 —— 可见段就横排滚到它，收在 ＋N 里就把那颗标亮。
+    // 不自动展开下拉：新会话弹层是全屏遮罩，展开也看不见。必须在标签槽建完之后做。
+    const born = this.wsBirthId;
+    if (born) {
+      this.wsBirthId = null;
+      const reveal = birthReveal({ order, max, current: cur ?? undefined, members, id: born });
+      if (reveal.where === "row") {
+        const slot = Array.from(wsTabs.querySelectorAll<HTMLElement>(".ws-tab-slot")).find((n) => n.dataset.ws === born);
+        slot?.scrollIntoView({ inline: "nearest", block: "nearest" });
+      } else if (reveal.where === "more" || reveal.where === "off") {
+        this.wsMoreFresh = born;
+      }
+    }
     // #121：超出的组收进这颗。它在槽外面（见 createShell），槽横滚时位置不动。
     // #276：rowAware 时 Ｎ = 装不下 + 不在横条里（两段都从这颗进）。
     const outside = rowAware ? [...model.more, ...model.offRow] : model.more;
@@ -16971,11 +17064,14 @@ export class App {
         : tr("还有 {p1} 个工作区", { p1: outside.length });
       wsTabsMore.hidden = false;
       wsTabsMore.textContent = tr("＋{p1}", { p1: outside.length });
+      // #478：新组真的被收在这里时标亮一下，点开下拉就清。
+      wsTabsMore.classList.toggle("fresh", this.wsMoreFresh !== null && outside.includes(this.wsMoreFresh));
       wsTabsMore.title = why;
       wsTabsMore.setAttribute("aria-label", why);
       wsTabsMore.onclick = () => this.toggleTabsMore(model, byId, rowAware);
     } else {
       wsTabsMore.onclick = null;
+      wsTabsMore.classList.remove("fresh");
     }
     // #277 标签重建过一轮：浮层挂在 body 上没被换掉，位置要按新标签再贴一次。
     this.placeWsTabRename();
@@ -17098,6 +17194,9 @@ export class App {
     }
     const anchor = this.els.wsTabsMore;
     if (!anchor) return;
+    // #478：下拉一打开，「新」标记就算送达了。
+    this.wsMoreFresh = null;
+    anchor.classList.remove("fresh");
     // 外壳复用置顶胶囊那张卡（`.pin-menu` / `.pm-item`）：同一个下拉，只是列的是工作区。
     const pop = el("div", `pin-menu ws-tabs-menu${rowAware ? " ws-tabs-board" : ""}`);
     pop.setAttribute("role", "menu");

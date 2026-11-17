@@ -81,7 +81,9 @@ import { marketDelete, marketInstall, marketList, marketPublish, marketSources, 
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
+import { startReminderLoop } from "./attendance-reminder.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
+import { handleAttendance } from "./attendance.ts";
 import { handleSysmanage } from "./sysmanage.ts";
 import { handleHotdeploy } from "./hotdeploy.ts";
 
@@ -538,6 +540,9 @@ async function main(): Promise<void> {
       /* ignore */
     }
   };
+
+  // 加班提醒：自己的定时器，不跟着 HTTP 请求走 —— 面板关着、没人点也得能提醒。
+  startReminderLoop({ notifier, url: () => `http://127.0.0.1:${cfg.port}/`, log });
 
   log(`${APP_NAME} ${VERSION} — pi ${piVersion} @ ${pi.cli}`);
   // Q-032: 扩展丢了就只剩「模型把表单写成文字」，而那是无声的。启动时把在场情况写进日志。
@@ -1029,6 +1034,15 @@ async function main(): Promise<void> {
     // #248 Jira 面板：单站点、只读、凭据不出桥。路由都在 jira.ts 里，这里只接线。
     if (await handleMail(req, res, url, { publicReq, confirm: (sid, mail) => askMailConfirm(sid, mail, wss) })) return;
     if (await handleJira(req, res, url, { publicReq })) return;
+    // 考勤：隧道访客整页隐身（模块内 return false → 落到底部的 404）。
+    if (
+      await handleAttendance(req, res, url, {
+        publicReq,
+        notifier,
+        pageUrl: publicReq ? (tunnel.state.url ?? "") : "http://127.0.0.1:" + cfg.port,
+      })
+    )
+      return;
 
     if (url.pathname === "/api/me") {
       return json(res, 200, {
@@ -3652,7 +3666,8 @@ async function main(): Promise<void> {
               // 不带 dir = 老规矩，建一个空壳手动组、由页面接着进入改名。
               const dir = typeof msg.dir === "string" ? msg.dir : "";
               if (dir) {
-                const result = await sessions.workspaces.createDir(dir);
+                // #478：建组当天按天插位（今天这一档的末尾），不看显示名。
+                const result = await sessions.workspaces.createDir(dir, sessions.place());
                 if (!result.ok || !result.group) {
                   send({ type: "notice", text: result.reason ?? "这个目录没能建成工作区", level: "warn" });
                   return;
@@ -3662,7 +3677,7 @@ async function main(): Promise<void> {
                 send({ type: "ws.created", id: result.group.id, created: result.created === true });
                 return;
               }
-              sessions.workspaces.create(String(msg.name ?? ""));
+              sessions.workspaces.create(String(msg.name ?? ""), sessions.place());
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
               return;
             }

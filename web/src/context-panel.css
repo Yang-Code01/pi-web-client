@@ -313,6 +313,153 @@ button.cx-chip:hover { border-color: var(--line-strong); background: var(--panel
 .cx-cmd-dur { flex: none; color: var(--dim); font: 9.5px/1 var(--mono); }
 .cx-cmd-time { flex: none; color: var(--faint); font: 9.5px/1 var(--mono); }
 
+/* ---------------------------------------------------------------- 可读化正文（技能目录 / Markdown） */
+
+/* 类目头行：折叠行 + 右侧「可视化 / 原文」开关（不展开类目也看得见） */
+.cx-acc-top { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.cx-acc-top > .cx-acc-head { width: auto; flex: 1 1 auto; min-width: 0; }
+.cx-viz-toggle { display: inline-flex; gap: 3px; flex: none; padding-right: 6px; }
+.cx-viz-toggle .cx-seg { padding: 1px 6px; font-size: 10px; }
+
+.cx-viz {
+  max-height: 380px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--sunken);
+  padding: 6px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+/* 内滚已经把高度限制住了，手风琴那层 345px 上限再套一层会出两条滚动条 */
+.cx-acc:has(.cx-viz) { max-height: none; }
+
+/* 技能目录：两列紧凑表（名字单行省略 / 说明两行，点行展开） */
+.cx-skill-table { display: grid; gap: 1px; align-content: start; min-width: 0; }
+.cx-skill-intro {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: 0 2px 5px;
+  margin-bottom: 2px;
+  border-bottom: 1px dashed var(--line-soft);
+}
+.cx-skill-count { color: var(--dim); font: 10px/1.5 var(--mono); }
+.cx-skill-note {
+  color: var(--faint);
+  font-size: 10.5px;
+  line-height: 1.5;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cx-skill-row {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 1px 10px;
+  align-items: baseline;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 2px;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px dashed var(--line-soft);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cx-skill-row:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.cx-skill-row:last-child { border-bottom: 0; }
+.cx-skill-row:hover { background: var(--panel-3); }
+.cx-skill-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font: 10.5px/1.5 var(--mono);
+}
+.cx-skill-desc {
+  min-width: 0;
+  color: var(--dim);
+  font-size: 10.5px;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cx-skill-row.open { background: var(--panel-3); }
+.cx-skill-row.open .cx-skill-desc { display: block; -webkit-line-clamp: unset; overflow: visible; color: var(--text); }
+.cx-skill-path {
+  display: block;
+  grid-column: 1 / -1;
+  min-width: 0;
+  color: var(--faint);
+  font: 9.5px/1.5 var(--mono);
+  word-break: break-all;
+}
+
+/* Markdown 正文（SKILL.md / rules / docs / project_context） */
+.cx-md { color: var(--text); font-size: 10.5px; line-height: 1.6; word-break: break-word; }
+/* 不复用 styles.css 的 .md-doc：那是整页文文档的尺度（max-width 860 / padding 24–28 / font-size 14px），
+   挤进 380px 面板要把它盖掉大半，不如按面板的 10–13px 尺度单写一套。 */
+.cx-md > :first-child { margin-top: 0; }
+.cx-md > :last-child { margin-bottom: 0; }
+.cx-md h1, .cx-md h2, .cx-md h3, .cx-md h4, .cx-md h5, .cx-md h6 { margin: 10px 0 5px; line-height: 1.35; color: var(--text); }
+.cx-md h1 { font-size: 13px; }
+.cx-md h2 { font-size: 12px; }
+.cx-md h3, .cx-md h4, .cx-md h5, .cx-md h6 { font-size: 11px; }
+.cx-md p { margin: 0 0 6px; }
+.cx-md ul, .cx-md ol { margin: 0 0 6px; padding-left: 16px; }
+.cx-md li { margin: 1px 0; }
+.cx-md li.task { list-style: none; margin-left: -13px; }
+.cx-md code { font: 0.94em var(--mono); background: var(--accent-bg); border-radius: 4px; padding: 0 3px; }
+.cx-md pre {
+  margin: 0 0 6px;
+  padding: 5px 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  background: var(--panel-2);
+  overflow: auto;
+  font: 9.5px/1.5 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cx-md pre code { background: transparent; padding: 0; font-size: inherit; }
+.cx-md .md-front { color: var(--faint); }
+.cx-md blockquote {
+  margin: 0 0 6px;
+  padding: 1px 0 1px 8px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--dim);
+}
+.cx-md .md-table { margin: 0 0 6px; overflow: auto; }
+.cx-md table { border-collapse: collapse; font-size: 10px; }
+.cx-md th, .cx-md td { border: 1px solid var(--line-soft); padding: 2px 5px; text-align: left; }
+.cx-md th { background: var(--panel-2); font-weight: 600; }
+.cx-md hr { border: 0; border-top: 1px solid var(--line-soft); margin: 8px 0; }
+.cx-md a { color: var(--accent); text-decoration: none; }
+.cx-md a:hover { text-decoration: underline; }
+.cx-md img { max-width: 100%; }
+/* 注入段里「只有一条带链接的粗体路径」的段落 = 文件分界（见 context-viz.ts 的 ctxSectionMarkdown）。
+   多一层 .file-link 限定：正文里整段加粗的句子不会被误当成分界行。 */
+.cx-md p:has(> strong:only-child > .file-link:only-child) {
+  margin: 10px 0 5px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+  font: 600 9.5px/1.4 var(--mono);
+  color: var(--muted);
+  word-break: break-all;
+}
+.cx-md p:has(> strong:only-child > .file-link:only-child) a { color: inherit; }
+.cx-md > p:has(> strong:only-child > .file-link:only-child):first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+
 /* ---------------------------------------------------------------- responsive */
 
 @container (max-width: 940px) {
@@ -327,6 +474,8 @@ button.cx-chip:hover { border-color: var(--line-strong); background: var(--panel
   .cx-donut-row { gap: 10px; }
   .cx-donut { width: 78px; height: 78px; }
   .cx-donut svg { width: 78px; height: 78px; }
+  .cx-skill-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .cx-skill-name { white-space: normal; word-break: break-all; }
 }
 
 /* ---------------------------------------------------------------- browser detail */

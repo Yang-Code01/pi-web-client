@@ -31,6 +31,7 @@ import {
   ctxUsageMap,
   isCtxRequest,
 } from "../src/context.ts";
+import { ctxSectionMarkdown, ctxSkillCatalog, ctxUnwrapSection, decodeEntities } from "../src/context-viz.ts";
 
 /** 请求行工厂：不带 kind 也合法，模拟 PR #386 初版的旧日志。 */
 const req = (over = {}) => ({
@@ -332,4 +333,90 @@ test("ctxBodyMap / ctxBrowserView：body 行把正文合并回对应条目", () 
   const u = view.items.find((i) => i.id === "u1");
   assert.equal(u.content, "这是用户消息的完整正文");
   assert.equal(u.preview, "短预览", "预览不被正文覆盖");
+});
+
+test("decodeEntities：只解常见命名实体与数字实体，其余原样留着", () => {
+  assert.equal(decodeEntities("`as any` 不该出现在这里 &quot;引号&quot; &apos;单&apos;"), "`as any` 不该出现在这里 \"引号\" '单'");
+  assert.equal(decodeEntities("&#39;&#x27;&lt;t&gt;&amp;&nbsp;!"), "'" + "'" + "<t>&" + " !");
+  assert.equal(decodeEntities("&something;&"), "&something;&");
+  assert.equal(decodeEntities(""), "");
+});
+
+test("ctxSkillCatalog：剥掉分节标签、解实体、按 名字+路径 去重", () => {
+  const xml = [
+    "<skills>",
+    "The following skills provide specialized instructions for specific tasks.",
+    "Use the read tool to load a skill's file when the task matches its description.",
+    "",
+    "<available_skills>",
+    "  <skill>",
+    "    <name>alpha</name>",
+    "    <description>Say &quot;hi&quot; &amp; go</description>",
+    "    <location>C:/a/SKILL.md</location>",
+    "  </skill>",
+    "  <skill>",
+    "    <name>alpha</name>",
+    "    <description>Say &quot;hi&quot; &amp; go</description>",
+    "    <location>C:/a/SKILL.md</location>",
+    "  </skill>",
+    "  <skill>",
+    "    <name>beta</name>",
+    "    <description></description>",
+    "  </skill>",
+    "</available_skills>",
+    "</skills>",
+  ].join("\n");
+  const cat = ctxSkillCatalog(xml);
+  assert.equal(cat.skills.length, 2, "重复的 名字+路径 只留一条");
+  assert.deepEqual(cat.skills[0], { name: "alpha", description: 'Say "hi" & go', location: "C:/a/SKILL.md" });
+  assert.deepEqual(cat.skills[1], { name: "beta", description: "", location: "" });
+  assert.ok(cat.intro.startsWith("The following skills"), "介绍段从 <skills> 之后开始");
+  assert.ok(!cat.intro.includes("<available_skills>"), "介绍段不带技能清单");
+  assert.ok(!cat.intro.includes("<skills>"), "分节标签已剥掉");
+});
+
+test("ctxSkillCatalog：不像技能清单时返回空，界面据此退回原文", () => {
+  assert.deepEqual(ctxSkillCatalog("just some text").skills, []);
+  assert.deepEqual(ctxSkillCatalog("").skills, []);
+});
+
+test("ctxUnwrapSection：只剥唯一且配对的首尾分节标签", () => {
+  assert.equal(ctxUnwrapSection("<rules>\n- 中文优先\n- 用 tr()\n</rules>"), "- 中文优先\n- 用 tr()");
+  assert.equal(ctxUnwrapSection("<cwd>E:/x</cwd>"), "E:/x");
+  // 收尾标签对不上就不动它（避免把正文里的半截标签当成外壳）
+  assert.equal(ctxUnwrapSection("<rules>\n正文\n</docs>"), "<rules>\n正文\n</docs>");
+  assert.equal(ctxUnwrapSection("## 标题\n正文"), "## 标题\n正文");
+});
+
+test("ctxSectionMarkdown：注入段按小节转 Markdown，project_context 每份文件一条分界行", () => {
+  const src = [
+    "<addendum>",
+    "",
+    "## 这个工作区的规矩",
+    "",
+    "- 产物写进会话目录",
+    "",
+    "<project_context>",
+    String.raw`<project_instructions path="C:\Users\a\AGENTS.md">`,
+    "# 全局偏好",
+    "",
+    "- 中文",
+    "</project_instructions>",
+    String.raw`<project_instructions path="E:\repo\AGENTS.md">`,
+    "# pi-web-client",
+    "",
+    "- worktree",
+    "</project_instructions>",
+    "</project_context>",
+    "",
+    "</addendum>",
+  ].join("\n");
+  const md = ctxSectionMarkdown(src);
+  assert.ok(!md.includes("<addendum>"), "外层分节标签剥掉，正文才走 Markdown");
+  assert.ok(md.startsWith("## 这个工作区的规矩"));
+  assert.ok(md.includes("\n" + String.raw`**C:\Users\a\AGENTS.md**`), "每份 AGENTS.md 有自己的分界行");
+  assert.ok(md.includes("\n" + String.raw`**E:\repo\AGENTS.md**`));
+  assert.ok(!md.includes("## C:"), "分界行不用标题，免得跟 AGENTS.md 自带的 ## / ### 抢层级");
+  assert.ok(!md.includes("<project_instructions"), "标签不残留");
+  assert.ok(!md.includes("\n\n\n"), "连续空行压成一行");
 });
