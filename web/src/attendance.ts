@@ -481,7 +481,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
       preview.append(
         el("div", "at-confirm__line", tr("{p1} → {p2} · {p3} 小时", { p1: p.startTime ?? "", p2: p.endTime ?? "", p3: String(p.hours ?? "") })),
         el("div", "at-confirm__line", tr("事由：{p1}", { p1: form.project ? `${form.reasonType} / ${form.project}` : form.reasonType })),
-        el("div", "at-confirm__line", tr("审批人：{p1}", { p1: p.workflow ?? "" })),
+        el("div", "at-confirm__line", tr("审批人：{p1}", { p1: approverNames() || p.workflow || "" })),
       );
       const row = el("div", "at-confirm__actions");
       const ok = el("button", "btn primary", tr("确认提交"));
@@ -576,6 +576,15 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
   }
 
   /** 可选的小输入框：带一句提示，免得人以为必须填。 */
+  /** 确认框里给人看的审批人：id 换成「姓名 工号」，按一级、二级的顺序。 */
+  function approverNames(): string {
+    const pool = new Map<number, string>();
+    for (const x of overtime?.candidates.l1 ?? []) pool.set(x.userId, `${x.name} ${x.workNo}`.trim());
+    for (const x of overtime?.fixedL2 ?? []) pool.set(x.userId, `${x.name} ${x.workNo}`.trim());
+    const show = (ids: string[]): string => ids.map((id) => pool.get(Number(id)) ?? "").filter(Boolean).join("、");
+    return [show(form.l1), show(form.l2)].filter(Boolean).join(" → ");
+  }
+
   function noteField(name: string, value: string, onChange: (v: string) => void, hint: string): HTMLInputElement {
     const input = text(name, value, onChange);
     input.placeholder = hint;

@@ -441,7 +441,8 @@ const draft = {
   endTime: "2026-11-18T20:00",
   hours: 2,
   reason: { type: "进度延迟", project: "P1", detail: "赶版本" },
-  workflow: "2001&3001,3002",
+  // 页面真实发的是对象，不是 "2001&3001,3002" 这种字符串。
+  workflow: { l1: [2001], l2: [3001, 3002] },
 };
 
 test("加班提交：先要确认，不写任何东西", async () => {
@@ -452,6 +453,20 @@ test("加班提交：先要确认，不写任何东西", async () => {
   assert.equal(res.json.preview.startTime, "2026-11-18T18:00:00");
   assert.equal(res.json.preview.workflow, "2001&3001,3002");
   assert.equal(seenAdds.length, before, "没确认就一个字节都不该发出去");
+});
+
+test("加班提交：审批人两种形状都认，别再把 [object Object] 解成空", async () => {
+  const asString = await call("POST", "/api/attendance/overtime", { ...draft, workflow: "2001&3001,3002" });
+  assert.equal(asString.status, 200);
+  assert.equal(asString.json.preview.workflow, "2001&3001,3002", "字符串形状要照旧能用");
+
+  const asObject = await call("POST", "/api/attendance/overtime", draft);
+  assert.equal(asObject.status, 200);
+  assert.equal(asObject.json.preview.workflow, "2001&3001,3002", "页面的 {l1,l2} 要归成同一串");
+
+  const onlyL1 = await call("POST", "/api/attendance/overtime", { ...draft, workflow: { l1: [2001], l2: [] } });
+  assert.equal(onlyL1.status, 200, "只选一级也行");
+  assert.equal(onlyL1.json.preview.workflow, "2001&");
 });
 
 test("加班提交：本地校验挡在手边", async () => {

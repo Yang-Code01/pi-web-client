@@ -584,6 +584,17 @@ export function lastStepPeople(applyList: unknown[], workflow: Record<string, un
 }
 
 /** 一级审批人的默认值：上一次申请的那个项目负责人（OA 新建单据时也是拿这个当前值）。 */
+/** 页面发 `{l1,l2}` 对象，也接受 `"l1&l2"` 字符串；两种都归成数字 id。 */
+export function readWorkflow(raw: unknown): { l1: number[]; l2: number[] } {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const box = raw as { l1?: unknown; l2?: unknown };
+    const ids = (v: unknown): number[] =>
+      Array.isArray(v) ? v.map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0) : [];
+    return { l1: ids(box.l1), l2: ids(box.l2) };
+  }
+  return parseWorkflow(String(raw ?? ""));
+}
+
 export function lastLeadApprover(applyList: unknown[], workflow: Record<string, unknown>): string {
   return lastStepPeople(applyList, workflow, 1)[0] ?? "";
 }
@@ -949,7 +960,7 @@ export async function handleAttendance(
         project: String((rawReason as Record<string, unknown>)?.project ?? ""),
         detail: String((rawReason as Record<string, unknown>)?.detail ?? ""),
       };
-      const wf = parseWorkflow(String(body.workflow ?? ""));
+      const wf = readWorkflow(body.workflow);
       const workflow = formatWorkflow(wf.l1, wf.l2);
 
       const problem: OvertimeProblem | null = checkDraft({ startTime, endTime, hours, reason, workflow });
