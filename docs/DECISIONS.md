@@ -5769,3 +5769,19 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 删预算后旧的 `budget.json` 成了无主文件（不迁移，因为那个数没有任何意义）；百分比必须在有窗口信息时才生效，冷会话打开面板只能显示「还没拿到窗口大小」，要等一次 stats；交接文档落在桥的 `state/handoff/` 而不是工作区，翻历史要去状态目录找；`/skill:handoff` 是用户技能（`disable-model-invocation`），没装时开关会被拦住，但「装没装」是在打开开关/触发那一刻才查。
 
 **验证：** `node --test bridge/tests/context-policy-unit.mjs`（7 条：三层优先级、5/90 边界、差 4 点、32K/200K/1M 夹取、交接优先、未设百分比不压制压缩）；`node --test bridge/tests/context-session-unit.mjs`（9 条：交接只发事件、到压缩线只压一次、运行中不压、scratch/已交接/占位中/失败退避全早退）；`npm run test:context`（桥 30 + web 33）通过；`node bridge/tests/context-policy-ui.mjs`（假 pi + Chromium，口令 `context-ui-pass`，端口 `CONTEXT_UI_PORT`，默认 7914 会被 Windows 保留段占掉，实测用 8934）20 项通过：四个头栏按钮、横幅隐藏时底栏仍贴底、窗口/默认 70%≈140K、差 2 点被拦且不发帧、保存后 `layer.session` 正确（保存前查 `/handoff` 技能，假 pi 用 `FAKE_PI_COMMANDS` 报一条）、生效来源变 session、140K→80K 夹取、Esc 只关子弹窗、交接说明与两次点击才发、压缩按钮不炸页面；`npm --prefix web run typecheck`（tsc + i18n 3489 键 × 3 语 + viewport 守卫）与 `npm --prefix bridge run typecheck`、`npm run build:bridge`、`npm run build:web` 通过。
+
+## D300 内网通按 QQ 的会话逻辑重做：消息从创建就有状态，状态用 `patch` 行追加，已读是真回执（2026-11-18）
+
+**背景。** v1 的「已送达」是本地伪造的：`peer/src/index.ts` 在 outbox 投递成功的回调里往历史里追加一条 `kind:"receipt"` 的假条目，而收端的 `acceptReceipt()` 只写日志、不更新任何状态。也就是说，发件人看到的进度只是「HTTP POST 返回 200」，对方读没读、收没收到，协议层从来没有表达过。此外没有未读、没有草稿、没有引用、没有撤回、没有群，会话列表只能按最后一条消息排。
+
+**怎么定的。** 用 REA 拆本机 QQ 9.9.19（`F:/soft/QQ/versions/9.9.19-35469`）拿设计基准：`resources/app/major.node` 没有 PE 导出，但字符串表里是 QQNT 内核的完整 N-API 约定（104 个 `nodeIKernel*Service/Listener`、`msgSeq`/`sendStatus`/`elements[]`/`recallMsg`/`setMsgRead`+`setMsgReadAndReport`/`unreadCnt`/`isTop`+`topTime`/`draft*` 等）。`application.asar` 里 1005 个文件全部解出，但 JS/CSS/HTML 整体加密；本机 QQ 从未登录、全盘没有 `nt_msg.db`，所以拿不到 SQLite schema。结论：模型来自绑定层符号 + 可观察行为，每条设计在 `docs/PEER-V2.md` 里标注来源符号，不写「QQ 应该是这样」。
+
+**落地的四条硬决定。**
+1. **消息从创建那一刻就有状态**（`sending` → `success` → `read` / `failed`），不再是「发出去才知道存不存在」。对齐 `onAddSendMsg` 先插 `kSending`、`onSendStatusChange` 再推进。
+2. **状态是追加 `patch` 行，不重写历史**。每会话一份 append-only JSONL，行有三种 `op`：`msg` / `patch`（sendStatus、recall）/ 旧的无 `op` 行按 `msg` 读。理由：2 GB 的对话里每来一次「已读」就重写整份文件会卡死，而追加的崩溃语义与现在一样便宜（最多丢最后半行）。
+3. **已读分两步，且是真回执**：进会话先本地记 `readSeq`（`setMsgRead`），再把 `kind:"read"` 控制消息投给对方（`setMsgReadAndReport`）；对方据此把自己发出的消息升成「已读」。窗口不可见时只本地标记、不上报。未读是**算**出来的（`最后一条 seq − readSeq`），不存计数。
+4. **群 = 发送方扇出**。没有中心节点，所以群消息由发送方对每个在线成员各投一次，成员上限 32；接收方按 `(seq, id)` 排，不保证全序。成员全离线就明确报错，不假装发出去。
+
+**取舍。** 不做 `kSuccessNoSeq`（系统提示也分配 seq，未读与「跳到未读」不用特判）；不做临时 id → 服务端 id 的换号（P2P 没有服务端改号这一环，id 全场不变）；不做多端同步（`otherDevice` 在类型里留着，但本机没有第二台设备可信）；撤回保留 2 分钟窗口、两侧都留灰条而不是删行——P2P 下删本地那份才是撒谎；旧的 `PROTO=1` 不动，旧对端收到未知 `kind` 回 400 且 `retryable:false`，只丢那一条控制消息。
+
+**验证。** `bridge/tests/peer-v2.mjs`（两台 peer，端口 17970/17971，announce 17972/17974）覆盖：发送三态与 `sendType`、历史里没有伪回执行、未读→`/read`→对方消息变 `read`、引用摘要、撤回两侧 fold、转发、搜索、输入中、置顶+免打扰+草稿、建群/群收发/成员表/退群。回归 `bridge/tests/peer-e2e.mjs` 21 项照过（两处断言从「等 receipt 行」改成「等消息 `sendStatus === "success"`」）。界面侧用隔离实例（`pi-web-client-test-dev`，17876/17877）跑 `ui-flow.mjs` 走完「加好友 → 发消息 → 对方已读 → 引用回复 → 搜索」，截图在 `.scratch/qq-align/ui/`。
