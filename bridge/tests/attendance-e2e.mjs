@@ -227,6 +227,28 @@ test("配地址：只收完整的 http(s)，不收带账号密码的", async () 
   assert.equal(st.json.account, "TS***1");
 });
 
+test("账号留空：PUT / login 都沿用已经存着的那个；把掩码发回来直接拒", async () => {
+  // 页面上只有掩码（TS***1）：用户不重填账号时，前端发空串，桥端要接住。
+  const keep = await call("PUT", "/api/attendance/config", {
+    apiBase: "https://attendance.example.com:8443",
+    pageBase: "https://attendance.example.com",
+    account: "",
+  });
+  assert.equal(keep.status, 200);
+  assert.equal((await call("GET", "/api/attendance/state")).json.account, "TS***1");
+
+  const masked = await call("PUT", "/api/attendance/config", {
+    apiBase: "https://attendance.example.com:8443",
+    account: "TS***1",
+  });
+  assert.equal(masked.status, 400);
+  assert.equal(masked.json.code, "bad_account");
+
+  const login = await call("POST", "/api/attendance/login", { password: "good" });
+  assert.equal(login.status, 200);
+  assert.equal(seenLogin.account, "TS0001");
+});
+
 test("登录：缺密码 / 上游 NG 都拒，成功只回姓名与掩码工号", async () => {
   const noPw = await call("POST", "/api/attendance/login", { account: "TS0001" });
   assert.equal(noPw.status, 400);

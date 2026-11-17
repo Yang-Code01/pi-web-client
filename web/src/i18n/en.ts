@@ -3423,7 +3423,6 @@ export const en: Dict = {
   "加班申请": "Overtime request",
   "单号": "Request no.",
   "去设置": "Open settings",
-  "只用来换登录态，加密存在本机": "Only used to get the sign-in state; stored encrypted on this machine",
   "周末": "Weekend",
   "备注": "Note",
   "审批中": "Pending approval",
@@ -3472,4 +3471,9 @@ export const en: Dict = {
   "事由：{p1}": "Reason: {p1}",
   "审批人：{p1}": "Approvers: {p1}",
   "待{p1}审批": "Pending {p1}",
+  "已通过": "Approved",
+  "已驳回": "Rejected",
+  "比如项目号，可不填": "e.g. project code, optional",
+  "补一句为什么，可不填": "A line on why, optional",
+  "登录态会加密存本机": "Sign-in state is stored encrypted here",
 };

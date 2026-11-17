@@ -138,6 +138,7 @@ class SysPanel {
   private customInput: HTMLInputElement | null = null;
   /** 考勤页的清理函数：切页或关面板时调，别让它在后台继续拉数据。 */
   private attendanceDispose: (() => void) | null = null;
+  private attendanceRefresh: (() => void) | null = null;
   private noticeTimer: number | null = null;
   private countdownTimer: number | null = null;
   private countdownNodes: { digits: HTMLElement; caption: HTMLElement; worked: HTMLElement; bar: HTMLElement } | null = null;
@@ -264,6 +265,10 @@ class SysPanel {
 
   private async refresh(): Promise<void> {
     const section = this.state.section;
+    if (section === "attendance") {
+      this.attendanceRefresh?.();
+      return;
+    }
     if (section === "overview") await Promise.all([this.load("overview", true), this.load("network", true)]);
     else await this.load(section, true);
   }
@@ -396,10 +401,14 @@ class SysPanel {
   private paintPane(): void {
     if (!this.pane) return;
     const section = this.state.section;
+    // 考勤页的页签、表单、展开的那一行都住在它自己的闭包里：别的分区拉完数据显示时
+    // 不能把它重画一遍，否则正在填的加班申请会凭空清空。它自己会刷。
+    if (section === "attendance" && this.renderedSection === "attendance" && this.attendanceDispose) return;
     this.stopCountdown();
     if (this.renderedSection !== null) this.scrollBySection.set(this.renderedSection, this.pane.scrollTop);
     this.attendanceDispose?.();
     this.attendanceDispose = null;
+    this.attendanceRefresh = null;
     this.pane.replaceChildren();
     this.renderedSection = section;
     if (this.state.loading[section] && !this.data(section)) {
@@ -424,7 +433,9 @@ class SysPanel {
 
   private paintAttendancePane(): void {
     if (!this.pane) return;
-    this.attendanceDispose = paintAttendance(this.pane);
+    const page = paintAttendance(this.pane);
+    this.attendanceDispose = page.dispose;
+    this.attendanceRefresh = page.refresh;
   }
 
   // ---------------------------------------------------------------- 概况

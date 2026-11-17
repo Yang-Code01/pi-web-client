@@ -1,66 +1,39 @@
 /* 考勤 · 嵌在「设置 → 本机管理」右栏里的一页。
-   尺寸跟着 .sys-pane 走，不写裸 vh/vw：#app 上的 zoom 会把视口单位再乘一次（D123）。 */
+   尺寸跟着 .sys-pane 走，不写裸 vh/vw：#app 上的 zoom 会把视口单位再乘一次（D123）。
+   类名跟 attendance.ts 里用的一一对应，别再各写各的。 */
 
 .at-page {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;
   min-height: 0;
 }
 
-/* 页头：标题 + 账号状态 + 操作。 */
-.at-head {
+/* 一页里的每一块（记录 / 申请 / 设置），内部自己排。 */
+.at-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* 页签 + 右侧状态 */
+.at-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
 }
 
-.at-head__title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.at-head__who {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.at-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-
-.at-dot.ok {
-  background: #3fb950;
-}
-
-.at-dot.bad {
-  background: #f85149;
-}
-
-.at-head__spacer {
-  flex: 1 1 auto;
-}
-
-/* 页签 */
 .at-tabs {
   display: flex;
   gap: 4px;
   padding: 3px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: color-mix(in oklab, var(--panel) 80%, transparent);
-  align-self: flex-start;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
 }
 
 .at-tab {
@@ -68,7 +41,7 @@
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: var(--muted);
+  color: var(--dim);
   font: inherit;
   font-size: 13px;
   cursor: pointer;
@@ -79,150 +52,127 @@
 }
 
 .at-tab.on {
-  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--text);
 }
 
-/* 提示条 —— 有 hidden 时整块 display:none，父级是 flex 列，不会顶掉后面的行。 */
-.at-notice {
+.at-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.at-chip {
+  display: inline-block;
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.at-chip.warn {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+  color: var(--warn);
+}
+
+.at-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 提示条 / 缓存横幅 —— 父级是 flex 列，这里不用 hidden，靠有没有子节点。 */
+.at-notice,
+.at-banner {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  font-size: 13px;
-  background: color-mix(in oklab, var(--panel) 88%, transparent);
-}
-
-.at-notice[hidden] {
-  display: none;
+  font-size: 12.5px;
+  color: var(--dim);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
 }
 
 .at-notice.ok {
-  border-color: color-mix(in oklab, #3fb950 40%, var(--line));
-}
-
-.at-notice.bad {
-  border-color: color-mix(in oklab, #f85149 45%, var(--line));
-  color: #ffb4ae;
-}
-
-.at-notice__close {
-  margin-left: auto;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-}
-
-/* 汇总卡 */
-.at-sum {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
-  gap: 8px;
-}
-
-.at-sum__cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 9px 11px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: color-mix(in oklab, var(--panel) 92%, transparent);
-}
-
-.at-sum__k {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.at-sum__v {
-  font-size: 16px;
-  font-variant-numeric: tabular-nums;
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
   color: var(--text);
 }
 
-/* 工具条 */
-.at-bar {
+.at-notice.bad,
+.at-banner.bad {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  color: color-mix(in srgb, var(--danger) 62%, var(--text));
+}
+
+.at-notice__text {
+  min-width: 0;
+}
+
+.at-notice__x {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.at-notice__x:hover {
+  color: var(--text);
+}
+
+/* 工具条：日期区间 + 查询 */
+.at-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
-.at-bar__hint {
+.at-label {
   font-size: 12px;
-  color: var(--muted);
-}
-
-.at-dates {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  color: var(--dim);
 }
 
 .at-input {
   padding: 5px 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--input-bg, color-mix(in oklab, var(--panel) 70%, black));
+  background: var(--bg);
   color: var(--text);
   font: inherit;
   font-size: 13px;
   min-width: 0;
+  max-width: 100%;
 }
 
 .at-input:focus-visible {
-  outline: 2px solid color-mix(in oklab, var(--accent) 70%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
   outline-offset: 1px;
 }
 
-.at-input--wide {
-  flex: 1 1 240px;
+/* 日期框在窄栏里不能被压到看不见选日期的按钮。 */
+input.at-input[type="date"] {
+  min-width: 148px;
 }
 
-.at-btn {
-  padding: 5px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: color-mix(in oklab, var(--panel) 84%, transparent);
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.at-btn:hover:not(:disabled) {
-  border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
-}
-
-.at-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.at-btn--primary {
-  background: color-mix(in oklab, var(--accent) 22%, transparent);
-  border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
-}
-
-.at-btn--danger {
-  border-color: color-mix(in oklab, #f85149 50%, var(--line));
-  color: #ffb4ae;
+/* 提示文字要真的像提示：同色系、更淡一档。 */
+.at-input::placeholder {
+  color: color-mix(in srgb, var(--dim) 70%, transparent);
 }
 
 /* 表格 */
-.at-scroll {
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  min-height: 0;
-}
-
 .at-table {
   width: 100%;
   border-collapse: collapse;
@@ -233,7 +183,7 @@
 .at-table td {
   padding: 7px 10px;
   text-align: left;
-  border-bottom: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   white-space: nowrap;
 }
 
@@ -242,143 +192,212 @@
   top: 0;
   z-index: 1;
   background: var(--panel);
-  color: var(--muted);
+  color: var(--dim);
   font-weight: 500;
   font-size: 12px;
 }
 
 .at-table tbody tr:hover {
-  background: color-mix(in oklab, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-.at-table td.num {
+/* 周末淡一点、缺卡重一点，别用颜色吓人，只是让人扫得出来。 */
+.at-table tbody tr.weekend td {
+  color: color-mix(in srgb, var(--text) 78%, var(--dim));
+}
+
+.at-table tbody tr.missing .at-day::after {
+  content: "·";
+  margin-left: 6px;
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.at-day {
   font-variant-numeric: tabular-nums;
-}
-
-.at-table td.nil {
-  color: var(--muted);
-}
-
-.at-tag {
-  display: inline-block;
-  padding: 0 6px;
-  margin-right: 6px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.at-tag.weekend {
-  border-color: color-mix(in oklab, #d29922 45%, var(--line));
-  color: #e3b341;
 }
 
 .at-note {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--dim);
+  white-space: normal;
+}
+
+.at-bad {
+  color: color-mix(in srgb, var(--danger) 62%, var(--text));
 }
 
 .at-detail {
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
   font-size: 12px;
+  cursor: pointer;
 }
 
-.at-detail dl {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 3px 12px;
+.at-detail:hover {
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.at-raw {
   margin: 0;
-}
-
-.at-detail dt {
-  color: var(--muted);
-}
-
-.at-detail dd {
-  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--dim);
+  white-space: pre-wrap;
   word-break: break-all;
 }
 
-/* 表单 */
-.at-form {
-  display: grid;
+/* 卡片 / 表单 */
+.at-card {
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: color-mix(in oklab, var(--panel) 92%, transparent);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  min-width: 0;
+}
+
+.at-card.danger {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+}
+
+.at-card__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.at-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  min-width: 0;
 }
 
 .at-field {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
-  align-items: center;
+  align-items: start;
   gap: 10px;
   font-size: 13px;
+  min-width: 0;
 }
 
-.at-field > span {
-  color: var(--muted);
+.at-field__label {
+  padding-top: 6px;
+  color: var(--dim);
 }
 
-.at-field--stack {
-  grid-template-columns: 88px minmax(0, 1fr);
-  align-items: start;
-}
-
-.at-field__body {
+.at-leaders {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: 6px;
   min-width: 0;
 }
 
-.at-draft {
-  font-size: 12px;
-  color: var(--muted);
+.at-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.at-draft.bad {
-  color: #ffb4ae;
+/* 卡片是 flex 列：单独一个按钮会被拉成整行宽的横幅，改回按钮自己的宽度。 */
+.at-card > .btn {
+  align-self: flex-start;
 }
 
-.at-hr {
-  height: 1px;
-  background: var(--line);
+.at-link {
+  padding: 0;
   border: 0;
-  margin: 2px 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
 }
 
-/* 空态 / 骨架 */
+.at-link:hover {
+  text-decoration: underline;
+}
+
+/* 二次确认：提交前把要发的东西原地摊开，人再点一次。 */
+.at-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 50%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.at-confirm__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.at-confirm__line {
+  font-size: 12.5px;
+  color: var(--dim);
+  word-break: break-word;
+}
+
+.at-confirm__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* 状态表（设置页的「状态 / 账号 / 工号 / 缓存」） */
+.at-kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.at-kv dt {
+  color: var(--dim);
+}
+
+.at-kv dd {
+  margin: 0;
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* 空态 / 说明 */
 .at-empty {
   padding: 28px 16px;
   text-align: center;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--dim);
 }
 
-.at-skel {
-  height: 12px;
-  border-radius: 6px;
-  background: linear-gradient(90deg, var(--line), color-mix(in oklab, var(--line) 40%, transparent), var(--line));
-  background-size: 200% 100%;
-  animation: at-skel 1.2s linear infinite;
+.at-empty > p {
+  margin: 0 0 10px;
 }
 
-@keyframes at-skel {
-  from {
-    background-position: 200% 0;
-  }
-  to {
-    background-position: -200% 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .at-skel {
-    animation: none;
-  }
+.at-hint {
+  font-size: 12px;
+  color: var(--dim);
 }
 
 /* 窄栏：容器查询而不是 @media —— 这一页永远活在右栏里，视口宽度跟它没关系（D263）。 */
@@ -388,7 +407,12 @@
     gap: 4px;
   }
 
-  .at-sum {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .at-kv {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .at-kv dd {
+    margin-bottom: 6px;
   }
 }

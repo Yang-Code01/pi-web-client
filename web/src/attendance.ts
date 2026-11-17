@@ -32,16 +32,18 @@ interface OvertimeForm {
   l2: string[];
 }
 
-export interface AttendancePaneDeps {
-  /** 页面被换掉时（切页 / 关面板）调它，用来丢定时器。 */
-  onDispose?: (fn: () => void) => void;
+export interface AttendancePane {
+  /** 切走 / 关面板时调它：停掉正在跑的请求，把 DOM 摘掉。 */
+  dispose: () => void;
+  /** 「刷新」按钮用：重读状态，并按当前页签重拉数据。 */
+  refresh: () => void;
 }
 
 /**
- * 画一页考勤进 `host`。返回一个 dispose：切走时调用，把正在跑的请求和定时器丢掉。
- * 重复调用会先把上一次的内容清空。
+ * 画一页考勤进 `host`。重复调用会先把上一次的内容清空。
+ * 页签、表单、展开的那一行都存在这一份闭包里 —— 所以调用方别在手痒时重画它。
  */
-export function paintAttendance(host: HTMLElement): () => void {
+export function paintAttendance(host: HTMLElement): AttendancePane {
   let disposed = false;
   let tab: Tab = "records";
   let state: AttendanceState | null = null;
@@ -55,6 +57,9 @@ export function paintAttendance(host: HTMLElement): () => void {
   let overtimeBusy = false;
   let notice = "";
   let noticeTone: "ok" | "bad" = "ok";
+  // 密码框靠这个活过重绘：点「保存配置」会把整页重画，输入框里刚敲的密码
+  // 随之消失，紧接着点「登录」就变成「请填密码」。只留在内存里，不落盘。
+  let passwordDraft = "";
   let pending: { preview: Record<string, unknown>; body: Record<string, unknown> } | null = null;
   let opened: string | null = null;
   /** 撤回要点两次：第一次记在这儿，第二次才真发。 */
@@ -158,7 +163,9 @@ export function paintAttendance(host: HTMLElement): () => void {
       root.append(el("div", "at-empty", tr("正在读状态…")));
       return;
     }
-    if (!state.configured) {
+    // 没配置时默认落在「还没配置」上，但「设置」页必须能进去 —— 那是唯一的配置入口，
+    // 不放开的话「去设置」按钮点了什么都不会发生（第一次装的人直接卡死）。
+    if (!state.configured && tab !== "settings") {
       root.append(paintUnconfigured());
       return;
     }
@@ -261,7 +268,8 @@ export function paintAttendance(host: HTMLElement): () => void {
     const table = el("table", "at-table");
     const thead = document.createElement("thead");
     const hr = document.createElement("tr");
-    for (const label of [tr("日期"), tr("上班"), tr("下班"), tr("加班"), tr("备注")]) {
+    // 表头要和行对得上：行是「日期/上班/下班/加班/备注/详情」6 列，详情行 colSpan 也是 6。
+    for (const label of [tr("日期"), tr("上班"), tr("下班"), tr("加班"), tr("备注"), ""]) {
       hr.append(el("th", "", label));
     }
     thead.append(hr);
@@ -355,8 +363,8 @@ export function paintAttendance(host: HTMLElement): () => void {
     if (!overtime.reasons.includes(form.reasonType) && overtime.reasons.length) form.reasonType = overtime.reasons[0]!;
     typeSel.onchange = () => (form.reasonType = typeSel.value);
     grid.append(field(tr("事由"), typeSel));
-    grid.append(field(tr("项目"), text("project", form.project, (v) => (form.project = v))));
-    grid.append(field(tr("说明"), text("detail", form.detail, (v) => (form.detail = v))));
+    grid.append(field(tr("项目"), noteField("project", form.project, (v) => (form.project = v), tr("比如项目号，可不填"))));
+    grid.append(field(tr("说明"), noteField("detail", form.detail, (v) => (form.detail = v), tr("补一句为什么，可不填"))));
     grid.append(field(tr("一级审批人"), leaderSelect(overtime.candidates.l1, form.l1, false)));
     grid.append(field(tr("二级审批人"), leaderSelect(overtime.candidates.l2, form.l2, true)));
     card.append(grid);
@@ -406,7 +414,7 @@ export function paintAttendance(host: HTMLElement): () => void {
       const tbody = document.createElement("tbody");
       for (const app of overtime.applyList) {
         const row = document.createElement("tr");
-        const state_ = statusOf(overtime.workflow[String(app.code)] as unknown, app.workflow_result);
+        const state_ = statusOf(overtime.workflow[String(app.code)] as unknown, app.workflow_result, app.reject_reason ?? "");
         row.append(
           el("td", "", String(app.code)),
           el("td", "", spanText(app.start_time, app.end_time)),
@@ -431,9 +439,14 @@ export function paintAttendance(host: HTMLElement): () => void {
     return wrap;
   }
 
-  function statusOf(chain: unknown, result: number): { text: string; tone: "ok" | "bad" } {
+  function statusOf(chain: unknown, result: number, rejected: string): { text: string; tone: "ok" | "bad" } {
     const state_ = stepState(chain, result);
-    if (state_.kind === "ended") return { text: tr("已结束"), tone: "ok" };
+    if (state_.kind === "ended") {
+      // 「审批结束」有三种结局，笼统写成「已结束」会把被驳回的抹平。
+      if (rejected) return { text: tr("已驳回"), tone: "bad" };
+      if (result === 1) return { text: tr("已通过"), tone: "ok" };
+      return { text: tr("已结束"), tone: "ok" };
+    }
     if (state_.kind === "pending") return { text: tr("待{p1}审批", { p1: state_.role }), tone: "ok" };
     return { text: tr("审批中"), tone: "ok" };
   }
@@ -455,8 +468,14 @@ export function paintAttendance(host: HTMLElement): () => void {
     return input;
   }
 
-  function datetime(name: string, value: string, onChange: (v: string) => void): HTMLInputElement {
-    const input = document.createElement("input");
+  /** 可选的小输入框：带一句提示，免得人以为必须填。 */
+  function noteField(name: string, value: string, onChange: (v: string) => void, hint: string): HTMLInputElement {
+    const input = text(name, value, onChange);
+    input.placeholder = hint;
+    return input;
+  }
+
+  function datetime(name: string, value: string, onChange: (v: string) => void): HTMLInputElement {    const input = document.createElement("input");
     input.type = "datetime-local";
     input.className = "at-input";
     input.dataset.field = name;
@@ -473,7 +492,11 @@ export function paintAttendance(host: HTMLElement): () => void {
     }
     const sel = document.createElement("select");
     sel.className = "at-input";
-    if (multi) sel.multiple = true;
+    if (multi) {
+      sel.multiple = true;
+      // 多选默认会把整个列表铺开成一个大盒子，限高到 3 行；列表更长时自己滚。
+      sel.size = Math.min(Math.max(list.length, 2), 3);
+    }
     for (const p of list) {
       const opt = document.createElement("option");
       opt.value = String(p.userId);
@@ -570,7 +593,11 @@ export function paintAttendance(host: HTMLElement): () => void {
     password.type = "password";
     password.className = "at-input";
     password.autocomplete = "current-password";
-    password.placeholder = tr("只用来换登录态，加密存在本机");
+    password.placeholder = tr("登录态会加密存本机");
+    password.value = passwordDraft;
+    password.oninput = () => {
+      passwordDraft = password.value;
+    };
 
     grid.append(
       field(tr("接口地址"), apiBase),
@@ -585,10 +612,12 @@ export function paintAttendance(host: HTMLElement): () => void {
     save.type = "button";
     save.onclick = async () => {
       try {
+        // 不带账户就表示「沿用已经存着的那个」—— 页面上只有掩码（TS***1），
+        // 拿它当账号发回去会把掩码存成账号，登录必错。
         await api.attendanceSaveConfig({
           apiBase: apiBase.value.trim(),
           pageBase: pageBase.value.trim(),
-          account: account.value.trim() || state?.account || "",
+          account: account.value.trim(),
         } as never);
         notice = tr("配置已保存");
         noticeTone = "ok";
@@ -601,8 +630,9 @@ export function paintAttendance(host: HTMLElement): () => void {
     login.type = "button";
     login.onclick = async () => {
       try {
-        await api.attendanceLogin({ account: account.value.trim() || state?.account || "", password: password.value });
+        await api.attendanceLogin({ account: account.value.trim(), password: password.value });
         password.value = "";
+        passwordDraft = "";
         notice = tr("登录成功");
         noticeTone = "ok";
         await loadState();
@@ -615,6 +645,7 @@ export function paintAttendance(host: HTMLElement): () => void {
     logout.onclick = async () => {
       try {
         await api.attendanceLogout();
+        passwordDraft = "";
         notice = tr("已退出");
         noticeTone = "ok";
         await loadState();
@@ -650,6 +681,7 @@ export function paintAttendance(host: HTMLElement): () => void {
       if (!window.confirm(tr("确定清除本机保存的考勤配置和登录态？"))) return;
       try {
         await api.attendancePurge();
+        passwordDraft = "";
         notice = tr("已清除");
         noticeTone = "ok";
         records = null;
@@ -667,8 +699,17 @@ export function paintAttendance(host: HTMLElement): () => void {
   render();
   void loadState();
 
-  return () => {
-    disposed = true;
-    root.remove();
+  const refresh = (): void => {
+    void loadState();
+    if (tab === "records") void loadRecords();
+    else if (tab === "overtime") void loadOvertime();
+  };
+
+  return {
+    dispose: () => {
+      disposed = true;
+      root.remove();
+    },
+    refresh,
   };
 }

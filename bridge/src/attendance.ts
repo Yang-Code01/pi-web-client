@@ -602,10 +602,13 @@ export async function handleAttendance(
           const p2 = baseUrlProblem(pageBase, "网页地址");
           if (p2) return stop(res, 400, "bad_page_base", p2);
         }
-        if (!account) return stop(res, 400, "no_account", "请填登录账号");
-        const next: AttendanceConfig = { ...config, apiBase: apiBase.replace(/\/+$/, ""), pageBase, account };
+        // 页面只知道掩码（TS***1）：空着就沿用已经存着的账号，别把掩码存成账号。
+        const kept = account || config.account;
+        if (!kept) return stop(res, 400, "no_account", "请填登录账号");
+        if (kept.includes("*")) return stop(res, 400, "bad_account", "账号不能带掩码，请重新填一遍");
+        const next: AttendanceConfig = { ...config, apiBase: apiBase.replace(/\/+$/, ""), pageBase, account: kept };
         writeConfig(next);
-        audit({ kind: "config", account: maskAccount(account), apiBase });
+        audit({ kind: "config", account: maskAccount(kept), apiBase });
         json(res, 200, { ok: true });
         return true;
       }
@@ -626,9 +629,12 @@ export async function handleAttendance(
     if (url.pathname === "/api/attendance/login") {
       if (method !== "POST") return stop(res, 405, "bad_method", "不支持这个请求方法");
       const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
-      const account = typeof body.account === "string" ? body.account.trim() : config.account;
+      // 空串和缺字段一个意思：沿用已经存着的账号。写成三元会让 `account: ""` 跳过回退。
+      const given = typeof body.account === "string" ? body.account.trim() : "";
+      const account = given || config.account;
       const password = typeof body.password === "string" ? body.password : "";
       if (!account) return stop(res, 400, "no_account", "请填账号");
+      if (account.includes("*")) return stop(res, 400, "bad_account", "账号不能带掩码，请重新填一遍");
       if (!password) return stop(res, 400, "no_password", "请填密码");
       if (!config.apiBase) return stop(res, 400, "not_configured", "先配好 OA 地址");
       const result = await login(config, oaCtx, account, password);
