@@ -3570,7 +3570,11 @@ export class SessionManager extends EventEmitter {
       { global: layers.global, project: layers.project, session: next },
       layers.compaction,
     );
-    const error = validateContext(resolved);
+    let error = validateContext(resolved);
+    // 自动交接一旦武装起来，每一次到线都会要求 `/handoff` 能展开：活着的会话当场查一次，别等触发才发现。
+    if (!error && resolved.handoffOn && resolved.handoffPercent !== null && session.live) {
+      if (!(await this.hasHandoffSkill(session))) error = { code: "skill" };
+    }
     if (!error) {
       writeContextOverride(id, next);
       session.rearmAutoCompact();
@@ -3649,8 +3653,9 @@ export class SessionManager extends EventEmitter {
    * 失败只通知、不推进：旧会话还能接着用，5 分钟内不再自动重试（见 `maybeContextAction`）。
    */
   async startHandoff(id: string, opts: { manual?: boolean } = {}): Promise<void> {
-    const session = this.sessions.get(id);
-    if (!session) throw new Error("找不到这个会话");
+    // 磁盘上的会话（桥重启后还没打开过的）也要能交接，所以和 rename 一样 known + ensure。
+    if (!this.known(id)) throw new Error("找不到这个会话");
+    const session = this.ensure(id);
     if (this.handoffs.has(id) || session.handoffPending) return;
     // 先占位再等：openLive 要等 pi 起来，这期间每次 stats 都会再喊一次交接。
     this.handoffs.add(id);
@@ -3664,9 +3669,16 @@ export class SessionManager extends EventEmitter {
         throw error;
       }
     }
+    if (!(await this.hasHandoffSkill(session))) {
+      session.handoffPending = false;
+      this.handoffs.delete(id);
+      throw new Error("没装 handoff 技能（/skill:handoff），交接没法生成文档");
+    }
     const emitPhase = (phase: string, extra: Record<string, unknown> = {}) =>
       this.emit("ws", { type: "handoff.state", sessionId: id, phase, manual: Boolean(opts.manual), ...extra });
     const doc = statePath("handoff", `${id}-${Date.now()}.md`);
+    // 新会话建出来之后才失败的，退出时把它收走：半成品接棒会话挂在列表里只会让人困惑。
+    let created: Session | null = null;
     try {
       emitPhase("interrupting");
       // 正在跑的那一轮（以及它带的后台子代理）就地终止：交接要的是稳定的现场。
@@ -3691,6 +3703,7 @@ export class SessionManager extends EventEmitter {
         `${session.state.name ?? "会话"}（接棒）`,
         readLaunch(id),
       );
+      created = next;
       const permission = readPermissionFile(id);
       if (permission) {
         writePermission(next.state.id, permission.mode, permission.from);
@@ -3713,8 +3726,16 @@ export class SessionManager extends EventEmitter {
     } catch (error) {
       session.noteHandoffFailure();
       const message = error instanceof Error ? error.message : String(error);
-      this.emit("ws", { type: "notice", sessionId: id, text: `交接没有完成：${message}`, level: "error" });
-      emitPhase("failed", { message });
+      if (created) {
+        void created.close({ quiet: true }).catch(() => {});
+        this.manage.setArchived([created.state.id], true);
+        this.emit("ws", { type: "manage", manage: this.manage.snapshot() });
+      }
+      const text = created
+        ? `交接没有完成：${message}（交接文档在 ${doc}，新会话已收走；这个会话还能继续用）`
+        : `交接没有完成：${message}`;
+      this.emit("ws", { type: "notice", sessionId: id, text, level: "error" });
+      emitPhase("failed", { message, doc });
     } finally {
       this.handoffs.delete(id);
       session.handoffPending = false;

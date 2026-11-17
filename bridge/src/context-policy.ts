@@ -73,7 +73,9 @@ export interface ContextDecision extends ContextLine {
 export type ContextError =
   | { code: "range"; field: "compact" | "handoff" }
   | { code: "equal" }
-  | { code: "gap" };
+  | { code: "gap" }
+  /** 自动交接要靠用户的 /handoff 技能，没装它就别把开关打开。 */
+  | { code: "skill" };
 
 const none = (used: number | null, window: number | null): ContextDecision => ({
   action: "none",

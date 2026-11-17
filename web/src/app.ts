@@ -19447,6 +19447,7 @@ function policyErrorText(error: any): string {
   }
   if (code === "equal") return tr("两条阈值不能相同：同一时间只能执行其中一个");
   if (code === "gap") return tr("两条阈值至少要差 5 个百分点");
+  if (code === "skill") return tr("没装 handoff 技能（/skill:handoff）：自动交接用不了");
   return String(error?.message ?? error ?? tr("保存失败"));
 }
 
