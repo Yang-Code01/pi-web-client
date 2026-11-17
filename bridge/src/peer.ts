@@ -284,20 +284,36 @@ export class PeerHost {
    * 响应计时：几百 MB 的文件下到一半就被掐断，用户拿到截断的文件。头到了之后由调用方
    * 在浏览器断开时 abort。
    */
-  async fileStream(id: string, signal?: AbortSignal): Promise<Response> {
+  async fileStream(id: string, signal?: AbortSignal, download = false): Promise<Response> {
     const ctrl = new AbortController();
     const abort = () => ctrl.abort();
     const timer = setTimeout(abort, 30_000);
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
     try {
-      return await fetch(`http://127.0.0.1:${this.opts.port}/files?id=${encodeURIComponent(id)}`, { signal: ctrl.signal });
+      const dl = download ? "&dl=1" : "";
+      return await fetch(`http://127.0.0.1:${this.opts.port}/files?id=${encodeURIComponent(id)}${dl}`, { signal: ctrl.signal });
     } finally {
       clearTimeout(timer);
     }
   }
 
   /** D209：入站文件在收件目录里的绝对路径（只问本机 peer 守护进程，拿不到就 null）。 */
+  /** 收件文件的名字与绝对路径：「预览」要把它交给本工程的预览面板。 */
+  async fileMeta(id: string): Promise<{ path: string; name: string } | null> {
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.opts.port}/files/meta?id=${encodeURIComponent(id)}`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { path?: unknown; name?: unknown };
+      if (typeof body.path !== "string" || !body.path) return null;
+      return { path: body.path, name: typeof body.name === "string" ? body.name : "" };
+    } catch {
+      return null;
+    }
+  }
+
   async filePath(id: string): Promise<string | null> {
     try {
       const res = await fetch(`http://127.0.0.1:${this.opts.port}/files/meta?id=${encodeURIComponent(id)}`, {

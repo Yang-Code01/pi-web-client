@@ -389,6 +389,8 @@ export class App {
    *  否则下一次打开的任何会话都会莫名其妙带上上一个会话的笔记。 */
   private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
+  /** 顶栏「内网通」的未读总数（弹框关着也要看得见，D301 第 3 条）。 */
+  private peerUnread = 0;
   private modelChip: HTMLButtonElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
   /** 「继续」按钮（D159）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
@@ -1534,7 +1536,15 @@ export class App {
       }
       void this.trackRawNav(String(d.rel ?? ""), String(d.href ?? ""), Number(d.y) || 0, String(d.tk ?? ""));
     });
+    // 内网通弹框里的「预览」（D301）：iframe 自己打不开预览面板，把收件路径递上来由这里开。
+    window.addEventListener("message", (ev) => {
+      if (ev.origin !== location.origin) return;
+      const d = ev.data as { type?: string; id?: string; path?: string } | null;
+      if (d?.type !== "peer.preview" || !d.path) return;
+      void this.openPeerFile(String(d.path));
+    });
     this.installShortcuts();
+    this.startPeerUnread();
     // 粘贴截图：桌面端 Ctrl+V / ⌘V 无论焦点在输入框还是页面上都落到待发图片里。
     window.addEventListener("paste", (ev) => this.onPaste(ev));
     // Drop files anywhere on the chat while a session is open.
@@ -4691,7 +4701,92 @@ export class App {
    * keeps its own entry (openable directly) without a second implementation; the iframe is removed
    * on close, which also stops its polling.
    */
+  /**
+   * 内网通收到的文件「预览」（D301）：收到的东西在 ~/.pi-peer 收件箱里，会话目录之外；
+   * 预览面板本来就给收件目录开了一条 pin（D209），所以直接交给它。
+   * **没有会话可挂时不替用户开外部程序** —— 面板是预览的唯一出口，缺的只是「挂哪」；
+   * 想落到磁盘上按「下载」就够了。
+   */
+  private async openPeerFile(path: string): Promise<void> {
+    if (!this.currentId) {
+      this.showPeerNote(tr("先打开一个会话，预览就用它的预览面板"));
+      return;
+    }
+    if (await this.openPreview(path)) return;
+    this.showPeerNote(tr("打不开这个文件（可能已经被挪走了）"));
+  }
+
+  private showPeerNote(text: string): void {
+    const box = el("div", "peer-note", text);
+    this.overlay(box);
+    window.setTimeout(() => box.classList.add("gone"), 3200);
+    window.setTimeout(() => box.remove(), 4000);
+  }
+
+  /**
+   * 顶栏「内网通」的未读角标与系统通知（D301）：弹框关着时 iframe 不在，未读只有在这里能看见。
+   * 6 秒一轮 —— 和 iframe 自己的轮询同频，多这一点请求比「看不见的新消息」便宜。
+   */
+  private startPeerUnread(): void {
+    const tick = async () => {
+      let data: { threads?: { conv: string; nickname?: string; unread?: number; lastAt?: number; muted?: boolean }[] };
+      try {
+        const res = await fetch("/api/peer/threads", { headers: { accept: "application/json" } });
+        if (!res.ok) return;
+        data = (await res.json()) as typeof data;
+      } catch {
+        return; // 内网通没开（PI_PEER=0）时静默
+      }
+      const rows = data.threads ?? [];
+      const total = rows.reduce((n, t) => n + (Number(t.unread) || 0), 0);
+      const before = this.peerUnread;
+      this.peerUnread = total;
+      this.paintPeerBadge();
+      if (total > before) {
+        const hot = rows.filter((t) => (Number(t.unread) || 0) > 0 && !t.muted).sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0));
+        this.notifyPeer(hot[0]);
+      }
+    };
+    void tick();
+    window.setInterval(() => void tick(), 6000);
+  }
+
+  private paintPeerBadge(): void {
+    const btn = this.els.peer;
+    if (!btn) return;
+    let chip = btn.querySelector<HTMLElement>(".peer-badge");
+    if (!this.peerUnread) {
+      chip?.remove();
+      return;
+    }
+    if (!chip) {
+      chip = el("span", "peer-badge");
+      btn.append(chip);
+    }
+    chip.textContent = this.peerUnread > 99 ? "99+" : String(this.peerUnread);
+    chip.title = tr("内网通有 {p1} 条未读", { p1: String(this.peerUnread) });
+  }
+
+  /** 系统提示（浏览器通知）：权限只在用户真开过内网通之后才要，别一进页面就弹授权。 */
+  private notifyPeer(thread?: { nickname?: string; unread?: number }): void {
+    if (!thread || !("Notification" in window)) return;
+    const title = tr("内网通 · {p1}", { p1: thread.nickname || tr("新消息") });
+    const body = tr("有 {p1} 条新消息", { p1: String(thread.unread ?? 1) });
+    if (Notification.permission === "granted") {
+      const note = new Notification(title, { body, tag: "pi-peer", silent: false });
+      note.onclick = () => {
+        window.focus();
+        this.openPeerSheet();
+        note.close();
+      };
+      return;
+    }
+    if (Notification.permission === "default") void Notification.requestPermission();
+  }
+
   private openPeerSheet(): void {
+    // 用户主动开内网通这一刻才是要通知权限的时机（无手势的 requestPermission 会被浏览器直接拒）。
+    if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission();
     this.closeSheet();
     this.sheetKind = "peer";
     const back = el("div", "sheet-back center");

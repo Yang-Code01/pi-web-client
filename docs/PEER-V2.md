@@ -201,6 +201,13 @@ interface ConvState {
 
 刻意没做：`face`/`image` 元素、多端同步（`otherDevice` 只在类型里）、合并转发、群公告与群权限、「跳到未读」的键盘导航（只做了分隔线与未读计数）。`PROTO` 仍是 1。
 
+### 5.1 2026-11-18 追加（D301）
+
+- **文件不再要求好友**：`files.begin()`、`/files/send`、`/files/upload` 里的 `relations.isFriend` 门槛删掉，好友关系只剩「在不在好友列表」。安全边界换成「来源 IP 必须对得上 hello 过的节点」（`verify()`）+ `pauseFiles` + 收件盘余量。
+- **下载 / 预览**：`GET /files` 认 `dl=1`（`content-disposition: attachment`），不带则按类型 inline；`GET /api/peer/meta` 给出落盘绝对路径，网页客户端拿它走 `openPreview`（收件箱在 D209 的 previewPins 里，会话目录之外也开得了）。
+- **未读角标 / 系统通知**：客户端每 6s 拉一次 `/api/peer/threads`，把各会话 `unread` 求和画到内网通按钮上；总数变大时给最新一条非免打扰会话发浏览器通知（点击聚焦并打开面板）。
+- **发文件的会话错位**：会话 key 改成 conv 之后，选择器把 nodeId 塞回 `S.thread`，界面看起来「跳到了一个没选好友的空会话」—— 现在 `pickerPeer` 单独记住这次发给谁，`convTarget()` 兜底。
+
 ## 6. 分期
 
 见 `.scratch/qq-align/PLAN.md`（本地）。顺序按依赖排：存储 fold → 状态机 → 已读未读 → 会话列表 →

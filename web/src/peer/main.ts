@@ -221,6 +221,8 @@ const S = {
 const isConv = (id: string): boolean => /^[ng]:/.test(id);
 const convOf = (id: string): string => (isConv(id) ? id : `n:${id}`);
 const convNode = (conv: string): string => conv.slice(2);
+/** 会话的发件目标：单聊给 nodeId，群聊给空串（群文件还没做）。 */
+const convTarget = (conv: string): string => (conv.startsWith("n:") ? convNode(conv) : "");
 const isGroupConv = (conv: string): boolean => conv.startsWith("g:");
 
 const app = document.querySelector("#app") as HTMLElement;
@@ -244,6 +246,8 @@ const pickerClose = document.querySelector("#picker-close") as HTMLButtonElement
 
 let pickerDir = "";
 let pickerParent: string | null = null;
+/** 这次选文件要发给谁（nodeId）；S.thread 是 conv，不能拿来当收件人。 */
+let pickerPeer = "";
 let picked: BrowseEntry | null = null;
 let composeEl: HTMLElement | null = null;
 let composeFor = "";
@@ -1063,7 +1067,7 @@ function renderChat(): void {
   head.append(title, h("div", "grow"));
   const tools = h("div", "tools");
   tools.append(
-    iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId ?? convNode(t.conv), t.kind === "c2c")),
+    ...(t.kind === "c2c" ? [iconBtn("attach", tr("发文件"), () => void openPicker(convNode(t.conv), true))] : []),
     iconBtn("more", tr("更多"), (ev) => {
       const box = (ev.currentTarget as HTMLElement).getBoundingClientRect();
       threadMenu(box.left, box.bottom + 6, t);
@@ -1238,6 +1242,25 @@ function forwardMsg(e: Entry): void {
   openMenu(box.left + 40, box.top + 60, items.length ? items : [{ label: tr("还没有别的会话"), icon: "msg", run: () => {} }]);
 }
 
+/**
+ * 收到的文件「预览」：嵌在客户端弹框里时把路径交给父页面，用本工程的预览面板打开；
+ * 单独开一个 /peer 标签页（没有父页面）时退回浏览器内置查看的 inline 流。
+ */
+async function previewFile(e: Entry): Promise<void> {
+  if (window.parent && window.parent !== window) {
+    try {
+      const meta = await getJson<{ ok: boolean; path: string }>(`/api/peer/meta?id=${encodeURIComponent(e.id)}`);
+      if (meta.path) {
+        window.parent.postMessage({ type: "peer.preview", id: e.id, path: meta.path }, location.origin);
+        return;
+      }
+    } catch {
+      // 落回新标签：预览面板打不了的（PDF / 大文件）本来就该走浏览器自己的查看器。
+    }
+  }
+  window.open(`/api/peer/file?id=${encodeURIComponent(e.id)}`, "_blank", "noopener");
+}
+
 function fileCard(e: Entry, mine: boolean): HTMLElement {
   const f = e.file;
   if (!f) return h("div", "fcard");
@@ -1260,20 +1283,20 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
       else toast(tr("文件已经在你自己的盘上"));
     });
   } else {
-    // D209：点卡片 = 用本机程序打开收件箱里那份真文件（收件时已经落盘，不是再下载一次）。
-    card.title = tr("点一下用本机程序打开");
+    // D301：收到的文件给两个出口 ——「预览」进本工程的预览面板，「下载」走强制 attachment 的流落盘。
+    card.title = tr("点一下预览");
     card.style.cursor = "pointer";
-    card.addEventListener("click", () => {
-      void postJson("/api/peer/open", { id: e.id }).catch((err: any) =>
-        toast(tr("打不开这个文件：{p1}", { p1: String((err as Error)?.message ?? err) })),
-      );
+    card.addEventListener("click", () => void previewFile(e));
+    const dl = h("a", "act", tr("下载"));
+    dl.href = `/api/peer/file?id=${encodeURIComponent(e.id)}&download=1`;
+    dl.addEventListener("click", (ev) => ev.stopPropagation());
+    const pv = h("button", "act", tr("预览"));
+    pv.type = "button";
+    pv.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void previewFile(e);
     });
-    const act = h("a", "act", tr("另存"));
-    act.href = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
-    act.target = "_blank";
-    act.rel = "noopener";
-    act.addEventListener("click", (ev) => ev.stopPropagation());
-    foot.append(h("span", "", tr("对方发来")), act);
+    foot.append(h("span", "", tr("对方发来")), dl, pv);
   }
   body.append(foot);
   card.append(icon, body);
@@ -1335,7 +1358,8 @@ function composeBox(t: Thread): HTMLElement {
   });
 
   const bar2 = h("div", "bar2");
-  const attach = iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId ?? convNode(t.conv), t.kind === "c2c"));
+  // 群文件还没做：按钮不出现，比点进去发到别处诚实。
+  const attach = t.kind === "c2c" ? iconBtn("attach", tr("发文件"), () => void openPicker(convNode(t.conv), true)) : h("span");
   const hint = h("span", "hintline", tr("Enter 发送，Shift+Enter 换行；拖文件或粘贴截图也行"));
   const btn = h("button", "send", tr("发送"));
   btn.type = "button";
@@ -1423,9 +1447,10 @@ async function resend(e: Entry): Promise<void> {
 }
 
 async function sendPath(path: string, name?: string): Promise<void> {
-  if (!S.thread) return;
+  const target = pickerPeer || convTarget(S.thread ?? "");
+  if (!target) return;
   try {
-    await postJson("/api/peer/sendfile", name ? { peer: S.thread, path, name } : { peer: S.thread, path });
+    await postJson("/api/peer/sendfile", name ? { peer: target, path, name } : { peer: target, path });
     closePicker();
     await loadMessages();
     renderMain();
@@ -1435,10 +1460,11 @@ async function sendPath(path: string, name?: string): Promise<void> {
 }
 
 async function uploadBlob(name: string, blob: Blob): Promise<void> {
-  if (!S.thread) return;
+  const target = convTarget(S.thread ?? "");
+  if (!target) return toast(tr("群文件还没做，先单聊发吧"));
   if (blob.size > 64 * 1024 * 1024) return toast(tr("「{p1}」太大（上限 64 MB），用「+」从磁盘选", { p1: name }));
   try {
-    const res = await fetch(`/api/peer/upload?peer=${encodeURIComponent(S.thread)}&name=${encodeURIComponent(name)}`, {
+    const res = await fetch(`/api/peer/upload?peer=${encodeURIComponent(target)}&name=${encodeURIComponent(name)}`, {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
       body: blob,
@@ -1500,7 +1526,7 @@ function renderContactDetail(): void {
   talk.addEventListener("click", () => openThread(c.nodeId));
   acts.append(talk);
 
-  if (c.friend) {
+  if (c.online || c.friend) {
     const file = h("button", "btn", tr("传文件"));
     file.type = "button";
     file.addEventListener("click", () => void openPicker(c.nodeId, true));
@@ -1515,7 +1541,7 @@ function renderContactDetail(): void {
     no.addEventListener("click", () => void friendAction(c.nodeId, "remove"));
     acts.append(ok, no);
   } else if (!c.friend) {
-    // 两颗按钮并存：快捷添加（文字即时）、两步加好友（可传文件）。已 quick 时快捷按钮变成不可点的状态标签，
+    // 两颗按钮并存：快捷添加（即时）、两步加好友（进好友列表）。权限上两者没有区别（D301）。已 quick 时快捷按钮变成不可点的状态标签，
     // 但「加为好友」要留着，让用户还能升级成真正的好友。
     const qadd = h("button", "btn pri", c.quick ? tr("已是快捷联系人") : tr("快捷添加（可聊天）"));
     qadd.type = "button";
@@ -1523,7 +1549,7 @@ function renderContactDetail(): void {
     if (!c.online) qadd.title = tr("对方已离线，等他上线再试");
     if (!c.quick) qadd.addEventListener("click", () => void friendAction(c.nodeId, "quick", true));
     acts.append(qadd);
-    const add = h("button", "btn", c.outgoing ? tr("再发一次申请") : tr("加为好友（可传文件）"));
+    const add = h("button", "btn", c.outgoing ? tr("再发一次申请") : tr("加为好友"));
     add.type = "button";
     add.disabled = !c.online;
     if (!c.online) add.title = tr("对方离线，等上线再申请");
@@ -1565,7 +1591,7 @@ function renderContactDetail(): void {
     [tr("关系"), relation],
   ];
   for (const [k, v] of rows) kv.append(h("span", "k", k), h("span", "v", v));
-  card.append(kv, h("div", "note", tr("在线的人会自动出现在「附近的人」里；快捷添加只放行文字，文件只能发给好友。")));
+  card.append(kv, h("div", "note", tr("在线的人会自动出现在「附近的人」里；加好友只是把他放进好友列表，能发什么和快捷联系人一样。")));
   if (!c.online && !c.friend) card.append(h("div", "note", tr("对方已离线，等他上线再试")));
   detail.append(card);
   mainEl.append(detail);
@@ -1853,7 +1879,7 @@ function threadMenu(x: number, y: number, t: Thread): void {
   const c = contactOf(nodeId);
   openMenu(x, y, [
     { label: tr("打开对话"), icon: "msg", run: () => openThread(t.conv) },
-    ...(c?.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(nodeId, true) }] : []),
+    ...(c && (c.online || c.friend) ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(nodeId, true) }] : []),
     ...(t.kind === "c2c"
       ? [
           { label: t.pinned ? tr("取消置顶") : tr("置顶会话"), icon: "star", run: () => void pinThread(t, !t.pinned) },
@@ -1893,7 +1919,7 @@ function contactMenu(x: number, y: number, c: Contact): void {
     ...(!c.friend && !c.incoming && !c.quick && c.online
       ? [{ label: tr("快捷添加（可聊天）"), icon: "userPlus", run: () => void friendAction(c.nodeId, "quick", true) }]
       : []),
-    ...(c.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(c.nodeId, true) }] : []),
+    ...(c.online || c.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(c.nodeId, true) }] : []),
     { label: c.favorite ? tr("取消收藏") : tr("收藏"), icon: "star", run: () => void friendAction(c.nodeId, "favorite", !c.favorite) },
     ...(!c.friend && !c.quick && !c.incoming && !c.outgoing && c.online
       ? [{ label: tr("从附近移除"), icon: "trash", danger: true, run: () => void friendAction(c.nodeId, "remove") }]
@@ -1950,10 +1976,15 @@ function inputEl(placeholder: string): HTMLInputElement {
 
 // ---------------------------------------------------------------- 文件选择器
 
-async function openPicker(peer: string, direct = false): Promise<void> {
+async function openPicker(nodeId: string, direct = false): Promise<void> {
   // 「传文件」从联系人页直接进来时，先把会话切过去：发完就在聊天里能看到。
-  if (!S.thread || S.thread !== peer) {
-    S.thread = peer;
+  // 注意 S.thread 里存的是 conv（`n:<nodeId>`），不能把 nodeId 挤进去 —— 那样会话就从列表里消失，
+  // 看起来像「跳到了没选好友的空会话」（QQ 对齐这一轮踩的 bug）。
+  if (!nodeId) return;
+  pickerPeer = nodeId;
+  const conv = convOf(nodeId);
+  if (!S.thread || S.thread !== conv) {
+    S.thread = conv;
     await loadMessages();
   }
   if (direct) {

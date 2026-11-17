@@ -2342,6 +2342,11 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .icon-btn.wide { width: auto; padding: 0 8px; font: 12px/1 var(--sans, inherit); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
 .icon-btn.wide .ic { display: inline-block; }
 .icon-btn.wide .lb { display: inline-block; overflow: hidden; text-overflow: ellipsis; }
+/* 内网通未读（D301）：角标挂在顶栏那颗「🌐 内网通」上，弹框关着也看得见。 */
+.icon-btn.wide { position: relative; }
+.peer-badge { position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font: 10px/15px var(--mono); text-align: center; letter-spacing: 0; box-shadow: 0 0 0 1.5px var(--panel); pointer-events: none; }
+.peer-note { position: fixed; left: 50%; bottom: 26px; z-index: 60; padding: 8px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); color: var(--text); font-size: 12.5px; box-shadow: 0 8px 24px #0007; transform: translateX(-50%); transition: opacity .4s ease, transform .4s ease; }
+.peer-note.gone { opacity: 0; transform: translate(-50%, 6px); }
 .icon-btn[hidden] { display: none !important; }
 /* 390px 的手机上「📁 文件管理器」一颗就 90px，六颗连「产物」一起是 480px —— 顶栏只剩 60px 给标题，
    只能横向滚。这里把文字收掉、按钮回成 28px 方块：文字仍在 title 与 aria-label 里，桌面端照旧是宽按钮。 */

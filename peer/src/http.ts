@@ -538,7 +538,6 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const peerId = String(body?.peer ?? "");
         const file = String(body?.path ?? "");
         if (!peerId || !file) return json(res, 400, { error: "缺 peer 或 path" });
-        if (!relations.isFriend(peerId)) return json(res, 403, { error: "先加好友才能发文件" });
         try {
           const stat = fs.statSync(file);
           if (!stat.isFile()) return json(res, 400, { error: "这不是一个文件" });
@@ -554,7 +553,6 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const peerId = url.searchParams.get("peer") ?? "";
         const name = url.searchParams.get("name") ?? "粘贴的图片.png";
         if (!peerId) return json(res, 400, { error: "缺 peer" });
-        if (!relations.isFriend(peerId)) return json(res, 403, { error: "先加好友才能发文件" });
         const data = await readRaw(req, 64 * 1024 * 1024).catch(() => null);
         if (!data) return json(res, 413, { error: "太大了（上限 64 MB）" });
         const tmp = path.join(statePath("out"), `up-${randomUUID()}${path.extname(name)}`);
@@ -582,7 +580,9 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           return json(res, 404, { error: "文件已经被挪走或删掉了" });
         }
         const type = stored.mime || "application/octet-stream";
-        const inline = /^image\//.test(type) || type.startsWith("text/") || type === "application/pdf";
+        // 「预览」走 inline（浏览器自己认得图片/文本/PDF），「下载」带 dl=1 强制落盘。
+        const dl = url.searchParams.get("dl") === "1";
+        const inline = !dl && (/^image\//.test(type) || type.startsWith("text/") || type === "application/pdf");
         res.writeHead(200, {
           "content-type": type,
           "content-length": stat.size,

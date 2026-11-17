@@ -986,7 +986,11 @@ async function main(): Promise<void> {
         if (!res.writableEnded) ctrl.abort();
       });
       try {
-        const upstream = await peer.fileStream(url.searchParams.get("id") ?? "", ctrl.signal);
+        const upstream = await peer.fileStream(
+          url.searchParams.get("id") ?? "",
+          ctrl.signal,
+          url.searchParams.get("download") === "1",
+        );
         if (!upstream.ok || !upstream.body) return json(res, upstream.status, { error: "取不到这个文件" });
         const headers: Record<string, string> = { "cache-control": "private, max-age=60" };
         for (const key of ["content-type", "content-length", "content-disposition"]) {
@@ -1007,6 +1011,14 @@ async function main(): Promise<void> {
         if (res.destroyed || res.writableEnded) return;
         return json(res, 404, { error: (err as Error).message });
       }
+    }
+    // 收件文件的绝对路径：页面「预览」时要把这个路径交给预览面板（D209 的 pin 根里已经有收件目录）。
+    if (url.pathname === "/api/peer/meta" && req.method === "GET") {
+      if (!authorized(req.headers.cookie)) return json(res, 401, { error: "要登录" });
+      if (isTunnelRequest(req.headers)) return json(res, 403, { error: "公网不打开本机文件" });
+      const meta = await peer.fileMeta(url.searchParams.get("id") ?? "");
+      if (!meta) return json(res, 404, { error: "取不到这个文件（可能已经被挪走了）" });
+      return json(res, 200, { ok: true, ...meta });
     }
     // D209：内网通收到的文件，点卡片就用本机程序打开（收件目录里的那份真文件，不是下载副本）。
     if (url.pathname === "/api/peer/open" && req.method === "POST") {

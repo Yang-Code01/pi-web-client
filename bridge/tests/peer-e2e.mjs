@@ -260,7 +260,7 @@ try {
   );
   log("ok quick 文字送到对端且有送达回执");
 
-  // 文件三道闸仍然只认 friend：本机发不出去，对端也不会为 quick 的人写盘。
+  // D301：文件不再要求好友 —— quick 的人也照发，收件端照收（好友只决定「在不在好友列表」）。
   const quickProbe = path.join(ROOT, "quick-probe.bin");
   fs.writeFileSync(quickProbe, Buffer.from("quick"));
   const quickFile = await fetch("http://127.0.0.1:17965/files/send", {
@@ -268,23 +268,32 @@ try {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ peer: sc, path: quickProbe }),
   });
-  if (quickFile.status !== 403) throw new Error(`quick 发文件应 403，实际 ${quickFile.status} ${await quickFile.text()}`);
-  const quickBegin = await fetch("http://127.0.0.1:17968/peer/file/begin", {
+  if (!quickFile.ok) throw new Error(`quick 发文件应成功，实际 ${quickFile.status} ${await quickFile.text()}`);
+  await until(
+    "C 收到 quick 文件卡片",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17968/messages?peer=${sa}`)).json();
+      return body.entries?.find((e) => e.kind === "file" && e.file?.name === "quick-probe.bin") ?? false;
+    },
+    20000,
+  );
+  // 闸门只剩「来源对不上」：没打过招呼的地址替别人写盘，必须被 hello 校验挡住。
+  const strangerBegin = await fetch("http://127.0.0.1:17968/peer/file/begin", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      from: { nodeId: sa, nickname: "甲", hostname: os.hostname(), port: 17965 },
+      from: { nodeId: "not-a-node", nickname: "冒名", hostname: os.hostname(), port: 17965 },
       messageId: "00000000-0000-4000-8000-0000000000ff",
-      name: "quick.bin",
+      name: "stranger.bin",
       size: 5,
       sha256: "0".repeat(64),
     }),
   });
-  const quickBeginBody = await quickBegin.json();
-  if (quickBegin.status !== 403 || quickBeginBody.retryable !== false) {
-    throw new Error(`quick 收件端应 403 且不可重试，实际 ${quickBegin.status} ${JSON.stringify(quickBeginBody)}`);
+  const strangerBody = await strangerBegin.json();
+  if (strangerBegin.status !== 409 || strangerBody.retryable !== true) {
+    throw new Error(`冒名 begin 应 409 可重试，实际 ${strangerBegin.status} ${JSON.stringify(strangerBody)}`);
   }
-  log("ok quick 不放开文件：发出去 403，收件端拒写 403");
+  log("ok quick 也能收文件；冒名来源仍被 hello 校验挡住（409）");
 
   const offlineQuick = await fetch("http://127.0.0.1:17965/friend", {
     method: "POST",
@@ -673,14 +682,22 @@ try {
   fs.writeFileSync(srcFile, payload);
   const wantHash = createHash("sha256").update(payload).digest("hex");
 
-  // 非好友不能发文件：C 不是 A 的好友，必须 403 且不可重试。
+  // D301：非好友也发得出去（C 不是 A 的好友）。
   const notFriend = await fetch("http://127.0.0.1:17965/files/send", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ peer: sc, path: srcFile }),
   });
-  if (notFriend.status !== 403) throw new Error(`非好友发文件应 403，实际 ${notFriend.status} ${await notFriend.text()}`);
-  log("ok 非好友发文件被拒（403）");
+  if (!notFriend.ok) throw new Error(`非好友发文件应成功，实际 ${notFriend.status} ${await notFriend.text()}`);
+  await until(
+    "C 收到非好友发来的文件",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17968/messages?peer=${sa}`)).json();
+      return body.entries?.find((e) => e.kind === "file" && e.file?.name === "报告 e2e.bin") ?? false;
+    },
+    30000,
+  );
+  log("ok 非好友也能发文件（D301）");
 
   const sendFile = await fetch("http://127.0.0.1:17965/files/send", {
     method: "POST",

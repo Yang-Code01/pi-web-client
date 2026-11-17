@@ -161,10 +161,9 @@ export class Files {
       }
       const check = await verify(fromAddr, from);
       if (check) return check;
-      // 决定 9：文件只给好友。文字谁都能发，文件不行——写盘是不可撤销的。
-      if (!this.ctx.relations.isFriend(from.nodeId)) {
-        return { status: 403, body: { error: "先加好友才能收文件", retryable: false } };
-      }
+      // D301：文件不再要求好友 —— 好友只决定「在不在好友列表」，不是权限。写盘风险由
+      // verify() 的来源 IP 校验、pauseFiles 开关与收件盘余量挡着（与文字同一套信任边界）。
+
       if (this.ctx.cfg.pauseFiles) return { status: 503, body: { error: "我这边暂停收文件了", retryable: true } };
       const free = this.free();
       if (free < size + KEEP_BYTES || free < size / KEEP_RATIO) {
