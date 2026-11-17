@@ -445,10 +445,10 @@ openCase({
 // ---------------------------------------------------------------- TC-10 导入历史（人工）
 openCase({
   id: "TC-10",
-  title: "导入历史：一次 UAC 读 Security 4800/4801",
+  title: "导入历史：一次 UAC 读 Security 的 4624（解锁）与 4800/4801（锁屏）",
   module: "上下班 / 回填",
   priority: "P1",
-  precondition: "本机非管理员；Security 日志里有最近的锁屏/解锁（4800/4801）",
+  precondition: "本机非管理员；Security 日志里有本账号最近的交互式登录（4624）；4800/4801 需另开审核策略才有",
   manual: true,
 });
 {

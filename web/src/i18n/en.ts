@@ -2894,8 +2894,9 @@ export const en: Dict = {
   "导入历史（需管理员）": "Import history (needs admin)",
   "等 UAC 点是…": "Waiting for the UAC prompt…",
   "导入了 {p1} 条解锁记录": "Imported {p1} unlock records",
-  "日志里没有解锁记录：这台机器没开审核策略（4800/4801），只能用记录器从现在开始记":
-    "No unlock records in the log: this machine has audit policy 4800/4801 turned off, so only the recorder can track from now on",
+  "日志里没有解锁记录：Security 日志里没查到你这个账号的交互式登录/解锁事件（4624、4800/4801），只能用记录器从现在开始记":
+    "No unlock records in the log: the Security log has no interactive sign-in/unlock events (4624, 4800/4801) for this account, so only the recorder can track from now on",
+  "推算": "inferred",
   "导入历史失败": "Import failed",
   "记录器已启动": "Recorder started",
   "记录器已移除": "Recorder removed",

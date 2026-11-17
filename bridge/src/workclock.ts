@@ -4,7 +4,8 @@
  * 三条数据来源，页面上分别标出来源，不混为一谈：
  * - `event`：常驻记录器在解锁的那一刻收到系统会话事件（`WM_WTSSESSION_CHANGE`）。最准，零权限。
  * - `poll`：记录器漏了事件时，用「锁屏界面消失 + 最后一次输入」补的近似值。
- * - `log`：点「导入历史」时，提权读 Security 日志的 4801（解锁）/ 4800（锁屏）回填出来的。
+ * - `log`：点「导入历史」时，提权读 Security 日志回填出来的：解锁取 4624 的 LogonType
+ *   （7 = 解锁、2 = 开机后登录…），锁屏仍只有 4800/4801。见 D288。
  *
  * 数据落在状态目录 `workclock/` 下：
  * - `settings.json`   桥写：每天工时（默认 9）、算上班的星期（默认周一到周五）、到点提醒开关。
@@ -44,6 +45,30 @@ const DEFAULT_WORKDAYS = [1, 2, 3, 4, 5];
 export type WorkclockSource = "event" | "poll" | "log";
 export type WorkclockKind = "unlock" | "lock";
 
+/**
+ * Security 日志里要读的事件：4624（登录/解锁，默认就审计）+ 4800/4801（锁屏，默认不审计）。
+ * 解锁的主力是 4624 —— 4800/4801 属于「Other Logon/Logoff Events」，默认关闭（D288）。
+ */
+const SECURITY_IDS = [4624, 4800, 4801];
+
+/**
+ * 4624 的 LogonType 里哪些算「到岗」：只列交互式登录。
+ * 3（网络）/4（批处理）/5（服务）**必须排除** —— 否则每个文件共享访问都会造出一条假解锁。
+ * 含义写在这张表里，生成 PS 的 `$unlockTypes` 也从它来，别在两处各抄一份数字。
+ */
+const LOGON_TYPE_MEANING = {
+  2: "开机后登录",
+  7: "解锁",
+  10: "RDP 连进来",
+  11: "缓存凭据登录",
+  12: "缓存远程交互",
+  13: "缓存解锁",
+} as const;
+
+export const LOGON_UNLOCK_TYPES: number[] = Object.keys(LOGON_TYPE_MEANING)
+  .map(Number)
+  .sort((a, b) => a - b);
+
 export interface WorkclockEvent {
   /** 毫秒时间戳（本地时区语义由 `localDateKey` 决定）。 */
   t: number;
@@ -69,6 +94,8 @@ export interface WorkclockDay {
   met: boolean;
   unlocks: number;
   ongoing: boolean;
+  /** 下班时刻没有锁屏事件可依，是按「当天最后一次解锁」推出来的：工时只会偏小，页面上要标出来。 */
+  endInferred: boolean;
 }
 
 export interface WorkclockToday extends WorkclockDay {
@@ -256,11 +283,17 @@ export function summarizeDays(
     const isToday = i === 0;
     const lastEvent = list[list.length - 1];
     let lastEnd: number | null = null;
+    let endInferred = false;
     if (first) {
       const locks = list.filter((ev) => ev.k === "lock" && ev.t >= first.t);
       if (isToday && lastEvent && lastEvent.k === "unlock") lastEnd = now;
       else if (locks.length) lastEnd = locks[locks.length - 1].t;
-      else if (list.length) lastEnd = list[list.length - 1].t;
+      else if (list.length) {
+        // 只有解锁、没有锁屏（日志回填在没开审核策略的机器上拿不到 4800/4801）：下班就是「当天最后一次
+        // 解锁」，工时只会偏小。标 endInferred，页面据此写「推算」，别让人拿它当准数（D288）。
+        lastEnd = list[list.length - 1].t;
+        endInferred = true;
+      }
     }
     const workedMs = first && lastEnd ? Math.max(0, lastEnd - first.t) : 0;
     const workday = settings.workdays.includes(new Date(start.getTime()).getDay());
@@ -274,6 +307,7 @@ export function summarizeDays(
       met: workday && workedMs >= settings.hours * 3_600_000,
       unlocks: list.filter((ev) => ev.k === "unlock").length,
       ongoing: isToday && Boolean(first) && lastEvent?.k === "unlock",
+      endInferred,
     });
   }
   return out;
@@ -788,20 +822,23 @@ interface BackfillResult {
 }
 
 /**
- * 读 Security 日志回填解锁历史。只有这一步需要管理员（4800/4801 非管理员读不到，实测拒绝访问）。
- * 提权脚本把事件写进 `log-events.json`，桥只读结果 —— 桥自己的 stdout 拿不到提权进程的输出。
+ * 提权跑的助手脚本：把 Security 日志里的事件读成 `[{"t":毫秒,"k":"unlock"|"lock"}]` 写盘，
+ * 成功/失败都写回执。解锁来自 4624 的 LogonType（默认就审计），锁屏只有 4800/4801（默认不审计）。
+ *
+ * 字段一律走 XML：`.Properties` 会**静默返回空值**（login_audit 的脚本注释记了这条，我没在有 Security
+ * 权限的环境里复验），那样会得到「读到了日志但 0 条」的假象。`FilterHashtable` 没有 EndTime，只能
+ * StartTime + 上限截断。
  */
-export async function backfillHistory(now = Date.now()): Promise<BackfillResult> {
-  if (process.platform !== "win32") {
-    return { ok: false, code: "not_windows", error: "只有 Windows 有 Security 日志" };
-  }
-  const out = logEventsFile();
-  fs.mkdirSync(dir(), { recursive: true });
-  const body =
+export function backfillScript(outFile: string): string {
+  return (
     `$since = [DateTime]::Now.AddDays(-${MAX_LOG_DAYS})\n` +
+    `$who = ([Security.Principal.WindowsIdentity]::GetCurrent()).Name\n` +
+    // 用 [char]92 而不是 '\\\\'：`-match` 当正则、`LastIndexOf` 当字面量，两边对 `'\\\\'` 的理解不一样（实测拿不到短名）。
+    `$me = if ($who.Contains([char]92)) { $who.Substring($who.LastIndexOf([char]92) + 1) } else { $who }\n` +
+    `$unlockTypes = @(${LOGON_UNLOCK_TYPES.join(",")})\n` +
     `$events = @()\n` +
     `try {\n` +
-    `  $events = @(Get-WinEvent -FilterHashtable @{ LogName='Security'; Id=4800,4801; StartTime=$since } -ErrorAction Stop)\n` +
+    `  $events = @(Get-WinEvent -FilterHashtable @{ LogName='Security'; Id=${SECURITY_IDS.join(",")}; StartTime=$since } -MaxEvents 50000 -ErrorAction Stop)\n` +
     `} catch {\n` +
     `  $msg = $_.Exception.Message\n` +
     `  if ($msg -notmatch 'No events were found|没有找到') {\n` +
@@ -813,23 +850,45 @@ export async function backfillHistory(now = Date.now()): Promise<BackfillResult>
     `}\n` +
     `$list = New-Object Collections.Generic.List[object]\n` +
     `foreach ($e in $events) {\n` +
-    `  $kind = if ($e.Id -eq 4801) { 'unlock' } else { 'lock' }\n` +
     `  $ms = ([DateTimeOffset]$e.TimeCreated).ToUnixTimeMilliseconds()\n` +
-    `  $list.Add([ordered]@{ t = $ms; k = $kind })\n` +
+    `  if ($e.Id -eq 4800) { $list.Add([ordered]@{ t = $ms; k = 'lock' }); continue }\n` +
+    `  if ($e.Id -eq 4801) { $list.Add([ordered]@{ t = $ms; k = 'unlock' }); continue }\n` +
+    `  $xml = $null\n` +
+    `  try { $xml = [xml]$e.ToXml() } catch { continue }\n` +
+    `  $data = @{}\n` +
+    `  foreach ($d in @($xml.Event.EventData.Data)) { if ($d.Name) { $data[$d.Name] = $d.InnerText } }\n` +
+    `  if ($data['TargetUserName'] -ne $me) { continue }\n` +
+    `  $lt = 0\n` +
+    `  if (-not [int]::TryParse([string]$data['LogonType'], [ref]$lt)) { continue }\n` +
+    `  if ($unlockTypes -notcontains $lt) { continue }\n` +
+    `  $list.Add([ordered]@{ t = $ms; k = 'unlock' })\n` +
     `}\n` +
-    `[IO.File]::WriteAllText(${psQuote(out)}, (ConvertTo-Json -InputObject $list -Compress), (New-Object Text.UTF8Encoding($false)))\n` +
-    `$unlocks = @($list | Where-Object { $_.k -eq 'unlock' })\n` +
-    `$first = if ($unlocks.Count -gt 0) { ($unlocks | Measure-Object -Property t -Minimum).Minimum } else { $null }\n` +
-    `$last = if ($unlocks.Count -gt 0) { ($unlocks | Measure-Object -Property t -Maximum).Maximum } else { $null }\n` +
-    `Write-Receipt ([pscustomobject]@{ ok = $true; count = $unlocks.Count; from = $first; to = $last })`;
-  const data = await runElevated("workclock", body, "backfill_failed");
+    `[IO.File]::WriteAllText(${psQuote(outFile)}, (ConvertTo-Json -InputObject $list -Compress), (New-Object Text.UTF8Encoding($false)))\n` +
+    // 回执只报「写下了多少条原始事件」；给用户看的条数由 TS 去重后重算（去重规则只留 dedupeEvents 一份）。
+    `Write-Receipt ([pscustomobject]@{ ok = $true; count = $list.Count })`
+  );
+}
+
+/**
+ * 读 Security 日志回填解锁历史。只有这一步需要管理员（非管理员连 4624 都读不到，实测拒绝访问）。
+ * 提权脚本把事件写进 `log-events.json`，桥只读结果 —— 桥自己的 stdout 拿不到提权进程的输出。
+ */
+export async function backfillHistory(now = Date.now()): Promise<BackfillResult> {
+  if (process.platform !== "win32") {
+    return { ok: false, code: "not_windows", error: "只有 Windows 有 Security 日志" };
+  }
+  fs.mkdirSync(dir(), { recursive: true });
+  const data = await runElevated("workclock", backfillScript(logEventsFile()), "backfill_failed");
   if (data.ok !== true) {
     const code = typeof data.code === "string" ? data.code : "backfill_failed";
     return { ok: false, code, error: backfillErrorText(code, data.error) };
   }
-  const count = typeof data.count === "number" ? data.count : 0;
-  const from = typeof data.from === "number" ? data.from : null;
-  const to = typeof data.to === "number" ? data.to : null;
+  // 条数按页面真正会显示的明细算：脚本写的是原始事件（一次解锁常有两三条重复 4624），
+  // 去重规则只有 dedupeEvents 这一份，不在这里另抄一遍（D288）。
+  const unlocks = dedupeEvents(readLogEvents()).filter((ev) => ev.k === "unlock");
+  const count = unlocks.length;
+  const from = count ? unlocks[0].t : null;
+  const to = count ? unlocks[count - 1].t : null;
   return { ok: true, count, from, to, state: await readWorkclock(false, now) };
 }
 

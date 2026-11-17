@@ -5496,6 +5496,8 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 - 装/卸的结果一律读回真实状态决定 `ok`，不信子进程的退出码。
 - 页面文案跟着分档：`运行中` / `已注册自启，但没在跑` / `未安装`，并显示心跳时间；回填 0 条改成明确的坏消息（「这台机器没开审核策略（4800/4801），只能用记录器从现在开始记」）。
 
+> **被 D288 取代的部分（2026-11-17）：** 回填只查 4800/4801、以及 0 条时那句「没开审核策略（4800/4801）」的说法都不再准确 —— 解锁改读默认就审计的 4624，页面上给「推算」的下班时刻也标了出来，见 **D288**。其余口径（Run 项自启、回读验证、三档文案）不变。
+
 **实测（本机，Windows 11 + PS 5.1）：**
 
 - 标准用户 `Register-ScheduledTask` → `Access is denied`；改成 `-File` 模式后语句级错误仍不中止。
@@ -5532,3 +5534,23 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 - 已开着的会话不会立刻掉资源，沿用原来的「重新加载当前会话」提示（和扩展启停一致）。
 
 **验证：** `bridge/tests/ext-manager.mjs` 新增 A2 段（条目两形态 / 停用保过滤 / 启用塌缩 / 幂等 / 找条目 / 另一 scope 仍在加载）与 B 段 `pkg.toggle` 端到端（写盘形状、库存 `disabled` / `alsoEnabled`、`(filtered)` 不进来源、启用塌回字符串、未知来源拒绝且不写盘、项目条目仍加载、未信任项目拒绝写入）；`probes/ext-manager-stages.mjs` 新增第 10 步（点停用 → 变「启用」、状态写「已停用」、版本号还在 → 点启用回来），并把探针第一步修到现在的新弹窗（已安装清单在「插件市场」子页签里）。
+
+## D288 回填解锁改用 4624 的 LogonType，4800/4801 只够拿锁屏（用户要求借鉴 login_audit 2026-11-17）
+
+**问题：** D286 之后记录器能跑起来了，但「导入历史」在这台机器上永远是 0 条 —— 只查 `Id=4800,4801`，而这两个事件属于「Other Logon/Logoff Events」子类别，默认**不**审计（微软文档的默认值就是 Not logged）。用户拿 `E:\yqm\login_audit` 的实现来问有没有可借鉴的，那套脚本的解锁来源是 4624。
+
+**决定：** 回填同时读 **4624**（Audit Logon）。Win10 1809 起 Audit Logon 默认 Success + Failure 都开，所以不改任何审核策略就能拿到历史解锁时间：
+
+- `LogonType` 决定算不算「到岗」：`7` = 解锁（微软原话 "This workstation was unlocked"）、`2` = 开机后登录、`11` = 缓存凭据登录、`10` = RDP 连进来、`12`/`13` = 缓存远程/缓存解锁 → 都算 unlock。
+- `3`（网络）/`4`（批处理）/`5`（服务）**必须排除**：不排除的话每次文件共享访问、每个计划任务都会造出一条「上班」。
+- 只认 `TargetUserName` == 当前 `WindowsIdentity` 的短名，`DWM-1`/`UMFD-0` 这类伪用户不算。取短名不用 `.Split('\')[-1]`（`Split` 的重载绑定会受字面量影响），也不直接信 `$env:USERNAME`（UAC 里改用另一个管理员凭据时它就不是当前账号了）：按 `LastIndexOf` 截。
+- `LogonType` 用 `[int]::TryParse` 转，转不动的整条跳过、不让一条脏数据把整次回填抛死在写盘之前。
+- 字段一律从 `[xml]$e.ToXml()` 里按 `EventData/Data[@Name]` 取；`$e.Properties` 取不到命名字段（login_audit 的脚本注释记了这条，我没有在 Security 上复验 —— 没有提权环境）。
+- 锁屏（下班时刻）仍然只有 4800/4801：默认不审计的机器上「下班」只能靠记录器，这是这条决定的已知缺口，页面上按来源标出来。
+- `FilterHashtable` 没有 EndTime，只能 `StartTime` + `-MaxEvents 50000` 截断；生成脚本抽成 `backfillScript(outFile)`，单测直接断言这几条不变量。
+- 回执里的条数是**去重前**的原始事件数，一次解锁常有两三条重复 4624；给用户看的条数由桥读完 `log-events.json` 后按 `dedupeEvents` 重算 —— 去重规则只留 TS 一份，不在 PS 里再抄一遍（否则两个数对不上，用户会以为「导入了但看不见」）。
+- **缺口要在页面上标出来：** 没开审核策略的机器回填不到 4800/4801，「下班」只能取「当天最后一次解锁」，工时只会偏小。`WorkclockDay.endInferred` 为真时下班时间后面写「推算」，不再默默少算。
+
+**取舍：** 记录器仍是主来源（`event` > `poll` > `log` > `start`，D246）；4624 只是把「历史」这一层从 0 条变成有数据。代价：一次解锁可能产生 2 条重复 4624（login_audit 的注释记了本机这个现象），靠 `dedupeEvents` 的同 kind 5 秒合并吃掉；RDP 连进来算到岗（「连上就开始干活」更贴工时口径，但有人可能不认同）；换账号后只看得到当前账号的历史；回填得到的历史只有上班时刻准、下班时刻是推的。
+
+**验证：** `node bridge/tests/workclock-unit.mjs` 新增用例断言生成脚本含 `Id=4624,4800,4801`、`@(2,7,10,11,12,13)`、XML 取值、当前用户过滤、`-MaxEvents 50000`，且 `LOGON_UNLOCK_TYPES` 不含 3/4/5；PowerShell 解析器（`[Parser]::ParseFile`，用 `.scratch/parse-check.ps1`）对生成脚本报 0 错；**真机回填条数未自动验证** —— 要弹一次 UAC，留给用户点「导入历史」确认。
