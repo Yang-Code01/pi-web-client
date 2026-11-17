@@ -50,7 +50,7 @@ interface Entry {
   kind: "text" | "receipt" | "file" | "recall";
   text?: string;
   ack?: { id: string; status: "delivered" | "failed"; error?: string };
-  file?: { name: string; size: number; mime: string; sha256?: string };
+  file?: { name: string; size: number; mime: string; sha256?: string; w?: number; h?: number };
   via?: "pi";
   /** P2：会话内序号，同毫秒时当排序第二键。 */
   seq?: number;
@@ -782,7 +782,8 @@ function preview(t: Thread): string {
   const e = t.last;
   if (!e) return tr("还没有消息");
   if (e.recalled) return tr("撤回了一条消息");
-  const body = e.kind === "file" ? tr("[文件] {p1}", { p1: e.file?.name ?? "" }) : (e.text ?? "");
+  const body =
+    e.kind === "file" ? (picKind(e) === "gif" ? tr("[动图]") : picKind(e) ? tr("[图片]") : tr("[文件] {p1}", { p1: e.file?.name ?? "" })) : (e.text ?? "");
   // 最后一条是我发的就加「你:」前缀（QQ 的会话行也这样，不然自己的话看着像对方说的）。
   return t.lastMine ? tr("你: {p1}", { p1: body }) : body;
 }
@@ -1146,7 +1147,9 @@ function entryNode(e: Entry, t: Thread): HTMLElement {
   msg.append(avatar(mine ? (S.view?.status?.nickname ?? tr("我")) : t.nickname, e.from.nodeId));
   const box = h("div", "b");
   if (e.replyTo) box.append(quoteBlock(e.replyTo));
-  if (e.kind === "file" && e.file) {
+  if (e.kind === "file" && e.file && picKind(e)) {
+    box.append(picBubble(e, mine));
+  } else if (e.kind === "file" && e.file) {
     box.append(fileCard(e, mine));
   } else {
     const bub = h("div", `bub${e.state === "failed" ? " failed" : ""}`, e.text ?? "");
@@ -1224,6 +1227,66 @@ async function recall(e: Entry, t: Thread): Promise<void> {
   } catch (err) {
     toast((err as Error).message);
   }
+}
+
+/**
+ * 这条文件消息是不是图片：`"pic"` / `"gif"` / `null`（D305）。
+ *
+ * QQ 把图片、动图、表情做成三种元素（`PicMsgElem` / `GiphyMsgElem` / `FaceMsgElem`）；
+ * 我们只有一种 `kind:"file"`，所以按 mime 分派 —— 分成三种 kind 会把回执、撤回、未读、
+ * 折叠那一套全都要跟着分叉，不值当。
+ */
+function picKind(e: Entry): "gif" | "pic" | null {
+  if (e.kind !== "file" || !e.file) return null;
+  const mime = (e.file.mime || "").toLowerCase();
+  if (mime === "image/gif" || /\.gif$/i.test(e.file.name)) return "gif";
+  if (mime.startsWith("image/") || /\.(png|jpe?g|webp|bmp|avif)$/i.test(e.file.name)) return "pic";
+  return null;
+}
+
+/**
+ * 图片气泡：聊天里直接是图，不是文件卡片（D305）。
+ *
+ * 尺寸优先用消息里记着的 `w/h`（发/收时在本机读文件头算的）把位置先占住；小图当**表情包**
+ * 画（不要边框、上限更小），大图按比例缩到气泡宽度以内。点一下看原图（D302 的弹窗），
+ * 右键菜单（复制 / 引用 / 撤回）照旧在 `.msg` 上，不用另写。
+ */
+/** 图片加载完会把列表顶高：只要人还贴着底就重新钉住（翻历史时不打扰）。 */
+function repinBottom(): void {
+  if (!stickBottom) return;
+  const stream = mainEl.querySelector<HTMLElement>(".stream");
+  if (stream) stream.scrollTop = stream.scrollHeight;
+}
+
+function picBubble(e: Entry, mine: boolean): HTMLElement {
+  const f = e.file!;
+  // 表情包：小、方、而且不是动图（QQ 里 `FaceMsgElem` 与 `GiphyMsgElem` 是两种元素）。
+  const square = f.w && f.h ? Math.max(f.w, f.h) / Math.min(f.w, f.h) <= 1.6 : false;
+  const sticker = picKind(e) === "pic" && Boolean(f.w && f.h && Math.max(f.w, f.h) <= 200 && square);
+  const wrap = h("div", `pic${sticker ? " sticker" : ""}`);
+  const img = h("img");
+  img.src = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
+  img.alt = f.name;
+  img.loading = "lazy";
+  img.decoding = "async";
+  // 先按记着的宽高占位（等比缩到气泡宽度内），图没下来时也不会把整列消息顶下去。
+  if (f.w && f.h) {
+    const cap = sticker ? 150 : 300;
+    const scale = Math.min(1, cap / Math.max(f.w, f.h));
+    img.width = Math.max(1, Math.round(f.w * scale));
+    img.height = Math.max(1, Math.round(f.h * scale));
+  }
+  img.title = tr("点一下看原图");
+  img.addEventListener("click", () => previewEntry(e));
+  // 图到了之后重新贴一次底（没有 w/h 的老消息加载前是 0 高）。
+  img.addEventListener("load", repinBottom);
+  // 取不到就退回文件卡片，别留一个破图标在那儿。
+  img.addEventListener("error", () => {
+    wrap.replaceChildren(fileCard(e, mine));
+    repinBottom();
+  });
+  wrap.append(img);
+  return wrap;
 }
 
 function fileCard(e: Entry, mine: boolean): HTMLElement {

@@ -57,6 +57,27 @@ fuses 看着都开着，但**实际都不生效**：
 对方切换为离线发送
 ```
 
+### 1.3b 媒体消息：QQ 把「图 / 动图 / 表情」拆成三种元素（D305 补）
+
+`nt::im_core::` 里与媒体相关的类（全部 **[静态]**）：
+
+```
+PicMsgElem          PicUploadMgr / PicUploadWorker          （发：上传拿 URL）
+                    PicDownloadMgr / PicDownloadWorker       （收：按 URL 下载）
+                    PicAioThumbDownMgr                       （会话里先拉缩略图）
+                    PicDownloadKeyCache                      （下载凭据缓存）
+GiphyMsgElem        动图是**另一种元素**，不是 Pic
+FaceMsgElem         FaceBubbleMsgElem / FaceBubbleMsgProcMgr  （小表情 / 表情气泡）
+FlashPicMsgProcMgr  闪照
+```
+
+同一文件里的中文占位符：`[图片]`、`[表情]`、`[动画表情]`、`[表情气泡]`、`{}:[图片]`
+—— **会话列表的摘要写的是占位符，不是文件名**。
+
+对我们的含义（D305 照抄的三点）：① 图片在聊天里就是图，不是「文件卡片」；
+② 图片元素**自带尺寸**（`PicMsgElem` 有宽高），页面先占位，缩略图下来不顶得乱跳；
+③ 小方图（表情包）与动图（GIF）视觉上区别对待。
+
 ### 1.4 观测：会话列表的解剖
 
 2026-11-18 00:09 在跑着的 QQ 主窗口（截图只在本地，没进仓库，因为里面有别人的头像和昵称）。**[观测]**

@@ -8,6 +8,7 @@ import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import type { Entry, History, PeerIdentity } from "./history.ts";
 import { uuidv7 } from "./messages.ts";
+import { imageSize, type ImageSize } from "./image.ts";
 
 /** 分块大小：1 MB。局域网里 TCP 已经帮我们做了分片，再切细只多几个 RTT。 */
 export const CHUNK = 1024 * 1024;
@@ -272,13 +273,20 @@ export class Files {
     this.tokens.delete(token);
     this.stored[waiting.messageId] = { path: final, name: path.basename(final), size: waiting.size, mime: waiting.mime };
     this.saveStored();
+    const dims: ImageSize | null = /^image\//.test(waiting.mime) ? imageSize(final) : null;
     this.ctx.history.append(waiting.peerId, {
       id: waiting.messageId,
       at: Date.now(),
       from: { nodeId: waiting.peerId },
       to: { kind: "node", id: this.ctx.nodeId },
       kind: "file",
-      file: { name: path.basename(final), size: waiting.size, mime: waiting.mime, sha256: waiting.sha256 || undefined },
+      file: {
+        name: path.basename(final),
+        size: waiting.size,
+        mime: waiting.mime,
+        sha256: waiting.sha256 || undefined,
+        ...(dims ? { w: dims.w, h: dims.h } : {}),
+      },
     });
     const transfer = this.transfers.get(waiting.messageId);
     if (transfer) {
@@ -385,13 +393,15 @@ export class Files {
     if (!endRes.ok) throw new Error(end.error ?? `收尾失败（HTTP ${endRes.status}）`);
 
     // 自己这边也留一张卡片：发出去的东西在对话里要看得见。
+    const mime = mimeOf(name);
+    const dims: ImageSize | null = /^image\//.test(mime) ? imageSize(localPath) : null;
     this.ctx.history.append(peerId, {
       id,
       at: Date.now(),
       from: { nodeId: this.ctx.nodeId, nickname: this.ctx.cfg.nickname, port: this.ctx.cfg.port },
       to: { kind: "node", id: peerId },
       kind: "file",
-      file: { name: end.name ?? name, size, mime: mimeOf(name), sha256 },
+      file: { name: end.name ?? name, size, mime, sha256, ...(dims ? { w: dims.w, h: dims.h } : {}) },
     });
     const transfer = this.transfers.get(id);
     if (transfer) {

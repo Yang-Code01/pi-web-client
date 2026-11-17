@@ -3605,4 +3605,6 @@ export const en: Dict = {
   "粘贴或输入路径，回车跳转": "Paste or type a path, press Enter to jump",
   "跳转": "Go",
   "选择": "Select",
+  "[动图]": "[GIF]",
+  "点一下看原图": "Click to see the original",
 };

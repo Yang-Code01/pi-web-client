@@ -916,6 +916,38 @@ try {
   if (strangerCard.file.sha256 !== wantHash) throw new Error("非好友收文件的哈希不对");
   log("ok 非好友也能收发文件（D300：好友只决定列不列在好友里）");
 
+  // D305：图片带宽高（页面先占位，图下来不顶得乱跳），GIF 的 mime 要认出来。
+  const pngBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mNkYPhfz0AEYBxVSF+FABJADveWkH6oAAAAAElFTkSuQmCC",
+    "base64",
+  );
+  const pngPath = path.join(ROOT, "小图.png");
+  fs.writeFileSync(pngPath, pngBytes);
+  const sendPng = await fetch("http://127.0.0.1:17965/files/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sb, path: pngPath }),
+  });
+  if (!sendPng.ok) throw new Error(`发图失败：${sendPng.status} ${await sendPng.text()}`);
+  const [minePic, theirPic] = await until(
+    "两边都记下图片的宽高",
+    async () => {
+      const [a, b] = await Promise.all([
+        (await fetch(`http://127.0.0.1:17965/messages?peer=${sb}`)).json(),
+        (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json(),
+      ]);
+      const pick = (body) => (body.entries ?? []).find((e) => e.kind === "file" && e.file?.name === "小图.png");
+      const x = pick(a);
+      const y = pick(b);
+      return x?.file?.w === 10 && y?.file?.w === 10 ? [x, y] : null;
+    },
+    20000,
+  );
+  if (minePic.file.mime !== "image/png" || theirPic.file.h !== 10) {
+    throw new Error(`图片元数据不对：${JSON.stringify(minePic.file)} / ${JSON.stringify(theirPic.file)}`);
+  }
+  log("ok 图片消息带宽高与 image/png（页面据此直接画图、预留位置）");
+
   const sendFile = await fetch("http://127.0.0.1:17965/files/send", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -927,7 +959,8 @@ try {
     "B 收到文件卡片",
     async () => {
       const body = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json();
-      return body.entries?.find((e) => e.kind === "file") ?? false;
+      // 前面还发过一张小图，所以按名字找，别拿「第一条 file」当那份 3 MB 的 payload。
+      return body.entries?.find((e) => e.kind === "file" && e.file?.name === "报告 e2e.bin") ?? false;
     },
     30000,
   );
@@ -941,7 +974,9 @@ try {
   log("ok 落盘内容逐字节一致");
 
   const again2 = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json();
-  if (again2.entries.filter((e) => e.kind === "file").length !== 1) throw new Error("文件重发写了多张卡片");
+  if (again2.entries.filter((e) => e.kind === "file" && e.file?.name === "报告 e2e.bin").length !== 1) {
+    throw new Error("文件重发写了多张卡片");
+  }
   log("ok 同一文件只留一张卡片");
 
   // 0 字节文件：空的 .log / .txt 也要能发（以前 begin 用 size <= 0 直接 400）。
