@@ -795,6 +795,27 @@ body.embedded .brand .nm { display: none; }
 .listhead .icon-btn { width: 26px; height: 26px; }
 
 
+/* 选择器的路径行（D304，照本工程文件管理器的「跳到路径」）：输入框 + 跳转。 */
+.ppath { display: flex; align-items: center; gap: 7px; padding: 8px 12px 0; }
+.ppath input {
+  flex: 1; min-width: 0; height: 28px; padding: 0 9px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-3); color: var(--text); font: 11.5px var(--mono);
+}
+.ppath input:focus { outline: none; border-color: var(--accent-dim); }
+.ppath input.bad { border-color: var(--danger); }
+.ppath .btn { height: 28px; }
+
+/* 文件行的两颗按钮与「跳过去定位到的那一行」。 */
+.files li .racts { display: flex; align-items: center; gap: 4px; }
+.files li .racts button {
+  padding: 2px 7px; border: 1px solid var(--line-soft); border-radius: 6px;
+  background: var(--panel-3); color: var(--dim); font: 11px var(--sans); cursor: pointer;
+}
+.files li .racts button:hover { border-color: var(--accent-dim); color: var(--text); }
+.files li.hit { box-shadow: inset 0 0 0 1px var(--accent-dim); }
+.files li.dir .racts { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }

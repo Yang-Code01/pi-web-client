@@ -937,6 +937,38 @@ async function main(): Promise<void> {
         return json(res, 400, { error: (err as Error).message });
       }
     }
+    // 选择器里的预览（D304）：本机一份文件的字节，透传 peer 的 `/fs/raw`。
+    if (url.pathname === "/api/peer/fs/raw" && req.method === "GET") {
+      if (publicReq) return fail(res, 403, "fs_public", "通过公网访问时不能读本机文件");
+      const ctrl = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) ctrl.abort();
+      });
+      try {
+        const upstream = await fetch(
+          `http://127.0.0.1:${cfg.peerPort}/fs/raw?path=${encodeURIComponent(url.searchParams.get("path") ?? "")}`,
+          { signal: ctrl.signal },
+        );
+        if (!upstream.ok || !upstream.body) {
+          const text = await upstream.text().catch(() => "");
+          return json(res, upstream.status, { error: text || "取不到这个文件" });
+        }
+        const headers: Record<string, string> = { "cache-control": "no-store" };
+        for (const key of ["content-type", "content-length", "content-disposition"]) {
+          const value = upstream.headers.get(key);
+          if (value) headers[key] = value;
+        }
+        res.writeHead(200, headers);
+        const body = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]);
+        body.on("error", () => res.destroy());
+        body.pipe(res);
+      } catch (err) {
+        if (!res.headersSent) return json(res, 502, { error: (err as Error).message });
+        res.destroy();
+      }
+      return;
+    }
+
     if (url.pathname === "/api/peer/transfers" && req.method === "GET") {
       try {
         return json(res, 200, await peer.transfers());
@@ -995,7 +1027,9 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/peer/sheet" && req.method === "POST") {
       if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
       const body = await readBody(req).catch(() => ({}));
-      const abs = await peer.filePath(String(body?.id ?? ""));
+      // 两个入口：`id` 是内网通里的一条文件消息，`path` 是选择器里眼前这份本机文件（还没发）。
+      const byPath = typeof body?.path === "string" && body.path ? path.resolve(body.path) : "";
+      const abs = byPath || (await peer.filePath(String(body?.id ?? "")));
       if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
       const ext = path.extname(abs).toLowerCase();
       if (ext !== ".xlsx" && ext !== ".xlsm") return fail(res, 400, "peer_sheet", "这不是表格文件");

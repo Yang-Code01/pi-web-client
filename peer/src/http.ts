@@ -7,7 +7,7 @@ import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
-import { CHUNK } from "./files.ts";
+import { CHUNK, mimeOf } from "./files.ts";
 import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
 import type { History } from "./history.ts";
@@ -565,6 +565,29 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });
         }
+      }
+
+      // 选择器里的「预览」（D304）：把本机一份文件的字节原样吐回去（inline），
+      // 让页面能在发送之前看一眼。只认回环，单文件上限 64 MB。
+      // 不比 `/files/send` 多开什么口子 —— 那个本来就能把任意本机路径发出去。
+      if (url.pathname === "/fs/raw" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const file = path.resolve(url.searchParams.get("path") ?? "");
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(file);
+        } catch {
+          return json(res, 404, { error: "没有这个文件" });
+        }
+        if (!stat.isFile()) return json(res, 400, { error: "这不是一个文件" });
+        if (stat.size > 64 * 1024 * 1024) return json(res, 413, { error: "太大了（上限 64 MB）" });
+        res.writeHead(200, {
+          "content-type": mimeOf(file),
+          "content-length": stat.size,
+          "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(path.basename(file))}`,
+          "cache-control": "no-store",
+        });
+        return void fs.createReadStream(file).pipe(res);
       }
 
       if (url.pathname === "/transfers" && req.method === "GET") {

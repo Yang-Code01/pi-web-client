@@ -3601,4 +3601,8 @@ export const en: Dict = {
   "名字已改成「{p1}」": "Name changed to “{p1}”",
   "你的名字": "Your name",
   "只改你这边的显示名，对方看不到，也不会被对方的改名冲掉。": "Only changes the name on your side — the other person never sees it, and their own rename won't overwrite it.",
+  "找不到这个路径：{p1}": "No such path: {p1}",
+  "粘贴或输入路径，回车跳转": "Paste or type a path, press Enter to jump",
+  "跳转": "Go",
+  "选择": "Select",
 };

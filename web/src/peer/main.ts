@@ -117,6 +117,7 @@ interface BrowseEntry {
   dir: boolean;
   size: number;
   mtime: number;
+  mime?: string;
 }
 
 interface Browse {
@@ -224,6 +225,8 @@ const placesEl = document.querySelector("#places") as HTMLUListElement;
 const rootsEl = document.querySelector("#roots") as HTMLUListElement;
 const filesEl = document.querySelector("#files") as HTMLUListElement;
 const pickerSel = document.querySelector("#picker-sel") as HTMLElement;
+const pickerPath = document.querySelector("#picker-path") as HTMLInputElement;
+const pickerGo = document.querySelector("#picker-go") as HTMLButtonElement;
 const pickerUp = document.querySelector("#picker-up") as HTMLButtonElement;
 const pickerSendBtn = document.querySelector("#picker-send") as HTMLButtonElement;
 const pickerClose = document.querySelector("#picker-close") as HTMLButtonElement;
@@ -1233,7 +1236,7 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
   // 点卡片 = 预览（D302：预览是这页自己的弹窗，不再借主界面的面板）。
   card.title = tr("点一下预览");
   card.style.cursor = "pointer";
-  card.addEventListener("click", () => previewDialog(e));
+  card.addEventListener("click", () => previewEntry(e));
 
   const foot = h("div", "fbot");
   const acts = h("span", "fbtns");
@@ -1244,7 +1247,7 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
     const done = status === "delivered" || status === "sent";
     foot.append(h("span", "", done ? tr("已送达") : status === "sending" ? tr("发送中…") : tr("发送失败")));
     if (done) {
-      acts.append(actBtn(tr("预览"), () => previewDialog(e)), actBtn(tr("打开所在位置"), () => void revealFile(e)));
+      acts.append(actBtn(tr("预览"), () => previewEntry(e)), actBtn(tr("打开所在位置"), () => void revealFile(e)));
     } else if (status === "failed") {
       acts.append(actBtn(tr("重发"), () => void resend(e)));
     } else {
@@ -1257,7 +1260,7 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
     dl.download = f.name;
     dl.rel = "noopener";
     dl.addEventListener("click", (ev) => ev.stopPropagation());
-    acts.append(actBtn(tr("预览"), () => previewDialog(e)), dl, actBtn(tr("打开所在位置"), () => void revealFile(e)));
+    acts.append(actBtn(tr("预览"), () => previewEntry(e)), dl, actBtn(tr("打开所在位置"), () => void revealFile(e)));
   }
   foot.append(acts);
   body.append(foot);
@@ -1297,6 +1300,43 @@ const TEXT_EXT = /\.(md|markdown|txt|log|json|ya?ml|toml|ini|csv|ts|tsx|js|jsx|m
 let sheetWin: SheetDialog | null = null;
 
 /**
+ * 一份「可以看的东西」：同一套渲染要伺候两种来源 ——
+ * 内网通里的一条文件消息（`entryId`），和选择器里眼前这份**还没发出去**的本机文件（`path`）。
+ */
+interface PreviewSrc {
+  name: string;
+  mime: string;
+  size: number;
+  /** 取字节的地址（`/api/peer/file?id=` 或 `/api/peer/fs/raw?path=`）。 */
+  url: string;
+  entryId?: string;
+  path?: string;
+}
+
+function previewEntry(e: Entry): void {
+  const f = e.file;
+  if (!f) return;
+  showPreview({
+    name: f.name,
+    mime: f.mime,
+    size: f.size,
+    url: `/api/peer/file?id=${encodeURIComponent(e.id)}`,
+    entryId: e.id,
+  });
+}
+
+/** 选择器里「预览」：文件还在本机，没进历史，所以按路径取字节。 */
+function previewLocal(file: BrowseEntry): void {
+  showPreview({
+    name: file.name,
+    mime: file.mime ?? "",
+    size: file.size,
+    url: `/api/peer/fs/raw?path=${encodeURIComponent(file.path)}`,
+    path: file.path,
+  });
+}
+
+/**
  * 内网通的 Excel：开的是**本工程那扇表格浮窗**（`SheetDialog`，D166 那一套）。
  *
  * 凭据由 `/api/peer/sheet` 现发 —— 内网通页面没有会话，拿不到 `/api/preview` 的 grant；
@@ -1306,11 +1346,14 @@ let sheetWin: SheetDialog | null = null;
  * 和主界面的差别只有两处：`scale` 恒为 1（这页没有界面缩放），`onQuote` 不给（这里没有
  * 可以引用给 pi 的输入框）。
  */
-async function openSheetWindow(e: Entry): Promise<void> {
+async function openSheetWindow(src: PreviewSrc): Promise<void> {
   closeLayer();
   let grant: { token: string; path?: string };
   try {
-    grant = await postJson<{ token: string; path?: string }>("/api/peer/sheet", { id: e.id });
+    grant = await postJson<{ token: string; path?: string }>(
+      "/api/peer/sheet",
+      src.entryId ? { id: src.entryId } : { path: src.path },
+    );
   } catch (err) {
     toast((err as Error).message);
     return;
@@ -1320,9 +1363,9 @@ async function openSheetWindow(e: Entry): Promise<void> {
   sheetWin = null;
   const dlg: SheetDialog = new SheetDialog({
     token,
-    name: e.file?.name ?? tr("表格"),
-    path: grant.path ?? "",
-    raw: `/api/peer/file?id=${encodeURIComponent(e.id)}`,
+    name: src.name,
+    path: grant.path ?? src.path ?? "",
+    raw: src.url,
     scale: () => 1,
     loadMeta: () => postJson("/api/sheet/meta", { token }),
     fetchWindow: (sheet, r0, r1, c0, c1) => postJson("/api/sheet/window", { token, sheet, r0, r1, c0, c1 }),
@@ -1332,12 +1375,12 @@ async function openSheetWindow(e: Entry): Promise<void> {
     saveStruct: (sheet, op) => postJson("/api/sheet/struct", { token, sheet, op }),
     page: { token },
     onOpen: async () => {
-      await postJson("/api/peer/open", { id: e.id });
+      await postJson("/api/peer/open", src.entryId ? { id: src.entryId } : { path: src.path });
     },
     onReveal: async () => {
-      await postJson("/api/peer/reveal", { id: e.id });
+      await postJson("/api/peer/reveal", src.entryId ? { id: src.entryId } : { path: src.path });
     },
-    onReopen: () => void openSheetWindow(e),
+    onReopen: () => void openSheetWindow(src),
     onClose: () => {
       if (sheetWin === dlg) sheetWin = null;
     },
@@ -1352,13 +1395,14 @@ async function openSheetWindow(e: Entry): Promise<void> {
   dlg.open();
 }
 
-function previewDialog(e: Entry): void {
-  const f = e.file;
-  if (!f) return;
-  // Excel（D303 复审）：**直接开本工程的表格浮窗**（`SheetDialog`），不另写一个简化表格。
-  // 它是浮窗不是弹窗，所以这里不等 modal。
-  if (/\.(xlsx|xlsm)$/i.test(f.name)) {
-    void openSheetWindow(e);
+/**
+ * 预览弹窗（D302）。**不借主界面的预览面板**：那个要一个打开的会话、还会把内网通弹层
+ * 关掉，看一张截图不值当。这里按类型自己画：图片 `<img>`、PDF `<iframe>`、文本 `<pre>`，
+ * Excel 交给上面那扇表格浮窗，其余说清楚「点下载」。
+ */
+function showPreview(src: PreviewSrc): void {
+  if (/\.(xlsx|xlsm)$/i.test(src.name)) {
+    void openSheetWindow(src);
     return;
   }
   closeLayer();
@@ -1366,50 +1410,51 @@ function previewDialog(e: Entry): void {
   scrim.addEventListener("click", closeLayer);
   const modal = h("div", "modal preview");
   const head = h("header");
-  head.append(h("strong", "nm", f.name), iconBtn("close", tr("关掉预览"), closeLayer));
+  head.append(h("strong", "nm", src.name), iconBtn("close", tr("关掉预览"), closeLayer));
   const meta = h("div", "meta");
-  meta.append(h("span", "", `${sizeOf(f.size)} · `), h("span", "", f.mime || tr("未知类型")));
+  meta.append(h("span", "", `${sizeOf(src.size)} · `), h("span", "", src.mime || tr("未知类型")));
   const body = h("div", "body");
   modal.append(head, meta, body);
   layerEl.append(scrim, modal);
   const onKey = (ev: KeyboardEvent): void => {
     if (ev.key !== "Escape") return;
+    // 捕获阶段就把这一下吃掉：不冒泡到「Esc 关选择器」那条全局监听
+    // （否则在预览里按 Esc，预览关了、下面的选择器也一起关了）。
+    ev.stopPropagation();
     document.removeEventListener("keydown", onKey, true);
     closeLayer();
   };
   document.addEventListener("keydown", onKey, true);
-  void fillPreview(body, e);
+  void fillPreview(body, src);
 }
 
-async function fillPreview(body: HTMLElement, e: Entry): Promise<void> {
-  const f = e.file!;
-  const url = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
-  const name = f.name.toLowerCase();
-  if (/^image\//.test(f.mime)) {
+async function fillPreview(body: HTMLElement, src: PreviewSrc): Promise<void> {
+  const name = src.name.toLowerCase();
+  if (/^image\//.test(src.mime) || /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(name)) {
     const img = h("img");
-    img.src = url;
-    img.alt = f.name;
+    img.src = src.url;
+    img.alt = src.name;
     body.append(img);
     return;
   }
-  if (f.mime === "application/pdf" || name.endsWith(".pdf")) {
+  if (src.mime === "application/pdf" || name.endsWith(".pdf")) {
     const frame = h("iframe");
-    frame.src = url;
-    frame.title = f.name;
+    frame.src = src.url;
+    frame.title = src.name;
     body.append(frame);
     return;
   }
-  const isText = f.mime.startsWith("text/") || TEXT_EXT.test(name);
+  const isText = src.mime.startsWith("text/") || TEXT_EXT.test(name);
   if (!isText) {
     body.append(h("div", "none", tr("这个类型在这儿看不了，点「下载」用别的程序打开")));
     return;
   }
-  if (f.size > 2 * 1024 * 1024) {
-    body.append(h("div", "none", tr("太大了（{p1}），点「下载」再看", { p1: sizeOf(f.size) })));
+  if (src.size > 2 * 1024 * 1024) {
+    body.append(h("div", "none", tr("太大了（{p1}），点「下载」再看", { p1: sizeOf(src.size) })));
     return;
   }
   try {
-    const res = await fetch(url);
+    const res = await fetch(src.url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     body.append(h("pre", "", await res.text()));
   } catch (err) {
@@ -2205,6 +2250,8 @@ async function browse(dir: string): Promise<void> {
     for (const entry of data.entries ?? []) filesEl.append(fileItem(entry));
     pickerSendBtn.disabled = true;
     pickerSel.textContent = tr("还没选文件");
+    pickerPath.value = pickerDir;
+    pickerPath.classList.remove("bad");
     pickerUp.disabled = !pickerParent;
     pickerUp.onclick = () => pickerParent && void browse(pickerParent);
   } catch (err) {
@@ -2220,22 +2267,81 @@ function placeItem(name: string, path: string): HTMLLIElement {
   return li;
 }
 
+function selectEntry(li: HTMLElement, entry: BrowseEntry): void {
+  for (const other of filesEl.children) other.classList.remove("on");
+  li.classList.add("on");
+  picked = entry;
+  pickerSendBtn.disabled = false;
+  pickerSel.textContent = entry.name;
+  pickerPath.value = entry.path;
+  pickerPath.classList.remove("bad");
+}
+
 function fileItem(entry: BrowseEntry): HTMLLIElement {
-  const li = h("li");
+  const li = h("li", entry.dir ? "dir" : "");
   li.append(ic(entry.dir ? "folder" : "file"), h("span", "ell", entry.name));
-  li.append(h("span", "sz", entry.dir ? "" : sizeOf(entry.size)));
+  const tail = h("span", "racts");
+  tail.append(h("span", "sz", entry.dir ? "" : sizeOf(entry.size)));
+  if (!entry.dir) {
+    // D304：文件行给两颗按钮 —— 发之前先看一眼（预览），或直接选中（选择）。
+    const look = h("button", "", tr("预览"));
+    look.type = "button";
+    look.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      previewLocal(entry);
+    });
+    const pick = h("button", "", tr("选择"));
+    pick.type = "button";
+    pick.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      selectEntry(li, entry);
+    });
+    tail.append(look, pick);
+  }
+  li.append(tail);
   li.addEventListener("click", () => {
     if (entry.dir) {
       void browse(entry.path);
       return;
     }
-    for (const other of filesEl.children) other.classList.remove("on");
-    li.classList.add("on");
-    picked = entry;
-    pickerSendBtn.disabled = false;
-    pickerSel.textContent = entry.name;
+    selectEntry(li, entry);
   });
   return li;
+}
+
+/**
+ * 跳到路径（D304，照本工程文件管理器的 D153）：指向文件夹就进去；指向文件就进它的父目录、
+ * 把那行标成 `.hit` 并**选中**它（在这里选中就等于「准备发给对方」）。找不到就地报错，列表不动。
+ */
+async function jumpTo(raw: string): Promise<void> {
+  const value = raw.trim().replace(/^["'`]|["'`]$/g, "");
+  if (!value) return;
+  const bad = (): void => {
+    pickerPath.classList.add("bad");
+    toast(tr("找不到这个路径：{p1}", { p1: value }));
+  };
+  const asDir = await getJson<Browse & { ok: boolean }>(`/api/peer/fs?path=${encodeURIComponent(value)}`).catch(() => null);
+  if (asDir) {
+    await browse(value);
+    return;
+  }
+  const cut = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
+  if (cut <= 0) return bad();
+  const dir = value.slice(0, cut);
+  const base = value.slice(cut + 1);
+  const listing = await getJson<Browse & { ok: boolean }>(`/api/peer/fs?path=${encodeURIComponent(dir)}`).catch(() => null);
+  if (!listing) return bad();
+  await browse(dir);
+  const entry = (listing.entries ?? []).find((e) => e.name === base);
+  const row = [...filesEl.querySelectorAll("li")].find(
+    (li) => (li.querySelector(".ell") as HTMLElement | null)?.textContent === base,
+  );
+  if (!entry || !row) return bad();
+  row.classList.add("hit");
+  row.scrollIntoView({ block: "nearest" });
+  if (!entry.dir) selectEntry(row, entry);
+  pickerPath.value = entry.path;
+  pickerPath.classList.remove("bad");
 }
 
 function renderCrumbs(): void {
@@ -2256,6 +2362,15 @@ function renderCrumbs(): void {
 }
 
 pickerClose.addEventListener("click", closePicker);
+pickerGo.addEventListener("click", () => void jumpTo(pickerPath.value));
+pickerPath.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    void jumpTo(pickerPath.value);
+  } else {
+    pickerPath.classList.remove("bad");
+  }
+});
 pickerSendBtn.addEventListener("click", () => {
   if (picked) void sendPath(picked.path);
 });
@@ -2264,8 +2379,10 @@ picker.addEventListener("click", (ev) => {
 });
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
-  if (!picker.hidden) return closePicker();
-  closeLayer();
+  // 先关最上面那层：预览弹窗 / 菜单（`#layer`）优先于选择器 —— 否则在预览里按 Esc
+  // 会把下面整个选择器关掉，用户还得重新找一遍文件。
+  if (layerEl.childElementCount) return closeLayer();
+  if (!picker.hidden) closePicker();
 });
 
 // ---------------------------------------------------------------- 启动 / 轮询
@@ -2275,6 +2392,9 @@ async function boot(): Promise<void> {
   for (const node of document.querySelectorAll<HTMLElement>("[data-i18n]")) node.textContent = tr(node.dataset.i18n ?? "");
   for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-title]")) node.title = tr(node.dataset.i18nTitle ?? "");
   for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-aria]")) node.setAttribute("aria-label", tr(node.dataset.i18nAria ?? ""));
+  for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-placeholder]")) {
+    (node as HTMLInputElement).placeholder = tr(node.dataset.i18nPlaceholder ?? "");
+  }
   (pickerClose as HTMLElement).append(ic("close"));
   await loadStatus();
   await loadThreads();
