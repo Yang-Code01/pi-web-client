@@ -3778,12 +3778,27 @@ export class SessionManager extends EventEmitter {
       }
       writeContextOverride(next.state.id, readContextOverride(id));
       emitPhase("starting", { newId: next.state.id });
-      await next.prompt(
-        `（来自${opts.manual ? "手动" : "自动"}交接）先读这份交接文档：${doc}\n` +
-          "然后按里面的「下一步」继续这个任务。文档里提到的文件与决定就是当前的现场，不要从头再来一遍。",
-      );
+      // 不等这一轮跑完：pi 的 prompt 响应可能到整轮结束才回来，盯着它会让「交接完成」迟到一整个
+      // 任务（UI 卡在「交接进行中」，而新会话其实已经在干活了）。发出去就算交付，失败只提示。
+      void next
+        .prompt(
+          `（来自${opts.manual ? "手动" : "自动"}交接）先读这份交接文档：${doc}
+` +
+            "然后按里面的「下一步」继续这个任务。文档里提到的文件与决定就是当前的现场，不要从头再来一遍。",
+        )
+        .catch((error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          this.emit("ws", {
+            type: "notice",
+            sessionId: next.state.id,
+            text: `新会话没接上第一条消息：${reason}（交接文档在 ${doc}，可以直接让它读）`,
+            level: "error",
+          });
+        });
       session.state.handoffTo = next.state.id;
       writeHandoffTo(id, next.state.id);
+      // 接棒的会话置顶：交接刚发生，用户下一步要看的十有八九是它。
+      this.manage.pinLast(next.state.id);
       this.emit("ws", { type: "session.state", session: session.state });
       // 旧会话到此为止：停 pi、归档。它不再自动压缩/交接，翻回去只是读历史。
       void session.close({ quiet: true }).catch(() => {});

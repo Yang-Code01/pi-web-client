@@ -2055,16 +2055,23 @@ export class App {
         this.paintPolicySheetIfOpen();
         break;
       case "handoff.state": {
-        if (msg.sessionId !== this.currentId) break;
         const phase = String(msg.phase ?? "");
-        this.handoffPhase = phase === "done" || phase === "failed" ? null : phase;
-        this.paintHandoffSheetIfOpen();
-        if (phase === "done" && msg.newId) {
-          this.flashToast(tr("交接完成，已切到新会话"), false, 4000);
+        const mine = msg.sessionId === this.currentId;
+        // 结束信号不管在不在当前会话都收：手动交接期间用户可能已经点到别处去了，
+        // 那张「交接进行中」的子弹窗不能因此永远留在屏幕上。
+        if (phase === "done" || phase === "failed") {
+          this.handoffPhase = null;
           this.closeSubSheet();
+        } else if (mine) {
+          this.handoffPhase = phase;
+          this.paintHandoffSheetIfOpen();
+        }
+        if (phase === "done" && msg.newId) {
+          if (!mine) break; // 别的会话的交接不把用户拽走
+          this.flashToast(tr("交接完成，已切到新会话"), false, 4000);
           this.closeSheet();
           this.openSession(String(msg.newId));
-        } else if (phase === "failed") {
+        } else if (phase === "failed" && mine) {
           this.flashToast(tr("交接没有完成：{p1}", { p1: String(msg.message ?? "") }), true, 6000);
         }
         break;
