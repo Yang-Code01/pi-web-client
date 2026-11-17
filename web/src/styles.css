@@ -4621,6 +4621,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .bg-run-head { display: flex; align-items: baseline; gap: 10px; }
 .bg-run-agent { font-size: 13px; font-weight: 600; color: var(--text); }
 .bg-run-state { font: 11px/1 var(--mono); color: var(--accent); }
+/* 模型 + 思考档：标题行下面那一行小字，靠左；`title` 里才是全的 provider/id。 */
+.bg-run-model { font: 11px/1.4 var(--mono); color: var(--dim); overflow-wrap: anywhere; }
 .bg-run-task { font-size: 13px; line-height: 1.5; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
 .bg-run-id { font: 11px/1 var(--mono); color: var(--faint); }
 .bg-run-lab { font-size: 11px; color: var(--faint); letter-spacing: 0.02em; }

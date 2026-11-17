@@ -6,7 +6,7 @@
  *   node --experimental-transform-types bridge/tests/bgruns-unit.mjs
  */
 import assert from "node:assert/strict";
-import { BgRuns } from "../src/bgruns.ts";
+import { BgRuns, parseModelMeta, splitDeclaredModel } from "../src/bgruns.ts";
 
 let changes = 0;
 const runs = new BgRuns(() => {
@@ -398,6 +398,99 @@ if (linkedOutside) {
 }
 rmSync(childSessionRoot, { recursive: true, force: true });
 rmSync(outsideSessionRoot, { recursive: true, force: true });
+
+// ---------------------------------------------------------------- 模型 / 思考档（侧板卡片那一行）
+
+assert.deepEqual(
+  splitDeclaredModel("wb2api/cn:glm-5.3-flash:high"),
+  { provider: "wb2api", model: "cn:glm-5.3-flash", thinking: "high" },
+  "`:high` 后缀切掉，模型 id 自己的冒号不许动",
+);
+assert.deepEqual(splitDeclaredModel("cn:glm-5.3-flash"), { model: "cn:glm-5.3-flash" }, "不是已知档位的冒号不是思考后缀");
+assert.deepEqual(splitDeclaredModel("claude-x"), { model: "claude-x" });
+assert.equal(splitDeclaredModel("   "), undefined);
+assert.deepEqual(
+  parseModelMeta(
+    [
+      JSON.stringify({ type: "model_change", provider: "wb2api", modelId: "cn:glm-5.3-flash" }),
+      JSON.stringify({ type: "thinking_level_change", thinkingLevel: "high" }),
+      JSON.stringify({ type: "message", message: { role: "user", content: "x" } }),
+    ].join("\n"),
+  ),
+  { provider: "wb2api", model: "cn:glm-5.3-flash", thinking: "high" },
+);
+assert.deepEqual(
+  parseModelMeta(JSON.stringify({ type: "message", message: { role: "assistant", provider: "anthropic", model: "claude-x", thinkingLevel: "low" } })),
+  { provider: "anthropic", model: "claude-x", thinking: "low" },
+  "没写 model_change 的会话：实际值只能从 assistant 消息上拿",
+);
+assert.deepEqual(parseModelMeta("\n{半行"), {}, "半行（头尾截断）跳过，不抛");
+
+const modelRoot = mkdtempSync(join(tmpdir(), "pi-sessions-model-"));
+const modelRunDir = join(modelRoot, "proj", "run-0");
+mkdirSync(modelRunDir, { recursive: true });
+const modelSession = join(modelRunDir, "session.jsonl");
+writeFileSync(
+  modelSession,
+  [
+    JSON.stringify({ type: "session", version: 3, cwd: tmpdir() }),
+    JSON.stringify({ type: "model_change", provider: "wb2api", modelId: "cn:glm-5.3-flash" }),
+    JSON.stringify({ type: "thinking_level_change", thinkingLevel: "high" }),
+  ].join("\n") + "\n",
+);
+
+const bgDir = mkdtempSync(join(tmpdir(), "pi-subagents-model-"));
+const MODEL_BG = "33333333-4444-5555-6666-777777777777";
+writeFileSync(join(bgDir, "status.json"), JSON.stringify({ state: "running", steps: [{ sessionFile: modelSession }] }));
+const modelRuns = new BgRuns(() => {}, { sessionsRoot: modelRoot });
+modelRuns.noteToolEnd("subagent", { runId: MODEL_BG, asyncDir: bgDir }, `Async: worker [${MODEL_BG}]`, { agent: "worker", task: "t", model: "some/other-model:low" });
+const bgView = modelRuns.list().find((r) => r.id === MODEL_BG);
+assert.equal(bgView?.model, "cn:glm-5.3-flash", "子代理会话里的实际值优先于派活参数");
+assert.equal(bgView?.provider, "wb2api");
+assert.equal(bgView?.thinking, "high");
+assert.equal(bgView?.modelFrom, "session");
+
+// 会话文件被拼到会话根外面（或 junction 反向指出去）：一个字节都不读，回落到派活参数。
+const escapeRoot = mkdtempSync(join(tmpdir(), "pi-sessions-model-outside-"));
+const escapeFile = join(escapeRoot, "session.jsonl");
+writeFileSync(escapeFile, JSON.stringify({ type: "model_change", provider: "evil", modelId: "stolen" }) + "\n");
+writeFileSync(join(bgDir, "status.json"), JSON.stringify({ state: "running", steps: [{ sessionFile: escapeFile }] }));
+const escapedView = modelRuns.list().find((r) => r.id === MODEL_BG);
+assert.equal(escapedView?.model, "other-model", "会话根之外的文件不读");
+assert.equal(escapedView?.modelFrom, "declared");
+
+// 会话还没落盘、runner 也没记：退到派活参数（`provider/id:max`）。
+const declaredDir = mkdtempSync(join(tmpdir(), "pi-subagents-declared-"));
+const DECLARED_BG = "44444444-5555-6666-7777-888888888888";
+writeFileSync(join(declaredDir, "status.json"), JSON.stringify({ state: "running", steps: [] }));
+modelRuns.noteToolEnd("subagent", { runId: DECLARED_BG, asyncDir: declaredDir }, `Async: worker [${DECLARED_BG}]`, { agent: "worker", task: "t", model: "wb2api/cn:glm-5.3-flash:max" });
+const declaredView = modelRuns.list().find((r) => r.id === DECLARED_BG);
+assert.equal(declaredView?.model, "cn:glm-5.3-flash");
+assert.equal(declaredView?.provider, "wb2api");
+assert.equal(declaredView?.thinking, "max");
+assert.equal(declaredView?.modelFrom, "declared");
+
+// 新版 pi-subagents 把 model / thinking 写进 status.json 的 steps[]：会话读不到就用它。
+const runnerDir = mkdtempSync(join(tmpdir(), "pi-subagents-runner-"));
+const RUNNER_BG = "55555555-6666-7777-8888-999999999999";
+writeFileSync(join(runnerDir, "status.json"), JSON.stringify({ state: "running", steps: [{ model: "anthropic/claude-x", thinking: "xhigh" }] }));
+modelRuns.noteToolEnd("subagent", { runId: RUNNER_BG, asyncDir: runnerDir }, `Async: worker [${RUNNER_BG}]`, { agent: "worker", task: "t" });
+const runnerView = modelRuns.list().find((r) => r.id === RUNNER_BG);
+assert.equal(runnerView?.model, "claude-x");
+assert.equal(runnerView?.provider, "anthropic");
+assert.equal(runnerView?.thinking, "xhigh");
+assert.equal(runnerView?.modelFrom, "runner");
+
+// 什么都没读到：不写字段，前端那一行就不画（而不是画半句空话）。
+const bareDir = mkdtempSync(join(tmpdir(), "pi-subagents-bare-"));
+const BARE_BG = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+writeFileSync(join(bareDir, "status.json"), JSON.stringify({ state: "running" }));
+modelRuns.noteToolEnd("subagent", { runId: BARE_BG, asyncDir: bareDir }, `Async: worker [${BARE_BG}]`, { agent: "worker", task: "t" });
+const bareView = modelRuns.list().find((r) => r.id === BARE_BG);
+assert.equal(bareView?.model, undefined, "什么都没读到：卡片不画模型行");
+assert.equal("modelFrom" in (bareView ?? {}), false);
+
+for (const dir of [modelRoot, bgDir, escapeRoot, declaredDir, runnerDir, bareDir]) rmSync(dir, { recursive: true, force: true });
 
 const acpDir = join(tmpdir(), "acp-delegate");
 mkdirSync(acpDir, { recursive: true });

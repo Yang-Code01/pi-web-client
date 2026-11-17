@@ -16,8 +16,9 @@
  * `message_start` 进来）；pi-subagents 读 `<asyncDir>/status.json` 的 `state`（`prune()` 里，
  * 30 秒一次）。都没有的 run 在 `SILENT_DEAD_MS` 后判死。
  *
- * 读盘只碰白名单里的两处根（`%TEMP%` 下的 `acp-delegate` 与 `pi-subagents-*`），且只读尾巴
- * （见 `tail()`）。
+ * 读盘只碰白名单里的几处根（`%TEMP%` 下的 `acp-delegate` 与 `pi-subagents-*`，外加 pi 的
+ * 会话根），痕迹只读尾巴（见 `tail()`）；会话根只用来读子代理自己记下的模型 / 思考档
+ * （见 `sessionModelMeta()`）。
  *
  * **前台派活也算一张卡**（D187）：`async:false` 的并行/工作流从来不会出现在结果 details 里，
  * 所以它在 `tool_execution_start` 就按工具调用 id 立卡，过程从孩子各自的 `status.json` 现拼，
@@ -27,6 +28,7 @@
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { sessionsRoot } from "./paths.ts";
 
 /** runner 的痕迹目录（acp_delegate 把 `<runId>.activity` / `.out` / `.session.jsonl` 都写在这里）。 */
 const ACP_DIR = join(tmpdir(), "acp-delegate");
@@ -79,6 +81,8 @@ export interface BgRun {
   children?: FgChild[];
   /** 前台跑完的答复：结果文本里那坨 `Return: {…}` 的 `children[].output`（D187）。 */
   outText?: string;
+  /** 派活参数里写的 `model`（`provider/id`，可能带 `:high` 后缀）：子代理会话还没落盘时的回落值。 */
+  declaredModel?: string;
 }
 
 /** 会话快照 / `SessionState.bg` 里那一小块：前端只画「N 个 · 谁 · 从什么时候」。 */
@@ -107,6 +111,30 @@ export interface BgRunView {
   endedAt?: number;
   hasLog: boolean;
   hasOut: boolean;
+  /**
+   * 卡片上「模型 · 思考」那一行：`model` 只给 id，provider 单独放（前端悬停里拼全）。
+   * 一个字段都没有 = 什么都不知道（子会话还没落盘、派活参数也没写），卡片就不画这一行。
+   */
+  model?: string;
+  provider?: string;
+  thinking?: string;
+  /** 这个模型是从哪儿看到的：子代理会话（实际值）/ runner 的 `status.json` / 派活参数。 */
+  modelFrom?: "session" | "runner" | "declared";
+}
+
+/** 一个 run 实际用的模型与思考档（`list()` 里算好，线上形状见 `BgRunView`）。 */
+export interface RunModel {
+  model: string;
+  provider?: string;
+  thinking?: string;
+  from: "session" | "runner" | "declared";
+}
+
+/** 从子代理会话 / `status.json` 里读到的模型信息，字段都可以缺。 */
+interface ModelMeta {
+  provider?: string;
+  model?: string;
+  thinking?: string;
 }
 
 /** 一个从没报过完成、也没再被 `details` 提过的 run 判死的期限。给得很宽：真跑几小时的任务
@@ -236,6 +264,129 @@ function tail(file: string, limit: number): string | undefined {
   }
 }
 
+// ---------------------------------------------------------------- 模型 / 思考档
+
+/** `model` 参数上的思考档后缀（pi-subagents 的写法：`provider/id:high`）。 */
+const THINKING_SUFFIX = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * 派活参数里的 `model`：`provider/id` 加可选的 `:high` 后缀。后缀只认已知档位，
+ * `cn:glm-5.3-flash` 这种带冒号的模型 id 不会被当成思考档切掉。
+ */
+export function splitDeclaredModel(raw: string): Omit<RunModel, "from"> | undefined {
+  let base = raw.trim();
+  if (!base) return undefined;
+  let thinking: string | undefined;
+  const at = base.lastIndexOf(":");
+  if (at > 0 && THINKING_SUFFIX.has(base.slice(at + 1))) {
+    thinking = base.slice(at + 1);
+    base = base.slice(0, at);
+  }
+  const slash = base.indexOf("/");
+  const provider = slash > 0 ? base.slice(0, slash) : undefined;
+  const model = (slash > 0 ? base.slice(slash + 1) : base).trim();
+  if (!model) return undefined;
+  return { model, ...(provider ? { provider } : {}), ...(thinking ? { thinking } : {}) };
+}
+
+/**
+ * 一段 `session.jsonl` 里的模型 / 思考档：`model_change`、`thinking_level_change`、以及
+ * assistant 消息自带的 `provider` / `model` / `thinkingLevel`，后写的赢（中途换档取最新的）。
+ * 子代理没有显式写 `model_change` 时，assistant 消息就是实际值的唯一来源。
+ */
+export function parseModelMeta(text: string, base: ModelMeta = {}): ModelMeta {
+  const out: ModelMeta = { ...base };
+  for (const line of text.split("\n")) {
+    // 绝大多数行是消息正文，整行 JSON.parse 一遍太贵；模型相关的行一定带这些键。
+    if (!line.includes("model") && !line.includes("thinkingLevel")) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue; // 首/尾半行：正常现象
+    }
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    if (e.type === "model_change") {
+      if (typeof e.provider === "string" && e.provider) out.provider = e.provider;
+      if (typeof e.modelId === "string" && e.modelId) out.model = e.modelId;
+      continue;
+    }
+    if (e.type === "thinking_level_change") {
+      if (typeof e.thinkingLevel === "string" && e.thinkingLevel) out.thinking = e.thinkingLevel;
+      continue;
+    }
+    if (e.type !== "message" || !e.message || typeof e.message !== "object") continue;
+    const m = e.message as Record<string, unknown>;
+    if (m.role !== "assistant") continue;
+    if (typeof m.provider === "string" && m.provider) out.provider = m.provider;
+    if (typeof m.model === "string" && m.model) out.model = m.model;
+    if (typeof m.thinkingLevel === "string" && m.thinkingLevel) out.thinking = m.thinkingLevel;
+  }
+  return out;
+}
+
+/** 读文件的一段（从 `start` 起最多 `len` 字节）。读不到 / 越界返回 undefined。 */
+function readChunk(file: string, start: number, len: number): string | undefined {
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, "r");
+    const size = fstatSync(fd).size;
+    if (start >= size) return undefined;
+    const buf = Buffer.alloc(Math.min(len, size - start));
+    if (buf.length) readSync(fd, buf, 0, buf.length, start);
+    return buf.toString("utf8");
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // 关不掉也只是这一行读不到。
+      }
+    }
+  }
+}
+
+/**
+ * 子代理会话里实际用的模型 / 思考档。会话文件能长到几 MB，而侧板 1.5 秒刷一次 —— 只读头尾
+ * 各 64 KB（模型和思考档由 pi 写在开头，中途换档很罕见，尾段兜它），并按 size + mtime 缓存。
+ */
+const MODEL_META_CHUNK = 64 * 1024;
+const MODEL_META_CACHE = new Map<string, { size: number; mtime: number; meta: ModelMeta | undefined }>();
+
+export function sessionModelMeta(file: string): ModelMeta | undefined {
+  let stat: ReturnType<typeof statSync>;
+  try {
+    stat = statSync(file);
+  } catch {
+    return undefined;
+  }
+  const hit = MODEL_META_CACHE.get(file);
+  if (hit && hit.size === stat.size && hit.mtime === stat.mtimeMs) return hit.meta;
+  let meta: ModelMeta = {};
+  const head = readChunk(file, 0, MODEL_META_CHUNK);
+  if (head) meta = parseModelMeta(head);
+  if (stat.size > MODEL_META_CHUNK * 2) {
+    const tailText = readChunk(file, stat.size - MODEL_META_CHUNK, MODEL_META_CHUNK);
+    if (tailText) meta = parseModelMeta(tailText, meta);
+  }
+  const found = meta.model || meta.thinking ? meta : undefined;
+  if (MODEL_META_CACHE.size > 128) MODEL_META_CACHE.clear();
+  MODEL_META_CACHE.set(file, { size: stat.size, mtime: stat.mtimeMs, meta: found });
+  return found;
+}
+
+/** `file` 的真路径是否落在 `root` 里面（`..` / 快捷方式拼出去的一律不算）。 */
+function underRoot(file: string, root: string): boolean {
+  try {
+    return containsPath(realpathSync.native(root), realpathSync.native(file));
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------- workflow（`subagent({workflow:…})`）
 
 /** 一个孩子：谁在跑（`agent`）+ 派给它的原话（`task`）。 */
@@ -256,6 +407,9 @@ interface FgChild {
   state: string;
   startedAt?: number;
   endedAt?: number;
+  /** runner 写进孩子 `status.json` 的实际模型 / 思考档（新版 pi-subagents 才有）。 */
+  model?: string;
+  thinking?: string;
 }
 
 /** 非空字符串才算数（`""` / 空白 / 非字符串都当没有）。 */
@@ -472,6 +626,8 @@ function fgChildren(parentId: string, since: number): FgChild[] {
         state: typeof obj.state === "string" ? obj.state : "",
         ...(typeof obj.startedAt === "number" ? { startedAt: obj.startedAt } : {}),
         ...(typeof obj.endedAt === "number" ? { endedAt: obj.endedAt } : {}),
+        ...(typeof step?.model === "string" && step.model ? { model: step.model } : {}),
+        ...(typeof step?.thinking === "string" && step.thinking ? { thinking: step.thinking } : {}),
       });
     }
   }
@@ -546,9 +702,12 @@ export class BgRuns {
   private sweep: NodeJS.Timeout | null = null;
 
   private readonly onChange: () => void;
+  /** 子代理会话所在的那个根（`~/.pi/agent/sessions` 或它被设置改到的位置）。 */
+  private readonly sessionsDir: string;
 
-  constructor(onChange: () => void) {
+  constructor(onChange: () => void, options: { sessionsRoot?: string } = {}) {
     this.onChange = onChange;
+    this.sessionsDir = options.sessionsRoot ?? sessionsRoot();
   }
 
   /**
@@ -580,6 +739,8 @@ export class BgRuns {
       foreground: true,
       children: [],
     };
+    const declared = str(a.model);
+    if (declared) run.declaredModel = declared;
     if (workflow) run.workflow = true;
     this.runs.set(callId, run);
     this.arm();
@@ -630,6 +791,9 @@ export class BgRuns {
     const agent = (str(d.agent) ?? str(a.agent) ?? fromText?.[1] ?? fromText?.[2] ?? childSummary.agent ?? "").trim();
     const task = (str(d.task) ?? str(a.task) ?? (source === "acp" ? TASK_LINE.exec(text)?.[1] : undefined) ?? childSummary.task ?? "").trim();
     const run: BgRun = { id, source, agent, task, startedAt: Date.now(), state: "running", ...(callId ? { toolCallId: callId } : {}) };
+    // 卡片上「继承什么」只有派活参数知道：子代理会话里真实用的值要等它落盘才有。
+    const declared = str(a.model) ?? str(d.model);
+    if (declared) run.declaredModel = declared;
     if (workflow) run.workflow = true;
     const live = LIVE_LOG.exec(text)?.[1];
     if (source === "acp") {
@@ -679,19 +843,124 @@ export class BgRuns {
   list(): BgRunView[] {
     return [...this.runs.values()]
       .sort((a, b) => a.startedAt - b.startedAt)
-      .map((r) => ({
-        id: r.id,
-        ...(r.toolCallId ? { toolCallId: r.toolCallId } : {}),
-        source: r.source,
-        agent: r.agent,
-        task: r.task,
-        startedAt: r.startedAt,
-        state: r.state,
-        ...(r.endedAt ? { endedAt: r.endedAt } : {}),
-        hasLog: r.foreground ? Boolean(r.children?.length) : Boolean(r.logPath),
-        // workflow 的答复在 `status.json` 里现拼：跑完才有，别在 running 时撒谎说「有输出」。
-        hasOut: r.foreground ? Boolean(r.outText) : r.workflow ? r.state !== "running" : Boolean(r.outPath),
-      }));
+      .map((r) => {
+        const model = this.modelFor(r);
+        return {
+          id: r.id,
+          ...(r.toolCallId ? { toolCallId: r.toolCallId } : {}),
+          source: r.source,
+          agent: r.agent,
+          task: r.task,
+          startedAt: r.startedAt,
+          state: r.state,
+          ...(r.endedAt ? { endedAt: r.endedAt } : {}),
+          hasLog: r.foreground ? Boolean(r.children?.length) : Boolean(r.logPath),
+          // workflow 的答复在 `status.json` 里现拼：跑完才有，别在 running 时撒谎说「有输出」。
+          hasOut: r.foreground ? Boolean(r.outText) : r.workflow ? r.state !== "running" : Boolean(r.outPath),
+          ...(model
+            ? {
+                model: model.model,
+                ...(model.provider ? { provider: model.provider } : {}),
+                ...(model.thinking ? { thinking: model.thinking } : {}),
+                modelFrom: model.from,
+              }
+            : {}),
+        };
+      });
+  }
+
+  /**
+   * 这个 run 实际用的模型 / 思考档，三级回落：
+   *
+   * 1. 子代理自己的会话记录（最准：继承来的、被 agent frontmatter 改过的都真实记在这里）；
+   * 2. runner 写进 `status.json` 的 `model` / `thinking`（新版 pi-subagents 才有）；
+   * 3. 派活参数里的 `model`（`provider/id:high`）—— 子会话还没落盘时至少写清楚「派了什么」。
+   */
+  private modelFor(run: BgRun): RunModel | undefined {
+    const meta = this.sessionMeta(run);
+    if (meta?.model) {
+      return {
+        model: meta.model,
+        ...(meta.provider ? { provider: meta.provider } : {}),
+        ...(meta.thinking ? { thinking: meta.thinking } : {}),
+        from: "session",
+      };
+    }
+    const recorded = run.foreground ? this.fgModel(run) : this.runnerModel(run);
+    if (recorded) return recorded;
+    if (run.declaredModel) {
+      const declared = splitDeclaredModel(run.declaredModel);
+      if (declared) return { ...declared, from: "declared" };
+    }
+    return undefined;
+  }
+
+  /** 子代理会话里的实际模型（只认落在会话根里的文件）。 */
+  private sessionMeta(run: BgRun): ModelMeta | undefined {
+    for (const file of this.sessionFiles(run)) {
+      const meta = sessionModelMeta(resolve(file));
+      if (meta?.model) return meta;
+    }
+    return undefined;
+  }
+
+  /**
+   * 子代理会话文件：pi-subagents 的 `status.json` 里 `steps[].sessionFile` 指向 pi 的会话根，
+   * acp 的在 `%TEMP%/acp-delegate`。两处都先归一真路径、确认还在根里才读 —— `status.json`
+   * 的内容也可能是别的进程写的，不能因此变成任意文件读取。
+   */
+  private sessionFiles(run: BgRun): string[] {
+    if (run.source === "acp") {
+      const file = resolve(join(ACP_DIR, `${run.id}.session.jsonl`));
+      return existsSync(file) && underRoot(file, ACP_DIR) ? [file] : [];
+    }
+    if (!run.dir) return [];
+    const steps = statusObject(run.dir)?.steps;
+    if (!Array.isArray(steps)) return [];
+    const out: string[] = [];
+    for (const step of [...steps].reverse()) {
+      if (!step || typeof step !== "object") continue;
+      const raw = (step as Record<string, unknown>).sessionFile;
+      if (typeof raw !== "string" || !raw.trim()) continue;
+      const file = resolve(raw);
+      if (!existsSync(file) || !underRoot(file, this.sessionsDir)) continue;
+      out.push(file);
+    }
+    return out;
+  }
+
+  /** runner 落盘的 `status.json`：`steps[].model` / `steps[].thinking`。 */
+  private runnerModel(run: BgRun): RunModel | undefined {
+    if (!run.dir) return undefined;
+    const steps = statusObject(run.dir)?.steps;
+    if (!Array.isArray(steps)) return undefined;
+    for (const step of [...steps].reverse()) {
+      if (!step || typeof step !== "object") continue;
+      const s = step as Record<string, unknown>;
+      const raw = typeof s.model === "string" ? s.model.trim() : "";
+      if (!raw) continue;
+      const parsed = splitDeclaredModel(raw);
+      if (!parsed) continue;
+      const thinking =
+        (typeof s.thinking === "string" && s.thinking.trim()) || parsed.thinking;
+      return { ...parsed, ...(thinking ? { thinking } : {}), from: "runner" };
+    }
+    return undefined;
+  }
+
+  /**
+   * 前台派活：模型记在孩子们各自的 `status.json` 里。几十路并行时各跑各的模型，
+   * 不一致就不写 —— 卡片上写一个不等于任何一个孩子的模型比空着更误导。
+   */
+  private fgModel(run: BgRun): RunModel | undefined {
+    const kids = run.children ?? [];
+    const models = new Set(kids.map((k) => k.model?.trim()).filter((m): m is string => Boolean(m)));
+    if (models.size !== 1) return undefined;
+    const parsed = splitDeclaredModel([...models][0]);
+    if (!parsed) return undefined;
+    const thinking = new Set(kids.map((k) => k.thinking?.trim()).filter((t): t is string => Boolean(t)));
+    const level = thinking.size === 1 ? [...thinking][0] : parsed.thinking;
+    return { ...parsed, ...(level ? { thinking: level } : {}), from: "runner" };
   }
 
   get(id: string): BgRun | undefined {

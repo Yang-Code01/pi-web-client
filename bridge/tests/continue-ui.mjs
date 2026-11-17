@@ -269,6 +269,25 @@ try {
   check("详情里写着是谁", /researcher/.test(cardText), JSON.stringify(cardText.slice(0, 120)));
   check("详情里写着派了什么活", /look at the files/.test(cardText), JSON.stringify(cardText.slice(0, 120)));
   check("详情里带着 runId", /del_fake/.test(cardText));
+  // 卡片上的「模型 · 思考」：桥从子代理自己的会话里读到实际值，卡片只写 modelId。
+  const modelText = await page.locator(".bg-run-model").innerText().catch(() => "");
+  check("详情里写着子代理的模型与思考档", /cn:glm-5\.3-flash/.test(modelText) && /high/.test(modelText), JSON.stringify(modelText));
+  const modelTip = await page.locator(".bg-run-model").getAttribute("title");
+  check(
+    "provider 与「从哪儿看到的」放在悬停里",
+    /wb2api\/cn:glm-5\.3-flash/.test(modelTip ?? "") && /来自子代理会话/.test(modelTip ?? ""),
+    JSON.stringify(modelTip),
+  );
+  check(
+    "模型行在标题行下面、任务原文上面",
+    await page.evaluate(() => {
+      const box = (sel) => document.querySelector(sel)?.getBoundingClientRect().top ?? NaN;
+      const head = box(".bg-run-head");
+      const model = box(".bg-run-model");
+      const task = box(".bg-run-task");
+      return head < model && model < task;
+    }),
+  );
   for (let i = 0; i < 40; i++) {
     if (/continueState/.test(await page.locator(".bg-run-log").innerText().catch(() => ""))) break;
     await sleep(100);
@@ -326,6 +345,7 @@ try {
   // 清理：给下一个人留干净的临时目录。
   fs.rmSync(path.join(os.tmpdir(), "acp-delegate", "del_fake.activity"), { force: true });
   fs.rmSync(path.join(os.tmpdir(), "acp-delegate", "del_fake.out"), { force: true });
+  fs.rmSync(path.join(os.tmpdir(), "acp-delegate", "del_fake.session.jsonl"), { force: true });
 } catch (err) {
   check(`没跑完：${String(err?.message ?? err).split("\n")[0]}`, false);
   if (bridgeLog) log("bridge:", bridgeLog.slice(-1500));

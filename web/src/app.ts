@@ -178,6 +178,8 @@ interface ExecChildState {
 interface BgRunNode {
   root: HTMLElement;
   state: HTMLElement;
+  /** 「模型 · 思考」那一行：桥什么都没读到时整行隐藏（不留空行）。 */
+  model: HTMLElement;
   log: HTMLElement;
   out: HTMLElement;
   labOut: HTMLElement;
@@ -238,6 +240,14 @@ function bgTookText(ms: number): string {
   const s = String(secs % 60).padStart(2, "0");
   const clock = m < 60 ? `${m}:${s}` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
   return tr("用了 {p1}", { p1: clock });
+}
+
+/** 「模型 · 思考」的出处（悬停里那一句）：实际值、runner 记录，还是派活参数。 */
+function modelFromText(from: BgRunView["modelFrom"]): string {
+  if (from === "session") return tr("来自子代理会话");
+  if (from === "runner") return tr("来自 runner 记录");
+  if (from === "declared") return tr("来自派活参数");
+  return "";
 }
 
 /**
@@ -14420,6 +14430,9 @@ export class App {
         const root = el("div", "bg-run");
         const line = el("div", "bg-run-head");
         line.append(el("span", "bg-run-agent", r.agent || tr("子代理")), el("span", "bg-run-state"));
+        // 模型 / 思考档：桥从子代理自己的会话里读到的实际值优先，读不到才回落派活参数。
+        const model = el("div", "bg-run-model");
+        model.hidden = true;
         const task = el("div", "bg-run-task", r.task || tr("（任务原文没传到桥）"));
         const id = el("div", "bg-run-id", r.id);
         const labLog = el("div", "bg-run-lab", tr("过程"));
@@ -14428,9 +14441,9 @@ export class App {
         labOut.hidden = true;
         const outEl = el("pre", "bg-run-out");
         outEl.hidden = true;
-        root.append(line, task, id, labLog, logEl, labOut, outEl);
+        root.append(line, model, task, id, labLog, logEl, labOut, outEl);
         sheet.body.append(root);
-        node = { root, state: line.lastElementChild as HTMLElement, log: logEl, out: outEl, labOut, hasLog: Boolean(r.hasLog) };
+        node = { root, state: line.lastElementChild as HTMLElement, model, log: logEl, out: outEl, labOut, hasLog: Boolean(r.hasLog) };
         if (!r.hasLog) logEl.textContent = tr("桥还没接上这个 runner 的过程记录。");
         sheet.runs.set(r.id, node);
       }
@@ -14440,6 +14453,20 @@ export class App {
         r.state === "running"
           ? `${state} · ${bgElapsedText(r.startedAt)}`
           : `${state} · ${bgTookText(Math.max(0, (r.endedAt ?? Date.now()) - r.startedAt))}`;
+      // 卡片上只写 modelId（省位），provider 与「从哪儿看到的」放到悬停里。
+      const modelText = r.model ? [r.model, r.thinking ? tr("思考 {p1}", { p1: r.thinking }) : ""].filter(Boolean).join(" · ") : "";
+      if (node.model.textContent !== modelText) node.model.textContent = modelText;
+      node.model.hidden = !modelText;
+      const modelTip = modelText
+        ? [
+            [r.provider, r.model].filter(Boolean).join("/"),
+            r.thinking ? tr("思考 {p1}", { p1: r.thinking }) : "",
+            modelFromText(r.modelFrom),
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : "";
+      if (node.model.title !== modelTip) node.model.title = modelTip;
       this.socket.send({ type: "bg.log", sessionId: sheet.sessionId, runId: r.id });
     }
   }

@@ -147,6 +147,15 @@ export interface BgRunView {
   endedAt?: number;
   hasLog: boolean;
   hasOut: boolean;
+  /**
+   * 卡片上「模型 · 思考」那一行：`model` 只有 id，provider 单独给（悬停里拼全）。
+   * 一个字段都没有 = 桥什么都没读到，卡片就不画这一行。
+   */
+  model?: string;
+  provider?: string;
+  thinking?: string;
+  /** 模型是从哪儿看到的：子代理会话（实际值）/ runner 的 `status.json` / 派活参数。 */
+  modelFrom?: "session" | "runner" | "declared";
 }
 
 export interface ApprovalRequest {

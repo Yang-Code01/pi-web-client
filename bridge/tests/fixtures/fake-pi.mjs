@@ -410,6 +410,15 @@ async function turn(text) {
     const activity = path.join(os.tmpdir(), "acp-delegate", "del_fake.activity");
     fs.mkdirSync(path.dirname(activity), { recursive: true });
     fs.writeFileSync(activity, "[tool] bash rg -n continueState web/src\n[tool] read bridge/src/sessions.ts\n");
+    // 子代理自己的会话记录（D170 侧板卡片的「模型 · 思考」行就是从这份里读实际值）。
+    fs.writeFileSync(
+      path.join(os.tmpdir(), "acp-delegate", "del_fake.session.jsonl"),
+      [
+        JSON.stringify({ type: "session", version: 3, cwd: process.cwd() }),
+        JSON.stringify({ type: "model_change", provider: "wb2api", modelId: "cn:glm-5.3-flash" }),
+        JSON.stringify({ type: "thinking_level_change", thinkingLevel: "high" }),
+      ].join("\n") + "\n",
+    );
     out({ type: "message_start", message: assistant("") });
     out({ type: "tool_execution_start", toolCallId: "call-bg", toolName: "acp_delegate", args: { agent: "researcher", task: "look at the files" } });
     out({

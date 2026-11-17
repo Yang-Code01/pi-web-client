@@ -5449,3 +5449,26 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - `@` 文件补全同理：路径中间补全只换光标左边那截。
 
 **验证：** `web/tests/commands-unit.mjs` 新增 5 个用例（`applyPick()` 切片模拟真插入）：光标回开头选候选后原文完整保留、无空格整段保留、词中间补全只换到光标、`/` 只认行首、`@` 同样只到光标 —— `npm run test:commands` 20 pass。真 Chromium 探针 `probes/complete-insert-keeps-text.mjs`（隔离桥 17876，用内建命令行代替技能行，路径相同）：修复前输入框变成 `/new ` 与 `/new bug`（红），重建后 `/new 帮我看看这个bug`、`/new 帮我看看这个 bug`（绿）。`npm --prefix web run typecheck`、`npm --prefix web run build` 全绿。
+
+## D285 子代理侧板的每张卡片写上「模型 · 思考档」（无票，用户报「点击子代理弹出的 dialog 里没有子代理模型和思考强度提示」，2026-11-17）
+
+**问题：** 点开「子代理」侧板（D170 那个：卡片是 agent / 状态 / 任务原文 / runId / 过程 / 最终输出）看不出这支子代理跑在哪个模型、思考档开到几档。用户只能回忆派活时写了什么 `model:`，或者去翻 runner 的日志；卡片的其余部分都能看出「派了谁、在干什么」，唯独这一项最影响「它是不是跑偏了」的判断。
+
+**原因：** 模型这件事只有三种来源，而它们都在桥读不到的地方：① 子代理自己的会话记录（`session.jsonl`，`model_change` / `thinking_level_change` / assistant 消息的 `provider`+`model`+`thinkingLevel`）；② 新版 pi-subagents 把 `model` / `thinking` 抄进 runner 的 `status.json` 的 `steps[]`；③ 派活参数 `model: "provider/id:high"`。桥原来只在 `BgRunView` 里带 `agent` / `task` / `hasLog` / `hasOut`，这三个来源一个都没接。
+
+**决定：**
+
+- **实际值优先，三级回落**（`bridge/src/bgruns.ts` 的 `modelFor()`）：① 子代理会话里记的实际模型 → `modelFrom: "session"`；② runner 的 `status.json`（`steps[].model`，可带 `:high` 后缀）→ `"runner"`；③ 派活参数 `args.model` → `"declared"`。会话记录最准：它记的是继承来的、被 agent frontmatter 改过的真实值，而 `declared` 只是「派了什么」。
+- **前台派（D187）不猜**：模型记在孩子们各自的 `status.json` 里，几十路并行时各跑各的；`fgModel()` 只在所有孩子的模型一致时写，不一致就空着 —— 写一个不等于任何一个孩子的模型比空着更误导。
+- **读会话文件也要白名单**：`status.json` 是别的进程写的，里面的 `sessionFile` 可能指向任意路径（甚至拼 `..` 出去）。`sessionFiles()` 先 `resolve` 再 `realpathSync.native`，确认还在 pi 的会话根（`paths.ts::sessionsRoot()`；测试用 `new BgRuns(cb, { sessionsRoot })` 注入）或 acp 的 `%TEMP%/acp-delegate/<runId>.session.jsonl`（这条既有约定见本文件 D170 段与 `childSessionFile()`）里，否则一个字节都不读。
+- **只读会话头**：`sessionModelMeta()` 读前 64 KB，文件超过 128 KB 再读尾 64 KB 兜住「模型写在很后面的会话」，按 `size+mtime` 缓存（`list()` 每 1.5 s 被前端轮询一次，不缓存就是每轮重读）。
+- **卡片上一行小字，只写 id**（`web/src/app.ts` 的 `paintBgSheet()`，`.bg-run-model`）：`cn:glm-5.3-flash · 思考 high`，位置在标题行下面、任务原文上面（窄栏放不下 `provider/id`）；`provider/id` 与「来自子代理会话 / 来自 runner 记录 / 来自派活参数」放悬停 `title`。三个来源一个都没读到就整行 `hidden`，不留空行、不画半句空话。
+
+**代价 / 可改：**
+
+- 第三级 `declared` 只是派活时的写法，子代理真被 frontmatter / runner 改掉模型时它会说错；卡片上只有悬停里那句「来自派活参数」提示可信度。
+- 思考档只认 `off|minimal|low|medium|high|xhigh|max` 这几档后缀；别的自定义档位（比如数字）会被当成模型 id 的一部分。
+- 模型 id 里的冒号（`cn:glm-5.3-flash`）与 `provider/id` 的分隔符都是冒号，只能靠「后缀是不是已知档位」来切；将来 pi 若加新档位要同步这张表。
+- acp 派活那条路只有 `%TEMP%/acp-delegate/<runId>.session.jsonl` 这一种约定；真跑起来那份文件没写出来时，卡片就回落到派活参数。
+
+**验证：** `npm run test:bgruns` 新增「模型 / 思考档」一节：`splitDeclaredModel` 三个断言（`wb2api/cn:glm-5.3-flash:high`、不带后缀的冒号、空白）、`parseModelMeta` 三个（含半行跳过）、四级回落各一条（会话实际值优先于 `args.model`、会话文件在根外被拒后回落 declared、`steps[].model` 回落 runner、全空时字段根本不出现）。`npm run test:continue:ui` 新增三条：卡片 `.bg-run-model` 上出现 `cn:glm-5.3-flash` 与 `high`、`title` 里有 `wb2api/cn:glm-5.3-flash` 与「来自子代理会话」、模型行在标题行下面任务原文上面（假 pi 现在会写 `%TEMP%/acp-delegate/del_fake.session.jsonl`）。两处 typecheck 全绿，`i18n-check: ok — 3287 keys × 3 langs`（新增三条），`test:viewport` 通过（`.bg-run-model` 不碰 vh/vw）。
