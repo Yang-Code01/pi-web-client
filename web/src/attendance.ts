@@ -581,7 +581,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     const pool = new Map<number, string>();
     for (const x of overtime?.candidates.l1 ?? []) pool.set(x.userId, `${x.name} ${x.workNo}`.trim());
     for (const x of overtime?.fixedL2 ?? []) pool.set(x.userId, `${x.name} ${x.workNo}`.trim());
-    const show = (ids: string[]): string => ids.map((id) => pool.get(Number(id)) ?? "").filter(Boolean).join("、");
+    const show = (ids: string[]): string => ids.map((id) => pool.get(Number(id)) ?? "").filter(Boolean).join(tr("、"));
     return [show(form.l1), show(form.l2)].filter(Boolean).join(" → ");
   }
 

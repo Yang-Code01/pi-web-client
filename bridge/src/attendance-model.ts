@@ -304,7 +304,11 @@ export interface AttendanceSummary {
 }
 
 /** 缺卡 = 平日、有日期、但上班或下班时间缺一个。周末没打卡不算缺。 */
-export function summarize(rows: AttendanceRow[], maxDay = ""): AttendanceSummary {
+/**
+ * 统计口径。`today` 传了的话，今天这一行整行不计缺卡 —— 一天还没过完，
+ * 「缺下班卡」在上午十点也是真的，把它算成缺卡会让人每天都看到一条假的。
+ */
+export function summarize(rows: AttendanceRow[], maxDay = "", today = ""): AttendanceSummary {
   let attended = 0;
   let missing = 0;
   let overtime = 0;
@@ -312,7 +316,7 @@ export function summarize(rows: AttendanceRow[], maxDay = ""): AttendanceSummary
   let last = maxDay;
   for (const r of rows) {
     if (r.clockIn || r.clockOut) attended++;
-    if (!r.weekend && (!r.clockIn || !r.clockOut)) missing++;
+    if (!r.weekend && r.date !== today && (!r.clockIn || !r.clockOut)) missing++;
     overtime += r.overtime;
     if (r.weekend) weekendOvertime += r.overtime;
     if (r.date > last) last = r.date;

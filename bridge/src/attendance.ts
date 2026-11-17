@@ -897,7 +897,7 @@ export async function handleAttendance(
         writeCache(cache);
         json(res, 200, {
           rows: live.rows,
-          summary: summarize(live.rows, live.maxDay),
+          summary: summarize(live.rows, live.maxDay, todayKey(new Date())),
           range,
           source: "live",
           fetchedAt: cache.fetchedAt,
@@ -914,7 +914,7 @@ export async function handleAttendance(
       if (used && rows.length === 0) throw failure;
       json(res, 200, {
         rows,
-        summary: summarize(rows, cache.maxDay),
+        summary: summarize(rows, cache.maxDay, todayKey(new Date())),
         range,
         source: "cache",
         fetchedAt: cache.fetchedAt,

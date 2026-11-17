@@ -276,6 +276,18 @@ test("summarize：平淡期周末不算缺卡", () => {
   assert.equal(s.lastDay, "2026-11-17", "max_day 与行取大者");
 });
 
+test("summarize：今天整行不算缺卡（下班卡还没到点）", () => {
+  const rows = [
+    M.mapRow({ day: "2026-11-16(一)", day_type: 0, start: "09:00", end: "18:00", ov: 0 }),
+    M.mapRow({ day: "2026-11-17(二)", day_type: 0, start: null, end: null, ov: 0 }),
+  ];
+  assert.equal(M.summarize(rows, "2026-11-16").missing, 1, "不传 today 时今天也算缺卡");
+  assert.equal(M.summarize(rows, "2026-11-16", "2026-11-17").missing, 0, "传了 today 就整行跳过");
+  const half = [M.mapRow({ day: "2026-11-17(二)", day_type: 0, start: "09:10", end: null, ov: 0 })];
+  assert.equal(M.summarize(half, "", "2026-11-17").missing, 0, "今天只有上班卡也不算缺");
+  assert.equal(M.summarize(half, "", "2026-11-17").attended, 1, "出勤数照算");
+});
+
 test("summarize：空列表不会 NaN", () => {
   const s = M.summarize([]);
   assert.deepEqual(s, { days: 0, attended: 0, missing: 0, overtime: 0, weekendOvertime: 0, lastDay: "" });
