@@ -253,7 +253,8 @@ try {
     "A 拿到 quick 文字的 delivered 回执",
     async () => {
       const body = await (await fetch(`http://127.0.0.1:17965/messages?peer=${sc}`)).json();
-      return body.entries?.some((e) => e.kind === "receipt" && e.ack?.status === "delivered") ? body : false;
+      // v2 起不再自己给自己写回执：发送成功的状态落在消息本身上。
+      return body.entries?.some((e) => e.text === "快捷联系人也能聊" && e.sendStatus === "success") ? body : false;
     },
     8000,
   );
@@ -558,7 +559,7 @@ try {
     async () => {
       const res = await fetch(`http://127.0.0.1:17965/messages?peer=${sb}`);
       const body = await res.json();
-      return body.entries?.some((e) => e.kind === "receipt" && e.ack?.status === "delivered") ? body : false;
+      return body.entries?.some((e) => e.text === "你好，乙" && e.sendStatus === "success") ? body : false;
     },
     8000,
   );

@@ -2,15 +2,31 @@ import fs from "node:fs";
 import { statePath } from "./config.ts";
 import type { Entry } from "./history.ts";
 
+export type QueuedKind =
+  | "text"
+  | "msg"
+  | "read"
+  | "typing"
+  | "recall"
+  | "group-invite"
+  | "group-sync"
+  | "group-leave"
+  | "friend-request"
+  | "friend-accept"
+  | "friend-quick";
+
 /** 一条待投递的消息。落盘是为了「bridge 重启后还能补」——进程是会被父进程重启的。 */
 export interface Queued {
   id: string;
   peerId: string;
   addr: string;
   port: number;
-  /** 信封类型：`text` 要收据，好友/快捷控制消息不要。 */
-  kind: "text" | "friend-request" | "friend-accept" | "friend-quick";
-  /** text 时是整条 Entry，其余是控制消息体。 */
+  /**
+   * 信封类型。`msg` 是 v2 消息（单聊/群聊共用），`text` 只留给 `outbox.json` 里的老条目；
+   * 其余是不进历史的控制消息（已读/输入中/撤回/群/好友）。
+   */
+  kind: QueuedKind;
+  /** `msg` 时是 `{ msg, target, total }`，`text` 时是整条 Entry，其余是控制消息体。 */
   payload: unknown;
   at: number;
   tries: number;

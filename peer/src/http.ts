@@ -12,7 +12,11 @@ import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
 import type { History } from "./history.ts";
 import type { Messages } from "./messages.ts";
+import { convOfNode, isGroupConv, textOf } from "./model.ts";
+import type { Msg } from "./model.ts";
+import type { Quote } from "./model.ts";
 import type { Relations } from "./peers.ts";
+import type { Store } from "./store.ts";
 import { MAX_MARKET_FRAME, ingest, manifestResponse, parseFrame, touchBlob } from "./market.ts";
 
 export interface PeerContext {
@@ -24,6 +28,7 @@ export interface PeerContext {
   relations: Relations;
   files: Files;
   ignored: Ignored;
+  store: Store;
 }
 
 const MAX_BODY = 1024 * 1024;
@@ -78,6 +83,27 @@ export class Ignored {
 function isLoopback(req: http.IncomingMessage): boolean {
   const addr = req.socket.remoteAddress ?? "";
   return /^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(addr);
+}
+
+/**
+ * 线上投影：v2 字段原样带出去，同时补回 v1 的 `kind` / `text` / `file`。
+ * 老的 pi 工具和旧页面按这三个字段读，没必要为了协议升级让它们全挂。
+ */
+function wire(msg: Msg): Record<string, unknown> {
+  const file = msg.elements.find((elem) => elem.type === "file");
+  const out: Record<string, unknown> = { ...msg, kind: file ? "file" : "text", text: textOf(msg) };
+  if (file && file.type === "file") {
+    out.file = { name: file.name, size: file.size, mime: file.mime, ...(file.sha256 ? { sha256: file.sha256 } : {}) };
+  }
+  return out;
+}
+
+/** 页面和 pi 工具既可以按 `conv` 也可以按 `peer` 传；`conv` 先认（群聊只有一个 key）。 */
+function convOfQuery(conv: unknown, peer: unknown): string {
+  const raw = String(conv ?? "");
+  if (raw.startsWith("n:") || raw.startsWith("g:")) return raw;
+  const id = String(peer ?? "");
+  return id ? convOfNode(id) : "";
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -136,7 +162,7 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
 }
 
 export function createPeerServer(ctx: PeerContext): http.Server {
-  const { cfg, nodeId, discovery, history, messages, relations, files, ignored } = ctx;
+  const { cfg, nodeId, discovery, history, messages, relations, files, ignored, store } = ctx;
   const identity = () => ({ nodeId, nickname: cfg.nickname, hostname: os.hostname(), port: cfg.port, version: VERSION });
 
   return http.createServer(async (req, res) => {
@@ -251,27 +277,156 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       // 以下三条只给本机页面 / pi 工具用。历史只在回环上可读（决定 4；隧道里那条 403 是设计好的）。
       if (url.pathname === "/threads" && req.method === "GET") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
-        return json(res, 200, { ok: true, threads: history.threads(discovery.online(), relations.list()) });
+        return json(res, 200, {
+          ok: true,
+          // 会话列表里的 last 也按 v1 形状投影一次：前端摘要读的是 kind/text/file。
+          threads: history
+            .threads(discovery.online(), relations.list(), store, messages.typingNow())
+            .map((t) => ({ ...t, last: t.last ? wire(t.last) : null })),
+          groups: store.groups(),
+        });
       }
 
       if (url.pathname === "/messages" && req.method === "GET") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
-        const peerId = url.searchParams.get("peer") ?? "";
-        if (!peerId) return json(res, 400, { error: "缺 peer" });
+        const conv = convOfQuery(url.searchParams.get("conv"), url.searchParams.get("peer"));
+        if (!conv) return json(res, 400, { error: "缺 conv" });
         const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 200));
-        return json(res, 200, { ok: true, peer: peerId, entries: history.read(peerId, limit) });
+        const state = store.conv(conv);
+        const group = isGroupConv(conv) ? store.group(conv.slice(2)) : null;
+        return json(res, 200, {
+          ok: true,
+          conv,
+          entries: history.read(conv, limit).map(wire),
+          state,
+          group,
+          typing: messages.typingNow().has(conv),
+        });
+      }
+
+      // 进会话 / 窗口重新可见：把水位推到最新，并告诉对方「我读到这儿了」。
+      if (url.pathname === "/read" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const conv = convOfQuery(body?.conv, body?.peer);
+        if (!conv) return json(res, 400, { error: "缺 conv" });
+        return json(res, 200, messages.markRead(conv));
+      }
+
+      if (url.pathname === "/typing" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const conv = convOfQuery(body?.conv, body?.peer);
+        if (!conv) return json(res, 400, { error: "缺 conv" });
+        messages.typingNotify(conv);
+        return json(res, 200, { ok: true });
       }
 
       if (url.pathname === "/send" && req.method === "POST") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const body = await readBody(req).catch(() => ({}));
         try {
+          const conv = convOfQuery(body?.conv, body?.peer);
+          if (!conv) return json(res, 400, { error: "缺 conv 或 peer" });
           const via = body?.via === "pi" ? ("pi" as const) : undefined;
-          const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""), via);
+          const quote = body?.quote && typeof body.quote === "object" ? (body.quote as Quote) : undefined;
+          const result = messages.sendConv(conv, { text: String(body?.text ?? ""), ...(quote ? { quote } : {}), ...(via ? { via } : {}) });
           return json(res, 200, result);
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });
         }
+      }
+
+      // 撤回 2 分钟内自己发的消息；对端收到后走同一条复核再落 patch。
+      if (url.pathname === "/recall" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const conv = convOfQuery(body?.conv, body?.peer);
+        const id = String(body?.id ?? "");
+        if (!conv || !id) return json(res, 400, { error: "缺 conv 或 id" });
+        const result = messages.recall(conv, id);
+        return json(res, result.ok ? 200 : 400, result);
+      }
+
+      // 转发：把一条消息抄进一个或多个会话（QQ 的 forwardMsg）。
+      if (url.pathname === "/forward" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const conv = convOfQuery(body?.conv, body?.peer);
+        const id = String(body?.id ?? "");
+        const targets = Array.isArray(body?.to) ? body.to.map((item: unknown) => convOfQuery(item, null)).filter(Boolean) : [];
+        if (!conv || !id || !targets.length) return json(res, 400, { error: "缺 conv / id / to" });
+        try {
+          return json(res, 200, messages.forward(conv, id, targets));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      if (url.pathname === "/search" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const q = url.searchParams.get("q") ?? "";
+        const conv = convOfQuery(url.searchParams.get("conv"), null);
+        const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
+        const hits = history.search(q, conv || undefined, limit).map((hit) => ({ conv: hit.conv, msg: wire(hit.msg) }));
+        return json(res, 200, { ok: true, hits });
+      }
+
+      // 置顶 / 免打扰：会话级的两个开关，写进 state.json。
+      if (url.pathname === "/conv" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const conv = convOfQuery(body?.conv, body?.peer);
+        if (!conv) return json(res, 400, { error: "缺 conv" });
+        const patch: { pinned?: boolean; muted?: boolean } = {};
+        if (typeof body?.pinned === "boolean") patch.pinned = body.pinned;
+        if (typeof body?.muted === "boolean") patch.muted = body.muted;
+        return json(res, 200, { ok: true, state: store.set(conv, patch) });
+      }
+
+      // 草稿：停止输入时写一次，进别的会话再回来就能续上。
+      if (url.pathname === "/draft" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const conv = convOfQuery(body?.conv, body?.peer);
+        if (!conv) return json(res, 400, { error: "缺 conv" });
+        store.setDraft(conv, String(body?.text ?? ""));
+        return json(res, 200, { ok: true });
+      }
+
+      if (url.pathname === "/groups" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        return json(res, 200, { ok: true, groups: store.groups() });
+      }
+
+      if (url.pathname === "/group/create" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const name = String(body?.name ?? "");
+        const members = Array.isArray(body?.members) ? body.members.map((id: unknown) => String(id)) : [];
+        try {
+          return json(res, 200, messages.createGroup(name, members));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      if (url.pathname === "/group/invite" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const groupId = String(body?.groupId ?? "");
+        const members = Array.isArray(body?.members) ? body.members.map((id: unknown) => String(id)) : [];
+        try {
+          return json(res, 200, messages.invite(groupId, members));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      if (url.pathname === "/group/leave" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        return json(res, 200, messages.leave(String(body?.groupId ?? "")));
       }
 
       // pi 的三个工具里「找人」这一步（第 5 片，决定 33）：昵称可以重名，

@@ -808,10 +808,12 @@ async function main(): Promise<void> {
       }
     }
     if (url.pathname === "/api/peer/messages" && req.method === "GET") {
+      const conv = url.searchParams.get("conv") ?? "";
       const who = url.searchParams.get("peer") ?? "";
-      if (!who) return json(res, 400, { error: "缺 peer" });
+      const limit = Number(url.searchParams.get("limit")) || 200;
+      if (!conv && !who) return json(res, 400, { error: "缺 conv" });
       try {
-        return json(res, 200, await peer.history(who, Number(url.searchParams.get("limit")) || 200));
+        return json(res, 200, conv ? await peer.messages(conv, limit) : await peer.history(who, limit));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
@@ -819,8 +821,91 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/peer/send" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       try {
+        const conv = String(body?.conv ?? "");
         const via = body?.via === "pi" ? ("pi" as const) : undefined;
+        if (conv) return json(res, 200, await peer.send(conv, String(body?.text ?? ""), body?.quote));
         return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/read" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.read(String(body?.conv ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/typing" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.typing(String(body?.conv ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/recall" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.recall(String(body?.conv ?? ""), String(body?.id ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/forward" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const to = Array.isArray(body?.to) ? body.to.map(String) : [];
+      try {
+        return json(res, 200, await peer.forward(String(body?.conv ?? ""), String(body?.id ?? ""), to));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/search" && req.method === "GET") {
+      const q = url.searchParams.get("q") ?? "";
+      if (!q.trim()) return json(res, 200, { hits: [] });
+      try {
+        return json(res, 200, await peer.search(q, url.searchParams.get("conv") ?? undefined));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/conv" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const patch: { pinned?: boolean; muted?: boolean } = {};
+      if (typeof body?.pinned === "boolean") patch.pinned = body.pinned;
+      if (typeof body?.muted === "boolean") patch.muted = body.muted;
+      try {
+        return json(res, 200, await peer.setConv(String(body?.conv ?? ""), patch));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/draft" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.setDraft(String(body?.conv ?? ""), String(body?.text ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/groups" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.groups());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/group" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const action = String(body?.action ?? "");
+      const members = Array.isArray(body?.members) ? body.members.map(String) : [];
+      try {
+        if (action === "create") return json(res, 200, await peer.createGroup(String(body?.name ?? ""), members));
+        if (action === "invite") return json(res, 200, await peer.invite(String(body?.groupId ?? ""), members));
+        if (action === "leave") return json(res, 200, await peer.leaveGroup(String(body?.groupId ?? "")));
+        return json(res, 400, { error: "未知动作" });
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }

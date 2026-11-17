@@ -183,8 +183,63 @@ export class PeerHost {
     return this.request("GET", `/messages?peer=${encodeURIComponent(peer)}&limit=${limit}`);
   }
 
+  /** v2：按会话 key（`n:<nodeId>` / `g:<groupId>`）读，群聊与草稿状态都靠它。 */
+  messages(conv: string, limit = 200): Promise<any> {
+    return this.request("GET", `/messages?conv=${encodeURIComponent(conv)}&limit=${limit}`);
+  }
+
   sendText(peer: string, text: string, via?: "pi"): Promise<{ ok: boolean; id: string; at: number }> {
     return this.request("POST", "/send", via ? { peer, text, via } : { peer, text });
+  }
+
+  /** v2 的发送入口：能带引用，也能发到群会话。 */
+  send(conv: string, text: string, quote?: unknown): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
+    return this.request("POST", "/send", quote ? { conv, text, quote } : { conv, text });
+  }
+
+  read(conv: string): Promise<{ ok: boolean; seq: number }> {
+    return this.request("POST", "/read", { conv });
+  }
+
+  typing(conv: string): Promise<{ ok: boolean }> {
+    return this.request("POST", "/typing", { conv });
+  }
+
+  recall(conv: string, id: string): Promise<{ ok: boolean }> {
+    return this.request("POST", "/recall", { conv, id });
+  }
+
+  forward(conv: string, id: string, to: string[]): Promise<{ ok: boolean; ids: string[] }> {
+    return this.request("POST", "/forward", { conv, id, to });
+  }
+
+  search(q: string, conv?: string): Promise<{ hits: unknown[] }> {
+    const tail = conv ? `&conv=${encodeURIComponent(conv)}` : "";
+    return this.request("GET", `/search?q=${encodeURIComponent(q)}${tail}`);
+  }
+
+  setConv(conv: string, patch: { pinned?: boolean; muted?: boolean }): Promise<{ ok: boolean }> {
+    return this.request("POST", "/conv", { conv, ...patch });
+  }
+
+  setDraft(conv: string, text: string): Promise<{ ok: boolean }> {
+    return this.request("POST", "/draft", { conv, text });
+  }
+
+  groups(): Promise<{ groups: unknown[] }> {
+    return this.request("GET", "/groups");
+  }
+
+  createGroup(name: string, members: string[]): Promise<{ ok: boolean; groupId: string; conv: string }> {
+    return this.request("POST", "/group/create", { name, members });
+  }
+
+  invite(groupId: string, members: string[]): Promise<{ ok: boolean }> {
+    return this.request("POST", "/group/invite", { groupId, members });
+  }
+
+  leaveGroup(groupId: string): Promise<{ ok: boolean }> {
+    return this.request("POST", "/group/leave", { groupId });
   }
 
   contacts(): Promise<{ contacts: unknown[] }> {
