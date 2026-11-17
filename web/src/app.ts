@@ -259,6 +259,8 @@ export class App {
   private sessionReclaimEl: HTMLElement | null = null;
   /** #484：旧会话顶部的「已交给新会话」条（平时 hidden）。 */
   private handoffBannerEl: HTMLElement | null = null;
+  /** #484：交接进行到哪一步（interrupting/writing/forking/starting），子弹窗据此显示状态。 */
+  private handoffPhase: string | null = null;
   private handoffBannerText: HTMLElement | null = null;
   private sessionReclaimTextEl: HTMLElement | null = null;
   private sessionReclaimId: string | null = null;
@@ -2054,8 +2056,9 @@ export class App {
         break;
       case "handoff.state": {
         if (msg.sessionId !== this.currentId) break;
-        this.paintHandoffSheetIfOpen();
         const phase = String(msg.phase ?? "");
+        this.handoffPhase = phase === "done" || phase === "failed" ? null : phase;
+        this.paintHandoffSheetIfOpen();
         if (phase === "done" && msg.newId) {
           this.flashToast(tr("交接完成，已切到新会话"), false, 4000);
           this.closeSubSheet();
@@ -5520,11 +5523,22 @@ export class App {
           el("div", "sub-note sub-note-dim", tr("手动交接：停当前任务 → 生成交接文档 → 新会话读文档继续。自动交接：上下文到阈值时自动做同一件事（可以连着交接多棒）。")),
         );
 
-        const manual = el("button", "btn primary sub-wide", tr("手动交接")) as HTMLButtonElement;
+        const busy = this.handoffPhase !== null;
+        if (busy) {
+          const step: Record<string, string> = {
+            interrupting: tr("正在中断当前任务…"),
+            writing: tr("正在生成交接文档…"),
+            forking: tr("正在建新会话…"),
+            starting: tr("正在把交接文档交给新会话…"),
+          };
+          body.append(el("div", "sub-note sub-status", step[this.handoffPhase ?? ""] ?? tr("交接进行中…")));
+        }
+        const manual = el("button", "btn primary sub-wide", busy ? tr("交接进行中…") : tr("手动交接")) as HTMLButtonElement;
+        manual.disabled = busy;
         manual.dataset.act = "handoff-now";
         let armed = false;
         manual.onclick = () => {
-          if (!this.currentId) return;
+          if (!this.currentId || this.handoffPhase) return;
           if (!armed) {
             armed = true;
             manual.textContent = tr("确认交接（会停止当前任务）");

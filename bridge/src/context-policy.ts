@@ -131,6 +131,16 @@ export function compactionEnabledFrom(json: Record<string, unknown> | unknown): 
 }
 
 /** 三层合一。缺省：压缩 70%、交接关。 */
+/** 桥和页面共用一句话：给用户看清楚是哪条线、差了多少。 */
+export function describeContextError(error: ContextError): string {
+  if (error.code === "range") {
+    return error.field === "handoff" ? "自动交接阈值要在 5% 到 90% 之间" : "自动压缩阈值要在 5% 到 90% 之间";
+  }
+  if (error.code === "equal") return "两条阈值不能相同：同一时间只能执行其中一个";
+  if (error.code === "gap") return "两条阈值至少要差 5 个百分点";
+  return "没装 handoff 技能（/skill:handoff）：自动交接用不了";
+}
+
 export function resolveContext(layers: ContextLayers, compactionEnabled = true): ResolvedContext {
   const compact = pick(layers, "autoCompactPercent");
   const enabled = pick(layers, "autoHandoffEnabled");

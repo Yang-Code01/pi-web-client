@@ -23,6 +23,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
+import { describeContextError } from "./context-policy.ts";
 import { pageBefore } from "./history.ts";
 import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
@@ -2824,6 +2825,13 @@ async function main(): Promise<void> {
             const scope = msg.scope === "project" ? "project" : "global";
             const cwd = scope === "project" ? String(msg.cwd ?? "") || null : null;
             try {
+              const patch = msg.patch && typeof msg.patch === "object" && !Array.isArray(msg.patch) ? msg.patch : null;
+              // #484：设置台写的是项目/全局那一层，保存前按「当时解析出来的两个生效值」校验。
+              const bad = patch ? await sessions.validateLayerSettings(scope, cwd, patch) : null;
+              if (bad) {
+                send({ type: "settings.error", scope, message: describeContextError(bad) });
+                return;
+              }
               const view = await writeSettings(pi.cli, scope, cwd, {
                 patch: msg.patch && typeof msg.patch === "object" && !Array.isArray(msg.patch) ? msg.patch : undefined,
                 raw: typeof msg.raw === "string" ? msg.raw : undefined,

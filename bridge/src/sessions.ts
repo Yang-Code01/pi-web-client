@@ -29,6 +29,7 @@ import { planReplayFromEntries, planFromToolResult, type PlanSnapshot } from "./
 import {
   compactionEnabledFrom,
   contextFromSettings,
+  parsePercent,
   policyView,
   resolveContext,
   validateContext,
@@ -864,6 +865,9 @@ export class Session extends EventEmitter {
   contextPolicyView: (() => Promise<ContextPolicyView>) | null = null;
   /** 最近一次 get_session_stats 的用量与窗口；两者都有才知道自己离哪条线还有多远。 */
   private lastContextTokens: number | null = null;
+  /** #484：刚压过、用量又没明显降下来时先冷却，别每轮都压一次同样没用的东西。 */
+  private lastCompactAt = 0;
+  private lastCompactTokens: number | null = null;
   private lastContextWindow: number | null = null;
   /** #484: 最近一次解析出来的策略；快照帧与 `context.policy.get` 都读它，免得每次都等两份设置。 */
   lastPolicy: ContextPolicyView | null = null;
@@ -1018,6 +1022,8 @@ export class Session extends EventEmitter {
       origin: id ? originOf(id) : "disk",
       running: false,
       done: Boolean(finished) && !finishedStale,
+      // #484：已经交接过的会话，桥重启后也要记得 —— 否则归档的旧会话被点开会重新武装。
+      handoffTo: readHandoffTo(id) ?? undefined,
       // D162: 打开一个老会话不是新活动 —— 时间停在文件最后一次真正被写的时刻，
       // 否则列表会在点开的一瞬间从「39分钟前」跳成「刚刚」。
       updatedAt: Math.round(meta?.mtime ?? Date.now()),
@@ -2619,7 +2625,18 @@ export class Session extends EventEmitter {
     }
     if (decision.action !== "compact") return;
     if (this.autoCompactUsed || this.state.running || !this.rpc?.alive) return;
+    // 压完窗口没怎么下来（典型：工具输出又长回去了），十分钟内不再试同一件事。
+    if (
+      this.lastCompactAt &&
+      Date.now() - this.lastCompactAt < 10 * 60_000 &&
+      this.lastCompactTokens !== null &&
+      used >= this.lastCompactTokens * 0.95
+    ) {
+      return;
+    }
     this.autoCompactUsed = true;
+    this.lastCompactAt = Date.now();
+    this.lastCompactTokens = used;
     this.emitWs({
       type: "notice",
       sessionId: this.state.id,
@@ -3193,8 +3210,8 @@ export class SessionManager extends EventEmitter {
     session.loopbackUrl = this.loopbackUrl;
     // #484: 阈值要在桥这边读（页面关着也得能压、能交接），所以把「解析三层」绑给会话。
     session.contextPolicyView = () => this.contextPolicyFor(session.state.id);
-    session.on("handoff", () => {
-      void this.startHandoff(session.state.id).catch(() => {
+    session.on("handoff", (trigger?: { used?: number; window?: number; percent?: number }) => {
+      void this.startHandoff(session.state.id, { ...trigger }).catch(() => {
         /* startHandoff 自己通知并回滚 */
       });
     });
@@ -3552,6 +3569,42 @@ export class SessionManager extends EventEmitter {
    * 会话级覆盖只钉它真改了的键；`null` 是「恢复跟随」。校验按 **解析后** 的两条线比（5–90、至少差 5 点），
    * 所以覆盖值与项目值撞车时会被拦下来，而不是静默改掉一个。
    */
+  /**
+   * #484：项目/全局的阈值是直接写进 pi settings.json 的（设置台那条路），保存前也得按「当时解析出来的
+   * 两个生效值」校验一次 —— 否则两条相等只会在判定时被悄悄夹开，用户永远不知道自己设错了。
+   */
+  async validateLayerSettings(
+    scope: "global" | "project",
+    cwd: string | null,
+    patch: Record<string, unknown>,
+  ): Promise<ContextError | null> {
+    const keys = ["web.autoCompactPercent", "web.autoHandoffEnabled", "web.autoHandoffPercent"];
+    if (!keys.some((key) => key in patch)) return null;
+    const layers = await this.readContextSettings(scope === "project" ? cwd : null);
+    const draft: ContextSettings = { ...(scope === "project" ? layers.project : layers.global) };
+    const percent = (value: unknown): number | null => (value === null || value === undefined ? null : parsePercent(value as any));
+    if ("web.autoCompactPercent" in patch) {
+      const value = percent(patch["web.autoCompactPercent"]);
+      if (value === null) delete draft.autoCompactPercent;
+      else draft.autoCompactPercent = value;
+    }
+    if ("web.autoHandoffEnabled" in patch) {
+      const raw = patch["web.autoHandoffEnabled"];
+      if (raw === null || raw === undefined) delete draft.autoHandoffEnabled;
+      else draft.autoHandoffEnabled = raw === true || raw === "true";
+    }
+    if ("web.autoHandoffPercent" in patch) {
+      const value = percent(patch["web.autoHandoffPercent"]);
+      if (value === null) delete draft.autoHandoffPercent;
+      else draft.autoHandoffPercent = value;
+    }
+    const resolved =
+      scope === "project"
+        ? resolveContext({ global: layers.global, project: draft, session: {} }, layers.compaction)
+        : resolveContext({ global: draft, project: {}, session: {} }, layers.compaction);
+    return validateContext(resolved);
+  }
+
   async setContextPolicy(
     id: string,
     patch: ContextSettings,
@@ -3600,17 +3653,18 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  private waitQuiet(session: Session, timeoutMs: number): Promise<void> {
+  /** true = 确实停下来了；false = 超时还在跑（交接要按失败处理，别对着跑着的会话发提示）。 */
+  private waitQuiet(session: Session, timeoutMs: number): Promise<boolean> {
     return new Promise((resolve) => {
-      if (!session.state.running) return resolve();
-      const timer = setTimeout(finish, timeoutMs);
-      function finish() {
+      if (!session.state.running) return resolve(true);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      function finish(settled: boolean) {
         clearTimeout(timer);
         session.off("state", check);
-        resolve();
+        resolve(settled);
       }
       const check = (state: SessionState) => {
-        if (!state.running) finish();
+        if (!state.running) finish(true);
       };
       session.on("state", check);
     });
@@ -3652,7 +3706,10 @@ export class SessionManager extends EventEmitter {
    * 复制消息树会把上下文原样带过去，正好丢了交接的意义；所以这里就是「同目录的新会话」。
    * 失败只通知、不推进：旧会话还能接着用，5 分钟内不再自动重试（见 `maybeContextAction`）。
    */
-  async startHandoff(id: string, opts: { manual?: boolean } = {}): Promise<void> {
+  async startHandoff(
+    id: string,
+    opts: { manual?: boolean; used?: number | null; window?: number | null; percent?: number | null } = {},
+  ): Promise<void> {
     // 磁盘上的会话（桥重启后还没打开过的）也要能交接，所以和 rename 一样 known + ensure。
     if (!this.known(id)) throw new Error("找不到这个会话");
     const session = this.ensure(id);
@@ -3684,16 +3741,25 @@ export class SessionManager extends EventEmitter {
       // 正在跑的那一轮（以及它带的后台子代理）就地终止：交接要的是稳定的现场。
       if (session.state.running) {
         session.abort();
-        await this.waitQuiet(session, 8000);
+        if (!(await this.waitQuiet(session, 10_000))) {
+          throw new Error("中断这一轮超时（10 秒还没停下来）；会话还在跑，交接没有开始。");
+        }
       }
-      session.dropBackground();
+      const stopped = this.stopBackgroundOf(session);
+      let why = "用户手动发起交接";
+      if (!opts.manual) {
+        const percent = opts.percent != null ? ` ${Math.round(opts.percent)}%` : "";
+        const window = opts.window ? `（窗口 ${Math.round(opts.window / 1000)}K）` : "";
+        why = `上下文到了自动交接线${percent}${window}`;
+      }
       // 只读/需确认下唯一放行的写入：这一个文档。
       writeHandoffPath(id, doc);
       emitPhase("writing");
       await session.prompt(
         `/skill:handoff 把当前会话的交接文档写到这个绝对路径：${doc}\n` +
-          "只写这一个文件，不要改动工作区的其他文件。这是交接：上一轮已被中断，后台子代理也已终止；" +
-          "文档里写明任务停在哪里、已经做完什么、下一步该做什么。",
+          `${why}；上一轮已被中断，后台子代理也被终止（${stopped} 个）。\n` +
+          "只写这一个文件，不要改动工作区的其他文件。文档里写明：任务停在哪里、已经做完什么、" +
+          "还有哪些没做、下一步该做什么。写完只回一句「交接文档已写好」，不要继续做事。",
       );
       const ready = await this.waitForDoc(session, doc, 5 * 60_000);
       if (!ready) throw new Error("5 分钟内没等到交接文档；这个会话还能继续用，什么也没改。");
@@ -3712,7 +3778,7 @@ export class SessionManager extends EventEmitter {
       writeContextOverride(next.state.id, readContextOverride(id));
       emitPhase("starting", { newId: next.state.id });
       await next.prompt(
-        `先读这份交接文档：${doc}\n` +
+        `（来自${opts.manual ? "手动" : "自动"}交接）先读这份交接文档：${doc}\n` +
           "然后按里面的「下一步」继续这个任务。文档里提到的文件与决定就是当前的现场，不要从头再来一遍。",
       );
       session.state.handoffTo = next.state.id;

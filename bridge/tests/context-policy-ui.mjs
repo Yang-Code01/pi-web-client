@@ -37,6 +37,8 @@ const env = {
   PI_WEB_TUNNEL: "0",
   PI_WEB_ROOT: path.join(REPO, "web", "dist"),
   PI_BIN: FAKE_PI,
+  // #484：自动交接要求 `/handoff` 技能存在（保存开关时查一次），假 pi 用 env 报一条给它。
+  FAKE_PI_COMMANDS: JSON.stringify([{ name: "skill:handoff", description: "交接", source: "user" }]),
 };
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 const bridge = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });
