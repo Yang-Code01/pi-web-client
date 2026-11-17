@@ -68,16 +68,20 @@ function readOnlyHint(pi: any, toolName: string): boolean {
   }
 }
 
-/** `{patterns, mode}` per session; re-read on every call so the web button applies immediately. */
-function readAllow(): { patterns: string[]; mode: Mode } {
+/** `{patterns, mode, handoffPath}` per session; re-read on every call so the web button applies immediately. */
+function readAllow(): { patterns: string[]; mode: Mode; handoffPath: string | null } {
   const file = process.env.PI_WEB_ALLOW_FILE;
-  if (!file) return { patterns: [], mode: "ask" };
+  if (!file) return { patterns: [], mode: "ask", handoffPath: null };
   try {
     const data = JSON.parse(fs.readFileSync(file, "utf8"));
     const mode: Mode = ["readonly", "strict", "ask", "auto"].includes(data.mode) ? data.mode : "ask";
-    return { patterns: Array.isArray(data.patterns) ? data.patterns.map(String) : [], mode };
+    return {
+      patterns: Array.isArray(data.patterns) ? data.patterns.map(String) : [],
+      mode,
+      handoffPath: typeof data.handoffPath === "string" && data.handoffPath ? data.handoffPath : null,
+    };
   } catch {
-    return { patterns: [], mode: "ask" };
+    return { patterns: [], mode: "ask", handoffPath: null };
   }
 }
 
@@ -250,9 +254,22 @@ export default function approvalGate(pi: any): void {
     const toolName = String(event.toolName ?? "tool");
     const input = (event.input ?? {}) as Record<string, unknown>;
     const cwd = String(ctx.cwd ?? process.cwd());
-    const { patterns, mode } = readAllow();
+    const { patterns, mode, handoffPath } = readAllow();
     const lower = toolName.toLowerCase();
     const looksOnly = READ_ONLY_TOOLS.has(lower) || ASK_TOOLS.has(lower) || readOnlyHint(pi, toolName);
+
+    // #484：交接文档是桥自己起的一个文件，写到哪儿由桥决定。只放行这一个目标（按绝对路径比），
+    // 其他写入在只读 / 需确认下照旧拦 —— 交接因此不必把整个会话降成「可写」。
+    if (handoffPath && WRITE_TOOLS.has(lower)) {
+      const target = targetPath(input).trim();
+      if (target) {
+        const abs = path.isAbsolute(target) ? path.resolve(target) : path.resolve(cwd, target);
+        if (abs === path.resolve(handoffPath)) {
+          console.error("[approval-gate] handoff document allowed");
+          return undefined;
+        }
+      }
+    }
 
     if (mode === "auto") return undefined;
     if (mode === "readonly" && !looksOnly) {
