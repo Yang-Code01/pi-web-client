@@ -190,9 +190,13 @@ export const api = {
     if (!out.sha) throw Object.assign(new Error(out.error ?? "读不了这条提交"), { code: out.code });
     return out;
   },
-  /** D289: 提交详情里点开某个文件时，才拉这一份并排差异（根提交左侧是空树）。 */
-  gitCommitFile: async (dir: string, sha: string, path: string, old = ""): Promise<GitDiffFile> => {
-    const out = await postJson<GitDiffFile & { ok?: boolean; code?: string; error?: string }>("/api/git/commit-file", { dir, sha, path, old });
+  /**
+   * D289: 提交详情里点开某个文件时，才拉这一份并排差异（根提交左侧是空树）。
+   * 只给 `@@` 块 + 3 行上下文，`from` 是块序号 —— 滚到底再要下一页，所以改在文件后半段的
+   * 提交也看得到（整篇文件按行号硬对齐那套做不到这点）。
+   */
+  gitCommitFile: async (dir: string, sha: string, path: string, old = "", from = 0): Promise<GitDiffFile> => {
+    const out = await postJson<GitDiffFile & { ok?: boolean; code?: string; error?: string }>("/api/git/commit-file", { dir, sha, path, old, from });
     if (!out.path) throw Object.assign(new Error(out.error ?? "读不了这个文件的差异"), { code: out.code });
     return out;
   },

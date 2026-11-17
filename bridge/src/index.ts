@@ -1132,7 +1132,7 @@ async function main(): Promise<void> {
           return json(res, 200, await gitCommitDetail(dir, String(body?.sha ?? "")));
         }
         if (url.pathname === "/api/git/commit-file") {
-          return json(res, 200, await gitCommitFile(dir, String(body?.sha ?? ""), String(body?.path ?? ""), String(body?.old ?? "")));
+          return json(res, 200, await gitCommitFile(dir, String(body?.sha ?? ""), String(body?.path ?? ""), String(body?.old ?? ""), Number(body?.from ?? 0)));
         }
         const id = String(body?.id ?? "").trim();
         const params = (body?.params && typeof body.params === "object" && !Array.isArray(body.params) ? body.params : {}) as GitOpParams;

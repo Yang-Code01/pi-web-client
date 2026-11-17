@@ -3437,4 +3437,6 @@ export const en: Dict = {
   "这条已经在当前分支上，摘过来会是一个空提交": "Already on the current branch — cherry-picking it would be an empty commit",
   "把这条提交摘到当前分支（走现有的摘提交操作卡）": "Cherry-pick this commit onto the current branch (through the existing cherry-pick card)",
   "在当前分支上生成一条反向提交（走现有的回滚操作卡）": "Create a reverse commit on the current branch (through the existing revert card)",
+  // D289：差异按 @@ 块分页，滚到底时底下那句提示。
+  "已显示 {p1}/{p2} 个变更块 · 继续往下滚看剩下的": "Showing {p1}/{p2} hunks · scroll for the rest",
 };

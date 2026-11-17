@@ -953,7 +953,10 @@ export interface GitDiffFile {
   additions: number;
   deletions: number;
   truncated: boolean;
-  lines: { left: string; right: string; tag: "same" | "add" | "del" | "mod" }[];
+  /** `hunk` 是 `@@ -a,b +c,d @@` 那一条分隔（只有提交详情按块分页时才会有）。 */
+  lines: { left: string; right: string; tag: "same" | "add" | "del" | "mod" | "hunk" }[];
+  /** 提交详情按块分页：这一页拿了第 from 块起的 count 块，总共 total 块。 */
+  hunks?: { total: number; from: number; count: number };
   images?: { base: string | null; target: string | null };
   note: string;
 }

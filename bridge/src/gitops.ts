@@ -100,8 +100,10 @@ export interface GitDiffFile {
   additions: number;
   deletions: number;
   truncated: boolean;
-  /** 文本并排：每行 {left, right, tag}。 */
-  lines: { left: string; right: string; tag: "same" | "add" | "del" | "mod" }[];
+  /** 文本并排：每行 {left, right, tag}；`hunk` 是 `@@ -a,b +c,d @@` 那一条分隔。 */
+  lines: { left: string; right: string; tag: "same" | "add" | "del" | "mod" | "hunk" }[];
+  /** 提交详情按块分页：这一页拿了第 from 块起的 count 块，总共 total 块。 */
+  hunks?: { total: number; from: number; count: number };
   /** 图片：两侧 data URL（小图才给，> 2 MB 走占位）。 */
   images?: { base: string | null; target: string | null };
   note: string;
@@ -378,6 +380,54 @@ function sideBySide(base: string, target: string): GitDiffFile["lines"] {
   return lines;
 }
 
+/** 提交详情里每个文件先只给这么多块 `@@`，滚到底再要下一页。 */
+export const HUNKS_PER_PAGE = 20;
+/** 一页最多这么多并排行：一个块把整篇文件重写时会很大，浏览器扛不住。 */
+const HUNK_ROWS_MAX = 4000;
+
+/**
+ * D289：`git diff -U3` 的输出 → 变更块。
+ *
+ * 之前提交详情跟「差异」页一样，把两侧整篇文件按行号硬对齐（`sideBySide`）再截到 200 行 ——
+ * 一条只改了 20 行的提交也要占满 200 行，而且改在后面的位置根本滚不到。现在按 git 给的
+ * `@@` 块走：只带 3 行上下文，块按页取，滚到底再要下一块。
+ */
+function parseHunks(text: string): { header: string; rows: GitDiffFile["lines"] }[] {
+  const hunks: { header: string; rows: GitDiffFile["lines"] }[] = [];
+  let cur: { header: string; rows: GitDiffFile["lines"] } | null = null;
+  let del: string[] = [];
+  let add: string[] = [];
+  const flush = (): void => {
+    if (cur) {
+      const n = Math.max(del.length, add.length);
+      for (let i = 0; i < n; i++) {
+        const l = del[i] ?? "";
+        const r = add[i] ?? "";
+        cur.rows.push({ left: l, right: r, tag: l && r ? "mod" : r ? "add" : "del" });
+      }
+    }
+    del = [];
+    add = [];
+  };
+  for (const line of text.split("\n")) {
+    if (line.startsWith("@@")) {
+      flush();
+      cur = { header: line.trim(), rows: [] };
+      hunks.push(cur);
+      continue;
+    }
+    if (!cur || !line) continue;
+    const head = line[0];
+    if (head === " ") {
+      flush();
+      cur.rows.push({ left: line.slice(1), right: line.slice(1), tag: "same" });
+    } else if (head === "-") del.push(line.slice(1));
+    else if (head === "+") add.push(line.slice(1));
+  }
+  flush();
+  return hunks;
+}
+
 /** 空树的固定哈希：根提交没有父，`git diff <sha>^ <sha>` 会直接失败，拿它当左侧。 */
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /** 提交详情里最多列多少个文件（与工作台历史的 300 条对齐，多的只报个数）。 */
@@ -591,7 +641,7 @@ export async function gitCommitDetail(dir: string, sha: string): Promise<GitComm
  * 单个文件的并排内容：`gitCommitDetail` 拿到清单之后，点哪个才拉哪个。
  * 左侧固定是该提交的第一个父提交（merge 也是），根提交用空树。
  */
-export async function gitCommitFile(dir: string, sha: string, p: string, old = ""): Promise<GitDiffFile> {
+export async function gitCommitFile(dir: string, sha: string, p: string, old = "", from = 0): Promise<GitDiffFile> {
   const target = commitish(sha, "");
   if (!target) throw Object.assign(new Error("提交哈希不合法"), { code: "invalid_params" });
   const want = paths([p])[0];
@@ -601,14 +651,47 @@ export async function gitCommitFile(dir: string, sha: string, p: string, old = "
   const [full, ...parents] = lineage.stdout.trim().split(/\s+/);
   if (!full) throw Object.assign(new Error(`找不到提交 ${target}`), { code: "commit_unknown" });
   const left = parents[0] ?? EMPTY_TREE;
-  const out = await read(dir, ["diff", "--numstat", "-z", "--find-renames", left, full, "--", ...(wantOld ? [wantOld, want] : [want])]);
+  const sides = wantOld ? [wantOld, want] : [want];
+  const out = await read(dir, ["diff", "--numstat", "-z", "--find-renames", left, full, "--", ...sides]);
   const row = numstatRows(out.stdout).find((r) => r.path === want);
-  return diffOneFile(dir, left, full, want, wantOld || row?.old, {
+  const meta = {
     status: row?.old || wantOld ? "R" : "M",
     additions: row?.additions ?? 0,
     deletions: row?.deletions ?? 0,
     binary: row?.binary ?? false,
-  });
+  };
+  if (classify(want) !== "text" || meta.binary) return diffOneFile(dir, left, full, want, wantOld || row?.old, meta);
+
+  // 文本：只取 `@@` 块（-U3 上下文），按 from / HUNKS_PER_PAGE 分页 —— 跟 diffOneFile 比，
+  // 不读两侧整篇文件，改在文件后半段的提交也能滚到。
+  const diff = await read(dir, ["diff", "--no-color", "-U3", "--find-renames", left, full, "--", ...sides]);
+  const all = parseHunks(diff.stdout);
+  const start = Math.max(0, Math.min(Math.trunc(Number(from) || 0), all.length));
+  const lines: GitDiffFile["lines"] = [];
+  let taken = 0;
+  let cut = false;
+  for (const h of all.slice(start, start + HUNKS_PER_PAGE)) {
+    const rows = h.rows.length > HUNK_ROWS_MAX ? h.rows.slice(0, HUNK_ROWS_MAX) : h.rows;
+    if (rows.length !== h.rows.length) cut = true;
+    if (lines.length && lines.length + rows.length + 1 > HUNK_ROWS_MAX) break;
+    lines.push({ left: h.header, right: "", tag: "hunk" });
+    lines.push(...rows);
+    taken += 1;
+  }
+  return {
+    path: want,
+    ...(wantOld || row?.old ? { old: wantOld || row?.old } : {}),
+    status: meta.status,
+    kind: "text",
+    binary: false,
+    size: Buffer.byteLength(diff.stdout),
+    additions: meta.additions,
+    deletions: meta.deletions,
+    truncated: cut,
+    lines,
+    note: cut ? `这一块太长，只显示前 ${HUNK_ROWS_MAX} 行` : "",
+    hunks: { total: all.length, from: start, count: taken },
+  };
 }
 
 /** 写操作注册表：id → 拼 argv 的纯函数。桥只认这些 id，不认网页传来的命令字符串。 */

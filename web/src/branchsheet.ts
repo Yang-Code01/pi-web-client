@@ -812,6 +812,24 @@ export class BranchSheet {
    * D289: `caps` 换掉图片两侧的落款（分支对照说「对照 / 当前」，提交详情说「父提交 / 本提交」）；
    * `limit` 换成桥端这次实际用的截断阈值，省略时用工作台自己那份。
    */
+  /**
+   * D289: 并排两栏的单元格。`hunk` 那条 `@@ -a,b +c,d @@` 要成对占两栏 —— 网格用
+   * `:nth-child(odd)` 画中间那条分隔线，插一个跨栏元素会把后面每一行的奇偶都错开。
+   */
+  private codeRows(f: GitDiffFile): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    for (const line of f.lines) {
+      if (line.tag === "hunk") {
+        const head = el("div", "go-code hunk", line.left);
+        head.title = line.left;
+        out.push(head, el("div", "go-code hunk"));
+        continue;
+      }
+      out.push(el("div", `go-code ${line.tag}`, line.left), el("div", `go-code ${line.tag}`, line.right));
+    }
+    return out;
+  }
+
   private fileDetail(
     f: GitDiffFile,
     caps?: { left: string; right: string },
@@ -837,11 +855,7 @@ export class BranchSheet {
       box.append(pair);
     } else if (f.kind === "text") {
       const grid = el("div", "go-codegrid");
-      for (const line of f.lines) {
-        const l = el("div", `go-code ${line.tag}`, line.left);
-        const r = el("div", `go-code ${line.tag}`, line.right);
-        grid.append(l, r);
-      }
+      grid.append(...this.codeRows(f));
       box.append(grid);
       if (f.truncated) box.append(el("div", "go-trunc", tr("大文件已截断：只显示前 {p1} 行 / {p2} KB", { p1: limit?.lines ?? 200, p2: Math.round((limit?.bytes ?? 409600) / 1024) })));
       if (f.note) box.append(el("div", "go-note", f.note));
@@ -892,6 +906,7 @@ export class BranchSheet {
 
     let detail: GitCommitDetail | null = null;
     let picked = -1;
+    let loadingMore = false;
 
     const paintSide = (d: GitCommitDetail | null): void => {
       side.replaceChildren();
@@ -989,21 +1004,51 @@ export class BranchSheet {
       if (d.more) fileList.append(el("div", "go-note", tr("只列出前 {p1} 个文件，共 {p2} 个", { p1: d.limit.files, p2: d.total })));
     };
 
-    const loadFile = async (i: number): Promise<void> => {
+    /**
+     * D289: 差异按 `@@` 块分页。`from === 0` 是换文件（清空重画），`from > 0` 是往下续拉，
+     * 直接往已有的 `.go-codegrid` 后面追加 —— 桥端一页 20 块，滚到底再要下一页，
+     * 所以「一屏 200 行、改在后面的看不到」这个毛病没了。
+     */
+    const hunkMore = (box: HTMLElement, full: GitDiffFile): void => {
+      box.querySelector("[data-hunk-more]")?.remove();
+      const h = full.hunks;
+      if (!h) return;
+      const next = h.from + h.count;
+      if (next >= h.total) return;
+      const noteEl = el("div", "go-hunk-more", tr("已显示 {p1}/{p2} 个变更块 · 继续往下滚看剩下的", { p1: next, p2: h.total }));
+      noteEl.dataset.hunkMore = String(next);
+      box.append(noteEl);
+    };
+
+    const loadFile = async (i: number, from = 0): Promise<void> => {
       const d = detail;
       const f = d?.files[i];
       if (!d || !f) return;
-      pane.replaceChildren(el("div", "branch-skeleton", tr("正在读差异…")));
+      if (from > 0 && loadingMore) return;
+      if (from === 0) pane.replaceChildren(el("div", "branch-skeleton", tr("正在读差异…")));
+      loadingMore = from > 0;
       try {
-        const full = await api.gitCommitFile(this.dir, d.sha, f.path, f.old ?? "");
+        const full = await api.gitCommitFile(this.dir, d.sha, f.path, f.old ?? "", from);
         if (ticket !== this.commitTicket || !card.isConnected || picked !== i) return;
-        pane.replaceChildren(this.fileDetail(full, {
-          left: d.parents.length ? tr("父提交 · {p1}", { p1: d.parents[0].slice(0, 7) }) : tr("（空树）"),
-          right: tr("本提交 · {p1}", { p1: d.short }),
-        }, null));
+        const box = from > 0 ? pane.querySelector<HTMLElement>(".go-file") : null;
+        const grid = box?.querySelector<HTMLElement>(".go-codegrid");
+        if (from > 0 && box && grid) {
+          grid.append(...this.codeRows(full));
+          hunkMore(box, full);
+        } else if (from === 0) {
+          const one = this.fileDetail(full, {
+            left: d.parents.length ? tr("父提交 · {p1}", { p1: d.parents[0].slice(0, 7) }) : tr("（空树）"),
+            right: tr("本提交 · {p1}", { p1: d.short }),
+          }, null);
+          pane.replaceChildren(one);
+          hunkMore(one, full);
+        }
       } catch (err) {
         if (ticket !== this.commitTicket || !card.isConnected) return;
-        pane.replaceChildren(el("div", "branch-note", errText(err)));
+        if (from === 0) pane.replaceChildren(el("div", "branch-note", errText(err)));
+        else pane.querySelector("[data-hunk-more]")?.replaceWith(el("div", "branch-note", errText(err)));
+      } finally {
+        loadingMore = false;
       }
     };
 
@@ -1062,6 +1107,14 @@ export class BranchSheet {
       on?.focus();
       on?.scrollIntoView({ block: "nearest" });
     };
+
+    // 滚到底就把下一页变更块接上（一页 20 块，见桥端 HUNKS_PER_PAGE）。
+    pane.addEventListener("scroll", () => {
+      const noteEl = pane.querySelector<HTMLElement>("[data-hunk-more]");
+      if (!noteEl || picked < 0 || loadingMore) return;
+      if (pane.scrollTop + pane.clientHeight < pane.scrollHeight - 160) return;
+      void loadFile(picked, Number(noteEl.dataset.hunkMore ?? 0));
+    });
 
     pane.append(el("div", "go-diff-empty", tr("正在读这条提交…")));
     paintSide(null);

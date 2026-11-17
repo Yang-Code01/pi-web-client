@@ -309,7 +309,6 @@ try {
   // 右栏只取「只在对侧分支上」的行，并跳过 merge（merge 摘/回滚都要 -m，按钮同样禁用）。
   const rowSel = '.bc-col[data-side="right"] .bc-row.onlyR:not(:has(.bc-badge))';
   check("历史行是 role=button 且在 Tab 序列里", await page.getAttribute(rowSel, "role") === "button" && await page.getAttribute(rowSel, "tabindex") === "0");
-  const shortSha = await page.getAttribute(rowSel, "data-h");
   await page.click(rowSel);
   await page.waitForSelector(".go-card.go-commit", { timeout: 20000 });
   check("点一行弹出提交详情小窗", await page.locator(".go-card.go-commit").count() === 1);
@@ -320,6 +319,9 @@ try {
   check("详情写着作者与父提交", /\S/.test(await page.textContent(".go-commit-meta") ?? "") && await page.locator(".go-meta-row").count() >= 4);
   await page.waitForSelector(".go-commit-diff .go-codegrid .go-code", { timeout: 20000 });
   check("详情自动展开第一个文件的并排差异", await page.locator(".go-commit-diff .go-codegrid .go-code").count() >= 2);
+  check("差异按变更块给，不贴整篇文件", await page.locator(".go-commit-diff .go-code.hunk").count() >= 2);
+  const hunkHead = (await page.textContent(".go-commit-diff .go-code.hunk"))?.trim() ?? "";
+  check("块头是 @@ 行", hunkHead.startsWith("@@"), hunkHead);
   check("打开的那一行有高亮", await page.locator('.bc-row.is-open').count() === 1);
   check("文件清单带增删数", /\+\d+/.test(await page.textContent(".go-commit-files-head") ?? ""));
 

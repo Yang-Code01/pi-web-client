@@ -56,9 +56,15 @@ try {
     git(dir, "commit", "-q", "-m", "a: 两行");
     return git(dir, "rev-parse", "HEAD");
   })();
-  // rename：git mv b.txt c.txt
+  // rename + 改一行：先把文件撑到 12 行（相似度够高 git 才认得出 rename），再 git mv + 改首行
+  const dozen = Array.from({ length: 12 }, (_, i) => `row ${i + 1}`);
+  put("b.txt", `${dozen.join("\n")}\n`);
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "b: 撑到 12 行");
   git(dir, "mv", "b.txt", "c.txt");
-  git(dir, "commit", "-q", "-m", "rename b → c");
+  put("c.txt", `${[`row 1 changed`, ...dozen.slice(1)].join("\n")}\n`);
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "rename b → c，顺手改一行");
   const c4 = git(dir, "rev-parse", "HEAD");
   // merge：从 c1 拉 side 分支加一个文件，再 no-ff 合回 main
   git(dir, "checkout", "-q", "-b", "side", c1);
@@ -108,7 +114,8 @@ try {
   assert.equal(d1.files[0].additions, 1, "根提交对着空树算增行");
   const f1 = await gitCommitFile(dir, c1, "a.txt");
   assert.equal(f1.kind, "text");
-  assert.equal(f1.lines[0].right, "one", "根提交左侧是空树 → 全算新增");
+  assert.equal(f1.lines[0].tag, "hunk", "文本差异从块头开始");
+  assert.ok(f1.lines.some((l) => l.right === "one"), "根提交左侧是空树 → 全算新增");
 
   const dLong = await gitCommitDetail(dir, longMsg);
   assert.equal(dLong.subject, "docs: 长说明");
@@ -125,7 +132,9 @@ try {
   assert.equal(renamed.status, "R");
   const fr = await gitCommitFile(dir, c4, "c.txt", "b.txt");
   assert.equal(fr.status, "R");
-  assert.ok(fr.lines.some((l) => l.left === "two"), "左侧读的是旧路径 b.txt");
+  assert.equal(fr.hunks.total, 1, "rename 带改动 → 一块");
+  assert.ok(fr.lines.some((l) => l.left === "row 1"), "左侧读的是旧路径 b.txt");
+  assert.ok(fr.lines.some((l) => l.right === "row 1 changed" && l.tag === "mod"), "右侧是本提交里的新内容");
 
   const dm = await gitCommitDetail(dir, merge);
   assert.equal(dm.merge, true);
@@ -139,6 +148,39 @@ try {
   assert.equal(f2.path, "b.txt");
   assert.equal(f2.additions, 1);
   assert.ok(f2.lines.some((l) => l.right === "two" && l.tag === "add"), "新增文件右侧有内容");
+
+  // ---------------------------------------------------------------- 按变更块分页
+  // 改在文件后半段也要看得到：只取 `@@` 块，不读两侧整篇；一页 20 块，滚到底再要下一页。
+  const big = Array.from({ length: 400 }, (_, i) => `line ${i + 1}`);
+  commit("big.txt", `${big.join("\n")}\n`, "docs: 400 行的文件");
+  const big2 = big.map((t, i) => (i % 10 === 4 ? `${t} CHANGED` : t));
+  const cBig = commit("big.txt", `${big2.join("\n")}\n`, "fix: 改在 40 个不相邻的位置");
+  const fh = await gitCommitFile(dir, cBig, "big.txt");
+  assert.equal(fh.hunks.total, 40, "40 处不相邻的改动 = 40 块");
+  assert.equal(fh.hunks.from, 0);
+  assert.equal(fh.hunks.count, 20, "一页 20 块");
+  assert.equal(fh.lines[0].tag, "hunk", "每页从块头开始");
+  assert.ok(fh.lines[0].left.startsWith("@@ -"), `块头是 @@ 行，实际 ${fh.lines[0].left}`);
+  assert.ok(!fh.lines.some((l) => l.left === "line 10"), "两块的上下文之间的行不进页");
+  const fh2 = await gitCommitFile(dir, cBig, "big.txt", "", 20);
+  assert.equal(fh2.hunks.from, 20);
+  assert.equal(fh2.hunks.count, 20);
+  assert.equal(fh2.lines[0].tag, "hunk", "第二页也从块头开始");
+  const fh3 = await gitCommitFile(dir, cBig, "big.txt", "", 40);
+  assert.equal(fh3.hunks.count, 0, "要过尾了就返回空页");
+  assert.deepEqual(fh3.lines, []);
+  assert.equal(fh3.truncated, false);
+
+  // 一整块超长时也只给前 4000 行，并说明为什么
+  const huge = Array.from({ length: 4100 }, (_, i) => `l${i}`);
+  commit("huge.txt", huge.join("\n") + "\n", "docs: 4100 行");
+  const cHuge = commit("huge.txt", huge.map((t) => `${t} x`).join("\n") + "\n", "fix: 整篇都改");
+  const fHuge = await gitCommitFile(dir, cHuge, "huge.txt");
+  assert.equal(fHuge.hunks.total, 1);
+  assert.equal(fHuge.hunks.count, 1);
+  assert.equal(fHuge.lines.length, 4001, "块头 + 前 4000 行");
+  assert.equal(fHuge.truncated, true);
+  assert.ok(fHuge.note.includes("这一块太长"), "超长块要有说明：" + fHuge.note);
 
   // ---------------------------------------------------------------- 参数清洗
   await rejects(gitCommitDetail(dir, "--evil"), "invalid_params", "`-` 开头的哈希不进 argv");
