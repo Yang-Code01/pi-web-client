@@ -204,6 +204,8 @@ export interface SessionState {
   bg?: BgView | null;
   /** Launch options chosen at creation (#28), one line. */
   launch?: string;
+  /** #484：这个会话已经交接给哪个新会话（旧会话只读；有它的卡上挂「已交接」徙标，点一下跳过去）。 */
+  handoffTo?: string;
 }
 
 /** #94 工作区的一级分组；`id` 是稳定键（派生组 = 归一化工程根小写，手动组 = `manual:…`）。 */

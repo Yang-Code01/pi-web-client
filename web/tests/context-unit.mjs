@@ -123,25 +123,38 @@ test("ctxCompactAfterSeq：✂ 挂在压缩事件之后的下一次请求，不�
   assert.equal(s.has(6), false);
 });
 
-test("ctxKpis：当前 / 峰值 / 次数 / 均值 / 真实预算余量", () => {
+test("ctxKpis：当前 / 峰值 / 次数 / 均值 / 两条阈值线的余量", () => {
   const lines = [req({ seq: 1, total: 100 }), req({ seq: 2, total: 300 }), req({ seq: 3, total: 200 })];
-  const k = ctxKpis(lines, 1000, null, 800);
+  const policy = {
+    policy: { compactPercent: 70, compactFrom: "global", compactOn: true, handoffOn: true, handoffFrom: "project", handoffPercent: 85 },
+    window: 1000,
+    used: null,
+    compact: { line: 800, percent: 80, clamped: false },
+    handoff: { line: 900, percent: 90, clamped: true },
+    decision: { action: "compact", percent: 80, line: 800 },
+  };
+  const k = ctxKpis(lines, 1000, null, policy);
   assert.equal(k.current, 200, "无实测值时用最后一轮");
   assert.equal(k.peak, 300);
   assert.equal(k.peakSeq, 2);
   assert.equal(k.requests, 3);
   assert.equal(k.avg, 200);
-  assert.equal(k.budget, 800);
-  assert.equal(k.tillCompact, 600, "桥的真实预算 - current，不再是 window * 0.92");
+  assert.equal(k.compactLine, 800);
+  assert.equal(k.compactPercent, 80, "百分比取夹取后的真值");
+  assert.equal(k.tillCompact, 600, "压缩线 - current");
+  assert.equal(k.handoffLine, 900);
+  assert.equal(k.tillHandoff, 700, "交接线 - current");
 
-  const measured = ctxKpis(lines, 1000, 12345, 800);
+  const measured = ctxKpis(lines, 1000, 12345, policy);
   assert.equal(measured.current, 12345, "有实测值（stats.context.tokens）优先");
-  assert.equal(measured.tillCompact, 0, "实测值超了预算就 0，不出负数");
+  assert.equal(measured.tillCompact, 0, "实测值超了就 0，不出负数");
+  assert.equal(measured.tillHandoff, 0);
 
-  const nobudget = ctxKpis(lines, 1000, null, null);
-  assert.equal(nobudget.budget, null);
-  assert.equal(nobudget.tillCompact, null, "没设预算就没有距压缩");
-  assert.equal(ctxKpis([], 1000, null, 800).requests, 0, "空序列不出 NaN");
+  const bare = ctxKpis(lines, 1000, null, null);
+  assert.equal(bare.compactLine, null);
+  assert.equal(bare.tillCompact, null, "没解析出阈值就没有距压缩");
+  assert.equal(bare.tillHandoff, null);
+  assert.equal(ctxKpis([], 1000, null, policy).requests, 0, "空序列不出 NaN");
 });
 
 test("ctxFileRows：按路径聚合读 / 写 / 检索、+/− 行与失败，按次数排序", () => {

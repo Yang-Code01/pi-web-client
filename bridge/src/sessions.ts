@@ -26,6 +26,17 @@ import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 import { isProtocolWidgetLines } from "./extwidgets.ts";
 import { itemsFrame, type SessionHistory } from "./history.ts";
 import { planReplayFromEntries, planFromToolResult, type PlanSnapshot } from "./execplan.ts";
+import {
+  compactionEnabledFrom,
+  contextFromSettings,
+  policyView,
+  resolveContext,
+  validateContext,
+  type ContextError,
+  type ContextPolicyView,
+  type ContextSettings,
+} from "./context-policy.ts";
+import { readSettings } from "./pisettings.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -223,6 +234,8 @@ export interface SessionState {
   /** Sidebar arrangement (bridge-side state/manage.json), only filled in by list(). */
   pinned?: boolean;
   archived?: boolean;
+  /** #484: 这个会话把任务交接给了哪个新会话（旧会话就停在那一刻，不再自动压缩/交接）。 */
+  handoffTo?: string;
   /** 工作区（一级分组 = 工程）的组 id，只有 list() 填（#72/#94）。空串 = 没有 cwd，不属于任何工作区。 */
   ws?: string;
   /** Tool permission mode the approval gate enforces (state/allow/<id>.json `mode`). */
@@ -556,22 +569,73 @@ function writePermission(id: string, mode: PermissionMode, from: "default" | nul
   writeJson(file, next);
 }
 
-/** Context budget is one global number: `{"value": 200000}` in the state dir. */
-function budgetFile(): string {
-  return statePath("budget.json");
+/**
+ * #484: 一个会话自己的上下文阈值覆盖，`{compactPercent, handoffEnabled, handoffPercent}`，
+ * 缺键 = 跟随项目/全局。旧的 `budget.json`（一个全局绝对 token 数）已删：100 万的预算在 200K 窗口上
+ * 永远等不到，这正是「自动压缩从没生效」的原因。
+ */
+function contextFile(id: string): string {
+  return statePath("context", `${id}.json`);
 }
 
-function readBudget(): number | null {
-  const raw = readJson<{ value?: unknown }>(budgetFile(), {});
-  const value = Number(raw?.value);
-  return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
+function readContextOverride(id: string): ContextSettings {
+  const raw = readJson<{ compactPercent?: unknown; handoffEnabled?: unknown; handoffPercent?: unknown }>(contextFile(id), {});
+  const out: ContextSettings = {};
+  const compact = Number(raw?.compactPercent);
+  if (Number.isFinite(compact) && compact !== 0) out.autoCompactPercent = Math.round(compact);
+  if (typeof raw?.handoffEnabled === "boolean") out.autoHandoffEnabled = raw.handoffEnabled;
+  const handoff = Number(raw?.handoffPercent);
+  if (Number.isFinite(handoff) && handoff !== 0) out.autoHandoffPercent = Math.round(handoff);
+  return out;
 }
 
-function writeBudget(value: number | null): void {
+function writeContextOverride(id: string, settings: ContextSettings): void {
   try {
-    writeJson(budgetFile(), { value });
+    writeJson(contextFile(id), {
+      compactPercent: settings.autoCompactPercent ?? null,
+      handoffEnabled: settings.autoHandoffEnabled ?? null,
+      handoffPercent: settings.autoHandoffPercent ?? null,
+    });
   } catch {
     /* an unwritable state dir only costs persistence */
+  }
+}
+
+/** 旧会话 → 接棒会话。侧栏的「已交接」徽标与那条「已交给 …」靠它，桥重启后还在。 */
+function handoffFile(): string {
+  return statePath("handoff.json");
+}
+
+function readHandoffTo(id: string): string | null {
+  const raw = readJson<Record<string, unknown>>(handoffFile(), {});
+  const value = raw?.[id];
+  return typeof value === "string" && value ? value : null;
+}
+
+function writeHandoffTo(id: string, to: string): void {
+  try {
+    const raw = readJson<Record<string, unknown>>(handoffFile(), {});
+    raw[id] = to;
+    writeJson(handoffFile(), raw);
+  } catch {
+    /* persistence is a nicety: the in-memory state still carries it */
+  }
+}
+
+/**
+ * #484: 交接文档是唯一允许在只读模式下写的文件。路径写进闸门每次工具调用都会重读的那份 allow
+ * 文件里，所以只放行这一个目标，别的写入照旧拦。
+ */
+function writeHandoffPath(id: string, file: string | null): void {
+  try {
+    const p = allowFile(id);
+    const data = readJson<Record<string, unknown>>(p, {});
+    const next: Record<string, unknown> = { ...(data && typeof data === "object" ? data : {}) };
+    if (file) next.handoffPath = file;
+    else delete next.handoffPath;
+    writeJson(p, next);
+  } catch {
+    /* the gate falls back to plain permissions: the handoff then fails loudly instead of writing anywhere */
   }
 }
 
@@ -761,7 +825,8 @@ export interface SessionSnapshot {
   items: Item[];
   approvals: ApprovalRequest[];
   asks: AskRequest[];
-  budget: number | null;
+  /** #484: 三层阈值解析后的样子（不带预算：绝对 token 数已经删了）。 */
+  policy: ContextPolicyView | null;
   ext: ExtUiState;
   queue: { steering: string[]; followUp: string[] };
   plan: PlanSnapshot | null;
@@ -795,10 +860,17 @@ export class Session extends EventEmitter {
   /** Set by SessionManager: loopback origin the child posts to (asks, preview opens). */
   loopbackUrl: string | null = null;
 
-  /** Context-token ceiling the bridge enforces by compacting; null = off. Shared across sessions. */
-  contextBudget: number | null = readBudget();
-  /** Tokens the last get_session_stats reported, used to decide when the budget is blown. */
+  /** #484: 三层阈值由 manager 注入（要读两份 settings.json，Session 自己不碰盘）。 */
+  contextPolicyView: (() => Promise<ContextPolicyView>) | null = null;
+  /** 最近一次 get_session_stats 的用量与窗口；两者都有才知道自己离哪条线还有多远。 */
   private lastContextTokens: number | null = null;
+  private lastContextWindow: number | null = null;
+  /** #484: 最近一次解析出来的策略；快照帧与 `context.policy.get` 都读它，免得每次都等两份设置。 */
+  lastPolicy: ContextPolicyView | null = null;
+  /** 交接进行中：别让下一次 stats 再触发一遍。 */
+  handoffPending = false;
+  /** 上一次自动交接失败的时刻：5 分钟内不再重试，不然每条消息都弹一次同样的错。 */
+  private handoffFailedAt = 0;
   /** #384：ctxlog 增量基线（已推给前端的行数；null = 还没推过全量）。 */
   private ctxBaseline: number | null = null;
   /** One auto-compaction per turn; the next agent_start re-arms it. */
@@ -837,6 +909,17 @@ export class Session extends EventEmitter {
 
   /** D170 详情：这个会话的后台任务（含刚跑完的）。没接过手的会话返回空。 */
   bgList(): BgRunView[] {
+    return this.bgRuns.list();
+  }
+
+  /** #484: 交接前不再追踪这些子代理（真进程随 abort / 会话关闭走，桥只负责别再统计它们）。 */
+  dropBackground(): void {
+    this.bgRuns.reset();
+    this.publishBg();
+  }
+
+  /** 交接时提示「终止了几个」用；只是计数，不阻塞流程。 */
+  backgroundRuns(): BgRunView[] {
     return this.bgRuns.list();
   }
 
@@ -1350,16 +1433,21 @@ export class Session extends EventEmitter {
     try {
       const stats = await this.rpc.request<any>("get_session_stats", {}, 15000);
       const tokens = stats?.contextUsage?.tokens;
+      const window = stats?.contextUsage?.contextWindow;
       this.lastContextTokens = typeof tokens === "number" ? tokens : null;
+      this.lastContextWindow = typeof window === "number" && window > 0 ? window : null;
+      // #484: the policy read is cached in the manager (1.5 s) — this stays a cheap call.
+      const policy = await (this.contextPolicyView?.() ?? Promise.resolve(null));
+      if (policy) this.lastPolicy = policy;
       this.emitWs({
         type: "stats",
         sessionId: this.state.id,
         tokens: stats?.tokens ?? null,
         cost: stats?.cost ?? null,
         context: stats?.contextUsage ?? null,
-        budget: this.contextBudget,
+        policy,
       });
-      void this.maybeAutoCompact();
+      this.maybeContextAction(policy);
     } catch {
       /* stats are decoration; the chat still works without them */
     }
@@ -2513,37 +2601,50 @@ export class Session extends EventEmitter {
     this.skillScanCache = null;
   }
 
-  /** Set (or clear) the context ceiling; persisted so it survives a bridge restart. */
-  setContextBudget(value: number | null): void {
-    this.contextBudget = value && value > 0 ? Math.round(value) : null;
-    writeBudget(this.contextBudget);
-    this.autoCompactUsed = false;
-    this.emitWs({ type: "budget", sessionId: this.state.id, budget: this.contextBudget });
-    void this.maybeAutoCompact();
-  }
-
-  /** Compact once per turn when the last measured context blew the budget. */
-  private async maybeAutoCompact(): Promise<void> {
-    // 随手问 (#86) is never compacted behind the user's back: the summary would be exactly the
-    // 上下文干扰 it exists to avoid. It gets a reminder instead, and 「清空」 is the only reset.
-    if (this.state.scratch) return;
-    const budget = this.contextBudget;
-    const used = this.lastContextTokens;
-    if (!budget || !used) return;
-    if (used < budget) return;
+  /**
+   * #484: 每次 stats 之后看一次策略。交接可以在一轮中间打断；压缩等这一轮结束 —— 趁 pi 跑着压
+   * 没意义（下一句回答还会把它填回去），而交接必须当场停，否则任务会接着把窗口撞穿。
+   */
+  private maybeContextAction(view: ContextPolicyView | null): void {
+    // 随手问 (#86) 从不被偷偷压缩：摘要恰好就是它要避开的上下文干扰；「清空」是唯一的重置。
+    if (this.state.scratch || this.state.handoffTo || this.handoffPending) return;
+    if (!view) return;
+    const { used, window } = view;
+    if (!used || !window) return;
+    const decision = view.decision;
+    if (decision.action === "handoff") {
+      if (this.handoffFailedAt && Date.now() - this.handoffFailedAt < 5 * 60_000) return;
+      this.emit("handoff", { used, window, percent: decision.percent });
+      return;
+    }
+    if (decision.action !== "compact") return;
     if (this.autoCompactUsed || this.state.running || !this.rpc?.alive) return;
     this.autoCompactUsed = true;
     this.emitWs({
       type: "notice",
       sessionId: this.state.id,
-      text: `上下文 ${Math.round(used / 1000)}K 已超预算 ${Math.round(budget / 1000)}K，自动压缩…`,
+      text: `上下文 ${Math.round(used / 1000)}K 已到自动压缩线 ${decision.percent}%（${Math.round(decision.line / 1000)}K），自动压缩…`,
       level: "warn",
     });
-    try {
-      await this.compact();
-    } catch {
+    void this.compact().catch(() => {
       /* a failed compaction should not break the turn */
-    }
+    });
+  }
+
+  /** 自动交接失败后由 manager 记下时间，5 分钟内不再自己重试。 */
+  noteHandoffFailure(): void {
+    this.handoffFailedAt = Date.now();
+    this.handoffPending = false;
+  }
+
+  /** 阈值改了（或交接失败后重试）就给压缩一次新的机会；下一轮 `agent_start` 还会再清一次。 */
+  rearmAutoCompact(): void {
+    this.autoCompactUsed = false;
+  }
+
+  /** manager 读策略 / 建快照时要的那两个数。 */
+  contextUsage(): { used: number | null; window: number | null } {
+    return { used: this.lastContextTokens, window: this.lastContextWindow };
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
@@ -2675,7 +2776,7 @@ export class Session extends EventEmitter {
       items: this.items,
       approvals: [...this.approvals.values()],
       asks: [...this.asks.values()].map(publicAsk),
-      budget: this.contextBudget,
+      policy: this.lastPolicy,
       ext: this.extUi(),
       queue: this.queue,
       plan: this.plan,
@@ -3018,7 +3119,13 @@ export class SessionManager extends EventEmitter {
       if (s.state.scratch) continue;
       const lock = readLock(s.state.id);
       // Copy: these flags must not leak into the live state a session broadcasts.
-      out.push({ ...s.state, ...flag(s.state.id, s.state.cwd, s.state.updatedAt), locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))) });
+      const handoffTo = readHandoffTo(s.state.id);
+      out.push({
+        ...s.state,
+        ...flag(s.state.id, s.state.cwd, s.state.updatedAt),
+        ...(handoffTo ? { handoffTo } : {}),
+        locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))),
+      });
     }
     for (const meta of this.discover()) {
       if (seen.has(meta.id)) continue;
@@ -3039,6 +3146,10 @@ export class SessionManager extends EventEmitter {
         origin: originOf(meta.id),
         permission: readPermission(meta.id),
         ...(meta.firstUserText ? { preview: meta.firstUserText } : {}),
+        ...((() => {
+          const to = readHandoffTo(meta.id);
+          return to ? { handoffTo: to } : {};
+        })()),
         ...flag(meta.id, meta.cwd, Math.round(meta.mtime)),
         ...(readTtyLock(meta.id) ? { locked: true } : {}),
       });
@@ -3080,6 +3191,13 @@ export class SessionManager extends EventEmitter {
   private wire(session: Session): void {
     session.on("ws", (payload: any) => this.emit("ws", payload));
     session.loopbackUrl = this.loopbackUrl;
+    // #484: 阈值要在桥这边读（页面关着也得能压、能交接），所以把「解析三层」绑给会话。
+    session.contextPolicyView = () => this.contextPolicyFor(session.state.id);
+    session.on("handoff", () => {
+      void this.startHandoff(session.state.id).catch(() => {
+        /* startHandoff 自己通知并回滚 */
+      });
+    });
     session.on("state", (state: SessionState) => this.emit("ws", { type: "session.state", session: state }));
     session.on("approval", (approval: ApprovalRequest) => this.emit("approval", approval));
     session.on("ask", (ask: AskRequest, tool: string) => this.emit("ask", ask, tool));
@@ -3359,6 +3477,271 @@ export class SessionManager extends EventEmitter {
     await session.rename(name);
     this.emit("ws", { type: "session.state", session: session.state });
     return session;
+  }
+
+  /**
+   * pi 自己的压缩是兜底（`窗口 − reserveTokens`，默认 16384）；这里读它两次：一次当 UI 的「上限」，
+   * 一次当桥的压低线（见 `effectiveLine`）。没写的项目算「跟随全局」，两份都没写就是开。
+   */
+  async compactionEnabled(cwd: string | null): Promise<boolean> {
+    return (await this.readContextSettings(cwd)).compaction;
+  }
+
+  // ------------------------------------------------------------ 上下文阈值 / 交接 (#484)
+
+  /** readSettings 要读盘且是异步的；按 cwd 缓存 1.5 秒，每条消息刷新一次 stats 也不会变成慢查询。 */
+  private settingsCache = new Map<
+    string,
+    { at: number; global: ContextSettings; project: ContextSettings; compaction: boolean }
+  >();
+  /** 每会话一把：同一时刻只允许一个交接流程。 */
+  private handoffs = new Set<string>();
+
+  /** settings.set 落盘后调用：否则改完要等缓存过期才生效。 */
+  dropContextCache(): void {
+    this.settingsCache.clear();
+  }
+
+  private async readContextSettings(cwd: string | null): Promise<{
+    global: ContextSettings;
+    project: ContextSettings;
+    compaction: boolean;
+  }> {
+    const key = cwd ?? "";
+    const hit = this.settingsCache.get(key);
+    if (hit && Date.now() - hit.at < 1500) return hit;
+    let compaction = true;
+    let global: ContextSettings = {};
+    let project: ContextSettings = {};
+    try {
+      const view = await readSettings(this.cli, "global", null);
+      global = contextFromSettings(view.json);
+      compaction = compactionEnabledFrom(view.json) ?? true;
+    } catch {
+      /* 读不到就按默认：开 */
+    }
+    if (cwd) {
+      try {
+        const view = await readSettings(this.cli, "project", cwd);
+        project = contextFromSettings(view.json);
+        compaction = compactionEnabledFrom(view.json) ?? compaction;
+      } catch {
+        /* 项目没有设置文件很常见 */
+      }
+    }
+    const entry = { at: Date.now(), global, project, compaction };
+    this.settingsCache.set(key, entry);
+    return entry;
+  }
+
+  /** 会话 > 项目 > 全局，再乘上当前模型的窗口。窗口未知时两条线都是 null（不猜）。 */
+  async contextPolicyFor(id: string): Promise<ContextPolicyView> {
+    const session = this.sessions.get(id);
+    const cwd = session?.state.cwd ?? this.metas().find((m) => m.id === id)?.cwd ?? null;
+    const layers = await this.readContextSettings(cwd);
+    const usage = session?.contextUsage() ?? { used: null, window: null };
+    return policyView({
+      layers: { global: layers.global, project: layers.project, session: readContextOverride(id) },
+      compactionEnabled: layers.compaction,
+      window: usage.window,
+      used: usage.used,
+    });
+  }
+
+  /**
+   * 会话级覆盖只钉它真改了的键；`null` 是「恢复跟随」。校验按 **解析后** 的两条线比（5–90、至少差 5 点），
+   * 所以覆盖值与项目值撞车时会被拦下来，而不是静默改掉一个。
+   */
+  async setContextPolicy(
+    id: string,
+    patch: ContextSettings,
+  ): Promise<{ policy: ContextPolicyView; error: ContextError | null }> {
+    if (!this.known(id)) throw new Error("找不到这个会话");
+    const session = this.ensure(id);
+    const next: ContextSettings = { ...readContextOverride(id) };
+    for (const key of ["autoCompactPercent", "autoHandoffEnabled", "autoHandoffPercent"] as const) {
+      if (!(key in patch)) continue;
+      const value = patch[key];
+      if (value === null || value === undefined) delete next[key];
+      else (next as Record<string, unknown>)[key] = value;
+    }
+    const layers = await this.readContextSettings(session.state.cwd);
+    const resolved = resolveContext(
+      { global: layers.global, project: layers.project, session: next },
+      layers.compaction,
+    );
+    const error = validateContext(resolved);
+    if (!error) {
+      writeContextOverride(id, next);
+      session.rearmAutoCompact();
+    }
+    const usage = session.contextUsage();
+    const policy = policyView({
+      layers: { global: layers.global, project: layers.project, session: next },
+      compactionEnabled: layers.compaction,
+      window: usage.window,
+      used: usage.used,
+    });
+    if (!error) this.emit("ws", { type: "context.policy", sessionId: id, policy });
+    return { policy, error };
+  }
+
+  /** 交接靠用户自己的 `/handoff` 技能（它 `disable-model-invocation`，模型不能主动跑它）。 */
+  async hasHandoffSkill(session: Session): Promise<boolean> {
+    try {
+      const list = await session.commands();
+      return list.some((c) => /^(?:skill:)?handoff$/i.test(c.name));
+    } catch {
+      return false;
+    }
+  }
+
+  private waitQuiet(session: Session, timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      if (!session.state.running) return resolve();
+      const timer = setTimeout(finish, timeoutMs);
+      function finish() {
+        clearTimeout(timer);
+        session.off("state", check);
+        resolve();
+      }
+      const check = (state: SessionState) => {
+        if (!state.running) finish();
+      };
+      session.on("state", check);
+    });
+  }
+
+  /** 文档写完才算数：出现过、够大、停在同一个大小 1.5 秒。5 分钟没等到就放弃。 */
+  private async waitForDoc(session: Session, file: string, timeoutMs: number): Promise<boolean> {
+    const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const started = Date.now();
+    let lastSize = -1;
+    let stableAt = 0;
+    while (Date.now() - started < timeoutMs) {
+      let size = -1;
+      try {
+        size = fs.statSync(file).size;
+      } catch {
+        /* 还没写 */
+      }
+      if (size > 200) {
+        if (size !== lastSize) {
+          lastSize = size;
+          stableAt = Date.now();
+        } else if (Date.now() - stableAt > 1500) {
+          return true;
+        }
+      } else if (!session.state.running && Date.now() - started > 2000) {
+        // 这一轮已经结束，文件却没长出来：不用傻等满 5 分钟。
+        return false;
+      }
+      await pause(400);
+    }
+    return false;
+  }
+
+  /**
+   * #484 交接：中断 → 让旧会话用 `/handoff` 把现场写进固定路径的文档 → 同 cwd 建 **全新空会话**
+   * （只继承权限/模型/启动参数/会话级阈值）→ 让它先读文档再继续 → 旧会话停摆、归档、记下后继。
+   *
+   * 复制消息树会把上下文原样带过去，正好丢了交接的意义；所以这里就是「同目录的新会话」。
+   * 失败只通知、不推进：旧会话还能接着用，5 分钟内不再自动重试（见 `maybeContextAction`）。
+   */
+  async startHandoff(id: string, opts: { manual?: boolean } = {}): Promise<void> {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error("找不到这个会话");
+    if (this.handoffs.has(id) || session.handoffPending) return;
+    // 先占位再等：openLive 要等 pi 起来，这期间每次 stats 都会再喊一次交接。
+    this.handoffs.add(id);
+    session.handoffPending = true;
+    if (!session.live) {
+      try {
+        await this.openLive(id);
+      } catch (error) {
+        session.handoffPending = false;
+        this.handoffs.delete(id);
+        throw error;
+      }
+    }
+    const emitPhase = (phase: string, extra: Record<string, unknown> = {}) =>
+      this.emit("ws", { type: "handoff.state", sessionId: id, phase, manual: Boolean(opts.manual), ...extra });
+    const doc = statePath("handoff", `${id}-${Date.now()}.md`);
+    try {
+      emitPhase("interrupting");
+      // 正在跑的那一轮（以及它带的后台子代理）就地终止：交接要的是稳定的现场。
+      if (session.state.running) {
+        session.abort();
+        await this.waitQuiet(session, 8000);
+      }
+      session.dropBackground();
+      // 只读/需确认下唯一放行的写入：这一个文档。
+      writeHandoffPath(id, doc);
+      emitPhase("writing");
+      await session.prompt(
+        `/skill:handoff 把当前会话的交接文档写到这个绝对路径：${doc}\n` +
+          "只写这一个文件，不要改动工作区的其他文件。这是交接：上一轮已被中断，后台子代理也已终止；" +
+          "文档里写明任务停在哪里、已经做完什么、下一步该做什么。",
+      );
+      const ready = await this.waitForDoc(session, doc, 5 * 60_000);
+      if (!ready) throw new Error("5 分钟内没等到交接文档；这个会话还能继续用，什么也没改。");
+      emitPhase("forking");
+      const next = await this.create(
+        session.state.cwd,
+        `${session.state.name ?? "会话"}（接棒）`,
+        readLaunch(id),
+      );
+      const permission = readPermissionFile(id);
+      if (permission) {
+        writePermission(next.state.id, permission.mode, permission.from);
+        next.applyPermission(permission.mode);
+      }
+      writeContextOverride(next.state.id, readContextOverride(id));
+      emitPhase("starting", { newId: next.state.id });
+      await next.prompt(
+        `先读这份交接文档：${doc}\n` +
+          "然后按里面的「下一步」继续这个任务。文档里提到的文件与决定就是当前的现场，不要从头再来一遍。",
+      );
+      session.state.handoffTo = next.state.id;
+      writeHandoffTo(id, next.state.id);
+      this.emit("ws", { type: "session.state", session: session.state });
+      // 旧会话到此为止：停 pi、归档。它不再自动压缩/交接，翻回去只是读历史。
+      void session.close({ quiet: true }).catch(() => {});
+      this.manage.setArchived([id], true);
+      this.emit("ws", { type: "manage", manage: this.manage.snapshot() });
+      emitPhase("done", { newId: next.state.id });
+    } catch (error) {
+      session.noteHandoffFailure();
+      const message = error instanceof Error ? error.message : String(error);
+      this.emit("ws", { type: "notice", sessionId: id, text: `交接没有完成：${message}`, level: "error" });
+      emitPhase("failed", { message });
+    } finally {
+      this.handoffs.delete(id);
+      session.handoffPending = false;
+      writeHandoffPath(id, null);
+      this.emit("ws", { type: "context.policy", sessionId: id, policy: await this.contextPolicyFor(id) });
+    }
+  }
+
+  /** 交接前把子代理卡片收干净：真正的子进程随 `abort`/会话关闭走，桥只能负责不再追踪它们。 */
+  private stopBackgroundOf(session: Session): number {
+    const runs = session.backgroundRuns().filter((r) => r.state === "running");
+    session.dropBackground();
+    if (runs.length) {
+      this.emit("ws", {
+        type: "notice",
+        sessionId: session.state.id,
+        text: `交接前终止了 ${runs.length} 个后台子代理`,
+        level: "warn",
+      });
+    }
+    return runs.length;
+  }
+
+  /** 交接前把后台子代理一并终止（清单只为提示用，不阻塞流程）。 */
+  stopBackground(id: string): number {
+    const session = this.sessions.get(id);
+    return session ? this.stopBackgroundOf(session) : 0;
   }
 
   /** Composer permission button: persisted per session, picked up by the gate on the next tool call. */

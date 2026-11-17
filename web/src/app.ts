@@ -61,7 +61,7 @@ import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
-import { type CtxLine } from "./context.ts";
+import { type CtxLine, type CtxPolicy } from "./context.ts";
 import { ContextPanel, type ContextPanelData } from "./context-panel.ts";
 import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
@@ -257,6 +257,9 @@ export class App {
   private currentId: string | null = null;
   private session: SessionState | null = null;
   private sessionReclaimEl: HTMLElement | null = null;
+  /** #484：旧会话顶部的「已交给新会话」条（平时 hidden）。 */
+  private handoffBannerEl: HTMLElement | null = null;
+  private handoffBannerText: HTMLElement | null = null;
   private sessionReclaimTextEl: HTMLElement | null = null;
   private sessionReclaimId: string | null = null;
   private dismissedReclaimIds = new Set<string>();
@@ -419,8 +422,8 @@ export class App {
   private contextPanel: ContextPanel | null = null;
   /** 设置 → 工具 → 上下文洞察（跨会话）。 */
   private contextInsights: ContextInsightsView | null = null;
-  /** Context budget chosen in the model sheet (bridge enforces it); null = window size. */
-  private budget: number | null = null;
+  /** #484：当前会话解析后的两条阈值（会话 > 项目 > 全局，再按当前窗口夹取）。 */
+  private policy: CtxPolicy | null = null;
   /** Extension status lines / widgets / title for the current session (#18). */
   private ext: ExtUi = { status: [], widgets: [], title: null };
   private extAbove: HTMLElement | null = null;
@@ -955,9 +958,22 @@ export class App {
     };
     reclaim.append(this.sessionReclaimTextEl, reclaimAction, reclaimClose);
     this.sessionReclaimEl = reclaim;
+    // #484：旧会话读历史时的「已交给新会话」横幅。跟 reclaim 同一个形状：平时 hidden，
+    // 模板多一行只在它露出来时才切（`.chat-pane:has()` 那两条规则），不靠固定 grid 行号。
+    const handoffBanner = el("div", "handoff-banner");
+    handoffBanner.hidden = true;
+    this.handoffBannerText = el("span", "handoff-banner-text");
+    const handoffGo = el("button", "btn primary", tr("去看看")) as HTMLButtonElement;
+    handoffGo.dataset.act = "handoff-goto";
+    handoffGo.onclick = () => {
+      const to = this.session?.handoffTo;
+      if (to) this.openFromList(to);
+    };
+    handoffBanner.append(this.handoffBannerText, handoffGo);
+    this.handoffBannerEl = handoffBanner;
     const scroll = el("div", "pane chat-scroll");
     const composerHost = el("div", "composer");
-    chatPane.append(reclaim, scroll, composerHost);
+    chatPane.append(handoffBanner, reclaim, scroll, composerHost);
 
     const queuePane = el("section", "pane");
     const queueInner = el("div", "queue");
@@ -1784,7 +1800,7 @@ export class App {
         // 先取出来再 finish()，后面 closeSheet() 会把它丢掉。
         const handoff = this.creating ? this.prefillNext : null;
         this.creating?.finish();
-        // bridge sends the snapshot as {sessionId, state, items, approvals, budget}
+        // bridge sends the snapshot as {sessionId, state, items, approvals, policy}
         if (msg.sessionId) {
           const nextId = String(msg.sessionId);
           if (nextId !== this.currentId) {
@@ -1806,7 +1822,7 @@ export class App {
         this.turnChars = { cjk: 0, other: 0 };
         if (msg.state) this.session = msg.state as SessionState;
         else if (msg.session) this.session = msg.session;
-        this.budget = typeof msg.budget === "number" ? msg.budget : null;
+        this.policy = (msg.policy as CtxPolicy | null) ?? null;
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         if ("trust" in msg) this.trust = (msg.trust as TrustState | null) ?? null;
         this.queue = msg.queue ? { steering: msg.queue.steering ?? [], followUp: msg.queue.followUp ?? [] } : { steering: [], followUp: [] };
@@ -2007,7 +2023,7 @@ export class App {
         break;
       case "stats":
         if (msg.sessionId !== this.currentId) break;
-        if (typeof msg.budget === "number" || msg.budget === null) this.budget = msg.budget ?? null;
+        if ("policy" in msg) this.policy = (msg.policy as CtxPolicy | null) ?? null;
         this.stats = { tokens: msg.tokens && typeof msg.tokens === "object" ? msg.tokens : null, cost: typeof msg.cost === "number" ? msg.cost : null };
         this.usage = {
           contextTokens: typeof msg.context?.tokens === "number" ? msg.context.tokens : null,
@@ -2028,12 +2044,28 @@ export class App {
         if (msg.sessionId === this.currentId) this.paintContextIfOpen();
         break;
       }
-      case "budget":
+      case "context.policy":
         if (msg.sessionId !== this.currentId) break;
-        this.budget = typeof msg.budget === "number" ? msg.budget : null;
+        this.policy = (msg.policy as CtxPolicy | null) ?? this.policy;
+        if (msg.error) this.flashToast(policyErrorText(msg.error), true, 6000);
         this.fillModelChip();
         this.paintContextIfOpen();
+        this.paintPolicySheetIfOpen();
         break;
+      case "handoff.state": {
+        if (msg.sessionId !== this.currentId) break;
+        this.paintHandoffSheetIfOpen();
+        const phase = String(msg.phase ?? "");
+        if (phase === "done" && msg.newId) {
+          this.flashToast(tr("交接完成，已切到新会话"), false, 4000);
+          this.closeSubSheet();
+          this.closeSheet();
+          this.openSession(String(msg.newId));
+        } else if (phase === "failed") {
+          this.flashToast(tr("交接没有完成：{p1}", { p1: String(msg.message ?? "") }), true, 6000);
+        }
+        break;
+      }
       case "tool":
         if (msg.sessionId !== this.currentId) break;
         this.chat.toolEvent(msg.phase, msg);
@@ -4728,10 +4760,8 @@ export class App {
     sheet.append(head);
 
     // Everything below is a draft until 确认: browsing models must not switch the live session.
-    const startBudget = this.budget ?? null;
     const startModel = this.session?.model;
     const startLevel = this.session?.thinkingLevel ?? "";
-    let draftBudget = startBudget;
     let draftModel = startModel;
     let draftLevel = startLevel;
     const foot = el("div", "sheet-foot");
@@ -4744,7 +4774,6 @@ export class App {
       const changes: string[] = [];
       if (draftModel !== startModel) changes.push(tr("模型 → {p1}", { p1: shortModelName(this.models.find((m) => m.id === draftModel)?.name ?? draftModel ?? "") }));
       if (draftLevel !== startLevel) changes.push(tr("思考 → {p1}", { p1: draftLevel }));
-      if (draftBudget !== startBudget) changes.push(tr("预算 → {p1}", { p1: draftBudget ? compactSize(draftBudget) : tr("不设") }));
       confirm.disabled = !changes.length;
       footHint.textContent = changes.length ? changes.join(tr("，")) : tr("未改动");
       footHint.title = footHint.textContent;
@@ -4754,15 +4783,9 @@ export class App {
       const model = this.models.find((m) => m.id === draftModel);
       const modelChanged = draftModel !== startModel && !!model;
       const levelChanged = draftLevel !== startLevel && !!draftLevel;
-      const budgetChanged = draftBudget !== startBudget;
-      if (!sessionId || (!modelChanged && !levelChanged && !budgetChanged)) return;
-      const budget = draftBudget;
+      if (!sessionId || (!modelChanged && !levelChanged)) return;
       const level = draftLevel;
       this.act(() => {
-        if (budgetChanged) {
-          this.budget = budget;
-          this.socket.send({ type: "setBudget", sessionId, budget });
-        }
         // The level rides along with the model switch so the bridge applies it after pi's clamp.
         if (modelChanged && model) this.socket.send({ type: "setModel", sessionId, provider: model.provider, modelId: model.id, level: level || undefined });
         else if (levelChanged) this.socket.send({ type: "setThinking", sessionId, level });
@@ -4775,25 +4798,17 @@ export class App {
       this.closeSheet();
     };
 
-    // Context budget: enforced by the bridge (one auto-compaction per turn when it is blown).
-    const budgetBox = el("div", "levels");
-    budgetBox.append(el("div", "levels-label", tr("上下文预算")));
-    const budgetChips = el("div", "chips");
-    for (const value of BUDGETS) {
-      const on = (value ?? null) === startBudget;
-      const chip = el("button", `chip${on ? " on" : ""}`, value ? compactSize(value) : tr("不设"));
-      chip.onclick = () => {
-        draftBudget = value ?? null;
-        for (const other of budgetChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
-        refreshFoot();
-      };
-      budgetChips.append(chip);
-    }
-    budgetBox.append(budgetChips);
-    budgetBox.append(el("div", "budget-hint", tr("用量超过预算时，这轮结束后自动压缩一次。")));
+    // #484：阈值不再在这个弹窗里设（绝对 token 预算已删）。这里只报告当前生效的两条线，
+    // 真改去上下文面板：那里能分「当前会话 / 项目 / 全局」三层。
+    const policyBox = el("div", "levels");
+    policyBox.append(el("div", "levels-label", tr("上下文阈值")));
+    const lineText: string[] = [];
+    if (this.policy?.compact) lineText.push(tr("自动压缩 {p1}% ≈ {p2}", { p1: String(Math.round(this.policy.compact.percent)), p2: compactSize(this.policy.compact.line) }));
+    if (this.policy?.handoff) lineText.push(tr("自动交接 {p1}% ≈ {p2}", { p1: String(Math.round(this.policy.handoff.percent)), p2: compactSize(this.policy.handoff.line) }));
+    policyBox.append(el("div", "budget-hint", lineText.length ? lineText.join(tr(" · ")) : tr("还没拿到窗口大小；到上下文面板里设置。")));
     // One grid row for both: the sheet's rows are fixed (the model list is the 1fr one).
     const top = el("div", "sheet-top");
-    top.append(budgetBox, this.sessionInfoBox());
+    top.append(policyBox, this.sessionInfoBox());
     sheet.append(top);
 
     // Switching only works on a session this bridge owns; a terminal-owned one has no rpc child.
@@ -5248,10 +5263,24 @@ export class App {
     };
     const sheet = el("div", "sheet settings-sheet context-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("上下文")));
+    // #484：头栏右侧三个入口 —— 阈值设置 / 立即压缩 / 交接。
+    const actions = el("div", "sheet-actions");
+    const policyBtn = el("button", "btn ghost", tr("自动压缩")) as HTMLButtonElement;
+    policyBtn.dataset.act = "context-policy";
+    policyBtn.title = tr("按窗口百分比设置自动压缩 / 自动交接的阈值");
+    policyBtn.onclick = () => this.openPolicySheet();
+    const compactBtn = el("button", "btn ghost", tr("压缩")) as HTMLButtonElement;
+    compactBtn.dataset.act = "context-compact";
+    compactBtn.title = tr("立刻压缩当前会话的上下文");
+    compactBtn.onclick = () => this.compactNow();
+    const handoffBtn = el("button", "btn ghost", tr("交接")) as HTMLButtonElement;
+    handoffBtn.dataset.act = "context-handoff";
+    handoffBtn.title = tr("把现场写成交接文档，在新会话里继续");
+    handoffBtn.onclick = () => this.openHandoffSheet();
     const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
-    head.append(close);
+    actions.append(policyBtn, compactBtn, handoffBtn, close);
+    head.append(el("div", "sheet-title", tr("上下文")), actions);
     const body = el("div", "settings-body");
     const host = el("div", "ctx-host");
     body.append(host);
@@ -5261,6 +5290,271 @@ export class App {
     this.sheet = back;
     this.contextPanel = new ContextPanel(host);
     this.contextPanel.update(this.contextPanelData());
+    // 打开就问一次：stats 只在 pi 跑着时刷新，冷会话也得看得到当前生效的线。
+    if (this.currentId) this.socket.send({ type: "context.policy.get", sessionId: this.currentId });
+  }
+
+  /** 立即压缩：运行中的话先停这一轮（pi 跑着的时候压缩没有意义）。 */
+  private compactNow(): void {
+    const sessionId = this.currentId;
+    if (!sessionId) return;
+    if (this.session?.running) {
+      const ok = window.confirm(tr("这一轮还在跑。压缩会先中断它（已经写下的文件会保留）。继续吗？"));
+      if (!ok) return;
+      this.socket.send({ type: "abort", sessionId });
+    }
+    this.socket.send({ type: "compact", sessionId });
+    this.flashToast(tr("正在压缩…"), false, 3000);
+  }
+
+  // ---------------------------------------------------------------- #484 上下文阈值 / 交接
+
+  private subSheet: HTMLElement | null = null;
+  private subSheetKind: "policy" | "handoff" | null = null;
+  private subSheetPaint: (() => void) | null = null;
+  private subEsc = (ev: KeyboardEvent): void => {
+    if (ev.key !== "Escape" || !this.subSheet) return;
+    ev.stopPropagation();
+    this.closeSubSheet();
+  };
+
+  private closeSubSheet(): void {
+    if (!this.subSheet) return;
+    document.removeEventListener("keydown", this.subEsc, true);
+    this.subSheet.remove();
+    this.subSheet = null;
+    this.subSheetKind = null;
+    this.subSheetPaint = null;
+  }
+
+  /** 盖在上下文面板上的子弹窗（不是再开一层 sheet：Esc 先关它，再按一次才关面板）。 */
+  private openSubSheet(kind: "policy" | "handoff", title: string, build: (body: HTMLElement) => void): void {
+    this.closeSubSheet();
+    const back = el("div", "sheet-sub-back");
+    const sheet = el("div", "sheet sub-sheet");
+    const head = el("div", "sheet-head");
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSubSheet();
+    head.append(el("div", "sheet-title", title), close);
+    const body = el("div", "settings-body sub-body");
+    build(body);
+    sheet.append(head, body);
+    back.append(sheet);
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSubSheet();
+    };
+    this.overlay(back);
+    this.subSheet = back;
+    this.subSheetKind = kind;
+    document.addEventListener("keydown", this.subEsc, true);
+  }
+
+  private paintPolicySheetIfOpen(): void {
+    if (this.subSheetKind !== "policy") return;
+    this.subSheetPaint?.();
+  }
+
+  private paintHandoffSheetIfOpen(): void {
+    if (this.subSheetKind !== "handoff") return;
+    this.subSheetPaint?.();
+  }
+
+  /** 百分比输入 + 来源提示 + 「恢复跟随」。返回当前值（空 = 跟随）。 */
+  private policyPercentRow(
+    parent: HTMLElement,
+    label: string,
+    value: number | null,
+    source: string,
+    effective: string,
+    onInput: (value: number | null) => void,
+    role: string,
+  ): HTMLElement {
+    const row = el("div", "sub-row");
+    row.dataset.role = role;
+    row.append(el("div", "sub-label", label));
+    const input = el("input", "sub-input") as HTMLInputElement;
+    input.dataset.role = role;
+    input.type = "number";
+    input.min = "5";
+    input.max = "90";
+    input.placeholder = value == null ? tr("跟随中：{p1}", { p1: source }) : String(value);
+    if (value != null) input.value = String(value);
+    input.oninput = () => onInput(input.value.trim() === "" ? null : Number(input.value));
+    const reset = el("button", "btn ghost sub-mini", tr("恢复跟随")) as HTMLButtonElement;
+    reset.disabled = value == null;
+    reset.onclick = () => {
+      input.value = "";
+      onInput(null);
+      reset.disabled = true;
+    };
+    const right = el("div", "sub-right");
+    right.append(input, el("span", "sub-unit", "%"), reset);
+    row.append(right);
+    row.append(el("div", "sub-hint", tr("跟随中：{p1} · 生效：{p2}", { p1: source, p2: effective })));
+    parent.append(row);
+    return row;
+  }
+
+  private sourceLabel(from: string | undefined): string {
+    if (from === "session") return tr("当前会话");
+    if (from === "project") return tr("项目");
+    if (from === "global") return tr("全局");
+    return tr("默认值");
+  }
+
+  private policyLineText(line: { percent: number; line: number } | null, fallback: string): string {
+    if (!line) return fallback;
+    return tr("{p1}% ≈ {p2}", { p1: String(Math.round(line.percent)), p2: compactSize(line.line) });
+  }
+
+  /** 阈值子弹窗：只改会话级；项目 / 全局去设置台（`web.*` 键）。 */
+  private openPolicySheet(): void {
+    this.openSubSheet("policy", tr("自动压缩与交接"), (body) => {
+      const paint = (): void => {
+        const policy = this.policy;
+        const scroll = body.scrollTop;
+        body.textContent = "";
+        const window = policy?.window ?? this.usage.contextWindow;
+        body.append(
+          el(
+            "div",
+            "sub-note",
+            window
+              ? tr("当前模型窗口 {p1}：两条线都按它的百分比算，且不会越过 pi 自己的压缩线。", { p1: compactSize(window) })
+              : tr("还没拿到窗口大小：发一条消息或在有 pi 在跑的会话里打开。"),
+          ),
+        );
+
+        const draft = {
+          compact: policy?.policy.compactFrom === "session" ? policy.policy.compactPercent : null,
+          handoffOn: policy?.policy.handoffFrom === "session" ? !!policy.policy.handoffOn : null as boolean | null,
+          handoff: policy?.policy.handoffFrom === "session" ? policy.policy.handoffPercent : null,
+        };
+        const error = el("div", "sub-error");
+
+        const compactRow = this.policyPercentRow(
+          body,
+          tr("自动压缩"),
+          draft.compact,
+          this.sourceLabel(policy?.policy.compactFrom),
+          this.policyLineText(policy?.compact ?? null, tr("未开启")),
+          (value) => {
+            draft.compact = value;
+          },
+          "compact-percent",
+        );
+        void compactRow;
+
+        // 自动交接：跟随 / 开 / 关 + 百分比（三者一起算会话级覆盖）。
+        const hRow = el("div", "sub-row");
+        hRow.append(el("div", "sub-label", tr("自动交接")));
+        const mode = el("select", "sub-select") as HTMLSelectElement;
+        mode.dataset.act = "handoff-mode";
+        for (const value of ["follow", "on", "off"] as const) {
+          const opt = el("option", "", value === "follow" ? tr("跟随（{p1}）", { p1: this.sourceLabel(policy?.policy.handoffFrom) }) : value === "on" ? tr("开") : tr("关")) as HTMLOptionElement;
+          opt.value = value;
+          mode.append(opt);
+        }
+        mode.value = draft.handoffOn == null ? "follow" : draft.handoffOn ? "on" : "off";
+        mode.onchange = () => {
+          draft.handoffOn = mode.value === "follow" ? null : mode.value === "on";
+        };
+        hRow.append(mode);
+        hRow.append(el("div", "sub-hint", tr("生效：{p1}", { p1: this.policyLineText(policy?.handoff ?? null, tr("未武装（到不了这条线就不会交接）")) })));
+        body.append(hRow);
+
+        this.policyPercentRow(
+          body,
+          tr("自动交接阈值"),
+          draft.handoff,
+          this.sourceLabel(policy?.policy.handoffFrom),
+          this.policyLineText(policy?.handoff ?? null, tr("未武装")),
+          (value) => {
+            draft.handoff = value;
+          },
+          "handoff-percent",
+        );
+
+        const foot = el("div", "sub-foot");
+        const save = el("button", "btn primary", tr("保存")) as HTMLButtonElement;
+        save.dataset.act = "policy-save";
+        save.onclick = () => {
+          const patch: Record<string, number | boolean | null> = { autoCompactPercent: draft.compact };
+          patch.autoHandoffPercent = draft.handoff;
+          if (draft.handoffOn !== null) patch.autoHandoffEnabled = draft.handoffOn;
+          const local = validatePolicyDraft(draft.compact, draft.handoff, draft.handoffOn ?? false);
+          if (local) {
+            error.textContent = local;
+            return;
+          }
+          error.textContent = "";
+          if (!this.currentId) return;
+          this.socket.send({ type: "context.policy.set", sessionId: this.currentId, patch });
+          this.flashToast(tr("已保存会话级阈值"), false, 3000);
+        };
+        foot.append(error, save);
+        body.append(foot);
+        body.append(
+          el(
+            "div",
+            "sub-note sub-note-dim",
+            tr("项目 / 全局的默认值在「设置 → 消息与压缩」里改（web.autoCompactPercent 等）；这里只覆盖当前会话，清空即恢复跟随。"),
+          ),
+        );
+        body.scrollTop = scroll;
+      };
+      this.subSheetPaint = paint;
+      paint();
+    });
+  }
+
+  /** 交接子弹窗：说明 + 手动交接 + 自动交接设置。 */
+  private openHandoffSheet(): void {
+    this.openSubSheet("handoff", tr("交接"), (body) => {
+      const paint = (): void => {
+        const policy = this.policy;
+        const scroll = body.scrollTop;
+        body.textContent = "";
+        body.append(
+          el("div", "sub-note", tr("交接 = 把这一摊现场写成交接文档，再开一个同目录的新会话读它继续。旧会话会停下并归档，翻回去只是读历史。")),
+          el("div", "sub-note sub-note-dim", tr("手动交接：停当前任务 → 生成交接文档 → 新会话读文档继续。自动交接：上下文到阈值时自动做同一件事（可以连着交接多棒）。")),
+        );
+
+        const manual = el("button", "btn primary sub-wide", tr("手动交接")) as HTMLButtonElement;
+        manual.dataset.act = "handoff-now";
+        let armed = false;
+        manual.onclick = () => {
+          if (!this.currentId) return;
+          if (!armed) {
+            armed = true;
+            manual.textContent = tr("确认交接（会停止当前任务）");
+            window.setTimeout(() => {
+              armed = false;
+              if (manual.isConnected) manual.textContent = tr("手动交接");
+            }, 5000);
+            return;
+          }
+          this.socket.send({ type: "handoff.start", sessionId: this.currentId });
+          this.flashToast(tr("交接已开始：正在中断并生成交接文档…"), false, 4000);
+        };
+        body.append(manual);
+
+        const hRow = el("div", "sub-row");
+        hRow.append(el("div", "sub-label", tr("自动交接")));
+        const on = policy?.handoff != null;
+        hRow.append(el("div", "sub-value", on ? tr("已开启：{p1}", { p1: this.policyLineText(policy!.handoff, "") }) : tr("未开启")));
+        body.append(hRow);
+        body.append(el("div", "sub-hint", tr("自动交接和自动压缩的阈值不能是同一个值，也不会同时触发：交接在达到阈值时立即中断当前轮，压缩则等这一轮结束。")));
+        const config = el("button", "btn ghost", tr("设置阈值…"));
+        config.onclick = () => this.openPolicySheet();
+        const foot = el("div", "sub-foot");
+        foot.append(config);
+        body.append(foot);
+        body.scrollTop = scroll;
+      };
+      this.subSheetPaint = paint;
+      paint();
+    });
   }
 
   /** ctxlog / stats 到了就重画（面板开着才画）。 */
@@ -5276,7 +5570,7 @@ export class App {
       lines,
       contextWindow: this.usage.contextWindow,
       measured: this.usage.contextTokens,
-      budget: this.budget,
+      policy: this.policy,
       model: this.session?.model ?? "",
       tokens: this.stats.tokens,
       cost: this.stats.cost,
@@ -5986,6 +6280,23 @@ export class App {
     this.hotChip.title = tr("主检出的源码在这条分支上（不是 main）。点开热部署，把 {port} 放回去。", { port: this.hotPort });
   }
 
+  /** #484：当前会话已经交接出去时，顶部一条「已交给新会话：<名字>」+ 跳转。 */
+  private paintHandoffBanner(): void {
+    const banner = this.handoffBannerEl;
+    const text = this.handoffBannerText;
+    if (!banner || !text) return;
+    const to = this.session?.handoffTo;
+    if (!to) {
+      banner.hidden = true;
+      return;
+    }
+    const target = this.sessions.find((s) => s.id === to);
+    text.textContent = target
+      ? tr("已交给新会话：{p1}", { p1: target.name || target.id.slice(0, 8) })
+      : tr("已交给新会话（它还在列表里，往下翻翻）");
+    banner.hidden = false;
+  }
+
   private renderTop(): void {
     const { dot, title, sub, collapseLeft, collapseRight } = this.els;
     const running = this.session?.running;
@@ -6000,6 +6311,7 @@ export class App {
 
     if (!this.connected) bits.push(tr("离线"));
     sub.textContent = bits.join(" · ");
+    this.paintHandoffBanner();
 
     this.paintHotChip();
     setToggle(collapseLeft, this.collapsed.sessions, tr("会话列表"));
@@ -6061,12 +6373,13 @@ export class App {
     levelEl.textContent = thinking || "–";
     levelEl.classList.toggle("off", !thinking || thinking === "off");
 
-    const win = this.budget ?? this.usage.contextWindow ?? this.models.find((m) => m.id === this.session?.model)?.contextWindow ?? null;
+    const win = this.usage.contextWindow ?? this.models.find((m) => m.id === this.session?.model)?.contextWindow ?? null;
     const used = this.usage.contextTokens;
     if (used != null && win) {
       ctx.textContent = `${compactSize(used)}/${compactSize(win)}`;
-      ctx.classList.toggle("hot", used / win >= (this.budget ? 0.9 : 0.8));
-      ctx.title = this.budget ? tr("上下文预算 {p1}：超了就自动压缩", { p1: compactSize(this.budget) }) : "";
+      const line = this.policy?.compact?.line ?? null;
+      ctx.classList.toggle("hot", line != null && used >= line);
+      ctx.title = this.policy?.compact ? tr("自动压缩线 {p1}%（{p2}）", { p1: String(Math.round(this.policy.compact.percent)), p2: compactSize(this.policy.compact.line) }) : "";
     } else if (win) {
       ctx.textContent = `–/${compactSize(win)}`;
       ctx.classList.remove("hot");
@@ -6988,6 +7301,17 @@ export class App {
       const src = el("span", `src-tag ${web ? "web" : "cli"}`, web ? tr("网页") : "CLI");
       src.title = web ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话");
       row.append(src);
+      // #484：交接出去的旧会话在列表里留个徙标，点一下跳到接棒的新会话。
+      if (s.handoffTo) {
+        const to = s.handoffTo;
+        const tag = el("span", "handoff-tag", tr("已交接"));
+        tag.title = tr("已交给新会话；这里只是历史");
+        tag.onclick = (ev) => {
+          ev.stopPropagation();
+          this.openFromList(to);
+        };
+        row.append(tag);
+      }
       {
         const acts = el("span", "card-acts");
         const pinned = this.manage.pin.includes(s.id);
@@ -18047,8 +18371,7 @@ const DEFAULT_PREFS: Prefs = {
   wsIntroSeen: false,
 };
 
-/** Context-budget presets in the model sheet; null = no ceiling (use the window). */
-const BUDGETS: (number | null)[] = [null, 100_000, 200_000, 500_000, 1_000_000];
+/** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
 
 const SVG = (body: string) =>
   `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
@@ -18386,6 +18709,9 @@ function settingFields(): SettingField[] {
   { key: "compaction.enabled", label: tr("自动压缩"), kind: "bool" },
   { key: "compaction.reserveTokens", label: tr("压缩：保留的空余 token"), kind: "number" },
   { key: "compaction.keepRecentTokens", label: tr("压缩：保留最近的 token"), kind: "number" },
+  { key: "web.autoCompactPercent", label: tr("自动压缩阈值（窗口百分比）"), kind: "number", defaultText: "70", hint: tr("上下文用到窗口的这个百分比就自动压缩；夹在 5–90%，不会越过 pi 自己的压缩线。会话级覆盖在上下文面板的「自动压缩」里改（#484）") },
+  { key: "web.autoHandoffEnabled", label: tr("自动交接"), kind: "bool", defaultText: tr("关"), hint: tr("到阈值时停下来写交接文档，再开一个同目录的新会话接着做；关着不影响手动交接") },
+  { key: "web.autoHandoffPercent", label: tr("自动交接阈值（窗口百分比）"), kind: "number", defaultText: tr("留空＝不开启"), hint: tr("与自动压缩至少差 5 个百分点；两条不能相同（同一时间只执行其中一个）") },
 
   { key: "transport", label: tr("流式通道"), kind: "select", group: tr("网络与重试"), options: ["auto", "sse", "websocket", "websocket-cached"], hint: tr("auto 让 pi 自己挑；provider 不支持就会退回 SSE") },
   { key: "httpProxy", label: tr("HTTP 代理"), kind: "text", globalOnly: true, placeholder: "http://127.0.0.1:7890", defaultText: tr("直连") },
@@ -19110,4 +19436,35 @@ function compactSize(n?: number): string {
   if (!n) return "";
   if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`;
   return `${Math.round(n / 1000)}K`;
+}
+
+/** #484：桥回的错误码 → 一句人话。 */
+function policyErrorText(error: any): string {
+  const code = String(error?.code ?? "");
+  const field = String(error?.field ?? "");
+  if (code === "range") {
+    return field === "handoff" ? tr("自动交接阈值要在 5% 到 90% 之间") : tr("自动压缩阈值要在 5% 到 90% 之间");
+  }
+  if (code === "equal") return tr("两条阈值不能相同：同一时间只能执行其中一个");
+  if (code === "gap") return tr("两条阈值至少要差 5 个百分点");
+  return String(error?.message ?? error ?? tr("保存失败"));
+}
+
+/** #484：子弹窗保存前的本地校验（和桥同一条规则，省一次往返）。 */
+function validatePolicyDraft(compact: number | null, handoff: number | null, handoffOn: boolean): string | null {
+  for (const [value, which] of [
+    [compact, "compact"],
+    [handoffOn ? handoff : null, "handoff"],
+  ] as const) {
+    if (value == null) continue;
+    if (!Number.isFinite(value) || value < 5 || value > 90) {
+      return which === "handoff" ? tr("自动交接阈值要在 5% 到 90% 之间") : tr("自动压缩阈值要在 5% 到 90% 之间");
+    }
+  }
+  if (compact != null && handoffOn && handoff != null && Math.abs(compact - handoff) < 5) {
+    return Math.abs(compact - handoff) === 0
+      ? tr("两条阈值不能相同：同一时间只能执行其中一个")
+      : tr("两条阈值至少要差 5 个百分点");
+  }
+  return null;
 }

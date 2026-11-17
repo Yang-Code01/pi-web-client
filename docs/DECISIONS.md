@@ -5704,3 +5704,24 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 代价是多一个纯函数模块（`web/src/context-viz.ts`）和两套样式；技能说明两行 clamp 意味着长描述（最长 1053 字）默认看不全，要靠点开或过滤。没选「按目录分组」（D）—— 42 条里 34 条来自同一个目录，分组头一天就把列表撑开了。
 
 **验证：** `node --test web/tests/context-unit.mjs` 新增 5 组用例（实体解码、`<skills>` 解析去重、标签剥除的配对判定、注入段转 Markdown 后每份 AGENTS.md 一条分界行）；`npm --prefix web run typecheck`（tsc + i18n-check 3329 键 × 3 语 + viewport 守卫）通过，`context` / `layout` / `rules` 三个单测文件 31 过。界面用一次性 harness（真 ctxlog 的那次请求 + 全部 body 行，Vite 起在 5191）在 Chromium 里核过：42 行、`.cx-viz` 计算高度 380 / 可滚、手风琴 `max-height: none`、行展开解 clamp 并显示 `SKILL.md` 路径、过滤 `hyperframes` → `10 / 42 个技能`、切原文恢复 XML、`sec:rules` 出 `UL/LI/CODE`、窄容器（root 573px）技能行转单列、页面无 console 错误。harness 的三个文件用完即删，不进 main。
+
+## D296 上下文阈值改「窗口百分比」三层，删绝对 token 预算；交接与压缩二选一且交接优先（用户要求 2026-11-17）
+
+**问题：** 自动压缩「从来没生效」不是触发逻辑写错了，而是量纲错了：`state/budget.json` 里存的是绝对 token 数（本机实际是 `{"value": 1000000}`），判定是 `lastContextTokens >= budget`。任何真实模型的窗口都比 1M 小得多，所以这条线永远等不到；而且它是全局一份、与模型无关，切换模型后更说不清。长任务还有第二个缺口：上下文顶到窗口时没有任何机制把「做到哪了」交给下一个会话。
+
+**决定：**
+
+- **删掉绝对预算整条链**：`budget.json` / `readBudget` / `writeBudget` / `setContextBudget` / `maybeAutoCompact` / ws `setBudget` / 模型弹窗里的 100K–1M chips / `BUDGETS` / `budget` 帧字段，一个不留（不留兼容层：旧文件留着也没人读）。判定、层级、夹取全部收进新纯函数模块 `bridge/src/context-policy.ts`。
+- **三层优先级：会话 > 项目 > 全局 > 默认**。全局/项目写在 pi 的 `settings.json` 里，键为 `web.autoCompactPercent` / `web.autoHandoffEnabled` / `web.autoHandoffPercent`（沿用 `web.defaultPermission` 的先例，进「消息与压缩」组，项目级天然「覆盖全局 / 清空继承」）；会话级覆盖另存 `state/context/<id>.json`，清空即恢复跟随。
+- **默认压缩 70%，交接默认关**。自动压缩的总开关仍是 pi 自己的 `compaction.enabled`：关 = 桥也不按百分比提前压；开 = 桥按百分比提前压，pi 的 `窗口 − reserveTokens` 当兜底。不再新增第二个开关。
+- **两条线都夹在 `min(百分比×窗口, 窗口 − 16384 − 2000)`**，并且界面显示夹取后的**真实百分比**：200K 上 70% 就是 140K；32K 窗口上 70% 会变成 ~43.9%，因为 pi 自己的压缩线在 48.8%（`32K − 16384`），不夹的话小窗口模型永远轮不到桥。
+- **交接和压缩不能同值、不会同时发生，交接优先**：交接开着（开关开 **且** 有百分比）时，桥只判交接线，压缩不自动触发 —— 否则低阈值的压缩会把上下文压回去，交接永远等不到。校验 5–90% 且两条至少差 5 个百分点，按**解析后的值**比（会话覆盖可能和项目值撞成相等）。
+- **两种动作的时机不对称，是有意的**：压缩等这一轮结束（`running` 时不动，pi 跑着的时候压缩没有意义）；交接在到线时**立即中断**（`abort` → 等 settle）。这条与「压缩不打断」不同，别在共用一处守卫时抹平。
+- **交接 8 步**：占位互斥 → 中断并等 quiet → 终止后台子代理（只断开追踪，真进程随 abort/关闭走）→ 发 `/skill:handoff` 并**指定绝对路径**（技能默认写 `%TEMP%` 且文件名不定，不指定就找不到产物）→ 校验文件 > 200 字节且 mtime 稳定（5 分钟超时）→ 同 cwd 建**全新空会话**（不 clone 消息树，否则上下文没省）并继承权限/模型/launch/会话覆盖 → 自动发首条「先读这份交接文档」→ 成功后停旧 pi、永久解武、归档、写 `handoffTo` 后继链接、页面切过去。任何一步失败：只通知 + 5 分钟退避，不建新会话、旧会话重新武装。
+- **旧会话交接后彻底退场**：`handoffTo` 一置位，`maybeContextAction` 直接早退（不解武的话交接轮结束时会再触发一次，原地无限 fork）；卡片挂「已交接」徽标、页面顶部一条「已交给新会话」可点跳转，文件本身不动（归档不删）。
+- **只读/需确认权限下也能写交接文档**：`allowFile(id)` 多一个 `handoffPath`，审批闸门每次调用重读它，写工具的目标规范化后与这条绝对路径相等就放行；只放行这一个文件，别的一律照旧拦。
+- **随手问（scratch）从不确定压缩、也不交接**：它本来就不受通用休眠管理，自动动作会更乱。
+
+**取舍：** 删预算后旧的 `budget.json` 成了无主文件（不迁移，因为那个数没有任何意义）；百分比必须在有窗口信息时才生效，冷会话打开面板只能显示「还没拿到窗口大小」，要等一次 stats；交接文档落在桥的 `state/handoff/` 而不是工作区，翻历史要去状态目录找；`/skill:handoff` 是用户技能（`disable-model-invocation`），没装时开关会被拦住，但「装没装」是在打开开关/触发那一刻才查。
+
+**验证：** `node --test bridge/tests/context-policy-unit.mjs`（7 条：三层优先级、5/90 边界、差 4 点、32K/200K/1M 夹取、交接优先、未设百分比不压制压缩）；`node --test bridge/tests/context-session-unit.mjs`（9 条：交接只发事件、到压缩线只压一次、运行中不压、scratch/已交接/占位中/失败退避全早退）；`npm run test:context`（桥 30 + web 33）通过；`node bridge/tests/context-policy-ui.mjs`（假 pi + Chromium，口令 `context-ui-pass`，端口 `CONTEXT_UI_PORT`，默认 7914 会被 Windows 保留段占掉，实测用 8934）17 项通过：四个头栏按钮、窗口/默认 70%≈140K、差 2 点被拦且不发帧、保存后 `layer.session` 正确、生效来源变 session、140K→80K 夹取、Esc 只关子弹窗、交接说明与两次点击才发、压缩按钮不炸页面；`npm --prefix web run typecheck`（tsc + i18n 3489 键 × 3 语 + viewport 守卫）与 `npm --prefix bridge run typecheck`、`npm run build:bridge`、`npm run build:web` 通过。
