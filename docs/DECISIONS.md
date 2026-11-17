@@ -5449,3 +5449,30 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - `@` 文件补全同理：路径中间补全只换光标左边那截。
 
 **验证：** `web/tests/commands-unit.mjs` 新增 5 个用例（`applyPick()` 切片模拟真插入）：光标回开头选候选后原文完整保留、无空格整段保留、词中间补全只换到光标、`/` 只认行首、`@` 同样只到光标 —— `npm run test:commands` 20 pass。真 Chromium 探针 `probes/complete-insert-keeps-text.mjs`（隔离桥 17876，用内建命令行代替技能行，路径相同）：修复前输入框变成 `/new ` 与 `/new bug`（红），重建后 `/new 帮我看看这个bug`、`/new 帮我看看这个 bug`（绿）。`npm --prefix web run typecheck`、`npm --prefix web run build` 全绿。
+
+## D285 启动完成不再把正在打字的人甩出输入框（用户报障 2026-11-17）
+
+**问题：** 开新会话后 pi 要几秒才起来，这段窗口是允许打字的（D178）。但就在 bridge 报「起来了」的那一瞬，**焦点从输入框掉回页面**，正在打的字再也进不去，只能重新点一下输入框。字不丢（`composerText` 草稿还在、重画会填回去），丢的是焦点和光标位置 —— 打断的是「正在写一句话」这件事本身。
+
+**根因：** `mergeSession()` 里判断「要不要重画聊天区」的条件含有 `starting`：
+
+```ts
+if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starting !== state.starting) this.renderChat();
+```
+
+但 `starting` 只喂 `paintHintStatus()`（那行「pi 正在启动（加载扩展，通常几秒）…」）和撤回按钮。`composerPlaceholder()` 只看 running / asks，`renderChat()` 函数体里根本没有 `starting`。桥在 `bridge/src/sessions.ts` 的 `setState({ starting: false })` 翻这一格，前端就为了一行提示文案把整块聊天区 `replaceChildren()`，`this.textarea = null` 之后重建一个全新的 —— 焦点随旧节点落回 `<body>`。启动期越长，撞上的概率越高，看着就像「pi 一起来就把我踢出去」。
+
+同一个坑其实早被踩到过一次：「继续」按钮的 `sendContinue()` 里手工记了 `selectionStart`、重画后 `focus()` + `setSelectionRange()` 收回来（那里有注释明写「重画会重建 textarea，光标位置和焦点不会 —— 收回来」）。只是它只管自己那一条路径。
+
+**决定：**
+
+- **`starting` 不再算重画理由。** 条件只留 `owned` / `origin`；`starting` 翻转照旧走事件处理里的 `fillHintStatus()`，提示条该变还是变。
+- **`renderChat()` 自己负责焦点搬运。** 进门先看 `document.activeElement === this.textarea`，是就记下 `selectionStart` / `selectionEnd`；函数末尾（`syncCwdChip(); placeFailCta();` 之后）新 textarea 建好了，`focus({ preventScroll: true })` 再 `setSelectionRange()`。理由：`owned` / `origin` 翻转（另一端接管、pi 进程退出）**同样会重建 composer**，症状一模一样，只修 `starting` 是修一个入口，不是修一类。`sendContinue()` 那段保留（幂等），并把它的 `focus()` 补成同一套参数（`preventScroll` + 完整选区），以后新加的调用点不用各自再抄一遍。
+
+**代价 / 可改：**
+
+- 接回焦点以「重画前焦点在输入框里」为条件，所以弹窗、侧栏、抽屉的焦点不会被抢；反过来，如果将来有「重画时想把焦点主动送去别处」的需求，得显式 `blur()` 或在重画后再聚焦目标元素（后聚焦的赢）。
+- 只在同一个会话内重画才有意义：切会话时 `this.textarea` 的内容会换成另一份草稿，`setSelectionRange()` 的超界偏移由浏览器夹到文本长度内，不会抛错，但光标位置对不上原来那句 —— 现状本来就是这样，没有变差。
+- 选区只在焦点确实在输入框时恢复；用户此时若正在用鼠标拖选别处（焦点已不在 textarea），概不干预。
+
+**验证：** 新增 `bridge/tests/composer-focus.mjs`（端口默认 7870，`COMPOSER_FOCUS_PORT` 覆盖）：`FAKE_PI_BOOT_MS=5000` 让假 pi 握住第一条命令模拟慢启动，走真实 UI 开新会话、进输入框，每 80ms 用真键盘敲一个字，一直敲到「正在启动」消失；断言焦点始终是 composer 里的 `TEXTAREA`、字数一个不少、之后再敲的字照样进输入框。修复前红：`activeElement=BODY inComposer=false`、末字丢失（`len=53 want≥54`）；修复后绿（`flippedAt=45`）。`npm run typecheck`（含 i18n-check、viewport-units 守卫）与 `npm run build` 全过。
