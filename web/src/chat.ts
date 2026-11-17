@@ -1,5 +1,5 @@
 import { artifactSources, noteArtifact, toolPath, type ArtifactSource } from "./artifact-sources.ts";
-import { askQuestions, parseAskResult } from "./ask-result.ts";
+import { askQuestions, askTurnLabel, parseAskResult } from "./ask-result.ts";
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { reviewBody, reviewDisplay } from "./failures.ts";
 import { highlightFragment } from "./highlight.ts";
@@ -157,6 +157,19 @@ function compactArgs(args: unknown): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 400);
 }
 
+/**
+ * 刻度带上的一格：一条用户消息，或一张问答卡。问卷也属于「用户的输入」，但**一份问卷只占一格**
+ * （它的多道题是同一个工具调用）。
+ */
+interface RailTurn {
+  id: string;
+  node: HTMLElement;
+  label: string;
+  kind: "user" | "ask";
+  /** 问答卡按 `toolCallId` 去重：实时那条的 id 是 `live-tool:…`，回放时换成真的。 */
+  toolCallId?: string;
+}
+
 export class ChatView {
   private cards = new Map<string, HTMLElement>();
   private loaded: Item[] = [];
@@ -248,8 +261,11 @@ export class ChatView {
   private liveKey = "";
   /** This turn's written files, as chips under the ops module. */
   private opsFiles: HTMLElement | null = null;
-  /** The user turns, in order — one tick on the rail each. `reset()` refills it through `add()`. */
-  private turns: { id: string; node: HTMLElement; label: string }[] = [];
+  /**
+   * 刻度带上的一格，按顺序排：每条用户消息各一格，每张问答卡也各一格。
+   * `reset()` 重新装填时同样经由 `add()` 走到这里。
+   */
+  private turns: RailTurn[] = [];
   /** 右缘的轮次缩略图（Q-028）。它挂在滚动视口外面，所以不会随之滚走。 */
   private turnRail: TurnRail;
   /** 缩略图里悬停/点击时在正文高亮的那条消息。 */
@@ -268,7 +284,7 @@ export class ChatView {
    * `anchor` 是 DOM 锚点（当时的视口顶部节点，没内容时就是回底钮），**不是** `history.before`
    * 那个条目 id 游标（那个叫 `topId`）。
    */
-  private staging: { anchor: HTMLElement; turns: { id: string; node: HTMLElement; label: string }[] } | null = null;
+  private staging: { anchor: HTMLElement; turns: RailTurn[] } | null = null;
   /** 「载入更早」那一行：列表的第一块内容，没有更早的就整行收起来（#220）。 */
   private moreRow: HTMLElement;
   private moreBtn: HTMLButtonElement;
@@ -644,13 +660,14 @@ export class ChatView {
 
   /** 这条会话里有没有用户说过话：没有的话「继续」按钮没有可接的东西（D159）。 */
   hasUserTurns(): boolean {
-    return this.turns.length > 0;
+    // 刻度带上还有问卷卡，但那不是「用户说过的话」：只有真正的用户消息才给「继续」可接的东西。
+    return this.turns.some((turn) => turn.kind === "user");
   }
 
   /** 一轮用户输入 = 缩略图上的一根刻度。`reset()` 也会经由 `add()` 走到这里。 */
   private noteTurn(item: UserItem, node: HTMLElement): void {
     const label = turnLabel(item.text ?? "", item.images?.length ?? 0);
-    const turn = { id: item.id, node, label };
+    const turn: RailTurn = { id: item.id, node, label, kind: "user" };
     // 往前翻的时候，这些不是「新的」：先攒着，插完再 unshift 进 turns / 刻度带（#220）。
     if (this.staging) {
       this.staging.turns.push(turn);
@@ -658,6 +675,38 @@ export class ChatView {
     }
     this.turns.push(turn);
     this.turnRail.add(label);
+    this.queueRailSync();
+  }
+
+  /**
+   * 一张问答卡也算一次用户输入：刻度带上占一格，点它回到那张卡。
+   *
+   * 实时那条的 id 是 `live-tool:<callId>`，回放 / 结果到达时整张卡会被重建（换成真的 id），
+   * 所以这里按 `toolCallId` 去重，并把刻度带上的 id 与节点一起换成新的 —— 否则点它会指向已经删掉的节点。
+   */
+  private noteAskTurn(node: HTMLElement, item: ToolItem): void {
+    const list = this.staging ? this.staging.turns : this.turns;
+    const known = list.find((turn) => turn.kind === "ask" && turn.toolCallId === item.toolCallId);
+    if (known) {
+      known.id = item.id;
+      known.node = node;
+      return;
+    }
+    const questions = askQuestions(item.args);
+    const turn: RailTurn = {
+      id: item.id,
+      node,
+      label: askTurnLabel(String(questions[0]?.title ?? ""), questions.length),
+      kind: "ask",
+      toolCallId: item.toolCallId,
+    };
+    // 往前翻的时候这些不是「新的」：先攒着，插完再 unshift 进 turns / 刻度带（#220）。
+    if (this.staging) {
+      this.staging.turns.push(turn);
+      return;
+    }
+    this.turns.push(turn);
+    this.turnRail.add(turn.label);
     this.queueRailSync();
   }
 
@@ -735,7 +784,9 @@ export class ChatView {
     this.topId = items[0]?.id ?? null;
     // Chrome first: `push()` inserts before the jump button, so it has to be in the DOM already.
     this.mountChrome();
-    const loadedIds = new Set(items.filter((item): item is UserItem => item.kind === "user").map((item) => item.id));
+    const loadedIds = new Set(
+      items.filter((item) => item.kind === "user" || (item.kind === "tool" && this.isAskTool(item.name))).map((item) => item.id),
+    );
     for (const item of items) this.add(item);
     // #243: 整段会话的索引里，这一页没载入的那些先以 ghost 占位在带子上沿。
     // 老桥没有 `turns` → 空数组，退回「只画已载入的轮次」。
@@ -743,7 +794,12 @@ export class ChatView {
     // #244: ghost 的点击只带 id 回来，这里把「第几轮」也记下（失败文案要用）。
     this.turnOrdinal = new Map(index.map((turn, i) => [turn.id, i + 1]));
     this.turnRail.setGhosts(
-      index.filter((turn) => !loadedIds.has(turn.id)).map((turn) => ({ id: turn.id, label: turnLabel(turn.text, turn.images) })),
+      index
+        .filter((turn) => !loadedIds.has(turn.id))
+        .map((turn) => ({
+          id: turn.id,
+          label: turn.kind === "ask" ? askTurnLabel(turn.text, turn.questions ?? 1) : turnLabel(turn.text, turn.images),
+        })),
     );
     this.renderMore();
     this.follow();
@@ -770,7 +826,7 @@ export class ChatView {
     const topBefore = anchor?.getBoundingClientRect().top ?? 0;
     const seen = new Set(this.users.keys());
     const held = this.holdTurnState();
-    const fresh: { id: string; node: HTMLElement; label: string }[] = [];
+    const fresh: RailTurn[] = [];
     this.staging = { anchor: anchor ?? this.jump, turns: fresh };
     // #341: 翻出来的旧轮各自成组，不许并进当前这一轮那张卡。
     const liveGroup = this.todoGroup;
@@ -958,6 +1014,7 @@ export class ChatView {
         this.cards.set(item.id, fresh);
         this.toolCards.set(item.toolCallId, fresh);
         this.push(fresh);
+        this.noteAskTurn(fresh, item);
         this.scrollToEnd();
         return;
       }
@@ -988,8 +1045,10 @@ export class ChatView {
     }
     if (item.kind === "tool") {
       this.toolCards.set(item.toolCallId, node);
-      if (this.isAskTool(item.name) || this.isTodoTool(item.name)) this.push(node);
-      else {
+      if (this.isAskTool(item.name) || this.isTodoTool(item.name)) {
+        this.push(node);
+        if (this.isAskTool(item.name)) this.noteAskTurn(node, item);
+      } else {
         this.ensureOps().append(node);
         this.refreshOps();
         this.noteWrite(item.name, item.args);
@@ -1080,6 +1139,7 @@ export class ChatView {
     if (item.kind === "tool" && (this.isAskTool(item.name) || this.isTodoTool(item.name))) {
       node.remove();
       this.push(rebuilt);
+      if (this.isAskTool(item.name)) this.noteAskTurn(rebuilt, item);
     } else node.replaceWith(rebuilt);
     this.cards.delete(id);
     this.cards.set(item.id, rebuilt);
@@ -1228,8 +1288,18 @@ export class ChatView {
       });
       this.toolCards.set(key, card);
       this.cards.set(`live-tool:${key}`, card);
-      if (this.isAskTool(data.name)) this.push(card);
-      else {
+      if (this.isAskTool(data.name)) {
+        this.push(card);
+        this.noteAskTurn(card, {
+          id: `live-tool:${key}`,
+          ts: new Date().toISOString(),
+          kind: "tool",
+          toolCallId: key,
+          name: String(data.name ?? "tool"),
+          args: data.args,
+          status: "running",
+        });
+      } else {
         this.ensureOps().append(card);
         this.refreshOps();
         this.noteWrite(data.name, data.args);

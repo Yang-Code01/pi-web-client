@@ -109,8 +109,9 @@ export interface SessionHistory {
   /**
    * #243: 整段会话的轮次索引（不只这一页）。`text` 已在桥上折成一行并截短。
    * 老桥没有这个字段 —— 那就只画已载入的轮次，一个 ghost 都不出现。
+   * `kind` 缺省按 `user` 处理（老桥只发用户轮次）；`ask` 是问答卡，一次问卷只占一条。
    */
-  turns?: { id: string; text: string; images: number }[];
+  turns?: { id: string; text: string; images: number; kind?: "user" | "ask"; questions?: number }[];
 }
 
 /** What pi extensions drew with ctx.ui.setStatus / setWidget / setTitle (fire-and-forget in RPC). */
