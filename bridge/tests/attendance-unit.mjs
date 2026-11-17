@@ -508,3 +508,13 @@ test("lastStepPeople 用 workflow_user_name 当名单，不拿 handle 当名单"
   assert.deepEqual(A.lastStepPeople(list, workflow, 3), []);
   assert.deepEqual(A.lastStepPeople([], workflow, 2), []);
 });
+
+test("oaTime 把 ISO 的 T 换成空格，OA 只认这种", () => {
+  assert.equal(M.oaTime("2026-11-17T18:00:00"), "2026-11-17 18:00:00");
+  assert.equal(M.oaTime("2026-11-17 18:00:00"), "2026-11-17 18:00:00");
+  assert.equal(M.oaTime(""), "");
+});
+
+test("OVERTIME_USE_TYPE_DEFAULT 是 1 —— OA 页面新建加班发明细就是 1", () => {
+  assert.equal(M.OVERTIME_USE_TYPE_DEFAULT, 1);
+});

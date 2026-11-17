@@ -491,12 +491,14 @@ test("加班提交：确认后真发，body 是 OA 要的那七个字段", async
   const sent = seenAdds.at(-1);
   assert.equal(sent.token, TOKEN);
   assert.deepEqual(sent.body, {
-    use_type: 0,
+    // 这两条是从 OA 自己页面发出来的请求体里抄的：use_type 是 1，datetime 用空格不用 T。
+    // 以前发 0 + "T"，接口照样回 OK，但申请一览里一行都不多 —— 测试必须钉住。
+    use_type: 1,
     user_id: 1001,
     agent_user_id: 0,
     reason: '{"type":"进度延迟","project":"P1","detail":"赶版本"}',
-    start_time: "2026-11-18T18:00:00",
-    end_time: "2026-11-18T20:00:00",
+    start_time: "2026-11-18 18:00:00",
+    end_time: "2026-11-18 20:00:00",
     workflow_list: "2001&3001,3002",
   });
 });

@@ -338,7 +338,18 @@ export function round1(n: number): number {
 // ---------------------------------------------------------------- 加班申请
 
 /** OA 把申请类型存成整数；语义没坐实前只有一个已知值，其余原样透传。 */
-export const OVERTIME_USE_TYPE_DEFAULT = 0;
+export const OVERTIME_USE_TYPE_DEFAULT = 1;
+
+/**
+ * OA 的 datetime 要空格分隔（`2026-11-17 18:00:00`），不是 ISO 的 `T`。
+ *
+ * 这是从 OA 自己页面发出的请求体里逐字抄下来的：发 `T` 的那种，接口照样回
+ * `{status:"OK"}`，但库里连一行都不会多 —— 申请提交完在「申请一览」里查不到，
+ * 排查花了半天。凡是往 OA 写的 datetime，都必须过这个函数。
+ */
+export function oaTime(iso: string): string {
+  return String(iso ?? "").replace("T", " ");
+}
 
 export interface OvertimeReason {
   type: string;

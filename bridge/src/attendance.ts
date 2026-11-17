@@ -27,6 +27,8 @@ import {
   maskAccount,
   mapRow,
   normalizeHours,
+  oaTime,
+  OVERTIME_USE_TYPE_DEFAULT,
   parseOvertimeReason,
   parseWorkflow,
   receiptKey,
@@ -962,6 +964,9 @@ export async function handleAttendance(
       };
       const wf = readWorkflow(body.workflow);
       const workflow = formatWorkflow(wf.l1, wf.l2);
+      // use_type 只在实测里见过 1（OA 页面新建加班发明细就是 1）；0 那份会写不进去。
+      const rawUseType = Number(body.useType ?? OVERTIME_USE_TYPE_DEFAULT);
+      const useType = Number.isInteger(rawUseType) && rawUseType > 0 ? rawUseType : OVERTIME_USE_TYPE_DEFAULT;
 
       const problem: OvertimeProblem | null = checkDraft({ startTime, endTime, hours, reason, workflow });
       if (problem) return stop(res, 400, problem.code, problem.message);
@@ -991,12 +996,12 @@ export async function handleAttendance(
           endpoint: config.endpoints.overtimeAdd,
           token: fresh.token,
           body: {
-            use_type: Number(body.useType ?? 0) || 0,
+            use_type: useType,
             user_id: fresh.userId,
             agent_user_id: 0,
             reason: formatOvertimeReason(reason),
-            start_time: startTime,
-            end_time: endTime,
+            start_time: oaTime(startTime),
+            end_time: oaTime(endTime),
             workflow_list: workflow,
           },
         }),
