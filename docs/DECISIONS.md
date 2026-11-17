@@ -5823,3 +5823,8 @@ ok 本机状态（online/away）进 /status 与在线表
 
 **验证：** `peer-e2e` / `peer-ui` / `peer-history` 全过；`npm run build`、`npm run typecheck`（i18n 与 viewport 守卫）通过。人工：在测试实例里从「同事2」（非好友）发一个 `.txt` 过来，卡片出现「下载 / 预览」两颗按钮；点「预览」主页面关掉弹层并在预览面板里打开该文件（`/api/peer/preview` 回 `{ok:true, pages:1}`）；把内网通弹层关掉后再收消息，顶栏按钮上出现件数徽标。
 
+**复审修正（同日，用户报的两个 bug）：**
+
+1. **自己发出去的文件点不开预览**：`files.storedPath(id)` 只登记收到的文件，自己发的（也就是原路径那份）不在索引里 → `/files/meta` 404 → 预览必然失败。改成 `send()` 时也把 `{ id → 原路径 }` 写进同一份索引（两个方向共用），并在 `/api/peer/preview` 里把解析出来的路径记进一个 30 分钟 / 20 条的短时集合，交给 `previewPins()` —— 自己发的文件通常在桌面或下载目录，既不在收件箱也不在会话目录，没有这一步 `/api/preview` 的 D50 信任检查会拒。同时自己发的卡片也长出了 `预览 / 打开` 两颗按钮，点卡片 = 预览。
+2. **发完文件不滚到底**：`renderMain()` 每次重画都会用「刚才停在哪」重算 `stickBottom`，把发送方设的意图盖掉；而且 `renderChat()` 在**输入框挂进 DOM 之前**就设 `scrollTop`，量到的高度比最终少一截。改成给发送动作一个 `forceBottom` 意图（重画时优先于位置判断），并把贴底放到输入框挂上之后、再补一帧 `requestAnimationFrame`。实测同一场景 `距底差` 从 938px / 212px 变成 0px。
+

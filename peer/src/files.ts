@@ -70,7 +70,12 @@ export interface FileResult {
   body: unknown;
 }
 
-/** 收到的文件：`<entryId>` → 磁盘上的位置。历史里只有一张卡片，文件本体留在收件目录。 */
+/**
+ * `<entryId>` → 磁盘上的位置，**两个方向共用**：
+ * - 收到的文件落在收件目录（`end` 时登记）；
+ * - 自己发出去的文件指向它的原路径（`send()` 时登记）—— 卡片上的「预览」要用它。
+ * 历史里只有一张卡片，文件本体不动。
+ */
 type Stored = Record<string, { path: string; name: string; size: number; mime: string }>;
 
 export class Files {
@@ -311,6 +316,9 @@ export class Files {
   async send(peerId: string, localPath: string, name: string): Promise<{ ok: true; id: string }> {
     const stat = fs.statSync(localPath);
     const id = uuidv7();
+    // 自己发的也要能被「预览 / 打开」找到：索引里指向原路径（不是副本，用户挪了就是挪了）。
+    this.stored[id] = { path: localPath, name, size: stat.size, mime: mimeOf(name) };
+    this.saveStored();
     this.transfers.set(id, {
       id,
       peerId,

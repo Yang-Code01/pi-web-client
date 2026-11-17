@@ -230,6 +230,8 @@ let composeEl: HTMLElement | null = null;
 let composeFor = "";
 /** 消息列重画前的滚动位置：贴着底就继续贴底，翻历史就停在原处。 */
 let stickBottom = true;
+/** 刚发出一条消息（文字 / 文件）：下一次重画必须贴底，哪怕原先停在历史中间。 */
+let forceBottom = false;
 let prevScroll = 0;
 let textInput: HTMLTextAreaElement | null = null;
 let sendBtn: HTMLButtonElement | null = null;
@@ -963,9 +965,14 @@ function emptyState(icon: string, title: string, sub: string): HTMLElement {
 function renderMain(): void {
   // 重新画聊天会把消息列清空重排，滚到哪儿要自己记住：翻历史的时侯别把人拽回底。
   const prev = mainEl.querySelector<HTMLElement>(".stream");
+  let forced = forceBottom;
+  forceBottom = false;
   if (prev) {
-    stickBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 32;
+    // 发出去的东西一定要看得见：`forceBottom` 优先于「刚才停在哪」。
+    stickBottom = forced || prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 32;
     prevScroll = prev.scrollTop;
+  } else if (forced) {
+    stickBottom = true;
   }
   rerender(paintMain);
 }
@@ -1076,10 +1083,18 @@ function renderChat(): void {
     stream.append(h("div", "empty", tr("还没有消息，说点什么吧")));
   }
   mainEl.append(stream);
-  stream.scrollTop = stickBottom ? stream.scrollHeight : prevScroll;
-
   const compose = composeBox(t);
   mainEl.append(compose);
+  // 贴底要在**输入框也挂上之后**做：先设一次会把还没缩下来的高度当成底，
+  // 差的那几十像素就是输入框与文件卡片的高度（用户报的「发完文件没滚到底」）。
+  if (stickBottom) {
+    stream.scrollTop = stream.scrollHeight;
+    requestAnimationFrame(() => {
+      if (stickBottom) stream.scrollTop = stream.scrollHeight;
+    });
+  } else {
+    stream.scrollTop = prevScroll;
+  }
 }
 
 function entryNode(e: Entry, t: Thread): HTMLElement {
@@ -1186,38 +1201,35 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
   if (status) {
     const done = status === "delivered" || status === "sent";
     const foot = h("div", "fbot");
-    foot.append(
-      h("span", "", done ? tr("已送达") : status === "sending" ? tr("发送中…") : tr("发送失败")),
-      h("span", "act", done ? tr("打开") : status === "sending" ? tr("等一会") : tr("重发")),
-    );
+    foot.append(h("span", "", done ? tr("已送达") : status === "sending" ? tr("发送中…") : tr("发送失败")));
+    const acts = h("span", "fbtns");
+    if (done) {
+      // 自己发的也给「预览」：索引里指向原路径，预览面板直接看那份（D301）。
+      acts.append(actBtn(tr("预览"), () => void previewFile(e)), actBtn(tr("打开"), () => void openFile(e)));
+      card.addEventListener("click", () => void previewFile(e));
+    } else if (status === "failed") {
+      acts.append(actBtn(tr("重发"), () => void resend(e)));
+      card.addEventListener("click", () => void resend(e));
+    } else {
+      acts.append(h("span", "act", tr("等一会")));
+    }
+    foot.append(acts);
     body.append(foot);
-    card.addEventListener("click", () => {
-      if (status === "failed") void resend(e);
-      else toast(tr("文件已经在你自己的盘上"));
-    });
   } else {
     const foot = h("div", "fbot");
     // D209：点卡片 = 用本机程序打开收件箱里那份真文件（收件时已经落盘，不是再下载一次）。
     card.title = tr("点一下用本机程序打开");
     card.style.cursor = "pointer";
-    card.addEventListener("click", () => {
-      void postJson("/api/peer/open", { id: e.id }).catch((err: any) =>
-        toast(tr("打不开这个文件：{p1}", { p1: String((err as Error)?.message ?? err) })),
-      );
-    });
+    card.addEventListener("click", () => void openFile(e));
     // 收到的文件给两颗明确的按钮（好友发的也一样）：下载到磁盘 / 用本工程的预览面板看。
+    const acts = h("span", "fbtns");
     const dl = h("a", "act", tr("下载"));
     dl.href = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
     dl.download = f.name;
     dl.rel = "noopener";
     dl.addEventListener("click", (ev) => ev.stopPropagation());
-    const pv = h("button", "act", tr("预览"));
-    pv.type = "button";
-    pv.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      void previewFile(e);
-    });
-    foot.append(h("span", "", tr("对方发来")), pv, dl);
+    acts.append(actBtn(tr("预览"), () => void previewFile(e)), dl);
+    foot.append(h("span", "", tr("对方发来")), acts);
     body.append(foot);
   }
   card.append(icon, body);
@@ -1345,7 +1357,7 @@ async function send(): Promise<void> {
     S.replyTo = null;
     // 草稿跟着消息一起清掉；不刷会话列表（下一轮轮询会自己拉）。
     void postJson("/api/peer/thread", { peer: id, draft: "" }).catch(() => {});
-    stickBottom = true;
+    forceBottom = true;
     await loadMessages(id);
     await loadThreads();
     renderAll();
@@ -1354,6 +1366,26 @@ async function send(): Promise<void> {
   } finally {
     S.sending = false;
     if (sendBtn) sendBtn.disabled = false;
+  }
+}
+
+/** 卡片右下角那颗小按钮：统一 `<button class="act">`，点它不要连累整张卡片的点击。 */
+function actBtn(label: string, run: () => void): HTMLButtonElement {
+  const b = h("button", "act", label);
+  b.type = "button";
+  b.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    run();
+  });
+  return b;
+}
+
+/** D209：用本机程序打开收件箱里那份（自己发的 = 原文件）。 */
+async function openFile(e: Entry): Promise<void> {
+  try {
+    await postJson("/api/peer/open", { id: e.id });
+  } catch (err) {
+    toast(tr("打不开这个文件：{p1}", { p1: String((err as Error)?.message ?? err) }));
   }
 }
 
@@ -1388,6 +1420,8 @@ async function sendPath(path: string, name?: string): Promise<void> {
   try {
     await postJson("/api/peer/sendfile", name ? { peer: S.thread, path, name } : { peer: S.thread, path });
     closePicker();
+    // 发完要看见它：不然文件卡片就落在视口外面（这条是用户报的 bug）。
+    forceBottom = true;
     await loadMessages();
     renderMain();
   } catch (err) {
@@ -1406,6 +1440,7 @@ async function uploadBlob(name: string, blob: Blob): Promise<void> {
     });
     const data = (await res.json().catch(() => ({}))) as { error?: string };
     if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    forceBottom = true;
     await loadMessages();
     renderMain();
   } catch (err) {

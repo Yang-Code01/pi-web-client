@@ -753,6 +753,12 @@ body.embedded .brand .nm { display: none; }
 .replybar .who { flex: none; color: var(--accent); }
 .replybar .ex { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 文件卡片右下角那组按钮（D301）：状态文字在左，按钮组靠右。 */
+.fbot .fbtns { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.fbot .fbtns .act { margin-left: 0; }
+.fbot button.act { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.fbot button.act:hover { text-decoration: underline; }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
