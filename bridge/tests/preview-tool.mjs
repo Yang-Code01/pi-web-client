@@ -14,7 +14,7 @@
  * 绝对路径；文件不存在 → `path`；一张页签回 `stale` 不压另张页签的 `ok:true`。
  *
  * 自带丢弃式 bridge + 脚本化 pi（fixture 会把回环 origin 与 token 写进 FAKE_PI_LOG），
- * 不花模型 turn、不碰 7864。端口默认 7892，可用 PREVIEW_PORT 改。
+ * 不花模型 turn、不碰 7864。端口由系统分配，可用 PREVIEW_PORT 钉住。
  *
  *   node bridge/tests/preview-tool.mjs
  */
@@ -23,9 +23,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.PREVIEW_PORT ?? 7892);
+const PORT = Number(process.env.PREVIEW_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "preview-tool");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

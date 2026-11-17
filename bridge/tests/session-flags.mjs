@@ -10,10 +10,11 @@ import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
-const PORT = Number(process.env.PI_WEB_PORT ?? 7875);
+const PORT = Number(process.env.PI_WEB_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "session-flags");
 const STATE = path.join(ROOT, "state");
 const OUT = path.join(ROOT, "shots");
@@ -82,21 +83,27 @@ try {
 
   const create = (name) =>
     new Promise((resolve, reject) => {
+      // Cleared on either exit: a pending watchdog timer holds the event loop open until it fires.
+      const timeout = setTimeout(() => {
+        ws.off("message", onMsg);
+        reject(new Error(`create ${name} timeout`));
+      }, 60000);
       const onMsg = (buf) => {
         const msg = JSON.parse(buf.toString());
         if (msg.type === "session" && msg.state?.name === name) {
           ws.off("message", onMsg);
+          clearTimeout(timeout);
           files.push(msg.state.file);
           resolve(msg.sessionId);
         }
         if (msg.type === "error") {
           ws.off("message", onMsg);
+          clearTimeout(timeout);
           reject(new Error(msg.message));
         }
       };
       ws.on("message", onMsg);
       ws.send(JSON.stringify({ type: "create", cwd: CWD, name }));
-      setTimeout(() => reject(new Error(`create ${name} timeout`)), 60000);
     });
 
   // The older session first, then the newer one: creation order is what the sidebar must keep.

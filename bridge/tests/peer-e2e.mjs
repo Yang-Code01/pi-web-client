@@ -752,7 +752,7 @@ try {
 
   // 端口被占：再起一份抢 17968，必须退出码 2（bridge 靠它判断「另一份在跑」，不会无限重启）。
   const dup = spawn(process.execPath, [ENTRY], {
-    env: { ...process.env, PI_PEER_STATE: path.join(ROOT, "dup"), PI_PEER_PORT: "17968", PI_PEER_ANNOUNCE_PORT: "17970" },
+    env: { ...process.env, PI_PEER_STATE: path.join(ROOT, "dup"), PI_PEER_PORT: "17968", PI_PEER_ANNOUNCE_PORT: "17970" }, // port-guard: allow —— 就是要抢 B 的端口，验「另一份在跑」退出码 2
     stdio: ["ignore", "pipe", "pipe"],
   });
   const code = await new Promise((resolve) => dup.on("exit", resolve));

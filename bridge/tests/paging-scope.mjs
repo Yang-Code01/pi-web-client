@@ -13,8 +13,7 @@
  * `claim` / `reload` 不在这里试：两者都从 `openLive` 拉起 pi，与这条线无头用例的「不起进程」相冲。
  * 它们的帧由 subscribe 共用的 `sessionFrameOf` + `frameFor` 成形（见 D215 验证）。
  *
- * 只用 Node 的 ws 客户端，不起浏览器；端口默认 7891（7888 continue-ui、7889 attach-picker、
- * 7890 history-ui 已占），`PAGING_SCOPE_PORT` 可改，不碰 7864。
+ * 只用 Node 的 ws 客户端，不起浏览器；端口由系统分配，`PAGING_SCOPE_PORT` 可钉住，不碰 7864。
  *
  *   node bridge/tests/paging-scope.mjs
  */
@@ -23,9 +22,10 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.PAGING_SCOPE_PORT ?? 7891);
+const PORT = Number(process.env.PAGING_SCOPE_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "paging-scope");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

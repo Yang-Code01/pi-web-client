@@ -10,7 +10,7 @@
  *   C. bug 记录里第五个 tab「⚡ AI 出错记录」按次数排序，右边能看每次发生、能标已修复、能交给 agent；
  *   D. 再点一次同类 → 只加次数不新增行；撤销把整本退回点之前。
  *
- * 端口默认 7895（continue-ui 用 7888），可用 FAILURES_UI_PORT 改。
+ * 端口由系统分配，可用 FAILURES_UI_PORT 钉住。
  * 截图落在 .scratch/shots/failures-*.png。
  */
 import { spawn, execFileSync } from "node:child_process";
@@ -19,11 +19,12 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.FAILURES_UI_PORT ?? 7895);
+const PORT = Number(process.env.FAILURES_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "failures-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

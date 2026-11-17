@@ -14,8 +14,9 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
-const PORT = Number(process.env.PI_WEB_PORT ?? 7871);
+const PORT = Number(process.env.PI_WEB_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "rename-probe");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(os.homedir(), ".pi", "agent");

@@ -3,7 +3,7 @@
  *
  *   npm run build && node bridge/tests/sysmanage-ui.mjs
  *
- * 自带丢弃式 bridge（端口 7893），不碰 7864；只读本机数据，不真的改 DNS / 重启 WinNAT——
+ * 自带丢弃式 bridge（端口由系统分配），不碰 7864；只读本机数据，不真的改 DNS / 重启 WinNAT——
  * 两者都会弹 UAC 并动整机网络，留本机手验。截图落在 .scratch/shots/sysmanage-ui.png。
  * 末尾另开几个放大字号的上下文，验三套控制台都不会被 #app 的 zoom 顶出视口，
  * 本机管理六个分区及概况跳转也不会横向穿出面板。
@@ -13,10 +13,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.SYSMANAGE_UI_PORT ?? 7893);
+const PORT = Number(process.env.SYSMANAGE_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "sysmanage-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

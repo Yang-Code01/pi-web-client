@@ -11,6 +11,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "scratch-chat");
@@ -18,7 +19,7 @@ const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const PI_LOG = path.join(ROOT, "fake-pi.jsonl");
 const SCRATCH = path.join(STATE, "scratch");
-const PORT = 7906;
+const PORT = await freePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
 

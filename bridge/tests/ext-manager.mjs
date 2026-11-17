@@ -11,11 +11,12 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 // Overridable: on Windows the default can sit inside a Hyper-V excluded port range (netsh
 // interface ipv4 show excludedportrange protocol=tcp), where listen() fails with EACCES.
-const PORT = Number(process.env.PI_TEST_PORT) || 7912;
+const PORT = Number(process.env.PI_TEST_PORT) || (await freePort());
 const ROOT = path.join(REPO, ".scratch", "ext-manager");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

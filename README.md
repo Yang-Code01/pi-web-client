@@ -202,6 +202,10 @@ PI_WEB_HOST=0.0.0.0 npm start
 
 ## 测试
 
+**跑一遍全部 E2E**：`npm run test:all`（= `node tools/run-tests.mjs`，D298）。每个测试都自己起一份桥和一个浏览器，彼此独立，所以按 CPU 并发跑：默认 `min(6, CPU-1)` 路。`--jobs 4` 降并发、`--only ask-ui,share-bug` 只跑几个、`--skip peer-ui` 跳过、`--timeout 600` 放宽单测超时、`--list` 先看清单和并发计划。碰真 `~/.pi/agent`、系统服务、内网通节点的七个（`rename-check`、`session-dirs`、`ext-manager`、`sysmanage-ui`、`peer-e2e`、`peer-ui`、`peer-history`）会自动排在并行波之后串行跑，理由写在 `tools/run-tests.mjs` 的 `SERIAL` 表里；连手工起的 7867 实例的那三个（`e2e`、`browser`、`model-check`）默认不跑，要跑就 `--only`。每份桥还会拿到一个自己的内网通端口（`PI_PEER_PORT`），不然并发时都在抢 7865。各测完整输出落 `.scratch/tests/<name>.log`，终端只留一行结果、失败时再打尾巴；拿不准某个失败是不是并行带来的，用 `--jobs 1 --only <name>` 复跑一次。跑之前先 `npm run build`。
+
+下面这些是单独的用例，按需单跑：
+
 ```bash
 # 起一个隔离的桥（假状态目录，7867），e2e 会真发 prompt、真点审批
 PI_WEB_PORT=7867 PI_WEB_STATE="$PWD/.scratch/test-state" npm start &
@@ -209,7 +213,7 @@ npm test                                                                # WS 协
 npm run test:rpc                                                        # 回归：子进程 stdin 关闭后应答 ui_request 不能崩桥
 node bridge/tests/browser.mjs                                           # 真 Chromium，手机/桌面截图
 node probes/rename-ui.mjs                                              # 改名：Enter/Esc/失焦/刷新后仍在
-node bridge/tests/manage-check.mjs                                     # 会话管理：置顶/排序/归档/删除/拒删 live/重启后仍在（隔离桥 7876）
+node bridge/tests/manage-check.mjs                                     # 会话管理：置顶/排序/归档/删除/拒删 live/重启后仍在
 node probes/manage-ui.mjs                                              # 会话管理 UI：☆/拖拽/多选归档/两步删除/过滤（真 Chromium，7877）
 node probes/pin-auto-open.mjs                                          # 打开不置顶（D146）+ 置顶横栏折成「＋N」（桩桥 + 真 Chromium）
 node probes/workspace-migrate.mjs                                      # 迁移预览：首次弹、数字与左栏一致、确认后不再弹（桩桥 + 真 Chromium，7907）
@@ -222,8 +226,8 @@ npm run test:sysmanage:ui                                             # 本机�
 npm run test:hotdeploy                                                # 热部署：选分支、编译换进程、未提交改动先暂存再恢复
 npm run test:context                                                  # 上下文日志：七类拆分、逐请求快照、旧日志不画崩（D271）
 npm run test:skill:ui                                                 # 技能面板「使用 / 查看」：看不算用、公网不给绝对路径（D281）
-npm run test:ask                                                      # 提问通道：HTTP 三道闸 + 真模型作答/取消（自带隔离桥 7891）
-npm run test:ask:ui                                                   # 提问抽屉：真 Chromium，刷新补发/多题/自己写/停止运行（7892）
+npm run test:ask                                                      # 提问通道：HTTP 三道闸 + 真模型作答/取消（自带隔离桥）
+npm run test:ask:ui                                                   # 提问抽屉：真 Chromium，刷新补发/多题/自己写/停止运行
 node probes/readme-shots.mjs                                          # 重拍 README 那六张图（临时桥 + fixture 会话，不碰 ~/.pi/agent）
 node probes/scroll-race.mjs                                           # 滚动竞争：流式输出时快滑 / 慢滑 / 回到底部（桩桥 + 真触摸）
 node probes/reveal-check.mjs                                          # 在文件夹中显示：三平台命令 + 缺文件/目录/隧道 403（REVEAL_OPEN=1 真弹窗）
@@ -270,6 +274,8 @@ node probes/preview-open.mjs                                          # open_pre
 ```
 
 `npm run typecheck` 分别跑 bridge、peer 和 web 的 `tsc --noEmit`。
+
+**测试不写死端口**（D296）：`bridge/tests` 与 `web/tests` 统一用 `tools/free-port.mjs` 的 `freePort()` 让系统挑端口（要钉死就用各自的 `<X>_PORT` 环境变量），所以日志里每次的端口都不同、两份也能并行跑。为什不容许写死：Windows 的保留段会让 `listen` 报 **EACCES**（不是 EADDRINUSE），测试会先空转二十秒等 healthz 再抛一句 `fetch failed`，看起来像「慢」其实是永远过不了。守卫是 `npm run test:ports`。`probes/` 那批手工脚本还没改，仍用写死的默认端口（可用 `PI_WEB_PORT=` 覆盖）。
 
 测试与探针不再写死盘符或用户目录（D114）：仓库根从脚本自己的 `import.meta.url` 反推（`tools/paths.mjs`），playwright 自己找（`PW_PATH` → 仓库 `node_modules` → npx 缓存，且必须真启动一次才算找到），pi CLI 复用桥的 `resolvePi()`。每个探针的端口都能用 `PI_WEB_PORT=` 覆盖（默认值就是上面写的那些），所以两份可以并行跑。
 

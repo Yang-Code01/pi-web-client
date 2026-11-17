@@ -10,13 +10,14 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "translate-e2e");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const WORK = path.join(ROOT, "work");
-const PORT = 7921;
+const PORT = await freePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const PI_BIN = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi-translate.mjs");
 const SLUG = "doc.md";

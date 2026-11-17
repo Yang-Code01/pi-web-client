@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-exec-plan-"));
 const STATE = path.join(ROOT, "state");
@@ -16,7 +17,7 @@ const AGENT = path.join(ROOT, "agent");
 const WORK = path.join(ROOT, "work");
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
-const PORT = Number(process.env.EXEC_PLAN_PORT ?? 7914);
+const PORT = Number(process.env.EXEC_PLAN_PORT ?? (await freePort()));
 const BASE = `http://127.0.0.1:${PORT}`;
 const PASS = "exec-plan-e2e-pass";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

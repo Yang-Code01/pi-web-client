@@ -23,16 +23,22 @@ const login = await fetch(`${BASE}/api/login`, {
 const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
 const sessionId = await new Promise((resolve, reject) => {
   const ws = new WebSocket(`${BASE.replace("http", "ws")}/ws`, { headers: { cookie } });
+  // The watchdog has to be cleared on the way out: a pending timer keeps the event loop alive, so a
+  // test that finished its work in 10 s sat in the process for another 50 waiting for it to fire.
+  const timeout = setTimeout(() => reject(new Error("create timeout")), 60000);
   ws.on("open", () => ws.send(JSON.stringify({ type: "create", cwd: REPO, name: "ui 测试" })));
   ws.on("message", (b) => {
     const m = JSON.parse(b.toString());
     if (m.type === "session.state" && m.session?.name === "ui 测试") {
+      clearTimeout(timeout);
       resolve(m.session.id);
       ws.close();
     }
-    if (m.type === "error") reject(new Error(m.message));
+    if (m.type === "error") {
+      clearTimeout(timeout);
+      reject(new Error(m.message));
+    }
   });
-  setTimeout(() => reject(new Error("create timeout")), 60000);
 });
 log("created session", sessionId);
 

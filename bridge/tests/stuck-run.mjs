@@ -20,6 +20,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "stuck-run");
@@ -289,7 +290,7 @@ async function settlesInsideTheGrace(bridge, page) {
 }
 
 /** A port of its own: 7893 / 7894 / 7895 / 7898 / 7899 belong to the other bridge tests. */
-const PORT = 7901;
+const PORT = await freePort();
 const bridge = await startBridge(PORT);
 try {
   const page = await client(bridge);

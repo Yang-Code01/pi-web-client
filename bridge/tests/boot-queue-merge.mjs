@@ -22,13 +22,14 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "boot-queue");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const PI_LOG = path.join(ROOT, "fake-pi.jsonl");
-const PORT = Number(process.env.PI_WEB_PORT ?? 7877);
+const PORT = Number(process.env.PI_WEB_PORT ?? (await freePort()));
 const BASE = `http://127.0.0.1:${PORT}`;
 /** 启动窗口：够长到「立刻广播」与「就绪后才交给 pi」两件事能分别观察到。 */
 const BOOT_MS = 2500;

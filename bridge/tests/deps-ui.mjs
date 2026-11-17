@@ -7,7 +7,7 @@
  * 都在，✓/✗ 跟 `/api/deps` 一致（不自己编结论）；③ 缺东西时有一行可复制的命令、不缺时没有。
  *
  * 用本机真装的 pi（`pi list` 是本地命令，不联网），所以断言对「装齐了」和「没装齐」两种机器都成立：
- * 期望值一律从 `/api/deps` 取，不从写死的清单取。端口 7886（7893–7899 都已有主人，7896 归 lessons-spawn / tunnel-ui），可用 DEPS_UI_PORT 改。
+ * 期望值一律从 `/api/deps` 取，不从写死的清单取。端口由系统分配，可用 DEPS_UI_PORT 钉住。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -15,10 +15,11 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.DEPS_UI_PORT ?? 7886);
+const PORT = Number(process.env.DEPS_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "deps-ui");
 const STATE = path.join(ROOT, "state");
 const PROJECT = path.join(ROOT, "project");
