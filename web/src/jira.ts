@@ -14,14 +14,18 @@ import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
 import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
+import { sessionNameFromIssueKey } from "./session-name.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 
 export interface JiraHandoff {
-  /** 只把提示词放进当前输入框，不发送。 */
-  prefill(text: string): void;
-  /** 开一个新会话，建好后把提示词填进它的输入框，不自动发送。 */
-  newSessionWith(text: string): void;
+  /** 只把提示词放进当前输入框，不发送。`name` 只在回退去建新会话时起作用（#487）。 */
+  prefill(text: string, name?: string): void;
+  /**
+   * 开一个新会话，建好后把提示词填进它的输入框，不自动发送。
+   * #487：`name` 预填进「开新会话」面板的名字框，可改可清。
+   */
+  newSessionWith(text: string, name?: string): void;
 }
 
 export interface JiraHost {
@@ -2038,8 +2042,13 @@ export class JiraPanel {
     try {
       const handoff = this.host.handoff;
       if (!handoff) throw new Error(tr("没有可用的会话出口"));
-      if (kind === "prefill") handoff.prefill(text);
-      else handoff.newSessionWith(text);
+      // 面板整屏盖着（`.jc-back` z-index 80 / `.jc-pane` 90），比底部 sheet（60）与它的 modal（70）都高：
+      // 不先收掉，交接出来的输入框（预填 / 新开会话面板）在下面点不到。笔记面板同样先 close() 再交。
+      this.close();
+      // #487：会话名就用这张票的数字号码（票号去掉前缀），省得自己再抄一遍。
+      const name = sessionNameFromIssueKey(issue.key);
+      if (kind === "prefill") handoff.prefill(text, name);
+      else handoff.newSessionWith(text, name);
     } catch (e) {
       await this.tell(tr("交给 agent 失败：{p1}", { p1: errText(e) }));
     }

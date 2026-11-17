@@ -3496,7 +3496,7 @@ export class App {
       dir: cwd,
       branch: git.branch,
       refreshChip: () => { void this.refreshGit(true); },
-      handoff: { prefill: (text) => this.prefill(text), newSessionWith: (text) => this.newSessionWith(text) },
+      handoff: { prefill: (text, name) => this.prefill(text, name), newSessionWith: (text, name) => this.newSessionWith(text, name) },
     });
     sheet.onClose = () => {
       if (this.branchSheet === sheet) this.branchSheet = null;
@@ -3517,7 +3517,7 @@ export class App {
     const sheet = new ReposSheet({
       cwd,
       refreshChip: () => { void this.refreshGit(true); },
-      handoff: { prefill: (text) => this.prefill(text), newSessionWith: (text) => this.newSessionWith(text) },
+      handoff: { prefill: (text, name) => this.prefill(text, name), newSessionWith: (text, name) => this.newSessionWith(text, name) },
     });
     sheet.onClose = () => {
       if (this.reposSheet === sheet) this.reposSheet = null;
@@ -5732,7 +5732,7 @@ export class App {
     return list;
   }
 
-  private openNewSessionSheet(autoPin = false, preset?: { cwd?: string; note?: string }): void {
+  private openNewSessionSheet(autoPin = false, preset?: { cwd?: string; note?: string; name?: string }): void {
     this.closeSheet();
     this.sheetKind = "new";
     const back = el("div", "sheet-back");
@@ -5749,6 +5749,9 @@ export class App {
     const nameField = el("input", "ns-input") as HTMLInputElement;
     nameField.placeholder = tr("可留空：发第一条消息后自动用它取名");
     nameField.maxLength = 120;
+    // #487：交接过来的名字先填上，可改可清；空串等于不填（票号取完是空的时候）。
+    // 按名字框自己的上限截断：程序赋值不受 maxLength 约束，不截会显示一个比建出来的长 120 字之外还长的名字。
+    nameField.value = (preset?.name?.trim() ?? "").slice(0, nameField.maxLength);
     const cwdField = el("input", "ns-input mono") as HTMLInputElement;
     cwdField.placeholder = tr("例如 E:\\yqm\\pi-web-client");
     // #478：从空工作区建完会话时，这里已经是那个组的目录，并写明它在横条的哪一颗。
@@ -5941,7 +5944,11 @@ export class App {
         }
       };
     }
-    queueMicrotask(() => nameField.focus());
+    queueMicrotask(() => {
+      nameField.focus();
+      // #487：预填的名字把光标放末尾 —— 接着补两个字，而不是一打字就覆盖整段。
+      if (nameField.value) nameField.setSelectionRange(nameField.value.length, nameField.value.length);
+    });
   }
   // ---------------------------------------------------------------- render
   private renderAll(): void {
@@ -9004,7 +9011,8 @@ export class App {
       this.jira = new JiraPanel({
         settings: (tab) => this.openSettingsSheet(tab),
         // #252：交给 agent 的两个出口与笔记面板同一套实现（预填只填、新会话不自动发）。
-        handoff: { prefill: (text) => this.prefill(text), newSessionWith: (text) => this.newSessionWith(text) },
+        // #487：两个出口都多带一个名字 —— 票号去掉前缀，填进新会话面板的名字框。
+        handoff: { prefill: (text, name) => this.prefill(text, name), newSessionWith: (text, name) => this.newSessionWith(text, name) },
         // D209：附件下载到本机后，点一行就在这次的预览里打开（没有会话时安静地什么都不做）。
         openFile: (path) => void this.openPreview(path),
       });
@@ -9064,10 +9072,13 @@ export class App {
     btn.title = count ? tr("记录：{p1} 条待处理（Ctrl+Shift+B）", { p1: count }) : tr("记录 bug / 变更 / 想法 / 杂事（Ctrl+Shift+B）");
   }
 
-  /** 「交给 agent → 预填到当前会话」：只填，不发送。 */
-  private prefill(text: string): void {
+  /**
+   * 「交给 agent → 预填到当前会话」：只填，不发送。
+   * #487：`name` 只在回退去建新会话时有用（没有当前会话），有会话就只填文字。
+   */
+  private prefill(text: string, name?: string): void {
     if (!this.textarea || !this.currentId) {
-      this.newSessionWith(text);
+      this.newSessionWith(text, name);
       return;
     }
     this.textarea.value = text;
@@ -9100,10 +9111,15 @@ export class App {
     this.fitComposer();
   }
 
-  /** 「交给 agent → 新开会话」：会话建好之后才填（见 case "session"）。 */
-  private newSessionWith(text: string): void {
+  /**
+   * 「交给 agent → 新开会话」：会话建好之后才填（见 case "session"）。
+   * #487：`name` 直接落到面板的名字框里，面板一关就没，不需要额外的待填状态。
+   */
+  private newSessionWith(text: string, name?: string): void {
+    // 先开面板再记待填文字：openNewSessionSheet() 头一句 closeSheet() 会清掉上一次的
+    // prefillNext（上一扇新会话面板还开着的时候，那句清理会把刚记下的文字吞掉）。
+    this.openNewSessionSheet(false, name?.trim() ? { name } : undefined);
     this.prefillNext = text;
-    this.openNewSessionSheet();
   }
 
   private openFiles(): void {

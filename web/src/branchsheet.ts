@@ -12,6 +12,7 @@ import { api } from "./api.ts";
 import { errText, fmtRelative, tr } from "./i18n/index.ts";
 import type { GitCommit, GitCommitDetail, GitDiff, GitDiffFile, GitExecResult, GitHistory, GitOpParams, GitRefs, GitWorktreeState } from "./types.ts";
 import { GIT_OPS, MANUAL_FILTERS, OPS_BY_ID, OP_GROUPS, opFrames, buildHandoffPrompt, type GitOpDef } from "./git-ops.ts";
+import { sessionNameFromBranchRef } from "./session-name.ts";
 
 /** 一次取多少条；「再加载」按同样大小往后翻。 */
 const PAGE = 80;
@@ -58,8 +59,8 @@ export interface BranchSheetOptions {
   branch: string;
   /** 成功后让 app.ts 的状态行 chip 跟着变（fresh）。 */
   refreshChip?: () => void;
-  /** 复用了 JiraPanel / FailPanel 的两个出口：只填不发，不自动发送。 */
-  handoff?: { prefill: (text: string) => void; newSessionWith: (text: string) => void };
+  /** 复用了 JiraPanel / FailPanel 的两个出口：只填不发，不自动发送。#487：`name` 预填进新会话的名字框。 */
+  handoff?: { prefill: (text: string, name?: string) => void; newSessionWith: (text: string, name?: string) => void };
   /**
    * #392：嵌进「目录与仓库」右栏，而不是自己开一扇全屏窗。
    * 不建背景遮罩、不绑 document 的 Esc、不显示标题与 ✕；分支侧栏收进头部下拉。
@@ -72,7 +73,7 @@ export class BranchSheet {
   private fallback: string;
   private readonly embedded: boolean;
   private readonly refreshChip: (() => void) | null;
-  private readonly handoff: { prefill: (text: string) => void; newSessionWith: (text: string) => void } | null;
+  private readonly handoff: { prefill: (text: string, name?: string) => void; newSessionWith: (text: string, name?: string) => void } | null;
   private readonly root: HTMLElement;
   private readonly sheet: HTMLElement;
   private readonly repoEl: HTMLElement;
@@ -1266,10 +1267,10 @@ export class BranchSheet {
     const acts = el("div", "go-acts");
     const goNew = btn(tr("新会话并预填"), "btn primary");
     goNew.dataset.aiGo = "new";
-    goNew.onclick = () => this.handoffGo(preview.textContent ?? "", true);
+    goNew.onclick = () => this.handoffGo(preview.textContent ?? "", true, sessionNameFromBranchRef(picker.input.value));
     const goCur = btn(tr("预填到当前会话"));
     goCur.dataset.aiGo = "current";
-    goCur.onclick = () => this.handoffGo(preview.textContent ?? "", false);
+    goCur.onclick = () => this.handoffGo(preview.textContent ?? "", false, sessionNameFromBranchRef(picker.input.value));
     acts.append(goNew, goCur, this.cancelBtn());
     body.append(acts);
     card.append(body);
@@ -1293,7 +1294,11 @@ export class BranchSheet {
     });
   }
 
-  private openHandoff(prompt: string): void {
+  /**
+   * `ref` 是这条提示词用的分支：名字就用它（#487），默认当前选中的那条。
+   */
+  private openHandoff(prompt: string, ref = this.selectedBranch): void {
+    const name = sessionNameFromBranchRef(ref);
     const card = el("div", "go-card go-handoff");
     card.append(this.cardHead(tr("交给 agent"), tr("只填进输入框，不自动发送"), false, ""));
     const body = el("div", "go-card-body");
@@ -1302,20 +1307,20 @@ export class BranchSheet {
     const acts = el("div", "go-acts");
     const goNew = btn(tr("新会话并预填"), "btn primary");
     goNew.dataset.aiGo = "new";
-    goNew.onclick = () => this.handoffGo(prompt, true);
+    goNew.onclick = () => this.handoffGo(prompt, true, name);
     const goCur = btn(tr("预填到当前会话"));
     goCur.dataset.aiGo = "current";
-    goCur.onclick = () => this.handoffGo(prompt, false);
+    goCur.onclick = () => this.handoffGo(prompt, false, name);
     acts.append(goNew, goCur, this.cancelBtn());
     body.append(acts);
     card.append(body);
     this.openCard(card, true);
   }
 
-  private handoffGo(prompt: string, newSession: boolean): void {
+  private handoffGo(prompt: string, newSession: boolean, name?: string): void {
     if (!this.handoff) { this.say(tr("这个面板没接上输入框，提示词已留在卡里"), true); return; }
-    if (newSession) this.handoff.newSessionWith(prompt);
-    else this.handoff.prefill(prompt);
+    if (newSession) this.handoff.newSessionWith(prompt, name);
+    else this.handoff.prefill(prompt, name);
     this.say(tr("已放进输入框，没有自动发送"));
     this.closeOp();
   }
