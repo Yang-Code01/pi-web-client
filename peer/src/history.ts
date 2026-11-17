@@ -246,9 +246,11 @@ export class History {
         byContact.get(last.from.nodeId);
       const from = last.from.nodeId === nodeId ? last.from : null;
       const meta = input.meta(nodeId);
+      // 未读 = 对方发来的**消息**：文本与文件都算（D300 之后文件谁都能发，再不计数就会
+      // 出现「文件悄悄落在会话里、列表上一点动静都没有」）。回执与撤回记录不算。
       let unread = 0;
       for (const entry of tail) {
-        if (entry.kind !== "text") continue;
+        if (!isMessage(entry)) continue;
         if (entry.from.nodeId === input.me) continue;
         if (meta.readAt !== undefined && !afterWatermark(entry, meta.readAt, meta.readId ?? "")) continue;
         unread += 1;

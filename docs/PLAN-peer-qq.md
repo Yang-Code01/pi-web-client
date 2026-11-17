@@ -118,7 +118,7 @@ interface ThreadMeta {
 ```
 
 - **水位为什么是 `{at, id}` 而不是一个时间戳**：`uuidv7` 同毫秒内是随机的（`peer/src/messages.ts:14` 的注释已经写了），拿 `at` 单键会让「同一毫秒里先收到的那条」永远算未读。判定用 `(e.at, e.id) > (read.at, read.id)` 的字典序，纯本地比较，对时钟漂移只影响本机，不影响对端。
-- **未读只数别人发的文本**（`kind:"text" && from.nodeId !== me`），回执、文件不算 —— QQ 的摘要行也是这个口径（`@全体成员` 后面才是正文）。
+- **未读数别人发来的消息**（`text` 与 `file`，`from.nodeId !== me`），回执与撤回记录不算。文件也算：D300 之后谁都能传文件，不计数就会出现「文件悄悄落到会话里、列表上没动静」。
 - **`/threads` 增加字段**：`unread: number`、`pinned`、`muted`、`lastMine: boolean`（最后一条是不是我发的，给「你:」前缀）、`draft`。
 - **新接口**（都只认回环，口径同 `/peer/add`）：
   - `POST /threads/read { nodeId, at, id }`
