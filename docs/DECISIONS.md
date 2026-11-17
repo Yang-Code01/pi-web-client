@@ -5765,4 +5765,19 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 
 **取舍：** 不抄 QQ 的元素列表（`*MsgElem`）、云端漫游（`IRoamMsgManager`）与群——我们没有富媒体渲染链、没有中心存储，`GLOSSARY.md` 也把群排在 v1.1。`seq` 只用于排序与「本机发现缺号时提示」，因为 QQ 的 `MsgSeqPullApi` 是向服务端要漏掉的消息，我们无服务端可问。混跑期间撤回能力不对称，这是不升 `PROTO` 的固定成本。
 
-**验证：** 未实施。落地顺序与逐片验收见 `docs/PLAN-peer-qq.md` §8：每片一个 PR，合之前 `npm run build` + `node bridge/tests/peer-e2e.mjs` + `node bridge/tests/peer-ui.mjs`（串行跑，同机多份内网通会互相发现）。
+**验证：** 已实现（2026-11-18，四片合成一个 PR）。`npm run build` 过；`node bridge/tests/peer-e2e.mjs` 全过，其中这一段是新加的：
+
+```
+ok 未读按对方发来的条数算（3）
+ok 消息带会话内单调的 seq
+ok 已读水位是 {at,id} 双键，打过之后只算新来的
+ok 置顶 / 静音 / 草稿只在本机生效，置顶排最前
+ok 输入中 3 秒窗口（心跳不落盘）
+ok 撤回是追加一条记录、原文留在文件里，重复撤回被拒
+ok 超过 2 分钟的撤回被拒（400 + 文案）
+ok 重发复用原 id：两边都还是一条
+ok 送达状态由 receipt 折叠出来（state=delivered）
+ok 本机状态（online/away）进 /status 与在线表
+```
+
+`node bridge/tests/peer-history.mjs` 与 `node bridge/tests/peer-ui.mjs` 也全过；peer-ui 新加了两条界面断言（未读徽标在头像上、静音会话只画不带数字的小圆点）。顺带修掉一个一直在的洞：**`/messages` 以前从来没有把 receipt 折叠回消息**，所以页面上的「已送达 / 发送失败」其实从来没显示过 —— `ack` 字段只存在于 receipt 那一行，而那一行被前端跳过了。现在折叠在 `peer/src/history.ts` 的 `foldEntries()` 里做。

@@ -677,6 +677,82 @@ body.embedded .brand .nm { display: none; }
   .empty { padding: 24px; }
 }
 
+
+/* ---------------------------------------------------------------- D299：会话 / 消息模型
+ *
+ * P1 未读与置顶、P2 三态、P3 引用与撤回灰条、P4 输入中。
+ * 都是往既有骨架上贴的，不改上面的栅格。 */
+
+.avwrap { position: relative; flex: none; display: inline-flex; }
+
+/* 未读：头像右上角。静音会话只画一个不带数字的小圆点（QQ 用斜杠铃铛，这里的行更窄）。 */
+.avwrap .unread {
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #10141a;
+  font: 600 9.5px var(--mono);
+  line-height: 15px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.avwrap .unread.quiet { min-width: 8px; width: 8px; height: 8px; padding: 0; border-radius: 50%; }
+
+.row .n .pin { width: 10px; height: 10px; color: var(--faint); flex: none; }
+.row .s .mute { width: 11px; height: 11px; color: var(--faint); flex: none; }
+.row .s .typing { color: var(--accent); }
+.row .s .draft { color: var(--warn); }
+.head .s.typing { color: var(--accent); }
+
+/* P2：三态。发送中不动声色，失败才让整条气泡变红。 */
+.msg .tm .sending { color: var(--faint); }
+.bub.failed { border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+
+/* P3：撤回留下的灰条（原消息不再显示，历史文件里还在）。 */
+.graytip {
+  margin: 10px 0;
+  text-align: center;
+  font: 11px var(--sans);
+  color: var(--faint);
+}
+
+/* P3：引用块。点一下跳到原消息。 */
+.quote {
+  display: flex;
+  gap: 6px;
+  max-width: 100%;
+  margin-bottom: 4px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--line-strong);
+  border-radius: 4px;
+  background: rgb(255 255 255 / 3%);
+  font-size: 11px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.quote .who { flex: none; color: var(--accent); }
+.quote .ex { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* P3：输入框上方的引用条。 */
+.replyhost[hidden] { display: none; }
+.replybar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-left: 2px solid var(--accent);
+  background: rgb(125 211 252 / 6%);
+  font-size: 11px;
+  color: var(--dim);
+}
+.replybar .who { flex: none; color: var(--accent); }
+.replybar .ex { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }

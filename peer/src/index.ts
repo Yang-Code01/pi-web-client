@@ -7,6 +7,8 @@ import { Outbox } from "./outbox.ts";
 import { Messages, uuidv7 } from "./messages.ts";
 import { Relations } from "./peers.ts";
 import { Files } from "./files.ts";
+import { LocalActivity } from "./presence.ts";
+import { Threads } from "./threads.ts";
 
 const cfg = loadConfig();
 const nodeId = ensureNodeId();
@@ -29,9 +31,14 @@ process.on("unhandledRejection", (err) => log(`unhandledRejection: ${(err as Err
 const discovery = new Discovery(cfg, nodeId, log);
 discovery.on("change", (online: unknown[]) => log(`在线 ${online.length} 台`));
 
+// P4：away 由「最后一次活动」推出来，announce 每 10 秒把当前状态带上。
+const activity = new LocalActivity();
+discovery.setLocalStatus(() => (cfg.hidden ? "hidden" : activity.status()));
+
 const history = new History(log);
 const relations = new Relations(log);
 const ignored = new Ignored(log);
+const threads = new Threads(log);
 const messages = new Messages({ cfg, nodeId, discovery, history, outbox: null as never, relations, log });
 // 回环没注入 outbox 之前先建好：`deliver` 只依赖网络，`settled` 才依赖 outbox 本身。
 const outbox = new Outbox({
@@ -59,7 +66,7 @@ messages.attachOutbox(outbox);
 
 const files = new Files({ cfg, nodeId, discovery, history, relations, log });
 
-const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations, files, ignored });
+const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity });
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   // 端口被占 = 已经有一份 peer 在跑。直接退出而不是自动换端口：bridge 要能看出「没起来」。

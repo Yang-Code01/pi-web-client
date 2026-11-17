@@ -819,13 +819,71 @@ async function main(): Promise<void> {
       const body = await readBody(req).catch(() => ({}));
       try {
         const via = body?.via === "pi" ? ("pi" as const) : undefined;
-        return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via));
+        const replyTo =
+          body?.replyTo && typeof body.replyTo === "object" && typeof body.replyTo.id === "string"
+            ? { id: String(body.replyTo.id), from: String(body.replyTo.from ?? ""), excerpt: String(body.replyTo.excerpt ?? "") }
+            : undefined;
+        return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
     }
-    if (url.pathname === "/api/peer/contacts" && req.method === "GET") {
+    // P1：已读水位 / 置顶 / 静音 / 草稿（都只改本机 peer 的那份 threads.json）。
+    if (url.pathname === "/api/peer/read" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
       try {
+        return json(res, 200, await peer.markRead(String(body?.peer ?? ""), Number(body?.at), String(body?.id ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/thread" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const patch: { pinned?: boolean; muted?: boolean; draft?: string } = {};
+      if (typeof body?.pinned === "boolean") patch.pinned = body.pinned;
+      if (typeof body?.muted === "boolean") patch.muted = body.muted;
+      if (typeof body?.draft === "string") patch.draft = body.draft;
+      try {
+        return json(res, 200, await peer.patchThread(String(body?.peer ?? ""), patch));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // P2：重发同一条消息（同一个 id）。
+    if (url.pathname === "/api/peer/retry" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.retrySend(String(body?.peer ?? ""), String(body?.id ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // P3：撤回 / 输入中。
+    if (url.pathname === "/api/peer/recall" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.recall(String(body?.peer ?? ""), String(body?.id ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/typing" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.typing(String(body?.peer ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // P4：页面心跳（away 由 peer 按最后一次活动推）。
+    if (url.pathname === "/api/peer/presence" && req.method === "POST") {
+      try {
+        return json(res, 200, await peer.presence());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/contacts" && req.method === "GET") {      try {
         return json(res, 200, await peer.contacts());
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
@@ -2087,6 +2145,24 @@ async function main(): Promise<void> {
     return kind === "approval" ? `需要你批准 · ${name}` : `需要你回答${count > 1 ? `（${count} 题）` : ""} · ${name}`;
   };
   const shouldNotify = (): boolean => notifier.enabled && !anyPresent();
+
+  /**
+   * D299 / P4：内网通的新消息也走同一条通知管道。
+   *
+   * 压制条件在 `PeerHost.pollThreads()` 里（自己发的 / 静音 / 免打扰 / 已经记过账），
+   * 这里只看「人是不是在页面前」——在场就不推，跟 pi 会话的口径一致。
+   */
+  peer.onNew((thread) => {
+    if (!shouldNotify()) return;
+    const last = thread.last;
+    const body = last?.text
+      ? last.text.replace(/\s+/g, " ").slice(0, 140)
+      : last?.file
+        ? `[文件] ${last.file.name}`
+        : "发来一条新消息";
+    const link = tunnel.state.url ? `${tunnel.state.url}/peer` : `http://127.0.0.1:${cfg.port}/peer`;
+    void notifier.notify(`内网通 · ${thread.nickname}`, body, link);
+  });
   sessions.on("approval", (approval) => {
     if (!shouldNotify()) return;
     const session = sessions.get(approval.sessionId);

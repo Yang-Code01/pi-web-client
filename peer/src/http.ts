@@ -14,6 +14,8 @@ import type { History } from "./history.ts";
 import type { Messages } from "./messages.ts";
 import type { Relations } from "./peers.ts";
 import { MAX_MARKET_FRAME, ingest, manifestResponse, parseFrame, touchBlob } from "./market.ts";
+import type { LocalActivity } from "./presence.ts";
+import type { Threads } from "./threads.ts";
 
 export interface PeerContext {
   cfg: PeerConfig;
@@ -24,6 +26,8 @@ export interface PeerContext {
   relations: Relations;
   files: Files;
   ignored: Ignored;
+  threads: Threads;
+  activity: LocalActivity;
 }
 
 const MAX_BODY = 1024 * 1024;
@@ -136,8 +140,15 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
 }
 
 export function createPeerServer(ctx: PeerContext): http.Server {
-  const { cfg, nodeId, discovery, history, messages, relations, files, ignored } = ctx;
-  const identity = () => ({ nodeId, nickname: cfg.nickname, hostname: os.hostname(), port: cfg.port, version: VERSION });
+  const { cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity } = ctx;
+  const identity = () => ({
+    nodeId,
+    nickname: cfg.nickname,
+    hostname: os.hostname(),
+    port: cfg.port,
+    version: VERSION,
+    status: activity.status(),
+  });
 
   return http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://peer");
@@ -154,6 +165,8 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           nickname: cfg.nickname,
           hostname: os.hostname(),
           port: cfg.port,
+          status: activity.status(),
+          idleMs: activity.idleMs(),
           online: discovery.online(),
           config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
         });
@@ -251,7 +264,48 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       // 以下三条只给本机页面 / pi 工具用。历史只在回环上可读（决定 4；隧道里那条 403 是设计好的）。
       if (url.pathname === "/threads" && req.method === "GET") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
-        return json(res, 200, { ok: true, threads: history.threads(discovery.online(), relations.list()) });
+        return json(res, 200, {
+          ok: true,
+          threads: history.threads({
+            online: discovery.online(),
+            contacts: relations.list(),
+            me: nodeId,
+            meta: (id) => threads.get(id),
+            typing: (id) => messages.typing(id),
+            pending: (id) => messages.pending(id),
+          }),
+        });
+      }
+
+      // 会话元数据（D299 / P1）：三个开关 + 已读水位 + 草稿，都只改本机那份小 json。
+      if (url.pathname === "/threads/read" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const peerId = String(body?.peer ?? "");
+        if (!peerId) return json(res, 400, { error: "缺 peer" });
+        const at = Number(body?.at);
+        const id = String(body?.id ?? "");
+        if (!Number.isFinite(at) || !id) return json(res, 400, { error: "缺 at / id" });
+        return json(res, 200, { ok: true, meta: threads.setRead(peerId, { at, id }) });
+      }
+
+      if (url.pathname === "/threads/patch" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const peerId = String(body?.peer ?? "");
+        if (!peerId) return json(res, 400, { error: "缺 peer" });
+        const patch: Record<string, unknown> = {};
+        if (typeof body?.pinned === "boolean") patch.pinned = body.pinned;
+        if (typeof body?.muted === "boolean") patch.muted = body.muted;
+        if (typeof body?.draft === "string") {
+          try {
+            threads.setDraft(peerId, body.draft);
+          } catch (err) {
+            return json(res, 400, { error: (err as Error).message });
+          }
+        }
+        if (patch.pinned !== undefined || patch.muted !== undefined) threads.patch(peerId, patch);
+        return json(res, 200, { ok: true, meta: threads.get(peerId) });
       }
 
       if (url.pathname === "/messages" && req.method === "GET") {
@@ -259,7 +313,44 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const peerId = url.searchParams.get("peer") ?? "";
         if (!peerId) return json(res, 400, { error: "缺 peer" });
         const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 200));
-        return json(res, 200, { ok: true, peer: peerId, entries: history.read(peerId, limit) });
+        return json(res, 200, { ok: true, peer: peerId, entries: messages.view(peerId, limit) });
+      }
+
+      // P2：重发**同一条**消息（同一个 id），不造新消息。
+      if (url.pathname === "/send/retry" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          return json(res, 200, messages.retry(String(body?.peer ?? ""), String(body?.id ?? "")));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      // P3：撤回（本机落灰条 + 通知对端）与输入中（不落盘、不重试）。
+      if (url.pathname === "/recall" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          return json(res, 200, messages.recall(String(body?.peer ?? ""), String(body?.id ?? "")));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      if (url.pathname === "/typing" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        activity.touch();
+        void messages.sendTyping(String(body?.peer ?? ""));
+        return json(res, 200, { ok: true });
+      }
+
+      // P4：页面还开着就是「人在」——away 只在没人动 10 分钟后才成立。
+      if (url.pathname === "/presence" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        activity.touch();
+        return json(res, 200, { ok: true, status: activity.status() });
       }
 
       if (url.pathname === "/send" && req.method === "POST") {
@@ -267,7 +358,17 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const body = await readBody(req).catch(() => ({}));
         try {
           const via = body?.via === "pi" ? ("pi" as const) : undefined;
-          const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""), via);
+          // 引用（P3）：只带 id + 一小段摘录，不把整段原文塞进信封。
+          const replyTo =
+            body?.replyTo && typeof body.replyTo === "object" && typeof body.replyTo.id === "string"
+              ? {
+                  id: String(body.replyTo.id),
+                  from: String(body.replyTo.from ?? ""),
+                  excerpt: String(body.replyTo.excerpt ?? "").slice(0, 120),
+                }
+              : undefined;
+          activity.touch();
+          const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo);
           return json(res, 200, result);
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });

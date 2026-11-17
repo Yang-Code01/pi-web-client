@@ -249,15 +249,16 @@ try {
     },
     8000,
   );
+  // D299 之后 receipt 不再单独出现，而是折叠成消息上的 state（页面只画一条消息）。
   await until(
-    "A 拿到 quick 文字的 delivered 回执",
+    "A 那条 quick 文字折叠成 delivered",
     async () => {
       const body = await (await fetch(`http://127.0.0.1:17965/messages?peer=${sc}`)).json();
-      return body.entries?.some((e) => e.kind === "receipt" && e.ack?.status === "delivered") ? body : false;
+      return body.entries?.some((e) => e.text === "快捷联系人也能聊" && e.state === "delivered") ? body : false;
     },
     8000,
   );
-  log("ok quick 文字送到对端且有送达回执");
+  log("ok quick 文字送到对端且折叠成 delivered");
 
   // 文件三道闸仍然只认 friend：本机发不出去，对端也不会为 quick 的人写盘。
   const quickProbe = path.join(ROOT, "quick-probe.bin");
@@ -554,16 +555,16 @@ try {
   log("ok 同一条消息只存一次（dedupe）");
 
   const receipt = await until(
-    "A 拿到 delivered 回执",
+    "A 那条消息折叠成 delivered",
     async () => {
       const res = await fetch(`http://127.0.0.1:17965/messages?peer=${sb}`);
       const body = await res.json();
-      return body.entries?.some((e) => e.kind === "receipt" && e.ack?.status === "delivered") ? body : false;
+      return body.entries?.some((e) => e.text === "你好，乙" && e.state === "delivered") ? body : false;
     },
     8000,
   );
   void receipt;
-  log("ok 送达回执（append 一行 receipt）");
+  log("ok 送达状态由 receipt 折叠到消息上（不再单独出现在消息流里）");
 
   const tooLong = await fetch("http://127.0.0.1:17965/send", {
     method: "POST",
@@ -663,6 +664,174 @@ try {
   );
   void viaEntry;
   log("ok agent 代发的消息带 via=pi（对端徽章）");
+
+  // ---- D299（P1~P4）：会话元数据 / 未读水位 / 序号 / 撤回 / 输入中 ----
+  const jsonHeaders = { "content-type": "application/json" };
+  const threadsOf = async (port) => (await (await fetch(`http://127.0.0.1:${port}/threads`)).json()).threads ?? [];
+  const msgsOf = async (port, peer) =>
+    (await (await fetch(`http://127.0.0.1:${port}/messages?peer=${peer}&limit=200`)).json()).entries ?? [];
+
+  // 未读：B 从来没打过水位 ⇒ A 发几条就算几条。
+  for (const text of ["未读一", "未读二"]) {
+    const r = await fetch("http://127.0.0.1:17965/send", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ peer: sb, text }) });
+    if (!r.ok) throw new Error(`发「${text}」失败：${r.status} ${await r.text()}`);
+  }
+  const unreadThread = await until(
+    "B 的未读 >= 2",
+    async () => {
+      const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+      return t && t.unread >= 2 ? t : false;
+    },
+    8000,
+  );
+  log(`ok 未读按对方发来的条数算（${unreadThread.unread}）`);
+
+  // 序号：同一会话里单调递增（同毫秒时它是排序的第二键）。
+  const bMsgs = await msgsOf(17966, sa);
+  const seqs = bMsgs.filter((e) => e.kind === "text" && typeof e.seq === "number").map((e) => e.seq);
+  if (seqs.length < 2) throw new Error(`消息没带 seq：${JSON.stringify(bMsgs.slice(-2))}`);
+  if (seqs.some((v, i) => i > 0 && v <= seqs[i - 1])) throw new Error(`seq 没有单调递增：${seqs.join(",")}`);
+  log("ok 消息带会话内单调的 seq");
+
+  // 打水位（{at, id} 双键）⇒ 未读归零。
+  const lastFromA = [...bMsgs].reverse().find((e) => e.kind === "text" && e.from.nodeId !== sb);
+  const readRes = await fetch("http://127.0.0.1:17966/threads/read", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sa, at: lastFromA.at, id: lastFromA.id }),
+  });
+  if (!readRes.ok) throw new Error(`打水位失败：${readRes.status} ${await readRes.text()}`);
+  await until(
+    "打水位后未读归零",
+    async () => {
+      const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+      return t && t.unread === 0 ? t : false;
+    },
+    8000,
+  );
+  // 再来一条：只多这一条。
+  await fetch("http://127.0.0.1:17965/send", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ peer: sb, text: "水位之后" }) });
+  await until(
+    "水位之后新来的那条算 1 条未读",
+    async () => {
+      const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+      return t && t.unread === 1 ? t : false;
+    },
+    8000,
+  );
+  log("ok 已读水位是 {at,id} 双键，打过之后只算新来的");
+
+  // 置顶 / 静音 / 草稿：只改本机那份 threads.json，且立刻反映到 /threads。
+  const patchRes = await fetch("http://127.0.0.1:17966/threads/patch", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sa, pinned: true, muted: true, draft: "还没写完" }),
+  });
+  if (!patchRes.ok) throw new Error(`改会话元数据失败：${patchRes.status} ${await patchRes.text()}`);
+  const patched = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+  if (!patched?.pinned || !patched?.muted || patched?.draft !== "还没写完") {
+    throw new Error(`置顶/静音/草稿没生效：${JSON.stringify(patched)}`);
+  }
+  // 置顶的排在最前。
+  if ((await threadsOf(17966))[0]?.nodeId !== sa) throw new Error("置顶的会话没有排到最前");
+  log("ok 置顶 / 静音 / 草稿只在本机生效，置顶排最前");
+
+  // 输入中：3 秒窗口，不落盘。
+  await fetch("http://127.0.0.1:17965/typing", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ peer: sb }) });
+  const typingOn = await until(
+    "对端看到「正在输入」",
+    async () => {
+      const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+      return t?.typing === true ? t : false;
+    },
+    6000,
+  );
+  void typingOn;
+  await until(
+    "停手 3 秒后「正在输入」自己消失",
+    async () => {
+      const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+      return t?.typing === false ? t : false;
+    },
+    8000,
+  );
+  log("ok 输入中 3 秒窗口（心跳不落盘）");
+
+  // 撤回：原消息不删，两边都折叠成「已撤回」；再撤一次要拒。
+  const recallTarget = (await msgsOf(17965, sb)).filter((e) => e.kind === "text" && e.text === "水位之后").at(-1);
+  const recallRes = await fetch("http://127.0.0.1:17965/recall", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sb, id: recallTarget.id }),
+  });
+  if (!recallRes.ok) throw new Error(`撤回失败：${recallRes.status} ${await recallRes.text()}`);
+  const recalledMine = await until(
+    "自己这边看到已撤回",
+    async () => (await msgsOf(17965, sb)).find((e) => e.id === recallTarget.id && e.recalled === true),
+    8000,
+  );
+  void recalledMine;
+  const recalledTheirs = await until(
+    "对端那条也被折叠成已撤回",
+    async () => (await msgsOf(17966, sa)).find((e) => e.id === recallTarget.id && e.recalled === true),
+    8000,
+  );
+  // 原文还在历史文件里（append-only），只是不再显示。
+  if (!recalledTheirs.text) throw new Error("撤回把原文从历史里删掉了");
+  const recallAgain = await fetch("http://127.0.0.1:17965/recall", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sb, id: recallTarget.id }),
+  });
+  if (recallAgain.status !== 400) throw new Error(`重复撤回应 400，实际 ${recallAgain.status}`);
+  log("ok 撤回是追加一条记录、原文留在文件里，重复撤回被拒");
+
+  // 超时：往历史里塞一条 5 分钟前的消息，撤回必须被拒。
+  const oldId = "old-" + Date.now();
+  fs.appendFileSync(
+    path.join(ROOT, "a", "history", `${sb}.jsonl`),
+    JSON.stringify({ id: oldId, at: Date.now() - 5 * 60_000, from: { nodeId: sa, nickname: "甲" }, to: { kind: "node", id: sb }, kind: "text", text: "很久以前" }) + "\n",
+  );
+  const late = await fetch("http://127.0.0.1:17965/recall", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sb, id: oldId }),
+  });
+  const lateBody = await late.json();
+  if (late.status !== 400 || !String(lateBody.error ?? "").includes("超过撤回时间")) {
+    throw new Error(`超过 2 分钟应拒绝撤回，实际 ${late.status} ${JSON.stringify(lateBody)}`);
+  }
+  log("ok 超过 2 分钟的撤回被拒（400 + 文案）");
+
+  // 重发：同一个 id 再投一次，历史里还是一条，对端也只有一份。
+  const retryTarget = (await msgsOf(17965, sb)).find((e) => e.kind === "text" && e.text === "未读一");
+  const retryRes = await fetch("http://127.0.0.1:17965/send/retry", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sb, id: retryTarget.id }),
+  });
+  if (!retryRes.ok) throw new Error(`重发失败：${retryRes.status} ${await retryRes.text()}`);
+  await new Promise((r) => setTimeout(r, 800));
+  const mineAfterRetry = (await msgsOf(17965, sb)).filter((e) => e.id === retryTarget.id);
+  if (mineAfterRetry.length !== 1) throw new Error(`重发后本机变成 ${mineAfterRetry.length} 条`);
+  const theirsAfterRetry = (await msgsOf(17966, sa)).filter((e) => e.id === retryTarget.id);
+  if (theirsAfterRetry.length !== 1) throw new Error(`重发后对端变成 ${theirsAfterRetry.length} 条`);
+  if (theirsAfterRetry[0].state) throw new Error("对端不该看到我自己这边的发送状态");
+  log("ok 重发复用原 id：两边都还是一条");
+
+  // 状态派生：把 peer 的 outbox 停掉不容易做，这里只验「送达之后 state=delivered」。
+  const delivered = (await msgsOf(17965, sb)).find((e) => e.id === retryTarget.id);
+  if (delivered?.state !== "delivered") throw new Error(`送达后 state 应为 delivered，实际 ${JSON.stringify(delivered?.state)}`);
+  log("ok 送达状态由 receipt 折叠出来（state=delivered）");
+
+  // P4：状态字段进 announce，/status 也带一份。
+  const stA = await status(17965);
+  if (stA.status !== "online" && stA.status !== "away") throw new Error(`/status 没有本机状态：${JSON.stringify(stA.status)}`);
+  const onlineB = stA.online.find((p) => p.nodeId === sb);
+  if (onlineB && typeof onlineB.status !== "string") throw new Error("在线表里没有对端状态");
+  const presence = await (await fetch("http://127.0.0.1:17965/presence", { method: "POST", headers: jsonHeaders, body: "{}" })).json();
+  if (presence.status !== "online") throw new Error(`页面心跳之后应为 online，实际 ${JSON.stringify(presence)}`);
+  log("ok 本机状态（online/away）进 /status 与在线表");
 
   // ---- 第 4 片：文件。先造一个 3 MB 的二进制文件（跨 3 个分块），发过去逐字节比对。 ----
   const { createHash } = await import("node:crypto");

@@ -155,7 +155,14 @@ try {
     let body = {};
     let delay = 0;
     if (p === "/api/peer") body = { enabled: true, running: true, reason: "", status };
-    else if (p === "/api/peer/threads") body = { threads: [thread(ZHANG, "小张", msg("00000000-0000-4000-8000-00000000000a", "小张的最后一句", me, ZHANG)), thread(LI, "小李", msg("00000000-0000-4000-8000-00000000000b", "小李的最后一句", me, LI))] };
+    // D299：小张 3 条未读、小李静音 + 5 条未读（静音只画不带数字的小圆点）。
+    else if (p === "/api/peer/threads")
+      body = {
+        threads: [
+          { ...thread(ZHANG, "小张", msg("00000000-0000-4000-8000-00000000000a", "小张的最后一句", me, ZHANG)), unread: 3 },
+          { ...thread(LI, "小李", msg("00000000-0000-4000-8000-00000000000b", "小李的最后一句", me, LI)), unread: 5, muted: true },
+        ],
+      };
     else if (p === "/api/peer/contacts") body = { contacts: [contact(WANG, "小王"), contact(ZHANG, "小张"), contact(LI, "小李")] };
     else if (p === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
     else if (p === "/api/peer/messages") {
@@ -195,6 +202,12 @@ try {
 
   // ---- 2. 切会话串台 ----
   await page.click('#rail button[title="消息"]');
+
+  // D299 / P1：未读徽标在头像右上角；静音会话不带数字。
+  const badges = await page.locator(".listbox .row .avwrap .unread").allTextContents();
+  check("未读徽标画在头像上", badges.length === 2 && badges[0] === "3" && badges[1] === "", JSON.stringify(badges));
+  const quiet = await page.locator(".listbox .row .avwrap .unread.quiet").count();
+  check("静音会话的未读是不带数字的小圆点", quiet === 1, `quiet=${quiet}`);
   await page.click('.listbox .row:has-text("小张")');
   await page.click('.listbox .row:has-text("小李")');
   await page.waitForTimeout(1600);
