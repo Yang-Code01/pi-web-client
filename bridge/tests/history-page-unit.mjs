@@ -173,4 +173,25 @@ assert.equal(askTurns[1].questions, 2, "多题的题数带上，前端补「等 
 assert.equal(askTurns[3].text, "旧的单题？", "旧 question 没有 header，就用题面");
 assert.equal(askTurns[3].questions, 1, "旧单题是 1 题");
 
+const emptyQuestions = itemsFrame([
+  { id: "s2:c1", kind: "tool", toolCallId: "c1", name: "ask_user_question", args: { questions: [], question: "仍然要问？" }, result: "" },
+]).history.turns;
+assert.equal(emptyQuestions[0]?.text, "仍然要问？", "questions 空数组退回平铺 question（与网页 askQuestions 一致）");
+assert.equal(emptyQuestions[0]?.questions, 1, "退回后算 1 题");
+
+const promptBeforeLabel = itemsFrame([
+  { id: "s2:c2", kind: "tool", toolCallId: "c2", name: "ask_user_question", args: { questions: [{ label: "主题", prompt: "语气" }] }, result: "" },
+]).history.turns;
+assert.equal(promptBeforeLabel[0]?.text, "语气", "标题顺序 header → question → prompt → label（与网页同序）");
+
+const emptyList = itemsFrame([
+  { id: "s2:c1", kind: "tool", toolCallId: "c1", name: "ask_user_question", args: { questions: [], question: "空数组回退？", options: [] }, result: "" },
+]).history.turns;
+assert.equal(emptyList[0].text, "空数组回退？", "空 questions 与网页一样回退到平铺 question");
+assert.equal(emptyList[0].questions, 1, "回退后按 1 题算");
+const labelOnly = itemsFrame([
+  { id: "s2:c2", kind: "tool", toolCallId: "c2", name: "ask_user_question", args: { questions: [{ label: "主题", prompt: "语气" }] }, result: "" },
+]).history.turns;
+assert.equal(labelOnly[0].text, "语气", "标题顺序 header → question → prompt → label，与网页同序");
+
 console.log("history-page-unit: ok");

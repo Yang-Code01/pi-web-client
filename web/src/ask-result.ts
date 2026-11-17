@@ -15,29 +15,48 @@ import { tr } from "./i18n/index.ts";
 export interface AskQuestion {
   /** 卡片左侧的标签：新工具是 `header`，旧问卷是 `label`，都没有就 `Qn`。 */
   label: string;
-  /** 刻度带上说的那句：`header` 优先，没有就用题面（旧单题的题面在 `question` 里）。 */
+  /** 刻度带上说的那句：`header` 优先，没有依次用题面 / 提示 / `label`（与桥的 `askSummary` 同序）。 */
   title: string;
   prompt: string;
   options: unknown[];
 }
 
-/** 刻度带上问卷标题的长度上限，与 `turnLabel` 和桥的 `TURN_TEXT_MAX` 对齐。 */
+/** 刻度带一行字的上限（含「问卷概况：」与「 · 等 N 题」），与缩略图的 `TURN_LABEL_MAX`、桥的 `TURN_TEXT_MAX` 对齐。 */
 const ASK_TITLE_MAX = 80;
+
+/** 取第一个非空字符串（会 trim）；与桥 `history.ts` 的 `firstText` 同一套顺序。 */
+function firstText(values: unknown[]): string {
+  for (const value of values) {
+    const text = typeof value === "string" ? value.trim() : "";
+    if (text) return text;
+  }
+  return "";
+}
+
+function buildAskLabel(brief: string, n: number): string {
+  if (!brief) return n > 1 ? tr("问卷概况：等 {p1} 题", { p1: n }) : tr("问卷概况");
+  if (n > 1) return tr("问卷概况：{p1} · 等 {p2} 题", { p1: brief, p2: n });
+  return tr("问卷概况：{p1}", { p1: brief });
+}
 
 /**
  * 一条问卷在刻度带上的一行字：`问卷概况：第一题 · 等 N 题`。
  *
  * 一份问卷（包括多题）只占一格，所以只取第一题开头那几个字；多题时补一句题数，单题不补。
- * 桥下发的 ghost 索引里文字已经截到 80 字，这里再折一次是为了**实时**那种还没经过桥的手；
- * 两边的结果必须一样，否则同一份问卷载入前后会显示成两句。
+ * 上限按**整行**算（前缀 + 标题 + 题数都算进去）：先量出前后缀占多少，剩下的留给标题与省略号，
+ * 这样多题时的「等 N 题」不会被截掉。
+ *
+ * 桥下发的 ghost 索引里标题已经截到 80 字，这里再折一次是为了**实时**那种还没经过桥的手；
+ * 两边最后都会落到同一个 budget 上，所以同一份问卷载入前后是同一句话。
  */
 export function askTurnLabel(title: string, questions: number): string {
   const one = String(title ?? "").replace(/\s+/g, " ").trim();
-  const brief = one.length > ASK_TITLE_MAX ? `${one.slice(0, ASK_TITLE_MAX - 1)}…` : one;
   const n = Number(questions) > 0 ? Math.floor(Number(questions)) : 0;
-  if (!brief) return n > 1 ? tr("问卷概况 · 等 {p1} 题", { p1: n }) : tr("问卷概况");
-  if (n > 1) return tr("问卷概况：{p1} · 等 {p2} 题", { p1: brief, p2: n });
-  return tr("问卷概况：{p1}", { p1: brief });
+  const full = buildAskLabel(one, n);
+  if (full.length <= ASK_TITLE_MAX) return full;
+  const overhead = full.length - one.length;
+  const budget = Math.max(1, ASK_TITLE_MAX - overhead - 1);
+  return buildAskLabel(`${one.slice(0, budget)}…`, n);
 }
 
 /** 把一次提问的参数归一成同一形状：新工具是 `questions[]`，旧 `question` 是平铺的单个问题。 */
@@ -46,11 +65,12 @@ export function askQuestions(args: unknown): AskQuestion[] {
   const raw = Array.isArray(a.questions) ? (a.questions as any[]) : [];
   const list = raw.length ? raw : a.question !== undefined || a.options !== undefined ? [a] : [];
   return list.map((q, i) => {
-    const header = String(q?.header ?? q?.label ?? "").trim();
+    // 与桥的 `askSummary` 同序：header → question → prompt → label。
+    const title = firstText([q?.header, q?.question, q?.prompt, q?.label]);
     const prompt = String(q?.question ?? q?.prompt ?? "");
     return {
-      label: header || `Q${i + 1}`,
-      title: header || prompt,
+      label: firstText([q?.header, q?.label]) || `Q${i + 1}`,
+      title,
       prompt,
       options: Array.isArray(q?.options) ? q.options : [],
     };

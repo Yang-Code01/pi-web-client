@@ -67,21 +67,28 @@ test("askQuestions：旧单题的平铺参数也归一成一条；空参数不�
   assert.deepEqual(askQuestions({}), []);
 });
 
-test("askQuestions：title 给刻度带用 —— header 优先，没有 header 就是题面", () => {
+test("askQuestions：title 给刻度带用 —— header 优先，其次题面 / prompt / label（与桥同序）", () => {
   assert.equal(askQuestions({ questions: [{ header: "日志", question: "调到哪个级别？" }] })[0].title, "日志");
   assert.equal(askQuestions({ question: "要哪个？", options: [] })[0].title, "要哪个？");
+  assert.equal(askQuestions({ questions: [{ label: "主题", prompt: "语气" }] })[0].title, "语气");
+  assert.equal(askQuestions({ questions: [{ label: "主题", question: "正文" }] })[0].title, "正文");
 });
 
 test("askTurnLabel：一份问卷一行字，多题补「等 N 题」，单题不补", () => {
   assert.equal(askTurnLabel("日志", 1), "问卷概况：日志");
   assert.equal(askTurnLabel("日志", 3), "问卷概况：日志 · 等 3 题");
-  // 没有 header 时桥给的 title 就是题面；题面也没有就只剩「问卷概况」。
+  // 没有标题时桥给的 title 就是空串；多题也要留住「问卷概况：」前缀。
   assert.equal(askTurnLabel("", 1), "问卷概况");
-  assert.equal(askTurnLabel("", 4), "问卷概况 · 等 4 题");
+  assert.equal(askTurnLabel("", 4), "问卷概况：等 4 题");
 });
 
-test("askTurnLabel：折成一行，标题最多 80 字（79 字 + …）", () => {
+test("askTurnLabel：折成一行，整行最多 80 字（含前缀与「等 N 题」）", () => {
   assert.equal(askTurnLabel("  第一行\n 第二行  ", 1), "问卷概况：第一行 第二行");
   const long = "x".repeat(200);
-  assert.equal(askTurnLabel(long, 1), `问卷概况：${"x".repeat(79)}…`);
+  const single = askTurnLabel(long, 1);
+  assert.equal(single, `问卷概况：${"x".repeat(74)}…`);
+  assert.equal(single.length, 80);
+  const multi = askTurnLabel(long, 3);
+  assert.equal(multi.length, 80);
+  assert.ok(multi.endsWith(" · 等 3 题"));
 });

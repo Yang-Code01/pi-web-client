@@ -1235,7 +1235,7 @@ export const en: Dict = {
   "重置": "Reset",
   "问卷 · {p1} 题": "Questionnaire · {p1} questions",
   "问卷概况": "Questionnaire",
-  "问卷概况 · 等 {p1} 题": "Questionnaire · {p1} questions",
+  "问卷概况：等 {p1} 题": "Questionnaire: {p1} questions",
   "问卷概况：{p1}": "Questionnaire: {p1}",
   "问卷概况：{p1} · 等 {p2} 题": "Questionnaire: {p1} · {p2} questions",
   "问卷已关闭": "Questionnaire closed",

@@ -262,8 +262,8 @@ export class ChatView {
   /** This turn's written files, as chips under the ops module. */
   private opsFiles: HTMLElement | null = null;
   /**
-   * The turns on the rail, in order — one tick each: every user message, plus every questionnaire card.
-   * `reset()` refills it through `add()`.
+   * 刻度带上的一格，按顺序排：每条用户消息各一格，每张问答卡也各一格。
+   * `reset()` 重新装填时同样经由 `add()` 走到这里。
    */
   private turns: RailTurn[] = [];
   /** 右缘的轮次缩略图（Q-028）。它挂在滚动视口外面，所以不会随之滚走。 */

@@ -81,7 +81,9 @@ function firstText(values: unknown[]): string {
  */
 function askSummary(args: unknown): { title: string; questions: number } {
   const a = asFields(args);
-  const list = asArray(a?.questions) ?? (a && (a.question !== undefined || a.options !== undefined) ? [a] : []);
+  // 空数组按「没给 questions」处理（与网页 `askQuestions` 一致），免得载入前后标题 / 题数对不上。
+  const raw = asArray(a?.questions);
+  const list = raw && raw.length ? raw : a && (a.question !== undefined || a.options !== undefined) ? [a] : [];
   const first = asFields(list[0]);
   return {
     title: firstText([first?.header, first?.question, first?.prompt, first?.label]),

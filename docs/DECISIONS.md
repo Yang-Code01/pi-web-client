@@ -5578,15 +5578,17 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 
 **问题：** 右侧刻度带原来只认 `item.kind === "user"`（`web/src/chat.ts` 的 `noteTurn` 与 `bridge/src/history.ts` 的 `turnIndex`），问答卡（`ask_user_question` / 旧 `question` / `questionnaire`）不进带子。用户要求：问卷也是用户输入，要进刻度表；同一份问卷的多道题只显示一次；行文用「问卷概况：…」。不做 ghost 的话，只有已经滚到过的那几张问卷能出现，整段会话的问卷位置与编号都对不上（#243 的索引本来就是全量的）。
 
+**为什么：** 刻度带回答的是「我在这段会话里输入过什么」，问卷是模型反过来要求用户输入，和气泡一样属于用户输入；漏掉它，带子的格数就与真实交互对不上，点击跳转也少了一类落点。索引放在桥上而不是只在网页里补，是因为 ghost / 自动翻页依赖**全量**顺序，只有已载入的那几张问卷会让未载入的问卷无法点击到位。
+
 **决定：**
 
-- **桥上把问卷条目录进全量索引**：`turnIndex` 里 `ASK_TOOLS` 命中的工具条目 push `{ id, kind: "ask", text: 第一题标题, images: 0, questions: 题数 }`；`HistoryTurn.kind` 老条目缺省按 `user` 读（新前端 + 老桥仍然只画用户消息）。标题取 `header`，没有就取题面（`question` / `prompt` / `label`），与 `askQuestions` 同序。
+- **桥上把问卷条目录进全量索引**：`turnIndex` 里 `ASK_TOOLS` 命中的工具条目 push `{ id, kind: "ask", text: 第一题标题, images: 0, questions: 题数 }`；`HistoryTurn.kind` 老条目缺省按 `user` 读（新前端 + 老桥仍然只画用户消息）。标题取 `header`，没有就依次取 `question` / `prompt` / `label`，与 `askQuestions` 同序；`questions: []` 视为没给，回退到平铺的 `question`，免得同一份问卷载入前后文字或题数对不上。
 - **一份问卷一格，按工具调用去重**：同一份多题问卷只对应一个 toolCall，因此天然一条；前端另按 `toolCallId` 去重，实时卡（id `live-tool:<callId>`）在结果/回放到达被重建时，把带子上的 id 与节点一起换成新的，点它才不会指向已经 remove 的节点。
-- **文案**：`askTurnLabel(title, questions)` 固定前缀「问卷概况：」；多题补「 · 等 N 题」，单题不补；没有标题只说「问卷概况」；整行沿用 80 字上限（`ASK_TITLE_MAX` 与桥的 `TURN_TEXT_MAX`、缩略图的 `TURN_LABEL_MAX` 对齐）。桥上送 `text` 时已折行截短，前端再折一次，两边同一句话。
+- **文案**：`askTurnLabel(title, questions)` 固定前缀「问卷概况：」；多题补「 · 等 N 题」，单题不补；没有标题时单题只说「问卷概况」、多题说「问卷概况：等 N 题」。上限按**整行** 80 字算（含前缀与「等 N 题」，`ASK_TITLE_MAX` 与桥的 `TURN_TEXT_MAX`、缩略图的 `TURN_LABEL_MAX` 对齐）：先量出前后缀占多少，剩下的留给标题与省略号，别把题数截掉。桥上送 `text` 时已折行截短，前端再折一次，两边同一句话。
 - **点它回到卡**：ghost 行同样可点（#244 的自动往回翻页），已载入的悬停 / 点击给 `.qa-card` 描边（原来只给 `.msg.user .body`）。
 - **「执行→计划」的 round 只数用户消息**：`app.ts` 两处 `execPlanRounds` 过滤 `turn.kind !== "ask"`，否则计划的 `listedRound` 与 `ordinal` 全错位。
 - **旧会话也认**：`question` / `questionnaire` 与 `ask_user_question` 一视同仁（`isAskTool` 与桥的 `ASK_TOOLS` 对齐）；取消 / 一题没答的问卷照样占一格。
 
 **取舍：** 刻度带的行号从此数的是「用户输入」而不是「用户消息」—— 问卷后面那条消息的「第 N 轮」会比以前大 1（点计划跨轮引用的仍是用户消息编号，两者不再完全相同，这是「问卷也是输入」的直接代价）。实时卡重建的时机依赖 `add()` / `replace()` 两条路径，别处若再重建问答卡要记得也走 `noteAskTurn`。
 
-**验证：** `bridge/tests/history-page-unit.mjs` 断言索引里 ask 的 kind / 标题 / 题数、旧工具名、普通工具不占格、多题只有一条；`web/tests/ask-card-unit.mjs` 断言 `title` 回退与 `askTurnLabel` 四种文案、折行与 80 字截断；`probes/rail-ask.mjs` 验四格（2 用户 + 2 问卷，多题只占一格）、ghost 行文字、悬停亮问答卡、点 ghost 翻页到货；`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）与 `npm --prefix bridge run typecheck` 通过。
+**验证：** `bridge/tests/history-page-unit.mjs` 断言索引里 ask 的 kind / 标题 / 题数、旧工具名、普通工具不占格、多题只有一条、空 `questions` 回退与 `prompt`/`label` 的标题顺序；`web/tests/ask-card-unit.mjs` 断言 `title` 与桥同序的回退、`askTurnLabel` 四种文案、折行与整行 80 字截断（多题仍保住「等 N 题」）；`probes/rail-ask.mjs` 验四格（2 用户 + 2 问卷，多题只占一格）、ghost 行文字、悬停亮问答卡、点 ghost 翻页到货；`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）与 `npm --prefix bridge run typecheck` 通过。
