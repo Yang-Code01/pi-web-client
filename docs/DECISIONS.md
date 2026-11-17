@@ -5509,3 +5509,26 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **代价 / 局限：** Run 项在登录后几秒才拉起（不是「一登录就绪」），开机后立刻锁屏的那一小段会漏；Windows「启动应用」列表里显示的是 `powershell.exe` 而不是好认的名字；非管理员仍读不到 Security 日志，历史回填依旧要 UAC 或另开审核策略。
 
 **追加（同一次改动，代码评审后）：** `readAgent` 的 running 与 `installAgent` 的「已在跑就别再起一份」原本各写一份判定，抽成 `statusRunning(status, now)` 共用 —— 两处各写一遍早晚会漂成「装的时候觉得在跑、页面觉得是死的」。
+
+## D287 扩展弹窗里的 pi 包用 pi 自己的 `autoload: false` 停用，不用另立开关键（#469，用户要求 2026-11-17）
+
+**问题：** 扩展弹窗「已安装 → pi 包」只有「更新」「卸载」。用户想让某个包「先别生效、但别卸掉」时，唯一的路是卸载：版本记录没了，之前用 `pi config` 收窄过的资源过滤（`extensions` / `skills` / `prompts` / `themes`）也一起丢，回头重装还得重配一遍。
+
+**决定：**
+
+- **停用 = 把 settings 里的条目改写成 pi 自己的 `{ source, autoload: false }`。** 不引入我们自己的开关字段（页面自带的 `extensions` 黑名单那套只认扩展 id，包不是扩展），也不改名/移文件。pi 读包时 `autoload === false` 就走「空 patterns」那条路：扩展、技能、提示词、主题一个都不加载，等价于「装在那儿但不起作用」。
+- **不改包、不改来源。** `pi update` / `pi remove` 只认 `pkg.source`，所以停用的包照样能升级、能卸载；升级不会把条目改回启用（`updateConfiguredSources` 不写 settings）。
+- **启用按 pi 的塌缩规则还原**（`pi config` 同一个规则：去掉 `autoload`、丢掉被清空的资源数组、只剩 `source` 时塌回纯字符串）。**不存「停用前的原始形态」的存档映射** —— 存档会和用户在终端里自己跑 `pi config` 之后的真实状态打架，而 `autoload: false` 之上只要还留着用户的过滤条件，还原就不丢信息。
+- **`pi list` 会给对象条目打 ` (filtered)` 尾巴**（user 和 project 两个 scope 都会），所以 `picli.parsePackages` 先把尾巴剥掉再当来源用；否则停用之后「更新」按钮对不上这一行，`pkg.toggle` 也会拿着带尾巴的字符串去找条目。
+- **项目条目会替换全局条目，反过来不行**：全局停用、项目里重新启用 → 包照旧加载。`pi list` 又把项目条目并进同一行（同一来源只给一行），所以行上只有一个 `alsoEnabled`：按行自己的 scope 说「项目里仍启用」或「全局仍在加载」，不让「已停用」说谎。
+- **每个 scope 只动自己那份 settings.json**，写锁按文件命名（`settings:global` / `settings:project`），和扩展启停同一把锁 —— 两个按钮同时点不会互相覆盖。项目 scope 的写入要项目已被信任（pi 自己的 `FileSettingsStorage.withLock` 拒绝写未信任项目的 `.pi/settings.json`），拒绝时把 pi 的原话带给页面。
+- **来源比对按 settings 里的原样字符串**（trim 后相等）。`pi list` 回显的就是 settings 里的写法，`pkg.toggle` 拿的也是它，所以两边天然一致；pi 没有导出规范化函数，我们不自造一套（将来若支持 `npm:x@2` 之类的等价写法要重新看这里）。
+
+**代价 / 可改：**
+
+- 「停用」是写在 settings 里的事实，不是页面状态：换台机器、换个前端看到的是同一份。代价是它有副作用范围 —— `pi` 在终端里也读不到这个包了（这正是用户要的），所以按钮文案写「停用」而不是「在这里隐藏」。
+- 停用只影响资源加载，不影响包文件、`pi list` 的可见性（会标 `(filtered)`）与版本检查。
+- 启用会丢掉用户手写的空数组（例如 `prompts: []`）：pi 里空数组和不写这一类是同一个意思（都表示「不限」），塌缩后语义不变；如果将来 pi 改成「空数组 = 一个都不加载」，这里要跟着改。
+- 已开着的会话不会立刻掉资源，沿用原来的「重新加载当前会话」提示（和扩展启停一致）。
+
+**验证：** `bridge/tests/ext-manager.mjs` 新增 A2 段（条目两形态 / 停用保过滤 / 启用塌缩 / 幂等 / 找条目 / 另一 scope 仍在加载）与 B 段 `pkg.toggle` 端到端（写盘形状、库存 `disabled` / `alsoEnabled`、`(filtered)` 不进来源、启用塌回字符串、未知来源拒绝且不写盘、项目条目仍加载、未信任项目拒绝写入）；`probes/ext-manager-stages.mjs` 新增第 10 步（点停用 → 变「启用」、状态写「已停用」、版本号还在 → 点启用回来），并把探针第一步修到现在的新弹窗（已安装清单在「插件市场」子页签里）。

@@ -12,7 +12,8 @@
  *      （另一个包的卸载、扩展的停用）仍然可点；
  *   6. 两个包同时点更新 → 桥收到两个不同 reqId，一个在跑一个在排队，互不阻塞；
  *   7. 跑完后两行各自回到可点的「更新」，同一行可以反复点；
- *   8. 启停扩展走 ext.op：点「停用」先「排队中…」，running 后「停用中…」，done 后回到可点。
+ *   8. 启停扩展走 ext.op：点「停用」先「排队中…」，running 后「停用中…」，done 后回到可点；
+ *   9. 停用 pi 包走 pkg.toggle：按钮变「启用」、状态列写「已停用」，包还在（版本号还在）；再点「启用」回来。
  *
  * Run: npm run build:web && node probes/ext-manager-stages.mjs
  */
@@ -23,7 +24,9 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { loadPlaywright } from "../tools/playwright.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 7931;
+// Overridable: on Windows the default can sit inside a Hyper-V excluded port range (netsh
+// interface ipv4 show excludedportrange protocol=tcp), where listen() fails with EACCES.
+const PORT = Number(process.env.PI_TEST_PORT) || 7931;
 const DIST = path.join(REPO, "web", "dist");
 const OUT = path.join(REPO, ".scratch", "ext-manager-stages", "shots");
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -57,8 +60,8 @@ const ITEMS = [
 ];
 
 /** 两包一扩展一 MCP；版本要到 versions 阶段才有答案。 */
-const PKG_A = { kind: "package", scope: "user", source: "npm:pkg-a", path: null, name: "pkg-a", version: "1.0.0", origin: "npm", pinned: false, latest: null, update: false };
-const PKG_B = { kind: "package", scope: "user", source: "npm:pkg-b", path: null, name: "pkg-b", version: "1.0.0", origin: "npm", pinned: false, latest: null, update: false };
+const PKG_A = { kind: "package", scope: "user", source: "npm:pkg-a", path: null, name: "pkg-a", version: "1.0.0", origin: "npm", pinned: false, latest: null, update: false, disabled: false, alsoEnabled: false };
+const PKG_B = { kind: "package", scope: "user", source: "npm:pkg-b", path: null, name: "pkg-b", version: "1.0.0", origin: "npm", pinned: false, latest: null, update: false, disabled: false, alsoEnabled: false };
 const EXT = { kind: "extension", id: "builtin:mcp", label: "MCP 支持", scope: "builtin", how: "builtin", enabled: true };
 const MCP = {
   name: "rea",
@@ -77,8 +80,12 @@ const localStage = { packages: [PKG_A, PKG_B], extensions: [EXT], mcp: [], mcpEr
 const mcpStage = { ...localStage, mcp: [MCP], mcpReady: true };
 const versionStage = { ...mcpStage, packages: [checked(PKG_A), checked(PKG_B)], updates: 2, versionsChecked: true };
 
-/** 桩桥的状态：收到的请求。 */
-const world = { picli: [], extOp: [], inventories: 0 };
+/** 桩桥的状态：收到的请求，以及被停用的包（停用后每一次库存都带着它）。 */
+const world = { picli: [], extOp: [], inventories: 0, stopped: new Set() };
+const withState = (stage) => ({
+  ...stage,
+  packages: stage.packages.map((p) => ({ ...p, disabled: world.stopped.has(p.source), alsoEnabled: false })),
+});
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", BASE);
@@ -138,9 +145,11 @@ wss.on("connection", (ws) => {
       const n = world.inventories;
       // D113: three stages, deliberately slow, so the probe can watch the paint in between.
       const cwd = msg.cwd ?? CWD;
-      setTimeout(() => n === world.inventories && send({ type: "ext.inventory", cwd, ...localStage }), 120);
-      setTimeout(() => n === world.inventories && send({ type: "ext.inventory", cwd, ...mcpStage }), 1500);
-      if (msg.check !== false) setTimeout(() => n === world.inventories && send({ type: "ext.inventory", cwd, ...versionStage }), 2600);
+      // 第一次（冷启动）的本地阶段故意慢一点，不然空态一闪就被行顶掉了，探针看不到。
+      const localMs = n === 1 ? 700 : 120;
+      setTimeout(() => n === world.inventories && send({ type: "ext.inventory", cwd, ...withState(localStage) }), localMs);
+      setTimeout(() => n === world.inventories && send({ type: "ext.inventory", cwd, ...withState(mcpStage) }), 1500);
+      if (msg.check !== false) setTimeout(() => n === world.inventories && send({ type: "ext.inventory", cwd, ...withState(versionStage) }), 2600);
       return;
     }
     if (msg.type === "picli") {
@@ -156,20 +165,27 @@ wss.on("connection", (ws) => {
         /** 探针控制它什么时候结束：退出码 + 可选错误，再推一份最新库存。 */
         finish: (code = 0, error) => {
           send({ type: "picli.done", reqId: msg.reqId, runId, op: msg.op, code, ...(error ? { error } : {}) });
-          send({ type: "ext.inventory", cwd: CWD, ...versionStage });
+          send({ type: "ext.inventory", cwd: CWD, ...withState(versionStage) });
         },
       };
       world.picli.push(entry);
       setTimeout(entry.start, 200);
       return;
     }
-    if (msg.type === "ext.toggle" || msg.type === "mcp.toggle" || msg.type === "mcp.bump") {
+    if (msg.type === "ext.toggle" || msg.type === "pkg.toggle" || msg.type === "mcp.toggle" || msg.type === "mcp.bump") {
       const entry = {
         msg,
         start: () => send({ type: "ext.op", reqId: msg.reqId, op: msg.type, state: "running" }),
         finish: () => {
-          send({ type: "ext.changed", what: msg.type === "ext.toggle" ? "extension" : "mcp", id: msg.id ?? msg.name });
+          // 停用 / 启用落到桩桥自己的状态里：下一条库存带着新的 disabled，页面才有东西可画。
+          if (msg.type === "pkg.toggle") {
+            if (msg.enable) world.stopped.delete(msg.source);
+            else world.stopped.add(msg.source);
+          }
+          const what = { "ext.toggle": "extension", "pkg.toggle": "package", "mcp.toggle": "mcp", "mcp.bump": "mcp" }[msg.type];
+          send({ type: "ext.changed", what, id: msg.id ?? msg.name ?? msg.source });
           send({ type: "ext.op", reqId: msg.reqId, op: msg.type, state: "done", code: 0 });
+          if (msg.type === "pkg.toggle") send({ type: "ext.inventory", cwd: CWD, ...withState(versionStage) });
         },
       };
       world.extOp.push(entry);
@@ -184,10 +200,15 @@ const { chromium } = await loadPlaywright();
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 log("fake bridge on", BASE);
 
-/** 打开扩展弹窗（从输入框下那颗按钮）。有可更新时会多一个角标，按钮名会变，所以按 class 找。 */
+/** 打开扩展弹窗（从输入框下那颗按钮），并切到「插件市场 → 已安装」页签。 */
 const openDialog = async (page) => {
   await page.locator(".ext-btn").click();
   await until(async () => (await page.locator(".ext-host").count()) === 1, 5000, "ext dialog");
+  // 弹窗默认落在「插件市场」；已安装清单在市场自己的子页签里，不点它永远是市场卡片（#469 时修正）。
+  const tab = page.locator(".ext-host .mk-tab").filter({ hasText: "已安装" }).first();
+  await until(async () => (await tab.count()) === 1, 5000, "已安装 tab");
+  await tab.click();
+  await until(async () => (await page.locator(".ext-host .login-row, .ext-host .empty").count()) > 0, 5000, "installed pane");
 };
 const rowOf = (page, name) => page.locator(".login-row").filter({ hasText: name }).first();
 const btnIn = (page, rowName, label) => rowOf(page, rowName).getByRole("button", { name: label, exact: true });
@@ -295,6 +316,28 @@ try {
   await until(async () => (await rowOf(page, "MCP 支持").getByRole("button", { name: "停用", exact: true }).count()) === 1, 5000, "toggle back");
   check(true, "ext.op done 之后那一行回到可点");
   await page.screenshot({ path: path.join(OUT, "8-toggled.png") });
+
+  // 10) 停用 pi 包：按钮变「启用」、状态列写「已停用」，包还在；再点「启用」回来
+  const pkgIdx = world.extOp.length;
+  await btnIn(page, "pkg-b", "停用").click();
+  await until(async () => world.extOp.length === pkgIdx + 1, 3000, "pkg.toggle request");
+  check(world.extOp[pkgIdx].msg.source === "npm:pkg-b", `pkg.toggle 带的是这一包的 source（拿到 ${world.extOp[pkgIdx].msg.source}）`);
+  check(world.extOp[pkgIdx].msg.enable === false, "点「停用」发 enable: false");
+  await until(async () => (await rowOf(page, "pkg-b").innerText()).includes("停用中"), 3000, "disabling label");
+  check(await btnIn(page, "pkg-a", "停用").isEnabled(), "一个包在停用时别的包照旧可点");
+  world.extOp[pkgIdx].finish();
+  await until(async () => (await rowOf(page, "pkg-b").getByRole("button", { name: "启用", exact: true }).count()) === 1, 5000, "row b after 停用");
+  check((await rowOf(page, "pkg-b").innerText()).includes("已停用"), `停用后状态列写「已停用」（拿到 ${(await rowOf(page, "pkg-b").innerText()).replace(/\s+/g, " ")}）`);
+  check((await rowOf(page, "pkg-b").innerText()).includes("v1.0.0"), "停用后包还在（版本号照旧）");
+  await page.screenshot({ path: path.join(OUT, "9-pkg-disabled.png") });
+  const onIdx = world.extOp.length;
+  await btnIn(page, "pkg-b", "启用").click();
+  await until(async () => world.extOp.length === onIdx + 1, 3000, "pkg.toggle back");
+  check(world.extOp[onIdx].msg.enable === true, "点「启用」发 enable: true");
+  world.extOp[onIdx].finish();
+  await until(async () => (await rowOf(page, "pkg-b").getByRole("button", { name: "停用", exact: true }).count()) === 1, 5000, "row b back to 停用");
+  check(!(await rowOf(page, "pkg-b").innerText()).includes("已停用"), "启用后「已停用」消失");
+  await page.screenshot({ path: path.join(OUT, "10-pkg-enabled.png") });
 
   log(bad ? `${bad} FAILED` : "ALL OK");
 } finally {

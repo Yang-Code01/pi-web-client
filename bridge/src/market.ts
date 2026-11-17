@@ -196,6 +196,10 @@ export interface InstalledPackage {
   pinned: boolean;
   latest: string | null;
   update: boolean;
+  /** 停用 (#469): the entry is in settings but loads nothing (`autoload: false`). */
+  disabled: boolean;
+  /** 停用的是全局条目，而这个项目的条目仍开着 — then the package still loads here. */
+  alsoEnabled: boolean;
   checkError?: string;
 }
 
@@ -296,7 +300,10 @@ function gitRemoteHead(url: string): Promise<string | null> {
 }
 
 /** `pi list` rows → installed packages with versions and, unless `offline`, whether a newer one exists. */
-export async function inspectPackages(rows: { scope: "user" | "project"; source: string; path: string | null }[], check: boolean): Promise<InstalledPackage[]> {
+export async function inspectPackages(
+  rows: { scope: "user" | "project"; source: string; path: string | null; disabled?: boolean; alsoEnabled?: boolean }[],
+  check: boolean,
+): Promise<InstalledPackage[]> {
   return Promise.all(
     rows.map(async (r) => {
       const src = parseSource(r.source);
@@ -312,6 +319,8 @@ export async function inspectPackages(rows: { scope: "user" | "project"; source:
         pinned: src.pinned,
         latest: null,
         update: false,
+        disabled: r.disabled === true,
+        alsoEnabled: r.alsoEnabled === true,
       };
       if (!check || src.pinned) return item;
       try {

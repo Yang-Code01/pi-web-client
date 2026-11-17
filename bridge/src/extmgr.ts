@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { agentDir, readJson, statePath, writeJson } from "./paths.ts";
+import { disableEntry, disabledEntry, enableEntry, findEntry, loadedByList, settingsScopeFor, type PackageEntry } from "./pkgs.ts";
 import { runPiCli } from "./picli.ts";
 import { readSettings, writeSettings } from "./pisettings.ts";
 import { editMcpEntry, inspectPackages, looseExtensions, mcpEntry, mcpPackageOf, mcpVersion, type InstalledExtension, type InstalledPackage, type McpVersionInfo } from "./market.ts";
@@ -44,6 +45,37 @@ async function cli(cliPath: string, req: Record<string, unknown>): Promise<{ cod
   return runPiCli(cliPath, req, () => {}).done;
 }
 
+/** Both `packages` lists (global, and the project's when there is a cwd) — unreadable ones become null. */
+async function packageSettings(cliPath: string, cwd: string | null): Promise<{ global: any; project: any }> {
+  const read = async (scope: "global" | "project") => {
+    try {
+      return (await readSettings(cliPath, scope, scope === "project" ? cwd : null)).json;
+    } catch {
+      return null;
+    }
+  };
+  const [globalSettings, projectSettings] = await Promise.all([read("global"), cwd ? read("project") : null]);
+  return { global: globalSettings, project: projectSettings };
+}
+
+/**
+ * 停用 / 启用 one package without uninstalling it (#469): rewrite its entry in that scope's
+ * `packages` — `autoload: false` off, the user's own filters back on. Nothing else in settings moves.
+ */
+export async function togglePackage(cliPath: string, target: { scope: "user" | "project"; source: string }, enable: boolean, cwd: string | null): Promise<void> {
+  const scope = settingsScopeFor(target.scope);
+  const view = await readSettings(cliPath, scope, scope === "project" ? cwd : null);
+  if (view.error) throw new Error(view.error);
+  const list = Array.isArray(view.json?.packages) ? [...(view.json!.packages as unknown[])] : [];
+  const index = findEntry(list, target.source);
+  if (index === -1) throw new Error(`${scope === "project" ? "项目" : "全局"} settings.json 的 packages 里没有 ${target.source}`);
+  const current = list[index] as PackageEntry;
+  const next = enable ? enableEntry(current) : disableEntry(current);
+  if (JSON.stringify(next) === JSON.stringify(current)) return;
+  list[index] = next;
+  await writeSettings(cliPath, scope, scope === "project" ? cwd : null, { patch: { packages: list } });
+}
+
 /** The mcp.json files pi reads for this cwd (global, and the project's when there is a cwd). */
 export function mcpFiles(cwd: string | null): string[] {
   const files = [path.join(agentDir(), "mcp.json")];
@@ -70,7 +102,24 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
   const checkedAt = Date.now();
   const list = await cli(cliPath, { op: "pkg.list", cwd: cwd ?? undefined });
   const rows = Array.isArray(list.data) ? (list.data as { scope: "user" | "project"; source: string; path: string | null }[]) : [];
-  const inv: Inventory = { packages: await inspectPackages(rows, false), extensions: looseExtensions(cwd), mcp: [], mcpError: null, mcpErrors: [], mcpNote: null, updates: 0, checkedAt, mcpReady: false, versionsChecked: false };
+  // 停用 lives in settings, not in `pi list`: read both scopes once and hang the state on the rows, so
+  // the row knows whether the package loads at all (#469).
+  const settings = await packageSettings(cliPath, cwd);
+  const userList = settings.global?.packages;
+  const projectList = settings.project?.packages;
+  const entryOf = (scope: "user" | "project", source: string) => {
+    const holder = scope === "project" ? projectList : userList;
+    const index = findEntry(holder, source);
+    return index === -1 ? null : (holder as unknown[])[index];
+  };
+  const marked = rows.map((r) => {
+    const disabled = disabledEntry(entryOf(r.scope, r.source));
+    // The other scope can keep it loading (see `loadedByList`). `pi list` collapses a project entry
+    // into the user row, so this flag is the only place that distinction can show on screen.
+    const other = r.scope === "project" ? userList : projectList;
+    return { ...r, disabled, alsoEnabled: disabled && loadedByList(other, r.source) };
+  });
+  const inv: Inventory = { packages: await inspectPackages(marked, false), extensions: looseExtensions(cwd), mcp: [], mcpError: null, mcpErrors: [], mcpNote: null, updates: 0, checkedAt, mcpReady: false, versionsChecked: false };
   const countUpdates = () => inv.packages.filter((p) => p.update).length + inv.mcp.filter((m) => m.version.update).length;
   const snapshot = () => {
     inv.updates = countUpdates();
@@ -115,7 +164,7 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
     if (!check) return;
     // Package versions do not depend on the MCP rows, and `pi mcp list` connects to every server
     // (minutes, 180 s timeout): start the packages first so the wait below does not serialize them.
-    const pkgStage = inspectPackages(rows, true).catch(() => inv.packages);
+    const pkgStage = inspectPackages(marked, true).catch(() => inv.packages);
     // The MCP rows carry the versions: without this wait they are read while `inv.mcp` is still [] on
     // any machine where `pi list` beats `pi mcp list` (a fresh agent dir: always), and the pin versions
     // are silently never checked. The stage itself never rejects (it catches into `mcpError`).
