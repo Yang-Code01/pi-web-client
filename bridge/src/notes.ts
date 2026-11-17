@@ -97,6 +97,27 @@ function text(value: unknown, max: number): string {
   return typeof value === "string" ? value.slice(0, max) : "";
 }
 
+/**
+ * 正文从 #486 起存的是净化过的 HTML；标题没填时拿正文第一句兜底，要先把标签和实体剥掉，
+ * 不然列表里会出现整句 `<p>...`。老的纯文本笔记过这道没什么变化。
+ */
+export function titleFromBody(body: string): string {
+  const plain = body
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<\/[a-z][^>]*>/gi, " ")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+  return plain.slice(0, 60);
+}
+
 function newId(): string {
   return `n_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
@@ -119,7 +140,7 @@ export function saveNote(input: NoteInput): Note {
   const notes = listNotes();
   const at = Date.now();
   const body = text(input.body, MAX_BODY);
-  const title = text(input.title, MAX_TITLE).trim() || body.trim().split("\n")[0]?.slice(0, 60) || "未命名";
+  const title = text(input.title, MAX_TITLE).trim() || titleFromBody(body) || "未命名";
   const kind = pick(NOTE_KINDS, input.kind, "kind", "bug");
   const mode = pick(NOTE_MODES, input.mode, "mode", "quick");
   const status = pick(NOTE_STATUSES, input.status, "status", "pending");

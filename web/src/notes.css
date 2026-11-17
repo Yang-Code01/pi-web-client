@@ -1,0 +1,379 @@
+/* ---------------------------------------------------------------- 记录面板（D108 / #486）
+   照「设置 · 本机管理」那套控制台的骨相重画：左边分区导航、中间记录列表、右边一篇文档。
+   两栏都能各自收起（宽版导轨 44px / 整个让出去），正文永远是「标题 + 长文」，富文本工具栏吸顶。
+   那份控制台的样式在 sysmanage.css 里；这里是自己一份，import 在 notesheet.ts 顶上。 */
+
+.notes-btn { gap: 4px; }
+.notes-btn.has-pending { border-color: var(--accent-dim); color: var(--accent); background: var(--accent-bg); }
+.notes-glyph { font-size: 12px; }
+/* 开关（显示已处理）与列表头排在一行。 */
+.notes-switch { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--dim); cursor: pointer; white-space: nowrap; }
+.notes-switch[hidden] { display: none; }
+
+.notes-back { align-items: center; justify-items: center; }
+
+.notes-sheet {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(1420px, calc(var(--vw1) * 94));
+  height: calc(var(--vh1) * 88);
+  max-height: none;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0;
+  box-shadow: 0 42px 120px -30px #000;
+}
+
+/* 头部压成一行：小标题 + 一句统计 + 右侧按钮。高约 50px，把纵向留给正文。 */
+.notes-head {
+  gap: 9px; flex-wrap: nowrap;
+  padding: 10px 14px 9px;
+  justify-content: flex-start;
+}
+.notes-head-title { display: flex; align-items: center; gap: 7px; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; }
+.notes-head-glyph { font-size: 14px; line-height: 1; }
+.notes-head-sub { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notes-head-new { height: 28px; padding: 0 11px; }
+.notes-head > .btn { flex: none; height: 28px; padding: 0 11px; }
+.notes-foot { gap: 8px; padding: 9px 14px 11px; }
+.notes-hint { font-size: 11px; color: var(--faint); }
+.notes-hint.bad { color: var(--danger); }
+
+.notes-body { display: grid; min-height: 0; container: console / inline-size; }
+/* hidden 会被上面的 display:grid 盖掉，显式关掉。 */
+.notes-body[hidden] { display: none; }
+.notes-main { display: grid; min-height: 0; }
+.notes-sheet.in-failures .notes-foot { display: none; }
+
+/* ------------------------------------------------ 三栏：分区 | 列表 | 文档 */
+
+.notes-console {
+  display: grid;
+  grid-template-columns: 168px 272px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--line);
+  transition: grid-template-columns var(--dur-2) var(--ease);
+}
+.notes-console.nav-rail { grid-template-columns: 44px 272px minmax(0, 1fr); }
+.notes-console.list-off { grid-template-columns: 168px 0 minmax(0, 1fr); }
+.notes-console.nav-rail.list-off { grid-template-columns: 44px 0 minmax(0, 1fr); }
+
+/* 细线滚动条：整个面板统一（别同时写标准属性 scrollbar-width，Chromium 会忽略 ::-webkit-scrollbar 宽度）。 */
+.notes-console ::-webkit-scrollbar { width: 6px; height: 6px; }
+.notes-console ::-webkit-scrollbar-track { background: transparent; }
+.notes-console ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); border-radius: 999px; }
+.notes-console ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
+.notes-console ::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---- 一：分区导航 */
+
+.nc-nav { display: grid; grid-template-rows: minmax(0, 1fr); border-right: 1px solid var(--line); overflow: hidden; }
+.nc-nav-inner { display: flex; flex-direction: column; min-height: 0; overflow: auto; padding: 8px 8px 10px; }
+.nc-nav-head { display: flex; align-items: center; height: 26px; padding: 0 4px 0 7px; margin-bottom: 4px; }
+.nc-nav-title { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); white-space: nowrap; }
+.nc-nav-fold {
+  margin-left: auto; width: 20px; height: 20px; display: grid; place-items: center; flex: none;
+  border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--faint);
+  font-size: 11px; cursor: pointer; opacity: 0.7;
+}
+.nc-nav-fold:hover { opacity: 1; background: var(--panel-2); color: var(--text); }
+.nc-nav-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 8px;
+  border-radius: 7px; border: 1px solid transparent; background: transparent;
+  color: var(--dim); font-size: 12px; text-align: left; white-space: nowrap; cursor: pointer;
+  position: relative; flex: none;
+}
+.nc-nav-item:hover { background: var(--panel-2); color: var(--text); }
+.nc-nav-item.on { background: var(--accent-bg); color: var(--text); border-color: var(--accent-dim); }
+.nc-nav-item.on::before {
+  content: ""; position: absolute; left: -8px; top: 6px; bottom: 6px; width: 2px;
+  border-radius: 2px; background: var(--accent);
+}
+.nc-nav-glyph { width: 16px; text-align: center; flex: none; font-size: 12px; }
+.nc-nav-label { overflow: hidden; text-overflow: ellipsis; }
+.nc-nav-n {
+  margin-left: auto; min-width: 18px; height: 17px; padding: 0 5px; border-radius: 6px;
+  display: grid; place-items: center; font: 10.5px/1 var(--mono);
+  background: var(--panel-2); color: var(--faint);
+}
+.nc-nav-item.on .nc-nav-n { background: var(--accent-dim); color: var(--text); }
+.nc-nav-sep { height: 1px; margin: 7px 4px; background: var(--line-soft); flex: none; }
+
+/* 收成 44px 导轨：只剩图标（label / 计数 / 分组标题藏起来，title 里还有全文）。 */
+.notes-console.nav-rail .nc-nav-label,
+.notes-console.nav-rail .nc-nav-n,
+.notes-console.nav-rail .nc-nav-title { display: none; }
+.notes-console.nav-rail .nc-nav-item { justify-content: center; padding: 0; }
+.notes-console.nav-rail .nc-nav-head { padding: 0; justify-content: center; }
+.notes-console.nav-rail .nc-nav-fold { margin: 0; }
+.notes-console.nav-rail .nc-nav-inner { padding: 8px 5px 10px; }
+
+/* ---- 二：记录列表 */
+
+.nc-list {
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0; min-height: 0; overflow: hidden;
+  border-right: 1px solid var(--line);
+  background: var(--sunken);
+  transition: opacity var(--dur-1) var(--ease);
+}
+.notes-console.list-off .nc-list { opacity: 0; pointer-events: none; }
+.nc-list-head { display: grid; gap: 6px; padding: 9px 10px 8px; border-bottom: 1px solid var(--line-soft); }
+.nc-list-head { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
+.nc-search {
+  grid-column: 1 / -1;
+  width: 100%; height: 28px; padding: 0 9px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  font-size: 12px; outline: none;
+}
+.nc-search::placeholder { color: var(--faint); }
+.nc-search:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-bg); }
+.nc-done { font-size: 11px; }
+.nc-list-head > .nc-rail-tab { margin-left: auto; }
+
+.nc-items { overflow: auto; padding: 4px 6px 8px; display: flex; flex-direction: column; gap: 2px; min-height: 0; }
+.nc-empty-list { padding: 26px 10px; text-align: center; color: var(--faint); font-size: 12px; }
+
+.nc-row {
+  display: grid; gap: 4px; padding: 9px 10px 10px; border-radius: 9px;
+  border: 1px solid transparent; background: transparent; color: var(--text);
+  text-align: left; cursor: pointer; position: relative; flex: none;
+}
+.nc-row:hover { background: var(--panel-2); }
+.nc-row.on { background: var(--accent-bg); border-color: var(--accent-dim); }
+.nc-row.on::before {
+  content: ""; position: absolute; left: -1px; top: 9px; bottom: 9px; width: 2px;
+  border-radius: 2px; background: var(--accent);
+}
+.nc-row:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: -2px; }
+.nc-row-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.nc-row-title {
+  flex: 1; min-width: 0; font-size: 12.5px; font-weight: 550; line-height: 1.4; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.nc-dot {
+  flex: none; width: 16px; height: 16px; display: grid; place-items: center;
+  border-radius: 999px; border: 1px solid; font-size: 9px;
+}
+.nc-dot.pending { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
+.nc-dot.done { color: var(--ok); border-color: var(--ok-dim); background: var(--ok-bg); }
+.nc-dot.dropped { color: var(--faint); border-color: var(--line); background: var(--panel-2); }
+.nc-row-body {
+  font-size: 11px; line-height: 1.45; color: var(--dim);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  word-break: break-word;
+}
+.nc-row-meta { display: flex; align-items: center; gap: 6px; font: 10px/1 var(--mono); color: var(--faint); }
+.nc-row-issue { padding: 2px 4px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line-soft); }
+/* 行尾小图标：默认隐形，悬停 / 聚焦才露出来，免得列表看着像工具栏。 */
+.nc-row-acts { margin-left: auto; display: flex; gap: 4px; opacity: 0; transition: opacity var(--dur-1); }
+.nc-row:hover .nc-row-acts, .nc-row:focus-within .nc-row-acts { opacity: 1; }
+.nc-row-act {
+  width: 20px; height: 20px; display: grid; place-items: center; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--dim);
+  font-size: 11px; cursor: pointer;
+}
+.nc-row-act:hover { color: var(--text); border-color: var(--line-strong); }
+.nc-row-act.danger:hover { color: var(--danger); border-color: var(--danger-dim); background: var(--danger-bg); }
+
+/* ---- 三：文档 */
+
+.nc-doc {
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0; min-height: 0;
+  container: doc / inline-size;
+}
+.nc-doc-head {
+  display: flex; align-items: center; gap: 7px; min-height: 33px; padding: 5px 12px;
+  border-bottom: 1px solid var(--line-soft); color: var(--faint);
+}
+.nc-doc-time { font: 10.5px/1 var(--mono); color: var(--faint); white-space: nowrap; }
+.nc-status {
+  flex: none; width: 22px; height: 22px; display: grid; place-items: center;
+  border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2);
+  color: var(--dim); font-size: 11px; cursor: pointer;
+}
+.nc-status:hover { color: var(--text); border-color: var(--line-strong); }
+.nc-status.pending { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
+.nc-status.done { color: var(--ok); border-color: var(--ok-dim); background: var(--ok-bg); }
+.nc-status.dropped { color: var(--faint); }
+/* 窄条上的「展开这一栏」：只在对应栏收起时出现。 */
+.nc-rail-tab {
+  flex: none; width: 22px; height: 22px; display: grid; place-items: center;
+  border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2);
+  color: var(--dim); font-size: 11px; cursor: pointer;
+}
+.nc-rail-tab[hidden] { display: none; }
+.nc-rail-tab:hover { color: var(--text); border-color: var(--line-strong); }
+.nc-doc-scroll { overflow: auto; min-height: 0; }
+
+.nc-empty {
+  height: 100%; display: grid; place-content: center; justify-items: center; gap: 8px;
+  padding: 40px 24px; text-align: center; color: var(--faint); font-size: 12px;
+}
+/* `display: grid` 会盖掉 `[hidden]` 的 `display: none`：不加这条，隐藏的空态还占满一整屏。 */
+.nc-empty[hidden] { display: none; }
+.nc-empty-title { color: var(--dim); font-size: 13px; }
+.nc-empty-hint { font-size: 11.5px; }
+
+/* 正文排版：标题一行、工具栏吸顶、下面是可以一直往下写的一整篇。 */
+.nc-title {
+  width: 100%; margin: 0; padding: 20px 26px 6px;
+  border: 0; background: transparent; color: var(--text);
+  font-size: 21px; line-height: 1.34; font-weight: 650; letter-spacing: -0.012em;
+  outline: none;
+}
+.nc-title::placeholder { color: var(--faint); opacity: 0.75; }
+.nc-toolbar { position: sticky; top: 0; z-index: 3; }
+.nc-body {
+  padding: 2px 26px 40px; outline: none; word-break: break-word;
+  font-size: 13.5px; line-height: 1.75; color: var(--text); min-height: 240px;
+}
+.nc-body.readonly { color: var(--dim); }
+.nc-body:empty::before { content: attr(data-ph); color: var(--faint); opacity: 0.7; }
+.nc-body p { margin: 0 0 11px; }
+.nc-body h1, .nc-body h2, .nc-body h3 { margin: 20px 0 9px; line-height: 1.35; letter-spacing: -0.01em; }
+.nc-body h1 { font-size: 19px; font-weight: 650; }
+.nc-body h2 { font-size: 16px; font-weight: 600; }
+.nc-body h3 { font-size: 14px; font-weight: 600; }
+.nc-body ul, .nc-body ol { margin: 0 0 11px; padding-left: 22px; }
+.nc-body li { margin: 3px 0; }
+.nc-body pre {
+  margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; overflow: auto;
+  background: var(--sunken); border: 1px solid var(--line);
+  font: 12px/1.6 var(--mono); color: var(--text); white-space: pre-wrap;
+}
+.nc-body code { font: 12px/1.6 var(--mono); background: var(--sunken); padding: 1px 4px; border-radius: 4px; }
+.nc-body pre code { background: transparent; padding: 0; }
+.nc-body blockquote {
+  margin: 0 0 12px; padding: 2px 0 2px 12px; border-left: 2px solid var(--accent-dim); color: var(--dim);
+}
+.nc-body hr { margin: 16px 0; border: 0; border-top: 1px solid var(--line); }
+.nc-body mark { background: var(--warn-bg); color: var(--warn); padding: 0 2px; border-radius: 2px; }
+.nc-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.nc-body table { width: 100%; border-collapse: collapse; margin: 0 0 12px; font-size: 12.5px; }
+.nc-body th, .nc-body td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; }
+.nc-body th { background: var(--panel-2); font-weight: 600; }
+
+/* 工具栏：吸顶，溢出的设置折进「⋯」 */
+.tb {
+  display: flex; align-items: center; gap: 2px; flex-wrap: nowrap;
+  margin: 4px 26px 10px; padding: 4px 5px;
+  border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2);
+  box-shadow: 0 8px 22px -18px #000;
+}
+.tb-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+  min-width: 26px; height: 24px; padding: 0 5px; border-radius: 6px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--dim); font-size: 12px; cursor: pointer; flex: none;
+}
+.tb-btn:hover { background: var(--panel-3); color: var(--text); }
+.tb-b { font-weight: 700; }
+.tb-i { font-style: italic; font-family: Georgia, serif; font-size: 13px; }
+.tb-u { text-decoration: underline; text-underline-offset: 2px; }
+.tb-s { text-decoration: line-through; }
+.tb-sep { width: 1px; height: 15px; margin: 0 3px; background: var(--line); flex: none; }
+.tb-pop {
+  position: fixed; z-index: 90; display: grid; gap: 4px; padding: 6px;
+  border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+}
+.tb-size { padding: 4px 10px; border-radius: 6px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.tb-size:hover { background: var(--panel-3); }
+.tb-tabs { display: flex; gap: 2px; padding: 2px; border-radius: 7px; background: var(--sunken); }
+.tb-tab { flex: 1; padding: 4px 8px; border-radius: 5px; border: 0; background: transparent; color: var(--faint); font-size: 11px; cursor: pointer; }
+.tb-tab.on { background: var(--panel-3); color: var(--text); }
+.tb-colors { display: grid; grid-template-columns: repeat(6, 18px); gap: 4px; }
+.tb-swatch { width: 18px; height: 18px; border-radius: 5px; border: 1px solid var(--line-strong); cursor: pointer; padding: 0; }
+.tb-swatch:hover { transform: scale(1.12); }
+.tb-more-item { display: block; width: 100%; padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 12px; text-align: left; cursor: pointer; }
+.tb-more-item:hover { background: var(--panel-3); }
+
+/* 窄一点的文档栏：把「字号 / 颜色 / 代码块 / 表格 / 分隔线 / 引用」折进「⋯」。 */
+@container doc (max-width: 640px) {
+  .tb-wide { display: none; }
+  .nc-title { padding: 16px 16px 4px; font-size: 19px; }
+  .tb { margin: 4px 16px 8px; }
+  .nc-body { padding: 2px 16px 32px; }
+}
+
+/* ---- 正文下面的属性 / 截图 / 操作 */
+
+.nc-meta {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
+  margin: 0 26px; padding: 11px 0 0; border-top: 1px dashed var(--line);
+}
+.nc-cell { display: grid; gap: 3px; min-width: 0; }
+.nc-cell-k { font-size: 10px; letter-spacing: 0.04em; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nc-cell-v { font: 11.5px/1.4 var(--mono); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nc-cell-input .nc-mini {
+  width: 100%; height: 24px; padding: 0 7px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  font: 11.5px/1 var(--mono); outline: none;
+}
+.nc-cell-input .nc-mini:focus { border-color: var(--accent-dim); }
+@container doc (max-width: 760px) {
+  .nc-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0 16px; }
+}
+
+.nc-shots { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 26px 0; align-items: center; }
+.nc-shot { position: relative; width: 62px; height: 46px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.nc-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.nc-shot-x {
+  position: absolute; top: 1px; right: 1px; width: 15px; height: 15px; display: grid; place-items: center;
+  border-radius: 4px; border: 0; background: rgba(0, 0, 0, 0.65); color: var(--text); font-size: 10px; cursor: pointer;
+}
+.nc-add-shot {
+  display: inline-flex; align-items: center; gap: 4px; height: 46px; width: 62px; justify-content: center;
+  border-radius: 6px; border: 1px dashed var(--line-strong); color: var(--faint); font-size: 11px; cursor: pointer;
+}
+.nc-add-shot:hover { color: var(--text); border-color: var(--accent-dim); }
+.nc-add-shot input[type="file"] { display: none; }
+.nc-shots-hint { font: 10.5px/1.5 var(--mono); color: var(--faint); }
+@container doc (max-width: 760px) {
+  .nc-shots { margin: 10px 16px 0; }
+}
+
+.nc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 26px 0; padding-bottom: 4px; }
+.nc-actions .btn { height: 28px; padding: 0 11px; font-size: 12px; }
+@container doc (max-width: 760px) {
+  .nc-actions { margin: 10px 16px 0; }
+}
+
+.nc-state-bar {
+  display: flex; align-items: center; gap: 8px; margin: 10px 26px 0; padding: 8px 11px;
+  border-radius: 8px; border: 1px dashed var(--accent-dim); background: var(--accent-bg);
+  color: var(--dim); font-size: 12px;
+}
+.nc-state-bar.trash { border-color: var(--warn-dim); background: var(--warn-bg); color: var(--warn); }
+.nc-state-bar .btn { height: 24px; padding: 0 9px; font-size: 11px; }
+.nc-state-bar .grow { flex: 1; }
+
+.nc-foot { margin: 10px 26px 0; padding-top: 8px; border-top: 1px dashed var(--line-soft); font: 11px/1.5 var(--mono); color: var(--faint); }
+
+/* 归档 / 垃圾箱 / 只读：藏掉编辑入口，别让「看着能改」骗人。 */
+.nc-doc[data-readonly="true"] .tb,
+.nc-doc[data-readonly="true"] .nc-cell-input { display: none; }
+
+/* 窄窗口：三栏变两栏（分区栏收窄）。用容器查询而不是 @media：sheet 活在 #app 里，
+   `zoom`（外观字号）不改视口宽度，@media 的阈值跟实际宽度对不上（D263）。宽度本身
+   由 `min(1420px, calc(var(--vw1) * 94))` 跟着视口缩，这里不用再改。 */
+@container console (max-width: 1100px) {
+  .notes-console { grid-template-columns: 138px 240px minmax(0, 1fr); }
+}
+
+/* 交给 agent / 改状态的浮层：挂 body（不在 #app），跟以前的 .note-handoff 长得一样。 */
+.note-handoff {
+  position: fixed; z-index: 80; min-width: 260px; display: grid; gap: 2px; padding: 4px;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+.note-handoff button {
+  display: grid; gap: 2px; text-align: left; padding: 8px 8px; border-radius: 8px;
+  border: 0; background: transparent; cursor: pointer;
+}
+.note-handoff button:hover { background: var(--line-soft); }
+.handoff-label { font-size: 12px; color: var(--text); }
+.handoff-hint { font-size: 11px; color: var(--faint); }

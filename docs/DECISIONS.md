@@ -5785,3 +5785,20 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 名字不再按字数额外截断，只服名字框自己的 120 字上限（预填时显式 `slice` 到 `nameField.maxLength` —— 程序赋值绕得过 `maxLength`，不截就会显示一个 130 字、建出来却是 120 字的名字）；分支不改用「最后一段」，用户要的就是整条 ref。Jira 交接时先 `close()` 自己（与笔记面板同一做法），否则上面那条盖板问题会让整个功能在浏览器里用不了；代价是交接后要再看 Jira 得重开面板。记录 / 邮箱两个面板这次没扩（用户定的范围）；仓库面板与分支工作台共用同一个 `BranchSheet`，类型跟着放宽，它的 AI 出口实际也带名字。
 
 **验证：** `node --experimental-strip-types web/tests/session-name-unit.mjs` 覆盖票号与 ref 的边界；`node probes/jira-handoff-name.mjs` 用真 Chromium + 拦掉的 `/api/jira/*` 跑三条场景（无会话时回退、有会话时新开、取消后不漏），断言的是左栏那一行会话叫什么；`npm run test:githist:ui` 里补了一条「分支出口把 ref 填进名字框」。
+## D301 记录面板重做成三栏控制台：正文存净化过的 HTML，`mode` 退休（用户要求 2026-11-17）
+
+**问题：** 🐞 记录面板一直是「一列条目 + 一个 textarea」，跟「设置 → 本机管理」那套控制台不是一个世界的；用户要的是同一套语言（分区 / 列表 / 正文三段），输入要能写富文本：标题 + 长文、代码块（打 ``` 换行就成块）、颜色 / 字号 / 下划线 / 删除线 / 列表 / 表格 / 分隔线，设置多了就折起来。原来的 `mode`（快速 / 表单 / 详细）三档在「统一成长文本」之后没有意义了。
+
+**决定：**
+
+- **`Note.body` 从纯文本改成净化过的 HTML**，`mode` 字段留在类型与落盘里，但写路径不再写、读路径一律忽略（老数据不迁移）。写进 body 之前必须过 `sanitizeRich()`：白名单只放 `p br h1-h3 strong b em i u s strike del ul ol li code pre blockquote hr table thead tbody tr th td span mark a`，`span[style]` 只留 `color` / `background-color` / `font-size`（`0.5–4em`），`a` 只留 `http(s)`，`script / style / iframe …` 连内容一起丢。老纯文本按**空行**切 `<p>`、单换行当 `<br>`；判「是不是 HTML」认块标签与行内排版标签（`strong/em/span/mark/a` 等），不认裸 `<13:45:02>` 这种日志片段。
+- **净化和 Markdown 导出都是纯函数**（`web/src/notes/rich.ts`，无 DOM）：浏览器与 node 单测共用一份。标题仍由 web 侧从正文首行派生（`plainText(body)`），**桥的 `saveNote` 一行没动** —— 后端不动是这次的范围。
+- **富文本编辑器单开一个类**（`web/src/notes/editor.ts`）：`execCommand` 负责粗斜下删 / 列表 / 段落，颜色 / 字号 / 底色自写 `wrapInline()` 包 `span[style]`；粘贴时 text/html 走净化、纯文本走转义分行；```` ``` ```` 在**回车那一刻**才转代码块（` ```ts ` 带上 `language-ts`）—— 边打边转会把语言名吃掉。不用 `innerHTML` 拼内容（仓库一贯规矩），统一 `DOMParser` + `importNode`。
+- **布局状态跟人走**：`NotesLayout = { nav: "open" | "rail", list: "open" | "closed" }` 存 `localStorage` 的 `notes.nav` / `notes.list`；`⌘\` 收放列表，导轨上的 `»` 展开。三栏列宽 `168px 272px minmax(0,1fr)`，收起时改轨道而不是 `display:none`（要过渡）。
+- **存盘从按钮改成停手自动存**（900ms，Ctrl/⌘+S 立刻存），脚注写「已自动保存 · 改于 … · N 字」；新建先聚焦标题；归档 / 垃圾箱里的记录整块只读。
+- **尺寸 / 响应式照 AGENTS.md 的两条硬规矩**：面板在 `#app` 里，宽高一律 `calc(var(--vw1) * 94)` / `calc(var(--vh1) * 88)`；工具栏折叠用 `@container doc (max-width: 620px)`，列表列窄了用 `@container console`，不用 `@media`。
+
+**取舍：** `execCommand` 已废弃但仍被三大浏览器支持，换 ProseMirror 要整棵编辑器重写、还要一份 schema 维护；这里只要「常见排版」，选它省下的复杂度比未来的兼容风险值。`mode` 不删字段而是「写不再写、读一律忽略」—— 老 `notes/*.json` 直接能读，代价是类型上还会看到这个字段。
+
+**验证：** `npm run test:notes` 四段全绿：`web/tests/notes-rich-unit.mjs`（22：白名单 / 事件属性 / 字号只认 em / 表格 / 幂等 / 老文本迁移）、`web/tests/notes-editor-browser.mjs`（真 Chromium：选区加粗、``` 回车转代码块、粘贴净化、颜色包裹、选区丢失时不改正文）、`web/tests/notes-sheet-browser.mjs`（三栏骨架 / 列表行 / 自动存 / 状态菜单 / 两栏折叠 / 搜索 / 归档只读，`locale: zh-CN`）。`cd web && npm run typecheck`（tsc + i18n 3475 键 × 3 语 + viewport 守卫）通过。
+
