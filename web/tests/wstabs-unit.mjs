@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clampMax, moveToFront, newTabFold, rowModel, TABS_DEFAULT, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabRenameBox, tabReorder } from "../src/wstabs.ts";
+import { birthReveal, clampMax, moveToFront, newTabFold, rowModel, TABS_DEFAULT, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabRenameBox, tabReorder } from "../src/wstabs.ts";
 
 /** 桥下发的一份顺序（左栏与横条共用）。 */
 const ORDER = ["g1", "g2", "g3", "g4", "g5"];
@@ -311,4 +311,37 @@ test("#277 极矮窗口：上下都放不下时仍从上边 8px 开始（不出�
   const box = tabRenameBox({ left: 100, top: 10, bottom: 40, width: 80 }, { width: 1000, height: 34 });
   assert.equal(box.top, 8);
   assert.equal(box.left, 100);
+});
+
+// ── #478：新建的组落在哪（横条第几颗 / 收在 ＋N 的第几条 / 不在横条里 / 快照里没有）────────
+
+test("#478 落在可见段：报第几颗，不加「收在 ＋N」", () => {
+  const r = birthReveal({ order: ["a", "b", "new", "c"], max: 6, id: "new" });
+  assert.deepEqual(r, { where: "row", row: 3, folded: null, outside: 0 });
+});
+
+test("#478 名额坐满被折叠：报 ＋N 里的第几条与角标数字", () => {
+  const r = birthReveal({ order: ["a", "b", "c", "d", "new"], max: 3, id: "new" });
+  // 横条画 a b c；＋N 里是 d、new 两条，new 排第 2。
+  assert.deepEqual(r, { where: "more", row: null, folded: 2, outside: 2 });
+});
+
+test("#478 名额 1：新组只能进 ＋N", () => {
+  const r = birthReveal({ order: ["a", "new"], max: 1, id: "new" });
+  assert.deepEqual(r, { where: "more", row: null, folded: 1, outside: 1 });
+});
+
+test("#478 被移出横条（inRow=false）：也算收在 ＋N，但单独标出", () => {
+  const r = birthReveal({ order: ["a", "b", "new"], max: 6, members: ["a", "b"], id: "new" });
+  assert.deepEqual(r, { where: "off", row: null, folded: 1, outside: 1 });
+});
+
+test("#478 快照里根本没有这颗：不给一个对不上的位置", () => {
+  const r = birthReveal({ order: ["a", "b"], max: 6, id: "ghost" });
+  assert.deepEqual(r, { where: "unknown", row: null, folded: null, outside: 0 });
+});
+
+test("#478 当前组占最后一格时新组挪进 ＋N：位置按最终画出来的横条算", () => {
+  const r = birthReveal({ order: ["a", "b", "new"], max: 2, current: "new", id: "new" });
+  assert.deepEqual(r, { where: "row", row: 2, folded: null, outside: 1 });
 });

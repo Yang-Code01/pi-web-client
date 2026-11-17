@@ -564,3 +564,67 @@ test("#278 连点两次（并发）也只建一个组", async () => {
   assert.equal(a.group.id, b.group.id);
   assert.equal(ws.snapshot().groups.length, 1);
 });
+
+// ---------------------------------------------------------------- #478 新组按天插位
+
+const TODAY = 20261117;
+
+/** 一组真实存在的普通目录（`root` 桩返回 null，目录就是它自己的工程根）。 */
+function plainDirs(...names) {
+  return names.map((name) => {
+    const dir = path.join(tmp, `day-${name}`);
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  });
+}
+
+test("#478 createDir 带定位上下文：新组落进今天这一档的末尾", async () => {
+  const ws = fresh({ root: async () => null });
+  const [a, b, c, n] = plainDirs("a", "b", "c", "n");
+  const ga = (await ws.createDir(a)).group.id;
+  const gb = (await ws.createDir(b)).group.id;
+  const gc = (await ws.createDir(c)).group.id;
+  const dayOf = (id) => ({ [ga]: TODAY, [gb]: TODAY, [gc]: TODAY - 1 })[id] ?? -Infinity;
+  const gn = (await ws.createDir(n, { anchorDay: TODAY, dayOf })).group.id;
+  assert.deepEqual(ws.snapshot().order, [ga, gb, gn, gc], "两个「今天」之后、旧组之前");
+});
+
+test("#478 命中已有组：带定位上下文也不改顺序（R7）", async () => {
+  const ws = fresh({ root: async () => null });
+  const [a, b] = plainDirs("hit-a", "hit-b");
+  const ga = (await ws.createDir(a)).group.id;
+  const gb = (await ws.createDir(b)).group.id;
+  const before = ws.snapshot().order;
+  const again = await ws.createDir(a, { anchorDay: TODAY + 9999, dayOf: () => -Infinity });
+  assert.equal(again.created, false);
+  assert.equal(again.group.id, ga);
+  assert.deepEqual(ws.snapshot().order, before);
+  assert.deepEqual(ws.snapshot().order, [ga, gb]);
+});
+
+test("#478 不带定位上下文：仍追加到末尾（旧调用方回归）", async () => {
+  const ws = fresh({ root: async () => null });
+  const [a, b] = plainDirs("plain-1", "plain-2");
+  const ga = (await ws.createDir(a)).group.id;
+  const gb = (await ws.createDir(b)).group.id;
+  assert.deepEqual(ws.snapshot().order, [ga, gb]);
+});
+
+test("#478 手建组也按天插位", async () => {
+  const ws = fresh();
+  const a = ws.create("今天动的");
+  const b = ws.create("上周动的");
+  const g = ws.create("刚建的", { anchorDay: TODAY, dayOf: (id) => (id === a.id ? TODAY : TODAY - 7) });
+  assert.deepEqual(ws.snapshot().order, [a.id, g.id, b.id]);
+});
+
+test("#478 resolve 补组：每个新组按它下面会话的最大活动日定位", async () => {
+  const ws = fresh({ root: async () => null });
+  const [a, b, old] = plainDirs("res-a", "res-b", "res-old");
+  const ga = (await ws.createDir(a)).group.id;
+  const gb = (await ws.createDir(b)).group.id;
+  const dayOf = (id) => ({ [ga]: TODAY, [gb]: TODAY - 5 })[id] ?? -Infinity;
+  await ws.resolve([old], { anchorDay: TODAY, dayOf, cwdDay: () => TODAY - 10 });
+  const gOld = ws.groupFor("s-old", old);
+  assert.deepEqual(ws.snapshot().order, [ga, gb, gOld], "十天前的根落在五天前的组后面，不冲进今天档");
+});

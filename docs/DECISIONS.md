@@ -5574,7 +5574,41 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 
 **验证：** `npm run test:githist` 里的新单元 `bridge/tests/git-commit-unit.mjs` 用真 git 仓库断言：短/全长 SHA、标题取 `%B` 首行、正文为空、根提交 `parents === []` 且对照空树、merge 报两个父且差异只列第一父侧的文件、rename 带 `old`、`onHead` / `pushed`（`update-ref refs/remotes/...` 之后才为真）、500 行正文截到 400 行、`limits.files === 300`、参数清洗（`--evil` / `../outside` / `deadbeef` 各自报对码）；另有一组「400 行文件里改 40 处不相邻的位置」断言 `hunks.total === 40`、首页 `count === 20` 且首行是 `@@` 块头、块与块之间的上下文行不出现、`from = 20` 从第 21 块起、`from = 40` 返回空页，以及「整篇 4100 行都改」时单块截到 4000 行并写明原因。`npm run test:githist:ui`（Playwright，`GITOPS_UI_PORT` 要避开 Hyper-V 保留段，本机用 8300）点一遍：行是 `role=button` 且在 Tab 序列、点开小窗且工作台还在下面、完整 40 位 SHA、父提交、自动展开第一个文本文件的并排差异、**差异里有 `@@` 块头且不是整篇文件**、高亮唯一、文件清单带增删数、点另一个文件换右侧、摘提交关窗改开操作卡且哈希预填、Enter 也能开、Esc 关掉后焦点回到那一行、点遮罩同样关、顶点提交的摘提交是禁用的。续拉另用一次性探针验过：造一个「300 行文件改在 25 处」的临时仓库，首屏 `已显示 20/25 个变更块`，滚到底自动补到 25 块、提示消失。`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）通过。
 
-## D290 问卷也进轮次缩略图：一份问卷一格，文字是「问卷概况：第一题 · 等 N 题」（用户要求 2026-11-17）
+## D290 工作区按天插位：新建 / 首见的组落在「同一天那一档」的末尾（用户要求 2026-11-17）
+
+**问题：** 组的先后只有一份 `order`，而 `create / createDir / resolve` 都把它**追加到末尾**（D168 定的）。结果：今天新建的两个工程排在一堆三个月没动过的工程后面；启动时补出来的组也一样。用户要的是「按最后一次更新排，以天为单位」——前两个今天有更新的在上面，后面两个今天没更新，今天新建的就该排第三，而不是第五。
+
+**决定：**
+
+- **只有一个插入规则**：新出现的组（显式新建、按目录新建、`resolve` 启动补组）**只在出现的那一刻**插一次 —— 插到 `order` 里第一个「比它旧」的组之前，也就是同一天这一档的末尾；等于 `order` 里没有任何更旧的组时落到末尾。已有组命中就不动顺序（`createDir` 返回 `created:false` 时尤其）。
+- **组的天 = 组内可见会话的最新 `updatedAt`**（含子会话；归档与随手问不算 —— 归档是全局分区，不进任何工作区）。**一个会话都没有的空组按最旧算**，排在当天档的末尾而不是冒充「刚刚更新」。
+- **天是本地日历日**（`dayKey()` → `yyyymmdd`），不是「多少小时以内」：跨零点就该换档，与左栏分组用的是同一个口径。
+- **比较的是 `order` 里组的「最近更新天」，锚点只有新建那一下用**：`insertByDay(order, id, anchorDay, dayOf)` 是纯函数，`Workspaces` 只负责把它接到 `create / createDir / resolve` 上；`groupFor` 的调用方（开新会话 / 接管终端会话）也带上同一个 `place`，否则那两处新建的组又会跑到末尾。
+- **新建之后要能看见它**：横排在可见段就滚到那一颗，被折叠进 ＋N 就把 ＋N 标亮（**不自动展开下拉** —— 空组紧接着要开全屏的「新会话」弹层，展开了也看不见）；左栏展开并滚到组头、闪一下；空组直接把「开新会话」摆出来并预填目录，位置写进弹层标题下（「已建在 X，横条第 N 位」/「已建在 X，收在 ＋N 里（第 M 位）」）。
+- **新建工作区的目录输入框与文件管理器同一种**：`mountDirPicker(..., { pathBox: true })`，粘绝对路径即可定位，不新写一套目录浏览。
+
+**取舍：** 代价是「一次插入」之后顺序就归 `order`，用户手动拖过的顺序不会被下一次更新打乱 —— 这是有意的：自动重排会把人刚整理好的横条又搅一次。没做「按最近活动整体重排」，因为那会让横条上的位置天天变、肌肉记忆失效（D168 的理由仍然成立）。`dayMap()` 每次要扫一遍会话元数据（只读缓存，不跑 git），`list()` 里按帧记忆一次；`Workspaces` 的状态写会重放两遍，所以 `dayOf` 必须是纯读。
+
+**验证：** `bridge/tests/wsorder-unit.mjs`（11 条：本地日切、同档末尾、空 order、手动拖乱的顺序上再插、稳定性）、`bridge/tests/workspace-unit.mjs`（41 条，其中 5 条新的：`createDir` 带 place 插到旧组前、命中已有组不动顺序、不带 place 仍追加、手建组按天、`resolve` 按 `cwdDay`）、`bridge/tests/sessions-day-order.mjs`（5 条：真会话文件 + mtime，今天档末尾 / 子会话算今天 / 空组最旧 / 归档不计 / 再次看到顺序不变）、`web/tests/wstabs-unit.mjs`（47 条，6 条新的 `birthReveal()`：可见段第几颗、被折叠时 ＋N 里的序号、不在横条）。`npm run typecheck`、`npm run build` 通过。
+
+## D290 新建工作区按天插位，建完在横条与左栏都指得出它在哪（用户要求 2026-11-17，issue #478）
+
+**问题：** `order` 一直是「新组追加到末尾」，于是今天新建的组被排到几个月没动的旧组后面；横条名额满了它直接进 ＋N，看起来像没建成；按目录建完组是空的，还得自己再点一次新会话。
+
+**决定：**
+
+- **组的天 = 组内可见会话（含子会话）的最大 `updatedAt`**；空组算最旧（`-Infinity`）。归档是全局分区、不进任何工作区，随手问也不在列表里，两者都不计。
+- **新建组落在「今天这一档的末尾」**：插到第一个更旧的组之前（`insertByDay`）。只在出现那一刻插一次，之后归 `order` 管，拖动 / 删除不再重排；命中已有组不动顺序。显式 `ws.create`、按目录 `ws.create.dir`、启动补组 `resolveWorkspaces` 三条路都按这条走。
+- **补组的锚点用 `cwdDay(cwd)`**（该目录下会话的最大活动日），取不到才用启动当天 —— 启动补出来的旧工程不会被当成「今天新建的」顶到前面。
+- **建完四件套**：横排滚到它；被折叠时标亮 ＋N 但**不自动展开**（新会话弹层是全屏遮罩，展开了也看不见）；左栏展开并滚到、组头闪一下；位置写进新会话弹层的说明里（「横条第 N 位」/「收在 ＋N 里（第 M 位）」）。
+- **空组建完直接开「开新会话」并预填目录**；取消就停在原会话，不回滚、不留一个空对话。
+- **「新建工作区」对话框加 `pathBox: true`**，与文件管理器同一行输入框（贴绝对路径回车即定位）。
+
+**取舍：** 天的粒度是**本地时区的日**（`dayKey = 年*10000+(月+1)*100+日`）。同一天内的先后沿用 `order` 里原有次序，不按小时排 —— 按小时排会让「今天的组」每来一个新会话就跳到最前，位置不稳。`dayOf` 必须纯读（`StateFile.update()` 会在缓存上跑一遍、读盘后重放一遍，两次结果要一致），所以 `SessionManager.dayMap()` 只查缓存与 `discover()`，不建组、不跑 git；`place()` 返回前把 `dayMap()` 算成一回，避免 `insertByDay` 对每一项回调时重扫全部会话。
+
+**验证：** `node bridge/tests/wsorder-unit.mjs`（11 通过）、`node bridge/tests/workspace-unit.mjs`（41，含 5 个 #478 用例）、`node bridge/tests/sessions-day-order.mjs`（5，真会话文件 + `utimesSync` 控 mtime）、`node web/tests/wstabs-unit.mjs`（47，含 6 个 `birthReveal` 用例）；`npm run typecheck`、`npm run build` 通过。
+
+## D291 问卷也进轮次缩略图：一份问卷一格，文字是「问卷概况：第一题 · 等 N 题」（用户要求 2026-11-17）
 
 **问题：** 右侧刻度带原来只认 `item.kind === "user"`（`web/src/chat.ts` 的 `noteTurn` 与 `bridge/src/history.ts` 的 `turnIndex`），问答卡（`ask_user_question` / 旧 `question` / `questionnaire`）不进带子。用户要求：问卷也是用户输入，要进刻度表；同一份问卷的多道题只显示一次；行文用「问卷概况：…」。不做 ghost 的话，只有已经滚到过的那几张问卷能出现，整段会话的问卷位置与编号都对不上（#243 的索引本来就是全量的）。
 
@@ -5592,3 +5626,4 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 刻度带的行号从此数的是「用户输入」而不是「用户消息」—— 问卷后面那条消息的「第 N 轮」会比以前大 1（点计划跨轮引用的仍是用户消息编号，两者不再完全相同，这是「问卷也是输入」的直接代价）。实时卡重建的时机依赖 `add()` / `replace()` 两条路径，别处若再重建问答卡要记得也走 `noteAskTurn`。
 
 **验证：** `bridge/tests/history-page-unit.mjs` 断言索引里 ask 的 kind / 标题 / 题数、旧工具名、普通工具不占格、多题只有一条、空 `questions` 回退与 `prompt`/`label` 的标题顺序；`web/tests/ask-card-unit.mjs` 断言 `title` 与桥同序的回退、`askTurnLabel` 四种文案、折行与整行 80 字截断（多题仍保住「等 N 题」）；`probes/rail-ask.mjs` 验四格（2 用户 + 2 问卷，多题只占一格）、ghost 行文字、悬停亮问答卡、点 ghost 翻页到货；`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）与 `npm --prefix bridge run typecheck` 通过。
+
