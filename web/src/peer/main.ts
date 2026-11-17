@@ -42,23 +42,55 @@ interface PeerView {
 interface Entry {
   id: string;
   at: number;
+  saveAt?: number;
+  seq?: number;
+  conv?: string;
   from: { nodeId: string; nickname?: string; hostname?: string; port?: number };
-  to: { kind: "node" | "group"; id: string };
+  to?: { kind: "node" | "group"; id: string };
   kind: "text" | "receipt" | "file";
   text?: string;
+  /** v1 的投递回执（对端收到没）；v2 起只有历史里很老的行还带它。 */
   ack?: { id: string; status: "delivered" | "failed"; error?: string };
   file?: { name: string; size: number; mime: string; sha256?: string };
   via?: "pi";
+  sendType?: "self" | "recv" | "otherDevice" | "selfForward";
+  sendStatus?: "sending" | "success" | "failed" | "read";
+  elements?: Elem[];
+  quote?: Quote;
+  recall?: { at: number; by: string };
+}
+
+type Elem =
+  | { type: "text"; text: string }
+  | { type: "file"; name: string; size: number; mime: string; sha256?: string; transferId?: string }
+  | { type: "gray"; tip: string; tone?: "system" | "danger" }
+  | { type: "at"; nodeId: string; nickname?: string };
+
+interface Quote {
+  id: string;
+  fromNode: string;
+  nickname?: string;
+  abstract: string;
 }
 
 interface Thread {
-  nodeId: string;
+  conv: string;
+  kind: "c2c" | "group";
+  nodeId?: string;
+  groupId?: string;
   nickname: string;
   hostname: string;
   port: number;
   last: Entry | null;
+  lastAt?: number;
   count: number;
   online: boolean;
+  unread?: number;
+  draft?: string;
+  pinned?: boolean;
+  muted?: boolean;
+  typing?: boolean;
+  members?: number;
 }
 
 interface Contact {
@@ -134,6 +166,7 @@ const ICONS: Record<string, string[]> = {
   eyeOff: ["M3 3l18 18", "M10.6 6.3A9.6 9.6 0 0 1 12 6.2c5 0 8 5.8 8 5.8a14 14 0 0 1-2.4 3.3", "M6.4 7.2C3.9 9 3 12 3 12s3 5.8 9 5.8c1.1 0 2.1-.2 3-.5"],
   bellOff: ["M6.2 8.5A6 6 0 0 1 18 10.5V14", "M6 14v3h12", "M4 20l16-16", "M10 20a2 2 0 0 0 4 0"],
   copy: ["M9 9h10v10H9z", "M15 5.5H5.5V15"],
+  forward: ["M4 12h13", "M11 6l6 6-6 6"],
   trash: ["M4.5 7h15", "M9.5 7V5h5v2", "M6.5 7l.9 13h9.2l.9-13"],
   userPlus: ["M10 4a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z", "M3.5 20v-1.5A5.5 5.5 0 0 1 9 13h2", "M17.5 13.5v6", "M14.5 16.5h6"],
   refresh: ["M20 11a8 8 0 1 0-1.2 5.2", "M20 4.5V11h-6.5"],
@@ -178,7 +211,17 @@ const S = {
   msgs: [] as Entry[],
   msgsFor: "" as string,
   sending: false,
+  /** 引用回复时挂着的那条消息；发出去就清掉。 */
+  quote: null as Entry | null,
+  /** 搜索命中的消息（跨会话）。 */
+  hits: [] as { conv: string; msg: Entry }[],
 };
+
+// ---- 会话 key：`n:<nodeId>` 单聊、`g:<groupId>` 群聊。S.thread 一直存 conv。
+const isConv = (id: string): boolean => /^[ng]:/.test(id);
+const convOf = (id: string): string => (isConv(id) ? id : `n:${id}`);
+const convNode = (conv: string): string => conv.slice(2);
+const isGroupConv = (conv: string): boolean => conv.startsWith("g:");
 
 const app = document.querySelector("#app") as HTMLElement;
 const barEl = document.querySelector("#bar") as HTMLElement;
@@ -351,7 +394,8 @@ async function loadStatus(): Promise<void> {
 async function loadThreads(): Promise<void> {
   try {
     const data = await getJson<{ threads: Thread[] }>("/api/peer/threads");
-    S.threads = data.threads ?? [];
+    // 兼容只给了 nodeId 的旧数据（旧桥 / 桩数据）：没有 conv 就从 nodeId 推，别让整个列表炸掉。
+    S.threads = (data.threads ?? []).map((t) => (t.conv ? t : { ...t, conv: convOf(String(t.nodeId ?? "")) }));
   } catch {
     S.threads = [];
   }
@@ -404,7 +448,8 @@ async function loadContacts(): Promise<void> {
 
 /** 一串消息的指纹：id + 回执状态。轮询拿回来跟上次一样就不必重画。 */
 function msgSig(): string {
-  return S.msgs.map((m) => `${m.id}:${m.ack?.status ?? ""}`).join("|");
+  // 状态（发送中/已送达/已读/失败）和撤回都要算进去，否则对端一读、状态变了，界面还停在旧字样上。
+  return S.msgs.map((m) => `${m.id}:${m.sendStatus ?? m.ack?.status ?? ""}:${m.recall ? "r" : ""}`).join("|");
 }
 
 /** 拉取序号：只让最新一次请求的响应落到 S.msgs 上。 */
@@ -414,7 +459,7 @@ async function loadMessages(id = S.thread): Promise<void> {
   if (!id) return;
   // 慢响应要能丢：手点得比网快时，A 的响应会在切到 B 之后才回来。
   const seq = ++msgSeq;
-  const data = await getJson<{ entries: Entry[] }>(`/api/peer/messages?peer=${encodeURIComponent(id)}&limit=200`).catch(() => null);
+  const data = await getJson<{ entries: Entry[] }>(`/api/peer/messages?conv=${encodeURIComponent(id)}&limit=200`).catch(() => null);
   // 拉不到就保持旧内容：一次超时不该把聊天清空
   if (!data || seq !== msgSeq || S.thread !== id) return;
   S.msgs = data.entries ?? [];
@@ -450,7 +495,8 @@ function go(page: Page): void {
 }
 
 function openThread(id: string): void {
-  S.thread = id;
+  S.thread = convOf(id);
+  S.quote = null;
   S.page = "msg";
   S.mview = "chat";
   S.msgs = [];
@@ -461,7 +507,28 @@ function openThread(id: string): void {
   // 从联系人列表点「发消息」就是要马上打字：把焦点直接放进输入框。
   // renderAll() 里 renderChat() 已经同步建好 textarea（composeBox 会更新 textInput）。
   textInput?.focus({ preventScroll: true });
-  void loadMessages().then(() => renderMain());
+  void loadMessages().then(() => {
+    renderMain();
+    void markRead();
+  });
+}
+
+/** 进会话时把未读推平：对端会收到一条真回执，他那边我的气泡才变「已读」。 */
+async function markRead(): Promise<void> {
+  const conv = S.thread;
+  if (!conv) return;
+  const t = S.threads.find((x) => x.conv === conv);
+  if (!t?.unread) return;
+  t.unread = 0; // 先清零：等请求回来再重画会慢半拍，列表上的红点会赖着不走
+  renderList();
+  try {
+    await postJson("/api/peer/read", { conv });
+    await loadThreads();
+    renderList();
+    renderMain();
+  } catch {
+    /* 未读推不平不该弹错：下一轮轮询会再试 */
+  }
 }
 
 function renderAll(): void {
@@ -562,7 +629,8 @@ function renderMobnav(): void {
   }
 }
 
-function searchBox(placeholder: string): HTMLElement {
+
+function searchBox(placeholder: string, onType?: (value: string) => void): HTMLElement {
   const box = h("div", "search");
   const input = h("input");
   input.type = "search";
@@ -571,6 +639,7 @@ function searchBox(placeholder: string): HTMLElement {
   input.dataset.keep = "search";
   input.addEventListener("input", () => {
     S.query = input.value;
+    onType?.(S.query);
     renderList();
   });
   box.append(ic("search"), input);
@@ -626,19 +695,66 @@ function matches(...texts: (string | undefined)[]): boolean {
   return texts.some((t) => (t ?? "").toLowerCase().includes(q));
 }
 
+
 function preview(t: Thread): string {
+  if (t.typing) return tr("正在输入…");
+  const draft = (t.draft ?? "").trim();
+  if (draft) return tr("草稿：{p1}", { p1: draft });
   const e = t.last;
-  if (!e) return tr("还没有消息");
+  if (!e) {
+    if (t.kind === "group") return tr("群聊建好了，说点什么吧");
+    return tr("还没有消息");
+  }
+  if (e.recall) return tr("已撤回一条消息");
   if (e.kind === "receipt") return tr("已送达");
   if (e.kind === "file") return tr("[文件] {p1}", { p1: e.file?.name ?? "" });
-  return e.text ?? "";
+  const who = e.sendType && e.sendType !== "recv" ? "" : `${e.from.nickname ?? ""} · `;
+  return who + (e.text ?? "").replace(/\s+/g, " ");
 }
 
+/** 消息搜索的命中片段：命中词两边留点上下文。 */
+function snippet(e: Entry, q: string): string {
+  const text = (e.text ?? "").replace(/\s+/g, " ");
+  const at = text.toLowerCase().indexOf(q.trim().toLowerCase());
+  if (at < 0) return text.slice(0, 80);
+  const head = Math.max(0, at - 18);
+  return (head > 0 ? "…" : "") + text.slice(head, at + q.trim().length + 42);
+}
+
+
 function renderThreadList(): void {
-  listEl.append(searchBox(tr("搜索会话")));
+  listEl.append(searchBox(tr("搜索会话、消息"), () => void loadHits()));
   const box = h("div", "listbox");
-  const rows = S.threads.filter((t) => matches(t.nickname, t.hostname));
-  if (!rows.length) {
+
+  // 搜索命中：跨会话的消息体，点一下跳到那条消息所在的会话。
+  if (S.query.trim() && S.hits.length) {
+    const title = h("div", "group-title", tr("消息搜索"));
+    title.append(h("span", "n", String(S.hits.length)));
+    box.append(title);
+    for (const hit of S.hits.slice(0, 30)) {
+      const t = S.threads.find((x) => x.conv === hit.conv);
+      const row = h("div", "row hit");
+      row.append(avatar(t?.nickname ?? convNode(hit.conv), hit.conv));
+      const tbox = h("div", "t");
+      const name = h("div", "n");
+      name.append(h("span", "nm", t?.nickname ?? convNode(hit.conv)));
+      tbox.append(name, h("div", "s", snippet(hit.msg, S.query)));
+      const right = h("div", "r");
+      right.append(h("span", "tm", clock(hit.msg.at)));
+      row.append(tbox, right);
+      row.addEventListener("click", () => {
+        S.query = "";
+        S.hits = [];
+        openThread(hit.conv);
+      });
+      box.append(row);
+    }
+  }
+
+  const rows = S.threads.filter((t) => matches(t.nickname, t.hostname, preview(t)));
+  const sorted = [...rows]
+    .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || (b.lastAt ?? b.last?.at ?? 0) - (a.lastAt ?? a.last?.at ?? 0));
+  if (!sorted.length && !S.hits.length) {
     box.append(
       emptyState(
         "msg",
@@ -647,20 +763,34 @@ function renderThreadList(): void {
       ),
     );
   }
-  for (const t of rows) {
-    const row = h("div", `row${S.thread === t.nodeId ? " on" : ""}`);
-    row.append(avatar(t.nickname, t.nodeId, t.online));
+  let pinnedShown = false;
+  let restShown = false;
+  for (const t of sorted) {
+    if (t.pinned && !pinnedShown) {
+      box.append(h("div", "group-title", tr("置顶")));
+      pinnedShown = true;
+    }
+    if (!t.pinned && !restShown) {
+      if (pinnedShown) box.append(h("div", "group-title", tr("全部会话")));
+      restShown = true;
+    }
+    const row = h("div", `row${S.thread === t.conv ? " on" : ""}${t.unread ? " unread" : ""}`);
+    row.append(avatar(t.nickname, t.conv, t.kind === "c2c" ? t.online : undefined));
     const tbox = h("div", "t");
     const name = h("div", "n");
     name.append(h("span", "nm", t.nickname));
+    if (t.kind === "group") name.append(h("span", "tag", tr("{p1} 人", { p1: String(t.members ?? 0) })));
     if (t.last?.via === "pi") name.append(h("span", "pill pi", "pi"));
+    if (t.muted) name.append(ic("bellOff", "mute-mark"));
     const sub = h("div", "s");
-    sub.append(h("span", "", preview(t)));
+    sub.append(h("span", `abs${t.draft ? " draft" : ""}${t.typing ? " typing" : ""}`, preview(t)));
     tbox.append(name, sub);
     const right = h("div", "r");
-    right.append(h("span", "tm", t.last ? ago(t.last.at) : ""));
+    const at = t.lastAt ?? t.last?.at ?? 0;
+    right.append(h("span", "tm", at ? ago(at) : ""));
+    if (t.unread) right.append(h("span", `badge${t.muted ? " mute" : ""}`, t.unread > 99 ? "99+" : String(t.unread)));
     row.append(tbox, right);
-    row.addEventListener("click", () => openThread(t.nodeId));
+    row.addEventListener("click", () => openThread(t.conv));
     row.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
       threadMenu(ev.clientX, ev.clientY, t);
@@ -668,6 +798,21 @@ function renderThreadList(): void {
     box.append(row);
   }
   listEl.append(box);
+}
+
+/** 搜索：跨会话的消息体，命中的会话列表在下面「消息搜索」一节里展开。 */
+let hitSeq = 0;
+async function loadHits(): Promise<void> {
+  const q = S.query.trim();
+  if (q.length < 2) {
+    S.hits = [];
+    return;
+  }
+  const seq = ++hitSeq;
+  const data = await getJson<{ hits: { conv: string; msg: Entry }[] }>(`/api/peer/search?q=${encodeURIComponent(q)}`).catch(() => null);
+  if (!data || seq !== hitSeq) return;
+  S.hits = data.hits ?? [];
+  renderList();
 }
 
 interface Group {
@@ -865,15 +1010,20 @@ function backBtn(): HTMLButtonElement {
  * 当前的会话对象。有历史就从 /threads 里取；刚加的好友还没历史（peer 的 /threads 只遍历
  * history 目录），就用通讯录 / 在线表拼一个，不然聊天区只剩「选一个会话」，第一条消息没法发。
  */
-function threadOf(id: string | null): Thread | null {
-  if (!id) return null;
-  const found = S.threads.find((x) => x.nodeId === id);
+
+function threadOf(conv: string | null): Thread | null {
+  if (!conv) return null;
+  const found = S.threads.find((x) => x.conv === conv);
   if (found) return found;
+  if (conv.startsWith("g:")) return null;
+  const id = convNode(conv);
   const contact = contactOf(id);
   const online = S.view?.status?.online.find((p) => p.nodeId === id);
   const nickname = contact?.nickname || online?.nickname;
   if (!nickname) return null;
   return {
+    conv,
+    kind: "c2c",
     nodeId: id,
     nickname,
     hostname: contact?.hostname || online?.hostname || "",
@@ -881,8 +1031,14 @@ function threadOf(id: string | null): Thread | null {
     last: null,
     count: 0,
     online: Boolean(online),
+    unread: 0,
+    draft: "",
+    pinned: false,
+    muted: false,
+    typing: false,
   };
 }
+
 
 function renderChat(): void {
   const t = threadOf(S.thread);
@@ -893,16 +1049,21 @@ function renderChat(): void {
     return;
   }
   const head = h("div", "head");
-  head.append(backBtn(), avatar(t.nickname, t.nodeId, t.online));
+  head.append(backBtn(), avatar(t.nickname, t.conv, t.kind === "c2c" ? t.online : undefined));
   const title = h("div", "t");
   const name = h("div", "n");
   name.append(h("span", "nm", t.nickname));
-  const sub = h("div", "s", t.online ? tr("在线") + " · " + (t.hostname || "") : tr("离线"));
-  title.append(name, sub);
+  if (t.kind === "group") name.append(h("span", "tag", tr("{p1} 人", { p1: String(t.members ?? 0) })));
+  const bits: string[] = [];
+  if (t.kind === "group") bits.push(t.online ? tr("有成员在线") : tr("都没在线"));
+  else bits.push(t.online ? tr("在线") : tr("离线"));
+  if (t.typing) bits.push(tr("正在输入…"));
+  else if (t.hostname) bits.push(t.hostname);
+  title.append(name, h("div", "s", bits.join(" · ")));
   head.append(title, h("div", "grow"));
   const tools = h("div", "tools");
   tools.append(
-    iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId)),
+    iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId ?? convNode(t.conv), t.kind === "c2c")),
     iconBtn("more", tr("更多"), (ev) => {
       const box = (ev.currentTarget as HTMLElement).getBoundingClientRect();
       threadMenu(box.left, box.bottom + 6, t);
@@ -912,80 +1073,193 @@ function renderChat(): void {
   mainEl.append(head);
 
   const stream = h("div", "stream");
+  const msgs = S.msgs.filter((e) => e.kind !== "receipt");
+  // 「未读」分隔线要落在第一条未读的**别人**消息前面：从后往前数 t.unread 条收到的。
+  let unreadAt = -1;
+  if (t.unread) {
+    let left = t.unread;
+    for (let i = msgs.length - 1; i >= 0; i -= 1) {
+      const e = msgs[i];
+      const mine = e.sendType ? e.sendType === "self" || e.sendType === "selfForward" : e.from.nodeId === (S.view?.status?.nodeId ?? "");
+      if (!mine && !e.recall) {
+        left -= 1;
+        if (left === 0) {
+          unreadAt = i;
+          break;
+        }
+      }
+    }
+  }
   let lastDay = "";
-  for (const e of S.msgs) {
-    if (e.kind === "receipt") continue;
+  msgs.forEach((e, i) => {
+    if (i === unreadAt) stream.append(h("div", "unread-line", tr("未读 · {p1}", { p1: String(t.unread ?? 0) })));
     const day = dayLabel(e.at);
     if (day !== lastDay) {
       stream.append(h("div", "day", day));
       lastDay = day;
     }
-    stream.append(entryNode(e, t));
-  }
-  if (!S.msgs.length) {
-    stream.append(h("div", "empty", tr("还没有消息，说点什么吧")));
-  }
+    const gray = e.elements?.[0]?.type === "gray" ? e.elements[0] : null;
+    stream.append(gray ? grayRow(gray.tip) : entryNode(e, t));
+  });
+  if (t.typing) stream.append(typingRow(t.nickname));
+  if (!msgs.length) stream.append(h("div", "empty", tr("还没有消息，说点什么吧")));
   mainEl.append(stream);
   stream.scrollTop = stickBottom ? stream.scrollHeight : prevScroll;
 
-  const compose = composeBox(t);
-  mainEl.append(compose);
+  mainEl.append(composeBox(t));
 }
 
+/** 系统提示（建群、退群、撤回通知）：居中一行灰字，不带头像。 */
+function grayRow(tip: string): HTMLElement {
+  return h("div", "gray-row", tip);
+}
+
+function typingRow(nickname: string): HTMLElement {
+  const row = h("div", "typing");
+  const text = h("span", "", tr("{p1} 正在输入", { p1: nickname }));
+  const dots = h("span", "dots");
+  dots.append(h("i"), h("i"), h("i"));
+  row.append(text, dots);
+  return row;
+}
+
+/** 正文里的 @我 要变色；别的 @ 原样。 */
+function textNode(text: string): DocumentFragment {
+  const frag = document.createDocumentFragment();
+  const me = S.view?.status?.nickname ?? "";
+  const parts = me ? text.split(new RegExp(`(@${me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`)) : [text];
+  for (const part of parts) {
+    if (!part) continue;
+    if (me && part === `@${me}`) frag.append(h("span", "at-me", part));
+    else frag.append(document.createTextNode(part));
+  }
+  return frag;
+}
+
+
 function entryNode(e: Entry, t: Thread): HTMLElement {
-  const mine = e.from.nodeId === S.view?.status?.nodeId;
-  const msg = h("div", `msg${mine ? " mine" : ""}`);
-  msg.append(avatar(mine ? (S.view?.status?.nickname ?? tr("我")) : t.nickname, e.from.nodeId));
+  const me = S.view?.status?.nodeId ?? "";
+  const mine = e.sendType ? e.sendType === "self" || e.sendType === "selfForward" : e.from.nodeId === me;
+  if (e.recall) {
+    return h("div", "gray-row", mine ? tr("你撤回了一条消息") : tr("{p1} 撤回了一条消息", { p1: e.from.nickname ?? t.nickname }));
+  }
+  const msg = h("div", `msg${mine ? " out" : ""}`);
+  const who = mine ? (S.view?.status?.nickname ?? tr("我")) : e.from.nickname ?? t.nickname;
+  if (!mine) msg.append(avatar(who, e.from.nodeId));
   const box = h("div", "b");
   if (e.kind === "file" && e.file) {
     box.append(fileCard(e, mine));
   } else {
-    const bub = h("div", "bub", e.text ?? "");
+    const bub = h("div", "bub");
+    if (e.quote) {
+      const q = h("div", "quote");
+      q.append(h("b", "", (e.quote.nickname ?? "") + " · "), document.createTextNode(e.quote.abstract));
+      bub.append(q);
+    }
+    bub.append(textNode(e.text ?? ""));
     bub.title = tr("点击复制");
     bub.addEventListener("click", () => void copyText(e.text ?? ""));
+    bub.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      msgMenu(ev.clientX, ev.clientY, e, t);
+    });
     box.append(bub);
   }
   const meta = h("div", "tm");
   if (e.via === "pi") meta.append(h("span", "pill pi", tr("pi 代发")));
   meta.append(h("span", "", clock(e.at)));
-  if (mine && e.ack) {
-    if (e.ack.status === "delivered") {
-      const ok = ic("check", "ok");
-      meta.append(ok, h("span", "ok", tr("已送达")));
-    } else {
-      const bad = ic("alert", "bad");
-      meta.append(bad, h("span", "bad", tr("发送失败")));
+  if (mine) {
+    const status = e.sendStatus ?? (e.ack?.status === "delivered" ? "success" : e.ack?.status === "failed" ? "failed" : undefined);
+    if (status === "sending") {
+      meta.append(ic("retry", "spin"), h("span", "", tr("发送中")));
+    } else if (status === "read") {
+      meta.append(ic("check", "ok"), h("span", "ok", tr("已读")));
+    } else if (status === "failed") {
+      meta.append(ic("alert", "bad"), h("span", "bad", tr("发送失败")));
       const retry = h("button", "link", tr("重试"));
+      retry.type = "button";
       retry.addEventListener("click", () => void resend(e));
       meta.append(retry);
+    } else if (status === "success") {
+      meta.append(ic("check", "ok"), h("span", "", tr("已送达")));
     }
   }
   box.append(meta);
   msg.append(box);
+  if (mine) msg.append(avatar(who, me || "me"));
   return msg;
 }
 
+/** 消息右键：复制 / 引用 / 转发 / 撤回（自己发的、两分钟内）。 */
+function msgMenu(x: number, y: number, e: Entry, t: Thread): void {
+  const mine = e.sendType ? e.sendType === "self" || e.sendType === "selfForward" : e.from.nodeId === S.view?.status?.nodeId;
+  const canRecall = mine && !e.recall && Date.now() - e.at < 2 * 60 * 1000;
+  openMenu(x, y, [
+    { label: tr("复制"), icon: "copy", run: () => void copyText(e.text ?? "") },
+    { label: tr("引用"), icon: "msg", run: () => quoteMsg(e) },
+    { label: tr("转发到…"), icon: "forward", run: () => forwardMsg(e) },
+    ...(canRecall ? [{ label: tr("撤回"), icon: "trash", danger: true, run: () => void recallMsg(t.conv, e.id) }] : []),
+  ]);
+}
+
+function quoteMsg(e: Entry): void {
+  S.quote = e;
+  renderMain();
+  textInput?.focus();
+}
+
+async function recallMsg(conv: string, id: string): Promise<void> {
+  try {
+    await postJson("/api/peer/recall", { conv, id });
+    await loadMessages();
+    await loadThreads();
+    renderAll();
+  } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
+/** 转发：列出所有会话让人挑一个（内网通没有「多选会话」这一层，先一个个来）。 */
+function forwardMsg(e: Entry): void {
+  const items = S.threads.slice(0, 12).map((t) => ({
+    label: t.nickname,
+    icon: t.kind === "group" ? "contacts" : "msg",
+    run: () => {
+      void postJson("/api/peer/forward", { conv: S.thread, id: e.id, to: [t.conv] })
+        .then(async () => {
+          toast(tr("已转发给 {p1}", { p1: t.nickname }));
+          await loadThreads();
+          renderAll();
+        })
+        .catch((err: Error) => toast(err.message));
+    },
+  }));
+  const box = mainEl.getBoundingClientRect();
+  openMenu(box.left + 40, box.top + 60, items.length ? items : [{ label: tr("还没有别的会话"), icon: "msg", run: () => {} }]);
+}
+
 function fileCard(e: Entry, mine: boolean): HTMLElement {
-  const f = e.file!;
+  const f = e.file;
+  if (!f) return h("div", "fcard");
   const card = h("div", "fcard");
   const icon = h("div", "ic");
   icon.append(ic(/^image\//.test(f.mime) ? "image" : "file"));
   const body = h("div");
   body.append(h("div", "nm", f.name), h("div", "sz", sizeOf(f.size)));
-  const status = mine ? e.ack : undefined;
-  if (status) {
-    const foot = h("div", "fbot");
-    foot.append(
-      h("span", "", status.status === "delivered" ? tr("已送达") : tr("发送失败")),
-      h("span", "act", status.status === "delivered" ? tr("打开") : tr("重试")),
-    );
-    body.append(foot);
+  const status = e.sendStatus ?? e.ack?.status;
+  const foot = h("div", "fbot");
+
+  if (mine) {
+    const failed = status === "failed";
+    const label = failed ? tr("发送失败") : status === "sending" ? tr("发送中") : tr("已发出");
+    const act = h("span", "act", failed ? tr("重试") : tr("打开"));
+    foot.append(h("span", "", label), act);
+    card.style.cursor = "pointer";
     card.addEventListener("click", () => {
-      if (status.status === "failed") void resend(e);
+      if (failed) void resend(e);
       else toast(tr("文件已经在你自己的盘上"));
     });
   } else {
-    const foot = h("div", "fbot");
     // D209：点卡片 = 用本机程序打开收件箱里那份真文件（收件时已经落盘，不是再下载一次）。
     card.title = tr("点一下用本机程序打开");
     card.style.cursor = "pointer";
@@ -1000,33 +1274,68 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
     act.rel = "noopener";
     act.addEventListener("click", (ev) => ev.stopPropagation());
     foot.append(h("span", "", tr("对方发来")), act);
-    body.append(foot);
   }
+  body.append(foot);
   card.append(icon, body);
   return card;
 }
 
+
+let draftTimer = 0;
+let typingAt = 0;
+
+/** 草稿 700ms 落一次；打字的同时按 2.5 秒节流发「正在输入」。 */
+function noteDraft(conv: string, text: string): void {
+  window.clearTimeout(draftTimer);
+  draftTimer = window.setTimeout(() => {
+    void postJson("/api/peer/draft", { conv, text }).catch(() => {});
+  }, 700);
+  if (text.trim() && Date.now() - typingAt > 2500) {
+    typingAt = Date.now();
+    void postJson("/api/peer/typing", { conv }).catch(() => {});
+  }
+}
+
 function composeBox(t: Thread): HTMLElement {
-  if (composeEl && composeFor === t.nodeId) {
+  if (composeEl && composeFor === t.conv) {
     (composeEl.querySelector(".hintline") as HTMLElement | null)?.replaceChildren();
     return composeEl;
   }
-  composeFor = t.nodeId;
+  composeFor = t.conv;
   const wrap = h("div", "compose");
   const box = h("div", "box");
+
+  if (S.quote) {
+    const bar = h("div", "quote-bar");
+    bar.append(h("span", "q", tr("回复 {p1}：{p2}", { p1: S.quote.from.nickname ?? "", p2: (S.quote.text ?? "").slice(0, 40) })));
+    const off = h("button", "icon-btn", "");
+    off.type = "button";
+    off.title = tr("取消引用");
+    off.append(ic("close"));
+    off.addEventListener("click", () => {
+      S.quote = null;
+      renderMain();
+    });
+    bar.append(off);
+    box.append(bar);
+  }
+
   const ta = h("textarea");
-  ta.placeholder = tr("发给 {p1}", { p1: t.nickname });
+  ta.placeholder = t.kind === "group" ? tr("发到 {p1}", { p1: t.nickname }) : tr("发给 {p1}", { p1: t.nickname });
   ta.rows = 2;
   ta.dataset.keep = "compose";
   ta.autocomplete = "off";
+  ta.value = t.draft ?? "";
+  ta.addEventListener("input", () => noteDraft(t.conv, ta.value));
   ta.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
       ev.preventDefault();
       void send();
     }
   });
+
   const bar2 = h("div", "bar2");
-  const attach = iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId));
+  const attach = iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId ?? convNode(t.conv), t.kind === "c2c"));
   const hint = h("span", "hintline", tr("Enter 发送，Shift+Enter 换行；拖文件或粘贴截图也行"));
   const btn = h("button", "send", tr("发送"));
   btn.type = "button";
@@ -1065,20 +1374,33 @@ function composeBox(t: Thread): HTMLElement {
 // ---------------------------------------------------------------- 发送
 
 async function send(): Promise<void> {
-  const id = S.thread;
+  const conv = S.thread;
   const ta = textInput;
-  if (!id || !ta || S.sending) return;
+  if (!conv || !ta || S.sending) return;
   const text = ta.value.replace(/\s+$/, "");
   if (!text) return;
   if (byteLen(text) > MAX_TEXT_BYTES) return toast(tr("太长了（上限 32 KB）"));
   S.sending = true;
   if (sendBtn) sendBtn.disabled = true;
+  window.clearTimeout(draftTimer); // 别让刚才那一下 input 的 700ms 回调把草稿写回去
+  const quote = S.quote
+    ? {
+        id: S.quote.id,
+        fromNode: S.quote.from.nodeId,
+        nickname: S.quote.from.nickname,
+        abstract: (S.quote.text ?? "").slice(0, 80),
+      }
+    : undefined;
   try {
-    await postJson("/api/peer/send", { peer: id, text });
+    // 带上 peer：老版本桥只认 peer，新桥优先用 conv。
+    await postJson("/api/peer/send", { conv, peer: isGroupConv(conv) ? undefined : convNode(conv), text, ...(quote ? { quote } : {}) });
     ta.value = "";
-    await loadMessages(id);
+    S.quote = null;
+    void postJson("/api/peer/draft", { conv, text: "" }).catch(() => {});
+    await loadMessages(conv);
     await loadThreads();
     renderAll();
+    textInput?.focus();
   } catch (err) {
     toast((err as Error).message);
   } finally {
@@ -1088,11 +1410,12 @@ async function send(): Promise<void> {
 }
 
 async function resend(e: Entry): Promise<void> {
-  if (!S.thread) return;
+  const conv = S.thread;
+  if (!conv) return;
   try {
-    if (e.kind === "text" && e.text) await postJson("/api/peer/send", { peer: S.thread, text: e.text });
+    if (e.kind === "text" && e.text) await postJson("/api/peer/send", { conv, text: e.text });
     else toast(tr("文件重发请从磁盘再选一次"));
-    await loadMessages();
+    await loadMessages(conv);
     renderMain();
   } catch (err) {
     toast((err as Error).message);
@@ -1526,16 +1849,42 @@ function openMenu(x: number, y: number, items: { label: string; icon?: string; d
 }
 
 function threadMenu(x: number, y: number, t: Thread): void {
-  const c = contactOf(t.nodeId);
+  const nodeId = t.nodeId ?? convNode(t.conv);
+  const c = contactOf(nodeId);
   openMenu(x, y, [
-    { label: tr("打开对话"), icon: "msg", run: () => openThread(t.nodeId) },
-    ...(c?.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(t.nodeId, true) }] : []),
-    {
-      label: tr("复制 nodeId"),
-      icon: "copy",
-      run: () => void copyText(t.nodeId),
-    },
+    { label: tr("打开对话"), icon: "msg", run: () => openThread(t.conv) },
+    ...(c?.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(nodeId, true) }] : []),
+    ...(t.kind === "c2c"
+      ? [
+          { label: t.pinned ? tr("取消置顶") : tr("置顶会话"), icon: "star", run: () => void pinThread(t, !t.pinned) },
+          { label: t.muted ? tr("允许提醒") : tr("免打扰"), icon: "bellOff", run: () => void pinThread(t, t.pinned ?? false, !t.muted) },
+          { label: tr("复制 nodeId"), icon: "copy", run: () => void copyText(nodeId) },
+        ]
+      : [{ label: tr("退出群聊"), icon: "trash", danger: true, run: () => void leaveGroup(t) }]),
   ]);
+}
+
+/** 会话置顶 / 免打扰：一个接口两个开关，传哪个改哪个。 */
+async function pinThread(t: Thread, pinned: boolean, muted?: boolean): Promise<void> {
+  try {
+    await postJson("/api/peer/conv", muted === undefined ? { conv: t.conv, pinned } : { conv: t.conv, muted });
+    await loadThreads();
+    renderList();
+  } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
+async function leaveGroup(t: Thread): Promise<void> {
+  const groupId = t.groupId ?? convNode(t.conv);
+  try {
+    await postJson("/api/peer/group", { action: "leave", groupId });
+    S.thread = null;
+    await loadThreads();
+    renderAll();
+  } catch (err) {
+    toast((err as Error).message);
+  }
 }
 
 function contactMenu(x: number, y: number, c: Contact): void {
@@ -1711,7 +2060,7 @@ async function boot(): Promise<void> {
   await loadThreads();
   await loadContacts();
   await loadTransfers();
-  if (S.threads.length && !S.thread) S.thread = S.threads[0].nodeId;
+  if (S.threads.length && !S.thread) S.thread = S.threads[0].conv;
   app.dataset.page = S.page;
   app.dataset.mview = S.mview;
   renderAll();
@@ -1747,7 +2096,9 @@ window.setInterval(() => {
   // 没有新消息就不重画：整块换 DOM 会把输入框、选区、滚动都拽一遍，2.5 秒一次太贵了。
   const before = msgSig();
   void loadMessages().then(() => {
-    if (S.page === "msg" && msgSig() !== before) renderMain();
+    if (S.page !== "msg" || msgSig() === before) return;
+    renderMain();
+    void markRead();
   });
 }, 2500);
 

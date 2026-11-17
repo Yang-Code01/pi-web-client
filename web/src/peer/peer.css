@@ -8,30 +8,30 @@
 
 :root {
   color-scheme: dark;
-  --bg: #0b0d10;
-  --sunken: #0a0e13;
-  --panel: #12151a;
-  --panel-2: #171b22;
-  --panel-3: #1c2129;
-  --line: #232833;
-  --line-soft: #1b2028;
-  --line-strong: #2f3a48;
-  --text: #e7eaf0;
-  --dim: #9aa2b1;
+  --bg: #121417;
+  --sunken: #101214;
+  --panel: #16181c;
+  --panel-2: #1b1e23;
+  --panel-3: #22262c;
+  --line: #262a31;
+  --line-soft: #1e2126;
+  --line-strong: #363c46;
+  --text: #e8eae6;
+  --dim: #9aa19b;
   /* /peer 是另一份文档，不跑 app.ts 的 applyPrefs，所以这里自带一份默认值；
      D158 管的是「同一份文档里同一判据只有一份」。 */
   --faint: #8b93a1;
-  --accent: #7dd3fc;
-  --accent-bg: #0e2a36;
-  --accent-dim: #0e3a4d;
-  --ok: #4ade80;
-  --warn: #fbbf24;
-  --danger: #fb7185;
-  --c-msg: #7dd3fc;
-  --c-contacts: #5eead4;
-  --c-transfers: #c4b5fd;
-  --c-me: #cbd5e1;
-  --r: 12px;
+  --accent: #4ade9b;
+  --accent-bg: #10261c;
+  --accent-dim: #1a4634;
+  --ok: #4ade9b;
+  --warn: #e3b341;
+  --danger: #f0726b;
+  --c-msg: #4ade9b;
+  --c-contacts: #7fb8d8;
+  --c-transfers: #b7a6e8;
+  --c-me: #b9beb6;
+  --r: 8px;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --dur-1: 140ms;
   --dur-2: 180ms;
@@ -680,3 +680,128 @@ body.embedded .brand .nm { display: none; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ---------------------------------------------- v2：会话细节（对齐 QQ 的行为） */
+
+/* 头像从圆的改成圆角方块（样张 B 的语言），在线点跟着一起变方。 */
+.av { border-radius: 10px; }
+.av::before { border-radius: 10px; clip-path: none; }
+.av .st { border-radius: 50%; }
+
+/* 会话行：未读整行提亮，时间与未读数上下叠在右侧。 */
+.row .n .nm { font-weight: 500; }
+.row.unread .n .nm { font-weight: 600; color: var(--text); }
+.row.unread .s { color: var(--dim); }
+.row .tag {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 5%);
+  color: var(--faint);
+  font: 10px var(--mono);
+  flex: none;
+}
+.mute-mark { width: 11px; height: 11px; color: var(--faint); flex: none; }
+.badge {
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #12100f;
+  font: 600 10px/17px var(--mono);
+  text-align: center;
+}
+.badge.mute { background: var(--line-strong); color: var(--dim); }
+.abs.draft { color: var(--warn); }
+.abs.draft::before { content: "· "; }
+.abs.typing { color: var(--accent); }
+
+/* 消息搜索命中 */
+.row.hit .t .s { color: var(--dim); }
+.row.hit .t .s b { color: var(--text); }
+
+/* 未读分隔线：一条带文字的细线 */
+.unread-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 8px;
+  color: var(--accent);
+  font: 10.5px var(--mono);
+}
+.unread-line::before, .unread-line::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, var(--accent) 25%, transparent); }
+
+/* 系统提示：居中的一行灰字（建群、退群、撤回通知） */
+.gray-row {
+  margin: 8px auto 12px;
+  padding: 3px 10px;
+  width: fit-content;
+  max-width: 80%;
+  border-radius: 99px;
+  background: rgb(255 255 255 / 4%);
+  color: var(--faint);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* 正在输入 */
+.typing { display: flex; align-items: center; gap: 6px; margin: 2px 0 6px 42px; color: var(--faint); font-size: 11px; }
+.typing .dots { display: inline-flex; gap: 3px; }
+.typing .dots i {
+  width: 4px; height: 4px; border-radius: 50%; background: var(--faint);
+  animation: typing-bounce 1.05s infinite ease-in-out;
+}
+.typing .dots i:nth-child(2) { animation-delay: 0.15s; }
+.typing .dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-bounce { 0%, 60%, 100% { opacity: 0.35; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-2px); } }
+
+/* 发出的消息靠右（v1 用 .mine，v2 用 .out，两个都认） */
+.msg.out { flex-direction: row-reverse; }
+.msg.out .tm { justify-content: flex-end; }
+.msg.out .bub { background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); border-color: color-mix(in srgb, var(--accent) 26%, var(--line)); border-top-left-radius: 12px; border-top-right-radius: 4px; }
+.bub .at-me { color: var(--accent); font-weight: 600; }
+
+/* 引用块：气泡里的一小段左边线摘要 */
+.quote {
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 0 5px 5px 0;
+  background: rgb(0 0 0 / 18%);
+  color: var(--dim);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.quote b { color: var(--text); font-weight: 600; }
+
+/* 输入区的引用条 */
+.quote-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 4px 4px 4px 9px;
+  border-left: 2px solid var(--accent-dim);
+  border-radius: 0 6px 6px 0;
+  background: rgb(255 255 255 / 3%);
+  color: var(--dim);
+  font-size: 11.5px;
+}
+.quote-bar .q { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quote-bar .icon-btn { width: 20px; height: 20px; }
+.quote-bar .icon-btn svg { width: 11px; height: 11px; }
+
+/* 发送中：小圈转起来 */
+.msg .tm .spin { animation: spin 1.1s linear infinite; color: var(--dim); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.msg .tm .link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.hintline { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--faint); }

@@ -59,6 +59,7 @@ const at = Date.now() - 30_000;
 const msg = (id, text, from, to) => ({ id, at, from, to: { kind: "node", id: to }, kind: "text", text, ack: { id, status: "delivered" } });
 const me = { nodeId: ME, nickname: "我", hostname: "probe", port: 17965 };
 const thread = (nodeId, nickname, last) => ({
+  conv: `n:${nodeId}`,
   nodeId,
   nickname,
   hostname: `${nickname}-pc`,
@@ -159,7 +160,8 @@ try {
     else if (p === "/api/peer/contacts") body = { contacts: [contact(WANG, "小王"), contact(ZHANG, "小张"), contact(LI, "小李")] };
     else if (p === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
     else if (p === "/api/peer/messages") {
-      const who = url.searchParams.get("peer");
+      // v2 页面用 ?conv=n:<nodeId>，旧桩用 ?peer=；两种都认。
+      const who = url.searchParams.get("peer") ?? (url.searchParams.get("conv") ?? "").slice(2);
       if (who === ZHANG) {
         delay = 1000; // 小张的响应慢：切到小李之后才回来
         body = { entries: [msg("aaaaaaaa-0000-4000-8000-000000000001", "我是 A 的消息", { ...me, nodeId: ZHANG, nickname: "小张" }, ME)] };
