@@ -2951,7 +2951,9 @@ export class App {
       // Q-021: 一轮结束正是模型可能刚跑完 `git checkout` 的时刻。
       if (prev?.running && !state.running) void this.refreshGit(true);
       // The writer bar (接管 / 停止运行) and the status line both hang off these two flags.
-      if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starting !== state.starting) this.renderChat();
+      // `starting` 不在其中：它只喂状态行（「pi 正在启动…」/ 撤回），`fillHintStatus()` 就够了。
+      // 把它算进重画理由会整体重建 composer，正在打字的人被甩出输入框（D178 起启动期可输入）。
+      if (prev?.owned !== state.owned || prev?.origin !== state.origin) this.renderChat();
       else {
         this.fillHintStatus();
         // 上面那条 else 走的就是「flags 变了但不用重画」：`starting` / 闲忙都可能在这里翻，「继续」跟着刷。
@@ -10696,6 +10698,12 @@ export class App {
 
   private renderChat(): void {
     const host = this.els.composerHost;
+    // 整块重画会换掉 textarea（连选区一起）。正在打字的人不能被换节点打断：记下焦点与光标，
+    // 重建完再放回去（D285）。只在焦点确实在输入框时才接 —— 弹窗、侧栏的焦点不抢。
+    const caret =
+      this.textarea && document.activeElement === this.textarea
+        ? { start: this.textarea.selectionStart, end: this.textarea.selectionEnd }
+        : null;
     host.replaceChildren();
     this.hintStatus = null;
     this.cwdChip = null;
@@ -10856,6 +10864,10 @@ export class App {
     this.renderAsks();
     this.syncCwdChip();
     this.placeFailCta();
+    if (caret && this.textarea) {
+      this.textarea.focus({ preventScroll: true });
+      this.textarea.setSelectionRange(caret.start, caret.end);
+    }
   }
 
   /**
@@ -14475,7 +14487,11 @@ export class App {
     // 字面「继续」就发这两个字（用户定的），不做 i18n：模型读到的东西不该跟着界面语言变。
     const clientId = `local:${now}:${Math.random().toString(36).slice(2, 8)}`;
     // 重画会重建 textarea，草稿文字会从 `composerText` 填回去，但光标位置和焦点不会 —— 收回来。
-    const caret = this.textarea?.selectionStart ?? null;
+    // `renderChat()` 现在自己也做这件事（D285），但点这个按钮时焦点在按钮上，它不接手，所以这里仍要收；
+    // 两处用同一套参数（preventScroll + 完整选区），别一边恢复选区、一边把选区塔成光标。
+    const caret = this.textarea
+      ? { start: this.textarea.selectionStart, end: this.textarea.selectionEnd }
+      : null;
     this.act(() => {
       if (this.currentId === id) {
         this.chat.add({ id: clientId, kind: "user", text, images: [], ts: new Date().toISOString() });
@@ -14483,9 +14499,9 @@ export class App {
         // D250: 「继续」也是他按的，跟 Enter 一样落到自己这条气泡上。
         this.chat.follow();
         const ta = this.textarea;
-        if (ta && caret != null) {
-          ta.focus();
-          ta.setSelectionRange(caret, caret);
+        if (ta && caret) {
+          ta.focus({ preventScroll: true });
+          ta.setSelectionRange(caret.start, caret.end);
         }
       }
       this.socket.send({ type: "prompt", sessionId: id, text, images: [], clientId, behavior: "steer" });
