@@ -5919,3 +5919,25 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .mk-form-panel .ext-form { width: 100%; }
 .mk-pill-count { color: var(--faint); font: inherit; }
 .mk-comments { text-decoration: none; }
+
+/* ---------------------------------------------------------------- 内网通未读徽标
+ *
+ * 挂在顶栏「🌐 内网通」那颗按钮的右上角。件数是**服务端**算的（内网通页面的
+ * `threads.json` 水位），所以关掉弹层也照样准 —— 主页面只负责把它画出来。
+ * 窄屏那颗按钮只剩图标，徽标跟着按钮走，不用另写一套。 */
+.icon-btn.wide { position: relative; }
+.peer-unread {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #10141a;
+  font: 600 9.5px var(--mono);
+  line-height: 15px;
+  text-align: center;
+  pointer-events: none;
+}

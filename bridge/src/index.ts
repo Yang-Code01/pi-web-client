@@ -988,6 +988,23 @@ async function main(): Promise<void> {
       if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
       return json(res, 200, await openWithApp(abs));
     }
+    // 内网通的「预览」：把收件目录里的那份文件交给**本工程的预览面板**（页面侧收到
+    // `peer.preview` 后调 `App.openPreview()`）。与 `/api/peer/open` 的区别只在出口：
+    // 那个交给系统默认程序，这个交给页面。
+    if (url.pathname === "/api/peer/preview" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const abs = await peer.filePath(String(body?.id ?? ""));
+      if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
+      let pages = 0;
+      for (const client of wss.clients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        client.send(JSON.stringify({ type: "peer.preview", path: abs }));
+        pages += 1;
+      }
+      // 没有页面接住就说清楚（和 `open_preview` 工具的 no-page 一个口径）。
+      if (!pages) return json(res, 200, { ok: false, reason: "no-page", text: "没有打开着的 pi 页面，预览没处显示。" });
+      return json(res, 200, { ok: true, path: abs, pages });
+    }
     if (url.pathname === "/api/peer/add" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       try {

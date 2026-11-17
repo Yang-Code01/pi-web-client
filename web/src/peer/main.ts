@@ -406,8 +406,11 @@ let unreadPrimed = false;
  * bridge 那边有一条同样的路（Web Push），两者不冲突：页面开着就是这条，页面关了就是那条。
  */
 function pingUnread(): void {
+  // 嵌在主页面弹层里时，通知由主页面统一发（它知道「内网通弹层开着没有」）；这一份只在
+  // `/peer` 被单独打开时管用 —— 否则同一件事会弹两条。
+  const embedded = window.self !== window.top;
   const canNotify =
-    document.hidden && notifyEnabled() && "Notification" in window && Notification.permission === "granted";
+    !embedded && document.hidden && notifyEnabled() && "Notification" in window && Notification.permission === "granted";
   for (const t of S.threads) {
     const prev = S.unreadSeen.get(t.nodeId) ?? 0;
     S.unreadSeen.set(t.nodeId, t.unread);
@@ -1178,7 +1181,7 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
   const body = h("div");
   body.append(h("div", "nm", f.name), h("div", "sz", sizeOf(f.size)));
   // 文件不走 outbox（它有自己那套 token/分块/哈希），所以永远没有 receipt：
-  // 自己发的就当「已发出」，否则卡片会画成「对方发来」+「另存」。
+  // 自己发的就当「已发出」，否则卡片会画成「对方发来」+「下载 / 预览」。
   const status: string | undefined = mine ? (e.state ?? "sent") : undefined;
   if (status) {
     const done = status === "delivered" || status === "sent";
@@ -1202,12 +1205,19 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
         toast(tr("打不开这个文件：{p1}", { p1: String((err as Error)?.message ?? err) })),
       );
     });
-    const act = h("a", "act", tr("另存"));
-    act.href = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
-    act.target = "_blank";
-    act.rel = "noopener";
-    act.addEventListener("click", (ev) => ev.stopPropagation());
-    foot.append(h("span", "", tr("对方发来")), act);
+    // 收到的文件给两颗明确的按钮（好友发的也一样）：下载到磁盘 / 用本工程的预览面板看。
+    const dl = h("a", "act", tr("下载"));
+    dl.href = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
+    dl.download = f.name;
+    dl.rel = "noopener";
+    dl.addEventListener("click", (ev) => ev.stopPropagation());
+    const pv = h("button", "act", tr("预览"));
+    pv.type = "button";
+    pv.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void previewFile(e);
+    });
+    foot.append(h("span", "", tr("对方发来")), pv, dl);
     body.append(foot);
   }
   card.append(icon, body);
@@ -1344,6 +1354,19 @@ async function send(): Promise<void> {
   } finally {
     S.sending = false;
     if (sendBtn) sendBtn.disabled = false;
+  }
+}
+
+/**
+ * 收件箱里那份文件交给**本工程的预览面板**（桥的 `/api/peer/preview` → WS `peer.preview` →
+ * 主页面 `onPeerPreview()`）。内网通是弹层里的 iframe，所以这里只管把 id 递出去。
+ */
+async function previewFile(e: Entry): Promise<void> {
+  try {
+    const res = await postJson<{ ok?: boolean; text?: string }>("/api/peer/preview", { id: e.id });
+    if (res?.ok === false) toast(res.text || tr("预览没打开"));
+  } catch (err) {
+    toast((err as Error).message);
   }
 }
 

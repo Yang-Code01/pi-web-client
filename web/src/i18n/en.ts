@@ -3586,4 +3586,7 @@ export const en: Dict = {
   "桌面通知已开": "Desktop notifications on",
   "加为好友": "Add as friend",
   "内网通 · {p1}": "LAN chat · {p1}",
+  "内网通：{p1} 条未读": "LAN chat: {p1} unread",
+  "预览面板要有一个打开的会话：先开一个会话，再从内网通点「预览」。": "The preview panel needs an open session: open one first, then hit “Preview” in the LAN chat.",
+  "预览没打开": "The preview did not open",
 };
