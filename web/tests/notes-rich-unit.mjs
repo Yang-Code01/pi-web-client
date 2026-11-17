@@ -100,18 +100,24 @@ test("isRichEmpty：空白、&nbsp;、空段落都算空", () => {
 
 // ---------------------------------------------------------------- 老数据 / 回填
 
-test("hasRichMarkup：只有真正的块标签才算富文本", () => {
+test("hasRichMarkup：块标签和行内标签都算富文本", () => {
   assert.equal(hasRichMarkup("<p>a</p>"), true);
-  assert.equal(hasRichMarkup("<strong>a</strong>"), false);
+  assert.equal(hasRichMarkup("<strong>a</strong>"), true);
   assert.equal(hasRichMarkup("用的是 <pre> 标签"), true);
   assert.equal(hasRichMarkup("时间 <13:45:02> 报错"), false);
   assert.equal(hasRichMarkup("金额 a < b"), false);
 });
 
-test("纯文本回填成段落，换行不丢，HTML 特殊字符被转义", () => {
-  assert.equal(textToRich("第一行\n第二行 <b>不是粗体</b>"), "<p>第一行</p><p>第二行 &lt;b&gt;不是粗体&lt;/b&gt;</p>");
+test("纯文本回填：空行切段落、单换行当 br，特殊字符转义", () => {
+  assert.equal(textToRich("第一行\n第二行 <不是标签>"), "<p>第一行<br>第二行 &lt;不是标签&gt;</p>");
   assert.equal(textToRich(""), "");
   assert.equal(textToRich("a\n\nb"), "<p>a</p><p>b</p>");
+  assert.equal(textToRich("a\n\n\n\nb"), "<p>a</p><p>b</p>");
+});
+
+test("带行内标签的老 body 当 HTML 处理，不被二次转义", () => {
+  assert.equal(textToRich("看 <b>这里</b>\n下一行"), "<p>看 <b>这里</b><br>下一行</p>");
+  assert.equal(textToRich(textToRich("看 <b>这里</b>")), textToRich("看 <b>这里</b>"));
 });
 
 test("回填幂等：富文本再回填一次不变", () => {

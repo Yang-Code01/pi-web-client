@@ -30,7 +30,9 @@ assert.ok(code.includes("var Notes"), "esbuild 没产出 JS bundle");
 
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
-const page = await browser.newPage();
+// 界面文案跟着浏览器语言走（docs/I18N.md）：不指定 zh-CN，断言中文会在别的机器上假失败。
+const context = await browser.newContext({ locale: "zh-CN" });
+const page = await context.newPage();
 const errors = [];
 page.on("pageerror", (err) => errors.push(String(err)));
 page.on("console", (msg) => {
@@ -43,7 +45,7 @@ await page.route("http://notes.test/**", (route) =>
 await page.goto("http://notes.test/");
 await page.addScriptTag({ content: code });
 
-const out = await page.evaluate(() => {
+const out = await page.evaluate(async () => {
   const now = Date.now();
   const note = (over) => ({
     id: "n1",
@@ -87,8 +89,15 @@ const out = await page.evaluate(() => {
   // 1. 三栏骨架
   const consoleEl = q(".notes-console");
   result.columns = [...consoleEl.children].map((c) => c.className);
-  // 2. 列表：默认只显示待处理的
+  // 2. 列表：默认「全部」，行上有字数 / 截图数 / 时间
   result.rows = qa(".nc-row").map((r) => r.querySelector(".nc-row-title").textContent);
+  result.segCounts = qa(".nc-seg-item").map((b) => [b.dataset.seg, b.querySelector(".nc-seg-n").textContent]);
+  result.rowMeta = qa(".nc-row")[0] ? {
+    words: q(".nc-row-words").textContent,
+    shots: q(".nc-row-shot").textContent,
+    time: q(".nc-row-time").textContent,
+  } : null;
+  result.banner = q(".nc-banner")?.textContent ?? null;
   // 3. 分区计数（bug 待处理 1 条）
   result.navBugCount = q('.nc-nav-item[data-key="bug"] .nc-nav-n')?.textContent ?? null;
 
@@ -98,11 +107,12 @@ const out = await page.evaluate(() => {
   result.bodyHtml = q(".nc-body").innerHTML;
   result.saveBtnHidden = !qa(".nc-actions .btn").some((b) => b.textContent === "保存");
 
-  // 5. 改标题 + 保存 → 发 notes.save，正文是净化的 HTML
+  // 5. 改标题 → 停手自动保存：发 notes.save，正文是净化的 HTML
   const title = q(".nc-title");
   title.value = "改过的标题";
   fire(title, "input");
-  qa(".nc-actions .btn").find((b) => b.textContent === "保存").click();
+  result.autoSaving = q(".notes-hint").textContent;
+  await new Promise((r) => setTimeout(r, 1100));
   const save = sent.find((m) => m.type === "notes.save");
   result.save = save ? { id: save.id, title: save.title, body: save.body } : null;
 
@@ -143,11 +153,17 @@ const out = await page.evaluate(() => {
   fire(search, "input");
   result.searchEmpty = q(".nc-empty-list")?.textContent ?? null;
 
-  // 12. 已处理开关
+  // 12. 分段控件：切到「已处理」只剩已处理那条，再切回全部
   search.value = "";
   fire(search, "input");
-  q(".nc-done input").click();
-  result.rowsWithDone = qa(".nc-row").length;
+  q('.nc-seg-item[data-seg="done"]').click();
+  result.rowsDone = qa(".nc-row").map((r) => r.querySelector(".nc-row-title").textContent);
+  q('.nc-seg-item[data-seg="all"]').click();
+  result.rowsAll = qa(".nc-row").length;
+
+  // 12b. 新建一条：光标落在标题上
+  q(".notes-head-new").click();
+  result.newFocus = document.activeElement === q(".nc-title");
 
   // 13. 导出：不崩、给出提示
   q(".notes-head .btn.ghost").click();
@@ -161,11 +177,17 @@ const out = await page.evaluate(() => {
 await browser.close();
 
 assert.deepEqual(out.columns, ["nc-nav", "nc-list", "nc-doc"], "三栏：分区 / 列表 / 正文");
-assert.deepEqual(out.rows, ["旧标题"], "默认只显示待处理的记录");
+assert.deepEqual(out.rows, ["旧标题", "已处理的那条"], "默认「全部」：待处理和已处理都在");
+assert.deepEqual(out.segCounts, [["all", "2"], ["pending", "1"], ["done", "1"], ["dropped", "0"]], "分段控件的计数");
+assert.equal(out.rowMeta?.words, "5 字", "行上显示字数（第一段 + 要点 = 5 个非空白字符）");
+assert.equal(out.rowMeta?.shots, "🖼 0", "行上显示截图数");
+assert.ok(out.rowMeta?.time, "行上有时间");
+assert.match(out.banner ?? "", /这一类还有 1 条待处理/, "顶部黄条报待处理条数");
 assert.equal(out.navBugCount, "1", "分区计数 = 待处理的条数");
 assert.equal(out.titleValue, "旧标题", "点行后标题进编辑器");
 assert.ok(out.bodyHtml.includes("<li>要点</li>"), `正文按 HTML 填进编辑器，实际 ${out.bodyHtml}`);
-assert.equal(out.saveBtnHidden, false, "编辑态有保存按钮");
+assert.equal(out.saveBtnHidden, true, "自动保存：不再有保存按钮");
+assert.equal(out.autoSaving, "正在写…", "改动后先给「正在写」");
 assert.ok(out.save, "点保存要发 notes.save");
 assert.equal(out.save.id, "n1", "改已有条目带 id");
 assert.equal(out.save.title, "改过的标题", "标题跟着输入走");
@@ -182,7 +204,9 @@ assert.equal(out.listBack, true, "再按一次回来");
 assert.equal(out.archivedEmpty, "归档里的记录不能直接改。", "归档分区只读提示");
 assert.equal(out.newHiddenInArchive, true, "归档分区不摆「记一条」");
 assert.equal(out.searchEmpty, "没有匹配的记录。", "搜索无结果");
-assert.equal(out.rowsWithDone, 2, "勾上「显示已处理」后 bug 两条都在");
+assert.deepEqual(out.rowsDone, ["已处理的那条"], "切到「已处理」只剩已处理那条");
+assert.equal(out.rowsAll, 2, "切回「全部」两条都在");
+assert.equal(out.newFocus, true, "新建一条时光标落在标题上");
 assert.ok(out.footHint, "导出要给一句提示");
 assert.equal(out.closed, true, "close() 把面板从 DOM 摘掉");
 assert.deepEqual(errors, [], `不该有控制台错误：${errors.join(" | ")}`);

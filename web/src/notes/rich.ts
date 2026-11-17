@@ -51,6 +51,8 @@ const DROP_WITH_CONTENT = new Set(["script", "style", "iframe", "object", "embed
 const STYLE_PROPS = new Set(["color", "background-color", "font-size"]);
 
 const BLOCK_TAG = /<(p|br|h[1-6]|ul|ol|li|pre|blockquote|hr|table|thead|tbody|tr|th|td)\b[^>]*>/i;
+/** 老 body 里只要有这些行内标签，也说明它已经是 HTML 了（否则 `<b>x</b>` 会被再转义一遍）。 */
+const INLINE_TAG = /<(strong|b|em|i|u|s|strike|del|span|mark|a)\b[^>]*>/i;
 
 interface RichNode {
   tag: string | null;
@@ -194,16 +196,36 @@ function serialize(nodes: RichNode[]): string {
   return out;
 }
 
-/** 老数据（纯文本）→ 段落；已经是富文本的原样净化。两条路都幂等。 */
+/**
+ * 老数据（纯文本）→ 富文本；已经是富文本的原样净化。两条路都幂等。
+ *
+ * 分段按 #486 写的那条：**空行切段落、单换行当 `<br>`**，先转义再包 `<p>`。
+ */
 export function textToRich(text: string): string {
-  if (hasRichMarkup(text)) return sanitizeRich(text);
-  const lines = text.split(/\r?\n/).filter((line) => line.trim() !== "");
-  return lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("");
+  if (hasRichMarkup(text)) {
+    const clean = sanitizeRich(text);
+    // 只有行内标签的老 body（`<b>x</b>`）净化完还是散的，包成段落才和编辑器一个形状。
+    return BLOCK_TAG.test(clean) ? clean : paragraphize(clean, (s) => s);
+  }
+  return paragraphize(text, escapeHtml);
 }
 
-/** 只有真正的块标签才算「已经是富文本」：日志里的 `<13:45:02>`、`a < b` 不能误判。 */
+/** 空行切段落、单换行当 `<br>`；`keep` 决定里面那段文本要不要转义。 */
+function paragraphize(text: string, keep: (s: string) => string): string {
+  return text
+    .split(/\r?\n[ \t]*\r?\n/)
+    .map((chunk) => chunk.trim())
+    .filter((chunk) => chunk !== "")
+    .map((chunk) => `<p>${chunk.split(/\r?\n/).map(keep).join("<br>")}</p>`)
+    .join("");
+}
+
+/**
+ * 「已经是富文本」：出现正文里认得的标签才算（块标签或行内标签）。
+ * 日志里的 `<13:45:02>`、`a < b` 不能误判，所以只认白名单里的标签名。
+ */
 export function hasRichMarkup(s: string): boolean {
-  return BLOCK_TAG.test(s);
+  return BLOCK_TAG.test(s) || INLINE_TAG.test(s);
 }
 
 // ---------------------------------------------------------------- 读

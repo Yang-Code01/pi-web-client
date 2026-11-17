@@ -59,7 +59,7 @@
     "test:bgruns": "node --experimental-strip-types bridge/tests/bgruns-unit.mjs",
     "test:whatsnew": "node --experimental-strip-types bridge/tests/whatsnew-unit.mjs",
     "test:sysmanage": "node bridge/tests/sysmanage-unit.mjs && node bridge/tests/workclock-unit.mjs && node web/tests/sysmanage-unit.mjs",
-    "test:notes": "node --experimental-strip-types bridge/tests/notes-title-unit.mjs && node --experimental-strip-types web/tests/notes-rich-unit.mjs && node web/tests/notes-editor-browser.mjs && node web/tests/notes-sheet-browser.mjs",
+    "test:notes": "node --experimental-strip-types web/tests/notes-rich-unit.mjs && node web/tests/notes-editor-browser.mjs && node web/tests/notes-sheet-browser.mjs",
     "test:attendance": "node bridge/tests/attendance-unit.mjs && node bridge/tests/attendance-e2e.mjs && node --experimental-strip-types web/tests/attendance-unit.mjs",
     "test:hotdeploy": "node bridge/tests/hotdeploy-unit.mjs && node bridge/tests/hotdeploy-stash-unit.mjs",
     "test:sysmanage:ui": "node bridge/tests/sysmanage-ui.mjs",

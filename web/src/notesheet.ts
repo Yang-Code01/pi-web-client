@@ -32,6 +32,8 @@ const STATUS_GLYPH: Record<NoteStatus, string> = { pending: "○", done: "✓", 
 
 /** 左栏在看哪一堆：在列表里 / 归档 / 垃圾箱 / AI 出错记录（只读，不算笔记）。 */
 type View = "active" | "archived" | "trash" | "failures";
+/** 列表头的分段筛选；`all` 以外都直接对 `Note.status`。 */
+type SegFilter = "all" | NoteStatus;
 
 const LAYOUT_KEY: Record<keyof NotesLayout, string> = { nav: "notes.nav", list: "notes.list" };
 
@@ -118,7 +120,16 @@ export class NotesSheet {
   private failPanel!: FailPanel;
   private failEl!: HTMLElement;
   private bodyEl!: HTMLElement;
-  private showDone = false;
+  /** 列表头上的分段筛选（#486：全部 / 待处理 / 已处理 / 已忽略）。 */
+  private seg: SegFilter = "all";
+  /** 自动保存的定时器：停手 900ms 就落盘。 */
+  private saveTimer = 0;
+  /** 这一堆的「还有 N 条没动」黄条被关掉了吗（按分区记，不落盘）。 */
+  private readonly bannerGone = new Set<string>();
+  private listCountEl!: HTMLElement;
+  private segEl!: HTMLElement;
+  private bannerEl!: HTMLElement;
+  private headBadgeEl!: HTMLElement;
   private clearTrash!: HTMLButtonElement;
   private newBtn!: HTMLButtonElement;
   private searchEl!: HTMLInputElement;
@@ -196,6 +207,8 @@ export class NotesSheet {
     const head = el("div", "sheet-head notes-head");
     const title = el("div", "notes-head-title");
     title.append(el("span", "notes-head-glyph", "🐞"), el("span", "", tr("记录面板")));
+    this.headBadgeEl = el("span", "notes-head-badge", "");
+    this.headBadgeEl.hidden = true;
     this.headCountEl = el("span", "notes-head-sub", "");
 
     const nb = el("button", "btn primary notes-head-new", tr("＋ 记一条"));
@@ -204,7 +217,7 @@ export class NotesSheet {
     const exportAll = el("button", "btn ghost", tr("导出"));
     exportAll.title = tr("把当前这一堆记录导出成一份 Markdown");
     exportAll.onclick = () => this.exportAll();
-    head.append(title, this.headCountEl, el("div", "grow"), nb, exportAll, closeButton(tr("关闭"), () => this.close()));
+    head.append(title, this.headBadgeEl, this.headCountEl, el("div", "grow"), nb, exportAll, closeButton(tr("关闭"), () => this.close()));
     return head;
   }
 
@@ -231,6 +244,14 @@ export class NotesSheet {
     // 第二栏：记录列表。
     const list = el("section", "nc-list") as HTMLElement;
     const listHead = el("div", "nc-list-head");
+    const top = el("div", "nc-list-top");
+    this.listCountEl = el("span", "nc-list-count", "");
+    const collapseList = el("button", "nc-rail-tab", "«");
+    collapseList.title = tr("收起列表");
+    collapseList.setAttribute("aria-label", tr("收起列表"));
+    collapseList.onclick = () => this.setList("closed");
+    top.append(el("span", "nc-list-title", tr("记录")), this.listCountEl, collapseList);
+
     const search = el("input", "ns-input nc-search") as HTMLInputElement;
     search.type = "search";
     search.placeholder = tr("搜标题 / 正文");
@@ -239,21 +260,12 @@ export class NotesSheet {
       this.paintList();
     };
     this.searchEl = search;
-    const done = el("label", "notes-switch nc-done");
-    const doneInput = el("input") as HTMLInputElement;
-    doneInput.type = "checkbox";
-    doneInput.onchange = () => {
-      this.showDone = doneInput.checked;
-      this.paintList();
-    };
-    done.append(doneInput, el("span", "", tr("显示已处理")));
-    const collapseList = el("button", "nc-rail-tab", "«");
-    collapseList.title = tr("收起列表");
-    collapseList.setAttribute("aria-label", tr("收起列表"));
-    collapseList.onclick = () => this.setList("closed");
-    listHead.append(search, done, collapseList);
+    this.segEl = el("div", "nc-seg");
+    this.bannerEl = el("div", "nc-banner");
+    this.bannerEl.hidden = true;
+    listHead.append(top, search, this.segEl);
     this.rowListEl = el("div", "nc-items") as HTMLElement;
-    list.append(listHead, this.rowListEl);
+    list.append(listHead, this.bannerEl, this.rowListEl);
 
     // 第三栏：正文。
     this.docEl = el("article", "nc-doc") as HTMLElement;
@@ -405,18 +417,27 @@ export class NotesSheet {
     return NOTE_KINDS.find((k) => k.id === this.kind)?.label ?? this.kind;
   }
 
-  /** 列表空着时那句提示，按视图 / 搜索 / 勾选分。 */
+  /** 列表空着时那句提示，按视图 / 搜索 / 分段分。 */
   private emptyListText(): string {
     if (this.query) return tr("没有匹配的记录。");
     if (this.view === "trash") return tr("垃圾箱是空的。");
     if (this.view === "archived") return tr("还没有归档的记录。");
-    return tr("这一类里没有{p1}记录。", { p1: this.showDone ? "" : tr("待处理的") });
+    if (this.seg === "pending") return tr("这一类里没有待处理的记录。");
+    if (this.seg === "done") return tr("这一类里没有已处理的记录。");
+    if (this.seg === "dropped") return tr("这一类里没有被忽略的记录。");
+    return tr("这一类还是空的，点「＋ 记一条」开始。");
   }
 
   private paintHead(): void {
     const notes = this.host.notes();
     const here = this.visible().length;
     this.headCountEl.textContent = tr("{p1} · {p2} 条在眼前", { p1: this.viewLabel(), p2: here });
+    const pending = this.view === "active"
+      ? notes.filter((n) => n.kind === this.kind && n.status === "pending" && !n.archivedAt && !n.deletedAt).length
+      : 0;
+    this.headBadgeEl.hidden = !pending;
+    this.headBadgeEl.textContent = pending ? String(pending) : "";
+    this.headBadgeEl.title = pending ? tr("这一类还有 {p1} 条待处理", { p1: pending }) : "";
     this.newBtn.hidden = this.view !== "active";
     this.clearTrash.hidden = this.view !== "trash";
     const trashed = notes.filter((n) => n.deletedAt).length;
@@ -495,9 +516,16 @@ export class NotesSheet {
       this.close();
     };
     document.addEventListener("keydown", this.esc, true);
-    // Ctrl/⌘ + \ ：收起 / 展开列表（和编辑器里的「专注写」是一套手势）。
+    // Ctrl/⌘ + \ ：收起 / 展开列表（和编辑器里的「专注写」是一套手势）；Ctrl/⌘ + S：立刻存。
     this.shortcut = (ev: KeyboardEvent): void => {
-      if (!(ev.ctrlKey || ev.metaKey) || ev.key !== "\\") return;
+      if (!(ev.ctrlKey || ev.metaKey)) return;
+      if (ev.key === "s") {
+        // 浏览器自己的「保存网页」不要了：面板里这一下就是存这一条。
+        ev.preventDefault();
+        if (this.dirty && (this.editing?.id || this.hasContent())) this.save();
+        return;
+      }
+      if (ev.key !== "\\") return;
       ev.preventDefault();
       this.setList(this.layout.list === "open" ? "closed" : "open");
     };
@@ -515,6 +543,10 @@ export class NotesSheet {
   }
 
   close(): void {
+    // 关面板前落一次盘：自动保存的定时器可能还没到点。
+    this.flush();
+    window.clearTimeout(this.saveTimer);
+    this.saveTimer = 0;
     if (this.esc) document.removeEventListener("keydown", this.esc, true);
     if (this.shortcut) document.removeEventListener("keydown", this.shortcut, true);
     document.querySelector(".note-handoff")?.remove();
@@ -540,7 +572,8 @@ export class NotesSheet {
     if (n.deletedAt) return this.view === "trash";
     if (n.archivedAt) return this.view === "archived";
     if (this.view !== "active") return false;
-    return this.showDone || n.status === "pending";
+    if (this.seg === "all") return true;
+    return n.status === this.seg;
   }
 
   private visible(): Note[] {
@@ -565,11 +598,75 @@ export class NotesSheet {
   private paintList(): void {
     const rows = this.visible();
     this.paintHead();
+    this.paintSeg();
+    this.paintBanner();
+    this.listCountEl.textContent = String(rows.length);
     if (!rows.length) {
       this.rowListEl.replaceChildren(el("div", "nc-empty-list", this.emptyListText()));
       return;
     }
     this.rowListEl.replaceChildren(...rows.map((n) => this.row(n)));
+  }
+
+  /** 分段控件：全部 / 待处理 / 已处理 / 已忽略（归档、垃圾箱里不显示）。 */
+  private paintSeg(): void {
+    const show = this.view === "active";
+    this.segEl.hidden = !show;
+    if (!show) return;
+    const notes = this.host.notes().filter((n) => !n.deletedAt && !n.archivedAt && n.kind === this.kind);
+    const defs: { id: SegFilter; label: string; n: number }[] = [
+      { id: "all", label: tr("全部"), n: notes.length },
+      { id: "pending", label: tr("待处理"), n: notes.filter((n) => n.status === "pending").length },
+      { id: "done", label: tr("已处理"), n: notes.filter((n) => n.status === "done").length },
+      { id: "dropped", label: tr("已忽略"), n: notes.filter((n) => n.status === "dropped").length },
+    ];
+    this.segEl.replaceChildren(
+      ...defs.map((d) => {
+        const b = el("button", `nc-seg-item${d.id === this.seg ? " on" : ""}`) as HTMLButtonElement;
+        b.type = "button";
+        b.dataset.seg = d.id;
+        b.append(el("span", "", d.label), el("span", "nc-seg-n", String(d.n)));
+        b.onclick = () => {
+          this.seg = d.id;
+          this.paintList();
+        };
+        return b;
+      }),
+    );
+  }
+
+  /** 黄条：「这一类有 N 条待处理还没动，最老的一条停在 X 天前」。 */
+  private paintBanner(): void {
+    const idle = this.view === "active" && this.seg === "all";
+    const key = this.kind;
+    if (!idle || this.bannerGone.has(key)) {
+      this.bannerEl.hidden = true;
+      return;
+    }
+    const pending = this.host.notes().filter((n) => n.kind === this.kind && n.status === "pending" && !n.archivedAt && !n.deletedAt);
+    if (!pending.length) {
+      this.bannerEl.hidden = true;
+      return;
+    }
+    const oldest = Math.min(...pending.map((n) => n.createdAt || n.updatedAt || Date.now()));
+    const days = Math.max(0, Math.floor((Date.now() - oldest) / 86_400_000));
+    const text = days >= 1
+      ? tr("这一类还有 {p1} 条待处理没动，最老的一条停在 {p2} 天前。", { p1: pending.length, p2: days })
+      : tr("这一类还有 {p1} 条待处理没动。", { p1: pending.length });
+    const close = el("button", "nc-banner-x", "✕");
+    close.title = tr("今天先不看这条");
+    close.setAttribute("aria-label", close.title);
+    close.onclick = () => {
+      this.bannerGone.add(key);
+      this.bannerEl.hidden = true;
+    };
+    this.bannerEl.replaceChildren(el("span", "nc-banner-text", text), close);
+    this.bannerEl.hidden = false;
+  }
+
+  /** 字数：按纯文本数非空白字符（中文一个字算一个）。 */
+  private wordsOf(n: Partial<Note>): number {
+    return plainText(n.body ?? "").replace(/\s+/g, "").length;
   }
 
   private row(n: Note): HTMLElement {
@@ -597,8 +694,10 @@ export class NotesSheet {
     if (summary) row.append(el("div", "nc-row-body", summary));
 
     const meta = el("div", "nc-row-meta");
-    meta.append(el("span", "", shortTime(n.updatedAt)));
     if (n.issue) meta.append(el("span", "nc-row-issue", `#${n.issue.replace(/^#/, "")}`));
+    meta.append(el("span", "nc-row-shot", `🖼 ${n.shots?.length ?? 0}`));
+    meta.append(el("span", "nc-row-words", tr("{p1} 字", { p1: this.wordsOf(n) })));
+    meta.append(el("span", "nc-row-time", shortTime(n.updatedAt)));
     meta.append(this.rowActs(n));
     row.append(meta);
     return row;
@@ -690,10 +789,12 @@ export class NotesSheet {
     this.sel = null;
     this.pendingShots = [];
     this.dirty = false;
+    this.seg = "all";
     this.draftSeq += 1;
     this.paintList();
     this.load(null);
-    this.editor?.focus();
+    // 新建一条就先落在标题上：先把「是什么」写清，正文随后（#486 使用场景第 1 条）。
+    this.titleEl.focus();
   }
 
   private paintEditor(): void {
@@ -780,13 +881,25 @@ export class NotesSheet {
     this.metaEl.replaceChildren(...this.metaCells(note ?? {}));
     this.actionsEl.replaceChildren(...this.actionButtons(note ?? {}));
     this.footEl.textContent = this.editing?.id
-      ? tr("存于状态目录 notes/bug-notes.json；图在 notes/assets/{p1}/，交给 agent 时给的是绝对路径。", { p1: this.editing.id })
-      : tr("还没存：Enter 存一条，Shift+Enter 换行；也可以点上面的「保存」。");
+      ? tr("已自动保存 · 改于 {p1} · {p2} 字", { p1: stamp(this.editing.note.updatedAt ?? Date.now()), p2: this.wordsOf(this.editing.note) })
+      : tr("停手一下就自动存；Ctrl+S 立刻存。正文支持 Markdown 那套：``` 换行变代码块。");
   }
 
   private markDirty(): void {
     this.dirty = true;
-    this.footEl.textContent = tr("有未保存的改动 · Ctrl+S 或点「保存」");
+    // 自动保存：停手 900ms 就落盘（#486「标题和正文都自动保存」，不再要用户按保存）。
+    this.say(tr("正在写…"));
+    window.clearTimeout(this.saveTimer);
+    this.saveTimer = window.setTimeout(() => {
+      this.saveTimer = 0;
+      if (this.dirty && (this.editing?.id || this.hasContent())) this.save();
+    }, 900);
+  }
+
+  /** 草稿是不是已经有东西可存了（标题或正文非空）。 */
+  private hasContent(): boolean {
+    const note = this.editing?.note;
+    return !!(note?.title ?? "").trim() || !isRichEmpty(this.editor?.html() ?? note?.body ?? "");
   }
 
   private shotTiles(note: Partial<Note>): HTMLElement[] {
@@ -908,9 +1021,6 @@ export class NotesSheet {
       return [back, copy, el("div", "grow"), del];
     }
     const row: HTMLElement[] = [];
-    const save = el("button", "btn primary", tr("保存"));
-    save.onclick = () => this.save();
-    row.push(save);
     const copy = el("button", "btn ghost", tr("复制 Markdown"));
     copy.onclick = () => {
       const full = this.fullNote(note);
@@ -1071,7 +1181,8 @@ export class NotesSheet {
     if (this.view !== "active") this.setView("active");
     const note = this.editing.note;
     const body = this.editor?.html() ?? note.body ?? "";
-    const title = (note.title ?? "").trim();
+    // 标题空着就从正文首行推：桥那边的兜底只会切纯文本，正文是 HTML 时会切出 `<p>`。
+    const title = (note.title ?? "").trim() || plainText(body).trim().split("\n")[0].trim().slice(0, 60);
     if (isRichEmpty(body) && !title) {
       this.say(tr("先写点什么再存"), true);
       return;
@@ -1094,6 +1205,8 @@ export class NotesSheet {
 
   /** 切走之前把改动存掉；草稿不存（用户可能只是点开看看又去别处）。 */
   private flush(): void {
+    window.clearTimeout(this.saveTimer);
+    this.saveTimer = 0;
     if (!this.dirty || !this.editing) return;
     if (this.editing.id) this.save();
     else if (!isRichEmpty(this.editing.note.body ?? "") || (this.editing.note.title ?? "").trim()) this.save();
@@ -1194,7 +1307,11 @@ export class NotesSheet {
     this.dirty = false;
     this.paintList();
     this.uploadPending(note.id);
-    this.say(tr("已保存"));
+    // 自动保存：脚注就说「已自动保存 · 时间 · 字数」。
+    if (this.editing?.id === note.id) {
+      this.editing.note.body = this.editor?.html() ?? this.editing.note.body;
+      this.footEl.textContent = tr("已自动保存 · 改于 {p1} · {p2} 字", { p1: stamp(note.updatedAt), p2: this.wordsOf(this.editing.note) });
+    }
     this.paintEditor();
   }
 

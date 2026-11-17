@@ -62,6 +62,8 @@ export class RichEditor {
   private readonly onDocKey = (ev: KeyboardEvent): void => {
     if (ev.key === "Escape" && this.pop) {
       ev.preventDefault();
+      // 面板自己也听 Esc（关整个面板）：先把这一下吃掉，别一按就把面板带走。
+      ev.stopPropagation();
       this.closePop();
     }
   };
@@ -156,8 +158,6 @@ export class RichEditor {
   private afterInput(): void {
     this.saveRange();
     this.onChange();
-    const trigger = this.fenceAtCaret();
-    if (trigger !== null) this.makeCode(trigger);
   }
 
   /** 光标所在块如果整行就是 ``` / ```ts，返回语言（可能为空串）；否则 null。 */
@@ -173,10 +173,14 @@ export class RichEditor {
 
   private onKeydown(ev: KeyboardEvent): void {
     const mod = ev.ctrlKey || ev.metaKey;
-    if (mod && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === "b") {
-      ev.preventDefault();
-      this.exec("bold");
-      return;
+    // ` ``` ` / ` ```ts ` 敲完回车才转换：立即转会把语言名截掉（打完三个反引号就把块换了，`ts` 再也补不上）。
+    if (ev.key === "Enter" && !ev.shiftKey && !mod && !ev.altKey) {
+      const lang = this.fenceAtCaret();
+      if (lang !== null) {
+        ev.preventDefault();
+        this.makeCode(lang);
+        return;
+      }
     }
     // Alt+P：插一个原始 <p> 分段（粘进来的 div / 空段落清理用）。
     if (ev.altKey && !mod && ev.key.toLowerCase() === "p") {
@@ -208,8 +212,17 @@ export class RichEditor {
 
   // ---------------------------------------------------------------- 动作
 
+  /** 内联样式要的是「用户选中的那段」：活选区塌了就先回退到上次存下的非空选区。 */
+  private inlineRange(): Range | null {
+    const live = this.range();
+    if (live && !live.collapsed) return live;
+    const saved = this.savedRange;
+    if (saved && !saved.collapsed && this.body.contains(saved.startContainer)) return saved;
+    return live;
+  }
+
   private wrapInline(prop: "color" | "background-color" | "font-size", value: string): void {
-    const range = this.range();
+    const range = this.inlineRange();
     if (!range || range.collapsed) {
       this.say(tr("先选中要改的文字。"), true);
       return;
@@ -225,7 +238,10 @@ export class RichEditor {
     this.onChange();
   }
 
-  /** 把光标所在的块换成 `<pre><code>`；已经是代码块就换回段落。 */
+  /**
+   * 把光标所在的块换成 `<pre><code>`；已经是代码块就换回段落。
+   * 由 ``` 触发时，块里那几个反引号要清掉、语言名挂到 `code.language-*`（导出 Markdown 时用）。
+   */
   private makeCode(value = ""): void {
     const range = this.range();
     if (!range) return;
@@ -245,7 +261,11 @@ export class RichEditor {
       this.restore(caret);
     } else {
       const content = block.textContent ?? "";
-      code.replaceChildren(parseHtml(content || value ? escapeLines(content || value) : "<br>"));
+      const fence = /^\s*```(\w*)\s*$/.exec(content);
+      const lang = fence ? fence[1] : value;
+      const text = fence ? "" : content;
+      if (lang) code.className = `language-${lang}`;
+      code.replaceChildren(parseHtml(text ? escapeLines(text) : "<br>"));
       pre.append(code);
       block.replaceWith(pre);
       const caret = document.createRange();
@@ -303,13 +323,13 @@ export class RichEditor {
       btn("U", tr("下划线"), () => this.exec("underline"), "tb-u"),
       btn("S", tr("删除线"), () => this.exec("strikeThrough"), "tb-s"),
       sep(),
-      btn("A", tr("字号"), (el) => this.openSize(el), "tb-wide"),
-      btn("🎨", tr("文字颜色 / 底色"), (el) => this.openColor(el), "tb-wide"),
+      btn("A", tr("字号"), (el) => this.openSize(el)),
+      btn("🎨", tr("文字颜色 / 底色"), (el) => this.openColor(el)),
       sep(),
-      btn("•", tr("符号列表"), () => this.exec("insertUnorderedList")),
-      btn("1.", tr("编号列表"), () => this.exec("insertOrderedList")),
+      btn("•", tr("符号列表"), () => this.exec("insertUnorderedList"), "tb-wide"),
+      btn("1.", tr("编号列表"), () => this.exec("insertOrderedList"), "tb-wide"),
       sep(),
-      btn("</>", tr("代码块（整行输入 ``` 也行）"), () => this.makeCode(), "tb-wide"),
+      btn("</>", tr("代码块（整行输入 ``` 也行）"), () => this.makeCode()),
       btn("▦", tr("插入表格"), () => this.insertHtml(this.tableHtml()), "tb-wide"),
       btn("—", tr("分隔线"), () => this.exec("insertHorizontalRule"), "tb-wide"),
       btn("❝", tr("引用"), () => this.toggleBlock("blockquote"), "tb-wide"),
@@ -413,6 +433,8 @@ export class RichEditor {
     pop.append(
       item(tr("字号"), () => this.openSize(anchor)),
       item(tr("文字颜色 / 底色"), () => this.openColor(anchor)),
+      item(tr("符号列表"), () => this.exec("insertUnorderedList")),
+      item(tr("编号列表"), () => this.exec("insertOrderedList")),
       item(tr("代码块"), () => this.makeCode()),
       item(tr("插入表格"), () => this.insertHtml(this.tableHtml())),
       item(tr("分隔线"), () => this.exec("insertHorizontalRule")),

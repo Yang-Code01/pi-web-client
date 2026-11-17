@@ -29,8 +29,14 @@
   padding: 10px 14px 9px;
   justify-content: flex-start;
 }
-.notes-head-title { display: flex; align-items: center; gap: 7px; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; }
-.notes-head-glyph { font-size: 14px; line-height: 1; }
+.notes-head-title { display: flex; align-items: center; gap: 7px; font-size: 17px; font-weight: 650; letter-spacing: -0.015em; white-space: nowrap; }
+.notes-head-glyph { font-size: 15px; line-height: 1; }
+.notes-head-badge {
+  min-width: 18px; height: 18px; padding: 0 5px; display: grid; place-items: center;
+  border-radius: 999px; background: var(--warn-bg); border: 1px solid var(--warn-dim);
+  font: 10px/1 var(--mono); color: var(--warn);
+}
+.notes-head-badge[hidden] { display: none; }
 .notes-head-sub { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .notes-head-new { height: 28px; padding: 0 11px; }
 .notes-head > .btn { flex: none; height: 28px; padding: 0 11px; }
@@ -112,24 +118,68 @@
 /* ---- 二：记录列表 */
 
 .nc-list {
-  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0; min-height: 0; overflow: hidden;
   border-right: 1px solid var(--line);
   background: var(--sunken);
   transition: opacity var(--dur-1) var(--ease);
 }
 .notes-console.list-off .nc-list { opacity: 0; pointer-events: none; }
-.nc-list-head { display: grid; gap: 6px; padding: 9px 10px 8px; border-bottom: 1px solid var(--line-soft); }
-.nc-list-head { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
+.nc-list-head {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px;
+  padding: 9px 10px 8px; border-bottom: 1px solid var(--line-soft);
+}
+.nc-list-top { display: flex; align-items: center; gap: 6px; }
+.nc-list-title { font-size: 12px; font-weight: 650; letter-spacing: -0.01em; }
+.nc-list-count {
+  min-width: 17px; height: 17px; padding: 0 5px; display: grid; place-items: center;
+  border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line-soft);
+  font: 10px/1 var(--mono); color: var(--dim);
+}
+.nc-list-top > .nc-rail-tab { margin-left: auto; }
 .nc-search {
-  grid-column: 1 / -1;
   width: 100%; height: 28px; padding: 0 9px; border-radius: 7px;
   border: 1px solid var(--line); background: var(--panel); color: var(--text);
   font-size: 12px; outline: none;
 }
 .nc-search::placeholder { color: var(--faint); }
 .nc-search:focus { border-color: var(--accent-dim); box-shadow: 0 0 0 3px var(--accent-bg); }
-.nc-done { font-size: 11px; }
+
+/* 分段控件：全部 / 待处理 / 已处理 / 已忽略。 */
+/* min-width:0 + overflow:hidden：网格项的默认宽度是 min-content，窄版会把「已忽略」顶出去。 */
+.nc-seg {
+  display: flex; gap: 2px; min-width: 0; overflow: hidden; padding: 2px;
+  border-radius: 7px; background: var(--panel); border: 1px solid var(--line-soft);
+}
+.nc-seg[hidden] { display: none; }
+.nc-seg-item {
+  flex: 1; min-width: 0; height: 22px; padding: 0 4px; display: flex; align-items: center; justify-content: center; gap: 3px;
+  border: 0; border-radius: 5px; background: transparent; color: var(--dim);
+  font: 10.5px/1 inherit; cursor: pointer; white-space: nowrap; overflow: hidden;
+}
+.nc-seg-item:hover { color: var(--text); background: var(--panel-2); }
+.nc-seg-item.on { background: var(--accent-bg); color: var(--text); }
+.nc-seg-n { font: 10px/1 var(--mono); color: var(--faint); }
+.nc-seg-item.on .nc-seg-n { color: var(--dim); }
+
+/* 窄一点的时候（列表列只有 240px）四个分段一行放不下：让它们折成两行，不要挤成一团。 */
+@container console (max-width: 1120px) {
+  .nc-seg { flex-wrap: wrap; }
+  .nc-seg-item { flex: 1 0 auto; padding: 0 6px; }
+}
+/* 黄条：这一类还有 N 条没动。 */
+.nc-banner {
+  display: flex; align-items: flex-start; gap: 6px; margin: 6px 8px 0; padding: 7px 8px;
+  border-radius: 7px; border: 1px solid var(--warn-dim); background: var(--warn-bg);
+  align-self: start;
+}
+.nc-banner[hidden] { display: none; }
+.nc-banner-text { flex: 1; font-size: 10.5px; line-height: 1.5; color: var(--warn); }
+.nc-banner-x {
+  flex: none; width: 16px; height: 16px; display: grid; place-items: center;
+  border: 0; border-radius: 4px; background: transparent; color: var(--warn); font-size: 10px; cursor: pointer;
+}
+.nc-banner-x:hover { background: var(--panel-2); }
 .nc-list-head > .nc-rail-tab { margin-left: auto; }
 
 .nc-items { overflow: auto; padding: 4px 6px 8px; display: flex; flex-direction: column; gap: 2px; min-height: 0; }
@@ -166,6 +216,9 @@
 }
 .nc-row-meta { display: flex; align-items: center; gap: 6px; font: 10px/1 var(--mono); color: var(--faint); }
 .nc-row-issue { padding: 2px 4px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line-soft); }
+/* 时间贴右，图标行动作再往右（悬停才露）。 */
+.nc-row-time { margin-left: auto; }
+.nc-row-shot, .nc-row-words { white-space: nowrap; }
 /* 行尾小图标：默认隐形，悬停 / 聚焦才露出来，免得列表看着像工具栏。 */
 .nc-row-acts { margin-left: auto; display: flex; gap: 4px; opacity: 0; transition: opacity var(--dur-1); }
 .nc-row:hover .nc-row-acts, .nc-row:focus-within .nc-row-acts { opacity: 1; }
@@ -174,6 +227,7 @@
   border: 1px solid var(--line); background: var(--panel-2); color: var(--dim);
   font-size: 11px; cursor: pointer;
 }
+.nc-row-acts { margin-left: 2px; }
 .nc-row-act:hover { color: var(--text); border-color: var(--line-strong); }
 .nc-row-act.danger:hover { color: var(--danger); border-color: var(--danger-dim); background: var(--danger-bg); }
 
@@ -194,6 +248,8 @@
   border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2);
   color: var(--dim); font-size: 11px; cursor: pointer;
 }
+/* display:grid 会盖掉 [hidden]：空态时状态圆点必须真藏起来。 */
+.nc-status[hidden] { display: none; }
 .nc-status:hover { color: var(--text); border-color: var(--line-strong); }
 .nc-status.pending { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
 .nc-status.done { color: var(--ok); border-color: var(--ok-dim); background: var(--ok-bg); }
@@ -208,7 +264,7 @@
 /* 正文头这颗只在列表收起时出现，贴右边，别和分区头那颗箭头挤在一起。 */
 .nc-doc-head > .nc-rail-tab { margin-left: auto; }
 .nc-rail-tab:hover { color: var(--text); border-color: var(--line-strong); }
-.nc-doc-scroll { overflow: auto; min-height: 0; }
+.nc-doc-scroll { overflow: auto; min-height: 0; padding-inline: max(18px, calc((100% - 800px) / 2)); }
 
 .nc-empty {
   height: 100%; display: grid; place-content: center; justify-items: center; gap: 8px;
@@ -265,6 +321,8 @@
   border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2);
   box-shadow: 0 8px 22px -18px #000;
 }
+/* 同上：display:flex 会盖掉 [hidden]，空态时工具栏不能还摆在那儿。 */
+.tb[hidden] { display: none; }
 .tb-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 3px;
   min-width: 26px; height: 24px; padding: 0 5px; border-radius: 6px;
@@ -294,7 +352,7 @@
 .tb-more-item:hover { background: var(--panel-3); }
 
 /* 窄一点的文档栏：把「字号 / 颜色 / 代码块 / 表格 / 分隔线 / 引用」折进「⋯」。 */
-@container doc (max-width: 640px) {
+@container doc (max-width: 620px) {
   .tb-wide { display: none; }
   .nc-title { padding: 16px 16px 4px; font-size: 19px; }
   .tb { margin: 4px 16px 8px; }

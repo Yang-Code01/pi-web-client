@@ -23,7 +23,9 @@ const bundled = await build({
 const code = bundled.outputFiles[0].text;
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
-const page = await browser.newPage();
+// 工具栏的 title / aria-label 都是 tr() 出来的中文：locale 必须钉成 zh-CN（docs/I18N.md）。
+const context = await browser.newContext({ locale: "zh-CN" });
+const page = await context.newPage();
 await page.setContent("<!doctype html><html><body><div id=tb></div><div id=doc></div></body></html>");
 await page.addScriptTag({ content: code });
 await page.evaluate(() => {
@@ -76,8 +78,22 @@ assert.match(out, /<i>/, `斜体没生效（选区丢了）：${out}`);
 await page.evaluate(() => window.ed.setHtml("<p><br></p>"));
 await page.click("#doc");
 await page.keyboard.type("```");
+await page.keyboard.press("Enter");
 await page.waitForTimeout(80);
 assert.equal(await count("pre code"), 1, "整行三个反引号应该换成代码块");
+assert.equal(await page.evaluate(() => document.querySelector("#doc pre code").textContent.trim()), "", "反引号要清掉");
+assert.ok(!(await html()).includes("```"), "存下来的正文里不该再有反引号");
+
+await page.evaluate(() => window.ed.setHtml("<p><br></p>"));
+await page.click("#doc");
+await page.keyboard.type("```ts");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(80);
+assert.equal(
+  await page.evaluate(() => document.querySelector("#doc pre code").className),
+  "language-ts",
+  "带上语言名时要挂到 code.language-*",
+);
 
 // ---------------------------------------------------------------- Alt+P
 
