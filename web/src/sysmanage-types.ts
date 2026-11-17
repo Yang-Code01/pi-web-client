@@ -1,5 +1,5 @@
 /** #266：桥端 `/api/sys*` 的响应形状（与 bridge/src/sysmanage.ts 对齐）。 */
-export type SysSection = "overview" | "network" | "ports" | "services" | "workclock";
+export type SysSection = "overview" | "network" | "ports" | "services" | "workclock" | "attendance";
 export type NetStatus = "up" | "disconnected" | "not_present" | "unknown";
 export type PortScope = "all" | "nic" | "loopback";
 
@@ -201,4 +201,107 @@ export interface WorkclockBackfill {
   from?: number | null;
   to?: number | null;
   state?: SysWorkclock;
+}
+
+// ---------------------------------------------------------------- 考勤（本机管理第六页）
+
+/** `GET /api/attendance/state`。账号、工号都已经是掩码；密码 / token 从不出现。 */
+export interface AttendanceState {
+  configured: boolean;
+  problem: string | null;
+  apiBase: string;
+  pageBase: string;
+  /** 掩码后的账号，例如 `JS***6`。 */
+  account: string;
+  loggedIn: boolean;
+  expiresAt: number;
+  userName: string;
+  workNoMask: string;
+  cacheDays: number;
+  cacheFetchedAt: number;
+  maxDay: string;
+}
+
+/** 一天的记录。`raw` 是 OA 原样那一行 —— 语义没坐实的字段只在详情里展开，不猜。 */
+export interface AttendanceRowView {
+  date: string;
+  weekday: string;
+  weekend: boolean;
+  clockIn: string | null;
+  clockOut: string | null;
+  overtime: number;
+  overtimeEdited: boolean;
+  editedBy: string;
+  raw: Record<string, unknown>;
+}
+
+export interface AttendanceRange {
+  start: string;
+  end: string;
+  clamped: boolean;
+  problem: string | null;
+}
+
+export interface AttendanceSummary {
+  days: number;
+  attended: number;
+  missing: number;
+  overtime: number;
+  weekendOvertime: number;
+  lastDay: string;
+}
+
+export interface AttendanceRecords {
+  rows: AttendanceRowView[];
+  summary: AttendanceSummary;
+  range: AttendanceRange;
+  source: "live" | "cache";
+  fetchedAt: number;
+  stale: boolean;
+  problem: string | null;
+}
+
+export interface AttendanceLeader {
+  userId: number;
+  name: string;
+  workNo: string;
+}
+
+export interface AttendanceApply {
+  code: number;
+  user_id: number;
+  name: string;
+  agent_user_id: number;
+  agent_name: string;
+  start_time: string;
+  end_time: string;
+  hours: number;
+  reason: string;
+  reasonParsed?: { type: string; project: string; detail: string };
+  /** 0 = 还在审批里。 */
+  workflow_result: number;
+  expense: number;
+  reject_reason: string | null;
+}
+
+export interface AttendanceOvertime {
+  applyList: AttendanceApply[];
+  /** 以申请单号为键的审批链。 */
+  workflow: Record<string, unknown>;
+  reasons: string[];
+  admitTime: string;
+  rule: string;
+  candidates: { l1: AttendanceLeader[]; l2: AttendanceLeader[] };
+  userId: number;
+}
+
+export interface AttendanceSubmitResult {
+  needConfirm?: boolean;
+  preview?: Record<string, unknown>;
+  ok?: boolean;
+}
+
+export interface AttendanceCancelResult {
+  needConfirm?: boolean;
+  ok?: boolean;
 }

@@ -82,6 +82,7 @@ import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
+import { handleAttendance } from "./attendance.ts";
 import { handleSysmanage } from "./sysmanage.ts";
 import { handleHotdeploy } from "./hotdeploy.ts";
 
@@ -1029,6 +1030,8 @@ async function main(): Promise<void> {
     // #248 Jira 面板：单站点、只读、凭据不出桥。路由都在 jira.ts 里，这里只接线。
     if (await handleMail(req, res, url, { publicReq, confirm: (sid, mail) => askMailConfirm(sid, mail, wss) })) return;
     if (await handleJira(req, res, url, { publicReq })) return;
+    // 考勤：隧道访客整页隐身（模块内 return false → 落到底部的 404）。
+    if (await handleAttendance(req, res, url, { publicReq })) return;
 
     if (url.pathname === "/api/me") {
       return json(res, 200, {

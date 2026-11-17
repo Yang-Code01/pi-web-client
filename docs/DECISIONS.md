@@ -5554,3 +5554,23 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 记录器仍是主来源（`event` > `poll` > `log` > `start`，D246）；4624 只是把「历史」这一层从 0 条变成有数据。代价：一次解锁可能产生 2 条重复 4624（login_audit 的注释记了本机这个现象），靠 `dedupeEvents` 的同 kind 5 秒合并吃掉；RDP 连进来算到岗（「连上就开始干活」更贴工时口径，但有人可能不认同）；换账号后只看得到当前账号的历史；回填得到的历史只有上班时刻准、下班时刻是推的。
 
 **验证：** `node bridge/tests/workclock-unit.mjs` 新增用例断言生成脚本含 `Id=4624,4800,4801`、`@(2,7,10,11,12,13)`、XML 取值、当前用户过滤、`-MaxEvents 50000`，且 `LOGON_UNLOCK_TYPES` 不含 3/4/5；PowerShell 解析器（`[Parser]::ParseFile`，用 `.scratch/parse-check.ps1`）对生成脚本报 0 错；**真机回填条数未自动验证** —— 要弹一次 UAC，留给用户点「导入历史」确认。
+
+## D289 考勤做成「本机管理」第六页，OA 形状全部搬进 config，密码用 DPAPI（用户要求 2026-11-17）
+
+**问题：** 用户所在公司的考勤/OA 系统要把「我的考勤」和「加班申请」搬进 pi-web 的本机管理里。这套系统是内网私有部署，接口形状是它自己的（`token` 头、`query_type` 四种模式、加班申请要两级审批人 id），而上游是开源项目 —— 任何公司标识、域名、工号都不能进仓库。
+
+**决定：**
+
+- **独立第六页，不动「上下班」。** `web/src/sysmanage.ts` 的 `SysSection` 加 `"attendance"`。已有的「上下班」是拿 Windows 解锁事件算本机工时（D246/D288），与公司考勤是两套账，混在一起会让人以为在核对同一件事。
+- **页面只认字段名，不认字段含义。** `config.json` 里存 `apiBase` / `pageBase` / `account` / `endpoints{login,records,overtimeInit,overtimeAdd,overtimeCancel,leaders}` / `fields{...}`。代码里没有一处公司域名字面量，换一家 OA 只改配置。
+- **`query_type` 只能是 3。** 实测 0/1 会忽略日期参数、固定回最近一段（换日期结果一模一样），2 返回空，只有 3 尊重 `start_dt`/`end_dt`。页面强制 3 并把区间裁到 90 天。
+- **`keyword` 必须填自己的 `user_id`。** 空串会让上游抛 `1292 (22007): Truncated incorrect INTEGER value: ''`，回填工号也行但没必要 —— 只查自己，不等上游的权限兜底。
+- **两次确认、十分钟去重。** 加班提交第一次只回预览（`needConfirm` + 链路 + 小时数），第二次带 `confirm` 才真发；成功后按「账号+时段+时长+事由」记账 10 分钟，同样的内容再提交直接 409，避免连点两下造两张单。撤回同理。
+- **密码落 DPAPI，页面只见掩码。** `credentials.bin` 是 `PWDP1` + 长度 + `[ProtectedData]::Protect(CurrentUser)` 密文；页面拿到的永远是 `TS***1` 这种掩码。PowerShell 只用 `Add-Type -AssemblyName System.Security`，不引原生依赖；非 Windows 退化成 `PWPL1` 明文 + 0600（并在设置页写明）。
+- **登录失败即停。** 10 分钟窗口内最多 3 次，第一次等 1s 再翻倍、封顶 60s；登录 URL 把密码放在 query 里（上游形状），所以 **`oaFetch` 的错误消息一律不带 URL**，token 与密码都不进日志、不进审计、不进模型上下文。
+- **隧道访客整页隐身。** 命中 `ctx.publicReq` 直接 `return false`，落到 `bridge/src/index.ts` 的兜底 404 —— 不是 403（403 等于承认这里有个功能）。单测里用 `x-test-tunnel: 1` 头复现。
+- **缓存 90 天 + 手动清除。** 记录按天覆盖写 `cache.json`，超过 90 天裁掉；上游挂了就退缓存并标 `stale`；「清除本地数据」清配置/凭据/缓存但保留 `audit.jsonl`（那是「做过什么」的账，不是数据）。
+
+**取舍：** 缓存只保 90 天 —— 更长的历史得联网取，但内网断线时仍有三个月可看；退避与去重都是「宁可挡一下」的取向，代价是连续改两次申请要等或改内容；DPAPI 走 PowerShell 子进程，每次加解密约几十毫秒，够用但不如原生调用，好处是零依赖、跨机器不出错。
+
+**验证：** `npm run test:attendance` 三段 69 条全绿 —— `bridge/tests/attendance-unit.mjs` 37 条（日期区间/90 天上限/退避/去重键/掩码/行映射/汇总/事由 JSON/审批链往返/草稿校验）、`bridge/tests/attendance-e2e.mjs` 20 条（假 OA + 临时 `PI_WEB_STATE`：未配置 400、配置校验、登录成功只回掩码、上游 NG 401、退避 429、只查自己、缓存放 stale、上游挂了回 502、加班申请与候选、二次确认、本地校验、七字段 body、10 分钟去重、撤回要 confirm、隧道全 404、清除后配置归零而审计仍在）、`web/tests/attendance-unit.mjs` 12 条（本地日期不跟 UTC、默认 14 天跨月跨年、审批状态三种、工时/区间/事由显示）。`npm --prefix web run typecheck`（含 `i18n-check` 与 `test:viewport`）与 `npm --prefix bridge run typecheck` 均通过。

@@ -1,0 +1,394 @@
+/* 考勤 · 嵌在「设置 → 本机管理」右栏里的一页。
+   尺寸跟着 .sys-pane 走，不写裸 vh/vw：#app 上的 zoom 会把视口单位再乘一次（D123）。 */
+
+.at-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+/* 页头：标题 + 账号状态 + 操作。 */
+.at-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.at-head__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.at-head__who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.at-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.at-dot.ok {
+  background: #3fb950;
+}
+
+.at-dot.bad {
+  background: #f85149;
+}
+
+.at-head__spacer {
+  flex: 1 1 auto;
+}
+
+/* 页签 */
+.at-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel) 80%, transparent);
+  align-self: flex-start;
+}
+
+.at-tab {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.at-tab:hover {
+  color: var(--text);
+}
+
+.at-tab.on {
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  color: var(--text);
+}
+
+/* 提示条 —— 有 hidden 时整块 display:none，父级是 flex 列，不会顶掉后面的行。 */
+.at-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 13px;
+  background: color-mix(in oklab, var(--panel) 88%, transparent);
+}
+
+.at-notice[hidden] {
+  display: none;
+}
+
+.at-notice.ok {
+  border-color: color-mix(in oklab, #3fb950 40%, var(--line));
+}
+
+.at-notice.bad {
+  border-color: color-mix(in oklab, #f85149 45%, var(--line));
+  color: #ffb4ae;
+}
+
+.at-notice__close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+/* 汇总卡 */
+.at-sum {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 8px;
+}
+
+.at-sum__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel) 92%, transparent);
+}
+
+.at-sum__k {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.at-sum__v {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* 工具条 */
+.at-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.at-bar__hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.at-dates {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.at-input {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--input-bg, color-mix(in oklab, var(--panel) 70%, black));
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.at-input:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent) 70%, transparent);
+  outline-offset: 1px;
+}
+
+.at-input--wide {
+  flex: 1 1 240px;
+}
+
+.at-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--panel) 84%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.at-btn:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
+}
+
+.at-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.at-btn--primary {
+  background: color-mix(in oklab, var(--accent) 22%, transparent);
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
+}
+
+.at-btn--danger {
+  border-color: color-mix(in oklab, #f85149 50%, var(--line));
+  color: #ffb4ae;
+}
+
+/* 表格 */
+.at-scroll {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-height: 0;
+}
+
+.at-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.at-table th,
+.at-table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  white-space: nowrap;
+}
+
+.at-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.at-table tbody tr:hover {
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+}
+
+.at-table td.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.at-table td.nil {
+  color: var(--muted);
+}
+
+.at-tag {
+  display: inline-block;
+  padding: 0 6px;
+  margin-right: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.at-tag.weekend {
+  border-color: color-mix(in oklab, #d29922 45%, var(--line));
+  color: #e3b341;
+}
+
+.at-note {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.at-detail {
+  font-size: 12px;
+}
+
+.at-detail dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 12px;
+  margin: 0;
+}
+
+.at-detail dt {
+  color: var(--muted);
+}
+
+.at-detail dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+/* 表单 */
+.at-form {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--panel) 92%, transparent);
+}
+
+.at-field {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.at-field > span {
+  color: var(--muted);
+}
+
+.at-field--stack {
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: start;
+}
+
+.at-field__body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.at-draft {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.at-draft.bad {
+  color: #ffb4ae;
+}
+
+.at-hr {
+  height: 1px;
+  background: var(--line);
+  border: 0;
+  margin: 2px 0;
+}
+
+/* 空态 / 骨架 */
+.at-empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.at-skel {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--line), color-mix(in oklab, var(--line) 40%, transparent), var(--line));
+  background-size: 200% 100%;
+  animation: at-skel 1.2s linear infinite;
+}
+
+@keyframes at-skel {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .at-skel {
+    animation: none;
+  }
+}
+
+/* 窄栏：容器查询而不是 @media —— 这一页永远活在右栏里，视口宽度跟它没关系（D263）。 */
+@container (max-width: 560px) {
+  .at-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .at-sum {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
