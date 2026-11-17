@@ -1,4 +1,6 @@
 import { applyLang, bootLang, fmtDate, fmtNum, fmtRelative, fmtTime, tr } from "../i18n/index.ts";
+import { SheetDialog } from "../sheet/dialog.ts";
+import "../sheet/sheet.css";
 
 /**
  * `peer.html` 的脚本：只跟 bridge 说话（cookie + `/api/peer*`），从不直接连 7865。
@@ -1221,148 +1223,6 @@ async function recall(e: Entry, t: Thread): Promise<void> {
   }
 }
 
-/** 一次取多少行 / 列：先给一屏，往后按 200 行要。 */
-const SHEET_ROWS = 200;
-const SHEET_COLS = 26;
-
-/** 0 → A、25 → Z、26 → AA。表头那一行用。 */
-function colName(i: number): string {
-  let n = i + 1;
-  let out = "";
-  while (n > 0) {
-    const r = (n - 1) % 26;
-    out = String.fromCharCode(65 + r) + out;
-    n = Math.floor((n - 1) / 26);
-  }
-  return out;
-}
-
-interface SheetCellView {
-  r: number;
-  c: number;
-  t: string;
-  a?: "l" | "c" | "r";
-  k?: string;
-}
-
-/**
- * 表格预览（D303）：内网通页面**只读**地看一份 xlsx/xlsm。
- *
- * 为什么不直接用主界面的 `SheetDialog`：它是给会话看的（要 `/api/preview` 发的 grant），
- * 还带着编辑/合并/条件格式那一整套和主界面的样式表；塞进内网通弹层既拿不到 grant，也会
- * 把两套主题搅在一起。这里只回答「表里是什么」：表头 + 行列号 + 格式化后的值。
- * 要编辑仍然点「下载」再用 pi 打开。
- */
-async function renderSheet(host: HTMLElement, e: Entry): Promise<void> {
-  const fail = (err: unknown): void => {
-    host.append(h("div", "none", tr("读不出来：{p1}", { p1: String((err as Error)?.message ?? err) })));
-  };
-  let token = "";
-  try {
-    const grant = await postJson<{ token: string }>("/api/peer/sheet", { id: e.id });
-    token = grant.token;
-  } catch (err) {
-    return fail(err);
-  }
-  let meta: { sheets?: { name: string; rows: number; cols: number }[] };
-  try {
-    meta = await postJson<{ sheets?: { name: string; rows: number; cols: number }[] }>("/api/sheet/meta", { token });
-  } catch (err) {
-    return fail(err);
-  }
-  const list = (meta.sheets ?? []).filter((s) => s && s.name);
-  if (!list.length) {
-    host.append(h("div", "none", tr("这本书里没有可看的表")));
-    return;
-  }
-  const tabs = h("div", "sheettabs");
-  const scroll = h("div", "sheetscroll");
-  const more = h("div", "sheetmore");
-  host.append(tabs, scroll, more);
-
-  let loaded = 0;
-  let current = list[0].name;
-  let table: HTMLTableElement | null = null;
-
-  const appendWindow = async (sheetName: string, rows: { r: number; cells: SheetCellView[] }[]): Promise<void> => {
-    if (!table) {
-      table = h("table", "sheettable");
-      const head = h("thead");
-      const hr = h("tr");
-      hr.append(h("th", "corner", ""));
-      for (let c = 0; c < SHEET_COLS; c += 1) hr.append(h("th", "", colName(c)));
-      head.append(hr);
-      table.append(head, h("tbody"));
-      scroll.append(table);
-    }
-    const tbody = table.querySelector("tbody") as HTMLElement;
-    for (const row of rows) {
-      const tr = h("tr");
-      tr.append(h("th", "", String(row.r + 1)));
-      const byCol = new Map(row.cells.map((cell) => [cell.c, cell]));
-      for (let c = 0; c < SHEET_COLS; c += 1) {
-        const cell = byCol.get(c);
-        const td = h("td", cell?.a ? `al-${cell.a}` : "", cell?.t ?? "");
-        if (cell?.k === "n") td.classList.add("num");
-        tr.append(td);
-      }
-      tbody.append(tr);
-    }
-    loaded += rows.length;
-  };
-
-  const loadSheet = async (sheetName: string): Promise<void> => {
-    current = sheetName;
-    loaded = 0;
-    table = null;
-    scroll.replaceChildren();
-    more.replaceChildren();
-    for (const b of [...tabs.querySelectorAll("button")]) b.classList.toggle("on", (b as HTMLElement).dataset.sheet === sheetName);
-    const total = list.find((s) => s.name === sheetName)?.rows ?? SHEET_ROWS;
-    const fetchWindow = (r0: number, r1: number) =>
-      postJson<{ rows?: { r: number; cells: SheetCellView[] }[] }>("/api/sheet/window", {
-        token,
-        sheet: sheetName,
-        r0,
-        r1,
-        c0: 0,
-        c1: SHEET_COLS,
-      });
-
-    const paintMore = (): void => {
-      more.replaceChildren();
-      if (total <= loaded) return;
-      const b = h("button", "btn", tr("再看 {p1} 行", { p1: String(Math.min(SHEET_ROWS, total - loaded)) }));
-      b.type = "button";
-      b.addEventListener("click", () => {
-        more.replaceChildren();
-        void fetchWindow(loaded, Math.min(total, loaded + SHEET_ROWS))
-          .then((win) => appendWindow(sheetName, win.rows ?? []))
-          .then(paintMore)
-          .catch(fail);
-      });
-      more.append(b);
-    };
-
-    try {
-      await appendWindow(sheetName, (await fetchWindow(0, Math.min(total, SHEET_ROWS))).rows ?? []);
-    } catch (err) {
-      return fail(err);
-    }
-    paintMore();
-  };
-
-  for (const sheet of list) {
-    const b = h("button", "", sheet.name);
-    b.type = "button";
-    b.dataset.sheet = sheet.name;
-    b.addEventListener("click", () => void loadSheet(sheet.name));
-    tabs.append(b);
-  }
-  if (list.length > 1) tabs.classList.add("on");
-  await loadSheet(current);
-}
-
 function fileCard(e: Entry, mine: boolean): HTMLElement {
   const f = e.file!;
   const card = h("div", "fcard");
@@ -1433,9 +1293,74 @@ const TEXT_EXT = /\.(md|markdown|txt|log|json|ya?ml|toml|ini|csv|ts|tsx|js|jsx|m
  * 看一张截图不值当。这里按类型自己画：图片 `<img>`、PDF `<iframe>`、文本 `<pre>`，
  * 其余说清楚「点下载」。
  */
+/** 当前开着的那扇表格浮窗（同一时间只留一扇，和主界面 `sheetDock` 一个规矩）。 */
+let sheetWin: SheetDialog | null = null;
+
+/**
+ * 内网通的 Excel：开的是**本工程那扇表格浮窗**（`SheetDialog`，D166 那一套）。
+ *
+ * 凭据由 `/api/peer/sheet` 现发 —— 内网通页面没有会话，拿不到 `/api/preview` 的 grant；
+ * 拿到 token 之后其余全走既有的 `/api/sheet/*`：看、查找、改格子、合并/插删行列都是同一份
+ * 代码，不另写一个简化表格（D303 复审）。
+ *
+ * 和主界面的差别只有两处：`scale` 恒为 1（这页没有界面缩放），`onQuote` 不给（这里没有
+ * 可以引用给 pi 的输入框）。
+ */
+async function openSheetWindow(e: Entry): Promise<void> {
+  closeLayer();
+  let grant: { token: string; path?: string };
+  try {
+    grant = await postJson<{ token: string; path?: string }>("/api/peer/sheet", { id: e.id });
+  } catch (err) {
+    toast((err as Error).message);
+    return;
+  }
+  const token = grant.token;
+  sheetWin?.destroy();
+  sheetWin = null;
+  const dlg: SheetDialog = new SheetDialog({
+    token,
+    name: e.file?.name ?? tr("表格"),
+    path: grant.path ?? "",
+    raw: `/api/peer/file?id=${encodeURIComponent(e.id)}`,
+    scale: () => 1,
+    loadMeta: () => postJson("/api/sheet/meta", { token }),
+    fetchWindow: (sheet, r0, r1, c0, c1) => postJson("/api/sheet/window", { token, sheet, r0, r1, c0, c1 }),
+    findSheet: (sheet, q) => postJson("/api/sheet/find", { token, sheet, q }),
+    mediaUrl: (sheet, id) => `/api/sheet/media?token=${encodeURIComponent(token)}&sheet=${encodeURIComponent(sheet)}&id=${encodeURIComponent(id)}`,
+    saveSheet: (sheet, ops) => postJson("/api/sheet/edit", { token, sheet, ops }),
+    saveStruct: (sheet, op) => postJson("/api/sheet/struct", { token, sheet, op }),
+    page: { token },
+    onOpen: async () => {
+      await postJson("/api/peer/open", { id: e.id });
+    },
+    onReveal: async () => {
+      await postJson("/api/peer/reveal", { id: e.id });
+    },
+    onReopen: () => void openSheetWindow(e),
+    onClose: () => {
+      if (sheetWin === dlg) sheetWin = null;
+    },
+    onRaise: () => {
+      sheetWin?.root.classList.remove("front");
+      dlg.root.classList.add("front");
+    },
+  });
+  sheetWin = dlg;
+  document.body.append(dlg.root);
+  dlg.root.classList.add("front");
+  dlg.open();
+}
+
 function previewDialog(e: Entry): void {
   const f = e.file;
   if (!f) return;
+  // Excel（D303 复审）：**直接开本工程的表格浮窗**（`SheetDialog`），不另写一个简化表格。
+  // 它是浮窗不是弹窗，所以这里不等 modal。
+  if (/\.(xlsx|xlsm)$/i.test(f.name)) {
+    void openSheetWindow(e);
+    return;
+  }
   closeLayer();
   const scrim = h("div", "scrim");
   scrim.addEventListener("click", closeLayer);
@@ -1472,11 +1397,6 @@ async function fillPreview(body: HTMLElement, e: Entry): Promise<void> {
     frame.src = url;
     frame.title = f.name;
     body.append(frame);
-    return;
-  }
-  // Excel（D303）：走桥的表格只读凭据，画成一张真表；.csv 仍然按文本看。
-  if (/\.(xlsx|xlsm)$/i.test(name)) {
-    await renderSheet(body, e);
     return;
   }
   const isText = f.mime.startsWith("text/") || TEXT_EXT.test(name);

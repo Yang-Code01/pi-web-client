@@ -31,6 +31,9 @@
   --c-contacts: #5eead4;
   --c-transfers: #c4b5fd;
   --c-me: #cbd5e1;
+  /* 表格浮窗（D303 复用）要用 --vh1 / --vw1：这页没有界面缩放，就是 1% 视口。 */
+  --vh1: 1vh;
+  --vw1: 1vw;
   --r: 12px;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --dur-1: 140ms;
@@ -791,35 +794,6 @@ body.embedded .brand .nm { display: none; }
 .listhead .search { flex: 1; min-width: 0; }
 .listhead .icon-btn { width: 26px; height: 26px; }
 
-/* 表格预览（D303）：只读网格。表头与行号跟着滚，列宽不撑破弹窗。 */
-.sheettabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); }
-.sheettabs button {
-  padding: 4px 10px; border: 1px solid var(--line-soft); border-radius: 8px;
-  background: var(--panel-3); color: var(--dim); font: 11.5px var(--sans); cursor: pointer;
-}
-.sheettabs button.on { border-color: var(--accent-dim); background: var(--accent-bg); color: var(--text); }
-.sheetscroll { overflow: auto; max-height: min(64vh, 640px); }
-.sheettable { border-collapse: separate; border-spacing: 0; font: 12px var(--sans); }
-.sheettable th, .sheettable td {
-  padding: 4px 9px; border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft);
-  max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: pre;
-}
-.sheettable thead th { position: sticky; top: 0; z-index: 1; background: var(--panel-3); color: var(--faint); font: 10px var(--mono); text-align: center; }
-.sheettable tbody th { position: sticky; left: 0; z-index: 1; background: var(--panel-3); color: var(--faint); font: 10px var(--mono); text-align: right; }
-.sheettable thead th.corner { left: 0; z-index: 2; }
-.sheettable td.num { text-align: right; font-variant-numeric: tabular-nums; }
-.sheettable td.al-c { text-align: center; }
-.sheettable td.al-r { text-align: right; }
-.sheetmore { padding: 10px 12px 14px; }
-
-/* 名字编辑（D303）：我页一行输入 + 保存。 */
-.namerow { display: flex; gap: 7px; padding: 0 13px 4px; }
-.namerow input {
-  flex: 1; min-width: 0; height: 30px; padding: 0 9px;
-  border: 1px solid var(--line); border-radius: 8px;
-  background: var(--panel-3); color: var(--text); font: 12.5px var(--sans);
-}
-.namerow input:focus { outline: none; border-color: var(--accent-dim); }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

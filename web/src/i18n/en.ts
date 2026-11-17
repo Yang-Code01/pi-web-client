@@ -3592,8 +3592,6 @@ export const en: Dict = {
   "未知类型": "unknown type",
   "展开会话列表": "Expand the conversation list",
   "这个类型在这儿看不了，点「下载」用别的程序打开": "This type can't be shown here — use Download and open it with another program",
-  "再看 {p1} 行": "Show {p1} more rows",
-  "这本书里没有可看的表": "This workbook has no sheets to show",
   "备注名": "Display name",
   "备注名已改成「{p1}」": "Display name changed to “{p1}”",
   "别人看到的就是这个名字；改完会立刻广播一次。": "This is the name others see; it is broadcast again as soon as you save.",
