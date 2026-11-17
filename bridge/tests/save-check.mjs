@@ -12,8 +12,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { REPO } from "../../tools/paths.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
-const PORT = Number(process.env.PI_WEB_PORT ?? 7879);
+const PORT = Number(process.env.PI_WEB_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch/save-check");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

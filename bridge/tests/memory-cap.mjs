@@ -23,19 +23,20 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "memory-cap");
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
 const FAKE_TABLE = path.join(REPO, "bridge", "tests", "fixtures", "fake-tasklist.mjs");
 /**
- * One port per phase. A bridge started right after another one on the same port was refused the
- * bind here (EADDRINUSE, with the previous phase's sockets still around), and a test file that
- * starts five bridges should not depend on that; 7903 is the port this ticket was handed, the rest
- * are free ones next to it.
+ * One port per phase, each OS-assigned. A bridge started right after another one on the same port
+ * was refused the bind here (EADDRINUSE, with the previous phase's sockets still around), and a
+ * test file that starts five bridges should not depend on that. Picking numbers out of a hat does
+ * not survive either: 7884 is held by Trend Micro (TmListen.exe) on one machine, and 7877–8635 is
+ * a Windows reserved block on another — `listen` there fails with EACCES.
  */
-// 7884 在同一台机器上被 Trend Micro（TmListen.exe）占着，挑端口要避开这种常驻服务。
-const PORTS = { order: 7903, keepOne: 7880, protect: 7882, blindCap: 7883, blindIdle: 7906 };
+const PORTS = { order: await freePort(), keepOne: await freePort(), protect: await freePort(), blindCap: await freePort(), blindIdle: await freePort() };
 const TICK_MS = 1000;
 const TICK_WAIT = TICK_MS * 4;
 const MB = 1024 * 1024;

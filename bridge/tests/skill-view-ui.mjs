@@ -19,9 +19,10 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const PORT = Number(process.env.PI_WEB_PORT ?? 7801);
+const PORT = Number(process.env.PI_WEB_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "skill-view-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
@@ -125,16 +126,21 @@ try {
   // 回答 —— 「置灰」那条路要的正是 pi 报了、盘上没有。cwd 指向临时工程，项目里的技能才找得到。
   const SID = await new Promise((resolve, reject) => {
     const ws = new WebSocket(`${BASE.replace("http", "ws")}/ws`, { headers: { cookie } });
+    // 这个 watchdog 不清理的话，进程会在测试做完之后又干等到 60 秒才退出（实测 65 s → 11 s）。
+    const timeout = setTimeout(() => reject(new Error("create timeout")), 60000);
     ws.on("open", () => ws.send(JSON.stringify({ type: "create", cwd: PROJECT, name: SESSION_NAME })));
     ws.on("message", (b) => {
       const m = JSON.parse(b.toString());
       if (m.type === "session.state" && m.session?.name === SESSION_NAME) {
+        clearTimeout(timeout);
         resolve(m.session.id);
         ws.close();
       }
-      if (m.type === "error") reject(new Error(m.message));
+      if (m.type === "error") {
+        clearTimeout(timeout);
+        reject(new Error(m.message));
+      }
     });
-    setTimeout(() => reject(new Error("create timeout")), 60000);
   });
   log("会话已建", SID);
 

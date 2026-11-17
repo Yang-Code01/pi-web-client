@@ -15,6 +15,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -80,7 +81,7 @@ log("A. terminal-side extension");
 
 // ------------------------------------------------------------------ B. the bridge side
 log("B. bridge honours it");
-const PORT = 7906;
+const PORT = await freePort();
 const ROOT = path.join(REPO, ".scratch", "session-lock");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

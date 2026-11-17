@@ -12,12 +12,13 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const ROOT = REPO;
 const DIST = path.join(ROOT, "bridge", "dist", "index.js");
-const PORT = Number(process.env.ASK_UI_PORT ?? 7892);
+const PORT = Number(process.env.ASK_UI_PORT ?? (await freePort()));
 const STATE = path.join(ROOT, ".scratch", "ask-ui-state");
 const BASE = `http://127.0.0.1:${PORT}`;
 const OUT = path.join(ROOT, ".scratch", "shots");

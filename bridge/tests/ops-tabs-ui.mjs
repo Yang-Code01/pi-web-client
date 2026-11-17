@@ -14,7 +14,7 @@
  *   F. **老一轮**的页签也得点得动：翻回去点前面那几轮，切的是它自己那块，最后那一轮纹丝不动
  *      （`aria-selected` 与 `details.open` 一起验 —— 用户报障：前面几轮点了没反应）。
  *
- * 端口默认 7897，可用 OPS_TABS_UI_PORT 改。截图落在 .scratch/shots/ops-tabs-*.png。
+ * 端口由系统分配，可用 OPS_TABS_UI_PORT 钉住。截图落在 .scratch/shots/ops-tabs-*.png。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -22,11 +22,12 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.OPS_TABS_UI_PORT ?? 7897);
+const PORT = Number(process.env.OPS_TABS_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "ops-tabs-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

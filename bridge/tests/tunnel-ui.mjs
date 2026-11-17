@@ -11,18 +11,19 @@
  *
  *   npm run build:bridge && npm run build:web && node bridge/tests/tunnel-ui.mjs
  *
- * 端口默认 7896，`TUNNEL_UI_PORT` 可改。截图落在 .scratch/shots/tunnel-ui-*.png。
+ * 端口由系统分配，`TUNNEL_UI_PORT` 可钉住。截图落在 .scratch/shots/tunnel-ui-*.png。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.TUNNEL_UI_PORT ?? 7896);
+const PORT = Number(process.env.TUNNEL_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "tunnel-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

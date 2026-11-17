@@ -19,13 +19,14 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "create-fast");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const PI_LOG = path.join(ROOT, "fake-pi.jsonl");
-const PORT = 7905;
+const PORT = await freePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 /** 桩 pi 的「启动」时长：够长到任何「等它」的实现都会明显超时。 */
 const BOOT_MS = 4000;

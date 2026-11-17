@@ -17,11 +17,12 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "runtime-settings");
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
-const PORT = 7902;
+const PORT = await freePort();
 /** The GC tick the tests inject: the real one is 60 s, and a phase sits out a whole tick. */
 const TICK_MS = 1000;
 const TICK_WAIT = TICK_MS * 5;

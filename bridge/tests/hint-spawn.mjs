@@ -18,26 +18,16 @@
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
-import net from "node:net";
 import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
 const ROOT = path.join(REPO, ".scratch", "hint-spawn");
 const PASS = "hint-spawn-pass";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-/** 系统分配一个空闲端口：三个用例连跑，固定端口容易撞上别的探针或还没放掉的监听。 */
-const freePort = () =>
-  new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-  });
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok });

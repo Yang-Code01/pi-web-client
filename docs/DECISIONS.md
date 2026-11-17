@@ -5573,3 +5573,27 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 代价是多两个接口、多一层缓存失效判断；跨仓库的缓存不复用（键里带 repo，只在本会话内）；merge 提交的摘/回滚暂时禁用（操作卡没有 `-m` 入口，与其让人跑出一条红字，不如先说清）。没选「点行就跳到差异 tab」：那会覆盖用户当前的对照与筛选，回不去。三个候选原型留在丢弃分支 `proto/commit-detail`（`web/prototype/commit-detail.html`，`?variant=A|B|C`），不进 main。
 
 **验证：** `npm run test:githist` 里的新单元 `bridge/tests/git-commit-unit.mjs` 用真 git 仓库断言：短/全长 SHA、标题取 `%B` 首行、正文为空、根提交 `parents === []` 且对照空树、merge 报两个父且差异只列第一父侧的文件、rename 带 `old`、`onHead` / `pushed`（`update-ref refs/remotes/...` 之后才为真）、500 行正文截到 400 行、`limits.files === 300`、参数清洗（`--evil` / `../outside` / `deadbeef` 各自报对码）；另有一组「400 行文件里改 40 处不相邻的位置」断言 `hunks.total === 40`、首页 `count === 20` 且首行是 `@@` 块头、块与块之间的上下文行不出现、`from = 20` 从第 21 块起、`from = 40` 返回空页，以及「整篇 4100 行都改」时单块截到 4000 行并写明原因。`npm run test:githist:ui`（Playwright，`GITOPS_UI_PORT` 要避开 Hyper-V 保留段，本机用 8300）点一遍：行是 `role=button` 且在 Tab 序列、点开小窗且工作台还在下面、完整 40 位 SHA、父提交、自动展开第一个文本文件的并排差异、**差异里有 `@@` 块头且不是整篇文件**、高亮唯一、文件清单带增删数、点另一个文件换右侧、摘提交关窗改开操作卡且哈希预填、Enter 也能开、Esc 关掉后焦点回到那一行、点遮罩同样关、顶点提交的摘提交是禁用的。续拉另用一次性探针验过：造一个「300 行文件改在 25 处」的临时仓库，首屏 `已显示 20/25 个变更块`，滚到底自动补到 25 块、提示消失。`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）通过。
+
+## D290 测试的监听端口交给系统分配，不再在代码里记账（2026-11-17）
+
+**问题：** 135 个 `bridge/tests/*.mjs` 里有两个独立缺陷，叠在一起的表现都是「E2E 很慢、跑不完」。其一：**57 个文件把监听端口写死**（7880…7927 这些连号），而这台机器用 `netsh interface ipv4 show excludedportrange protocol=tcp` 能报出 7877–7976、7977–8076、8077–8176、8336–8435、8436–8535、8536–8635 七段保留区 —— 落在里面的 `listen` 拿到的是 **EACCES**（不是寻常的 EADDRINUSE），桥起不来、`/healthz` 永远不通，测试于是先空转 `100 × 200ms` 等它，20 秒后抛 `fetch failed`。所以这些用例不是慢，是**在这台机器上永远过不了**；报错长得不像端口问题，没人往那儿想。其二：`probes/` 里还留着一份手写的 `freePort(start)`（从给定基数往后扫），跟新做法两套实现。
+
+**决定：** 测试（`bridge/tests/`、`web/tests/`）不再声明端口的默认值，改为**问系统要**：新增 `tools/free-port.mjs` 的 `freePort()`（`net.createServer().listen(0)` 拿到内核分配的空闲端口再关掉），64 个文件统一写成 `const PORT = Number(process.env.<X>_PORT ?? (await freePort()));`，`<X>_PORT` 仍可钉死（两份并行、复现某个端口相关的 bug 时需要）。理由：系统分配的端口天然避开 Windows 的保留块与服务占用，也不会撞上上个用例留下的 `TIME_WAIT`；文件名里那个「端口的归属账本」（7887 是 history-paths、7888 是 continue…）同时删掉，因为它维护不动、也解释不了保留区。
+
+- **例外：`bridge/tests/e2e.mjs` 保持固定 7867。** 它不自己起桥，连的是「人先开好的那一份」实例；把端口交给系统只会连到没人开的端口上。`dbg*.mjs` / `browser.mjs` / `model-check.mjs` 同理，连的也是活着的实例。
+- **`hint-spawn.mjs` 里那份本地 `freePort` 副本删掉**，改从 `tools/free-port.mjs` 引 —— 同一概念不留两套实现。
+- **加守卫 `tools/port-guard.mjs`（`npm run test:ports`）**：扫 `bridge/tests/` 与 `web/tests/`，出现「端口常量 / `process.env.X ?? 数字` 兜底 / 直接 `.listen(数字)` / `startBridge({ port: 数字 })` / `PI_*_PORT: "数字"`」就报错，行尾写 `// port-guard: allow` 加理由才放行（全库只剩 `peer-e2e.mjs` 一处：它要**故意**和 B 抢同一个端口，验「另一份在跑」的退出码 2）。`probes/` 与 `port: 993` 这类纯数据不扫，宁缺勿滥。
+
+**取舍：** 端口不再可预测，日志里每次不同，靠终端里打印的那行 `listening` 找；想让用例复现「某个端口上的问题」得自己带 `<X>_PORT`。`probes/` 那 80 多个写死端口的探针**这次没管**（它们是手工脚本，逻辑上「先连活着的实例还是自己起一份」各不相同，得逐个读），也就仍然在保留区上跑不起来 —— 文档里的 `PI_WEB_PORT=` 覆盖对它们照旧有效，属于下一步。
+
+**验证：** 迁移前实测 7911 / 7901 / 7902 / 7903 / 7893 / 7891 六个端口 `listen` 全报 `EACCES`，7480 / 7481 正常。迁移后 `node bridge/tests/git-history-ui.mjs`（原 7927）与 `node bridge/tests/sysmanage-ui.mjs`（原 7918）**从「起不来」变成全绿**（56 s / 66 s）。`npm run build` 通过；`npm run test:ports` 扫 166 个文件报 ok。
+
+## D291 UI 测试里自己设的超时定时器，命中之后必须 `clearTimeout`（2026-11-17）
+
+**问题：** `bridge/tests/skill-view-ui.mjs` 整程 **65 s**，而它真正在干活只有 5 s —— 首条日志与末条日志相差 5 秒，进程却再挂 55 秒才退。原因是自己写的「等 create 回执」这类 promise 里 `setTimeout(() => reject(new Error("create timeout")), 60000)` 没有配对的 `clearTimeout`：promise 早早就 resolve 了，可那个 60 s 的 pending 定时器还挂在事件循环上，node 只能等它到期才退。同一写法在 `browser.mjs` / `model-check.mjs` / `session-flags.mjs` 里各有一份；`e2e.mjs` 的 `waitFor()` 队列是「命中就从 `waiters` 里摘掉」，可定时器同样没清。
+
+**决定：** 一律 `const timeout = setTimeout(...)` + 在 resolve 与 reject 两路都 `clearTimeout(timeout)`（`ws.on("open")` 之后才建，避免握手失败时先报别的错）；`e2e.mjs` 的 `waitFor` 在命中分支里 `clearTimeout(w.timer)`。**不是**把超时时间调小 —— 病症是「该清不清」，缩短只会把真正的等待也一起砍掉。
+
+**取舍：** 每个 ws 辅助函数多两行样板；换来的是测试进程的存活时间等于它真正干活的时间，CI 里按「整条命令跑多久」看回归也不会再有这种隐形尾巴。
+
+**验证：** 只删 `skill-view-ui.mjs:137` 那一行的副本（`.scratch/skill-ui-fast.mjs`）跑出 **11 s**；四个文件都改完后 `node bridge/tests/skill-view-ui.mjs` 稳定在 **17.5–19 s**（在 main 上是 65–67 s），末条日志与进程退出同一秒，连跑两次一致。刚 `npm run build` 完的第一次仍要 ~60 s —— 那是另一个成本：桥启动时 `pinAll()` 要扫 452 个会话，冷缓存下几十秒才回 `/healthz`，这次没动它。

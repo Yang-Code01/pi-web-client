@@ -1,6 +1,9 @@
 /**
  * End-to-end check for M1: login → sessions → create → prompt → stream → approval → abort.
- * Run against a live bridge: PI_WEB_PORT=7867 PI_WEB_STATE=... node tests/e2e.mjs
+ *
+ * This one does **not** start its own bridge — it talks to a live one, so the port stays a number you
+ * can point at an instance (`PI_WEB_PORT=7867 PI_WEB_STATE=... node tests/e2e.mjs`). An OS-assigned
+ * port here would only ever reach an instance nobody started.
  */
 import path from "node:path";
 import fs from "node:fs";
@@ -37,6 +40,7 @@ ws.on("message", (buf) => {
   for (const w of waiters.slice()) {
     if (w.pred(msg)) {
       waiters.splice(waiters.indexOf(w), 1);
+      clearTimeout(w.timer);
       w.resolve(msg);
     }
   }
@@ -45,6 +49,7 @@ const waitFor = (pred, ms = 120000, label = "event") =>
   new Promise((resolve, reject) => {
     const hit = seen.find(pred);
     if (hit) return resolve(hit);
+    // 命中之后要把定时器清掉：不 clean 的那个 timer 会把进程按到超时为止（同 60 s 尾巴）。
     const timer = setTimeout(() => {
       const i = waiters.findIndex((w) => w.timer === timer);
       if (i >= 0) waiters.splice(i, 1);
