@@ -596,35 +596,13 @@ async function main(): Promise<void> {
   };
 
   /**
-   * D301：`/api/peer/preview` 解析出来的文件路径，短时记住。
-   *
-   * 为什么要记：自己发出去的文件指向**原路径**（桌面、下载目录…），它既不在收件箱也不在会话目录里，
-   * 而 `/api/preview` 的 D50 信任检查只认 cwd / pins / 会话里提过的路径。记 30 分钟、最多 20 条，
-   * 只由桥自己写（页面递不上路径）。过期的条目在下一次 resolve 时顺手清掉。
-   */
-  const peerPreviewPaths: { path: string; at: number }[] = [];
-  const rememberPeerPreview = (abs: string): void => {
-    const now = Date.now();
-    for (let i = peerPreviewPaths.length - 1; i >= 0; i -= 1) {
-      if (now - peerPreviewPaths[i].at > 30 * 60_000) peerPreviewPaths.splice(i, 1);
-    }
-    const hit = peerPreviewPaths.find((p) => p.path === abs);
-    if (hit) hit.at = now;
-    else peerPreviewPaths.push({ path: abs, at: now });
-    while (peerPreviewPaths.length > 20) peerPreviewPaths.shift();
-  };
-
-  /**
    * D209：用户自己配的「文件就在这儿」的两处根 —— Jira 附件根（D205）与内网通收件箱（#45）。
    * 每请求现读一次：改了设置，旧目录立刻不再是可信根（不缓存路径）。
    */
   const previewPins = (): string[] => {
     const jira = readAttachmentRoot();
     const inbox = peer.view().status?.config?.inbox ?? null;
-    // D301 复审：自己发出去的文件不在收件箱里，路径由 `/api/peer/preview` 现解析出来。
-    // 只认最近 30 分钟内桥自己解析过的那几条，且是**文件**而不是目录（`isUnder` 用得上）。
-    const fresh = peerPreviewPaths.filter((p) => Date.now() - p.at < 30 * 60_000).map((p) => p.path);
-    return [jira, inbox, ...fresh].filter((root): root is string => Boolean(root));
+    return [jira, inbox].filter((root): root is string => Boolean(root));
   };
 
   // ---------------------------------------------------------------- http
@@ -1010,26 +988,16 @@ async function main(): Promise<void> {
       if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
       return json(res, 200, await openWithApp(abs));
     }
-    // 内网通的「预览」：把那份文件交给**本工程的预览面板**（页面侧收到 `peer.preview` 后调
-    // `App.openPreview()`）。与 `/api/peer/open` 的区别只在出口：那个交给系统默认程序，这个交给页面。
-    //
-    // 路径**只由桥解析**（id → peer 自己的索引），页面递不上任意路径；自己发出去的文件指向原路径，
-    // 不在收件箱里，所以这条路要把它记进 `previewPins()`，否则 `/api/preview` 的 D50 信任检查会拒。
-    if (url.pathname === "/api/peer/preview" && req.method === "POST") {
-      if (publicReq) return fail(res, 403, "preview_public", "公网不能在本机预览文件");
+    // 内网通的「打开所在位置」：让这台机器的文件管理器把那份文件选出来（D302）。
+    // 自己发的文件指向原路径、收到的在收件箱，两边都靠 peer 的文件索引解析 —— 页面递不上任意路径。
+    if (url.pathname === "/api/peer/reveal" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "reveal_public", "通过公网访问时不会在你的桌面上打开文件夹，回本机操作");
       const body = await readBody(req).catch(() => ({}));
       const abs = await peer.filePath(String(body?.id ?? ""));
       if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
-      rememberPeerPreview(abs);
-      let pages = 0;
-      for (const client of wss.clients) {
-        if (client.readyState !== WebSocket.OPEN) continue;
-        client.send(JSON.stringify({ type: "peer.preview", path: abs }));
-        pages += 1;
-      }
-      // 没有页面接住就说清楚（和 `open_preview` 工具的 no-page 一个口径）。绝对路径不回给调用方。
-      if (!pages) return json(res, 200, { ok: false, reason: "no-page", text: "没有打开着的 pi 页面，预览没处显示。" });
-      return json(res, 200, { ok: true, pages });
+      const out = revealInFileManager(abs);
+      log(`peer reveal ${abs} → ${out.ok ? "ok" : out.message}`);
+      return out.ok ? json(res, 200, out) : json(res, 400, { error: out.message });
     }
     if (url.pathname === "/api/peer/add" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));

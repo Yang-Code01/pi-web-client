@@ -2149,11 +2149,6 @@ export class App {
         this.mailConfirm.ask(reqId, frame.mail);
         break;
       }
-      case "peer.preview": {
-        // 内网通文件的「预览」：桥已经把 id 解析成收件目录里的绝对路径。
-        this.onPeerPreview(msg);
-        break;
-      }
       case "preview.open": {
         // #224: `open_preview` 工具 → 桥 → 正在看这个会话的页面，在这里落到 viewer 上。
         // 桥现在要回执才算打开（复审）：页面接住了回 ok:true，被编辑器拦下回 declined，
@@ -4761,21 +4756,6 @@ export class App {
     if (btn) {
       btn.title = n > 0 ? tr("内网通：{p1} 条未读", { p1: String(n) }) : tr("内网通：发现同一内网里的人，直接对话、传文件");
     }
-  }
-
-  /**
-   * 内网通页面点了「📄 预览」：桥把收件目录里那份文件的绝对路径发过来，交给本工程的预览面板。
-   * 收件箱本来就是 D209 的可信预览根，所以不需要额外的信任判断。
-   */
-  private onPeerPreview(msg: { path?: string }): void {
-    const path = String(msg.path ?? "");
-    if (!path) return;
-    this.closeSheet();
-    if (!this.currentId) {
-      this.warn(tr("预览面板要有一个打开的会话：先开一个会话，再从内网通点「预览」。"));
-      return;
-    }
-    void this.openPreview(path);
   }
 
   private openPeerSheet(): void {

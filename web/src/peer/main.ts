@@ -145,6 +145,7 @@ const ICONS: Record<string, string[]> = {
   close: ["M6 6l12 12", "M18 6 6 18"],
   back: ["M15 5l-7 7 7 7"],
   more: ["M5.5 12h.01", "M12 12h.01", "M18.5 12h.01"],
+  collapse: ["M9 5l7 7-7 7"],
   star: ["M12 4.2l2.3 4.9 5.2.7-3.8 3.6.9 5.3L12 16.2l-4.6 2.5.9-5.3L4.5 9.8l5.2-.7z"],
   file: ["M14 3.5H7.5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z", "M14 3.5V8h4.5"],
   folder: ["M3.5 8a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"],
@@ -202,6 +203,8 @@ const S = {
   replyTo: null as Entry | null,
   /** P4：上一次通知过的未读数，按 nodeId 记（只在页面隐藏时用来比）。 */
   unreadSeen: new Map<string, number>(),
+  /** D302：会话列表折叠（跨刷新记住），折叠后整块宽度让给对话。 */
+  listCollapsed: readFlag("peer.listCollapsed"),
 };
 
 const app = document.querySelector("#app") as HTMLElement;
@@ -245,6 +248,23 @@ let draftTimer = 0;
 // ---------------------------------------------------------------- 小工具
 
 const byteLen = (text: string): number => new TextEncoder().encode(text).length;
+
+/** localStorage 里的布尔开关：存 `"1"` / `"0"`，读写都包一层 try（隐身模式下会抛）。 */
+function readFlag(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key: string, on: boolean): void {
+  try {
+    window.localStorage.setItem(key, on ? "1" : "0");
+  } catch {
+    /* 隐身模式 */
+  }
+}
 
 /** 时间/相对时间统一走 i18n 的 fmt*：手写 toLocale* 会脱离当前语言（docs/I18N.md）。 */
 function ago(ts: number): string {
@@ -547,6 +567,13 @@ const PAGES: { id: Page; icon: string; label: string; color: string }[] = [
   { id: "me", icon: "me", label: "我", color: "var(--c-me)" },
 ];
 
+/** 折叠 / 展开会话列表：折叠后 `paintList` 不进 DOM，主区吃掉整块宽度（同一个 data-nolist）。 */
+function setListCollapsed(on: boolean): void {
+  S.listCollapsed = on;
+  writeFlag("peer.listCollapsed", on);
+  renderAll();
+}
+
 function go(page: Page): void {
   if (S.page !== page) {
     S.page = page;
@@ -614,7 +641,11 @@ function renderBar(): void {
     flags.textContent = on.join(" · ");
   }
 
-  frag.append(brand, meta, spacer, flags);
+  frag.append(brand, meta, spacer);
+  if (S.listCollapsed && S.page !== "me") {
+    frag.append(iconBtn("collapse", tr("展开会话列表"), () => setListCollapsed(false)));
+  }
+  frag.append(flags);
   if (window.self === window.top) {
     const back = h("a", "btn", tr("‹ 回 pi"));
     back.href = "/";
@@ -727,7 +758,7 @@ function renderList(): void {
 function paintList(): void {
   listEl.replaceChildren();
   // 我页没有列表：整块宽度让给右侧。光把 list 隐藏不够 —— 网格会自动补位，main 会被挤到第二列。
-  const noList = S.page === "me";
+  const noList = S.page === "me" || S.listCollapsed;
   app.dataset.nolist = noList ? "1" : "0";
   listEl.style.display = noList ? "none" : "";
   if (noList) return;
@@ -766,7 +797,9 @@ async function markRead(t: Thread): Promise<void> {
 }
 
 function renderThreadList(): void {
-  listEl.append(searchBox(tr("搜索会话")));
+  const head = h("div", "listhead");
+  head.append(searchBox(tr("搜索会话")), iconBtn("back", tr("收起会话列表"), () => setListCollapsed(true)));
+  listEl.append(head);
   const box = h("div", "listbox");
   const rows = S.threads.filter((t) => matches(t.nickname, t.hostname));
   if (!rows.length) {
@@ -1195,45 +1228,126 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
   icon.append(ic(/^image\//.test(f.mime) ? "image" : "file"));
   const body = h("div");
   body.append(h("div", "nm", f.name), h("div", "sz", sizeOf(f.size)));
-  // 文件不走 outbox（它有自己那套 token/分块/哈希），所以永远没有 receipt：
-  // 自己发的就当「已发出」，否则卡片会画成「对方发来」+「下载 / 预览」。
-  const status: string | undefined = mine ? (e.state ?? "sent") : undefined;
-  if (status) {
+  // 点卡片 = 预览（D302：预览是这页自己的弹窗，不再借主界面的面板）。
+  card.title = tr("点一下预览");
+  card.style.cursor = "pointer";
+  card.addEventListener("click", () => previewDialog(e));
+
+  const foot = h("div", "fbot");
+  const acts = h("span", "fbtns");
+  if (mine) {
+    // 文件不走 outbox（它有自己那套 token/分块/哈希），所以永远没有 receipt：
+    // 自己发的就当「已发出」。
+    const status: string = e.state ?? "sent";
     const done = status === "delivered" || status === "sent";
-    const foot = h("div", "fbot");
     foot.append(h("span", "", done ? tr("已送达") : status === "sending" ? tr("发送中…") : tr("发送失败")));
-    const acts = h("span", "fbtns");
     if (done) {
-      // 自己发的也给「预览」：索引里指向原路径，预览面板直接看那份（D301）。
-      acts.append(actBtn(tr("预览"), () => void previewFile(e)), actBtn(tr("打开"), () => void openFile(e)));
-      card.addEventListener("click", () => void previewFile(e));
+      acts.append(actBtn(tr("预览"), () => previewDialog(e)), actBtn(tr("打开所在位置"), () => void revealFile(e)));
     } else if (status === "failed") {
       acts.append(actBtn(tr("重发"), () => void resend(e)));
-      card.addEventListener("click", () => void resend(e));
     } else {
       acts.append(h("span", "act", tr("等一会")));
     }
-    foot.append(acts);
-    body.append(foot);
   } else {
-    const foot = h("div", "fbot");
-    // D209：点卡片 = 用本机程序打开收件箱里那份真文件（收件时已经落盘，不是再下载一次）。
-    card.title = tr("点一下用本机程序打开");
-    card.style.cursor = "pointer";
-    card.addEventListener("click", () => void openFile(e));
-    // 收到的文件给两颗明确的按钮（好友发的也一样）：下载到磁盘 / 用本工程的预览面板看。
-    const acts = h("span", "fbtns");
+    foot.append(h("span", "", tr("对方发来")));
     const dl = h("a", "act", tr("下载"));
     dl.href = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
     dl.download = f.name;
     dl.rel = "noopener";
     dl.addEventListener("click", (ev) => ev.stopPropagation());
-    acts.append(actBtn(tr("预览"), () => void previewFile(e)), dl);
-    foot.append(h("span", "", tr("对方发来")), acts);
-    body.append(foot);
+    acts.append(actBtn(tr("预览"), () => previewDialog(e)), dl, actBtn(tr("打开所在位置"), () => void revealFile(e)));
   }
+  foot.append(acts);
+  body.append(foot);
   card.append(icon, body);
   return card;
+}
+
+/** 卡片右下角那颗小按钮：统一 `<button class="act">`，点它不要连累整张卡片的点击。 */
+function actBtn(label: string, run: () => void): HTMLButtonElement {
+  const b = h("button", "act", label);
+  b.type = "button";
+  b.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    run();
+  });
+  return b;
+}
+
+/** 「打开所在位置」：让这台机器的文件管理器把它选出来（macOS 是 Finder 里的 `open -R`）。 */
+async function revealFile(e: Entry): Promise<void> {
+  try {
+    await postJson("/api/peer/reveal", { id: e.id });
+  } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
+/** 文本类后缀：这些即使 mime 是 application/octet-stream 也当文本预览。 */
+const TEXT_EXT = /\.(md|markdown|txt|log|json|ya?ml|toml|ini|csv|ts|tsx|js|jsx|mjs|css|html?|xml|py|go|rs|java|c|h|cpp|sh|bash|zsh|bat|ps1|diff|patch|sql|conf|env)$/i;
+
+/**
+ * 预览弹窗（D302）。**不再借主界面的预览面板**：那个要一个打开的会话、还会把内网通弹层关掉，
+ * 看一张截图不值当。这里按类型自己画：图片 `<img>`、PDF `<iframe>`、文本 `<pre>`，
+ * 其余说清楚「点下载」。
+ */
+function previewDialog(e: Entry): void {
+  const f = e.file;
+  if (!f) return;
+  closeLayer();
+  const scrim = h("div", "scrim");
+  scrim.addEventListener("click", closeLayer);
+  const modal = h("div", "modal preview");
+  const head = h("header");
+  head.append(h("strong", "nm", f.name), iconBtn("close", tr("关掉预览"), closeLayer));
+  const meta = h("div", "meta");
+  meta.append(h("span", "", `${sizeOf(f.size)} · `), h("span", "", f.mime || tr("未知类型")));
+  const body = h("div", "body");
+  modal.append(head, meta, body);
+  layerEl.append(scrim, modal);
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key !== "Escape") return;
+    document.removeEventListener("keydown", onKey, true);
+    closeLayer();
+  };
+  document.addEventListener("keydown", onKey, true);
+  void fillPreview(body, e);
+}
+
+async function fillPreview(body: HTMLElement, e: Entry): Promise<void> {
+  const f = e.file!;
+  const url = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
+  const name = f.name.toLowerCase();
+  if (/^image\//.test(f.mime)) {
+    const img = h("img");
+    img.src = url;
+    img.alt = f.name;
+    body.append(img);
+    return;
+  }
+  if (f.mime === "application/pdf" || name.endsWith(".pdf")) {
+    const frame = h("iframe");
+    frame.src = url;
+    frame.title = f.name;
+    body.append(frame);
+    return;
+  }
+  const isText = f.mime.startsWith("text/") || TEXT_EXT.test(name);
+  if (!isText) {
+    body.append(h("div", "none", tr("这个类型在这儿看不了，点「下载」用别的程序打开")));
+    return;
+  }
+  if (f.size > 2 * 1024 * 1024) {
+    body.append(h("div", "none", tr("太大了（{p1}），点「下载」再看", { p1: sizeOf(f.size) })));
+    return;
+  }
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    body.append(h("pre", "", await res.text()));
+  } catch (err) {
+    body.append(h("div", "none", tr("读不出来：{p1}", { p1: (err as Error).message })));
+  }
 }
 
 /** 引用条（P3）：换会话会重建，引用 / 取消引用只重画这一条。 */
@@ -1366,39 +1480,6 @@ async function send(): Promise<void> {
   } finally {
     S.sending = false;
     if (sendBtn) sendBtn.disabled = false;
-  }
-}
-
-/** 卡片右下角那颗小按钮：统一 `<button class="act">`，点它不要连累整张卡片的点击。 */
-function actBtn(label: string, run: () => void): HTMLButtonElement {
-  const b = h("button", "act", label);
-  b.type = "button";
-  b.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    run();
-  });
-  return b;
-}
-
-/** D209：用本机程序打开收件箱里那份（自己发的 = 原文件）。 */
-async function openFile(e: Entry): Promise<void> {
-  try {
-    await postJson("/api/peer/open", { id: e.id });
-  } catch (err) {
-    toast(tr("打不开这个文件：{p1}", { p1: String((err as Error)?.message ?? err) }));
-  }
-}
-
-/**
- * 收件箱里那份文件交给**本工程的预览面板**（桥的 `/api/peer/preview` → WS `peer.preview` →
- * 主页面 `onPeerPreview()`）。内网通是弹层里的 iframe，所以这里只管把 id 递出去。
- */
-async function previewFile(e: Entry): Promise<void> {
-  try {
-    const res = await postJson<{ ok?: boolean; text?: string }>("/api/peer/preview", { id: e.id });
-    if (res?.ok === false) toast(res.text || tr("预览没打开"));
-  } catch (err) {
-    toast((err as Error).message);
   }
 }
 
