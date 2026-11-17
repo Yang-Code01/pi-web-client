@@ -331,7 +331,8 @@ export class History {
         nickname,
         hostname: known?.hostname ?? "",
         port: known?.port ?? 0,
-        online: isGroupConv(conv) ? true : byId.has(target),
+        // 群：有成员在线才算「有成员在线」，否则头栏会一直骗人说在线。
+        online: isGroupConv(conv) ? (group?.members ?? []).some((m) => byId.has(m.nodeId)) : byId.has(target),
         last,
         lastAt: last?.at ?? 0,
         count: msgs.length,

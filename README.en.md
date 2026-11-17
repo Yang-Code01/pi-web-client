@@ -39,7 +39,7 @@ The LAN page (内网通) is another face of the same window: who is online, clic
 
 | Online list: multicast discovery, manual address as a fallback | Conversation: text, files, delivery receipts, `🤖 sent by agent` |
 | --- | --- |
-| ![LAN online](docs/shots/peer-online.png) | ![LAN chat](docs/shots/peer-agent.png) |
+| ![LAN group chat](docs/shots/peer-online.png) | ![LAN chat](docs/shots/peer-agent.png) |
 
 Interface language (the "Appearance & language" panel; switching is instant, and Japanese gets its own font stack rather than simplified-Chinese glyphs):
 

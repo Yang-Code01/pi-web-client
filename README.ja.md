@@ -39,7 +39,7 @@ LAN（内网通）は同じ窓のもう一つの面です。誰がオンライ�
 
 | オンライン一覧：マルチキャストで発見、手入力アドレスで代替 | 会話：テキスト、ファイル、配達確認、`🤖 agent が代送` |
 | --- | --- |
-| ![LAN オンライン](docs/shots/peer-online.png) | ![LAN の会話](docs/shots/peer-agent.png) |
+| ![LAN のグループ会話](docs/shots/peer-online.png) | ![LAN の会話](docs/shots/peer-agent.png) |
 
 UI の言語（「外観と言語」パネル。切り替えは即時で、日本語には専用のフォントスタックを使います——簡体字の字形を流用しません）：
 

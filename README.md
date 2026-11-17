@@ -39,7 +39,7 @@
 
 | 在线列表：组播发现 + 手动地址兜底 | 对话：文字、文件、送达回执、`🤖 agent 代发` |
 | --- | --- |
-| ![内网通在线](docs/shots/peer-online.png) | ![内网通对话](docs/shots/peer-agent.png) |
+| ![内网通群聊](docs/shots/peer-online.png) | ![内网通对话](docs/shots/peer-agent.png) |
 
 界面语言（「外观与语言」面板，切换即时生效；日文有自己的字体栈，不是拿简体字形硬凑）：
 
