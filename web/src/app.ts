@@ -13248,18 +13248,21 @@ export class App {
     name.title = `${p.source}${p.path ? `\n${p.path}` : ""}`;
     // While the registries are being asked, an unchanged row is 「检查中」 — not 「最新」, which it
     // only knows after the answer comes back.
-    const tag = p.update
-      ? tr("可更新到 {p1}", { p1: p.latest ?? "" })
-      : p.origin === "local"
-        ? tr("本地")
-        : p.checkError
-          ? tr("没查到最新版")
-          : p.pinned
-            ? ""
-            : this.extCheckLoading
-              ? tr("检查中…")
-              : tr("最新");
-    row.append(name, el("span", `login-status${p.update ? " warn" : p.origin !== "local" && !p.checkError && !p.pinned && !this.extCheckLoading ? " ok" : ""}`, tr("{p1}{p2}", { p1: p.scope === "project" ? tr("项目 · ") : "", p2: tag })));
+    const tag = p.disabled
+      ? tr("已停用") + (p.alsoEnabled ? (p.scope === "project" ? tr(" · 全局仍在加载") : tr(" · 项目里仍启用")) : "") + (p.update ? tr(" · 可更新到 {p1}", { p1: p.latest ?? "" }) : "")
+      : p.update
+        ? tr("可更新到 {p1}", { p1: p.latest ?? "" })
+        : p.origin === "local"
+          ? tr("本地")
+          : p.checkError
+            ? tr("没查到最新版")
+            : p.pinned
+              ? ""
+              : this.extCheckLoading
+                ? tr("检查中…")
+                : tr("最新");
+    const idx = p.update ? " warn" : !p.disabled && p.origin !== "local" && !p.checkError && !p.pinned && !this.extCheckLoading ? " ok" : "";
+    row.append(name, el("span", `login-status${idx}`, tr("{p1}{p2}", { p1: p.scope === "project" ? tr("项目 · ") : "", p2: tag })));
     const acts = el("div", "login-acts");
     if (p.update) {
       const label = this.opLabel(key, tr("更新中…"));
@@ -13268,6 +13271,13 @@ export class App {
       up.onclick = () => this.piCli({ op: "pkg.update", target: this.pkgRef(p) }, key);
       acts.append(up);
     }
+    // 停用 keeps the package installed and updatable; it only stops pi from loading anything from it,
+    // so the user can put an extension aside without losing the entry or its filters (#469).
+    const tk = this.opLabel(key, p.disabled ? tr("启用中…") : tr("停用中…"));
+    const tg = el("button", "btn", tk ?? (p.disabled ? tr("启用") : tr("停用"))) as HTMLButtonElement;
+    tg.disabled = ro || Boolean(tk);
+    tg.onclick = () => this.extWrite({ type: "pkg.toggle", scope: p.scope, source: p.source, enable: p.disabled }, key);
+    acts.append(tg);
     const armed = this.extArm?.key === key;
     // While this row's own operation runs, its other buttons wait too — but they keep their own
     // label (a 卸载 button saying 「更新中…」 would be a lie), and no other row is affected.
@@ -17991,6 +18001,10 @@ interface ExtPackage {
   latest: string | null;
   update: boolean;
   checkError?: string;
+  /** 停用 = still installed, pi loads nothing from it (#469). */
+  disabled: boolean;
+  /** A project entry of the same source would load it anyway — only set on a stopped user row. */
+  alsoEnabled: boolean;
 }
 interface ExtLoose {
   id: string;

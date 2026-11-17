@@ -13,7 +13,9 @@ import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const PORT = 7912;
+// Overridable: on Windows the default can sit inside a Hyper-V excluded port range (netsh
+// interface ipv4 show excludedportrange protocol=tcp), where listen() fails with EACCES.
+const PORT = Number(process.env.PI_TEST_PORT) || 7912;
 const ROOT = path.join(REPO, ".scratch", "ext-manager");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
@@ -34,6 +36,8 @@ process.env.PI_WEB_STATE = STATE;
 process.env.PI_AGENT_DIR = AGENT;
 const market = await import("../dist/market.js");
 const extmgr = await import("../dist/extmgr.js");
+const pisettings = await import("../dist/pisettings.js");
+const { resolvePi } = await import("../dist/pi.js");
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let failed = false;
@@ -130,6 +134,37 @@ await Promise.all([
   }),
 ]);
 check(afterFail, "a failed write does not stall the queue");
+
+// ------------------------------------------------------------------ A2. package entries (#469)
+log("A2. package entries: 停用 / 启用");
+const pkgs = await import("../dist/pkgs.js");
+const picli = await import("../dist/picli.js");
+const json = (v) => JSON.stringify(v);
+check(pkgs.entrySource("npm:x") === "npm:x" && pkgs.entrySource({ source: "npm:x", autoload: false }) === "npm:x", "both entry forms name the source");
+check(!pkgs.disabledEntry("npm:x") && pkgs.disabledEntry({ source: "npm:x", autoload: false }), "a plain string loads; autoload:false does not");
+check(!pkgs.disabledEntry({ source: "npm:x", skills: ["+a"] }), "a filter is not a disable (the package still loads what it keeps)");
+// 停用 keeps the filters the user wrote, so 启用 gives them back character for character.
+const filtered = { source: "npm:x", skills: ["+a"], prompts: [] };
+check(json(pkgs.disableEntry(filtered)) === json({ source: "npm:x", skills: ["+a"], prompts: [], autoload: false }), `停用 keeps the user's filters (${json(pkgs.disableEntry(filtered))})`);
+check(json(pkgs.enableEntry({ source: "npm:x", skills: ["+a"], prompts: [], autoload: false })) === json({ source: "npm:x", skills: ["+a"] }), "启用 keeps the filters, drops autoload and the emptied lists");
+check(pkgs.enableEntry({ source: "npm:x", autoload: false }) === "npm:x", "nothing left but the source → back to the plain string, like pi config does");
+check(pkgs.enableEntry("npm:x") === "npm:x" && json(pkgs.disableEntry(pkgs.disableEntry(filtered))) === json(pkgs.disableEntry(filtered)), "both directions are idempotent");
+check(pkgs.findEntry(["a", { source: "b", autoload: false }], "b") === 1 && pkgs.findEntry(["a"], "b") === -1, "entries are found by their source");
+// Either list can keep a source loading: a project entry replaces the global one, and a 停用的 project
+// entry still loads while the global one is on — so each side asks about the other.
+check(
+  pkgs.loadedByList(["npm:x"], "npm:x") === true &&
+    pkgs.loadedByList([{ source: "npm:x", autoload: false }], "npm:x") === false &&
+    pkgs.loadedByList([], "npm:x") === false,
+  "the other scope's own entry decides whether a 停用的 package is still loaded",
+);
+check(pkgs.settingsScopeFor("user") === "global" && pkgs.settingsScopeFor("project") === "project" && pkgs.settingsScopeFor(undefined) === "global", "the settings file a toggle writes has one mapping");
+// `pi list` tags any object entry ` (filtered)`; that suffix must not leak into the source we run `pi` with.
+const listed = "User packages:\n  npm:x (filtered)\n    /tmp/x\n  npm:y\n    /tmp/y\n";
+check(
+  json(picli.parsePackages(listed)) === json([{ scope: "user", source: "npm:x", path: "/tmp/x" }, { scope: "user", source: "npm:y", path: "/tmp/y" }]),
+  `pi list's « (filtered) » suffix does not end up in the source (${json(picli.parsePackages(listed))})`,
+);
 
 // ------------------------------------------------------------------ B. bridge
 log("B. bridge");
@@ -231,6 +266,49 @@ try {
   check(mcp && typeof mcp.version.latest === "string" && mcp.version.latest !== "0.0.1", `MCP version check reached npm for the pinned server (${JSON.stringify(mcp?.version)})`);
   check(mcp?.version.update === true, "newer release found on npm → update offered");
   check(typeof inv.updates === "number", `update count ${inv.updates}`);
+
+  // 停用 / 启用 a package (#469): pi's own `autoload: false` form — nothing is uninstalled, and the row
+  // says so; 启用 puts the entry back exactly as it was.
+  const s0 = JSON.parse(fs.readFileSync(path.join(AGENT, "settings.json"), "utf8"));
+  check(s0.packages?.every((p) => typeof p === "string"), `fixture starts with plain string entries (${json(s0.packages)})`);
+  check(inv.packages.every((p) => p.disabled === false && p.alsoEnabled === false), "every package starts enabled");
+  await a.ask({ type: "pkg.toggle", reqId: "t1", scope: "user", source: pkg.source, enable: false }, (m) => m.type === "ext.changed" && m.what === "package", "pkg off");
+  const s1p = JSON.parse(fs.readFileSync(path.join(AGENT, "settings.json"), "utf8"));
+  check(json(s1p.packages) === json([{ source: pkg.source, autoload: false }]), `停用 wrote pi's own delta form, nothing else (${json(s1p.packages)})`);
+  inv = await a.ask({ type: "ext.inventory", check: false }, (m) => m.type === "ext.inventory" && m.mcpReady, "inventory after off");
+  const offRow = inv.packages?.find((p) => p.source === pkg.source);
+  check(offRow?.disabled === true && offRow?.name === "demo-pkg" && offRow?.version === "1.2.3", `停用 keeps the row (still installed, still v1.2.3, ${json(offRow)})`);
+  check(offRow?.source === pkg.source, `…and its source is not polluted by pi list's « (filtered) » (${offRow?.source})`);
+  check(offRow?.alsoEnabled === false, "a user-scope 停用 with no project entry is not still loaded elsewhere");
+  // Q5: a project entry of the same source replaces the user entry, so the user row must say it is
+  // still loaded here — a row that just said 「已停用」 would be a lie.
+  fs.mkdirSync(path.join(ROOT, ".pi"), { recursive: true });
+  fs.writeFileSync(path.join(ROOT, ".pi", "settings.json"), JSON.stringify({ packages: [pkg.source] }, null, 2));
+  const dual = await a.ask({ type: "ext.inventory", check: false, cwd: ROOT }, (m) => m.type === "ext.inventory" && m.mcpReady, "inventory with a project entry");
+  const dualUser = dual.packages?.find((p) => p.scope === "user" && p.source === pkg.source);
+  check(dualUser?.disabled === true && dualUser?.alsoEnabled === true, `user 停用 + project entry → still loaded here (${json(dualUser)})`);
+  // `pi list` collapses a project entry into the user row (one line per source), so the project's
+  // say-so only shows up through `alsoEnabled` above.
+  check(dual.packages?.filter((p) => p.source === pkg.source).length === 1, "pi list 还是只给一行（项目条目并进 user 行）");
+  fs.rmSync(path.join(ROOT, ".pi", "settings.json"));
+  await a.ask({ type: "pkg.toggle", reqId: "t2", scope: "user", source: pkg.source, enable: true }, (m) => m.type === "ext.changed" && m.what === "package", "pkg on");
+  const s2p = JSON.parse(fs.readFileSync(path.join(AGENT, "settings.json"), "utf8"));
+  check(json(s2p.packages) === json([pkg.source]), `启用 collapsed back to the plain string (${json(s2p.packages)})`);
+  // A project row's 停用 writes that project's own settings.json — same button, scope follows the row.
+  // pi refuses to write an untrusted project, so the first attempt must say why (and write nothing).
+  fs.mkdirSync(path.join(ROOT, ".pi"), { recursive: true });
+  fs.writeFileSync(path.join(ROOT, ".pi", "settings.json"), JSON.stringify({ packages: [pkg.source] }, null, 2));
+  const untrusted = await a.ask({ type: "pkg.toggle", reqId: "t4", scope: "project", source: pkg.source, enable: false, cwd: ROOT }, (m) => m.type === "ext.error", "project pkg off, untrusted");
+  check(/信任/.test(untrusted.message) && json(JSON.parse(fs.readFileSync(path.join(ROOT, ".pi", "settings.json"), "utf8")).packages) === json([pkg.source]), `没被信任的项目拒绝写，并说清楚原因（${untrusted.message}）`);
+  const { cli: piCliPath } = resolvePi();
+  const trustOptions = (await pisettings.trustInfo(piCliPath, ROOT)).options;
+  await pisettings.setTrust(piCliPath, ROOT, trustOptions.findIndex((o) => o.trusted));
+  await a.ask({ type: "pkg.toggle", reqId: "t5", scope: "project", source: pkg.source, enable: false, cwd: ROOT }, (m) => m.type === "ext.changed" && m.what === "package", "project pkg off");
+  const pj = JSON.parse(fs.readFileSync(path.join(ROOT, ".pi", "settings.json"), "utf8"));
+  check(json(pj.packages) === json([{ source: pkg.source, autoload: false }]), `项目 scope 的停用写在项目自己的 settings.json 里（${json(pj.packages)}）`);
+  fs.rmSync(path.join(ROOT, ".pi"), { recursive: true, force: true });
+  const badToggle = await a.ask({ type: "pkg.toggle", reqId: "t3", scope: "user", source: "npm:not-installed", enable: false }, (m) => m.type === "ext.error", "pkg off unknown");
+  check(/packages/.test(badToggle.message) && json(JSON.parse(fs.readFileSync(path.join(AGENT, "settings.json"), "utf8")).packages) === json([pkg.source]), `a source that is not in packages is refused, nothing written (${badToggle.message})`);
 
   // disable / enable a built-in and the loose extension — D113: fired together, the lock keeps both.
   const off1 = a.ask({ type: "ext.toggle", id: "builtin:codemode", scope: "builtin", how: "builtin", enable: false }, (m) => m.type === "ext.changed" && m.id === "builtin:codemode", "toggle builtin");

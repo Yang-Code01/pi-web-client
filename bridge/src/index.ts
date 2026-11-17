@@ -75,7 +75,8 @@ import { actOnFailure, emptyLedger, mergeFailures, readLedger, undoFailures, typ
 import { allowRemind, reminderText, reviewPrompt } from "./lessons.ts";
 import { deleteRule, markReviewed, readRules, setRule } from "./rules.ts";
 import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, type McpInstallOption } from "./market.ts";
-import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
+import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, togglePackage, updateCount, writeUiPrefs } from "./extmgr.ts";
+import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
@@ -3076,6 +3077,7 @@ async function main(): Promise<void> {
             return;
           }
           case "ext.toggle":
+          case "pkg.toggle":
           case "mcp.toggle":
           case "mcp.bump":
           case "mcp.install": {
@@ -3104,10 +3106,18 @@ async function main(): Promise<void> {
                 const scope = msg.scope === "project" ? "project" : msg.scope === "builtin" ? "builtin" : "user";
                 // Built-ins live in the *global* settings.json, exactly like user extensions
                 // (toggleExtension maps them there), so the lock is named after the file, not the scope.
-                await writeLock(`settings:${scope === "project" ? "project" : "global"}`, () =>
+                await writeLock(`settings:${settingsScopeFor(scope)}`, () =>
                   toggleExtension(pi.cli, { id: String(msg.id ?? ""), scope, how: String(msg.how ?? "") }, msg.enable === true, msg.cwd ? String(msg.cwd) : null),
                 );
                 send({ type: "ext.changed", what: "extension", id: msg.id });
+              } else if (msg.type === "pkg.toggle") {
+                const scope = msg.scope === "project" ? "project" : "user";
+                // Same file as an extension toggle when the scope is project, so the lock is named
+                // after the file it writes (see the ext.toggle comment above) — one mapping, in pkgs.ts.
+                await writeLock(`settings:${settingsScopeFor(scope)}`, () =>
+                  togglePackage(pi.cli, { scope, source: String(msg.source ?? "") }, msg.enable === true, msg.cwd ? String(msg.cwd) : null),
+                );
+                send({ type: "ext.changed", what: "package", id: msg.source });
               } else if (msg.type === "mcp.toggle") {
                 const file = String(msg.file ?? "");
                 await writeLock(`mcp:${file}`, async () => toggleMcp(file, String(msg.name ?? ""), msg.enable === true));

@@ -115,7 +115,10 @@ export function parsePackages(out: string): PackageRow[] {
     const src = /^ {2}(\S.*)$/.exec(line);
     const loc = /^ {4}(\S.*)$/.exec(line);
     if (loc && rows.length && rows[rows.length - 1].path === null) rows[rows.length - 1].path = loc[1].trim();
-    else if (src && !line.startsWith("    ")) rows.push({ scope, source: src[1].trim(), path: null });
+    // pi prints any object entry — a filtered one, and one 停用 wrote with `autoload: false` — with a
+    // trailing " (filtered)". It is a label, not part of the source: kept, it would be handed back to
+    // `pi update` / `pi remove` as `npm:x (filtered)` and match nothing.
+    else if (src && !line.startsWith("    ")) rows.push({ scope, source: src[1].trim().replace(/ \(filtered\)$/, ""), path: null });
   }
   return rows;
 }
