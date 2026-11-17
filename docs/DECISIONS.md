@@ -5554,7 +5554,6 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 记录器仍是主来源（`event` > `poll` > `log` > `start`，D246）；4624 只是把「历史」这一层从 0 条变成有数据。代价：一次解锁可能产生 2 条重复 4624（login_audit 的注释记了本机这个现象），靠 `dedupeEvents` 的同 kind 5 秒合并吃掉；RDP 连进来算到岗（「连上就开始干活」更贴工时口径，但有人可能不认同）；换账号后只看得到当前账号的历史；回填得到的历史只有上班时刻准、下班时刻是推的。
 
 **验证：** `node bridge/tests/workclock-unit.mjs` 新增用例断言生成脚本含 `Id=4624,4800,4801`、`@(2,7,10,11,12,13)`、XML 取值、当前用户过滤、`-MaxEvents 50000`，且 `LOGON_UNLOCK_TYPES` 不含 3/4/5；PowerShell 解析器（`[Parser]::ParseFile`，用 `.scratch/parse-check.ps1`）对生成脚本报 0 错；**真机回填条数未自动验证** —— 要弹一次 UAC，留给用户点「导入历史」确认。
-
 ## D289 历史里点一条提交弹详情小窗，形状是「主从双栏」（用户要求 2026-11-17）
 
 **问题：** 分支工作台的「历史」里，一行只有短 SHA、标题、作者时间，想知道这条提交到底改了什么，只能去命令行 `git show`，或者切到「差异」页把对照设成这条提交 —— 后者会丢掉当前对照、也不显示提交说明与提交元信息。用户要求：点提交履历能弹出一个小 dialog 看详细信息，关掉后回到分支管理的 dialog。
@@ -5574,7 +5573,118 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 
 **验证：** `npm run test:githist` 里的新单元 `bridge/tests/git-commit-unit.mjs` 用真 git 仓库断言：短/全长 SHA、标题取 `%B` 首行、正文为空、根提交 `parents === []` 且对照空树、merge 报两个父且差异只列第一父侧的文件、rename 带 `old`、`onHead` / `pushed`（`update-ref refs/remotes/...` 之后才为真）、500 行正文截到 400 行、`limits.files === 300`、参数清洗（`--evil` / `../outside` / `deadbeef` 各自报对码）；另有一组「400 行文件里改 40 处不相邻的位置」断言 `hunks.total === 40`、首页 `count === 20` 且首行是 `@@` 块头、块与块之间的上下文行不出现、`from = 20` 从第 21 块起、`from = 40` 返回空页，以及「整篇 4100 行都改」时单块截到 4000 行并写明原因。`npm run test:githist:ui`（Playwright，`GITOPS_UI_PORT` 要避开 Hyper-V 保留段，本机用 8300）点一遍：行是 `role=button` 且在 Tab 序列、点开小窗且工作台还在下面、完整 40 位 SHA、父提交、自动展开第一个文本文件的并排差异、**差异里有 `@@` 块头且不是整篇文件**、高亮唯一、文件清单带增删数、点另一个文件换右侧、摘提交关窗改开操作卡且哈希预填、Enter 也能开、Esc 关掉后焦点回到那一行、点遮罩同样关、顶点提交的摘提交是禁用的。续拉另用一次性探针验过：造一个「300 行文件改在 25 处」的临时仓库，首屏 `已显示 20/25 个变更块`，滚到底自动补到 25 块、提示消失。`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）通过。
 
-## D290 上下文里的 system 段换成可读化视图，先看数据再定形状（用户要求 2026-11-17）
+## D290 工作区按天插位：新建 / 首见的组落在「同一天那一档」的末尾（用户要求 2026-11-17）
+
+**问题：** 组的先后只有一份 `order`，而 `create / createDir / resolve` 都把它**追加到末尾**（D168 定的）。结果：今天新建的两个工程排在一堆三个月没动过的工程后面；启动时补出来的组也一样。用户要的是「按最后一次更新排，以天为单位」——前两个今天有更新的在上面，后面两个今天没更新，今天新建的就该排第三，而不是第五。
+
+**决定：**
+
+- **只有一个插入规则**：新出现的组（显式新建、按目录新建、`resolve` 启动补组）**只在出现的那一刻**插一次 —— 插到 `order` 里第一个「比它旧」的组之前，也就是同一天这一档的末尾；等于 `order` 里没有任何更旧的组时落到末尾。已有组命中就不动顺序（`createDir` 返回 `created:false` 时尤其）。
+- **组的天 = 组内可见会话的最新 `updatedAt`**（含子会话；归档与随手问不算 —— 归档是全局分区，不进任何工作区）。**一个会话都没有的空组按最旧算**，排在当天档的末尾而不是冒充「刚刚更新」。
+- **天是本地日历日**（`dayKey()` → `yyyymmdd`），不是「多少小时以内」：跨零点就该换档，与左栏分组用的是同一个口径。
+- **比较的是 `order` 里组的「最近更新天」，锚点只有新建那一下用**：`insertByDay(order, id, anchorDay, dayOf)` 是纯函数，`Workspaces` 只负责把它接到 `create / createDir / resolve` 上；`groupFor` 的调用方（开新会话 / 接管终端会话）也带上同一个 `place`，否则那两处新建的组又会跑到末尾。
+- **新建之后要能看见它**：横排在可见段就滚到那一颗，被折叠进 ＋N 就把 ＋N 标亮（**不自动展开下拉** —— 空组紧接着要开全屏的「新会话」弹层，展开了也看不见）；左栏展开并滚到组头、闪一下；空组直接把「开新会话」摆出来并预填目录，位置写进弹层标题下（「已建在 X，横条第 N 位」/「已建在 X，收在 ＋N 里（第 M 位）」）。
+- **新建工作区的目录输入框与文件管理器同一种**：`mountDirPicker(..., { pathBox: true })`，粘绝对路径即可定位，不新写一套目录浏览。
+
+**取舍：** 代价是「一次插入」之后顺序就归 `order`，用户手动拖过的顺序不会被下一次更新打乱 —— 这是有意的：自动重排会把人刚整理好的横条又搅一次。没做「按最近活动整体重排」，因为那会让横条上的位置天天变、肌肉记忆失效（D168 的理由仍然成立）。`dayMap()` 每次要扫一遍会话元数据（只读缓存，不跑 git），`list()` 里按帧记忆一次；`Workspaces` 的状态写会重放两遍，所以 `dayOf` 必须是纯读。
+
+**验证：** `bridge/tests/wsorder-unit.mjs`（11 条：本地日切、同档末尾、空 order、手动拖乱的顺序上再插、稳定性）、`bridge/tests/workspace-unit.mjs`（41 条，其中 5 条新的：`createDir` 带 place 插到旧组前、命中已有组不动顺序、不带 place 仍追加、手建组按天、`resolve` 按 `cwdDay`）、`bridge/tests/sessions-day-order.mjs`（5 条：真会话文件 + mtime，今天档末尾 / 子会话算今天 / 空组最旧 / 归档不计 / 再次看到顺序不变）、`web/tests/wstabs-unit.mjs`（47 条，6 条新的 `birthReveal()`：可见段第几颗、被折叠时 ＋N 里的序号、不在横条）。`npm run typecheck`、`npm run build` 通过。
+
+## D290 新建工作区按天插位，建完在横条与左栏都指得出它在哪（用户要求 2026-11-17，issue #478）
+
+**问题：** `order` 一直是「新组追加到末尾」，于是今天新建的组被排到几个月没动的旧组后面；横条名额满了它直接进 ＋N，看起来像没建成；按目录建完组是空的，还得自己再点一次新会话。
+
+**决定：**
+
+- **组的天 = 组内可见会话（含子会话）的最大 `updatedAt`**；空组算最旧（`-Infinity`）。归档是全局分区、不进任何工作区，随手问也不在列表里，两者都不计。
+- **新建组落在「今天这一档的末尾」**：插到第一个更旧的组之前（`insertByDay`）。只在出现那一刻插一次，之后归 `order` 管，拖动 / 删除不再重排；命中已有组不动顺序。显式 `ws.create`、按目录 `ws.create.dir`、启动补组 `resolveWorkspaces` 三条路都按这条走。
+- **补组的锚点用 `cwdDay(cwd)`**（该目录下会话的最大活动日），取不到才用启动当天 —— 启动补出来的旧工程不会被当成「今天新建的」顶到前面。
+- **建完四件套**：横排滚到它；被折叠时标亮 ＋N 但**不自动展开**（新会话弹层是全屏遮罩，展开了也看不见）；左栏展开并滚到、组头闪一下；位置写进新会话弹层的说明里（「横条第 N 位」/「收在 ＋N 里（第 M 位）」）。
+- **空组建完直接开「开新会话」并预填目录**；取消就停在原会话，不回滚、不留一个空对话。
+- **「新建工作区」对话框加 `pathBox: true`**，与文件管理器同一行输入框（贴绝对路径回车即定位）。
+
+**取舍：** 天的粒度是**本地时区的日**（`dayKey = 年*10000+(月+1)*100+日`）。同一天内的先后沿用 `order` 里原有次序，不按小时排 —— 按小时排会让「今天的组」每来一个新会话就跳到最前，位置不稳。`dayOf` 必须纯读（`StateFile.update()` 会在缓存上跑一遍、读盘后重放一遍，两次结果要一致），所以 `SessionManager.dayMap()` 只查缓存与 `discover()`，不建组、不跑 git；`place()` 返回前把 `dayMap()` 算成一回，避免 `insertByDay` 对每一项回调时重扫全部会话。
+
+**验证：** `node bridge/tests/wsorder-unit.mjs`（11 通过）、`node bridge/tests/workspace-unit.mjs`（41，含 5 个 #478 用例）、`node bridge/tests/sessions-day-order.mjs`（5，真会话文件 + `utimesSync` 控 mtime）、`node web/tests/wstabs-unit.mjs`（47，含 6 个 `birthReveal` 用例）；`npm run typecheck`、`npm run build` 通过。
+
+## D291 考勤做成「本机管理」第六页，OA 形状全部搬进 config，密码用 DPAPI（用户要求 2026-11-17）
+
+**问题：** 用户所在公司的考勤/OA 系统要把「我的考勤」和「加班申请」搬进 pi-web 的本机管理里。这套系统是内网私有部署，接口形状是它自己的（`token` 头、`query_type` 四种模式、加班申请要两级审批人 id），而上游是开源项目 —— 任何公司标识、域名、工号都不能进仓库。
+
+**决定：**
+
+- **独立第六页，不动「上下班」。** `web/src/sysmanage.ts` 的 `SysSection` 加 `"attendance"`。已有的「上下班」是拿 Windows 解锁事件算本机工时（D246/D288），与公司考勤是两套账，混在一起会让人以为在核对同一件事。
+- **页面只认字段名，不认字段含义。** `config.json` 里存 `apiBase` / `pageBase` / `account` / `endpoints{login,records,overtimeInit,overtimeAdd,overtimeCancel,leaders}` / `fields{...}`。代码里没有一处公司域名字面量，换一家 OA 只改配置。
+- **`query_type` 只能是 3。** 实测 0/1 会忽略日期参数、固定回最近一段（换日期结果一模一样），2 返回空，只有 3 尊重 `start_dt`/`end_dt`。页面强制 3 并把区间裁到 90 天。
+- **`keyword` 必须填自己的 `user_id`。** 空串会让上游抛 `1292 (22007): Truncated incorrect INTEGER value: ''`，回填工号也行但没必要 —— 只查自己，不等上游的权限兜底。
+- **两次确认、十分钟去重。** 加班提交第一次只回预览（`needConfirm` + 链路 + 小时数），第二次带 `confirm` 才真发；成功后按「账号+时段+时长+事由」记账 10 分钟，同样的内容再提交直接 409，避免连点两下造两张单。撤回同理。
+- **密码落 DPAPI，页面只见掩码。** `credentials.bin` 是 `PWDP1` + 长度 + `[ProtectedData]::Protect(CurrentUser)` 密文；页面拿到的永远是 `TS***1` 这种掩码。PowerShell 只用 `Add-Type -AssemblyName System.Security`，不引原生依赖；非 Windows 退化成 `PWPL1` 明文 + 0600（并在设置页写明）。
+- **登录失败即停。** 10 分钟窗口内最多 3 次，第一次等 1s 再翻倍、封顶 60s；登录 URL 把密码放在 query 里（上游形状），所以 **`oaFetch` 的错误消息一律不带 URL**，token 与密码都不进日志、不进审计、不进模型上下文。
+- **隧道访客整页隐身。** 命中 `ctx.publicReq` 直接 `return false`，落到 `bridge/src/index.ts` 的兜底 404 —— 不是 403（403 等于承认这里有个功能）。单测里用 `x-test-tunnel: 1` 头复现。
+- **缓存 90 天 + 手动清除。** 记录按天覆盖写 `cache.json`，超过 90 天裁掉；上游挂了就退缓存并标 `stale`；「清除本地数据」清配置/凭据/缓存但保留 `audit.jsonl`（那是「做过什么」的账，不是数据）。
+
+**取舍：** 缓存只保 90 天 —— 更长的历史得联网取，但内网断线时仍有三个月可看；退避与去重都是「宁可挡一下」的取向，代价是连续改两次申请要等或改内容；DPAPI 走 PowerShell 子进程，每次加解密约几十毫秒，够用但不如原生调用，好处是零依赖、跨机器不出错。
+
+**验证：** `npm run test:attendance` 三段 69 条全绿 —— `bridge/tests/attendance-unit.mjs` 37 条（日期区间/90 天上限/退避/去重键/掩码/行映射/汇总/事由 JSON/审批链往返/草稿校验）、`bridge/tests/attendance-e2e.mjs` 20 条（假 OA + 临时 `PI_WEB_STATE`：未配置 400、配置校验、登录成功只回掩码、上游 NG 401、退避 429、只查自己、缓存放 stale、上游挂了回 502、加班申请与候选、二次确认、本地校验、七字段 body、10 分钟去重、撤回要 confirm、隧道全 404、清除后配置归零而审计仍在）、`web/tests/attendance-unit.mjs` 12 条（本地日期不跟 UTC、默认 14 天跨月跨年、审批状态三种、工时/区间/事由显示）。`npm --prefix web run typecheck`（含 `i18n-check` 与 `test:viewport`）与 `npm --prefix bridge run typecheck` 均通过。
+
+## D292 加班提醒走桥自己的定时器，当天补一次但绝不重复（用户要求 2026-11-17）
+
+**问题：** 用户要「每周几、几点、提示内容、弹系统通知」的加班申请提醒。bridge 会重启、机器会关机、笔记本会睡眠 —— 到点那一刻不一定有人在跑定时器；反过来，补发做不好就会一天弹好几遍，那就成了骚扰。
+
+**决定：**
+
+- **放在考勤页的第四个页签，不在主界面弹自己的对话框。** 提醒是「这个模块的配置」，放在它旁边最不容易找不到；页签顺序：考勤记录 / 加班申请 / 提醒 / 设置。
+- **桥里跑，不在页面里跑。** `bridge/src/attendance-reminder.ts` 的 `startReminderLoop` 每 30 秒问一次纯函数 `reminderDue(rule, lastFiredDate, now)`，`timer.unref()` 免得把进程吊着。页面关着、人不在电脑前也照样发。
+- **当天补一次、准点不算补。** `reminderDue` 只回 `{fire, late}`：`late = now − 设定时刻 > 0`，正文在补发时加「（今天 18:00 的提醒）」，让人知道是补的而不是系统抽风。早于设定时刻不发。
+- **先落盘 `lastFiredDate` 再推送。** 顺序反过来，桥中途被杀就会重启后再发一遍。发完再把实际到达数写回 `lastSent`。
+- **改了时间或星期就清掉 `lastFiredDate`。** 否则用户把 18:00 改成 17:00，当天已经「发过」的标记还在，那天就再也收不到 —— 这种「我明明设了却没响」最难查。
+- **关着的时候不挑毛病。** `ruleProblem` 在 `enabled: false` 时一律放行：先关掉、回头再填是正当用法。开着才要求「至少一个星期 / HH:MM / 不空的提示内容」。
+- **通知走 `force`。** `Notifier.push(title, body, url, force)` 的 `force` 以前只在 payload 里传、`web/public/sw.js` 不看它（有前台页面就直接 return）。这次让 sw 认它：定时提醒不该因为「页面上正好开着」就不弹 —— 用户要的是系统通知。
+- **通道状态照实说，不假装成功。** 面板直接列「通知总开关 / 推送订阅数 / 上次提醒 / 上次到达」。没订阅就明说「去 pi 设置 → 通知里打开推送」，试发时 `subscriptionCount() === 0` 回 409 而不是静默成功 —— 通知发出去没人收到，比报错更糟。
+- **隧道访客照旧 404。** 提醒路由也在 `handleAttendance` 里，`ctx.publicReq` 先返回 false 落兜底。
+- **星期存 ISO 编号（1=周一…7=周日），不存「周一」两个字。** 要能排序、能跨语言；`weekdayOfDate` 把 `getDay()` 的 0 映射成 7。
+
+**取舍：** 轮询 30 秒而不是按「下一个点」算精确定时器 —— 规则的每次改动都要重排定时器，而 30 秒的误差在这个场景里没人能感知；代价是每天至多 2880 次空转（读一个 JSON），实测可以忽略。补发只限当天，不回溯昨天以前 —— 隔天提醒「上周该交加班了」没有意义。
+
+**验证：** `bridge/tests/attendance-unit.mjs` 44 条（新增 8 条：`weekdayOfDate` 周日=7、`minutesOf`/`clockOfMinutes` 往返与坏值、`normalizeRule` 回落与夹取、`ruleProblem` 关着放行、`reminderDue` 四种不发的情形与补发偏移、`reminderBody` 补发文案、规范化后再校验）；`bridge/tests/attendance-e2e.mjs` 30 条（新增 6 条：默认关着且通道状态照实说、开着不选星期 400、规范化后读回一致、关着不挑毛病、没有通道试发 500、定时器到点只发一次且重启不补第二遍、挪时间后清掉当天标记）；`web/tests/attendance-unit.mjs` 12 条不变。i18n 增 26 个键（en/ja 齐）；`npm --prefix web run typecheck`（含 `i18n-check` 3394 键 × 3 语言、`test:viewport`）、`npm --prefix bridge run typecheck`、`npm --prefix web run build`、`npm run build:bridge` 全过；测试实例 17876 上真界面截过三张（记录/加班申请/提醒），提醒页的七个星期按钮在 1400px 下排成一行、窄容器改四列。
+
+## D293 加班申请的默认值从「我上一次的申请」推，二级审批人只读（用户要求 2026-11-17）
+
+**问题：** 用户比着 OA 的新建单据说三件事：时间要按日期类型给默认值（工作日 18:00–22:00、周末 09:00–18:00）；一级审批人要有默认值；二级审批人该是固定的、不可改，"应该有 api"。
+
+**决定：**
+
+- **时间窗由日期类型算，不记住上次。** `defaultWindow(dateKey)`：周六日 `09:00–18:00`、其余 `18:00–22:00`。换日期就整段重给、时长跟着自动算；人手动改过 `start`/`end` 就不再覆盖。理由是 OA 自己也是这个规律，而"上次用过的时间"在跨周末时几乎总是错的。
+- **一级审批人的默认值取「我上一次加班申请的 idx1」。** 实测最新一条 117477 的 idx1 `江伟晨-JS0654` 与 OA 新建单据的默认值逐字一致 —— 这说明 OA 的默认值就是"上一单的那一位"，而不是某个组织架构接口。页面仍可改，选择按工号记在 `localStorage`（`pi-web-attendance:l1`），下次优先用它（前提是还在候选里）。
+- **二级审批人取「上一次申请的 idx2 的完整名单」，只读展示。** `workflow_list[code]` 里 `workflow_user_name` 是这一级"应该是谁"的完整名单（`李庆-JS0031,徐凯-JS0716`），`handle_user_name` 只有真正点过的那一个。用前者，与 OA 弹窗的两枚只读框一致。删掉原来的多选 + `L2_KEY`。
+- **`GET /in/roles/depart_leader_data` 只当兜底，绝不当权威。** 同一天同一 token 连取该端点，`last.depart_manager` 从 `[李庆-JS0031, 徐凯-JS0716]` 变成了 `[王俊-JS0055, 刘琳-SH0355, 姜祯-SH0654]`（连打三次都一样），说明它跟"我这个部门审批谁"不是一回事。只有在历史申请里找不到 idx2 时才用它，且面板上写明「OA 没给这级的固定审批人，提交前先在 OA 网页上确认一次」。
+- **审批人名字按工号对 id，对不上就丢，绝不猜。** `parsePerson` / `resolvePeople` 逐字比对工号，名字只在没有工号时才用来兜底 —— 工号是唯一键，名字会重。
+- **这些都在桥端算，前端只拿结果。** `GET /api/attendance/overtime` 直接回 `fixedL2` / `defaultL1`；页面不再自己拼"上一单"的逻辑，免得两处口径不一致。
+
+**取舍：** 一级审批人没有真正"系统给的默认值"这件事本身有点可疑 —— 如果哪天 OA 改成按当前时间点的组织架构算，这个推断会滞后。但三个可能的来源（`apply_approvers` 空数组、`workflow/*` 全部 `权限不足`、`depart/user/c` 只有人数）都试过，历史单据目前是唯一能验证与 OA 一致的口径。二级审批人固定名单一旦变了（比如换了部门负责人），我们的展示会滞后到下一次申请 —— 这可以接受：提交那一刻 OA 自己会按最新组织架构重算，我们显示的只是"应该是谁"。
+
+**验证：** `bridge/tests/attendance-unit.mjs` 49 条（新增 `parsePerson` 7 种切法、`resolvePeople` 五种匹配、`readDepartManagers`、`lastStepPeople`）；`bridge/tests/attendance-e2e.mjs` 30 条（假 OA 审批链补 idx2，`roles` 端点的 `last.depart_manager` **故意给一个不在候选表里的人**当路标，断言 `fixedL2` 仍是历史里的两位 —— 证明没走 roles）；`web/tests/attendance-unit.mjs` 14 条（新增 `defaultWindow`）。`sysmanage-ui` 90 项 ok。测试实例 17876 上改日期实测：11-17（周二）自动 18:00–22:00 / 4 小时，11-21（周六）自动 09:00–18:00 / 9 小时，11-18（周三）又回 18:00–22:00；一级选中上一单那位、二级两枚只读标签，`select[multiple]` 计数为 0。
+
+## D294 问卷也进轮次缩略图：一份问卷一格，文字是「问卷概况：第一题 · 等 N 题」（用户要求 2026-11-17）
+
+**问题：** 右侧刻度带原来只认 `item.kind === "user"`（`web/src/chat.ts` 的 `noteTurn` 与 `bridge/src/history.ts` 的 `turnIndex`），问答卡（`ask_user_question` / 旧 `question` / `questionnaire`）不进带子。用户要求：问卷也是用户输入，要进刻度表；同一份问卷的多道题只显示一次；行文用「问卷概况：…」。不做 ghost 的话，只有已经滚到过的那几张问卷能出现，整段会话的问卷位置与编号都对不上（#243 的索引本来就是全量的）。
+
+**为什么：** 刻度带回答的是「我在这段会话里输入过什么」，问卷是模型反过来要求用户输入，和气泡一样属于用户输入；漏掉它，带子的格数就与真实交互对不上，点击跳转也少了一类落点。索引放在桥上而不是只在网页里补，是因为 ghost / 自动翻页依赖**全量**顺序，只有已载入的那几张问卷会让未载入的问卷无法点击到位。
+
+**决定：**
+
+- **桥上把问卷条目录进全量索引**：`turnIndex` 里 `ASK_TOOLS` 命中的工具条目 push `{ id, kind: "ask", text: 第一题标题, images: 0, questions: 题数 }`；`HistoryTurn.kind` 老条目缺省按 `user` 读（新前端 + 老桥仍然只画用户消息）。标题取 `header`，没有就依次取 `question` / `prompt` / `label`，与 `askQuestions` 同序；`questions: []` 视为没给，回退到平铺的 `question`，免得同一份问卷载入前后文字或题数对不上。
+- **一份问卷一格，按工具调用去重**：同一份多题问卷只对应一个 toolCall，因此天然一条；前端另按 `toolCallId` 去重，实时卡（id `live-tool:<callId>`）在结果/回放到达被重建时，把带子上的 id 与节点一起换成新的，点它才不会指向已经 remove 的节点。
+- **文案**：`askTurnLabel(title, questions)` 固定前缀「问卷概况：」；多题补「 · 等 N 题」，单题不补；没有标题时单题只说「问卷概况」、多题说「问卷概况：等 N 题」。上限按**整行** 80 字算（含前缀与「等 N 题」，`ASK_TITLE_MAX` 与桥的 `TURN_TEXT_MAX`、缩略图的 `TURN_LABEL_MAX` 对齐）：先量出前后缀占多少，剩下的留给标题与省略号，别把题数截掉。桥上送 `text` 时已折行截短，前端再折一次，两边同一句话。
+- **点它回到卡**：ghost 行同样可点（#244 的自动往回翻页），已载入的悬停 / 点击给 `.qa-card` 描边（原来只给 `.msg.user .body`）。
+- **「执行→计划」的 round 只数用户消息**：`app.ts` 两处 `execPlanRounds` 过滤 `turn.kind !== "ask"`，否则计划的 `listedRound` 与 `ordinal` 全错位。
+- **旧会话也认**：`question` / `questionnaire` 与 `ask_user_question` 一视同仁（`isAskTool` 与桥的 `ASK_TOOLS` 对齐）；取消 / 一题没答的问卷照样占一格。
+
+**取舍：** 刻度带的行号从此数的是「用户输入」而不是「用户消息」—— 问卷后面那条消息的「第 N 轮」会比以前大 1（点计划跨轮引用的仍是用户消息编号，两者不再完全相同，这是「问卷也是输入」的直接代价）。实时卡重建的时机依赖 `add()` / `replace()` 两条路径，别处若再重建问答卡要记得也走 `noteAskTurn`。
+
+**验证：** `bridge/tests/history-page-unit.mjs` 断言索引里 ask 的 kind / 标题 / 题数、旧工具名、普通工具不占格、多题只有一条、空 `questions` 回退与 `prompt`/`label` 的标题顺序；`web/tests/ask-card-unit.mjs` 断言 `title` 与桥同序的回退、`askTurnLabel` 四种文案、折行与整行 80 字截断（多题仍保住「等 N 题」）；`probes/rail-ask.mjs` 验四格（2 用户 + 2 问卷，多题只占一格）、ghost 行文字、悬停亮问答卡、点 ghost 翻页到货；`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）与 `npm --prefix bridge run typecheck` 通过。
+
+## D295 上下文里的 system 段换成可读化视图，先看数据再定形状（用户要求 2026-11-17）
 
 **问题：** 上下文浏览器里「技能注入」那一行展开后，是一整段 `<pre>`：`<skills>` 那份 XML 有 22KB、42 条技能，描述里的引号还是 `&quot;` / `&apos;` 转义实体；「注入内容」（rules / docs / addendum / project_context）其实是原样的 Markdown，只是外面裹了一层分节标签。用户要的是能读的页面，不是代码块。
 
@@ -5584,12 +5694,13 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 - **列表自己滚，高度 380px**：`.cx-viz { max-height: 380px; overflow: auto }`。同时要 `.cx-acc:has(.cx-viz) { max-height: none }` —— 手风琴本身有 345px 上限（`:201`），两层一起就是两条滚动条。
 - **点击就地展开，不整块重画**：`skillRow` 只 toggle 自己的 `.open` 与路径行。面板每次来日志行都会 `render()` 重建整棵树，展开走重画会把 42 行列表的滚动位置甩回顶部。
 - **转义实体在界面上解掉**：`decodeEntities` 解 `&quot; &apos; &amp; &lt; &gt; &nbsp;` 与数字实体（`&#39;` / `&#x27;`），其余命名实体原样保留 —— 模型看到的就是解码后的文字，界面不该跟模型不一致。
+- **注入类目一律当注入**：`cat === "inject"` 下不管 kind 是 `section` 还是 `inject`（custom / branchSummary / compactionSummary）都走 Markdown，别只认 section。
 - **分节标签按「唯一且配对」剥**：`ctxUnwrapSection` 只在首行是 `<tag …>` 且末尾是 `</tag>` 时剥；`<rules>…</docs>` 这种对不上的不动，避免把正文里的半截标签当成外壳。
 - **project_context 按文件分界**：`<project_instructions path="…">` 换成一条粗体路径行，而不是 `##` 标题 —— AGENTS.md 自己就有 `##` / `###`，用标题会和文件内层级打架（先用 `##` 试过，h2 里叠出 `## Worktree 工作流`）。
-- **保留原文出口**：类目过滤行右侧「可视化 / 原文」开关，默认可视化，切到原文就是原来那段 `<pre>`（解析不出来时也自动退回原文）。
-- **解析与渲染都按内容缓存**：`skillCache`（id → src + 目录，>24 清）与 `mdCache`（id#种类 → src + 节点，>40 清）。日志很密，22KB XML 每行重解析一次会卡。
+- **保留原文出口**：「可视化 / 原文」开关放在类目**头行**（不展开类目也看得见），默认可视化，切到原文就是原来那段 `<pre>`；技能目录解析不出条目时这一行自动退回原文。
+- **解析与渲染都按内容缓存**：一个 `memo(cap)` 小表按 id + 内容缓存三样东西（技能目录、注入段 Markdown、Markdown 节点）。日志很密，22KB XML 每行重解析一次会卡；行上的摘要与展开正文共用同一份转换结果，预览行不能每次重画都重算。
 - **顺手删掉 `statsCard` 没用到的 `token` 入参**：改这块时 delta lint 会把它报成新错误，不删每次都要绕。
 
 **取舍：** 代价是多一个纯函数模块（`web/src/context-viz.ts`）和两套样式；技能说明两行 clamp 意味着长描述（最长 1053 字）默认看不全，要靠点开或过滤。没选「按目录分组」（D）—— 42 条里 34 条来自同一个目录，分组头一天就把列表撑开了。
 
-**验证：** `node --test web/tests/context-unit.mjs` 新增 5 组用例（实体解码、`<skills>` 解析去重、标签剥除的配对判定、注入段转 Markdown 后每份 AGENTS.md 一条分界行）；`npm --prefix web run typecheck`（tsc + i18n-check 3329 键 × 3 语 + viewport 守卫）通过。界面用一次性 harness（真 ctxlog 的那次请求 + 全部 body 行，Vite 起在 5191）在 Chromium 里核过：42 行、`.cx-viz` 计算高度 380 / 可滚、手风琴 `max-height: none`、行展开解 clamp 并显示 `SKILL.md` 路径、过滤 `hyperframes` → `10 / 42 个技能`、切原文恢复 XML、`sec:rules` 出 `UL/LI/CODE`、窄容器（root 573px）技能行转单列、页面无 console 错误。harness 的三个文件用完即删，不进 main。
+**验证：** `node --test web/tests/context-unit.mjs` 新增 5 组用例（实体解码、`<skills>` 解析去重、标签剥除的配对判定、注入段转 Markdown 后每份 AGENTS.md 一条分界行）；`npm --prefix web run typecheck`（tsc + i18n-check 3329 键 × 3 语 + viewport 守卫）通过，`context` / `layout` / `rules` 三个单测文件 31 过。界面用一次性 harness（真 ctxlog 的那次请求 + 全部 body 行，Vite 起在 5191）在 Chromium 里核过：42 行、`.cx-viz` 计算高度 380 / 可滚、手风琴 `max-height: none`、行展开解 clamp 并显示 `SKILL.md` 路径、过滤 `hyperframes` → `10 / 42 个技能`、切原文恢复 XML、`sec:rules` 出 `UL/LI/CODE`、窄容器（root 573px）技能行转单列、页面无 console 错误。harness 的三个文件用完即删，不进 main。
