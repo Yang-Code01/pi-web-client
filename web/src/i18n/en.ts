@@ -3439,4 +3439,11 @@ export const en: Dict = {
   "在当前分支上生成一条反向提交（走现有的回滚操作卡）": "Create a reverse commit on the current branch (through the existing revert card)",
   // D289：差异按 @@ 块分页，滚到底时底下那句提示。
   "已显示 {p1}/{p2} 个变更块 · 继续往下滚看剩下的": "Showing {p1}/{p2} hunks · scroll for the rest",
+  // 上下文面板：注入正文的「可视化 / 原文」视图（技能目录表格与 Markdown 正文）。
+  "可视化": "Readable",
+  "原文": "Raw",
+  "技能目录": "Skill catalog",
+  "共 {p1} 个技能": "{p1} skills",
+  "{p1} / {p2} 个技能": "{p1} / {p2} skills",
+  "没有匹配的技能": "No matching skills",
 };

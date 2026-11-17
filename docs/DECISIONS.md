@@ -5573,3 +5573,23 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 代价是多两个接口、多一层缓存失效判断；跨仓库的缓存不复用（键里带 repo，只在本会话内）；merge 提交的摘/回滚暂时禁用（操作卡没有 `-m` 入口，与其让人跑出一条红字，不如先说清）。没选「点行就跳到差异 tab」：那会覆盖用户当前的对照与筛选，回不去。三个候选原型留在丢弃分支 `proto/commit-detail`（`web/prototype/commit-detail.html`，`?variant=A|B|C`），不进 main。
 
 **验证：** `npm run test:githist` 里的新单元 `bridge/tests/git-commit-unit.mjs` 用真 git 仓库断言：短/全长 SHA、标题取 `%B` 首行、正文为空、根提交 `parents === []` 且对照空树、merge 报两个父且差异只列第一父侧的文件、rename 带 `old`、`onHead` / `pushed`（`update-ref refs/remotes/...` 之后才为真）、500 行正文截到 400 行、`limits.files === 300`、参数清洗（`--evil` / `../outside` / `deadbeef` 各自报对码）；另有一组「400 行文件里改 40 处不相邻的位置」断言 `hunks.total === 40`、首页 `count === 20` 且首行是 `@@` 块头、块与块之间的上下文行不出现、`from = 20` 从第 21 块起、`from = 40` 返回空页，以及「整篇 4100 行都改」时单块截到 4000 行并写明原因。`npm run test:githist:ui`（Playwright，`GITOPS_UI_PORT` 要避开 Hyper-V 保留段，本机用 8300）点一遍：行是 `role=button` 且在 Tab 序列、点开小窗且工作台还在下面、完整 40 位 SHA、父提交、自动展开第一个文本文件的并排差异、**差异里有 `@@` 块头且不是整篇文件**、高亮唯一、文件清单带增删数、点另一个文件换右侧、摘提交关窗改开操作卡且哈希预填、Enter 也能开、Esc 关掉后焦点回到那一行、点遮罩同样关、顶点提交的摘提交是禁用的。续拉另用一次性探针验过：造一个「300 行文件改在 25 处」的临时仓库，首屏 `已显示 20/25 个变更块`，滚到底自动补到 25 块、提示消失。`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）通过。
+
+## D290 上下文里的 system 段换成可读化视图，先看数据再定形状（用户要求 2026-11-17）
+
+**问题：** 上下文浏览器里「技能注入」那一行展开后，是一整段 `<pre>`：`<skills>` 那份 XML 有 22KB、42 条技能，描述里的引号还是 `&quot;` / `&apos;` 转义实体；「注入内容」（rules / docs / addendum / project_context）其实是原样的 Markdown，只是外面裹了一层分节标签。用户要的是能读的页面，不是代码块。
+
+**决定：**
+
+- **先做一次性原型再定形状**：从真 ctxlog 里抽出那次请求的 `sec:skills`，摆出四个候选（A 卡片流、B 两列紧凑表、C 折叠列表、D 按目录分组），用同样的真实数据截图给用户挑；用户挑 **B**：一屏放得下更多、名字单行省略、说明两行。
+- **列表自己滚，高度 380px**：`.cx-viz { max-height: 380px; overflow: auto }`。同时要 `.cx-acc:has(.cx-viz) { max-height: none }` —— 手风琴本身有 345px 上限（`:201`），两层一起就是两条滚动条。
+- **点击就地展开，不整块重画**：`skillRow` 只 toggle 自己的 `.open` 与路径行。面板每次来日志行都会 `render()` 重建整棵树，展开走重画会把 42 行列表的滚动位置甩回顶部。
+- **转义实体在界面上解掉**：`decodeEntities` 解 `&quot; &apos; &amp; &lt; &gt; &nbsp;` 与数字实体（`&#39;` / `&#x27;`），其余命名实体原样保留 —— 模型看到的就是解码后的文字，界面不该跟模型不一致。
+- **分节标签按「唯一且配对」剥**：`ctxUnwrapSection` 只在首行是 `<tag …>` 且末尾是 `</tag>` 时剥；`<rules>…</docs>` 这种对不上的不动，避免把正文里的半截标签当成外壳。
+- **project_context 按文件分界**：`<project_instructions path="…">` 换成一条粗体路径行，而不是 `##` 标题 —— AGENTS.md 自己就有 `##` / `###`，用标题会和文件内层级打架（先用 `##` 试过，h2 里叠出 `## Worktree 工作流`）。
+- **保留原文出口**：类目过滤行右侧「可视化 / 原文」开关，默认可视化，切到原文就是原来那段 `<pre>`（解析不出来时也自动退回原文）。
+- **解析与渲染都按内容缓存**：`skillCache`（id → src + 目录，>24 清）与 `mdCache`（id#种类 → src + 节点，>40 清）。日志很密，22KB XML 每行重解析一次会卡。
+- **顺手删掉 `statsCard` 没用到的 `token` 入参**：改这块时 delta lint 会把它报成新错误，不删每次都要绕。
+
+**取舍：** 代价是多一个纯函数模块（`web/src/context-viz.ts`）和两套样式；技能说明两行 clamp 意味着长描述（最长 1053 字）默认看不全，要靠点开或过滤。没选「按目录分组」（D）—— 42 条里 34 条来自同一个目录，分组头一天就把列表撑开了。
+
+**验证：** `node --test web/tests/context-unit.mjs` 新增 5 组用例（实体解码、`<skills>` 解析去重、标签剥除的配对判定、注入段转 Markdown 后每份 AGENTS.md 一条分界行）；`npm --prefix web run typecheck`（tsc + i18n-check 3329 键 × 3 语 + viewport 守卫）通过。界面用一次性 harness（真 ctxlog 的那次请求 + 全部 body 行，Vite 起在 5191）在 Chromium 里核过：42 行、`.cx-viz` 计算高度 380 / 可滚、手风琴 `max-height: none`、行展开解 clamp 并显示 `SKILL.md` 路径、过滤 `hyperframes` → `10 / 42 个技能`、切原文恢复 XML、`sec:rules` 出 `UL/LI/CODE`、窄容器（root 573px）技能行转单列、页面无 console 错误。harness 的三个文件用完即删，不进 main。

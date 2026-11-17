@@ -37,6 +37,8 @@ import {
   type CtxTrendRow,
 } from "./context.ts";
 import { fmtTime, tr } from "./i18n/index.ts";
+import { renderMarkdown } from "./md.ts";
+import { ctxSectionMarkdown, ctxSkillCatalog, type SkillCatalog, type SkillEntry } from "./context-viz.ts";
 import "./context-panel.css";
 
 export interface ContextPanelData {
@@ -227,6 +229,12 @@ export class ContextPanel {
   private browserMode: "full" | "delta" = "full";
   private readonly openCats = new Set<string>();
   private readonly openItems = new Set<string>();
+  /** 哪些条目类目被切到「原文」；默认都是可读化视图。 */
+  private readonly vizRaw = new Set<string>();
+  /** 技能目录里展开了哪几个技能（名字 + 路径；整块重画后仍保留）。 */
+  private readonly openSkills = new Set<string>();
+  private readonly skillCache = new Map<string, { src: string; catalog: SkillCatalog }>();
+  private readonly mdCache = new Map<string, { src: string; nodes: Node[] }>();
   private readonly catQuery = new Map<string, string>();
   private readonly asstKind = new Map<string, string>();
   private toolSort: "size" | "name" = "size";
@@ -277,7 +285,7 @@ export class ContextPanel {
     const kpis = ctxKpis(reqs, data.contextWindow, data.measured, data.budget);
     const root = div("cx-root");
     root.append(
-      div("cx-top", this.statsCard(summary, token), this.meterCard(data, kpis, token)),
+      div("cx-top", this.statsCard(summary), this.meterCard(data, kpis, token)),
       div("cx-duo", this.tokenCard(token), this.timingCard(timing)),
       div("cx-main", this.currentCard(data, kpis, reqs), this.browserCard(data.lines, reqs)),
       this.trendCard(data.lines, reqs, summary),
@@ -299,7 +307,7 @@ export class ContextPanel {
 
   // ---------------------------------------------------------------- stats ledger
 
-  private statsCard(summary: ReturnType<typeof ctxSummary>, token: ReturnType<typeof ctxTokenStats>): HTMLElement {
+  private statsCard(summary: ReturnType<typeof ctxSummary>): HTMLElement {
     const box = card(tr("上下文统计"), "▦");
     box.classList.add("cx-stats");
     const kpis = div(
@@ -578,6 +586,22 @@ export class ContextPanel {
           );
         }
       }
+      // 有可读化正文的类目（技能注入 / 注入内容）给一个「可视化 / 原文」开关。
+      if (cat.items.some((it) => this.vizKind(it))) {
+        const raw = this.vizRaw.has(cat.id);
+        const toggle = div("cx-viz-toggle");
+        toggle.append(
+          button(`cx-seg${raw ? "" : " on"}`, tr("可视化"), () => {
+            this.vizRaw.delete(cat.id);
+            this.render();
+          }),
+          button(`cx-seg${raw ? " on" : ""}`, tr("原文"), () => {
+            this.vizRaw.add(cat.id);
+            this.render();
+          }),
+        );
+        bar.append(toggle);
+      }
       body.append(bar);
       const needle = query.trim().toLowerCase();
       const kind = this.asstKind.get(cat.id) ?? "";
@@ -607,8 +631,17 @@ export class ContextPanel {
       else this.openItems.add(item.id);
       this.render();
     });
-    const main = div("cx-item-main", span("cx-item-label", item.label || item.kind || "?"), item.sub ? span("cx-item-sub", item.sub) : null);
-    if (item.preview) main.append(span("cx-item-preview", item.preview));
+    const viz = this.vizRaw.has(item.cat) ? null : this.vizKind(item);
+    const catalog = viz === "skills" ? this.catalogOf(item) : null;
+    // 读得懂的正文，行上也换成读得懂的摘要：`<skills>` 那段 XML 的第一行对人不构成信息。
+    const label = catalog ? tr("技能目录") : item.label || item.kind || "?";
+    const preview = catalog
+      ? tr("共 {p1} 个技能", { p1: String(catalog.skills.length) })
+      : viz === "md" && item.cat === "inject"
+        ? (ctxSectionMarkdown(item.content ?? "").split("\n").find((l) => l.trim()) ?? item.preview ?? "").trim()
+        : item.preview;
+    const main = div("cx-item-main", span("cx-item-label", label), item.sub ? span("cx-item-sub", item.sub) : null);
+    if (preview) main.append(span("cx-item-preview", preview));
     row.append(span("cx-caret", open ? "⌄" : "›"), main, span("cx-item-tokens", `≈${ctxFmt(item.tokens)}`));
     if (item.kind) row.title = `${item.label} · ${item.kind}`;
     wrap.append(row);
@@ -627,7 +660,9 @@ export class ContextPanel {
       }
       if (item.content) {
         if (item.body?.args) detail.append(div("cx-item-section", tr("结果")));
-        detail.append(el("pre", "cx-item-body", item.content));
+        if (viz === "skills" && catalog) detail.append(this.skillTable(item.cat, catalog));
+        else if (viz === "md") detail.append(this.markdownBody(item));
+        else detail.append(el("pre", "cx-item-body", item.content));
       } else if (item.preview) {
         detail.append(el("pre", "cx-item-body", item.preview));
         detail.append(div("cx-note", tr("旧版日志只保留了预览；下一次请求起可以展开正文")));
@@ -637,6 +672,97 @@ export class ContextPanel {
       wrap.append(detail);
     }
     return wrap;
+  }
+
+  // ---------------------------------------------------------------- 可读化正文
+
+  /** 这条正文能不能换成读得懂的视图：技能目录（`sec:skills`）/ Markdown（SKILL.md、注入段）。 */
+  private vizKind(item: CtxItem): "skills" | "md" | null {
+    if (!item.content) return null;
+    if (item.kind === "skill") return "md";
+    if (item.kind !== "section") return null;
+    if (item.cat === "skill") return this.catalogOf(item).skills.length ? "skills" : null;
+    if (item.cat === "inject") return "md";
+    return null;
+  }
+
+  /** 解析 `sec:skills` 的 XML；同一份 content 只解析一次（面板每来一行日志就重画一遍）。 */
+  private catalogOf(item: CtxItem): SkillCatalog {
+    const src = item.content ?? "";
+    const hit = this.skillCache.get(item.id);
+    if (hit && hit.src === src) return hit.catalog;
+    if (this.skillCache.size > 24) this.skillCache.clear();
+    const catalog = ctxSkillCatalog(src);
+    this.skillCache.set(item.id, { src, catalog });
+    return catalog;
+  }
+
+  /** 技能目录：两列紧凑表（名字 / 两行说明），点一行看完整说明与 SKILL.md 路径。 */
+  private skillTable(catId: string, catalog: SkillCatalog): HTMLElement {
+    const box = div("cx-viz cx-skill-table");
+    const needle = (this.catQuery.get(catId) ?? "").trim().toLowerCase();
+    const rows = needle
+      ? catalog.skills.filter((s) => `${s.name}\n${s.description}\n${s.location}`.toLowerCase().includes(needle))
+      : catalog.skills;
+    const head = div("cx-skill-intro");
+    head.append(
+      span(
+        "cx-skill-count",
+        rows.length === catalog.skills.length
+          ? tr("共 {p1} 个技能", { p1: String(rows.length) })
+          : tr("{p1} / {p2} 个技能", { p1: String(rows.length), p2: String(catalog.skills.length) }),
+      ),
+    );
+    if (catalog.intro) {
+      const note = span("cx-skill-note", catalog.intro);
+      note.title = catalog.intro;
+      head.append(note);
+    }
+    box.append(head);
+    if (!rows.length) box.append(empty(tr("没有匹配的技能")));
+    for (const s of rows) box.append(this.skillRow(s));
+    return box;
+  }
+
+  private skillRow(s: SkillEntry): HTMLElement {
+    // 同名技能可能来自两个目录，展开状态按 名字+路径 记，别互相带着开。
+    const key = `${s.name}\n${s.location}`;
+    const open = this.openSkills.has(key);
+    // 按钮而不是 div：42 行里靠键盘也能走（Tab + Enter），和类目里其它行一致。
+    const row = el("button", `cx-skill-row${open ? " open" : ""}`);
+    row.type = "button";
+    row.title = s.location ? `${s.name} · ${s.location}` : s.name;
+    row.setAttribute("aria-expanded", String(open));
+    row.append(span("cx-skill-name", s.name), span("cx-skill-desc", s.description || tr("（没有描述）")));
+    if (open && s.location) row.append(span("cx-skill-path", s.location));
+    // 就地展开 / 收起：整块重画会把列表滚回顶部（42 个技能时很难忍）。
+    row.onclick = () => {
+      const willOpen = !this.openSkills.has(key);
+      if (willOpen) this.openSkills.add(key);
+      else this.openSkills.delete(key);
+      row.classList.toggle("open", willOpen);
+      row.setAttribute("aria-expanded", String(willOpen));
+      row.querySelector(".cx-skill-path")?.remove();
+      if (willOpen && s.location) row.append(span("cx-skill-path", s.location));
+    };
+    return row;
+  }
+
+  /** SKILL.md / 注入段走 Markdown。节点按内容缓存：面板更新很密，别每来一行就重解析一遍。 */
+  private markdownBody(item: CtxItem): HTMLElement {
+    const src = item.kind === "skill" ? (item.content ?? "") : ctxSectionMarkdown(item.content ?? "");
+    const box = div("cx-viz cx-md");
+    const key = `${item.id}#${item.kind === "skill" ? "skill" : "section"}`;
+    const hit = this.mdCache.get(key);
+    if (hit && hit.src === src) {
+      box.append(...hit.nodes);
+      return box;
+    }
+    const nodes = Array.from(renderMarkdown(src, { doc: true }).childNodes);
+    if (this.mdCache.size > 40) this.mdCache.clear();
+    this.mdCache.set(key, { src, nodes });
+    box.append(...nodes);
+    return box;
   }
 
   // ---------------------------------------------------------------- trend
