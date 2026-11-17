@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { filterCommands, PANEL_COMMANDS } from "../src/commands.ts";
+import { atSpan, filterCommands, PANEL_COMMANDS, slashSpan } from "../src/commands.ts";
 
 const cmd = (name, desc = "", tag = "技能") => ({ insert: `/${name} `, label: `/${name}`, desc, tag });
 const labels = (items) => items.map((x) => x.label);
@@ -119,4 +119,42 @@ test("面板命令能被补全选中：/term /fil /art 各只留一条", () => {
   const mixed = [...items, cmd("terminalinfo"), cmd("filesize")];
   assert.equal(labels(filterCommands(mixed, "terminal"))[0], "/terminal");
   assert.equal(labels(filterCommands(mixed, "files"))[0], "/files");
+});
+
+// 2026-11-17 用户报障：输入框里已经有一段话，光标回到最前面敲 `/` 再选一个技能，那段话被清空。
+// 根因是替换范围取了「到下一个空白的 token 结尾」，把 `/` 后面整段用户内容也吞了；
+// 范围必须止于光标。
+const applyPick = (text, span, insert) => `${text.slice(0, span.start)}${insert}${text.slice(span.end).replace(/^ /, "")}`;
+
+test("光标回到开头敲 / 再选候选：原来的内容必须留着", () => {
+  const typed = "帮我看看这个 bug";
+  const text = `/${typed}`;
+  const span = slashSpan(text, 1);
+  assert.deepEqual(span, { start: 0, end: 1, query: "" });
+  assert.equal(applyPick(text, span, "/skill:handoff "), "/skill:handoff 帮我看看这个 bug");
+});
+
+test("没有空格的一整段也一样：替换范围只到光标，不往后吞", () => {
+  const text = "/帮我看看这个bug";
+  const span = slashSpan(text, 1);
+  assert.equal(span.end, 1);
+  assert.equal(applyPick(text, span, "/new "), "/new 帮我看看这个bug");
+});
+
+test("光标在命令词中间补全：只换到光标，右边的字不跟着变", () => {
+  const text = "/skill:handoff 后面还有字";
+  const span = slashSpan(text, 6);
+  assert.deepEqual(span, { start: 0, end: 6, query: "skill" });
+});
+
+test("斜杠命令只认行首：正文中间的 / 不弹补全", () => {
+  assert.equal(slashSpan("帮我看看 /sk", 9), null);
+  assert.deepEqual(slashSpan("/sk", 3), { start: 0, end: 3, query: "sk" });
+});
+
+test("@ 文件同样只替换到光标：@ 后面已有的字不被吃掉", () => {
+  assert.deepEqual(atSpan("@src/ap 后面", 7), { start: 0, end: 7, query: "src/ap" });
+  assert.equal(applyPick("@src/ap 后面", atSpan("@src/ap 后面", 7), "@src/app.ts "), "@src/app.ts 后面");
+  assert.deepEqual(atSpan("看看 @src/ap", 10), { start: 3, end: 10, query: "src/ap" });
+  assert.equal(atSpan("看看src/ap", 8), null);
 });

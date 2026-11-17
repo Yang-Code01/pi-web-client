@@ -44,6 +44,30 @@ function tailRank(tail: string, t: string): number {
   return tail.includes(t) ? 4 : -1;
 }
 
+/**
+ * 补全要把输入框里的哪一段换成候选：`start`–`end` 是替换范围，`query` 是拿来过滤的词。
+ *
+ * 范围**只到光标**。光标右边是用户已经写好的话 —— 把光标挪回开头敲 `/`（或在段落中间补一个
+ * `@`）时它就在那儿，不是这条命令的一部分，跟着替换就会把它吞掉（2026-11-17 用户报障：
+ * 回到开头 `/` 选完技能，原来写的问题描述没了）。从前这里取「到下一个空白」的 token 结尾，
+ * 于是 `/` 后面那整段用户内容都被当成要替换的命令文字。
+ */
+export type CompleteSpan = { start: number; end: number; query: string };
+
+/** `/` 命令：`/` 必须从第一个字符开始（pi 也只认行首的命令），光标之后一概不动。 */
+export function slashSpan(text: string, caret: number): CompleteSpan | null {
+  const m = /^\/([^\s]*)$/.exec(text.slice(0, caret));
+  if (!m) return null;
+  return { start: 0, end: caret, query: m[1] };
+}
+
+/** `@` 文件：`@` 前面是开头或空白；同样只替换到光标，后面的字留着。 */
+export function atSpan(text: string, caret: number): CompleteSpan | null {
+  const m = /(?:^|\s)@([^\s@]*)$/.exec(text.slice(0, caret));
+  if (!m) return null;
+  return { start: caret - m[1].length - 1, end: caret, query: m[1] };
+}
+
 export function filterCommands(all: CommandItem[], query: string): CommandItem[] {
   const q = query.toLowerCase();
   if (!q) return all.slice(0, MAX_ITEMS);
