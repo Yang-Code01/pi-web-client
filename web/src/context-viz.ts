@@ -69,15 +69,14 @@ export function ctxSkillCatalog(xml: string): SkillCatalog {
   return { intro, skills };
 }
 
-/** `<rules>…</rules>` 这层包裹只是 prompt 的分节标记：去掉它，留下正文。 */
-export function ctxUnwrapSection(src: string): { tag: string; text: string } {
+/** `<rules>…</rules>` 这层包裹只是 prompt 的分节标记：去掉它，留下正文（首尾标签不成对就不动）。 */
+export function ctxUnwrapSection(src: string): string {
   const text = (src ?? "").replace(/\r\n?/g, "\n").trim();
   const open = OUTER_TAG.exec(text);
-  if (!open) return { tag: "", text };
-  const tag = (open[1] ?? "").toLowerCase();
-  const tail = `</${tag}>`;
-  if (!text.toLowerCase().endsWith(tail)) return { tag: "", text };
-  return { tag, text: text.slice(open[0].length, text.length - tail.length).trim() };
+  if (!open) return text;
+  const tail = `</${(open[1] ?? "").toLowerCase()}>`;
+  if (!text.toLowerCase().endsWith(tail)) return text;
+  return text.slice(open[0].length, text.length - tail.length).trim();
 }
 
 const INSTRUCTIONS = /<project_instructions(?:\s+path="([^"]*)")?\s*>([\s\S]*?)<\/project_instructions>/gi;
@@ -90,7 +89,7 @@ const INSTRUCTIONS = /<project_instructions(?:\s+path="([^"]*)")?\s*>([\s\S]*?)<
  * `##` / `###` 抢层级。
  */
 export function ctxSectionMarkdown(src: string): string {
-  const { text } = ctxUnwrapSection(src);
+  const text = ctxUnwrapSection(src);
   return text
     .replace(INSTRUCTIONS, (_whole: string, path: string | undefined, body: string) => {
       const inner = body.trim();

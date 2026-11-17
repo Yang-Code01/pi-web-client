@@ -315,8 +315,10 @@ button.cx-chip:hover { border-color: var(--line-strong); background: var(--panel
 
 /* ---------------------------------------------------------------- 可读化正文（技能目录 / Markdown） */
 
-/* 类目过滤行右侧的「可视化 / 原文」开关 */
-.cx-viz-toggle { display: inline-flex; gap: 3px; margin-left: auto; flex: none; }
+/* 类目头行：折叠行 + 右侧「可视化 / 原文」开关（不展开类目也看得见） */
+.cx-acc-top { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.cx-acc-top > .cx-acc-head { width: auto; flex: 1 1 auto; min-width: 0; }
+.cx-viz-toggle { display: inline-flex; gap: 3px; flex: none; padding-right: 6px; }
 .cx-viz-toggle .cx-seg { padding: 1px 6px; font-size: 10px; }
 
 .cx-viz {
@@ -405,6 +407,8 @@ button.cx-chip:hover { border-color: var(--line-strong); background: var(--panel
 
 /* Markdown 正文（SKILL.md / rules / docs / project_context） */
 .cx-md { color: var(--text); font-size: 10.5px; line-height: 1.6; word-break: break-word; }
+/* 不复用 styles.css 的 .md-doc：那是整页文文档的尺度（max-width 860 / padding 24–28 / font-size 14px），
+   挤进 380px 面板要把它盖掉大半，不如按面板的 10–13px 尺度单写一套。 */
 .cx-md > :first-child { margin-top: 0; }
 .cx-md > :last-child { margin-bottom: 0; }
 .cx-md h1, .cx-md h2, .cx-md h3, .cx-md h4, .cx-md h5, .cx-md h6 { margin: 10px 0 5px; line-height: 1.35; color: var(--text); }
@@ -443,8 +447,9 @@ button.cx-chip:hover { border-color: var(--line-strong); background: var(--panel
 .cx-md a { color: var(--accent); text-decoration: none; }
 .cx-md a:hover { text-decoration: underline; }
 .cx-md img { max-width: 100%; }
-/* 注入段里只有一行粗体路径的段落 = 文件分界（见 context-viz.ts 的 ctxSectionMarkdown）。 */
-.cx-md p:has(> strong:only-child) {
+/* 注入段里「只有一条带链接的粗体路径」的段落 = 文件分界（见 context-viz.ts 的 ctxSectionMarkdown）。
+   多一层 .file-link 限定：正文里整段加粗的句子不会被误当成分界行。 */
+.cx-md p:has(> strong:only-child > .file-link:only-child) {
   margin: 10px 0 5px;
   padding-top: 6px;
   border-top: 1px solid var(--line-soft);
@@ -452,7 +457,8 @@ button.cx-chip:hover { border-color: var(--line-strong); background: var(--panel
   color: var(--muted);
   word-break: break-all;
 }
-.cx-md > p:has(> strong:only-child):first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.cx-md p:has(> strong:only-child > .file-link:only-child) a { color: inherit; }
+.cx-md > p:has(> strong:only-child > .file-link:only-child):first-child { margin-top: 0; padding-top: 0; border-top: 0; }
 
 /* ---------------------------------------------------------------- responsive */
 

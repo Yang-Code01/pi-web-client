@@ -381,13 +381,11 @@ test("ctxSkillCatalog：不像技能清单时返回空，界面据此退回原�
 });
 
 test("ctxUnwrapSection：只剥唯一且配对的首尾分节标签", () => {
-  const rules = "<rules>\n- 中文优先\n- 用 tr()\n</rules>";
-  assert.deepEqual(ctxUnwrapSection(rules), { tag: "rules", text: "- 中文优先\n- 用 tr()" });
-  const cwd = "<cwd>E:/x</cwd>";
-  assert.deepEqual(ctxUnwrapSection(cwd), { tag: "cwd", text: "E:/x" });
+  assert.equal(ctxUnwrapSection("<rules>\n- 中文优先\n- 用 tr()\n</rules>"), "- 中文优先\n- 用 tr()");
+  assert.equal(ctxUnwrapSection("<cwd>E:/x</cwd>"), "E:/x");
   // 收尾标签对不上就不动它（避免把正文里的半截标签当成外壳）
-  assert.deepEqual(ctxUnwrapSection("<rules>\n正文\n</docs>"), { tag: "", text: "<rules>\n正文\n</docs>" });
-  assert.deepEqual(ctxUnwrapSection("## 标题\n正文"), { tag: "", text: "## 标题\n正文" });
+  assert.equal(ctxUnwrapSection("<rules>\n正文\n</docs>"), "<rules>\n正文\n</docs>");
+  assert.equal(ctxUnwrapSection("## 标题\n正文"), "## 标题\n正文");
 });
 
 test("ctxSectionMarkdown：注入段按小节转 Markdown，project_context 每份文件一条分界行", () => {

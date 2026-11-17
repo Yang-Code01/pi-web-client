@@ -184,6 +184,25 @@ function empty(text: string): HTMLDivElement {
   return div("cx-empty", text);
 }
 
+/** 正文的可读化视图：`skills` = 技能目录表，`md` = Markdown，`null` = 原样 `<pre>`。 */
+type VizKind = "skills" | "md" | null;
+
+/**
+ * 按内容缓存的小表：面板每来一行日志就整块重画，解析 XML / 建 Markdown DOM 不能每次都重来。
+ * 同一 key 的 src 变了就地重算；超过上限整表清空（面板里活着的条目本来就有限）。
+ */
+function memo<V>(cap: number) {
+  const map = new Map<string, { src: string; value: V }>();
+  return (key: string, src: string, make: (src: string) => V): V => {
+    const hit = map.get(key);
+    if (hit && hit.src === src) return hit.value;
+    if (map.size > cap) map.clear();
+    const value = make(src);
+    map.set(key, { src, value });
+    return value;
+  };
+}
+
 function shortPath(path: string): string {
   if (path.length <= 64) return path;
   const parts = path.split("/");
@@ -233,8 +252,9 @@ export class ContextPanel {
   private readonly vizRaw = new Set<string>();
   /** 技能目录里展开了哪几个技能（名字 + 路径；整块重画后仍保留）。 */
   private readonly openSkills = new Set<string>();
-  private readonly skillCache = new Map<string, { src: string; catalog: SkillCatalog }>();
-  private readonly mdCache = new Map<string, { src: string; nodes: Node[] }>();
+  private readonly skillMemo = memo<SkillCatalog>(24);
+  private readonly sectionMemo = memo<string>(24);
+  private readonly mdMemo = memo<Node[]>(40);
   private readonly catQuery = new Map<string, string>();
   private readonly asstKind = new Map<string, string>();
   private toolSort: "size" | "name" = "size";
@@ -548,7 +568,12 @@ export class ContextPanel {
     });
     head.append(dot(cat.cls), span("cx-acc-label", cat.label), span("cx-acc-count", tr("{p1} 项", { p1: String(cat.count) })));
     head.append(span("cx-acc-tokens", `≈${ctxFmt(cat.tokens)}`), span("cx-acc-pct", ctxPct(cat.pct)), span("cx-caret", open ? "⌃" : "⌄"));
-    wrap.append(head);
+    // 开关放在类目头行：不展开类目也能看见「这段正文能读、也能退回原文」。
+    if (cat.items.some((it) => this.vizKind(it))) {
+      const top = div("cx-acc-top");
+      top.append(head, this.vizToggle(cat));
+      wrap.append(top);
+    } else wrap.append(head);
     if (open) {
       const body = div("cx-acc-body");
       const bar = div("cx-browser-filters");
@@ -586,22 +611,6 @@ export class ContextPanel {
           );
         }
       }
-      // 有可读化正文的类目（技能注入 / 注入内容）给一个「可视化 / 原文」开关。
-      if (cat.items.some((it) => this.vizKind(it))) {
-        const raw = this.vizRaw.has(cat.id);
-        const toggle = div("cx-viz-toggle");
-        toggle.append(
-          button(`cx-seg${raw ? "" : " on"}`, tr("可视化"), () => {
-            this.vizRaw.delete(cat.id);
-            this.render();
-          }),
-          button(`cx-seg${raw ? " on" : ""}`, tr("原文"), () => {
-            this.vizRaw.add(cat.id);
-            this.render();
-          }),
-        );
-        bar.append(toggle);
-      }
       body.append(bar);
       const needle = query.trim().toLowerCase();
       const kind = this.asstKind.get(cat.id) ?? "";
@@ -622,6 +631,23 @@ export class ContextPanel {
     return wrap;
   }
 
+  /** 类目头行上的「可视化 / 原文」开关；原文就是改造之前那段纯文本。 */
+  private vizToggle(cat: CtxBrowserCat): HTMLElement {
+    const raw = this.vizRaw.has(cat.id);
+    const toggle = div("cx-viz-toggle");
+    toggle.append(
+      button(`cx-seg${raw ? "" : " on"}`, tr("可视化"), () => {
+        this.vizRaw.delete(cat.id);
+        this.render();
+      }),
+      button(`cx-seg${raw ? " on" : ""}`, tr("原文"), () => {
+        this.vizRaw.add(cat.id);
+        this.render();
+      }),
+    );
+    return toggle;
+  }
+
   /** 一行条目：收起时是预览，展开显示 prompt / schema / 消息 / 参数 / 结果正文。 */
   private browserItem(item: CtxItem): HTMLElement {
     const open = this.openItems.has(item.id);
@@ -631,15 +657,16 @@ export class ContextPanel {
       else this.openItems.add(item.id);
       this.render();
     });
-    const viz = this.vizRaw.has(item.cat) ? null : this.vizKind(item);
-    const catalog = viz === "skills" ? this.catalogOf(item) : null;
+    let viz = this.vizRaw.has(item.cat) ? null : this.vizKind(item);
+    let catalog = viz === "skills" ? this.catalogOf(item) : null;
+    // 解析不出技能条目（旧日志 / 格式变了）时退回原文，而不是画一张空表。
+    if (viz === "skills" && !catalog?.skills.length) {
+      viz = null;
+      catalog = null;
+    }
     // 读得懂的正文，行上也换成读得懂的摘要：`<skills>` 那段 XML 的第一行对人不构成信息。
     const label = catalog ? tr("技能目录") : item.label || item.kind || "?";
-    const preview = catalog
-      ? tr("共 {p1} 个技能", { p1: String(catalog.skills.length) })
-      : viz === "md" && item.cat === "inject"
-        ? (ctxSectionMarkdown(item.content ?? "").split("\n").find((l) => l.trim()) ?? item.preview ?? "").trim()
-        : item.preview;
+    const preview = this.itemPreview(item, viz, catalog);
     const main = div("cx-item-main", span("cx-item-label", label), item.sub ? span("cx-item-sub", item.sub) : null);
     if (preview) main.append(span("cx-item-preview", preview));
     row.append(span("cx-caret", open ? "⌄" : "›"), main, span("cx-item-tokens", `≈${ctxFmt(item.tokens)}`));
@@ -660,9 +687,7 @@ export class ContextPanel {
       }
       if (item.content) {
         if (item.body?.args) detail.append(div("cx-item-section", tr("结果")));
-        if (viz === "skills" && catalog) detail.append(this.skillTable(item.cat, catalog));
-        else if (viz === "md") detail.append(this.markdownBody(item));
-        else detail.append(el("pre", "cx-item-body", item.content));
+        detail.append(this.itemBody(item, viz, catalog));
       } else if (item.preview) {
         detail.append(el("pre", "cx-item-body", item.preview));
         detail.append(div("cx-note", tr("旧版日志只保留了预览；下一次请求起可以展开正文")));
@@ -676,25 +701,43 @@ export class ContextPanel {
 
   // ---------------------------------------------------------------- 可读化正文
 
-  /** 这条正文能不能换成读得懂的视图：技能目录（`sec:skills`）/ Markdown（SKILL.md、注入段）。 */
-  private vizKind(item: CtxItem): "skills" | "md" | null {
+  /**
+   * 这条正文能不能换成读得懂的视图：技能目录（`sec:skills`）/ Markdown（SKILL.md、注入段）。
+   * 只看 kind / cat，不解析内容 —— 解析留到真要画的那一刻，由 `catalogOf` / `sectionMd` 各自缓存。
+   */
+  private vizKind(item: CtxItem): VizKind {
     if (!item.content) return null;
     if (item.kind === "skill") return "md";
-    if (item.kind !== "section") return null;
-    if (item.cat === "skill") return this.catalogOf(item).skills.length ? "skills" : null;
-    if (item.cat === "inject") return "md";
+    if (item.cat === "inject") return item.kind === "section" || item.kind === "inject" ? "md" : null;
+    if (item.cat === "skill" && item.kind === "section") return "skills";
     return null;
+  }
+
+  /** 行上的摘要：目录给条数，注入段给读得懂的第一行，其余保持原样。 */
+  private itemPreview(item: CtxItem, viz: VizKind, catalog: SkillCatalog | null): string {
+    if (catalog) return tr("共 {p1} 个技能", { p1: String(catalog.skills.length) });
+    if (viz === "md" && item.cat === "inject") {
+      const line = this.sectionMd(item).split("\n").find((l) => l.trim());
+      return (line ?? item.preview ?? "").trim();
+    }
+    return item.preview ?? "";
+  }
+
+  /** 展开后的正文：技能目录表 / Markdown / 原来的纯文本。 */
+  private itemBody(item: CtxItem, viz: VizKind, catalog: SkillCatalog | null): HTMLElement {
+    if (viz === "skills" && catalog) return this.skillTable(item.cat, catalog);
+    if (viz === "md") return this.markdownBody(item);
+    return el("pre", "cx-item-body", item.content ?? "");
   }
 
   /** 解析 `sec:skills` 的 XML；同一份 content 只解析一次（面板每来一行日志就重画一遍）。 */
   private catalogOf(item: CtxItem): SkillCatalog {
-    const src = item.content ?? "";
-    const hit = this.skillCache.get(item.id);
-    if (hit && hit.src === src) return hit.catalog;
-    if (this.skillCache.size > 24) this.skillCache.clear();
-    const catalog = ctxSkillCatalog(src);
-    this.skillCache.set(item.id, { src, catalog });
-    return catalog;
+    return this.skillMemo(item.id, item.content ?? "", ctxSkillCatalog);
+  }
+
+  /** 注入段正文 → Markdown（剥分节标签 + 文件分界行）。预览行与展开正文共用这一份结果。 */
+  private sectionMd(item: CtxItem): string {
+    return this.sectionMemo(item.id, item.content ?? "", ctxSectionMarkdown);
   }
 
   /** 技能目录：两列紧凑表（名字 / 两行说明），点一行看完整说明与 SKILL.md 路径。 */
@@ -750,17 +793,8 @@ export class ContextPanel {
 
   /** SKILL.md / 注入段走 Markdown。节点按内容缓存：面板更新很密，别每来一行就重解析一遍。 */
   private markdownBody(item: CtxItem): HTMLElement {
-    const src = item.kind === "skill" ? (item.content ?? "") : ctxSectionMarkdown(item.content ?? "");
     const box = div("cx-viz cx-md");
-    const key = `${item.id}#${item.kind === "skill" ? "skill" : "section"}`;
-    const hit = this.mdCache.get(key);
-    if (hit && hit.src === src) {
-      box.append(...hit.nodes);
-      return box;
-    }
-    const nodes = Array.from(renderMarkdown(src, { doc: true }).childNodes);
-    if (this.mdCache.size > 40) this.mdCache.clear();
-    this.mdCache.set(key, { src, nodes });
+    const nodes = this.mdMemo(`${item.id}#md`, this.sectionMd(item), (src) => Array.from(renderMarkdown(src, { doc: true }).childNodes));
     box.append(...nodes);
     return box;
   }
