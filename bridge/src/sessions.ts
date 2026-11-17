@@ -3124,6 +3124,11 @@ export class SessionManager extends EventEmitter {
     // #478：新组出现时按「组 → 最近活动天」插位，锚点是触发它的那个会话（R2/R5）；表惰性算一次。
     let days: Map<string, number> | null = null;
     const dayOf = (groupId: string) => (days ??= this.dayMap()).get(groupId) ?? -Infinity;
+    // 「已交接」标记按 id 只解析一次 handoff.json（两个分支都要它，别各读一遍）。
+    const handoffOf = (id: string): { handoffTo?: string } => {
+      const to = readHandoffTo(id);
+      return to ? { handoffTo: to } : {};
+    };
     const flag = (id: string, cwd: string, updatedAt: number) => ({
       pinned: manage.pin.includes(id),
       archived: manage.archived.includes(id),
@@ -3136,11 +3141,10 @@ export class SessionManager extends EventEmitter {
       if (s.state.scratch) continue;
       const lock = readLock(s.state.id);
       // Copy: these flags must not leak into the live state a session broadcasts.
-      const handoffTo = readHandoffTo(s.state.id);
       out.push({
         ...s.state,
         ...flag(s.state.id, s.state.cwd, s.state.updatedAt),
-        ...(handoffTo ? { handoffTo } : {}),
+        ...handoffOf(s.state.id),
         locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))),
       });
     }
@@ -3163,10 +3167,7 @@ export class SessionManager extends EventEmitter {
         origin: originOf(meta.id),
         permission: readPermission(meta.id),
         ...(meta.firstUserText ? { preview: meta.firstUserText } : {}),
-        ...((() => {
-          const to = readHandoffTo(meta.id);
-          return to ? { handoffTo: to } : {};
-        })()),
+        ...handoffOf(meta.id),
         ...flag(meta.id, meta.cwd, Math.round(meta.mtime)),
         ...(readTtyLock(meta.id) ? { locked: true } : {}),
       });
@@ -3823,12 +3824,6 @@ export class SessionManager extends EventEmitter {
       });
     }
     return runs.length;
-  }
-
-  /** 交接前把后台子代理一并终止（清单只为提示用，不阻塞流程）。 */
-  stopBackground(id: string): number {
-    const session = this.sessions.get(id);
-    return session ? this.stopBackgroundOf(session) : 0;
   }
 
   /** Composer permission button: persisted per session, picked up by the gate on the next tool call. */

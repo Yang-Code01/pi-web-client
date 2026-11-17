@@ -204,7 +204,7 @@ export interface SessionState {
   bg?: BgView | null;
   /** Launch options chosen at creation (#28), one line. */
   launch?: string;
-  /** #484：这个会话已经交接给哪个新会话（旧会话只读；有它的卡上挂「已交接」徙标，点一下跳过去）。 */
+  /** #484：这个会话已经交接给哪个新会话（旧会话只读；有它的卡上挂「已交接」徽标，点一下跳过去）。 */
   handoffTo?: string;
 }
 

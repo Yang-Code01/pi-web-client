@@ -95,6 +95,20 @@ try {
   await page.waitForSelector(".context-sheet", { timeout: 10000 });
   const actions = page.locator(".context-sheet .sheet-actions > .btn");
   check("context sheet header has 4 buttons (3 new + close)", (await actions.count()) === 4, String(await actions.count()));
+  // AGENTS.md「网格里的可隐藏子元素」：横幅 hidden 时它不占格子，底栏必须仍贴底（#484 新增的
+  // .handoff-banner 若被算进模板，输入框会被挤出 1fr —— 这个断言就是防它复发）。
+  const stick = await page.evaluate(() => {
+    const pane = document.querySelector(".chat-pane");
+    const composer = document.querySelector(".chat-pane > .composer");
+    const banner = document.querySelector(".chat-pane > .handoff-banner");
+    if (!pane || !composer) return null;
+    return {
+      bannerHidden: !banner || banner.hidden,
+      gap: Math.round(pane.getBoundingClientRect().bottom - composer.getBoundingClientRect().bottom),
+    };
+  });
+  check("banner hidden keeps the composer at the bottom", !!stick && stick.bannerHidden && Math.abs(stick.gap) <= 2, JSON.stringify(stick));
+
   check("the three entries exist", (await page.locator('.sheet-actions [data-act="context-policy"]').count()) === 1 && (await page.locator('.sheet-actions [data-act="context-compact"]').count()) === 1 && (await page.locator('.sheet-actions [data-act="context-handoff"]').count()) === 1);
 
   // --- 阈值子弹窗 ---------------------------------------------------------

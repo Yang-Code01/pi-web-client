@@ -5435,7 +5435,7 @@ export class App {
         };
         const error = el("div", "sub-error");
 
-        const compactRow = this.policyPercentRow(
+        this.policyPercentRow(
           body,
           tr("自动压缩"),
           draft.compact,
@@ -5446,7 +5446,6 @@ export class App {
           },
           "compact-percent",
         );
-        void compactRow;
 
         // 自动交接：跟随 / 开 / 关 + 百分比（三者一起算会话级覆盖）。
         const hRow = el("div", "sub-row");
@@ -5520,7 +5519,7 @@ export class App {
         body.textContent = "";
         body.append(
           el("div", "sub-note", tr("交接 = 把这一摊现场写成交接文档，再开一个同目录的新会话读它继续。旧会话会停下并归档，翻回去只是读历史。")),
-          el("div", "sub-note sub-note-dim", tr("手动交接：停当前任务 → 生成交接文档 → 新会话读文档继续。自动交接：上下文到阈值时自动做同一件事（可以连着交接多棒）。")),
+          el("div", "sub-note sub-note-dim", tr("手动交接：停当前任务 → 生成交接文档 → 新会话读文档继续。自动交接：上下文到阈值时自动做同一件事（可以连着交接多轮）。")),
         );
 
         const busy = this.handoffPhase !== null;
@@ -7315,7 +7314,7 @@ export class App {
       const src = el("span", `src-tag ${web ? "web" : "cli"}`, web ? tr("网页") : "CLI");
       src.title = web ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话");
       row.append(src);
-      // #484：交接出去的旧会话在列表里留个徙标，点一下跳到接棒的新会话。
+      // #484：交接出去的旧会话在列表里留个徽标，点一下跳到接棒的新会话。
       if (s.handoffTo) {
         const to = s.handoffTo;
         const tag = el("span", "handoff-tag", tr("已交接"));
@@ -19466,6 +19465,10 @@ function policyErrorText(error: any): string {
 }
 
 /** #484：子弹窗保存前的本地校验（和桥同一条规则，省一次往返）。 */
+/**
+ * 本地先拦一次明显的错（省一次往返）。**桥才是权威**：它按解析后的两条线校验
+ * （会话覆盖可能与项目的另一条线撞车），所以这里只判「都显式填了」的情形。
+ */
 function validatePolicyDraft(compact: number | null, handoff: number | null, handoffOn: boolean): string | null {
   for (const [value, which] of [
     [compact, "compact"],

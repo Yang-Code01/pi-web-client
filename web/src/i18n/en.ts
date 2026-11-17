@@ -3572,7 +3572,7 @@ export const en: Dict = {
   "当前模型窗口 {p1}：两条线都按它的百分比算，且不会越过 pi 自己的压缩线。": "Model window {p1}: both lines are percentages of it and never cross pi's own compaction line.",
   "恢复跟随": "Follow again",
   "手动交接": "Hand off now",
-  "手动交接：停当前任务 → 生成交接文档 → 新会话读文档继续。自动交接：上下文到阈值时自动做同一件事（可以连着交接多棒）。": "Manual: stop the current task → write the handoff document → a new session reads it and continues. Automatic: the same thing happens when the context reaches the threshold (can chain as often as needed).",
+  "手动交接：停当前任务 → 生成交接文档 → 新会话读文档继续。自动交接：上下文到阈值时自动做同一件事（可以连着交接多轮）。": "Manual: stop the current task → write the handoff document → a new session reads it and continues. Automatic: the same thing happens when the context reaches the threshold (can chain as often as needed).",
   "把现场写成交接文档，在新会话里继续": "Write the current state into a handoff document and continue in a new session",
   "按窗口百分比设置自动压缩 / 自动交接的阈值": "Set the auto-compact / auto-handoff thresholds as a share of the window",
   "未开启": "Off",

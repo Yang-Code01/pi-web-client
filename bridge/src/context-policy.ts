@@ -248,4 +248,3 @@ export function policyView(input: {
 }
 
 /** 通知里用的「哪一层说了话」，桥不译，前端自己 tr()。 */
-export const SOURCE_ORDER: SettingSource[] = ["session", "project", "global", "default"];

@@ -650,8 +650,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* 「重新接管」横幅平时 hidden（display:none 不占网格格子）。三行模板只在它露出来时才用，
    否则消息列表会掉进 auto 行、输入框掉进 1fr 行：新会话输入框飘到中间、长会话外层多出一条滚动条。 */
 .chat-pane:has(> .session-reclaim:not([hidden])) { grid-template-rows: auto minmax(0, 1fr) auto; }
-.chat-pane:has(> .composer > .chat-empty):not(:has(> .session-reclaim:not([hidden]))) { grid-template-rows: 1fr; place-items: center; }
-.session-reclaim[hidden] { display: none; }.session-reclaim {
+/* 空对话也要看两条横幅：任一条露出来就不能再用单行居中模板（否则横幅把输入框挤出 1fr）。 */
+.chat-pane:has(> .composer > .chat-empty):not(:has(> .session-reclaim:not([hidden]))):not(:has(> .handoff-banner:not([hidden]))) { grid-template-rows: 1fr; place-items: center; }
+.session-reclaim[hidden] { display: none; }
+.session-reclaim {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
   background: var(--warn-bg); border-bottom: 1px solid var(--warn-dim); color: var(--warn); font-size: 12px;
 }
@@ -666,7 +668,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .handoff-banner .btn { flex: 0 0 auto; padding: 4px 9px; font-size: 11px; }
 .chat-pane:has(> .handoff-banner:not([hidden])):not(:has(> .session-reclaim:not([hidden]))) { grid-template-rows: auto minmax(0, 1fr) auto; }
 .chat-pane:has(> .handoff-banner:not([hidden])):has(> .session-reclaim:not([hidden])) { grid-template-rows: auto auto minmax(0, 1fr) auto; }
-/* 「已交接」徒标：和源标签同一行，点一下跳到接棒的会话。 */
+/* 「已交接」徽标：和源标签同一行，点一下跳到接棒的会话。 */
 .handoff-tag { flex: none; font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--accent-dim); color: var(--accent); cursor: pointer; }
 /* 没打开会话时中栏原本整片空、那句提示贴在底边（它挂在 .composer 里）—— 看着像界面坏了。
    这一刻整块居中成一枚安静的空状态，输入框那块也不再假装可用。 */
