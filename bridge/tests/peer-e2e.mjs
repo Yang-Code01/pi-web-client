@@ -260,7 +260,7 @@ try {
   );
   log("ok quick 文字送到对端且折叠成 delivered");
 
-  // 文件三道闸仍然只认 friend：本机发不出去，对端也不会为 quick 的人写盘。
+  // D300：quick（也不是好友）照样能传文件 —— 关系不再是一道文件权限。
   const quickProbe = path.join(ROOT, "quick-probe.bin");
   fs.writeFileSync(quickProbe, Buffer.from("quick"));
   const quickFile = await fetch("http://127.0.0.1:17965/files/send", {
@@ -268,8 +268,14 @@ try {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ peer: sc, path: quickProbe }),
   });
-  if (quickFile.status !== 403) throw new Error(`quick 发文件应 403，实际 ${quickFile.status} ${await quickFile.text()}`);
-  const quickBegin = await fetch("http://127.0.0.1:17968/peer/file/begin", {
+  if (!quickFile.ok) throw new Error(`quick 发文件应放行，实际 ${quickFile.status} ${await quickFile.text()}`);
+  // 收件端开着「暂停收文件」时仍然要拒：那才是真闸门。
+  await fetch("http://127.0.0.1:17968/config", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pauseFiles: true }),
+  });
+  const pausedBegin = await fetch("http://127.0.0.1:17968/peer/file/begin", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -280,11 +286,16 @@ try {
       sha256: "0".repeat(64),
     }),
   });
-  const quickBeginBody = await quickBegin.json();
-  if (quickBegin.status !== 403 || quickBeginBody.retryable !== false) {
-    throw new Error(`quick 收件端应 403 且不可重试，实际 ${quickBegin.status} ${JSON.stringify(quickBeginBody)}`);
+  const pausedBody = await pausedBegin.json();
+  if (pausedBegin.status !== 503 || pausedBody.retryable !== true) {
+    throw new Error(`暂停收文件时应 503 且可重试，实际 ${pausedBegin.status} ${JSON.stringify(pausedBody)}`);
   }
-  log("ok quick 不放开文件：发出去 403，收件端拒写 403");
+  await fetch("http://127.0.0.1:17968/config", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pauseFiles: false }),
+  });
+  log("ok quick 也能传文件（D300）；真闸门是「暂停收文件」");
 
   const offlineQuick = await fetch("http://127.0.0.1:17965/friend", {
     method: "POST",
@@ -841,14 +852,23 @@ try {
   fs.writeFileSync(srcFile, payload);
   const wantHash = createHash("sha256").update(payload).digest("hex");
 
-  // 非好友不能发文件：C 不是 A 的好友，必须 403 且不可重试。
-  const notFriend = await fetch("http://127.0.0.1:17965/files/send", {
+  // D300：文件不再要好友。C 跟 A 没有任何关系记录（只有在线发现），照样能收发。
+  const toStranger = await fetch("http://127.0.0.1:17965/files/send", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ peer: sc, path: srcFile }),
   });
-  if (notFriend.status !== 403) throw new Error(`非好友发文件应 403，实际 ${notFriend.status} ${await notFriend.text()}`);
-  log("ok 非好友发文件被拒（403）");
+  if (!toStranger.ok) throw new Error(`非好友发文件应放行，实际 ${toStranger.status} ${await toStranger.text()}`);
+  const strangerCard = await until(
+    "C 收到非好友发来的文件卡片",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17968/messages?peer=${sa}`)).json();
+      return body.entries?.find((e) => e.kind === "file" && e.file?.name === "报告 e2e.bin") ?? false;
+    },
+    30000,
+  );
+  if (strangerCard.file.sha256 !== wantHash) throw new Error("非好友收文件的哈希不对");
+  log("ok 非好友也能收发文件（D300：好友只决定列不列在好友里）");
 
   const sendFile = await fetch("http://127.0.0.1:17965/files/send", {
     method: "POST",

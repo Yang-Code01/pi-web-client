@@ -6,7 +6,7 @@ import type { PeerIdentity } from "./history.ts";
  * 好友关系（第 3 片，决定 7/8/11）。
  *
  * `friend`（双向已确认）与 `quick`（一键快捷联系人）正交：quick 只放行 1:1 文字，
- * 不授予文件权限（D106 的闸门只看 friend）。`favorite` 是本机收藏，
+ * **没有权限含义**（D300：文件与通知都不看关系）。`favorite` 是本机收藏，
  * `outgoing`（我发出、还没被接受），「他请求我」是 `friend === false && incoming === true`。
  */
 export interface Contact {

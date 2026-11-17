@@ -64,7 +64,7 @@ const outbox = new Outbox({
 });
 messages.attachOutbox(outbox);
 
-const files = new Files({ cfg, nodeId, discovery, history, relations, log });
+const files = new Files({ cfg, nodeId, discovery, history, log });
 
 const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity });
 

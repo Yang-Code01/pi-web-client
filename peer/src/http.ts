@@ -478,13 +478,13 @@ export function createPeerServer(ctx: PeerContext): http.Server {
 
       // 第 4 片：本机侧。发文件走「传路径」而不是「传字节」——页面、peer 在同一台机器上，
       // 让 peer 直接读盘比浏览器先把 2 GB 塞进 base64 再吐出来快得多；剪贴板里的图走 upload 兜底。
+      // 不对好友做闸门（D300）：这里是**本机用户自己选的**文件和收件人，拦它没有意义。
       if (url.pathname === "/files/send" && req.method === "POST") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const body = await readBody(req).catch(() => ({}));
         const peerId = String(body?.peer ?? "");
         const file = String(body?.path ?? "");
         if (!peerId || !file) return json(res, 400, { error: "缺 peer 或 path" });
-        if (!relations.isFriend(peerId)) return json(res, 403, { error: "先加好友才能发文件" });
         try {
           const stat = fs.statSync(file);
           if (!stat.isFile()) return json(res, 400, { error: "这不是一个文件" });
@@ -500,7 +500,6 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const peerId = url.searchParams.get("peer") ?? "";
         const name = url.searchParams.get("name") ?? "粘贴的图片.png";
         if (!peerId) return json(res, 400, { error: "缺 peer" });
-        if (!relations.isFriend(peerId)) return json(res, 403, { error: "先加好友才能发文件" });
         const data = await readRaw(req, 64 * 1024 * 1024).catch(() => null);
         if (!data) return json(res, 413, { error: "太大了（上限 64 MB）" });
         const tmp = path.join(statePath("out"), `up-${randomUUID()}${path.extname(name)}`);

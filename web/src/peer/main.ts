@@ -1438,12 +1438,13 @@ function renderContactDetail(): void {
   talk.addEventListener("click", () => openThread(c.nodeId));
   acts.append(talk);
 
-  if (c.friend) {
-    const file = h("button", "btn", tr("传文件"));
-    file.type = "button";
-    file.addEventListener("click", () => void openPicker(c.nodeId, true));
-    acts.append(file);
-  }
+  // D300：传文件不再要好友，只要对方在线（文件走的是对方在线时的 HTTP 直连）。
+  const file = h("button", "btn", tr("传文件"));
+  file.type = "button";
+  file.disabled = !c.online;
+  if (!c.online) file.title = tr("对方已离线，等他上线再试");
+  file.addEventListener("click", () => void openPicker(c.nodeId, true));
+  acts.append(file);
   if (c.incoming && !c.friend) {
     const ok = h("button", "btn pri", tr("接受"));
     ok.type = "button";
@@ -1461,7 +1462,7 @@ function renderContactDetail(): void {
     if (!c.online) qadd.title = tr("对方已离线，等他上线再试");
     if (!c.quick) qadd.addEventListener("click", () => void friendAction(c.nodeId, "quick", true));
     acts.append(qadd);
-    const add = h("button", "btn", c.outgoing ? tr("再发一次申请") : tr("加为好友（可传文件）"));
+    const add = h("button", "btn", c.outgoing ? tr("再发一次申请") : tr("加为好友"));
     add.type = "button";
     add.disabled = !c.online;
     if (!c.online) add.title = tr("对方离线，等上线再申请");
@@ -1799,10 +1800,10 @@ async function patchThread(peer: string, patch: { pinned?: boolean; muted?: bool
 }
 
 function threadMenu(x: number, y: number, t: Thread): void {
-  const c = contactOf(t.nodeId);
   openMenu(x, y, [
     { label: tr("打开对话"), icon: "msg", run: () => openThread(t.nodeId) },
-    ...(c?.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(t.nodeId, true) }] : []),
+    // D300：传文件只要求对方在线，不再要求是好友。
+    ...(t.online ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(t.nodeId, true) }] : []),
     { label: t.pinned ? tr("取消置顶") : tr("置顶会话"), icon: "star", run: () => void patchThread(t.nodeId, { pinned: !t.pinned }) },
     { label: t.muted ? tr("取消免打扰") : tr("消息免打扰"), icon: "bellOff", run: () => void patchThread(t.nodeId, { muted: !t.muted }) },
     { label: tr("标记为已读"), icon: "check", run: () => void markRead(t).then(() => loadThreads()).then(() => { if (S.page === "msg") renderList(); }) },
@@ -1820,7 +1821,8 @@ function contactMenu(x: number, y: number, c: Contact): void {
     ...(!c.friend && !c.incoming && !c.quick && c.online
       ? [{ label: tr("快捷添加（可聊天）"), icon: "userPlus", run: () => void friendAction(c.nodeId, "quick", true) }]
       : []),
-    ...(c.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(c.nodeId, true) }] : []),
+    // D300：传文件只要求在线。
+    ...(c.online ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(c.nodeId, true) }] : []),
     { label: c.favorite ? tr("取消收藏") : tr("收藏"), icon: "star", run: () => void friendAction(c.nodeId, "favorite", !c.favorite) },
     ...(!c.friend && !c.quick && !c.incoming && !c.outgoing && c.online
       ? [{ label: tr("从附近移除"), icon: "trash", danger: true, run: () => void friendAction(c.nodeId, "remove") }]

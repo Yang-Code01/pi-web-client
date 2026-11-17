@@ -8,7 +8,6 @@ import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import type { Entry, History, PeerIdentity } from "./history.ts";
 import { uuidv7 } from "./messages.ts";
-import type { Relations } from "./peers.ts";
 
 /** 分块大小：1 MB。局域网里 TCP 已经帮我们做了分片，再切细只多几个 RTT。 */
 export const CHUNK = 1024 * 1024;
@@ -85,7 +84,6 @@ export class Files {
       nodeId: string;
       discovery: Discovery;
       history: History;
-      relations: Relations;
       log: (msg: string) => void;
     },
   ) {
@@ -148,7 +146,12 @@ export class Files {
 
   // ------------------------------------------------------------------ 收
 
-  /** 对方要发文件：查好友、查盘、开 token，并告诉他我这边已经有多少字节（续传用）。 */
+  /** 对方要发文件：查盘、开 token，并告诉他我这边已经有多少字节（续传用）。
+   *
+   * D300：**不看好友**。好友关系现在只决定「在不在好友列表里」，不再是一道权限。
+   * 收不收得下由下面三个真正的约束管：`pauseFiles` 开关、磁盘余量、token 只能由
+   * 收到 begin 的那一方发出来（来源校验在 `verify` 里，与好友无关）。
+   */
   begin(fromAddr: string, body: any, verify: (addr: string, who: PeerIdentity) => Promise<FileResult | null>): Promise<FileResult> {
     return (async () => {
       const from = body?.from as PeerIdentity | undefined;
@@ -161,10 +164,6 @@ export class Files {
       }
       const check = await verify(fromAddr, from);
       if (check) return check;
-      // 决定 9：文件只给好友。文字谁都能发，文件不行——写盘是不可撤销的。
-      if (!this.ctx.relations.isFriend(from.nodeId)) {
-        return { status: 403, body: { error: "先加好友才能收文件", retryable: false } };
-      }
       if (this.ctx.cfg.pauseFiles) return { status: 503, body: { error: "我这边暂停收文件了", retryable: true } };
       const free = this.free();
       if (free < size + KEEP_BYTES || free < size / KEEP_RATIO) {

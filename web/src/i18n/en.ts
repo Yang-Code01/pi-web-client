@@ -1487,7 +1487,6 @@ export const en: Dict = {
   "上一层": "Up",
   "重新广播": "Announce again",
   "免打扰": "Mute",
-  "加为好友（可传文件）": "Add as friend (files allowed)",
   "对方已离线，等他上线再试": "They're offline — try again when they're back",
   "已是快捷联系人": "Already a quick contact",
   "快捷联系人": "Quick contacts",
@@ -3585,5 +3584,6 @@ export const en: Dict = {
   "桌面通知": "Desktop notifications",
   "桌面通知已关": "Desktop notifications off",
   "桌面通知已开": "Desktop notifications on",
+  "加为好友": "Add as friend",
   "内网通 · {p1}": "LAN chat · {p1}",
 };
