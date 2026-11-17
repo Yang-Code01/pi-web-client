@@ -448,14 +448,14 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(patch),
     }),
-  /** 装 / 卸常驻记录器（注册计划任务，不要管理员）。 */
+  /** 装 / 卸常驻记录器（写 HKCU 的 Run 项，不要管理员）。 */
   sysWorkclockAgent: (action: "install" | "uninstall") =>
     req<WorkclockAgentResult>("/api/sys/workclock/agent", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action }),
     }),
-  /** 提权读 Security 4800/4801 回填历史，一次 UAC。 */
+  /** 提权读 Security 日志回填历史：解锁看 4624 的 LogonType，锁屏看 4800/4801。一次 UAC。 */
   sysWorkclockBackfill: () => req<WorkclockBackfill>("/api/sys/workclock/backfill", { method: "POST" }),
   /** 热部署：换分支 → 编译 → 换进程。写接口只在桥端本机/局域网放行，公网 403。 */
   hotdeploy: () => req<HotdeploySnapshot>("/api/hotdeploy"),

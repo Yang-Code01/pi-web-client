@@ -1145,7 +1145,10 @@ class SysPanel {
       const row = el("tr", day.workday ? "" : "is-rest");
       row.append(el("td", "sys-wk-table__date", `${day.date.slice(5)} ${weekdayOf(day.date)}`));
       row.append(el("td", "sys-table__mono", day.firstUnlock === null ? "—" : clockText(day.firstUnlock)));
-      row.append(el("td", "sys-table__mono", day.lastEnd === null ? "—" : clockText(day.lastEnd)));
+      const end = el("td", "sys-table__mono", day.lastEnd === null ? "—" : clockText(day.lastEnd));
+      // 没有锁屏事件时下班是「当天最后一次解锁」推出来的，工时只会偏小 —— 不标出来就等于默默少算（D288）。
+      if (day.endInferred) end.append(el("span", "sys-wk-tag", tr("推算")));
+      row.append(end);
       row.append(el("td", "sys-table__mono", day.firstUnlock === null ? "—" : formatDuration(day.workedMs)));
       const source = el("td");
       if (day.source) source.append(el("span", `sys-wk-tag sys-wk-tag--${day.source}`, this.sourceLabel(day.source)));
@@ -1290,8 +1293,9 @@ class SysPanel {
       const res = await api.sysWorkclockBackfill();
       if (!res.ok) this.setNotice("bad", tr("导入历史失败"));
       else if (!res.count) {
-        // 0 条不是成功提示：这台机器没开审核策略（4800/4801），日志里根本没有可读的解锁记录。
-        this.setNotice("bad", tr("日志里没有解锁记录：这台机器没开审核策略（4800/4801），只能用记录器从现在开始记"));
+        // 0 条不是成功提示：count 是「当前账号 + 交互式登录」过滤后的解锁数，所以文案不能写死天数，
+        // 也不能只说 4624 —— 4800/4801 仍在查，只是这台机器没开审计（D288）。
+        this.setNotice("bad", tr("日志里没有解锁记录：Security 日志里没查到你这个账号的交互式登录/解锁事件（4624、4800/4801），只能用记录器从现在开始记"));
       } else this.setNotice("ok", tr("导入了 {p1} 条解锁记录", { p1: res.count }));
       await this.load("workclock", true);
     } catch (err) {

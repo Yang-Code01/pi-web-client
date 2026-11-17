@@ -139,6 +139,8 @@ export interface WorkclockDay {
   met: boolean;
   unlocks: number;
   ongoing: boolean;
+  /** 下班时刻是按「当天最后一次解锁」推的（没有锁屏事件），工时只会偏小。 */
+  endInferred: boolean;
 }
 
 export interface WorkclockToday extends WorkclockDay {

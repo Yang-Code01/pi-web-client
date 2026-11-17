@@ -13,8 +13,10 @@
 import assert from "node:assert/strict";
 import {
   autostartValueName,
+  backfillScript,
   dedupeEvents,
   localDateKey,
+  LOGON_UNLOCK_TYPES,
   normalizeSettings,
   parseEventLines,
   parseLogEvents,
@@ -163,6 +165,23 @@ check("今天已锁屏：工时停在最后一次锁屏，ongoing 为假", () =>
   assert.equal(days[0].ongoing, false);
 });
 
+check("过一天只有解锁、没锁屏（日志回填）：下班是推的，工时偏小且要标 endInferred", () => {
+  const now = at(2026, 3, 12, 12);
+  const events = [ev(at(2026, 3, 10, 9), "unlock", "log"), ev(at(2026, 3, 10, 18), "unlock", "log")];
+  const days = summarizeDays(events, ALL_DAYS, now);
+  const day = days.find((d) => d.date === "2026-03-10");
+  // 下班取当天最后一次解锁（不是夜间也不取 now），工时是两上解锁之差
+  assert.equal(day.lastEnd, at(2026, 3, 10, 18));
+  assert.equal(day.workedMs, 9 * HOUR);
+  assert.equal(day.endInferred, true, "缺锁屏事件时要在页面上标「推算」");
+  // 有锁屏事件的日期不能标推算
+  const withLock = summarizeDays([ev(at(2026, 3, 10, 9), "unlock"), ev(at(2026, 3, 10, 18), "lock")], ALL_DAYS, at(2026, 3, 12, 12))[0];
+  assert.equal(withLock.endInferred, false);
+  // 今天的「已工作」算到 now，不属于推算
+  const today = summarizeDays([ev(at(2026, 3, 12, 9), "unlock")], ALL_DAYS, now)[0];
+  assert.equal(today.endInferred, false);
+});
+
 check("达标只在工作日算：休息日干满 9 小时也 met=false", () => {
   const now = at(2026, 3, 10, 23); // 2026-03-10 是周二
   const today = new Date(now).getDay();
@@ -293,6 +312,34 @@ check("autostartValueName：正式实例用原名，测试实例带状态目录�
   assert.match(a, /^pi-web-client-workclock-[0-9a-f]{6}$/);
   assert.notEqual(a, b);
   assert.equal(a, autostartValueName({ PI_WEB_STATE: "C:\\tmp\\wk-a" }, "C:\\tmp\\wk-a"));
+});
+
+check("backfillScript：解锁读 4624 的 LogonType，锁屏只认 4800/4801", () => {
+  const ps = backfillScript("C:\\Users\\a b\\log-events.json");
+  // 4624 默认就审计（4800/4801 属于 Other Logon/Logoff，默认关闭），解锁全靠它
+  assert.match(ps, /Id=4624,4800,4801/);
+  assert.match(ps, /\$unlockTypes = @\(2,7,10,11,12,13\)/);
+  // 3（网络）/4（批处理）/5（服务）混进来就会天天造出假解锁
+  for (const t of [0, 3, 4, 5]) assert.ok(!LOGON_UNLOCK_TYPES.includes(t), `LogonType ${t} 不该算解锁`);
+  for (const t of [2, 7, 11, 12, 13]) assert.ok(LOGON_UNLOCK_TYPES.includes(t), `LogonType ${t} 应该算解锁`);
+  // 字段必须走 XML：$e.Properties 取不到命名字段（login_audit 的脚本注释里也记了这一条）
+  assert.match(ps, /\[xml\]\$e\.ToXml\(\)/);
+  assert.match(ps, /TargetUserName/);
+  // 只算当前账号，DWM-1/UMFD-0 这类伪用户不能当到岗；短名按 LastIndexOf([char]92) 截
+  assert.match(ps, /WindowsIdentity\]::GetCurrent\(\)\)\.Name/);
+  // 不用 '\\\\'：-match 当正则、LastIndexOf 当字面量，两边理解不一样（实测拿不到短名）
+  assert.match(ps, /LastIndexOf\(\[char\]92\)/);
+  assert.ok(!/Split\('\\\\'\)/.test(ps), "Split('\\\\') 的重载绑定不稳，别用");
+  // 一条脏 LogonType 不能把整次回填抛死在写盘之前
+  assert.match(ps, /\[int\]::TryParse\(\[string\]\$data\['LogonType'\], \[ref\]\$lt\)/);
+  assert.ok(!/\[int\]\$data\['LogonType'\]/.test(ps), "别用裸 [int] 强转 LogonType");
+  // FilterHashtable 没有 EndTime，只能 StartTime + 上限截断
+  assert.match(ps, /-MaxEvents 50000/);
+  // 写盘路径按 PS 单引号转义，带空格也得活
+  assert.match(ps, /WriteAllText\('C:\\Users\\a b\\log-events\.json'/);
+  // 读不到日志时要能分辨「没权限」与「真没有」
+  assert.match(ps, /no_security_access/);
+  assert.match(ps, /security_read_failed/);
 });
 
 if (failures) {
