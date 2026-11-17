@@ -463,3 +463,72 @@ input.at-input[type="date"] {
   margin-left: 6px;
   font-variant-numeric: tabular-nums;
 }
+
+/* --- 提醒页：页内那条「提醒：…」提示 --- */
+
+.at-banner__text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.6;
+}
+
+/* --- 提醒页：开关、星期按钮 --- */
+
+.at-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.at-toggle input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.at-grid--reminder {
+  margin-bottom: 4px;
+}
+
+.at-field--wide {
+  grid-column: 1 / -1;
+}
+
+.at-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.at-week__btn {
+  padding: 5px 10px;
+  min-width: 44px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.at-week__btn:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+}
+
+.at-week__btn.on {
+  color: var(--bg);
+  background: color-mix(in srgb, var(--accent) 78%, var(--text));
+  border-color: transparent;
+}
+
+@container (max-width: 560px) {
+  .at-week {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}

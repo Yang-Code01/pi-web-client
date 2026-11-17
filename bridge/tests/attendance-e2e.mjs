@@ -526,11 +526,87 @@ test("隧道访客：整个模块都当不存在", async () => {
     "/api/attendance/config",
     "/api/attendance/records?start=2026-11-10&end=2026-11-16",
     "/api/attendance/overtime",
+    "/api/attendance/reminder",
   ]) {
     const res = await call("GET", route, undefined, { "x-test-tunnel": "1" });
     assert.equal(res.status, 404, route);
     assert.equal(res.json.error, "not found", route);
   }
+});
+
+test("提醒：默认关着，通道状态照实说", async () => {
+  const out = await call("GET", "/api/attendance/reminder");
+  assert.equal(out.status, 200);
+  assert.equal(out.json.rule.enabled, false);
+  assert.equal(out.json.rule.time, "18:00");
+  assert.equal(out.json.lastFiredDate, "");
+  assert.equal(out.json.pushEnabled, false, "测试里的 ctx 没塞 notifier，那就是没有通道");
+  assert.equal(out.json.pushSubscriptions, 0);
+});
+
+test("提醒：开着却不选星期，存不进去", async () => {
+  const out = await call("PUT", "/api/attendance/reminder", { enabled: true, days: [], time: "18:00", text: "交加班" });
+  assert.equal(out.status, 400);
+  assert.equal(out.json.code, "bad_reminder");
+  assert.match(out.json.error, /星期/);
+});
+
+test("提醒：存下来能读回来，时间会被规范化", async () => {
+  const out = await call("PUT", "/api/attendance/reminder", { enabled: true, days: [5, 5, 1], time: "9:05", text: "  交加班  " });
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json.rule, { enabled: true, days: [1, 5], time: "09:05", text: "交加班" });
+  const back = await call("GET", "/api/attendance/reminder");
+  assert.deepEqual(back.json.rule, out.json.rule);
+});
+
+test("提醒：关着的时候不挑毛病，先存半张脸也行", async () => {
+  const out = await call("PUT", "/api/attendance/reminder", { enabled: false, days: [] });
+  assert.equal(out.status, 200);
+  assert.equal(out.json.rule.enabled, false);
+});
+
+test("提醒：没有通知通道时，试发要明说", async () => {
+  const out = await call("POST", "/api/attendance/reminder/test");
+  assert.equal(out.status, 500);
+  assert.equal(out.json.code, "no_notifier");
+});
+
+test("提醒：定时器到点只发一次，重启也不补第二遍", async () => {
+  const { startReminderLoop } = await import("../src/attendance-reminder.ts");
+  const today = new Date();
+  const weekday = today.getDay() === 0 ? 7 : today.getDay();
+  const put = await call("PUT", "/api/attendance/reminder", { enabled: true, days: [weekday], time: "00:00", text: "该交加班了" });
+  assert.equal(put.status, 200);
+
+  const pushes = [];
+  const notifier = {
+    enabled: true,
+    subscriptionCount: () => 1,
+    push: async (title, body, url, force) => {
+      pushes.push({ title, body, url, force });
+      return { sent: 1, failed: 0 };
+    },
+  };
+
+  const stop = startReminderLoop({ notifier, url: () => "http://127.0.0.1:7864/", intervalMs: 60_000 });
+  await new Promise((r) => setTimeout(r, 120));
+  stop();
+  assert.equal(pushes.length, 1, "到点了就该发一条");
+  assert.equal(pushes[0].force, true, "要 force，否则页面开着就看不到");
+  assert.match(pushes[0].body, /该交加班了/);
+
+  const again = startReminderLoop({ notifier, url: () => "http://127.0.0.1:7864/", intervalMs: 60_000 });
+  await new Promise((r) => setTimeout(r, 120));
+  again();
+  assert.equal(pushes.length, 1, "今天已经发过，重启不许再来一遍");
+
+  const rec = await call("GET", "/api/attendance/reminder");
+  assert.equal(rec.json.lastFiredDate, new Date().toLocaleDateString("sv-SE"));
+  assert.equal(rec.json.lastSent, 1);
+
+  // 把时间挪一挪，当天的「已发过」就该让开。
+  const moved = await call("PUT", "/api/attendance/reminder", { enabled: true, days: [weekday], time: "23:59", text: "该交加班了" });
+  assert.equal(moved.json.lastFiredDate, "");
 });
 
 test("清除本地数据：配置、凭据、缓存全没，审计留着", async () => {

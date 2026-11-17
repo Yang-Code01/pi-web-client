@@ -360,3 +360,76 @@ test("round1 不产生浮点尾巴", () => {
   assert.equal(M.round1(1.449), 1.4);
   assert.equal(M.round1(1.45), 1.5);
 });
+
+// ---------------------------------------------------------------- 加班申请提醒
+
+const R = await import("../src/attendance-reminder.ts");
+
+test("weekdayOfDate：周日算 7，不是 0", () => {
+  // 2026-11-16 周一 … 2026-11-22 周日
+  assert.equal(R.weekdayOfDate(new Date(2026, 10, 16, 10, 0)), 1);
+  assert.equal(R.weekdayOfDate(new Date(2026, 10, 20, 10, 0)), 5);
+  assert.equal(R.weekdayOfDate(new Date(2026, 10, 21, 10, 0)), 6);
+  assert.equal(R.weekdayOfDate(new Date(2026, 10, 22, 10, 0)), 7);
+});
+
+test("minutesOf / clockOfMinutes 互为反函数，坏输入有就回 -1", () => {
+  assert.equal(R.minutesOf("18:00"), 1080);
+  assert.equal(R.minutesOf("09:05"), 545);
+  assert.equal(R.clockOfMinutes(1080), "18:00");
+  assert.equal(R.clockOfMinutes(545), "09:05");
+  assert.equal(R.minutesOf("24:00"), null);
+  assert.equal(R.minutesOf("18:60"), null);
+  assert.equal(R.minutesOf("18"), null);
+  assert.equal(R.minutesOf("abc"), null);
+});
+
+test("normalizeRule：缺的字段回落到上一版，坏值被夹住", () => {
+  const base = { enabled: false, days: [5], time: "18:00", text: "默认" };
+  assert.deepEqual(R.normalizeRule({}, base), base);
+  assert.deepEqual(R.normalizeRule({ enabled: true }, base), { ...base, enabled: true });
+  assert.deepEqual(R.normalizeRule({ days: [7, 1, 1, 9, 0] }, base).days, [1, 7]);
+  // 显式给空数组就是「一个都不选」，不回落；能不能存由 ruleProblem 说了算。
+  assert.deepEqual(R.normalizeRule({ days: [] }, base).days, []);
+  assert.match(R.ruleProblem({ ...base, enabled: true, days: [] }), /至少选一个星期/);
+  assert.equal(R.normalizeRule({ time: "19:30" }, base).time, "19:30");
+  assert.equal(R.normalizeRule({ time: "19:99" }, base).time, base.time);
+  assert.equal(R.normalizeRule({ text: "  " }, base).text, base.text);
+  const long = "长".repeat(R.MAX_REMINDER_TEXT + 20);
+  assert.equal(R.normalizeRule({ text: long }, base).text.length, R.MAX_REMINDER_TEXT);
+});
+
+test("ruleProblem：关着就不管，开着才挑毛病", () => {
+  const rule = { enabled: false, days: [], time: "25:00", text: "" };
+  assert.equal(R.ruleProblem(rule), null);
+  assert.match(R.ruleProblem({ ...rule, enabled: true, time: "18:00" }), /至少选一个星期/);
+  assert.match(R.ruleProblem({ ...rule, enabled: true, days: [1] }), /HH:MM/);
+  assert.equal(R.ruleProblem({ enabled: true, days: [1], time: "18:00", text: "" }), "提示内容不能空");
+});
+
+test("reminderDue：不在今天 / 没到点 / 今天已经发过，都不发", () => {
+  const rule = { enabled: true, days: [2], time: "18:00", text: "x" };
+  const now = new Date(2026, 10, 17, 18, 5);   // 周二 18:05
+  assert.equal(R.reminderDue({ ...rule, enabled: false }, "", now).fire, false);
+  assert.equal(R.reminderDue({ ...rule, days: [1] }, "", now).fire, false);
+  assert.equal(R.reminderDue({ ...rule, time: "18:30" }, "", now).fire, false);
+  assert.equal(R.reminderDue(rule, "2026-11-17", now).fire, false);
+  const hit = R.reminderDue(rule, "2026-11-14", now);
+  assert.equal(hit.fire, true);
+  assert.equal(hit.offsetMinutes, 5);
+  assert.equal(hit.late, true);
+  assert.equal(R.reminderDue(rule, "", new Date(2026, 10, 17, 18, 0)).late, false);
+});
+
+test("reminderBody：补发时说明是几点那次的", () => {
+  const rule = { enabled: true, days: [2], time: "18:00", text: "该交了" };
+  assert.equal(R.reminderBody(rule, false), "该交了");
+  assert.match(R.reminderBody(rule, true), /18:00/);
+});
+
+test("normalizeRule 后再 ruleProblem 仍然认账（顺序反了会漏检查）", () => {
+  const base = R.DEFAULT_RULE;
+  const rule = R.normalizeRule({ enabled: true, days: [3, 3], time: "17:45", text: "提交加班" }, base);
+  assert.equal(R.ruleProblem(rule), null);
+  assert.deepEqual(rule.days, [3]);
+});

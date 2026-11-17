@@ -39,6 +39,15 @@ import {
   type RowMapOptions,
 } from "./attendance-model.ts";
 import { SecretError, readSecret, removeSecret, writeSecret } from "./dpapi.ts";
+import {
+  REMINDER_TITLE,
+  normalizeRule,
+  readReminder,
+  reminderBody,
+  ruleProblem,
+  writeReminder,
+  type ReminderSink,
+} from "./attendance-reminder.ts";
 
 // ---------------------------------------------------------------- 配置
 
@@ -591,6 +600,24 @@ export interface AttendanceHttpCtx {
   publicReq: boolean;
   /** 桥内测试缝，生产不传。 */
   upstream?: string;
+  /** 发系统通知用的通道；单测里塞假的。 */
+  notifier?: ReminderSink;
+  /** 点开系统通知时打开的地址。 */
+  pageUrl?: string;
+}
+
+/** 提醒面板要的东西：规则、上一次实际发送、推送通道还通不通。 */
+function reminderPayload(ctx: AttendanceHttpCtx) {
+  const rec = readReminder();
+  return {
+    rule: rec.rule,
+    lastFiredDate: rec.lastFiredDate,
+    lastFiredAt: rec.lastFiredAt,
+    lastSent: rec.lastSent,
+    title: REMINDER_TITLE,
+    pushEnabled: ctx.notifier?.enabled ?? false,
+    pushSubscriptions: ctx.notifier?.subscriptionCount() ?? 0,
+  };
 }
 
 /** 页面用的状态摘要。密码、token 一律不出现，账号只给掩码。 */
@@ -627,6 +654,39 @@ export async function handleAttendance(
 
   try {
     const { config, problem } = readConfig();
+
+    // ---- 加班提醒
+    if (url.pathname === "/api/attendance/reminder") {
+      if (method === "GET") {
+        json(res, 200, reminderPayload(ctx));
+        return true;
+      }
+      if (method !== "PUT") return stop(res, 405, "bad_method", "不支持这个请求方法");
+      const body = await readJsonBody(req);
+      const current = readReminder();
+      const rule = normalizeRule(body, current.rule);
+      const problem2 = ruleProblem(rule);
+      if (problem2) return stop(res, 400, "bad_reminder", problem2);
+      // 改了规则就把「今天发过了」清掉：不然用户把时间往前挪，当天就再也收不到。
+      const shifted = rule.time !== current.rule.time || String(rule.days) !== String(current.rule.days);
+      writeReminder({ ...current, rule, ...(shifted ? { lastFiredDate: "" } : {}) });
+      json(res, 200, reminderPayload(ctx));
+      return true;
+    }
+
+    if (url.pathname === "/api/attendance/reminder/test") {
+      if (method !== "POST") return stop(res, 405, "bad_method", "不支持这个请求方法");
+      const sink = ctx.notifier;
+      if (!sink) return stop(res, 500, "no_notifier", "这条桥没有通知通道");
+      if (!sink.enabled) return stop(res, 409, "notify_off", "通知总开关是关的：去 pi 设置 → 通知里打开");
+      if (sink.subscriptionCount() === 0) {
+        return stop(res, 409, "no_subscription", "还没有设备订阅推送：去 pi 设置 → 通知里打开推送并允许浏览器通知");
+      }
+      const rec = readReminder();
+      const result = await sink.push(REMINDER_TITLE, reminderBody(rec.rule, false), ctx.pageUrl ?? "/", true);
+      json(res, 200, { sent: result.sent, failed: result.failed });
+      return true;
+    }
 
     // ---- 状态 / 配置
     if (url.pathname === "/api/attendance/state") {

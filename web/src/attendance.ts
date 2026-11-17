@@ -13,13 +13,13 @@
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { errText, tr } from "./i18n/index.ts";
-import type { AttendanceState, AttendanceRecords, AttendanceOvertime } from "./sysmanage-types.ts";
+import type { AttendanceState, AttendanceRecords, AttendanceOvertime, AttendanceReminder } from "./sysmanage-types.ts";
 // 日期 → 「周五」这件事本机管理已经做过一遍（sysmanage-model.ts:207），别再写一张中文星期表。
 import { weekdayOf } from "./sysmanage-model.ts";
-import { defaultRange, hoursText, overtimeSplit, reasonText, round1, spanText, stepState } from "./attendance-shared.ts";
+import { dateKey, defaultRange, hoursText, overtimeSplit, reasonText, round1, spanText, stepState } from "./attendance-shared.ts";
 import "./attendance.css";
 
-type Tab = "records" | "overtime" | "settings";
+type Tab = "records" | "overtime" | "reminder" | "settings";
 
 interface OvertimeForm {
   start: string;
@@ -67,6 +67,18 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
   let opened: string | null = null;
   /** 撤回要点两次：第一次记在这儿，第二次才真发。 */
   let cancelPending: number | null = null;
+
+  let reminder: AttendanceReminder | null = null;
+  let reminderError = "";
+  let reminderBusy = false;
+  let reminderNotice = "";
+  let reminderLoaded = false;
+  /** 页内提示条：桥那边刚发过提醒就在这里显示一条（系统通知被页面挡住时也看得见）。 */
+  let bannerText = "";
+  /** 已经提示过的那一次（按发送时刻去重），关掉就不再来。 */
+  let bannerSeen = "";
+  /** 提醒表单草稿：整页重画时不能把正在改的东西清掉。 */
+  const reminderForm = { enabled: false, days: [] as number[], time: "18:00", text: "" };
 
   // 人手动改过时长就不再自动覆盖；没改过就跟着起止时间走。
   let hoursTouched = false;
@@ -150,6 +162,18 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     if (disposed) return;
     root.replaceChildren();
     root.append(paintBar());
+    if (bannerText) {
+      const banner = el("div", "at-banner");
+      banner.append(el("span", "at-banner__text", tr("提醒：{p1}", { p1: bannerText })));
+      const known = el("button", "at-link", tr("知道了"));
+      known.type = "button";
+      known.onclick = () => {
+        bannerText = "";
+        render();
+      };
+      banner.append(known);
+      root.append(banner);
+    }
     if (notice) {
       const box = el("div", `at-notice${noticeTone === "bad" ? " bad" : ""}`);
       box.append(el("span", "at-notice__text", notice));
@@ -172,12 +196,13 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     }
     // 没配置时默认落在「还没配置」上，但「设置」页必须能进去 —— 那是唯一的配置入口，
     // 不放开的话「去设置」按钮点了什么都不会发生（第一次装的人直接卡死）。
-    if (!state.configured && tab !== "settings") {
+    if (!state.configured && tab !== "settings" && tab !== "reminder") {
       root.append(paintUnconfigured());
       return;
     }
     if (tab === "records") root.append(paintRecords());
     else if (tab === "overtime") root.append(paintOvertime());
+    else if (tab === "reminder") root.append(paintReminder());
     else root.append(paintSettings());
   }
 
@@ -187,6 +212,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     const items: [Tab, string][] = [
       ["records", tr("考勤记录")],
       ["overtime", tr("加班申请")],
+      ["reminder", tr("提醒")],
       ["settings", tr("设置")],
     ];
     for (const [id, label] of items) {
@@ -198,6 +224,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
         notice = "";
         render();
         if (id === "overtime" && !overtime) void loadOvertime();
+        if (id === "reminder" && !reminderLoaded) void loadReminder();
       };
       tabs.append(b);
     }
@@ -674,6 +701,178 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
 
   // ---- 设置
 
+  // ---------------------------------------------------------------- 提醒
+
+  async function loadReminder(silent = false): Promise<void> {
+    if (reminderBusy) return;
+    reminderBusy = true;
+    if (!silent) reminderError = "";
+    let fresh = false;
+    try {
+      const data = await api.attendanceReminder();
+      reminder = data;
+      reminderError = "";
+      if (!reminderLoaded) {
+        reminderLoaded = true;
+        reminderForm.enabled = data.rule.enabled;
+        reminderForm.days = [...data.rule.days];
+        reminderForm.time = data.rule.time;
+        reminderForm.text = data.rule.text;
+      }
+      fresh = pickBanner(data);
+    } catch (err) {
+      if (!silent || !reminder) reminderError = fail(err);
+    } finally {
+      reminderBusy = false;
+      // 静默轮询只在真的冒出新提醒时重画，否则每 60 秒白闪一下。
+      if (!disposed && (!silent || fresh)) render();
+    }
+  }
+
+  /** 今天真的发过、且还没提示过 → 返回 true（调用方据此重画）。 */
+  function pickBanner(data: AttendanceReminder): boolean {
+    if (!data.rule.enabled) return false;
+    if (data.lastFiredDate !== dateKey(new Date())) return false;
+    const key = data.lastFiredDate + " " + data.lastFiredAt;
+    if (key === bannerSeen) return false;
+    bannerSeen = key;
+    bannerText = data.rule.text;
+    return true;
+  }
+
+  function clockOf(iso: string): string {
+    if (!iso) return "";
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return "";
+    return String(at.getHours()).padStart(2, "0") + ":" + String(at.getMinutes()).padStart(2, "0");
+  }
+
+  function paintReminder(): HTMLElement {
+    const wrap = el("div", "at-section");
+    if (reminderError) wrap.append(el("div", "at-banner bad", reminderError));
+    if (reminderNotice) wrap.append(el("div", "at-banner", reminderNotice));
+    if (!reminder) {
+      wrap.append(el("div", "at-empty", reminderBusy ? tr("正在读提醒设置…") : tr("还没读到提醒设置")));
+      return wrap;
+    }
+
+    const card = el("div", "at-card");
+    card.append(el("h3", "at-card__title", tr("加班申请提醒")));
+
+    const on = document.createElement("input");
+    on.type = "checkbox";
+    on.checked = reminderForm.enabled;
+    on.dataset.field = "reminder-enabled";
+    on.onchange = () => (reminderForm.enabled = on.checked);
+    const onRow = el("label", "at-toggle");
+    onRow.append(on, el("span", "", tr("到点提醒我提交加班申请")));
+    card.append(onRow);
+
+    const grid = el("div", "at-grid at-grid--reminder");
+    // 星期：7 个按钮，点谁谁亮。存 ISO 编号（1 = 周一），别把「周一」两个字存进数据里。
+    const days = el("div", "at-week");
+    const labels = [tr("周一"), tr("周二"), tr("周三"), tr("周四"), tr("周五"), tr("周六"), tr("周日")];
+    labels.forEach((label, index) => {
+      const day = index + 1;
+      const picked = reminderForm.days.includes(day);
+      const btn = el("button", "at-week__btn" + (picked ? " on" : ""), label);
+      btn.type = "button";
+      btn.dataset.day = String(day);
+      btn.onclick = () => {
+        reminderForm.days = picked
+          ? reminderForm.days.filter((d) => d !== day)
+          : [...reminderForm.days, day].sort((a, b) => a - b);
+        reminderNotice = "";
+        reminderError = "";
+        render();
+      };
+      days.append(btn);
+    });
+    // 七个按钮要占整行，否则挤在 220px 的格子里换三行。
+    const daysField = field(tr("每周几"), days);
+    daysField.classList.add("at-field--wide");
+    grid.append(daysField);
+
+    const time = document.createElement("input");
+    time.type = "time";
+    time.className = "at-input";
+    time.dataset.field = "reminder-time";
+    time.value = reminderForm.time;
+    time.oninput = () => (reminderForm.time = time.value);
+    grid.append(field(tr("几点"), time));
+
+    const body = text("reminder-text", reminderForm.text, (v) => (reminderForm.text = v));
+    body.placeholder = tr("比如：该提交本周的加班申请了");
+    grid.append(field(tr("提示内容"), body));
+    card.append(grid);
+
+    const actions = el("div", "at-actions");
+    const save = el("button", "btn primary", tr("保存提醒"));
+    save.type = "button";
+    save.onclick = () => void saveReminder();
+    const test = el("button", "btn", tr("试一下"));
+    test.type = "button";
+    test.onclick = () => void testReminder();
+    actions.append(save, test);
+    card.append(actions);
+    wrap.append(card);
+
+    // 这条提醒到底能不能弹出去，取决于 pi 的通知总开关和推送订阅 —— 摆明面上，别让人猜。
+    const info = el("div", "at-card");
+    info.append(el("h3", "at-card__title", tr("通知通道")));
+    const kv = el("dl", "at-kv");
+    const put = (k: string, v: string) => {
+      kv.append(el("dt", "", k), el("dd", "", v));
+    };
+    put(tr("通知总开关"), reminder.pushEnabled ? tr("已打开") : tr("关着：去 pi 设置 → 通知里打开"));
+    put(
+      tr("推送订阅"),
+      reminder.pushSubscriptions > 0
+        ? tr("{p1} 台设备").replace("{p1}", String(reminder.pushSubscriptions))
+        : tr("还没有设备订阅：在 pi 设置 → 通知里打开推送"),
+    );
+    put(tr("上次提醒"), reminder.lastFiredDate ? reminder.lastFiredDate + " " + clockOf(reminder.lastFiredAt) : tr("还没发过"));
+    if (reminder.lastFiredDate) {
+      put(tr("上次到达"), reminder.lastSent > 0 ? tr("{p1} 台设备").replace("{p1}", String(reminder.lastSent)) : tr("没有设备收到"));
+    }
+    info.append(kv);
+    wrap.append(info);
+    return wrap;
+  }
+
+  async function saveReminder(): Promise<void> {
+    reminderNotice = "";
+    reminderError = "";
+    try {
+      const saved = await api.attendanceReminderSave({
+        enabled: reminderForm.enabled,
+        days: reminderForm.days,
+        time: reminderForm.time,
+        text: reminderForm.text,
+      });
+      reminder = saved;
+      reminderNotice = tr("提醒已保存");
+      reminderForm.days = [...saved.rule.days];
+      reminderForm.time = saved.rule.time;
+      reminderForm.text = saved.rule.text;
+    } catch (err) {
+      reminderError = fail(err);
+    }
+    render();
+  }
+
+  async function testReminder(): Promise<void> {
+    reminderNotice = "";
+    reminderError = "";
+    try {
+      const sent = await api.attendanceReminderTest();
+      reminderNotice = sent.sent > 0 ? tr("已发出去，去右下角看看") : tr("发出去了，但没有设备收到");
+    } catch (err) {
+      reminderError = fail(err);
+    }
+    render();
+  }
+
   function paintSettings(): HTMLElement {
     const wrap = el("div", "at-section");
     const card = el("div", "at-card");
@@ -802,9 +1001,13 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
 
   render();
   void loadState();
+  // 提醒设置顺带拉一次：页内提示条靠它判断「今天有没有发过」。
+  void loadReminder(true);
+  const reminderPoll = setInterval(() => void loadReminder(true), 60_000);
 
   const refresh = (): void => {
     void loadState();
+    void loadReminder(true);
     if (tab === "records") void loadRecords();
     else if (tab === "overtime") void loadOvertime();
   };
@@ -812,6 +1015,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
   return {
     dispose: () => {
       disposed = true;
+      clearInterval(reminderPoll);
       root.remove();
     },
     refresh,

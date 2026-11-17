@@ -305,3 +305,24 @@ export interface AttendanceCancelResult {
   needConfirm?: boolean;
   ok?: boolean;
 }
+
+/** 加班申请提醒：规则 + 上一次实际发送的情况。 */
+export interface AttendanceReminderRule {
+  enabled: boolean;
+  /** ISO 星期：1 = 周一 … 7 = 周日。 */
+  days: number[];
+  /** "HH:MM" */
+  time: string;
+  text: string;
+}
+
+export interface AttendanceReminder {
+  rule: AttendanceReminderRule;
+  /** 最近一次真的发出去的那天；空串表示还没发过。 */
+  lastFiredDate: string;
+  lastFiredAt: string;
+  /** 上次推到几台设备（0 = 没有任何订阅，通知其实没到人手里）。 */
+  lastSent: number;
+  pushEnabled: boolean;
+  pushSubscriptions: number;
+}

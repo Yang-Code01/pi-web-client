@@ -119,7 +119,7 @@ check("概况有网卡", (await page.locator(".sys-adapter").count()) > 0, Strin
 await page.locator(".sys-nav__item").nth(5).click();
 await page.locator(".at-page").first().waitFor({ timeout: 20_000 });
 check("考勤页能打开", (await page.locator(".at-page").count()) === 1);
-check("考勤页三个页签", (await page.locator(".at-tab").count()) === 3, String(await page.locator(".at-tab").count()));
+check("考勤页四个页签", (await page.locator(".at-tab").count()) === 4, String(await page.locator(".at-tab").count()));
 const toSettings = page.getByRole("button", { name: "去设置", exact: true });
 // 进页先显示「正在读状态…」，未配置态要等 /api/attendance/state 回来才画。
 await toSettings.first().waitFor({ timeout: 10_000 });
@@ -128,6 +128,10 @@ await toSettings.first().click();
 await page.locator('.at-input[data-field="apiBase"]').waitFor({ timeout: 10_000 });
 check("「去设置」真能到设置页", (await page.locator('.at-input[data-field="apiBase"]').count()) === 1);
 check("设置页有地址/账号/密码四个输入框", (await page.locator(".at-input").count()) >= 4, String(await page.locator(".at-input").count()));
+// 提醒页跟 OA 配置无关：没配过也该打得开（它是本地规则）。
+await page.locator(".at-tab", { hasText: "提醒" }).click();
+await page.locator(".at-week__btn").first().waitFor({ timeout: 10_000 });
+check("提醒页没配置也能开", (await page.locator(".at-week__btn").count()) === 7, String(await page.locator(".at-week__btn").count()));
 await page.locator(".at-page").screenshot({ path: path.join(OUT, "sysmanage-attendance.png") });
 // 回到概况，后面的用例还指望它。
 await page.locator(".sys-nav__item").nth(0).click();

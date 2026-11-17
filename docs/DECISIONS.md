@@ -5574,3 +5574,24 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 缓存只保 90 天 —— 更长的历史得联网取，但内网断线时仍有三个月可看；退避与去重都是「宁可挡一下」的取向，代价是连续改两次申请要等或改内容；DPAPI 走 PowerShell 子进程，每次加解密约几十毫秒，够用但不如原生调用，好处是零依赖、跨机器不出错。
 
 **验证：** `npm run test:attendance` 三段 69 条全绿 —— `bridge/tests/attendance-unit.mjs` 37 条（日期区间/90 天上限/退避/去重键/掩码/行映射/汇总/事由 JSON/审批链往返/草稿校验）、`bridge/tests/attendance-e2e.mjs` 20 条（假 OA + 临时 `PI_WEB_STATE`：未配置 400、配置校验、登录成功只回掩码、上游 NG 401、退避 429、只查自己、缓存放 stale、上游挂了回 502、加班申请与候选、二次确认、本地校验、七字段 body、10 分钟去重、撤回要 confirm、隧道全 404、清除后配置归零而审计仍在）、`web/tests/attendance-unit.mjs` 12 条（本地日期不跟 UTC、默认 14 天跨月跨年、审批状态三种、工时/区间/事由显示）。`npm --prefix web run typecheck`（含 `i18n-check` 与 `test:viewport`）与 `npm --prefix bridge run typecheck` 均通过。
+
+## D290 加班提醒走桥自己的定时器，当天补一次但绝不重复（用户要求 2026-11-17）
+
+**问题：** 用户要「每周几、几点、提示内容、弹系统通知」的加班申请提醒。bridge 会重启、机器会关机、笔记本会睡眠 —— 到点那一刻不一定有人在跑定时器；反过来，补发做不好就会一天弹好几遍，那就成了骚扰。
+
+**决定：**
+
+- **放在考勤页的第四个页签，不在主界面弹自己的对话框。** 提醒是「这个模块的配置」，放在它旁边最不容易找不到；页签顺序：考勤记录 / 加班申请 / 提醒 / 设置。
+- **桥里跑，不在页面里跑。** `bridge/src/attendance-reminder.ts` 的 `startReminderLoop` 每 30 秒问一次纯函数 `reminderDue(rule, lastFiredDate, now)`，`timer.unref()` 免得把进程吊着。页面关着、人不在电脑前也照样发。
+- **当天补一次、准点不算补。** `reminderDue` 只回 `{fire, late}`：`late = now − 设定时刻 > 0`，正文在补发时加「（今天 18:00 的提醒）」，让人知道是补的而不是系统抽风。早于设定时刻不发。
+- **先落盘 `lastFiredDate` 再推送。** 顺序反过来，桥中途被杀就会重启后再发一遍。发完再把实际到达数写回 `lastSent`。
+- **改了时间或星期就清掉 `lastFiredDate`。** 否则用户把 18:00 改成 17:00，当天已经「发过」的标记还在，那天就再也收不到 —— 这种「我明明设了却没响」最难查。
+- **关着的时候不挑毛病。** `ruleProblem` 在 `enabled: false` 时一律放行：先关掉、回头再填是正当用法。开着才要求「至少一个星期 / HH:MM / 不空的提示内容」。
+- **通知走 `force`。** `Notifier.push(title, body, url, force)` 的 `force` 以前只在 payload 里传、`web/public/sw.js` 不看它（有前台页面就直接 return）。这次让 sw 认它：定时提醒不该因为「页面上正好开着」就不弹 —— 用户要的是系统通知。
+- **通道状态照实说，不假装成功。** 面板直接列「通知总开关 / 推送订阅数 / 上次提醒 / 上次到达」。没订阅就明说「去 pi 设置 → 通知里打开推送」，试发时 `subscriptionCount() === 0` 回 409 而不是静默成功 —— 通知发出去没人收到，比报错更糟。
+- **隧道访客照旧 404。** 提醒路由也在 `handleAttendance` 里，`ctx.publicReq` 先返回 false 落兜底。
+- **星期存 ISO 编号（1=周一…7=周日），不存「周一」两个字。** 要能排序、能跨语言；`weekdayOfDate` 把 `getDay()` 的 0 映射成 7。
+
+**取舍：** 轮询 30 秒而不是按「下一个点」算精确定时器 —— 规则的每次改动都要重排定时器，而 30 秒的误差在这个场景里没人能感知；代价是每天至多 2880 次空转（读一个 JSON），实测可以忽略。补发只限当天，不回溯昨天以前 —— 隔天提醒「上周该交加班了」没有意义。
+
+**验证：** `bridge/tests/attendance-unit.mjs` 44 条（新增 8 条：`weekdayOfDate` 周日=7、`minutesOf`/`clockOfMinutes` 往返与坏值、`normalizeRule` 回落与夹取、`ruleProblem` 关着放行、`reminderDue` 四种不发的情形与补发偏移、`reminderBody` 补发文案、规范化后再校验）；`bridge/tests/attendance-e2e.mjs` 30 条（新增 6 条：默认关着且通道状态照实说、开着不选星期 400、规范化后读回一致、关着不挑毛病、没有通道试发 500、定时器到点只发一次且重启不补第二遍、挪时间后清掉当天标记）；`web/tests/attendance-unit.mjs` 12 条不变。i18n 增 26 个键（en/ja 齐）；`npm --prefix web run typecheck`（含 `i18n-check` 3394 键 × 3 语言、`test:viewport`）、`npm --prefix bridge run typecheck`、`npm --prefix web run build`、`npm run build:bridge` 全过；测试实例 17876 上真界面截过三张（记录/加班申请/提醒），提醒页的七个星期按钮在 1400px 下排成一行、窄容器改四列。
