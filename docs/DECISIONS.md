@@ -5554,7 +5554,6 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 记录器仍是主来源（`event` > `poll` > `log` > `start`，D246）；4624 只是把「历史」这一层从 0 条变成有数据。代价：一次解锁可能产生 2 条重复 4624（login_audit 的注释记了本机这个现象），靠 `dedupeEvents` 的同 kind 5 秒合并吃掉；RDP 连进来算到岗（「连上就开始干活」更贴工时口径，但有人可能不认同）；换账号后只看得到当前账号的历史；回填得到的历史只有上班时刻准、下班时刻是推的。
 
 **验证：** `node bridge/tests/workclock-unit.mjs` 新增用例断言生成脚本含 `Id=4624,4800,4801`、`@(2,7,10,11,12,13)`、XML 取值、当前用户过滤、`-MaxEvents 50000`，且 `LOGON_UNLOCK_TYPES` 不含 3/4/5；PowerShell 解析器（`[Parser]::ParseFile`，用 `.scratch/parse-check.ps1`）对生成脚本报 0 错；**真机回填条数未自动验证** —— 要弹一次 UAC，留给用户点「导入历史」确认。
-
 ## D289 历史里点一条提交弹详情小窗，形状是「主从双栏」（用户要求 2026-11-17）
 
 **问题：** 分支工作台的「历史」里，一行只有短 SHA、标题、作者时间，想知道这条提交到底改了什么，只能去命令行 `git show`，或者切到「差异」页把对照设成这条提交 —— 后者会丢掉当前对照、也不显示提交说明与提交元信息。用户要求：点提交履历能弹出一个小 dialog 看详细信息，关掉后回到分支管理的 dialog。
@@ -5608,7 +5607,65 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 
 **验证：** `node bridge/tests/wsorder-unit.mjs`（11 通过）、`node bridge/tests/workspace-unit.mjs`（41，含 5 个 #478 用例）、`node bridge/tests/sessions-day-order.mjs`（5，真会话文件 + `utimesSync` 控 mtime）、`node web/tests/wstabs-unit.mjs`（47，含 6 个 `birthReveal` 用例）；`npm run typecheck`、`npm run build` 通过。
 
-## D291 问卷也进轮次缩略图：一份问卷一格，文字是「问卷概况：第一题 · 等 N 题」（用户要求 2026-11-17）
+## D291 考勤做成「本机管理」第六页，OA 形状全部搬进 config，密码用 DPAPI（用户要求 2026-11-17）
+
+**问题：** 用户所在公司的考勤/OA 系统要把「我的考勤」和「加班申请」搬进 pi-web 的本机管理里。这套系统是内网私有部署，接口形状是它自己的（`token` 头、`query_type` 四种模式、加班申请要两级审批人 id），而上游是开源项目 —— 任何公司标识、域名、工号都不能进仓库。
+
+**决定：**
+
+- **独立第六页，不动「上下班」。** `web/src/sysmanage.ts` 的 `SysSection` 加 `"attendance"`。已有的「上下班」是拿 Windows 解锁事件算本机工时（D246/D288），与公司考勤是两套账，混在一起会让人以为在核对同一件事。
+- **页面只认字段名，不认字段含义。** `config.json` 里存 `apiBase` / `pageBase` / `account` / `endpoints{login,records,overtimeInit,overtimeAdd,overtimeCancel,leaders}` / `fields{...}`。代码里没有一处公司域名字面量，换一家 OA 只改配置。
+- **`query_type` 只能是 3。** 实测 0/1 会忽略日期参数、固定回最近一段（换日期结果一模一样），2 返回空，只有 3 尊重 `start_dt`/`end_dt`。页面强制 3 并把区间裁到 90 天。
+- **`keyword` 必须填自己的 `user_id`。** 空串会让上游抛 `1292 (22007): Truncated incorrect INTEGER value: ''`，回填工号也行但没必要 —— 只查自己，不等上游的权限兜底。
+- **两次确认、十分钟去重。** 加班提交第一次只回预览（`needConfirm` + 链路 + 小时数），第二次带 `confirm` 才真发；成功后按「账号+时段+时长+事由」记账 10 分钟，同样的内容再提交直接 409，避免连点两下造两张单。撤回同理。
+- **密码落 DPAPI，页面只见掩码。** `credentials.bin` 是 `PWDP1` + 长度 + `[ProtectedData]::Protect(CurrentUser)` 密文；页面拿到的永远是 `TS***1` 这种掩码。PowerShell 只用 `Add-Type -AssemblyName System.Security`，不引原生依赖；非 Windows 退化成 `PWPL1` 明文 + 0600（并在设置页写明）。
+- **登录失败即停。** 10 分钟窗口内最多 3 次，第一次等 1s 再翻倍、封顶 60s；登录 URL 把密码放在 query 里（上游形状），所以 **`oaFetch` 的错误消息一律不带 URL**，token 与密码都不进日志、不进审计、不进模型上下文。
+- **隧道访客整页隐身。** 命中 `ctx.publicReq` 直接 `return false`，落到 `bridge/src/index.ts` 的兜底 404 —— 不是 403（403 等于承认这里有个功能）。单测里用 `x-test-tunnel: 1` 头复现。
+- **缓存 90 天 + 手动清除。** 记录按天覆盖写 `cache.json`，超过 90 天裁掉；上游挂了就退缓存并标 `stale`；「清除本地数据」清配置/凭据/缓存但保留 `audit.jsonl`（那是「做过什么」的账，不是数据）。
+
+**取舍：** 缓存只保 90 天 —— 更长的历史得联网取，但内网断线时仍有三个月可看；退避与去重都是「宁可挡一下」的取向，代价是连续改两次申请要等或改内容；DPAPI 走 PowerShell 子进程，每次加解密约几十毫秒，够用但不如原生调用，好处是零依赖、跨机器不出错。
+
+**验证：** `npm run test:attendance` 三段 69 条全绿 —— `bridge/tests/attendance-unit.mjs` 37 条（日期区间/90 天上限/退避/去重键/掩码/行映射/汇总/事由 JSON/审批链往返/草稿校验）、`bridge/tests/attendance-e2e.mjs` 20 条（假 OA + 临时 `PI_WEB_STATE`：未配置 400、配置校验、登录成功只回掩码、上游 NG 401、退避 429、只查自己、缓存放 stale、上游挂了回 502、加班申请与候选、二次确认、本地校验、七字段 body、10 分钟去重、撤回要 confirm、隧道全 404、清除后配置归零而审计仍在）、`web/tests/attendance-unit.mjs` 12 条（本地日期不跟 UTC、默认 14 天跨月跨年、审批状态三种、工时/区间/事由显示）。`npm --prefix web run typecheck`（含 `i18n-check` 与 `test:viewport`）与 `npm --prefix bridge run typecheck` 均通过。
+
+## D292 加班提醒走桥自己的定时器，当天补一次但绝不重复（用户要求 2026-11-17）
+
+**问题：** 用户要「每周几、几点、提示内容、弹系统通知」的加班申请提醒。bridge 会重启、机器会关机、笔记本会睡眠 —— 到点那一刻不一定有人在跑定时器；反过来，补发做不好就会一天弹好几遍，那就成了骚扰。
+
+**决定：**
+
+- **放在考勤页的第四个页签，不在主界面弹自己的对话框。** 提醒是「这个模块的配置」，放在它旁边最不容易找不到；页签顺序：考勤记录 / 加班申请 / 提醒 / 设置。
+- **桥里跑，不在页面里跑。** `bridge/src/attendance-reminder.ts` 的 `startReminderLoop` 每 30 秒问一次纯函数 `reminderDue(rule, lastFiredDate, now)`，`timer.unref()` 免得把进程吊着。页面关着、人不在电脑前也照样发。
+- **当天补一次、准点不算补。** `reminderDue` 只回 `{fire, late}`：`late = now − 设定时刻 > 0`，正文在补发时加「（今天 18:00 的提醒）」，让人知道是补的而不是系统抽风。早于设定时刻不发。
+- **先落盘 `lastFiredDate` 再推送。** 顺序反过来，桥中途被杀就会重启后再发一遍。发完再把实际到达数写回 `lastSent`。
+- **改了时间或星期就清掉 `lastFiredDate`。** 否则用户把 18:00 改成 17:00，当天已经「发过」的标记还在，那天就再也收不到 —— 这种「我明明设了却没响」最难查。
+- **关着的时候不挑毛病。** `ruleProblem` 在 `enabled: false` 时一律放行：先关掉、回头再填是正当用法。开着才要求「至少一个星期 / HH:MM / 不空的提示内容」。
+- **通知走 `force`。** `Notifier.push(title, body, url, force)` 的 `force` 以前只在 payload 里传、`web/public/sw.js` 不看它（有前台页面就直接 return）。这次让 sw 认它：定时提醒不该因为「页面上正好开着」就不弹 —— 用户要的是系统通知。
+- **通道状态照实说，不假装成功。** 面板直接列「通知总开关 / 推送订阅数 / 上次提醒 / 上次到达」。没订阅就明说「去 pi 设置 → 通知里打开推送」，试发时 `subscriptionCount() === 0` 回 409 而不是静默成功 —— 通知发出去没人收到，比报错更糟。
+- **隧道访客照旧 404。** 提醒路由也在 `handleAttendance` 里，`ctx.publicReq` 先返回 false 落兜底。
+- **星期存 ISO 编号（1=周一…7=周日），不存「周一」两个字。** 要能排序、能跨语言；`weekdayOfDate` 把 `getDay()` 的 0 映射成 7。
+
+**取舍：** 轮询 30 秒而不是按「下一个点」算精确定时器 —— 规则的每次改动都要重排定时器，而 30 秒的误差在这个场景里没人能感知；代价是每天至多 2880 次空转（读一个 JSON），实测可以忽略。补发只限当天，不回溯昨天以前 —— 隔天提醒「上周该交加班了」没有意义。
+
+**验证：** `bridge/tests/attendance-unit.mjs` 44 条（新增 8 条：`weekdayOfDate` 周日=7、`minutesOf`/`clockOfMinutes` 往返与坏值、`normalizeRule` 回落与夹取、`ruleProblem` 关着放行、`reminderDue` 四种不发的情形与补发偏移、`reminderBody` 补发文案、规范化后再校验）；`bridge/tests/attendance-e2e.mjs` 30 条（新增 6 条：默认关着且通道状态照实说、开着不选星期 400、规范化后读回一致、关着不挑毛病、没有通道试发 500、定时器到点只发一次且重启不补第二遍、挪时间后清掉当天标记）；`web/tests/attendance-unit.mjs` 12 条不变。i18n 增 26 个键（en/ja 齐）；`npm --prefix web run typecheck`（含 `i18n-check` 3394 键 × 3 语言、`test:viewport`）、`npm --prefix bridge run typecheck`、`npm --prefix web run build`、`npm run build:bridge` 全过；测试实例 17876 上真界面截过三张（记录/加班申请/提醒），提醒页的七个星期按钮在 1400px 下排成一行、窄容器改四列。
+
+## D293 加班申请的默认值从「我上一次的申请」推，二级审批人只读（用户要求 2026-11-17）
+
+**问题：** 用户比着 OA 的新建单据说三件事：时间要按日期类型给默认值（工作日 18:00–22:00、周末 09:00–18:00）；一级审批人要有默认值；二级审批人该是固定的、不可改，"应该有 api"。
+
+**决定：**
+
+- **时间窗由日期类型算，不记住上次。** `defaultWindow(dateKey)`：周六日 `09:00–18:00`、其余 `18:00–22:00`。换日期就整段重给、时长跟着自动算；人手动改过 `start`/`end` 就不再覆盖。理由是 OA 自己也是这个规律，而"上次用过的时间"在跨周末时几乎总是错的。
+- **一级审批人的默认值取「我上一次加班申请的 idx1」。** 实测最新一条 117477 的 idx1 `江伟晨-JS0654` 与 OA 新建单据的默认值逐字一致 —— 这说明 OA 的默认值就是"上一单的那一位"，而不是某个组织架构接口。页面仍可改，选择按工号记在 `localStorage`（`pi-web-attendance:l1`），下次优先用它（前提是还在候选里）。
+- **二级审批人取「上一次申请的 idx2 的完整名单」，只读展示。** `workflow_list[code]` 里 `workflow_user_name` 是这一级"应该是谁"的完整名单（`李庆-JS0031,徐凯-JS0716`），`handle_user_name` 只有真正点过的那一个。用前者，与 OA 弹窗的两枚只读框一致。删掉原来的多选 + `L2_KEY`。
+- **`GET /in/roles/depart_leader_data` 只当兜底，绝不当权威。** 同一天同一 token 连取该端点，`last.depart_manager` 从 `[李庆-JS0031, 徐凯-JS0716]` 变成了 `[王俊-JS0055, 刘琳-SH0355, 姜祯-SH0654]`（连打三次都一样），说明它跟"我这个部门审批谁"不是一回事。只有在历史申请里找不到 idx2 时才用它，且面板上写明「OA 没给这级的固定审批人，提交前先在 OA 网页上确认一次」。
+- **审批人名字按工号对 id，对不上就丢，绝不猜。** `parsePerson` / `resolvePeople` 逐字比对工号，名字只在没有工号时才用来兜底 —— 工号是唯一键，名字会重。
+- **这些都在桥端算，前端只拿结果。** `GET /api/attendance/overtime` 直接回 `fixedL2` / `defaultL1`；页面不再自己拼"上一单"的逻辑，免得两处口径不一致。
+
+**取舍：** 一级审批人没有真正"系统给的默认值"这件事本身有点可疑 —— 如果哪天 OA 改成按当前时间点的组织架构算，这个推断会滞后。但三个可能的来源（`apply_approvers` 空数组、`workflow/*` 全部 `权限不足`、`depart/user/c` 只有人数）都试过，历史单据目前是唯一能验证与 OA 一致的口径。二级审批人固定名单一旦变了（比如换了部门负责人），我们的展示会滞后到下一次申请 —— 这可以接受：提交那一刻 OA 自己会按最新组织架构重算，我们显示的只是"应该是谁"。
+
+**验证：** `bridge/tests/attendance-unit.mjs` 49 条（新增 `parsePerson` 7 种切法、`resolvePeople` 五种匹配、`readDepartManagers`、`lastStepPeople`）；`bridge/tests/attendance-e2e.mjs` 30 条（假 OA 审批链补 idx2，`roles` 端点的 `last.depart_manager` **故意给一个不在候选表里的人**当路标，断言 `fixedL2` 仍是历史里的两位 —— 证明没走 roles）；`web/tests/attendance-unit.mjs` 14 条（新增 `defaultWindow`）。`sysmanage-ui` 90 项 ok。测试实例 17876 上改日期实测：11-17（周二）自动 18:00–22:00 / 4 小时，11-21（周六）自动 09:00–18:00 / 9 小时，11-18（周三）又回 18:00–22:00；一级选中上一单那位、二级两枚只读标签，`select[multiple]` 计数为 0。
+
+## D294 问卷也进轮次缩略图：一份问卷一格，文字是「问卷概况：第一题 · 等 N 题」（用户要求 2026-11-17）
 
 **问题：** 右侧刻度带原来只认 `item.kind === "user"`（`web/src/chat.ts` 的 `noteTurn` 与 `bridge/src/history.ts` 的 `turnIndex`），问答卡（`ask_user_question` / 旧 `question` / `questionnaire`）不进带子。用户要求：问卷也是用户输入，要进刻度表；同一份问卷的多道题只显示一次；行文用「问卷概况：…」。不做 ghost 的话，只有已经滚到过的那几张问卷能出现，整段会话的问卷位置与编号都对不上（#243 的索引本来就是全量的）。
 
