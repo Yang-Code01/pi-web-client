@@ -5684,3 +5684,23 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 
 **验证：** `bridge/tests/history-page-unit.mjs` 断言索引里 ask 的 kind / 标题 / 题数、旧工具名、普通工具不占格、多题只有一条、空 `questions` 回退与 `prompt`/`label` 的标题顺序；`web/tests/ask-card-unit.mjs` 断言 `title` 与桥同序的回退、`askTurnLabel` 四种文案、折行与整行 80 字截断（多题仍保住「等 N 题」）；`probes/rail-ask.mjs` 验四格（2 用户 + 2 问卷，多题只占一格）、ghost 行文字、悬停亮问答卡、点 ghost 翻页到货；`npm --prefix web run typecheck`（含 i18n 与 viewport 守卫）与 `npm --prefix bridge run typecheck` 通过。
 
+## D295 上下文里的 system 段换成可读化视图，先看数据再定形状（用户要求 2026-11-17）
+
+**问题：** 上下文浏览器里「技能注入」那一行展开后，是一整段 `<pre>`：`<skills>` 那份 XML 有 22KB、42 条技能，描述里的引号还是 `&quot;` / `&apos;` 转义实体；「注入内容」（rules / docs / addendum / project_context）其实是原样的 Markdown，只是外面裹了一层分节标签。用户要的是能读的页面，不是代码块。
+
+**决定：**
+
+- **先做一次性原型再定形状**：从真 ctxlog 里抽出那次请求的 `sec:skills`，摆出四个候选（A 卡片流、B 两列紧凑表、C 折叠列表、D 按目录分组），用同样的真实数据截图给用户挑；用户挑 **B**：一屏放得下更多、名字单行省略、说明两行。
+- **列表自己滚，高度 380px**：`.cx-viz { max-height: 380px; overflow: auto }`。同时要 `.cx-acc:has(.cx-viz) { max-height: none }` —— 手风琴本身有 345px 上限（`:201`），两层一起就是两条滚动条。
+- **点击就地展开，不整块重画**：`skillRow` 只 toggle 自己的 `.open` 与路径行。面板每次来日志行都会 `render()` 重建整棵树，展开走重画会把 42 行列表的滚动位置甩回顶部。
+- **转义实体在界面上解掉**：`decodeEntities` 解 `&quot; &apos; &amp; &lt; &gt; &nbsp;` 与数字实体（`&#39;` / `&#x27;`），其余命名实体原样保留 —— 模型看到的就是解码后的文字，界面不该跟模型不一致。
+- **注入类目一律当注入**：`cat === "inject"` 下不管 kind 是 `section` 还是 `inject`（custom / branchSummary / compactionSummary）都走 Markdown，别只认 section。
+- **分节标签按「唯一且配对」剥**：`ctxUnwrapSection` 只在首行是 `<tag …>` 且末尾是 `</tag>` 时剥；`<rules>…</docs>` 这种对不上的不动，避免把正文里的半截标签当成外壳。
+- **project_context 按文件分界**：`<project_instructions path="…">` 换成一条粗体路径行，而不是 `##` 标题 —— AGENTS.md 自己就有 `##` / `###`，用标题会和文件内层级打架（先用 `##` 试过，h2 里叠出 `## Worktree 工作流`）。
+- **保留原文出口**：「可视化 / 原文」开关放在类目**头行**（不展开类目也看得见），默认可视化，切到原文就是原来那段 `<pre>`；技能目录解析不出条目时这一行自动退回原文。
+- **解析与渲染都按内容缓存**：一个 `memo(cap)` 小表按 id + 内容缓存三样东西（技能目录、注入段 Markdown、Markdown 节点）。日志很密，22KB XML 每行重解析一次会卡；行上的摘要与展开正文共用同一份转换结果，预览行不能每次重画都重算。
+- **顺手删掉 `statsCard` 没用到的 `token` 入参**：改这块时 delta lint 会把它报成新错误，不删每次都要绕。
+
+**取舍：** 代价是多一个纯函数模块（`web/src/context-viz.ts`）和两套样式；技能说明两行 clamp 意味着长描述（最长 1053 字）默认看不全，要靠点开或过滤。没选「按目录分组」（D）—— 42 条里 34 条来自同一个目录，分组头一天就把列表撑开了。
+
+**验证：** `node --test web/tests/context-unit.mjs` 新增 5 组用例（实体解码、`<skills>` 解析去重、标签剥除的配对判定、注入段转 Markdown 后每份 AGENTS.md 一条分界行）；`npm --prefix web run typecheck`（tsc + i18n-check 3329 键 × 3 语 + viewport 守卫）通过，`context` / `layout` / `rules` 三个单测文件 31 过。界面用一次性 harness（真 ctxlog 的那次请求 + 全部 body 行，Vite 起在 5191）在 Chromium 里核过：42 行、`.cx-viz` 计算高度 380 / 可滚、手风琴 `max-height: none`、行展开解 clamp 并显示 `SKILL.md` 路径、过滤 `hyperframes` → `10 / 42 个技能`、切原文恢复 XML、`sec:rules` 出 `UL/LI/CODE`、窄容器（root 573px）技能行转单列、页面无 console 错误。harness 的三个文件用完即删，不进 main。

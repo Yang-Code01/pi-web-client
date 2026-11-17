@@ -3553,6 +3553,11 @@ export const en: Dict = {
 "正在读提醒设置…": "Reading the reminder settings…",
 "还没读到提醒设置": "Could not read the reminder settings",
 "提醒：{p1}": "Reminder: {p1}",
-
-
+  // D295：上下文面板里「可视化 / 原文」的视图文案。
+  "可视化": "Readable",
+  "原文": "Raw",
+  "技能目录": "Skill catalog",
+  "共 {p1} 个技能": "{p1} skills",
+  "{p1} / {p2} 个技能": "{p1} / {p2} skills",
+  "没有匹配的技能": "No matching skills",
 };
