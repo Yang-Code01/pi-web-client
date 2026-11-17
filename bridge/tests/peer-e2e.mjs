@@ -844,6 +844,52 @@ try {
   if (presence.status !== "online") throw new Error(`页面心跳之后应为 online，实际 ${JSON.stringify(presence)}`);
   log("ok 本机状态（online/away）进 /status 与在线表");
 
+  // ---- D303：改自己的名字 / 改对方的备注名 ----
+  const renameMe = await fetch("http://127.0.0.1:17965/config", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ nickname: "甲改" }),
+  });
+  if (!renameMe.ok) throw new Error(`改自己的名字失败：${renameMe.status} ${await renameMe.text()}`);
+  const renamedMe = await renameMe.json();
+  if (renamedMe.nickname !== "甲改") throw new Error(`/config 没回新名字：${JSON.stringify(renamedMe.nickname)}`);
+  await until(
+    "对端的在线表里看到新名字",
+    async () => {
+      const s = await status(17966);
+      return s?.online?.find((p) => p.nodeId === sa)?.nickname === "甲改" ? s : false;
+    },
+    12000,
+  );
+  log("ok 改自己的名字：立刻广播，对端在线表跟着变");
+
+  // 空名字要拒。
+  const emptyName = await fetch("http://127.0.0.1:17965/config", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ nickname: "   " }),
+  });
+  if (emptyName.status !== 400) throw new Error(`空名字应 400，实际 ${emptyName.status}`);
+  log("ok 空名字被拒（400）");
+
+  // 备注名：只在本机，且不会被对方的 announce 冲掉。
+  const renamer = await fetch("http://127.0.0.1:17966/friend", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sa, action: "rename", name: "老甲" }),
+  });
+  if (!renamer.ok) throw new Error(`改备注名失败：${renamer.status} ${await renamer.text()}`);
+  const remark = async () =>
+    (await (await fetch("http://127.0.0.1:17966/contacts")).json()).contacts?.find((c) => c.nodeId === sa)?.nickname;
+  if ((await remark()) !== "老甲") throw new Error(`备注名没生效：${await remark()}`);
+  // 等 A 再 announce 一两轮：备注名不能被对方的昵称盖掉。
+  await new Promise((r) => setTimeout(r, 2500));
+  if ((await remark()) !== "老甲") throw new Error(`备注名被对方的 announce 覆盖了：${await remark()}`);
+  // 对方那边看不到这条备注（它只在本机）。
+  const onA = (await (await fetch("http://127.0.0.1:17965/contacts")).json()).contacts?.find((c) => c.nodeId === sb);
+  if (onA?.nickname === "老甲") throw new Error("备注名被同步到了对方");
+  log("ok 备注名只在本机生效，且不被对方的改名覆盖");
+
   // ---- 第 4 片：文件。先造一个 3 MB 的二进制文件（跨 3 个分块），发过去逐字节比对。 ----
   const { createHash } = await import("node:crypto");
   const payload = Buffer.alloc(3 * 1024 * 1024 + 137);

@@ -892,11 +892,12 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/peer/friend" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       const action = String(body?.action ?? "");
-      const actions = ["request", "quick", "accept", "favorite", "remove"] as const;
+      const actions = ["request", "quick", "accept", "favorite", "remove", "rename"] as const;
       type FriendAction = (typeof actions)[number];
       if (!(actions as readonly string[]).includes(action)) return json(res, 400, { error: "未知动作" });
       try {
-        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as FriendAction, Boolean(body?.on)));
+        const name = typeof body?.name === "string" ? body.name : undefined;
+        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as FriendAction, Boolean(body?.on), name));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
@@ -988,6 +989,27 @@ async function main(): Promise<void> {
       if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
       return json(res, 200, await openWithApp(abs));
     }
+    // 内网通的表格预览（D303）：内网通页面没有会话，拿不到 `/api/preview` 发的表 grant，
+    // 所以这里用 peer 的文件索引解析出路径、当场登记一张只读凭据交给它。只认 .xlsx/.xlsm
+    // （和 `bridge/src/preview.ts` 的 SHEET 同一份口径），别的格式一律走页面自己的 `<pre>` / `<img>`。
+    if (url.pathname === "/api/peer/sheet" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      const abs = await peer.filePath(String(body?.id ?? ""));
+      if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
+      const ext = path.extname(abs).toLowerCase();
+      if (ext !== ".xlsx" && ext !== ".xlsm") return fail(res, 400, "peer_sheet", "这不是表格文件");
+      let mtime = 0;
+      try {
+        mtime = fs.statSync(abs).mtimeMs;
+      } catch {
+        return fail(res, 404, "peer_file", "文件已经不在原处了");
+      }
+      const token = randomUUID();
+      registerFileGrant(token, abs, mtime);
+      return json(res, 200, { ok: true, token, name: path.basename(abs), ext, path: abs });
+    }
+
     // 内网通的「打开所在位置」：让这台机器的文件管理器把那份文件选出来（D302）。
     // 自己发的文件指向原路径、收到的在收件箱，两边都靠 peer 的文件索引解析 —— 页面递不上任意路径。
     if (url.pathname === "/api/peer/reveal" && req.method === "POST") {
@@ -1023,10 +1045,12 @@ async function main(): Promise<void> {
     }
     if (url.pathname === "/api/peer/config" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
-      const patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean } = {};
+      const patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; nickname?: string } = {};
       for (const key of ["hidden", "dnd", "pauseFiles"] as const) {
         if (typeof body?.[key] === "boolean") patch[key] = body[key];
       }
+      // D303：自己的名字。空串 / 全空白由 peer 那边拒（回 400 的文案）。
+      if (typeof body?.nickname === "string") patch.nickname = body.nickname;
       try {
         return json(res, 200, await peer.setConfig(patch));
       } catch (err) {

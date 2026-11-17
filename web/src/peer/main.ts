@@ -1221,6 +1221,148 @@ async function recall(e: Entry, t: Thread): Promise<void> {
   }
 }
 
+/** 一次取多少行 / 列：先给一屏，往后按 200 行要。 */
+const SHEET_ROWS = 200;
+const SHEET_COLS = 26;
+
+/** 0 → A、25 → Z、26 → AA。表头那一行用。 */
+function colName(i: number): string {
+  let n = i + 1;
+  let out = "";
+  while (n > 0) {
+    const r = (n - 1) % 26;
+    out = String.fromCharCode(65 + r) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+interface SheetCellView {
+  r: number;
+  c: number;
+  t: string;
+  a?: "l" | "c" | "r";
+  k?: string;
+}
+
+/**
+ * 表格预览（D303）：内网通页面**只读**地看一份 xlsx/xlsm。
+ *
+ * 为什么不直接用主界面的 `SheetDialog`：它是给会话看的（要 `/api/preview` 发的 grant），
+ * 还带着编辑/合并/条件格式那一整套和主界面的样式表；塞进内网通弹层既拿不到 grant，也会
+ * 把两套主题搅在一起。这里只回答「表里是什么」：表头 + 行列号 + 格式化后的值。
+ * 要编辑仍然点「下载」再用 pi 打开。
+ */
+async function renderSheet(host: HTMLElement, e: Entry): Promise<void> {
+  const fail = (err: unknown): void => {
+    host.append(h("div", "none", tr("读不出来：{p1}", { p1: String((err as Error)?.message ?? err) })));
+  };
+  let token = "";
+  try {
+    const grant = await postJson<{ token: string }>("/api/peer/sheet", { id: e.id });
+    token = grant.token;
+  } catch (err) {
+    return fail(err);
+  }
+  let meta: { sheets?: { name: string; rows: number; cols: number }[] };
+  try {
+    meta = await postJson<{ sheets?: { name: string; rows: number; cols: number }[] }>("/api/sheet/meta", { token });
+  } catch (err) {
+    return fail(err);
+  }
+  const list = (meta.sheets ?? []).filter((s) => s && s.name);
+  if (!list.length) {
+    host.append(h("div", "none", tr("这本书里没有可看的表")));
+    return;
+  }
+  const tabs = h("div", "sheettabs");
+  const scroll = h("div", "sheetscroll");
+  const more = h("div", "sheetmore");
+  host.append(tabs, scroll, more);
+
+  let loaded = 0;
+  let current = list[0].name;
+  let table: HTMLTableElement | null = null;
+
+  const appendWindow = async (sheetName: string, rows: { r: number; cells: SheetCellView[] }[]): Promise<void> => {
+    if (!table) {
+      table = h("table", "sheettable");
+      const head = h("thead");
+      const hr = h("tr");
+      hr.append(h("th", "corner", ""));
+      for (let c = 0; c < SHEET_COLS; c += 1) hr.append(h("th", "", colName(c)));
+      head.append(hr);
+      table.append(head, h("tbody"));
+      scroll.append(table);
+    }
+    const tbody = table.querySelector("tbody") as HTMLElement;
+    for (const row of rows) {
+      const tr = h("tr");
+      tr.append(h("th", "", String(row.r + 1)));
+      const byCol = new Map(row.cells.map((cell) => [cell.c, cell]));
+      for (let c = 0; c < SHEET_COLS; c += 1) {
+        const cell = byCol.get(c);
+        const td = h("td", cell?.a ? `al-${cell.a}` : "", cell?.t ?? "");
+        if (cell?.k === "n") td.classList.add("num");
+        tr.append(td);
+      }
+      tbody.append(tr);
+    }
+    loaded += rows.length;
+  };
+
+  const loadSheet = async (sheetName: string): Promise<void> => {
+    current = sheetName;
+    loaded = 0;
+    table = null;
+    scroll.replaceChildren();
+    more.replaceChildren();
+    for (const b of [...tabs.querySelectorAll("button")]) b.classList.toggle("on", (b as HTMLElement).dataset.sheet === sheetName);
+    const total = list.find((s) => s.name === sheetName)?.rows ?? SHEET_ROWS;
+    const fetchWindow = (r0: number, r1: number) =>
+      postJson<{ rows?: { r: number; cells: SheetCellView[] }[] }>("/api/sheet/window", {
+        token,
+        sheet: sheetName,
+        r0,
+        r1,
+        c0: 0,
+        c1: SHEET_COLS,
+      });
+
+    const paintMore = (): void => {
+      more.replaceChildren();
+      if (total <= loaded) return;
+      const b = h("button", "btn", tr("再看 {p1} 行", { p1: String(Math.min(SHEET_ROWS, total - loaded)) }));
+      b.type = "button";
+      b.addEventListener("click", () => {
+        more.replaceChildren();
+        void fetchWindow(loaded, Math.min(total, loaded + SHEET_ROWS))
+          .then((win) => appendWindow(sheetName, win.rows ?? []))
+          .then(paintMore)
+          .catch(fail);
+      });
+      more.append(b);
+    };
+
+    try {
+      await appendWindow(sheetName, (await fetchWindow(0, Math.min(total, SHEET_ROWS))).rows ?? []);
+    } catch (err) {
+      return fail(err);
+    }
+    paintMore();
+  };
+
+  for (const sheet of list) {
+    const b = h("button", "", sheet.name);
+    b.type = "button";
+    b.dataset.sheet = sheet.name;
+    b.addEventListener("click", () => void loadSheet(sheet.name));
+    tabs.append(b);
+  }
+  if (list.length > 1) tabs.classList.add("on");
+  await loadSheet(current);
+}
+
 function fileCard(e: Entry, mine: boolean): HTMLElement {
   const f = e.file!;
   const card = h("div", "fcard");
@@ -1330,6 +1472,11 @@ async function fillPreview(body: HTMLElement, e: Entry): Promise<void> {
     frame.src = url;
     frame.title = f.name;
     body.append(frame);
+    return;
+  }
+  // Excel（D303）：走桥的表格只读凭据，画成一张真表；.csv 仍然按文本看。
+  if (/\.(xlsx|xlsm)$/i.test(name)) {
+    await renderSheet(body, e);
     return;
   }
   const isText = f.mime.startsWith("text/") || TEXT_EXT.test(name);
@@ -1615,6 +1762,10 @@ function renderContactDetail(): void {
       acts.append(hide);
     }
   }
+  const rename = h("button", "btn", tr("改备注名"));
+  rename.type = "button";
+  rename.addEventListener("click", () => renameModal(c.nodeId, c.nickname));
+  acts.append(rename);
   const fav = h("button", "btn", c.favorite ? tr("取消收藏") : tr("收藏"));
   fav.type = "button";
   fav.addEventListener("click", () => void friendAction(c.nodeId, "favorite", !c.favorite));
@@ -1783,6 +1934,36 @@ function renderMe(): void {
   hero.append(t);
   detail.append(hero);
 
+  // D303：自己的名字。改完立刻重播一次 announce，别人下一次刷新就看到新名字。
+  const nameCard = h("div", "card");
+  nameCard.append(h("h3", "", tr("名字")));
+  const nameRow = h("div", "namerow");
+  const nameInput = inputEl(tr("你的名字"));
+  nameInput.value = st.nickname;
+  nameInput.maxLength = 40;
+  const saveName = h("button", "btn pri", tr("保存"));
+  saveName.type = "button";
+  const applyName = async (): Promise<void> => {
+    const value = nameInput.value.trim();
+    if (!value || value === st.nickname) return;
+    try {
+      await postJson("/api/peer/config", { nickname: value });
+      await loadStatus();
+      await loadThreads();
+      renderAll();
+      toast(tr("名字已改成「{p1}」", { p1: value }));
+    } catch (err) {
+      toast((err as Error).message);
+    }
+  };
+  saveName.addEventListener("click", () => void applyName());
+  nameInput.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") void applyName();
+  });
+  nameRow.append(nameInput, saveName);
+  nameCard.append(nameRow, h("div", "note", tr("别人看到的就是这个名字；改完会立刻广播一次。")));
+  detail.append(nameCard);
+
   const profile = h("div", "card");
   profile.append(h("h3", "", tr("资料")));
   const kv = h("div", "kv");
@@ -1946,6 +2127,7 @@ function threadMenu(x: number, y: number, t: Thread): void {
     { label: t.pinned ? tr("取消置顶") : tr("置顶会话"), icon: "star", run: () => void patchThread(t.nodeId, { pinned: !t.pinned }) },
     { label: t.muted ? tr("取消免打扰") : tr("消息免打扰"), icon: "bellOff", run: () => void patchThread(t.nodeId, { muted: !t.muted }) },
     { label: tr("标记为已读"), icon: "check", run: () => void markRead(t).then(() => loadThreads()).then(() => { if (S.page === "msg") renderList(); }) },
+    { label: tr("改备注名"), icon: "me", run: () => renameModal(t.nodeId, t.nickname) },
     {
       label: tr("复制 nodeId"),
       icon: "copy",
@@ -1962,6 +2144,7 @@ function contactMenu(x: number, y: number, c: Contact): void {
       : []),
     // D300：传文件只要求在线。
     ...(c.online ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(c.nodeId, true) }] : []),
+    { label: tr("改备注名"), icon: "me", run: () => renameModal(c.nodeId, c.nickname) },
     { label: c.favorite ? tr("取消收藏") : tr("收藏"), icon: "star", run: () => void friendAction(c.nodeId, "favorite", !c.favorite) },
     ...(!c.friend && !c.quick && !c.incoming && !c.outgoing && c.online
       ? [{ label: tr("从附近移除"), icon: "trash", danger: true, run: () => void friendAction(c.nodeId, "remove") }]
@@ -2006,6 +2189,55 @@ function addModal(): void {
   foot.append(cancel, goBtn);
   modal.append(head, body, foot);
   layerEl.append(scrim, modal);
+}
+
+/**
+ * 改备注名（D303）：只改本机这份记录。对方改自己的名字不会覆盖它，我们改它也不会告诉对方。
+ * 会话列表与联系人详情都走这一个弹窗。
+ */
+function renameModal(peerId: string, current: string): void {
+  closeLayer();
+  const scrim = h("div", "scrim");
+  scrim.addEventListener("click", closeLayer);
+  const modal = h("div", "modal");
+  const head = h("header");
+  head.append(h("strong", "", tr("改备注名")), iconBtn("close", tr("关掉"), closeLayer));
+  const body = h("div", "body");
+  const field = h("label", "field");
+  const input = inputEl(tr("给他起个名字"));
+  input.value = current;
+  input.maxLength = 40;
+  field.append(h("span", "", tr("备注名")), input);
+  body.append(field, h("p", "note", tr("只改你这边的显示名，对方看不到，也不会被对方的改名冲掉。")));
+  const foot = h("footer");
+  const cancel = h("button", "btn", tr("取消"));
+  cancel.type = "button";
+  cancel.addEventListener("click", closeLayer);
+  const save = h("button", "btn pri", tr("保存"));
+  save.type = "button";
+  const run = async (): Promise<void> => {
+    const name = input.value.trim();
+    if (!name) return;
+    try {
+      await postJson("/api/peer/friend", { peer: peerId, action: "rename", name });
+      closeLayer();
+      await loadContacts();
+      await loadThreads();
+      renderAll();
+      toast(tr("备注名已改成「{p1}」", { p1: name }));
+    } catch (err) {
+      const line = h("p", "err", (err as Error).message);
+      modal.insertBefore(line, foot);
+    }
+  };
+  save.addEventListener("click", () => void run());
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") void run();
+  });
+  foot.append(cancel, save);
+  modal.append(head, body, foot);
+  layerEl.append(scrim, modal);
+  window.setTimeout(() => input.focus({ preventScroll: true }), 0);
 }
 
 function inputEl(placeholder: string): HTMLInputElement {

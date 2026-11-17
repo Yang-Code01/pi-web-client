@@ -32,6 +32,12 @@ const MIME: Record<string, string> = {
   ".md": "text/markdown;charset=utf-8",
   ".json": "application/json",
   ".zip": "application/zip",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+  ".xls": "application/vnd.ms-excel",
+  ".csv": "text/csv;charset=utf-8",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".mp4": "video/mp4",
   ".mp3": "audio/mpeg",
 };

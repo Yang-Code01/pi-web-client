@@ -114,6 +114,14 @@ export class Relations {
     return this.touch(who, { friend: true, incoming: false, outgoing: false });
   }
 
+  /**
+   * 改备注名（D303）：只改本机这份记录，**不告诉对方**，也不会被对方的 announce 覆盖
+   * —— 对方改自己的名字时，只有在线表里的昵称会变，通讯录里这条备注照旧。
+   */
+  rename(who: PeerIdentity, nickname: string): Contact {
+    return this.touch(who, { nickname });
+  }
+
   /** 收藏只在用户点的时候变（决定 12），不会因为对方拒绝被自动降级。 */
   favorite(who: PeerIdentity, on: boolean): Contact {
     return this.touch(who, { favorite: on });

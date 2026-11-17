@@ -217,8 +217,9 @@ export class PeerHost {
     return this.request("GET", "/threads");
   }
 
-  /** 隐身 / 免打扰 / 暂停收文件：改 peer 的 cfg 并落盘到 `~/.pi-peer/config.json`。 */  setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean }): Promise<{
+  /** 隐身 / 免打扰 / 暂停收文件：改 peer 的 cfg 并落盘到 `~/.pi-peer/config.json`。 */  setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; nickname?: string }): Promise<{
     ok: boolean;
+    nickname?: string;
     config: { hidden: boolean; dnd: boolean; pauseFiles: boolean; inbox: string; manual: string[] };
   }> {
     return this.request("POST", "/config", patch);
@@ -278,8 +279,8 @@ export class PeerHost {
     return this.request("GET", "/contacts");
   }
 
-  friend(peer: string, action: "request" | "quick" | "accept" | "favorite" | "remove", on?: boolean): Promise<unknown> {
-    return this.request("POST", "/friend", { peer, action, on });
+  friend(peer: string, action: "request" | "quick" | "accept" | "favorite" | "remove" | "rename", on?: boolean, name?: string): Promise<unknown> {
+    return this.request("POST", "/friend", { peer, action, on, name });
   }
 
   /** 发文件：只把**路径**交给 peer，字节由 peer 自己读盘（同机，省一次全量中转）。 */

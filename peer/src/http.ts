@@ -182,12 +182,24 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         for (const key of ["hidden", "dnd", "pauseFiles"] as const) {
           if (typeof body[key] === "boolean") cfg[key] = body[key] as boolean;
         }
+        // D303：自己的名字也能改。上限 40（公告里塞得下），改完立刻重播一次，别等下一轮。
+        let renamed = false;
+        if (typeof body.nickname === "string") {
+          const name = body.nickname.trim().replace(/\s+/g, " ").slice(0, 40);
+          if (!name) return json(res, 400, { error: "名字不能是空的" });
+          if (name !== cfg.nickname) {
+            cfg.nickname = name;
+            renamed = true;
+          }
+        }
         saveConfig(cfg);
+        if (renamed) discovery.announce();
         // 隐身→可见：立刻丢一份 announce，别等下一轮定时（10 秒里对方还看不见）。
         // 可见→隐身不发：`announce()` 自己就查 hidden（D99），这里再额外补一刀只会绕开那个守卫。
         if (wasHidden && !cfg.hidden) discovery.announce();
         return json(res, 200, {
           ok: true,
+          nickname: cfg.nickname,
           config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
         });
       }
@@ -462,6 +474,15 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             const known = relations.get(peerId) ?? who;
             if (!known) return json(res, 400, { error: "不在通讯录里" });
             relations.favorite({ nodeId: peerId, nickname: known.nickname, hostname: known.hostname, port: known.port }, Boolean(body?.on));
+            return json(res, 200, { ok: true, contact: relations.get(peerId) });
+          }
+          // D303：改备注名。只写本机的关系记录，不发给对方（对方改自己的名字也不覆盖它）。
+          if (action === "rename") {
+            const name = String(body?.name ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+            if (!name) return json(res, 400, { error: "名字不能是空的" });
+            const known = relations.get(peerId) ?? who;
+            if (!known) return json(res, 400, { error: "这个人已经不在线了：刷新在线列表再试" });
+            relations.rename({ nodeId: peerId, nickname: known.nickname, hostname: known.hostname, port: known.port }, name);
             return json(res, 200, { ok: true, contact: relations.get(peerId) });
           }
           if (action === "remove") {
