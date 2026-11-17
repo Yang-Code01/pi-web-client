@@ -356,6 +356,9 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .new-session { display: grid; gap: 8px; padding: 8px; grid-template-columns: minmax(0, 1fr); }
 .new-session .btn { width: 100%; white-space: normal; }
 .new-sheet .ns-label { display: block; margin: 12px 0 4px; font-size: 12px; color: var(--dim); }
+/* #478：从空工作区直接开新会话时，标题下面一句「它在横条哪一颗」。
+   只在这个弹层里有位置说明时才 append（不是 hidden），所以不用钉 grid-row。 */
+.new-sheet .ns-note { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--dim); }
 .new-sheet .ns-input {
   width: 100%; box-sizing: border-box; padding: 8px 12px; background: var(--panel); color: var(--text);
   border: 1px solid var(--line); border-radius: 8px;
@@ -407,6 +410,12 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .sess-head .chev { width: 12px; cursor: pointer; }
 /* 工作区组头（#95）：能点、能收起，色点 + 名字 + 待办角标 + 数量（贴样张 a-two-row 的手感）。 */
 .ws-head { min-height: 36px; padding: 7px 6px; gap: 7px; border-radius: 7px; cursor: pointer; color: var(--dim); }
+/* #478：新建 / 刚被「带过去」的组在左栏闪一下，说完就淡掉（动画结束回到常态）。 */
+.ws-head.ws-fresh { animation: ws-head-fresh 1.6s ease-out 1; }
+@keyframes ws-head-fresh {
+  0% { background: color-mix(in oklab, var(--accent) 18%, transparent); }
+  100% { background: transparent; }
+}
 .ws-head:hover, .ws-head:focus-visible { background: var(--panel-2); color: var(--text); outline: none; }
 .ws-head .chev { color: var(--faint); font-size: 10px; width: 10px; cursor: inherit; }
 .ws-head .ws-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; background: var(--slate); }
@@ -1232,6 +1241,17 @@ body.ws-tab-dragging .ws-tab:hover:not(.on) { color: var(--dim); background: non
 }
 .ws-tabs-more:hover { border-color: var(--line); background: var(--panel-2); color: var(--accent); }
 .ws-tabs-more[hidden] { display: none; }
+/* #478：刚建的组被收进 ＋N 时把这颗标亮（不自动展开下拉）——直到用户点开它。 */
+.ws-tabs-more.fresh {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--panel-2);
+  animation: ws-fresh-pulse 1.2s ease-out 2;
+}
+@keyframes ws-fresh-pulse {
+  from { box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 55%, transparent); }
+  to { box-shadow: 0 0 0 6px color-mix(in oklab, var(--accent) 0%, transparent); }
+}
 /* #175：横条末尾那颗 ＋（在 ＋N 左边）—— 新建一个空组，建完就在左栏里改名。
    和 `.ws-tabs-more` 同一档尺寸，但常驻（不跟名额挂钩），所以只在壳 A 的横条里出现。 */
 .ws-tabs-add {
@@ -3400,6 +3420,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .pin-menu { animation: none; }
   .bg-bar .bg-dot { animation: none; }
   .turn-rail.busy .turn-tick.ghost { animation: none; }
+  /* #478：新建组的两处「刚出来」提示动效也关掉（静态高亮保留）。 */
+  .ws-tabs-more.fresh { animation: none; }
+  .ws-head.ws-fresh { animation: none; }
 }
 
 /* #18 extension status / widgets (ctx.ui.setStatus / setWidget over RPC) */

@@ -104,6 +104,40 @@ export function newTabFold(
 }
 
 /**
+ * #478：刚建 / 刚定位的组落在哪 —— 横条第几颗、被收在 `＋N` 的第几条、还是压根不在横条里。
+ * 排序的权威在桥端；这里只回答「照现在这份快照画出来，用户该去哪里找它」。
+ */
+export interface BirthReveal {
+  /** `row` = 横条可见段；`more` = 名额装不下；`off` = 被移出横条（inRow=false）；`unknown` = 快照里没有。 */
+  where: "row" | "more" | "off" | "unknown";
+  /** `where="row"`：横条第几颗（1 起，与屏幕上数的一致）。 */
+  row: number | null;
+  /** `where="more" | "off"`：＋N 下拉里的第几条（1 起，含「不在横条里」那一段）。 */
+  folded: number | null;
+  /** ＋N 上的角标数字（与渲染同源，别在别处重算）。 */
+  outside: number;
+}
+
+export function birthReveal(o: {
+  order: readonly string[];
+  max: number;
+  current?: string;
+  members?: readonly string[] | null;
+  id: string;
+}): BirthReveal {
+  const model = rowModel({ order: o.order, max: o.max, current: o.current, members: o.members });
+  const foldedIds = [...model.more, ...model.offRow];
+  const outside = foldedIds.length;
+  const row = model.visible.indexOf(o.id);
+  if (row >= 0) return { where: "row", row: row + 1, folded: null, outside };
+  const folded = foldedIds.indexOf(o.id);
+  if (folded >= 0) {
+    return { where: model.offRow.includes(o.id) ? "off" : "more", row: null, folded: folded + 1, outside };
+  }
+  return { where: "unknown", row: null, folded: null, outside };
+}
+
+/**
  * #177 组头「移到最前」：把 `id` 搬到 `order` 第一位，其余（含折叠组）相对位置不变。
  * `null` = 已经是最前 / 不在这份 order 里，调用方一个字都不用发。
  */
