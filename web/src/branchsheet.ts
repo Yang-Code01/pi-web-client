@@ -10,7 +10,7 @@
 import { createEl as el } from "./chat.ts";
 import { api } from "./api.ts";
 import { errText, fmtRelative, tr } from "./i18n/index.ts";
-import type { GitCommit, GitDiff, GitDiffFile, GitExecResult, GitHistory, GitOpParams, GitRefs, GitWorktreeState } from "./types.ts";
+import type { GitCommit, GitCommitDetail, GitDiff, GitDiffFile, GitExecResult, GitHistory, GitOpParams, GitRefs, GitWorktreeState } from "./types.ts";
 import { GIT_OPS, MANUAL_FILTERS, OPS_BY_ID, OP_GROUPS, opFrames, buildHandoffPrompt, type GitOpDef } from "./git-ops.ts";
 
 /** 一次取多少条；「再加载」按同样大小往后翻。 */
@@ -106,6 +106,12 @@ export class BranchSheet {
   })();
   /** 只要最新那次请求的答案：换对照分支拉得快时，旧答案不许盖新的。 */
   private ticket = 0;
+  /** D289: 提交详情按 `repo|sha` 缓存在会话里；写操作成功或换目录时整块丢掉。 */
+  private commitCache = new Map<string, GitCommitDetail>();
+  /** 详情卡是从哪一行打开的：关掉它把焦点还回去。 */
+  private commitRow: HTMLElement | null = null;
+  /** 后回来的详情不许盖掉新打开的那张卡。 */
+  private commitTicket = 0;
   private esc: ((ev: KeyboardEvent) => void) | null = null;
   onClose: (() => void) | null = null;
 
@@ -232,6 +238,8 @@ export class BranchSheet {
     this.data = null;
     this.state = null;
     this.refs = null;
+    this.commitCache.clear();
+    this.commitRow = null;
     this.ticket += 1;
     this.sideOpen = false;
     this.paintSideVisibility();
@@ -266,6 +274,8 @@ export class BranchSheet {
   /** 一次把历史、仓库状态、分支表都拉齐；写成功后 fresh=true 让 chip 与 5s 缓存一起更新。 */
   private async load(fresh: boolean): Promise<void> {
     const ticket = ++this.ticket;
+    // D289: 拉取 / 写操作之后提交详情可能已经变了（新提交、改写、推送），缓存整块丢掉。
+    if (fresh) this.commitCache.clear();
     this.setBusy(true);
     this.paintBusy();
     try {
@@ -373,10 +383,24 @@ export class BranchSheet {
     this.fetchBtn.hidden = keep ? keep.branches.length === 0 : true;
   }
 
+  /**
+   * D289: 后台每次刷新都会把顶部对照栏整条重画 —— 正在里面打字的人会被清空，
+   * 展开着的对照菜单也会被换掉（点下去那一刻正好被替换就点了个空）。
+   * 对照栏长什么样只取决于这几个字段，没变就别重画。
+   */
+  private cmpSig = "";
+
   private paint(): void {
     if (!this.data) return;
     this.fetchBtn.hidden = this.data.branches.length === 0;
-    this.paintCmp(this.data);
+    const cmpSig = [
+      this.data.head, this.data.base, this.data.ahead, this.data.behind,
+      this.data.mergeBase?.h ?? "", JSON.stringify(this.data.branches),
+    ].join("");
+    if (cmpSig !== this.cmpSig) {
+      this.cmpSig = cmpSig;
+      this.paintCmp(this.data);
+    }
     this.paintTabs();
     this.paintTabBody();
     const when = this.data.fetchedAt ? fmtRelative(this.data.fetchedAt) : tr("不知道（还没 fetch 过）");
@@ -602,9 +626,24 @@ export class BranchSheet {
 
   // ---------------------------------------------------------------- 历史
 
+  /**
+   * D289: 后台每几秒重拉一次历史，`paintHistory()` 会把整批 `.bc-row` 换掉 —— 高亮、
+   * 键盘焦点、滚动位置全跟着旧节点一起消失（test:githist:ui 就是被这个绊住的）。
+   * 数据与这一屏长得一样时干脆别重画。
+   */
+  private historySig = "";
+
   private paintHistory(): void {
     const data = this.data;
     if (!data) return;
+    // 侧栏的折叠状态 / 选中的分支也决定这一屏长什么样（组头、选中高亮都是本地状态）。
+    const sig = `${this.side}${this.selectedBranch}${JSON.stringify(this.foldedGroups)}${JSON.stringify(this.refs)}${JSON.stringify(data)}`;
+    const same = this.colsEl.firstElementChild?.classList.contains("go-history") === true;
+    if (sig === this.historySig && same) {
+      this.keepCommitRow();
+      return;
+    }
+    this.historySig = sig;
     const wrap = el("div", "go-history");
     const sideTabs = el("div", "go-side-tabs");
     const makeSide = (side: "left" | "right", text: string): HTMLButtonElement => {
@@ -628,6 +667,22 @@ export class BranchSheet {
       wrap.append(this.branchSideEl(data));
     }
     this.colsEl.replaceChildren(wrap);
+    this.keepCommitRow();
+  }
+
+  /**
+   * D289: 列表被重画（后台刷新、换对照、写操作后 fresh 重拉）之后，还开着的详情卡那一行的
+   * 高亮要跟到新节点上 —— 否则老节点跟着 replaceChildren 一起丢了，人看到的是「高亮自己没了」。
+   */
+  private keepCommitRow(): void {
+    if (this.opLayer.hidden) return;
+    const sha = this.opLayer.querySelector<HTMLElement>("[data-commit]")?.dataset.commit;
+    if (!sha) return;
+    const row = this.colsEl.querySelector<HTMLElement>(`.bc-row[data-h="${sha}"]`);
+    if (!row) return;
+    this.commitRow?.classList.remove("is-open");
+    this.commitRow = row;
+    row.classList.add("is-open");
   }
 
   private branchLocalCount(data: GitHistory): number {
@@ -714,6 +769,17 @@ export class BranchSheet {
     subject.append(document.createTextNode(commit.s));
     row.append(el("span", "bc-h", commit.h), subject, el("span", "bc-meta", `${commit.an} · ${fmtRelative(commit.at)}`));
     row.classList.toggle("right", side === "right");
+    // D289: 整行就是「看这条提交的详情」，键盘 Tab 到它、Enter / 空格打开。
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-label", tr("查看提交 {p1}：{p2}", { p1: commit.h.slice(0, 7), p2: commit.s }));
+    const open = (): void => this.openCommit(commit, row);
+    row.onclick = open;
+    row.onkeydown = (ev: KeyboardEvent) => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      open();
+    };
     return row;
   }
 
@@ -742,12 +808,40 @@ export class BranchSheet {
     this.colsEl.replaceChildren(wrap);
   }
 
-  private fileDetail(f: GitDiffFile): HTMLElement {
+  /**
+   * D289: `caps` 换掉图片两侧的落款（分支对照说「对照 / 当前」，提交详情说「父提交 / 本提交」）；
+   * `limit` 换成桥端这次实际用的截断阈值，省略时用工作台自己那份。
+   */
+  /**
+   * D289: 并排两栏的单元格。`hunk` 那条 `@@ -a,b +c,d @@` 要成对占两栏 —— 网格用
+   * `:nth-child(odd)` 画中间那条分隔线，插一个跨栏元素会把后面每一行的奇偶都错开。
+   */
+  private codeRows(f: GitDiffFile): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    for (const line of f.lines) {
+      if (line.tag === "hunk") {
+        const head = el("div", "go-code hunk", line.left);
+        head.title = line.left;
+        out.push(head, el("div", "go-code hunk"));
+        continue;
+      }
+      out.push(el("div", `go-code ${line.tag}`, line.left), el("div", `go-code ${line.tag}`, line.right));
+    }
+    return out;
+  }
+
+  private fileDetail(
+    f: GitDiffFile,
+    caps?: { left: string; right: string },
+    limit: { lines: number; bytes: number } | null = this.diff?.limit ?? null,
+  ): HTMLElement {
     const box = el("div", "go-file");
     box.append(el("div", "go-file-head", `${f.path} · ${tr(f.kind)} · +${f.additions} −${f.deletions}`));
     if (f.kind === "image" && f.images) {
       const pair = el("div", "go-img-pair");
-      for (const [cap, src] of [[tr("对照 · {p1}", { p1: this.diff?.base ?? "" }), f.images.base], [tr("当前 · {p1}", { p1: this.data?.head ?? "" }), f.images.target]] as const) {
+      const capL = caps?.left ?? tr("对照 · {p1}", { p1: this.diff?.base ?? "" });
+      const capR = caps?.right ?? tr("当前 · {p1}", { p1: this.data?.head ?? "" });
+      for (const [cap, src] of [[capL, f.images.base], [capR, f.images.target]] as const) {
         const cell = el("div", "go-img-cell");
         cell.append(el("span", "go-cap", cap));
         if (src) {
@@ -761,19 +855,298 @@ export class BranchSheet {
       box.append(pair);
     } else if (f.kind === "text") {
       const grid = el("div", "go-codegrid");
-      for (const line of f.lines) {
-        const l = el("div", `go-code ${line.tag}`, line.left);
-        const r = el("div", `go-code ${line.tag}`, line.right);
-        grid.append(l, r);
-      }
+      grid.append(...this.codeRows(f));
       box.append(grid);
-      if (f.truncated) box.append(el("div", "go-trunc", tr("大文件已截断：只显示前 {p1} 行 / {p2} KB", { p1: this.diff?.limit.lines ?? 200, p2: Math.round((this.diff?.limit.bytes ?? 409600) / 1024) })));
+      if (f.truncated) box.append(el("div", "go-trunc", tr("大文件已截断：只显示前 {p1} 行 / {p2} KB", { p1: limit?.lines ?? 200, p2: Math.round((limit?.bytes ?? 409600) / 1024) })));
       if (f.note) box.append(el("div", "go-note", f.note));
     } else {
       box.append(el("div", "go-ph", tr("非文本占位：{p1}", { p1: tr(f.kind) })));
       if (f.note) box.append(el("div", "go-note", f.note));
     }
     return box;
+  }
+
+  // ---------------------------------------------------------------- 提交详情（D289）
+
+  /**
+   * D289: 历史里点一行 → 这条提交的详情卡（样张 B：左主右，右栏上文件清单下并排差异）。
+   *
+   * 卡先按行里已有的数据画出来（短哈希、标题、作者、相对时间），元信息 / 文件清单 / 说明等
+   * `/api/git/commit` 回来再补；**点开哪个文件才拉哪一份差异** —— 桥端那个接口不读 blob，
+   * 一次全量 diff 才是真的贵。关掉它（Esc / ✕ / 点遮罩）都回到工作台，焦点还给这一行。
+   */
+  private openCommit(commit: GitCommit, rowEl: HTMLElement): void {
+    const repo = this.data?.repo ?? this.dir;
+    const key = `${repo}|${commit.h}`;
+    const ticket = ++this.commitTicket;
+    rowEl.classList.add("is-open");
+    this.commitRow = rowEl;
+
+    const card = el("div", "go-card go-commit");
+    card.dataset.commit = commit.h;
+    card.tabIndex = -1;
+    card.append(this.cardHead(`${commit.h.slice(0, 7)}  ${commit.s}`, `${commit.an} · ${fmtRelative(commit.at)}`, false, "◍"));
+
+    const cardBody = el("div", "go-commit-body");
+    const side = el("div", "go-commit-side");
+    side.dataset.commitSide = "1";
+    const main = el("div", "go-commit-main");
+    const filesHead = el("div", "go-commit-files-head");
+    filesHead.dataset.commitFilesHead = "1";
+    const fileList = el("div", "go-commit-files");
+    fileList.dataset.commitFiles = "1";
+    const pane = el("div", "go-commit-diff");
+    pane.dataset.commitDiff = "1";
+    main.append(filesHead, fileList, pane);
+    cardBody.append(side, main);
+    const foot = el("div", "go-card-foot go-commit-foot");
+    card.append(cardBody, foot);
+    this.openCard(card, true);
+    card.focus();
+
+    let detail: GitCommitDetail | null = null;
+    let picked = -1;
+    let loadingMore = false;
+
+    const paintSide = (d: GitCommitDetail | null): void => {
+      side.replaceChildren();
+      if (!d) {
+        side.append(el("div", "go-commit-wait", tr("正在读这条提交…")));
+        return;
+      }
+      const meta = el("div", "go-commit-meta");
+      const line = (k: string, v: Node | string): void => {
+        const row = el("div", "go-meta-row");
+        const val = el("span", "go-meta-v");
+        if (typeof v === "string") val.textContent = v;
+        else val.append(v);
+        row.append(el("span", "go-meta-k", k), val);
+        meta.append(row);
+      };
+      line(tr("作者"), d.author);
+      line(tr("时间"), fmtRelative(d.at));
+      if (d.parents.length === 1) {
+        const one = el("span", "go-meta-mono", d.parents[0].slice(0, 7));
+        one.title = d.parents[0];
+        line(tr("父提交"), one);
+      } else if (d.parents.length > 1) {
+        const wrap = el("span", "go-meta-parents");
+        d.parents.forEach((p, i) => {
+          const one = el("span", "go-meta-mono", p.slice(0, 7));
+          one.title = p;
+          if (i === 0) one.append(el("span", "go-meta-tag", tr("第一父")));
+          wrap.append(one);
+        });
+        line(tr("父提交"), wrap);
+      } else line(tr("父提交"), tr("（根提交）"));
+      const chips = el("span", "go-meta-chips");
+      if (d.onHead) chips.append(el("span", "go-commit-chip ok", tr("在当前分支")));
+      chips.append(el("span", d.pushed ? "go-commit-chip" : "go-commit-chip warn", d.pushed ? tr("已推送") : tr("未推送")));
+      if (d.merge) chips.append(el("span", "go-commit-chip", "merge"));
+      line(tr("位置"), chips);
+      if (d.decorations.trim()) {
+        const deco = el("span", "go-meta-chips");
+        for (const one of d.decorations.split(",").map((x) => x.trim()).filter(Boolean)) deco.append(el("span", "go-commit-chip", one));
+        line(tr("引用"), deco);
+      }
+      const sha = el("span", "go-meta-mono go-meta-sha", d.sha);
+      sha.title = d.sha;
+      line(tr("SHA"), sha);
+      side.append(meta);
+
+      const box = el("div", "go-commit-msg-box");
+      box.append(el("div", "go-commit-msg-title", tr("提交说明")));
+      const msg = el("div", d.body ? "go-commit-msg" : "go-commit-msg go-empty", d.body || tr("（只有标题，没有补充说明）"));
+      box.append(msg);
+      if (d.body.split("\n").length > 6 || d.body.length > 420 || d.bodyTruncated) {
+        const more = btn(tr("展开全文"), "go-commit-more");
+        more.dataset.commitMore = "1";
+        more.onclick = () => {
+          const open = msg.classList.toggle("open");
+          more.textContent = open ? tr("收起") : tr("展开全文");
+        };
+        box.append(more);
+      }
+      if (d.bodyTruncated) box.append(el("div", "go-note", tr("说明太长，只显示前 {p1} 行", { p1: d.limit.bodyLines })));
+      side.append(box);
+    };
+
+    const paintFiles = (): void => {
+      filesHead.replaceChildren(el("span", "go-commit-files-title", tr("变更文件")));
+      fileList.replaceChildren();
+      if (!detail) {
+        fileList.append(el("div", "go-commit-wait", tr("正在读文件清单…")));
+        return;
+      }
+      const d = detail;
+      filesHead.replaceChildren();
+      const add = d.files.reduce((n, f) => n + f.additions, 0);
+      const del = d.files.reduce((n, f) => n + f.deletions, 0);
+      filesHead.append(
+        el("span", "go-commit-files-title", tr("变更文件 {p1} 个", { p1: d.files.length })),
+        el("span", "grow"),
+        el("span", "go-commit-total", `+${add} −${del}`),
+      );
+      d.files.forEach((f, i) => {
+        const b = btn("", "go-commit-file");
+        b.dataset.commitFile = String(i);
+        b.classList.toggle("on", i === picked);
+        b.append(el("span", "go-fstat", f.status), el("span", "go-fpath", f.path), el("span", "go-fnum", f.binary ? tr("二进制") : `+${f.additions} −${f.deletions}`));
+        b.title = f.old ? tr("原名 {p1} → 现名 {p2}", { p1: f.old, p2: f.path }) : f.path;
+        b.onclick = () => {
+          picked = i;
+          paintFiles();
+          void loadFile(i);
+        };
+        fileList.append(b);
+      });
+      if (!d.files.length) fileList.append(el("div", "bc-empty", tr("这条提交没有文件改动")));
+      if (d.more) fileList.append(el("div", "go-note", tr("只列出前 {p1} 个文件，共 {p2} 个", { p1: d.limit.files, p2: d.total })));
+    };
+
+    /**
+     * D289: 差异按 `@@` 块分页。`from === 0` 是换文件（清空重画），`from > 0` 是往下续拉，
+     * 直接往已有的 `.go-codegrid` 后面追加 —— 桥端一页 20 块，滚到底再要下一页，
+     * 所以「一屏 200 行、改在后面的看不到」这个毛病没了。
+     */
+    const hunkMore = (box: HTMLElement, full: GitDiffFile): void => {
+      box.querySelector("[data-hunk-more]")?.remove();
+      const h = full.hunks;
+      if (!h) return;
+      const next = h.from + h.count;
+      if (next >= h.total) return;
+      const noteEl = el("div", "go-hunk-more", tr("已显示 {p1}/{p2} 个变更块 · 继续往下滚看剩下的", { p1: next, p2: h.total }));
+      noteEl.dataset.hunkMore = String(next);
+      box.append(noteEl);
+    };
+
+    const loadFile = async (i: number, from = 0): Promise<void> => {
+      const d = detail;
+      const f = d?.files[i];
+      if (!d || !f) return;
+      if (from > 0 && loadingMore) return;
+      if (from === 0) pane.replaceChildren(el("div", "branch-skeleton", tr("正在读差异…")));
+      loadingMore = from > 0;
+      try {
+        const full = await api.gitCommitFile(this.dir, d.sha, f.path, f.old ?? "", from);
+        if (ticket !== this.commitTicket || !card.isConnected || picked !== i) return;
+        const box = from > 0 ? pane.querySelector<HTMLElement>(".go-file") : null;
+        const grid = box?.querySelector<HTMLElement>(".go-codegrid");
+        if (from > 0 && box && grid) {
+          grid.append(...this.codeRows(full));
+          hunkMore(box, full);
+        } else if (from === 0) {
+          const one = this.fileDetail(full, {
+            left: d.parents.length ? tr("父提交 · {p1}", { p1: d.parents[0].slice(0, 7) }) : tr("（空树）"),
+            right: tr("本提交 · {p1}", { p1: d.short }),
+          }, null);
+          pane.replaceChildren(one);
+          hunkMore(one, full);
+        }
+      } catch (err) {
+        if (ticket !== this.commitTicket || !card.isConnected) return;
+        if (from === 0) pane.replaceChildren(el("div", "branch-note", errText(err)));
+        else pane.querySelector("[data-hunk-more]")?.replaceWith(el("div", "branch-note", errText(err)));
+      } finally {
+        loadingMore = false;
+      }
+    };
+
+    const paintFoot = (): void => {
+      // 底栏不放「Esc / ✕ / 点遮罩都关掉它」那句提示：说明展开全文时会压到内容上，
+      // 而且三种关法本来就套在 ✕ 与遮罩上，写在按钮旁边是废话。
+      foot.replaceChildren();
+      const acts = el("div", "go-acts");
+      const copy = btn(tr("复制 SHA"));
+      copy.dataset.commitCopy = "1";
+      copy.onclick = () => void this.copyText(detail?.sha ?? commit.h, copy, tr("复制 SHA"));
+      const pick = btn(tr("摘提交"), "btn ghost");
+      pick.dataset.commitOp = "cherry_pick";
+      const revert = btn(tr("回滚"), "btn ghost go-danger");
+      revert.dataset.commitOp = "revert";
+      for (const b of [pick, revert]) {
+        b.onclick = () => {
+          const sha = detail?.sha ?? commit.h;
+          this.closeOp();
+          this.openOp(b.dataset.commitOp ?? "", { hashes: sha });
+        };
+      }
+      // 不适合的照常显示、禁用 + 说明（grilling 定的「不藏按钮」）；merge 提交两个动词都要 -m，
+      // 现有操作卡没有 -m 入口，与其让人跑出一条红字，不如先禁掉。
+      const pickWhy = detail?.onHead
+        ? tr("这条已经在当前分支上，摘过来会是一个空提交")
+        : detail?.merge
+          ? tr("这是 merge 提交，摘提交要先指定 -m，操作卡还没有这个入口")
+          : null;
+      const revertWhy = detail?.merge
+        ? tr("这是 merge 提交，回滚要先指定 -m，操作卡还没有这个入口")
+        : null;
+      pick.disabled = !!pickWhy;
+      pick.title = pickWhy ?? tr("把这条提交摘到当前分支（走现有的摘提交操作卡）");
+      revert.disabled = !!revertWhy;
+      revert.title = revertWhy ?? tr("在当前分支上生成一条反向提交（走现有的回滚操作卡）");
+      const close = btn(tr("关闭"), "btn primary");
+      close.dataset.commitClose = "1";
+      close.onclick = () => this.closeOp();
+      acts.append(copy, pick, revert, close);
+      foot.append(acts);
+    };
+
+    const apply = (d: GitCommitDetail): void => {
+      detail = d;
+      paintSide(d);
+      paintFiles();
+      paintFoot();
+      const first = d.files.findIndex((f) => f.kind === "text");
+      if (first >= 0) {
+        picked = first;
+        paintFiles();
+        void loadFile(first);
+      } else pane.replaceChildren(el("div", "go-diff-empty", tr("这条提交没有可显示的文本差异")));
+      const on = fileList.querySelector<HTMLElement>(`[data-commit-file="${Math.max(picked, 0)}"]`);
+      on?.focus();
+      on?.scrollIntoView({ block: "nearest" });
+    };
+
+    // 滚到底就把下一页变更块接上（一页 20 块，见桥端 HUNKS_PER_PAGE）。
+    pane.addEventListener("scroll", () => {
+      const noteEl = pane.querySelector<HTMLElement>("[data-hunk-more]");
+      if (!noteEl || picked < 0 || loadingMore) return;
+      if (pane.scrollTop + pane.clientHeight < pane.scrollHeight - 160) return;
+      void loadFile(picked, Number(noteEl.dataset.hunkMore ?? 0));
+    });
+
+    pane.append(el("div", "go-diff-empty", tr("正在读这条提交…")));
+    paintSide(null);
+    paintFiles();
+    paintFoot();
+
+    const cached = this.commitCache.get(key);
+    if (cached) { apply(cached); return; }
+    void (async () => {
+      try {
+        const d = await api.gitCommit(this.dir, commit.h);
+        this.commitCache.set(key, d);
+        if (ticket !== this.commitTicket || !card.isConnected) return;
+        apply(d);
+      } catch (err) {
+        if (ticket !== this.commitTicket || !card.isConnected) return;
+        side.replaceChildren(el("div", "branch-note", errText(err)));
+        fileList.replaceChildren();
+        filesHead.replaceChildren(el("span", "go-commit-files-title", tr("变更文件")));
+        pane.replaceChildren(el("div", "go-diff-empty", tr("读不到这条提交的详情")));
+      }
+    })();
+  }
+
+  /** 复制一段文字，按钮上闪一下「已复制」。分支名与提交 SHA 共用。 */
+  private async copyText(text: string, button: HTMLButtonElement, label: string): Promise<void> {
+    const done = navigator.clipboard?.writeText(text);
+    if (!done) return;
+    await done.then(() => {
+      button.textContent = tr("已复制");
+      setTimeout(() => { if (button.isConnected) button.textContent = label; }, 900);
+    }).catch(() => {});
   }
 
   // ---------------------------------------------------------------- 图解手册
@@ -815,9 +1188,13 @@ export class BranchSheet {
   // ---------------------------------------------------------------- 操作卡（居中，样张 D）
 
   private closeOp(): void {
+    this.commitTicket += 1;
+    const back = this.commitRow?.isConnected ? this.commitRow : this.sheet;
+    this.commitRow?.classList.remove("is-open");
+    this.commitRow = null;
     this.opLayer.hidden = true;
     this.opLayer.replaceChildren();
-    this.sheet.focus();
+    back.focus();
   }
 
   private openCard(node: HTMLElement, wide = false): void {
@@ -970,7 +1347,8 @@ export class BranchSheet {
 
   // ---------------------------------------------------------------- 单动词操作卡
 
-  private openOp(id: string): void {
+  /** D289: `prefill` 让提交详情里的「摘提交 / 回滚」把哈希带进操作卡，用户不用再抄一遍。 */
+  private openOp(id: string, prefill: GitOpParams = {}): void {
     const op = OPS_BY_ID[id];
     if (!op) return;
     // 冲突态只放行中止 / 继续 / handoff，其余一律禁点。
@@ -1009,6 +1387,10 @@ export class BranchSheet {
         input.placeholder = field.placeholder ?? "";
         form.append(input);
       }
+    }
+    for (const [key, value] of Object.entries(prefill)) {
+      const node = form.querySelector<HTMLInputElement>(`[data-field="${key}"]`);
+      if (node && typeof value === "string") node.value = value;
     }
     const switches = el("div", "go-switches");
     for (const sw of op.switches) {

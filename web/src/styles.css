@@ -5309,6 +5309,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .go-code.add { color: var(--ok); background: var(--ok-bg); }
 .go-code.del { color: var(--danger); background: var(--danger-bg); }
 .go-code.mod { color: var(--warn); background: var(--warn-bg); }
+/* 提交详情按 @@ 块分页：这块是那一条 `@@ -a,b +c,d @@`，两栏同色当成一根横条。 */
+.go-code.hunk { color: var(--accent); background: var(--sunken); font-weight: 600; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 .go-img-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .go-img-cell { min-width: 0; }
 .go-img { display: block; max-width: 100%; max-height: 260px; object-fit: contain; border: 1px solid var(--line); border-radius: 8px; background: var(--sunken); }
@@ -5395,6 +5397,57 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .go-conflict-row { font: 11px var(--mono); color: var(--warn); padding: 2px 0; overflow-wrap: anywhere; }
 .go-ai-card .go-card-body, .go-handoff .go-card-body { gap: 6px; }
 
+/* D289：历史里点一行的提交详情。左窄栏放元信息与说明，右主栏上文件清单、下并排差异。
+   整行可点（role=button + Tab），关掉它回到工作台，焦点还给那一行。 */
+.bc-row { cursor: pointer; }
+.bc-row:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: -2px; }
+.bc-row.is-open { background: var(--panel-3); box-shadow: inset 2px 0 0 var(--accent); }
+/* 高度必须用 --vh1 给死：opLayer 是 `display:grid; place-items:center`，百分比高度对着「由内容
+   决定高度」的网格区域解析 = 无效，卡会跟着内容一路涨（实测一条提交 21830px），里面的
+   `.go-commit-diff` 于是永远不滚、差异看起来是空白。.branch-sheet 也是同一个理由这么写的。 */
+.go-commit { width: min(900px, calc(var(--vw1) * 94)); height: min(calc(var(--vh1) * 78), 720px); max-height: calc(var(--vh1) * 78); }
+.go-commit .go-card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 行模板必须写死 minmax(0, 1fr)：只给列不给行时，隐式行是 auto，右边那半截会照内容涨
+   （实测一屏 720 的卡里 main 撑到 6109px），文件清单与差异区就都变成了「看不见的空白」。 */
+.go-commit-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.go-commit-side { min-width: 0; overflow: auto; padding: 12px 14px; border-right: 1px solid var(--line-soft); display: grid; gap: 12px; align-content: start; }
+.go-commit-meta { display: grid; gap: 5px; }
+.go-meta-row { display: grid; grid-template-columns: 3.4rem minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: 11.5px; }
+.go-meta-k { color: var(--faint); }
+.go-meta-v { min-width: 0; color: var(--dim); display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; overflow-wrap: anywhere; }
+.go-meta-mono { font: 11px var(--mono); color: var(--text); }
+.go-meta-sha { color: var(--accent); }
+.go-meta-parents { display: flex; flex-wrap: wrap; gap: 8px; }
+.go-meta-tag { margin-left: 5px; font-size: 9.5px; color: var(--faint); }
+.go-meta-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.go-commit-chip { font-size: 9.5px; padding: 1px 5px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--dim); }
+.go-commit-chip.ok { color: var(--ok); border-color: var(--ok-dim); }
+.go-commit-chip.warn { color: var(--warn); border-color: var(--warn-dim); }
+.go-commit-msg-box { display: grid; gap: 5px; }
+.go-commit-msg-title { font-size: 10.5px; color: var(--accent); }
+.go-commit-msg { max-height: 9.6em; overflow: hidden; padding: 7px 9px; white-space: pre-wrap; overflow-wrap: anywhere; font: 11.5px/1.6 var(--mono); color: var(--dim); background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 8px; }
+.go-commit-msg.open { max-height: none; }
+.go-commit-msg.go-empty { color: var(--faint); }
+.go-commit-more { justify-self: start; appearance: none; border: 0; background: none; padding: 0; color: var(--accent); font-size: 10.5px; cursor: pointer; }
+.go-commit-more:hover { text-decoration: underline; }
+.go-commit-wait { padding: 4px 0; font-size: 11px; color: var(--faint); }
+.go-commit-main { min-width: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
+.go-commit-files-head { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line-soft); font-size: 11px; color: var(--faint); }
+.go-commit-files-title { color: var(--dim); }
+.go-commit-total { font: 11px var(--mono); color: var(--dim); }
+.go-commit-files { min-height: 0; max-height: calc(var(--vh1) * 25); overflow: auto; border-bottom: 1px solid var(--line); }
+.go-commit-file { display: grid; grid-template-columns: 1.1rem minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line-soft); background: transparent; color: var(--dim); font: 11px var(--mono); padding: 5px 14px 5px 12px; cursor: pointer; }
+.go-commit-file:hover { background: var(--panel-3); color: var(--text); }
+.go-commit-file.on { background: var(--accent-bg); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+.go-fstat { color: var(--faint); }
+.go-commit-file.on .go-fstat { color: var(--accent); }
+.go-fpath { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.go-fnum { font-size: 10.5px; white-space: nowrap; color: var(--faint); }
+.go-commit-diff { min-height: 0; overflow: auto; padding: 10px 14px; }
+.go-hunk-more { padding: 6px 2px 2px; font-size: 11px; color: var(--faint); }
+.go-commit-foot { justify-content: flex-end; }
+.go-commit-foot .go-acts { flex: none; }
+
 /* 窄版一律按**卡片自己的宽度**判，不按视口：嵌进「目录与仓库」右栏时卡只有 800（字号 150% 时
    482），而视口还是 1440 —— @media 不触发，于是对照行里那颗 origin/main 输入框直接压在
    「领先 / 落后」上、两列挤压到只剩省略号（穿模）。@container 才是这里该用的判据（同 `.viewer`）。 */
@@ -5424,6 +5477,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .go-img-pair, .go-codegrid { grid-template-columns: minmax(0, 1fr); }
   .go-code:nth-child(odd) { border-right: 0; }
   .go-frames { grid-template-columns: minmax(0, 1fr); }
+  .go-commit-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 44%) minmax(0, 1fr); }
+  .go-commit-side { border-right: 0; border-bottom: 1px solid var(--line-soft); }
+  .go-commit-msg { max-height: 6.4em; }
   .go-arrow { text-align: center; transform: rotate(90deg); }
   .go-card, .go-card.wide { width: 98%; max-height: 94%; }
   .go-frame svg { height: 62px; }

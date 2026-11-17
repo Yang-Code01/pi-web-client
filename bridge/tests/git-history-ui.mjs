@@ -284,6 +284,86 @@ try {
   check("这一折也能铺全量", await page.locator(".go-cmp-menu [data-cmp-pick]").count() >= 43);
   await page.click(".go-cmp-toggle");
 
+  // D289：历史里点一行 → 提交详情小窗；关掉它回到工作台，焦点还给那一行。
+  await page.click('.go-tabs [data-tab="history"]');
+  await page.waitForSelector('.bc-col[data-side="left"] .bc-row', { timeout: 20000 });
+  // D289：先验「不适合」的那一类 —— 左列第一行就是 HEAD 自己，摘提交该是禁用 + 说清理由。
+  const tipSel = '.bc-col[data-side="left"] .bc-row:first-child';
+  await page.click(tipSel);
+  await page.waitForSelector(".go-card.go-commit", { timeout: 20000 });
+  await page.waitForSelector('[data-commit-op="cherry_pick"][disabled]', { timeout: 20000 });
+  check("顶点提交的摘提交是禁用的", await page.isDisabled('[data-commit-op="cherry_pick"]'));
+  check("禁用按钮说明了为什么", /已经在当前分支/.test((await page.getAttribute('[data-commit-op="cherry_pick"]', "title")) ?? ""));
+  await page.keyboard.press("Escape");
+  check("顶点那一窗关干净了", await page.locator(".go-card.go-commit").count() === 0 && await page.locator(".bc-row.is-open").count() === 0);
+
+  // 换到 main 当对照：右栏于是有「当前分支还没有的提交」，那才是摘提交真正的用武之地。
+  const cmpTo = async (ref) => {
+    await page.click(".go-cmp-toggle");
+    await page.fill(".go-cmp-input", ref);
+    await page.click(".go-cmp-menu [data-cmp-use='1']");
+    await page.waitForTimeout(400);
+  };
+  await cmpTo("main");
+  await page.waitForSelector('.bc-col[data-side="right"] .bc-row.onlyR', { timeout: 20000 });
+  // 右栏只取「只在对侧分支上」的行，并跳过 merge（merge 摘/回滚都要 -m，按钮同样禁用）。
+  const rowSel = '.bc-col[data-side="right"] .bc-row.onlyR:not(:has(.bc-badge))';
+  check("历史行是 role=button 且在 Tab 序列里", await page.getAttribute(rowSel, "role") === "button" && await page.getAttribute(rowSel, "tabindex") === "0");
+  await page.click(rowSel);
+  await page.waitForSelector(".go-card.go-commit", { timeout: 20000 });
+  check("点一行弹出提交详情小窗", await page.locator(".go-card.go-commit").count() === 1);
+  check("小窗开着时工作台还在下面", await page.locator(".branch-sheet.go-sheet").count() === 1);
+  await page.waitForSelector(".go-commit-file", { timeout: 20000 });
+  const fullSha = (await page.textContent(".go-meta-sha"))?.trim() ?? "";
+  check("详情列出完整 SHA", /^[0-9a-f]{40}$/.test(fullSha), fullSha.slice(0, 12));
+  check("详情写着作者与父提交", /\S/.test(await page.textContent(".go-commit-meta") ?? "") && await page.locator(".go-meta-row").count() >= 4);
+  await page.waitForSelector(".go-commit-diff .go-codegrid .go-code", { timeout: 20000 });
+  check("详情自动展开第一个文件的并排差异", await page.locator(".go-commit-diff .go-codegrid .go-code").count() >= 2);
+  check("差异按变更块给，不贴整篇文件", await page.locator(".go-commit-diff .go-code.hunk").count() >= 2);
+  const hunkHead = (await page.textContent(".go-commit-diff .go-code.hunk"))?.trim() ?? "";
+  check("块头是 @@ 行", hunkHead.startsWith("@@"), hunkHead);
+  check("打开的那一行有高亮", await page.locator('.bc-row.is-open').count() === 1);
+  check("文件清单带增删数", /\+\d+/.test(await page.textContent(".go-commit-files-head") ?? ""));
+
+  // 换一个文件：右侧内容跟着换（懒加载那一份差异）。
+  const fileCount = await page.locator(".go-commit-file").count();
+  if (fileCount > 1) {
+    await page.click('.go-commit-file[data-commit-file="1"]');
+    check("点另一个文件换成它的差异", await page.locator('.go-commit-file.on').getAttribute("data-commit-file") === "1");
+  }
+
+  // 摘提交：小窗先关，回工作台打开现有的操作卡，哈希已预填。
+  await page.click('[data-commit-op="cherry_pick"]');
+  await page.waitForSelector('[data-op-card="cherry_pick"]', { timeout: 20000 });
+  check("摘提交关掉小窗改开操作卡", await page.locator(".go-card.go-commit").count() === 0 && await page.locator('[data-op-card="cherry_pick"]').count() === 1);
+  check("摘提交把哈希预填进操作卡", await page.inputValue('[data-op-card="cherry_pick"] [data-field="hashes"]') === fullSha);
+  await page.keyboard.press("Escape");
+  check("Esc 收起操作卡", await page.locator(".go-op-layer:not([hidden])").count() === 0);
+
+  // 键盘也能开：Tab 到行上敲 Enter，Esc 关掉后焦点回到那一行。
+  await page.focus(rowSel);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".go-card.go-commit", { timeout: 20000 });
+  check("Enter 也能打开详情", await page.locator(".go-card.go-commit").count() === 1);
+  await page.keyboard.press("Escape");
+  check("Esc 关掉详情、回到工作台", await page.locator(".go-card.go-commit").count() === 0 && await page.locator(".branch-sheet.go-sheet").count() === 1);
+  check("关掉后焦点回到那一行", await page.evaluate(() => {
+    const a = document.activeElement;
+    return Boolean(a && a.classList.contains("bc-row") && a.getAttribute("data-h"));
+  }));
+  check("关掉后高亮也收了", await page.locator('.bc-row.is-open').count() === 0);
+
+  // 收尾把对照换回 origin/main —— 后面「差异」那一节要断言文件栏标的就是它。
+  await cmpTo("origin/main");
+  await page.waitForSelector('.bc-col[data-side="right"] .bc-row', { timeout: 20000 });
+
+  // 点遮罩同样关掉（遮罩就是 opLayer 自己）。换回 origin/main 之后右栏全是「两边都有」的
+  // 提交（.onlyR 为 0），所以这一步随便点左栏第一行 —— 关窗跟从哪一行进来无关。
+  await page.click('.bc-col[data-side="left"] .bc-row:first-child');
+  await page.waitForSelector(".go-card.go-commit", { timeout: 20000 });
+  await page.click(".go-op-layer", { position: { x: 8, y: 8 } });
+  check("点遮罩关掉详情", await page.locator(".go-card.go-commit").count() === 0);
+
   // 差异 tab：文件列表 + 并排文本行。
   await page.click('.go-tabs [data-tab="diff"]');
   await page.waitForSelector(".go-diff-files [data-file]", { timeout: 20000 });

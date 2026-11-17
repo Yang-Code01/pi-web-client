@@ -1,4 +1,4 @@
-import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetEditOp, SheetMatches, SheetMeta, SheetStructOp, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
+import type { ArtifactDiff, ArtifactList, GitCommitDetail, GitDiff, GitDiffFile, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetEditOp, SheetMatches, SheetMeta, SheetStructOp, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
 import type { MailAccountInput, MailAccountView, MailConfigView, MailDetailView, MailFolderView, MailOAuthLoginView, MailOAuthPollView, MailPolicyView, MailSendInput, MailSummary } from "./mail-shared.ts";
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
@@ -181,6 +181,25 @@ export const api = {
   /** D235: 当前分支 vs 对照 / 单条提交 vs 父提交的并排富视图。 */
   gitDiff: (dir: string, base = "", target = "HEAD", commit = "") =>
     postJson<GitDiff>("/api/git/diff", { dir, base, target, commit }),
+  /**
+   * D289: 历史里点一行 → 这条提交的详情。桥端只读元信息 + `--numstat` 文件名，
+   * **不读 blob**，所以比 `gitDiff(commit)` 便宜得多；单个文件的并排差异再点着拉 `gitCommitFile`。
+   */
+  gitCommit: async (dir: string, sha: string): Promise<GitCommitDetail> => {
+    const out = await postJson<GitCommitDetail & { ok?: boolean; code?: string; error?: string }>("/api/git/commit", { dir, sha });
+    if (!out.sha) throw Object.assign(new Error(out.error ?? "读不了这条提交"), { code: out.code });
+    return out;
+  },
+  /**
+   * D289: 提交详情里点开某个文件时，才拉这一份并排差异（根提交左侧是空树）。
+   * 只给 `@@` 块 + 3 行上下文，`from` 是块序号 —— 滚到底再要下一页，所以改在文件后半段的
+   * 提交也看得到（整篇文件按行号硬对齐那套做不到这点）。
+   */
+  gitCommitFile: async (dir: string, sha: string, path: string, old = "", from = 0): Promise<GitDiffFile> => {
+    const out = await postJson<GitDiffFile & { ok?: boolean; code?: string; error?: string }>("/api/git/commit-file", { dir, sha, path, old, from });
+    if (!out.path) throw Object.assign(new Error(out.error ?? "读不了这个文件的差异"), { code: out.code });
+    return out;
+  },
   /**
    * D235: 只发 id + 结构化 params，真正的 argv 由桥端白名单拼。
    * git 自己失败时也回 200 + 完整结果（退出码/stderr/state），界面据此画失败卡；
