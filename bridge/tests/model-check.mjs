@@ -16,13 +16,14 @@ const r = await fetch(`${BASE}/api/login`, { method: "POST", headers: { "content
 const cookie = (r.headers.get("set-cookie") ?? "").split(";")[0];
 const sid = await new Promise((resolve, reject) => {
   const ws = new WebSocket(`${BASE.replace("http", "ws")}/ws`, { headers: { cookie } });
+  // Cleared on resolve: a pending watchdog timer holds the event loop open long after the test is done.
+  const timeout = setTimeout(() => reject(new Error("create timeout")), 60000);
   ws.on("open", () => ws.send(JSON.stringify({ type: "create", cwd: REPO, name: "模型测试" })));
   ws.on("message", (b) => {
     const m = JSON.parse(b.toString());
     const st = m.type === "session.state" ? m.session : m.type === "session" ? m.state : null;
-    if (st?.name === "模型测试") { resolve(st.id); ws.close(); }
+    if (st?.name === "模型测试") { clearTimeout(timeout); resolve(st.id); ws.close(); }
   });
-  setTimeout(() => reject(new Error("create timeout")), 60000);
 });
 
 const browser = await chromium.launch();

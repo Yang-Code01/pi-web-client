@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { freePort } from "../../tools/free-port.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ENTRY = path.resolve(here, "..", "..", "peer", "dist", "index.js");
@@ -24,7 +25,7 @@ if (!fs.existsSync(ENTRY)) {
 
 const ME = "11111111-1111-4111-8111-111111111111";
 const PEER = "aaaaaaaa-1111-4111-8111-111111111111";
-const PORT = 17971;
+const PORT = await freePort();
 const state = path.join(ROOT, "state");
 fs.mkdirSync(path.join(state, "history"), { recursive: true });
 

@@ -8,8 +8,7 @@
  *   D. 全程没有任何一帧说「还有更早的」—— 界面因此没有任何入口去点。
  *
  * 会话文件是手写的（220 条），不花模型 turn；pi 用 `fixtures/fake-pi.mjs`，本用例不需要拉起它。
- * 端口默认 7892（7887 history-paths、7888 continue、7889 attach、7890 history、7891 paging-scope
- * 已占），`PAGING_LOCAL_UI_PORT` 可改；不碰 7864 上的实例。
+ * 端口由系统分配，`PAGING_LOCAL_UI_PORT` 可钉住；不碰 7864 上的实例。
  *
  *   node bridge/tests/paging-local-ui.mjs
  */
@@ -19,11 +18,12 @@ import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.PAGING_LOCAL_UI_PORT ?? 7892);
+const PORT = Number(process.env.PAGING_LOCAL_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "paging-local-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

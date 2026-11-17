@@ -16,13 +16,14 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-gitops-ui-"));
 const STATE = path.join(ROOT, "state");
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
-const PORT = Number(process.env.GITOPS_UI_PORT ?? 7927);
+const PORT = Number(process.env.GITOPS_UI_PORT ?? (await freePort()));
 const BASE = `http://127.0.0.1:${PORT}`;
 const PASS = "gitops-ui-pass";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

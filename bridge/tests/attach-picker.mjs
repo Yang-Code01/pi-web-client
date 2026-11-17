@@ -11,8 +11,8 @@
  *   5. the remembered-dir index keeps 30 entries, dropping the oldest.
  *
  * Runs a throwaway bridge on its own port with temp state, so the real one is never touched.
- * Port comes from ATTACH_UI_PORT (7880/7882/7883 belong to memory-cap, 7888 to continue-ui);
- * deliberately not PI_WEB_PORT, so an exported PI_WEB_PORT pointing at the real bridge can't be killed.
+ * Port is OS-assigned (pin it with ATTACH_UI_PORT); deliberately not PI_WEB_PORT, so an exported
+ * PI_WEB_PORT pointing at the real bridge can't be killed.
  *
  * Run: node bridge/tests/attach-picker.mjs
  */
@@ -21,10 +21,11 @@ import path from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
-const PORT = Number(process.env.ATTACH_UI_PORT ?? 7889);
+const PORT = Number(process.env.ATTACH_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch/attach-picker");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

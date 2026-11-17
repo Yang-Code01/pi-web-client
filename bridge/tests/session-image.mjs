@@ -6,7 +6,7 @@
  *   B. n=0 / n=1 各自拿到对应字节与 mime；
  *   C. 越界 404、负序号 400、不存在的会话 / 条目 404 —— 都是 JSON 错误，不是半截二进制。
  *
- * 端口默认 7893，`SESSION_IMAGE_PORT` 可改；不碰 7864 上的实例。
+ * 端口由系统分配，`SESSION_IMAGE_PORT` 可钉住；不碰 7864 上的实例。
  *
  *   node bridge/tests/session-image.mjs
  */
@@ -14,9 +14,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { REPO } from "../../tools/paths.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.SESSION_IMAGE_PORT ?? 7893);
+const PORT = Number(process.env.SESSION_IMAGE_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "session-image-e2e");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

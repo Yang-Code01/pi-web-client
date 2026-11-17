@@ -10,7 +10,7 @@
  *   C. 窄屏（420px 并排、340px 换行）下都不压按钮；
  *   D. 这时点 pill，小卡贴着它往上开，且不出视口。
  *
- * 端口默认 7894（7895 / 7896 分别给了 failures-ui 与 lessons-spawn），可用 FAIL_CTA_UI_PORT 改。
+ * 端口由系统分配，可用 FAIL_CTA_UI_PORT 钉住。
  * 截图落在 .scratch/shots/fail-cta-*.png。
  */
 import { spawn, execFileSync } from "node:child_process";
@@ -19,11 +19,12 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.FAIL_CTA_UI_PORT ?? 7894);
+const PORT = Number(process.env.FAIL_CTA_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "fail-cta-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

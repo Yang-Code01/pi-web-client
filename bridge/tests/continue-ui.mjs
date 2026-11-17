@@ -11,7 +11,7 @@
  *      继续在下、权限在上、两颗粒子同宽，整块只比输入框高 3.5px（28 + 4 + 44 = 76 vs 72.5）；
  *   D. 英文界面：标签是 `Continue`，发出去的仍然是字面「继续」（模型读到的东西不跟界面语言变）。
  *
- * 端口默认 7888（其它探针已占 7891–7899），可用 CONTINUE_UI_PORT 改。
+ * 端口由系统分配，可用 CONTINUE_UI_PORT 钉住。
  *
  * 截图落在 .scratch/shots/continue-*.png。
  */
@@ -22,11 +22,12 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.CONTINUE_UI_PORT ?? 7888);
+const PORT = Number(process.env.CONTINUE_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "continue-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

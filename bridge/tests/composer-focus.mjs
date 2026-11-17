@@ -12,7 +12,7 @@
  *   3. 期间敲进去的字符一个不少；
  *   4. 启动结束后接着敲的字仍然进输入框（不是事后补一次 focus 蒙混过关）。
  *
- * 端口默认 7870，可用 COMPOSER_FOCUS_PORT 改。截图落在 .scratch/shots/composer-focus-*.png。
+ * 端口由系统分配，可用 COMPOSER_FOCUS_PORT 钉住。截图落在 .scratch/shots/composer-focus-*.png。
  *
  * Run: npm run build && node bridge/tests/composer-focus.mjs
  */
@@ -21,12 +21,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.COMPOSER_FOCUS_PORT ?? 7870);
+const PORT = Number(process.env.COMPOSER_FOCUS_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "composer-focus");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

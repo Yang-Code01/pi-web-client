@@ -10,10 +10,11 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { REPO } from "../../tools/paths.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const ROOT = REPO;
 const DIST = path.join(ROOT, "bridge", "dist", "index.js");
-const PORT = Number(process.env.ARTIFACTS_E2E_PORT ?? 7893);
+const PORT = Number(process.env.ARTIFACTS_E2E_PORT ?? (await freePort()));
 const STATE = process.env.ARTIFACTS_E2E_STATE ?? path.join(ROOT, ".scratch", "artifacts-e2e-state");
 const BASE = `http://127.0.0.1:${PORT}`;
 const PASS = "artifacts-e2e-pass";

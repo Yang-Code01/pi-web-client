@@ -17,11 +17,12 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.ACPD_UI_PORT ?? 7911);
+const PORT = Number(process.env.ACPD_UI_PORT ?? (await freePort()));
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-acp-ui-"));
 const STATE = path.join(ROOT, "state");
 const CFG = path.join(ROOT, "billion-context.json");

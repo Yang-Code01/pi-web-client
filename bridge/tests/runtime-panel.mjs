@@ -17,12 +17,13 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "runtime-panel");
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
 const FAKE_TABLE = path.join(REPO, "bridge", "tests", "fixtures", "fake-tasklist.mjs");
-const PORT = 7903;
+const PORT = await freePort();
 const TICK_MS = 1000;
 const TICK_WAIT = TICK_MS * 5;
 /** The idle threshold the last phase injects: it must still reap while the sampler is broken. */

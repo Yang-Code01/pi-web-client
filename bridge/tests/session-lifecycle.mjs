@@ -16,6 +16,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "session-lifecycle");
@@ -170,7 +171,7 @@ async function runOneTurn(page, sid, text) {
 // ---------------------------------------------------------------- A. idle reaping
 async function idleReaping() {
   log("A. settled + idle > threshold → pi exits, transcript stays, the next message wakes it");
-  const bridge = await startBridge({ name: "idle", port: 7894, env: { PI_WEB_IDLE_MS: String(IDLE_MS) } });
+  const bridge = await startBridge({ name: "idle", port: await freePort(), env: { PI_WEB_IDLE_MS: String(IDLE_MS) } });
   try {
     const tab = await client(bridge);
     const sid = await newSession(tab, "lifecycle");
@@ -251,7 +252,7 @@ async function runningNotReaped(bridge, page, idleSid) {
 // ---------------------------------------------------------------- C. the threshold file
 async function thresholdFile() {
   log("C. `<state>/lifecycle.json` sets the threshold (no environment override)");
-  const bridge = await startBridge({ name: "file", port: 7895, lifecycle: { idleMs: IDLE_MS } });
+  const bridge = await startBridge({ name: "file", port: await freePort(), lifecycle: { idleMs: IDLE_MS } });
   try {
     const page = await client(bridge);
     const sid = await newSession(page, "file-lifecycle");

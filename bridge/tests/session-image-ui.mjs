@@ -5,7 +5,7 @@
  *   A. 会话记录里的用户气泡 —— 画布是 `/api/session/image`，点开灯箱看原图；
  *   B. 待发图片弹层 —— 缩略图整块可点，灯箱里是本地 data URL。
  *
- * 会话文件手写、pi 用假实现，不花模型 turn。端口默认 7894，`IMAGE_UI_PORT` 可改。
+ * 会话文件手写、pi 用假实现，不花模型 turn。端口由系统分配，`IMAGE_UI_PORT` 可钉住。
  *
  *   node bridge/tests/session-image-ui.mjs
  */
@@ -14,11 +14,12 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.IMAGE_UI_PORT ?? 7894);
+const PORT = Number(process.env.IMAGE_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "session-image-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

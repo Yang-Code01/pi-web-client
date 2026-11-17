@@ -21,6 +21,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { freePort } from "../../tools/free-port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "approval-expiry");
@@ -214,7 +215,7 @@ async function idleSibling(page) {
 // ---------------------------------------------------------------- A. nobody present → expire
 async function expiresWhenNobodyPresent() {
   log("A. an approval whose pages are all unpresent expires at the threshold, says so, and sleeps");
-  const bridge = await startBridge({ name: "away", port: 7901 });
+  const bridge = await startBridge({ name: "away", port: await freePort() });
   try {
     const tab = await client(bridge);
     tab.present(true); // somebody is at the keyboard when the approval comes up
@@ -263,7 +264,7 @@ async function expiresWhenNobodyPresent() {
 // ---------------------------------------------------------------- B. somebody present → never
 async function neverExpiresWhileSomebodyIsPresent() {
   log("B. with one page in front, the approval survives far past the threshold");
-  const bridge = await startBridge({ name: "here", port: 7902 });
+  const bridge = await startBridge({ name: "here", port: await freePort() });
   try {
     // The page that watches this session is not in front (another monitor, another device)…
     const watcher = await client(bridge);
@@ -307,7 +308,7 @@ async function neverExpiresWhileSomebodyIsPresent() {
 // ---------------------------------------------------------------- C. an ask expires too
 async function askExpiresToo() {
   log("C. a question nobody is in front of expires the same way as an approval");
-  const bridge = await startBridge({ name: "ask", port: 7903 });
+  const bridge = await startBridge({ name: "ask", port: await freePort() });
   try {
     const tab = await client(bridge);
     tab.present(true);
@@ -335,7 +336,7 @@ async function askExpiresToo() {
 // ---------------------------------- D. an absence that began earlier cannot expire a new card
 async function freshCardIsNotExpired() {
   log("D. 人早就走了之后才冒出来的审批，在它自己变老之前不会被丢");
-  const bridge = await startBridge({ name: "fresh", port: 7911 });
+  const bridge = await startBridge({ name: "fresh", port: await freePort() });
   try {
     // Nobody ever reports presence, so `absentFor()` has been growing since the bridge booted.
     // Waiting here is what makes the first half of the rule true *before* the card exists.

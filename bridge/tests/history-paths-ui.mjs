@@ -9,7 +9,7 @@
  *   E. 新建会话 —— `history` 是 `{ hasMore: false, total: 0 }`，页面没有「载入更早」。
  *
  * 会话文件是手写的（200+ 条），不花模型 turn：pi 用 `fixtures/fake-pi.mjs`，只负责让桥把
- * 休眠会话重新拉起来。端口默认 7887，`HISTORY_UI_PORT` 可改；不碰 7864 上的实例。
+ * 休眠会话重新拉起来。端口由系统分配，`HISTORY_UI_PORT` 可钉住；不碰 7864 上的实例。
  *
  *   node bridge/tests/history-paths-ui.mjs
  */
@@ -19,11 +19,12 @@ import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.HISTORY_UI_PORT ?? 7887);
+const PORT = Number(process.env.HISTORY_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "history-paths-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

@@ -10,7 +10,7 @@
  *   B. 切回「pi」是另一份文档（pi 的 Changelog），两页内容不串味；
  *   C. 敲 `/whatsnew` 直接落在这一页，不用再点 tab。
  *
- * 端口默认 7887（其余探针占 7888、7891–7899），可用 WHATSNEW_UI_PORT 改。
+ * 端口由系统分配，可用 WHATSNEW_UI_PORT 钉住。
  * 截图落在 .scratch/shots/whatsnew-*.png。
  */
 import { spawn, execFileSync } from "node:child_process";
@@ -19,10 +19,11 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.WHATSNEW_UI_PORT ?? 7887);
+const PORT = Number(process.env.WHATSNEW_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "whatsnew-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

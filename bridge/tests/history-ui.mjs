@@ -22,7 +22,7 @@
  * `{type:"history.before", sessionId, before, limit?}` → `{type:"history", sessionId, before, items, hasMore}`，
  * limit 夹在 [1,60]，`before` 找不到回空页 + hasMore:false。
  *
- * 端口默认 7890（continue-ui 占 7888），可用 HISTORY_UI_PORT 改。
+ * 端口由系统分配，可用 HISTORY_UI_PORT 钉住。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -30,11 +30,12 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.HISTORY_UI_PORT ?? 7890);
+const PORT = Number(process.env.HISTORY_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "history-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

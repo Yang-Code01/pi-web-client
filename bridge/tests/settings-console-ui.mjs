@@ -5,7 +5,7 @@
  *
  *   npm run build && node bridge/tests/settings-console-ui.mjs
  *
- * 端口默认 7918，可用 SETTINGS_CONSOLE_UI_PORT 改。截图落在 .scratch/shots/settings-console-*.png。
+ * 端口由系统分配，可用 SETTINGS_CONSOLE_UI_PORT 钉住。截图落在 .scratch/shots/settings-console-*.png。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -13,10 +13,11 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
+import { freePort } from "../../tools/free-port.mjs";
 
 const { chromium } = await loadPlaywright();
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.SETTINGS_CONSOLE_UI_PORT ?? 7918);
+const PORT = Number(process.env.SETTINGS_CONSOLE_UI_PORT ?? (await freePort()));
 const ROOT = path.join(REPO, ".scratch", "settings-console-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
