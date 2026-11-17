@@ -433,3 +433,66 @@ test("normalizeRule 后再 ruleProblem 仍然认账（顺序反了会漏检查�
   assert.equal(R.ruleProblem(rule), null);
   assert.deepEqual(rule.days, [3]);
 });
+// ---------------------------------------------------------------- 审批人（默认值与固定名单）
+
+const A = await import("../src/attendance.ts");
+const pool = [
+  { userId: 11, name: "王五", workNo: "TS0003" },
+  { userId: 12, name: "赵六", workNo: "TS0004" },
+  { userId: 9, name: "李四", workNo: "TS0002" },
+];
+
+test("parsePerson 拆「姓名-工号」，缺一半也不炸", () => {
+  assert.deepEqual(A.parsePerson("王五-TS0003"), { name: "王五", workNo: "TS0003" });
+  assert.deepEqual(A.parsePerson(" 王五-TS0003 "), { name: "王五", workNo: "TS0003" });
+  assert.deepEqual(A.parsePerson("阿卜杜拉-买买提-TS0001"), { name: "阿卜杜拉-买买提", workNo: "TS0001" });
+  assert.deepEqual(A.parsePerson("王五"), { name: "王五", workNo: "" });
+  assert.deepEqual(A.parsePerson(""), { name: "", workNo: "" });
+  assert.deepEqual(A.parsePerson(null), { name: "", workNo: "" });
+  assert.deepEqual(A.parsePerson(42), { name: "", workNo: "" });
+});
+
+test("resolvePeople 按工号对 id，对不上的直接丢", () => {
+  assert.deepEqual(A.resolvePeople(["王五-TS0003", "赵六-TS0004"], pool).map((p) => p.userId), [11, 12]);
+  assert.deepEqual(A.resolvePeople(["王五-TS9999"], pool), []);
+  assert.deepEqual(A.resolvePeople(["赵六"], pool).map((p) => p.userId), [12]);
+  assert.deepEqual(A.resolvePeople(["王五-TS0003", "王五-TS0003", "", null, 7], pool).map((p) => p.userId), [11]);
+  assert.deepEqual(A.resolvePeople(null, pool), []);
+});
+
+test("readDepartManagers 只取 last.depart_manager", () => {
+  assert.deepEqual(A.readDepartManagers({ last: { depart_manager: ["王五-TS0003", "赵六-TS0004"] } }), ["王五-TS0003", "赵六-TS0004"]);
+  assert.deepEqual(A.readDepartManagers({ data: [{ depart_manager: "张一-TS0010" }] }), []);
+  assert.deepEqual(A.readDepartManagers({ last: { depart_manager: "王五-TS0003" } }), []);
+  assert.deepEqual(A.readDepartManagers(null), []);
+});
+
+test("lastLeadApprover 取最新那条的 idx1，处理过就看 handle_user_name", () => {
+  const workflow = {
+    1: [
+      { workflow_index: 0, workflow_user_name: "张三-TS0001", handle_user_name: "张三-TS0001" },
+      { workflow_index: 1, workflow_user_name: "李四-TS0002", handle_user_name: null },
+    ],
+    2: [{ workflow_index: 1, workflow_user_name: "王五-TS0003,赵六-TS0004", handle_user_name: "王五-TS0003" }],
+  };
+  assert.equal(A.lastLeadApprover([{ code: 1, start_time: "2026-11-10T18:00:00" }, { code: 2, start_time: "2026-11-16T18:00:00" }], workflow), "王五-TS0003");
+  assert.equal(A.lastLeadApprover([{ code: 1, start_time: "2026-11-10T18:00:00" }], workflow), "李四-TS0002");
+  assert.equal(A.lastLeadApprover([{ code: 2, start_time: "2026-11-16T18:00:00" }], { 2: [{ workflow_index: 1, workflow_user_name: "王五-TS0003,赵六-TS0004", handle_user_name: "" }] }), "王五-TS0003");
+  assert.equal(A.lastLeadApprover([], workflow), "");
+  assert.equal(A.lastLeadApprover([{ code: 404, start_time: "2026-11-16T18:00:00" }], workflow), "");
+});
+
+test("lastStepPeople 用 workflow_user_name 当名单，不拿 handle 当名单", () => {
+  const workflow = {
+    1: [
+      { workflow_index: 1, workflow_user_name: "李四-TS0002", handle_user_name: "李四-TS0002" },
+      { workflow_index: 2, workflow_user_name: "王五-TS0003,赵六-TS0004", handle_user_name: "王五-TS0003" },
+    ],
+  };
+  const list = [{ code: 1, start_time: "2026-11-12T18:00:00" }];
+  // 第二级有两个人：只批过一个，但名单要完整
+  assert.deepEqual(A.lastStepPeople(list, workflow, 2), ["王五-TS0003", "赵六-TS0004"]);
+  assert.deepEqual(A.lastStepPeople(list, workflow, 1), ["李四-TS0002"]);
+  assert.deepEqual(A.lastStepPeople(list, workflow, 3), []);
+  assert.deepEqual(A.lastStepPeople([], workflow, 2), []);
+});

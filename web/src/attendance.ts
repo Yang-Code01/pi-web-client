@@ -16,7 +16,7 @@ import { errText, tr } from "./i18n/index.ts";
 import type { AttendanceState, AttendanceRecords, AttendanceOvertime, AttendanceReminder } from "./sysmanage-types.ts";
 // 日期 → 「周五」这件事本机管理已经做过一遍（sysmanage-model.ts:207），别再写一张中文星期表。
 import { weekdayOf } from "./sysmanage-model.ts";
-import { dateKey, defaultRange, hoursText, overtimeSplit, reasonText, round1, spanText, stepState } from "./attendance-shared.ts";
+import { dateKey, defaultRange, defaultWindow, hoursText, overtimeSplit, reasonText, round1, spanText, stepState } from "./attendance-shared.ts";
 import "./attendance.css";
 
 type Tab = "records" | "overtime" | "reminder" | "settings";
@@ -146,8 +146,14 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
       overtime = await api.attendanceOvertime();
       overtimeError = "";
       if (!form.reasonType && overtime.reasons.length) form.reasonType = overtime.reasons[0]!;
-      if (form.l1.length === 0) form.l1 = recallApprovers(overtime.candidates.l1, L1_KEY);
-      if (form.l2.length === 0) form.l2 = recallApprovers(overtime.candidates.l2, L2_KEY);
+      // 二级是 OA 按组织架构定死的，页面只负责显示：每次都以接口为准。
+      form.l2 = overtime.fixedL2.map((p) => String(p.userId));
+      if (form.l1.length === 0) {
+        const recalled = recallApprovers(overtime.candidates.l1, L1_KEY);
+        form.l1 = recalled.length > 0 ? recalled : overtime.defaultL1.map((p) => String(p.userId));
+      }
+      // 起止时间还没人动过：按今天是不是周末给一段默认值。
+      if (!form.start) fillWindow(dateKey(new Date()));
     } catch (err) {
       overtimeError = fail(err);
     } finally {
@@ -405,8 +411,21 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     grid.append(
       field(
         tr("开始"),
-        datetime("start", form.start, (v) => {
+        datetime("start", form.start, (v, input) => {
+          const before = form.start.slice(0, 10);
+          const day = v.slice(0, 10);
           form.start = v;
+          // 换了一天（平日 ↔ 周末）就整段重给：两天的窗口不一样，不该让人手改两个时间。
+          if (day && day !== before) {
+            fillWindow(day);
+            // 整页重画会丢焦点，就地改另外两个框就行。
+            input.value = form.start;
+            const card = input.closest(".at-card");
+            const endInput = card?.querySelector<HTMLInputElement>('[data-field="end"]');
+            if (endInput) endInput.value = form.end;
+            const hoursInput = card?.querySelector<HTMLInputElement>('input[type="number"]');
+            if (hoursInput) hoursInput.value = form.hours;
+          }
           autofillHours();
         }),
       ),
@@ -414,9 +433,13 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     grid.append(
       field(
         tr("结束"),
-        datetime("end", form.end, (v) => {
+        datetime("end", form.end, (v, input) => {
           form.end = v;
           autofillHours();
+          // 时长跟着起止时间走：自动算出来的值要立刻看得见。
+          const card = input.closest(".at-card");
+          const hoursInput = card?.querySelector<HTMLInputElement>('input[type="number"]');
+          if (hoursInput) hoursInput.value = form.hours;
         }),
       ),
     );
@@ -447,8 +470,8 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     grid.append(field(tr("事由"), typeSel));
     grid.append(field(tr("项目"), noteField("project", form.project, (v) => (form.project = v), tr("比如项目号，可不填"))));
     grid.append(field(tr("说明"), noteField("detail", form.detail, (v) => (form.detail = v), tr("补一句为什么，可不填"))));
-    grid.append(field(tr("一级审批人"), leaderSelect(overtime.candidates.l1, form.l1, false)));
-    grid.append(field(tr("二级审批人"), leaderSelect(overtime.candidates.l2, form.l2, true)));
+    grid.append(field(tr("一级审批人"), leaderSelect(overtime.candidates.l1, form.l1)));
+    grid.append(field(tr("二级审批人"), fixedLeaders(overtime.fixedL2, tr("由考勤系统按组织架构定，不能改")), true));
     card.append(grid);
 
     if (pending) {
@@ -533,8 +556,10 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     return { text: tr("审批中"), tone: "ok" };
   }
 
-  function field(label: string, node: HTMLElement): HTMLElement {
+  /** 一格表单：wide 时占满整行（审批人这种要塞几个名字的用得上）。 */
+  function field(label: string, node: HTMLElement, wide = false): HTMLElement {
     const box = el("label", "at-field");
+    if (wide) box.classList.add("at-field--wide");
     box.append(el("span", "at-field__label", label));
     box.append(node);
     return box;
@@ -557,12 +582,17 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     return input;
   }
 
-  function datetime(name: string, value: string, onChange: (v: string) => void): HTMLInputElement {    const input = document.createElement("input");
+  function datetime(
+    name: string,
+    value: string,
+    onChange: (v: string, input: HTMLInputElement) => void,
+  ): HTMLInputElement {
+    const input = document.createElement("input");
     input.type = "datetime-local";
     input.className = "at-input";
     input.dataset.field = name;
     input.value = value;
-    input.onchange = () => onChange(input.value);
+    input.onchange = () => onChange(input.value, input);
     return input;
   }
 
@@ -578,11 +608,18 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     form.hours = String(round1((b - a) / 3_600_000));
   }
 
-  // 审批人记住上次的选择：同一批人天天要选，每次从头挑太烦。
+  /** 按某一天给起止时间：工作日 18–22，周末 9–18。 */
+  function fillWindow(day: string): void {
+    const win = defaultWindow(day);
+    form.start = `${day}T${win.start}`;
+    form.end = `${day}T${win.end}`;
+    autofillHours();
+  }
+
+  // 一级审批人记住上次的选择：天天是同一个人，每次从头挑太烦。
   function rememberApprovers(): void {
     try {
       localStorage.setItem(L1_KEY, JSON.stringify(form.l1));
-      localStorage.setItem(L2_KEY, JSON.stringify(form.l2));
     } catch {
       /* 隐私模式下没有 localStorage，记不住就算了 */
     }
@@ -601,7 +638,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     }
   }
 
-  function leaderSelect(list: { userId: number; name: string; workNo: string }[], chosen: string[], multi: boolean): HTMLElement {
+  function leaderSelect(list: { userId: number; name: string; workNo: string }[], chosen: string[]): HTMLElement {
     const wrap = el("div", "at-leaders");
     if (list.length === 0) {
       wrap.append(el("span", "at-hint", tr("没有候选")));
@@ -609,17 +646,11 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     }
     const sel = document.createElement("select");
     sel.className = "at-input";
-    if (multi) {
-      sel.multiple = true;
-      // 多选默认会把整个列表铺开成一个大盒子，限高到 3 行；列表更长时自己滚。
-      sel.size = Math.min(Math.max(list.length, 2), 3);
-    } else {
-      // 单选没有占位项时，浏览器会把第一个候选画成「已选中」——看着像选了，其实没有。
-      const blank = document.createElement("option");
-      blank.value = "";
-      blank.textContent = tr("请选择");
-      sel.append(blank);
-    }
+    // 单选没有占位项时，浏览器会把第一个候选画成「已选中」——看着像选了，其实没有。
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = tr("请选择");
+    sel.append(blank);
     for (const p of list) {
       const opt = document.createElement("option");
       opt.value = String(p.userId);
@@ -627,14 +658,26 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
       if (chosen.includes(opt.value)) opt.selected = true;
       sel.append(opt);
     }
-    sel.dataset.role = multi ? "l2" : "l1";
+    sel.dataset.role = "l1";
     sel.onchange = () => {
-      const picked = Array.from(sel.selectedOptions).map((o) => o.value).filter(Boolean);
-      if (multi) form.l2 = picked;
-      else form.l1 = picked;
+      form.l1 = Array.from(sel.selectedOptions)
+        .map((o) => o.value)
+        .filter(Boolean);
       rememberApprovers();
     };
     wrap.append(sel);
+    return wrap;
+  }
+
+  /** 二级审批人：只读展示。OA 按组织架构定好是谁，我们连改的口子都不给。 */
+  function fixedLeaders(list: { name: string; workNo: string }[], hint: string): HTMLElement {
+    const wrap = el("div", "at-leaders");
+    if (list.length === 0) {
+      wrap.append(el("span", "at-hint", tr("OA 没给这级的固定审批人，提交前先在 OA 网页上确认一次")));
+      return wrap;
+    }
+    for (const p of list) wrap.append(el("span", "at-chip", p.workNo ? `${p.name} ${p.workNo}` : p.name));
+    wrap.append(el("span", "at-hint", hint));
     return wrap;
   }
 

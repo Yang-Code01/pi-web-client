@@ -62,6 +62,18 @@ export function reasonText(reason: { type?: string; project?: string } | null | 
 }
 
 /** 小时数只留一位小数：0.30000000000000004 这种浮点尾巴不要出现在界面上。 */
+/**
+ * 加班申请的时间窗默认值：工作日 `18:00–22:00`，周末 `09:00–18:00`。
+ * 参数是 `YYYY-MM-DD`（不是 Date，免得调用方各自处理时区）；日期不合法时按工作日给。
+ */
+export function defaultWindow(dateKey: string): { start: string; end: string } {
+  const day = new Date(`${dateKey.slice(0, 10)}T00:00:00`);
+  const weekday = Number.isFinite(day.getTime()) ? day.getDay() : 1;
+  // 0 = 周日，6 = 周六：这两天在 OA 里算「周末加班」，白天来。
+  return weekday === 0 || weekday === 6 ? { start: "09:00", end: "18:00" } : { start: "18:00", end: "22:00" };
+}
+
+
 export function round1(n: number): number {
   return Math.round((Number(n) || 0) * 10) / 10;
 }

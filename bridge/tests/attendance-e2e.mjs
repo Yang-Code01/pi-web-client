@@ -128,6 +128,7 @@ const oa = http.createServer((req, res) => {
           900001: [
             { workflow_index: 0, workflow_role_name: "申请人", workflow_result: 1, handle_user_id: 1001, handle_user_name: "张三", update_time: "", workflow_user_name: "张三-TS0001" },
             { workflow_index: 1, workflow_role_name: "项目负责人", workflow_result: 0, handle_user_id: null, handle_user_name: null, update_time: "", workflow_user_name: "李四-TS0002" },
+            { workflow_index: 2, workflow_role_name: "部门负责人", workflow_result: 0, handle_user_id: null, handle_user_name: null, update_time: "", workflow_user_name: "王五-TS0003,赵六-TS0004" },
           ],
         },
         overtime_reason: ["进度延迟", "追加作业"],
@@ -147,6 +148,16 @@ const oa = http.createServer((req, res) => {
             { user_id: 3002, name: "赵六", work_no: "TS0004" },
           ],
         },
+      });
+    }
+
+    if (url.pathname === "/in/roles/depart_leader_data") {
+      // 二级审批人的固定名单：OA 只给「姓名-工号」，user_id 得自己对到候选表里。
+      return send(200, {
+        status: "OK",
+        // 兜底名单故意给一个对不上候选表的人：能过说明固定名单走的是「上一次申请」，不是这里。
+        last: { depart_manager: ["孙七-TS0007"], event_manager: ["李四-TS0002"] },
+        data: [{ depart_manager: "王五-TS0003", event_manager: ["李四-TS0002"] }],
       });
     }
 
@@ -413,9 +424,16 @@ test("加班申请：申请单、审批链、候选人都到齐", async () => {
   const a = ot.json.applyList[0];
   assert.equal(a.code, 900001);
   assert.deepEqual(a.reasonParsed, { type: "进度延迟", project: "P1", detail: "赶版本" });
-  assert.equal(ot.json.workflow["900001"].length, 2);
+  assert.equal(ot.json.workflow["900001"].length, 3);
   assert.deepEqual(ot.json.candidates.l1, [{ userId: 2001, name: "李四", workNo: "TS0002" }]);
   assert.equal(ot.json.candidates.l2.length, 2);
+  // 二级审批人取「上一次申请的第二级」（与 OA 表单那两条只读框一致），兜底才是 depart_leader_data。
+  assert.deepEqual(ot.json.fixedL2, [
+    { userId: 3001, name: "王五", workNo: "TS0003" },
+    { userId: 3002, name: "赵六", workNo: "TS0004" },
+  ]);
+  // 一级审批人的默认值 = 上一次申请的 idx1 审批人（李四-TS0002 → 2001）。
+  assert.deepEqual(ot.json.defaultL1, [{ userId: 2001, name: "李四", workNo: "TS0002" }]);
 });
 
 const draft = {

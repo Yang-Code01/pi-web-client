@@ -59,6 +59,8 @@ export interface AttendanceEndpoints {
   overtimeAdd: string;
   overtimeCancel: string;
   leaders: string;
+  /** 部门负责人名单（二级审批人就是这张表里的「我的那两条」）。 */
+  roles: string;
 }
 
 export const DEFAULT_ENDPOINTS: AttendanceEndpoints = {
@@ -68,6 +70,7 @@ export const DEFAULT_ENDPOINTS: AttendanceEndpoints = {
   overtimeAdd: "/in/apply/overtime/add",
   overtimeCancel: "/in/apply/overtime/cancel",
   leaders: "/in/common/leaders",
+  roles: "/in/roles/depart_leader_data",
 };
 
 export interface AttendanceConfig {
@@ -525,6 +528,66 @@ function readLeaders(data: unknown): { l1: LeaderItem[]; l2: LeaderItem[] } {
   return { l1: pick(list?.team_leaders), l2: pick(list?.depart_leaders) };
 }
 
+/** OA 里的「姓名-工号」。两段都可能缺，别假设一定有两个。 */
+export function parsePerson(text: unknown): { name: string; workNo: string } {
+  const raw = typeof text === "string" ? text.trim() : "";
+  if (!raw) return { name: "", workNo: "" };
+  const cut = raw.lastIndexOf("-");
+  if (cut <= 0) return { name: raw, workNo: "" };
+  return { name: raw.slice(0, cut).trim(), workNo: raw.slice(cut + 1).trim() };
+}
+
+/** 把「姓名-工号」对到候选表里的人；对不上就丢（宁可空着也不瞎猜 id）。 */
+export function resolvePeople(keys: unknown[], pool: LeaderItem[]): LeaderItem[] {
+  const out: LeaderItem[] = [];
+  const seen = new Set<number>();
+  for (const raw of Array.isArray(keys) ? keys : []) {
+    const { name, workNo } = parsePerson(raw);
+    if (!name && !workNo) continue;
+    const hit = pool.find((p) => (workNo ? p.workNo === workNo : p.name === name));
+    if (!hit || seen.has(hit.userId)) continue;
+    seen.add(hit.userId);
+    out.push(hit);
+  }
+  return out;
+}
+
+/** `depart_leader_data` 里的 `last.depart_manager`：这个人自己的二级审批人。 */
+export function readDepartManagers(data: unknown): string[] {
+  const last = (data as { last?: { depart_manager?: unknown } } | null)?.last;
+  const raw = last?.depart_manager;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((x): x is string => typeof x === "string" && x.trim() !== "");
+}
+
+/** 最近一次加班申请里某一级（`workflow_index`）的审批人，统一成「姓名-工号」列表。 */
+export function lastStepPeople(applyList: unknown[], workflow: Record<string, unknown>, index: number): string[] {
+  const rows = (Array.isArray(applyList) ? applyList : [])
+    .map((x) => x as Record<string, unknown>)
+    .filter((x) => x && (x.code !== undefined || x.start_time !== undefined));
+  if (rows.length === 0) return [];
+  const newest = rows.reduce((best, cur) => (String(cur.start_time ?? "") > String(best.start_time ?? "") ? cur : best));
+  const chain = workflow[String(newest.code ?? "")];
+  if (!Array.isArray(chain)) return [];
+  const step = (chain as Record<string, unknown>[]).find((x) => Number(x?.workflow_index) === index);
+  if (!step) return [];
+  // 「这一级应该是谁」写的是 workflow_user_name，可能是一串逗号分隔的人；
+  // handle_user_name 只记录真正点过的那个人，所以多级/多人时不能拿它当名单。
+  const planned = typeof step.workflow_user_name === "string" ? step.workflow_user_name : "";
+  const handled = typeof step.handle_user_name === "string" ? step.handle_user_name : "";
+  const text = planned || handled;
+  if (!text) return [];
+  return text
+    .split(",")
+    .map((x) => x.trim())
+    .filter((x) => x !== "");
+}
+
+/** 一级审批人的默认值：上一次申请的那个项目负责人（OA 新建单据时也是拿这个当前值）。 */
+export function lastLeadApprover(applyList: unknown[], workflow: Record<string, unknown>): string {
+  return lastStepPeople(applyList, workflow, 1)[0] ?? "";
+}
+
 interface OvertimeInit {
   applyList: unknown[];
   workflow: Record<string, unknown>;
@@ -532,22 +595,39 @@ interface OvertimeInit {
   admitTime: string;
   rule: string;
   leaders: { l1: LeaderItem[]; l2: LeaderItem[] };
+  /** 二级审批人的固定名单（从 roles 端点解析出来的人）。 */
+  fixedL2: LeaderItem[];
+  /** 一级审批人的默认值（上一次申请的那个人）。 */
+  defaultL1: LeaderItem[];
 }
 
 async function fetchOvertimeInit(cfg: AttendanceConfig, ctx: OaCtx, cred: Credentials): Promise<OvertimeInit> {
-  const [initRaw, leadersRaw] = await Promise.all([
+  // roles 端点不是所有部署都有：取不到就当没有固定名单，别把整个申请页拖挂。
+  const [initRaw, leadersRaw, rolesRaw] = await Promise.all([
     oaFetch(cfg, ctx, { method: "GET", endpoint: cfg.endpoints.overtimeInit, token: cred.token }),
     oaFetch(cfg, ctx, { method: "GET", endpoint: cfg.endpoints.leaders, token: cred.token }).catch(() => null),
+    oaFetch(cfg, ctx, { method: "GET", endpoint: cfg.endpoints.roles, token: cred.token }).catch(() => null),
   ]);
   if (!okStatus(initRaw)) throw new OaError("overtime_ng", 502, ngReason(initRaw, "加班申请取不到"));
   const v = initRaw as Record<string, unknown>;
+  const leaders = readLeaders(leadersRaw);
+  const workflow = v.workflow_list && typeof v.workflow_list === "object" ? (v.workflow_list as Record<string, unknown>) : {};
+  const applyList = Array.isArray(v.apply_list) ? (v.apply_list as unknown[]) : [];
+  // 固定名单可能落在两个候选表里（部门负责人表优先），按工号对 id。
+  const pool = [...leaders.l2, ...leaders.l1];
+  // 二级审批人：优先「我上一次申请的第二级是谁」——它跟 OA 表单里那两条只读框逐字一致；
+  // `depart_leader_data.last` 只是兜底，实测它会随部门/时间给出另一批人，不可全信。
+  const fixedKeys = lastStepPeople(applyList, workflow, 2);
+  const fixedL2 = fixedKeys.length > 0 ? resolvePeople(fixedKeys, pool) : resolvePeople(readDepartManagers(rolesRaw), pool);
   return {
-    applyList: Array.isArray(v.apply_list) ? (v.apply_list as unknown[]) : [],
-    workflow: v.workflow_list && typeof v.workflow_list === "object" ? (v.workflow_list as Record<string, unknown>) : {},
+    applyList,
+    workflow,
     reasons: Array.isArray(v.overtime_reason) ? (v.overtime_reason as unknown[]).filter((x): x is string => typeof x === "string") : [],
     admitTime: typeof v.overtime_admit_time === "string" ? v.overtime_admit_time : "",
     rule: typeof v.overtime_rule === "string" ? v.overtime_rule : "",
-    leaders: readLeaders(leadersRaw),
+    leaders,
+    fixedL2,
+    defaultL1: resolvePeople([lastLeadApprover(applyList, workflow)], leaders.l1),
   };
 }
 
@@ -850,6 +930,9 @@ export async function handleAttendance(
           admitTime: init.admitTime,
           rule: init.rule,
           candidates: init.leaders,
+          // 二级审批人在 OA 里就是「部门负责人」那两条，页面只读；一级默认上一次的那个人，可以改。
+          fixedL2: init.fixedL2,
+          defaultL1: init.defaultL1,
           userId: cred.userId,
         });
         return true;

@@ -3444,6 +3444,8 @@ export const en: Dict = {
   "正在读状态…": "Reading state…",
   "正在读申请…": "Reading requests…",
   "没有候选": "No candidates",
+  "由考勤系统按组织架构定，不能改": "Fixed by the attendance system from your department, cannot change",
+  "OA 没给这级的固定审批人，提交前先在 OA 网页上确认一次": "OA did not give a fixed approver for this step — confirm on the OA page before submitting",
   "清除本地数据": "Clear local data",
   "登录": "Sign in",
   "登录成功": "Signed in",

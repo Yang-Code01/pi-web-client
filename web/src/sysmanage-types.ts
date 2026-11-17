@@ -292,6 +292,10 @@ export interface AttendanceOvertime {
   admitTime: string;
   rule: string;
   candidates: { l1: AttendanceLeader[]; l2: AttendanceLeader[] };
+  /** 二级审批人：OA 按组织架构给的固定名单，页面上只读。 */
+  fixedL2: AttendanceLeader[];
+  /** 一级审批人的默认值（上一次申请的那个人），可以改。 */
+  defaultL1: AttendanceLeader[];
   userId: number;
 }
 

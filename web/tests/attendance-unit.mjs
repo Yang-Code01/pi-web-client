@@ -10,7 +10,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { overtimeSplit, dateKey, defaultRange, hoursText, reasonText, spanText, stepState } from "../src/attendance-shared.ts";
+import { overtimeSplit, dateKey, defaultRange, defaultWindow, hoursText, reasonText, spanText, stepState } from "../src/attendance-shared.ts";
 
 test("dateKey 用本地日期补零，不跟 UTC 走", () => {
   assert.equal(dateKey(new Date(2026, 10, 7)), "2026-11-07");
@@ -110,4 +110,19 @@ test("overtimeSplit 把总数拆成平时与周末，浮点尾巴要削掉", () 
   assert.deepEqual(overtimeSplit({}), { workday: 0, weekend: 0 });
   assert.deepEqual(overtimeSplit({ overtime: 2, weekendOvertime: 3 }), { workday: 0, weekend: 3 });
   assert.deepEqual(overtimeSplit({ overtime: Number.NaN, weekendOvertime: -2 }), { workday: 0, weekend: 0 });
+});
+
+test("defaultWindow：工作日 18–22，周末 9–18", () => {
+  // 2026-11-16 是周一、11-20 是周五
+  assert.deepEqual(defaultWindow("2026-11-16"), { start: "18:00", end: "22:00" });
+  assert.deepEqual(defaultWindow("2026-11-20"), { start: "18:00", end: "22:00" });
+  // 11-21 周六、11-22 周日
+  assert.deepEqual(defaultWindow("2026-11-21"), { start: "09:00", end: "18:00" });
+  assert.deepEqual(defaultWindow("2026-11-22"), { start: "09:00", end: "18:00" });
+  // 跨月跨年也对
+  assert.deepEqual(defaultWindow("2027-01-02"), { start: "09:00", end: "18:00" });
+  // 带时间尾巴也能用（页面传的是 dateKey，这里防一手）
+  assert.deepEqual(defaultWindow("2026-11-21T08:30"), { start: "09:00", end: "18:00" });
+  // 坏日期按工作日，不抛
+  assert.deepEqual(defaultWindow(""), { start: "18:00", end: "22:00" });
 });
