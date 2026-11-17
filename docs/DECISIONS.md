@@ -5769,3 +5769,19 @@ if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starti
 **取舍：** 删预算后旧的 `budget.json` 成了无主文件（不迁移，因为那个数没有任何意义）；百分比必须在有窗口信息时才生效，冷会话打开面板只能显示「还没拿到窗口大小」，要等一次 stats；交接文档落在桥的 `state/handoff/` 而不是工作区，翻历史要去状态目录找；`/skill:handoff` 是用户技能（`disable-model-invocation`），没装时开关会被拦住，但「装没装」是在打开开关/触发那一刻才查。
 
 **验证：** `node --test bridge/tests/context-policy-unit.mjs`（7 条：三层优先级、5/90 边界、差 4 点、32K/200K/1M 夹取、交接优先、未设百分比不压制压缩）；`node --test bridge/tests/context-session-unit.mjs`（9 条：交接只发事件、到压缩线只压一次、运行中不压、scratch/已交接/占位中/失败退避全早退）；`npm run test:context`（桥 30 + web 33）通过；`node bridge/tests/context-policy-ui.mjs`（假 pi + Chromium，口令 `context-ui-pass`，端口 `CONTEXT_UI_PORT`，默认 7914 会被 Windows 保留段占掉，实测用 8934）20 项通过：四个头栏按钮、横幅隐藏时底栏仍贴底、窗口/默认 70%≈140K、差 2 点被拦且不发帧、保存后 `layer.session` 正确（保存前查 `/handoff` 技能，假 pi 用 `FAKE_PI_COMMANDS` 报一条）、生效来源变 session、140K→80K 夹取、Esc 只关子弹窗、交接说明与两次点击才发、压缩按钮不炸页面；`npm --prefix web run typecheck`（tsc + i18n 3489 键 × 3 语 + viewport 守卫）与 `npm --prefix bridge run typecheck`、`npm run build:bridge`、`npm run build:web` 通过。
+
+## D300 交接时把票号 / 分支 ref 预填进新会话的名字框（2026-11-17）
+
+**问题：** 从 Jira 面板「交给 agent ▾」或分支操作工作台交接出去，新会话的名字总要手抄一遍：面板里的名字框默认空着，桥于是先叫它「新会话」，等第一条消息才拿正文首行取名（40 字截断）。同时开着几个交接会话时，左栏一片看着都差不多。而「这件事叫什么」本来就在手上 —— 提示词里已经带着票号和分支。顺带查出一个更要紧的：Jira 面板是整屏盖板（`.jc-back` z-index 80 / `.jc-pane` 90），比底部 sheet（z 60）与它的 modal（z 70）都高，所以从 Jira 交接出去之后，新会话面板和输入框被压在下面**点不到**（探针里 `.jc-pane intercepts pointer events` 直接点不动「创建」）。
+
+**决定：** 新增 `web/src/session-name.ts` 两个纯函数，规则只写这一处，两个面板共用：
+
+- **票号 → 名字**：`trim` 后取最后一个 `-` 之后的原文。`CASPH30INC-17967` → `17967`，`ABC_DEF-12` → `12`，没有连字符的 `E2E` 整条照填；取完是空的（`PROJ-`）返回空串，调用方按「不填」处理，别在面板里摆一个看不见的空名字。
+- **分支 ref → 名字**：整条原样，只去前后空白（`feat/skill-inject-viz`、`origin/main`、`HEAD~2` 都留着斜杠与 `~`）。
+- **只预填，不改名**：名字进「开新会话」面板的名字框，可改可清，创建时用最后写的；不加 `rename` 请求、不多一次网络往返。光标停在末尾（不 select-all），接着补字不会盖掉整段。名字只活在那个输入框里，面板一关就没，不需要额外的待填状态（D127 那条只管待填文字）。
+- **回退路径同样带名字**：`prefill()` 在没有当前会话时会去建新会话，名字一起带过去。
+- **分支工作台用点下去那一刻的 ref**：`openAi()` 那颗卡上，两个出口各自在 onClick 里读 `picker.input.value`（不是面板打开时缓存的 `selectedBranch`，也不是建卡时快照的值）；`openHandoff()` 那三处（询问 / 单个动词 / 批量动词）用的是面板当前选中的那条分支。
+
+**取舍：** 名字不再按字数额外截断，只服名字框自己的 120 字上限（预填时显式 `slice` 到 `nameField.maxLength` —— 程序赋值绕得过 `maxLength`，不截就会显示一个 130 字、建出来却是 120 字的名字）；分支不改用「最后一段」，用户要的就是整条 ref。Jira 交接时先 `close()` 自己（与笔记面板同一做法），否则上面那条盖板问题会让整个功能在浏览器里用不了；代价是交接后要再看 Jira 得重开面板。记录 / 邮箱两个面板这次没扩（用户定的范围）；仓库面板与分支工作台共用同一个 `BranchSheet`，类型跟着放宽，它的 AI 出口实际也带名字。
+
+**验证：** `node --experimental-strip-types web/tests/session-name-unit.mjs` 覆盖票号与 ref 的边界；`node probes/jira-handoff-name.mjs` 用真 Chromium + 拦掉的 `/api/jira/*` 跑三条场景（无会话时回退、有会话时新开、取消后不漏），断言的是左栏那一行会话叫什么；`npm run test:githist:ui` 里补了一条「分支出口把 ref 填进名字框」。
