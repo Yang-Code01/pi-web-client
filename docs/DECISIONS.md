@@ -6001,6 +6001,7 @@ Esc 之后 dialog: 0
 
 **验证：** `npm run test:notes` 四段全绿：`web/tests/notes-rich-unit.mjs`（22：白名单 / 事件属性 / 字号只认 em / 表格 / 幂等 / 老文本迁移）、`web/tests/notes-editor-browser.mjs`（真 Chromium：选区加粗、``` 回车转代码块、粘贴净化、颜色包裹、选区丢失时不改正文）、`web/tests/notes-sheet-browser.mjs`（三栏骨架 / 列表行 / 自动存 / 状态菜单 / 两栏折叠 / 搜索 / 归档只读，`locale: zh-CN`）。`cd web && npm run typecheck`（tsc + i18n 3475 键 × 3 语 + viewport 守卫）通过。
 
+
 ## D306 考勤：设置页能看回本机存着的密码，token 过期自动续登（用户要求 2026-11-18）
 
 **问题：** 用户提了两件事：「之前已经登陆过了，每次打开考勤自动更新」——可界面在 token 一过期就说「未登录」，而实际上记录页一拉数据，`session()` 就会拿存着的密码自动重登，提示与事实相反；「设置里面密码现在默认不显示，设置为显示状态。但是不是直接显示，应该有一个眼睛的图标，点击能显示」——要看的是**本机存着的那个**密码，不是重敲一遍。
@@ -6039,3 +6040,25 @@ Esc 之后 dialog: 0
 **取舍：** 放弃「provider 真值」换来零安装、零新进程、单一数据面（桥与 web 各自一份类型，没有第三处要装的东西）；`estimated` 字段把这个交换写进协议，界面据此显示「估算 / 真值」，不让人误以为是 GitHub 自己给的数。副作用是老会话里 `usage.cost` 为 0 / 缺失的请求没有积分（pi 记价之前的历史）。**否决过的两条**：① 桥自己做 MITM 代理截 pi 的 HTTP 流 —— 多一个进程、要正确转发流式响应，风险远大于收益；② 桥自己发一次 copilot 请求读响应头 —— 那是**真花钱**的探测，且与用户实际那次请求不是同一笔。
 
 **验证：** `node --experimental-strip-types bridge/tests/copilot-credits-unit.mjs`（12：增量读含半行/变短/文件不在/坏行、`cost × 100` 换算与真值优先、provider 分账、对账三态、额度解析含 `quota_reset_at:0` 与真实 Business 响应、拉额度失败一律 null 且不发请求）、`node --experimental-strip-types web/tests/copilot-unit.mjs`（7：精度三档、美元换算、重置时间 UTC/本地/天数、混合判定、用量比例、刷新年龄）、`web/tests/exec-view-unit.mjs` 22 通过（模型带 credits/otherCost）；`npm --prefix web run typecheck`（i18n 3597 键 × 3 语 + 视口守卫）与 `tsc --noEmit -p bridge/tsconfig.json` 全过。等价性实测：同一请求 pi 写的 `cost.total 0.0080125 × 100` 与响应的 `total_nano_aiu / 1e9` 完全一致。
+
+## D308 从弹层里打开的浮窗提一档（`.viewer.hi`），三处「先关父层」的绕法删掉（2026-11-18）
+
+**问题：** 一堆「面板里再开一层」的路径不遵守「从哪来，回哪去」。清了一遍（产物 / 差分 / 设置抽屉 / 设置台 / 模型面板 / 上下文面板 / 技能商店 / 内网通 / 记录 / Jira / 分支工作台 …），根因其实只有一条：**`.viewer` 是 46/47，永远在 `.sheet-back` 60 之下**，所以从面板里 `openPreview` 什么都看不见，点了像没反应。绕开的办法是「先 `this.closeSheet()` 再开预览」——用户关掉预览，父层也没了：
+
+- 产物列表点不可 diff 的行（`artifactRow`）；
+- 技能商店「已安装 → 查看」（`paintSkillInstalled`）；
+- 设置台「更新日志」里点 `docs/DECISIONS.md`（`paintWhatsnew` 的 `openPath`，代码注释里明写了「先收面板再交给预览」——那是当时对层序的妥协）。顺带 `settingsEsc` 的越级守卫只数 `.st-back, .sheet-back, .image-view`，Esc 会连父层一起收。
+
+**为什么：** 打开一扇浮窗本来不该销毁它背后的那一页，可 `App` 的 sheet 是单槽（每个 `open*Sheet` 首句 `closeSheet()`），谁也不能把自己叠在自己上面。改那个契约要动十几个入口，而这里真正的病症只有「预览被父层盖住」一条 —— 给这一种浮窗提一档，三处绕法就都不需要了。整体抬高 `.viewer` 不行：D111 的语义是工具窗压不过真正的模态与底部抽屉，这条得留着。
+
+**决定：**
+
+- **`.viewer.hi { z-index: 63 }`**（`.viewer.hi.front` 同高）：`openPreview` 里 `toggle("hi", Boolean(this.sheet || this.subSheet))` —— 从弹层里开的预览压得住父层，从空场 / 终端 / 普通浮窗里开的还是 46/47。只提这一类，**不是**把 `.viewer` 整体抬高（D111）。
+- **`.modal.hi` 62 → 64**：口令框与「更新 pi」得压得住 63（设置台里点文档链接 → 再点「更新 pi」就是这条路）。层带现在是 `term-dock 45 < viewer 46 < *.front 47 < modal 50 < sheet 60 = st-back 60 < sheet-sub 61 < viewer.hi 63 < modal.hi 64 < choose 66 < image-view 70`。
+- **父层关掉时摘掉 `hi`**（`closeSheet()` / `closeSubSheet()` 各一句 `this.viewer?.root.classList.remove("hi")`）：预览是拖出来的窗，父层没了就该回落到普通层带，不跟着消失。
+- **Esc 从上往下收**：新增 `viewerEsc`（document 捕获阶段，只在 `.hi` 时生效）→ 先收预览并 `stopPropagation()`；`settingsEsc` 加 `.viewer.hi` 提前 return，并把 `.sheet-sub-back` 补进越级守卫。面板自己的 Esc 挂在元素上，焦点在面板里时事件走不到浮窗，所以这一层必须在捕获阶段拦。三支 Esc（`viewerEsc` / `subEsc` / `settingsEsc`）统一先查 `ev.defaultPrevented`，且都不越级：`.viewer.hi` 上面压着 `.modal.hi`(64) 或 `.choose-back`(66) 时由 `higherLayerOpen()` 拦下，子层(61) 上面压着 `.viewer.hi` 时 `subEsc` 也提前 return —— 收掉的一定是最上面那层。`.image-view`(70) 不用列：它挂在 `window` 捕获阶段且自己 `stopPropagation()`。
+- **三处 `closeSheet()` 删掉**：产物不可 diff 行、技能商店「查看」、更新日志文档链接（见上）。
+
+**取舍：** 没顺手改「单槽 sheet」本身（`openDiffSheet` 首句仍是 `closeSheet()`，所以产物 → 看改动 → 关差分还是全关；设置抽屉 → pi 设置 / 本机管理 / 热部署、模型面板 → 项目信任 / 会话树、上下文面板 → 交接卡 → 阈值卡同理）。那些要的是 sheet 栈，改的是十几个 `open*Sheet` 的公共契约，不是这一档的事；先把「预览型子层」这条最容易误判成没反应的路修对，其余记在 issue #496 等下一条。`viewer.hi` 在子层(61) 盖上来时不会自动降回（子层其实还在预览下面）：今天没有一条路径能在预览已开时再开子层，Esc 的顺序已按「先收最上面那层」处理，真撞上了再决定是降档还是让子层也提一档。Esc 越级的三条分支（口令框 / 选择框压在上面时不收预览）没有自动化用例，只有代码审阅与 `higherLayerOpen()` 的注释：那两条要真起口令框或选择框，代价比收益大；层带本身由 `layers-unit.mjs` 兜底。
+
+**验证：** 新增 `web/tests/layers-unit.mjs`（已挂进 `npm --prefix web run typecheck`）从 `styles.css` / `settings-console.css` 里读真实 `z-index`，断言 `.viewer < .sheet-back`、`.viewer.hi > .sheet-back / .sheet-sub-back / .st-back`、`.modal.hi > .viewer.hi`、`.choose-back > .modal.hi`、`.image-view > .choose-back`、`.viewer.hi.front === .viewer.hi`；`bridge/tests/whatsnew-ui.mjs` 的 D 段改成「点链接后面板还在 + 预览 z-index 更高 + Esc 只收预览」，`bridge/tests/skill-view-ui.mjs` 的 E 段改成「查看之后商店还在 + Esc 回到商店」。两条 UI 用例在真 Chromium 里跑过（`WHATSNEW_UI_PORT` / `PI_WEB_PORT` 钉端口，本机 `freePort()` 偶尔会给出绑不上的端口）。

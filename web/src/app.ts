@@ -4874,6 +4874,8 @@ export class App {
     if (this.sheetKind === "new") this.prefillNext = null;
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
     document.removeEventListener("keydown", this.settingsEsc, true);
+    // D306: 面板没了，从它里面开的预览不再压着谁 —— 回到普通浮窗那条层带（46/47）。
+    this.viewer?.root.classList.remove("hi");
     this.sheet?.remove();
     this.sheet = null;
     this.sheetKind = null;
@@ -5473,7 +5475,9 @@ export class App {
   private subSheetKind: "policy" | "handoff" | null = null;
   private subSheetPaint: (() => void) | null = null;
   private subEsc = (ev: KeyboardEvent): void => {
-    if (ev.key !== "Escape" || !this.subSheet) return;
+    if (ev.key !== "Escape" || ev.defaultPrevented || !this.subSheet) return;
+    // D306: 从子层里开的预览（63）压在子层（61）上面，Esc 先收它 —— 收的得是最上面那层。
+    if (document.querySelector(".viewer.hi")) return;
     ev.stopPropagation();
     this.closeSubSheet();
   };
@@ -5481,6 +5485,8 @@ export class App {
   private closeSubSheet(): void {
     if (!this.subSheet) return;
     document.removeEventListener("keydown", this.subEsc, true);
+    // D306: 子层收掉之后，从它里面开的预览回到普通层带。
+    this.viewer?.root.classList.remove("hi");
     this.subSheet.remove();
     this.subSheet = null;
     this.subSheetKind = null;
@@ -6057,10 +6063,8 @@ export class App {
         if (entry.from) acts.append(el("span", "settings-hint", tr("来自 {p1}", { p1: entry.from })));
         // 商店这一行用它自己那份路径：同名技能可能被遮蔽，按名字去解析会开到别的目录里那份。
         const view = el("button", "btn ghost sk-view", tr("查看")) as HTMLButtonElement;
-        view.onclick = () => {
-          this.closeSheet();
-          void this.openPreview(`${entry.path}/SKILL.md`);
-        };
+        // D306：预览浮在商店上一（`.viewer.hi` 63），关掉预览回到这一页，而不是把商店一起关掉。
+        view.onclick = () => void this.openPreview(`${entry.path}/SKILL.md`);
         acts.append(view);
         if (entry.removable) {
           const key = `remove:${entry.path}`;
@@ -7934,10 +7938,8 @@ export class App {
       row.onclick = () => void this.openDiffSheet(sessionId, r.path, data);
     } else {
       // 没有可对比的改动（二进制 / 未知 / 没变）：点开就是看文件本身，别给一个空弹窗。
-      row.onclick = () => {
-        this.closeSheet();
-        void this.openPreview(r.path);
-      };
+      // D306：不再 `closeSheet()` —— 预览会压在产物列表上（`.viewer.hi`），关掉它列表还在。
+      row.onclick = () => void this.openPreview(r.path);
     }
     return row;
   }
@@ -8262,6 +8264,9 @@ export class App {
       this.pushStep({ path }, sessionId);
     }
     const v = this.ensureViewer();
+    // D306：从弹层里打开（sheet 60 / 子层 61 / 设置台 60）时浮窗得压在父层上，否则点了像没反应；
+    // 收掉浮窗父层还在原地 —— 「从哪来，回哪去」。面板关掉时 `closeSheet` 会把这个类摘掉。
+    v.root.classList.toggle("hi", Boolean(this.sheet || this.subSheet));
     // 换了一份文件：上一个文件的译文状态（含轮询）跟着走。得在改 v.path 之前问，否则永远相等。
     const switched = v.sessionId !== sessionId || v.path !== path;
     // 刚打开 / 换了一份文件：它该在终端上面（否则点了链接却看不见内容）。
@@ -8480,6 +8485,28 @@ export class App {
     this.paintViewer();
   }
 
+  /**
+   * D306：`.viewer.hi`(63) 上面还压着更高的层时，Esc 不该越过它们去收预览 —— 先收最上面那层。
+   * 大图（70）不用列：它挂在 `window` 捕获阶段并 `stopPropagation()`，轮不到这里。
+   */
+  private higherLayerOpen(): boolean {
+    return Boolean(document.querySelector(".modal.hi, .choose-back"));
+  }
+
+  /**
+   * D306：Esc 先收「压在面板上的预览」。面板自己的 Esc 都挂在元素上（`settingsEsc` 除外），
+   * 焦点还留在面板里时事件根本走不到这扇窗，所以这一层要在捕获阶段拦。只管 `.hi`：
+   * 普通层带的预览（46/47）不能抢掉面板的 Esc。
+   */
+  private viewerEsc = (ev: KeyboardEvent): void => {
+    const root = this.viewer?.root;
+    if (ev.key !== "Escape" || ev.defaultPrevented || !root || !root.classList.contains("hi")) return;
+    if (this.higherLayerOpen()) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    this.closeViewer();
+  };
+
   private ensureViewer(): Viewer {
     if (this.viewer) return this.viewer;
     const root = el("aside", "viewer");
@@ -8540,6 +8567,7 @@ export class App {
         this.closeViewer();
       }
     };
+    document.addEventListener("keydown", this.viewerEsc, true);
     this.overlay(root);
     this.raiseWindow(root);
     this.viewer = {
@@ -8587,6 +8615,7 @@ export class App {
       return;
     }
     if (this.winFront === v.root) this.winFront = null;
+    document.removeEventListener("keydown", this.viewerEsc, true);
     this.stopTrPoll(v);
     v.tr = null;
     v.root.remove();
@@ -11741,7 +11770,11 @@ export class App {
   /** #283：Escape 关设置面板。压着别的浮层时不越级关自己 —— 先关的该是最上面那层。 */
   private settingsEsc = (ev: KeyboardEvent): void => {
     if (ev.key !== "Escape" || ev.defaultPrevented || this.sheetKind !== "settings") return;
-    if (document.querySelectorAll(".st-back, .sheet-back, .image-view").length > 1) return;
+    // D306: 从面板里打开的预览（63）夹在中间时，Esc 先收它（`viewerEsc` 负责），面板还是父层。
+    if (document.querySelector(".viewer.hi")) return;
+    // 更高的层（口令框 64 / 选择框 66）压着时也不越级。
+    if (this.higherLayerOpen()) return;
+    if (document.querySelectorAll(".st-back, .sheet-back, .sheet-sub-back, .image-view").length > 1) return;
     this.closeSheet();
   };
 
@@ -14571,10 +14604,10 @@ export class App {
         const md = el("div", "settings-changelog");
         md.append(
           renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
-            // 正文里的 `docs/DECISIONS.md` 是可点的文件链接：预览若直接开在弹层背后，点了像没反应。
-            // 先收面板再交给预览；链接相对**仓库根**写，会话 cwd 可能不在这个仓库里（D195）。
+            // 正文里的 `docs/DECISIONS.md` 是可点的文件链接（D195）。D306：不再先收面板 ——
+            // 预览会压在面板上（`.viewer.hi`），关掉预览就回到这一页。链接相对**仓库根**写，
+            // 会话 cwd 可能不在这个仓库里。
             openPath: (file) => {
-              this.closeSheet();
               window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(out.root ?? "", file) } }));
             },
           }),

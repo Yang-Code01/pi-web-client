@@ -1692,8 +1692,10 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 /* ---------------------------------------------------------------- modal */
 .modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); display: grid; place-items: center; padding: 20px; z-index: 50; }
 /* Opened from inside a sheet (z-index 60): the modal band has to beat its own parent, or the sheet
-   swallows the clicks (#49 — this also un-hid the passphrase prompt when a write starts in 设置). */
-.modal.hi { z-index: 62; }
+   swallows the clicks (#49 — this also un-hid the passphrase prompt when a write starts in 设置).
+   64，不是 62：从弹层里打开的预览（`.viewer.hi`）是 63，口令框 / 「更新 pi」这类模态还得压得住它
+   （设置台里点文档链接看预览、再回来点「更新 pi」就是这条路）。 */
+.modal.hi { z-index: 64; }
 .modal form { width: min(360px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 12px; }
 .modal input { padding: 12px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font-family: var(--mono); }
 
@@ -2407,6 +2409,11 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 /* D111: 与终端同一条层带 —— 谁最后被点 / 聚焦谁拿 47，另一扇回落到自己的底值（预览 46 / 终端 45）。
    两扇窗都压不过口令 modal 50 与底部 sheet 60。 */
 .viewer.front { z-index: 47; }
+/* D306：从底部面板里打开的预览（产物 / 技能商店 / 设置台里的文档链接）要压在父层之上，
+   否则用户点了一下「没反应」——以前是靠先 `closeSheet()` 绕开的，那样父层就回不去了。
+   层带：sheet 60 → 子层 61 → 本层 63 → `.modal.hi` 64 → 选择框 66 → 大图 70。
+   两个类同时存在时以本行为准（`.front` 47 会把它按回普通层带）。 */
+.viewer.hi, .viewer.hi.front { z-index: 63; }
 @keyframes viewer-in { from { transform: translateX(24px); opacity: 0.4; } }
 /* 全屏：靠 left/right 撑满，**不写 `100vw`** —— `#app` 上是 `zoom: var(--ui-scale)`，vw/vh 在缩放的
    子树里会被再乘一次：1.25 字号下的 `100vw` 是 1800px（视口 1440px）而 `right: 0` 又把右缘钉在视口上，

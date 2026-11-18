@@ -241,7 +241,10 @@ try {
   const shopText = await viewerBody.innerText();
   check(shopText.includes("项目版本-PROJECT"), "同名技能打开的是项目里的那一份（pi 的遮蔽规则）");
   check(!shopText.includes("用户版本-USER"), "没有打开用户目录里的另一份");
-  check((await page.locator(".skill-sheet").count()) === 0, "查看之后商店关掉");
+  check((await page.locator(".skill-sheet").count()) === 1, "查看之后商店还在（D306：预览压在商店上面）");
+  await page.keyboard.press("Escape");
+  await until(async () => (await page.locator(".viewer").count()) === 0, 5000, "Esc 收掉预览");
+  check((await page.locator(".skill-sheet").count()) === 1, "Esc 只收预览，回到商店那一页");
   await page.screenshot({ path: path.join(SHOTS, "4-store.png") });
 
   // ---- F. 桥这一侧：`skill:` 只在 /api/preview 认，公网不递技能目录 ----------------
