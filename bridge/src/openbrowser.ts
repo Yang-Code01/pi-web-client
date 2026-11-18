@@ -7,8 +7,10 @@
  */
 import { spawn } from "node:child_process";
 
-const ON = new Set(["1", "true", "yes", "on", "always"]);
-const OFF = new Set(["0", "false", "no", "off", "never"]);
+// 只认 1 / 0 与 true / false 这两种写法：环境变量里人最常打的就是它们；其余值（含空串）
+// 一律当作「没写」，回到终端判断 —— 认不出来的值当成开关，比忽略它更容易让人踩到。
+const ON = new Set(["1", "true"]);
+const OFF = new Set(["0", "false"]);
 
 /** 该不该开：显式开关优先，没写就看这次启动是不是接在终端上。 */
 export function shouldOpenPage(
@@ -31,9 +33,10 @@ export function browserCommand(url: string, platform: NodeJS.Platform = process.
 
 /**
  * 打开页面。fire-and-forget：`start` / `xdg-open` 自己会退出，浏览器起没起、抢没抢焦点
- * 都不该挡住 bridge 继续起。
+ * 都不该挡住 bridge 继续起。不回头告诉调用方成没成：opener 不存在也要等 `error` 事件才知道，
+ * 而调用处并不关心。
  */
-export function openPage(url: string, platform: NodeJS.Platform = process.platform): boolean {
+export function openPage(url: string, platform: NodeJS.Platform = process.platform): void {
   const { cmd, args } = browserCommand(url, platform);
   try {
     // 不 detached：Windows 上 DETACHED_PROCESS 没有桌面关联，`start` 会静默什么也不做
@@ -43,8 +46,7 @@ export function openPage(url: string, platform: NodeJS.Platform = process.platfo
     // 会变成未捕获异常把 bridge 带走。开不成页面不是什么大事，安静算了。
     child.on("error", () => {});
     child.unref();
-    return true;
   } catch {
-    return false;
+    /* spawn 同步失败（极罕见）也一样安静：开不成页面不值得影响启动 */
   }
 }

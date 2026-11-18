@@ -14,14 +14,15 @@ import { browserCommand, shouldOpenPage } from "../src/openbrowser.ts";
 assert.equal(shouldOpenPage({}, true), true, "接在终端上手敲的启动：开");
 assert.equal(shouldOpenPage({}, false), false, "输出走管道/文件（看门狗、热部署、测试环境）：不开");
 
-for (const flag of ["1", "true", "YES", " on ", "always"]) {
+for (const flag of ["1", "true", "TRUE"]) {
   assert.equal(shouldOpenPage({ PI_WEB_OPEN: flag }, false), true, `PI_WEB_OPEN=${JSON.stringify(flag)} 强制开`);
 }
-for (const flag of ["0", "false", "No", " off ", "never"]) {
+for (const flag of ["0", "false", " False "]) {
   assert.equal(shouldOpenPage({ PI_WEB_OPEN: flag }, true), false, `PI_WEB_OPEN=${JSON.stringify(flag)} 强制关`);
 }
 assert.equal(shouldOpenPage({ PI_WEB_OPEN: "" }, true), true, "空字符串按没写处理");
 assert.equal(shouldOpenPage({ PI_WEB_OPEN: "maybe" }, false), false, "看不懂的值回落到终端判断");
+assert.equal(shouldOpenPage({ PI_WEB_OPEN: "maybe" }, true), true, "看不懂的值不越权关掉");
 
 // ------------------------------------------------ 用什么命令开
 
