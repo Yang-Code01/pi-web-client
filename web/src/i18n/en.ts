@@ -323,7 +323,7 @@ export const en: Dict = {
   "会话树：看分支、从任意消息分叉": "Session tree: see branches, fork from any message",
   "会话管理": "Session manager",
   "会话管理（含垃圾箱）": "Session manager (incl. trash)",
-  "你 · {p1}": "You · {p1}",
+  "你": "You",
   "你 · {p1} 命令 · {p2}": "You · {p1} command · {p2}",
   "你已填的 {p1} 题还留着，可以接着用。": "Your answers to {p1} questions are kept; you can pick up where you left off.",
   "例如 E:\\yqm\\pi-web-client": "e.g. E:\\yqm\\pi-web-client",
