@@ -25,6 +25,12 @@ export interface ChromeContext {
 
 const SESSION_ONLY: readonly string[] = ["artifacts", "files"];
 
+/**
+ * 默认不占顶栏的 id：**后加的、机器级的**功能（用户 2026-11-18 明确要求「默认隐藏」）。
+ * 三态不变 —— 键缺失按这里的默认（不画），`true` 才画出来，`false` 与缺失同效但会记住「关过」。
+ */
+const DEFAULT_HIDDEN: readonly ChromeId[] = ["filesearch"];
+
 /** 只在会话里才有内容的 id：没开会话时连显式打开也画不出来。列表只在这里写一次。 */
 export function isSessionOnly(id: ChromeId | string): boolean {
   return SESSION_ONLY.includes(id);
@@ -43,6 +49,7 @@ export function isChromeVisible(id: ChromeId | string, chrome: ChromeState | nul
   const choice = chrome?.[id as ChromeId];
   if (choice === false) return false;
   if (choice === true) return true;
+  if (DEFAULT_HIDDEN.includes(id as ChromeId)) return false;
   if (id === "files" && ctx.narrow) return false;
   return true;
 }

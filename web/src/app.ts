@@ -951,9 +951,9 @@ export class App {
     mail.dataset.act = "mail";
     mail.onclick = () => this.openMail();
     this.els.mail = mail;
-    // D316：整机文件搜索。跟终端 / 记录一样常驻（不绑会话），所以不进 chrome 白名单、不做显隐开关 ——
-    // 索引是机器级的，没开会话也能找、能把路径复制走。
-    const fsearch = this.wideBtn(tr("🔎 文件搜索"));
+    // D316：整机文件搜索（名字就叫 Everything）。跟终端 / 记录一样常驻（不绑会话）；
+    // 默认不画（`chrome.ts` 的 DEFAULT_HIDDEN），要去「设置 → 外观」里点亮才出现在顶栏。
+    const fsearch = this.wideBtn(tr("🔎 Everything|顶栏按钮"));
     fsearch.title = tr("在这台电脑上按名字 / 路径找文件（本机索引，毫秒级）");
     fsearch.dataset.act = "filesearch";
     fsearch.onclick = () => this.openFileSearch();
@@ -4441,7 +4441,7 @@ export class App {
       ["scratch", tr("💭 随手问")],
       ["jira", tr("🔷 Jira")],
       ["mail", tr("📮 邮箱")],
-      ["filesearch", tr("🔎 文件搜索")],
+      ["filesearch", tr("🔎 Everything|顶栏按钮")],
     ];
     for (const [id, label] of topItems) {
       const [ic, name] = splitWideLabel(label);
@@ -4747,9 +4747,9 @@ export class App {
       show("mail", mail, tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管"));
     }
     // 文件搜索也进 chrome 表（D316）：这颗是机器级的，没开会话也照样能用，
-    // 所以不进 `SESSION_ONLY` —— 设置里关掉就是真关掉，不是「有会话才画」。
+    // 所以不进 `SESSION_ONLY`；但它是 DEFAULT_HIDDEN 里的 —— 默认不占顶栏，用户在设置里点亮才画。
     if (fsearch) {
-      this.setWideLabel(fsearch, tr("🔎 文件搜索"));
+      this.setWideLabel(fsearch, tr("🔎 Everything|顶栏按钮"));
       show("filesearch", fsearch, tr("在这台电脑上按名字找文件：索引建在本机，不依赖 Everything"));
     }
     // #290：下沿四颗是在拼 composer 时一次建好的，重画 composer 时不经过这里 —— 它自己也会调
@@ -9803,17 +9803,19 @@ export class App {
     this.prefillNext = text;
   }
 
-  private openFiles(): void {
+  private openFiles(start = ""): void {
     if (!this.currentId) return;
     const v = this.ensureViewer();
     v.sessionId = this.currentId;
     if (v.pane === "edit" && v.dirty) {
       void this.leaveEditor(v).then((ok) => {
-        if (ok) this.openFiles();
+        if (ok) this.openFiles(start);
       });
       return;
     }
-    if (!v.lastDir) v.lastDir = localStorage.getItem("pi.fsDir") ?? this.session?.cwd ?? "";
+    // D316：带 `start` 时从那个目录开始浏览（文件搜索的「打开目录」直接落到这一层）。
+    if (start) v.lastDir = start;
+    else if (!v.lastDir) v.lastDir = localStorage.getItem("pi.fsDir") ?? this.session?.cwd ?? "";
     v.pane = "browse";
     this.paintViewer();
   }
@@ -15714,13 +15716,35 @@ export class App {
    */
   private openFileSearch(): void {
     this.closeSheet();
+    /** 目录行：优先在本机文件管理器里进到那一层；没开会话时退回资源管理器。 */
+    const openDir = (abs: string): void => {
+      this.closeSheet();
+      if (this.currentId) {
+        this.openFiles(abs);
+        return;
+      }
+      void this.reveal(abs);
+    };
     const handle = openFileSearch({
       cwd: (this.session?.cwd ?? "").trim(),
       send: (msg) => this.socket.send(msg),
       onQuote: (abs) => this.insertPaths([abs]),
-      onOpen: (abs) => void this.openPreview(abs),
-      // 「位置」直接走「📂 在文件夹中显示」那条路（桥端 explorer /select），面板不关。
-      onReveal: (abs) => void this.reveal(abs),
+      // 文件 → 预览；目录 → 直接打开目录（用户 2026-11-18）。
+      onOpen: (abs, isDir) => {
+        if (isDir) {
+          openDir(abs);
+          return;
+        }
+        void this.openPreview(abs);
+      },
+      // 文件 → 「📂 在文件夹中显示」（桥端 explorer /select，面板不关）；目录 → 直接进去看。
+      onReveal: (abs, isDir) => {
+        if (isDir) {
+          openDir(abs);
+          return;
+        }
+        void this.reveal(abs);
+      },
       onClose: () => this.closeSheet(),
     });
     this.fileSearch = handle;
@@ -19767,7 +19791,7 @@ const SHORTCUTS: { id: string; label: string }[] = [
   { id: "queue", label: tr("收起 / 展开右栏") },
   { id: "artifacts", label: tr("产物列表") },
   { id: "files", label: tr("文件管理器") },
-  { id: "filesearch", label: tr("文件搜索") },
+  { id: "filesearch", label: tr("Everything|搜索面板") },
   { id: "notes", label: tr("bug 记录") },
   { id: "look", label: tr("设置：外观 / 连接与设置") },
   { id: "skills", label: tr("技能面板") },

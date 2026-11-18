@@ -6203,8 +6203,9 @@ Esc 之后 dialog: 0
 - **卷勾选是显式清单，空清单 = 全关。** 这是踩过的坑：把 `enabled.size === 0` 当「没设过」，用户把卷全勾掉之后 `[]` 会退化成「不限范围」，取消勾选照样搜出结果。现在 `enabled: Set | null`（null 才是全开），query 里 `volFilter()` 对空清单直接回空；Web 侧同样以显式集合维护，「所有卷」是填满而不是清空。
 - **扫描是显式栈 DFS + `opendir`**，每 500 条一个事务、每批 `setImmediate` 让出；`SKIP` = `.git node_modules dist build __pycache__ .venv venv target $Recycle.Bin "System Volume Information" WinSxS Windows.old`。扫完用世代号 `gen` 删掉本轮没见到的行（整棵子树被删也能收尾）。`fs.watch(root, { recursive: true })` 做增量，每次事件 800 ms 防抖后 `syncPath`。
 - **入口与形态：** 顶栏「🔎 文件搜索」+ `ctrl+shift+f` + `runAction("filesearch")`。面板是控制台式（用户在三张样张里选的 A），外壳直接复用 `.sys-back / .sys-console / .sys-head / .sys-main / .sys-foot`；`.sys-console` 本来就是四行网格（head / 搜索行 / main / foot），不用改它，也不会踩「隐藏子元素挪行」那个坑。单击一行 = 引用并关面板，`Ctrl+Enter` = 关面板并在预览里打开。
-- **进 `CHROME_IDS`，但不进 `SESSION_ONLY`：** 索引是机器级的，没开会话也能用，所以设置里关掉就是真关掉，不是「有会话才画」。用户要求「和顶部按钮一样能在设置里关」，于是补进白名单（`web/src/chrome.ts` 与 `bridge/src/extmgr.ts` 两份白名单要同步，`web/tests/chrome-unit.mjs` 的 TOP 表跟着改）。
-- **行尾三颗动作：引用 / 打开 / 位置**（抄文件弹层 `.fc-acts` 的做法）：整行点击仍是「引用并关面板」，精确动作走行尾按钮；「位置」直接走桥端 `POST /api/reveal`（`explorer /select`），**面板不关** —— 人多半要继续看后面的结果。
+- **进 `CHROME_IDS`，但不进 `SESSION_ONLY`，且默认隐藏：** 索引是机器级的，没开会话也能用，所以设置里关掉就是真关掉，不是「有会话才画」。用户要求「和顶部按钮一样能在设置里关」＋「默认隐藏」，于是它既进白名单（`web/src/chrome.ts` 与 `bridge/src/extmgr.ts` 两份要同步，`web/tests/chrome-unit.mjs` 的 TOP 表跟着改），又进了 `DEFAULT_HIDDEN` —— 键缺失时不画，只有显式 `true` 才占顶栏。加一个不常用的大按钮却不让人先把它关掉，比不加更脏。
+- **名字就叫 Everything：** 用户 2026-11-18 定的（“更名为 everything”）。它不是品牌借用 —— 界面上要表达的就是「像 Everything 那样找」。i18n 键写成 `tr("🔎 Everything|顶栏按钮")` 这种带上下文后缀的形式：`i18n-check` 只收含 CJK 的 tr 键，纯拉丁键会被当成「词典里多余的键」。
+- **行尾三颗动作：引用 / 打开 / 位置**（抄文件弹层 `.fc-acts` 的做法）：整行点击仍是「引用并关面板」，精确动作走行尾按钮；「位置」直接走桥端 `POST /api/reveal`（`explorer /select`），**面板不关** —— 人多半要继续看后面的结果。**目录行换一套**：目录没有「预览」这回事，「打开」与「位置」都变成「打开目录」，点了在应用内文件管理器里进到那一层（`openFiles(start)`，没开会话时退回资源管理器）。
 
 **取舍：** 首次全盘扫描要几十秒到几分钟（满盘未实测；1 百万行建库 2.9 s，瓶颈在目录遍历与 `lstat`），期间可以先搜已经进库的部分；只做了「暂停 / 继续」，没做限速。不做 USN 级实时（要管理员权限 + 卷句柄），`fs.watch` 漏掉的事件靠下次重扫收。`node_modules` 这类目录永远不进索引，与 `@` 补全的老规矩一致。
 

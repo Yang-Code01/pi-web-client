@@ -50,6 +50,8 @@ fs.writeFileSync(path.join(dir, `${SID}.jsonl`), rows.map((r) => JSON.stringify(
 
 // 被索引的内容：三条要能被 "report" 命中，一条在 node_modules 里不许命中。
 fs.mkdirSync(path.join(WORK, "docs", "guide"), { recursive: true });
+// 一个目录（2c 段验「目录行 = 打开目录」）：名字不命中 report，不干扰第 2 段。
+fs.mkdirSync(path.join(WORK, "docs", "subfolder"), { recursive: true });
 fs.mkdirSync(path.join(WORK, "node_modules", "pkg"), { recursive: true });
 fs.writeFileSync(path.join(WORK, "quarterly-report.md"), "# 季报\n\n" + "a".repeat(400), "utf8");
 fs.writeFileSync(path.join(WORK, "docs", "guide", "install-report.txt"), "b".repeat(80), "utf8");
@@ -132,9 +134,21 @@ try {
   await until(async () => (await page.locator(".session-card").count()) >= 1, 15000, "one card");
   await page.locator(".session-card").first().click();
 
+  // ---- 0. Everything 默认隐藏（D316）：顶栏先看不到，去设置里点亮才出来
+  const fsearchBtn = page.locator('.topbar .icon-btn[data-act="filesearch"]');
+  assert((await fsearchBtn.isVisible()) === false, "Everything 应默认不画在顶栏");
+  await page.locator('.icon-btn[data-act="look"]').click();
+  await page.locator('.chrome-tile[data-chrome="filesearch"]').click();
+  // 设置面板是 sheet，盖住了顶栏 —— 关不掉就别硬点，重新加载一次（偏好已经存进 ui.json）。
+  await page.reload({ waitUntil: "networkidle" });
+  await until(async () => (await page.locator(".session-card").count()) >= 1, 15000, "one card");
+  await page.locator(".session-card").first().click();
+  await until(async () => fsearchBtn.isVisible(), 8000, "点亮后顶栏出现 Everything");
+  log("0 默认隐藏 → 设置 → 外观里点亮 → 顶栏出现");
+
   // ---- 1. 顶栏入口 → 面板打开，索引就绪
-  const btn = page.locator(".topbar .icon-btn", { hasText: "文件搜索" });
-  await until(async () => (await btn.count()) > 0, 10000, "顶部「文件搜索」按钮");
+  const btn = fsearchBtn;
+  await until(async () => (await btn.count()) > 0, 10000, "顶部「Everything」按钮");
   await btn.first().click();
   await page.locator(".fse-back .fse-console").waitFor({ timeout: 10000 });
   await page.locator(".fse-back .sys-badge[data-state=\"ready\"]").waitFor({ timeout: 30000 });
@@ -169,7 +183,16 @@ try {
   assert(revealTitle && revealTitle.includes("文件管理器"), `「位置」的 title 没写清去哪（${revealTitle}）`);
   log("2b 行尾动作：", [...new Set(actLabels)].join(" / "));
 
+  // ---- 2c. 目录行：没有「预览」这回事，两颗动作都改成「打开目录」（用户 2026-11-18）
+  await page.locator(".fse-input").fill("subfolder");
+  await until(async () => (await page.locator(".fse-body .fse-row").count()) === 1, 15000, "一个目录结果");
+  const dirActs = await page.$$eval(".fse-row .fse-acts .fse-act", (els) => els.map((e) => e.textContent.trim()));
+  assert(dirActs.join("/") === "引用/打开目录/打开目录", `目录行应是 引用/打开目录/打开目录（实际 ${dirActs.join("/")}）`);
+  log("2c 目录行动作：", dirActs.join(" / "));
+
   // ---- 3. 点一行 → 引用到输入框（路径进 composer）
+  await page.locator(".fse-input").fill("quarterly");
+  await until(async () => (await page.locator(".fse-row", { hasText: "quarterly-report.md" }).count()) === 1, 15000, "quarterly 行");
   await page.locator(".fse-row", { hasText: "quarterly-report.md" }).first().click();
   await sleep(400);
   const composer = await page.locator(".composer-input textarea").first().inputValue();
@@ -179,7 +202,7 @@ try {
   await page.screenshot({ path: path.join(OUT, "3-quoted.png"), animations: "disabled" });
 
   // ---- 4. 再开一次，Ctrl+Enter 在预览里打开
-  const btn2 = page.locator(".topbar .icon-btn", { hasText: "文件搜索" });
+  const btn2 = fsearchBtn;
   await btn2.first().click();
   await page.locator(".fse-back .fse-console").waitFor({ timeout: 10000 });
   await page.locator(".fse-input").fill("quarterly");
@@ -192,6 +215,24 @@ try {
   assert(viewerCount > 0, "Ctrl+Enter 之后预览层应出现");
   await page.screenshot({ path: path.join(OUT, "4-preview.png"), animations: "disabled" });
   log("4 Ctrl+Enter 预览 ok");
+
+  // ---- 5. 目录 → 打开目录：真进到那一层（应用内文件管理器，不弹资源管理器）
+  // 预览面板盖住顶栏，点了也没反应 —— 重新加载一次最稳（偏好与索引都在桥端）。
+  await page.reload({ waitUntil: "networkidle" });
+  await until(async () => (await page.locator(".session-card").count()) >= 1, 15000, "one card");
+  await page.locator(".session-card").first().click();
+  await until(async () => fsearchBtn.isVisible(), 8000, "顶栏 Everything");
+  await fsearchBtn.first().click();
+  await page.locator(".fse-back .fse-console").waitFor({ timeout: 10000 });
+  await page.locator(".fse-input").fill("subfolder");
+  await until(async () => (await page.locator(".fse-body .fse-row").count()) === 1, 15000, "目录结果");
+  await page.locator(".fse-row .fse-act", { hasText: "打开目录" }).first().click();
+  await until(async () => (await page.locator(".fse-back").count()) === 0, 10000, "搜索面板关掉");
+  await page.waitForSelector(".viewer", { timeout: 10000 });
+  const shown = await page.locator(".viewer").first().innerText();
+  assert(shown.includes("subfolder"), `文件管理器应落在 subfolder 这一层（实际：${shown.slice(0, 200)}）`);
+  log("5 目录 → 打开目录 ok");
+  await page.screenshot({ path: path.join(OUT, "5-dir.png"), animations: "disabled" });
 } catch (err) {
   console.error("FAIL:", err?.message ?? err);
   console.error(bridgeOut.join("").slice(-2000));

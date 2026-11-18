@@ -3816,7 +3816,6 @@ export const en: Dict = {
   "换个词试试：文件名的一段、路径里的目录名都行。": "Try another word: part of a file name, or a folder name in the path.",
   "搜索文件名或路径…": "Search file name or path…",
   "搜索范围": "Search scope",
-  "文件搜索": "File search",
   "未建索引": "No index",
   "正在建索引": "Building the index",
   "正在扫描：{p1} 项": "Scanning: {p1} items",
@@ -3836,6 +3835,10 @@ export const en: Dict = {
   "还没有索引": "No index yet",
   "连接中…": "Connecting…",
   "重建索引": "Rebuild index",
-  "🔎 文件搜索": "🔎 File search",
   "在这台电脑上按名字找文件：索引建在本机，不依赖 Everything": "Find files on this machine by name: the index is built locally, no Everything needed",
-  "在这台电脑的文件管理器里显示 {p1}": "Show {p1} in this machine's file manager"};
+  "在这台电脑的文件管理器里显示 {p1}": "Show {p1} in this machine's file manager",
+  "🔎 Everything|顶栏按钮": "🔎 Everything",
+  "Everything|搜索面板": "Everything",
+  "打开目录": "Open folder",
+  "进到 {p1} 里面看": "Open {p1}",
+};

@@ -2,7 +2,8 @@
  * 按钮可见性（#281 / #288）：哪一颗该画，全页只有这一个纯函数说了算。
  *
  * 三态用「键在不在」表达：缺失 = 默认行为，`false` = 关掉，`true` = 显式打开（窄屏也照开）。
- * 默认行为本身带两条例外：产物 / 文件管理器要开会话，文件管理器在 560px（D138）以下不进顶栏。
+ * 默认行为本身带三条例外：产物 / 文件管理器要开会话，文件管理器在 560px（D138）以下不进顶栏，
+ * Everything 在 `DEFAULT_HIDDEN` 里 —— 键缺失时不画，要用户在设置里点亮。
  * 浏览器里「真的少了一颗 / 刷新还在」由 `probes/chrome-topbar.mjs` / `chrome-bottom.mjs` / `chrome-sheet.mjs` / `chrome-narrow.mjs` 把关。
  *
  * Run: node --experimental-transform-types web/tests/chrome-unit.mjs
@@ -22,8 +23,11 @@ test("14 个稳定 id，顶栏 9 颗、下沿 5 颗", () => {
   assert.deepEqual([...CHROME_IDS], [...TOP, ...BOTTOM]);
 });
 
-test("键缺失 = 默认：开了会话、桌面宽，14 颗全画", () => {
-  for (const id of CHROME_IDS) assert.equal(isChromeVisible(id, {}, DESK), true, id);
+test("键缺失 = 默认：开了会话、桌面宽，除 Everything 外全画", () => {
+  for (const id of CHROME_IDS.filter((x) => x !== "filesearch")) assert.equal(isChromeVisible(id, {}, DESK), true, id);
+  // Everything 是后加的机器级功能，用户明确要求默认隐藏（2026-11-18）。
+  assert.equal(isChromeVisible("filesearch", {}, DESK), false, "Everything 默认不占顶栏");
+  assert.equal(isChromeVisible("filesearch", { filesearch: true }, DESK), true, "设置里点亮就出来");
 });
 
 test("false = 关掉：桌面 / 窄屏、有会话 / 无会话都不画", () => {
@@ -57,7 +61,7 @@ test("没开会话：产物与文件管理器不画，其余照旧", () => {
 });
 
 test("窄屏只改文件管理器的默认；别的按钮不受宽度影响", () => {
-  for (const id of CHROME_IDS.filter((x) => x !== "files")) {
+  for (const id of CHROME_IDS.filter((x) => x !== "files" && x !== "filesearch")) {
     assert.equal(isChromeVisible(id, {}, MOBILE), true, id);
   }
 });

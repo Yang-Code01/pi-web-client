@@ -45,10 +45,10 @@ export interface FileSearchOpts {
   send: (msg: unknown) => void;
   /** 行 = 引用：把绝对路径插进输入框。 */
   onQuote: (abs: string) => void;
-  /** 行 = 打开：在预览里打开。 */
-  onOpen: (abs: string) => void;
-  /** 行尾「位置」：在这台电脑的文件管理器里选中它。 */
-  onReveal: (abs: string) => void;
+  /** 行 = 打开：文件在预览里打开；目录直接进文件管理器。 */
+  onOpen: (abs: string, isDir: boolean) => void;
+  /** 行尾「位置」：文件在这台电脑的资源管理器里选中；目录直接进去看。 */
+  onReveal: (abs: string, isDir: boolean) => void;
   onClose: () => void;
 }
 
@@ -72,13 +72,13 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
   const shell = el("section", "sys-console fse-console");
   shell.setAttribute("role", "dialog");
   shell.setAttribute("aria-modal", "true");
-  shell.setAttribute("aria-label", tr("文件搜索"));
+  shell.setAttribute("aria-label", tr("Everything|搜索面板"));
 
   // ---------------------------------------------------------------- head
   const head = el("header", "sys-head");
   const headMain = el("div", "sys-head__main");
   headMain.append(
-    el("div", "sys-eyebrow", tr("文件搜索")),
+    el("div", "sys-eyebrow", tr("Everything|搜索面板")),
     el("h2", "sys-title", tr("在这台电脑上找文件")),
     el("div", "sys-sub", tr("输入名字的一段就行 · 点一行 = 引用到输入框 · Ctrl+Enter = 在预览里打开")),
   );
@@ -357,11 +357,20 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
           opts.onClose();
           opts.onQuote(row.path);
         }),
-        act(tr("打开"), tr("在预览里打开 {p1}", { p1: row.name }), () => {
-          opts.onClose();
-          opts.onOpen(row.path);
-        }),
-        act(tr("位置"), tr("在这台电脑的文件管理器里显示 {p1}", { p1: row.name }), () => opts.onReveal(row.path)),
+        // 目录没有「预览」这回事：用户 2026-11-18 要求目录直接就打开目录，所以文案也跟着变。
+        act(
+          row.isDir ? tr("打开目录") : tr("打开"),
+          row.isDir ? tr("进到 {p1} 里面看", { p1: row.name }) : tr("在预览里打开 {p1}", { p1: row.name }),
+          () => {
+            opts.onClose();
+            opts.onOpen(row.path, row.isDir);
+          },
+        ),
+        act(
+          row.isDir ? tr("打开目录") : tr("位置"),
+          row.isDir ? tr("进到 {p1} 里面看", { p1: row.name }) : tr("在这台电脑的文件管理器里显示 {p1}", { p1: row.name }),
+          () => opts.onReveal(row.path, row.isDir),
+        ),
       );
       node.append(name, dir, el("span", "fse-c3", row.isDir ? "" : fmtSize(row.size)), el("span", "fse-c4", fmtTime(row.mtime)), acts);
       node.onclick = () => {
@@ -444,7 +453,7 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
       if (!row) return;
       ev.preventDefault();
       if (ev.ctrlKey || ev.metaKey) {
-        opts.onOpen(row.path);
+        opts.onOpen(row.path, row.isDir);
         opts.onClose();
         return;
       }
