@@ -4787,7 +4787,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* 「高级」以前是一条横贯整张弹层的带边框块，三角小到看不见；拆成一行暗淡的折行文字，
    展开时才给边框，免得它把自己读成分隔线。 */
 .new-sheet .ns-advanced { margin-top: 6px; border-color: transparent; }
-.new-sheet .ns-advanced > summary { padding: 6px 16px; font-size: 11.5px; }
+.new-sheet .ns-advanced > summary { padding: 6px 16px; font-size: 11.5px; list-style: none; }
+/* 原生三角在 11.5px 下只剩一个灰点（审计⑥）：去掉它，这一行就是一句可点的暗淡文字，悬停提亮。 */
+.new-sheet .ns-advanced > summary::-webkit-details-marker { display: none; }
+.new-sheet .ns-advanced > summary:hover { color: var(--dim); }
 .new-sheet .ns-advanced[open] { margin: 6px 16px 8px; border-color: var(--line-soft); }
 .new-sheet .ns-advanced[open] > summary { padding: 8px 12px; }
 /* 左栏自己一列：列表那一层滚，底下那颗「用这个目录新建工作区」一直看得见（组一多就不会被挤到弹层外）。 */
