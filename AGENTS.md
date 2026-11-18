@@ -43,6 +43,14 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 本机已把它做成全局别名 **`gh merge-pr`**（合当前分支的 PR）。见到那句 `base branch policy` 就改用它，别停下来等人确认。合完 `git fetch` + `git merge --ff-only origin/main` 把本地 main 拉平。
 
+### 提问：一律走 `ask_user_question`
+
+需要用户做选择、确认方向、补一个只有他知道的事实时，调用 `ask_user_question` —— **正文里不留待答问题**（「Q1…？」「❓」「要不要我…？」都不算提问）。
+
+- 技能（`grilling` 等）规定的「❓ Q1 + ➡️ 建议」只约束**问什么**，不约束**怎么呈现**：题干整段放进 `question`，分支放进 `options[].description`，推荐项放第一个并在 label 末尾加「（推荐）」。
+- 用户还能自己输入（「Type something.」），不要加「其他」选项。
+- 兜底：`bridge/ext/ask-nudge.ts` 在模型停下前核对，正文提问且本轮没调 `ask_user_question` 就续跑一次；开关 `web.askNudge`（默认开），同一段问句只提醒一次、整会话最多两次（D319）。
+
 ### 界面文案（i18n）
 
 界面文案一律走 `web/src/i18n/` 的 `tr("中文原文")`：中文原文就是键，英文/日文在 `en.ts` / `ja.ts`。
@@ -55,7 +63,7 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 给容器写多轨 `grid-template-rows` 时，先看它的直接子元素里有没有会 `hidden` / `display:none` 的（横幅、提示条、菜单）。有就三选一：每个子元素钉死 `grid-row` / `grid-area`；只在它可见时才切到多一行的模板（`:has(> .x:not([hidden]))`）；或整块改 flex 列。隐藏的子元素不占格子，后面的会整体前挪一行：主体掉进 `auto` 行不再自己滚、底栏被拉进 `1fr`。已经踩过三次：随手问面板、系统管理页（`0eebbeb`）、对话栏（`b8149a9` → #372）。加了这类元素的 UI 测试顺手断言它隐藏时底栏仍贴底。
 
-反过来的坑：把别人的多轨模板改成一行时，子元素上钉着的 `grid-row` / `grid-area` 还在，主体会落到隐式行，顶上的第 1 行（`1fr`）白白空出一截（D319 在 `.sys-main { grid-row: 3 }` 上踩过）。改 `grid-template-rows` 时先看子元素里有没有显式行号，有就一起改回去。
+反过来的坑：把别人的多轨模板改成一行时，子元素上钉着的 `grid-row` / `grid-area` 还在，主体会落到隐式行，顶上的第 1 行（`1fr`）白白空出一截（D320 在 `.sys-main { grid-row: 3 }` 上踩过）。改 `grid-template-rows` 时先看子元素里有没有显式行号，有就一起改回去。
 
 ### 尺寸：`#app` 里不许写裸 `vh` / `vw`
 

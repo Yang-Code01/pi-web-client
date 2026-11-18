@@ -129,9 +129,9 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
   let current = "";
   let picker: DirPicker | null = null;
 
-  // 按控制台自己的宽度折左栏 / 收列（D319）。窗口宽度说不准：792px 的浏览页常挂在 1440px 的窗口上。
+  // 按控制台自己的宽度折左栏 / 收列（D320）。窗口宽度说不准：792px 的浏览页常挂在 1440px 的窗口上。
   const fitShell = (): void => {
-    // clientWidth 是布局 px：`#app` 上的 zoom 不会把这几个门槛再乘一次（D158 / D319）。
+    // clientWidth 是布局 px：`#app` 上的 zoom 不会把这几个门槛再乘一次（D158 / D320）。
     const width = shell.clientWidth;
     shell.classList.toggle("fc-rail", width >= RAIL_PX);
     shell.classList.toggle("fc-mid", width > 0 && width < MID_PX);

@@ -382,7 +382,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   animation: act-spin 0.8s linear infinite;
 }
 .new-sheet .ns-browser.disabled { pointer-events: none; opacity: 0.5; }
-/* D319：面包屑只占一行。长路径（`此电脑 / var / folders / … / 项目`）以前折成三行，把工具条顶成
+/* D320：面包屑只占一行。长路径（`此电脑 / var / folders / … / 项目`）以前折成三行，把工具条顶成
    三行高；现在横向滚到尾巴（当前目录就在眼前），左边还有内容时用一层渐隐标出来。 */
 .dir-path {
   display: flex; align-items: center;
