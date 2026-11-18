@@ -6122,19 +6122,53 @@ Esc 之后 dialog: 0
 
 **验证：** `node bridge/tests/dirpage.mjs`（15：过滤 / 排序 / 文件夹不随方向翻转 / 分页越界 / 递归 rel 且跳过 `node_modules` / 空路径盘符页 / `listFilesUnder` 三条）；`npm run test:stat`、`npm run test:dirpath` 不动；真桥探针 `probes/new-session-sheet.mjs` 八组 —— 弹层布局（只列目录 32 行 + `↑ 上一级`）、筛选 10 个且焦点不丢、只列目录时「包含子目录」隐藏、排序切向、`这个目录已有 1 个会话`、API 层 size 降序 / offset / `total` / `sub`、文件管理器默认 `mtime ↓` 且能跳到第 1500 个文件、附件弹层表头点「大小」两向都单调。
 
-## D312 热部署的辅助进程一律 `windowsHide`：Windows 上只留那一扇可见的桥窗口（用户要求 2026-11-18）
+## D312 记录面板记住上次的分区与选中；正文下不再有 issue / commit / 会话（用户要求 2026-11-18）
+
+**问题：** 记录面板每次打开都回到「bug / 全部 / 没选中」——正在跟的一条 bug，关一下再开就得重新点；用户要求「保存上次使用的窗口」。同一处底部还挂着 issue、commit 两个输入框和一行「会话」，用户明确说不再需要（#4）。
+
+**决定：**
+
+- **只记三样：分区（kind）、去向（view）、选中（sel）**，落在 `localStorage["notes.memory"]`（`{ kind, view, sel }`）。分段筛选（全部 / 待处理…）与搜索词**不记**：那是这一次的临时过滤，明天打开还想看见全部。
+- **面板实例不保留状态**（`close()` 会销毁根节点与编辑器，下次 `new`），所以记忆必须落盘；写入时机是每次真的切了分区 / 去向 / 选中，不做「关闭时再写」——崩溃、刷新都不丢。
+- **回落分两层**：分区与去向永远是合法的（读到坏值回落 `bug` / `active`）；选中只在「这一堆里真的有它」时接回（`inView(note)` + active 下 kind 相符）。找不到就清掉选中、保留分区，不自动选第一条——凭空打开一条不是用户的意图。
+- **换堆不关编辑器**：`setNotes()` 只在「选中那条真的不该在这堆里了」（被删、被改到别的去向）时清空，只是被「显示已处理」过滤掉不算；否则点个状态就把编辑器关了。
+- **多标签不监听 `storage` 事件**：打开时读一次、切了就覆盖写，另一个标签下次打开才看到——记录面板不是协作文档，省掉一套同步逻辑。
+- **issue / commit / 会话从界面到桥全删**：`Note` / `NoteInput` / `notes.save` / `notes.status` / `NotesHost.session()` 一起收掉，不留「存着但看不见」的字段。**老 JSON 不迁移**：`readNote()` 逐字段运行时收窄，`sessionId` / `sessionName` / `issue` / `commit` 读到即丢，下次保存自然消失；`kind` / `status` / `mode` 非法值回落。
+
+**取舍：** 不记面板宽度 / 高度（用户问的是「窗口」，选了分区与选中）；不记分段与搜索词；不迁移老数据（字段没人读，迁了也是死重量）。
+
+**验证：** `npm run test:notes` 的 `notes-sheet-browser.mjs` 新增三组：`notes.memory` 落盘值、重开接回分区与选中、切到归档后只清选中且重开仍在归档；同时断言正文下只剩 状态 / 分类 / 创建 / 改动 四格。`npm --prefix web run typecheck`（含 i18n / 视口 / 层带守卫）与 `npm --prefix bridge run typecheck` 通过。
+
+## D313 `npm start` 自己把页面打开，内网通的在线人数不再刷日志（用户要求 2026-11-18）
+
+**问题：** 两处都只是「不方便」，但每天都在忍着：① 手动 `npm start` 之后只打印一行地址，还得自己去浏览器里粘一遍；② 内网通的人数变化一直往控制台打 —— `peer/src/index.ts` 里一句 `discovery.on("change", …在线 N 台…)`，而 `prune()` 每 5 秒无条件 `emit("change")`、每条 announce（约 10 秒一次）也发一次，所以空局域网也每 5 秒刷一行「在线 0 台」，`peer.log` 跟着长。
+
+**决定：**
+
+- **只在「人手动在终端里启动」时开页面**：判据是 `process.stdout.isTTY`（`bridge/src/openbrowser.ts` 的 `shouldOpenPage()`）。看门狗、热部署（`scripts/hotdeploy.mjs`）、`.pi/skills/bridge-update/bin/restart.mjs`（输出走 `Tee-Object` 管道）、测试环境（`pi-web-client-test-dev`）全都不接终端，一行都不用改就不会弹标签。`PI_WEB_OPEN=1` / `0` 可以越过这个判断强制开或关（也认 `true` / `false`；认不出来的值按没写处理，不会反而把页面关掉）。
+- **系统默认浏览器**：Windows `cmd /c start "" <url>`、macOS `open`、Linux `xdg-open`。那个空的 `""` 是必需的 —— `start` 会把第一个带引号的参数当窗口标题，少了它 URL 只是把标题改掉、窗口不开。`spawn` 用 `stdio:"ignore"` + `windowsHide`，**不 detached**（Windows 上 DETACHED_PROCESS 没有桌面关联，`start` 静默失效，`terminal.ts` 已经踩过一次）；再挂一个空 `error` 监听：找不到 opener 时是个 `error` 事件，没人接就会带走 bridge。
+- **挂在 `listen` 回调里、打印「已启动」之后**：端口才是确定能连的；先开浏览器再去 listen 会撞上「页面打得开、服务还没起」。
+- **打开页面的函数不回报结果**：`openPage()` 只发起 `spawn` 就返回（`void`），不看返回值也无法可靠地看 —— opener 不存在要等 `error` 事件，而调用处并不关心开没开成。
+- **内网通的在线日志整句删掉，不是降频也不是去重**：用户要的是「完全不打印」。人数本身在「内网通」页面里一直看得见，日志里那行没有额外信息；prune 每 5 秒都 emit，去重也只能把刷屏变慢一点。
+- **顺手清掉 `bridge/src/index.ts` 里 10 条过期 lint**（模板串拼接、重复声明、嵌套三元、否定 if、赋值表达式），它们和这次功能无关，但都在要改的那个文件里。
+
+**取舍：** 没用「永远打开」（用户选项里明说不要：后台重启一天弹一屏标签）；没用「往上找父进程判断是不是终端」那种探针（`isTTY` 已经够用，且零配置）；没引 `open` 这类 npm 依赖，三平台各一行就够。
+
+**验证：** `npm run test:openpage`（纯函数：TTY 真假、`PI_WEB_OPEN` 的 1/0/true/false/空串/认不出的值、三平台命令形状含 win32 的空标题参数）；`peer-e2e` 末尾新增一条断言：三份 peer 跑完，stdout 里不得出现 `/在线 \d+ 台/`（收 stdout 的方式与 `PEER_E2E_VERBOSE` 共用）；空端口/临时状态目录真跑 21 秒 —— 含「在线 N 台」的行数为 0（别用「含‘在线’的行」计数：`peer/src/index.ts` 的隐身横幅与 `messages.ts` 的「对方不在线」都是合法行），`pi-web-client 已启动：http://127.0.0.1:…` 照旧；`openPage(url,"linux")` 在没装 `xdg-open` 的 Windows 上不再能把进程带走（`error` 监听生效）。
+
+## D314 热部署的辅助进程一律 `windowsHide`：Windows 上只留那一扇可见的桥窗口（用户要求 2026-11-18）
 
 **问题：** Windows 上点一次「热部署」，屏幕上一连串终端窗口一闪一闪（约 20 扇，还抢焦点），macOS 上则是零。原因不在 UI：worker 是被 `detached: true` 起的（`bridge/src/hotdeploy.ts` 的 `startRun()`），在 Windows 上这个进程**没有控制台**；而 `windowsHide` 只作用于**直接子进程**、不会往下继承。于是 worker 起的每一个控制台程序（`git` / `powershell` / `taskkill` / `cmd`）都让 Windows 新分配一扇可见控制台窗口，一次部署 ≈15–25 次 spawn，其中 `build()` 那扇还会存活整段构建（几十秒）。
 
 **决定：**
 
 - **`sh()` 默认带 `windowsHide: true`**（`scripts/hotdeploy.mjs`）：git / powershell / taskkill 全走它，一处开关收掉约 19 扇。
-- **旁路一律补齐**：`build()`（`cmd → npm → node build.mjs`，不补就是一扇几十秒的黑窗）、`scripts/hotdeploy-git.mjs` 的 `gitIn()`（D268 暂存路径会连跑几条）、`scripts/build.mjs` 的 `npm()` 与 `shortSha()`、`.pi/skills/bridge-update/bin/restart.mjs` 的 `sh()` 与 `build()`。
+- **旁路一律补齐**：`build()`（`cmd → npm → node build.mjs`，不补就是一扇几十秒的黑窗）、`scripts/hotdeploy-git.mjs` 的 `gitIn()`（D268 暂存路径会连跑几条）、`scripts/build.mjs` 的 `npm()` 与 `shortSha()`、`.pi/skills/bridge-update/bin/restart.mjs` 的 `sh()` 与 `build()`、`tools/worktree-remove.mjs` 里三条 git（它由桥的 `removeWorktree()` 拉起）。
 - **桥侧的 `git()` / `worktree-remove` 的 `execFile` 也补 `windowsHide`**（`bridge/src/hotdeploy.ts`）：今天不闪窗只因为桥跑在可见窗口里、自己有控制台；桥一旦由计划任务看门狗或 detached 的 `bridge-update` 起，热部署面板每 1.2s 轮一次快照、一次 5 条 `git`，开着面板一分钟就是几百扇。
-- **`alive()` 改用 `process.kill(pid, 0)`**（`scripts/hotdeploy.mjs`），不再每次探测起一条 `powershell`：等旧 bridge 退出那段循环最多 21 次，是部署末尾那串闪窗的唯一来源。`EPERM` 算「活着，但无权动」；实测活 pid 0.023ms、死 pid 抛 `ESRCH`，对照原来一条 `powershell` 快照 269ms。PID 复用带来的误判风险与原来的 powershell 判定同级，不是新增。
+- **`alive()` 改用 `process.kill(pid, 0)`**（`scripts/hotdeploy.mjs` 与 `.pi/skills/bridge-update/bin/restart.mjs`），不再每次探测起一条 `powershell`：热部署末尾等旧进程退出那段循环最多 21 次、bridge-update 的等待循环 24 次，是部署末尾那串闪窗的唯一来源。实测活 pid 0.023ms、死 pid 抛 `ESRCH`，对照原来一条 `powershell` 快照 269ms。`EPERM` 只在 Windows 算「活着，但无权动」；POSIX 保持原来的「任何错误都算死」，macOS 行为一字不变。
 - **不加 `windowsHide` 的只剩 D154 那一扇**：桥由 `Start-Process powershell` 起，窗口在可见控制台里，关窗即停。实测「父进程带 `windowsHide`、脚本里再 `Start-Process`」得到的窗口**仍然可见**（探针采样到标题），所以这一刀不会误伤它。
-- **守卫测试**：`bridge/tests/hotdeploy-unit.mjs` 第 ⑦ 节静态扫这五个文件里每个 `spawn` / `spawnSync` / `execFile` / `execFileSync` 调用，漏 `windowsHide` 就红；另断言两个 `startBridge()` 里 `Start-Process powershell` 还在，防止哪天「全隐藏」把桥窗口一起收掉。
+- **守卫测试**：`bridge/tests/hotdeploy-unit.mjs` 第 ⑦ 节静态扫这六个文件（worker、两个旁路脚本、`worktree-remove.mjs`、桥侧 `hotdeploy.ts`、`restart.mjs`）里每个 `spawn` / `spawnSync` / `execFile` / `execFileSync` 调用，漏 `windowsHide` 就红；判断前先剥掉行注释（免得一句「这里不需要 windowsHide」把漏掉的调用洗绿）。另断言两个 `startBridge()` 里 `Start-Process powershell` 还在，防止哪天「全隐藏」把桥窗口一起收掉。
 
-**取舍：** 构建那扇黑窗是唯一「消失的可见性」——构建进度本来就在面板日志区与 `worker.log` 里。`windowsHide` 在 POSIX 上被忽略，所以无条件写、不做平台分支。不改 `detached: true`：worker 必须活过被杀掉的旧桥；也不用 `AllocConsole`（Node 没有干净入口）。顺手修掉 `bridge/src/hotdeploy.ts` 里 4 处既有 lint 问题（嵌套三元、取反条件、正则里的控制字符），它们与本次改动同文件、不同行。
+**取舍：** 构建那扇黑窗是唯一「消失的可见性」——构建进度本来就在面板日志区与 `worker.log` 里。`windowsHide` 在 POSIX 上被忽略，所以无条件写、不做平台分支；唯一要分平台的是 `alive()` 的 `EPERM` 语义。不改 `detached: true`：worker 必须活过被杀掉的旧桥；也不用 `AllocConsole`（Node 没有干净入口）。`alive()` 的判活仍是两份（两个独立入口各一份），没有抽公共模块：`scripts/hotdeploy-git.mjs` 自己声明「这里不碰进程」，而 TS 那份 `pidAlive()` 在 `bridge/src/hotdeploy.ts` 里另有用途。顺手修掉 `bridge/src/hotdeploy.ts` 里 4 处既有 lint 问题（嵌套三元、取反条件、正则里的控制字符），它们与本次改动同文件、不同行。
 
-**验证：** 探针 `.scratch/hotdeploy-console/`（EnumWindows 采样可见控制台窗口）—— 复刻 `startRun()` 的起法，`plain` 出 `PROBE-plain-*` / `Windows PowerShell 5.1` / `cmd.exe` / `npm` 多扇窗，加 `windowsHide` 后零扇；三层链 `nest-*`：中间层带 `windowsHide` 时孙进程（= `scripts/build.mjs:42`）不开窗（0 帧），去掉中间层就开窗（`NEST-C2`）。改后用**真 worker**（`--branch __d312_no_such_branch__`，在 `dirty` 处早退）从无控制台父进程跑一遍：3 次 git spawn，窗口采样零命中。`npm run test:hotdeploy`（含新增的第 ⑦ 节）、`npm --prefix bridge run typecheck` 通过。
+**验证：** 探针 `.scratch/hotdeploy-console/`（EnumWindows 采样可见控制台窗口）—— 复刻 `startRun()` 的起法，`plain` 出 `PROBE-plain-*` / `Windows PowerShell 5.1` / `cmd.exe` / `npm` 多扇窗，加 `windowsHide` 后零扇；三层链 `nest-*`：中间层带 `windowsHide` 时孙进程（= `scripts/build.mjs:42`）不开窗（0 帧），去掉中间层就开窗（`NEST-C2`）。改后用**真 worker**（`--branch __d314_no_such_branch__`，在 `dirty` 处早退）从无控制台父进程跑一遍：3 次 git spawn，窗口采样零命中。`npm run test:hotdeploy`（含新增的第 ⑦ 节）、`npm --prefix bridge run typecheck` 通过；第 ⑦ 节删掉任一处 `windowsHide` 会报 `文件:行`。

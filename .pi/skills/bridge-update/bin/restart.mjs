@@ -58,7 +58,7 @@ function sleep(ms) {
 }
 
 function sh(file, args, opts = {}) {
-  // D312：本脚本由 detached 的桥或 agent 起了之后没有控制台，不隐藏就每次 git/powershell 一扇窗口。
+  // D314：本脚本由 detached 的桥或 agent 起了之后没有控制台，不隐藏就每次 git/powershell 一扇窗口。
   return spawnSync(file, args, { cwd: REPO, encoding: "utf8", windowsHide: true, ...opts });
 }
 
@@ -152,20 +152,15 @@ function childrenOf(pid) {
 
 function alive(pid) {
   if (!pid) return false;
-  if (!WIN) {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
+  // D314：原来 Windows 上每次探测都起一条 powershell —— 一扇窗口 + 约 270ms，
+  // 等旧 bridge 退出那段循环最多 24 次。process.kill(pid, 0) 同样是存在性判定（实测 0.023ms）。
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // 只在 Windows 把 EPERM 当「活着、但无权动」；POSIX 保持原来的「任何错误都算死」。
+    return process.platform === "win32" && e instanceof Error && e.code === "EPERM";
   }
-  const r = sh("powershell", [
-    "-NoProfile",
-    "-Command",
-    `if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { 'yes' } else { 'no' }`,
-  ]);
-  return String(r.stdout || "").trim() === "yes";
 }
 
 function killPid(pid) {

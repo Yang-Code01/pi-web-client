@@ -110,7 +110,14 @@ function sanitizeAttrs(tag: string, raw: string): Record<string, string> {
   } else if (tag === "a") {
     const m = /\bhref\s*=\s*("([^"]*)"|'([^']*)')/i.exec(raw);
     const href = decode(m ? (m[2] ?? m[3] ?? "") : "").trim();
-    if (/^https?:\/\/[^\s]+$/i.test(href)) attrs.href = href;
+    // 绝对 http(s) 与站内 `/` 路径（#511：输入规则认这两种）；其余协议（javascript: 等）一律丢掉。
+    if (/^(https?:\/\/[^\s]+|\/[^\s]*)$/i.test(href)) attrs.href = href;
+  } else if (tag === "code") {
+    // 代码块的语言挂在 `class="language-xx"`（编辑器 makeCode 写，导出 Markdown 用）。
+    const m = /\bclass\s*=\s*("([^"]*)"|'([^']*)')/i.exec(raw);
+    const cls = m ? decode(m[2] ?? m[3] ?? "") : "";
+    const lang = /(?:^|\s)language-([a-z0-9+#.-]{1,20})/i.exec(cls);
+    if (lang) attrs.class = `language-${lang[1]}`;
   }
   return attrs;
 }
@@ -191,7 +198,7 @@ function serialize(nodes: RichNode[]): string {
       .map(([k, v]) => ` ${k}="${escapeHtml(v)}"`)
       .join("");
     out += `<${node.tag}${attrs}>`;
-    if (!VOID.has(node.tag)) out += serialize(node.children) + `</${node.tag}>`;
+    if (!VOID.has(node.tag)) out += `${serialize(node.children)}</${node.tag}>`;
   }
   return out;
 }
@@ -238,7 +245,7 @@ export function plainText(html: string): string {
       .map((node) => {
         if (!node.tag) return node.text ?? "";
         if (node.tag === "br") return "\n";
-        if (node.tag === "td" || node.tag === "th") return node.children.map((c) => walk([c])).join("") + " ";
+        if (node.tag === "td" || node.tag === "th") return `${node.children.map((c) => walk([c])).join("")} `;
         const inner = walk(node.children);
         switch (node.tag) {
           case "p":
@@ -350,8 +357,11 @@ export function richToMarkdown(html: string): string {
           out += "---\n\n";
           break;
         case "pre": {
+          // 语言名挂在 `<code class="language-xx">` 上（净化白名单只留这一种 class）。
+          const codeNode = node.children.find((c) => c.tag === "code");
+          const lang = /(?:^|\s)language-([a-z0-9+#.-]{1,20})/i.exec(codeNode?.attrs.class ?? "")?.[1] ?? "";
           const code = rawText(node.children).replace(/\s+$/, "");
-          out += `\`\`\`\n${code}\n\`\`\`\n\n`;
+          out += `\`\`\`${lang}\n${code}\n\`\`\`\n\n`;
           break;
         }
         case "blockquote": {
@@ -361,7 +371,7 @@ export function richToMarkdown(html: string): string {
         }
         case "ul":
         case "ol":
-          out += listOf(node, node.tag === "ul" ? "-" : "1.") + "\n";
+          out += `${listOf(node, node.tag === "ul" ? "-" : "1.")}\n`;
           break;
         case "table":
           out += tableOf(node);
@@ -400,8 +410,18 @@ export function richToMarkdown(html: string): string {
     .trim();
 }
 
-/** 净化后的 HTML 再解析成一棵树（导出纯文本 / Markdown 用）。 */
-function parse(html: string): RichNode[] {
+/**
+ * 「发送给好友」的文本（#509 / #511）：标题 + 空行 + 正文 Markdown；正文为空只发标题。
+ * 标题与正文的长度拦截在调用方（记录面板）做，这里只负责拼。
+ */
+export function noteTextForPeer(title: string, html: string): string {
+  const head = title.trim();
+  const body = richToMarkdown(html).trim();
+  if (!body) return head;
+  return head ? `${head}\n\n${body}` : body;
+}
+
+/** 净化后的 HTML 再解析成一棵树（导出纯文本 / Markdown 用）。 */function parse(html: string): RichNode[] {
   const clean = sanitizeRich(html);
   const root: RichNode = { tag: null, attrs: {}, children: [] };
   const stack: RichNode[] = [root];

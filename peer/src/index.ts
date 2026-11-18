@@ -29,7 +29,8 @@ process.on("uncaughtException", (err) => log(`uncaughtException: ${(err as Error
 process.on("unhandledRejection", (err) => log(`unhandledRejection: ${(err as Error)?.stack ?? err}`));
 
 const discovery = new Discovery(cfg, nodeId, log);
-discovery.on("change", (online: unknown[]) => log(`在线 ${online.length} 台`));
+// 在线名单的变化不再写日志（用户要求）：prune 每 5 秒就 emit 一次 change，announce 每 10 秒也来一次，
+// 早先那句「在线 N 台」会把控制台和 peer.log 一直刷下去。现在要看人数去页面的内网通里看。
 
 // P4：away 由「最后一次活动」推出来，announce 每 10 秒把当前状态带上。
 const activity = new LocalActivity();

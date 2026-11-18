@@ -123,7 +123,7 @@ assert.deepEqual(
 
 console.log("hotdeploy-unit: ok");
 
-// ------------------------------------------------- ⑦ 每个 spawn 都必须 windowsHide（D312）
+// ------------------------------------------------- ⑦ 每个 spawn 都必须 windowsHide（D314）
 
 /*
  * 热部署的 worker 是被 detached 起的（bridge/src/hotdeploy.ts 的 startRun），
@@ -138,13 +138,24 @@ console.log("hotdeploy-unit: ok");
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+// 热部署与 bridge-update 会碰到的入口都要在这儿：worker、旁路脚本、桥侧的 execFile，
+// 以及 worktree-remove.mjs —— 它由桥的 removeWorktree() 拉起，自己还会跑三条 git。
 const SPAWN_FILES = [
   "scripts/hotdeploy.mjs",
   "scripts/hotdeploy-git.mjs",
   "scripts/build.mjs",
+  "tools/worktree-remove.mjs",
   "bridge/src/hotdeploy.ts",
   ".pi/skills/bridge-update/bin/restart.mjs",
 ];
+
+/** 去掉行注释再判断：注释里写一句「这里不需要 windowsHide」不许把漏掉的调用变成绿。 */
+function withoutLineComments(text) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/(?<![:\\])\/\/.*$/, ""))
+    .join("\n");
+}
 
 /** 抓出每个 spawn 系列调用（括号配对，跳过字符串里的括号）。 */
 function spawnCalls(src) {
@@ -178,8 +189,8 @@ for (const rel of SPAWN_FILES) {
   assert.ok(calls.length > 0, `${rel}：一个 spawn 都没扫到，扫描器自己坏了`);
   for (const call of calls) {
     assert.ok(
-      call.text.includes("windowsHide"),
-      `${rel}:${call.line} 的 ${call.name}() 少了 windowsHide —— Windows 上会多一扇终端窗口（D312）`,
+      withoutLineComments(call.text).includes("windowsHide"),
+      `${rel}:${call.line} 的 ${call.name}() 少了 windowsHide —— Windows 上会多一扇终端窗口（D314）`,
     );
   }
 }
@@ -190,4 +201,4 @@ for (const rel of ["scripts/hotdeploy.mjs", ".pi/skills/bridge-update/bin/restar
   assert.ok(src.includes("Start-Process powershell"), `${rel}：可见的桥窗口应当继续由 Start-Process 打开`);
 }
 
-console.log("hotdeploy-unit: ok（含 D312 的 windowsHide 扫描）");
+console.log("hotdeploy-unit: ok（含 D314 的 windowsHide 扫描）");

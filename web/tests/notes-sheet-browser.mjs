@@ -54,10 +54,6 @@ const out = await page.evaluate(async () => {
     title: "旧标题",
     body: "<p>第一段</p><ul><li>要点</li></ul>",
     shots: [],
-    sessionId: null,
-    sessionName: null,
-    issue: "",
-    commit: "",
     createdAt: now,
     updatedAt: now,
     archivedAt: null,
@@ -73,7 +69,6 @@ const out = await page.evaluate(async () => {
   const host = {
     send: (msg) => sent.push(msg),
     notes: () => notes,
-    session: () => ({ id: "s1", name: "会话一" }),
     prefill: () => {},
     newSessionWith: () => {},
   };
@@ -105,6 +100,7 @@ const out = await page.evaluate(async () => {
   q('.nc-row[data-id="n1"]').click();
   result.titleValue = q(".nc-title").value;
   result.bodyHtml = q(".nc-body").innerHTML;
+  result.metaLabels = qa(".nc-meta .nc-cell").map((c) => c.querySelector(".nc-cell-k")?.textContent ?? "");
   result.saveBtnHidden = !qa(".nc-actions .btn").some((b) => b.textContent === "保存");
 
   // 5. 改标题 → 停手自动保存：发 notes.save，正文是净化的 HTML
@@ -169,8 +165,40 @@ const out = await page.evaluate(async () => {
   q(".notes-head .btn.ghost").click();
   result.footHint = q(".notes-hint").textContent;
 
+  // 14. 记忆：分区 + 选中（#514）
+  q('.nc-nav-item[data-key="bug"]').click();
+  q('.nc-row[data-id="n1"]').click();
+  result.memoryStored = JSON.parse(localStorage.getItem("notes.memory") ?? "null");
   sheet.close();
   result.closed = !document.querySelector(".notes-sheet");
+
+  const sheet2 = new Notes.NotesSheet(host);
+  sheet2.mount(document.getElementById("app"));
+  sheet2.setNotes(notes);
+  result.memoryRestored = {
+    kindOn: q('.nc-nav-item[data-key="bug"]').classList.contains("on"),
+    title: q(".nc-title")?.value ?? null,
+    body: q(".nc-body")?.textContent ?? "",
+  };
+
+  // 切到归档：选中的那条不在这一堆里 → 只保留分区、清掉选中。
+  q('.nc-nav-item[data-key="archived"]').click();
+  sheet2.setNotes(notes);
+  result.memoryArchived = {
+    on: q('.nc-nav-item[data-key="archived"]').classList.contains("on"),
+    stored: JSON.parse(localStorage.getItem("notes.memory") ?? "null"),
+  };
+  sheet2.close();
+
+  const sheet3 = new Notes.NotesSheet(host);
+  sheet3.mount(document.getElementById("app"));
+  sheet3.setNotes(notes);
+  result.memoryReopen = {
+    archivedOn: q('.nc-nav-item[data-key="archived"]').classList.contains("on"),
+    hasSel: q('.nc-row.on') !== null,
+    emptyTitle: q(".nc-empty-title")?.textContent ?? null,
+  };
+  sheet3.close();
   return result;
 });
 
@@ -208,6 +236,16 @@ assert.deepEqual(out.rowsDone, ["已处理的那条"], "切到「已处理」只
 assert.equal(out.rowsAll, 2, "切回「全部」两条都在");
 assert.equal(out.newFocus, true, "新建一条时光标落在标题上");
 assert.ok(out.footHint, "导出要给一句提示");
+assert.deepEqual(out.metaLabels, ["状态", "分类", "创建", "改动"], "正文下只剩这四格：issue / commit / 会话 已退场");
+assert.deepEqual(out.memoryStored, { kind: "bug", view: "active", sel: "n1" }, "记忆落 notes.memory：分区 + 去向 + 选中");
+assert.equal(out.memoryRestored.kindOn, true, "重开回到上次的分区");
+assert.equal(out.memoryRestored.title, "旧标题", "重开接回上次选中的记录");
+assert.ok(out.memoryRestored.body.includes("要点"), "接回的那条正文也回来了");
+assert.equal(out.memoryArchived.on, true, "切到归档后分区是归档");
+assert.deepEqual(out.memoryArchived.stored, { kind: "bug", view: "archived", sel: null }, "选中不在这一堆时只清选中、保留分区");
+assert.equal(out.memoryReopen.archivedOn, true, "重开仍在归档分区");
+assert.equal(out.memoryReopen.hasSel, false, "归档里不会凭空选中一条");
+assert.equal(out.memoryReopen.emptyTitle, "归档里的记录不能直接改。", "归档空态照旧");
 assert.equal(out.closed, true, "close() 把面板从 DOM 摘掉");
 assert.deepEqual(errors, [], `不该有控制台错误：${errors.join(" | ")}`);
 

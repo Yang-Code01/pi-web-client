@@ -62,11 +62,41 @@ function writeLayout(layout: NotesLayout): void {
   }
 }
 
-/** 面板跟页面之间只有这几个口子：发送、当前笔记列表、当前会话、两个「交给 agent」的落点。 */
+/** 面板上次的样子（#510）：分区、去向、选中的记录。 */
+const MEMORY_KEY = "notes.memory";
+interface NotesMemory {
+  kind: NoteKind;
+  view: View;
+  sel: string | null;
+}
+
+function readMemory(): NotesMemory {
+  const fallback: NotesMemory = { kind: "bug", view: "active", sel: null };
+  try {
+    const raw = localStorage.getItem(MEMORY_KEY);
+    if (!raw) return fallback;
+    const v = JSON.parse(raw) as Partial<Record<keyof NotesMemory, unknown>>;
+    const kind = NOTE_KINDS.some((k) => k.id === v.kind) ? (v.kind as NoteKind) : fallback.kind;
+    const view = (["active", "archived", "trash", "failures"] as const).find((x) => x === v.view) ?? fallback.view;
+    return { kind, view, sel: typeof v.sel === "string" ? v.sel : null };
+  } catch {
+    return fallback;
+  }
+}
+
+/** 记住面板的样子；隐私模式下写不进去也不是错。 */
+function writeMemory(memory: NotesMemory): void {
+  try {
+    localStorage.setItem(MEMORY_KEY, JSON.stringify(memory));
+  } catch {
+    /* 存不了就按默认来 */
+  }
+}
+
+/** 面板跟页面之间只有这几个口子：发送、当前笔记列表、两个「交给 agent」的落点。 */
 export interface NotesHost {
   send(msg: unknown): void;
   notes(): Note[];
-  session(): { id: string; name: string } | null;
   /** 写进当前会话的输入框（不发送）。 */
   prefill(text: string): void;
   /** 开一个新会话，等它建好后把文字填进那个会话的输入框（不发送）。 */
@@ -98,8 +128,6 @@ export function noteMarkdown(note: Note): string {
   const body = note.body ? richToMarkdown(note.body) : "";
   const lines = [`## ${note.title}`, head, "", body];
   if (note.shots.length) lines.push("", ...note.shots.map((s) => `![](${s})`));
-  if (note.issue) lines.push("", `issue: ${note.issue}`);
-  if (note.commit) lines.push(`commit: ${note.commit}`);
   return lines.join("\n");
 }
 
@@ -113,8 +141,11 @@ export class NotesSheet {
   private hintEl!: HTMLElement;
   private headCountEl!: HTMLElement;
 
-  private kind: NoteKind = "bug";
-  private view: View = "active";
+  private readonly memory = readMemory();
+  private kind: NoteKind = this.memory.kind;
+  private view: View = this.memory.view;
+  /** 面板第一次拿到列表时把上次的记录接回来；接完就关掉。 */
+  private restoring = true;
   /** AI 出错记录那份账本（D164）：跟笔记不是一回事，但共用一个面板。 */
   private ledger: FailLedger | null = null;
   private failPanel!: FailPanel;
@@ -467,6 +498,7 @@ export class NotesSheet {
     this.paintNav();
     this.paintList();
     this.paintEditor();
+    this.remember();
   }
 
   private resetPick(): void {
@@ -485,6 +517,15 @@ export class NotesSheet {
     this.paintNav();
     this.paintList();
     this.paintEditor();
+    this.remember();
+  }
+
+  /** 记住这一屏（分区 / 去向 / 选中）；写的时机是每次真的切了。 */
+  private remember(): void {
+    this.memory.kind = this.kind;
+    this.memory.view = this.view;
+    this.memory.sel = this.sel;
+    writeMemory(this.memory);
   }
 
   /** 换到出错记录：收起笔记三栏，把只读面板亮出来；回来时反过来。 */
@@ -581,9 +622,9 @@ export class NotesSheet {
     return this.host.notes().filter((n) => this.inView(n) && (this.view !== "active" || n.kind === this.kind) && (!q || this.matches(n, q)));
   }
 
-  /** 检索只看人写得出来的字段：标题、正文（按纯文本）、issue / commit 号。 */
+  /** 检索只看人写得出来的字段：标题、正文（按纯文本）。 */
   private matches(n: Note, q: string): boolean {
-    return [n.title, this.summaryOf(n), n.issue, n.commit].some((v) => String(v ?? "").toLowerCase().includes(q));
+    return [n.title, this.summaryOf(n)].some((v) => String(v ?? "").toLowerCase().includes(q));
   }
 
   /** 列表里那一行摘要 / 搜索用的纯文本；同一条正文只解析一次（按 updatedAt 失效）。 */
@@ -694,7 +735,6 @@ export class NotesSheet {
     if (summary) row.append(el("div", "nc-row-body", summary));
 
     const meta = el("div", "nc-row-meta");
-    if (n.issue) meta.append(el("span", "nc-row-issue", `#${n.issue.replace(/^#/, "")}`));
     meta.append(el("span", "nc-row-shot", `🖼 ${n.shots?.length ?? 0}`));
     meta.append(el("span", "nc-row-words", tr("{p1} 字", { p1: this.wordsOf(n) })));
     meta.append(el("span", "nc-row-time", shortTime(n.updatedAt)));
@@ -768,6 +808,7 @@ export class NotesSheet {
     this.sel = null;
     this.editing = null;
     this.paintEditor();
+    this.remember();
   }
 
   /** 切条目时先把手上的改动存掉：不留「切走就丢」这种坑。 */
@@ -780,6 +821,7 @@ export class NotesSheet {
     this.dirty = false;
     this.paintList();
     this.load(note);
+    this.remember();
   }
 
   // ---------------------------------------------------------------- 正文
@@ -795,6 +837,7 @@ export class NotesSheet {
     this.load(null);
     // 新建一条就先落在标题上：先把「是什么」写清，正文随后（#486 使用场景第 1 条）。
     this.titleEl.focus();
+    this.remember();
   }
 
   private paintEditor(): void {
@@ -973,27 +1016,6 @@ export class NotesSheet {
     cell(tr("分类"), NOTE_KINDS.find((k) => k.id === (note.kind ?? this.kind))?.label ?? "");
     cell(tr("创建"), note.createdAt ? stamp(note.createdAt) : "");
     cell(tr("改动"), note.updatedAt ? stamp(note.updatedAt) : "");
-
-    const input = (placeholder: string, field: "issue" | "commit", value: string): HTMLElement => {
-      const box = el("label", "nc-cell nc-cell-input");
-      box.append(el("span", "nc-cell-k", placeholder));
-      const i = el("input", "ns-input nc-mini") as HTMLInputElement;
-      i.placeholder = field === "issue" ? "1234" : "abc1234";
-      i.value = value;
-      i.disabled = !!note.deletedAt || !!note.archivedAt;
-      i.oninput = () => {
-        if (!this.editing) return;
-        this.editing.note[field] = i.value;
-        this.markDirty();
-        this.pushStatus();
-      };
-      i.onblur = () => this.pushStatus();
-      box.append(i);
-      return box;
-    };
-    cells.push(input("issue", "issue", note.issue ?? ""));
-    cells.push(input("commit", "commit", note.commit ?? ""));
-    if (note.sessionName) cell(tr("会话"), note.sessionName);
     return cells;
   }
 
@@ -1052,6 +1074,7 @@ export class NotesSheet {
         this.pendingShots = [];
         this.dirty = false;
         this.paintEditor();
+        this.remember();
       };
       row.push(el("div", "grow"), archive, del);
     }
@@ -1139,7 +1162,7 @@ export class NotesSheet {
     this.sel = note?.id ?? null;
     this.editing = {
       id: note?.id ?? null,
-      note: note ? { ...note, shots: [...note.shots] } : { kind: this.kind, status: "pending", title: "", body: "", issue: "", commit: "" },
+      note: note ? { ...note, shots: [...note.shots] } : { kind: this.kind, status: "pending", title: "", body: "" },
     };
     this.paintEditor();
     this.say("");
@@ -1147,7 +1170,6 @@ export class NotesSheet {
 
   /** 编辑器里的完整条目（用于复制 / 交给 agent：草稿也能用，只是没有 id）。 */
   private fullNote(note: Partial<Note>): Note | null {
-    const session = this.host.session();
     const now = Date.now();
     const body = note.body ?? "";
     const text = plainText(body);
@@ -1163,12 +1185,8 @@ export class NotesSheet {
       title,
       body,
       shots: [...(note.shots ?? [])],
-      sessionId: note.sessionId ?? session?.id ?? null,
-      sessionName: note.sessionName ?? session?.name ?? null,
       archivedAt: note.archivedAt ?? null,
       deletedAt: note.deletedAt ?? null,
-      issue: note.issue ?? "",
-      commit: note.commit ?? "",
       createdAt: note.createdAt ?? now,
       updatedAt: note.updatedAt ?? now,
     };
@@ -1187,7 +1205,6 @@ export class NotesSheet {
       this.say(tr("先写点什么再存"), true);
       return;
     }
-    const session = this.host.session();
     this.saveTicket = { editing: this.editing };
     this.host.send({
       type: "notes.save",
@@ -1195,10 +1212,6 @@ export class NotesSheet {
       kind: note.kind ?? this.kind,
       title,
       body,
-      issue: note.issue ?? "",
-      commit: note.commit ?? "",
-      sessionId: note.sessionId ?? session?.id ?? null,
-      sessionName: note.sessionName ?? session?.name ?? null,
     });
     this.say(tr("保存中…"));
   }
@@ -1227,10 +1240,8 @@ export class NotesSheet {
       type: "notes.status",
       id: this.editing.id,
       status: this.editing.note.status ?? "pending",
-      issue: this.editing.note.issue ?? "",
-      commit: this.editing.note.commit ?? "",
     });
-    // 状态 / issue / commit 是「立刻落盘」的，不属于等「保存」那一批：别让 dirty 拦住「交给 agent」。
+    // 状态是「立刻落盘」的，不属于等「保存」那一批：别让 dirty 拦住「交给 agent」。
     this.dirty = false;
   }
 
@@ -1266,6 +1277,10 @@ export class NotesSheet {
 
   /** 广播（任何人保存了任何东西）→ 列表 / 分区计数。 */
   setNotes(notes: Note[]): void {
+    if (this.restoring) {
+      this.restoring = false;
+      this.restorePick(notes);
+    }
     this.paintNav();
     this.paintList();
     if (!this.sel) return;
@@ -1274,8 +1289,21 @@ export class NotesSheet {
     if (!n || this.goneFromView(n)) {
       this.sel = null;
       this.editing = null;
+      this.remember();
       this.paintEditor();
     }
+  }
+
+  /** 打开面板的第一次广播：把上次选中的那条接回来；它已经不在这一堆里就只保留分区。 */
+  private restorePick(notes: Note[]): void {
+    if (!this.memory.sel || this.view === "failures") return;
+    const n = notes.find((x) => x.id === this.memory.sel);
+    if (!n || !this.inView(n) || (this.view === "active" && n.kind !== this.kind)) {
+      this.remember();
+      return;
+    }
+    this.load(n);
+    this.remember();
   }
 
   /** 广播来的这条，按它自己的归档 / 删除状态，判断是不是已经不该出现在当前视图里。 */
@@ -1305,6 +1333,7 @@ export class NotesSheet {
     this.sel = note.id;
     if (this.editing?.id === note.id) this.paintedId = note.id;
     this.dirty = false;
+    this.remember();
     this.paintList();
     this.uploadPending(note.id);
     // 自动保存：脚注就说「已自动保存 · 时间 · 字数」。

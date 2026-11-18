@@ -34,7 +34,8 @@ if (!fs.existsSync(wt)) {
 }
 
 // 必须是登记过的 worktree，而且不能是主检出（主检出删不得）。
-const list = execFileSync("git", ["-C", wt, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+// D314：本脚本由桥的 removeWorktree() 拉起，桥可能没有控制台；不隐藏就每条 git 一扇窗口。
+const list = execFileSync("git", ["-C", wt, "worktree", "list", "--porcelain"], { encoding: "utf8", windowsHide: true });
 const trees = list.split(/\r?\n/).filter((l) => l.startsWith("worktree ")).map((l) => path.resolve(l.slice(9)));
 const same = (a, b) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
 if (!trees.some((t) => same(t, wt))) {
@@ -84,12 +85,12 @@ if (dryRun) {
 }
 
 try {
-  execFileSync("git", ["-C", trees[0], "worktree", "remove", ...(force ? ["--force"] : []), wt], { stdio: "inherit" });
+  execFileSync("git", ["-C", trees[0], "worktree", "remove", ...(force ? ["--force"] : []), wt], { stdio: "inherit", windowsHide: true });
 } catch {
   console.error("git worktree remove 失败（外链已拆，主检出不受影响）；看上面 git 的报错，确认后可加 --force 重跑");
   process.exit(1);
 }
-execFileSync("git", ["-C", trees[0], "worktree", "prune"]);
+execFileSync("git", ["-C", trees[0], "worktree", "prune"], { windowsHide: true });
 
 let missing = 0;
 for (const { target } of links) {

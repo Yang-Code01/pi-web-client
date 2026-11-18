@@ -38,7 +38,7 @@ function npm(args, env) {
   // Node 在 Windows 上不允许直接 spawn .cmd（EINVAL，CVE-2024-27980 之后），只能过 shell；
   // 整条命令当一个字符串传，避免 DEP0190 的「args 不转义」。
   const win = process.platform === "win32";
-  // D312：这个脚本也可能是从无控制台的 worker 里跑的（热部署的 build()），
+  // D314：这个脚本也可能是从无控制台的 worker 里跑的（热部署的 build()），
   // 不写 windowsHide 就给每个包多开一扇窗。
   const r = win
     ? spawnSync(`npm ${args.join(" ")}`, { cwd: root, stdio: "inherit", env, shell: true, windowsHide: true })

@@ -105,7 +105,7 @@ function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown
 
 function git(args: string[], cwd = REPO): Promise<{ ok: boolean; out: string; err: string }> {
   return new Promise((resolve) => {
-    // D312：桥以无控制台方式起的时候（detached / 计划任务看门狗），这两条 execFile 会给每个 git 开一扇窗口；
+    // D314：桥以无控制台方式起的时候（detached / 计划任务看门狗），这两条 execFile 会给每个 git 开一扇窗口；
     // 热部署面板每 1.2s 轮一次快照、一次 5 条 git，开着面板一分钟就是几百扇。
     execFile("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, out, errOut) => {
       resolve({ ok: !err, out: String(out ?? ""), err: String(errOut ?? "") });
