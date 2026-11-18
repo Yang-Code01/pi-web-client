@@ -69,6 +69,7 @@ import {
   saveNote,
   setNoteLife,
   setNoteStatus,
+  describeShots,
   type NoteKind,
   type NoteLife,
   type NoteMode,
@@ -1389,6 +1390,16 @@ async function main(): Promise<void> {
     }
 
     // An image picked in the file browser gets attached, not referenced by path.
+    // #509：提交记录包之前，桥侧算截图的 name / size / sha256（浏览器不读盘、也不该把整张图读进来算哈希）。
+    if (url.pathname === "/api/notes/measure" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const paths = Array.isArray(body?.paths) ? body.paths.map((x: unknown) => String(x)) : [];
+      try {
+        return json(res, 200, { shots: await describeShots(paths) });
+      } catch (err: any) {
+        return json(res, 400, { error: String(err?.message ?? err) });
+      }
+    }
     if (url.pathname === "/api/image" && req.method === "GET") {
       try {
         const img = readAttachableImage(url.searchParams.get("path") ?? "");

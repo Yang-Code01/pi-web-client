@@ -199,6 +199,81 @@ const out = await page.evaluate(async () => {
     emptyTitle: q(".nc-empty-title")?.textContent ?? null,
   };
   sheet3.close();
+
+  // 15. 内网通连动（#518）：菜单 / 选人 / 发送 / 确认 / 提交
+  const calls = [];
+  window.fetch = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(String(init.body)) : null;
+    const path = String(url).split("?")[0];
+    calls.push({ url: path, body });
+    const reply = (data) => ({ ok: true, status: 200, json: async () => data });
+    if (path === "/api/peer") return reply({ enabled: true, running: true, status: { nodeId: "me", online: [{ nodeId: "f1", nickname: "小李", hostname: "pc-li" }] } });
+    if (path === "/api/peer/contacts") return reply({ contacts: [
+      { nodeId: "me", nickname: "我自己", hostname: "pc-me", online: true },
+      { nodeId: "f1", nickname: "小李", hostname: "pc-li", online: true },
+      { nodeId: "f2", nickname: "老王", hostname: "pc-wang", online: false },
+    ] });
+    if (path === "/api/notes/measure") return reply({ shots: [{ name: "a.png", size: 1024, sha256: "a".repeat(64) }] });
+    if (path === "/api/peer/sendnote" || path === "/api/peer/sendfile") return reply({ ok: true });
+    if (path === "/api/peer/send") return reply({ ok: true, id: "e1" });
+    return reply({});
+  };
+  const waitFor = async (fn) => {
+    for (let i = 0; i < 100; i += 1) {
+      const v = fn();
+      if (v) return v;
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    return null;
+  };
+  localStorage.removeItem("notes.memory");
+  const sheet4 = new Notes.NotesSheet(host);
+  sheet4.mount(document.getElementById("app"));
+  const peerFeed = [note({ id: "n9", title: "连动这条", body: "<p><strong>粗</strong> 与 <code>码</code></p>", shots: ["/tmp/a.png"] })];
+  host.notes = () => peerFeed;
+  sheet4.setNotes(peerFeed);
+  q('.nc-row[data-id="n9"]').click();
+  const linkBtn = qa(".nc-actions .btn").find((b) => b.textContent.startsWith("内网通连动"));
+  linkBtn.click();
+  await waitFor(() => qa(".note-peer-menu button").length === 2 && qa(".note-peer-menu button")[0].textContent.includes("发送给好友"));
+  result.peerMenu = qa(".note-peer-menu .handoff-label").map((s) => s.textContent);
+
+  const pick = async (name) => {
+    await waitFor(() => qa(".peer-pick-row").some((r) => r.querySelector(".pp-name")?.textContent === name));
+    qa(".peer-pick-row").find((r) => r.querySelector(".pp-name")?.textContent === name).click();
+  };
+  qa(".note-peer-menu button")[0].click();
+  await waitFor(() => qa(".peer-pick-row").length);
+  result.pickRows = qa(".peer-pick-row").map((r) => ({ name: r.querySelector(".pp-name")?.textContent, off: r.disabled }));
+  result.pickHasMe = qa(".peer-pick-row .pp-name").some((s) => s.textContent === "我自己");
+  await pick("小李");
+  await waitFor(() => calls.some((c) => c.url === "/api/peer/send") && (q(".notes-hint")?.textContent ?? "").includes("已发送"));
+  const sendCall = calls.find((c) => c.url === "/api/peer/send");
+  result.peerSend = { text: sendCall?.body?.text, toast: q(".notes-hint")?.textContent };
+  result.peerLast = localStorage.getItem("notes.peerLast");
+
+  linkBtn.click();
+  await waitFor(() => qa(".note-peer-menu button").length === 2 && qa(".note-peer-menu button")[0].textContent.includes("发送给好友"));
+  qa(".note-peer-menu button")[1].click();
+  await pick("小李");
+  await waitFor(() => q(".peer-confirm"));
+  result.confirm = qa(".peer-confirm .pc-row").map((r) => r.textContent);
+  q(".peer-confirm .btn.primary").click();
+  await waitFor(() => calls.some((c) => c.url === "/api/peer/sendnote") && calls.some((c) => c.url === "/api/peer/sendfile"));
+  const noteCall = calls.find((c) => c.url === "/api/peer/sendnote");
+  const fileCalls = calls.filter((c) => c.url === "/api/peer/sendfile");
+  result.noteSent = {
+    title: noteCall?.body?.note?.title,
+    shots: noteCall?.body?.note?.shots?.length,
+    files: fileCalls.length,
+    path: fileCalls[0]?.body?.path,
+  };
+
+  q(".notes-head-new").click();
+  qa(".nc-actions .btn").find((b) => b.textContent.startsWith("内网通连动")).click();
+  await waitFor(() => qa(".note-peer-menu button").length === 2 && qa(".note-peer-menu button")[0].textContent.includes("发送给好友"));
+  result.peerBlank = qa(".note-peer-menu button").map((b) => b.disabled);
+  sheet4.close();
   return result;
 });
 
@@ -247,6 +322,17 @@ assert.equal(out.memoryReopen.archivedOn, true, "重开仍在归档分区");
 assert.equal(out.memoryReopen.hasSel, false, "归档里不会凭空选中一条");
 assert.equal(out.memoryReopen.emptyTitle, "归档里的记录不能直接改。", "归档空态照旧");
 assert.equal(out.closed, true, "close() 把面板从 DOM 摘掉");
+assert.deepEqual(out.peerMenu, ["发送给好友", "提交给好友"], "连动菜单两项");
+assert.deepEqual(out.pickRows, [{ name: "小李", off: false }, { name: "老王", off: true }], "选人：在线在前、离线置灰");
+assert.equal(out.pickHasMe, false, "选人排除自己");
+assert.equal(out.peerSend?.text, "连动这条\n\n**粗** 与 `码`", "发送给好友发的是标题 + Markdown 正文");
+assert.equal(out.peerSend?.toast, "已发送给 小李", "发完给回执");
+assert.equal(out.peerLast, "f1", "记住上次发给谁");
+assert.ok(out.confirm?.some((row) => row.includes("连动这条")), `确认页有标题，实际 ${JSON.stringify(out.confirm)}`);
+assert.ok(out.confirm?.some((row) => row.includes("小李 · pc-li")), "确认页有收件人");
+assert.ok(out.confirm?.some((row) => row.includes("截图") && row.includes("1 张")), "确认页有截图张数");
+assert.deepEqual(out.noteSent, { title: "连动这条", shots: 1, files: 1, path: "/tmp/a.png" }, "提交：note 帧带清单，截图逐张走 sendfile");
+assert.deepEqual(out.peerBlank, [true, true], "空记录两项都禁用");
 assert.deepEqual(errors, [], `不该有控制台错误：${errors.join(" | ")}`);
 
 console.log("ok notes-sheet-browser: 三栏 / 列表 / 编辑器 / 保存 / 状态 / 折叠 / 搜索");
