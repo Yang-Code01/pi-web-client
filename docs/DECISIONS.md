@@ -6155,3 +6155,20 @@ Esc 之后 dialog: 0
 **取舍：** 没用「永远打开」（用户选项里明说不要：后台重启一天弹一屏标签）；没用「往上找父进程判断是不是终端」那种探针（`isTTY` 已经够用，且零配置）；没引 `open` 这类 npm 依赖，三平台各一行就够。
 
 **验证：** `npm run test:openpage`（纯函数：TTY 真假、`PI_WEB_OPEN` 的 1/0/true/false/空串/认不出的值、三平台命令形状含 win32 的空标题参数）；`peer-e2e` 末尾新增一条断言：三份 peer 跑完，stdout 里不得出现 `/在线 \d+ 台/`（收 stdout 的方式与 `PEER_E2E_VERBOSE` 共用）；空端口/临时状态目录真跑 21 秒 —— 含「在线 N 台」的行数为 0（别用「含‘在线’的行」计数：`peer/src/index.ts` 的隐身横幅与 `messages.ts` 的「对方不在线」都是合法行），`pi-web-client 已启动：http://127.0.0.1:…` 照旧；`openPage(url,"linux")` 在没装 `xdg-open` 的 Windows 上不再能把进程带走（`error` 监听生效）。
+
+## D314 内网通气泡按「富文本 / Markdown」两支渲染，图片与表格不进气泡（用户要求 2026-11-18）
+
+**背景：** #515 把输入区换成富文本之后，消息正文可能是 `RichEditor` 产出的 HTML；旧消息与「提交给好友」转发的正文仍是纯文本 Markdown。气泡原来只 `textContent` + `pre-wrap`，两类都显示不出结构。
+
+**决定：**
+
+- **判定顺序：`hasRichMarkup()` 命中的走富文本，其余全部走 Markdown**。不再为「纯文本」留第三支：`1. 第一`、`- 项` 这类老消息会开始显示成列表，明确接受。
+- **富文本支：** `sanitizeRich()` 后把 `span[style]` 拆成文本（颜色 / 字号 / 底色丢弃、字体跟主题）；`h1-h3` 加 `.bub-h` 降成 13.5px；`a` 补 `target="_blank" rel="noopener noreferrer"`；`img` 本就不在白名单。
+- **Markdown 支：** `renderMarkdown(text, { tables: false, imageSrc: () => null, openPath })`。气泡里不画表格（窄栏读不了）、不画图片（图片走文件卡）；`openPath` = 复制路径 + toast「已复制路径」。
+- **点击：** 气泡空白处复制全文（富文本复制 `plainText(html)`，Markdown 复制原文）；`a` / `code` / `pre` / `table` / 折叠按钮不抢点击。
+- **长消息：** 纯文本超过 1600 字或 24 行，正文套 `.bub-body.clip`（`max-height:280px` + 底部渐变），底部「显示全文 / 收起」只切类、不重渲染；展开状态不持久化。
+- **引用与列表摘要：** 富文本先 `plainText()` 再截 120 字，会话行预览同理，标签不再漏进摘要。
+
+**取舍：** 没给 peer 另写渲染器（直接复用 `web/src/md.ts`，构建增量在预算内）；没记展开状态（刷新回到折叠，和聊天软件一致）；老纯文本会按 Markdown 变化，这是为了让 #518 转发的正文与旧消息共用一条渲染路径。
+
+**验证：** `node bridge/tests/peer-ui.mjs` 新增四条夹具（富文本、带样式的 span、Markdown 列表/标题/表格、1700 字长消息）：结构保留而颜色字号被剥、链接 `_blank`、`1.` 成 2 个 `li`、`#` 成 h3、`table` 为 0、折叠按钮文案切换；全过。`npm --prefix web run typecheck`（含 i18n）通过。

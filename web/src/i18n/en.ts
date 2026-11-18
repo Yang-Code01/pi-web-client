@@ -722,6 +722,8 @@ export const en: Dict = {
   "撤回到输入框": "Return to input box",
   "操作失败": "Action failed",
   "收起": "Collapse",
+  "显示全文": "Show all",
+  "已复制路径": "Path copied",
   "收起 / 展开右栏": "Collapse / expand right panel",
   "收起 / 展开左栏": "Collapse / expand left panel",
   "收起{p1}": "Collapse {p1}",

@@ -171,7 +171,25 @@ try {
         delay = 1000; // 小张的响应慢：切到小李之后才回来
         body = { entries: [msg("aaaaaaaa-0000-4000-8000-000000000001", "我是 A 的消息", { ...me, nodeId: ZHANG, nickname: "小张" }, ME)] };
       } else if (who === LI) {
-        body = { entries: [msg("bbbbbbbb-0000-4000-8000-000000000001", "我是 B 的消息", { ...me, nodeId: LI, nickname: "小李" }, ME)] };
+        // #516：富文本 / 旧纯文本 Markdown / 超长折叠三种气泡各来一条。
+        body = {
+          entries: [
+            msg("bbbbbbbb-0000-4000-8000-000000000001", "我是 B 的消息", { ...me, nodeId: LI, nickname: "小李" }, ME),
+            msg(
+              "bbbbbbbb-0000-4000-8000-000000000002",
+              '<p>富 <strong>粗</strong> <span style="color:#ff0000;font-size:20px">红</span></p><p><a href="https://example.com/x">链接</a></p>',
+              { ...me, nodeId: LI, nickname: "小李" },
+              ME,
+            ),
+            msg(
+              "bbbbbbbb-0000-4000-8000-000000000003",
+              "1. 第一\n2. 第二\n\n# 小标题\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+              { ...me, nodeId: LI, nickname: "小李" },
+              ME,
+            ),
+            msg("bbbbbbbb-0000-4000-8000-000000000004", "长".repeat(1700), { ...me, nodeId: LI, nickname: "小李" }, ME),
+          ],
+        };
       } else {
         body = { entries: [] }; // 小王：没有历史
       }
@@ -225,6 +243,28 @@ try {
     text.includes("我是 B 的消息") && !text.includes("我是 A 的消息"),
     text.slice(0, 90),
   );
+  // #516：三种气泡都画对，链接 / 表格 / 折叠互不打架。
+  await page.waitForSelector(".bub-body.rich");
+  const richStrong = (await page.locator(".bub-body.rich strong").first().innerText()).trim();
+  const richSpan = await page.locator(".bub-body.rich span[style]").count();
+  const richLink = await page.locator('.bub-body.rich a[href="https://example.com/x"]').evaluate((a) => ({
+    target: a.getAttribute("target"),
+    rel: a.getAttribute("rel"),
+  }));
+  check("富文本气泡保留结构、剥掉颜色字号", richStrong === "粗" && richSpan === 0, `strong=${richStrong}，带样式 span=${richSpan}`);
+  check("富文本里的链接新窗口打开", richLink.target === "_blank" && (richLink.rel ?? "").includes("noopener"), JSON.stringify(richLink));
+  const mdList = await page.locator(".bub-body.md ol li").count();
+  const mdHead = await page.locator(".bub-body.md h3").first().innerText().catch(() => "");
+  const mdTable = await page.locator(".bub-body.md table").count();
+  check("旧纯文本按 Markdown 渲染列表与标题", mdList === 2 && mdHead.trim() === "小标题", `li=${mdList}，h3=${mdHead}`);
+  check("气泡里不渲染表格", mdTable === 0, `table=${mdTable}`);
+  const more = page.locator(".bub-more").first();
+  const clipBefore = await page.locator(".bub-body.clip").count();
+  const moreText = await more.innerText();
+  await more.click();
+  const clipAfter = await page.locator(".bub-body.clip").count();
+  const moreAfter = await more.innerText();
+  check("长消息折叠、点开不重渲染", clipBefore === 1 && clipAfter === 0 && moreText === "显示全文" && moreAfter === "收起", `clip=${clipBefore}→${clipAfter}，按钮=${moreText}→${moreAfter}`);
   await page.screenshot({ path: path.join(REPO, ".scratch", "shots", "peer-ui.png") });
 
   // ---- #381：通讯录桩只给 1 人，状态在线名单多给一个陌生 nodeId ----
