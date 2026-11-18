@@ -20,7 +20,7 @@ import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
-import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpStepKind, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
+import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -17264,15 +17264,12 @@ export class App {
 
   /** 折叠后只留人话：坐标、JS 代码、函数名一律不进来（那些只在展开态）。 */
   private browserFoldedText(card: BrowserOpCard): string {
+    // 一串「对页面做了什么」（打开哪页 → 点了什么 → 输入了什么），不是「最后干完那一下」：
+    // 脚本几乎都是读页面收尾，只报最后一步会让几张卡挤成同一行。模型层负责挑与合并。
+    const steps = foldedSteps(card.steps);
     // 脚本卡把文件名带上：一栏十个 `bash` 分不清谁是谁。
-    // 末尾的「等待 x 秒」/「输出 …」不是干的事，往后找最后一个真正的动作。
-    const ACTIONS: BrowserOpStepKind[] = ["nav", "input", "click", "read", "js", "cdp", "tab", "shot", "launch"];
-    const last =
-      card.steps.filter((step) => ACTIONS.includes(step.kind)).at(-1) ??
-      card.steps.filter((step) => step.kind !== "print").at(-1) ??
-      card.steps.at(-1);
     const who = card.script ? `${card.script} · ` : "";
-    if (last) return who + this.browserStepText(last, true);
+    if (steps.length) return who + steps.map((step) => this.browserStepText(step, true)).join(" → ");
     const first = card.intent.split("\n").map((line) => line.trim()).find(Boolean);
     return first ? first.slice(0, 80) : tr("浏览器调用");
   }
@@ -17296,7 +17293,10 @@ export class App {
       this.browserFold.set(card.toolCallId, !expanded);
       this.renderQueue();
     };
-    const title = el("div", "browser-title", this.browserFoldedText(card));
+    const titleText = this.browserFoldedText(card);
+    const title = el("div", "browser-title", titleText);
+    // 折叠行只有一行的宽度，长链被省略号截掉；悬停看全链。
+    if (titleText) title.title = titleText;
     const duration = el("span", "browser-dur", this.execDuration(card.durationMs ?? 0) || "–");
     duration.dataset.bdur = "";
     head.append(chev, title, duration);
@@ -17371,7 +17371,7 @@ export class App {
     let text: string;
     switch (step.kind) {
       case "nav":
-        text = target ? tr("打开 {p1}", { p1: target }) : tr("打开页面");
+        text = target ? tr("打开 {p1}", { p1: shortUrl(target) }) : tr("打开页面");
         break;
       case "wait": {
         const ms = /^(\d+)ms$/.exec(target);
@@ -17400,7 +17400,11 @@ export class App {
         break;
       case "input":
         // 脚本里的输入能带上选择器（`输入 · 今天的天气 · #kw`），但折叠行只留值。
-        text = target ? tr("输入 · {p1}", { p1: target }) : tr("输入");
+        if (!target) {
+          text = tr("输入");
+          break;
+        }
+        text = coarse ? tr("输入 {p1}", { p1: target }) : tr("输入 · {p1}", { p1: target });
         if (step.name && !coarse) text += ` · ${step.name}`;
         break;
       case "launch":
@@ -19205,6 +19209,11 @@ function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
   btn.textContent = collapsed ? (right ? "«" : "»") : (right ? "»" : "«");
   btn.title = collapsed ? tr("展开{p1}", { p1: label }) : tr("收起{p1}", { p1: label });
   btn.setAttribute("aria-pressed", String(collapsed));
+}
+
+/** 折叠行里的网址省掉协议名：一串「打开 …」本来就挤，`https://` 每段占 8 个字什么也没说。 */
+function shortUrl(target: string): string {
+  return target.replace(/^https?:\/\//i, "");
 }
 
 /** 浏览器面板的阈值与工具名单：面板齿轮里改，存 localStorage（`pi.browserOps.*`）。 */

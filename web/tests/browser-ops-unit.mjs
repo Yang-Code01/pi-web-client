@@ -6,7 +6,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { browserOpsView } from "../src/browser-ops.ts";
+import { browserOpsView, foldedSteps } from "../src/browser-ops.ts";
 
 const T0 = Date.parse("2026-11-18T10:00:00Z");
 const at = (sec) => new Date(T0 + sec * 1000).toISOString();
@@ -406,4 +406,36 @@ test("名字不常规的 MCP 也认：stagehand / cdp", () => {
   assert.equal(stagehand.cards.length, 1);
   const cdp = browserOpsView({ ...base, items: [tool("t2", 2, "mcp__cdp_navigate", { url: "https://x/" }, { durationMs: 1 })] });
   assert.equal(cdp.cards.length, 1);
+});
+
+test("折叠行只留「对页面做了什么」：启动 / 切标签 / 等待 / 截图 / 读页面都不占位", () => {
+  const view = browserOpsView({
+    ...base,
+    items: [
+      user("u1", 0),
+      wrote("w1", 5, ".scratch/baidu-weather.mjs", SCRIPT),
+      tool("b1", 9, "bash", { command: "node .scratch/baidu-weather.mjs" }, { durationMs: 41_000 }),
+    ],
+  });
+  // 脚本末尾是 `page.title()`：原来折叠行只取这一步，几张脚本卡就挤成同一句「读取页面信息」。
+  assert.equal(view.cards[0].steps.at(-1).kind, "read");
+  assert.deepEqual(foldedSteps(view.cards[0].steps).map(shape), [
+    { kind: "nav", target: "https://www.baidu.com", name: undefined },
+    { kind: "input", target: "今天的天气", name: "#kw" },
+    { kind: "click", target: "#su", name: undefined },
+  ]);
+});
+
+test("折叠行的兜底：只有读页面时照样说出来，且被等待隔开的两次读并成一条", () => {
+  const steps = stepsOf(["print(page_info())", "time.sleep(1)", "print(page_info())"].join("\n"));
+  assert.deepEqual(steps.map(shape), [
+    { kind: "read", target: undefined, name: undefined },
+    { kind: "wait", target: undefined, name: undefined },
+    { kind: "read", target: undefined, name: undefined },
+  ]);
+  // 合并必须在筛掉等待之后做：不然中间那个 wait 会把两次读页面拆成两件事。
+  assert.deepEqual(
+    foldedSteps(steps).map((step) => [step.kind, step.repeat ?? 1]),
+    [["read", 2]],
+  );
 });
