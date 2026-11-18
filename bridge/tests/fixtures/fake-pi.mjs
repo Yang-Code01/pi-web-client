@@ -665,6 +665,54 @@ Command exited with code 1` });
       isError: false,
       result: "title: 登录\nurl: http://127.0.0.1:7864/#/login\nsubmitted: true\ntabs: 1\nviewport: 1280x900\ncookies: 2\nframes: 0\n",
     });
+    // 两颗「写脚本 + bash 跑」的调用（#505 补的那条路）：形状照真实会话抄 ——
+    // 脚本结尾都是读页面（`page.title()` / `page.evaluate()`），所以折叠行会一起挤成同一句。
+    const scripts = [
+      {
+        path: ".scratch/baidu-weather/search.mjs",
+        body: [
+          'import { chromium } from "playwright";',
+          "const browser = await chromium.launch({ headless: true });",
+          "const page = await browser.newPage();",
+          'await page.goto("https://www.baidu.com/");',
+          'const box = page.locator("#kw");',
+          'await box.fill("南京今天天气");',
+          'await page.keyboard.press("Enter");',
+          "const title = await page.title();",
+          "const text = await page.evaluate(() => document.body.innerText);",
+          "console.log(title, text.slice(0, 80));",
+          "await browser.close();",
+        ],
+      },
+      {
+        path: ".scratch/baidu-weather/inspect.mjs",
+        body: [
+          'import { chromium } from "playwright";',
+          "const browser = await chromium.launch({ headless: true });",
+          "const page = await browser.newPage();",
+          'await page.goto("https://www.baidu.com/s?wd=weather");',
+          'await page.screenshot({ path: "baidu.png" });',
+          "const text = await page.evaluate(() => document.body.innerText);",
+          "console.log(text.slice(0, 80));",
+          "await browser.close();",
+        ],
+      },
+    ];
+    for (const [index, script] of scripts.entries()) {
+      const writeId = `call-write-${index}`;
+      const writeArgs = { path: script.path, content: script.body.join("\n") };
+      out({ type: "message_start", message: assistant("") });
+      out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: writeId, name: "write", arguments: writeArgs }], stopReason: "toolUse" }) });
+      out({ type: "tool_execution_start", toolCallId: writeId, toolName: "write", args: writeArgs });
+      out({ type: "tool_execution_end", toolCallId: writeId, toolName: "write", isError: false, result: `Wrote ${script.path}` });
+      const bashId = `call-bash-${index}`;
+      const bashArgs = { command: `cd . && node ${script.path} 2>&1 | tail -30` };
+      out({ type: "message_start", message: assistant("") });
+      out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: bashId, name: "bash", arguments: bashArgs }], stopReason: "toolUse" }) });
+      out({ type: "tool_execution_start", toolCallId: bashId, toolName: "bash", args: bashArgs });
+      await sleep(200);
+      out({ type: "tool_execution_end", toolCallId: bashId, toolName: "bash", isError: false, result: "百度一下，你就知道\n南京 9° 2~13°C 晴\n" });
+    }
     // 第二颗只发一次 partial 输出就停住：探针先看「运行中」，再把页面时钟快进成「疑似卡住」。
     const slow = "call-browser-idle";
     const slowArgs = { tool: "browser_exec", args: { code: "wait_for_network_idle(timeout=30)\nprint(page_info())" } };

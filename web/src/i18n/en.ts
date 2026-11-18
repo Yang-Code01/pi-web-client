@@ -3790,6 +3790,7 @@ export const en: Dict = {
   "输出 · {p1}": "Output · {p1}",
   "切换标签 · {p1}": "Switch tab · {p1}",
   "切换标签": "Switch tab",
+  "输入 {p1}": "Type {p1}",
   "输入 · {p1}": "Type · {p1}",
   "滚动 · {p1}": "Scroll · {p1}",
   "滚动": "Scroll",
