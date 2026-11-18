@@ -1,4 +1,6 @@
 import { applyLang, bootLang, fmtDate, fmtNum, fmtRelative, fmtTime, tr } from "../i18n/index.ts";
+import { RichEditor } from "../notes/editor.ts";
+import { isRichEmpty, plainText } from "../notes/rich.ts";
 import { SheetDialog } from "../sheet/dialog.ts";
 import "../sheet/sheet.css";
 
@@ -241,7 +243,9 @@ let stickBottom = true;
 /** 刚发出一条消息（文字 / 文件）：下一次重画必须贴底，哪怕原先停在历史中间。 */
 let forceBottom = false;
 let prevScroll = 0;
-let textInput: HTMLTextAreaElement | null = null;
+let textInput: HTMLElement | null = null;
+/** 输入区的富文本实例：换会话要 destroy（它在 document 上挂了监听）。 */
+let composer: RichEditor | null = null;
 let sendBtn: HTMLButtonElement | null = null;
 /** 引用条所在的槽：换会话时重建，引用 / 取消引用时只重画槽里的东西。 */
 let replyHost: HTMLElement | null = null;
@@ -253,6 +257,9 @@ let draftTimer = 0;
 // ---------------------------------------------------------------- 小工具
 
 const byteLen = (text: string): number => new TextEncoder().encode(text).length;
+/** 除了普通段落/换行，还有别的标签才算「带了格式」：纯文字仍发纯文本，老气泡不变。 */
+const hasFormat = (html: string): boolean =>
+  /<[a-z][^>]*>/i.test(html.replace(/<p(?:\s[^>]*)?>|<\/p>|<br(?:\s[^>]*)?>|<\/br>/gi, ""));
 
 /** localStorage 里的布尔开关：存 `"1"` / `"0"`，读写都包一层 try（隐身模式下会抛）。 */
 function readFlag(key: string): boolean {
@@ -830,7 +837,7 @@ function renderThreadList(): void {
     if (t.last?.via === "pi") name.append(h("span", "pill pi", "pi"));
     const sub = h("div", "s");
     if (t.typing) sub.append(h("span", "typing", tr("对方正在输入…")));
-    else if (t.draft) sub.append(h("span", "draft", tr("草稿：{p1}", { p1: t.draft })));
+    else if (t.draft) sub.append(h("span", "draft", tr("草稿：{p1}", { p1: plainText(t.draft).slice(0, 80) })));
     else sub.append(h("span", "", preview(t)));
     if (t.muted) sub.append(ic("bellOff", "mute"));
     tbox.append(name, sub);
@@ -1078,6 +1085,11 @@ function threadOf(id: string | null): Thread | null {
 function renderChat(): void {
   const t = threadOf(S.thread);
   if (!t) {
+    composer?.destroy();
+    composer = null;
+    textInput = null;
+    composeEl = null;
+    composeFor = "";
     mainEl.append(
       emptyState("msg", tr("选一个会话"), tr("左边挑一个人；还没有人就在「联系人」里加一个地址")),
     );
@@ -1550,38 +1562,34 @@ function composeBox(t: Thread): HTMLElement {
     paintReplyBar();
     return composeEl;
   }
+  // 换会话：旧编辑器在 document 上挂着 mousedown / keydown，不拆会跟着整页活着。
+  composer?.destroy();
+  composer = null;
   composeFor = t.nodeId;
   const wrap = h("div", "compose");
   replyHost = h("div", "replyhost");
   replyHost.hidden = true;
   const box = h("div", "box");
-  const ta = h("textarea");
-  ta.placeholder = tr("发给 {p1}", { p1: t.nickname });
-  ta.rows = 2;
-  ta.dataset.keep = "compose";
-  ta.autocomplete = "off";
-  // P1：草稿从会话元数据里恢复（没存过就是空）。
-  if (t.draft) ta.value = t.draft;
-  ta.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
-      ev.preventDefault();
-      void send();
-    }
+  // 精简工具栏（#515）：粗 / 斜 / 下划线 / 删除线 / 列表 / 引用 / 代码块。行内代码与链接靠 Markdown 输入规则。
+  const toolbar = h("div", "peer-tools");
+  const body = h("div", "peer-rich");
+  body.dataset.placeholder = tr("发给 {p1}", { p1: t.nickname });
+  body.dataset.empty = "1";
+  body.dataset.keep = "compose";
+  const ed = new RichEditor({
+    body,
+    toolbar,
+    tools: ["b", "i", "u", "s", "ul", "ol", "code", "quote"],
+    onChange: () => onComposeChange(t.nodeId),
+    onEnter: () => void send(),
+    say: (text) => toast(text),
   });
-  ta.addEventListener("input", () => {
-    const peerId = composeFor;
-    // P3：输入中。只在本会话面板里发，不发就不发，对端 3 秒后自然过期。
-    if (Date.now() - typingSentAt > 1500) {
-      typingSentAt = Date.now();
-      void postJson("/api/peer/typing", { peer: peerId }).catch(() => {});
-    }
-    // P1：草稿。停手 800 ms 落一次，换会话 / 发出去都会再对齐一次。
-    window.clearTimeout(draftTimer);
-    draftTimer = window.setTimeout(() => {
-      if (ta.value === (S.threads.find((x) => x.nodeId === peerId)?.draft ?? "")) return;
-      void postJson("/api/peer/thread", { peer: peerId, draft: ta.value }).catch(() => {});
-    }, 800);
-  });
+  // P1：草稿从会话元数据里恢复（现在存的是净化过的 HTML；老草稿是纯文本，setHtml 接得住）。
+  if (t.draft) ed.setHtml(t.draft);
+  body.dataset.empty = isRichEmpty(ed.html()) ? "1" : "0";
+  composer = ed;
+  textInput = body;
+
   const bar2 = h("div", "bar2");
   const attach = iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId));
   const hint = h("span", "hintline", tr("Enter 发送，Shift+Enter 换行；拖文件或粘贴截图也行"));
@@ -1589,9 +1597,8 @@ function composeBox(t: Thread): HTMLElement {
   btn.type = "button";
   btn.addEventListener("click", () => void send());
   bar2.append(attach, hint, btn);
-  box.append(ta, bar2);
+  box.append(toolbar, body, bar2);
   wrap.append(replyHost, box);
-  textInput = ta;
   sendBtn = btn;
   composeEl = wrap;
   paintReplyBar();
@@ -1609,26 +1616,56 @@ function composeBox(t: Thread): HTMLElement {
     const f = ev.dataTransfer?.files?.[0];
     if (f) void uploadBlob(f.name, f);
   });
-  ta.addEventListener("paste", (ev) => {
-    const item = [...(ev.clipboardData?.items ?? [])].find((i) => i.kind === "file");
-    if (!item) return;
-    const f = item.getAsFile();
-    if (!f) return;
-    ev.preventDefault();
-    void uploadBlob(tr("截图 {p1}.png", { p1: new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).replace(/:/g, "-") }), f);
-  });
+  // 粘贴截图：capture 抢在编辑器的 paste 之前，否则图片变成一段空文字。
+  body.addEventListener(
+    "paste",
+    (ev) => {
+      const item = [...(ev.clipboardData?.items ?? [])].find((i) => i.kind === "file");
+      if (!item) return;
+      const f = item.getAsFile();
+      if (!f) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      void uploadBlob(tr("截图 {p1}.png", { p1: new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).replace(/:/g, "-") }), f);
+    },
+    true,
+  );
   return wrap;
+}
+
+/** 输入变化：typing 心跳 + 800ms 防抖存 HTML 草稿（#515）。 */
+function onComposeChange(peerId: string): void {
+  const ed = composer;
+  if (!ed) return;
+  const html = ed.html();
+  const empty = isRichEmpty(html);
+  if (textInput) textInput.dataset.empty = empty ? "1" : "0";
+  // P3：输入中。只在本会话面板里发，不发就不发，对端 3 秒后自然过期。
+  if (Date.now() - typingSentAt > 1500) {
+    typingSentAt = Date.now();
+    void postJson("/api/peer/typing", { peer: peerId }).catch(() => {});
+  }
+  // P1：草稿。停手 800 ms 落一次；空就是空串，不把 <p><br></p> 存进去。
+  window.clearTimeout(draftTimer);
+  draftTimer = window.setTimeout(() => {
+    const value = empty ? "" : html;
+    if (byteLen(value) > MAX_TEXT_BYTES) return;
+    if (value === (S.threads.find((x) => x.nodeId === peerId)?.draft ?? "")) return;
+    void postJson("/api/peer/thread", { peer: peerId, draft: value }).catch(() => {});
+  }, 800);
 }
 
 // ---------------------------------------------------------------- 发送
 
 async function send(): Promise<void> {
   const id = S.thread;
-  const ta = textInput;
-  if (!id || !ta || S.sending) return;
-  const text = ta.value.replace(/\s+$/, "");
-  if (!text) return;
-  if (byteLen(text) > MAX_TEXT_BYTES) return toast(tr("太长了（上限 32 KB）"));
+  const ed = composer;
+  if (!id || !ed || S.sending) return;
+  const html = ed.html();
+  if (isRichEmpty(html)) return;
+  // 有格式就发 HTML（接收端按 hasRichMarkup 判定为富文本）；纯文字仍发纯文本，老气泡不变。
+  const text = hasFormat(html) ? html : plainText(html);
+  if (byteLen(text) > MAX_TEXT_BYTES) return toast(tr("太长（上限 32 KB），改用文件发"));
   S.sending = true;
   if (sendBtn) sendBtn.disabled = true;
   const reply = S.replyTo;
@@ -1642,7 +1679,8 @@ async function send(): Promise<void> {
       };
     }
     await postJson("/api/peer/send", body);
-    ta.value = "";
+    ed.setHtml("");
+    if (textInput) textInput.dataset.empty = "1";
     S.replyTo = null;
     // 草稿跟着消息一起清掉；不刷会话列表（下一轮轮询会自己拉）。
     void postJson("/api/peer/thread", { peer: id, draft: "" }).catch(() => {});
