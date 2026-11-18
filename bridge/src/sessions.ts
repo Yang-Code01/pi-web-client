@@ -60,6 +60,11 @@ function planNudgePath(): string {
   return process.env.PI_WEB_PLAN_NUDGE_EXT ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "plan-nudge.ts");
 }
 
+/** 提问兜底：正文里提问、没走 `ask_user_question` 就拉回来重问（`agent_before_settle`），默认开。 */
+function askNudgePath(): string {
+  return process.env.PI_WEB_ASK_NUDGE_EXT ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "ask-nudge.ts");
+}
+
 /** 邮箱工具（`mail_*`）：和预览工具一样只挂网页会话 —— 终端里的 pi 没有邮箱面板可确认。 */
 function mailToolPath(): string {
   return process.env.PI_WEB_MAIL_TOOL ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "mail.ts");
@@ -1278,6 +1283,8 @@ export class Session extends EventEmitter {
     args.push("-e", artifactToolPath());
     // #357：计划收尾核对。总是挂上，开不开由它每次自己读全局设置 `web.planNudge`（默认关）。
     args.push("-e", planNudgePath());
+    // 提问兜底：正文提问没走表单就续跑一次。开关 `web.askNudge`，默认开。
+    args.push("-e", askNudgePath());
     // #384：Context 面板组成数据。每次 LLM 调用前写一行 JSONL（估算），面板读它画六类组成。
     args.push("-e", ensureContextLogExt());
     // 邮箱：读、写、发用户的邮箱。发送前的确认由桥推给正在看这个会话的页面，不走审批弹窗。

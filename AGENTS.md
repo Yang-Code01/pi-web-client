@@ -43,6 +43,14 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 本机已把它做成全局别名 **`gh merge-pr`**（合当前分支的 PR）。见到那句 `base branch policy` 就改用它，别停下来等人确认。合完 `git fetch` + `git merge --ff-only origin/main` 把本地 main 拉平。
 
+### 提问：一律走 `ask_user_question`
+
+需要用户做选择、确认方向、补一个只有他知道的事实时，调用 `ask_user_question` —— **正文里不留待答问题**（「Q1…？」「❓」「要不要我…？」都不算提问）。
+
+- 技能（`grilling` 等）规定的「❓ Q1 + ➡️ 建议」只约束**问什么**，不约束**怎么呈现**：题干整段放进 `question`，分支放进 `options[].description`，推荐项放第一个并在 label 末尾加「（推荐）」。
+- 用户还能自己输入（「Type something.」），不要加「其他」选项。
+- 兜底：`bridge/ext/ask-nudge.ts` 在模型停下前核对，正文提问且本轮没调 `ask_user_question` 就续跑一次；开关 `web.askNudge`（默认开），同一段问句只提醒一次、整会话最多两次（D312）。
+
 ### 界面文案（i18n）
 
 界面文案一律走 `web/src/i18n/` 的 `tr("中文原文")`：中文原文就是键，英文/日文在 `en.ts` / `ja.ts`。

@@ -2412,6 +2412,8 @@ export const en: Dict = {
   "最后记录 · 计划 {p1}/{p2} · {p3}": "Last recorded · Plan {p1}/{p2} · {p3}",
   "停下前核对计划": "Check plan before stopping",
   "agent 停下前，计划还有没关的项、且上次更新后又调用了 5 次以上工具，就让它多跑一小步只用 todo 对齐计划（用户看不到这句提醒，会多花一次请求）。改了立即生效": "Before the agent stops, if the plan still has open items and 5+ tool calls ran since its last update, let it take one extra short step that only uses todo to bring the plan up to date (the reminder is hidden from you and costs one more request). Takes effect immediately",
+  "停下前核对提问": "Check questions before stopping",
+  "agent 停下前，如果它是在正文里向你提问、却没调用 ask_user_question，就让它改走表单再停一次（同一段问句只提醒一次，整会话最多两次，会多花一次请求）。改了立即生效": "Before the agent stops, if it asked you a question in its reply without calling ask_user_question, make it re-ask through the form (the same question only once, at most twice per session; costs one more request). Takes effect immediately",
   "HEAD 指向另一条分支": "HEAD points to another branch",
   "fetch + 把远程改动合进当前分支": "fetch + merge remote changes into the current branch",
   "git add -- <勾中文件>": "git add -- <selected files>",
