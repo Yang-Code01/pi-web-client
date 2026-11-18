@@ -110,7 +110,7 @@
 .fse-headrow,
 .fse-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 2fr) 86px 128px;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 2fr) 86px 128px 136px;
   gap: 14px;
   align-items: center;
 }
@@ -188,6 +188,53 @@
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
+}
+
+/* 行尾三颗：引用 / 打开 / 位置 —— 尺寸抄文件弹层的 `.fc-act`，但更小一号（行更密）。 */
+.fse-acts {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.fse-act {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11px;
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+    background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+/* 平时淡一点（一屏十几行都亮着太吵），鼠标进到这一行就全亮；键盘选中的行也亮。 */
+.fse-row:hover .fse-act,
+.fse-row.on .fse-act {
+  opacity: 1;
+}
+
+.fse-act:hover {
+  border-color: var(--line-strong);
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.fse-act:active {
+  transform: translateY(1px);
+}
+
+.fse-act:focus-visible {
+  outline: 2px solid var(--accent-dim);
+  outline-offset: 1px;
+  opacity: 1;
 }
 
 .fse-hit {
@@ -286,10 +333,11 @@
 @container (max-width: 620px) {
   .fse-headrow,
   .fse-row {
-    grid-template-columns: minmax(0, 1.4fr) 92px;
+    grid-template-columns: minmax(0, 1.4fr) 136px;
   }
 
   .fse-c2,
+  .fse-c3,
   .fse-c4 {
     display: none;
   }

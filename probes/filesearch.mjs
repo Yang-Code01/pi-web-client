@@ -158,6 +158,17 @@ try {
   log("2 结果：", names.join(", "), "|", foot.trim());
   await page.screenshot({ path: path.join(OUT, "2-results.png"), animations: "disabled" });
 
+  // ---- 2b. 行尾三颗动作（D316）：引用 / 打开 / 位置 —— 与文件弹层的 `.fc-acts` 同一套
+  const actLabels = await page.$$eval(".fse-row .fse-acts .fse-act", (els) => els.map((e) => e.textContent.trim()));
+  assert(actLabels.length === 2 * 3, `两行应有 6 颗按钮（实际 ${actLabels.length}）`);
+  for (const want of ["引用", "打开", "位置"]) {
+    assert(actLabels.includes(want), `缺「${want}」：${actLabels.join(",")}`);
+  }
+  // 「位置」不关面板：只验 title 写清了目标，不去点（点了会真的弹出资源管理器窗口）。
+  const revealTitle = await page.locator(".fse-row .fse-acts .fse-act").last().getAttribute("title");
+  assert(revealTitle && revealTitle.includes("文件管理器"), `「位置」的 title 没写清去哪（${revealTitle}）`);
+  log("2b 行尾动作：", [...new Set(actLabels)].join(" / "));
+
   // ---- 3. 点一行 → 引用到输入框（路径进 composer）
   await page.locator(".fse-row", { hasText: "quarterly-report.md" }).first().click();
   await sleep(400);

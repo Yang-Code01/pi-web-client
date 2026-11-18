@@ -1,5 +1,5 @@
 /**
- * 顶栏 / 输入框下沿那 11 颗按钮的可见性（#281 / #288）。
+ * 顶栏 / 输入框下沿那 14 颗按钮的可见性（#281 / #288）。
  *
  * **唯一一份定义**：桥存的是偏好（`chrome`），页面只问这里「这一颗该不该画」，不在各个渲染点
  * 各拼一遍条件。三态用「键在不在」表达 —— 键缺失 = 默认行为，`false` = 关掉，`true` = 显式打开
@@ -8,8 +8,8 @@
  * 纯函数，单测在 `web/tests/chrome-unit.mjs`。桥端的白名单在 `bridge/src/extmgr.ts`。
  */
 
-/** 写进状态 / 协议里的稳定 id（不是文案）。顶栏 8 颗、下沿 4 颗。 */
-export const CHROME_IDS = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "mail", "skills", "context", "ext", "attach", "model"] as const;
+/** 写进状态 / 协议里的稳定 id（不是文案）。顶栏 9 颗、下沿 5 颗。 */
+export const CHROME_IDS = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "mail", "filesearch", "skills", "context", "ext", "attach", "model"] as const;
 export type ChromeId = (typeof CHROME_IDS)[number];
 
 /** 只有三种状态：键缺失 / `false` / `true`。 */

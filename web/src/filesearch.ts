@@ -47,6 +47,8 @@ export interface FileSearchOpts {
   onQuote: (abs: string) => void;
   /** 行 = 打开：在预览里打开。 */
   onOpen: (abs: string) => void;
+  /** 行尾「位置」：在这台电脑的文件管理器里选中它。 */
+  onReveal: (abs: string) => void;
   onClose: () => void;
 }
 
@@ -134,6 +136,7 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
     el("span", "fse-c2", tr("位置")),
     el("span", "fse-c3", tr("大小")),
     el("span", "fse-c4", tr("修改时间")),
+    el("span", "fse-c5", ""),
   );
   const body = el("div", "fse-body");
   const empty = el("div", "fse-empty");
@@ -333,13 +336,39 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
       name.append(label);
       const dir = el("span", "fse-c2 fse-dir", row.dir);
       dir.title = row.path;
-      node.append(name, dir, el("span", "fse-c3", row.isDir ? "" : fmtSize(row.size)), el("span", "fse-c4", fmtTime(row.mtime)));
+      // 行尾三颗：引用 / 打开 / 所在位置（和文件弹层 `.fc-acts` 同一套做法）。
+      // 都先 `stopPropagation()`：整行点击仍然是「引用并关面板」，按钮自己说清楚自己干什么。
+      const acts = el("span", "fse-acts");
+      const act = (label: string, title: string, run: () => void): HTMLButtonElement => {
+        const b = el("button", "fse-act", label) as HTMLButtonElement;
+        b.type = "button";
+        b.title = title;
+        b.tabIndex = -1;
+        b.onclick = (ev) => {
+          ev.stopPropagation();
+          select(i);
+          run();
+        };
+        return b;
+      };
+      acts.append(
+        // 和文件弹层同序：先收回面板，再把焦点交还给输入框 / 预览。
+        act(tr("引用"), tr("把 {p1} 的路径引用到输入框", { p1: row.name }), () => {
+          opts.onClose();
+          opts.onQuote(row.path);
+        }),
+        act(tr("打开"), tr("在预览里打开 {p1}", { p1: row.name }), () => {
+          opts.onClose();
+          opts.onOpen(row.path);
+        }),
+        act(tr("位置"), tr("在这台电脑的文件管理器里显示 {p1}", { p1: row.name }), () => opts.onReveal(row.path)),
+      );
+      node.append(name, dir, el("span", "fse-c3", row.isDir ? "" : fmtSize(row.size)), el("span", "fse-c4", fmtTime(row.mtime)), acts);
       node.onclick = () => {
         select(i);
-        // 单击就引用并关掉：样张 A 的规矩是「点一行 = 引用到输入框」，
-        // 双击在本机是「先触发两次单击」，所以再也不做第二套手势。
-        opts.onQuote(row.path);
+        // 整行点击还是样张 A 的规矩「点一行 = 引用到输入框」，顺序同文件弹层：先收面板再插入。
         opts.onClose();
+        opts.onQuote(row.path);
       };
       body.append(node);
     });

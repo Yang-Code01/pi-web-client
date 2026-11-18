@@ -3836,4 +3836,6 @@ export const en: Dict = {
   "还没有索引": "No index yet",
   "连接中…": "Connecting…",
   "重建索引": "Rebuild index",
-  "🔎 文件搜索": "🔎 File search"};
+  "🔎 文件搜索": "🔎 File search",
+  "在这台电脑上按名字找文件：索引建在本机，不依赖 Everything": "Find files on this machine by name: the index is built locally, no Everything needed",
+  "在这台电脑的文件管理器里显示 {p1}": "Show {p1} in this machine's file manager"};

@@ -4441,6 +4441,7 @@ export class App {
       ["scratch", tr("💭 随手问")],
       ["jira", tr("🔷 Jira")],
       ["mail", tr("📮 邮箱")],
+      ["filesearch", tr("🔎 文件搜索")],
     ];
     for (const [id, label] of topItems) {
       const [ic, name] = splitWideLabel(label);
@@ -4745,8 +4746,12 @@ export class App {
       mail.setAttribute("aria-label", tr("邮箱"));
       show("mail", mail, tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管"));
     }
-    // 文件搜索常显（不进 chrome 表）：切语言只重设文字，不碰 hidden。
-    if (fsearch) this.setWideLabel(fsearch, tr("🔎 文件搜索"));
+    // 文件搜索也进 chrome 表（D316）：这颗是机器级的，没开会话也照样能用，
+    // 所以不进 `SESSION_ONLY` —— 设置里关掉就是真关掉，不是「有会话才画」。
+    if (fsearch) {
+      this.setWideLabel(fsearch, tr("🔎 文件搜索"));
+      show("filesearch", fsearch, tr("在这台电脑上按名字找文件：索引建在本机，不依赖 Everything"));
+    }
     // #290：下沿四颗是在拼 composer 时一次建好的，重画 composer 时不经过这里 —— 它自己也会调
     // `paintComposerChrome()`，两处共用同一份判断。
     this.paintComposerChrome();
@@ -15714,6 +15719,8 @@ export class App {
       send: (msg) => this.socket.send(msg),
       onQuote: (abs) => this.insertPaths([abs]),
       onOpen: (abs) => void this.openPreview(abs),
+      // 「位置」直接走「📂 在文件夹中显示」那条路（桥端 explorer /select），面板不关。
+      onReveal: (abs) => void this.reveal(abs),
       onClose: () => this.closeSheet(),
     });
     this.fileSearch = handle;
