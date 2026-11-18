@@ -333,6 +333,9 @@ export function entriesToItems(entries: SessionEntry[], todoSnapshots?: Map<stri
         if (target.name === "todo" && todoSnapshots?.has(target.toolCallId)) target.plan = todoSnapshots.get(target.toolCallId) ?? null;
         target.isError = Boolean(msg.isError);
         target.status = msg.isError ? "error" : "ok";
+        // 耗时写在 toolResult 上。历史回放时曾经漏掉它，结果整栏耗时（以及浏览器面板的
+        // 「执行了多长时间」）全是 0.0 秒 —— 只有实时事件带着 durationMs。
+        if (typeof (msg as any).durationMs === "number") target.durationMs = (msg as any).durationMs;
       }
     }
   }

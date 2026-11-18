@@ -6079,7 +6079,29 @@ Esc 之后 dialog: 0
 
 **验证：** `node --experimental-strip-types bridge/tests/message-time-unit.mjs`（7：草稿卡有 ts、`model` 保留、`message_end` 沿用同一个 ts、`s.items` 里那条同 ts、`draft:N` → `live:N`、下一条重新打点、孤立 `message_end` 也补 ts）；`node --experimental-strip-types web/tests/chat-head-unit.mjs`（5：无 ts 只留名字、坏 ts 当没有、今天只时分、非今天带年份、后缀接在时间后）。
 
-## D310 目录入口一场雨改齐：桥端分页 + 递归检索 + 按大小·时间排序，五个入口共用同一份排序（用户要求 2026-11-18）
+## D310 浏览器面板第一步：从工具日志派生一条可折叠的时间线，不新增桥事件（用户要求 2026-11-18）
+
+**问题：** 浏览器 MCP（browser-use / Playwright / Puppeteer …）在会话里只有一个工具项：名字加一整段代码，右栏「执行」也只给一行 `mcp__browser_use 48.0 秒`。用户看不到它点了哪个按钮、跑到哪一步、是慢还是卡死 —— 真实的会话里 14393 秒、506 次工具调用，其中 41 次是 `browser_exec`，只能人肉读代码。
+
+**决定：**
+
+- **数据只从会话已有的 items 派生**（`web/src/browser-ops.ts` 的纯函数 `browserOpsView()`），不新增桥事件、不落盘截图。刷新、重开、换设备都自动回放，也不需要额外的存储。
+- **子步骤是从参数代码里解析出来的，不是浏览器回传的轨迹**：按已知的 helper 名字（`goto_url` / `wait_for_load` / `click_at_xy` / `js` / `print(page_info())` …）切成一步一行，拆不出的整段原样一行。所以**不给每步编耗时**（工具事件只有整次的 `durationMs`）—— 那要等第二步的 CDP 通道。展开态显示函数名与坐标，折叠态一律不显示（坐标、JS 片段、函数名都只在展开态）。
+- **两层「卡住」的措辞必须分开**：面板里只有「疑似卡住 / 无声 / 打转」（60s 黄、120s 红、20s 无新输出、同动作连续 3 次），**卡死** 是 watchdog 那条整轮 30 分钟无事件，两者不是一回事（GLOSSARY 各一条）。
+- **无声只在这次调用确实上报过 partial 输出时才算** —— 否则所有不流式的 MCP 调用一开始就会被标成静默。
+- **唯一动作是「中断本轮」**，且点击前 `window.confirm` 说明「会停掉整轮、不能只杀这一步」：pi 的 RPC 没有单工具中止。按钮只在会话 running 时出现（`bridge/src/sessions.ts` 只在 `agent_start` 上把 `running` 置真）。
+- **第三颗 tab 不抢焦点**：有调用在跑且当前不在该 tab 时只亮一颗小圆点，不自动切过去。默认只展开「正在跑」与「卡住」的卡，其余折叠成一行中文。
+- **阈值与工具名单可改**：面板汇总行的齿轮里四个阈值加一行逗号分隔的名单，存 `pi.browserOps.thresholds` / `pi.browserOps.tools`；读不出来就回 `BROWSER_OPS_DEFAULTS`。
+- **子代理不新增订阅**：只读执行面板已经订阅到的子代理 items，拿不到就只画主会话；「只看主会话」开关过滤掉子代理的卡。
+
+**取舍：** 卡片顺序按「发现顺序」的倒序（新的在上），不再按 `startedAt` 排 —— 工具项没有 `ts` 时 `startedAt` 会退化成「现在」，混进两分钟前的调用会把顺序排反。副作用是子代理的卡（先收集）排在自己会话的卡后面。
+
+**验证：** `npm run test:browser-ops`（20 条纯函数用例：白名单 / 步骤序列 / 拆不出 / 打转 / 无声 / 阈值 / partial 输出 / 空视图）；`npm run test:browser-ops:ui`（Playwright + 假 pi：第三颗 tab 与 pip、折叠与全折叠、输出折三行、快进 70s/130s 变黄变红、中断前的确认框、齿轮里的阈值与名单）。
+
+**补记（同日，真实使用反馈后）：** 第一版只认 MCP 工具名，用户真跑「用 playwright 打开百度、输入、点检索」那一轮，面板是空的 —— 那轮 agent 先 `write` 了 `baidu-weather.mjs`、再用 `bash` 跑，一个 MCP 浏览器工具都没调。于是「浏览器类调用」改成**看行为**而不是看工具名：脚本源码里出现驱动调用（`page.goto` / `locator` / `launch` / `waitForSelector` …）才算，脚本可以是之前写好的文件、也可以是同一条命令里的 heredoc；`npx playwright test` / `cypress run` 这类命令式跑测试算一步 `run`；直接起 `chrome --headless` / `--remote-debugging-port` 算一步 `launch`；`curl 127.0.0.1:9222/json` 算一步 `cdp`。**不认**屏幕驱动（pyautogui / computer-use）和 `selenium-side-runner`（要跨机连浏览器），也不认「命令里出现 playwright」——试过那个宽松版本，真实会话一次多出 12 张噪音卡（`npx playwright --version`、`npm i playwright`、`grep -i playwright`）。
+
+**顺带修的桥问题：** `bridge/src/items.ts` 的 `toolResult` 分支没抄 `durationMs`（pi 把它写在 toolResult 消息顶层），所以**刷新页面后**所有工具耗时都是 0 —— 执行栏和浏览器面板一起瞎。补上之后同一条会话从「共 13 次 · 0.0 秒」变成「共 13 次 · 151 秒 · 最慢 84 秒」（`bridge/tests/items-duration-unit.mjs` 两例）。
+## D311 目录入口一场雨改齐：桥端分页 + 递归检索 + 按大小·时间排序，五个入口共用同一份排序（用户要求 2026-11-18）
 
 **问题：** 大目录（几千个文件、`node_modules` 在列表里）面前，五个「挑目录 / 挑文件」的入口一起失灵：新会话弹层的目录树、文件管理器的浏览页、附件弹层（`文件` 按钮）、内网通的选文件对话框、新建工作区的目录框。桥端 `listDirs()` 只回一页死数据 —— `dirs.slice(0, 1000)` / `files.slice(0, 2000)` —— 于是「筛选」框只在**已经拿到的这一千个名字**里找，用户看到一个空列表、一句「列表里没有 xxx（目录过大时只列出一部分）」，却没有任何办法把它找出来；排序只能按名字；新会话弹层的目录选择也还是老样子（输入框 + datalist），跟已经重做过的「新建工作区」不是一套东西。
 
