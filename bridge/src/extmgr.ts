@@ -261,7 +261,7 @@ export function bumpMcp(file: string, name: string, version: string): void {
 // ------------------------------------------------------------------ web UI preferences
 
 /**
- * 顶栏 9 颗、输入框下沿 5 颗（#281 / #288 / D316 加了文件搜索）。写进 `ui.json` 的是这些稳定 id，不是文案。
+ * 顶栏 9 颗、输入框下沿 5 颗（#281 / #288 / D321 加了文件搜索）。写进 `ui.json` 的是这些稳定 id，不是文案。
  * 页面那份「哪颗该画」的纯函数在 `web/src/chrome.ts`，两边白名单要一致。
  */
 export const CHROME_IDS = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "mail", "filesearch", "skills", "context", "ext", "attach", "model"] as const;

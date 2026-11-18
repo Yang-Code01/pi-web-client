@@ -1,5 +1,5 @@
 /**
- * D316 文件搜索索引：纯函数先行，再用临时目录跑一遍真扫描 + 真查询（node:sqlite）。
+ * D321 文件搜索索引：纯函数先行，再用临时目录跑一遍真扫描 + 真查询（node:sqlite）。
  *
  *   node bridge/tests/fileindex.mjs
  */

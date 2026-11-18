@@ -1,5 +1,5 @@
 /**
- * Probe: 文件搜索面板（D316）在真浏览器里走一遍 —— 顶栏入口 → 建索引 → 输入 → 出结果 →
+ * Probe: 文件搜索面板（D321）在真浏览器里走一遍 —— 顶栏入口 → 建索引 → 输入 → 出结果 →
  * 点一行引用到输入框 → Ctrl+Enter 在预览里打开。
  *
  * 起一份隔离 bridge，索引范围只指到这个探针自己的临时目录（`PI_WEB_FILEINDEX_ROOTS`），
@@ -134,7 +134,7 @@ try {
   await until(async () => (await page.locator(".session-card").count()) >= 1, 15000, "one card");
   await page.locator(".session-card").first().click();
 
-  // ---- 0. Everything 默认隐藏（D316）：顶栏先看不到，去设置里点亮才出来
+  // ---- 0. Everything 默认隐藏（D321）：顶栏先看不到，去设置里点亮才出来
   const fsearchBtn = page.locator('.topbar .icon-btn[data-act="filesearch"]');
   assert((await fsearchBtn.isVisible()) === false, "Everything 应默认不画在顶栏");
   await page.locator('.icon-btn[data-act="look"]').click();
@@ -172,7 +172,7 @@ try {
   log("2 结果：", names.join(", "), "|", foot.trim());
   await page.screenshot({ path: path.join(OUT, "2-results.png"), animations: "disabled" });
 
-  // ---- 2b. 行尾三颗动作（D316）：引用 / 打开 / 位置 —— 与文件弹层的 `.fc-acts` 同一套
+  // ---- 2b. 行尾三颗动作（D321）：引用 / 打开 / 位置 —— 与文件弹层的 `.fc-acts` 同一套
   const actLabels = await page.$$eval(".fse-row .fse-acts .fse-act", (els) => els.map((e) => e.textContent.trim()));
   assert(actLabels.length === 2 * 3, `两行应有 6 颗按钮（实际 ${actLabels.length}）`);
   for (const want of ["引用", "打开", "位置"]) {

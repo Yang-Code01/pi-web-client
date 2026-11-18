@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 /** 协议版本：announce / inbox 都带着它，将来换协议靠它挡掉旧对端。 */
 export const PROTO = 1;
 

@@ -50,7 +50,7 @@ interface Entry {
   at: number;
   from: { nodeId: string; nickname?: string; hostname?: string; port?: number };
   to: { kind: "node" | "group"; id: string };
-  kind: "text" | "receipt" | "file" | "recall";
+  kind: "text" | "receipt" | "file" | "recall" | "note";
   text?: string;
   ack?: { id: string; status: "delivered" | "failed"; error?: string };
   file?: { name: string; size: number; mime: string; sha256?: string; w?: number; h?: number };
@@ -61,10 +61,32 @@ interface Entry {
   replyTo?: { id: string; from: string; excerpt: string };
   /** `kind:"recall"` 指向被撤回的那条（页面不单独画它，只把原气泡换成灰条）。 */
   ref?: string;
+  /** `kind:"note"` 的记录包（#507）。 */
+  note?: NoteInfo;
   /** 视图字段（peer 折叠出来，不落盘）：这条已经被撤回。 */
   recalled?: boolean;
   /** 视图字段：我自己发的这条现在在哪个态。 */
   state?: "sending" | "delivered" | "failed";
+}
+
+interface NoteShotInfo {
+  name: string;
+  size: number;
+  sha256: string;
+  /** 由桥对齐出来的文件条目 id；null = 还没到。 */
+  entryId?: string | null;
+}
+
+interface NoteInfo {
+  title: string;
+  body: string;
+  kind: "bug" | "change" | "idea" | "chore";
+  status: "pending" | "done" | "dropped";
+  shots?: NoteShotInfo[];
+  noteCreatedAt?: number;
+  noteUpdatedAt?: number;
+  /** 本地接受状态（sidecar，不从对端回传）。 */
+  accepted?: { noteId: string; at: number } | null;
 }
 
 interface Thread {
@@ -791,7 +813,17 @@ function preview(t: Thread): string {
   if (!e) return tr("还没有消息");
   if (e.recalled) return tr("撤回了一条消息");
   const body =
-    e.kind === "file" ? (picKind(e) === "gif" ? tr("[动图]") : picKind(e) ? tr("[图片]") : tr("[文件] {p1}", { p1: e.file?.name ?? "" })) : hasRichMarkup(e.text ?? "") ? plainText(e.text ?? "") : (e.text ?? "");
+    e.kind === "note"
+      ? tr("[记录] {p1}", { p1: e.note?.title ?? "" })
+      : e.kind === "file"
+        ? picKind(e) === "gif"
+          ? tr("[动图]")
+          : picKind(e)
+            ? tr("[图片]")
+            : tr("[文件] {p1}", { p1: e.file?.name ?? "" })
+        : hasRichMarkup(e.text ?? "")
+          ? plainText(e.text ?? "")
+          : (e.text ?? "");
   // 最后一条是我发的就加「你:」前缀（QQ 的会话行也这样，不然自己的话看着像对方说的）。
   return t.lastMine ? tr("你: {p1}", { p1: body }) : body;
 }
@@ -1149,6 +1181,143 @@ function renderChat(): void {
   }
 }
 
+const NOTE_KIND_TEXT: Record<string, string> = { bug: "bug", change: tr("变更"), idea: tr("想法"), chore: tr("杂事") };
+const NOTE_STATUS_TEXT: Record<string, string> = { pending: tr("待处理"), done: tr("已处理"), dropped: tr("已忽略") };
+
+/** 记录卡片（#508）：标题 / 两行摘要 / 分类状态 / 最多 4 张图 / 来源 / 预览与接受。 */
+function noteCard(e: Entry, t: Thread, mine: boolean): HTMLElement {
+  const note = e.note as NoteInfo;
+  const shots = note.shots ?? [];
+  const missing = shots.filter((shot) => !shot.entryId).length;
+  const card = h("div", `ncard${e.state === "failed" ? " failed" : ""}${note.accepted ? " accepted" : ""}`);
+  const top = h("div", "ntop");
+  const chips = h("div", "nchips");
+  chips.append(h("span", "nchip", NOTE_KIND_TEXT[note.kind] ?? note.kind), h("span", "nchip st", NOTE_STATUS_TEXT[note.status] ?? note.status));
+  top.append(h("div", "ntitle", note.title || tr("未命名")), chips);
+  card.append(top);
+  const brief = plainText(note.body).trim();
+  if (brief) card.append(h("div", "nbrief", brief.slice(0, 140)));
+  if (shots.length) {
+    const grid = h("div", "nthumbs");
+    for (const shot of shots.slice(0, 4)) grid.append(shotThumb(shot));
+    if (shots.length > 4) grid.append(h("div", "nthumb more", `+${shots.length - 4}`));
+    card.append(grid);
+  }
+  if (missing) card.append(h("div", "nmiss", tr("还差 {p1} 张图", { p1: String(missing) })));
+  const foot = h("div", "nfoot");
+  const who = mine ? (S.view?.status?.nickname ?? tr("我")) : t.nickname;
+  foot.append(h("span", "nfrom", [who, e.from.hostname || t.hostname, clock(e.at)].join(" · ")));
+  const acts = h("div", "nacts");
+  const preview = h("button", "link", tr("预览")) as HTMLButtonElement;
+  preview.addEventListener("click", () => showNotePeek(e, t));
+  acts.append(preview);
+  if (!mine) {
+    if (note.accepted) {
+      const open = h("button", "link", tr("打开记录")) as HTMLButtonElement;
+      open.addEventListener("click", () => {
+        window.parent?.postMessage({ t: "pi-note-open", id: note.accepted?.noteId }, window.location.origin);
+      });
+      acts.append(h("span", "nok", tr("已接受")), open);
+    } else {
+      const take = h("button", "btn pri", tr("接受")) as HTMLButtonElement;
+      take.disabled = missing > 0 || e.state === "sending" || e.state === "failed";
+      if (missing) take.title = tr("还差 {p1} 张图", { p1: String(missing) });
+      take.addEventListener("click", () => void acceptNote(e, t, take));
+      acts.append(take);
+    }
+  }
+  foot.append(acts);
+  card.append(foot);
+  return card;
+}
+
+/** 截图缩略图：点开大图（与文件预览共用一层）。 */
+function shotThumb(shot: NoteShotInfo): HTMLElement {
+  if (!shot.entryId) return h("div", "nthumb missing", tr("还差图"));
+  const url = `/api/peer/file?id=${encodeURIComponent(shot.entryId)}`;
+  const img = h("img", "nthumb") as HTMLImageElement;
+  img.src = url;
+  img.alt = shot.name;
+  img.loading = "lazy";
+  img.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    showPreview({ name: shot.name, mime: "image/*", size: shot.size, url });
+  });
+  return img;
+}
+
+/** 接受：桥端原子导入，成功后本地卡片变「已接受」，面板由 broadcast 刷新。 */
+async function acceptNote(e: Entry, t: Thread, btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = tr("接受中…");
+  try {
+    const res = await postJson<{ ok: boolean; noteId: string; warning?: string }>("/api/peer/note/accept", { peer: t.nodeId, id: e.id });
+    if (e.note) e.note.accepted = { noteId: res.noteId, at: Date.now() };
+    toast(res.warning || tr("记录已导入"));
+    renderMain();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = label;
+    toast((err as Error).message);
+  }
+}
+
+/** 预览正文：净化过的 HTML 直接挂节点（选择复制照常用，编辑不了）。 */
+function noteBody(html: string): HTMLElement {
+  const doc = new DOMParser().parseFromString(`<body>${sanitizeRich(html)}</body>`, "text/html");
+  const box = h("div", "note-rich");
+  box.append(...[...doc.body.childNodes].map((node) => document.importNode(node, true)));
+  for (const a of box.querySelectorAll("a")) {
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+  }
+  return box;
+}
+
+/** 只读预览（#508）：标题、分类、发送时状态、正文、全部截图、来源；没有转发 / agent。 */
+function showNotePeek(e: Entry, t: Thread): void {
+  const note = e.note;
+  if (!note) return;
+  closeLayer();
+  const scrim = h("div", "scrim");
+  const modal = h("div", "modal notepeek");
+  const head = h("header");
+  const close = (): void => {
+    document.removeEventListener("keydown", onKey, true);
+    closeLayer();
+  };
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key !== "Escape") return;
+    ev.stopPropagation();
+    close();
+  };
+  head.append(h("strong", "nm", note.title || tr("未命名")), iconBtn("close", tr("关闭"), close));
+  const meta = h("div", "meta");
+  meta.append(
+    h("span", "nchip", NOTE_KIND_TEXT[note.kind] ?? note.kind),
+    h("span", "nchip st", tr("发送时") + " · " + (NOTE_STATUS_TEXT[note.status] ?? note.status)),
+  );
+  const body = h("div", "body note-body");
+  body.append(noteBody(note.body));
+  modal.append(head, meta, body);
+  const shots = (note.shots ?? []).filter((shot) => shot.entryId);
+  if (shots.length) {
+    const gallery = h("div", "note-gallery");
+    for (const shot of shots) gallery.append(shotThumb(shot));
+    modal.append(gallery);
+  }
+  const from = h("div", "note-from", tr("来自 {p1} · {p2} · {p3}", {
+    p1: e.from.nickname || t.nickname,
+    p2: e.from.hostname || t.hostname,
+    p3: `${fmtDate(e.at)} ${clock(e.at)}`,
+  }));
+  modal.append(from);
+  layerEl.append(scrim, modal);
+  scrim.addEventListener("click", close);
+  document.addEventListener("keydown", onKey, true);
+}
+
 function entryNode(e: Entry, t: Thread): HTMLElement {
   const mine = e.from.nodeId === S.view?.status?.nodeId;
   // 撤回（P3）：原气泡换成一整行灰条，原文不再显示（文件里还在，见 D299）。
@@ -1160,7 +1329,9 @@ function entryNode(e: Entry, t: Thread): HTMLElement {
   msg.append(avatar(mine ? (S.view?.status?.nickname ?? tr("我")) : t.nickname, e.from.nodeId));
   const box = h("div", "b");
   if (e.replyTo) box.append(quoteBlock(e.replyTo));
-  if (e.kind === "file" && e.file && picKind(e)) {
+  if (e.kind === "note" && e.note) {
+    box.append(noteCard(e, t, mine));
+  } else if (e.kind === "file" && e.file && picKind(e)) {
     box.append(picBubble(e, mine));
   } else if (e.kind === "file" && e.file) {
     box.append(fileCard(e, mine));
@@ -1254,7 +1425,7 @@ function addFold(bub: HTMLElement, body: HTMLElement, text: string): void {
 
 /** 引用条摘要：富文本要先转纯文本，不能把标签写进引用里。 */
 function excerptOf(e: Entry): string {
-  const raw = e.text ?? e.file?.name ?? "";
+  const raw = e.kind === "note" ? (e.note?.title ?? "") : (e.text ?? e.file?.name ?? "");
   return (hasRichMarkup(raw) ? plainText(raw) : raw).slice(0, 120);
 }
 function quoteBlock(ref: { id: string; from: string; excerpt: string }): HTMLElement {
@@ -1274,6 +1445,13 @@ function quoteBlock(ref: { id: string; from: string; excerpt: string }): HTMLEle
 
 function messageMenu(x: number, y: number, e: Entry, t: Thread, mine: boolean): void {
   const items: { label: string; icon?: string; danger?: boolean; run: () => void }[] = [];
+  if (e.kind === "note" && e.note) {
+    // 记录包不支持撤回 / 引用；只给预览与失败重发。
+    items.push({ label: tr("预览"), run: () => showNotePeek(e, t) });
+    if (mine && e.state === "failed") items.push({ label: tr("重发"), icon: "retry", run: () => void resend(e) });
+    openMenu(x, y, items);
+    return;
+  }
   if (e.text) items.push({ label: tr("复制文字"), icon: "copy", run: () => void copyText(e.text ?? "") });
   items.push({ label: tr("引用"), icon: "msg", run: () => startReply(e) });
   if (mine && e.state === "failed") items.push({ label: tr("重发"), icon: "retry", run: () => void resend(e) });

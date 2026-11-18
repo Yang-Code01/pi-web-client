@@ -21,7 +21,7 @@ import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
-import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpStepKind, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
+import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -407,7 +407,7 @@ export class App {
    *  否则下一次打开的任何会话都会莫名其妙带上上一个会话的笔记。 */
   private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
-  /** D316：文件搜索面板（打开时才有，关掉就置 null；`filesearch.*` 帧路由到它）。 */
+  /** D321：文件搜索面板（打开时才有，关掉就置 null；`filesearch.*` 帧路由到它）。 */
   private fileSearch: FileSearchHandle | null = null;
   private modelChip: HTMLButtonElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
@@ -951,7 +951,7 @@ export class App {
     mail.dataset.act = "mail";
     mail.onclick = () => this.openMail();
     this.els.mail = mail;
-    // D316：整机文件搜索（名字就叫 Everything）。跟终端 / 记录一样常驻（不绑会话）；
+    // D321：整机文件搜索（名字就叫 Everything）。跟终端 / 记录一样常驻（不绑会话）；
     // 默认不画（`chrome.ts` 的 DEFAULT_HIDDEN），要去「设置 → 外观」里点亮才出现在顶栏。
     const fsearch = this.wideBtn(tr("🔎 Everything|顶栏按钮"));
     fsearch.title = tr("在这台电脑上按名字 / 路径找文件（本机索引，毫秒级）");
@@ -1571,6 +1571,15 @@ export class App {
       },
       true,
     );
+    // 内网通记录卡片「打开记录」(#508)：同源 + 确实有这条，才开面板并选中。
+    window.addEventListener("message", (ev) => {
+      if (ev.origin !== window.location.origin) return;
+      const d = ev.data as { t?: string; id?: string } | null;
+      if (d?.t !== "pi-note-open" || typeof d.id !== "string") return;
+      if (!this.notes.some((n) => n.id === d.id)) return;
+      this.openNotes();
+      this.notesSheet?.openNote(d.id);
+    });
     // 预览页里的链接点击（D63）：用 token 认人，不靠 ev.source（跨文档导航后指针不相等）。
     window.addEventListener("message", (ev) => {
       const d = ev.data as { t?: string; rel?: string; href?: string; y?: number; tk?: string } | null;
@@ -4746,7 +4755,7 @@ export class App {
       mail.setAttribute("aria-label", tr("邮箱"));
       show("mail", mail, tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管"));
     }
-    // 文件搜索也进 chrome 表（D316）：这颗是机器级的，没开会话也照样能用，
+    // 文件搜索也进 chrome 表（D321）：这颗是机器级的，没开会话也照样能用，
     // 所以不进 `SESSION_ONLY`；但它是 DEFAULT_HIDDEN 里的 —— 默认不占顶栏，用户在设置里点亮才画。
     if (fsearch) {
       this.setWideLabel(fsearch, tr("🔎 Everything|顶栏按钮"));
@@ -9813,7 +9822,7 @@ export class App {
       });
       return;
     }
-    // D316：带 `start` 时从那个目录开始浏览（文件搜索的「打开目录」直接落到这一层）。
+    // D321：带 `start` 时从那个目录开始浏览（文件搜索的「打开目录」直接落到这一层）。
     if (start) v.lastDir = start;
     else if (!v.lastDir) v.lastDir = localStorage.getItem("pi.fsDir") ?? this.session?.cwd ?? "";
     v.pane = "browse";
@@ -10096,21 +10105,21 @@ export class App {
     body.append(host);
     const home = this.dirHome(() => this.session?.cwd ?? "");
     // D71: the copy button reads the picker live, so it always copies the directory actually listed.
-    let pickerPath = (): string => "";
-    const copy = this.dirCopy(() => pickerPath());
+    let handle: FileConsoleHandle | null = null;
+    const copy = this.dirCopy(() => handle?.picker.path() ?? "");
     // D167: 建完停在原地 —— 重新列一遍当前目录，再把新行标出来。
     const mk = this.mkControls({
-      parent: () => pickerPath(),
-      made: (abs) => this.revealMade(picker, abs),
+      parent: () => handle?.picker.path() ?? "",
+      made: (abs) => {
+        if (handle) this.revealMade(handle.picker, abs);
+      },
     });
-    const picker = mountDirPicker(host, {
+    // D320：浏览页和下沿「文件」是同一份控制台（左栏 + 四列表格 + 状态栏），只差一层壳与行语义。
+    handle = openFileConsole({
+      chrome: "pane",
       start: v.lastDir || this.session?.cwd || "",
-      files: true,
-      fallback: true,
-      pathBox: true,
-      // #499：文件管理器是文件入口 —— 表头上能按名称 / 大小 / 修改时间排，默认时间降序。
-      sortable: true,
-      defaultSort: { key: "mtime", dir: "desc" },
+      cwd: this.session?.cwd ?? "",
+      sessionId: v.sessionId,
       head: [home.node, copy.node, mk.dirBtn, mk.fileBtn],
       beforeList: [mk.row],
       onState: (s) => {
@@ -10125,8 +10134,8 @@ export class App {
       onPick: (abs) => void this.pickFromBrowser(v, abs),
       onContext: (abs, name, ev) => this.fileMenu(v, abs, name, ev),
     });
-    pickerPath = () => picker.path();
-    home.bind(picker);
+    host.append(handle.root);
+    home.bind(handle.picker);
     copy.bind();
   }
 
@@ -15711,7 +15720,7 @@ export class App {
   }
 
   /**
-   * D316：整机文件搜索面板。索引在 bridge 侧（node:sqlite），这里只发查询；还没有索引时
+   * D321：整机文件搜索面板。索引在 bridge 侧（node:sqlite），这里只发查询；还没有索引时
    * bridge 已经在后台扫，面板显示进度条与暂停键。
    */
   private openFileSearch(): void {
@@ -17323,15 +17332,12 @@ export class App {
 
   /** 折叠后只留人话：坐标、JS 代码、函数名一律不进来（那些只在展开态）。 */
   private browserFoldedText(card: BrowserOpCard): string {
+    // 一串「对页面做了什么」（打开哪页 → 点了什么 → 输入了什么），不是「最后干完那一下」：
+    // 脚本几乎都是读页面收尾，只报最后一步会让几张卡挤成同一行。模型层负责挑与合并。
+    const steps = foldedSteps(card.steps);
     // 脚本卡把文件名带上：一栏十个 `bash` 分不清谁是谁。
-    // 末尾的「等待 x 秒」/「输出 …」不是干的事，往后找最后一个真正的动作。
-    const ACTIONS: BrowserOpStepKind[] = ["nav", "input", "click", "read", "js", "cdp", "tab", "shot", "launch"];
-    const last =
-      card.steps.filter((step) => ACTIONS.includes(step.kind)).at(-1) ??
-      card.steps.filter((step) => step.kind !== "print").at(-1) ??
-      card.steps.at(-1);
     const who = card.script ? `${card.script} · ` : "";
-    if (last) return who + this.browserStepText(last, true);
+    if (steps.length) return who + steps.map((step) => this.browserStepText(step, true)).join(" → ");
     const first = card.intent.split("\n").map((line) => line.trim()).find(Boolean);
     return first ? first.slice(0, 80) : tr("浏览器调用");
   }
@@ -17355,7 +17361,10 @@ export class App {
       this.browserFold.set(card.toolCallId, !expanded);
       this.renderQueue();
     };
-    const title = el("div", "browser-title", this.browserFoldedText(card));
+    const titleText = this.browserFoldedText(card);
+    const title = el("div", "browser-title", titleText);
+    // 折叠行只有一行的宽度，长链被省略号截掉；悬停看全链。
+    if (titleText) title.title = titleText;
     const duration = el("span", "browser-dur", this.execDuration(card.durationMs ?? 0) || "–");
     duration.dataset.bdur = "";
     head.append(chev, title, duration);
@@ -17430,7 +17439,7 @@ export class App {
     let text: string;
     switch (step.kind) {
       case "nav":
-        text = target ? tr("打开 {p1}", { p1: target }) : tr("打开页面");
+        text = target ? tr("打开 {p1}", { p1: shortUrl(target) }) : tr("打开页面");
         break;
       case "wait": {
         const ms = /^(\d+)ms$/.exec(target);
@@ -17459,7 +17468,11 @@ export class App {
         break;
       case "input":
         // 脚本里的输入能带上选择器（`输入 · 今天的天气 · #kw`），但折叠行只留值。
-        text = target ? tr("输入 · {p1}", { p1: target }) : tr("输入");
+        if (!target) {
+          text = tr("输入");
+          break;
+        }
+        text = coarse ? tr("输入 {p1}", { p1: target }) : tr("输入 · {p1}", { p1: target });
         if (step.name && !coarse) text += ` · ${step.name}`;
         break;
       case "launch":
@@ -19269,6 +19282,11 @@ function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
   btn.setAttribute("aria-pressed", String(collapsed));
 }
 
+/** 折叠行里的网址省掉协议名：一串「打开 …」本来就挤，`https://` 每段占 8 个字什么也没说。 */
+function shortUrl(target: string): string {
+  return target.replace(/^https?:\/\//i, "");
+}
+
 /** 浏览器面板的阈值与工具名单：面板齿轮里改，存 localStorage（`pi.browserOps.*`）。 */
 interface BrowserCfg {
   thresholds: Partial<BrowserOpsThresholds>;
@@ -19733,6 +19751,15 @@ function settingFields(): SettingField[] {
     globalOnly: true,
     defaultText: tr("关"),
     hint: tr("agent 停下前，计划还有没关的项、且上次更新后又调用了 5 次以上工具，就让它多跑一小步只用 todo 对齐计划（用户看不到这句提醒，会多花一次请求）。改了立即生效"),
+  },
+  // D320: 提问兜底。默认开，只有显式 false 才关；扩展在 pi 子进程里每次停下现读。
+  {
+    key: "web.askNudge",
+    label: tr("停下前核对提问"),
+    kind: "bool",
+    globalOnly: true,
+    defaultText: tr("开"),
+    hint: tr("agent 停下前，如果它是在正文里向你提问、却没调用 ask_user_question，就让它改走表单再停一次（同一段问句只提醒一次，整会话最多两次，会多花一次请求）。改了立即生效"),
   },
   { key: "defaultTools", label: tr("默认工具"), kind: "list", group: tr("工具与脚本"), hint: tr("逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减"), placeholder: tr("例如 read, bash, +codemode") },
   { key: "codemode.mode", label: tr("codemode 工具模式"), kind: "select", options: ["on", "only"], hint: tr("on = 已声明的工具照常直接调；only = 只留 codemode，所有工具都从脚本里调") },

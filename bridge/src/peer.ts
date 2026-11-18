@@ -239,6 +239,11 @@ export class PeerHost {
     return this.request("GET", `/messages?peer=${encodeURIComponent(peer)}&limit=${limit}`);
   }
 
+  /** 记录包（#507）：正文 + 截图清单一帧；截图本体随后逐张 sendFile。 */
+  sendNote(peer: string, note: unknown): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
+    return this.request("POST", "/note", { peer, note });
+  }
+
   sendText(peer: string, text: string, via?: "pi", replyTo?: { id: string; from: string; excerpt: string }): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
     const body: Record<string, unknown> = { peer, text };
     if (via) body.via = via;

@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 /**
- * 全盘文件索引（#未编号 · D316）。
+ * 全盘文件索引（#未编号 · D321）。
  *
  * 为什么是这儿的一套而不是抄 Everything：Everything 快是因为拿管理员权限 `FSCTL_ENUM_USN_DATA`
  * 直读 NTFS 的 MFT。那套在非 Windows、没有管理员权限的机器上直接不存在，所以这里退一步 ——

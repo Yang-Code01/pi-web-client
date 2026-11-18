@@ -138,6 +138,7 @@ let friendCalls = [];
 let clearedIgnored = 0;
 
 let sent = null;
+let acceptedNote = null;
 const browser = await chromium.launch();
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -188,11 +189,44 @@ try {
               ME,
             ),
             msg("bbbbbbbb-0000-4000-8000-000000000004", "长".repeat(1700), { ...me, nodeId: LI, nickname: "小李" }, ME),
+            {
+              id: "bbbbbbbb-0000-4000-8000-000000000005",
+              at,
+              from: { ...me, nodeId: LI, nickname: "小李" },
+              to: { kind: "node", id: ME },
+              kind: "note",
+              note: {
+                title: "复现步骤",
+                body: "<p>点一下 <strong>提交</strong> 按钮</p>",
+                kind: "bug",
+                status: "pending",
+                shots: [{ name: "a.png", size: 68, sha256: "a".repeat(64), entryId: "file-a" }],
+                accepted: null,
+              },
+            },
+            {
+              id: "bbbbbbbb-0000-4000-8000-000000000006",
+              at,
+              from: { ...me, nodeId: LI, nickname: "小李" },
+              to: { kind: "node", id: ME },
+              kind: "note",
+              note: {
+                title: "缺图的记录",
+                body: "<p>图还没到</p>",
+                kind: "change",
+                status: "done",
+                shots: [{ name: "b.png", size: 1, sha256: "b".repeat(64), entryId: null }],
+                accepted: null,
+              },
+            },
           ],
         };
       } else {
         body = { entries: [] }; // 小王：没有历史
       }
+    } else if (p === "/api/peer/note/accept") {
+      acceptedNote = JSON.parse(req.postData() ?? "{}");
+      body = { ok: true, noteId: "n_imported" };
     } else if (p === "/api/peer/send") {
       sent = JSON.parse(req.postData() ?? "{}");
       body = { ok: true, id: "sent-by-ui" };
@@ -265,6 +299,26 @@ try {
   const clipAfter = await page.locator(".bub-body.clip").count();
   const moreAfter = await more.innerText();
   check("长消息折叠、点开不重渲染", clipBefore === 1 && clipAfter === 0 && moreText === "显示全文" && moreAfter === "收起", `clip=${clipBefore}→${clipAfter}，按钮=${moreText}→${moreAfter}`);
+  // #508：记录卡片、缺图禁用、只读预览、接受一次。
+  const cards = page.locator(".ncard");
+  const cardCount = await cards.count();
+  const cardTitle = (await page.locator(".ncard .ntitle").first().innerText()).trim();
+  const chips = await page.locator(".ncard").first().locator(".nchip").allInnerTexts();
+  check("记录卡片带标题与分类状态", cardCount === 2 && cardTitle === "复现步骤" && chips.join(",") === "bug,待处理", `cards=${cardCount}，title=${cardTitle}，chips=${chips.join(",")}`);
+  const missText = await page.locator(".ncard").nth(1).locator(".nmiss").innerText();
+  const missDisabled = await page.locator(".ncard").nth(1).locator("button", { hasText: "接受" }).isDisabled();
+  check("缺图的卡片禁用接受", missText.includes("还差 1 张图") && missDisabled, `${missText} disabled=${missDisabled}`);
+  await page.locator(".ncard").first().locator("button", { hasText: "预览" }).click();
+  await page.waitForSelector(".modal.notepeek");
+  const peekStrong = (await page.locator(".notepeek .note-rich strong").innerText()).trim();
+  const peekEditable = await page.locator(".notepeek [contenteditable]").count();
+  check("预览是只读正文", peekStrong === "提交" && peekEditable === 0, `strong=${peekStrong} editable=${peekEditable}`);
+  await page.keyboard.press("Escape");
+  await page.locator(".ncard").first().locator("button", { hasText: "接受" }).click();
+  await page.waitForSelector(".ncard.accepted");
+  const acceptedBody = acceptedNote;
+  const openBtn = await page.locator(".ncard.accepted button", { hasText: "打开记录" }).count();
+  check("接受后变「已接受」并可打开记录", acceptedBody?.peer === LI && acceptedBody?.id === "bbbbbbbb-0000-4000-8000-000000000005" && openBtn === 1, JSON.stringify(acceptedBody));
   await page.screenshot({ path: path.join(REPO, ".scratch", "shots", "peer-ui.png") });
 
   // ---- #381：通讯录桩只给 1 人，状态在线名单多给一个陌生 nodeId ----
