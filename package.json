@@ -94,6 +94,7 @@
     "probe:rail-click": "node probes/rail-click.mjs",
     "test:history": "node --experimental-strip-types bridge/tests/history-page-unit.mjs",
     "test:head": "node --experimental-strip-types bridge/tests/session-head-unit.mjs",
+    "test:msgtime": "node --experimental-strip-types bridge/tests/message-time-unit.mjs && node --experimental-strip-types web/tests/chat-head-unit.mjs",
     "test:paging": "node bridge/tests/paging-scope.mjs",
     "test:paging:ui": "node bridge/tests/paging-local-ui.mjs",
     "test:history:ui": "node bridge/tests/history-paths-ui.mjs",

@@ -956,6 +956,13 @@ export class Session extends EventEmitter {
   /** When our own pi last exited: writes up to then are ours, not a terminal's (see openLive D8). */
   ownExitAt = 0;
   private draftId: string | null = null;
+  /**
+   * 流式那条 assistant 消息的「开口时间」，message_start 打一次、message_end 沿用。
+   * 页面抬头写的是「模型名 · 时间」，实时这条以前压根没有 ts，于是抬头上只剩一个悬空的「 · 」；
+   * 重放的历史条目用的是 pi 自己的 `entry.timestamp`（≈ message_start 那一刻），这里对齐它 ——
+   * 刷新一次页面时间不许变（D309）。
+   */
+  private draftTs: string | null = null;
   private userCounter = 0;
   /**
    * 刚发出、pi 还没写进会话文件的用户图片（`user:N` → 原图）。文件里的 `user` 消息是 pi 展开过的
@@ -1588,8 +1595,10 @@ export class Session extends EventEmitter {
         if (ev.message?.role === "assistant") {
           this.draftCounter += 1;
           this.draftId = `draft:${this.draftCounter}`;
+          this.draftTs = new Date().toISOString();
           const item = {
             id: this.draftId,
+            ts: this.draftTs,
             kind: "assistant",
             text: "",
             thinking: "",
@@ -1636,8 +1645,11 @@ export class Session extends EventEmitter {
           else if (c.type === "toolCall") calls.push(c);
         }
         const draft = this.draftId;
+        // 这条消息是流式长出来的：时间仍取 message_start 那一下，刷新后和重放的历史对得上。
+        const ts = this.draftTs ?? new Date().toISOString();
         const item: Item = {
           id: `live:${this.draftCounter}`,
+          ts,
           kind: "assistant",
           text,
           thinking,
@@ -1653,6 +1665,7 @@ export class Session extends EventEmitter {
           this.upsert(item);
         }
         this.draftId = null;
+        this.draftTs = null;
         if (msg.usage) this.emitWs({ type: "usage", sessionId: this.state.id, usage: msg.usage });
         void this.refreshStats();
         for (const call of calls) {

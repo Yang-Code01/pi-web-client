@@ -7,7 +7,7 @@ import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { BashItem, Item, SessionHistory, SkillItem, ToolItem, UserItem } from "./types.ts";
-import { fmtTime, tr } from "./i18n/index.ts";
+import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
 const BASH_SHOW = 20000;
@@ -112,6 +112,28 @@ function timeOf(ts?: string): string {
   if (!ts) return "";
   const d = new Date(ts);
   return Number.isNaN(d.getTime()) ? "" : fmtTime(d);
+}
+
+/**
+ * 消息抬头的时间：今天只给时分，更早的把日期带上 —— 翻回上周那一条，「15:32」是哪个 15:32 读不出来。
+ * 时间跨度按本机时区算，和 `fmtDate` / `fmtTime` 的 locale 保持一致。
+ */
+export function stampOf(ts?: string): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const today = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return today ? fmtTime(d) : `${fmtDate(d)} ${fmtTime(d)}`;
+}
+
+/**
+ * 抬头那行「名字 · 时间」。时间缺了就**连分隔符一起省掉**：老桥发来的实时 assistant 条目没有 ts，
+ * 以前会留下一个悬空的「pi · 」，后面什么都没有。`suffix` 是「 · 已中断」这类尾巴，原样接在后面。
+ */
+export function headLine(name: string, ts?: string, suffix = ""): string {
+  const stamp = stampOf(ts);
+  return (stamp ? `${name} · ${stamp}` : name) + suffix;
 }
 
 /**
@@ -1525,7 +1547,7 @@ export class ChatView {
     }
     const who = el("div", "who");
     if (item.kind === "user") {
-      who.textContent = tr("你 · {p1}", { p1: timeOf(item.ts) });
+      who.textContent = headLine(tr("你"), item.ts);
       if (item.text.trim()) who.append(copyButton(() => item.text));
       if (this.onFork && item.text.trim()) {
         // #17 `/fork`: a new session holding everything before this message, the message back in the editor.
@@ -1541,7 +1563,7 @@ export class ChatView {
       }
       wrap.append(who, this.foldable(this.buildUserBody(item), 240));
     } else {
-      who.textContent = tr("{p1} · {p2}{p3}", { p1: item.model ?? "pi", p2: timeOf(item.ts), p3: item.stopReason === "aborted" ? tr(" · 已中断") : "" });
+      who.textContent = headLine(item.model ?? "pi", item.ts, item.stopReason === "aborted" ? tr(" · 已中断") : "");
       if (item.text.trim()) who.append(copyButton(() => item.text));
       wrap.append(who);
       // A message that only carries thinking/tool calls has no prose to show:

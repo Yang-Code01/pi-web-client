@@ -6062,3 +6062,19 @@ Esc 之后 dialog: 0
 **取舍：** 没顺手改「单槽 sheet」本身（`openDiffSheet` 首句仍是 `closeSheet()`，所以产物 → 看改动 → 关差分还是全关；设置抽屉 → pi 设置 / 本机管理 / 热部署、模型面板 → 项目信任 / 会话树、上下文面板 → 交接卡 → 阈值卡同理）。那些要的是 sheet 栈，改的是十几个 `open*Sheet` 的公共契约，不是这一档的事；先把「预览型子层」这条最容易误判成没反应的路修对，其余记在 issue #496 等下一条。`viewer.hi` 在子层(61) 盖上来时不会自动降回（子层其实还在预览下面）：今天没有一条路径能在预览已开时再开子层，Esc 的顺序已按「先收最上面那层」处理，真撞上了再决定是降档还是让子层也提一档。Esc 越级的三条分支（口令框 / 选择框压在上面时不收预览）没有自动化用例，只有代码审阅与 `higherLayerOpen()` 的注释：那两条要真起口令框或选择框，代价比收益大；层带本身由 `layers-unit.mjs` 兜底。
 
 **验证：** 新增 `web/tests/layers-unit.mjs`（已挂进 `npm --prefix web run typecheck`）从 `styles.css` / `settings-console.css` 里读真实 `z-index`，断言 `.viewer < .sheet-back`、`.viewer.hi > .sheet-back / .sheet-sub-back / .st-back`、`.modal.hi > .viewer.hi`、`.choose-back > .modal.hi`、`.image-view > .choose-back`、`.viewer.hi.front === .viewer.hi`；`bridge/tests/whatsnew-ui.mjs` 的 D 段改成「点链接后面板还在 + 预览 z-index 更高 + Esc 只收预览」，`bridge/tests/skill-view-ui.mjs` 的 E 段改成「查看之后商店还在 + Esc 回到商店」。两条 UI 用例在真 Chromium 里跑过（`WHATSNEW_UI_PORT` / `PI_WEB_PORT` 钉端口，本机 `freePort()` 偶尔会给出绑不上的端口）。
+
+## D309 模型回复的抬头补上时间：桥在 `message_start` 打一次点，`message_end` 沿用（用户要求 2026-11-18）
+
+**问题：** 对话里用户那条抬头是「你 · 15:32」，模型回复那条只有「pi · 」——**时间位置有,值没有**。原因不在前端拼串：`bridge/src/sessions.ts` 实时流式那条 assistant 消息在 `message_start`（草稿卡 `draft:N`）与 `message_end`（`live:N`）两处都**没写 `ts`**，而重放的历史条目（`bridge/src/items.ts`）用的是 pi 自己的 `entry.timestamp`。于是同一个会话，**刷新一次页面前后同一条消息两种长相**；前端 `timeOf("")` 把空 ts 变成空串，留下的就是那个悬空的分隔符。
+
+**决定：**
+
+- **桥打点，前端只读**：`message_start` 里 `this.draftTs = new Date().toISOString()` 并写进草稿卡；`message_end` 用 `this.draftTs ?? new Date().toISOString()`（`draftTs` 随后清空）。不选「前端收到帧时自己 `Date.now()`」——那是**渲染时间**，刷新后重放条目带的是 pi 的时间，同一条消息会跳；也不选「`message_end` 才打点」——那样长回复的抬头是收尾时刻，和 pi 的 `entry.timestamp`（≈ 开口那刻）差着整段生成时长。
+- **缺 ts 就整段省掉**，包括分隔符：`headLine()` 拼的是 `名字${stamp ? " · " + stamp : ""}`，老桥（还没升级的那份）发来的实时条目抬头就是干净的「pi」，不再是「pi · 」。
+- **非今天带日期**：今天是 `15:32`（与用户那条同一形态），不是今天则 `2026/11/17 15:32`。翻回上周的会话，「15:32」是哪个 15:32 读不出来。
+- **模型名不翻译**：抬头前半截仍是 `item.model ?? "pi"`，走 `headLine()` 而不是 `tr("{p1} · {p2}")`；「你」这个称呼进 i18n（`en` "You" / `ja` "あなた"），原来的 `"你 · {p1}"` 删掉。
+- **只动 assistant 抬头**：`timeOf()` 仍在，摘要卡 / 提醒卡 / 复习卡与 `!` 命令回显那行保持原样（范围外，免得顺手改掉它们的文案）。
+
+**取舍：** 时间落在**桥**而不是页面上，代价是这条时间在会话 JSONL 里**多一份**（pi 自己的 `entry.timestamp` 仍在），两处不保证逐位相等，只保证同一段：刷新后抬头用的是 `items.ts` 的 `entry.timestamp`，与实时那次的 `draftTs` 会差几十毫秒 —— 分钟级显示看不出来，也不打算为它去改重放路径。没顺手给 `thinking` / `toolCall` 条目补时间（它们不显示抬头）。
+
+**验证：** `node --experimental-strip-types bridge/tests/message-time-unit.mjs`（7：草稿卡有 ts、`model` 保留、`message_end` 沿用同一个 ts、`s.items` 里那条同 ts、`draft:N` → `live:N`、下一条重新打点、孤立 `message_end` 也补 ts）；`node --experimental-strip-types web/tests/chat-head-unit.mjs`（5：无 ts 只留名字、坏 ts 当没有、今天只时分、非今天带年份、后缀接在时间后）。
