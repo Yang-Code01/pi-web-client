@@ -34,6 +34,7 @@ import { resolveChildSessionFile } from "./bgruns.ts";
 import { entriesToItems } from "./items.ts";
 import type { Item } from "./items.ts";
 import { loadEntries, type SessionEntry } from "./sessionfile.ts";
+import { copilotFromEntries } from "./copilot-credits.ts";
 import { planReplayFromEntries, type PlanSnapshot } from "./execplan.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { bumpSkillUsage } from "./skills.ts";
@@ -141,6 +142,11 @@ interface ChildWatch {
 interface ChildSessionStats {
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number } | null;
   cost: number | null;
+  /** Copilot 积分（真值）；会话里没有 copilot 记录时是 null。 */
+  credits: number | null;
+  /** 同一个会话里别的 provider 花的美元 —— 与 credits 分账，别混成一个数。 */
+  otherCost: number | null;
+  hasCopilot: boolean;
   contextTokens: null;
   contextWindow: null;
 }
@@ -172,9 +178,13 @@ function childSessionStats(entries: SessionEntry[]): ChildSessionStats {
       sawCost = true;
     }
   }
+  const copilot = copilotFromEntries(entries as any[]);
   return {
     tokens: sawTokens ? tokens : null,
     cost: sawCost ? cost : null,
+    credits: copilot.hasCopilot ? copilot.credits : null,
+    otherCost: copilot.hasCopilot ? copilot.otherCost : null,
+    hasCopilot: copilot.hasCopilot,
     contextTokens: null,
     contextWindow: null,
   };

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
 import { displayUserText, loadEntries, loadEntryImage, listSessionFiles, normalizeUserText, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
+import { CopilotTally, fetchCopilotAccount, type CopilotAccountView, type CopilotView } from "./copilot-credits.ts";
 import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, skillItemFor, summarizeToolArgs, withSkillItems, type BashItem, type Item, type ToolItem, type UserItem } from "./items.ts";
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
@@ -877,6 +878,13 @@ export class Session extends EventEmitter {
   private handoffFailedAt = 0;
   /** #384：ctxlog 增量基线（已推给前端的行数；null = 还没推过全量）。 */
   private ctxBaseline: number | null = null;
+  /** Copilot 积分：增量扫会话 JSONL 的读书指针 + 它盯的是哪个文件。 */
+  private copilotTally: CopilotTally | null = null;
+  private copilotFile: string | null = null;
+  /** 账号额度的最近一份快照与它的抓取时刻；30 秒内不重复问 GitHub。 */
+  private copilotAccount: CopilotAccountView | null = null;
+  private copilotAccountAt = 0;
+  private copilotAccountInflight = false;
   /** One auto-compaction per turn; the next agent_start re-arms it. */
   private autoCompactUsed = false;
   /** get_commands results, refreshed every couple of minutes. */
@@ -1374,6 +1382,7 @@ export class Session extends EventEmitter {
     // #221: 唤醒续接同样只推末尾一页，不然休眠一个大会话再叫醒，页面又要等整段。
     this.emitWs({ type: "items", sessionId: id, ...this.frame() });
     void this.refreshStats();
+    void this.refreshCopilot();
     void this.emitContextLog(true);
   }
 
@@ -1459,6 +1468,51 @@ export class Session extends EventEmitter {
     }
   }
 
+  /**
+   * Copilot 积分：按字节 offset 增量读会话 JSONL（只读，不碰 pi 的 RPC），
+   * 把 copilot 请求的 `usage.cost × 100` 加成积分；账号额度另由 `refreshCopilotAccount` 拉。
+   * 其它 provider 的会话也走这里，`hasCopilot` 为 false 前端就不显示。
+   */
+  async refreshCopilot(): Promise<void> {
+    const file = this.state.file;
+    if (!file) return;
+    try {
+      if (this.copilotFile !== file || !this.copilotTally) {
+        this.copilotTally = new CopilotTally();
+        this.copilotFile = file;
+        this.copilotAccount = null;
+        this.copilotAccountAt = 0;
+      }
+      const view: CopilotView = this.copilotTally.read(file);
+      this.emitCopilot(view);
+      // 30 秒内不重复问 GitHub（决策 23）；额度是装饰，拉不到就不拉。
+      if (view.hasCopilot && Date.now() - this.copilotAccountAt > 30_000) void this.refreshCopilotAccount();
+    } catch {
+      /* 积分是装饰：读不到就当没有，不要影响对话 */
+    }
+  }
+
+  /** 拉一份账号额度并合进面板数据。同一时刻只允许一个请求在飞。 */
+  private async refreshCopilotAccount(): Promise<void> {
+    if (this.copilotAccountInflight) return;
+    this.copilotAccountInflight = true;
+    try {
+      const account = await fetchCopilotAccount();
+      if (!account || !this.copilotTally) return;
+      this.copilotAccount = account;
+      this.copilotAccountAt = Date.now();
+      this.emitCopilot(this.copilotTally.acceptAccount(account));
+    } catch {
+      /* 没凭据 / 断网 / 形状变了：面板显示「—」 */
+    } finally {
+      this.copilotAccountInflight = false;
+    }
+  }
+
+  private emitCopilot(view: CopilotView): void {
+    this.emitWs({ type: "copilot", sessionId: this.state.id, ...view, account: view.account ?? this.copilotAccount });
+  }
+
   private absorbState(st: any): void {
     if (!st || typeof st !== "object") return;
     const model = st.model?.id ?? st.modelId ?? st.model ?? undefined;
@@ -1478,7 +1532,11 @@ export class Session extends EventEmitter {
     switch (ev.type) {
       case "session_start":
       case "session_info_changed": {
-        if (typeof ev.sessionFile === "string") this.setState({ file: ev.sessionFile });
+        if (typeof ev.sessionFile === "string") {
+          this.setState({ file: ev.sessionFile });
+          // 文件这一刻才知道；续接的老会话要立刻把历史里的积分读出来，别等第一轮跑完。
+          void this.refreshCopilot();
+        }
         if (typeof ev.name === "string") this.setState({ name: ev.name });
         break;
       }
@@ -1499,6 +1557,7 @@ export class Session extends EventEmitter {
         // Not the end of the run: retries, overflow recovery, compaction, steering and follow-ups
         // can all carry on after it (docs/rpc.md "Run lifecycle"). Only agent_settled is idle.
         void this.refreshStats();
+        void this.refreshCopilot();
         void this.emitContextLog();
         break;
       case "agent_settled": {
@@ -1521,6 +1580,7 @@ export class Session extends EventEmitter {
         // 正好没赶上插话），就当下一轮的开头送出去 —— 别让它们等在一条再也不会出现的启动信号上。
         this.flushBootQueue();
         void this.refreshStats();
+        void this.refreshCopilot();
         void this.emitContextLog();
         break;
       }

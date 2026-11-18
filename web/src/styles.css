@@ -5365,3 +5365,20 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   text-align: center;
   pointer-events: none;
 }
+
+/* Copilot 积分专项块。整块是 flex 列而不是多轨 grid：底部的对账行、混合说明会 hidden，
+   隐藏的子元素不占格子（AGENTS.md「网格里的可隐藏子元素」）。列宽用 auto-fit 自适应，不靠 @media。 */
+.exec-metric-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.exec-copilot { display: flex; flex-direction: column; gap: 7px; min-width: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
+.exec-copilot-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.exec-copilot-title { color: var(--text); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.exec-copilot-badge { flex: none; padding: 1px 5px; border-radius: 999px; color: var(--accent); background: var(--accent-bg); font-size: 9px; white-space: nowrap; }
+.exec-copilot-badge.est { color: var(--faint); background: var(--panel-2); }
+.exec-copilot-plan { overflow: hidden; margin-left: auto; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.exec-copilot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 8px; }
+.exec-copilot-cell { display: grid; gap: 2px; min-width: 0; }
+.exec-copilot-note { overflow: hidden; color: var(--faint); font-size: 9px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.exec-copilot-bar { height: 4px; overflow: hidden; border-radius: 999px; background: var(--line); }
+.exec-copilot-fill { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
+.exec-copilot-foot { overflow: hidden; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.exec-copilot-warn { color: var(--danger); font-size: 10px; }

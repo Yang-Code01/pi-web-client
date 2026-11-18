@@ -47,6 +47,7 @@
     "test:mk": "node bridge/tests/mk-file.mjs",
     "test:uploads": "node --experimental-strip-types bridge/tests/uploads-unit.mjs",
     "test:nowchip": "node --experimental-strip-types web/tests/nowchip-unit.mjs",
+    "test:copilot": "node --experimental-strip-types bridge/tests/copilot-credits-unit.mjs && node --experimental-strip-types web/tests/copilot-unit.mjs",
     "test:exec-view": "node --experimental-strip-types web/tests/exec-view-unit.mjs",
     "test:wsmanage": "node --experimental-strip-types web/tests/wsmanage-unit.mjs",
     "test:menuplace": "node --experimental-strip-types web/tests/menuplace-unit.mjs",

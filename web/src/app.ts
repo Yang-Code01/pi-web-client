@@ -6,6 +6,7 @@ import { api, type DepPackageId, type DepsReport } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { atSpan, filterCommands, PANEL_COMMANDS, slashSpan, type CommandItem } from "./commands.ts";
+import { creditsToUsd, formatAge, formatCredits, formatReset, isMixed, usedPercent, type CopilotView } from "./copilot.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
@@ -65,7 +66,7 @@ import { type CtxLine, type CtxPolicy } from "./context.ts";
 import { ContextPanel, type ContextPanelData } from "./context-panel.ts";
 import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
-import { execView, type ExecChildRunInput, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
+import { execView, type ExecChildRunInput, type ExecMetricsView, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, birthReveal, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type BirthReveal, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
@@ -604,6 +605,11 @@ export class App {
     tokens: null,
     cost: null,
   };
+  /**
+   * Copilot 积分与账号额度（bridge 的 `copilot` 帧）：bridge 按 `usage.cost × 100` 把 copilot 请求
+   * 折成积分（会话里有真值条目就优先用它），额度由 bridge 自己问 GitHub。会话里没走过 copilot 时是 null。
+   */
+  private copilot: CopilotView | null = null;
   private rate = 0;
   private turnAt: number | null = null;
   /** What pi is doing right now, for the status line under the composer ("" = just running). */
@@ -1858,6 +1864,7 @@ export class App {
               .map((turn, index) => ({ id: turn.id, ordinal: index + 1 }))
           : [];
         this.stats = { tokens: null, cost: null };
+        this.copilot = null;
         // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
         this.sessionFails.clear();
         this.failReminded.clear();
@@ -2058,6 +2065,14 @@ export class App {
         if (this.queueTab === "exec") this.renderQueue();
         this.paintContextIfOpen();
         break;
+      case "copilot": {
+        if (msg.sessionId !== this.currentId) break;
+        this.copilot = this.copilotFromFrame(msg);
+        this.updateExecRoundStats();
+        this.fillModelChip();
+        if (this.queueTab === "exec") this.renderQueue();
+        break;
+      }
       case "ctxlog": {
         // #384：组成日志增量。非当前会话的也存（切换会话时面板要画全量），只重画打开着的面板。
         if (typeof msg.sessionId !== "string") break;
@@ -11476,7 +11491,11 @@ export class App {
       row(tr("上下文"), used == null ? tr("–（压缩后要等下一轮才有数）") : tr("{p1}{p2}", { p1: n(used), p2: win ? tr(" / {p1}（{p2}%）", { p1: n(win), p2: Math.round((used / win) * 100) }) : "" }));
       const t = this.stats.tokens;
       row(tr("累计 token"), t ? tr("输入 {p1} · 输出 {p2} · 缓存读 {p3} · 缓存写 {p4}", { p1: n(t.input), p2: n(t.output), p3: n(t.cacheRead), p4: n(t.cacheWrite) }) : "–");
-      row(tr("累计费用"), this.stats.cost == null ? "–" : `$${this.stats.cost.toFixed(4)}`, tr("pi 按模型价格表算的估计值（get_session_stats）"));
+      row(tr("累计费用"), this.sessionMoneyText(), this.copilot?.hasCopilot
+        ? this.copilot.account?.remaining == null
+          ? tr("Copilot 积分（1 积分 = $0.01）")
+          : tr("Copilot 积分（1 积分 = $0.01）· 账号本月还剩 {p1}", { p1: formatCredits(this.copilot.account.remaining) })
+        : tr("pi 按模型价格表算的估计值（get_session_stats）"));
     } else {
       row(tr("用量"), tr("接管后可见（数字来自正在运行的 pi）"));
     }
@@ -11566,7 +11585,9 @@ export class App {
     const win = this.usage.contextWindow;
     const bits: string[] = [];
     if (s?.owned && used != null) bits.push(tr("上下文 {p1}{p2}", { p1: compactSize(used) || used, p2: win ? `/${compactSize(win)}` : "" }));
-    if (s?.owned && this.stats.cost != null) bits.push(`$${this.stats.cost.toFixed(4)}`);
+    if (s?.owned && this.stats.cost != null) {
+      bits.push(this.copilot?.hasCopilot ? tr("{p1} 积分", { p1: formatCredits(this.copilot.credits) }) : `$${this.stats.cost.toFixed(4)}`);
+    }
     bits.push(tr("导出 · 会话树 · 压缩"));
     peek.textContent = bits.join(" · ");
     const paint = () => {
@@ -16120,6 +16141,8 @@ export class App {
     return {
       tokens: this.stats.tokens ? { ...this.stats.tokens } : null,
       cost: this.stats.cost,
+      credits: this.copilot?.hasCopilot ? this.copilot.credits : null,
+      otherCost: this.copilot?.hasCopilot ? this.copilot.otherCost : null,
       contextTokens: this.usage.contextTokens,
       contextWindow: this.usage.contextWindow,
     };
@@ -16128,7 +16151,7 @@ export class App {
   private beginExecRound(item: Item): void {
     if (item.kind !== "user") return;
     const snapshot = this.execStatsSnapshot();
-    const hasSnapshot = snapshot.tokens !== null || snapshot.cost !== null || snapshot.contextTokens !== null || snapshot.contextWindow !== null;
+    const hasSnapshot = snapshot.tokens !== null || snapshot.cost !== null || snapshot.credits != null || snapshot.contextTokens !== null || snapshot.contextWindow !== null;
     this.execRoundStats[item.id] = { baseline: hasSnapshot ? snapshot : null, final: hasSnapshot ? snapshot : null };
     if (this.currentId) saveExecRoundStats(this.currentId, this.execRoundStats);
   }
@@ -16235,6 +16258,7 @@ export class App {
       now: Date.now(),
       stats: this.execStatsSnapshot(),
       roundStats: this.execRoundStats,
+      copilot: this.copilot,
     });
   }
 
@@ -16509,6 +16533,131 @@ export class App {
     return value === null ? "–" : `$${value.toFixed(4)}`;
   }
 
+  /**
+   * 一句话的「多少钱」（决策 3/26/28）：copilot 会话读积分，别的 provider 读美元；
+   * 混在一起时两笔分开写，绝不把积分折成美元充成一个数。
+   */
+  private execMoneyText(totals: { cost: number | null; credits?: number | null; otherCost?: number | null }): string {
+    const credits = typeof totals.credits === "number" && Number.isFinite(totals.credits) ? totals.credits : null;
+    if (credits === null) return this.execMetricCost(totals.cost);
+    const other = typeof totals.otherCost === "number" && Number.isFinite(totals.otherCost) ? totals.otherCost : 0;
+    const creditLabel = tr("{p1} 积分", { p1: formatCredits(credits) });
+    return other > 0 ? `${creditLabel} + ${this.execMetricCost(other)}` : creditLabel;
+  }
+
+  /** 会话级的「多少钱」：有 copilot 记录时积分（+ 别的 provider 的 $），否则还是 pi 的美元估计。 */
+  private sessionMoneyText(): string {
+    if (this.copilot?.hasCopilot) {
+      return this.execMoneyText({ cost: this.stats.cost, credits: this.copilot.credits, otherCost: this.copilot.otherCost });
+    }
+    return this.stats.cost === null ? "–" : `$${this.stats.cost.toFixed(4)}`;
+  }
+
+  /** bridge 的 `copilot` 帧 → 前端类型；字段不全就当没有（旧 bridge 不发这个帧）。 */
+  private copilotFromFrame(msg: Record<string, unknown>): CopilotView | null {
+    if (msg.hasCopilot !== true) return null;
+    const account = msg.account && typeof msg.account === "object" ? (msg.account as CopilotView["account"]) : null;
+    return {
+      hasCopilot: true,
+      credits: typeof msg.credits === "number" ? msg.credits : null,
+      requests: typeof msg.requests === "number" ? msg.requests : 0,
+      lastAt: typeof msg.lastAt === "string" ? msg.lastAt : null,
+      otherCost: typeof msg.otherCost === "number" ? msg.otherCost : 0,
+      account,
+      reconcile: msg.reconcile && typeof msg.reconcile === "object" ? (msg.reconcile as CopilotView["reconcile"]) : null,
+    };
+  }
+
+  /**
+   * Copilot 专项块（决策 22/25/27/30）：本轮 / 会话累计 / 本月已用 / 剩余，外加额度条与重置时间。
+   * 它是个 flex 列，不是多轨 grid —— 底部那两行（对账、混合说明）会 `hidden`。
+   */
+  private execCopilotBlock(copilot: CopilotView, metrics: ExecMetricsView): HTMLElement {
+    const box = el("section", "exec-copilot");
+    box.setAttribute("aria-label", tr("Copilot 积分"));
+    const head = el("div", "exec-copilot-head");
+    head.append(el("span", "exec-copilot-title", tr("Copilot 积分")));
+    const estimated = copilot.estimated !== false;
+    head.append(el("span", `exec-copilot-badge${estimated ? " est" : ""}`, estimated ? tr("估算") : tr("真值")));
+    const account = copilot.account;
+    if (account?.plan) {
+      head.append(
+        el(
+          "span",
+          "exec-copilot-plan",
+          account.entitlement ? tr("{p1} · 每月 {p2}", { p1: account.plan, p2: formatCredits(account.entitlement) }) : account.plan,
+        ),
+      );
+    }
+    box.append(head);
+
+    const grid = el("div", "exec-copilot-grid");
+    const cell = (label: string, value: string, note?: string): void => {
+      const item = el("div", "exec-copilot-cell");
+      item.append(el("span", "exec-metric-label", label), el("b", "exec-metric-value", value));
+      if (note) item.append(el("span", "exec-copilot-note", note));
+      grid.append(item);
+    };
+    cell(tr("本轮"), metrics.credits === null ? "–" : formatCredits(metrics.credits), creditsToUsd(metrics.credits) ?? undefined);
+    cell(tr("会话累计"), formatCredits(copilot.credits), creditsToUsd(copilot.credits) ?? undefined);
+    if (account) {
+      if (account.unlimited) {
+        cell(tr("本月已用"), tr("不限"));
+        cell(tr("剩余"), tr("不限"));
+      } else {
+        cell(
+          tr("本月已用"),
+          account.entitlement === null ? formatCredits(account.used) : `${formatCredits(account.used)} / ${formatCredits(account.entitlement)}`,
+        );
+        const percent = account.percentRemaining;
+        cell(tr("剩余"), formatCredits(account.remaining), percent === null ? undefined : tr("还剩 {p1}%", { p1: percent.toFixed(percent < 10 ? 1 : 0) }));
+      }
+    }
+    box.append(grid);
+
+    const percent = usedPercent(account);
+    if (percent !== null) {
+      const bar = el("div", "exec-copilot-bar");
+      bar.setAttribute("role", "progressbar");
+      bar.setAttribute("aria-label", tr("本月额度已用"));
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", "100");
+      bar.setAttribute("aria-valuenow", String(percent));
+      const fill = el("span", "exec-copilot-fill");
+      fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+      bar.append(fill);
+      box.append(bar);
+    }
+
+    const notes: string[] = [];
+    if (isMixed(copilot)) {
+      notes.push(tr("本轮与会话累计只算 copilot 部分；其它 provider 另计 {p1}", { p1: this.execMetricCost(copilot.otherCost) }));
+    }
+    const reset = formatReset(account?.resetUtc ?? null);
+    if (reset) notes.push(tr("重置 {p1}（本地 {p2}）", { p1: reset.utc, p2: reset.local }));
+    const capUsd = creditsToUsd(account?.entitlement ?? null);
+    if (capUsd) notes.push(tr("额度约 {p1}", { p1: capUsd }));
+    const age = formatAge(account?.at ?? null);
+    if (age) notes.push(tr("额度更新于 {p1}", { p1: age }));
+    if (notes.length) box.append(el("div", "exec-copilot-foot", notes.join(" · ")));
+
+    const gap = copilot.reconcile;
+    if (gap && gap.gapPercent > 2) {
+      box.append(
+        el(
+          "div",
+          "exec-copilot-warn",
+          tr("对账偏了 {p1}%：本机记了 {p2} 积分，账号只扣了 {p3}", {
+            p1: gap.gapPercent.toFixed(1),
+            p2: formatCredits(gap.localDelta),
+            p3: formatCredits(gap.accountDelta),
+          }),
+        ),
+      );
+    }
+    return box;
+  }
+
   private execMetricsCard(model: ExecViewModel): HTMLElement {
     const metrics = model.metrics;
     const card = el("section", "exec-metrics");
@@ -16522,25 +16671,37 @@ export class App {
       box.append(number);
       return box;
     };
-    const costMetric = metric(tr("本轮费用"), this.execMetricCost(metrics.cost));
-    costMetric.dataset.execMetric = "cost";
-    grid.append(
+    const cells: HTMLElement[] = [
       metric(tr("本轮耗时"), metrics.durationMs === null ? "–" : this.execDuration(metrics.durationMs), true),
       metric(tr("工具 / 失败"), `${metrics.toolCount} / ${metrics.failureCount}`),
-      costMetric,
-    );
+    ];
+    // V1（决策 25/26）：纯 copilot 会话把「本轮费用」整格去掉 —— 积分在专项块里出现一次就够；
+    // 混合会话保留一格，写「积分 + 别的 provider 的 $」。
+    const copilot = model.copilot?.hasCopilot ? model.copilot : null;
+    if (!copilot || isMixed(copilot)) {
+      const costMetric = metric(tr("本轮费用"), this.execMoneyText(metrics));
+      costMetric.dataset.execMetric = "cost";
+      if (copilot && metrics.cost !== null) {
+        costMetric.title = tr("pi 的价格表估的是 {p1}", { p1: this.execMetricCost(metrics.cost) });
+      }
+      cells.push(costMetric);
+    } else {
+      grid.classList.add("two");
+    }
+    grid.append(...cells);
     card.append(grid);
 
-    const subtotal = (label: string, totals: { cost: number | null; tokens: number | null }) => {
+    const subtotal = (label: string, totals: { cost: number | null; credits: number | null; otherCost: number | null; tokens: number | null }) => {
       const row = el("div", "exec-metric-subtotal");
       row.append(el("span", "exec-metric-label", label));
       const tokenLabel = tr("Token 数");
-      row.append(el("span", "exec-metric-total", `${this.execMetricNumber(totals.tokens)} ${tokenLabel} · ${this.execMetricCost(totals.cost)}`));
+      row.append(el("span", "exec-metric-total", `${this.execMetricNumber(totals.tokens)} ${tokenLabel} · ${this.execMoneyText(totals)}`));
       return row;
     };
     const subtotals = el("div", "exec-metric-subtotals");
     subtotals.append(subtotal(tr("主会话"), metrics.main), subtotal(tr("子代理"), metrics.subagents));
     card.append(subtotals);
+    if (copilot) card.append(this.execCopilotBlock(copilot, metrics));
 
     const context = el("div", "exec-context");
     const percent = metrics.contextPercent;
@@ -16611,7 +16772,7 @@ export class App {
     const statusText = row.status === "running" ? tr("运行中") : row.status === "done" ? tr("已完成") : row.status === "failed" ? tr("失败") : tr("等待状态");
     toggle.append(el("span", `exec-subagent-status ${row.status}`, statusText));
     const totals = el("span", "exec-subagent-totals");
-    totals.append(this.execMetricNumber(row.stats.tokens), document.createTextNode(" "), el("span", "", tr("Token 数")), document.createTextNode(" · "), this.execMetricCost(row.stats.cost));
+    totals.append(this.execMetricNumber(row.stats.tokens), document.createTextNode(" "), el("span", "", tr("Token 数")), document.createTextNode(" · "), this.execMoneyText(row.stats));
     toggle.append(totals);
     toggle.onclick = () => this.toggleExecChild(row.runId);
     wrap.append(toggle);
