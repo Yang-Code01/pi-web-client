@@ -2877,8 +2877,8 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .dirpicker .dir-tools .dir-filter { margin: 0; padding: 5px 10px; font-size: 12.5px; }
 .dir-sub { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font: 12px var(--sans); color: var(--dim); cursor: pointer; white-space: nowrap; }
 .dir-sub input { margin: 0; accent-color: var(--accent); }
-/* 换顺序 / 换筛选词时旧的一页先留着、只压暗一点：清空再画会闪一下，看着像「抖」。 */
-.dirpicker.busy .dir-list { opacity: .55; }
+/* 换顺序 / 换筛选词时旧的一页先留着，连压暗都不要：一次 100ms 的 0.55 就是眼睛里的「闪一下」，
+   而内容压根没变。忙碌只体现在光标和页脚计数上，列表的像素一个都不许动。 */
 .dirpicker.busy .dir-list, .dirpicker.busy .dir-pagefoot { cursor: progress; }
 .dir-pagefoot { display: flex; align-items: center; gap: 10px; padding: 8px 2px 2px; font: 11.5px var(--mono); color: var(--faint); }
 .dir-pagecount { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

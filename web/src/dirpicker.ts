@@ -638,6 +638,14 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     const mine = ++seq;
     const append = o.append === true;
     let quiet = !append && o.quiet === true;
+    // 「读取中…」占位不立刻出：快的请求（本机目录 20~80ms）留着旧的一页就行，
+    // 先清空再填回去，视觉上就是列表闪了一下。只有真的慢过 220ms 才让位给占位。
+    let waitTimer: ReturnType<typeof setTimeout> | null = null;
+    const stopWait = (): void => {
+      if (waitTimer === null) return;
+      clearTimeout(waitTimer);
+      waitTimer = null;
+    };
     if (append) {
       moreBusy = true;
       paintFoot();
@@ -647,14 +655,19 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       root.classList.add("busy");
       paintFoot();
     } else {
-      clearRows();
-      rowsHost.append(message(tr("读取中…")));
-      foot.hidden = true;
+      waitTimer = setTimeout(() => {
+        waitTimer = null;
+        if (mine !== seq || !root.isConnected) return;
+        clearRows();
+        rowsHost.append(message(tr("读取中…")));
+        foot.hidden = true;
+      }, 220);
     }
     let next: DirPage;
     try {
       next = await api.dirsPage(target, { q: query, offset: append ? entries.length : 0, limit, sort: sort.key, dir: sort.dir, sub: subSearch, files: listFiles });
     } catch (ex: any) {
+      stopWait();
       if (mine !== seq || !root.isConnected) return { ok: false, error: "" };
       moreBusy = false;
       quiet = false;
@@ -666,6 +679,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       paintFoot();
       return { ok: false, error: said };
     }
+    stopWait();
     if (mine !== seq || !root.isConnected) {
       moreBusy = false;
       root.classList.remove("busy");
