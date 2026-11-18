@@ -6173,7 +6173,23 @@ Esc 之后 dialog: 0
 
 **验证：** `node bridge/tests/peer-ui.mjs` 新增四条夹具（富文本、带样式的 span、Markdown 列表/标题/表格、1700 字长消息）：结构保留而颜色字号被剥、链接 `_blank`、`1.` 成 2 个 `li`、`#` 成 h3、`table` 为 0、折叠按钮文案切换；全过。`npm --prefix web run typecheck`（含 i18n）通过。
 
-## D315 列表刷新不许变暗、不许先清空：把「忙碌」画在已经显示好的内容上就是「闪一下」（用户报障 2026-11-18）
+## D315 记录包复用内网通的 note 帧，截图按 sha 后到对齐，接受走桥的原子导入（用户要求 2026-11-18）
+
+**背景：** 「提交给好友」要把一条记录（标题 / 正文 / 分类 / 状态 / 截图）交给别人，对方看到一张卡片，能只读预览、能一键接受进自己的记录。内网通协议 v1 只认 text / file / recall，未知 kind 直接 400 不可重试（`peer/src/messages.ts`）。
+
+**决定：**
+
+- **协议：** `EntryKind` 加 `"note"`，载荷 `{ title, body, kind, status, shots: [{ name, size, sha256 }], noteCreatedAt, noteUpdatedAt }`；`normalizeNote()` 与 text 一样在**发与收两侧**都跑，正文 ≤ 200 KB、标题 200 字、截图 ≤ 24 张，整帧 ≤ 256 KB（`peer/src/note.ts`）。`deliver()` 与 `Queued.kind` 一起加 note，离线照样 24 小时补投；`PROTO` 不变，`VERSION` 0.1.0 → 0.2.0（只有 `version` 字段与 `/hello` 用它，`/contacts` 不带版本）。
+- **截图不塞进 note 帧：** 逐张走现成的 `/api/peer/sendfile`（`EntryKind: "file"`）。接收端按「同一发送人 / 在 note 之后 / 清单里有这个 sha / 还没被别的卡片用过」找文件条目，找到才把 `entryId` 缝进卡片视图；缺图卡片显示「还差 n 张图」并禁用接受。截图内容在**接受时**才从发送人 `/peer/file?id=` 拉回、校验 size 与 sha 再落盘。
+- **接受是桥的活，不是 peer 的：** `POST /api/peer/note/accept { peer, id }` 在 `bridge/src/index.ts` 里查历史 → 拉图校验 → `importNote()` 生成**新 id**、`createdAt = now`、分类保留、状态重置为「待处理」、截图写 `notes/assets/<新 id>`（临时目录写全再 rename，失败清理）、`origin { peerEntryId, nodeId, nickname, hostname, at }` 只读；成功后 `broadcast({ type: "notes" })` 刷新已打开的面板。
+- **「已接受」不进 JSONL：** peer 的历史是 append-only，改写会破坏它的时间线；接受状态放 `statePath("peer", "notes-accepted.json")` sidecar（`bridge/src/peer-notes.ts`），`/api/peer/messages` 返回前把 `accepted` 与每张图的 `entryId` 缝上去。一张卡片只接受一次：第二次点只会打开已接受的卡片。
+- **卡片与预览：** 四态（发送中 / 失败 / 缺图 / 已接受）、预览只读（`sanitizeRich` 的正文 + 全部截图 + 来源），不出现 issue / commit / 会话；「打开记录」用 `postMessage({ t: "pi-note-open", id })`，外壳校验同源且记录存在后开面板并选中。
+
+**取舍：** 没走 zip 或专用的整包上传接口（要新协议、新进度、新重试）；没把 base64 塞进 note 帧（256 KB 上限和 24 张图对不上）；没让 peer 直接写记录库（peer 进程不该碰 `state/notes`，也拿不到面板广播）；没把已接受写回历史（JSONL 不 patch）；跨版本互通不管（#138 明确「只要求同版本可用」）。
+
+**验证：** `npm run test:note` —— `peer-note-unit`（载荷校验、sha 对齐先到先得、原子导入、sidecar 读写）、`peer-e2e`（note 收发、超长正文 400「正文太长」、坏截图清单 400 不可重试）、`peer-ui`（卡片 chips、缺图禁用、只读预览、接受请求体与「已接受」）；`npm run typecheck` 三包全过；`npm --prefix web run build` 通过。
+
+## D316 列表刷新不许变暗、不许先清空：把「忙碌」画在已经显示好的内容上就是「闪一下」（用户报障 2026-11-18）
 
 **问题：** 用户报「新建目录和排序按钮，点击后会闪一下。这个发生过很多次」。逐帧采样（rAF 记录 `.dir-list` 的 `opacity` 与 children）抓到两处，机制不同、症状一样：
 

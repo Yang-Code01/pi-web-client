@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -63,6 +63,7 @@ import {
   addShot,
   deleteNote,
   listNotes,
+  importNote,
   purgeTrash,
   removeShot,
   saveNote,
@@ -73,6 +74,7 @@ import {
   type NoteMode,
   type NoteStatus,
 } from "./notes.ts";
+import { decorateNotes, markAccepted, readAccepted, resolveNoteShots } from "./peer-notes.ts";
 import { actOnFailure, emptyLedger, mergeFailures, readLedger, undoFailures, type CommitItem, type FailAction } from "./failures.ts";
 import { allowRemind, reminderText, reviewPrompt } from "./lessons.ts";
 import { deleteRule, markReviewed, readRules, setRule } from "./rules.ts";
@@ -822,7 +824,71 @@ async function main(): Promise<void> {
       const who = url.searchParams.get("peer") ?? "";
       if (!who) return json(res, 400, { error: "缺 peer" });
       try {
-        return json(res, 200, await peer.history(who, Number(url.searchParams.get("limit")) || 200));
+        const data = (await peer.history(who, Number(url.searchParams.get("limit")) || 200)) as { entries?: unknown[] };
+        return json(res, 200, { ...data, entries: decorateNotes(data.entries ?? []) });
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // #508：把一条记录包原子导入本机记录（截图按 sha 下回来、临时目录写完再提交）。
+    if (url.pathname === "/api/peer/note/accept" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const who = String(body?.peer ?? "");
+      const id = String(body?.id ?? "");
+      if (!who || !id) return json(res, 400, { error: "缺 peer 或 id" });
+      try {
+        const done = readAccepted()[id];
+        if (done) return json(res, 200, { ok: true, noteId: done.noteId, dup: true });
+        const data = (await peer.history(who, 500)) as { entries?: unknown[] };
+        const entries = data.entries ?? [];
+        const entry = (entries as Array<Record<string, any>>).find((e) => e.id === id && e.kind === "note");
+        if (!entry?.note) throw new Error("这条记录不在了（可能被对方撤回或历史被清理）");
+        const meta = entry.note as { title?: string; body?: string; kind?: string; shots?: Array<{ name?: string; size?: number; sha256?: string }> };
+        const shots = Array.isArray(meta.shots) ? meta.shots : [];
+        const slots = resolveNoteShots(entries, id);
+        const missing = slots.filter((slot) => !slot).length;
+        if (missing) throw new Error(`还缺 ${missing} 张图，等对方补发后再接受`);
+        const files: Array<{ name: string; data: Buffer }> = [];
+        for (let i = 0; i < shots.length; i += 1) {
+          const shot = shots[i];
+          const upstream = await peer.fileStream(slots[i] as string);
+          if (!upstream.ok || !upstream.body) throw new Error(`第 ${i + 1} 张图取不到`);
+          const buf = Buffer.from(await upstream.arrayBuffer());
+          if (buf.length !== Number(shot.size)) throw new Error(`第 ${i + 1} 张图大小对不上`);
+          const sha = createHash("sha256").update(buf).digest("hex");
+          if (sha !== String(shot.sha256).toLowerCase()) throw new Error(`第 ${i + 1} 张图校验失败`);
+          files.push({ name: String(shot.name ?? `shot-${i + 1}.png`), data: buf });
+        }
+        const note = importNote({
+          title: String(meta.title ?? ""),
+          body: String(meta.body ?? ""),
+          kind: meta.kind,
+          shots: files,
+          origin: {
+            peerEntryId: id,
+            nodeId: String(entry.from?.nodeId ?? who),
+            nickname: String(entry.from?.nickname ?? ""),
+            hostname: String(entry.from?.hostname ?? ""),
+            at: Number(entry.at) || Date.now(),
+          },
+        });
+        let warning: string | undefined;
+        try {
+          markAccepted(id, note.id);
+        } catch (err) {
+          warning = `记录已导入，但「已接受」没写进 sidecar：${(err as Error).message}`;
+          log(warning);
+        }
+        broadcast({ type: "notes", notes: listNotes() });
+        return json(res, 200, { ok: true, noteId: note.id, ...(warning ? { warning } : {}) });
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/sendnote" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.sendNote(String(body?.peer ?? ""), body?.note));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }

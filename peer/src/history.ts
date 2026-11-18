@@ -12,13 +12,31 @@ import type { ThreadMeta } from "./threads.ts";
  *
  * D299 之后这是**加性**扩展：新字段全部可选，旧版本读新文件只是看不见它们。
  */
-export type EntryKind = "text" | "receipt" | "file" | "recall";
+export type EntryKind = "text" | "receipt" | "file" | "recall" | "note";
 
 export interface PeerIdentity {
   nodeId: string;
   nickname?: string;
   hostname?: string;
   port?: number;
+}
+
+/** 记录包的截图清单：截图本体逐张走文件通道，卡片只带 sha 对齐（#507）。 */
+export interface NoteShot {
+  name: string;
+  size: number;
+  sha256: string;
+}
+
+/** 记录包正文：标题 / 净化 HTML / 分类 / 发送时状态 / 截图清单（#507 / #508）。 */
+export interface NotePayload {
+  title: string;
+  body: string;
+  kind: "bug" | "change" | "idea" | "chore";
+  status: "pending" | "done" | "dropped";
+  shots: NoteShot[];
+  noteCreatedAt?: number;
+  noteUpdatedAt?: number;
 }
 
 /** 引用：`excerpt` 截过，不把整段原文塞进信封（D299）。 */
@@ -50,6 +68,8 @@ export interface Entry {
   replyTo?: ReplyRef;
   /** `kind:"recall"` 时指向被撤回的那条消息的 id。 */
   ref?: string;
+  /** `kind:"note"` 的记录包（#507）。 */
+  note?: NotePayload;
 }
 
 /**
@@ -94,7 +114,7 @@ function safeName(nodeId: string): string {
 
 /** 视图里要显示的三种「一条消息」：回执不占位，撤回也不单独占位（它把原气泡换掉）。 */
 function isMessage(entry: Entry): boolean {
-  return entry.kind === "text" || entry.kind === "file";
+  return entry.kind === "text" || entry.kind === "file" || entry.kind === "note";
 }
 
 /**
@@ -110,7 +130,7 @@ export function foldEntries(entries: Entry[], me: string, pending: Set<string>):
   const byId = new Map<string, ViewEntry>();
   const out: ViewEntry[] = [];
   for (const entry of entries) {
-    if (entry.kind === "text" || entry.kind === "file") {
+    if (entry.kind === "text" || entry.kind === "file" || entry.kind === "note") {
       const view: ViewEntry = { ...entry };
       byId.set(entry.id, view);
       out.push(view);

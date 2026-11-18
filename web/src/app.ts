@@ -1561,6 +1561,15 @@ export class App {
       },
       true,
     );
+    // 内网通记录卡片「打开记录」(#508)：同源 + 确实有这条，才开面板并选中。
+    window.addEventListener("message", (ev) => {
+      if (ev.origin !== window.location.origin) return;
+      const d = ev.data as { t?: string; id?: string } | null;
+      if (d?.t !== "pi-note-open" || typeof d.id !== "string") return;
+      if (!this.notes.some((n) => n.id === d.id)) return;
+      this.openNotes();
+      this.notesSheet?.openNote(d.id);
+    });
     // 预览页里的链接点击（D63）：用 token 认人，不靠 ev.source（跨文档导航后指针不相等）。
     window.addEventListener("message", (ev) => {
       const d = ev.data as { t?: string; rel?: string; href?: string; y?: number; tk?: string } | null;

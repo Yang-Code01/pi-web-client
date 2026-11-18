@@ -70,7 +70,7 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 - 静默重取只留 `cursor: progress`，不加 `opacity`、不换占位。非静默重取（跳目录、建目录后重载）**慢过 220ms** 才让位给「读取中…」占位，快的请求用户应当看到「点了立刻换」。
 - 需要进度感就画在列表**外面**（页脚计数、工具行），不许改列表本身；也不要用骨架屏当折衷。
-- 守卫：`node probes/new-session-sheet.mjs` 第 10 段逐帧采样（排序 / 逐字筛选 / 建目录），任何一帧 `opacity < 0.99` 或有内容期间 `children === 0` 就红。新写/改任何分页列表（文件管理器、附件弹层、内网通选文件）时照这段抄一份。细节见 D315。
+- 守卫：`node probes/new-session-sheet.mjs` 第 10 段逐帧采样（排序 / 逐字筛选 / 建目录），任何一帧 `opacity < 0.99` 或有内容期间 `children === 0` 就红。新写/改任何分页列表（文件管理器、附件弹层、内网通选文件）时照这段抄一份。细节见 D316。
 
 ### Running the bridge
 

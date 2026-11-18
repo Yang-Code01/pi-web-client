@@ -18,6 +18,15 @@ export type NoteMode = (typeof NOTE_MODES)[number];
 export const NOTE_LIVES = ["active", "archived", "trashed"] as const;
 export type NoteLife = (typeof NOTE_LIVES)[number];
 
+/** 从内网通导入的记录从哪来：卡片在对方历史里的 id + 发送人（#508）。只读展示「来自 …」。 */
+export interface NoteOrigin {
+  peerEntryId: string;
+  nodeId: string;
+  nickname: string;
+  hostname: string;
+  at: number;
+}
+
 export interface Note {
   id: string;
   kind: NoteKind;
@@ -32,6 +41,8 @@ export interface Note {
   /** 归档 / 丢进垃圾箱的时间；二者都没有就是正常在列表里。 */
   archivedAt: number | null;
   deletedAt: number | null;
+  /** 从内网通「提交给好友」导进来的才有（#508）。 */
+  origin?: NoteOrigin;
 }
 
 interface Store {
@@ -92,6 +103,21 @@ function readNote(raw: Note): Note {
     updatedAt: num(r.updatedAt),
     archivedAt: typeof r.archivedAt === "number" ? r.archivedAt : null,
     deletedAt: typeof r.deletedAt === "number" ? r.deletedAt : null,
+    ...(readOrigin(r.origin) ? { origin: readOrigin(r.origin) } : {}),
+  };
+}
+
+/** 只认完整的来源对象，缺字段就当作没有（老 JSON / 半截数据都不该让列表崩）。 */
+function readOrigin(raw: unknown): NoteOrigin | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.peerEntryId !== "string" || typeof o.nodeId !== "string") return undefined;
+  return {
+    peerEntryId: o.peerEntryId,
+    nodeId: o.nodeId,
+    nickname: typeof o.nickname === "string" ? o.nickname : "",
+    hostname: typeof o.hostname === "string" ? o.hostname : "",
+    at: typeof o.at === "number" && Number.isFinite(o.at) ? o.at : 0,
   };
 }
 
@@ -226,6 +252,65 @@ export function deleteNote(id: string): boolean {
     /* 目录本来就没有 */
   }
   return true;
+}
+
+/** 内网通记录包里的截图（文件名 + 字节），导入时按 sha 对过。 */
+export interface ImportShot {
+  name: string;
+  data: Buffer;
+}
+
+/**
+ * 导入一条记录包（#508）：先生成新 id、截图写进临时目录，全部写完再改名提交；
+ * 中途失败只清临时目录，不动现有记录。`createdAt` 用导入时间（发送时间放 origin.at）。
+ */
+export function importNote(input: { title: string; body: string; kind?: string; shots?: ImportShot[]; origin: NoteOrigin }): Note {
+  const notes = listNotes();
+  const at = Date.now();
+  const body = text(input.body, MAX_BODY);
+  const title = text(input.title, MAX_TITLE).trim() || body.trim().split("\n")[0]?.slice(0, 60) || "未命名";
+  const kind = pick(NOTE_KINDS, input.kind, "kind", "bug");
+  const id = newId();
+  const dir = assetsDir(id);
+  const tmp = `${dir}.tmp-${at.toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+  ensureDir(path.dirname(dir));
+  fs.mkdirSync(tmp, { recursive: true });
+  const saved: string[] = [];
+  try {
+    for (const shot of input.shots ?? []) {
+      if (saved.length >= MAX_SHOTS) break;
+      if (shot.data.length > MAX_SHOT_BYTES) throw new Error(`图片太大（${Math.round(shot.data.length / 1024 / 1024)} MB）`);
+      const ext = /^\.[a-z0-9]{1,5}$/i.exec(path.extname(shot.name))?.[0] ?? ".png";
+      const name = `shot-${saved.length + 1}${ext.toLowerCase()}`;
+      fs.writeFileSync(path.join(tmp, name), shot.data);
+      saved.push(path.join(dir, name));
+    }
+    fs.renameSync(tmp, dir);
+  } catch (err) {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    throw err;
+  }
+  const note: Note = {
+    id,
+    kind,
+    status: "pending",
+    mode: "quick",
+    title,
+    body,
+    shots: saved,
+    createdAt: at,
+    updatedAt: at,
+    archivedAt: null,
+    deletedAt: null,
+    origin: input.origin,
+  };
+  try {
+    save([note, ...notes]);
+  } catch (err) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  return note;
 }
 
 const EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };

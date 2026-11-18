@@ -387,6 +387,19 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         }
       }
 
+      // 记录包（#507）：一条 kind:"note" 的消息；截图本体随后由页面逐张走 /files/send。
+      if (url.pathname === "/note" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          activity.touch();
+          const result = messages.sendNote(String(body?.peer ?? ""), body?.note);
+          return json(res, 200, result);
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
       // pi 的三个工具里「找人」这一步（第 5 片，决定 33）：昵称可以重名，
       // 所以必须把 nodeId 一起给模型，让它下次直接用 id。
       if (url.pathname === "/tools/find" && req.method === "GET") {

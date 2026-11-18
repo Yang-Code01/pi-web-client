@@ -21,7 +21,7 @@
     "test:all": "node tools/run-tests.mjs",
     "test:rpc": "node bridge/tests/write-after-end.mjs",
     "test:ask": "node --experimental-strip-types bridge/tests/ask-unit.mjs && node bridge/tests/ask-e2e.mjs",
-"test:context": "node --test bridge/tests/context-policy-unit.mjs bridge/tests/context-session-unit.mjs bridge/tests/context-log-unit.mjs bridge/tests/context-insight-unit.mjs && node --test web/tests/context-unit.mjs && node --experimental-strip-types --test web/tests/chrome-unit.mjs",
+    "test:context": "node --test bridge/tests/context-policy-unit.mjs bridge/tests/context-session-unit.mjs bridge/tests/context-log-unit.mjs bridge/tests/context-insight-unit.mjs && node --test web/tests/context-unit.mjs && node --experimental-strip-types --test web/tests/chrome-unit.mjs",
     "test:artifacts": "node --experimental-strip-types web/tests/artifact-sources-unit.mjs && node bridge/tests/artifacts-unit.mjs && node bridge/tests/artifacts-e2e.mjs",
     "test:ask:ui": "node bridge/tests/ask-ui.mjs",
     "test:ask-tab": "node --experimental-strip-types web/tests/ask-tab-unit.mjs",
@@ -119,7 +119,8 @@
     "test:repos:ui": "node bridge/tests/repos-ui.mjs",
     "test:pluginmarket": "node --experimental-strip-types web/tests/pluginmarket-unit.mjs",
     "test:mcpmarket": "node --experimental-strip-types web/tests/mcpmarket-unit.mjs",
-    "test:skill:ui": "node bridge/tests/skill-view-ui.mjs"
+    "test:skill:ui": "node bridge/tests/skill-view-ui.mjs",
+    "test:note": "node --experimental-strip-types --test bridge/tests/peer-note-unit.mjs && npm run build:peer && node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-ui.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
