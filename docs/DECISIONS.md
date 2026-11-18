@@ -6020,3 +6020,22 @@ Esc 之后 dialog: 0
 **取舍：** 这条边界是有意放宽的 —— 页面进程一旦被 XSS 控制，就能直接读到明文密码。挡住它的只有三条：只服务 `127.0.0.1` 的页面（隧道访客整页 404）、不复用它做任何跨域请求（密码只在本机输入框里显示）、不出现在日志 / 审计 / 模型上下文里。若哪天考勤页要开给隧道，这条路由必须先撤掉。另一半取舍是 `passwordRejected` 只在内存：桥重启后「密码已被拒」这个结论会丢一次，界面可能短暂显示「已登录」，下次请求失败才回到「未登录」。
 
 **验证：** `bridge/tests/attendance-e2e.mjs` 33 条（新增「token 过期但密码还在：仍算登录态，设置页能拿回那个密码」与「自动续登被上游拒了：界面回落成未登录，密码改对之后又回来」；隧道清单含 `/api/attendance/password`；顺手修「登录闸门 1 秒退避没等过去」那条既有脆调用例）；`bridge/tests/sysmanage-ui.mjs` 105 条（假 OA + 真 Chromium：回填已存密码、`type=password`、眼睛切明文、再点收回）；`bridge/tests/attendance-unit.mjs` 52 条；`npm --prefix web run typecheck`（i18n 3579 键 × 3 语、viewport 守卫）与 `npm run build` 通过。
+## D307 Copilot 按「积分」记账：全部在 bridge 里算，不装扩展（用户要求 2026-11-18）
+
+**问题：** pi 在用 `github-copilot` 模型时，`usage.cost` 仍然是「按价格表折算的美元」——可 GitHub 实际扣的是 **AI credits**（1 积分 = $0.01），而且个人 / Business 套餐是按月额度扣，超出才计费。于是界面上那三个数字（执行面板「本轮费用」、模型弹层「累计费用」、状态栏芯片）对 copilot 会话全是**看起来精确、实际是换算值**的数；用户真正想知道的「这一轮花了几个积分 / 本月还剩多少」一个都没有。pi 1.5.0 与 1.5.2 都没有对应的 RPC 或 schema 字段（`cost.totalFromProvider` 只给 OpenRouter 用）。
+
+**决定：**
+
+- **不写 pi 扩展，全部在本工程内**：先用扩展做过一版（`provider_stream_event` 抓响应里的 `copilot_usage.total_nano_aiu`，写会话条目），实测确认 `cost × 100` 与 `nanoAiu / 1e9` **逐位相等**（`claude-haiku-4.5`：0.0080125 美元 ↔ 801,250,000 nano-AIU = 0.80125 积分，含 cacheWrite）。既然等比，扩展多出来的只是一个「必须装到全局目录的组件」，于是撤掉：`credits = usage.cost.total × 100`，会话里若出现 `copilot-credits` 真值条目（将来 pi 自己吐）就优先用它并标「真值」。**代价只有一个**：pi 内置价格表落后于 GitHub 改价时会系统性偏 —— 由对账（下一条）自动暴露。
+- **账户额度由 bridge 自己拉**：每轮结束（`agent_end` / `agent_settled`）与打开会话时 `GET https://api.github.com/copilot_internal/user`，token 顺序 `COPILOT_GITHUB_TOKEN` → `~/.pi/agent/auth.json` 的 `github-copilot.refresh` → `.access`（`bridge/src/copilot-credits.ts` 的 `fetchCopilotAccount()`）。**最小间隔 30 秒**、8 秒超时、同一时刻只允许一个请求在飞；间隔内的轮次沿用旧快照，界面写「额度更新于 2m」，不假装是新的。不做「打开面板立即刷」——那会让一次视图刷新也变成网络请求。
+- **桥按字节 offset 增量读会话文件**：`CopilotTally` 只消费到最后一个 `
+`（半行留到下次；文件变短就 reset；文件不在返回上次快照），`CopilotView = { hasCopilot, credits, requests, lastAt, estimated, otherCost, account, reconcile }` 以 `{ type: "copilot", sessionId, … }` 推给前端。子会话走 `copilotFromEntries(entries)`（那边已有 `loadEntries()` 的结果）。
+- **按 provider 分账**：`otherCost` = 会话里 provider ≠ `github-copilot` 的 assistant 消息 `usage.cost.total` 之和。它 > 0 就是**混合会话**：主格子保留「本轮费用」写成 `积分 + $X`，专项块的「本轮 / 会话累计」只算 copilot 部分；**绝不把积分折成美元充成一个数**（决策 26）。
+- **显示形态（V1）**：专项块挂在执行面板「本轮耗时」那块卡里，只有会话历史出现过 copilot 才显示（切走模型也不消失）。纯 copilot 会话里主格子只留「本轮耗时 / 工具失败」两列，积分只在专项块出现一次；混合会话才回到三列。专项块四格：本轮 / 会话累计 / 本月已用 / 剩余，外加额度进度条、`重置 2026-12-01 00:00 UTC（本地 12/01 09:00）`、`额度约 $5,000`、`额度更新于 N m`。模型弹层的「累计费用」与状态栏芯片同口径换积分，悬停给 `$`。
+- **精度三档**：`< 1` 三位、`< 100` 两位、`≥ 100` 取整加千分位（`0.013` / `12.35` / `469,980`），`formatCredits()` 一处实现。账号行标「本月」，重置时间 UTC 与本地**并列**（决策 27）。
+- **对账**：收到新额度快照时比较「上一快照以来的账号增量」与「本机记账增量」，`accountDelta ≥ 10` 才比，偏差 > 2% 在专项块底部出一行小字；样本太小或月度重置（`used` 变小）就清掉。这条同时是「价格表过期」的探测器。
+- **范围**：上下文洞察里跨会话的「预估费用」KPI 保持美元不换（决策 31）；pi 本体不动。
+
+**取舍：** 放弃「provider 真值」换来零安装、零新进程、单一数据面（桥与 web 各自一份类型，没有第三处要装的东西）；`estimated` 字段把这个交换写进协议，界面据此显示「估算 / 真值」，不让人误以为是 GitHub 自己给的数。副作用是老会话里 `usage.cost` 为 0 / 缺失的请求没有积分（pi 记价之前的历史）。**否决过的两条**：① 桥自己做 MITM 代理截 pi 的 HTTP 流 —— 多一个进程、要正确转发流式响应，风险远大于收益；② 桥自己发一次 copilot 请求读响应头 —— 那是**真花钱**的探测，且与用户实际那次请求不是同一笔。
+
+**验证：** `node --experimental-strip-types bridge/tests/copilot-credits-unit.mjs`（12：增量读含半行/变短/文件不在/坏行、`cost × 100` 换算与真值优先、provider 分账、对账三态、额度解析含 `quota_reset_at:0` 与真实 Business 响应、拉额度失败一律 null 且不发请求）、`node --experimental-strip-types web/tests/copilot-unit.mjs`（7：精度三档、美元换算、重置时间 UTC/本地/天数、混合判定、用量比例、刷新年龄）、`web/tests/exec-view-unit.mjs` 22 通过（模型带 credits/otherCost）；`npm --prefix web run typecheck`（i18n 3597 键 × 3 语 + 视口守卫）与 `tsc --noEmit -p bridge/tsconfig.json` 全过。等价性实测：同一请求 pi 写的 `cost.total 0.0080125 × 100` 与响应的 `total_nano_aiu / 1e9` 完全一致。

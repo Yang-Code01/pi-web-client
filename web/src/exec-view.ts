@@ -1,4 +1,5 @@
 import type { Item, ToolPlanSnapshot as ExecPlanSnapshot, ToolPlanStatus as ExecPlanStatus, ToolPlanTask as ExecPlanTask } from "./types.ts";
+import type { CopilotView } from "./copilot.ts";
 export type { ExecPlanSnapshot, ExecPlanStatus, ExecPlanTask };
 
 export type ExecPhase = "idle" | "thinking" | "writing" | "tool" | "waiting";
@@ -6,6 +7,10 @@ export type ExecPhase = "idle" | "thinking" | "writing" | "tool" | "waiting";
 export interface ExecStatsSnapshot {
   tokens: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number } | null;
   cost: number | null;
+  /** Copilot 积分真值（会话累计）；其它 provider 没有这一项。 */
+  credits?: number | null;
+  /** Copilot 会话里别的 provider 花的美元（分账用）。 */
+  otherCost?: number | null;
   contextTokens: number | null;
   contextWindow: number | null;
 }
@@ -30,6 +35,8 @@ export interface ExecViewInput {
   childRuns?: ExecChildRunInput[];
   childSessionsAvailable?: boolean;
   publicAccess?: boolean;
+  /** Copilot 积分与账号额度（会话里没出现过 copilot 时为 null）。 */
+  copilot?: CopilotView | null;
 }
 
 export interface ExecActiveTool {
@@ -77,7 +84,7 @@ export interface ExecSubagentRow {
   status: "running" | "done" | "failed" | "unknown";
   steps: ExecChildStep[];
   plan: ExecPlanView | null;
-  stats: { cost: number | null; tokens: number | null };
+  stats: { cost: number | null; credits: number | null; otherCost: number | null; tokens: number | null };
   locked: boolean;
 }
 
@@ -128,9 +135,12 @@ export interface ExecMetricsView {
   toolCount: number;
   failureCount: number;
   cost: number | null;
+  credits: number | null;
+  /** 这一轮里别的 provider 花的美元；纯 copilot 轮次是 0。 */
+  otherCost: number | null;
   tokens: number | null;
-  main: { cost: number | null; tokens: number | null };
-  subagents: { cost: number; tokens: number };
+  main: { cost: number | null; credits: number | null; otherCost: number | null; tokens: number | null };
+  subagents: { cost: number; credits: number; otherCost: number; tokens: number };
   contextTokens: number | null;
   contextWindow: number | null;
   contextPercent: number | null;
@@ -152,6 +162,8 @@ export interface ExecViewModel {
   selectedRound: string | null;
   plan: ExecPlanView | null;
   metrics: ExecMetricsView;
+  /** Copilot 专项统计；会话里没有 copilot 记录时原样带上 false，前端不画专项块。 */
+  copilot: CopilotView | null;
 }
 
 interface LoadedRound {
@@ -251,7 +263,7 @@ function timelineRows(
           status: run?.state ?? (item.status === "running" ? "running" : "unknown"),
           steps: child.steps,
           plan: child.plan,
-          stats: { cost: run?.stats?.cost ?? null, tokens: totalTokens(run?.stats ?? null) },
+          stats: { cost: run?.stats?.cost ?? null, credits: run?.stats?.credits ?? null, otherCost: run?.stats?.otherCost ?? null, tokens: totalTokens(run?.stats ?? null) },
           locked: publicAccess || !childSessionsAvailable,
         };
       }
@@ -360,6 +372,8 @@ function roundMetrics(
   const snapshot = selectedIsCurrent || !first ? stats ?? roundStats?.final ?? null : roundStats?.final ?? null;
   const baseline = roundStats?.baseline ?? null;
   const cost = delta(snapshot?.cost ?? null, baseline?.cost ?? null);
+  const credits = delta(snapshot?.credits ?? null, baseline?.credits ?? null);
+  const otherCost = delta(snapshot?.otherCost ?? null, baseline?.otherCost ?? null);
   const tokens = delta(totalTokens(snapshot), totalTokens(baseline));
   const contextTokens = snapshot?.contextTokens ?? null;
   const contextWindow = snapshot?.contextWindow ?? null;
@@ -370,9 +384,11 @@ function roundMetrics(
   const childTotals = childRuns.filter((run) => childRunIds.has(run.toolCallId)).reduce(
     (sum, run) => ({
       cost: sum.cost + (typeof run.stats?.cost === "number" && Number.isFinite(run.stats.cost) ? run.stats.cost : 0),
+      credits: sum.credits + (typeof run.stats?.credits === "number" && Number.isFinite(run.stats.credits) ? run.stats.credits : 0),
+      otherCost: sum.otherCost + (typeof run.stats?.otherCost === "number" && Number.isFinite(run.stats.otherCost) ? run.stats.otherCost : 0),
       tokens: sum.tokens + (totalTokens(run.stats ?? null) ?? 0),
     }),
-    { cost: 0, tokens: 0 },
+    { cost: 0, credits: 0, otherCost: 0, tokens: 0 },
   );
 
   return {
@@ -380,8 +396,10 @@ function roundMetrics(
     toolCount: tools.length,
     failureCount,
     cost,
+    credits,
+    otherCost,
     tokens,
-    main: { cost, tokens },
+    main: { cost, credits, otherCost, tokens },
     subagents: childTotals,
     contextTokens,
     contextWindow,
@@ -483,5 +501,6 @@ export function execView(input: ExecViewInput): ExecViewModel {
     // #357：只在会话真空闲、看的又是当前计划时判过期；跑着的时候一步很长是正常的。
     plan: planView(selectedPlan, input.planRounds, stepCounts, input.phase === "idle" && selectedIsCurrent && input.plan !== undefined),
     metrics,
+    copilot: input.copilot ?? null,
   };
 }

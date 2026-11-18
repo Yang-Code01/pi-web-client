@@ -24,14 +24,17 @@ test("an idle view with no loaded turns has an empty previous-turn summary", () 
     rounds: [],
     selectedRound: null,
     plan: null,
+    copilot: null,
     metrics: {
       durationMs: null,
       toolCount: 0,
       failureCount: 0,
       cost: null,
+      credits: null,
+      otherCost: null,
       tokens: null,
-      main: { cost: null, tokens: null },
-      subagents: { cost: 0, tokens: 0 },
+      main: { cost: null, credits: null, otherCost: null, tokens: null },
+      subagents: { cost: 0, credits: 0, otherCost: 0, tokens: 0 },
       contextTokens: null,
       contextWindow: null,
       contextPercent: null,
@@ -158,9 +161,11 @@ test("round metrics subtract its baseline and count only non-todo tools and tool
     toolCount: 2,
     failureCount: 1,
     cost: 0.25,
+    credits: null,
+    otherCost: null,
     tokens: 75,
-    main: { cost: 0.25, tokens: 75 },
-    subagents: { cost: 0, tokens: 0 },
+    main: { cost: 0.25, credits: null, otherCost: null, tokens: 75 },
+    subagents: { cost: 0, credits: 0, otherCost: 0, tokens: 0 },
     contextTokens: 9000,
     contextWindow: 10000,
     contextPercent: 90,
@@ -193,9 +198,11 @@ test("historical round metrics use that round's final snapshot", () => {
     toolCount: 0,
     failureCount: 0,
     cost: 0.25,
+    credits: null,
+    otherCost: null,
     tokens: 40,
-    main: { cost: 0.25, tokens: 40 },
-    subagents: { cost: 0, tokens: 0 },
+    main: { cost: 0.25, credits: null, otherCost: null, tokens: 40 },
+    subagents: { cost: 0, credits: 0, otherCost: 0, tokens: 0 },
     contextTokens: 5000,
     contextWindow: 10000,
     contextPercent: 50,
@@ -254,11 +261,11 @@ test("subagent runs attach to their dispatch and show one child level of steps",
       planTaskId: null,
     }],
     plan: null,
-    stats: { cost: 0.02, tokens: 40 },
+    stats: { cost: 0.02, credits: null, otherCost: null, tokens: 40 },
     locked: false,
   });
   assert.equal("subagent" in view.timeline[0].subagent.steps[0], false, "grandchildren stay a single non-expandable line");
-  assert.deepEqual(view.metrics.subagents, { cost: 0.02, tokens: 40 });
+  assert.deepEqual(view.metrics.subagents, { cost: 0.02, credits: 0, otherCost: 0, tokens: 40 });
 });
 
 test("a skill step carries its description, why and path into the step note", () => {
@@ -407,7 +414,7 @@ test("child totals aggregate only loaded subagent runs with available statistics
     ],
   });
 
-  assert.deepEqual(view.metrics.subagents, { cost: 0.04, tokens: 35 });
+  assert.deepEqual(view.metrics.subagents, { cost: 0.04, credits: 0, otherCost: 0, tokens: 35 });
   assert.equal(view.timeline.length, 2, "unmatched runs do not create phantom rows");
 });
 
