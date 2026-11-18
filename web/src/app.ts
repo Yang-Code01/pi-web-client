@@ -17015,7 +17015,10 @@ export class App {
     text.append(el("b", "", tr("共 {p1} 次", { p1: String(model.total) })));
     const spent = this.execDuration(model.totalMs);
     if (spent) text.append(sep(), el("span", "", spent));
-    if (model.slowestMs !== null) {
+    // 只有一次调用时「最慢」与总数是同一个数；跑着的那一次同时又是最慢的时候，「当前」已经
+    // 是同一个数了。两种情况都别再重复一遍——挤掉的是真正在变的那几个字。
+    const slowestIsCurrent = model.current !== null && model.slowestMs === model.current.ms;
+    if (model.slowestMs !== null && model.total > 1 && !slowestIsCurrent) {
       text.append(sep(), el("span", "", tr("最慢 {p1}", { p1: this.execDuration(model.slowestMs) })));
     }
     const live = el("span", "browser-live", model.current ? tr("当前 {p1}", { p1: this.execDuration(model.current.ms) }) : "");

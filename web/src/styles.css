@@ -1680,8 +1680,10 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
    整块是 flex 列，不是 grid：卡片头 / 身体 / 输出都可能被折叠掉，写多轨 grid 的话
    隐藏的行会把后面整体往前挪（见 AGENTS.md「布局：网格里的可隐藏子元素」）。 */
 .browser-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.browser-sum { display: flex; align-items: baseline; gap: 8px; min-width: 0; color: var(--faint); font-size: 11px; }
-.browser-sum-text { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+/* 这一行里的「共 N 次 · 总耗时 · 最慢」在 340px 的栏里放不下，早先截成「最慢…」。
+   改成换行：宁可占两行，也不能把耗时截掉 —— 那一行就是这张面板的答案。 */
+.browser-sum { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; color: var(--faint); font-size: 11px; }
+.browser-sum-text { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
 .browser-sum-text b { color: var(--text); font-weight: 600; }
 .browser-live { color: var(--accent); font-variant-numeric: tabular-nums; }
 .browser-fold { flex: none; margin-left: auto; padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px; background: transparent; color: var(--faint); font: inherit; font-size: 10.5px; cursor: pointer; }
