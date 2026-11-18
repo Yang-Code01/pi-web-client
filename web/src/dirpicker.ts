@@ -14,6 +14,27 @@ const IMAGE_FILES = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
 /** 只敲盘符（`C:`）—— 那颗盘的根，不是相对路径。 */
 const BARE_DRIVE = /^[A-Za-z]:$/;
 
+/** 目录行的文件夹图标：内联 SVG（1.5 描边，和全站线性图标同一套）。
+ * 以前是 emoji `📁`：每个平台字形都不一样、会跟着字号变彩，还占不进图标那一列。
+ * 只在「只列目录」的入口里换成 SVG —— 列文件的入口里现有的文件行还是 emoji，
+ * 两边混在一张表里会像两套图标语言。
+ * 上一级那一行用同一个尺寸的箭头：以前是文本里的 `↑ `，名字开头和下面的行对不齐。 */
+const FOLDER_PATH = "M2.5 4.5a1 1 0 0 1 1-1h3l1.2 1.4h4.8a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z";
+const UP_PATH = "M8 12.5V4M4.5 7.5 8 4l3.5 3.5";
+function svgIcon(d: string): SVGSVGElement {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("class", "dir-ico");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(NS, "path");
+  path.setAttribute("d", d);
+  svg.append(path);
+  return svg;
+}
+const folderIcon = (): SVGSVGElement => svgIcon(FOLDER_PATH);
+const upIcon = (): SVGSVGElement => svgIcon(UP_PATH);
+
 type Volume = { root: string; total: number; free: number };
 type FileStat = { name: string; size: number; mtime: number };
 
@@ -311,7 +332,12 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     if (showFilter) find.append(filter, subWrap);
     root.append(dirHead, ...(find.childElementCount ? [find] : []), ...(opts.beforeList ?? []), list, foot);
   } else {
-    root.append(dirHead, ...(jump ? [jump] : []), sortRow, ...(showFilter ? [findRow] : []), ...(opts.beforeList ?? []), list, foot);
+    // 筛选与排序挤在同一行：两行各自的上下 padding 叠起来能吃掉近 90px 的列表高度（#499 之后
+    // 右栏一屏只剩四个文件夹，大头就在这两行的留白上）。
+    const tools = el("div", "dir-tools");
+    if (showFilter) tools.append(findRow);
+    if (sortable && !table) tools.append(sortRow);
+    root.append(dirHead, ...(jump ? [jump] : []), ...(tools.childElementCount ? [tools] : []), ...(opts.beforeList ?? []), list, foot);
   }
   host.append(root);
 
@@ -355,16 +381,17 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   };
 
   const paintSort = (): void => {
+    const arrow = sort.dir === "asc" ? " ↑" : " ↓";
     for (const [key, b] of sortBtns) {
       const on = key === sort.key;
       b.classList.toggle("on", on);
-      b.textContent = (sortLabels.find(([k]) => k === key)?.[1] ?? key) + (on ? (sort.dir === "asc" ? " ↑" : " ↓") : "");
+      b.textContent = (sortLabels.find(([k]) => k === key)?.[1] ?? key) + (on ? arrow : "");
     }
     for (const th of ths) {
       const on = th.dataset.sort === sort.key;
       th.classList.toggle("on", on);
       const ar = th.querySelector(".ar");
-      if (ar) ar.textContent = on ? (sort.dir === "asc" ? " ↑" : " ↓") : "";
+      if (ar) ar.textContent = on ? arrow : "";
     }
   };
 
@@ -445,8 +472,12 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
 
   const addDir = (entry: DirEntry): void => {
     const { name } = entry;
+    // 列文件的入口保留 emoji（同一列里文件行也是 emoji）；只挑目录的入口用线性图标。
+    const icon = (): Node => (listFiles ? el("span", "ico", "📁") : folderIcon());
     if (!table) {
-      const row = el("button", "model-row dir-row", `📁 ${name}`);
+      // 图标和名字分成两个节点：图标占定宽那一列，名字自己省略号（以前一整个字符串，长名字把行撑开）。
+      const row = el("button", "model-row dir-row") as HTMLButtonElement;
+      row.append(icon(), el("span", "nm", name));
       if (marked(entry)) row.classList.add("hit");
       row.title = entry.rel ? `${join(name)} · ${entry.rel}` : join(name);
       row.onclick = () => void go(join(name));
@@ -457,7 +488,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     if (marked(entry)) row.classList.add("hit");
     const nameCell = el("td");
     const wrap = el("div", "fc-name");
-    wrap.append(el("span", "ico", "📁"), el("span", "nm", name));
+    wrap.append(icon(), el("span", "nm", name));
     if (entry.rel) wrap.append(el("span", "rel", entry.rel));
     nameCell.append(wrap);
     const timeText = typeof entry.mtime === "number" ? formatTime(entry.mtime) : "–";
@@ -556,14 +587,16 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   const upRow = (): void => {
     if (table) {
       const up = el("tr", "fc-up");
-      const cell = el("td", "fc-dim", tr("↑ 上一级"));
+      const cell = el("td", "fc-dim fc-upcell");
       cell.colSpan = 4;
+      cell.append(upIcon(), el("span", "", tr("上一级")));
       up.append(cell);
       up.onclick = () => void go(parent ?? "");
       rowsHost.append(up);
       return;
     }
-    const up = el("button", "model-row dir-row", tr("↑ 上一级"));
+    const up = el("button", "model-row dir-row") as HTMLButtonElement;
+    up.append(upIcon(), el("span", "nm", tr("上一级")));
     up.onclick = () => void go(parent ?? "");
     rowsHost.append(up);
   };
@@ -657,7 +690,8 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     // 高亮跟着列表一起换：列表没换成，旧的「行 ↔ 高亮」配对就原样留着。
     pendingReveal = errorText ? "" : (o.reveal ?? "");
     paintCrumbs();
-    if (!append) {
+    if (append) appendRange(before);
+    else {
       if (showFilter && !o.keepQuery) {
         filter.value = "";
         query = "";
@@ -666,7 +700,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       // 换顺序/换筛选词后回到顶部是对的（不然眼睛找不到刚排在最前的那几条），
       // 但只在用户本来就不在顶部时才动，避免「已经在顶部还跳一下」。
       if (list.scrollTop !== 0) list.scrollTop = 0;
-    } else appendRange(before);
+    }
     moreBusy = false;
     if (quiet) {
       quiet = false;

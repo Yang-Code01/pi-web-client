@@ -385,6 +385,12 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .dir-path { padding: 8px 2px; font-family: var(--mono); font-size: 12px; color: var(--accent); word-break: break-all; }
 .dir-list { max-height: calc(var(--vh1) * 55); overflow-y: auto; scrollbar-gutter: stable; }
 .dir-row { font-family: var(--mono); font-size: 13px; text-align: left; }
+/* 列表版的目录行是「图标 + 名字」两个节点（emoji 换成内联 SVG 之后），所以得是 flex：
+   .model-row 默认两列网格，会把图标摊进 1fr 那一列。表格版（tr）不受影响。 */
+.dir-list > .dir-row { display: flex; align-items: center; gap: 8px; }
+.dir-list > .dir-row .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dir-ico { flex: 0 0 auto; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; color: var(--faint); }
+.dir-row:hover .dir-ico, .dir-row.hit .dir-ico { color: var(--dim); }
 .dir-foot { display: flex; justify-content: flex-end; padding-top: 10px; }
 
 /* ---------------------------------------------------------------- session management (D46) */
@@ -2854,7 +2860,7 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
    whole list instead of being ellipsised. Pin the track to the container and the ellipsis works. */
 .dir-list { grid-template-columns: minmax(0, 1fr); overflow-x: hidden; }
 
-/* ---- #499：大目录分页。排序行、筛选行、页脚计数各自独立一行，切换它们不该改变列表高度。 ---- */
+/* #499：大目录分页。排序行、筛选行各是一块，但包里新会话弹层把它们挤进同一行（见 .dir-tools）。 */
 .dir-sort { display: flex; align-items: center; gap: 2px; padding: 4px 2px; }
 .dir-sort[hidden], .dir-find[hidden], .dir-pagefoot[hidden], .dir-sub[hidden], .dir-pending[hidden], .dir-more[hidden] { display: none; }
 /* 排序就是一排列名（不是下拉框）：和各表格的表头同一个手势，点一下排、再点一下翻向。 */
@@ -2863,6 +2869,12 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .dir-sort-key.on { background: var(--panel-3); color: var(--text); }
 .dir-find { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 2px; }
 .dir-find .dir-filter { flex: 1 1 160px; min-width: 0; }
+/* 筛选 + 排序同一行：两块各自的 padding 叠起来能吃掉 40 多 px，列表因此矮一大截。
+   排序靠右、筛选吃掉剩下的宽度；窄版由 .dir-tools 自己换行（不挤成一条省略号）。 */
+.dir-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 2px 2px 4px; }
+.dir-tools .dir-find { flex: 1 1 180px; min-width: 0; padding: 0; flex-wrap: nowrap; }
+.dir-tools .dir-sort { flex: 0 0 auto; padding: 0; }
+.dir-tools .dir-filter { margin: 0; padding: 5px 10px; font-size: 12.5px; }
 .dir-sub { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font: 12px var(--sans); color: var(--dim); cursor: pointer; white-space: nowrap; }
 .dir-sub input { margin: 0; accent-color: var(--accent); }
 /* 换顺序 / 换筛选词时旧的一页先留着、只压暗一点：清空再画会闪一下，看着像「抖」。 */
@@ -4742,12 +4754,42 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* #499：新会话弹层 —— 左「工作区 / 最近」，右常显目录浏览（面包屑 + 筛选 + 排序），底下一行说明与按钮。 */
 /* 比默认的 .sheet（78vh）松一点：名字整行 + 396 的浏览区 + 高级 + 底栏，78% 会把自己撑出滚动条。 */
 .new-sheet { width: min(1020px, calc(calc(var(--vw1) * 100) - 32px)); max-height: calc(var(--vh1) * 92); }
-.ns-namerow { padding: 10px 16px 0; }
-.ns-namerow .ns-name { width: 100%; font-size: 15px; }
+/* 名字那一排：标签 + 输入框 + 右端「将在哪儿新建」。以前只有一个通栏输入框，
+   和下面的路径框、筛选框长得一模一样，看不出哪个是必填的主角。 */
+.ns-namerow { display: flex; align-items: center; gap: 10px; padding: 10px 16px 2px; }
+.ns-namelbl { flex: 0 0 auto; font-size: 12px; color: var(--dim); }
+.ns-namerow .ns-name { flex: 1 1 auto; min-width: 0; width: auto; font-size: 14px; }
+.ns-where {
+  flex: 0 1 auto; min-width: 0; max-width: 46%;
+  font: 11.5px var(--mono); color: var(--faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ns-where:empty { display: none; }
 /* 396 是给大屏的；矮一些的窗口里要自己收，否则整张弹层会滚起来、底栏被切掉。 */
 .new-sheet .ws-new-body { height: clamp(220px, calc(var(--vh1) * 92 - 240px), 396px); }
 .new-sheet .ws-new-side,
 .new-sheet .ws-new-dir { max-height: none; }
+/* 右栏那三层控件（面包屑 / 路径框 / 筛选 + 排序）以前各占一行、各有一圈留白，
+   205px 控件只给列表留下 245px。这里把留白收掉，列表拿回一屏多的行。 */
+.new-sheet .dir-path { padding: 2px 2px 4px; font-size: 11.5px; }
+.new-sheet .dir-head .dir-mk,
+.new-sheet .dir-head .dir-home { padding: 3px 7px; }
+.new-sheet .dir-jump { margin-top: 2px; }
+.new-sheet .dir-jump-input { padding: 5px 10px; }
+.new-sheet .dir-list { gap: 2px; padding: 2px 0 4px; }
+.new-sheet .dir-row { padding: 5px 10px; border-radius: 8px; }
+.new-sheet .dir-pagefoot { padding: 6px 2px 2px; }
+/* 左栏行也收一档：目录行 34px、组行 30px，同一列里不再两种节奏。 */
+.new-sheet .ws-new-pick { padding: 5px 8px; min-height: 30px; }
+.new-sheet .ws-new-side-title { padding: 2px 8px 4px; }
+/* 第二段（最近）和上面那组之间要留出「段间距 > 行距」，不然标题贴着上一行、读成同一组。 */
+.new-sheet .ws-new-picks + .ws-new-side-title { padding-top: 14px; }
+/* 「高级」以前是一条横贯整张弹层的带边框块，三角小到看不见；拆成一行暗淡的折行文字，
+   展开时才给边框，免得它把自己读成分隔线。 */
+.new-sheet .ns-advanced { margin-top: 6px; border-color: transparent; }
+.new-sheet .ns-advanced > summary { padding: 6px 16px; font-size: 11.5px; }
+.new-sheet .ns-advanced[open] { margin: 6px 16px 8px; border-color: var(--line-soft); }
+.new-sheet .ns-advanced[open] > summary { padding: 8px 12px; }
 /* 左栏自己一列：列表那一层滚，底下那颗「用这个目录新建工作区」一直看得见（组一多就不会被挤到弹层外）。 */
 .new-sheet .ws-new-side { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .new-sheet .ws-new-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }

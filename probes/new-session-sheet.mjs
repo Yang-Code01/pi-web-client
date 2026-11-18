@@ -61,7 +61,7 @@ function seedSession(sid, cwd, name) {
     { type: "message", id: "m1", parentId: null, timestamp: at, message: { role: "user", content: [{ type: "text", text: name }] } },
     { type: "session_info", id: "n1", parentId: "m1", timestamp: at, name },
   ];
-  fs.writeFileSync(path.join(dir, `${sid}.jsonl`), rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  fs.writeFileSync(path.join(dir, `${sid}.jsonl`), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
 }
 seedSession("zz-sheet-work", WORK, "主会话");
 seedSession("zz-sheet-other", OTHER, "别的目录");
@@ -329,7 +329,7 @@ try {
   const madeName = path.basename(OUTSIDE);
   await page.locator(".new-sheet .dir-jump-input").fill(OUTSIDE);
   await page.locator(".new-sheet .dir-jump-input").press("Enter");
-  await until(async () => ((await page.locator(".new-sheet .ws-new-note").textContent()) ?? "").includes(madeName), 8000, "browsed to the outside dir");
+  await until(async () => ((await page.locator(".new-sheet .ns-where").textContent()) ?? "").includes(madeName), 8000, "browsed to the outside dir");
   const picksBefore = await page.locator(".new-sheet .ws-new-pick").count();
   await page.locator(".new-sheet .ws-new-add").click();
   await until(async () => (await page.locator(".new-sheet .ws-new-pick", { hasText: madeName }).count()) === 1, 12000, "new workspace row");
