@@ -24,6 +24,8 @@ if (!fs.existsSync(ENTRY)) {
 }
 
 const procs = [];
+// 收着所有 peer 的 stdout：末尾那条「在线人数不再刷日志」（D313）要靠它断言。
+const peerStdout = [];
 function start(name, port, announce, nickname) {
   const state = path.join(ROOT, name);
   const child = spawn(process.execPath, [ENTRY], {
@@ -36,7 +38,10 @@ function start(name, port, announce, nickname) {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stdout.on("data", (b) => process.env.PEER_E2E_VERBOSE && process.stdout.write(`[${name}] ${b}`));
+  child.stdout.on("data", (b) => {
+    peerStdout.push(String(b));
+    if (process.env.PEER_E2E_VERBOSE) process.stdout.write(`[${name}] ${b}`);
+  });
   child.stderr.on("data", (b) => process.stdout.write(`[${name}!] ${b}`));
   procs.push(child);
   return child;
@@ -1028,6 +1033,12 @@ try {
   const code = await new Promise((resolve) => dup.on("exit", resolve));
   if (code !== 2) throw new Error(`端口被占时退出码应为 2，实际 ${code}`);
   log("ok 端口被占时退出码 2");
+
+  // D313：在线名单的变化不再写日志。prune 每 5 秒本来就会刷一行，上面这些等待足够抓到它；
+  // 断言的模式要窄（「在线 N 台」），「对方不在线」与隐身横幅那些含「在线」的正常行不算。
+  const onlineLines = peerStdout.join("").split(/\r?\n/).filter((line) => /在线 \d+ 台/.test(line));
+  if (onlineLines.length) throw new Error(`peer 仍在打印在线人数：${onlineLines[0]}`);
+  log("ok 不再打印「在线 N 台」");
 
   void A;
   void C;

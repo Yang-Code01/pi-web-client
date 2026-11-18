@@ -9695,7 +9695,6 @@ export class App {
       const notesHost: NotesHost = {
         send: (msg) => this.socket.send(msg),
         notes: () => this.notes,
-        session: () => (this.currentId ? { id: this.currentId, name: this.session?.name ?? "" } : null),
         prefill: (text) => this.prefill(text),
         newSessionWith: (text) => this.newSessionWith(text),
       };

@@ -6122,7 +6122,58 @@ Esc 之后 dialog: 0
 
 **验证：** `node bridge/tests/dirpage.mjs`（15：过滤 / 排序 / 文件夹不随方向翻转 / 分页越界 / 递归 rel 且跳过 `node_modules` / 空路径盘符页 / `listFilesUnder` 三条）；`npm run test:stat`、`npm run test:dirpath` 不动；真桥探针 `probes/new-session-sheet.mjs` 八组 —— 弹层布局（只列目录 32 行 + `↑ 上一级`）、筛选 10 个且焦点不丢、只列目录时「包含子目录」隐藏、排序切向、`这个目录已有 1 个会话`、API 层 size 降序 / offset / `total` / `sub`、文件管理器默认 `mtime ↓` 且能跳到第 1500 个文件、附件弹层表头点「大小」两向都单调。
 
-## D312 列表刷新不许变暗、不许先清空：把「忙碌」画在已经显示好的内容上就是「闪一下」（用户报障 2026-11-18）
+## D312 记录面板记住上次的分区与选中；正文下不再有 issue / commit / 会话（用户要求 2026-11-18）
+
+**问题：** 记录面板每次打开都回到「bug / 全部 / 没选中」——正在跟的一条 bug，关一下再开就得重新点；用户要求「保存上次使用的窗口」。同一处底部还挂着 issue、commit 两个输入框和一行「会话」，用户明确说不再需要（#4）。
+
+**决定：**
+
+- **只记三样：分区（kind）、去向（view）、选中（sel）**，落在 `localStorage["notes.memory"]`（`{ kind, view, sel }`）。分段筛选（全部 / 待处理…）与搜索词**不记**：那是这一次的临时过滤，明天打开还想看见全部。
+- **面板实例不保留状态**（`close()` 会销毁根节点与编辑器，下次 `new`），所以记忆必须落盘；写入时机是每次真的切了分区 / 去向 / 选中，不做「关闭时再写」——崩溃、刷新都不丢。
+- **回落分两层**：分区与去向永远是合法的（读到坏值回落 `bug` / `active`）；选中只在「这一堆里真的有它」时接回（`inView(note)` + active 下 kind 相符）。找不到就清掉选中、保留分区，不自动选第一条——凭空打开一条不是用户的意图。
+- **换堆不关编辑器**：`setNotes()` 只在「选中那条真的不该在这堆里了」（被删、被改到别的去向）时清空，只是被「显示已处理」过滤掉不算；否则点个状态就把编辑器关了。
+- **多标签不监听 `storage` 事件**：打开时读一次、切了就覆盖写，另一个标签下次打开才看到——记录面板不是协作文档，省掉一套同步逻辑。
+- **issue / commit / 会话从界面到桥全删**：`Note` / `NoteInput` / `notes.save` / `notes.status` / `NotesHost.session()` 一起收掉，不留「存着但看不见」的字段。**老 JSON 不迁移**：`readNote()` 逐字段运行时收窄，`sessionId` / `sessionName` / `issue` / `commit` 读到即丢，下次保存自然消失；`kind` / `status` / `mode` 非法值回落。
+
+**取舍：** 不记面板宽度 / 高度（用户问的是「窗口」，选了分区与选中）；不记分段与搜索词；不迁移老数据（字段没人读，迁了也是死重量）。
+
+**验证：** `npm run test:notes` 的 `notes-sheet-browser.mjs` 新增三组：`notes.memory` 落盘值、重开接回分区与选中、切到归档后只清选中且重开仍在归档；同时断言正文下只剩 状态 / 分类 / 创建 / 改动 四格。`npm --prefix web run typecheck`（含 i18n / 视口 / 层带守卫）与 `npm --prefix bridge run typecheck` 通过。
+
+## D313 `npm start` 自己把页面打开，内网通的在线人数不再刷日志（用户要求 2026-11-18）
+
+**问题：** 两处都只是「不方便」，但每天都在忍着：① 手动 `npm start` 之后只打印一行地址，还得自己去浏览器里粘一遍；② 内网通的人数变化一直往控制台打 —— `peer/src/index.ts` 里一句 `discovery.on("change", …在线 N 台…)`，而 `prune()` 每 5 秒无条件 `emit("change")`、每条 announce（约 10 秒一次）也发一次，所以空局域网也每 5 秒刷一行「在线 0 台」，`peer.log` 跟着长。
+
+**决定：**
+
+- **只在「人手动在终端里启动」时开页面**：判据是 `process.stdout.isTTY`（`bridge/src/openbrowser.ts` 的 `shouldOpenPage()`）。看门狗、热部署（`scripts/hotdeploy.mjs`）、`.pi/skills/bridge-update/bin/restart.mjs`（输出走 `Tee-Object` 管道）、测试环境（`pi-web-client-test-dev`）全都不接终端，一行都不用改就不会弹标签。`PI_WEB_OPEN=1` / `0` 可以越过这个判断强制开或关（也认 `true` / `false`；认不出来的值按没写处理，不会反而把页面关掉）。
+- **系统默认浏览器**：Windows `cmd /c start "" <url>`、macOS `open`、Linux `xdg-open`。那个空的 `""` 是必需的 —— `start` 会把第一个带引号的参数当窗口标题，少了它 URL 只是把标题改掉、窗口不开。`spawn` 用 `stdio:"ignore"` + `windowsHide`，**不 detached**（Windows 上 DETACHED_PROCESS 没有桌面关联，`start` 静默失效，`terminal.ts` 已经踩过一次）；再挂一个空 `error` 监听：找不到 opener 时是个 `error` 事件，没人接就会带走 bridge。
+- **挂在 `listen` 回调里、打印「已启动」之后**：端口才是确定能连的；先开浏览器再去 listen 会撞上「页面打得开、服务还没起」。
+- **打开页面的函数不回报结果**：`openPage()` 只发起 `spawn` 就返回（`void`），不看返回值也无法可靠地看 —— opener 不存在要等 `error` 事件，而调用处并不关心开没开成。
+- **内网通的在线日志整句删掉，不是降频也不是去重**：用户要的是「完全不打印」。人数本身在「内网通」页面里一直看得见，日志里那行没有额外信息；prune 每 5 秒都 emit，去重也只能把刷屏变慢一点。
+- **顺手清掉 `bridge/src/index.ts` 里 10 条过期 lint**（模板串拼接、重复声明、嵌套三元、否定 if、赋值表达式），它们和这次功能无关，但都在要改的那个文件里。
+
+**取舍：** 没用「永远打开」（用户选项里明说不要：后台重启一天弹一屏标签）；没用「往上找父进程判断是不是终端」那种探针（`isTTY` 已经够用，且零配置）；没引 `open` 这类 npm 依赖，三平台各一行就够。
+
+**验证：** `npm run test:openpage`（纯函数：TTY 真假、`PI_WEB_OPEN` 的 1/0/true/false/空串/认不出的值、三平台命令形状含 win32 的空标题参数）；`peer-e2e` 末尾新增一条断言：三份 peer 跑完，stdout 里不得出现 `/在线 \d+ 台/`（收 stdout 的方式与 `PEER_E2E_VERBOSE` 共用）；空端口/临时状态目录真跑 21 秒 —— 含「在线 N 台」的行数为 0（别用「含‘在线’的行」计数：`peer/src/index.ts` 的隐身横幅与 `messages.ts` 的「对方不在线」都是合法行），`pi-web-client 已启动：http://127.0.0.1:…` 照旧；`openPage(url,"linux")` 在没装 `xdg-open` 的 Windows 上不再能把进程带走（`error` 监听生效）。
+
+## D314 内网通气泡按「富文本 / Markdown」两支渲染，图片与表格不进气泡（用户要求 2026-11-18）
+
+**背景：** #515 把输入区换成富文本之后，消息正文可能是 `RichEditor` 产出的 HTML；旧消息与「提交给好友」转发的正文仍是纯文本 Markdown。气泡原来只 `textContent` + `pre-wrap`，两类都显示不出结构。
+
+**决定：**
+
+- **判定顺序：`hasRichMarkup()` 命中的走富文本，其余全部走 Markdown**。不再为「纯文本」留第三支：`1. 第一`、`- 项` 这类老消息会开始显示成列表，明确接受。
+- **富文本支：** `sanitizeRich()` 后把 `span[style]` 拆成文本（颜色 / 字号 / 底色丢弃、字体跟主题）；`h1-h3` 加 `.bub-h` 降成 13.5px；`a` 补 `target="_blank" rel="noopener noreferrer"`；`img` 本就不在白名单。
+- **Markdown 支：** `renderMarkdown(text, { tables: false, imageSrc: () => null, openPath })`。气泡里不画表格（窄栏读不了）、不画图片（图片走文件卡）；`openPath` = 复制路径 + toast「已复制路径」。
+- **点击：** 气泡空白处复制全文（富文本复制 `plainText(html)`，Markdown 复制原文）；`a` / `code` / `pre` / `table` / 折叠按钮不抢点击。
+- **长消息：** 纯文本超过 1600 字或 24 行，正文套 `.bub-body.clip`（`max-height:280px` + 底部渐变），底部「显示全文 / 收起」只切类、不重渲染；展开状态不持久化。
+- **引用与列表摘要：** 富文本先 `plainText()` 再截 120 字，会话行预览同理，标签不再漏进摘要。
+
+**取舍：** 没给 peer 另写渲染器（直接复用 `web/src/md.ts`，构建增量在预算内）；没记展开状态（刷新回到折叠，和聊天软件一致）；老纯文本会按 Markdown 变化，这是为了让 #518 转发的正文与旧消息共用一条渲染路径。
+
+**验证：** `node bridge/tests/peer-ui.mjs` 新增四条夹具（富文本、带样式的 span、Markdown 列表/标题/表格、1700 字长消息）：结构保留而颜色字号被剥、链接 `_blank`、`1.` 成 2 个 `li`、`#` 成 h3、`table` 为 0、折叠按钮文案切换；全过。`npm --prefix web run typecheck`（含 i18n）通过。
+
+## D315 列表刷新不许变暗、不许先清空：把「忙碌」画在已经显示好的内容上就是「闪一下」（用户报障 2026-11-18）
 
 **问题：** 用户报「新建目录和排序按钮，点击后会闪一下。这个发生过很多次」。逐帧采样（rAF 记录 `.dir-list` 的 `opacity` 与 children）抓到两处，机制不同、症状一样：
 

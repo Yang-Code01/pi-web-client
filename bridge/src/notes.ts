@@ -27,12 +27,6 @@ export interface Note {
   body: string;
   /** 桥这台机器上的绝对路径，按加入顺序。 */
   shots: string[];
-  /** 静默记下：这条是在哪个会话里记的（列表不显示，导出 / 交给 agent 时用）。 */
-  sessionId: string | null;
-  sessionName: string | null;
-  /** 处理完之后的凭据，可空。 */
-  issue: string;
-  commit: string;
   createdAt: number;
   updatedAt: number;
   /** 归档 / 丢进垃圾箱的时间；二者都没有就是正常在列表里。 */
@@ -73,8 +67,32 @@ export function listNotes(): Note[] {
   // 改过的排前面（新建 / 编辑都会刷 updatedAt），列表顺序就是 updatedAt 降序。
   return notes
     .filter((n): n is Note => Boolean(n) && typeof (n as Note).id === "string")
-    .map((n) => ({ ...n, shots: Array.isArray(n.shots) ? n.shots.filter((s) => typeof s === "string") : [] }))
+    .map(readNote)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+/** 只读认识的字段：老 JSON 里的 sessionId / sessionName / issue / commit 读到就丢（#514）。 */
+function readNote(raw: Note): Note {
+  // SAFETY: JSON 读回来的对象没有类型，逐字段按运行时值收窄；下面的 one/str/num 只接受对得上的值。
+  const r = raw as unknown as Record<string, unknown>;
+  // SAFETY: JSON 来自磁盘，类型只说「大致是 Note」；逐字段读前先当 unknown 校验。
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const one = <T extends string>(list: readonly T[], v: unknown, fallback: T): T =>
+    list.includes(v as T) ? (v as T) : fallback;
+  return {
+    id: str(r.id),
+    kind: one(NOTE_KINDS, r.kind, "bug"),
+    status: one(NOTE_STATUSES, r.status, "pending"),
+    mode: one(NOTE_MODES, r.mode, "quick"),
+    title: str(r.title),
+    body: str(r.body),
+    shots: Array.isArray(r.shots) ? r.shots.filter((s): s is string => typeof s === "string") : [],
+    createdAt: num(r.createdAt),
+    updatedAt: num(r.updatedAt),
+    archivedAt: typeof r.archivedAt === "number" ? r.archivedAt : null,
+    deletedAt: typeof r.deletedAt === "number" ? r.deletedAt : null,
+  };
 }
 
 function save(notes: Note[]): Note[] {
@@ -108,10 +126,6 @@ export interface NoteInput {
   mode?: NoteMode;
   title?: string;
   body?: string;
-  sessionId?: string | null;
-  sessionName?: string | null;
-  issue?: string;
-  commit?: string;
 }
 
 /** 新建或就地更新一条；`id` 不在（或已不存在）就当新建。 */
@@ -129,8 +143,6 @@ export function saveNote(input: NoteInput): Note {
     existing.mode = mode;
     existing.title = title;
     existing.body = body;
-    if (input.issue !== undefined) existing.issue = text(input.issue, 80);
-    if (input.commit !== undefined) existing.commit = text(input.commit, 120);
     existing.updatedAt = at;
     save(notes);
     return existing;
@@ -143,10 +155,6 @@ export function saveNote(input: NoteInput): Note {
     title,
     body,
     shots: [],
-    sessionId: input.sessionId ?? null,
-    sessionName: input.sessionName ?? null,
-    issue: text(input.issue, 80),
-    commit: text(input.commit, 120),
     createdAt: at,
     updatedAt: at,
     archivedAt: null,
@@ -156,13 +164,11 @@ export function saveNote(input: NoteInput): Note {
   return note;
 }
 
-export function setNoteStatus(id: string, status: NoteStatus, patch: { issue?: string; commit?: string } = {}): Note | null {
+export function setNoteStatus(id: string, status: NoteStatus): Note | null {
   const notes = listNotes();
   const note = notes.find((n) => n.id === id);
   if (!note) return null;
   note.status = pick(NOTE_STATUSES, status, "status", note.status);
-  if (patch.issue !== undefined) note.issue = text(patch.issue, 80);
-  if (patch.commit !== undefined) note.commit = text(patch.commit, 120);
   note.updatedAt = Date.now();
   save(notes);
   return note;

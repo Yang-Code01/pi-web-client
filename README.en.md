@@ -113,6 +113,8 @@ npm start     # tsc builds bridge + bundles peer and web/dist, then runs dist/in
 From then on every start is just `npm start`; it recompiles every time, so after a `git pull` that only changed code, `npm start` is enough.
 If a pulled change touched a sub-package's dependencies (the `package-lock.json` in `bridge/` `peer/` `web/`), `npm start` stops before compiling, lists the mismatched packages and asks you to run `npm install` first. The same goes for the pi extensions under "what this project needs": `npm start` first checks that every extension in the table is installed and, when one is missing, names it and asks for `npm install` (D224). That check runs `pi list` (a dozen seconds), so it really runs only on the first start after the list, pi, or pi's `settings.json` changed; once everything is there the answer is remembered and later starts pay nothing.
 
+When you run `npm start` / `npm run start:nobuild` by hand in a terminal, the server also opens the page in your default browser once it is up. Background restarts (watchdog, hot deploy, test environments) write their output to pipes or files rather than a terminal, so they leave the browser alone. `PI_WEB_OPEN=0` / `PI_WEB_OPEN=1` forces it off or on.
+
 The first start prints a passphrase once (also written to `passphrase.txt` in the state directory):
 
 ```text

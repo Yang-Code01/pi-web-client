@@ -171,7 +171,25 @@ try {
         delay = 1000; // 小张的响应慢：切到小李之后才回来
         body = { entries: [msg("aaaaaaaa-0000-4000-8000-000000000001", "我是 A 的消息", { ...me, nodeId: ZHANG, nickname: "小张" }, ME)] };
       } else if (who === LI) {
-        body = { entries: [msg("bbbbbbbb-0000-4000-8000-000000000001", "我是 B 的消息", { ...me, nodeId: LI, nickname: "小李" }, ME)] };
+        // #516：富文本 / 旧纯文本 Markdown / 超长折叠三种气泡各来一条。
+        body = {
+          entries: [
+            msg("bbbbbbbb-0000-4000-8000-000000000001", "我是 B 的消息", { ...me, nodeId: LI, nickname: "小李" }, ME),
+            msg(
+              "bbbbbbbb-0000-4000-8000-000000000002",
+              '<p>富 <strong>粗</strong> <span style="color:#ff0000;font-size:20px">红</span></p><p><a href="https://example.com/x">链接</a></p>',
+              { ...me, nodeId: LI, nickname: "小李" },
+              ME,
+            ),
+            msg(
+              "bbbbbbbb-0000-4000-8000-000000000003",
+              "1. 第一\n2. 第二\n\n# 小标题\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+              { ...me, nodeId: LI, nickname: "小李" },
+              ME,
+            ),
+            msg("bbbbbbbb-0000-4000-8000-000000000004", "长".repeat(1700), { ...me, nodeId: LI, nickname: "小李" }, ME),
+          ],
+        };
       } else {
         body = { entries: [] }; // 小王：没有历史
       }
@@ -190,14 +208,22 @@ try {
   await page.click('#rail button[title="联系人"]');
   await page.click('.listbox .row:has-text("小王")');
   await page.click('#main button:has-text("发消息")');
-  const boxes = await page.locator("textarea").count();
+  const boxes = await page.locator(".peer-rich[contenteditable=true]").count();
   const head = (await page.locator("#main .head").innerText().catch(() => "")).replace(/\s+/g, " ").trim();
-  check("无历史会话有输入框", boxes === 1, `textarea=${boxes}，头部「${head}」`);
+  check("无历史会话有输入框", boxes === 1, `contenteditable=${boxes}，头部「${head}」`);
   if (boxes === 1) {
-    await page.fill("textarea", "你好小王");
+    await page.fill(".peer-rich", "你好小王");
     await page.click('#main button:has-text("发送")');
     for (let i = 0; i < 40 && !sent; i++) await page.waitForTimeout(50);
     check("第一条消息真的发出去了", sent?.peer === WANG && sent?.text === "你好小王", JSON.stringify(sent));
+
+    // #515：带格式的正文按 HTML 发，接收端才有东西可渲染。
+    sent = null;
+    await page.click(".peer-rich");
+    await page.keyboard.type("**粗**");
+    await page.click('#main button:has-text("发送")');
+    for (let i = 0; i < 40 && !sent; i++) await page.waitForTimeout(50);
+    check("富文本按 HTML 发出去", sent?.peer === WANG && /<strong>粗<\/strong>/.test(sent?.text ?? ""), JSON.stringify(sent));
   }
 
   // ---- 2. 切会话串台 ----
@@ -217,6 +243,28 @@ try {
     text.includes("我是 B 的消息") && !text.includes("我是 A 的消息"),
     text.slice(0, 90),
   );
+  // #516：三种气泡都画对，链接 / 表格 / 折叠互不打架。
+  await page.waitForSelector(".bub-body.rich");
+  const richStrong = (await page.locator(".bub-body.rich strong").first().innerText()).trim();
+  const richSpan = await page.locator(".bub-body.rich span[style]").count();
+  const richLink = await page.locator('.bub-body.rich a[href="https://example.com/x"]').evaluate((a) => ({
+    target: a.getAttribute("target"),
+    rel: a.getAttribute("rel"),
+  }));
+  check("富文本气泡保留结构、剥掉颜色字号", richStrong === "粗" && richSpan === 0, `strong=${richStrong}，带样式 span=${richSpan}`);
+  check("富文本里的链接新窗口打开", richLink.target === "_blank" && (richLink.rel ?? "").includes("noopener"), JSON.stringify(richLink));
+  const mdList = await page.locator(".bub-body.md ol li").count();
+  const mdHead = await page.locator(".bub-body.md h3").first().innerText().catch(() => "");
+  const mdTable = await page.locator(".bub-body.md table").count();
+  check("旧纯文本按 Markdown 渲染列表与标题", mdList === 2 && mdHead.trim() === "小标题", `li=${mdList}，h3=${mdHead}`);
+  check("气泡里不渲染表格", mdTable === 0, `table=${mdTable}`);
+  const more = page.locator(".bub-more").first();
+  const clipBefore = await page.locator(".bub-body.clip").count();
+  const moreText = await more.innerText();
+  await more.click();
+  const clipAfter = await page.locator(".bub-body.clip").count();
+  const moreAfter = await more.innerText();
+  check("长消息折叠、点开不重渲染", clipBefore === 1 && clipAfter === 0 && moreText === "显示全文" && moreAfter === "收起", `clip=${clipBefore}→${clipAfter}，按钮=${moreText}→${moreAfter}`);
   await page.screenshot({ path: path.join(REPO, ".scratch", "shots", "peer-ui.png") });
 
   // ---- #381：通讯录桩只给 1 人，状态在线名单多给一个陌生 nodeId ----
@@ -247,11 +295,14 @@ try {
   check("通讯录只给 1 人时在线陌生人出现在附近的人", nearbyGroup === 1 && strangerRow === 1, `组=${nearbyGroup}，行=${strangerRow}`);
   await page2.click('.listbox .row:has-text("小赵")');
   await page2.click('#main button:has-text("发消息")');
-  const focused = await page2.evaluate(() => document.activeElement?.tagName ?? "");
-  const boxes2 = await page2.locator("textarea").count();
-  check("点发消息后输入框拿到焦点", focused === "TEXTAREA" && boxes2 === 1, `active=${focused}，textarea=${boxes2}`);
+  const focused = await page2.evaluate(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLElement && el.classList.contains("peer-rich") ? "peer-rich" : (el?.tagName ?? "");
+  });
+  const boxes2 = await page2.locator(".peer-rich[contenteditable=true]").count();
+  check("点发消息后输入框拿到焦点", focused === "peer-rich" && boxes2 === 1, `active=${focused}，contenteditable=${boxes2}`);
   if (boxes2 === 1) {
-    await page2.fill("textarea", "你好小赵");
+    await page2.fill(".peer-rich", "你好小赵");
     await page2.click('#main button:has-text("发送")');
     for (let i = 0; i < 40 && !sent; i++) await page2.waitForTimeout(50);
     check("附近的人发第一条消息命中正确 nodeId", sent?.peer === STRANGER && sent?.text === "你好小赵", JSON.stringify(sent));

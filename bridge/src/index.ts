@@ -111,6 +111,7 @@ import { saveStruct as saveSheetStruct, type StructOp } from "./sheet/struct.ts"
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { countSlides, slidesAvailable, slidesPdfFile, slidesPdfKey, slidesPdfStatus, slidesProbe } from "./slides/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
+import { openPage, shouldOpenPage } from "./openbrowser.ts";
 
 interface Config {
   port: number;
@@ -546,7 +547,7 @@ async function main(): Promise<void> {
     const line = `${new Date().toISOString()} ${msg}`;
     console.log(line);
     try {
-      fs.appendFileSync(statePath("logs", "bridge.log"), line + "\n");
+      fs.appendFileSync(statePath("logs", "bridge.log"), `${line}\n`);
     } catch {
       /* ignore */
     }
@@ -1177,7 +1178,7 @@ async function main(): Promise<void> {
       await handleAttendance(req, res, url, {
         publicReq,
         notifier,
-        pageUrl: publicReq ? (tunnel.state.url ?? "") : "http://127.0.0.1:" + cfg.port,
+        pageUrl: publicReq ? (tunnel.state.url ?? "") : `http://127.0.0.1:${cfg.port}`,
       })
     )
       return;
@@ -2053,13 +2054,14 @@ async function main(): Promise<void> {
     }
 
     if (url.pathname === "/api/notify-test" && req.method === "POST") {
-      const test =
-        uiLang === "en"
-          ? { title: "pi-web-client test", body: "If you can read this, push notifications work." }
-          : uiLang === "ja"
-            ? { title: "pi-web-client テスト", body: "これが見えていれば、通知は届いています。" }
-            : { title: "pi-web-client 测试", body: "如果你看到这条，通知链路是通的。" };
-      const result = await notifier.notify(test.title, test.body, `${publicReq ? tunnel.state.url ?? "" : "http://127.0.0.1:" + cfg.port}`, true);
+      let test = { title: "pi-web-client 测试", body: "如果你看到这条，通知链路是通的。" };
+      if (uiLang === "en") {
+        test = { title: "pi-web-client test", body: "If you can read this, push notifications work." };
+      } else if (uiLang === "ja") {
+        test = { title: "pi-web-client テスト", body: "これが見えていれば、通知は届いています。" };
+      }
+      const testUrl = publicReq ? tunnel.state.url ?? "" : `http://127.0.0.1:${cfg.port}`;
+      const result = await notifier.notify(test.title, test.body, testUrl, true);
       return json(res, 200, result);
     }
 
@@ -2125,7 +2127,10 @@ async function main(): Promise<void> {
       const shaped = frameFor(client as WebSocket, payload);
       const key = shaped === payload ? "paged" : "full";
       let data = cache.get(key);
-      if (data === undefined) cache.set(key, (data = JSON.stringify(shaped)));
+      if (data === undefined) {
+        data = JSON.stringify(shaped);
+        cache.set(key, data);
+      }
       client.send(data);
     }
   };
@@ -2249,11 +2254,9 @@ async function main(): Promise<void> {
   peer.onNew((thread) => {
     if (!shouldNotify()) return;
     const last = thread.last;
-    const body = last?.text
-      ? last.text.replace(/\s+/g, " ").slice(0, 140)
-      : last?.file
-        ? `[文件] ${last.file.name}`
-        : "发来一条新消息";
+    let body = "发来一条新消息";
+    if (last?.text) body = last.text.replace(/\s+/g, " ").slice(0, 140);
+    else if (last?.file) body = `[文件] ${last.file.name}`;
     const link = tunnel.state.url ? `${tunnel.state.url}/peer` : `http://127.0.0.1:${cfg.port}/peer`;
     void notifier.notify(`内网通 · ${thread.nickname}`, body, link);
   });
@@ -3330,7 +3333,7 @@ async function main(): Promise<void> {
             if (msg.type !== "mcp.install") send({ type: "ext.op", reqId, op, state: "running" });
             try {
               if (msg.type === "ext.toggle") {
-                const scope = msg.scope === "project" ? "project" : msg.scope === "builtin" ? "builtin" : "user";
+                const scope = msg.scope === "project" || msg.scope === "builtin" ? msg.scope : "user";
                 // Built-ins live in the *global* settings.json, exactly like user extensions
                 // (toggleExtension maps them there), so the lock is named after the file, not the scope.
                 await writeLock(`settings:${settingsScopeFor(scope)}`, () =>
@@ -3431,10 +3434,6 @@ async function main(): Promise<void> {
                 mode: msg.mode as NoteMode | undefined,
                 title: typeof msg.title === "string" ? msg.title : undefined,
                 body: typeof msg.body === "string" ? msg.body : undefined,
-                sessionId: typeof msg.sessionId === "string" ? msg.sessionId : null,
-                sessionName: typeof msg.sessionName === "string" ? msg.sessionName : null,
-                issue: typeof msg.issue === "string" ? msg.issue : undefined,
-                commit: typeof msg.commit === "string" ? msg.commit : undefined,
               });
               broadcast({ type: "notes", notes: listNotes() });
               send({ type: "notes.saved", note });
@@ -3445,12 +3444,9 @@ async function main(): Promise<void> {
           }
           case "notes.status": {
             try {
-              const note = setNoteStatus(String(msg.id ?? ""), msg.status as NoteStatus, {
-                ...(typeof msg.issue === "string" ? { issue: msg.issue } : {}),
-                ...(typeof msg.commit === "string" ? { commit: msg.commit } : {}),
-              });
-              if (!note) send({ type: "notes.saved", error: "这条记录已经不在了" });
-              else broadcast({ type: "notes", notes: listNotes() });
+              const note = setNoteStatus(String(msg.id ?? ""), msg.status as NoteStatus);
+              if (note) broadcast({ type: "notes", notes: listNotes() });
+              else send({ type: "notes.saved", error: "这条记录已经不在了" });
             } catch (err: any) {
               send({ type: "notes.saved", error: String(err?.message ?? err) });
             }
@@ -3458,11 +3454,10 @@ async function main(): Promise<void> {
           }
           case "notes.delete": {
             const id = String(msg.id ?? "");
-            if (!deleteNote(id)) send({ type: "notes.saved", error: "这条记录已经不在了" });
-            else {
+            if (deleteNote(id)) {
               log(`note deleted ${id}`);
               broadcast({ type: "notes", notes: listNotes() });
-            }
+            } else send({ type: "notes.saved", error: "这条记录已经不在了" });
             return;
           }
           case "notes.shot": {
@@ -3724,7 +3719,8 @@ async function main(): Promise<void> {
             if (!(await requireStepUp())) return;
             const cwd = String(msg.cwd ?? "");
             const trust = await setTrust(pi.cli, cwd, Number(msg.option));
-            log(`trust ${cwd} → ${trust.saved ? (trust.saved.decision ? "trusted" : "untrusted") + " @ " + trust.saved.path : "cleared"}`);
+            const where = trust.saved ? `${trust.saved.decision ? "trusted" : "untrusted"} @ ${trust.saved.path}` : "cleared";
+            log(`trust ${cwd} → ${where}`);
             send({ type: "trust", cwd, trust, saved: true });
             return;
           }
@@ -3987,9 +3983,12 @@ async function main(): Promise<void> {
       `slides: ${slidesProbed.available ? "PowerPoint" : "no PowerPoint"}` +
         `${slidesProbed.exe ? ` (${slidesProbed.exe})` : ""}`,
     );
-    console.log(`\n  pi-web-client 已启动：http://127.0.0.1:${cfg.port}`);
+    const pageUrl = `http://127.0.0.1:${cfg.port}`;
+    console.log(`\n  pi-web-client 已启动：${pageUrl}`);
     if (fresh) console.log(`  口令（首次生成，只显示这一次）：${fresh}\n`);
     else console.log(`  口令在 ${statePath("passphrase.txt")}\n`);
+    // 人手动在终端里 `npm start` 时把页面带出来；后台重启（看门狗 / 热部署 / 测试环境）不动浏览器。
+    if (shouldOpenPage()) openPage(pageUrl);
     if (cfg.tunnelAuto && tunnelBin) tunnel.start();
     // D161: pin 「the default permission as of now」 onto sessions the bridge has never looked at.
     // Async and best-effort: a session list that is a second late costs nothing, a crash on boot costs all.
