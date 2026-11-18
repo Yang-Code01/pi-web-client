@@ -124,7 +124,7 @@ try {
   await page.locator(".topbar .icon-btn", { hasText: "文件" }).click();
   await page.locator(".viewer-browse .dirpicker").waitFor({ timeout: 10000 });
   const heads = await page.$$eval(".viewer-head .pane-seg button", (els) => els.map((e) => e.textContent));
-  assert(heads.join() === "浏览,预览,编辑", `pane seg is 浏览/预览/编辑 (got ${heads.join()})`);
+  assert(heads.join() === "浏览,预览,编辑,对照", `pane seg is 浏览/预览/编辑/对照 (got ${heads.join()})`);
   assert((await page.locator(".viewer-head .pane-seg button.on").textContent()) === "浏览", "浏览 is active");
   await until(async () => (await page.locator(".dirpicker .file-row").count()) >= 3, 10000, "files listed");
   const crumbs = await page.locator(".dirpicker .dir-path").textContent();
@@ -137,7 +137,8 @@ try {
   // ---- 2. 走子目录再回来（面包屑 = 上一级）
   await page.locator(".dirpicker .dir-row", { hasText: "sub" }).click();
   await until(async () => (await page.locator(".dirpicker .file-row").count()) === 1, 8000, "sub listed");
-  await page.locator(".dirpicker .dir-row", { hasText: "上一级" }).click();
+  // 表格版式里「↑ 上一级」是表里的一条跨列行（.fc-up），不再是 .dir-row
+  await page.locator(".dirpicker .fc-up").click();
   await until(async () => (await page.locator(".dirpicker .file-row").count()) >= 3, 8000, "back in work");
   log("2 drill down + 上一级 ok");
 

@@ -10081,21 +10081,21 @@ export class App {
     body.append(host);
     const home = this.dirHome(() => this.session?.cwd ?? "");
     // D71: the copy button reads the picker live, so it always copies the directory actually listed.
-    let pickerPath = (): string => "";
-    const copy = this.dirCopy(() => pickerPath());
+    let handle: FileConsoleHandle | null = null;
+    const copy = this.dirCopy(() => handle?.picker.path() ?? "");
     // D167: 建完停在原地 —— 重新列一遍当前目录，再把新行标出来。
     const mk = this.mkControls({
-      parent: () => pickerPath(),
-      made: (abs) => this.revealMade(picker, abs),
+      parent: () => handle?.picker.path() ?? "",
+      made: (abs) => {
+        if (handle) this.revealMade(handle.picker, abs);
+      },
     });
-    const picker = mountDirPicker(host, {
+    // D320：浏览页和下沿「文件」是同一份控制台（左栏 + 四列表格 + 状态栏），只差一层壳与行语义。
+    handle = openFileConsole({
+      chrome: "pane",
       start: v.lastDir || this.session?.cwd || "",
-      files: true,
-      fallback: true,
-      pathBox: true,
-      // #499：文件管理器是文件入口 —— 表头上能按名称 / 大小 / 修改时间排，默认时间降序。
-      sortable: true,
-      defaultSort: { key: "mtime", dir: "desc" },
+      cwd: this.session?.cwd ?? "",
+      sessionId: v.sessionId,
       head: [home.node, copy.node, mk.dirBtn, mk.fileBtn],
       beforeList: [mk.row],
       onState: (s) => {
@@ -10110,8 +10110,8 @@ export class App {
       onPick: (abs) => void this.pickFromBrowser(v, abs),
       onContext: (abs, name, ev) => this.fileMenu(v, abs, name, ev),
     });
-    pickerPath = () => picker.path();
-    home.bind(picker);
+    host.append(handle.root);
+    home.bind(handle.picker);
     copy.bind();
   }
 
@@ -19681,7 +19681,7 @@ function settingFields(): SettingField[] {
     defaultText: tr("关"),
     hint: tr("agent 停下前，计划还有没关的项、且上次更新后又调用了 5 次以上工具，就让它多跑一小步只用 todo 对齐计划（用户看不到这句提醒，会多花一次请求）。改了立即生效"),
   },
-  // D319: 提问兜底。默认开，只有显式 false 才关；扩展在 pi 子进程里每次停下现读。
+  // D320: 提问兜底。默认开，只有显式 false 才关；扩展在 pi 子进程里每次停下现读。
   {
     key: "web.askNudge",
     label: tr("停下前核对提问"),

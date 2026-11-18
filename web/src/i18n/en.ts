@@ -424,6 +424,7 @@ export const en: Dict = {
   "删除（先进垃圾箱，可还原）": "Delete (goes to trash; restorable)",
   "删除（运行中：先停止这一轮再移入垃圾箱，可还原）": "Delete (running: this turn is stopped first, then it goes to trash; restorable)",
   "到会话列表里选一个": "Pick one from the session list",
+  "重新列出这个目录": "List this folder again",
   "刷新": "Refresh",
   "刷新（重新读取文件）": "Refresh (re-read the file)",
   "前进（Alt+→）": "Forward (Alt+→)",
