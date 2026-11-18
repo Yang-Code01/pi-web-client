@@ -3431,10 +3431,6 @@ async function main(): Promise<void> {
                 mode: msg.mode as NoteMode | undefined,
                 title: typeof msg.title === "string" ? msg.title : undefined,
                 body: typeof msg.body === "string" ? msg.body : undefined,
-                sessionId: typeof msg.sessionId === "string" ? msg.sessionId : null,
-                sessionName: typeof msg.sessionName === "string" ? msg.sessionName : null,
-                issue: typeof msg.issue === "string" ? msg.issue : undefined,
-                commit: typeof msg.commit === "string" ? msg.commit : undefined,
               });
               broadcast({ type: "notes", notes: listNotes() });
               send({ type: "notes.saved", note });
@@ -3445,10 +3441,7 @@ async function main(): Promise<void> {
           }
           case "notes.status": {
             try {
-              const note = setNoteStatus(String(msg.id ?? ""), msg.status as NoteStatus, {
-                ...(typeof msg.issue === "string" ? { issue: msg.issue } : {}),
-                ...(typeof msg.commit === "string" ? { commit: msg.commit } : {}),
-              });
+              const note = setNoteStatus(String(msg.id ?? ""), msg.status as NoteStatus);
               if (!note) send({ type: "notes.saved", error: "这条记录已经不在了" });
               else broadcast({ type: "notes", notes: listNotes() });
             } catch (err: any) {
