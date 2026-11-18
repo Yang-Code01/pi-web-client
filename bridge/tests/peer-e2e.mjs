@@ -24,6 +24,8 @@ if (!fs.existsSync(ENTRY)) {
 }
 
 const procs = [];
+// 收着所有 peer 的 stdout：末尾那条「在线人数不再刷日志」（D313）要靠它断言。
+const peerStdout = [];
 function start(name, port, announce, nickname) {
   const state = path.join(ROOT, name);
   const child = spawn(process.execPath, [ENTRY], {
@@ -36,7 +38,10 @@ function start(name, port, announce, nickname) {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stdout.on("data", (b) => process.env.PEER_E2E_VERBOSE && process.stdout.write(`[${name}] ${b}`));
+  child.stdout.on("data", (b) => {
+    peerStdout.push(String(b));
+    if (process.env.PEER_E2E_VERBOSE) process.stdout.write(`[${name}] ${b}`);
+  });
   child.stderr.on("data", (b) => process.stdout.write(`[${name}!] ${b}`));
   procs.push(child);
   return child;
@@ -259,6 +264,46 @@ try {
     8000,
   );
   log("ok quick 文字送到对端且折叠成 delivered");
+
+  // #507：记录包走同一条 inbox / outbox；零张图的包也要能收到并入历史。
+  const notePayload = { title: "复现步骤", body: "<p>点一下<b>提交</b></p>", kind: "bug", status: "pending", shots: [] };
+  const noteSend = await fetch("http://127.0.0.1:17965/note", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, note: notePayload }),
+  });
+  if (!noteSend.ok) throw new Error(`发记录包应成功，实际 ${noteSend.status} ${await noteSend.text()}`);
+  await until(
+    "C 收到记录包",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17968/messages?peer=${sa}`)).json();
+      return body.entries?.some((e) => e.kind === "note" && e.note?.title === "复现步骤") ? body : false;
+    },
+    8000,
+  );
+  const tooBigNote = await fetch("http://127.0.0.1:17965/note", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, note: { ...notePayload, body: "x".repeat(200_001) } }),
+  });
+  const tooBigBody = await tooBigNote.json();
+  if (tooBigNote.status !== 400 || !/正文太长/.test(tooBigBody.error ?? "")) {
+    throw new Error(`超长正文应 400，实际 ${tooBigNote.status} ${JSON.stringify(tooBigBody)}`);
+  }
+  const badShot = await fetch("http://127.0.0.1:17968/peer/inbox", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      proto: 1,
+      kind: "note",
+      control: { id: "00000000-0000-4000-8000-00000000n0t3", at: Date.now(), from: { nodeId: sa, port: 17965 }, to: { kind: "node", id: sc }, note: { ...notePayload, shots: [{ name: "a.png", size: 1, sha256: "nope" }] } },
+    }),
+  });
+  const badShotBody = await badShot.json();
+  if (badShot.status !== 400 || badShotBody.retryable !== false) {
+    throw new Error(`坏截图清单应 400 不可重试，实际 ${badShot.status} ${JSON.stringify(badShotBody)}`);
+  }
+  log("ok 记录包收发与载荷校验（#507）");
 
   // D300：quick（也不是好友）照样能传文件 —— 关系不再是一道文件权限。
   const quickProbe = path.join(ROOT, "quick-probe.bin");
@@ -1028,6 +1073,12 @@ try {
   const code = await new Promise((resolve) => dup.on("exit", resolve));
   if (code !== 2) throw new Error(`端口被占时退出码应为 2，实际 ${code}`);
   log("ok 端口被占时退出码 2");
+
+  // D313：在线名单的变化不再写日志。prune 每 5 秒本来就会刷一行，上面这些等待足够抓到它；
+  // 断言的模式要窄（「在线 N 台」），「对方不在线」与隐身横幅那些含「在线」的正常行不算。
+  const onlineLines = peerStdout.join("").split(/\r?\n/).filter((line) => /在线 \d+ 台/.test(line));
+  if (onlineLines.length) throw new Error(`peer 仍在打印在线人数：${onlineLines[0]}`);
+  log("ok 不再打印「在线 N 台」");
 
   void A;
   void C;

@@ -437,3 +437,49 @@
 .note-handoff button:hover { background: var(--line-soft); }
 .handoff-label { font-size: 12px; color: var(--text); }
 .handoff-hint { font-size: 11px; color: var(--faint); }
+.note-handoff button:disabled { opacity: 0.42; cursor: not-allowed; }
+
+/* 选人 / 提交确认：挂在 body 上（不在 #app），从连动菜单弹出来，所以压在 .note-handoff 之上。 */
+.peer-pick {
+  position: fixed; inset: 0; z-index: 82; display: grid; place-items: center;
+  background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px);
+}
+.peer-pick-panel {
+  width: min(420px, calc(var(--vw1) * 92)); max-height: calc(var(--vh1) * 76);
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden;
+  border-radius: 12px; border: 1px solid var(--line); background: var(--panel);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+.peer-pick-head {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.peer-pick-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.peer-pick-search {
+  margin: 8px 12px; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--text); font: inherit; font-size: 12px;
+}
+.peer-pick-list { overflow-y: auto; padding: 0 6px 8px; display: grid; gap: 2px; align-content: start; }
+.peer-pick-row {
+  display: flex; align-items: center; gap: 8px; padding: 8px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--text); text-align: left; font: inherit; cursor: pointer;
+}
+.peer-pick-row:hover:not(:disabled) { background: var(--line-soft); }
+.peer-pick-row:disabled { opacity: 0.45; cursor: not-allowed; }
+.pp-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.pp-dot.on { background: var(--ok); }
+.pp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.pp-host, .pp-off { color: var(--faint); font-size: 11px; flex: none; }
+.pp-last {
+  color: var(--accent, #7dd3fc); font-size: 10px; padding: 1px 5px; border-radius: 999px;
+  border: 1px solid currentColor; flex: none;
+}
+.peer-pick-empty { padding: 18px; text-align: center; color: var(--faint); font-size: 12px; }
+.peer-pick .grow { flex: 1; }
+.peer-confirm { grid-template-rows: auto auto auto; }
+.peer-confirm-body { padding: 10px 12px; display: grid; gap: 6px; }
+.pc-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; font-size: 12px; }
+.pc-k { color: var(--faint); }
+.pc-v { color: var(--text); overflow-wrap: anywhere; }
+.pc-v.bad { color: var(--danger); }
+.peer-confirm-foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line-soft); }

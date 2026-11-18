@@ -14,7 +14,7 @@ import { createEl as el } from "./chat.ts";
 import { FailPanel } from "./failpanel.ts";
 import { ripeEntries, type FailLedger } from "./failures.ts";
 import { RichEditor } from "./notes/editor.ts";
-import { isRichEmpty, plainText, richToMarkdown, textToRich } from "./notes/rich.ts";
+import { isRichEmpty, noteTextForPeer, plainText, richToMarkdown, textToRich } from "./notes/rich.ts";
 import type { RuleBook } from "./rules.ts";
 import type { Note, NoteKind, NoteStatus, NotesLayout } from "./types.ts";
 import "./notes.css";
@@ -62,11 +62,109 @@ function writeLayout(layout: NotesLayout): void {
   }
 }
 
-/** 面板跟页面之间只有这几个口子：发送、当前笔记列表、当前会话、两个「交给 agent」的落点。 */
+/** 面板上次的样子（#510）：分区、去向、选中的记录。 */
+const MEMORY_KEY = "notes.memory";
+interface NotesMemory {
+  kind: NoteKind;
+  view: View;
+  sel: string | null;
+}
+
+function readMemory(): NotesMemory {
+  const fallback: NotesMemory = { kind: "bug", view: "active", sel: null };
+  try {
+    const raw = localStorage.getItem(MEMORY_KEY);
+    if (!raw) return fallback;
+    const v = JSON.parse(raw) as Partial<Record<keyof NotesMemory, unknown>>;
+    const kind = NOTE_KINDS.some((k) => k.id === v.kind) ? (v.kind as NoteKind) : fallback.kind;
+    const view = (["active", "archived", "trash", "failures"] as const).find((x) => x === v.view) ?? fallback.view;
+    return { kind, view, sel: typeof v.sel === "string" ? v.sel : null };
+  } catch {
+    return fallback;
+  }
+}
+
+/** 记住面板的样子；隐私模式下写不进去也不是错。 */
+function writeMemory(memory: NotesMemory): void {
+  try {
+    localStorage.setItem(MEMORY_KEY, JSON.stringify(memory));
+  } catch {
+    /* 存不了就按默认来 */
+  }
+}
+
+/** 内网通连动（#509）：最后一位收件人只记 nodeId，换人或换机器就在列表里重选。 */
+const PEER_LAST_KEY = "notes.peerLast";
+/** 一条文字消息的硬上限（peer/src/messages.ts 的 MAX_TEXT_BYTES）。 */
+const PEER_TEXT_BYTES = 32 * 1024;
+
+interface PeerOnline {
+  nodeId: string;
+  nickname: string;
+  hostname: string;
+  port: number;
+}
+
+interface PeerView {
+  enabled: boolean;
+  running: boolean;
+  reason?: string;
+  status?: { nodeId?: string; online?: PeerOnline[] } | null;
+}
+
+interface PeerContact {
+  nodeId: string;
+  nickname: string;
+  hostname: string;
+  online?: boolean;
+}
+
+interface PeerPerson {
+  nodeId: string;
+  nickname: string;
+  hostname: string;
+  online: boolean;
+}
+
+interface ShotMeta {
+  name: string;
+  size: number;
+  sha256: string;
+}
+
+async function peerJson<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data;
+}
+
+function readLastPeer(): string {
+  try {
+    return localStorage.getItem(PEER_LAST_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeLastPeer(nodeId: string): void {
+  try {
+    localStorage.setItem(PEER_LAST_KEY, nodeId);
+  } catch {
+    /* 存不了就下次重选 */
+  }
+}
+
+function kb(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 面板跟页面之间只有这几个口子：发送、当前笔记列表、两个「交给 agent」的落点。 */
 export interface NotesHost {
   send(msg: unknown): void;
   notes(): Note[];
-  session(): { id: string; name: string } | null;
   /** 写进当前会话的输入框（不发送）。 */
   prefill(text: string): void;
   /** 开一个新会话，等它建好后把文字填进那个会话的输入框（不发送）。 */
@@ -98,8 +196,6 @@ export function noteMarkdown(note: Note): string {
   const body = note.body ? richToMarkdown(note.body) : "";
   const lines = [`## ${note.title}`, head, "", body];
   if (note.shots.length) lines.push("", ...note.shots.map((s) => `![](${s})`));
-  if (note.issue) lines.push("", `issue: ${note.issue}`);
-  if (note.commit) lines.push(`commit: ${note.commit}`);
   return lines.join("\n");
 }
 
@@ -113,8 +209,11 @@ export class NotesSheet {
   private hintEl!: HTMLElement;
   private headCountEl!: HTMLElement;
 
-  private kind: NoteKind = "bug";
-  private view: View = "active";
+  private readonly memory = readMemory();
+  private kind: NoteKind = this.memory.kind;
+  private view: View = this.memory.view;
+  /** 面板第一次拿到列表时把上次的记录接回来；接完就关掉。 */
+  private restoring = true;
   /** AI 出错记录那份账本（D164）：跟笔记不是一回事，但共用一个面板。 */
   private ledger: FailLedger | null = null;
   private failPanel!: FailPanel;
@@ -141,6 +240,10 @@ export class NotesSheet {
   private dirty = false;
   /** 这一次保存属于哪个编辑器实例：切走之后到达的 ack 不许改当前选择。 */
   private saveTicket: { editing: unknown } | null = null;
+  /** 提交前等保存 ack 的回调（#509）。 */
+  private saveWaiters: Array<{ resolve: (note: Note | null) => void; timer: number }> = [];
+  /** 内网通请求在飞：菜单与按钮置灰，防连点。 */
+  private peerBusy = false;
   private layout: NotesLayout = readLayout();
 
   // 正文区那几个长期存在的部件：只有换记录时才重填，避免打一个字就被广播重画（caret 会跳）。
@@ -467,6 +570,7 @@ export class NotesSheet {
     this.paintNav();
     this.paintList();
     this.paintEditor();
+    this.remember();
   }
 
   private resetPick(): void {
@@ -485,6 +589,15 @@ export class NotesSheet {
     this.paintNav();
     this.paintList();
     this.paintEditor();
+    this.remember();
+  }
+
+  /** 记住这一屏（分区 / 去向 / 选中）；写的时机是每次真的切了。 */
+  private remember(): void {
+    this.memory.kind = this.kind;
+    this.memory.view = this.view;
+    this.memory.sel = this.sel;
+    writeMemory(this.memory);
   }
 
   /** 换到出错记录：收起笔记三栏，把只读面板亮出来；回来时反过来。 */
@@ -530,6 +643,20 @@ export class NotesSheet {
       this.setList(this.layout.list === "open" ? "closed" : "open");
     };
     document.addEventListener("keydown", this.shortcut, true);
+  }
+
+  /** 从内网通卡片「打开记录」（#508）：切到它所在的分类 / 分区并选中这一条。 */
+  openNote(id: string): void {
+    const note = this.host.notes().find((n) => n.id === id);
+    if (!note) return;
+    this.kind = note.kind;
+    this.view = note.deletedAt ? "trash" : note.archivedAt ? "archived" : "active";
+    this.seg = "all";
+    this.query = "";
+    this.searchEl.value = "";
+    this.paintNav();
+    this.paintList();
+    this.select(id);
   }
 
   /** 打开面板就把光标放进「记一条」的那一格。 */
@@ -581,9 +708,9 @@ export class NotesSheet {
     return this.host.notes().filter((n) => this.inView(n) && (this.view !== "active" || n.kind === this.kind) && (!q || this.matches(n, q)));
   }
 
-  /** 检索只看人写得出来的字段：标题、正文（按纯文本）、issue / commit 号。 */
+  /** 检索只看人写得出来的字段：标题、正文（按纯文本）。 */
   private matches(n: Note, q: string): boolean {
-    return [n.title, this.summaryOf(n), n.issue, n.commit].some((v) => String(v ?? "").toLowerCase().includes(q));
+    return [n.title, this.summaryOf(n)].some((v) => String(v ?? "").toLowerCase().includes(q));
   }
 
   /** 列表里那一行摘要 / 搜索用的纯文本；同一条正文只解析一次（按 updatedAt 失效）。 */
@@ -694,7 +821,6 @@ export class NotesSheet {
     if (summary) row.append(el("div", "nc-row-body", summary));
 
     const meta = el("div", "nc-row-meta");
-    if (n.issue) meta.append(el("span", "nc-row-issue", `#${n.issue.replace(/^#/, "")}`));
     meta.append(el("span", "nc-row-shot", `🖼 ${n.shots?.length ?? 0}`));
     meta.append(el("span", "nc-row-words", tr("{p1} 字", { p1: this.wordsOf(n) })));
     meta.append(el("span", "nc-row-time", shortTime(n.updatedAt)));
@@ -768,6 +894,7 @@ export class NotesSheet {
     this.sel = null;
     this.editing = null;
     this.paintEditor();
+    this.remember();
   }
 
   /** 切条目时先把手上的改动存掉：不留「切走就丢」这种坑。 */
@@ -780,6 +907,7 @@ export class NotesSheet {
     this.dirty = false;
     this.paintList();
     this.load(note);
+    this.remember();
   }
 
   // ---------------------------------------------------------------- 正文
@@ -795,6 +923,7 @@ export class NotesSheet {
     this.load(null);
     // 新建一条就先落在标题上：先把「是什么」写清，正文随后（#486 使用场景第 1 条）。
     this.titleEl.focus();
+    this.remember();
   }
 
   private paintEditor(): void {
@@ -973,27 +1102,6 @@ export class NotesSheet {
     cell(tr("分类"), NOTE_KINDS.find((k) => k.id === (note.kind ?? this.kind))?.label ?? "");
     cell(tr("创建"), note.createdAt ? stamp(note.createdAt) : "");
     cell(tr("改动"), note.updatedAt ? stamp(note.updatedAt) : "");
-
-    const input = (placeholder: string, field: "issue" | "commit", value: string): HTMLElement => {
-      const box = el("label", "nc-cell nc-cell-input");
-      box.append(el("span", "nc-cell-k", placeholder));
-      const i = el("input", "ns-input nc-mini") as HTMLInputElement;
-      i.placeholder = field === "issue" ? "1234" : "abc1234";
-      i.value = value;
-      i.disabled = !!note.deletedAt || !!note.archivedAt;
-      i.oninput = () => {
-        if (!this.editing) return;
-        this.editing.note[field] = i.value;
-        this.markDirty();
-        this.pushStatus();
-      };
-      i.onblur = () => this.pushStatus();
-      box.append(i);
-      return box;
-    };
-    cells.push(input("issue", "issue", note.issue ?? ""));
-    cells.push(input("commit", "commit", note.commit ?? ""));
-    if (note.sessionName) cell(tr("会话"), note.sessionName);
     return cells;
   }
 
@@ -1009,24 +1117,16 @@ export class NotesSheet {
     if (note.archivedAt) {
       const back = el("button", "btn primary", tr("复原：放回列表"));
       back.onclick = () => this.editing?.id && this.setLife(this.editing.id, "active");
-      const copy = el("button", "btn ghost", tr("复制 Markdown"));
-      copy.onclick = () => {
-        const full = this.fullNote(note);
-        if (!full) return;
-        void copyText(noteMarkdown(full)).then((ok) => this.say(ok ? tr("已复制到剪贴板") : tr("复制失败：浏览器不给剪贴板权限"), !ok));
-      };
+      const link = el("button", "btn ghost", tr("内网通连动 ▾"));
+      link.onclick = () => this.peerMenu(link, note);
       const del = el("button", "btn danger", tr("删除"));
       del.title = tr("放进垃圾箱（可复原），不是彻底删");
       del.onclick = () => this.editing?.id && this.setLife(this.editing.id, "trashed");
-      return [back, copy, el("div", "grow"), del];
+      return [back, link, el("div", "grow"), del];
     }
     const row: HTMLElement[] = [];
-    const copy = el("button", "btn ghost", tr("复制 Markdown"));
-    copy.onclick = () => {
-      const full = this.fullNote(note);
-      if (!full) return;
-      void copyText(noteMarkdown(full)).then((ok) => this.say(ok ? tr("已复制到剪贴板") : tr("复制失败：浏览器不给剪贴板权限"), !ok));
-    };
+    const link = el("button", "btn ghost", tr("内网通连动 ▾"));
+    link.onclick = () => this.peerMenu(link, note);
     const hand = el("button", "btn ghost", tr("交给 agent ▾"));
     hand.onclick = () => {
       const full = this.fullNote(note);
@@ -1037,7 +1137,7 @@ export class NotesSheet {
       }
       this.handoffMenu(hand, noteMarkdown(full));
     };
-    row.push(copy, hand);
+    row.push(link, hand);
     if (this.editing?.id) {
       const archive = el("button", "btn ghost", tr("归档"));
       archive.onclick = () => this.editing?.id && this.setLife(this.editing.id, "archived");
@@ -1052,6 +1152,7 @@ export class NotesSheet {
         this.pendingShots = [];
         this.dirty = false;
         this.paintEditor();
+        this.remember();
       };
       row.push(el("div", "grow"), archive, del);
     }
@@ -1133,13 +1234,321 @@ export class NotesSheet {
     );
   }
 
+  // ---------------------------------------------------------------- 内网通连动（#509）
+
+  /** 正文下的「内网通连动 ▾」：先问桥要内网通状态，再画两项。 */
+  private peerMenu(anchor: HTMLElement, note: Partial<Note>): void {
+    const full = this.fullNote(note);
+    if (!full) return;
+    const text = noteTextForPeer(full.title, full.body);
+    const bytes = new TextEncoder().encode(text).length;
+    const blank = !String(note.title ?? "").trim() && !plainText(note.body ?? "").trim();
+    document.querySelector(".note-handoff")?.remove();
+    const r = anchor.getBoundingClientRect();
+    const pop = el("div", "note-handoff note-peer-menu");
+    pop.style.left = `${Math.max(12, Math.min(r.right - 300, innerWidth - 314))}px`;
+    pop.style.top = `${r.bottom + 6}px`;
+    const add = (label: string, hint: string, disabled: boolean, run: () => void): void => {
+      const b = el("button") as HTMLButtonElement;
+      b.append(el("span", "handoff-label", label), el("span", "handoff-hint", hint));
+      b.disabled = disabled;
+      b.onclick = () => {
+        if (b.disabled) return;
+        pop.remove();
+        run();
+      };
+      pop.append(b);
+    };
+    const waiting = el("button") as HTMLButtonElement;
+    waiting.disabled = true;
+    waiting.append(el("span", "handoff-label", tr("正在问内网通…")), el("span", "handoff-hint", tr("只看一眼它开没开")));
+    pop.append(waiting);
+    document.body.append(pop);
+    setTimeout(
+      () =>
+        document.addEventListener(
+          "click",
+          (ev) => {
+            if (!pop.contains(ev.target as Node)) pop.remove();
+          },
+          { once: true },
+        ),
+      0,
+    );
+    void peerJson<PeerView>("/api/peer")
+      .then((view) => {
+        if (!pop.isConnected) return;
+        pop.replaceChildren();
+        const why = view.enabled ? "" : (view.reason || (view.running ? tr("内网通正在重启，等它起来再试") : tr("内网通没启用")));
+        const empty = blank ? tr("先写点东西") : "";
+        const tooLong = bytes > PEER_TEXT_BYTES;
+        add(
+          tr("发送给好友"),
+          why || empty || (tooLong ? tr("正文 {p1} KB，超过 32 KB，改用「提交给好友」", { p1: Math.ceil(bytes / 1024) }) : tr("标题 + Markdown 正文")),
+          Boolean(why) || tooLong || blank,
+          () => void this.sendTextToPeer(text),
+        );
+        add(
+          tr("提交给好友"),
+          why || empty || tr("打包标题、正文、分类、状态与 {p1} 张图", { p1: full.shots.length }),
+          Boolean(why) || blank,
+          () => void this.submitToPeer(),
+        );
+      })
+      .catch((err: Error) => {
+        if (!pop.isConnected) return;
+        pop.replaceChildren();
+        add(tr("发送给好友"), tr("连不上内网通：{p1}", { p1: err.message }), true, () => {});
+        add(tr("提交给好友"), tr("连不上内网通：{p1}", { p1: err.message }), true, () => {});
+      });
+  }
+
+  /** 发送给好友：标题 + 空行 + Markdown 正文，作为一条普通文字消息。 */
+  private async sendTextToPeer(text: string): Promise<void> {
+    if (this.peerBusy) return;
+    const person = await this.pickPeer(tr("发送给好友"));
+    if (!person) return;
+    this.peerBusy = true;
+    this.say(tr("发送中…"));
+    try {
+      await peerJson("/api/peer/send", { method: "POST", body: JSON.stringify({ peer: person.nodeId, text }) });
+      writeLastPeer(person.nodeId);
+      this.say(tr("已发送给 {p1}", { p1: person.nickname }));
+    } catch (err) {
+      this.say(tr("没发出去：{p1}", { p1: (err as Error).message }), true);
+    } finally {
+      this.peerBusy = false;
+    }
+  }
+
+  /** 提交给好友：先落盘拿 id，再选人、确认、发 note 帧，最后逐张补截图。 */
+  private async submitToPeer(): Promise<void> {
+    if (this.peerBusy) return;
+    const expected = (this.editing?.note.shots?.length ?? 0) + this.pendingShots.length;
+    const saved = await this.saveAndWait();
+    if (!saved) {
+      this.say(tr("没保存成功，先别提交"), true);
+      return;
+    }
+    const latest = await this.waitShots(saved.id, expected);
+    if (!latest) return;
+    const person = await this.pickPeer(tr("提交给好友"));
+    if (!person) return;
+    let shots: ShotMeta[] = [];
+    try {
+      shots = (await peerJson<{ shots: ShotMeta[] }>("/api/notes/measure", { method: "POST", body: JSON.stringify({ paths: latest.shots }) })).shots;
+    } catch (err) {
+      this.say(tr("读不到截图：{p1}", { p1: (err as Error).message }), true);
+      return;
+    }
+    const missing = Math.max(0, expected - latest.shots.length);
+    if (!(await this.confirmSubmit(latest, person, shots, missing))) return;
+    this.peerBusy = true;
+    this.say(tr("提交中…"));
+    try {
+      await peerJson("/api/peer/sendnote", {
+        method: "POST",
+        body: JSON.stringify({
+          peer: person.nodeId,
+          note: {
+            title: latest.title,
+            body: latest.body,
+            kind: latest.kind,
+            status: latest.status,
+            shots,
+            noteCreatedAt: latest.createdAt,
+            noteUpdatedAt: latest.updatedAt,
+          },
+        }),
+      });
+      for (let i = 0; i < latest.shots.length; i += 1) {
+        try {
+          await peerJson("/api/peer/sendfile", { method: "POST", body: JSON.stringify({ peer: person.nodeId, path: latest.shots[i] }) });
+        } catch (err) {
+          throw new Error(tr("记录包已发出，但第 {p1} 张图没发出去：{p2}", { p1: i + 1, p2: (err as Error).message }));
+        }
+      }
+      writeLastPeer(person.nodeId);
+      this.say(tr("已提交给 {p1}", { p1: person.nickname }));
+    } catch (err) {
+      this.say((err as Error).message, true);
+    } finally {
+      this.peerBusy = false;
+    }
+  }
+
+  /** 保存并等 ack：提交要的是桥发回来的真 id 与截图清单。 */
+  private saveAndWait(): Promise<Note | null> {
+    if (!this.editing) return Promise.resolve(null);
+    const note = this.editing.note;
+    const body = this.editor?.html() ?? note.body ?? "";
+    const title = (note.title ?? "").trim() || plainText(body).trim().split("\n")[0].trim().slice(0, 60);
+    if (isRichEmpty(body) && !title) {
+      this.say(tr("先写点什么再存"), true);
+      return Promise.resolve(null);
+    }
+    if (!this.dirty && this.editing.id) {
+      const full = this.fullNote(note);
+      return Promise.resolve(full ? { ...full, id: this.editing.id } : null);
+    }
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(() => {
+        this.saveWaiters = this.saveWaiters.filter((w) => w.resolve !== resolve);
+        this.say(tr("保存超时，先别提交"), true);
+        resolve(null);
+      }, 6000);
+      this.saveWaiters.push({ resolve, timer });
+      this.save();
+    });
+  }
+
+  /** 等新图落盘（保存后 notes.shot 是一条条回来的），超时就按现有张数提交并让确认页报缺图。 */
+  private async waitShots(id: string, expected: number): Promise<Note | null> {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const n = this.host.notes().find((x) => x.id === id);
+      if (n && n.shots.length >= expected) return n;
+      await new Promise((r) => window.setTimeout(r, 100));
+    }
+    return this.host.notes().find((x) => x.id === id) ?? null;
+  }
+
+  /** 选人：合并通讯录与在线名单，排除自己、在线优先、可搜昵称与主机名。 */
+  private pickPeer(title: string): Promise<PeerPerson | null> {
+    return new Promise((resolve) => {
+      const last = readLastPeer();
+      const wrap = el("div", "peer-pick");
+      const panel = el("div", "peer-pick-panel");
+      const head = el("div", "peer-pick-head");
+      const cancel = el("button", "btn ghost", tr("取消"));
+      head.append(el("span", "peer-pick-title", title), el("div", "grow"), cancel);
+      const search = el("input", "peer-pick-search") as HTMLInputElement;
+      search.type = "search";
+      search.placeholder = tr("搜昵称或主机名");
+      const list = el("div", "peer-pick-list");
+      panel.append(head, search, list);
+      wrap.append(panel);
+      const done = (person: PeerPerson | null): void => {
+        document.removeEventListener("keydown", esc);
+        wrap.remove();
+        resolve(person);
+      };
+      const esc = (ev: KeyboardEvent): void => {
+        if (ev.key === "Escape") done(null);
+      };
+      cancel.onclick = () => done(null);
+      wrap.onclick = (ev) => {
+        if (ev.target === wrap) done(null);
+      };
+      document.addEventListener("keydown", esc);
+      document.body.append(wrap);
+      search.focus();
+      list.append(el("div", "peer-pick-empty", tr("正在问内网通…")));
+      void this.peerPeople()
+        .then((people) => {
+          if (!wrap.isConnected) return;
+          const paint = (): void => {
+            const q = search.value.trim().toLowerCase();
+            const rows = people.filter((p) => !q || p.nickname.toLowerCase().includes(q) || p.hostname.toLowerCase().includes(q));
+            list.replaceChildren();
+            if (!rows.length) {
+              list.append(el("div", "peer-pick-empty", q ? tr("没有匹配的人") : tr("现在没有在线的人")));
+              return;
+            }
+            for (const p of rows) {
+              const row = el("button", "peer-pick-row") as HTMLButtonElement;
+              row.disabled = !p.online;
+              row.append(el("span", `pp-dot${p.online ? " on" : ""}`), el("span", "pp-name", p.nickname), el("span", "pp-host", p.hostname));
+              if (p.nodeId === last) row.append(el("span", "pp-last", tr("上次")));
+              if (!p.online) row.append(el("span", "pp-off", tr("离线")));
+              row.onclick = () => done(p);
+              list.append(row);
+            }
+          };
+          search.oninput = paint;
+          paint();
+        })
+        .catch((err: Error) => {
+          if (wrap.isConnected) list.replaceChildren(el("div", "peer-pick-empty", tr("连不上内网通：{p1}", { p1: err.message })));
+        });
+    });
+  }
+
+  private async peerPeople(): Promise<PeerPerson[]> {
+    const view = await peerJson<PeerView>("/api/peer");
+    if (!view.enabled) throw new Error(view.reason || (view.running ? tr("内网通正在重启，等它起来再试") : tr("内网通没启用")));
+    const contacts = await peerJson<{ contacts: PeerContact[] }>("/api/peer/contacts").catch(() => ({ contacts: [] }));
+    const me = view.status?.nodeId;
+    const online = new Map((view.status?.online ?? []).map((p) => [p.nodeId, p]));
+    const people = new Map<string, PeerPerson>();
+    for (const c of contacts.contacts ?? []) {
+      if (!c.nodeId || c.nodeId === me) continue;
+      people.set(c.nodeId, {
+        nodeId: c.nodeId,
+        nickname: c.nickname || c.hostname,
+        hostname: c.hostname,
+        online: Boolean(c.online) || online.has(c.nodeId),
+      });
+    }
+    for (const [id, p] of online) {
+      if (id === me) continue;
+      people.set(id, { nodeId: id, nickname: p.nickname || p.hostname, hostname: p.hostname, online: true });
+    }
+    return [...people.values()].sort((a, b) => Number(b.online) - Number(a.online) || a.nickname.localeCompare(b.nickname, "zh"));
+  }
+
+  /** 提交前的确认页：给的是「对方会收到什么」，不是编辑框。 */
+  private confirmSubmit(note: Note, person: PeerPerson, shots: ShotMeta[], missing: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const total = shots.reduce((sum, s) => sum + s.size, 0);
+      const wrap = el("div", "peer-pick");
+      const panel = el("div", "peer-pick-panel peer-confirm");
+      const head = el("div", "peer-pick-head");
+      head.append(el("span", "peer-pick-title", tr("提交给好友")));
+      const body = el("div", "peer-confirm-body");
+      const row = (label: string, value: string, bad = false): void => {
+        const line = el("div", "pc-row");
+        line.append(el("span", "pc-k", label), el("span", `pc-v${bad ? " bad" : ""}`, value));
+        body.append(line);
+      };
+      row(tr("标题"), note.title);
+      row(tr("收件人"), `${person.nickname} · ${person.hostname}`);
+      row(tr("分类 / 状态"), `${NOTE_KINDS.find((k) => k.id === note.kind)?.label ?? note.kind} · ${STATUS_LABEL[note.status]}`);
+      row(tr("截图"), tr("{p1} 张 · {p2}", { p1: shots.length, p2: kb(total) }));
+      if (missing) row(tr("缺图"), tr("还差 {p1} 张，等图到齐再提交", { p1: missing }), true);
+      const foot = el("div", "peer-confirm-foot");
+      const back = el("button", "btn ghost", tr("返回"));
+      const ok = el("button", "btn primary", tr("提交")) as HTMLButtonElement;
+      ok.disabled = missing > 0;
+      foot.append(back, el("div", "grow"), ok);
+      panel.append(head, body, foot);
+      wrap.append(panel);
+      const done = (yes: boolean): void => {
+        document.removeEventListener("keydown", esc);
+        wrap.remove();
+        resolve(yes);
+      };
+      const esc = (ev: KeyboardEvent): void => {
+        if (ev.key === "Escape") done(false);
+      };
+      back.onclick = () => done(false);
+      ok.onclick = () => done(true);
+      wrap.onclick = (ev) => {
+        if (ev.target === wrap) done(false);
+      };
+      document.addEventListener("keydown", esc);
+      document.body.append(wrap);
+      ok.focus();
+    });
+  }
+
   // ---------------------------------------------------------------- 数据
 
   private load(note: Note | null): void {
     this.sel = note?.id ?? null;
     this.editing = {
       id: note?.id ?? null,
-      note: note ? { ...note, shots: [...note.shots] } : { kind: this.kind, status: "pending", title: "", body: "", issue: "", commit: "" },
+      note: note ? { ...note, shots: [...note.shots] } : { kind: this.kind, status: "pending", title: "", body: "" },
     };
     this.paintEditor();
     this.say("");
@@ -1147,7 +1556,6 @@ export class NotesSheet {
 
   /** 编辑器里的完整条目（用于复制 / 交给 agent：草稿也能用，只是没有 id）。 */
   private fullNote(note: Partial<Note>): Note | null {
-    const session = this.host.session();
     const now = Date.now();
     const body = note.body ?? "";
     const text = plainText(body);
@@ -1163,12 +1571,8 @@ export class NotesSheet {
       title,
       body,
       shots: [...(note.shots ?? [])],
-      sessionId: note.sessionId ?? session?.id ?? null,
-      sessionName: note.sessionName ?? session?.name ?? null,
       archivedAt: note.archivedAt ?? null,
       deletedAt: note.deletedAt ?? null,
-      issue: note.issue ?? "",
-      commit: note.commit ?? "",
       createdAt: note.createdAt ?? now,
       updatedAt: note.updatedAt ?? now,
     };
@@ -1187,7 +1591,6 @@ export class NotesSheet {
       this.say(tr("先写点什么再存"), true);
       return;
     }
-    const session = this.host.session();
     this.saveTicket = { editing: this.editing };
     this.host.send({
       type: "notes.save",
@@ -1195,10 +1598,6 @@ export class NotesSheet {
       kind: note.kind ?? this.kind,
       title,
       body,
-      issue: note.issue ?? "",
-      commit: note.commit ?? "",
-      sessionId: note.sessionId ?? session?.id ?? null,
-      sessionName: note.sessionName ?? session?.name ?? null,
     });
     this.say(tr("保存中…"));
   }
@@ -1227,10 +1626,8 @@ export class NotesSheet {
       type: "notes.status",
       id: this.editing.id,
       status: this.editing.note.status ?? "pending",
-      issue: this.editing.note.issue ?? "",
-      commit: this.editing.note.commit ?? "",
     });
-    // 状态 / issue / commit 是「立刻落盘」的，不属于等「保存」那一批：别让 dirty 拦住「交给 agent」。
+    // 状态是「立刻落盘」的，不属于等「保存」那一批：别让 dirty 拦住「交给 agent」。
     this.dirty = false;
   }
 
@@ -1266,6 +1663,10 @@ export class NotesSheet {
 
   /** 广播（任何人保存了任何东西）→ 列表 / 分区计数。 */
   setNotes(notes: Note[]): void {
+    if (this.restoring) {
+      this.restoring = false;
+      this.restorePick(notes);
+    }
     this.paintNav();
     this.paintList();
     if (!this.sel) return;
@@ -1274,8 +1675,21 @@ export class NotesSheet {
     if (!n || this.goneFromView(n)) {
       this.sel = null;
       this.editing = null;
+      this.remember();
       this.paintEditor();
     }
+  }
+
+  /** 打开面板的第一次广播：把上次选中的那条接回来；它已经不在这一堆里就只保留分区。 */
+  private restorePick(notes: Note[]): void {
+    if (!this.memory.sel || this.view === "failures") return;
+    const n = notes.find((x) => x.id === this.memory.sel);
+    if (!n || !this.inView(n) || (this.view === "active" && n.kind !== this.kind)) {
+      this.remember();
+      return;
+    }
+    this.load(n);
+    this.remember();
   }
 
   /** 广播来的这条，按它自己的归档 / 删除状态，判断是不是已经不该出现在当前视图里。 */
@@ -1288,6 +1702,10 @@ export class NotesSheet {
   saved(msg: any): void {
     if (msg.error) {
       this.say(String(msg.error), true);
+      for (const w of this.saveWaiters.splice(0)) {
+        window.clearTimeout(w.timer);
+        w.resolve(null);
+      }
       return;
     }
     const note = msg.note as Note | undefined;
@@ -1305,6 +1723,7 @@ export class NotesSheet {
     this.sel = note.id;
     if (this.editing?.id === note.id) this.paintedId = note.id;
     this.dirty = false;
+    this.remember();
     this.paintList();
     this.uploadPending(note.id);
     // 自动保存：脚注就说「已自动保存 · 时间 · 字数」。
@@ -1313,6 +1732,10 @@ export class NotesSheet {
       this.footEl.textContent = tr("已自动保存 · 改于 {p1} · {p2} 字", { p1: stamp(note.updatedAt), p2: this.wordsOf(this.editing.note) });
     }
     this.paintEditor();
+    for (const w of this.saveWaiters.splice(0)) {
+      window.clearTimeout(w.timer);
+      w.resolve({ ...note, shots: [...note.shots] });
+    }
   }
 
   shot(msg: any): void {
@@ -1359,19 +1782,4 @@ function readDataUrl(file: File): Promise<string> {
   });
 }
 
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.append(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok;
-  }
-}
+

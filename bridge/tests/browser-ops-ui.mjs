@@ -2,7 +2,7 @@
  * 浏览器面板（#503）探针：第三颗执行 tab、卡片折叠、子步骤、疑似卡住与中断。
  *
  * 假 pi 的 `BROWSER` 场景发四颗调用：两颗 `mcp__browser_use`（一颗跑完，一颗只发一次 partial 就停住），
- * 两颗「`write` 脚本 + `bash node x.mjs`」的脚本卡（D312：折叠行要说清开的哪页、输入了什么）。
+ * 两颗「`write` 脚本 + `bash node x.mjs`」的脚本卡（D318：折叠行要说清开的哪页、输入了什么）。
  * 「卡住」用页面里的 Date.now 快进来验，不真等两分钟。
  *
  * Run after `npm run build:bridge && npm run build:web`:
