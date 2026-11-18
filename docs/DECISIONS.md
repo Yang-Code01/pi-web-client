@@ -6000,3 +6000,23 @@ Esc 之后 dialog: 0
 **取舍：** `execCommand` 已废弃但仍被三大浏览器支持，换 ProseMirror 要整棵编辑器重写、还要一份 schema 维护；这里只要「常见排版」，选它省下的复杂度比未来的兼容风险值。`mode` 不删字段而是「写不再写、读一律忽略」—— 老 `notes/*.json` 直接能读，代价是类型上还会看到这个字段。
 
 **验证：** `npm run test:notes` 四段全绿：`web/tests/notes-rich-unit.mjs`（22：白名单 / 事件属性 / 字号只认 em / 表格 / 幂等 / 老文本迁移）、`web/tests/notes-editor-browser.mjs`（真 Chromium：选区加粗、``` 回车转代码块、粘贴净化、颜色包裹、选区丢失时不改正文）、`web/tests/notes-sheet-browser.mjs`（三栏骨架 / 列表行 / 自动存 / 状态菜单 / 两栏折叠 / 搜索 / 归档只读，`locale: zh-CN`）。`cd web && npm run typecheck`（tsc + i18n 3475 键 × 3 语 + viewport 守卫）通过。
+
+## D306 从弹层里打开的浮窗提一档（`.viewer.hi`），三处「先关父层」的绕法删掉（2026-11-18）
+
+**问题：** 一堆「面板里再开一层」的路径不遵守「从哪来，回哪去」。清了一遍（产物 / 差分 / 设置抽屉 / 设置台 / 模型面板 / 上下文面板 / 技能商店 / 内网通 / 记录 / Jira / 分支工作台 …），根因其实只有一条：**`.viewer` 是 46/47，永远在 `.sheet-back` 60 之下**，所以从面板里 `openPreview` 什么都看不见，点了像没反应。绕开的办法是「先 `this.closeSheet()` 再开预览」——用户关掉预览，父层也没了：
+
+- 产物列表点不可 diff 的行（`.scratch` 里那份审计的第 2 条，`web/src/app.ts` 的 `artifactRow`）；
+- 技能商店「已安装 → 查看」（`paintSkillInstalled`）；
+- 设置台「更新日志」里点 `docs/DECISIONS.md`（`paintWhatsnew` 的 `openPath`，代码注释里明写了「先收面板再交给预览」——那是当时对层序的妥协）。顺带 `settingsEsc` 的越级守卫只数 `.st-back, .sheet-back, .image-view`，Esc 会连父层一起收。
+
+**决定：**
+
+- **`.viewer.hi { z-index: 63 }`**（`.viewer.hi.front` 同高）：`openPreview` 里 `toggle("hi", Boolean(this.sheet || this.subSheet))` —— 从弹层里开的预览压得住父层，从空场 / 终端 / 普通浮窗里开的还是 46/47，不越到 `.modal`(50) 与 `.sheet-back`(60) 上面去。只提这一类，**不是**把 `.viewer` 整体抬高：D111 定过「两扇窗都压不过口令 modal 与底部 sheet」。
+- **`.modal.hi` 62 → 64**：口令框与「更新 pi」得压得住 63（设置台里点文档链接 → 再点「更新 pi」就是这条路）。层带现在是 `term-dock 45 < viewer 46 < *.front 47 < modal 50 < sheet 60 = st-back 60 < sheet-sub 61 < viewer.hi 63 < modal.hi 64 < choose 66 < image-view 70`。
+- **父层关掉时摘掉 `hi`**（`closeSheet()` / `closeSubSheet()` 各一句 `this.viewer?.root.classList.remove("hi")`）：预览是拖出来的窗，父层没了就该回落到普通层带，不跟着消失。
+- **Esc 从上往下收**：新增 `viewerEsc`（document 捕获阶段，只在 `.hi` 时生效）→ 先收预览并 `stopPropagation()`；`settingsEsc` 加 `.viewer.hi` 提前 return，并把 `.sheet-sub-back` 补进越级守卫。面板自己的 Esc 挂在元素上，焦点在面板里时事件走不到浮窗，所以这一层必须在捕获阶段拦。
+- **三处 `closeSheet()` 删掉**：产物不可 diff 行、技能商店「查看」、更新日志文档链接（见上）。
+
+**取舍：** 没顺手改「单槽 sheet」本身（`openDiffSheet` 首句仍是 `closeSheet()`，所以产物 → 看改动 → 关差分还是全关；设置抽屉 → pi 设置 / 本机管理 / 热部署、模型面板 → 项目信任 / 会话树、上下文面板 → 交接卡 → 阈值卡同理）。那些要的是 sheet 栈，改的是十几个 `open*Sheet` 的公共契约，不是这一档的事；先把「预览型子层」这条最容易误判成没反应的路修对，其余记在 PR 描述里等下一条。另外 `viewer.hi` 在「子层(61) 盖上来时」不会自动降回 —— 目前没有哪条子层路径会同时开预览，留着等真碰上了再说。
+
+**验证：** 新增 `web/tests/layers-unit.mjs`（已挂进 `npm --prefix web run typecheck`）从 `styles.css` / `settings-console.css` 里读真实 `z-index`，断言 `.viewer < .sheet-back`、`.viewer.hi > .sheet-back / .sheet-sub-back / .st-back`、`.modal.hi > .viewer.hi`、`.choose-back > .modal.hi`、`.image-view > .choose-back`、`.viewer.hi.front === .viewer.hi`；`bridge/tests/whatsnew-ui.mjs` 的 D 段改成「点链接后面板还在 + 预览 z-index 更高 + Esc 只收预览」，`bridge/tests/skill-view-ui.mjs` 的 E 段改成「查看之后商店还在 + Esc 回到商店」。两条 UI 用例在真 Chromium 里跑过（`WHATSNEW_UI_PORT` / `PI_WEB_PORT` 钉端口，本机 `freePort()` 偶尔会给出绑不上的端口）。

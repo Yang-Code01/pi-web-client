@@ -174,15 +174,31 @@ try {
   // ---------------------------------------------------------------- D. 正文里的路径能点开
   log("D. 点正文里的 docs/DECISIONS.md");
   await page.locator(".st-pane a.file-link", { hasText: "docs/DECISIONS.md" }).first().click();
-  await until(async () => (await page.locator(".settings-sheet").count()) === 0, 5000, "sheet closed by link");
   const shown = await until(async () => {
     const n = page.locator(".viewer .viewer-path");
     return (await n.count()) ? n.first().innerText() : null;
   }, 10000, "viewer opened");
   check(shown.includes("DECISIONS.md"), `预览里打开的是 ${shown}`);
   // 只看路径会假通过：解析错 cwd 时路径照旧显示，正文却是空的。
-  const previewText = await page.locator(".viewer-body").first().innerText();
+  const previewText = await until(async () => {
+    const t = await page.locator(".viewer-body").first().innerText();
+    return t.includes("D195") ? t : null;
+  }, 15000, "DECISIONS 正文");
   check(previewText.includes("D195"), "预览里读到的确实是 DECISIONS.md 正文");
+  // D306：从面板里点开的预览压在面板上面，面板自己不许被关 —— 关掉预览还得回到这一页。
+  check((await page.locator(".settings-sheet").count()) === 1, "点链接后更新日志面板还在");
+  const layers = await page.evaluate(() => {
+    const zi = (sel) => {
+      const n = document.querySelector(sel);
+      return n ? Number(getComputedStyle(n).zIndex) : null;
+    };
+    return { viewer: zi(".viewer.hi"), panel: zi(".st-back") };
+  });
+  check(layers.viewer !== null, "预览带上了 .hi（压着面板）");
+  check((layers.viewer ?? 0) > (layers.panel ?? 0), `预览(${layers.viewer}) 在面板(${layers.panel}) 之上`);
+  await page.keyboard.press("Escape");
+  await until(async () => (await page.locator(".viewer").count()) === 0, 5000, "viewer closed by Esc");
+  check((await page.locator(".settings-sheet").count()) === 1, "Esc 只收预览，更新日志面板还在（从哪来回到哪去）");
 } catch (e) {
   failed = true;
   console.error("  FAIL", e.message);
