@@ -60,6 +60,42 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   /** `/api/stat` 的回答：文件夹、文件、不存在，或者不给看（权限）。 */
 export type PathInfo = { path: string; kind: "dir" | "file" | "missing" | "denied"; parent: string | null };
 
+/** #499：目录清单里的一条。`rel` 只在「包含子目录」的命中里出现。 */
+export type DirEntry = { name: string; kind: "dir" | "file"; size?: number; mtime?: number; rel?: string };
+export type DirSortKey = "name" | "size" | "mtime";
+export type DirPageQuery = { q?: string; offset?: number; limit?: number; sort?: DirSortKey; dir?: "asc" | "desc"; sub?: boolean; /** false = 只列目录（连总数也不算文件）。 */ files?: boolean };
+/** 归一化之后的一页：永远有 `entries` / `total`，调用方不用再判旧桥。 */
+export type DirPage = {
+  path: string;
+  parent: string | null;
+  total: number;
+  truncated: boolean;
+  entries: DirEntry[];
+  volumes?: { root: string; total: number; free: number }[];
+  error?: string;
+  /** D110：让前端把中文错误换成本地语言（`dirs_missing` / `dirs_unreadable`）。 */
+  errCode?: string;
+  /** 还有条目没量到大小/时间：先按名字显示，隔一会儿再问一次。 */
+  statsPending?: boolean;
+  /** false = 旧桥，整目录一次给完；此时筛选由前端自己过滤、排序控件不显示。 */
+  paged: boolean;
+};
+
+/** 旧桥的整目录答案折成同一份形状：目录在前、文件在后，没带大小/时间（再由 fileStats 补）。 */
+function legacyPage(raw: { path: string; parent: string | null; dirs: string[]; files?: string[]; volumes?: { root: string; total: number; free: number }[]; error?: string; errCode?: string }): DirPage {
+  return {
+    path: raw.path,
+    parent: raw.parent,
+    total: raw.dirs.length + (raw.files?.length ?? 0),
+    truncated: false,
+    entries: [...raw.dirs.map((name) => ({ name, kind: "dir" as const })), ...(raw.files ?? []).map((name) => ({ name, kind: "file" as const }))],
+    volumes: raw.volumes,
+    error: raw.error,
+    errCode: raw.errCode,
+    paged: false,
+  };
+}
+
 /** 缺了少哪块功能的 id：和 `bridge/src/deps.ts` 的 `PackageId` 同一组值（前端不 import 桥的源码，所以抄一份）。 */
 export type DepPackageId = "subagents" | "questionnaire" | "todo" | "web-access";
 
@@ -119,6 +155,17 @@ export const api = {
       volumes?: { root: string; total: number; free: number }[];
       error?: string;
     }>(`/api/dirs?path=${encodeURIComponent(path)}${files ? "&files=1" : ""}`),
+  /**
+   * #499：一页目录清单。筛选、排序、递归都在桥端做，`total` 是过滤后的总数。
+   * 旧桥没有 `page=1`：它照样答 dirs/files 名字数组，这里把它们折成 entries（`paged: false`），
+   * 调用方据此退回「整目录一次给完 + 本地筛选」。
+   */
+  dirsPage: (path: string, q: DirPageQuery = {}) =>
+    req<Partial<DirPage> & { path: string; parent: string | null; dirs: string[]; files?: string[] }>(
+      `/api/dirs?page=1&path=${encodeURIComponent(path)}&q=${encodeURIComponent(q.q ?? "")}` +
+        `&offset=${q.offset ?? 0}&limit=${q.limit ?? 200}&sort=${q.sort ?? "name"}&dir=${q.dir ?? "asc"}` +
+        `${q.sub ? "&sub=1" : ""}&files=${q.files === false ? "0" : "1"}`,
+    ).then((raw): DirPage => (Array.isArray(raw.entries) ? { ...legacyPage(raw), ...raw, entries: raw.entries, total: raw.total ?? raw.entries.length, truncated: raw.truncated === true, paged: true } : legacyPage(raw))),
   /** D62: sizes/mtimes for one directory, asked for separately so the file rows can paint first. */
   fileStats: (path: string) =>
     req<{ files: { name: string; size: number; mtime: number }[] }>(`/api/dirs?path=${encodeURIComponent(path)}&stats=1`),

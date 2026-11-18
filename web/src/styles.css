@@ -2795,6 +2795,23 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
    whole list instead of being ellipsised. Pin the track to the container and the ellipsis works. */
 .dir-list { grid-template-columns: minmax(0, 1fr); overflow-x: hidden; }
 
+/* ---- #499：大目录分页。排序行、筛选行、页脚计数各自独立一行，切换它们不该改变列表高度。 ---- */
+.dir-sort { display: flex; align-items: center; gap: 8px; padding: 6px 2px; }
+.dir-sort[hidden], .dir-find[hidden], .dir-pagefoot[hidden], .dir-sub[hidden], .dir-pending[hidden], .dir-more[hidden] { display: none; }
+.dir-sort-label { flex: 0 0 auto; font: 12px var(--sans); color: var(--faint); }
+.dir-sort-pick { flex: 0 0 auto; width: 96px; height: 32px; padding: 0 6px; }
+.dir-sort-dir { flex: 0 0 auto; width: 32px; height: 32px; padding: 0; text-align: center; font: 13px var(--mono); }
+.dir-find { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 2px; }
+.dir-find .dir-filter { flex: 1 1 160px; min-width: 0; }
+.dir-sub { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font: 12px var(--sans); color: var(--dim); cursor: pointer; white-space: nowrap; }
+.dir-sub input { margin: 0; accent-color: var(--accent); }
+.dir-pagefoot { display: flex; align-items: center; gap: 10px; padding: 8px 2px 2px; font: 11.5px var(--mono); color: var(--faint); }
+.dir-pagecount { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dir-pending { flex: 0 0 auto; color: var(--dim); }
+.dir-more { flex: 0 0 auto; padding: 4px 12px; font-size: 12px; }
+/* 递归命中：行尾补一条相对路径，名字还留在原位。 */
+.file-row .rel { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--mono); color: var(--faint); }
+
 /* ---- long pastes: their own foldable box inside the composer, apart from the typed text ---- */
 /* #317 follow-up: the fade is a mask on the textarea, and a mask carries alpha for everything the
    element paints — with the panel colour and the border on the box, the top 24px would fade those
@@ -4653,6 +4670,16 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   flex: 1; min-width: 0; font-size: 12px; color: var(--dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* #499：新会话弹层 —— 左「工作区 / 最近」，右常显目录浏览（面包屑 + 筛选 + 排序），底下一行说明与按钮。 */
+.new-sheet { width: min(1020px, calc(calc(var(--vw1) * 100) - 32px)); }
+.ns-namerow { padding: 10px 16px 0; }
+.ns-namerow .ns-name { width: 100%; font-size: 15px; }
+.new-sheet .ws-new-body { height: 396px; }
+.new-sheet .ws-new-side,
+.new-sheet .ws-new-dir { max-height: none; }
+.ws-new-pick.on { border-color: var(--accent-dim); background: var(--accent-bg); }
+.ws-new-pick .ws-dot-ghost { background: transparent; border: 1px solid var(--line); }
 @media (max-width: 720px) {
   .ws-new-body { grid-template-columns: minmax(0, 1fr); }
   .ws-new-side {

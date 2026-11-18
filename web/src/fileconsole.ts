@@ -256,6 +256,8 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
     pathBox: true,
     layout: "console",
     tableView: true,
+    // #499：控制台也是文件入口 —— 默认按修改时间降序，和文件管理器一致。
+    defaultSort: { key: "mtime", dir: "desc" },
     actions: rowActions,
     head: [device, ...(opts.head ?? [])],
     beforeList: opts.beforeList ?? [],
@@ -265,7 +267,8 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
         noteRecent(state.path);
         opts.rememberDir(state.path);
       }
-      countBadge.textContent = tr("{p1} 项", { p1: state.dirs.length + state.files.length });
+      // #499：这是整目录的条数（分页时 dirs/files 只有这一页）。
+      countBadge.textContent = tr("{p1} 项", { p1: String(state.total ?? state.dirs.length + state.files.length) });
       footPath.textContent = state.path || tr("此电脑");
       renderNav(state);
       opts.onState?.(state);
