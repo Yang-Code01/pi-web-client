@@ -64,6 +64,14 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 - 守卫：`npm run test:viewport`（已挂在 web 的 typecheck 里）。新写/改弹层后跑一次，顺便在字号 150% 下看一眼底栏还在不在。
 - 判「窄版」用 `@container`（卡 / 面板自己的宽度），不要用 `@media`（视口宽度）：嵌在左栏右栏里的面板永远等不到 `@media` 触发（D263）。
 
+### 列表刷新：已显示的内容不许变暗、不许先清空
+
+点了排序 / 筛选 / 新建目录之后「闪一下」，根因永远是同一个：把「忙碌」画在**已经显示好的内容**上（`.busy` 压暗、`clearRows()` 再挂「读取中…」）。列表要 stale-while-revalidate —— 拿到新数据前不动一个像素：
+
+- 静默重取只留 `cursor: progress`，不加 `opacity`、不换占位。非静默重取（跳目录、建目录后重载）**慢过 220ms** 才让位给「读取中…」占位，快的请求用户应当看到「点了立刻换」。
+- 需要进度感就画在列表**外面**（页脚计数、工具行），不许改列表本身；也不要用骨架屏当折衷。
+- 守卫：`node probes/new-session-sheet.mjs` 第 10 段逐帧采样（排序 / 逐字筛选 / 建目录），任何一帧 `opacity < 0.99` 或有内容期间 `children === 0` 就红。新写/改任何分页列表（文件管理器、附件弹层、内网通选文件）时照这段抄一份。细节见 D315。
+
 ### Running the bridge
 
 The bridge (`http://127.0.0.1:7864`) is normally started by hand in a terminal; its `pi --mode rpc` children die with it. A restart goes through the skill below (stop + `npm start` by hand still works, it just skips the build check). To tell whether you are a descendant of some pid, ask the human or print your own ancestor chain with `pwsh` (`Get-Process(...).Parent`). See `docs/agents/running-the-bridge.md`.
