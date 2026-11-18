@@ -19681,6 +19681,15 @@ function settingFields(): SettingField[] {
     defaultText: tr("关"),
     hint: tr("agent 停下前，计划还有没关的项、且上次更新后又调用了 5 次以上工具，就让它多跑一小步只用 todo 对齐计划（用户看不到这句提醒，会多花一次请求）。改了立即生效"),
   },
+  // D319: 提问兜底。默认开，只有显式 false 才关；扩展在 pi 子进程里每次停下现读。
+  {
+    key: "web.askNudge",
+    label: tr("停下前核对提问"),
+    kind: "bool",
+    globalOnly: true,
+    defaultText: tr("开"),
+    hint: tr("agent 停下前，如果它是在正文里向你提问、却没调用 ask_user_question，就让它改走表单再停一次（同一段问句只提醒一次，整会话最多两次，会多花一次请求）。改了立即生效"),
+  },
   { key: "defaultTools", label: tr("默认工具"), kind: "list", group: tr("工具与脚本"), hint: tr("逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减"), placeholder: tr("例如 read, bash, +codemode") },
   { key: "codemode.mode", label: tr("codemode 工具模式"), kind: "select", options: ["on", "only"], hint: tr("on = 已声明的工具照常直接调；only = 只留 codemode，所有工具都从脚本里调") },
   { key: "codemode.inlineBudget", label: tr("codemode 工具清单预算"), kind: "number", hint: tr("最多花多少 token（字符数 ÷ 4）列工具；挤不下的靠 searchTools 找，0 = 只列命名空间") },
