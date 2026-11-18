@@ -6121,3 +6121,19 @@ Esc 之后 dialog: 0
 **取舍：** 不做虚拟滚动（200 条一页 + 滚到底自动加载已经够用），不做「文件夹递归体积」，不做列宽拖动，不给卷行排序（`↑ 上一级` 与盘符行钉在顶部不算进条数）。排序是共享的一份而不是每个入口一份：同一个用户在同一台机器上，刚在文件管理器里按大小排过，回到新会话弹层按名字排会更让人意外；真要分开，`loadDirSort(store)` 已经留了 `store` 参数。
 
 **验证：** `node bridge/tests/dirpage.mjs`（15：过滤 / 排序 / 文件夹不随方向翻转 / 分页越界 / 递归 rel 且跳过 `node_modules` / 空路径盘符页 / `listFilesUnder` 三条）；`npm run test:stat`、`npm run test:dirpath` 不动；真桥探针 `probes/new-session-sheet.mjs` 八组 —— 弹层布局（只列目录 32 行 + `↑ 上一级`）、筛选 10 个且焦点不丢、只列目录时「包含子目录」隐藏、排序切向、`这个目录已有 1 个会话`、API 层 size 降序 / offset / `total` / `sub`、文件管理器默认 `mtime ↓` 且能跳到第 1500 个文件、附件弹层表头点「大小」两向都单调。
+
+## D312 `npm start` 自己把页面打开，内网通的在线人数不再刷日志（用户要求 2026-11-18）
+
+**问题：** 两处都只是「不方便」，但每天都在忍着：① 手动 `npm start` 之后只打印一行地址，还得自己去浏览器里粘一遍；② 内网通的人数变化一直往控制台打 —— `peer/src/index.ts` 里一句 `discovery.on("change", …在线 N 台…)`，而 `prune()` 每 5 秒无条件 `emit("change")`、每条 announce（约 10 秒一次）也发一次，所以空局域网也每 5 秒刷一行「在线 0 台」，`peer.log` 跟着长。
+
+**决定：**
+
+- **只在「人手动在终端里启动」时开页面**：判据是 `process.stdout.isTTY`（`bridge/src/openbrowser.ts` 的 `shouldOpenPage()`）。看门狗、热部署（`scripts/hotdeploy.mjs`）、`.pi/skills/bridge-update/bin/restart.mjs`（输出走 `Tee-Object` 管道）、测试环境（`pi-web-client-test-dev`）全都不接终端，一行都不用改就不会弹标签。`PI_WEB_OPEN=1` / `0` 可以越过这个判断强制开或关。
+- **系统默认浏览器**：Windows `cmd /c start "" <url>`、macOS `open`、Linux `xdg-open`。那个空的 `""` 是必需的 —— `start` 会把第一个带引号的参数当窗口标题，少了它 URL 只是把标题改掉、窗口不开。`spawn` 用 `stdio:"ignore"` + `windowsHide`，**不 detached**（Windows 上 DETACHED_PROCESS 没有桌面关联，`start` 静默失效，`terminal.ts` 已经踩过一次）；再挂一个空 `error` 监听：找不到 opener 时是个 `error` 事件，没人接就会带走 bridge。
+- **挂在 `listen` 回调里、打印「已启动」之后**：端口才是确定能连的；先开浏览器再去 listen 会撞上「页面打得开、服务还没起」。
+- **内网通的在线日志整句删掉，不是降频也不是去重**：用户要的是「完全不打印」。人数本身在「内网通」页面里一直看得见，日志里那行没有额外信息；prune 每 5 秒都 emit，去重也只能把刷屏变慢一点。
+- **顺手清掉 `bridge/src/index.ts` 里 10 条过期 lint**（模板串拼接、重复声明、嵌套三元、否定 if、赋值表达式），它们和这次功能无关，但都在要改的那个文件里。
+
+**取舍：** 没用「永远打开」（用户选项里明说不要：后台重启一天弹一屏标签）；没用「往上找父进程判断是不是终端」那种探针（`isTTY` 已经够用，且零配置）；没引 `open` 这类 npm 依赖，三平台各一行就够。
+
+**验证：** `npm run test:openpage`（纯函数：TTY 真假、`PI_WEB_OPEN` 的各种写法与大小写、三平台命令形状含 win32 的空标题参数）；`npm run build:bridge` + `npm run build:peer`；空端口/临时状态目录真跑 21 秒 —— 日志里含「在线」的行数为 0（修之前 prune 每 5 秒一行，21 秒该有约 4 行），`pi-web-client 已启动：http://127.0.0.1:…` 照旧；`openPage(url,"linux")` 在没装 `xdg-open` 的 Windows 上返回 true 且进程继续活着（`error` 监听生效）。

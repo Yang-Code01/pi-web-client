@@ -109,6 +109,7 @@
     "test:subagents": "node --experimental-strip-types bridge/tests/subagents-unit.mjs && node --experimental-strip-types bridge/tests/subagents-basics-unit.mjs && node --experimental-strip-types bridge/tests/subagents-overrides-unit.mjs && node --experimental-strip-types bridge/tests/subagents-advanced-unit.mjs && node --experimental-strip-types bridge/tests/acpdelegate-unit.mjs",
     "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs && node bridge/tests/subagents-advanced-ui.mjs",
     "test:start-check": "node bridge/tests/start-check.mjs",
+    "test:openpage": "node --experimental-strip-types bridge/tests/openbrowser-unit.mjs",
     "test:sheet": "node --experimental-strip-types bridge/tests/sheet-numfmt-unit.mjs && node --experimental-strip-types bridge/tests/sheet-calc-unit.mjs && node --experimental-strip-types bridge/tests/sheet-style-unit.mjs && node --experimental-strip-types bridge/tests/sheet-theme-unit.mjs && node --experimental-strip-types bridge/tests/sheet-refs-unit.mjs && node --experimental-strip-types web/tests/sheet-links-unit.mjs",
     "test:deps": "node --experimental-strip-types bridge/tests/deps-unit.mjs",
     "test:pi": "node --experimental-strip-types bridge/tests/pi-candidates-unit.mjs",
