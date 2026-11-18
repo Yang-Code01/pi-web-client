@@ -5460,7 +5460,9 @@ export class App {
   private subSheetKind: "policy" | "handoff" | null = null;
   private subSheetPaint: (() => void) | null = null;
   private subEsc = (ev: KeyboardEvent): void => {
-    if (ev.key !== "Escape" || !this.subSheet) return;
+    if (ev.key !== "Escape" || ev.defaultPrevented || !this.subSheet) return;
+    // D306: 从子层里开的预览（63）压在子层（61）上面，Esc 先收它 —— 收的得是最上面那层。
+    if (document.querySelector(".viewer.hi")) return;
     ev.stopPropagation();
     this.closeSubSheet();
   };
@@ -8469,13 +8471,22 @@ export class App {
   }
 
   /**
+   * D306：`.viewer.hi`(63) 上面还压着更高的层时，Esc 不该越过它们去收预览 —— 先收最上面那层。
+   * 大图（70）不用列：它挂在 `window` 捕获阶段并 `stopPropagation()`，轮不到这里。
+   */
+  private higherLayerOpen(): boolean {
+    return Boolean(document.querySelector(".modal.hi, .choose-back"));
+  }
+
+  /**
    * D306：Esc 先收「压在面板上的预览」。面板自己的 Esc 都挂在元素上（`settingsEsc` 除外），
    * 焦点还留在面板里时事件根本走不到这扇窗，所以这一层要在捕获阶段拦。只管 `.hi`：
    * 普通层带的预览（46/47）不能抢掉面板的 Esc。
    */
   private viewerEsc = (ev: KeyboardEvent): void => {
     const root = this.viewer?.root;
-    if (ev.key !== "Escape" || !root || !root.classList.contains("hi")) return;
+    if (ev.key !== "Escape" || ev.defaultPrevented || !root || !root.classList.contains("hi")) return;
+    if (this.higherLayerOpen()) return;
     ev.preventDefault();
     ev.stopPropagation();
     this.closeViewer();
@@ -11740,6 +11751,8 @@ export class App {
     if (ev.key !== "Escape" || ev.defaultPrevented || this.sheetKind !== "settings") return;
     // D306: 从面板里打开的预览（63）夹在中间时，Esc 先收它（`viewerEsc` 负责），面板还是父层。
     if (document.querySelector(".viewer.hi")) return;
+    // 更高的层（口令框 64 / 选择框 66）压着时也不越级。
+    if (this.higherLayerOpen()) return;
     if (document.querySelectorAll(".st-back, .sheet-back, .sheet-sub-back, .image-view").length > 1) return;
     this.closeSheet();
   };
