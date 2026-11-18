@@ -3764,6 +3764,8 @@ export const en: Dict = {
   "启动有头浏览器": "Launch headed browser",
   "启动无头浏览器": "Launch headless browser",
   "截图": "Screenshot",
+  "运行 {p1}": "Run {p1}",
+  "运行命令": "Run a command",
   "执行 JS · {p1}": "Run JS · {p1}",
   "执行 JS": "Run JS",
   "点击 {p1}": "Click {p1}",

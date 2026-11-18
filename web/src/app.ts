@@ -17278,6 +17278,9 @@ export class App {
       case "shot":
         text = tr("截图");
         break;
+      case "run":
+        text = target ? tr("运行 {p1}", { p1: target }) : tr("运行命令");
+        break;
       case "scroll":
         text = target ? tr("滚动 · {p1}", { p1: target }) : tr("滚动");
         break;

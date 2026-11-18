@@ -330,3 +330,80 @@ test("只在命令里提到 playwright（装包、看版本、grep）→ 不算�
   ];
   assert.equal(browserOpsView({ ...base, items }).cards.length, 0);
 });
+
+/* ---------- 命令行直接跑测试 / 起浏览器 / 连调试端口 ---------- */
+test("npx playwright test 这种命令也认：一张卡、一步「运行」", () => {
+  const view = browserOpsView({
+    ...base,
+    items: [user("u1", 0), tool("b1", 5, "bash", { command: "npx playwright test --project=chromium" }, { durationMs: 61_000 })],
+  });
+  assert.equal(view.cards.length, 1);
+  assert.equal(view.cards[0].state, "done");
+  assert.equal(view.cards[0].durationMs, 61_000);
+  assert.deepEqual(view.cards[0].steps.map(shape), [{ kind: "run", target: "playwright test", name: undefined }]);
+});
+
+test("直接起浏览器（--headless）与连 CDP 端点各成一张卡", () => {
+  const launch = browserOpsView({
+    ...base,
+    items: [
+      user("u1", 0),
+      tool("b1", 5, "bash", { command: `"C:/Program Files/Google/Chrome/Application/chrome.exe" --headless=new --remote-debugging-port=9222 about:blank` }, { durationMs: 2_000 }),
+    ],
+  });
+  assert.equal(launch.cards.length, 1);
+  assert.equal(launch.cards[0].headed, false);
+  assert.deepEqual(launch.cards[0].steps.map(shape), [{ kind: "launch", target: "headless", name: undefined }]);
+
+  const cdp = browserOpsView({
+    ...base,
+    items: [user("u1", 0), tool("b2", 6, "bash", { command: "curl -s http://127.0.0.1:9222/json/version" }, { durationMs: 30 })],
+  });
+  assert.equal(cdp.cards.length, 1);
+  assert.deepEqual(cdp.cards[0].steps.map(shape), [{ kind: "cdp", target: "127.0.0.1:9222", name: undefined }]);
+});
+
+test("脚本是 cat heredoc 现场写的，也认得出来", () => {
+  const command = [
+    "cat > probe.mjs <<'EOF'",
+    "import { chromium } from 'playwright';",
+    "const browser = await chromium.launch();",
+    "const page = await browser.newPage();",
+    "await page.goto('https://x/');",
+    "EOF",
+    "node probe.mjs",
+  ].join("\n");
+  const view = browserOpsView({ ...base, items: [user("u1", 0), tool("b1", 5, "bash", { command }, { durationMs: 8_000 })] });
+  assert.equal(view.cards.length, 1);
+  assert.equal(view.cards[0].script, "probe.mjs");
+  assert.equal(view.cards[0].headed, false);
+  assert.deepEqual(view.cards[0].steps.map(shape), [
+    { kind: "launch", target: "headless", name: undefined },
+    { kind: "tab", target: undefined, name: undefined },
+    { kind: "nav", target: "https://x/", name: undefined },
+  ]);
+});
+
+test("后台跑（bg_run）同一条脚本也算", () => {
+  const view = browserOpsView({
+    ...base,
+    items: [
+      user("u1", 0),
+      wrote("w1", 2, "E:/x/run.mjs", SCRIPT),
+      tool("b1", 590, "bg_run", { command: "node E:/x/run.mjs" }, { status: "running", durationMs: undefined }),
+    ],
+  });
+  assert.equal(view.cards.length, 1);
+  assert.equal(view.cards[0].script, "run.mjs");
+  assert.equal(view.cards[0].state, "running");
+});
+
+test("名字不常规的 MCP 也认：stagehand / cdp", () => {
+  const stagehand = browserOpsView({
+    ...base,
+    items: [tool("t1", 1, "mcp__stagehand", { tool: "act", args: { action: "click" } }, { durationMs: 1 })],
+  });
+  assert.equal(stagehand.cards.length, 1);
+  const cdp = browserOpsView({ ...base, items: [tool("t2", 2, "mcp__cdp_navigate", { url: "https://x/" }, { durationMs: 1 })] });
+  assert.equal(cdp.cards.length, 1);
+});

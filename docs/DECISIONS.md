@@ -6097,3 +6097,7 @@ Esc 之后 dialog: 0
 **取舍：** 卡片顺序按「发现顺序」的倒序（新的在上），不再按 `startedAt` 排 —— 工具项没有 `ts` 时 `startedAt` 会退化成「现在」，混进两分钟前的调用会把顺序排反。副作用是子代理的卡（先收集）排在自己会话的卡后面。
 
 **验证：** `npm run test:browser-ops`（20 条纯函数用例：白名单 / 步骤序列 / 拆不出 / 打转 / 无声 / 阈值 / partial 输出 / 空视图）；`npm run test:browser-ops:ui`（Playwright + 假 pi：第三颗 tab 与 pip、折叠与全折叠、输出折三行、快进 70s/130s 变黄变红、中断前的确认框、齿轮里的阈值与名单）。
+
+**补记（同日，真实使用反馈后）：** 第一版只认 MCP 工具名，用户真跑「用 playwright 打开百度、输入、点检索」那一轮，面板是空的 —— 那轮 agent 先 `write` 了 `baidu-weather.mjs`、再用 `bash` 跑，一个 MCP 浏览器工具都没调。于是「浏览器类调用」改成**看行为**而不是看工具名：脚本源码里出现驱动调用（`page.goto` / `locator` / `launch` / `waitForSelector` …）才算，脚本可以是之前写好的文件、也可以是同一条命令里的 heredoc；`npx playwright test` / `cypress run` 这类命令式跑测试算一步 `run`；直接起 `chrome --headless` / `--remote-debugging-port` 算一步 `launch`；`curl 127.0.0.1:9222/json` 算一步 `cdp`。**不认**屏幕驱动（pyautogui / computer-use）和 `selenium-side-runner`（要跨机连浏览器），也不认「命令里出现 playwright」——试过那个宽松版本，真实会话一次多出 12 张噪音卡（`npx playwright --version`、`npm i playwright`、`grep -i playwright`）。
+
+**顺带修的桥问题：** `bridge/src/items.ts` 的 `toolResult` 分支没抄 `durationMs`（pi 把它写在 toolResult 消息顶层），所以**刷新页面后**所有工具耗时都是 0 —— 执行栏和浏览器面板一起瞎。补上之后同一条会话从「共 13 次 · 0.0 秒」变成「共 13 次 · 151 秒 · 最慢 84 秒」（`bridge/tests/items-duration-unit.mjs` 两例）。

@@ -23,6 +23,7 @@ export type BrowserOpStepKind =
   | "scroll"
   | "launch"
   | "shot"
+  | "run"
   | "call"
   | "raw";
 
@@ -108,13 +109,37 @@ export const BROWSER_TOOL_PATTERNS: readonly string[] = [
   "selenium",
   "browserbase",
   "lightpanda",
+  "browseruse",
+  "cdp",
+  "chrome",
+  "chromedriver",
+  "stagehand",
+  "agentql",
+  "skyvern",
+  "notte",
+  "steel",
+  "browserless",
 ];
 
 /**
  * 跑脚本的 shell 工具。它们不在白名单里，但现实里最常见的一条路就是「写个 playwright 脚本，
  * 用 bash 跑 node」——只认 MCP 工具名会把整类操作漏掉（#505 验收时就是这么漏的）。
  */
-const SHELL_TOOLS = new Set(["bash", "shell", "sh", "zsh", "pwsh", "powershell", "cmd", "run", "exec", "terminal"]);
+const SHELL_TOOLS = new Set([
+  "bash",
+  "shell",
+  "sh",
+  "zsh",
+  "pwsh",
+  "powershell",
+  "cmd",
+  "run",
+  "exec",
+  "terminal",
+  "bg_run",
+  "background",
+  "spawn",
+]);
 
 /** 脚本源码里出现这些词，才认定它在驱动浏览器。 */
 const DRIVER_HINTS: readonly string[] = [
@@ -134,6 +159,22 @@ const INLINE_RUN = /\b(?:node|deno|bun)\b[^\n]*(?:\s-e\s|--eval|--input-type)/;
 
 /** 内联代码里出现这些，就算在驱动浏览器 —— 未必写了 `import ... from 'playwright'`。 */
 const DRIVER_CALL = /(?:chromium|firefox|webkit)\s*\.\s*launch|\.newPage\s*\(|page\s*\.\s*goto\s*\(/;
+
+/** 命令行跑测试 / 跑工具（不是「写脚本再跑」，没有源码可读）。 */
+const RUNNERS: readonly [RegExp, string][] = [
+  [/\bplaywright\s+(?:test|codegen|screenshot|pdf|open)\b/i, "playwright test"],
+  [/\bcypress\s+run\b/i, "cypress run"],
+  [/\bwdio\s+(?:run\b|wdio\.conf)/i, "wdio run"],
+  [/\bselenium-side-runner\b/i, "selenium-side-runner"],
+  [/\bpytest\b[^\n]*--headed/i, "pytest --headed"],
+  [/\bnpx\s+(?:-{1,2}[\w-]+\s+)*puppeteer\b/i, "puppeteer"],
+];
+
+/** 直接起浏览器：带无头 / 调试端口 / 指定 profile 才算「在自动化它」。 */
+const BROWSER_BIN = /\b(?:chrome|chromium|msedge|firefox|brave)\b/i;
+const BROWSER_AUTOMATION_FLAG = /(?:--headless|--remote-debugging-port|--app=|--user-data-dir)/;
+/** 连 CDP 端点：`curl 127.0.0.1:9222/json/version`。 */
+const CDP_ENDPOINT = /(?:127\.0\.0\.1|localhost):(\d{2,5})\/(?:json|devtools)/i;
 
 interface ScriptSource {
   /** 归一化后的绝对路径（反斜杠 → `/`）。 */
@@ -214,12 +255,42 @@ function cardsFrom(
     if (written) {
       scripts.set(written.path, { path: written.path, base: written.base, content: written.content, order });
     }
+    // `cat > x.mjs <<'EOF' … EOF` 也算把脚本写下来了：后面 `node x.mjs` 才认得出。
+    for (const heredoc of heredocsOf(commandOf(item))) {
+      scripts.set(heredoc.path, {
+        path: heredoc.path,
+        base: baseName(heredoc.path),
+        content: heredoc.content,
+        order,
+      });
+    }
     const direct = isBrowserTool(item.name, patterns);
     const scripted = direct ? null : scriptedCall(item, scripts);
     if (!direct && !scripted) continue;
     cards.push(card(item, intent, thresholds, now, subagent, outputAt[item.toolCallId], scripted));
   }
   return cards;
+}
+
+/** 命令里直接写的文件（`cat > x.mjs <<'EOF' … EOF`）：把正文当脚本源码收进来看。 */
+function heredocsOf(command: string): { path: string; content: string }[] {
+  const out: { path: string; content: string }[] = [];
+  const lines = command.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const head = /<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/.exec(lines[i]);
+    if (!head) continue;
+    const delimiter = head[2];
+    const target = />\s*([^\s<>|;&'"]+)/.exec(lines[i]);
+    const body: string[] = [];
+    let j = i + 1;
+    while (j < lines.length && lines[j].trimEnd() !== delimiter) {
+      body.push(lines[j]);
+      j += 1;
+    }
+    if (j < lines.length && target) out.push({ path: normPath(target[1]), content: body.join("\n") });
+    i = j;
+  }
+  return out;
 }
 
 /** `write` 的整份内容：`{ path, content }`（不同工具的字段名不一样）。 */
@@ -254,19 +325,25 @@ function scriptedCall(
   scripts: Map<string, ScriptSource>,
 ): { script: string | null; steps: BrowserOpStep[]; headed: boolean | null } | null {
   if (!SHELL_TOOLS.has(lastSegment(item.name).toLowerCase())) return null;
+  const command = commandOf(item);
   const refs = scriptRefs(item);
   const source = findScript(refs, scripts);
-  if (source && mentionsDriver(source.content)) {
+  if (source) {
+    // 看得到源码就以源码为准：看得见但不是浏览器脚本 → 不算（`node build.mjs`）。
+    if (!mentionsDriver(source.content)) return null;
     const headed = headedOfScript(source.content);
     return { script: source.base, steps: parseScriptSteps(source.content, headed), headed };
   }
-  if (source) return null;
+  // 命令行跑测试 / 起浏览器 / 连 CDP 端点：没有源码可读，但确实是浏览器操作。
+  const runner = runnerOf(command);
+  if (runner) return { script: null, steps: [{ kind: "run", target: runner }], headed: null };
+  const port = CDP_ENDPOINT.exec(command)?.[1];
+  if (port) return { script: null, steps: [{ kind: "cdp", target: `127.0.0.1:${port}` }], headed: null };
+  const launch = launchOf(command);
+  if (launch) return { script: null, steps: [{ kind: "launch", target: launch }], headed: launch === "headed" };
   // 看不到脚本时只认「命令里直接跑一段驱动代码」（`node -e "…playwright…"`）。
   // 不能只要命令里出现 playwright 就算 —— `npx playwright --version`、`npm i playwright`、
   // `grep -i playwright` 都会命中，一张面板就成噪音了（真实会话里一次就多出 12 张）。
-  const command = typeof (item.args as Record<string, unknown>)?.command === "string"
-    ? ((item.args as Record<string, unknown>).command as string)
-    : "";
   if (!INLINE_RUN.test(command) || !(mentionsDriver(command) || DRIVER_CALL.test(command))) return null;
   const headed = headedOfScript(command);
   const steps = parseScriptSteps(command, headed);
@@ -276,6 +353,26 @@ function scriptedCall(
     steps: steps.length || !raw ? steps : [{ kind: "raw", target: raw }],
     headed,
   };
+}
+
+function commandOf(item: ToolItem): string {
+  if (!item.args || typeof item.args !== "object") return "";
+  const bag = item.args as Record<string, unknown>;
+  const command = bag.command ?? bag.cmd ?? bag.script;
+  return typeof command === "string" ? command : "";
+}
+
+function runnerOf(command: string): string | null {
+  for (const [pattern, label] of RUNNERS) {
+    if (pattern.test(command)) return label;
+  }
+  return null;
+}
+
+/** 命令是不是在起一个可供自动化的浏览器（带无头 / 调试端口 / 指定 profile）。 */
+function launchOf(command: string): "headed" | "headless" | null {
+  if (!BROWSER_BIN.test(command) || !BROWSER_AUTOMATION_FLAG.test(command)) return null;
+  return /--headless/.test(command) ? "headless" : "headed";
 }
 
 function mentionsDriver(text: string): boolean {
