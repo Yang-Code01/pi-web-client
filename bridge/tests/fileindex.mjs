@@ -130,6 +130,29 @@ await check("卷勾选：全取消 = 一条不给，勾回一个 = 只剩它", a
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+await check("扫到一半被打断：再开库不认半套索引，转 off 等重扫", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fileindex-"));
+  const dbFile = path.join(root, ".idx", "files.db");
+  fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(dbFile);
+  db.exec(`
+    CREATE TABLE files(path TEXT PRIMARY KEY, nlow TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0,
+      mtime INTEGER NOT NULL DEFAULT 0, is_dir INTEGER NOT NULL DEFAULT 0, vol TEXT NOT NULL, gen INTEGER NOT NULL);
+    CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+  `);
+  db.prepare("INSERT INTO files(path,nlow,size,mtime,is_dir,vol,gen) VALUES(?,?,?,?,?,?,?)").run(
+    "C:\\half\\a.txt", "a.txt", 1, 0, 0, "C:", 1);
+  db.prepare("INSERT INTO meta(k, v) VALUES('scanStartedAt', ?)").run(String(Date.now()));
+  db.close();
+  const index = new FileIndex({ dbFile, roots: [root] });
+  await index.open();
+  assert.equal(index.status().state, "off", "半套索引不该当 ready —— 否则会永久缺一半文件");
+  assert.equal(index.status().indexed, 1, "库里的行还在（只是等重扫清掉）");
+  index.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 if (failures) {
   console.log(`\n${failures} 项失败`);
   process.exit(1);

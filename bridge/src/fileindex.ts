@@ -207,8 +207,11 @@ export class FileIndex {
       }
       const last = db.prepare("SELECT v FROM meta WHERE k = 'lastScanAt'").get()?.v;
       if (typeof last === "string") this.lastScanAt = Number(last) || 0;
+      // 上次扫描没走完（库里只有前半截）：告诉调用方需要重扫，别把半套索引当就绪。
+      const interrupted = db.prepare("SELECT v FROM meta WHERE k = 'scanStartedAt'").get()?.v;
       this.refreshCounts();
-      this.stateValue = this.indexed > 0 ? "ready" : "off";
+      this.stateValue = this.indexed > 0 && !interrupted ? "ready" : "off";
+      if (interrupted) this.message = "上次扫描没扫完，重新扫一遍";
     } catch (ex) {
       this.stateValue = "error";
       this.message = `索引不可用：${ex instanceof Error ? ex.message : String(ex)}`;
@@ -328,6 +331,9 @@ export class FileIndex {
     this.scanGen = ++this.gen;
     this.scanned = 0;
     this.stateValue = "scanning";
+    // 扫到一半进程被杀（bridge 重启、关窗口）时库里只落了一半的行，而 lastScanAt 不会写。
+    // 留个 scanStartedAt：下次 open() 看见它就知道「该重扫」，否则半套索引会被当成已经就绪。
+    db.prepare("INSERT INTO meta(k, v) VALUES('scanStartedAt', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(String(Date.now()));
     this.publish();
 
     const started = performance.now();
@@ -414,6 +420,7 @@ export class FileIndex {
       flush();
       // 本轮没再见的行：删。再顺手把库里现有行数采一次，state 转 ready 之前一定是真值。
       db.prepare("DELETE FROM files WHERE gen != ?").run(this.scanGen);
+      db.prepare("DELETE FROM meta WHERE k = 'scanStartedAt'").run();
       db.prepare("INSERT INTO meta(k, v) VALUES('lastScanAt', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(String(Date.now()));
       this.lastScanAt = Date.now();
       this.refreshCounts();

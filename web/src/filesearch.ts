@@ -197,11 +197,17 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
     };
 
     nav.append(group(tr("搜索范围")));
+    // 扫描期还没有分卷计数，用已扫数代替：显示 0 会让人以为索引是空的。
+    const totalText = (): string | undefined => {
+      if (!status) return undefined;
+      const busy = status.state === "scanning" || status.state === "paused";
+      return countText(busy ? status.scanned : status.indexed);
+    };
     const all = item({
       icon: "▣",
       label: tr("所有卷"),
       on: active.size > 0 && active.size === allVolIds().length,
-      count: status ? countText(status.indexed) : undefined,
+      count: totalText(),
       title: tr("不限制盘符；下面勾掉的卷不参与索引"),
     });
     all.onclick = () => {
@@ -213,13 +219,13 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
     nav.append(all);
 
     for (const vol of status?.volumes ?? []) {
-      if (!vol.count && vol.enabled) continue;
+      // 扫描期 count 还是 0（分卷计数扫完才采），照样列出来，数字位置留个破折号。
       const on = active.has(vol.id);
       const b = item({
         icon: "▤",
         label: vol.id,
         on,
-        count: countText(vol.count),
+        count: vol.count ? countText(vol.count) : "—",
         title: on ? tr("点一下：这一卷不参与索引（会重扫）") : tr("点一下：把这一卷加回索引（会重扫）"),
       });
       b.onclick = () => {
