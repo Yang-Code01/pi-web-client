@@ -633,6 +633,51 @@ Command exited with code 1` });
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  // 浏览器面板（#503）：一次 turn 里两颗浏览器工具调用 —— 一颗带坐标点击跑完，一颗停在等网络上，收尾交给探针。
+  if (/^BROWSER/.test(text)) {
+    // 会话「在跑」只由 agent_start 起算（bridge/src/sessions.ts:1550）：不先说这句，「中断本轮」
+    // 那一小块根本不会画出来，探针就验不到它。
+    out({ type: "agent_start" });
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("先打开登录页，把用户名填进去，再点登录按钮，最后把页面信息读回来。") });
+    const first = "call-browser-login";
+    const firstArgs = {
+      tool: "browser_exec",
+      args: {
+        code: [
+          "goto_url('http://127.0.0.1:7864/#/login')",
+          "wait_for_load(timeout=15)",
+          'js("document.querySelector(\'#username\').value = \'tester\'")',
+          "click_at_xy(412, 318)",
+          "time.sleep(1.5)",
+          "print(page_info())",
+        ].join("\n"),
+      },
+    };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: first, name: "mcp__browser_use", arguments: firstArgs }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: first, toolName: "mcp__browser_use", args: firstArgs });
+    await sleep(500);
+    out({
+      type: "tool_execution_end",
+      toolCallId: first,
+      toolName: "mcp__browser_use",
+      isError: false,
+      result: "title: 登录\nurl: http://127.0.0.1:7864/#/login\nsubmitted: true\ntabs: 1\nviewport: 1280x900\ncookies: 2\nframes: 0\n",
+    });
+    // 第二颗只发一次 partial 输出就停住：探针先看「运行中」，再把页面时钟快进成「疑似卡住」。
+    const slow = "call-browser-idle";
+    const slowArgs = { tool: "browser_exec", args: { code: "wait_for_network_idle(timeout=30)\nprint(page_info())" } };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: slow, name: "mcp__browser_use", arguments: slowArgs }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: slow, toolName: "mcp__browser_use", args: slowArgs });
+    out({ type: "tool_execution_update", toolCallId: slow, partialResult: { content: [{ type: "text", text: "waiting for network idle…" }] } });
+    // 这一轮不能收尾：收尾 = agent_settled，页面会把会话算成空闲，「中断本轮」那一小块就没了。
+    // 一直挂到探针点「中断」为止（120 秒是兜底，免得测试崩了留下僵尸）。
+    const deadline = Date.now() + 120_000;
+    while (!abortRequested && Date.now() < deadline) await sleep(50);
+    return;
+  }
   // 「发到会话复盘」（D164 延伸）：回答末尾按提示词要求回写规矩。
   // 形状照真模型来：标记包在粗体里、前面夹一段解释 —— 前端在正文里找标记，不认整行的格式。
   if (text.startsWith("[pi-web:review]")) {

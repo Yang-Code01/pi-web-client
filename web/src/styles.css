@@ -1676,6 +1676,63 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .exec-child-step .exec-step-name { font-size: 10px; }
 .exec-child-step .exec-step-args { font-size: 10px; }
 @keyframes exec-flash { 0%, 45% { background-color: var(--accent-bg); } 100% { background-color: transparent; outline-color: transparent; } }
+/* ---------- 浏览器操作面板 (#503) ----------
+   整块是 flex 列，不是 grid：卡片头 / 身体 / 输出都可能被折叠掉，写多轨 grid 的话
+   隐藏的行会把后面整体往前挪（见 AGENTS.md「布局：网格里的可隐藏子元素」）。 */
+.browser-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.browser-sum { display: flex; align-items: baseline; gap: 8px; min-width: 0; color: var(--faint); font-size: 11px; }
+.browser-sum-text { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.browser-sum-text b { color: var(--text); font-weight: 600; }
+.browser-live { color: var(--accent); font-variant-numeric: tabular-nums; }
+.browser-fold { flex: none; margin-left: auto; padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px; background: transparent; color: var(--faint); font: inherit; font-size: 10.5px; cursor: pointer; }
+.browser-fold:hover { color: var(--text); border-color: var(--accent-dim); }
+.browser-fold:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.browser-only { display: flex; flex: none; align-items: center; gap: 3px; color: var(--faint); font-size: 10.5px; cursor: pointer; }
+.browser-only input { width: 11px; height: 11px; margin: 0; accent-color: var(--accent); }
+.browser-gear { flex: none; padding: 1px 3px; border: 0; border-radius: 5px; background: transparent; color: var(--faint); font: inherit; font-size: 11px; cursor: pointer; }
+.browser-gear:hover, .browser-gear[aria-expanded="true"] { color: var(--text); background: var(--panel-2); }
+.browser-cfg { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }
+.browser-cfg-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.browser-cfg-field { display: flex; align-items: center; gap: 3px; color: var(--faint); font-size: 10.5px; }
+.browser-cfg-field input { width: 44px; padding: 1px 3px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--text); font: inherit; font-size: 10.5px; text-align: right; }
+.browser-cfg-unit { color: var(--faint); }
+.browser-cfg-tools { min-width: 0; padding: 3px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--text); font: 10.5px/1.4 var(--mono); }
+.browser-cfg-save, .browser-cfg-reset { flex: none; padding: 2px 8px; border: 1px solid var(--line); border-radius: 5px; background: transparent; color: var(--faint); font: inherit; font-size: 10.5px; cursor: pointer; }
+.browser-cfg-save:hover { border-color: var(--accent-dim); color: var(--text); }
+.browser-cfg-reset:hover { color: var(--text); }
+.browser-idle { flex: none; color: var(--warn); font-size: 10px; font-variant-numeric: tabular-nums; }
+.browser-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.browser-card { min-width: 0; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }
+.browser-card[data-bstate="slow"] { border-color: var(--warn); }
+.browser-card[data-bstate="stuck"] { border-color: var(--danger); }
+.browser-card[data-bstate="failed"] { border-color: var(--line-strong); }
+.browser-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 6px 8px; cursor: pointer; }
+.browser-chev { flex: none; width: 14px; padding: 0; border: 0; background: transparent; color: var(--faint); font: inherit; font-size: 10px; cursor: pointer; }
+.browser-chev::before { content: "▸"; }
+.browser-chev.open::before { content: "▾"; }
+.browser-title { overflow: hidden; min-width: 0; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.browser-dur { flex: none; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.browser-badge { flex: none; padding: 1px 5px; border-radius: 999px; font-size: 10px; white-space: nowrap; }
+.browser-badge.slow { background: var(--warn); color: var(--warn-ink); }
+.browser-badge.stuck { background: var(--danger); color: #fff; }
+.browser-badge.silent, .browser-badge.looping { border: 1px solid var(--warn); color: var(--warn); }
+.browser-badge.failed { border: 1px solid var(--danger); color: var(--danger); }
+.browser-stop { flex: none; padding: 1px 6px; border: 1px solid var(--danger); border-radius: 5px; background: transparent; color: var(--danger); font: inherit; font-size: 10.5px; cursor: pointer; }
+.browser-stop:hover { background: var(--danger); color: #fff; }
+.browser-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 6px 8px 8px; border-top: 1px solid var(--line-soft); }
+.browser-intent { display: -webkit-box; overflow: hidden; color: var(--faint); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; cursor: pointer; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.browser-intent.open { display: block; overflow: visible; }
+.browser-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; min-width: 0; color: var(--faint); font: 10.5px/1.4 var(--mono); }
+.browser-meta span { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }
+.browser-steps { display: flex; flex-direction: column; gap: 2px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.browser-steps li { display: flex; gap: 5px; min-width: 0; color: var(--text); font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.browser-steps li::before { content: "·"; flex: none; color: var(--faint); }
+.browser-empty { color: var(--faint); font-size: 11.5px; }
+.browser-out { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.browser-out-toggle { align-self: flex-start; padding: 0; border: 0; background: transparent; color: var(--faint); font: inherit; font-size: 10.5px; cursor: pointer; }
+.browser-out-toggle:hover { color: var(--accent); text-decoration: underline; }
+.browser-out-body { display: -webkit-box; overflow: hidden; margin: 0; padding: 5px 6px; border-radius: 5px; background: var(--panel); color: var(--faint); font: 10.5px/1.5 var(--mono); white-space: pre-wrap; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.browser-out.open .browser-out-body { display: block; overflow: auto; max-height: calc(var(--vh1) * 30); }
 /* 这一栏是「待办 / 通道 / 工具 / 关于」四组，每组一个标题加一组控件。以前它们只靠 grid 的 8px
    gap 排着，按钮各浮各的，标题像是另一块的。发丝线 + 16/8 的上下节奏把它们连成组：
    标题上面 14px 线、下面 8px 才是控件。 */
