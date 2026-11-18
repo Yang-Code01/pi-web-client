@@ -20,7 +20,7 @@ import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
-import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
+import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpStepKind, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -17133,8 +17133,15 @@ export class App {
 
   /** 折叠后只留人话：坐标、JS 代码、函数名一律不进来（那些只在展开态）。 */
   private browserFoldedText(card: BrowserOpCard): string {
-    const last = card.steps.at(-1);
-    if (last) return this.browserStepText(last, true);
+    // 脚本卡把文件名带上：一栏十个 `bash` 分不清谁是谁。
+    // 末尾的「等待 x 秒」/「输出 …」不是干的事，往后找最后一个真正的动作。
+    const ACTIONS: BrowserOpStepKind[] = ["nav", "input", "click", "read", "js", "cdp", "tab", "shot", "launch"];
+    const last =
+      card.steps.filter((step) => ACTIONS.includes(step.kind)).at(-1) ??
+      card.steps.filter((step) => step.kind !== "print").at(-1) ??
+      card.steps.at(-1);
+    const who = card.script ? `${card.script} · ` : "";
+    if (last) return who + this.browserStepText(last, true);
     const first = card.intent.split("\n").map((line) => line.trim()).find(Boolean);
     return first ? first.slice(0, 80) : tr("浏览器调用");
   }
@@ -17199,7 +17206,7 @@ export class App {
       body.append(intent);
     }
     const meta = el("div", "browser-meta");
-    meta.append(el("span", "", card.tool));
+    meta.append(el("span", "", card.script ? `${card.tool} · ${card.script}` : card.tool));
     if (card.subagent) meta.append(el("span", "", tr("子代理 {p1}", { p1: card.subagent })));
     meta.append(el("span", "", card.headed === null ? tr("有头无头未知") : card.headed ? tr("有头视图") : tr("无头")));
     body.append(meta);
@@ -17227,15 +17234,21 @@ export class App {
   /** 子步骤只说人话：类型 + 目标，中文在渲染层出，模型层不带文案。`coarse` = 折叠态，去掉代码与坐标。 */
   private browserStepText(step: BrowserOpStep, coarse = false): string {
     const raw = step.target ?? "";
-    const target = coarse && (step.kind === "js" || step.kind === "click" || step.kind === "cdp" || step.kind === "print" || step.kind === "raw") ? "" : raw;
+    // 折叠行里不露点哪个坐标、哪段 JS；但 `print` 是脚本自己的旁白（「3) 点击百度一下…」），
+    // 恰恰是全卡最像人话的一行，不能遮。
+    const target = coarse && (step.kind === "js" || step.kind === "click" || step.kind === "cdp" || step.kind === "raw") ? "" : raw;
     let text: string;
     switch (step.kind) {
       case "nav":
         text = target ? tr("打开 {p1}", { p1: target }) : tr("打开页面");
         break;
-      case "wait":
-        text = tr("等待页面");
+      case "wait": {
+        const ms = /^(\d+)ms$/.exec(target);
+        if (ms) text = tr("等待 {p1} 秒", { p1: (Number(ms[1]) / 1000).toFixed(1) });
+        else if (step.name && !coarse) text = tr("等待元素 {p1}", { p1: step.name });
+        else text = target ? tr("等待 {p1}", { p1: target }) : tr("等待页面");
         break;
+      }
       case "js":
         text = target ? tr("执行 JS · {p1}", { p1: target }) : tr("执行 JS");
         break;
@@ -17255,7 +17268,15 @@ export class App {
         text = target ? tr("切换标签 · {p1}", { p1: target }) : tr("切换标签");
         break;
       case "input":
+        // 脚本里的输入能带上选择器（`输入 · 今天的天气 · #kw`），但折叠行只留值。
         text = target ? tr("输入 · {p1}", { p1: target }) : tr("输入");
+        if (step.name && !coarse) text += ` · ${step.name}`;
+        break;
+      case "launch":
+        text = target === "headless" ? tr("启动无头浏览器") : target === "headed" ? tr("启动有头浏览器") : tr("启动浏览器");
+        break;
+      case "shot":
+        text = tr("截图");
         break;
       case "scroll":
         text = target ? tr("滚动 · {p1}", { p1: target }) : tr("滚动");

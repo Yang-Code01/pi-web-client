@@ -21,6 +21,8 @@ export type BrowserOpStepKind =
   | "tab"
   | "input"
   | "scroll"
+  | "launch"
+  | "shot"
   | "call"
   | "raw";
 
@@ -62,6 +64,11 @@ export interface BrowserOpCard {
   output: string;
   /** 有头 / 无头；看不出来是 null，不猜。 */
   headed: boolean | null;
+  /**
+   * 这次调用是「跑脚本」而不是 MCP 浏览器工具时，脚本的文件名（步骤是从脚本源码读出来的）。
+   * 直接调 MCP 工具的是 null。
+   */
+  script: string | null;
 }
 
 export interface BrowserOpsSummary {
@@ -102,6 +109,40 @@ export const BROWSER_TOOL_PATTERNS: readonly string[] = [
   "browserbase",
   "lightpanda",
 ];
+
+/**
+ * 跑脚本的 shell 工具。它们不在白名单里，但现实里最常见的一条路就是「写个 playwright 脚本，
+ * 用 bash 跑 node」——只认 MCP 工具名会把整类操作漏掉（#505 验收时就是这么漏的）。
+ */
+const SHELL_TOOLS = new Set(["bash", "shell", "sh", "zsh", "pwsh", "powershell", "cmd", "run", "exec", "terminal"]);
+
+/** 脚本源码里出现这些词，才认定它在驱动浏览器。 */
+const DRIVER_HINTS: readonly string[] = [
+  "playwright",
+  "puppeteer",
+  "selenium",
+  "webdriver",
+  "chrome-remote-interface",
+  "devtools-protocol",
+];
+
+/** 命令里出现的脚本路径（`node E:/x/baidu-weather.mjs`、`python ./a.py`）。 */
+const SCRIPT_PATH = /[^\s'"`(){}\[\],;|&]+?\.(?:mjs|cjs|js|mts|cts|tsx?|py)\b/g;
+
+/** 直接跑一段代码（`node -e "…"` / `node --input-type=module -e`）。 */
+const INLINE_RUN = /\b(?:node|deno|bun)\b[^\n]*(?:\s-e\s|--eval|--input-type)/;
+
+/** 内联代码里出现这些，就算在驱动浏览器 —— 未必写了 `import ... from 'playwright'`。 */
+const DRIVER_CALL = /(?:chromium|firefox|webkit)\s*\.\s*launch|\.newPage\s*\(|page\s*\.\s*goto\s*\(/;
+
+interface ScriptSource {
+  /** 归一化后的绝对路径（反斜杠 → `/`）。 */
+  path: string;
+  base: string;
+  content: string;
+  /** items 里的先后顺序，同一文件写过几次时取最后一次。 */
+  order: number;
+}
 
 export interface BrowserOpsChildRun {
   name: string;
@@ -157,16 +198,111 @@ function cardsFrom(
   outputAt: Record<string, number>,
 ): BrowserOpCard[] {
   const cards: BrowserOpCard[] = [];
+  const scripts = new Map<string, ScriptSource>();
   let intent = "";
+  let order = 0;
   for (const item of items) {
+    order += 1;
     if (item.kind === "assistant") {
       if (item.text.trim()) intent = item.text.trim();
       continue;
     }
-    if (item.kind !== "tool" || !isBrowserTool(item.name, patterns)) continue;
-    cards.push(card(item, intent, thresholds, now, subagent, outputAt[item.toolCallId]));
+    if (item.kind !== "tool") continue;
+    // 先记账：这一轮里写过的脚本，后面 `bash node x.mjs` 才查得到源码。
+    // 只记整份 `write`；`edit` 的增量不合并，所以步骤可能比脚本旧一点——比肎猜好。
+    const written = writtenScript(item);
+    if (written) {
+      scripts.set(written.path, { path: written.path, base: written.base, content: written.content, order });
+    }
+    const direct = isBrowserTool(item.name, patterns);
+    const scripted = direct ? null : scriptedCall(item, scripts);
+    if (!direct && !scripted) continue;
+    cards.push(card(item, intent, thresholds, now, subagent, outputAt[item.toolCallId], scripted));
   }
   return cards;
+}
+
+/** `write` 的整份内容：`{ path, content }`（不同工具的字段名不一样）。 */
+function writtenScript(item: ToolItem): { path: string; base: string; content: string } | null {
+  if (!item.args || typeof item.args !== "object") return null;
+  const bag = item.args as Record<string, unknown>;
+  const path = bag.path ?? bag.file_path ?? bag.filePath;
+  const content = bag.content ?? bag.contents;
+  if (typeof path !== "string" || typeof content !== "string" || !content.trim()) return null;
+  const key = normPath(path);
+  return { path: key, base: baseName(key), content };
+}
+
+/** 命令里跑的脚本路径。 */
+function scriptRefs(item: ToolItem): string[] {
+  if (!item.args || typeof item.args !== "object") return [];
+  const bag = item.args as Record<string, unknown>;
+  const command = bag.command ?? bag.cmd;
+  if (typeof command !== "string") return [];
+  return [...command.matchAll(SCRIPT_PATH)].map((match) => normPath(match[0]));
+}
+
+/**
+ * 这次调用是不是「用 shell 跑了一个 browser 脚本」。
+ *
+ * 认得出来才认：命令里出现的脚本必须真是这一轮写过的（`write` 的 path 对得上），而且源码里得提到
+ * playwright / puppeteer 这些驱动——否则 `node build.mjs` 也会被当成浏览器操作。
+ * 看不到脚本（上一轮写的、手写的）时，只有命令本身点名了驱动才给一张「只知道跑了什么」的卡。
+ */
+function scriptedCall(
+  item: ToolItem,
+  scripts: Map<string, ScriptSource>,
+): { script: string | null; steps: BrowserOpStep[]; headed: boolean | null } | null {
+  if (!SHELL_TOOLS.has(lastSegment(item.name).toLowerCase())) return null;
+  const refs = scriptRefs(item);
+  const source = findScript(refs, scripts);
+  if (source && mentionsDriver(source.content)) {
+    const headed = headedOfScript(source.content);
+    return { script: source.base, steps: parseScriptSteps(source.content, headed), headed };
+  }
+  if (source) return null;
+  // 看不到脚本时只认「命令里直接跑一段驱动代码」（`node -e "…playwright…"`）。
+  // 不能只要命令里出现 playwright 就算 —— `npx playwright --version`、`npm i playwright`、
+  // `grep -i playwright` 都会命中，一张面板就成噪音了（真实会话里一次就多出 12 张）。
+  const command = typeof (item.args as Record<string, unknown>)?.command === "string"
+    ? ((item.args as Record<string, unknown>).command as string)
+    : "";
+  if (!INLINE_RUN.test(command) || !(mentionsDriver(command) || DRIVER_CALL.test(command))) return null;
+  const headed = headedOfScript(command);
+  const steps = parseScriptSteps(command, headed);
+  const raw = collapse(command).slice(0, 80);
+  return {
+    script: null,
+    steps: steps.length || !raw ? steps : [{ kind: "raw", target: raw }],
+    headed,
+  };
+}
+
+function mentionsDriver(text: string): boolean {
+  const lower = text.toLowerCase();
+  return DRIVER_HINTS.some((hint) => lower.includes(hint));
+}
+
+function findScript(refs: string[], scripts: Map<string, ScriptSource>): ScriptSource | null {
+  let best: ScriptSource | null = null;
+  for (const ref of refs) {
+    const refBase = baseName(ref);
+    for (const source of scripts.values()) {
+      const hit = source.path === ref || source.path.endsWith(`/${ref}`) || source.base === refBase;
+      if (!hit) continue;
+      if (!best || source.order > best.order) best = source;
+    }
+  }
+  return best;
+}
+
+function normPath(path: string): string {
+  return path.replace(/\\/g, "/").trim();
+}
+
+function baseName(path: string): string {
+  const parts = normPath(path).split("/");
+  return parts[parts.length - 1] || path;
 }
 
 function card(
@@ -176,15 +312,17 @@ function card(
   now: number,
   subagent: string | null,
   lastOutputAt: number | undefined,
+  scripted: { script: string | null; steps: BrowserOpStep[]; headed: boolean | null } | null = null,
 ): BrowserOpCard {
   const startedAt = item.ts ? Date.parse(item.ts) : now;
   const running = item.status === "running";
   const measured = running ? Math.max(0, now - startedAt) : item.durationMs ?? null;
-  const steps = parseSteps(item.args, item.name);
+  const steps = scripted ? scripted.steps : parseSteps(item.args, item.name);
   const silentFor = lastOutputAt === undefined ? null : Math.max(0, now - lastOutputAt);
   return {
     toolCallId: item.toolCallId,
     tool: item.name,
+    script: scripted?.script ?? null,
     subagent,
     startedAt: Number.isFinite(startedAt) ? startedAt : now,
     durationMs: measured,
@@ -195,7 +333,7 @@ function card(
     intent: intent.slice(0, 280),
     steps,
     output: (running ? item.partialResult ?? item.result : item.result) ?? "",
-    headed: headedOf(item),
+    headed: scripted ? scripted.headed : headedOf(item),
   };
 }
 
@@ -323,6 +461,146 @@ function codeOf(args: unknown): string | null {
   const inner = bag.args && typeof bag.args === "object" ? (bag.args as Record<string, unknown>) : bag;
   const code = inner.code ?? inner.script ?? inner.source ?? bag.code;
   return typeof code === "string" ? code : null;
+}
+
+/** 脚本里当操作读的 Playwright 调用（长的写在前面，否则 `waitFor` 会先吃掉 `waitForTimeout`）。 */
+const SCRIPT_ACTION =
+  /\.(launchPersistentContext|launch|goto|goBack|reload|fill|type|press|selectOption|click|dblclick|hover|check|setChecked|waitForTimeout|waitForLoadState|waitForSelector|waitForURL|waitFor|screenshot|title|url|content|innerText|textContent|inputValue|evaluate|newPage|newContext)\s*\(/g;
+
+const SCRIPT_KIND: Record<string, BrowserOpStepKind> = {
+  goto: "nav",
+  goBack: "nav",
+  reload: "nav",
+  launch: "launch",
+  launchPersistentContext: "launch",
+  fill: "input",
+  type: "input",
+  press: "input",
+  selectOption: "input",
+  click: "click",
+  dblclick: "click",
+  hover: "click",
+  check: "click",
+  setChecked: "click",
+  waitForTimeout: "wait",
+  waitForLoadState: "wait",
+  waitForSelector: "wait",
+  waitForURL: "wait",
+  waitFor: "wait",
+  screenshot: "shot",
+  title: "read",
+  url: "read",
+  content: "read",
+  innerText: "read",
+  textContent: "read",
+  inputValue: "read",
+  evaluate: "read",
+  newPage: "tab",
+  newContext: "tab",
+};
+
+/** `waitForLoadState('domcontentloaded')` 这种状态词不往界面上搬，反正都是等。 */
+const LOAD_STATES = new Set(["load", "domcontentloaded", "networkidle"]);
+
+/**
+ * 从一份 playwright 脚本源码里按出现顺序拆出操作。
+ *
+ * 这是块文本扫描：不执行、不解析 AST。变量绑定只跟一层（`const input = page.locator('#kw')`），
+ * 所以 `input.fill('x')` 能说出它在哪个选择器上输入；再深一层就只剩动作本身。
+ */
+function parseScriptSteps(source: string, headed: boolean | null): BrowserOpStep[] {
+  const steps: BrowserOpStep[] = [];
+  const selectors = new Map<string, string>();
+  for (const raw of source.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("//") || line.startsWith("/*") || line.startsWith("*")) continue;
+    const bind = /^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.+)$/.exec(line);
+    if (bind) {
+      const selector = selectorIn(bind[2]);
+      if (selector) selectors.set(bind[1], selector);
+    }
+    const log = /^console\.log\s*\(\s*(['"`])([\s\S]*?)\1/.exec(line);
+    if (log) steps.push({ kind: "print", target: collapse(log[2]).slice(0, 80) });
+    for (const match of line.matchAll(SCRIPT_ACTION)) {
+      const action = match[1];
+      const kind = SCRIPT_KIND[action];
+      if (!kind) continue;
+      const start = match.index ?? 0;
+      const argsRaw = argsAt(line, start + match[0].length - 1);
+      const before = line.slice(0, start);
+      const selector = selectors.get(receiverOf(before)) ?? selectorIn(before) ?? "";
+      const step = scriptStep(action, kind, argsRaw, selector, headed);
+      if (step) steps.push(step);
+    }
+  }
+  return mergeRepeats(steps).slice(0, MAX_STEPS);
+}
+
+function scriptStep(
+  action: string,
+  kind: BrowserOpStepKind,
+  argsRaw: string,
+  selector: string,
+  headed: boolean | null,
+): BrowserOpStep | null {
+  const literal = firstString(argsRaw);
+  switch (kind) {
+    case "nav":
+      return { kind, target: literal ? collapse(literal).slice(0, 80) : undefined };
+    case "launch":
+      return { kind, target: headed === null ? undefined : headed ? "headed" : "headless" };
+    case "tab":
+      return { kind };
+    case "input":
+      return {
+        kind,
+        target: literal ? collapse(literal).slice(0, 60) : undefined,
+        name: selector ? collapse(selector).slice(0, 40) : undefined,
+      };
+    case "click":
+      return { kind, target: selector.trim() || (literal ? collapse(literal).slice(0, 40) : undefined) };
+    case "wait": {
+      const ms = /^\s*(\d+)\s*,?\s*$/.exec(argsRaw);
+      if (action === "waitForTimeout" && ms) return { kind, target: `${ms[1]}ms` };
+      // `waitFor({ state: 'visible' })` 的重点是等哪个元素，不是那个状态词。
+      if (action === "waitFor" || action === "waitForSelector") {
+        return { kind, name: selector ? collapse(selector).slice(0, 40) : undefined };
+      }
+      const named = literal ? collapse(literal).slice(0, 40) : "";
+      return { kind, target: named && !LOAD_STATES.has(named) ? named : undefined };
+    }
+    case "print":
+      return { kind, target: literal ? collapse(literal).slice(0, 80) : undefined };
+    case "shot":
+    case "read":
+      return { kind };
+    default:
+      return { kind };
+  }
+}
+
+/** 这一行往前的最后一个标识符：`input.click()` 的 `input`。 */
+function receiverOf(before: string): string {
+  const match = /([A-Za-z_$][\w$]*)\s*$/.exec(before);
+  return match ? match[1] : "";
+}
+
+/** 这一行里的选择器：`locator('#kw')` / `waitForSelector('#kw')` / `$('#kw')`。 */
+function selectorIn(text: string): string {
+  const match = /(?:locator|waitForSelector|querySelector|\$)\(\s*(['"`])([^'"`]+)\1/.exec(text);
+  return match ? collapse(match[2]).slice(0, 60) : "";
+}
+
+/**
+ * 脚本是有头还是无头。`headless: false` 最直接；没写的话，`launch()` 默认无头、
+ * `launchPersistentContext()` 默认有头（Playwright 自己的默认，不是猜）。
+ */
+function headedOfScript(source: string): boolean | null {
+  const explicit = /headless\s*:\s*(true|false)/.exec(source);
+  if (explicit) return explicit[1] === "false";
+  if (/launchPersistentContext\s*\(/.test(source)) return true;
+  if (/\.launch\s*\(|chromium\.launch\(/.test(source)) return false;
+  return null;
 }
 
 /** Playwright MCP 那种扁平参数：一个调用一步，能读出来的字段进 target。 */

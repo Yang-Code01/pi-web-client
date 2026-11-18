@@ -242,3 +242,91 @@ test("白名单可改：自定义工具名也算，默认列表之外的不算",
   assert.equal(browserOpsView({ ...base, items }).cards.length, 0);
   assert.equal(browserOpsView({ ...base, items, tools: ["my_bot"] }).cards.length, 1);
 });
+
+/* ---------- 脚本驱动的浏览器（bash + node xxx.mjs） ----------
+ * 现实里最常见的一条路：agent 自己写一份 playwright 脚本，再用 bash 跑它。
+ * 这类调用不叫 mcp__playwright，光看工具名永远数不到（#505 验收时漏的正是它）。
+ */
+const SCRIPT = [
+  "import { chromium } from 'playwright';",
+  "",
+  "const browser = await chromium.launch({ headless: false, args: ['--start-maximized'] });",
+  "const page = await browser.newPage();",
+  "console.log('1) 打开百度 …');",
+  "await page.goto('https://www.baidu.com');",
+  "await page.waitForTimeout(1500);",
+  "const input = page.locator('#kw').first();",
+  "await input.fill('今天的天气');",
+  "await page.locator('#su').first().click();",
+  "await page.screenshot({ path: 'a.png' });",
+  "const title = await page.title();",
+].join("\n");
+
+const wrote = (id, sec, path, content) => tool(id, sec, "write", { path, content }, { durationMs: 12 });
+
+test("bash 跑这一轮写过的 playwright 脚本 → 一张卡，步骤从脚本源码读出来", () => {
+  const view = browserOpsView({
+    ...base,
+    items: [
+      user("u1", 0),
+      assistant("a1", 3, "写个脚本走一遍百度。"),
+      wrote("w1", 5, "E:/yqm/AI驱动测试/.scratch/baidu-weather.mjs", SCRIPT),
+      tool("b1", 9, "bash", { command: "node .scratch/baidu-weather.mjs" }, { durationMs: 41_000 }),
+    ],
+  });
+  assert.equal(view.cards.length, 1);
+  const [card] = view.cards;
+  assert.equal(card.script, "baidu-weather.mjs");
+  assert.equal(card.tool, "bash");
+  assert.equal(card.durationMs, 41_000);
+  assert.equal(card.headed, true);
+  assert.deepEqual(card.steps.map(shape), [
+    { kind: "launch", target: "headed", name: undefined },
+    { kind: "tab", target: undefined, name: undefined },
+    { kind: "print", target: "1) 打开百度 …", name: undefined },
+    { kind: "nav", target: "https://www.baidu.com", name: undefined },
+    { kind: "wait", target: "1500ms", name: undefined },
+    { kind: "input", target: "今天的天气", name: "#kw" },
+    { kind: "click", target: "#su", name: undefined },
+    { kind: "shot", target: undefined, name: undefined },
+    { kind: "read", target: undefined, name: undefined },
+  ]);
+});
+
+test("bash 跑的是别的脚本（没提浏览器驱动）→ 不算浏览器操作", () => {
+  const view = browserOpsView({
+    ...base,
+    items: [
+      user("u1", 0),
+      wrote("w1", 5, "E:/x/build.mjs", "import fs from 'node:fs';\nfs.writeFileSync('a', 'b');\n"),
+      tool("b1", 9, "bash", { command: "node build.mjs" }, { durationMs: 900 }),
+    ],
+  });
+  assert.equal(view.cards.length, 0);
+});
+
+test("命令里内联一段 playwright 代码 → 步骤从命令本身读出来", () => {
+  const view = browserOpsView({
+    ...base,
+    items: [
+      user("u1", 0),
+      tool("b1", 9, "bash", { command: `node -e "await page.goto('https://x/'); await page.title();"` }, { durationMs: 700 }),
+    ],
+  });
+  assert.equal(view.cards.length, 1);
+  assert.equal(view.cards[0].script, null);
+  assert.deepEqual(view.cards[0].steps.map(shape), [
+    { kind: "nav", target: "https://x/", name: undefined },
+    { kind: "read", target: undefined, name: undefined },
+  ]);
+});
+
+test("只在命令里提到 playwright（装包、看版本、grep）→ 不算浏览器操作", () => {
+  const items = [
+    user("u1", 0),
+    tool("b1", 2, "bash", { command: "npx playwright --version" }, { durationMs: 400 }),
+    tool("b2", 3, "bash", { command: "ls node_modules | grep -i playwright" }, { durationMs: 90 }),
+    tool("b3", 4, "bash", { command: "npm i playwright@1.57.0" }, { durationMs: 40_000 }),
+  ];
+  assert.equal(browserOpsView({ ...base, items }).cards.length, 0);
+});
