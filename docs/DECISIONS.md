@@ -6121,3 +6121,20 @@ Esc 之后 dialog: 0
 **取舍：** 不做虚拟滚动（200 条一页 + 滚到底自动加载已经够用），不做「文件夹递归体积」，不做列宽拖动，不给卷行排序（`↑ 上一级` 与盘符行钉在顶部不算进条数）。排序是共享的一份而不是每个入口一份：同一个用户在同一台机器上，刚在文件管理器里按大小排过，回到新会话弹层按名字排会更让人意外；真要分开，`loadDirSort(store)` 已经留了 `store` 参数。
 
 **验证：** `node bridge/tests/dirpage.mjs`（15：过滤 / 排序 / 文件夹不随方向翻转 / 分页越界 / 递归 rel 且跳过 `node_modules` / 空路径盘符页 / `listFilesUnder` 三条）；`npm run test:stat`、`npm run test:dirpath` 不动；真桥探针 `probes/new-session-sheet.mjs` 八组 —— 弹层布局（只列目录 32 行 + `↑ 上一级`）、筛选 10 个且焦点不丢、只列目录时「包含子目录」隐藏、排序切向、`这个目录已有 1 个会话`、API 层 size 降序 / offset / `total` / `sub`、文件管理器默认 `mtime ↓` 且能跳到第 1500 个文件、附件弹层表头点「大小」两向都单调。
+
+## D312 热部署的辅助进程一律 `windowsHide`：Windows 上只留那一扇可见的桥窗口（用户要求 2026-11-18）
+
+**问题：** Windows 上点一次「热部署」，屏幕上一连串终端窗口一闪一闪（约 20 扇，还抢焦点），macOS 上则是零。原因不在 UI：worker 是被 `detached: true` 起的（`bridge/src/hotdeploy.ts` 的 `startRun()`），在 Windows 上这个进程**没有控制台**；而 `windowsHide` 只作用于**直接子进程**、不会往下继承。于是 worker 起的每一个控制台程序（`git` / `powershell` / `taskkill` / `cmd`）都让 Windows 新分配一扇可见控制台窗口，一次部署 ≈15–25 次 spawn，其中 `build()` 那扇还会存活整段构建（几十秒）。
+
+**决定：**
+
+- **`sh()` 默认带 `windowsHide: true`**（`scripts/hotdeploy.mjs`）：git / powershell / taskkill 全走它，一处开关收掉约 19 扇。
+- **旁路一律补齐**：`build()`（`cmd → npm → node build.mjs`，不补就是一扇几十秒的黑窗）、`scripts/hotdeploy-git.mjs` 的 `gitIn()`（D268 暂存路径会连跑几条）、`scripts/build.mjs` 的 `npm()` 与 `shortSha()`、`.pi/skills/bridge-update/bin/restart.mjs` 的 `sh()` 与 `build()`。
+- **桥侧的 `git()` / `worktree-remove` 的 `execFile` 也补 `windowsHide`**（`bridge/src/hotdeploy.ts`）：今天不闪窗只因为桥跑在可见窗口里、自己有控制台；桥一旦由计划任务看门狗或 detached 的 `bridge-update` 起，热部署面板每 1.2s 轮一次快照、一次 5 条 `git`，开着面板一分钟就是几百扇。
+- **`alive()` 改用 `process.kill(pid, 0)`**（`scripts/hotdeploy.mjs`），不再每次探测起一条 `powershell`：等旧 bridge 退出那段循环最多 21 次，是部署末尾那串闪窗的唯一来源。`EPERM` 算「活着，但无权动」；实测活 pid 0.023ms、死 pid 抛 `ESRCH`，对照原来一条 `powershell` 快照 269ms。PID 复用带来的误判风险与原来的 powershell 判定同级，不是新增。
+- **不加 `windowsHide` 的只剩 D154 那一扇**：桥由 `Start-Process powershell` 起，窗口在可见控制台里，关窗即停。实测「父进程带 `windowsHide`、脚本里再 `Start-Process`」得到的窗口**仍然可见**（探针采样到标题），所以这一刀不会误伤它。
+- **守卫测试**：`bridge/tests/hotdeploy-unit.mjs` 第 ⑦ 节静态扫这五个文件里每个 `spawn` / `spawnSync` / `execFile` / `execFileSync` 调用，漏 `windowsHide` 就红；另断言两个 `startBridge()` 里 `Start-Process powershell` 还在，防止哪天「全隐藏」把桥窗口一起收掉。
+
+**取舍：** 构建那扇黑窗是唯一「消失的可见性」——构建进度本来就在面板日志区与 `worker.log` 里。`windowsHide` 在 POSIX 上被忽略，所以无条件写、不做平台分支。不改 `detached: true`：worker 必须活过被杀掉的旧桥；也不用 `AllocConsole`（Node 没有干净入口）。顺手修掉 `bridge/src/hotdeploy.ts` 里 4 处既有 lint 问题（嵌套三元、取反条件、正则里的控制字符），它们与本次改动同文件、不同行。
+
+**验证：** 探针 `.scratch/hotdeploy-console/`（EnumWindows 采样可见控制台窗口）—— 复刻 `startRun()` 的起法，`plain` 出 `PROBE-plain-*` / `Windows PowerShell 5.1` / `cmd.exe` / `npm` 多扇窗，加 `windowsHide` 后零扇；三层链 `nest-*`：中间层带 `windowsHide` 时孙进程（= `scripts/build.mjs:42`）不开窗（0 帧），去掉中间层就开窗（`NEST-C2`）。改后用**真 worker**（`--branch __d312_no_such_branch__`，在 `dirty` 处早退）从无控制台父进程跑一遍：3 次 git spawn，窗口采样零命中。`npm run test:hotdeploy`（含新增的第 ⑦ 节）、`npm --prefix bridge run typecheck` 通过。

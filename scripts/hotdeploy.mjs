@@ -98,7 +98,10 @@ function sleep(ms) {
 }
 
 function sh(file, args, opts = {}) {
-  return spawnSync(file, args, { cwd: REPO, encoding: "utf8", ...opts });
+  // D312：worker 是被 detached 起的，自己没有控制台；从这种进程里 spawn 控制台程序，
+  // Windows 会给每个子进程新分配一扇可见窗口（一次部署 20 扇，还抢焦点）。
+  // windowsHide 必须写在这里：它只作用于直接子进程，不会从上往下继承。
+  return spawnSync(file, args, { cwd: REPO, encoding: "utf8", windowsHide: true, ...opts });
 }
 
 function git(args, env) {
@@ -127,16 +130,15 @@ function changedLabel(files) {
 
 function alive(pid) {
   if (!pid) return false;
-  if (!WIN) {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
+  // D312：Windows 上原来每次探测都起一条 powershell —— 一扇窗口 + 约 270ms。
+  // 等旧 bridge 退出那段循环最多 21 次，是部署末尾那串闪窗的唯一来源。
+  // process.kill(pid, 0) 在 Windows 上同样能判存在性（实测 0.023ms），EPERM 表示「在，但无权动」。
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e instanceof Error && e.code === "EPERM";
   }
-  const r = sh("powershell", ["-NoProfile", "-Command", `if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { 'yes' } else { 'no' }`]);
-  return String(r.stdout || "").trim() === "yes";
 }
 
 function childrenOf(pid) {
@@ -229,6 +231,7 @@ function startBridge() {
     cwd: REPO,
     detached: true,
     stdio: ["ignore", out, out],
+    windowsHide: true, // 只有非 Windows 走到这里（POSIX 忽略这个选项）；Win 那扇可见窗口由上面的 Start-Process 开
   });
   child.unref();
   newPid = child.pid ?? null;
@@ -355,9 +358,11 @@ function distBuildId() {
 function build() {
   // Node 在 Windows 上不能直接 spawn .cmd（EINVAL），整条命令过 shell。
   const out = fs.openSync(LOG, "a");
+  // D312：这一扇窗口会存活整段构建（几十秒）；不给 windowsHide 的话整条
+  // cmd → npm → node build.mjs → npm 都在一扇黑窗里跑。隐藏之后构建输出仍在 LOG 与面板日志区里。
   const r = WIN
-    ? spawnSync(`npm run build`, { cwd: REPO, stdio: ["ignore", out, out], shell: true, env: process.env })
-    : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env });
+    ? spawnSync(`npm run build`, { cwd: REPO, stdio: ["ignore", out, out], shell: true, env: process.env, windowsHide: true })
+    : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env, windowsHide: true });
   fs.closeSync(out);
   if (r.error) return { code: 1, why: r.error.message };
   const code = r.status ?? 1;

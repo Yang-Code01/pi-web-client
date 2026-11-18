@@ -58,7 +58,8 @@ function sleep(ms) {
 }
 
 function sh(file, args, opts = {}) {
-  return spawnSync(file, args, { cwd: REPO, encoding: "utf8", ...opts });
+  // D312：本脚本由 detached 的桥或 agent 起了之后没有控制台，不隐藏就每次 git/powershell 一扇窗口。
+  return spawnSync(file, args, { cwd: REPO, encoding: "utf8", windowsHide: true, ...opts });
 }
 
 function git(args) {
@@ -230,6 +231,7 @@ function startBridge() {
     cwd: REPO,
     detached: true,
     stdio: ["ignore", out, out],
+    windowsHide: true, // 只非 Windows 走到；Win 那扇可见窗口由 Start-Process 开（D154）
   });
   child.unref();
   newPid = child.pid ?? null;
@@ -356,8 +358,8 @@ async function main() {
   const out = fs.openSync(LOG, "a");
   // Windows 上 .cmd 只能过 shell（否则 EINVAL）；整条命令当一个字符串传，避开 DEP0190。
   const built = WIN
-    ? spawnSync("npm run build", { cwd: REPO, shell: true, stdio: ["ignore", out, out], env: process.env })
-    : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env });
+    ? spawnSync("npm run build", { cwd: REPO, shell: true, stdio: ["ignore", out, out], env: process.env, windowsHide: true })
+    : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env, windowsHide: true });
   fs.closeSync(out);
   if ((built.status ?? 1) !== 0) {
     finish("build-failed", { error: `npm run build 退出码 ${built.status ?? "?"}；旧进程未动，7864 仍在服务旧代码。` });

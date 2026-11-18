@@ -105,7 +105,9 @@ function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown
 
 function git(args: string[], cwd = REPO): Promise<{ ok: boolean; out: string; err: string }> {
   return new Promise((resolve) => {
-    execFile("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }, (err, out, errOut) => {
+    // D312：桥以无控制台方式起的时候（detached / 计划任务看门狗），这两条 execFile 会给每个 git 开一扇窗口；
+    // 热部署面板每 1.2s 轮一次快照、一次 5 条 git，开着面板一分钟就是几百扇。
+    execFile("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, out, errOut) => {
       resolve({ ok: !err, out: String(out ?? ""), err: String(errOut ?? "") });
     });
   });
@@ -213,7 +215,10 @@ export function buildBranchRows(refs: RefLine[], worktrees: WorktreeRow[], curre
       lastCommitAt: r.at,
     });
   }
-  const rank = (r: BranchRow) => (r.current ? 0 : r.name === "main" ? 1 : 2);
+  const rank = (r: BranchRow): number => {
+    if (r.current) return 0;
+    return r.name === "main" ? 1 : 2;
+  };
   rows.sort((a, b) => rank(a) - rank(b) || (b.lastCommitAt ?? "").localeCompare(a.lastCommitAt ?? ""));
   return rows;
 }
@@ -234,13 +239,15 @@ export function pidAlive(pid: number | undefined): boolean {
   }
 }
 
+const ANSI_SGR = new RegExp(String.fromCharCode(27) + "\\[[0-9;]*m", "g");
+
 export function tailLines(file: string, max = 160): string[] {
   try {
     const text = fs.readFileSync(file, "utf8");
     const lines = text.split(/\r?\n/);
     if (lines.length && lines[lines.length - 1] === "") lines.pop();
     // vite 把 ✓/✗ 染成 ANSI 色再写进日志；<pre> 里会变成一堆 [32m。
-    return lines.slice(-max).map((line) => line.replace(/\u001b\[[0-9;]*m/g, ""));
+    return lines.slice(-max).map((line) => line.replace(ANSI_SGR, ""));
   } catch {
     return [];
   }
@@ -268,7 +275,9 @@ async function inLinkedWorktree(): Promise<{ linked: boolean; dir: string | null
   const common = await git(["rev-parse", "--git-common-dir"]);
   const a = path.resolve(REPO, gitDir.out.trim()).toLowerCase();
   const b = path.resolve(REPO, common.out.trim()).toLowerCase();
-  return { linked: a !== b && !ALLOW_WORKTREE, dir: a !== b ? REPO : null };
+  const inWorktree = a !== b;
+  // 放行开关打开时这颗按钮也管 worktree，不算「链接进来的那一份」
+  return { linked: ALLOW_WORKTREE ? false : inWorktree, dir: inWorktree ? REPO : null };
 }
 
 /** 刚起、state.json 还没落盘的那几秒：桥在内存里记一份，别让界面闪回上一轮的结果。 */
@@ -404,8 +413,9 @@ async function removeWorktree(req: http.IncomingMessage, res: http.ServerRespons
   if (!fs.existsSync(tool)) return fail(res, 500, "hotdeploy_tool", `缺少 ${tool}`);
   const args = [tool, known.path, ...(force ? ["--force"] : [])];
   const out = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-    execFile(process.execPath, args, { cwd: REPO, encoding: "utf8" }, (err, stdout, stderr) => {
-      const code = err && typeof (err as { code?: unknown }).code === "number" ? Number((err as { code?: number }).code) : err ? 1 : 0;
+    execFile(process.execPath, args, { cwd: REPO, encoding: "utf8", windowsHide: true }, (err, stdout, stderr) => {
+      const rawCode = (err as { code?: unknown } | null)?.code;
+      const code = err ? (typeof rawCode === "number" ? Number(rawCode) : 1) : 0;
       resolve({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
     });
   });

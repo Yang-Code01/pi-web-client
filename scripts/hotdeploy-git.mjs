@@ -5,7 +5,8 @@
 import { spawnSync } from "node:child_process";
 
 function gitIn(repo, args) {
-  const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  // D312：worker 没有控制台，不隐藏就会每次 git 一扇窗口（D268 的暂存路径会连跑好几条）。
+  const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", windowsHide: true });
   return {
     ok: r.status === 0,
     status: r.status,

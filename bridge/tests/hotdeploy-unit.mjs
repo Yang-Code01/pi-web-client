@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildBranchRows, parseRefLines, parseTrack, parseWorktrees, tailLines } from "../src/hotdeploy.ts";
 import { DEFAULT_HOTDEPLOY_PROXY, proxyCandidates } from "../../scripts/hotdeploy-git.mjs";
 
@@ -121,3 +122,72 @@ assert.deepEqual(
 );
 
 console.log("hotdeploy-unit: ok");
+
+// ------------------------------------------------- ⑦ 每个 spawn 都必须 windowsHide（D312）
+
+/*
+ * 热部署的 worker 是被 detached 起的（bridge/src/hotdeploy.ts 的 startRun），
+ * 在 Windows 上这个进程没有控制台。从这种进程里 spawn 控制台程序，CreateProcess
+ * 会给每个子进程新分配一扇可见终端窗口（一次部署 20 扇，还抢焦点）。
+ * windowsHide 只作用于直接子进程、不会往下继承，所以每个 spawn 都得自己带。
+ *
+ * 这条测试是静态扫描：新写一个漏了 windowsHide 的 spawn，这里就红。
+ * 唯一允许「不隐藏」的是 Start-Process —— 那扇是 D154 要人看着的桥窗口，由 powershell 自己开，
+ * 不走这几条 spawn 路径，所以下面另外断言它还在。
+ */
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+const SPAWN_FILES = [
+  "scripts/hotdeploy.mjs",
+  "scripts/hotdeploy-git.mjs",
+  "scripts/build.mjs",
+  "bridge/src/hotdeploy.ts",
+  ".pi/skills/bridge-update/bin/restart.mjs",
+];
+
+/** 抓出每个 spawn 系列调用（括号配对，跳过字符串里的括号）。 */
+function spawnCalls(src) {
+  const calls = [];
+  for (const name of ["spawnSync", "spawn", "execFileSync", "execFile"]) {
+    const re = new RegExp("(?<![\\w.$])" + name + "\\(", "g");
+    let m;
+    while ((m = re.exec(src))) {
+      const start = m.index + name.length + 1;
+      let depth = 1;
+      let quote = null;
+      let i = start;
+      for (; i < src.length && depth > 0; i += 1) {
+        const c = src[i];
+        if (quote) {
+          if (c === "\\") i += 1;
+          else if (c === quote) quote = null;
+        } else if (c === '"' || c === "'" || c === "`") quote = c;
+        else if (c === "(") depth += 1;
+        else if (c === ")") depth -= 1;
+      }
+      calls.push({ name, line: src.slice(0, m.index).split(/\r?\n/).length, text: src.slice(m.index, i) });
+    }
+  }
+  return calls;
+}
+
+for (const rel of SPAWN_FILES) {
+  const src = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
+  const calls = spawnCalls(src);
+  assert.ok(calls.length > 0, `${rel}：一个 spawn 都没扫到，扫描器自己坏了`);
+  for (const call of calls) {
+    assert.ok(
+      call.text.includes("windowsHide"),
+      `${rel}:${call.line} 的 ${call.name}() 少了 windowsHide —— Windows 上会多一扇终端窗口（D312）`,
+    );
+  }
+}
+
+// 桥那扇窗口必须继续由 Start-Process 开：改成直接 spawn 就没人看得见它在跑、也没法关窗即停（D154）。
+for (const rel of ["scripts/hotdeploy.mjs", ".pi/skills/bridge-update/bin/restart.mjs"]) {
+  const src = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
+  assert.ok(src.includes("Start-Process powershell"), `${rel}：可见的桥窗口应当继续由 Start-Process 打开`);
+}
+
+console.log("hotdeploy-unit: ok（含 D312 的 windowsHide 扫描）");
