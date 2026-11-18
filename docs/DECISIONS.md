@@ -6138,3 +6138,20 @@ Esc 之后 dialog: 0
 **取舍：** 不记面板宽度 / 高度（用户问的是「窗口」，选了分区与选中）；不记分段与搜索词；不迁移老数据（字段没人读，迁了也是死重量）。
 
 **验证：** `npm run test:notes` 的 `notes-sheet-browser.mjs` 新增三组：`notes.memory` 落盘值、重开接回分区与选中、切到归档后只清选中且重开仍在归档；同时断言正文下只剩 状态 / 分类 / 创建 / 改动 四格。`npm --prefix web run typecheck`（含 i18n / 视口 / 层带守卫）与 `npm --prefix bridge run typecheck` 通过。
+
+## D313 `npm start` 自己把页面打开，内网通的在线人数不再刷日志（用户要求 2026-11-18）
+
+**问题：** 两处都只是「不方便」，但每天都在忍着：① 手动 `npm start` 之后只打印一行地址，还得自己去浏览器里粘一遍；② 内网通的人数变化一直往控制台打 —— `peer/src/index.ts` 里一句 `discovery.on("change", …在线 N 台…)`，而 `prune()` 每 5 秒无条件 `emit("change")`、每条 announce（约 10 秒一次）也发一次，所以空局域网也每 5 秒刷一行「在线 0 台」，`peer.log` 跟着长。
+
+**决定：**
+
+- **只在「人手动在终端里启动」时开页面**：判据是 `process.stdout.isTTY`（`bridge/src/openbrowser.ts` 的 `shouldOpenPage()`）。看门狗、热部署（`scripts/hotdeploy.mjs`）、`.pi/skills/bridge-update/bin/restart.mjs`（输出走 `Tee-Object` 管道）、测试环境（`pi-web-client-test-dev`）全都不接终端，一行都不用改就不会弹标签。`PI_WEB_OPEN=1` / `0` 可以越过这个判断强制开或关（也认 `true` / `false`；认不出来的值按没写处理，不会反而把页面关掉）。
+- **系统默认浏览器**：Windows `cmd /c start "" <url>`、macOS `open`、Linux `xdg-open`。那个空的 `""` 是必需的 —— `start` 会把第一个带引号的参数当窗口标题，少了它 URL 只是把标题改掉、窗口不开。`spawn` 用 `stdio:"ignore"` + `windowsHide`，**不 detached**（Windows 上 DETACHED_PROCESS 没有桌面关联，`start` 静默失效，`terminal.ts` 已经踩过一次）；再挂一个空 `error` 监听：找不到 opener 时是个 `error` 事件，没人接就会带走 bridge。
+- **挂在 `listen` 回调里、打印「已启动」之后**：端口才是确定能连的；先开浏览器再去 listen 会撞上「页面打得开、服务还没起」。
+- **打开页面的函数不回报结果**：`openPage()` 只发起 `spawn` 就返回（`void`），不看返回值也无法可靠地看 —— opener 不存在要等 `error` 事件，而调用处并不关心开没开成。
+- **内网通的在线日志整句删掉，不是降频也不是去重**：用户要的是「完全不打印」。人数本身在「内网通」页面里一直看得见，日志里那行没有额外信息；prune 每 5 秒都 emit，去重也只能把刷屏变慢一点。
+- **顺手清掉 `bridge/src/index.ts` 里 10 条过期 lint**（模板串拼接、重复声明、嵌套三元、否定 if、赋值表达式），它们和这次功能无关，但都在要改的那个文件里。
+
+**取舍：** 没用「永远打开」（用户选项里明说不要：后台重启一天弹一屏标签）；没用「往上找父进程判断是不是终端」那种探针（`isTTY` 已经够用，且零配置）；没引 `open` 这类 npm 依赖，三平台各一行就够。
+
+**验证：** `npm run test:openpage`（纯函数：TTY 真假、`PI_WEB_OPEN` 的 1/0/true/false/空串/认不出的值、三平台命令形状含 win32 的空标题参数）；`peer-e2e` 末尾新增一条断言：三份 peer 跑完，stdout 里不得出现 `/在线 \d+ 台/`（收 stdout 的方式与 `PEER_E2E_VERBOSE` 共用）；空端口/临时状态目录真跑 21 秒 —— 含「在线 N 台」的行数为 0（别用「含‘在线’的行」计数：`peer/src/index.ts` 的隐身横幅与 `messages.ts` 的「对方不在线」都是合法行），`pi-web-client 已启动：http://127.0.0.1:…` 照旧；`openPage(url,"linux")` 在没装 `xdg-open` 的 Windows 上不再能把进程带走（`error` 监听生效）。

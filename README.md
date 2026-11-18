@@ -116,6 +116,10 @@ pull 进来的改动如果动了子包的依赖（`bridge/` `peer/` `web/` 的 `
 缺了就列出缺哪个、让你先跑 `npm install`（D224）。这一查要跑 `pi list`（十几秒），所以只在清单、pi 或 pi 的
 `settings.json` 变了之后的第一次启动真跑，齐了就记下来，之后的启动不再多花时间。
 
+人手动在终端里跑 `npm start` / `npm run start:nobuild` 时，服务起来后会顺手用系统默认浏览器打开页面；
+看门狗、热部署、测试环境这类后台重启的输出走管道或文件（不是终端），不会去碰浏览器。
+`PI_WEB_OPEN=0` / `PI_WEB_OPEN=1` 可以强制关掉或打开。
+
 首次启动会打印一次口令（也写在状态目录的 `passphrase.txt`）：
 
 ```text
@@ -136,6 +140,7 @@ PI_WEB_HOST=0.0.0.0 npm start
 | 变量 | 作用 | 默认 |
 | --- | --- | --- |
 | `PI_WEB_PORT` | 监听端口 | `7864` |
+| `PI_WEB_OPEN` | 启动后是否用系统默认浏览器打开页面；`1` / `0` 强制开或关，不写则只在终端里手动启动时开 | 自动 |
 | `PI_WEB_HOST` | 监听地址，局域网要 `0.0.0.0` | `127.0.0.1` |
 | `PI_WEB_STATE` | 状态目录（口令、锁、订阅、VAPID、记录） | `%LOCALAPPDATA%\pi-web-client` |
 | `PI_WEB_TUNNEL` | 启动时自动开 trycloudflare 隧道 | 关 |
