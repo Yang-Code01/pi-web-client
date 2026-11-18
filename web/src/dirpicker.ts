@@ -130,6 +130,11 @@ export interface DirPickerOpts {
   /** 控制台式版式：面包屑与动作条一行，跳转框与筛选框一行。 */
   layout?: "stack" | "console";
   /**
+   * 状态栏右侧那格写当前目录（文件管理器的 pane 壳用）。弹层已经在自己页脚写了一份，不传。
+   * 给了它，页脚就常显：没有分页时只留这一格路径。
+   */
+  statusPath?: boolean;
+  /**
    * 每行右侧的动作按钮（引用 / 打开）。给了它，文件行就从 `<button>` 换成 `div` ——
    * 按钮里不能再嵌按钮。
    */
@@ -182,6 +187,18 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     button.onclick = () => void go(target);
     return button;
   };
+  /**
+   * 面包屑只占一行：长路径（`此电脑 / var / folders / … / 项目`）以前会折成三行，把工具条顶成三层；
+   * 现在横向滚到尾巴（当前目录就在眼前），哪一侧还藏着内容就在那一侧渐隐。
+   */
+  const fitCrumbs = (): void => {
+    const hidden = where.scrollWidth - where.clientWidth;
+    // 左边藏了字（滚到尾巴后总有）：一层渐隐，别让人以为路径从「42z4…」开始。
+    where.classList.toggle("cut", where.scrollLeft > 2);
+    // 右边还藏着：同理再补一层（分页 / 长路径时才有）。
+    where.classList.toggle("cut-end", hidden - where.scrollLeft > 2);
+  };
+  where.onscroll = () => fitCrumbs();
   const paintCrumbs = (): void => {
     where.replaceChildren();
     where.append(crumb(tr("此电脑"), "", true));
@@ -197,6 +214,12 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       // （盘符正好是 cwd 那个盘时，点一下就落回仓库目录 —— 看着像没反应）。显示仍然只写 `F:`。
       where.append(el("span", "crumb-sep", sep), crumb(part, drive ? `${acc}${sep}` : acc, drive));
     }
+    // 画完才知道有没有溢出：滚到尾巴，再决定左边要不要渐隐。
+    requestAnimationFrame(() => {
+      if (!where.isConnected) return;
+      where.scrollLeft = where.scrollWidth;
+      fitCrumbs();
+    });
   };
   const dirHead = el("div", "dir-head");
   dirHead.append(where, ...(opts.head ?? []));
@@ -288,13 +311,16 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   sortRow.hidden = !sortable || table;
 
   // 已加载 N / M + 加载更多：只在分页清单里有意义（旧桥一次给完，这行一直隐藏）。
+  // 控制台版式把它当状态栏用：右边再加一格当前路径（`statusPath`）。
+  const statusPath = opts.statusPath === true;
   const foot = el("div", "dir-pagefoot");
   const count = el("span", "dir-pagecount");
   const pending = el("span", "dir-pending", tr("正在统计大小…"));
+  const footPath = el("span", "dir-footpath");
   const more = el("button", "btn ghost dir-more") as HTMLButtonElement;
   more.type = "button";
   more.onclick = () => void loadMore();
-  foot.append(count, pending, more);
+  foot.append(count, pending, more, footPath);
 
   const findRow = el("div", "dir-find");
   if (showFilter) findRow.append(filter, subWrap);
@@ -369,13 +395,20 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   };
 
   const paintFoot = (): void => {
-    foot.hidden = !paged || errorText !== "";
+    foot.hidden = statusPath ? false : !paged || errorText !== "";
     if (foot.hidden) return;
-    count.textContent = truncated ? tr("超过 5 万条，只展示前 5 万") : tr("已加载 {p1} / {p2}", { p1: String(entries.length), p2: String(total) });
-    pending.hidden = !statsPending;
-    more.hidden = entries.length >= total;
+    const paging = paged && errorText === "";
+    count.hidden = !paging && !statusPath;
+    pending.hidden = !paging || !statsPending;
+    more.hidden = !paging || entries.length >= total;
     more.disabled = moreBusy;
+    if (paging) count.textContent = truncated ? tr("超过 5 万条，只展示前 5 万") : tr("已加载 {p1} / {p2}", { p1: String(entries.length), p2: String(total) });
+    // 旧桥一次给完（没有分页）时，状态栏就报这一共几条。
+    else if (statusPath) count.textContent = tr("{p1} 项", { p1: String(total || entries.length) });
     more.textContent = moreBusy ? tr("读取中…") : tr("加载更多");
+    footPath.hidden = !statusPath;
+    footPath.textContent = statusPath ? current || tr("此电脑") : "";
+    footPath.title = footPath.textContent;
   };
 
   /** 旧桥：整目录里按名字筛（分页时由桥端筛，这里不再过滤）。 */
@@ -455,7 +488,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     }
     const row = el("tr", "dir-row dir");
     if (marked(entry)) row.classList.add("hit");
-    const nameCell = el("td");
+    const nameCell = el("td", "fc-namecell");
     const wrap = el("div", "fc-name");
     wrap.append(el("span", "ico", "📁"), el("span", "nm", name));
     if (entry.rel) wrap.append(el("span", "rel", entry.rel));
@@ -496,9 +529,9 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     } else row = el("button", "model-row dir-row file-row");
     if (marked(entry)) row.classList.add("hit");
     if (table) {
-      const nameCell = el("td");
+      const nameCell = el("td", "fc-namecell");
       const wrap = el("div", "fc-name");
-      const pick = el("button", "fc-pick", name) as HTMLButtonElement;
+      const pick = el("button", "fc-pick nm", name) as HTMLButtonElement;
       pick.type = "button";
       pick.title = join(name);
       pick.onclick = (ev) => {

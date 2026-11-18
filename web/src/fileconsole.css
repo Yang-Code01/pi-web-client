@@ -1,4 +1,5 @@
-/* #421 附件控制台：外壳照「设置 → 本机管理」（.sys-*），这里只补右栏与行内动作。 */
+/* #421 附件控制台：外壳照「设置 → 本机管理」（.sys-*），这里只补右栏与行内动作。
+   D312：同一份实现还有第二种壳（`.fc-pane-shell`）—— 顶栏 📁 文件管理器的浏览页。 */
 
 .fc-console .sys-pane {
   padding: 14px 18px 16px;
@@ -13,6 +14,10 @@
 
 /* 左栏：快速位置 / 最近 / 当前目录。分组标题只在宽版出现，窄版由 sysmanage.css 把 .sys-nav 折成横条。 */
 .fc-nav-group {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   padding: 9px 11px 2px;
   color: var(--faint);
   font-size: 10px;
@@ -75,11 +80,63 @@
   display: none;
 }
 
-/* 右栏：dirpicker 的控制台式版式。 */
+/* ---------------------------------------------------------------- pane 壳（文件管理器浏览页）
+   viewer 自己就是那个框：不要遮罩、不要外壳圆角与阴影，也不再有标题栏（viewer 的头在上面）。
+   宽度由 viewer 给，高度铺满 —— 滚动全部交给表格自己的 `.fc-body`。 */
+
+.fc-console.fc-pane-shell {
+  width: 100%;
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.fc-console.fc-pane-shell .sys-main {
+  /* `.sys-main` 在 sysmanage.css 里钉的是 `grid-row: 3`（弹层四行骨架的第 3 行）。
+     这里只有一行，不写回来的话主体会落到隐式的 2/3 行，第 1 行（1fr）空在顶上。 */
+  grid-row: 1;
+  grid-template-columns: 186px minmax(0, 1fr);
+}
+
+.fc-console.fc-pane-shell .sys-nav {
+  padding: 10px 8px;
+}
+
+.fc-console.fc-pane-shell .sys-pane,
+.fc-console.fc-pane-shell .fc-pane {
+  padding: 12px 12px 0;
+}
+
+.fc-console.fc-pane-shell .dir-pagefoot {
+  margin-top: 2px;
+  padding: 7px 2px;
+  border-top: 1px solid var(--line);
+}
+
+/* 左栏分组标题 + 条数（当前目录里有几项）。 */
+.fc-nav-group__count {
+  font: 10px var(--mono);
+  color: var(--faint);
+  letter-spacing: 0;
+}
+
+/* 工具条上只剩图标的那颗（刷新）：和旁边的文字按钮一样高。 */
+.fc-ico {
+  flex: none;
+  width: 26px;
+  padding: 4px 0;
+  font-size: 13px;
+  line-height: 1.2;
+  text-align: center;
+}
+
 .fc-pane .dirpicker {
   display: flex;
-  flex: 1 1 auto;
   flex-direction: column;
+  flex: 1 1 auto;
   min-height: 0;
 }
 
@@ -91,10 +148,21 @@
 }
 
 .fc-bar .dir-path {
-  flex: 1 1 100%;
+  flex: 1 1 220px;
   min-width: 0;
   padding: 0;
   font-size: 12px;
+}
+
+/* 面包屑右边那一组按钮：一起换行，别拆散（拆散会剩一颗刷新孤零零占一行）。 */
+.fc-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .fc-bar .btn,
@@ -165,17 +233,45 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 7px 10px;
+  padding: 6px 10px;
   background: var(--panel);
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.fc-table td {
-  padding: 6px 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+/* 行高钉在 30px（D312）：`.sys-table` 的 6px 内边距 + 顶对齐 + 11.5px 字号是设置页表格的口径，
+   目录表要更紧。加 `.fc-console` 前缀是为了压过 sysmanage.css 里同名的 `.sys-table td`。 */
+.fc-console .fc-table td {
+  height: 30px;
+  padding: 0 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
   vertical-align: middle;
+  line-height: 1.35;
+}
+
+.fc-console .fc-table th {
+  height: 28px;
+  padding: 0 10px;
+  vertical-align: middle;
+}
+
+.fc-console .fc-table .fc-name {
+  gap: 7px;
+}
+
+.fc-console .fc-table .ico {
+  font-size: 12px;
+}
+
+.fc-console .fc-table .fc-act {
+  height: 21px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+
+.fc-console .fc-table .fc-acts {
+  gap: 5px;
 }
 
 .fc-table th.num,
@@ -190,10 +286,11 @@
   color: var(--dim);
 }
 
-.fc-table th.fc-ops,
-.fc-table td.fc-ops {
-  width: 136px;
-  text-align: right;
+/* 名称列吃掉剩下的宽度，长名字走省略号：表格是自动布局，靠 `max-width: 0` 让这格可以被压到最窄
+   （固定布局下把某列 `display:none` 会让它继续占着一条空列，那时收列收不干净）。
+   其余三列钉死宽度。 */
+.fc-table td.fc-namecell {
+  max-width: 0;
 }
 
 .fc-table .fc-col-size {
@@ -202,6 +299,12 @@
 
 .fc-table .fc-col-time {
   width: 124px;
+}
+
+.fc-table th.fc-ops,
+.fc-table td.fc-ops {
+  width: 136px;
+  text-align: right;
 }
 
 .fc-table tbody tr.file-row {
@@ -214,11 +317,16 @@
 }
 
 .fc-table tbody tr:hover td {
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .fc-table tbody tr.hit td {
   background: var(--accent-bg);
+}
+
+/* 刚跳 / 刚建的那一行：左侧一根短竖条，在一排灰线里一眼能认出来。 */
+.fc-table tbody tr.hit td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .fc-table tbody tr.hit:hover td {
@@ -355,47 +463,126 @@
   pointer-events: none;
 }
 
-/* ---------------------------------------------------------------- 窄版 */
+/* ---------------------------------------------------------------- 窄版（弹层）
+   弹层是 1120×800 的固定外壳，跟窗口同生共死，继续读 app.ts 落的 `data-console-*`；
+   pane 壳（文件管理器）不在这里，它按**自己**的宽度折（那个 ResizeObserver，见本节末尾）。 */
 
-html[data-console-narrow="true"] .fc-nav-group,
-html[data-console-narrow="true"] .fc-sub,
-html[data-console-narrow="true"] .fc-nav-empty {
+html[data-console-narrow="true"] .fc-dialog .fc-nav-group,
+html[data-console-narrow="true"] .fc-dialog .fc-sub,
+html[data-console-narrow="true"] .fc-dialog .fc-nav-empty {
   display: none;
 }
 
-html[data-console-narrow="true"] .fc-nav {
+html[data-console-narrow="true"] .fc-dialog .fc-nav {
   flex-wrap: wrap;
 }
 
-html[data-console-narrow="true"] .sys-nav__item {
+html[data-console-narrow="true"] .fc-dialog .sys-nav__item {
   flex: 0 0 auto;
 }
 
-html[data-console-narrow="true"] .fc-bar {
+html[data-console-narrow="true"] .fc-dialog .fc-bar {
   flex-wrap: wrap;
 }
 
-html[data-console-narrow="true"] .fc-bar .dir-path {
+html[data-console-narrow="true"] .fc-dialog .fc-bar .dir-path {
   flex: 1 1 100%;
 }
 
-html[data-console-narrow="true"] .fc-find {
+html[data-console-narrow="true"] .fc-dialog .fc-find {
   flex-wrap: wrap;
 }
 
-html[data-console-mid="true"] .fc-col-time {
+html[data-console-mid="true"] .fc-dialog .fc-col-time {
   display: none;
 }
 
-html[data-console-tight="true"] .fc-col-size {
+html[data-console-tight="true"] .fc-dialog .fc-col-size {
   display: none;
 }
 
-html[data-console-tight="true"] .fc-filter {
+/* 页脚：路径长的时候别把左边那句说明挤成一列竖排的字（390 宽时实测就是那样）。 */
+.fc-dialog .sys-foot__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+html[data-console-tight="true"] .fc-dialog .sys-foot__hint {
+  display: none;
+}
+
+html[data-console-tight="true"] .fc-dialog .fc-filter {
   flex: 1 1 100%;
 }
 
-html[data-console-tight="true"] .fc-table th.fc-ops,
-html[data-console-tight="true"] .fc-table td.fc-ops {
+html[data-console-tight="true"] .fc-dialog .fc-table th.fc-ops,
+html[data-console-tight="true"] .fc-dialog .fc-table td.fc-ops {
   width: 118px;
+}
+
+/* 状态栏右侧那格：正在浏览的目录（pane 壳才显示）。 */
+.dir-footpath {
+  margin-left: auto;
+  min-width: 0;
+  max-width: 62%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+  font: 11px var(--mono);
+}
+
+.dir-footpath[hidden] {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- 窄版（控制台自己的宽度）
+   判定在 fileconsole.ts 的 ResizeObserver 里：`fc-rail` 够宽才立左栏，`fc-mid` / `fc-tight` 收列。
+   不写 `@media`：760px 的浏览页挂在 1440px 的窗口上，`@media` 永远等不到（D263 / D312）。 */
+
+.fc-console.fc-pane-shell:not(.fc-rail) .sys-main {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.fc-console.fc-pane-shell:not(.fc-rail) .fc-nav {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-right: 0;
+  border-bottom: 1px solid var(--line);
+  overflow: auto hidden;
+}
+
+.fc-console.fc-pane-shell:not(.fc-rail) .fc-nav-group,
+.fc-console.fc-pane-shell:not(.fc-rail) .fc-sub,
+.fc-console.fc-pane-shell:not(.fc-rail) .fc-nav-empty {
+  display: none;
+}
+
+.fc-console.fc-pane-shell:not(.fc-rail) .sys-nav__item {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 4px 9px;
+}
+
+.fc-console.fc-pane-shell.fc-mid .fc-col-time {
+  display: none;
+  /* `display:none` 落到 <col> 上时 Chrome 仍留着那一列的宽度，得把宽度也按死。 */
+  width: 0;
+}
+
+.fc-console.fc-pane-shell.fc-tight .fc-col-size {
+  display: none;
+  width: 0;
+}
+
+.fc-console.fc-pane-shell.fc-tight .fc-nav {
+  display: none;
+}
+
+.fc-console.fc-pane-shell.fc-tight .sys-main {
+  grid-template-rows: minmax(0, 1fr);
 }

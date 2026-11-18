@@ -55,6 +55,8 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 给容器写多轨 `grid-template-rows` 时，先看它的直接子元素里有没有会 `hidden` / `display:none` 的（横幅、提示条、菜单）。有就三选一：每个子元素钉死 `grid-row` / `grid-area`；只在它可见时才切到多一行的模板（`:has(> .x:not([hidden]))`）；或整块改 flex 列。隐藏的子元素不占格子，后面的会整体前挪一行：主体掉进 `auto` 行不再自己滚、底栏被拉进 `1fr`。已经踩过三次：随手问面板、系统管理页（`0eebbeb`）、对话栏（`b8149a9` → #372）。加了这类元素的 UI 测试顺手断言它隐藏时底栏仍贴底。
 
+反过来的坑：把别人的多轨模板改成一行时，子元素上钉着的 `grid-row` / `grid-area` 还在，主体会落到隐式行，顶上的第 1 行（`1fr`）白白空出一截（D312 在 `.sys-main { grid-row: 3 }` 上踩过）。改 `grid-template-rows` 时先看子元素里有没有显式行号，有就一起改回去。
+
 ### 尺寸：`#app` 里不许写裸 `vh` / `vw`
 
 `#app { zoom: var(--ui-scale) }`（外观「字号」）会把子树里的长度整体缩放一遍，而 `vw` / `vh` 解析的是**视口**、不认 zoom —— 同一个值被乘第二次。所以视口几成就写 `calc(var(--vh1) * N)` / `calc(var(--vw1) * N)`：

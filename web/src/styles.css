@@ -382,7 +382,17 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   animation: act-spin 0.8s linear infinite;
 }
 .new-sheet .ns-browser.disabled { pointer-events: none; opacity: 0.5; }
-.dir-path { padding: 8px 2px; font-family: var(--mono); font-size: 12px; color: var(--accent); word-break: break-all; }
+/* D312：面包屑只占一行。长路径（`此电脑 / var / folders / … / 项目`）以前折成三行，把工具条顶成
+   三行高；现在横向滚到尾巴（当前目录就在眼前），左边还有内容时用一层渐隐标出来。 */
+.dir-path {
+  display: flex; align-items: center;
+  padding: 8px 2px; font-family: var(--mono); font-size: 12px; color: var(--accent);
+  white-space: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+}
+.dir-path::-webkit-scrollbar { display: none; }
+.dir-path.cut { mask-image: linear-gradient(to right, transparent 0, #000 26px); }
+.dir-path.cut-end { mask-image: linear-gradient(to left, transparent 0, #000 26px); }
+.dir-path.cut.cut-end { mask-image: linear-gradient(to right, transparent 0, #000 26px, #000 calc(100% - 26px), transparent); }
 .dir-list { max-height: calc(var(--vh1) * 55); overflow-y: auto; scrollbar-gutter: stable; }
 .dir-row { font-family: var(--mono); font-size: 13px; text-align: left; }
 .dir-foot { display: flex; justify-content: flex-end; padding-top: 10px; }
@@ -2923,7 +2933,7 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .pane-seg { margin-right: 6px; }
 .pane-seg button:disabled { opacity: 0.4; cursor: default; }
 .viewer-body.browse { display: flex; flex-direction: column; overflow: hidden; }
-.viewer-browse { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 12px 12px; }
+.viewer-browse { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0; }
 .dirpicker { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .dirpicker .dir-filter { margin: 8px 0; padding: 8px 12px; font-size: 13px; }
 .dirpicker .dir-list { flex: 1; min-height: 0; max-height: none; overflow: auto; }
@@ -3152,6 +3162,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 /* Q-014: the path row in the file browser is a breadcrumb. */
 .dir-path .crumb {
+  flex: none;
   border: 0;
   background: transparent;
   color: var(--accent);
@@ -3168,7 +3179,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .dir-path .crumb:hover { background: rgba(124, 196, 255, 0.12); }
 .dir-path .crumb.root { color: var(--dim); }
-.dir-path .crumb-sep { color: var(--dim); opacity: 0.6; padding: 0 1px; }
+.dir-path .crumb-sep { flex: none; color: var(--dim); opacity: 0.6; padding: 0 1px; }
 
 /* Q-015: a session held by the pi CLI terminal is not "running forever" — say so, quietly. */
 .badge.lock,
