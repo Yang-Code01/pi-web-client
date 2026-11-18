@@ -1576,7 +1576,7 @@ export const en: Dict = {
   "复制 nodeId": "Copy nodeId",
   "复制不了，手动选吧": "Couldn't copy — select it manually",
   "大小": "Size",
-  "太长了（上限 32 KB）": "Too long (32 KB max)",
+  "太长（上限 32 KB），改用文件发": "Too long (32 KB max) — send it as a file instead",
   "好友 · 在线": "Friends · online",
   "好友 · 离线": "Friends · offline",
   "存储": "Storage",

@@ -190,14 +190,22 @@ try {
   await page.click('#rail button[title="联系人"]');
   await page.click('.listbox .row:has-text("小王")');
   await page.click('#main button:has-text("发消息")');
-  const boxes = await page.locator("textarea").count();
+  const boxes = await page.locator(".peer-rich[contenteditable=true]").count();
   const head = (await page.locator("#main .head").innerText().catch(() => "")).replace(/\s+/g, " ").trim();
-  check("无历史会话有输入框", boxes === 1, `textarea=${boxes}，头部「${head}」`);
+  check("无历史会话有输入框", boxes === 1, `contenteditable=${boxes}，头部「${head}」`);
   if (boxes === 1) {
-    await page.fill("textarea", "你好小王");
+    await page.fill(".peer-rich", "你好小王");
     await page.click('#main button:has-text("发送")');
     for (let i = 0; i < 40 && !sent; i++) await page.waitForTimeout(50);
     check("第一条消息真的发出去了", sent?.peer === WANG && sent?.text === "你好小王", JSON.stringify(sent));
+
+    // #515：带格式的正文按 HTML 发，接收端才有东西可渲染。
+    sent = null;
+    await page.click(".peer-rich");
+    await page.keyboard.type("**粗**");
+    await page.click('#main button:has-text("发送")');
+    for (let i = 0; i < 40 && !sent; i++) await page.waitForTimeout(50);
+    check("富文本按 HTML 发出去", sent?.peer === WANG && /<strong>粗<\/strong>/.test(sent?.text ?? ""), JSON.stringify(sent));
   }
 
   // ---- 2. 切会话串台 ----
@@ -247,11 +255,14 @@ try {
   check("通讯录只给 1 人时在线陌生人出现在附近的人", nearbyGroup === 1 && strangerRow === 1, `组=${nearbyGroup}，行=${strangerRow}`);
   await page2.click('.listbox .row:has-text("小赵")');
   await page2.click('#main button:has-text("发消息")');
-  const focused = await page2.evaluate(() => document.activeElement?.tagName ?? "");
-  const boxes2 = await page2.locator("textarea").count();
-  check("点发消息后输入框拿到焦点", focused === "TEXTAREA" && boxes2 === 1, `active=${focused}，textarea=${boxes2}`);
+  const focused = await page2.evaluate(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLElement && el.classList.contains("peer-rich") ? "peer-rich" : (el?.tagName ?? "");
+  });
+  const boxes2 = await page2.locator(".peer-rich[contenteditable=true]").count();
+  check("点发消息后输入框拿到焦点", focused === "peer-rich" && boxes2 === 1, `active=${focused}，contenteditable=${boxes2}`);
   if (boxes2 === 1) {
-    await page2.fill("textarea", "你好小赵");
+    await page2.fill(".peer-rich", "你好小赵");
     await page2.click('#main button:has-text("发送")');
     for (let i = 0; i < 40 && !sent; i++) await page2.waitForTimeout(50);
     check("附近的人发第一条消息命中正确 nodeId", sent?.peer === STRANGER && sent?.text === "你好小赵", JSON.stringify(sent));

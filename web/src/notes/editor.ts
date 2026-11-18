@@ -95,6 +95,8 @@ export class RichEditor {
     this.body.addEventListener("blur", () => this.saveRange());
     this.body.addEventListener("paste", (ev) => this.onPaste(ev));
     this.buildToolbar();
+    // 空正文也得有个段落：contenteditable 直接打字会落成裸文本节点，块级规则就找不到 block 了。
+    this.ensureBlock();
     document.addEventListener("mousedown", this.onOutside, true);
     document.addEventListener("keydown", this.onDocKey, true);
   }
@@ -102,6 +104,7 @@ export class RichEditor {
   /** 换一条记录：直接换 HTML（进门前已经净化过）。 */
   setHtml(html: string): void {
     this.body.replaceChildren(parseHtml(sanitizeRich(html)));
+    this.ensureBlock();
     this.savedRange = null;
     this.closePop();
   }
@@ -167,8 +170,18 @@ export class RichEditor {
   // ---------------------------------------------------------------- 输入
 
   private afterInput(): void {
+    this.ensureBlock();
     this.saveRange();
     this.onChange();
+  }
+
+  /** 正文里连一个元素都没有时补一个空段落（光标已经在了就放到段尾）。 */
+  private ensureBlock(): void {
+    if (this.body.children.length) return;
+    const p = document.createElement("p");
+    p.append(document.createElement("br"));
+    this.body.replaceChildren(p);
+    if (this.body === document.activeElement) this.caretToEnd(p);
   }
 
   /**
@@ -191,7 +204,8 @@ export class RichEditor {
     const range = this.range();
     if (!range || !range.collapsed) return;
     const block = this.topBlock(range.startContainer);
-    if (!block || !(block instanceof HTMLElement) || block.tagName === "PRE") return;
+    // 裸文本节点 / 整个 body 都不当 block：块级替换必须落在一个段落上。
+    if (!block || block === this.body || !(block instanceof HTMLElement) || block.tagName === "PRE") return;
     const caret = textOffset(block, range.startContainer, range.startOffset);
     if (caret === null) return;
     // contenteditable 把行尾空格存成 &nbsp;：判定前统一回普通空格（长度不变，偏移还能用）。
