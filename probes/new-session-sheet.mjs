@@ -190,6 +190,27 @@ try {
   await page.locator(".new-sheet .dir-sort-key", { hasText: "修改时间" }).click();
   const dirBtn2 = ((await page.locator(".new-sheet .dir-sort-key.on").textContent()) ?? "").trim();
   assert(dirBtn2 === "修改时间 ↑", `clicking the same column flips it (got ${dirBtn2})`);
+  // 换排序不该把列表清空闪一下：旧的一页留着，新的一页到了再整块换。
+  await page.evaluate(() => { document.querySelector(".new-sheet .dir-list")?.replaceChildren(); });
+  await page.locator(".new-sheet .dir-sort-key", { hasText: "名称" }).click();
+  const flash = await page.evaluate(async () => {
+    const list = document.querySelector(".new-sheet .dir-list");
+    const out = { msg: 0, minRows: 999, frames: 0 };
+    const t0 = performance.now();
+    await new Promise((r) => setTimeout(r, 40));
+    const key = [...document.querySelectorAll(".new-sheet .dir-sort-key")].find((b) => b.textContent.includes("修改时间"));
+    key?.click();
+    while (performance.now() - t0 < 900) {
+      out.frames++;
+      if (/读取中…/.test(list.textContent)) out.msg++;
+      const n = list.querySelectorAll(".dir-row").length;
+      if (n < out.minRows) out.minRows = n;
+      await new Promise((r) => setTimeout(r, 16));
+    }
+    return out;
+  });
+  assert(flash.msg === 0, `re-sorting never flashes 读取中… (${flash.msg}/${flash.frames} frames)`);
+  assert(flash.minRows > 0, `re-sorting keeps rows on screen (min ${flash.minRows} rows)`);
   const sheetH3 = (await page.locator(".new-sheet").boundingBox())?.height ?? 0;
   assert(Math.abs(sheetH3 - sheetH) < 2, `sorting does not resize the sheet (${sheetH} vs ${sheetH3})`);
   await page.screenshot({ path: path.join(OUT, "2-sorted.png"), animations: "disabled" });

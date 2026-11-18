@@ -603,11 +603,17 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
    * 取一页。`append` 是「加载更多」，`reveal` 是跳转要标的那一行，`allowFallback` 关掉时
    * 打不开的目录在原处报错（跳转框已经先说过一次，别再默默跳去盘符页）。
    */
-  const fetchInto = async (target: string, o: { append?: boolean; reveal?: string; allowFallback?: boolean; keepQuery?: boolean } = {}): Promise<{ ok: true } | { ok: false; error: string }> => {
+  const fetchInto = async (target: string, o: { append?: boolean; reveal?: string; allowFallback?: boolean; keepQuery?: boolean; quiet?: boolean } = {}): Promise<{ ok: true } | { ok: false; error: string }> => {
     const mine = ++seq;
     const append = o.append === true;
+    let quiet = !append && o.quiet === true;
     if (append) {
       moreBusy = true;
+      paintFoot();
+    } else if (quiet) {
+      // 同一个目录里只换了顺序或筛选词：旧的那一页先留着，等新的一页到了整块换上去。
+      // 先清空会让列表闪一下「读取中…」再弹回来，看着就是「抖了一下」。
+      root.classList.add("busy");
       paintFoot();
     } else {
       clearRows();
@@ -620,6 +626,8 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     } catch (ex: any) {
       if (mine !== seq || !root.isConnected) return { ok: false, error: "" };
       moreBusy = false;
+      quiet = false;
+      root.classList.remove("busy");
       pendingReveal = "";
       const said = tr("读取失败：{p1}", { p1: ex?.message ?? ex });
       clearRows();
@@ -629,6 +637,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     }
     if (mine !== seq || !root.isConnected) {
       moreBusy = false;
+      root.classList.remove("busy");
       return { ok: false, error: "" };
     }
     // A path that does not exist (typed, or remembered from another machine): show drives instead.
@@ -654,9 +663,15 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
         query = "";
       }
       paint();
-      list.scrollTop = 0;
+      // 换顺序/换筛选词后回到顶部是对的（不然眼睛找不到刚排在最前的那几条），
+      // 但只在用户本来就不在顶部时才动，避免「已经在顶部还跳一下」。
+      if (list.scrollTop !== 0) list.scrollTop = 0;
     } else appendRange(before);
     moreBusy = false;
+    if (quiet) {
+      quiet = false;
+      root.classList.remove("busy");
+    }
     paintFoot();
     fillStats(current);
     opts.onState?.({
@@ -718,7 +733,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     sort = nextDirSort(sort, key);
     saveDirSort(store, sort);
     paintSort();
-    void fetchInto(current, { keepQuery: true });
+    void fetchInto(current, { keepQuery: true, quiet: true });
   }
 
   let locating = false;
@@ -828,13 +843,13 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
         filterTimer = null;
         if (!root.isConnected) return;
         query = filter.value.trim();
-        void fetchInto(current, { keepQuery: true });
+        void fetchInto(current, { keepQuery: true, quiet: true });
       }, 150);
     };
     subBox.onchange = () => {
       subSearch = subBox.checked;
       saveSubSearch(subSearch);
-      void fetchInto(current, { keepQuery: true });
+      void fetchInto(current, { keepQuery: true, quiet: true });
     };
   }
   paintSort();
