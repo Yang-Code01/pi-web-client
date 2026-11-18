@@ -389,7 +389,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
    .model-row 默认两列网格，会把图标摊进 1fr 那一列。表格版（tr）不受影响。 */
 .dir-list > .dir-row { display: flex; align-items: center; gap: 8px; }
 .dir-list > .dir-row .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dir-ico { flex: 0 0 auto; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; color: var(--faint); }
+.dir-ico { flex: 0 0 auto; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; color: var(--faint); }
 .dir-row:hover .dir-ico, .dir-row.hit .dir-ico { color: var(--dim); }
 .dir-foot { display: flex; justify-content: flex-end; padding-top: 10px; }
 
@@ -2874,7 +2874,7 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .dir-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 2px 2px 4px; }
 .dir-tools .dir-find { flex: 1 1 180px; min-width: 0; padding: 0; flex-wrap: nowrap; }
 .dir-tools .dir-sort { flex: 0 0 auto; padding: 0; }
-.dir-tools .dir-filter { margin: 0; padding: 5px 10px; font-size: 12.5px; }
+.dirpicker .dir-tools .dir-filter { margin: 0; padding: 5px 10px; font-size: 12.5px; }
 .dir-sub { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font: 12px var(--sans); color: var(--dim); cursor: pointer; white-space: nowrap; }
 .dir-sub input { margin: 0; accent-color: var(--accent); }
 /* 换顺序 / 换筛选词时旧的一页先留着、只压暗一点：清空再画会闪一下，看着像「抖」。 */

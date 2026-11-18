@@ -6236,16 +6236,15 @@ export class App {
     nameField.id = "ns-new-name";
     nameField.placeholder = tr("新会话");
     nameField.maxLength = 120;
-    nameField.setAttribute("aria-label", tr("会话名称"));
     // #487：交接过来的名字先填上，可改可清；空串等于不填（票号取完是空的时候）。
     nameField.value = (preset?.name?.trim() ?? "").slice(0, nameField.maxLength);
     // 名字旁边给它一个标签：这排三个框（名字 / 路径 / 筛选）以前长得一模一样，分不出哪个是必填的。
     const nameLabel = el("label", "ns-namelbl", tr("名字"));
     nameLabel.htmlFor = nameField.id;
     // 右端写「将在哪儿新建」：以前只藏在底栏那句说明里，跟按钮挤在一行。
-    const where = el("span", "ns-where");
+    const whereHint = el("span", "ns-where");
     const nameRow = el("div", "ns-namerow");
-    nameRow.append(nameLabel, nameField, where);
+    nameRow.append(nameLabel, nameField, whereHint);
 
     const body = el("div", "ws-new-body");
     const side = el("div", "ws-new-side");
@@ -6261,8 +6260,8 @@ export class App {
 
     // 左栏：已经在列表里的工作区（手动组不算）+「用这个目录新建工作区」+ 最近用过的目录。
     const sideRows: { key: string; node: HTMLButtonElement; here: boolean }[] = [];
-    const addSide = (key: string, name: string, color: string | null, here = false, into?: HTMLElement): boolean => {
-      if (!key || sideRows.some((r) => sameDir(r.key, key))) return false;
+    const addSide = (key: string, name: string, color: string | null, here = false, into?: HTMLElement): void => {
+      if (!key || sideRows.some((r) => sameDir(r.key, key))) return;
       const row = el("button", "model-row ws-new-pick") as HTMLButtonElement;
       row.type = "button";
       row.dataset.ws = key;
@@ -6276,7 +6275,6 @@ export class App {
       row.onclick = () => void picker?.go(key);
       (into ?? picks).append(row);
       sideRows.push({ key, node: row, here });
-      return true;
     };
     const paintSide = (): void => {
       for (const row of sideRows) row.node.classList.toggle("on", sameDir(row.key, current));
@@ -6287,6 +6285,11 @@ export class App {
     sideScroll.append(el("div", "ws-new-side-title", tr("已经在列表里")));
     const picks = el("div", "ws-new-picks");
     sideScroll.append(picks);
+    // 「最近」自己一层：标题和行都跟着每次重绘重算，不然它们会留在 DOM 里、脱出 sideRows。
+    const recentTitle = el("div", "ws-new-side-title", tr("最近"));
+    const recentPicks = el("div", "ws-new-picks");
+    recentTitle.hidden = true;
+    sideScroll.append(recentTitle, recentPicks);
     /** 手动组不进这一栏：它们不是「按目录」的，点了也对不上一个路径。 */
     const pickGroups = () => buildTree(this.sessions, this.manage, this.workspaces, "").groups.filter((group) => !group.manual);
     // #499：新建工作区的入口就摆在组行下面 —— 用户在弹层里挑到一个新目录，不必先关掉弹层去建组。
@@ -6313,6 +6316,20 @@ export class App {
       wsAdd.disabled = true;
       this.act(() => this.socket.send({ type: "manage", action: "ws.create", dir: current }));
     };
+    /** 「最近」：先用过又没进上面那组的目录，再按会话更新时间补，最长 6 条。 */
+    const paintRecent = (): void => {
+      const recentDirs: string[] = [];
+      for (const dir of [...this.recentCwds(), ...[...this.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.cwd)]) {
+        const abs = cleanDirPath(dir ?? "");
+        if (!abs || recentDirs.some((d) => sameDir(d, abs))) continue;
+        recentDirs.push(abs);
+        if (recentDirs.length >= 6) break;
+      }
+      recentPicks.replaceChildren();
+      const fresh = recentDirs.filter((dir) => !sideRows.some((r) => sameDir(r.key, dir)) && !sameDir(dir, current));
+      recentTitle.hidden = fresh.length === 0;
+      for (const dir of fresh) addSide(dir, dirBaseName(dir), null, false, recentPicks);
+    };
     const paintPicks = (): void => {
       picks.replaceChildren();
       sideRows.length = 0;
@@ -6321,29 +6338,13 @@ export class App {
       for (const group of groups) addSide(group.key, group.name, group.color, group.id === hereWs);
       if (!groups.length) picks.append(el("div", "empty", tr("还没有按目录分的工作区")));
       wsAdd.disabled = this.newSheetWsCreating || !current || !this.bridgeCaps.includes(WS_CREATE_DIR_CAP);
+      // 先重算最近那一组（刚建好的工作区要从这里消失），高亮最后统一上。
+      paintRecent();
       paintSide();
     };
     this.newSheetPicks = paintPicks;
     paintPicks();
     side.append(wsAdd);
-
-    // 最近：先看这次用过的，再按会话的更新时间补；与会话的工作目录去重，最长 6 条。
-    const recentDirs: string[] = [];
-    for (const dir of [...this.recentCwds(), ...[...this.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.cwd)]) {
-      const abs = cleanDirPath(dir ?? "");
-      if (!abs || recentDirs.some((d) => sameDir(d, abs))) continue;
-      recentDirs.push(abs);
-      if (recentDirs.length >= 6) break;
-    }
-    const fresh = recentDirs.filter((dir) => !sideRows.some((r) => sameDir(r.key, dir)) && !sameDir(dir, current));
-    if (fresh.length) {
-      // 标题下得自己一层容器：以前最近的行直接 append 进上面那组，结果它们拱到「已经在列表里」末尾，
-      // 「最近」这个标题反而被晾在最后、下面一条都没有。
-      sideScroll.append(el("div", "ws-new-side-title", tr("最近")));
-      const recentPicks = el("div", "ws-new-picks");
-      sideScroll.append(recentPicks);
-      for (const dir of fresh) addSide(dir, dirBaseName(dir), null, false, recentPicks);
-    }
 
     const mkBtn = el("button", "btn ghost dir-mk", tr("＋ 新建文件夹")) as HTMLButtonElement;
     mkBtn.title = tr("在当前目录下新建一个文件夹");
@@ -6373,11 +6374,10 @@ export class App {
     foot.append(note, openExisting, ok);
     const advanced = this.launchOptionsBox();
 
-    /** 底部那行说明与「打开已有的」都跟着当前目录走。 */
+    /** 底栏说明和「打开已有的」跟着当前目录走；名字框右边的目标路径也一起刷。 */
     const paintFoot = (): void => {
       const here = sessionsHere();
-      // 目标目录放在名字框右侧（一直看得见），底栏只留「这儿已经有什么」和按钮。
-      where.textContent = current ? tr("将在 {p1} 新建", { p1: current }) : "";
+      whereHint.textContent = current ? tr("将在 {p1} 新建", { p1: current }) : "";
       if (!current) note.textContent = tr("先挑一个工作目录");
       else if (here.length) note.textContent = tr("这个目录已有 {p1} 个会话", { p1: String(here.length) });
       else note.textContent = "";

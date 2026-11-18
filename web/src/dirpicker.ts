@@ -306,7 +306,6 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     sortBtns.set(key, b);
     sortRow.append(b);
   }
-  sortRow.hidden = !sortable || table;
 
   // 已加载 N / M + 加载更多：只在分页清单里有意义（旧桥一次给完，这行一直隐藏）。
   const foot = el("div", "dir-pagefoot");
@@ -472,10 +471,9 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
 
   const addDir = (entry: DirEntry): void => {
     const { name } = entry;
-    // 列文件的入口保留 emoji（同一列里文件行也是 emoji）；只挑目录的入口用线性图标。
     const icon = (): Node => (listFiles ? el("span", "ico", "📁") : folderIcon());
     if (!table) {
-      // 图标和名字分成两个节点：图标占定宽那一列，名字自己省略号（以前一整个字符串，长名字把行撑开）。
+      // 图标和名字分两个节点：图标占定宽那一列，名字自己省略号。
       const row = el("button", "model-row dir-row") as HTMLButtonElement;
       row.append(icon(), el("span", "nm", name));
       if (marked(entry)) row.classList.add("hit");
@@ -587,7 +585,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   const upRow = (): void => {
     if (table) {
       const up = el("tr", "fc-up");
-      const cell = el("td", "fc-dim fc-upcell");
+      const cell = el("td", "fc-dim");
       cell.colSpan = 4;
       cell.append(upIcon(), el("span", "", tr("上一级")));
       up.append(cell);

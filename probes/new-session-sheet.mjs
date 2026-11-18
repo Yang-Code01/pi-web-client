@@ -61,7 +61,7 @@ function seedSession(sid, cwd, name) {
     { type: "message", id: "m1", parentId: null, timestamp: at, message: { role: "user", content: [{ type: "text", text: name }] } },
     { type: "session_info", id: "n1", parentId: "m1", timestamp: at, name },
   ];
-  fs.writeFileSync(path.join(dir, `${sid}.jsonl`), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+  fs.writeFileSync(path.join(dir, `${sid}.jsonl`), rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
 }
 seedSession("zz-sheet-work", WORK, "主会话");
 seedSession("zz-sheet-other", OTHER, "别的目录");
