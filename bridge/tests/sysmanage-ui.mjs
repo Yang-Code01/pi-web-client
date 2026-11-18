@@ -10,6 +10,7 @@
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
@@ -165,6 +166,79 @@ check(
   (await page.locator('.at-input[data-field="account"]').inputValue()) === "TS0002",
   await page.locator('.at-input[data-field="account"]').inputValue(),
 );
+
+// 密码框：登录过一次之后，再打开设置就该看到存着的那个密码，但 input 仍然是 password ——
+// 眼睛按钮一按才变 text，再一按收回去。
+const OA_PORT = await freePort();
+const OA = `http://127.0.0.1:${OA_PORT}`;
+// 密码框的选择器两副面孔都认：新版本带 data-field，旧版本只有 type=password。
+// 只写前者的话，旧代码上会直接超时撞崩，看不到「哪几条断言红了」。
+const pwSel = '.at-input[data-field="password"], input[type="password"].at-input';
+const pwBox = page.locator(pwSel).first();
+const oaToken = `x.${Buffer.from(JSON.stringify({ sub: "TS0001", exp: 4102444800 })).toString("base64url")}.y`;
+const oa = http.createServer((req, res) => {
+  const route = new URL(req.url ?? "/", "http://oa.invalid").pathname;
+  const login = route === "/in/login/check";
+  res.writeHead(login ? 200 : 404, { "content-type": "application/json" });
+  res.end(
+    login
+      ? JSON.stringify({ status: "OK", token: oaToken, user_id: 1001, name: "张三", work_no: "TS0001" })
+      : JSON.stringify({ status: "NG", error: "本用例没搭这个接口" }),
+  );
+});
+await new Promise((r) => oa.listen(OA_PORT, "127.0.0.1", r));
+await page.locator('.at-input[data-field="apiBase"]').fill(OA);
+await page.locator('.at-input[data-field="pageBase"]').fill(OA);
+await page.locator('.at-input[data-field="account"]').fill("TS0001");
+await pwBox.fill("ui-pass-123456");
+await page.getByRole("button", { name: "登录", exact: true }).click();
+const loggedIn = await page
+  .waitForFunction(() => (document.querySelector(".at-notice__text")?.textContent ?? "").trim() === "登录成功", null, {
+    timeout: 20_000,
+  })
+  .then(() => true)
+  .catch(() => false);
+check("对着能连通的 OA 能登录成功", loggedIn, (await page.locator(".at-notice__text").first().innerText().catch(() => "")).trim());
+
+// 真正的场景：关掉页面，下次打开考勤时密码就已经在框里（还是点，不是明文）。
+await page.reload({ waitUntil: "domcontentloaded" });
+await page.waitForTimeout(800);
+await page.locator('[data-act="look"]').first().click();
+await page.locator('.set-tabs .chip[data-tab="conn"]').click();
+const back = page.locator('.set-page[data-page="conn"]');
+await back.waitFor({ timeout: 10_000 });
+await back.getByRole("button", { name: "本机管理", exact: true }).first().click();
+await page.locator(".sys-console").waitFor({ timeout: 20_000 });
+await page.locator(".sys-nav__item").nth(5).click();
+await page.locator(".at-page").first().waitFor({ timeout: 20_000 });
+await page.locator(".at-tab", { hasText: "设置" }).click();
+await page.locator(pwSel).first().waitFor({ timeout: 10_000 });
+// 密码是异步从桥拿回来的：等它落进框里，别拿「还没到」当「回填坏了」。
+const filled = await page
+  .waitForFunction(
+    (sel) => (document.querySelector(sel)?.value ?? "") === "ui-pass-123456",
+    pwSel,
+    { timeout: 10_000 },
+  )
+  .then(() => true)
+  .catch(() => false);
+check("重开设置页，密码框回填了已存的密码", filled, await pwBox.inputValue().catch(() => ""));
+check("回填后 input 仍是 password（不明文摆着）", (await pwBox.getAttribute("type")) === "password", String(await pwBox.getAttribute("type")));
+const eye = page.locator(".at-eye");
+const hasEye = (await eye.count()) === 1;
+// 没有眼睛按钮时不去点它（旧版本就是这样），让后面的断言自己报红，而不是把整个用例撞崩。
+const clickEye = async () => {
+  if (hasEye) await eye.click();
+};
+check("密码框旁边有眼睛按钮", hasEye);
+check("眼睛按钮默认是「显示密码」", hasEye && (await eye.getAttribute("aria-pressed")) === "false", hasEye ? String(await eye.getAttribute("aria-pressed")) : "没有按钮");
+await clickEye();
+check("点眼睛变明文可见", (await pwBox.getAttribute("type")) === "text", String(await pwBox.getAttribute("type")));
+check("切明文内容不变", (await pwBox.inputValue()) === "ui-pass-123456", await pwBox.inputValue());
+check("切明文后眼睛是「隐藏密码」", hasEye && (await eye.getAttribute("aria-pressed")) === "true", hasEye ? String(await eye.getAttribute("aria-pressed")) : "没有按钮");
+await clickEye();
+check("再点一次收回 password", (await pwBox.getAttribute("type")) === "password", String(await pwBox.getAttribute("type")));
+oa.close();
 // 提醒页跟 OA 配置无关：没配过也该打得开（它是本地规则）。
 await page.locator(".at-tab", { hasText: "提醒" }).click();
 await page.locator(".at-week__btn").first().waitFor({ timeout: 10_000 });

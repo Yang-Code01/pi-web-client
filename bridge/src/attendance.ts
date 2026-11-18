@@ -723,7 +723,11 @@ async function statePayload(cfg: AttendanceConfig | null, problem: string | null
     apiBase: cfg?.apiBase ?? "",
     pageBase: cfg?.pageBase ?? "",
     account: maskAccount(cfg?.account ?? cred?.account ?? ""),
-    loggedIn: Boolean(cred?.token && tokenFresh(cred)),
+    // 「已登录」= 现在就能用（token 没过期）**或**待会儿能自动续（存着密码）。
+    // 只看 token 的话，过期那一刻界面会说「未登录」，可实际上页面一查记录 session()
+    // 就会拿存着的密码重登 —— 用户看到的是一句与事实相反的提示。
+    loggedIn: Boolean(cred && (tokenFresh(cred) || cred.password)),
+    hasPassword: Boolean(cred?.password),
     expiresAt: cred?.tokenExp ?? 0,
     userName: cred?.name ?? "",
     workNoMask: cred?.workNo ? maskAccount(cred.workNo) : "",
@@ -785,6 +789,15 @@ export async function handleAttendance(
     if (url.pathname === "/api/attendance/state") {
       if (method !== "GET") return stop(res, 405, "bad_method", "不支持这个请求方法");
       json(res, 200, await statePayload(config.apiBase ? config : null, problem));
+      return true;
+    }
+
+    // 设置页把已存的密码回填进密码框（input 仍是 type=password），眼睛按钮只切 type。
+    // 明文只给 127.0.0.1 的页面：隧道访客在本函数开头就被挡掉了。
+    if (url.pathname === "/api/attendance/password") {
+      if (method !== "GET") return stop(res, 405, "bad_method", "不支持这个请求方法");
+      const cred = await readCredentials();
+      json(res, 200, { password: cred?.password ?? "" });
       return true;
     }
 
