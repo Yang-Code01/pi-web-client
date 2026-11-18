@@ -6190,3 +6190,21 @@ Esc 之后 dialog: 0
 **取舍：** 不加骨架屏、不加 spinner、不加「正在读取」的动效 —— 本机目录的刷新快到不值得任何视觉解释，慢的时候一句静态占位已经够；如果哪天刷新真的慢到需要进度感，要在**列表外面**（页脚、工具行）表达，不许改列表本身。
 
 **验证：** `node probes/new-session-sheet.mjs` 十段全过（第 10 段为本次新增）；`.scratch/ns-ui/flicker.mjs` 另有同一套规则的独立取证脚本（排序 / 筛选 / 露出建目录行 / 真建目录四段，均 0 变暗 0 清空）。
+
+## D316 文件搜索：索引自己建（node:sqlite + 扫盘 + fs.watch），不借 Everything（用户要求 2026-11-18）
+
+**问题：** 客户端里按名字找本机文件，原来只有 `@` 补全那一套：`bridge/src/filesearch.ts` 现跑 `git ls-files` 或 `readdirSync`，上限 20 000 条、缓存 10 秒，面板一关就全丢。会话目录之外的东西（`C:\Users\…`、别的盘）搜不到；20 万文件的项目一搜就空。
+
+**决定：**
+
+- **索引建在桥端，用 Node 自带的 `node:sqlite`**（本机 Node 24.22.3 / SQLite 3.54.1，FTS5 与 trigram 都可用）。不借本机 Everything：那要用户另装一个外部程序、也只有 Windows 有，与「客户端自带」相冲突。用动态 `import("node:sqlite")` 并 catch —— 22.5–22.12 上它需要 `--experimental-sqlite`，静态 import 会让那些机器上的 bridge 直接起不来。
+- **只有一张表**：`files(path PRIMARY KEY, nlow, size, mtime, is_dir, vol, gen)` + `idx_files_nlow / idx_files_vol / idx_files_gen` + `meta(k, v)`。`nlow` 存 basename 小写（前缀查询吃索引），整条路径还是 `path`。库文件走 `statePath("filesearch.db")`。
+- **查询两段式，不上 FTS5。** 第一段 `nlow LIKE 'q%'` 吃 `idx_files_nlow`；不够 200 条才补第二段 `(nlow LIKE '%q%' OR path LIKE '%q%') AND path NOT IN (已取到)`。100 万行实测：前缀 0.4 ms、子串 0.6 ms、子串 + `ORDER BY length(name), name` 100.8 ms、建库 2.9 s / 168 MB，trigram FTS5 子串 0.7 ms —— 目标是 100 ms，多花一倍磁盘不值。
+- **卷勾选是显式清单，空清单 = 全关。** 这是踩过的坑：把 `enabled.size === 0` 当「没设过」，用户把卷全勾掉之后 `[]` 会退化成「不限范围」，取消勾选照样搜出结果。现在 `enabled: Set | null`（null 才是全开），query 里 `volFilter()` 对空清单直接回空；Web 侧同样以显式集合维护，「所有卷」是填满而不是清空。
+- **扫描是显式栈 DFS + `opendir`**，每 500 条一个事务、每批 `setImmediate` 让出；`SKIP` = `.git node_modules dist build __pycache__ .venv venv target $Recycle.Bin "System Volume Information" WinSxS Windows.old`。扫完用世代号 `gen` 删掉本轮没见到的行（整棵子树被删也能收尾）。`fs.watch(root, { recursive: true })` 做增量，每次事件 800 ms 防抖后 `syncPath`。
+- **入口与形态：** 顶栏「🔎 文件搜索」+ `ctrl+shift+f` + `runAction("filesearch")`。面板是控制台式（用户在三张样张里选的 A），外壳直接复用 `.sys-back / .sys-console / .sys-head / .sys-main / .sys-foot`；`.sys-console` 本来就是四行网格（head / 搜索行 / main / foot），不用改它，也不会踩「隐藏子元素挪行」那个坑。单击一行 = 引用并关面板，`Ctrl+Enter` = 关面板并在预览里打开。
+- **不进 `CHROME_IDS`：** 索引是机器级的，没开会话也能用，所以这颗按钮常显、也不出现在「外观 → 工具栏」的开关里（`isChromeVisible` 对不在表里的 id 返回 true）。
+
+**取舍：** 首次全盘扫描要几十秒到几分钟（满盘未实测；1 百万行建库 2.9 s，瓶颈在目录遍历与 `lstat`），期间可以先搜已经进库的部分；只做了「暂停 / 继续」，没做限速。不做 USN 级实时（要管理员权限 + 卷句柄），`fs.watch` 漏掉的事件靠下次重扫收。`node_modules` 这类目录永远不进索引，与 `@` 补全的老规矩一致。
+
+**验证：** `node bridge/tests/fileindex.mjs` 六条（转义、卷标识、真扫一个临时目录、删文件后 `syncPath`、`PI_WEB_FILEINDEX=0`、卷全取消再勾回）；`.scratch/filesearch/ws-probe.mjs` 起隔离 bridge 走真 WS（status → query → 取消全部卷 → 0 条 → 勾回 → 又有）；`probes/filesearch.mjs` 真浏览器四段（打开即列出 → 输入出结果且 `node_modules` 不出现 → 点一行引用进 composer → ArrowDown + Ctrl+Enter 开预览）；`npm --prefix web run typecheck` 全绿（含 i18n 三语键集合、viewport、layers）。截图在 `.scratch/filesearch-ui/shots/`。

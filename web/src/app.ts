@@ -9,6 +9,7 @@ import { atSpan, filterCommands, PANEL_COMMANDS, slashSpan, type CommandItem } f
 import { creditsToUsd, formatAge, formatCredits, formatReset, isMixed, usedPercent, type CopilotView } from "./copilot.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
+import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
@@ -406,6 +407,8 @@ export class App {
    *  否则下一次打开的任何会话都会莫名其妙带上上一个会话的笔记。 */
   private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
+  /** D316：文件搜索面板（打开时才有，关掉就置 null；`filesearch.*` 帧路由到它）。 */
+  private fileSearch: FileSearchHandle | null = null;
   private modelChip: HTMLButtonElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
   /** 「继续」按钮（D159）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
@@ -432,7 +435,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | "wsdelete" | "context" | "context-insights" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | "wsdelete" | "context" | "context-insights" | "filesearch" | null = null;
   /** 内网通未读：顶栏那颗按钮上的件数徽标（D300 起文件也算未读）。 */
   private peerUnread = 0;
   private peerBadge: HTMLElement | null = null;
@@ -948,9 +951,16 @@ export class App {
     mail.dataset.act = "mail";
     mail.onclick = () => this.openMail();
     this.els.mail = mail;
+    // D316：整机文件搜索。跟终端 / 记录一样常驻（不绑会话），所以不进 chrome 白名单、不做显隐开关 ——
+    // 索引是机器级的，没开会话也能找、能把路径复制走。
+    const fsearch = this.wideBtn(tr("🔎 文件搜索"));
+    fsearch.title = tr("在这台电脑上按名字 / 路径找文件（本机索引，毫秒级）");
+    fsearch.dataset.act = "filesearch";
+    fsearch.onclick = () => this.openFileSearch();
+    this.els.fsearch = fsearch;
     // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
     // 只要把它挪到别处）。A 里它在行 2 的最左，B/C/D 里挪进顶栏（见 `paintShell()`）。
-    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, jira, mail, this.hotChip, look, collapseRight);
+    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, jira, mail, fsearch, this.hotChip, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -2103,6 +2113,10 @@ export class App {
         if (msg.sessionId === this.currentId) this.paintContextIfOpen();
         break;
       }
+      case "filesearch.status":
+      case "filesearch.result":
+        this.fileSearch?.push(msg);
+        break;
       case "context.policy":
         if (msg.sessionId !== this.currentId) break;
         this.policy = (msg.policy as CtxPolicy | null) ?? this.policy;
@@ -4671,7 +4685,7 @@ export class App {
    * `renderTop()` 只画会话名与连接状态，`renderSessions()` 只画左栏卡片 —— 都不碰这八颗。
    */
   private paintChrome(): void {
-    const { look, files, term, fs, notes, peer, scratch, jira, mail, manageBtn, binBtn, tabs } = this.els;
+    const { look, files, term, fs, notes, peer, scratch, jira, mail, fsearch, manageBtn, binBtn, tabs } = this.els;
     const newBtn = this.els.newBtn as HTMLButtonElement;
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     const ctx = this.chromeCtx();
@@ -4731,6 +4745,8 @@ export class App {
       mail.setAttribute("aria-label", tr("邮箱"));
       show("mail", mail, tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管"));
     }
+    // 文件搜索常显（不进 chrome 表）：切语言只重设文字，不碰 hidden。
+    if (fsearch) this.setWideLabel(fsearch, tr("🔎 文件搜索"));
     // #290：下沿四颗是在拼 composer 时一次建好的，重画 composer 时不经过这里 —— 它自己也会调
     // `paintComposerChrome()`，两处共用同一份判断。
     this.paintComposerChrome();
@@ -4912,6 +4928,7 @@ export class App {
     this.sheet?.remove();
     this.sheet = null;
     this.sheetKind = null;
+    this.fileSearch = null;
     this.contextPanel = null;
     this.contextInsights = null;
     this.mgrRefresh = null;
@@ -15686,6 +15703,26 @@ export class App {
     handle.focus();
   }
 
+  /**
+   * D316：整机文件搜索面板。索引在 bridge 侧（node:sqlite），这里只发查询；还没有索引时
+   * bridge 已经在后台扫，面板显示进度条与暂停键。
+   */
+  private openFileSearch(): void {
+    this.closeSheet();
+    const handle = openFileSearch({
+      cwd: (this.session?.cwd ?? "").trim(),
+      send: (msg) => this.socket.send(msg),
+      onQuote: (abs) => this.insertPaths([abs]),
+      onOpen: (abs) => void this.openPreview(abs),
+      onClose: () => this.closeSheet(),
+    });
+    this.fileSearch = handle;
+    this.sheetKind = "filesearch";
+    this.overlay(handle.root);
+    this.sheet = handle.root;
+    handle.focus();
+  }
+
   /** 图片附加成待发图片（附件弹层 / 手机相册都走这里）。 */
   private attachImage(abs: string): void {
     void api
@@ -17888,6 +17925,9 @@ export class App {
       case "files":
         this.openFiles();
         break;
+      case "filesearch":
+        this.openFileSearch();
+        break;
       case "notes":
         this.openNotes();
         break;
@@ -19720,6 +19760,7 @@ const SHORTCUTS: { id: string; label: string }[] = [
   { id: "queue", label: tr("收起 / 展开右栏") },
   { id: "artifacts", label: tr("产物列表") },
   { id: "files", label: tr("文件管理器") },
+  { id: "filesearch", label: tr("文件搜索") },
   { id: "notes", label: tr("bug 记录") },
   { id: "look", label: tr("设置：外观 / 连接与设置") },
   { id: "skills", label: tr("技能面板") },
@@ -19729,7 +19770,7 @@ const SHORTCUTS: { id: string; label: string }[] = [
 ];
 
 /** 出厂就带的组合键；用户改过的以 localStorage 里的为准。 */
-const DEFAULT_KEYS: Record<string, string> = { notes: "ctrl+shift+b" };
+const DEFAULT_KEYS: Record<string, string> = { notes: "ctrl+shift+b", filesearch: "ctrl+shift+f" };
 
 /** The browser owns these; a page must never swallow them. */
 const RESERVED_KEYS = new Set([
