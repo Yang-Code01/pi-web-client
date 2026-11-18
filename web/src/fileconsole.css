@@ -1,5 +1,5 @@
 /* #421 附件控制台：外壳照「设置 → 本机管理」（.sys-*），这里只补右栏与行内动作。
-   D312：同一份实现还有第二种壳（`.fc-pane-shell`）—— 顶栏 📁 文件管理器的浏览页。 */
+   D319：同一份实现还有第二种壳（`.fc-pane-shell`）—— 顶栏 📁 文件管理器的浏览页。 */
 
 .fc-console .sys-pane {
   padding: 14px 18px 16px;
@@ -240,7 +240,7 @@
   text-transform: uppercase;
 }
 
-/* 行高钉在 30px（D312）：`.sys-table` 的 6px 内边距 + 顶对齐 + 11.5px 字号是设置页表格的口径，
+/* 行高钉在 30px（D319）：`.sys-table` 的 6px 内边距 + 顶对齐 + 11.5px 字号是设置页表格的口径，
    目录表要更紧。加 `.fc-console` 前缀是为了压过 sysmanage.css 里同名的 `.sys-table td`。 */
 .fc-console .fc-table td {
   height: 30px;
@@ -539,7 +539,7 @@ html[data-console-tight="true"] .fc-dialog .fc-table td.fc-ops {
 
 /* ---------------------------------------------------------------- 窄版（控制台自己的宽度）
    判定在 fileconsole.ts 的 ResizeObserver 里：`fc-rail` 够宽才立左栏，`fc-mid` / `fc-tight` 收列。
-   不写 `@media`：760px 的浏览页挂在 1440px 的窗口上，`@media` 永远等不到（D263 / D312）。 */
+   不写 `@media`：760px 的浏览页挂在 1440px 的窗口上，`@media` 永远等不到（D263 / D319）。 */
 
 .fc-console.fc-pane-shell:not(.fc-rail) .sys-main {
   grid-template-columns: minmax(0, 1fr);

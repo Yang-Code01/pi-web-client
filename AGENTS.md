@@ -55,7 +55,7 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 给容器写多轨 `grid-template-rows` 时，先看它的直接子元素里有没有会 `hidden` / `display:none` 的（横幅、提示条、菜单）。有就三选一：每个子元素钉死 `grid-row` / `grid-area`；只在它可见时才切到多一行的模板（`:has(> .x:not([hidden]))`）；或整块改 flex 列。隐藏的子元素不占格子，后面的会整体前挪一行：主体掉进 `auto` 行不再自己滚、底栏被拉进 `1fr`。已经踩过三次：随手问面板、系统管理页（`0eebbeb`）、对话栏（`b8149a9` → #372）。加了这类元素的 UI 测试顺手断言它隐藏时底栏仍贴底。
 
-反过来的坑：把别人的多轨模板改成一行时，子元素上钉着的 `grid-row` / `grid-area` 还在，主体会落到隐式行，顶上的第 1 行（`1fr`）白白空出一截（D312 在 `.sys-main { grid-row: 3 }` 上踩过）。改 `grid-template-rows` 时先看子元素里有没有显式行号，有就一起改回去。
+反过来的坑：把别人的多轨模板改成一行时，子元素上钉着的 `grid-row` / `grid-area` 还在，主体会落到隐式行，顶上的第 1 行（`1fr`）白白空出一截（D319 在 `.sys-main { grid-row: 3 }` 上踩过）。改 `grid-template-rows` 时先看子元素里有没有显式行号，有就一起改回去。
 
 ### 尺寸：`#app` 里不许写裸 `vh` / `vw`
 
@@ -65,6 +65,14 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 - 只有 `document.body.append()` 上去、压根不在 `#app` 里的浮层可以写裸的，行尾必须标 `/* 不在 #app */`；守卫只认这个标记，**别拿它当顺手豁免** —— 浮层本来就该跟着字号缩放，请挂进 `#app`。
 - 守卫：`npm run test:viewport`（已挂在 web 的 typecheck 里）。新写/改弹层后跑一次，顺便在字号 150% 下看一眼底栏还在不在。
 - 判「窄版」用 `@container`（卡 / 面板自己的宽度），不要用 `@media`（视口宽度）：嵌在左栏右栏里的面板永远等不到 `@media` 触发（D263）。
+
+### 列表刷新：已显示的内容不许变暗、不许先清空
+
+点了排序 / 筛选 / 新建目录之后「闪一下」，根因永远是同一个：把「忙碌」画在**已经显示好的内容**上（`.busy` 压暗、`clearRows()` 再挂「读取中…」）。列表要 stale-while-revalidate —— 拿到新数据前不动一个像素：
+
+- 静默重取只留 `cursor: progress`，不加 `opacity`、不换占位。非静默重取（跳目录、建目录后重载）**慢过 220ms** 才让位给「读取中…」占位，快的请求用户应当看到「点了立刻换」。
+- 需要进度感就画在列表**外面**（页脚计数、工具行），不许改列表本身；也不要用骨架屏当折衷。
+- 守卫：`node probes/new-session-sheet.mjs` 第 10 段逐帧采样（排序 / 逐字筛选 / 建目录），任何一帧 `opacity < 0.99` 或有内容期间 `children === 0` 就红。新写/改任何分页列表（文件管理器、附件弹层、内网通选文件）时照这段抄一份。细节见 D316。
 
 ### Running the bridge
 

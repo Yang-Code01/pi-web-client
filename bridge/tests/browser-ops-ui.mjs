@@ -1,7 +1,8 @@
 /**
  * 浏览器面板（#503）探针：第三颗执行 tab、卡片折叠、子步骤、疑似卡住与中断。
  *
- * 假 pi 的 `BROWSER` 场景发两颗 `mcp__browser_use` 调用 —— 一颗跑完，一颗只发一次 partial 就停住。
+ * 假 pi 的 `BROWSER` 场景发四颗调用：两颗 `mcp__browser_use`（一颗跑完，一颗只发一次 partial 就停住），
+ * 两颗「`write` 脚本 + `bash node x.mjs`」的脚本卡（D318：折叠行要说清开的哪页、输入了什么）。
  * 「卡住」用页面里的 Date.now 快进来验，不真等两分钟。
  *
  * Run after `npm run build:bridge && npm run build:web`:
@@ -116,18 +117,30 @@ try {
 
   await page.locator('[data-exec-tab="browser"]').click();
   await page.waitForSelector(".browser-card", { timeout: 20000 });
-  await page.waitForFunction(() => document.querySelectorAll(".browser-card").length === 2, null, { timeout: 20000 });
-  check("one card per browser call", (await page.locator(".browser-card").count()) === 2);
-  check("summary counts the calls", (await page.locator(".browser-sum-text").innerText()).includes("共 2 次"));
+  await page.waitForFunction(() => document.querySelectorAll(".browser-card").length === 4, null, { timeout: 20000 });
+  check("one card per browser call", (await page.locator(".browser-card").count()) === 4);
+  check("summary counts the calls", (await page.locator(".browser-sum-text").innerText()).includes("共 4 次"));
 
-  const done = page.locator('.browser-card[data-bstate="done"]').first();
+  const done = page.locator('[data-bcall="call-browser-login"]');
   check("the finished call shows as done", (await done.count()) === 1);
   const doneBody = done.locator(".browser-body");
   check("a finished card starts folded away", (await doneBody.count()) === 0);
   const doneTitle = (await done.locator(".browser-title").innerText()).trim();
-  check("a folded card still says what the last action was", doneTitle.length > 0 && !doneTitle.includes("browser_exec"), doneTitle);
+  check("a folded card reads as the actions it took", doneTitle.length > 0 && doneTitle.includes(" → ") && !doneTitle.includes("browser_exec"), doneTitle);
   check("the folded line keeps out code and coordinates", !/[(),]/.test(doneTitle) && !/browser_exec|goto_url|js\(/.test(doneTitle), doneTitle);
   check("the folded header carries the call duration", /\d/.test(await done.locator(".browser-dur").innerText()));
+
+  // 脚本卡（`write` + `bash node x.mjs`）：真实会话里几张脚本卡结尾都是「读一眼页面」，
+  // 折叠行只剩同一句「读取页面信息 ×2」，分不出这次是打开百度搜索、还是打开结果页截图。
+  const scriptTitle = async (name) =>
+    (await page.locator(".browser-card .browser-title").allInnerTexts()).find((line) => line.startsWith(`${name} · `)) ?? "";
+  const searchTitle = await scriptTitle("search.mjs");
+  const inspectTitle = await scriptTitle("inspect.mjs");
+  check("a scripted call folds into its own card", searchTitle !== "" && inspectTitle !== "", `${searchTitle} | ${inspectTitle}`);
+  check("a folded script card names the page it opened", /baidu\.com/.test(searchTitle) && /baidu\.com/.test(inspectTitle), `${searchTitle} | ${inspectTitle}`);
+  check("…and says what it typed, not just how it ended", searchTitle.includes("南京今天天气"), searchTitle);
+  const searchCard = page.locator('[data-bcall="call-bash-0"] .browser-title');
+  check("a chain wider than the card is still all there on hover", (await searchCard.getAttribute("title")) === searchTitle, searchTitle);
 
   await done.locator(".browser-chev").click();
   check("the chevron expands the card", await done.locator(".browser-chev").getAttribute("aria-expanded") === "true");
@@ -148,12 +161,12 @@ try {
   check("collapse-all folds every card", (await page.locator(".browser-card .browser-body").count()) === 0);
   check("the button flips to expand-all", (await fold.innerText()).includes("全部展开"));
   await fold.click();
-  check("expand-all brings every body back", (await page.locator(".browser-card .browser-body").count()) === 2);
+  check("expand-all brings every body back", (await page.locator(".browser-card .browser-body").count()) === 4);
 
   const only = page.locator(".browser-only input");
   check("there is a main-session-only switch", (await only.count()) === 1);
   await only.check();
-  check("switching it keeps the main cards", (await page.locator(".browser-card").count()) === 2);
+  check("switching it keeps the main cards", (await page.locator(".browser-card").count()) === 4);
   await only.uncheck();
 
   const gear = page.locator(".browser-gear");

@@ -9,7 +9,7 @@ export interface Queued {
   addr: string;
   port: number;
   /** 信封类型：`text` 要收据，好友/快捷/撤回这些控制消息不要。 */
-  kind: "text" | "friend-request" | "friend-accept" | "friend-quick" | "recall";
+  kind: "text" | "note" | "friend-request" | "friend-accept" | "friend-quick" | "recall";
   /** text 时是整条 Entry，其余是控制消息体。 */
   payload: unknown;
   at: number;
