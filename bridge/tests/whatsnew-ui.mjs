@@ -185,7 +185,7 @@ try {
     return t.includes("D195") ? t : null;
   }, 15000, "DECISIONS 正文");
   check(previewText.includes("D195"), "预览里读到的确实是 DECISIONS.md 正文");
-  // D306：从面板里点开的预览压在面板上面，面板自己不许被关 —— 关掉预览还得回到这一页。
+  // D308：从面板里点开的预览压在面板上面，面板自己不许被关 —— 关掉预览还得回到这一页。
   check((await page.locator(".settings-sheet").count()) === 1, "点链接后更新日志面板还在");
   const layers = await page.evaluate(() => {
     const zi = (sel) => {

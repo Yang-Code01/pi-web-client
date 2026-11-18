@@ -5,7 +5,7 @@
  *  - `web/src/app.ts` 里 `openPreview` 曾被「先 `closeSheet()` 再开预览」绕开（产物 / 技能商店 /
  *    更新日志三处），代价是父层被销毁、关掉预览就回不去那一页；
  *  - 而差分弹窗里的「在查看器里打开」没关父层，预览开在 sheet 背后 → 点了像没反应。
- * 根因是 `.viewer` 只有 46/47，永远在 `.sheet-back`(60) 之下。D306 给了 `.viewer.hi`(63)。
+ * 根因是 `.viewer` 只有 46/47，永远在 `.sheet-back`(60) 之下。D308 给了 `.viewer.hi`(63)。
  *
  * 判据（全在 `web/src/*.css` 与 `web/src/settings-console.css` 里取真实声明）：
  *  1. `.viewer` < `.sheet-back`：普通浮窗仍然在底部面板之下，D111 的层带没被改坏；
@@ -87,7 +87,7 @@ const same = (a, b) => {
 
 // 1. 普通浮窗仍在面板之下（D111）
 below(".viewer", ".sheet-back");
-// 2. 从面板里打开的预览高于它的父层（D306）
+// 2. 从面板里打开的预览高于它的父层（D308）
 above(".viewer.hi", ".sheet-back");
 above(".viewer.hi", ".sheet-sub-back");
 above(".viewer.hi", ".st-back");
@@ -100,7 +100,7 @@ above(".image-view", ".choose-back");
 same(".viewer.hi.front", ".viewer.hi");
 
 if (bad) {
-  console.log(`\nlayers: ${bad} 处不合格 —— 层带见 docs/DECISIONS.md D111 / D306`);
+  console.log(`\nlayers: ${bad} 处不合格 —— 层带见 docs/DECISIONS.md D111 / D308`);
   process.exit(1);
 }
 console.log("\nlayers: ok —— 弹层层带单调，从弹层里打开的子层压得住父层");
