@@ -573,6 +573,20 @@ export class NotesSheet {
     document.addEventListener("keydown", this.shortcut, true);
   }
 
+  /** 从内网通卡片「打开记录」（#508）：切到它所在的分类 / 分区并选中这一条。 */
+  openNote(id: string): void {
+    const note = this.host.notes().find((n) => n.id === id);
+    if (!note) return;
+    this.kind = note.kind;
+    this.view = note.deletedAt ? "trash" : note.archivedAt ? "archived" : "active";
+    this.seg = "all";
+    this.query = "";
+    this.searchEl.value = "";
+    this.paintNav();
+    this.paintList();
+    this.select(id);
+  }
+
   /** 打开面板就把光标放进「记一条」的那一格。 */
   focusComposer(): void {
     if (this.view === "failures") {

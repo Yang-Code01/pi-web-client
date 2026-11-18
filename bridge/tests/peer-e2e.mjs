@@ -265,6 +265,46 @@ try {
   );
   log("ok quick 文字送到对端且折叠成 delivered");
 
+  // #507：记录包走同一条 inbox / outbox；零张图的包也要能收到并入历史。
+  const notePayload = { title: "复现步骤", body: "<p>点一下<b>提交</b></p>", kind: "bug", status: "pending", shots: [] };
+  const noteSend = await fetch("http://127.0.0.1:17965/note", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, note: notePayload }),
+  });
+  if (!noteSend.ok) throw new Error(`发记录包应成功，实际 ${noteSend.status} ${await noteSend.text()}`);
+  await until(
+    "C 收到记录包",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17968/messages?peer=${sa}`)).json();
+      return body.entries?.some((e) => e.kind === "note" && e.note?.title === "复现步骤") ? body : false;
+    },
+    8000,
+  );
+  const tooBigNote = await fetch("http://127.0.0.1:17965/note", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, note: { ...notePayload, body: "x".repeat(200_001) } }),
+  });
+  const tooBigBody = await tooBigNote.json();
+  if (tooBigNote.status !== 400 || !/正文太长/.test(tooBigBody.error ?? "")) {
+    throw new Error(`超长正文应 400，实际 ${tooBigNote.status} ${JSON.stringify(tooBigBody)}`);
+  }
+  const badShot = await fetch("http://127.0.0.1:17968/peer/inbox", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      proto: 1,
+      kind: "note",
+      control: { id: "00000000-0000-4000-8000-00000000n0t3", at: Date.now(), from: { nodeId: sa, port: 17965 }, to: { kind: "node", id: sc }, note: { ...notePayload, shots: [{ name: "a.png", size: 1, sha256: "nope" }] } },
+    }),
+  });
+  const badShotBody = await badShot.json();
+  if (badShot.status !== 400 || badShotBody.retryable !== false) {
+    throw new Error(`坏截图清单应 400 不可重试，实际 ${badShot.status} ${JSON.stringify(badShotBody)}`);
+  }
+  log("ok 记录包收发与载荷校验（#507）");
+
   // D300：quick（也不是好友）照样能传文件 —— 关系不再是一道文件权限。
   const quickProbe = path.join(ROOT, "quick-probe.bin");
   fs.writeFileSync(quickProbe, Buffer.from("quick"));

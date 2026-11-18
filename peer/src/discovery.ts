@@ -1,7 +1,7 @@
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
 import os from "node:os";
-import { PROTO, type PeerConfig } from "./config.ts";
+import { PROTO, VERSION, type PeerConfig } from "./config.ts";
 
 /** announce 里带的东西：对端据此渲染在线列表、据此把 `from` 反查成身份（决定 7/10）。 */
 export interface Announce {
@@ -129,7 +129,7 @@ export class Discovery extends EventEmitter {
       nickname: this.cfg.nickname,
       hostname: os.hostname(),
       port: this.cfg.port,
-      version: "0.1.0",
+      version: VERSION,
       status: this.localStatus(),
     };
   }
@@ -192,7 +192,7 @@ export class Discovery extends EventEmitter {
         nickname: String(msg.nickname ?? ""),
         hostname: String(msg.hostname ?? ""),
         port: Number(msg.port) || this.cfg.port,
-        version: "0.1.0",
+        version: VERSION,
         status: msg.status,
       },
       addr,
