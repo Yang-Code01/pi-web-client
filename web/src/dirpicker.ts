@@ -267,17 +267,24 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     jump.append(jumpInput, jumpErr);
   }
 
-  // 列表版的排序控件（表格版点表头）。文件行才有「大小」——只列目录的入口不给一列永远空的排序。
-  const sortPick = el("select", "dir-sort-pick ns-input") as HTMLSelectElement;
-  for (const [key, label] of [["name", tr("名称")], ...(listFiles ? [["size", tr("大小")]] : []), ["mtime", tr("修改时间")]] as [DirSortKey, string][]) {
-    const option = el("option", "", label) as HTMLOptionElement;
-    option.value = key;
-    sortPick.append(option);
-  }
-  const dirBtn = el("button", "btn ghost dir-sort-dir") as HTMLButtonElement;
-  dirBtn.type = "button";
+  // 列表版的排序也是一排「列名」，和表格版的表头同一个手势：点一下按它排，再点一下翻方向。
+  // 文件行才有「大小」——只列目录的入口不给一个永远空的排序。
+  const sortLabels: [DirSortKey, string][] = [
+    ["name", tr("名称")],
+    ...(listFiles ? [["size", tr("大小")] as [DirSortKey, string]] : []),
+    ["mtime", tr("修改时间")],
+  ];
+  const sortBtns = new Map<DirSortKey, HTMLButtonElement>();
   const sortRow = el("div", "dir-sort");
-  sortRow.append(el("span", "dir-sort-label", tr("排序")), sortPick, dirBtn);
+  for (const [key, label] of sortLabels) {
+    const b = el("button", "dir-sort-key", label) as HTMLButtonElement;
+    b.type = "button";
+    b.dataset.sort = key;
+    b.title = tr("按这一列排序；再点一次换方向");
+    b.onclick = () => applySort(key);
+    sortBtns.set(key, b);
+    sortRow.append(b);
+  }
   sortRow.hidden = !sortable || table;
 
   // 已加载 N / M + 加载更多：只在分页清单里有意义（旧桥一次给完，这行一直隐藏）。
@@ -295,6 +302,9 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     root.classList.add("console");
     dirHead.classList.add("fc-bar");
     jumpInput.classList.add("fc-input");
+    // fc-filter 自带 .fc-input 的尺寸；再把 .dir-filter 摘掉，否则会被 `.dirpicker .dir-filter`
+    // 的 8px 外边距和 13px 字号顶得比左边的路径框高半头。
+    filter.classList.remove("dir-filter");
     filter.classList.add("fc-input", "fc-filter");
     const find = el("div", "fc-find");
     if (jump) find.append(jump);
@@ -345,9 +355,11 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   };
 
   const paintSort = (): void => {
-    sortPick.value = sort.key;
-    dirBtn.textContent = sort.dir === "asc" ? "↑" : "↓";
-    dirBtn.title = sort.dir === "asc" ? tr("升序 · 点一下换成降序") : tr("降序 · 点一下换成升序");
+    for (const [key, b] of sortBtns) {
+      const on = key === sort.key;
+      b.classList.toggle("on", on);
+      b.textContent = (sortLabels.find(([k]) => k === key)?.[1] ?? key) + (on ? (sort.dir === "asc" ? " ↑" : " ↓") : "");
+    }
     for (const th of ths) {
       const on = th.dataset.sort === sort.key;
       th.classList.toggle("on", on);
@@ -825,8 +837,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       void fetchInto(current, { keepQuery: true });
     };
   }
-  sortPick.onchange = () => applySort(sortPick.value as DirSortKey);
-  dirBtn.onclick = () => applySort(sort.key);
+  paintSort();
 
   // 滚到底自动翻页；再往下一屏才点「加载更多」也行（按钮一直在）。
   list.onscroll = () => {

@@ -8,6 +8,7 @@
  * Run: npm --prefix bridge run build && node probes/new-session-sheet.mjs
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { REPO } from "../tools/paths.mjs";
@@ -22,6 +23,9 @@ const AGENT = path.join(ROOT, "agent");
 const SESSIONS = path.join(AGENT, "sessions");
 const WORK = path.join(ROOT, "work");
 const OTHER = path.join(ROOT, "other");
+// 建工作区时会先问 git 工程根：仓库里的目录一律并回「pi-web-client」那一组，
+// 所以「真能新建一个」这条要有仓库外的目录才试得出来。
+const OUTSIDE = fs.mkdtempSync(path.join(os.tmpdir(), "ns-sheet-out-"));
 const OUT = path.join(ROOT, "shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 
@@ -178,13 +182,14 @@ try {
   // ---- 4. 排序：表头换成修改时间，列表顺序跟着换（换方向不再重画整块，高度也不动）
   await page.locator(".new-sheet .dir-filter").fill("");
   await until(async () => (await page.locator(".new-sheet .dir-row").count()) >= 30, 8000, "unfiltered");
-  const sortSel = page.locator(".new-sheet .dir-sort-pick");
-  await sortSel.selectOption("mtime");
-  const dirBtn = await page.locator(".new-sheet .dir-sort-dir").textContent();
-  assert(dirBtn === "↓", `switching to 修改时间 starts descending (got ${dirBtn})`);
-  await page.locator(".new-sheet .dir-sort-dir").click();
-  const dirBtn2 = await page.locator(".new-sheet .dir-sort-dir").textContent();
-  assert(dirBtn2 === "↑", `the arrow flips (got ${dirBtn2})`);
+  const sorts = (await page.$$eval(".new-sheet .dir-sort-key", (els) => els.map((e) => e.textContent.trim()))).join(" / ");
+  assert(sorts === "名称 ↑ / 修改时间", `the sheet lists column names, no size column without files (got ${sorts})`);
+  await page.locator(".new-sheet .dir-sort-key", { hasText: "修改时间" }).click();
+  const dirBtn = ((await page.locator(".new-sheet .dir-sort-key.on").textContent()) ?? "").trim();
+  assert(dirBtn === "修改时间 ↓", `switching to 修改时间 starts descending (got ${dirBtn})`);
+  await page.locator(".new-sheet .dir-sort-key", { hasText: "修改时间" }).click();
+  const dirBtn2 = ((await page.locator(".new-sheet .dir-sort-key.on").textContent()) ?? "").trim();
+  assert(dirBtn2 === "修改时间 ↑", `clicking the same column flips it (got ${dirBtn2})`);
   const sheetH3 = (await page.locator(".new-sheet").boundingBox())?.height ?? 0;
   assert(Math.abs(sheetH3 - sheetH) < 2, `sorting does not resize the sheet (${sheetH} vs ${sheetH3})`);
   await page.screenshot({ path: path.join(OUT, "2-sorted.png"), animations: "disabled" });
@@ -223,11 +228,10 @@ try {
   await page.locator(".topbar").waitFor({ timeout: 10000 });
   await page.locator(".topbar .icon-btn", { hasText: "文件" }).click();
   await page.locator(".viewer-browse .dirpicker").waitFor({ timeout: 10000 });
-  const fmSort = page.locator(".viewer-browse .dir-sort-pick");
-  await fmSort.waitFor({ timeout: 8000 });
-  assert((await fmSort.inputValue()) === "mtime", "file manager defaults to 修改时间");
-  assert((await page.locator(".viewer-browse .dir-sort-dir").textContent()) === "↓", "…descending");
-  await fmSort.selectOption("size");
+  const fmOn = page.locator(".viewer-browse .dir-sort-key.on");
+  await fmOn.waitFor({ timeout: 8000 });
+  assert(((await fmOn.textContent()) ?? "").trim() === "修改时间 ↓", `file manager defaults to 修改时间 ↓ (got ${await fmOn.textContent()})`);
+  await page.locator(".viewer-browse .dir-sort-key", { hasText: "大小" }).click();
   await until(async () => {
     const sizes = await page.$$eval(".viewer-browse .file-row .size", (els) => els.map((e) => e.textContent ?? ""));
     const nums = sizes.slice(0, 12).map(kb).filter((n) => Number.isFinite(n)).slice(0, 12);
@@ -254,6 +258,16 @@ try {
   await page.screenshot({ path: path.join(OUT, "3-file-manager.png"), animations: "disabled" });
   log("7 file manager ok:", rel);
 
+  // ---- 7b. 列表版排序也是一排列名（不是下拉框），点一下排、再点一下翻向
+  assert((await page.locator(".viewer-browse .dir-sort-pick").count()) === 0, "the list sort is not a <select>");
+  const keys = (await page.$$eval(".viewer-browse .dir-sort-key", (els) => els.map((e) => e.textContent.trim()))).join(" / ");
+  assert(keys === "名称 / 大小 ↓ / 修改时间", `three clickable column names, the active one carries the arrow (got ${keys})`);
+  await page.locator(".viewer-browse .dir-sort-key", { hasText: "名称" }).click();
+  await until(async () => ((await page.locator(".viewer-browse .dir-sort-key.on").textContent()) ?? "").includes("名称"), 8000, "name column on");
+  const nameCol = (await page.locator(".viewer-browse .dir-sort-key.on").textContent()) ?? "";
+  assert(nameCol.includes("↑"), `switching column starts ascending (got ${nameCol})`);
+  log("7b list sort chips ok");
+
   // ---- 8. 附件弹层（控制台）：表头就是排序入口，大小列点一下换方向，数值要真的跟着走
   await page.locator('.viewer .viewer-tools .viewer-btn[title^="关闭"]').click();
   await page.locator(".viewer").waitFor({ state: "detached", timeout: 5000 });
@@ -262,6 +276,11 @@ try {
   await page.locator(".composer .btn.ghost", { hasText: "文件" }).first().click();
   await page.locator(".sys-back .dirpicker").waitFor({ timeout: 10000 });
   assert(await page.locator(".sys-back .dir-sub").isVisible(), "the console keeps 包含子目录 (it lists files)");
+  // 路径框和筛选框得是同一行、同一个高度（以前 .dir-filter 的外边距把筛选框顶歪、还被拉高 6px）
+  const jbox = await page.locator(".sys-back .dir-jump-input").boundingBox();
+  const fbox = await page.locator(".sys-back .fc-filter").boundingBox();
+  assert(!!jbox && !!fbox && Math.abs(jbox.y - fbox.y) <= 0.6, `path and filter share a top edge (${jbox?.y} vs ${fbox?.y})`);
+  assert(!!jbox && !!fbox && Math.abs(jbox.height - fbox.height) <= 0.6, `path and filter are the same height (${jbox?.height} vs ${fbox?.height})`);
   const timeArrow = await page.locator(".sys-back th.fc-col-time .ar").textContent();
   assert((timeArrow ?? "").trim() === "↓", `the console arrives sorted by 修改时间 ↓ (got ${timeArrow})`);
   await page.locator(".sys-back th.fc-col-size").click();
@@ -278,6 +297,29 @@ try {
   }, 10000, "console size asc");
   await page.screenshot({ path: path.join(OUT, "4-console.png"), animations: "disabled" });
   log("8 console ok");
+
+  // ---- 9. 新会话左栏：用当前目录新建工作区，建完还在这个弹层里（不切走、不重开）
+  await page.locator(".sys-back .sys-head__actions .btn", { hasText: "关闭" }).click();
+  await page.locator(".sys-back").waitFor({ state: "detached", timeout: 8000 });
+  await page.locator(".btn.primary", { hasText: "开新会话" }).first().click();
+  await page.locator(".new-sheet .ws-new-add").waitFor({ timeout: 8000 });
+  const addLabel = ((await page.locator(".new-sheet .ws-new-add").textContent()) ?? "").trim();
+  assert(addLabel.includes("用这个目录新建工作区"), `the rail offers 用这个目录新建工作区 (got ${addLabel})`);
+  const madeName = path.basename(OUTSIDE);
+  await page.locator(".new-sheet .dir-jump-input").fill(OUTSIDE);
+  await page.locator(".new-sheet .dir-jump-input").press("Enter");
+  await until(async () => ((await page.locator(".new-sheet .ws-new-note").textContent()) ?? "").includes(madeName), 8000, "browsed to the outside dir");
+  const picksBefore = await page.locator(".new-sheet .ws-new-pick").count();
+  await page.locator(".new-sheet .ws-new-add").click();
+  await until(async () => (await page.locator(".new-sheet .ws-new-pick", { hasText: madeName }).count()) === 1, 12000, "new workspace row");
+  // 行的总数不能当断言：同一个工程根下的目录会被并回一组（这里 work / other 都并进 pi-web-client）。
+  assert((await page.locator(".new-sheet .ws-new-pick").count()) >= picksBefore, "no row was lost");
+  assert(await page.locator(".new-sheet").isVisible(), "the sheet stayed open");
+  const wsToast = (await page.locator(".fail-toast").allTextContents()).join(" ");
+  assert(wsToast.includes("已新建工作区"), `a toast says it was created (got ${wsToast})`);
+  fs.rmSync(OUTSIDE, { recursive: true, force: true });
+  await page.screenshot({ path: path.join(OUT, "5-ws-add.png"), animations: "disabled" });
+  log("9 rail workspace ok");
 
   assert(errors.length === 0, `no page errors (got ${errors.join(" | ")})`);
   log("all checks passed");

@@ -671,6 +671,9 @@ export class App {
   private wsNewResolve: DirResolution | null = null;
   /** #278：问桥的防抖计时器 —— 选目录是一路点出来的，别每一下都跑一次 git。 */
   private wsNewResolveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** #499：新会话弹层左栏里那颗「用这个目录新建工作区」，建完原地补一行（不关弹层、不切走）。 */
+  private newSheetPicks: (() => void) | null = null;
+  private newSheetWsCreating = false;
   /** #123 设置面板的「标签行」那块（名额步进器）；快照回来时只重画这一个小面。 */
   private wsPane: HTMLElement | null = null;
   /** #291 设置面板的「预览 + 开关墙」那块；`ui` 回执与断线时只重画这一个小面。 */
@@ -2811,6 +2814,19 @@ export class App {
         // #278/#478：按目录建组的回执（快照已经先到，顺序已经按天插好）。这里负责「让它在眼前」：
         // 横排滚到它 / 真的收进 ＋N 就把那颗标亮 / 左栏滚到它 —— 空组再直接把「开新会话」摆出来。
         this.wsNewBusy = false;
+        // #499：这颗是从「新会话」弹层左栏里按的 —— 不关弹层、也不切走，原地把它补进左栏。
+        if (this.newSheetWsCreating) {
+          this.newSheetWsCreating = false;
+          this.newSheetPicks?.();
+          const fresh = buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === String(msg.id ?? ""));
+          this.flashToast(
+            msg.created === false ? tr("这个工作区已经在列表里") : tr("已新建工作区「{p1}」", { p1: fresh?.name ?? "" }),
+            false,
+            3600,
+          );
+          this.renderSessions();
+          break;
+        }
         if (this.sheetKind === "wsnew") this.closeSheet();
         const id = String(msg.id ?? "");
         const created = msg.created !== false;
@@ -6220,7 +6236,7 @@ export class App {
     const sessionsHere = (): SessionState[] =>
       current ? this.sessions.filter((s) => !this.manage.archived.includes(s.id) && sameDir(s.cwd ?? "", current)) : [];
 
-    // 左栏：已经在列表里的工作区（手动组不算）+ 最近用过的目录。点一下就换到那个目录。
+    // 左栏：已经在列表里的工作区（手动组不算）+「用这个目录新建工作区」+ 最近用过的目录。
     const sideRows: { key: string; node: HTMLButtonElement; here: boolean }[] = [];
     const addSide = (key: string, name: string, color: string | null, here = false): void => {
       if (!key || sideRows.some((r) => sameDir(r.key, key))) return;
@@ -6235,17 +6251,57 @@ export class App {
       row.append(dot, label);
       if (here) row.append(el("span", "ws-here", tr("这里")));
       row.onclick = () => void picker?.go(key);
-      side.append(row);
+      picks.append(row);
       sideRows.push({ key, node: row, here });
     };
     const paintSide = (): void => {
       for (const row of sideRows) row.node.classList.toggle("on", sameDir(row.key, current));
     };
-    side.append(el("div", "ws-new-side-title", tr("已经在列表里")));
-    const hereWs = this.currentWsId();
-    const groups = buildTree(this.sessions, this.manage, this.workspaces, "").groups.filter((group) => !group.manual);
-    for (const group of groups) addSide(group.key, group.name, group.color, group.id === hereWs);
-    if (!groups.length) side.append(el("div", "empty", tr("还没有按目录分的工作区")));
+    // 左栏可能很长（组 + 最近）：标题和列表进可滚的那一层，底下的「新建工作区」钉住不跟着滚。
+    const sideScroll = el("div", "ws-new-scroll");
+    side.append(sideScroll);
+    sideScroll.append(el("div", "ws-new-side-title", tr("已经在列表里")));
+    const picks = el("div", "ws-new-picks");
+    sideScroll.append(picks);
+    /** 手动组不进这一栏：它们不是「按目录」的，点了也对不上一个路径。 */
+    const pickGroups = () => buildTree(this.sessions, this.manage, this.workspaces, "").groups.filter((group) => !group.manual);
+    // #499：新建工作区的入口就摆在组行下面 —— 用户在弹层里挑到一个新目录，不必先关掉弹层去建组。
+    const wsAdd = el("button", "model-row ws-new-add") as HTMLButtonElement;
+    wsAdd.type = "button";
+    wsAdd.append(el("span", "ico", "+"), el("span", "m-name", tr("用这个目录新建工作区")));
+    wsAdd.title = tr("把这个目录加成工作区（名字取目录名），建完还在这个弹层里");
+    wsAdd.onclick = () => {
+      if (this.newSheetWsCreating) return;
+      if (!current) {
+        this.flashToast(tr("先挑一个工作目录"), false, 3200);
+        return;
+      }
+      if (!this.bridgeCaps.includes(WS_CREATE_DIR_CAP)) {
+        this.flashToast(tr("这个 pi 还不支持按目录建工作区，请升级 pi-web-client"), false, 4000);
+        return;
+      }
+      const have = pickGroups().find((group) => sameDir(group.key, current));
+      if (have) {
+        this.flashToast(tr("这个目录已经在「{p1}」里了", { p1: have.name }), false, 3600);
+        return;
+      }
+      this.newSheetWsCreating = true;
+      wsAdd.disabled = true;
+      this.act(() => this.socket.send({ type: "manage", action: "ws.create", dir: current }));
+    };
+    const paintPicks = (): void => {
+      picks.replaceChildren();
+      sideRows.length = 0;
+      const hereWs = this.currentWsId();
+      const groups = pickGroups();
+      for (const group of groups) addSide(group.key, group.name, group.color, group.id === hereWs);
+      if (!groups.length) picks.append(el("div", "empty", tr("还没有按目录分的工作区")));
+      wsAdd.disabled = this.newSheetWsCreating || !current || !this.bridgeCaps.includes(WS_CREATE_DIR_CAP);
+      paintSide();
+    };
+    this.newSheetPicks = paintPicks;
+    paintPicks();
+    side.append(wsAdd);
 
     // 最近：先看这次用过的，再按会话的更新时间补；与会话的工作目录去重，最长 6 条。
     const recentDirs: string[] = [];
@@ -6257,7 +6313,7 @@ export class App {
     }
     const fresh = recentDirs.filter((dir) => !sideRows.some((r) => sameDir(r.key, dir)) && !sameDir(dir, current));
     if (fresh.length) {
-      side.append(el("div", "ws-new-side-title", tr("最近")));
+      sideScroll.append(el("div", "ws-new-side-title", tr("最近")));
       for (const dir of fresh) addSide(dir, dirBaseName(dir), null);
     }
 
