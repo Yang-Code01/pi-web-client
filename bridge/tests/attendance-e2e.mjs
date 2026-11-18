@@ -559,7 +559,7 @@ test("token 过期但密码还在：仍算登录态，设置页能拿回那个�
 
   const st = await call("GET", "/api/attendance/state");
   assert.equal(st.json.loggedIn, true, "token 过期但密码还在，就该算登录态");
-  assert.equal(st.json.hasPassword, true);
+  assert.equal("hasPassword" in st.json, false, "摘要里不摆没用的开关：页面只看 loggedIn");
 
   const pw = await call("GET", "/api/attendance/password");
   assert.equal(pw.status, 200);
@@ -571,6 +571,32 @@ test("token 过期但密码还在：仍算登录态，设置页能拿回那个�
   assert.equal(rec.status, 200);
   assert.equal(rec.json.source, "live");
   assert.equal(loginCount, before + 1, "过期后的第一次取数会自己重登一次");
+});
+
+test("自动续登被上游拒了：界面回落成未登录，密码改对之后又回来", async () => {
+  // 场景：token 过期、存着的密码被 OA 那边改了。此时界面若还写「已登录」，
+  // 每条请求都 401，比原来的「过期了」更难查。
+  loginToken = EXPIRED_TOKEN;
+  loginMode = "ok";
+  const login = await call("POST", "/api/attendance/login", { account: "TS0001", password: "good" });
+  assert.equal(login.status, 200);
+  loginToken = TOKEN;
+
+  loginMode = "ng";
+  const rec = await call("GET", "/api/attendance/records?start=2026-11-10&end=2026-11-16");
+  assert.equal(rec.status, 200, "取数失败退缓存，不把整页打成 500");
+  assert.equal(rec.json.source, "cache");
+  const st = await call("GET", "/api/attendance/state");
+  assert.equal(st.json.loggedIn, false, "密码被上游拒了，就不能再说「已登录」");
+
+  // 重登被拒也算一次失败，进了 1 秒退避：不等一下会撞 429，那档不算「密码坏了」。
+  await new Promise((r) => setTimeout(r, 1_100));
+  loginMode = "ok";
+  const again = await call("GET", "/api/attendance/records?start=2026-11-10&end=2026-11-16");
+  assert.equal(again.status, 200);
+  assert.equal(again.json.source, "live", "密码又能用了：自己续上，不用人回来点登录");
+  const after = await call("GET", "/api/attendance/state");
+  assert.equal(after.json.loggedIn, true, "续上了就该回到已登录");
 });
 
 test("退出：登录态没了，记录退成缓存", async () => {

@@ -118,8 +118,21 @@ check("概况有网卡", (await page.locator(".sys-adapter").count()) > 0, Strin
 
 // 考勤（第六页，D289）：没配置时落在「还没配置」，但「设置」页必须能进去 ——
 // 那是唯一的配置入口，点不开就等于这个功能装不上手。
-await page.locator(".sys-nav__item").nth(5).click();
-await page.locator(".at-page").first().waitFor({ timeout: 20_000 });
+// 导航项按文字找，不写 nth(5)：分区顺序属于 sysmanage 自己的事，调了顺序不该断这条用例。
+async function enterAttendance() {
+  await page.locator(".sys-nav__item", { hasText: "考勤" }).click();
+  await page.locator(".at-page").first().waitFor({ timeout: 20_000 });
+}
+/** 从任意页面重新开回本机管理控制台（刷新之后要重走一遍抽屉）。 */
+async function reopenConsole() {
+  await page.locator('[data-act="look"]').first().click();
+  await page.locator('.set-tabs .chip[data-tab="conn"]').click();
+  const back = page.locator('.set-page[data-page="conn"]');
+  await back.waitFor({ timeout: 10_000 });
+  await back.getByRole("button", { name: "本机管理", exact: true }).first().click();
+  await page.locator(".sys-console").waitFor({ timeout: 20_000 });
+}
+await enterAttendance();
 check("考勤页能打开", (await page.locator(".at-page").count()) === 1);
 check("考勤页四个页签", (await page.locator(".at-tab").count()) === 4, String(await page.locator(".at-tab").count()));
 const toSettings = page.getByRole("button", { name: "去设置", exact: true });
@@ -171,9 +184,9 @@ check(
 // 眼睛按钮一按才变 text，再一按收回去。
 const OA_PORT = await freePort();
 const OA = `http://127.0.0.1:${OA_PORT}`;
-// 密码框的选择器两副面孔都认：新版本带 data-field，旧版本只有 type=password。
-// 只写前者的话，旧代码上会直接超时撞崩，看不到「哪几条断言红了」。
-const pwSel = '.at-input[data-field="password"], input[type="password"].at-input';
+// 夹住 input 的 .at-secret（眼睛和框同一个壳）；不带 data-field，那是给人看的调试属性，
+// 测试不该依赖它。旧代码没有这个壳，选择器回退到裸的 password 框。
+const pwSel = ".at-secret .at-input, input[type=password].at-input";
 const pwBox = page.locator(pwSel).first();
 const oaToken = `x.${Buffer.from(JSON.stringify({ sub: "TS0001", exp: 4102444800 })).toString("base64url")}.y`;
 const oa = http.createServer((req, res) => {
@@ -187,6 +200,9 @@ const oa = http.createServer((req, res) => {
   );
 });
 await new Promise((r) => oa.listen(OA_PORT, "127.0.0.1", r));
+// 假 OA 必须无条件关掉：中途任何一个选择器超时都会直接跳出去，留在事件循环里
+// 会让这条用例明明判完错却一直不退出（同 D297 那类资源泄漏）。
+try {
 await page.locator('.at-input[data-field="apiBase"]').fill(OA);
 await page.locator('.at-input[data-field="pageBase"]').fill(OA);
 await page.locator('.at-input[data-field="account"]').fill("TS0001");
@@ -203,14 +219,8 @@ check("对着能连通的 OA 能登录成功", loggedIn, (await page.locator(".a
 // 真正的场景：关掉页面，下次打开考勤时密码就已经在框里（还是点，不是明文）。
 await page.reload({ waitUntil: "domcontentloaded" });
 await page.waitForTimeout(800);
-await page.locator('[data-act="look"]').first().click();
-await page.locator('.set-tabs .chip[data-tab="conn"]').click();
-const back = page.locator('.set-page[data-page="conn"]');
-await back.waitFor({ timeout: 10_000 });
-await back.getByRole("button", { name: "本机管理", exact: true }).first().click();
-await page.locator(".sys-console").waitFor({ timeout: 20_000 });
-await page.locator(".sys-nav__item").nth(5).click();
-await page.locator(".at-page").first().waitFor({ timeout: 20_000 });
+await reopenConsole();
+await enterAttendance();
 await page.locator(".at-tab", { hasText: "设置" }).click();
 await page.locator(pwSel).first().waitFor({ timeout: 10_000 });
 // 密码是异步从桥拿回来的：等它落进框里，别拿「还没到」当「回填坏了」。
@@ -238,7 +248,10 @@ check("切明文内容不变", (await pwBox.inputValue()) === "ui-pass-123456", 
 check("切明文后眼睛是「隐藏密码」", hasEye && (await eye.getAttribute("aria-pressed")) === "true", hasEye ? String(await eye.getAttribute("aria-pressed")) : "没有按钮");
 await clickEye();
 check("再点一次收回 password", (await pwBox.getAttribute("type")) === "password", String(await pwBox.getAttribute("type")));
-oa.close();
+} finally {
+  oa.closeAllConnections();
+  oa.close();
+}
 // 提醒页跟 OA 配置无关：没配过也该打得开（它是本地规则）。
 await page.locator(".at-tab", { hasText: "提醒" }).click();
 await page.locator(".at-week__btn").first().waitFor({ timeout: 10_000 });
