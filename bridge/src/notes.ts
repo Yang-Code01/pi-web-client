@@ -4,6 +4,7 @@
  * 一个 JSON 装全部条目，截图单独落盘（`notes/assets/<id>/`），因为 base64 塞进 JSON 会让文件
  * 在几十张图后变成几 MB，每次列表都得整读整写。截图路径记绝对路径：交给 agent 时它要能直接读。
  */
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, readJsonChecked, statePath, writeJson } from "./paths.ts";
@@ -59,6 +60,30 @@ let unreadable: string | null = null;
 
 export function notesFile(): string {
   return statePath("notes", "bug-notes.json");
+}
+
+/** #509：提交前给截图清单算 name / size / sha256（流式读，不把 20 MB 的图整个吞进内存）。 */
+export interface ShotMeta {
+  name: string;
+  size: number;
+  sha256: string;
+}
+
+export async function describeShots(paths: string[]): Promise<ShotMeta[]> {
+  const out: ShotMeta[] = [];
+  for (const file of paths.slice(0, 24)) {
+    const st = await fs.promises.stat(file);
+    if (!st.isFile()) throw new Error(`不是文件：${path.basename(file)}`);
+    const sha256 = await new Promise<string>((resolve, reject) => {
+      const hash = createHash("sha256");
+      fs.createReadStream(file)
+        .on("data", (chunk) => hash.update(chunk))
+        .on("end", () => resolve(hash.digest("hex")))
+        .on("error", reject);
+    });
+    out.push({ name: path.basename(file), size: st.size, sha256 });
+  }
+  return out;
 }
 
 export function assetsDir(id: string): string {
