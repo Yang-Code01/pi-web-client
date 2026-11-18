@@ -6,7 +6,8 @@
  * 考勤要的是「配置 / 记录 / 申请」三份不同形状、还能分别写回。
  *
  * 界面上的硬约束：
- *   - 密码只在输入框里待着，从不回显、从不进 localStorage；页面拿到的账号一律是掩码。
+ *   - 账号在页面上永远是掩码；已存的本机密码由桥解密后回填进密码框（input 仍是
+ *     `type=password`，眼睛按钮只切 type），不落 localStorage，也不进 state 摘要。
  *   - 提交加班要二次确认：先 POST 不带 confirm 拿一份预览，人再点一次才真发。
  *   - 隧道访客看不到这一页（桥端整页 404），页面这边只负责别把自己画坏。
  */
@@ -20,6 +21,43 @@ import { dateKey, defaultRange, defaultWindow, hoursText, overtimeSplit, reasonT
 import "./attendance.css";
 
 type Tab = "records" | "overtime" | "reminder" | "settings";
+
+/** 眼睛图标：`visible` = 密码此刻是明文，图标给「划线眼」（点一下又藏回去）。 */
+function eyeIcon(visible: boolean): SVGSVGElement {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  const attrs: Record<string, string> = {
+    viewBox: "0 0 24 24",
+    width: "16",
+    height: "16",
+    fill: "none",
+    stroke: "currentColor",
+    "stroke-width": "2",
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    "aria-hidden": "true",
+  };
+  for (const [k, v] of Object.entries(attrs)) svg.setAttribute(k, v);
+  const path = (d: string): void => {
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("d", d);
+    svg.append(p);
+  };
+  if (visible) {
+    path("M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.16 3.19");
+    path("M6.61 6.61A17.6 17.6 0 0 0 2 12s3.5 8 10 8a9.12 9.12 0 0 0 4.24-1.06");
+    path("M14.12 14.12a3 3 0 1 1-4.24-4.24");
+    path("M2 2l20 20");
+  } else {
+    path("M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z");
+    const dot = document.createElementNS(NS, "circle");
+    dot.setAttribute("cx", "12");
+    dot.setAttribute("cy", "12");
+    dot.setAttribute("r", "3");
+    svg.append(dot);
+  }
+  return svg;
+}
 
 interface OvertimeForm {
   start: string;
@@ -61,7 +99,15 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
   let noticeTone: "ok" | "bad" = "ok";
   // 密码框靠这个活过重绘：点「保存配置」会把整页重画，输入框里刚敲的密码
   // 随之消失，紧接着点「登录」就变成「请填密码」。只留在内存里，不落盘。
+  // 初始值来自桥解密的已存密码（loadSavedPassword）。`passwordTouched` 记住人动过没有 ——
+  // 人把密码删空之后就别再回填，否则「删掉密码」这个动作会被下一帧撤销。
   let passwordDraft = "";
+  let passwordTouched = false;
+  /** 已经拿过桥的密码（或者不需要再拿）。拿不到时不置位，下次重画再问一次。 */
+  let savedPasswordLoaded = false;
+  let savedPasswordLoading = false;
+  /** 眼睛按下去是明文。存闭包里，整页重画多少次都跟着人走。 */
+  let passwordVisible = false;
   // 设置页另外三个框同样的道理：登录失败、保存成功都会整页重画，重画时若一律拿 state
   // 重新填，刚敲的地址和账号就被抹掉了（账号更冤 —— 页面从来只拿得到掩码）。
   // `cfgTouched` 分字段记：没动过的框继续跟着 state 走，动过的以草稿为准。
@@ -124,6 +170,28 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     }
     if (!disposed) render();
     if (state?.configured && !form.reasonType) void loadOvertime(true);
+  }
+
+  /**
+   * 把本机存着的密码回填进密码框（`type=password`，屏幕上还是`••••`）。
+   * 解密在桥端（DPAPI），这里只在进设置页时拉一次；读不到就当没有，用户自己填。
+   */
+  async function loadSavedPassword(): Promise<void> {
+    if (savedPasswordLoaded || savedPasswordLoading) return;
+    savedPasswordLoading = true;
+    try {
+      const { password } = await api.attendancePassword();
+      // 真拿到了才记账：桥还在跑旧版本（没有这条路由）、或这次网络抽风时，
+      // 不能因为失败一次就再也不回填 —— 那会让密码框在这一整页里永远是空的。
+      savedPasswordLoaded = true;
+      if (disposed || passwordTouched || !password) return;
+      passwordDraft = password;
+      render();
+    } catch {
+      // 读不出就不管：框空着，下次进设置页再试。
+    } finally {
+      savedPasswordLoading = false;
+    }
   }
 
   async function loadRecords(): Promise<void> {
@@ -948,20 +1016,44 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     const account = cfgInput("account", "");
     account.placeholder = state?.account || tr("工号或邮箱");
     const password = document.createElement("input");
-    password.type = "password";
+    password.type = passwordVisible ? "text" : "password";
     password.className = "at-input";
-    password.autocomplete = "current-password";
+    // 与 D267 同口径：本站存过登录密码的浏览器会往 password 框里自动填 / 弹保存提示，
+    // new-password 能把那条路堵掉。
+    password.autocomplete = "new-password";
     password.placeholder = tr("登录态会加密存本机");
     password.value = passwordDraft;
     password.oninput = () => {
       passwordDraft = password.value;
+      passwordTouched = true;
     };
+    // 进设置页时把已存密码捞回来，只捞一次。
+    if (!savedPasswordLoaded) void loadSavedPassword();
+    // 眼睛只切 input 的 type：不改值、也不再问桥要一次，明文只存在于这一帧的 DOM 里。
+    const secret = el("div", "at-secret");
+    const eye = document.createElement("button");
+    eye.type = "button";
+    eye.className = "at-eye";
+    const paintEye = (visible: boolean): void => {
+      const label = visible ? tr("隐藏密码") : tr("显示密码");
+      eye.title = label;
+      eye.setAttribute("aria-label", label);
+      eye.setAttribute("aria-pressed", visible ? "true" : "false");
+      eye.replaceChildren(eyeIcon(visible));
+    };
+    eye.onclick = () => {
+      passwordVisible = !passwordVisible;
+      password.type = passwordVisible ? "text" : "password";
+      paintEye(passwordVisible);
+    };
+    paintEye(passwordVisible);
+    secret.append(password, eye);
 
     grid.append(
       field(tr("接口地址"), apiBase),
       field(tr("网页地址"), pageBase),
       field(tr("账号"), account),
-      field(tr("密码"), password),
+      field(tr("密码"), secret),
     );
     card.append(grid);
     card.append(
@@ -1003,9 +1095,12 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
         if (wantApi && (wantApi !== (state?.apiBase ?? "") || wantPage !== (state?.pageBase ?? ""))) {
           await api.attendanceSaveConfig({ apiBase: wantApi, pageBase: wantPage, account: wantAccount } as never);
         }
-        await api.attendanceLogin({ account: wantAccount, password: password.value });
-        password.value = "";
-        passwordDraft = "";
+        const used = password.value;
+        await api.attendanceLogin({ account: wantAccount, password: used });
+        // 桥刚把这条密码写进凭据文件：框里留着（掩码），眼睛一按能核对，改的时候不用重敲。
+        passwordDraft = used;
+        passwordTouched = false;
+        savedPasswordLoaded = true;
         notice = tr("登录成功");
         noticeTone = "ok";
         await loadState();
@@ -1019,6 +1114,10 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
       try {
         await api.attendanceLogout();
         passwordDraft = "";
+        passwordTouched = false;
+        passwordVisible = false;
+        // 凭据已经删了，别再回头问桥要密码。
+        savedPasswordLoaded = true;
         notice = tr("已退出");
         noticeTone = "ok";
         await loadState();
@@ -1055,6 +1154,9 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
       try {
         await api.attendancePurge();
         passwordDraft = "";
+        passwordTouched = false;
+        passwordVisible = false;
+        savedPasswordLoaded = true;
         // 清完就得把草稿一起丢掉：否则输入框还挂着刚被删掉的旧地址，看着像没清干净。
         cfgDraft.apiBase = "";
         cfgDraft.pageBase = "";

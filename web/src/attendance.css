@@ -193,6 +193,48 @@ input.at-input[type="date"] {
   color: color-mix(in srgb, var(--dim) 70%, transparent);
 }
 
+/* 密码框：眼睛钉在右端。输入框要让出位置，否则长密码尾巴会被图标盖住。 */
+.at-secret {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
+
+.at-secret .at-input {
+  padding-right: 32px;
+}
+
+.at-eye {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.at-eye:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--line) 65%, transparent);
+}
+
+.at-eye:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 1px;
+}
+
+.at-eye svg {
+  display: block;
+}
+
 /* 表格 */
 .at-table {
   width: 100%;

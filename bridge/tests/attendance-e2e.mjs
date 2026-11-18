@@ -26,6 +26,10 @@ const { handleAttendance } = await import("../src/attendance.ts");
 
 // exp = 2100-01-01，够 tokenFresh 认一辈子；payload 要能真解出来，不然 jwtExp 会给 0。
 const TOKEN = `x.${Buffer.from(JSON.stringify({ sub: "TS0001", exp: 4102444800 })).toString("base64url")}.y`;
+// exp = 2020-01-01：一登录就已经过期，模拟「上次登录的 token 早过期了，密码还在」。
+const EXPIRED_TOKEN = `x.${Buffer.from(JSON.stringify({ sub: "TS0001", exp: 1577836800 })).toString("base64url")}.y`;
+/** 登录接口发出去的 token：换成 EXPIRED_TOKEN 就是「过期但存着密码」那一档。 */
+let loginToken = TOKEN;
 /** `ok` / `ng` / `500`：登录单独一档，别的接口不跟着变。 */
 let loginMode = "ok";
 /** 记录接口单独一档：`ok` / `ng` / `500`。 */
@@ -78,7 +82,7 @@ const oa = http.createServer((req, res) => {
       seenLogin = { account: url.searchParams.get("user_account"), password: url.searchParams.get("user_password") };
       if (loginMode === "500") return send(500, { detail: "boom" });
       if (loginMode === "ng") return send(200, { status: "NG", error: "账号或密码错误" });
-      return send(200, { status: "OK", token: TOKEN, user_id: 1001, name: "张三", work_no: "TS0001" });
+      return send(200, { status: "OK", token: loginToken, user_id: 1001, name: "张三", work_no: "TS0001" });
     }
 
     if (url.pathname === "/in/record/query") {
@@ -305,6 +309,9 @@ test("登录：缺密码 / 上游 NG 都拒，成功只回姓名与掩码工号"
   const blocked = await call("POST", "/api/attendance/login", { account: "TS0001", password: "good" });
   assert.equal(blocked.status, 429);
   assert.equal(blocked.json.code, "too_many");
+  // 闸门是按时间戳算的（1 次失败退避 1 秒）：不把这一秒等过去，后面「被踢了偷偷重登」
+  // 那条用例就会撞在同一道闸门上拿到 429 —— 那是闸门在正常工作，不是重登坏了。
+  await new Promise((r) => setTimeout(r, 1_100));
 
   const st = await call("GET", "/api/attendance/state");
   assert.equal(st.json.loggedIn, true);
@@ -542,6 +549,56 @@ test("撤回：先要确认，确认后才打上游", async () => {
   assert.equal(seenCancel.token, TOKEN);
 });
 
+test("token 过期但密码还在：仍算登录态，设置页能拿回那个密码", async () => {
+  // 用户上次登录的 token 过期了（OA 一天一换）：界面别说「未登录」——
+  // 一查记录 session() 就会拿存着的密码自己重登，用户根本不用回来点登录。
+  loginToken = EXPIRED_TOKEN;
+  const login = await call("POST", "/api/attendance/login", { account: "TS0001", password: "good" });
+  assert.equal(login.status, 200);
+  loginToken = TOKEN;
+
+  const st = await call("GET", "/api/attendance/state");
+  assert.equal(st.json.loggedIn, true, "token 过期但密码还在，就该算登录态");
+  assert.equal("hasPassword" in st.json, false, "摘要里不摆没用的开关：页面只看 loggedIn");
+
+  const pw = await call("GET", "/api/attendance/password");
+  assert.equal(pw.status, 200);
+  assert.equal(pw.json.password, "good", "设置页把已存的密码回填进密码框（框本身仍是 password）");
+
+  // 拿这份「token 过期」的凭据去取数：重登一次，用户看不到「过期了」。
+  const before = loginCount;
+  const rec = await call("GET", "/api/attendance/records?start=2026-11-10&end=2026-11-16");
+  assert.equal(rec.status, 200);
+  assert.equal(rec.json.source, "live");
+  assert.equal(loginCount, before + 1, "过期后的第一次取数会自己重登一次");
+});
+
+test("自动续登被上游拒了：界面回落成未登录，密码改对之后又回来", async () => {
+  // 场景：token 过期、存着的密码被 OA 那边改了。此时界面若还写「已登录」，
+  // 每条请求都 401，比原来的「过期了」更难查。
+  loginToken = EXPIRED_TOKEN;
+  loginMode = "ok";
+  const login = await call("POST", "/api/attendance/login", { account: "TS0001", password: "good" });
+  assert.equal(login.status, 200);
+  loginToken = TOKEN;
+
+  loginMode = "ng";
+  const rec = await call("GET", "/api/attendance/records?start=2026-11-10&end=2026-11-16");
+  assert.equal(rec.status, 200, "取数失败退缓存，不把整页打成 500");
+  assert.equal(rec.json.source, "cache");
+  const st = await call("GET", "/api/attendance/state");
+  assert.equal(st.json.loggedIn, false, "密码被上游拒了，就不能再说「已登录」");
+
+  // 重登被拒也算一次失败，进了 1 秒退避：不等一下会撞 429，那档不算「密码坏了」。
+  await new Promise((r) => setTimeout(r, 1_100));
+  loginMode = "ok";
+  const again = await call("GET", "/api/attendance/records?start=2026-11-10&end=2026-11-16");
+  assert.equal(again.status, 200);
+  assert.equal(again.json.source, "live", "密码又能用了：自己续上，不用人回来点登录");
+  const after = await call("GET", "/api/attendance/state");
+  assert.equal(after.json.loggedIn, true, "续上了就该回到已登录");
+});
+
 test("退出：登录态没了，记录退成缓存", async () => {
   const out = await call("POST", "/api/attendance/logout");
   assert.equal(out.status, 200);
@@ -559,6 +616,7 @@ test("隧道访客：整个模块都当不存在", async () => {
   for (const route of [
     "/api/attendance/state",
     "/api/attendance/config",
+    "/api/attendance/password",
     "/api/attendance/records?start=2026-11-10&end=2026-11-16",
     "/api/attendance/overtime",
     "/api/attendance/reminder",

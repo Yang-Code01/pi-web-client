@@ -3,7 +3,9 @@
  *
  * 三条边界，跟 `bridge/src/jira.ts` 一个口径：
  *   1. **凭据不出桥**。密码和 token 落 `<状态目录>/attendance/credentials.bin`（DPAPI 加密），
- *      进内存只在出站请求的头发一次；页面永远只拿掩码。
+ *      进内存只在出站请求的头发一次。状态摘要里只有账号掩码；唯一的例外是设置页的
+ *      密码框：`GET /api/attendance/password` 把已存的密码交给本机页面回填（input 仍是
+ *      `type=password`）。这条边界由 D306 取代 D291 里「页面永远只拿掩码」那一句。
  *   2. **出站只发配置的站点**。`apiBase` 是唯一出口，改它要回本机；隧道访客整页不存在（见下）。
  *   3. **隧道整页隐身**：`publicReq` 时直接 `return false`，让 index.ts 的兜底回标准 404 ——
  *      不写成 403，403 等于告诉外面「这里有东西，只是不给你」。
@@ -166,6 +168,12 @@ interface Credentials {
 let credMemo: Credentials | null = null;
 /** 登录失败的时间戳，用于退避。只活在这个进程里：桥重启等于人工介入过。 */
 let loginFailures: number[] = [];
+/**
+ * 存着的那条密码被上游拒了（自动续登时回 login_failed）。
+ * 只在 `session()` 自动重登失败时置位：人手动在设置页敲错密码不该把界面打成「未登录」。
+ * 也只在内存里：桥重启后重新试一次，比一直挂着一句可能是旧的结论强。
+ */
+let passwordRejected = false;
 /** 最近的回执，用于防重复提交。 */
 let receipts: ReceiptRecord[] = [];
 
@@ -209,6 +217,7 @@ async function writeCredentials(cred: Credentials): Promise<void> {
 
 async function clearCredentials(): Promise<void> {
   credMemo = null;
+  passwordRejected = false;
   removeSecret(credFile());
 }
 
@@ -353,6 +362,8 @@ async function login(cfg: AttendanceConfig, ctx: OaCtx, account: string, passwor
   const token = typeof v.token === "string" ? v.token : "";
   if (!token) throw new OaError("login_failed", 401, "登录成功但没拿到 token");
   loginFailures = [];
+  // 这条密码刚被上游认了：之前「自动续登被拒」的结论作废。
+  passwordRejected = false;
   return {
     token,
     userId: Number(v.user_id ?? 0) || 0,
@@ -367,7 +378,14 @@ async function session(cfg: AttendanceConfig, ctx: OaCtx): Promise<Credentials> 
   if (!cred) throw new OaError("not_logged_in", 401, "还没登录");
   if (tokenFresh(cred)) return cred;
   if (!cred.password) throw new OaError("not_logged_in", 401, "登录过期了，重新登录一次");
-  const fresh = await login(cfg, ctx, cred.account, cred.password);
+  let fresh: Awaited<ReturnType<typeof login>>;
+  try {
+    fresh = await login(cfg, ctx, cred.account, cred.password);
+  } catch (err) {
+    // 退避（429）不算密码坏了：那种情形下界面说「未登录」也是错话，等一会儿照样能用。
+    if (err instanceof OaError && err.code === "login_failed") passwordRejected = true;
+    throw err;
+  }
   const next: Credentials = {
     ...cred,
     token: fresh.token,
@@ -713,7 +731,9 @@ function reminderPayload(ctx: AttendanceHttpCtx) {
   };
 }
 
-/** 页面用的状态摘要。密码、token 一律不出现，账号只给掩码。 */
+/**
+ * 页面用的状态摘要。token 一律不出现，账号只给掩码（密码走 `/api/attendance/password`，见 D306）。
+ */
 async function statePayload(cfg: AttendanceConfig | null, problem: string | null) {
   const cred = await readCredentials();
   const cache = readCache();
@@ -723,7 +743,12 @@ async function statePayload(cfg: AttendanceConfig | null, problem: string | null
     apiBase: cfg?.apiBase ?? "",
     pageBase: cfg?.pageBase ?? "",
     account: maskAccount(cfg?.account ?? cred?.account ?? ""),
-    loggedIn: Boolean(cred?.token && tokenFresh(cred)),
+    // 「已登录」= 现在就能用（token 没过期）**或**待会儿能自动续（存着密码且没被拒过）。
+    // 只看 token 的话，过期那一刻界面会说「未登录」，可实际上页面一查记录 session()
+    // 就会拿存着的密码重登 —— 用户看到的是一句与事实相反的提示。
+    // 反过来，自动续登被上游拒过（`passwordRejected`）就不能再说「已登录」：那时候
+    // 每个请求都会 401，界面绿着反而更难查。
+    loggedIn: Boolean(cred && (tokenFresh(cred) || (cred.password && !passwordRejected))),
     expiresAt: cred?.tokenExp ?? 0,
     userName: cred?.name ?? "",
     workNoMask: cred?.workNo ? maskAccount(cred.workNo) : "",
@@ -785,6 +810,15 @@ export async function handleAttendance(
     if (url.pathname === "/api/attendance/state") {
       if (method !== "GET") return stop(res, 405, "bad_method", "不支持这个请求方法");
       json(res, 200, await statePayload(config.apiBase ? config : null, problem));
+      return true;
+    }
+
+    // 设置页把已存的密码回填进密码框（input 仍是 type=password），眼睛按钮只切 type。
+    // 明文只给 127.0.0.1 的页面：隧道访客在本函数开头就被挡掉了。
+    if (url.pathname === "/api/attendance/password") {
+      if (method !== "GET") return stop(res, 405, "bad_method", "不支持这个请求方法");
+      const cred = await readCredentials();
+      json(res, 200, { password: cred?.password ?? "" });
       return true;
     }
 
