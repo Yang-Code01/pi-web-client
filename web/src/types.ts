@@ -1045,10 +1045,6 @@ export interface Note {
   body: string;
   /** 桥那台机器上的绝对路径（`/api/image?path=` 直接读）。 */
   shots: string[];
-  sessionId: string | null;
-  sessionName: string | null;
-  issue: string;
-  commit: string;
   createdAt: number;
   updatedAt: number;
   /** 归档 / 丢进垃圾箱的时间；都没有就是正常在列表里。 */
