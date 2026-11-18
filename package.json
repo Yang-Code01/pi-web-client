@@ -21,7 +21,8 @@
     "test:all": "node tools/run-tests.mjs",
     "test:rpc": "node bridge/tests/write-after-end.mjs",
     "test:ask": "node --experimental-strip-types bridge/tests/ask-unit.mjs && node bridge/tests/ask-e2e.mjs",
-"test:context": "node --test bridge/tests/context-policy-unit.mjs bridge/tests/context-session-unit.mjs bridge/tests/context-log-unit.mjs bridge/tests/context-insight-unit.mjs && node --test web/tests/context-unit.mjs && node --experimental-strip-types --test web/tests/chrome-unit.mjs",    "test:artifacts": "node --experimental-strip-types web/tests/artifact-sources-unit.mjs && node bridge/tests/artifacts-unit.mjs && node bridge/tests/artifacts-e2e.mjs",
+    "test:context": "node --test bridge/tests/context-policy-unit.mjs bridge/tests/context-session-unit.mjs bridge/tests/context-log-unit.mjs bridge/tests/context-insight-unit.mjs && node --test web/tests/context-unit.mjs && node --experimental-strip-types --test web/tests/chrome-unit.mjs",
+    "test:artifacts": "node --experimental-strip-types web/tests/artifact-sources-unit.mjs && node bridge/tests/artifacts-unit.mjs && node bridge/tests/artifacts-e2e.mjs",
     "test:ask:ui": "node bridge/tests/ask-ui.mjs",
     "test:ask-tab": "node --experimental-strip-types web/tests/ask-tab-unit.mjs",
     "test:ask-card": "node --experimental-strip-types web/tests/ask-card-unit.mjs",
@@ -64,7 +65,7 @@
     "test:bgruns": "node --experimental-strip-types bridge/tests/bgruns-unit.mjs",
     "test:whatsnew": "node --experimental-strip-types bridge/tests/whatsnew-unit.mjs",
     "test:sysmanage": "node bridge/tests/sysmanage-unit.mjs && node bridge/tests/workclock-unit.mjs && node web/tests/sysmanage-unit.mjs",
-    "test:notes": "node --experimental-strip-types web/tests/notes-rich-unit.mjs && node web/tests/notes-editor-browser.mjs && node web/tests/notes-sheet-browser.mjs",
+    "test:notes": "node --experimental-strip-types --test web/tests/md-input-unit.mjs && node --experimental-strip-types web/tests/notes-rich-unit.mjs && node web/tests/notes-editor-browser.mjs && node web/tests/notes-sheet-browser.mjs",
     "test:attendance": "node bridge/tests/attendance-unit.mjs && node bridge/tests/attendance-e2e.mjs && node --experimental-strip-types web/tests/attendance-unit.mjs",
     "test:hotdeploy": "node bridge/tests/hotdeploy-unit.mjs && node bridge/tests/hotdeploy-stash-unit.mjs",
     "test:sysmanage:ui": "node bridge/tests/sysmanage-ui.mjs",
@@ -110,6 +111,7 @@
     "test:subagents": "node --experimental-strip-types bridge/tests/subagents-unit.mjs && node --experimental-strip-types bridge/tests/subagents-basics-unit.mjs && node --experimental-strip-types bridge/tests/subagents-overrides-unit.mjs && node --experimental-strip-types bridge/tests/subagents-advanced-unit.mjs && node --experimental-strip-types bridge/tests/acpdelegate-unit.mjs",
     "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs && node bridge/tests/subagents-advanced-ui.mjs",
     "test:start-check": "node bridge/tests/start-check.mjs",
+    "test:openpage": "node --experimental-strip-types bridge/tests/openbrowser-unit.mjs",
     "test:sheet": "node --experimental-strip-types bridge/tests/sheet-numfmt-unit.mjs && node --experimental-strip-types bridge/tests/sheet-calc-unit.mjs && node --experimental-strip-types bridge/tests/sheet-style-unit.mjs && node --experimental-strip-types bridge/tests/sheet-theme-unit.mjs && node --experimental-strip-types bridge/tests/sheet-refs-unit.mjs && node --experimental-strip-types web/tests/sheet-links-unit.mjs",
     "test:deps": "node --experimental-strip-types bridge/tests/deps-unit.mjs",
     "test:pi": "node --experimental-strip-types bridge/tests/pi-candidates-unit.mjs",
@@ -118,7 +120,8 @@
     "test:repos:ui": "node bridge/tests/repos-ui.mjs",
     "test:pluginmarket": "node --experimental-strip-types web/tests/pluginmarket-unit.mjs",
     "test:mcpmarket": "node --experimental-strip-types web/tests/mcpmarket-unit.mjs",
-    "test:skill:ui": "node bridge/tests/skill-view-ui.mjs"
+    "test:skill:ui": "node bridge/tests/skill-view-ui.mjs",
+    "test:note": "node --experimental-strip-types --test bridge/tests/peer-note-unit.mjs && npm run build:peer && node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-ui.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

@@ -42,6 +42,8 @@ await page.evaluate(() => {
 
 const html = () => page.evaluate(() => window.ed.html());
 const count = (sel) => page.evaluate((s) => document.querySelectorAll(`#doc ${s}`).length, sel);
+// contenteditable 的行尾空格是 &nbsp;，断言里换成普通空格再比。
+const docHtml = async () => (await html()).replaceAll(String.fromCharCode(160), " ");
 
 // ---------------------------------------------------------------- 渲染
 
@@ -94,6 +96,126 @@ assert.equal(
   "language-ts",
   "带上语言名时要挂到 code.language-*",
 );
+
+// ---------------------------------------------------------------- Markdown 输入规则（#511）
+
+// 块级：`- ` + 空格立即转无序列表，标记本身不留在正文里。
+await page.evaluate(() => window.ed.setHtml("<p><br></p>"));
+await page.click("#doc");
+await page.keyboard.type("- ");
+await page.waitForTimeout(60);
+assert.equal(await count("ul li"), 1, "`- ` 应转成无序列表");
+assert.ok(!(await docHtml()).includes("- "), "列表标记要清掉");
+
+// 块级转换后 Ctrl+Z：一步回到打标记前的段落（replaceWith 不进原生撤销栈）。
+await page.keyboard.press("Control+z");
+await page.waitForTimeout(60);
+assert.equal(await count("ul"), 0, "Ctrl+Z 应撤销列表转换");
+assert.match(await docHtml(), /- /, "撤销后标记要回来");
+
+// 标题：# + 空格；#### 及以上不转。
+await page.evaluate(() => window.ed.setHtml("<p><br></p>"));
+await page.click("#doc");
+await page.keyboard.type("## ");
+await page.waitForTimeout(60);
+assert.equal(await count("h2"), 1, "`## ` 应转二级标题");
+
+await page.evaluate(() => window.ed.setHtml("<p><br></p>"));
+await page.click("#doc");
+await page.keyboard.type("#### ");
+await page.waitForTimeout(60);
+assert.equal(await count("h4"), 0, "`#### ` 不该转标题");
+assert.match(await docHtml(), /#### /, "`#### ` 要原样留着");
+
+// 行内：闭符号一敲完就转。
+await page.evaluate(() => window.ed.setHtml("<p><br></p>"));
+await page.click("#doc");
+await page.keyboard.type("**粗**");
+await page.waitForTimeout(60);
+assert.equal(await count("strong"), 1, "`**粗**` 应转粗体");
+assert.ok(!(await html()).includes("**"), "粗体标记要清掉");
+
+await page.evaluate(() => window.ed.setHtml("<p><br></p>"));
+await page.click("#doc");
+await page.keyboard.type("`码`");
+await page.waitForTimeout(60);
+assert.equal(await count("code"), 1, "反引号应转行内代码");
+
+// 代码块里不转行内规则。
+await page.evaluate(() => window.ed.setHtml("<pre><code>\n</code></pre>"));
+await page.evaluate(() => {
+  const code = document.querySelector("#doc pre code");
+  const range = document.createRange();
+  range.selectNodeContents(code);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+});
+await page.keyboard.type("**x**");
+await page.waitForTimeout(60);
+assert.equal(await count("pre strong"), 0, "代码块里不该转粗体");
+assert.match(await html(), /\*\*x\*\*/, "代码块里的星号要原样留着");
+
+// tools 过滤：只画列出来的按钮，也不画「更多」。
+await page.evaluate(() => {
+  const bar = document.createElement("div");
+  bar.id = "tb2";
+  const doc = document.createElement("div");
+  doc.id = "doc2";
+  document.body.append(bar, doc);
+  window.ed2 = new window.NotesEditor.RichEditor({
+    body: doc,
+    toolbar: bar,
+    onChange: () => {},
+    tools: ["b", "i", "code"],
+  });
+});
+const slim = await page.evaluate(() => [...document.querySelectorAll("#tb2 .tb-btn")].map((b) => b.title));
+assert.deepEqual(slim, ["粗体（Ctrl+B）", "斜体", "代码块（整行输入 ``` 也行）"], `精简工具栏不对：${slim}`);
+
+// onEnter：普通段落回车交给调用方；列表里仍续块。
+await page.evaluate(() => {
+  window.entered = 0;
+  const bar = document.createElement("div");
+  bar.id = "tb3";
+  const doc = document.createElement("div");
+  doc.id = "doc3";
+  document.body.append(bar, doc);
+  window.ed3 = new window.NotesEditor.RichEditor({
+    body: doc,
+    toolbar: bar,
+    onChange: () => {},
+    tools: [],
+    onEnter: () => {
+      window.entered += 1;
+    },
+  });
+});
+await page.evaluate(() => {
+  window.ed3.setHtml("<p>发送</p><ul><li>项</li></ul>");
+  window.ed3.focus();
+});
+await page.keyboard.press("Control+Home");
+await page.keyboard.press("End");
+await page.keyboard.press("Enter");
+assert.equal(await page.evaluate(() => window.entered), 1, "普通段落回车应交给 onEnter");
+
+await page.evaluate(() => {
+  const doc = document.getElementById("doc3");
+  window.ed3.setHtml("<ul><li>x</li></ul>");
+  doc.focus();
+  const li = doc.querySelector("li");
+  const range = document.createRange();
+  range.selectNodeContents(li);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+});
+await page.keyboard.press("Enter");
+assert.equal(await page.evaluate(() => window.entered), 1, "列表里回车不该触发 onEnter");
+assert.equal(await page.evaluate(() => document.querySelectorAll("#doc3 li").length), 2, "列表里回车应继续加一项");
 
 // ---------------------------------------------------------------- Alt+P
 

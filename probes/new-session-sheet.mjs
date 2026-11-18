@@ -329,7 +329,7 @@ try {
   const madeName = path.basename(OUTSIDE);
   await page.locator(".new-sheet .dir-jump-input").fill(OUTSIDE);
   await page.locator(".new-sheet .dir-jump-input").press("Enter");
-  await until(async () => ((await page.locator(".new-sheet .ws-new-note").textContent()) ?? "").includes(madeName), 8000, "browsed to the outside dir");
+  await until(async () => ((await page.locator(".new-sheet .ns-where").textContent()) ?? "").includes(madeName), 8000, "browsed to the outside dir");
   const picksBefore = await page.locator(".new-sheet .ws-new-pick").count();
   await page.locator(".new-sheet .ws-new-add").click();
   await until(async () => (await page.locator(".new-sheet .ws-new-pick", { hasText: madeName }).count()) === 1, 12000, "new workspace row");
@@ -341,6 +341,63 @@ try {
   fs.rmSync(OUTSIDE, { recursive: true, force: true });
   await page.screenshot({ path: path.join(OUT, "5-ws-add.png"), animations: "disabled" });
   log("9 rail workspace ok");
+
+  // ---- 10. 一次刷新里，列表不许变暗、也不许先清空再填 —— 这是「点排序 / 新建目录会闪」的根因。
+  // 防复发的关键：把这条写成逐帧断言，以后谁再把「忙碌」画在已经显示好的内容上（压暗、清空重画），
+  // 这段就会红，而不是等人眼再看出来。
+  await page.locator(".new-sheet .dir-jump-input").fill(WORK);
+  await page.locator(".new-sheet .dir-jump-input").press("Enter");
+  await until(async () => (await page.locator(".new-sheet .dir-row").count()) > 5, 8000, "work dir listed");
+  await page.waitForTimeout(600);
+  const watchList = () => page.evaluate(() => {
+    window.__flicker = [];
+    const list = document.querySelector(".new-sheet .dir-list");
+    const end = performance.now() + 900;
+    const tick = () => {
+      if (list) window.__flicker.push({ o: Number(getComputedStyle(list).opacity), n: list.children.length });
+      if (performance.now() < end) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  const reap = async (label) => {
+    const f = await page.evaluate(() => {
+      const all = window.__flicker.slice();
+      // 从「已经有内容」那一帧开始算；结束时空列表是合法的（新建后跳进空目录）
+      let first = all.findIndex((x) => x.n > 1);
+      if (first < 0) first = 0;
+      let last = -1;
+      all.forEach((x, i) => { if (x.n > 1) last = i; });
+      const seen = all.slice(first);
+      return {
+        seen: seen.length,
+        dim: seen.filter((x) => x.o < 0.99).length,
+        emptyBefore: all.slice(first, last + 1).filter((x) => x.n === 0).length,
+        ops: [...new Set(seen.map((x) => x.o))],
+      };
+    });
+    assert(f.seen > 3, `${label}: sampled enough frames (got ${f.seen})`);
+    assert(f.dim === 0, `${label}: the list never dims (opacity ${f.ops.join("/")})`);
+    assert(f.emptyBefore === 0, `${label}: the list is never emptied while refetching`);
+  };
+
+  await watchList();
+  await page.locator(".new-sheet .dir-sort-key").nth(1).click();
+  await page.waitForTimeout(1000);
+  await reap("sort");
+  await watchList();
+  await page.locator(".new-sheet .dir-filter").pressSequentially("dir", { delay: 50 });
+  await page.waitForTimeout(1000);
+  await reap("filter");
+  await page.locator(".new-sheet .dir-filter").fill("");
+  await page.waitForTimeout(700);
+  await watchList();
+  await page.locator(".new-sheet .dir-mk").click();
+  await page.locator(".new-sheet .dir-mkrow .ns-input").fill("flicker-check");
+  await page.locator(".new-sheet .dir-mkrow .ns-input").press("Enter");
+  await page.waitForTimeout(1500);
+  await reap("mkdir");
+  await until(async () => ((await page.locator(".new-sheet .dir-path").innerText()) ?? "").includes("flicker-check"), 8000, "stepped into the new folder");
+  log("10 no flicker on refresh");
 
   assert(errors.length === 0, `no page errors (got ${errors.join(" | ")})`);
   log("all checks passed");

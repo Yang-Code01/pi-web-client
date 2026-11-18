@@ -9,6 +9,7 @@
  * 因为 execCommand 那几条会产出 `font[color]`、`background-color` 内联到块上，净化白名单不收。
  */
 import { tr } from "../i18n/index.ts";
+import { matchBlock, matchInline, type BlockHit } from "../md-input.ts";
 import { fenceLanguage, sanitizeRich, textToRich } from "./rich.ts";
 
 const SIZES: [string, string][] = [
@@ -44,6 +45,10 @@ export interface RichEditorOptions {
   say?: (text: string, bad?: boolean) => void;
   /** 粘贴进来的文件（截图）。正文里不塞图片，交给面板当附件存。 */
   onFiles?: (files: File[]) => void;
+  /** 只画这些工具（不传 = 全套）。id 见 `buildToolbar()`。 */
+  tools?: string[];
+  /** 普通段落里按回车：调用方接管（内网通用来发送）。列表 / 引用 / 代码块里仍续块。 */
+  onEnter?: () => void;
 }
 
 export class RichEditor {
@@ -52,6 +57,10 @@ export class RichEditor {
   private readonly onChange: () => void;
   private readonly say: (text: string, bad?: boolean) => void;
   private readonly onFiles: ((files: File[]) => void) | null;
+  private readonly tools: Set<string> | null;
+  private readonly onEnter: (() => void) | null;
+  /** 块级替换的一次性撤销：原生撤销栈不认 `replaceWith`，转换后立刻 Ctrl+Z 由这里接管。 */
+  private undo: { parent: Node; next: Node | null; original: Element; created: Element[] } | null = null;
   private savedRange: Range | null = null;
   private pop: HTMLElement | null = null;
   private readonly onOutside = (ev: MouseEvent): void => {
@@ -73,17 +82,21 @@ export class RichEditor {
     this.toolbar = opts.toolbar;
     this.onChange = opts.onChange;
     this.onFiles = opts.onFiles ?? null;
+    this.tools = opts.tools ? new Set(opts.tools) : null;
+    this.onEnter = opts.onEnter ?? null;
     this.say = opts.say ?? (() => {});
     this.body.setAttribute("contenteditable", "true");
     this.body.spellcheck = false;
     this.body.classList.add("rich");
-    this.body.addEventListener("input", () => this.afterInput());
+    this.body.addEventListener("input", (ev) => this.onInput(ev));
     this.body.addEventListener("keydown", (ev) => this.onKeydown(ev));
     this.body.addEventListener("keyup", () => this.saveRange());
     this.body.addEventListener("mouseup", () => this.saveRange());
     this.body.addEventListener("blur", () => this.saveRange());
     this.body.addEventListener("paste", (ev) => this.onPaste(ev));
     this.buildToolbar();
+    // 空正文也得有个段落：contenteditable 直接打字会落成裸文本节点，块级规则就找不到 block 了。
+    this.ensureBlock();
     document.addEventListener("mousedown", this.onOutside, true);
     document.addEventListener("keydown", this.onDocKey, true);
   }
@@ -91,6 +104,7 @@ export class RichEditor {
   /** 换一条记录：直接换 HTML（进门前已经净化过）。 */
   setHtml(html: string): void {
     this.body.replaceChildren(parseHtml(sanitizeRich(html)));
+    this.ensureBlock();
     this.savedRange = null;
     this.closePop();
   }
@@ -156,7 +170,143 @@ export class RichEditor {
   // ---------------------------------------------------------------- 输入
 
   private afterInput(): void {
+    this.ensureBlock();
     this.saveRange();
+    this.onChange();
+  }
+
+  /** 正文里连一个元素都没有时补一个空段落（光标已经在了就放到段尾）。 */
+  private ensureBlock(): void {
+    if (this.body.children.length) return;
+    const p = document.createElement("p");
+    p.append(document.createElement("br"));
+    this.body.replaceChildren(p);
+    if (this.body === document.activeElement) this.caretToEnd(p);
+  }
+
+  /**
+   * 输入后先看要不要转 Markdown（#511）：空格试块级，闭符号试行内。
+   * 转换本身不再触发一次 `onChange`——统一在末尾 `afterInput()` 里做。
+   */
+  private onInput(ev: Event): void {
+    const ie = ev as InputEvent;
+    if (ie.isComposing) return;
+    // 用户又敲了别的东西：刚才那一步块级转换就不再是「最后一步」，撤销交还原生。
+    this.undo = null;
+    if (ie.inputType === "insertText" && ie.data) {
+      if (ie.data === " ") this.tryBlock();
+      else if (ie.data.length === 1 && "`*~)".includes(ie.data)) this.tryInline();
+    }
+    this.afterInput();
+  }
+
+  private tryBlock(): void {
+    const range = this.range();
+    if (!range || !range.collapsed) return;
+    const block = this.topBlock(range.startContainer);
+    // 裸文本节点 / 整个 body 都不当 block：块级替换必须落在一个段落上。
+    if (!block || block === this.body || !(block instanceof HTMLElement) || block.tagName === "PRE") return;
+    const caret = textOffset(block, range.startContainer, range.startOffset);
+    if (caret === null) return;
+    // contenteditable 把行尾空格存成 &nbsp;：判定前统一回普通空格（长度不变，偏移还能用）。
+    const text = (block.textContent ?? "").replace(/\u00a0/g, " ");
+    const hit = matchBlock(text, caret);
+    if (hit) this.replaceWithBlock(block, hit);
+  }
+
+  private replaceWithBlock(block: HTMLElement, hit: BlockHit): void {
+    const original = block.cloneNode(true) as HTMLElement;
+    this.dropPrefix(block, hit.marker);
+    let target: HTMLElement;
+    let created: HTMLElement;
+    if (hit.kind === "ul" || hit.kind === "ol") {
+      const list = document.createElement(hit.kind);
+      const li = document.createElement("li");
+      list.append(li);
+      target = li;
+      created = list;
+    } else {
+      target = document.createElement(hit.kind);
+      created = target;
+    }
+    while (block.firstChild) target.append(block.firstChild);
+    if (!target.firstChild) target.append(document.createElement("br"));
+    const parent = block.parentNode;
+    block.replaceWith(created);
+    if (parent) this.undo = { parent, next: created.nextSibling, original, created: [created] };
+    this.caretToEnd(target);
+  }
+
+  /** 把段落开头 `count` 个字符删掉（标记可能跨多个文本节点）。 */
+  private dropPrefix(block: Element, count: number): void {
+    let left = count;
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    const texts: Text[] = [];
+    while (walker.nextNode()) texts.push(walker.currentNode as Text);
+    for (const t of texts) {
+      if (left <= 0) break;
+      const take = Math.min(left, t.data.length);
+      t.data = t.data.slice(take);
+      left -= take;
+    }
+  }
+
+  private tryInline(): void {
+    const range = this.range();
+    if (!range || !range.collapsed) return;
+    const block = this.topBlock(range.startContainer);
+    if (!block || !(block instanceof HTMLElement) || block.tagName === "PRE") return;
+    if (this.inCode(range.startContainer, block)) return;
+    const caret = textOffset(block, range.startContainer, range.startOffset);
+    if (caret === null) return;
+    const hit = matchInline(block.textContent ?? "", caret);
+    if (!hit) return;
+    const target = document.createRange();
+    if (!rangeAtOffsets(block, target, hit.from, hit.to)) return;
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(target);
+    document.execCommand("insertHTML", false, hit.html);
+  }
+
+  private inCode(node: Node, block: Element): boolean {
+    let cur: Node | null = node;
+    while (cur && cur !== block) {
+      if (cur instanceof HTMLElement && cur.tagName === "CODE") return true;
+      cur = cur.parentNode;
+    }
+    return false;
+  }
+
+  private topBlock(node: Node): Element | null {
+    let el: Node | null = node;
+    while (el && el.parentNode !== this.body) el = el.parentNode;
+    return el instanceof Element ? el : null;
+  }
+
+  private caretBlock(): HTMLElement | null {
+    const range = this.range();
+    if (!range) return null;
+    const block = this.topBlock(range.startContainer);
+    return block instanceof HTMLElement ? block : null;
+  }
+
+  private caretToEnd(node: Element): void {
+    const caret = document.createRange();
+    caret.selectNodeContents(node);
+    caret.collapse(false);
+    this.restore(caret);
+  }
+
+  private restoreUndo(): void {
+    const u = this.undo;
+    this.undo = null;
+    if (!u || !u.created.every((n) => n.isConnected)) return;
+    const clone = u.original.cloneNode(true) as Element;
+    for (const n of u.created) n.remove();
+    const anchor = u.next && u.next.parentNode === u.parent ? u.next : null;
+    u.parent.insertBefore(clone, anchor);
+    this.caretToEnd(clone);
     this.onChange();
   }
 
@@ -173,12 +323,30 @@ export class RichEditor {
 
   private onKeydown(ev: KeyboardEvent): void {
     const mod = ev.ctrlKey || ev.metaKey;
+    // 块级转换那一步：`replaceWith` 不进原生撤销栈，转换后立刻 Ctrl+Z 由快照接管。
+    if (mod && !ev.shiftKey && ev.key.toLowerCase() === "z" && this.undo) {
+      ev.preventDefault();
+      this.restoreUndo();
+      return;
+    }
     // ` ``` ` / ` ```ts ` 敲完回车才转换：立即转会把语言名截掉（打完三个反引号就把块换了，`ts` 再也补不上）。
     if (ev.key === "Enter" && !ev.shiftKey && !mod && !ev.altKey) {
       const lang = this.fenceAtCaret();
       if (lang !== null) {
         ev.preventDefault();
         this.makeCode(lang);
+        return;
+      }
+      if (this.hrAtCaret()) {
+        ev.preventDefault();
+        this.makeHr();
+        return;
+      }
+      const block = this.caretBlock();
+      // 普通段落回车交给调用方（内网通发送）；列表 / 引用 / 代码块里仍续块。
+      if (this.onEnter && block && !["LI", "UL", "OL", "BLOCKQUOTE", "PRE"].includes(block.tagName)) {
+        ev.preventDefault();
+        this.onEnter();
         return;
       }
     }
@@ -241,25 +409,23 @@ export class RichEditor {
   /**
    * 把光标所在的块换成 `<pre><code>`；已经是代码块就换回段落。
    * 由 ``` 触发时，块里那几个反引号要清掉、语言名挂到 `code.language-*`（导出 Markdown 时用）。
+   * 和块级输入规则一样走一次性快照，Ctrl+Z 能一步回到原段落。
    */
   private makeCode(value = ""): void {
-    const range = this.range();
-    if (!range) return;
-    let block: Node | null = range.startContainer;
-    while (block && block.parentNode !== this.body) block = block.parentNode;
-    if (!(block instanceof Element)) return;
-    const pre = document.createElement("pre");
-    const code = document.createElement("code");
-    if (block instanceof HTMLElement && block.tagName === "PRE") {
+    const block = this.caretBlock();
+    if (!block) return;
+    const original = block.cloneNode(true) as HTMLElement;
+    let created: HTMLElement;
+    let caretIn: HTMLElement;
+    if (block.tagName === "PRE") {
       const p = document.createElement("p");
       const text = block.textContent ?? "";
       p.replaceChildren(parseHtml(text ? escapeLines(text) : "<br>"));
-      block.replaceWith(p);
-      const caret = document.createRange();
-      caret.selectNodeContents(p);
-      caret.collapse(false);
-      this.restore(caret);
+      created = p;
+      caretIn = p;
     } else {
+      const pre = document.createElement("pre");
+      const code = document.createElement("code");
       const content = block.textContent ?? "";
       const fence = /^\s*```(\w*)\s*$/.exec(content);
       const lang = fence ? fence[1] : value;
@@ -267,12 +433,33 @@ export class RichEditor {
       if (lang) code.className = `language-${lang}`;
       code.replaceChildren(parseHtml(text ? escapeLines(text) : "<br>"));
       pre.append(code);
-      block.replaceWith(pre);
-      const caret = document.createRange();
-      caret.selectNodeContents(code);
-      caret.collapse(false);
-      this.restore(caret);
+      created = pre;
+      caretIn = code;
     }
+    const parent = block.parentNode;
+    block.replaceWith(created);
+    if (parent) this.undo = { parent, next: created.nextSibling, original, created: [created] };
+    this.caretToEnd(caretIn);
+    this.onChange();
+  }
+
+  private hrAtCaret(): boolean {
+    const block = this.caretBlock();
+    return Boolean(block && block.tagName !== "PRE" && (block.textContent ?? "").trim() === "---");
+  }
+
+  /** 整行 `---` 回车：换成 `<hr>` + 后面一个空段落，光标落在空段落里。 */
+  private makeHr(): void {
+    const block = this.caretBlock();
+    if (!block) return;
+    const original = block.cloneNode(true) as HTMLElement;
+    const hr = document.createElement("hr");
+    const p = document.createElement("p");
+    p.append(document.createElement("br"));
+    const parent = block.parentNode;
+    block.replaceWith(hr, p);
+    if (parent) this.undo = { parent, next: p.nextSibling, original, created: [hr, p] };
+    this.caretToEnd(p);
     this.onChange();
   }
 
@@ -299,6 +486,7 @@ export class RichEditor {
     const bar = this.toolbar;
     bar.classList.add("tb");
     bar.replaceChildren();
+    const keep = (id: string): boolean => !this.tools || this.tools.has(id);
     const btn = (glyph: string, title: string, run: (el: HTMLElement) => void, cls = ""): HTMLElement => {
       const b = document.createElement("button");
       b.type = "button";
@@ -316,30 +504,45 @@ export class RichEditor {
       s.className = "tb-sep";
       return s;
     };
+    const parts: Array<HTMLElement | "sep"> = [];
+    const add = (id: string, el: HTMLElement): void => {
+      if (keep(id)) parts.push(el);
+    };
+    const gap = (): void => {
+      if (parts.length && parts[parts.length - 1] !== "sep") parts.push("sep");
+    };
 
-    bar.append(
-      btn("B", tr("粗体（Ctrl+B）"), () => this.exec("bold"), "tb-b"),
-      btn("I", tr("斜体"), () => this.exec("italic"), "tb-i"),
-      btn("U", tr("下划线"), () => this.exec("underline"), "tb-u"),
-      btn("S", tr("删除线"), () => this.exec("strikeThrough"), "tb-s"),
-      sep(),
-      btn("A", tr("字号"), (el) => this.openSize(el)),
-      btn("🎨", tr("文字颜色 / 底色"), (el) => this.openColor(el)),
-      sep(),
-      btn("•", tr("符号列表"), () => this.exec("insertUnorderedList"), "tb-wide"),
-      btn("1.", tr("编号列表"), () => this.exec("insertOrderedList"), "tb-wide"),
-      sep(),
-      btn("</>", tr("代码块（整行输入 ``` 也行）"), () => this.makeCode()),
-      btn("▦", tr("插入表格"), () => this.insertHtml(this.tableHtml()), "tb-wide"),
-      btn("—", tr("分隔线"), () => this.exec("insertHorizontalRule"), "tb-wide"),
-      btn("❝", tr("引用"), () => this.toggleBlock("blockquote"), "tb-wide"),
-      (() => {
-        const grow = document.createElement("div");
-        grow.className = "grow";
-        return grow;
-      })(),
-      btn("⋯", tr("更多"), (el) => this.openMore(el)),
-    );
+    add("b", btn("B", tr("粗体（Ctrl+B）"), () => this.exec("bold"), "tb-b"));
+    add("i", btn("I", tr("斜体"), () => this.exec("italic"), "tb-i"));
+    add("u", btn("U", tr("下划线"), () => this.exec("underline"), "tb-u"));
+    add("s", btn("S", tr("删除线"), () => this.exec("strikeThrough"), "tb-s"));
+    gap();
+    add("size", btn("A", tr("字号"), (el) => this.openSize(el)));
+    add("color", btn("🎨", tr("文字颜色 / 底色"), (el) => this.openColor(el)));
+    gap();
+    add("ul", btn("•", tr("符号列表"), () => this.exec("insertUnorderedList"), "tb-wide"));
+    add("ol", btn("1.", tr("编号列表"), () => this.exec("insertOrderedList"), "tb-wide"));
+    gap();
+    add("code", btn("</>", tr("代码块（整行输入 ``` 也行）"), () => this.makeCode()));
+    add("table", btn("▦", tr("插入表格"), () => this.insertHtml(this.tableHtml()), "tb-wide"));
+    add("hr", btn("—", tr("分隔线"), () => this.exec("insertHorizontalRule"), "tb-wide"));
+    add("quote", btn("❝", tr("引用"), () => this.toggleBlock("blockquote"), "tb-wide"));
+
+    const grow = document.createElement("div");
+    grow.className = "grow";
+    parts.push(grow);
+    if (keep("more")) parts.push(btn("⋯", tr("更多"), (el) => this.openMore(el)));
+
+    const out: HTMLElement[] = [];
+    for (const p of parts) {
+      if (p === "sep") {
+        if (out.length && !out[out.length - 1].classList.contains("tb-sep")) out.push(sep());
+      } else {
+        out.push(p);
+      }
+    }
+    while (out.length && out[out.length - 1].classList.contains("tb-sep")) out.pop();
+    bar.append(...out);
   }
 
   private openPop(anchor: HTMLElement, node: HTMLElement): void {
@@ -449,6 +652,47 @@ export class RichEditor {
 /** 纯文本 → 段落；每行一个 `<p>`（编辑器里直接粘日志用）。 */
 function escapeLines(text: string): string {
   return textToRich(text);
+}
+
+/** 光标在块内的字符偏移（只看文字节点；光标在元素层时按子节点累计）。 */
+function textOffset(block: Element, node: Node, offset: number): number | null {
+  if (!block.contains(node)) return null;
+  if (node.nodeType === Node.TEXT_NODE) {
+    let total = 0;
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const t = walker.currentNode as Text;
+      if (t === node) return total + offset;
+      total += t.data.length;
+    }
+    return null;
+  }
+  if (node === block) {
+    let total = 0;
+    for (let i = 0; i < offset && i < block.childNodes.length; i++) total += block.childNodes[i].textContent?.length ?? 0;
+    return total;
+  }
+  return null;
+}
+
+/** 把块内 [from, to) 的字符位置变成 DOM Range（跨多个文本节点也行）。 */
+function rangeAtOffsets(block: Element, range: Range, from: number, to: number): boolean {
+  let total = 0;
+  let start: { node: Text; offset: number } | null = null;
+  let end: { node: Text; offset: number } | null = null;
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const t = walker.currentNode as Text;
+    const next = total + t.data.length;
+    if (!start && from >= total && from <= next) start = { node: t, offset: from - total };
+    if (!end && to >= total && to <= next) end = { node: t, offset: to - total };
+    total = next;
+    if (start && end) break;
+  }
+  if (!start || !end) return false;
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  return true;
 }
 
 /** 本文件不写 innerHTML（仓库规矩：见 web/src/md.ts 抬头）：解析完再挂节点。 */

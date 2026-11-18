@@ -6122,7 +6122,127 @@ Esc 之后 dialog: 0
 
 **验证：** `node bridge/tests/dirpage.mjs`（15：过滤 / 排序 / 文件夹不随方向翻转 / 分页越界 / 递归 rel 且跳过 `node_modules` / 空路径盘符页 / `listFilesUnder` 三条）；`npm run test:stat`、`npm run test:dirpath` 不动；真桥探针 `probes/new-session-sheet.mjs` 八组 —— 弹层布局（只列目录 32 行 + `↑ 上一级`）、筛选 10 个且焦点不丢、只列目录时「包含子目录」隐藏、排序切向、`这个目录已有 1 个会话`、API 层 size 降序 / offset / `total` / `sub`、文件管理器默认 `mtime ↓` 且能跳到第 1500 个文件、附件弹层表头点「大小」两向都单调。
 
-## D312 正文里提问不再放过：停下前核对，没走 `ask_user_question` 就续跑一次（用户要求 2026-11-18）
+## D312 记录面板记住上次的分区与选中；正文下不再有 issue / commit / 会话（用户要求 2026-11-18）
+
+**问题：** 记录面板每次打开都回到「bug / 全部 / 没选中」——正在跟的一条 bug，关一下再开就得重新点；用户要求「保存上次使用的窗口」。同一处底部还挂着 issue、commit 两个输入框和一行「会话」，用户明确说不再需要（#4）。
+
+**决定：**
+
+- **只记三样：分区（kind）、去向（view）、选中（sel）**，落在 `localStorage["notes.memory"]`（`{ kind, view, sel }`）。分段筛选（全部 / 待处理…）与搜索词**不记**：那是这一次的临时过滤，明天打开还想看见全部。
+- **面板实例不保留状态**（`close()` 会销毁根节点与编辑器，下次 `new`），所以记忆必须落盘；写入时机是每次真的切了分区 / 去向 / 选中，不做「关闭时再写」——崩溃、刷新都不丢。
+- **回落分两层**：分区与去向永远是合法的（读到坏值回落 `bug` / `active`）；选中只在「这一堆里真的有它」时接回（`inView(note)` + active 下 kind 相符）。找不到就清掉选中、保留分区，不自动选第一条——凭空打开一条不是用户的意图。
+- **换堆不关编辑器**：`setNotes()` 只在「选中那条真的不该在这堆里了」（被删、被改到别的去向）时清空，只是被「显示已处理」过滤掉不算；否则点个状态就把编辑器关了。
+- **多标签不监听 `storage` 事件**：打开时读一次、切了就覆盖写，另一个标签下次打开才看到——记录面板不是协作文档，省掉一套同步逻辑。
+- **issue / commit / 会话从界面到桥全删**：`Note` / `NoteInput` / `notes.save` / `notes.status` / `NotesHost.session()` 一起收掉，不留「存着但看不见」的字段。**老 JSON 不迁移**：`readNote()` 逐字段运行时收窄，`sessionId` / `sessionName` / `issue` / `commit` 读到即丢，下次保存自然消失；`kind` / `status` / `mode` 非法值回落。
+
+**取舍：** 不记面板宽度 / 高度（用户问的是「窗口」，选了分区与选中）；不记分段与搜索词；不迁移老数据（字段没人读，迁了也是死重量）。
+
+**验证：** `npm run test:notes` 的 `notes-sheet-browser.mjs` 新增三组：`notes.memory` 落盘值、重开接回分区与选中、切到归档后只清选中且重开仍在归档；同时断言正文下只剩 状态 / 分类 / 创建 / 改动 四格。`npm --prefix web run typecheck`（含 i18n / 视口 / 层带守卫）与 `npm --prefix bridge run typecheck` 通过。
+
+## D313 `npm start` 自己把页面打开，内网通的在线人数不再刷日志（用户要求 2026-11-18）
+
+**问题：** 两处都只是「不方便」，但每天都在忍着：① 手动 `npm start` 之后只打印一行地址，还得自己去浏览器里粘一遍；② 内网通的人数变化一直往控制台打 —— `peer/src/index.ts` 里一句 `discovery.on("change", …在线 N 台…)`，而 `prune()` 每 5 秒无条件 `emit("change")`、每条 announce（约 10 秒一次）也发一次，所以空局域网也每 5 秒刷一行「在线 0 台」，`peer.log` 跟着长。
+
+**决定：**
+
+- **只在「人手动在终端里启动」时开页面**：判据是 `process.stdout.isTTY`（`bridge/src/openbrowser.ts` 的 `shouldOpenPage()`）。看门狗、热部署（`scripts/hotdeploy.mjs`）、`.pi/skills/bridge-update/bin/restart.mjs`（输出走 `Tee-Object` 管道）、测试环境（`pi-web-client-test-dev`）全都不接终端，一行都不用改就不会弹标签。`PI_WEB_OPEN=1` / `0` 可以越过这个判断强制开或关（也认 `true` / `false`；认不出来的值按没写处理，不会反而把页面关掉）。
+- **系统默认浏览器**：Windows `cmd /c start "" <url>`、macOS `open`、Linux `xdg-open`。那个空的 `""` 是必需的 —— `start` 会把第一个带引号的参数当窗口标题，少了它 URL 只是把标题改掉、窗口不开。`spawn` 用 `stdio:"ignore"` + `windowsHide`，**不 detached**（Windows 上 DETACHED_PROCESS 没有桌面关联，`start` 静默失效，`terminal.ts` 已经踩过一次）；再挂一个空 `error` 监听：找不到 opener 时是个 `error` 事件，没人接就会带走 bridge。
+- **挂在 `listen` 回调里、打印「已启动」之后**：端口才是确定能连的；先开浏览器再去 listen 会撞上「页面打得开、服务还没起」。
+- **打开页面的函数不回报结果**：`openPage()` 只发起 `spawn` 就返回（`void`），不看返回值也无法可靠地看 —— opener 不存在要等 `error` 事件，而调用处并不关心开没开成。
+- **内网通的在线日志整句删掉，不是降频也不是去重**：用户要的是「完全不打印」。人数本身在「内网通」页面里一直看得见，日志里那行没有额外信息；prune 每 5 秒都 emit，去重也只能把刷屏变慢一点。
+- **顺手清掉 `bridge/src/index.ts` 里 10 条过期 lint**（模板串拼接、重复声明、嵌套三元、否定 if、赋值表达式），它们和这次功能无关，但都在要改的那个文件里。
+
+**取舍：** 没用「永远打开」（用户选项里明说不要：后台重启一天弹一屏标签）；没用「往上找父进程判断是不是终端」那种探针（`isTTY` 已经够用，且零配置）；没引 `open` 这类 npm 依赖，三平台各一行就够。
+
+**验证：** `npm run test:openpage`（纯函数：TTY 真假、`PI_WEB_OPEN` 的 1/0/true/false/空串/认不出的值、三平台命令形状含 win32 的空标题参数）；`peer-e2e` 末尾新增一条断言：三份 peer 跑完，stdout 里不得出现 `/在线 \d+ 台/`（收 stdout 的方式与 `PEER_E2E_VERBOSE` 共用）；空端口/临时状态目录真跑 21 秒 —— 含「在线 N 台」的行数为 0（别用「含‘在线’的行」计数：`peer/src/index.ts` 的隐身横幅与 `messages.ts` 的「对方不在线」都是合法行），`pi-web-client 已启动：http://127.0.0.1:…` 照旧；`openPage(url,"linux")` 在没装 `xdg-open` 的 Windows 上不再能把进程带走（`error` 监听生效）。
+
+## D314 内网通气泡按「富文本 / Markdown」两支渲染，图片与表格不进气泡（用户要求 2026-11-18）
+
+**背景：** #515 把输入区换成富文本之后，消息正文可能是 `RichEditor` 产出的 HTML；旧消息与「提交给好友」转发的正文仍是纯文本 Markdown。气泡原来只 `textContent` + `pre-wrap`，两类都显示不出结构。
+
+**决定：**
+
+- **判定顺序：`hasRichMarkup()` 命中的走富文本，其余全部走 Markdown**。不再为「纯文本」留第三支：`1. 第一`、`- 项` 这类老消息会开始显示成列表，明确接受。
+- **富文本支：** `sanitizeRich()` 后把 `span[style]` 拆成文本（颜色 / 字号 / 底色丢弃、字体跟主题）；`h1-h3` 加 `.bub-h` 降成 13.5px；`a` 补 `target="_blank" rel="noopener noreferrer"`；`img` 本就不在白名单。
+- **Markdown 支：** `renderMarkdown(text, { tables: false, imageSrc: () => null, openPath })`。气泡里不画表格（窄栏读不了）、不画图片（图片走文件卡）；`openPath` = 复制路径 + toast「已复制路径」。
+- **点击：** 气泡空白处复制全文（富文本复制 `plainText(html)`，Markdown 复制原文）；`a` / `code` / `pre` / `table` / 折叠按钮不抢点击。
+- **长消息：** 纯文本超过 1600 字或 24 行，正文套 `.bub-body.clip`（`max-height:280px` + 底部渐变），底部「显示全文 / 收起」只切类、不重渲染；展开状态不持久化。
+- **引用与列表摘要：** 富文本先 `plainText()` 再截 120 字，会话行预览同理，标签不再漏进摘要。
+
+**取舍：** 没给 peer 另写渲染器（直接复用 `web/src/md.ts`，构建增量在预算内）；没记展开状态（刷新回到折叠，和聊天软件一致）；老纯文本会按 Markdown 变化，这是为了让 #518 转发的正文与旧消息共用一条渲染路径。
+
+**验证：** `node bridge/tests/peer-ui.mjs` 新增四条夹具（富文本、带样式的 span、Markdown 列表/标题/表格、1700 字长消息）：结构保留而颜色字号被剥、链接 `_blank`、`1.` 成 2 个 `li`、`#` 成 h3、`table` 为 0、折叠按钮文案切换；全过。`npm --prefix web run typecheck`（含 i18n）通过。
+
+## D315 记录包复用内网通的 note 帧，截图按 sha 后到对齐，接受走桥的原子导入（用户要求 2026-11-18）
+
+**背景：** 「提交给好友」要把一条记录（标题 / 正文 / 分类 / 状态 / 截图）交给别人，对方看到一张卡片，能只读预览、能一键接受进自己的记录。内网通协议 v1 只认 text / file / recall，未知 kind 直接 400 不可重试（`peer/src/messages.ts`）。
+
+**决定：**
+
+- **协议：** `EntryKind` 加 `"note"`，载荷 `{ title, body, kind, status, shots: [{ name, size, sha256 }], noteCreatedAt, noteUpdatedAt }`；`normalizeNote()` 与 text 一样在**发与收两侧**都跑，正文 ≤ 200 KB、标题 200 字、截图 ≤ 24 张，整帧 ≤ 256 KB（`peer/src/note.ts`）。`deliver()` 与 `Queued.kind` 一起加 note，离线照样 24 小时补投；`PROTO` 不变，`VERSION` 0.1.0 → 0.2.0（只有 `version` 字段与 `/hello` 用它，`/contacts` 不带版本）。
+- **截图不塞进 note 帧：** 逐张走现成的 `/api/peer/sendfile`（`EntryKind: "file"`）。接收端按「同一发送人 / 在 note 之后 / 清单里有这个 sha / 还没被别的卡片用过」找文件条目，找到才把 `entryId` 缝进卡片视图；缺图卡片显示「还差 n 张图」并禁用接受。截图内容在**接受时**才从发送人 `/peer/file?id=` 拉回、校验 size 与 sha 再落盘。
+- **接受是桥的活，不是 peer 的：** `POST /api/peer/note/accept { peer, id }` 在 `bridge/src/index.ts` 里查历史 → 拉图校验 → `importNote()` 生成**新 id**、`createdAt = now`、分类保留、状态重置为「待处理」、截图写 `notes/assets/<新 id>`（临时目录写全再 rename，失败清理）、`origin { peerEntryId, nodeId, nickname, hostname, at }` 只读；成功后 `broadcast({ type: "notes" })` 刷新已打开的面板。
+- **「已接受」不进 JSONL：** peer 的历史是 append-only，改写会破坏它的时间线；接受状态放 `statePath("peer", "notes-accepted.json")` sidecar（`bridge/src/peer-notes.ts`），`/api/peer/messages` 返回前把 `accepted` 与每张图的 `entryId` 缝上去。一张卡片只接受一次：第二次点只会打开已接受的卡片。
+- **卡片与预览：** 四态（发送中 / 失败 / 缺图 / 已接受）、预览只读（`sanitizeRich` 的正文 + 全部截图 + 来源），不出现 issue / commit / 会话；「打开记录」用 `postMessage({ t: "pi-note-open", id })`，外壳校验同源且记录存在后开面板并选中。
+
+**取舍：** 没走 zip 或专用的整包上传接口（要新协议、新进度、新重试）；没把 base64 塞进 note 帧（256 KB 上限和 24 张图对不上）；没让 peer 直接写记录库（peer 进程不该碰 `state/notes`，也拿不到面板广播）；没把已接受写回历史（JSONL 不 patch）；跨版本互通不管（#138 明确「只要求同版本可用」）。
+
+**验证：** `npm run test:note` —— `peer-note-unit`（载荷校验、sha 对齐先到先得、原子导入、sidecar 读写）、`peer-e2e`（note 收发、超长正文 400「正文太长」、坏截图清单 400 不可重试）、`peer-ui`（卡片 chips、缺图禁用、只读预览、接受请求体与「已接受」）；`npm run typecheck` 三包全过；`npm --prefix web run build` 通过。
+
+## D316 列表刷新不许变暗、不许先清空：把「忙碌」画在已经显示好的内容上就是「闪一下」（用户报障 2026-11-18）
+
+**问题：** 用户报「新建目录和排序按钮，点击后会闪一下。这个发生过很多次」。逐帧采样（rAF 记录 `.dir-list` 的 `opacity` 与 children）抓到两处，机制不同、症状一样：
+
+- **排序（换顺序 / 换筛选词）**：`fetchInto(..., { quiet: true })` 保留旧的这一页，但给根节点加 `.busy`，而 `.dirpicker.busy .dir-list { opacity: .55 }` 让整张列表压暗再弹回 —— 实测 +41ms 变 0.55、+90ms 回 1。50ms 的亮度跌落，眼睛读到的就是「闪」，而内容从头到尾没变。
+- **新建目录**：建完 `picker.go(path)` 走的是**非静默**那条路，先 `clearRows()` 再挂「读取中…」，快请求下这一两张空帧就是白屏闪。凡是非静默重取（跳目录、建目录、删改名后重载）都吃这一口。
+
+**决定：**
+
+- **已显示内容的列表，在拿到新数据前不动一个像素**（stale-while-revalidate）：清空、压暗、骨架屏一律不允许。忙碌只体现在 `cursor: progress` 和页脚计数上。
+- **非静默重取先留着旧的一页，慢过 220ms 才让位给「读取中…」**占位（`fetchInto` 里的 `waitTimer`，`stopWait()` 在每个出口清掉，`seq` 变了就不许再出占位）。本机目录 20~80ms 回，用户看到的就是「点了立刻换」；真慢的时候仍有明确反馈。
+- **把规则做成断言，而不是靠记性**：`probes/new-session-sheet.mjs` 第 10 段在点排序、逐字筛选、建目录三段里逐帧采样，任何一帧 `opacity < 0.99`，或「有内容期间」出现 `children === 0`，就红。结束为空是合法的（新建后跳进空目录），所以只统计最后一个有内容帧**之前**的空帧。
+- **验证断言真的会咬人**：把 `.dirpicker.busy .dir-list { opacity: .55 }` 加回去重跑，探针立刻失败在 `sort: the list never dims (opacity 1/0.55)`，再删掉即恢复全绿。
+
+**取舍：** 不加骨架屏、不加 spinner、不加「正在读取」的动效 —— 本机目录的刷新快到不值得任何视觉解释，慢的时候一句静态占位已经够；如果哪天刷新真的慢到需要进度感，要在**列表外面**（页脚、工具行）表达，不许改列表本身。
+
+**验证：** `node probes/new-session-sheet.mjs` 十段全过（第 10 段为本次新增）；`.scratch/ns-ui/flicker.mjs` 另有同一套规则的独立取证脚本（排序 / 筛选 / 露出建目录行 / 真建目录四段，均 0 变暗 0 清空）。
+
+## D317 记录面板的「内网通连动」：发送是文字、提交是记录包，图永远后补（#518）
+
+**问题：** 记录正文下方原本有一颗「复制 Markdown」；用户要把它换成「内网通连动」：发送给好友 = 一条普通消息，提交给好友 = 打包给对端，对端在气泡里看到卡片，能接受或只读预览。于是要定的是**入口放哪、发送与提交各发什么、截图什么时候走**。
+
+**决定：**
+
+- **入口**：active 与归档两个分支都用「内网通连动 ▾」替掉「复制 Markdown」；垃圾箱没有（那条已经删了，发不出去）。菜单先挂「正在问内网通…」，`GET /api/peer` 回来才换成两项；未启用、正在重启、连不上都写成禁用 + 原因，`> 32 KB` 的正文让「发送」禁用并提示改用提交。
+- **发送**：`noteTextForPeer(title, body)` = 标题 + 空行 + `richToMarkdown(body)`，走 `/api/peer/send` 的普通 `text` 帧，对端没有任何按钮。标题与正文都空时两项都禁用；发送允许草稿，不强迫先落盘。
+- **提交**：先 `saveAndWait()` 拿到桥发回来的真 id 与截图清单（dirty 时挂 waiter 等 `notes.saved`，6s 超时；`waitShots()` 每 100ms 轮询到张数齐，5s 上限），再选人、`POST /api/notes/measure` 拿每张图的体积与 sha256，确认页写「对方会收到什么」，最后 `POST /api/peer/sendnote` 发 note 帧、逐张 `POST /api/peer/sendfile` 补图。**note 先到、图后到**是正常状态：对端卡片按 sha 对齐，缺图时禁用接受（#517），不为此把整包改成一次上传。
+- **选人**：合并 `/api/peer` 的在线名单与 `/api/peer/contacts`，排除 `status.nodeId`，在线优先、离线置灰不可点，可按昵称与主机名搜；`localStorage["notes.peerLast"]` 记上次发给谁并打「上次」标。
+- **失败语义**：`sendnote` 成功、某张图失败 → 提示「记录包已发出，但第 n 张图没发出去：…」，不回滚 note（对端会按缺图处理）；`sendnote` 失败 → 提示错误、不重试，用户可再点一次。
+- **为什么不打包成 zip：** #507 已经定过——沿用现有文件通道，对端才能逐张对齐、中途补图；zip 会引入解包、路径与体积上限一整套新约定，收益只是少几次请求。
+
+**取舍：** 确认页不可取消发送（点「提交」即发，失败再重试），避免「点了确认还在等」的二段状态；没有多选/群发；提交前的截图体积用桥端 `describeShots()`（流式 sha256）算，不在浏览器里读文件。
+
+**验证：** `web/tests/notes-sheet-browser.mjs` 第 15 段走完「菜单两项 → 选人在线/离线/排除自己 → 发送的 Markdown 文本与回执 → 确认页四项 → sendnote + sendfile → 空记录禁用」；`npm run test:notes`、web/bridge typecheck 全绿。
+
+## D318 浏览器面板的折叠行改成一条操作链：只说「对页面做了什么」，不报最后那一下（用户要求 2026-11-18）
+
+**问题：** D310 的折叠行取的是「最后一个动作」，而 playwright 脚本几乎都是读页面收尾（`page.title()` / `page.evaluate()` / `page.screenshot()`）。真实会话里八张卡七张挤成同一行：`search.mjs · 读取页面信息 ×2`、`dom.mjs · 读取页面信息 ×2`、`inspect.mjs · 读取页面信息` —— 脚本名之外一个字都不同不了，一栏卡看下来不知道哪次是打开百度搜索、哪次是打开结果页截图。`×2` / `×3` 也不是「打转」，是相邻两步恰好都是读页面：`page.title()` 与 `page.evaluate()` 合并出来的。
+
+**决定：**
+
+- **折叠行 = 这次调用的一串操作**（`打开 www.baidu.com → 点击 → 输入 南京今天天气 → 输入 Enter`），挑与合并的规则放进模型层（`web/src/browser-ops.ts` 的 `foldedSteps()`），渲染层只把它们串成中文。
+- **只列「对页面做了什么」**：`nav` / `click` / `input` / `js` / `cdp` / `scroll` / `run` / `call` / `raw`。`launch`、`tab`（启动浏览器 / 切换标签）、`wait`、`print`、`read`、`shot` 是每支脚本都有的过场，**只在没有别的可列时兜底出现**（一张只调了 `page_info` 的 MCP 卡仍然说「读取页面信息」，不会因为筛干净而空成一片）。
+- **合并放在筛之后做**：`page.title()` → `waitForTimeout()` → `page.evaluate()` 中间那个 wait 被筛掉后会留下相邻的两行「读取页面信息」，那不是两件事。
+- **折叠行仍然不露代码与坐标**（D310 那条不变）：点击只写「点击」，输入只留值（`输入 南京今天天气`，选择器只在展开态），导航省掉 `https://` 前缀（一串「打开 …」本来就挤，协议名每段占 8 个字什么也没说）。
+- **链宽了不折行**：`.browser-title` 还是单行 + 省略号，全链挂在 `title` 属性上，悬停能看完整的。列表密度不变 —— 一屏还是那几条卡。
+- **新增 i18n 键 `输入 {p1}`**：折叠态没有分隔符（`输入 南京今天天气`），展开态仍是 `输入 · 值 · #选择器`，两种文案分开，别让 `·` 在链里跟 `→` 打架。
+
+**取舍：** 不做「每步耗时」与「执行到第几步」—— 子步骤仍然是从源码解析出来的要求，不是浏览器回传的轨迹（D310），折叠行能说的只是「这一步被要求做过」。也不把 `read` / `shot` 留在链里凑信息：留着就回到「七张卡同一行」的老问题。
+
+**验证：** `npm run test:browser-ops`（31 条，新增两条：`foldedSteps()` 在真实脚本上只剩「打开 → 输入 → 点击」；只有读页面时兜底、且被 wait 隔开的两步并成一条）；`npm run test:browser-ops:ui`（42 条，假 pi 的 `BROWSER` 场景多了两颗 `write` + `bash node x.mjs` 的脚本卡：折叠行要点出打开的网址与输入的值，链再宽也要整条挂在 `title` 上）。红过的判定：改动前两张脚本卡分别是 `search.mjs · 读取页面信息 ×2` 与 `inspect.mjs · 读取页面信息`，与用户截图逐字一致。
+
+
+## D319 正文里提问不再放过：停下前核对，没走 `ask_user_question` 就续跑一次（用户要求 2026-11-18）
 
 **问题：** 会话「回复时间」（`455ac52c`）第 12 轮，模型加载了 `grilling` 技能，按技能模板在正文里写了 `❓ Q1 / ➡️ 建议` 一次问三个问题，整轮没有调用提问工具；用户第 13 轮追问「为什么没用表单」才补上。技能规定的是「问什么」，却把「怎么呈现」也接管了。项目里只有交付礼仪那一条「用问卷问预览」的提示词（D191 / `DELIVERY_HINT`），通用的「提问走表单」从来没有写成可执行规则 —— `AGENTS.md` 与它的 git 历史里 `ask_user_question` 都是 0 命中，所以冲突时没有任何东西把输出拉回表单。
 

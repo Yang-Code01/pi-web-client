@@ -738,6 +738,29 @@ function mergeRepeats(steps: BrowserOpStep[]): BrowserOpStep[] {
   return out;
 }
 
+/**
+ * 折叠行里代表这次调用的动作：只说「对页面做了什么」——打开哪页、点了什么、输入了什么。
+ *
+ * 原来只取最后一个动作，而 playwright 脚本几乎都是「读一眼页面」收尾（`page.title()` /
+ * `page.evaluate()` / `page.screenshot()`），于是几张脚本卡挤成同一行 `读取页面信息 ×2`，分不出
+ * 谁是谁（真实会话里 8 张卡有 7 张）。所以这里按「操作」筛一遍，读页面 / 截图 / 等待 / 启动 /
+ * 切标签这些**每支脚本都有的过场**只在没别的可列时兜底出现。
+ *
+ * 合并放在筛之后做：`page.title()` → `waitForTimeout()` → `page.evaluate()` 被那个 wait 隔开，
+ * 中间夹的步被筛掉后会留下相邻的两行「读取页面信息」，那不是两件事。
+ */
+export function foldedSteps(steps: BrowserOpStep[]): BrowserOpStep[] {
+  const ops = steps.filter((step) => FOLDED_OPS.includes(step.kind));
+  const fallback = steps.filter((step) => !FOLDED_NOISE.includes(step.kind));
+  return mergeRepeats(ops.length ? ops : fallback);
+}
+
+/** 折叠行认作「操作」的类型。`launch` / `tab` 不进来：「启动浏览器」「切换标签」每支脚本都写。 */
+const FOLDED_OPS: readonly BrowserOpStepKind[] = ["nav", "click", "input", "js", "cdp", "scroll", "run", "call", "raw"];
+
+/** 兜底时也不要的：旁白与等待不是「做了什么」。 */
+const FOLDED_NOISE: readonly BrowserOpStepKind[] = ["print", "wait"];
+
 function stepsOfStatement(statement: string): BrowserOpStep[] {
   const text = statement.trim();
   if (!text || text.startsWith("#") || /^(import|from)\b/.test(text)) return [];

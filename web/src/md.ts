@@ -19,6 +19,8 @@ export interface MdOptions {
   openPath?: (path: string) => void;
   /** Map a relative image src to a loadable url; return null to drop the image. */
   imageSrc?: (src: string) => string | null;
+  /** GFM 表格；聊天气泡里关掉（表格在窄栏里没法读）。默认开。 */
+  tables?: boolean;
 }
 
 /** Extensions worth linking when the text names a file that has a directory part. */
@@ -303,7 +305,7 @@ export function renderMarkdown(src: string, opts: MdOptions = {}): DocumentFragm
       continue;
     }
 
-    if (/^\s*\|?.*\|/.test(line) && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1])) {
+    if ((opts.tables ?? true) && /^\s*\|?.*\|/.test(line) && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1])) {
       closeList();
       const head = splitRow(line);
       const aligns = splitRow(lines[i + 1]).map((c) => (c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : ""));

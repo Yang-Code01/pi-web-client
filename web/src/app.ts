@@ -20,7 +20,7 @@ import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
-import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpStepKind, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
+import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -1561,6 +1561,15 @@ export class App {
       },
       true,
     );
+    // 内网通记录卡片「打开记录」(#508)：同源 + 确实有这条，才开面板并选中。
+    window.addEventListener("message", (ev) => {
+      if (ev.origin !== window.location.origin) return;
+      const d = ev.data as { t?: string; id?: string } | null;
+      if (d?.t !== "pi-note-open" || typeof d.id !== "string") return;
+      if (!this.notes.some((n) => n.id === d.id)) return;
+      this.openNotes();
+      this.notesSheet?.openNote(d.id);
+    });
     // 预览页里的链接点击（D63）：用 token 认人，不靠 ev.source（跨文档导航后指针不相等）。
     window.addEventListener("message", (ev) => {
       const d = ev.data as { t?: string; rel?: string; href?: string; y?: number; tk?: string } | null;
@@ -6233,13 +6242,18 @@ export class App {
 
     // #499：名字整行、默认值就是「新会话」—— 写在占位里，用户不用先删掉它再打字。
     const nameField = el("input", "ns-input ns-name") as HTMLInputElement;
+    nameField.id = "ns-new-name";
     nameField.placeholder = tr("新会话");
     nameField.maxLength = 120;
-    nameField.setAttribute("aria-label", tr("会话名称"));
     // #487：交接过来的名字先填上，可改可清；空串等于不填（票号取完是空的时候）。
     nameField.value = (preset?.name?.trim() ?? "").slice(0, nameField.maxLength);
+    // 名字旁边给它一个标签：这排三个框（名字 / 路径 / 筛选）以前长得一模一样，分不出哪个是必填的。
+    const nameLabel = el("label", "ns-namelbl", tr("名字"));
+    nameLabel.htmlFor = nameField.id;
+    // 右端写「将在哪儿新建」：以前只藏在底栏那句说明里，跟按钮挤在一行。
+    const whereHint = el("span", "ns-where");
     const nameRow = el("div", "ns-namerow");
-    nameRow.append(nameField);
+    nameRow.append(nameLabel, nameField, whereHint);
 
     const body = el("div", "ws-new-body");
     const side = el("div", "ws-new-side");
@@ -6255,7 +6269,7 @@ export class App {
 
     // 左栏：已经在列表里的工作区（手动组不算）+「用这个目录新建工作区」+ 最近用过的目录。
     const sideRows: { key: string; node: HTMLButtonElement; here: boolean }[] = [];
-    const addSide = (key: string, name: string, color: string | null, here = false): void => {
+    const addSide = (key: string, name: string, color: string | null, here = false, into?: HTMLElement): void => {
       if (!key || sideRows.some((r) => sameDir(r.key, key))) return;
       const row = el("button", "model-row ws-new-pick") as HTMLButtonElement;
       row.type = "button";
@@ -6268,7 +6282,7 @@ export class App {
       row.append(dot, label);
       if (here) row.append(el("span", "ws-here", tr("这里")));
       row.onclick = () => void picker?.go(key);
-      picks.append(row);
+      (into ?? picks).append(row);
       sideRows.push({ key, node: row, here });
     };
     const paintSide = (): void => {
@@ -6280,6 +6294,11 @@ export class App {
     sideScroll.append(el("div", "ws-new-side-title", tr("已经在列表里")));
     const picks = el("div", "ws-new-picks");
     sideScroll.append(picks);
+    // 「最近」自己一层：标题和行都跟着每次重绘重算，不然它们会留在 DOM 里、脱出 sideRows。
+    const recentTitle = el("div", "ws-new-side-title", tr("最近"));
+    const recentPicks = el("div", "ws-new-picks");
+    recentTitle.hidden = true;
+    sideScroll.append(recentTitle, recentPicks);
     /** 手动组不进这一栏：它们不是「按目录」的，点了也对不上一个路径。 */
     const pickGroups = () => buildTree(this.sessions, this.manage, this.workspaces, "").groups.filter((group) => !group.manual);
     // #499：新建工作区的入口就摆在组行下面 —— 用户在弹层里挑到一个新目录，不必先关掉弹层去建组。
@@ -6306,6 +6325,20 @@ export class App {
       wsAdd.disabled = true;
       this.act(() => this.socket.send({ type: "manage", action: "ws.create", dir: current }));
     };
+    /** 「最近」：先用过又没进上面那组的目录，再按会话更新时间补，最长 6 条。 */
+    const paintRecent = (): void => {
+      const recentDirs: string[] = [];
+      for (const dir of [...this.recentCwds(), ...[...this.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.cwd)]) {
+        const abs = cleanDirPath(dir ?? "");
+        if (!abs || recentDirs.some((d) => sameDir(d, abs))) continue;
+        recentDirs.push(abs);
+        if (recentDirs.length >= 6) break;
+      }
+      recentPicks.replaceChildren();
+      const fresh = recentDirs.filter((dir) => !sideRows.some((r) => sameDir(r.key, dir)) && !sameDir(dir, current));
+      recentTitle.hidden = fresh.length === 0;
+      for (const dir of fresh) addSide(dir, dirBaseName(dir), null, false, recentPicks);
+    };
     const paintPicks = (): void => {
       picks.replaceChildren();
       sideRows.length = 0;
@@ -6314,25 +6347,13 @@ export class App {
       for (const group of groups) addSide(group.key, group.name, group.color, group.id === hereWs);
       if (!groups.length) picks.append(el("div", "empty", tr("还没有按目录分的工作区")));
       wsAdd.disabled = this.newSheetWsCreating || !current || !this.bridgeCaps.includes(WS_CREATE_DIR_CAP);
+      // 先重算最近那一组（刚建好的工作区要从这里消失），高亮最后统一上。
+      paintRecent();
       paintSide();
     };
     this.newSheetPicks = paintPicks;
     paintPicks();
     side.append(wsAdd);
-
-    // 最近：先看这次用过的，再按会话的更新时间补；与会话的工作目录去重，最长 6 条。
-    const recentDirs: string[] = [];
-    for (const dir of [...this.recentCwds(), ...[...this.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.cwd)]) {
-      const abs = cleanDirPath(dir ?? "");
-      if (!abs || recentDirs.some((d) => sameDir(d, abs))) continue;
-      recentDirs.push(abs);
-      if (recentDirs.length >= 6) break;
-    }
-    const fresh = recentDirs.filter((dir) => !sideRows.some((r) => sameDir(r.key, dir)) && !sameDir(dir, current));
-    if (fresh.length) {
-      sideScroll.append(el("div", "ws-new-side-title", tr("最近")));
-      for (const dir of fresh) addSide(dir, dirBaseName(dir), null);
-    }
 
     const mkBtn = el("button", "btn ghost dir-mk", tr("＋ 新建文件夹")) as HTMLButtonElement;
     mkBtn.title = tr("在当前目录下新建一个文件夹");
@@ -6362,12 +6383,13 @@ export class App {
     foot.append(note, openExisting, ok);
     const advanced = this.launchOptionsBox();
 
-    /** 底部那行说明与「打开已有的」都跟着当前目录走。 */
+    /** 底栏说明和「打开已有的」跟着当前目录走；名字框右边的目标路径也一起刷。 */
     const paintFoot = (): void => {
       const here = sessionsHere();
+      whereHint.textContent = current ? tr("将在 {p1} 新建", { p1: current }) : "";
       if (!current) note.textContent = tr("先挑一个工作目录");
       else if (here.length) note.textContent = tr("这个目录已有 {p1} 个会话", { p1: String(here.length) });
-      else note.textContent = tr("将在 {p1} 新建会话", { p1: current });
+      else note.textContent = "";
       openExisting.hidden = here.length === 0;
       ok.disabled = !current;
     };
@@ -9682,7 +9704,6 @@ export class App {
       const notesHost: NotesHost = {
         send: (msg) => this.socket.send(msg),
         notes: () => this.notes,
-        session: () => (this.currentId ? { id: this.currentId, name: this.session?.name ?? "" } : null),
         prefill: (text) => this.prefill(text),
         newSessionWith: (text) => this.newSessionWith(text),
       };
@@ -17243,15 +17264,12 @@ export class App {
 
   /** 折叠后只留人话：坐标、JS 代码、函数名一律不进来（那些只在展开态）。 */
   private browserFoldedText(card: BrowserOpCard): string {
+    // 一串「对页面做了什么」（打开哪页 → 点了什么 → 输入了什么），不是「最后干完那一下」：
+    // 脚本几乎都是读页面收尾，只报最后一步会让几张卡挤成同一行。模型层负责挑与合并。
+    const steps = foldedSteps(card.steps);
     // 脚本卡把文件名带上：一栏十个 `bash` 分不清谁是谁。
-    // 末尾的「等待 x 秒」/「输出 …」不是干的事，往后找最后一个真正的动作。
-    const ACTIONS: BrowserOpStepKind[] = ["nav", "input", "click", "read", "js", "cdp", "tab", "shot", "launch"];
-    const last =
-      card.steps.filter((step) => ACTIONS.includes(step.kind)).at(-1) ??
-      card.steps.filter((step) => step.kind !== "print").at(-1) ??
-      card.steps.at(-1);
     const who = card.script ? `${card.script} · ` : "";
-    if (last) return who + this.browserStepText(last, true);
+    if (steps.length) return who + steps.map((step) => this.browserStepText(step, true)).join(" → ");
     const first = card.intent.split("\n").map((line) => line.trim()).find(Boolean);
     return first ? first.slice(0, 80) : tr("浏览器调用");
   }
@@ -17275,7 +17293,10 @@ export class App {
       this.browserFold.set(card.toolCallId, !expanded);
       this.renderQueue();
     };
-    const title = el("div", "browser-title", this.browserFoldedText(card));
+    const titleText = this.browserFoldedText(card);
+    const title = el("div", "browser-title", titleText);
+    // 折叠行只有一行的宽度，长链被省略号截掉；悬停看全链。
+    if (titleText) title.title = titleText;
     const duration = el("span", "browser-dur", this.execDuration(card.durationMs ?? 0) || "–");
     duration.dataset.bdur = "";
     head.append(chev, title, duration);
@@ -17350,7 +17371,7 @@ export class App {
     let text: string;
     switch (step.kind) {
       case "nav":
-        text = target ? tr("打开 {p1}", { p1: target }) : tr("打开页面");
+        text = target ? tr("打开 {p1}", { p1: shortUrl(target) }) : tr("打开页面");
         break;
       case "wait": {
         const ms = /^(\d+)ms$/.exec(target);
@@ -17379,7 +17400,11 @@ export class App {
         break;
       case "input":
         // 脚本里的输入能带上选择器（`输入 · 今天的天气 · #kw`），但折叠行只留值。
-        text = target ? tr("输入 · {p1}", { p1: target }) : tr("输入");
+        if (!target) {
+          text = tr("输入");
+          break;
+        }
+        text = coarse ? tr("输入 {p1}", { p1: target }) : tr("输入 · {p1}", { p1: target });
         if (step.name && !coarse) text += ` · ${step.name}`;
         break;
       case "launch":
@@ -19186,6 +19211,11 @@ function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
   btn.setAttribute("aria-pressed", String(collapsed));
 }
 
+/** 折叠行里的网址省掉协议名：一串「打开 …」本来就挤，`https://` 每段占 8 个字什么也没说。 */
+function shortUrl(target: string): string {
+  return target.replace(/^https?:\/\//i, "");
+}
+
 /** 浏览器面板的阈值与工具名单：面板齿轮里改，存 localStorage（`pi.browserOps.*`）。 */
 interface BrowserCfg {
   thresholds: Partial<BrowserOpsThresholds>;
@@ -19651,7 +19681,7 @@ function settingFields(): SettingField[] {
     defaultText: tr("关"),
     hint: tr("agent 停下前，计划还有没关的项、且上次更新后又调用了 5 次以上工具，就让它多跑一小步只用 todo 对齐计划（用户看不到这句提醒，会多花一次请求）。改了立即生效"),
   },
-  // D312: 提问兜底。默认开，只有显式 false 才关；扩展在 pi 子进程里每次停下现读。
+  // D319: 提问兜底。默认开，只有显式 false 才关；扩展在 pi 子进程里每次停下现读。
   {
     key: "web.askNudge",
     label: tr("停下前核对提问"),

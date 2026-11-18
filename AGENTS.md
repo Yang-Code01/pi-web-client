@@ -49,7 +49,7 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 - 技能（`grilling` 等）规定的「❓ Q1 + ➡️ 建议」只约束**问什么**，不约束**怎么呈现**：题干整段放进 `question`，分支放进 `options[].description`，推荐项放第一个并在 label 末尾加「（推荐）」。
 - 用户还能自己输入（「Type something.」），不要加「其他」选项。
-- 兜底：`bridge/ext/ask-nudge.ts` 在模型停下前核对，正文提问且本轮没调 `ask_user_question` 就续跑一次；开关 `web.askNudge`（默认开），同一段问句只提醒一次、整会话最多两次（D312）。
+- 兜底：`bridge/ext/ask-nudge.ts` 在模型停下前核对，正文提问且本轮没调 `ask_user_question` 就续跑一次；开关 `web.askNudge`（默认开），同一段问句只提醒一次、整会话最多两次（D319）。
 
 ### 界面文案（i18n）
 
@@ -71,6 +71,14 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 - 只有 `document.body.append()` 上去、压根不在 `#app` 里的浮层可以写裸的，行尾必须标 `/* 不在 #app */`；守卫只认这个标记，**别拿它当顺手豁免** —— 浮层本来就该跟着字号缩放，请挂进 `#app`。
 - 守卫：`npm run test:viewport`（已挂在 web 的 typecheck 里）。新写/改弹层后跑一次，顺便在字号 150% 下看一眼底栏还在不在。
 - 判「窄版」用 `@container`（卡 / 面板自己的宽度），不要用 `@media`（视口宽度）：嵌在左栏右栏里的面板永远等不到 `@media` 触发（D263）。
+
+### 列表刷新：已显示的内容不许变暗、不许先清空
+
+点了排序 / 筛选 / 新建目录之后「闪一下」，根因永远是同一个：把「忙碌」画在**已经显示好的内容**上（`.busy` 压暗、`clearRows()` 再挂「读取中…」）。列表要 stale-while-revalidate —— 拿到新数据前不动一个像素：
+
+- 静默重取只留 `cursor: progress`，不加 `opacity`、不换占位。非静默重取（跳目录、建目录后重载）**慢过 220ms** 才让位给「读取中…」占位，快的请求用户应当看到「点了立刻换」。
+- 需要进度感就画在列表**外面**（页脚计数、工具行），不许改列表本身；也不要用骨架屏当折衷。
+- 守卫：`node probes/new-session-sheet.mjs` 第 10 段逐帧采样（排序 / 逐字筛选 / 建目录），任何一帧 `opacity < 0.99` 或有内容期间 `children === 0` 就红。新写/改任何分页列表（文件管理器、附件弹层、内网通选文件）时照这段抄一份。细节见 D316。
 
 ### Running the bridge
 
