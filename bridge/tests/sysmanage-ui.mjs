@@ -129,6 +129,42 @@ await toSettings.first().click();
 await page.locator('.at-input[data-field="apiBase"]').waitFor({ timeout: 10_000 });
 check("「去设置」真能到设置页", (await page.locator('.at-input[data-field="apiBase"]').count()) === 1);
 check("设置页有地址/账号/密码四个输入框", (await page.locator(".at-input").count()) >= 4, String(await page.locator(".at-input").count()));
+// 填完四个字段直接点「登录」，中间不点「保存配置」：桥端拿到的必须是表单里这对地址，
+// 而登录失败（这里是 127.0.0.1:9，必然拒连）也不能把刚填的东西清空。
+await page.locator('.at-input[data-field="apiBase"]').fill("http://127.0.0.1:9/oa");
+await page.locator('.at-input[data-field="pageBase"]').fill("http://127.0.0.1:9");
+await page.locator('.at-input[data-field="account"]').fill("TS0001");
+await page.locator('input[type="password"].at-input').fill("ui-pass-123456");
+await page.getByRole("button", { name: "登录", exact: true }).click();
+await page.locator(".at-notice__text").first().waitFor({ timeout: 20_000 });
+const loginNotice = (await page.locator(".at-notice__text").first().innerText()).trim();
+check("直接点「登录」会用表单里的地址（不是「先配好 OA 地址」）", !/先配好 OA 地址/.test(loginNotice), loginNotice);
+check("登录失败不清空接口地址", (await page.locator('.at-input[data-field="apiBase"]').inputValue()) === "http://127.0.0.1:9/oa");
+check("登录失败不清空账号", (await page.locator('.at-input[data-field="account"]').inputValue()) === "TS0001");
+check(
+  "登录失败不清空密码",
+  (await page.locator('input[type="password"].at-input').inputValue()) === "ui-pass-123456",
+  await page.locator('input[type="password"].at-input').inputValue(),
+);
+// 保存配置成功也会整页重画：账号不能跟着消失，否则人以为没存上。
+await page.locator('.at-input[data-field="account"]').fill("TS0002");
+await page.getByRole("button", { name: "保存配置", exact: true }).click();
+// 等提示条换一句话（成功是「配置已保存」，失败是那一条错误），不认死具体文案。
+await page.waitForFunction(
+  (prev) => {
+    const t = (document.querySelector(".at-notice__text")?.textContent ?? "").trim();
+    return t.length > 0 && t !== prev;
+  },
+  loginNotice,
+  { timeout: 20_000 },
+);
+const saveNotice = (await page.locator(".at-notice__text").first().innerText()).trim();
+check("保存配置后提示「配置已保存」", saveNotice === "配置已保存", saveNotice);
+check(
+  "保存配置后账号还在输入框里",
+  (await page.locator('.at-input[data-field="account"]').inputValue()) === "TS0002",
+  await page.locator('.at-input[data-field="account"]').inputValue(),
+);
 // 提醒页跟 OA 配置无关：没配过也该打得开（它是本地规则）。
 await page.locator(".at-tab", { hasText: "提醒" }).click();
 await page.locator(".at-week__btn").first().waitFor({ timeout: 10_000 });

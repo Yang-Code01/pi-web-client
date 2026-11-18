@@ -33,7 +33,6 @@ interface OvertimeForm {
 }
 
 const L1_KEY = "pi-web-attendance:l1";
-const L2_KEY = "pi-web-attendance:l2";
 
 export interface AttendancePane {
   /** 切走 / 关面板时调它：停掉正在跑的请求，把 DOM 摘掉。 */
@@ -63,6 +62,11 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
   // 密码框靠这个活过重绘：点「保存配置」会把整页重画，输入框里刚敲的密码
   // 随之消失，紧接着点「登录」就变成「请填密码」。只留在内存里，不落盘。
   let passwordDraft = "";
+  // 设置页另外三个框同样的道理：登录失败、保存成功都会整页重画，重画时若一律拿 state
+  // 重新填，刚敲的地址和账号就被抹掉了（账号更冤 —— 页面从来只拿得到掩码）。
+  // `cfgTouched` 分字段记：没动过的框继续跟着 state 走，动过的以草稿为准。
+  const cfgDraft = { apiBase: "", pageBase: "", account: "" };
+  const cfgTouched = { apiBase: false, pageBase: false, account: false };
   let pending: { preview: Record<string, unknown>; body: Record<string, unknown> } | null = null;
   let opened: string | null = null;
   /** 撤回要点两次：第一次记在这儿，第二次才真发。 */
@@ -931,11 +935,17 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     card.append(el("h3", "at-card__title", tr("考勤系统")));
     const grid = el("div", "at-grid");
 
-    const apiBase = text("apiBase", state?.apiBase ?? "", () => {});
+    const cfgInput = (name: "apiBase" | "pageBase" | "account", saved: string): HTMLInputElement =>
+      text(name, cfgTouched[name] ? cfgDraft[name] : saved, (v) => {
+        cfgTouched[name] = true;
+        cfgDraft[name] = v;
+      });
+    const apiBase = cfgInput("apiBase", state?.apiBase ?? "");
     apiBase.placeholder = "https://attendance.example.com:8085";
-    const pageBase = text("pageBase", state?.pageBase ?? "", () => {});
+    const pageBase = cfgInput("pageBase", state?.pageBase ?? "");
     pageBase.placeholder = "https://attendance.example.com";
-    const account = text("account", "", () => {});
+    // 账号只认草稿：state 给的是掩码（TS***1），填进输入框再保存回去就成了账号。
+    const account = cfgInput("account", "");
     account.placeholder = state?.account || tr("工号或邮箱");
     const password = document.createElement("input");
     password.type = "password";
@@ -985,7 +995,15 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     login.type = "button";
     login.onclick = async () => {
       try {
-        await api.attendanceLogin({ account: account.value.trim(), password: password.value });
+        const wantApi = apiBase.value.trim().replace(/\/+$/, "");
+        const wantPage = pageBase.value.trim();
+        const wantAccount = account.value.trim();
+        // 表单里填了地址就先落盘再登录：没人说过「登录」之前必须先点一次「保存配置」，
+        // 而桥端 login 只读已存的 config —— 少了这一步就回「先配好 OA 地址」。
+        if (wantApi && (wantApi !== (state?.apiBase ?? "") || wantPage !== (state?.pageBase ?? ""))) {
+          await api.attendanceSaveConfig({ apiBase: wantApi, pageBase: wantPage, account: wantAccount } as never);
+        }
+        await api.attendanceLogin({ account: wantAccount, password: password.value });
         password.value = "";
         passwordDraft = "";
         notice = tr("登录成功");
@@ -1037,6 +1055,13 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
       try {
         await api.attendancePurge();
         passwordDraft = "";
+        // 清完就得把草稿一起丢掉：否则输入框还挂着刚被删掉的旧地址，看着像没清干净。
+        cfgDraft.apiBase = "";
+        cfgDraft.pageBase = "";
+        cfgDraft.account = "";
+        cfgTouched.apiBase = false;
+        cfgTouched.pageBase = false;
+        cfgTouched.account = false;
         notice = tr("已清除");
         noticeTone = "ok";
         records = null;
