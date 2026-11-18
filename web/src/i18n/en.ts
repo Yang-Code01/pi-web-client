@@ -3490,6 +3490,8 @@ export const en: Dict = {
 "比如项目号，可不填": "e.g. project code, optional",
 "补一句为什么，可不填": "A line on why, optional",
 "登录态会加密存本机": "Sign-in state is stored encrypted here",
+"显示密码": "Show password",
+"隐藏密码": "Hide password",
 "接口地址填 OA 的后端（一般带端口），网页地址填你平时打开页面的那个；两个常常只差端口。": "The API address is the OA backend (usually with a port); the page address is the one you open in a browser. They often differ only by port.",
 "平时": "Weekday",
 "没有加班": "no overtime",

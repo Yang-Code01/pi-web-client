@@ -205,7 +205,10 @@ export interface WorkclockBackfill {
 
 // ---------------------------------------------------------------- 考勤（本机管理第六页）
 
-/** `GET /api/attendance/state`。账号、工号都已经是掩码；密码 / token 从不出现。 */
+/**
+ * `GET /api/attendance/state`。账号、工号都已经是掩码；这份摘要里没有密码 / token
+ * （密码单独走 `GET /api/attendance/password`，只给本机页面回填设置页的密码框）。
+ */
 export interface AttendanceState {
   configured: boolean;
   problem: string | null;
@@ -213,6 +216,7 @@ export interface AttendanceState {
   pageBase: string;
   /** 掩码后的账号，例如 `JS***6`。 */
   account: string;
+  /** 有 token 能用，或存着密码且没被上游拒过（过期时桥会自动重登）。 */
   loggedIn: boolean;
   expiresAt: number;
   userName: string;

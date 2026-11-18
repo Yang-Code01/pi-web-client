@@ -489,6 +489,8 @@ export const api = {
   attendanceLogin: (body: { account: string; password: string }) =>
     postJson<{ ok: true; userName: string; workNoMask: string }>("/api/attendance/login", body),
   attendanceLogout: () => req<{ ok: true }>("/api/attendance/logout", { method: "POST" }),
+  /** 已存的本机密码（桥端 DPAPI 解密）。设置页拿来回填密码框，眼睛按钮只切 input 的 type。 */
+  attendancePassword: () => req<{ password: string }>("/api/attendance/password"),
   attendanceOvertime: () => req<AttendanceOvertime>("/api/attendance/overtime"),
   attendanceOvertimeSubmit: (body: Record<string, unknown>) =>
     postJson<AttendanceSubmitResult>("/api/attendance/overtime", body),
