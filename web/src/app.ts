@@ -20,6 +20,7 @@ import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
+import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpStepKind, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -312,6 +313,21 @@ export class App {
   private execRoundStats: Record<string, ExecRoundStats> = {};
   private execRuns: BgRunDto[] = [];
   private execChildStates = new Map<string, ExecChildState>();
+  /** 浏览器面板：用户手动折叠/展开过的卡（toolCallId → 是否展开）；没记录的按状态给默认。 */
+  private browserFold = new Map<string, boolean>();
+  private browserIntentOpen = new Set<string>();
+  private browserOutOpen = new Set<string>();
+  /** 每次调用最后一次有新输出的时刻（toolCallId → 毫秒），「无声」只看这个。 */
+  private browserOutputAt = new Map<string, number>();
+  private browserOutputSeen = new Map<string, string>();
+  /** 上一次画出来的状态签名：只有它变了才整块重画，否则 1 秒的闹钟只改耗时。 */
+  private browserSig = "";
+  /** 「只看主会话」：过滤掉子代理的卡（默认关，只在这次页面里记着）。 */
+  private browserMainOnly = false;
+  /** 齿轮面板是否展开（阈值与工具名单）。 */
+  private browserCfgOpen = false;
+  /** 阈值与工具名单：从 localStorage 读，改完回写；坏数据回默认。 */
+  private browserCfg: BrowserCfg = readBrowserCfg();
   private execChildErrors = new Map<string, string>();
   private execChildExpanded = new Set<string>();
   /** D232: 当前打开的参数对话框的关闭句柄（切会话、再开一份时先关掉旧的）。 */
@@ -1486,6 +1502,7 @@ export class App {
       }
       if (this.session?.running) this.fillHintStatus();
       this.refreshExecClock();
+      this.refreshBrowserClock();
       // 刻度尺也养在这个闹钟里：只改 DOM 的格子数，不重画整个列表。
       for (const node of document.querySelectorAll<HTMLElement>(".sc-ruler[data-since]")) {
         drawRuler(node, Number(node.dataset.since));
@@ -1925,7 +1942,7 @@ export class App {
         if (Array.isArray(turns))
           this.execPlanRounds = turns.filter((turn) => turn.kind !== "ask").map((turn, index) => ({ id: turn.id, ordinal: index + 1 }));
         this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
@@ -1933,7 +1950,7 @@ export class App {
       case "plan":
         if (msg.sessionId !== this.currentId) break;
         this.execPlan = msg.plan && typeof msg.plan === "object" ? msg.plan as ExecPlanSnapshot : null;
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
         break;
       case "history":
         // #220: 一页更早的内容。归属由 ChatView 认（`before` 是否等于它当前的 `topId`）；
@@ -1941,7 +1958,7 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         if (typeof msg.before !== "string") break;
         this.chat.prepend(msg.before, (msg.items ?? []) as Item[], msg.hasMore === true);
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
         break;
       case "item.add":
         if (msg.sessionId !== this.currentId) break;
@@ -1962,13 +1979,13 @@ export class App {
         this.beginExecRound(item);
         // #199: 启动期的「撤回」只在真有排队消息时才有位置，气泡来去都得重画这一行。
         if (this.session?.starting) this.fillHintStatus();
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
         break;
       case "item.remove":
         if (msg.sessionId !== this.currentId) break;
         this.chat.remove(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
         if (this.session?.starting) this.fillHintStatus();
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
         break;
       case "bash.delta":
         if (msg.sessionId !== this.currentId) break;
@@ -1980,7 +1997,7 @@ export class App {
           const runsChanged = JSON.stringify(this.execRuns) !== JSON.stringify(runs);
           this.execRuns = runs;
           this.syncExecChildWatches();
-          if (runsChanged && this.queueTab === "exec") this.renderQueue();
+          if (runsChanged && this.execTabLive()) this.renderQueue();
         }
         if (this.bgSheet && msg.sessionId === this.bgSheet.sessionId) {
           // 桥只发错误码（文案在这边翻了再显示），目前只有一种：公网那只手看不到后台任务。
@@ -2008,7 +2025,7 @@ export class App {
           state: msg.state === "done" || msg.state === "failed" ? msg.state : "running",
           pending: msg.pending === true,
         });
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
         break;
       }
       case "exec.child.unavailable": {
@@ -2018,7 +2035,7 @@ export class App {
         this.execChildErrors.set(runId, String(msg.error ?? "unavailable"));
         const previous = this.execChildStates.get(runId);
         if (previous) this.execChildStates.set(runId, { ...previous, pending: false });
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
         break;
       }
       case "bg.log":
@@ -2034,7 +2051,7 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.chat.replace(msg.id, msg.item as Item);
         if (this.session?.starting) this.fillHintStatus();
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
         break;
       case "delta":
         if (msg.sessionId !== this.currentId) break;
@@ -2062,7 +2079,7 @@ export class App {
         };
         this.updateExecRoundStats();
         this.fillModelChip();
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
         this.paintContextIfOpen();
         break;
       case "copilot": {
@@ -2070,7 +2087,7 @@ export class App {
         this.copilot = this.copilotFromFrame(msg);
         this.updateExecRoundStats();
         this.fillModelChip();
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
         break;
       }
       case "ctxlog": {
@@ -2135,7 +2152,7 @@ export class App {
           this.setExecPhase("waiting");
           this.setActivity(tr("思考中"));
         }
-        if (msg.phase !== "update" && this.queueTab === "exec") this.renderQueue();
+        if (msg.phase !== "update" && this.execTabLive()) this.renderQueue();
         break;
       case "approval.add":
         // D156：当前会话也照加 —— 列表里的计数和本地队列是两份账，只给「不在看的会话」加会让
@@ -13586,7 +13603,7 @@ export class App {
         this.depsAt = Date.now();
         this.depsLoading = false;
         this.paintDepsSurface();
-        if (this.queueTab === "exec") this.renderQueue();
+        if (this.execTabLive()) this.renderQueue();
       });
   }
 
@@ -16922,6 +16939,398 @@ export class App {
     }
   }
 
+  // ---------------------------------------------------------------- 浏览器面板 (#503)
+  /**
+   * 浏览器工具一跑起来就是十几步，右栏只看到一行「mcp__browser_use 48.0 秒」，看不出它在点哪个按钮。
+   * 这块面板把那次调用的代码拆成能读的子步骤，加上黄 / 红两级「疑似卡住」、「无声」和「打转」。
+   * 数据只来自会话 items（回放），不新开通道、不落盘截图。
+   */
+  private browserModel(): BrowserOpsSummary {
+    const items = this.chat.loadedItems();
+    const known = new Set(items.filter((item) => item.kind === "tool").map((item) => item.toolCallId));
+    for (const key of [...this.browserOutputAt.keys()]) if (!known.has(key)) this.browserOutputAt.delete(key);
+    for (const key of [...this.browserOutputSeen.keys()]) if (!known.has(key)) this.browserOutputSeen.delete(key);
+    const childRuns = this.browserMainOnly
+      ? []
+      : this.execRuns
+        .map((run) => ({ name: run.agent || tr("子代理"), items: this.execChildStates.get(run.id)?.items ?? [] }))
+        .filter((run) => run.items.length > 0);
+    return browserOpsView({
+      items,
+      childRuns,
+      tools: this.browserCfg.tools ?? BROWSER_TOOL_PATTERNS,
+      thresholds: this.browserCfg.thresholds,
+      outputAt: Object.fromEntries(this.browserOutputAt),
+      now: Date.now(),
+    });
+  }
+
+  /** 有没有浏览器调用正在跑（只看状态，不解析代码）：第三颗 tab 上的小圆点用。 */
+  private browserRunning(): boolean {
+    return this.chat.loadedItems().some((item) => item.kind === "tool" && item.status === "running" && isBrowserTool(item.name));
+  }
+
+  /** 记下每次调用「最后一次有新输出」的时刻；没输出过的不记，免得把「开始到现在」当成「多久没输出」。 */
+  private trackBrowserOutput(items: Item[]): void {
+    const now = Date.now();
+    for (const item of items) {
+      if (item.kind !== "tool") continue;
+      const seen = `${item.partialResult ?? ""}\u0000${item.result ?? ""}`;
+      if (this.browserOutputSeen.get(item.toolCallId) === seen) continue;
+      this.browserOutputSeen.set(item.toolCallId, seen);
+      if ((item.partialResult ?? "").trim() || (item.result ?? "").trim()) this.browserOutputAt.set(item.toolCallId, now);
+    }
+  }
+
+  private renderBrowserPanel(): HTMLElement {
+    this.trackBrowserOutput(this.chat.loadedItems());
+    const model = this.browserModel();
+    this.browserSig = this.browserSignature(model);
+    const panel = el("div", "browser-panel");
+    panel.append(this.browserSumCard(model));
+    if (this.browserCfgOpen) panel.append(this.browserCfgEditor());
+    if (!model.cards.length) {
+      panel.append(el("div", "exec-empty", tr("这一轮没有浏览器操作")));
+      panel.append(el("div", "hint", tr("工具名不在名单里就不会出现；点右上角齿轮可改名单与阈值。")));
+      return panel;
+    }
+    const list = el("div", "browser-list");
+    for (const card of model.cards) list.append(this.browserCardNode(card));
+    panel.append(list);
+    return panel;
+  }
+
+  private browserSignature(model: BrowserOpsSummary): string {
+    return `${this.browserSigOf(model)}|${this.browserMainOnly ? 1 : 0}|${this.browserCfgOpen ? 1 : 0}`;
+  }
+
+  private browserSigOf(model: BrowserOpsSummary): string {
+    return model.cards.map((card) => `${card.toolCallId}:${card.state}:${card.silent ? 1 : 0}:${card.looping ? 1 : 0}`).join("|");
+  }
+
+  private browserSumCard(model: BrowserOpsSummary): HTMLElement {
+    const sum = el("div", "browser-sum");
+    const text = el("div", "browser-sum-text");
+    const sep = () => el("span", "browser-sep", " · ");
+    text.append(el("b", "", tr("共 {p1} 次", { p1: String(model.total) })));
+    const spent = this.execDuration(model.totalMs);
+    if (spent) text.append(sep(), el("span", "", spent));
+    // 只有一次调用时「最慢」与总数是同一个数；跑着的那一次同时又是最慢的时候，「当前」已经
+    // 是同一个数了。两种情况都别再重复一遍——挤掉的是真正在变的那几个字。
+    const slowestIsCurrent = model.current !== null && model.slowestMs === model.current.ms;
+    if (model.slowestMs !== null && model.total > 1 && !slowestIsCurrent) {
+      text.append(sep(), el("span", "", tr("最慢 {p1}", { p1: this.execDuration(model.slowestMs) })));
+    }
+    const live = el("span", "browser-live", model.current ? tr("当前 {p1}", { p1: this.execDuration(model.current.ms) }) : "");
+    live.dataset.bnow = "";
+    live.hidden = !model.current;
+    const liveSep = sep();
+    liveSep.dataset.bnowsep = "";
+    liveSep.hidden = !model.current;
+    text.append(liveSep, live);
+    const allFolded = model.cards.length > 0 && model.cards.every((card) => !this.browserExpanded(card));
+    const fold = el("button", "browser-fold", allFolded ? tr("全部展开") : tr("全部折叠")) as HTMLButtonElement;
+    fold.type = "button";
+    fold.onclick = () => {
+      for (const card of model.cards) this.browserFold.set(card.toolCallId, allFolded);
+      this.renderQueue();
+    };
+    sum.append(text, ...this.browserSumTools(model));
+    return sum;
+  }
+
+  /** 汇总行右侧那几颗：只看主会话 / 全部折叠 / 齿轮。窄栏里要自己换行，别把汇总文字挤没。 */
+  private browserSumTools(model: BrowserOpsSummary): HTMLElement[] {
+    const only = el("label", "browser-only") as HTMLLabelElement;
+    only.title = tr("只看主会话：过滤掉子代理里跑的浏览器调用");
+    const box = el("input", "") as HTMLInputElement;
+    box.type = "checkbox";
+    box.checked = this.browserMainOnly;
+    box.onchange = () => {
+      this.browserMainOnly = box.checked;
+      this.renderQueue();
+    };
+    only.append(box, el("span", "", tr("只看主会话")));
+    const allFolded = model.cards.length > 0 && model.cards.every((card) => !this.browserExpanded(card));
+    const fold = el("button", "browser-fold", allFolded ? tr("全部展开") : tr("全部折叠")) as HTMLButtonElement;
+    fold.type = "button";
+    fold.onclick = () => {
+      for (const card of model.cards) this.browserFold.set(card.toolCallId, allFolded);
+      this.renderQueue();
+    };
+    const gear = el("button", "browser-gear", "⚙") as HTMLButtonElement;
+    gear.type = "button";
+    gear.title = tr("阈值与工具名单");
+    gear.setAttribute("aria-expanded", String(this.browserCfgOpen));
+    gear.onclick = () => {
+      this.browserCfgOpen = !this.browserCfgOpen;
+      this.renderQueue();
+    };
+    return [only, fold, gear];
+  }
+
+  /** 齿轮面板：四个阈值 + 一行工具名单，改完存 localStorage。 */
+  private browserCfgEditor(): HTMLElement {
+    const cfg = this.browserCfg;
+    const box = el("div", "browser-cfg");
+    const nums = el("div", "browser-cfg-row");
+    const fields: { key: keyof BrowserOpsThresholds; label: string; value: number }[] = [
+      { key: "slowMs", label: tr("变黄（秒）"), value: (cfg.thresholds.slowMs ?? BROWSER_OPS_DEFAULTS.slowMs) / 1000 },
+      { key: "stuckMs", label: tr("变红（秒）"), value: (cfg.thresholds.stuckMs ?? BROWSER_OPS_DEFAULTS.stuckMs) / 1000 },
+      { key: "silentMs", label: tr("无声（秒）"), value: (cfg.thresholds.silentMs ?? BROWSER_OPS_DEFAULTS.silentMs) / 1000 },
+      { key: "loopCount", label: tr("打转（次）"), value: cfg.thresholds.loopCount ?? BROWSER_OPS_DEFAULTS.loopCount },
+    ];
+    const inputs = new Map<keyof BrowserOpsThresholds, HTMLInputElement>();
+    for (const field of fields) {
+      const wrap = el("label", "browser-cfg-field");
+      const input = el("input", "") as HTMLInputElement;
+      input.type = "number";
+      input.min = "1";
+      input.value = String(Math.round(field.value));
+      input.dataset.bcfg = field.key;
+      inputs.set(field.key, input);
+      wrap.append(el("span", "", field.label), input);
+      nums.append(wrap);
+    }
+    const tools = el("input", "browser-cfg-tools") as HTMLInputElement;
+    tools.type = "text";
+    tools.dataset.bcfg = "tools";
+    tools.value = (cfg.tools ?? BROWSER_TOOL_PATTERNS).join(", ");
+    tools.title = tr("逗号分隔，按子串认（例：browser_use, playwright, cdp）");
+    const actions = el("div", "browser-cfg-row");
+    const save = el("button", "browser-cfg-save", tr("保存")) as HTMLButtonElement;
+    save.type = "button";
+    save.onclick = () => {
+      for (const [key, input] of inputs) {
+        const value = Number(input.value);
+        if (!Number.isFinite(value) || value <= 0) continue;
+        cfg.thresholds[key] = key === "loopCount" ? Math.max(1, Math.round(value)) : Math.round(value * 1000);
+      }
+      const list = tools.value.split(/[,，\n]/).map((name) => name.trim()).filter(Boolean);
+      cfg.tools = list.length ? list : null;
+      writeBrowserCfg(cfg);
+      this.browserCfgOpen = false;
+      this.renderQueue();
+    };
+    const reset = el("button", "browser-cfg-reset", tr("恢复默认")) as HTMLButtonElement;
+    reset.type = "button";
+    reset.onclick = () => {
+      this.browserCfg = { thresholds: {}, tools: null };
+      writeBrowserCfg(this.browserCfg);
+      this.renderQueue();
+    };
+    actions.append(save, reset);
+    box.append(nums, tools, actions);
+    return box;
+  }
+
+  /** 默认只展开「正在跑」与「卡住」的卡：一次会话里几十张全展开就没人看得完。 */
+  private browserExpanded(card: BrowserOpCard): boolean {
+    const saved = this.browserFold.get(card.toolCallId);
+    if (saved !== undefined) return saved;
+    return card.state === "running" || card.state === "slow" || card.state === "stuck";
+  }
+
+  /** 折叠后只留人话：坐标、JS 代码、函数名一律不进来（那些只在展开态）。 */
+  private browserFoldedText(card: BrowserOpCard): string {
+    // 脚本卡把文件名带上：一栏十个 `bash` 分不清谁是谁。
+    // 末尾的「等待 x 秒」/「输出 …」不是干的事，往后找最后一个真正的动作。
+    const ACTIONS: BrowserOpStepKind[] = ["nav", "input", "click", "read", "js", "cdp", "tab", "shot", "launch"];
+    const last =
+      card.steps.filter((step) => ACTIONS.includes(step.kind)).at(-1) ??
+      card.steps.filter((step) => step.kind !== "print").at(-1) ??
+      card.steps.at(-1);
+    const who = card.script ? `${card.script} · ` : "";
+    if (last) return who + this.browserStepText(last, true);
+    const first = card.intent.split("\n").map((line) => line.trim()).find(Boolean);
+    return first ? first.slice(0, 80) : tr("浏览器调用");
+  }
+
+  private browserCardNode(card: BrowserOpCard): HTMLElement {
+    const expanded = this.browserExpanded(card);
+    const node = el("div", `browser-card ${card.state}`);
+    node.dataset.bcall = card.toolCallId;
+    node.dataset.bstate = card.state;
+    if (card.silent) node.dataset.silent = "1";
+    if (card.looping) node.dataset.looping = "1";
+    if (card.subagent) node.dataset.subagent = card.subagent;
+
+    const head = el("div", "browser-head");
+    const chev = el("button", `browser-chev${expanded ? " open" : ""}`) as HTMLButtonElement;
+    chev.type = "button";
+    chev.setAttribute("aria-expanded", String(expanded));
+    chev.setAttribute("aria-label", expanded ? tr("收起这次调用") : tr("展开这次调用"));
+    chev.onclick = (event) => {
+      event.stopPropagation();
+      this.browserFold.set(card.toolCallId, !expanded);
+      this.renderQueue();
+    };
+    const title = el("div", "browser-title", this.browserFoldedText(card));
+    const duration = el("span", "browser-dur", this.execDuration(card.durationMs ?? 0) || "–");
+    duration.dataset.bdur = "";
+    head.append(chev, title, duration);
+    if (card.silent && card.silentFor !== null) {
+      head.append(el("span", "browser-idle", tr("最后输出 {p1}前", { p1: this.execDuration(card.silentFor) })));
+    }
+    const badge = this.browserBadge(card);
+    if (badge) head.append(badge);
+    if ((card.state === "slow" || card.state === "stuck") && this.session?.running) {
+      const stop = el("button", "browser-stop", tr("中断本轮")) as HTMLButtonElement;
+      stop.type = "button";
+      stop.title = tr("会停掉整轮：这一轮里模型的所有工具调用都会中断");
+      stop.setAttribute("aria-label", tr("中断本轮（会停掉整轮，不能只杀这一步）"));
+      stop.onclick = (event) => {
+        event.stopPropagation();
+        if (!window.confirm(tr("中断会停掉整轮：这一轮里模型的所有工具调用都会结束，不能只杀这一步。继续吗？"))) return;
+        this.act(() => this.socket.send({ type: "abort", sessionId: this.currentId }));
+      };
+      head.append(stop);
+    }
+    head.onclick = () => {
+      this.browserFold.set(card.toolCallId, !expanded);
+      this.renderQueue();
+    };
+    node.append(head);
+    if (!expanded) return node;
+
+    const body = el("div", "browser-body");
+    if (card.intent) {
+      const open = this.browserIntentOpen.has(card.toolCallId);
+      const intent = el("div", `browser-intent${open ? " open" : ""}`, card.intent);
+      intent.title = tr("点一下展开 / 收起模型当时的原话");
+      intent.onclick = () => {
+        if (open) this.browserIntentOpen.delete(card.toolCallId);
+        else this.browserIntentOpen.add(card.toolCallId);
+        this.renderQueue();
+      };
+      body.append(intent);
+    }
+    const meta = el("div", "browser-meta");
+    meta.append(el("span", "", card.script ? `${card.tool} · ${card.script}` : card.tool));
+    if (card.subagent) meta.append(el("span", "", tr("子代理 {p1}", { p1: card.subagent })));
+    meta.append(el("span", "", card.headed === null ? tr("有头无头未知") : card.headed ? tr("有头视图") : tr("无头")));
+    body.append(meta);
+    if (card.steps.length) {
+      const steps = el("ol", "browser-steps");
+      for (const step of card.steps) steps.append(el("li", "", this.browserStepText(step)));
+      body.append(steps);
+    } else {
+      body.append(el("div", "browser-empty", tr("这次调用没有可拆的操作")));
+    }
+    if (card.output.trim()) body.append(this.browserOutput(card));
+    node.append(body);
+    return node;
+  }
+
+  private browserBadge(card: BrowserOpCard): HTMLElement | null {
+    if (card.state === "stuck") return el("span", "browser-badge stuck", tr("疑似卡住"));
+    if (card.state === "slow") return el("span", "browser-badge slow", card.silent ? tr("疑似卡住 · 无声") : tr("疑似卡住"));
+    if (card.looping) return el("span", "browser-badge looping", tr("打转"));
+    if (card.silent) return el("span", "browser-badge silent", tr("无声"));
+    if (card.state === "failed") return el("span", "browser-badge failed", tr("失败"));
+    return null;
+  }
+
+  /** 子步骤只说人话：类型 + 目标，中文在渲染层出，模型层不带文案。`coarse` = 折叠态，去掉代码与坐标。 */
+  private browserStepText(step: BrowserOpStep, coarse = false): string {
+    const raw = step.target ?? "";
+    // 折叠行里不露点哪个坐标、哪段 JS；但 `print` 是脚本自己的旁白（「3) 点击百度一下…」），
+    // 恰恰是全卡最像人话的一行，不能遮。
+    const target = coarse && (step.kind === "js" || step.kind === "click" || step.kind === "cdp" || step.kind === "raw") ? "" : raw;
+    let text: string;
+    switch (step.kind) {
+      case "nav":
+        text = target ? tr("打开 {p1}", { p1: target }) : tr("打开页面");
+        break;
+      case "wait": {
+        const ms = /^(\d+)ms$/.exec(target);
+        if (ms) text = tr("等待 {p1} 秒", { p1: (Number(ms[1]) / 1000).toFixed(1) });
+        else if (step.name && !coarse) text = tr("等待元素 {p1}", { p1: step.name });
+        else text = target ? tr("等待 {p1}", { p1: target }) : tr("等待页面");
+        break;
+      }
+      case "js":
+        text = target ? tr("执行 JS · {p1}", { p1: target }) : tr("执行 JS");
+        break;
+      case "click":
+        text = target ? tr("点击 {p1}", { p1: target }) : tr("点击");
+        break;
+      case "cdp":
+        text = target ? tr("发 CDP · {p1}", { p1: target }) : tr("发 CDP");
+        break;
+      case "read":
+        text = tr("读取页面信息");
+        break;
+      case "print":
+        text = target ? tr("输出 · {p1}", { p1: target }) : tr("输出");
+        break;
+      case "tab":
+        text = target ? tr("切换标签 · {p1}", { p1: target }) : tr("切换标签");
+        break;
+      case "input":
+        // 脚本里的输入能带上选择器（`输入 · 今天的天气 · #kw`），但折叠行只留值。
+        text = target ? tr("输入 · {p1}", { p1: target }) : tr("输入");
+        if (step.name && !coarse) text += ` · ${step.name}`;
+        break;
+      case "launch":
+        text = target === "headless" ? tr("启动无头浏览器") : target === "headed" ? tr("启动有头浏览器") : tr("启动浏览器");
+        break;
+      case "shot":
+        text = tr("截图");
+        break;
+      case "run":
+        text = target ? tr("运行 {p1}", { p1: target }) : tr("运行命令");
+        break;
+      case "scroll":
+        text = target ? tr("滚动 · {p1}", { p1: target }) : tr("滚动");
+        break;
+      case "call":
+        text = step.name ? tr("调用 {p1}", { p1: step.name }) : tr("未知操作");
+        break;
+      default:
+        text = target ? tr("原样执行 · {p1}", { p1: target }) : tr("原样执行");
+    }
+    return step.repeat && step.repeat > 1 ? `${text} ×${step.repeat}` : text;
+  }
+
+  private browserOutput(card: BrowserOpCard): HTMLElement {
+    const open = this.browserOutOpen.has(card.toolCallId);
+    const box = el("div", `browser-out${open ? " open" : ""}`);
+    const toggle = el("button", "browser-out-toggle", open ? tr("收起输出") : tr("展开输出")) as HTMLButtonElement;
+    toggle.type = "button";
+    toggle.onclick = (event) => {
+      event.stopPropagation();
+      if (open) this.browserOutOpen.delete(card.toolCallId);
+      else this.browserOutOpen.add(card.toolCallId);
+      this.renderQueue();
+    };
+    box.append(toggle, el("pre", "browser-out-body", card.output.trim()));
+    return box;
+  }
+
+  /** 1 秒的闹钟：状态没变就只刷耗时，变了才整块重画（免得每秒把折叠 / 滚动位置打回原样）。 */
+  private refreshBrowserClock(): void {
+    if (this.queueTab !== "browser" || !this.els.queueInner) return;
+    this.trackBrowserOutput(this.chat.loadedItems());
+    const model = this.browserModel();
+    if (this.browserSignature(model) !== this.browserSig) {
+      this.renderQueue();
+      return;
+    }
+    for (const card of model.cards) {
+      const node = this.els.queueInner.querySelector<HTMLElement>(`[data-bcall="${CSS.escape(card.toolCallId)}"]`);
+      const duration = node?.querySelector<HTMLElement>("[data-bdur]");
+      if (duration) duration.textContent = this.execDuration(card.durationMs ?? 0) || "–";
+    }
+    const now = this.els.queueInner.querySelector<HTMLElement>("[data-bnow]");
+    if (now) {
+      now.textContent = model.current ? tr("当前 {p1}", { p1: this.execDuration(model.current.ms) }) : "";
+      now.hidden = !model.current;
+    }
+    const nowSep = this.els.queueInner.querySelector<HTMLElement>("[data-bnowsep]");
+    if (nowSep) nowSep.hidden = !model.current;
+  }
+
   private approvalNode(): HTMLElement {
     const slot = el("div", "approval-slot");
     for (const a of this.approvals) slot.append(this.approvalCard(a));
@@ -16955,6 +17364,11 @@ export class App {
     return card;
   }
 
+  /** 两个「执行类」tab 都吃执行事件；renderQueue 画的是当前选中的那个。 */
+  private execTabLive(): boolean {
+    return this.queueTab === "exec" || this.queueTab === "browser";
+  }
+
   private renderQueue(): void {
     const host = this.els.queueInner;
     // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。
@@ -16984,10 +17398,26 @@ export class App {
       pip.setAttribute("aria-label", tr("执行中"));
       execution.append(pip);
     }
-    tabs.append(needs, execution);
+    const browser = el("button", this.queueTab === "browser" ? "on" : "", tr("浏览器")) as HTMLButtonElement;
+    browser.type = "button";
+    browser.dataset.execTab = "browser";
+    browser.setAttribute("aria-selected", String(this.queueTab === "browser"));
+    browser.onclick = () => this.selectQueueTab("browser");
+    if (this.queueTab !== "browser" && this.browserRunning()) {
+      const pip = el("span", "exec-pip");
+      pip.title = tr("正在操作浏览器");
+      pip.setAttribute("aria-label", tr("正在操作浏览器"));
+      browser.append(pip);
+    }
+    tabs.append(needs, execution, browser);
     host.append(tabs);
     if (this.queueTab === "exec") {
       host.append(this.renderExecPanel());
+      this.els.queuePane.scrollTop = kept;
+      return;
+    }
+    if (this.queueTab === "browser") {
+      host.append(this.renderBrowserPanel());
       this.els.queuePane.scrollTop = kept;
       return;
     }
@@ -18646,9 +19076,47 @@ function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
   btn.setAttribute("aria-pressed", String(collapsed));
 }
 
+/** 浏览器面板的阈值与工具名单：面板齿轮里改，存 localStorage（`pi.browserOps.*`）。 */
+interface BrowserCfg {
+  thresholds: Partial<BrowserOpsThresholds>;
+  /** null = 用默认名单。 */
+  tools: string[] | null;
+}
+
+const BROWSER_THRESHOLD_KEYS = ["slowMs", "stuckMs", "silentMs", "loopCount"] as const;
+
+function readBrowserCfg(): BrowserCfg {
+  const cfg: BrowserCfg = { thresholds: {}, tools: null };
+  try {
+    const raw = JSON.parse(localStorage.getItem("pi.browserOps.thresholds") ?? "null") as Record<string, unknown> | null;
+    for (const key of BROWSER_THRESHOLD_KEYS) {
+      const value = Number(raw?.[key]);
+      if (Number.isFinite(value) && value > 0) cfg.thresholds[key] = value;
+    }
+  } catch { cfg.thresholds = {}; }
+  try {
+    const raw = JSON.parse(localStorage.getItem("pi.browserOps.tools") ?? "null") as unknown;
+    if (Array.isArray(raw)) {
+      const list = raw.filter((name): name is string => typeof name === "string" && name.trim() !== "").map((name) => name.trim());
+      if (list.length) cfg.tools = list;
+    }
+  } catch { cfg.tools = null; }
+  return cfg;
+}
+
+function writeBrowserCfg(cfg: BrowserCfg): void {
+  try {
+    if (Object.keys(cfg.thresholds).length) localStorage.setItem("pi.browserOps.thresholds", JSON.stringify(cfg.thresholds));
+    else localStorage.removeItem("pi.browserOps.thresholds");
+    if (cfg.tools?.length) localStorage.setItem("pi.browserOps.tools", JSON.stringify(cfg.tools));
+    else localStorage.removeItem("pi.browserOps.tools");
+  } catch { /* 存不了就用默认值 */ }
+}
+
 function readQueueTab(): QueueTab {
   try {
-    return localStorage.getItem("pi.queueTab") === "exec" ? "exec" : "needs";
+    const saved = localStorage.getItem("pi.queueTab");
+    return saved === "exec" || saved === "browser" ? saved : "needs";
   } catch {
     return "needs";
   }
