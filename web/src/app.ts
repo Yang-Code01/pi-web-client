@@ -416,6 +416,14 @@ export class App {
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
   private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | "wsdelete" | "context" | "context-insights" | null = null;
+  /** 内网通未读：顶栏那颗按钮上的件数徽标（D300 起文件也算未读）。 */
+  private peerUnread = 0;
+  private peerBadge: HTMLElement | null = null;
+  /** 最近一次处理过的最新消息 id：只用来判断「又来了新的」。 */
+  private peerSeen = "";
+  /** 第一轮只记账不弹提示（否则一打开就把全部历史推一遍）。 */
+  private peerPrimed = false;
+  private peerWatchTimer = 0;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   /** 新建文件夹 / 新建文件共用一个等待表：两条结果的形状一样（`{ path }` / `{ error }`，D167）。 */
@@ -885,9 +893,18 @@ export class App {
     const peer = this.wideBtn(tr("🌐 内网通"));
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
-    peer.onclick = () => this.openPeerSheet();
+    // 点它是一次用户手势：顺手把通知权限问一次（没问过才问，问过就不再打扰）。
+    peer.onclick = () => {
+      this.askNotifyPermission();
+      this.openPeerSheet();
+    };
     // 之前没登记进 els，`paintChrome()` 里那段 `if (peer)` 一直是死代码：切语言时这颗不动。
     this.els.peer = peer;
+    // 未读件数挂在按钮右上角（`setWideLabel()` 会 replaceChildren，所以 paintChrome 里要重挂）。
+    this.peerBadge = el("i", "peer-unread") as HTMLElement;
+    this.peerBadge.hidden = true;
+    peer.append(this.peerBadge);
+    this.startPeerWatch();
     // #86：随手问也不跟会话绑定（它不进列表），所以跟终端 / 记录一样常显。
     const scratch = this.wideBtn(tr("💭 随手问"));
     scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
@@ -4648,6 +4665,9 @@ export class App {
     if (peer) {
       this.setWideLabel(peer, tr("🌐 内网通"));
       show("peer", peer, tr("内网通：发现同一内网里的人，直接对话、传文件"));
+      // setWideLabel() 把子节点全换掉了：徽标与提示要重新挂回去。
+      if (this.peerBadge) peer.append(this.peerBadge);
+      this.paintPeerBadge();
     }
     if (scratch) {
       this.setWideLabel(scratch, tr("💭 随手问"));
@@ -4691,6 +4711,108 @@ export class App {
    * keeps its own entry (openable directly) without a second implementation; the iframe is removed
    * on close, which also stops its polling.
    */
+  // ---------------------------------------------------------------- 内网通：未读徽标 + 系统提示
+
+  /**
+   * 顶栏「🌐 内网通」那颗按钮上的未读件数，以及新消息的系统提示。
+   *
+   * 为什么在这儿再轮询一次 `/api/peer/threads`：内网通页面是弹层里的 iframe，关掉就没人看着；
+   * 而未读是**服务端**算的（`threads.json` 里的水位），谁看都一样。主页面自己问一次、画在按钮上，
+   * 点开弹层照旧由内网通页面打水位把它清掉 —— 两边都不需要额外记状态。
+   *
+   * 12 秒一轮：比内网通页面自己的 4 秒慢，但这里只为一个数字，不值得更密。
+   */
+  private startPeerWatch(): void {
+    if (this.peerWatchTimer) return;
+    this.peerWatchTimer = window.setInterval(() => void this.pollPeer(), 12_000);
+    window.setTimeout(() => void this.pollPeer(), 2_500);
+  }
+
+  /** `localStorage["peer.notify"]`：内网通设置页那颗「桌面通知」，两边共用一份开关。 */
+  private peerNotifyOn(): boolean {
+    try {
+      return window.localStorage.getItem("peer.notify") !== "0";
+    } catch {
+      return true;
+    }
+  }
+
+  /** 点按钮是一次用户手势：只在「还没决定过」的时候问一次权限。 */
+  private askNotifyPermission(): void {
+    if (!("Notification" in window)) return;
+    if (String(Notification.permission) !== "default") return;
+    if (!this.peerNotifyOn()) return;
+    void Notification.requestPermission().catch(() => {});
+  }
+
+  private async pollPeer(): Promise<void> {
+    let view: any = null;
+    let data: any = null;
+    try {
+      const [a, b] = await Promise.all([fetch("/api/peer"), fetch("/api/peer/threads")]);
+      if (!a.ok || !b.ok) return;
+      view = await a.json();
+      data = await b.json();
+    } catch {
+      return;
+    }
+    const threads: any[] = Array.isArray(data?.threads) ? data.threads : [];
+    this.peerUnread = threads.reduce((n, t) => n + (Number(t?.unread) || 0), 0);
+    this.paintPeerBadge();
+
+    const me = String(view?.status?.nodeId ?? "");
+    const dnd = view?.status?.config?.dnd === true;
+    let newest: any = null;
+    for (const t of threads) {
+      const last = t?.last;
+      if (!last) continue;
+      if (!newest || (Number(last.at) || 0) > (Number(newest.last.at) || 0)) newest = t;
+    }
+    const last = newest?.last;
+    if (!last) return;
+    const id = String(last.id ?? "");
+    const fresh = Boolean(id) && id !== this.peerSeen;
+    this.peerSeen = id;
+    if (!this.peerPrimed) {
+      this.peerPrimed = true;
+      return;
+    }
+    if (!fresh) return;
+    if (String(last.from?.nodeId ?? "") === me) return;
+    if (newest.muted === true || dnd) return;
+    // 弹层开着、页面也在前面 = 他正看着，不弹。
+    if (this.sheetKind === "peer" && !document.hidden) return;
+    if (!this.peerNotifyOn()) return;
+    if (!("Notification" in window) || String(Notification.permission) !== "granted") return;
+    const body = last.text
+      ? String(last.text).replace(/\s+/g, " ").slice(0, 120)
+      : last.file?.name
+        ? tr("[文件] {p1}", { p1: String(last.file.name) })
+        : tr("发来一条新消息");
+    try {
+      const note = new Notification(tr("内网通 · {p1}", { p1: String(newest.nickname ?? "") }), { body, tag: `peer-${id}` });
+      note.onclick = () => {
+        window.focus();
+        this.openPeerSheet();
+        note.close();
+      };
+    } catch {
+      /* 不支持 / 权限被撤：不弹就是了 */
+    }
+  }
+
+  private paintPeerBadge(): void {
+    const badge = this.peerBadge;
+    if (!badge) return;
+    const n = this.peerUnread;
+    badge.hidden = n <= 0;
+    badge.textContent = n > 99 ? "99+" : String(n);
+    const btn = this.els.peer;
+    if (btn) {
+      btn.title = n > 0 ? tr("内网通：{p1} 条未读", { p1: String(n) }) : tr("内网通：发现同一内网里的人，直接对话、传文件");
+    }
+  }
+
   private openPeerSheet(): void {
     this.closeSheet();
     this.sheetKind = "peer";

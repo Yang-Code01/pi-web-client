@@ -8,8 +8,8 @@ export interface Queued {
   peerId: string;
   addr: string;
   port: number;
-  /** 信封类型：`text` 要收据，好友/快捷控制消息不要。 */
-  kind: "text" | "friend-request" | "friend-accept" | "friend-quick";
+  /** 信封类型：`text` 要收据，好友/快捷/撤回这些控制消息不要。 */
+  kind: "text" | "friend-request" | "friend-accept" | "friend-quick" | "recall";
   /** text 时是整条 Entry，其余是控制消息体。 */
   payload: unknown;
   at: number;
@@ -73,10 +73,21 @@ export class Outbox {
     this.timer = null;
   }
 
+  /** 按 id 去重：重发（P2）拿的是同一条消息的同一个 id，重复入队只会投两遍。 */
   add(item: Queued): void {
+    if (this.items.some((other) => other.id === item.id)) return;
     this.items.push(item);
     this.save();
     void this.flush();
+  }
+
+  has(id: string): boolean {
+    return this.items.some((item) => item.id === id);
+  }
+
+  /** 某个会话里还没送到的消息：页面据此把气泡画成「发送中」。 */
+  pendingFor(peerId: string): Queued[] {
+    return this.items.filter((item) => item.peerId === peerId);
   }
 
   pending(): Queued[] {

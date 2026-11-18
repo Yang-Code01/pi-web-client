@@ -31,6 +31,9 @@
   --c-contacts: #5eead4;
   --c-transfers: #c4b5fd;
   --c-me: #cbd5e1;
+  /* 表格浮窗（D303 复用）要用 --vh1 / --vw1：这页没有界面缩放，就是 1% 视口。 */
+  --vh1: 1vh;
+  --vw1: 1vw;
   --r: 12px;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --dur-1: 140ms;
@@ -312,7 +315,8 @@ body.embedded .brand .nm { display: none; }
   min-height: 0;
   overflow-y: auto;
   padding: 16px 18px 8px;
-  scroll-behavior: smooth;
+  /* 不要 smooth：整列每次都重建 DOM，平滑滚动会让「发完贴底」变成从顶上慢慢滑下来。 */
+  scroll-behavior: auto;
 }
 
 .day { margin: 14px 0 10px; text-align: center; font: 10.5px var(--mono); color: var(--faint); }
@@ -676,6 +680,152 @@ body.embedded .brand .nm { display: none; }
   .bar { min-height: 46px; padding: 0 10px; }
   .empty { padding: 24px; }
 }
+
+
+/* ---------------------------------------------------------------- D299：会话 / 消息模型
+ *
+ * P1 未读与置顶、P2 三态、P3 引用与撤回灰条、P4 输入中。
+ * 都是往既有骨架上贴的，不改上面的栅格。 */
+
+.avwrap { position: relative; flex: none; display: inline-flex; }
+
+/* 未读：头像右上角。静音会话只画一个不带数字的小圆点（QQ 用斜杠铃铛，这里的行更窄）。 */
+.avwrap .unread {
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #10141a;
+  font: 600 9.5px var(--mono);
+  line-height: 15px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.avwrap .unread.quiet { min-width: 8px; width: 8px; height: 8px; padding: 0; border-radius: 50%; }
+
+.row .n .pin { width: 10px; height: 10px; color: var(--faint); flex: none; }
+.row .s .mute { width: 11px; height: 11px; color: var(--faint); flex: none; }
+.row .s .typing { color: var(--accent); }
+.row .s .draft { color: var(--warn); }
+.head .s.typing { color: var(--accent); }
+
+/* P2：三态。发送中不动声色，失败才让整条气泡变红。 */
+.msg .tm .sending { color: var(--faint); }
+.bub.failed { border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+
+/* P3：撤回留下的灰条（原消息不再显示，历史文件里还在）。 */
+.graytip {
+  margin: 10px 0;
+  text-align: center;
+  font: 11px var(--sans);
+  color: var(--faint);
+}
+
+/* P3：引用块。点一下跳到原消息。 */
+.quote {
+  display: flex;
+  gap: 6px;
+  max-width: 100%;
+  margin-bottom: 4px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--line-strong);
+  border-radius: 4px;
+  background: rgb(255 255 255 / 3%);
+  font-size: 11px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.quote .who { flex: none; color: var(--accent); }
+.quote .ex { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* P3：输入框上方的引用条。 */
+.replyhost[hidden] { display: none; }
+.replybar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-left: 2px solid var(--accent);
+  background: rgb(125 211 252 / 6%);
+  font-size: 11px;
+  color: var(--dim);
+}
+.replybar .who { flex: none; color: var(--accent); }
+.replybar .ex { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 文件卡片右下角那组按钮（D301）：状态文字在左，按钮组靠右。 */
+.fbot .fbtns { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.fbot .fbtns .act { margin-left: 0; }
+.fbot button.act { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.fbot button.act:hover { text-decoration: underline; }
+
+/* ---------------------------------------------------------------- 预览 dialog / 折叠列表（D302）
+ *
+ * 预览是**内网通页面自己的弹窗**，不再借用主界面的预览面板（那边要一个打开的会话，
+ * 而且会把弹层关掉）。内容按类型画：图片、文本、PDF，其余给「下载」。 */
+.modal.preview {
+  width: min(900px, calc(100vw - 48px));
+  max-height: min(82vh, 820px);
+  display: flex;
+  flex-direction: column;
+}
+.modal.preview header { flex: none; }
+.modal.preview header .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal.preview .body { flex: 1; min-height: 0; overflow: auto; padding: 0; }
+.modal.preview .meta { padding: 8px 15px; border-bottom: 1px solid var(--line-soft); font: 10.5px var(--mono); color: var(--faint); }
+.modal.preview img { display: block; max-width: 100%; margin: 0 auto; padding: 10px; box-sizing: border-box; }
+.modal.preview iframe { display: block; width: 100%; height: min(70vh, 700px); border: 0; background: #fff; }
+.modal.preview pre {
+  margin: 0;
+  padding: 13px 16px 18px;
+  font: 12px/1.6 var(--mono);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.modal.preview .none { padding: 26px 18px; text-align: center; color: var(--dim); font-size: 12px; }
+
+/* 会话列表折叠：列表列让给主区（和「我」页同一个 data-nolist 机制）。 */
+.listhead { display: flex; align-items: center; gap: 6px; padding-right: 10px; }
+.listhead .search { flex: 1; min-width: 0; }
+.listhead .icon-btn { width: 26px; height: 26px; }
+
+
+/* 选择器的路径行（D304，照本工程文件管理器的「跳到路径」）：输入框 + 跳转。 */
+.ppath { display: flex; align-items: center; gap: 7px; padding: 8px 12px 0; }
+.ppath input {
+  flex: 1; min-width: 0; height: 28px; padding: 0 9px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-3); color: var(--text); font: 11.5px var(--mono);
+}
+.ppath input:focus { outline: none; border-color: var(--accent-dim); }
+.ppath input.bad { border-color: var(--danger); }
+.ppath .btn { height: 28px; }
+
+/* 文件行的两颗按钮与「跳过去定位到的那一行」。 */
+.files li .racts { display: flex; align-items: center; gap: 4px; }
+.files li .racts button {
+  padding: 2px 7px; border: 1px solid var(--line-soft); border-radius: 6px;
+  background: var(--panel-3); color: var(--dim); font: 11px var(--sans); cursor: pointer;
+}
+.files li .racts button:hover { border-color: var(--accent-dim); color: var(--text); }
+.files li.hit { box-shadow: inset 0 0 0 1px var(--accent-dim); }
+.files li.dir .racts { display: none; }
+
+/* 图片 / 动图 / 表情包（D305）：聊天里直接是图，不再是文件卡片。
+ * 小图按表情包画（无边框、右上限 150），大图按比例缩到气泡宽度以内。 */
+.pic { display: inline-block; line-height: 0; }
+.pic img {
+  display: block; max-width: min(300px, 100%); max-height: 300px;
+  border: 1px solid var(--line-soft); border-radius: 10px;
+  background: var(--panel-3); cursor: zoom-in;
+}
+.msg.mine .pic img { border-color: #1d4f63; }
+.pic.sticker img { max-width: 150px; max-height: 150px; border: 0; background: transparent; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

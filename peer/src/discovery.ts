@@ -12,6 +12,8 @@ export interface Announce {
   hostname: string;
   port: number;
   version: string;
+  /** `online` / `away`（空闲推导）。旧对端没有这个字段，按 online 算（D299 / P4）。 */
+  status?: string;
 }
 
 export interface SeenPeer {
@@ -22,6 +24,8 @@ export interface SeenPeer {
   addr: string;
   port: number;
   lastSeen: number;
+  /** 对端自报的状态：online / away。没报就是 online。 */
+  status: string;
   /** 5 分钟内的来源地址集合（决定 7：换网卡 / DHCP 换 IP 不算伪造）。 */
   ips: string[];
 }
@@ -40,6 +44,8 @@ export class Discovery extends EventEmitter {
   private readonly ipSeenAt = new Map<string, number>();
   /** 收到同一条 hello 就回一次，回得太多会把局域网变成广播风暴。 */
   private readonly repliedAt = new Map<string, number>();
+  /** 本机状态由外面提供（空闲推导），discovery 自己不猜（D299 / P4）。 */
+  private localStatus: () => string = () => "online";
 
   constructor(
     private readonly cfg: PeerConfig,
@@ -110,6 +116,11 @@ export class Discovery extends EventEmitter {
     }
   }
 
+  /** 本机状态（online / away）：由 peer 主进程按「最后一次活动」算出来。 */
+  setLocalStatus(fn: () => string): void {
+    this.localStatus = fn;
+  }
+
   private packet(t: Announce["t"]): Announce {
     return {
       proto: PROTO,
@@ -119,6 +130,7 @@ export class Discovery extends EventEmitter {
       hostname: os.hostname(),
       port: this.cfg.port,
       version: "0.1.0",
+      status: this.localStatus(),
     };
   }
 
@@ -160,6 +172,7 @@ export class Discovery extends EventEmitter {
       addr,
       port: Number(msg.port) || this.cfg.port,
       lastSeen: Date.now(),
+      status: typeof msg.status === "string" && msg.status ? msg.status : "online",
       ips: [...ips],
     };
     this.seen.set(msg.nodeId, peer);
@@ -169,7 +182,7 @@ export class Discovery extends EventEmitter {
    * 对端把 announce 单播到 http 端口（`/peer/hello`）时也走这里：组播被交换机挡住时，
    * 手动地址那条路就靠它把对端拉进在线表。
    */
-  recordHello(msg: Pick<Announce, "nodeId" | "nickname" | "hostname" | "port">, addr: string): void {
+  recordHello(msg: Pick<Announce, "nodeId" | "nickname" | "hostname" | "port"> & { status?: string }, addr: string): void {
     if (!msg.nodeId || msg.nodeId === this.nodeId) return;
     this.remember(
       {
@@ -180,6 +193,7 @@ export class Discovery extends EventEmitter {
         hostname: String(msg.hostname ?? ""),
         port: Number(msg.port) || this.cfg.port,
         version: "0.1.0",
+        status: msg.status,
       },
       addr,
     );
@@ -206,6 +220,7 @@ export class Discovery extends EventEmitter {
             nickname: String(body.nickname ?? ""),
             hostname: String(body.hostname ?? ""),
             port: Number(body.port) || port,
+            status: typeof body.status === "string" ? body.status : undefined,
           },
           addr,
         );

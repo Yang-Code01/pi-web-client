@@ -8,7 +8,7 @@ import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import type { Entry, History, PeerIdentity } from "./history.ts";
 import { uuidv7 } from "./messages.ts";
-import type { Relations } from "./peers.ts";
+import { imageSize, type ImageSize } from "./image.ts";
 
 /** 分块大小：1 MB。局域网里 TCP 已经帮我们做了分片，再切细只多几个 RTT。 */
 export const CHUNK = 1024 * 1024;
@@ -33,6 +33,12 @@ const MIME: Record<string, string> = {
   ".md": "text/markdown;charset=utf-8",
   ".json": "application/json",
   ".zip": "application/zip",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+  ".xls": "application/vnd.ms-excel",
+  ".csv": "text/csv;charset=utf-8",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".mp4": "video/mp4",
   ".mp3": "audio/mpeg",
 };
@@ -71,7 +77,12 @@ export interface FileResult {
   body: unknown;
 }
 
-/** 收到的文件：`<entryId>` → 磁盘上的位置。历史里只有一张卡片，文件本体留在收件目录。 */
+/**
+ * `<entryId>` → 磁盘上的位置，**两个方向共用**：
+ * - 收到的文件落在收件目录（`end` 时登记）；
+ * - 自己发出去的文件指向它的原路径（`send()` 时登记）—— 卡片上的「预览」要用它。
+ * 历史里只有一张卡片，文件本体不动。
+ */
 type Stored = Record<string, { path: string; name: string; size: number; mime: string }>;
 
 export class Files {
@@ -85,7 +96,6 @@ export class Files {
       nodeId: string;
       discovery: Discovery;
       history: History;
-      relations: Relations;
       log: (msg: string) => void;
     },
   ) {
@@ -148,7 +158,12 @@ export class Files {
 
   // ------------------------------------------------------------------ 收
 
-  /** 对方要发文件：查好友、查盘、开 token，并告诉他我这边已经有多少字节（续传用）。 */
+  /** 对方要发文件：查盘、开 token，并告诉他我这边已经有多少字节（续传用）。
+   *
+   * D300：**不看好友**。好友关系现在只决定「在不在好友列表里」，不再是一道权限。
+   * 收不收得下由下面三个真正的约束管：`pauseFiles` 开关、磁盘余量、token 只能由
+   * 收到 begin 的那一方发出来（来源校验在 `verify` 里，与好友无关）。
+   */
   begin(fromAddr: string, body: any, verify: (addr: string, who: PeerIdentity) => Promise<FileResult | null>): Promise<FileResult> {
     return (async () => {
       const from = body?.from as PeerIdentity | undefined;
@@ -161,10 +176,6 @@ export class Files {
       }
       const check = await verify(fromAddr, from);
       if (check) return check;
-      // 决定 9：文件只给好友。文字谁都能发，文件不行——写盘是不可撤销的。
-      if (!this.ctx.relations.isFriend(from.nodeId)) {
-        return { status: 403, body: { error: "先加好友才能收文件", retryable: false } };
-      }
       if (this.ctx.cfg.pauseFiles) return { status: 503, body: { error: "我这边暂停收文件了", retryable: true } };
       const free = this.free();
       if (free < size + KEEP_BYTES || free < size / KEEP_RATIO) {
@@ -262,13 +273,20 @@ export class Files {
     this.tokens.delete(token);
     this.stored[waiting.messageId] = { path: final, name: path.basename(final), size: waiting.size, mime: waiting.mime };
     this.saveStored();
+    const dims: ImageSize | null = /^image\//.test(waiting.mime) ? imageSize(final) : null;
     this.ctx.history.append(waiting.peerId, {
       id: waiting.messageId,
       at: Date.now(),
       from: { nodeId: waiting.peerId },
       to: { kind: "node", id: this.ctx.nodeId },
       kind: "file",
-      file: { name: path.basename(final), size: waiting.size, mime: waiting.mime, sha256: waiting.sha256 || undefined },
+      file: {
+        name: path.basename(final),
+        size: waiting.size,
+        mime: waiting.mime,
+        sha256: waiting.sha256 || undefined,
+        ...(dims ? { w: dims.w, h: dims.h } : {}),
+      },
     });
     const transfer = this.transfers.get(waiting.messageId);
     if (transfer) {
@@ -312,6 +330,9 @@ export class Files {
   async send(peerId: string, localPath: string, name: string): Promise<{ ok: true; id: string }> {
     const stat = fs.statSync(localPath);
     const id = uuidv7();
+    // 自己发的也要能被「预览 / 打开」找到：索引里指向原路径（不是副本，用户挪了就是挪了）。
+    this.stored[id] = { path: localPath, name, size: stat.size, mime: mimeOf(name) };
+    this.saveStored();
     this.transfers.set(id, {
       id,
       peerId,
@@ -372,13 +393,15 @@ export class Files {
     if (!endRes.ok) throw new Error(end.error ?? `收尾失败（HTTP ${endRes.status}）`);
 
     // 自己这边也留一张卡片：发出去的东西在对话里要看得见。
+    const mime = mimeOf(name);
+    const dims: ImageSize | null = /^image\//.test(mime) ? imageSize(localPath) : null;
     this.ctx.history.append(peerId, {
       id,
       at: Date.now(),
       from: { nodeId: this.ctx.nodeId, nickname: this.ctx.cfg.nickname, port: this.ctx.cfg.port },
       to: { kind: "node", id: peerId },
       kind: "file",
-      file: { name: end.name ?? name, size, mime: mimeOf(name), sha256 },
+      file: { name: end.name ?? name, size, mime, sha256, ...(dims ? { w: dims.w, h: dims.h } : {}) },
     });
     const transfer = this.transfers.get(id);
     if (transfer) {

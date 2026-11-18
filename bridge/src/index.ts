@@ -820,13 +820,71 @@ async function main(): Promise<void> {
       const body = await readBody(req).catch(() => ({}));
       try {
         const via = body?.via === "pi" ? ("pi" as const) : undefined;
-        return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via));
+        const replyTo =
+          body?.replyTo && typeof body.replyTo === "object" && typeof body.replyTo.id === "string"
+            ? { id: String(body.replyTo.id), from: String(body.replyTo.from ?? ""), excerpt: String(body.replyTo.excerpt ?? "") }
+            : undefined;
+        return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
     }
-    if (url.pathname === "/api/peer/contacts" && req.method === "GET") {
+    // P1：已读水位 / 置顶 / 静音 / 草稿（都只改本机 peer 的那份 threads.json）。
+    if (url.pathname === "/api/peer/read" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
       try {
+        return json(res, 200, await peer.markRead(String(body?.peer ?? ""), Number(body?.at), String(body?.id ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/thread" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const patch: { pinned?: boolean; muted?: boolean; draft?: string } = {};
+      if (typeof body?.pinned === "boolean") patch.pinned = body.pinned;
+      if (typeof body?.muted === "boolean") patch.muted = body.muted;
+      if (typeof body?.draft === "string") patch.draft = body.draft;
+      try {
+        return json(res, 200, await peer.patchThread(String(body?.peer ?? ""), patch));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // P2：重发同一条消息（同一个 id）。
+    if (url.pathname === "/api/peer/retry" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.retrySend(String(body?.peer ?? ""), String(body?.id ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // P3：撤回 / 输入中。
+    if (url.pathname === "/api/peer/recall" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.recall(String(body?.peer ?? ""), String(body?.id ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/typing" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.typing(String(body?.peer ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // P4：页面心跳（away 由 peer 按最后一次活动推）。
+    if (url.pathname === "/api/peer/presence" && req.method === "POST") {
+      try {
+        return json(res, 200, await peer.presence());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/contacts" && req.method === "GET") {      try {
         return json(res, 200, await peer.contacts());
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
@@ -835,11 +893,12 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/peer/friend" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       const action = String(body?.action ?? "");
-      const actions = ["request", "quick", "accept", "favorite", "remove"] as const;
+      const actions = ["request", "quick", "accept", "favorite", "remove", "rename"] as const;
       type FriendAction = (typeof actions)[number];
       if (!(actions as readonly string[]).includes(action)) return json(res, 400, { error: "未知动作" });
       try {
-        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as FriendAction, Boolean(body?.on)));
+        const name = typeof body?.name === "string" ? body.name : undefined;
+        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as FriendAction, Boolean(body?.on), name));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
@@ -879,6 +938,38 @@ async function main(): Promise<void> {
         return json(res, 400, { error: (err as Error).message });
       }
     }
+    // 选择器里的预览（D304）：本机一份文件的字节，透传 peer 的 `/fs/raw`。
+    if (url.pathname === "/api/peer/fs/raw" && req.method === "GET") {
+      if (publicReq) return fail(res, 403, "fs_public", "通过公网访问时不能读本机文件");
+      const ctrl = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) ctrl.abort();
+      });
+      try {
+        const upstream = await fetch(
+          `http://127.0.0.1:${cfg.peerPort}/fs/raw?path=${encodeURIComponent(url.searchParams.get("path") ?? "")}`,
+          { signal: ctrl.signal },
+        );
+        if (!upstream.ok || !upstream.body) {
+          const text = await upstream.text().catch(() => "");
+          return json(res, upstream.status, { error: text || "取不到这个文件" });
+        }
+        const headers: Record<string, string> = { "cache-control": "no-store" };
+        for (const key of ["content-type", "content-length", "content-disposition"]) {
+          const value = upstream.headers.get(key);
+          if (value) headers[key] = value;
+        }
+        res.writeHead(200, headers);
+        const body = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]);
+        body.on("error", () => res.destroy());
+        body.pipe(res);
+      } catch (err) {
+        if (!res.headersSent) return json(res, 502, { error: (err as Error).message });
+        res.destroy();
+      }
+      return;
+    }
+
     if (url.pathname === "/api/peer/transfers" && req.method === "GET") {
       try {
         return json(res, 200, await peer.transfers());
@@ -931,6 +1022,40 @@ async function main(): Promise<void> {
       if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
       return json(res, 200, await openWithApp(abs));
     }
+    // 内网通的表格预览（D303）：内网通页面没有会话，拿不到 `/api/preview` 发的表 grant，
+    // 所以这里用 peer 的文件索引解析出路径、当场登记一张只读凭据交给它。只认 .xlsx/.xlsm
+    // （和 `bridge/src/preview.ts` 的 SHEET 同一份口径），别的格式一律走页面自己的 `<pre>` / `<img>`。
+    if (url.pathname === "/api/peer/sheet" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      // 两个入口：`id` 是内网通里的一条文件消息，`path` 是选择器里眼前这份本机文件（还没发）。
+      const byPath = typeof body?.path === "string" && body.path ? path.resolve(body.path) : "";
+      const abs = byPath || (await peer.filePath(String(body?.id ?? "")));
+      if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
+      const ext = path.extname(abs).toLowerCase();
+      if (ext !== ".xlsx" && ext !== ".xlsm") return fail(res, 400, "peer_sheet", "这不是表格文件");
+      let mtime = 0;
+      try {
+        mtime = fs.statSync(abs).mtimeMs;
+      } catch {
+        return fail(res, 404, "peer_file", "文件已经不在原处了");
+      }
+      const token = randomUUID();
+      registerFileGrant(token, abs, mtime);
+      return json(res, 200, { ok: true, token, name: path.basename(abs), ext, path: abs });
+    }
+
+    // 内网通的「打开所在位置」：让这台机器的文件管理器把那份文件选出来（D302）。
+    // 自己发的文件指向原路径、收到的在收件箱，两边都靠 peer 的文件索引解析 —— 页面递不上任意路径。
+    if (url.pathname === "/api/peer/reveal" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "reveal_public", "通过公网访问时不会在你的桌面上打开文件夹，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      const abs = await peer.filePath(String(body?.id ?? ""));
+      if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
+      const out = revealInFileManager(abs);
+      log(`peer reveal ${abs} → ${out.ok ? "ok" : out.message}`);
+      return out.ok ? json(res, 200, out) : json(res, 400, { error: out.message });
+    }
     if (url.pathname === "/api/peer/add" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       try {
@@ -955,10 +1080,12 @@ async function main(): Promise<void> {
     }
     if (url.pathname === "/api/peer/config" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
-      const patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean } = {};
+      const patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; nickname?: string } = {};
       for (const key of ["hidden", "dnd", "pauseFiles"] as const) {
         if (typeof body?.[key] === "boolean") patch[key] = body[key];
       }
+      // D303：自己的名字。空串 / 全空白由 peer 那边拒（回 400 的文案）。
+      if (typeof body?.nickname === "string") patch.nickname = body.nickname;
       try {
         return json(res, 200, await peer.setConfig(patch));
       } catch (err) {
@@ -2088,6 +2215,24 @@ async function main(): Promise<void> {
     return kind === "approval" ? `需要你批准 · ${name}` : `需要你回答${count > 1 ? `（${count} 题）` : ""} · ${name}`;
   };
   const shouldNotify = (): boolean => notifier.enabled && !anyPresent();
+
+  /**
+   * D299 / P4：内网通的新消息也走同一条通知管道。
+   *
+   * 压制条件在 `PeerHost.pollThreads()` 里（自己发的 / 静音 / 免打扰 / 已经记过账），
+   * 这里只看「人是不是在页面前」——在场就不推，跟 pi 会话的口径一致。
+   */
+  peer.onNew((thread) => {
+    if (!shouldNotify()) return;
+    const last = thread.last;
+    const body = last?.text
+      ? last.text.replace(/\s+/g, " ").slice(0, 140)
+      : last?.file
+        ? `[文件] ${last.file.name}`
+        : "发来一条新消息";
+    const link = tunnel.state.url ? `${tunnel.state.url}/peer` : `http://127.0.0.1:${cfg.port}/peer`;
+    void notifier.notify(`内网通 · ${thread.nickname}`, body, link);
+  });
   sessions.on("approval", (approval) => {
     if (!shouldNotify()) return;
     const session = sessions.get(approval.sessionId);

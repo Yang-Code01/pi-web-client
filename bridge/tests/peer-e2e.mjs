@@ -249,17 +249,18 @@ try {
     },
     8000,
   );
+  // D299 之后 receipt 不再单独出现，而是折叠成消息上的 state（页面只画一条消息）。
   await until(
-    "A 拿到 quick 文字的 delivered 回执",
+    "A 那条 quick 文字折叠成 delivered",
     async () => {
       const body = await (await fetch(`http://127.0.0.1:17965/messages?peer=${sc}`)).json();
-      return body.entries?.some((e) => e.kind === "receipt" && e.ack?.status === "delivered") ? body : false;
+      return body.entries?.some((e) => e.text === "快捷联系人也能聊" && e.state === "delivered") ? body : false;
     },
     8000,
   );
-  log("ok quick 文字送到对端且有送达回执");
+  log("ok quick 文字送到对端且折叠成 delivered");
 
-  // 文件三道闸仍然只认 friend：本机发不出去，对端也不会为 quick 的人写盘。
+  // D300：quick（也不是好友）照样能传文件 —— 关系不再是一道文件权限。
   const quickProbe = path.join(ROOT, "quick-probe.bin");
   fs.writeFileSync(quickProbe, Buffer.from("quick"));
   const quickFile = await fetch("http://127.0.0.1:17965/files/send", {
@@ -267,8 +268,14 @@ try {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ peer: sc, path: quickProbe }),
   });
-  if (quickFile.status !== 403) throw new Error(`quick 发文件应 403，实际 ${quickFile.status} ${await quickFile.text()}`);
-  const quickBegin = await fetch("http://127.0.0.1:17968/peer/file/begin", {
+  if (!quickFile.ok) throw new Error(`quick 发文件应放行，实际 ${quickFile.status} ${await quickFile.text()}`);
+  // 收件端开着「暂停收文件」时仍然要拒：那才是真闸门。
+  await fetch("http://127.0.0.1:17968/config", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pauseFiles: true }),
+  });
+  const pausedBegin = await fetch("http://127.0.0.1:17968/peer/file/begin", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -279,11 +286,16 @@ try {
       sha256: "0".repeat(64),
     }),
   });
-  const quickBeginBody = await quickBegin.json();
-  if (quickBegin.status !== 403 || quickBeginBody.retryable !== false) {
-    throw new Error(`quick 收件端应 403 且不可重试，实际 ${quickBegin.status} ${JSON.stringify(quickBeginBody)}`);
+  const pausedBody = await pausedBegin.json();
+  if (pausedBegin.status !== 503 || pausedBody.retryable !== true) {
+    throw new Error(`暂停收文件时应 503 且可重试，实际 ${pausedBegin.status} ${JSON.stringify(pausedBody)}`);
   }
-  log("ok quick 不放开文件：发出去 403，收件端拒写 403");
+  await fetch("http://127.0.0.1:17968/config", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pauseFiles: false }),
+  });
+  log("ok quick 也能传文件（D300）；真闸门是「暂停收文件」");
 
   const offlineQuick = await fetch("http://127.0.0.1:17965/friend", {
     method: "POST",
@@ -554,16 +566,16 @@ try {
   log("ok 同一条消息只存一次（dedupe）");
 
   const receipt = await until(
-    "A 拿到 delivered 回执",
+    "A 那条消息折叠成 delivered",
     async () => {
       const res = await fetch(`http://127.0.0.1:17965/messages?peer=${sb}`);
       const body = await res.json();
-      return body.entries?.some((e) => e.kind === "receipt" && e.ack?.status === "delivered") ? body : false;
+      return body.entries?.some((e) => e.text === "你好，乙" && e.state === "delivered") ? body : false;
     },
     8000,
   );
   void receipt;
-  log("ok 送达回执（append 一行 receipt）");
+  log("ok 送达状态由 receipt 折叠到消息上（不再单独出现在消息流里）");
 
   const tooLong = await fetch("http://127.0.0.1:17965/send", {
     method: "POST",
@@ -664,6 +676,220 @@ try {
   void viaEntry;
   log("ok agent 代发的消息带 via=pi（对端徽章）");
 
+  // ---- D299（P1~P4）：会话元数据 / 未读水位 / 序号 / 撤回 / 输入中 ----
+  const jsonHeaders = { "content-type": "application/json" };
+  const threadsOf = async (port) => (await (await fetch(`http://127.0.0.1:${port}/threads`)).json()).threads ?? [];
+  const msgsOf = async (port, peer) =>
+    (await (await fetch(`http://127.0.0.1:${port}/messages?peer=${peer}&limit=200`)).json()).entries ?? [];
+
+  // 未读：B 从来没打过水位 ⇒ A 发几条就算几条。
+  for (const text of ["未读一", "未读二"]) {
+    const r = await fetch("http://127.0.0.1:17965/send", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ peer: sb, text }) });
+    if (!r.ok) throw new Error(`发「${text}」失败：${r.status} ${await r.text()}`);
+  }
+  const unreadThread = await until(
+    "B 的未读 >= 2",
+    async () => {
+      const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+      return t && t.unread >= 2 ? t : false;
+    },
+    8000,
+  );
+  log(`ok 未读按对方发来的条数算（${unreadThread.unread}）`);
+
+  // 序号：同一会话里单调递增（同毫秒时它是排序的第二键）。
+  const bMsgs = await msgsOf(17966, sa);
+  const seqs = bMsgs.filter((e) => e.kind === "text" && typeof e.seq === "number").map((e) => e.seq);
+  if (seqs.length < 2) throw new Error(`消息没带 seq：${JSON.stringify(bMsgs.slice(-2))}`);
+  if (seqs.some((v, i) => i > 0 && v <= seqs[i - 1])) throw new Error(`seq 没有单调递增：${seqs.join(",")}`);
+  log("ok 消息带会话内单调的 seq");
+
+  // 打水位（{at, id} 双键）⇒ 未读归零。
+  const lastFromA = [...bMsgs].reverse().find((e) => e.kind === "text" && e.from.nodeId !== sb);
+  const readRes = await fetch("http://127.0.0.1:17966/threads/read", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sa, at: lastFromA.at, id: lastFromA.id }),
+  });
+  if (!readRes.ok) throw new Error(`打水位失败：${readRes.status} ${await readRes.text()}`);
+  await until(
+    "打水位后未读归零",
+    async () => {
+      const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+      return t && t.unread === 0 ? t : false;
+    },
+    8000,
+  );
+  // 再来一条：只多这一条。
+  await fetch("http://127.0.0.1:17965/send", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ peer: sb, text: "水位之后" }) });
+  await until(
+    "水位之后新来的那条算 1 条未读",
+    async () => {
+      const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+      return t && t.unread === 1 ? t : false;
+    },
+    8000,
+  );
+  log("ok 已读水位是 {at,id} 双键，打过之后只算新来的");
+
+  // 置顶 / 静音 / 草稿：只改本机那份 threads.json，且立刻反映到 /threads。
+  const patchRes = await fetch("http://127.0.0.1:17966/threads/patch", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sa, pinned: true, muted: true, draft: "还没写完" }),
+  });
+  if (!patchRes.ok) throw new Error(`改会话元数据失败：${patchRes.status} ${await patchRes.text()}`);
+  const patched = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+  if (!patched?.pinned || !patched?.muted || patched?.draft !== "还没写完") {
+    throw new Error(`置顶/静音/草稿没生效：${JSON.stringify(patched)}`);
+  }
+  // 置顶的排在最前。
+  if ((await threadsOf(17966))[0]?.nodeId !== sa) throw new Error("置顶的会话没有排到最前");
+  log("ok 置顶 / 静音 / 草稿只在本机生效，置顶排最前");
+
+  // 输入中：3 秒窗口，不落盘。
+  await fetch("http://127.0.0.1:17965/typing", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ peer: sb }) });
+  const typingOn = await until(
+    "对端看到「正在输入」",
+    async () => {
+      const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+      return t?.typing === true ? t : false;
+    },
+    6000,
+  );
+  void typingOn;
+  await until(
+    "停手 3 秒后「正在输入」自己消失",
+    async () => {
+      const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
+      return t?.typing === false ? t : false;
+    },
+    8000,
+  );
+  log("ok 输入中 3 秒窗口（心跳不落盘）");
+
+  // 撤回：原消息不删，两边都折叠成「已撤回」；再撤一次要拒。
+  const recallTarget = (await msgsOf(17965, sb)).filter((e) => e.kind === "text" && e.text === "水位之后").at(-1);
+  const recallRes = await fetch("http://127.0.0.1:17965/recall", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sb, id: recallTarget.id }),
+  });
+  if (!recallRes.ok) throw new Error(`撤回失败：${recallRes.status} ${await recallRes.text()}`);
+  const recalledMine = await until(
+    "自己这边看到已撤回",
+    async () => (await msgsOf(17965, sb)).find((e) => e.id === recallTarget.id && e.recalled === true),
+    8000,
+  );
+  void recalledMine;
+  const recalledTheirs = await until(
+    "对端那条也被折叠成已撤回",
+    async () => (await msgsOf(17966, sa)).find((e) => e.id === recallTarget.id && e.recalled === true),
+    8000,
+  );
+  // 原文还在历史文件里（append-only），只是不再显示。
+  if (!recalledTheirs.text) throw new Error("撤回把原文从历史里删掉了");
+  const recallAgain = await fetch("http://127.0.0.1:17965/recall", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sb, id: recallTarget.id }),
+  });
+  if (recallAgain.status !== 400) throw new Error(`重复撤回应 400，实际 ${recallAgain.status}`);
+  log("ok 撤回是追加一条记录、原文留在文件里，重复撤回被拒");
+
+  // 超时：往历史里塞一条 5 分钟前的消息，撤回必须被拒。
+  const oldId = "old-" + Date.now();
+  fs.appendFileSync(
+    path.join(ROOT, "a", "history", `${sb}.jsonl`),
+    JSON.stringify({ id: oldId, at: Date.now() - 5 * 60_000, from: { nodeId: sa, nickname: "甲" }, to: { kind: "node", id: sb }, kind: "text", text: "很久以前" }) + "\n",
+  );
+  const late = await fetch("http://127.0.0.1:17965/recall", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sb, id: oldId }),
+  });
+  const lateBody = await late.json();
+  if (late.status !== 400 || !String(lateBody.error ?? "").includes("超过撤回时间")) {
+    throw new Error(`超过 2 分钟应拒绝撤回，实际 ${late.status} ${JSON.stringify(lateBody)}`);
+  }
+  log("ok 超过 2 分钟的撤回被拒（400 + 文案）");
+
+  // 重发：同一个 id 再投一次，历史里还是一条，对端也只有一份。
+  const retryTarget = (await msgsOf(17965, sb)).find((e) => e.kind === "text" && e.text === "未读一");
+  const retryRes = await fetch("http://127.0.0.1:17965/send/retry", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sb, id: retryTarget.id }),
+  });
+  if (!retryRes.ok) throw new Error(`重发失败：${retryRes.status} ${await retryRes.text()}`);
+  await new Promise((r) => setTimeout(r, 800));
+  const mineAfterRetry = (await msgsOf(17965, sb)).filter((e) => e.id === retryTarget.id);
+  if (mineAfterRetry.length !== 1) throw new Error(`重发后本机变成 ${mineAfterRetry.length} 条`);
+  const theirsAfterRetry = (await msgsOf(17966, sa)).filter((e) => e.id === retryTarget.id);
+  if (theirsAfterRetry.length !== 1) throw new Error(`重发后对端变成 ${theirsAfterRetry.length} 条`);
+  if (theirsAfterRetry[0].state) throw new Error("对端不该看到我自己这边的发送状态");
+  log("ok 重发复用原 id：两边都还是一条");
+
+  // 状态派生：把 peer 的 outbox 停掉不容易做，这里只验「送达之后 state=delivered」。
+  const delivered = (await msgsOf(17965, sb)).find((e) => e.id === retryTarget.id);
+  if (delivered?.state !== "delivered") throw new Error(`送达后 state 应为 delivered，实际 ${JSON.stringify(delivered?.state)}`);
+  log("ok 送达状态由 receipt 折叠出来（state=delivered）");
+
+  // P4：状态字段进 announce，/status 也带一份。
+  const stA = await status(17965);
+  if (stA.status !== "online" && stA.status !== "away") throw new Error(`/status 没有本机状态：${JSON.stringify(stA.status)}`);
+  const onlineB = stA.online.find((p) => p.nodeId === sb);
+  if (onlineB && typeof onlineB.status !== "string") throw new Error("在线表里没有对端状态");
+  const presence = await (await fetch("http://127.0.0.1:17965/presence", { method: "POST", headers: jsonHeaders, body: "{}" })).json();
+  if (presence.status !== "online") throw new Error(`页面心跳之后应为 online，实际 ${JSON.stringify(presence)}`);
+  log("ok 本机状态（online/away）进 /status 与在线表");
+
+  // ---- D303：改自己的名字 / 改对方的备注名 ----
+  const renameMe = await fetch("http://127.0.0.1:17965/config", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ nickname: "甲改" }),
+  });
+  if (!renameMe.ok) throw new Error(`改自己的名字失败：${renameMe.status} ${await renameMe.text()}`);
+  const renamedMe = await renameMe.json();
+  if (renamedMe.nickname !== "甲改") throw new Error(`/config 没回新名字：${JSON.stringify(renamedMe.nickname)}`);
+  await until(
+    "对端的在线表里看到新名字",
+    async () => {
+      const s = await status(17966);
+      return s?.online?.find((p) => p.nodeId === sa)?.nickname === "甲改" ? s : false;
+    },
+    12000,
+  );
+  log("ok 改自己的名字：立刻广播，对端在线表跟着变");
+
+  // 空名字要拒。
+  const emptyName = await fetch("http://127.0.0.1:17965/config", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ nickname: "   " }),
+  });
+  if (emptyName.status !== 400) throw new Error(`空名字应 400，实际 ${emptyName.status}`);
+  log("ok 空名字被拒（400）");
+
+  // 备注名：只在本机，且不会被对方的 announce 冲掉。
+  const renamer = await fetch("http://127.0.0.1:17966/friend", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sa, action: "rename", name: "老甲" }),
+  });
+  if (!renamer.ok) throw new Error(`改备注名失败：${renamer.status} ${await renamer.text()}`);
+  const remark = async () =>
+    (await (await fetch("http://127.0.0.1:17966/contacts")).json()).contacts?.find((c) => c.nodeId === sa)?.nickname;
+  if ((await remark()) !== "老甲") throw new Error(`备注名没生效：${await remark()}`);
+  // 等 A 再 announce 一两轮：备注名不能被对方的昵称盖掉。
+  await new Promise((r) => setTimeout(r, 2500));
+  if ((await remark()) !== "老甲") throw new Error(`备注名被对方的 announce 覆盖了：${await remark()}`);
+  // 对方那边看不到这条备注（它只在本机）。
+  const onA = (await (await fetch("http://127.0.0.1:17965/contacts")).json()).contacts?.find((c) => c.nodeId === sb);
+  if (onA?.nickname === "老甲") throw new Error("备注名被同步到了对方");
+  log("ok 备注名只在本机生效，且不被对方的改名覆盖");
+
   // ---- 第 4 片：文件。先造一个 3 MB 的二进制文件（跨 3 个分块），发过去逐字节比对。 ----
   const { createHash } = await import("node:crypto");
   const payload = Buffer.alloc(3 * 1024 * 1024 + 137);
@@ -672,14 +898,55 @@ try {
   fs.writeFileSync(srcFile, payload);
   const wantHash = createHash("sha256").update(payload).digest("hex");
 
-  // 非好友不能发文件：C 不是 A 的好友，必须 403 且不可重试。
-  const notFriend = await fetch("http://127.0.0.1:17965/files/send", {
+  // D300：文件不再要好友。C 跟 A 没有任何关系记录（只有在线发现），照样能收发。
+  const toStranger = await fetch("http://127.0.0.1:17965/files/send", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ peer: sc, path: srcFile }),
   });
-  if (notFriend.status !== 403) throw new Error(`非好友发文件应 403，实际 ${notFriend.status} ${await notFriend.text()}`);
-  log("ok 非好友发文件被拒（403）");
+  if (!toStranger.ok) throw new Error(`非好友发文件应放行，实际 ${toStranger.status} ${await toStranger.text()}`);
+  const strangerCard = await until(
+    "C 收到非好友发来的文件卡片",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17968/messages?peer=${sa}`)).json();
+      return body.entries?.find((e) => e.kind === "file" && e.file?.name === "报告 e2e.bin") ?? false;
+    },
+    30000,
+  );
+  if (strangerCard.file.sha256 !== wantHash) throw new Error("非好友收文件的哈希不对");
+  log("ok 非好友也能收发文件（D300：好友只决定列不列在好友里）");
+
+  // D305：图片带宽高（页面先占位，图下来不顶得乱跳），GIF 的 mime 要认出来。
+  const pngBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mNkYPhfz0AEYBxVSF+FABJADveWkH6oAAAAAElFTkSuQmCC",
+    "base64",
+  );
+  const pngPath = path.join(ROOT, "小图.png");
+  fs.writeFileSync(pngPath, pngBytes);
+  const sendPng = await fetch("http://127.0.0.1:17965/files/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sb, path: pngPath }),
+  });
+  if (!sendPng.ok) throw new Error(`发图失败：${sendPng.status} ${await sendPng.text()}`);
+  const [minePic, theirPic] = await until(
+    "两边都记下图片的宽高",
+    async () => {
+      const [a, b] = await Promise.all([
+        (await fetch(`http://127.0.0.1:17965/messages?peer=${sb}`)).json(),
+        (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json(),
+      ]);
+      const pick = (body) => (body.entries ?? []).find((e) => e.kind === "file" && e.file?.name === "小图.png");
+      const x = pick(a);
+      const y = pick(b);
+      return x?.file?.w === 10 && y?.file?.w === 10 ? [x, y] : null;
+    },
+    20000,
+  );
+  if (minePic.file.mime !== "image/png" || theirPic.file.h !== 10) {
+    throw new Error(`图片元数据不对：${JSON.stringify(minePic.file)} / ${JSON.stringify(theirPic.file)}`);
+  }
+  log("ok 图片消息带宽高与 image/png（页面据此直接画图、预留位置）");
 
   const sendFile = await fetch("http://127.0.0.1:17965/files/send", {
     method: "POST",
@@ -692,7 +959,8 @@ try {
     "B 收到文件卡片",
     async () => {
       const body = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json();
-      return body.entries?.find((e) => e.kind === "file") ?? false;
+      // 前面还发过一张小图，所以按名字找，别拿「第一条 file」当那份 3 MB 的 payload。
+      return body.entries?.find((e) => e.kind === "file" && e.file?.name === "报告 e2e.bin") ?? false;
     },
     30000,
   );
@@ -706,7 +974,9 @@ try {
   log("ok 落盘内容逐字节一致");
 
   const again2 = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json();
-  if (again2.entries.filter((e) => e.kind === "file").length !== 1) throw new Error("文件重发写了多张卡片");
+  if (again2.entries.filter((e) => e.kind === "file" && e.file?.name === "报告 e2e.bin").length !== 1) {
+    throw new Error("文件重发写了多张卡片");
+  }
   log("ok 同一文件只留一张卡片");
 
   // 0 字节文件：空的 .log / .txt 也要能发（以前 begin 用 size <= 0 直接 400）。

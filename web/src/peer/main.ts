@@ -1,4 +1,6 @@
 import { applyLang, bootLang, fmtDate, fmtNum, fmtRelative, fmtTime, tr } from "../i18n/index.ts";
+import { SheetDialog } from "../sheet/dialog.ts";
+import "../sheet/sheet.css";
 
 /**
  * `peer.html` 的脚本：只跟 bridge 说话（cookie + `/api/peer*`），从不直接连 7865。
@@ -20,6 +22,7 @@ interface OnlinePeer {
   addr: string;
   port: number;
   lastSeen: number;
+  status?: string;
   ips: string[];
 }
 
@@ -44,11 +47,21 @@ interface Entry {
   at: number;
   from: { nodeId: string; nickname?: string; hostname?: string; port?: number };
   to: { kind: "node" | "group"; id: string };
-  kind: "text" | "receipt" | "file";
+  kind: "text" | "receipt" | "file" | "recall";
   text?: string;
   ack?: { id: string; status: "delivered" | "failed"; error?: string };
-  file?: { name: string; size: number; mime: string; sha256?: string };
+  file?: { name: string; size: number; mime: string; sha256?: string; w?: number; h?: number };
   via?: "pi";
+  /** P2：会话内序号，同毫秒时当排序第二键。 */
+  seq?: number;
+  /** P3：引用。 */
+  replyTo?: { id: string; from: string; excerpt: string };
+  /** `kind:"recall"` 指向被撤回的那条（页面不单独画它，只把原气泡换成灰条）。 */
+  ref?: string;
+  /** 视图字段（peer 折叠出来，不落盘）：这条已经被撤回。 */
+  recalled?: boolean;
+  /** 视图字段：我自己发的这条现在在哪个态。 */
+  state?: "sending" | "delivered" | "failed";
 }
 
 interface Thread {
@@ -59,6 +72,15 @@ interface Thread {
   last: Entry | null;
   count: number;
   online: boolean;
+  status: string;
+  lastSeen: number;
+  unread: number;
+  pinned: boolean;
+  muted: boolean;
+  draft: string;
+  lastMine: boolean;
+  sending: boolean;
+  typing: boolean;
 }
 
 interface Contact {
@@ -95,6 +117,7 @@ interface BrowseEntry {
   dir: boolean;
   size: number;
   mtime: number;
+  mime?: string;
 }
 
 interface Browse {
@@ -125,6 +148,7 @@ const ICONS: Record<string, string[]> = {
   close: ["M6 6l12 12", "M18 6 6 18"],
   back: ["M15 5l-7 7 7 7"],
   more: ["M5.5 12h.01", "M12 12h.01", "M18.5 12h.01"],
+  collapse: ["M9 5l7 7-7 7"],
   star: ["M12 4.2l2.3 4.9 5.2.7-3.8 3.6.9 5.3L12 16.2l-4.6 2.5.9-5.3L4.5 9.8l5.2-.7z"],
   file: ["M14 3.5H7.5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z", "M14 3.5V8h4.5"],
   folder: ["M3.5 8a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"],
@@ -178,6 +202,12 @@ const S = {
   msgs: [] as Entry[],
   msgsFor: "" as string,
   sending: false,
+  /** P3：正在引用的那条（发送后清空）。 */
+  replyTo: null as Entry | null,
+  /** P4：上一次通知过的未读数，按 nodeId 记（只在页面隐藏时用来比）。 */
+  unreadSeen: new Map<string, number>(),
+  /** D302：会话列表折叠（跨刷新记住），折叠后整块宽度让给对话。 */
+  listCollapsed: readFlag("peer.listCollapsed"),
 };
 
 const app = document.querySelector("#app") as HTMLElement;
@@ -195,6 +225,8 @@ const placesEl = document.querySelector("#places") as HTMLUListElement;
 const rootsEl = document.querySelector("#roots") as HTMLUListElement;
 const filesEl = document.querySelector("#files") as HTMLUListElement;
 const pickerSel = document.querySelector("#picker-sel") as HTMLElement;
+const pickerPath = document.querySelector("#picker-path") as HTMLInputElement;
+const pickerGo = document.querySelector("#picker-go") as HTMLButtonElement;
 const pickerUp = document.querySelector("#picker-up") as HTMLButtonElement;
 const pickerSendBtn = document.querySelector("#picker-send") as HTMLButtonElement;
 const pickerClose = document.querySelector("#picker-close") as HTMLButtonElement;
@@ -206,13 +238,38 @@ let composeEl: HTMLElement | null = null;
 let composeFor = "";
 /** 消息列重画前的滚动位置：贴着底就继续贴底，翻历史就停在原处。 */
 let stickBottom = true;
+/** 刚发出一条消息（文字 / 文件）：下一次重画必须贴底，哪怕原先停在历史中间。 */
+let forceBottom = false;
 let prevScroll = 0;
 let textInput: HTMLTextAreaElement | null = null;
 let sendBtn: HTMLButtonElement | null = null;
+/** 引用条所在的槽：换会话时重建，引用 / 取消引用时只重画槽里的东西。 */
+let replyHost: HTMLElement | null = null;
+/** 输入中的心跳节流：服务端还有一层 1.5 s，这里只是别把每次按键都发出去。 */
+let typingSentAt = 0;
+/** 草稿防抖：敲一下存一下会把 threads.json 打成筛子。 */
+let draftTimer = 0;
 
 // ---------------------------------------------------------------- 小工具
 
 const byteLen = (text: string): number => new TextEncoder().encode(text).length;
+
+/** localStorage 里的布尔开关：存 `"1"` / `"0"`，读写都包一层 try（隐身模式下会抛）。 */
+function readFlag(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key: string, on: boolean): void {
+  try {
+    window.localStorage.setItem(key, on ? "1" : "0");
+  } catch {
+    /* 隐身模式 */
+  }
+}
 
 /** 时间/相对时间统一走 i18n 的 fmt*：手写 toLocale* 会脱离当前语言（docs/I18N.md）。 */
 function ago(ts: number): string {
@@ -355,6 +412,84 @@ async function loadThreads(): Promise<void> {
   } catch {
     S.threads = [];
   }
+  pingUnread();
+}
+
+/** 桌面通知开关：默认开，浏览器权限要用户点一下才给（`setNotify`）。 */
+function notifyEnabled(): boolean {
+  try {
+    return window.localStorage.getItem("peer.notify") !== "0";
+  } catch {
+    return true;
+  }
+}
+
+let unreadPrimed = false;
+
+/**
+ * P4：页面不在前面时，新消息弹一条系统通知。
+ *
+ * 首轮只记账不弹（否则一打开就把全部未读弹一遍）；静音会话与免打扰都挡。
+ * bridge 那边有一条同样的路（Web Push），两者不冲突：页面开着就是这条，页面关了就是那条。
+ */
+function pingUnread(): void {
+  // 嵌在主页面弹层里时，通知由主页面统一发（它知道「内网通弹层开着没有」）；这一份只在
+  // `/peer` 被单独打开时管用 —— 否则同一件事会弹两条。
+  const embedded = window.self !== window.top;
+  const canNotify =
+    !embedded && document.hidden && notifyEnabled() && "Notification" in window && Notification.permission === "granted";
+  for (const t of S.threads) {
+    const prev = S.unreadSeen.get(t.nodeId) ?? 0;
+    S.unreadSeen.set(t.nodeId, t.unread);
+    if (!unreadPrimed || !canNotify) continue;
+    if (t.unread <= prev || t.unread === 0) continue;
+    if (t.muted || S.view?.status?.config.dnd) continue;
+    const last = t.last;
+    const body = last ? (last.text ?? (last.file ? tr("[文件] {p1}", { p1: last.file.name }) : tr("发来一条新消息"))) : "";
+    try {
+      const note = new Notification(tr("内网通 · {p1}", { p1: t.nickname }), { body: body.slice(0, 120), tag: t.nodeId });
+      note.onclick = () => {
+        window.focus();
+        openThread(t.nodeId);
+        note.close();
+      };
+    } catch {
+      /* 不支持 / 权限被撤：不弹就是了 */
+    }
+  }
+  unreadPrimed = true;
+}
+
+async function setNotify(on: boolean): Promise<void> {
+  if (!on) {
+    try {
+      window.localStorage.setItem("peer.notify", "0");
+    } catch {
+      /* 隐身模式 */
+    }
+    toast(tr("桌面通知已关"));
+    renderMain();
+    return;
+  }
+  if ("Notification" in window && Notification.permission !== "granted") {
+    try {
+      await Notification.requestPermission();
+    } catch {
+      /* 老浏览器没有 requestPermission */
+    }
+    // 读回来重新判一次：上面的窄化在 await 之后已经不成立了，所以先转成 string 再比。
+    if (String(Notification.permission) !== "granted") {
+      toast(tr("浏览器没有给通知权限"));
+      return;
+    }
+  }
+  try {
+    window.localStorage.setItem("peer.notify", "1");
+  } catch {
+    /* 隐身模式 */
+  }
+  toast(tr("桌面通知已开"));
+  renderMain();
 }
 
 /** 独立落盘的忽略名单：页面只用它挡住在线表兜底合并，不改状态 / 找人接口。 */
@@ -437,6 +572,13 @@ const PAGES: { id: Page; icon: string; label: string; color: string }[] = [
   { id: "me", icon: "me", label: "我", color: "var(--c-me)" },
 ];
 
+/** 折叠 / 展开会话列表：折叠后 `paintList` 不进 DOM，主区吃掉整块宽度（同一个 data-nolist）。 */
+function setListCollapsed(on: boolean): void {
+  S.listCollapsed = on;
+  writeFlag("peer.listCollapsed", on);
+  renderAll();
+}
+
 function go(page: Page): void {
   if (S.page !== page) {
     S.page = page;
@@ -461,7 +603,13 @@ function openThread(id: string): void {
   // 从联系人列表点「发消息」就是要马上打字：把焦点直接放进输入框。
   // renderAll() 里 renderChat() 已经同步建好 textarea（composeBox 会更新 textInput）。
   textInput?.focus({ preventScroll: true });
-  void loadMessages().then(() => renderMain());
+  void loadMessages().then(async () => {
+    const fresh = threadOf(id);
+    if (fresh) await markRead(fresh);
+    await loadThreads();
+    if (S.thread === id && S.page === "msg") renderList();
+    renderMain();
+  });
 }
 
 function renderAll(): void {
@@ -498,7 +646,11 @@ function renderBar(): void {
     flags.textContent = on.join(" · ");
   }
 
-  frag.append(brand, meta, spacer, flags);
+  frag.append(brand, meta, spacer);
+  if (S.listCollapsed && S.page !== "me") {
+    frag.append(iconBtn("collapse", tr("展开会话列表"), () => setListCollapsed(false)));
+  }
+  frag.append(flags);
   if (window.self === window.top) {
     const back = h("a", "btn", tr("‹ 回 pi"));
     back.href = "/";
@@ -611,7 +763,7 @@ function renderList(): void {
 function paintList(): void {
   listEl.replaceChildren();
   // 我页没有列表：整块宽度让给右侧。光把 list 隐藏不够 —— 网格会自动补位，main 会被挤到第二列。
-  const noList = S.page === "me";
+  const noList = S.page === "me" || S.listCollapsed;
   app.dataset.nolist = noList ? "1" : "0";
   listEl.style.display = noList ? "none" : "";
   if (noList) return;
@@ -629,13 +781,31 @@ function matches(...texts: (string | undefined)[]): boolean {
 function preview(t: Thread): string {
   const e = t.last;
   if (!e) return tr("还没有消息");
-  if (e.kind === "receipt") return tr("已送达");
-  if (e.kind === "file") return tr("[文件] {p1}", { p1: e.file?.name ?? "" });
-  return e.text ?? "";
+  if (e.recalled) return tr("撤回了一条消息");
+  const body =
+    e.kind === "file" ? (picKind(e) === "gif" ? tr("[动图]") : picKind(e) ? tr("[图片]") : tr("[文件] {p1}", { p1: e.file?.name ?? "" })) : (e.text ?? "");
+  // 最后一条是我发的就加「你:」前缀（QQ 的会话行也这样，不然自己的话看着像对方说的）。
+  return t.lastMine ? tr("你: {p1}", { p1: body }) : body;
+}
+
+function badgeText(n: number): string {
+  return n > 99 ? "99+" : String(n);
+}
+
+/** 把未读打到已读：拿最后一条消息的 `{at, id}` 当水位，同毫秒也不会漏（D299）。 */
+async function markRead(t: Thread): Promise<void> {
+  if (!t.last || t.unread === 0) return;
+  try {
+    await postJson("/api/peer/read", { peer: t.nodeId, at: t.last.at, id: t.last.id });
+  } catch {
+    /* 落后一拍不算错：下一轮轮询会重试 */
+  }
 }
 
 function renderThreadList(): void {
-  listEl.append(searchBox(tr("搜索会话")));
+  const head = h("div", "listhead");
+  head.append(searchBox(tr("搜索会话")), iconBtn("back", tr("收起会话列表"), () => setListCollapsed(true)));
+  listEl.append(head);
   const box = h("div", "listbox");
   const rows = S.threads.filter((t) => matches(t.nickname, t.hostname));
   if (!rows.length) {
@@ -648,14 +818,21 @@ function renderThreadList(): void {
     );
   }
   for (const t of rows) {
-    const row = h("div", `row${S.thread === t.nodeId ? " on" : ""}`);
-    row.append(avatar(t.nickname, t.nodeId, t.online));
+    const row = h("div", `row${S.thread === t.nodeId ? " on" : ""}${t.pinned ? " pinned" : ""}`);
+    const wrap = h("span", "avwrap");
+    wrap.append(avatar(t.nickname, t.nodeId, t.online));
+    if (t.unread > 0) wrap.append(h("i", `unread${t.muted ? " quiet" : ""}`, t.muted ? "" : badgeText(t.unread)));
+    row.append(wrap);
     const tbox = h("div", "t");
     const name = h("div", "n");
     name.append(h("span", "nm", t.nickname));
+    if (t.pinned) name.append(ic("star", "pin"));
     if (t.last?.via === "pi") name.append(h("span", "pill pi", "pi"));
     const sub = h("div", "s");
-    sub.append(h("span", "", preview(t)));
+    if (t.typing) sub.append(h("span", "typing", tr("对方正在输入…")));
+    else if (t.draft) sub.append(h("span", "draft", tr("草稿：{p1}", { p1: t.draft })));
+    else sub.append(h("span", "", preview(t)));
+    if (t.muted) sub.append(ic("bellOff", "mute"));
     tbox.append(name, sub);
     const right = h("div", "r");
     right.append(h("span", "tm", t.last ? ago(t.last.at) : ""));
@@ -827,9 +1004,14 @@ function emptyState(icon: string, title: string, sub: string): HTMLElement {
 function renderMain(): void {
   // 重新画聊天会把消息列清空重排，滚到哪儿要自己记住：翻历史的时侯别把人拽回底。
   const prev = mainEl.querySelector<HTMLElement>(".stream");
+  let forced = forceBottom;
+  forceBottom = false;
   if (prev) {
-    stickBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 32;
+    // 发出去的东西一定要看得见：`forceBottom` 优先于「刚才停在哪」。
+    stickBottom = forced || prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 32;
     prevScroll = prev.scrollTop;
+  } else if (forced) {
+    stickBottom = true;
   }
   rerender(paintMain);
 }
@@ -881,6 +1063,15 @@ function threadOf(id: string | null): Thread | null {
     last: null,
     count: 0,
     online: Boolean(online),
+    status: online?.status ?? (online ? "online" : "offline"),
+    lastSeen: online?.lastSeen ?? 0,
+    unread: 0,
+    pinned: false,
+    muted: false,
+    draft: "",
+    lastMine: false,
+    sending: false,
+    typing: false,
   };
 }
 
@@ -897,7 +1088,12 @@ function renderChat(): void {
   const title = h("div", "t");
   const name = h("div", "n");
   name.append(h("span", "nm", t.nickname));
-  const sub = h("div", "s", t.online ? tr("在线") + " · " + (t.hostname || "") : tr("离线"));
+  const subText = t.typing
+    ? tr("对方正在输入…")
+    : t.online
+      ? (t.status === "away" ? tr("离开") : tr("在线")) + " · " + (t.hostname || "")
+      : tr("离线");
+  const sub = h("div", `s${t.typing ? " typing" : ""}`, subText);
   title.append(name, sub);
   head.append(title, h("div", "grow"));
   const tools = h("div", "tools");
@@ -914,7 +1110,7 @@ function renderChat(): void {
   const stream = h("div", "stream");
   let lastDay = "";
   for (const e of S.msgs) {
-    if (e.kind === "receipt") continue;
+    if (e.kind === "receipt" || e.kind === "recall") continue;
     const day = dayLabel(e.at);
     if (day !== lastDay) {
       stream.append(h("div", "day", day));
@@ -926,21 +1122,37 @@ function renderChat(): void {
     stream.append(h("div", "empty", tr("还没有消息，说点什么吧")));
   }
   mainEl.append(stream);
-  stream.scrollTop = stickBottom ? stream.scrollHeight : prevScroll;
-
   const compose = composeBox(t);
   mainEl.append(compose);
+  // 贴底要在**输入框也挂上之后**做：先设一次会把还没缩下来的高度当成底，
+  // 差的那几十像素就是输入框与文件卡片的高度（用户报的「发完文件没滚到底」）。
+  if (stickBottom) {
+    stream.scrollTop = stream.scrollHeight;
+    requestAnimationFrame(() => {
+      if (stickBottom) stream.scrollTop = stream.scrollHeight;
+    });
+  } else {
+    stream.scrollTop = prevScroll;
+  }
 }
 
 function entryNode(e: Entry, t: Thread): HTMLElement {
   const mine = e.from.nodeId === S.view?.status?.nodeId;
+  // 撤回（P3）：原气泡换成一整行灰条，原文不再显示（文件里还在，见 D299）。
+  if (e.recalled) {
+    return h("div", "graytip", mine ? tr("你撤回了一条消息") : tr("{p1} 撤回了一条消息", { p1: t.nickname }));
+  }
   const msg = h("div", `msg${mine ? " mine" : ""}`);
+  msg.dataset.id = e.id;
   msg.append(avatar(mine ? (S.view?.status?.nickname ?? tr("我")) : t.nickname, e.from.nodeId));
   const box = h("div", "b");
-  if (e.kind === "file" && e.file) {
+  if (e.replyTo) box.append(quoteBlock(e.replyTo));
+  if (e.kind === "file" && e.file && picKind(e)) {
+    box.append(picBubble(e, mine));
+  } else if (e.kind === "file" && e.file) {
     box.append(fileCard(e, mine));
   } else {
-    const bub = h("div", "bub", e.text ?? "");
+    const bub = h("div", `bub${e.state === "failed" ? " failed" : ""}`, e.text ?? "");
     bub.title = tr("点击复制");
     bub.addEventListener("click", () => void copyText(e.text ?? ""));
     box.append(bub);
@@ -948,21 +1160,133 @@ function entryNode(e: Entry, t: Thread): HTMLElement {
   const meta = h("div", "tm");
   if (e.via === "pi") meta.append(h("span", "pill pi", tr("pi 代发")));
   meta.append(h("span", "", clock(e.at)));
-  if (mine && e.ack) {
-    if (e.ack.status === "delivered") {
-      const ok = ic("check", "ok");
-      meta.append(ok, h("span", "ok", tr("已送达")));
-    } else {
+  if (mine) {
+    if (e.state === "sending") {
+      meta.append(h("span", "sending", tr("发送中…")));
+    } else if (e.state === "failed") {
       const bad = ic("alert", "bad");
       meta.append(bad, h("span", "bad", tr("发送失败")));
-      const retry = h("button", "link", tr("重试"));
+      const retry = h("button", "link", tr("重发"));
       retry.addEventListener("click", () => void resend(e));
       meta.append(retry);
+    } else if (e.state === "delivered") {
+      const ok = ic("check", "ok");
+      meta.append(ok, h("span", "ok", tr("已送达")));
     }
   }
   box.append(meta);
   msg.append(box);
+  msg.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    messageMenu(ev.clientX, ev.clientY, e, t, mine);
+  });
   return msg;
+}
+
+/** 引用块：点一下滚到原消息；原消息已经撤回就直说（QQ 的 `ProcessReplyMsgWhenRecallOriginalMsg`）。 */
+function quoteBlock(ref: { id: string; from: string; excerpt: string }): HTMLElement {
+  const target = S.msgs.find((m) => m.id === ref.id);
+  const box = h("div", "quote");
+  const who = target ? (target.from.nodeId === S.view?.status?.nodeId ? tr("我") : ref.from) : tr("引用");
+  box.append(h("span", "who", who), h("span", "ex", target?.recalled ? tr("原消息已撤回") : ref.excerpt));
+  box.title = tr("点一下跳到原消息");
+  box.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const node = mainEl.querySelector<HTMLElement>(`.msg[data-id="${ref.id}"]`);
+    if (node) node.scrollIntoView({ block: "center", behavior: "smooth" });
+    else toast(tr("原消息不在这段历史里"));
+  });
+  return box;
+}
+
+function messageMenu(x: number, y: number, e: Entry, t: Thread, mine: boolean): void {
+  const items: { label: string; icon?: string; danger?: boolean; run: () => void }[] = [];
+  if (e.text) items.push({ label: tr("复制文字"), icon: "copy", run: () => void copyText(e.text ?? "") });
+  items.push({ label: tr("引用"), icon: "msg", run: () => startReply(e) });
+  if (mine && e.state === "failed") items.push({ label: tr("重发"), icon: "retry", run: () => void resend(e) });
+  if (mine && Date.now() - e.at <= 120_000) {
+    items.push({ label: tr("撤回"), icon: "trash", danger: true, run: () => void recall(e, t) });
+  }
+  openMenu(x, y, items);
+}
+
+function startReply(e: Entry): void {
+  S.replyTo = e;
+  renderMain();
+  textInput?.focus({ preventScroll: true });
+}
+
+/** 引用 / 撤回都要重拉：撤回了之后原文要从消息流里消失，只留灰条。 */
+async function recall(e: Entry, t: Thread): Promise<void> {
+  try {
+    await postJson("/api/peer/recall", { peer: t.nodeId, id: e.id });
+    await loadMessages(t.nodeId);
+    await loadThreads();
+    renderList();
+    renderMain();
+  } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
+/**
+ * 这条文件消息是不是图片：`"pic"` / `"gif"` / `null`（D305）。
+ *
+ * QQ 把图片、动图、表情做成三种元素（`PicMsgElem` / `GiphyMsgElem` / `FaceMsgElem`）；
+ * 我们只有一种 `kind:"file"`，所以按 mime 分派 —— 分成三种 kind 会把回执、撤回、未读、
+ * 折叠那一套全都要跟着分叉，不值当。
+ */
+function picKind(e: Entry): "gif" | "pic" | null {
+  if (e.kind !== "file" || !e.file) return null;
+  const mime = (e.file.mime || "").toLowerCase();
+  if (mime === "image/gif" || /\.gif$/i.test(e.file.name)) return "gif";
+  if (mime.startsWith("image/") || /\.(png|jpe?g|webp|bmp|avif)$/i.test(e.file.name)) return "pic";
+  return null;
+}
+
+/**
+ * 图片气泡：聊天里直接是图，不是文件卡片（D305）。
+ *
+ * 尺寸优先用消息里记着的 `w/h`（发/收时在本机读文件头算的）把位置先占住；小图当**表情包**
+ * 画（不要边框、上限更小），大图按比例缩到气泡宽度以内。点一下看原图（D302 的弹窗），
+ * 右键菜单（复制 / 引用 / 撤回）照旧在 `.msg` 上，不用另写。
+ */
+/** 图片加载完会把列表顶高：只要人还贴着底就重新钉住（翻历史时不打扰）。 */
+function repinBottom(): void {
+  if (!stickBottom) return;
+  const stream = mainEl.querySelector<HTMLElement>(".stream");
+  if (stream) stream.scrollTop = stream.scrollHeight;
+}
+
+function picBubble(e: Entry, mine: boolean): HTMLElement {
+  const f = e.file!;
+  // 表情包：小、方、而且不是动图（QQ 里 `FaceMsgElem` 与 `GiphyMsgElem` 是两种元素）。
+  const square = f.w && f.h ? Math.max(f.w, f.h) / Math.min(f.w, f.h) <= 1.6 : false;
+  const sticker = picKind(e) === "pic" && Boolean(f.w && f.h && Math.max(f.w, f.h) <= 200 && square);
+  const wrap = h("div", `pic${sticker ? " sticker" : ""}`);
+  const img = h("img");
+  img.src = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
+  img.alt = f.name;
+  img.loading = "lazy";
+  img.decoding = "async";
+  // 先按记着的宽高占位（等比缩到气泡宽度内），图没下来时也不会把整列消息顶下去。
+  if (f.w && f.h) {
+    const cap = sticker ? 150 : 300;
+    const scale = Math.min(1, cap / Math.max(f.w, f.h));
+    img.width = Math.max(1, Math.round(f.w * scale));
+    img.height = Math.max(1, Math.round(f.h * scale));
+  }
+  img.title = tr("点一下看原图");
+  img.addEventListener("click", () => previewEntry(e));
+  // 图到了之后重新贴一次底（没有 w/h 的老消息加载前是 0 高）。
+  img.addEventListener("load", repinBottom);
+  // 取不到就退回文件卡片，别留一个破图标在那儿。
+  img.addEventListener("error", () => {
+    wrap.replaceChildren(fileCard(e, mine));
+    repinBottom();
+  });
+  wrap.append(img);
+  return wrap;
 }
 
 function fileCard(e: Entry, mine: boolean): HTMLElement {
@@ -972,58 +1296,291 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
   icon.append(ic(/^image\//.test(f.mime) ? "image" : "file"));
   const body = h("div");
   body.append(h("div", "nm", f.name), h("div", "sz", sizeOf(f.size)));
-  const status = mine ? e.ack : undefined;
-  if (status) {
-    const foot = h("div", "fbot");
-    foot.append(
-      h("span", "", status.status === "delivered" ? tr("已送达") : tr("发送失败")),
-      h("span", "act", status.status === "delivered" ? tr("打开") : tr("重试")),
-    );
-    body.append(foot);
-    card.addEventListener("click", () => {
-      if (status.status === "failed") void resend(e);
-      else toast(tr("文件已经在你自己的盘上"));
-    });
+  // 点卡片 = 预览（D302：预览是这页自己的弹窗，不再借主界面的面板）。
+  card.title = tr("点一下预览");
+  card.style.cursor = "pointer";
+  card.addEventListener("click", () => previewEntry(e));
+
+  const foot = h("div", "fbot");
+  const acts = h("span", "fbtns");
+  if (mine) {
+    // 文件不走 outbox（它有自己那套 token/分块/哈希），所以永远没有 receipt：
+    // 自己发的就当「已发出」。
+    const status: string = e.state ?? "sent";
+    const done = status === "delivered" || status === "sent";
+    foot.append(h("span", "", done ? tr("已送达") : status === "sending" ? tr("发送中…") : tr("发送失败")));
+    if (done) {
+      acts.append(actBtn(tr("预览"), () => previewEntry(e)), actBtn(tr("打开所在位置"), () => void revealFile(e)));
+    } else if (status === "failed") {
+      acts.append(actBtn(tr("重发"), () => void resend(e)));
+    } else {
+      acts.append(h("span", "act", tr("等一会")));
+    }
   } else {
-    const foot = h("div", "fbot");
-    // D209：点卡片 = 用本机程序打开收件箱里那份真文件（收件时已经落盘，不是再下载一次）。
-    card.title = tr("点一下用本机程序打开");
-    card.style.cursor = "pointer";
-    card.addEventListener("click", () => {
-      void postJson("/api/peer/open", { id: e.id }).catch((err: any) =>
-        toast(tr("打不开这个文件：{p1}", { p1: String((err as Error)?.message ?? err) })),
-      );
-    });
-    const act = h("a", "act", tr("另存"));
-    act.href = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
-    act.target = "_blank";
-    act.rel = "noopener";
-    act.addEventListener("click", (ev) => ev.stopPropagation());
-    foot.append(h("span", "", tr("对方发来")), act);
-    body.append(foot);
+    foot.append(h("span", "", tr("对方发来")));
+    const dl = h("a", "act", tr("下载"));
+    dl.href = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
+    dl.download = f.name;
+    dl.rel = "noopener";
+    dl.addEventListener("click", (ev) => ev.stopPropagation());
+    acts.append(actBtn(tr("预览"), () => previewEntry(e)), dl, actBtn(tr("打开所在位置"), () => void revealFile(e)));
   }
+  foot.append(acts);
+  body.append(foot);
   card.append(icon, body);
   return card;
+}
+
+/** 卡片右下角那颗小按钮：统一 `<button class="act">`，点它不要连累整张卡片的点击。 */
+function actBtn(label: string, run: () => void): HTMLButtonElement {
+  const b = h("button", "act", label);
+  b.type = "button";
+  b.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    run();
+  });
+  return b;
+}
+
+/** 「打开所在位置」：让这台机器的文件管理器把它选出来（macOS 是 Finder 里的 `open -R`）。 */
+async function revealFile(e: Entry): Promise<void> {
+  try {
+    await postJson("/api/peer/reveal", { id: e.id });
+  } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
+/** 文本类后缀：这些即使 mime 是 application/octet-stream 也当文本预览。 */
+const TEXT_EXT = /\.(md|markdown|txt|log|json|ya?ml|toml|ini|csv|ts|tsx|js|jsx|mjs|css|html?|xml|py|go|rs|java|c|h|cpp|sh|bash|zsh|bat|ps1|diff|patch|sql|conf|env)$/i;
+
+/**
+ * 预览弹窗（D302）。**不再借主界面的预览面板**：那个要一个打开的会话、还会把内网通弹层关掉，
+ * 看一张截图不值当。这里按类型自己画：图片 `<img>`、PDF `<iframe>`、文本 `<pre>`，
+ * 其余说清楚「点下载」。
+ */
+/** 当前开着的那扇表格浮窗（同一时间只留一扇，和主界面 `sheetDock` 一个规矩）。 */
+let sheetWin: SheetDialog | null = null;
+
+/**
+ * 一份「可以看的东西」：同一套渲染要伺候两种来源 ——
+ * 内网通里的一条文件消息（`entryId`），和选择器里眼前这份**还没发出去**的本机文件（`path`）。
+ */
+interface PreviewSrc {
+  name: string;
+  mime: string;
+  size: number;
+  /** 取字节的地址（`/api/peer/file?id=` 或 `/api/peer/fs/raw?path=`）。 */
+  url: string;
+  entryId?: string;
+  path?: string;
+}
+
+function previewEntry(e: Entry): void {
+  const f = e.file;
+  if (!f) return;
+  showPreview({
+    name: f.name,
+    mime: f.mime,
+    size: f.size,
+    url: `/api/peer/file?id=${encodeURIComponent(e.id)}`,
+    entryId: e.id,
+  });
+}
+
+/** 选择器里「预览」：文件还在本机，没进历史，所以按路径取字节。 */
+function previewLocal(file: BrowseEntry): void {
+  showPreview({
+    name: file.name,
+    mime: file.mime ?? "",
+    size: file.size,
+    url: `/api/peer/fs/raw?path=${encodeURIComponent(file.path)}`,
+    path: file.path,
+  });
+}
+
+/**
+ * 内网通的 Excel：开的是**本工程那扇表格浮窗**（`SheetDialog`，D166 那一套）。
+ *
+ * 凭据由 `/api/peer/sheet` 现发 —— 内网通页面没有会话，拿不到 `/api/preview` 的 grant；
+ * 拿到 token 之后其余全走既有的 `/api/sheet/*`：看、查找、改格子、合并/插删行列都是同一份
+ * 代码，不另写一个简化表格（D303 复审）。
+ *
+ * 和主界面的差别只有两处：`scale` 恒为 1（这页没有界面缩放），`onQuote` 不给（这里没有
+ * 可以引用给 pi 的输入框）。
+ */
+async function openSheetWindow(src: PreviewSrc): Promise<void> {
+  closeLayer();
+  let grant: { token: string; path?: string };
+  try {
+    grant = await postJson<{ token: string; path?: string }>(
+      "/api/peer/sheet",
+      src.entryId ? { id: src.entryId } : { path: src.path },
+    );
+  } catch (err) {
+    toast((err as Error).message);
+    return;
+  }
+  const token = grant.token;
+  sheetWin?.destroy();
+  sheetWin = null;
+  const dlg: SheetDialog = new SheetDialog({
+    token,
+    name: src.name,
+    path: grant.path ?? src.path ?? "",
+    raw: src.url,
+    scale: () => 1,
+    loadMeta: () => postJson("/api/sheet/meta", { token }),
+    fetchWindow: (sheet, r0, r1, c0, c1) => postJson("/api/sheet/window", { token, sheet, r0, r1, c0, c1 }),
+    findSheet: (sheet, q) => postJson("/api/sheet/find", { token, sheet, q }),
+    mediaUrl: (sheet, id) => `/api/sheet/media?token=${encodeURIComponent(token)}&sheet=${encodeURIComponent(sheet)}&id=${encodeURIComponent(id)}`,
+    saveSheet: (sheet, ops) => postJson("/api/sheet/edit", { token, sheet, ops }),
+    saveStruct: (sheet, op) => postJson("/api/sheet/struct", { token, sheet, op }),
+    page: { token },
+    onOpen: async () => {
+      await postJson("/api/peer/open", src.entryId ? { id: src.entryId } : { path: src.path });
+    },
+    onReveal: async () => {
+      await postJson("/api/peer/reveal", src.entryId ? { id: src.entryId } : { path: src.path });
+    },
+    onReopen: () => void openSheetWindow(src),
+    onClose: () => {
+      if (sheetWin === dlg) sheetWin = null;
+    },
+    onRaise: () => {
+      sheetWin?.root.classList.remove("front");
+      dlg.root.classList.add("front");
+    },
+  });
+  sheetWin = dlg;
+  document.body.append(dlg.root);
+  dlg.root.classList.add("front");
+  dlg.open();
+}
+
+/**
+ * 预览弹窗（D302）。**不借主界面的预览面板**：那个要一个打开的会话、还会把内网通弹层
+ * 关掉，看一张截图不值当。这里按类型自己画：图片 `<img>`、PDF `<iframe>`、文本 `<pre>`，
+ * Excel 交给上面那扇表格浮窗，其余说清楚「点下载」。
+ */
+function showPreview(src: PreviewSrc): void {
+  if (/\.(xlsx|xlsm)$/i.test(src.name)) {
+    void openSheetWindow(src);
+    return;
+  }
+  closeLayer();
+  const scrim = h("div", "scrim");
+  scrim.addEventListener("click", closeLayer);
+  const modal = h("div", "modal preview");
+  const head = h("header");
+  head.append(h("strong", "nm", src.name), iconBtn("close", tr("关掉预览"), closeLayer));
+  const meta = h("div", "meta");
+  meta.append(h("span", "", `${sizeOf(src.size)} · `), h("span", "", src.mime || tr("未知类型")));
+  const body = h("div", "body");
+  modal.append(head, meta, body);
+  layerEl.append(scrim, modal);
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key !== "Escape") return;
+    // 捕获阶段就把这一下吃掉：不冒泡到「Esc 关选择器」那条全局监听
+    // （否则在预览里按 Esc，预览关了、下面的选择器也一起关了）。
+    ev.stopPropagation();
+    document.removeEventListener("keydown", onKey, true);
+    closeLayer();
+  };
+  document.addEventListener("keydown", onKey, true);
+  void fillPreview(body, src);
+}
+
+async function fillPreview(body: HTMLElement, src: PreviewSrc): Promise<void> {
+  const name = src.name.toLowerCase();
+  if (/^image\//.test(src.mime) || /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(name)) {
+    const img = h("img");
+    img.src = src.url;
+    img.alt = src.name;
+    body.append(img);
+    return;
+  }
+  if (src.mime === "application/pdf" || name.endsWith(".pdf")) {
+    const frame = h("iframe");
+    frame.src = src.url;
+    frame.title = src.name;
+    body.append(frame);
+    return;
+  }
+  const isText = src.mime.startsWith("text/") || TEXT_EXT.test(name);
+  if (!isText) {
+    body.append(h("div", "none", tr("这个类型在这儿看不了，点「下载」用别的程序打开")));
+    return;
+  }
+  if (src.size > 2 * 1024 * 1024) {
+    body.append(h("div", "none", tr("太大了（{p1}），点「下载」再看", { p1: sizeOf(src.size) })));
+    return;
+  }
+  try {
+    const res = await fetch(src.url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    body.append(h("pre", "", await res.text()));
+  } catch (err) {
+    body.append(h("div", "none", tr("读不出来：{p1}", { p1: (err as Error).message })));
+  }
+}
+
+/** 引用条（P3）：换会话会重建，引用 / 取消引用只重画这一条。 */
+function paintReplyBar(): void {
+  if (!replyHost) return;
+  replyHost.replaceChildren();
+  const r = S.replyTo;
+  replyHost.hidden = !r;
+  if (!r) return;
+  const bar = h("div", "replybar");
+  const who = r.from.nodeId === S.view?.status?.nodeId ? tr("我") : r.from.nickname || r.from.nodeId.slice(0, 8);
+  bar.append(h("span", "who", tr("回复 {p1}", { p1: who })), h("span", "ex", (r.text ?? r.file?.name ?? "").slice(0, 120)));
+  bar.append(
+    iconBtn("close", tr("取消引用"), () => {
+      S.replyTo = null;
+      paintReplyBar();
+    }),
+  );
+  replyHost.append(bar);
 }
 
 function composeBox(t: Thread): HTMLElement {
   if (composeEl && composeFor === t.nodeId) {
     (composeEl.querySelector(".hintline") as HTMLElement | null)?.replaceChildren();
+    paintReplyBar();
     return composeEl;
   }
   composeFor = t.nodeId;
   const wrap = h("div", "compose");
+  replyHost = h("div", "replyhost");
+  replyHost.hidden = true;
   const box = h("div", "box");
   const ta = h("textarea");
   ta.placeholder = tr("发给 {p1}", { p1: t.nickname });
   ta.rows = 2;
   ta.dataset.keep = "compose";
   ta.autocomplete = "off";
+  // P1：草稿从会话元数据里恢复（没存过就是空）。
+  if (t.draft) ta.value = t.draft;
   ta.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
       ev.preventDefault();
       void send();
     }
+  });
+  ta.addEventListener("input", () => {
+    const peerId = composeFor;
+    // P3：输入中。只在本会话面板里发，不发就不发，对端 3 秒后自然过期。
+    if (Date.now() - typingSentAt > 1500) {
+      typingSentAt = Date.now();
+      void postJson("/api/peer/typing", { peer: peerId }).catch(() => {});
+    }
+    // P1：草稿。停手 800 ms 落一次，换会话 / 发出去都会再对齐一次。
+    window.clearTimeout(draftTimer);
+    draftTimer = window.setTimeout(() => {
+      if (ta.value === (S.threads.find((x) => x.nodeId === peerId)?.draft ?? "")) return;
+      void postJson("/api/peer/thread", { peer: peerId, draft: ta.value }).catch(() => {});
+    }, 800);
   });
   const bar2 = h("div", "bar2");
   const attach = iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId));
@@ -1033,10 +1590,11 @@ function composeBox(t: Thread): HTMLElement {
   btn.addEventListener("click", () => void send());
   bar2.append(attach, hint, btn);
   box.append(ta, bar2);
-  wrap.append(box);
+  wrap.append(replyHost, box);
   textInput = ta;
   sendBtn = btn;
   composeEl = wrap;
+  paintReplyBar();
 
   wrap.addEventListener("dragover", (ev) => {
     ev.preventDefault();
@@ -1073,9 +1631,22 @@ async function send(): Promise<void> {
   if (byteLen(text) > MAX_TEXT_BYTES) return toast(tr("太长了（上限 32 KB）"));
   S.sending = true;
   if (sendBtn) sendBtn.disabled = true;
+  const reply = S.replyTo;
   try {
-    await postJson("/api/peer/send", { peer: id, text });
+    const body: Record<string, unknown> = { peer: id, text };
+    if (reply) {
+      body.replyTo = {
+        id: reply.id,
+        from: reply.from.nickname || reply.from.nodeId.slice(0, 8),
+        excerpt: (reply.text ?? reply.file?.name ?? "").slice(0, 120),
+      };
+    }
+    await postJson("/api/peer/send", body);
     ta.value = "";
+    S.replyTo = null;
+    // 草稿跟着消息一起清掉；不刷会话列表（下一轮轮询会自己拉）。
+    void postJson("/api/peer/thread", { peer: id, draft: "" }).catch(() => {});
+    forceBottom = true;
     await loadMessages(id);
     await loadThreads();
     renderAll();
@@ -1090,7 +1661,8 @@ async function send(): Promise<void> {
 async function resend(e: Entry): Promise<void> {
   if (!S.thread) return;
   try {
-    if (e.kind === "text" && e.text) await postJson("/api/peer/send", { peer: S.thread, text: e.text });
+    // P2：同一个 id 重投，**不造新消息** —— 旧版这里是再 `POST /send` 一次，历史会多一条。
+    if (e.kind === "text") await postJson("/api/peer/retry", { peer: S.thread, id: e.id });
     else toast(tr("文件重发请从磁盘再选一次"));
     await loadMessages();
     renderMain();
@@ -1104,6 +1676,8 @@ async function sendPath(path: string, name?: string): Promise<void> {
   try {
     await postJson("/api/peer/sendfile", name ? { peer: S.thread, path, name } : { peer: S.thread, path });
     closePicker();
+    // 发完要看见它：不然文件卡片就落在视口外面（这条是用户报的 bug）。
+    forceBottom = true;
     await loadMessages();
     renderMain();
   } catch (err) {
@@ -1122,6 +1696,7 @@ async function uploadBlob(name: string, blob: Blob): Promise<void> {
     });
     const data = (await res.json().catch(() => ({}))) as { error?: string };
     if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    forceBottom = true;
     await loadMessages();
     renderMain();
   } catch (err) {
@@ -1177,12 +1752,13 @@ function renderContactDetail(): void {
   talk.addEventListener("click", () => openThread(c.nodeId));
   acts.append(talk);
 
-  if (c.friend) {
-    const file = h("button", "btn", tr("传文件"));
-    file.type = "button";
-    file.addEventListener("click", () => void openPicker(c.nodeId, true));
-    acts.append(file);
-  }
+  // D300：传文件不再要好友，只要对方在线（文件走的是对方在线时的 HTTP 直连）。
+  const file = h("button", "btn", tr("传文件"));
+  file.type = "button";
+  file.disabled = !c.online;
+  if (!c.online) file.title = tr("对方已离线，等他上线再试");
+  file.addEventListener("click", () => void openPicker(c.nodeId, true));
+  acts.append(file);
   if (c.incoming && !c.friend) {
     const ok = h("button", "btn pri", tr("接受"));
     ok.type = "button";
@@ -1200,7 +1776,7 @@ function renderContactDetail(): void {
     if (!c.online) qadd.title = tr("对方已离线，等他上线再试");
     if (!c.quick) qadd.addEventListener("click", () => void friendAction(c.nodeId, "quick", true));
     acts.append(qadd);
-    const add = h("button", "btn", c.outgoing ? tr("再发一次申请") : tr("加为好友（可传文件）"));
+    const add = h("button", "btn", c.outgoing ? tr("再发一次申请") : tr("加为好友"));
     add.type = "button";
     add.disabled = !c.online;
     if (!c.online) add.title = tr("对方离线，等上线再申请");
@@ -1214,6 +1790,10 @@ function renderContactDetail(): void {
       acts.append(hide);
     }
   }
+  const rename = h("button", "btn", tr("改备注名"));
+  rename.type = "button";
+  rename.addEventListener("click", () => renameModal(c.nodeId, c.nickname));
+  acts.append(rename);
   const fav = h("button", "btn", c.favorite ? tr("取消收藏") : tr("收藏"));
   fav.type = "button";
   fav.addEventListener("click", () => void friendAction(c.nodeId, "favorite", !c.favorite));
@@ -1382,6 +1962,36 @@ function renderMe(): void {
   hero.append(t);
   detail.append(hero);
 
+  // D303：自己的名字。改完立刻重播一次 announce，别人下一次刷新就看到新名字。
+  const nameCard = h("div", "card");
+  nameCard.append(h("h3", "", tr("名字")));
+  const nameRow = h("div", "namerow");
+  const nameInput = inputEl(tr("你的名字"));
+  nameInput.value = st.nickname;
+  nameInput.maxLength = 40;
+  const saveName = h("button", "btn pri", tr("保存"));
+  saveName.type = "button";
+  const applyName = async (): Promise<void> => {
+    const value = nameInput.value.trim();
+    if (!value || value === st.nickname) return;
+    try {
+      await postJson("/api/peer/config", { nickname: value });
+      await loadStatus();
+      await loadThreads();
+      renderAll();
+      toast(tr("名字已改成「{p1}」", { p1: value }));
+    } catch (err) {
+      toast((err as Error).message);
+    }
+  };
+  saveName.addEventListener("click", () => void applyName());
+  nameInput.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") void applyName();
+  });
+  nameRow.append(nameInput, saveName);
+  nameCard.append(nameRow, h("div", "note", tr("别人看到的就是这个名字；改完会立刻广播一次。")));
+  detail.append(nameCard);
+
   const profile = h("div", "card");
   profile.append(h("h3", "", tr("资料")));
   const kv = h("div", "kv");
@@ -1401,6 +2011,7 @@ function renderMe(): void {
     toggle(tr("隐身"), tr("别人看不到你，但消息照收"), st.config.hidden, (on) => void setConfig({ hidden: on })),
     toggle(tr("免打扰"), tr("新消息不弹提醒，消息照收"), st.config.dnd, (on) => void setConfig({ dnd: on })),
     toggle(tr("暂停收文件"), tr("别人发来的文件会被拒收，消息不受影响"), st.config.pauseFiles, (on) => void setConfig({ pauseFiles: on })),
+    toggle(tr("桌面通知"), tr("页面不在前面时弹系统通知（需要浏览器授权）"), notifyEnabled(), (on) => void setNotify(on)),
   );
   detail.append(sw);
 
@@ -1525,11 +2136,26 @@ function openMenu(x: number, y: number, items: { label: string; icon?: string; d
   layerEl.append(scrim, menu);
 }
 
+/** P1：改置顶 / 静音 / 草稿。改完立刻重拉会话列表，行上的标记不会慢一拍。 */
+async function patchThread(peer: string, patch: { pinned?: boolean; muted?: boolean; draft?: string }): Promise<void> {
+  try {
+    await postJson("/api/peer/thread", { peer, ...patch });
+    await loadThreads();
+    if (S.page === "msg") renderList();
+  } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
 function threadMenu(x: number, y: number, t: Thread): void {
-  const c = contactOf(t.nodeId);
   openMenu(x, y, [
     { label: tr("打开对话"), icon: "msg", run: () => openThread(t.nodeId) },
-    ...(c?.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(t.nodeId, true) }] : []),
+    // D300：传文件只要求对方在线，不再要求是好友。
+    ...(t.online ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(t.nodeId, true) }] : []),
+    { label: t.pinned ? tr("取消置顶") : tr("置顶会话"), icon: "star", run: () => void patchThread(t.nodeId, { pinned: !t.pinned }) },
+    { label: t.muted ? tr("取消免打扰") : tr("消息免打扰"), icon: "bellOff", run: () => void patchThread(t.nodeId, { muted: !t.muted }) },
+    { label: tr("标记为已读"), icon: "check", run: () => void markRead(t).then(() => loadThreads()).then(() => { if (S.page === "msg") renderList(); }) },
+    { label: tr("改备注名"), icon: "me", run: () => renameModal(t.nodeId, t.nickname) },
     {
       label: tr("复制 nodeId"),
       icon: "copy",
@@ -1544,7 +2170,9 @@ function contactMenu(x: number, y: number, c: Contact): void {
     ...(!c.friend && !c.incoming && !c.quick && c.online
       ? [{ label: tr("快捷添加（可聊天）"), icon: "userPlus", run: () => void friendAction(c.nodeId, "quick", true) }]
       : []),
-    ...(c.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(c.nodeId, true) }] : []),
+    // D300：传文件只要求在线。
+    ...(c.online ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(c.nodeId, true) }] : []),
+    { label: tr("改备注名"), icon: "me", run: () => renameModal(c.nodeId, c.nickname) },
     { label: c.favorite ? tr("取消收藏") : tr("收藏"), icon: "star", run: () => void friendAction(c.nodeId, "favorite", !c.favorite) },
     ...(!c.friend && !c.quick && !c.incoming && !c.outgoing && c.online
       ? [{ label: tr("从附近移除"), icon: "trash", danger: true, run: () => void friendAction(c.nodeId, "remove") }]
@@ -1589,6 +2217,55 @@ function addModal(): void {
   foot.append(cancel, goBtn);
   modal.append(head, body, foot);
   layerEl.append(scrim, modal);
+}
+
+/**
+ * 改备注名（D303）：只改本机这份记录。对方改自己的名字不会覆盖它，我们改它也不会告诉对方。
+ * 会话列表与联系人详情都走这一个弹窗。
+ */
+function renameModal(peerId: string, current: string): void {
+  closeLayer();
+  const scrim = h("div", "scrim");
+  scrim.addEventListener("click", closeLayer);
+  const modal = h("div", "modal");
+  const head = h("header");
+  head.append(h("strong", "", tr("改备注名")), iconBtn("close", tr("关掉"), closeLayer));
+  const body = h("div", "body");
+  const field = h("label", "field");
+  const input = inputEl(tr("给他起个名字"));
+  input.value = current;
+  input.maxLength = 40;
+  field.append(h("span", "", tr("备注名")), input);
+  body.append(field, h("p", "note", tr("只改你这边的显示名，对方看不到，也不会被对方的改名冲掉。")));
+  const foot = h("footer");
+  const cancel = h("button", "btn", tr("取消"));
+  cancel.type = "button";
+  cancel.addEventListener("click", closeLayer);
+  const save = h("button", "btn pri", tr("保存"));
+  save.type = "button";
+  const run = async (): Promise<void> => {
+    const name = input.value.trim();
+    if (!name) return;
+    try {
+      await postJson("/api/peer/friend", { peer: peerId, action: "rename", name });
+      closeLayer();
+      await loadContacts();
+      await loadThreads();
+      renderAll();
+      toast(tr("备注名已改成「{p1}」", { p1: name }));
+    } catch (err) {
+      const line = h("p", "err", (err as Error).message);
+      modal.insertBefore(line, foot);
+    }
+  };
+  save.addEventListener("click", () => void run());
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") void run();
+  });
+  foot.append(cancel, save);
+  modal.append(head, body, foot);
+  layerEl.append(scrim, modal);
+  window.setTimeout(() => input.focus({ preventScroll: true }), 0);
 }
 
 function inputEl(placeholder: string): HTMLInputElement {
@@ -1636,6 +2313,8 @@ async function browse(dir: string): Promise<void> {
     for (const entry of data.entries ?? []) filesEl.append(fileItem(entry));
     pickerSendBtn.disabled = true;
     pickerSel.textContent = tr("还没选文件");
+    pickerPath.value = pickerDir;
+    pickerPath.classList.remove("bad");
     pickerUp.disabled = !pickerParent;
     pickerUp.onclick = () => pickerParent && void browse(pickerParent);
   } catch (err) {
@@ -1651,22 +2330,81 @@ function placeItem(name: string, path: string): HTMLLIElement {
   return li;
 }
 
+function selectEntry(li: HTMLElement, entry: BrowseEntry): void {
+  for (const other of filesEl.children) other.classList.remove("on");
+  li.classList.add("on");
+  picked = entry;
+  pickerSendBtn.disabled = false;
+  pickerSel.textContent = entry.name;
+  pickerPath.value = entry.path;
+  pickerPath.classList.remove("bad");
+}
+
 function fileItem(entry: BrowseEntry): HTMLLIElement {
-  const li = h("li");
+  const li = h("li", entry.dir ? "dir" : "");
   li.append(ic(entry.dir ? "folder" : "file"), h("span", "ell", entry.name));
-  li.append(h("span", "sz", entry.dir ? "" : sizeOf(entry.size)));
+  const tail = h("span", "racts");
+  tail.append(h("span", "sz", entry.dir ? "" : sizeOf(entry.size)));
+  if (!entry.dir) {
+    // D304：文件行给两颗按钮 —— 发之前先看一眼（预览），或直接选中（选择）。
+    const look = h("button", "", tr("预览"));
+    look.type = "button";
+    look.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      previewLocal(entry);
+    });
+    const pick = h("button", "", tr("选择"));
+    pick.type = "button";
+    pick.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      selectEntry(li, entry);
+    });
+    tail.append(look, pick);
+  }
+  li.append(tail);
   li.addEventListener("click", () => {
     if (entry.dir) {
       void browse(entry.path);
       return;
     }
-    for (const other of filesEl.children) other.classList.remove("on");
-    li.classList.add("on");
-    picked = entry;
-    pickerSendBtn.disabled = false;
-    pickerSel.textContent = entry.name;
+    selectEntry(li, entry);
   });
   return li;
+}
+
+/**
+ * 跳到路径（D304，照本工程文件管理器的 D153）：指向文件夹就进去；指向文件就进它的父目录、
+ * 把那行标成 `.hit` 并**选中**它（在这里选中就等于「准备发给对方」）。找不到就地报错，列表不动。
+ */
+async function jumpTo(raw: string): Promise<void> {
+  const value = raw.trim().replace(/^["'`]|["'`]$/g, "");
+  if (!value) return;
+  const bad = (): void => {
+    pickerPath.classList.add("bad");
+    toast(tr("找不到这个路径：{p1}", { p1: value }));
+  };
+  const asDir = await getJson<Browse & { ok: boolean }>(`/api/peer/fs?path=${encodeURIComponent(value)}`).catch(() => null);
+  if (asDir) {
+    await browse(value);
+    return;
+  }
+  const cut = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
+  if (cut <= 0) return bad();
+  const dir = value.slice(0, cut);
+  const base = value.slice(cut + 1);
+  const listing = await getJson<Browse & { ok: boolean }>(`/api/peer/fs?path=${encodeURIComponent(dir)}`).catch(() => null);
+  if (!listing) return bad();
+  await browse(dir);
+  const entry = (listing.entries ?? []).find((e) => e.name === base);
+  const row = [...filesEl.querySelectorAll("li")].find(
+    (li) => (li.querySelector(".ell") as HTMLElement | null)?.textContent === base,
+  );
+  if (!entry || !row) return bad();
+  row.classList.add("hit");
+  row.scrollIntoView({ block: "nearest" });
+  if (!entry.dir) selectEntry(row, entry);
+  pickerPath.value = entry.path;
+  pickerPath.classList.remove("bad");
 }
 
 function renderCrumbs(): void {
@@ -1687,6 +2425,15 @@ function renderCrumbs(): void {
 }
 
 pickerClose.addEventListener("click", closePicker);
+pickerGo.addEventListener("click", () => void jumpTo(pickerPath.value));
+pickerPath.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    void jumpTo(pickerPath.value);
+  } else {
+    pickerPath.classList.remove("bad");
+  }
+});
 pickerSendBtn.addEventListener("click", () => {
   if (picked) void sendPath(picked.path);
 });
@@ -1695,8 +2442,10 @@ picker.addEventListener("click", (ev) => {
 });
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
-  if (!picker.hidden) return closePicker();
-  closeLayer();
+  // 先关最上面那层：预览弹窗 / 菜单（`#layer`）优先于选择器 —— 否则在预览里按 Esc
+  // 会把下面整个选择器关掉，用户还得重新找一遍文件。
+  if (layerEl.childElementCount) return closeLayer();
+  if (!picker.hidden) closePicker();
 });
 
 // ---------------------------------------------------------------- 启动 / 轮询
@@ -1706,6 +2455,9 @@ async function boot(): Promise<void> {
   for (const node of document.querySelectorAll<HTMLElement>("[data-i18n]")) node.textContent = tr(node.dataset.i18n ?? "");
   for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-title]")) node.title = tr(node.dataset.i18nTitle ?? "");
   for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-aria]")) node.setAttribute("aria-label", tr(node.dataset.i18nAria ?? ""));
+  for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-placeholder]")) {
+    (node as HTMLInputElement).placeholder = tr(node.dataset.i18nPlaceholder ?? "");
+  }
   (pickerClose as HTMLElement).append(ic("close"));
   await loadStatus();
   await loadThreads();
@@ -1716,6 +2468,8 @@ async function boot(): Promise<void> {
   app.dataset.mview = S.mview;
   renderAll();
   if (S.thread) void loadMessages().then(() => renderMain());
+  // P4：启动时先报一次「人在」，别让自己在 10 分钟内就显示成离开。
+  void postJson("/api/peer/presence").catch(() => {});
 }
 
 void boot();
@@ -1746,10 +2500,25 @@ window.setInterval(() => {
   if (S.page !== "msg" || !S.thread || document.hidden) return;
   // 没有新消息就不重画：整块换 DOM 会把输入框、选区、滚动都拽一遍，2.5 秒一次太贵了。
   const before = msgSig();
-  void loadMessages().then(() => {
+  void loadMessages().then(async () => {
     if (S.page === "msg" && msgSig() !== before) renderMain();
+    // P1：贴底看 = 看见了。打了水位之后下一轮 /threads 会把未读清零。
+    if (!document.hidden && stickBottom) {
+      const t = threadOf(S.thread);
+      if (t) await markRead(t);
+    }
   });
 }, 2500);
+
+// P4：页面开着就每分钟报一次「人在」—— away 只在没人动 10 分钟后才成立。
+const heartbeat = (): void => {
+  if (document.hidden) return;
+  void postJson("/api/peer/presence").catch(() => {});
+};
+window.setInterval(heartbeat, 60_000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) heartbeat();
+});
 
 window.setInterval(() => {
   void loadTransfers().then(() => {

@@ -1,4 +1,5 @@
 import "./styles.css";
+import "./sheet/sheet.css";
 import { api } from "./api.ts";
 import { App, bootScale } from "./app.ts";
 import type { Me } from "./types.ts";

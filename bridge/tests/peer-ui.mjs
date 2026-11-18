@@ -155,7 +155,14 @@ try {
     let body = {};
     let delay = 0;
     if (p === "/api/peer") body = { enabled: true, running: true, reason: "", status };
-    else if (p === "/api/peer/threads") body = { threads: [thread(ZHANG, "小张", msg("00000000-0000-4000-8000-00000000000a", "小张的最后一句", me, ZHANG)), thread(LI, "小李", msg("00000000-0000-4000-8000-00000000000b", "小李的最后一句", me, LI))] };
+    // D299：小张 3 条未读、小李静音 + 5 条未读（静音只画不带数字的小圆点）。
+    else if (p === "/api/peer/threads")
+      body = {
+        threads: [
+          { ...thread(ZHANG, "小张", msg("00000000-0000-4000-8000-00000000000a", "小张的最后一句", me, ZHANG)), unread: 3 },
+          { ...thread(LI, "小李", msg("00000000-0000-4000-8000-00000000000b", "小李的最后一句", me, LI)), unread: 5, muted: true },
+        ],
+      };
     else if (p === "/api/peer/contacts") body = { contacts: [contact(WANG, "小王"), contact(ZHANG, "小张"), contact(LI, "小李")] };
     else if (p === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
     else if (p === "/api/peer/messages") {
@@ -195,6 +202,12 @@ try {
 
   // ---- 2. 切会话串台 ----
   await page.click('#rail button[title="消息"]');
+
+  // D299 / P1：未读徽标在头像右上角；静音会话不带数字。
+  const badges = await page.locator(".listbox .row .avwrap .unread").allTextContents();
+  check("未读徽标画在头像上", badges.length === 2 && badges[0] === "3" && badges[1] === "", JSON.stringify(badges));
+  const quiet = await page.locator(".listbox .row .avwrap .unread.quiet").count();
+  check("静音会话的未读是不带数字的小圆点", quiet === 1, `quiet=${quiet}`);
   await page.click('.listbox .row:has-text("小张")');
   await page.click('.listbox .row:has-text("小李")');
   await page.waitForTimeout(1600);
@@ -274,7 +287,7 @@ try {
   };
   const titlesOf = (p) => p.locator(".group-title").evaluateAll((els) => els.map((el) => el.firstChild?.textContent?.trim() ?? ""));
   const relationOf = (p) => p.locator("#main .kv .v").nth(4).innerText();
-  // 按钮「加为好友（可传文件）」也含「传文件」三个字，必须用精确文本找真正的传文件按钮。
+  // D300：传文件不再要好友，所以「加为好友」这颗按钮之外，任何（在线的）人都该有「传文件」。
   const exactFile = (p) => p.locator("#main button").filter({ hasText: /^传文件$/ }).count();
 
   friendCalls = [];
@@ -292,12 +305,12 @@ try {
   const zhRel = (await relationOf(zh.p)).trim();
   const quickDone = await zh.p.locator('#main button:has-text("已是快捷联系人")').count();
   const quickDoneDisabled = await zh.p.locator('#main button:has-text("已是快捷联系人")').isDisabled();
-  const addFriendBtn = await zh.p.locator('#main button:has-text("加为好友（可传文件）")').count();
+  const addFriendBtn = await zh.p.locator('#main button:has-text("加为好友")').count();
   const quickFileBtn = await exactFile(zh.p);
   const quickPending = await zh.p.locator('#main .note:has-text("已发申请")').count();
   check(
-    "已 quick 的人：禁用快捷按钮、仍可加好友、不给传文件",
-    zhRel === "快捷联系人" && quickDone === 1 && quickDoneDisabled && addFriendBtn === 1 && quickFileBtn === 0 && quickPending === 0,
+    "已 quick 的人：禁用快捷按钮、仍可加好友、传文件照给（D300）",
+    zhRel === "快捷联系人" && quickDone === 1 && quickDoneDisabled && addFriendBtn === 1 && quickFileBtn === 1 && quickPending === 0,
     `关系=${zhRel}，已快捷=${quickDone}/禁用=${quickDoneDisabled}，加好友=${addFriendBtn}，传文件=${quickFileBtn}，待处理=${quickPending}`,
   );
 
@@ -321,9 +334,9 @@ try {
 
   await zh.p.click('.listbox .row:has-text("小赵")');
   const twoButtons = await zh.p.locator('#main button:has-text("快捷添加（可聊天）")').count();
-  const twoButtons2 = await zh.p.locator('#main button:has-text("加为好友（可传文件）")').count();
+  const twoButtons2 = await zh.p.locator('#main button:has-text("加为好友")').count();
   const strangerFile = await exactFile(zh.p);
-  check("在线陌生人详情两颗添加按钮并存且不给传文件", twoButtons === 1 && twoButtons2 === 1 && strangerFile === 0, `快捷=${twoButtons}，加好友=${twoButtons2}，传文件=${strangerFile}`);
+  check("在线陌生人详情两颗添加按钮并存且照样能传文件", twoButtons === 1 && twoButtons2 === 1 && strangerFile === 1, `快捷=${twoButtons}，加好友=${twoButtons2}，传文件=${strangerFile}`);
   await zh.p.click('#main button:has-text("快捷添加（可聊天）")');
   for (let i = 0; i < 40 && !friendCalls.length; i++) await zh.p.waitForTimeout(50);
   check(
@@ -334,15 +347,17 @@ try {
 
   await zh.p.click('.listbox .row:has-text("小钱")');
   const offQuick = zh.p.locator('#main button:has-text("快捷添加（可聊天）")');
-  const offAdd = zh.p.locator('#main button:has-text("加为好友（可传文件）")');
+  const offAdd = zh.p.locator('#main button:has-text("加为好友")');
   const offQuickDisabled = await offQuick.isDisabled();
   const offQuickTitle = await offQuick.getAttribute("title");
   const offAddDisabled = await offAdd.isDisabled();
+  const offFile = zh.p.locator("#main button").filter({ hasText: /^传文件$/ });
+  const offFileDisabled = await offFile.isDisabled();
   const offVisibleNote = await zh.p.locator('#main .note:has-text("对方已离线，等他上线再试")').count();
   check(
-    "离线的人两颗按钮都禁用且提示等上线",
-    offQuickDisabled && offAddDisabled && offQuickTitle === "对方已离线，等他上线再试" && offVisibleNote === 1,
-    `快捷禁用=${offQuickDisabled}/title=${offQuickTitle}，加好友禁用=${offAddDisabled}，可见提示=${offVisibleNote}`,
+    "离线的人三颗按钮都禁用且提示等上线",
+    offQuickDisabled && offAddDisabled && offFileDisabled && offQuickTitle === "对方已离线，等他上线再试" && offVisibleNote === 1,
+    `快捷禁用=${offQuickDisabled}/title=${offQuickTitle}，加好友禁用=${offAddDisabled}，传文件禁用=${offFileDisabled}，可见提示=${offVisibleNote}`,
   );
 
   await zh.p.click('.listbox .row:has-text("小王")');
@@ -355,8 +370,8 @@ try {
   await zh.c.close();
 
   for (const [locale, group, quickLabel, addLabel] of [
-    ["en", "Quick contacts", "Quick add (chat only)", "Add as friend (files allowed)"],
-    ["ja", "クイック連絡先", "クイック追加（チャットのみ）", "友だちに追加（ファイル送信可）"],
+    ["en", "Quick contacts", "Quick add (chat only)", "Add as friend"],
+    ["ja", "クイック連絡先", "クイック追加（チャットのみ）", "友だちに追加"],
   ]) {
     const fx = await quickFixture(locale);
     const ts = await titlesOf(fx.p);

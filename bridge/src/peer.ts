@@ -22,8 +22,20 @@ export interface PeerStatus {
   nickname: string;
   hostname: string;
   port: number;
+  status?: string;
+  idleMs?: number;
   online: PeerView[];
   config: { hidden: boolean; pauseFiles: boolean; dnd: boolean; inbox: string; manual: string[] };
+}
+
+/** `/threads` 里一条会话（只声明 bridge 用得着的字段，其余原样透传给页面）。 */
+export interface PeerThread {
+  nodeId: string;
+  nickname: string;
+  muted?: boolean;
+  pinned?: boolean;
+  unread?: number;
+  last: { id: string; at: number; kind: string; text?: string; from: { nodeId: string; nickname?: string }; file?: { name: string } } | null;
 }
 
 /**
@@ -40,6 +52,11 @@ export class PeerHost {
   private reason = "";
   private timer: NodeJS.Timeout | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
+  /** 已经通知过（或看过）的消息 id，只留最近 500 条：重启后从「当前这一批」重新记账。 */
+  private seen = new Set<string>();
+  /** 首次轮询只记账不推送：否则装上 D299 之后第一次打开会把全部历史推一遍。 */
+  private threadPollPrimed = false;
+  private onNewMessage: ((thread: PeerThread) => void) | null = null;
 
   private readonly opts: { port: number; entry: string | null; log: (msg: string) => void };
 
@@ -52,6 +69,11 @@ export class PeerHost {
     if (!this.opts.entry) return;
     this.spawn();
     this.timer = setInterval(() => void this.poll(), 5000);
+  }
+
+  /** 新消息回调（D299 / P4）：`bridge/src/index.ts` 接上 Notifier 就能推 Web Push。 */
+  onNew(fn: (thread: PeerThread) => void): void {
+    this.onNewMessage = fn;
   }
 
   stop(): void {
@@ -101,6 +123,40 @@ export class PeerHost {
     const next = await this.fetchStatus();
     if (next) this.reason = "";
     this.status = next;
+    void this.pollThreads();
+  }
+
+  /**
+   * 轮询会话列表，只为「推到桌面」这一件事（P4）。
+   *
+   * 判据都在这里：自己发的不推、静音会话不推、免打扰不推、已经记过账的不推。
+   */
+  private async pollThreads(): Promise<void> {
+    if (!this.status) return;
+    let data: { threads?: PeerThread[] };
+    try {
+      data = await this.threads();
+    } catch {
+      return;
+    }
+    const me = this.status.nodeId;
+    const dnd = this.status.config?.dnd === true;
+    for (const thread of data.threads ?? []) {
+      const last = thread.last;
+      if (!last) continue;
+      if (this.seen.has(last.id)) continue;
+      this.seen.add(last.id);
+      if (this.seen.size > 500) {
+        const drop = [...this.seen].slice(0, this.seen.size - 500);
+        for (const id of drop) this.seen.delete(id);
+      }
+      if (!this.threadPollPrimed) continue;
+      if (last.from.nodeId === me) continue;
+      if (thread.muted) continue;
+      if (dnd) continue;
+      this.onNewMessage?.(thread);
+    }
+    this.threadPollPrimed = true;
   }
 
   private fetchStatus(): Promise<PeerStatus | null> {
@@ -134,7 +190,7 @@ export class PeerHost {
     };
   }
 
-  private async request(method: "GET" | "POST", pathname: string, body?: unknown): Promise<any> {
+  private async request(method: "GET" | "POST", pathname: string, body?: unknown, opts: { repoll?: boolean } = {}): Promise<any> {
     const res = await fetch(`http://127.0.0.1:${this.opts.port}${pathname}`, {
       method,
       headers: { "content-type": "application/json" },
@@ -149,7 +205,7 @@ export class PeerHost {
       parsed = { error: text };
     }
     if (!res.ok) throw new Error(parsed?.error ?? `peer 回 ${res.status}`);
-    if (method === "POST") await this.poll();
+    if (method === "POST" && opts.repoll !== false) await this.poll();
     return parsed;
   }
 
@@ -157,13 +213,13 @@ export class PeerHost {
     return this.request("POST", pathname, body);
   }
 
-  threads(): Promise<{ threads: unknown[] }> {
+  threads(): Promise<{ threads: PeerThread[] }> {
     return this.request("GET", "/threads");
   }
 
-  /** 隐身 / 免打扰 / 暂停收文件：改 peer 的 cfg 并落盘到 `~/.pi-peer/config.json`。 */
-  setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean }): Promise<{
+  /** 隐身 / 免打扰 / 暂停收文件：改 peer 的 cfg 并落盘到 `~/.pi-peer/config.json`。 */  setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; nickname?: string }): Promise<{
     ok: boolean;
+    nickname?: string;
     config: { hidden: boolean; dnd: boolean; pauseFiles: boolean; inbox: string; manual: string[] };
   }> {
     return this.request("POST", "/config", patch);
@@ -183,16 +239,48 @@ export class PeerHost {
     return this.request("GET", `/messages?peer=${encodeURIComponent(peer)}&limit=${limit}`);
   }
 
-  sendText(peer: string, text: string, via?: "pi"): Promise<{ ok: boolean; id: string; at: number }> {
-    return this.request("POST", "/send", via ? { peer, text, via } : { peer, text });
+  sendText(peer: string, text: string, via?: "pi", replyTo?: { id: string; from: string; excerpt: string }): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
+    const body: Record<string, unknown> = { peer, text };
+    if (via) body.via = via;
+    if (replyTo) body.replyTo = replyTo;
+    return this.request("POST", "/send", body);
+  }
+
+  /** P2：重发同一条消息（同一个 id），不造新消息。 */
+  retrySend(peer: string, id: string): Promise<{ ok: boolean }> {
+    return this.request("POST", "/send/retry", { peer, id });
+  }
+
+  /** P3：撤回（2 分钟窗口在 peer 侧判，bridge 只转发）。 */
+  recall(peer: string, id: string): Promise<{ ok: boolean; at: number }> {
+    return this.request("POST", "/recall", { peer, id });
+  }
+
+  /** P3：输入中。刻意不 await 结果也不报错：心跳丢了就丢了。 */
+  typing(peer: string): Promise<{ ok: boolean }> {
+    return this.request("POST", "/typing", { peer }, { repoll: false });
+  }
+
+  /** P1：已读水位 / 置顶 / 静音 / 草稿。 */
+  markRead(peer: string, at: number, id: string): Promise<{ ok: boolean }> {
+    return this.request("POST", "/threads/read", { peer, at, id });
+  }
+
+  patchThread(peer: string, patch: { pinned?: boolean; muted?: boolean; draft?: string }): Promise<{ ok: boolean }> {
+    return this.request("POST", "/threads/patch", { peer, ...patch });
+  }
+
+  /** P4：页面还开着 = 有人在（away 由 peer 按最后一次 touch 推算）。 */
+  presence(): Promise<{ ok: boolean; status: string }> {
+    return this.request("POST", "/presence", {}, { repoll: false });
   }
 
   contacts(): Promise<{ contacts: unknown[] }> {
     return this.request("GET", "/contacts");
   }
 
-  friend(peer: string, action: "request" | "quick" | "accept" | "favorite" | "remove", on?: boolean): Promise<unknown> {
-    return this.request("POST", "/friend", { peer, action, on });
+  friend(peer: string, action: "request" | "quick" | "accept" | "favorite" | "remove" | "rename", on?: boolean, name?: string): Promise<unknown> {
+    return this.request("POST", "/friend", { peer, action, on, name });
   }
 
   /** 发文件：只把**路径**交给 peer，字节由 peer 自己读盘（同机，省一次全量中转）。 */
