@@ -46,7 +46,7 @@ import { resolvePi, readVersion } from "./pi.ts";
 import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
 import { BUILD_ID } from "./build-id.ts";
 import { removePidFile, writePidFile } from "./pidfile.ts";
-import { clipboardFiles, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
+import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
 import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
@@ -1202,6 +1202,20 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/dirs" && req.method === "GET") {
       const dir = url.searchParams.get("path") ?? "";
       if (url.searchParams.get("stats") === "1") return json(res, 200, { files: statFiles(dir) });
+      // issue #499：`page=1` 走分页清单（筛选 / 排序 / 递归都在桥端做），老前端不带它就是老答案。
+      if (url.searchParams.get("page") === "1") {
+        const sort = url.searchParams.get("sort");
+        const dirOrder = url.searchParams.get("dir");
+        return json(res, 200, await listDirPage(dir, {
+          q: url.searchParams.get("q") ?? "",
+          offset: Number(url.searchParams.get("offset") ?? 0),
+          limit: Number(url.searchParams.get("limit") ?? 200),
+          sort: sort === "size" || sort === "mtime" ? sort : "name",
+          dir: dirOrder === "desc" ? "desc" : "asc",
+          sub: url.searchParams.get("sub") === "1",
+          files: url.searchParams.get("files") !== "0",
+        }));
+      }
       return json(res, 200, listDirs(dir, url.searchParams.get("files") === "1"));
     }
 
@@ -2364,7 +2378,8 @@ async function main(): Promise<void> {
       notes: listNotes(),
       // #278：页面据此决定 ＋ 是「挑目录建组」还是退回「空壳组 + 就地改名」（旧桥没有这项）；
       // `ws.resolve.dir` = 对话框能问「这个目录折回到哪个组」（子目录 / worktree）。
-      caps: ["ws.create.dir", "ws.resolve.dir", "exec.child.subscribe"],
+      // #499：`dirs.page` = /api/dirs 认 page/q/sort/sub（旧桥只会给截断过的整目录）。
+      caps: ["ws.create.dir", "ws.resolve.dir", "exec.child.subscribe", "dirs.page"],
     });
     // 先用 1–2 s 的快清单打招呼，带扩展的完整清单十几秒后自己补上（D150）。
     void pushCatalog(ws, { resend: true });

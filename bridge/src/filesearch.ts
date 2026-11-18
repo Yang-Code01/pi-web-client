@@ -15,6 +15,7 @@ const CACHE_MS = 10_000;
 const SKIP = new Set([".git", "node_modules", "dist", "build", ".next", ".venv", "venv", "__pycache__", "target", ".cache", ".scratch"]);
 
 const cache = new Map<string, { at: number; files: Promise<string[]> }>();
+const underCache = new Map<string, { at: number; files: Promise<string[]> }>();
 
 function gitFiles(cwd: string): Promise<string[] | null> {
   return new Promise((resolve) => {
@@ -50,6 +51,44 @@ function walk(cwd: string): string[] {
     }
   }
   return out;
+}
+
+/** `git rev-parse --show-prefix`: the git-reported paths are repo-root relative, and the caller
+ * asked about a subdirectory — this is how much to strip. Empty string when dir is the repo root. */
+function gitPrefix(dir: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile("git", ["rev-parse", "--show-prefix"], { cwd: dir, windowsHide: true, timeout: 8000 }, (err, stdout) => {
+      if (err) return resolve(null);
+      resolve(String(stdout).trim());
+    });
+  });
+}
+
+/**
+ * #499：目录浏览的「包含子目录」要的是**相对这个目录**的路径。`listFiles()` 在仓库里给的是
+ * 仓库根相对路径（子目录下浏览会整片对不上），而且 gitignored 的目录（build、.scratch）Git
+ * 一个都不报 —— 那时退回 walk，别把「没人跟踪」当成「没有文件」。
+ */
+export async function listFilesUnder(dir: string): Promise<string[]> {
+  const hit = underCache.get(dir);
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit.files;
+  const files = (async () => {
+    const list = await gitFiles(dir).catch(() => null);
+    if (list && list.length) {
+      const prefix = (await gitPrefix(dir)) ?? "";
+      if (!prefix) return list;
+      const out: string[] = [];
+      for (const p of list) {
+        if (!p.startsWith(prefix)) continue;
+        out.push(p.slice(prefix.length));
+        if (out.length >= MAX_FILES) break;
+      }
+      if (out.length) return out;
+    }
+    return walk(dir);
+  })();
+  underCache.set(dir, { at: Date.now(), files });
+  return files;
 }
 
 export function listFiles(cwd: string): Promise<string[]> {

@@ -107,6 +107,7 @@
 
 .fc-find {
   display: flex;
+  align-items: center; /* 不写就是 stretch：右边那颗「包含子目录」会被拉到 64px 高 */
   gap: 8px;
 }
 

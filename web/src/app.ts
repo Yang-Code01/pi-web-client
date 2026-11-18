@@ -687,6 +687,9 @@ export class App {
   private wsNewResolve: DirResolution | null = null;
   /** #278：问桥的防抖计时器 —— 选目录是一路点出来的，别每一下都跑一次 git。 */
   private wsNewResolveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** #499：新会话弹层左栏里那颗「用这个目录新建工作区」，建完原地补一行（不关弹层、不切走）。 */
+  private newSheetPicks: (() => void) | null = null;
+  private newSheetWsCreating = false;
   /** #123 设置面板的「标签行」那块（名额步进器）；快照回来时只重画这一个小面。 */
   private wsPane: HTMLElement | null = null;
   /** #291 设置面板的「预览 + 开关墙」那块；`ui` 回执与断线时只重画这一个小面。 */
@@ -2828,6 +2831,19 @@ export class App {
         // #278/#478：按目录建组的回执（快照已经先到，顺序已经按天插好）。这里负责「让它在眼前」：
         // 横排滚到它 / 真的收进 ＋N 就把那颗标亮 / 左栏滚到它 —— 空组再直接把「开新会话」摆出来。
         this.wsNewBusy = false;
+        // #499：这颗是从「新会话」弹层左栏里按的 —— 不关弹层、也不切走，原地把它补进左栏。
+        if (this.newSheetWsCreating) {
+          this.newSheetWsCreating = false;
+          this.newSheetPicks?.();
+          const fresh = buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === String(msg.id ?? ""));
+          this.flashToast(
+            msg.created === false ? tr("这个工作区已经在列表里") : tr("已新建工作区「{p1}」", { p1: fresh?.name ?? "" }),
+            false,
+            3600,
+          );
+          this.renderSessions();
+          break;
+        }
         if (this.sheetKind === "wsnew") this.closeSheet();
         const id = String(msg.id ?? "");
         const created = msg.created !== false;
@@ -6200,54 +6216,124 @@ export class App {
     }
   }
 
-  /** Dropdown = what you started from here, then every directory the listed sessions live in. */
-  private recentCwdOptions(): HTMLElement {
-    const list = el("datalist");
-    list.id = "pi-recent-cwds";
-    const seen = new Set<string>();
-    const all = [...this.recentCwds(), ...[...this.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.cwd)];
-    for (const cwd of all) {
-      if (!cwd || seen.has(cwd.toLowerCase())) continue;
-      seen.add(cwd.toLowerCase());
-      const opt = el("option") as HTMLOptionElement;
-      opt.value = cwd;
-      list.append(opt);
-      if (seen.size >= 20) break;
-    }
-    return list;
-  }
-
   private openNewSessionSheet(autoPin = false, preset?: { cwd?: string; note?: string; name?: string }): void {
     this.closeSheet();
     this.sheetKind = "new";
-    const back = el("div", "sheet-back");
+    const back = el("div", "sheet-back center");
     back.onclick = (ev) => {
       if (ev.target === back && !this.creating) this.closeSheet();
     };
-    const sheet = el("div", "sheet new-sheet");
+    const sheet = el("div", "sheet ws-new-sheet new-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", tr("开新会话")));
-    const close = el("button", "btn ghost", tr("取消"));
+    const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
     close.onclick = () => this.closeSheet();
     head.append(close);
 
-    const nameField = el("input", "ns-input") as HTMLInputElement;
-    nameField.placeholder = tr("可留空：发第一条消息后自动用它取名");
+    // #499：名字整行、默认值就是「新会话」—— 写在占位里，用户不用先删掉它再打字。
+    const nameField = el("input", "ns-input ns-name") as HTMLInputElement;
+    nameField.placeholder = tr("新会话");
     nameField.maxLength = 120;
+    nameField.setAttribute("aria-label", tr("会话名称"));
     // #487：交接过来的名字先填上，可改可清；空串等于不填（票号取完是空的时候）。
-    // 按名字框自己的上限截断：程序赋值不受 maxLength 约束，不截会显示一个比建出来的长 120 字之外还长的名字。
     nameField.value = (preset?.name?.trim() ?? "").slice(0, nameField.maxLength);
-    const cwdField = el("input", "ns-input mono") as HTMLInputElement;
-    cwdField.placeholder = tr("例如 E:\\yqm\\pi-web-client");
-    // #478：从空工作区建完会话时，这里已经是那个组的目录，并写明它在横条的哪一颗。
-    cwdField.value = preset?.cwd?.trim() ? preset.cwd : this.defaultCwd();
-    cwdField.setAttribute("list", "pi-recent-cwds");
-    const browseBtn = el("button", "btn ghost", tr("📁 浏览"));
-    const cwdRow = el("div", "ns-row");
-    cwdRow.append(cwdField, browseBtn);
+    const nameRow = el("div", "ns-namerow");
+    nameRow.append(nameField);
 
-    const browser = el("div", "ns-browser");
-    browser.hidden = true;
+    const body = el("div", "ws-new-body");
+    const side = el("div", "ws-new-side");
+    const dirHost = el("div", "ws-new-dir");
+    body.append(side, dirHost);
+
+    let current = cleanDirPath(preset?.cwd?.trim() || this.defaultCwd());
+    let picker: DirPicker | null = null;
+    const sameDir = (a: string, b: string): boolean => a !== "" && b !== "" && cleanDirPath(a).toLowerCase() === cleanDirPath(b).toLowerCase();
+    /** 这个目录下已经开着的会话（归档的不算：它们不是「打开」的候选）。 */
+    const sessionsHere = (): SessionState[] =>
+      current ? this.sessions.filter((s) => !this.manage.archived.includes(s.id) && sameDir(s.cwd ?? "", current)) : [];
+
+    // 左栏：已经在列表里的工作区（手动组不算）+「用这个目录新建工作区」+ 最近用过的目录。
+    const sideRows: { key: string; node: HTMLButtonElement; here: boolean }[] = [];
+    const addSide = (key: string, name: string, color: string | null, here = false): void => {
+      if (!key || sideRows.some((r) => sameDir(r.key, key))) return;
+      const row = el("button", "model-row ws-new-pick") as HTMLButtonElement;
+      row.type = "button";
+      row.dataset.ws = key;
+      row.title = key;
+      const dot = el("span", "ws-dot");
+      if (color) dot.style.background = color;
+      else dot.classList.add("ws-dot-ghost");
+      const label = el("span", "m-name", name);
+      row.append(dot, label);
+      if (here) row.append(el("span", "ws-here", tr("这里")));
+      row.onclick = () => void picker?.go(key);
+      picks.append(row);
+      sideRows.push({ key, node: row, here });
+    };
+    const paintSide = (): void => {
+      for (const row of sideRows) row.node.classList.toggle("on", sameDir(row.key, current));
+    };
+    // 左栏可能很长（组 + 最近）：标题和列表进可滚的那一层，底下的「新建工作区」钉住不跟着滚。
+    const sideScroll = el("div", "ws-new-scroll");
+    side.append(sideScroll);
+    sideScroll.append(el("div", "ws-new-side-title", tr("已经在列表里")));
+    const picks = el("div", "ws-new-picks");
+    sideScroll.append(picks);
+    /** 手动组不进这一栏：它们不是「按目录」的，点了也对不上一个路径。 */
+    const pickGroups = () => buildTree(this.sessions, this.manage, this.workspaces, "").groups.filter((group) => !group.manual);
+    // #499：新建工作区的入口就摆在组行下面 —— 用户在弹层里挑到一个新目录，不必先关掉弹层去建组。
+    const wsAdd = el("button", "model-row ws-new-add") as HTMLButtonElement;
+    wsAdd.type = "button";
+    wsAdd.append(el("span", "ico", "+"), el("span", "m-name", tr("用这个目录新建工作区")));
+    wsAdd.title = tr("把这个目录加成工作区（名字取目录名），建完还在这个弹层里");
+    wsAdd.onclick = () => {
+      if (this.newSheetWsCreating) return;
+      if (!current) {
+        this.flashToast(tr("先挑一个工作目录"), false, 3200);
+        return;
+      }
+      if (!this.bridgeCaps.includes(WS_CREATE_DIR_CAP)) {
+        this.flashToast(tr("这个 pi 还不支持按目录建工作区，请升级 pi-web-client"), false, 4000);
+        return;
+      }
+      const have = pickGroups().find((group) => sameDir(group.key, current));
+      if (have) {
+        this.flashToast(tr("这个目录已经在「{p1}」里了", { p1: have.name }), false, 3600);
+        return;
+      }
+      this.newSheetWsCreating = true;
+      wsAdd.disabled = true;
+      this.act(() => this.socket.send({ type: "manage", action: "ws.create", dir: current }));
+    };
+    const paintPicks = (): void => {
+      picks.replaceChildren();
+      sideRows.length = 0;
+      const hereWs = this.currentWsId();
+      const groups = pickGroups();
+      for (const group of groups) addSide(group.key, group.name, group.color, group.id === hereWs);
+      if (!groups.length) picks.append(el("div", "empty", tr("还没有按目录分的工作区")));
+      wsAdd.disabled = this.newSheetWsCreating || !current || !this.bridgeCaps.includes(WS_CREATE_DIR_CAP);
+      paintSide();
+    };
+    this.newSheetPicks = paintPicks;
+    paintPicks();
+    side.append(wsAdd);
+
+    // 最近：先看这次用过的，再按会话的更新时间补；与会话的工作目录去重，最长 6 条。
+    const recentDirs: string[] = [];
+    for (const dir of [...this.recentCwds(), ...[...this.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.cwd)]) {
+      const abs = cleanDirPath(dir ?? "");
+      if (!abs || recentDirs.some((d) => sameDir(d, abs))) continue;
+      recentDirs.push(abs);
+      if (recentDirs.length >= 6) break;
+    }
+    const fresh = recentDirs.filter((dir) => !sideRows.some((r) => sameDir(r.key, dir)) && !sameDir(dir, current));
+    if (fresh.length) {
+      sideScroll.append(el("div", "ws-new-side-title", tr("最近")));
+      for (const dir of fresh) addSide(dir, dirBaseName(dir), null);
+    }
+
     const mkBtn = el("button", "btn ghost dir-mk", tr("＋ 新建文件夹")) as HTMLButtonElement;
     mkBtn.title = tr("在当前目录下新建一个文件夹");
     const mkRow = el("div", "dir-mkrow");
@@ -6261,45 +6347,58 @@ export class App {
     const mkFields = el("div", "ns-row");
     mkFields.append(mkInput, mkOk, mkCancel);
     mkRow.append(mkFields, mkErr);
-    let current = "";
-    let picker: DirPicker | null = null;
-    const home = this.dirHome(() => cwdField.value);
-    // 目录浏览只有一份实现（dirpicker.ts），这里只多做三件事：定位回工作目录 + 新建文件夹 + 走目录就等于选目录。
-    picker = mountDirPicker(browser, {
-      start: cwdField.value.trim(),
-      head: [home.node, mkBtn],
-      beforeList: [mkRow],
-      fallback: true,
-      // Hidden until 浏览 opens it, and the field is the source of truth for where to start:
-      // a listing that ran while the sheet was still opening would rewrite what the user types.
-      autoStart: false,
-      onState: (s) => {
-        current = s.path;
-        mkBtn.hidden = !s.path || !!s.error;
-        closeMk();
-        if (s.path) cwdField.value = s.path;
-      },
-    });
-    home.bind(picker);
+    const home = this.dirHome(() => current);
 
     const err = el("div", "ns-error");
     const status = el("div", "ns-status");
     status.hidden = true;
     status.append(el("span", "act-spin"), el("span", "", tr("正在启动会话…（拉起 pi 进程，通常要几秒）")));
-    const foot = el("div", "dir-foot");
-    const ok = el("button", "btn primary", tr("创建"));
-    foot.append(ok);
+    const foot = el("div", "sheet-foot");
+    const note = el("div", "ws-new-note");
+    const openExisting = el("button", "btn ghost", tr("打开已有的")) as HTMLButtonElement;
+    openExisting.type = "button";
+    const ok = el("button", "btn primary", tr("新会话")) as HTMLButtonElement;
+    ok.type = "button";
+    foot.append(note, openExisting, ok);
     const advanced = this.launchOptionsBox();
+
+    /** 底部那行说明与「打开已有的」都跟着当前目录走。 */
+    const paintFoot = (): void => {
+      const here = sessionsHere();
+      if (!current) note.textContent = tr("先挑一个工作目录");
+      else if (here.length) note.textContent = tr("这个目录已有 {p1} 个会话", { p1: String(here.length) });
+      else note.textContent = tr("将在 {p1} 新建会话", { p1: current });
+      openExisting.hidden = here.length === 0;
+      ok.disabled = !current;
+    };
+
+    // 目录浏览只有一份实现（dirpicker.ts），这里只多做三件事：定位回工作目录 + 新建文件夹 + 走目录就等于选目录。
+    picker = mountDirPicker(dirHost, {
+      start: current,
+      files: false,
+      // #499：右栏常显浏览（不再有「📁 浏览」开合），路径框、筛选、排序都在里面。
+      filter: true,
+      pathBox: true,
+      sortable: true,
+      defaultSort: { key: "name", dir: "asc" },
+      head: [home.node, mkBtn],
+      beforeList: [mkRow],
+      fallback: true,
+      onState: (state) => {
+        current = state.path;
+        mkBtn.hidden = !state.path || !!state.error;
+        paintSide();
+        paintFoot();
+        closeMk();
+      },
+    });
+    home.bind(picker);
 
     sheet.append(
       head,
       ...(preset?.note ? [el("div", "ns-note", preset.note)] : []),
-      el("label", "ns-label", tr("会话名称")),
-      nameField,
-      el("label", "ns-label", tr("工作目录")),
-      cwdRow,
-      this.recentCwdOptions(),
-      browser,
+      nameRow,
+      body,
       advanced.node,
       err,
       status,
@@ -6308,13 +6407,9 @@ export class App {
     back.append(sheet);
     this.overlay(back);
     this.sheet = back;
+    paintSide();
+    paintFoot();
 
-    // 打开面板时才去读目录：这里只绑定开关。
-    browseBtn.onclick = () => {
-      browser.hidden = !browser.hidden;
-      browseBtn.textContent = browser.hidden ? tr("📁 浏览") : tr("收起");
-      if (!browser.hidden) void picker?.go(cwdField.value.trim());
-    };
     let mkBusy = false;
     const setMkBusy = (busy: boolean): void => {
       mkBusy = busy;
@@ -6381,18 +6476,31 @@ export class App {
       }
     };
 
+    openExisting.onclick = (): void => {
+      const here = sessionsHere();
+      if (!here.length) return;
+      this.closeSheet();
+      if (here.length === 1) {
+        this.openFromList(here[0].id);
+        return;
+      }
+      // 多个：把左栏滚到那一组，让用户自己挑（和「新建工作区 → 带你过去」同一个出口）。
+      const group = buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => !g.manual && sameDir(g.key, current));
+      if (group) this.switchToWsGroup(group.id);
+      else this.flashToast(tr("这个目录有 {p1} 个会话，在左栏里挑一个", { p1: String(here.length) }), false, 4000);
+    };
+
     const setBusy = (busy: boolean): void => {
       status.hidden = !busy;
-      for (const node of [nameField, cwdField, browseBtn, ok, close] as (HTMLInputElement | HTMLButtonElement)[]) node.disabled = busy;
-      browser.classList.toggle("disabled", busy);
-      ok.textContent = busy ? tr("启动中…") : tr("创建");
+      for (const node of [nameField, ok, close] as (HTMLInputElement | HTMLButtonElement)[]) node.disabled = busy;
+      body.classList.toggle("disabled", busy);
+      ok.textContent = busy ? tr("启动中…") : tr("新会话");
     };
     const submit = (): void => {
       if (this.creating) return;
-      const cwd = cwdField.value.trim();
+      const cwd = current.trim();
       if (!cwd) {
         err.textContent = tr("先选一个工作目录");
-        cwdField.focus();
         return;
       }
       err.textContent = "";
@@ -6400,41 +6508,40 @@ export class App {
         cwd,
         nameField.value.trim(),
         () => {
-        setBusy(true);
-        const timer = setTimeout(() => this.creating?.finish(tr("等了 60 秒还没启动起来，看看服务端日志")), 60000);
-        this.creating = {
-          finish: (error) => {
-            clearTimeout(timer);
-            this.creating = null;
-            if (this.sheet !== back) return;
-            if (!error) {
-              this.closeSheet();
-              return;
-            }
-            setBusy(false);
-            err.textContent = error;
-          },
-        };
+          setBusy(true);
+          const timer = setTimeout(() => this.creating?.finish(tr("等了 60 秒还没启动起来，看看服务端日志")), 60000);
+          this.creating = {
+            finish: (error) => {
+              clearTimeout(timer);
+              this.creating = null;
+              if (this.sheet !== back) return;
+              if (!error) {
+                this.closeSheet();
+                return;
+              }
+              setBusy(false);
+              err.textContent = error;
+            },
+          };
         },
         autoPin,
         advanced.read(),
       );
     };
     ok.onclick = submit;
-    for (const field of [nameField, cwdField]) {
-      field.onkeydown = (ev) => {
-        if (ev.key === "Enter" && !ev.isComposing) {
-          ev.preventDefault();
-          submit();
-        }
-      };
-    }
+    nameField.onkeydown = (ev) => {
+      if (ev.key === "Enter" && !ev.isComposing) {
+        ev.preventDefault();
+        submit();
+      }
+    };
     queueMicrotask(() => {
       nameField.focus();
       // #487：预填的名字把光标放末尾 —— 接着补两个字，而不是一打字就覆盖整段。
       if (nameField.value) nameField.setSelectionRange(nameField.value.length, nameField.value.length);
     });
   }
+
   // ---------------------------------------------------------------- render
   private renderAll(): void {
     this.renderTop();
@@ -9965,6 +10072,9 @@ export class App {
       files: true,
       fallback: true,
       pathBox: true,
+      // #499：文件管理器是文件入口 —— 表头上能按名称 / 大小 / 修改时间排，默认时间降序。
+      sortable: true,
+      defaultSort: { key: "mtime", dir: "desc" },
       head: [home.node, copy.node, mk.dirBtn, mk.fileBtn],
       beforeList: [mk.row],
       onState: (s) => {

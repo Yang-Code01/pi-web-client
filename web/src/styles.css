@@ -383,7 +383,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .new-sheet .ns-browser.disabled { pointer-events: none; opacity: 0.5; }
 .dir-path { padding: 8px 2px; font-family: var(--mono); font-size: 12px; color: var(--accent); word-break: break-all; }
-.dir-list { max-height: calc(var(--vh1) * 55); overflow-y: auto; }
+.dir-list { max-height: calc(var(--vh1) * 55); overflow-y: auto; scrollbar-gutter: stable; }
 .dir-row { font-family: var(--mono); font-size: 13px; text-align: left; }
 .dir-foot { display: flex; justify-content: flex-end; padding-top: 10px; }
 
@@ -2854,6 +2854,27 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
    whole list instead of being ellipsised. Pin the track to the container and the ellipsis works. */
 .dir-list { grid-template-columns: minmax(0, 1fr); overflow-x: hidden; }
 
+/* ---- #499：大目录分页。排序行、筛选行、页脚计数各自独立一行，切换它们不该改变列表高度。 ---- */
+.dir-sort { display: flex; align-items: center; gap: 2px; padding: 4px 2px; }
+.dir-sort[hidden], .dir-find[hidden], .dir-pagefoot[hidden], .dir-sub[hidden], .dir-pending[hidden], .dir-more[hidden] { display: none; }
+/* 排序就是一排列名（不是下拉框）：和各表格的表头同一个手势，点一下排、再点一下翻向。 */
+.dir-sort-key { flex: 0 0 auto; padding: 5px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font: 12px var(--sans); cursor: pointer; white-space: nowrap; }
+.dir-sort-key:hover { background: var(--panel-3); color: var(--text); }
+.dir-sort-key.on { background: var(--panel-3); color: var(--text); }
+.dir-find { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 2px; }
+.dir-find .dir-filter { flex: 1 1 160px; min-width: 0; }
+.dir-sub { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font: 12px var(--sans); color: var(--dim); cursor: pointer; white-space: nowrap; }
+.dir-sub input { margin: 0; accent-color: var(--accent); }
+/* 换顺序 / 换筛选词时旧的一页先留着、只压暗一点：清空再画会闪一下，看着像「抖」。 */
+.dirpicker.busy .dir-list { opacity: .55; }
+.dirpicker.busy .dir-list, .dirpicker.busy .dir-pagefoot { cursor: progress; }
+.dir-pagefoot { display: flex; align-items: center; gap: 10px; padding: 8px 2px 2px; font: 11.5px var(--mono); color: var(--faint); }
+.dir-pagecount { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dir-pending { flex: 0 0 auto; color: var(--dim); }
+.dir-more { flex: 0 0 auto; padding: 4px 12px; font-size: 12px; }
+/* 递归命中：行尾补一条相对路径，名字还留在原位。 */
+.file-row .rel { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--mono); color: var(--faint); }
+
 /* ---- long pastes: their own foldable box inside the composer, apart from the typed text ---- */
 /* #317 follow-up: the fade is a mask on the textarea, and a mask carries alpha for everything the
    element paints — with the panel colour and the border on the box, the top 24px would fade those
@@ -2917,6 +2938,11 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .dir-jump-input.bad { border-color: var(--danger-dim); }
 .dir-jump-err { padding-top: 4px; font-size: 12px; color: var(--danger); line-height: 1.45; word-break: break-all; }
 .dir-jump-err:empty { display: none; }
+/* 附件弹层（控制台）里路径框和筛选框要同一行、同一个盒子：.dir-jump 的 6px 上边距、
+   .dir-jump-input 的 10px/12px 内边距都会把两个框顶得一高一低（`查看 > 文件` 里看得很明显）。 */
+.dirpicker.console .dir-jump { margin-top: 0; }
+.dirpicker.console .fc-find .dir-jump-input,
+.dirpicker.console .fc-find .fc-filter { height: 36px; padding: 0 10px; font-size: 12px; }
 .dirpicker.locating .dir-jump-input { opacity: 0.6; }
 /* 跳到一个文件 / 新建出来的那一行：只做静态高亮，不加呼吸动画 —— 目录里不该有东西自己跳（下一次导航就清，D167）。 */
 .dir-row.hit { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
@@ -4712,14 +4738,43 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   flex: 1; min-width: 0; font-size: 12px; color: var(--dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* #499：新会话弹层 —— 左「工作区 / 最近」，右常显目录浏览（面包屑 + 筛选 + 排序），底下一行说明与按钮。 */
+/* 比默认的 .sheet（78vh）松一点：名字整行 + 396 的浏览区 + 高级 + 底栏，78% 会把自己撑出滚动条。 */
+.new-sheet { width: min(1020px, calc(calc(var(--vw1) * 100) - 32px)); max-height: calc(var(--vh1) * 92); }
+.ns-namerow { padding: 10px 16px 0; }
+.ns-namerow .ns-name { width: 100%; font-size: 15px; }
+/* 396 是给大屏的；矮一些的窗口里要自己收，否则整张弹层会滚起来、底栏被切掉。 */
+.new-sheet .ws-new-body { height: clamp(220px, calc(var(--vh1) * 92 - 240px), 396px); }
+.new-sheet .ws-new-side,
+.new-sheet .ws-new-dir { max-height: none; }
+/* 左栏自己一列：列表那一层滚，底下那颗「用这个目录新建工作区」一直看得见（组一多就不会被挤到弹层外）。 */
+.new-sheet .ws-new-side { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.new-sheet .ws-new-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.new-sheet .ws-new-add { flex: 0 0 auto; }
+.ws-new-pick.on { border-color: var(--accent-dim); background: var(--accent-bg); }
+.ws-new-pick .ws-dot-ghost { background: transparent; border: 1px solid var(--line); }
+/* #499：左栏底下的「用这个目录新建工作区」—— 一排虚线，和上面那些已经存在的组区分开。 */
+.ws-new-add { margin-top: 4px; color: var(--dim); border: 1px dashed var(--line); }
+.ws-new-add:hover:not(:disabled) { color: var(--text); border-color: var(--accent-dim); }
+.ws-new-add .ico { flex: 0 0 auto; width: 14px; text-align: center; font: 13px var(--mono); }
 @media (max-width: 720px) {
   .ws-new-body { grid-template-columns: minmax(0, 1fr); }
-  .ws-new-side {
+  .new-sheet .ws-new-side {
     flex-direction: row; overflow-x: auto; overflow-y: hidden;
     max-height: none; border-right: 0; border-bottom: 1px solid var(--line-soft);
   }
   .ws-new-side-title { display: none; }
   .ws-new-pick { flex: none; }
+  /* 窄版左栏变成一条横向轨道：条目不拉伸，滚动也换成横向的 */
+  .new-sheet .ws-new-side { align-items: center; gap: 8px; }
+  .new-sheet .ws-new-scroll {
+    display: flex; flex-direction: row; align-items: center;
+    flex: 1 1 0; min-width: 0;
+    overflow-x: auto; overflow-y: hidden;
+  }
+  .new-sheet .ws-new-picks { display: flex; flex-direction: row; align-items: center; gap: 6px; }
+  .new-sheet .ws-new-add { align-self: center; white-space: nowrap; }
 }
 /* 模型选择：在用的钉在最上面，其余按来源（provider）分组 */
 .model-group-head { position: sticky; top: 0; z-index: 1; display: block; width: 100%; text-align: left; border: 0; cursor: pointer; padding: 6px 4px 2px; background: var(--panel); color: var(--faint); font: 600 11px/1.4 var(--sans); letter-spacing: .02em; }

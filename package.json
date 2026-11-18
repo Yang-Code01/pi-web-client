@@ -46,6 +46,7 @@
     "test:skill": "node bridge/tests/skill-implicit.mjs",
     "test:models": "node bridge/tests/models-unit.mjs",
     "test:stat": "node bridge/tests/stat-path.mjs",
+    "test:dirpage": "node bridge/tests/dirpage.mjs",
     "test:mk": "node bridge/tests/mk-file.mjs",
     "test:uploads": "node --experimental-strip-types bridge/tests/uploads-unit.mjs",
     "test:nowchip": "node --experimental-strip-types web/tests/nowchip-unit.mjs",
