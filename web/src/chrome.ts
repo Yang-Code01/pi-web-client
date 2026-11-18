@@ -1,5 +1,5 @@
 /**
- * 顶栏 / 输入框下沿那 11 颗按钮的可见性（#281 / #288）。
+ * 顶栏 / 输入框下沿那 14 颗按钮的可见性（#281 / #288）。
  *
  * **唯一一份定义**：桥存的是偏好（`chrome`），页面只问这里「这一颗该不该画」，不在各个渲染点
  * 各拼一遍条件。三态用「键在不在」表达 —— 键缺失 = 默认行为，`false` = 关掉，`true` = 显式打开
@@ -8,8 +8,8 @@
  * 纯函数，单测在 `web/tests/chrome-unit.mjs`。桥端的白名单在 `bridge/src/extmgr.ts`。
  */
 
-/** 写进状态 / 协议里的稳定 id（不是文案）。顶栏 8 颗、下沿 4 颗。 */
-export const CHROME_IDS = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "mail", "skills", "context", "ext", "attach", "model"] as const;
+/** 写进状态 / 协议里的稳定 id（不是文案）。顶栏 9 颗、下沿 5 颗。 */
+export const CHROME_IDS = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "mail", "filesearch", "skills", "context", "ext", "attach", "model"] as const;
 export type ChromeId = (typeof CHROME_IDS)[number];
 
 /** 只有三种状态：键缺失 / `false` / `true`。 */
@@ -24,6 +24,12 @@ export interface ChromeContext {
 }
 
 const SESSION_ONLY: readonly string[] = ["artifacts", "files"];
+
+/**
+ * 默认不占顶栏的 id：**后加的、机器级的**功能（用户 2026-11-18 明确要求「默认隐藏」）。
+ * 三态不变 —— 键缺失按这里的默认（不画），`true` 才画出来，`false` 与缺失同效但会记住「关过」。
+ */
+const DEFAULT_HIDDEN: readonly ChromeId[] = ["filesearch"];
 
 /** 只在会话里才有内容的 id：没开会话时连显式打开也画不出来。列表只在这里写一次。 */
 export function isSessionOnly(id: ChromeId | string): boolean {
@@ -43,6 +49,7 @@ export function isChromeVisible(id: ChromeId | string, chrome: ChromeState | nul
   const choice = chrome?.[id as ChromeId];
   if (choice === false) return false;
   if (choice === true) return true;
+  if (DEFAULT_HIDDEN.includes(id as ChromeId)) return false;
   if (id === "files" && ctx.narrow) return false;
   return true;
 }

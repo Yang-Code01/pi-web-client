@@ -51,6 +51,7 @@ import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uplo
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
+import { FileIndex } from "./fileindex.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
 import { selfChangelog } from "./whatsnew.ts";
 import { scanSubagents } from "./subagents.ts";
@@ -2212,6 +2213,10 @@ async function main(): Promise<void> {
     }
   };
 
+  // D321：文件搜索索引（node:sqlite）。一个进程一份，落盘在 state 目录；页面只发查询，不碰磁盘。
+  const fileIndex = new FileIndex({ dbFile: statePath("filesearch.db"), log });
+  fileIndex.onChange((status) => broadcast({ type: "filesearch.status", status }));
+
   // D81/D171: the MCP store's ranked index is a walk over hundreds of registry pages. Tell the page
   // when it lands, so the unranked registry results it was shown get replaced without a re-search.
   setIndexListener((idx) => broadcast({ type: "mcp.index", at: idx.at, truncated: Boolean(idx.truncated) }));
@@ -2918,6 +2923,54 @@ async function main(): Promise<void> {
               log(`permission.applyDefault failed: ${String(err)}`);
               send({ type: "permission.applied", cwd: msg.cwd ? String(msg.cwd) : null, applied: 0 });
             }
+            return;
+          }
+          // D321 文件搜索：索引在 bridge 侧，页面只发查询。首次没库时才全盘扫，之后靠 fs.watch 增量。
+          case "filesearch.status": {
+            send({ type: "filesearch.status", status: fileIndex.status() });
+            return;
+          }
+          case "filesearch.query": {
+            const id = msg.id ?? null;
+            const sort = msg.sort === "size" || msg.sort === "mtime" ? msg.sort : "name";
+            try {
+              const result = fileIndex.query(String(msg.q ?? ""), {
+                volumes: Array.isArray(msg.volumes) ? msg.volumes.map(String) : undefined,
+                sort,
+                offset: Number.isFinite(msg.offset) ? Number(msg.offset) : 0,
+                limit: Number.isFinite(msg.limit) ? Number(msg.limit) : undefined,
+              });
+              send({ type: "filesearch.result", id, ...result });
+            } catch (err) {
+              send({
+                type: "filesearch.result",
+                id,
+                rows: [],
+                ms: 0,
+                truncated: false,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+            return;
+          }
+          case "filesearch.scan": {
+            fileIndex.start(true);
+            send({ type: "filesearch.status", status: fileIndex.status() });
+            return;
+          }
+          case "filesearch.pause": {
+            fileIndex.pause();
+            send({ type: "filesearch.status", status: fileIndex.status() });
+            return;
+          }
+          case "filesearch.resume": {
+            fileIndex.resume();
+            send({ type: "filesearch.status", status: fileIndex.status() });
+            return;
+          }
+          case "filesearch.volumes": {
+            fileIndex.setVolumes(Array.isArray(msg.volumes) ? msg.volumes.map(String) : []);
+            send({ type: "filesearch.status", status: fileIndex.status() });
             return;
           }
           case "context.policy.get": {
@@ -4067,6 +4120,15 @@ async function main(): Promise<void> {
     // 人手动在终端里 `npm start` 时把页面带出来；后台重启（看门狗 / 热部署 / 测试环境）不动浏览器。
     if (shouldOpenPage()) openPage(pageUrl);
     if (cfg.tunnelAuto && tunnelBin) tunnel.start();
+    // 文件搜索：开库几乎不耗时；已经有索引就直接能查，没有才起首次扫描（不堵住 listen 回调）。
+    void fileIndex
+      .open()
+      .then(() => {
+        const st = fileIndex.status();
+        log(`filesearch: ${st.state} (${st.indexed} entries)`);
+        if (st.state === "off") fileIndex.start();
+      })
+      .catch((err) => log(`filesearch: open failed: ${String(err)}`));
     // D161: pin 「the default permission as of now」 onto sessions the bridge has never looked at.
     // Async and best-effort: a session list that is a second late costs nothing, a crash on boot costs all.
     void sessions.pinAll().then((n) => n && log(`pinned default permission on ${n} session(s)`)).catch(() => {});
@@ -4074,6 +4136,7 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     log("shutting down");
+    fileIndex.close();
     terminals.closeAll();
     tunnel.stop();
     await sessions.shutdown();
