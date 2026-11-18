@@ -23,6 +23,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
+import { describeContextError } from "./context-policy.ts";
 import { pageBefore } from "./history.ts";
 import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
@@ -2814,10 +2815,35 @@ async function main(): Promise<void> {
             }
             return;
           }
-          case "setBudget": {
+          case "context.policy.get": {
+            const id = String(msg.sessionId ?? "");
+            if (!sessions.get(id)) {
+              send({ type: "context.policy", sessionId: id || null, policy: null, error: "找不到这个会话" });
+              return;
+            }
+            send({ type: "context.policy", sessionId: id, policy: await sessions.contextPolicyFor(id) });
+            return;
+          }
+          // #484：只改会话级。项目 / 全局两份去设置台改（`web.*` 键）。
+          case "context.policy.set": {
             if (!(await requireStepUp())) return;
-            const raw = Number(msg.budget);
-            sessions.get(msg.sessionId)?.setContextBudget(Number.isFinite(raw) && raw > 0 ? raw : null);
+            const id = String(msg.sessionId ?? "");
+            try {
+              const patch = msg.patch && typeof msg.patch === "object" && !Array.isArray(msg.patch) ? msg.patch : {};
+              const { policy, error } = await sessions.setContextPolicy(id, patch);
+              send({ type: "context.policy", sessionId: id, policy, error });
+            } catch (err: any) {
+              send({ type: "context.policy", sessionId: id, policy: null, error: { code: "unknown", message: String(err?.message ?? err) } });
+            }
+            return;
+          }
+          // #484：手动交接。异步 —— 写文档可能好几分钟，绝不能把这条 ws 消息挂在那里等。
+          case "handoff.start": {
+            if (!(await requireStepUp())) return;
+            const id = String(msg.sessionId ?? "");
+            void sessions.startHandoff(id, { manual: true }).catch((err: any) => {
+              send({ type: "notice", sessionId: id, text: `交接没有开始：${String(err?.message ?? err)}`, level: "error" });
+            });
             return;
           }
           case "skills": {
@@ -2944,11 +2970,20 @@ async function main(): Promise<void> {
             const scope = msg.scope === "project" ? "project" : "global";
             const cwd = scope === "project" ? String(msg.cwd ?? "") || null : null;
             try {
+              const patch = msg.patch && typeof msg.patch === "object" && !Array.isArray(msg.patch) ? msg.patch : null;
+              // #484：设置台写的是项目/全局那一层，保存前按「当时解析出来的两个生效值」校验。
+              const bad = patch ? await sessions.validateLayerSettings(scope, cwd, patch) : null;
+              if (bad) {
+                send({ type: "settings.error", scope, message: describeContextError(bad) });
+                return;
+              }
               const view = await writeSettings(pi.cli, scope, cwd, {
                 patch: msg.patch && typeof msg.patch === "object" && !Array.isArray(msg.patch) ? msg.patch : undefined,
                 raw: typeof msg.raw === "string" ? msg.raw : undefined,
               });
               log(`settings ${scope} written: ${view.path}`);
+              // #484：阈值就在这份文件里，改完不该再等 1.5 秒的缓存。
+              sessions.dropContextCache();
               send({ type: "settings", ...view, saved: true });
             } catch (err: any) {
               send({ type: "settings.error", scope, message: String(err?.message ?? err) });

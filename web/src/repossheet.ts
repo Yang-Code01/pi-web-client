@@ -65,7 +65,7 @@ export interface ReposSheetOptions {
   cwd: string;
   /** 写成功后让状态行 chip 与这扇窗一起刷新。 */
   refreshChip?: () => void;
-  handoff?: { prefill: (text: string) => void; newSessionWith: (text: string) => void };
+  handoff?: { prefill: (text: string, name?: string) => void; newSessionWith: (text: string, name?: string) => void };
 }
 
 export class ReposSheet {

@@ -204,6 +204,8 @@ export interface SessionState {
   bg?: BgView | null;
   /** Launch options chosen at creation (#28), one line. */
   launch?: string;
+  /** #484：这个会话已经交接给哪个新会话（旧会话只读；有它的卡上挂「已交接」徽标，点一下跳过去）。 */
+  handoffTo?: string;
 }
 
 /** #94 工作区的一级分组；`id` 是稳定键（派生组 = 归一化工程根小写，手动组 = `manual:…`）。 */
@@ -1025,12 +1027,20 @@ export interface GitHistory {
 /** 记录（D95）：bridge/src/notes.ts 的 Note 镜像，落在状态目录，不属于任何会话。 */
 export type NoteKind = "bug" | "change" | "idea" | "chore";
 export type NoteStatus = "pending" | "done" | "dropped";
+/** 已废弃：新旧面板都用「标题 + 长文」。字段留着只为读老数据不报错，读路径忽略它。 */
 export type NoteMode = "quick" | "form" | "long";
+
+/** 记录面板的折叠布局（D154 后续）：左边分区栏、中间列表栏各自可收成 44px 导轨 / 完全收起。 */
+export interface NotesLayout {
+  nav: "open" | "rail";
+  list: "open" | "closed";
+}
 export interface Note {
   id: string;
   kind: NoteKind;
   status: NoteStatus;
-  mode: NoteMode;
+  /** 新写入的条目不再设置它；老条目可能还有值。 */
+  mode?: NoteMode;
   title: string;
   body: string;
   /** 桥那台机器上的绝对路径（`/api/image?path=` 直接读）。 */

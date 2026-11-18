@@ -33,6 +33,7 @@ import {
   type CtxEvent,
   type CtxItem,
   type CtxLine,
+  type CtxPolicy,
   type CtxTimingRow,
   type CtxTrendRow,
 } from "./context.ts";
@@ -45,7 +46,8 @@ export interface ContextPanelData {
   lines: CtxLine[];
   contextWindow: number | null;
   measured: number | null;
-  budget: number | null;
+  /** #484：三层阈值解析后的两条线；null = 还没拿到（会话没在跑、或还没发第一条消息）。 */
+  policy: CtxPolicy | null;
   model: string;
   tokens: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number } | null;
   cost: number | null;
@@ -302,7 +304,7 @@ export class ContextPanel {
     const summary = ctxSummary(data.lines);
     const token = ctxTokenStats(data.lines);
     const timing = ctxTiming(data.lines);
-    const kpis = ctxKpis(reqs, data.contextWindow, data.measured, data.budget);
+    const kpis = ctxKpis(reqs, data.contextWindow, data.measured, data.policy);
     const root = div("cx-root");
     root.append(
       div("cx-top", this.statsCard(summary), this.meterCard(data, kpis, token)),
@@ -395,11 +397,20 @@ export class ContextPanel {
       this.meter(tr("缓存命中"), token.cacheHit == null ? "–" : ctxPct(token.cacheHit, 2)),
       this.meter(tr("本会话峰值"), ctxFmt(kpis.peak)),
       this.meter(tr("距自动压缩"), kpis.tillCompact == null ? "–" : `~${ctxFmt(kpis.tillCompact)}`),
+      this.meter(tr("距自动交接"), kpis.tillHandoff == null ? "–" : `~${ctxFmt(kpis.tillHandoff)}`),
     );
     box.append(grid);
     if (data.contextWindow) {
       box.append(div("cx-meter-line", tr("窗口 {p1}", { p1: ctxFmt(data.contextWindow) }), span("cx-meter-pct", ctxPct((kpis.current / data.contextWindow) * 100))));
     }
+    const lines: string[] = [];
+    if (kpis.compactLine != null && kpis.compactPercent != null) {
+      lines.push(tr("自动压缩 {p1}% ≈ {p2}", { p1: String(Math.round(kpis.compactPercent)), p2: ctxFmt(kpis.compactLine) }));
+    }
+    if (kpis.handoffLine != null && kpis.handoffPercent != null) {
+      lines.push(tr("自动交接 {p1}% ≈ {p2}", { p1: String(Math.round(kpis.handoffPercent)), p2: ctxFmt(kpis.handoffLine) }));
+    }
+    if (lines.length) box.append(div("cx-note cx-lines", ...lines.map((line) => span("cx-line", line))));
     box.append(
       div(
         "cx-note",

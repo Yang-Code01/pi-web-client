@@ -650,7 +650,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* 「重新接管」横幅平时 hidden（display:none 不占网格格子）。三行模板只在它露出来时才用，
    否则消息列表会掉进 auto 行、输入框掉进 1fr 行：新会话输入框飘到中间、长会话外层多出一条滚动条。 */
 .chat-pane:has(> .session-reclaim:not([hidden])) { grid-template-rows: auto minmax(0, 1fr) auto; }
-.chat-pane:has(> .composer > .chat-empty):not(:has(> .session-reclaim:not([hidden]))) { grid-template-rows: 1fr; place-items: center; }
+/* 空对话也要看两条横幅：任一条露出来就不能再用单行居中模板（否则横幅把输入框挤出 1fr）。 */
+.chat-pane:has(> .composer > .chat-empty):not(:has(> .session-reclaim:not([hidden]))):not(:has(> .handoff-banner:not([hidden]))) { grid-template-rows: 1fr; place-items: center; }
 .session-reclaim[hidden] { display: none; }
 .session-reclaim {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
@@ -659,6 +660,16 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .session-reclaim-text { flex: 1; min-width: 0; }
 .session-reclaim .btn { flex: 0 0 auto; padding: 4px 9px; font-size: 11px; }
 .session-reclaim-close { min-width: 28px; }
+/* #484：旧会话顶部的「已交给新会话」条 —— 和 reclaim 同样只在露出来时才多占一行，
+   两条同时出现时是四行模板（否则消息列表会掉进 auto 行，底栏被拉进 1fr）。 */
+.handoff-banner[hidden] { display: none; }
+.handoff-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--accent-bg); border-bottom: 1px solid var(--accent-dim); color: var(--text); font-size: 12px; }
+.handoff-banner-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.handoff-banner .btn { flex: 0 0 auto; padding: 4px 9px; font-size: 11px; }
+.chat-pane:has(> .handoff-banner:not([hidden])):not(:has(> .session-reclaim:not([hidden]))) { grid-template-rows: auto minmax(0, 1fr) auto; }
+.chat-pane:has(> .handoff-banner:not([hidden])):has(> .session-reclaim:not([hidden])) { grid-template-rows: auto auto minmax(0, 1fr) auto; }
+/* 「已交接」徽标：和源标签同一行，点一下跳到接棒的会话。 */
+.handoff-tag { flex: none; font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--accent-dim); color: var(--accent); cursor: pointer; }
 /* 没打开会话时中栏原本整片空、那句提示贴在底边（它挂在 .composer 里）—— 看着像界面坏了。
    这一刻整块居中成一枚安静的空状态，输入框那块也不再假装可用。 */
 .chat-pane:has(> .composer > .chat-empty) > .chat-scroll { display: none; }
@@ -1854,7 +1865,36 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 /* 标题栏里的按钮按内容宽（flex:none）排：让它们参与收缩的话，挤到 min-content 时两字标签会折成两行，
    一条 38px 高的按钮变成 58px，整条标题栏跟着变高、看着像坏了。要收也是标题和提示去收。 */
 .sheet-head > .btn { flex: none; }
+/* #484：标题栏右侧的一组入口（自动压缩 / 压缩 / 交接 / 关闭）。用 flex 列而不是 grid：
+   这里没有会隐藏的子元素，窄屏时按钮可以整体换行，不会把标题挤成两行。 */
+.sheet-actions { display: flex; align-items: center; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+.sheet-actions > .btn { flex: none; }
 .sheet-title { font-size: 14px; font-weight: 500; color: var(--text); }
+
+/* #484：盖在上下文面板上的子弹窗。挂在 #app 里、跟着字号缩放，所以尺寸一律走 --vw1；
+   层号比 .sheet-back(60) 高一层，Esc 先关它再关面板。 */
+.sheet-sub-back { position: fixed; inset: 0; z-index: 61; background: rgba(3, 5, 8, 0.5); display: grid; place-items: center; padding: 16px; }
+.sub-sheet { width: min(520px, calc(var(--vw1) * 92)); max-height: calc(var(--vh1) * 86); display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.sub-body { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding: 12px 16px 16px; }
+.sub-row { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--panel-2); }
+.sub-label { font-size: 12px; font-weight: 500; color: var(--text); }
+.sub-right { display: flex; align-items: center; gap: 6px; }
+.sub-input { width: 72px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-variant-numeric: tabular-nums; }
+.sub-select { padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+.sub-unit { font-size: 12px; color: var(--muted); }
+.sub-mini { padding: 2px 8px; font-size: 12px; }
+.sub-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.sub-value { font-size: 12px; color: var(--text); }
+.sub-note { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.sub-note-dim { opacity: 0.8; }
+.sub-error { color: var(--danger, #e0645a); font-size: 12px; min-height: 0; }
+.sub-error:empty { display: none; }
+.sub-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.sub-wide { width: 100%; }
+
+/* #484：面板里的两条阈值线（压缩 / 交接），窄到放不下就换行。 */
+.cx-lines { display: flex; flex-wrap: wrap; gap: 4px 12px; font-variant-numeric: tabular-nums; }
+.cx-line { white-space: nowrap; }
 /* 抽屉里没有第二套聚焦语言：浏览器默认的「白 outline」比信号色环还响（新建会话的会话名输入框
    聚焦时就是一圈白）。这里用 :where() 把优先级压到 0，控件自己写了 :focus 规则的照旧走自己的。 */
 .sheet :where(input:not([type="checkbox"]):not([type="radio"]), textarea, select) { font-size: 13px; }
@@ -3712,148 +3752,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .ext-pi .pi-name { font-size: 13px; font-weight: 500; }
 .settings-sheet .ext-pi .pi-ver { font: 12px var(--mono); color: var(--faint); }
 
-/* ---------------------------------------------------------------- 记录（D108）
-   顶栏 🐞 打开的本地随手记：左边一份列表、右边一个常驻编辑器。
-   它不属于任何会话，所以是 dialog 而不是 tab；宽度比普通 sheet 宽一倍，两边才放得下。 */
-.notes-btn { gap: 4px; }
-.notes-btn.has-pending { border-color: var(--accent-dim); color: var(--accent); background: var(--accent-bg); }
-.notes-glyph { font-size: 12px; }
-
-.notes-sheet { grid-template-rows: auto minmax(0, 1fr) auto; }
-.notes-head { gap: 12px; flex-wrap: wrap; }
-.notes-tabs { display: flex; gap: 4px; flex-wrap: wrap; font-size: 12px; }
-.notes-tab {
-  display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 999px;
-  border: 1px solid transparent; background: transparent; color: var(--dim); font-size: 12px;
-}
-.notes-tab:hover { background: var(--panel-2); }
-.notes-tab.on { border-color: var(--accent-dim); background: var(--accent-bg); color: var(--text); }
-.notes-tab .n { font: 11px/1 var(--mono); padding: 2px 4px; border-radius: 999px; background: var(--accent-dim); color: var(--accent); }
-.notes-switch { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--dim); cursor: pointer; }
-.notes-switch[hidden] { display: none; }
-
-/* 「显示已处理」右边那两个抽屉：归档 / 垃圾箱。带计数，点谁就看谁，再点回列表。 */
-.notes-views { display: flex; gap: 4px; }
-.notes-viewbtn {
-  display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 8px;
-  border: 1px solid transparent; background: transparent; color: var(--dim); font-size: 12px; cursor: pointer;
-}
-.notes-viewbtn:hover { background: var(--panel-2); color: var(--text); }
-.notes-viewbtn.on { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
-.notes-viewbtn .n { font: 11px var(--mono); color: var(--faint); }
-
-.notes-body { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 0; }
-.notes-side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line-soft); }
-.notes-new { margin: 8px 8px 4px; justify-content: flex-start; }
-.notes-search {
-  margin: 0 8px 8px; width: calc(100% - 20px); padding: 4px 8px; font-size: 12px;
-  color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; outline: none;
-}
-.notes-search:focus { border-color: var(--accent-dim); }
-.notes-editor-empty-hint { font-size: 12px; color: var(--faint); }
-.notes-search::placeholder { color: var(--faint); }
-.notes-items { overflow-y: auto; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 4px; }
-.notes-empty { padding: 16px 8px; color: var(--faint); font-size: 12px; text-align: center; }
-
-.note-row { position: relative; display: block; width: 100%; text-align: left; padding: 8px 8px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--text); cursor: pointer; }
-.note-row:hover { background: var(--panel-2); }
-.note-row.on { border-color: var(--accent-dim); background: var(--accent-bg); }
-.note-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-
-/* 行尾两个小图标：默认隐形，悬停 / 键盘聚焦才露出来，免得列表看着像工具栏。 */
-.note-row-acts { margin-left: auto; display: flex; gap: 4px; opacity: 0; transition: opacity 120ms; }
-.note-row:hover .note-row-acts, .note-row:focus-within .note-row-acts { opacity: 1; }
-.note-row-act {
-  width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px;
-  border: 1px solid var(--line); background: var(--accent-bg); color: var(--dim); font-size: 12px; cursor: pointer;
-}
-.note-row-act:hover { color: var(--text); background: var(--accent-bg); }
-.note-row-act.danger:hover { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
-.note-row-top { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
-.note-row-title { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.note-row-body { margin-top: 2px; font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.note-row-shot { margin-top: 6px; width: 100%; height: 44px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); opacity: 0.85; }
-.note-row-meta { display: flex; gap: 8px; margin-top: 4px; font: 11px/1.3 var(--mono); color: var(--faint); }
-.note-pill { flex: 0 0 auto; font: 11px/1 var(--mono); padding: 4px 4px; border-radius: 999px; border: 1px solid; }
-.note-pill.pending { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
-.note-pill.done { color: var(--ok); border-color: var(--ok-dim); background: var(--ok-bg); }
-.note-pill.dropped { color: var(--faint); border-color: var(--line); background: var(--panel-2); }
-
-.notes-editor { overflow-y: auto; padding: 12px; }
-.notes-editor-empty { height: 100%; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--faint); font-size: 12px; }
-.notes-editor-empty-title { color: var(--dim); }
-.note-ed { display: flex; flex-direction: column; gap: 8px; min-height: 100%; }
-.note-modes { gap: 4px; }
-.note-title { width: 100%; padding: 8px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); font-weight: 500; }
-.note-body { width: 100%; padding: 8px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); resize: vertical; line-height: 1.6; }
-.note-body::placeholder { color: var(--faint); }
-.note-body.mono { font-family: var(--mono); font-size: 12px; }
-.note-title:focus, .note-body:focus, .note-meta-input:focus { outline: none; border-color: var(--accent-dim); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
-
-.note-shots { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-.note-shot { position: relative; }
-.note-shot img { display: block; width: 88px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
-.note-shot-x { position: absolute; top: -4px; right: -4px; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--dim); font-size: 11px; line-height: 1; display: grid; place-items: center; }
-.note-shot-x:hover { color: var(--danger); border-color: var(--danger); }
-.note-add-shot { padding: 4px 8px; border-radius: 8px; border: 1px dashed var(--line); background: transparent; color: var(--faint); font-size: 12px; cursor: pointer; }
-/* 原生 file input 只当 picker 用，露出来就是一行 "Choose Files / No file chosen" */
-.note-add-shot input[type="file"] { display: none; }
-.note-add-shot:hover { color: var(--dim); border-color: var(--line-strong); }
-.note-shots-hint { font-size: 11px; color: var(--faint); }
-.note-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font: 11px/1.4 var(--mono); color: var(--faint); }
-.note-meta-input { width: 96px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line-soft); background: transparent; font: 12px/1.4 var(--mono); }
-.note-meta-input::placeholder { color: var(--faint); }
-.note-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-/* 四个动作同一副骨架：等高、同内距、同圆角，只靠颜色分主次（保存实心、删除红字）。 */
-.note-actions .btn { padding: 8px 12px; font-size: 13px; line-height: 18px; border-radius: 8px; }
-.notes-tabs-sep { width: 1px; height: 15px; background: var(--line); margin: 0 4px; align-self: center; }
-
-/* 归档 / 垃圾箱里打开一条时的提示条：这两堆里的条目不该看着跟列表里一样。 */
-.note-life-bar {
-  display: flex; align-items: center; gap: 8px; padding: 8px 8px; border-radius: 8px;
-  border: 1px dashed var(--accent-dim); background: var(--accent-bg); color: var(--dim); font-size: 12px;
-}
-.note-life-bar.trash { border-color: var(--warn-dim); background: var(--panel); color: var(--warn); }
-.note-life-bar .grow { flex: 1; }
-.note-title-view { margin-top: 4px; font-size: 14px; font-weight: 500; }
-.note-body-view {
-  margin: 4px 0 0; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line-soft);
-  background: var(--sunken); color: var(--dim); font: 12px/1.65 var(--mono); white-space: pre-wrap; word-break: break-word;
-}
-
-.note-foot-hint { margin-top: auto; padding-top: 10px; border-top: 1px dashed var(--line-soft); font: 11px/1.5 var(--mono); color: var(--faint); }
-
-.notes-foot { gap: 8px; }
-.notes-hint { font-size: 11px; color: var(--faint); }
-.notes-hint.bad { color: var(--danger); }
-
-.note-handoff { position: fixed; z-index: 80; min-width: 260px; display: grid; gap: 2px; padding: 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55); }
-.note-handoff button { display: grid; gap: 2px; text-align: left; padding: 8px 8px; border-radius: 8px; border: 0; background: transparent; }
-.note-handoff button:hover { background: var(--line-soft); }
-.handoff-label { font-size: 12px; color: var(--text); }
-.handoff-hint { font-size: 11px; color: var(--faint); }
-
-@media (min-width: 760px) {
-  /* 比普通 sheet 宽一倍、也给足高度：左边一列 + 右边编辑器，矮了编辑器就只剩一条缝。 */
-  .sheet.notes-sheet { width: min(1000px, 100%); min-height: min(620px, calc(var(--vh1) * 78)); }
-}
-@media (max-width: 620px) {
-  /* 窄屏上「归档 / 垃圾箱」只剩图标：标题、计数都在 title 里 */
-  .notes-viewbtn span:not(.n) { display: none; }
-}
-
-@media (max-width: 860px) {
-  .notes-body { grid-template-columns: 1fr; grid-template-rows: minmax(140px, 40%) minmax(0, 1fr); }
-  .notes-side { border-right: 0; border-bottom: 1px solid var(--line-soft); }
-  .notes-editor { padding: 8px; }
-}
-
 /* ---------------------------------------------------------------- AI 出错记录（D164） */
 /* 笔记的两栏和只读账本互斥：包一层好让 sheet 的「头 / 身 / 脚」三行网格不变。 */
-.notes-main { display: grid; min-height: 0; }
-/* hidden 会被上面的 display:grid 盖掉，这两个格子得显式关掉。 */
-.notes-body[hidden], .fail-wrap[hidden] { display: none; }
-.notes-sheet.in-failures .notes-foot { display: none; }
+/* 笔记三栏和只读账本互斥（布局在 notes.css），这里只留 hidden 的关掉规则。 */
+.fail-wrap[hidden] { display: none; }
 .fail-wrap { min-height: 0; overflow: hidden; display: grid; }
 .fail-body { display: grid; grid-template-columns: 320px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
 

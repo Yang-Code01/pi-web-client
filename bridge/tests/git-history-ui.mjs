@@ -233,6 +233,16 @@ try {
   // 回归：全量分支清单会把 105 条 ref / 2735 字符塞进上下文，已整行删掉。
   check("提示词不列可用分支", preview?.includes("可用分支") === false);
   check("提示词保持十几行短", (preview?.length ?? 0) < 400, `len=${preview?.length}`);
+  // #487：分支出口也要把名字带进新会话面板 —— 名字是点下去那一刻输入框里的 ref（上面刚设回 feat/x）。
+  // 点「新会话」会把卡收掉（handoffGo 末尾 closeOp），所以这条先验，之后再重开卡走「预填到当前会话」。
+  await page.click(".go-ai-card [data-ai-go='new']");
+  await page.waitForSelector(".sheet.new-sheet");
+  check("新会话面板的名字就是这条分支 ref", (await page.inputValue(".sheet.new-sheet input.ns-input")) === "feat/x");
+  await page.click('.sheet.new-sheet .sheet-head .btn.ghost:has-text("取消")');
+  await page.waitForSelector(".sheet.new-sheet", { state: "detached" });
+  await page.click(".go-tool-row [data-ai='1']");
+  await page.waitForSelector(".go-ai-card .go-textarea");
+  await page.fill(".go-ai-card .go-textarea", "先别动 git，告诉我该不该合并 main");
   await page.click(".go-ai-card [data-ai-go='current']");
   await page.waitForSelector(".composer-input textarea");
   const filled = await page.inputValue(".composer-input textarea");

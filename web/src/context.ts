@@ -201,6 +201,31 @@ export function ctxTotal(line: CtxLine): number {
   return typeof line.total === "number" && line.total > 0 ? line.total : sum;
 }
 
+/** 桥下发的阈值形状（与 `bridge/src/context-policy.ts` 的 `ContextPolicyView` 对齐）。 */
+export interface CtxPolicyLine {
+  line: number;
+  percent: number;
+  clamped: boolean;
+}
+
+export interface CtxPolicy {
+  policy: {
+    compactPercent: number;
+    compactFrom: "session" | "project" | "global" | "default";
+    compactOn: boolean;
+    handoffOn: boolean;
+    handoffFrom: "session" | "project" | "global" | "default";
+    handoffPercent: number | null;
+  };
+  window: number | null;
+  used: number | null;
+  /** 夹取后的压缩线（pi 自己的开关关着时为 null）。 */
+  compact: CtxPolicyLine | null;
+  /** 夹取后的交接线（没开或没设百分比时为 null）。 */
+  handoff: CtxPolicyLine | null;
+  decision: { action: "none" | "compact" | "handoff"; percent: number; line: number };
+}
+
 export interface CtxKpis {
   /** 当前上下文：provider 实测优先，否则最后一次请求的估算总量。 */
   current: number;
@@ -210,19 +235,30 @@ export interface CtxKpis {
   /** 请求次数与估算均值。 */
   requests: number;
   avg: number;
-  /** 距自动压缩还有多少（桥的真实 contextBudget - current）；未设预算时为 null。 */
+  /** 距自动压缩还有多少（夹取后的压缩线 - current）；没开压缩时为 null。 */
   tillCompact: number | null;
-  budget: number | null;
+  /** 距自动交接还有多少；自动交接没武装时为 null。 */
+  tillHandoff: number | null;
+  /** 解析后的两条线（真实 token 数与真实百分比），UI 直接拿来显示。 */
+  compactLine: number | null;
+  compactPercent: number | null;
+  handoffLine: number | null;
+  handoffPercent: number | null;
   /** provider 报的真值（stats.contextUsage），有就优先显示。 */
   measured: number | null;
   window: number | null;
 }
 
 /**
- * budget 是桥 `setContextBudget` 写进 budget.json 的真实阈值（`used < budget` 才不压缩）。
- * 旧版的 `window * 0.92` 是前端臆造的口径，pi 侧没有这个比例，已废弃。
+ * #484：两条线都由桥解析（会话 > 项目 > 全局，再按当前窗口夹取），前端不再自己造比例。
+ * 旧版的 `window * 0.92` 与绝对 token 预算都已删除。
  */
-export function ctxKpis(lines: CtxLine[], window: number | null, measured: number | null, budget: number | null): CtxKpis {
+export function ctxKpis(
+  lines: CtxLine[],
+  window: number | null,
+  measured: number | null,
+  policy: CtxPolicy | null,
+): CtxKpis {
   const last = lines[lines.length - 1];
   let peak = 0;
   let peakSeq = 0;
@@ -237,14 +273,20 @@ export function ctxKpis(lines: CtxLine[], window: number | null, measured: numbe
   }
   const requests = lines.length;
   const current = measured != null && measured > 0 ? measured : last ? ctxTotal(last) : 0;
+  const compactLine = policy?.compact?.line ?? null;
+  const handoffLine = policy?.handoff?.line ?? null;
   return {
     current,
     peak,
     peakSeq,
     requests,
     avg: requests ? Math.round(sum / requests) : 0,
-    tillCompact: budget ? Math.max(0, Math.round(budget - current)) : null,
-    budget,
+    tillCompact: compactLine != null ? Math.max(0, Math.round(compactLine - current)) : null,
+    tillHandoff: handoffLine != null ? Math.max(0, Math.round(handoffLine - current)) : null,
+    compactLine,
+    compactPercent: compactLine == null ? null : (policy?.compact?.percent ?? null),
+    handoffLine,
+    handoffPercent: handoffLine == null ? null : (policy?.handoff?.percent ?? null),
     measured,
     window,
   };
