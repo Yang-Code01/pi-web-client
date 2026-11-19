@@ -410,6 +410,7 @@ function cardsFrom(
       scripts.set(written.path, { path: written.path, base: written.base, content: written.content, order });
     }
     // `cat > x.mjs <<'EOF' … EOF` 也算把脚本写下来了：后面 `node x.mjs` 才认得出。
+    for (const copy of copiedScripts(commandOf(item), scripts)) scripts.set(copy.path, { ...copy, order });
     for (const heredoc of heredocsOf(commandOf(item))) {
       scripts.set(heredoc.path, {
         path: heredoc.path,
@@ -684,7 +685,7 @@ function scriptedCall(item: ToolItem, scripts: Map<string, ScriptSource>, keywor
   const entries: { ref: string; source: ScriptSource | null }[] = [];
   for (const ref of runs.direct) {
     const source = findScript([ref], scripts);
-    if (source && drivesBrowser(source.content, 2)) entries.push({ ref, source });
+    if (source && (drivesBrowser(source.content, 2) || importsBrowserScript(source.content, scripts))) entries.push({ ref, source });
   }
   for (const ref of runs.args) {
     const source = findScript([ref], scripts);
@@ -698,6 +699,13 @@ function scriptedCall(item: ToolItem, scripts: Map<string, ScriptSource>, keywor
     return true;
   });
   if (unique.some((entry) => entry.source)) return scriptsCard(unique);
+
+  // 源码看不全（启动器 import 了没读过的执行器、片段是用 python / sed 改出来的）时，看它跑出来的东西：
+  // 跑了脚本、输出里至少两条动作 / 断言，而且有浏览器的痕迹（存了截图 / 录像、提到浏览器）。
+  if (runs.direct.length && reportsBrowserRun(outputOf(item))) {
+    const names = [...runs.direct, ...runs.args].map(baseName);
+    return { script: [...new Set(names)].join(", "), steps: names.map((name) => ({ kind: "run" as const, target: name })), headed: null };
+  }
 
   // 只看命令本身，不看 heredoc 正文：提交说明、DECISIONS.md 里写到 `--remote-debugging-port` 不等于在起浏览器。
   const bare = withoutHeredocBodies(command);
@@ -981,6 +989,61 @@ function findScript(refs: string[], scripts: Map<string, ScriptSource>): ScriptS
 
 function normPath(path: string): string {
   return path.replace(/\\/g, "/").trim();
+}
+
+/**
+ * `cp cases/TC-01.py cases_zh/TC-01_zh.py`：源文件已经见过，副本就按同一份源码记下（后来的小改动不跟）。
+ * 不记的话，复制一份再跑就认不出是浏览器脚本了。
+ */
+function copiedScripts(command: string, scripts: Map<string, ScriptSource>): { path: string; base: string; content: string }[] {
+  const out: { path: string; base: string; content: string }[] = [];
+  if (!command) return out;
+  for (const words of simpleCommands(command)) {
+    const tokens = unwrap(words);
+    if (!COPY_COMMANDS.has(programOf(tokens[0] ?? ""))) continue;
+    const paths = tokens.slice(1).filter((token) => !token.startsWith("-"));
+    const dest = paths.pop();
+    if (!dest) continue;
+    for (const from of paths) {
+      const source = findScript([from], scripts);
+      if (!source) continue;
+      const path = normPath(SCRIPT_FILE.test(dest) ? dest : `${dest.replace(/[\\/]+$/, "")}/${source.base}`);
+      out.push({ path, base: baseName(path), content: source.content });
+    }
+  }
+  return out;
+}
+
+const COPY_COMMANDS = new Set(["cp", "copy", "copy-item", "cpi"]);
+
+/** 启动器脚本：自己不碰浏览器，但 import 了一份见过的、在驱动浏览器的脚本（`import run` → run.py）。 */
+function importsBrowserScript(content: string, scripts: Map<string, ScriptSource>): boolean {
+  const names = new Set<string>();
+  for (const match of content.matchAll(/^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))/gm)) {
+    names.add((match[1] ?? match[2]).split(".").pop() ?? "");
+  }
+  for (const match of content.matchAll(/(?:from\s+|require\s*\(\s*|import\s*\(\s*)['"]([^'"]+)['"]/g)) {
+    names.add(baseName(match[1]).replace(/\.[cm]?[jt]s$/, ""));
+  }
+  for (const source of scripts.values()) {
+    const stem = source.base.replace(/\.[^.]+$/, "");
+    if (names.has(stem) && drivesBrowser(source.content, 2)) return true;
+  }
+  return false;
+}
+
+/** 脚本跑出来的东西像不像一次浏览器操作：至少两条动作 / 断言，并且存了截图录像或提到了浏览器。 */
+function reportsBrowserRun(output: string): boolean {
+  if (!output) return false;
+  const steps = outputSteps(output);
+  if (steps.filter((step) => step.kind === "act" || step.kind === "check").length < 2) return false;
+  return steps.some((step) => step.kind === "file") || BROWSER_OUTPUT.test(output);
+}
+
+const BROWSER_OUTPUT = /\b(?:chrom(?:e|ium)|playwright|puppeteer|selenium|webdriver|headless|devtools|cdp|browser|screenshot)\b/i;
+
+function outputOf(item: ToolItem): string {
+  return (item.status === "running" ? item.partialResult ?? item.result : item.result) ?? "";
 }
 
 function baseName(path: string): string {

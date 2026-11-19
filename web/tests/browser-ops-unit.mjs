@@ -750,3 +750,40 @@ test("浏览器工具卡不读输出（agent_browser 的快照里也有 ✓ 行�
   assert.equal(card.stepSource, "call");
   assert.deepEqual(card.steps, [{ kind: "click", target: "@e3" }]);
 });
+
+// ---------------------------------------------------------------- D327 第三轮：启动器 / 复制出来的片段
+test("复制出来的片段（cp a.py b_zh.py）再交给启动器跑 → 认得出，步骤照样按输出列", () => {
+  const items = [
+    user("u1", 0),
+    readFile("r1", 1, "C:/api/.scratch/casph30inc-18325/e2e/cases/TC-01_basic_info_edit_ng.py", TC01),
+    tool("c1", 2, "bash", { command: 'cd "C:/api/.scratch/casph30inc-18325/e2e" && mkdir -p cases_zh && cp cases/TC-01_basic_info_edit_ng.py cases_zh/TC-01_basic_info_edit_ng_zh.py && grep -n "step(" cases_zh/TC-01_basic_info_edit_ng_zh.py' }, { durationMs: 50 }),
+    wrote("w1", 3, "C:/api/.scratch/casph30inc-18325/e2e/run_green.py", "import os\nimport sys\nimport video\nimport run\nrun.main()\n"),
+    tool("b1", 4, "bash", { command: 'cd "C:/api/.scratch/casph30inc-18325/e2e" && python run_green.py "C:/api/.scratch/casph30inc-18325/e2e" "C:/api/.scratch/casph30inc-18325/e2e/cases_zh/TC-01_basic_info_edit_ng_zh.py"; echo "exit=$?"' }, { status: "running", partialResult: "" }),
+  ];
+  const view = browserOpsView({ ...base, now: T0 + 10_000, items });
+  assert.equal(view.cards.length, 1, JSON.stringify(view.cards.map((c) => c.tool)));
+  assert.equal(view.cards[0].script, "TC-01_basic_info_edit_ng_zh.py");
+  // 复制命令本身（cp + grep）不是浏览器操作
+  assert.ok(!view.cards.some((c) => c.toolCallId === "call-c1"));
+});
+
+test("启动器自己不碰浏览器，但 import 了见过的执行器（import run → run.py）→ 算", () => {
+  const items = [
+    user("u1", 0),
+    readFile("r1", 1, "C:/skill/scripts/run.py", RUN_PY),
+    wrote("w1", 2, "/w/run_green.py", "import sys\nsys.path.insert(0, 'C:/skill/scripts')\nimport run\nrun.main()\n"),
+    tool("b1", 3, "bash", { command: "python /w/run_green.py /w" }, { durationMs: 5_000, result: "done" }),
+  ];
+  const [card] = browserOpsView({ ...base, items }).cards;
+  assert.equal(card?.script, "run_green.py");
+});
+
+test("源码看不到时按输出认：跑了脚本、输出里有动作 / 断言和录像 → 算；只有 OK 行不算", () => {
+  const run = (result) => browserOpsView({ ...base, items: [user("u1", 0), tool("b1", 1, "bash", { command: "python launch.py W case_x.py" }, { durationMs: 9_000, result })] }).cards;
+  const cards = run("step 打开页面\nOK 标题正确\nvideo /w/videos/x.mp4\n");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].script, "launch.py, case_x.py");
+  assert.equal(cards[0].stepSource, "output");
+  assert.equal(run("OK test_a\nOK test_b\nOK test_c\n").length, 0);
+  assert.equal(browserOpsView({ ...base, items: [user("u1", 0), tool("b1", 1, "bash", { command: "ls -la" }, { durationMs: 9, result: "step x\nOK y\nvideo a.mp4" })] }).cards.length, 0);
+});
