@@ -173,7 +173,8 @@ try {
   check("the summary has a gear for thresholds", (await gear.count()) === 1);
   await gear.click();
   const cfg = page.locator(".browser-cfg");
-  check("the gear opens the thresholds and the tool list", (await cfg.locator("input[type=\"number\"]").count()) === 4 && (await cfg.locator(".browser-cfg-tools").inputValue()).includes("browser_use"), await cfg.innerText());
+  check("the gear opens the thresholds and the tool list", (await cfg.locator("input[type=\"number\"]").count()) === 4 && (await cfg.locator(".browser-cfg-tools:not(.browser-cfg-commands)").inputValue()).includes("browser_use"), await cfg.innerText());
+  check("the gear has an empty command-keyword box (D327)", (await cfg.locator(".browser-cfg-commands").inputValue()) === "");
   await cfg.locator(".browser-cfg-reset").click();
   check("reset drops the saved thresholds", (await page.evaluate(() => localStorage.getItem("pi.browserOps.thresholds"))) === null);
   await gear.click();

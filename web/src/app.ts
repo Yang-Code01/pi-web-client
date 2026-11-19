@@ -21,7 +21,7 @@ import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
-import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
+import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -17160,15 +17160,20 @@ export class App {
       items,
       childRuns,
       tools: this.browserCfg.tools ?? BROWSER_TOOL_PATTERNS,
+      commands: this.browserCfg.commands,
       thresholds: this.browserCfg.thresholds,
       outputAt: Object.fromEntries(this.browserOutputAt),
       now: Date.now(),
     });
   }
 
-  /** 有没有浏览器调用正在跑（只看状态，不解析代码）：第三颗 tab 上的小圆点用。 */
+  /**
+   * 有没有浏览器调用正在跑：第三颗 tab 上的小圆点用。没有在跑的工具就不解析；有的话和面板走同一套识别，
+   * 否则 bash 跑脚本、agent_browser 这些面板认得出、小圆点却不亮（D327）。
+   */
   private browserRunning(): boolean {
-    return this.chat.loadedItems().some((item) => item.kind === "tool" && item.status === "running" && isBrowserTool(item.name));
+    if (!this.chat.loadedItems().some((item) => item.kind === "tool" && item.status === "running")) return false;
+    return this.browserModel().cards.some((card) => card.state === "running" || card.state === "slow" || card.state === "stuck");
   }
 
   /** 记下每次调用「最后一次有新输出」的时刻；没输出过的不记，免得把「开始到现在」当成「多久没输出」。 */
@@ -17192,7 +17197,7 @@ export class App {
     if (this.browserCfgOpen) panel.append(this.browserCfgEditor());
     if (!model.cards.length) {
       panel.append(el("div", "exec-empty", tr("这一轮没有浏览器操作")));
-      panel.append(el("div", "hint", tr("工具名不在名单里就不会出现；点右上角齿轮可改名单与阈值。")));
+      panel.append(el("div", "hint", tr("认得出的有：浏览器工具（MCP、agent_browser）、shell 跑的浏览器脚本与命令行。自家执行器认不出时，点右上角齿轮加命令关键词。")));
       return panel;
     }
     const list = el("div", "browser-list");
@@ -17298,6 +17303,12 @@ export class App {
     tools.dataset.bcfg = "tools";
     tools.value = (cfg.tools ?? BROWSER_TOOL_PATTERNS).join(", ");
     tools.title = tr("逗号分隔，按子串认（例：browser_use, playwright, cdp）");
+    const commands = el("input", "browser-cfg-tools browser-cfg-commands") as HTMLInputElement;
+    commands.type = "text";
+    commands.dataset.bcfg = "commands";
+    commands.value = cfg.commands.join(", ");
+    commands.placeholder = tr("命令关键词（例：e2e.sh）");
+    commands.title = tr("shell 命令里出现其中一个就算浏览器操作：给认不出的自家执行器用，逗号分隔");
     const actions = el("div", "browser-cfg-row");
     const save = el("button", "browser-cfg-save", tr("保存")) as HTMLButtonElement;
     save.type = "button";
@@ -17309,6 +17320,7 @@ export class App {
       }
       const list = tools.value.split(/[,，\n]/).map((name) => name.trim()).filter(Boolean);
       cfg.tools = list.length ? list : null;
+      cfg.commands = commands.value.split(/[,，\n]/).map((word) => word.trim()).filter(Boolean);
       writeBrowserCfg(cfg);
       this.browserCfgOpen = false;
       this.renderQueue();
@@ -17316,12 +17328,12 @@ export class App {
     const reset = el("button", "browser-cfg-reset", tr("恢复默认")) as HTMLButtonElement;
     reset.type = "button";
     reset.onclick = () => {
-      this.browserCfg = { thresholds: {}, tools: null };
+      this.browserCfg = { thresholds: {}, tools: null, commands: [] };
       writeBrowserCfg(this.browserCfg);
       this.renderQueue();
     };
     actions.append(save, reset);
-    box.append(nums, tools, actions);
+    box.append(nums, tools, commands, actions);
     return box;
   }
 
@@ -19294,12 +19306,14 @@ interface BrowserCfg {
   thresholds: Partial<BrowserOpsThresholds>;
   /** null = 用默认名单。 */
   tools: string[] | null;
+  /** shell 命令关键词：命令里出现就算浏览器操作（认不出的自家执行器用），默认空。 */
+  commands: string[];
 }
 
 const BROWSER_THRESHOLD_KEYS = ["slowMs", "stuckMs", "silentMs", "loopCount"] as const;
 
 function readBrowserCfg(): BrowserCfg {
-  const cfg: BrowserCfg = { thresholds: {}, tools: null };
+  const cfg: BrowserCfg = { thresholds: {}, tools: null, commands: [] };
   try {
     const raw = JSON.parse(localStorage.getItem("pi.browserOps.thresholds") ?? "null") as Record<string, unknown> | null;
     for (const key of BROWSER_THRESHOLD_KEYS) {
@@ -19314,6 +19328,10 @@ function readBrowserCfg(): BrowserCfg {
       if (list.length) cfg.tools = list;
     }
   } catch { cfg.tools = null; }
+  try {
+    const raw = JSON.parse(localStorage.getItem("pi.browserOps.commands") ?? "null") as unknown;
+    if (Array.isArray(raw)) cfg.commands = raw.filter((word): word is string => typeof word === "string" && word.trim() !== "").map((word) => word.trim());
+  } catch { cfg.commands = []; }
   return cfg;
 }
 
@@ -19323,6 +19341,8 @@ function writeBrowserCfg(cfg: BrowserCfg): void {
     else localStorage.removeItem("pi.browserOps.thresholds");
     if (cfg.tools?.length) localStorage.setItem("pi.browserOps.tools", JSON.stringify(cfg.tools));
     else localStorage.removeItem("pi.browserOps.tools");
+    if (cfg.commands.length) localStorage.setItem("pi.browserOps.commands", JSON.stringify(cfg.commands));
+    else localStorage.removeItem("pi.browserOps.commands");
   } catch { /* 存不了就用默认值 */ }
 }
 

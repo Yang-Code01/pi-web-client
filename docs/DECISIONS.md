@@ -6388,3 +6388,21 @@ Esc 之后 dialog: 0
 **取舍：** 没有让 worker 自己在可见窗口里跑（那样进度也能看见）。worker 必须先 build、再杀桥，进度已经在页面上轮询显示，再开一扇窗口只会多一扇。也没改 bridge-update skill，D254 规定两者不共用入口。
 
 **验证：** `node bridge/tests/hotdeploy-unit.mjs` 新增一段静态守卫：`scripts/hotdeploy*.mjs` 里每一处 `spawnSync(` 都必须带 `windowsHide`。去掉 `hotdeploy-git.mjs` 里的那一个，守卫会变红。`node bridge/tests/hotdeploy-window-e2e.mjs`（Windows，`npm run test:hotdeploy-window`）用一份假桥覆盖三件事：`windowHostOf` 认得本端口、不认别的端口；有标记时同一父 pid 原地重起、标记被收走；没有标记时窗口随桥关闭。把标记写到别的路径，这段测试会变红。`hotdeploy-stash-unit.mjs` 在 main 上本来就红，与本条无关：临时目录在这台机器上是 8.3 短路径（`YANGQM~1.HYR`），`occupiedBy()` 把它误判成「已被别的 worktree 检出」。
+
+## D327 浏览器面板：按「怎么驱动浏览器」认，不只按工具名认（用户报障 2026-11-19）
+
+**现象：** 会话 18325 里 AI 点了按钮、截了图、录了视频，右栏「浏览器」却是「共 0 次 · 这一轮没有浏览器操作」。
+
+**原因：** 那轮的操作全走 bash：`bash scripts/e2e.sh W TC-01.py TC-02.py`。真正开浏览器的是项目自带的执行器 `run.py`（`sync_playwright` + `connect_over_cdp`），用例和探针只是片段（`p.locator(...).click()`，不写 `import playwright`）。旧的 `scriptedCall()` 找到片段源码后，看它没提 playwright 就丢弃；`.sh` 不算脚本；`read` 过的脚本不进源码表；内联只认 node。另外盘点 716 份会话：用得最多的 `agent_browser`（553 次）与 `agent_browser_code`（63 次）不在默认名单里，`mcp({tool:"browser_exec"})` 网关、desktop-touch 的 `desktop-touch_browser_*` 也认不出。
+
+**决定：**
+- 工具名：默认名单加 `agent_browser`；名字里有独立的 `browser` 段（`agent_browser`、`desktop-touch_browser_click`）也算；`mcp` / `mcp__*` 网关看 `args.tool`，卡片标成「mcp · browser_exec」。只列工具、查说明的网关调用不算。
+- agent-browser：把 `args` 命令行（可串联多条、`batch` + stdin、`browser({args})`）拆成步骤，`--headed` 记成有窗口。shell 里跑 `agent-browser` / `browser-use` 命令行同样算，安装、`--version`、`doctor` 不算。
+- shell 脚本：先把命令切成简单命令、去掉 heredoc 正文和包装（`timeout`、`env`、`npx`、`uv run`…），只认**被执行的**脚本：解释器后面的那一份，或者作为执行器参数传进去的那几份。前者要看得出在驱动浏览器（提到驱动、起浏览器、CDP，或至少两处 page API）；后者一处 page API 就够，看不到源码也照样记一步「run」。多份片段合成一张卡，每份前面插一步「run 文件名」。`read` 读过的整份脚本也进源码表。
+- python：`python - <<EOF` 里真的调了 `sync_playwright()` / `connect_over_cdp` 才算；只是用 python 改文件、`python -c "import playwright"` 检查都不算。
+- 兜底：齿轮里加一栏「命令关键词」（默认空，存 `pi.browserOps.commands`），自家执行器认不出时用户自己补。
+- tab 上的小圆点改用和面板同一套识别，不再只看工具名。
+
+**取舍：** 只在命令里**提到**脚本名不算（`grep`、`sed -i`、`git commit -m` 都会提到），所以不能按「出现过就算」放宽；`.sh` 包装器本身也不当浏览器脚本，靠它的参数片段判断。命令关键词默认空，免得把别人的 `e2e` 字样都算进来。
+
+**验证：** `npm run test:browser-ops` 新增 10 段（18325 的执行器片段、heredoc 探针、改文件不算、python 内联、agent_browser 三种写法、CLI、mcp 网关、desktop-touch、命令关键词），改回旧逻辑会红。拿 18325 的真实会话回放：0 张 → 9 张。716 份会话新旧对比：1409 → 2331 张，少掉的约 320 张逐条抽查都是旧版的误报（`sed` / `grep` / 改文件脚本里提到了脚本名）。`npm run test:browser-ops:ui` 补一条：齿轮里有空的命令关键词框。
