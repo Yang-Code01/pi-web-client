@@ -46,14 +46,14 @@ const rows = [
   { type: "message", id: "m1", parentId: null, timestamp: at, message: { role: "user", content: [{ type: "text", text: "文件搜索验证" }] } },
   { type: "session_info", id: "n1", parentId: "m1", timestamp: at, name: "文件搜索" },
 ];
-fs.writeFileSync(path.join(dir, `${SID}.jsonl`), rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+fs.writeFileSync(path.join(dir, `${SID}.jsonl`), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
 
 // 被索引的内容：三条要能被 "report" 命中，一条在 node_modules 里不许命中。
 fs.mkdirSync(path.join(WORK, "docs", "guide"), { recursive: true });
 // 一个目录（2c 段验「目录行 = 打开目录」）：名字不命中 report，不干扰第 2 段。
 fs.mkdirSync(path.join(WORK, "docs", "subfolder"), { recursive: true });
 fs.mkdirSync(path.join(WORK, "node_modules", "pkg"), { recursive: true });
-fs.writeFileSync(path.join(WORK, "quarterly-report.md"), "# 季报\n\n" + "a".repeat(400), "utf8");
+fs.writeFileSync(path.join(WORK, "quarterly-report.md"), `# 季报\n\n${"a".repeat(400)}`, "utf8");
 fs.writeFileSync(path.join(WORK, "docs", "guide", "install-report.txt"), "b".repeat(80), "utf8");
 fs.writeFileSync(path.join(WORK, "notes.txt"), "c", "utf8");
 fs.writeFileSync(path.join(WORK, "node_modules", "pkg", "hidden-report.js"), "d", "utf8");
@@ -134,17 +134,11 @@ try {
   await until(async () => (await page.locator(".session-card").count()) >= 1, 15000, "one card");
   await page.locator(".session-card").first().click();
 
-  // ---- 0. Everything 默认隐藏（D321）：顶栏先看不到，去设置里点亮才出来
+  // ---- 0. Everything 默认画在顶栏（D332，2026-11-19 与文件管理器对调）：不用先去设置里点亮
   const fsearchBtn = page.locator('.topbar .icon-btn[data-act="filesearch"]');
-  assert((await fsearchBtn.isVisible()) === false, "Everything 应默认不画在顶栏");
-  await page.locator('.icon-btn[data-act="look"]').click();
-  await page.locator('.chrome-tile[data-chrome="filesearch"]').click();
-  // 设置面板是 sheet，盖住了顶栏 —— 关不掉就别硬点，重新加载一次（偏好已经存进 ui.json）。
-  await page.reload({ waitUntil: "networkidle" });
-  await until(async () => (await page.locator(".session-card").count()) >= 1, 15000, "one card");
-  await page.locator(".session-card").first().click();
-  await until(async () => fsearchBtn.isVisible(), 8000, "点亮后顶栏出现 Everything");
-  log("0 默认隐藏 → 设置 → 外观里点亮 → 顶栏出现");
+  await until(async () => fsearchBtn.isVisible(), 8000, "Everything 默认出现在顶栏");
+  assert((await page.locator('.topbar .icon-btn[data-act="files"]').isVisible()) === false, "文件管理器应默认不画在顶栏（D332）");
+  log("0 文件管理器默认不画、Everything 默认就在顶栏");
 
   // ---- 1. 顶栏入口 → 面板打开，索引就绪
   const btn = fsearchBtn;
@@ -162,7 +156,8 @@ try {
   // 等「高亮」而不是等「行数」：打开面板时已经按修改时间列过一遍，行数早就够了。
   await until(async () => (await page.locator(".fse-row mark.fse-hit").count()) >= 1, 15000, "高亮出现");
   await until(async () => (await page.locator(".fse-body .fse-row").count()) === 2, 15000, "两行结果");
-  const names = await page.$$eval(".fse-row .fse-name", (els) => els.map((e) => e.textContent.trim()));
+  // 读 `.fse-label`（纯名字）：`.fse-name` 里现在还有图标与类型徽章。
+  const names = await page.$$eval(".fse-row .fse-label", (els) => els.map((e) => e.textContent.trim()));
   assert(names.includes("quarterly-report.md"), `应命中 quarterly-report.md（实际 ${names.join(",")}）`);
   assert(names.includes("install-report.txt"), `子串段应补上 install-report.txt（实际 ${names.join(",")}）`);
   assert(!names.some((n) => n.includes("hidden-report")), "node_modules 里的不该出现");
@@ -181,14 +176,50 @@ try {
   // 「位置」不关面板：只验 title 写清了目标，不去点（点了会真的弹出资源管理器窗口）。
   const revealTitle = await page.locator(".fse-row .fse-acts .fse-act").last().getAttribute("title");
   assert(revealTitle && revealTitle.includes("文件管理器"), `「位置」的 title 没写清去哪（${revealTitle}）`);
-  log("2b 行尾动作：", [...new Set(actLabels)].join(" / "));
+  // 文件行的类型徽章 = 后缀大写（名称列被截断也看得见）。
+  const kinds = await page.$$eval(".fse-row .fse-kind", (els) => els.map((e) => e.textContent.trim()));
+  for (const want of ["MD", "TXT"]) assert(kinds.includes(want), `缺后缀徽章 ${want}：${kinds.join(",")}`);
+  // 行尾动作不许压到「修改时间」列（用户 2026-11-19 报的重叠）：按钮左沿不能跨过时间列右沿。
+  const overlap = await page.$$eval(".fse-row", (rows) =>
+    rows.map((row) => {
+      const time = row.querySelector(".fse-c4").getBoundingClientRect();
+      const acts = row.querySelector(".fse-acts").getBoundingClientRect();
+      return acts.left < time.right - 0.5;
+    }),
+  );
+  assert(!overlap.some(Boolean), `行尾动作压到了修改时间（重叠行：${overlap.map((v, i) => (v ? i : -1)).filter((i) => i >= 0).join(",")}）`);
+  log("2b 行尾动作：", [...new Set(actLabels)].join(" / "), "| 徽章", kinds.join(","));
 
   // ---- 2c. 目录行：没有「预览」这回事，两颗动作都改成「打开目录」（用户 2026-11-18）
   await page.locator(".fse-input").fill("subfolder");
   await until(async () => (await page.locator(".fse-body .fse-row").count()) === 1, 15000, "一个目录结果");
   const dirActs = await page.$$eval(".fse-row .fse-acts .fse-act", (els) => els.map((e) => e.textContent.trim()));
-  assert(dirActs.join("/") === "引用/打开目录/打开目录", `目录行应是 引用/打开目录/打开目录（实际 ${dirActs.join("/")}）`);
-  log("2c 目录行动作：", dirActs.join(" / "));
+  // 目录只有「引用 / 打开目录」两颗：第三颗原先也画成「打开目录」，点了做的事完全一样（用户 2026-11-19）。
+  assert(dirActs.join("/") === "引用/打开目录", `目录行应是 引用/打开目录（实际 ${dirActs.join("/")}）`);
+  // 类型徽章：目录写「文件夹」，文件写后缀（用户 2026-11-19 分不清一坨名字是文件夹还是文件）。
+  const dirKind = await page.locator(".fse-row .fse-kind").textContent();
+  assert(dirKind.trim() === "文件夹", `目录的类型徽章应是「文件夹」（实际「${dirKind.trim()}」）`);
+  log("2c 目录行动作：", dirActs.join(" / "), "| 徽章", dirKind.trim());
+
+  // ---- 2d. 弹层变窄（@container ≤620px）：只剩名称 / 行尾动作两列，两列也不许压在一起
+  await page.setViewportSize({ width: 600, height: 900 });
+  await sleep(400);
+  const narrow = await page.$$eval(".fse-row", (els) =>
+    els.map((row) => {
+      const name = row.querySelector(".fse-c1").getBoundingClientRect();
+      const acts = row.querySelector(".fse-acts").getBoundingClientRect();
+      return { overlap: acts.left < name.right - 0.5, badge: !!row.querySelector(".fse-kind") };
+    }),
+  );
+  const hiddenCols = await page.locator(".fse-row .fse-c2").first().isVisible();
+  assert(narrow.length > 0, "窄版应该还有行");
+  assert(!hiddenCols, "窄版应藏掉「位置」列");
+  assert(!narrow.some((r) => r.overlap), "窄版名称与行尾动作重叠了");
+  assert(narrow.every((r) => r.badge), "窄版类型徽章应该还在");
+  await page.screenshot({ path: path.join(OUT, "2d-narrow.png"), animations: "disabled" });
+  log("2d 窄版：名称与行尾动作不重叠，徽章仍在");
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await sleep(300);
 
   // ---- 3. 点一行 → 引用到输入框（路径进 composer）
   await page.locator(".fse-input").fill("quarterly");

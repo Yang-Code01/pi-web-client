@@ -1,11 +1,11 @@
 /**
  * Probe: 窄屏「开关优先」（#281 / #292）。
  *
- * D138 在 560px 以下用 CSS 把「📁 文件管理器」藏掉。`true` 是**显式显示**：根元素带
- * `data-chrome-narrow="files"`，样式表里排在 D138 之后的那条规则把那颗顶回来；没人动过（没键）
- * 与显式 `false` 各自保持今天的默认 / 全宽不画。纯函数的表格在 `web/tests/chrome-unit.mjs`，
- * 这里把关的是浏览器里那三态，以及 390 与 560–620 过渡处页面不横向溢出：
- * `documentElement.scrollWidth == 视口宽`。
+ * D138 在 560px 以下用 CSS 把「📁 文件管理器」藏掉，但 D332（2026-11-19）之后它本来就默认不画，
+ * 560 那条只在显式 `true` 时才需要顶开。`true` 是**显式显示**：根元素带 `data-chrome-narrow="files"`，
+ * 样式表里排在 D138 之后的那条规则把那颗顶回来；没人动过（没键）与显式 `false` 各自保持默认不画。
+ * 纯函数的表格在 `web/tests/chrome-unit.mjs`，这里把关的是浏览器里那三态，以及 390 与 560–620
+ * 过渡处页面不横向溢出：`documentElement.scrollWidth == 视口宽`。
  *
  * Run: npm run build:web && node probes/chrome-narrow.mjs
  */
@@ -130,11 +130,6 @@ const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
 
 /** 那颗按钮在不在「看得见」的那一侧（CSS 的 `display:none` 与 `hidden` 都算）。 */
-const seen = (page, act) =>
-  page.evaluate((a) => {
-    const n = document.querySelector(`.topbar [data-act="${a}"]`);
-    return Boolean(n) && n.getClientRects().length > 0;
-  }, act);
 const dom = (page) =>
   page.evaluate(() => {
     const top = document.querySelector(".topbar");
@@ -157,6 +152,7 @@ const dom = (page) =>
 const docFits = (d) => d.docScroll <= d.viewport;
 const topbarFits = (d) => d.topRight <= d.viewport;
 const filesSeen = (d) => d.acts.includes("files");
+const searchSeen = (d) => d.acts.includes("filesearch");
 
 const errors = [];
 const newPage = async (width) => {
@@ -188,10 +184,11 @@ const resize = async (page, width) => {
   chrome = {};
   const page = await newPage(390);
 
-  // 没键：与今天完全一样 —— 没有标记，文件管理器不画，文档不横向溢出。
+  // 没键：默认就不画（D332，与宽度无关），也没有标记；Everything 反而默认画。
   let d = await dom(page);
   ok(d.marker === null, "390、没键：根元素没有 data-chrome-narrow（D138 原样）");
-  ok(!filesSeen(d), "390、没键：文件管理器不画（与今天一样）");
+  ok(!filesSeen(d), "390、没键：文件管理器不画（D332 默认不显示）");
+  ok(searchSeen(d), "390、没键：Everything 默认画");
   ok(docFits(d), `390、没键：页面不横向溢出（${d.docScroll} <= ${d.viewport}）`);
 
   // 没会话 + 显式 true：标记在，但 hidden 仍赢，那颗不复活。
@@ -241,13 +238,13 @@ const resize = async (page, width) => {
     ok(docFits(d), `${width}、files:true：不横向溢出（${d.docScroll} <= ${d.viewport}）`);
   }
 
-  // 默认态跨 560：隐藏只由 D138 的媒体查询决定，560 及以下不画、561 起画。
+  // 默认态跨 560：D332 之后宽度不再参与默认 —— 任何宽度都不画，Everything 都在。
   await setChrome({ files: undefined });
   for (const width of [390, 559, 560, 561, 620]) {
     await resize(page, width);
     d = await dom(page);
-    const want = width > 560;
-    ok(filesSeen(d) === want, `${width}、没键：${want ? "画" : "不画"}（D138 的默认）`);
+    ok(!filesSeen(d), `${width}、没键：文件管理器不画（D332 默认不显示，与宽度无关）`);
+    ok(searchSeen(d), `${width}、没键：Everything 默认画`);
     ok(d.marker === null, `${width}、没键：不带标记`);
     ok(docFits(d), `${width}、没键：不横向溢出（${d.docScroll} <= ${d.viewport}）`);
   }

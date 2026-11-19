@@ -6477,3 +6477,30 @@ Esc 之后 dialog: 0
 **取舍。** 不加 Ctrl+K（面板是临时浮层，用户没提，加了要跟编辑器 / 浏览器抢键）；不做防抖（本地数组过滤，几十条毫秒级）；搜索词不落盘、不记忆（一次性动作，记下来下次打开还会在搜，预期之外的空白屏）。列表内那颗 `.nc-search` 保留：它限当前分区、按 `seg` 过滤，适合「就在这一堆里找」，和顶栏的分工是范围不同。
 
 **验证。** `npm run test:notes`（`web/tests/notes-sheet-browser.mjs` 第 13 段重写：跨分区命中 / 分区胶囊 / 导航空放 / 三个控件隐掉 / 列表头与头部统计 / 归档不进结果 / 正文可搜 / Esc 只清搜索 / 点结果切分区并选中 / 列表搜索框回来），原「导出」那段与 `footHint` 断言一起删掉。`npm --prefix web run typecheck`（`i18n` 无多余键）。三栏布局截图核对：头部右侧「搜索框 / ＋ 记一条 / 关闭」，搜索态中栏只剩「搜索结果 / 胶囊 / 正文摘要」。
+
+## D332 顶栏默认对调：文件管理器默认不显示，Everything 默认显示（用户要求 2026-11-19）
+
+**要求。** 用户原话：「现在默认文件管理器是显示、everything 不显示的。现在想要改成文件管理器默认不显示，everything 默认显示」。
+
+**决定。**
+- `web/src/chrome.ts` 的 `DEFAULT_HIDDEN` 从 `["filesearch"]` 改成 `["files"]`。三态不变：键缺失 = 按这里（文件管理器不画、Everything 画），`true` 显式打开，`false` 关掉（与缺失同效但记住「关过」）。
+- **取代 D321 尾部那句。** D321 里「又进了 `DEFAULT_HIDDEN` —— 键缺失时不画，只有显式 `true` 才占顶栏」讲的是旧默认（Everything 默认隐藏），自本条起不再成立：Everything 默认就画，进 `DEFAULT_HIDDEN` 的是文件管理器。D321 其余内容（索引、两段式查询、卷勾选、面板形态、改名 Everything）不变；按 `docs/agents/domain.md` 的体例，旧条目原文保留、由本条点名取代。
+- 拔掉 D138 的第二重默认：`ChromeContext` 不再带 `narrow`，`isChromeVisible()` 不再因 560px 以下把文件管理器藏起来 —— 它的默认在所有宽度一致。样式表里那条 560px 媒体查询留着，显式 `true` 时 `data-chrome-narrow="files"` 还要顶开它（#292）。
+- 桥端协议与 `ui.json` 格式不动：白名单、`ui.set`（`null` 删键）照旧；已有 `filesearch: true/false` 的旧偏好照读。
+- 设置 → 外观的预览仍留「桌面 / 手机 390」切换，只演示排版，不再改变预览里哪颗亮；原来那句「手机宽度下「文件管理器」默认收起」与 `ctx.narrow` 那条虚线原因（「手机上默认收起」）一并删掉，后者换成「默认不显示」。
+
+**为什么。** 用户每天用的入口是 Everything（按名字全盘找文件），文件管理器进得少；把顶栏常驻位让给常用的那颗。顺带消掉「默认结果取决于窗口宽度」这条 D138 的历史包袱 —— 同一个账号在桌面和手机上看到的默认不一样，设置面板很难解释。
+
+**取舍。** 没开会话时产物与文件管理器仍不画（`SESSION_ONLY` 没变），文件管理器在开关墙里是虚线方块、title 写「默认不显示」。在 390 上点亮过文件管理器（`files: true`）的旧偏好继续生效，升级后不会又消失。
+
+**验证。** `web/tests/chrome-unit.mjs`：默认表、`files:true` / `filesearch:false` 闭环、无会话时 files 仍不画、`narrowForcedVisible` 只认显式 true；`probes/chrome-topbar.mjs` 四档宽度断言「文件管理器默认不画、Everything 默认画」、逐颗开关与重开会话后的默认；`probes/chrome-narrow.mjs` 断言 390 / 559 / 560 / 561 / 620 默认一致不画、`true` 在窄屏顶开、`false` 任何宽度都不画；`probes/chrome-sheet.mjs` 断言预览两档都不出文件管理器、点亮后两档都出、删键回默认；`probes/filesearch.mjs` 开场改为默认就在顶栏。
+
+## D333 插件与 MCP 弹窗：已安装的 MCP 先出行后连接，搜索补全，两个市场一个样子（用户报障 2026-11-19）
+
+1. **MCP 行不等 `pi mcp list`。** 它要挨个连上每个服务器（实测十几秒到几分钟）。桥一开始就从 mcp.json 读出行（状态「连接中」）推给页面，`pi list` 和 `pi mcp list` 并排跑，谁回来谁更新；包版本查完立刻推（`packagesChecked`），不再等 MCP。行的命令显示用户写的（`npx -y …`），不是 pi 解析后的 `node.exe …\_npx\…`。刷新时上一次的连接状态和包行保留到新答案回来（stale-while-revalidate）。
+2. **pi-mcp-adapter 自己配置里的服务器也列出来**（`~/.config/mcp/mcp.json`、`~/.agents/mcp.json`、`<agentDir>/mcp-adapter.json`、项目 `.mcp.json` 等），只读：pi mcp 管不到它们，用 `/mcp-adapter` 管。
+3. **MCP 搜索。** 排行索引只取每个服务器的最新版（`version=latest`），否则 600 页上限被旧版本占满、两万多条后被截断，`desktop-touch-mcp`、JetBrains 的都不在里面（索引带 `v`，旧索引照用但后台重建）。匹配看全名（去掉 `io.github.` 前缀）和安装包名，`newrelic` 能搜到 `com.newrelic/mcp-server`；有查询时同时问一次 Registry 的在线搜索合并进来（6 秒超时）。
+4. **插件搜索。** npm 一次只回 250 个，列表到底时「从 npm 加载更多」按 `from=` 再取一页（最多 1000）；查询是一个确切包名而结果里没有时按名字直接查 registry，只认带 `pi-package` 关键词或 `pi` 清单的包。
+5. **样子。** 已安装页嵌在各自市场的子页签里（插件市场 → 已安装：pi 包 + 插件；MCP 市场 → 已安装：MCP 服务器 + 手动添加），行用市场的卡片样式 `.ext-row`、按钮用 `mk-install`，外层页签与市场对齐、字体统一。
+
+**验证。** `node bridge/tests/ext-manager.mjs`（首段先到的是 mcp.json 的行、状态 connecting）、`node probes/ext-manager-stages.mjs`、`node --experimental-strip-types bridge/tests/mcp-relevance-unit.mjs`。

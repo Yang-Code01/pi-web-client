@@ -80,7 +80,7 @@ import { decorateNotes, markAccepted, readAccepted, resolveNoteShots } from "./p
 import { actOnFailure, emptyLedger, mergeFailures, readLedger, undoFailures, type CommitItem, type FailAction } from "./failures.ts";
 import { allowRemind, reminderText, reviewPrompt } from "./lessons.ts";
 import { deleteRule, markReviewed, readRules, setRule } from "./rules.ts";
-import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, type McpInstallOption } from "./market.ts";
+import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, STORE_MAX, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, togglePackage, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
@@ -3420,7 +3420,7 @@ async function main(): Promise<void> {
             return;
           }
           case "ext.store": {
-            const limit = Math.min(250, Math.max(1, Number(msg.limit) || 20));
+            const limit = Math.min(STORE_MAX, Math.max(1, Number(msg.limit) || 20));
             try {
               send({ type: "ext.store", query: String(msg.query ?? ""), items: await searchPackages(String(msg.query ?? ""), limit) });
             } catch (err: any) {

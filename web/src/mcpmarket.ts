@@ -58,7 +58,12 @@ export interface McpMarketState {
   hasToken: boolean;
   truncated: boolean;
   visible: number;
+  /** Inner tab: the registry, or the servers already configured (same rows as the plugin market's 已安装). */
+  tab: McpTab;
+  installedCount: number;
 }
+
+export type McpTab = "discover" | "installed";
 
 export interface McpMarketActions {
   onQuery(query: string): void;
@@ -70,6 +75,9 @@ export interface McpMarketActions {
   onExportLog(): void;
   isInstalled(identifier: string): boolean;
   onRefresh(): void;
+  onTab(tab: McpTab): void;
+  /** Paint the installed servers into `host` (owned by the app: rows talk to the bridge). */
+  renderInstalled(host: HTMLElement): void;
 }
 
 const MCP_KINDS: { id: McpCategory; label: string }[] = [
@@ -106,6 +114,9 @@ export function sortMcp(items: McpMarketItem[], sort: McpSort, dir: McpDir): Mcp
 export function rankMcpSearch(items: McpMarketItem[], query: string, sort: McpSort, dir: McpDir): McpMarketItem[] {
   const q = query.trim().toLowerCase();
   if (!q) return sortMcp(items, sort, dir);
+  // The bridge already ranked a query's hits by how well they match (name > title > package > description,
+  // then stars). Re-sorting by stars here buried `desktop-touch-mcp` under popular servers that only
+  // mention the word in their description; only an exact name jumps the queue.
   const exact: McpMarketItem[] = [];
   const rest: McpMarketItem[] = [];
   for (const item of items) {
@@ -114,7 +125,7 @@ export function rankMcpSearch(items: McpMarketItem[], query: string, sort: McpSo
     if (title === q || name === q || name.split("/").pop() === q) exact.push(item);
     else rest.push(item);
   }
-  return [...sortMcp(exact, sort, dir), ...sortMcp(rest, sort, dir)];
+  return [...exact, ...rest];
 }
 
 function repoOwner(repo: string | null): string | null {
@@ -346,15 +357,30 @@ function mountMasonry(wrap: HTMLElement, items: McpMarketItem[], render: (item: 
 export function renderMcpMarket(state: McpMarketState, actions: McpMarketActions): HTMLElement {
   const root = el("div", "mk-root mk-mcp-root");
   const tabs = el("div", "mk-tabs");
-  const discover = el("button", "mk-tab on", tr("发现")) as HTMLButtonElement;
-  discover.type = "button";
-  tabs.append(discover, el("span", "mk-grow"));
+  const tab = (id: McpTab, label: string, count?: number) => {
+    const b = el("button", `mk-tab${state.tab === id ? " on" : ""}`, count && count > 0 ? `${label} (${count})` : label) as HTMLButtonElement;
+    b.type = "button";
+    b.onclick = () => actions.onTab(id);
+    tabs.append(b);
+  };
+  tab("discover", tr("发现"));
+  tab("installed", tr("已安装"), state.installedCount);
+  tabs.append(el("span", "mk-grow"));
   const exportBtn = el("button", "mk-top-btn") as HTMLButtonElement;
   exportBtn.type = "button";
   exportBtn.append(el("span", "", tr("导出日志")));
   exportBtn.onclick = () => actions.onExportLog();
   tabs.append(exportBtn);
   root.append(tabs);
+
+  if (state.tab === "installed") {
+    const page = el("div", "mk-page mk-installed-page");
+    const host = el("div", "mk-installed-embed");
+    actions.renderInstalled(host);
+    page.append(host);
+    root.append(page);
+    return root;
+  }
 
   const body = el("div", "mk-body");
   const sticky = el("div", "mk-sticky");
