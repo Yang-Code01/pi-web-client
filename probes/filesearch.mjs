@@ -134,17 +134,11 @@ try {
   await until(async () => (await page.locator(".session-card").count()) >= 1, 15000, "one card");
   await page.locator(".session-card").first().click();
 
-  // ---- 0. Everything 默认隐藏（D321）：顶栏先看不到，去设置里点亮才出来
+  // ---- 0. Everything 默认画在顶栏（D332，2026-11-19 与文件管理器对调）：不用先去设置里点亮
   const fsearchBtn = page.locator('.topbar .icon-btn[data-act="filesearch"]');
-  assert((await fsearchBtn.isVisible()) === false, "Everything 应默认不画在顶栏");
-  await page.locator('.icon-btn[data-act="look"]').click();
-  await page.locator('.chrome-tile[data-chrome="filesearch"]').click();
-  // 设置面板是 sheet，盖住了顶栏 —— 关不掉就别硬点，重新加载一次（偏好已经存进 ui.json）。
-  await page.reload({ waitUntil: "networkidle" });
-  await until(async () => (await page.locator(".session-card").count()) >= 1, 15000, "one card");
-  await page.locator(".session-card").first().click();
-  await until(async () => fsearchBtn.isVisible(), 8000, "点亮后顶栏出现 Everything");
-  log("0 默认隐藏 → 设置 → 外观里点亮 → 顶栏出现");
+  await until(async () => fsearchBtn.isVisible(), 8000, "Everything 默认出现在顶栏");
+  assert((await page.locator('.topbar .icon-btn[data-act="files"]').isVisible()) === false, "文件管理器应默认不画在顶栏（D332）");
+  log("0 文件管理器默认不画、Everything 默认就在顶栏");
 
   // ---- 1. 顶栏入口 → 面板打开，索引就绪
   const btn = fsearchBtn;

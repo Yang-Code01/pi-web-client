@@ -2,79 +2,79 @@
  * 按钮可见性（#281 / #288）：哪一颗该画，全页只有这一个纯函数说了算。
  *
  * 三态用「键在不在」表达：缺失 = 默认行为，`false` = 关掉，`true` = 显式打开（窄屏也照开）。
- * 默认行为本身带三条例外：产物 / 文件管理器要开会话，文件管理器在 560px（D138）以下不进顶栏，
- * Everything 在 `DEFAULT_HIDDEN` 里 —— 键缺失时不画，要用户在设置里点亮。
+ * 默认行为带两条例外：产物 / 文件管理器要开会话；文件管理器在 `DEFAULT_HIDDEN` 里 —— 键缺失时
+ * 不画，要用户在设置里点亮。Everything（`filesearch`）反过来默认画（D332，2026-11-19 用户要求
+ * 把两颗的默认对调）。宽度不再参与默认：560px 那条 D138 只在显式 `true` 时还要顶开样式表。
  * 浏览器里「真的少了一颗 / 刷新还在」由 `probes/chrome-topbar.mjs` / `chrome-bottom.mjs` / `chrome-sheet.mjs` / `chrome-narrow.mjs` 把关。
  *
- * Run: node --experimental-transform-types web/tests/chrome-unit.mjs
+ * Run: node --experimental-strip-types web/tests/chrome-unit.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CHROME_IDS, chromeFrom, isChromeVisible, narrowForcedVisible } from "../src/chrome.ts";
+import { CHROME_IDS, chromeFrom, isChromeVisible, isDefaultHidden, narrowForcedVisible } from "../src/chrome.ts";
 
 const TOP = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "mail", "filesearch"];
 const BOTTOM = ["skills", "context", "ext", "attach", "model"];
-const DESK = { hasSession: true, narrow: false };
-const MOBILE = { hasSession: true, narrow: true };
-const EMPTY = { hasSession: false, narrow: false };
-const EMPTY_MOBILE = { hasSession: false, narrow: true };
+// D332 之后宽度不再参与可见性：场景只剩「有会话 / 没会话」一个维度（原先按桌面 / 390 分四组）。
+const SESSION = { hasSession: true };
+const NO_SESSION = { hasSession: false };
 
 test("14 个稳定 id，顶栏 9 颗、下沿 5 颗", () => {
   assert.deepEqual([...CHROME_IDS], [...TOP, ...BOTTOM]);
 });
 
-test("键缺失 = 默认：开了会话、桌面宽，除 Everything 外全画", () => {
-  for (const id of CHROME_IDS.filter((x) => x !== "filesearch")) assert.equal(isChromeVisible(id, {}, DESK), true, id);
-  // Everything 是后加的机器级功能，用户明确要求默认隐藏（2026-11-18）。
-  assert.equal(isChromeVisible("filesearch", {}, DESK), false, "Everything 默认不占顶栏");
-  assert.equal(isChromeVisible("filesearch", { filesearch: true }, DESK), true, "设置里点亮就出来");
+test("键缺失 = 默认：开了会话，除文件管理器外全画", () => {
+  for (const id of CHROME_IDS.filter((x) => x !== "files")) assert.equal(isChromeVisible(id, {}, SESSION), true, id);
+  // D332：用户 2026-11-19 把两颗的默认对调 —— 文件管理器默认不占顶栏，Everything 默认画。
+  assert.equal(isChromeVisible("files", {}, SESSION), false, "文件管理器默认不占顶栏");
+  assert.equal(isChromeVisible("filesearch", {}, SESSION), true, "Everything 默认画");
+  assert.equal(isChromeVisible("files", { files: true }, SESSION), true, "设置里点亮就出来");
+  assert.equal(isChromeVisible("filesearch", { filesearch: false }, SESSION), false, "Everything 也能关");
 });
 
-test("false = 关掉：桌面 / 窄屏、有会话 / 无会话都不画", () => {
+test("false = 关掉：有会话 / 没会话都不画", () => {
   for (const id of CHROME_IDS) {
     const chrome = { [id]: false };
-    for (const ctx of [DESK, MOBILE, EMPTY, EMPTY_MOBILE]) {
+    for (const ctx of [SESSION, NO_SESSION]) {
       assert.equal(isChromeVisible(id, chrome, ctx), false, `${id} ${JSON.stringify(ctx)}`);
     }
   }
 });
 
-test("true = 显式打开：连 D138 的窄屏规则也顶开", () => {
-  assert.equal(isChromeVisible("files", {}, MOBILE), false, "默认在 390 上不画文件管理器");
-  assert.equal(isChromeVisible("files", { files: true }, MOBILE), true, "显式 true 顶开 390");
-  assert.equal(isChromeVisible("files", { files: true }, EMPTY_MOBILE), false, "顶开窄屏也换不来一个会话");
+test("true = 显式打开：有会话就画，D138 的样式表由页面顶开", () => {
+  assert.equal(isChromeVisible("files", {}, SESSION), false, "键缺失时文件管理器不画");
+  assert.equal(isChromeVisible("files", { files: true }, SESSION), true, "显式 true 就画");
+  assert.equal(isChromeVisible("files", { files: true }, NO_SESSION), false, "显式 true 也换不来一个会话");
   for (const id of TOP.filter((x) => x !== "files")) {
-    assert.equal(isChromeVisible(id, { [id]: true }, MOBILE), true, id);
+    assert.equal(isChromeVisible(id, { [id]: true }, SESSION), true, id);
   }
   for (const id of BOTTOM) {
-    assert.equal(isChromeVisible(id, { [id]: true }, MOBILE), true, id);
+    assert.equal(isChromeVisible(id, { [id]: true }, SESSION), true, id);
   }
 });
 
 test("没开会话：产物与文件管理器不画，其余照旧", () => {
-  for (const ctx of [EMPTY, EMPTY_MOBILE]) {
-    assert.equal(isChromeVisible("artifacts", {}, ctx), false);
-    assert.equal(isChromeVisible("files", { files: true }, ctx), false);
-    assert.equal(isChromeVisible("terminal", {}, ctx), true);
-    assert.equal(isChromeVisible("notes", {}, ctx), true);
-  }
-});
-
-test("窄屏只改文件管理器的默认；别的按钮不受宽度影响", () => {
-  for (const id of CHROME_IDS.filter((x) => x !== "files" && x !== "filesearch")) {
-    assert.equal(isChromeVisible(id, {}, MOBILE), true, id);
-  }
+  assert.equal(isChromeVisible("artifacts", {}, NO_SESSION), false);
+  assert.equal(isChromeVisible("files", { files: true }, NO_SESSION), false);
+  assert.equal(isChromeVisible("terminal", {}, NO_SESSION), true);
+  assert.equal(isChromeVisible("notes", {}, NO_SESSION), true);
 });
 
 test("未知 id 忽略：不认识的照样画（新按钮不需要同步改偏好）", () => {
-  assert.equal(isChromeVisible("look", { look: false }, DESK), true);
-  assert.equal(isChromeVisible("nonsense", { nonsense: false }, MOBILE), true);
+  assert.equal(isChromeVisible("look", { look: false }, SESSION), true);
+  assert.equal(isChromeVisible("nonsense", { nonsense: false }, NO_SESSION), true);
 });
 
 test("非布尔值当作没写：退回默认，不被 truthy 骗成 true", () => {
-  assert.equal(isChromeVisible("terminal", { terminal: "yes" }, DESK), true, "字符串不算显式");
-  assert.equal(isChromeVisible("files", { files: "no" }, MOBILE), false, "字符串也不算显式打开窄屏");
-  assert.equal(isChromeVisible("files", { files: 1 }, MOBILE), false);
+  assert.equal(isChromeVisible("terminal", { terminal: "yes" }, SESSION), true, "字符串不算显式");
+  assert.equal(isChromeVisible("files", { files: "no" }, SESSION), false, "字符串也不算显式打开");
+  assert.equal(isChromeVisible("files", { files: 1 }, SESSION), false);
+});
+
+test("默认不占顶栏的那张表：页面开关墙照它说「默认不显示」", () => {
+  assert.deepEqual(CHROME_IDS.filter((id) => isDefaultHidden(id)), ["files"], "默认隐藏的只有文件管理器");
+  assert.equal(isDefaultHidden("filesearch"), false, "Everything 是默认画的那一颗");
+  assert.equal(isDefaultHidden("look"), false, "不认识的 id 不算默认隐藏");
 });
 
 test("窄屏强制显示：只有显式 true 的文件管理器要顶开 D138", () => {
