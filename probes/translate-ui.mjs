@@ -269,6 +269,7 @@ try {
   await page.locator('.viewer-tools button[title="关闭（Esc）"]').click();
   await page.waitForTimeout(400);
   await page.locator(".set-btn").click();
+  await page.locator('.display-sheet .st-tabs__btn[data-tab="conn"]').click();
   await page.locator('.display-sheet .st-nav__item[data-sec="tools"]').click();
   await page.getByRole("button", { name: "pi 设置" }).click();
   await page.locator('.st-nav__item[data-tab="preview"]').click();

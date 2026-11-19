@@ -180,6 +180,7 @@ const docFits = (d) => d.docScroll <= d.viewport;
 async function setLang(page, lang) {
   await page.locator('.icon-btn[data-act="look"]').click();
   await page.waitForSelector(".display-sheet", { timeout: 5000 });
+  await page.locator('.display-sheet .st-nav__item[data-sec="lang"]').click();
   await page.locator(`.display-sheet .chips .chip[lang="${lang}"]`).click();
   await sleep(300);
   await page.locator('.display-sheet .btn:has-text("关闭"), .display-sheet .btn:has-text("Close")').first().click();
@@ -188,6 +189,7 @@ async function setLang(page, lang) {
 async function setLayout(page, id) {
   await page.locator('.icon-btn[data-act="look"]').click();
   await page.waitForSelector(".display-sheet", { timeout: 5000 });
+  await page.locator('.display-sheet .st-nav__item[data-sec="layout"]').click();
   await page.locator(`.display-sheet .layout-chip[data-layout="${id}"]`).click();
   await sleep(200);
   await page.locator('.display-sheet .btn:has-text("关闭"), .display-sheet .btn:has-text("Close")').first().click();

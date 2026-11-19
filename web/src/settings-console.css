@@ -1132,11 +1132,80 @@
 }
 
 /* ---------------------------------------------------------------- 外观与连接（齿轮按钮那个 dialog，.display-sheet）
-   同一个 .st-console 壳：两页（外观 / 连接与设置）只切显隐，窗格自己滚；左栏每项是页里的一个小节。 */
+   同一个 .st-console 壳：标题旁两个大类页签（外观 / 连接与设置），左栏只列当前大类的子类，每个子类一页（.set-sub）。 */
 .st-console.display-sheet {
   /* 列轨必须是 minmax(0,…)：隐式的 auto 列会被顶栏预览（不换行）撑到 min-content，手机宽度下整块被裁掉。 */
   grid-template-columns: minmax(0, 1fr);
-  width: min(960px, 100%);
+  width: min(1080px, 100%);
+}
+
+/* 标题 | 大类页签 | 按钮：页签居中，不挤标题。 */
+.st-console.display-sheet .st-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: start;
+}
+
+.st-console.display-sheet .st-head__actions {
+  justify-self: end;
+}
+
+.st-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin-top: 6px;
+  padding: 3px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.st-tabs__btn {
+  padding: 6px 16px;
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.st-tabs__btn:hover:not(.on) {
+  color: var(--text);
+}
+
+.st-tabs__btn.on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.st-tabs__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 窄：页签挪到标题下面一行，按钮留在右上。 */
+:where(html[data-console-narrow="true"]) .st-console.display-sheet .st-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+:where(html[data-console-narrow="true"]) .st-console.display-sheet .st-tabs {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.st-console.display-sheet .set-sub[hidden],
+.st-console.display-sheet .st-cards[hidden] {
+  display: none;
+}
+
+.st-console.display-sheet .set-sub > .st-cards {
+  margin-bottom: 14px;
 }
 
 .st-console.display-sheet .set-page {
@@ -1216,10 +1285,6 @@
   grid-row: 3;
   justify-content: flex-start;
   margin-top: 8px;
-}
-
-.st-console.display-sheet [data-sec] {
-  scroll-margin-top: 10px;
 }
 
 :where(html[data-console-narrow="true"]) .st-console.display-sheet .st-cards {

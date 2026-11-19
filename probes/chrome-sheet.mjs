@@ -186,6 +186,8 @@ const openSession = async (page) => {
 };
 const openSheet = async (page) => {
   await page.locator('.icon-btn[data-act="look"]').click();
+  await page.waitForSelector(".display-sheet", { timeout: 5000 });
+  await page.locator('.display-sheet .st-nav__item[data-sec="chrome"]').click();
   await page.waitForSelector(".chrome-pane", { timeout: 5000 });
   await sleep(200);
 };

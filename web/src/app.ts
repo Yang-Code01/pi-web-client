@@ -700,6 +700,8 @@ export class App {
   private wsPane: HTMLElement | null = null;
   /** #291 设置面板的「预览 + 开关墙」那块；`ui` 回执与断线时只重画这一个小面。 */
   private chromePane: HTMLElement | null = null;
+  /** 齿轮设置里每个大类上次停在哪个子类（只记这次打开的页面）。 */
+  private displaySec: Partial<Record<Prefs["settingsTab"], string>> = {};
   /**
    * #291 预览的观察档（桌面 / 手机 390）。它只是这张画的宽度，不是偏好：不写盘、不进 `chrome`，
    * 也不改真窗口 —— 方块的两态拿它判，才不会在 1440 的表里「切了手机却什么都没变」。
@@ -3966,7 +3968,7 @@ export class App {
     this.closeSheet();
     this.sheetKind = "display";
     // 外壳同 pi 设置 / 本机管理（.st-console）：左栏分组目录，右边一页「统计卡 + 小节 + 面板」。
-    // 两页（外观 / 连接与设置）照旧只切显隐；左栏的每一项是页里的一个小节，点了滚过去。
+    // 两大类（外观 / 连接与设置）是标题旁的页签；左栏只列当前大类的子类，每个子类单独一页（只切显隐，不重建）。
     const back = el("div", "st-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
@@ -3983,42 +3985,41 @@ export class App {
     const sub = el("div", "st-sub");
     sub.dataset.role = "dsub";
     headMain.append(el("div", "st-eyebrow", tr("设置")), title, sub);
+    const tabs = el("div", "st-tabs");
+    tabs.setAttribute("role", "tablist");
+    for (const g of this.displayGroups()) {
+      const b = el("button", "st-tabs__btn", g.label) as HTMLButtonElement;
+      b.type = "button";
+      b.dataset.tab = g.tab;
+      b.setAttribute("role", "tab");
+      b.onclick = () => this.setDisplayTab(g.tab);
+      tabs.append(b);
+    }
     const actions = el("div", "st-head__actions");
+    const reset = el("button", "btn ghost", tr("恢复默认")) as HTMLButtonElement;
+    reset.type = "button";
+    reset.dataset.role = "dreset";
+    reset.title = tr("字号、颜色、文字亮度、布局回到默认；语言与界面元素不动");
+    reset.onclick = () => {
+      // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
+      // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
+      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen, settingsTab: this.prefs.settingsTab };
+      savePrefs(this.prefs);
+      this.applyPrefs();
+      this.openDisplaySheet();
+    };
     const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
     close.type = "button";
     close.onclick = () => this.closeSheet();
-    actions.append(close);
-    head.append(headMain, actions);
+    actions.append(reset, close);
+    head.append(headMain, tabs, actions);
 
     const main = el("div", "st-main");
     const nav = el("nav", "st-nav");
     nav.setAttribute("aria-label", tr("设置"));
-    const navGroups: { label: string; tab: Prefs["settingsTab"]; items: [string, string][] }[] = [
-      { label: tr("外观"), tab: "look", items: [["lang", tr("语言与字号")], ["color", tr("颜色")], ["layout", tr("工作区")], ["chrome", tr("界面元素")]] },
-      { label: tr("连接与设置"), tab: "conn", items: [["chan", tr("通道")], ["tools", tr("工具")], ["about", tr("关于")]] },
-    ];
-    for (const g of navGroups) {
-      nav.append(el("div", "st-nav__group", g.label));
-      for (const [sec, label] of g.items) {
-        const item = el("button", "st-nav__item") as HTMLButtonElement;
-        item.type = "button";
-        item.dataset.tab = g.tab;
-        item.dataset.sec = sec;
-        item.append(el("span", "st-nav__label", label));
-        item.onclick = () => this.setDisplayTab(g.tab, sec);
-        nav.append(item);
-      }
-    }
+    nav.dataset.role = "dnav";
     const pane = el("div", "st-pane");
     pane.dataset.role = "pane";
-    let spyFrame = 0;
-    pane.addEventListener("scroll", () => {
-      if (spyFrame) return;
-      spyFrame = requestAnimationFrame(() => {
-        spyFrame = 0;
-        this.syncDisplayNav();
-      });
-    });
     main.append(nav, pane);
     const foot = el("footer", "st-foot");
     foot.append(
@@ -4035,17 +4036,18 @@ export class App {
     const lookCards = el("div", "st-cards");
     lookCards.dataset.role = "look-cards";
     lookPage.append(lookCards);
-    /** 一个小节：标题 + 一块面板；data-sec 给左栏滚过去用。 */
-    const section = (sec: string, label: string, meta?: string): HTMLElement => {
-      const h = this.stSection(label, meta);
-      h.dataset.sec = sec;
+    /** 一个子类：单独一页（.set-sub），里面一块面板；左栏点哪项就只显示哪一页。 */
+    const section = (sec: string): HTMLElement => {
+      const sub = el("div", "set-sub");
+      sub.dataset.sec = sec;
       const panel = el("div", "settings-panel");
-      lookPage.append(h, panel);
+      sub.append(panel);
+      lookPage.append(sub);
       return panel;
     };
 
     // 语言放第一组：换语言是「整页立刻变样」的事，比字号更需要一眼找到（D110）。
-    const langPanel = section("lang", tr("语言与字号"));
+    const langPanel = section("lang");
     const langChips = el("div", "chips");
     for (const [code, label] of LANGS) {
       const chip = el("button", `chip${this.prefs.lang === code ? " on" : ""}`, label);
@@ -4217,7 +4219,7 @@ export class App {
 
     paintSize(this.prefs.scale);
 
-    const colorPanel = section("color", tr("颜色"));
+    const colorPanel = section("color");
     const swatches = el("div", "swatches");
     for (const [id, label] of ACCENT_LABELS) {
       const sw = el("button", `swatch${this.prefs.accent === id ? " on" : ""}`);
@@ -4250,7 +4252,7 @@ export class App {
     // #97：工作区布局。四颗 chip 各带一张 CSS 画的小示意图（不引图片：设置面板要能离线打开，
     // 一张 png 就得多一条资源路径）。这一票只点亮 A，其余三颗置灰 + 悬停说明「下一步补上」——
     // 画不出来的壳让人点进去只会看到「什么都没变」，那比置灰更让人困惑。
-    const layoutPanel = section("layout", tr("工作区"));
+    const layoutPanel = section("layout");
     const layoutChips = el("div", "chips layout-chips");
     const shown = activeLayout(this.prefs);
     for (const { id, label } of LAYOUTS) {
@@ -4289,24 +4291,11 @@ export class App {
 
     // #291：预览 + 开关墙。预览是「点一下就能关掉」的那张画，开关墙是找不到按钮时的兜底；
     // 两处写的是同一份 `chrome`，都走 `ui.set`，等桥的广播回来再重画。
-    const chromePanel = section("chrome", tr("界面元素"), tr("点预览里的按钮就收起 / 放回"));
+    const chromePanel = section("chrome");
     this.chromePane = el("div", "chrome-pane");
     chromePanel.classList.add("pad");
     chromePanel.append(this.chromePane);
     this.paintChromePane();
-
-    const resetPanel = section("reset", tr("重置"));
-    const reset = el("button", "btn ghost", tr("恢复默认")) as HTMLButtonElement;
-    reset.type = "button";
-    reset.onclick = () => {
-      // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
-      // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
-      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen, settingsTab: this.prefs.settingsTab };
-      savePrefs(this.prefs);
-      this.applyPrefs();
-      this.openDisplaySheet();
-    };
-    resetPanel.append(this.stRow(tr("恢复默认"), tr("字号、颜色、文字亮度、布局回到默认；语言与界面元素不动"), reset));
 
     back.append(sheet);
     this.overlay(back);
@@ -4316,29 +4305,65 @@ export class App {
     this.setDisplayTab(this.prefs.settingsTab);
   }
 
-  /** 外观页顶上那排卡：当前语言 / 字号 / 强调色 / 布局。applyPrefs 之后跟着重画。 */
+  /** 齿轮设置的两大类与各自的子类（顺序就是左栏顺序；「连接与设置」里工具排第一，最常用）。 */
+  private displayGroups(): { tab: Prefs["settingsTab"]; label: string; items: { sec: string; label: string; sub: string }[] }[] {
+    return [
+      {
+        tab: "look",
+        label: tr("外观"),
+        items: [
+          { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
+          { sec: "color", label: tr("颜色"), sub: tr("强调色与文字亮度") },
+          { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
+          { sec: "chrome", label: tr("界面元素"), sub: tr("顶栏与输入框下沿的按钮；点预览里的按钮就收起 / 放回") },
+        ],
+      },
+      {
+        tab: "conn",
+        label: tr("连接与设置"),
+        items: [
+          { sec: "tools", label: tr("工具"), sub: tr("pi 设置、本机管理、热部署、上下文洞察") },
+          { sec: "chan", label: tr("通道"), sub: tr("Web Push 与公网隧道") },
+          { sec: "about", label: tr("关于"), sub: tr("版本与会话目录；点一下复制") },
+        ],
+      },
+    ];
+  }
+
+  /** 外观各子类顶上那排卡（语言与字号 / 颜色 / 工作区；界面元素没有卡）。applyPrefs 之后跟着重画。 */
   private paintLookCards(): void {
     const box = this.sheet?.querySelector<HTMLElement>('[data-role="look-cards"]');
     if (!box) return;
+    const sec = this.displaySec.look ?? "lang";
     const lang = LANGS.find(([code]) => code === this.prefs.lang)?.[1] ?? this.prefs.lang;
     const accent = ACCENT_LABELS.find(([id]) => id === this.prefs.accent)?.[1] ?? this.prefs.accent;
     const text = TEXT_STEPS.find(([k]) => k === this.prefs.text)?.[1] ?? this.prefs.text;
     const layoutId = activeLayout(this.prefs);
     const layout = LAYOUTS.find((l) => l.id === layoutId)?.label ?? layoutId;
     const scale = Math.round(this.prefs.scale * 100);
-    const cards = this.stCards([
-      { label: tr("语言"), value: lang, sub: tr("界面与推送") },
-      { label: tr("字号"), value: `${scale}%`, sub: scale === Math.round(DEFAULT_PREFS.scale * 100) ? tr("默认") : tr("已调整") },
-      { label: tr("强调色"), value: tr(accent), sub: tr("文字亮度：{p1}", { p1: tr(text) }) },
-      { label: tr("工作区布局"), value: tr(layout), sub: tr("会话与侧栏的摆法") },
-    ]);
+    const items =
+      sec === "lang"
+        ? [
+            { label: tr("语言"), value: lang, sub: tr("界面与推送") },
+            { label: tr("字号"), value: `${scale}%`, sub: scale === Math.round(DEFAULT_PREFS.scale * 100) ? tr("默认") : tr("已调整") },
+          ]
+        : sec === "color"
+          ? [
+              { label: tr("强调色"), value: tr(accent), sub: tr("按钮与选中项") },
+              { label: tr("文字亮度"), value: tr(text), sub: tr("三档文字一起调") },
+            ]
+          : sec === "layout"
+            ? [{ label: tr("工作区布局"), value: tr(layout), sub: tr("会话与侧栏的摆法") }]
+            : [];
+    const cards = this.stCards(items);
     cards.dataset.role = "look-cards";
+    cards.hidden = items.length === 0;
     box.replaceWith(cards);
   }
 
   /**
-   * 抽屉换页：只切显隐，不重建（重建会丢掉滑块拖到一半的手感）。停在哪页记进 `pi.prefs`。
-   * 带 `sec` 时滚到那一小节（左栏的每一项都是某一页里的一个小节）。
+   * 换大类 / 子类：只切显隐，不重建（重建会丢掉滑块拖到一半的手感）。停在哪个大类记进 `pi.prefs`，
+   * 每个大类上次停在哪个子类只记在这次打开的页面里。
    */
   private setDisplayTab(tab: Prefs["settingsTab"], sec?: string): void {
     if (this.prefs.settingsTab !== tab) {
@@ -4347,57 +4372,44 @@ export class App {
     }
     const sheet = this.sheet;
     if (!sheet) return;
-    const pane = sheet.querySelector<HTMLElement>('[data-role="pane"]');
-    let changed = false;
-    for (const page of sheet.querySelectorAll<HTMLElement>(".set-page")) {
-      const hide = page.dataset.page !== tab;
-      if (page.hidden !== hide) changed = true;
-      page.hidden = hide;
-    }
+    const group = this.displayGroups().find((g) => g.tab === tab) ?? this.displayGroups()[0];
+    const item = group.items.find((i) => i.sec === (sec ?? this.displaySec[tab])) ?? group.items[0];
+    this.displaySec[tab] = item.sec;
+    for (const page of sheet.querySelectorAll<HTMLElement>(".set-page")) page.hidden = page.dataset.page !== tab;
     if (tab === "conn") this.paintConnPage();
+    for (const sub of sheet.querySelectorAll<HTMLElement>(`.set-page[data-page="${tab}"] .set-sub`)) sub.hidden = sub.dataset.sec !== item.sec;
+    if (tab === "look") this.paintLookCards();
     const title = sheet.querySelector<HTMLElement>('[data-role="dtitle"]');
     const sub = sheet.querySelector<HTMLElement>('[data-role="dsub"]');
-    if (title) title.textContent = tab === "conn" ? tr("连接与设置") : tr("外观");
-    if (sub) sub.textContent = tab === "conn" ? tr("通知通道、公网隧道、管理工具与版本信息") : tr("语言、字号、颜色与工作区的摆法；改了立即生效");
-    if (pane) {
-      const target = sec ? pane.querySelector<HTMLElement>(`.set-page[data-page="${tab}"] [data-sec="${sec}"]`) : null;
-      const first = pane.querySelector<HTMLElement>(`.set-page[data-page="${tab}"] [data-sec]`);
-      if (target && target !== first) {
-        // 不自己拿矩形算 scrollTop：#app 的 zoom 下 getBoundingClientRect 与 scrollTop 不是同一种像素。
-        // 上沿留白交给 CSS 的 scroll-margin-top。
-        target.scrollIntoView({ block: "start" });
-      } else if (target || changed) {
-        pane.scrollTop = 0;
+    if (title) title.textContent = item.label;
+    if (sub) sub.textContent = item.sub;
+    for (const b of sheet.querySelectorAll<HTMLElement>(".st-tabs__btn")) {
+      const on = b.dataset.tab === tab;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-selected", String(on));
+    }
+    const reset = sheet.querySelector<HTMLElement>('[data-role="dreset"]');
+    if (reset) reset.hidden = tab !== "look";
+    const nav = sheet.querySelector<HTMLElement>('[data-role="dnav"]');
+    if (nav) {
+      nav.replaceChildren(el("div", "st-nav__group", group.label));
+      for (const it of group.items) {
+        const b = el("button", `st-nav__item${it.sec === item.sec ? " on" : ""}`) as HTMLButtonElement;
+        b.type = "button";
+        b.dataset.tab = tab;
+        b.dataset.sec = it.sec;
+        if (it.sec === item.sec) b.setAttribute("aria-current", "true");
+        b.append(el("span", "st-nav__label", it.label));
+        b.onclick = () => this.setDisplayTab(tab, it.sec);
+        nav.append(b);
       }
     }
-    this.syncDisplayNav(sec);
-  }
-
-  /** 左栏高亮：窗格里最后一个已经滚到上沿的小节；点过的那项优先（最后一节滚不到顶）。 */
-  private syncDisplayNav(prefer?: string): void {
-    const sheet = this.sheet;
-    const pane = sheet?.querySelector<HTMLElement>('[data-role="pane"]');
-    if (!sheet || !pane) return;
-    const tab = this.prefs.settingsTab;
-    let active = prefer ?? "";
-    if (!active) {
-      const top = pane.getBoundingClientRect().top + 24;
-      const secs = [...pane.querySelectorAll<HTMLElement>(`.set-page[data-page="${tab}"] [data-sec]`)];
-      active = secs[0]?.dataset.sec ?? "";
-      for (const s of secs) if (s.getBoundingClientRect().top <= top) active = s.dataset.sec ?? active;
-      // 滚到底了：最后一节就算没顶到上沿也算它。
-      if (pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 2 && secs.length) active = secs[secs.length - 1].dataset.sec ?? active;
-    }
-    for (const item of sheet.querySelectorAll<HTMLElement>(".st-nav__item")) {
-      const on = item.dataset.tab === tab && item.dataset.sec === active;
-      item.classList.toggle("on", on);
-      if (on) item.setAttribute("aria-current", "true");
-      else item.removeAttribute("aria-current");
-    }
+    const pane = sheet.querySelector<HTMLElement>('[data-role="pane"]');
+    if (pane) pane.scrollTop = 0;
   }
 
   /**
-   * 「连接与设置」那一页：通道、工具、关于。
+   * 「连接与设置」：工具、通道、关于三个子类，各自一页（.set-sub），由 setDisplayTab 切显隐。
    *
    * 这三块以前在左栏底部，隧道一开一关会顺带重画整栏；搬进抽屉之后没有 `renderQueue()` 那条路了，
    * 所以隧道点完要自己重画（抽屉没开时 `paintConnPage` 直接返回）。
@@ -4406,28 +4418,50 @@ export class App {
     const page = this.sheet?.querySelector<HTMLElement>('.set-page[data-page="conn"]');
     if (!page) return;
     page.replaceChildren();
-    const section = (sec: string, label: string, meta?: string): HTMLElement => {
-      const h = this.stSection(label, meta);
-      h.dataset.sec = sec;
+    const active = this.displaySec.conn ?? "tools";
+    const section = (sec: string, cards?: HTMLElement): HTMLElement => {
+      const sub = el("div", "set-sub");
+      sub.dataset.sec = sec;
+      sub.hidden = sec !== active;
       const panel = el("div", "settings-panel");
-      page.append(h, panel);
+      if (cards) sub.append(cards);
+      sub.append(panel);
+      page.append(sub);
       return panel;
     };
 
-    const up = this.tunnel.status === "up";
-    const cards = this.stCards([
-      { label: tr("Web Push"), value: String(this.me.pushCount), sub: tr("台设备已订阅") },
-      {
-        label: tr("公网隧道"),
-        value: up ? tr("已开") : tr("未开"),
-        sub: this.tunnel.error ? tr("上次出错") : up ? tr("外网可访问") : tr("只在局域网"),
-        cls: this.tunnel.error ? "warn" : undefined,
-      },
-      { label: tr("bridge"), value: this.me.version, sub: `pi ${this.me.pi}` },
-    ]);
-    page.append(cards);
+    const tools = section("tools");
+    const tool = (name: string, desc: string, run: () => void): void => {
+      const open = el("button", "btn", tr("打开")) as HTMLButtonElement;
+      open.type = "button";
+      open.setAttribute("aria-label", name);
+      open.onclick = run;
+      tools.append(this.stRow(name, desc, open));
+    };
+    tool(tr("pi 设置"), tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）"), () => this.openSettingsSheet("global"));
+    tool(tr("本机管理"), tr("本机信息、网卡与 DNS、端口与服务"), () => {
+      this.closeSheet();
+      openSysmanage();
+    });
+    tool(tr("热部署"), tr("把这条桥换成某条分支上的构建：编译、换进程、等健康检查（会切断正在跑的会话）"), () => {
+      this.closeSheet();
+      openHotdeploy();
+    });
+    tool(tr("上下文洞察"), tr("跨会话的上下文统计：全体与分项目的 Token、费用、技能、工具与命令"), () => this.openContextInsightSheet());
 
-    const chan = section("chan", tr("通道"));
+    const up = this.tunnel.status === "up";
+    const chan = section(
+      "chan",
+      this.stCards([
+        { label: tr("Web Push"), value: String(this.me.pushCount), sub: tr("台设备已订阅") },
+        {
+          label: tr("公网隧道"),
+          value: up ? tr("已开") : tr("未开"),
+          sub: this.tunnel.error ? tr("上次出错") : up ? tr("外网可访问") : tr("只在局域网"),
+          cls: this.tunnel.error ? "warn" : undefined,
+        },
+      ]),
+    );
     const push = el("button", "btn", tr("开启 Web Push")) as HTMLButtonElement;
     push.type = "button";
     push.onclick = () => void this.enablePush();
@@ -4467,27 +4501,8 @@ export class App {
     chan.append(tunRow);
     if (this.tunnel.error) chan.append(el("div", "notice warn", errText(this.tunnel)));
 
-    const tools = section("tools", tr("工具"));
-    const tool = (name: string, desc: string, run: () => void): void => {
-      const open = el("button", "btn", tr("打开")) as HTMLButtonElement;
-      open.type = "button";
-      open.setAttribute("aria-label", name);
-      open.onclick = run;
-      tools.append(this.stRow(name, desc, open));
-    };
-    tool(tr("pi 设置"), tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）"), () => this.openSettingsSheet("global"));
-    tool(tr("本机管理"), tr("本机信息、网卡与 DNS、端口与服务"), () => {
-      this.closeSheet();
-      openSysmanage();
-    });
-    tool(tr("热部署"), tr("把这条桥换成某条分支上的构建：编译、换进程、等健康检查（会切断正在跑的会话）"), () => {
-      this.closeSheet();
-      openHotdeploy();
-    });
-    tool(tr("上下文洞察"), tr("跨会话的上下文统计：全体与分项目的 Token、费用、技能、工具与命令"), () => this.openContextInsightSheet());
-
     // 关于：两行都能点一下复制（版本、会话目录），报问题时直接粘。
-    const about = section("about", tr("关于"), tr("点一下复制"));
+    const about = section("about", this.stCards([{ label: tr("bridge"), value: this.me.version, sub: `pi ${this.me.pi}` }]));
     about.classList.add("set-about");
     about.append(this.copyRow(tr("版本"), `pi ${this.me.pi} · bridge ${this.me.version}`));
     about.append(this.copyRow(tr("会话目录"), this.me.sessionsRoot));
