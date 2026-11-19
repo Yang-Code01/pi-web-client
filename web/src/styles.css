@@ -2117,7 +2117,6 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
    开关墙是两块方块；虚线 = 现在不画，实线 = 画着。 */
 .chrome-pane { display: grid; gap: 8px; }
 .chrome-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.chrome-note { font-size: 11px; line-height: 1.5; color: var(--faint); }
 .chrome-offline { font-size: 11px; line-height: 1.5; color: var(--dim); }
 
 .chrome-pv {

@@ -63,7 +63,7 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
-import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
+import { chromeFrom, isChromeVisible, isDefaultHidden, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { type CtxLine, type CtxPolicy } from "./context.ts";
 import { ContextPanel, type ContextPanelData } from "./context-panel.ts";
 import { ContextInsightsView } from "./context-insights.ts";
@@ -952,7 +952,7 @@ export class App {
     mail.onclick = () => this.openMail();
     this.els.mail = mail;
     // D321：整机文件搜索（名字就叫 Everything）。跟终端 / 记录一样常驻（不绑会话）；
-    // 默认不画（`chrome.ts` 的 DEFAULT_HIDDEN），要去「设置 → 外观」里点亮才出现在顶栏。
+    // 默认画在顶栏（D332，2026-11-19 用户要求与文件管理器对调），用户在「设置 → 外观」里可以关。
     const fsearch = this.wideBtn(tr("🔎 Everything|顶栏按钮"));
     fsearch.title = tr("在这台电脑上按名字 / 路径找文件（本机索引，毫秒级）");
     fsearch.dataset.act = "filesearch";
@@ -1626,7 +1626,7 @@ export class App {
         // does not resize the pane, so the pane's ResizeObserver never fires and the box would keep
         // the old cap.
         this.fitComposer();
-        // D138 的 560 断点看的是视口宽度：窗口一拖，文件管理器那颗的默认就得重算。
+        // 顶栏布局跟着壳 / 紧凑模式变；虽已没有「宽度决定默认」的规则，重算一次仍是最省心的。
         this.paintChrome();
         // 右栏宽度是按布局宽算的 px（D189），跨过断点或改窗口大小都得重算。
         if (this.asks.length) this.syncAskDock();
@@ -4406,9 +4406,9 @@ export class App {
    * #291：设置 → 外观里的实时预览 + 开关墙。
    *
    * 预览是顶栏 / 下沿的一张缩略画：胶囊亮不亮、方块实线还是虚线，全问 `isChromeVisible()`；
-   * 宽度用**这张画自己的**档（桌面 / 手机 390），不是真窗口 —— 否则在 1440 的表里点「手机」，
-   * 文件管理器不会退场。写状态只走 `ui.set`（`null` = 删键，回默认），等桥的 `ui` 广播回来再重画，
-   * 本地不留副本。
+   * 宽度用**这张画自己的**档（桌面 / 手机 390），不是真窗口 —— 只影响这张画的排版，不再影响可见性
+   * （D332 之后窄屏不再把哪颗按钮变成默认不画）。写状态只走 `ui.set`（`null` = 删键，回默认），
+   * 等桥的 `ui` 广播回来再重画，本地不留副本。
    *
    * 预览活在「开了会话」的假设里：没开会话时产物 / 文件管理器本来就不长，跟着灭会让人以为点不亮，
    * 所以把原因写进方块的 title。断桥时整块置灰、按钮真 `disabled`。
@@ -4428,7 +4428,7 @@ export class App {
     const offline = !this.connected;
     pane.classList.toggle("offline", offline);
     // 会话事实照实给：没开会话时产物 / 文件管理器在真顶栏里也不画，预览不该比真顶栏多一颗。
-    const ctx: ChromeContext = { hasSession: !!this.currentId, narrow: this.chromePreviewNarrow };
+    const ctx: ChromeContext = { hasSession: !!this.currentId };
     const chrome = this.uiPrefs.chrome;
     const lit = (id: ChromeId): boolean => isChromeVisible(id, chrome, ctx);
     const set = (id: ChromeId, on: boolean): void => {
@@ -4519,9 +4519,6 @@ export class App {
     }
     bar.append(seg, el("span", "chrome-pv-hint", tr("点预览里的按钮可以直接关掉")));
     pane.append(bar);
-    if (this.chromePreviewNarrow) {
-      pane.append(el("div", "chrome-note", tr("手机宽度下「文件管理器」默认收起；想留着就点亮下面的方块")));
-    }
 
     // ---- 下半：开关墙。每块「全部显示」= 把这组键删掉（回默认），不是写 true。
     const wall = el("div", "chrome-wall");
@@ -4563,10 +4560,10 @@ export class App {
           el("span", "chrome-tile-name", name),
           el("span", "chrome-tile-eye", on ? "●" : "○"),
         );
-        // 虚着的方块要说清「为什么虚」：会话限定与窄档默认都不在 `chrome` 里，光看键看不出来。
+        // 虚着的方块要说清「为什么虚」：会话限定与「默认不显示」都不在 `chrome` 里，光看键看不出来。
         const why: string[] = [];
         if (isSessionOnly(id)) why.push(tr("没开会话时不显示"));
-        if (id === "files" && ctx.narrow && chrome[id] === undefined) why.push(tr("手机上默认收起"));
+        if (isDefaultHidden(id)) why.push(tr("默认不显示"));
         const hint = on
           ? tr("点一下隐藏「{p1}」", { p1: name })
           : tr("点一下显示「{p1}」", { p1: name });
@@ -4664,11 +4661,10 @@ export class App {
   }
 
   /**
-   * #288：判断按钮可见性只需要这两件事实。560 是 D138 的窄屏断点，跟 `compact()` 一样按缩放后的
-   * 有效宽度算 —— `@media` 看的是视口宽度，2.0 字号下会漏判（D158）。
+   * #288：判断按钮可见性只需要「有没有当前会话」这一件事实。
    */
   private chromeCtx(): ChromeContext {
-    return { hasSession: !!this.currentId, narrow: window.innerWidth / this.uiScale() < 560 };
+    return { hasSession: !!this.currentId };
   }
 
   /**
@@ -4757,8 +4753,8 @@ export class App {
       mail.setAttribute("aria-label", tr("邮箱"));
       show("mail", mail, tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管"));
     }
-    // 文件搜索也进 chrome 表（D321）：这颗是机器级的，没开会话也照样能用，
-    // 所以不进 `SESSION_ONLY`；但它是 DEFAULT_HIDDEN 里的 —— 默认不占顶栏，用户在设置里点亮才画。
+    // 文件搜索也进 chrome 表（D321）：这颗是机器级的，没开会话也照样能用，所以不进 `SESSION_ONLY`；
+    // D332 起它默认就画（与文件管理器对调）。
     if (fsearch) {
       this.setWideLabel(fsearch, tr("🔎 Everything|顶栏按钮"));
       show("filesearch", fsearch, tr("在这台电脑上按名字找文件：索引建在本机，不依赖 Everything"));
