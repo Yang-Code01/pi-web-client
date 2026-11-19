@@ -821,8 +821,12 @@ body.embedded .brand .nm { display: none; }
 .row .s .draft { color: var(--warn); }
 .head .s.typing { color: var(--accent); }
 
-/* P2：三态。发送中不动声色，失败才让整条气泡变红。 */
+/* P2：三态。发送中不动声色，失败才让整条气泡变红。
+   例外：连着重试几次都投不进去时改口（琥珀色「对方没响应」+ 立即重试）——
+   对端端口根本连不上时，「发送中…」会一直挂到 24 小时过期，那时再红就太晚了。 */
 .msg .tm .sending { color: var(--faint); }
+.msg .tm .stall { color: var(--warn); }
+.msg .tm .stall + .link { color: var(--warn); font-size: 10px; }
 .bub.failed { border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
 
 /* P3：撤回留下的灰条（原消息不再显示，历史文件里还在）。 */

@@ -37,6 +37,27 @@ export function uuidv7(now = Date.now()): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/**
+ * fetch 失败时要往 `cause` 里看一层：Node 只把 `fetch failed` 摆在最外面，
+ * 真正的原因（`connect ECONNREFUSED 127.0.0.1:7865` / `getaddrinfo ENOTFOUND`）在 cause 上。
+ * 页面要把这句翻成人话（D325），所以这里就要给出有用的那句，而不是「fetch failed」。
+ */
+function why(err: unknown): string {
+  const seen = new Set<unknown>();
+  const parts: string[] = [];
+  let cur = err as { message?: unknown; code?: unknown; cause?: unknown } | undefined;
+  while (cur && typeof cur === "object" && !seen.has(cur) && parts.length < 3) {
+    seen.add(cur);
+    const msg = typeof cur.message === "string" ? cur.message : "";
+    const code = typeof cur.code === "string" ? cur.code : "";
+    // 外层那句「fetch failed」没有信息量，有 cause 时丢掉它。
+    const noise = !code && /^fetch failed$/i.test(msg) && Boolean(cur.cause);
+    if (!noise) parts.push(code && !msg.includes(code) ? `${code}: ${msg}` : msg || code);
+    cur = cur.cause as typeof cur;
+  }
+  return parts.join(" ← ") || "fetch failed";
+}
+
 /** `::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台机器，比较前先归一。 */
 function normAddr(addr: string): string {
   return addr.replace(/^::ffff:/, "").replace(/^::1$/, "127.0.0.1");
@@ -139,7 +160,11 @@ export class Messages {
     if (!peer) throw new Error("这个人已经不在线了：等他上线再重发");
     const outbox = this.ctx.outbox;
     if (!outbox) throw new Error("outbox 还没准备好");
-    outbox.add({ id: entry.id, peerId, addr: peer.addr, port: peer.port, kind: "text", payload: entry, at: Date.now(), tries: 0, nextAt: 0 });
+    // 还在排队的那条（页面上的「立即重试」）：只把下一次尝试提前。
+    // 不能再 `add()` 一次 —— 它按 id 去重，什么也不会发生，用户点完会以为按钮坏了。
+    if (outbox.nudge(entry.id)) return { ok: true };
+    const kind = entry.kind === "note" ? "note" : "text";
+    outbox.add({ id: entry.id, peerId, addr: peer.addr, port: peer.port, kind, payload: entry, at: Date.now(), tries: 0, nextAt: 0 });
     return { ok: true };
   }
 
@@ -218,7 +243,7 @@ export class Messages {
       return { ok: false, retryable: reply.retryable !== false, error: reply.error ?? `HTTP ${res.status}` };
     } catch (err) {
       // 连不上（对端关了 / 换了 IP）先当可重试：24 小时内他再上线还能补到。
-      return { ok: false, retryable: true, error: (err as Error).message };
+      return { ok: false, retryable: true, error: why(err) };
     }
   }
 
@@ -414,8 +439,10 @@ export class Messages {
 
   /** 页面要的那一份：receipt / recall 已折叠进消息（P2）。 */
   view(peerId: string, limit: number): ViewEntry[] {
-    const pending = new Set((this.ctx.outbox?.pendingFor(peerId) ?? []).map((item) => item.id));
-    return foldEntries(this.ctx.history.read(peerId, limit), this.ctx.nodeId, pending);
+    const queued = this.ctx.outbox?.pendingFor(peerId) ?? [];
+    const pending = new Set(queued.map((item) => item.id));
+    const why = new Map(queued.map((item) => [item.id, { tries: item.tries, error: item.lastError }]));
+    return foldEntries(this.ctx.history.read(peerId, limit), this.ctx.nodeId, pending, why);
   }
 
   version(): string {

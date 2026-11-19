@@ -1065,6 +1065,50 @@ try {
   }, 8000);
   log("ok 进程能干净退出");
 
+  // D325：对方关机了、但还挂在在线表上（端口已经连不上）—— 这正是用户报的那次现场：
+  // 绿点还在、发出去的永远「发送中」。消息必须留在队列里可补投，同时把
+  // 「试了几次 / 为什么没送到」交给页面，否则页面只能一直画「发送中…」。
+  const aStill = await status(17965);
+  if (!aStill?.online?.some((p) => p.nodeId === sb)) throw new Error("B 刚断，A 的在线表里还该留着它（用户遇到的正是这种情形）");
+  const stallText = `连不上的一条 ${Date.now()}`;
+  const stallSend = await fetch("http://127.0.0.1:17965/send", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sb, text: stallText }),
+  });
+  if (!stallSend.ok) throw new Error(`/send 回 ${stallSend.status}：${await stallSend.text()}`);
+  const stallId = (await stallSend.json()).id;
+  const stalledView = await until(
+    "连不上时视图带上 tries / sendError",
+    async () => {
+      const e = (await msgsOf(17965, sb)).find((x) => x.id === stallId);
+      return e && e.state === "sending" && (e.tries ?? 0) >= 2 && e.sendError ? e : false;
+    },
+    20000,
+  );
+  if (!/ECONNREFUSED|abort|timeout/i.test(String(stalledView.sendError))) {
+    throw new Error(`sendError 该是连不上的原话，实际 ${JSON.stringify(stalledView.sendError)}`);
+  }
+  log(`ok 连不上时 state 仍是 sending，但带着 tries=${stalledView.tries} 与原因`);
+
+  // 「立即重试」＝ nudge：还在队列里就只把下一次尝试提前，不再入队一条（add 按 id 去重，什么都不会发生）。
+  const nudged = await fetch("http://127.0.0.1:17965/send/retry", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ peer: sb, id: stallId }),
+  });
+  if (!nudged.ok) throw new Error(`立即重试回 ${nudged.status}：${await nudged.text()}`);
+  const afterNudge = await until(
+    "立即重试之后同一条的 tries 继续涨、条数不变",
+    async () => {
+      const mine = (await msgsOf(17965, sb)).filter((x) => x.id === stallId);
+      return mine.length === 1 && (mine[0].tries ?? 0) > (stalledView.tries ?? 0) ? mine[0] : false;
+    },
+    10000,
+  );
+  if (afterNudge.state !== "sending") throw new Error(`对端还是连不上，state 该继续是 sending，实际 ${afterNudge.state}`);
+  log("ok 立即重试只提前下一次尝试，不多出一条");
+
   // 端口被占：再起一份抢 17968，必须退出码 2（bridge 靠它判断「另一份在跑」，不会无限重启）。
   const dup = spawn(process.execPath, [ENTRY], {
     env: { ...process.env, PI_PEER_STATE: path.join(ROOT, "dup"), PI_PEER_PORT: "17968", PI_PEER_ANNOUNCE_PORT: "17970" }, // port-guard: allow —— 就是要抢 B 的端口，验「另一份在跑」退出码 2

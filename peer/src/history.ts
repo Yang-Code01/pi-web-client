@@ -75,12 +75,22 @@ export interface Entry {
 /**
  * 折叠后的消息：页面只画这一种。
  *
- * `recalled` / `state` 都是**视图字段**，从来不落盘 —— 它们由「后面那条 receipt / recall」
- * 与「outbox 里还在排队的 id」现算出来（D299：状态派生、不落盘）。
+ * `recalled` / `state` / `tries` / `sendError` 都是**视图字段**，从来不落盘 —— 它们由
+ * 「后面那条 receipt / recall」与「outbox 里还在排队的 id」现算出来（D299：状态派生、不落盘）。
  */
 export interface ViewEntry extends Entry {
   recalled?: boolean;
   state?: "sending" | "delivered" | "failed";
+  /** 还在排队时试过几次（送达到了就不带）。 */
+  tries?: number;
+  /** 上一次没送到的原因，原样是网络错误那串字（`fetch` 的 `The operation was aborted…`）。 */
+  sendError?: string;
+}
+
+/** 排队中的那条现在什么情况：重试过几次、上一次说了什么。 */
+export interface PendingInfo {
+  tries?: number;
+  error?: string;
 }
 
 export interface ThreadSummary {
@@ -122,11 +132,13 @@ function isMessage(entry: Entry): boolean {
  *
  * - receipt → 给原消息挂 `ack`（同一条消息被重投多次时**最后一条回执说了算**）；
  * - recall → 把原消息标成 `recalled`，页面画成灰条；撤回记录本身不进消息流；
- * - `pending` 里的 id → `state:"sending"`，其余已送达的标 `delivered`。
+ * - `pending` 里的 id → `state:"sending"`，其余已送达的标 `delivered`；
+ * - `why` 里的 id 再带上 `tries` / `sendError`：光说「发送中」等于不说，用户看不出是
+ *   在等对方上线，还是对方的端口根本连不上（两种都可能是真的）。
  *
  * 不落盘、不改历史文件：同一份 JSONL 在旧版本里读出来还是它原来的样子。
  */
-export function foldEntries(entries: Entry[], me: string, pending: Set<string>): ViewEntry[] {
+export function foldEntries(entries: Entry[], me: string, pending: Set<string>, why?: Map<string, PendingInfo>): ViewEntry[] {
   const byId = new Map<string, ViewEntry>();
   const out: ViewEntry[] = [];
   for (const entry of entries) {
@@ -149,8 +161,12 @@ export function foldEntries(entries: Entry[], me: string, pending: Set<string>):
   }
   for (const view of out) {
     if (view.from.nodeId !== me) continue;
-    if (pending.has(view.id)) view.state = "sending";
-    else if (view.ack?.status === "failed") view.state = "failed";
+    if (pending.has(view.id)) {
+      view.state = "sending";
+      const info = why?.get(view.id);
+      if (info?.tries) view.tries = info.tries;
+      if (info?.error) view.sendError = info.error;
+    } else if (view.ack?.status === "failed") view.state = "failed";
     else if (view.ack?.status === "delivered") view.state = "delivered";
   }
   return out;
