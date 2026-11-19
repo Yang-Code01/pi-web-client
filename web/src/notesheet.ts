@@ -233,6 +233,11 @@ export class NotesSheet {
   private newBtn!: HTMLButtonElement;
   private searchEl!: HTMLInputElement;
   private query = "";
+  /** 顶栏的全局检索（D331）：跨分区的活记录，标题 / 正文。空串 = 没在搜；不落盘（搜索词不记）。 */
+  private gq = "";
+  private gsearchEl!: HTMLInputElement;
+  private listTitleEl!: HTMLElement;
+  private gclearEl!: HTMLButtonElement;
   private sel: string | null = null;
   /** 编辑器里现在是什么：null = 没在编辑。 */
   private editing: { id: string | null; note: Partial<Note> } | null = null;
@@ -317,10 +322,23 @@ export class NotesSheet {
     const nb = el("button", "btn primary notes-head-new", tr("＋ 记一条"));
     nb.onclick = () => this.newNote();
     this.newBtn = nb;
-    const exportAll = el("button", "btn ghost", tr("导出"));
-    exportAll.title = tr("把当前这一堆记录导出成一份 Markdown");
-    exportAll.onclick = () => this.exportAll();
-    head.append(title, this.headBadgeEl, this.headCountEl, el("div", "grow"), nb, exportAll, closeButton(tr("关闭"), () => this.close()));
+
+    // 全局检索（D331）：跨分区搜活记录的标题 / 正文；有词就把中栏切成结果视图。
+    const gsearch = el("input", "notes-head-search") as HTMLInputElement;
+    gsearch.type = "search";
+    gsearch.placeholder = tr("搜全部记录");
+    gsearch.setAttribute("aria-label", tr("搜全部记录"));
+    gsearch.oninput = () => {
+      this.gq = gsearch.value.trim().toLowerCase();
+      // 列表收着时结果看不见：顺手展开，但别把焦点从这颗框抢走。
+      if (this.gq && this.layout.list === "closed") this.setList("open", false);
+      this.paintHead();
+      this.paintNav();
+      this.paintList();
+    };
+    this.gsearchEl = gsearch;
+
+    head.append(title, this.headBadgeEl, this.headCountEl, el("div", "grow"), gsearch, nb, closeButton(tr("关闭"), () => this.close()));
     return head;
   }
 
@@ -349,11 +367,17 @@ export class NotesSheet {
     const listHead = el("div", "nc-list-head");
     const top = el("div", "nc-list-top");
     this.listCountEl = el("span", "nc-list-count", "");
+    this.listTitleEl = el("span", "nc-list-title", tr("记录"));
     const collapseList = el("button", "nc-rail-tab", "«");
     collapseList.title = tr("收起列表");
     collapseList.setAttribute("aria-label", tr("收起列表"));
     collapseList.onclick = () => this.setList("closed");
-    top.append(el("span", "nc-list-title", tr("记录")), this.listCountEl, collapseList);
+    this.gclearEl = el("button", "nc-gclear", "✕") as HTMLButtonElement;
+    this.gclearEl.type = "button";
+    this.gclearEl.title = tr("清除搜索");
+    this.gclearEl.setAttribute("aria-label", tr("清除搜索"));
+    this.gclearEl.onclick = () => this.clearSearch(true);
+    top.append(this.listTitleEl, this.listCountEl, collapseList, this.gclearEl);
 
     const search = el("input", "ns-input nc-search") as HTMLInputElement;
     search.type = "search";
@@ -455,11 +479,11 @@ export class NotesSheet {
     this.paintNav();
   }
 
-  private setList(list: NotesLayout["list"]): void {
+  private setList(list: NotesLayout["list"], focus = true): void {
     this.layout = { ...this.layout, list };
     writeLayout(this.layout);
     this.applyLayout();
-    if (list === "open") this.searchEl.focus();
+    if (list === "open" && focus && !this.searchEl.hidden) this.searchEl.focus();
   }
 
   /** 窄条上的展开按钮只在列表收起时出现。 */
@@ -471,6 +495,8 @@ export class NotesSheet {
 
   private paintNav(): void {
     const notes = this.host.notes();
+    // 搜索时导航空放：结果不分属任何一个分区（点了某个分区就退出搜索，见 setKind / setView）。
+    const searching = this.searching();
     const nav = el("div", "nc-nav-inner");
     const head = el("div", "nc-nav-head");
     // 收起来以后这颗箭头反过来当展开钮（不再在正文头另摆一颗，免得两个箭头挨着）。
@@ -498,14 +524,14 @@ export class NotesSheet {
 
     for (const k of NOTE_KINDS) {
       const pending = notes.filter((n) => n.kind === k.id && n.status === "pending" && !n.archivedAt && !n.deletedAt).length;
-      nav.append(item(k.id, k.glyph, k.label, pending, this.view === "active" && this.kind === k.id, () => this.setKind(k.id)));
+      nav.append(item(k.id, k.glyph, k.label, pending, !searching && this.view === "active" && this.kind === k.id, () => this.setKind(k.id)));
     }
     nav.append(el("div", "nc-nav-sep"));
     const ripe = ripeEntries(this.ledger).length;
-    nav.append(item("failures", "⚡", tr("AI 出错记录"), ripe, this.view === "failures", () => this.setView("failures")));
+    nav.append(item("failures", "⚡", tr("AI 出错记录"), ripe, !searching && this.view === "failures", () => this.setView("failures")));
 
     const viewItem = (id: "archived" | "trash", glyph: string, label: string, count: number): HTMLElement =>
-      item(id, glyph, label, count, this.view === id, () => this.setView(id));
+      item(id, glyph, label, count, !searching && this.view === id, () => this.setView(id));
     nav.append(el("div", "nc-nav-sep"));
     nav.append(viewItem("archived", "📦", tr("归档"), notes.filter((n) => n.archivedAt && !n.deletedAt).length));
     nav.append(viewItem("trash", "🗑️", tr("垃圾箱"), notes.filter((n) => n.deletedAt).length));
@@ -522,7 +548,7 @@ export class NotesSheet {
 
   /** 列表空着时那句提示，按视图 / 搜索 / 分段分。 */
   private emptyListText(): string {
-    if (this.query) return tr("没有匹配的记录。");
+    if (this.searching() || this.query) return tr("没有匹配的记录。");
     if (this.view === "trash") return tr("垃圾箱是空的。");
     if (this.view === "archived") return tr("还没有归档的记录。");
     if (this.seg === "pending") return tr("这一类里没有待处理的记录。");
@@ -533,15 +559,23 @@ export class NotesSheet {
 
   private paintHead(): void {
     const notes = this.host.notes();
+    const searching = this.searching();
     const here = this.visible().length;
-    this.headCountEl.textContent = tr("{p1} · {p2} 条在眼前", { p1: this.viewLabel(), p2: here });
-    const pending = this.view === "active"
+    this.headCountEl.textContent = searching
+      ? tr("{p1} · {p2} 条命中", { p1: tr("全部记录"), p2: here })
+      : tr("{p1} · {p2} 条在眼前", { p1: this.viewLabel(), p2: here });
+    const pending = !searching && this.view === "active"
       ? notes.filter((n) => n.kind === this.kind && n.status === "pending" && !n.archivedAt && !n.deletedAt).length
       : 0;
     this.headBadgeEl.hidden = !pending;
     this.headBadgeEl.textContent = pending ? String(pending) : "";
     this.headBadgeEl.title = pending ? tr("这一类还有 {p1} 条待处理", { p1: pending }) : "";
-    this.newBtn.hidden = this.view !== "active";
+    // 搜索结果里不摆「＋ 记一条」：它得知道建到哪个分区，而搜索时导航空放。
+    this.newBtn.hidden = this.view !== "active" || searching;
+    this.listTitleEl.textContent = searching ? tr("搜索结果") : tr("记录");
+    this.gclearEl.hidden = !searching;
+    // 两个搜索框并排会分不清哪个管什么：全局检索期间把列表内那颗收起来。
+    this.searchEl.hidden = searching;
     this.clearTrash.hidden = this.view !== "trash";
     const trashed = notes.filter((n) => n.deletedAt).length;
     this.clearTrash.textContent = trashed ? tr("清空垃圾箱（{p1}）", { p1: trashed }) : tr("清空垃圾箱");
@@ -549,7 +583,8 @@ export class NotesSheet {
   }
 
   private paintMode(): void {
-    const fail = this.view === "failures";
+    // 全局检索期间不摆 AI 出错账本：结果画在中栏列表里，账本留着会把结果盖住。
+    const fail = this.view === "failures" && !this.searching();
     this.consoleEl.hidden = fail;
     this.failEl.hidden = !fail;
     this.root.firstElementChild?.classList.toggle("in-failures", fail);
@@ -559,12 +594,12 @@ export class NotesSheet {
 
   /** 选一类：如果现在正看着归档 / 垃圾箱，先回列表。 */
   private setKind(kind: NoteKind): void {
-    if (this.view === "active" && this.kind === kind) return;
+    // 搜索中点分区 = 退出搜索：不然点了跟没反应一样（导航空放，哪一项都不亮）。
+    if (!this.searching() && this.view === "active" && this.kind === kind) return;
     this.flush();
     this.kind = kind;
     this.view = "active";
-    this.query = "";
-    this.searchEl.value = "";
+    this.resetSearch();
     this.resetPick();
     this.paintHead();
     this.paintNav();
@@ -581,9 +616,10 @@ export class NotesSheet {
   }
 
   private setView(view: View): void {
-    if (this.view === view) return;
+    if (!this.searching() && this.view === view) return;
     this.flush();
     this.view = view;
+    this.resetSearch();
     this.resetPick();
     this.paintHead();
     this.paintNav();
@@ -624,6 +660,13 @@ export class NotesSheet {
         ev.stopPropagation();
         return;
       }
+      // 全局检索有字：第一下 Esc 只清空搜索，再一下才关面板。
+      if (this.searching()) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.clearSearch(true);
+        return;
+      }
       ev.preventDefault();
       ev.stopPropagation();
       this.close();
@@ -652,8 +695,7 @@ export class NotesSheet {
     this.kind = note.kind;
     this.view = note.deletedAt ? "trash" : note.archivedAt ? "archived" : "active";
     this.seg = "all";
-    this.query = "";
-    this.searchEl.value = "";
+    this.resetSearch();
     this.paintNav();
     this.paintList();
     this.select(id);
@@ -704,6 +746,11 @@ export class NotesSheet {
   }
 
   private visible(): Note[] {
+    // 全局检索：不看当前分区与分段，只看「活记录」（归档 / 垃圾箱另有各自主页）。
+    if (this.searching()) {
+      const gq = this.gq;
+      return this.host.notes().filter((n) => !n.deletedAt && !n.archivedAt && this.matches(n, gq));
+    }
     const q = this.query;
     return this.host.notes().filter((n) => this.inView(n) && (this.view !== "active" || n.kind === this.kind) && (!q || this.matches(n, q)));
   }
@@ -711,6 +758,39 @@ export class NotesSheet {
   /** 检索只看人写得出来的字段：标题、正文（按纯文本）。 */
   private matches(n: Note, q: string): boolean {
     return [n.title, this.summaryOf(n)].some((v) => String(v ?? "").toLowerCase().includes(q));
+  }
+
+  /** 顶栏全局检索有没有字；有就是「结果视图」，view / kind 原封不动（清空后原路返回）。 */
+  private searching(): boolean {
+    return this.gq.length > 0;
+  }
+
+  /** 两个搜索框一起清空：切分区 / 切去向 / 跳到某条时都要，别在三处各抄一遍。 */
+  private resetSearch(): void {
+    this.gq = "";
+    this.gsearchEl.value = "";
+    this.query = "";
+    this.searchEl.value = "";
+  }
+
+  /** 清掉全局搜索回到原视图；focus=true 时把焦点交还给顶栏那颗框。 */
+  private clearSearch(focus: boolean): void {
+    if (!this.gq) {
+      if (focus) this.gsearchEl.focus();
+      return;
+    }
+    this.gq = "";
+    this.gsearchEl.value = "";
+    this.paintHead();
+    this.paintNav();
+    this.paintList();
+    if (focus) this.gsearchEl.focus();
+  }
+
+  /** 搜索结果里点一条：先退出搜索，再切到它所在的分区并选中。 */
+  private openHit(id: string): void {
+    this.clearSearch(false);
+    this.openNote(id);
   }
 
   /** 列表里那一行摘要 / 搜索用的纯文本；同一条正文只解析一次（按 updatedAt 失效）。 */
@@ -737,7 +817,7 @@ export class NotesSheet {
 
   /** 分段控件：全部 / 待处理 / 已处理 / 已忽略（归档、垃圾箱里不显示）。 */
   private paintSeg(): void {
-    const show = this.view === "active";
+    const show = this.view === "active" && !this.searching();
     this.segEl.hidden = !show;
     if (!show) return;
     const notes = this.host.notes().filter((n) => !n.deletedAt && !n.archivedAt && n.kind === this.kind);
@@ -764,7 +844,7 @@ export class NotesSheet {
 
   /** 黄条：「这一类有 N 条待处理还没动，最老的一条停在 X 天前」。 */
   private paintBanner(): void {
-    const idle = this.view === "active" && this.seg === "all";
+    const idle = this.view === "active" && this.seg === "all" && !this.searching();
     const key = this.kind;
     if (!idle || this.bannerGone.has(key)) {
       this.bannerEl.hidden = true;
@@ -802,16 +882,22 @@ export class NotesSheet {
     row.dataset.id = n.id;
     row.tabIndex = 0;
     row.setAttribute("role", "button");
-    row.onclick = () => this.select(n.id);
+    row.onclick = () => (this.searching() ? this.openHit(n.id) : this.select(n.id));
     row.onkeydown = (ev) => {
       if (ev.target !== row) return;
       if (ev.key === "Enter" || ev.key === " ") {
         ev.preventDefault();
-        this.select(n.id);
+        if (this.searching()) this.openHit(n.id);
+        else this.select(n.id);
       }
     };
 
     const top = el("div", "nc-row-top");
+    // 结果行来自不同分区：标题前挂一颗分区胶囊，否则看不出这一条原来在哪。
+    if (this.searching()) {
+      const k = NOTE_KINDS.find((x) => x.id === n.kind);
+      top.append(el("span", "nc-row-kind", `${k?.glyph ?? ""} ${k?.label ?? n.kind}`));
+    }
     const status = el("span", `nc-dot ${n.status}`, STATUS_GLYPH[n.status]);
     status.title = STATUS_LABEL[n.status];
     top.append(el("span", "nc-row-title", n.title), status);
@@ -824,7 +910,8 @@ export class NotesSheet {
     meta.append(el("span", "nc-row-shot", `🖼 ${n.shots?.length ?? 0}`));
     meta.append(el("span", "nc-row-words", tr("{p1} 字", { p1: this.wordsOf(n) })));
     meta.append(el("span", "nc-row-time", shortTime(n.updatedAt)));
-    meta.append(this.rowActs(n));
+    // 结果行只负责「打开」：归档 / 删除两颗小按钮跟着当前这一堆的语义变，跨分区结果里容易误操作。
+    if (!this.searching()) meta.append(this.rowActs(n));
     row.append(meta);
     return row;
   }
@@ -1747,23 +1834,6 @@ export class NotesSheet {
       this.editing.note.shots = [...msg.shots];
       if (!this.pendingShots.length) this.paintEditor();
     }
-  }
-
-  exportAll(): void {
-    const rows = this.visible();
-    if (!rows.length) {
-      this.say(tr("这一堆里没有可导出的记录"), true);
-      return;
-    }
-    const label = NOTE_KINDS.find((k) => k.id === this.kind)?.label ?? this.kind;
-    const md = [tr("# {p1} 记录 · {p2}", { p1: label, p2: stamp(Date.now()) }), ""].concat(rows.map((n) => `${noteMarkdown(n)}\n---`)).join("\n\n");
-    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${label}-notes-${new Date().toISOString().slice(0, 10)}.md`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-    this.say(tr("已导出 {p1} 条", { p1: rows.length }));
   }
 }
 

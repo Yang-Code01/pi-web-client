@@ -161,9 +161,60 @@ const out = await page.evaluate(async () => {
   q(".notes-head-new").click();
   result.newFocus = document.activeElement === q(".nc-title");
 
-  // 13. 导出：不崩、给出提示
-  q(".notes-head .btn.ghost").click();
-  result.footHint = q(".notes-hint").textContent;
+  // 13. 全局检索：跨分区搜活记录，点结果回到它所在分区
+  q('.nc-nav-item[data-key="bug"]').click();
+  const gs = q(".notes-head-search");
+  gs.value = "别的分区";
+  fire(gs, "input");
+  result.g = {
+    rows: qa(".nc-row").map((r) => r.querySelector(".nc-row-title").textContent),
+    chip: q(".nc-row-kind")?.textContent ?? null,
+    navOn: qa(".nc-nav-item.on").length,
+    newHidden: q(".notes-head-new").hidden,
+    segHidden: q(".nc-seg").hidden,
+    listTitle: q(".nc-list-title").textContent,
+    headCount: q(".notes-head-sub").textContent,
+    clearShown: !q(".nc-gclear").hidden,
+    listSearchHidden: q(".nc-search").hidden,
+  };
+  // 归档了的那条不参与全局检索：直接把 fixture 标成归档
+  notes[0].archivedAt = now;
+  gs.value = "旧标题";
+  fire(gs, "input");
+  result.gArchived = qa(".nc-row").length;
+  notes[0].archivedAt = null;
+  // 正文（按纯文本）也参与匹配：只改 n2 的正文（连带 updatedAt 让摘要缓存失效）
+  notes[1].body = "<p>正文里才有的词</p>";
+  notes[1].updatedAt = now + 1;
+  gs.value = "正文里才有的词";
+  fire(gs, "input");
+  result.gBody = qa(".nc-row").map((r) => r.dataset.id);
+  // Esc 第一下只清搜索，面板留着
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  result.gEsc = { value: gs.value, open: !!document.querySelector(".notes-sheet"), rows: qa(".nc-row").length, listSearchBack: !q(".nc-search").hidden };
+  // 点结果 → 切到它所在分区并选中
+  gs.value = "别的分区";
+  fire(gs, "input");
+  q('.nc-row[data-id="n3"]').click();
+  result.gJump = {
+    kindOn: q('.nc-nav-item[data-key="idea"]').classList.contains("on"),
+    query: gs.value,
+    title: q(".nc-title")?.value ?? null,
+  };
+
+  // 13b. 「AI 出错记录」视图里输入全局检索：中栏交给结果，账本让开；Esc 后回账本
+  q('.nc-nav-item[data-key="failures"]').click();
+  result.gFailBefore = { console: q(".notes-console").hidden, fail: q(".fail-wrap").hidden };
+  gs.value = "别的分区";
+  fire(gs, "input");
+  result.gFailSearch = {
+    consoleBack: !q(".notes-console").hidden,
+    failHidden: q(".fail-wrap").hidden,
+    rows: qa(".nc-row").length,
+    listTitle: q(".nc-list-title")?.textContent ?? null,
+  };
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  result.gFailAfterEsc = { console: q(".notes-console").hidden, fail: q(".fail-wrap").hidden, value: gs.value };
 
   // 14. 记忆：分区 + 选中（#514）
   q('.nc-nav-item[data-key="bug"]').click();
@@ -310,7 +361,27 @@ assert.equal(out.searchEmpty, "没有匹配的记录。", "搜索无结果");
 assert.deepEqual(out.rowsDone, ["已处理的那条"], "切到「已处理」只剩已处理那条");
 assert.equal(out.rowsAll, 2, "切回「全部」两条都在");
 assert.equal(out.newFocus, true, "新建一条时光标落在标题上");
-assert.ok(out.footHint, "导出要给一句提示");
+assert.deepEqual(out.g?.rows, ["别的分区"], "全局检索跨分区：bug 分区里也能看到 idea 那条");
+assert.ok(out.g?.chip?.includes("想法"), `结果行带分区胶囊，实际 ${out.g?.chip}`);
+assert.equal(out.g?.navOn, 0, "搜索时导航空放");
+assert.equal(out.g?.newHidden, true, "搜索时藏掉「＋ 记一条」");
+assert.equal(out.g?.segHidden, true, "搜索时藏掉分段控件");
+assert.equal(out.g?.listTitle, "搜索结果", "列表头切成「搜索结果」");
+assert.match(out.g?.headCount ?? "", /全部记录 · 1 条命中/, "头部统计报命中数");
+assert.equal(out.g?.clearShown, true, "搜索时列表头有清除按钮");
+assert.equal(out.g?.listSearchHidden, true, "搜索时藏起列表内那颗搜索框");
+assert.equal(out.gArchived, 0, "归档的记录不进全局检索");
+assert.deepEqual(out.gBody, ["n2"], "正文也参与匹配");
+assert.equal(out.gEsc?.value, "", "Esc 第一下只清搜索");
+assert.equal(out.gEsc?.open, true, "清搜索时面板还开着");
+assert.equal(out.gEsc?.listSearchBack, true, "清搜索后列表内搜索框回来");
+assert.equal(out.gEsc?.rows, 2, "清搜索后回到原分区原列表");
+assert.equal(out.gJump?.kindOn, true, "点结果切到它所在分区");
+assert.equal(out.gJump?.query, "", "点结果清空搜索");
+assert.equal(out.gJump?.title, "别的分区", "点结果选中那一条")
+assert.deepEqual(out.gFailBefore, { console: true, fail: false }, "进 AI 出错账本时列表让位");
+assert.deepEqual(out.gFailSearch, { consoleBack: true, failHidden: true, rows: 1, listTitle: "搜索结果" }, "账本视图里搜索也出结果");
+assert.deepEqual(out.gFailAfterEsc, { console: true, fail: false, value: "" }, "Esc 清搜索后回到账本");
 assert.deepEqual(out.metaLabels, ["状态", "分类", "创建", "改动"], "正文下只剩这四格：issue / commit / 会话 已退场");
 assert.deepEqual(out.memoryStored, { kind: "bug", view: "active", sel: "n1" }, "记忆落 notes.memory：分区 + 去向 + 选中");
 assert.equal(out.memoryRestored.kindOn, true, "重开回到上次的分区");
