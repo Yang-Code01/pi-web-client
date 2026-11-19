@@ -25,7 +25,7 @@ export interface MdOptions {
 
 /** Extensions worth linking when the text names a file that has a directory part. */
 const CODE_EXT =
-  "md|markdown|html?|png|jpe?g|gif|svg|webp|bmp|ico|txt|csv|tsv|log|json|jsonl|ya?ml|toml|ini|xml|pdf|tsx?|jsx?|mjs|cjs|vue|svelte|css|scss|less|py|rb|go|rs|java|kt|cs|cpp|cc|c|h|hpp|sh|ps1|bat|cmd|sql|lua|php|swift|dart|r|gradle|properties|env|lock|conf|cfg";
+  "md|markdown|html?|png|jpe?g|gif|svg|webp|bmp|ico|txt|csv|tsv|log|json|jsonl|ya?ml|toml|ini|xml|pdf|tsx?|jsx?|mjs|cjs|vue|svelte|css|scss|less|py|rb|go|rs|java|kt|cs|cpp|cc|c|h|hpp|sh|ps1|bat|cmd|sql|lua|php|swift|dart|r|gradle|properties|env|lock|conf|cfg|mp4|m4v|webm|ogv|mov|mkv|avi|wmv|flv|mp3|wav|m4a|aac|ogg|oga|flac|opus";
 // Name characters: no whitespace, quotes, brackets or CJK punctuation.
 const NAME = "[^\\s`'\"<>|*?:()\\[\\]{}，。；：！？、（）【】「」『』《》\\\\/]";
 const WIN_ABS = `[A-Za-z]:[\\\\/](?:${NAME}+[\\\\/])*${NAME}+\\.[A-Za-z0-9]{1,10}`;
@@ -51,8 +51,11 @@ function defaultOpen(path: string): void {
   window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path } }));
 }
 
-/** An `<img>` for a markdown image, or null when the source may not be loaded (see `imageSrc`). */
-function imageNode(alt: string, rawSrc: string, opts: MdOptions): HTMLImageElement | null {
+/** An `<img>` for a markdown image, or null when the source may not be loaded (see `imageSrc`).
+ * #542: `![…](x.mp4)` / `![…](a.mp3)` become a player instead (see `mediaNode`). */
+function imageNode(alt: string, rawSrc: string, opts: MdOptions): HTMLElement | null {
+  const kind = mediaKind(rawSrc);
+  if (kind) return mediaNode(kind, rawSrc, alt, {}, opts);
   const src = /^https?:\/\//i.test(rawSrc) ? rawSrc : opts.imageSrc?.(rawSrc) ?? null;
   if (!src) return null;
   const img = document.createElement("img");
@@ -61,6 +64,148 @@ function imageNode(alt: string, rawSrc: string, opts: MdOptions): HTMLImageEleme
   img.loading = "lazy";
   img.referrerPolicy = "no-referrer";
   return img;
+}
+
+const VIDEO_EXT = "mp4|m4v|webm|ogv|mov|mkv|avi|wmv|flv";
+const AUDIO_EXT = "mp3|wav|m4a|aac|ogg|oga|flac|opus";
+const VIDEO_RE = new RegExp(`\\.(?:${VIDEO_EXT})$`, "i");
+const AUDIO_RE = new RegExp(`\\.(?:${AUDIO_EXT})$`, "i");
+
+/** Is this src a video / audio file (by extension, ignoring `?query` / `#hash`)? */
+export function mediaKind(src: string): "video" | "audio" | null {
+  const bare = src.split(/[?#]/)[0];
+  return VIDEO_RE.test(bare) ? "video" : AUDIO_RE.test(bare) ? "audio" : null;
+}
+
+/** The only attributes a markdown `<video>` / `<audio>` keeps (#542). `controls` is always on and
+ * `autoplay`, `on*`, `style` & co. are dropped by construction: nothing else is ever copied. */
+export interface MediaAttrs {
+  poster?: string;
+  loop?: boolean;
+  muted?: boolean;
+  width?: number;
+  height?: number;
+}
+
+function mediaFallbackNode(kind: "video" | "audio", rawSrc: string, label: string, opts: MdOptions): HTMLElement {
+  const name = label || rawSrc.split(/[?#]/)[0].split(/[\\/]/).pop() || rawSrc;
+  const text = kind === "video" ? tr("[视频：{p1}]", { p1: name }) : tr("[音频：{p1}]", { p1: name });
+  if (/^https?:\/\//i.test(rawSrc)) {
+    const a = document.createElement("a");
+    a.href = rawSrc;
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    a.textContent = text;
+    return a;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(rawSrc) && !/^[A-Za-z]:[\\/]/.test(rawSrc)) {
+    const span = document.createElement("span");
+    span.textContent = text;
+    return span;
+  }
+  return fileLink(rawSrc.split("#")[0], text, opts);
+}
+
+/**
+ * A player for a media file referenced from markdown (#542). http(s) loads directly (same rule as
+ * images); a relative src goes through `imageSrc`, exactly like an image. Where the caller has no
+ * `imageSrc` (chat bubbles) or refuses the path, a local file becomes a link that opens the preview
+ * instead — chat never embeds local media. A player that errors becomes that same link.
+ */
+function mediaNode(kind: "video" | "audio", rawSrc: string, label: string, attrs: MediaAttrs, opts: MdOptions): HTMLElement {
+  const resolve = (s: string) => (/^https?:\/\//i.test(s) ? s : opts.imageSrc?.(s) ?? null);
+  const src = resolve(rawSrc);
+  if (!src) return mediaFallbackNode(kind, rawSrc, label, opts);
+  const media = document.createElement(kind);
+  media.className = "md-media";
+  media.controls = true;
+  media.preload = "metadata";
+  if (label) media.title = label;
+  if (attrs.loop) media.loop = true;
+  if (attrs.muted) {
+    media.muted = true;
+    media.defaultMuted = true;
+  }
+  if (kind === "video") {
+    const v = media as HTMLVideoElement;
+    const poster = attrs.poster ? resolve(attrs.poster) : null;
+    if (poster) v.poster = poster;
+    if (attrs.width) v.width = attrs.width;
+    if (attrs.height) v.height = attrs.height;
+  }
+  media.onerror = () => {
+    if (media.isConnected) media.replaceWith(mediaFallbackNode(kind, rawSrc, label, opts));
+  };
+  media.src = src;
+  return media;
+}
+
+/** Attributes of one start tag (`<video a="1" b='2' c=3 d>`), names lower-cased. */
+function tagAttrs(tag: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const body = tag.replace(/^<\s*[a-z]+/i, "").replace(/\/?>$/, "");
+  const re = /([^\s"'<>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body))) {
+    const name = m[1].toLowerCase();
+    if (!out.has(name)) out.set(name, m[2] ?? m[3] ?? m[4] ?? "");
+  }
+  return out;
+}
+
+const MEDIA_TAG_START = /^\s*<(video|audio)(?=[\s>\/])/i;
+
+/**
+ * A block-level `<video …>` / `<audio …>` starting at `lines[i]` (#542): runs to its closing tag (may
+ * span lines), or ends at the start tag itself when it is self-closing or nothing closes it before a
+ * blank line. Returns the player and the index of the first line after the block.
+ */
+function mediaBlock(lines: string[], i: number, opts: MdOptions): { node: HTMLElement; next: number } | null {
+  const start = MEDIA_TAG_START.exec(lines[i]);
+  if (!start) return null;
+  const kind = start[1].toLowerCase() as "video" | "audio";
+  const close = new RegExp(`</\\s*${kind}\\s*>`, "i");
+  let end = i;
+  let text = lines[i];
+  // The start tag itself may wrap; collect until its `>`.
+  while (!/^[^>]*>/.test(text.replace(/"[^"]*"|'[^']*'/g, "")) && end + 1 < lines.length && lines[end + 1].trim()) {
+    end += 1;
+    text += `\n${lines[end]}`;
+  }
+  const tagEnd = (() => {
+    const stripped = text.replace(/"[^"]*"|'[^']*'/g, (q) => "_".repeat(q.length));
+    return stripped.indexOf(">");
+  })();
+  if (tagEnd < 0) return null;
+  const openTag = text.slice(text.indexOf("<"), tagEnd + 1);
+  const selfClosing = /\/\s*>$/.test(openTag);
+  if (!selfClosing && !close.test(text)) {
+    let k = end + 1;
+    while (k < lines.length && lines[k].trim() && !close.test(lines[k])) k += 1;
+    if (k < lines.length && close.test(lines[k])) {
+      text += `\n${lines.slice(end + 1, k + 1).join("\n")}`;
+      end = k;
+    }
+  }
+  const attrs = tagAttrs(openTag);
+  let src = attrs.get("src") ?? "";
+  if (!src) {
+    const source = /<source\b[^>]*>/i.exec(text.slice(tagEnd + 1));
+    if (source) src = tagAttrs(source[0]).get("src") ?? "";
+  }
+  if (!src) return null;
+  const num = (v: string | undefined) => (v && /^\d{1,5}$/.test(v.trim()) ? Number(v.trim()) : undefined);
+  const picked: MediaAttrs = {
+    poster: kind === "video" ? attrs.get("poster") || undefined : undefined,
+    loop: attrs.has("loop"),
+    muted: attrs.has("muted"),
+    width: num(attrs.get("width")),
+    height: num(attrs.get("height")),
+  };
+  const box = document.createElement("div");
+  box.className = "md-media-block";
+  box.appendChild(mediaNode(kind, src.trim(), "", picked, opts));
+  return { node: box, next: end + 1 };
 }
 
 /** The anchor a markdown link asks for: external tab, in-page anchor, or file preview. */
@@ -172,7 +317,9 @@ function inlineInto(target: Node, text: string, opts: MdOptions): void {
       const pic = /^!\[([^\]]*)\]\(([^\s)]+)\)$/.exec(label);
       if (pic) {
         const img = imageNode(pic[1], pic[2], opts);
-        if (img) target.appendChild(wrapHref(img, href, opts));
+        // A player inside an <a> would navigate on every click of its controls (#542).
+        if (img && mediaKind(pic[2])) target.appendChild(img);
+        else if (img) target.appendChild(wrapHref(img, href, opts));
         else target.appendChild(document.createTextNode(pic[1] || tr("[图片]")));
       } else if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
         const a = document.createElement("a");
@@ -246,7 +393,7 @@ export function renderMarkdown(src: string, opts: MdOptions = {}): DocumentFragm
     list = null;
   };
   const isBlockStart = (l: string) =>
-    /^\s*(```|~~~)/.test(l) || /^#{1,6}\s/.test(l) || /^\s*([-*+]|\d+[.)])\s+/.test(l) || /^\s*>/.test(l) || /^\s*([-*_])(\s*\1){2,}\s*$/.test(l) || /^\s*\|/.test(l);
+    /^\s*(```|~~~)/.test(l) || /^#{1,6}\s/.test(l) || /^\s*([-*+]|\d+[.)])\s+/.test(l) || /^\s*>/.test(l) || /^\s*([-*_])(\s*\1){2,}\s*$/.test(l) || /^\s*\|/.test(l) || MEDIA_TAG_START.test(l);
 
   while (i < lines.length) {
     const line = lines[i];
@@ -285,6 +432,16 @@ export function renderMarkdown(src: string, opts: MdOptions = {}): DocumentFragm
       closeList();
       i += 1;
       continue;
+    }
+
+    if (MEDIA_TAG_START.test(line)) {
+      const block = mediaBlock(lines, i, opts);
+      if (block) {
+        closeList();
+        frag.appendChild(block.node);
+        i = block.next;
+        continue;
+      }
     }
 
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {

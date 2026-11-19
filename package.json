@@ -95,6 +95,7 @@
     "probe:workspace": "node probes/run-all.mjs",
     "probe:chrome": "node probes/run-all.mjs --only chrome-topbar,chrome-bottom,chrome-sheet,chrome-narrow",
     "probe:preview": "node probes/preview-open.mjs",
+    "probe:media": "node probes/media-preview.mjs",
     "probe:filesearch": "node probes/filesearch.mjs",
     "probe:translate": "node probes/translate-ui.mjs",
     "probe:extstore": "node probes/ext-store-paint.mjs",

@@ -2537,6 +2537,14 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .viewer-body.image { display: grid; place-items: center; padding: 16px;
   background: repeating-conic-gradient(var(--panel-2) 0% 25%, var(--panel) 0% 50%) 0 0 / 20px 20px; }
 .viewer-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+/* #542: native player, scaled to the panel; audio gets a full-width bar near the top. */
+.viewer-body.media { display: grid; place-items: center; padding: 16px; background: #000; }
+.viewer-body.media:has(> audio) { place-items: start center; background: var(--panel); }
+.viewer-media.video { max-width: 100%; max-height: 100%; display: block; background: #000; }
+.viewer-media.audio { width: min(100%, 640px); }
+.md-doc .md-media { display: block; max-width: 100%; margin: 8px 0; }
+.md-doc audio.md-media, .md audio.md-media { width: min(100%, 480px); }
+video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .viewer-msg { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 24px 16px; color: var(--dim); font-size: 13px; }
 .viewer-msg.err { color: var(--danger); }
 .viewer-msg.err > div { flex-basis: 100%; white-space: pre-wrap; word-break: break-word; }

@@ -6403,3 +6403,18 @@ Esc 之后 dialog: 0
 **与 D146 的关系：** D146 规定「打开 ≠ 置顶」，打开不改排列；本条只管「新建」，新建本来就要在列表里给它一个位置，两者不冲突。
 
 **验证：** `node bridge/tests/new-session-pin.mjs`（真桥 + 桩 pi：不带 pin 的 create 落到末尾、第二个排在后面且第一个仍在、`/import` 也置顶、随手问不进 pin）；`node probes/round16-pin.mjs` 改成桩桥对所有 create 置顶，并断言页面不再发 `pin`（顺手修了它在新会话面板改版后失效的路径输入选择器）。
+
+## D328 预览能播放视频 / 音频：浏览器能放就放，放不了降级到本机程序（#542，2026-11-19）
+
+**问题：** 预览把 `.mp4` 当二进制，只给「新标签页打开 / 下载」；`/raw` 不支持 Range，大文件拖进度、moov 在尾部的 mp4 都放不了。Markdown 里也嵌不了视频。
+
+**决定：**
+
+- 桥：`kindOf` 新增 `video` / `audio`（mp4 m4v webm ogv mov mkv avi wmv flv / mp3 wav m4a aac ogg oga flac opus），带正确 MIME；`/raw` 支持单段 `Range`（206 / 416，多段与坏头退回 200 全量），本地与隧道同一条路。公网同样抹掉 `abs`。不转码、不引入 ffmpeg。
+- viewer：`<video|audio controls preload="metadata">`，**不自动播放**；重绘时同一个 raw url 的播放器原地保留（不打断播放），关闭 / 换文件先 `pause()`。`error` 事件 → 和不支持格式的二进制同一张卡片：「用默认程序打开」「新标签页打开 / 下载」「在文件夹中显示」；失败过的 url 记住，重绘不再重试。
+- Markdown（文档预览）：`![](x.mp4)` 按扩展名变播放器；块级 `<video>` / `<audio>` 只认白名单 `src poster loop muted width height`（`<source>` 取第一个），`controls` 强制开，`autoplay` / `on*` / `style` 一律丢弃——不是消毒 HTML，而是从不拷贝白名单外的东西。本地路径走和图片相同的 `imageSrc`（`/raw`），http(s) 直接加载。
+- 聊天气泡：**本地媒体不内嵌**（和本地图片一样），变成「[视频：名]」链接，点开进 viewer；路径链接也认媒体扩展名。
+
+**已知偏差：** `HTMLMediaElement` 没有 `referrerPolicy`，页面也没设全站 referrer 策略，外链媒体会带默认的 origin-only referrer（图片是 `no-referrer`）。
+
+**验证：** `node bridge/tests/media-raw.mjs`（kind / MIME / Range 206·416·多段·坏头 / 隧道抹 abs）；`node probes/media-preview.mjs`（真 Chromium：webm 时长、拖动出 206、能播、关掉即停；wav；坏 mp4 与 avi 降级卡片；md 三种写法 + 白名单；聊天只出链接、点开播放；150% 字号不越界）。
