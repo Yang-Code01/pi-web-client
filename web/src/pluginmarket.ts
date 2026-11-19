@@ -60,6 +60,8 @@ export interface MarketViewState {
   updates: number;
   ops: MarketOp[];
   recentHidden: boolean;
+  /** npm has more beyond what was fetched (the list came back full at the requested size). */
+  moreRemote: boolean;
 }
 
 export interface MarketActions {
@@ -69,6 +71,8 @@ export interface MarketActions {
   onSort(sort: MarketSort, dir: MarketDir): void;
   onOnlyInstalled(only: boolean): void;
   onVisible(n: number): void;
+  /** Fetch the next npm page (250 more) and show 30 more rows. */
+  onMoreRemote(): void;
   onInstall(pkg: MarketPackage): void;
   onToggleFavorite(name: string): void;
   onToggleBlock(name: string): void;
@@ -697,6 +701,15 @@ function discoverPage(state: MarketViewState, actions: MarketActions): HTMLEleme
     const b = el("button", "mk-install", tr("加载更多（还有 {p1} 个）", { p1: ordered.length - shown.length })) as HTMLButtonElement;
     b.type = "button";
     b.onclick = () => actions.onVisible(state.visible + 30);
+    more.append(b);
+    page.append(more);
+  } else if (state.moreRemote) {
+    // 列表到底了，但 npm 那边还有（只取了前几百个）：再取一页，已显示的不动。
+    const more = el("div", "mk-load-more");
+    const b = el("button", "mk-install", state.loading ? tr("正在从 npm 取更多…") : tr("从 npm 加载更多")) as HTMLButtonElement;
+    b.type = "button";
+    b.disabled = state.loading;
+    b.onclick = () => actions.onMoreRemote();
     more.append(b);
     page.append(more);
   }

@@ -6494,3 +6494,13 @@ Esc 之后 dialog: 0
 **取舍。** 没开会话时产物与文件管理器仍不画（`SESSION_ONLY` 没变），文件管理器在开关墙里是虚线方块、title 写「默认不显示」。在 390 上点亮过文件管理器（`files: true`）的旧偏好继续生效，升级后不会又消失。
 
 **验证。** `web/tests/chrome-unit.mjs`：默认表、`files:true` / `filesearch:false` 闭环、无会话时 files 仍不画、`narrowForcedVisible` 只认显式 true；`probes/chrome-topbar.mjs` 四档宽度断言「文件管理器默认不画、Everything 默认画」、逐颗开关与重开会话后的默认；`probes/chrome-narrow.mjs` 断言 390 / 559 / 560 / 561 / 620 默认一致不画、`true` 在窄屏顶开、`false` 任何宽度都不画；`probes/chrome-sheet.mjs` 断言预览两档都不出文件管理器、点亮后两档都出、删键回默认；`probes/filesearch.mjs` 开场改为默认就在顶栏。
+
+## D333 插件与 MCP 弹窗：已安装的 MCP 先出行后连接，搜索补全，两个市场一个样子（用户报障 2026-11-19）
+
+1. **MCP 行不等 `pi mcp list`。** 它要挨个连上每个服务器（实测十几秒到几分钟）。桥一开始就从 mcp.json 读出行（状态「连接中」）推给页面，`pi list` 和 `pi mcp list` 并排跑，谁回来谁更新；包版本查完立刻推（`packagesChecked`），不再等 MCP。行的命令显示用户写的（`npx -y …`），不是 pi 解析后的 `node.exe …\_npx\…`。刷新时上一次的连接状态和包行保留到新答案回来（stale-while-revalidate）。
+2. **pi-mcp-adapter 自己配置里的服务器也列出来**（`~/.config/mcp/mcp.json`、`~/.agents/mcp.json`、`<agentDir>/mcp-adapter.json`、项目 `.mcp.json` 等），只读：pi mcp 管不到它们，用 `/mcp-adapter` 管。
+3. **MCP 搜索。** 排行索引只取每个服务器的最新版（`version=latest`），否则 600 页上限被旧版本占满、两万多条后被截断，`desktop-touch-mcp`、JetBrains 的都不在里面（索引带 `v`，旧索引照用但后台重建）。匹配看全名（去掉 `io.github.` 前缀）和安装包名，`newrelic` 能搜到 `com.newrelic/mcp-server`；有查询时同时问一次 Registry 的在线搜索合并进来（6 秒超时）。
+4. **插件搜索。** npm 一次只回 250 个，列表到底时「从 npm 加载更多」按 `from=` 再取一页（最多 1000）；查询是一个确切包名而结果里没有时按名字直接查 registry，只认带 `pi-package` 关键词或 `pi` 清单的包。
+5. **样子。** 已安装页嵌在各自市场的子页签里（插件市场 → 已安装：pi 包 + 插件；MCP 市场 → 已安装：MCP 服务器 + 手动添加），行用市场的卡片样式 `.ext-row`、按钮用 `mk-install`，外层页签与市场对齐、字体统一。
+
+**验证。** `node bridge/tests/ext-manager.mjs`（首段先到的是 mcp.json 的行、状态 connecting）、`node probes/ext-manager-stages.mjs`、`node --experimental-strip-types bridge/tests/mcp-relevance-unit.mjs`。

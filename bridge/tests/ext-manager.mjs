@@ -243,14 +243,17 @@ try {
   const instDone = inst[inst.length - 1];
   check(instDone.code === 0, "local package installed through pi");
   check(inst.some((m) => m.type === "picli.start" && m.reqId === "probe1") && instDone.reqId === "probe1", "the bridge echoes the page's reqId so a queued command can be told apart");
-  // D113: the inventory arrives in stages — installed rows first, then MCP, then versions. Since D171
-  // the version stage waits for the MCP rows (it reads their pinned versions), so the order of the late
-  // two is fixed; every snapshot carries everything that has answered so far.
+  // D113: the inventory arrives in stages — the MCP rows from mcp.json first (state 连接中, before `pi
+  // list` answers), then the installed packages, then `pi mcp list` and versions. Every snapshot carries
+  // everything that has answered so far.
   const stages = (
     await a.collect({ type: "ext.inventory", check: true }, (m) => m.type === "ext.inventory" && m.mcpReady && m.versionsChecked, "inventory stages")
   ).filter((m) => m.type === "ext.inventory");
-  check(stages.length >= 2, `inventory pushed in ${stages.length} stages`);
-  check(stages[0].mcpReady === false && stages[0].versionsChecked === false && stages[0].packages?.length === 1, "first stage: the installed packages, without waiting for MCP or the registries");
+  check(stages.length >= 3, `inventory pushed in ${stages.length} stages`);
+  const early = stages[0].mcp?.find((m) => m.name === "everything");
+  check(stages[0].packagesReady === false && stages[0].mcpReady === false && early?.state === "connecting", `first stage: MCP rows from mcp.json, connecting, packages not read yet (${JSON.stringify(early)})`);
+  const listed = stages.find((s) => s.packagesReady);
+  check(listed && listed.versionsChecked === false && listed.packages?.length === 1, "then the installed packages, without waiting for MCP or the registries");
   let inv = stages[stages.length - 1];
   check(inv.mcpReady === true && inv.versionsChecked === true, "the last stage has both the MCP rows and the versions");
   const pkg = inv.packages?.find((p) => p.name === "demo-pkg");
