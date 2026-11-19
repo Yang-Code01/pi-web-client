@@ -45,9 +45,11 @@ const messages = new Messages({ cfg, nodeId, discovery, history, outbox: null as
 const outbox = new Outbox({
   log,
   deliver: (item) => messages.deliver(item),
+  locate: (peerId) => discovery.byId(peerId),
   settled: (item, verdict) => {
-    // 只有文字需要回执；好友请求/接受在通讯录里已经有了自己的状态。
-    if (item.kind !== "text") {
+    // 文字与记录包是「一条消息」，要回执（页面靠它画已送达 / 发送失败 + 重发）；
+    // 好友请求/接受在通讯录里已经有了自己的状态。记录包以前漏在这里：送达后状态一直是空的。
+    if (item.kind !== "text" && item.kind !== "note") {
       if (!verdict.ok) log(`控制消息 ${item.kind} → ${item.addr}:${item.port} 没送到：${verdict.error}`);
       return;
     }

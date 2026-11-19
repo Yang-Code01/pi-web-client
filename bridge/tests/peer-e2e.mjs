@@ -735,6 +735,10 @@ try {
   const unreadThread = await until(
     "B 的未读 >= 2",
     async () => {
+      // 两条都落盘了才往下走：只看 unread >= 2 不够，前面 agent 代发那条也算未读，
+      // 「未读二」还在路上时就打水位，它之后到达又把未读顶回 1。
+      const got = await msgsOf(17966, sa);
+      if (!got.some((e) => e.kind === "text" && e.text === "未读二")) return false;
       const t = (await threadsOf(17966)).find((x) => x.nodeId === sa);
       return t && t.unread >= 2 ? t : false;
     },

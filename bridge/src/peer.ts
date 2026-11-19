@@ -38,6 +38,9 @@ export interface PeerThread {
   last: { id: string; at: number; kind: string; text?: string; from: { nodeId: string; nickname?: string }; file?: { name: string } } | null;
 }
 
+/** 子进程跑满这么久再退出，重启计数清零。 */
+const STABLE_MS = 60_000;
+
 /**
  * peer 子进程的托管：fork + 退避重启 + 5 秒轮询 `/status`。
  *
@@ -47,6 +50,8 @@ export interface PeerThread {
 export class PeerHost {
   private child: ChildProcess | null = null;
   private restarts = 0;
+  /** 这一份子进程什么时候起的：稳定跑过 `STABLE_MS` 再退出，就不算「连续」退出。 */
+  private spawnedAt = 0;
   private stopped = false;
   private status: PeerStatus | null = null;
   private reason = "";
@@ -95,6 +100,7 @@ export class PeerHost {
       windowsHide: true,
     });
     this.child = child;
+    this.spawnedAt = Date.now();
     const relay = (buf: Buffer) => {
       for (const line of buf.toString("utf8").split(/\r?\n/)) if (line.trim()) this.opts.log(`[peer] ${line.trim()}`);
     };
@@ -109,6 +115,9 @@ export class PeerHost {
         this.reason = `peer 端口 ${this.opts.port} 被占用：另一份 peer 在跑（或者别的程序占了）`;
         return;
       }
+      // 「连续退出」要真的连续：以前计数从不清零，隔几天崩一次、累计第 4 次就再也不重启，
+      // 内网通一直挂到 bridge 重启。跑稳了一分钟再退出，就从头算。
+      if (Date.now() - this.spawnedAt > STABLE_MS) this.restarts = 0;
       this.restarts += 1;
       if (this.restarts > 3) {
         this.reason = `peer 连续退出 ${this.restarts} 次（最后一次 ${signal ?? code}），不再重启`;
