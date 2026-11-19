@@ -181,10 +181,28 @@ export function localDateKey(ms: number): string {
   return `${y}-${m}-${day}`;
 }
 
-function dayStartMs(ms: number): number {
+/**
+ * 一个工作日从凌晨 `WORKDAY_START_HOUR` 点算起（D334）：过了半夜还在干活，0:00–5:00 的解锁 / 锁屏
+ * 归前一天 —— 前一天的下班顺着延长，第二天的上班也不会被凌晨那次解锁顶成 01:30。
+ * 用本地分量回拨一天而不是减 5 小时，夏令时切换那天也不会错位。
+ */
+export const WORKDAY_START_HOUR = 5;
+
+function workDayDate(ms: number): Date {
   const d = new Date(ms);
+  if (d.getHours() < WORKDAY_START_HOUR) d.setDate(d.getDate() - 1);
   d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  return d;
+}
+
+/** 事件归哪个工作日：键的形状与 `localDateKey` 一样，只是凌晨 5 点前算前一天。 */
+export function workDayKey(ms: number): string {
+  return localDateKey(workDayDate(ms).getTime());
+}
+
+/** `ms` 所在工作日的那个日历日的 0 点（不是 5 点：只拿它往前数日子、取星期）。 */
+function dayStartMs(ms: number): number {
+  return workDayDate(ms).getTime();
 }
 
 /** 逐行读 `agent.jsonl`：坏行跳过，不看时间顺序也没有关系（后面统一排序）。 */
@@ -225,7 +243,7 @@ export function parseLogEvents(value: unknown): WorkclockEvent[] {
   return out;
 }
 
-/** 同一来源里 5 秒内的同种事件去重（记录器启动时可能既报 start 又报 logon）。 */
+/** 同种事件 5 秒内只留第一条，不分来源（记录器启动时可能既报 start 又报 logon；一次解锁日志和事件各记一条）。 */
 export function dedupeEvents(events: WorkclockEvent[]): WorkclockEvent[] {
   const sorted = [...events].sort((a, b) => a.t - b.t);
   const out: WorkclockEvent[] = [];
@@ -240,7 +258,7 @@ export function dedupeEvents(events: WorkclockEvent[]): WorkclockEvent[] {
 function byDay(events: WorkclockEvent[]): Map<string, WorkclockEvent[]> {
   const map = new Map<string, WorkclockEvent[]>();
   for (const ev of events) {
-    const key = localDateKey(ev.t);
+    const key = workDayKey(ev.t);
     const list = map.get(key) ?? [];
     list.push(ev);
     map.set(key, list);
@@ -249,18 +267,39 @@ function byDay(events: WorkclockEvent[]): Map<string, WorkclockEvent[]> {
   return map;
 }
 
+/** 记录器的 `start` 在页面上按「事件」显示；其余来源原样。 */
+function sourceOf(ev: WorkclockEvent): WorkclockSource {
+  if (ev.src === "poll" || ev.src === "log") return ev.src;
+  return "event";
+}
+
 /**
- * 某一天的上班时刻。优先级：记录器看到的真实会话事件 > 轮询估计 > 日志回填 > 记录器启动时刻。
- * 同一天几种都有时不用 min() 混算 —— 让来源在页面上说得清，也别拿「中途才装上的记录器」冒充上班时间。
+ * 某一天的上班时刻：真实解锁（事件 / 轮询估计 / 日志回填）里最早的那一条，来源就标它自己的；
+ * 记录器启动时刻（`start`）只在一条真实解锁都没有时兜底。
+ * 不按来源排先后（D334 取代 D246 第 4 条）：记录器中途才装上时，它看到的第一次解锁会比日志里的晚，
+ * 按来源排就会把日志回填出来的真 09:29 压成 11:23。`start` 仍最弱，15:00 装的记录器不顶掉 09:00。
  */
 function pickFirstUnlock(list: WorkclockEvent[]): { t: number; src: WorkclockSource } | null {
-  const real = list.filter((ev) => ev.k === "unlock" && (ev.src === "event" || ev.src === "poll"));
-  if (real.length) return { t: real[0].t, src: real[0].src === "poll" ? "poll" : "event" };
-  const logged = list.filter((ev) => ev.k === "unlock" && ev.src === "log");
-  if (logged.length) return { t: logged[0].t, src: "log" };
+  const real = list.find((ev) => ev.k === "unlock" && ev.src !== "start");
+  if (real) return { t: real.t, src: sourceOf(real) };
   const started = list.filter((ev) => ev.k === "unlock");
   if (started.length) return { t: started[0].t, src: "event" };
   return null;
+}
+
+/**
+ * 某一天的下班时刻。`list` 按时间排好、且含第一次解锁，所以最后一条一定不早于上班。
+ * - 今天、最后一条是解锁：还在干，算到「现在」。
+ * - 往日、最后一条是解锁：解锁之后关机（不产生锁屏），或日志回填在没开审核策略的机器上拿不到 4800/4801。
+ *   下班至少是这次解锁，工时只会偏小；标 endInferred，页面写「推算」（D288、D334）。
+ *   不能退回「最后一次锁屏」：9:00 解锁、12:00 锁屏、13:00 解锁后关机会只算 3 小时。
+ * - 最后一条是锁屏：就是它。
+ */
+function dayEnd(list: WorkclockEvent[], isToday: boolean, now: number): { lastEnd: number; endInferred: boolean } {
+  const last = list[list.length - 1];
+  if (last.k === "lock") return { lastEnd: last.t, endInferred: false };
+  if (isToday) return { lastEnd: now, endInferred: false };
+  return { lastEnd: last.t, endInferred: true };
 }
 
 /** 汇总最近 `days` 天（含今天）。返回按日期倒序，未开工的日期也占一行（`firstUnlock === null`）。 */
@@ -282,19 +321,7 @@ export function summarizeDays(
     const first = pickFirstUnlock(list);
     const isToday = i === 0;
     const lastEvent = list[list.length - 1];
-    let lastEnd: number | null = null;
-    let endInferred = false;
-    if (first) {
-      const locks = list.filter((ev) => ev.k === "lock" && ev.t >= first.t);
-      if (isToday && lastEvent && lastEvent.k === "unlock") lastEnd = now;
-      else if (locks.length) lastEnd = locks[locks.length - 1].t;
-      else if (list.length) {
-        // 只有解锁、没有锁屏（日志回填在没开审核策略的机器上拿不到 4800/4801）：下班就是「当天最后一次
-        // 解锁」，工时只会偏小。标 endInferred，页面据此写「推算」，别让人拿它当准数（D288）。
-        lastEnd = list[list.length - 1].t;
-        endInferred = true;
-      }
-    }
+    const { lastEnd, endInferred } = first ? dayEnd(list, isToday, now) : { lastEnd: null, endInferred: false };
     const workedMs = first && lastEnd ? Math.max(0, lastEnd - first.t) : 0;
     const workday = settings.workdays.includes(new Date(start.getTime()).getDay());
     out.push({
@@ -305,7 +332,8 @@ export function summarizeDays(
       source: first ? first.src : null,
       workday,
       met: workday && workedMs >= settings.hours * 3_600_000,
-      unlocks: list.filter((ev) => ev.k === "unlock").length,
+      // 记录器启动（`start`）不是人解的锁，不算次数（D334）。
+      unlocks: list.filter((ev) => ev.k === "unlock" && ev.src !== "start").length,
       ongoing: isToday && Boolean(first) && lastEvent?.k === "unlock",
       endInferred,
     });
@@ -324,14 +352,15 @@ export function summarizeToday(
   const date = base.date;
   let target: number | null = null;
   let remainingMs: number | null = null;
-  if (base.firstUnlock !== null) target = base.firstUnlock + settings.hours * 3_600_000;
+  // 休息日只记解锁、不算倒计时（D246 第 5 条）：target 留空，页面也就不会到点弹提醒。
+  if (base.firstUnlock !== null && base.workday) target = base.firstUnlock + settings.hours * 3_600_000;
   if (target !== null) remainingMs = target - now;
   return {
     ...base,
     target,
     remainingMs,
     events: dedupeEvents(events)
-      .filter((ev) => localDateKey(ev.t) === date)
+      .filter((ev) => workDayKey(ev.t) === date)
       .sort((a, b) => a.t - b.t),
   };
 }

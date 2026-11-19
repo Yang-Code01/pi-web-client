@@ -8,19 +8,42 @@
  * 界面上的硬约束：
  *   - 账号在页面上永远是掩码；已存的本机密码由桥解密后回填进密码框（input 仍是
  *     `type=password`，眼睛按钮只切 type），不落 localStorage，也不进 state 摘要。
- *   - 提交加班要二次确认：先 POST 不带 confirm 拿一份预览，人再点一次才真发。
+ *   - 提交加班 / 请假要二次确认：先 POST 不带 confirm 拿一份预览，人再点一次才真发；
+ *     真发的是预览那一刻的表单（之后再改表单不会混进去）。
  *   - 隧道访客看不到这一页（桥端整页 404），页面这边只负责别把自己画坏。
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { errText, tr } from "./i18n/index.ts";
-import type { AttendanceState, AttendanceRecords, AttendanceOvertime, AttendanceReminder } from "./sysmanage-types.ts";
+import type { AttendanceState, AttendanceRecords, AttendanceOvertime, AttendanceLeave, AttendanceReminder } from "./sysmanage-types.ts";
 // 日期 → 「周五」这件事本机管理已经做过一遍（sysmanage-model.ts:207），别再写一张中文星期表。
 import { weekdayOf } from "./sysmanage-model.ts";
 import { dateKey, defaultRange, defaultWindow, hoursText, overtimeSplit, reasonText, round1, spanText, stepState } from "./attendance-shared.ts";
 import "./attendance.css";
 
-type Tab = "records" | "overtime" | "reminder" | "settings";
+type Tab = "records" | "overtime" | "leave" | "reminder" | "settings";
+
+// i18n-ignore-start OA 的请假类型值：原样发给 OA、也拿来比对，不是界面文案（显示走 leaveTypeLabel）
+const LEAVE_TYPES = ["调休", "事假", "病假", "其他"] as const;
+// i18n-ignore-end
+
+function leaveTypeLabel(t: string): string {
+  const i = (LEAVE_TYPES as readonly string[]).indexOf(t);
+  return i < 0 ? t : [tr("调休"), tr("事假"), tr("病假"), tr("其他")][i]!;
+}
+
+/** 「其他」假只按天、不选钟点。 */
+const isByDay = (t: string): boolean => t === LEAVE_TYPES[3];
+
+interface LeaveForm {
+  type: string;
+  startDay: string;
+  startHour: number;
+  endDay: string;
+  endHour: number;
+  reason: string;
+  l1: string[];
+}
 
 /** 眼睛图标：`visible` = 密码此刻是明文，图标给「划线眼」（点一下又藏回去）。 */
 function eyeIcon(visible: boolean): SVGSVGElement {
@@ -71,6 +94,7 @@ interface OvertimeForm {
 }
 
 const L1_KEY = "pi-web-attendance:l1";
+const LEAVE_L1_KEY = "pi-web-attendance:leave-l1";
 
 export interface AttendancePane {
   /** 切走 / 关面板时调它：停掉正在跑的请求，把 DOM 摘掉。 */
@@ -95,6 +119,13 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
   let overtime: AttendanceOvertime | null = null;
   let overtimeError = "";
   let overtimeBusy = false;
+  let leave: AttendanceLeave | null = null;
+  let leaveError = "";
+  let leaveBusy = false;
+  let leavePending: { preview: Record<string, unknown>; body: Record<string, unknown> } | null = null;
+  /** 请假撤回同样点两次。 */
+  let leaveCancelPending: number | null = null;
+  const leaveForm: LeaveForm = { type: LEAVE_TYPES[0], startDay: "", startHour: 9, endDay: "", endHour: 18, reason: "", l1: [] };
   let notice = "";
   let noticeTone: "ok" | "bad" = "ok";
   // 密码框靠这个活过重绘：点「保存配置」会把整页重画，输入框里刚敲的密码
@@ -234,6 +265,31 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     }
   }
 
+  async function loadLeave(silent = false): Promise<void> {
+    if (leaveBusy) return;
+    leaveBusy = true;
+    if (!silent) leaveError = "";
+    render();
+    try {
+      leave = await api.attendanceLeave();
+      leaveError = "";
+      if (leaveForm.l1.length === 0) {
+        const recalled = recallApprovers(leave.candidates, LEAVE_L1_KEY);
+        leaveForm.l1 = recalled.length > 0 ? recalled : leave.defaultL1.map((p) => String(p.userId));
+      }
+      if (!leaveForm.startDay) {
+        const day = nextWorkday(leave.workdays);
+        leaveForm.startDay = day;
+        leaveForm.endDay = day;
+      }
+    } catch (err) {
+      leaveError = fail(err);
+    } finally {
+      leaveBusy = false;
+      if (!disposed) render();
+    }
+  }
+
   // ---------------------------------------------------------------- 渲染
 
   function render(): void {
@@ -280,6 +336,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     }
     if (tab === "records") root.append(paintRecords());
     else if (tab === "overtime") root.append(paintOvertime());
+    else if (tab === "leave") root.append(paintLeave());
     else if (tab === "reminder") root.append(paintReminder());
     else root.append(paintSettings());
   }
@@ -290,6 +347,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     const items: [Tab, string][] = [
       ["records", tr("考勤记录")],
       ["overtime", tr("加班申请")],
+      ["leave", tr("请假申请")],
       ["reminder", tr("提醒")],
       ["settings", tr("设置")],
     ];
@@ -302,6 +360,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
         notice = "";
         render();
         if (id === "overtime" && !overtime) void loadOvertime();
+        if (id === "leave" && !leave) void loadLeave();
         if (id === "reminder" && !reminderLoaded) void loadReminder();
       };
       tabs.append(b);
@@ -540,21 +599,40 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     }
     if (!overtime.reasons.includes(form.reasonType) && overtime.reasons.length) form.reasonType = overtime.reasons[0]!;
     typeSel.onchange = () => (form.reasonType = typeSel.value);
-    grid.append(field(tr("事由"), typeSel));
-    grid.append(field(tr("项目"), noteField("project", form.project, (v) => (form.project = v), tr("比如项目号，可不填"))));
-    grid.append(field(tr("说明"), noteField("detail", form.detail, (v) => (form.detail = v), tr("补一句为什么，可不填"))));
-    grid.append(field(tr("一级审批人"), leaderSelect(overtime.candidates.l1, form.l1)));
+    grid.append(field(tr("事由"), typeSel, false, true));
+    grid.append(field(tr("项目"), noteField("project", form.project, (v) => (form.project = v), tr("比如项目号"), true), false, true));
+    grid.append(field(tr("说明"), noteField("detail", form.detail, (v) => (form.detail = v), tr("补一句为什么"), true), false, true));
+    grid.append(
+      field(
+        tr("一级审批人"),
+        leaderSelect(overtime.candidates.l1, form.l1, (ids) => {
+          form.l1 = ids;
+          rememberApprovers(L1_KEY, ids);
+        }),
+        false,
+        true,
+      ),
+    );
     grid.append(field(tr("二级审批人"), fixedLeaders(overtime.fixedL2, tr("由考勤系统按组织架构定，不能改")), true));
     card.append(grid);
 
     if (pending) {
       const preview = el("div", "at-confirm");
       preview.append(el("div", "at-confirm__title", tr("确认一下，这一步会真的提交到考勤系统：")));
-      const p = pending.preview as { startTime?: string; endTime?: string; hours?: number; workflow?: string };
+      const p = pending.preview as {
+        startTime?: string;
+        endTime?: string;
+        hours?: number;
+        workflow?: string;
+        reason?: { type?: string; project?: string; detail?: string };
+      };
+      // 确认框只照预览说话：预览是桥端校验过的那一份，也正是「确认提交」要发出去的那一份。
+      const r = p.reason ?? {};
       preview.append(
         el("div", "at-confirm__line", tr("{p1} → {p2} · {p3} 小时", { p1: p.startTime ?? "", p2: p.endTime ?? "", p3: String(p.hours ?? "") })),
-        el("div", "at-confirm__line", tr("事由：{p1}", { p1: form.project ? `${form.reasonType} / ${form.project}` : form.reasonType })),
-        el("div", "at-confirm__line", tr("审批人：{p1}", { p1: approverNames() || p.workflow || "" })),
+        el("div", "at-confirm__line", tr("事由：{p1}", { p1: [r.type, r.project].filter(Boolean).join(" / ") })),
+        el("div", "at-confirm__line", tr("说明：{p1}", { p1: r.detail ?? "" })),
+        el("div", "at-confirm__line", tr("审批人：{p1}", { p1: approverNames(p.workflow ?? "") || p.workflow || "" })),
       );
       const row = el("div", "at-confirm__actions");
       const ok = el("button", "btn primary", tr("确认提交"));
@@ -629,11 +707,17 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     return { text: tr("审批中"), tone: "ok" };
   }
 
-  /** 一格表单：wide 时占满整行（审批人这种要塞几个名字的用得上）。 */
-  function field(label: string, node: HTMLElement, wide = false): HTMLElement {
+  /** 一格表单：wide 时占满整行（审批人这种要塞几个名字的用得上）；required 时标签后面带一个红色 *。 */
+  function field(label: string, node: HTMLElement, wide = false, required = false): HTMLElement {
     const box = el("label", "at-field");
     if (wide) box.classList.add("at-field--wide");
-    box.append(el("span", "at-field__label", label));
+    const head = el("span", "at-field__label", label);
+    if (required) {
+      const star = el("span", "at-req", "*");
+      star.title = tr("必填");
+      head.append(star);
+    }
+    box.append(head);
     box.append(node);
     return box;
   }
@@ -648,19 +732,34 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     return input;
   }
 
-  /** 可选的小输入框：带一句提示，免得人以为必须填。 */
-  /** 确认框里给人看的审批人：id 换成「姓名 工号」，按一级、二级的顺序。 */
-  function approverNames(): string {
+  /**
+   * 确认框里给人看的审批人：把 `"一级ids&二级ids"` 里的 id 换成「姓名 工号」，按一级、二级的顺序。
+   * 加班、请假两页的候选人都放进名单里查（同一个人在两边的 id 一样）。
+   */
+  function approverNames(workflow: string): string {
     const pool = new Map<number, string>();
-    for (const x of overtime?.candidates.l1 ?? []) pool.set(x.userId, `${x.name} ${x.workNo}`.trim());
-    for (const x of overtime?.fixedL2 ?? []) pool.set(x.userId, `${x.name} ${x.workNo}`.trim());
-    const show = (ids: string[]): string => ids.map((id) => pool.get(Number(id)) ?? "").filter(Boolean).join(tr("、"));
-    return [show(form.l1), show(form.l2)].filter(Boolean).join(" → ");
+    const people = [
+      ...(overtime?.candidates.l1 ?? []),
+      ...(overtime?.fixedL2 ?? []),
+      ...(leave?.candidates ?? []),
+      ...(leave?.fixedL2 ?? []),
+    ];
+    for (const x of people) pool.set(x.userId, `${x.name} ${x.workNo}`.trim());
+    const [a = "", b = ""] = workflow.split("&");
+    const show = (part: string): string =>
+      part
+        .split(",")
+        .map((id) => pool.get(Number(id)) ?? "")
+        .filter(Boolean)
+        .join(tr("、"));
+    return [show(a), show(b)].filter(Boolean).join(" → ");
   }
 
-  function noteField(name: string, value: string, onChange: (v: string) => void, hint: string): HTMLInputElement {
+  /** 带一句提示的小输入框；required 时同时打上 `required`（读屏、:invalid 样式都认）。 */
+  function noteField(name: string, value: string, onChange: (v: string) => void, hint: string, required = false): HTMLInputElement {
     const input = text(name, value, onChange);
     input.placeholder = hint;
+    if (required) input.required = true;
     return input;
   }
 
@@ -698,10 +797,10 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     autofillHours();
   }
 
-  // 一级审批人记住上次的选择：天天是同一个人，每次从头挑太烦。
-  function rememberApprovers(): void {
+  // 一级审批人记住上次的选择：天天是同一个人，每次从头挑太烦。加班、请假各记各的。
+  function rememberApprovers(key: string, ids: string[]): void {
     try {
-      localStorage.setItem(L1_KEY, JSON.stringify(form.l1));
+      localStorage.setItem(key, JSON.stringify(ids));
     } catch {
       /* 隐私模式下没有 localStorage，记不住就算了 */
     }
@@ -720,7 +819,11 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     }
   }
 
-  function leaderSelect(list: { userId: number; name: string; workNo: string }[], chosen: string[]): HTMLElement {
+  function leaderSelect(
+    list: { userId: number; name: string; workNo: string }[],
+    chosen: string[],
+    onPick: (ids: string[]) => void,
+  ): HTMLElement {
     const wrap = el("div", "at-leaders");
     if (list.length === 0) {
       wrap.append(el("span", "at-hint", tr("没有候选")));
@@ -742,10 +845,11 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     }
     sel.dataset.role = "l1";
     sel.onchange = () => {
-      form.l1 = Array.from(sel.selectedOptions)
-        .map((o) => o.value)
-        .filter(Boolean);
-      rememberApprovers();
+      onPick(
+        Array.from(sel.selectedOptions)
+          .map((o) => o.value)
+          .filter(Boolean),
+      );
     };
     wrap.append(sel);
     return wrap;
@@ -785,7 +889,8 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
         notice = tr("提交完成");
         noticeTone = "ok";
       } else {
-        await api.attendanceOvertimeSubmit({ ...body, confirm: true });
+        // 发的是预览那一份：人在确认框出来之后又改了表单，不能让没看过的内容混进去。
+        await api.attendanceOvertimeSubmit({ ...(pending?.body ?? body), confirm: true });
         pending = null;
         notice = tr("交上去了，等审批");
         noticeTone = "ok";
@@ -818,6 +923,337 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
       overtime = await api.attendanceOvertime();
     } catch (err) {
       cancelPending = null;
+      notice = fail(err);
+      noticeTone = "bad";
+    }
+    if (!disposed) render();
+  }
+
+  // ---- 请假
+
+  /** 今天之后的第一个工作日（OA 规定 ≤2 天的假要前一天提，默认当天基本都会被拒）。 */
+  function nextWorkday(workdays: string[]): string {
+    const today = dateKey(new Date());
+    const hit = [...workdays].sort().find((d) => d > today);
+    if (hit) return hit;
+    const d = new Date();
+    do d.setDate(d.getDate() + 1);
+    while (d.getDay() === 0 || d.getDay() === 6);
+    return dateKey(d);
+  }
+
+  function dateInput(name: string, value: string, onChange: (v: string) => void): HTMLInputElement {
+    const input = document.createElement("input");
+    input.type = "date";
+    input.className = "at-input";
+    input.dataset.field = name;
+    input.value = value;
+    input.onchange = () => onChange(input.value);
+    return input;
+  }
+
+  function hourSelect(name: string, hours: readonly number[], value: number, onChange: (v: number) => void): HTMLSelectElement {
+    const sel = document.createElement("select");
+    sel.className = "at-input at-hour";
+    sel.dataset.field = name;
+    for (const h of hours) {
+      const opt = document.createElement("option");
+      opt.value = String(h);
+      opt.textContent = `${String(h).padStart(2, "0")}:00`;
+      if (h === value) opt.selected = true;
+      sel.append(opt);
+    }
+    sel.onchange = () => onChange(Number(sel.value));
+    return sel;
+  }
+
+  /** 表单里的预估时长：口径与桥端 estimateLeave 一致（工作日整天 8h、半天 4h；其他按天）。 */
+  function leaveEstimate(): string {
+    const f = leaveForm;
+    if (!f.startDay || !f.endDay || f.endDay < f.startDay) return "—";
+    const days: string[] = [];
+    for (let d = new Date(`${f.startDay}T00:00:00`); dateKey(d) <= f.endDay; d.setDate(d.getDate() + 1)) days.push(dateKey(d));
+    if (isByDay(f.type)) return tr("{p1} 天", { p1: String(days.length) });
+    const work = new Set(leave?.workdays ?? []);
+    const isWork = (k: string): boolean => (work.size ? work.has(k) : ![0, 6].includes(new Date(`${k}T00:00:00`).getDay()));
+    let hours = 0;
+    days.forEach((k, i) => {
+      if (!isWork(k)) return;
+      const from = i === 0 ? f.startHour : 9;
+      const to = i === days.length - 1 ? f.endHour : 18;
+      hours += (from <= 9 && to >= 13 ? 4 : 0) + (from <= 14 && to >= 18 ? 4 : 0);
+    });
+    return tr("{p1} 小时", { p1: String(hours) });
+  }
+
+  function leaveSpan(start: string, end: string, type: string): string {
+    const s = start.replace("T", " ");
+    const e = end.replace("T", " ");
+    if (isByDay(type)) return `${s.slice(0, 10)} → ${e.slice(0, 10)}`;
+    return `${s.slice(0, 16)} → ${e.slice(0, 16)}`;
+  }
+
+  function leaveAmount(app: AttendanceLeave["applyList"][number]): string {
+    if (isByDay(app.leaveType)) return tr("{p1} 天", { p1: String(app.other_days) });
+    const h = app.compensatory_hours || app.normal_hours || app.sick_hours || 0;
+    return tr("{p1} 小时", { p1: String(h) });
+  }
+
+  function paintLeave(): HTMLElement {
+    const wrap = el("div", "at-section");
+    if (leaveError) wrap.append(el("div", "at-banner bad", leaveError));
+    if (!leave) {
+      wrap.append(el("div", "at-empty", leaveBusy ? tr("正在读申请…") : tr("还没读到申请")));
+      if (!leaveBusy) {
+        const retry = el("button", "btn", tr("重试"));
+        retry.type = "button";
+        retry.onclick = () => void loadLeave();
+        wrap.append(retry);
+      }
+      return wrap;
+    }
+    const f = leaveForm;
+    const byDay = isByDay(f.type);
+    const card = el("div", "at-card");
+    card.append(el("h3", "at-card__title", tr("新的请假申请")));
+    const grid = el("div", "at-grid");
+
+    const typeSel = document.createElement("select");
+    typeSel.className = "at-input";
+    typeSel.dataset.field = "leaveType";
+    for (const t of LEAVE_TYPES) {
+      const opt = document.createElement("option");
+      opt.value = t;
+      opt.textContent = leaveTypeLabel(t);
+      if (t === f.type) opt.selected = true;
+      typeSel.append(opt);
+    }
+    typeSel.onchange = () => {
+      f.type = typeSel.value;
+      render();
+    };
+    grid.append(field(tr("请假类型"), typeSel, false, true));
+    const amount = el("span", "at-chip", leaveEstimate());
+    amount.dataset.role = "leave-estimate";
+    const amountBox = el("div", "at-leaders");
+    amountBox.append(amount);
+    if (f.type === LEAVE_TYPES[0] && leave.compensatory !== null) {
+      amountBox.append(el("span", "at-hint", tr("调休余额 {p1} 小时", { p1: String(leave.compensatory) })));
+    }
+    grid.append(field(tr("时长（预估）"), amountBox));
+    const refreshEstimate = (from: HTMLElement): void => {
+      const chip = from.closest(".at-card")?.querySelector<HTMLElement>('[data-role="leave-estimate"]');
+      if (chip) chip.textContent = leaveEstimate();
+    };
+
+    const startBox = el("div", "at-when");
+    const startDay = dateInput("startDay", f.startDay, (v) => {
+      f.startDay = v;
+      // 结束日期早于开始就跟着挑：绝大多数假是同一天。
+      if (!f.endDay || f.endDay < v) {
+        f.endDay = v;
+        const endInput = startDay.closest(".at-card")?.querySelector<HTMLInputElement>('[data-field="endDay"]');
+        if (endInput) endInput.value = v;
+      }
+      refreshEstimate(startDay);
+    });
+    startBox.append(startDay);
+    if (!byDay) {
+      const sh = hourSelect("startHour", [9, 14], f.startHour, (v) => {
+        f.startHour = v;
+        refreshEstimate(sh);
+      });
+      startBox.append(sh);
+    }
+    grid.append(field(tr("开始"), startBox, false, true));
+
+    const endBox = el("div", "at-when");
+    const endDay = dateInput("endDay", f.endDay, (v) => {
+      f.endDay = v;
+      refreshEstimate(endDay);
+    });
+    endBox.append(endDay);
+    if (!byDay) {
+      const eh = hourSelect("endHour", [14, 18], f.endHour, (v) => {
+        f.endHour = v;
+        refreshEstimate(eh);
+      });
+      endBox.append(eh);
+    }
+    grid.append(field(tr("结束"), endBox, false, true));
+
+    const hint = byDay ? tr("例如：育儿假，婚假，产假，丧假等，请注明") : tr("请假原因");
+    grid.append(field(tr("事由"), noteField("leaveReason", f.reason, (v) => (f.reason = v), hint, true), true, true));
+    grid.append(
+      field(
+        tr("一级审批人"),
+        leaderSelect(leave.candidates, f.l1, (ids) => {
+          f.l1 = ids;
+          rememberApprovers(LEAVE_L1_KEY, ids);
+        }),
+        false,
+        true,
+      ),
+    );
+    grid.append(field(tr("二级审批人"), fixedLeaders(leave.fixedL2, tr("由考勤系统按组织架构定，不能改")), true));
+    card.append(grid);
+
+    const rules = el("ul", "at-rules");
+    for (const line of [
+      tr("请假 ≤2 天：须于前一日 16:30 前提交"),
+      tr("请假 ≥3 天：须提前一周提交，说明事由并提交佐证材料"),
+      tr("突发疾病无法提前报备：第一时间告知项目负责人，并于当日补齐系统流程"),
+      tr("病假 / 其他假：还需填写《特殊假申请单》并提交佐证材料至管理部"),
+    ]) {
+      rules.append(el("li", "", line));
+    }
+    card.append(rules);
+
+    if (leavePending) {
+      const p = leavePending.preview as {
+        type?: string;
+        startTime?: string;
+        endTime?: string;
+        reason?: string;
+        workflow?: string;
+        estimate?: { value: number; unit: string };
+      };
+      const box = el("div", "at-confirm");
+      box.append(el("div", "at-confirm__title", tr("确认一下，这一步会真的提交到考勤系统：")));
+      const est = p.estimate ? (p.estimate.unit === "d" ? tr("{p1} 天", { p1: String(p.estimate.value) }) : tr("{p1} 小时", { p1: String(p.estimate.value) })) : "";
+      box.append(
+        el(
+          "div",
+          "at-confirm__line",
+          [leaveTypeLabel(p.type ?? ""), leaveSpan(p.startTime ?? "", p.endTime ?? "", p.type ?? ""), est ? tr("约 {p1}", { p1: est }) : ""]
+            .filter(Boolean)
+            .join(" · "),
+        ),
+        el("div", "at-confirm__line", tr("事由：{p1}", { p1: p.reason ?? "" })),
+        el("div", "at-confirm__line", tr("审批人：{p1}", { p1: approverNames(p.workflow ?? "") || p.workflow || "" })),
+      );
+      const row = el("div", "at-confirm__actions");
+      const ok = el("button", "btn primary", tr("确认提交"));
+      ok.type = "button";
+      ok.disabled = leaveBusy;
+      ok.onclick = () => void submitLeave(true);
+      const no = el("button", "btn", tr("取消"));
+      no.type = "button";
+      no.onclick = () => {
+        leavePending = null;
+        render();
+      };
+      row.append(ok, no);
+      box.append(row);
+      card.append(box);
+    } else {
+      const submit = el("button", "btn primary", leaveBusy ? tr("提交中…") : tr("提交申请"));
+      submit.type = "button";
+      submit.disabled = leaveBusy;
+      submit.onclick = () => void submitLeave(false);
+      card.append(submit);
+    }
+    wrap.append(card);
+
+    const list = el("div", "at-card");
+    list.append(el("h3", "at-card__title", tr("我的请假申请")));
+    if (leave.applyList.length === 0) list.append(el("div", "at-empty", tr("还没有申请")));
+    else {
+      const table = el("table", "at-table");
+      const thead = document.createElement("thead");
+      const hr = document.createElement("tr");
+      for (const label of [tr("单号"), tr("类型"), tr("时间"), tr("时长"), tr("事由"), tr("状态"), ""]) hr.append(el("th", "", label));
+      thead.append(hr);
+      table.append(thead);
+      const tbody = document.createElement("tbody");
+      for (const app of leave.applyList) {
+        const row = document.createElement("tr");
+        const st = statusOf(leave.workflow[String(app.code)] as unknown, app.workflow_result, app.reject_reason ?? "");
+        row.append(
+          el("td", "", String(app.code)),
+          el("td", "", app.leaveType ? leaveTypeLabel(app.leaveType) : "—"),
+          el("td", "", leaveSpan(app.start_time, app.end_time, app.leaveType)),
+          el("td", "", leaveAmount(app)),
+          el("td", "at-note", app.reason ?? ""),
+          el("td", st.tone === "bad" ? "at-bad" : "", st.text),
+        );
+        const cell = document.createElement("td");
+        if (app.workflow_result === 0) {
+          const cancel = el("button", "at-link", leaveCancelPending === app.code ? tr("确认撤回") : tr("撤回"));
+          cancel.type = "button";
+          cancel.onclick = () => void cancelLeave(app.code, app.leaveType);
+          cell.append(cancel);
+        }
+        row.append(cell);
+        tbody.append(row);
+      }
+      table.append(tbody);
+      list.append(table);
+    }
+    wrap.append(list);
+    return wrap;
+  }
+
+  async function submitLeave(confirmed: boolean): Promise<void> {
+    if (leaveBusy) return;
+    const f = leaveForm;
+    const body: Record<string, unknown> = confirmed && leavePending
+      ? leavePending.body
+      : {
+          type: f.type,
+          startDay: f.startDay,
+          endDay: f.endDay,
+          startHour: f.startHour,
+          endHour: f.endHour,
+          reason: f.reason,
+          workflow: { l1: f.l1.map(Number), l2: (leave?.fixedL2 ?? []).map((p) => p.userId) },
+          workdays: leave?.workdays ?? [],
+        };
+    leaveBusy = true;
+    render();
+    try {
+      if (!confirmed) {
+        const res = await api.attendanceLeaveSubmit({ ...body });
+        if (res.needConfirm) {
+          leavePending = { preview: res.preview ?? {}, body };
+          notice = "";
+          return;
+        }
+      } else {
+        await api.attendanceLeaveSubmit({ ...body, confirm: true });
+        leavePending = null;
+        f.reason = "";
+        notice = tr("交上去了，等审批");
+        noticeTone = "ok";
+        leave = await api.attendanceLeave();
+      }
+    } catch (err) {
+      leavePending = null;
+      notice = fail(err);
+      noticeTone = "bad";
+    } finally {
+      leaveBusy = false;
+      if (!disposed) render();
+    }
+  }
+
+  async function cancelLeave(code: number, type: string): Promise<void> {
+    const confirmed = leaveCancelPending === code;
+    try {
+      const res = await api.attendanceLeaveCancel(code, type, confirmed);
+      if (res.needConfirm) {
+        leaveCancelPending = code;
+        notice = tr("再点一次撤回：单号 {p1}").replace("{p1}", String(code));
+        noticeTone = "bad";
+        render();
+        return;
+      }
+      leaveCancelPending = null;
+      notice = tr("已撤回");
+      noticeTone = "ok";
+      leave = await api.attendanceLeave();
+    } catch (err) {
+      leaveCancelPending = null;
       notice = fail(err);
       noticeTone = "bad";
     }
@@ -1190,6 +1626,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     void loadReminder(true);
     if (tab === "records") void loadRecords();
     else if (tab === "overtime") void loadOvertime();
+    else if (tab === "leave") void loadLeave();
   };
 
   return {

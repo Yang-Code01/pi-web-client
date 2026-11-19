@@ -20,6 +20,12 @@ import { ensureDir, readJsonChecked, statePath } from "./paths.ts";
 import {
   clampRange,
   checkDraft,
+  checkLeaveDraft,
+  estimateLeave,
+  leaveOaTimes,
+  leaveTypeOf,
+  type LeaveDraft,
+  type LeaveType,
   findReceipt,
   formatOvertimeReason,
   formatWorkflow,
@@ -66,6 +72,13 @@ export interface AttendanceEndpoints {
   leaders: string;
   /** 部门负责人名单（二级审批人就是这张表里的「我的那两条」）。 */
   roles: string;
+  /** 请假一览。 */
+  leaveList: string;
+  /** 调休 / 事假（`use_type: 0` 时只回审批人与日历，不落单）。 */
+  leaveAddNormal: string;
+  leaveAddSick: string;
+  leaveAddOther: string;
+  leaveCancel: string;
 }
 
 export const DEFAULT_ENDPOINTS: AttendanceEndpoints = {
@@ -76,7 +89,18 @@ export const DEFAULT_ENDPOINTS: AttendanceEndpoints = {
   overtimeCancel: "/in/apply/overtime/cancel",
   leaders: "/in/common/leaders",
   roles: "/in/roles/depart_leader_data",
+  leaveList: "/in/apply/leave/get",
+  leaveAddNormal: "/in/apply/leave/add/normal",
+  leaveAddSick: "/in/apply/leave/add/sick",
+  leaveAddOther: "/in/apply/leave/add/other",
+  leaveCancel: "/in/apply/leave/cancel",
 };
+
+function leaveAddEndpoint(cfg: AttendanceConfig, type: LeaveType): string {
+  if (type === "病假") return cfg.endpoints.leaveAddSick;
+  if (type === "其他") return cfg.endpoints.leaveAddOther;
+  return cfg.endpoints.leaveAddNormal;
+}
 
 export interface AttendanceConfig {
   /** OA 接口根，形如 `https://attendance.example.com:8085`。 */
@@ -672,6 +696,96 @@ async function fetchOvertimeInit(cfg: AttendanceConfig, ctx: OaCtx, cred: Creden
   };
 }
 
+// ---------------------------------------------------------------- 请假
+
+interface LeaveInit {
+  applyList: Record<string, unknown>[];
+  workflow: Record<string, unknown>;
+  /** 一级审批人（项目负责人）候选。 */
+  candidates: LeaderItem[];
+  /** 一级默认：OA 的 `recently_team_leader`（上一次选的人）。 */
+  defaultL1: LeaderItem[];
+  /** 二级固定：本人的部门负责人（OA 表单里只读的那几条）。 */
+  fixedL2: LeaderItem[];
+  /** 调休余额（小时），取不到是 null。 */
+  compensatory: number | null;
+  /** OA 日历里的工作日（type 0 / 4），用来预估时长。 */
+  workdays: string[];
+}
+
+function personItem(o: Record<string, unknown>, idKey = "user_id", nameKey = "name"): LeaderItem | null {
+  const userId = Number(o[idKey] ?? 0) || 0;
+  if (userId <= 0) return null;
+  const p = parsePerson(o[nameKey]);
+  return { userId, name: p.name, workNo: p.workNo };
+}
+
+function people(raw: unknown, idKey?: string, nameKey?: string): LeaderItem[] {
+  const out: LeaderItem[] = [];
+  const seen = new Set<number>();
+  for (const x of Array.isArray(raw) ? raw : []) {
+    const item = x && typeof x === "object" ? personItem(x as Record<string, unknown>, idKey, nameKey) : null;
+    if (!item || seen.has(item.userId)) continue;
+    seen.add(item.userId);
+    out.push(item);
+  }
+  return out;
+}
+
+async function fetchLeaveInit(cfg: AttendanceConfig, ctx: OaCtx, cred: Credentials): Promise<LeaveInit> {
+  // OA 自己的请假页也是这两发：一览 + `use_type: 0` 的 add/normal（只回信息，不落单）。
+  const probe = {
+    use_type: 0,
+    user_id: cred.userId,
+    agent_user_id: 0,
+    leave_type: "",
+    reason: "",
+    start_time: "",
+    end_time: "",
+    workflow_list: "",
+  };
+  const [listRaw, infoRaw] = await Promise.all([
+    oaFetch(cfg, ctx, { method: "GET", endpoint: cfg.endpoints.leaveList, token: cred.token }),
+    oaFetch(cfg, ctx, { method: "POST", endpoint: cfg.endpoints.leaveAddNormal, token: cred.token, body: probe }),
+  ]);
+  if (!okStatus(listRaw)) throw new OaError("leave_ng", 502, ngReason(listRaw, "请假一览取不到"));
+  const v = listRaw as Record<string, unknown>;
+  const info = (infoRaw && typeof infoRaw === "object" ? infoRaw : {}) as Record<string, unknown>;
+  const applyList = (Array.isArray(v.apply_list) ? v.apply_list : []).filter(
+    (x): x is Record<string, unknown> => !!x && typeof x === "object" && String((x as Record<string, unknown>).code ?? "") !== "",
+  );
+  const workflow = v.workflow_list && typeof v.workflow_list === "object" ? (v.workflow_list as Record<string, unknown>) : {};
+  const balance = Array.isArray(info.compensatory_time) ? (info.compensatory_time[0] as Record<string, unknown> | undefined) : undefined;
+  const compensatory = balance && Number.isFinite(Number(balance.compensatory_time)) ? Number(balance.compensatory_time) : null;
+  const workdays = (Array.isArray(info.day_type) ? info.day_type : [])
+    .map((x) => x as Record<string, unknown>)
+    .filter((x) => ["0", "4"].includes(String(x.type)))
+    .map((x) => String(x.date ?? "").slice(0, 10))
+    .filter((x) => x !== "");
+  return {
+    applyList,
+    workflow,
+    candidates: people(info.team_leader),
+    defaultL1: people(info.recently_team_leader),
+    fixedL2: people(info.user_depart_leader_inf, "user_depart_leader_user_id", "user_depart_leader_name"),
+    compensatory,
+    workdays,
+  };
+}
+
+function readLeaveDraft(body: Record<string, unknown>): LeaveDraft {
+  const wf = readWorkflow(body.workflow);
+  return {
+    type: String(body.type ?? ""),
+    startDay: String(body.startDay ?? ""),
+    endDay: String(body.endDay ?? ""),
+    startHour: Number(body.startHour ?? 9),
+    endHour: Number(body.endHour ?? 18),
+    reason: String(body.reason ?? "").trim(),
+    workflow: formatWorkflow(wf.l1, wf.l2),
+  };
+}
+
 // ---------------------------------------------------------------- HTTP
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -1084,6 +1198,103 @@ export async function handleAttendance(
       );
       const ok = okStatus(data);
       audit({ kind: "overtime_cancel", ok, code });
+      if (!ok) return stop(res, 502, "rejected", ngReason(data, "撤回被拒了"));
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    // ---- 请假申请
+    if (url.pathname === "/api/attendance/leave") {
+      if (!config.apiBase) return stop(res, 400, "not_configured", "先配好 OA 地址");
+      if (method === "GET") {
+        const init = await withSession(config, oaCtx, (fresh) => fetchLeaveInit(config, oaCtx, fresh));
+        json(res, 200, {
+          applyList: init.applyList.map((row) => ({ ...row, leaveType: leaveTypeOf(row) })),
+          workflow: init.workflow,
+          candidates: init.candidates,
+          defaultL1: init.defaultL1,
+          fixedL2: init.fixedL2,
+          compensatory: init.compensatory,
+          workdays: init.workdays,
+        });
+        return true;
+      }
+      if (method !== "POST") return stop(res, 405, "bad_method", "不支持这个请求方法");
+      const cred = await session(config, oaCtx);
+      const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+      const draft = readLeaveDraft(body);
+      const problem = checkLeaveDraft(draft);
+      if (problem) return stop(res, 400, problem.code, problem.message);
+      const type = draft.type as LeaveType;
+      const times = leaveOaTimes(draft);
+      const key = receiptKey({ account: cred.account, startTime: times.start, endTime: times.end, hours: 0, reason: `leave:${type}:${draft.reason}` });
+      const dup = findReceipt(receipts, key, Date.now());
+      if (dup) {
+        json(res, 409, {
+          code: "duplicate",
+          error: "十分钟内已经提交过一次同样的请假，要再提交一次请先确认它没进系统",
+          receiptCode: dup.code ?? "",
+        });
+        return true;
+      }
+      if (body.confirm !== true) {
+        const workdays = Array.isArray(body.workdays) ? new Set((body.workdays as unknown[]).map(String)) : null;
+        json(res, 200, {
+          needConfirm: true,
+          preview: { type, startTime: times.start, endTime: times.end, reason: draft.reason, workflow: draft.workflow, estimate: estimateLeave(draft, workdays) },
+        });
+        return true;
+      }
+      const data = await withSession(config, oaCtx, (fresh) =>
+        oaFetch(config, oaCtx, {
+          method: "POST",
+          endpoint: leaveAddEndpoint(config, type),
+          token: fresh.token,
+          body: {
+            use_type: 1,
+            user_id: fresh.userId,
+            agent_user_id: 0,
+            leave_type: type,
+            reason: draft.reason,
+            start_time: times.start,
+            end_time: times.end,
+            workflow_list: draft.workflow,
+          },
+        }),
+      );
+      const ok = okStatus(data);
+      const message = ok ? "" : ngReason(data, "提交被拒了");
+      receipts = [
+        ...receipts.filter((r) => Date.now() - r.at < 30 * 60_000),
+        { key, at: Date.now(), ok, code: ok ? "" : undefined, message: message || undefined },
+      ];
+      audit({ kind: "leave_add", ok, leaveType: type, startTime: times.start, endTime: times.end, message });
+      if (!ok) return stop(res, 502, "rejected", message);
+      json(res, 200, { ok: true });
+      return true;
+    }
+
+    // ---- 撤回请假：POST /api/attendance/leave/cancel?code=<单号>&type=<类型>
+    if (url.pathname === "/api/attendance/leave/cancel") {
+      if (method !== "POST") return stop(res, 405, "bad_method", "不支持这个请求方法");
+      if (!config.apiBase) return stop(res, 400, "not_configured", "先配好 OA 地址");
+      const code = (url.searchParams.get("code") ?? "").trim();
+      if (!/^\d{1,12}$/.test(code)) return stop(res, 400, "bad_code", "单号不对");
+      const leaveType = (url.searchParams.get("type") ?? "").trim();
+      if (url.searchParams.get("confirm") !== "1") {
+        json(res, 200, { needConfirm: true, code });
+        return true;
+      }
+      const data = await withSession(config, oaCtx, (fresh) =>
+        oaFetch(config, oaCtx, {
+          method: "POST",
+          endpoint: config.endpoints.leaveCancel,
+          token: fresh.token,
+          body: { code: Number(code), leave_type: leaveType },
+        }),
+      );
+      const ok = okStatus(data);
+      audit({ kind: "leave_cancel", ok, code });
       if (!ok) return stop(res, 502, "rejected", ngReason(data, "撤回被拒了"));
       json(res, 200, { ok: true });
       return true;

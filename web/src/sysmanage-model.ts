@@ -161,13 +161,31 @@ export function clockText(ms: number): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-/** 目标下班时刻：跨过本地零点就写成「明天 05:37」，不然 23:37 看到「05:37」会以为是今天。 */
+/** 本地日历日的序号（只用来比先后，跨月跨年也对）。 */
+function calendarDay(ms: number): number {
+  const d = new Date(ms);
+  return d.getFullYear() * 10_000 + (d.getMonth() + 1) * 100 + d.getDate();
+}
+
+/**
+ * 目标下班时刻：跨过本地零点就写成「明天 05:37」，不然 23:37 看到「05:37」会以为是今天。
+ * 凌晨 5 点前还算前一个工作日（D334），这时目标多半在昨天：写「昨天 20:23」，别写成「明天」。
+ */
 export function targetText(targetMs: number, nowMs: number): string {
-  const a = new Date(targetMs);
-  const b = new Date(nowMs);
-  const sameDay =
-    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-  return sameDay ? clockText(targetMs) : tr("明天 {p1}", { p1: clockText(targetMs) });
+  const a = calendarDay(targetMs);
+  const b = calendarDay(nowMs);
+  if (a === b) return clockText(targetMs);
+  return a > b ? tr("明天 {p1}", { p1: clockText(targetMs) }) : tr("昨天 {p1}", { p1: clockText(targetMs) });
+}
+
+/**
+ * 属于某个工作日（`date` 是 `YYYY-MM-DD`）的时刻：凌晨 5 点前的事件归前一天（D334），
+ * 落在下一个日历日时写「次日 01:30」，不然近 30 天里的下班「01:30」看着像比上班还早。
+ */
+export function dayClockText(ms: number, date: string): string {
+  const [y, m, d] = date.split("-").map(Number);
+  const own = y * 10_000 + m * 100 + d;
+  return calendarDay(ms) > own ? tr("次日 {p1}", { p1: clockText(ms) }) : clockText(ms);
 }
 
 export interface Countdown {
