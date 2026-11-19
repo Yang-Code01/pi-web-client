@@ -6418,3 +6418,43 @@ Esc 之后 dialog: 0
 **已知偏差：** `HTMLMediaElement` 没有 `referrerPolicy`，页面也没设全站 referrer 策略，外链媒体会带默认的 origin-only referrer（图片是 `no-referrer`）。
 
 **验证：** `node bridge/tests/media-raw.mjs`（kind / MIME / Range 206·416·多段·坏头 / 隧道抹 abs）；`bridge/tests/media-grant-unit.mjs`（媒体文件都有 `/api/open` 授权）；`node probes/media-preview.mjs`（真 Chromium：webm 时长、拖动出 206、能播、关掉即停；wav；坏 mp4 与 avi 降级卡片；md 三种写法 + 白名单；聊天只出链接、点开播放；150% 字号不越界）。
+
+## D329 浏览器面板：按「怎么驱动浏览器」认，不只按工具名认（用户报障 2026-11-19）
+
+**现象：** 会话 18325 里 AI 点了按钮、截了图、录了视频，右栏「浏览器」却是「共 0 次 · 这一轮没有浏览器操作」。
+
+**原因：** 那轮的操作全走 bash：`bash scripts/e2e.sh W TC-01.py TC-02.py`。真正开浏览器的是项目自带的执行器 `run.py`（`sync_playwright` + `connect_over_cdp`），用例和探针只是片段（`p.locator(...).click()`，不写 `import playwright`）。旧的 `scriptedCall()` 找到片段源码后，看它没提 playwright 就丢弃；`.sh` 不算脚本；`read` 过的脚本不进源码表；内联只认 node。另外盘点 716 份会话：用得最多的 `agent_browser`（553 次）与 `agent_browser_code`（63 次）不在默认名单里，`mcp({tool:"browser_exec"})` 网关、desktop-touch 的 `desktop-touch_browser_*` 也认不出。
+
+**决定：**
+- 工具名：默认名单加 `agent_browser`；名字里有独立的 `browser` 段（`agent_browser`、`desktop-touch_browser_click`）也算；`mcp` / `mcp__*` 网关看 `args.tool`，卡片标成「mcp · browser_exec」。只列工具、查说明的网关调用不算。
+- agent-browser：把 `args` 命令行（可串联多条、`batch` + stdin、`browser({args})`）拆成步骤，`--headed` 记成有窗口。shell 里跑 `agent-browser` / `browser-use` 命令行同样算，安装、`--version`、`doctor` 不算。
+- shell 脚本：先把命令切成简单命令、去掉 heredoc 正文和包装（`timeout`、`env`、`npx`、`uv run`…），只认**被执行的**脚本：解释器后面的那一份，或者作为执行器参数传进去的那几份。前者要看得出在驱动浏览器（提到驱动、起浏览器、CDP，或至少两处 page API）；后者一处 page API 就够，看不到源码也照样记一步「run」。多份片段合成一张卡，每份前面插一步「run 文件名」。`read` 读过的整份脚本也进源码表。
+- python：`python - <<EOF` 里真的调了 `sync_playwright()` / `connect_over_cdp` 才算；只是用 python 改文件、`python -c "import playwright"` 检查都不算。
+- 兜底：齿轮里加一栏「命令关键词」（默认空，存 `pi.browserOps.commands`），自家执行器认不出时用户自己补。
+- tab 上的小圆点改用和面板同一套识别，不再只看工具名。
+- **步骤以运行输出为准**（用户在测试环境里反馈：卡片只有「运行 e2e.sh / 读取页面信息 ×4 / 点击」，看不出点了哪个按钮、改了什么）：shell 跑的脚本，输出里认得出 `step …` / `手順N：…`（动作）、`OK` / `NG` / `✓` / `not ok`（断言，失败带 actual / expected）、`data:` / `db:`（读到的值）、`note:`、截图 / 录像路径、`=== 文件名` 段头，就按输出列步骤，跑的时候跟着 partial 输出实时增加（最多留最新 80 步）。一行都认不出才回到源码猜，源码里的 `step('…')` / `test.step('…')` 旁白也记成动作。卡片元信息标出「步骤来自运行输出」还是「从脚本源码推测」（`stepSource`）。浏览器工具卡不读输出（agent_browser 的快照里也有 ✓）。
+- **打转只看实际执行**：从代码里猜出来的重复（循环、四次 `input_value`）不算；只有运行输出里同一步连续报了 `loopCount` 次，或者连着 `loopCount` 次一模一样的浏览器工具调用，而且这次还在跑，才标「打转」；调用一结束就不再标。
+
+**取舍：** 只在命令里**提到**脚本名不算（`grep`、`sed -i`、`git commit -m` 都会提到），所以不能按「出现过就算」放宽；`.sh` 包装器本身也不当浏览器脚本，靠它的参数片段判断。命令关键词默认空，免得把别人的 `e2e` 字样都算进来。
+
+**验证：** `npm run test:browser-ops` 新增 10 段（18325 的执行器片段、heredoc 探针、改文件不算、python 内联、agent_browser 三种写法、CLI、mcp 网关、desktop-touch、命令关键词），改回旧逻辑会红。拿 18325 的真实会话回放：0 张 → 9 张。716 份会话新旧对比：1409 → 2331 张，少掉的约 320 张逐条抽查都是旧版的误报（`sed` / `grep` / 改文件脚本里提到了脚本名）。`npm run test:browser-ops:ui` 补一条：齿轮里有空的命令关键词框。第二轮（输出步骤 + 打转）再加 6 段：按输出列步骤、跑着时实时 / 无输出回源码、源码旁白、工具卡不读输出、代码重复不算打转、连续同样调用或输出重复且在跑才算。用户那次 TC-01 录像会话回放：由 4 步（含「打转」）变成 26 步，逐条是手順、断言、读到的值和录像路径。
+
+## D330 浏览器面板：以运行时真实发生的事为准，猜只用来起名字（用户追问 2026-11-19）
+
+**问题。** D329 之后用户又跑了一轮：AI 写了个启动器 `run_green.py`（只 `import run`）、`cp` 一份片段改成中文再跑，面板又只剩一张「发 CDP」。看命令 / 源码去猜，AI 每换一种写法就漏一次，补不完。
+
+**决定。** 三层，从硬到软：
+
+1. **进程观察（`bridge/src/browser-watch.ts`）。** 工具在跑时，桥每 ~0.8 秒看一眼 pi 子进程底下的进程树与本机 TCP 连接：树里出现 chrome / msedge / chromium / chrome-headless-shell / firefox … 记 `launch`；树里的进程连上「浏览器在监听的本机端口」记 `cdp`（隔一层 daemon 也算）。证据写到工具卡 `ToolItem.browser`，推 `tool`/`browser` 事件，落盘到 `<state>/browser-evidence/<会话>.json`，重开会话补回。前端：有证据而命令认不出时也出卡（步骤 = 运行 <命令> + 启动浏览器 / 发 CDP，输出里有步骤仍按输出）。`PI_WEB_BROWSER_WATCH=0` 关掉。
+2. **输出约定 `::browser <动作> <说明>`。** 脚本打印这种行，这次调用就算，逐行成步骤（act/ok/ng/nav/click/fill/wait/shot/video/value/note/launch，不认识的动作原样当一步）。
+3. **手动标记。** 「执行」页里认不出的 shell 步骤，悬停出 🌐：点一下把被跑的脚本名（没有就用不泛的程序名）加进命令关键词。
+
+**为什么这样。** 各种写法里不变的只有「浏览器被拉起或被连上」，这件事桥能直接看到，不依赖命令长什么样；原来的猜测留着给步骤起名字、给看不到进程的场合兜底（会话回放、远程 pi）。
+
+**取舍。**
+- 归属：pi 的直接子进程里，工具开始之后才出现的，记到开始时间在它之前、最晚开始的在跑工具上；MCP 服务器、扩展这类常驻子进程早于工具，不算。两个 shell 工具同时起子进程时可能记错。
+- Windows 上每开一次 PowerShell 查 `Win32_Process` 要将近 2 秒，所以用一个常驻的 PowerShell（闲 30 秒关），netstat 另跑（几十毫秒）。真机实测：python + playwright 拉 headless 约 2.3 秒认出，连已开 Edge 的 9399 约 3.2 秒认出，不碰浏览器的 `sleep` 不误报。
+- 不到一秒就结束的浏览器调用可能漏看，靠第 2、3 层和原来的猜兜底。
+- `bg_run` 起的后台进程只在工具调用期间看，调用返回后就不跟了。
+
+**验证。** `node --experimental-strip-types bridge/tests/browser-watch-unit.mjs`（8 段：launch、cdp、daemon 隔层、常驻子进程不算、dev server 端口与 pid 重用不算、并发归属、结束后不上报、netstat/lsof/etime 解析）；`web/tests/browser-ops-unit.mjs` 加证据出卡、证据 + 输出步骤、`::browser` 约定、手动标记关键词。

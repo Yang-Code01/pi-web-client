@@ -53,6 +53,16 @@ export interface ToolItem extends ItemBase {
   isError?: boolean;
   durationMs?: number;
   status: "running" | "ok" | "error" | "unknown";
+  /** D330：桥在它跑的时候看到了浏览器（拉起 / 连上调试端口）。 */
+  browser?: BrowserEvidence;
+}
+/** 桥看到的浏览器证据，见 bridge/src/browser-watch.ts。 */
+export interface BrowserEvidence {
+  kind: "launch" | "cdp";
+  browser: string;
+  port?: number;
+  headless?: boolean;
+  at: number;
 }
 /**
  * 模型自己加载了一个技能（隐式触发）：它在 `read` 里读了 SKILL.md —— pi 没有 Skill 工具，

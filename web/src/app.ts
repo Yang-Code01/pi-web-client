@@ -21,7 +21,7 @@ import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
-import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, isBrowserTool, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
+import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, markKeyword, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -17143,6 +17143,9 @@ export class App {
     heading.append(select);
     panel.append(heading);
     const list = el("div", "exec-timeline");
+    // D330：认不出的 shell 调用，用户可以当场指认「这是浏览器操作」，关键词记进齿轮里的命令关键词。
+    const browserCalls = new Set(this.browserModel().cards.map((card) => card.toolCallId));
+    const loadedItems = this.chat.loadedItems();
     for (const row of model.timeline) {
       const selectedPlanTaskId = this.execSelectedPlanTaskId;
       const selected = selectedPlanTaskId !== null && row.planTaskId === selectedPlanTaskId;
@@ -17166,6 +17169,21 @@ export class App {
       };
       const entry = el("div", "exec-step-entry");
       entry.append(button);
+      const loaded = loadedItems.find((it) => it.id === row.id);
+      const keyword = loaded?.kind === "tool" && !browserCalls.has(loaded.toolCallId) ? markKeyword(loaded) : null;
+      if (keyword) {
+        entry.classList.add("markable");
+        const mark = el("button", "exec-step-mark", "🌐") as HTMLButtonElement;
+        mark.type = "button";
+        mark.title = tr("这是浏览器操作：把「{p1}」加进命令关键词，以后的调用都算", { p1: keyword });
+        mark.onclick = () => {
+          if (!this.browserCfg.commands.some((word) => word.toLowerCase() === keyword)) this.browserCfg.commands = [...this.browserCfg.commands, keyword];
+          writeBrowserCfg(this.browserCfg);
+          this.flashToast(tr("已加进命令关键词：{p1}（浏览器面板齿轮里可删）", { p1: keyword }), false, 3000);
+          this.renderQueue();
+        };
+        entry.append(mark);
+      }
       if (row.subagent) entry.append(this.execSubagentNode(row.subagent));
       list.append(entry);
     }
@@ -17210,15 +17228,20 @@ export class App {
       items,
       childRuns,
       tools: this.browserCfg.tools ?? BROWSER_TOOL_PATTERNS,
+      commands: this.browserCfg.commands,
       thresholds: this.browserCfg.thresholds,
       outputAt: Object.fromEntries(this.browserOutputAt),
       now: Date.now(),
     });
   }
 
-  /** 有没有浏览器调用正在跑（只看状态，不解析代码）：第三颗 tab 上的小圆点用。 */
+  /**
+   * 有没有浏览器调用正在跑：第三颗 tab 上的小圆点用。没有在跑的工具就不解析；有的话和面板走同一套识别，
+   * 否则 bash 跑脚本、agent_browser 这些面板认得出、小圆点却不亮（D329）。
+   */
   private browserRunning(): boolean {
-    return this.chat.loadedItems().some((item) => item.kind === "tool" && item.status === "running" && isBrowserTool(item.name));
+    if (!this.chat.loadedItems().some((item) => item.kind === "tool" && item.status === "running")) return false;
+    return this.browserModel().cards.some((card) => card.state === "running" || card.state === "slow" || card.state === "stuck");
   }
 
   /** 记下每次调用「最后一次有新输出」的时刻；没输出过的不记，免得把「开始到现在」当成「多久没输出」。 */
@@ -17242,7 +17265,7 @@ export class App {
     if (this.browserCfgOpen) panel.append(this.browserCfgEditor());
     if (!model.cards.length) {
       panel.append(el("div", "exec-empty", tr("这一轮没有浏览器操作")));
-      panel.append(el("div", "hint", tr("工具名不在名单里就不会出现；点右上角齿轮可改名单与阈值。")));
+      panel.append(el("div", "hint", tr("认得出的有：浏览器工具（MCP、agent_browser），以及运行时真的拉起或连上了浏览器的命令。还漏了的话：脚本里打印「::browser 步骤」行，或在「执行」页那一步右边点 🌐。")));
       return panel;
     }
     const list = el("div", "browser-list");
@@ -17348,6 +17371,12 @@ export class App {
     tools.dataset.bcfg = "tools";
     tools.value = (cfg.tools ?? BROWSER_TOOL_PATTERNS).join(", ");
     tools.title = tr("逗号分隔，按子串认（例：browser_use, playwright, cdp）");
+    const commands = el("input", "browser-cfg-tools browser-cfg-commands") as HTMLInputElement;
+    commands.type = "text";
+    commands.dataset.bcfg = "commands";
+    commands.value = cfg.commands.join(", ");
+    commands.placeholder = tr("命令关键词（例：e2e.sh）");
+    commands.title = tr("shell 命令里出现其中一个就算浏览器操作：给认不出的自家执行器用，逗号分隔");
     const actions = el("div", "browser-cfg-row");
     const save = el("button", "browser-cfg-save", tr("保存")) as HTMLButtonElement;
     save.type = "button";
@@ -17359,6 +17388,7 @@ export class App {
       }
       const list = tools.value.split(/[,，\n]/).map((name) => name.trim()).filter(Boolean);
       cfg.tools = list.length ? list : null;
+      cfg.commands = commands.value.split(/[,，\n]/).map((word) => word.trim()).filter(Boolean);
       writeBrowserCfg(cfg);
       this.browserCfgOpen = false;
       this.renderQueue();
@@ -17366,12 +17396,12 @@ export class App {
     const reset = el("button", "browser-cfg-reset", tr("恢复默认")) as HTMLButtonElement;
     reset.type = "button";
     reset.onclick = () => {
-      this.browserCfg = { thresholds: {}, tools: null };
+      this.browserCfg = { thresholds: {}, tools: null, commands: [] };
       writeBrowserCfg(this.browserCfg);
       this.renderQueue();
     };
     actions.append(save, reset);
-    box.append(nums, tools, actions);
+    box.append(nums, tools, commands, actions);
     return box;
   }
 
@@ -17460,10 +17490,17 @@ export class App {
     meta.append(el("span", "", card.script ? `${card.tool} · ${card.script}` : card.tool));
     if (card.subagent) meta.append(el("span", "", tr("子代理 {p1}", { p1: card.subagent })));
     meta.append(el("span", "", card.headed === null ? tr("有头无头未知") : card.headed ? tr("有头视图") : tr("无头")));
+    if (card.stepSource === "output") meta.append(el("span", "browser-src", tr("步骤来自运行输出")));
+    else if (card.stepSource === "script") meta.append(el("span", "browser-src", tr("步骤是从脚本源码推测的")));
     body.append(meta);
     if (card.steps.length) {
       const steps = el("ol", "browser-steps");
-      for (const step of card.steps) steps.append(el("li", "", this.browserStepText(step)));
+      for (const step of card.steps) {
+        const tone = step.kind === "check" ? (step.ok ? "pass" : "fail") : step.kind === "act" ? "act" : "";
+        const li = el("li", tone, this.browserStepText(step));
+        if (step.kind === "check" && step.name) li.title = step.name;
+        steps.append(li);
+      }
       body.append(steps);
     } else {
       body.append(el("div", "browser-empty", tr("这次调用没有可拆的操作")));
@@ -17541,6 +17578,21 @@ export class App {
         break;
       case "call":
         text = step.name ? tr("调用 {p1}", { p1: step.name }) : tr("未知操作");
+        break;
+      case "act":
+        // 执行器自己说的话（「手順1：…を押す」）原样显示，不加前缀：它就是人话。
+        text = target || tr("动作");
+        break;
+      case "check":
+        // 展开时 ✓/✗ 由样式画在行首（li.pass / li.fail），文字里只在折叠行带。
+        text = coarse ? `${step.ok ? "✓" : "✗"} ${target}` : target;
+        if (!step.ok && step.name && !coarse) text += ` · ${step.name}`;
+        break;
+      case "value":
+        text = tr("读到 · {p1}", { p1: target });
+        break;
+      case "file":
+        text = /\.(?:mp4|webm)$/i.test(target) ? tr("录像 {p1}", { p1: baseNameOf(target) }) : tr("存下 {p1}", { p1: baseNameOf(target) });
         break;
       default:
         text = target ? tr("原样执行 · {p1}", { p1: target }) : tr("原样执行");
@@ -19335,6 +19387,11 @@ function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
 }
 
 /** 折叠行里的网址省掉协议名：一串「打开 …」本来就挤，`https://` 每段占 8 个字什么也没说。 */
+/** 路径只留文件名（Windows 与 POSIX 分隔符都认）。 */
+function baseNameOf(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 function shortUrl(target: string): string {
   return target.replace(/^https?:\/\//i, "");
 }
@@ -19344,12 +19401,14 @@ interface BrowserCfg {
   thresholds: Partial<BrowserOpsThresholds>;
   /** null = 用默认名单。 */
   tools: string[] | null;
+  /** shell 命令关键词：命令里出现就算浏览器操作（认不出的自家执行器用），默认空。 */
+  commands: string[];
 }
 
 const BROWSER_THRESHOLD_KEYS = ["slowMs", "stuckMs", "silentMs", "loopCount"] as const;
 
 function readBrowserCfg(): BrowserCfg {
-  const cfg: BrowserCfg = { thresholds: {}, tools: null };
+  const cfg: BrowserCfg = { thresholds: {}, tools: null, commands: [] };
   try {
     const raw = JSON.parse(localStorage.getItem("pi.browserOps.thresholds") ?? "null") as Record<string, unknown> | null;
     for (const key of BROWSER_THRESHOLD_KEYS) {
@@ -19364,6 +19423,10 @@ function readBrowserCfg(): BrowserCfg {
       if (list.length) cfg.tools = list;
     }
   } catch { cfg.tools = null; }
+  try {
+    const raw = JSON.parse(localStorage.getItem("pi.browserOps.commands") ?? "null") as unknown;
+    if (Array.isArray(raw)) cfg.commands = raw.filter((word): word is string => typeof word === "string" && word.trim() !== "").map((word) => word.trim());
+  } catch { cfg.commands = []; }
   return cfg;
 }
 
@@ -19373,6 +19436,8 @@ function writeBrowserCfg(cfg: BrowserCfg): void {
     else localStorage.removeItem("pi.browserOps.thresholds");
     if (cfg.tools?.length) localStorage.setItem("pi.browserOps.tools", JSON.stringify(cfg.tools));
     else localStorage.removeItem("pi.browserOps.tools");
+    if (cfg.commands.length) localStorage.setItem("pi.browserOps.commands", JSON.stringify(cfg.commands));
+    else localStorage.removeItem("pi.browserOps.commands");
   } catch { /* 存不了就用默认值 */ }
 }
 
