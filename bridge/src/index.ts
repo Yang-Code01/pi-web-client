@@ -2480,7 +2480,7 @@ async function main(): Promise<void> {
      * manage 的广播一律带上工作区快照（#94）：前端拿到的会话、分组、置顶是同一时刻的一份状态，
      * 否则一次拖排之后两个列表会互相打架。
      */
-    const manageSnapshot = () => ({ manage: sessions.manage.snapshot(), workspace: sessions.workspaces.snapshot() });
+    const manageSnapshot = () => sessions.manageSnapshot();
 
     /**
      * 补一次工作区缓存（git 是子进程，慢），有改动才广播。页面进来时跑一次：worktree 在这时候

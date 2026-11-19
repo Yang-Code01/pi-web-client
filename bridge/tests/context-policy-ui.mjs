@@ -191,6 +191,8 @@ try {
   await page.waitForFunction((id) => location.hash.endsWith(id) && !!document.querySelector(".composer-input textarea"), newId, { timeout: 20000 });
   check("page follows the handoff into the new session", (await page.evaluate(() => location.hash)).endsWith(newId));
   check("the new session shows a working composer (not the blank state)", await page.locator(".composer-input textarea").isVisible());
+  // D327：接棒的新会话在 create() 里置顶，落在 pin 末尾。
+  check("the handoff session is pinned at the end (D327)", frames.some((f) => f.type === "manage" && Array.isArray(f.manage?.pin) && f.manage.pin.at(-1) === newId));
   check("the old session is archived after handoff", frames.some((f) => f.type === "manage" && Array.isArray(f.manage?.archived) && f.manage.archived.includes(sourceId)));
 
   check("page has no uncaught errors", pageErrors.length === 0, pageErrors.join("; "));

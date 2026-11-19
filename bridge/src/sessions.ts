@@ -3362,9 +3362,13 @@ export class SessionManager extends EventEmitter {
    * 只加不减：别的会话（包括分叉 / 接棒的原会话）的置顶一概不动。
    */
   private pinNew(id: string): void {
-    if (!id) return;
     this.manage.pinLast(id);
-    this.emit("ws", { type: "manage", manage: this.manage.snapshot(), workspace: this.workspaces.snapshot() });
+    this.emit("ws", { type: "manage", ...this.manageSnapshot() });
+  }
+
+  /** `manage` 帧的正文：置顶 / 归档 / 标签 + 工作区排列。桥里所有广播 manage 的地方共用这一份。 */
+  manageSnapshot(): { manage: ReturnType<Manage["snapshot"]>; workspace: ReturnType<Workspaces["snapshot"]> } {
+    return { manage: this.manage.snapshot(), workspace: this.workspaces.snapshot() };
   }
 
   // ------------------------------------------------------------ 随手问 (#86)
