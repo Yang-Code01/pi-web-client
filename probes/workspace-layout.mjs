@@ -270,6 +270,7 @@ ok(r.nowHidden === true, "当前会话已在 ★ 行里（带填充），最左�
 // 5) 设置里的四颗布局 chip：#98 起四颗都点得动，没有置灰的
 await page.locator('.icon-btn[data-act="look"]').click();
 await sleep(400);
+await page.locator('.display-sheet .st-nav__item[data-sec="layout"]').click();
 let s = await sheetState();
 ok(s.open, "点 Aa 打开了「外观与语言」");
 ok(s.count === 4 && s.demos === 4, `四颗布局 chip，各带一张示意图（${s.count} / ${s.demos}）`);
@@ -318,6 +319,7 @@ ok((await prefs()).layout === "c", "手写进去的 layout 值原样留着");
 ok((await htmlLayout()) === "c", "手写的 c 直接按 C 画（不再是「没实现」退回 A）");
 await page.locator('.icon-btn[data-act="look"]').click();
 await sleep(400);
+await page.locator('.display-sheet .st-nav__item[data-sec="layout"]').click();
 s = await sheetState();
 ok(s.on.join(",") === "c", "面板亮着的是 c");
 await page.locator(".display-sheet .btn:has-text(\"关闭\")").click();
@@ -326,6 +328,7 @@ await sleep(200);
 // 9) 再点 A：把偏好改回来，并且刷新后保留
 await page.locator('.icon-btn[data-act="look"]').click();
 await sleep(400);
+await page.locator('.display-sheet .st-nav__item[data-sec="layout"]').click();
 await page.locator('.layout-chip[data-layout="a"]').click();
 await sleep(300);
 await page.locator(".display-sheet .btn:has-text(\"关闭\")").click();
@@ -352,6 +355,7 @@ await page.waitForSelector(".session-card", { timeout: 15000 });
 await sleep(700);
 await page.locator('.icon-btn[data-act="look"]').click();
 await sleep(400);
+await page.locator('.display-sheet .st-nav__item[data-sec="layout"]').click();
 await page.locator('.display-sheet .btn:has-text("恢复默认")').click();
 await sleep(400);
 ok((await prefs()).layout === "a", `恢复默认把布局带回 A（layout = ${(await prefs()).layout}）`);

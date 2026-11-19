@@ -100,14 +100,23 @@ const EMPTY_ERROR: Record<SysSection, string> = {
 
 let current: SysPanel | null = null;
 
-/** 打开本机管理。重复调用先关旧的，不会叠两层。 */
-export function openSysmanage(): void {
-  current?.close();
+/**
+ * 打开本机管理。重复调用先关旧的，不会叠两层。
+ * `onClose`：用户把它关掉之后调一次（从齿轮设置的「工具」打开时用来回到那一页）；被新开的一份顶掉时不调。
+ */
+export function openSysmanage(opts: { onClose?: () => void } = {}): void {
+  if (current) {
+    current.onClose = null;
+    current.close();
+  }
   current = new SysPanel();
+  current.onClose = opts.onClose ?? null;
   current.mount();
 }
 
 class SysPanel {
+  /** 关掉之后回到哪里（见 openSysmanage）。 */
+  onClose: (() => void) | null = null;
   private state: State = {
     section: "overview",
     overview: null,
@@ -172,6 +181,9 @@ class SysPanel {
     this.root?.remove();
     this.root = null;
     if (current === this) current = null;
+    const back = this.onClose;
+    this.onClose = null;
+    back?.();
   }
 
   // ---------------------------------------------------------------- 外壳

@@ -47,9 +47,17 @@ const RESULT_TTL_MS = 10 * 60_000;
 
 let current: HotdeployPanel | null = null;
 
-export function openHotdeploy(): void {
-  current?.close();
+/**
+ * 打开热部署。重复调用先关旧的，不会叠两层。
+ * `onClose`：用户把它关掉之后调一次（从齿轮设置的「工具」打开时用来回到那一页）；被新开的一份顶掉时不调。
+ */
+export function openHotdeploy(opts: { onClose?: () => void } = {}): void {
+  if (current) {
+    current.onClose = null;
+    current.close();
+  }
   current = new HotdeployPanel();
+  current.onClose = opts.onClose ?? null;
   current.mount();
 }
 
@@ -69,6 +77,8 @@ interface Notice {
 type Phase = HotdeployPhase | "idle";
 
 class HotdeployPanel {
+  /** 关掉之后回到哪里（见 openHotdeploy）。 */
+  onClose: (() => void) | null = null;
   private root!: HTMLDivElement;
   private console!: HTMLElement;
   private sub!: HTMLElement;
@@ -143,6 +153,9 @@ class HotdeployPanel {
     if (current === this) current = null;
     // 面板里可能刚收掉一个 worktree：让顶栏那颗 chip 重问一句。
     window.dispatchEvent(new CustomEvent("pi-hotdeploy-closed"));
+    const back = this.onClose;
+    this.onClose = null;
+    back?.();
   }
 
   // ---------------------------------------------------------------- 骨架
