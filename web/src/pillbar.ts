@@ -142,6 +142,8 @@ export class PillBar<S extends PillSession = PillSession> {
   private focusAt: number | null = null;
   /** 上一次画出来的胶囊 —— 「＋N」的浮层列的就是这一份。 */
   private chips: PillChip[] = [];
+  /** 上一次看得见的胶囊 id；淡入只给新来的。null = 还没画过。 */
+  private shown: Set<string> | null = null;
 
   constructor(host: HTMLElement, opts: PillBarOpts<S>) {
     this.host = host;
@@ -234,7 +236,24 @@ export class PillBar<S extends PillSession = PillSession> {
     for (const node of tail) host.append(node);
 
     this.fold(nodes, more);
+    this.fadeIn(nodes);
     this.restoreFocus(nodes, tail[0] ?? more, heldKey);
+  }
+
+  /**
+   * 新进来的胶囊淡入（刚点 ★、从归档恢复、归档后从「＋N」里放出来的那颗）。
+   * 整条每次回声都重建，所以只认「上一次没显示、这一次显示了」的 id；首次渲染不演。
+   * 只动 opacity：不碰布局，邻居一个像素都不挣。
+   */
+  private fadeIn(nodes: HTMLElement[]): void {
+    const now = new Set(nodes.filter((n) => !n.hidden).map((n) => n.dataset.pinId ?? ""));
+    const before = this.shown;
+    this.shown = now;
+    if (!before || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    for (const n of nodes) {
+      if (n.hidden || before.has(n.dataset.pinId ?? "")) continue;
+      n.animate([{ opacity: "0" }, { opacity: "1" }], { duration: 220, easing: "ease-out" });
+    }
   }
 
   /**

@@ -19314,8 +19314,10 @@ export class App {
   }
 
   /**
-   * 归档动效：胶囊压扁 → 横着滑进条尾的抽屉 → 抽屉合盖计数 +1 → 塌缩让位，然后才真的发归档。
-   * 先演后发：归档是幂等的，而桥的回声会重建整条置顶条，抽屉就跟着没了。
+   * 归档动效：胶囊原地淡出 → 横向收拢让位（后面的胶囊平滑左移），然后才真的发归档。
+   * 先演后发：归档是幂等的，而桥的回声会重建整条 ★ 行，收拢完的几何必须和重建后一模一样，
+   * 否则回声那一帧会跳。早先版本在条尾插一个抽屉（把「＋」挤开 35px、回声时再弹回）、
+   * 收拢时文字折行把整行撑高 20px，于是整排上下抖 —— 这里锁住高度 + 不换行、不往流里插任何东西。
    */
   private archiveFromPin(id: string, chip: HTMLElement): void {
     if (this.pinAnim) return;
@@ -19328,43 +19330,38 @@ export class App {
     const host = this.els.pinStrip;
     if (!host.contains(chip)) return;
     this.pinAnim = id;
-    const ease = "cubic-bezier(.22,.68,0,1)";
-    const tray = el("div", "pin-tray");
-    tray.append(el("div", "pin-tray-lid"), el("div", "pin-tray-body"), el("span", "pin-tray-count", "1"));
-    host.insertBefore(tray, host.querySelector(".pin-new"));
-    const r = chip.getBoundingClientRect();
-    const t = tray.getBoundingClientRect();
-    const dx = t.left + t.width / 2 - (r.left + r.width / 2);
-    const dy = t.top + t.height / 2 - (r.top + r.height / 2);
-    const w = r.width;
-    tray.animate([{ opacity: "0", transform: "translateY(-4px)" }, { opacity: "1", transform: "none" }], { duration: 140, easing: ease });
-    const lid = tray.querySelector(".pin-tray-lid");
-    lid?.animate(
-      [{ transform: "rotate(0deg)" }, { transform: "rotate(-46deg)", offset: 0.45 }, { transform: "rotate(0deg)" }],
-      { duration: 460, easing: ease },
-    );
-    const fly = chip.animate(
-      [
-        { transform: "none", opacity: "1", offset: 0 },
-        { transform: "scale(1.07, .66)", opacity: "1", offset: 0.34 },
-        { transform: `translate(${dx}px, ${dy}px) scale(.22, .22)`, opacity: "0", offset: 0.92 },
-        { transform: `translate(${dx}px, ${dy}px) scale(.22, .22)`, opacity: "0", offset: 1 },
-      ],
-      { duration: 520, easing: ease, fill: "forwards" },
-    );
-    fly.onfinish = () => {
-      tray.querySelector(".pin-tray-count")?.animate(
-        [{ opacity: "0", transform: "translateX(-50%) scale(.4)" }, { opacity: "1", transform: "translateX(-50%) scale(1)" }],
-        { duration: 220, easing: ease, fill: "both" },
+    // 量 CSS px 而不是 getBoundingClientRect：#app 上有 zoom（外观「字号」），rect 是缩放后的视觉尺寸，
+    // 拿它写回 style.width / height 会被再缩一遍 —— 胶囊先变宽、整行变高，正是这里要治的抖。
+    const cs = getComputedStyle(chip);
+    const borders = parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+    const box = cs.boxSizing === "border-box" ? 0 : borders + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+    const vbox = cs.boxSizing === "border-box" ? 0 : parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const r = { width: parseFloat(cs.width) + box, height: parseFloat(cs.height) + vbox };
+    const gap = parseFloat(getComputedStyle(host).columnGap) || 0;
+    // 收拢只动这一颗胶囊（chip.parentElement 就是 .pin-strip，动它会把整条缩没）。
+    // border-box 下宽度到不了 0（还剩左右边框），用负的右外边距把边框和 flex gap 一起吃掉：
+    // 收完这颗的占位正好是 0，下一颗停在它原来的左边缘 —— 和回声重建后的位置一致。
+    Object.assign(chip.style, {
+      boxSizing: "border-box",
+      height: `${r.height}px`,
+      overflow: "hidden",
+      whiteSpace: "nowrap",
+      pointerEvents: "none",
+    });
+    const fade = chip.animate([{ opacity: "1" }, { opacity: "0" }], { duration: 220, easing: "ease-out", fill: "forwards" });
+    fade.onfinish = () => {
+      const shut = chip.animate(
+        [
+          { width: `${r.width}px`, marginRight: "0px" },
+          { width: "0px", marginRight: `${-(gap + borders)}px` },
+        ],
+        { duration: 220, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" },
       );
-      // 塌缩让位只动这一颗胶囊：chip.parentElement 就是 .pin-strip 本身，
-      // 早先版本动的就是它，结果整条缩成 24px（只剩左右 padding）并横向溢出。
-      chip.animate([{ width: `${w}px` }, { width: "0px" }], { duration: 240, easing: ease, fill: "forwards" });
-      window.setTimeout(() => {
+      shut.onfinish = () => {
         this.pinAnim = null;
         this.archiveIds([id], true);
         this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
-      }, 240);
+      };
     };
   }
 

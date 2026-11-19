@@ -41,6 +41,13 @@ import {
 } from "./context-policy.ts";
 import { readSettings } from "./pisettings.ts";
 
+/**
+ * 启动期 get_state 的等待窗口：过了就把 `starting` 翻下去、交出启动期排队的消息（D178），
+ * 不让页面一直挂「启动中」。窗口过了 pi 还没答，模型 / 思考档位改由 `syncStateAfterBoot` 继续等。
+ * 环境变量只给测试压短用（`bridge/tests/boot-slow-state.mjs`）。
+ */
+const BOOT_STATE_MS = Number(process.env.PI_WEB_BOOT_STATE_MS) || 30_000;
+
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
   return process.env.PI_WEB_GATE ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "approval-gate.ts");
@@ -1406,10 +1413,12 @@ export class Session extends EventEmitter {
     this.setState({ starting: true }, { touch: false });
     const bootAt = Date.now();
     void this.rpc
-      .request<any>("get_state", {}, 30000)
+      .request<any>("get_state", {}, BOOT_STATE_MS)
       .then((st) => this.absorbState(st))
       .catch(() => {
-        /* best effort: events still work */
+        // 机器忙时 pi 冷启实测过 137 秒：窗口过了不等于 pi 没了。不接着问，model / thinkingLevel
+        // 就永远是空的，输入框下的模型 chip 只剩「模型 · –」。
+        void this.syncStateAfterBoot();
       })
       .finally(() => {
         // 这一行是「新会话为什么慢」的唯一可观测出口：桥日志里能直接看到每次冷启花了多久。
@@ -1558,6 +1567,23 @@ export class Session extends EventEmitter {
     const merged: CopilotView = { ...view, account: view.account ?? this.copilotAccount };
     this.copilotView = merged;
     this.emitWs({ type: "copilot", sessionId: this.state.id, ...merged });
+  }
+
+  /**
+   * 启动窗口里 get_state 超时后的补课：同一个 pi 还活着就接着问，直到它答为止。
+   * pi 挂了 / 换了（request 不是因超时失败，或 this.rpc 已经不是它）就停，由新的启动流程接手。
+   */
+  private async syncStateAfterBoot(): Promise<void> {
+    const rpc = this.rpc;
+    for (let i = 0; i < 10 && rpc && this.rpc === rpc; i++) {
+      try {
+        const st = await rpc.request<any>("get_state", {}, Math.max(BOOT_STATE_MS, 60_000));
+        if (this.rpc === rpc) this.absorbState(st);
+        return;
+      } catch (err: any) {
+        if (!/^timeout after/.test(String(err?.message ?? ""))) return;
+      }
+    }
   }
 
   private absorbState(st: any): void {

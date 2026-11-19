@@ -6459,9 +6459,26 @@ Esc 之后 dialog: 0
 
 **验证。** `node --experimental-strip-types bridge/tests/browser-watch-unit.mjs`（8 段：launch、cdp、daemon 隔层、常驻子进程不算、dev server 端口与 pid 重用不算、并发归属、结束后不上报、netstat/lsof/etime 解析）；`web/tests/browser-ops-unit.mjs` 加证据出卡、证据 + 输出步骤、`::browser` 约定、手动标记关键词。
 
-## D331
+## D331 记录面板：顶栏全局检索，结果视图不占分区（用户报障 2026-11-19）
 
-**插件与 MCP 弹窗：已安装的 MCP 先出行后连接，搜索补全，两个市场一个样子。**
+**现象。** 用户截图三件事：①「关闭」按钮离面板右边缘还有一大截，跟「＋ 记一条」「导出」挤在标题右边；② 顶上那个「导出」没人用，要删；③ 想跨分区找一条记录，只能先点分区再用列表里那颗搜索框，得一个个分区试。
+
+**原因。** 头部是 `head.append(title, badge, count, el("div", "grow"), nb, exportAll, closeButton(...))`，而 `.grow` 在全仓库都没有通用的 `flex: 1`（只在 `.nc-state-bar` / `.peer-pick` / `.ask-strip` / `.fail-actions` / `.bc-col-head` 里各自定义），所以那个空 div 宽度是 0，按钮组就紧贴标题、离右边很远。
+
+**决定。**
+- 删掉「导出」：按钮、`exportAll()`、`# {p1} 记录 · {p2}` / `导出` / `把当前这一堆记录导出成一份 Markdown` / `这一堆里没有可导出的记录` / `已导出 {p1} 条` 五条 i18n 键，一起走。要整堆拿走仍可「交给 agent」，那是另一条路。
+- 头部顺序改成 `标题 / 待处理 badge / 统计 / grow / 搜索框 / ＋ 记一条 / 关闭`，`.notes-head > .grow { flex: 1; min-width: 0 }`：「关闭」落右上角，标题与按钮之间留给搜索框（`flex: 0 1 300px`，最窄 120px）。
+- 全局检索不新增视图状态：`searching()` 就是「顶栏输入框有字」（`gq.length > 0`），`view` / `kind` 原封不动。`visible()` 在搜索时忽略分区与分段，只看**活记录**（`!deletedAt && !archivedAt`）的标题 + 正文纯文本（沿用 `matches()`），归档 / 垃圾箱另有各自主页。
+- 结果视图里：导航空放（哪一项都不亮）、分段控件与黄条隐掉、「＋ 记一条」隐掉、列表内那颗搜索框隐掉（两个框并排分不清谁管什么），列表头改「搜索结果 + 命中数 + ✕」，头部统计改「全部记录 · N 条命中」。
+- 结果行标题前挂分区胶囊；行上不摆归档 / 删除两颗小按钮（它们跟着当前这一堆的语义走，跨分区结果里容易误操作）。点一行 = `clearSearch(false)` + `openNote(id)`：切到它所在的分区并选中。
+- 点左侧任一分区 / 归档 / 垃圾箱 / AI 出错记录 = 退出搜索（`setKind` / `setView` 清 `gq`）；否则点了像没反应。
+- Esc 两段：有搜索词时第一下只清空（焦点回到顶栏搜索框），再一下才关面板。
+
+**取舍。** 不加 Ctrl+K（面板是临时浮层，用户没提，加了要跟编辑器 / 浏览器抢键）；不做防抖（本地数组过滤，几十条毫秒级）；搜索词不落盘、不记忆（一次性动作，记下来下次打开还会在搜，预期之外的空白屏）。列表内那颗 `.nc-search` 保留：它限当前分区、按 `seg` 过滤，适合「就在这一堆里找」，和顶栏的分工是范围不同。
+
+**验证。** `npm run test:notes`（`web/tests/notes-sheet-browser.mjs` 第 13 段重写：跨分区命中 / 分区胶囊 / 导航空放 / 三个控件隐掉 / 列表头与头部统计 / 归档不进结果 / 正文可搜 / Esc 只清搜索 / 点结果切分区并选中 / 列表搜索框回来），原「导出」那段与 `footHint` 断言一起删掉。`npm --prefix web run typecheck`（`i18n` 无多余键）。三栏布局截图核对：头部右侧「搜索框 / ＋ 记一条 / 关闭」，搜索态中栏只剩「搜索结果 / 胶囊 / 正文摘要」。
+
+## D332 插件与 MCP 弹窗：已安装的 MCP 先出行后连接，搜索补全，两个市场一个样子（用户报障 2026-11-19）
 
 1. **MCP 行不等 `pi mcp list`。** 它要挨个连上每个服务器（实测十几秒到几分钟）。桥一开始就从 mcp.json 读出行（状态「连接中」）推给页面，`pi list` 和 `pi mcp list` 并排跑，谁回来谁更新；包版本查完立刻推（`packagesChecked`），不再等 MCP。行的命令显示用户写的（`npx -y …`），不是 pi 解析后的 `node.exe …\_npx\…`。刷新时上一次的连接状态和包行保留到新答案回来（stale-while-revalidate）。
 2. **pi-mcp-adapter 自己配置里的服务器也列出来**（`~/.config/mcp/mcp.json`、`~/.agents/mcp.json`、`<agentDir>/mcp-adapter.json`、项目 `.mcp.json` 等），只读：pi mcp 管不到它们，用 `/mcp-adapter` 管。

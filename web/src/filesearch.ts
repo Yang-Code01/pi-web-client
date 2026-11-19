@@ -328,12 +328,14 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
       node.dataset.abs = row.path;
       node.classList.toggle("on", i === sel);
       const name = el("span", "fse-c1 fse-name");
-      if (row.isDir) name.prepend(el("span", "fse-ico", "▤"));
+      // 图标先分「目录 / 文件」两类，名称后面的徽章再说清是什么类型（用户 2026-11-19：
+      // 光看一行 `10581` 分不清是文件夹还是文件）。
+      name.prepend(el("span", "fse-ico", row.isDir ? "▤" : "▪"));
       // 高亮片段包在单独一层里：`.fse-name` 是 flex（图标与名字留 6px），
       // 若让 `<mark>` 直接当 flex 子项，每段文字之间都会多出一道 gap，名字看起来像断成几截。
       const label = el("span", "fse-label");
       label.append(marked(row.name, needle));
-      name.append(label);
+      name.append(label, el("span", "fse-kind", kindText(row)));
       const dir = el("span", "fse-c2 fse-dir", row.dir);
       dir.title = row.path;
       // 行尾三颗：引用 / 打开 / 所在位置（和文件弹层 `.fc-acts` 同一套做法）。
@@ -366,12 +368,14 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
             opts.onOpen(row.path, row.isDir);
           },
         ),
-        act(
-          row.isDir ? tr("打开目录") : tr("位置"),
-          row.isDir ? tr("进到 {p1} 里面看", { p1: row.name }) : tr("在这台电脑的文件管理器里显示 {p1}", { p1: row.name }),
-          () => opts.onReveal(row.path, row.isDir),
-        ),
       );
+      // 目录的第二颗已经是「打开目录」，第三颗再画一颗「打开目录」就是重复（用户 2026-11-19 指出 2 个）：
+      // 目录没有「在文件管理器里选中」这回事，只有文件才有「位置」。
+      if (!row.isDir) {
+        acts.append(
+          act(tr("位置"), tr("在这台电脑的文件管理器里显示 {p1}", { p1: row.name }), () => opts.onReveal(row.path, false)),
+        );
+      }
       node.append(name, dir, el("span", "fse-c3", row.isDir ? "" : fmtSize(row.size)), el("span", "fse-c4", fmtTime(row.mtime)), acts);
       node.onclick = () => {
         select(i);
@@ -529,6 +533,19 @@ function marked(text: string, query: string): DocumentFragment {
   }
   if (at < text.length) frag.append(document.createTextNode(text.slice(at)));
   return frag;
+}
+
+/** 名称列尾的类型徽章：目录「文件夹」，文件给后缀（大写），没有后缀就是「文件」。 */
+function kindText(row: Row): string {
+  if (row.isDir) return tr("文件夹");
+  return extOf(row.name) || tr("文件");
+}
+
+/** `a.tar.gz` → `GZ`；dotfile（`.gitignore`）与没有后缀都算没有。 */
+function extOf(name: string): string {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot >= name.length - 1) return "";
+  return name.slice(dot + 1).toUpperCase();
 }
 
 function fmtSize(n: number): string {
