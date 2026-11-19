@@ -7,7 +7,8 @@
  * 显式打开也换不来一个会话，原因写进 title。
  *
  * 四档宽度 390 / 560 / 620 / 1440 各跑一遍；断言尺寸沿用 D138 的口径：
- * `documentElement.scrollWidth == 视口宽`。
+ * `documentElement.scrollWidth == 视口宽`。D331（2026-11-19）之后宽度不再决定默认：
+ * 文件管理器在任何宽度都默认不画、Everything 默认画；560 那条媒体查询只管显式 `true` 顶开。
  *
  * 下沿四颗（#290）与 Aa 里的开关墙（#291）、窄屏强制显示（#292）不在这里验。
  *
@@ -213,6 +214,7 @@ const newPage = async (width) => {
   let d = await dom(page);
   ok(DESK_ONLY.every((a) => d.acts.includes(a)), "桌面、没开会话：终端 / 记录 / 内网通 / 随手问 / Jira 都画");
   ok(!(await seen(page, "artifacts")) && !(await seen(page, "files")), "桌面、没开会话：产物与文件管理器不在顶栏");
+  ok(await seen(page, "filesearch"), "桌面、没开会话：Everything 默认就在顶栏（机器级，不绑会话）");
   ok(docFits(d), `桌面、没开会话：页面不横向溢出（${d.docScroll} <= ${d.viewport}）`);
 
   await setChrome({ artifacts: true, files: true });
@@ -224,26 +226,37 @@ const newPage = async (width) => {
 
   await openSession(page, "s-1");
   d = await dom(page);
-  ok(TOP.every((a) => d.hidden[a] === false) && TOP.every((a) => d.acts.includes(a)), `开会话、默认：七颗全画（${d.acts.join(",")}）`);
+  const ON = TOP.filter((a) => a !== "files");
+  ok(ON.every((a) => d.hidden[a] === false) && ON.every((a) => d.acts.includes(a)), `开会话、默认：六颗全画（${d.acts.join(",")}）`);
+  ok(d.hidden.files === true && !d.acts.includes("files"), "开会话、默认：文件管理器不占顶栏（D331）");
   ok(docFits(d), `开会话、默认：页面不横向溢出（${d.docScroll} <= ${d.viewport}）`);
 
   // 逐颗关掉再打开：只有那一颗变化，别的原位不动。
-  for (const id of TOP) {
+  for (const id of ON) {
     chrome = { [id]: false };
     broadcast({ type: "ui", ui: uiPayload() });
     await sleep(180);
     d = await dom(page);
-    const left = TOP.filter((a) => a !== id);
+    const left = ON.filter((a) => a !== id);
     ok(!d.acts.includes(id) && d.hidden[id] === true, `${id}:false → 那颗不画`);
-    ok(left.every((a) => d.hidden[a] === false && d.acts.includes(a)), `${id}:false → 其余六颗原位不动`);
+    ok(left.every((a) => d.hidden[a] === false && d.acts.includes(a)), `${id}:false → 其余五颗原位不动`);
     ok(docFits(d), `${id}:false → 不留空位、不溢出（${d.docScroll} <= ${d.viewport}）`);
 
     chrome = {};
     broadcast({ type: "ui", ui: uiPayload() });
     await sleep(180);
     d = await dom(page);
-    ok(TOP.every((a) => d.hidden[a] === false && d.acts.includes(a)), `${id} 删键 → 回默认，七颗全回来`);
+    ok(ON.every((a) => d.hidden[a] === false && d.acts.includes(a)) && d.hidden.files === true, `${id} 删键 → 回默认，六颗回来、文件管理器仍藏着`);
   }
+
+  // 文件管理器反过来：默认不画，显式 true 才画，删键 / false 都收回去。
+  await setChrome({ files: true });
+  d = await dom(page);
+  ok(d.hidden.files === false && d.acts.includes("files"), "files:true → 文件管理器画出来");
+  await setChrome({ files: false });
+  d = await dom(page);
+  ok(d.hidden.files === true, "files:false → 收起");
+  await setChrome({ files: undefined });
 
   // 一次关掉整排：顶栏不该剩一排空壳 / 空位。
   chrome = Object.fromEntries(TOP.map((a) => [a, false]));
@@ -254,7 +267,7 @@ const newPage = async (width) => {
   ok(docFits(d), `七颗全关：页面不横向溢出（${d.docScroll} <= ${d.viewport}）`);
 
   // 切语言：文字与可见性一起换，不能「字变了但少了一颗」。
-  chrome = { notes: false, jira: true };
+  chrome = { notes: false, jira: true, files: true };
   broadcast({ type: "ui", ui: uiPayload() });
   await sleep(200);
   await setLang(page, "en");
@@ -275,7 +288,9 @@ const newPage = async (width) => {
 
   // 再开一个会话：回来了。
   await openSession(page, "s-2");
-  ok((await seen(page, "artifacts")) && (await seen(page, "files")), "重新开会话：产物与文件管理器回来");
+  ok((await seen(page, "artifacts")) && (await seen(page, "files")), "重新开会话：产物与文件管理器回来（files:true 还在偏好里）");
+  await setChrome({ files: undefined });
+  ok(!(await seen(page, "files")), "删掉 files 键：回默认，文件管理器又收起来");
   await page.context().close();
 }
 
@@ -310,18 +325,19 @@ for (const width of [390, 560, 620, 1440]) {
   await openSession(page, "s-1");
   let d = await dom(page);
   ok((await seen(page, "artifacts")) && DESK_ONLY.every((a) => d.acts.includes(a)), `${width}：开会话后产物与常驻五颗都在`);
-  ok(width > 560 ? d.acts.includes("files") : !d.acts.includes("files"), `${width}：文件管理器按 D138 的默认（${d.acts.includes("files") ? "画" : "不画"}）`);
+  ok(!d.acts.includes("files"), `${width}：文件管理器默认不画（D331，与宽度无关）`);
+  ok(d.acts.includes("filesearch"), `${width}：Everything 默认画（D331，与宽度无关）`);
   ok(docFits(d), `${width}：默认不横向溢出（${d.docScroll} <= ${d.viewport}）`);
 
-  chrome = { artifacts: false, terminal: false, files: false, notes: false, peer: false, scratch: false, jira: false };
+  chrome = { artifacts: false, terminal: false, files: false, notes: false, peer: false, scratch: false, jira: false, filesearch: false };
   broadcast({ type: "ui", ui: uiPayload() });
   await sleep(220);
   d = await dom(page);
-  const left = d.acts.filter((a) => TOP.includes(a));
-  ok(left.length === 0, `${width}：七颗关掉后顶栏不剩可见按钮（${left.join(",") || "空"}）`);
+  const left = d.acts.filter((a) => TOP.includes(a) || a === "filesearch");
+  ok(left.length === 0, `${width}：七颗 + Everything 关掉后顶栏不剩可见按钮（${left.join(",") || "空"}）`);
   ok(docFits(d), `${width}：全关后不横向溢出（${d.docScroll} <= ${d.viewport}）`);
 
-  chrome = { jira: true };
+  chrome = { jira: true, filesearch: false };
   broadcast({ type: "ui", ui: uiPayload() });
   await sleep(200);
   d = await dom(page);

@@ -3,7 +3,7 @@
  *
  * 纯函数还是 `web/tests/chrome-unit.mjs` 那一份；这里验的是浏览器里的四件事：
  *   A 点预览里的胶囊 → 真顶栏 / 下沿那颗立刻不画、对应方块变虚线；点方块 → 回来；
- *   B 预览切「手机 390」→ 没人碰过的文件管理器自己从预览里消失；点亮它的方块后窄档也在；
+ *   B 预览切「手机 390」只改排版、不改默认：文件管理器两档都不画，点亮方块后两档都画；
  *   C 每块「全部显示」= 删掉这组键（桥端真的少了 key，不是写 true），两块互不牵连；
  *   D 桥断了 → 整块置灰、一句说明、点什么都没反应；
  * 另加票里两条硬约定：「恢复默认」不碰 `chrome`；`Aa` 不在开关墙里。手机宽度下不裁切。
@@ -214,7 +214,8 @@ const newPage = async (width) => {
   let d = await snap(page);
   ok(d.exists, "A 预览与开关墙画出来了");
   ok(d.caps.terminal && d.tiles.terminal === true && d.tileDash.terminal === "solid", "A 默认：终端在预览里、方块实线亮着");
-  ok(d.caps.artifacts && d.caps.files, "A 开了会话：产物与文件管理器也在预览里");
+  ok(d.caps.artifacts, "A 开了会话：产物在预览里");
+  ok(!d.caps.files && d.tiles.files === false && d.tileDash.files === "dashed", "A 文件管理器默认不在预览里、方块虚着（D331）");
 
   await page.locator('.chrome-pv-btn[data-chrome="terminal"]').click();
   await sleep(250);
@@ -241,7 +242,7 @@ const newPage = async (width) => {
   await page.context().close();
 }
 
-// ---------------------------------------------------------------- B 预览切宽度：文件管理器自己退场
+// ---------------------------------------------------------------- B 预览切宽度只改排版：默认不随档位变
 {
   chrome = {};
   sent = [];
@@ -252,16 +253,17 @@ const newPage = async (width) => {
   await sleep(250);
   let d = await snap(page);
   ok(d.pvNarrow, "B 切到「手机 390」：预览收窄");
-  ok(!d.caps.files && d.tiles.files === false && d.tileDash.files === "dashed", "B 窄档下没人碰过的文件管理器从预览里消失、方块虚着");
-  ok(d.caps.artifacts && d.tiles.artifacts === true, "B 窄档只收文件管理器，产物还在");
-  ok(await seen(page, "files"), "B 真顶栏（1440）不受预览宽度影响，文件管理器照画");
+  ok(!d.caps.files && d.tiles.files === false && d.tileDash.files === "dashed", "B 窄档下文件管理器不画、方块虚着（默认，与档位无关）");
+  ok(d.caps.artifacts && d.tiles.artifacts === true, "B 窄档下产物照旧画（宽度不改默认）");
+  ok(!(await seen(page, "files")), "B 真顶栏（1440）同样不画文件管理器（D331）");
   ok(chrome.files === undefined, "B 只是看，不写盘：chrome 里没有 files");
 
   await page.locator('.chrome-tile[data-chrome="files"]').click();
   await sleep(250);
   d = await snap(page);
   ok(chrome.files === true, "B 点亮方块：桥收到 files:true");
-  ok(d.caps.files && d.tiles.files === true, "B 点亮后窄档预览里也在");
+  ok(d.caps.files && d.tiles.files === true, "B 点亮后窄档预览里也在（显式 true 顶开 D138）");
+  ok(await seen(page, "files"), "B 真顶栏（1440）也跟着画");
 
   await page.locator('.chrome-seg [data-width="wide"]').click();
   await sleep(200);
@@ -274,7 +276,7 @@ const newPage = async (width) => {
   await page.locator('.chrome-seg [data-width="narrow"]').click();
   await sleep(200);
   d = await snap(page);
-  ok(!d.caps.files && d.tiles.files === false, "B 删键后再进窄档：文件管理器又自己消失");
+  ok(!d.caps.files && d.tiles.files === false, "B 删键后再进窄档：文件管理器仍按默认不画");
   ok(docFits(d), `B 窄档预览不裁切（${d.docScroll} <= ${d.viewport}）`);
   await page.context().close();
 }
@@ -296,7 +298,7 @@ const newPage = async (width) => {
   ok(TOP.every((id) => topPatch[id] === null), "C 顶栏「全部显示」发的是 null（删键），不是 true");
   ok(TOP.every((id) => !(id in chrome)), "C 顶栏组的键全删了");
   ok(chrome.ext === false, "C 顶栏「全部显示」不碰下沿的 ext");
-  ok(TOP.every((id) => d.tiles[id] === true) && d.tiles.ext === false, "C 顶栏方块全亮，下沿的扩展还虚着");
+  ok(TOP.filter((id) => id !== "files").every((id) => d.tiles[id] === true) && d.tiles.files === false && d.tiles.ext === false, "C 顶栏方块全亮、文件管理器回默认虚着，下沿的扩展还虚着");
 
   await page.locator('.chrome-all[data-group="bottom"]').click();
   await sleep(250);
@@ -304,7 +306,7 @@ const newPage = async (width) => {
   const botPatch = sent.at(-1)?.chrome ?? {};
   ok(BOTTOM.every((id) => botPatch[id] === null), "C 下沿「全部显示」发的也是 null");
   ok(Object.keys(chrome).length === 0, `C 下沿组的键全删了，桥端回到默认（${JSON.stringify(chrome)}）`);
-  ok(ALL.every((id) => d.tiles[id] === true), "C 十一块全亮");
+  ok(ALL.filter((id) => id !== "files").every((id) => d.tiles[id] === true) && d.tiles.files === false, "C 其余十块全亮（文件管理器回默认，不亮）");
   await page.context().close();
 }
 

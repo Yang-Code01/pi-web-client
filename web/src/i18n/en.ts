@@ -2267,8 +2267,6 @@ export const en: Dict = {
   "桌面": "Desktop",
   "手机 390": "Phone 390",
   "点预览里的按钮可以直接关掉": "Click a button in the preview to hide it",
-  "手机宽度下「文件管理器」默认收起；想留着就点亮下面的方块":
-    "On phone width the file manager is hidden by default; light its tile below to keep it",
   "点一下就收起来，再点一下放回来": "Click to tuck it away, click again to bring it back",
   "顶栏按钮": "Top bar buttons",
   "输入框下沿": "Composer strip",
@@ -2277,7 +2275,7 @@ export const en: Dict = {
   "点一下隐藏「{p1}」": "Click to hide “{p1}”",
   "点一下显示「{p1}」": "Click to show “{p1}”",
   "没开会话时不显示": "Hidden when no session is open",
-  "手机上默认收起": "Hidden by default on phones",
+  "默认不显示": "Hidden by default",
   "连上桥才能改可见性：现在点了不会有反应": "Connect to the bridge to change visibility — clicks do nothing right now",
   "人员": "People",
   "优先级": "Priority",

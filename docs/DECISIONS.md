@@ -6458,3 +6458,19 @@ Esc 之后 dialog: 0
 - `bg_run` 起的后台进程只在工具调用期间看，调用返回后就不跟了。
 
 **验证。** `node --experimental-strip-types bridge/tests/browser-watch-unit.mjs`（8 段：launch、cdp、daemon 隔层、常驻子进程不算、dev server 端口与 pid 重用不算、并发归属、结束后不上报、netstat/lsof/etime 解析）；`web/tests/browser-ops-unit.mjs` 加证据出卡、证据 + 输出步骤、`::browser` 约定、手动标记关键词。
+
+## D331 顶栏默认对调：文件管理器默认不显示，Everything 默认显示（用户要求 2026-11-19）
+
+**要求。** 用户原话：「现在默认文件管理器是显示、everything 不显示的。现在想要改成文件管理器默认不显示，everything 默认显示」。
+
+**决定。**
+- `web/src/chrome.ts` 的 `DEFAULT_HIDDEN` 从 `["filesearch"]` 改成 `["files"]`。三态不变：键缺失 = 按这里（文件管理器不画、Everything 画），`true` 显式打开，`false` 关掉（与缺失同效但记住「关过」）。
+- 拔掉 D138 的第二重默认：`ChromeContext` 不再带 `narrow`，`isChromeVisible()` 不再因 560px 以下把文件管理器藏起来 —— 它的默认在所有宽度一致。样式表里那条 560px 媒体查询留着，显式 `true` 时 `data-chrome-narrow="files"` 还要顶开它（#292）。
+- 桥端协议与 `ui.json` 格式不动：白名单、`ui.set`（`null` 删键）照旧；已有 `filesearch: true/false` 的旧偏好照读。
+- 设置 → 外观的预览仍留「桌面 / 手机 390」切换，只演示排版，不再改变预览里哪颗亮；原来那句「手机宽度下「文件管理器」默认收起」与 `ctx.narrow` 那条虚线原因（「手机上默认收起」）一并删掉，后者换成「默认不显示」。
+
+**为什么。** 用户每天用的入口是 Everything（按名字全盘找文件），文件管理器进得少；把顶栏常驻位让给常用的那颗。顺带消掉「默认结果取决于窗口宽度」这条 D138 的历史包袱 —— 同一个账号在桌面和手机上看到的默认不一样，设置面板很难解释。
+
+**取舍。** 没开会话时产物与文件管理器仍不画（`SESSION_ONLY` 没变），文件管理器在开关墙里是虚线方块、title 写「默认不显示」。在 390 上点亮过文件管理器（`files: true`）的旧偏好继续生效，升级后不会又消失。
+
+**验证。** `web/tests/chrome-unit.mjs`：默认表、`files:true` / `filesearch:false` 闭环、无会话时 files 仍不画、`narrowForcedVisible` 只认显式 true；`probes/chrome-topbar.mjs` 四档宽度断言「文件管理器默认不画、Everything 默认画」、逐颗开关与重开会话后的默认；`probes/chrome-narrow.mjs` 断言 390 / 559 / 560 / 561 / 620 默认一致不画、`true` 在窄屏顶开、`false` 任何宽度都不画；`probes/chrome-sheet.mjs` 断言预览两档都不出文件管理器、点亮后两档都出、删键回默认；`probes/filesearch.mjs` 开场改为默认就在顶栏。
