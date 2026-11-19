@@ -6389,7 +6389,22 @@ Esc 之后 dialog: 0
 
 **验证：** `node bridge/tests/hotdeploy-unit.mjs` 新增一段静态守卫：`scripts/hotdeploy*.mjs` 里每一处 `spawnSync(` 都必须带 `windowsHide`。去掉 `hotdeploy-git.mjs` 里的那一个，守卫会变红。`node bridge/tests/hotdeploy-window-e2e.mjs`（Windows，`npm run test:hotdeploy-window`）用一份假桥覆盖三件事：`windowHostOf` 认得本端口、不认别的端口；有标记时同一父 pid 原地重起、标记被收走；没有标记时窗口随桥关闭。把标记写到别的路径，这段测试会变红。`hotdeploy-stash-unit.mjs` 在 main 上本来就红，与本条无关：临时目录在这台机器上是 8.3 短路径（`YANGQM~1.HYR`），`occupiedBy()` 把它误判成「已被别的 worktree 检出」。
 
-## D327 浏览器面板：按「怎么驱动浏览器」认，不只按工具名认（用户报障 2026-11-19）
+## D327 新建即置顶：所有入口建出来的会话都落到 pin 末尾（取代 Q-022「只有横条 ＋ 置顶」，2026-11-19）
+
+**问题：** 用户报「Jira 里交给 agent → 新开一个会话，建出来没有星标」。查下来是一类问题：只有横条 ＋、工作区竖列 ＋、工作区弹层「＋ 新会话」三处传了 `openNewSessionSheet(true)`，`create` 帧才带 `pin: true`；左栏「开新会话」、`/new`、快捷键、新建空工作区后弹出的面板、所有「交给 agent → 新开会话」（Jira / 笔记 / 失败面板 / 分支面板 / 目录与仓库，经 `newSessionWith` 写死 `false`）都不置顶。分叉 / 复制、`/import` 由桥直接建，没有 pin 的概念；只有交接「接棒」在 `startHandoff` 里自己 `pinLast`。同一件事三种行为，加入口还会再漏。
+
+**决定：** 置顶由桥在「会话真正建出来」的地方统一做，页面不再传 `pin`：
+
+- `SessionManager.pinNew(id)` = `manage.pinLast(id)` + 广播 `manage`。`create()` 里调用（随手问 `scratch` 除外，#86 它不是用户的会话），所以面板所有入口、交给 agent、在第一条消息处分叉、接棒都自动覆盖；`branchOff` 的 `createBranchedSession` 路径和 `importFile` 各自补一次。
+- 落到 pin **末尾**（`pinLast`，挨着横条的 ＋），不插到最前面。
+- 只加不减：别的会话的置顶一概不动，分叉 / 复制的原会话照旧置顶。（接棒后原会话被归档 —— 那是交接本身的语义，`setArchived` 会把它从 pin 拿掉，与本条无关。）
+- 前端删掉 `openNewSessionSheet(autoPin)` / `createSession(pin)`；桥对旧页面发来的 `pin` 字段直接忽略。
+
+**与 D146 的关系：** D146 规定「打开 ≠ 置顶」，打开不改排列；本条只管「新建」，新建本来就要在列表里给它一个位置，两者不冲突。
+
+**验证：** `node bridge/tests/new-session-pin.mjs`（真桥 + 桩 pi：不带 pin 的 create 落到末尾、第二个排在后面且第一个仍在、`/import` 也置顶、随手问不进 pin）；`node probes/round16-pin.mjs` 改成桩桥对所有 create 置顶，并断言页面不再发 `pin`（顺手修了它在新会话面板改版后失效的路径输入选择器）。
+
+## D329 浏览器面板：按「怎么驱动浏览器」认，不只按工具名认（用户报障 2026-11-19）
 
 **现象：** 会话 18325 里 AI 点了按钮、截了图、录了视频，右栏「浏览器」却是「共 0 次 · 这一轮没有浏览器操作」。
 
@@ -6409,9 +6424,9 @@ Esc 之后 dialog: 0
 
 **验证：** `npm run test:browser-ops` 新增 10 段（18325 的执行器片段、heredoc 探针、改文件不算、python 内联、agent_browser 三种写法、CLI、mcp 网关、desktop-touch、命令关键词），改回旧逻辑会红。拿 18325 的真实会话回放：0 张 → 9 张。716 份会话新旧对比：1409 → 2331 张，少掉的约 320 张逐条抽查都是旧版的误报（`sed` / `grep` / 改文件脚本里提到了脚本名）。`npm run test:browser-ops:ui` 补一条：齿轮里有空的命令关键词框。第二轮（输出步骤 + 打转）再加 6 段：按输出列步骤、跑着时实时 / 无输出回源码、源码旁白、工具卡不读输出、代码重复不算打转、连续同样调用或输出重复且在跑才算。用户那次 TC-01 录像会话回放：由 4 步（含「打转」）变成 26 步，逐条是手順、断言、读到的值和录像路径。
 
-## D328 浏览器面板：以运行时真实发生的事为准，猜只用来起名字（用户追问 2026-11-19）
+## D330 浏览器面板：以运行时真实发生的事为准，猜只用来起名字（用户追问 2026-11-19）
 
-**问题。** D327 之后用户又跑了一轮：AI 写了个启动器 `run_green.py`（只 `import run`）、`cp` 一份片段改成中文再跑，面板又只剩一张「发 CDP」。看命令 / 源码去猜，AI 每换一种写法就漏一次，补不完。
+**问题。** D329 之后用户又跑了一轮：AI 写了个启动器 `run_green.py`（只 `import run`）、`cp` 一份片段改成中文再跑，面板又只剩一张「发 CDP」。看命令 / 源码去猜，AI 每换一种写法就漏一次，补不完。
 
 **决定。** 三层，从硬到软：
 

@@ -53,7 +53,7 @@ export interface ToolItem extends ItemBase {
   isError?: boolean;
   durationMs?: number;
   status: "running" | "ok" | "error" | "unknown";
-  /** D328：桥在它跑的时候看到了浏览器（拉起 / 连上调试端口）。 */
+  /** D330：桥在它跑的时候看到了浏览器（拉起 / 连上调试端口）。 */
   browser?: BrowserEvidence;
 }
 /** 桥看到的浏览器证据，见 bridge/src/browser-watch.ts。 */

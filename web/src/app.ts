@@ -1119,12 +1119,12 @@ export class App {
       onStar: (id) => this.togglePin(id),
       tail: () => {
         // Q-013: with the left pane hidden this is the only visible way to start a session.
-        // Q-022: 从这颗 ＋ 建的会话自动置顶，否则建完在这条里根本看不见。
+        // Q-022 / D327: 新建的会话一律由桥置顶到这条末尾（不再只有这颗 ＋ 才置顶）。
         const add = el("button", "pin-chip pin-new", tr("＋"));
         add.title = tr("开新会话（自动置顶到这条里）");
         add.dataset.act = "new";
         add.dataset.pinKey = "new";
-        add.onclick = () => this.openNewSessionSheet(true);
+        add.onclick = () => this.openNewSessionSheet();
         // 同一动作不要两颗按钮：顶栏左上角那颗就能展开左栏，行 2 右端不再摆第二颗。
         return [add];
       },
@@ -2893,7 +2893,7 @@ export class App {
               note = tr("已建在 {p1}，收在 ＋{p2} 里（第 {p3} 位）", { p1: name, p2: where.outside, p3: where.folded ?? 0 });
             }
             // 空组：直接开新会话、目录已填（取消就停在原会话，不回滚、不揣进空对话）。
-            this.openNewSessionSheet(false, { cwd: cleanDirPath(group.key), note });
+            this.openNewSessionSheet({ cwd: cleanDirPath(group.key), note });
           }
         }
         if (!created) this.flashToast(tr("这个工作区已经在列表里"), false, 3600);
@@ -6162,13 +6162,13 @@ export class App {
     return localStorage.getItem("pi.lastCwd") || latest || "";
   }
 
-  private createSession(cwd: string, name: string, onSent: () => void, pin = false, options?: Record<string, unknown>): void {
+  private createSession(cwd: string, name: string, onSent: () => void, options?: Record<string, unknown>): void {
     localStorage.setItem("pi.lastCwd", cwd);
     const recent = this.recentCwds().filter((c) => c !== cwd);
     localStorage.setItem("pi.recentCwds", JSON.stringify([cwd, ...recent].slice(0, 12)));
     this.act(() => {
       onSent();
-      this.socket.send({ type: "create", cwd, ...(name ? { name } : {}), ...(pin ? { pin: true } : {}), ...(options && Object.keys(options).length ? { options } : {}) });
+      this.socket.send({ type: "create", cwd, ...(name ? { name } : {}), ...(options && Object.keys(options).length ? { options } : {}) });
     });
   }
 
@@ -6249,7 +6249,7 @@ export class App {
     }
   }
 
-  private openNewSessionSheet(autoPin = false, preset?: { cwd?: string; note?: string; name?: string }): void {
+  private openNewSessionSheet(preset?: { cwd?: string; note?: string; name?: string }): void {
     this.closeSheet();
     this.sheetKind = "new";
     const back = el("div", "sheet-back center");
@@ -6570,7 +6570,6 @@ export class App {
             },
           };
         },
-        autoPin,
         advanced.read(),
       );
     };
@@ -9810,7 +9809,7 @@ export class App {
   private newSessionWith(text: string, name?: string): void {
     // 先开面板再记待填文字：openNewSessionSheet() 头一句 closeSheet() 会清掉上一次的
     // prefillNext（上一扇新会话面板还开着的时候，那句清理会把刚记下的文字吞掉）。
-    this.openNewSessionSheet(false, name?.trim() ? { name } : undefined);
+    this.openNewSessionSheet(name?.trim() ? { name } : undefined);
     this.prefillNext = text;
   }
 
@@ -17093,7 +17092,7 @@ export class App {
     heading.append(select);
     panel.append(heading);
     const list = el("div", "exec-timeline");
-    // D328：认不出的 shell 调用，用户可以当场指认「这是浏览器操作」，关键词记进齿轮里的命令关键词。
+    // D330：认不出的 shell 调用，用户可以当场指认「这是浏览器操作」，关键词记进齿轮里的命令关键词。
     const browserCalls = new Set(this.browserModel().cards.map((card) => card.toolCallId));
     const loadedItems = this.chat.loadedItems();
     for (const row of model.timeline) {
@@ -17187,7 +17186,7 @@ export class App {
 
   /**
    * 有没有浏览器调用正在跑：第三颗 tab 上的小圆点用。没有在跑的工具就不解析；有的话和面板走同一套识别，
-   * 否则 bash 跑脚本、agent_browser 这些面板认得出、小圆点却不亮（D327）。
+   * 否则 bash 跑脚本、agent_browser 这些面板认得出、小圆点却不亮（D329）。
    */
   private browserRunning(): boolean {
     if (!this.chat.loadedItems().some((item) => item.kind === "tool" && item.status === "running")) return false;
@@ -18224,7 +18223,7 @@ export class App {
     add.dataset.act = "new";
     add.title = tr("开新会话");
     add.setAttribute("aria-label", tr("开新会话"));
-    add.onclick = () => this.openNewSessionSheet(true);
+    add.onclick = () => this.openNewSessionSheet();
     foot.append(add);
     // 色点条只在左栏收起时出现 —— 它就是那颗「展开回去」的按钮。竖列旁边有顶栏那颗，不用重复。
     if (kind === "strip") {
@@ -18750,7 +18749,7 @@ export class App {
     add.dataset.act = "new";
     add.onclick = () => {
       this.closeWsPop();
-      this.openNewSessionSheet(true);
+      this.openNewSessionSheet();
     };
     foot.append(add);
     pop.append(body, foot);

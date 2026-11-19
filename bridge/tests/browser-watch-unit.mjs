@@ -1,4 +1,4 @@
-// D328：BrowserWatch 只认运行时真实发生的事（拉起浏览器 / 连上调试端口）。纯函数测试喂假快照。
+// D330：BrowserWatch 只认运行时真实发生的事（拉起浏览器 / 连上调试端口）。纯函数测试喂假快照。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { evidenceFrom, parseNetstat, parseLsof, etimeMs, browserName, BrowserWatch } from "../src/browser-watch.ts";

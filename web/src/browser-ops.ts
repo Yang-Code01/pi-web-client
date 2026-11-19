@@ -64,7 +64,7 @@ export interface BrowserOpCard {
   silentFor: number | null;
   /**
    * 正在跑、而且实际执行里同一动作连续到 `loopCount` 次（运行输出里的重复，或连着几次一模一样的浏览器工具调用）。
-   * 从代码里猜出来的重复（循环、多次读值）不算；调用一结束就不再标（D327）。
+   * 从代码里猜出来的重复（循环、多次读值）不算；调用一结束就不再标（D329）。
    */
   looping: boolean;
   /**
@@ -139,7 +139,7 @@ export const BROWSER_TOOL_PATTERNS: readonly string[] = [
 
 /**
  * 名字里有独立的 `browser` 一节（`agent_browser`、`browser_exec`、`desktop-touch_browser_click`）
- * 也算：名单是子串匹配，但浏览器工具的命名五花八门，光靠名单总会漏（D327 里 `agent_browser`
+ * 也算：名单是子串匹配，但浏览器工具的命名五花八门，光靠名单总会漏（D329 里 `agent_browser`
  * 用了 550 多次，一次都没进面板）。要求前后是分隔符，`subbrowsers` 这种不会误中。
  */
 const BROWSER_WORD = /(?:^|[_\-.])browser(?:[_\-.]|$)/i;
@@ -185,7 +185,7 @@ const PY_DRIVER_CALL =
   /\b(?:sync|async)_playwright\s*\(|\bconnect_over_cdp\s*\(|\.launch(?:_persistent_context)?\s*\(|\bwebdriver\.(?:Chrome|Edge|Firefox|Remote)\s*\(/;
 
 /**
- * 不写 `import playwright`、直接调 page 对象的片段脚本（D327：交给项目自己的执行器跑，
+ * 不写 `import playwright`、直接调 page 对象的片段脚本（D329：交给项目自己的执行器跑，
  * `p.get_by_role(...).click()`）。这些写法几乎只在浏览器自动化里出现。
  */
 const PAGE_API: readonly RegExp[] = [
@@ -421,7 +421,7 @@ function cardsFrom(
     }
     const label = browserToolLabel(item.name, item.args, patterns);
     let scripted = label ? agentBrowserCall(item) : scriptedCall(item, scripts, commands);
-    // D328：桥亲眼看到浏览器被拉起 / 被连上了，就不用猜命令是怎么写的。
+    // D330：桥亲眼看到浏览器被拉起 / 被连上了，就不用猜命令是怎么写的。
     if (!label && !scripted && item.browser) scripted = evidenceCall(item);
     if (!label && !scripted) continue;
     const next = card(item, intent, thresholds, now, subagent, outputAt[item.toolCallId], scripted, label ?? item.name, label !== null);
@@ -504,7 +504,7 @@ interface ShellRuns {
 
 /**
  * 把命令拆成一条条简单命令再看每条跑了什么。只有「解释器 + 脚本」才算跑脚本：
- * `grep -n x run.py`、`sed -n 1,20p run.py`、`wc -l run.py` 只是在看，不该成卡（D327 实验时误报过）。
+ * `grep -n x run.py`、`sed -n 1,20p run.py`、`wc -l run.py` 只是在看，不该成卡（D329 实验时误报过）。
  */
 function shellRuns(command: string): ShellRuns {
   const runs: ShellRuns = { direct: [], args: [], inline: [], clis: [] };
@@ -689,7 +689,7 @@ function programOf(token: string): string {
  *
  * 看得到源码就以源码为准：被跑的脚本得是这一轮写过 / 读过的，而且在驱动浏览器 —— 否则
  * `node build.mjs` 也会被当成浏览器操作。脚本可以是完整的 playwright 脚本，也可以是交给项目
- * 执行器跑的片段（`bash e2e.sh W TC-01.py`，D327）。看不到脚本时，再看命令本身：跑测试、
+ * 执行器跑的片段（`bash e2e.sh W TC-01.py`，D329）。看不到脚本时，再看命令本身：跑测试、
  * 连 CDP、起浏览器、浏览器命令行、内联驱动代码，最后是用户配的命令关键词。
  */
 function scriptedCall(item: ToolItem, scripts: Map<string, ScriptSource>, keywords: readonly string[]): Scripted | null {
@@ -716,7 +716,7 @@ function scriptedCall(item: ToolItem, scripts: Map<string, ScriptSource>, keywor
   });
   if (unique.some((entry) => entry.source)) return scriptsCard(unique);
 
-  // D328：脚本照约定打印了 `::browser …`，就算 —— 命令怎么写都行。
+  // D330：脚本照约定打印了 `::browser …`，就算 —— 命令怎么写都行。
   if (MARKER_LINE.test(outputOf(item))) {
     const names = [...runs.direct, ...runs.args].map(baseName);
     const target = names[0] ?? collapse(withoutHeredocBodies(command)).slice(0, 80);
@@ -973,7 +973,7 @@ function jsonArray(text: string): unknown[] | null {
 }
 
 /**
- * D328 手动标记：在执行面板上点「这是浏览器操作」时记下的命令关键词 —— 被跑的脚本名；没有脚本就用
+ * D330 手动标记：在执行面板上点「这是浏览器操作」时记下的命令关键词 —— 被跑的脚本名；没有脚本就用
  * 程序名（`python` / `git` 这类太泛的不要）。不是 shell 工具、或者挑不出合适的词时返回 null。
  */
 export function markKeyword(item: ToolItem): string | null {
@@ -1202,7 +1202,7 @@ function outputStep(line: string): BrowserOpStep | null {
 }
 
 /**
- * D328 输出约定：脚本自己打印 `::browser <动作> <说明>`，面板逐行照抄。只要输出里有一行，这次调用就算浏览器操作，
+ * D330 输出约定：脚本自己打印 `::browser <动作> <说明>`，面板逐行照抄。只要输出里有一行，这次调用就算浏览器操作，
  * 不管命令怎么写。动作：act/step、ok/pass、ng/fail、nav/open、click、fill/input、wait、shot/video/file、value、note、launch。
  * 不认识的动作连同说明一起当一步。
  */

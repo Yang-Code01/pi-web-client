@@ -122,7 +122,7 @@ function needsBuild(dir) {
   const want = ["bridge/dist/index.js", "web/dist/index.html"];
   if (hasPeer(dir)) want.push("peer/dist/index.js", "web/dist/peer.html");
   const missing = want.filter((rel) => !fs.existsSync(path.join(dir, rel)));
-  // 产物在但比源码旧，也得重建：否则改了 web/src 再重启，页面还是旧的（D328 验收时踩过）。
+  // 产物在但比源码旧，也得重建：否则改了 web/src 再重启，页面还是旧的（D330 验收时踩过）。
   const stale = [["bridge/src", "bridge/dist/index.js"], ["web/src", "web/dist/index.html"], ["peer/src", "peer/dist/index.js"]]
     .filter(([src, out]) => fs.existsSync(path.join(dir, src)) && fs.existsSync(path.join(dir, out)))
     .filter(([src, out]) => newestMtime(path.join(dir, src)) > fs.statSync(path.join(dir, out)).mtimeMs)
