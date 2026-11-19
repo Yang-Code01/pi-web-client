@@ -5,7 +5,7 @@
  *  - 气泡挂在 body 上（条是 overflow-x:auto，挂在里面会被裁掉），位置在胶囊下方
  *  - 悬停 180ms 才出、移开 220ms 才收（扫过不算）
  *  - 重命名在气泡里就地变输入框，回车提交发 rename
- *  - 归档：条尾出现抽屉 → 胶囊压扁滑进去 → 发 manage/archive，随后条里没它了
+ *  - 归档：胶囊原地淡出 → 横向收拢让位 → 发 manage/archive，随后条里没它了（不抖见 pin-archive-jitter.mjs）
  *  - 删除：胶囊被克隆带走 → 左栏自动展开露出🗑 → 飞进桶 → 发 manage/delete，桶计数 +1
  *  - 左栏那颗🗑 直接打开会话管理的垃圾箱视图
  *
@@ -225,22 +225,22 @@ try {
   assert(ren.sessionId === "probe-a" && ren.name === "改过的名字", `rename 帧不对：${JSON.stringify(ren)}`);
   await until(async () => (await count(page, ".pin-menu")) === 0, 1000, "menu closed after rename");
 
-  /* ---------------------------------------------------------------- 4. 归档：抽屉 + 压扁滑入 */
+  /* ---------------------------------------------------------------- 4. 归档：淡出 + 收拢 */
   log("4) archive");
   await until(async () => (await chipAt(page, 0).textContent())?.includes("改过的名字"), 2000, "chip to show the new name");
   await chipAt(page, 0).hover();
   await until(async () => (await count(page, ".pin-menu")) === 1, 1500, "pin menu for archive");
   await page.click('.pm-item[data-act="archive"]');
-  await until(async () => (await count(page, ".pin-tray")) === 1, 1200, "archive tray to appear");
   const moving = await page.evaluate(() => {
     const chip = document.querySelector(".pin-chip .pin-open")?.closest(".pin-chip");
     return { anims: chip?.getAnimations().length ?? 0, tray: !!document.querySelector(".pin-tray") };
   });
-  assert(moving.anims > 0, "归档时胶囊应该在播动画（压扁 + 滑入）");
+  assert(moving.anims > 0, "归档时胶囊应该在播动画（淡出 + 收拢）");
+  assert(!moving.tray, "归档不再往条尾插抽屉（会把「＋」挤开、回声时弹回）");
   await sleep(200);
   await page.screenshot({ path: `${OUT}/4-archive.png` });
   await sleep(280);
-  await page.screenshot({ path: `${OUT}/4b-archive-squash.png` });
+  await page.screenshot({ path: `${OUT}/4b-archive-collapse.png` });
   await until(async () => frames.some((f) => f.type === "manage" && f.action === "archive"), 2500, "archive frame");
   const arc = frames.find((f) => f.type === "manage" && f.action === "archive");
   assert(arc.ids.length === 1 && arc.ids[0] === "probe-a" && arc.on === true, `archive 帧不对：${JSON.stringify(arc)}`);
@@ -295,7 +295,7 @@ try {
 
   await browser.close();
   await new Promise((r) => server.close(r));
-  log("ALL OK — 气泡挂在 body、180/220ms 开关、就地改名、归档抽屉、删除飞进左栏🗑、🗑 直达垃圾箱");
+  log("ALL OK — 气泡挂在 body、180/220ms 开关、就地改名、归档淡出、删除飞进左栏🗑、🗑 直达垃圾箱");
   log("shots:", OUT);
 } catch (err) {
   await browser.close().catch(() => {});

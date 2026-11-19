@@ -3504,44 +3504,6 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   outline: 2px solid rgba(125, 211, 252, 0.22);
 }
 
-/* 归档落点：条尾一个抽屉，胶囊压扁滑进去 */
-.pin-tray { position: relative; flex: 0 0 auto; width: 24px; height: 22px; }
-.pin-tray-lid {
-  position: absolute;
-  left: 0;
-  top: 1px;
-  width: 24px;
-  height: 3px;
-  border-radius: 4px;
-  background: var(--dim);
-  transform-origin: 100% 50%;
-}
-.pin-tray-body {
-  position: absolute;
-  left: 1px;
-  top: 4px;
-  width: 22px;
-  height: 13px;
-  border: 1.6px solid var(--dim);
-  border-radius: 4px;
-  box-shadow: inset 0 3px 0 -1px var(--line);
-}
-.pin-tray-count {
-  position: absolute;
-  left: 50%;
-  top: -7px;
-  transform: translateX(-50%);
-  min-width: 14px;
-  height: 14px;
-  padding: 0 4px;
-  border-radius: 6px;
-  background: var(--accent);
-  color: var(--ok-ink);
-  font: 500 11px/14px var(--sans);
-  text-align: center;
-  opacity: 0;
-}
-
 /* 删除的飞行体：脱离文档流的克隆，位置由 JS 给 */
 .pin-flyer {
   position: fixed;
