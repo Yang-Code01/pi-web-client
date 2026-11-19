@@ -174,13 +174,13 @@
 }
 
 .jc-banner--warn {
-  color: #f8d48b;
-  background: rgba(251, 191, 36, 0.1);
+  color: color-mix(in srgb, var(--warn) 55%, var(--text));
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
 
 .jc-banner--bad {
-  color: #ffc0c9;
-  background: rgba(251, 113, 133, 0.12);
+  color: color-mix(in srgb, var(--danger) 55%, var(--text));
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 /* ---------------------------------------------------------------- 导航 + 内容 */
@@ -247,7 +247,7 @@
   min-width: 18px;
   padding: 1px 5px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
   font-family: var(--mono);
   font-size: 10px;
   text-align: center;
