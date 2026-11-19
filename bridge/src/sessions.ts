@@ -40,6 +40,7 @@ import {
   type ContextSettings,
 } from "./context-policy.ts";
 import { readSettings } from "./pisettings.ts";
+import { renumberCtxLog } from "./ctxlog-seq.ts";
 
 /**
  * 启动期 get_state 的等待窗口：过了就把 `starting` 翻下去、交出启动期排队的消息（D178），
@@ -1472,7 +1473,8 @@ export class Session extends EventEmitter {
         /* 半行（正在写）下次再收 */
       }
     }
-    return out;
+    // 旧扩展每次 session_start 都从 seq 1 重数，同一文件里会撞号；见 ctxlog-seq.ts。
+    return renumberCtxLog(out);
   }
 
   /**

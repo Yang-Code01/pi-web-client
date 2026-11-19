@@ -128,6 +128,42 @@ test("三类行共用一个 seq；换会话归零，pending 工具调用也清�
   assert.equal(b[0].kind, "request");
 });
 
+test("同一会话再次 session_start：seq / 轮 / 步接着文件末尾数，不从 1 重来", async () => {
+  const h = load();
+  await h.session_start({ reason: "startup" }, ctx("res111"));
+  await request(h, "res111", msgs([{ role: "user", content: "q1" }]));
+  await request(h, "res111", msgs([{ role: "user", content: "q1" }, { role: "assistant", content: "a" }]));
+  const before = rows("res111");
+  const lastSeq = before[before.length - 1].seq;
+  // 桥重启 / 接管：同一个会话 id 再起一次扩展。
+  const h2 = load();
+  await h2.session_start({ reason: "resume" }, ctx("res111"));
+  await h2.session_compact({ compactionEntry: { tokensBefore: 10 }, reason: "manual", willRetry: false });
+  await request(h2, "res111", msgs([{ role: "user", content: "q1" }, { role: "assistant", content: "a" }, { role: "user", content: "q1" }]));
+  await request(h2, "res111", msgs([{ role: "user", content: "q1" }, { role: "assistant", content: "a" }, { role: "user", content: "q2" }]));
+  const all = rows("res111");
+  const seqs = all.map((r) => r.seq);
+  assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), "seq 单调");
+  assert.equal(new Set(seqs).size, seqs.length, "seq 不撞号");
+  const after = all.slice(before.length);
+  assert.ok(after[0].seq > lastSeq, "重启后的第一行接在原来末尾之后");
+  const ev = after.find((r) => r.kind === "event");
+  assert.equal(ev.atSeq, reqRows("res111")[1].seq, "重启后的事件挂在重启前最后一次请求上");
+  const reqs = reqRows("res111");
+  assert.deepEqual(reqs.map((r) => [r.turn, r.step]), [[1, 1], [1, 2], [2, 1], [3, 1]], "轮次接着数，不再出现第二个「第 1 轮」");
+  assert.equal(typeof reqs[0].userKey, "string", "请求行带 userKey，重启后用它判断同一轮");
+});
+
+test("同一会话重启在同一轮里：步数接着涨，不开新轮", async () => {
+  const h = load();
+  await h.session_start({ reason: "startup" }, ctx("res222"));
+  await request(h, "res222", msgs([{ role: "user", content: "same" }]));
+  const h2 = load();
+  await h2.session_start({ reason: "resume" }, ctx("res222"));
+  await request(h2, "res222", msgs([{ role: "user", content: "same" }, { role: "assistant", content: "x" }]));
+  assert.deepEqual(reqRows("res222").map((r) => [r.turn, r.step]), [[1, 1], [1, 2]]);
+});
+
 test("显式事件：压缩带 tokensBefore、失败不落 error 正文、换模型只记 id", async () => {
   const h = load();
   await h.session_start({ reason: "new" }, ctx("evt111"));

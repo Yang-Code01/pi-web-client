@@ -6504,3 +6504,15 @@ Esc 之后 dialog: 0
 5. **样子。** 已安装页嵌在各自市场的子页签里（插件市场 → 已安装：pi 包 + 插件；MCP 市场 → 已安装：MCP 服务器 + 手动添加），行用市场的卡片样式 `.ext-row`、按钮用 `mk-install`，外层页签与市场对齐、字体统一。
 
 **验证。** `node bridge/tests/ext-manager.mjs`（首段先到的是 mcp.json 的行、状态 connecting）、`node probes/ext-manager-stages.mjs`、`node --experimental-strip-types bridge/tests/mcp-relevance-unit.mjs`。
+
+## D334 上下文面板：日志 seq 不再撞号，进度条 / 浏览器下拉 / 轮次高亮 / 过滤框输入法修正（自查 2026-11-19）
+
+1. **seq 接着数。** 扩展每次 `session_start`（重载扩展、`/reload`、切模型后的重启）都把 `seq` / `turn` / `step` 清零，却接着往同一份 `<id>.ctx.jsonl` 追加：同一个文件里出现好几段从 1 开始的 seq（本机样本 1374 行里 802 个重号），`usage.atSeq`、事件的 `atSeq`、点柱子后的 `pickSeq` 都对不上，「第 1 轮」出现几次，轮次 KPI 偏小。扩展启动时改为读文件尾，从最后一行的 seq、最后一个请求的 turn/step/userKey 接着数（`resumeState`）。已经写坏的旧日志由桥在读时 `renumberCtxLog`（`bridge/src/ctxlog-seq.ts`）把后面每一段整体平移到前一段之后，面板与 context-insight 都经它；seq 本来单调时原样返回。
+2. **当前上下文进度条。** 已用部分 `.cx-progress-used` 没有宽度，各段的百分比解析不出来，39.6% 只画成几个像素。改为已用宽度 = 已用 / 窗口，各段按已用的占比分。
+3. **浏览器下拉只列最近 40 次。** 从趋势图点了更早的柱子，下拉仍显示最后一项。选中的那一步不在最近 40 次里时把它插到下拉最前面。
+4. **轮次粒度的高亮。** 「轮次」柱子的 seq 是这一轮第一次请求；选中的若是这一轮的中间一步就一根都不亮，详情落到最后一轮。改为找第一根 `seq >= pickedSeq` 的那一轮。
+5. **过滤框与输入法。** 每敲一下都整块重画，组字中途 input 被换掉，半截拼音被提交（「wenwenj文件」）。组字期间不重画（也推迟 ctxlog / stats 触发的重画），`compositionend` / 失焦后再画。
+
+**没修：** 「剪枝」chip 固定 `prune: 0`；命令过滤只匹配程序名。
+
+**验证。** `npm run test:context`（新增 `bridge/tests/ctxlog-seq-unit.mjs`、`context-log-unit.mjs` 里两条续号用例）、`node probes/context-panel.mjs`（合成三段日志，量进度条比例、下拉、轮次高亮、CDP 模拟输入法；在 main 上 2/3/4/5 都红）。

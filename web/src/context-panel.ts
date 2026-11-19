@@ -267,6 +267,8 @@ export class ContextPanel {
   private cmdSort: "latest" | "slowest" = "latest";
   private cmdQuery = "";
   private eventKind: CtxEvent["kind"] | null = null;
+  /** 过滤框正在组字：这期间不重画（见 `searchBox`）。 */
+  private composing = false;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -279,7 +281,42 @@ export class ContextPanel {
     this.render();
   }
 
+  /**
+   * 面板里的过滤框。每敲一下都整块重画，但输入法组字期间（拼音 / 假名还没上屏）不能重画：
+   * 换掉 input 会把半截拼音当成文字提交（「wen」+「wenj文件」）。组字时只记值，上屏后再画；
+   * 这段时间里 ctxlog / stats 触发的重画也一起推迟。
+   */
+  private searchBox(key: string, placeholder: string, value: string, set: (v: string) => void): HTMLInputElement {
+    const search = el("input", "cx-search");
+    search.type = "search";
+    search.dataset.cxKey = key;
+    search.placeholder = placeholder;
+    search.value = value;
+    search.addEventListener("compositionstart", () => {
+      this.composing = true;
+    });
+    search.addEventListener("compositionend", () => {
+      this.composing = false;
+      set(search.value);
+      this.render();
+    });
+    search.addEventListener("input", (ev) => {
+      if (this.composing || (ev as InputEvent).isComposing) return;
+      set(search.value);
+      this.render();
+    });
+    // 组字中途失焦而浏览器没发 compositionend：别让面板从此不再重画。
+    search.addEventListener("blur", () => {
+      if (!this.composing) return;
+      this.composing = false;
+      set(search.value);
+      this.render();
+    });
+    return search;
+  }
+
   private render(): void {
+    if (this.composing) return; // compositionend 会补画一次
     const data = this.data;
     const scroller = this.host.closest<HTMLElement>(".settings-body");
     const top = scroller?.scrollTop ?? 0;
@@ -487,11 +524,15 @@ export class ContextPanel {
     const bar = div("cx-progress");
     const used = div("cx-progress-used");
     const total = Math.max(1, kpis.window ?? kpis.current);
+    // 外层先定宽（占窗口几成），段再按类目在已用部分里分：只给段写百分比时，父级是按内容收缩的 flex 项，
+    // 百分比无从解析，整条只剩几个 1px（39.6% 画成 7px）。
+    const usedSum = CTX_CATS.reduce((s, c) => s + (last.cats?.[c.id] ?? 0), 0);
+    used.style.width = `${Math.min(100, (usedSum / total) * 100)}%`;
     for (const c of CTX_CATS) {
       const n = last.cats?.[c.id] ?? 0;
       if (!n) continue;
       const seg = span(`cx-progress-seg ${c.cls}`);
-      seg.style.width = `${(n / total) * 100}%`;
+      seg.style.width = `${(n / Math.max(1, usedSum)) * 100}%`;
       seg.style.background = colorOf(c.cls);
       used.append(seg);
     }
@@ -522,7 +563,11 @@ export class ContextPanel {
     const head = box.querySelector(".cx-card-head")!;
     const controls = div("cx-browser-controls");
     const select = el("select", "cx-select");
-    for (const r of reqs.slice(-40)) {
+    // 下拉只列最近 40 次；从趋势图点了更早的柱子时把那一项补在最前面，否则下拉会显示成别的步。
+    const listed = reqs.slice(-40);
+    const picked = reqs.find((r) => r.seq === selectedSeq);
+    if (picked && !listed.includes(picked)) listed.unshift(picked);
+    for (const r of listed) {
       const opt = el("option", "", `T${r.turn ?? 1} · S${r.step ?? 1}`);
       opt.value = String(r.seq);
       if (r.seq === selectedSeq) opt.selected = true;
@@ -589,16 +634,7 @@ export class ContextPanel {
       const body = div("cx-acc-body");
       const bar = div("cx-browser-filters");
       const query = this.catQuery.get(cat.id) ?? "";
-      const search = el("input", "cx-search");
-      search.type = "search";
-      search.dataset.cxKey = `cat:${cat.id}`;
-      search.placeholder = tr("过滤条目…");
-      search.value = query;
-      search.oninput = () => {
-        this.catQuery.set(cat.id, search.value);
-        this.render();
-      };
-      bar.append(search);
+      bar.append(this.searchBox(`cat:${cat.id}`, tr("过滤条目…"), query, (v) => this.catQuery.set(cat.id, v)));
       if (cat.id === "asst") {
         const counts = { reasoning: 0, call: 0, answer: 0 } as Record<string, number>;
         for (const it of cat.items) if (it.kind && it.kind in counts) counts[it.kind] += 1;
@@ -835,6 +871,8 @@ export class ContextPanel {
       return box;
     }
     const pickedSeq = this.pickSeq ?? reqs[reqs.length - 1]!.seq;
+    // 「轮次」粒度下一根柱 = 一轮，seq 是该轮最后一步；选中的若是轮中间的一步，就落在包含它的那一轮。
+    const pickedRow = rows.find((r) => r.seq >= pickedSeq) ?? rows[rows.length - 1]!;
     const max = Math.max(...rows.map((r) => r.total), 1);
     const chart = div("cx-chart");
     const yaxis = div("cx-yaxis");
@@ -844,7 +882,7 @@ export class ContextPanel {
     const bars = div("cx-bars");
     const scissors = ctxCompactAfterSeq(lines);
     for (const row of rows) {
-      const b = button(`cx-bar${row.seq === pickedSeq ? " picked" : ""}`, "", () => {
+      const b = button(`cx-bar${row === pickedRow ? " picked" : ""}`, "", () => {
         this.pickSeq = row.seq;
         this.render();
       });
@@ -877,7 +915,7 @@ export class ContextPanel {
       if (rows.length > 12 && i % Math.ceil(rows.length / 8) !== 0 && i !== rows.length - 1) return;
       xlabels.append(span("", this.gran === "turn" ? String(r.turn) : String(r.step)));
     });
-    box.append(xlabels, this.trendDetail(rows.find((r) => r.seq === pickedSeq) ?? rows[rows.length - 1]!, summary, reqs));
+    box.append(xlabels, this.trendDetail(pickedRow, summary, reqs));
     return box;
   }
 
@@ -991,15 +1029,7 @@ export class ContextPanel {
     }
     head.append(chips);
     const tools = div("cx-tools-row");
-    const search = el("input", "cx-search");
-    search.type = "search";
-    search.placeholder = tr("按路径过滤…");
-    search.value = this.fileQuery;
-    search.oninput = () => {
-      this.fileQuery = search.value;
-      this.render();
-    };
-    tools.append(search);
+    tools.append(this.searchBox("files", tr("按路径过滤…"), this.fileQuery, (v) => (this.fileQuery = v)));
     for (const [id, label] of [["count", tr("按次数")], ["lines", tr("按行数")], ["latest", tr("按最新")], ["path", tr("按路径")], ["name", tr("按文件名")]] as const) {
       tools.append(button(`cx-sort${this.fileSort === id ? " on" : ""}`, label, () => {
         this.fileSort = id;
@@ -1075,15 +1105,7 @@ export class ContextPanel {
     );
     box.append(summary);
     const tools = div("cx-tools-row");
-    const search = el("input", "cx-search");
-    search.type = "search";
-    search.placeholder = tr("过滤命令…");
-    search.value = this.cmdQuery;
-    search.oninput = () => {
-      this.cmdQuery = search.value;
-      this.render();
-    };
-    tools.append(search);
+    tools.append(this.searchBox("commands", tr("过滤命令…"), this.cmdQuery, (v) => (this.cmdQuery = v)));
     for (const [id, label] of [["latest", tr("最新")], ["slowest", tr("最慢")]] as const) {
       tools.append(button(`cx-sort${this.cmdSort === id ? " on" : ""}`, label, () => {
         this.cmdSort = id;
