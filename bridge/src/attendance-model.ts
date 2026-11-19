@@ -254,10 +254,17 @@ export function numOf(raw: unknown): number {
 export interface AttendanceRow {
   date: string;
   weekday: string;
-  /** 0=平日 1=周末（OA 的 day_type）。认不出来时按 false 处理。 */
-  weekend: boolean;
+  /**
+   * 这天不用上班（OA 的 day_type：0/4 = 平时，1/3 = 周末，2 = 假日）。
+   * 只认 1 会把国庆和祝日当工作日，凭空多出缺卡。认不出来时按 false（当工作日）。
+   */
+  dayOff: boolean;
   clockIn: string | null;
   clockOut: string | null;
+  /** 当天已批准的请假 / 出差小时合计（c_hours + t_hours + s_hours + o_hours + bt_hours）。 */
+  absenceHours: number;
+  /** 这天整天都有申请顶着：请假/出差凑满 8 小时、居家办公、活动出勤。半天假不算。 */
+  fullDayExcused: boolean;
   /** 加班小时（OA 的 `ov`）。 */
   overtime: number;
   /** 加班时长被人工改过（OA 的 `overtime_rewrite_enable`），页面据此加「已修改」标记。 */
@@ -280,12 +287,15 @@ export interface RowMapOptions {
 
 export function mapRow(raw: Record<string, unknown>, opts: RowMapOptions = {}): AttendanceRow {
   const day = splitDay(raw[opts.day ?? "day"]);
+  const absenceHours = round1(absenceHoursOf(raw));
   return {
     date: day.date,
     weekday: day.weekday,
-    weekend: numOf(raw[opts.dayType ?? "day_type"]) === 1,
+    dayOff: dayOffOf(numOf(raw[opts.dayType ?? "day_type"])),
     clockIn: clockOf(raw[opts.clockIn ?? "start"]),
     clockOut: clockOf(raw[opts.clockOut ?? "end"]),
+    absenceHours,
+    fullDayExcused: fullDayExcusedOf(raw, absenceHours),
     overtime: numOf(raw[opts.overtime ?? "ov"]),
     overtimeEdited: numOf(raw[opts.overtimeEdited ?? "overtime_rewrite_enable"]) === 1,
     editedBy: typeof raw[opts.editedBy ?? "update_name"] === "string" ? String(raw[opts.editedBy ?? "update_name"]) : "",
@@ -303,7 +313,41 @@ export interface AttendanceSummary {
   lastDay: string;
 }
 
-/** 缺卡 = 平日、有日期、但上班或下班时间缺一个。周末没打卡不算缺。 */
+/** OA 的 day_type 里哪些不用上班。0/4 是平时（4 = 调休上班的周六），1/3 周末，2 假日。 */
+function dayOffOf(dayType: number): boolean {
+  return dayType === 1 || dayType === 2 || dayType === 3;
+}
+
+/**
+ * 当天请假 / 出差的小时数。OA 分开放：调休 c_hours、事假 t_hours、病假 s_hours、
+ * 其他假期 o_hours、出差 bt_hours；导入模板写明「请假总时长不可超过 8 小时」。
+ */
+function absenceHoursOf(raw: Record<string, unknown>): number {
+  let sum = 0;
+  for (const key of ["c_hours", "t_hours", "s_hours", "o_hours", "bt_hours"]) sum += numOf(raw[key]);
+  return sum;
+}
+
+/** 一整天都有申请顶着，就不该再要求打卡。半天假（不足 8 小时）不算整天。 */
+function fullDayExcusedOf(raw: Record<string, unknown>, absenceHours: number): boolean {
+  if (absenceHours >= 8) return true;
+  if (numOf(raw.home) === 1) return true; // 居家办公
+  return typeof raw.special_reason === "string" && raw.special_reason.trim() !== ""; // 活动出勤
+}
+
+/**
+ * 这一行算不算缺卡。
+ *
+ * 三层：休息日不算；今天不算（一天没过完，「缺下班卡」在上午十点也是真的）；
+ * 整天有申请顶着不算。剩下的就是「该来而没来打卡」：上下班少一个，
+ * **或者两个时刻一模一样** —— OA 只有一次打卡时会把 start/end 填成同一时刻
+ * （11/13 09:27/09:27），只看「有没有值」会把忘了打下班卡整条漏掉。
+ */
+export function isMissingRow(row: AttendanceRow, today = ""): boolean {
+  if (row.dayOff || row.fullDayExcused || row.date === today) return false;
+  return !row.clockIn || !row.clockOut || row.clockIn === row.clockOut;
+}
+
 /**
  * 统计口径。`today` 传了的话，今天这一行整行不计缺卡 —— 一天还没过完，
  * 「缺下班卡」在上午十点也是真的，把它算成缺卡会让人每天都看到一条假的。
@@ -316,9 +360,10 @@ export function summarize(rows: AttendanceRow[], maxDay = "", today = ""): Atten
   let last = maxDay;
   for (const r of rows) {
     if (r.clockIn || r.clockOut) attended++;
-    if (!r.weekend && r.date !== today && (!r.clockIn || !r.clockOut)) missing++;
+    if (isMissingRow(r, today)) missing++;
     overtime += r.overtime;
-    if (r.weekend) weekendOvertime += r.overtime;
+    // 假日的加班按周末那档算（OA 把 2 叫假日，但公司只按「平时 / 周末」两套算头）。
+    if (r.dayOff) weekendOvertime += r.overtime;
     if (r.date > last) last = r.date;
   }
   return {
@@ -329,6 +374,11 @@ export function summarize(rows: AttendanceRow[], maxDay = "", today = ""): Atten
     weekendOvertime: round1(weekendOvertime),
     lastDay: last,
   };
+}
+
+/** 接口里一行：原样字段 + 这一行算不算缺卡（页面拿它标红，别在前端再抄一遍口径）。 */
+export function viewRows(rows: AttendanceRow[], today = ""): (AttendanceRow & { missing: boolean })[] {
+  return rows.map((r) => ({ ...r, missing: isMissingRow(r, today) }));
 }
 
 export function round1(n: number): number {

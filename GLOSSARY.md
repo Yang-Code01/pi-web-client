@@ -86,6 +86,7 @@
 | **顶栏** | 页面最上面那条常驻工具栏（`.topbar`）：左边折叠 / 当前会话 chip / 标题，右边一排动作按钮。说「顶栏 7 颗」时特指可关掉的那七颗（D218）：`artifacts`（📂 产物）、`terminal`（>_ 终端）、`files`（📁 文件管理器）、`notes`（🐞 bug）、`peer`（🌐 内网通）、`scratch`（💭 随手问）、`jira`（🔷 Jira）；`look`（⚙）、当前会话 chip 与左右栏折叠不算在这七颗里（⚙ 是设置抽屉的唯一入口，锁死）。**不用它指代浏览器自己的地址栏 / 标签栏。** |
 | **下沿** | 输入框正下方那一行工具（`.hint-tools`）：左边四颗可关掉（D218）—— `skills`（技能）、`ext`（扩展）、`attach`（文件）、`model`（模型 chip，显示当前模型名，没选时写「模型」）；右边是随会话出现的「释放会话 / 让回终端」。说「输入框下沿 4 颗」时只指前四颗。**不用它指代输入框上方的状态行（`.hint` 里 cwd / token 那行）或聊天区底部的队列条。** |
 | **上下班** | 本机管理（`section=workclock`）里的上班/下班分区（D246）：记每天**第一次解锁**的时刻，按用户设的工时（默认 9 小时）算下班倒计时。**不用「考勤」指代它** —— 它不统计请假/迟到，也不上报给任何人。 |
+| **考勤记录** | 「设置 → 本机管理 → 考勤」页那张表（`web/src/attendance.ts`；桥端 `bridge/src/attendance.ts` 从 OA `attendanceimport2` 拉行）：一天一行 `{date, dayOff, clockIn, clockOut, absenceHours, fullDayExcused, missing, raw}`。`dayOff` = OA 的 `day_type` 1/2/3（周末与假日）；**缺卡**（`missing`）由桥端 `isMissingRow()` 算好下发，口径见 D323。**不是**「上下班」分区（那条只记解锁）。 |
 | **解锁记录 / 解锁事件** | 上下班分区的基本数据，一条 `{t, k, src}`：`k` 是 `unlock`/`lock`，`src` 说明怎么知道的（`event` 记录器收到会话事件 / `poll` 轮询 LogonUI / `log`「导入历史」回填 / `start` 记录器启动兜底）。文件是状态目录的 `workclock/agent.jsonl`。 |
 | **日志回填** | 页面上「导入历史（需管理员）」那颗按钮干的事：提权读一次 Security 日志，以 `src: "log"` 写进 `workclock/log-events.json`。解锁读 **4624** 的 LogonType（审计默认就开着），锁屏读 4800/4801（默认不审计，常见 0 条）。见 D288。 |
 | **记录器** | 那个常驻的小脚本（`workclock-agent.ps1`，D246）：跑在用户会话里收 `SessionSwitch` 事件、每 15 秒轮询兜底、写心跳。登录自启靠 **HKCU 的 Run 项**（`pi-web-client-workclock`，测试实例带状态目录哈希后缀，D286）——不是计划任务：标准用户注册不了计划任务。装/卸不需要管理员，装它是「日常零 UAC 拿到准解锁时间」的代价。 |
