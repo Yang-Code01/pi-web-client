@@ -137,18 +137,18 @@
 }
 
 .sys-banner--warn {
-  color: #f8d48b;
-  background: rgba(251, 191, 36, 0.1);
+  color: color-mix(in srgb, var(--warn) 55%, var(--text));
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
 
 .sys-banner--ok {
-  color: #b6f3ca;
-  background: rgba(74, 222, 128, 0.1);
+  color: color-mix(in srgb, var(--ok) 55%, var(--text));
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
 }
 
 .sys-banner--bad {
-  color: #ffc0c9;
-  background: rgba(251, 113, 133, 0.12);
+  color: color-mix(in srgb, var(--danger) 55%, var(--text));
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .sys-banner__text {
@@ -172,7 +172,7 @@
 
 .sys-banner__close:hover {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
 }
 
 /* ---------------------------------------------------------------- 主体 */
@@ -212,7 +212,7 @@
 }
 
 .sys-nav__item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
   color: var(--text);
 }
 
@@ -228,7 +228,7 @@
   min-width: 18px;
   padding: 1px 5px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
   color: var(--dim);
   font-family: var(--mono);
   font-size: 10px;
@@ -314,7 +314,7 @@
   display: block;
   height: 6px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.07);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
   border-radius: 999px;
 }
 
@@ -624,7 +624,7 @@
   align-items: center;
   height: 22px;
   padding: 0 8px;
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
   border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--dim);
@@ -643,15 +643,15 @@
   gap: 10px;
   margin-bottom: 10px;
   padding: 7px 9px;
-  background: rgba(251, 191, 36, 0.08);
-  border: 1px solid rgba(251, 191, 36, 0.24);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 24%, transparent);
   border-radius: 8px;
 }
 
 .sys-saved__text {
   min-width: 0;
   overflow: hidden;
-  color: #f2cf88;
+  color: color-mix(in srgb, var(--warn) 55%, var(--text));
   font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -673,7 +673,7 @@
   display: grid;
   gap: 2px;
   padding: 7px 9px;
-  background: rgba(255, 255, 255, 0.025);
+  background: color-mix(in srgb, var(--text) 2.5%, transparent);
   border: 1px solid var(--line);
   border-radius: 8px;
   color: inherit;
@@ -917,7 +917,7 @@
 }
 
 .sys-table tbody tr:hover td {
-  background: rgba(255, 255, 255, 0.025);
+  background: color-mix(in srgb, var(--text) 2.5%, transparent);
 }
 
 .sys-table__mono {
@@ -1038,11 +1038,11 @@
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
   border-radius: 9px;
-  background: rgba(251, 113, 133, 0.08);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
 .sys-error__text {
-  color: #ffc0c9;
+  color: color-mix(in srgb, var(--danger) 55%, var(--text));
   font-size: 11.5px;
   overflow-wrap: anywhere;
 }

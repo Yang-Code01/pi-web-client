@@ -262,7 +262,7 @@
 .fse-hit {
   border-radius: 3px;
   padding: 0 1px;
-  background: rgba(125, 211, 252, 0.22);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
   color: var(--text);
 }
 

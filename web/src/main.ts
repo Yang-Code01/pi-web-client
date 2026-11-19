@@ -3,6 +3,7 @@ import "./sheet/sheet.css";
 import { api } from "./api.ts";
 import { App, bootScale } from "./app.ts";
 import type { Me } from "./types.ts";
+import { bootTheme } from "./theme.ts";
 import { applyLang, bootLang, errText, tr } from "./i18n/index.ts";
 
 // 登录页在 App 之前就画出来了，所以语言得在这时先定下来（D110）：`pi.prefs.lang`
@@ -10,6 +11,8 @@ import { applyLang, bootLang, errText, tr } from "./i18n/index.ts";
 applyLang(bootLang());
 // 登录页先于 App 画出：字号也先按已存/默认偏好挂上，别让第一眼停在 100%。
 document.documentElement.style.setProperty("--ui-scale", String(bootScale()));
+// 主题同理：浅色用户的登录页不该先闪一下黑底。
+bootTheme();
 
 function loginScreen(onSuccess: (me: Me) => void): void {
   const app = document.getElementById("app")!;

@@ -79,8 +79,8 @@
 /* 细线滚动条：整个面板统一（别同时写标准属性 scrollbar-width，Chromium 会忽略 ::-webkit-scrollbar 宽度）。 */
 .notes-console ::-webkit-scrollbar { width: 6px; height: 6px; }
 .notes-console ::-webkit-scrollbar-track { background: transparent; }
-.notes-console ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); border-radius: 999px; }
-.notes-console ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
+.notes-console ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--text) 16%, transparent); border-radius: 999px; }
+.notes-console ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text) 28%, transparent); }
 .notes-console ::-webkit-scrollbar-corner { background: transparent; }
 
 /* ---- 一：分区导航 */
