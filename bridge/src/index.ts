@@ -2957,7 +2957,7 @@ async function main(): Promise<void> {
             return;
           }
           case "filesearch.scan": {
-            fileIndex.start(true);
+            fileIndex.start();
             send({ type: "filesearch.status", status: fileIndex.status() });
             return;
           }

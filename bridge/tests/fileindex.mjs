@@ -153,6 +153,76 @@ await check("扫到一半被打断：再开库不认半套索引，转 off 等�
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+// D323：2.06M 行的真库上，计划走歪 = 单次 20 s 的同步阻塞，面板空着、整个 bridge 停住。
+// 计划只看 SQL 形状与索引，小库上 SQLite 的选择和大库一样（都没 ANALYZE），所以在这里钉死。
+await check("查询计划：不走 idx_files_vol、前缀是区间、名字子串是覆盖扫描、空查询不排临时表", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fileindex-"));
+  fs.writeFileSync(path.join(root, "alpha.txt"), "x");
+  const index = new FileIndex({ dbFile: path.join(root, ".idx", "files.db"), roots: [root] });
+  await index.open();
+  index.start();
+  for (let i = 0; i < 100 && index.status().state !== "ready"; i += 1) await sleep(50);
+  const vols = [index.status().volumes[0].id];
+  for (const sort of ["name", "size", "mtime"]) {
+    for (const q of ["", "al", "pha"]) {
+      for (const plan of index.explain(q, { volumes: vols, sort })) {
+        assert.ok(!plan.includes("idx_files_vol"), `q=${q} sort=${sort} 走了 vol 索引：${plan}`);
+        // 空查询按名字排就该顺着名字索引走（取够 LIMIT 就停）；有词时顺着它逐行回表找子串 = 读完整张表。
+        if (q) assert.ok(!/SCAN files USING INDEX idx_files_nlow/.test(plan), `q=${q} sort=${sort} 顺着名字索引逐行回表：${plan}`);
+      }
+    }
+    const empty = index.explain("", { volumes: vols, sort })[0];
+    assert.ok(!empty.includes("TEMP B-TREE"), `空查询 sort=${sort} 要走索引顺序，不排全表：${empty}`);
+  }
+  const [prefix, sub, ...rest] = index.explain("al", { volumes: vols });
+  assert.match(prefix, /idx_files_nlow \(nlow>\? AND nlow<\?\)/, `前缀要用名字索引的区间：${prefix}`);
+  assert.match(sub, /COVERING INDEX idx_files_nlow/, `名字子串要在索引上覆盖扫描：${sub}`);
+  assert.equal(rest.length, 0, "不带分隔符时不该扫整条路径");
+  assert.equal(index.explain("x/al", { volumes: vols }).length, 3, "带分隔符才加路径那一段");
+  index.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+await check("只按名字匹配；搜索词带 \\ 或 / 才匹配路径", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fileindex-"));
+  fs.mkdirSync(path.join(root, "docs", "guide"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide", "install.txt"), "x");
+  const index = new FileIndex({ dbFile: path.join(root, ".idx", "files.db"), roots: [root] });
+  await index.open();
+  index.start();
+  for (let i = 0; i < 100 && index.status().state !== "ready"; i += 1) await sleep(50);
+  const names = (q) => index.query(q).rows.map((r) => r.name);
+  assert.deepEqual(names("guide"), ["guide"], "只命中名字叫 guide 的目录，不命中它下面的文件");
+  assert.ok(names("guide/inst").includes("install.txt"), "带 / 时按路径命中");
+  assert.ok(names(`guide${path.sep}inst`).includes("install.txt"), "带本机分隔符时按路径命中");
+  assert.equal(names("100%").length, 0, "% 是字面量");
+  index.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+await check("重建索引不清表：重扫期间照样搜得到，扫完删掉没再见到的行", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fileindex-"));
+  fs.writeFileSync(path.join(root, "keep.txt"), "x");
+  fs.writeFileSync(path.join(root, "gone.txt"), "x");
+  const index = new FileIndex({ dbFile: path.join(root, ".idx", "files.db"), roots: [root] });
+  await index.open();
+  index.start();
+  for (let i = 0; i < 100 && index.status().state !== "ready"; i += 1) await sleep(50);
+  index.close();
+  // 关着的时候删一个：再开库不会收到 watch 事件，只能靠重扫按 gen 清掉。
+  fs.rmSync(path.join(root, "gone.txt"));
+  const again = new FileIndex({ dbFile: path.join(root, ".idx", "files.db"), roots: [root] });
+  await again.open();
+  again.start();
+  assert.equal(again.status().state, "scanning");
+  assert.equal(again.query("keep").rows.length, 1, "重扫刚开始就该还能搜到旧行");
+  for (let i = 0; i < 100 && again.status().state !== "ready"; i += 1) await sleep(50);
+  assert.equal(again.query("keep").rows.length, 1);
+  assert.equal(again.query("gone").rows.length, 0, "扫完应删掉本轮没见到的行");
+  again.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 if (failures) {
   console.log(`\n${failures} 项失败`);
   process.exit(1);

@@ -10,7 +10,8 @@ import path from "node:path";
  * 首次全盘遍历一次（30–90 s，后台、可暂停），之后 `fs.watch` 增量，模糊查询 ~100 ms（100 万行实测）。
  *
  * 三条硬约束（都是实测出来的，改之前先读 `.scratch/filesearch/bench.mjs` 的数字）：
- * 1. **不上 FTS5 / trigram**：只把 100 ms 降到 1 ms，库翻倍。前缀查询本来就走 `nlow` 索引（0.4 ms）。
+ * 1. **不上 FTS5 / trigram**：库翻倍。前缀走 `nlow` 区间、名字子串走 `nlow` 覆盖扫描，2M 行 ~0.3 s；
+ *    每条 SQL 的计划都钉死了，见 `query()` 上的注释（D323）。
  * 2. **SQLite 只开一个连接、同步 API**：`node:sqlite` 没有异步版本，靠「500 行一个事务 + 让出事件循环」
  *    把单次阻塞压在 1–3 ms，不让一份索引拖慢正在跑的会话。
  * 3. **`node:sqlite` 用动态 import**：Node 22.5–22.12 需要 `--experimental-sqlite`，静态 import 会让
@@ -185,6 +186,8 @@ export class FileIndex {
         CREATE INDEX IF NOT EXISTS idx_files_nlow ON files(nlow);
         CREATE INDEX IF NOT EXISTS idx_files_vol ON files(vol);
         CREATE INDEX IF NOT EXISTS idx_files_gen ON files(gen);
+        CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
+        CREATE INDEX IF NOT EXISTS idx_files_size ON files(size);
         CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
       `);
       this.upsert = db.prepare(
@@ -284,18 +287,13 @@ export class FileIndex {
 
   // ---------------------------------------------------------------- scan
 
-  /** 开一轮扫描。已经在扫就什么都不做（面板按钮可以安心连点）。 */
-  start(rebuild = false): void {
+  /**
+   * 开一轮扫描。已经在扫就什么都不做（面板按钮可以安心连点）。
+   * 重建也走这里，不清表：边扫边覆盖，扫完按 gen 删掉本轮没见到的行。重建期间照样能搜；
+   * 先 `DELETE FROM files` 在 2M 行上同步卡了 17 s，还让面板空了一个小时（D323）。
+   */
+  start(): void {
     if (!this.db || this.stateValue === "error" || this.scanning) return;
-    if (rebuild) {
-      try {
-        this.db.exec("DELETE FROM files");
-        this.indexed = 0;
-        this.volCounts.clear();
-      } catch {
-        return;
-      }
-    }
     this.cancelled = false;
     this.paused = false;
     this.scanning = this.runScan()
@@ -419,7 +417,8 @@ export class FileIndex {
       }
       flush();
       // 本轮没再见的行：删。再顺手把库里现有行数采一次，state 转 ready 之前一定是真值。
-      db.prepare("DELETE FROM files WHERE gen != ?").run(this.scanGen);
+      // `gen < ?` 而不是 `!=`：区间能走 idx_files_gen，`!=` 在 2M 行上是一次全表扫（同步）。
+      db.prepare("DELETE FROM files WHERE gen < ?").run(this.scanGen);
       db.prepare("DELETE FROM meta WHERE k = 'scanStartedAt'").run();
       db.prepare("INSERT INTO meta(k, v) VALUES('lastScanAt', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(String(Date.now()));
       this.lastScanAt = Date.now();
@@ -551,56 +550,90 @@ export class FileIndex {
   }
 
   // ---------------------------------------------------------------- query
+  //
+  // 每条 SQL 的执行计划都是被钉死的（`explain()` 给测试看，bridge/tests/fileindex.mjs 断言）：
+  // 2.06M 行的真库上，计划一走歪就是单次 20 s 的同步阻塞，整个 bridge 跟着停（D323）。
+  // - 卷过滤写成 `+vol IN (...)`：一元 `+` 让它不能用 idx_files_vol。否则 SQLite 会挑 vol 索引
+  //   拿出几乎整张表再临时排序 —— 三个卷就是全部行。
+  // - 前缀用 `nlow >= ? AND nlow < ?` 的区间，不用 `LIKE 'x%'`：默认的 LIKE 不分大小写，
+  //   BINARY 的 idx_files_nlow 用不上。
+  // - 名字子串先在 idx_files_nlow 上做覆盖扫描（只读索引，不回表）拿 rowid，再回表取那几行；
+  //   顺着索引逐行回表找子串，碰上不存在的词要读完整张表的随机页。
+  // - 路径子串只在搜索词带 `\` 或 `/` 时跑（和 Everything 一样），它必须顺序读完整张表（~1 s）。
 
   query(rawq: string, opts: QueryOptions = {}): QueryResult {
     const started = performance.now();
     const db = this.db;
     if (!db) return { rows: [], ms: 0, truncated: false };
+    const plan = this.plan(rawq, opts);
+    if (!plan) return this.toResult([], 1, started);
+    const seen = new Set<string>();
+    const out: any[] = [];
+    for (const stage of plan.stages) {
+      for (const row of db.prepare(stage.sql).all(...stage.args)) {
+        const key = String(row.path);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(row);
+        if (out.length >= plan.limit + 1) break;
+      }
+      if (out.length >= plan.limit + 1) break;
+    }
+    return this.toResult(out, plan.limit, started);
+  }
+
+  /** 测试用：`query()` 会跑的每条 SQL 的 `EXPLAIN QUERY PLAN`（每段一行，`|` 分隔）。 */
+  explain(rawq: string, opts: QueryOptions = {}): string[] {
+    const db = this.db;
+    const plan = db ? this.plan(rawq, opts) : null;
+    if (!db || !plan) return [];
+    return plan.stages.map((stage) =>
+      db
+        .prepare(`EXPLAIN QUERY PLAN ${stage.sql}`)
+        .all(...stage.args)
+        .map((row) => String(row.detail))
+        .join(" | "),
+    );
+  }
+
+  /**
+   * 查询拆成按优先级排的几段 SQL；`null` = 没库，`undefined` = 范围是空集（卷全被勾掉）。
+   * 拼进 SQL 的只有排序键与占位符个数：`orderSql()` 只回三个字面量之一，其余全是绑定值。
+   */
+  private plan(rawq: string, opts: QueryOptions): { limit: number; stages: Array<{ sql: string; args: Array<string | number> }> } | null | undefined {
+    if (!this.db) return null;
     const limit = Math.min(LIMIT_MAX, Math.max(1, Math.round(opts.limit ?? LIMIT_DEFAULT)));
     const offset = Math.max(0, Math.round(opts.offset ?? 0));
-    const q = rawq.trim();
     const filter = this.volFilter(opts.volumes);
-    // null = 范围是空集（卷全被勾掉），不是「不限范围」。
-    if (!filter) return this.toResult([], limit, started);
-    const volSql = filter.sql;
-    const volArgs: string[] = filter.args;
+    // 范围是空集，不是「不限范围」。
+    if (!filter) return undefined;
+    const { sql: volSql, args: volArgs } = filter;
+    const cols = "SELECT path, nlow, size, mtime, is_dir, vol FROM files";
+    const q = rawq.trim();
 
     if (!q) {
       const order = this.emptyOrder(opts.sort);
-      const emptySql = `SELECT path, nlow, size, mtime, is_dir, vol FROM files WHERE 1=1${volSql} ORDER BY ${order} LIMIT ? OFFSET ?`;
-      const rows = db.prepare(emptySql).all(...volArgs, limit + 1, offset);
-      return this.toResult(rows, limit, started);
+      return { limit, stages: [{ sql: `${cols} WHERE 1=1${volSql} ORDER BY ${order} LIMIT ? OFFSET ?`, args: [...volArgs, limit + 1, offset] }] };
     }
 
     const low = q.toLowerCase();
     const glob = escapeLike(low);
     const order = this.orderSql(opts.sort);
-    const cols = "SELECT path, nlow, size, mtime, is_dir, vol FROM files";
-    const seen = new Set<string>();
-    const out: any[] = [];
-    const take = (rows: any[]): void => {
-      for (const row of rows) {
-        const key = String(row.path);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push(row);
-        if (out.length >= limit + 1) return;
-      }
-    };
-
-    // 拼的只有排序键与占位符个数：`orderSql()` 只返回三个字面量之一，`volArgs` 全是绑定值。
-    const prefixSql = `${cols} WHERE nlow LIKE ? ESCAPE '\\'${volSql} ORDER BY ${order} LIMIT ?`;
-    const prefixStmt = db.prepare(prefixSql);
-    // 第一段：名字前缀 —— 走 idx_files_nlow，100 万行 0.4 ms。搜索框逐键都先走这条。
-    take(prefixStmt.all(`${glob}%`, ...volArgs, limit + 1));
-    // 第二段：还不够才补子串（名字或整条路径）。全表扫 ~100 ms，所以只在必要时跑。
-    if (out.length < limit + 1) {
-      const excluded = out.map(() => "?").join(",") || "''";
-      const subSql = `${cols} WHERE (nlow LIKE ? ESCAPE '\\' OR path LIKE ? ESCAPE '\\') AND path NOT IN (${excluded})${volSql} ORDER BY ${order} LIMIT ?`;
-      const subStmt = db.prepare(subSql);
-      take(subStmt.all(`%${glob}%`, `%${glob}%`, ...out.map((r) => String(r.path)), ...volArgs, limit + 1));
+    const stages: Array<{ sql: string; args: Array<string | number> }> = [
+      // 第一段：名字前缀，idx_files_nlow 上的区间。U+10FFFF 是 UTF-8 里最大的码位，区间恰好盖住所有以 low 开头的名字。
+      { sql: `${cols} WHERE nlow >= ? AND nlow < ?${volSql} ORDER BY ${order} LIMIT ?`, args: [low, `${low}\u{10FFFF}`, ...volArgs, limit + 1] },
+      // 第二段：名字子串。
+      {
+        sql: `${cols} WHERE rowid IN (SELECT rowid FROM files INDEXED BY idx_files_nlow WHERE nlow LIKE ? ESCAPE '\\')${volSql} ORDER BY ${order} LIMIT ?`,
+        args: [`%${glob}%`, ...volArgs, limit + 1],
+      },
+    ];
+    if (/[\\/]/.test(q)) {
+      // 第三段：路径子串。Windows 上库里存的是 `\`，用户敲 `/` 也算。
+      const pathGlob = escapeLike(process.platform === "win32" ? q.replace(/\//g, "\\") : q);
+      stages.push({ sql: `${cols} NOT INDEXED WHERE path LIKE ? ESCAPE '\\'${volSql} ORDER BY ${order} LIMIT ?`, args: [`%${pathGlob}%`, ...volArgs, limit + 1] });
     }
-    return this.toResult(out, limit, started);
+    return { limit, stages };
   }
 
   /**
@@ -612,7 +645,8 @@ export class FileIndex {
     if (!wanted) return { sql: "", args: [] };
     const vols = wanted.filter((v) => this.roots.some((root) => volumeOf(root) === v));
     if (!vols.length) return null;
-    return { sql: ` AND vol IN (${vols.map(() => "?").join(",")})`, args: vols };
+    // `+vol`：别让 SQLite 拿 idx_files_vol 走查询（见 query() 上的注释）。
+    return { sql: ` AND +vol IN (${vols.map(() => "?").join(",")})`, args: vols };
   }
 
   /** 排序键：只认三个字面量，任何别的一律回「按名字」。 */
