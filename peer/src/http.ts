@@ -10,6 +10,7 @@ import type { Discovery } from "./discovery.ts";
 import { CHUNK, mimeOf } from "./files.ts";
 import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
+import { MAX_STICKER_BYTES, addSticker, listStickers, removeSticker, stickerCopy, stickerPath } from "./stickers.ts";
 import type { History } from "./history.ts";
 import type { Messages } from "./messages.ts";
 import type { Relations } from "./peers.ts";
@@ -350,6 +351,17 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         }
       }
 
+      // 表情回应：本机落一条 react，再通知对端（对端不在线就只在本机）。
+      if (url.pathname === "/react" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          return json(res, 200, messages.react(String(body?.peer ?? ""), String(body?.id ?? ""), String(body?.emoji ?? ""), body?.on !== false));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
       if (url.pathname === "/typing" && req.method === "POST") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const body = await readBody(req).catch(() => ({}));
@@ -539,6 +551,47 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const tmp = path.join(statePath("out"), `up-${randomUUID()}${path.extname(name)}`);
         fs.writeFileSync(tmp, data);
         return json(res, 200, await files.send(peerId, tmp, name));
+      }
+
+      // 「我的表情」：本机收藏的小图。列表 / 收藏（原始字节）/ 删除 / 取图 / 发给某人。
+      if (url.pathname === "/stickers" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        return json(res, 200, { ok: true, stickers: listStickers() });
+      }
+      if (url.pathname === "/stickers/add" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const data = await readRaw(req, MAX_STICKER_BYTES).catch(() => null);
+        if (!data) return json(res, 413, { error: "表情太大了（上限 5 MB）" });
+        try {
+          return json(res, 200, { ok: true, sticker: addSticker(url.searchParams.get("name") ?? "表情.png", data) });
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+      if (url.pathname === "/stickers/remove" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        return json(res, 200, { ok: removeSticker(String(body?.id ?? "")) });
+      }
+      if (url.pathname === "/stickers/raw" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const file = stickerPath(url.searchParams.get("id") ?? "");
+        if (!file) return json(res, 404, { error: "没有这个表情" });
+        const stat = fs.statSync(file);
+        res.writeHead(200, { "content-type": mimeOf(file), "content-length": stat.size, "cache-control": "private, max-age=86400" });
+        return void fs.createReadStream(file).pipe(res);
+      }
+      if (url.pathname === "/stickers/send" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const peerId = String(body?.peer ?? "");
+        if (!peerId) return json(res, 400, { error: "缺 peer" });
+        try {
+          const copy = stickerCopy(String(body?.id ?? ""));
+          return json(res, 200, await files.send(peerId, copy.path, copy.name));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
       }
 
       // D209：收件目录里那份文件的绝对路径。站内翻页 / 「用本机程序打开」都要它，

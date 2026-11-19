@@ -5055,10 +5055,48 @@ export class App {
 
     const sheet = el("div", "sheet peer-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("内网通")));
+    const title = el("div", "sheet-title", tr("内网通"));
+    // 最大化：铺满整个浏览器窗口，再点还原；记住上一次的状态，下次打开照旧。
+    const MAX_KEY = "pi-web.peer.max";
+    const maxBtn = el("button", "btn ghost peer-max");
+    const paintMax = (on: boolean): void => {
+      back.classList.toggle("peer-max-on", on);
+      sheet.classList.toggle("max", on);
+      maxBtn.textContent = on ? tr("还原") : tr("最大化");
+      maxBtn.title = on ? tr("还原成弹框") : tr("铺满整个窗口（双击标题栏也行）");
+    };
+    const toggleMax = (): void => {
+      const on = !sheet.classList.contains("max");
+      try {
+        localStorage.setItem(MAX_KEY, on ? "1" : "0");
+      } catch {
+        /* 隐私模式：只是记不住 */
+      }
+      paintMax(on);
+    };
+    let saved = false;
+    try {
+      saved = localStorage.getItem(MAX_KEY) === "1";
+    } catch {
+      /* ignore */
+    }
+    paintMax(saved);
+    maxBtn.onclick = toggleMax;
+    head.ondblclick = (ev) => {
+      if ((ev.target as HTMLElement).closest("button")) return;
+      toggleMax();
+    };
+    const tab = el("button", "btn ghost", tr("新标签页"));
+    tab.title = tr("在新标签页里单独打开内网通");
+    tab.onclick = () => {
+      window.open(`/peer?v=${Date.now()}`, "_blank", "noopener");
+      this.closeSheet();
+    };
     const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
-    head.append(close);
+    const acts = el("div", "peer-head-acts");
+    acts.append(tab, maxBtn, close);
+    head.append(title, acts);
 
     const frame = document.createElement("iframe");
     frame.className = "peer-frame";

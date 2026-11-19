@@ -270,6 +270,11 @@ export class PeerHost {
     return this.request("POST", "/recall", { peer, id });
   }
 
+  /** 表情回应：`on:false` 取消。 */
+  react(peer: string, id: string, emoji: string, on: boolean): Promise<{ ok: boolean; at: number }> {
+    return this.request("POST", "/react", { peer, id, emoji, on });
+  }
+
   /** P3：输入中。刻意不 await 结果也不报错：心跳丢了就丢了。 */
   typing(peer: string): Promise<{ ok: boolean }> {
     return this.request("POST", "/typing", { peer }, { repoll: false });
@@ -314,6 +319,36 @@ export class PeerHost {
     const parsed = text ? JSON.parse(text) : null;
     if (!res.ok) throw new Error(parsed?.error ?? `HTTP ${res.status}`);
     return parsed;
+  }
+
+  /** 「我的表情」：本机收藏的小图（存在 peer 的 state 目录里）。 */
+  stickers(): Promise<{ stickers: unknown[] }> {
+    return this.request("GET", "/stickers");
+  }
+
+  async addSticker(name: string, data: Buffer): Promise<{ ok: boolean; sticker: unknown }> {
+    const res = await fetch(`http://127.0.0.1:${this.opts.port}/stickers/add?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: data,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await res.text();
+    const parsed = text ? JSON.parse(text) : null;
+    if (!res.ok) throw new Error(parsed?.error ?? `HTTP ${res.status}`);
+    return parsed;
+  }
+
+  removeSticker(id: string): Promise<{ ok: boolean }> {
+    return this.request("POST", "/stickers/remove", { id }, { repoll: false });
+  }
+
+  sendSticker(peer: string, id: string): Promise<{ ok: boolean; id: string }> {
+    return this.request("POST", "/stickers/send", { peer, id });
+  }
+
+  stickerStream(id: string): Promise<Response> {
+    return fetch(`http://127.0.0.1:${this.opts.port}/stickers/raw?id=${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(15_000) });
   }
 
   transfers(): Promise<{ transfers: unknown[]; free: number }> {

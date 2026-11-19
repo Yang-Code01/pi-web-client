@@ -947,6 +947,14 @@ async function main(): Promise<void> {
         return json(res, 400, { error: (err as Error).message });
       }
     }
+    if (url.pathname === "/api/peer/react" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.react(String(body?.peer ?? ""), String(body?.id ?? ""), String(body?.emoji ?? ""), body?.on !== false));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
     if (url.pathname === "/api/peer/typing" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       try {
@@ -1006,6 +1014,65 @@ async function main(): Promise<void> {
         return json(res, out.ok ? 200 : 400, out);
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // 转发一条文件消息：找到本机那份文件（收到的在收件目录，自己发的指向原路径），再发给另一个人。
+    if (url.pathname === "/api/peer/forwardfile" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const file = await peer.filePath(String(body?.id ?? ""));
+        if (!file) return json(res, 404, { error: "本机找不到这个文件了" });
+        return json(res, 200, await peer.sendFile(String(body?.peer ?? ""), file, body?.name ? String(body.name) : undefined));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // 「我的表情」：列表 / 收藏（原始字节，上限 5 MB）/ 删除 / 取图 / 发送。
+    if (url.pathname === "/api/peer/stickers" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.stickers());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/stickers/add" && req.method === "POST") {
+      const raw = await readRaw(req, 5 * 1024 * 1024).catch(() => null);
+      if (!raw) return json(res, 413, { error: "表情太大了（上限 5 MB）" });
+      try {
+        return json(res, 200, await peer.addSticker(url.searchParams.get("name") || "表情.png", raw));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/stickers/remove" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.removeSticker(String(body?.id ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/stickers/send" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.sendSticker(String(body?.peer ?? ""), String(body?.id ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/stickers/raw" && req.method === "GET") {
+      try {
+        const upstream = await peer.stickerStream(url.searchParams.get("id") ?? "");
+        if (!upstream.ok) return json(res, upstream.status, { error: "没有这个表情" });
+        const buf = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(200, {
+          "content-type": upstream.headers.get("content-type") ?? "application/octet-stream",
+          "content-length": buf.length,
+          "cache-control": "private, max-age=86400",
+        });
+        return void res.end(buf);
+      } catch (err) {
+        return json(res, 404, { error: (err as Error).message });
       }
     }
     if (url.pathname === "/api/peer/upload" && req.method === "POST") {
