@@ -36,6 +36,8 @@ fs.writeFileSync(
   path.join(wkDir, "agent.jsonl"),
   `${JSON.stringify({ t: Date.now() - 3 * 3600_000, k: "unlock", src: "event" })}\n`,
 );
+// 休息日不算倒计时（D246 第 5 条）：七天都设成工作日，周末跑这条用例也能看到倒计时在走。
+fs.writeFileSync(path.join(wkDir, "settings.json"), JSON.stringify({ hours: 9, workdays: [0, 1, 2, 3, 4, 5, 6] }));
 fs.mkdirSync(AGENT, { recursive: true });
 
 const env = {
@@ -134,7 +136,7 @@ async function reopenConsole() {
 }
 await enterAttendance();
 check("考勤页能打开", (await page.locator(".at-page").count()) === 1);
-check("考勤页四个页签", (await page.locator(".at-tab").count()) === 4, String(await page.locator(".at-tab").count()));
+check("考勤页五个页签", (await page.locator(".at-tab").count()) === 5, String(await page.locator(".at-tab").count()));
 const toSettings = page.getByRole("button", { name: "去设置", exact: true });
 // 进页先显示「正在读状态…」，未配置态要等 /api/attendance/state 回来才画。
 await toSettings.first().waitFor({ timeout: 10_000 });

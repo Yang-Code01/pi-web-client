@@ -20,6 +20,7 @@ import {
   serviceStartLabel,
   serviceStatusLabel,
   targetText,
+  dayClockText,
   uptimeParts,
   visiblePorts,
   weekdayOf,
@@ -195,4 +196,12 @@ test("上下班：目标时刻跨过零点就标「明天」", () => {
   assert.equal(targetText(new Date(2026, 10, 13, 18, 0).getTime(), now), "18:00");
   assert.equal(targetText(new Date(2026, 10, 14, 5, 37).getTime(), now), "明天 05:37");
   assert.equal(targetText(new Date(2026, 10, 15, 1, 0).getTime(), now), "明天 01:00");
+});
+
+test("上下班：凌晨还算前一个工作日时，目标写「昨天」，下班写「次日」（D334）", () => {
+  const night = new Date(2026, 10, 14, 2, 10).getTime();
+  assert.equal(targetText(new Date(2026, 10, 13, 20, 23).getTime(), night), "昨天 20:23");
+  assert.equal(dayClockText(new Date(2026, 10, 14, 1, 30).getTime(), "2026-11-13"), "次日 01:30");
+  assert.equal(dayClockText(new Date(2026, 10, 13, 23, 30).getTime(), "2026-11-13"), "23:30");
+  assert.equal(dayClockText(new Date(2026, 11, 1, 1, 0).getTime(), "2026-11-30"), "次日 01:00");
 });

@@ -468,6 +468,8 @@ export type OvertimeProblemCode =
   | "hours_zero"
   | "hours_mismatch"
   | "reason_type_missing"
+  | "project_missing"
+  | "detail_missing"
   | "approver_missing";
 
 export interface OvertimeProblem {
@@ -500,11 +502,120 @@ export function checkDraft(d: OvertimeDraft): OvertimeProblem | null {
     };
   }
   if (!d.reason.type.trim()) return { code: "reason_type_missing", message: "选一个加班事由" };
+  // OA 的规定：项目、说明都是必填（审批人要靠它判断这班该不该加）。
+  if (!d.reason.project.trim()) return { code: "project_missing", message: "项目要填" };
+  if (!d.reason.detail.trim()) return { code: "detail_missing", message: "说明要填" };
   const wf = parseWorkflow(d.workflow);
   if (wf.l1.length === 0 && wf.l2.length === 0) {
     return { code: "approver_missing", message: "至少要选一个审批人" };
   }
   return null;
+}
+
+// ---------------------------------------------------------------- 请假
+
+/** OA 的四种请假类型；调休 / 事假走 add/normal，病假走 add/sick，其他走 add/other。 */
+export const LEAVE_TYPES = ["调休", "事假", "病假", "其他"] as const;
+export type LeaveType = (typeof LEAVE_TYPES)[number];
+
+export function isLeaveType(raw: unknown): raw is LeaveType {
+  return typeof raw === "string" && (LEAVE_TYPES as readonly string[]).includes(raw);
+}
+
+/** OA 页面只给这几个钟点：开始 09 / 14，结束 14 / 18（半天粒度）。 */
+export const LEAVE_START_HOURS = [9, 14] as const;
+export const LEAVE_END_HOURS = [14, 18] as const;
+
+export interface LeaveDraft {
+  type: string;
+  /** `YYYY-MM-DD` */
+  startDay: string;
+  endDay: string;
+  /** 「其他」只按天，忽略钟点。 */
+  startHour: number;
+  endHour: number;
+  reason: string;
+  workflow: string;
+}
+
+export type LeaveProblemCode =
+  | "type_missing"
+  | "time_missing"
+  | "hour_invalid"
+  | "time_order"
+  | "reason_missing"
+  | "approver_missing";
+
+export interface LeaveProblem {
+  code: LeaveProblemCode;
+  message: string;
+}
+
+export function checkLeaveDraft(d: LeaveDraft): LeaveProblem | null {
+  if (!isLeaveType(d.type)) return { code: "type_missing", message: "选一个请假类型" };
+  if (!isDateKey(d.startDay) || !isDateKey(d.endDay)) {
+    return { code: "time_missing", message: "开始和结束日期都要填" };
+  }
+  if (d.type !== "其他") {
+    const okStart = (LEAVE_START_HOURS as readonly number[]).includes(d.startHour);
+    const okEnd = (LEAVE_END_HOURS as readonly number[]).includes(d.endHour);
+    if (!okStart || !okEnd) return { code: "hour_invalid", message: "开始只能 09:00 / 14:00，结束只能 14:00 / 18:00" };
+  }
+  const gap = diffDays(d.startDay, d.endDay);
+  if (gap < 0) return { code: "time_order", message: "结束日期不能早于开始日期" };
+  if (d.type !== "其他" && gap === 0 && d.endHour <= d.startHour) {
+    return { code: "time_order", message: "结束时间要晚于开始时间" };
+  }
+  if (!d.reason.trim()) return { code: "reason_missing", message: "事由要填" };
+  const wf = parseWorkflow(d.workflow);
+  if (wf.l1.length === 0 && wf.l2.length === 0) {
+    return { code: "approver_missing", message: "至少要选一个审批人" };
+  }
+  return null;
+}
+
+/** 提交给 OA 的起止时间：`YYYY-MM-DD HH:00:00`；「其他」只按天（00:00:00）。 */
+export function leaveOaTimes(d: LeaveDraft): { start: string; end: string } {
+  if (d.type === "其他") return { start: `${d.startDay} 00:00:00`, end: `${d.endDay} 00:00:00` };
+  const hh = (n: number): string => String(n).padStart(2, "0");
+  return { start: `${d.startDay} ${hh(d.startHour)}:00:00`, end: `${d.endDay} ${hh(d.endHour)}:00:00` };
+}
+
+/**
+ * 预估时长：按 OA 日历里的工作日（type 0 / 4）数，整天 8 小时、半天 4 小时；
+ * 「其他」按自然日数（单位：天）。只用来给人看一眼，真正的时长以 OA 算出来的为准。
+ * `workdays` 为空（日历没取到）时，周一到周五当工作日。
+ */
+export function estimateLeave(d: LeaveDraft, workdays: ReadonlySet<string> | null): { value: number; unit: "h" | "d" } {
+  const gap = diffDays(d.startDay, d.endDay);
+  if (gap < 0) return { value: 0, unit: d.type === "其他" ? "d" : "h" };
+  if (d.type === "其他") return { value: gap + 1, unit: "d" };
+  const isWork = (key: string): boolean => {
+    if (workdays) return workdays.has(key);
+    const w = new Date(`${key}T00:00:00`).getDay();
+    return w !== 0 && w !== 6;
+  };
+  let hours = 0;
+  for (let i = 0; i <= gap; i++) {
+    const key = addDays(d.startDay, i);
+    if (!isWork(key)) continue;
+    const from = i === 0 ? d.startHour : 9;
+    const to = i === gap ? d.endHour : 18;
+    // 上午 09-13（午休 13-14 不算）、下午 14-18 各 4 小时。
+    const am = from <= 9 && to >= 13 ? 4 : 0;
+    const pm = from <= 14 && to >= 18 ? 4 : 0;
+    hours += am + pm;
+  }
+  return { value: hours, unit: "h" };
+}
+
+/** OA 的请假单不带类型字段：看哪一栏时长有值。 */
+export function leaveTypeOf(row: Record<string, unknown>): LeaveType | "" {
+  if (numOf(row.compensatory_hours) > 0) return "调休";
+  if (numOf(row.normal_hours) > 0) return "事假";
+  if (numOf(row.sick_hours) > 0) return "病假";
+  if (numOf(row.other_days) > 0 || (String(row.other_apply_type ?? "0") !== "0" && String(row.other_apply_type ?? "") !== "")) return "其他";
+  return "";
 }
 
 /** 加班时长口径：只收 0.5 小时的倍数（半天起）。返回规范化后的值。 */
