@@ -36,6 +36,8 @@ fs.writeFileSync(
   path.join(wkDir, "agent.jsonl"),
   `${JSON.stringify({ t: Date.now() - 3 * 3600_000, k: "unlock", src: "event" })}\n`,
 );
+// 休息日不算倒计时（D246 第 5 条）：七天都设成工作日，周末跑这条用例也能看到倒计时在走。
+fs.writeFileSync(path.join(wkDir, "settings.json"), JSON.stringify({ hours: 9, workdays: [0, 1, 2, 3, 4, 5, 6] }));
 fs.mkdirSync(AGENT, { recursive: true });
 
 const env = {
