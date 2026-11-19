@@ -173,8 +173,9 @@
   color: var(--faint);
 }
 
-/* 名称列尾的类型徽章：目录「文件夹」，文件给后缀（PNG / MD…）；名称被截断也留得住。 */
-.fse-ext {
+/* 名称列尾的类型徽章：目录「文件夹」，文件给后缀（PNG / MD…）；名称被截断也留得住。
+   大写写在 `extOf()` 里（DOM 文本就是 `PNG`），这里不再用 text-transform 重复一道。 */
+.fse-kind {
   flex: none;
   max-width: 72px;
   padding: 0 4px;
@@ -184,7 +185,6 @@
   font-size: 9.5px;
   line-height: 14px;
   letter-spacing: 0.04em;
-  text-transform: uppercase;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

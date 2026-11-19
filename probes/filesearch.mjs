@@ -183,7 +183,7 @@ try {
   const revealTitle = await page.locator(".fse-row .fse-acts .fse-act").last().getAttribute("title");
   assert(revealTitle && revealTitle.includes("文件管理器"), `「位置」的 title 没写清去哪（${revealTitle}）`);
   // 文件行的类型徽章 = 后缀大写（名称列被截断也看得见）。
-  const kinds = await page.$$eval(".fse-row .fse-ext", (els) => els.map((e) => e.textContent.trim()));
+  const kinds = await page.$$eval(".fse-row .fse-kind", (els) => els.map((e) => e.textContent.trim()));
   for (const want of ["MD", "TXT"]) assert(kinds.includes(want), `缺后缀徽章 ${want}：${kinds.join(",")}`);
   // 行尾动作不许压到「修改时间」列（用户 2026-11-19 报的重叠）：按钮左沿不能跨过时间列右沿。
   const overlap = await page.$$eval(".fse-row", (rows) =>
@@ -203,7 +203,7 @@ try {
   // 目录只有「引用 / 打开目录」两颗：第三颗原先也画成「打开目录」，点了做的事完全一样（用户 2026-11-19）。
   assert(dirActs.join("/") === "引用/打开目录", `目录行应是 引用/打开目录（实际 ${dirActs.join("/")}）`);
   // 类型徽章：目录写「文件夹」，文件写后缀（用户 2026-11-19 分不清一坨名字是文件夹还是文件）。
-  const dirKind = await page.locator(".fse-row .fse-ext").textContent();
+  const dirKind = await page.locator(".fse-row .fse-kind").textContent();
   assert(dirKind.trim() === "文件夹", `目录的类型徽章应是「文件夹」（实际「${dirKind.trim()}」）`);
   log("2c 目录行动作：", dirActs.join(" / "), "| 徽章", dirKind.trim());
 
@@ -214,7 +214,7 @@ try {
     els.map((row) => {
       const name = row.querySelector(".fse-c1").getBoundingClientRect();
       const acts = row.querySelector(".fse-acts").getBoundingClientRect();
-      return { overlap: acts.left < name.right - 0.5, badge: !!row.querySelector(".fse-ext") };
+      return { overlap: acts.left < name.right - 0.5, badge: !!row.querySelector(".fse-kind") };
     }),
   );
   const hiddenCols = await page.locator(".fse-row .fse-c2").first().isVisible();

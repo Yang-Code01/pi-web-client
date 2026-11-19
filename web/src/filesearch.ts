@@ -335,7 +335,7 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
       // 若让 `<mark>` 直接当 flex 子项，每段文字之间都会多出一道 gap，名字看起来像断成几截。
       const label = el("span", "fse-label");
       label.append(marked(row.name, needle));
-      name.append(label, el("span", "fse-ext", kindText(row)));
+      name.append(label, el("span", "fse-kind", kindText(row)));
       const dir = el("span", "fse-c2 fse-dir", row.dir);
       dir.title = row.path;
       // 行尾三颗：引用 / 打开 / 所在位置（和文件弹层 `.fc-acts` 同一套做法）。
