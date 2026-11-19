@@ -837,6 +837,8 @@ export interface SessionSnapshot {
   ext: ExtUiState;
   queue: { steering: string[]; followUp: string[] };
   plan: PlanSnapshot | null;
+  /** Copilot 积分：这一帧自带最近一份（见 `copilotView`），订阅 / 换页就不用另等一条 `copilot` 帧。 */
+  copilot: CopilotView | null;
 }
 
 /** #384：context-log 扩展落盘的一行（见 bridge/ext/context-log.ts）。六类行共用一个 seq：
@@ -886,6 +888,11 @@ export class Session extends EventEmitter {
   /** Copilot 积分：增量扫会话 JSONL 的读书指针 + 它盯的是哪个文件。 */
   private copilotTally: CopilotTally | null = null;
   private copilotFile: string | null = null;
+  /**
+   * 最近一次推出去的积分视图。`session` 帧要带它 —— 本轮次之前 subscribe（重连 / 切会话 /
+   * stepup 重同步）会把前端那份清空，而 `copilot` 帧只在 boot 与轮末发，中间那几分钟面板是空的。
+   */
+  private copilotView: CopilotView | null = null;
   /** 账号额度的最近一份快照与它的抓取时刻；30 秒内不重复问 GitHub。 */
   private copilotAccount: CopilotAccountView | null = null;
   private copilotAccountAt = 0;
@@ -1494,6 +1501,7 @@ export class Session extends EventEmitter {
       if (this.copilotFile !== file || !this.copilotTally) {
         this.copilotTally = new CopilotTally();
         this.copilotFile = file;
+        this.copilotView = null;
         this.copilotAccount = null;
         this.copilotAccountAt = 0;
       }
@@ -1524,7 +1532,10 @@ export class Session extends EventEmitter {
   }
 
   private emitCopilot(view: CopilotView): void {
-    this.emitWs({ type: "copilot", sessionId: this.state.id, ...view, account: view.account ?? this.copilotAccount });
+    // 账号额度是另一次异步抓的，合在这里一次，顺带留一份给 `session` 帧（`snapshot()`）。
+    const merged: CopilotView = { ...view, account: view.account ?? this.copilotAccount };
+    this.copilotView = merged;
+    this.emitWs({ type: "copilot", sessionId: this.state.id, ...merged });
   }
 
   private absorbState(st: any): void {
@@ -2877,6 +2888,7 @@ export class Session extends EventEmitter {
       ext: this.extUi(),
       queue: this.queue,
       plan: this.plan,
+      copilot: this.copilotView,
     };
   }
 
