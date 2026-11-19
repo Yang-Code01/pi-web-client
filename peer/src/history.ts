@@ -12,7 +12,7 @@ import type { ThreadMeta } from "./threads.ts";
  *
  * D299 之后这是**加性**扩展：新字段全部可选，旧版本读新文件只是看不见它们。
  */
-export type EntryKind = "text" | "receipt" | "file" | "recall" | "note";
+export type EntryKind = "text" | "receipt" | "file" | "recall" | "note" | "react";
 
 export interface PeerIdentity {
   nodeId: string;
@@ -70,6 +70,15 @@ export interface Entry {
   ref?: string;
   /** `kind:"note"` 的记录包（#507）。 */
   note?: NotePayload;
+  /** `kind:"react"`：对 `ref` 那条消息点的表情；`on:false` 是取消（同一个人同一个表情最后一条说了算）。 */
+  emoji?: string;
+  on?: boolean;
+}
+
+/** 折叠后挂在消息上的表情回应：每个表情一组，`who` 是点了它的 nodeId（按先后）。 */
+export interface Reaction {
+  emoji: string;
+  who: string[];
 }
 
 /**
@@ -80,6 +89,7 @@ export interface Entry {
  */
 export interface ViewEntry extends Entry {
   recalled?: boolean;
+  reactions?: Reaction[];
   state?: "sending" | "delivered" | "failed";
   /** 还在排队时试过几次（送达到了就不带）。 */
   tries?: number;
@@ -158,6 +168,10 @@ export function foldEntries(entries: Entry[], me: string, pending: Set<string>, 
       const target = byId.get(entry.ref);
       if (target) target.recalled = true;
     }
+    if (entry.kind === "react" && entry.ref && entry.emoji) {
+      const target = byId.get(entry.ref);
+      if (target) applyReaction(target, entry.from.nodeId, entry.emoji, entry.on !== false);
+    }
   }
   for (const view of out) {
     if (view.from.nodeId !== me) continue;
@@ -170,6 +184,24 @@ export function foldEntries(entries: Entry[], me: string, pending: Set<string>, 
     else if (view.ack?.status === "delivered") view.state = "delivered";
   }
   return out;
+}
+
+/** 同一个人对同一个表情：点了就加（不重复），取消就摘；一组空了就整组拿掉。 */
+function applyReaction(target: ViewEntry, who: string, emoji: string, on: boolean): void {
+  const list = target.reactions ?? [];
+  let group = list.find((r) => r.emoji === emoji);
+  if (on) {
+    if (!group) {
+      group = { emoji, who: [] };
+      list.push(group);
+    }
+    if (!group.who.includes(who)) group.who.push(who);
+  } else if (group) {
+    group.who = group.who.filter((x) => x !== who);
+  }
+  const kept = list.filter((r) => r.who.length > 0);
+  if (kept.length) target.reactions = kept;
+  else delete target.reactions;
 }
 
 export class History {

@@ -4,6 +4,8 @@ import { RichEditor } from "../notes/editor.ts";
 import { hasRichMarkup, isRichEmpty, plainText, sanitizeRich } from "../notes/rich.ts";
 import { SheetDialog } from "../sheet/dialog.ts";
 import "../sheet/sheet.css";
+import { emojiPanel, QUICK_REACTIONS, type Sticker } from "./emoji.ts";
+import { imageViewer, type ViewerItem } from "./viewer.ts";
 
 /**
  * `peer.html` 的脚本：只跟 bridge 说话（cookie + `/api/peer*`），从不直接连 7865。
@@ -50,7 +52,7 @@ interface Entry {
   at: number;
   from: { nodeId: string; nickname?: string; hostname?: string; port?: number };
   to: { kind: "node" | "group"; id: string };
-  kind: "text" | "receipt" | "file" | "recall" | "note";
+  kind: "text" | "receipt" | "file" | "recall" | "note" | "react";
   text?: string;
   ack?: { id: string; status: "delivered" | "failed"; error?: string };
   file?: { name: string; size: number; mime: string; sha256?: string; w?: number; h?: number };
@@ -71,6 +73,8 @@ interface Entry {
   tries?: number;
   /** 视图字段：上一次没送到的原因，原样是 `fetch` 的错串。 */
   sendError?: string;
+  /** 视图字段：表情回应，`who` 是回应过的 nodeId。 */
+  reactions?: { emoji: string; who: string[] }[];
 }
 
 interface NoteShotInfo {
@@ -193,6 +197,10 @@ const ICONS: Record<string, string[]> = {
   monitor: ["M4 5.5h16v10H4z", "M9 20h6", "M12 15.5V20"],
   disk: ["M4 6.5h16v11H4z", "M7 6.5V4h10v2.5", "M8 12h8"],
   image: ["M4 5.5h16v13H4z", "M4 15l4.5-4 3.5 3 3-2.5 5 4", "M9 9.2h.01"],
+  smile: ["M12 3.5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17Z", "M8.5 14c.9 1.3 2.1 2 3.5 2s2.6-.7 3.5-2", "M9 9.8h.01", "M15 9.8h.01"],
+  forward: ["M14 5l6 6-6 6", "M20 11H10a6 6 0 0 0-6 6v1.5"],
+  quote: ["M10 5 4 11l6 6", "M4 11h10a6 6 0 0 1 6 6v1.5"],
+  select: ["M4.5 4.5h6v6h-6z", "M13.5 7.5H20", "M4.5 13.5h6v6h-6z", "M6 16.5l1.4 1.4L10 15.2", "M13.5 16.5H20"],
 };
 
 function ic(name: string, cls = ""): SVGSVGElement {
@@ -237,6 +245,10 @@ const S = {
   unreadSeen: new Map<string, number>(),
   /** D302：会话列表折叠（跨刷新记住），折叠后整块宽度让给对话。 */
   listCollapsed: readFlag("peer.listCollapsed"),
+  /** 聊天记录内搜索：null = 没开搜索条。 */
+  search: null as { q: string; at: number } | null,
+  /** 多选：null = 没在多选；否则是勾上的消息 id。 */
+  picked: null as Set<string> | null,
 };
 
 const app = document.querySelector("#app") as HTMLElement;
@@ -573,7 +585,9 @@ async function loadContacts(): Promise<void> {
 
 /** 一串消息的指纹：id + 回执状态。轮询拿回来跟上次一样就不必重画。 */
 function msgSig(): string {
-  return S.msgs.map((m) => `${m.id}:${m.ack?.status ?? ""}`).join("|");
+  return S.msgs
+    .map((m) => `${m.id}:${m.ack?.status ?? ""}:${m.state ?? ""}:${m.recalled ? 1 : 0}:${(m.reactions ?? []).map((r) => r.emoji + r.who.length).join(",")}`)
+    .join("|");
 }
 
 /** 拉取序号：只让最新一次请求的响应落到 S.msgs 上。 */
@@ -583,7 +597,7 @@ async function loadMessages(id = S.thread): Promise<void> {
   if (!id) return;
   // 慢响应要能丢：手点得比网快时，A 的响应会在切到 B 之后才回来。
   const seq = ++msgSeq;
-  const data = await getJson<{ entries: Entry[] }>(`/api/peer/messages?peer=${encodeURIComponent(id)}&limit=200`).catch(() => null);
+  const data = await getJson<{ entries: Entry[] }>(`/api/peer/messages?peer=${encodeURIComponent(id)}&limit=${S.search ? 2000 : 200}`).catch(() => null);
   // 拉不到就保持旧内容：一次超时不该把聊天清空
   if (!data || seq !== msgSeq || S.thread !== id) return;
   S.msgs = data.entries ?? [];
@@ -1147,6 +1161,7 @@ function renderChat(): void {
   head.append(title, h("div", "grow"));
   const tools = h("div", "tools");
   tools.append(
+    iconBtn("search", tr("搜索聊天记录（Ctrl+F）"), () => openSearch()),
     iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId)),
     iconBtn("more", tr("更多"), (ev) => {
       const box = (ev.currentTarget as HTMLElement).getBoundingClientRect();
@@ -1155,24 +1170,40 @@ function renderChat(): void {
   );
   head.append(tools);
   mainEl.append(head);
+  if (S.search) mainEl.append(searchBar(t));
 
   const stream = h("div", "stream");
   let lastDay = "";
+  const q = S.search?.q.trim().toLowerCase() ?? "";
+  const hits: HTMLElement[] = [];
   for (const e of S.msgs) {
-    if (e.kind === "receipt" || e.kind === "recall") continue;
+    if (e.kind === "receipt" || e.kind === "recall" || e.kind === "react") continue;
     const day = dayLabel(e.at);
     if (day !== lastDay) {
       stream.append(h("div", "day", day));
       lastDay = day;
     }
-    stream.append(entryNode(e, t));
+    const node = entryNode(e, t);
+    if (q && !e.recalled && searchText(e).toLowerCase().includes(q)) {
+      node.classList.add("hit");
+      hits.push(node);
+    }
+    stream.append(node);
   }
   if (!S.msgs.length) {
     stream.append(h("div", "empty", tr("还没有消息，说点什么吧")));
   }
+  if (S.picked) stream.classList.add("picking");
   mainEl.append(stream);
-  const compose = composeBox(t);
+  const compose = S.picked ? pickBar(t) : composeBox(t);
   mainEl.append(compose);
+  searchHits = hits;
+  paintSearchCount();
+  if (q && hits.length && searchJump) {
+    searchJump = false;
+    focusHit(stream);
+    return;
+  }
   // 贴底要在**输入框也挂上之后**做：先设一次会把还没缩下来的高度当成底，
   // 差的那几十像素就是输入框与文件卡片的高度（用户报的「发完文件没滚到底」）。
   if (stickBottom) {
@@ -1183,6 +1214,454 @@ function renderChat(): void {
   } else {
     stream.scrollTop = prevScroll;
   }
+}
+
+// ---------------------------------------------------------------- 聊天记录内搜索
+
+/** 搜索条跨重画复用：轮询来了新消息整块重画时，输入框不能丢焦点、不能丢正在打的字。 */
+let searchEl: HTMLElement | null = null;
+let searchInput: HTMLInputElement | null = null;
+let searchCount: HTMLElement | null = null;
+let searchHits: HTMLElement[] = [];
+/** 下一次画完要不要跳到当前命中（打字 / 切命中时为真，轮询重画时为假，别把人拽走）。 */
+let searchJump = false;
+let searchTimer = 0;
+
+/** 一条消息里能被搜到的字：正文（富文本先转纯文本）、文件名、记录标题。 */
+function searchText(e: Entry): string {
+  if (e.kind === "note") return `${e.note?.title ?? ""} ${plainText(e.note?.body ?? "")}`;
+  if (e.kind === "file") return e.file?.name ?? "";
+  const text = e.text ?? "";
+  return hasRichMarkup(text) ? plainText(text) : text;
+}
+
+function openSearch(): void {
+  if (!S.thread) return;
+  if (!S.search) {
+    S.search = { q: "", at: -1 };
+    // 搜索时多拉一些历史（200 → 2000），不然只能搜到最近一屏。
+    void loadMessages().then(() => {
+      if (S.search) renderMain();
+    });
+    renderMain();
+  }
+  searchInput?.focus();
+  searchInput?.select();
+}
+
+function closeSearch(): void {
+  S.search = null;
+  searchEl = null;
+  searchInput = null;
+  searchCount = null;
+  searchHits = [];
+  renderMain();
+}
+
+function searchBar(t: Thread): HTMLElement {
+  if (searchEl && searchEl.dataset.peer === t.nodeId) return searchEl;
+  const bar = h("div", "searchbar");
+  bar.dataset.peer = t.nodeId;
+  bar.append(ic("search"));
+  const input = h("input") as HTMLInputElement;
+  input.type = "search";
+  input.placeholder = tr("搜索这段聊天记录");
+  input.value = S.search?.q ?? "";
+  input.addEventListener("input", () => {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => {
+      if (!S.search) return;
+      S.search.q = input.value;
+      // 从最新的一条命中开始往回翻，和多数聊天软件一样。
+      S.search.at = Number.MAX_SAFE_INTEGER;
+      searchJump = true;
+      renderMain();
+    }, 160);
+  });
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeSearch();
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      stepHit(ev.shiftKey ? 1 : -1);
+    }
+  });
+  const count = h("span", "cnt");
+  const up = iconBtn("back", tr("上一条（Enter）"), () => stepHit(-1));
+  up.classList.add("rot-up");
+  const down = iconBtn("back", tr("下一条（Shift+Enter）"), () => stepHit(1));
+  down.classList.add("rot-down");
+  bar.append(input, count, up, down, iconBtn("close", tr("关掉搜索（Esc）"), closeSearch));
+  searchEl = bar;
+  searchInput = input;
+  searchCount = count;
+  return bar;
+}
+
+function paintSearchCount(): void {
+  if (!searchCount || !S.search) return;
+  const q = S.search.q.trim();
+  if (!q) searchCount.textContent = "";
+  else if (!searchHits.length) searchCount.textContent = tr("没有结果");
+  else searchCount.textContent = `${Math.min(S.search.at, searchHits.length - 1) + 1} / ${searchHits.length}`;
+}
+
+function focusHit(stream: HTMLElement): void {
+  if (!S.search || !searchHits.length) return;
+  S.search.at = Math.max(0, Math.min(S.search.at, searchHits.length - 1));
+  for (const n of stream.querySelectorAll(".msg.cur")) n.classList.remove("cur");
+  const node = searchHits[S.search.at];
+  node.classList.add("cur");
+  stickBottom = false;
+  node.scrollIntoView({ block: "center" });
+  prevScroll = stream.scrollTop;
+  paintSearchCount();
+}
+
+function stepHit(dir: number): void {
+  if (!S.search || !searchHits.length) return;
+  const at = Math.min(S.search.at, searchHits.length - 1) + dir;
+  S.search.at = (at + searchHits.length) % searchHits.length;
+  const stream = mainEl.querySelector<HTMLElement>(".stream");
+  if (stream) focusHit(stream);
+}
+
+document.addEventListener("keydown", (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === "f" && S.page === "msg" && S.thread) {
+    ev.preventDefault();
+    openSearch();
+  }
+});
+
+// ---------------------------------------------------------------- 表情
+
+/** 输入框里最后的光标：表情面板里有页签 / 按钮，点它们可能把焦点带走，插表情要插回原处。 */
+let lastRange: Range | null = null;
+document.addEventListener("selectionchange", () => {
+  const sel = document.getSelection();
+  if (textInput && sel?.rangeCount && textInput.contains(sel.anchorNode)) lastRange = sel.getRangeAt(0).cloneRange();
+});
+
+function closeEmoji(): void {
+  for (const p of document.querySelectorAll(".emoji-panel")) p.remove();
+  document.removeEventListener("pointerdown", emojiOutside, true);
+  document.removeEventListener("keydown", emojiEsc, true);
+}
+function emojiOutside(ev: PointerEvent): void {
+  const el = ev.target instanceof Element ? ev.target : null;
+  if (el?.closest(".emoji-panel, .emoji-btn")) return;
+  closeEmoji();
+}
+function emojiEsc(ev: KeyboardEvent): void {
+  if (ev.key !== "Escape") return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  closeEmoji();
+}
+
+function insertEmoji(emoji: string): void {
+  const body = textInput;
+  if (!body) return;
+  body.focus({ preventScroll: true });
+  const sel = document.getSelection();
+  if (sel && lastRange && body.contains(lastRange.startContainer)) {
+    sel.removeAllRanges();
+    sel.addRange(lastRange);
+  } else if (sel) {
+    // 没点过输入框：插到末尾。
+    const r = document.createRange();
+    r.selectNodeContents(body);
+    r.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+  // execCommand 已被标记为过时，但它是唯一能进撤销栈、又会触发 input 事件（编辑器靠它存草稿）的插法。
+  document.execCommand("insertText", false, emoji);
+}
+
+async function loadStickers(): Promise<Sticker[]> {
+  const data = await getJson<{ stickers: Sticker[] }>("/api/peer/stickers");
+  return data.stickers ?? [];
+}
+
+async function addStickerBlob(name: string, blob: Blob): Promise<void> {
+  const res = await fetch(`/api/peer/stickers/add?name=${encodeURIComponent(name)}`, {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream" },
+    body: blob,
+  });
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+}
+
+/** 聊天里的图 → 我的表情。 */
+async function addStickerFromEntry(e: Entry): Promise<void> {
+  try {
+    const res = await fetch(`/api/peer/file?id=${encodeURIComponent(e.id)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await addStickerBlob(e.file?.name ?? "sticker", await res.blob());
+    toast(tr("已添加到我的表情"));
+  } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
+async function sendSticker(peer: string, id: string): Promise<void> {
+  try {
+    await postJson("/api/peer/stickers/send", { peer, id });
+    forceBottom = true;
+    await loadMessages(peer);
+    renderMain();
+  } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
+function toggleEmoji(wrap: HTMLElement, peer: string): void {
+  if (wrap.querySelector(".emoji-panel")) return closeEmoji();
+  closeEmoji();
+  const panel = emojiPanel({
+    onEmoji: (emoji) => insertEmoji(emoji),
+    onSticker: (id) => {
+      closeEmoji();
+      void sendSticker(peer, id);
+    },
+    loadStickers,
+    addSticker: (file) => addStickerBlob(file.name, file),
+    removeSticker: async (id) => {
+      await postJson("/api/peer/stickers/remove", { id });
+    },
+    close: closeEmoji,
+  });
+  wrap.append(panel);
+  document.addEventListener("pointerdown", emojiOutside, true);
+  document.addEventListener("keydown", emojiEsc, true);
+}
+
+// ---------------------------------------------------------------- 表情回应
+
+function myId(): string {
+  return S.view?.status?.nodeId ?? "";
+}
+
+async function react(e: Entry, t: Thread, emoji: string): Promise<void> {
+  const on = !(e.reactions ?? []).some((r) => r.emoji === emoji && r.who.includes(myId()));
+  try {
+    await postJson("/api/peer/react", { peer: t.nodeId, id: e.id, emoji, on });
+    await loadMessages(t.nodeId);
+    renderMain();
+  } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
+/** 气泡下面那一排「👍 2」。 */
+function reactionRow(e: Entry, t: Thread): HTMLElement | null {
+  const list = (e.reactions ?? []).filter((r) => r.who.length);
+  if (!list.length) return null;
+  const row = h("div", "reacts");
+  for (const r of list) {
+    const mineOn = r.who.includes(myId());
+    const chip = h("button", `react${mineOn ? " on" : ""}`);
+    chip.type = "button";
+    chip.append(h("span", "e", r.emoji), h("span", "n", String(r.who.length)));
+    chip.title = r.who.map((id) => (id === myId() ? tr("我") : t.nickname)).join(", ");
+    chip.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void react(e, t, r.emoji);
+    });
+    row.append(chip);
+  }
+  return row;
+}
+
+/** 一排快捷回应，塞进右键菜单的最上面。 */
+function reactStrip(e: Entry, t: Thread): HTMLElement {
+  const strip = h("div", "rstrip");
+  for (const emoji of QUICK_REACTIONS) {
+    const b = h("button", "", emoji) as HTMLButtonElement;
+    b.type = "button";
+    b.title = tr("回应 {p1}", { p1: emoji });
+    if ((e.reactions ?? []).some((r) => r.emoji === emoji && r.who.includes(myId()))) b.classList.add("on");
+    b.addEventListener("click", () => {
+      closeLayer();
+      void react(e, t, emoji);
+    });
+    strip.append(b);
+  }
+  return strip;
+}
+
+// ---------------------------------------------------------------- 多选 / 转发
+
+function canForward(e: Entry): boolean {
+  return !e.recalled && (e.kind === "text" || (e.kind === "file" && Boolean(e.file)));
+}
+
+function startPick(e?: Entry): void {
+  S.picked = new Set(e && canForward(e) ? [e.id] : []);
+  closeEmoji();
+  renderMain();
+}
+
+function endPick(): void {
+  S.picked = null;
+  renderMain();
+}
+
+function togglePick(e: Entry): void {
+  if (!S.picked || !canForward(e)) return;
+  if (S.picked.has(e.id)) S.picked.delete(e.id);
+  else S.picked.add(e.id);
+  renderMain();
+}
+
+function pickedEntries(): Entry[] {
+  const set = S.picked ?? new Set<string>();
+  return S.msgs.filter((m) => set.has(m.id));
+}
+
+function pickBar(t: Thread): HTMLElement {
+  const bar = h("div", "compose pickbar");
+  const n = S.picked?.size ?? 0;
+  bar.append(h("span", "cnt", tr("已选 {p1} 条", { p1: String(n) })), h("span", "grow"));
+  const fwd = h("button", "btn pri", tr("逐条转发")) as HTMLButtonElement;
+  fwd.type = "button";
+  fwd.disabled = !n;
+  fwd.addEventListener("click", () => forwardModal(pickedEntries()));
+  const copy = h("button", "btn", tr("复制")) as HTMLButtonElement;
+  copy.type = "button";
+  copy.disabled = !n;
+  copy.addEventListener("click", () => {
+    const lines = pickedEntries().map((m) => {
+      const who = m.from.nodeId === myId() ? (S.view?.status?.nickname ?? tr("我")) : t.nickname;
+      return `${who} ${clock(m.at)}\n${m.kind === "file" ? `[${m.file?.name ?? ""}]` : searchText(m)}`;
+    });
+    void copyText(lines.join("\n\n"));
+  });
+  const cancel = h("button", "btn", tr("取消")) as HTMLButtonElement;
+  cancel.type = "button";
+  cancel.addEventListener("click", endPick);
+  bar.append(copy, fwd, cancel);
+  return bar;
+}
+
+/** 转发：挑一个或几个人，按原来的先后顺序一条条发过去（文件走本机缓存，不再从磁盘选）。 */
+function forwardModal(entries: Entry[]): void {
+  const list = entries.filter(canForward).sort((a, b) => a.at - b.at || (a.seq ?? 0) - (b.seq ?? 0));
+  if (!list.length) return toast(tr("这些消息不能转发"));
+  closeLayer();
+  const scrim = h("div", "scrim");
+  scrim.addEventListener("click", closeLayer);
+  const modal = h("div", "modal fwd");
+  const head = h("header");
+  head.append(h("strong", "", tr("转发 {p1} 条", { p1: String(list.length) })), iconBtn("close", tr("关掉"), closeLayer));
+  const body = h("div", "body");
+  const filter = inputEl(tr("搜联系人"));
+  const ul = h("div", "fwd-list");
+  const chosen = new Set<string>();
+  const people = new Map<string, { nodeId: string; nickname: string; online: boolean }>();
+  for (const th of S.threads) people.set(th.nodeId, { nodeId: th.nodeId, nickname: th.nickname, online: th.online });
+  for (const c of S.contacts) {
+    if (!people.has(c.nodeId) && (c.friend || c.quick)) people.set(c.nodeId, { nodeId: c.nodeId, nickname: c.nickname, online: c.online });
+  }
+  const goBtn = h("button", "btn pri", tr("发送")) as HTMLButtonElement;
+  const paint = (): void => {
+    const q = filter.value.trim().toLowerCase();
+    ul.replaceChildren();
+    for (const p of people.values()) {
+      if (q && !p.nickname.toLowerCase().includes(q) && !p.nodeId.startsWith(q)) continue;
+      const row = h("button", `fwd-row${chosen.has(p.nodeId) ? " on" : ""}`) as HTMLButtonElement;
+      row.type = "button";
+      row.append(avatar(p.nickname, p.nodeId, p.online), h("span", "nm", p.nickname), h("span", "ck"));
+      row.addEventListener("click", () => {
+        if (chosen.has(p.nodeId)) chosen.delete(p.nodeId);
+        else chosen.add(p.nodeId);
+        paint();
+      });
+      ul.append(row);
+    }
+    if (!ul.children.length) ul.append(h("div", "empty", tr("没有匹配的人")));
+    goBtn.disabled = !chosen.size;
+    goBtn.textContent = chosen.size ? tr("发送给 {p1} 人", { p1: String(chosen.size) }) : tr("发送");
+  };
+  filter.addEventListener("input", paint);
+  body.append(filter, ul);
+  const foot = h("footer");
+  const cancel = h("button", "btn", tr("取消"));
+  cancel.type = "button";
+  cancel.addEventListener("click", closeLayer);
+  goBtn.type = "button";
+  goBtn.addEventListener("click", async () => {
+    goBtn.disabled = true;
+    let fails = 0;
+    for (const peer of chosen) {
+      for (const e of list) {
+        try {
+          if (e.kind === "file") await postJson("/api/peer/forwardfile", { peer, id: e.id, name: e.file?.name });
+          else await postJson("/api/peer/send", { peer, text: e.text ?? "" });
+        } catch {
+          fails++;
+        }
+      }
+    }
+    closeLayer();
+    S.picked = null;
+    toast(fails ? tr("转发完了，有 {p1} 条没发出去", { p1: String(fails) }) : tr("已转发"));
+    if (S.thread && chosen.has(S.thread)) forceBottom = true;
+    await loadMessages();
+    await loadThreads();
+    renderAll();
+  });
+  foot.append(cancel, goBtn);
+  modal.append(head, body, foot);
+  layerEl.append(scrim, modal);
+  paint();
+  filter.focus();
+}
+
+// ---------------------------------------------------------------- 看图
+
+let viewerDestroy: (() => void) | null = null;
+
+/** 点聊天里的图：同一会话的所有图都能左右翻。 */
+function openViewer(e: Entry): void {
+  const pics = S.msgs.filter((m) => !m.recalled && picKind(m));
+  const items: ViewerItem[] = pics.map((m) => ({
+    url: `/api/peer/file?id=${encodeURIComponent(m.id)}`,
+    name: m.file?.name ?? "",
+    entryId: m.id,
+  }));
+  const index = Math.max(0, pics.findIndex((m) => m.id === e.id));
+  closeLayer();
+  const t = threadOf(S.thread);
+  const v = imageViewer({
+    items,
+    index,
+    onClose: closeLayer,
+    actions: (item) => {
+      const m = S.msgs.find((x) => x.id === item.entryId);
+      if (!m) return [];
+      return [
+        { label: tr("添加到表情"), run: () => void addStickerFromEntry(m) },
+        { label: tr("转发"), run: () => forwardModal([m]) },
+        ...(t ? [{ label: tr("在聊天里定位"), run: () => locate(m.id) }] : []),
+      ];
+    },
+  });
+  viewerDestroy = v.destroy;
+  layerEl.append(v.root);
+}
+
+function locate(id: string): void {
+  closeLayer();
+  const node = mainEl.querySelector<HTMLElement>(`.msg[data-id="${id}"]`);
+  if (!node) return;
+  stickBottom = false;
+  node.scrollIntoView({ block: "center" });
+  node.classList.add("flash");
+  window.setTimeout(() => node.classList.remove("flash"), 1400);
 }
 
 const NOTE_KIND_TEXT: Record<string, string> = { bug: "bug", change: tr("变更"), idea: tr("想法"), chore: tr("杂事") };
@@ -1415,10 +1894,39 @@ function entryNode(e: Entry, t: Thread): HTMLElement {
   if (e.via === "pi") meta.append(h("span", "pill pi", tr("pi 代发")));
   meta.append(h("span", "", clock(e.at)));
   if (mine) meta.append(...sendStateMeta(e));
+  const rx = reactionRow(e, t);
+  if (rx) box.append(rx);
   box.append(meta);
   msg.append(box);
+  if (e.kind !== "note") {
+    // 悬停出来的小笑脸：不用右键也能回应。
+    const quick = iconBtn("smile", tr("回应"), (ev) => {
+      const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+      openMenu(r.left, r.bottom + 4, []);
+      layerEl.querySelector(".menu")?.prepend(reactStrip(e, t));
+    });
+    quick.classList.add("msg-quick");
+    msg.append(quick);
+  }
+  if (S.picked) {
+    const ok = canForward(e);
+    const ck = h("span", `pick${S.picked.has(e.id) ? " on" : ""}${ok ? "" : " off"}`);
+    msg.prepend(ck);
+    if (S.picked.has(e.id)) msg.classList.add("picked");
+    // 多选时点哪儿都是勾选：抓在 capture 阶段，气泡自己的「点击复制 / 看大图」不再触发。
+    msg.addEventListener(
+      "click",
+      (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        togglePick(e);
+      },
+      true,
+    );
+  }
   msg.addEventListener("contextmenu", (ev) => {
     ev.preventDefault();
+    if (S.picked) return;
     messageMenu(ev.clientX, ev.clientY, e, t, mine);
   });
   return msg;
@@ -1490,12 +1998,17 @@ function messageMenu(x: number, y: number, e: Entry, t: Thread, mine: boolean): 
     return;
   }
   if (e.text) items.push({ label: tr("复制文字"), icon: "copy", run: () => void copyText(e.text ?? "") });
-  items.push({ label: tr("引用"), icon: "msg", run: () => startReply(e) });
+  items.push({ label: tr("引用"), icon: "quote", run: () => startReply(e) });
+  if (canForward(e)) items.push({ label: tr("转发"), icon: "forward", run: () => forwardModal([e]) });
+  items.push({ label: tr("多选"), icon: "select", run: () => startPick(e) });
+  if (picKind(e)) items.push({ label: tr("添加到表情"), icon: "smile", run: () => void addStickerFromEntry(e) });
   if (mine && e.state === "failed") items.push({ label: tr("重发"), icon: "retry", run: () => void resend(e) });
   if (mine && Date.now() - e.at <= 120_000) {
     items.push({ label: tr("撤回"), icon: "trash", danger: true, run: () => void recall(e, t) });
   }
   openMenu(x, y, items);
+  // 快捷回应放在菜单最上面（和微信 / Slack 一样）。
+  layerEl.querySelector(".menu")?.prepend(reactStrip(e, t));
 }
 
 function startReply(e: Entry): void {
@@ -1550,7 +2063,8 @@ function picBubble(e: Entry, mine: boolean): HTMLElement {
   const f = e.file!;
   // 表情包：小、方、而且不是动图（QQ 里 `FaceMsgElem` 与 `GiphyMsgElem` 是两种元素）。
   const square = f.w && f.h ? Math.max(f.w, f.h) / Math.min(f.w, f.h) <= 1.6 : false;
-  const sticker = picKind(e) === "pic" && Boolean(f.w && f.h && Math.max(f.w, f.h) <= 200 && square);
+  const sticker =
+    /^表情\./.test(f.name) || (picKind(e) === "pic" && Boolean(f.w && f.h && Math.max(f.w, f.h) <= 200 && square));
   const wrap = h("div", `pic${sticker ? " sticker" : ""}`);
   const img = h("img");
   img.src = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
@@ -1565,7 +2079,7 @@ function picBubble(e: Entry, mine: boolean): HTMLElement {
     img.height = Math.max(1, Math.round(f.h * scale));
   }
   img.title = tr("点一下看原图");
-  img.addEventListener("click", () => previewEntry(e));
+  img.addEventListener("click", () => openViewer(e));
   // 图到了之后重新贴一次底（没有 w/h 的老消息加载前是 0 高）。
   img.addEventListener("load", repinBottom);
   // 取不到就退回文件卡片，别留一个破图标在那儿。
@@ -1868,11 +2382,16 @@ function composeBox(t: Thread): HTMLElement {
 
   const bar2 = h("div", "bar2");
   const attach = iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId));
+  // 表情：面板挂在 wrap 里（wrap 跨重画复用，轮询刷新不会把它关掉）。
+  const smile = iconBtn("smile", tr("表情"), () => toggleEmoji(wrap, t.nodeId));
+  smile.classList.add("emoji-btn");
+  // 点按钮不抢焦点：插入点还是输入框里原来的光标。
+  smile.addEventListener("mousedown", (ev) => ev.preventDefault());
   const hint = h("span", "hintline", tr("Enter 发送，Shift+Enter 换行；拖文件或粘贴截图也行"));
   const btn = h("button", "send", tr("发送"));
   btn.type = "button";
   btn.addEventListener("click", () => void send());
-  bar2.append(attach, hint, btn);
+  bar2.append(smile, attach, hint, btn);
   box.append(toolbar, body, bar2);
   wrap.append(replyHost, box);
   sendBtn = btn;
@@ -1955,6 +2474,8 @@ async function send(): Promise<void> {
       };
     }
     await postJson("/api/peer/send", body);
+    // 打完字 800ms 内就回车时，还在等的草稿定时器会把刚发出去的那段存回草稿，下次进会话又冒出来。
+    window.clearTimeout(draftTimer);
     ed.setHtml("");
     if (textInput) textInput.dataset.empty = "1";
     S.replyTo = null;
@@ -2425,6 +2946,8 @@ async function refreshAll(): Promise<void> {
 // ---------------------------------------------------------------- 菜单 / 弹窗
 
 function closeLayer(): void {
+  viewerDestroy?.();
+  viewerDestroy = null;
   layerEl.replaceChildren();
 }
 

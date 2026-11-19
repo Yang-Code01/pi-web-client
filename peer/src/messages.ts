@@ -68,6 +68,13 @@ export interface InboxResult {
   body: unknown;
 }
 
+/** 回应用的表情：一小段字（一个 emoji 可能由好几个码点拼成），不许空、不许长。 */
+function normEmoji(raw: unknown): string {
+  const s = typeof raw === "string" ? raw.trim() : "";
+  if (!s || s.length > 16 || /[\s<>]/.test(s)) return "";
+  return s;
+}
+
 export type ControlKind = "friend-request" | "friend-accept" | "friend-quick" | "recall";
 
 /**
@@ -192,6 +199,28 @@ export class Messages {
     return { ok: true, at };
   }
 
+  /**
+   * 表情回应：本机先落一条 `kind:"react"`（指向原消息、带 emoji 与 on），再通知对端。
+   * 对端在线时走 outbox（失败会补投）；离线时只在本机生效。
+   */
+  react(peerId: string, id: string, emoji: string, on: boolean): { ok: true; at: number } {
+    const e = normEmoji(emoji);
+    if (!e) throw new Error("表情不对");
+    const entry = this.ctx.history.find(peerId, id);
+    if (!entry) throw new Error("找不到这条消息");
+    if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") throw new Error("这条不能回应");
+    const at = Date.now();
+    this.ctx.history.append(peerId, this.entry(uuidv7(at), at, this.me(), peerId, "react", { ref: id, emoji: e, on }));
+    // 对方不在线时只在本机生效（和撤回一样）：outbox 需要地址，离线的人没有。
+    const peer = this.ctx.discovery.byId(peerId);
+    const outbox = this.ctx.outbox;
+    if (peer && outbox) {
+      const control = { id: uuidv7(at), at, from: this.me(), target: id, emoji: e, on };
+      outbox.add({ id: control.id, peerId, addr: peer.addr, port: peer.port, kind: "react", payload: control, at, tries: 0, nextAt: 0 });
+    }
+    return { ok: true, at };
+  }
+
   isRecalled(peerId: string, id: string): boolean {
     return this.ctx.history.read(peerId, 2000).some((entry) => entry.kind === "recall" && entry.ref === id);
   }
@@ -260,6 +289,7 @@ export class Messages {
     // 第 3 片：撤回 / 输入中。同样是加性的 kind，旧对端回 `unknown kind` 直接丢掉。
     if (kind === "recall") return this.acceptRecall(fromAddr, body.control);
     if (kind === "note") return this.acceptNote(fromAddr, body.control);
+    if (kind === "react") return this.acceptReact(fromAddr, body.control);
     if (kind === "typing") return this.acceptTyping(fromAddr, body.control);
     return { status: 400, body: { error: "unknown kind", retryable: false } };
   }
@@ -341,6 +371,21 @@ export class Messages {
     const at = Number(control?.at) || Date.now();
     this.ctx.history.append(claimed.nodeId, this.entry(uuidv7(at), at, claimed, this.ctx.nodeId, "recall", { ref: target }));
     this.ctx.log(`${claimed.nickname || claimed.nodeId.slice(0, 8)} 撤回了一条消息`);
+    return { status: 200, body: { ok: true } };
+  }
+
+  /** 收到表情回应：同一个 control id 只记一次（outbox 补投会重发）。 */
+  private async acceptReact(fromAddr: string, control: any): Promise<InboxResult> {
+    const claimed = control?.from as PeerIdentity | undefined;
+    const id = String(control?.id ?? "");
+    const target = String(control?.target ?? "");
+    const emoji = normEmoji(control?.emoji);
+    if (!claimed?.nodeId || !id || !target || !emoji) return { status: 400, body: { error: "bad react", retryable: false } };
+    const check = await this.verifySource(fromAddr, claimed);
+    if (check) return check;
+    if (this.ctx.history.recentIds(claimed.nodeId, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
+    const at = Number(control?.at) || Date.now();
+    this.ctx.history.append(claimed.nodeId, this.entry(id, at, claimed, this.ctx.nodeId, "react", { ref: target, emoji, on: control?.on !== false }));
     return { status: 200, body: { ok: true } };
   }
 

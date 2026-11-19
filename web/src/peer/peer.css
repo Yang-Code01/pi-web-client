@@ -1060,3 +1060,160 @@ body.embedded .brand .nm { display: none; }
 }
 .note-gallery .nthumb { aspect-ratio: 1; }
 .note-from { padding: 12px 15px 14px; color: var(--faint); font: 10.5px var(--mono); }
+
+/* ------------------------------------------------------------------ 表情面板 */
+
+.compose { position: relative; }
+.emoji-panel {
+  position: absolute;
+  left: 14px;
+  bottom: calc(100% - 6px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, calc(100% - 28px));
+  height: 330px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 55%);
+  overflow: hidden;
+}
+.ep-tabs { display: flex; gap: 2px; padding: 6px 6px 0; border-bottom: 1px solid var(--line-soft); }
+.ep-tab {
+  height: 28px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent;
+  background: transparent; color: var(--dim); font-size: 12px; cursor: pointer;
+}
+.ep-tab.on { color: var(--text); border-bottom-color: var(--accent); }
+.ep-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ep-nav { display: flex; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--line-soft); flex: none; }
+.ep-jump { width: 28px; height: 26px; border: 0; border-radius: 6px; background: transparent; font-size: 15px; cursor: pointer; }
+.ep-jump:hover { background: var(--panel-3); }
+.ep-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 10px; }
+.ep-sec { position: sticky; top: -4px; z-index: 1; padding: 6px 2px 4px; background: var(--panel-2); font-size: 11px; color: var(--faint); }
+.ep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 2px; }
+.ep-e {
+  height: 34px; border: 0; border-radius: 7px; background: transparent;
+  font: 21px/1 "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif; cursor: pointer;
+}
+.ep-e:hover { background: var(--panel-3); transform: scale(1.12); }
+.ep-grid.stickers { grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 6px; padding-top: 6px; }
+.ep-s {
+  display: grid; place-items: center; aspect-ratio: 1; padding: 4px;
+  border: 1px solid var(--line-soft); border-radius: 9px; background: var(--sunken); cursor: pointer;
+}
+.ep-s:hover { border-color: var(--accent-dim); }
+.ep-s img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.ep-add { color: var(--dim); font-size: 26px; border-style: dashed; }
+.ep-empty { padding: 18px 6px; font-size: 11.5px; color: var(--faint); text-align: center; }
+.ep-tip { flex: none; padding: 5px 10px 6px; border-top: 1px solid var(--line-soft); font-size: 10.5px; color: var(--faint); }
+
+/* ------------------------------------------------------------------ 聊天记录内搜索 */
+
+.searchbar {
+  display: flex; align-items: center; gap: 6px; flex: none;
+  padding: 6px 12px; border-bottom: 1px solid var(--line-soft); background: var(--panel);
+}
+.searchbar > svg { width: 14px; height: 14px; color: var(--faint); flex: none; }
+.searchbar input {
+  flex: 1; min-width: 0; height: 28px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--sunken); outline: 0; font-size: 12.5px;
+}
+.searchbar input:focus { border-color: var(--accent-dim); }
+.searchbar .cnt { min-width: 52px; font: 11px var(--mono); color: var(--faint); text-align: right; }
+.searchbar .icon-btn { width: 26px; height: 26px; }
+.rot-up svg { transform: rotate(90deg); }
+.rot-down svg { transform: rotate(-90deg); }
+.msg.hit .bub, .msg.hit .pic img, .msg.hit .fcard { box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 45%, transparent); }
+.msg.hit.cur .bub, .msg.hit.cur .pic img, .msg.hit.cur .fcard { box-shadow: 0 0 0 2px var(--warn); }
+@keyframes peer-flash { from { background: rgb(125 211 252 / 18%); } to { background: transparent; } }
+.msg.flash { border-radius: 10px; animation: peer-flash 1.4s ease-out; }
+
+/* ------------------------------------------------------------------ 表情回应 */
+
+.msg { position: relative; }
+.reacts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.msg.mine .reacts { justify-content: flex-end; }
+.react {
+  display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px;
+  border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); color: var(--dim);
+  font: 11px var(--mono); cursor: pointer;
+}
+.react .e { font-size: 13px; line-height: 1; }
+.react.on { border-color: var(--accent-dim); background: var(--accent-bg); color: var(--accent); }
+.react:hover { border-color: var(--line-strong); }
+.msg-quick.icon-btn {
+  align-self: flex-start; width: 26px; height: 26px; margin-top: 2px;
+  opacity: 0; transition: opacity var(--dur-1) var(--ease);
+}
+.msg:hover .msg-quick, .msg-quick:focus-visible { opacity: 1; }
+.rstrip { display: flex; gap: 2px; padding: 2px 2px 5px; margin-bottom: 4px; border-bottom: 1px solid var(--line-soft); }
+.menu .rstrip button {
+  display: grid; place-items: center; width: 30px; height: 30px; padding: 0;
+  font: 18px/1 "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+}
+.menu .rstrip button:hover { transform: scale(1.15); }
+.menu .rstrip button.on { background: var(--accent-bg); }
+
+/* ------------------------------------------------------------------ 多选 / 转发 */
+
+.stream.picking .msg { cursor: pointer; }
+.stream.picking .msg-quick { display: none; }
+.msg .pick {
+  flex: none; width: 16px; height: 16px; margin-top: 8px;
+  border: 1.5px solid var(--line-strong); border-radius: 50%;
+}
+.msg .pick.on { border-color: var(--accent); background: var(--accent) radial-gradient(circle, var(--bg) 0 2.5px, transparent 3px); }
+.msg .pick.off { opacity: 0.3; }
+.msg.picked .bub, .msg.picked .pic img, .msg.picked .fcard { box-shadow: 0 0 0 2px var(--accent-dim); }
+.pickbar { display: flex; align-items: center; gap: 8px; }
+.pickbar .cnt { font-size: 12.5px; color: var(--dim); }
+.pickbar .grow { flex: 1; }
+.modal.fwd .body { display: flex; flex-direction: column; gap: 8px; }
+.modal.fwd .body > input {
+  height: 32px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--sunken); outline: 0; font-size: 12.5px;
+}
+.fwd-list { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.fwd-row {
+  display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 4px 8px;
+  border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text);
+  font-size: 12.5px; text-align: left; cursor: pointer;
+}
+.fwd-row:hover { background: rgb(255 255 255 / 4%); }
+.fwd-row.on { border-color: var(--accent-dim); background: var(--accent-bg); }
+.fwd-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fwd-row .ck { width: 16px; height: 16px; border: 1.5px solid var(--line-strong); border-radius: 50%; }
+.fwd-row.on .ck { border-color: var(--accent); background: var(--accent) radial-gradient(circle, var(--bg) 0 2.5px, transparent 3px); }
+
+/* ------------------------------------------------------------------ 看图 */
+
+.iv { position: fixed; inset: 0; z-index: 60; background: rgb(5 7 10 / 92%); user-select: none; }
+.iv-stage { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; cursor: grab; touch-action: none; }
+.iv-stage:active { cursor: grabbing; }
+.iv-img { max-width: none; max-height: none; transform-origin: center; transition: opacity 0.15s; image-rendering: auto; }
+.iv-top {
+  position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; background: linear-gradient(rgb(0 0 0 / 55%), transparent); pointer-events: none;
+}
+.iv-top > * { pointer-events: auto; }
+.iv-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.iv-count { font: 11.5px var(--mono); color: var(--dim); }
+.iv-btn {
+  display: inline-grid; place-items: center; min-width: 32px; height: 32px; padding: 0 10px;
+  border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: rgb(20 24 30 / 80%);
+  color: var(--text); font-size: 12.5px; text-decoration: none; cursor: pointer;
+}
+.iv-btn:hover { background: rgb(40 46 56 / 90%); }
+.iv-prev, .iv-next { position: absolute; top: 50%; translate: 0 -50%; width: 44px; height: 64px; font-size: 28px; }
+.iv-prev { left: 12px; }
+.iv-next { right: 12px; }
+.iv-prev[hidden], .iv-next[hidden] { display: none; }
+.iv-bar {
+  position: absolute; left: 0; right: 0; bottom: 16px; width: max-content; margin: 0 auto; display: flex; align-items: center; gap: 6px;
+  max-width: calc(100% - 24px); flex-wrap: wrap; justify-content: center;
+  padding: 6px; border: 1px solid rgb(255 255 255 / 10%); border-radius: 12px; background: rgb(12 15 19 / 85%);
+}
+.iv-pct { min-width: 48px; font: 11.5px var(--mono); color: var(--dim); text-align: center; }
+.iv-extra { display: flex; gap: 6px; padding-left: 6px; border-left: 1px solid rgb(255 255 255 / 10%); }
+
