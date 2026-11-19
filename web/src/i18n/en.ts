@@ -2839,6 +2839,8 @@ export const en: Dict = {
   "上班 = 当天第一次解锁；倒计时是墙上时间，午休照走；再解锁几次不重置。":
     "The day starts at its first unlock; the countdown is wall-clock time, so lunch counts; unlocking again does not reset it.",
   "距离下班": "Until you're done",
+  "记录器启动": "Recorder started",
+  "今天是休息日，不算倒计时": "Rest day — no countdown",
   "已过下班点": "Past the finish line",
   "还没有今天的上班记录": "No start time for today yet",
   "目标下班": "Target end",

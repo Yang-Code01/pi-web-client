@@ -158,6 +158,25 @@ check("记录器中途才装：日志 09:29 解锁不被它 10:22 启动、11:23
   assert.equal(days[0].source, "log");
 });
 
+check("往日最后一条是解锁：下班算到那次解锁并标推算，不退回更早的锁屏（D334）", () => {
+  const now = at(2026, 3, 12, 12);
+  const days = summarizeDays(
+    [ev(at(2026, 3, 10, 9), "unlock"), ev(at(2026, 3, 10, 12), "lock"), ev(at(2026, 3, 10, 13), "unlock")],
+    ALL_DAYS,
+    now,
+  );
+  assert.equal(days[2].lastEnd, at(2026, 3, 10, 13));
+  assert.equal(days[2].workedMs, 4 * HOUR);
+  assert.equal(days[2].endInferred, true);
+});
+
+check("记录器启动不算解锁次数（D334）", () => {
+  const now = at(2026, 3, 10, 12);
+  const days = summarizeDays([ev(at(2026, 3, 10, 9), "unlock", "log"), ev(at(2026, 3, 10, 10), "unlock", "start")], ALL_DAYS, now);
+  assert.equal(days[0].unlocks, 1);
+  assert.equal(days[0].ongoing, true);
+});
+
 check("记录器事件更早时用事件", () => {
   const now = at(2026, 3, 10, 20);
   const days = summarizeDays(
@@ -252,6 +271,18 @@ check("summarizeToday：目标下班 = 上班 + 工时，remaining 可负，明�
   assert.equal(today.remainingMs, -2 * HOUR);
   assert.equal(today.events.length, 1);
   assert.equal(today.events[0].t, at(2026, 3, 10, 9));
+});
+
+check("summarizeToday：休息日有解锁也不算目标下班（D246 第 5 条）", () => {
+  const now = at(2026, 3, 10, 20);
+  const rest = { ...ALL_DAYS, workdays: [new Date(now).getDay() === 0 ? 1 : 0] };
+  const events = [ev(at(2026, 3, 10, 9), "unlock")];
+  const days = summarizeDays(events, rest, now);
+  const today = summarizeToday(days, events, rest, now);
+  assert.equal(today.workday, false);
+  assert.equal(today.firstUnlock, at(2026, 3, 10, 9));
+  assert.equal(today.target, null);
+  assert.equal(today.remainingMs, null);
 });
 
 check("summarizeToday：没上班记录时 target / remaining / 明细都空", () => {

@@ -1095,8 +1095,14 @@ class SysPanel {
     for (const ev of today.events) {
       const row = el("div", "sys-wk-event");
       row.append(el("span", "sys-wk-event__time", clockText(ev.t)));
-      row.append(el("span", `sys-wk-event__kind sys-wk-event__kind--${ev.k}`, ev.k === "unlock" ? tr("解锁") : tr("锁屏")));
-      row.append(el("span", "sys-wk-event__src", this.sourceLabel(ev.src === "start" ? "event" : ev.src)));
+      // 记录器启动（start）不是人解的锁：单独写出来，不冒充「解锁 · 事件」（D334）。
+      if (ev.src === "start") {
+        row.append(el("span", "sys-wk-event__kind sys-wk-event__kind--start", tr("记录器启动")));
+        row.append(el("span", "sys-wk-event__src", tr("事件")));
+      } else {
+        row.append(el("span", `sys-wk-event__kind sys-wk-event__kind--${ev.k}`, ev.k === "unlock" ? tr("解锁") : tr("锁屏")));
+        row.append(el("span", "sys-wk-event__src", this.sourceLabel(ev.src)));
+      }
       list.append(row);
     }
     panel.append(list);
@@ -1213,6 +1219,7 @@ class SysPanel {
 
   private countdownCaption(today: WorkclockToday, now: number): string {
     if (today.firstUnlock === null) return tr("还没有今天的上班记录");
+    if (!today.workday) return tr("今天是休息日，不算倒计时");
     if (today.target !== null && today.target <= now) return tr("已过下班点");
     return tr("距离下班");
   }
@@ -1240,9 +1247,10 @@ class SysPanel {
     const target = today.target;
     const first = today.firstUnlock;
     if (target === null || first === null) {
+      // 休息日有解锁但不算倒计时（D246 第 5 条）：标题说清楚，「已工作」照走。
       nodes.digits.textContent = "--:--:--";
-      nodes.caption.textContent = tr("还没有今天的上班记录");
-      nodes.worked.textContent = "—";
+      nodes.caption.textContent = this.countdownCaption(today, now);
+      nodes.worked.textContent = first === null ? "—" : formatDuration(Math.max(0, now - first));
       return;
     }
     nodes.digits.textContent = formatCountdown(target - now);
