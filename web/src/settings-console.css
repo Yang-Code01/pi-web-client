@@ -1130,3 +1130,96 @@
   grid-row: 1 / span 2;
   align-self: center;
 }
+
+/* ---------------------------------------------------------------- 外观与连接（齿轮按钮那个 dialog，.display-sheet）
+   同一个 .st-console 壳：两页（外观 / 连接与设置）只切显隐，窗格自己滚；左栏每项是页里的一个小节。 */
+.st-console.display-sheet {
+  width: min(960px, 100%);
+}
+
+.st-console.display-sheet .set-page {
+  flex: none;
+  min-height: 0;
+  overflow: visible;
+  padding-bottom: 8px;
+}
+
+.st-console.display-sheet .set-page > .settings-group:first-of-type {
+  margin-top: 4px;
+}
+
+.st-console.display-sheet .st-cards {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+/* 控件在右边那列，靠右排；chips / 色块自己也靠右。 */
+.st-console.display-sheet .settings-row > .settings-ctl {
+  grid-column: 2 / span 2;
+}
+
+.st-console.display-sheet .settings-ctl > .chips,
+.st-console.display-sheet .settings-ctl > .swatches {
+  justify-content: flex-end;
+}
+
+/* 宽行：字号滑轨、布局示意图、标签行名额 —— 控件另起一行占满整宽。 */
+.st-console.display-sheet .settings-row.wide {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.st-console.display-sheet .settings-row.wide > .settings-ctl {
+  grid-column: 1;
+  grid-row: 3;
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
+.st-console.display-sheet .settings-row.wide > .settings-ctl > * {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.st-console.display-sheet .settings-row.wide > .settings-ctl > .chips {
+  justify-content: flex-start;
+}
+
+.st-console.display-sheet .settings-label .size-read {
+  margin-left: auto;
+}
+
+/* 隧道地址：放在说明下面一行。 */
+.st-console.display-sheet .settings-row.has-link > .set-link {
+  grid-column: 1;
+  grid-row: 3;
+  justify-self: start;
+  margin-top: 4px;
+}
+
+.st-console.display-sheet .settings-panel.pad {
+  padding: 12px 14px;
+}
+
+.st-console.display-sheet .settings-panel > .notice {
+  margin: 0 14px 12px;
+}
+
+.st-console.display-sheet .settings-panel.set-about {
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+}
+
+:where(html[data-console-tight="true"]) .st-console.display-sheet .settings-row > .settings-ctl {
+  grid-column: 1;
+  grid-row: 3;
+  justify-content: flex-start;
+  margin-top: 8px;
+}
+
+.st-console.display-sheet [data-sec] {
+  scroll-margin-top: 10px;
+}
+
+:where(html[data-console-narrow="true"]) .st-console.display-sheet .st-cards {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}

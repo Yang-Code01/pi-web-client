@@ -3903,6 +3903,7 @@ export class App {
     // #97：布局也是外观偏好，但「哪一种壳」影响的是行与列的摆法，#98 还要在自己的 CSS 里挑壳。
     // 存的值原样留在 prefs 里，这里只标出这一版真正画出来的那一种（见 layout.ts 的 activeLayout）。
     this.paintLayout();
+    if (this.sheetKind === "display") this.paintLookCards();
     // D93: 终端 dialog 的几何按缩放换算，改了字号 / 缩放后得重新夹一次（不然 pinned 的那块会溢出）。
     if (this.termDock) this.applyTermGeom(this.termDock);
   }
@@ -3962,40 +3963,87 @@ export class App {
   private openDisplaySheet(): void {
     this.closeSheet();
     this.sheetKind = "display";
-    const back = el("div", "sheet-back");
+    // 外壳同 pi 设置 / 本机管理（.st-console）：左栏分组目录，右边一页「统计卡 + 小节 + 面板」。
+    // 两页（外观 / 连接与设置）照旧只切显隐；左栏的每一项是页里的一个小节，点了滚过去。
+    const back = el("div", "st-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
     };
 
-    const sheet = el("div", "sheet display-sheet");
-    const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("设置")));
-    // 两枚页签跟标题同排（样张 V2）：不另起一行，抽屉一打开就看得见两个入口。
-    const tabs = el("div", "set-tabs");
-    for (const [id, label] of [
-      ["look", tr("外观")],
-      ["conn", tr("连接与设置")],
-    ] as const) {
-      const chip = el("button", "chip", label);
-      chip.dataset.tab = id;
-      chip.onclick = () => this.setDisplayTab(id);
-      tabs.append(chip);
-    }
-    head.append(tabs);
-    const close = el("button", "btn ghost", tr("关闭"));
+    const sheet = el("section", "st-console settings-sheet display-sheet");
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-modal", "true");
+    sheet.setAttribute("aria-label", tr("设置"));
+    const head = el("header", "st-head");
+    const headMain = el("div", "st-head__main");
+    const title = el("h2", "st-title");
+    title.dataset.role = "dtitle";
+    const sub = el("div", "st-sub");
+    sub.dataset.role = "dsub";
+    headMain.append(el("div", "st-eyebrow", tr("设置")), title, sub);
+    const actions = el("div", "st-head__actions");
+    const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
     close.onclick = () => this.closeSheet();
-    head.append(close);
-    sheet.append(head);
-    // 每页自己滚：标题 + 页签钉在上面（以前是整块 .sheet 一起滚，翻到下面想换页得滚回顶上）。
+    actions.append(close);
+    head.append(headMain, actions);
+
+    const main = el("div", "st-main");
+    const nav = el("nav", "st-nav");
+    nav.setAttribute("aria-label", tr("设置"));
+    const navGroups: { label: string; tab: Prefs["settingsTab"]; items: [string, string][] }[] = [
+      { label: tr("外观"), tab: "look", items: [["lang", tr("语言与字号")], ["color", tr("颜色")], ["layout", tr("工作区")], ["chrome", tr("界面元素")]] },
+      { label: tr("连接与设置"), tab: "conn", items: [["chan", tr("通道")], ["tools", tr("工具")], ["about", tr("关于")]] },
+    ];
+    for (const g of navGroups) {
+      nav.append(el("div", "st-nav__group", g.label));
+      for (const [sec, label] of g.items) {
+        const item = el("button", "st-nav__item") as HTMLButtonElement;
+        item.type = "button";
+        item.dataset.tab = g.tab;
+        item.dataset.sec = sec;
+        item.append(el("span", "st-nav__label", label));
+        item.onclick = () => this.setDisplayTab(g.tab, sec);
+        nav.append(item);
+      }
+    }
+    const pane = el("div", "st-pane");
+    pane.dataset.role = "pane";
+    let spyFrame = 0;
+    pane.addEventListener("scroll", () => {
+      if (spyFrame) return;
+      spyFrame = requestAnimationFrame(() => {
+        spyFrame = 0;
+        this.syncDisplayNav();
+      });
+    });
+    main.append(nav, pane);
+    const foot = el("footer", "st-foot");
+    foot.append(
+      el("span", "st-foot__hint", tr("改了立即生效：外观存在这个浏览器里，标签行与界面元素存在桥上")),
+      el("span", "st-foot__meta", "pi-web-client"),
+    );
+    sheet.append(head, main, foot);
     const lookPage = el("div", "set-page");
     lookPage.dataset.page = "look";
     const connPage = el("div", "set-page");
     connPage.dataset.page = "conn";
-    sheet.append(lookPage, connPage);
+    pane.append(lookPage, connPage);
+
+    const lookCards = el("div", "st-cards");
+    lookCards.dataset.role = "look-cards";
+    lookPage.append(lookCards);
+    /** 一个小节：标题 + 一块面板；data-sec 给左栏滚过去用。 */
+    const section = (sec: string, label: string, meta?: string): HTMLElement => {
+      const h = this.stSection(label, meta);
+      h.dataset.sec = sec;
+      const panel = el("div", "settings-panel");
+      lookPage.append(h, panel);
+      return panel;
+    };
 
     // 语言放第一组：换语言是「整页立刻变样」的事，比字号更需要一眼找到（D110）。
-    const langBox = el("div", "levels");
-    langBox.append(el("div", "levels-label", tr("语言")));
+    const langPanel = section("lang", tr("语言与字号"));
     const langChips = el("div", "chips");
     for (const [code, label] of LANGS) {
       const chip = el("button", `chip${this.prefs.lang === code ? " on" : ""}`, label);
@@ -4003,14 +4051,9 @@ export class App {
       chip.onclick = () => this.setPrefLang(code);
       langChips.append(chip);
     }
-    langBox.append(langChips);
-    lookPage.append(langBox);
+    langPanel.append(this.stRow(tr("语言"), tr("界面文字、推送标题都跟着换"), langChips));
 
-    const sizeBox = el("div", "levels");
     const sizeRead = el("span", "size-read");
-    const sizeHead = el("div", "size-head");
-    sizeHead.append(el("div", "levels-label", tr("字号")), sizeRead);
-    sizeBox.append(sizeHead);
 
     const rail = el("div", "size-rail");
     const range = document.createElement("input");
@@ -4052,8 +4095,10 @@ export class App {
     bigAa.setAttribute("aria-hidden", "true");
     const sizeCtl = el("div", "size-ctl");
     sizeCtl.append(smallAa, rail, bigAa, marks);
-    sizeBox.append(sizeCtl);
-    lookPage.append(sizeBox);
+    const sizeRow = this.stRow(tr("字号"), tr("整页一起缩放；拖动或点刻度，双击轨道回 100%"), sizeCtl);
+    sizeRow.classList.add("wide");
+    sizeRow.querySelector(".settings-label")?.append(sizeRead);
+    langPanel.append(sizeRow);
 
     /** 把值抹到控件上（轨道填充 / 读数 / 刻度的「已过」状态 / 刻度字的高亮）。 */
     const paintSize = (v: number): void => {
@@ -4170,8 +4215,7 @@ export class App {
 
     paintSize(this.prefs.scale);
 
-    const colorBox = el("div", "levels");
-    colorBox.append(el("div", "levels-label", tr("颜色")));
+    const colorPanel = section("color", tr("颜色"));
     const swatches = el("div", "swatches");
     for (const [id, label] of ACCENT_LABELS) {
       const sw = el("button", `swatch${this.prefs.accent === id ? " on" : ""}`);
@@ -4186,11 +4230,8 @@ export class App {
       };
       swatches.append(sw);
     }
-    colorBox.append(swatches);
-    lookPage.append(colorBox);
+    colorPanel.append(this.stRow(tr("强调色"), tr("按钮、选中项、进度条用的那一种颜色"), swatches));
 
-    const textBox = el("div", "levels");
-    textBox.append(el("div", "levels-label", tr("文字亮度")));
     const textChips = el("div", "chips");
     for (const [key, label] of TEXT_STEPS) {
       const chip = el("button", `chip${this.prefs.text === key ? " on" : ""}`, tr(label));
@@ -4202,14 +4243,12 @@ export class App {
       };
       textChips.append(chip);
     }
-    textBox.append(textChips);
-    lookPage.append(textBox);
+    colorPanel.append(this.stRow(tr("文字亮度"), tr("正文 / 次要 / 提示三档文字一起调亮或调暗"), textChips));
 
     // #97：工作区布局。四颗 chip 各带一张 CSS 画的小示意图（不引图片：设置面板要能离线打开，
     // 一张 png 就得多一条资源路径）。这一票只点亮 A，其余三颗置灰 + 悬停说明「下一步补上」——
     // 画不出来的壳让人点进去只会看到「什么都没变」，那比置灰更让人困惑。
-    const layoutBox = el("div", "levels");
-    layoutBox.append(el("div", "levels-label", tr("工作区布局")));
+    const layoutPanel = section("layout", tr("工作区"));
     const layoutChips = el("div", "chips layout-chips");
     const shown = activeLayout(this.prefs);
     for (const { id, label } of LAYOUTS) {
@@ -4234,28 +4273,29 @@ export class App {
       }
       layoutChips.append(chip);
     }
-    layoutBox.append(layoutChips);
-    lookPage.append(layoutBox);
+    const layoutRow = this.stRow(tr("工作区布局"), tr("会话列表、对话与侧栏怎么摆；灰的几种还没做好"), layoutChips);
+    layoutRow.classList.add("wide");
+    layoutPanel.append(layoutRow);
 
     // #123：标签行的名额。名额存在桥端（`ws.tabs`），不进 `pi.prefs` ——
     // 换浏览器打开还是同一个 N。改完即发，不等「确定」。
-    const wsTabsBox = el("div", "levels");
-    wsTabsBox.append(el("div", "levels-label", tr("标签行")));
     this.wsPane = el("div", "ws-tabs-pane");
-    wsTabsBox.append(this.wsPane);
-    lookPage.append(wsTabsBox);
+    const wsRow = this.stRow(tr("标签行"), tr("存在桥上：换浏览器打开还是同一套"), this.wsPane);
+    wsRow.classList.add("wide");
+    layoutPanel.append(wsRow);
     this.paintWsTabsPane();
 
     // #291：预览 + 开关墙。预览是「点一下就能关掉」的那张画，开关墙是找不到按钮时的兜底；
     // 两处写的是同一份 `chrome`，都走 `ui.set`，等桥的广播回来再重画。
-    const chromeBox = el("div", "levels");
+    const chromePanel = section("chrome", tr("界面元素"), tr("点预览里的按钮就收起 / 放回"));
     this.chromePane = el("div", "chrome-pane");
-    chromeBox.append(this.chromePane);
-    lookPage.append(chromeBox);
+    chromePanel.classList.add("pad");
+    chromePanel.append(this.chromePane);
     this.paintChromePane();
 
-    const foot = el("div", "sheet-foot");
-    const reset = el("button", "btn ghost", tr("恢复默认"));
+    const resetPanel = section("reset", tr("重置"));
+    const reset = el("button", "btn ghost", tr("恢复默认")) as HTMLButtonElement;
+    reset.type = "button";
     reset.onclick = () => {
       // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
       // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
@@ -4264,30 +4304,98 @@ export class App {
       this.applyPrefs();
       this.openDisplaySheet();
     };
-    foot.append(reset);
-    lookPage.append(foot);
+    resetPanel.append(this.stRow(tr("恢复默认"), tr("字号、颜色、文字亮度、布局回到默认；语言与界面元素不动"), reset));
 
     back.append(sheet);
     this.overlay(back);
     this.sheet = back;
+    document.addEventListener("keydown", this.settingsEsc, true);
+    this.paintLookCards();
     this.setDisplayTab(this.prefs.settingsTab);
   }
 
-  /** 抽屉换页签：只切显隐，不重建（重建会丢掉滑块拖到一半的手感）。停在哪页记进 `pi.prefs`。 */
-  private setDisplayTab(tab: Prefs["settingsTab"]): void {
+  /** 外观页顶上那排卡：当前语言 / 字号 / 强调色 / 布局。applyPrefs 之后跟着重画。 */
+  private paintLookCards(): void {
+    const box = this.sheet?.querySelector<HTMLElement>('[data-role="look-cards"]');
+    if (!box) return;
+    const lang = LANGS.find(([code]) => code === this.prefs.lang)?.[1] ?? this.prefs.lang;
+    const accent = ACCENT_LABELS.find(([id]) => id === this.prefs.accent)?.[1] ?? this.prefs.accent;
+    const text = TEXT_STEPS.find(([k]) => k === this.prefs.text)?.[1] ?? this.prefs.text;
+    const layoutId = activeLayout(this.prefs);
+    const layout = LAYOUTS.find((l) => l.id === layoutId)?.label ?? layoutId;
+    const scale = Math.round(this.prefs.scale * 100);
+    const cards = this.stCards([
+      { label: tr("语言"), value: lang, sub: tr("界面与推送") },
+      { label: tr("字号"), value: `${scale}%`, sub: scale === Math.round(DEFAULT_PREFS.scale * 100) ? tr("默认") : tr("已调整") },
+      { label: tr("强调色"), value: tr(accent), sub: tr("文字亮度：{p1}", { p1: tr(text) }) },
+      { label: tr("工作区布局"), value: tr(layout), sub: tr("会话与侧栏的摆法") },
+    ]);
+    cards.dataset.role = "look-cards";
+    box.replaceWith(cards);
+  }
+
+  /**
+   * 抽屉换页：只切显隐，不重建（重建会丢掉滑块拖到一半的手感）。停在哪页记进 `pi.prefs`。
+   * 带 `sec` 时滚到那一小节（左栏的每一项都是某一页里的一个小节）。
+   */
+  private setDisplayTab(tab: Prefs["settingsTab"], sec?: string): void {
     if (this.prefs.settingsTab !== tab) {
       this.prefs = { ...this.prefs, settingsTab: tab };
       savePrefs(this.prefs);
     }
     const sheet = this.sheet;
     if (!sheet) return;
-    for (const page of sheet.querySelectorAll<HTMLElement>(".set-page")) page.hidden = page.dataset.page !== tab;
-    for (const chip of sheet.querySelectorAll<HTMLElement>(".set-tabs .chip")) chip.classList.toggle("on", chip.dataset.tab === tab);
+    const pane = sheet.querySelector<HTMLElement>('[data-role="pane"]');
+    let changed = false;
+    for (const page of sheet.querySelectorAll<HTMLElement>(".set-page")) {
+      const hide = page.dataset.page !== tab;
+      if (page.hidden !== hide) changed = true;
+      page.hidden = hide;
+    }
     if (tab === "conn") this.paintConnPage();
+    const title = sheet.querySelector<HTMLElement>('[data-role="dtitle"]');
+    const sub = sheet.querySelector<HTMLElement>('[data-role="dsub"]');
+    if (title) title.textContent = tab === "conn" ? tr("连接与设置") : tr("外观");
+    if (sub) sub.textContent = tab === "conn" ? tr("通知通道、公网隧道、管理工具与版本信息") : tr("语言、字号、颜色与工作区的摆法；改了立即生效");
+    if (pane) {
+      const target = sec ? pane.querySelector<HTMLElement>(`.set-page[data-page="${tab}"] [data-sec="${sec}"]`) : null;
+      const first = pane.querySelector<HTMLElement>(`.set-page[data-page="${tab}"] [data-sec]`);
+      if (target && target !== first) {
+        // 不自己拿矩形算 scrollTop：#app 的 zoom 下 getBoundingClientRect 与 scrollTop 不是同一种像素。
+        // 上沿留白交给 CSS 的 scroll-margin-top。
+        target.scrollIntoView({ block: "start" });
+      } else if (target || changed) {
+        pane.scrollTop = 0;
+      }
+    }
+    this.syncDisplayNav(sec);
+  }
+
+  /** 左栏高亮：窗格里最后一个已经滚到上沿的小节；点过的那项优先（最后一节滚不到顶）。 */
+  private syncDisplayNav(prefer?: string): void {
+    const sheet = this.sheet;
+    const pane = sheet?.querySelector<HTMLElement>('[data-role="pane"]');
+    if (!sheet || !pane) return;
+    const tab = this.prefs.settingsTab;
+    let active = prefer ?? "";
+    if (!active) {
+      const top = pane.getBoundingClientRect().top + 24;
+      const secs = [...pane.querySelectorAll<HTMLElement>(`.set-page[data-page="${tab}"] [data-sec]`)];
+      active = secs[0]?.dataset.sec ?? "";
+      for (const s of secs) if (s.getBoundingClientRect().top <= top) active = s.dataset.sec ?? active;
+      // 滚到底了：最后一节就算没顶到上沿也算它。
+      if (pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 2 && secs.length) active = secs[secs.length - 1].dataset.sec ?? active;
+    }
+    for (const item of sheet.querySelectorAll<HTMLElement>(".st-nav__item")) {
+      const on = item.dataset.tab === tab && item.dataset.sec === active;
+      item.classList.toggle("on", on);
+      if (on) item.setAttribute("aria-current", "true");
+      else item.removeAttribute("aria-current");
+    }
   }
 
   /**
-   * 「连接与设置」那一页：从「需要你」栏搬过来的通道、工具，加上关于。
+   * 「连接与设置」那一页：通道、工具、关于。
    *
    * 这三块以前在左栏底部，隧道一开一关会顺带重画整栏；搬进抽屉之后没有 `renderQueue()` 那条路了，
    * 所以隧道点完要自己重画（抽屉没开时 `paintConnPage` 直接返回）。
@@ -4296,77 +4404,91 @@ export class App {
     const page = this.sheet?.querySelector<HTMLElement>('.set-page[data-page="conn"]');
     if (!page) return;
     page.replaceChildren();
+    const section = (sec: string, label: string, meta?: string): HTMLElement => {
+      const h = this.stSection(label, meta);
+      h.dataset.sec = sec;
+      const panel = el("div", "settings-panel");
+      page.append(h, panel);
+      return panel;
+    };
 
-    const chan = el("div", "levels");
-    chan.append(el("div", "levels-label", tr("通道")));
-    const chanTools = el("div", "set-tools");
-    const push = el("button", "btn", tr("开启 Web Push"));
+    const up = this.tunnel.status === "up";
+    const cards = this.stCards([
+      { label: tr("Web Push"), value: String(this.me.pushCount), sub: tr("台设备已订阅") },
+      {
+        label: tr("公网隧道"),
+        value: up ? tr("已开") : tr("未开"),
+        sub: this.tunnel.error ? tr("上次出错") : up ? tr("外网可访问") : tr("只在局域网"),
+        cls: this.tunnel.error ? "warn" : undefined,
+      },
+      { label: tr("bridge"), value: this.me.version, sub: `pi ${this.me.pi}` },
+    ]);
+    page.append(cards);
+
+    const chan = section("chan", tr("通道"));
+    const push = el("button", "btn", tr("开启 Web Push")) as HTMLButtonElement;
+    push.type = "button";
     push.onclick = () => void this.enablePush();
-    const test = el("button", "btn", tr("发测试通知"));
+    const test = el("button", "btn", tr("发测试通知")) as HTMLButtonElement;
+    test.type = "button";
     test.onclick = async () => {
       const res = await api.notifyTest().catch((e) => ({ push: 0, wechat: String(e.message ?? e) }));
       alert(tr("Web Push 送达 {p1} 台；微信：{p2}", { p1: res.push, p2: res.wechat }));
     };
-    const tun = el("button", "btn", this.tunnel.status === "up" ? tr("关掉公网隧道") : tr("开公网隧道"));
+    chan.append(this.stRow(tr("Web Push"), tr("Web Push 订阅 {p1} 台设备", { p1: this.me.pushCount }), [push, test]));
+    const tun = el("button", "btn", up ? tr("关掉公网隧道") : tr("开公网隧道")) as HTMLButtonElement;
+    tun.type = "button";
     tun.onclick = async () => {
       // 从公网页面点「关掉」时回包可能死在正在拆的隧道上（Cloudflare 502）：以前这里
       // `.catch(() => null)` 把错误吞了，用户看到的就是「点了没反应」。失败必须说出来。
-      const up = this.tunnel.status === "up";
+      const wasUp = this.tunnel.status === "up";
       if (tun.disabled) return;
       tun.disabled = true;
       try {
-        const res = await api.tunnel(up ? "stop" : "start");
+        const res = await api.tunnel(wasUp ? "stop" : "start");
         this.tunnel = res.tunnel;
       } catch (err) {
-        this.flashToast(up && this.me.public ? tr("没收到回包：隧道可能已经关了，这个页面也就断了") : tr("隧道操作失败：{p1}", { p1: errText(err) }), true, 8000);
+        this.flashToast(wasUp && this.me.public ? tr("没收到回包：隧道可能已经关了，这个页面也就断了") : tr("隧道操作失败：{p1}", { p1: errText(err) }), true, 8000);
       } finally {
         this.renderTop();
         this.paintConnPage();
       }
     };
-    chanTools.append(push, test, tun);
-    chan.append(chanTools);
-    chan.append(el("div", "hint", tr("Web Push 订阅 {p1} 台设备", { p1: this.me.pushCount })));
+    const tunRow = this.stRow(tr("公网隧道"), up ? "" : tr("开了之后手机不在局域网也能连上这条桥"), tun);
     if (this.tunnel.url) {
       const link = el("a", "set-link", this.tunnel.url);
       link.href = this.tunnel.url;
       link.target = "_blank";
-      chan.append(link);
+      tunRow.append(link);
+      tunRow.classList.add("has-link");
     }
+    chan.append(tunRow);
     if (this.tunnel.error) chan.append(el("div", "notice warn", errText(this.tunnel)));
-    page.append(chan);
 
-    const tools = el("div", "levels");
-    tools.append(el("div", "levels-label", tr("工具")));
-    const toolButtons = el("div", "set-tools");
-    const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
-    piSettings.title = tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）");
-    piSettings.onclick = () => this.openSettingsSheet("global");
-    const sysmanage = el("button", "btn", tr("本机管理")) as HTMLButtonElement;
-    sysmanage.title = tr("本机信息、网卡与 DNS、端口与服务");
-    sysmanage.onclick = () => {
+    const tools = section("tools", tr("工具"));
+    const tool = (name: string, desc: string, run: () => void): void => {
+      const open = el("button", "btn", tr("打开")) as HTMLButtonElement;
+      open.type = "button";
+      open.setAttribute("aria-label", name);
+      open.onclick = run;
+      tools.append(this.stRow(name, desc, open));
+    };
+    tool(tr("pi 设置"), tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）"), () => this.openSettingsSheet("global"));
+    tool(tr("本机管理"), tr("本机信息、网卡与 DNS、端口与服务"), () => {
       this.closeSheet();
       openSysmanage();
-    };
-    const hotdeploy = el("button", "btn", tr("热部署")) as HTMLButtonElement;
-    hotdeploy.title = tr("把这条桥换成某条分支上的构建：编译、换进程、等健康检查（会切断正在跑的会话）");
-    hotdeploy.onclick = () => {
+    });
+    tool(tr("热部署"), tr("把这条桥换成某条分支上的构建：编译、换进程、等健康检查（会切断正在跑的会话）"), () => {
       this.closeSheet();
       openHotdeploy();
-    };
-    const contextInsights = el("button", "btn", tr("上下文洞察")) as HTMLButtonElement;
-    contextInsights.title = tr("跨会话的上下文统计：全体与分项目的 Token、费用、技能、工具与命令");
-    contextInsights.onclick = () => this.openContextInsightSheet();
-    toolButtons.append(piSettings, sysmanage, hotdeploy, contextInsights);
-    tools.append(toolButtons);
-    page.append(tools);
+    });
+    tool(tr("上下文洞察"), tr("跨会话的上下文统计：全体与分项目的 Token、费用、技能、工具与命令"), () => this.openContextInsightSheet());
 
-    // 关于贴底：两行都能点一下复制（版本、会话目录），报问题时直接粘。
-    const about = el("div", "sheet-foot set-about");
-    about.append(el("div", "levels-label", tr("关于")));
+    // 关于：两行都能点一下复制（版本、会话目录），报问题时直接粘。
+    const about = section("about", tr("关于"), tr("点一下复制"));
+    about.classList.add("set-about");
     about.append(this.copyRow(tr("版本"), `pi ${this.me.pi} · bridge ${this.me.version}`));
     about.append(this.copyRow(tr("会话目录"), this.me.sessionsRoot));
-    page.append(about);
   }
 
   /** 点一下复制一行（关于里的版本 / 会话目录）。 */
@@ -11994,7 +12116,7 @@ export class App {
 
   /** #283：Escape 关设置面板。压着别的浮层时不越级关自己 —— 先关的该是最上面那层。 */
   private settingsEsc = (ev: KeyboardEvent): void => {
-    if (ev.key !== "Escape" || ev.defaultPrevented || this.sheetKind !== "settings") return;
+    if (ev.key !== "Escape" || ev.defaultPrevented || (this.sheetKind !== "settings" && this.sheetKind !== "display")) return;
     // D308: 从面板里打开的预览（63）夹在中间时，Esc 先收它（`viewerEsc` 负责），面板还是父层。
     if (document.querySelector(".viewer.hi")) return;
     // 更高的层（口令框 64 / 选择框 66）压着时也不越级。

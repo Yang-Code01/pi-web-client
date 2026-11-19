@@ -316,7 +316,7 @@ const newPage = async (width) => {
   await openSheet(page);
   let d = await snap(page);
   ok(d.wallAa === false, "「Aa」不在开关墙里");
-  await page.locator('.display-sheet .sheet-foot .btn').click();
+  await page.locator('.display-sheet button:has-text("恢复默认")').click();
   await page.waitForSelector(".chrome-pane", { timeout: 5000 });
   await sleep(300);
   d = await snap(page);
