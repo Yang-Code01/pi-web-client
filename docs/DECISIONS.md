@@ -6465,6 +6465,7 @@ Esc 之后 dialog: 0
 
 **决定。**
 - `web/src/chrome.ts` 的 `DEFAULT_HIDDEN` 从 `["filesearch"]` 改成 `["files"]`。三态不变：键缺失 = 按这里（文件管理器不画、Everything 画），`true` 显式打开，`false` 关掉（与缺失同效但记住「关过」）。
+- **取代 D321 尾部那句。** D321 里「又进了 `DEFAULT_HIDDEN` —— 键缺失时不画，只有显式 `true` 才占顶栏」讲的是旧默认（Everything 默认隐藏），自本条起不再成立：Everything 默认就画，进 `DEFAULT_HIDDEN` 的是文件管理器。D321 其余内容（索引、两段式查询、卷勾选、面板形态、改名 Everything）不变；按 `docs/agents/domain.md` 的体例，旧条目原文保留、由本条点名取代。
 - 拔掉 D138 的第二重默认：`ChromeContext` 不再带 `narrow`，`isChromeVisible()` 不再因 560px 以下把文件管理器藏起来 —— 它的默认在所有宽度一致。样式表里那条 560px 媒体查询留着，显式 `true` 时 `data-chrome-narrow="files"` 还要顶开它（#292）。
 - 桥端协议与 `ui.json` 格式不动：白名单、`ui.set`（`null` 删键）照旧；已有 `filesearch: true/false` 的旧偏好照读。
 - 设置 → 外观的预览仍留「桌面 / 手机 390」切换，只演示排版，不再改变预览里哪颗亮；原来那句「手机宽度下「文件管理器」默认收起」与 `ctx.narrow` 那条虚线原因（「手机上默认收起」）一并删掉，后者换成「默认不显示」。

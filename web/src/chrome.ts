@@ -38,6 +38,11 @@ export function isSessionOnly(id: ChromeId | string): boolean {
   return SESSION_ONLY.includes(id);
 }
 
+/** 键缺失时默认不占顶栏的 id。页面拿它决定开关墙上那颗方块要点明「默认不显示」（D331）。 */
+export function isDefaultHidden(id: ChromeId | string): boolean {
+  return DEFAULT_HIDDEN.includes(id as ChromeId);
+}
+
 /** D138 在 560px 以下用 CSS 藏掉的按钮（样式表里那条 `@media` 还在）：只有它们存在
  * 「显式打开要顶开样式表」的问题，与「默认画不画」是两件事。 */
 const NARROW_CSS_HIDDEN: readonly ChromeId[] = ["files"];
@@ -52,10 +57,9 @@ export function isChromeVisible(id: ChromeId | string, chrome: ChromeState | nul
   const choice = chrome?.[id as ChromeId];
   if (choice === false) return false;
   if (choice === true) return true;
-  if (DEFAULT_HIDDEN.includes(id as ChromeId)) return false;
+  if (isDefaultHidden(id)) return false;
   return true;
 }
-
 /**
  * #292「开关优先」：窄屏要顶开 D138 的那些 id —— 空数组表示没人显式打开，样式表原样生效。
  * 只表达「显式 true」这一件事，不含会话事实；没开会话时按钮仍带 `hidden`，页面靠覆盖规则里的

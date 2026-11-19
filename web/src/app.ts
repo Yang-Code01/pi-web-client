@@ -63,7 +63,7 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
-import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
+import { chromeFrom, isChromeVisible, isDefaultHidden, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { type CtxLine, type CtxPolicy } from "./context.ts";
 import { ContextPanel, type ContextPanelData } from "./context-panel.ts";
 import { ContextInsightsView } from "./context-insights.ts";
@@ -4563,7 +4563,7 @@ export class App {
         // 虚着的方块要说清「为什么虚」：会话限定与「默认不显示」都不在 `chrome` 里，光看键看不出来。
         const why: string[] = [];
         if (isSessionOnly(id)) why.push(tr("没开会话时不显示"));
-        if (id === "files" && chrome[id] === undefined) why.push(tr("默认不显示"));
+        if (isDefaultHidden(id)) why.push(tr("默认不显示"));
         const hint = on
           ? tr("点一下隐藏「{p1}」", { p1: name })
           : tr("点一下显示「{p1}」", { p1: name });
