@@ -27,7 +27,7 @@ const SESSION_ONLY: readonly string[] = ["artifacts", "files"];
  * 默认不占顶栏的 id。三态不变 —— 键缺失按这里的默认（不画），`true` 才画出来，
  * `false` 与缺失同效但会记住「关过」。
  *
- * 用户 2026-11-19 把两颗的默认对调：文件管理器默认不显示、Everything 默认显示（D331）。
+ * 用户 2026-11-19 把两颗的默认对调：文件管理器默认不显示、Everything 默认显示（D332）。
  * 文件管理器的 560px 规则（D138）只在显式 `true` 时还要「顶开样式表」这件事上继续存在，
  * 不再从宽度推默认。
  */
@@ -38,7 +38,7 @@ export function isSessionOnly(id: ChromeId | string): boolean {
   return SESSION_ONLY.includes(id);
 }
 
-/** 键缺失时默认不占顶栏的 id。页面拿它决定开关墙上那颗方块要点明「默认不显示」（D331）。 */
+/** 键缺失时默认不占顶栏的 id。页面拿它决定开关墙上那颗方块要点明「默认不显示」（D332）。 */
 export function isDefaultHidden(id: ChromeId | string): boolean {
   return DEFAULT_HIDDEN.includes(id as ChromeId);
 }

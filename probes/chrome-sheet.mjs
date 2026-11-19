@@ -215,7 +215,7 @@ const newPage = async (width) => {
   ok(d.exists, "A 预览与开关墙画出来了");
   ok(d.caps.terminal && d.tiles.terminal === true && d.tileDash.terminal === "solid", "A 默认：终端在预览里、方块实线亮着");
   ok(d.caps.artifacts, "A 开了会话：产物在预览里");
-  ok(!d.caps.files && d.tiles.files === false && d.tileDash.files === "dashed", "A 文件管理器默认不在预览里、方块虚着（D331）");
+  ok(!d.caps.files && d.tiles.files === false && d.tileDash.files === "dashed", "A 文件管理器默认不在预览里、方块虚着（D332）");
 
   await page.locator('.chrome-pv-btn[data-chrome="terminal"]').click();
   await sleep(250);
@@ -255,7 +255,7 @@ const newPage = async (width) => {
   ok(d.pvNarrow, "B 切到「手机 390」：预览收窄");
   ok(!d.caps.files && d.tiles.files === false && d.tileDash.files === "dashed", "B 窄档下文件管理器不画、方块虚着（默认，与档位无关）");
   ok(d.caps.artifacts && d.tiles.artifacts === true, "B 窄档下产物照旧画（宽度不改默认）");
-  ok(!(await seen(page, "files")), "B 真顶栏（1440）同样不画文件管理器（D331）");
+  ok(!(await seen(page, "files")), "B 真顶栏（1440）同样不画文件管理器（D332）");
   ok(chrome.files === undefined, "B 只是看，不写盘：chrome 里没有 files");
 
   await page.locator('.chrome-tile[data-chrome="files"]').click();

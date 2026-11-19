@@ -110,7 +110,10 @@
 .fse-headrow,
 .fse-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 2fr) 86px 128px 136px;
+  /* 最后一列是行尾动作：按钮文字按语言变长（英文 Open folder / 日文 フォルダを開く），
+     固定 136px 装不下三个，会向左溢出压到「修改时间」上（用户 2026-11-19 报的重叠）。
+     160px 是英文三颗的实测宽度；再长就让列自己涨，绝不往左钻。 */
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 2fr) 86px 128px minmax(160px, max-content);
   gap: 14px;
   align-items: center;
 }
@@ -165,7 +168,26 @@
 
 .fse-ico {
   flex: none;
+  width: 12px;
+  text-align: center;
   color: var(--faint);
+}
+
+/* 名称列尾的类型徽章：目录「文件夹」，文件给后缀（PNG / MD…）；名称被截断也留得住。
+   大写写在 `extOf()` 里（DOM 文本就是 `PNG`），这里不再用 text-transform 重复一道。 */
+.fse-kind {
+  flex: none;
+  max-width: 72px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--panel-3);
+  color: var(--faint);
+  font-size: 9.5px;
+  line-height: 14px;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fse-label {
@@ -333,7 +355,7 @@
 @container (max-width: 620px) {
   .fse-headrow,
   .fse-row {
-    grid-template-columns: minmax(0, 1.4fr) 136px;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, max-content);
   }
 
   .fse-c2,

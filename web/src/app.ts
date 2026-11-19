@@ -952,7 +952,7 @@ export class App {
     mail.onclick = () => this.openMail();
     this.els.mail = mail;
     // D321：整机文件搜索（名字就叫 Everything）。跟终端 / 记录一样常驻（不绑会话）；
-    // 默认画在顶栏（D331，2026-11-19 用户要求与文件管理器对调），用户在「设置 → 外观」里可以关。
+    // 默认画在顶栏（D332，2026-11-19 用户要求与文件管理器对调），用户在「设置 → 外观」里可以关。
     const fsearch = this.wideBtn(tr("🔎 Everything|顶栏按钮"));
     fsearch.title = tr("在这台电脑上按名字 / 路径找文件（本机索引，毫秒级）");
     fsearch.dataset.act = "filesearch";
@@ -4407,7 +4407,7 @@ export class App {
    *
    * 预览是顶栏 / 下沿的一张缩略画：胶囊亮不亮、方块实线还是虚线，全问 `isChromeVisible()`；
    * 宽度用**这张画自己的**档（桌面 / 手机 390），不是真窗口 —— 只影响这张画的排版，不再影响可见性
-   * （D331 之后窄屏不再把哪颗按钮变成默认不画）。写状态只走 `ui.set`（`null` = 删键，回默认），
+   * （D332 之后窄屏不再把哪颗按钮变成默认不画）。写状态只走 `ui.set`（`null` = 删键，回默认），
    * 等桥的 `ui` 广播回来再重画，本地不留副本。
    *
    * 预览活在「开了会话」的假设里：没开会话时产物 / 文件管理器本来就不长，跟着灭会让人以为点不亮，
@@ -4754,7 +4754,7 @@ export class App {
       show("mail", mail, tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管"));
     }
     // 文件搜索也进 chrome 表（D321）：这颗是机器级的，没开会话也照样能用，所以不进 `SESSION_ONLY`；
-    // D331 起它默认就画（与文件管理器对调）。
+    // D332 起它默认就画（与文件管理器对调）。
     if (fsearch) {
       this.setWideLabel(fsearch, tr("🔎 Everything|顶栏按钮"));
       show("filesearch", fsearch, tr("在这台电脑上按名字找文件：索引建在本机，不依赖 Everything"));

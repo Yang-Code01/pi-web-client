@@ -7,7 +7,7 @@
  * 显式打开也换不来一个会话，原因写进 title。
  *
  * 四档宽度 390 / 560 / 620 / 1440 各跑一遍；断言尺寸沿用 D138 的口径：
- * `documentElement.scrollWidth == 视口宽`。D331（2026-11-19）之后宽度不再决定默认：
+ * `documentElement.scrollWidth == 视口宽`。D332（2026-11-19）之后宽度不再决定默认：
  * 文件管理器在任何宽度都默认不画、Everything 默认画；560 那条媒体查询只管显式 `true` 顶开。
  *
  * 下沿四颗（#290）与 Aa 里的开关墙（#291）、窄屏强制显示（#292）不在这里验。
@@ -228,7 +228,7 @@ const newPage = async (width) => {
   d = await dom(page);
   const ON = TOP.filter((a) => a !== "files");
   ok(ON.every((a) => d.hidden[a] === false) && ON.every((a) => d.acts.includes(a)), `开会话、默认：六颗全画（${d.acts.join(",")}）`);
-  ok(d.hidden.files === true && !d.acts.includes("files"), "开会话、默认：文件管理器不占顶栏（D331）");
+  ok(d.hidden.files === true && !d.acts.includes("files"), "开会话、默认：文件管理器不占顶栏（D332）");
   ok(docFits(d), `开会话、默认：页面不横向溢出（${d.docScroll} <= ${d.viewport}）`);
 
   // 逐颗关掉再打开：只有那一颗变化，别的原位不动。
@@ -325,8 +325,8 @@ for (const width of [390, 560, 620, 1440]) {
   await openSession(page, "s-1");
   let d = await dom(page);
   ok((await seen(page, "artifacts")) && DESK_ONLY.every((a) => d.acts.includes(a)), `${width}：开会话后产物与常驻五颗都在`);
-  ok(!d.acts.includes("files"), `${width}：文件管理器默认不画（D331，与宽度无关）`);
-  ok(d.acts.includes("filesearch"), `${width}：Everything 默认画（D331，与宽度无关）`);
+  ok(!d.acts.includes("files"), `${width}：文件管理器默认不画（D332，与宽度无关）`);
+  ok(d.acts.includes("filesearch"), `${width}：Everything 默认画（D332，与宽度无关）`);
   ok(docFits(d), `${width}：默认不横向溢出（${d.docScroll} <= ${d.viewport}）`);
 
   chrome = { artifacts: false, terminal: false, files: false, notes: false, peer: false, scratch: false, jira: false, filesearch: false };
