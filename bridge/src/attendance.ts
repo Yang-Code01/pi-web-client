@@ -36,6 +36,7 @@ import {
   receiptKey,
   summarize,
   todayKey,
+  viewRows,
   type AttendanceRow,
   type OvertimeProblem,
   type OvertimeReason,
@@ -468,6 +469,15 @@ function mergeRows(cache: CacheFile, rows: AttendanceRow[], maxDay: string, acco
 function rowsInRange(cache: CacheFile, start: string, end: string): AttendanceRow[] {
   return Object.values(cache.days)
     .filter((r) => r.date >= start && r.date <= end)
+    // 缓存里可能是旧版写下的行（没有 dayOff / absenceHours）。raw 是整行存着的，
+    // 重新映一遍就有新字段了，不用等下一次取数，也不用给缓存加版本号。
+    .map((r) => {
+      if (r.dayOff !== undefined) return r;
+      if (r.raw && typeof r.raw === "object") return mapRow(r.raw);
+      // 连 raw 都没有的老行（只可能是手改过的缓存）：老字段 weekend 至少能救回休息日那一半。
+      const legacy = r as AttendanceRow & { weekend?: unknown };
+      return { ...r, dayOff: Boolean(legacy.weekend), absenceHours: 0, fullDayExcused: false };
+    })
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -931,9 +941,10 @@ export async function handleAttendance(
         const account = box.cred?.account ?? "";
         const cache = mergeRows(readCacheFor(account), live.rows, live.maxDay, account);
         writeCache(cache);
+        const today = todayKey(new Date());
         json(res, 200, {
-          rows: live.rows,
-          summary: summarize(live.rows, live.maxDay, todayKey(new Date())),
+          rows: viewRows(live.rows, today),
+          summary: summarize(live.rows, live.maxDay, today),
           range,
           source: "live",
           fetchedAt: cache.fetchedAt,
@@ -948,9 +959,10 @@ export async function handleAttendance(
       const cache = used ? readCacheFor(used.account) : readCache();
       const rows = rowsInRange(cache, range.start, range.end);
       if (used && rows.length === 0) throw failure;
+      const today = todayKey(new Date());
       json(res, 200, {
-        rows,
-        summary: summarize(rows, cache.maxDay, todayKey(new Date())),
+        rows: viewRows(rows, today),
+        summary: summarize(rows, cache.maxDay, today),
         range,
         source: "cache",
         fetchedAt: cache.fetchedAt,

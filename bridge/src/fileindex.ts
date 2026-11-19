@@ -11,7 +11,7 @@ import path from "node:path";
  *
  * 三条硬约束（都是实测出来的，改之前先读 `.scratch/filesearch/bench.mjs` 的数字）：
  * 1. **不上 FTS5 / trigram**：库翻倍。前缀走 `nlow` 区间、名字子串走 `nlow` 覆盖扫描，2M 行 ~0.3 s；
- *    每条 SQL 的计划都钉死了，见 `query()` 上的注释（D323）。
+ *    每条 SQL 的计划都钉死了，见 `query()` 上的注释（D324）。
  * 2. **SQLite 只开一个连接、同步 API**：`node:sqlite` 没有异步版本，靠「500 行一个事务 + 让出事件循环」
  *    把单次阻塞压在 1–3 ms，不让一份索引拖慢正在跑的会话。
  * 3. **`node:sqlite` 用动态 import**：Node 22.5–22.12 需要 `--experimental-sqlite`，静态 import 会让
@@ -290,7 +290,7 @@ export class FileIndex {
   /**
    * 开一轮扫描。已经在扫就什么都不做（面板按钮可以安心连点）。
    * 重建也走这里，不清表：边扫边覆盖，扫完按 gen 删掉本轮没见到的行。重建期间照样能搜；
-   * 先 `DELETE FROM files` 在 2M 行上同步卡了 17 s，还让面板空了一个小时（D323）。
+   * 先 `DELETE FROM files` 在 2M 行上同步卡了 17 s，还让面板空了一个小时（D324）。
    */
   start(): void {
     if (!this.db || this.stateValue === "error" || this.scanning) return;
@@ -552,7 +552,7 @@ export class FileIndex {
   // ---------------------------------------------------------------- query
   //
   // 每条 SQL 的执行计划都是被钉死的（`explain()` 给测试看，bridge/tests/fileindex.mjs 断言）：
-  // 2.06M 行的真库上，计划一走歪就是单次 20 s 的同步阻塞，整个 bridge 跟着停（D323）。
+  // 2.06M 行的真库上，计划一走歪就是单次 20 s 的同步阻塞，整个 bridge 跟着停（D324）。
   // - 卷过滤写成 `+vol IN (...)`：一元 `+` 让它不能用 idx_files_vol。否则 SQLite 会挑 vol 索引
   //   拿出几乎整张表再临时排序 —— 三个卷就是全部行。
   // - 前缀用 `nlow >= ? AND nlow < ?` 的区间，不用 `LIKE 'x%'`：默认的 LIKE 不分大小写，

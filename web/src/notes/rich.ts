@@ -45,12 +45,19 @@ const ALLOWED = new Set([
 
 const VOID = new Set(["br", "hr"]);
 
+/** 会单独占一行的标签：透明容器里只要有它们，就不能把容器升成段落。 */
+const BLOCK_LEVEL = new Set(["p", "br", "h1", "h2", "h3", "ul", "ol", "li", "pre", "blockquote", "hr", "table", "thead", "tbody", "tr", "th", "td"]);
+/** 白名单外但按行分块的标签（浏览器 Ctrl+C 网页常产出 `<div>一行</div>`）。 */
+const BLOCKISH = new Set(["div", "section", "article", "header", "footer", "aside", "nav", "main", "figure", "figcaption", "dl", "dt", "dd", "address", "center", "form", "fieldset", "legend", "details", "summary", "h4", "h5", "h6"]);
+
 /** 这些标签连里面的字一起扔：粘一份带 <script> 的页面进来时不该留下死代码。 */
 const DROP_WITH_CONTENT = new Set(["script", "style", "iframe", "object", "embed", "svg", "math", "template", "noscript", "textarea", "title", "head", "img"]);
 
 const STYLE_PROPS = new Set(["color", "background-color", "font-size"]);
 
 const BLOCK_TAG = /<(p|br|h[1-6]|ul|ol|li|pre|blockquote|hr|table|thead|tbody|tr|th|td)\b[^>]*>/i;
+/** 白名单外的块容器的开/闭标签：它们也是结构，只是要降级成 `<p>`。 */
+const BLOCKISH_TAG = new RegExp(`</?(?:${[...BLOCKISH].join("|")})\\b`, "i");
 /** 老 body 里只要有这些行内标签，也说明它已经是 HTML 了（否则 `<b>x</b>` 会被再转义一遍）。 */
 const INLINE_TAG = /<(strong|b|em|i|u|s|strike|del|span|mark|a)\b[^>]*>/i;
 
@@ -59,6 +66,8 @@ interface RichNode {
   attrs: Record<string, string>;
   children: RichNode[];
   text?: string;
+  /** 丢弃区 / 透明容器的原始标签名：闭合标签靠它对上。 */
+  name?: string;
 }
 
 // ---------------------------------------------------------------- 解析 / 净化
@@ -135,6 +144,16 @@ export function sanitizeRich(html: string): string {
 
   let last = 0;
   TOKEN.lastIndex = 0;
+
+  // 白名单外的块级容器（典型是浏览器复制出来的 `<div>一行</div>`）：悬空时把内容包成段落，
+  // 否则多行粘贴会全挤成一行。容器里已经有块级元素（例如 div 套 p）时保持透明，免得多套一层。
+  const blockify = (node: RichNode): void => {
+    if (node.tag !== "#keep" || !node.name || !BLOCKISH.has(node.name)) return;
+    if (!node.children.length || hasBlockLevel(node)) return;
+    node.tag = "p";
+    node.name = undefined;
+  };
+
   for (let m = TOKEN.exec(html); m; m = TOKEN.exec(html)) {
     const between = html.slice(last, m.index);
     if (between) append({ tag: null, attrs: {}, children: [], text: decode(between) });
@@ -147,10 +166,12 @@ export function sanitizeRich(html: string): string {
     const closing = m[0].startsWith("</");
 
     if (closing) {
-      // 找最近的同名开标签；找不到就是多余的闭合，忽略。
+      // 找最近的同名开标签；找不到就是多余的闭合，忽略。#drop 靠 name 认（见下）。
       for (let i = stack.length - 1; i > 0; i--) {
-        if (stack[i].tag === name) {
+        if (stack[i].tag === name || stack[i].name === name) {
+          const node = stack[i];
           stack.length = i;
+          blockify(node);
           break;
         }
       }
@@ -158,26 +179,44 @@ export function sanitizeRich(html: string): string {
     }
 
     if (DROP_WITH_CONTENT.has(name)) {
-      if (!selfClose) stack.push({ tag: "#drop", attrs: {}, children: [] });
+      // 压栈时记下原始标签名：`</head>` / `</script>` 得能对上。漏了名字的话 #drop 永远弹不出去，
+      // append 会把**后面全部内容**一起扔掉（浏览器 Ctrl+C 出来的 html 自带 <html><head>…）。
+      // img / embed 没有闭合标签，不压栈，否则之后的正文全丢。
+      if (!selfClose && name !== "img" && name !== "embed") stack.push({ tag: "#drop", name, attrs: {}, children: [] });
       continue;
     }
 
     if (!ALLOWED.has(name)) {
       // 不认识的标签：丢掉标签本身，内容照常走（<div> 这类只是分区）。
-      if (!selfClose) stack.push({ tag: "#keep", attrs: {}, children: [] });
+      // 节点必须先挂到树上再压栈：只压不挂的话，后面 append 都塞进这个孤儿节点，最后整段消失。
+      if (!selfClose) {
+        const keep: RichNode = { tag: "#keep", name, attrs: {}, children: [] };
+        append(keep);
+        stack.push(keep);
+      }
       continue;
     }
 
     const node: RichNode = { tag: name, attrs: sanitizeAttrs(name, rawAttrs), children: [] };
     append(node);
     const transparent = (name === "span" && !node.attrs.style) || (name === "a" && !node.attrs.href);
-    if (transparent) node.tag = "#keep"; // 没有有效属性的 span / a：当成透明容器
+    if (transparent) {
+      node.tag = "#keep"; // 没有有效属性的 span / a：当成透明容器
+      node.name = name; // 闭合标签还得能对上，否则后面的内容会被塞进这个容器里面
+    }
     if (!selfClose && !VOID.has(name)) stack.push(node);
   }
   const tail = html.slice(last);
   if (tail) append({ tag: null, attrs: {}, children: [], text: decode(tail) });
+  // 没闭合的块级容器（粘一半的 html）也包一下，从里往外。
+  for (let i = stack.length - 1; i > 0; i--) blockify(stack[i]);
 
   return serialize(root.children);
+}
+
+/** 子树里有没有能单独占行的元素（含已转成 p 的容器）。 */
+function hasBlockLevel(node: RichNode): boolean {
+  return node.children.some((c) => (c.tag !== null && BLOCK_LEVEL.has(c.tag)) || hasBlockLevel(c));
 }
 
 const TRANSPARENT = /^#/;
@@ -233,6 +272,14 @@ function paragraphize(text: string, keep: (s: string) => string): string {
  */
 export function hasRichMarkup(s: string): boolean {
   return BLOCK_TAG.test(s) || INLINE_TAG.test(s);
+}
+
+/**
+ * 剪贴板 html 里有没有值得净化的结构：块级 / 行内 / 白名单外的块容器都算；
+ * 只有 `<html><head><body>` 这层包裹时不算 —— 交给纯文本，换行才留得住。
+ */
+export function hasAnyStructure(html: string): boolean {
+  return BLOCK_TAG.test(html) || INLINE_TAG.test(html) || BLOCKISH_TAG.test(html);
 }
 
 // ---------------------------------------------------------------- 读

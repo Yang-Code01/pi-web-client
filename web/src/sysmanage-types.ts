@@ -230,9 +230,16 @@ export interface AttendanceState {
 export interface AttendanceRowView {
   date: string;
   weekday: string;
-  weekend: boolean;
+  /** 不用上班的一天（周末 / 假日 / 祝日）。 */
+  dayOff: boolean;
   clockIn: string | null;
   clockOut: string | null;
+  /** 当天已批准的请假 / 出差小时合计。 */
+  absenceHours: number;
+  /** 整天都有申请顶着（≥8 小时假、居家办公、活动出勤）。 */
+  fullDayExcused: boolean;
+  /** 这行算不算缺卡。口径在桥端（attendance-model.ts 的 isMissingRow），页面只照着标。 */
+  missing: boolean;
   overtime: number;
   overtimeEdited: boolean;
   editedBy: string;

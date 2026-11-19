@@ -6319,7 +6319,25 @@ Esc 之后 dialog: 0
 
 **验证：** `node probes/copilot-on-subscribe.mjs`（对着未修复的 bridge 2/2 红；对着修复后的隔离 bridge 连跑 5 次 2/2 绿）、`node probes/copilot-panel-resubscribe.mjs` 八条全 ok、`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 i18n 三语 / viewport / layers）。
 
-## D323 文件搜索：每条 SQL 的执行计划钉死，名字子串不再顺着索引回表；重建不清表（2026-11-19）
+## D323 缺卡口径：申请与假日先豁免，同一时刻的打卡算缺一次（依据 2026-11-19）
+
+（原编号写成 D322，与同一天落进 main 的「Copilot 积分跟着 `session` 帧走」撞号，合并后改成 D323。）
+
+**问题：** 同事报来两条：11/13 只打了一次卡（09:27 / 09:27）却记「缺卡 0 天」；11/2 请假已批准（未打卡）却记「缺卡 1 天」。旧 `summarize` 只判 `!clockIn || !clockOut`，且只把 `day_type === 1` 当休息日：OA 把单次打卡镜像成 `start === end`，两头都非空就漏掉；整天调休 / 法定假日（`day_type` 2、3）没打卡则一律算缺。本机 180 天真实数据旧口径误判 8 天（5 天整天假 + 3 天 `day_type` 2/3 假日），新口径 0 天。
+
+**决定：**
+
+- 缺卡的唯一判定入口是 `isMissingRow(row, today)`（`bridge/src/attendance-model.ts`）：`dayOff`（`day_type` 1/2/3，即 `dayOffOf`）、`fullDayExcused`（请假 / 出差 / 居家 / 活动合计 ≥ 8 小时，或 `home === 1`，或 `special_reason` 非空）、`date === today`（今天还没下班）三条都豁免；余下的加上 `clockIn === clockOut`。
+- 阈值取 8 小时的依据是 OA 导入模板那句「请假总时长不可超过 8 小时」；半天假（0 < 小时 < 8）且完全没打卡仍算缺卡 —— 宁可多报也不漏报。
+- 假日并进「周末」桶：`summarize` 的 `weekendOvertime` 现在收 `dayOff` 行的加班，不新增字段、不动接口。
+- 旧缓存不升版本号：`rowsInRange` 见到没有 `dayOff` 字段却带 `raw` 的行就用 `mapRow(raw)` 重映一遍；连 `raw` 都没有的老行退回老字段 `weekend`（只可能是手改过的缓存）。
+- 「缺」由桥端算好下发（`viewRows()` 在每行上补 `missing`），前端只照着高亮，不再自己推导。
+
+**取舍：** 判定读的是 OA 原始行的请假小时字段（`c_hours` / `t_hours` / `s_hours` / `o_hours` / `bt_hours` 加 `home` / `special_reason`），这些名字是 OA 前端的约定；OA 换字段名这里会静默退回「只看有没有打卡」。整天假按 8 小时判，7.5 小时的年假会被算成缺卡（本机数据里没有这种样本）。时间只比到分钟（`clockOf` 取 `HH:mm`），真实两次打卡若只差几秒也会被当成同一时刻 —— 镜像行的两端是逐字相同的，这个方向宁可多算一次缺卡。
+
+**验证：** `node bridge/tests/attendance-unit.mjs` 57 条全绿（新增六条：`day_type` 1/2/3 都是休息日且 4 不算、全天申请从小时字段认出来、整天请假 / 假日没打卡不算缺卡、上下班同一时刻算缺一次、假日加班进周末桶；改前 8 条红）；`node bridge/tests/attendance-e2e.mjs` 33 条全绿（新增整天调休与假日两行，并把旧版缓存形状 `{weekend:true, raw:{day_type:2}}` 写进去验证重映）；`node web/tests/attendance-unit.mjs` 14 条；`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 i18n / viewport / layers）全绿；把 `.scratch/attendance/att-a.json` + `att-b.json` 的 180 行 raw 直接跑 `summarize`，`missing` 从 5 + 假日误判降到 0。
+
+## D324 文件搜索：每条 SQL 的执行计划钉死，名字子串不再顺着索引回表；重建不清表（2026-11-19）
 
 **问题：** 真机索引 2.06M 行（库 1.0 GB）时，Everything 面板「什么文件都没有了」：状态是「就绪 · 2.06 M 项」，结果区一直空、页脚 0 ms。查询本身没报错，是**慢到出不来**：`node:sqlite` 是同步 API，一条查询跑多久整个 bridge 就停多久，逐键输入又排起一串。用同形状的 2.06M 行合成库（558 MB）逐条计时：
 

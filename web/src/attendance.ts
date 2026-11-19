@@ -389,8 +389,9 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     const tbody = document.createElement("tbody");
     for (const row of records!.rows) {
       const tr_ = document.createElement("tr");
-      if (row.weekend) tr_.className = "weekend";
-      if (!row.clockIn || !row.clockOut) tr_.className = `${tr_.className} missing`.trim();
+      if (row.dayOff) tr_.className = "weekend";
+      // 缺卡口径在桥端算好一起下发（周末、整天请假、今天都不算），这里只照着标。
+      if (row.missing) tr_.className = `${tr_.className} missing`.trim();
       tr_.append(
         el("td", "at-day", weekdayOf(row.date) ? `${row.date} ${weekdayOf(row.date)}` : row.date),
         el("td", "", row.clockIn ?? "—"),
@@ -441,12 +442,12 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
   function overtimeCell(row: AttendanceRecords["rows"][number]): HTMLElement {
     const td = el("td", "at-ov");
     if (row.overtime) {
-      const kind = row.weekend ? tr("周末") : tr("平时");
+      const kind = row.dayOff ? tr("周末") : tr("平时");
       td.append(
-        el("span", row.weekend ? "at-ov-tag weekend" : "at-ov-tag", kind),
+        el("span", row.dayOff ? "at-ov-tag weekend" : "at-ov-tag", kind),
         el("span", "at-ov-hours", String(row.overtime)),
       );
-    } else if (row.weekend) {
+    } else if (row.dayOff) {
       // 周末没加班也标一下，免得看成数据漏了。
       td.append(el("span", "at-ov-tag quiet", tr("周末")));
     }

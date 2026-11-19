@@ -203,7 +203,7 @@ test("mapRow 挑认得的字段，其余原样留在 raw", () => {
   const row = M.mapRow(RAW);
   assert.equal(row.date, "2026-10-08");
   assert.equal(row.weekday, "四");
-  assert.equal(row.weekend, false);
+  assert.equal(row.dayOff, false);
   assert.equal(row.clockIn, "09:20");
   assert.equal(row.clockOut, "18:29");
   assert.equal(row.overtime, 1.5);
@@ -221,10 +221,15 @@ test("mapRow：没打卡时时间是 null 而不是空串", () => {
   assert.equal(row.clockOut, null);
 });
 
-test("mapRow：day_type 1 是周末", () => {
-  assert.equal(M.mapRow({ ...RAW, day_type: 1 }).weekend, true);
-  assert.equal(M.mapRow({ ...RAW, day_type: "1" }).weekend, true);
-  assert.equal(M.mapRow({ ...RAW, day_type: null }).weekend, false);
+// OA 的 day_type：0/4 = 平时（4 是调休上班的周六），1/3 = 周末，2 = 假日。
+// 只认 1 会把国庆和祝日当成工作日，凭空多出缺卡。
+test("mapRow：day_type 1/2/3 都是休息日", () => {
+  assert.equal(M.mapRow({ ...RAW, day_type: 1 }).dayOff, true);
+  assert.equal(M.mapRow({ ...RAW, day_type: "2" }).dayOff, true, "假日");
+  assert.equal(M.mapRow({ ...RAW, day_type: 3 }).dayOff, true);
+  assert.equal(M.mapRow({ ...RAW, day_type: 0 }).dayOff, false);
+  assert.equal(M.mapRow({ ...RAW, day_type: 4 }).dayOff, false, "调休上班的周六要上班");
+  assert.equal(M.mapRow({ ...RAW, day_type: null }).dayOff, false);
 });
 
 test("mapRow：字段名可以换（换 OA 只改映射）", () => {
@@ -233,10 +238,27 @@ test("mapRow：字段名可以换（换 OA 只改映射）", () => {
     { day: "work_date", dayType: "rest", clockIn: "in", clockOut: "out", overtime: "ot" },
   );
   assert.equal(row.date, "2026-11-02");
-  assert.equal(row.weekend, true);
+  assert.equal(row.dayOff, true);
   assert.equal(row.clockIn, "08:55");
   assert.equal(row.clockOut, "19:05");
   assert.equal(row.overtime, 2);
+});
+
+test("mapRow：全天申请从小时字段认出来，半天不算", () => {
+  const base = { ...RAW, c_hours: 0, t_hours: 0, start: null, end: null };
+  const leave = M.mapRow({ ...base, c_hours: 8 });
+  assert.equal(leave.absenceHours, 8);
+  assert.equal(leave.fullDayExcused, true);
+  const half = M.mapRow({ ...base, c_hours: 4 });
+  assert.equal(half.absenceHours, 4);
+  assert.equal(half.fullDayExcused, false, "只请了半天，另一半没打卡仍然要提醒");
+  const mix = M.mapRow({ ...base, t_hours: 4, bt_hours: 4 });
+  assert.equal(mix.absenceHours, 8, "事假 + 出差可以拼成一天");
+  assert.equal(mix.fullDayExcused, true);
+  assert.equal(M.mapRow({ ...base, o_hours: 8 }).fullDayExcused, true, "其他假期");
+  assert.equal(M.mapRow({ ...base, home: 1 }).fullDayExcused, true, "居家办公");
+  assert.equal(M.mapRow({ ...base, special_reason: "部门团建" }).fullDayExcused, true, "活动出勤");
+  assert.equal(M.mapRow({ ...base }).fullDayExcused, false, "什么都没申请");
 });
 
 test("splitDay 拆不出来就原样当日期", () => {
@@ -286,6 +308,50 @@ test("summarize：今天整行不算缺卡（下班卡还没到点）", () => {
   const half = [M.mapRow({ day: "2026-11-17(二)", day_type: 0, start: "09:10", end: null, ov: 0 })];
   assert.equal(M.summarize(half, "", "2026-11-17").missing, 0, "今天只有上班卡也不算缺");
   assert.equal(M.summarize(half, "", "2026-11-17").attended, 1, "出勤数照算");
+});
+
+test("summarize：整天请假没打卡不算缺卡", () => {
+  const rows = [
+    // 11/2 周一整天调休：OA 里 code=申请单号、c_hours=8、没有打卡。
+    M.mapRow({ day: "2026-11-02(一)", day_type: 0, start: null, end: null, c_hours: 8, code: "109603", err: 0 }),
+    // 只有半天假、又完全没打卡：另一半没人解释，仍然算缺卡。
+    M.mapRow({ day: "2026-11-03(二)", day_type: 0, start: null, end: null, c_hours: 4, code: "109604", err: 0 }),
+    // 出差一整天。
+    M.mapRow({ day: "2026-11-04(三)", day_type: 0, start: null, end: null, bt_hours: 8, bt_code: "123" }),
+  ];
+  assert.equal(M.summarize(rows, "").missing, 1, "只有 11/03 那天算缺卡");
+});
+
+test("summarize：假日与周末没打卡不算缺卡", () => {
+  const rows = [
+    M.mapRow({ day: "2026-10-05(一)", day_type: 3, start: null, end: null }),
+    M.mapRow({ day: "2026-10-06(二)", day_type: 2, start: null, end: null }),
+    M.mapRow({ day: "2026-10-10(六)", day_type: 1, start: null, end: null }),
+    M.mapRow({ day: "2026-10-08(四)", day_type: 0, start: null, end: null }),
+  ];
+  const s = M.summarize(rows, "");
+  assert.equal(s.missing, 1, "只剩 10/08 这个工作日");
+  assert.equal(s.attended, 0);
+});
+
+// OA 只有一次打卡时会把 start/end 填成同一时刻（11/13 09:27/09:27、11/14 11:00/11:00），
+// 只看「有没有值」会把「忘了打下班卡」整条漏掉。
+test("summarize：上下班时间相同等于只打了一次卡", () => {
+  const rows = [M.mapRow({ day: "2026-11-13(五)", day_type: 0, start: "09:27", end: "09:27" })];
+  const s = M.summarize(rows, "");
+  assert.equal(s.missing, 1);
+  assert.equal(s.attended, 1, "人来了，出勤照算");
+});
+
+test("summarize：假日加班算进周末桶", () => {
+  const rows = [
+    M.mapRow({ day: "2026-10-01(四)", day_type: 2, start: "09:00", end: "12:00", ov: 3 }),
+    M.mapRow({ day: "2026-11-14(六)", day_type: 1, ov: 5 }),
+    M.mapRow({ day: "2026-11-16(一)", day_type: 0, start: "09:00", end: "21:00", ov: 3 }),
+  ];
+  const s = M.summarize(rows);
+  assert.equal(s.weekendOvertime, 8, "假日 3 + 周末 5");
+  assert.equal(s.overtime, 11);
 });
 
 test("summarize：空列表不会 NaN", () => {

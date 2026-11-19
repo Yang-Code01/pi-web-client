@@ -153,7 +153,7 @@ await check("扫到一半被打断：再开库不认半套索引，转 off 等�
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-// D323：2.06M 行的真库上，计划走歪 = 单次 20 s 的同步阻塞，面板空着、整个 bridge 停住。
+// D324：2.06M 行的真库上，计划走歪 = 单次 20 s 的同步阻塞，面板空着、整个 bridge 停住。
 // 计划只看 SQL 形状与索引，小库上 SQLite 的选择和大库一样（都没 ANALYZE），所以在这里钉死。
 await check("查询计划：不走 idx_files_vol、前缀是区间、名字子串是覆盖扫描、空查询不排临时表", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "fileindex-"));
