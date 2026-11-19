@@ -53,9 +53,13 @@ let loginCount = 0;
 let kicked = false;
 
 const ROWS = [
-  { user_id: 1001, name: "张三", work_no: "TS0001", day: "2026-11-13(五)", day_type: 0, start: "09:05", end: "18:31", ov: 0, code: "0", c_hours: 8, t_hours: 0 },
-  { user_id: 1001, name: "张三", work_no: "TS0001", day: "2026-11-16(一)", day_type: 0, start: "09:12", end: null, ov: 0, code: "0", c_hours: 8, t_hours: 0 },
+  { user_id: 1001, name: "张三", work_no: "TS0001", day: "2026-11-13(五)", day_type: 0, start: "09:05", end: "18:31", ov: 0, code: "0", c_hours: 0, t_hours: 0 },
+  { user_id: 1001, name: "张三", work_no: "TS0001", day: "2026-11-16(一)", day_type: 0, start: "09:12", end: null, ov: 0, code: "0", c_hours: 0, t_hours: 0 },
   { user_id: 1001, name: "张三", work_no: "TS0001", day: "2026-11-14(六)", day_type: 1, start: "10:00", end: "15:00", ov: 5, code: "0", c_hours: 0, t_hours: 0 },
+  // 整天调休，完全没打卡：OA 里就是 code=申请单号 + c_hours=8 + start/end 为空。
+  { user_id: 1001, name: "张三", work_no: "TS0001", day: "2026-11-10(一)", day_type: 0, start: null, end: null, ov: 0, code: "109603", c_hours: 8, t_hours: 0 },
+  // 假日（day_type 2）：没打卡也不该记缺卡。
+  { user_id: 1001, name: "张三", work_no: "TS0001", day: "2026-11-11(三)", day_type: 2, start: null, end: null, ov: 0, code: "0", c_hours: 0, t_hours: 0 },
 ];
 
 const oa = http.createServer((req, res) => {
@@ -337,17 +341,23 @@ test("记录：只查自己，query_type 必须是 3", async () => {
   assert.deepEqual(q.body, { keyword: "TS0001", query_type: 3, start_dt: "2026-11-10", end_dt: "2026-11-16" });
 
   const rows = rec.json.rows;
-  assert.equal(rows.length, 3);
+  assert.equal(rows.length, 5);
   assert.equal(rows[0].date, "2026-11-13");
   assert.equal(rows[0].weekday, "五");
+  assert.equal(rows[0].missing, false, "两头都打了卡");
   assert.equal(rows[1].clockOut, null);
-  assert.equal(rows[2].weekend, true);
+  assert.equal(rows[1].missing, true, "下班卡缺了");
+  assert.equal(rows[2].dayOff, true);
   assert.equal(rows[2].overtime, 5);
+  assert.equal(rows[3].missing, false, "整天调休没打卡不算缺卡");
+  assert.equal(rows[3].fullDayExcused, true);
+  assert.equal(rows[4].dayOff, true, "假日");
+  assert.equal(rows[4].missing, false);
 
   const s = rec.json.summary;
-  assert.equal(s.days, 3);
+  assert.equal(s.days, 5);
   assert.equal(s.attended, 3);
-  assert.equal(s.missing, 1, "周二下班缺卡算一次，周六不缺");
+  assert.equal(s.missing, 1, "只有周一（11/16）下班缺卡算一次；调休、假日、周六都不算");
   assert.equal(s.overtime, 5);
   assert.equal(s.lastDay, "2026-11-16");
 });
@@ -364,13 +374,41 @@ test("记录：页面传的日期不会绕过 90 天上限", async () => {
 });
 
 test("记录：上游 NG 时用缓存顶上，并且明确说这是缓存", async () => {
+  // 旧版缓存里存的是改口径之前的行（没有 dayOff / absenceHours）。raw 是整行存着的，
+  // 读的时候要重新映一遍，不然升级后离线看历史还是老的误判。
+  const cachePath = path.join(process.env.PI_WEB_STATE, "attendance", "cache.json");
+  fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+  fs.writeFileSync(
+    cachePath,
+    JSON.stringify({
+      account: "TS0001",
+      fetchedAt: Date.now(),
+      maxDay: "2026-11-11",
+      days: {
+        "2026-11-11": {
+          date: "2026-11-11",
+          weekday: "三",
+          weekend: true,
+          clockIn: null,
+          clockOut: null,
+          overtime: 0,
+          overtimeEdited: false,
+          editedBy: "",
+          raw: { day: "2026-11-11(三)", day_type: 2, start: null, end: null, ov: 0 },
+        },
+      },
+    }),
+  );
   recordsMode = "ng";
   const rec = await call("GET", "/api/attendance/records?start=2026-11-10&end=2026-11-16");
   assert.equal(rec.status, 200);
   assert.equal(rec.json.source, "cache");
   assert.equal(rec.json.stale, true);
   assert.match(rec.json.problem, /查不到/);
-  assert.equal(rec.json.rows.length, 3);
+  assert.equal(rec.json.rows.length, 1);
+  assert.equal(rec.json.rows[0].dayOff, true, "day_type 2 是假日，旧缓存也要认");
+  assert.equal(rec.json.rows[0].missing, false);
+  assert.equal(rec.json.summary.missing, 0);
   recordsMode = "ok";
 });
 
@@ -409,7 +447,7 @@ test("上游把 token 踢了（人在别处又登一次）：偷偷重登一次�
   assert.equal(rec.json.source, "live");
   assert.equal(rec.json.stale, false);
   assert.equal(loginCount, before + 1);
-  assert.equal(rec.json.rows.length, 3);
+  assert.equal(rec.json.rows.length, 5);
 });
 
 test("记录：上游模糊匹配回别人的行，一条都不当自己的显示", async () => {
@@ -604,7 +642,7 @@ test("退出：登录态没了，记录退成缓存", async () => {
   assert.equal(out.status, 200);
   const st = await call("GET", "/api/attendance/state");
   assert.equal(st.json.loggedIn, false);
-  assert.equal(st.json.cacheDays, 3, "缓存还在，退出不等于清数据");
+  assert.equal(st.json.cacheDays, 5, "缓存还在，退出不等于清数据");
 
   const rec = await call("GET", "/api/attendance/records?start=2026-11-10&end=2026-11-16");
   assert.equal(rec.status, 200);
