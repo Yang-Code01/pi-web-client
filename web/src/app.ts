@@ -5706,8 +5706,12 @@ export class App {
     const view = new ContextInsightsView(host, {
       currentId: this.currentId,
       openSession: (id) => {
+        // 从设置 → 工具进来时挂着 sheetReturn：不摘掉的话 closeSheet 的微任务会把设置面板重新打开，
+        // 盖住刚切过去的会话，看起来就是「点了没反应」。跳会话是离开设置，不是关子面板回去。
+        this.sheetReturn = null;
         this.closeSheet();
-        this.openSession(id);
+        // 走列表那条路：窄屏要切到对话页，hash 也要跟上（只调 openSession 两样都不做）。
+        this.openFromList(id);
       },
     });
     this.contextInsights = view;
