@@ -120,4 +120,16 @@ assert.deepEqual(
   "ALL_PROXY 排在 HTTP(S)_PROXY 之后",
 );
 
+// ------------------------------------------------- 不闪窗：worker 无控制台，每个子进程都要 windowsHide
+
+for (const name of ["hotdeploy.mjs", "hotdeploy-git.mjs", "hotdeploy-window.mjs"]) {
+  const src = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "scripts", name), "utf8");
+  // 每一处 spawnSync( 调用，往后看到本条语句结束（下一个 ");"）为止，必须带 windowsHide 或走 sh()。
+  for (const m of src.matchAll(/spawnSync\(/g)) {
+    const stmt = src.slice(m.index, src.indexOf(");", m.index) + 2);
+    if (/^spawnSync\("npm", \["run", "build"\]/.test(stmt)) continue; // 非 Windows 分支
+    assert.ok(stmt.includes("windowsHide"), `${name} 里的 spawnSync 没带 windowsHide：${stmt.slice(0, 80)}`);
+  }
+}
+
 console.log("hotdeploy-unit: ok");

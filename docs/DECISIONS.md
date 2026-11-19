@@ -6372,3 +6372,19 @@ Esc 之后 dialog: 0
 **取舍：** 没做「超过 N 分钟就自动判失败」。outbox 的 24 小时补投是 D103 有意留的（对端可能一整天没开机，`409 还没学到你` 也要靠它兜），改成短超时会让「他下午才上线」变成永久丢失；用户要的是**当时就知道**，不是「更早放弃」，所以只加解释与手动入口，不动过期窗口，也不改退避曲线。也没给文件卡加这套：文件传输不走 outbox（token / 分块 / 哈希自成一摊），它显示的「发送中…」本来就有进度条和失败态。
 
 **验证：** `node bridge/tests/peer-e2e.mjs`（新增「停掉对端后仍带 tries/sendError，state 仍是 sending」「立即重试之后同一条只把 tries 往前推、不多出一条」两段 —— 第一步就抓到 sendError 原本是 `fetch failed`，才有了上面的 `why()`）；`node bridge/tests/peer-ui.mjs`（假 API 灌 `state:"sending", tries:7, sendError:"The operation was aborted due to timeout"` → 气泡出现「对方没响应（已重试 7 次）」与「立即重试」，点它发出 `POST /api/peer/retry`；`tries:1` 的那条仍只写「发送中…」且没有按钮；`delivered` 写「已送达」）；`node bridge/tests/peer-note-unit.mjs`、`node bridge/tests/peer-history.mjs`；`npm run typecheck`（含 i18n 三语键集合 / viewport / layers）。
+
+## D326 热部署不再闪窗，并复用同一扇 pi bridge 窗口（用户报障 2026-11-19）
+
+**问题：** 在 Windows 上点热部署，会有一串黑色控制台窗口弹出又关掉，`npm run build` 那扇会一直开到编译结束；最后旧的 `pi bridge` 窗口关掉，再弹一扇新的。用户问能不能「一个窗口干完所有操作」。
+
+**根因：** 桥用 `spawn(..., { detached: true })` 起 worker（`bridge/src/hotdeploy.ts`）。在 Windows 上这是 `DETACHED_PROCESS`，worker **没有控制台**。worker 里的 `spawnSync`（`git` 十几次，`powershell` 用来找 pid / 查子进程 / 轮询存活，`taskkill`，`cmd` 跑 `npm run build`）都没带 `windowsHide`，所以每一次调用，系统都会给子进程新建一个**可见**控制台。已用探针复现：同样参数起的子进程，默认 `IsWindowVisible(GetConsoleWindow())` 为 True；带上 `windowsHide` 后 hwnd=0。bridge-update skill 的 `restart.mjs` 是经 `Start-Process -WindowStyle Hidden` 起的，自带一个隐藏的控制台，所以没有这个问题。
+
+**决定：**
+
+- `scripts/hotdeploy.mjs` 的 `sh()`、`build()`，以及 `scripts/hotdeploy-git.mjs` 的 `gitIn()`，全部带上 `windowsHide: true`。已实测：外层 powershell 带 `windowsHide` 时，`Start-Process` 照样能打开可见窗口。
+- 换进程用的窗口改成一个**循环脚本** `.scratch/hot-deploy/bridge-window-<port>.ps1`（由 `scripts/hotdeploy-window.mjs` 的 `windowScript()` 生成）：`node bridge\dist\index.js` 退出后，若存在 `relaunch-<port>` 标记，就删掉标记、在**同一扇窗口**里再起一次；没有标记就退出循环，窗口关掉（关窗即停、杀桥即关，D154 的语义不变）。分支名每一轮现查，因为复用窗口时，脚本里写死的分支会过期。
+- worker 在杀旧桥之前，用 `windowHostOf(oldPid, port)` 查旧桥的父进程是不是本端口的循环窗口。是的话就放下标记，杀桥后等 5 秒，看窗口有没有收走标记。收走了就不再开新窗口；没收走（旧桥没死、窗口被关）就撤回标记，照旧 `Start-Process` 开一扇新窗口。旧版 `start-bridge.ps1` 窗口、手动 `npm start` 的终端都不认，所以升级后的第一次部署还会换一扇新窗口，从第二次起就一直复用这一扇。
+
+**取舍：** 没有让 worker 自己在可见窗口里跑（那样进度也能看见）。worker 必须先 build、再杀桥，进度已经在页面上轮询显示，再开一扇窗口只会多一扇。也没改 bridge-update skill，D254 规定两者不共用入口。
+
+**验证：** `node bridge/tests/hotdeploy-unit.mjs` 新增一段静态守卫：`scripts/hotdeploy*.mjs` 里每一处 `spawnSync(` 都必须带 `windowsHide`。去掉 `hotdeploy-git.mjs` 里的那一个，守卫会变红。`node bridge/tests/hotdeploy-window-e2e.mjs`（Windows，`npm run test:hotdeploy-window`）用一份假桥覆盖三件事：`windowHostOf` 认得本端口、不认别的端口；有标记时同一父 pid 原地重起、标记被收走；没有标记时窗口随桥关闭。把标记写到别的路径，这段测试会变红。`hotdeploy-stash-unit.mjs` 在 main 上本来就红，与本条无关：临时目录在这台机器上是 8.3 短路径（`YANGQM~1.HYR`），`occupiedBy()` 把它误判成「已被别的 worktree 检出」。

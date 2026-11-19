@@ -69,6 +69,7 @@
     "test:notes": "node --experimental-strip-types --test web/tests/md-input-unit.mjs && node --experimental-strip-types web/tests/notes-rich-unit.mjs && node web/tests/notes-editor-browser.mjs && node web/tests/notes-sheet-browser.mjs",
     "test:attendance": "node bridge/tests/attendance-unit.mjs && node bridge/tests/attendance-e2e.mjs && node --experimental-strip-types web/tests/attendance-unit.mjs",
     "test:hotdeploy": "node bridge/tests/hotdeploy-unit.mjs && node bridge/tests/hotdeploy-stash-unit.mjs",
+    "test:hotdeploy-window": "node bridge/tests/hotdeploy-window-e2e.mjs",
     "test:sysmanage:ui": "node bridge/tests/sysmanage-ui.mjs",
     "test:settings": "node web/tests/settings-console-unit.mjs",
     "test:settings:ui": "node bridge/tests/settings-console-ui.mjs",

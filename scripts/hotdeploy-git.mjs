@@ -5,7 +5,8 @@
 import { spawnSync } from "node:child_process";
 
 function gitIn(repo, args) {
-  const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  // windowsHide：热部署 worker 无控制台，不带就每个 git 弹一扇窗。
+  const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", windowsHide: true });
   return {
     ok: r.status === 0,
     status: r.status,
