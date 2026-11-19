@@ -583,7 +583,8 @@ export class NotesSheet {
   }
 
   private paintMode(): void {
-    const fail = this.view === "failures";
+    // 全局检索期间不摆 AI 出错账本：结果画在中栏列表里，账本留着会把结果盖住。
+    const fail = this.view === "failures" && !this.searching();
     this.consoleEl.hidden = fail;
     this.failEl.hidden = !fail;
     this.root.firstElementChild?.classList.toggle("in-failures", fail);
@@ -598,10 +599,7 @@ export class NotesSheet {
     this.flush();
     this.kind = kind;
     this.view = "active";
-    this.gq = "";
-    this.gsearchEl.value = "";
-    this.query = "";
-    this.searchEl.value = "";
+    this.resetSearch();
     this.resetPick();
     this.paintHead();
     this.paintNav();
@@ -621,8 +619,7 @@ export class NotesSheet {
     if (!this.searching() && this.view === view) return;
     this.flush();
     this.view = view;
-    this.gq = "";
-    this.gsearchEl.value = "";
+    this.resetSearch();
     this.resetPick();
     this.paintHead();
     this.paintNav();
@@ -698,10 +695,7 @@ export class NotesSheet {
     this.kind = note.kind;
     this.view = note.deletedAt ? "trash" : note.archivedAt ? "archived" : "active";
     this.seg = "all";
-    this.query = "";
-    this.searchEl.value = "";
-    this.gq = "";
-    this.gsearchEl.value = "";
+    this.resetSearch();
     this.paintNav();
     this.paintList();
     this.select(id);
@@ -769,6 +763,14 @@ export class NotesSheet {
   /** 顶栏全局检索有没有字；有就是「结果视图」，view / kind 原封不动（清空后原路返回）。 */
   private searching(): boolean {
     return this.gq.length > 0;
+  }
+
+  /** 两个搜索框一起清空：切分区 / 切去向 / 跳到某条时都要，别在三处各抄一遍。 */
+  private resetSearch(): void {
+    this.gq = "";
+    this.gsearchEl.value = "";
+    this.query = "";
+    this.searchEl.value = "";
   }
 
   /** 清掉全局搜索回到原视图；focus=true 时把焦点交还给顶栏那颗框。 */

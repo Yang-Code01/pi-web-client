@@ -202,6 +202,20 @@ const out = await page.evaluate(async () => {
     title: q(".nc-title")?.value ?? null,
   };
 
+  // 13b. 「AI 出错记录」视图里输入全局检索：中栏交给结果，账本让开；Esc 后回账本
+  q('.nc-nav-item[data-key="failures"]').click();
+  result.gFailBefore = { console: q(".notes-console").hidden, fail: q(".fail-wrap").hidden };
+  gs.value = "别的分区";
+  fire(gs, "input");
+  result.gFailSearch = {
+    consoleBack: !q(".notes-console").hidden,
+    failHidden: q(".fail-wrap").hidden,
+    rows: qa(".nc-row").length,
+    listTitle: q(".nc-list-title")?.textContent ?? null,
+  };
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  result.gFailAfterEsc = { console: q(".notes-console").hidden, fail: q(".fail-wrap").hidden, value: gs.value };
+
   // 14. 记忆：分区 + 选中（#514）
   q('.nc-nav-item[data-key="bug"]').click();
   q('.nc-row[data-id="n1"]').click();
@@ -365,6 +379,9 @@ assert.equal(out.gEsc?.rows, 2, "清搜索后回到原分区原列表");
 assert.equal(out.gJump?.kindOn, true, "点结果切到它所在分区");
 assert.equal(out.gJump?.query, "", "点结果清空搜索");
 assert.equal(out.gJump?.title, "别的分区", "点结果选中那一条")
+assert.deepEqual(out.gFailBefore, { console: true, fail: false }, "进 AI 出错账本时列表让位");
+assert.deepEqual(out.gFailSearch, { consoleBack: true, failHidden: true, rows: 1, listTitle: "搜索结果" }, "账本视图里搜索也出结果");
+assert.deepEqual(out.gFailAfterEsc, { console: true, fail: false, value: "" }, "Esc 清搜索后回到账本");
 assert.deepEqual(out.metaLabels, ["状态", "分类", "创建", "改动"], "正文下只剩这四格：issue / commit / 会话 已退场");
 assert.deepEqual(out.memoryStored, { kind: "bug", view: "active", sel: "n1" }, "记忆落 notes.memory：分区 + 去向 + 选中");
 assert.equal(out.memoryRestored.kindOn, true, "重开回到上次的分区");
