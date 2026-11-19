@@ -6303,3 +6303,18 @@ Esc 之后 dialog: 0
 **取舍：** 首次全盘扫描要几十秒到几分钟（满盘未实测；1 百万行建库 2.9 s，瓶颈在目录遍历与 `lstat`），期间可以先搜已经进库的部分；只做了「暂停 / 继续」，没做限速。不做 USN 级实时（要管理员权限 + 卷句柄），`fs.watch` 漏掉的事件靠下次重扫收。`node_modules` 这类目录永远不进索引，与 `@` 补全的老规矩一致。
 
 **验证：** `node bridge/tests/fileindex.mjs` 六条（转义、卷标识、真扫一个临时目录、删文件后 `syncPath`、`PI_WEB_FILEINDEX=0`、卷全取消再勾回）；`.scratch/filesearch/ws-probe.mjs` 起隔离 bridge 走真 WS（status → query → 取消全部卷 → 0 条 → 勾回 → 又有）；`probes/filesearch.mjs` 真浏览器四段（打开即列出 → 输入出结果且 `node_modules` 不出现 → 点一行引用进 composer → ArrowDown + Ctrl+Enter 开预览）；`npm --prefix web run typecheck` 全绿（含 i18n 三语键集合、viewport、layers）。截图在 `.scratch/filesearch-ui/shots/`。
+
+## D322 Copilot 积分跟着 `session` 帧走，不在订阅后干等下一轮（2026-11-19）
+
+**问题：** test 会话刚打开时「执行」面板有「Copilot 积分」块，几轮之后整块消失，直到下一轮结束才回来。`copilot` 帧只在 boot（`openLive` / `resume`）、`agent_end`、`agent_settled` 三处发；而 `subscribe` 只回一条 `session` 帧，前端 `case "session"` 里又无条件 `this.copilot = null`。页面重连、切会话回来、`stepup-ok` 之后的 resync 都走 `subscribe`，于是这三条路都会把面板清空 —— 正在跑的那一轮里（截图时 135 秒 / 213 字）就一直是空的。真桥实测：订阅后 8 秒内 `{"hello":1,"session":1,"ctxlog":1,"stats":1,"filesearch.status":1126,"catalog":1}`，`copilot` 帧 0 条。
+
+**决定：**
+
+- **`SessionSnapshot` 加 `copilot: CopilotView | null`**（`bridge/src/sessions.ts`）：`emitCopilot()` 把合并过账号额度的视图存进 `this.copilotView`，`snapshot()` 带出去。`sessionFrameOf` 是 subscribe / claim / create / reload 四条路共用的那一处，所以四条一起修好，不必给每条都补一次推送。
+- **`subscribe` 里补一次 `refreshCopilot()`**：缓存视图只覆盖「已经统计过」的会话；页面刚打开（bridge 重启过、或这条会话从未 boot）时缓存还是 null，靠这次增量读（一次 `stat`，读不到新字节就不扫）当场算出来。
+- **前端 `case "session"` 读 `msg.copilot`，不再清空**：会话帧本来就只发当前这条会话（切会话时 `currentId` 跟着换），不存在串号；旧 bridge 不带这个字段时 `copilotFromFrame` 拿到 undefined 就回落 null，行为与以前一致。
+- **两半各留一个探针**：`probes/copilot-on-subscribe.mjs` 打真桥（只读，登录 + subscribe）量「订阅后 3 秒内拿不拿得到」—— 修复前 0/2 次拿到，修复后 2/2；`probes/copilot-panel-resubscribe.mjs` 用桩桥 + 真前端量另一头：切会话 A→B→A、整页重载之后 `.exec-copilot` 还在不在，顺带覆盖「旧 bridge 只发 copilot 帧」的形状。
+
+**取舍：** 没有改成「轮次进行中也定时推积分」。积分只在会话文件写完一条 assistant 后才有变化，而 `session_start` / `agent_end` / `agent_settled` 已经覆盖了写入时刻；再加定时器只会多出一堆无变化的帧。也没有把 `copilot` 挪进 `items` 帧 —— 那条是分页用的历史正文，混进计费数据会让 `frameFor` 的两形（paged / full）多背一个不相干字段。
+
+**验证：** `node probes/copilot-on-subscribe.mjs`（红 → 绿，见上）、`node probes/copilot-panel-resubscribe.mjs` 七条全 ok、`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 i18n 三语 / viewport / layers）。

@@ -2625,6 +2625,9 @@ async function main(): Promise<void> {
             send(frameFor(ws, { ...sessionFrameOf(snap), trust: await trustFor(snap.state.cwd) }));
             const opened = sessions.get(String(msg.sessionId));
             void opened?.refreshStats();
+            // Copilot 积分只随 boot / 轮末推 —— 订阅（重连、切会话、stepup 重同步都走这条）时
+            // 补一次，否则面板要空到下一轮结束（D322）。增量读，代价是一次 stat。
+            void opened?.refreshCopilot();
             // #384：ctxlog 是 per-session 文件，不跟着 session 帧走；新打开一个页面时补一次全量。
             void opened?.emitContextLog(true);
             return;

@@ -1903,7 +1903,9 @@ export class App {
               .map((turn, index) => ({ id: turn.id, ordinal: index + 1 }))
           : [];
         this.stats = { tokens: null, cost: null };
-        this.copilot = null;
+        // Copilot 积分跟着会话帧一起下来（bridge 的 `snapshot()` 带了最近一份）：不要在这里清空 ——
+        // 订阅（重连 / 切会话 / stepup 重同步）会重发会话帧，清掉就得到下一轮结束才回来。
+        this.copilot = msg.copilot && typeof msg.copilot === "object" ? this.copilotFromFrame(msg.copilot) : null;
         // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
         this.sessionFails.clear();
         this.failReminded.clear();

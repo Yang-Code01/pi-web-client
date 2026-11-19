@@ -14,6 +14,7 @@ pi 用 `github-copilot` 模型时，GitHub 扣的不是「按价格表折算的�
         │     账号额度：bridge 自己 GET /copilot_internal/user（30 秒节流、8 秒超时）
         │
         ↓  ws 帧 { type: "copilot", sessionId, …CopilotView }
+        ↓  同一份也挂在 `session` 帧的 `copilot` 字段上（订阅 / 重连 / 切会话时立刻有，D322）
 web/src/app.ts  → 执行面板主格子 + 「Copilot 积分」专项块 / 模型弹层累计费用 / 状态栏芯片
 ```
 
@@ -57,7 +58,8 @@ web/src/app.ts  → 执行面板主格子 + 「Copilot 积分」专项块 / 模�
 - **`:credits` 是本会话累计**：扫描到的所有 copilot 请求的积分相加。
 - **「本轮」与执行面板同口径**：和现有「本轮费用」一样是快照差值（`beginExecRound` 时记基线，`roundMetrics()` 里 `delta`），所以子代理那一轮也算在内 —— 决策 29 要的就是这个，不要另外按 user prompt 重新切分。
 - **`otherCost`**：本会话里 provider **不是** `github-copilot` 的 assistant 消息 `usage.cost.total` 之和。它有值且会话里出现过 copilot，就是**混合会话**（决策 26）：主格子保留「本轮费用」一格写 `积分 + $X`，专项块的「本轮 / 会话累计」只写 copilot 那部分。
-- **账户额度刷新**：每轮结束（`agent_end` / `agent_settled`）与打开会话时触发，最小间隔 30 秒（决策 23）。间隔内的轮次沿用旧快照，专项块脚注里写「额度更新于 2m」，不假装是新的。
+- **账户额度刷新**：每轮结束（`agent_end` / `agent_settled`）与订阅（`subscribe`）时触发，最小间隔 30 秒（决策 23）。间隔内的轮次沿用旧快照，专项块脚注里写「额度更新于 2m」，不假装是新的。
+- **随 `session` 帧一起下发**：bridge 的 `snapshot()` 带最近一份积分视图，订阅（页面重连 / 切会话 / stepup 重同步都会重发 `session` 帧）那一刻前端就有数据，不必等下一轮结束（D322）。前端 `case "session"` 读 `msg.copilot`，**不要**在会话帧里把它清成 null。
 - **对账**：拿到新额度快照时，比较「上一份快照以来账号的增量」与「本机记账增量」，`accountDelta ≥ 10` 才比；偏差 > 2% 在专项块底部出一行小字。样本太小或者月度重置（`used` 变小）就不比，清掉提示。
 
 ## 精度与文案
@@ -67,6 +69,8 @@ web/src/app.ts  → 执行面板主格子 + 「Copilot 积分」专项块 / 模�
 ## 排查
 
 **看不到专项块**：只有会话历史里出现过 `provider === "github-copilot"`（或本会话有 `copilot-credits` 条目）才显示（决策 24）。
+
+**专项块「一开始有、几轮之后没了」**：这是 D322 修掉的毛病 —— `subscribe` 只发 `session` 帧，而积分只在 boot / 轮末推，中间那条路上没人补。现在会话帧自带一份；`probes/copilot-on-subscribe.mjs` 直接量这条（订阅后 3 秒内拿不拿得到），`probes/copilot-panel-resubscribe.mjs` 量前端那一半（切会话 / 重连之后块还在不在）。
 
 **积分是 0 或没变**：老会话在 pi 记价格之前跑的（`usage.cost` 为 0 / 缺失）就没有积分；`copilot_internal/user` 的 `remaining` 在几分钟内也可能不动（服务端缓存），本机记账与账号额度允许不同步。
 
@@ -78,5 +82,7 @@ web/src/app.ts  → 执行面板主格子 + 「Copilot 积分」专项块 / 模�
 node --experimental-strip-types bridge/tests/copilot-credits-unit.mjs   # 增量读 / 换算口径 / 分账 / 对账 / 额度解析
 node --experimental-strip-types web/tests/copilot-unit.mjs              # 精度三档 / 重置时间 / 混合判定
 node --experimental-strip-types web/tests/exec-view-unit.mjs            # 执行面板模型带 credits/otherCost
+node probes/copilot-on-subscribe.mjs                                    # 订阅之后拿得到积分（真桥，只读）
+node probes/copilot-panel-resubscribe.mjs                               # 切会话 / 重连之后专项块还在（桩桥 + 真前端）
 npm --prefix web run typecheck                                          # i18n 三语 + 视口守卫
 ```
