@@ -76,7 +76,7 @@ const MCP = {
   version: { registry: null, identifier: null, version: null, latest: null, update: false },
 };
 const checked = (p) => ({ ...p, latest: "2.0.0", update: true });
-const localStage = { packages: [PKG_A, PKG_B], extensions: [EXT], mcp: [], mcpError: null, updates: 0, checkedAt: Date.now(), mcpReady: false, versionsChecked: false };
+const localStage = { packages: [PKG_A, PKG_B], extensions: [EXT], mcp: [{ ...MCP, state: "connecting", tools: [] }], mcpError: null, updates: 0, checkedAt: Date.now(), mcpReady: false, packagesReady: true, versionsChecked: false };
 const mcpStage = { ...localStage, mcp: [MCP], mcpReady: true };
 const versionStage = { ...mcpStage, packages: [checked(PKG_A), checked(PKG_B)], updates: 2, versionsChecked: true };
 
@@ -204,15 +204,16 @@ log("fake bridge on", BASE);
 const openDialog = async (page) => {
   await page.locator(".ext-btn").click();
   await until(async () => (await page.locator(".ext-host").count()) === 1, 5000, "ext dialog");
+  await page.locator(".ext-host .ext-tabs .chip").filter({ hasText: "插件市场" }).click();
   // 弹窗默认落在「插件市场」；已安装清单在市场自己的子页签里，不点它永远是市场卡片（#469 时修正）。
   const tab = page.locator(".ext-host .mk-tab").filter({ hasText: "已安装" }).first();
   await until(async () => (await tab.count()) === 1, 5000, "已安装 tab");
   await tab.click();
-  await until(async () => (await page.locator(".ext-host .login-row, .ext-host .empty").count()) > 0, 5000, "installed pane");
+  await until(async () => (await page.locator(".ext-host .ext-inst-top").count()) > 0, 5000, "installed pane");
 };
-const rowOf = (page, name) => page.locator(".login-row").filter({ hasText: name }).first();
+const rowOf = (page, name) => page.locator(".ext-row").filter({ hasText: name }).first();
 const btnIn = (page, rowName, label) => rowOf(page, rowName).getByRole("button", { name: label, exact: true });
-const hintText = async (page) => (await page.locator(".ext-host .settings-hint").first().innerText()).replace(/\s+/g, " ").trim();
+const hintText = async (page) => (await page.locator(".ext-host .ext-inst-hint").first().innerText()).replace(/\s+/g, " ").trim();
 const spinning = async (page) => (await page.locator(".ext-host .act-spin").count()) > 0;
 
 let browser;
@@ -226,10 +227,10 @@ try {
   await page.locator(".session-card").first().click();
   await until(async () => (await page.locator(".msg").count()) >= 2, 8000, "messages");
 
-  // 1) 冷启动：空态说的是「读取已安装的…」，不是「联网检查版本中」当主角
+  // 1) 冷启动：顶部写的是「读取已安装的…」，不是「联网检查版本中」当主角
   await openDialog(page);
-  await until(async () => (await page.locator(".ext-host .empty").first().innerText().catch(() => "")).includes("读取已安装"), 2000, "cold empty state");
-  log("cold:", (await page.locator(".ext-host .empty").first().innerText()).trim());
+  await until(async () => (await hintText(page).catch(() => "")).includes("读取已安装"), 2000, "cold empty state");
+  log("cold:", await hintText(page));
   check(!(await rowOf(page, "pkg-a").count()), "冷启动时还没有行");
   check(await spinning(page), "顶部已经有 ⟳（联网检查在跑）");
   await page.screenshot({ path: path.join(OUT, "1-cold.png") });
@@ -237,7 +238,6 @@ try {
   // 2) 本地阶段到达：行出现，MCP 区还在连接
   await until(async () => (await rowOf(page, "pkg-a").count()) === 1, 4000, "local stage rows");
   check(true, "本地阶段一到，包行就出现了（不等联网）");
-  check((await page.locator(".ext-host").innerText()).includes("连接 MCP 服务器中"), "MCP 区写「连接 MCP 服务器中…」");
   check((await rowOf(page, "pkg-a").innerText()).includes("检查中"), `版本还没回来时写「检查中…」（拿到 ${(await rowOf(page, "pkg-a").innerText()).replace(/\s+/g, " ")}）`);
   check(!(await btnIn(page, "pkg-a", "更新").count()), "还没有「更新」按钮（版本未知）");
   await page.screenshot({ path: path.join(OUT, "2-local.png") });
@@ -247,8 +247,13 @@ try {
   check(await btnIn(page, "pkg-a", "更新").isEnabled(), "版本回来后「更新」可点");
   await until(async () => !(await spinning(page)), 3000, "spinner gone");
   check((await hintText(page)).includes("检查于"), `检查完了顶部改写成「检查于 …」（拿到 ${await hintText(page)}）`);
-  check((await page.locator(".ext-host").innerText()).includes("已连接 · 1 个工具"), "MCP 行带着连接状态");
   await page.screenshot({ path: path.join(OUT, "3-versions.png") });
+  // MCP 服务器在「MCP 市场 → 已安装」里：先从 mcp.json 出行（连接中），pi mcp list 回来后带上状态
+  await page.locator(".ext-host .ext-tabs .chip").filter({ hasText: "MCP 市场" }).click();
+  await page.locator(".ext-host .mk-tab").filter({ hasText: "已安装" }).first().click();
+  await until(async () => (await rowOf(page, "rea").innerText().catch(() => "")).includes("已连接 · 1 个工具"), 5000, "mcp row state");
+  check(true, "MCP 行带着连接状态");
+  await page.screenshot({ path: path.join(OUT, "3b-mcp.png") });
 
   // 4) 关掉再开：上一次的行立刻在，同时又在检查
   await page.getByRole("button", { name: "关闭", exact: true }).click();

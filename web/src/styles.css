@@ -3833,7 +3833,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .composer .ext-btn { position: relative; }
 .ext-badge { position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--warn); color: var(--bg); font: 500 10.5px/16px var(--mono); text-align: center; }
 .sheet.settings-sheet.ext-sheet { width: min(1080px, calc(var(--vw1) * 96)); }
-.ext-host { display: grid; gap: 8px; min-width: 0; width: 100%; }
+.ext-host { display: grid; gap: 8px; min-width: 0; width: 100%; max-width: 960px; margin: 0 auto; }
 /* 照 dshmarket：入口页签是一段 30px 高的分段控件，选中项抬起、未选中透明。 */
 .ext-host .ext-tabs {
   display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 2px;
@@ -3843,7 +3843,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .ext-host .ext-tabs .chip {
   height: 30px; min-height: 30px; padding: 0 12px; border: 0; border-radius: 12px;
-  background: transparent; color: var(--dim); font-size: 14px; font-weight: 400; white-space: nowrap;
+  background: transparent; color: var(--dim); font: 400 14px/20px var(--sans); white-space: nowrap;
 }
 .ext-host .ext-tabs .chip:hover { background: var(--panel-3); color: var(--text); }
 .ext-host .ext-tabs .chip.on {
@@ -5524,6 +5524,40 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* MCP 市场沿用插件市场的 .mk-* 外观；这里只补它自己的表单面板和嵌入清单。 */
 .mk-installed-page { padding: 4px 4px 0; }
 .mk-installed-embed { display: grid; gap: 8px; min-width: 0; }
+/* 已安装（插件市场 / MCP 市场各一份）：卡片式行，和发现页的 .mk-card 同一套圆角 / 底色 / 按钮。 */
+.ext-inst-top { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 4px; }
+.ext-inst-hint { display: inline-flex; align-items: center; min-width: 0; color: var(--faint); font: 12px/18px var(--sans); }
+.ext-inst-label { margin: 6px 4px 0; color: var(--text); font: 600 13px/20px var(--sans); }
+.ext-inst-list { display: grid; gap: 6px; min-width: 0; padding: 0 4px; }
+.ext-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 4px 12px;
+  padding: 10px 14px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--panel-2); min-width: 0;
+}
+.ext-row.off .ext-row-name { color: var(--dim); }
+.ext-row-main { min-width: 0; }
+.ext-row-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ext-row-name { flex: none; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font: 500 14px/20px var(--sans); }
+.ext-row-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font: 12px/18px var(--sans); }
+.ext-row-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font: 11.5px/17px var(--mono); }
+.ext-row-sub.wrap { white-space: normal; word-break: break-word; }
+.ext-state { display: inline-flex; align-items: center; white-space: nowrap; color: var(--dim); font: 12px/18px var(--sans); }
+.ext-state.ok { color: var(--ok); }
+.ext-state.warn { color: var(--warn); }
+.ext-state.bad { color: var(--danger); }
+.ext-row-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.ext-row-extra { grid-column: 1 / -1; display: grid; gap: 4px; min-width: 0; }
+.ext-row-err { color: var(--danger); font: 12px/18px var(--sans); word-break: break-word; }
+.ext-row .ext-tools > summary { cursor: pointer; color: var(--faint); font: 12px/18px var(--sans); }
+.mk-install.primary { background: var(--accent); color: var(--bg); box-shadow: none; font-weight: 600; }
+.mk-install.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.mk-install.danger { color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); }
+.ext-add-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 8px; }
+.ext-add-grid > :last-child { grid-column: 1 / -1; }
+@container (max-width: 560px) {
+  .ext-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .ext-row-acts { grid-column: 1 / -1; justify-content: flex-start; }
+  .ext-add-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .mk-installed-embed > .settings-foot { padding-top: 0; }
 .mk-form-panel {
   margin: 0 4px 10px; padding: 12px 14px; display: grid; gap: 8px;

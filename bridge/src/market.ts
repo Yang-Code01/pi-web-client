@@ -468,22 +468,66 @@ function toStore(o: any): StorePackage {
   };
 }
 
-/** Ranked by monthly downloads. Without a query: the top of everything with `pi-package`. */
-export function searchPackages(query: string, limit: number): Promise<StorePackage[]> {
+/** npm's search caps one answer at 250; `from` pages past it. 1000 = four pages, plenty to browse. */
+export const STORE_PAGE = 250;
+export const STORE_MAX = 1000;
+
+/**
+ * Ranked by monthly downloads. Without a query: the top of everything with `pi-package` (14k+ in
+ * Nov 2026, so `limit` pages further than the first 250 when the page asks for more). With a query an
+ * exact package name always comes first — also one npm's `pi-package` search does not return (not
+ * tagged, or ranked past the pages we read): it is looked up by name directly.
+ */
+export async function searchPackages(query: string, limit: number): Promise<StorePackage[]> {
   const q = query.trim();
-  return cached(`store:${q}`, 10 * 60_000, async () => {
-    const text = encodeURIComponent(`keywords:pi-package${q ? ` ${q}` : ""}`);
-    // Ask npm to weigh popularity so the 250 it returns are the popular ones, then rank by downloads.
-    // With a query, exact package names come first and the rest keep npm's relevance order; the web
-    // side re-sorts the rest, but exact must survive the bridge's slice even for low-download packages.
-    const data = await getJson<{ objects?: any[] }>(`https://registry.npmjs.org/-/v1/search?text=${text}&size=250&popularity=1.0&quality=0.0&maintenance=0.0`);
-    const list = (data.objects ?? []).map(toStore);
-    if (!q) return list.sort((a, b) => b.monthly - a.monthly);
-    const lower = q.toLowerCase();
-    const exact = list.filter((p) => p.name.toLowerCase() === lower || (p.name.toLowerCase().split("/").pop() ?? "") === lower);
-    const exactNames = new Set(exact.map((p) => p.name));
-    return [...exact, ...list.filter((p) => !exactNames.has(p.name))];
-  }).then((list) => list.slice(0, limit));
+  const pages = Math.max(1, Math.ceil(Math.min(limit, STORE_MAX) / STORE_PAGE));
+  const list: StorePackage[] = [];
+  for (let i = 0; i < pages; i++) {
+    const page = await cached(`store:${q}:${i}`, 10 * 60_000, async () => {
+      const text = encodeURIComponent(`keywords:pi-package${q ? ` ${q}` : ""}`);
+      // Ask npm to weigh popularity so the pages it returns are the popular ones, then rank by downloads.
+      const data = await getJson<{ objects?: any[] }>(`https://registry.npmjs.org/-/v1/search?text=${text}&size=${STORE_PAGE}&from=${i * STORE_PAGE}&popularity=1.0&quality=0.0&maintenance=0.0`);
+      return (data.objects ?? []).map(toStore);
+    });
+    list.push(...page);
+    if (page.length < STORE_PAGE) break;
+  }
+  const seen = new Set<string>();
+  const unique = list.filter((p) => !seen.has(p.name) && seen.add(p.name));
+  if (!q) return unique.sort((a, b) => b.monthly - a.monthly).slice(0, limit);
+  const lower = q.toLowerCase();
+  const isExact = (p: StorePackage) => p.name.toLowerCase() === lower || (p.name.toLowerCase().split("/").pop() ?? "") === lower;
+  let exact = unique.filter(isExact);
+  if (!exact.length && /^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i.test(q)) {
+    const direct = await cached(`store:name:${lower}`, 10 * 60_000, () => packageByName(lower).catch(() => null));
+    if (direct) exact = [direct];
+  }
+  const exactNames = new Set(exact.map((p) => p.name));
+  return [...exact, ...unique.filter((p) => !exactNames.has(p.name))].slice(0, limit);
+}
+
+/** One package straight from the registry document, shaped like a search hit (no download counts). */
+async function packageByName(name: string): Promise<StorePackage | null> {
+  const doc = await getJson<any>(`https://registry.npmjs.org/${name.replace("/", "%2F")}`);
+  const latest = doc?.["dist-tags"]?.latest;
+  const v = latest ? doc.versions?.[latest] : null;
+  if (!v) return null;
+  // Only a pi package: tagged, or carrying pi's manifest (`"pi": {...}` in package.json). Anything
+  // else on npm (left-pad) would just fail to install as an extension.
+  const tagged = Array.isArray(v.keywords) && v.keywords.includes("pi-package");
+  if (!tagged && (typeof v.pi !== "object" || v.pi === null)) return null;
+  const repo = typeof v.repository === "string" ? v.repository : v.repository?.url;
+  return toStore({
+    package: {
+      name: doc.name,
+      version: latest,
+      description: v.description ?? doc.description ?? "",
+      keywords: v.keywords ?? [],
+      date: doc.time?.[latest],
+      publisher: v._npmUser?.name ? { username: v._npmUser.name } : undefined,
+      links: { npm: `https://www.npmjs.com/package/${doc.name}`, repository: repo ? String(repo) : undefined, homepage: v.homepage },
+    },
+  });
 }
 
 // ------------------------------------------------------------------ MCP store (official registry)
@@ -590,7 +634,15 @@ export interface McpIndex {
   starsComplete: boolean;
   /** The registry had more pages than we walked: the long tail is missing from the ranking. */
   truncated?: boolean;
+  /** INDEX_SCHEMA of the walk that wrote it; an older file is served while a new walk replaces it. */
+  v?: number;
 }
+
+/**
+ * 2: walk only `version=latest`. Version 1 walked every version of every server, hit the page cap at
+ * ~22k names (Nov 2026) and silently lost the long tail (desktop-touch-mcp, the JetBrains servers…).
+ */
+const INDEX_SCHEMA = 2;
 
 /** 600 pages × 100 entries. The registry had ~300 pages in Nov 2026; the cap only stops a runaway. */
 const INDEX_MAX_PAGES = 600;
@@ -609,7 +661,7 @@ export function setIndexListener(fn: ((idx: McpIndex) => void) | null): void {
 /** Every active latest registry entry, with GitHub stars; rebuilt once a day in the background. */
 export function mcpIndex(force = false, preloaded?: McpIndex | null): Promise<{ at: number; items: StoreMcp[]; starsComplete: boolean; building?: boolean; truncated?: boolean }> {
   const disk = preloaded === undefined ? readIndexDisk() : preloaded;
-  const fresh = disk?.at && Date.now() - disk.at < INDEX_TTL && Array.isArray(disk.items);
+  const fresh = disk?.at && Date.now() - disk.at < INDEX_TTL && Array.isArray(disk.items) && disk.v === INDEX_SCHEMA;
   if (fresh && !force) return Promise.resolve({ at: disk!.at!, items: disk!.items!, starsComplete: Boolean(disk!.starsComplete), truncated: Boolean(disk!.truncated) });
   // A stale index is still useful while the new one builds.
   const stale = disk?.items && !force ? Promise.resolve({ at: disk.at ?? 0, items: disk.items, starsComplete: Boolean(disk.starsComplete), building: true, truncated: Boolean(disk.truncated) }) : null;
@@ -667,7 +719,7 @@ async function buildIndex(): Promise<McpIndex> {
   let cursor: string | null = null;
   let pages = 0;
   for (; pages < INDEX_MAX_PAGES; pages++) {
-    const url = `https://registry.modelcontextprotocol.io/v0/servers?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+    const url = `https://registry.modelcontextprotocol.io/v0/servers?limit=100&version=latest${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
     const data: any = await getJsonRetry(url);
     for (const e of data.servers ?? []) {
       const n = normalize(e);
@@ -682,7 +734,7 @@ async function buildIndex(): Promise<McpIndex> {
   }
   const list = [...items.values()];
   const starsComplete = await fillStars(list);
-  return { at: Date.now(), items: list, starsComplete, truncated: Boolean(cursor) && pages >= INDEX_MAX_PAGES };
+  return { at: Date.now(), items: list, starsComplete, truncated: Boolean(cursor) && pages >= INDEX_MAX_PAGES, v: INDEX_SCHEMA };
 }
 
 const GH_TOKEN_TTL = 10 * 60_000;
@@ -760,9 +812,41 @@ export async function runners(): Promise<{ npx: boolean; uvx: boolean; docker: b
   return { npx, uvx, docker };
 }
 
+/**
+ * How well one server matches the query: 0 = not at all. Every term must hit somewhere; the score is
+ * the weakest term's place (name > title > package / url > description), so `newrelic` finds
+ * `com.newrelic/mcp-server`. Only the `io.github.<owner>.` prefix is cut: it would make "github" match
+ * half the registry, while a reverse-DNS namespace like `com.newrelic` is the real product name.
+ */
+export function mcpRelevance(m: StoreMcp, q: string): number {
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return 1;
+  const name = m.name.toLowerCase().replace(/^io\.github\./, "");
+  const short = name.split("/").pop() ?? name;
+  const title = (m.title || "").toLowerCase();
+  const ids = m.options.map((o) => o.identifier.toLowerCase()).join(" ");
+  const desc = (m.description || "").toLowerCase();
+  let score = 5;
+  for (const t of terms) {
+    const s = short === t || title === t ? 5 : short.includes(t) || title.includes(t) ? 4 : name.includes(t) ? 3 : ids.includes(t) ? 2 : desc.includes(t) ? 1 : 0;
+    if (!s) return 0;
+    score = Math.min(score, s);
+  }
+  return score;
+}
+
+/** Best match first, then stars: a query is a question about names, not a popularity contest. The registry's own
+ * search may match what `mcpRelevance` does not (it scores 0): those stay, last. */
+export function rankMcpHits(items: StoreMcp[], q: string): StoreMcp[] {
+  return items
+    .map((m) => ({ m, r: mcpRelevance(m, q) }))
+    .sort((a, b) => b.r - a.r || b.m.stars - a.m.stars || a.m.name.localeCompare(b.m.name))
+    .map((x) => x.m);
+}
+
 /** Registry search without the index (first run, while the index is being built): no stars. */
 async function liveSearch(query: string, limit: number): Promise<StoreMcp[]> {
-  const data: any = await getJson(`https://registry.modelcontextprotocol.io/v0/servers?limit=100${query.trim() ? `&search=${encodeURIComponent(query.trim())}` : ""}`);
+  const data: any = await getJson(`https://registry.modelcontextprotocol.io/v0/servers?limit=100&version=latest${query.trim() ? `&search=${encodeURIComponent(query.trim())}` : ""}`);
   return (data.servers ?? []).map(normalize).filter((x: StoreMcp | null): x is StoreMcp => Boolean(x)).slice(0, limit);
 }
 
@@ -778,15 +862,22 @@ export async function searchMcp(query: string, limit: number): Promise<{ items: 
     // registry right away and let it land (the page is told when it is ready, see setIndexListener).
     void mcpIndex().catch(() => {});
     items = await liveSearch(query, limit);
+    if (query.trim()) items = rankMcpHits(items, query.trim().toLowerCase());
     isBuilding = true;
   } else {
     const idx = await mcpIndex(false, disk);
     truncated = Boolean(idx.truncated);
     const q = query.trim().toLowerCase();
-    const terms = q.split(/\s+/).filter(Boolean);
-    // The namespace (io.github.someone/…) would make "github" match half the registry: match the short name.
-    const hit = (m: StoreMcp) => terms.every((t) => (m.name.split("/").pop() ?? "").toLowerCase().includes(t) || m.title.toLowerCase().includes(t) || m.description.toLowerCase().includes(t));
-    items = (q ? idx.items.filter(hit) : idx.items).slice().sort((a, b) => b.stars - a.stars || a.name.localeCompare(b.name)).slice(0, limit);
+    if (!q) items = idx.items.slice().sort((a, b) => b.stars - a.stars || a.name.localeCompare(b.name)).slice(0, limit);
+    else {
+      // The index can lag the registry by a day (or miss what a truncated walk never reached): ask the
+      // registry's own search too, briefly, and merge — a server that exists must be findable by name.
+      const live = await Promise.race([liveSearch(query, 100).catch(() => [] as StoreMcp[]), new Promise<StoreMcp[]>((r) => setTimeout(() => r([]), 6000))]);
+      const merged = new Map<string, StoreMcp>();
+      for (const m of idx.items) if (mcpRelevance(m, q) > 0) merged.set(m.name, m);
+      for (const m of live) if (!merged.has(m.name)) merged.set(m.name, m);
+      items = rankMcpHits([...merged.values()], q).slice(0, limit);
+    }
     at = idx.at;
     starsComplete = idx.starsComplete;
     isBuilding = Boolean(idx.building);
