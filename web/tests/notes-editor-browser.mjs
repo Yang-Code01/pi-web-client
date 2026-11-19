@@ -248,6 +248,49 @@ out = await html();
 assert.match(out, /粘进来的/, "粘贴的正文该留下");
 assert.doesNotMatch(out, /onclick|onerror|<img/, `粘贴没净化：${out}`);
 
+// 浏览器里 Ctrl+C 网页正文：clipboard 的 html 带 <html><head>…</head><body>，不能整次吞掉。
+await page.evaluate(() => {
+  window.ed.setHtml("<p>网页粘贴</p>");
+  window.ed.focus();
+  const dt = new DataTransfer();
+  dt.setData(
+    "text/html",
+    '<html><head><meta charset="utf-8"><style>p{color:red}</style></head><body><div><strong>Error:</strong> cannot read properties of null</div></body></html>',
+  );
+  dt.setData("text/plain", "Error: cannot read properties of null");
+  document.getElementById("doc").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+});
+out = await html();
+assert.match(out, /cannot read properties of null/, `网页复制来的 HTML 粘不进来：${out}`);
+assert.match(out, /<strong>Error:<\/strong>/, `网页复制来的粗体丢了：${out}`);
+assert.doesNotMatch(out, /<html|<head|<meta|<style/i, `网页外冗的标签漏出来了：${out}`);
+
+// 浏览器复制的多行文本是 `<div>一行</div>`：必须各占一段，不能拼成一行。
+await page.evaluate(() => {
+  window.ed.setHtml("<p>多行</p>");
+  window.ed.focus();
+  const dt = new DataTransfer();
+  dt.setData("text/html", "<div>line one</div><div>line two</div>");
+  dt.setData("text/plain", "line one\nline two");
+  document.getElementById("doc").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+});
+out = await html();
+assert.match(out, /line one/, `第一行丢了：${out}`);
+assert.match(out, /<\/p><p>line two<\/p>/, `第二行没单独成段（被拼成一行？）：${out}`);
+assert.doesNotMatch(out, /line oneline two/, `两行被拼成一行：${out}`);
+
+// html 净化后为空（只剩被丢弃的容器）时退回纯文本：发出 preventDefault 之后不能静默吞掉这次粘贴。
+await page.evaluate(() => {
+  window.ed.setHtml("<p>退路</p>");
+  window.ed.focus();
+  const dt = new DataTransfer();
+  dt.setData("text/html", "<style>p{}</style><div></div>");
+  dt.setData("text/plain", "纯文本退路");
+  document.getElementById("doc").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+});
+out = await html();
+assert.match(out, /纯文本退路/, `净化后为空时没退回纯文本：${out}`);
+
 // 纯文本粘贴：换行要变成段落，而不是一坨。
 await page.evaluate(() => {
   window.ed.setHtml("<p>纯文本</p>");

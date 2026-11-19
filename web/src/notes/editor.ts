@@ -371,7 +371,9 @@ export class RichEditor {
     ev.preventDefault();
     const html = data.getData("text/html");
     const text = data.getData("text/plain");
-    const insert = html && /<(p|br|div|strong|em|ul|li|pre|h[1-6])\b/i.test(html) ? sanitizeRich(html) : escapeLines(text);
+    const rich = html && /<(p|br|div|strong|em|ul|li|pre|h[1-6])\b/i.test(html) ? sanitizeRich(html) : "";
+    // 净化后为空（html 里只有被丢弃的容器）时退回纯文本：别让这次粘贴静默消失。
+    const insert = rich || escapeLines(text);
     if (!insert) return;
     document.execCommand("insertHTML", false, insert);
     this.saveRange();
