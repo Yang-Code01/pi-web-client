@@ -3895,4 +3895,9 @@ export const en: Dict = {
   "连不上对方（4 秒没响应）": "Can't reach them (no reply within 4s)",
   "对方没开内网通（连接被拒绝）": "They're not running LAN chat (connection refused)",
   "连接被对方重置": "They reset the connection",
-  "地址解析不出来": "Couldn't resolve the address"};
+  "地址解析不出来": "Couldn't resolve the address",
+  "[视频：{p1}]": "[Video: {p1}]",
+  "[音频：{p1}]": "[Audio: {p1}]",
+  "这个视频浏览器放不了（格式或编码不支持），用本机程序打开": "The browser can't play this video (format or codec not supported) — open it in a desktop app",
+  "这个音频浏览器放不了（格式或编码不支持），用本机程序打开": "The browser can't play this audio (format or codec not supported) — open it in a desktop app",
+};

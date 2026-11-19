@@ -17,7 +17,7 @@ import { scanSkillEntries } from "./skills.ts";
  * previewed page cannot read the bridge's cookies or call its API.
  */
 
-export type PreviewKind = "markdown" | "html" | "image" | "pdf" | "text" | "sheet" | "slides" | "binary";
+export type PreviewKind = "markdown" | "html" | "image" | "pdf" | "text" | "sheet" | "slides" | "video" | "audio" | "binary";
 
 export interface PreviewInfo {
   token: string;
@@ -54,8 +54,32 @@ const SLIDES = new Set([".pptx", ".pptm", ".ppsx", ".potx", ".ppt", ".pps"]);
 const LEGACY_SLIDES = new Set([".ppt", ".pps"]);
 // D209: files that only make sense in a desktop app — we hand out a grant and a button, never parse.
 const DOCS = new Set([".pdf", ".doc", ".docx"]);
-/** Everything /api/open will launch in the OS: workbooks, decks, documents. */
-export const OPENS_ON_DESKTOP = new Set([...OPENABLE, ...SLIDES, ...DOCS]);
+// #542: video / audio play in the browser's own <video>/<audio>. avi/wmv/flv are listed too: the page
+// tries, and when the element errors it falls back to "open with the desktop app" — one fallback path,
+// no table of which codecs a browser happens to decode.
+const VIDEO: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".webm": "video/webm",
+  ".ogv": "video/ogg",
+  ".mov": "video/quicktime",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo",
+  ".wmv": "video/x-ms-wmv",
+  ".flv": "video/x-flv",
+};
+const AUDIO: Record<string, string> = {
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".flac": "audio/flac",
+  ".opus": "audio/ogg",
+};
+/** Everything /api/open will launch in the OS: workbooks, decks, documents, media (#542). */
+export const OPENS_ON_DESKTOP = new Set([...OPENABLE, ...SLIDES, ...DOCS, ...Object.keys(VIDEO), ...Object.keys(AUDIO)]);
 const IMAGE: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -76,10 +100,6 @@ const OTHER_MIME: Record<string, string> = {
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
   ".otf": "font/otf",
-  ".mp4": "video/mp4",
-  ".webm": "video/webm",
-  ".mp3": "audio/mpeg",
-  ".wav": "audio/wav",
   ".pdf": "application/pdf",
   ".wasm": "application/wasm",
 };
@@ -158,6 +178,8 @@ export function kindOf(file: string): PreviewKind {
   // PDF 必须先认掉：一旦落到 looksText() 的嗅探，加密/结构化 PDF 的前 8 KB 往往一个 NUL 都没有
   // （字段全是十六进制密文），会被判成 text，前端就把 %PDF- 头和压缩流当 UTF-8 渲染成满屏乱码。
   if (PDF.has(ext)) return "pdf";
+  if (VIDEO[ext]) return "video";
+  if (AUDIO[ext]) return "audio";
   // Not a zip inside: .xls renamed to .xlsx, or an encrypted package. Say so, don't half-parse it.
   if (SHEET.has(ext)) return isZipPackage(file) ? "sheet" : "binary";
   // Legacy/OLE decks have no zip index, but PowerPoint still opens them — don't downgrade them.
@@ -169,6 +191,8 @@ function mimeOf(file: string): string {
   const ext = path.extname(file).toLowerCase();
   if (HTML.has(ext)) return "text/html; charset=utf-8";
   if (IMAGE[ext]) return IMAGE[ext];
+  if (VIDEO[ext]) return VIDEO[ext];
+  if (AUDIO[ext]) return AUDIO[ext];
   if (OTHER_MIME[ext]) return OTHER_MIME[ext];
   if (MD.has(ext)) return "text/plain; charset=utf-8";
   return looksText(file) ? "text/plain; charset=utf-8" : "application/octet-stream";
@@ -585,11 +609,44 @@ export function serveRaw(req: http.IncomingMessage, res: http.ServerResponse, pa
     res.end(req.method === "HEAD" ? undefined : out);
     return true;
   }
-  res.writeHead(200, { ...base, "content-type": mimeOf(abs), "content-length": String(st.size) });
-  if (req.method === "HEAD") {
+  // #542: single-range requests so a <video> can seek and start before the whole file is down.
+  const head = { ...base, "content-type": mimeOf(abs), "accept-ranges": "bytes" };
+  const range = parseRange(req.headers.range, st.size);
+  if (range === "unsatisfiable") {
+    res.writeHead(416, { ...head, "content-range": `bytes */${st.size}` });
     res.end();
     return true;
   }
-  fs.createReadStream(abs).on("error", () => res.destroy()).pipe(res);
+  const [start, end] = range ?? [0, st.size - 1];
+  res.writeHead(range ? 206 : 200, {
+    ...head,
+    "content-length": String(Math.max(0, end - start + 1)),
+    ...(range ? { "content-range": `bytes ${start}-${end}/${st.size}` } : {}),
+  });
+  if (req.method === "HEAD" || st.size === 0) {
+    res.end();
+    return true;
+  }
+  fs.createReadStream(abs, { start, end }).on("error", () => res.destroy()).pipe(res);
   return true;
+}
+
+/**
+ * One `Range: bytes=…` spec → inclusive [start, end], clamped to the file. null = serve the whole file
+ * (no header, another unit, several ranges, or garbage — RFC 9110 lets a server ignore those);
+ * "unsatisfiable" = a well-formed single range that starts past the end (→ 416).
+ */
+export function parseRange(header: string | undefined, size: number): [number, number] | "unsatisfiable" | null {
+  const m = /^bytes=(\d*)-(\d*)$/.exec((header ?? "").trim());
+  if (!m || (m[1] === "" && m[2] === "")) return null;
+  if (m[1] === "") {
+    const n = Number(m[2]);
+    if (n === 0) return "unsatisfiable";
+    return size === 0 ? "unsatisfiable" : [Math.max(0, size - n), size - 1];
+  }
+  const start = Number(m[1]);
+  const end = m[2] === "" ? size - 1 : Math.min(Number(m[2]), size - 1);
+  if (start >= size) return "unsatisfiable";
+  if (end < start) return null;
+  return [start, end];
 }

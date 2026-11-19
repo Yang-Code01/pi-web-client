@@ -1436,7 +1436,7 @@ async function main(): Promise<void> {
         if (info.kind === "slides") info.slides = { pages: await countSlides(info.abs), engine: slidesAvailable() };
         // 公网也不泄本机绝对路径（US 46 延伸）：binary 分支（.xls/.ods/加密包）内容与 open 都已拒，路径一并抹掉。
         // PDF 现在有自己的 kind（浏览器内嵌看），路径同样不给。
-        if (publicReq && (info.kind === "binary" || info.kind === "pdf")) info.abs = "";
+        if (publicReq && (info.kind === "binary" || info.kind === "pdf" || info.kind === "video" || info.kind === "audio")) info.abs = "";
         // #462：技能目录也不往公网递 —— abs 是 `<用户的技能根>/<名字>/SKILL.md`，root 是它所在那层；
         // 页面留着 `skill:<名字>` 就能刷新重开（`v.info.abs || path`）。
         if (publicReq && bySkill) {

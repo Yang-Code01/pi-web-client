@@ -8773,6 +8773,42 @@ export class App {
     openSameOrigin(url);
   }
 
+  /** #542: raw urls whose <video>/<audio> already errored — repaints show the card, not a retry. */
+  private mediaFailed = new Set<string>();
+
+  /** The "can't show it here" card: optional 「用默认程序打开」, always 「新标签页打开 / 下载」, and the
+   * folder button when the bridge gave us a path (#106/D209; #542 reuses it for media that won't play). */
+  private desktopCard(body: HTMLElement, info: PreviewInfo, url: string, message: string, desktop: boolean): void {
+    const box = el("div", desktop ? "viewer-msg workbook" : "viewer-msg");
+    box.append(el("div", "", message));
+    if (desktop) {
+      const open = el("button", "btn", tr("用默认程序打开"));
+      open.onclick = () => {
+        open.disabled = true;
+        void this.openInApp(info.token).finally(() => {
+          open.disabled = false;
+        });
+      };
+      box.append(open);
+    }
+    const dl = el("button", "btn", tr("新标签页打开 / 下载"));
+    dl.onclick = () => openSameOrigin(url);
+    // D69: the useful move for an xlsm / pdf / docx is the machine's own file manager, not a download.
+    // 公网不泄本机路径（US 46）：桥端已把 binary / 媒体的 abs 抹空，这里就不给「在文件夹中显示」。
+    box.append(dl);
+    if (info.abs) box.append(this.revealButton(info.abs));
+    body.append(box);
+  }
+
+  private mediaFallback(body: HTMLElement, info: PreviewInfo, url: string): void {
+    body.classList.remove("media");
+    const msg =
+      info.kind === "audio"
+        ? tr("这个音频浏览器放不了（格式或编码不支持），用本机程序打开")
+        : tr("这个视频浏览器放不了（格式或编码不支持），用本机程序打开");
+    this.desktopCard(body, info, url, msg, true);
+  }
+
   private closeViewer(): void {
     const v = this.viewer;
     if (!v) return;
@@ -8787,6 +8823,7 @@ export class App {
     document.removeEventListener("keydown", this.viewerEsc, true);
     this.stopTrPoll(v);
     v.tr = null;
+    stopMedia(v.root);
     v.root.remove();
     this.viewer = null;
   }
@@ -9131,6 +9168,14 @@ export class App {
       (info.kind === "pdf" || (info.kind === "html" && v.mode === "render"))
     )
       return;
+    // #542: same for a playing video / audio — a header repaint must not restart it. Keyed on the raw url,
+    // so ⟳ (new token) does rebuild it. A file that already failed keeps its fallback card.
+    if (!v.error && info && (info.kind === "video" || info.kind === "audio")) {
+      const key = rawUrl(info);
+      const live = body.querySelector<HTMLElement>(":scope > [data-media-src]");
+      if (live?.dataset.mediaSrc === key) return;
+    }
+    stopMedia(body);
 
     body.replaceChildren();
     body.className = "viewer-body";
@@ -9212,35 +9257,41 @@ export class App {
       body.append(f);
       return;
     }
+    if (info.kind === "video" || info.kind === "audio") {
+      // #542: the browser's own player. No autoplay; metadata only, so duration shows without pulling
+      // the file. /raw answers Range, so seeking and late-moov files work. Anything the browser cannot
+      // decode (avi/wmv/flv, odd codecs) errors → the same card binary files get, minus the guesswork.
+      if (this.mediaFailed.has(url)) {
+        this.mediaFallback(body, info, url);
+        return;
+      }
+      const media = el(info.kind, `viewer-media ${info.kind}`) as HTMLMediaElement;
+      media.controls = true;
+      media.preload = "metadata";
+      media.dataset.mediaSrc = url;
+      media.onerror = () => {
+        if (!media.isConnected || this.viewer !== v || v.info !== info) return;
+        this.mediaFailed.add(url);
+        stopMedia(body);
+        body.replaceChildren();
+        this.mediaFallback(body, info, url);
+      };
+      media.src = url;
+      body.classList.add("media");
+      body.append(media);
+      return;
+    }
     if (info.kind === "binary") {
       // #106/D209: .xls / .ods / 加密包 / 改了扩展名的 zip / docx / ppt — 这里不看，交给这台电脑上的默认程序。
       // pdf 曾经也走这条（D50 原文「PDF 特殊处理」），D50 修订后它有了自己的 kind 与内嵌查看器。
       const desktop = DESKTOP_OPEN.test(info.name);
-      const box = el("div", desktop ? "viewer-msg workbook" : "viewer-msg");
-      box.append(
-        el(
-          "div",
-          "",
-          desktop ? tr("这个格式这里不支持，用本机程序打开") : tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) }),
-        ),
+      this.desktopCard(
+        body,
+        info,
+        url,
+        desktop ? tr("这个格式这里不支持，用本机程序打开") : tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) }),
+        desktop,
       );
-      if (desktop) {
-        const open = el("button", "btn", tr("用默认程序打开"));
-        open.onclick = () => {
-          open.disabled = true;
-          void this.openInApp(info.token).finally(() => {
-            open.disabled = false;
-          });
-        };
-        box.append(open);
-      }
-      const dl = el("button", "btn", tr("新标签页打开 / 下载"));
-      dl.onclick = () => openSameOrigin(url);
-      // D69: the useful move for an xlsm / pdf / docx is the machine's own file manager, not a download.
-      // 公网不泄本机路径（US 46）：桥端已把 binary 的 abs 抹空，这里就不给「在文件夹中显示」。
-      box.append(dl);
-      if (info.abs) box.append(this.revealButton(info.abs));
-      body.append(box);
       return;
     }
     if (v.text == null) {
@@ -20553,7 +20604,23 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
 const PASTE_KEY = /Mac|iPhone|iPad|iPod/.test(`${navigator.platform} ${navigator.userAgent}`) ? "⌘V" : "Ctrl+V";
 
 /** #106: 表格类文件即使读不了（.xls/.ods/加密包），也用「这个格式这里不支持」而不是通用二进制文案。 */
-const DESKTOP_OPEN = /\.(xlsx|xlsm|xlsb|xls|ods|pptx|pptm|ppsx|potx|ppt|pps|pdf|doc|docx)$/i;
+const DESKTOP_OPEN = /\.(xlsx|xlsm|xlsb|xls|ods|pptx|pptm|ppsx|potx|ppt|pps|pdf|doc|docx|mp4|m4v|webm|ogv|mov|mkv|avi|wmv|flv|mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i;
+
+/** #542: stop whatever video / audio is in this subtree before it is torn down — no sound from a
+ * panel the user already moved away from, and no half-open range request keeping the file busy
+ * (clearing `src` + `load()` releases the decoder and the connection). */
+function stopMedia(root: ParentNode): void {
+  for (const m of root.querySelectorAll<HTMLMediaElement>("video, audio")) {
+    try {
+      m.pause();
+      m.onerror = null;
+      m.removeAttribute("src");
+      m.load();
+    } catch {
+      /* already gone */
+    }
+  }
+}
 
 /** "Deepseek-V4.1-Flash · x0.11 · 1M" -> "Deepseek-V4.1-Flash": the chip has no room for pricing. */
 function shortModelName(name: string): string {
