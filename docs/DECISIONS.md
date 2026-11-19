@@ -6521,3 +6521,15 @@ Esc 之后 dialog: 0
 4. **过了半夜还在干活，凌晨那次解锁被算成第二天上班（用户追加要求「凌晨不算」）。** 一个工作日从凌晨 5:00 算起（`WORKDAY_START_HOUR = 5`，`workDayKey`）：0:00–5:00 的解锁 / 锁屏归前一天，前一天的下班与工时顺着延长，第二天上班从 5:00 后第一次解锁算；5 点前打开页面，「今天」仍是前一个工作日。页面上跨过零点的时刻写「次日 01:30」（`dayClockText`），目标下班落在昨天写「昨天 20:23」，不再一律写「明天」。回拨用本地分量减一天，不减 5 小时（夏令时那天不错位）。代价：真在 5 点前开工的早班会记到前一天（用户选的是 5:00，不是 6:00，也不是「只不当上班、不归前一天」）。
 
 **验证：** `node --experimental-strip-types bridge/tests/workclock-unit.mjs`：新增凌晨归前一天两例、往日最后解锁、start 不计数、休息日无目标三例；原「两者都有时不取更早的日志」改成取更早的日志（来源 log、工时 11h）；新增截图场景（日志 09:29 解锁 + 10:22 start + 11:23 事件 → 09:29 / log）与「事件更早时用事件」。`npm --prefix bridge run build`、`npm --prefix web run typecheck`、`node bridge/tests/sysmanage-ui.mjs`（105 项）、`node web/tests/sysmanage-unit.mjs`（新增「昨天 / 次日」一例）通过。
+
+## D335 上下文面板：日志 seq 不再撞号，进度条 / 浏览器下拉 / 轮次高亮 / 过滤框输入法修正（自查 2026-11-19）
+
+1. **seq 接着数。** 扩展每次 `session_start`（重载扩展、`/reload`、切模型后的重启）都把 `seq` / `turn` / `step` 清零，却接着往同一份 `<id>.ctx.jsonl` 追加：同一个文件里出现好几段从 1 开始的 seq（本机样本 1374 行里 802 个重号），`usage.atSeq`、事件的 `atSeq`、点柱子后的 `pickSeq` 都对不上，「第 1 轮」出现几次，轮次 KPI 偏小。扩展启动时改为读文件尾，从最后一行的 seq、最后一个请求的 turn/step/userKey 接着数（`resumeState`）。已经写坏的旧日志由桥在读时 `renumberCtxLog`（`bridge/src/ctxlog-seq.ts`）把后面每一段整体平移到前一段之后，面板与 context-insight 都经它；seq 本来单调时原样返回。
+2. **当前上下文进度条。** 已用部分 `.cx-progress-used` 没有宽度，各段的百分比解析不出来，39.6% 只画成几个像素。改为已用宽度 = 已用 / 窗口，各段按已用的占比分。
+3. **浏览器下拉只列最近 40 次。** 从趋势图点了更早的柱子，下拉仍显示最后一项。选中的那一步不在最近 40 次里时把它插到下拉最前面。
+4. **轮次粒度的高亮。** 「轮次」柱子的 seq 是这一轮第一次请求；选中的若是这一轮的中间一步就一根都不亮，详情落到最后一轮。改为找第一根 `seq >= pickedSeq` 的那一轮。
+5. **过滤框与输入法。** 每敲一下都整块重画，组字中途 input 被换掉，半截拼音被提交（「wenwenj文件」）。组字期间不重画（也推迟 ctxlog / stats 触发的重画），`compositionend` / 失焦后再画。
+
+**没修：** 「剪枝」chip 固定 `prune: 0`；命令过滤只匹配程序名。
+
+**验证。** `npm run test:context`（新增 `bridge/tests/ctxlog-seq-unit.mjs`、`context-log-unit.mjs` 里两条续号用例）、`node probes/context-panel.mjs`（合成三段日志，量进度条比例、下拉、轮次高亮、CDP 模拟输入法；在 main 上 2/3/4/5 都红）。
