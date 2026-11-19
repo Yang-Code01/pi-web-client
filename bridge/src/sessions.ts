@@ -3351,7 +3351,20 @@ export class SessionManager extends EventEmitter {
     this.sessions.set(id, session);
     await session.startLive({ resume: false, cwd, ws: this.workspaces.groupFor(id, cwd, this.place()), name });
     this.emit("ws", { type: "session.state", session: session.state });
+    // 随手问不是用户的会话（#86），不占置顶。
+    if (!opts.scratch) this.pinNew(id);
     return session;
+  }
+
+  /**
+   * D327：新建即置顶 —— 不管从哪个入口建出来（开新会话面板的任一按钮、交给 agent、分叉 / 复制、
+   * 导入、接棒），新会话都落到 pin 列表末尾（挨着横条的 ＋），并把排列广播给所有页面。
+   * 只加不减：别的会话（包括分叉 / 接棒的原会话）的置顶一概不动。
+   */
+  private pinNew(id: string): void {
+    if (!id) return;
+    this.manage.pinLast(id);
+    this.emit("ws", { type: "manage", manage: this.manage.snapshot(), workspace: this.workspaces.snapshot() });
   }
 
   // ------------------------------------------------------------ 随手问 (#86)
@@ -3530,6 +3543,7 @@ export class SessionManager extends EventEmitter {
         this.cache = null;
         const meta = readMeta(file);
         this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
+        if (meta?.id) this.pinNew(meta.id);
         return { sessionId: meta?.id ?? "", text };
       }
     }
@@ -3571,6 +3585,7 @@ export class SessionManager extends EventEmitter {
     fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL);
     this.cache = null;
     this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
+    this.pinNew(meta.id);
     return { sessionId: meta.id };
   }
 
@@ -3897,8 +3912,7 @@ export class SessionManager extends EventEmitter {
         });
       session.state.handoffTo = next.state.id;
       writeHandoffTo(id, next.state.id);
-      // 接棒的会话置顶：交接刚发生，用户下一步要看的十有八九是它。
-      this.manage.pinLast(next.state.id);
+      // 接棒的会话已经在 create() 里置顶（D327），这里不再重复。
       this.emit("ws", { type: "session.state", session: session.state });
       // 先报完成，再收旧会话：归档回声会让页面「当前会话被归档 → 切邻居 / 回空态」，
       // 排在 done 前面的话，done 到达时页面已经不在旧会话上，看起来就是「交接完成了但页面空白」。
@@ -4221,11 +4235,6 @@ export class SessionManager extends EventEmitter {
       };
     }
     return { ok: true, deleted: true, report };
-  }
-
-  /** Q-022: 置顶横条的 ＋ 建出来的会话，落到 pin 列表末尾。 */
-  pinLast(id: string): void {
-    this.manage.pinLast(id);
   }
 
   setArchived(ids: string[], on: boolean): void {

@@ -1,7 +1,7 @@
 /**
- * Probe: Q-022 — a session started from the pin strip's ＋ is pinned right away (otherwise the new
- * session is invisible in the strip that started it), and the ★ on a pin chip un-pins without
- * opening the session.
+ * Probe: Q-022 / D327 — every new session is pinned right away by the bridge (so one started from the
+ * strip's ＋ shows up in that strip), the page no longer asks for it on the wire, and the ★ on a pin
+ * chip un-pins without opening the session.
  *
  * Stands in for the bridge, so it can record the `create` / `manage` frames the UI puts on the wire.
  *
@@ -105,15 +105,13 @@ wss.on("connection", (ws) => {
       ws.send(JSON.stringify({ type: "session", sessionId: state.id, state, items: [], approvals: [], asks: [], budget: null }));
       return;
     }
-    // Q-022: the strip's ＋ must ask for the pin on the wire; the bridge owns the arrangement.
+    // D327: like the real bridge, every create pins the new session at the end, whatever the entry.
     if (msg.type === "create") {
       creates.push(msg);
       ws.send(JSON.stringify({ type: "session", sessionId: NEW.id, state: NEW, items: [], approvals: [], asks: [], budget: null }));
       ws.send(JSON.stringify({ type: "session.state", session: NEW }));
-      if (msg.pin) {
-        manage = { ...manage, pin: [...manage.pin.filter((id) => id !== NEW.id), NEW.id] };
-        ws.send(JSON.stringify({ type: "manage", manage }));
-      }
+      manage = { ...manage, pin: [...manage.pin.filter((id) => id !== NEW.id), NEW.id] };
+      ws.send(JSON.stringify({ type: "manage", manage }));
       return;
     }
     if (msg.type === "manage" && msg.action === "arrange") {
@@ -137,18 +135,19 @@ try {
   await page.goto(BASE, { waitUntil: "networkidle" });
   await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card");
 
-  // 0) The ordinary 开新会话 button stays a plain create — only the strip's ＋ pins (decision 4).
+  // 0) The ordinary 开新会话 button: the page sends a plain create (D327: pinning is the bridge's job).
+  // The sheet starts in defaultCwd() (open session → pi.lastCwd); there is no typed path field any more.
+  await page.evaluate((p) => localStorage.setItem("pi.lastCwd", p), REPO);
   await page.locator(".new-session [data-act=\"new\"]").click();
   await until(async () => page.locator(".sheet.new-sheet").isVisible(), 5000, "new-session sheet");
-  // The sheet's 浏览 pane lists the start directory on mount and writes the result back into the
-  // field — let that settle before typing, or the listing overwrites the typed path.
   await sleep(700);
-  await page.locator(".sheet.new-sheet .ns-row .ns-input.mono").first().fill(REPO);
-  await page.locator(".sheet.new-sheet .dir-foot .btn.primary").click();
+  await page.locator(".sheet.new-sheet .sheet-foot .btn.primary").click();
   await until(async () => creates.length >= 1, 5000, "create frame");
-  assert(!("pin" in creates[0]), `the sidebar button does not pin (got ${JSON.stringify(creates[0])})`);
+  assert(!("pin" in creates[0]), `the page leaves pinning to the bridge (got ${JSON.stringify(creates[0])})`);
   log("sidebar create:", JSON.stringify({ type: creates[0].type, cwd: creates[0].cwd, pin: creates[0].pin }));
   await until(async () => (await page.locator(".sheet.new-sheet").count()) === 0, 5000, "sheet closes");
+  // Start the strip steps from the original arrangement (only A pinned).
+  manage = { pin: [A.id], order: [A.id], archived: [] };
 
   // 1) Collapse the left pane: the strip is now the only way in, so its ＋ must pin.
   await page.evaluate(() => localStorage.setItem("pi.collapse.sessions", "1"));
@@ -180,17 +179,17 @@ try {
   log("focus after un-pin:", focused);
   assert(focused.includes("pin-new"), `focus falls back to the ＋ (got ${focused})`);
 
-  // 4) ＋ opens the sheet and the create frame carries pin:true.
+  // 4) ＋ opens the sheet and sends a create (no pin flag: the bridge pins every new session).
   await page.locator(".pin-strip .pin-new").click();
   await until(async () => page.locator(".sheet.new-sheet").isVisible(), 5000, "new-session sheet from ＋");
   await sleep(700);
-  await page.locator(".sheet.new-sheet .ns-row .ns-input.mono").first().fill(path.join(REPO, "sub"));
-  await page.locator(".sheet.new-sheet .dir-foot .btn.primary").click();
+  const where = (await page.locator(".sheet.new-sheet .ns-where").textContent()) ?? "";
+  await page.locator(".sheet.new-sheet .sheet-foot .btn.primary").click();
   await until(async () => creates.length >= 2, 5000, "create frame from ＋");
   const second = creates[1];
   log("strip create:", JSON.stringify({ cwd: second.cwd, pin: second.pin }));
-  assert(second.pin === true, `the strip's ＋ asks for a pin (got ${JSON.stringify(second.pin)})`);
-  assert(second.cwd === path.join(REPO, "sub"), `the cwd is the one typed (got ${JSON.stringify(second.cwd)})`);
+  assert(!("pin" in second), `the strip's ＋ sends a plain create too (got ${JSON.stringify(second)})`);
+  assert(Boolean(second.cwd) && where.includes(second.cwd), `the cwd is the one the sheet showed (got ${JSON.stringify(second.cwd)} vs ${JSON.stringify(where)})`);
 
   // 5) The bridge echoes the arrangement → the new session sits at the end of the strip, next to ＋.
   await until(async () => (await page.locator(".pin-strip .pin-open").count()) === 1, 5000, "the new chip arrives");
