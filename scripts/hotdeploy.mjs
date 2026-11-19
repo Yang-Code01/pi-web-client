@@ -8,7 +8,9 @@
  * 页面轮询的就是这个文件；结束写 last-run.json。
  *
  * 结论沿用 D154：先 build 后杀进程（build 失败时旧服务原样活着）、只按 pid 杀不 taskkill /T、
- * 新进程开可见 PowerShell 窗口（关窗即停）。D268 起支持 --stash：只暂存当前分支，构建用
+ * 新进程开可见 PowerShell 窗口（关窗即停）；旧桥已经在这扇窗口的循环里时复用它，不再另开（D326）。
+ * worker 自己没有控制台（detached），它起的每个子进程都必须 windowsHide，否则一次一闪。
+ * D268 起支持 --stash：只暂存当前分支，构建用
  * 分支已提交内容，换进程前恢复；不 reset / 不 rebase。
  */
 import { spawn, spawnSync } from "node:child_process";
@@ -16,6 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { proxyCandidates, stashPush, stashRestore } from "./hotdeploy-git.mjs";
+import { psQuote, windowHostOf, windowScript } from "./hotdeploy-window.mjs";
 
 const WIN = process.platform === "win32";
 
@@ -40,6 +43,9 @@ const STATE = path.join(WORK, "state.json");
 const LAST = path.join(WORK, "last-run.json");
 const LOCK = path.join(WORK, "lock");
 const LIVE = path.join(WORK, "bridge-live.log");
+/** 循环窗口脚本：node 退出后看到 RELAUNCH 标记就在同一扇窗口里再起一次。文件名带端口，多开互不干扰。 */
+const WINDOW_SCRIPT = path.join(WORK, `bridge-window-${PORT}.ps1`);
+const RELAUNCH = path.join(WORK, `relaunch-${PORT}`);
 
 const startedAt = new Date().toISOString();
 const state = {
@@ -98,7 +104,8 @@ function sleep(ms) {
 }
 
 function sh(file, args, opts = {}) {
-  return spawnSync(file, args, { cwd: REPO, encoding: "utf8", ...opts });
+  // windowsHide：worker 是 detached 起的（无控制台），不带它每个 git / powershell / taskkill 都会弹一扇窗再关掉。
+  return spawnSync(file, args, { cwd: REPO, encoding: "utf8", windowsHide: true, ...opts });
 }
 
 function git(args, env) {
@@ -195,31 +202,31 @@ function killPid(pid) {
   return sh("kill", ["-TERM", String(pid)]);
 }
 
-function psQuote(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
-/** 可见窗口里直接跑 `node bridge/dist/index.js`：人能看到输出，关窗即停（D154）。 */
-function startBridge() {
+function truncateLive() {
   try {
     if (fs.existsSync(LIVE) && fs.statSync(LIVE).size > 5 * 1024 * 1024) fs.writeFileSync(LIVE, "");
   } catch {}
-  const launcher = path.join(WORK, "start-bridge.ps1");
-  // PS 5.1 按 ANSI 读无 BOM 文件；窗口标题与路径都可能是中文，必须带 BOM。
-  // 直接跑 node，别经过 npm：npm.cmd 把窗口标题改回 PowerShell，那扇窗口就认不出来了。
-  const body = [
-    `\uFEFF$host.ui.RawUI.WindowTitle = 'pi bridge · ${PORT}'`,
-    `Set-Location -LiteralPath ${psQuote(REPO)}`,
-    `Write-Host 'pi bridge · ${PORT} · ${BRANCH || "?"} —— 这扇窗口关了桥就停了' -ForegroundColor DarkGray`,
-    `& ${psQuote(process.execPath)} 'bridge\\dist\\index.js' 2>&1 | Tee-Object -FilePath ${psQuote(LIVE)} -Append`,
-    "",
-  ].join("\r\n");
-  fs.writeFileSync(launcher, body);
+}
+
+/** 等循环窗口把 RELAUNCH 标记收走（= 它已经在起新桥）。 */
+async function relaunchTaken(ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (!fs.existsSync(RELAUNCH)) return true;
+    await sleep(150);
+  }
+  return !fs.existsSync(RELAUNCH);
+}
+
+/** 开一扇新的可见窗口跑循环脚本：人能看到输出，关窗即停（D154）。 */
+function startBridge() {
+  truncateLive();
+  fs.writeFileSync(WINDOW_SCRIPT, windowScript({ repo: REPO, port: PORT, node: process.execPath, live: LIVE, relaunch: RELAUNCH }));
   if (WIN) {
     const r = sh("powershell", [
       "-NoProfile",
       "-Command",
-      `Start-Process powershell -ArgumentList ${psQuote(`-NoProfile -File "${launcher}"`)} -WorkingDirectory ${psQuote(REPO)}`,
+      `Start-Process powershell -ArgumentList ${psQuote(`-NoProfile -ExecutionPolicy Bypass -File "${WINDOW_SCRIPT}"`)} -WorkingDirectory ${psQuote(REPO)}`,
     ]);
     if (r.status !== 0) log("Start-Process 失败：", String(r.stderr || "").trim().slice(0, 400));
     return;
@@ -356,7 +363,7 @@ function build() {
   // Node 在 Windows 上不能直接 spawn .cmd（EINVAL），整条命令过 shell。
   const out = fs.openSync(LOG, "a");
   const r = WIN
-    ? spawnSync(`npm run build`, { cwd: REPO, stdio: ["ignore", out, out], shell: true, env: process.env })
+    ? spawnSync(`npm run build`, { cwd: REPO, stdio: ["ignore", out, out], shell: true, windowsHide: true, env: process.env })
     : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env });
   fs.closeSync(out);
   if (r.error) return { code: 1, why: r.error.message };
@@ -469,6 +476,12 @@ async function main() {
   // ---- 4. 换进程
   writeState({ step: 4 });
   oldPid = await portPid();
+  // 旧桥跑在本端口的循环窗口里：杀之前放下标记，窗口自己在原地起新桥，不另开窗。
+  const host = WIN ? windowHostOf(oldPid, PORT) : null;
+  if (host) {
+    fs.writeFileSync(RELAUNCH, String(process.pid));
+    log(`旧 bridge 在窗口 pid ${host} 里，换完在同一扇窗口里起`);
+  }
   if (oldPid) {
     log(`杀掉旧 bridge pid ${oldPid}`);
     // worker 自己是旧 bridge 的子进程 —— 别把自己算进去（算进去就自杀，旧桥还活着，状态卡在 running）。
@@ -483,8 +496,15 @@ async function main() {
   } else {
     log("端口上没找到在跑的 bridge，直接起新的");
   }
-  startBridge();
-  log("新窗口已拉起，等 /healthz");
+  // 窗口 5 秒内没收走标记（旧桥没死、窗口被关了…）就收回标记，照旧开一扇新窗口。
+  if (host && !alive(oldPid) && (await relaunchTaken(5000))) {
+    log("同一扇窗口已在起新桥，等 /healthz");
+  } else {
+    if (host) log("窗口没接手，改开新窗口");
+    fs.rmSync(RELAUNCH, { force: true });
+    startBridge();
+    log("新窗口已拉起，等 /healthz");
+  }
 
   // ---- 5. 健康检查
   writeState({ step: 5 });
