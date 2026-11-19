@@ -1134,6 +1134,8 @@
 /* ---------------------------------------------------------------- 外观与连接（齿轮按钮那个 dialog，.display-sheet）
    同一个 .st-console 壳：两页（外观 / 连接与设置）只切显隐，窗格自己滚；左栏每项是页里的一个小节。 */
 .st-console.display-sheet {
+  /* 列轨必须是 minmax(0,…)：隐式的 auto 列会被顶栏预览（不换行）撑到 min-content，手机宽度下整块被裁掉。 */
+  grid-template-columns: minmax(0, 1fr);
   width: min(960px, 100%);
 }
 
