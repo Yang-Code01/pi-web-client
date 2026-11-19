@@ -3879,4 +3879,10 @@ export const en: Dict = {
   "返回": "Back",
   "先写点东西": "Write something first",
   "还差 {p1} 张，等图到齐再提交": "{p1} image(s) still missing — wait before submitting",
-  "连不上内网通：{p1}": "Can't reach LAN chat: {p1}"};
+  "连不上内网通：{p1}": "Can't reach LAN chat: {p1}",
+  "对方没响应（已重试 {p1} 次）": "No reply from them ({p1}× retried)",
+  "立即重试": "Retry now",
+  "连不上对方（4 秒没响应）": "Can't reach them (no reply within 4s)",
+  "对方没开内网通（连接被拒绝）": "They're not running LAN chat (connection refused)",
+  "连接被对方重置": "They reset the connection",
+  "地址解析不出来": "Couldn't resolve the address"};

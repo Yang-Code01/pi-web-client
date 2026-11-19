@@ -67,6 +67,10 @@ interface Entry {
   recalled?: boolean;
   /** 视图字段：我自己发的这条现在在哪个态。 */
   state?: "sending" | "delivered" | "failed";
+  /** 视图字段：还在排队时试过几次（peer 侧 outbox 现算，不落盘）。 */
+  tries?: number;
+  /** 视图字段：上一次没送到的原因，原样是 `fetch` 的错串。 */
+  sendError?: string;
 }
 
 interface NoteShotInfo {
@@ -1318,6 +1322,52 @@ function showNotePeek(e: Entry, t: Thread): void {
   document.addEventListener("keydown", onKey, true);
 }
 
+/** 重试几次之后才改口：一次超时可能只是对方正在读盘，连着三次就该说「没响应」了。 */
+const STALL_TRIES = 3;
+
+/** 这条还在排队、而且已经试了好几次：气泡要从「发送中…」改成能解释自己的样子。 */
+function stalled(e: Entry): boolean {
+  return e.state === "sending" && (e.tries ?? 0) >= STALL_TRIES;
+}
+
+/**
+ * 把网络错误原文翻成一句人话。
+ *
+ * `fetch` 打到 4 秒超时给的是 `The operation was aborted due to timeout`，整句塞进气泡
+ * 既不中文也不解释；认不出来的原样留着，至少能拿去搜。
+ */
+function errorText(raw: string): string {
+  if (/abort|timeout/i.test(raw)) return tr("连不上对方（4 秒没响应）");
+  if (/ECONNREFUSED/i.test(raw)) return tr("对方没开内网通（连接被拒绝）");
+  if (/ECONNRESET|EPIPE/i.test(raw)) return tr("连接被对方重置");
+  if (/ENOTFOUND|EAI_AGAIN/i.test(raw)) return tr("地址解析不出来");
+  return raw;
+}
+
+/**
+ * 自己发的这条现在什么态：返回要挂进 `.tm` 的节点（调用方已经画了时间）。
+ *
+ * `sending` 分两种：刚发出去就是「发送中…」；连着几次投不进去就改口说「对方没响应」，
+ * 并把这颗「立即重试」给出去 —— 否则对端根本连不上时，气泡能一直显示「发送中…」到 24 小时。
+ */
+function sendStateMeta(e: Entry): (HTMLElement | SVGSVGElement)[] {
+  if (e.state === "sending") {
+    if (!stalled(e)) return [h("span", "sending", tr("发送中…"))];
+    const why = h("span", "stall", tr("对方没响应（已重试 {p1} 次）", { p1: String(e.tries ?? 0) }));
+    if (e.sendError) why.title = errorText(e.sendError);
+    const again = h("button", "link", tr("立即重试"));
+    again.addEventListener("click", () => void resend(e));
+    return [ic("alert", "stall"), why, again];
+  }
+  if (e.state === "failed") {
+    const retry = h("button", "link", tr("重发"));
+    retry.addEventListener("click", () => void resend(e));
+    return [ic("alert", "bad"), h("span", "bad", tr("发送失败")), retry];
+  }
+  if (e.state === "delivered") return [ic("check", "ok"), h("span", "ok", tr("已送达"))];
+  return [];
+}
+
 function entryNode(e: Entry, t: Thread): HTMLElement {
   const mine = e.from.nodeId === S.view?.status?.nodeId;
   // 撤回（P3）：原气泡换成一整行灰条，原文不再显示（文件里还在，见 D299）。
@@ -1364,20 +1414,7 @@ function entryNode(e: Entry, t: Thread): HTMLElement {
   const meta = h("div", "tm");
   if (e.via === "pi") meta.append(h("span", "pill pi", tr("pi 代发")));
   meta.append(h("span", "", clock(e.at)));
-  if (mine) {
-    if (e.state === "sending") {
-      meta.append(h("span", "sending", tr("发送中…")));
-    } else if (e.state === "failed") {
-      const bad = ic("alert", "bad");
-      meta.append(bad, h("span", "bad", tr("发送失败")));
-      const retry = h("button", "link", tr("重发"));
-      retry.addEventListener("click", () => void resend(e));
-      meta.append(retry);
-    } else if (e.state === "delivered") {
-      const ok = ic("check", "ok");
-      meta.append(ok, h("span", "ok", tr("已送达")));
-    }
-  }
+  if (mine) meta.append(...sendStateMeta(e));
   box.append(meta);
   msg.append(box);
   msg.addEventListener("contextmenu", (ev) => {
@@ -1939,7 +1976,8 @@ async function resend(e: Entry): Promise<void> {
   if (!S.thread) return;
   try {
     // P2：同一个 id 重投，**不造新消息** —— 旧版这里是再 `POST /send` 一次，历史会多一条。
-    if (e.kind === "text") await postJson("/api/peer/retry", { peer: S.thread, id: e.id });
+    // 文字和记录包都走 outbox；还在排队的那条只把下一次尝试提前（peer 侧 nudge）。
+    if (e.kind === "text" || e.kind === "note") await postJson("/api/peer/retry", { peer: S.thread, id: e.id });
     else toast(tr("文件重发请从磁盘再选一次"));
     await loadMessages();
     renderMain();

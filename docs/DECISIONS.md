@@ -6356,3 +6356,19 @@ Esc 之后 dialog: 0
 **取舍：** 仍然不上 FTS5 trigram（D321 第 1 条）：名字子串覆盖扫描 2.06M 行约 0.2–0.3 s，够用；trigram 要给路径建就是几个 GB。也没有把查询挪到 worker：计划修好后最慢的是显式路径搜索（~1 s），先不为它引入第二个连接。
 
 **验证：** 合成库上同一组查询：空查询 1004 ms → 5 ms，前缀 2092 ms → 6 ms，不存在的词 1975 ms → 167 ms（子串段 21.7 s → 0.27 s），按大小排 0.7 s → 2 ms；`node bridge/tests/fileindex.mjs` 十项全 ok（新增三项在旧代码上红）；`node probes/filesearch.mjs` ok；`npm --prefix bridge run typecheck`。
+## D325 「发送中」必须能解释自己：连败 3 次改口 + 立即重试（2026-11-19）
+
+**问题：** 用户报「接受了对方从缺陷记录联动过来的记录包之后，我再回消息，气泡一直显示『发送中…』」。实测（本机 `~/.pi-peer/outbox.json` + `logs/peer.log`）根本不是记录包的事：对方的 7865 入站 TCP 被静默丢弃（4 秒超时，连试 29 次都没通），而我们这边 **第一次「收到」在记录包到达的同一分钟就已经在超时重投**。真正让用户困惑的是产品行为 —— `foldEntries` 只认「在不在 outbox 里」，`pending.has(id)` 就画「发送中…」，而 outbox 把超时一律当可重试、24 小时才过期；「发送失败 + 重发」只挂在 `ack.failed` 上，一条永远送不到的消息要等到**明天**才肯说自己没送到，中间没有任何「为什么」和「手动再来一次」的入口。
+
+**决定：**
+
+- **状态仍然派生、不落盘**（D299 不变），但把 outbox 里已经有的东西交出去：`Queued.lastError` 记下每次投递失败的原因（`flush()` 重试分支里 `item.lastError = verdict.error`），`pendingFor()` 除 id 集外多交一份 `Map<id, {tries, error}>`，`foldEntries(entries, me, pending, why)` 把它折成视图字段 `ViewEntry.tries / sendError`。视图字段的边界还是那条：**服务端算，页面只画**。
+- **`state === "sending"` 分两步说**：`tries < 3` 照旧「发送中…」（正常的一次投递、一次重连）；`tries >= 3` 改口成琥珀色「对方没响应（已重试 N 次）」+ 一颗「立即重试」（`STALL_TRIES = 3`，`web/src/peer/main.ts` 的 `stalled()`）。3 次意味着已经跨过约 1+2+4 秒的退避，够排掉「刚好在切换网络」；24 小时的补投**不取消** —— 改口只是不再骗人，不是放弃。
+- **原因说人话**：`why()` 先把真正的原因从 `err.cause` 里挖出来（Node 的 `fetch` 只把 `fetch failed` 摆在最外面，`connect ECONNREFUSED 127.0.0.1:7865` 在 cause 上 —— 不挖的话页面拿到的永远是 `fetch failed`，谁也翻译不出人话），再交给 `errorText()`：`abort/timeout` → 「连不上对方（4 秒没响应）」、`ECONNREFUSED` → 「对方没开内网通（连接被拒绝）」、`ECONNRESET/EPIPE` → 「连接被对方重置」、`ENOTFOUND/EAI_AGAIN` → 「地址解析不出来」，认不出的原样显示。这类故障的判别点只有这一个：**同一个端口在别人机器上通、在他机器上不通**，就说明防火墙 / bind 在他那边（`ping`、`arp`、445 都判不出来，本机实测 ICMP 与未开放端口一律静默丢弃）。
+- **「立即重试」走 `nudge()`，不走 `retry()`**：那条消息本来就在队列里，`add()` 按 id 去重会什么都不做 —— `Outbox.nudge(id)` 把 `nextAt` 归零再 `flush()`，语义是「现在就去试」，成功后 `state` 自然变 delivered，失败则 `tries` 加一（页面两秒内从 2.5 秒轮询里看到新数字）。`retry()` 留给「队列里已经没有这条」（早已过期 / 从没进过队）的情况，它要求消息真的不在排队中。
+- **顺手修 `retry()` 把 note 的 kind 写成 `text`**：`outbox.add({ ... kind: "text", payload: entry })` 对记录包会拼出 `{kind:"text"}` 帧，对端 `acceptText` 判定 `bad message` 回 400 —— 记录包重发从来没成过。`retry()` 现在保留 `entry.kind === "note" ? "note" : "text"`（两者的 control 形状本就能互用，`acceptNote` 只读 `control.id/from/note/at/seq`）。
+- **页面允许对 note 点「重发」**：`resend()` 的条件从 `kind === "text"` 放宽到 text / note。
+
+**取舍：** 没做「超过 N 分钟就自动判失败」。outbox 的 24 小时补投是 D103 有意留的（对端可能一整天没开机，`409 还没学到你` 也要靠它兜），改成短超时会让「他下午才上线」变成永久丢失；用户要的是**当时就知道**，不是「更早放弃」，所以只加解释与手动入口，不动过期窗口，也不改退避曲线。也没给文件卡加这套：文件传输不走 outbox（token / 分块 / 哈希自成一摊），它显示的「发送中…」本来就有进度条和失败态。
+
+**验证：** `node bridge/tests/peer-e2e.mjs`（新增「停掉对端后仍带 tries/sendError，state 仍是 sending」「立即重试之后同一条只把 tries 往前推、不多出一条」两段 —— 第一步就抓到 sendError 原本是 `fetch failed`，才有了上面的 `why()`）；`node bridge/tests/peer-ui.mjs`（假 API 灌 `state:"sending", tries:7, sendError:"The operation was aborted due to timeout"` → 气泡出现「对方没响应（已重试 7 次）」与「立即重试」，点它发出 `POST /api/peer/retry`；`tries:1` 的那条仍只写「发送中…」且没有按钮；`delivered` 写「已送达」）；`node bridge/tests/peer-note-unit.mjs`、`node bridge/tests/peer-history.mjs`；`npm run typecheck`（含 i18n 三语键集合 / viewport / layers）。

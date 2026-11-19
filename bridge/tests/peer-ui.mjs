@@ -550,6 +550,73 @@ try {
   );
   check("#383 中文语境没有缺译文告警", ig.missing.length === 0, ig.missing.join(" | "));
   await ig.c.close();
+  // ---- D325：「发送中」要能解释自己，也要能手动再来一次 ----
+  // 用户报的那一次：对端绿点还在、端口却一直被静默丢弃（4 秒超时），气泡能无限「发送中…」。
+  const retryCalls = [];
+  const stalledFixture = async () => {
+    const c = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+    const p = await c.newPage();
+    const mineEntry = (id, text, patch = {}) => ({
+      id,
+      at,
+      from: me,
+      to: { kind: "node", id: ZHANG },
+      kind: "text",
+      text,
+      ...patch,
+    });
+    const entries = [
+      mineEntry("dadadada-0000-4000-8000-000000000001", "已经送达的那条", { state: "delivered", ack: { id: "x1", status: "delivered" } }),
+      mineEntry("dadadada-0000-4000-8000-000000000002", "刚发出去的那条", { state: "sending", tries: 1 }),
+      mineEntry("dadadada-0000-4000-8000-000000000003", "还在转的那条", {
+        state: "sending",
+        tries: 7,
+        sendError: "The operation was aborted due to timeout",
+      }),
+    ];
+    await p.route("**/api/**", async (route) => {
+      const req = route.request();
+      const path2 = new URL(req.url()).pathname;
+      let body = {};
+      if (path2 === "/api/peer") body = { enabled: true, running: true, reason: "", status };
+      else if (path2 === "/api/peer/threads") body = { threads: [{ ...thread(ZHANG, "小张", entries[2]), unread: 0 }] };
+      else if (path2 === "/api/peer/contacts") body = { contacts: [contact(ZHANG, "小张")] };
+      else if (path2 === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+      else if (path2 === "/api/peer/messages") body = { entries };
+      else if (path2 === "/api/peer/retry") {
+        retryCalls.push(JSON.parse(req.postData() ?? "{}"));
+        body = { ok: true };
+      }
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+    });
+    await p.goto(`${BASE}/peer.html`);
+    await p.waitForSelector(".listbox .row");
+    await p.click('.listbox .row:has-text("小张")');
+    await p.waitForSelector('.msg:has-text("还在转的那条")');
+    return { c, p };
+  };
+
+  const st = await stalledFixture();
+  const stallMsg = st.p.locator('.msg:has-text("还在转的那条")');
+  const freshMsg = st.p.locator('.msg:has-text("刚发出去的那条")');
+  const doneMsg = st.p.locator('.msg:has-text("已经送达的那条")');
+  const stallText = (await stallMsg.locator(".tm span.stall").innerText()).trim();
+  const stallTitle = (await stallMsg.locator(".tm span.stall").getAttribute("title")) ?? "";
+  check("连败好几次的气囊改口说「对方没响应」", stallText === "对方没响应（已重试 7 次）" && /没响应|连不上/.test(stallTitle), `文案=${stallText}，title=${stallTitle}`);
+  const freshSending = (await freshMsg.locator(".tm .sending").innerText()).trim();
+  const freshButtons = await freshMsg.locator(".tm button").count();
+  check("刚发出去的气囊照旧只写「发送中…」，不弹重试", freshSending === "发送中…" && freshButtons === 0, `文案=${freshSending}，按钮=${freshButtons}`);
+  const doneText = (await doneMsg.locator(".tm span.ok").innerText()).trim();
+  check("送达的那条写「已送达」", doneText === "已送达", `文案=${doneText}`);
+  await stallMsg.locator(".tm button", { hasText: "立即重试" }).click();
+  for (let i = 0; i < 40 && !retryCalls.length; i++) await st.p.waitForTimeout(50);
+  check(
+    "点「立即重试」真的 POST /api/peer/retry（同一条 id）",
+    retryCalls.at(-1)?.peer === ZHANG && retryCalls.at(-1)?.id === "dadadada-0000-4000-8000-000000000003",
+    JSON.stringify(retryCalls),
+  );
+  await st.p.screenshot({ path: path.join(REPO, ".scratch", "shots", "peer-stall.png") });
+  await st.c.close();
 } catch (err) {
   check("脚本跑完", false, err?.message ?? String(err));
 } finally {

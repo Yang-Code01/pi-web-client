@@ -15,6 +15,8 @@ export interface Queued {
   at: number;
   tries: number;
   nextAt: number;
+  /** 上一次没送到的原因（原样留着，页面拿来解释「为什么还在这条上打转」）。 */
+  lastError?: string;
 }
 
 /** 对端明确说「以后也别试了」就扔；只有超时 / 配额 / IP 漂移这类才值得重试（决定 21/22）。 */
@@ -85,9 +87,29 @@ export class Outbox {
     return this.items.some((item) => item.id === id);
   }
 
-  /** 某个会话里还没送到的消息：页面据此把气泡画成「发送中」。 */
+  /**
+   * 某个会话里还没送到的消息：页面据此把气泡画成「发送中」。
+   *
+   * 不只是一个 id 集合 —— `tries` / `lastError` 一起交出去，否则「发送中」永远说不出
+   * 自己卡在哪（真事：对端防火墙挡了 7865，气泡能显示一整天「发送中…」）。
+   */
   pendingFor(peerId: string): Queued[] {
     return this.items.filter((item) => item.peerId === peerId);
+  }
+
+  /**
+   * 「立即重试」：把下一次尝试提前到现在。
+   *
+   * 已经在排队的那条不能再 `add()` 一次（按 id 去重，什么都不会发生 —— 用户点了会觉得
+   * 按钮坏了），所以由这里直接改 `nextAt` 并踢一脚 flush。返回 false = 它已经不在队列里。
+   */
+  nudge(id: string): boolean {
+    const item = this.items.find((other) => other.id === id);
+    if (!item) return false;
+    item.nextAt = 0;
+    this.save();
+    void this.flush();
+    return true;
   }
 
   pending(): Queued[] {
@@ -116,6 +138,7 @@ export class Outbox {
           continue;
         }
         item.tries += 1;
+        item.lastError = verdict.error;
         item.nextAt = Date.now() + Math.min(60_000, 1000 * 2 ** Math.min(item.tries, 6));
         this.opts.log(`再投 ${item.id.slice(0, 8)} → ${item.addr}:${item.port} 第 ${item.tries} 次：${verdict.error}`);
         this.save();
