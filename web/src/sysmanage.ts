@@ -11,6 +11,7 @@ import { errText, fmtTime, tr } from "./i18n/index.ts";
 import {
   DNS_PRESETS,
   clockText,
+  dayClockText,
   filterServices,
   formatBytes,
   formatCountdown,
@@ -1094,7 +1095,7 @@ class SysPanel {
     if (!today.events.length) list.append(this.note(tr("今天还没有解锁记录；记录器没装的话，要靠日志回填。")));
     for (const ev of today.events) {
       const row = el("div", "sys-wk-event");
-      row.append(el("span", "sys-wk-event__time", clockText(ev.t)));
+      row.append(el("span", "sys-wk-event__time", dayClockText(ev.t, today.date)));
       // 记录器启动（start）不是人解的锁：单独写出来，不冒充「解锁 · 事件」（D334）。
       if (ev.src === "start") {
         row.append(el("span", "sys-wk-event__kind sys-wk-event__kind--start", tr("记录器启动")));
@@ -1184,7 +1185,7 @@ class SysPanel {
       const row = el("tr", day.workday ? "" : "is-rest");
       row.append(el("td", "sys-wk-table__date", `${day.date.slice(5)} ${weekdayOf(day.date)}`));
       row.append(el("td", "sys-table__mono", day.firstUnlock === null ? "—" : clockText(day.firstUnlock)));
-      const end = el("td", "sys-table__mono", day.lastEnd === null ? "—" : clockText(day.lastEnd));
+      const end = el("td", "sys-table__mono", day.lastEnd === null ? "—" : dayClockText(day.lastEnd, day.date));
       // 没有锁屏事件时下班是「当天最后一次解锁」推出来的，工时只会偏小 —— 不标出来就等于默默少算（D288）。
       if (day.endInferred) end.append(el("span", "sys-wk-tag", tr("推算")));
       row.append(end);

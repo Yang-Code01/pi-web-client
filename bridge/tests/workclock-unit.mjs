@@ -24,6 +24,7 @@ import {
   summarizeCoverage,
   summarizeDays,
   summarizeToday,
+  workDayKey,
 } from "../src/workclock.ts";
 
 let failures = 0;
@@ -283,6 +284,41 @@ check("summarizeToday：休息日有解锁也不算目标下班（D246 第 5 条
   assert.equal(today.firstUnlock, at(2026, 3, 10, 9));
   assert.equal(today.target, null);
   assert.equal(today.remainingMs, null);
+});
+
+check("凌晨 5 点前的事件归前一天：前一天下班延长，第二天上班不被凌晨解锁顶掉（D334）", () => {
+  const now = at(2026, 3, 11, 12);
+  const days = summarizeDays(
+    [
+      ev(at(2026, 3, 10, 9), "unlock"),
+      ev(at(2026, 3, 10, 23), "lock"),
+      ev(at(2026, 3, 11, 1), "unlock"),
+      ev(at(2026, 3, 11, 2), "lock"),
+      ev(at(2026, 3, 11, 9), "unlock"),
+    ],
+    ALL_DAYS,
+    now,
+  );
+  assert.equal(days[0].date, "2026-03-11");
+  assert.equal(days[0].firstUnlock, at(2026, 3, 11, 9));
+  assert.equal(days[0].unlocks, 1);
+  assert.equal(days[1].date, "2026-03-10");
+  assert.equal(days[1].lastEnd, at(2026, 3, 11, 2));
+  assert.equal(days[1].workedMs, 17 * HOUR);
+  assert.equal(days[1].unlocks, 2);
+});
+
+check("凌晨 5 点前打开页面：「今天」还是前一个工作日，明细含跨过零点的事件", () => {
+  const now = at(2026, 3, 11, 3);
+  const events = [ev(at(2026, 3, 10, 9), "unlock"), ev(at(2026, 3, 11, 1), "lock"), ev(at(2026, 3, 11, 2), "unlock")];
+  const days = summarizeDays(events, ALL_DAYS, now);
+  const today = summarizeToday(days, events, ALL_DAYS, now);
+  assert.equal(today.date, "2026-03-10");
+  assert.equal(today.firstUnlock, at(2026, 3, 10, 9));
+  assert.equal(today.ongoing, true);
+  assert.equal(today.events.length, 3);
+  assert.equal(workDayKey(at(2026, 3, 11, 4, 59)), "2026-03-10");
+  assert.equal(workDayKey(at(2026, 3, 11, 5)), "2026-03-11");
 });
 
 check("summarizeToday：没上班记录时 target / remaining / 明细都空", () => {

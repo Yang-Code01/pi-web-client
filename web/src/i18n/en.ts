@@ -2844,6 +2844,8 @@ export const en: Dict = {
   "已过下班点": "Past the finish line",
   "还没有今天的上班记录": "No start time for today yet",
   "目标下班": "Target end",
+  "昨天 {p1}": "yesterday {p1}",
+  "次日 {p1}": "next day {p1}",
   "明天 {p1}": "tomorrow {p1}",
   "第一次解锁 {p1}": "First unlock {p1}",
   "已工作": "Worked",

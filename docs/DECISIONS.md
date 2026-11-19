@@ -6513,10 +6513,11 @@ Esc 之后 dialog: 0
 
 **为什么：** 三种来源都是真实发生的解锁：4624 LogonType 7/2/11… 是系统自己记的，并不比记录器的会话事件「假」；按来源排先后只在「两者报同一次解锁、时刻略有出入」时有意义，而那种情况 `dedupeEvents` 的 5 秒合并已经吃掉了。代价：RDP 连进来（LogonType 10，D288 算到岗）若早于本人到座，上班时间会按它算 —— 这和 D288 的口径一致。
 
-**顺带查出的三处（同一 PR 修）：**
+**顺带查出的几处（同一 PR 修）：**
 
 1. **往日下班漏掉最后一次解锁。** 9:00 解锁、12:00 锁屏、13:00 解锁后关机（关机不产生锁屏），下班取「最后一次锁屏」只算 3 小时、还不标推算。改成：往日最后一条是解锁就以它为下班、标 `endInferred`；最后一条是锁屏才用锁屏（抽成 `dayEnd`）。
 2. **休息日照样倒计时、到点弹提醒。** D246 第 5 条定的是休息日不算倒计时，但 `summarizeToday` 没看 `workday`。改成休息日 `target` / `remainingMs` 为空，页面标题写「今天是休息日，不算倒计时」，「已工作」照走。`bridge/tests/sysmanage-ui.mjs` 种的设置改成七天都上班，周末跑也能看到倒计时。
 3. **记录器启动被当成一次解锁。** `start` 计进「今日解锁 N 次」，明细里显示成「解锁 · 事件」（这次报障里 10:22 那条就是它，读截图时很容易当成真解锁）。改成不计数，明细写「记录器启动」。
+4. **过了半夜还在干活，凌晨那次解锁被算成第二天上班（用户追加要求「凌晨不算」）。** 一个工作日从凌晨 5:00 算起（`WORKDAY_START_HOUR = 5`，`workDayKey`）：0:00–5:00 的解锁 / 锁屏归前一天，前一天的下班与工时顺着延长，第二天上班从 5:00 后第一次解锁算；5 点前打开页面，「今天」仍是前一个工作日。页面上跨过零点的时刻写「次日 01:30」（`dayClockText`），目标下班落在昨天写「昨天 20:23」，不再一律写「明天」。回拨用本地分量减一天，不减 5 小时（夏令时那天不错位）。代价：真在 5 点前开工的早班会记到前一天（用户选的是 5:00，不是 6:00，也不是「只不当上班、不归前一天」）。
 
-**验证：** `node --experimental-strip-types bridge/tests/workclock-unit.mjs`：新增往日最后解锁、start 不计数、休息日无目标三例；原「两者都有时不取更早的日志」改成取更早的日志（来源 log、工时 11h）；新增截图场景（日志 09:29 解锁 + 10:22 start + 11:23 事件 → 09:29 / log）与「事件更早时用事件」。`npm --prefix bridge run build`、`npm --prefix web run typecheck`、`node bridge/tests/sysmanage-ui.mjs`（105 项）通过。
+**验证：** `node --experimental-strip-types bridge/tests/workclock-unit.mjs`：新增凌晨归前一天两例、往日最后解锁、start 不计数、休息日无目标三例；原「两者都有时不取更早的日志」改成取更早的日志（来源 log、工时 11h）；新增截图场景（日志 09:29 解锁 + 10:22 start + 11:23 事件 → 09:29 / log）与「事件更早时用事件」。`npm --prefix bridge run build`、`npm --prefix web run typecheck`、`node bridge/tests/sysmanage-ui.mjs`（105 项）、`node web/tests/sysmanage-unit.mjs`（新增「昨天 / 次日」一例）通过。

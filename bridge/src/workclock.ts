@@ -181,10 +181,28 @@ export function localDateKey(ms: number): string {
   return `${y}-${m}-${day}`;
 }
 
-function dayStartMs(ms: number): number {
+/**
+ * 一个工作日从凌晨 `WORKDAY_START_HOUR` 点算起（D334）：过了半夜还在干活，0:00–5:00 的解锁 / 锁屏
+ * 归前一天 —— 前一天的下班顺着延长，第二天的上班也不会被凌晨那次解锁顶成 01:30。
+ * 用本地分量回拨一天而不是减 5 小时，夏令时切换那天也不会错位。
+ */
+export const WORKDAY_START_HOUR = 5;
+
+function workDayDate(ms: number): Date {
   const d = new Date(ms);
+  if (d.getHours() < WORKDAY_START_HOUR) d.setDate(d.getDate() - 1);
   d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  return d;
+}
+
+/** 事件归哪个工作日：键的形状与 `localDateKey` 一样，只是凌晨 5 点前算前一天。 */
+export function workDayKey(ms: number): string {
+  return localDateKey(workDayDate(ms).getTime());
+}
+
+/** `ms` 所在工作日的那个日历日的 0 点（不是 5 点：只拿它往前数日子、取星期）。 */
+function dayStartMs(ms: number): number {
+  return workDayDate(ms).getTime();
 }
 
 /** 逐行读 `agent.jsonl`：坏行跳过，不看时间顺序也没有关系（后面统一排序）。 */
@@ -240,7 +258,7 @@ export function dedupeEvents(events: WorkclockEvent[]): WorkclockEvent[] {
 function byDay(events: WorkclockEvent[]): Map<string, WorkclockEvent[]> {
   const map = new Map<string, WorkclockEvent[]>();
   for (const ev of events) {
-    const key = localDateKey(ev.t);
+    const key = workDayKey(ev.t);
     const list = map.get(key) ?? [];
     list.push(ev);
     map.set(key, list);
@@ -342,7 +360,7 @@ export function summarizeToday(
     target,
     remainingMs,
     events: dedupeEvents(events)
-      .filter((ev) => localDateKey(ev.t) === date)
+      .filter((ev) => workDayKey(ev.t) === date)
       .sort((a, b) => a.t - b.t),
   };
 }
