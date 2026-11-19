@@ -6504,3 +6504,16 @@ Esc 之后 dialog: 0
 5. **样子。** 已安装页嵌在各自市场的子页签里（插件市场 → 已安装：pi 包 + 插件；MCP 市场 → 已安装：MCP 服务器 + 手动添加），行用市场的卡片样式 `.ext-row`、按钮用 `mk-install`，外层页签与市场对齐、字体统一。
 
 **验证。** `node bridge/tests/ext-manager.mjs`（首段先到的是 mcp.json 的行、状态 connecting）、`node probes/ext-manager-stages.mjs`、`node --experimental-strip-types bridge/tests/mcp-relevance-unit.mjs`。
+
+## D334 问卷说「详情在回复里」却没写正文：拦下这次提问（用户要求 2026-11-19）
+
+**现象。** 会话 `ae79148b`（上下文面板查 bug）第 74 条助手消息只有 thinking + `ask_user_question`，题干写「查出 5 个确认的 bug（详情在回复里）」，5 个 bug 只在思考里，页面上一个字都看不到。不是客户端漏渲染：会话文件里这条消息根本没有 text 块。
+
+**决定。** 在 `bridge/ext/ask-nudge.ts` 加第二道兜底，挂 `tool_call`，与 D319 共用开关 `web.askNudge`：
+- 问卷文本（题干 / 选项，跳过 `preview`）命中「详情在 / 详情见 / 见上文 / 如上 / 上述 / 回复里 / see above」这类指向正文的说法；
+- 且这次调用所在的助手消息正文去空白后不足 40 字、本轮所有助手正文合计不足 200 字；
+- 就 `block` 这次调用，理由里让模型先把详情写进正文（或直接写进题干）再问。同一段引用只拦一次（按理由里的 `#hash` 认），第二次放行，不让会话卡死。
+
+**为什么挂 `tool_call` 而不是停下前补一条。** 这时用户还没看到问卷，拦下后模型补完正文再问，用户看到的就是「正文 + 问卷」；等问卷发出去再补，用户已经在答一张看不懂的卷子了。
+
+**验证。** `node bridge/tests/ask-nudge-unit.mjs`（第二道兜底一段：空正文拦、写了详情 / 前一步写过放行、只拦一次、开关关不拦）。

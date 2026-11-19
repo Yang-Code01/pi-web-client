@@ -21,6 +21,8 @@ import askNudge, {
   nudgeText,
   nudgedHashes,
   pendingQuestion,
+  detailReference,
+  DETAIL_GUARD_MARK,
 } from "../ext/ask-nudge.ts";
 
 const results = [];
@@ -144,6 +146,44 @@ fs.writeFileSync(file, JSON.stringify({ web: { askNudge: false } }));
 check("开关关 → 不续跑", (await settle(ev(), ctx(pending))) === undefined);
 delete process.env.PI_WEB_SETTINGS_FILE;
 check("没给设置路径 → 默认开，仍续跑", (await settle(ev(), ctx(pending)))?.continue === true);
+
+// ---- 第二道兜底：问卷引用「回复里的详情」，正文却是空的（会话 ae79148b 第 74 条）
+{
+  const toolCall = handlers.tool_call;
+  const q = { questions: [{ question: "上下文面板查出 5 个确认的 bug（详情在回复里）。接下来怎么处理？", options: [{ label: "全部修复", description: "x" }] }] };
+  const plain = { questions: [{ question: "接下来怎么处理？", options: [{ label: "修", description: "x" }] }] };
+  const callMsg = (text, callId = "c1") => ({
+    type: "message",
+    id: id(),
+    message: {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "5 个 bug 的详情只写在这里" },
+        ...(text ? [{ type: "text", text }] : []),
+        { type: "toolCall", id: callId, name: "ask_user_question", arguments: {} },
+      ],
+    },
+  });
+  const tc = (input, branch, toolName = "ask_user_question") => toolCall({ toolName, toolCallId: "c1", input }, ctx(branch));
+  check("认出「详情在回复里」", !!detailReference(q));
+  check("认出英文 see above", !!detailReference({ question: "Pick one (see details above)" }));
+  check("普通题干不算引用", detailReference(plain) === null);
+  const empty = [user(), assistant("Harness：用真实 ctxlog 喂 ContextPanel。"), toolResult(), callMsg("")];
+  const r1 = await tc(q, empty);
+  check("正文为空 + 引用详情 → 拦下", r1?.block === true && r1.reason.includes(DETAIL_GUARD_MARK));
+  check("不引用详情 → 放行", (await tc(plain, empty)) === undefined);
+  check("非提问工具 → 不管", (await tc(q, empty, "bash")) === undefined);
+  const written = [user(), callMsg("查出 5 个 bug：\n1. seq 重置后柱状图点选错位\n2. 进度条宽度只有 7px\n3. IME 组字时被重渲染吞字")];
+  check("正文写了详情 → 放行", (await tc(q, written)) === undefined);
+  const earlier = [user(), assistant(`详情：${"现象与原因说明。".repeat(30)}`), toolResult(), callMsg("")];
+  check("详情写在本轮前一步 → 放行", (await tc(q, earlier)) === undefined);
+  const blockedOnce = [...empty, { type: "message", id: id(), message: { role: "toolResult", toolName: "ask_user_question", toolCallId: "c1", isError: true, content: [{ type: "text", text: r1.reason }] } }, callMsg("", "c2")];
+  check("同一引用拦过一次 → 第二次放行", (await toolCall({ toolName: "ask_user_question", toolCallId: "c2", input: q }, ctx(blockedOnce))) === undefined);
+  process.env.PI_WEB_SETTINGS_FILE = file;
+  check("开关关 → 不拦", (await tc(q, empty)) === undefined);
+  delete process.env.PI_WEB_SETTINGS_FILE;
+  check("读不到分支不抛", (await toolCall({ toolName: "ask_user_question", input: q }, { sessionManager: { getBranch: () => { throw new Error("x"); } } })) === undefined);
+}
 
 fs.rmSync(dir, { recursive: true, force: true });
 const failed = results.filter((r) => !r.ok);
