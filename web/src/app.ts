@@ -700,6 +700,8 @@ export class App {
   private wsPane: HTMLElement | null = null;
   /** #291 设置面板的「预览 + 开关墙」那块；`ui` 回执与断线时只重画这一个小面。 */
   private chromePane: HTMLElement | null = null;
+  /** 当前面板关掉之后要回到哪里（从齿轮设置的「工具」打开的子面板）；kind 变了就作废。 */
+  private sheetReturn: { kind: NonNullable<App["sheetKind"]>; run: () => void } | null = null;
   /** 齿轮设置里每个大类上次停在哪个子类（只记这次打开的页面）。 */
   private displaySec: Partial<Record<Prefs["settingsTab"], string>> = {};
   /**
@@ -4438,16 +4440,24 @@ export class App {
       open.onclick = run;
       tools.append(this.stRow(name, desc, open));
     };
-    tool(tr("pi 设置"), tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）"), () => this.openSettingsSheet("global"));
+    // 从哪里来回哪里去：这里打开的面板关掉之后回到齿轮设置的「工具」这一页，而不是整个关掉。
+    const back = (): void => this.reopenDisplaySheet();
+    tool(tr("pi 设置"), tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）"), () => {
+      this.openSettingsSheet("global");
+      this.sheetReturn = { kind: "settings", run: back };
+    });
     tool(tr("本机管理"), tr("本机信息、网卡与 DNS、端口与服务"), () => {
       this.closeSheet();
-      openSysmanage();
+      openSysmanage({ onClose: back });
     });
     tool(tr("热部署"), tr("把这条桥换成某条分支上的构建：编译、换进程、等健康检查（会切断正在跑的会话）"), () => {
       this.closeSheet();
-      openHotdeploy();
+      openHotdeploy({ onClose: back });
     });
-    tool(tr("上下文洞察"), tr("跨会话的上下文统计：全体与分项目的 Token、费用、技能、工具与命令"), () => this.openContextInsightSheet());
+    tool(tr("上下文洞察"), tr("跨会话的上下文统计：全体与分项目的 Token、费用、技能、工具与命令"), () => {
+      this.openContextInsightSheet();
+      this.sheetReturn = { kind: "context-insights", run: back };
+    });
 
     const up = this.tunnel.status === "up";
     const chan = section(
@@ -4506,6 +4516,12 @@ export class App {
     about.classList.add("set-about");
     about.append(this.copyRow(tr("版本"), `pi ${this.me.pi} · bridge ${this.me.version}`));
     about.append(this.copyRow(tr("会话目录"), this.me.sessionsRoot));
+  }
+
+  /** 子面板关掉后回到齿轮设置：那时已经有别的面板开着（用户顺手开了别的）就不抢。 */
+  private reopenDisplaySheet(): void {
+    if (this.sheet) return;
+    this.openDisplaySheet();
   }
 
   /** 点一下复制一行（关于里的版本 / 会话目录）。 */
@@ -5098,6 +5114,20 @@ export class App {
     if (this.bgTimer !== null) window.clearInterval(this.bgTimer);
     this.bgTimer = null;
     this.bgSheet = null;
+    // 从齿轮设置打开的子面板：关掉之后回去。等这一轮同步代码跑完再看 ——
+    // openXxx() 自己也先 closeSheet() 再建新的（重画、换页），那时 sheet 马上又有了，不算「关掉」。
+    const ret = this.sheetReturn;
+    if (ret) {
+      queueMicrotask(() => {
+        if (this.sheetReturn !== ret) return;
+        if (!this.sheet) {
+          this.sheetReturn = null;
+          ret.run();
+        } else if (this.sheetKind !== ret.kind) {
+          this.sheetReturn = null;
+        }
+      });
+    }
   }
 
   /** The model sheet's 会话 section: folded unless asked for (/session). */
