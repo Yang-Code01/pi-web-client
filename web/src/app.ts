@@ -20541,12 +20541,16 @@ const PASTE_KEY = /Mac|iPhone|iPad|iPod/.test(`${navigator.platform} ${navigator
 /** #106: 表格类文件即使读不了（.xls/.ods/加密包），也用「这个格式这里不支持」而不是通用二进制文案。 */
 const DESKTOP_OPEN = /\.(xlsx|xlsm|xlsb|xls|ods|pptx|pptm|ppsx|potx|ppt|pps|pdf|doc|docx|mp4|m4v|webm|ogv|mov|mkv|avi|wmv|flv|mp3|wav|m4a|aac|ogg|oga|flac|opus)$/i;
 
-/** #542: pause whatever video / audio is in this subtree before it is torn down — no sound from a
- * panel the user already moved away from. */
+/** #542: stop whatever video / audio is in this subtree before it is torn down — no sound from a
+ * panel the user already moved away from, and no half-open range request keeping the file busy
+ * (clearing `src` + `load()` releases the decoder and the connection). */
 function stopMedia(root: ParentNode): void {
   for (const m of root.querySelectorAll<HTMLMediaElement>("video, audio")) {
     try {
       m.pause();
+      m.onerror = null;
+      m.removeAttribute("src");
+      m.load();
     } catch {
       /* already gone */
     }

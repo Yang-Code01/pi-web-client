@@ -6417,4 +6417,4 @@ Esc 之后 dialog: 0
 
 **已知偏差：** `HTMLMediaElement` 没有 `referrerPolicy`，页面也没设全站 referrer 策略，外链媒体会带默认的 origin-only referrer（图片是 `no-referrer`）。
 
-**验证：** `node bridge/tests/media-raw.mjs`（kind / MIME / Range 206·416·多段·坏头 / 隧道抹 abs）；`node probes/media-preview.mjs`（真 Chromium：webm 时长、拖动出 206、能播、关掉即停；wav；坏 mp4 与 avi 降级卡片；md 三种写法 + 白名单；聊天只出链接、点开播放；150% 字号不越界）。
+**验证：** `node bridge/tests/media-raw.mjs`（kind / MIME / Range 206·416·多段·坏头 / 隧道抹 abs）；`bridge/tests/media-grant-unit.mjs`（媒体文件都有 `/api/open` 授权）；`node probes/media-preview.mjs`（真 Chromium：webm 时长、拖动出 206、能播、关掉即停；wav；坏 mp4 与 avi 降级卡片；md 三种写法 + 白名单；聊天只出链接、点开播放；150% 字号不越界）。
