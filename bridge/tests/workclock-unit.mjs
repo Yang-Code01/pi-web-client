@@ -128,16 +128,45 @@ check("启动时刻比日志回填弱：中途装记录器不把上班时间推�
   assert.equal(days[0].source, "log");
 });
 
-check("记录器事件优先于日志回填：同一天两者都有时不取更早的日志", () => {
+check("取最早的真实解锁：日志比记录器事件早就用日志，来源记 log（D334）", () => {
   const now = at(2026, 3, 10, 20);
   const days = summarizeDays(
     [ev(at(2026, 3, 10, 7), "unlock", "log"), ev(at(2026, 3, 10, 8), "unlock", "event"), ev(at(2026, 3, 10, 18), "lock")],
     ALL_DAYS,
     now,
   );
+  assert.equal(days[0].firstUnlock, at(2026, 3, 10, 7));
+  assert.equal(days[0].source, "log");
+  assert.equal(days[0].workedMs, 11 * HOUR);
+});
+
+check("记录器中途才装：日志 09:29 解锁不被它 10:22 启动、11:23 才看到的解锁压掉", () => {
+  const now = at(2026, 3, 10, 18);
+  const m = 60_000;
+  const days = summarizeDays(
+    [
+      ev(at(2026, 3, 10, 9) + 29 * m, "unlock", "log"),
+      ev(at(2026, 3, 10, 9) + 35 * m, "lock", "log"),
+      ev(at(2026, 3, 10, 10) + 22 * m, "unlock", "start"),
+      ev(at(2026, 3, 10, 11) + 23 * m, "lock", "event"),
+      ev(at(2026, 3, 10, 11) + 23 * m + 30_000, "unlock", "event"),
+    ],
+    ALL_DAYS,
+    now,
+  );
+  assert.equal(days[0].firstUnlock, at(2026, 3, 10, 9) + 29 * m);
+  assert.equal(days[0].source, "log");
+});
+
+check("记录器事件更早时用事件", () => {
+  const now = at(2026, 3, 10, 20);
+  const days = summarizeDays(
+    [ev(at(2026, 3, 10, 9), "unlock", "log"), ev(at(2026, 3, 10, 8), "unlock", "event")],
+    ALL_DAYS,
+    now,
+  );
   assert.equal(days[0].firstUnlock, at(2026, 3, 10, 8));
   assert.equal(days[0].source, "event");
-  assert.equal(days[0].workedMs, 10 * HOUR);
 });
 
 check("没有记录器事件时退到日志，来源记 log；只有轮询估计时记 poll", () => {

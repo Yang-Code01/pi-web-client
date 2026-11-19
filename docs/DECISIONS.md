@@ -6504,3 +6504,13 @@ Esc 之后 dialog: 0
 5. **样子。** 已安装页嵌在各自市场的子页签里（插件市场 → 已安装：pi 包 + 插件；MCP 市场 → 已安装：MCP 服务器 + 手动添加），行用市场的卡片样式 `.ext-row`、按钮用 `mk-install`，外层页签与市场对齐、字体统一。
 
 **验证。** `node bridge/tests/ext-manager.mjs`（首段先到的是 mcp.json 的行、状态 connecting）、`node probes/ext-manager-stages.mjs`、`node --experimental-strip-types bridge/tests/mcp-relevance-unit.mjs`。
+
+## D334 上班时间取当天最早的真实解锁，不再按来源排先后（用户报障 2026-11-19）
+
+**问题：** 用户截图：今日明细第一条是 09:29「解锁 · 日志」，「上班」卡却写 11:23「事件」。那天记录器 10:22 才启动（明细里 10:22 那条是 `start`，界面按 `事件` 显示），它亲眼看到的第一次解锁是 11:23。D246 第 4 条 / D288 规定 `event` > `poll` > `log` > `start`，所以只要当天有一条记录器事件，日志回填的更早解锁就被整体压掉 —— 中途装记录器的那天，上班时间被推后两个小时。
+
+**决定：** `pickFirstUnlock` 取 `event` / `poll` / `log` 里**最早**的一条解锁，来源标那一条自己的；`start` 仍只在一条真实解锁都没有时兜底。取代 D246 第 4 条与 D288「取舍」里的来源排序；D246 想挡的「15:00 装的记录器把 09:00 顶成 15:00」照样挡得住（`start` 不参与取最早，取最早本身也不会选晚的）。
+
+**为什么：** 三种来源都是真实发生的解锁：4624 LogonType 7/2/11… 是系统自己记的，并不比记录器的会话事件「假」；按来源排先后只在「两者报同一次解锁、时刻略有出入」时有意义，而那种情况 `dedupeEvents` 的 5 秒合并已经吃掉了。代价：RDP 连进来（LogonType 10，D288 算到岗）若早于本人到座，上班时间会按它算 —— 这和 D288 的口径一致。
+
+**验证：** `node --experimental-strip-types bridge/tests/workclock-unit.mjs`：原「两者都有时不取更早的日志」改成取更早的日志（来源 log、工时 11h）；新增截图场景（日志 09:29 解锁 + 10:22 start + 11:23 事件 → 09:29 / log）与「事件更早时用事件」。`npm --prefix bridge run build` 通过。

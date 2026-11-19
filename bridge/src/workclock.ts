@@ -250,14 +250,14 @@ function byDay(events: WorkclockEvent[]): Map<string, WorkclockEvent[]> {
 }
 
 /**
- * 某一天的上班时刻。优先级：记录器看到的真实会话事件 > 轮询估计 > 日志回填 > 记录器启动时刻。
- * 同一天几种都有时不用 min() 混算 —— 让来源在页面上说得清，也别拿「中途才装上的记录器」冒充上班时间。
+ * 某一天的上班时刻：真实解锁（事件 / 轮询估计 / 日志回填）里最早的那一条，来源就标它自己的；
+ * 记录器启动时刻（`start`）只在一条真实解锁都没有时兜底。
+ * 不按来源排先后（D334 取代 D246 第 4 条）：记录器中途才装上时，它看到的第一次解锁会比日志里的晚，
+ * 按来源排就会把日志回填出来的真 09:29 压成 11:23。`start` 仍最弱，15:00 装的记录器不顶掉 09:00。
  */
 function pickFirstUnlock(list: WorkclockEvent[]): { t: number; src: WorkclockSource } | null {
-  const real = list.filter((ev) => ev.k === "unlock" && (ev.src === "event" || ev.src === "poll"));
-  if (real.length) return { t: real[0].t, src: real[0].src === "poll" ? "poll" : "event" };
-  const logged = list.filter((ev) => ev.k === "unlock" && ev.src === "log");
-  if (logged.length) return { t: logged[0].t, src: "log" };
+  const real = list.find((ev) => ev.k === "unlock" && ev.src !== "start");
+  if (real) return { t: real.t, src: real.src === "poll" ? "poll" : real.src === "log" ? "log" : "event" };
   const started = list.filter((ev) => ev.k === "unlock");
   if (started.length) return { t: started[0].t, src: "event" };
   return null;
