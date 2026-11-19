@@ -25,14 +25,20 @@ export type BrowserOpStepKind =
   | "shot"
   | "run"
   | "call"
-  | "raw";
+  | "raw"
+  | "act"
+  | "check"
+  | "value"
+  | "file";
 
 export interface BrowserOpStep {
   kind: BrowserOpStepKind;
   /** 网址 / 坐标 / 代码片段 / `Domain.method` / 函数名，按 kind 解释。 */
   target?: string;
-  /** `call` 用：认不出的函数名。 */
+  /** `call` 用：认不出的函数名；`check` 失败时放 actual / expected。 */
   name?: string;
+  /** `check` 用：断言过了没有。 */
+  ok?: boolean;
   /** 同一 (kind,target,name) 连续出现的次数，≥2 才写。 */
   repeat?: number;
 }
@@ -56,8 +62,16 @@ export interface BrowserOpCard {
   silent: boolean;
   /** 距最后一次新输出多少毫秒；这次调用还没输出过就是 null（不把「开始到现在」当「多久没输出」）。 */
   silentFor: number | null;
-  /** 同一动作连续重复到 `loopCount` 次。 */
+  /**
+   * 正在跑、而且实际执行里同一动作连续到 `loopCount` 次（运行输出里的重复，或连着几次一模一样的浏览器工具调用）。
+   * 从代码里猜出来的重复（循环、多次读值）不算；调用一结束就不再标（D327）。
+   */
   looping: boolean;
+  /**
+   * 步骤从哪来：`output` = 脚本自己在输出里报的（实际做了什么），`script` = 从脚本源码猜的（打算做什么），
+   * `call` = 浏览器工具这次调用的参数 / 代码。
+   */
+  stepSource: "output" | "script" | "call";
   /** 调用前模型最后一段话；没有就空串。 */
   intent: string;
   steps: BrowserOpStep[];
@@ -407,7 +421,9 @@ function cardsFrom(
     const label = browserToolLabel(item.name, item.args, patterns);
     const scripted = label ? agentBrowserCall(item) : scriptedCall(item, scripts, commands);
     if (!label && !scripted) continue;
-    cards.push(card(item, intent, thresholds, now, subagent, outputAt[item.toolCallId], scripted, label ?? item.name));
+    const next = card(item, intent, thresholds, now, subagent, outputAt[item.toolCallId], scripted, label ?? item.name, label !== null);
+    if (next.stepSource === "call" && isRunning(next) && repeatsPrevious(next, cards, thresholds.loopCount)) next.looping = true;
+    cards.push(next);
   }
   return cards;
 }
@@ -972,6 +988,18 @@ function baseName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+function isRunning(card: BrowserOpCard): boolean {
+  return card.state === "running" || card.state === "slow" || card.state === "stuck";
+}
+
+/** 打转的另一种样子：模型连着几次调同一个浏览器工具、做同一件事（例如反复 snapshot 同一页）。 */
+function repeatsPrevious(next: BrowserOpCard, cards: BrowserOpCard[], loopCount: number): boolean {
+  const need = loopCount - 1;
+  if (need < 1 || cards.length < need) return false;
+  const sig = (card: BrowserOpCard) => `${card.tool} ${JSON.stringify(card.steps)}`;
+  return cards.slice(-need).every((prev) => prev.stepSource === "call" && sig(prev) === sig(next));
+}
+
 function card(
   item: ToolItem,
   intent: string,
@@ -981,11 +1009,16 @@ function card(
   lastOutputAt: number | undefined,
   scripted: { script: string | null; steps: BrowserOpStep[]; headed: boolean | null } | null = null,
   label: string = item.name,
+  direct = true,
 ): BrowserOpCard {
   const startedAt = item.ts ? Date.parse(item.ts) : now;
   const running = item.status === "running";
   const measured = running ? Math.max(0, now - startedAt) : item.durationMs ?? null;
-  const steps = scripted ? scripted.steps : parseSteps(item.args, item.name);
+  const output = (running ? item.partialResult ?? item.result : item.result) ?? "";
+  // shell 跑的脚本：脚本自己在输出里报了做了什么，就以输出为准；输出里认不出东西（还没开跑、执行器不报）才用源码猜的。
+  const reported = direct ? [] : outputSteps(output);
+  const fromOutput = reported.some((step) => step.kind !== "run");
+  const steps = fromOutput ? reported : scripted ? scripted.steps : parseSteps(item.args, item.name);
   const silentFor = lastOutputAt === undefined ? null : Math.max(0, now - lastOutputAt);
   return {
     toolCallId: item.toolCallId,
@@ -997,16 +1030,78 @@ function card(
     state: stateOf(item, measured ?? 0, thresholds),
     silent: running && silentFor !== null && silentFor >= thresholds.silentMs,
     silentFor,
-    looping: steps.some((step) => (step.repeat ?? 1) >= thresholds.loopCount),
+    looping: running && fromOutput && steps.some((step) => (step.repeat ?? 1) >= thresholds.loopCount),
+    stepSource: fromOutput ? "output" : direct ? "call" : "script",
     intent: intent.slice(0, 280),
     steps,
-    output: (running ? item.partialResult ?? item.result : item.result) ?? "",
+    output,
     headed: scripted ? scripted.headed : headedOf(item),
   };
 }
 
 /** 最多拆多少步：一次 `browser_exec` 里塞几十行很常见，再多也读不完。 */
 export const MAX_STEPS = 40;
+
+/** 从运行输出里最多留多少步：跑着的时候最新的最要紧，所以超了丢最前面的。 */
+export const MAX_OUTPUT_STEPS = 80;
+
+/**
+ * 脚本运行输出里认得出的行，变成步骤：执行器自己报的动作（`step 手順1：…`）、断言（`OK …` / `NG …` / `✓` / `not ok`）、
+ * 读到的值（`data: k = v`、`db: …`）、旁白（`note: …`）、存下的截图和录像、`=== 文件名` 段头。
+ * 一行都认不出就是空数组，调用方回到源码去猜。
+ */
+export function outputSteps(output: string): BrowserOpStep[] {
+  const steps: BrowserOpStep[] = [];
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: 去掉终端颜色码
+  for (const raw of output.replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/)) {
+    const step = outputStep(raw.trim());
+    if (step) steps.push(step);
+  }
+  return mergeRepeats(steps).slice(-MAX_OUTPUT_STEPS);
+}
+
+const OUT_HEADER = /^={2,}\s*(.+?)\s*=*$/;
+const OUT_ACT = /^(?:\[(?:step|action)\]|(?:step|action)\s*[:：]?|>>|▶|►)\s*(.+)$/i;
+const OUT_ACT_CJK = /^((?:手順|ステップ|步骤|操作)\s*\d*\s*[:：].+)$/;
+const OUT_PASS = /^(?:\[?(?:OK|PASS(?:ED)?)\]?|ok\s+\d+(?:\s+-)?|✓|✔|√)\s*[:：]?\s+(.+)$/;
+const OUT_FAIL = /^(?:\[?(?:NG|FAIL(?:ED)?|ERROR)\]?|not ok\s+\d+(?:\s+-)?|✗|✘|✖|×)\s*[:：]?\s+(.+)$/;
+const OUT_VERDICT = /^=>\s*(OK|PASS(?:ED)?|NG|FAIL(?:ED)?|ERROR)\b\s*(.*)$/i;
+const OUT_VALUE = /^(?:data|db|value|read|got)\s*[:：]\s*(.+)$/i;
+const OUT_NOTE = /^(?:note|info)\s*[:：]\s*(.+)$/i;
+const OUT_FILE = /^(?:video|shot|screenshot|saved?|wrote|录像|截图)\s*[:：]?\s+(\S.*\.(?:png|jpe?g|webp|gif|mp4|webm|pdf))$/i;
+
+function outputStep(line: string): BrowserOpStep | null {
+  if (!line) return null;
+  const header = OUT_HEADER.exec(line);
+  if (header) return /^(?:summary|results?|total)$/i.test(header[1]) ? null : { kind: "run", target: clip(header[1]) };
+  const verdict = OUT_VERDICT.exec(line);
+  if (verdict) return { kind: "check", ok: /^(?:OK|PASS)/i.test(verdict[1]), target: clip(verdict[2] || verdict[1]) };
+  const act = OUT_ACT.exec(line) ?? OUT_ACT_CJK.exec(line);
+  if (act) return { kind: "act", target: clip(act[1]) };
+  const pass = OUT_PASS.exec(line);
+  if (pass) return checkStep(true, pass[1]);
+  const fail = OUT_FAIL.exec(line);
+  if (fail) return checkStep(false, fail[1]);
+  const value = OUT_VALUE.exec(line);
+  if (value) return { kind: "value", target: clip(value[1]) };
+  const note = OUT_NOTE.exec(line);
+  if (note) return { kind: "print", target: clip(note[1]) };
+  const file = OUT_FILE.exec(line);
+  return file ? { kind: "file", target: file[1] } : null;
+}
+
+/** 断言行：标题留下；没过的把 `actual=… expected=…` 也带上，过了的就不占地方。 */
+function checkStep(ok: boolean, text: string): BrowserOpStep {
+  const cut = /\s{2,}(?=actual\s*=|expected\s*=|got\s*=)/i.exec(text);
+  const label = cut ? text.slice(0, cut.index) : text;
+  const detail = cut ? collapse(text.slice(cut.index)) : "";
+  return ok || !detail ? { kind: "check", ok, target: clip(label) } : { kind: "check", ok, target: clip(label), name: clip(detail) };
+}
+
+function clip(text: string, max = 160): string {
+  const flat = collapse(text);
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
 
 const KIND_BY_NAME: Record<string, BrowserOpStepKind> = {
   goto_url: "nav",
@@ -1209,6 +1304,9 @@ function parseScriptSteps(source: string, headed: boolean | null): BrowserOpStep
     }
     const log = /^(?:console\.log|print)\s*\(\s*f?(['"`])([\s\S]*?)\1/.exec(line);
     if (log) steps.push({ kind: "print", target: collapse(log[2]).slice(0, 80) });
+    // 自家执行器的旁白函数（`step('手順1：…')`、`test.step('…')`）：真动作多半封装在帮手函数里，这句话才说得清在做什么。
+    const narrate = /^(?:await\s+)?(?:test\.)?(?:step|narrate|section|describe)\s*\(\s*f?(['"`])([\s\S]*?)\1/.exec(line);
+    if (narrate) steps.push({ kind: "act", target: collapse(narrate[2]).slice(0, 120) });
     for (const match of line.matchAll(SCRIPT_ACTION)) {
       const action = SNAKE_ACTION[match[1]] ?? match[1];
       const kind = SCRIPT_KIND[action];
@@ -1352,7 +1450,7 @@ export function foldedSteps(steps: BrowserOpStep[]): BrowserOpStep[] {
 }
 
 /** 折叠行认作「操作」的类型。`launch` / `tab` 不进来：「启动浏览器」「切换标签」每支脚本都写。 */
-const FOLDED_OPS: readonly BrowserOpStepKind[] = ["nav", "click", "input", "js", "cdp", "scroll", "run", "call", "raw"];
+const FOLDED_OPS: readonly BrowserOpStepKind[] = ["nav", "click", "input", "js", "cdp", "scroll", "run", "call", "raw", "act"];
 
 /** 兜底时也不要的：旁白与等待不是「做了什么」。 */
 const FOLDED_NOISE: readonly BrowserOpStepKind[] = ["print", "wait"];

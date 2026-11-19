@@ -173,11 +173,34 @@ test("跑着的时候输出取这轮的 partial，不是最终 result；阈值�
   assert.equal(done.output, "ok");
 });
 
-test("打转：同一动作连续三次 → 标 looping，那一步带 repeat=3", () => {
+test("打转：代码里写了三次同一动作不算打转（那只是猜的），步骤仍带 repeat=3", () => {
   const code = ["goto_url('http://x/')", "goto_url('http://x/')", "goto_url('http://x/')", "print('hi')"].join("\n");
-  const card = browserOpsView({ ...base, items: [user("u1", 0), bu("t1", 10, code, { durationMs: 1_000 })] }).cards[0];
-  assert.equal(card.looping, true);
-  assert.equal(card.steps[0].repeat, 3);
+  const done = browserOpsView({ ...base, items: [user("u1", 0), bu("t1", 10, code, { durationMs: 1_000 })] }).cards[0];
+  assert.equal(done.looping, false);
+  assert.equal(done.steps[0].repeat, 3);
+  const running = browserOpsView({ ...base, now: T0 + 15_000, items: [user("u1", 0), bu("t1", 10, code, { status: "running" })] }).cards[0];
+  assert.equal(running.looping, false);
+});
+
+test("打转：连着三次一模一样的浏览器调用、第三次还在跑 → 标 looping；跑完就不标", () => {
+  const snap = (id, sec, extra) => tool(id, sec, "agent_browser", { args: ["snapshot", "-i"] }, extra);
+  const items = (last) => [user("u1", 0), snap("a1", 1, { durationMs: 500 }), snap("a2", 3, { durationMs: 500 }), snap("a3", 5, last)];
+  const live = browserOpsView({ ...base, now: T0 + 6_000, items: items({ status: "running" }) });
+  assert.equal(live.cards[0].looping, true);
+  assert.equal(live.cards[1].looping, false);
+  const done = browserOpsView({ ...base, items: items({ durationMs: 500 }) });
+  assert.ok(done.cards.every((card) => !card.looping));
+});
+
+test("打转：脚本运行输出里连着报同一步、还在跑 → 标 looping", () => {
+  const items = (extra) => [
+    user("u1", 0),
+    wrote("w1", 1, "/w/t.py", "p.locator('#a').click()"),
+    tool("b1", 2, "bash", { command: "bash e2e.sh /w /w/t.py" }, extra),
+  ];
+  const out = "step 点「保存」\nstep 点「保存」\nstep 点「保存」\n";
+  assert.equal(browserOpsView({ ...base, now: T0 + 10_000, items: items({ status: "running", partialResult: out }) }).cards[0].looping, true);
+  assert.equal(browserOpsView({ ...base, items: items({ result: out, durationMs: 9_000 }) }).cards[0].looping, false);
 });
 
 test("失败的工具调用 → failed，不冒充 done", () => {
@@ -657,4 +680,73 @@ test("命令关键词：命令里出现就算（认不出的自家执行器）�
   const view = browserOpsView({ ...base, items, commands: ["e2e.sh"] });
   assert.equal(view.cards.length, 1);
   assert.equal(view.cards[0].steps[0].kind, "run");
+});
+
+// ---------------------------------------------------------------- D327 第二轮：步骤以运行输出为准
+const E2E_OUT = [
+  "=== TC-01_basic_info_edit_ng.py",
+  "  db: 操作前：媒体明細 -> 1 rows",
+  "  OK 操作前：媒体明細の掲載期間 = 2026/10/30~10/31  actual=[('2026-10-30', '2026-10-31')] expected=[('2026-10-30', '2026-10-31')]",
+  "  step 手順1：媒体明細 P2611000179-2 の「基本情報編集」を押す",
+  "  data: 開いたダイアログ = 基本情報編集ダイアログ",
+  "  step 手順2：掲載期間の From を 2026/10/30 → 2026/10/31 に変更",
+  "  NG 画面：変更後の掲載期間 = 2026/10/31~2026/10/31  actual=('2026/10/30', '2026/10/31') expected=('2026/10/31', '2026/10/31')",
+  "  note: 受注担当欄の警告は無関係",
+  "  video C:\\api\\.scratch\\casph30inc-18325\\e2e\\videos\\TC-01.mp4",
+  "  => NG (68.6s)",
+  "",
+  "=== summary",
+  "NG       TC-01",
+].join("\n");
+
+const e2eRun = (extra) => [
+  user("u1", 0),
+  readFile("r1", 1, "C:/api/.scratch/casph30inc-18325/e2e/cases/TC-01_basic_info_edit_ng.py", TC01),
+  tool("b1", 9, "bash", { command: 'bash "C:/api/.agents/skills/cas3-plan-e2e/scripts/e2e.sh" --video W "C:/api/.scratch/casph30inc-18325/e2e/cases/TC-01_basic_info_edit_ng.py"' }, extra),
+];
+
+test("脚本卡：输出里报了做了什么，就按输出列步骤（动作、断言、读到的值、录像）", () => {
+  const [card] = browserOpsView({ ...base, items: e2eRun({ result: E2E_OUT, durationMs: 70_000 }) }).cards;
+  assert.equal(card.stepSource, "output");
+  assert.deepEqual(card.steps.slice(0, 4), [
+    { kind: "run", target: "TC-01_basic_info_edit_ng.py" },
+    { kind: "value", target: "操作前：媒体明細 -> 1 rows" },
+    { kind: "check", ok: true, target: "操作前：媒体明細の掲載期間 = 2026/10/30~10/31" },
+    { kind: "act", target: "手順1：媒体明細 P2611000179-2 の「基本情報編集」を押す" },
+  ]);
+  assert.ok(card.steps.some((s) => s.kind === "check" && s.ok === false && s.target === "画面：変更後の掲載期間 = 2026/10/31~2026/10/31" && /actual=/.test(s.name ?? "")), JSON.stringify(card.steps));
+  assert.ok(card.steps.some((s) => s.kind === "print" && s.target === "受注担当欄の警告は無関係"));
+  assert.ok(card.steps.some((s) => s.kind === "file" && s.target.endsWith("TC-01.mp4")));
+  assert.ok(card.steps.some((s) => s.kind === "check" && s.ok === false && s.target === "(68.6s)"));
+  assert.ok(!card.steps.some((s) => s.target === "summary"));
+  // 折叠行说的是动作，不是「运行 xx」
+  assert.ok(foldedSteps(card.steps).some((s) => s.kind === "act"));
+});
+
+test("脚本卡：跑着的时候按已有输出实时列；还没输出东西时回到源码猜，并标 script", () => {
+  const half = E2E_OUT.split("\n").slice(0, 4).join("\n");
+  const [live] = browserOpsView({ ...base, now: T0 + 20_000, items: e2eRun({ status: "running", partialResult: half }) }).cards;
+  assert.equal(live.stepSource, "output");
+  assert.equal(live.steps.at(-1).kind, "act");
+  const [early] = browserOpsView({ ...base, now: T0 + 10_000, items: e2eRun({ status: "running", partialResult: "" }) }).cards;
+  assert.equal(early.stepSource, "script");
+  assert.ok(early.steps.length > 0);
+});
+
+test("源码兜底：执行器的旁白函数 step('…') / test.step('…') 记成动作", () => {
+  const src = ["step(f'手順1：メディアプラン詳細を開く（{PLAN}）')", "plan.goto_plan(p, PLAN)", "p.locator('#save').click()", "await test.step('ログインする', async () => {})"].join("\n");
+  const [card] = browserOpsView({
+    ...base,
+    items: [user("u1", 0), wrote("w1", 1, "/w/t.py", src), tool("b1", 2, "bash", { command: "bash e2e.sh /w /w/t.py" }, { durationMs: 1_000, result: "done" })],
+  }).cards;
+  assert.equal(card.stepSource, "script");
+  assert.equal(card.steps[0].kind, "act");
+  assert.equal(card.steps[0].target, "手順1：メディアプラン詳細を開く（{PLAN}）");
+  assert.ok(card.steps.some((s) => s.kind === "act" && s.target === "ログインする"), JSON.stringify(card.steps));
+});
+
+test("浏览器工具卡不读输出（agent_browser 的快照里也有 ✓ 行）", () => {
+  const [card] = browserOpsView({ ...base, items: [user("u1", 0), tool("a1", 1, "agent_browser", { args: ["click", "@e3"] }, { durationMs: 300, result: "✓ Done\nOK clicked" })] }).cards;
+  assert.equal(card.stepSource, "call");
+  assert.deepEqual(card.steps, [{ kind: "click", target: "@e3" }]);
 });

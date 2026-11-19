@@ -1745,6 +1745,11 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .browser-steps { display: flex; flex-direction: column; gap: 2px; min-width: 0; margin: 0; padding: 0; list-style: none; }
 .browser-steps li { display: flex; gap: 5px; min-width: 0; color: var(--text); font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .browser-steps li::before { content: "·"; flex: none; color: var(--faint); }
+.browser-steps li.act { color: var(--text); font-weight: 600; }
+.browser-steps li.pass::before { content: "✓"; color: var(--ok); }
+.browser-steps li.fail { color: var(--danger); }
+.browser-steps li.fail::before { content: "✗"; color: var(--danger); }
+.browser-meta .browser-src { color: var(--muted, var(--faint)); font-style: italic; }
 .browser-empty { color: var(--faint); font-size: 11.5px; }
 .browser-out { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .browser-out-toggle { align-self: flex-start; padding: 0; border: 0; background: transparent; color: var(--faint); font: inherit; font-size: 10.5px; cursor: pointer; }

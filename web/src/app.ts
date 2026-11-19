@@ -17422,10 +17422,17 @@ export class App {
     meta.append(el("span", "", card.script ? `${card.tool} · ${card.script}` : card.tool));
     if (card.subagent) meta.append(el("span", "", tr("子代理 {p1}", { p1: card.subagent })));
     meta.append(el("span", "", card.headed === null ? tr("有头无头未知") : card.headed ? tr("有头视图") : tr("无头")));
+    if (card.stepSource === "output") meta.append(el("span", "browser-src", tr("步骤来自运行输出")));
+    else if (card.stepSource === "script") meta.append(el("span", "browser-src", tr("步骤是从脚本源码推测的")));
     body.append(meta);
     if (card.steps.length) {
       const steps = el("ol", "browser-steps");
-      for (const step of card.steps) steps.append(el("li", "", this.browserStepText(step)));
+      for (const step of card.steps) {
+        const tone = step.kind === "check" ? (step.ok ? "pass" : "fail") : step.kind === "act" ? "act" : "";
+        const li = el("li", tone, this.browserStepText(step));
+        if (step.kind === "check" && step.name) li.title = step.name;
+        steps.append(li);
+      }
       body.append(steps);
     } else {
       body.append(el("div", "browser-empty", tr("这次调用没有可拆的操作")));
@@ -17503,6 +17510,21 @@ export class App {
         break;
       case "call":
         text = step.name ? tr("调用 {p1}", { p1: step.name }) : tr("未知操作");
+        break;
+      case "act":
+        // 执行器自己说的话（「手順1：…を押す」）原样显示，不加前缀：它就是人话。
+        text = target || tr("动作");
+        break;
+      case "check":
+        // 展开时 ✓/✗ 由样式画在行首（li.pass / li.fail），文字里只在折叠行带。
+        text = coarse ? `${step.ok ? "✓" : "✗"} ${target}` : target;
+        if (!step.ok && step.name && !coarse) text += ` · ${step.name}`;
+        break;
+      case "value":
+        text = tr("读到 · {p1}", { p1: target });
+        break;
+      case "file":
+        text = /\.(?:mp4|webm)$/i.test(target) ? tr("录像 {p1}", { p1: baseNameOf(target) }) : tr("存下 {p1}", { p1: baseNameOf(target) });
         break;
       default:
         text = target ? tr("原样执行 · {p1}", { p1: target }) : tr("原样执行");
@@ -19297,6 +19319,11 @@ function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
 }
 
 /** 折叠行里的网址省掉协议名：一串「打开 …」本来就挤，`https://` 每段占 8 个字什么也没说。 */
+/** 路径只留文件名（Windows 与 POSIX 分隔符都认）。 */
+function baseNameOf(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 function shortUrl(target: string): string {
   return target.replace(/^https?:\/\//i, "");
 }
