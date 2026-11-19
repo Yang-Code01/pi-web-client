@@ -60,8 +60,8 @@ export class Manage {
   }
 
   /**
-   * Q-022: a session created from the pin strip's ＋ arrives pinned. Appended, not unshifted, so
-   * it lands right next to the button that made it instead of jumping over older pins.
+   * D327 (was Q-022, strip ＋ only): every newly created session arrives pinned. Appended, not
+   * unshifted, so it lands right next to the strip's ＋ instead of jumping over older pins.
    */
   pinLast(id: string): void {
     if (!id) return;

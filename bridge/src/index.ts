@@ -2480,7 +2480,7 @@ async function main(): Promise<void> {
      * manage 的广播一律带上工作区快照（#94）：前端拿到的会话、分组、置顶是同一时刻的一份状态，
      * 否则一次拖排之后两个列表会互相打架。
      */
-    const manageSnapshot = () => ({ manage: sessions.manage.snapshot(), workspace: sessions.workspaces.snapshot() });
+    const manageSnapshot = () => sessions.manageSnapshot();
 
     /**
      * 补一次工作区缓存（git 是子进程，慢），有改动才广播。页面进来时跑一次：worktree 在这时候
@@ -2825,13 +2825,11 @@ async function main(): Promise<void> {
             // #28: CLI flags for this session, validated before anything is spawned.
             const launch = cleanLaunch(msg.options);
             const session = await sessions.create(String(msg.cwd || process.cwd()), name, launch);
-            // Q-022: created from the pin strip's ＋ → pinned at the end of the strip, and every
-            // client hears about the arrangement (the strip is a projection of manage.pin).
-            if (msg.pin) sessions.pinLast(session.state.id);
+            // D327: sessions.create() pins every new session at the end of the strip and broadcasts
+            // the arrangement itself, whichever entry made it; an old page's `pin` flag is ignored.
             (ws as any).watching = session.state.id;
             send(frameFor(ws, { ...sessionFrameOf(session.pagedSnapshot()), trust: await trustFor(session.state.cwd) }));
             broadcast({ type: "session.state", session: session.state });
-            if (msg.pin) broadcast({ type: "manage", ...manageSnapshot() });
             return;
           }
           case "mkdir": {

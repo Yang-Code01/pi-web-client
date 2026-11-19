@@ -6388,3 +6388,18 @@ Esc 之后 dialog: 0
 **取舍：** 没有让 worker 自己在可见窗口里跑（那样进度也能看见）。worker 必须先 build、再杀桥，进度已经在页面上轮询显示，再开一扇窗口只会多一扇。也没改 bridge-update skill，D254 规定两者不共用入口。
 
 **验证：** `node bridge/tests/hotdeploy-unit.mjs` 新增一段静态守卫：`scripts/hotdeploy*.mjs` 里每一处 `spawnSync(` 都必须带 `windowsHide`。去掉 `hotdeploy-git.mjs` 里的那一个，守卫会变红。`node bridge/tests/hotdeploy-window-e2e.mjs`（Windows，`npm run test:hotdeploy-window`）用一份假桥覆盖三件事：`windowHostOf` 认得本端口、不认别的端口；有标记时同一父 pid 原地重起、标记被收走；没有标记时窗口随桥关闭。把标记写到别的路径，这段测试会变红。`hotdeploy-stash-unit.mjs` 在 main 上本来就红，与本条无关：临时目录在这台机器上是 8.3 短路径（`YANGQM~1.HYR`），`occupiedBy()` 把它误判成「已被别的 worktree 检出」。
+
+## D327 新建即置顶：所有入口建出来的会话都落到 pin 末尾（取代 Q-022「只有横条 ＋ 置顶」，2026-11-19）
+
+**问题：** 用户报「Jira 里交给 agent → 新开一个会话，建出来没有星标」。查下来是一类问题：只有横条 ＋、工作区竖列 ＋、工作区弹层「＋ 新会话」三处传了 `openNewSessionSheet(true)`，`create` 帧才带 `pin: true`；左栏「开新会话」、`/new`、快捷键、新建空工作区后弹出的面板、所有「交给 agent → 新开会话」（Jira / 笔记 / 失败面板 / 分支面板 / 目录与仓库，经 `newSessionWith` 写死 `false`）都不置顶。分叉 / 复制、`/import` 由桥直接建，没有 pin 的概念；只有交接「接棒」在 `startHandoff` 里自己 `pinLast`。同一件事三种行为，加入口还会再漏。
+
+**决定：** 置顶由桥在「会话真正建出来」的地方统一做，页面不再传 `pin`：
+
+- `SessionManager.pinNew(id)` = `manage.pinLast(id)` + 广播 `manage`。`create()` 里调用（随手问 `scratch` 除外，#86 它不是用户的会话），所以面板所有入口、交给 agent、在第一条消息处分叉、接棒都自动覆盖；`branchOff` 的 `createBranchedSession` 路径和 `importFile` 各自补一次。
+- 落到 pin **末尾**（`pinLast`，挨着横条的 ＋），不插到最前面。
+- 只加不减：别的会话的置顶一概不动，分叉 / 复制的原会话照旧置顶。（接棒后原会话被归档 —— 那是交接本身的语义，`setArchived` 会把它从 pin 拿掉，与本条无关。）
+- 前端删掉 `openNewSessionSheet(autoPin)` / `createSession(pin)`；桥对旧页面发来的 `pin` 字段直接忽略。
+
+**与 D146 的关系：** D146 规定「打开 ≠ 置顶」，打开不改排列；本条只管「新建」，新建本来就要在列表里给它一个位置，两者不冲突。
+
+**验证：** `node bridge/tests/new-session-pin.mjs`（真桥 + 桩 pi：不带 pin 的 create 落到末尾、第二个排在后面且第一个仍在、`/import` 也置顶、随手问不进 pin）；`node probes/round16-pin.mjs` 改成桩桥对所有 create 置顶，并断言页面不再发 `pin`（顺手修了它在新会话面板改版后失效的路径输入选择器）。
