@@ -17,3 +17,16 @@ export const ACCENTS: Record<string, { accent: string; dim: string }> = {
   rose: { accent: "#fda4af", dim: "#3d1a22" },
   slate: { accent: "#cbd5e1", dim: "#252b36" },
 };
+
+/**
+ * 浅底主题（「晨光」）用的同六种强调色：亮色 tint 在白底上对比不够，换成深一档；
+ * `dim` 反过来是浅底上的淡色填充。id 与上表一一对应。
+ */
+export const ACCENTS_LIGHT: Record<string, { accent: string; dim: string }> = {
+  ice: { accent: "#0369a1", dim: "#dbeefa" },
+  teal: { accent: "#0f766e", dim: "#d5f3ee" },
+  violet: { accent: "#6d28d9", dim: "#ebe4fc" },
+  amber: { accent: "#b45309", dim: "#fbeccc" },
+  rose: { accent: "#be123c", dim: "#fbe0e5" },
+  slate: { accent: "#475569", dim: "#e3e8ef" },
+};

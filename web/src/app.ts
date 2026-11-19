@@ -27,6 +27,7 @@ import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } fro
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
+import { DEFAULT_THEME, THEMES, isTheme, paintTheme, type ThemeId } from "./theme.ts";
 import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
 import { MailConfirmDialog } from "./mailconfirm.ts";
@@ -3900,9 +3901,8 @@ export class App {
     const root = document.documentElement.style;
     root.setProperty("--ui-scale", String(this.prefs.scale));
     this.syncCompact();
-    const accent = ACCENTS[this.prefs.accent] ?? ACCENTS[DEFAULT_PREFS.accent];
-    root.setProperty("--accent", accent.accent);
-    root.setProperty("--accent-dim", accent.dim);
+    // 主题与强调色一起落：浅底主题用深一档的强调色表（theme.ts）。
+    paintTheme(this.prefs.theme, this.prefs.accent);
     // D158：三档文字颜色（--text/--dim/--faint）只有 styles.css 里 [data-text] 那一份，这里只标档位。
     // 读回来时 readPrefs 已经按 TEXT_STEPS 校验过，不会给 CSS 一个没有对应规则的值。
     document.documentElement.dataset.text = this.prefs.text;
@@ -4001,7 +4001,7 @@ export class App {
     const reset = el("button", "btn ghost", tr("恢复默认")) as HTMLButtonElement;
     reset.type = "button";
     reset.dataset.role = "dreset";
-    reset.title = tr("字号、颜色、文字亮度、布局回到默认；语言与界面元素不动");
+    reset.title = tr("字号、主题、颜色、文字亮度、布局回到默认；语言与界面元素不动");
     reset.onclick = () => {
       // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
       // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
@@ -4221,6 +4221,32 @@ export class App {
 
     paintSize(this.prefs.scale);
 
+    // 主题：四颗带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
+    const themePanel = section("theme");
+    const themeChips = el("div", "chips theme-chips");
+    for (const t of THEMES) {
+      const chip = el("button", `chip theme-chip${this.prefs.theme === t.id ? " on" : ""}`);
+      chip.dataset.theme = t.id;
+      chip.title = tr(t.label);
+      const demo = el("span", "theme-demo");
+      demo.style.setProperty("--td-bg", t.demo.bg);
+      demo.style.setProperty("--td-panel", t.demo.panel);
+      demo.style.setProperty("--td-text", t.demo.text);
+      demo.style.setProperty("--td-line", t.demo.line);
+      demo.append(el("span", "td-side"), el("span", "td-l1"), el("span", "td-l2"), el("span", "td-btn"));
+      chip.append(demo, el("span", "theme-chip-label", tr(t.label)));
+      chip.onclick = () => {
+        this.prefs = { ...this.prefs, theme: t.id };
+        savePrefs(this.prefs);
+        this.applyPrefs();
+        for (const other of themeChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
+      };
+      themeChips.append(chip);
+    }
+    const themeRow = this.stRow(tr("配色主题"), tr("换整套底色、面板、线条与文字；强调色与文字亮度在「颜色」里另调"), themeChips);
+    themeRow.classList.add("wide");
+    themePanel.append(themeRow);
+
     const colorPanel = section("color");
     const swatches = el("div", "swatches");
     for (const [id, label] of ACCENT_LABELS) {
@@ -4315,6 +4341,7 @@ export class App {
         label: tr("外观"),
         items: [
           { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
+          { sec: "theme", label: tr("配色主题"), sub: tr("整套底色、线条与文字；默认是午夜") },
           { sec: "color", label: tr("颜色"), sub: tr("强调色与文字亮度") },
           { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
           { sec: "chrome", label: tr("界面元素"), sub: tr("顶栏与输入框下沿的按钮；点预览里的按钮就收起 / 放回") },
@@ -4349,7 +4376,9 @@ export class App {
             { label: tr("语言"), value: lang, sub: tr("界面与推送") },
             { label: tr("字号"), value: `${scale}%`, sub: scale === Math.round(DEFAULT_PREFS.scale * 100) ? tr("默认") : tr("已调整") },
           ]
-        : sec === "color"
+        : sec === "theme"
+          ? [{ label: tr("配色主题"), value: tr(THEMES.find((t) => t.id === this.prefs.theme)?.label ?? this.prefs.theme), sub: this.prefs.theme === DEFAULT_PREFS.theme ? tr("默认") : tr("已调整") }]
+          : sec === "color"
           ? [
               { label: tr("强调色"), value: tr(accent), sub: tr("按钮与选中项") },
               { label: tr("文字亮度"), value: tr(text), sub: tr("三档文字一起调") },
@@ -19996,6 +20025,8 @@ function writeFlag(key: string, value: boolean): void {
 
 type Prefs = {
   scale: number;
+  /** 整套配色（theme.ts 的稳定 id）；默认 midnight 就是原来那套。 */
+  theme: ThemeId;
   accent: string;
   text: "soft" | "normal" | "bright";
   lang: Lang;
@@ -20020,6 +20051,7 @@ const DEFAULT_SCALE = 1.25;
 
 const DEFAULT_PREFS: Prefs = {
   scale: DEFAULT_SCALE,
+  theme: DEFAULT_THEME,
   accent: "ice",
   text: "normal",
   lang: "zh-Hans",
@@ -20710,6 +20742,7 @@ function readPrefs(): Prefs {
     const accent = LEGACY_ACCENTS[String(p?.accent)] ?? String(p?.accent);
     return {
       scale: prefScale(p?.scale),
+      theme: isTheme(p?.theme) ? p.theme : DEFAULT_PREFS.theme,
       accent: ACCENTS[accent] ? accent : DEFAULT_PREFS.accent,
       text: TEXT_STEPS.some(([k]) => k === p?.text) ? (p.text as Prefs["text"]) : DEFAULT_PREFS.text,
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。

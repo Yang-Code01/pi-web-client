@@ -270,9 +270,9 @@
   font-size: 12.5px;
   line-height: 1.5;
 }
-.hot-banner.warn { color: #f5cf7a; border-color: var(--warn-dim); background: var(--warn-bg); }
-.hot-banner.ok { color: #9be9b8; border-color: var(--ok-dim); background: var(--ok-bg); }
-.hot-banner.err { color: #ffa3b2; border-color: var(--danger-dim); background: var(--danger-bg); }
+.hot-banner.warn { color: color-mix(in srgb, var(--warn) 55%, var(--text)); border-color: var(--warn-dim); background: var(--warn-bg); }
+.hot-banner.ok { color: color-mix(in srgb, var(--ok) 55%, var(--text)); border-color: var(--ok-dim); background: var(--ok-bg); }
+.hot-banner.err { color: color-mix(in srgb, var(--danger) 55%, var(--text)); border-color: var(--danger-dim); background: var(--danger-bg); }
 .hot-banner b { font-weight: 600; }
 .hot-banner__body { display: flex; flex-direction: column; gap: 8px; }
 .hot-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
