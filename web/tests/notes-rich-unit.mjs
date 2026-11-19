@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   escapeHtml,
   fenceLanguage,
+  hasAnyStructure,
   hasRichMarkup,
   isRichEmpty,
   plainText,
@@ -31,6 +32,25 @@ test("白名单里的结构活着出来", () => {
 
 test("script / iframe / style 连内容一起扔掉", () => {
   assert.equal(sanitizeRich('<p>a</p><script>alert(1)</script><iframe src="x">y</iframe><style>p{}</style>'), "<p>a</p>");
+});
+
+// 浏览器 Ctrl+C 网页正文时，clipboard 的 html 是 `<html><head><meta …><style>…</style></head><body>…</body></html>`。
+// 曾经两条路都会把正文吞掉：#keep 只压栈不挂树（后续内容都塞进孤儿节点），#drop 又丢了自己的标签名
+// （`</head>` 对不上，后面的内容全部被判在丢弃区）—— 结果 Ctrl+V 净化成空串，静默无反应。
+test("浏览器形状的 html 和分区容器不吞正文", () => {
+  // <div> 是浏览器 Ctrl+C 时逐行的包装：升成段落才不会被拼成一行。
+  assert.equal(sanitizeRich("<div>分区里的字</div>"), "<p>分区里的字</p>");
+  assert.equal(sanitizeRich("<div>line one</div><div>line two</div>"), "<p>line one</p><p>line two</p>");
+  assert.equal(sanitizeRich("<div><p>已经是段落</p></div>"), "<p>已经是段落</p>");
+  assert.equal(sanitizeRich("<head></head><p>x</p>"), "<p>x</p>");
+  assert.equal(
+    sanitizeRich('<html><head><meta charset="utf-8"><style>p{}</style></head><body><div><strong>Error</strong>: boom</div></body></html>'),
+    "<p><strong>Error</strong>: boom</p>",
+  );
+  assert.equal(sanitizeRich("<p>a</p><script>x()</script><p>b</p>"), "<p>a</p><p>b</p>");
+  // img / embed 没有闭合标签，不能把 #drop 压进栈里赖着不走。
+  assert.equal(sanitizeRich("<p>a</p><img src=x><p>b</p>"), "<p>a</p><p>b</p>");
+  assert.equal(sanitizeRich("<p>a</p><svg><title>t</title></svg><p>b</p>"), "<p>a</p><p>b</p>");
 });
 
 test("事件属性、class、id 都不留，但标签本身还在", () => {
@@ -106,6 +126,13 @@ test("hasRichMarkup：块标签和行内标签都算富文本", () => {
   assert.equal(hasRichMarkup("用的是 <pre> 标签"), true);
   assert.equal(hasRichMarkup("时间 <13:45:02> 报错"), false);
   assert.equal(hasRichMarkup("金额 a < b"), false);
+});
+
+test("hasAnyStructure：包裹层不算结构，块容器 / 行内 / 表格算", () => {
+  assert.equal(hasAnyStructure("<html><head></head><body>纯文字</body></html>"), false);
+  assert.equal(hasAnyStructure("<section>一段</section>"), true);
+  assert.equal(hasAnyStructure('<span style="color:red">红</span>'), true);
+  assert.equal(hasAnyStructure("<table><tr><td>x</td></tr></table>"), true);
 });
 
 test("纯文本回填：空行切段落、单换行当 br，特殊字符转义", () => {
