@@ -1745,6 +1745,11 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .browser-steps { display: flex; flex-direction: column; gap: 2px; min-width: 0; margin: 0; padding: 0; list-style: none; }
 .browser-steps li { display: flex; gap: 5px; min-width: 0; color: var(--text); font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .browser-steps li::before { content: "·"; flex: none; color: var(--faint); }
+.browser-steps li.act { color: var(--text); font-weight: 600; }
+.browser-steps li.pass::before { content: "✓"; color: var(--ok); }
+.browser-steps li.fail { color: var(--danger); }
+.browser-steps li.fail::before { content: "✗"; color: var(--danger); }
+.browser-meta .browser-src { color: var(--muted, var(--faint)); font-style: italic; }
 .browser-empty { color: var(--faint); font-size: 11.5px; }
 .browser-out { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .browser-out-toggle { align-self: flex-start; padding: 0; border: 0; background: transparent; color: var(--faint); font: inherit; font-size: 10.5px; cursor: pointer; }
@@ -5559,3 +5564,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .exec-copilot-fill { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
 .exec-copilot-foot { overflow: hidden; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .exec-copilot-warn { color: var(--danger); font-size: 10px; }
+/* D330：执行页里认不出的 shell 步骤，悬停才露出「这是浏览器操作」 */
+.exec-step-entry.markable { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.exec-step-entry.markable > .exec-subagent { grid-column: 1 / -1; }
+.exec-step-mark { padding: 2px 4px; border: 0; border-radius: 4px; background: transparent; font-size: 11px; cursor: pointer; opacity: 0; }
+.exec-step-entry:hover .exec-step-mark, .exec-step-mark:focus-visible { opacity: .75; }
+.exec-step-mark:hover { opacity: 1; background: var(--panel-2); }
+@media (hover: none) { .exec-step-mark { opacity: .6; } }

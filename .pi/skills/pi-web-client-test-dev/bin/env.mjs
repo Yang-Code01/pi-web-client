@@ -121,7 +121,23 @@ function hasPeer(dir) {
 function needsBuild(dir) {
   const want = ["bridge/dist/index.js", "web/dist/index.html"];
   if (hasPeer(dir)) want.push("peer/dist/index.js", "web/dist/peer.html");
-  return want.filter((rel) => !fs.existsSync(path.join(dir, rel)));
+  const missing = want.filter((rel) => !fs.existsSync(path.join(dir, rel)));
+  // 产物在但比源码旧，也得重建：否则改了 web/src 再重启，页面还是旧的（D330 验收时踩过）。
+  const stale = [["bridge/src", "bridge/dist/index.js"], ["web/src", "web/dist/index.html"], ["peer/src", "peer/dist/index.js"]]
+    .filter(([src, out]) => fs.existsSync(path.join(dir, src)) && fs.existsSync(path.join(dir, out)))
+    .filter(([src, out]) => newestMtime(path.join(dir, src)) > fs.statSync(path.join(dir, out)).mtimeMs)
+    .map(([, out]) => `${out}（比源码旧）`);
+  return [...missing, ...stale];
+}
+
+function newestMtime(root) {
+  let newest = 0;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+    const full = path.join(root, entry.name);
+    newest = Math.max(newest, entry.isDirectory() ? newestMtime(full) : fs.statSync(full).mtimeMs);
+  }
+  return newest;
 }
 
 function ensureDeps(dir) {
@@ -209,7 +225,9 @@ async function cmdStart(opts) {
   const head = git(dir, "rev-parse", "--short", "HEAD");
   const dirty = git(dir, "status", "--porcelain").length > 0;
 
-  if (needsBuild(dir).length || opts.build) {
+  const outdated = needsBuild(dir);
+  if (outdated.length || opts.build) {
+    if (outdated.length) say(`要重建：${outdated.join(" / ")}`);
     ensureDeps(dir);
     build(dir);
   } else {
