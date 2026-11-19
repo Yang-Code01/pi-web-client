@@ -136,7 +136,7 @@ async function reopenConsole() {
 }
 await enterAttendance();
 check("考勤页能打开", (await page.locator(".at-page").count()) === 1);
-check("考勤页四个页签", (await page.locator(".at-tab").count()) === 4, String(await page.locator(".at-tab").count()));
+check("考勤页五个页签", (await page.locator(".at-tab").count()) === 5, String(await page.locator(".at-tab").count()));
 const toSettings = page.getByRole("button", { name: "去设置", exact: true });
 // 进页先显示「正在读状态…」，未配置态要等 /api/attendance/state 回来才画。
 await toSettings.first().waitFor({ timeout: 10_000 });

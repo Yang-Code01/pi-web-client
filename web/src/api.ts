@@ -1,7 +1,7 @@
 import type { ArtifactDiff, ArtifactList, GitCommitDetail, GitDiff, GitDiffFile, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetEditOp, SheetMatches, SheetMeta, SheetStructOp, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
 import type { MailAccountInput, MailAccountView, MailConfigView, MailDetailView, MailFolderView, MailOAuthLoginView, MailOAuthPollView, MailPolicyView, MailSendInput, MailSummary } from "./mail-shared.ts";
-import type { AttendanceCancelResult, AttendanceReminder, AttendanceReminderRule, AttendanceOvertime, AttendanceRecords, AttendanceState, AttendanceSubmitResult, DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
+import type { AttendanceCancelResult, AttendanceLeave, AttendanceReminder, AttendanceReminderRule, AttendanceOvertime, AttendanceRecords, AttendanceState, AttendanceSubmitResult, DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 import type { HotdeployRemoveResult, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
 import type { CtxInsightData } from "./context-insight-types.ts";
 
@@ -546,7 +546,20 @@ export const api = {
     req<AttendanceCancelResult>(`/api/attendance/overtime/cancel?code=${code}${confirm ? "&confirm=1" : ""}`, {
       method: "POST",
     }),
-  attendancePurge: () => req<{ ok: true }>("/api/attendance/config", { method: "DELETE" }),  attendanceReminder: () => req<AttendanceReminder>("/api/attendance/reminder"),  attendanceReminderSave: (rule: AttendanceReminderRule) => req<AttendanceReminder>("/api/attendance/reminder", { method: "PUT", body: JSON.stringify(rule) }),  /** 立刻发一条测试通知（走系统通知，不受「页面在前台就不弹」的限制）。 */  attendanceReminderTest: () => postJson<{ sent: number; failed: number }>("/api/attendance/reminder/test", {}),
+  attendanceLeave: () => req<AttendanceLeave>("/api/attendance/leave"),
+  attendanceLeaveSubmit: (body: Record<string, unknown>) =>
+    postJson<AttendanceSubmitResult>("/api/attendance/leave", body),
+  attendanceLeaveCancel: (code: number, type: string, confirm = false) =>
+    req<AttendanceCancelResult>(
+      `/api/attendance/leave/cancel?code=${code}&type=${encodeURIComponent(type)}${confirm ? "&confirm=1" : ""}`,
+      { method: "POST" },
+    ),
+  attendancePurge: () => req<{ ok: true }>("/api/attendance/config", { method: "DELETE" }),
+  attendanceReminder: () => req<AttendanceReminder>("/api/attendance/reminder"),
+  attendanceReminderSave: (rule: AttendanceReminderRule) =>
+    req<AttendanceReminder>("/api/attendance/reminder", { method: "PUT", body: JSON.stringify(rule) }),
+  /** 立刻发一条测试通知（走系统通知，不受「页面在前台就不弹」的限制）。 */
+  attendanceReminderTest: () => postJson<{ sent: number; failed: number }>("/api/attendance/reminder/test", {}),
   /** 热部署：换分支 → 编译 → 换进程。写接口只在桥端本机/局域网放行，公网 403。 */
   hotdeploy: () => req<HotdeploySnapshot>("/api/hotdeploy"),
   hotdeployLog: (lines = 160) => req<{ lines: string[] }>(`/api/hotdeploy/log?lines=${lines}`),

@@ -574,3 +574,33 @@ input.at-input[type="date"] {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
+
+/* 必填标记：标签后面一个小红星。 */
+.at-req {
+  color: var(--danger, #d14343);
+  margin-left: 2px;
+}
+
+/* 请假：日期 + 钟点并排。 */
+.at-when {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.at-when > input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.at-when > .at-hour {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+/* 请假规范：表单下面一小段，别抢表单的眼。 */
+.at-rules {
+  margin: 10px 0 12px;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
+  opacity: 0.8;
+}

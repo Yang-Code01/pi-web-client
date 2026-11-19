@@ -400,7 +400,7 @@ const draft = {
   startTime: "2026-11-16T18:00",
   endTime: "2026-11-16T20:00",
   hours: 2,
-  reason: { type: "进度延迟", project: "", detail: "" },
+  reason: { type: "进度延迟", project: "P-001", detail: "联调" },
   workflow: "12&56",
 };
 
@@ -416,7 +416,57 @@ test("checkDraft：逐条毛病", () => {
   assert.equal(M.checkDraft({ ...draft, hours: 0 }).code, "hours_zero");
   assert.equal(M.checkDraft({ ...draft, hours: 5 }).code, "hours_mismatch");
   assert.equal(M.checkDraft({ ...draft, reason: { type: "", project: "", detail: "" } }).code, "reason_type_missing");
+  assert.equal(M.checkDraft({ ...draft, reason: { ...draft.reason, project: "  " } }).code, "project_missing");
+  assert.equal(M.checkDraft({ ...draft, reason: { ...draft.reason, detail: "" } }).code, "detail_missing");
   assert.equal(M.checkDraft({ ...draft, workflow: "&" }).code, "approver_missing");
+});
+
+const leave = {
+  type: "调休",
+  startDay: "2026-11-23",
+  endDay: "2026-11-24",
+  startHour: 9,
+  endHour: 18,
+  reason: "回老家",
+  workflow: "122&11,128",
+};
+
+test("checkLeaveDraft：合格草稿没有毛病，逐条毛病", () => {
+  assert.equal(M.checkLeaveDraft(leave), null);
+  assert.equal(M.checkLeaveDraft({ ...leave, type: "年假" }).code, "type_missing");
+  assert.equal(M.checkLeaveDraft({ ...leave, startDay: "" }).code, "time_missing");
+  assert.equal(M.checkLeaveDraft({ ...leave, startHour: 10 }).code, "hour_invalid");
+  assert.equal(M.checkLeaveDraft({ ...leave, endDay: "2026-11-22" }).code, "time_order");
+  assert.equal(M.checkLeaveDraft({ ...leave, endDay: "2026-11-23", startHour: 14, endHour: 14 }).code, "time_order");
+  assert.equal(M.checkLeaveDraft({ ...leave, reason: " " }).code, "reason_missing");
+  assert.equal(M.checkLeaveDraft({ ...leave, workflow: "&" }).code, "approver_missing");
+  // 「其他」只按天，钟点随便是什么都不拦。
+  assert.equal(M.checkLeaveDraft({ ...leave, type: "其他", startHour: 0, endHour: 0 }), null);
+});
+
+test("leaveOaTimes：按 OA 的格式拼起止时间", () => {
+  assert.deepEqual(M.leaveOaTimes(leave), { start: "2026-11-23 09:00:00", end: "2026-11-24 18:00:00" });
+  assert.deepEqual(M.leaveOaTimes({ ...leave, type: "其他" }), { start: "2026-11-23 00:00:00", end: "2026-11-24 00:00:00" });
+});
+
+test("estimateLeave：工作日整天 8h、半天 4h，跳过休息日；其他按自然日", () => {
+  const work = new Set(["2026-11-23", "2026-11-24"]);
+  assert.deepEqual(M.estimateLeave(leave, work), { value: 16, unit: "h" });
+  assert.deepEqual(M.estimateLeave({ ...leave, endDay: "2026-11-23", endHour: 14 }, work), { value: 4, unit: "h" });
+  assert.deepEqual(M.estimateLeave({ ...leave, endDay: "2026-11-23", startHour: 14 }, work), { value: 4, unit: "h" });
+  // 周六日（11-21/22）不算。
+  assert.deepEqual(M.estimateLeave({ ...leave, startDay: "2026-11-21" }, work), { value: 16, unit: "h" });
+  // 没有日历时按周一到周五。
+  assert.deepEqual(M.estimateLeave({ ...leave, startDay: "2026-11-21" }, null), { value: 16, unit: "h" });
+  assert.deepEqual(M.estimateLeave({ ...leave, type: "其他", startDay: "2026-11-21" }, work), { value: 4, unit: "d" });
+});
+
+test("leaveTypeOf：哪一栏时长有值就是哪种假", () => {
+  assert.equal(M.leaveTypeOf({ compensatory_hours: 16 }), "调休");
+  assert.equal(M.leaveTypeOf({ normal_hours: 4 }), "事假");
+  assert.equal(M.leaveTypeOf({ sick_hours: 8 }), "病假");
+  assert.equal(M.leaveTypeOf({ other_days: 3, other_apply_type: "1" }), "其他");
+  assert.equal(M.leaveTypeOf({ compensatory_hours: 0, other_apply_type: "0" }), "");
 });
 
 test("checkDraft：差不到一小时不拦（OA 允许按半天取整）", () => {

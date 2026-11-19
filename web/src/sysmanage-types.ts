@@ -310,6 +310,35 @@ export interface AttendanceOvertime {
   userId: number;
 }
 
+/** OA 的一条请假单。时长分四栏，哪栏有值就是哪种假（桥端算好放在 leaveType）。 */
+export interface AttendanceLeaveApply {
+  code: number;
+  name: string;
+  start_time: string;
+  end_time: string;
+  normal_hours: number;
+  compensatory_hours: number;
+  sick_hours: number;
+  other_days: number;
+  other_apply_type: string;
+  reason: string;
+  /** 0 = 还在审批里。 */
+  workflow_result: number;
+  reject_reason: string | null;
+  leaveType: string;
+}
+
+export interface AttendanceLeave {
+  applyList: AttendanceLeaveApply[];
+  workflow: Record<string, unknown>;
+  candidates: AttendanceLeader[];
+  defaultL1: AttendanceLeader[];
+  fixedL2: AttendanceLeader[];
+  /** 调休余额（小时）。 */
+  compensatory: number | null;
+  workdays: string[];
+}
+
 export interface AttendanceSubmitResult {
   needConfirm?: boolean;
   preview?: Record<string, unknown>;
