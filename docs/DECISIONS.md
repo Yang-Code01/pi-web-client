@@ -6336,3 +6336,23 @@ Esc 之后 dialog: 0
 **取舍：** 判定读的是 OA 原始行的请假小时字段（`c_hours` / `t_hours` / `s_hours` / `o_hours` / `bt_hours` 加 `home` / `special_reason`），这些名字是 OA 前端的约定；OA 换字段名这里会静默退回「只看有没有打卡」。整天假按 8 小时判，7.5 小时的年假会被算成缺卡（本机数据里没有这种样本）。时间只比到分钟（`clockOf` 取 `HH:mm`），真实两次打卡若只差几秒也会被当成同一时刻 —— 镜像行的两端是逐字相同的，这个方向宁可多算一次缺卡。
 
 **验证：** `node bridge/tests/attendance-unit.mjs` 57 条全绿（新增六条：`day_type` 1/2/3 都是休息日且 4 不算、全天申请从小时字段认出来、整天请假 / 假日没打卡不算缺卡、上下班同一时刻算缺一次、假日加班进周末桶；改前 8 条红）；`node bridge/tests/attendance-e2e.mjs` 33 条全绿（新增整天调休与假日两行，并把旧版缓存形状 `{weekend:true, raw:{day_type:2}}` 写进去验证重映）；`node web/tests/attendance-unit.mjs` 14 条；`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 i18n / viewport / layers）全绿；把 `.scratch/attendance/att-a.json` + `att-b.json` 的 180 行 raw 直接跑 `summarize`，`missing` 从 5 + 假日误判降到 0。
+
+## D324 文件搜索：每条 SQL 的执行计划钉死，名字子串不再顺着索引回表；重建不清表（2026-11-19）
+
+**问题：** 真机索引 2.06M 行（库 1.0 GB）时，Everything 面板「什么文件都没有了」：状态是「就绪 · 2.06 M 项」，结果区一直空、页脚 0 ms。查询本身没报错，是**慢到出不来**：`node:sqlite` 是同步 API，一条查询跑多久整个 bridge 就停多久，逐键输入又排起一串。用同形状的 2.06M 行合成库（558 MB）逐条计时：
+
+- 每条带卷过滤的 SQL 都写成 `vol IN (?,?,?)`，SQLite 挑了 `idx_files_vol` —— 三个卷就是整张表，再临时排序：空查询 1.0 s，前缀 2.1 s。
+- 前缀写成 `nlow LIKE 'x%'`：默认 LIKE 不分大小写，BINARY 的 `idx_files_nlow` 根本用不上。D321 头注里「前缀 0.4 ms」只在小库、无卷过滤时成立。
+- 名字里没有的词（逐键输入时几乎每一键）会落到子串段：`(nlow LIKE '%x%' OR path LIKE '%x%') ... ORDER BY nlow`，计划是顺着 `idx_files_nlow` 一行一行回表，**单条 21.7 s**。
+- 「重建索引」先 `DELETE FROM files`：真机日志里事件循环停了 17 s（03:22:12 的日志 03:22:29 才落盘），删完库是空的，要等整轮重扫（约一小时）才回来。
+
+**决定：**
+
+- 卷过滤写成 `+vol IN (...)`，一元 `+` 让它不能走 vol 索引；前缀改成 `nlow >= ? AND nlow < ?`（上界拼 U+10FFFF）走名字索引区间；名字子串先在 `idx_files_nlow` 上覆盖扫描拿 rowid（只读索引，不回表），再取那几行；新增 `idx_files_mtime`、`idx_files_size`，空查询按时间 / 大小排直接走索引顺序。
+- **只按名字匹配，搜索词带 `/` 或反斜杠才匹配整条路径**（和 Everything 一致；用户 2026-11-19 选定）。路径子串必须顺序读完整张表（合成库 1.1 s），只在用户明确在搜路径时付这笔账。Windows 上 `/` 当反斜杠用。
+- **重建不清表**：`start()` 不再有 `rebuild` 参数，重建就是再扫一轮，边扫边覆盖，扫完按 gen 删掉本轮没见到的行（`gen < ?` 走 `idx_files_gen`，原来的 `gen != ?` 是全表扫）。重建期间照样能搜。
+- `FileIndex.explain(q, opts)` 返回 `query()` 每段 SQL 的 `EXPLAIN QUERY PLAN`。测试在小库上断言计划形状（没 ANALYZE 时 SQLite 在大小库上的选择一致）：不出现 `idx_files_vol`、有词时不出现 `SCAN files USING INDEX idx_files_nlow`、空查询不出现 `TEMP B-TREE`。
+
+**取舍：** 仍然不上 FTS5 trigram（D321 第 1 条）：名字子串覆盖扫描 2.06M 行约 0.2–0.3 s，够用；trigram 要给路径建就是几个 GB。也没有把查询挪到 worker：计划修好后最慢的是显式路径搜索（~1 s），先不为它引入第二个连接。
+
+**验证：** 合成库上同一组查询：空查询 1004 ms → 5 ms，前缀 2092 ms → 6 ms，不存在的词 1975 ms → 167 ms（子串段 21.7 s → 0.27 s），按大小排 0.7 s → 2 ms；`node bridge/tests/fileindex.mjs` 十项全 ok（新增三项在旧代码上红）；`node probes/filesearch.mjs` ok；`npm --prefix bridge run typecheck`。
