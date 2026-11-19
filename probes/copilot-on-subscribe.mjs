@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import { wsWrapper } from "../tools/paths.mjs";
 
@@ -42,23 +43,45 @@ const login = await fetch(`${BASE}/api/login`, {
 if (!login.ok) fail(`login ${login.status} ${await login.text()}`);
 const cookie = (login.headers.getSetCookie?.() ?? [login.headers.get("set-cookie")])[0].split(";")[0];
 
+/**
+ * 这个会话里到底有没有 copilot 用量 —— 判定跟 bridge 的 `CopilotTally` 一模一样：
+ * `message` 条目且 `message.role === "assistant"` 且 `provider === "github-copilot"`，
+ * 或一条 `custom` / `copilot-credits`。
+ *
+ * 不能只搜字符串：工具输出、模型自述里出现 “github-copilot” 的会话多得很（本项目自己就在
+ * 讲它）—— 实测真的挑中了一个只提到这四个字、一分积分也没有的会话。逐行流式读，命中就停。
+ */
+async function hasCopilotUsage(file) {
+  const rl = readline.createInterface({ input: fs.createReadStream(file, "utf8"), crlfDelay: Infinity });
+  try {
+    for await (const line of rl) {
+      if (!line.includes("github-copilot") && !line.includes("copilot-credits")) continue;
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (entry?.type === "message" && entry.message?.role === "assistant" && entry.message?.provider === "github-copilot") return true;
+      if (entry?.type === "custom" && entry.customType === "copilot-credits") return true;
+    }
+    return false;
+  } finally {
+    rl.close();
+  }
+}
+
 /** 挑一个真有 copilot 用量的会话 —— 探针要能在空仓库 / 纯非 copilot 机器上明确说出「没得测」。 */
-function pickCopilotSession(list) {
+async function pickCopilotSession(list) {
   for (const s of list) {
     if (!s.file || !fs.existsSync(s.file)) continue;
-    let head;
-    try {
-      head = fs.readFileSync(s.file, "utf8");
-    } catch {
-      continue;
-    }
-    if (head.includes("github-copilot")) return s;
+    if (await hasCopilotUsage(s.file)) return s;
   }
   return null;
 }
 
 const listed = await (await fetch(`${BASE}/api/sessions`, { headers: { cookie } })).json();
-const pick = argSession ? (listed.sessions ?? []).find((s) => s.id === argSession) : pickCopilotSession(listed.sessions ?? []);
+const pick = argSession ? (listed.sessions ?? []).find((s) => s.id === argSession) : await pickCopilotSession(listed.sessions ?? []);
 if (!pick) fail(`没有找到带 copilot 用量的会话（共 ${(listed.sessions ?? []).length} 个）`);
 console.log(`## 会话 ${pick.name ?? "?"} ${pick.id}`);
 console.log(`##   ${pick.file}`);
@@ -82,25 +105,27 @@ await new Promise((r, j) => {
 inbox.length = 0;
 
 /**
- * 一次订阅：发出 subscribe，等 session 帧，再从这段时间里找「带 copilot 的那份数据」。
+ * 一次订阅：发出 subscribe，先等 `session` 帧（它前面可能要现算 git trust，首次会慢），
+ * 再从这一刻起数 3 秒找「带 copilot 的那份数据」。
  * 修复前后允许两种形状（session 帧自带 / 紧跟一条 copilot 帧），探针只管前端能不能拿到。
  */
-function subscribeOnce() {
+function subscribeOnce({ waitSessionMs = 10_000, waitCopilotMs = 3000 } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
     const seen = [];
+    let sessionAt = 0;
+    const kinds = () => [...new Set(seen.map((m) => m.type))].join(",") || "（无帧）";
     const tick = () => {
       for (const m of inbox.splice(0)) {
         seen.push(m);
+        if (m.type === "session" && m.sessionId === pick.id && !sessionAt) sessionAt = Date.now();
         const fromFrame = m.type === "session" && m.sessionId === pick.id ? m.copilot : undefined;
         const fromCopilot = m.type === "copilot" && m.sessionId === pick.id ? m : undefined;
         const view = fromFrame ?? fromCopilot;
         if (view && view.hasCopilot === true) return resolve({ ok: true, via: m.type, view, seen });
       }
-      if (Date.now() - started > 3000) {
-        const kinds = [...new Set(seen.map((m) => m.type))].join(",") || "（无帧）";
-        return resolve({ ok: false, seen, kinds });
-      }
+      if (sessionAt && Date.now() - sessionAt > waitCopilotMs) return resolve({ ok: false, seen, kinds: kinds() });
+      if (!sessionAt && Date.now() - started > waitSessionMs) return resolve({ ok: false, seen, kinds: kinds(), slowSession: true });
       setTimeout(tick, 50);
     };
     ws.send(JSON.stringify({ type: "subscribe", sessionId: pick.id }));
@@ -110,7 +135,12 @@ function subscribeOnce() {
 
 let bad = 0;
 for (const round of [1, 2]) {
-  const res = await subscribeOnce();
+  let res = await subscribeOnce();
+  // 刚起来的 bridge 首次算 git trust 能慢过 10 秒 —— 那是环境，不是本 bug；重试一次，不计入结论。
+  if (res.slowSession) {
+    console.error(`## 第 ${round} 次订阅：连上了但 session 帧迟迟不来（收到帧：${res.kinds}）—— 重试一次`);
+    res = await subscribeOnce();
+  }
   if (res.ok) {
     const v = res.view;
     console.log(

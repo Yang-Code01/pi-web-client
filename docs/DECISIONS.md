@@ -6310,11 +6310,11 @@ Esc 之后 dialog: 0
 
 **决定：**
 
-- **`SessionSnapshot` 加 `copilot: CopilotView | null`**（`bridge/src/sessions.ts`）：`emitCopilot()` 把合并过账号额度的视图存进 `this.copilotView`，`snapshot()` 带出去。`sessionFrameOf` 是 subscribe / claim / create / reload 四条路共用的那一处，所以四条一起修好，不必给每条都补一次推送。
+- **`SessionSnapshot` 加 `copilot: CopilotView | null`**（`bridge/src/sessions.ts`）：`emitCopilot()` 把合并过账号额度的视图存进 `this.copilotView`，`snapshot()` 带出去。`sessionFrameOf` 是 subscribe / claim / create / reload 四条路共用的那一处（`bridge/src/index.ts:2625`、`:2704`、`:2832`、`:3268`），所以四条一起带上这个字段，不必给每条都补一次构造。冷会话（从未统计过）的首帧里它还是 `null` —— 缓存视图没算过，这一次由下面那条 `refreshCopilot()` 的帧补上，毫秒级；探针第一轮常常就是从那条帧拿到的。
 - **`subscribe` 里补一次 `refreshCopilot()`**：缓存视图只覆盖「已经统计过」的会话；页面刚打开（bridge 重启过、或这条会话从未 boot）时缓存还是 null，靠这次增量读（一次 `stat`，读不到新字节就不扫）当场算出来。
 - **前端 `case "session"` 读 `msg.copilot`，不再清空**：会话帧本来就只发当前这条会话（切会话时 `currentId` 跟着换），不存在串号；旧 bridge 不带这个字段时 `copilotFromFrame` 拿到 undefined 就回落 null，行为与以前一致。
-- **两半各留一个探针**：`probes/copilot-on-subscribe.mjs` 打真桥（只读，登录 + subscribe）量「订阅后 3 秒内拿不拿得到」—— 修复前 0/2 次拿到，修复后 2/2；`probes/copilot-panel-resubscribe.mjs` 用桩桥 + 真前端量另一头：切会话 A→B→A、整页重载之后 `.exec-copilot` 还在不在，顺带覆盖「旧 bridge 只发 copilot 帧」的形状。
+- **两半各留一个探针**：`probes/copilot-on-subscribe.mjs` 打真桥（只读，登录 + subscribe）量「订阅后 3 秒内拿不拿得到」—— 跑在未修复的 bridge 上 2/2 次拿不到，跑在修复后的隔离 bridge 上连跑 5 次都 2/2 拿到（第二次起直接来自 `session` 帧）。它挑会话的判据与 `CopilotTally` 对齐（`message.role === "assistant"` 且 `provider === "github-copilot"`，或 `custom` / `copilot-credits`），**不能只搜字符串**：工具输出与模型自述里出现 “github-copilot” 的会话满地都是，实测这个漏洞会挑中一个一分积分也没有的会话，把红/绿判反。等 `session` 帧才开始计时（框架前面的 git trust 首次可能慢到十几秒，那是环境不是 bug）。`probes/copilot-panel-resubscribe.mjs` 用桩桥 + 真前端量另一头，四种帧形状：帧自带 copilot（切会话 A→B→A、整页重载之后块还在）、纯非 copilot（不画）、旧 bridge 的 boot 形状（帧里没这个键、另跟一条 `copilot` 帧 → 仍然画得出来）、旧 bridge 的重订阅形状（什么都不补 → 不画，前端不拿上一份去猜）。
 
 **取舍：** 没有改成「轮次进行中也定时推积分」。积分只在会话文件写完一条 assistant 后才有变化，而 `session_start` / `agent_end` / `agent_settled` 已经覆盖了写入时刻；再加定时器只会多出一堆无变化的帧。也没有把 `copilot` 挪进 `items` 帧 —— 那条是分页用的历史正文，混进计费数据会让 `frameFor` 的两形（paged / full）多背一个不相干字段。
 
-**验证：** `node probes/copilot-on-subscribe.mjs`（红 → 绿，见上）、`node probes/copilot-panel-resubscribe.mjs` 七条全 ok、`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 i18n 三语 / viewport / layers）。
+**验证：** `node probes/copilot-on-subscribe.mjs`（对着未修复的 bridge 2/2 红；对着修复后的隔离 bridge 连跑 5 次 2/2 绿）、`node probes/copilot-panel-resubscribe.mjs` 八条全 ok、`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 i18n 三语 / viewport / layers）。

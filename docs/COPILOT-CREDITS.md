@@ -82,7 +82,7 @@ web/src/app.ts  → 执行面板主格子 + 「Copilot 积分」专项块 / 模�
 node --experimental-strip-types bridge/tests/copilot-credits-unit.mjs   # 增量读 / 换算口径 / 分账 / 对账 / 额度解析
 node --experimental-strip-types web/tests/copilot-unit.mjs              # 精度三档 / 重置时间 / 混合判定
 node --experimental-strip-types web/tests/exec-view-unit.mjs            # 执行面板模型带 credits/otherCost
-node probes/copilot-on-subscribe.mjs                                    # 订阅之后拿得到积分（真桥，只读）
-node probes/copilot-panel-resubscribe.mjs                               # 切会话 / 重连之后专项块还在（桩桥 + 真前端）
+node probes/copilot-on-subscribe.mjs                                    # 订阅之后拿得到积分（真桥，只读；未修复的 bridge 上应当 2/2 红）
+node probes/copilot-panel-resubscribe.mjs                               # 切会话 / 重连之后专项块还在（桩桥 + 真前端，八条）
 npm --prefix web run typecheck                                          # i18n 三语 + 视口守卫
 ```

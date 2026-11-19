@@ -6,8 +6,8 @@
  * 机制：`subscribe` 只发 `session` 帧，前端 `case "session"` 里无条件 `this.copilot = null`，
  * 而 `copilot` 帧只在 boot / agent_end / agent_settled 发 —— 订阅这条路上没人补。
  *
- * 桩桥只做一件事：`session` 帧自带 `copilot`（修复后 bridge 的 `snapshot()` 就是这样），
- * **不**另发 `copilot` 帧。所以这个探针量的是前端那一半：拿到会话帧就必须把块画回来。
+ * 桩桥按四种形状发帧（见 `SPECS`）。修复后 bridge 的 `session` 帧自带 copilot，所以探针主要量
+ * 前端那一半：拿到会话帧就必须把块画回来；反过来，帧里什么都没给（旧桥重订阅）时不许编数据。
  *
  * Run: npm --prefix web run build && node probes/copilot-panel-resubscribe.mjs
  */
@@ -29,12 +29,23 @@ const ok = (cond, what) => {
 };
 
 const view = { hasCopilot: true, credits: 434.39, requests: 105, lastAt: null, estimated: true, otherCost: 0, account: null, reconcile: null };
-/** copilot: `view` → 真会话；`null` → 纯非 copilot 会话；`"old"` → 模拟旧 bridge（帧里没有这个键）。 */
-const SESSIONS = [
-  { id: "st-cop", name: "copilot 会话", copilot: view },
-  { id: "st-plain", name: "普通会话", copilot: null },
-  { id: "st-old", name: "旧桥会话", copilot: "old" },
-].map((s, i) => ({
+/**
+ * 四种会话形状，`frame` 说会话帧自带的 `copilot` 是什么：
+ * - `view` —— 修复后真 bridge 的形状（`snapshot()` 带缓存视图）
+ * - `null` —— 纯非 copilot 会话（对照）
+ * - `omit` —— 旧 bridge：帧里压根没这个键。再分两种：`followUp` 真就是 boot / 轮末
+ *   「帧后紧跟一条 copilot 帧」；不跟的那种是**重订阅**——旧桥上它什么也不补，
+ *   也就是修复前的发病路径。探针锁的是「前端不编数据」，并非「旧桥变好」。
+ */
+const SPECS = [
+  { id: "st-cop", name: "copilot 会话", frame: "view", followUp: false },
+  { id: "st-plain", name: "普通会话", frame: "null", followUp: false },
+  { id: "st-old-live", name: "旧桥 · 另发帧", frame: "omit", followUp: true },
+  { id: "st-old-idle", name: "旧桥 · 重订阅", frame: "omit", followUp: false },
+];
+/** 帧里不带 `frame` / `followUp` 这两个内部字段的公开会话列表。 */
+const publicState = ({ frame: _f, followUp: _u, ...rest }) => rest;
+const SESSIONS = SPECS.map((s, i) => ({
   ...s,
   cwd: REPO,
   ws: `f:/pi-web-client-w${i}`,
@@ -89,15 +100,16 @@ server.on("upgrade", (req, socket, head) => {
       }
       const s = byId(msg.sessionId);
       if (msg.type === "subscribe" && s) {
-        const { ws: _ws, copilot, ...state } = s;
+        const { ws: _ws, frame: shape, followUp, ...state } = s;
         const frame = { type: "session", sessionId: s.id, state, items: [], approvals: [], asks: [], policy: null, queue: { steering: [], followUp: [] }, plan: null };
-        if (copilot !== "old") frame.copilot = copilot;
+        if (shape === "view") frame.copilot = view;
+        else if (shape === "null") frame.copilot = null;
         ws.send(JSON.stringify(frame));
-        // 旧 bridge 那条路：帧里没有 copilot 时，紧接着一条 copilot 帧（真桥 boot / 轮末就是这样）。
-        if (copilot === "old") ws.send(JSON.stringify({ type: "copilot", sessionId: s.id, ...view }));
+        // 旧 bridge 的 boot / 轮末形状：帧里没有 copilot 时，紧接着一条 copilot 帧。重订阅那条没有。
+        if (followUp) ws.send(JSON.stringify({ type: "copilot", sessionId: s.id, ...view }));
       }
     });
-    ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS.map(({ copilot: _c, ...s }) => s), manage: MANAGE, trash: [], tunnel: TUNNEL, workspace: WORKSPACE }));
+    ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS.map(publicState), manage: MANAGE, trash: [], tunnel: TUNNEL, workspace: WORKSPACE }));
   });
 });
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
@@ -158,11 +170,17 @@ await openExec();
 b = await block();
 ok(b !== null && b.cells.some((c) => c.label === "会话累计" && c.value === "434"), "重连之后块还在");
 
-// 4) 旧 bridge（帧里没有 copilot，只跟一条 copilot 帧）也不能回归
-await openSession("st-old");
+// 4) 旧 bridge 的 boot 形状（帧里没有 copilot，紧跟一条 copilot 帧）也不能回归
+await openSession("st-old-live");
 await openExec();
 b = await block();
-ok(b !== null, "旧 bridge 的形状（另有 copilot 帧）仍然画得出来");
+ok(b !== null && b.cells.some((c) => c.label === "会话累计" && c.value === "434"), "旧 bridge 的 boot 形状（另有 copilot 帧）仍然画得出来");
+
+// 5) 旧 bridge 的重订阅形状（帧里没有 copilot，**也不跟**帧）—— 这正是修复前的发病路径。
+//    前端不能拿上一份去猜，块就该不画；旧桥得升级 bridge 才修得好。
+await openSession("st-old-idle");
+await openExec();
+ok((await block()) === null, "（对照）旧 bridge 重订阅什么都不给时，块不画（不编数据）");
 
 await page.screenshot({ path: path.join(REPO, ".scratch/copilot-panel-resubscribe.png"), clip: { x: 640, y: 0, width: 640, height: 520 } });
 await browser.close();
