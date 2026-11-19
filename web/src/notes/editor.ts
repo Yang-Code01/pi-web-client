@@ -10,7 +10,7 @@
  */
 import { tr } from "../i18n/index.ts";
 import { matchBlock, matchInline, type BlockHit } from "../md-input.ts";
-import { fenceLanguage, sanitizeRich, textToRich } from "./rich.ts";
+import { fenceLanguage, hasAnyStructure, sanitizeRich, textToRich } from "./rich.ts";
 
 const SIZES: [string, string][] = [
   ["1em", "正常"],
@@ -371,7 +371,8 @@ export class RichEditor {
     ev.preventDefault();
     const html = data.getData("text/html");
     const text = data.getData("text/plain");
-    const rich = html && /<(p|br|div|strong|em|ul|li|pre|h[1-6])\b/i.test(html) ? sanitizeRich(html) : "";
+    // 「这段 html 值不值得净化」由 rich.ts 判定，别在这里另写一份标签清单（两份清单迟早会分叉）。
+    const rich = html && hasAnyStructure(html) ? sanitizeRich(html) : "";
     // 净化后为空（html 里只有被丢弃的容器）时退回纯文本：别让这次粘贴静默消失。
     const insert = rich || escapeLines(text);
     if (!insert) return;

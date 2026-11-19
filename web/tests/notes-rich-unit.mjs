@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   escapeHtml,
   fenceLanguage,
+  hasAnyStructure,
   hasRichMarkup,
   isRichEmpty,
   plainText,
@@ -125,6 +126,13 @@ test("hasRichMarkup：块标签和行内标签都算富文本", () => {
   assert.equal(hasRichMarkup("用的是 <pre> 标签"), true);
   assert.equal(hasRichMarkup("时间 <13:45:02> 报错"), false);
   assert.equal(hasRichMarkup("金额 a < b"), false);
+});
+
+test("hasAnyStructure：包裹层不算结构，块容器 / 行内 / 表格算", () => {
+  assert.equal(hasAnyStructure("<html><head></head><body>纯文字</body></html>"), false);
+  assert.equal(hasAnyStructure("<section>一段</section>"), true);
+  assert.equal(hasAnyStructure('<span style="color:red">红</span>'), true);
+  assert.equal(hasAnyStructure("<table><tr><td>x</td></tr></table>"), true);
 });
 
 test("纯文本回填：空行切段落、单换行当 br，特殊字符转义", () => {

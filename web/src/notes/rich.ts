@@ -56,6 +56,8 @@ const DROP_WITH_CONTENT = new Set(["script", "style", "iframe", "object", "embed
 const STYLE_PROPS = new Set(["color", "background-color", "font-size"]);
 
 const BLOCK_TAG = /<(p|br|h[1-6]|ul|ol|li|pre|blockquote|hr|table|thead|tbody|tr|th|td)\b[^>]*>/i;
+/** 白名单外的块容器的开/闭标签：它们也是结构，只是要降级成 `<p>`。 */
+const BLOCKISH_TAG = new RegExp(`</?(?:${[...BLOCKISH].join("|")})\\b`, "i");
 /** 老 body 里只要有这些行内标签，也说明它已经是 HTML 了（否则 `<b>x</b>` 会被再转义一遍）。 */
 const INLINE_TAG = /<(strong|b|em|i|u|s|strike|del|span|mark|a)\b[^>]*>/i;
 
@@ -270,6 +272,14 @@ function paragraphize(text: string, keep: (s: string) => string): string {
  */
 export function hasRichMarkup(s: string): boolean {
   return BLOCK_TAG.test(s) || INLINE_TAG.test(s);
+}
+
+/**
+ * 剪贴板 html 里有没有值得净化的结构：块级 / 行内 / 白名单外的块容器都算；
+ * 只有 `<html><head><body>` 这层包裹时不算 —— 交给纯文本，换行才留得住。
+ */
+export function hasAnyStructure(html: string): boolean {
+  return BLOCK_TAG.test(html) || INLINE_TAG.test(html) || BLOCKISH_TAG.test(html);
 }
 
 // ---------------------------------------------------------------- 读

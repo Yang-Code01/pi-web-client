@@ -279,6 +279,18 @@ assert.match(out, /line one/, `第一行丢了：${out}`);
 assert.match(out, /<\/p><p>line two<\/p>/, `第二行没单独成段（被拼成一行？）：${out}`);
 assert.doesNotMatch(out, /line oneline two/, `两行被拼成一行：${out}`);
 
+// 只有表格的网页复制：以前被「值不值得净化」的闸门判成纯文本（表格结构丢掉），现在仍走净化。
+await page.evaluate(() => {
+  window.ed.setHtml("<p>表格</p>");
+  window.ed.focus();
+  const dt = new DataTransfer();
+  dt.setData("text/html", "<table><tr><td>甲</td><td>乙</td></tr></table>");
+  dt.setData("text/plain", "甲\t乙");
+  document.getElementById("doc").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+});
+out = await html();
+assert.equal(await count("table"), 1, `表格形状的粘贴被降级成纯文本了：${out}`);
+
 // html 净化后为空（只剩被丢弃的容器）时退回纯文本：发出 preventDefault 之后不能静默吞掉这次粘贴。
 await page.evaluate(() => {
   window.ed.setHtml("<p>退路</p>");
