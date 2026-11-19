@@ -23,6 +23,12 @@
  * - 正文里有「在问用户」的结构（❓Q1、行首 Q1、或结尾带第二人称的选择问句）；
  * - 这段问句之前没提醒过（按问句摘要去重，重启也不重复），且本会话提醒次数 < MAX_NUDGES。
  *
+ * 第二道兜底（`tool_call`，同一个开关）：问卷题干 / 选项里写了「详情在回复里」「见上文」这类引用，
+ * 而这次调用所在的助手消息正文几乎为空时，拦下这次调用，让模型先把详情写进正文再问。
+ * 起因：会话 `ae79148b`（上下文面板查 bug）第 74 条助手消息只有 thinking + ask_user_question，
+ * 题干说「5 个确认的 bug（详情在回复里）」，5 个 bug 却只出现在思考里，用户在页面上一个字也看不到。
+ * 同一题干只拦一次：第二次还这样就放行，别把模型卡死在循环里。
+ *
  * stdout 属于 RPC 协议：日志只能走 console.error。
  */
 import fs from "node:fs";
@@ -197,7 +203,109 @@ export function nudgeEnabled(file = process.env.PI_WEB_SETTINGS_FILE): boolean {
   }
 }
 
+// ---- 第二道兜底：问卷引用了「正文里的详情」，正文却是空的 ----
+
+export const DETAIL_GUARD_MARK = "[网页客户端 · 问卷引用核对]";
+/** 题干 / 选项里指向「正文」的说法。只认明确指向回复正文的，「详见文档」之类不算。 */
+const DETAIL_REF =
+  /详情(?:在|见)|(?:见|看)(?:上文|上面|前文|正文|回复|下文|下面)|如上(?:所述)?|上面(?:列|说|提|写)|上述|(?:回复|正文|上文)(?:里|中)|\b(?:see|details?)\s+(?:above|below)|\bas (?:listed|described|shown) above/i;
+/** 当前这条助手消息正文少于这个字数，就算「没写详情」。 */
+export const DETAIL_MIN_CHARS = 40;
+/** 本轮（最后一条用户消息之后）所有助手正文加起来到这个数，就当详情写在了前一步里。 */
+export const DETAIL_TURN_CHARS = 200;
+
+function askTexts(input: any): string[] {
+  const out: string[] = [];
+  const walk = (v: any, depth: number) => {
+    if (depth > 6 || v == null) return;
+    if (typeof v === "string") out.push(v);
+    else if (Array.isArray(v)) v.forEach((x) => walk(x, depth + 1));
+    else if (typeof v === "object") for (const [k, x] of Object.entries(v)) if (k !== "preview") walk(x, depth + 1);
+  };
+  walk(input, 0);
+  return out;
+}
+
+/** 问卷文本里命中的引用说法；没有返回 null。 */
+export function detailReference(input: any): string | null {
+  for (const t of askTexts(input)) {
+    const m = t.match(DETAIL_REF);
+    if (m) return t.slice(Math.max(0, (m.index ?? 0) - 40), (m.index ?? 0) + 80).trim();
+  }
+  return null;
+}
+
+function visibleLength(message: any): number {
+  return stripCode(textOf(message)).replace(/\s+/g, "").length;
+}
+
+/**
+ * 这次提问是否「引用了正文却没写正文」。命中返回给模型的拦截理由，否则 null。
+ * `branch` 要包含这次调用所在的助手消息（pi 在 `tool_call` 前保证同步到这一条）。
+ */
+export function danglingDetail(input: any, toolCallId: string | undefined, branch: any[]): string | null {
+  const ref = detailReference(input);
+  if (!ref) return null;
+
+  let start = 0;
+  for (let i = branch.length - 1; i >= 0; i -= 1) {
+    if (branch[i]?.type === "message" && branch[i].message?.role === "user") {
+      start = i + 1;
+      break;
+    }
+  }
+  let current: any = null;
+  let turnChars = 0;
+  const hash = hashOf(ref);
+  for (let i = start; i < branch.length; i += 1) {
+    const msg = branch[i]?.type === "message" ? branch[i].message : null;
+    if (!msg) continue;
+    if (msg.role === "assistant") {
+      turnChars += visibleLength(msg);
+      if (Array.isArray(msg.content) && msg.content.some((p: any) => p?.type === "toolCall" && p.id === toolCallId)) current = msg;
+    }
+    // 同一段引用已经拦过一次：放行。
+    if (msg.role === "toolResult" && ASK_TOOLS.test(String(msg.toolName ?? "")) && textOf(msg).includes(`${DETAIL_GUARD_MARK}#${hash}`)) {
+      return null;
+    }
+  }
+  // 找不到所在消息（极少见）时退回看最后一条助手消息。
+  if (!current) {
+    for (let i = branch.length - 1; i >= start; i -= 1) {
+      const msg = branch[i]?.type === "message" ? branch[i].message : null;
+      if (msg?.role === "assistant") {
+        current = msg;
+        break;
+      }
+    }
+  }
+  if (visibleLength(current) >= DETAIL_MIN_CHARS || turnChars >= DETAIL_TURN_CHARS) return null;
+
+  return [
+    `${DETAIL_GUARD_MARK}#${hash} 这次提问没有发出去，用户还没看到问卷。`,
+    `问卷里写了「${ref.replace(/\s+/g, " ")}」，但你的回复正文几乎是空的：思考（thinking）用户看不到，详情只在那里等于没写。`,
+    "先在正文里把要用户依据的内容写出来（例如查出的问题清单、各自的现象和原因），再用同样的问卷调用一次 `ask_user_question`。",
+    "或者把详情直接写进 `question` 题干里，不要再说「详情在回复里」。",
+  ].join("\n");
+}
+
 export default function askNudge(pi: any): void {
+  pi.on("tool_call", async (event: any, ctx: any) => {
+    if (!ASK_TOOLS.test(String(event?.toolName ?? ""))) return;
+    if (!nudgeEnabled()) return;
+    let branch: any[];
+    try {
+      branch = ctx.sessionManager.getBranch();
+    } catch (err) {
+      console.error("[ask-nudge] 读不到会话分支：", err);
+      return;
+    }
+    const reason = danglingDetail(event.input, event.toolCallId, branch);
+    if (!reason) return;
+    console.error("[ask-nudge] 问卷引用了正文详情但正文为空 → 拦下这次提问");
+    return { block: true, reason };
+  });
+
   pi.on("agent_before_settle", async (event: any, ctx: any) => {
     if (event?.outcome !== "completed" || event?.context?.canContinue === false) return;
     if (!nudgeEnabled()) return;

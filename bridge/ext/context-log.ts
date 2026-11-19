@@ -107,6 +107,44 @@ function oneLine(s: string): string {
 }
 
 /** FNV-1a — stable fallback identity when a message carries no timestamp. */
+/**
+ * 已有日志的末尾状态：最后一行的 seq、最后一次请求的 seq / 轮 / 步 / userKey。
+ * 文件不存在或读坏了就从零开始（和以前一样）。只解析最后一条请求行，其余行只看开头的 seq。
+ */
+function resumeState(file: string): { seq: number; lastRequestSeq: number; turn: number; step: number; userKey: string } {
+  const out = { seq: 0, lastRequestSeq: 0, turn: 0, step: 0, userKey: "" };
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return out;
+  }
+  const rows = text.split("\n");
+  let sawRequest = false;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i]!.trim();
+    if (!row) continue;
+    if (!out.seq) {
+      const m = /"seq":(\d+)/.exec(row.slice(0, 64));
+      if (m) out.seq = Number(m[1]);
+    }
+    if (!sawRequest && row.includes('"kind":"request"')) {
+      try {
+        const req = JSON.parse(row);
+        sawRequest = true;
+        out.lastRequestSeq = typeof req.seq === "number" ? req.seq : 0;
+        out.turn = typeof req.turn === "number" ? req.turn : 0;
+        out.step = typeof req.step === "number" ? req.step : 0;
+        out.userKey = typeof req.userKey === "string" ? req.userKey : "";
+      } catch {
+        /* 半行：再往前找 */
+      }
+    }
+    if (out.seq && sawRequest) break;
+  }
+  return out;
+}
+
 function hash32(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -343,6 +381,14 @@ export default function contextLog(pi: any): void {
       const dir = path.join(LOG_DIR, id.slice(0, 8));
       fs.mkdirSync(dir, { recursive: true });
       file = path.join(dir, `${id}.ctx.jsonl`);
+      // 同一会话再次启动（桥重启 / 接管 / 重载）会接着往这个文件追加：序号与轮次要接着数，
+      // 否则 usage / 事件的 atSeq 会和前一段撞号，面板把它们挂到错误的请求上。
+      const tail = resumeState(file);
+      seq = tail.seq;
+      lastRequestSeq = tail.lastRequestSeq;
+      turn = tail.turn;
+      step = tail.step;
+      lastUserKey = tail.userKey;
     } catch {
       file = null;
     }
@@ -601,7 +647,8 @@ export default function contextLog(pi: any): void {
     }
 
     // turn/step: a new last-user message opens a turn; every request is one step.
-    const userKey = `${users}:${clip(lastUserText, 200)}`;
+    // 存哈希：要写进请求行，重启后据此判断下一次请求是不是同一轮。
+    const userKey = hash32(`${users}:${clip(lastUserText, 200)}`);
     if (userKey !== lastUserKey) {
       lastUserKey = userKey;
       turn++;
@@ -622,6 +669,7 @@ export default function contextLog(pi: any): void {
       model: currentModel,
       turn,
       step,
+      userKey,
       users,
       total,
       cats,

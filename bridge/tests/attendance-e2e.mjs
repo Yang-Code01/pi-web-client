@@ -43,6 +43,10 @@ const seenQueries = [];
 /** 上游收到的提交体。 */
 const seenAdds = [];
 let seenCancel = null;
+/** 请假：上游收到的提交（含路径，四种假分三个端点）与撤回体、以及 use_type 0 的信息探测。 */
+const seenLeaveAdds = [];
+let seenLeaveCancel = null;
+let leaveProbes = 0;
 /** 上游收到的 Authorization / token 头。 */
 const seenTokens = [];
 /** 上游登录收到的 query。 */
@@ -177,6 +181,59 @@ const oa = http.createServer((req, res) => {
 
     if (url.pathname === "/in/apply/overtime/cancel") {
       seenCancel = { code: url.searchParams.get("code"), token };
+      if (writeMode === "ng") return send(200, { status: "NG", message: "已经批完了" });
+      return send(200, { status: "OK" });
+    }
+
+    if (url.pathname === "/in/apply/leave/get") {
+      return send(200, {
+        status: "OK",
+        apply_list: [
+          {
+            code: 118304, user_id: 1001, name: "张三-TS0001", agent_user_id: 0, agent_name: 0,
+            start_time: "2026-11-23T09:00:00", end_time: "2026-11-24T18:00:00",
+            normal_hours: 0, compensatory_hours: 16, sick_hours: 0, other_apply_type: "0", other_days: 0,
+            reason: "回老家", workflow_result: 0, reject_reason: null,
+          },
+        ],
+        workflow_list: {
+          118304: [
+            { workflow_index: 0, workflow_role_name: "申请人", workflow_result: 1, handle_user_name: "张三-TS0001" },
+            { workflow_index: 1, workflow_role_name: "项目负责人", workflow_result: 0, workflow_user_name: "李四-TS0002" },
+          ],
+        },
+        special_workflow_1: "",
+      });
+    }
+
+    if (url.pathname.startsWith("/in/apply/leave/add/")) {
+      // use_type 0 是 OA 页面进页时的信息探测：只回审批人与日历，不落单。
+      if (body?.use_type === 0) {
+        leaveProbes++;
+        return send(200, {
+          team_leader: [
+            { user_id: 2001, name: "李四-TS0002", role_id: "D002", depart_id: 1 },
+            { user_id: 2002, name: "赵六-TS0006", role_id: "D002", depart_id: 1 },
+          ],
+          recently_team_leader: [{ user_id: 2001, name: "李四-TS0002", depart_id: 1 }],
+          user_depart_leader_inf: [
+            { user_depart_leader_user_id: 3001, user_depart_leader_work_no: "TS0003", user_depart_leader_name: "王五-TS0003", user_depart_leader_depart_id: 1 },
+          ],
+          compensatory_time: [{ compensatory_time: 57 }],
+          day_type: [
+            { date: "2026-11-23T00:00:00", type: 0 },
+            { date: "2026-11-24T00:00:00", type: 0 },
+            { date: "2026-11-28T00:00:00", type: 1 },
+          ],
+        });
+      }
+      seenLeaveAdds.push({ path: url.pathname, token, body });
+      if (writeMode === "ng") return send(200, { status: "NG", message: "调休时间不足" });
+      return send(200, { status: "OK", message: "申请成功" });
+    }
+
+    if (url.pathname === "/in/apply/leave/cancel") {
+      seenLeaveCancel = { token, body };
       if (writeMode === "ng") return send(200, { status: "NG", message: "已经批完了" });
       return send(200, { status: "OK" });
     }
@@ -523,6 +580,14 @@ test("加班提交：本地校验挡在手边", async () => {
   assert.equal(noReason.status, 400);
   assert.equal(noReason.json.code, "reason_type_missing");
 
+  const noProject = await call("POST", "/api/attendance/overtime", { ...draft, reason: { ...draft.reason, project: "" }, confirm: true });
+  assert.equal(noProject.status, 400);
+  assert.equal(noProject.json.code, "project_missing");
+
+  const noDetail = await call("POST", "/api/attendance/overtime", { ...draft, reason: { ...draft.reason, detail: " " }, confirm: true });
+  assert.equal(noDetail.status, 400);
+  assert.equal(noDetail.json.code, "detail_missing");
+
   const noApprover = await call("POST", "/api/attendance/overtime", { ...draft, workflow: "&", confirm: true });
   assert.equal(noApprover.status, 400);
   assert.equal(noApprover.json.code, "approver_missing");
@@ -585,6 +650,101 @@ test("撤回：先要确认，确认后才打上游", async () => {
   assert.deepEqual(ok.json, { ok: true });
   assert.equal(seenCancel.code, "900001");
   assert.equal(seenCancel.token, TOKEN);
+});
+
+test("请假申请：一览、类型、审批人、调休余额都到齐，进页只做 use_type 0 的探测", async () => {
+  const adds = seenLeaveAdds.length;
+  const res = await call("GET", "/api/attendance/leave");
+  assert.equal(res.status, 200);
+  assert.equal(res.json.applyList.length, 1);
+  assert.equal(res.json.applyList[0].leaveType, "调休");
+  assert.deepEqual(res.json.candidates.map((p) => p.userId), [2001, 2002]);
+  assert.deepEqual(res.json.defaultL1, [{ userId: 2001, name: "李四", workNo: "TS0002" }]);
+  assert.deepEqual(res.json.fixedL2, [{ userId: 3001, name: "王五", workNo: "TS0003" }]);
+  assert.equal(res.json.compensatory, 57);
+  assert.deepEqual(res.json.workdays, ["2026-11-23", "2026-11-24"]);
+  assert.ok(leaveProbes > 0);
+  assert.equal(seenLeaveAdds.length, adds, "进页不该落任何单");
+});
+
+const leaveDraft = {
+  type: "调休",
+  startDay: "2026-11-23",
+  endDay: "2026-11-24",
+  startHour: 9,
+  endHour: 18,
+  reason: "回老家",
+  workflow: { l1: [2001], l2: [3001] },
+  workdays: ["2026-11-23", "2026-11-24"],
+};
+
+test("请假提交：先要确认，预览带预估时长，不写任何东西", async () => {
+  const before = seenLeaveAdds.length;
+  const res = await call("POST", "/api/attendance/leave", leaveDraft);
+  assert.equal(res.status, 200);
+  assert.equal(res.json.needConfirm, true);
+  assert.equal(res.json.preview.startTime, "2026-11-23 09:00:00");
+  assert.equal(res.json.preview.workflow, "2001&3001");
+  assert.deepEqual(res.json.preview.estimate, { value: 16, unit: "h" });
+  assert.equal(seenLeaveAdds.length, before);
+});
+
+test("请假提交：本地校验（事由必填、钟点只认 OA 那几个）", async () => {
+  const before = seenLeaveAdds.length;
+  const noReason = await call("POST", "/api/attendance/leave", { ...leaveDraft, reason: "", confirm: true });
+  assert.equal(noReason.status, 400);
+  assert.equal(noReason.json.code, "reason_missing");
+  const badHour = await call("POST", "/api/attendance/leave", { ...leaveDraft, startHour: 10, confirm: true });
+  assert.equal(badHour.json.code, "hour_invalid");
+  const badType = await call("POST", "/api/attendance/leave", { ...leaveDraft, type: "年假", confirm: true });
+  assert.equal(badType.json.code, "type_missing");
+  assert.equal(seenLeaveAdds.length, before);
+});
+
+test("请假提交：按类型走对端点，body 跟 OA 页面发的一样", async () => {
+  const res = await call("POST", "/api/attendance/leave", { ...leaveDraft, confirm: true });
+  assert.equal(res.status, 200);
+  const sent = seenLeaveAdds.at(-1);
+  assert.equal(sent.path, "/in/apply/leave/add/normal");
+  assert.equal(sent.token, TOKEN);
+  assert.deepEqual(sent.body, {
+    use_type: 1,
+    user_id: 1001,
+    agent_user_id: 0,
+    leave_type: "调休",
+    reason: "回老家",
+    start_time: "2026-11-23 09:00:00",
+    end_time: "2026-11-24 18:00:00",
+    workflow_list: "2001&3001",
+  });
+
+  const again = await call("POST", "/api/attendance/leave", { ...leaveDraft, confirm: true });
+  assert.equal(again.status, 409, "十分钟内同样的请假挡住第二次");
+
+  await call("POST", "/api/attendance/leave", { ...leaveDraft, type: "病假", confirm: true });
+  assert.equal(seenLeaveAdds.at(-1).path, "/in/apply/leave/add/sick");
+  await call("POST", "/api/attendance/leave", { ...leaveDraft, type: "其他", reason: "婚假", confirm: true });
+  const other = seenLeaveAdds.at(-1);
+  assert.equal(other.path, "/in/apply/leave/add/other");
+  assert.equal(other.body.start_time, "2026-11-23 00:00:00", "其他假只按天");
+});
+
+test("请假提交：上游 NG 回 502", async () => {
+  writeMode = "ng";
+  const res = await call("POST", "/api/attendance/leave", { ...leaveDraft, type: "事假", confirm: true });
+  assert.equal(res.status, 502);
+  assert.match(res.json.error, /调休时间不足/);
+  writeMode = "ok";
+});
+
+test("请假撤回：先要确认，确认后带上类型发给上游", async () => {
+  seenLeaveCancel = null;
+  const first = await call("POST", "/api/attendance/leave/cancel?code=118304&type=" + encodeURIComponent("调休"));
+  assert.deepEqual(first.json, { needConfirm: true, code: "118304" });
+  assert.equal(seenLeaveCancel, null);
+  const ok = await call("POST", "/api/attendance/leave/cancel?code=118304&confirm=1&type=" + encodeURIComponent("调休"));
+  assert.deepEqual(ok.json, { ok: true });
+  assert.deepEqual(seenLeaveCancel.body, { code: 118304, leave_type: "调休" });
 });
 
 test("token 过期但密码还在：仍算登录态，设置页能拿回那个密码", async () => {

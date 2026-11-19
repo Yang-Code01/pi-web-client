@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, type Hash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { statePath } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
@@ -70,6 +70,12 @@ interface Waiting {
   part: string;
   received: number;
   at: number;
+  /**
+   * 边收边算的 sha256。分块只能按序写（offset 必须正好接上），所以喂进来的顺序就是文件顺序。
+   * 以前在 `end` 里同步把整份文件重读一遍：几 GB 时整个 peer 卡住十几秒，
+   * 发送方等 `end` 的 8 秒先超时，报「失败」—— 其实我这边收好了。
+   */
+  hash: Hash;
 }
 
 export interface FileResult {
@@ -202,6 +208,7 @@ export class Files {
         part,
         received: 0,
         at: Date.now(),
+        hash: createHash("sha256"),
       });
       this.transfers.set(messageId, {
         id: messageId,
@@ -233,6 +240,7 @@ export class Files {
       fs.closeSync(fd);
     }
     waiting.received += data.length;
+    waiting.hash.update(data);
     waiting.at = Date.now();
     const transfer = this.transfers.get(waiting.messageId);
     if (transfer) transfer.bytes = waiting.received;
@@ -247,20 +255,7 @@ export class Files {
       return { status: 400, body: { error: `还差 ${waiting.size - waiting.received} 字节`, offset: waiting.received, retryable: true } };
     }
     if (waiting.sha256) {
-      const hash = createHash("sha256");
-      // 按块喂哈希：readFileSync 会把整份文件塞进内存，GB 级文件在收尾时直接 ENOBUFS。
-      const fd = fs.openSync(waiting.part, "r");
-      try {
-        const buf = Buffer.allocUnsafe(CHUNK);
-        for (;;) {
-          const read = fs.readSync(fd, buf, 0, buf.length, null);
-          if (read <= 0) break;
-          hash.update(buf.subarray(0, read));
-        }
-      } finally {
-        fs.closeSync(fd);
-      }
-      const got = hash.digest("hex");
+      const got = waiting.hash.digest("hex");
       if (got !== waiting.sha256) {
         this.tokens.delete(token);
         fs.rmSync(waiting.part, { force: true });

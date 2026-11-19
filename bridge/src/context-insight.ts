@@ -10,6 +10,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { renumberCtxLog } from "./ctxlog-seq.ts";
 import type { SessionState } from "./sessions.ts";
 import type { WorkspaceState } from "./workspaces.ts";
 
@@ -192,7 +193,7 @@ function parseLines(text: string): Line[] {
       /* 正在追加的半行：下一次读文件时再收 */
     }
   }
-  return out;
+  return renumberCtxLog(out);
 }
 
 /** 一个 ctxlog 文件的全部聚合。纯函数，方便单测。 */
