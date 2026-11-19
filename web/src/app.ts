@@ -27,7 +27,7 @@ import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } fro
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
-import { DEFAULT_THEME, THEMES, isTheme, paintTheme, type ThemeId } from "./theme.ts";
+import { accentFor, DEFAULT_THEME, TERM_THEMES, THEMES, isTheme, paintTheme, type ThemeId } from "./theme.ts";
 import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
 import { MailConfirmDialog } from "./mailconfirm.ts";
@@ -738,6 +738,8 @@ export class App {
   private termTabStrip: HTMLElement | null = null;
   private termBodies: HTMLElement | null = null;
   private termTabs = new Map<string, TermTab>();
+  /** 上一次落给终端的主题+强调色（`theme/accent`），一样的就不重复写 16 个色号。 */
+  private termThemeKey = "";
   private termActive: string | null = null;
   /** D92: the dialog is on screen (not minimized). The shells themselves live in the bridge. */
   private termOpen = false;
@@ -3903,13 +3905,19 @@ export class App {
     this.syncCompact();
     // 主题与强调色一起落：浅底主题用深一档的强调色表（theme.ts）。
     paintTheme(this.prefs.theme, this.prefs.accent);
+    // 终端也要跟着换底：浅底主题里终端还是黑的话，切过去就像贴了块黑纸。
+    this.paintTermThemes();
     // D158：三档文字颜色（--text/--dim/--faint）只有 styles.css 里 [data-text] 那一份，这里只标档位。
     // 读回来时 readPrefs 已经按 TEXT_STEPS 校验过，不会给 CSS 一个没有对应规则的值。
     document.documentElement.dataset.text = this.prefs.text;
     // #97：布局也是外观偏好，但「哪一种壳」影响的是行与列的摆法，#98 还要在自己的 CSS 里挑壳。
     // 存的值原样留在 prefs 里，这里只标出这一版真正画出来的那一种（见 layout.ts 的 activeLayout）。
     this.paintLayout();
-    if (this.sheetKind === "display") this.paintLookCards();
+    if (this.sheetKind === "display") {
+      // 强调色块是深一支还是浅一支，跟着主题的明暗走 —— 不重画的话，浅底上会留一圈粉彩点看不清。
+      this.paintSwatches();
+      this.paintLookCards();
+    }
     // D93: 终端 dialog 的几何按缩放换算，改了字号 / 缩放后得重新夹一次（不然 pinned 的那块会溢出）。
     if (this.termDock) this.applyTermGeom(this.termDock);
   }
@@ -4251,7 +4259,8 @@ export class App {
     const swatches = el("div", "swatches");
     for (const [id, label] of ACCENT_LABELS) {
       const sw = el("button", `swatch${this.prefs.accent === id ? " on" : ""}`);
-      sw.style.setProperty("--sw", ACCENTS[id].accent);
+      sw.dataset.accent = id;
+      sw.style.setProperty("--sw", accentFor(this.prefs.theme, id).accent);
       sw.title = tr(label);
       sw.setAttribute("aria-label", tr(label));
       sw.onclick = () => {
@@ -4357,6 +4366,17 @@ export class App {
         ],
       },
     ];
+  }
+
+  /**
+   * 强调色块换表：深底主题用亮粉彩、浅底主题用深饱和（`ACCENTS` / `ACCENTS_LIGHT`）。
+   * 只改色块自己的 `--sw`，不动选中的那颗、也不重建这一行 —— 重建会把焦点和 hover 丢掉。
+   */
+  private paintSwatches(): void {
+    for (const sw of this.sheet?.querySelectorAll<HTMLElement>(".swatch[data-accent]") ?? []) {
+      const id = sw.dataset.accent;
+      if (id) sw.style.setProperty("--sw", accentFor(this.prefs.theme, id).accent);
+    }
   }
 
   /** 外观各子类顶上那排卡（语言与字号 / 颜色 / 工作区；界面元素没有卡）。applyPrefs 之后跟着重画。 */
@@ -18424,6 +18444,20 @@ export class App {
   }
 
   /** One tab = one shell: its own xterm, its own body, its own socket id. */
+  /** 终端配色：主题那套 16 色 + 当前强调色当光标（浅底主题下已经是深一档的强调色表）。 */
+  private termPalette(): { [key: string]: string } {
+    return { ...TERM_THEMES[this.prefs.theme], cursor: accentFor(this.prefs.theme, this.prefs.accent).accent };
+  }
+
+  /** 主题/强调色变了就把配色写给所有已开的终端；同一组（`theme/accent`）只写一次。 */
+  private paintTermThemes(): void {
+    const key = `${this.prefs.theme}/${this.prefs.accent}`;
+    if (key === this.termThemeKey) return;
+    this.termThemeKey = key;
+    const palette = this.termPalette();
+    for (const view of this.termTabs.values()) view.term.options.theme = palette;
+  }
+
   private addTermTab(id: string, shell: string, cwd: string): TermTab {
     const existing = this.termTabs.get(id);
     if (existing) return existing;
@@ -18447,7 +18481,7 @@ export class App {
       fontSize: 13,
       cursorBlink: true,
       scrollback: 4000,
-      theme: { background: "#0b0d10", foreground: "#d6deeb", cursor: "#7dd3fc", selectionBackground: "#334155" },
+      theme: this.termPalette(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
