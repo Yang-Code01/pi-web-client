@@ -24,6 +24,7 @@ import { absentFor } from "./presence.ts";
 import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
+import { BrowserWatch, readEvidence, saveEvidence, type BrowserEvidence } from "./browser-watch.ts";
 import { isProtocolWidgetLines } from "./extwidgets.ts";
 import { itemsFrame, type SessionHistory } from "./history.ts";
 import { planReplayFromEntries, planFromToolResult, type PlanSnapshot } from "./execplan.ts";
@@ -916,6 +917,11 @@ export class Session extends EventEmitter {
   private readError: string | null = null;
   /** D170：后台子代理。变化只往 `state.bg` 写一小块摘要（see `publishBg`）。 */
   private readonly bgRuns = new BgRuns(() => this.publishBg());
+  /** D328：工具在跑时看 pi 子进程底下有没有拉起浏览器 / 连上调试端口。 */
+  private readonly browserWatch = new BrowserWatch({
+    rootPid: () => (process.env.PI_WEB_BROWSER_WATCH === "0" ? null : this.pid),
+    onEvidence: (toolCallId, evidence) => this.noteBrowserEvidence(toolCallId, evidence),
+  });
 
   /**
    * D170: 后台子代理只有两件事会变 —— 又起了一个、结束了一个。折成 `state.bg` 的一小块再广播；
@@ -1135,6 +1141,21 @@ export class Session extends EventEmitter {
    * 读失败绝不能写成 `items = []` —— 前端收到一次 `items: []` 就会清屏，而磁盘上的会话好好的，
    * 用户看到的是「对话没了」。第一次读失败没内容可保，也要说一句为什么。
    */
+  /** D328：运行时看到了浏览器 —— 记到工具卡上、落盘、推给页面。 */
+  private noteBrowserEvidence(toolCallId: string, evidence: BrowserEvidence): void {
+    saveEvidence(this.state.id, toolCallId, evidence);
+    const at = this.items.findIndex((it) => it.kind === "tool" && it.toolCallId === toolCallId);
+    if (at >= 0) this.items[at] = { ...(this.items[at] as ToolItem), browser: evidence };
+    this.emitWs({ type: "tool", phase: "browser", sessionId: this.state.id, toolCallId, browser: evidence });
+  }
+
+  /** 重读会话文件后，把存过的浏览器证据补回工具卡。 */
+  private decorateBrowserEvidence(): void {
+    const saved = readEvidence(this.state.id);
+    if (!Object.keys(saved).length) return;
+    this.items = this.items.map((it) => (it.kind === "tool" && saved[it.toolCallId] ? { ...it, browser: saved[it.toolCallId] } : it));
+  }
+
   private loadFromFile(): boolean {
     if (!this.state.file) return true;
     try {
@@ -1143,6 +1164,7 @@ export class Session extends EventEmitter {
       const planReplay = planReplayFromEntries(res.entries);
       this.plan = planReplay.plan;
       this.items = this.keepUnsentBubbles(withSkillItems(entriesToItems(res.entries, planReplay.toolResults), this.skillsHere(), this.state.cwd || undefined));
+      this.decorateBrowserEvidence();
       this.state.truncated = res.truncated;
       this.readError = null;
       return true;
@@ -1711,6 +1733,7 @@ export class Session extends EventEmitter {
         if (ev.toolName === "ask_user_question") this.openQuestionnaire(String(ev.toolCallId ?? ""), ev.args);
         // D187: 前台派活（`async:false`）的 run 不会出现在结果 details 里，卡片得在开始这刻立。
         this.bgRuns.noteToolStart(String(ev.toolName ?? ""), ev.args, String(ev.toolCallId ?? ""));
+        this.browserWatch.start(String(ev.toolCallId ?? ""));
         this.emitWs({
           type: "tool",
           phase: "start",
@@ -1728,6 +1751,7 @@ export class Session extends EventEmitter {
       }
       case "tool_execution_end": {
         this.closeQuestionnaire(String(ev.toolCallId ?? ""));
+        this.browserWatch.end(String(ev.toolCallId ?? ""));
         const at = this.items.findIndex((it) => it.kind === "tool" && it.toolCallId === String(ev.toolCallId));
         const seen = at >= 0 ? (this.items[at] as ToolItem) : undefined;
         const resultDetails = (ev.result as any)?.details;

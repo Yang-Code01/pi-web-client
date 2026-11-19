@@ -28,7 +28,7 @@
     "test:ask-card": "node --experimental-strip-types web/tests/ask-card-unit.mjs",
     "test:ask-tab:ui": "node bridge/tests/ask-tab-ui.mjs",
     "test:exec-panel:ui": "node bridge/tests/exec-panel-ui.mjs",
-    "test:browser-ops": "node --experimental-strip-types web/tests/browser-ops-unit.mjs",
+    "test:browser-ops": "node --experimental-strip-types web/tests/browser-ops-unit.mjs && node --experimental-strip-types bridge/tests/browser-watch-unit.mjs",
     "test:browser-ops:ui": "node bridge/tests/browser-ops-ui.mjs",
     "test:exec-plan": "node --experimental-strip-types web/tests/exec-view-unit.mjs && node bridge/tests/plan-nudge-unit.mjs && npm run build:bridge && node bridge/tests/exec-plan-e2e.mjs",
     "test:ask-nudge": "node bridge/tests/ask-nudge-unit.mjs",

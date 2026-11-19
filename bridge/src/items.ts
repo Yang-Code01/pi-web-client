@@ -2,6 +2,7 @@ import path from "node:path";
 import { skillOfRead, type SkillEntry } from "./skills.ts";
 import { extractText, skillExpansion, type SessionEntry } from "./sessionfile.ts";
 import type { PlanSnapshot } from "./execplan.ts";
+import type { BrowserEvidence } from "./browser-watch.ts";
 
 export interface ItemBase {
   id: string;
@@ -44,6 +45,8 @@ export interface ToolItem extends ItemBase {
   isError?: boolean;
   durationMs?: number;
   status: "running" | "ok" | "error" | "unknown";
+  /** D328：桥在它跑的时候看到了浏览器（拉起 / 连上调试端口）。 */
+  browser?: BrowserEvidence;
 }
 export interface NoticeItem extends ItemBase {
   kind: "notice";

@@ -787,3 +787,46 @@ test("源码看不到时按输出认：跑了脚本、输出里有动作 / 断�
   assert.equal(run("OK test_a\nOK test_b\nOK test_c\n").length, 0);
   assert.equal(browserOpsView({ ...base, items: [user("u1", 0), tool("b1", 1, "bash", { command: "ls -la" }, { durationMs: 9, result: "step x\nOK y\nvideo a.mp4" })] }).cards.length, 0);
 });
+
+// ---------------------------------------------------------------- D328：运行时证据 + 输出约定
+test("桥看到浏览器被拉起（item.browser）→ 命令再怎么写也出卡；没有证据就照旧不出", () => {
+  const command = "python whatever_new_launcher.py --flag";
+  const plain = tool("b1", 1, "bash", { command }, { durationMs: 3_000, result: "done" });
+  assert.equal(browserOpsView({ ...base, items: [user("u1", 0), plain] }).cards.length, 0);
+  const seen = { ...plain, browser: { kind: "launch", browser: "chrome-headless-shell", headless: true, at: T0 } };
+  const [card] = browserOpsView({ ...base, items: [user("u1", 0), seen] }).cards;
+  assert.ok(card);
+  assert.equal(card.headed, false);
+  assert.deepEqual(card.steps.map((s) => s.kind), ["run", "launch"]);
+  const cdp = { ...plain, browser: { kind: "cdp", browser: "chrome", port: 9333, at: T0 } };
+  assert.equal(browserOpsView({ ...base, items: [user("u1", 0), cdp] }).cards[0].steps[1].target, "chrome · 127.0.0.1:9333");
+});
+
+test("有证据且输出里有步骤 → 步骤按输出", () => {
+  const item = { ...tool("b1", 1, "bash", { command: "./go" }, { durationMs: 3_000, result: "step 打开首页\nOK 标题对\n" }), browser: { kind: "launch", browser: "msedge", at: T0 } };
+  const [card] = browserOpsView({ ...base, items: [user("u1", 0), item] }).cards;
+  assert.equal(card.stepSource, "output");
+  assert.deepEqual(card.steps.map((s) => s.kind), ["act", "check"]);
+});
+
+test("输出约定 ::browser → 出卡、逐行成步骤；没有标记的普通输出不出", () => {
+  const out = ["::browser nav http://x/", "::browser click 保存", "::browser fill 期间=2026/10/31", "::browser ok 弹出错误提示", "::browser ng 期间未变  actual=10/30 expected=10/31", "::browser video C:/v/TC-01.mp4", "::browser 自定义 一句话"].join("\n");
+  const [card] = browserOpsView({ ...base, items: [user("u1", 0), tool("b1", 1, "bash", { command: "some-runner case1" }, { durationMs: 1_000, result: out })] }).cards;
+  assert.ok(card);
+  assert.equal(card.stepSource, "output");
+  assert.deepEqual(card.steps.map((s) => s.kind), ["nav", "click", "input", "check", "check", "file", "act"]);
+  assert.equal(card.steps[4].ok, false);
+  assert.equal(card.steps[4].name, "actual=10/30 expected=10/31");
+  assert.equal(card.steps[6].target, "自定义 一句话");
+  assert.equal(browserOpsView({ ...base, items: [user("u1", 0), tool("b1", 1, "bash", { command: "echo '::browserish'" }, { durationMs: 1, result: "::browserish" })] }).cards.length, 0);
+});
+
+test("手动标记的关键词：脚本名优先，其次不泛的程序名；git / python 这类不给", async () => {
+  const { markKeyword } = await import("../src/browser-ops.ts");
+  const bash = (command) => tool("b", 1, "bash", { command }, { durationMs: 1 });
+  assert.equal(markKeyword(bash("cd /w && python run_green.py W cases/TC-01.py")), "run_green.py");
+  assert.equal(markKeyword(bash("bash scripts/e2e.sh W TC-01.py")), "e2e.sh");
+  assert.equal(markKeyword(bash("timeout 60 my-runner --case x")), "my-runner");
+  assert.equal(markKeyword(bash("git status && ls")), null);
+  assert.equal(markKeyword(tool("r", 1, "read", { path: "x.py" }, { durationMs: 1 })), null);
+});

@@ -1272,10 +1272,15 @@ export class ChatView {
     this.scrollToEnd();
   }
 
-  toolEvent(phase: "start" | "update" | "end", data: any): void {
+  toolEvent(phase: "start" | "update" | "end" | "browser", data: any): void {
     const key = String(data.toolCallId ?? "");
     if (!key) return;
     const prior = this.loaded.find((item): item is ToolItem => item.kind === "tool" && item.toolCallId === key);
+    if (phase === "browser") {
+      // D328：只是给已有的工具卡补一条「桥看到浏览器了」，聊天里的卡不用重画。
+      if (prior && data.browser) this.remember({ ...prior, browser: data.browser });
+      return;
+    }
     if (phase === "start") {
       this.remember({
         id: `live-tool:${key}`,

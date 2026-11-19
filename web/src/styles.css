@@ -5564,3 +5564,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .exec-copilot-fill { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
 .exec-copilot-foot { overflow: hidden; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .exec-copilot-warn { color: var(--danger); font-size: 10px; }
+/* D328：执行页里认不出的 shell 步骤，悬停才露出「这是浏览器操作」 */
+.exec-step-entry.markable { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.exec-step-entry.markable > .exec-subagent { grid-column: 1 / -1; }
+.exec-step-mark { padding: 2px 4px; border: 0; border-radius: 4px; background: transparent; font-size: 11px; cursor: pointer; opacity: 0; }
+.exec-step-entry:hover .exec-step-mark, .exec-step-mark:focus-visible { opacity: .75; }
+.exec-step-mark:hover { opacity: 1; background: var(--panel-2); }
+@media (hover: none) { .exec-step-mark { opacity: .6; } }

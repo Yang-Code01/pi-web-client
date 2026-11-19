@@ -420,13 +420,29 @@ function cardsFrom(
       });
     }
     const label = browserToolLabel(item.name, item.args, patterns);
-    const scripted = label ? agentBrowserCall(item) : scriptedCall(item, scripts, commands);
+    let scripted = label ? agentBrowserCall(item) : scriptedCall(item, scripts, commands);
+    // D328：桥亲眼看到浏览器被拉起 / 被连上了，就不用猜命令是怎么写的。
+    if (!label && !scripted && item.browser) scripted = evidenceCall(item);
     if (!label && !scripted) continue;
     const next = card(item, intent, thresholds, now, subagent, outputAt[item.toolCallId], scripted, label ?? item.name, label !== null);
     if (next.stepSource === "call" && isRunning(next) && repeatsPrevious(next, cards, thresholds.loopCount)) next.looping = true;
     cards.push(next);
   }
   return cards;
+}
+
+/** 只有桥的运行时证据、命令本身认不出来时的步骤：「运行 <命令>」+「启动浏览器 / 发 CDP」。输出里有步骤时仍以输出为准。 */
+function evidenceCall(item: ToolItem): Scripted {
+  const evidence = item.browser!;
+  const steps: BrowserOpStep[] = [];
+  const command = collapse(withoutHeredocBodies(commandOf(item))).slice(0, 80);
+  if (command) steps.push({ kind: "run", target: command });
+  steps.push(
+    evidence.kind === "cdp"
+      ? { kind: "cdp", target: `${evidence.browser} · 127.0.0.1:${evidence.port ?? "?"}` }
+      : { kind: "launch", target: evidence.headless ? "headless" : undefined },
+  );
+  return { script: null, steps, headed: evidence.headless ? false : null };
 }
 
 /** 命令里直接写的文件（`cat > x.mjs <<'EOF' … EOF`）：把正文当脚本源码收进来看。 */
@@ -700,6 +716,13 @@ function scriptedCall(item: ToolItem, scripts: Map<string, ScriptSource>, keywor
   });
   if (unique.some((entry) => entry.source)) return scriptsCard(unique);
 
+  // D328：脚本照约定打印了 `::browser …`，就算 —— 命令怎么写都行。
+  if (MARKER_LINE.test(outputOf(item))) {
+    const names = [...runs.direct, ...runs.args].map(baseName);
+    const target = names[0] ?? collapse(withoutHeredocBodies(command)).slice(0, 80);
+    return { script: names.length ? [...new Set(names)].join(", ") : null, steps: target ? [{ kind: "run", target }] : [], headed: null };
+  }
+
   // 源码看不全（启动器 import 了没读过的执行器、片段是用 python / sed 改出来的）时，看它跑出来的东西：
   // 跑了脚本、输出里至少两条动作 / 断言，而且有浏览器的痕迹（存了截图 / 录像、提到浏览器）。
   if (runs.direct.length && reportsBrowserRun(outputOf(item))) {
@@ -949,6 +972,29 @@ function jsonArray(text: string): unknown[] | null {
   return null;
 }
 
+/**
+ * D328 手动标记：在执行面板上点「这是浏览器操作」时记下的命令关键词 —— 被跑的脚本名；没有脚本就用
+ * 程序名（`python` / `git` 这类太泛的不要）。不是 shell 工具、或者挑不出合适的词时返回 null。
+ */
+export function markKeyword(item: ToolItem): string | null {
+  if (!SHELL_TOOLS.has(lastSegment(item.name).toLowerCase())) return null;
+  const command = commandOf(item);
+  const runs = shellRuns(command);
+  const ref = runs.direct[0] ?? runs.args[0];
+  if (ref) return baseName(ref).toLowerCase();
+  for (const words of simpleCommands(command)) {
+    const program = programOf(unwrap(words)[0] ?? "");
+    if (program.length > 2 && !INTERPRETERS.has(program) && !GENERIC_PROGRAMS.has(program)) return program;
+  }
+  return null;
+}
+
+const GENERIC_PROGRAMS = new Set([
+  "cd", "echo", "printf", "ls", "cat", "grep", "rg", "sed", "awk", "head", "tail", "rm", "mkdir", "cp", "mv", "touch",
+  "git", "gh", "npm", "pnpm", "yarn", "set", "export", "sleep", "true", "false", "test", "find", "curl", "wget", "tee", "xargs",
+  "sort", "uniq", "wc", "cut", "tr", "date", "which", "where", "type", "pwd", "source", "exit", "wait", "kill", "chmod", "diff",
+]);
+
 function commandOf(item: ToolItem): string {
   if (!item.args || typeof item.args !== "object") return "";
   const bag = item.args as Record<string, unknown>;
@@ -1135,6 +1181,8 @@ const OUT_FILE = /^(?:video|shot|screenshot|saved?|wrote|录像|截图)\s*[:：]
 
 function outputStep(line: string): BrowserOpStep | null {
   if (!line) return null;
+  const marker = MARKER.exec(line);
+  if (marker) return markerStep((marker[1] ?? "").toLowerCase(), marker[2]?.trim() ?? "");
   const header = OUT_HEADER.exec(line);
   if (header) return /^(?:summary|results?|total)$/i.test(header[1]) ? null : { kind: "run", target: clip(header[1]) };
   const verdict = OUT_VERDICT.exec(line);
@@ -1151,6 +1199,56 @@ function outputStep(line: string): BrowserOpStep | null {
   if (note) return { kind: "print", target: clip(note[1]) };
   const file = OUT_FILE.exec(line);
   return file ? { kind: "file", target: file[1] } : null;
+}
+
+/**
+ * D328 输出约定：脚本自己打印 `::browser <动作> <说明>`，面板逐行照抄。只要输出里有一行，这次调用就算浏览器操作，
+ * 不管命令怎么写。动作：act/step、ok/pass、ng/fail、nav/open、click、fill/input、wait、shot/video/file、value、note、launch。
+ * 不认识的动作连同说明一起当一步。
+ */
+export const MARKER = /^::browser(?:\s+(\S+))?(?:\s+(.*))?$/i;
+const MARKER_LINE = /^\s*::browser(?:\s|$)/m;
+
+function markerStep(verb: string, text: string): BrowserOpStep | null {
+  switch (verb) {
+    case "":
+      return null;
+    case "act":
+    case "step":
+      return { kind: "act", target: clip(text) };
+    case "ok":
+    case "pass":
+      return checkStep(true, text);
+    case "ng":
+    case "fail":
+      return checkStep(false, text);
+    case "nav":
+    case "open":
+    case "goto":
+      return { kind: "nav", target: clip(text, 80) };
+    case "click":
+      return { kind: "click", target: clip(text, 80) };
+    case "fill":
+    case "input":
+    case "type":
+      return { kind: "input", target: clip(text, 80) };
+    case "wait":
+      return { kind: "wait", target: clip(text, 40) || undefined };
+    case "shot":
+    case "screenshot":
+    case "video":
+    case "file":
+      return { kind: "file", target: text };
+    case "value":
+    case "data":
+      return { kind: "value", target: clip(text) };
+    case "note":
+      return { kind: "print", target: clip(text) };
+    case "launch":
+      return { kind: "launch", target: /headless/i.test(text) ? "headless" : /headed/i.test(text) ? "headed" : undefined };
+    default:
+      return { kind: "act", target: clip(`${verb} ${text}`) };
+  }
 }
 
 /** 断言行：标题留下；没过的把 `actual=… expected=…` 也带上，过了的就不占地方。 */

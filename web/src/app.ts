@@ -21,7 +21,7 @@ import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
-import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
+import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, markKeyword, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -17093,6 +17093,9 @@ export class App {
     heading.append(select);
     panel.append(heading);
     const list = el("div", "exec-timeline");
+    // D328：认不出的 shell 调用，用户可以当场指认「这是浏览器操作」，关键词记进齿轮里的命令关键词。
+    const browserCalls = new Set(this.browserModel().cards.map((card) => card.toolCallId));
+    const loadedItems = this.chat.loadedItems();
     for (const row of model.timeline) {
       const selectedPlanTaskId = this.execSelectedPlanTaskId;
       const selected = selectedPlanTaskId !== null && row.planTaskId === selectedPlanTaskId;
@@ -17116,6 +17119,21 @@ export class App {
       };
       const entry = el("div", "exec-step-entry");
       entry.append(button);
+      const loaded = loadedItems.find((it) => it.id === row.id);
+      const keyword = loaded?.kind === "tool" && !browserCalls.has(loaded.toolCallId) ? markKeyword(loaded) : null;
+      if (keyword) {
+        entry.classList.add("markable");
+        const mark = el("button", "exec-step-mark", "🌐") as HTMLButtonElement;
+        mark.type = "button";
+        mark.title = tr("这是浏览器操作：把「{p1}」加进命令关键词，以后的调用都算", { p1: keyword });
+        mark.onclick = () => {
+          if (!this.browserCfg.commands.some((word) => word.toLowerCase() === keyword)) this.browserCfg.commands = [...this.browserCfg.commands, keyword];
+          writeBrowserCfg(this.browserCfg);
+          this.flashToast(tr("已加进命令关键词：{p1}（浏览器面板齿轮里可删）", { p1: keyword }), false, 3000);
+          this.renderQueue();
+        };
+        entry.append(mark);
+      }
       if (row.subagent) entry.append(this.execSubagentNode(row.subagent));
       list.append(entry);
     }
@@ -17197,7 +17215,7 @@ export class App {
     if (this.browserCfgOpen) panel.append(this.browserCfgEditor());
     if (!model.cards.length) {
       panel.append(el("div", "exec-empty", tr("这一轮没有浏览器操作")));
-      panel.append(el("div", "hint", tr("认得出的有：浏览器工具（MCP、agent_browser）、shell 跑的浏览器脚本与命令行。自家执行器认不出时，点右上角齿轮加命令关键词。")));
+      panel.append(el("div", "hint", tr("认得出的有：浏览器工具（MCP、agent_browser），以及运行时真的拉起或连上了浏览器的命令。还漏了的话：脚本里打印「::browser 步骤」行，或在「执行」页那一步右边点 🌐。")));
       return panel;
     }
     const list = el("div", "browser-list");
