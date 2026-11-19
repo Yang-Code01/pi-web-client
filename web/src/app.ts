@@ -99,6 +99,7 @@ import {
   formatCell,
   inheritText,
   type MatrixRow,
+  type SettingSource,
   type SettingsJson,
 } from "./settings-matrix.ts";
 import { paintSubagentsPage, type SubagentScan } from "./subagents.ts";
@@ -11938,23 +11939,23 @@ export class App {
     sub.dataset.role = "sub";
     const badges = el("div", "st-badges");
     badges.dataset.role = "badges";
-    const scopeHost = el("div", "st-head__scope");
-    scopeHost.dataset.role = "scope";
     // flashSettings() 找的就是 .settings-note，位置换了但类名留着。
-    headMain.append(title, sub, scopeHost, badges, el("div", "settings-note"));
+    headMain.append(title, sub, badges, el("div", "settings-note"));
     const actions = el("div", "st-head__actions");
-    const compare = el("button", "btn ghost", tr("对照")) as HTMLButtonElement;
-    compare.type = "button";
-    compare.dataset.role = "settings-compare";
-    compare.onclick = () => {
-      this.settingsCompare = !this.settingsCompare;
-      this.flashSettings("");
-      this.paintSettings();
-    };
+    // 保存不再常驻头部：只有草稿脏了才出现在标题下的黄条里（照本机管理的「改了才问」）。
+    const dirty = el("div", "st-dirty");
+    dirty.dataset.role = "dirty";
+    dirty.hidden = true;
+    const dirtyText = el("span", "st-dirty__text");
+    dirtyText.dataset.role = "dirty-text";
+    const discard = el("button", "btn ghost", tr("放弃")) as HTMLButtonElement;
+    discard.type = "button";
+    discard.onclick = () => this.discardSettingsDraft();
     const save = el("button", "btn primary", tr("保存")) as HTMLButtonElement;
     save.type = "button";
     save.dataset.role = "settings-save";
     save.onclick = () => this.saveSettingsScope();
+    dirty.append(el("span", "st-dirty__dot"), dirtyText, discard, save);
     const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
     refresh.type = "button";
     refresh.title = tr("重新读一遍设置文件与各页的数字（不写盘）");
@@ -11962,7 +11963,7 @@ export class App {
     const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
     close.type = "button";
     close.onclick = () => this.closeSheet();
-    actions.append(compare, save, refresh, close);
+    actions.append(refresh, close);
     head.append(headMain, actions);
 
     const main = el("div", "st-main");
@@ -11974,10 +11975,10 @@ export class App {
 
     const foot = el("footer", "st-foot");
     foot.append(
-      el("span", "st-foot__hint", tr("保存写整张表单；每行仍标出覆盖 / 未设置")),
+      el("span", "st-foot__hint", tr("改了才出现保存条；保存只写改过的键")),
       el("span", "st-foot__meta", "pi-web-client · D216"),
     );
-    consoleNode.append(head, main, foot);
+    consoleNode.append(head, dirty, main, foot);
     back.append(consoleNode);
     this.overlay(back);
     this.sheet = back;
@@ -12086,12 +12087,16 @@ export class App {
     // #286: the compare table reads both layers, so it does not depend on the current scope's view.
     if (this.settingsCompare) {
       const globalView = this.settingsView.global;
-      if (globalView && !globalView.error) return this.paintSettingsCompare(pane);
-      // 对照要给不出表时（读取中 / 坏 JSON）自己退回表单，按钮文案也跟着退。
+      if (globalView && !globalView.error) {
+        this.paintSettingsTop(pane, cwd);
+        return this.paintSettingsCompare(pane);
+      }
+      // 对照要给不出表时（读取中 / 坏 JSON）自己退回表单，分段也跟着退。
       this.settingsCompare = false;
       this.paintSettingsHead(consoleNode, cwd);
     }
-    // #285: one page, two scopes; the segment lives in the header.
+    // #285: one page, two scopes; the segment sits on the pane's toolbar.
+    this.paintSettingsTop(pane, cwd);
     const scope = this.settingsScope;
     const view = this.settingsView[scope];
     if (!view || (scope === "project" && view.cwd !== cwd)) {
@@ -12099,6 +12104,8 @@ export class App {
       return;
     }
     this.paintSettingsForm(pane, view);
+    // 重画后把每行的「改过」点和黄条对上（草稿跨作用域切换是留着的）。
+    this.updateSettingsSaveState();
   }
 
   /**
@@ -12124,8 +12131,59 @@ export class App {
     const scope = this.settingsScope;
     const view = this.settingsView[scope];
     save.textContent = scope === "project" ? tr("保存·项目") : tr("保存·全局");
-    save.disabled =
-      !view || Boolean(view.error) || (scope === "project" && !view.writable) || !this.settingsDirty(scope);
+    const changed = this.settingsChangedLabels(scope);
+    save.disabled = !view || Boolean(view.error) || (scope === "project" && !view.writable) || !changed.length;
+    // 黄条只在「全局与项目」的表单上、真有改动时出现；切到别的页或对照，草稿还在，但条收起来。
+    const bar = this.sheet?.querySelector<HTMLElement>('[data-role="dirty"]');
+    if (bar) bar.hidden = this.settingsTab !== "global" || this.settingsCompare || !changed.length;
+    const text = this.sheet?.querySelector<HTMLElement>('[data-role="dirty-text"]');
+    if (text && changed.length) {
+      const head =
+        scope === "project"
+          ? tr("项目设置有 {p1} 处未保存", { p1: changed.length })
+          : tr("全局设置有 {p1} 处未保存", { p1: changed.length });
+      text.replaceChildren(el("b", "", head), el("span", "", tr("：{p1}", { p1: changed.join(tr("、")) })));
+    }
+    const card = this.sheet?.querySelector<HTMLElement>('[data-role="dirty-card"]');
+    if (card) {
+      card.classList.toggle("warn", changed.length > 0);
+      const value = card.querySelector<HTMLElement>(".st-card__value");
+      if (value) value.textContent = String(changed.length);
+    }
+    // 每一行自己的「改过」点：草稿和快照不一样就亮。
+    const draft = this.settingsDrafts.get(scope);
+    const snapshot = this.settingsSnapshots.get(scope);
+    const same = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    this.sheet?.querySelectorAll<HTMLElement>(".settings-row[data-key]").forEach((row) => {
+      const key = row.dataset.key ?? "";
+      const keys = key === "defaultModel" ? ["defaultProvider", "defaultModel"] : [key];
+      const dirty = Boolean(draft && snapshot) && keys.some((k) => !same(draft?.[k], snapshot?.[k]));
+      row.classList.toggle("dirty", dirty);
+    });
+  }
+
+  /** 草稿里相对快照改过的字段，用表单上的中文名列出来（模型那一对算一项）。 */
+  private settingsChangedLabels(scope: "global" | "project"): string[] {
+    const draft = this.settingsDrafts.get(scope);
+    const snapshot = this.settingsSnapshots.get(scope);
+    if (!draft || !snapshot) return [];
+    const fields = settingFields();
+    const changed = Object.keys(diffPatch(snapshot, draft, fields));
+    const labels: string[] = [];
+    for (const f of fields) {
+      const keys = f.kind === "model" ? ["defaultProvider", "defaultModel"] : [f.key];
+      if (keys.some((k) => changed.includes(k)) && !labels.includes(f.label)) labels.push(f.label);
+    }
+    return labels;
+  }
+
+  /** 黄条的「放弃」：草稿回到快照，整页重画。 */
+  private discardSettingsDraft(): void {
+    const scope = this.settingsScope;
+    const snapshot = this.settingsSnapshots.get(scope);
+    if (snapshot) this.settingsDrafts.set(scope, { ...snapshot });
+    this.flashSettings("");
+    this.paintSettings();
   }
 
   /** #283：header 的标题跟页走，副标题只写真实路径，徽标只在有真数时挂。 */
@@ -12153,18 +12211,6 @@ export class App {
         sub.append(el("span", "", tr("项目信任")), el("span", "", " · "), el("span", "mono", cwd));
       }
     }
-    this.paintSettingsScopeBar(consoleNode, cwd);
-    // #286: compare is a whole-page mode; the scope segment and save button are meaningless in it.
-    const compare = consoleNode.querySelector<HTMLButtonElement>('[data-role="settings-compare"]');
-    if (compare) {
-      const globalView = this.settingsView.global;
-      compare.hidden = tab !== "global";
-      compare.textContent = this.settingsCompare ? tr("回到表单") : tr("对照");
-      compare.setAttribute("aria-pressed", String(this.settingsCompare));
-      compare.disabled = !globalView || Boolean(globalView.error);
-    }
-    const save = consoleNode.querySelector<HTMLButtonElement>('[data-role="settings-save"]');
-    if (save) save.hidden = tab !== "global" || this.settingsCompare;
     this.updateSettingsSaveState();
     const badges = consoleNode.querySelector<HTMLElement>('[data-role="badges"]');
     if (!badges) return;
@@ -12189,19 +12235,29 @@ export class App {
     const agentCount = this.subagentsScan ? this.subagentsScan.agents.length : 0;
     const groups: { label: string; items: [SettingsTab, string, number][] }[] = [
       {
-        label: tr("设置"),
+        label: tr("pi 配置"),
         items: [
           ["global", tr("全局与项目"), counts.globalKeys],
           ["trust", tr("项目信任"), 0],
         ],
       },
       {
-        label: tr("系统"),
+        label: tr("账号"),
         items: [
           ["login", tr("登录·凭据"), 0],
           ["passphrase", tr("口令"), 0],
+        ],
+      },
+      {
+        label: tr("扩展"),
+        items: [
           ["ext", tr("插件与 MCP"), extCount],
           ["subagents", tr("子代理"), agentCount],
+        ],
+      },
+      {
+        label: tr("本 web"),
+        items: [
           ["notify", tr("通知"), 0],
           ["preview", tr("预览与翻译"), 0],
           ["runtime", tr("运行时"), 0],
@@ -12227,30 +12283,99 @@ export class App {
   }
 
   /**
-   * #285：global / project 仍是同一个 tab，头部这个分段切的是作用域。
+   * 「全局与项目」页顶：一排统计卡 + 工具条（全局 / 项目 / 对照 分段）。照本机管理的「先看数、再看表」。
    * 没有 cwd 时「项目」照样能点：切过去是「先打开一个会话」的空态，而不是一颗点不动的按钮。
    */
-  private paintSettingsScopeBar(consoleNode: HTMLElement, _cwd: string): void {
-    const host = consoleNode.querySelector<HTMLElement>('[data-role="scope"]');
-    if (!host) return;
-    host.replaceChildren();
-    if (this.settingsTab !== "global") return;
-    // #286: 对照 shows both layers at once, so the scope segment has nothing left to switch.
-    if (this.settingsCompare) return;
+  private paintSettingsTop(pane: HTMLElement, cwd: string): void {
+    const globalView = this.settingsView.global;
+    const projectView = this.settingsView.project;
+    const projectJson = cwd && projectView && projectView.cwd === cwd ? (projectView.json ?? null) : null;
+    const fields = settingFields();
+    const rows = buildMatrix(fields, globalView?.json ?? null, projectJson, globalView?.defaults ?? {});
+    const model = rows.find((row) => row.kind === "model");
+    const sourceText = (src: SettingSource): string =>
+      src === "project" ? tr("来自项目") : src === "global" ? tr("来自全局") : tr("pi 默认");
+    const globalSet = rows.filter((row) => row.global !== undefined).length;
+    const overrides = rows.filter((row) => row.project !== undefined).length;
+    const cards = el("div", "st-cards");
+    const card = (label: string, value: string, subText: string, cls = ""): HTMLElement => {
+      const c = el("div", `st-card${cls ? ` ${cls}` : ""}`);
+      c.append(el("div", "st-card__label", label), el("div", "st-card__value", value), el("div", "st-card__sub", subText));
+      return c;
+    };
+    const modelText = model ? formatCell("model", model.effective as Parameters<typeof formatCell>[1]) : "";
+    cards.append(
+      card(tr("实际生效的模型"), modelText || tr("自动"), model ? sourceText(model.source) : "—", "wide"),
+      card(tr("全局已设置"), `${globalSet} / ${rows.length}`, tr("其余用 pi 默认")),
+      card(tr("项目覆盖"), String(overrides), cwd ? tr("当前会话的项目") : tr("没有打开会话")),
+    );
+    const pending = card(tr("未保存"), "0", tr("改了才出现保存条"));
+    pending.dataset.role = "dirty-card";
+    cards.append(pending);
+    const bar = el("div", "st-scopebar");
     const seg = el("div", "st-seg");
     seg.setAttribute("role", "group");
-    const make = (id: "global" | "project", label: string): HTMLButtonElement => {
-      const b = this.settingsSegButton("scope", id, label, this.settingsScope === id);
+    const make = (id: "global" | "project" | "compare", label: string): HTMLButtonElement => {
+      const on = id === "compare" ? this.settingsCompare : !this.settingsCompare && this.settingsScope === id;
+      const b = this.settingsSegButton("scope", id, label, on);
+      if (id === "compare") b.disabled = !globalView || Boolean(globalView.error);
       b.onclick = () => {
-        if (this.settingsScope === id) return;
-        this.settingsScope = id;
+        if (on) return;
+        if (id === "compare") this.settingsCompare = true;
+        else {
+          this.settingsCompare = false;
+          this.settingsScope = id;
+        }
         this.flashSettings("");
         this.paintSettings();
       };
       return b;
     };
-    seg.append(make("global", tr("全局")), make("project", tr("项目")));
-    host.append(seg);
+    seg.append(make("global", tr("全局")), make("project", tr("项目")), make("compare", tr("对照")));
+    bar.append(seg);
+    pane.append(cards, bar);
+  }
+
+  /** 小节头：左边大写小标题，右边一行等宽小字（同本机管理的 .sys-section）。 */
+  private stSection(label: string, meta?: string | HTMLElement): HTMLElement {
+    const sec = el("div", "settings-group");
+    sec.append(el("span", "settings-group__label", label));
+    if (meta !== undefined) {
+      if (typeof meta === "string") sec.append(el("span", "settings-group__meta", meta));
+      else sec.append(meta);
+    }
+    return sec;
+  }
+
+  /** 一行设置：左名字 + 说明，右控件。控件可以是一组按钮。 */
+  private stRow(name: string, desc: string, controls: HTMLElement | HTMLElement[], tag: "div" | "label" = "div"): HTMLElement {
+    const line = el(tag, "settings-row");
+    const label = el("span", "settings-label");
+    label.append(el("span", "settings-name", name));
+    const ctl = el("span", "settings-ctl");
+    ctl.append(...(Array.isArray(controls) ? controls : [controls]));
+    line.append(label, ctl);
+    if (desc) line.append(el("span", "settings-hint", desc));
+    return line;
+  }
+
+  /** 统计卡一排。 */
+  private stCards(items: { label: string; value: string; sub: string; cls?: string }[]): HTMLElement {
+    const cards = el("div", "st-cards");
+    for (const it of items) {
+      const c = el("div", `st-card${it.cls ? ` ${it.cls}` : ""}`);
+      c.append(el("div", "st-card__label", it.label), el("div", "st-card__value", it.value), el("div", "st-card__sub", it.sub));
+      cards.append(c);
+    }
+    return cards;
+  }
+
+  /** 开关：checkbox 本体还在（键盘、表单语义照旧），长相是拨杆。 */
+  private stSwitch(input: HTMLInputElement): HTMLElement {
+    const wrap = el("span", "st-switch");
+    input.type = "checkbox";
+    wrap.append(input, el("span", "st-switch__track"));
+    return wrap;
   }
 
   /** 两个页内分段控件（作用域 / 更新日志）共用同一种带选中态的按钮。 */
@@ -12395,6 +12520,15 @@ export class App {
     }
 
     const value = view.value;
+    body.append(
+      this.stCards([
+        { label: tr("口令文件"), value: value === null ? tr("读不到") : tr("在"), sub: "passphrase.txt", cls: value === null ? "warn" : "" },
+        { label: tr("访问方式"), value: this.me.public ? tr("公网") : tr("本机 / 局域网"), sub: this.me.public ? tr("看明文要先验一次") : tr("可直接查看") },
+      ]),
+    );
+    body.append(this.stSection(tr("口令"), view.dir));
+    const panel = el("div", "settings-panel");
+    body.append(panel);
     const row = el("div", "settings-row");
     row.append(el("span", "settings-label", tr("当前口令")));
     const holder = el("div", "passphrase-now");
@@ -12413,8 +12547,9 @@ export class App {
       tools.append(toggle, copy);
       holder.append(tools);
     }
+    holder.classList.add("settings-ctl");
     row.append(holder);
-    body.append(row);
+    panel.append(row);
 
     const edit = el("label", "settings-row");
     edit.append(el("span", "settings-label", tr("新口令")));
@@ -12425,7 +12560,7 @@ export class App {
     input.value = this.passphraseDraft;
     input.oninput = () => (this.passphraseDraft = input.value);
     edit.append(input);
-    body.append(edit);
+    panel.append(edit);
 
     // 随机出来的值在输入框里是遮住的；这行让人先看清再决定保不保存。
     if (this.passphraseFresh) {
@@ -12438,8 +12573,9 @@ export class App {
       const tools = el("div", "passphrase-tools");
       tools.append(copy);
       box.append(code, tools);
+      box.classList.add("settings-ctl");
       fresh.append(box);
-      body.append(fresh);
+      panel.append(fresh);
     }
 
     const actions = el("div", "passphrase-actions");
@@ -12458,12 +12594,12 @@ export class App {
       this.act(() => this.socket.send({ type: "passphrase.set", value: next }));
     };
     actions.append(rnd, save);
-    body.append(actions);
+    panel.append(actions);
 
     body.append(
       el(
         "div",
-        "hint",
+        "st-note",
         tr("忘了口令：在终端里跑 {p1} --passphrase <新口令>。口令写在 {p2} 的 passphrase.txt。", {
           p1: "node bridge/dist/index.js",
           p2: view.dir,
@@ -12516,9 +12652,17 @@ export class App {
       this.models.map((m) => `${m.provider}/${m.id}`),
       want,
     );
-    const row = el("label", "settings-row");
-    row.append(el("span", "settings-label", tr("翻译用的默认模型")));
-    const sel = el("select", "tr-modelsel") as HTMLSelectElement;
+    const fallback = this.trDefaultModel || "copilot/gpt-6-luna";
+    pane.append(
+      this.stCards([
+        { label: tr("翻译模型"), value: resolved || want || "—", sub: this.trModelPref ? tr("你选的") : tr("出厂默认"), cls: "wide" },
+        { label: tr("出厂默认"), value: fallback, sub: tr("恢复默认会回到它"), cls: "wide" },
+      ]),
+    );
+    if (want && !resolved) {
+      pane.append(el("div", "hint warn", tr("这个模型现在不在模型目录里（{p1}），下次翻译会先让你挑一个。", { p1: want })));
+    }
+    const sel = el("select", "ns-input tr-modelsel") as HTMLSelectElement;
     appendModelOptions(sel, this.models, undefined, (m) => shortModelName(m.name), tr("当前使用"));
     if (resolved) sel.value = resolved;
     else if (sel.options.length) sel.value = sel.options[0].value;
@@ -12526,53 +12670,51 @@ export class App {
       this.rememberTrModel(sel.value);
       this.flashSettings(tr("以后翻译默认用 {p1}", { p1: sel.options[sel.selectedIndex]?.textContent ?? sel.value }));
     };
-    row.append(sel);
-    pane.append(row);
-
-    const tools = el("div", "queue-tools");
-    const reset = el("button", "btn", tr("恢复默认（{p1}）", { p1: this.trDefaultModel || "copilot/gpt-6-luna" })) as HTMLButtonElement;
+    const reset = el("button", "btn", tr("恢复默认（{p1}）", { p1: fallback })) as HTMLButtonElement;
     reset.onclick = () => {
-      this.rememberTrModel(this.trDefaultModel || "copilot/gpt-6-luna");
+      this.rememberTrModel(fallback);
       this.flashSettings(tr("已恢复默认模型"));
       this.paintSettings();
     };
-    tools.append(reset);
-    pane.append(tools);
-
-    if (want && !resolved) {
-      pane.append(el("div", "hint warn", tr("这个模型现在不在模型目录里（{p1}），下次翻译会先让你挑一个。", { p1: want })));
-    }
-    pane.append(
-      el(
-        "div",
-        "hint",
+    pane.append(this.stSection(tr("翻译")));
+    const panel = el("div", "settings-panel");
+    panel.append(
+      this.stRow(
+        tr("翻译用的默认模型"),
         tr("预览右上角的「译」会用这里选的模型：另起一个 pi 子进程翻，不占当前对话的上下文。译文只存在本机，原文不动；在对照里改的译文可以再写回原文。"),
+        sel,
+        "label",
       ),
+      this.stRow(tr("恢复默认"), tr("换模型不会重翻已有的译文：点「更新」时才按新模型整篇重来。"), reset),
     );
-    pane.append(el("div", "hint", tr("换模型不会重翻已有的译文：点「更新」时才按新模型整篇重来。")));
+    pane.append(panel);
   }
 
   private paintNotify(body: HTMLElement): void {
     const on = this.me.notify !== false;
-    const row = el("label", "settings-row");
-    row.append(el("span", "settings-label", tr("需要你时发通知")));
+    body.append(
+      this.stCards([
+        { label: tr("通知"), value: on ? tr("开") : tr("关"), sub: tr("需要你时才发"), cls: on ? "" : "warn" },
+        { label: tr("Web Push 设备"), value: String(this.me.pushCount), sub: tr("已订阅") },
+      ]),
+    );
     const box = el("input") as HTMLInputElement;
-    box.type = "checkbox";
     box.checked = on;
     box.onchange = () => {
       this.socket.send({ type: "notify.set", on: box.checked });
       this.flashSettings(box.checked ? tr("已打开通知") : tr("已关闭通知：不再推 Windows 通知，也不发微信"));
     };
-    row.append(box);
-    body.append(row);
-    body.append(
-      el(
-        "div",
-        "hint",
+    body.append(this.stSection(tr("开关")));
+    const panel = el("div", "settings-panel");
+    panel.append(
+      this.stRow(
+        tr("需要你时发通知"),
         tr("等你批准或回答时，推送到 Windows 通知（Web Push）和微信。正看着这个页面时不发：只有切到别的标签页、最小化浏览器或切到别的程序时才发。一份问卷只发一条。"),
+        this.stSwitch(box),
+        "label",
       ),
     );
-    const tools = el("div", "queue-tools");
+    body.append(panel);
     const push = el("button", "btn", tr("在这台设备开启 Web Push"));
     push.onclick = () => void this.enablePush();
     const test = el("button", "btn", tr("发测试通知"));
@@ -12580,9 +12722,13 @@ export class App {
       const res = await api.notifyTest().catch((e) => ({ push: 0, wechat: String(e.message ?? e) }));
       this.flashSettings(tr("测试通知：Web Push 送达 {p1} 台；微信：{p2}", { p1: res.push, p2: res.wechat }));
     };
-    tools.append(push, test);
-    body.append(tools);
-    body.append(el("div", "hint", tr("Web Push 已订阅 {p1} 台设备。测试通知不受开关影响，页面在前也会弹。", { p1: this.me.pushCount })));
+    body.append(this.stSection(tr("推送"), tr("{p1} 台设备", { p1: this.me.pushCount })));
+    const panel2 = el("div", "settings-panel");
+    panel2.append(
+      this.stRow(tr("这台设备"), tr("浏览器会先问一次授权；同意后这台设备才收得到 Windows 通知。"), push),
+      this.stRow(tr("发一条试试"), tr("Web Push 已订阅 {p1} 台设备。测试通知不受开关影响，页面在前也会弹。", { p1: this.me.pushCount }), test),
+    );
+    body.append(panel2);
   }
 
   /**
@@ -12600,6 +12746,15 @@ export class App {
       return;
     }
     const cost = stats.unavailable ? tr("不可用") : stats.totalBytes === null ? "" : fmtSize(stats.totalBytes);
+    const busy = stats.sessions.filter((x) => x.running).length;
+    body.append(
+      this.stCards([
+        { label: tr("运行中 pi"), value: String(stats.running), sub: tr("{p1} 个在跑一轮", { p1: busy }) },
+        { label: tr("占用内存"), value: cost || "—", sub: tr("桥拉起的子进程合计"), cls: stats.unavailable ? "warn" : "" },
+        { label: tr("空闲休眠"), value: tr("{p1} 分钟", { p1: plainNumber(stats.lifecycle.idleMs / MINUTE_MS) }), sub: tr("闲够了就收") },
+        { label: tr("内存水位"), value: `${plainNumber(stats.lifecycle.watermarkBytes / GB)} GB`, sub: tr("超了先收最久没用的") },
+      ]),
+    );
     body.append(
       el(
         "div",
@@ -12618,12 +12773,12 @@ export class App {
     };
     const actions = el("div", "runtime-actions");
     actions.append(sleepAll);
-    body.append(actions);
+    body.append(this.stSection(tr("进程"), actions));
     if (this.sleepAllReceipt) body.append(el("div", "runtime-sleep-all", sleepAllText(this.sleepAllReceipt)));
     body.append(
       el(
         "div",
-        "hint",
+        "st-note",
         tr("内存数字来自桥自己拉起的那些 pi 子进程（Windows 用 tasklist，macOS / Linux 用 ps），不按进程名过滤。读不到就写「不可用」，不猜、不留空。"),
       ),
     );
@@ -12642,7 +12797,7 @@ export class App {
       }
       body.append(list);
     }
-    body.append(this.runtimeThresholds(stats));
+    body.append(this.stSection(tr("回收阈值")), this.runtimeThresholds(stats));
   }
 
   /**
@@ -12822,7 +12977,8 @@ export class App {
    */
   private paintSettingsForm(body: HTMLElement, view: SettingsView): void {
     const scope = this.settingsScope;
-    body.append(el("div", "settings-path", tr("{p1}{p2}", { p1: view.exists ? "" : tr("（还没有这个文件，保存时创建）"), p2: view.path })));
+    // 路径已经在工具条上；这里只在「文件还不存在」时补一句。
+    if (!view.exists) body.append(el("div", "settings-path", tr("（还没有这个文件，保存时创建）")));
     if (view.error) {
       body.append(el("div", "takeover warn bad", tr("{p1}。下面的表单不可用，用「编辑 JSON」修好文件。", { p1: view.error })));
       const holder = el("div", "settings-json-host");
@@ -12891,24 +13047,45 @@ export class App {
     adv.append(el("summary", "", tr("高级")));
     const advForm = el("div", "settings-form");
     adv.append(advForm);
+    // 每组一个小节头 + 一块面板（照本机管理的 section + panel）；小节头右边写这组设了几项。
     let group = "";
+    let panel: HTMLElement = el("div", "settings-panel");
+    let groupMeta: HTMLElement | null = null;
+    let groupSet = 0;
+    let groupTotal = 0;
+    const closeGroup = (): void => {
+      if (groupMeta) groupMeta.textContent = tr("{p1} / {p2} 已设置", { p1: groupSet, p2: groupTotal });
+    };
     for (const f of fields) {
       const row = rowOf.get(f.key);
       if (!row) continue;
-      const host = f.advanced ? advForm : form;
-      if (!f.advanced && f.group && f.group !== group) {
-        group = f.group;
-        form.append(el("div", "settings-group", f.group));
+      if (!f.advanced && ((f.group && f.group !== group) || !form.childElementCount)) {
+        closeGroup();
+        group = f.group ?? group;
+        const sec = el("div", "settings-group");
+        sec.append(el("span", "settings-group__label", group || tr("其他")));
+        groupMeta = el("span", "settings-group__meta");
+        sec.append(groupMeta);
+        panel = el("div", "settings-panel");
+        form.append(sec, panel);
+        groupSet = 0;
+        groupTotal = 0;
+      }
+      const host = f.advanced ? advForm : panel;
+      if (!f.advanced) {
+        groupTotal++;
+        if ((scope === "project" ? row.project : row.global) !== undefined) groupSet++;
       }
       const line = el("label", "settings-row");
       // #286: the compare table points back here by field key, not by DOM position.
       line.dataset.key = f.key;
-      const labelEl = el("span", "settings-label", f.label);
+      const labelEl = el("span", "settings-label");
+      labelEl.append(el("span", "settings-name", f.label), el("span", "settings-key", f.key));
       const onlyGlobal = scope === "project" && Boolean(f.globalOnly);
-      if (!onlyGlobal) labelEl.append(sourceChip(row));
       line.append(labelEl);
       if (onlyGlobal) {
-        line.append(el("span", "settings-hint", tr("仅全局")));
+        line.classList.add("only-global");
+        line.append(el("span", "settings-src", tr("仅全局")));
         if (f.hint) line.append(el("span", "settings-hint", f.hint));
         host.append(line);
         continue;
@@ -12979,11 +13156,12 @@ export class App {
         input = inp;
       }
       input.disabled = locked;
-      line.append(input);
+      line.append(input, sourceChip(row));
       const hint = hintFor(f, row);
       if (hint) line.append(el("span", "settings-hint", hint));
       host.append(line);
     }
+    closeGroup();
     if (advForm.childElementCount) form.append(adv);
     body.append(form);
     if (scope === "global") body.append(this.lockExtBox());
@@ -13166,7 +13344,17 @@ export class App {
       t.saved ? tr("已保存的决定：{p1}（{p2}）", { p1: t.saved.decision ? tr("信任") : tr("不信任"), p2: t.saved.path }) : tr("没有保存的决定。全局 defaultProjectTrust = {p1}，网页里的 pi 不能弹提示，所以{p2}。", { p1: t.fallback, p2: t.effective ? tr("会加载") : tr("不会加载") }),
       tr("决定写在 ~/.pi/agent/trust.json，和终端里的 /trust 是同一份。"),
     ];
-    for (const l of lines) body.append(el("div", "settings-hint", l));
+    body.append(
+      this.stCards([
+        { label: tr("需要信任"), value: t.needed ? tr("是") : tr("否"), sub: t.needed ? tr("有项目级 pi 资源") : tr("信不信都不影响") },
+        { label: tr("已保存的决定"), value: t.saved ? (t.saved.decision ? tr("信任") : tr("不信任")) : tr("没有"), sub: t.saved ? t.saved.path : `defaultProjectTrust = ${t.fallback}` },
+        { label: tr("现在"), value: t.effective ? tr("会加载") : tr("不会加载"), sub: tr("项目的 .pi 资源"), cls: t.needed && !t.effective ? "warn" : "" },
+      ]),
+    );
+    body.append(this.stSection(tr("决定"), cwd));
+    const panel = el("div", "settings-panel settings-trust");
+    body.append(panel);
+    for (const l of lines) panel.append(el("div", "settings-hint", l));
     const opts = el("div", "settings-trust-opts");
     t.options.forEach((o, i) => {
       // bridge 只给英文标签（Trust / Do not trust / Trust parent folder (…)），这里翻成人话。
@@ -13176,8 +13364,8 @@ export class App {
       b.onclick = () => this.act(() => this.socket.send({ type: "trust.set", cwd, option: i }));
       opts.append(b);
     });
-    body.append(opts);
-    if (this.session?.owned) body.append(el("div", "settings-hint", tr("改了之后，正在运行的会话要「重新加载」（/reload）才会按新的决定加载项目资源。")));
+    panel.append(opts);
+    if (this.session?.owned) body.append(el("div", "st-note", tr("改了之后，正在运行的会话要「重新加载」（/reload）才会按新的决定加载项目资源。")));
   }
 
   // ---------------------------------------------------------------- /share /bug (#38)
@@ -14743,8 +14931,17 @@ export class App {
       body.append(box);
       if (!run.result) return;
     }
+    const provs = this.authProviders ?? [];
+    const configured = provs.filter((p) => p.configured).length;
     body.append(
-      el("div", "settings-hint", tr("和终端的 /login 一样，凭据由 pi 写进 ~/.pi/agent/auth.json，网页只转达提示、不保存也不回显密钥。OAuth 的回调落在运行 bridge 的这台电脑上；在别的设备上登录时，按提示把浏览器最后跳转到的网址粘贴回来。")),
+      this.stCards([
+        { label: tr("Provider"), value: String(provs.length), sub: tr("pi 认得的") },
+        { label: tr("已配置"), value: String(configured), sub: tr("登录或环境变量") },
+        { label: tr("auth.json 里"), value: String(provs.filter((p) => p.stored).length), sub: tr("网页 / 终端登录的") },
+      ]),
+    );
+    body.append(
+      el("div", "st-note", tr("和终端的 /login 一样，凭据由 pi 写进 ~/.pi/agent/auth.json，网页只转达提示、不保存也不回显密钥。OAuth 的回调落在运行 bridge 的这台电脑上；在别的设备上登录时，按提示把浏览器最后跳转到的网址粘贴回来。")),
     );
     const filter = el("input", "ns-input") as HTMLInputElement;
     filter.placeholder = tr("按名字筛选 provider…");
@@ -14785,7 +14982,7 @@ export class App {
       paintList();
     };
     paintList();
-    body.append(filter, list);
+    body.append(this.stSection(tr("Provider"), tr("{p1} / {p2} 已配置", { p1: configured, p2: provs.length })), filter, list);
   }
 
   private answerLogin(value: string): void {
