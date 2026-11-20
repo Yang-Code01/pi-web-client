@@ -355,6 +355,13 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           }
         }
         if (patch.pinned !== undefined || patch.muted !== undefined) threads.patch(peerId, patch);
+        // 标为未读（Teams 那个）：把已读水位退到对方最后一条消息之前，这条又算进未读。
+        if (body?.unread === true) {
+          const me = nodeId;
+          const tail = history.read(peerId, 200);
+          const last = [...tail].reverse().find((e) => e.from.nodeId !== me && (e.kind === "text" || e.kind === "file" || e.kind === "note"));
+          if (last) threads.patch(peerId, { readAt: last.at - 1, readId: null });
+        }
         return json(res, 200, { ok: true, meta: threads.get(peerId) });
       }
 

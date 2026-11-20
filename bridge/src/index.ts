@@ -943,10 +943,11 @@ async function main(): Promise<void> {
     }
     if (url.pathname === "/api/peer/thread" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
-      const patch: { pinned?: boolean; muted?: boolean; draft?: string } = {};
+      const patch: { pinned?: boolean; muted?: boolean; draft?: string; unread?: boolean } = {};
       if (typeof body?.pinned === "boolean") patch.pinned = body.pinned;
       if (typeof body?.muted === "boolean") patch.muted = body.muted;
       if (typeof body?.draft === "string") patch.draft = body.draft;
+      if (body?.unread === true) patch.unread = true;
       try {
         return json(res, 200, await peer.patchThread(String(body?.peer ?? ""), patch));
       } catch (err) {

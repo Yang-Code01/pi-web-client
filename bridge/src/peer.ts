@@ -300,7 +300,7 @@ export class PeerHost {
     return this.request("POST", "/threads/read", { peer, at, id });
   }
 
-  patchThread(peer: string, patch: { pinned?: boolean; muted?: boolean; draft?: string }): Promise<{ ok: boolean }> {
+  patchThread(peer: string, patch: { pinned?: boolean; muted?: boolean; draft?: string; unread?: boolean }): Promise<{ ok: boolean }> {
     return this.request("POST", "/threads/patch", { peer, ...patch });
   }
 
