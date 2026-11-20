@@ -470,6 +470,7 @@ export interface ArtifactRow {
 export type ArtifactWhy =
   | "no-baseline"
   | "delivered-only"
+  | "mentioned-only"
   | "git-head-missing"
   | "snapshot-too-big"
   | "size-only"

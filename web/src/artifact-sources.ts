@@ -20,6 +20,8 @@ export interface ArtifactSource {
   writes: number;
   /** 交付工具记下的那一条为 true：桥据此换掉「没有写入前原文」的说法。 */
   delivered: boolean;
+  /** 回复正文提及的路径（非工具调用）：桥据此校验文件存在且 mtime 晚于会话开始后才收录。 */
+  mentioned?: boolean;
 }
 
 /** Tool arguments carry the path under one of these keys, depending on the tool. */
@@ -52,12 +54,35 @@ export function noteArtifact(
   if (prev && !isWrite) return { path, isWrite };
   into.delete(path);
   // 先打开、后写入时次数从 1 起算 —— 这一列答的是「写过几次」，不是「出现过几次」。
-  const writes = isWrite ? (prev && !prev.delivered ? prev.writes : 0) + 1 : 1;
+  const writes = isWrite ? (prev && !prev.delivered && !prev.mentioned ? prev.writes : 0) + 1 : 1;
   into.set(path, { path, tool, writes, delivered: !isWrite });
   return { path, isWrite };
 }
 
-/** 产物列表要的形状：最近写 / 打开的在前。 */
-export function artifactSources(map: Map<string, ArtifactSource>): { path: string; tool: string; writes: number; delivered?: boolean }[] {
-  return [...map.values()].reverse().map((v) => ({ path: v.path, tool: v.tool, writes: v.writes, ...(v.delivered ? { delivered: true } : {}) }));
+/**
+ * 记一条 AI 回复正文里提到的文件路径（脚本/程序生成但未调 open_preview 时的兜底线索）。
+ * 已有写入或交付记录的路径不动（优先级：写入 > 交付 > 提及）；重复提及只挪到末尾（最近的在最前）。
+ */
+export function noteMentioned(into: Map<string, ArtifactSource>, paths: Iterable<string>): void {
+  for (const raw of paths) {
+    const path = String(raw ?? "").trim();
+    if (!path) continue;
+    const prev = into.get(path);
+    if (prev && !prev.mentioned) continue;
+    into.delete(path);
+    into.set(path, { path, tool: "mentioned", writes: 1, delivered: true, mentioned: true });
+  }
+}
+
+/** 产物列表要的形状：最近写 / 打开 / 提及的在前。 */
+export function artifactSources(
+  map: Map<string, ArtifactSource>,
+): { path: string; tool: string; writes: number; delivered?: boolean; mentioned?: boolean }[] {
+  return [...map.values()].reverse().map((v) => ({
+    path: v.path,
+    tool: v.tool,
+    writes: v.writes,
+    ...(v.delivered ? { delivered: true } : {}),
+    ...(v.mentioned ? { mentioned: true } : {}),
+  }));
 }

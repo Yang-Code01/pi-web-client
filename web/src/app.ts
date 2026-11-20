@@ -8360,7 +8360,7 @@ export class App {
     const line = el("span", "art-line");
     line.append(el("span", "art-name", name), el("span", `art-badge st-${r.status}`, this.artStatusLabel(r.status)));
     if (r.added || r.removed) line.append(el("span", "art-count", `+${r.added} −${r.removed}`));
-    line.append(el("span", "art-tools", `${r.tool}×${r.writes}`));
+    line.append(el("span", "art-tools", r.tool === "mentioned" ? tr("回复提及") : `${r.tool}×${r.writes}`));
     if (r.estimate) line.append(el("span", "art-est", tr("按 git 估算")));
     main.append(line, el("span", "art-path", r.path));
     if (!r.diffable && r.why) main.append(el("span", "art-why", this.artifactWhyText(r.why)));
@@ -8529,6 +8529,8 @@ export class App {
         return tr("会话开始时没有留下原文（桥没在运行或扩展被关了），文件也不在 git 的 HEAD 里");
       case "delivered-only":
         return tr("这个文件不是写入工具写的（脚本 / 程序生成的），没有写入前的原文；点开就是看它现在的样子");
+      case "mentioned-only":
+        return tr("从回复提及的路径补收（非写入工具直接写入），点开看当前内容");
       case "git-head-missing":
         return tr("这个文件在 git 的 HEAD 里读不出来");
       case "snapshot-too-big":

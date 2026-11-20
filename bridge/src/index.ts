@@ -1535,9 +1535,10 @@ async function main(): Promise<void> {
           writes: Number(it.writes) || 1,
           // D275：交付工具（open_preview）记下的行，没有基线时要说「脚本产物」而不是「桥没在运行」。
           ...(it.delivered === true ? { delivered: true } : {}),
+          ...(it.mentioned === true ? { mentioned: true } : {}),
         }));
       try {
-        return json(res, 200, await listArtifacts(sessionId, where.cwd, items));
+        return json(res, 200, await listArtifacts(sessionId, where.cwd, items, { startedAt: where.startedAt }));
       } catch (err: any) {
         log(`artifacts.list failed: ${String(err?.message ?? err)}`);
         return fail(res, 500, "artifacts_failed", "读不了这个会话的产物");

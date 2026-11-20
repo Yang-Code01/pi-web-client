@@ -28,13 +28,19 @@ const CODE_EXT =
   "md|markdown|html?|png|jpe?g|gif|svg|webp|bmp|ico|txt|csv|tsv|log|json|jsonl|ya?ml|toml|ini|xml|pdf|tsx?|jsx?|mjs|cjs|vue|svelte|css|scss|less|py|rb|go|rs|java|kt|cs|cpp|cc|c|h|hpp|sh|ps1|bat|cmd|sql|lua|php|swift|dart|r|gradle|properties|env|lock|conf|cfg|mp4|m4v|webm|ogv|mov|mkv|avi|wmv|flv|mp3|wav|m4a|aac|ogg|oga|flac|opus";
 // Name characters: no whitespace, quotes, brackets or CJK punctuation.
 const NAME = "[^\\s`'\"<>|*?:()\\[\\]{}，。；：！？、（）【】「」『』《》\\\\/]";
+// Inside an explicit code span (`C:\a\report(プラン).html`), balanced parentheses are part of the
+// file name — not surrounding prose punctuation.
+const SPAN_NAME = NAME.replace("()", "");
 const WIN_ABS = `[A-Za-z]:[\\\\/](?:${NAME}+[\\\\/])*${NAME}+\\.[A-Za-z0-9]{1,10}`;
 const POSIX_ABS = `(?<![\\w.])/(?:${NAME}+/)+${NAME}+\\.(?:${CODE_EXT})`;
 const REL_DIR = `(?<![\\w./\\\\])(?:\\.{1,2}[\\\\/])?(?:${NAME}+[\\\\/])+${NAME}+\\.(?:${CODE_EXT})`;
+const SPAN_WIN_ABS = `[A-Za-z]:[\\\\/](?:${SPAN_NAME}+[\\\\/])*${SPAN_NAME}+\\.[A-Za-z0-9]{1,10}`;
+const SPAN_POSIX_ABS = `/(?:${SPAN_NAME}+/)+${SPAN_NAME}+\\.(?:${CODE_EXT})`;
+const SPAN_REL_DIR = `(?:\\.{1,2}[\\\\/])?(?:${SPAN_NAME}+[\\\\/])+${SPAN_NAME}+\\.(?:${CODE_EXT})`;
 // A bare name (`问题记录.md`) is deliberately NOT a path: it does not say where the file is, and
 // guessing a directory for it opens the wrong file sooner or later. Use a path, or the file manager.
 const PATH_RE = new RegExp(`(${WIN_ABS})|(${POSIX_ABS})|(${REL_DIR})`, "g");
-const PATH_WHOLE = new RegExp(`^(?:${WIN_ABS}|${POSIX_ABS}|${REL_DIR})$`);
+const PATH_WHOLE = new RegExp(`^(?:${SPAN_WIN_ABS}|${SPAN_POSIX_ABS}|${SPAN_REL_DIR})$`);
 
 function stripTrail(p: string): string {
   return p.replace(/[.,;:!?)\]}'"]+$/, "");
@@ -45,6 +51,62 @@ export function looksLikePath(text: string): boolean {
   const t = text.trim();
   if (!t || t.length > 400 || /\s/.test(t) || /^[a-z]+:\/\//i.test(t)) return false;
   return PATH_WHOLE.test(t);
+}
+
+/**
+ * Extract file paths mentioned in an assistant reply (fenced code blocks excluded).
+ * Shares the same path grammar as `renderMarkdown`: inline code spans (supporting parentheses in
+ * file names like `report(プラン).html`), local markdown links `[label](path)`, and plain-text paths.
+ */
+export function extractMentionedPaths(src: string): string[] {
+  if (!src) return [];
+  const out: string[] = [];
+  const lines = src.replace(/\r\n?/g, "\n").split("\n");
+  let fence = false;
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      fence = !fence;
+      continue;
+    }
+    if (fence) continue;
+    const re = new RegExp(INLINE.source, "g");
+    let last = 0;
+    let m: RegExpExecArray | null;
+    const scanPlain = (chunk: string): void => {
+      PATH_RE.lastIndex = 0;
+      let pm: RegExpExecArray | null;
+      while ((pm = PATH_RE.exec(chunk))) {
+        const raw = stripTrail(pm[0]);
+        if (!raw) continue;
+        out.push(raw);
+        PATH_RE.lastIndex = pm.index + raw.length;
+      }
+    };
+    while ((m = re.exec(line))) {
+      if (m.index > last) scanPlain(line.slice(last, m.index));
+      const token = m[0];
+      if (m[1]) {
+        const inner = token.slice(1, -1).trim();
+        if (looksLikePath(inner)) out.push(inner);
+      } else if (m[3]) {
+        const lm = /^\[((?:[^\[\]\n]|\[[^\]\n]*\])+)\]\(([^\s)]+)/.exec(token);
+        const href = lm?.[2] ?? "";
+        if (
+          href &&
+          !/^https?:\/\//i.test(href) &&
+          !/^mailto:/i.test(href) &&
+          !href.startsWith("#") &&
+          (!/^[a-z][a-z0-9+.-]*:/i.test(href) || /^[A-Za-z]:[\\/]/.test(href))
+        ) {
+          const clean = href.split("#")[0].trim();
+          if (clean && !clean.endsWith("/") && !clean.endsWith("\\")) out.push(clean);
+        }
+      }
+      last = m.index + token.length;
+    }
+    if (last < line.length) scanPlain(line.slice(last));
+  }
+  return out;
 }
 
 function defaultOpen(path: string): void {

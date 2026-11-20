@@ -8,7 +8,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { artifactSources, noteArtifact, toolPath } from "../src/artifact-sources.ts";
+import { artifactSources, noteArtifact, noteMentioned, toolPath } from "../src/artifact-sources.ts";
+import { extractMentionedPaths, looksLikePath } from "../src/md.ts";
 
 const map = () => new Map();
 const paths = (m) => artifactSources(m).map((it) => `${it.path}:${it.tool}×${it.writes}`);
@@ -67,4 +68,42 @@ test("toolPath：几种参数写法都认，非字符串 / 空白不算", () => 
   assert.equal(toolPath({ filename: "e" }), "e");
   assert.equal(toolPath({ path: 1 }), "");
   assert.equal(toolPath(null), "");
+});
+
+test("noteMentioned：补收回复提及路径，且不覆盖已有写入或交付记录", () => {
+  const m = map();
+  noteArtifact(m, "write", { path: "a.html" });
+  noteArtifact(m, "open_preview", { path: "b.html" });
+  noteMentioned(m, ["a.html", "b.html", "C:\\soft\\10_計画\\report(プラン).html"]);
+  assert.deepEqual(artifactSources(m), [
+    { path: "C:\\soft\\10_計画\\report(プラン).html", tool: "mentioned", writes: 1, delivered: true, mentioned: true },
+    { path: "b.html", tool: "open_preview", writes: 1, delivered: true },
+    { path: "a.html", tool: "write", writes: 1 },
+  ]);
+});
+
+test("noteMentioned：先提及后写入时，升级为写入且次数从 1 算", () => {
+  const m = map();
+  noteMentioned(m, ["out.html"]);
+  noteArtifact(m, "write", { path: "out.html" });
+  assert.deepEqual(artifactSources(m), [{ path: "out.html", tool: "write", writes: 1 }]);
+});
+
+test("extractMentionedPaths：支持反引号内带括号文件名、纯文本路径、本地链接，跳过代码块与 URL", () => {
+  assert.equal(looksLikePath("C:\\soft\\10_計画\\AI駆動開発\\planning-external-report(プラン).html"), true);
+  const reply = [
+    "两份报告都写好了：",
+    "- `C:\\soft\\10_計画\\AI駆動開発\\planning-external-report(プラン).html`",
+    "- `C:\\soft\\10_計画\\AI駆動開発\\planning-internal-report(プラン).html`",
+    "另见 [说明](docs/report.md) 与 C:\\api\\.jira\\impact-20261104.html 和 https://example.com/a.html",
+    "```bash",
+    "cat C:\\ignored\\in-code-block.html",
+    "```",
+  ].join("\n");
+  assert.deepEqual(extractMentionedPaths(reply), [
+    "C:\\soft\\10_計画\\AI駆動開発\\planning-external-report(プラン).html",
+    "C:\\soft\\10_計画\\AI駆動開発\\planning-internal-report(プラン).html",
+    "docs/report.md",
+    "C:\\api\\.jira\\impact-20261104.html",
+  ]);
 });

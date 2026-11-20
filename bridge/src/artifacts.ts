@@ -33,6 +33,8 @@ export interface ArtifactInput {
   writes: number;
   /** 这条来自交付工具（`open_preview`）而不是写入工具：没有写入前基线时换一种说法（D275）。 */
   delivered?: boolean;
+  /** 这条来自 AI 回复正文提及的路径：桥会校验文件存在且 mtime 晚于会话开始后才收录。 */
+  mentioned?: boolean;
 }
 
 export interface ArtifactRow {
@@ -58,6 +60,7 @@ export interface ArtifactRow {
 export type ArtifactWhy =
   | "no-baseline"
   | "delivered-only"
+  | "mentioned-only"
   | "git-head-missing"
   | "snapshot-too-big"
   | "size-only"
@@ -276,17 +279,31 @@ function emptySummary(): ArtifactSummary {
   return { new: 0, modified: 0, same: 0, deleted: 0, unknown: 0, added: 0, removed: 0 };
 }
 
+function parseTimeMs(v?: string | number): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim()) {
+    const ms = Date.parse(v);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return null;
+}
+
 /**
  * 把「这个会话写过的路径」和「写入前的原文」对上，给出每一行的状态。
  *
  * `inputs` 由页面给（它重放历史时就在收集 write/edit，按最近写的在前）。桥只负责解析路径、
  * 查基线、算行数 —— 路径来自已登录页面，读盘这件事它本来就能通过 /api/preview 做，没有新权限。
  */
-export async function listArtifacts(sessionId: string, cwd: string, inputs: ArtifactInput[]): Promise<ArtifactList> {
+export async function listArtifacts(
+  sessionId: string,
+  cwd: string,
+  inputs: ArtifactInput[],
+  opts: { startedAt?: string | number } = {},
+): Promise<ArtifactList> {
   const dir = snapshotDir(sessionId);
   const idx = readIndex(dir);
-  const seen = new Set<string>();
-  const resolved: Resolved[] = [];
+  const startedAtMs = parseTimeMs(opts.startedAt);
+  const byKey = new Map<string, Resolved>();
   for (const input of inputs) {
     let abs: string;
     try {
@@ -295,10 +312,20 @@ export async function listArtifacts(sessionId: string, cwd: string, inputs: Arti
       continue;
     }
     const key = keyOf(abs);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    resolved.push({ input: { ...input, writes: Math.max(1, Number(input.writes) || 1) }, abs, rel: path.relative(cwd, abs) });
+    const prev = byKey.get(key);
+    const next: Resolved = {
+      input: { ...input, writes: Math.max(1, Number(input.writes) || 1) },
+      abs,
+      rel: path.relative(cwd, abs),
+    };
+    if (!prev) {
+      byKey.set(key, next);
+    } else if (prev.input.mentioned && !input.mentioned) {
+      // 真实写入 / 交付记录优先于回复正文提及（不同写法如相对路径 vs 绝对路径可能撞到同一个 abs）。
+      byKey.set(key, next);
+    }
   }
+  const resolved = [...byKey.values()];
 
   const root = resolved.some((r) => !idx.files[keyOf(r.abs)]) ? await gitRoot(cwd) : null;
   const items: ArtifactRow[] = [];
@@ -306,6 +333,11 @@ export async function listArtifacts(sessionId: string, cwd: string, inputs: Arti
 
   for (const r of resolved) {
     const st = statOrNull(r.abs);
+    if (r.input.mentioned) {
+      // 回复提及的路径只作补收：必须是本会话开始后写过 / 改过的真实文件，过滤掉旧参考文件与不存在的路径。
+      if (!st || !st.isFile()) continue;
+      if (startedAtMs !== null && st.mtimeMs < startedAtMs - 1000) continue;
+    }
     const now = st && st.size <= MAX_SNAPSHOT_BYTES ? readOrNull(r.abs) : null;
     const snap = idx.files[keyOf(r.abs)];
     let before: Buffer | null = null;
@@ -332,7 +364,11 @@ export async function listArtifacts(sessionId: string, cwd: string, inputs: Arti
       }
     }
     // 脚本 / 程序生成的交付文件本来就没有写入前原文（D275）：别把「桥没在运行」这句错话扣在它头上。
-    if (!known && !why) why = r.input.delivered ? "delivered-only" : "no-baseline";
+    if (!known && !why) {
+      if (r.input.mentioned) why = "mentioned-only";
+      else if (r.input.delivered) why = "delivered-only";
+      else why = "no-baseline";
+    }
 
     const binary = Boolean(snap?.binary) || Boolean(now && looksBinary(now)) || Boolean(!now && before && looksBinary(before));
     const sizeBefore = snap ? (snap.existed ? snap.size : null) : before ? before.length : null;
