@@ -191,7 +191,8 @@ function inlineText(node: AdfNode): string {
     case "hardBreak":
       return "\n";
     case "mention": {
-      const name = attrText(node, "text") || attrText(node, "displayName");
+      // Jira Cloud 存的 `attrs.text` 自带 「@」，再拼一个就成了「@@名字」。
+      const name = (attrText(node, "text") || attrText(node, "displayName")).replace(/^@+/, "");
       return name ? `@${name}` : "";
     }
     case "emoji":
@@ -400,6 +401,46 @@ export const STATUS_CATEGORY_KEYS = ["new", "indeterminate", "done"] as const;
 export type StatusCategoryKey = (typeof STATUS_CATEGORY_KEYS)[number];
 
 export const SEARCH_STORAGE_KEY = "pi.jira.search.last";
+
+// ---------------------------------------------------------------- 最近消息
+
+export type RecentKind = "mentions" | "replied";
+
+/** 桥 `GET /api/jira/recent` 的一条：工单 + 定位它的那条评论（`body` 是 ADF）。 */
+export interface JiraRecentItem extends JiraIssue {
+  comment: { id: string; at: string; author: string; body: unknown };
+}
+
+/** 「@我的」上次看到哪里：按站点 + 账号分键，值是毫秒时间戳。 */
+export function recentSeenKey(siteUrl: string, account: string): string {
+  return `pi.jira.recent.seen\n${siteUrl.trim().replace(/\/+$/, "")}\n${account}`;
+}
+
+/** 没看过（`seenAt` 为 null）一律不算新：第一次用不该满屏蓝点。 */
+export function isUnread(item: JiraRecentItem, seenAt: number | null): boolean {
+  if (seenAt === null) return false;
+  const at = Date.parse(item.comment.at);
+  return Number.isFinite(at) && at > seenAt;
+}
+
+/** 评论摘要：ADF → 一行纯文本，截到 `max` 字。 */
+export function recentSnippet(body: unknown, max = 160): string {
+  const text = adfToText(body).replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** 相对时间：1 小时内按分、一天内按小时、一周内按天，再早就给日期。 */
+export function relativeTime(iso: string, now = Date.now()): string {
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return "";
+  const min = Math.max(0, Math.round((now - ts) / 60000));
+  if (min < 1) return tr("刚刚");
+  if (min < 60) return tr("{p1} 分钟前", { p1: min });
+  if (min < 60 * 24) return tr("{p1} 小时前", { p1: Math.floor(min / 60) });
+  const days = Math.floor(min / 1440);
+  if (days < 7) return tr("{p1} 天前", { p1: days });
+  return formatUpdated(iso).slice(0, 10);
+}
 
 export interface JiraUserOption {
   accountId: string;

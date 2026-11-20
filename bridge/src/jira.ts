@@ -453,6 +453,115 @@ async function listProjects(config: JiraConfig, ctx: JiraCtx): Promise<JiraProje
     .slice(0, LIST_MAX);
 }
 
+// ---------------------------------------------------------------- 最近消息（@我的 / 我回复过的）
+
+export type RecentKind = "mentions" | "replied";
+
+/** 一条最近消息：工单本身 + 定位它的那条评论（`body` 是 ADF 原样，页面用 `adfToText` 出摘要，同 D204）。 */
+export interface JiraRecentItem extends JiraIssue {
+  comment: { id: string; at: string; author: string; body: unknown };
+}
+
+/** 候选工单上限：@ 走 `comment ~`，命中都是真候选；回复走 `updatedBy`，混着只改字段的，所以多取一些。 */
+const RECENT_CANDIDATES: Record<RecentKind, number> = { mentions: 50, replied: 100 };
+/** 「我回复过的」往回看多少天：`updatedBy` 的时间窗。 */
+const RECENT_REPLIED_DAYS = 90;
+/** 逐张读评论的并发：100 张候选别一下全扔给 Jira。 */
+const RECENT_CONCURRENCY = 8;
+const RECENT_MAX = 50;
+
+/** accountId 只会是字母数字与 `:` `-` `_`；不像就不拼进 JQL。 */
+const ACCOUNT_ID = /^[A-Za-z0-9:_-]{1,128}$/;
+
+export function recentJql(kind: RecentKind, accountId: string): string {
+  if (!ACCOUNT_ID.test(accountId)) throw new JiraError("jira_upstream", 502, "Jira 回的账号 id 形状不对");
+  return kind === "mentions"
+    ? `comment ~ "${accountId}" ORDER BY updated DESC`
+    : `issuekey in updatedBy("${accountId}", "-${RECENT_REPLIED_DAYS}d") ORDER BY updated DESC`;
+}
+
+/** ADF 里有没有 @ 这个账号（`mention` 节点的 `attrs.id`）。 */
+export function adfMentions(node: unknown, accountId: string): boolean {
+  if (!node || typeof node !== "object") return false;
+  const n = node as { type?: unknown; attrs?: { id?: unknown }; content?: unknown };
+  if (n.type === "mention" && n.attrs?.id === accountId) return true;
+  return Array.isArray(n.content) && n.content.some((c) => adfMentions(c, accountId));
+}
+
+/**
+ * 从一张工单的评论里挑出定位用的那条（评论按新到旧）：
+ * mentions = 别人写的、@ 了我的最新一条；replied = 我自己写的最新一条。都没有就 null。
+ */
+export function pickRecentComment(kind: RecentKind, comments: unknown[], accountId: string): any | null {
+  for (const c of comments as any[]) {
+    const mine = c?.author?.accountId === accountId;
+    if (kind === "replied" ? mine : !mine && adfMentions(c?.body, accountId)) return c;
+  }
+  return null;
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+async function listRecent(
+  config: JiraConfig,
+  ctx: JiraCtx,
+  kind: RecentKind,
+): Promise<{ items: JiraRecentItem[]; skipped: number }> {
+  const me = await myself(config, ctx);
+  const query = new URLSearchParams({
+    jql: recentJql(kind, me.accountId),
+    maxResults: String(RECENT_CANDIDATES[kind]),
+    fields: ISSUE_FIELDS,
+  });
+  const raw = await upstreamJson(config, ctx, `${SEARCH}?${query}`);
+  const issues: JiraIssue[] = (Array.isArray(raw?.issues) ? raw.issues : [])
+    .map(issueOf)
+    .filter((x: JiraIssue) => ISSUE_KEY.test(x.key));
+  let skipped = 0;
+  const found = await mapLimit(issues, RECENT_CONCURRENCY, async (issue): Promise<JiraRecentItem | null> => {
+    let body: any;
+    try {
+      body = await upstreamJson(
+        config,
+        ctx,
+        `/rest/api/3/issue/${issue.key}/comment?orderBy=-created&maxResults=${COMMENT_PAGE}`,
+      );
+    } catch (err) {
+      // 凭据问题整页失败；单张工单读不到评论（权限、刚被删）只跳过它。
+      if (err instanceof JiraError && (err.code === "jira_auth" || err.code === "jira_network")) throw err;
+      skipped++;
+      return null;
+    }
+    const hit = pickRecentComment(kind, Array.isArray(body?.comments) ? body.comments : [], me.accountId);
+    if (!hit) return null;
+    return {
+      ...issue,
+      comment: {
+        id: typeof hit.id === "string" ? hit.id : "",
+        at: typeof hit.created === "string" ? hit.created : "",
+        author: personName(hit.author),
+        body: hit.body ?? null,
+      },
+    };
+  });
+  const items = found
+    .filter((x): x is JiraRecentItem => x !== null && x.comment.at !== "")
+    .sort((a, b) => Date.parse(b.comment.at) - Date.parse(a.comment.at))
+    .slice(0, RECENT_MAX);
+  return { items, skipped };
+}
+
 // ---------------------------------------------------------------- #257 搜索
 
 interface SearchOutcome {
@@ -1213,6 +1322,18 @@ async function getProjects(res: http.ServerResponse, ctx: JiraCtx, refresh: bool
   return json(res, 200, { projects });
 }
 
+async function getRecent(res: http.ServerResponse, ctx: JiraCtx, rawKind: string | null, refresh: boolean): Promise<void> {
+  if (rawKind !== "mentions" && rawKind !== "replied") return fail(res, 400, "jira_input", "kind 只能是 mentions 或 replied");
+  const config = listConfig(res);
+  if (!config) return;
+  const cacheKind = `recent:${rawKind}`;
+  const cached = refresh ? null : cacheGet<{ items: JiraRecentItem[]; skipped: number }>(cacheKind, config);
+  if (cached) return json(res, 200, { kind: rawKind, ...cached });
+  const value = await listRecent(config, ctx, rawKind);
+  cachePut(cacheKind, config, value);
+  return json(res, 200, { kind: rawKind, ...value });
+}
+
 // ---------------------------------------------------------------- HTTP 小件
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -1357,6 +1478,15 @@ export async function handleJira(
       if (url.pathname === "/api/jira/search") await getSearch(res, ctx, url.searchParams);
       else if (url.pathname === "/api/jira/meta") await getMeta(res, ctx, url.searchParams.get("project") ?? undefined);
       else await getUsers(res, ctx, url.searchParams.get("q") ?? undefined);
+      return true;
+    }
+    // 最近消息：`kind=mentions|replied`，只认 `refresh`，查询由桥写死（同 D203）。
+    if (url.pathname === "/api/jira/recent") {
+      if (method !== "GET") {
+        fail(res, 405, "bad_method", "不支持这个请求方法");
+        return true;
+      }
+      await getRecent(res, ctx, url.searchParams.get("kind"), url.searchParams.get("refresh") === "1");
       return true;
     }
     if (url.pathname === "/api/jira/issues" || url.pathname === "/api/jira/projects") {
