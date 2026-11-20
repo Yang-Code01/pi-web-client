@@ -448,6 +448,16 @@
   .notes-console { grid-template-columns: 138px 240px minmax(0, 1fr); }
 }
 
+/* AI 出错记录：分区栏留着（点它回到 bug 记录），列表 + 正文两栏让给只读账本。 */
+.notes-console.in-fail { grid-template-columns: 168px minmax(0, 1fr); }
+.notes-console.in-fail.nav-rail { grid-template-columns: 44px minmax(0, 1fr); }
+.notes-console.in-fail > .nc-list,
+.notes-console.in-fail > .nc-doc { display: none; }
+@container console (max-width: 1100px) {
+  .notes-console.in-fail { grid-template-columns: 138px minmax(0, 1fr); }
+  .notes-console.in-fail.nav-rail { grid-template-columns: 44px minmax(0, 1fr); }
+}
+
 /* 交给 agent / 改状态的浮层：挂 body（不在 #app），跟以前的 .note-handoff 长得一样。 */
 .note-handoff {
   position: fixed; z-index: 80; min-width: 260px; display: grid; gap: 2px; padding: 4px;
