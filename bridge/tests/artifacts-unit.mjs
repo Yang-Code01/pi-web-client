@@ -223,4 +223,46 @@ function sid(tag) {
   assert.equal(row.diffable, false);
 }
 
+// ---------------------------------------------------------------- 没有基线、按 git 估算：未跟踪 = 新增；cwd 是子目录也要对上路径
+{
+  const { execFileSync } = await import("node:child_process");
+  const repo = tmpdir();
+  const git = (...a) => execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { stdio: "ignore" });
+  const sub = path.join(repo, "pkg");
+  fs.mkdirSync(sub);
+  write(sub, "tracked.ts", "a\nb\n");
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-qm", "init");
+  fs.writeFileSync(path.join(sub, "tracked.ts"), "a\nB\n");
+  write(sub, "untracked.ts", "x\ny\nz\n");
+  fs.writeFileSync(path.join(sub, "pic.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]));
+  const id = sid("git");
+  const out = await listArtifacts(id, sub, [
+    { path: "tracked.ts", tool: "edit", writes: 1 },
+    { path: "untracked.ts", tool: "write", writes: 1 },
+    { path: "pic.png", tool: "write", writes: 1 },
+  ]);
+  const by = Object.fromEntries(out.items.map((r) => [r.path, r]));
+  assert.equal(by["tracked.ts"].status, "modified", "cwd 在仓库子目录：git 路径要按仓库根算");
+  assert.equal(by["tracked.ts"].estimate, true);
+  assert.equal(by["tracked.ts"].added, 1);
+  assert.equal(by["tracked.ts"].removed, 1);
+  assert.equal(by["untracked.ts"].status, "new", "HEAD 里没有的文件按 git 估算是新增，不是「修改 +N −0」");
+  assert.equal(by["untracked.ts"].added, 3);
+  assert.equal(by["untracked.ts"].estimate, true);
+  assert.equal(by["pic.png"].status, "new", "未跟踪的二进制也是新增");
+  assert.equal(out.summary.new, 2);
+
+  const dt = await diffArtifact(id, sub, "tracked.ts");
+  assert.equal(dt.status, "modified");
+  assert.equal(dt.estimate, true);
+  assert.equal(dt.added, 1);
+  const du = await diffArtifact(id, sub, "untracked.ts");
+  assert.equal(du.reason, undefined, `列表说能看改动，差异页就不能说没有原文：${du.reason}`);
+  assert.equal(du.status, "new");
+  assert.equal(du.estimate, true);
+  assert.equal(du.added, 3);
+}
+
 console.log("artifacts-unit: all passed");
