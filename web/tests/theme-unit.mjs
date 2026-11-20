@@ -43,7 +43,7 @@ test("十套主题：id 表、信息表、显示名一一对应，不重名", ()
   );
   const labels = THEMES.map((t) => t.label);
   assert.equal(new Set(labels).size, labels.length, `显示名重了：${labels.join(" / ")}`);
-  assert.equal(DEFAULT_THEME, "midnight");
+  assert.equal(DEFAULT_THEME, "mac-light");
   assert.equal(themeInfo(DEFAULT_THEME).id, DEFAULT_THEME);
 });
 
@@ -81,7 +81,7 @@ test("强调色选表：浅底用 ACCENTS_LIGHT，深底用 ACCENTS，不认识�
     }
     assert.deepEqual(accentFor(t.id, "chartreuse"), table.ice);
   }
-  assert.deepEqual(accentFor("nope", "ice"), ACCENTS.ice, "不认识的主题按默认那套（深底）算");
+  assert.deepEqual(accentFor("nope", "ice"), MAC_ACCENTS_LIGHT.blue, "不认识的主题按默认那套（Mac 浅色）算");
 });
 
 test("终端配色：每套主题都齐 16 色 + 底/字/选区，浅底主题的底确实比字亮", () => {
@@ -106,8 +106,8 @@ test("终端配色：每套主题都齐 16 色 + 底/字/选区，浅底主题�
 
 test("每套主题在 theme-tokens.css 里都有自己那一块（midnight 落在 :root 上，不另写）", () => {
   for (const t of THEMES) {
-    if (t.id === DEFAULT_THEME) {
-      assert.ok(/:root\s*\{[^}]*--bg:\s*#0b0d10/m.test(CSS), "默认那套应该就是 :root");
+    if (t.id === "midnight") {
+      assert.ok(/:root\s*\{[^}]*--bg:\s*#0b0d10/m.test(CSS), "CSS 兜底（:root）是午夜那套");
       continue;
     }
     assert.ok(CSS.includes(`:root[data-theme="${t.id}"] {`), `${t.id} 缺少主题块`);

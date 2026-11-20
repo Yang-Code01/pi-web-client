@@ -441,7 +441,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | "wsdelete" | "context" | "context-insights" | "filesearch" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "theme-intro" | "bg" | "wsnew" | "wsdelete" | "context" | "context-insights" | "filesearch" | null = null;
   /** 内网通未读：顶栏那颗按钮上的件数徽标（D300 起文件也算未读）。 */
   private peerUnread = 0;
   private peerBadge: HTMLElement | null = null;
@@ -4049,7 +4049,7 @@ export class App {
     reset.onclick = () => {
       // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
       // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
-      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen, settingsTab: this.prefs.settingsTab };
+      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen, themeIntroSeen: this.prefs.themeIntroSeen, settingsTab: this.prefs.settingsTab };
       savePrefs(this.prefs);
       this.applyPrefs();
       this.openDisplaySheet();
@@ -4434,7 +4434,7 @@ export class App {
         label: tr("外观"),
         items: [
           { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
-          { sec: "theme", label: tr("配色主题"), sub: tr("整套底色、线条与文字；默认是午夜") },
+          { sec: "theme", label: tr("配色主题"), sub: tr("整套底色、线条与文字；默认是 Mac 浅色") },
           { sec: "mac", label: tr("Mac 风格"), sub: tr("仿 macOS 的浅色、深色与午夜蓝三套") },
           { sec: "color", label: tr("颜色"), sub: tr("强调色与文字亮度") },
           { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
@@ -7186,6 +7186,7 @@ export class App {
     this.wsRenameFocus = false;
     // #102：键盘动作（Alt+方向键、折叠）换掉的 DOM 到此全部就位，把焦点还给该在的地方。
     this.consumePendingFocus();
+    this.maybeThemeIntro();
     this.maybeWorkspaceIntro(tree);
     // #478：刚建 / 刚被带过去的组在左栏里滚到并闪一下（横条那一半已经在 renderWorkspaceTabs 里做完）。
     this.revealWsInTree();
@@ -7239,6 +7240,89 @@ export class App {
     if (!outcome.focus) return;
     outcome.focus.focus({ preventScroll: true });
     if (outcome.focus.classList.contains("session-card")) outcome.focus.scrollIntoView({ block: "nearest" });
+  }
+
+  /**
+   * 第一次打开：弹一张主题选择。上排 Mac 风格三套、下排配色主题七套，默认亮着 Mac 浅色。
+   * 点一颗立即换上（同设置里的 chip，存进 `pi.prefs.theme`）；「开始使用」/ 关掉都算看过 ——
+   * 弹出的那一刻就记 `themeIntroSeen`，刷新也不会再来一次（以后去 设置 → 外观 改）。
+   */
+  private maybeThemeIntro(): void {
+    if (this.prefs.themeIntroSeen || this.sheetKind) return;
+    // 自动化不弹（同 maybeWorkspaceIntro）：探针每次都是全新 profile；要测这张弹窗的探针在 sessionStorage 里开闸。
+    let forced = false;
+    try {
+      forced = sessionStorage.getItem("pi.probe.themeIntro") === "1";
+    } catch {
+      // 读不到就按没开闸。
+    }
+    if (navigator.webdriver && !forced) return;
+    this.prefs = { ...this.prefs, themeIntroSeen: true };
+    savePrefs(this.prefs);
+
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet theme-intro-sheet");
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-label", tr("选一套主题"));
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("选一套主题")));
+    sheet.append(head);
+
+    const body = el("div", "theme-intro");
+    body.append(el("p", "theme-intro-lead", tr("先挑一套顺眼的；以后随时可以在 设置 → 外观 里换。")));
+    const chip = (t: (typeof THEMES)[number]): HTMLElement => {
+      const b = el("button", `chip theme-chip${this.prefs.theme === t.id ? " on" : ""}`) as HTMLButtonElement;
+      b.type = "button";
+      b.dataset.theme = t.id;
+      b.title = tr(t.label);
+      const demo = el("span", "theme-demo");
+      demo.style.setProperty("--td-bg", t.demo.bg);
+      demo.style.setProperty("--td-panel", t.demo.panel);
+      demo.style.setProperty("--td-text", t.demo.text);
+      demo.style.setProperty("--td-line", t.demo.line);
+      demo.append(el("span", "td-side"), el("span", "td-l1"), el("span", "td-l2"), el("span", "td-btn"));
+      if (t.mac) {
+        demo.classList.add("mac");
+        demo.append(el("span", "td-lights"));
+      }
+      b.append(demo, el("span", "theme-chip-label", tr(t.label)));
+      b.onclick = () => {
+        this.prefs = { ...this.prefs, theme: t.id };
+        savePrefs(this.prefs);
+        this.applyPrefs();
+        for (const other of sheet.querySelectorAll<HTMLElement>(".theme-chip")) other.classList.toggle("on", other.dataset.theme === t.id);
+      };
+      return b;
+    };
+    const group = (title: string, role: string, list: typeof THEMES): HTMLElement => {
+      const box = el("div", "theme-intro-group");
+      box.dataset.role = role;
+      const row = el("div", "chips theme-chips");
+      for (const t of list) row.append(chip(t));
+      box.append(el("div", "theme-intro-title", title), row);
+      return box;
+    };
+    body.append(
+      group(tr("Mac 风格"), "theme-intro-mac", THEMES.filter((t) => t.mac)),
+      group(tr("配色主题"), "theme-intro-color", THEMES.filter((t) => !t.mac)),
+    );
+
+    const foot = el("div", "sheet-foot");
+    const go = el("button", "btn primary", tr("开始使用")) as HTMLButtonElement;
+    go.type = "button";
+    go.dataset.role = "theme-intro-ok";
+    go.onclick = () => this.closeSheet();
+    foot.append(go);
+    sheet.append(body, foot);
+
+    back.append(sheet);
+    this.overlay(back);
+    this.setSheet(back);
+    this.sheetKind = "theme-intro";
+    go.focus({ preventScroll: true });
   }
 
   /**
@@ -20445,7 +20529,7 @@ function writeFlag(key: string, value: boolean): void {
 
 type Prefs = {
   scale: number;
-  /** 整套配色（theme.ts 的稳定 id）；默认 midnight 就是原来那套。 */
+  /** 整套配色（theme.ts 的稳定 id）；默认 mac-light（Mac 浅色）。 */
   theme: ThemeId;
   accent: string;
   /** Mac 风格主题下的强调色（palette.ts 的 MAC_ACCENT_IDS）；和 `accent` 分开存，换主题互不覆盖。 */
@@ -20460,6 +20544,8 @@ type Prefs = {
   layout: LayoutId;
   /** #101 迁移预览只弹一次：用户点了「就这样开始」才写这个标记（取消不写，下次还弹）。 */
   wsIntroSeen: boolean;
+  /** 第一次打开时的主题选择弹窗弹过没有（弹出即记，关掉也不再弹）。老用户（已有 pi.prefs、没这个键）当作弹过。 */
+  themeIntroSeen: boolean;
 };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
@@ -20482,6 +20568,7 @@ const DEFAULT_PREFS: Prefs = {
   layout: "a",
   settingsTab: "look",
   wsIntroSeen: false,
+  themeIntroSeen: false,
 };
 
 /** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
@@ -21209,6 +21296,8 @@ function readPrefs(): Prefs {
       layout: layoutPref(p),
       settingsTab: p?.settingsTab === "conn" ? "conn" : "look",
       wsIntroSeen: p?.wsIntroSeen === true,
+      // 只有明确写着 false 的（新用户第一次存盘）才算没弹过；升级上来的老用户已经在用自己的主题，不打扰。
+      themeIntroSeen: p?.themeIntroSeen !== false,
     };
   } catch {
     return { ...DEFAULT_PREFS, lang: detectLang() };
