@@ -6680,3 +6680,23 @@ Esc 之后 dialog: 0
 
 **未覆盖（待补）。** 邮箱的 Esc（`trapEscape` 改冒泡）、预览 / 表格 / 幻灯片浮窗的焦点分支、选择框 `choose`、口令框 `askStepUp`、升级确认、终端菜单 `openShellMenu`、图片查看，现在只有代码审查，没有 probe。`probes/skill-palette.mjs` 在 origin/main 的基线上就卡在「点对话区关闭」那一步（`.skill-panel` 截住了点击），与本改动无关。
 
+## D347 记录面板三处报障：正文只存「已上屏」的快照、首次广播再定落点、账本要有出口（用户报障 2026-11-20）
+
+**症状。** ① 用中文输入法写字，正文里最后一句会变成拼音（“diu”“bu”），或者干脆停在上屏之前那一版；② 关掉面板再打开，不会回到上次选中的记录，每次都落一张空草稿；③ 切到「AI 出错记录」后没有返回钮，也没有「＋ 记一条」，只能整个关掉面板。
+
+**根因（三层一起）。**
+- Chrome 的 IME 把组字期间的 `input` 全部发在 `compositionend` **之前**，`compositionend` 之后**不再派发** `input`。`RichEditor.onInput` 首行 `if (ie.isComposing) return;` 把整段跳过了，上屏的字从来没有通知到面板。
+- 自动保存的 900ms 定时器由更早的一次普通按键安排；到点 `save()` 用 `editor.html()`（实时 `innerHTML`）拼正文，把**未上屏的拼音**净化后写了进去。
+- `saved()` 无条件 `dirty = false`：保存请求在飞期间的输入会被 ack 清掉脏标记，定时器到点看 `dirty` 是 false 就不再存（次要路径，同样丢最后一字）。
+- 打开面板时 `sheets.mount()` 之后紧接 `focusComposer()`：这时 `editing` 还是 null，走 `newNote()` → `remember()` 把 `memory.sel = null` 写进 localStorage；`notes.list` 的广播随后才到，`restorePick()` 读到的已经是 null。
+- 账本视图把含导航空放、`＋ 记一条` 的整个 `.notes-console` 藏了起来（`.notes-sheet.in-failures`），`FailPanel` 自己也没有返回入口。
+
+**决定。**
+- 编辑器分清「实时 DOM」和「已上屏快照」：`composing` 期间 `html()` 返回 `committedHtml`，`notify()`（所有改正文的出口）只在非组字时刷新快照；`compositionend` 补一次 `afterInput()`。面板永远拿不到预编辑串，上屏后再存一遍。
+- 脏标记按内容版本清：`markDirty()` 累加 `contentSeq`，`save()` 记下 `sentSeq`，`saved()` 只有 `contentSeq === sentSeq` 才清 `dirty`。
+- `focusComposer()` 在 `restoring`（首次列表未回）时直接退让；默认落点由 `restorePick()` 在拿到列表后决定：能接回就接回，接不回来才落草稿（归档 / 垃圾箱里不落）。这样「记过什么」不会再被打开动作本身覆盖掉。
+- 账本视图加「← 记录」（`setView("active")`），并把 `＋ 记一条` 留出来（点了先退回列表再落草稿）：在那个数账本的地方也能直接记一条 bug。
+
+**验证。** `npm --prefix web run typecheck`（含 i18n / viewport / layers / theme 守卫）；`npm run test:notes`（`notes-editor-browser` 的 IME 一节 + `notes-sheet-browser` 的账本一节）；`node probes/notes-ime-memory.mjs` 13/13（隔离桥 + CDP `Input.imeSetComposition`：组字 1.3s 后落盘无拼音、上屏后 1.6s 内带「丢」、重开接回同一条、账本能返回也能记一条）。
+
+**没做。** 组字中的中文被 Esc 取消、或输入法在组字中被系统切成英文，只依赖浏览器派发的 `compositionend`，没有别的兜底；真机 IME（微软拼音、搜狗）没在本机手测，只有 CDP 模拟。

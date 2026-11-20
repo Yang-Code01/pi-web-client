@@ -342,6 +342,30 @@ await page.click(".tb-pop .tb-swatch");
 out = await html();
 assert.equal(out, "<p>没选</p>", "没选区时不该改到正文");
 
+// ---------------------------------------------------------------- IME 组字（用户报障 2026-11-20）
+
+// 中文打字时 Chrome 把全部 input 都发在 compositionend 之前，compositionend 之后不再发 input。
+// 编辑器必须：组字期间 html() 交已上屏的快照（不许把拼音写进正文），上屏后补一次 onChange ——
+// 不然自动保存存的要么是拼音、要么永远停在上屏前那一版。用 CDP 模拟输入法，纯 DOM 事件模拟不出来。
+const cdp = await context.newCDPSession(page);
+await page.evaluate(() => {
+  window.ed.setHtml("<p>第一句。</p>");
+  window.ed.focus();
+});
+await page.keyboard.type(" ");
+const committed = await html();
+const changesBefore = await page.evaluate(() => window.changes);
+await cdp.send("Input.imeSetComposition", { text: "diu", selectionStart: 3, selectionEnd: 3 });
+assert.equal(await page.evaluate(() => document.querySelector("#doc").innerHTML.includes("diu")), true, "前提：组字串进了 DOM");
+assert.equal(await html(), committed, "组字期间 html() 不许把拼音交出去");
+assert.equal(await page.evaluate(() => window.changes), changesBefore, "组字期间不许通知 onChange");
+await cdp.send("Input.insertText", { text: "丢" });
+await page.waitForTimeout(50);
+const afterCompose = await page.evaluate(() => window.changes);
+assert.ok(afterCompose > changesBefore, `上屏后没补一次 onChange：${changesBefore} → ${afterCompose}`);
+assert.match(await docHtml(), /丢/, "上屏的字没进正文");
+assert.equal((await html()).includes("diu"), false, "上屏后正文里还留着拼音");
+
 // ---------------------------------------------------------------- 保存读回
 
 await page.evaluate(() => window.ed.setHtml('<p style="position:fixed">坏样式</p><p onclick="x()">好</p>'));

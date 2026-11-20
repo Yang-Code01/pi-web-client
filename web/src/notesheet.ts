@@ -232,6 +232,8 @@ export class NotesSheet {
   private headBadgeEl!: HTMLElement;
   private clearTrash!: HTMLButtonElement;
   private newBtn!: HTMLButtonElement;
+  /** 只在「AI 出错记录」里出现的返回钮：账本视图把三栏整个藏了起来，没有它就走不回去。 */
+  private backBtn!: HTMLButtonElement;
   private searchEl!: HTMLInputElement;
   private query = "";
   /** 顶栏的全局检索（D331）：跨分区的活记录，标题 / 正文。空串 = 没在搜；不落盘（搜索词不记）。 */
@@ -244,6 +246,10 @@ export class NotesSheet {
   private editing: { id: string | null; note: Partial<Note> } | null = null;
   private pendingShots: string[] = [];
   private dirty = false;
+  /** 正文 / 标题每改一次 +1；ack 回来时拿它判断「保存期间用户又改了没有」。 */
+  private contentSeq = 0;
+  /** 最近一次保存发出去时的 contentSeq。 */
+  private sentSeq = 0;
   /** 这一次保存属于哪个编辑器实例：切走之后到达的 ack 不许改当前选择。 */
   private saveTicket: { editing: unknown } | null = null;
   /** 提交前等保存 ack 的回调（#509）。 */
@@ -321,8 +327,18 @@ export class NotesSheet {
     this.headCountEl = el("span", "notes-head-sub", "");
 
     const nb = el("button", "btn primary notes-head-new", tr("＋ 记一条"));
-    nb.onclick = () => this.newNote();
+    nb.onclick = () => {
+      // 账本视图里按这颗：先退回记录列表，不然草稿落在被藏起来的第三栏里。
+      if (this.view === "failures") this.setView("active");
+      this.newNote();
+    };
     this.newBtn = nb;
+
+    const back = el("button", "btn ghost notes-head-back", tr("← 记录")) as HTMLButtonElement;
+    back.title = tr("回到记录列表");
+    back.onclick = () => this.setView("active");
+    this.backBtn = back;
+    back.hidden = true;
 
     // 全局检索（D331）：跨分区搜活记录的标题 / 正文；有词就把中栏切成结果视图。
     const gsearch = el("input", "notes-head-search") as HTMLInputElement;
@@ -339,7 +355,7 @@ export class NotesSheet {
     };
     this.gsearchEl = gsearch;
 
-    head.append(title, this.headBadgeEl, this.headCountEl, el("div", "grow"), gsearch, nb, closeButton(tr("关闭"), () => this.close()));
+    head.append(title, this.headBadgeEl, this.headCountEl, back, el("div", "grow"), gsearch, nb, closeButton(tr("关闭"), () => this.close()));
     return head;
   }
 
@@ -572,7 +588,9 @@ export class NotesSheet {
     this.headBadgeEl.textContent = pending ? String(pending) : "";
     this.headBadgeEl.title = pending ? tr("这一类还有 {p1} 条待处理", { p1: pending }) : "";
     // 搜索结果里不摆「＋ 记一条」：它得知道建到哪个分区，而搜索时导航空放。
-    this.newBtn.hidden = this.view !== "active" || searching;
+    // AI 出错记录里也留着它（点了先退回列表）：在那个数账本的地方也能直接记一条 bug。
+    this.newBtn.hidden = searching || (this.view !== "active" && this.view !== "failures");
+    this.backBtn.hidden = this.view !== "failures" || searching;
     this.listTitleEl.textContent = searching ? tr("搜索结果") : tr("记录");
     this.gclearEl.hidden = !searching;
     // 两个搜索框并排会分不清哪个管什么：全局检索期间把列表内那颗收起来。
@@ -702,6 +720,8 @@ export class NotesSheet {
       this.failPanel.focus();
       return;
     }
+    // 第一次列表还没回来：此刻落草稿会顺手把 memory.sel 写成 null，restorePick 就再也接不回上次那条。
+    if (this.restoring) return;
     if (this.editing) this.editor?.focus();
     else this.newNote();
   }
@@ -1099,6 +1119,7 @@ export class NotesSheet {
 
   private markDirty(): void {
     this.dirty = true;
+    this.contentSeq += 1;
     // 自动保存：停手 900ms 就落盘（#486「标题和正文都自动保存」，不再要用户按保存）。
     this.say(tr("正在写…"));
     window.clearTimeout(this.saveTimer);
@@ -1667,6 +1688,7 @@ export class NotesSheet {
       return;
     }
     this.saveTicket = { editing: this.editing };
+    this.sentSeq = this.contentSeq;
     this.host.send({
       type: "notes.save",
       ...(this.editing.id ? { id: this.editing.id } : {}),
@@ -1757,14 +1779,23 @@ export class NotesSheet {
 
   /** 打开面板的第一次广播：把上次选中的那条接回来；它已经不在这一堆里就只保留分区。 */
   private restorePick(notes: Note[]): void {
-    if (!this.memory.sel || this.view === "failures") return;
-    const n = notes.find((x) => x.id === this.memory.sel);
-    if (!n || !this.inView(n) || (this.view === "active" && n.kind !== this.kind)) {
-      this.remember();
+    if (this.view === "failures") {
+      this.failPanel.focus();
       return;
     }
-    this.load(n);
+    const n = this.memory.sel ? notes.find((x) => x.id === this.memory.sel) : null;
+    if (n && this.inView(n) && !(this.view === "active" && n.kind !== this.kind)) {
+      this.load(n);
+      this.remember();
+      this.editor?.focus();
+      return;
+    }
+    // 没接回来（没记过 / 那条已经不在眼前）：这时才落一张新草稿。
+    // 打开面板时 focusComposer 会先退让，所以这个默认落点没有被提前写进 memory。
+    // 归档 / 垃圾箱里不落草稿：那里是只读的一堆，草稿只能靠「复原」才动得了。
     this.remember();
+    if (this.view === "active") this.newNote();
+    else this.editor?.focus();
   }
 
   /** 广播来的这条，按它自己的归档 / 删除状态，判断是不是已经不该出现在当前视图里。 */
@@ -1797,7 +1828,8 @@ export class NotesSheet {
     }
     this.sel = note.id;
     if (this.editing?.id === note.id) this.paintedId = note.id;
-    this.dirty = false;
+    // 请求在飞期间又改了正文 / 标题：别把脏标记清掉，那次 markDirty 排的定时器还得把新内容存一遍。
+    if (this.contentSeq === this.sentSeq) this.dirty = false;
     this.remember();
     this.paintList();
     this.uploadPending(note.id);

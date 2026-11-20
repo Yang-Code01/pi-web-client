@@ -3724,6 +3724,8 @@ export const en: Dict = {
   "粗体（Ctrl+B）": "Bold (Ctrl+B)",
   "编号列表": "Numbered list",
   "记录面板": "Notes",
+  "← 记录": "← Notes",
+  "回到记录列表": "Back to the notes list",
   "{p1} 字": "{p1} words",
   "今天先不看这条": "Hide for now",
   "停手一下就自动存；Ctrl+S 立刻存。正文支持 Markdown 那套：``` 换行变代码块。": "Saves by itself once you stop typing; Ctrl+S saves now. Markdown works: ``` then a newline becomes a code block.",

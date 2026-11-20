@@ -62,6 +62,10 @@ export class RichEditor {
   /** 块级替换的一次性撤销：原生撤销栈不认 `replaceWith`，转换后立刻 Ctrl+Z 由这里接管。 */
   private undo: { parent: Node; next: Node | null; original: Element; created: Element[] } | null = null;
   private savedRange: Range | null = null;
+  /** IME 正在组字：这段期间 DOM 里放的是预编辑串（拼音），不是已上屏的正文。 */
+  private composing = false;
+  /** 最后一次已上屏的内容快照：组字期间 `html()` 返回它，自动保存不会把拼音写进正文。 */
+  private committedHtml = "";
   private pop: HTMLElement | null = null;
   private readonly onOutside = (ev: MouseEvent): void => {
     const t = ev.target;
@@ -94,9 +98,16 @@ export class RichEditor {
     this.body.addEventListener("mouseup", () => this.saveRange());
     this.body.addEventListener("blur", () => this.saveRange());
     this.body.addEventListener("paste", (ev) => this.onPaste(ev));
+    // Chrome 的 IME：组字期间的 input 全是 isComposing，compositionend 之后不再派发 input。
+    // 不在 compositionend 补一次 onChange，上屏的最后几个字就永远没人通知（自动保存拿到的是旧内容）。
+    this.body.addEventListener("compositionstart", () => {
+      this.composing = true;
+    });
+    this.body.addEventListener("compositionend", () => this.endComposition());
     this.buildToolbar();
     // 空正文也得有个段落：contenteditable 直接打字会落成裸文本节点，块级规则就找不到 block 了。
     this.ensureBlock();
+    this.committedHtml = this.readHtml();
     document.addEventListener("mousedown", this.onOutside, true);
     document.addEventListener("keydown", this.onDocKey, true);
   }
@@ -105,12 +116,19 @@ export class RichEditor {
   setHtml(html: string): void {
     this.body.replaceChildren(parseHtml(sanitizeRich(html)));
     this.ensureBlock();
+    this.composing = false;
+    this.committedHtml = this.readHtml();
     this.savedRange = null;
     this.closePop();
   }
 
-  /** 读回当前正文（净化过）。 */
+  /** 读回当前正文（净化过）。组字期间给上一次已上屏的内容：预编辑串不能当正文存。 */
   html(): string {
+    return this.composing ? this.committedHtml : this.readHtml();
+  }
+
+  /** 实时 DOM 的正文（净化过）；组字期间不要从这里往外读。 */
+  private readHtml(): string {
     return sanitizeRich(this.body.innerHTML);
   }
 
@@ -164,7 +182,7 @@ export class RichEditor {
     document.execCommand("styleWithCSS", false, "false");
     document.execCommand(command, false, value);
     this.saveRange();
-    this.onChange();
+    this.notify();
   }
 
   // ---------------------------------------------------------------- 输入
@@ -172,6 +190,18 @@ export class RichEditor {
   private afterInput(): void {
     this.ensureBlock();
     this.saveRange();
+    this.notify();
+  }
+
+  /** 组字结束：DOM 已经换成上屏的字，补一次变更通知（Chrome 之后不会再派发 input）。 */
+  private endComposition(): void {
+    this.composing = false;
+    this.afterInput();
+  }
+
+  /** 统一的「正文变了」出口：先固化已上屏快照，再回报面板。 */
+  private notify(): void {
+    if (!this.composing) this.committedHtml = this.readHtml();
     this.onChange();
   }
 
@@ -307,7 +337,7 @@ export class RichEditor {
     const anchor = u.next && u.next.parentNode === u.parent ? u.next : null;
     u.parent.insertBefore(clone, anchor);
     this.caretToEnd(clone);
-    this.onChange();
+    this.notify();
   }
 
   /** 光标所在块如果整行就是 ``` / ```ts，返回语言（可能为空串）；否则 null。 */
@@ -378,7 +408,7 @@ export class RichEditor {
     if (!insert) return;
     document.execCommand("insertHTML", false, insert);
     this.saveRange();
-    this.onChange();
+    this.notify();
   }
 
   // ---------------------------------------------------------------- 动作
@@ -406,7 +436,7 @@ export class RichEditor {
     const after = document.createRange();
     after.selectNodeContents(wrap);
     this.restore(after);
-    this.onChange();
+    this.notify();
   }
 
   /**
@@ -443,7 +473,7 @@ export class RichEditor {
     block.replaceWith(created);
     if (parent) this.undo = { parent, next: created.nextSibling, original, created: [created] };
     this.caretToEnd(caretIn);
-    this.onChange();
+    this.notify();
   }
 
   private hrAtCaret(): boolean {
@@ -463,7 +493,7 @@ export class RichEditor {
     block.replaceWith(hr, p);
     if (parent) this.undo = { parent, next: p.nextSibling, original, created: [hr, p] };
     this.caretToEnd(p);
-    this.onChange();
+    this.notify();
   }
 
   private insertHtml(html: string): void {
@@ -471,7 +501,7 @@ export class RichEditor {
     if (range) this.restore(range);
     document.execCommand("insertHTML", false, html);
     this.saveRange();
-    this.onChange();
+    this.notify();
   }
 
   private toggleBlock(tag: string): void {
