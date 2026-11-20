@@ -8345,36 +8345,67 @@ export class App {
 
   // ---------------------------------------------------------------- file preview
   /**
-   * D208: 产物弹窗。和以前最大的区别是「状态不是工具名」—— 每行的 新增/修改 来自桥对
-   * 「写入前的原文」和现在的文件的比较，所以 write 覆盖一个已有文件会显示「修改」。
-   * 点一行直接开独立 diff 弹窗（C 方案），不离开这个列表也一样能对比改动。
+   * D208: 产物弹窗（方案 A「设置式分组」，原型 web/prototype/artifacts-console.html 的 A）。
+   * 外壳同设置页 .st-console：左栏「状态 / 来源」分组带计数；右栏是统计卡 + 排序与路径预览栏 + 清单。
+   * 「状态不是工具名」—— 每行的 新增/修改 来自桥对「写入前的原文」和现在的文件的比较，所以 write 覆盖一个已有文件会显示「修改」。
+   * 点一行直接开独立 diff 弹窗（C 方案）；没有可对比的改动就直接在预览里打开。
    */
   private async openArtifactsSheet(): Promise<void> {
     if (!this.currentId) return;
     // 已经开着就别重建：会把筛选与滚动位置打回去（`/artifacts` 与那颗按钮都走这里）。
     if (this.sheet?.querySelector(".art-sheet")) return;
     const sessionId = this.currentId;
+    const cwd = (this.session?.cwd ?? "").trim();
     this.closeSheet();
     this.sheetKind = "display";
-    const back = el("div", "sheet-back");
+    const back = el("div", "st-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
     };
-    const sheet = el("div", "sheet art-sheet");
-    const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("本会话的产物")));
-    const close = el("button", "btn ghost", tr("关闭"));
+    const sheet = el("section", "st-console settings-sheet art-sheet");
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-modal", "true");
+    sheet.setAttribute("aria-label", tr("本会话的产物"));
+
+    // 顶栏：小字眉 + 大标题 + 徽章行；右边「刷新 / 关闭」。
+    const head = el("header", "st-head");
+    const headMain = el("div", "st-head__main");
+    const sub = el("div", "st-sub");
+    const badges = el("div", "st-badges");
+    headMain.append(el("div", "st-eyebrow", tr("产物 · 本会话")), el("h2", "st-title", tr("本会话的产物")), sub, badges);
+    const actions = el("div", "st-head__actions");
+    const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
+    refresh.type = "button";
+    const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
     close.onclick = () => this.closeSheet();
-    head.append(close);
-    const sum = el("div", "art-sum");
-    const filters = el("div", "art-filters");
-    const list = el("div", "art-list");
-    list.append(el("div", "empty", tr("正在比对产物…")));
-    // Free-form path: anything in the cwd or mentioned in the session.
-    const foot = el("div", "art-foot");
+    actions.append(refresh, close);
+    head.append(headMain, actions);
+
+    const main = el("div", "st-main");
+    const nav = el("nav", "st-nav");
+    nav.setAttribute("aria-label", tr("筛选"));
+    const pane = el("div", "st-pane");
+    main.append(nav, pane);
+
+    const foot = el("footer", "st-foot");
+    const defaultHint = tr("左栏按状态 / 来源筛选；点一行看它的改动，没有改动可比的直接在预览里打开");
+    const hint = el("span", "st-foot__hint", defaultHint);
+    foot.append(hint, el("span", "st-foot__meta", "pi-web-client"));
+    sheet.append(head, main, foot);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+
+    // 工具条：排序段 + 路径预览。整条只建一次，换筛选不重建，输入到一半的字不丢。
+    const bar = el("div", "st-scopebar art-bar");
+    const seg = el("div", "st-seg");
+    seg.setAttribute("role", "group");
     const input = el("input", "ns-input mono") as HTMLInputElement;
     input.placeholder = tr("输入路径预览（相对会话工作目录，或绝对路径）");
-    const go = el("button", "btn", tr("预览"));
+    input.spellcheck = false;
+    const go = el("button", "btn", tr("预览")) as HTMLButtonElement;
+    go.type = "button";
     const submit = (): void => {
       const p = input.value.trim();
       if (!p) return;
@@ -8385,89 +8416,182 @@ export class App {
     input.onkeydown = (ev) => {
       if (ev.key === "Enter") submit();
     };
-    foot.append(input, go);
-    sheet.append(head, sum, filters, list, foot);
-    back.append(sheet);
-    this.overlay(back);
-    this.sheet = back;
+    bar.append(seg, input, go);
+    const cardsHost = el("div", "art-cards");
+    const groupHost = el("div", "art-group");
+    const panelHost = el("div", "settings-panel art-panel");
+    pane.append(bar, cardsHost, groupHost, panelHost);
 
-    let data: ArtifactList;
-    try {
-      data = await api.artifactsList(sessionId, this.chat.artifacts());
-    } catch (err: any) {
-      if (this.sheet !== back) return;
-      list.replaceChildren(el("div", "empty", tr("读不到产物列表：{p1}", { p1: String(err?.message ?? err) })));
-      return;
-    }
-    // 比对是异步的：弹窗可能已经关了，或者已经换成了别的弹窗 —— 别往死掉的节点里写。
-    if (this.sheet !== back) return;
-    if (!data.items.length) {
-      list.replaceChildren(el("div", "empty", tr("这个会话还没写过文件。AI 回复里提到的路径也可以直接点开预览。")));
-      return;
-    }
-
-    const s = data.summary;
-    const pill = (cls: string, text: string): HTMLElement => el("span", `art-sum-pill ${cls}`, text);
-    if (s.new) sum.append(pill("new", tr("新增 {p1}", { p1: s.new })));
-    if (s.modified) sum.append(pill("mod", tr("修改 {p1}", { p1: s.modified })));
-    if (s.deleted) sum.append(pill("del", tr("删除 {p1}", { p1: s.deleted })));
-    if (s.unknown) sum.append(pill("unk", tr("未知 {p1}", { p1: s.unknown })));
-    if (s.added || s.removed) sum.append(el("span", "art-sum-count", `+${s.added} −${s.removed}`));
-    if (data.baseline !== "exact") sum.append(el("span", "art-sum-note", data.baseline === "none" ? tr("没有写入前的原文，状态只能靠猜") : tr("部分文件没有写入前的原文")));
-
-    type Filter = "all" | ArtifactRow["status"];
-    let filter: Filter = "all";
-    const paint = (): void => {
-      list.replaceChildren();
-      for (const r of data.items) {
-        if (filter !== "all" && r.status !== filter) continue;
-        list.append(this.artifactRow(sessionId, r, data));
-      }
-      if (!list.childElementCount) list.append(el("div", "empty", tr("这一类里没有文件。")));
-    };
-    const chips: { key: Filter; label: string; n: number }[] = [
-      { key: "all", label: tr("全部"), n: data.items.length },
-      { key: "new", label: tr("新增"), n: s.new },
-      { key: "modified", label: tr("修改"), n: s.modified },
-      { key: "deleted", label: tr("已删除"), n: s.deleted },
-      { key: "unknown", label: tr("未知"), n: s.unknown },
+    type Item = { key: string; label: string; test: (r: ArtifactRow) => boolean };
+    const srcOf = (r: ArtifactRow): "write" | "deliver" | "mentioned" =>
+      r.tool === "mentioned" ? "mentioned" : r.tool === "open_preview" ? "deliver" : "write";
+    const groups = (): { label: string; items: Item[] }[] => [
+      {
+        label: tr("状态"),
+        items: [
+          { key: "all", label: tr("全部"), test: () => true },
+          { key: "new", label: tr("新增"), test: (r) => r.status === "new" },
+          { key: "modified", label: tr("修改"), test: (r) => r.status === "modified" },
+          { key: "deleted", label: tr("已删除"), test: (r) => r.status === "deleted" },
+          { key: "unknown", label: tr("未知"), test: (r) => r.status === "unknown" },
+          { key: "same", label: tr("未变"), test: (r) => r.status === "same" },
+        ],
+      },
+      {
+        label: tr("来源"),
+        items: [
+          { key: "src:write", label: tr("工具写入"), test: (r) => srcOf(r) === "write" },
+          { key: "src:deliver", label: tr("在预览里打开"), test: (r) => srcOf(r) === "deliver" },
+          { key: "src:mentioned", label: tr("回复里提到"), test: (r) => srcOf(r) === "mentioned" },
+        ],
+      },
     ];
-    for (const c of chips) {
-      if (c.key !== "all" && !c.n) continue;
-      const chip = el("button", "art-chip", `${c.label} ${c.n}`);
-      if (c.key === filter) chip.classList.add("on");
-      chip.onclick = () => {
-        filter = c.key;
-        for (const other of filters.children) other.classList.toggle("on", other === chip);
-        paint();
+
+    let data: ArtifactList | null = null;
+    let sel = "all";
+    let sort: "recent" | "path" = "recent";
+
+    const paintHead = (): void => {
+      sub.replaceChildren(tr("会话工作目录") + " ", el("span", "mono", cwd || "—"));
+      badges.replaceChildren();
+      if (!data) return;
+      const s = data.summary;
+      badges.append(el("span", "st-badge", tr("{p1} 个文件", { p1: data.items.length })), el("span", "st-badge", `+${s.added} −${s.removed}`));
+      if (s.unknown) badges.append(el("span", "st-badge warn", tr("{p1} 个没有写入前原文", { p1: s.unknown })));
+      else if (data.baseline !== "exact") badges.append(el("span", "st-badge warn", tr("部分文件没有写入前的原文")));
+    };
+    const paintSort = (): void => {
+      const mk = (id: "recent" | "path", label: string): HTMLButtonElement => {
+        const b = this.settingsSegButton("scope", id, label, sort === id);
+        b.onclick = () => {
+          if (sort === id) return;
+          sort = id;
+          paintAll();
+        };
+        return b;
       };
-      filters.append(chip);
-    }
-    paint();
+      seg.replaceChildren(mk("recent", tr("按最近")), mk("path", tr("按路径")));
+    };
+    const paintNav = (): void => {
+      const all = data?.items ?? [];
+      nav.replaceChildren();
+      for (const g of groups()) {
+        nav.append(el("div", "st-nav__group", g.label));
+        for (const it of g.items) {
+          const on = sel === it.key;
+          const b = el("button", `st-nav__item${on ? " on" : ""}`) as HTMLButtonElement;
+          b.type = "button";
+          if (on) b.setAttribute("aria-current", "true");
+          b.append(el("span", "st-nav__label", it.label));
+          const n = all.filter(it.test).length;
+          if (n > 0) b.append(el("span", "st-nav__count", String(n)));
+          b.onclick = () => {
+            sel = it.key;
+            paintAll();
+          };
+          nav.append(b);
+        }
+      }
+    };
+    const paintCards = (): void => {
+      const s = data?.summary;
+      cardsHost.replaceChildren(
+        this.stCards([
+          { label: tr("新增"), value: String(s?.new ?? 0), sub: tr("会话开始前不存在") },
+          { label: tr("修改"), value: String(s?.modified ?? 0), sub: tr("写入前后可逐行对比") },
+          { label: tr("行数变化"), value: `+${s?.added ?? 0} −${s?.removed ?? 0}`, sub: tr("全部文件合计") },
+          { label: tr("未知"), value: String(s?.unknown ?? 0), sub: tr("没有写入前原文，只能猜"), cls: "warn" },
+        ]),
+      );
+    };
+    const paintList = (): void => {
+      const cur = groups().flatMap((g) => g.items).find((i) => i.key === sel) ?? groups()[0]!.items[0]!;
+      const rows = (data?.items ?? []).filter(cur.test);
+      if (sort === "path") rows.sort((a, b) => a.path.localeCompare(b.path));
+      // 「全部」与各分类的计数跟着这一类走；排序段决定同一类里的先后。
+      groupHost.replaceChildren(
+        this.stSection(
+          cur.label,
+          tr("{p1} 个 · {p2}", { p1: rows.length, p2: sort === "path" ? tr("按路径") : tr("最近写入在前") }),
+        ),
+      );
+      panelHost.replaceChildren();
+      if (!data) {
+        panelHost.append(el("div", "empty", tr("正在比对产物…")));
+        return;
+      }
+      if (!data.items.length) {
+        panelHost.append(el("div", "empty", tr("这个会话还没写过文件。AI 回复里提到的路径也可以直接点开预览。")));
+        return;
+      }
+      if (!rows.length) {
+        panelHost.append(el("div", "empty", tr("这一类里没有文件。")));
+        return;
+      }
+      for (const r of rows) panelHost.append(this.artifactRow(sessionId, r, data));
+    };
+    const paintAll = (): void => {
+      paintHead();
+      paintSort();
+      paintNav();
+      paintCards();
+      paintList();
+    };
+
+    // 刷新是 stale-while-revalidate：拿到新数据前不动已经显示的列表，只把光标改成 progress（同设置页的静默重取）。
+    const load = async (): Promise<void> => {
+      refresh.disabled = true;
+      back.style.cursor = "progress";
+      try {
+        const next = await api.artifactsList(sessionId, this.chat.artifacts());
+        if (this.sheet !== back) return;
+        data = next;
+        hint.textContent = defaultHint;
+      } catch (err: any) {
+        if (this.sheet !== back) return;
+        const msg = String(err?.message ?? err);
+        if (data) hint.textContent = tr("刷新失败：{p1}", { p1: msg });
+        else panelHost.replaceChildren(el("div", "empty", tr("读不到产物列表：{p1}", { p1: msg })));
+        return;
+      } finally {
+        back.style.cursor = "";
+        refresh.disabled = false;
+      }
+      // 比对是异步的：弹窗可能已经关了，或者已经换成了别的弹窗 —— 上面的守卫已经挡住了。
+      paintAll();
+    };
+    refresh.onclick = () => void load();
+    paintAll();
+    void load();
   }
 
-  /** 弹窗里的一行。`writes` 是「这个会话写过它几次」，不是行数。 */
+  /**
+   * 清单里的一行：左边文件名 + 路径（没有可比改动时多一行原因）｜ 行数 · 工具×次数 · 操作｜ 状态徽章。
+   * `writes` 是「这个会话写过它几次」，不是行数。
+   */
   private artifactRow(sessionId: string, r: ArtifactRow, data: ArtifactList): HTMLElement {
-    const row = el("button", `art-row st-${r.status}`);
-    const name = fileNameOf(r.path);
-    const main = el("span", "art-main");
-    const line = el("span", "art-line");
-    line.append(el("span", "art-name", name), el("span", `art-badge st-${r.status}`, this.artStatusLabel(r.status)));
-    if (r.added || r.removed) line.append(el("span", "art-count", `+${r.added} −${r.removed}`));
-    line.append(el("span", "art-tools", r.tool === "mentioned" ? tr("回复提及") : `${r.tool}×${r.writes}`));
-    if (r.estimate) line.append(el("span", "art-est", tr("按 git 估算")));
-    main.append(line, el("span", "art-path", r.path));
-    if (!r.diffable && r.why) main.append(el("span", "art-why", this.artifactWhyText(r.why)));
-    row.append(el("span", "art-ico", previewIcon(r.path)), main);
+    const row = el("button", `settings-row art-row st-${r.status}`) as HTMLButtonElement;
+    row.type = "button";
     row.title = r.path;
+    const label = el("span", "settings-label");
+    label.append(el("span", "settings-name art-name", fileNameOf(r.path)));
+    const hint = el("span", "settings-hint");
+    hint.append(el("span", "art-path", r.path));
+    if (!r.diffable && r.why) hint.append(el("span", "art-why", this.artifactWhyText(r.why)));
+    const ctl = el("span", "settings-ctl");
+    if (r.added || r.removed) ctl.append(el("span", "art-count", `+${r.added} −${r.removed}`));
+    ctl.append(el("span", "art-tools", r.tool === "mentioned" ? tr("回复提及") : `${r.tool}×${r.writes}`));
+    if (r.estimate) ctl.append(el("span", "art-est", tr("按 git 估算")));
     if (r.diffable) {
-      row.append(el("span", "art-go", tr("看改动")));
+      ctl.append(el("span", "art-go", tr("看改动")));
       row.onclick = () => void this.openDiffSheet(sessionId, r.path, data);
     } else {
       // 没有可对比的改动（二进制 / 未知 / 没变）：点开就是看文件本身，别给一个空弹窗。
       // D308：不再 `closeSheet()` —— 预览会压在产物列表上（`.viewer.hi`），关掉它列表还在。
+      ctl.append(el("span", "art-open", tr("预览")));
       row.onclick = () => void this.openPreview(r.path);
     }
+    row.append(label, hint, ctl, el("span", `art-badge st-${r.status}`, this.artStatusLabel(r.status)));
     return row;
   }
 

@@ -6644,3 +6644,21 @@ Esc 之后 dialog: 0
 - 布局：题目在「需要你」栏里（`askDock()`）时，预览加 `.beside-ask`，`right` 让到那一栏左缘（`--ask-right`，按 `uiScale` 换算成布局 px，D123）；全屏预览不让；题答完、收起右栏、窗口变化时 `syncViewerBesideAsk` 复位。拖宽度改成从面板自己的右缘量。
 
 **验证。** `npm run test:ask-preview`（8 项纯函数，含截图那句「相对路径 + worktree 目录」不猜）；`node probes/ask-preview.mjs`（9 项：2 题问卷，「先不看」不开，点「在预览里打开」当场弹 viewer、停在第 2 题且提交仍禁用、第 2 题选项在最上层未被盖、提交后两条答案原文回给发起方、答完预览回到右缘）；`npm run test:hint`（20 项）；`npm --prefix web run typecheck`。`probes/preview-open.mjs` 在 main 上就因 `.topbar` 的「文件」按钮已隐藏而卡住（与本改动无关），临时换掉那个等待后预览相关 13 项都过。
+
+## D345 产物弹窗改成设置控制台样式（方案 A，用户选定 2026-11-20）
+
+**需求。** 「本会话的产物」弹窗的 UI 按本项目设置控制台（`st-console`）的模板重做。先出三版原型（A 设置式分组 / B 目录树 + 对照表 / C 主从详情，分支 `proto/artifacts-console`，未进主线），用户选 A。
+
+**决定。**
+- 外壳：`section.st-console.settings-sheet.art-sheet`。head 放 eyebrow、标题、会话工作目录与状态徽章；左栏 nav 分「状态」（全部 / 新增 / 修改 / 已删除 / 未知 / 未变）与「来源」（工具写入 / 在预览里打开 / 回复里提到），带计数；右栏是「按最近 / 按路径」切换 + 路径预览输入 + 四张统计卡 + `settings-panel` 行清单；底下是 `st-foot`。
+- 行：`button.settings-row.art-row`，三列「名字 + 路径 / 脚本说明 | 数字与工具名 | 状态胶囊」。能对比的行给「看改动」（打开 diff 弹窗）；不能对比的给「预览」（`openPreview`，不关弹窗）。
+- 列轨写成 `minmax(0,1fr)`：顶栏按钮会把隐式 auto 列撑到 min-content（390px 下实测 427px），和 `display-sheet` 同法修。
+- 样式全部挂在 `.st-console.art-sheet` 下，替换 `styles.css` 里旧的 `.art-*` 块；`.art-badge`、`.art-count`、`.art-est` 与 diff 弹窗共用，留在全局。
+- 数据层不动：`/api` 返回、D275 / D340 的来源收集与桥侧校验都没改。
+
+**验证。**
+- `npm run typecheck`（tsc、i18n 3983 键 × 3 语、视口守卫、层带、主题单测）通过。
+- `probes/artifacts-delivered.mjs` 9/9：原有 7 条，外加 390px 下弹窗与行不撑出视口、字号 150% 下底栏仍在弹窗里。
+- `web/tests/artifact-sources-unit.mjs`、`chrome-unit.mjs`、`commands-unit.mjs`、`settings-console-unit.mjs` 通过。
+
+**顺带。** `probes/artifacts-delivered.mjs` 在 Windows 上一跑就炸：会话目录名 `--C:-Users-…--` 里带冒号，`mkdirSync` 报 ENOENT。把编码里的 `:` 也替换成 `-`。
