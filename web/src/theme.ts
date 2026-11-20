@@ -4,13 +4,14 @@
  * - 颜色的唯一真源在 `styles.css` 的 `:root[data-theme="…"]`；这里只管 id、显示名、预览小样用的几个色，
  *   以及「这一套是不是浅底」（浅底要换一张更深的强调色表，否则冰蓝字在白底上看不清）。
  * - id 是稳定标识，存在 `pi.prefs.theme` 里：不能翻译、不能改名；显示名走 `tr()`。
- * - 默认 `midnight` 就是原来那套，`<html>` 上不写 `data-theme` 时 CSS 也落在它。
+ * - 默认是 `mac-light`（第一次打开时还会弹一张主题选择，见 app.ts 的 maybeThemeIntro）。
+ *   CSS 的 `:root` 兜底仍是 `midnight` 那套：`<html>` 上不写 `data-theme` 时落在它；JS 一跑就会写上默认的 mac-light。
  */
 import { ACCENTS, ACCENTS_LIGHT, DEFAULT_MAC_ACCENT, MAC_ACCENTS, MAC_ACCENTS_LIGHT } from "./palette.ts";
 
 export const THEME_IDS = ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper", "mac-light", "mac-dark", "mac-midnight"] as const;
 export type ThemeId = (typeof THEME_IDS)[number];
-export const DEFAULT_THEME: ThemeId = "midnight";
+export const DEFAULT_THEME: ThemeId = "mac-light";
 
 export type ThemeInfo = {
   id: ThemeId;
@@ -45,7 +46,7 @@ export function isTheme(v: unknown): v is ThemeId {
 }
 
 export function themeInfo(id: ThemeId): ThemeInfo {
-  return THEMES.find((t) => t.id === id) ?? THEMES[0];
+  return THEMES.find((t) => t.id === id) ?? THEMES.find((t) => t.id === DEFAULT_THEME) ?? THEMES[0];
 }
 
 /** 是不是 Mac 风格那一族：强调色换 macOS 八色、文字不分三档、界面换 Mac 的质感与动效（mac.css）。 */

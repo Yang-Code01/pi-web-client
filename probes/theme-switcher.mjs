@@ -5,11 +5,11 @@
  * 主题只换底，强调色与文字亮度仍是独立设置（强调色按明暗各有一支 ramp）。
  *
  * 这里量的是「换完以后整页真的换了」——不是某个变量改了：
- *  - 开箱是 main 的午夜；七颗 chip 的文案与顺序；小样各自的内联 --td-* 是自己的底色；
+ *  - 开箱是 Mac 浅色（第一次打开的主题选择弹窗在第 8 段）；七颗 chip 的文案与顺序；小样各自的内联 --td-* 是自己的底色；
  *  - 点晨光 / 素白 / 沙丘：'<html data-theme>'、--bg、设置面板 / 顶栏 / 输入框的**实际背景色**都跟着变；
  *  - 七套主题下正文 / 次要 / 提示三档文字对各自底的对比度（浅底最容易翻车）；
  *  - 强调色仍是独立设置：同一个 ice，深底主题取 #7dd3fc、浅底主题取 #0369a1，选项本身没被重置；
- *  - 「恢复默认」把主题拉回午夜；刷新后主题还在（bootTheme 在登录页之前就落过）；
+ *  - 「恢复默认」把主题拉回 Mac 浅色；刷新后主题还在（bootTheme 在登录页之前就落过）；
  *  - 新增一个子类后底栏仍贴底（AGENTS.md「网格里的可隐藏子元素」那条）。
  *
  * 终端配色不在这儿量：桩桥没有 pty，改由单测 web/tests/theme-unit.mjs 覆盖七套 16 色。
@@ -245,12 +245,13 @@ if (await page.locator('input[type="password"]').count()) {
 await page.waitForSelector('.icon-btn[data-act="look"]', { timeout: 15000 });
 await sleep(700);
 
-// 1) 开箱是 main 那套「午夜」
+// 1) 开箱是「Mac 浅色」；探针带 webdriver，第一次打开的主题弹窗不会挡在前面（弹窗在第 8 段单独量）
 let s = await snap();
-ok(s.theme === "midnight", `默认主题是 midnight（${s.theme}）`);
-ok(s.bg === "#0b0d10", `默认底色还是 #0b0d10（${s.bg}）`);
-ok(s.meta === "#0b0d10", `meta theme-color 跟着底色（${s.meta}）`);
-ok(s.scheme === "dark", `默认 color-scheme 是 dark（${s.scheme}）`);
+ok(s.theme === "mac-light", `默认主题是 mac-light（${s.theme}）`);
+ok(s.bg === "#f5f5f7", `默认底色是 #f5f5f7（${s.bg}）`);
+ok(s.meta === "#f5f5f7", `meta theme-color 跟着底色（${s.meta}）`);
+ok(s.scheme === "light", `默认 color-scheme 是 light（${s.scheme}）`);
+ok(!(await page.locator(".theme-intro-sheet").count()), "自动化下不弹主题选择");
 
 // 2) 设置 → 外观：配色主题在首屏，七颗 chip，小样各是各的底色
 await openSheet();
@@ -258,11 +259,11 @@ s = await snap();
 ok(s.activeSec.includes("配色主题"), `打开设置先落在「配色主题」（${s.activeSec}）`);
 const WANT_CHIPS = ["午夜", "晨光", "暖炉", "峡湾", "素白", "深海", "沙丘", "Mac 浅色", "Mac 深色", "Mac 午夜蓝"];
 ok(JSON.stringify(s.chips) === JSON.stringify(WANT_CHIPS), `十套主题按顺序列出（后三颗在「Mac 风格」页）（${s.chips.join(" / ")}）`);
-ok(JSON.stringify(s.onChips) === JSON.stringify(["midnight"]), `当前那套亮着（${s.onChips.join(",")}）`);
+ok(JSON.stringify(s.onChips) === JSON.stringify(["mac-light"]), `当前那套亮着（${s.onChips.join(",")}）`);
 const WANT_DEMO_BG = ["#0b0d10", "#f5f6f8", "#151210", "#2a303b", "#ffffff", "#070b14", "#f4efe4", "#f5f5f7", "#1c1c1e", "#171c26"];
 ok(JSON.stringify(s.demoBgs) === JSON.stringify(WANT_DEMO_BG), `十个小样各自是自己的底色（${s.demoBgs.join(",")}）`);
 ok(lum(s.demoBgs[4]) > 0.95, `素白小样的底是纯白（${s.demoBgs[4]}）`);
-ok(s.cardText.includes("午夜") && s.cardText.includes("默认"), `顶上卡片写清当前主题（${s.cardText}）`);
+ok(s.cardText.includes("Mac 浅色") && s.cardText.includes("默认"), `顶上卡片写清当前主题（${s.cardText}）`);
 ok(s.resetTitle.includes("主题"), `「恢复默认」的说明覆盖了主题（${s.resetTitle}）`);
 ok(s.footBottom !== null && Math.abs(s.footBottom - s.sheetBottom) <= 1, `新增一个子类后底栏仍贴底（${s.footBottom} vs ${s.sheetBottom}）`);
 
@@ -377,16 +378,64 @@ ok(s.theme === "paper", `刷新后还是沙丘（${s.theme}）`);
 ok(s.bg === "#f4efe4", `沙丘底 #f4efe4（${s.bg}）`);
 ok(s.meta === "#f4efe4", `刷新后 meta theme-color 也是沙丘（${s.meta}）`);
 
-// 7) 「恢复默认」把主题也拉回午夜
+// 7) 「恢复默认」把主题也拉回 Mac 浅色
 await openSheet();
 await page.locator('.display-sheet [data-role="dreset"]').click();
 await sleep(350);
 s = await snap();
-ok(s.theme === "midnight", `恢复默认后主题回午夜（${s.theme}）`);
-ok(s.bg === "#0b0d10", `恢复默认后底色回 #0b0d10（${s.bg}）`);
-ok(JSON.stringify(s.onChips) === JSON.stringify(["midnight"]), `恢复默认后午夜那颗亮着（${s.onChips.join(",")}）`);
+ok(s.theme === "mac-light", `恢复默认后主题回 Mac 浅色（${s.theme}）`);
+ok(s.bg === "#f5f5f7", `恢复默认后底色回 #f5f5f7（${s.bg}）`);
+ok(JSON.stringify(s.onChips) === JSON.stringify(["mac-light"]), `恢复默认后 Mac 浅色那颗亮着（${s.onChips.join(",")}）`);
 
 ok(errors.length === 0, `没有 pageerror（${errors.join(" | ") || "无"}）`);
+
+// 8) 第一次打开：主题选择弹窗。全新 profile + sessionStorage 开闸（自动化默认不弹）。
+{
+  const ctx2 = await browser.newContext({ viewport: { width: 1000, height: 900 }, locale: "zh-CN" });
+  await ctx2.addInitScript(() => sessionStorage.setItem("pi.probe.themeIntro", "1"));
+  const p2 = await ctx2.newPage();
+  await p2.goto(`${BASE}/#/s/${SESSION.id}`, { waitUntil: "networkidle" });
+  if (await p2.locator('input[type="password"]').count()) {
+    await p2.fill('input[type="password"]', "probe");
+    await p2.click('button:has-text("进入")');
+  }
+  await p2.waitForSelector(".theme-intro-sheet", { timeout: 15000 });
+  await sleep(400);
+  fs.mkdirSync(path.join(REPO, ".scratch"), { recursive: true });
+  await p2.screenshot({ path: path.join(REPO, ".scratch", "theme-intro.png") });
+  const intro = await p2.evaluate(() => {
+    const sh = document.querySelector(".theme-intro-sheet");
+    const ids = (role) => [...(sh?.querySelectorAll(`[data-role="${role}"] .theme-chip`) ?? [])].map((n) => n.dataset.theme);
+    const top = (role) => sh?.querySelector(`[data-role="${role}"]`)?.getBoundingClientRect().top ?? 0;
+    const foot = sh?.querySelector(".sheet-foot")?.getBoundingClientRect();
+    return {
+      mac: ids("theme-intro-mac"),
+      color: ids("theme-intro-color"),
+      macAbove: top("theme-intro-mac") < top("theme-intro-color"),
+      on: [...(sh?.querySelectorAll(".theme-chip.on") ?? [])].map((n) => n.dataset.theme),
+      theme: document.documentElement.dataset.theme,
+      footIn: !!foot && foot.bottom <= innerHeight + 1,
+      seen: JSON.parse(localStorage.getItem("pi.prefs") ?? "{}").themeIntroSeen,
+    };
+  });
+  ok(JSON.stringify(intro.mac) === JSON.stringify(["mac-light", "mac-dark", "mac-midnight"]), `弹窗上排是 Mac 三套（${intro.mac.join(",")}）`);
+  ok(intro.color.length === 7 && !intro.color.some((id) => id.startsWith("mac-")), `下排是七套配色主题（${intro.color.join(",")}）`);
+  ok(intro.macAbove, "Mac 那排在配色那排上面");
+  ok(JSON.stringify(intro.on) === JSON.stringify(["mac-light"]) && intro.theme === "mac-light", `默认亮着 Mac 浅色（${intro.on.join(",")} / ${intro.theme}）`);
+  ok(intro.footIn, "「开始使用」在视口里");
+  ok(intro.seen === true, "弹出即记 themeIntroSeen");
+  await p2.locator('.theme-intro-sheet .theme-chip[data-theme="ember"]').click();
+  await sleep(250);
+  ok((await p2.evaluate(() => document.documentElement.dataset.theme)) === "ember", "点暖炉立即换上");
+  await p2.locator('.theme-intro-sheet [data-role="theme-intro-ok"]').click();
+  await sleep(250);
+  ok(!(await p2.locator(".theme-intro-sheet").count()), "「开始使用」关掉弹窗");
+  await p2.reload({ waitUntil: "networkidle" });
+  await sleep(1200);
+  ok(!(await p2.locator(".theme-intro-sheet").count()), "刷新后不再弹");
+  ok((await p2.evaluate(() => document.documentElement.dataset.theme)) === "ember", "刷新后还是暖炉");
+  await ctx2.close();
+}
 
 fs.mkdirSync(path.join(REPO, ".scratch"), { recursive: true });
 for (const id of ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper", "mac-light", "mac-dark", "mac-midnight"]) {
