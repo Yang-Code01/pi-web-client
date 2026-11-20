@@ -11,12 +11,13 @@ import { CHUNK, mimeOf } from "./files.ts";
 import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
 import { MAX_STICKER_BYTES, addSticker, listStickers, removeSticker, stickerCopy, stickerPath } from "./stickers.ts";
-import type { History } from "./history.ts";
+import { afterWatermark, type History } from "./history.ts";
 import type { Messages } from "./messages.ts";
 import type { Relations } from "./peers.ts";
 import { MAX_MARKET_FRAME, ingest, manifestResponse, parseFrame, touchBlob } from "./market.ts";
 import type { LocalActivity } from "./presence.ts";
 import type { Threads } from "./threads.ts";
+import type { Groups } from "./groups.ts";
 
 export interface PeerContext {
   cfg: PeerConfig;
@@ -29,6 +30,7 @@ export interface PeerContext {
   ignored: Ignored;
   threads: Threads;
   activity: LocalActivity;
+  groups: Groups;
 }
 
 const MAX_BODY = 1024 * 1024;
@@ -141,7 +143,7 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
 }
 
 export function createPeerServer(ctx: PeerContext): http.Server {
-  const { cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity } = ctx;
+  const { cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity, groups } = ctx;
   const identity = () => ({
     nodeId,
     nickname: cfg.nickname,
@@ -283,11 +285,47 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             online: discovery.online(),
             contacts: relations.list(),
             me: nodeId,
+            meName: cfg.nickname,
             meta: (id) => threads.get(id),
             typing: (id) => messages.typing(id),
             pending: (id) => messages.pending(id),
+            group: (id) => groups.get(id),
           }),
         });
+      }
+
+      // 群聊：列表 + create / rename / invite / leave（都只在回环上）。
+      if (url.pathname === "/groups" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        return json(res, 200, { ok: true, groups: groups.list() });
+      }
+      if (url.pathname === "/groups" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const ids = Array.isArray(body?.members) ? body.members.map((x: unknown) => String(x)).filter(Boolean) : [];
+        const id = String(body?.id ?? "");
+        try {
+          activity.touch();
+          const action = String(body?.action ?? "");
+          if (action === "create") return json(res, 200, { ok: true, group: messages.createGroup(String(body?.name ?? ""), ids) });
+          if (action === "rename") return json(res, 200, { ok: true, group: messages.renameGroup(id, String(body?.name ?? "")) });
+          if (action === "invite") return json(res, 200, { ok: true, group: messages.inviteGroup(id, ids) });
+          if (action === "leave") return json(res, 200, { ok: true, group: messages.leaveGroup(id) });
+          return json(res, 400, { error: "action 只能是 create / rename / invite / leave" });
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      // 固定消息：本机落一条 pin，再通知对端 / 群成员。
+      if (url.pathname === "/pin" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          return json(res, 200, messages.pin(String(body?.peer ?? ""), String(body?.id ?? ""), body?.on !== false));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
       }
 
       // 会话元数据（D299 / P1）：三个开关 + 已读水位 + 草稿，都只改本机那份小 json。
@@ -299,7 +337,18 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const at = Number(body?.at);
         const id = String(body?.id ?? "");
         if (!Number.isFinite(at) || !id) return json(res, 400, { error: "缺 at / id" });
-        return json(res, 200, { ok: true, meta: threads.setRead(peerId, { at, id }) });
+        // 水位往前走了才回「已读」：告诉这段里发过消息的人。
+        const before = threads.get(peerId);
+        const moved = before.readAt === undefined || afterWatermark({ at, id }, before.readAt, before.readId ?? "");
+        const meta = threads.setRead(peerId, { at, id });
+        if (moved) {
+          try {
+            messages.sendRead(peerId, { at: before.readAt, id: before.readId }, { at, id });
+          } catch (err) {
+            console.warn(`[peer] 已读回执没发出去：${(err as Error).message}`);
+          }
+        }
+        return json(res, 200, { ok: true, meta });
       }
 
       if (url.pathname === "/threads/patch" && req.method === "POST") {
@@ -318,6 +367,13 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           }
         }
         if (patch.pinned !== undefined || patch.muted !== undefined) threads.patch(peerId, patch);
+        // 标为未读（Teams 那个）：把已读水位退到对方最后一条消息之前，这条又算进未读。
+        if (body?.unread === true) {
+          const me = nodeId;
+          const tail = history.read(peerId, 200);
+          const last = [...tail].reverse().find((e) => e.from.nodeId !== me && (e.kind === "text" || e.kind === "file" || e.kind === "note"));
+          if (last) threads.patch(peerId, { readAt: last.at - 1, readId: null });
+        }
         return json(res, 200, { ok: true, meta: threads.get(peerId) });
       }
 
@@ -392,7 +448,10 @@ export function createPeerServer(ctx: PeerContext): http.Server {
                 }
               : undefined;
           activity.touch();
-          const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo);
+          const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo, {
+            priority: body?.priority,
+            topic: body?.topic,
+          });
           return json(res, 200, result);
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });

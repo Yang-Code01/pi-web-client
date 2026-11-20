@@ -903,7 +903,38 @@ async function main(): Promise<void> {
           body?.replyTo && typeof body.replyTo === "object" && typeof body.replyTo.id === "string"
             ? { id: String(body.replyTo.id), from: String(body.replyTo.from ?? ""), excerpt: String(body.replyTo.excerpt ?? "") }
             : undefined;
-        return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo));
+        return json(
+          res,
+          200,
+          await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo, {
+            priority: typeof body?.priority === "string" ? body.priority : undefined,
+            topic: typeof body?.topic === "string" ? body.topic : undefined,
+          }),
+        );
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // 固定消息 + 群聊（create / rename / invite / leave）：原样转给 peer。
+    if (url.pathname === "/api/peer/pin" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.pin(String(body?.peer ?? ""), String(body?.id ?? ""), body?.on !== false));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/groups" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.groups());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/groups" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.group(body && typeof body === "object" ? body : {}));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
@@ -919,10 +950,11 @@ async function main(): Promise<void> {
     }
     if (url.pathname === "/api/peer/thread" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
-      const patch: { pinned?: boolean; muted?: boolean; draft?: string } = {};
+      const patch: { pinned?: boolean; muted?: boolean; draft?: string; unread?: boolean } = {};
       if (typeof body?.pinned === "boolean") patch.pinned = body.pinned;
       if (typeof body?.muted === "boolean") patch.muted = body.muted;
       if (typeof body?.draft === "string") patch.draft = body.draft;
+      if (body?.unread === true) patch.unread = true;
       try {
         return json(res, 200, await peer.patchThread(String(body?.peer ?? ""), patch));
       } catch (err) {
