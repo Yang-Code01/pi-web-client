@@ -8,7 +8,7 @@
  */
 import { ACCENTS, ACCENTS_LIGHT } from "./palette.ts";
 
-export const THEME_IDS = ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper"] as const;
+export const THEME_IDS = ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper", "mac-light", "mac-dark", "mac-midnight"] as const;
 export type ThemeId = (typeof THEME_IDS)[number];
 export const DEFAULT_THEME: ThemeId = "midnight";
 
@@ -19,6 +19,8 @@ export type ThemeInfo = {
   /** 设置里那颗小样：底 / 面板 / 字 / 线。强调色用用户当前选的那个。 */
   demo: { bg: string; panel: string; text: string; line: string };
   light: boolean;
+  /** 归在「Mac 风格」那一页（设置里单独一个子类），小样左上角画三颗红绿灯。不写就是「配色主题」那一页。 */
+  mac?: true;
 };
 
 export const THEMES: ThemeInfo[] = [
@@ -31,6 +33,11 @@ export const THEMES: ThemeInfo[] = [
   { id: "light", label: "素白", demo: { bg: "#ffffff", panel: "#f8f9fb", text: "#101216", line: "#c3cad4" }, light: true },
   { id: "dusk", label: "深海", demo: { bg: "#070b14", panel: "#111a2b", text: "#e3eaf7", line: "#2a3a5c" }, light: false },
   { id: "paper", label: "沙丘", demo: { bg: "#f4efe4", panel: "#fcf9f2", text: "#2a2419", line: "#c7b99e" }, light: true },
+  // Mac 风格（设置里单独一页）：照 macOS 的系统配色取值 —— 中性灰阶、不带色偏，信号色用 Apple 的 system 色
+  // （浅底用它的高对比版本）。浅色是 Sonoma 窗口那种 #f5f5f7，深色是石墨中性灰，午夜蓝取 MacBook「午夜色」的蓝黑。
+  { id: "mac-light", label: "Mac 浅色", demo: { bg: "#f5f5f7", panel: "#ffffff", text: "#1d1d1f", line: "#c7c7cc" }, light: true, mac: true },
+  { id: "mac-dark", label: "Mac 深色", demo: { bg: "#1c1c1e", panel: "#2c2c2e", text: "#f5f5f7", line: "#48484a" }, light: false, mac: true },
+  { id: "mac-midnight", label: "Mac 午夜蓝", demo: { bg: "#171c26", panel: "#242b3a", text: "#eef1f7", line: "#434d63" }, light: false, mac: true },
 ];
 
 export function isTheme(v: unknown): v is ThemeId {
@@ -144,6 +151,26 @@ const LIGHT_ANSI = {
   brightWhite: "#24292f",
 };
 
+/** Mac 深色 / 午夜蓝：macOS 深色模式的 system 色（systemRed / Green / Blue …），蓝调亮一档好在黑底上读。 */
+const APPLE_DARK_ANSI = {
+  black: "#3a3a3c",
+  red: "#ff453a",
+  green: "#32d74b",
+  yellow: "#ffd60a",
+  blue: "#409cff",
+  magenta: "#bf5af2",
+  cyan: "#64d2ff",
+  white: "#e5e5ea",
+  brightBlack: "#636366",
+  brightRed: "#ff6961",
+  brightGreen: "#5de36f",
+  brightYellow: "#ffe14d",
+  brightBlue: "#70b7ff",
+  brightMagenta: "#da8fff",
+  brightCyan: "#8ae0ff",
+  brightWhite: "#ffffff",
+};
+
 export const TERM_THEMES: Record<ThemeId, TermPalette> = {
   midnight: { background: "#0b0d10", foreground: "#d6deeb", selectionBackground: "#334155", ...COOL_DARK_ANSI },
   daylight: { background: "#f7f8fa", foreground: "#1f2328", selectionBackground: "#cfe0ef", ...LIGHT_ANSI },
@@ -194,4 +221,7 @@ export const TERM_THEMES: Record<ThemeId, TermPalette> = {
   light: { background: "#ffffff", foreground: "#101216", selectionBackground: "#d6e4f2", ...LIGHT_ANSI },
   dusk: { background: "#070b14", foreground: "#d6e2f5", selectionBackground: "#263a58", ...COOL_DARK_ANSI },
   paper: { background: "#fcf9f2", foreground: "#2a2419", selectionBackground: "#e6dcc2", ...LIGHT_ANSI },
+  "mac-light": { background: "#ffffff", foreground: "#1d1d1f", selectionBackground: "#b3d7ff", ...LIGHT_ANSI },
+  "mac-dark": { background: "#1c1c1e", foreground: "#f5f5f7", selectionBackground: "#3f638b", ...APPLE_DARK_ANSI },
+  "mac-midnight": { background: "#171c26", foreground: "#eef1f7", selectionBackground: "#34507a", ...APPLE_DARK_ANSI },
 };

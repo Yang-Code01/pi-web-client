@@ -32,8 +32,8 @@ function luma(hex) {
   return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
 
-test("七套主题：id 表、信息表、显示名一一对应，不重名", () => {
-  assert.deepEqual([...THEME_IDS], ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper"]);
+test("十套主题：id 表、信息表、显示名一一对应，不重名", () => {
+  assert.deepEqual([...THEME_IDS], ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper", "mac-light", "mac-dark", "mac-midnight"]);
   assert.equal(THEMES.length, THEME_IDS.length);
   assert.deepEqual(
     THEMES.map((t) => t.id),
@@ -105,4 +105,11 @@ test("每套主题在 styles.css 里都有自己那一块（midnight 落在 :roo
     assert.ok(CSS.includes(`:root[data-theme="${t.id}"][data-text="soft"]`), `${t.id} 缺少「柔和」文字档`);
     assert.ok(CSS.includes(`:root[data-theme="${t.id}"][data-text="bright"]`), `${t.id} 缺少「明亮」文字档`);
   }
+});
+
+test("Mac 风格：恰好三套、排在最后、浅深都有", () => {
+  const mac = THEMES.filter((t) => t.mac);
+  assert.deepEqual(mac.map((t) => t.id), ["mac-light", "mac-dark", "mac-midnight"]);
+  assert.deepEqual(THEMES.slice(-3), mac, "Mac 那页的三颗在表尾，「配色主题」那页的顺序不被打乱");
+  assert.ok(mac.some((t) => t.light) && mac.some((t) => !t.light));
 });

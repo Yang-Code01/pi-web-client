@@ -231,6 +231,103 @@
 :root[data-theme="paper"][data-text="soft"] { --text: #3e3729; --dim: #6a6152; --faint: #6f6553; }
 :root[data-theme="paper"][data-text="bright"] { --text: #1a1610; --dim: #4a4335; --faint: #564e3f; }
 
+/* Mac 风格（设置里单独一页）：照 macOS 的系统配色。灰阶一律中性（R=G≈B），不像其它几套带冷/暖偏色；
+   信号色用 Apple 的 systemGreen / Orange / Red，浅底用它的「高对比」版本。 */
+:root[data-theme="mac-light"] {
+  --bg: #f5f5f7;
+  --sunken: #ececef;
+  --panel: #ffffff;
+  --panel-2: #f2f2f4;
+  --panel-3: #e8e8ed;
+  --line: #dedee3;
+  --line-soft: #ebebef;
+  --line-strong: #c7c7cc;
+  --line-lit: #aeaeb2;
+  --text: #1d1d1f;
+  --dim: #515154;
+  --faint: #636366;
+  --accent-hover: color-mix(in srgb, var(--accent) 82%, #000);
+  --accent-bg: color-mix(in srgb, var(--accent) 9%, #fff);
+  --accent-ink: #ffffff;
+  --ok: #248a3d;
+  --ok-bg: #eaf7ee;
+  --ok-dim: #bfe6c9;
+  --ok-ink: #ffffff;
+  --warn: #b25000;
+  --warn-bg: #fff6e5;
+  --warn-dim: #f5d9a6;
+  --warn-ink: #ffffff;
+  --danger: #d70015;
+  --danger-bg: #fff0f1;
+  --danger-dim: #f7c6cb;
+  --danger-ink: #ffffff;
+  color-scheme: light;
+}
+:root[data-theme="mac-light"][data-text="soft"] { --text: #3a3a3c; --dim: #58585c; --faint: #636366; }
+:root[data-theme="mac-light"][data-text="bright"] { --text: #000000; --dim: #3a3a3c; --faint: #545458; }
+
+/* Mac 深色：石墨中性灰，比「午夜」亮一档、不带蓝。 */
+:root[data-theme="mac-dark"] {
+  --bg: #1c1c1e;
+  --sunken: #161618;
+  --panel: #232325;
+  --panel-2: #2c2c2e;
+  --panel-3: #343436;
+  --line: #38383a;
+  --line-soft: #2e2e30;
+  --line-strong: #48484a;
+  --line-lit: #5a5a5e;
+  --text: #f5f5f7;
+  --dim: #b8b8bd;
+  --faint: #a1a1a6;
+  --accent-hover: color-mix(in srgb, var(--accent) 80%, #fff);
+  --accent-bg: color-mix(in srgb, var(--accent) 14%, #1c1c1e);
+  --accent-ink: #04202b;
+  --ok: #30d158;
+  --ok-bg: #102a18;
+  --ok-dim: #1f4a2c;
+  --ok-ink: #04140a;
+  --warn: #ffd60a;
+  --warn-bg: #2b2508;
+  --warn-dim: #4a400f;
+  --danger: #ff453a;
+  --danger-bg: #331311;
+  --danger-dim: #55221e;
+}
+:root[data-theme="mac-dark"][data-text="soft"] { --text: #e5e5ea; --dim: #aeaeb2; --faint: #a1a1a6; }
+:root[data-theme="mac-dark"][data-text="bright"] { --text: #ffffff; --dim: #d1d1d6; --faint: #aeaeb2; }
+
+/* Mac 午夜蓝：MacBook「午夜色」的蓝黑，比「峡湾」暗、比「深海」亮；信号色与 Mac 深色同一套。 */
+:root[data-theme="mac-midnight"] {
+  --bg: #171c26;
+  --sunken: #131720;
+  --panel: #1d2330;
+  --panel-2: #242b3a;
+  --panel-3: #2b3343;
+  --line: #333c4e;
+  --line-soft: #283041;
+  --line-strong: #434d63;
+  --line-lit: #56617a;
+  --text: #eef1f7;
+  --dim: #b3bccc;
+  --faint: #a3adbf;
+  --accent-hover: color-mix(in srgb, var(--accent) 80%, #fff);
+  --accent-bg: color-mix(in srgb, var(--accent) 14%, #171c26);
+  --accent-ink: #04202b;
+  --ok: #30d158;
+  --ok-bg: #11291f;
+  --ok-dim: #1f4733;
+  --ok-ink: #04140a;
+  --warn: #ffd60a;
+  --warn-bg: #2a2614;
+  --warn-dim: #48401b;
+  --danger: #ff453a;
+  --danger-bg: #33171d;
+  --danger-dim: #55252b;
+}
+:root[data-theme="mac-midnight"][data-text="soft"] { --text: #d9dfe9; --dim: #a7b1c2; --faint: #9aa4b6; }
+:root[data-theme="mac-midnight"][data-text="bright"] { --text: #ffffff; --dim: #ccd4e1; --faint: #b0b9c9; }
+
 /*
  * D110: 日文要自己的字体栈。Windows 上 "Segoe UI" 根本没有 CJK 字形，日文会一路落到 Microsoft YaHei，
  * 汉字按简体字形（直 / 骨 / 次 …）画出来 —— 一眼就是机翻。不改字体等于没本地化。
@@ -2268,6 +2365,8 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .theme-demo .td-l1 { left: 22px; top: 8px; width: 32px; height: 3px; background: var(--td-text); }
 .theme-demo .td-l2 { left: 22px; top: 15px; width: 22px; height: 3px; background: var(--td-text); opacity: 0.55; }
 .theme-demo .td-btn { right: 6px; bottom: 6px; width: 16px; height: 7px; background: var(--accent); }
+/* Mac 风格那几颗：侧栏顶上三颗红绿灯，一眼看出是哪一族。 */
+.theme-demo.mac .td-lights { left: 2px; top: 3px; width: 3px; height: 3px; border-radius: 50%; background: #ff5f57; box-shadow: 4px 0 #febc2e, 8px 0 #28c840; }
 .layout-demo > span { position: absolute; display: block; border-radius: 2px; }
 .layout-demo .ld-top { left: 4px; right: 4px; top: 4px; height: 3px; background: var(--line-lit); }
 .layout-demo .ld-body { left: 4px; right: 4px; bottom: 4px; height: 7px; background: var(--line-soft); }

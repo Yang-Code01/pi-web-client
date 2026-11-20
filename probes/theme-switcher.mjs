@@ -227,6 +227,12 @@ const openSheet = async () => {
   await sleep(150);
 };
 const pick = async (id) => {
+  // Mac 那三套在「Mac 风格」那一页，别的在「配色主题」：先切到那一页，隐藏页里的 chip 点不到。
+  const nav = id.startsWith("mac-") ? "Mac 风格" : "配色主题";
+  if (!(await page.locator(".display-sheet .st-nav__item.on", { hasText: nav }).count())) {
+    await page.locator(".display-sheet .st-nav__item", { hasText: nav }).click();
+    await sleep(200);
+  }
   await page.locator(`.theme-chip[data-theme="${id}"]`).click();
   await sleep(250);
 };
@@ -250,11 +256,11 @@ ok(s.scheme === "dark", `默认 color-scheme 是 dark（${s.scheme}）`);
 await openSheet();
 s = await snap();
 ok(s.activeSec.includes("配色主题"), `打开设置先落在「配色主题」（${s.activeSec}）`);
-const WANT_CHIPS = ["午夜", "晨光", "暖炉", "峡湾", "素白", "深海", "沙丘"];
-ok(JSON.stringify(s.chips) === JSON.stringify(WANT_CHIPS), `七套主题按顺序列出（${s.chips.join(" / ")}）`);
+const WANT_CHIPS = ["午夜", "晨光", "暖炉", "峡湾", "素白", "深海", "沙丘", "Mac 浅色", "Mac 深色", "Mac 午夜蓝"];
+ok(JSON.stringify(s.chips) === JSON.stringify(WANT_CHIPS), `十套主题按顺序列出（后三颗在「Mac 风格」页）（${s.chips.join(" / ")}）`);
 ok(JSON.stringify(s.onChips) === JSON.stringify(["midnight"]), `当前那套亮着（${s.onChips.join(",")}）`);
-const WANT_DEMO_BG = ["#0b0d10", "#f5f6f8", "#151210", "#2a303b", "#ffffff", "#070b14", "#f4efe4"];
-ok(JSON.stringify(s.demoBgs) === JSON.stringify(WANT_DEMO_BG), `七个小样各自是自己的底色（${s.demoBgs.join(",")}）`);
+const WANT_DEMO_BG = ["#0b0d10", "#f5f6f8", "#151210", "#2a303b", "#ffffff", "#070b14", "#f4efe4", "#f5f5f7", "#1c1c1e", "#171c26"];
+ok(JSON.stringify(s.demoBgs) === JSON.stringify(WANT_DEMO_BG), `十个小样各自是自己的底色（${s.demoBgs.join(",")}）`);
 ok(lum(s.demoBgs[4]) > 0.95, `素白小样的底是纯白（${s.demoBgs[4]}）`);
 ok(s.cardText.includes("午夜") && s.cardText.includes("默认"), `顶上卡片写清当前主题（${s.cardText}）`);
 ok(s.resetTitle.includes("主题"), `「恢复默认」的说明覆盖了主题（${s.resetTitle}）`);
@@ -296,6 +302,9 @@ const THEMES = [
   ["light", "#ffffff", "light"],
   ["dusk", "#070b14", "dark"],
   ["paper", "#f4efe4", "light"],
+  ["mac-light", "#f5f5f7", "light"],
+  ["mac-dark", "#1c1c1e", "dark"],
+  ["mac-midnight", "#171c26", "dark"],
 ];
 for (const [id, want, scheme] of THEMES) {
   await pick(id);
@@ -307,6 +316,19 @@ for (const [id, want, scheme] of THEMES) {
   ok(contrast(s.colorDim, s.bg) >= 4.5, `${id}：次要文字 ≥ 4.5（${contrast(s.colorDim, s.bg).toFixed(1)}:1）`);
   ok(contrast(s.colorFaint, s.panel3) >= 4.5, `${id}：提示文字对面板 3 ≥ 4.5（${contrast(s.colorFaint, s.panel3).toFixed(1)}:1）`);
 }
+
+// 4b) Mac 风格是左栏单独一项，点进去只有三颗、带红绿灯；切过去后两页的「亮着」一致
+await pick("mac-dark");
+s = await snap();
+ok(s.navSecs.some((t) => t.startsWith("Mac 风格")), `左栏有「Mac 风格」（${s.navSecs.join(" | ")}）`);
+ok(s.activeSec.includes("Mac 风格"), `点进去落在 Mac 风格（${s.activeSec}）`);
+const macVisible = await page.locator('.display-sheet .set-sub[data-sec="mac"] .theme-chip').count();
+ok(macVisible === 3, `Mac 风格页里三颗（${macVisible}）`);
+const lights = await page.locator('.display-sheet .set-sub[data-sec="mac"] .theme-demo.mac .td-lights').count();
+ok(lights === 3, `每颗小样都画了红绿灯（${lights}）`);
+ok(JSON.stringify(s.onChips) === JSON.stringify(["mac-dark"]), `两页合起来只亮 Mac 深色（${s.onChips.join(",")}）`);
+ok(s.cardText.includes("Mac 深色"), `顶上卡片写的是 Mac 深色（${s.cardText}）`);
+ok(s.footBottom !== null && Math.abs(s.footBottom - s.sheetBottom) <= 1, `Mac 风格页底栏贴底（${s.footBottom} vs ${s.sheetBottom}）`);
 
 // 5) 强调色跟明暗走、但不被主题重置：暖炉是深底拿亮粉彩，沙丘是浅底拿深饱和
 await pick("ember");
@@ -340,7 +362,7 @@ ok(JSON.stringify(s.onChips) === JSON.stringify(["midnight"]), `恢复默认后�
 ok(errors.length === 0, `没有 pageerror（${errors.join(" | ") || "无"}）`);
 
 fs.mkdirSync(path.join(REPO, ".scratch"), { recursive: true });
-for (const id of ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper"]) {
+for (const id of ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper", "mac-light", "mac-dark", "mac-midnight"]) {
   if (!(await page.locator(".display-sheet").count())) await openSheet();
   await pick(id);
   await page.screenshot({ path: path.join(REPO, ".scratch", `theme-${id}.png`) });

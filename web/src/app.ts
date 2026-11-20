@@ -4229,10 +4229,14 @@ export class App {
 
     paintSize(this.prefs.scale);
 
-    // 主题：四颗带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
-    const themePanel = section("theme");
-    const themeChips = el("div", "chips theme-chips");
-    for (const t of THEMES) {
+    // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
+    // 「配色主题」与「Mac 风格」两页各一排，写的是同一个 `prefs.theme`：点任一颗，两页的「亮着」一起改。
+    const themeChipRow = (list: typeof THEMES): HTMLElement => {
+      const row = el("div", "chips theme-chips");
+      for (const t of list) row.append(themeChip(t));
+      return row;
+    };
+    const themeChip = (t: (typeof THEMES)[number]): HTMLElement => {
       const chip = el("button", `chip theme-chip${this.prefs.theme === t.id ? " on" : ""}`);
       chip.dataset.theme = t.id;
       chip.title = tr(t.label);
@@ -4242,18 +4246,28 @@ export class App {
       demo.style.setProperty("--td-text", t.demo.text);
       demo.style.setProperty("--td-line", t.demo.line);
       demo.append(el("span", "td-side"), el("span", "td-l1"), el("span", "td-l2"), el("span", "td-btn"));
+      if (t.mac) {
+        demo.classList.add("mac");
+        demo.append(el("span", "td-lights"));
+      }
       chip.append(demo, el("span", "theme-chip-label", tr(t.label)));
       chip.onclick = () => {
         this.prefs = { ...this.prefs, theme: t.id };
         savePrefs(this.prefs);
         this.applyPrefs();
-        for (const other of themeChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
+        for (const other of this.sheet?.querySelectorAll<HTMLElement>(".theme-chip") ?? []) other.classList.toggle("on", other.dataset.theme === t.id);
       };
-      themeChips.append(chip);
-    }
-    const themeRow = this.stRow(tr("配色主题"), tr("换整套底色、面板、线条与文字；强调色与文字亮度在「颜色」里另调"), themeChips);
+      return chip;
+    };
+    const themePanel = section("theme");
+    const themeRow = this.stRow(tr("配色主题"), tr("换整套底色、面板、线条与文字；强调色与文字亮度在「颜色」里另调"), themeChipRow(THEMES.filter((t) => !t.mac)));
     themeRow.classList.add("wide");
     themePanel.append(themeRow);
+
+    const macPanel = section("mac");
+    const macRow = this.stRow(tr("Mac 风格"), tr("照 macOS 的系统配色：中性灰阶与 Apple 的红绿黄；强调色仍在「颜色」里另调"), themeChipRow(THEMES.filter((t) => t.mac)));
+    macRow.classList.add("wide");
+    macPanel.append(macRow);
 
     const colorPanel = section("color");
     const swatches = el("div", "swatches");
@@ -4351,6 +4365,7 @@ export class App {
         items: [
           { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
           { sec: "theme", label: tr("配色主题"), sub: tr("整套底色、线条与文字；默认是午夜") },
+          { sec: "mac", label: tr("Mac 风格"), sub: tr("仿 macOS 的浅色、深色与午夜蓝三套") },
           { sec: "color", label: tr("颜色"), sub: tr("强调色与文字亮度") },
           { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
           { sec: "chrome", label: tr("界面元素"), sub: tr("顶栏与输入框下沿的按钮；点预览里的按钮就收起 / 放回") },
@@ -4396,7 +4411,7 @@ export class App {
             { label: tr("语言"), value: lang, sub: tr("界面与推送") },
             { label: tr("字号"), value: `${scale}%`, sub: scale === Math.round(DEFAULT_PREFS.scale * 100) ? tr("默认") : tr("已调整") },
           ]
-        : sec === "theme"
+        : sec === "theme" || sec === "mac"
           ? [{ label: tr("配色主题"), value: tr(THEMES.find((t) => t.id === this.prefs.theme)?.label ?? this.prefs.theme), sub: this.prefs.theme === DEFAULT_PREFS.theme ? tr("默认") : tr("已调整") }]
           : sec === "color"
           ? [
