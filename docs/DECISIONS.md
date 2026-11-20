@@ -6694,9 +6694,10 @@ Esc 之后 dialog: 0
 **决定。**
 - 编辑器分清「实时 DOM」和「已上屏快照」：`composing` 期间 `html()` 返回 `committedHtml`，`notify()`（所有改正文的出口）只在非组字时刷新快照；`compositionend` 补一次 `afterInput()`。面板永远拿不到预编辑串，上屏后再存一遍。
 - 脏标记按内容版本清：`markDirty()` 累加 `contentSeq`，`save()` 记下 `sentSeq`，`saved()` 只有 `contentSeq === sentSeq` 才清 `dirty`。
+- 改状态（`pushStatus()`）不再顺手 `dirty = false`：手上有没存的正文 / 标题就当场 `save()`，等 ack 再清。原来那一句会让 900ms 定时器到点看到「不脏」而不存（代码审查时发现，同一类问题）。
 - `focusComposer()` 在 `restoring`（首次列表未回）时直接退让；默认落点由 `restorePick()` 在拿到列表后决定：能接回就接回，接不回来才落草稿（归档 / 垃圾箱里不落）。这样「记过什么」不会再被打开动作本身覆盖掉。
 - 账本视图加「← 记录」（`setView("active")`），并把 `＋ 记一条` 留出来（点了先退回列表再落草稿）：在那个数账本的地方也能直接记一条 bug。
 
-**验证。** `npm --prefix web run typecheck`（含 i18n / viewport / layers / theme 守卫）；`npm run test:notes`（`notes-editor-browser` 的 IME 一节 + `notes-sheet-browser` 的账本一节）；`node probes/notes-ime-memory.mjs` 13/13（隔离桥 + CDP `Input.imeSetComposition`：组字 1.3s 后落盘无拼音、上屏后 1.6s 内带「丢」、重开接回同一条、账本能返回也能记一条）。
+**验证。** `npm --prefix web run typecheck`（含 i18n / viewport / layers / theme 守卫）；`npm run test:notes`（`notes-editor-browser` 的 IME 一节 + `notes-sheet-browser` 的账本一节、改状态时顺手存一节）；`node probes/notes-ime-memory.mjs` 13/13（隔离桥 + CDP `Input.imeSetComposition`：组字 1.3s 后落盘无拼音、上屏后 1.6s 内带「丢」、重开接回同一条、账本能返回也能记一条）。
 
 **没做。** 组字中的中文被 Esc 取消、或输入法在组字中被系统切成英文，只依赖浏览器派发的 `compositionend`，没有别的兜底；真机 IME（微软拼音、搜狗）没在本机手测，只有 CDP 模拟。

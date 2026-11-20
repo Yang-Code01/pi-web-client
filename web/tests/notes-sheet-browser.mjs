@@ -118,6 +118,15 @@ const out = await page.evaluate(async () => {
   qa(".note-handoff button")[1].click();
   result.statusMsg = sent.filter((m) => m.type === "notes.status").at(-1) ?? null;
 
+  // 6b. 改了标题还没到 900ms 就点状态：改动要顺手存掉，不能被状态那一下抹掉脏标记（D347）
+  const savesBefore = sent.filter((m) => m.type === "notes.save").length;
+  title.value = "状态前刚改的标题";
+  fire(title, "input");
+  q(".nc-status").click();
+  qa(".note-handoff button")[0].click();
+  const savesAfter = sent.filter((m) => m.type === "notes.save");
+  result.statusFlush = { count: savesAfter.length - savesBefore, title: savesAfter.at(-1)?.title ?? null };
+
   // 7. 行上的归档按钮 → notes.life
   qa('.nc-row[data-id="n1"] .nc-row-act')[0].click();
   result.lifeMsg = sent.filter((m) => m.type === "notes.life").at(-1) ?? null;
@@ -396,6 +405,7 @@ assert.deepEqual(out.gFailSearch, { consoleBack: true, failHidden: true, rows: 1
 assert.deepEqual(out.gFailAfterEsc, { console: true, fail: false, value: "" }, "Esc 清搜索后回到账本");
 assert.deepEqual(out.metaLabels, ["状态", "分类", "创建", "改动"], "正文下只剩这四格：issue / commit / 会话 已退场");
 assert.deepEqual(out.failHead, { back: true, newShown: true }, "账本里既有返回、也有记一条");
+assert.deepEqual(out.statusFlush, { count: 1, title: "状态前刚改的标题" }, "改状态时把没存的标题一并存掉");
 assert.deepEqual(out.failBack, { consoleBack: true, failHidden: true, backHidden: true }, "返回按钮回到记录列表，自己藏起来");
 assert.deepEqual(out.failNew, { consoleBack: true, failHidden: true, focusTitle: true }, "账本里记一条：切回列表并落在标题上");
 assert.deepEqual(out.memoryStored, { kind: "bug", view: "active", sel: "n1" }, "记忆落 notes.memory：分区 + 去向 + 选中");
