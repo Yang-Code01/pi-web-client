@@ -63,7 +63,7 @@ import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
-import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
+import { appendModelOptions, groupModels, modelGroupSection, rememberRecentModel } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isDefaultHidden, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { type CtxLine, type CtxPolicy } from "./context.ts";
@@ -5268,7 +5268,13 @@ export class App {
       const level = draftLevel;
       this.act(() => {
         // The level rides along with the model switch so the bridge applies it after pi's clamp.
-        if (modelChanged && model) this.socket.send({ type: "setModel", sessionId, provider: model.provider, modelId: model.id, level: level || undefined });
+        if (modelChanged && model) {
+          // 换走的和换上的都记进「最近使用」：下次打开时，刚离开的那个就在顶上。
+          const prev = this.models.find((m) => m.id === startModel);
+          rememberRecentModel(prev?.provider, prev?.id);
+          rememberRecentModel(model.provider, model.id);
+          this.socket.send({ type: "setModel", sessionId, provider: model.provider, modelId: model.id, level: level || undefined });
+        }
         else if (levelChanged) this.socket.send({ type: "setThinking", sessionId, level });
         if (this.session && this.session.id === sessionId && (modelChanged || levelChanged)) {
           this.session = { ...this.session, ...(modelChanged && model ? { model: model.id, modelName: model.name } : {}), thinkingLevel: level || this.session.thinkingLevel };
@@ -5345,13 +5351,14 @@ export class App {
       }
     };
     // 在用的模型钉在最上面（每次打开按当前会话重画，换了模型就跟着换），其余按来源分组。
-    const { pinned, groups } = groupModels(this.models, { id: startModel });
-    const sections: { title: string; models: ModelInfo[] }[] = [];
-    if (pinned) sections.push({ title: tr("当前使用"), models: [pinned] });
+    // 「最近使用」紧跟其后、不折叠，方便来回切。
+    const { pinned, recent, groups } = groupModels(this.models, { id: startModel });
+    const sections: { title: string; models: ModelInfo[]; pinned?: boolean; fixed?: boolean }[] = [];
+    if (pinned) sections.push({ title: tr("当前使用"), models: [pinned], pinned: true });
+    if (recent.length) sections.push({ title: tr("最近使用"), models: recent, fixed: true });
     for (const g of groups) sections.push({ title: g.provider, models: g.models });
     for (const section of sections) {
-      const isPinned = !!pinned && section.models[0] === pinned;
-      const group = modelGroupSection(section.title, section.models.length, { pinned: isPinned });
+      const group = modelGroupSection(section.title, section.models.length, { pinned: section.pinned, fixed: section.fixed });
       list.append(group.node);
       for (const m of section.models) {
       const row = el("button", `model-row${m.id === draftModel ? " on" : ""}`);
@@ -6446,7 +6453,7 @@ export class App {
     };
     const model = el("select", "ns-input") as HTMLSelectElement;
     model.append(new Option(tr("（用默认模型）"), ""));
-    appendModelOptions(model, this.models, undefined, (m) => shortModelName(m.name), tr("当前使用"));
+    appendModelOptions(model, this.models, undefined, (m) => shortModelName(m.name), tr("当前使用"), tr("最近使用"));
     field(tr("模型 --model"), model);
     const thinking = el("select", "ns-input") as HTMLSelectElement;
     for (const lv of ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]) thinking.append(new Option(lv || tr("（默认）"), lv));
