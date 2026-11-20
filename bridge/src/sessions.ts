@@ -1736,6 +1736,9 @@ export class Session extends EventEmitter {
         this.draftTs = null;
         if (msg.usage) this.emitWs({ type: "usage", sessionId: this.state.id, usage: msg.usage });
         void this.refreshStats();
+        // 长任务一轮里可能调几十次工具、跑十几分钟；如果等到 agent_end 才读 JSONL，整轮期间
+        // 面板都不会出现 Copilot 积分块（或数字僵在上一轮）。增量读只扫新增字节，开销极小（D339）。
+        void this.refreshCopilot();
         for (const call of calls) {
           // D199：模型自己 read 了某个 SKILL.md 就是隐式触发 —— 在它那张 read 卡之前立一张技能卡。
           const card = skillItemFor(this.items, this.skillsHere(), { name: String(call.name ?? ""), args: call.arguments }, this.state.cwd || undefined);

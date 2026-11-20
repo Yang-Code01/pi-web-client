@@ -2769,6 +2769,7 @@ async function main(): Promise<void> {
             const session = await sessions.claim(String(msg.sessionId));
             (ws as any).watching = session.state.id;
             send(frameFor(ws, { ...sessionFrameOf(session.pagedSnapshot()), trust: await trustFor(session.state.cwd) }));
+            void session.refreshCopilot();
             return;
           }
           case "prompt": {
@@ -3331,6 +3332,7 @@ async function main(): Promise<void> {
             const session = await sessions.reload(String(msg.sessionId ?? ""));
             (ws as any).watching = session.state.id;
             send(frameFor(ws, { ...sessionFrameOf(session.pagedSnapshot()), trust: await trustFor(session.state.cwd) }));
+            void session.refreshCopilot();
             send({ type: "notice", sessionId: session.state.id, text: "已重新加载：pi 进程重启，设置、扩展、技能、模板、AGENTS.md 都是最新的了。", level: "info" });
             return;
           }
