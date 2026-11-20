@@ -118,6 +118,15 @@ const out = await page.evaluate(async () => {
   qa(".note-handoff button")[1].click();
   result.statusMsg = sent.filter((m) => m.type === "notes.status").at(-1) ?? null;
 
+  // 6b. 改了标题还没到 900ms 就点状态：改动要顺手存掉，不能被状态那一下抹掉脏标记（D350）
+  const savesBefore = sent.filter((m) => m.type === "notes.save").length;
+  title.value = "状态前刚改的标题";
+  fire(title, "input");
+  q(".nc-status").click();
+  qa(".note-handoff button")[0].click();
+  const savesAfter = sent.filter((m) => m.type === "notes.save");
+  result.statusFlush = { count: savesAfter.length - savesBefore, title: savesAfter.at(-1)?.title ?? null };
+
   // 7. 行上的归档按钮 → notes.life
   qa('.nc-row[data-id="n1"] .nc-row-act')[0].click();
   result.lifeMsg = sent.filter((m) => m.type === "notes.life").at(-1) ?? null;
@@ -215,6 +224,18 @@ const out = await page.evaluate(async () => {
   };
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   result.gFailAfterEsc = { console: q(".notes-console").hidden, fail: q(".fail-wrap").hidden, value: gs.value };
+
+  // 13c. 账本里也能记一条、能退回记录列表（用户报障 2026-11-20）：以前进了账本就出不来了
+  result.failHead = { back: !q(".notes-head-back").hidden, newShown: !q(".notes-head-new").hidden };
+  q(".notes-head-back").click();
+  result.failBack = { consoleBack: !q(".notes-console").hidden, failHidden: q(".fail-wrap").hidden, backHidden: q(".notes-head-back").hidden };
+  q('.nc-nav-item[data-key="failures"]').click();
+  q(".notes-head-new").click();
+  result.failNew = {
+    consoleBack: !q(".notes-console").hidden,
+    failHidden: q(".fail-wrap").hidden,
+    focusTitle: document.activeElement === q(".nc-title"),
+  };
 
   // 14. 记忆：分区 + 选中（#514）
   q('.nc-nav-item[data-key="bug"]').click();
@@ -383,6 +404,10 @@ assert.deepEqual(out.gFailBefore, { console: true, fail: false }, "进 AI 出错
 assert.deepEqual(out.gFailSearch, { consoleBack: true, failHidden: true, rows: 1, listTitle: "搜索结果" }, "账本视图里搜索也出结果");
 assert.deepEqual(out.gFailAfterEsc, { console: true, fail: false, value: "" }, "Esc 清搜索后回到账本");
 assert.deepEqual(out.metaLabels, ["状态", "分类", "创建", "改动"], "正文下只剩这四格：issue / commit / 会话 已退场");
+assert.deepEqual(out.failHead, { back: true, newShown: true }, "账本里既有返回、也有记一条");
+assert.deepEqual(out.statusFlush, { count: 1, title: "状态前刚改的标题" }, "改状态时把没存的标题一并存掉");
+assert.deepEqual(out.failBack, { consoleBack: true, failHidden: true, backHidden: true }, "返回按钮回到记录列表，自己藏起来");
+assert.deepEqual(out.failNew, { consoleBack: true, failHidden: true, focusTitle: true }, "账本里记一条：切回列表并落在标题上");
 assert.deepEqual(out.memoryStored, { kind: "bug", view: "active", sel: "n1" }, "记忆落 notes.memory：分区 + 去向 + 选中");
 assert.equal(out.memoryRestored.kindOn, true, "重开回到上次的分区");
 assert.equal(out.memoryRestored.title, "旧标题", "重开接回上次选中的记录");
