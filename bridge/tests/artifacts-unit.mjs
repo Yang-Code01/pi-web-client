@@ -149,6 +149,51 @@ function sid(tag) {
   assert.equal(viaWrite.why, "no-baseline");
 }
 
+// ---------------------------------------------------------------- 回复正文提及的路径（按存在 + mtime 过滤）
+{
+  const dir = tmpdir();
+  const id = sid("mentioned");
+  const now = Date.now();
+  const sessionStart = new Date(now - 10_000).toISOString();
+  // 会话前已存在的旧参考文件
+  const oldRef = write(dir, "old-ref.html", "old\n");
+  const oldSec = (now - 60_000) / 1000;
+  fs.utimesSync(oldRef, oldSec, oldSec);
+  // 会话开始后脚本生成的新报告
+  const fresh = write(dir, "planning-external-report(プラン).html", "<html>new</html>\n");
+  const out = await listArtifacts(
+    id,
+    dir,
+    [
+      { path: fresh, tool: "mentioned", writes: 1, delivered: true, mentioned: true },
+      { path: oldRef, tool: "mentioned", writes: 1, delivered: true, mentioned: true },
+      { path: path.join(dir, "missing.html"), tool: "mentioned", writes: 1, delivered: true, mentioned: true },
+      { path: dir, tool: "mentioned", writes: 1, delivered: true, mentioned: true },
+    ],
+    { startedAt: sessionStart },
+  );
+  assert.equal(out.items.length, 1, "只收录会话开始后写过的真实文件，过滤旧文件、不存在路径和目录");
+  assert.equal(out.items[0].path, fresh);
+  assert.equal(out.items[0].why, "mentioned-only");
+  assert.equal(out.items[0].tool, "mentioned");
+
+  // 同一文件既有提及（在前）又有真实写入（在后），不同写法指向同一 abs：保留写入记录。
+  recordSnapshot(id, fresh);
+  fs.writeFileSync(fresh, "<html>updated</html>\n");
+  const merged = await listArtifacts(
+    id,
+    dir,
+    [
+      { path: fresh, tool: "mentioned", writes: 1, delivered: true, mentioned: true },
+      { path: "planning-external-report(プラン).html", tool: "write", writes: 2 },
+    ],
+    { startedAt: sessionStart },
+  );
+  assert.equal(merged.items.length, 1);
+  assert.equal(merged.items[0].tool, "write");
+  assert.equal(merged.items[0].writes, 2);
+}
+
 // ---------------------------------------------------------------- 路径：相对/绝对写的是同一个文件
 {
   const dir = tmpdir();

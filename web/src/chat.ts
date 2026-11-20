@@ -1,9 +1,9 @@
-import { artifactSources, noteArtifact, toolPath, type ArtifactSource } from "./artifact-sources.ts";
+import { artifactSources, noteArtifact, noteMentioned, toolPath, type ArtifactSource } from "./artifact-sources.ts";
 import { askQuestions, askTurnLabel, parseAskResult } from "./ask-result.ts";
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { reviewBody, reviewDisplay } from "./failures.ts";
 import { highlightFragment } from "./highlight.ts";
-import { renderMarkdown } from "./md.ts";
+import { extractMentionedPaths, renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { BashItem, Item, SessionHistory, SkillItem, ToolItem, UserItem } from "./types.ts";
@@ -1124,10 +1124,12 @@ export class ChatView {
     }
   }
 
-  /** 复盘回写的「规矩」行只往外交一次（外面按键覆盖去重，重放不会多写）。 */
+  /** 复盘回写的「规矩」行只往外交一次（外面按键覆盖去重，重放不会多写）；同时补收正文提及的文件路径。 */
   private noteAnswer(item: Item): void {
     if (item.kind !== "assistant") return;
     const text = String(item.text ?? "");
+    const paths = extractMentionedPaths(text);
+    if (paths.length) noteMentioned(this.written, paths);
     if (!text.includes("[pi-web:rule]")) return;
     this.onAnswer?.(text);
   }
@@ -1639,7 +1641,7 @@ export class ChatView {
    * 桥会按 abs 去重，这里要是合并了反而看不出用户当时用的是哪种写法。
    * 来源不止写入：`open_preview` 交付过的也算（`delivered`），脚本生成的 xlsx / html 只有这一条线索。
    */
-  artifacts(): { path: string; tool: string; writes: number; delivered?: boolean }[] {
+  artifacts(): { path: string; tool: string; writes: number; delivered?: boolean; mentioned?: boolean }[] {
     return artifactSources(this.written);
   }
 

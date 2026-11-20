@@ -6588,3 +6588,15 @@ Esc 之后 dialog: 0
 - `bridge/src/sessions.ts`：`onPiEvent` 的 `message_end` 在 `void this.refreshStats()` 旁同步补 `void this.refreshCopilot()`。`CopilotTally.read()` 按字节 offset 增量读 JSONL，单次只需一次 `stat` + 读新增行；账号额度本身有 30s 节流和 inflight 互斥，不会多打 GitHub API。
 - `bridge/src/index.ts`：`claim` / `reload` 补发一次 `void session.refreshCopilot()`，与 `subscribe` 对齐。
 
+## D340 产物列表补收 AI 回复正文提及的脚本产物（用户报障 2026-11-20）
+
+**症状。** 会话里用脚本（`bash`）生成了两个 HTML 报告（如 `C:\soft\10_計画\AI駆動開発\planning-external-report(プラン).html`），用户对「要在预览里打开吗？」选了「先不看」，结果打开「本会话的产物」弹窗时看不到这两份文件，只看得到 `write` 工具写的模板和临时脚本。
+
+**根因。** D275 之后产物来源只有 `WRITE_TOOLS` 与 `DELIVER_TOOLS`（`open_preview`）。脚本写入不走 `write/edit`，用户选「先不看」又不调 `open_preview`，两条线索都落空；另外 `web/src/md.ts` 的 `NAME` 字符集排除了半角圆括号 `()`，反引号里的带括号文件名（`report(プラン).html`）也无法被 `looksLikePath` 识别。
+
+**决定。**
+- **路径提取与括号支持**（`web/src/md.ts`）：在反引号行内代码（`SPAN_NAME`）中允许半角括号 `()`，同时导出 `extractMentionedPaths(src)` 复用与 `renderMarkdown` 一致的路径规则（行内代码、本地链接、纯文本路径，跳过围栏代码块与 URL）。
+- **前端收集优先级**（`web/src/artifact-sources.ts`、`web/src/chat.ts`）：在 `noteAnswer` 中提取回复正文路径，经 `noteMentioned` 记入 `this.written`（带 `mentioned: true`）；优先级严格为「写入 > 交付 > 提及」，不覆盖真实写入或 `open_preview` 记录。
+- **桥侧校验过滤**（`bridge/src/sessions.ts`、`bridge/src/artifacts.ts`、`bridge/src/index.ts`）：`locate()` 一并返回 `startedAt`，`listArtifacts()` 对 `mentioned` 条目校验「文件存在、是普通文件、且 `mtimeMs >= startedAt - 1000`」，过滤掉旧参考文件、目录与不存在的路径；同一 `abs` 撞车时保留非 `mentioned` 记录；无基线时返回 `why: "mentioned-only"`，页面显示「回复提及」及对应说明（三语同步）。
+
+
