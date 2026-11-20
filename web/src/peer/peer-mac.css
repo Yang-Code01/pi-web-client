@@ -207,9 +207,10 @@ html[data-ui="mac"] :is(.modal, .pbox, .emoji-panel) {
 }
 html[data-ui="mac"] :is(.modal, .pbox) { border-radius: 14px; animation: mac-window-in 460ms var(--mac-spring) backwards; }
 html[data-ui="mac"] .emoji-panel { border-radius: 14px; animation: mac-menu-in 260ms var(--mac-spring) backwards; transform-origin: 0 100%; }
-html[data-ui="mac"] .ep-sec { background: transparent; -webkit-backdrop-filter: var(--mac-blur); backdrop-filter: var(--mac-blur); }
-html[data-ui="mac"] :is(.ep-jump, .ep-e):hover { background: var(--mac-fill-2); }
-html[data-ui="mac"] :is(.modal header, .modal.preview .meta, .phead, .crumbs, .pside, .pfoot, .ep-tabs, .ep-nav, .ep-tip, .rstrip) { border-color: var(--mac-glass-line); }
+/* 表情弹窗：毛玻璃底上组标题也是透明 + 模糊（滚过去的表情在标题下面糊开，和系统弹窗一样）。 */
+html[data-ui="mac"] .emoji-panel { --ep-bg: transparent; --ep-fill: var(--mac-fill); --ep-fill-2: var(--mac-fill-2); --ep-sep: var(--mac-glass-line); }
+html[data-ui="mac"] .ep-sec { -webkit-backdrop-filter: var(--mac-blur); backdrop-filter: var(--mac-blur); }
+html[data-ui="mac"] :is(.modal header, .modal.preview .meta, .phead, .crumbs, .pside, .pfoot, .rstrip) { border-color: var(--mac-glass-line); }
 html[data-ui="mac"] :is(.crumbs button, .pside li, .files li):hover { background: var(--mac-fill); }
 html[data-ui="mac"] .files li.on { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 
