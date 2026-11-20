@@ -202,6 +202,35 @@ try {
   // 记录包在群里不支持：明确报错而不是悄悄发成 1:1。
   await post(PA, "/note", { peer: gid, note: { title: "t", body: "<p>x</p>", kind: "idea", status: "pending", shots: [] } }, 400);
   log("ok 群里拒绝记录包");
+
+  // ---- 重要 / 紧急 + 话题回复：字段跟着消息走；紧急让免打扰的会话也带 urgent。 ----
+  await post(PB, "/threads/patch", { peer: gid, muted: true });
+  const loud = await post(PA, "/send", { peer: gid, text: "今天上线", priority: "urgent" });
+  await until("B 收到紧急消息", async () => (await msgs(PB, gid)).find((e) => e.id === loud.id)?.priority === "urgent");
+  await until("B 的会话行带 urgent", async () => (await thread(PB, gid))?.urgent === true);
+  const topicReply = await post(PB, "/send", { peer: gid, text: "几点？", topic: loud.id });
+  await until("A 收到话题回复", async () => (await msgs(PA, gid)).find((e) => e.id === topicReply.id)?.topic === loud.id);
+  await post(PA, "/send", { peer: gid, text: "x", topic: "no-such-topic-0000" }, 400);
+  const at = await post(PC, "/send", { peer: gid, text: "@乙 看一下" });
+  await until("B 的会话行带 mention", async () => (await thread(PB, gid))?.mention === true && at.id);
+  log("ok 紧急 / 话题 / @ 标记");
+
+  // ---- 已读回执：B、C 读到 A 的消息，A 的气泡上 readBy 有他们；1:1 同理。 ----
+  const readMe = await post(PA, "/send", { peer: gid, text: "谁看了？" });
+  await until("B 收到", async () => (await msgs(PB, gid)).some((e) => e.id === readMe.id));
+  await post(PB, "/threads/read", { peer: gid, at: readMe.at, id: readMe.id });
+  await until("A 看到 B 已读", async () => (await msgs(PA, gid)).find((e) => e.id === readMe.id)?.readBy?.includes(b));
+  if ((await msgs(PA, gid)).find((e) => e.id === readMe.id)?.readBy?.includes(c)) throw new Error("C 还没读");
+  await until("C 收到", async () => (await msgs(PC, gid)).some((e) => e.id === readMe.id));
+  await post(PC, "/threads/read", { peer: gid, at: readMe.at, id: readMe.id });
+  await until("A 看到 B、C 都已读", async () => (await msgs(PA, gid)).find((e) => e.id === readMe.id)?.readBy?.length === 2);
+  // 旧水位不会把新的盖回去：更早的消息也算已读。
+  if (!(await msgs(PA, gid)).find((e) => e.id === afterLeave.id)?.readBy?.includes(b)) throw new Error("更早的消息也应算 B 已读");
+  const dm = await post(PA, "/send", { peer: c, text: "私聊已读吗" });
+  await until("C 收到私聊", async () => (await msgs(PC, a)).some((e) => e.id === dm.id));
+  await post(PC, "/threads/read", { peer: a, at: dm.at, id: dm.id });
+  await until("A 看到私聊已读", async () => (await msgs(PA, c)).find((e) => e.id === dm.id)?.readBy?.includes(c));
+  log("ok 已读回执");
 } catch (err) {
   failed = err;
 }

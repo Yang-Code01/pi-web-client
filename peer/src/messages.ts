@@ -8,6 +8,8 @@ import { GROUP_PREFIX, MAX_GROUP_MEMBERS, isGroupId, normalizeGroup, snapshot, t
 import { normalizeNote } from "./note.ts";
 import type { Outbox, Queued, Verdict } from "./outbox.ts";
 import type { Relations } from "./peers.ts";
+import { afterWatermark } from "./history.ts";
+import { covered, type Reads } from "./reads.ts";
 
 /** 单条文本上限（决定 25）：再长就让用户改发文件，协议这边硬拒 32 KB。 */
 export const MAX_TEXT_BYTES = 32 * 1024;
@@ -85,6 +87,16 @@ export type ControlKind = "friend-request" | "friend-accept" | "friend-quick" | 
  * - `send()` 由本机页面 / 第 5 片的 pi 工具调用（回环）；
  * - `accept()` 由局域网里的对端 POST `/peer/inbox` 调用。
  */
+/** 消息的「重要 / 紧急」标记（Teams 的传递选项）；别的值一律当普通。 */
+export function normPriority(raw: unknown): "important" | "urgent" | undefined {
+  return raw === "important" || raw === "urgent" ? raw : undefined;
+}
+
+/** 话题（群里「回复这条话题」）：值是话题第一条消息的 id。 */
+export function normTopic(raw: unknown): string | undefined {
+  return typeof raw === "string" && /^[\w-]{8,80}$/.test(raw) ? raw : undefined;
+}
+
 export class Messages {
   /** 对方正在输入：只放内存，进程重启就清空（一条心跳本来也只活 3 秒）。 */
   private readonly typingUntil = new Map<string, number>();
@@ -99,6 +111,7 @@ export class Messages {
       outbox: Outbox | null;
       relations: Relations;
       groups: Groups;
+      reads: Reads;
       log: (msg: string) => void;
     },
   ) {}
@@ -183,7 +196,13 @@ export class Messages {
     return { ok: true, id, at, seq };
   }
 
-  send(peerId: string, text: string, via?: "pi", replyTo?: Entry["replyTo"]): { ok: true; id: string; at: number; seq: number } {
+  send(
+    peerId: string,
+    text: string,
+    via?: "pi",
+    replyTo?: Entry["replyTo"],
+    opts: { priority?: unknown; topic?: unknown } = {},
+  ): { ok: true; id: string; at: number; seq: number } {
     const trimmed = text.replace(/\s+$/, "");
     if (!trimmed.trim()) throw new Error("空消息");
     const bytes = Buffer.byteLength(trimmed, "utf8");
@@ -194,7 +213,17 @@ export class Messages {
     const at = Date.now();
     const id = uuidv7(at);
     const seq = this.ctx.history.nextSeq(peerId);
-    const entry = this.entry(id, at, this.me(), peerId, "text", { text: trimmed, seq, ...(via ? { via } : {}), ...(replyTo ? { replyTo } : {}) });
+    const priority = normPriority(opts.priority);
+    const topic = normTopic(opts.topic);
+    if (topic && !this.ctx.history.find(peerId, topic)) throw new Error("找不到这个话题");
+    const entry = this.entry(id, at, this.me(), peerId, "text", {
+      text: trimmed,
+      seq,
+      ...(via ? { via } : {}),
+      ...(replyTo ? { replyTo } : {}),
+      ...(priority ? { priority } : {}),
+      ...(topic ? { topic } : {}),
+    });
     this.ctx.history.append(peerId, entry);
     this.enqueue(peerId, id, "text", entry, at, targets);
     return { ok: true, id, at, seq };
@@ -366,6 +395,7 @@ export class Messages {
     if (kind === "note") return this.acceptNote(fromAddr, body.control);
     if (kind === "react") return this.acceptReact(fromAddr, body.control, body.group);
     if (kind === "pin") return this.acceptPin(fromAddr, body.control, body.group);
+    if (kind === "read") return this.acceptRead(fromAddr, body.control, body.group);
     if (kind === "group") return this.acceptGroup(fromAddr, body.control);
     if (kind === "typing") return this.acceptTyping(fromAddr, body.control);
     return { status: 400, body: { error: "unknown kind", retryable: false } };
@@ -523,6 +553,46 @@ export class Messages {
     return gate ?? { thread: groupId };
   }
 
+  /**
+   * 我把这个会话读到了 `next`（上一次是 `prev`）：给这段里发过消息的人各回一条「已读」。
+   * 只告诉作者本人 —— 别人的消息谁读了和我无关；离线的作者照样排队，上线后补到。
+   */
+  sendRead(threadId: string, prev: { at?: number; id?: string }, next: { at: number; id: string }): number {
+    const group = isGroupId(threadId) ? this.ctx.groups.get(threadId) : null;
+    if (group?.left) return 0;
+    const authors = new Map<string, PeerIdentity>();
+    for (const entry of this.ctx.history.read(threadId, 200)) {
+      if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") continue;
+      if (entry.from.nodeId === this.ctx.nodeId) continue;
+      if (prev.at !== undefined && !afterWatermark(entry, prev.at, prev.id ?? "")) continue;
+      if (!covered(entry, next)) continue;
+      authors.set(entry.from.nodeId, entry.from);
+    }
+    if (group) for (const id of [...authors.keys()]) if (!group.members.some((m) => m.nodeId === id)) authors.delete(id);
+    if (!authors.size || !this.ctx.outbox) return 0;
+    const at = Date.now();
+    const id = uuidv7(at);
+    const control = { id, at, from: this.me(), upTo: { at: next.at, id: next.id }, ...this.groupField(threadId) };
+    const targets = this.memberTargets([...authors.values()]);
+    if (group) this.enqueue(threadId, id, "read", control, at, targets);
+    else for (const t of targets) this.ctx.outbox.add({ id, peerId: t.peerId, addr: t.addr, port: t.port, kind: "read", payload: control, at, tries: 0, nextAt: 0 });
+    return authors.size;
+  }
+
+  /** 收到已读回执：只往前推水位，重投 / 乱序都无害。 */
+  private async acceptRead(fromAddr: string, control: any, snap: unknown): Promise<InboxResult> {
+    const claimed = control?.from as PeerIdentity | undefined;
+    const at = Number(control?.upTo?.at);
+    const upId = String(control?.upTo?.id ?? "");
+    if (!claimed?.nodeId || !Number.isFinite(at) || !upId) return { status: 400, body: { error: "bad read", retryable: false } };
+    const check = await this.verifySource(fromAddr, claimed);
+    if (check) return check;
+    const where = this.controlThread(control, claimed, snap);
+    if (!("thread" in where)) return where;
+    this.ctx.reads.mark(where.thread, claimed.nodeId, { at, id: upId });
+    return { status: 200, body: { ok: true } };
+  }
+
   /** 收到固定 / 取消固定：同一个 control id 只记一次。 */
   private async acceptPin(fromAddr: string, control: any, snap: unknown): Promise<InboxResult> {
     const claimed = control?.from as PeerIdentity | undefined;
@@ -572,6 +642,8 @@ export class Messages {
         ...(message?.via === "pi" ? { via: "pi" as const } : {}),
         ...(Number.isFinite(seq) ? { seq } : {}),
         ...(replyTo ? { replyTo } : {}),
+        ...(normPriority(message?.priority) ? { priority: normPriority(message?.priority) } : {}),
+        ...(normTopic(message?.topic) ? { topic: normTopic(message?.topic) } : {}),
       }),
     );
     this.ctx.log(`收到 ${claimed.nickname || claimed.nodeId.slice(0, 8)} 的消息（${Buffer.byteLength(text, "utf8")} 字节）`);
@@ -760,6 +832,16 @@ export class Messages {
           delete view.tries;
           delete view.sendError;
         }
+      }
+    }
+    // 已读：我发的消息上挂「谁读到了」（别人通过 `read` 回执告诉我的水位）。
+    const marks = Object.entries(this.ctx.reads.of(peerId));
+    if (marks.length) {
+      for (const view of folded) {
+        if (view.from.nodeId !== this.ctx.nodeId || view.recalled) continue;
+        if (view.kind !== "text" && view.kind !== "file" && view.kind !== "note") continue;
+        const who = marks.filter(([, mark]) => covered(view, mark)).map(([nodeId]) => nodeId);
+        if (who.length) view.readBy = who;
       }
     }
     const tail = folded.slice(-limit);

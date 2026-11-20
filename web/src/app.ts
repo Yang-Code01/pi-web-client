@@ -5060,7 +5060,7 @@ export class App {
     }
     if (!fresh) return;
     if (String(last.from?.nodeId ?? "") === me) return;
-    if (newest.muted === true || dnd) return;
+    if ((newest.muted === true && !newest.urgent && !newest.mention) || dnd) return;
     // 弹层开着、页面也在前面 = 他正看着，不弹。
     if (this.sheetKind === "peer" && !document.hidden) return;
     if (!this.peerNotifyOn()) return;

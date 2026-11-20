@@ -5,6 +5,7 @@ import { createPeerServer, Ignored } from "./http.ts";
 import { History } from "./history.ts";
 import { Outbox } from "./outbox.ts";
 import { Messages, uuidv7 } from "./messages.ts";
+import { Reads } from "./reads.ts";
 import { Relations } from "./peers.ts";
 import { Files } from "./files.ts";
 import { LocalActivity } from "./presence.ts";
@@ -42,7 +43,8 @@ const relations = new Relations(log);
 const ignored = new Ignored(log);
 const threads = new Threads(log);
 const groups = new Groups(log);
-const messages = new Messages({ cfg, nodeId, discovery, history, outbox: null as never, relations, groups, log });
+const reads = new Reads(log);
+const messages = new Messages({ cfg, nodeId, discovery, history, outbox: null as never, relations, groups, reads, log });
 // 回环没注入 outbox 之前先建好：`deliver` 只依赖网络，`settled` 才依赖 outbox 本身。
 const outbox = new Outbox({
   log,

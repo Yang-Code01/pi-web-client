@@ -33,6 +33,9 @@ export interface PeerThread {
   nodeId: string;
   nickname: string;
   muted?: boolean;
+  /** 未读里有「紧急」/ 有人 @ 我：免打扰也要提醒。 */
+  urgent?: boolean;
+  mention?: boolean;
   pinned?: boolean;
   unread?: number;
   last: { id: string; at: number; kind: string; text?: string; from: { nodeId: string; nickname?: string }; file?: { name: string } } | null;
@@ -161,7 +164,7 @@ export class PeerHost {
       }
       if (!this.threadPollPrimed) continue;
       if (last.from.nodeId === me) continue;
-      if (thread.muted) continue;
+      if (thread.muted && !thread.urgent && !thread.mention) continue;
       if (dnd) continue;
       this.onNewMessage?.(thread);
     }
@@ -253,8 +256,16 @@ export class PeerHost {
     return this.request("POST", "/note", { peer, note });
   }
 
-  sendText(peer: string, text: string, via?: "pi", replyTo?: { id: string; from: string; excerpt: string }): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
+  sendText(
+    peer: string,
+    text: string,
+    via?: "pi",
+    replyTo?: { id: string; from: string; excerpt: string },
+    extra: { priority?: string; topic?: string } = {},
+  ): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
     const body: Record<string, unknown> = { peer, text };
+    if (extra.priority) body.priority = extra.priority;
+    if (extra.topic) body.topic = extra.topic;
     if (via) body.via = via;
     if (replyTo) body.replyTo = replyTo;
     return this.request("POST", "/send", body);

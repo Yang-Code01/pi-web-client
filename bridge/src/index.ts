@@ -903,7 +903,14 @@ async function main(): Promise<void> {
           body?.replyTo && typeof body.replyTo === "object" && typeof body.replyTo.id === "string"
             ? { id: String(body.replyTo.id), from: String(body.replyTo.from ?? ""), excerpt: String(body.replyTo.excerpt ?? "") }
             : undefined;
-        return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo));
+        return json(
+          res,
+          200,
+          await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo, {
+            priority: typeof body?.priority === "string" ? body.priority : undefined,
+            topic: typeof body?.topic === "string" ? body.topic : undefined,
+          }),
+        );
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }

@@ -9,7 +9,7 @@ export interface Queued {
   addr: string;
   port: number;
   /** 信封类型：`text` 要收据，好友/快捷/撤回这些控制消息不要。 */
-  kind: "text" | "note" | "friend-request" | "friend-accept" | "friend-quick" | "recall" | "react" | "pin" | "group";
+  kind: "text" | "note" | "friend-request" | "friend-accept" | "friend-quick" | "recall" | "react" | "pin" | "group" | "read";
   /**
    * 群消息才有：这条属于哪个会话（群 id）、原消息 id 是什么。一条群消息会拆成每个成员
    * 一条（`id` = `<原 id>@<成员>`），各按各的人补投；页面和回执只认 `msgId`。

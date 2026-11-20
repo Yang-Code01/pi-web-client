@@ -74,6 +74,10 @@ export interface Entry {
   seq?: number;
   /** 引用回复。 */
   replyTo?: ReplyRef;
+  /** 「重要 / 紧急」（Teams 的传递选项），普通消息不带。 */
+  priority?: "important" | "urgent";
+  /** 话题回复：话题第一条消息的 id（群里「回复这条话题」）。 */
+  topic?: string;
   /** `kind:"recall"` 时指向被撤回的那条消息的 id。 */
   ref?: string;
   /** `kind:"note"` 的记录包（#507）。 */
@@ -109,6 +113,8 @@ export interface ViewEntry extends Entry {
   pinned?: { by: string; at: number };
   /** 不在这一页里、只因为被固定才带上的早期消息：页面只拿它画顶上的固定条，不进消息流。 */
   outside?: boolean;
+  /** 我发的消息：哪些人已读（nodeId）。 */
+  readBy?: string[];
 }
 
 /** 排队中的那条现在什么情况：重试过几次、上一次说了什么。 */
@@ -138,11 +144,22 @@ export interface ThreadSummary {
   sending: boolean;
   /** 对方正在输入（3 秒内的 typing 心跳，不落盘）。 */
   typing: boolean;
+  /** 未读里有标「紧急」的消息：免打扰也照样提醒。 */
+  urgent: boolean;
+  /** 未读里有人 @ 我（或 @所有人）：免打扰也照样提醒。 */
+  mention: boolean;
   /** 群会话才有：成员、群主、我是不是已经退出。 */
   group?: { members: PeerIdentity[]; owner: string; left: boolean };
 }
 
 const TAIL_BYTES = 512 * 1024;
+
+/** 这段文字有没有 @ 到我（`@所有人` 也算）。正文可能是富文本 HTML，先剥标签。 */
+export function mentioned(text: string, name: string | undefined): boolean {
+  const plain = text.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ");
+  if (plain.includes("@所有人")) return true;
+  return Boolean(name) && plain.includes(`@${name}`);
+}
 
 function safeName(nodeId: string): string {
   return nodeId.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -309,6 +326,8 @@ export class History {
     online: { nodeId: string; nickname: string; hostname: string; port: number; status?: string; lastSeen: number }[];
     contacts: { nodeId: string; nickname: string; hostname: string; port: number }[];
     me: string;
+    /** 我的昵称：未读里有没有人 @ 我。 */
+    meName?: string;
     meta: (nodeId: string) => ThreadMeta;
     typing: (nodeId: string) => boolean;
     pending: (nodeId: string) => boolean;
@@ -348,11 +367,15 @@ export class History {
       // 未读 = 对方发来的**消息**：文本与文件都算（D300 之后文件谁都能发，再不计数就会
       // 出现「文件悄悄落在会话里、列表上一点动静都没有」）。回执与撤回记录不算。
       let unread = 0;
+      let urgent = false;
+      let mention = false;
       for (const entry of tail) {
         if (!isMessage(entry)) continue;
         if (entry.from.nodeId === input.me) continue;
         if (meta.readAt !== undefined && !afterWatermark(entry, meta.readAt, meta.readId ?? "")) continue;
         unread += 1;
+        if (entry.priority === "urgent") urgent = true;
+        if (entry.kind === "text" && mentioned(entry.text ?? "", input.meName)) mention = true;
       }
       const texts = tail.filter((entry) => entry.kind === "text").length;
       const anyOnline = group ? group.members.some((m) => m.nodeId !== input.me && byId.has(m.nodeId)) : false;
@@ -373,6 +396,8 @@ export class History {
         lastMine: last.from.nodeId === input.me,
         sending: input.pending(nodeId),
         typing: input.typing(nodeId),
+        urgent,
+        mention,
         ...(group ? { group: { members: group.members, owner: group.owner, left: group.left === true } } : {}),
       });
     }
@@ -386,7 +411,7 @@ export class History {
  * 同毫秒没法靠时间区分（uuidv7 的随机位不保证顺序），用 id 字典序兜底：它只在本机一致，
  * 而水位本来也只在本机用 —— 不拿它跟对端对表。
  */
-export function afterWatermark(entry: Entry, readAt: number, readId: string): boolean {
+export function afterWatermark(entry: Pick<Entry, "at" | "id">, readAt: number, readId: string): boolean {
   if (entry.at !== readAt) return entry.at > readAt;
   return readId ? entry.id > readId : true;
 }

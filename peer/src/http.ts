@@ -11,7 +11,7 @@ import { CHUNK, mimeOf } from "./files.ts";
 import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
 import { MAX_STICKER_BYTES, addSticker, listStickers, removeSticker, stickerCopy, stickerPath } from "./stickers.ts";
-import type { History } from "./history.ts";
+import { afterWatermark, type History } from "./history.ts";
 import type { Messages } from "./messages.ts";
 import type { Relations } from "./peers.ts";
 import { MAX_MARKET_FRAME, ingest, manifestResponse, parseFrame, touchBlob } from "./market.ts";
@@ -285,6 +285,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             online: discovery.online(),
             contacts: relations.list(),
             me: nodeId,
+            meName: cfg.nickname,
             meta: (id) => threads.get(id),
             typing: (id) => messages.typing(id),
             pending: (id) => messages.pending(id),
@@ -336,7 +337,18 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const at = Number(body?.at);
         const id = String(body?.id ?? "");
         if (!Number.isFinite(at) || !id) return json(res, 400, { error: "缺 at / id" });
-        return json(res, 200, { ok: true, meta: threads.setRead(peerId, { at, id }) });
+        // 水位往前走了才回「已读」：告诉这段里发过消息的人。
+        const before = threads.get(peerId);
+        const moved = before.readAt === undefined || afterWatermark({ at, id }, before.readAt, before.readId ?? "");
+        const meta = threads.setRead(peerId, { at, id });
+        if (moved) {
+          try {
+            messages.sendRead(peerId, { at: before.readAt, id: before.readId }, { at, id });
+          } catch (err) {
+            console.warn(`[peer] 已读回执没发出去：${(err as Error).message}`);
+          }
+        }
+        return json(res, 200, { ok: true, meta });
       }
 
       if (url.pathname === "/threads/patch" && req.method === "POST") {
@@ -436,7 +448,10 @@ export function createPeerServer(ctx: PeerContext): http.Server {
                 }
               : undefined;
           activity.touch();
-          const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo);
+          const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo, {
+            priority: body?.priority,
+            topic: body?.topic,
+          });
           return json(res, 200, result);
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });
