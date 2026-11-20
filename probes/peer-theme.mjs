@@ -159,6 +159,26 @@ for (const theme of ["mac-light", "mac-dark"]) {
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `embedded-${theme}.png`) });
 }
 
+// ---- 4. 发一条消息：只有新那条放入场动画，别的气泡不许跟着弹（D351）
+await setTheme(page, "mac-light");
+await page.goto(`${A}/peer`);
+await openChat(page);
+const before = await page.$$eval(".msg .bub", (n) => n.length);
+await page.evaluate(() => {
+  window.__bounced = new Set();
+  document.addEventListener("animationstart", (ev) => {
+    const m = ev.target.closest?.(".msg");
+    if (m && ev.target.classList.contains("bub")) window.__bounced.add(m.dataset.id);
+  }, true);
+});
+await page.click(".box [contenteditable], .box textarea");
+await page.keyboard.type("抖不抖");
+await page.keyboard.press("Enter");
+await page.waitForFunction((n) => document.querySelectorAll(".msg .bub").length > n, before, { timeout: 10000 });
+await sleep(3500); // 再等一两轮轮询重画
+const bounced = await page.evaluate(() => window.__bounced.size);
+check("发一条消息后只有新气泡放动画", bounced <= 1, `放了动画的气泡 ${bounced} 个（屏上原有 ${before} 个）`);
+
 check("页面没有报错", errors.length === 0, errors.join(" | "));
 await browser.close();
 console.log(bad ? `\n${bad} 项失败` : "\n全过");

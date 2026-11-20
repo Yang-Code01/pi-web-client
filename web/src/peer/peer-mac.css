@@ -75,9 +75,10 @@ html[data-ui="mac"] .bub {
   -webkit-backdrop-filter: var(--mac-blur);
   backdrop-filter: var(--mac-blur);
   padding: 8px 13px;
-  animation: mac-bubble-in 420ms var(--mac-spring) backwards;
   transform-origin: 0 100%;
 }
+/* 入场动画只给新来的消息（main.ts 打 .fresh）：消息流每次都整段重画，挂在 .bub 上会让所有气泡一起弹（D351）。 */
+html[data-ui="mac"] .msg.fresh .bub { animation: mac-bubble-in 420ms var(--mac-spring) backwards; }
 html[data-ui="mac"] .bub:hover { border-color: var(--mac-glass-line); }
 html[data-ui="mac"] .msg.mine .bub {
   border-color: transparent;
