@@ -35,6 +35,8 @@ export interface JiraHost {
   handoff?: JiraHandoff;
   /** D209：附件已经落到本机了，点一行就在会话里把它打开（ppt/pdf/图片都和文件树同一条路）。 */
   openFile?: (path: string) => void;
+  /** Jira 面板关闭时通知宿主，以便把压在上面的浮窗落回普通层带。 */
+  onClose?: () => void;
 }
 
 export interface JiraMe {
@@ -248,6 +250,8 @@ export class JiraPanel {
     this.state = { kind: "loading" };
     this.esc = (ev) => {
       if (ev.key !== "Escape") return;
+      // D308：预览 / 表格 / 幻灯片浮窗压在 Jira 之上时，Esc 先让浮窗自己收起，不关 Jira 面板。
+      if (document.querySelector(".viewer.hi, .sd.hi")) return;
       ev.preventDefault();
       ev.stopPropagation();
       // 交给 agent 的浮层最轻：Esc 先只收它（与目录层同理，一下关两层太粗）。
@@ -279,6 +283,7 @@ export class JiraPanel {
     this.root?.remove();
     this.root = null;
     this.pane = null;
+    this.host.onClose?.();
     this.renderedSection = null;
     this.resultsBox = null;
     this.personBox = null;

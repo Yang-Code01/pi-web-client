@@ -2934,8 +2934,9 @@ export const en: Dict = {
   "文件夹": "Folder",
   "点一行 = 引用到输入框 · 图片行 = 直接附加 · 「打开」= 在预览里打开":
     "Click a row = quote to the composer · image row = attach · \"Open\" = open in preview",
-  "点行 = 引用（图片 = 附加）；「打开」= 先关列表再看预览":
-    "Click a row = quote (images = attach); \"Open\" = close the list and preview",
+  "点行 = 引用（图片 = 附加）；「打开」= 在预览里查看，返回可回到列表":
+    "Click a row = quote (images = attach); \"Open\" = preview and return to this list",
+  "返回上一个面板（Esc）": "Return to previous panel (Esc)",
   "还没进过别的目录": "No other folders yet",
   "附件": "Attachments",
   "附加": "Attach",

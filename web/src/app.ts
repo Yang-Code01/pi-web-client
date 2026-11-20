@@ -5178,11 +5178,11 @@ export class App {
     if (this.sheetKind === "new") this.prefillNext = null;
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
     document.removeEventListener("keydown", this.settingsEsc, true);
-    // D308: 面板没了，从它里面开的预览不再压着谁 —— 回到普通浮窗那条层带（46/47）。
-    this.viewer?.root.classList.remove("hi");
+    // D308: 面板没了，从它里面开的预览 / 表格 / 幻灯片不再压着谁 —— 回到普通浮窗层带（46/47）。
     this.sheet?.remove();
     this.sheet = null;
     this.sheetKind = null;
+    this.syncViewerLayer();
     this.fileSearch = null;
     this.contextPanel = null;
     this.contextInsights = null;
@@ -5806,8 +5806,8 @@ export class App {
   private subSheetPaint: (() => void) | null = null;
   private subEsc = (ev: KeyboardEvent): void => {
     if (ev.key !== "Escape" || ev.defaultPrevented || !this.subSheet) return;
-    // D308: 从子层里开的预览（63）压在子层（61）上面，Esc 先收它 —— 收的得是最上面那层。
-    if (document.querySelector(".viewer.hi")) return;
+    // D308: 从子层里开的预览或表格/幻灯片浮窗压在子层上面，Esc 先收它 —— 收的得是最上面那层。
+    if (document.querySelector(".viewer.hi, .sd.hi")) return;
     ev.stopPropagation();
     this.closeSubSheet();
   };
@@ -5815,12 +5815,12 @@ export class App {
   private closeSubSheet(): void {
     if (!this.subSheet) return;
     document.removeEventListener("keydown", this.subEsc, true);
-    // D308: 子层收掉之后，从它里面开的预览回到普通层带。
-    this.viewer?.root.classList.remove("hi");
     this.subSheet.remove();
     this.subSheet = null;
     this.subSheetKind = null;
     this.subSheetPaint = null;
+    // D308: 子层收掉之后，若底下也没别的父层，浮窗回到普通层带。
+    this.syncViewerLayer();
   }
 
   /** 盖在上下文面板上的子弹窗（不是再开一层 sheet：Esc 先关它，再按一次才关面板）。 */
@@ -8284,7 +8284,7 @@ export class App {
     const submit = (): void => {
       const p = input.value.trim();
       if (!p) return;
-      this.closeSheet();
+      // 保持产物面板在底，从这里打开的预览按「←」或 Esc 可回到产物面板（D308）。
       void this.openPreview(p);
     };
     go.onclick = submit;
@@ -8693,15 +8693,25 @@ export class App {
     if (open?.pane === "edit" && open.dirty && open.info?.abs !== path) {
       if (!(await this.leaveEditor(open))) return false;
     }
+    const overParent = this.viewerOverParent();
+    const enteringParent = overParent && (!open || !open.root.classList.contains("hi"));
     // 打开一个新文件是历史里的一步；⟳ 刷新、返回/前进自己不算（D63）。
+    // 若刚从「浏览」目录页点开文件，先把那个目录记进历史栈，点「←」才能回到原目录。
     if (!replace) {
       this.rememberScroll();
+      if (open?.pane === "browse" && !enteringParent) {
+        this.pushStep({ path: null, browseDir: open.lastDir || this.session?.cwd || "" }, sessionId);
+      }
       this.pushStep({ path }, sessionId);
     }
     const v = this.ensureViewer();
-    // D308：从弹层里打开（sheet 60 / 子层 61 / 设置台 60）时浮窗得压在父层上，否则点了像没反应；
-    // 收掉浮窗父层还在原地 —— 「从哪来，回哪去」。面板关掉时 `closeSheet` 会把这个类摘掉。
-    v.root.classList.toggle("hi", Boolean(this.sheet || this.subSheet));
+    // 从父弹层（Everything / 附件列表 / 产物 / 技能商店 / 设置 / Jira）新打开这扇浮窗时，
+    // 记下它在历史栈里的入口下标：退到这一步（含）再点「←」就收起浮窗，回到打开它的父弹层。
+    if (enteringParent) v.parentFloor = this.histOf(sessionId).at;
+    else if (!overParent) v.parentFloor = -1;
+    // D308：从弹层里打开（sheet / 子层 / 设置台 / Everything / 附件弹层 / Jira）时浮窗压在父层上，
+    // 收掉浮窗或点「←」父层还在原地 —— 「从哪来，回哪去」。面板关掉时 `syncViewerLayer` 会把它摘掉。
+    v.root.classList.toggle("hi", overParent);
     // 换了一份文件：上一个文件的译文状态（含轮询）跟着走。得在改 v.path 之前问，否则永远相等。
     const switched = v.sessionId !== sessionId || v.path !== path;
     // 刚打开 / 换了一份文件：它该在终端上面（否则点了链接却看不见内容）。
@@ -8821,10 +8831,13 @@ export class App {
       onClose: () => {
         if (this.winFront === dialog.root) this.winFront = null;
         if (this.sheetDock === dialog) this.sheetDock = null;
+        this.syncDockEsc();
       },
       onRaise: () => this.raiseWindow(dialog.root),
     });
     this.sheetDock = dialog;
+    dialog.root.classList.toggle("hi", this.viewerOverParent());
+    this.syncDockEsc();
     this.overlay(dialog.root);
     this.raiseWindow(dialog.root);
     dialog.open();
@@ -8860,10 +8873,13 @@ export class App {
       onClose: () => {
         if (this.winFront === dialog.root) this.winFront = null;
         if (this.sheetDock === dialog) this.sheetDock = null;
+        this.syncDockEsc();
       },
       onRaise: () => this.raiseWindow(dialog.root),
     });
     this.sheetDock = dialog;
+    dialog.root.classList.toggle("hi", this.viewerOverParent());
+    this.syncDockEsc();
     this.overlay(dialog.root);
     this.raiseWindow(dialog.root);
     dialog.open();
@@ -8886,10 +8902,13 @@ export class App {
       onClose: () => {
         if (this.winFront === dialog.root) this.winFront = null;
         if (this.slidesDock === dialog) this.slidesDock = null;
+        this.syncDockEsc();
       },
       onRaise: () => this.raiseWindow(dialog.root),
     });
     this.slidesDock = dialog;
+    dialog.root.classList.toggle("hi", this.viewerOverParent());
+    this.syncDockEsc();
     this.overlay(dialog.root);
     this.raiseWindow(dialog.root);
     dialog.open();
@@ -8921,8 +8940,56 @@ export class App {
   }
 
   /**
-   * D308：`.viewer.hi`(63) 上面还压着更高的层时，Esc 不该越过它们去收预览 —— 先收最上面那层。
-   * 大图（70）不用列：它挂在 `window` 捕获阶段并 `stopPropagation()`，轮不到这里。
+   * D308：预览 / 表格 / 幻灯片浮窗是否压在某个父弹层之上（底部 sheet、子层、设置台、
+   * Everything、附件控制台、Jira 等），用于决定是否抬高到 `.hi` 层带、以及「←」是否能退回父层。
+   */
+  private viewerOverParent(): boolean {
+    return Boolean(this.sheet || this.subSheet || document.querySelector(".jc-back"));
+  }
+
+  /**
+   * 同步预览与独立浮窗（表格 / 幻灯片）的 `.hi` 层带：父层关掉后回落到普通浮窗层带（46/47）。
+   */
+  private syncViewerLayer(): void {
+    const hi = this.viewerOverParent();
+    if (this.viewer) {
+      this.viewer.root.classList.toggle("hi", hi);
+      if (!hi) this.viewer.parentFloor = -1;
+    }
+    this.sheetDock?.root.classList.toggle("hi", hi);
+    this.slidesDock?.root.classList.toggle("hi", hi);
+    this.syncDockEsc();
+  }
+
+  /** 压在父弹层之上的表格 / 幻灯片浮窗挂捕获阶段 Esc，避免按 Esc 误关底层父面板。 */
+  private syncDockEsc(): void {
+    const need = Boolean(this.sheetDock?.root.classList.contains("hi") || this.slidesDock?.root.classList.contains("hi"));
+    document.removeEventListener("keydown", this.dockEsc, true);
+    if (need) document.addEventListener("keydown", this.dockEsc, true);
+  }
+
+  private dockEsc = (ev: KeyboardEvent): void => {
+    if (ev.key !== "Escape" || ev.defaultPrevented) return;
+    if (this.higherLayerOpen() || this.viewer?.root.classList.contains("hi")) return;
+    const target =
+      this.winFront === this.slidesDock?.root && this.slidesDock?.root.classList.contains("hi")
+        ? this.slidesDock
+        : this.sheetDock?.root.classList.contains("hi")
+          ? this.sheetDock
+          : this.slidesDock?.root.classList.contains("hi")
+            ? this.slidesDock
+            : null;
+    if (!target) return;
+    // 表格浮窗内正在查找时，留给表格自己先关查找栏。
+    if (target === this.sheetDock && target.root.querySelector(".sd-find:not([hidden])")) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    target.destroy();
+  };
+
+  /**
+   * D308：`.viewer.hi` 上面还压着更高的层时，Esc 不该越过它们去收预览 —— 先收最上面那层。
+   * 大图不用列：它挂在 `window` 捕获阶段并 `stopPropagation()`，轮不到这里。
    */
   private higherLayerOpen(): boolean {
     return Boolean(document.querySelector(".modal.hi, .choose-back"));
@@ -9028,6 +9095,7 @@ export class App {
       pendingScroll: 0,
       tr: null,
       trTimer: null,
+      parentFloor: -1,
     };
     return this.viewer;
   }
@@ -9172,13 +9240,18 @@ export class App {
     return h;
   }
 
-  /** 记一步。重复打开同一份文件不会多出一格（只把位置移过去）。
+  /** 记一步。重复打开同一份文件 / 同一目录不会多出一格（只把位置移过去）。
    *  路径比较要归一化：同一个文件可能以 \\ 或 / 两种写法进来。 */
   private pushStep(step: VStep, sessionId: string): void {
     const h = this.histOf(sessionId);
     const cur = h.steps[h.at];
-    if (cur && samePath(cur.path, step.path)) return;
-    if (cur && !cur.path && !step.path && (cur.url ?? "") === (step.url ?? "")) return;
+    if (cur) {
+      if (step.browseDir !== undefined && cur.browseDir !== undefined && samePath(cur.browseDir, step.browseDir)) return;
+      if (step.browseDir === undefined && cur.browseDir === undefined) {
+        if (cur.path && step.path && samePath(cur.path, step.path)) return;
+        if (!cur.path && !step.path && (cur.url ?? "") === (step.url ?? "")) return;
+      }
+    }
     h.steps = h.steps.slice(0, h.at + 1);
     h.steps.push(step);
     // 往前记着新的一步，说明后退分支已经作废（和浏览器的行为一致）。
@@ -9210,6 +9283,12 @@ export class App {
     if (!v) return;
     const h = this.histOf(v.sessionId);
     const at = h.at + delta;
+    // 浮在父弹层（Everything / 附件弹层 / 产物 / 技能商店 / 设置 / Jira）之上，且已经退到本次进入的起点：
+    // 再点「←」就关掉预览，回到打开它的父弹层（「从哪来，回哪去」），不往更早的历史里翻。
+    if (delta < 0 && this.viewerOverParent() && (at < 0 || (v.parentFloor >= 0 && at < v.parentFloor))) {
+      this.closeViewer();
+      return;
+    }
     if (at < 0 || at >= h.steps.length) return;
     this.rememberScroll();
     h.at = at;
@@ -9219,6 +9298,17 @@ export class App {
   private async openStep(step: VStep): Promise<void> {
     const v = this.viewer;
     if (!v) return;
+    if (step.browseDir !== undefined) {
+      if (!(await this.leaveEditor(v))) return;
+      this.stopTrPoll(v);
+      const want = step.browseDir;
+      const changed = !samePath(v.lastDir, want);
+      v.lastDir = want;
+      v.pane = "browse";
+      if (changed) v.body.querySelector(":scope > .viewer-browse")?.remove();
+      this.paintViewer();
+      return;
+    }
     if (step.path) {
       await this.openPreview(step.path, v.sessionId, true);
       if (step.y) this.restoreScroll(step.y);
@@ -9314,11 +9404,13 @@ export class App {
     const left = el("div", "viewer-titles");
     left.append(title, sub);
     // 返回 / 前进：历史是「这个会话看过哪些文件」，关预览不丢（D63）。
+    // 压在父弹层之上且已退到本次打开的入口步时，「←」仍可点 —— 点一下收起预览回到父弹层。
     const h = this.histOf(v.sessionId);
     const nav = el("div", "viewer-nav");
     const back = el("button", "viewer-btn", "←") as HTMLButtonElement;
-    back.title = tr("后退（Alt+←）");
-    back.disabled = h.at <= 0;
+    const atParentEntry = this.viewerOverParent() && (h.at <= 0 || (v.parentFloor >= 0 && h.at <= v.parentFloor));
+    back.title = atParentEntry ? tr("返回上一个面板（Esc）") : tr("后退（Alt+←）");
+    back.disabled = h.at <= 0 && !atParentEntry;
     if (!back.disabled) back.onclick = () => this.goStep(-1);
     const fwd = el("button", "viewer-btn", "→") as HTMLButtonElement;
     fwd.title = tr("前进（Alt+→）");
@@ -10024,6 +10116,7 @@ export class App {
         handoff: { prefill: (text, name) => this.prefill(text, name), newSessionWith: (text, name) => this.newSessionWith(text, name) },
         // D209：附件下载到本机后，点一行就在这次的预览里打开（没有会话时安静地什么都不做）。
         openFile: (path) => void this.openPreview(path),
+        onClose: () => this.syncViewerLayer(),
       });
     this.jira.open();
   }
@@ -10132,6 +10225,8 @@ export class App {
 
   private openFiles(start = ""): void {
     if (!this.currentId) return;
+    const overParent = this.viewerOverParent();
+    const enteringParent = overParent && (!this.viewer || !this.viewer.root.classList.contains("hi"));
     const v = this.ensureViewer();
     v.sessionId = this.currentId;
     if (v.pane === "edit" && v.dirty) {
@@ -10141,8 +10236,19 @@ export class App {
       return;
     }
     // D321：带 `start` 时从那个目录开始浏览（文件搜索的「打开目录」直接落到这一层）。
-    if (start) v.lastDir = start;
-    else if (!v.lastDir) v.lastDir = localStorage.getItem("pi.fsDir") ?? this.session?.cwd ?? "";
+    if (start) {
+      if (v.lastDir !== start) v.body.querySelector(":scope > .viewer-browse")?.remove();
+      v.lastDir = start;
+    } else if (!v.lastDir) {
+      v.lastDir = localStorage.getItem("pi.fsDir") ?? this.session?.cwd ?? "";
+    }
+    if (enteringParent) {
+      this.pushStep({ path: null, browseDir: v.lastDir || this.session?.cwd || "" }, this.currentId);
+      v.parentFloor = this.histOf(this.currentId).at;
+    } else if (!overParent) {
+      v.parentFloor = -1;
+    }
+    v.root.classList.toggle("hi", overParent);
     v.pane = "browse";
     this.paintViewer();
   }
@@ -12260,8 +12366,8 @@ export class App {
   /** #283：Escape 关设置面板。压着别的浮层时不越级关自己 —— 先关的该是最上面那层。 */
   private settingsEsc = (ev: KeyboardEvent): void => {
     if (ev.key !== "Escape" || ev.defaultPrevented || (this.sheetKind !== "settings" && this.sheetKind !== "display")) return;
-    // D308: 从面板里打开的预览（63）夹在中间时，Esc 先收它（`viewerEsc` 负责），面板还是父层。
-    if (document.querySelector(".viewer.hi")) return;
+    // D308: 从面板里打开的预览或表格/幻灯片浮窗夹在中间时，Esc 先收它，面板还是父层。
+    if (document.querySelector(".viewer.hi, .sd.hi")) return;
     // 更高的层（口令框 64 / 选择框 66）压着时也不越级。
     if (this.higherLayerOpen()) return;
     if (document.querySelectorAll(".st-back, .sheet-back, .sheet-sub-back, .image-view").length > 1) return;
@@ -16330,9 +16436,8 @@ export class App {
    */
   private openFileSearch(): void {
     this.closeSheet();
-    /** 目录行：优先在本机文件管理器里进到那一层；没开会话时退回资源管理器。 */
+    /** 目录行：优先在文件管理器里进到那一层；保持搜索面板在底以便点「←」或 Esc 返回；没开会话时退回资源管理器。 */
     const openDir = (abs: string): void => {
-      this.closeSheet();
       if (this.currentId) {
         this.openFiles(abs);
         return;
@@ -20878,11 +20983,15 @@ interface Viewer {
   tr: TrView | null;
   /** 轮询翻译进度的定时器。 */
   trTimer: number | null;
+  /** 从父弹层（Everything / 附件 / 产物 / 设置 / Jira 等）新打开浮窗时，历史栈里的入口下标；-1 表示非父层打开。 */
+  parentFloor: number;
 }
 
-/** 预览历史里的一步（D63）。`path` 为空表示「外链 / 越界」这种应用里打不开的地方。 */
+/** 预览历史里的一步（D63）。`browseDir` 表示浏览态的某一个目录；`path` 为空且非浏览态表示「外链 / 越界」。 */
 interface VStep {
   path: string | null;
+  /** 浏览态（文件管理器目录列表）：返回时切回浏览页并落回这个目录。 */
+  browseDir?: string;
   /** 外链占位项：记下当时的 url，前进回来时给个出口。 */
   url?: string;
   label?: string;

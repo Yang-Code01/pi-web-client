@@ -22,8 +22,10 @@ import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SRC = path.join(ROOT, "src");
-/** 层带要从这两张表里读：主样式 + 设置台外壳（`.st-back` 在那儿）。 */
-const FILES = ["styles.css", "settings-console.css"].map((f) => path.join(SRC, f));
+/** 层带要从这几张表里读：主样式 + 设置台 + 系统控制台（Everything / 附件）+ Jira + 表格/幻灯片浮窗。 */
+const FILES = ["styles.css", "settings-console.css", "sysmanage.css", "jira-console.css", "sheet/sheet.css"].map((f) =>
+  path.join(SRC, f),
+);
 
 let bad = 0;
 const fail = (msg) => {
@@ -87,17 +89,25 @@ const same = (a, b) => {
 
 // 1. 普通浮窗仍在面板之下（D111）
 below(".viewer", ".sheet-back");
-// 2. 从面板里打开的预览高于它的父层（D308）
+below(".sd", ".sheet-back");
+// 2. 从面板里打开的预览与表格/幻灯片浮窗高于它的父层（D308）
 above(".viewer.hi", ".sheet-back");
 above(".viewer.hi", ".sheet-sub-back");
 above(".viewer.hi", ".st-back");
+above(".viewer.hi", ".sys-back");
+above(".viewer.hi", ".jc-back");
+above(".sd.hi", ".sheet-back");
+above(".sd.hi", ".sys-back");
+above(".sd.hi", ".jc-back");
 // 3. 模态还要压得住它（口令框 / 更新 pi）
 above(".modal.hi", ".viewer.hi");
+above(".modal.hi", ".sd.hi");
 // 4. 已有两层别被挤掉
 above(".choose-back", ".modal.hi");
 above(".image-view", ".choose-back");
 // 5. `.front` 不会把 `.hi` 按回普通层带
 same(".viewer.hi.front", ".viewer.hi");
+same(".sd.hi.front", ".sd.hi");
 
 if (bad) {
   console.log(`\nlayers: ${bad} 处不合格 —— 层带见 docs/DECISIONS.md D111 / D308`);
