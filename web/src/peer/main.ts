@@ -3279,11 +3279,14 @@ picker.addEventListener("click", (ev) => {
   if (ev.target === picker) closePicker();
 });
 document.addEventListener("keydown", (ev) => {
-  if (ev.key !== "Escape") return;
+  // 已经有人吃掉这一下（搜索框、表情面板…）就不再往下：否则会误关外面的弹层。
+  if (ev.key !== "Escape" || ev.defaultPrevented) return;
   // 先关最上面那层：预览弹窗 / 菜单（`#layer`）优先于选择器 —— 否则在预览里按 Esc
   // 会把下面整个选择器关掉，用户还得重新找一遍文件。
   if (layerEl.childElementCount) return closeLayer();
-  if (!picker.hidden) closePicker();
+  if (!picker.hidden) return closePicker();
+  // 页内已经没有可关的东西：在外面弹层的 iframe 里时，把 Esc 交给父页去关那一层（app.ts openPeerSheet）。
+  if (window.parent !== window) window.parent.postMessage({ type: "peer-esc" }, window.location.origin);
 });
 
 // ---------------------------------------------------------------- 启动 / 轮询

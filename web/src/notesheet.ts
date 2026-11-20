@@ -19,6 +19,7 @@ import type { RuleBook } from "./rules.ts";
 import type { Note, NoteKind, NoteStatus, NotesLayout } from "./types.ts";
 import "./notes.css";
 import { tr } from "./i18n/index.ts";
+import { pushEscLayer } from "./modal.ts";
 
 export const NOTE_KINDS: { id: NoteKind; label: string; glyph: string }[] = [
   { id: "bug", label: "bug", glyph: "🐞" },
@@ -648,30 +649,24 @@ export class NotesSheet {
     this.failPanel.setRules(book);
   }
 
+  /** Esc 到了笔记面板这一层：交给 agent 的菜单先关；全局检索有字先清空；否则关面板。一次 Esc 只关一样东西。 */
+  private onEscape(): void {
+    const menu = this.root.querySelector(".note-handoff") ?? document.querySelector(".note-handoff");
+    if (menu) {
+      menu.remove();
+      return;
+    }
+    if (this.searching()) {
+      this.clearSearch(true);
+      return;
+    }
+    this.close();
+  }
+
   mount(parent: HTMLElement): void {
     parent.append(this.root);
-    this.esc = (ev: KeyboardEvent): void => {
-      if (ev.key !== "Escape") return;
-      // 交给 agent 的菜单先关，再往上一层：一次 Escape 只关一样东西。
-      const menu = this.root.querySelector(".note-handoff") ?? document.querySelector(".note-handoff");
-      if (menu) {
-        menu.remove();
-        ev.preventDefault();
-        ev.stopPropagation();
-        return;
-      }
-      // 全局检索有字：第一下 Esc 只清空搜索，再一下才关面板。
-      if (this.searching()) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        this.clearSearch(true);
-        return;
-      }
-      ev.preventDefault();
-      ev.stopPropagation();
-      this.close();
-    };
-    document.addEventListener("keydown", this.esc, true);
+    // 统一弹层栈：压在上面的小框（提示 / 确认）先接 Esc；轮到面板时才走这里的层内逻辑。
+    this.escPop = pushEscLayer({ el: this.root, onEsc: () => this.onEscape() });
     // Ctrl/⌘ + \ ：收起 / 展开列表（和编辑器里的「专注写」是一套手势）；Ctrl/⌘ + S：立刻存。
     this.shortcut = (ev: KeyboardEvent): void => {
       if (!(ev.ctrlKey || ev.metaKey)) return;
@@ -716,7 +711,8 @@ export class NotesSheet {
     this.flush();
     window.clearTimeout(this.saveTimer);
     this.saveTimer = 0;
-    if (this.esc) document.removeEventListener("keydown", this.esc, true);
+    this.escPop?.();
+    this.escPop = null;
     if (this.shortcut) document.removeEventListener("keydown", this.shortcut, true);
     document.querySelector(".note-handoff")?.remove();
     this.editor?.destroy();
@@ -724,7 +720,7 @@ export class NotesSheet {
     this.onClose?.();
   }
 
-  private esc: ((ev: KeyboardEvent) => void) | null = null;
+  private escPop: (() => void) | null = null;
   private shortcut: ((ev: KeyboardEvent) => void) | null = null;
 
   onClose: (() => void) | null = null;
@@ -1516,18 +1512,14 @@ export class NotesSheet {
       panel.append(head, search, list);
       wrap.append(panel);
       const done = (person: PeerPerson | null): void => {
-        document.removeEventListener("keydown", esc);
         wrap.remove();
         resolve(person);
       };
-      const esc = (ev: KeyboardEvent): void => {
-        if (ev.key === "Escape") done(null);
-      };
+      pushEscLayer({ el: wrap, onEsc: () => done(null) });
       cancel.onclick = () => done(null);
       wrap.onclick = (ev) => {
         if (ev.target === wrap) done(null);
       };
-      document.addEventListener("keydown", esc);
       document.body.append(wrap);
       search.focus();
       list.append(el("div", "peer-pick-empty", tr("正在问内网通…")));
@@ -1611,19 +1603,15 @@ export class NotesSheet {
       panel.append(head, body, foot);
       wrap.append(panel);
       const done = (yes: boolean): void => {
-        document.removeEventListener("keydown", esc);
         wrap.remove();
         resolve(yes);
       };
-      const esc = (ev: KeyboardEvent): void => {
-        if (ev.key === "Escape") done(false);
-      };
+      pushEscLayer({ el: wrap, onEsc: () => done(false) });
       back.onclick = () => done(false);
       ok.onclick = () => done(true);
       wrap.onclick = (ev) => {
         if (ev.target === wrap) done(false);
       };
-      document.addEventListener("keydown", esc);
       document.body.append(wrap);
       ok.focus();
     });

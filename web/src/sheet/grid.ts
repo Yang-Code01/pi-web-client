@@ -19,6 +19,7 @@ import { tr, errText } from "../i18n/index.ts";
 import { chartNode } from "./chart.ts";
 import { formatLocal } from "./fmt.ts";
 import { clampNum } from "../floatwin.ts";
+import { pushEscLayer } from "../modal.ts";
 import type {
   SheetCell,
   SheetEdge,
@@ -836,6 +837,7 @@ export class SheetGrid {
       menu.append(item);
     }
     document.body.append(menu);
+    pushEscLayer({ el: menu, onEsc: () => menu.remove() });
     const off = (ev: Event): void => {
       if (menu.contains(ev.target as Node)) return;
       menu.remove();

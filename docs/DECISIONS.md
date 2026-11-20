@@ -6662,3 +6662,21 @@ Esc 之后 dialog: 0
 - `web/tests/artifact-sources-unit.mjs`、`chrome-unit.mjs`、`commands-unit.mjs`、`settings-console-unit.mjs` 通过。
 
 **顺带。** `probes/artifacts-delivered.mjs` 在 Windows 上一跑就炸：会话目录名 `--C:-Users-…--` 里带冒号，`mkdirSync` 报 ENOENT。把编码里的 `:` 也替换成 `-`。
+## D346 所有弹层统一 Esc 关闭：一个 Esc 栈（`web/src/modal.ts`）
+
+**症状。** 很多 dialog 只有 ✕ 和点遮罩，按 Esc 没反应；少数有 Esc 的（设置、子面板、查看器）各写一份 `document` 监听，焦点一离开就失效，层级判断（`higherLayerOpen`）散在几处。
+
+**决定。**
+- `pushEscLayer({ el?, focusScoped?, onEsc })` 登记一层、返回摘除函数；全局只挂一个 `document` keydown，**冒泡阶段**。从栈顶往下找第一层接 Esc 的，`preventDefault()` 后调它的 `onEsc`，一次 Esc 只关一层。挂着的 `el` 已不在页面上的层顺手摘掉。
+- 焦点处的控件要用 Esc 做事（清搜索、先收下拉、取消改名）就 `preventDefault()` / `stopPropagation()`，弹层不再动。没人吃的才交给栈顶。
+- `setSheet(back)` 统一登记面板（23 处原 `this.sheet = …` 全部改走它）；`openSubSheet`、小框（口令、安装、升级确认、选择框）、菜单（设置里的下拉、权限、终端菜单、表格下拉候选）、图片查看、随手问、笔记的提示框都登记。
+- 非模态浮窗（预览 `.viewer`、表格 / 幻灯片停靠 `.sd`）用 `focusScoped`：焦点在窗里才接 Esc，焦点在聊天里放过去（聊天里的 Esc 不被抢，`D308` 的层带不变）。`.hi` 状态变了由 `syncFloatLayers()` 重登记。
+- 内网通 iframe：页内没东西可关的 Esc 发 `peer-esc` 给父页，父页调 `escapeTopLayer()`，关的是外面那层（面板）。
+- `trapEscape` 保留为 `pushEscLayer({ onEsc })` 的简写，原来是捕获阶段，现在改冒泡（邮箱两处用它）。
+
+**为什么不用每个弹层自己挂监听。** 焦点丢了就失效，这是症状本身；统一栈之后焦点在哪都一样，新弹层只调一次 `pushEscLayer`。
+
+**验证。** `npm --prefix web run typecheck`（含 layers、viewport 守卫）；`node probes/esc-dialogs.mjs`（上下文 / 模型 / 开新会话 / 技能面板 / 技能商店 / 内网通，各测「焦点在内」与「焦点在 body」两种，无弹层时 Esc 不动输入框）；`web/tests/notes-sheet-browser.mjs`、`web/tests/layers-unit.mjs`、`web/tests/ask-tab-unit.mjs` 通过。
+
+**未覆盖（待补）。** 邮箱的 Esc（`trapEscape` 改冒泡）、预览 / 表格 / 幻灯片浮窗的焦点分支、选择框 `choose`、口令框 `askStepUp`、升级确认、终端菜单 `openShellMenu`、图片查看，现在只有代码审查，没有 probe。`probes/skill-palette.mjs` 在 origin/main 的基线上就卡在「点对话区关闭」那一步（`.skill-panel` 截住了点击），与本改动无关。
+
