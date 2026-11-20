@@ -6577,3 +6577,14 @@ Esc 之后 dialog: 0
 **顺手修。** 打完字 800 ms 内回车，草稿定时器会把刚发出去的内容又存回草稿；`send()` 成功后先清定时器。
 
 **验证。** 两份测试实例（`pi-web-client-test-dev`）上跑 `node probes/peer-chat-extras.mjs <A bridge> <B bridge> <B peer>`：32 项（最大化 / 表情插入 / 我的表情发送 / 回应双向可见与取消 / 搜索 / 看图翻页缩放 / 多选转发对方收到 / 图片加到表情）。
+
+## D339 执行面板 Copilot 积分块在长任务进行中实时出现并更新（用户报障 2026-11-20）
+
+**症状。** 新建会话或第一轮长任务跑了 6 分钟、52 个工具调用、`主会话 3.6M Token 数 · $2.0289` 已实时刷出来，但执行面板一直没有「Copilot 积分」板块（且本轮费用显示美元而非积分）。
+
+**根因。** `refreshCopilot()` 只在 `boot`、`session_start`/`session_info_changed`、`agent_end`、`agent_settled` 和 `subscribe` 时触发，而 `onPiEvent` 的 `message_end` 只调了 `refreshStats()`、没调 `refreshCopilot()`。新会话创建时尚无 assistant 消息（`hasCopilot: false`），只要第一轮没走到 `agent_end` 且页面没重新订阅，`copilotView` 就一直是 `hasCopilot: false`，整轮期间面板都不会亮起积分块；后续轮次里积分数字也会卡在上一轮末尾。另外 `claim` / `reload` 下发 `session` 帧时也未补一次 `refreshCopilot()`。
+
+**决定。**
+- `bridge/src/sessions.ts`：`onPiEvent` 的 `message_end` 在 `void this.refreshStats()` 旁同步补 `void this.refreshCopilot()`。`CopilotTally.read()` 按字节 offset 增量读 JSONL，单次只需一次 `stat` + 读新增行；账号额度本身有 30s 节流和 inflight 互斥，不会多打 GitHub API。
+- `bridge/src/index.ts`：`claim` / `reload` 补发一次 `void session.refreshCopilot()`，与 `subscribe` 对齐。
+

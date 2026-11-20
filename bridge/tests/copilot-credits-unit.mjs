@@ -271,3 +271,72 @@ test("账号额度：拉不到（没凭据 / 非 200 / 抛错）一律 null，�
     else process.env.PI_CODING_AGENT_DIR = savedAgent;
   }
 });
+
+test("D339：长任务进行中，第一条 assistant message_end 后即推送 copilot 帧并更新 snapshot", async () => {
+  const dir = tmp();
+  const savedState = process.env.PI_WEB_STATE;
+  const savedToken = process.env.COPILOT_GITHUB_TOKEN;
+  const savedAgent = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_WEB_STATE = dir;
+  delete process.env.COPILOT_GITHUB_TOKEN;
+  process.env.PI_CODING_AGENT_DIR = dir; // 空目录：不发真实 GitHub 请求
+  try {
+    const { Session } = await import("../src/sessions.ts");
+    const id = "cop-mid-turn";
+    const file = path.join(dir, `${id}.jsonl`);
+    // 新会话开局：只有头和 user 消息，还没有 assistant 消息
+    fs.writeFileSync(
+      file,
+      `${JSON.stringify({ type: "session", id })}\n${JSON.stringify({ type: "message", message: { role: "user", content: "hi" } })}\n`,
+    );
+    const s = new Session(process.execPath, {
+      file,
+      id,
+      cwd: process.cwd(),
+      startedAt: new Date().toISOString(),
+      name: null,
+      nameAt: null,
+      firstUserText: "hi",
+      mtime: Date.now(),
+    });
+    const frames = [];
+    s.on("ws", (f) => frames.push(f));
+
+    await s.refreshCopilot();
+    assert.equal(s.snapshot().copilot?.hasCopilot, false, "尚无 assistant 消息时 hasCopilot 为 false");
+
+    // 模拟第一轮长任务中途：第一条 assistant（调用工具）已写入 JSONL，但未到 agent_end
+    fs.appendFileSync(file, assistant("github-copilot", 0.12));
+    s.onPiEvent({
+      type: "message_end",
+      message: { role: "assistant", model: "claude-opus-4.5", stopReason: "toolUse", content: [{ type: "text", text: "step 1" }] },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const copilotFrames = frames.filter((f) => f.type === "copilot");
+    const latest = copilotFrames.at(-1);
+    assert.equal(latest?.hasCopilot, true, "第一条 message_end 后立刻推 hasCopilot=true");
+    assert.ok(Math.abs((latest?.credits ?? 0) - 12) < 1e-6, "第一笔 0.12 美元 = 12 积分");
+    assert.equal(s.snapshot().copilot?.hasCopilot, true, "snapshot() 同步带出最新积分视图");
+
+    // 同一轮里第二条 assistant 落盘，积分应随之递增
+    fs.appendFileSync(file, assistant("github-copilot", 0.08));
+    s.onPiEvent({
+      type: "message_end",
+      message: { role: "assistant", model: "claude-opus-4.5", stopReason: "toolUse", content: [{ type: "text", text: "step 2" }] },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const afterSecond = frames.filter((f) => f.type === "copilot").at(-1);
+    assert.ok(Math.abs((afterSecond?.credits ?? 0) - 20) < 1e-6, "第二笔追加后累计 20 积分");
+    assert.equal(afterSecond?.requests, 2);
+  } finally {
+    if (savedState === undefined) delete process.env.PI_WEB_STATE;
+    else process.env.PI_WEB_STATE = savedState;
+    if (savedToken === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
+    else process.env.COPILOT_GITHUB_TOKEN = savedToken;
+    if (savedAgent === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = savedAgent;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
