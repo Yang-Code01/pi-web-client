@@ -379,11 +379,11 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
           opts.onQuote(row.path);
         }),
         // 目录没有「预览」这回事：用户 2026-11-18 要求目录直接就打开目录，所以文案也跟着变。
+        // 不关搜索面板：浮窗压在面板之上，点「←」或 Esc 回到 Everything 搜索结果（「从哪来，回哪去」）。
         act(
           row.isDir ? tr("打开目录") : tr("打开"),
           row.isDir ? tr("进到 {p1} 里面看", { p1: row.name }) : tr("在预览里打开 {p1}", { p1: row.name }),
           () => {
-            opts.onClose();
             opts.onOpen(row.path, row.isDir);
           },
         ),
@@ -482,7 +482,6 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
       ev.preventDefault();
       if (ev.ctrlKey || ev.metaKey) {
         opts.onOpen(row.path, row.isDir);
-        opts.onClose();
         return;
       }
       opts.onQuote(row.path);

@@ -21,6 +21,8 @@
 .sd.pinned { animation: none; }
 /* D111：点 / 聚焦哪扇窗，哪扇拿 47。 */
 .sd.front { z-index: 47; }
+/* D308：从 Everything / 附件列表 / 产物 / Jira 等弹层里打开的表格或幻灯片浮窗压在父层之上。 */
+.sd.hi, .sd.hi.front { z-index: 83; }
 .sd-grip {
   position: absolute; left: 0; right: 18px; top: 0; height: 7px;
   cursor: ns-resize; touch-action: none; z-index: 3;

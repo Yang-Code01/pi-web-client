@@ -98,7 +98,7 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
   main.append(nav, pane);
 
   const foot = el("footer", "sys-foot");
-  const footHint = el("span", "sys-foot__hint", tr("点行 = 引用（图片 = 附加）；「打开」= 先关列表再看预览"));
+  const footHint = el("span", "sys-foot__hint", tr("点行 = 引用（图片 = 附加）；「打开」= 在预览里查看，返回可回到列表"));
   const footPath = el("span", "sys-foot__meta", tr("此电脑"));
   foot.append(footHint, footPath);
 
@@ -300,7 +300,7 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
     open.type = "button";
     open.title = tr("在预览里打开 {p1}", { p1: name });
     open.onclick = () => {
-      opts.onClose?.();
+      // 不关附件列表：预览压在列表之上，点「←」或 Esc 回到原目录（「从哪来，回哪去」）。
       opts.onOpen?.(abs, name);
     };
     return [quote, open];
