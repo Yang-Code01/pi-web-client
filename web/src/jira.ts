@@ -13,9 +13,9 @@ import "./jira-console.css";
 import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, isUnread, issueMeta, keyMask, mergeSearchPage, recentSeenKey, recentSnippet, relativeTime, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
 import { sessionNameFromIssueKey } from "./session-name.ts";
-import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
+import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraRecentItem, JiraSearchMeta, JiraUserOption, RecentKind, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 
 export interface JiraHandoff {
@@ -82,7 +82,22 @@ type PanelState =
 type ReadyState = Extract<PanelState, { kind: "ready" }>;
 
 /** #407：左导航三页；未连接时只有「连接」这一页，不在这个联合里。 */
-type JiraSection = "issues" | "search" | "account";
+type JiraSection = "issues" | "recent" | "search" | "account";
+
+/** 「最近消息」一个子列表：重取时 `items` 留着不清（列表刷新不许先清空，D316）。 */
+interface RecentList {
+  phase: "idle" | "loading" | "ready" | "error";
+  items: JiraRecentItem[];
+  skipped: number;
+  text: string;
+  code: string;
+}
+
+const RECENT_PAGE = 10;
+
+function emptyRecent(): RecentList {
+  return { phase: "idle", items: [], skipped: 0, text: "", code: "" };
+}
 
 type DetailState =
   | { kind: "loading" }
@@ -140,6 +155,12 @@ export class JiraPanel {
 
   // #407：本机管理同款三页导航（我的未完成 / 搜索 / 账号与附件）；切页只重画 pane。
   private section: JiraSection = "issues";
+  private recentSeg: RecentKind = "mentions";
+  private recent: Record<RecentKind, RecentList> = { mentions: emptyRecent(), replied: emptyRecent() };
+  private recentShown: Record<RecentKind, number> = { mentions: RECENT_PAGE, replied: RECENT_PAGE };
+  private recentSeq = 0;
+  /** 进本页那一刻的「上次看到」：本次的蓝点按它画；存储里的值已经更新成现在。 */
+  private recentSeenBase: number | null = null;
   private search: SearchState = emptySearch();
   /** 每个面板实例最多自动跑一次（首次切到搜索）。 */
   private searchAutoRan = false;
@@ -211,6 +232,11 @@ export class JiraPanel {
     this.details.clear();
     // #407：每次开面板回到「我的未完成」，重新读上次的条件；搜索结果不跨面板复用。
     this.section = "issues";
+    this.recentSeg = "mentions";
+    this.recent = { mentions: emptyRecent(), replied: emptyRecent() };
+    this.recentShown = { mentions: RECENT_PAGE, replied: RECENT_PAGE };
+    this.recentSeq += 1;
+    this.recentSeenBase = null;
     this.dismissed.clear();
     this.scrollBySection.clear();
     this.renderedSection = null;
@@ -624,6 +650,9 @@ export class JiraPanel {
 
   /** 并行拉两段列表；没到货时保持占位。「刷新」失败不动旧列表，只多一行错误。 */
   private async loadLists(seq: number, refresh: boolean): Promise<void> {
+    // 「@我的」跟着列表一起拉：左栏角标要它；「我回复过的」等切到那一段再拉。
+    void this.loadRecent("mentions", refresh);
+    if (refresh && this.recent.replied.phase !== "idle") void this.loadRecent("replied", true);
     const [issues, projects] = await Promise.allSettled([api.jiraIssues(refresh), api.jiraProjects(refresh)]);
     if (seq !== this.seq || !this.root || this.state.kind !== "ready") return;
     const prev = this.state;
@@ -665,6 +694,7 @@ export class JiraPanel {
     const issues = this.state.issues;
     return [
       { id: "issues", label: tr("我的未完成"), count: issues.kind === "ready" ? String(issues.items.length) : "" },
+      { id: "recent", label: tr("最近消息"), count: this.recentUnread() ? `@${this.recentUnread()}` : "" },
       { id: "search", label: tr("搜索"), count: "" },
       { id: "account", label: tr("账号与附件"), count: "" },
     ];
@@ -749,6 +779,7 @@ export class JiraPanel {
     if (state.kind === "form") return this.formEl(state);
     if (state.kind === "error") return this.errorEl(state);
     if (this.section === "search") return this.searchEl(state);
+    if (this.section === "recent") return this.recentEl(state);
     if (this.section === "account") return this.accountEl(state);
     return this.issuesEl(state);
   }
@@ -767,9 +798,10 @@ export class JiraPanel {
   /** 切页：重画一次（数据都在字段里）；首次进搜索页顺带拉选项、跑一次。 */
   private select(id: string): void {
     if (this.state.kind !== "ready") return;
-    if (id !== "issues" && id !== "search" && id !== "account") return;
+    if (id !== "issues" && id !== "recent" && id !== "search" && id !== "account") return;
     if (this.section === id) return;
     this.section = id;
+    if (id === "recent") this.onEnterRecent();
     this.render();
     if (id === "search") this.onEnterSearch();
   }
@@ -1459,6 +1491,170 @@ export class JiraPanel {
       foot.append(more, el("span", "jira-result-note", searchCountNote(this.searchItems.length, false)));
     }
     box.append(foot);
+  }
+
+  // -------------------------------------------------------------- 最近消息（@我的 / 我回复过的）
+
+  /** 拉一段；已有的条目在新数据到货前不动（D316）。刷新失败也不清旧列表。 */
+  private async loadRecent(kind: RecentKind, refresh: boolean): Promise<void> {
+    const seq = this.recentSeq;
+    const list = this.recent[kind];
+    this.recent[kind] = { ...list, phase: "loading" };
+    if (this.section === "recent") this.render();
+    try {
+      const out = await api.jiraRecent(kind, refresh);
+      if (seq !== this.recentSeq || !this.root) return;
+      this.recent[kind] = { phase: "ready", items: out.items, skipped: out.skipped, text: "", code: "" };
+      if (kind === "mentions" && this.section === "recent") this.markRecentSeen();
+    } catch (err) {
+      if (seq !== this.recentSeq || !this.root) return;
+      this.recent[kind] = { ...this.recent[kind], phase: "error", text: errText(err), code: codeOf(err) };
+    }
+    this.render();
+  }
+
+  private recentStoreKey(): string | null {
+    if (this.state.kind !== "ready") return null;
+    return recentSeenKey(this.state.siteUrl, this.state.me.accountId || this.state.me.email);
+  }
+
+  private readRecentSeen(): number | null {
+    const key = this.recentStoreKey();
+    if (!key) return null;
+    try {
+      const raw = Number(localStorage.getItem(key));
+      return Number.isFinite(raw) && raw > 0 ? raw : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 把「上次看到」记成现在；头一回打开（没有记录）也只记下，不点蓝点。 */
+  private markRecentSeen(): void {
+    const key = this.recentStoreKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, String(Date.now()));
+    } catch {
+      // 存不了就每次都当没看过：只是没有蓝点，不影响列表。
+    }
+  }
+
+  /** 左栏角标：上次查看之后别人 @ 我的条数；正在看这一页时为 0。 */
+  private recentUnread(): number {
+    if (this.section === "recent") return 0;
+    const seen = this.readRecentSeen();
+    return this.recent.mentions.items.filter((x) => isUnread(x, seen)).length;
+  }
+
+  private onEnterRecent(): void {
+    this.recentSeenBase = this.readRecentSeen();
+    if (this.recent.mentions.phase === "ready") this.markRecentSeen();
+    if (this.recentSeg === "replied" && this.recent.replied.phase === "idle") void this.loadRecent("replied", false);
+  }
+
+  private switchRecent(kind: RecentKind): void {
+    if (this.recentSeg === kind) return;
+    this.recentSeg = kind;
+    this.render();
+    if (this.recent[kind].phase === "idle") void this.loadRecent(kind, false);
+  }
+
+  private recentEl(state: ReadyState): HTMLElement {
+    const box = el("div", "jira-recent");
+    const bar = el("div", "jira-recent-bar");
+    const seg = el("div", "jira-recent-seg");
+    seg.setAttribute("role", "tablist");
+    const tabs: [RecentKind, string][] = [
+      ["mentions", tr("@我的")],
+      ["replied", tr("我回复过的")],
+    ];
+    for (const [kind, label] of tabs) {
+      const on = this.recentSeg === kind;
+      const b = el("button", on ? "on" : "") as HTMLButtonElement;
+      b.type = "button";
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", on ? "true" : "false");
+      b.dataset.kind = kind;
+      b.append(el("span", "", label));
+      const list = this.recent[kind];
+      if (list.phase === "ready" || list.items.length) b.append(el("b", "", String(list.items.length)));
+      b.onclick = () => this.switchRecent(kind);
+      seg.append(b);
+    }
+    const list = this.recent[this.recentSeg];
+    const refresh = el("button", "btn ghost jira-refresh", "↻") as HTMLButtonElement;
+    refresh.type = "button";
+    refresh.title = tr("刷新");
+    refresh.setAttribute("aria-label", tr("刷新"));
+    refresh.disabled = list.phase === "loading";
+    refresh.onclick = () => void this.loadRecent(this.recentSeg, true);
+    bar.append(seg, refresh);
+    box.append(bar);
+    box.append(
+      el(
+        "div",
+        "jira-recent-hint",
+        this.recentSeg === "mentions"
+          ? tr("别人在评论里 @ 了你的工单，按那条评论的时间排序。")
+          : tr("最近 90 天你发过评论的工单，按你最后一条评论的时间排序。"),
+      ),
+    );
+
+    if (list.phase === "error" && isAuthCode(list.code)) {
+      box.append(el("div", "jira-note bad", tr("凭据失效，改一下 token 再试")));
+    } else if (list.phase === "error") {
+      box.append(el("div", "jira-list-error", list.items.length ? tr("刷新失败：{p1}", { p1: list.text }) : list.text));
+    }
+    if (!list.items.length) {
+      if (list.phase === "loading" || list.phase === "idle") box.append(el("div", "jira-list-placeholder", tr("正在读取…")));
+      else if (list.phase === "ready")
+        box.append(
+          el("div", "jira-empty", this.recentSeg === "mentions" ? tr("最近没有人在评论里 @ 你") : tr("最近 90 天没有你发过的评论")),
+        );
+      return box;
+    }
+
+    const rows = el("div", "jira-list");
+    const shown = Math.min(this.recentShown[this.recentSeg], list.items.length);
+    for (const item of list.items.slice(0, shown)) rows.append(this.recentRowEl(state.siteUrl, item, this.recentSeg));
+    box.append(rows);
+
+    const foot = el("div", "jira-recent-foot");
+    if (shown < list.items.length) {
+      const more = el("button", "btn ghost jira-recent-more", tr("显示更多")) as HTMLButtonElement;
+      more.type = "button";
+      more.onclick = () => {
+        this.recentShown[this.recentSeg] += RECENT_PAGE;
+        this.render();
+      };
+      foot.append(more);
+    }
+    foot.append(el("span", "", tr("显示 {p1} / {p2}", { p1: shown, p2: list.items.length })));
+    if (list.skipped) foot.append(el("span", "", tr("{p1} 张工单读不到评论，已跳过", { p1: list.skipped })));
+    box.append(foot);
+    return box;
+  }
+
+  /** 复用「我的未完成」的行（展开详情 / 下载附件 / 交给 agent），再插一行评论摘要。 */
+  private recentRowEl(siteUrl: string, item: JiraRecentItem, kind: RecentKind): HTMLElement {
+    const wrap = this.issueEl(siteUrl, item, kind === "mentions");
+    wrap.classList.add("jira-recent-row");
+    const top = wrap.querySelector(".jira-issue-top");
+    if (kind === "mentions" && isUnread(item, this.recentSeenBase)) {
+      const dot = el("span", "jira-recent-dot");
+      dot.title = tr("上次查看之后的新消息");
+      top?.prepend(dot);
+    }
+    const quote = el("div", "jira-recent-quote");
+    const who = kind === "replied" ? tr("我") : item.comment.author || tr("（未知）");
+    quote.append(el("span", kind === "replied" ? "jira-recent-who me" : "jira-recent-who", tr("{p1}：", { p1: who })));
+    quote.append(el("span", "jira-recent-snip", recentSnippet(item.comment.body) || tr("（只有附件或格式，没有文字）")));
+    const when = el("span", "jira-recent-when", relativeTime(item.comment.at));
+    when.title = formatUpdated(item.comment.at);
+    quote.append(when);
+    top?.after(quote);
+    return wrap;
   }
 
   private issuesEl(state: ReadyState): HTMLElement {

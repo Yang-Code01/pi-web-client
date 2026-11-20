@@ -20,14 +20,15 @@ import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
+import { previewTargetOf } from "./ask-preview.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
 import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, markKeyword, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
-import { ACCENTS } from "./palette.ts";
-import { accentFor, DEFAULT_THEME, TERM_THEMES, THEMES, isTheme, paintTheme, type ThemeId } from "./theme.ts";
+import { ACCENTS, DEFAULT_MAC_ACCENT, MAC_ACCENTS } from "./palette.ts";
+import { accentFor, activeAccent, DEFAULT_THEME, isMacTheme, TERM_THEMES, THEMES, isTheme, paintTheme, themeInfo, type ThemeId } from "./theme.ts";
 import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
 import { MailConfirmDialog } from "./mailconfirm.ts";
@@ -1632,6 +1633,7 @@ export class App {
         paneFrame = 0;
         this.syncCompact();
         this.renderPanes();
+        this.syncViewerBesideAsk();
         // #316: the composer's cap switched between half and 40% of the pane. A width-only change
         // does not resize the pane, so the pane's ResizeObserver never fires and the box would keep
         // the old cap.
@@ -3510,6 +3512,30 @@ export class App {
     alert(tr("已开启：需要你的时候会推到这个设备"));
   }
 
+  /**
+   * 关掉一层面板。Mac 风格主题下先放一段退场动画（`.mac-leaving`，mac.css）再真正移除；
+   * 同一轮同步代码里又开了新面板（换页、重画、恢复默认）就当场移除旧的，并让新的跳过入场动画，
+   * 免得「重画」看起来像关了又开。其它主题直接移除，行为与以前一致。
+   */
+  private retireOverlay(node: HTMLElement | null): void {
+    if (!node) return;
+    const animate = isMacTheme(this.prefs.theme) && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!animate) {
+      node.remove();
+      return;
+    }
+    node.classList.add("mac-leaving");
+    node.inert = true;
+    queueMicrotask(() => {
+      if (this.sheet && this.sheet !== node) {
+        node.remove();
+        this.sheet.classList.add("mac-instant");
+        return;
+      }
+      window.setTimeout(() => node.remove(), 210);
+    });
+  }
+
   /** Overlays live inside #app so they scale with the appearance zoom. */
   private overlay(node: HTMLElement): void {
     (document.getElementById("app") ?? document.body).append(node);
@@ -3904,12 +3930,13 @@ export class App {
     root.setProperty("--ui-scale", String(this.prefs.scale));
     this.syncCompact();
     // 主题与强调色一起落：浅底主题用深一档的强调色表（theme.ts）。
-    paintTheme(this.prefs.theme, this.prefs.accent);
+    paintTheme(this.prefs.theme, activeAccent(this.prefs.theme, this.prefs));
     // 终端也要跟着换底：浅底主题里终端还是黑的话，切过去就像贴了块黑纸。
     this.paintTermThemes();
     // D158：三档文字颜色（--text/--dim/--faint）只有 styles.css 里 [data-text] 那一份，这里只标档位。
     // 读回来时 readPrefs 已经按 TEXT_STEPS 校验过，不会给 CSS 一个没有对应规则的值。
-    document.documentElement.dataset.text = this.prefs.text;
+    // Mac 主题不分三档：文字层级照 Apple 的 label / secondaryLabel 那一套固定下来（设置里那一行也藏起来）。
+    document.documentElement.dataset.text = isMacTheme(this.prefs.theme) ? "normal" : this.prefs.text;
     // #97：布局也是外观偏好，但「哪一种壳」影响的是行与列的摆法，#98 还要在自己的 CSS 里挑壳。
     // 存的值原样留在 prefs 里，这里只标出这一版真正画出来的那一种（见 layout.ts 的 activeLayout）。
     this.paintLayout();
@@ -4229,10 +4256,14 @@ export class App {
 
     paintSize(this.prefs.scale);
 
-    // 主题：四颗带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
-    const themePanel = section("theme");
-    const themeChips = el("div", "chips theme-chips");
-    for (const t of THEMES) {
+    // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
+    // 「配色主题」与「Mac 风格」两页各一排，写的是同一个 `prefs.theme`：点任一颗，两页的「亮着」一起改。
+    const themeChipRow = (list: typeof THEMES): HTMLElement => {
+      const row = el("div", "chips theme-chips");
+      for (const t of list) row.append(themeChip(t));
+      return row;
+    };
+    const themeChip = (t: (typeof THEMES)[number]): HTMLElement => {
       const chip = el("button", `chip theme-chip${this.prefs.theme === t.id ? " on" : ""}`);
       chip.dataset.theme = t.id;
       chip.title = tr(t.label);
@@ -4242,20 +4273,60 @@ export class App {
       demo.style.setProperty("--td-text", t.demo.text);
       demo.style.setProperty("--td-line", t.demo.line);
       demo.append(el("span", "td-side"), el("span", "td-l1"), el("span", "td-l2"), el("span", "td-btn"));
+      if (t.mac) {
+        demo.classList.add("mac");
+        demo.append(el("span", "td-lights"));
+      }
       chip.append(demo, el("span", "theme-chip-label", tr(t.label)));
       chip.onclick = () => {
         this.prefs = { ...this.prefs, theme: t.id };
         savePrefs(this.prefs);
         this.applyPrefs();
-        for (const other of themeChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
+        for (const other of this.sheet?.querySelectorAll<HTMLElement>(".theme-chip") ?? []) other.classList.toggle("on", other.dataset.theme === t.id);
       };
-      themeChips.append(chip);
-    }
-    const themeRow = this.stRow(tr("配色主题"), tr("换整套底色、面板、线条与文字；强调色与文字亮度在「颜色」里另调"), themeChips);
+      return chip;
+    };
+    const themePanel = section("theme");
+    const themeRow = this.stRow(tr("配色主题"), tr("换整套底色、面板、线条与文字；强调色与文字亮度在「颜色」里另调"), themeChipRow(THEMES.filter((t) => !t.mac)));
     themeRow.classList.add("wide");
     themePanel.append(themeRow);
 
+    const macPanel = section("mac");
+    const macRow = this.stRow(tr("Mac 风格"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效；强调色在「颜色」里换成 macOS 八色"), themeChipRow(THEMES.filter((t) => t.mac)));
+    macRow.classList.add("wide");
+    macPanel.append(macRow);
+    // Mac 主题下多出来的几颗快捷键（installShortcuts 里的 MAC_KEYS）：Mac 上显示 ⌘，别处显示 Ctrl。
+    const onMac = /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
+    const keys = el("ul", "mac-keys");
+    for (const [combo, label] of MAC_KEY_HINTS) {
+      const li = el("li", "");
+      for (const k of combo(onMac)) li.append(el("kbd", "", k));
+      li.append(tr(label));
+      keys.append(li);
+    }
+    const keysRow = this.stRow(tr("Mac 快捷键"), tr("只在 Mac 风格主题下生效；你在「快捷键」里绑过的组合优先"), keys);
+    keysRow.classList.add("wide");
+    macPanel.append(keysRow);
+
     const colorPanel = section("color");
+    // Mac 主题下换成 macOS 那一排八色（存在 macAccent 里，和原来六色互不覆盖）；两行都建好，按主题只露一行。
+    const macSwatches = el("div", "swatches mac-swatches");
+    for (const [id, label] of MAC_ACCENT_LABELS) {
+      const sw = el("button", `swatch${this.prefs.macAccent === id ? " on" : ""}`);
+      sw.dataset.macAccent = id;
+      sw.title = tr(label);
+      sw.setAttribute("aria-label", tr(label));
+      sw.onclick = () => {
+        this.prefs = { ...this.prefs, macAccent: id };
+        savePrefs(this.prefs);
+        this.applyPrefs();
+        for (const other of macSwatches.querySelectorAll(".swatch")) other.classList.toggle("on", other === sw);
+      };
+      macSwatches.append(sw);
+    }
+    const macAccentRow = this.stRow(tr("强调色（macOS）"), tr("照 macOS「系统设置 → 外观」的八色；默认系统蓝"), macSwatches);
+    macAccentRow.dataset.role = "mac-accent-row";
+    colorPanel.append(macAccentRow);
     const swatches = el("div", "swatches");
     for (const [id, label] of ACCENT_LABELS) {
       const sw = el("button", `swatch${this.prefs.accent === id ? " on" : ""}`);
@@ -4271,7 +4342,9 @@ export class App {
       };
       swatches.append(sw);
     }
-    colorPanel.append(this.stRow(tr("强调色"), tr("按钮、选中项、进度条用的那一种颜色"), swatches));
+    const accentRow = this.stRow(tr("强调色"), tr("按钮、选中项、进度条用的那一种颜色"), swatches);
+    accentRow.dataset.role = "accent-row";
+    colorPanel.append(accentRow);
 
     const textChips = el("div", "chips");
     for (const [key, label] of TEXT_STEPS) {
@@ -4284,7 +4357,9 @@ export class App {
       };
       textChips.append(chip);
     }
-    colorPanel.append(this.stRow(tr("文字亮度"), tr("正文 / 次要 / 提示三档文字一起调亮或调暗"), textChips));
+    const textRow = this.stRow(tr("文字亮度"), tr("正文 / 次要 / 提示三档文字一起调亮或调暗"), textChips);
+    textRow.dataset.role = "text-row";
+    colorPanel.append(textRow);
 
     // #97：工作区布局。四颗 chip 各带一张 CSS 画的小示意图（不引图片：设置面板要能离线打开，
     // 一张 png 就得多一条资源路径）。这一票只点亮 A，其余三颗置灰 + 悬停说明「下一步补上」——
@@ -4338,6 +4413,7 @@ export class App {
     this.overlay(back);
     this.sheet = back;
     document.addEventListener("keydown", this.settingsEsc, true);
+    this.paintSwatches();
     this.paintLookCards();
     this.setDisplayTab(this.prefs.settingsTab);
   }
@@ -4351,6 +4427,7 @@ export class App {
         items: [
           { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
           { sec: "theme", label: tr("配色主题"), sub: tr("整套底色、线条与文字；默认是午夜") },
+          { sec: "mac", label: tr("Mac 风格"), sub: tr("仿 macOS 的浅色、深色与午夜蓝三套") },
           { sec: "color", label: tr("颜色"), sub: tr("强调色与文字亮度") },
           { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
           { sec: "chrome", label: tr("界面元素"), sub: tr("顶栏与输入框下沿的按钮；点预览里的按钮就收起 / 放回") },
@@ -4373,10 +4450,24 @@ export class App {
    * 只改色块自己的 `--sw`，不动选中的那颗、也不重建这一行 —— 重建会把焦点和 hover 丢掉。
    */
   private paintSwatches(): void {
+    const mac = isMacTheme(this.prefs.theme);
     for (const sw of this.sheet?.querySelectorAll<HTMLElement>(".swatch[data-accent]") ?? []) {
       const id = sw.dataset.accent;
-      if (id) sw.style.setProperty("--sw", accentFor(this.prefs.theme, id).accent);
+      // 六色那行在 Mac 主题下是藏着的；仍按「同明暗的普通主题」上色，切回来时不闪一下错色。
+      if (id) sw.style.setProperty("--sw", accentFor(mac ? (themeInfo(this.prefs.theme).light ? "daylight" : "midnight") : this.prefs.theme, id).accent);
     }
+    for (const sw of this.sheet?.querySelectorAll<HTMLElement>(".swatch[data-mac-accent]") ?? []) {
+      const id = sw.dataset.macAccent;
+      if (id) sw.style.setProperty("--sw", accentFor(mac ? this.prefs.theme : (themeInfo(this.prefs.theme).light ? "mac-light" : "mac-dark"), id).accent);
+    }
+    // Mac 主题：六色与文字亮度两行让位，换成 macOS 八色那一行。
+    const row = (role: string) => this.sheet?.querySelector<HTMLElement>(`[data-role="${role}"]`);
+    const macRow = row("mac-accent-row");
+    const accentRow = row("accent-row");
+    const textRow = row("text-row");
+    if (macRow) macRow.hidden = !mac;
+    if (accentRow) accentRow.hidden = mac;
+    if (textRow) textRow.hidden = mac;
   }
 
   /** 外观各子类顶上那排卡（语言与字号 / 颜色 / 工作区；界面元素没有卡）。applyPrefs 之后跟着重画。 */
@@ -4385,7 +4476,10 @@ export class App {
     if (!box) return;
     const sec = this.displaySec.look ?? "lang";
     const lang = LANGS.find(([code]) => code === this.prefs.lang)?.[1] ?? this.prefs.lang;
-    const accent = ACCENT_LABELS.find(([id]) => id === this.prefs.accent)?.[1] ?? this.prefs.accent;
+    const mac = isMacTheme(this.prefs.theme);
+    const accent = mac
+      ? (MAC_ACCENT_LABELS.find(([id]) => id === this.prefs.macAccent)?.[1] ?? this.prefs.macAccent)
+      : (ACCENT_LABELS.find(([id]) => id === this.prefs.accent)?.[1] ?? this.prefs.accent);
     const text = TEXT_STEPS.find(([k]) => k === this.prefs.text)?.[1] ?? this.prefs.text;
     const layoutId = activeLayout(this.prefs);
     const layout = LAYOUTS.find((l) => l.id === layoutId)?.label ?? layoutId;
@@ -4396,12 +4490,12 @@ export class App {
             { label: tr("语言"), value: lang, sub: tr("界面与推送") },
             { label: tr("字号"), value: `${scale}%`, sub: scale === Math.round(DEFAULT_PREFS.scale * 100) ? tr("默认") : tr("已调整") },
           ]
-        : sec === "theme"
+        : sec === "theme" || sec === "mac"
           ? [{ label: tr("配色主题"), value: tr(THEMES.find((t) => t.id === this.prefs.theme)?.label ?? this.prefs.theme), sub: this.prefs.theme === DEFAULT_PREFS.theme ? tr("默认") : tr("已调整") }]
           : sec === "color"
           ? [
               { label: tr("强调色"), value: tr(accent), sub: tr("按钮与选中项") },
-              { label: tr("文字亮度"), value: tr(text), sub: tr("三档文字一起调") },
+              mac ? { label: tr("文字层级"), value: tr("Apple 标签色"), sub: tr("Mac 主题按 macOS 固定") } : { label: tr("文字亮度"), value: tr(text), sub: tr("三档文字一起调") },
             ]
           : sec === "layout"
             ? [{ label: tr("工作区布局"), value: tr(layout), sub: tr("会话与侧栏的摆法") }]
@@ -5179,7 +5273,7 @@ export class App {
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
     document.removeEventListener("keydown", this.settingsEsc, true);
     // D308: 面板没了，从它里面开的预览 / 表格 / 幻灯片不再压着谁 —— 回到普通浮窗层带（46/47）。
-    this.sheet?.remove();
+    this.retireOverlay(this.sheet);
     this.sheet = null;
     this.sheetKind = null;
     this.syncViewerLayer();
@@ -8251,36 +8345,67 @@ export class App {
 
   // ---------------------------------------------------------------- file preview
   /**
-   * D208: 产物弹窗。和以前最大的区别是「状态不是工具名」—— 每行的 新增/修改 来自桥对
-   * 「写入前的原文」和现在的文件的比较，所以 write 覆盖一个已有文件会显示「修改」。
-   * 点一行直接开独立 diff 弹窗（C 方案），不离开这个列表也一样能对比改动。
+   * D208: 产物弹窗（方案 A「设置式分组」，原型 web/prototype/artifacts-console.html 的 A）。
+   * 外壳同设置页 .st-console：左栏「状态 / 来源」分组带计数；右栏是统计卡 + 排序与路径预览栏 + 清单。
+   * 「状态不是工具名」—— 每行的 新增/修改 来自桥对「写入前的原文」和现在的文件的比较，所以 write 覆盖一个已有文件会显示「修改」。
+   * 点一行直接开独立 diff 弹窗（C 方案）；没有可对比的改动就直接在预览里打开。
    */
   private async openArtifactsSheet(): Promise<void> {
     if (!this.currentId) return;
     // 已经开着就别重建：会把筛选与滚动位置打回去（`/artifacts` 与那颗按钮都走这里）。
     if (this.sheet?.querySelector(".art-sheet")) return;
     const sessionId = this.currentId;
+    const cwd = (this.session?.cwd ?? "").trim();
     this.closeSheet();
     this.sheetKind = "display";
-    const back = el("div", "sheet-back");
+    const back = el("div", "st-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
     };
-    const sheet = el("div", "sheet art-sheet");
-    const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("本会话的产物")));
-    const close = el("button", "btn ghost", tr("关闭"));
+    const sheet = el("section", "st-console settings-sheet art-sheet");
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-modal", "true");
+    sheet.setAttribute("aria-label", tr("本会话的产物"));
+
+    // 顶栏：小字眉 + 大标题 + 徽章行；右边「刷新 / 关闭」。
+    const head = el("header", "st-head");
+    const headMain = el("div", "st-head__main");
+    const sub = el("div", "st-sub");
+    const badges = el("div", "st-badges");
+    headMain.append(el("div", "st-eyebrow", tr("产物 · 本会话")), el("h2", "st-title", tr("本会话的产物")), sub, badges);
+    const actions = el("div", "st-head__actions");
+    const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
+    refresh.type = "button";
+    const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
     close.onclick = () => this.closeSheet();
-    head.append(close);
-    const sum = el("div", "art-sum");
-    const filters = el("div", "art-filters");
-    const list = el("div", "art-list");
-    list.append(el("div", "empty", tr("正在比对产物…")));
-    // Free-form path: anything in the cwd or mentioned in the session.
-    const foot = el("div", "art-foot");
+    actions.append(refresh, close);
+    head.append(headMain, actions);
+
+    const main = el("div", "st-main");
+    const nav = el("nav", "st-nav");
+    nav.setAttribute("aria-label", tr("筛选"));
+    const pane = el("div", "st-pane");
+    main.append(nav, pane);
+
+    const foot = el("footer", "st-foot");
+    const defaultHint = tr("左栏按状态 / 来源筛选；点一行看它的改动，没有改动可比的直接在预览里打开");
+    const hint = el("span", "st-foot__hint", defaultHint);
+    foot.append(hint, el("span", "st-foot__meta", "pi-web-client"));
+    sheet.append(head, main, foot);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+
+    // 工具条：排序段 + 路径预览。整条只建一次，换筛选不重建，输入到一半的字不丢。
+    const bar = el("div", "st-scopebar art-bar");
+    const seg = el("div", "st-seg");
+    seg.setAttribute("role", "group");
     const input = el("input", "ns-input mono") as HTMLInputElement;
     input.placeholder = tr("输入路径预览（相对会话工作目录，或绝对路径）");
-    const go = el("button", "btn", tr("预览"));
+    input.spellcheck = false;
+    const go = el("button", "btn", tr("预览")) as HTMLButtonElement;
+    go.type = "button";
     const submit = (): void => {
       const p = input.value.trim();
       if (!p) return;
@@ -8291,89 +8416,182 @@ export class App {
     input.onkeydown = (ev) => {
       if (ev.key === "Enter") submit();
     };
-    foot.append(input, go);
-    sheet.append(head, sum, filters, list, foot);
-    back.append(sheet);
-    this.overlay(back);
-    this.sheet = back;
+    bar.append(seg, input, go);
+    const cardsHost = el("div", "art-cards");
+    const groupHost = el("div", "art-group");
+    const panelHost = el("div", "settings-panel art-panel");
+    pane.append(bar, cardsHost, groupHost, panelHost);
 
-    let data: ArtifactList;
-    try {
-      data = await api.artifactsList(sessionId, this.chat.artifacts());
-    } catch (err: any) {
-      if (this.sheet !== back) return;
-      list.replaceChildren(el("div", "empty", tr("读不到产物列表：{p1}", { p1: String(err?.message ?? err) })));
-      return;
-    }
-    // 比对是异步的：弹窗可能已经关了，或者已经换成了别的弹窗 —— 别往死掉的节点里写。
-    if (this.sheet !== back) return;
-    if (!data.items.length) {
-      list.replaceChildren(el("div", "empty", tr("这个会话还没写过文件。AI 回复里提到的路径也可以直接点开预览。")));
-      return;
-    }
-
-    const s = data.summary;
-    const pill = (cls: string, text: string): HTMLElement => el("span", `art-sum-pill ${cls}`, text);
-    if (s.new) sum.append(pill("new", tr("新增 {p1}", { p1: s.new })));
-    if (s.modified) sum.append(pill("mod", tr("修改 {p1}", { p1: s.modified })));
-    if (s.deleted) sum.append(pill("del", tr("删除 {p1}", { p1: s.deleted })));
-    if (s.unknown) sum.append(pill("unk", tr("未知 {p1}", { p1: s.unknown })));
-    if (s.added || s.removed) sum.append(el("span", "art-sum-count", `+${s.added} −${s.removed}`));
-    if (data.baseline !== "exact") sum.append(el("span", "art-sum-note", data.baseline === "none" ? tr("没有写入前的原文，状态只能靠猜") : tr("部分文件没有写入前的原文")));
-
-    type Filter = "all" | ArtifactRow["status"];
-    let filter: Filter = "all";
-    const paint = (): void => {
-      list.replaceChildren();
-      for (const r of data.items) {
-        if (filter !== "all" && r.status !== filter) continue;
-        list.append(this.artifactRow(sessionId, r, data));
-      }
-      if (!list.childElementCount) list.append(el("div", "empty", tr("这一类里没有文件。")));
-    };
-    const chips: { key: Filter; label: string; n: number }[] = [
-      { key: "all", label: tr("全部"), n: data.items.length },
-      { key: "new", label: tr("新增"), n: s.new },
-      { key: "modified", label: tr("修改"), n: s.modified },
-      { key: "deleted", label: tr("已删除"), n: s.deleted },
-      { key: "unknown", label: tr("未知"), n: s.unknown },
+    type Item = { key: string; label: string; test: (r: ArtifactRow) => boolean };
+    const srcOf = (r: ArtifactRow): "write" | "deliver" | "mentioned" =>
+      r.tool === "mentioned" ? "mentioned" : r.tool === "open_preview" ? "deliver" : "write";
+    const groups = (): { label: string; items: Item[] }[] => [
+      {
+        label: tr("状态"),
+        items: [
+          { key: "all", label: tr("全部"), test: () => true },
+          { key: "new", label: tr("新增"), test: (r) => r.status === "new" },
+          { key: "modified", label: tr("修改"), test: (r) => r.status === "modified" },
+          { key: "deleted", label: tr("已删除"), test: (r) => r.status === "deleted" },
+          { key: "unknown", label: tr("未知"), test: (r) => r.status === "unknown" },
+          { key: "same", label: tr("未变"), test: (r) => r.status === "same" },
+        ],
+      },
+      {
+        label: tr("来源"),
+        items: [
+          { key: "src:write", label: tr("工具写入"), test: (r) => srcOf(r) === "write" },
+          { key: "src:deliver", label: tr("在预览里打开"), test: (r) => srcOf(r) === "deliver" },
+          { key: "src:mentioned", label: tr("回复里提到"), test: (r) => srcOf(r) === "mentioned" },
+        ],
+      },
     ];
-    for (const c of chips) {
-      if (c.key !== "all" && !c.n) continue;
-      const chip = el("button", "art-chip", `${c.label} ${c.n}`);
-      if (c.key === filter) chip.classList.add("on");
-      chip.onclick = () => {
-        filter = c.key;
-        for (const other of filters.children) other.classList.toggle("on", other === chip);
-        paint();
+
+    let data: ArtifactList | null = null;
+    let sel = "all";
+    let sort: "recent" | "path" = "recent";
+
+    const paintHead = (): void => {
+      sub.replaceChildren(tr("会话工作目录") + " ", el("span", "mono", cwd || "—"));
+      badges.replaceChildren();
+      if (!data) return;
+      const s = data.summary;
+      badges.append(el("span", "st-badge", tr("{p1} 个文件", { p1: data.items.length })), el("span", "st-badge", `+${s.added} −${s.removed}`));
+      if (s.unknown) badges.append(el("span", "st-badge warn", tr("{p1} 个没有写入前原文", { p1: s.unknown })));
+      else if (data.baseline !== "exact") badges.append(el("span", "st-badge warn", tr("部分文件没有写入前的原文")));
+    };
+    const paintSort = (): void => {
+      const mk = (id: "recent" | "path", label: string): HTMLButtonElement => {
+        const b = this.settingsSegButton("scope", id, label, sort === id);
+        b.onclick = () => {
+          if (sort === id) return;
+          sort = id;
+          paintAll();
+        };
+        return b;
       };
-      filters.append(chip);
-    }
-    paint();
+      seg.replaceChildren(mk("recent", tr("按最近")), mk("path", tr("按路径")));
+    };
+    const paintNav = (): void => {
+      const all = data?.items ?? [];
+      nav.replaceChildren();
+      for (const g of groups()) {
+        nav.append(el("div", "st-nav__group", g.label));
+        for (const it of g.items) {
+          const on = sel === it.key;
+          const b = el("button", `st-nav__item${on ? " on" : ""}`) as HTMLButtonElement;
+          b.type = "button";
+          if (on) b.setAttribute("aria-current", "true");
+          b.append(el("span", "st-nav__label", it.label));
+          const n = all.filter(it.test).length;
+          if (n > 0) b.append(el("span", "st-nav__count", String(n)));
+          b.onclick = () => {
+            sel = it.key;
+            paintAll();
+          };
+          nav.append(b);
+        }
+      }
+    };
+    const paintCards = (): void => {
+      const s = data?.summary;
+      cardsHost.replaceChildren(
+        this.stCards([
+          { label: tr("新增"), value: String(s?.new ?? 0), sub: tr("会话开始前不存在") },
+          { label: tr("修改"), value: String(s?.modified ?? 0), sub: tr("写入前后可逐行对比") },
+          { label: tr("行数变化"), value: `+${s?.added ?? 0} −${s?.removed ?? 0}`, sub: tr("全部文件合计") },
+          { label: tr("未知"), value: String(s?.unknown ?? 0), sub: tr("没有写入前原文，只能猜"), cls: "warn" },
+        ]),
+      );
+    };
+    const paintList = (): void => {
+      const cur = groups().flatMap((g) => g.items).find((i) => i.key === sel) ?? groups()[0]!.items[0]!;
+      const rows = (data?.items ?? []).filter(cur.test);
+      if (sort === "path") rows.sort((a, b) => a.path.localeCompare(b.path));
+      // 「全部」与各分类的计数跟着这一类走；排序段决定同一类里的先后。
+      groupHost.replaceChildren(
+        this.stSection(
+          cur.label,
+          tr("{p1} 个 · {p2}", { p1: rows.length, p2: sort === "path" ? tr("按路径") : tr("最近写入在前") }),
+        ),
+      );
+      panelHost.replaceChildren();
+      if (!data) {
+        panelHost.append(el("div", "empty", tr("正在比对产物…")));
+        return;
+      }
+      if (!data.items.length) {
+        panelHost.append(el("div", "empty", tr("这个会话还没写过文件。AI 回复里提到的路径也可以直接点开预览。")));
+        return;
+      }
+      if (!rows.length) {
+        panelHost.append(el("div", "empty", tr("这一类里没有文件。")));
+        return;
+      }
+      for (const r of rows) panelHost.append(this.artifactRow(sessionId, r, data));
+    };
+    const paintAll = (): void => {
+      paintHead();
+      paintSort();
+      paintNav();
+      paintCards();
+      paintList();
+    };
+
+    // 刷新是 stale-while-revalidate：拿到新数据前不动已经显示的列表，只把光标改成 progress（同设置页的静默重取）。
+    const load = async (): Promise<void> => {
+      refresh.disabled = true;
+      back.style.cursor = "progress";
+      try {
+        const next = await api.artifactsList(sessionId, this.chat.artifacts());
+        if (this.sheet !== back) return;
+        data = next;
+        hint.textContent = defaultHint;
+      } catch (err: any) {
+        if (this.sheet !== back) return;
+        const msg = String(err?.message ?? err);
+        if (data) hint.textContent = tr("刷新失败：{p1}", { p1: msg });
+        else panelHost.replaceChildren(el("div", "empty", tr("读不到产物列表：{p1}", { p1: msg })));
+        return;
+      } finally {
+        back.style.cursor = "";
+        refresh.disabled = false;
+      }
+      // 比对是异步的：弹窗可能已经关了，或者已经换成了别的弹窗 —— 上面的守卫已经挡住了。
+      paintAll();
+    };
+    refresh.onclick = () => void load();
+    paintAll();
+    void load();
   }
 
-  /** 弹窗里的一行。`writes` 是「这个会话写过它几次」，不是行数。 */
+  /**
+   * 清单里的一行：左边文件名 + 路径（没有可比改动时多一行原因）｜ 行数 · 工具×次数 · 操作｜ 状态徽章。
+   * `writes` 是「这个会话写过它几次」，不是行数。
+   */
   private artifactRow(sessionId: string, r: ArtifactRow, data: ArtifactList): HTMLElement {
-    const row = el("button", `art-row st-${r.status}`);
-    const name = fileNameOf(r.path);
-    const main = el("span", "art-main");
-    const line = el("span", "art-line");
-    line.append(el("span", "art-name", name), el("span", `art-badge st-${r.status}`, this.artStatusLabel(r.status)));
-    if (r.added || r.removed) line.append(el("span", "art-count", `+${r.added} −${r.removed}`));
-    line.append(el("span", "art-tools", r.tool === "mentioned" ? tr("回复提及") : `${r.tool}×${r.writes}`));
-    if (r.estimate) line.append(el("span", "art-est", tr("按 git 估算")));
-    main.append(line, el("span", "art-path", r.path));
-    if (!r.diffable && r.why) main.append(el("span", "art-why", this.artifactWhyText(r.why)));
-    row.append(el("span", "art-ico", previewIcon(r.path)), main);
+    const row = el("button", `settings-row art-row st-${r.status}`) as HTMLButtonElement;
+    row.type = "button";
     row.title = r.path;
+    const label = el("span", "settings-label");
+    label.append(el("span", "settings-name art-name", fileNameOf(r.path)));
+    const hint = el("span", "settings-hint");
+    hint.append(el("span", "art-path", r.path));
+    if (!r.diffable && r.why) hint.append(el("span", "art-why", this.artifactWhyText(r.why)));
+    const ctl = el("span", "settings-ctl");
+    if (r.added || r.removed) ctl.append(el("span", "art-count", `+${r.added} −${r.removed}`));
+    ctl.append(el("span", "art-tools", r.tool === "mentioned" ? tr("回复提及") : `${r.tool}×${r.writes}`));
+    if (r.estimate) ctl.append(el("span", "art-est", tr("按 git 估算")));
     if (r.diffable) {
-      row.append(el("span", "art-go", tr("看改动")));
+      ctl.append(el("span", "art-go", tr("看改动")));
       row.onclick = () => void this.openDiffSheet(sessionId, r.path, data);
     } else {
       // 没有可对比的改动（二进制 / 未知 / 没变）：点开就是看文件本身，别给一个空弹窗。
       // D308：不再 `closeSheet()` —— 预览会压在产物列表上（`.viewer.hi`），关掉它列表还在。
+      ctl.append(el("span", "art-open", tr("预览")));
       row.onclick = () => void this.openPreview(r.path);
     }
+    row.append(label, hint, ctl, el("span", `art-badge st-${r.status}`, this.artStatusLabel(r.status)));
     return row;
   }
 
@@ -9045,7 +9263,9 @@ export class App {
         // `clientX` / `innerWidth` 是**视觉** px，写进 `--viewer-w` 的是**布局** px（#app 的 zoom）——
         // 不除这个系数，1.25 字号下拖出来的面板会比鼠标宽 25%，分隔条永远跑在指针前面。
         const s = this.uiScale();
-        const w = Math.max(320, Math.min((window.innerWidth - 120) / s, (window.innerWidth - e.clientX) / s));
+        // 让出「需要你」栏时右缘不在视口边上：宽度从面板自己的右缘量。
+        const edge = root.getBoundingClientRect().right;
+        const w = Math.max(320, Math.min((edge - 120) / s, (edge - e.clientX) / s));
         root.style.setProperty("--viewer-w", `${Math.round(w)}px`);
       };
       const up = () => {
@@ -9097,6 +9317,7 @@ export class App {
       trTimer: null,
       parentFloor: -1,
     };
+    this.syncViewerBesideAsk();
     return this.viewer;
   }
 
@@ -16645,6 +16866,23 @@ export class App {
     return this.askWanted() && !this.collapsed.queue;
   }
 
+  /**
+   * 预览浮窗铺在右缘，会把「需要你」栏整栏盖住。题目还住在那一栏时，浮窗往左让出它：
+   * 否则问卷里点了「在预览里打开」，下一题立刻被压在预览底下，又回到「没法边看边答」。
+   * 全屏预览不让（那是用户自己要的一整屏，CSS 里 `.full` 优先）；题答完就回到右缘。
+   */
+  private syncViewerBesideAsk(): void {
+    const v = this.viewer;
+    if (!v) return;
+    const pane = this.els.queuePane;
+    const beside = this.askDock() && Boolean(pane?.offsetWidth);
+    v.root.classList.toggle("beside-ask", beside);
+    if (!beside) return;
+    // getBoundingClientRect 是视觉 px，写进 #app 里的 style 要换算成布局 px（D123）。
+    const right = Math.max(0, (window.innerWidth - pane.getBoundingClientRect().left) / this.uiScale());
+    v.root.style.setProperty("--ask-right", `${Math.round(right)}px`);
+  }
+
   private askWanted(): boolean {
     return Boolean(this.asks.length && this.currentId && !this.compact() && !this.askDockMuted);
   }
@@ -16720,6 +16958,7 @@ export class App {
     // 槽一删，寄居在里面的 ⚡ 按钮也跟着没了（后面的分支还可能提前 return），先把它捞出来。
     this.placeFailCta();
     this.syncAskDock();
+    this.syncViewerBesideAsk();
     this.fillHintStatus();
     if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
     if (this.askLost && !this.asks.length) {
@@ -16791,8 +17030,13 @@ export class App {
         if (on) btn.classList.add("on");
         btn.append(el("div", "l", `${q.multiSelect ? (on ? "☑ " : "☐ ") : ""}${opt.label}`));
         if (opt.description) btn.append(el("div", "d", opt.description));
-        btn.onclick = () =>
-          q.multiSelect ? this.togglePick(ask, q, i + 1) : this.pickAnswer(ask, { id: q.id, value: opt.value, label: opt.label, index: i + 1 });
+        btn.onclick = () => {
+          // 「在预览里打开」当场打开：多题问卷要全答完模型才拿得到答案，不能让用户没看就答下一题（ask-preview.ts）。
+          const target = q.multiSelect ? null : previewTargetOf(q.prompt, opt);
+          if (target) void this.openPreview(target, ask.sessionId);
+          if (q.multiSelect) this.togglePick(ask, q, i + 1);
+          else this.pickAnswer(ask, { id: q.id, value: opt.value, label: opt.label, index: i + 1 });
+        };
         list.append(btn);
       });
       slot.append(list);
@@ -18556,12 +18800,12 @@ export class App {
   /** One tab = one shell: its own xterm, its own body, its own socket id. */
   /** 终端配色：主题那套 16 色 + 当前强调色当光标（浅底主题下已经是深一档的强调色表）。 */
   private termPalette(): { [key: string]: string } {
-    return { ...TERM_THEMES[this.prefs.theme], cursor: accentFor(this.prefs.theme, this.prefs.accent).accent };
+    return { ...TERM_THEMES[this.prefs.theme], cursor: accentFor(this.prefs.theme, activeAccent(this.prefs.theme, this.prefs)).accent };
   }
 
   /** 主题/强调色变了就把配色写给所有已开的终端；同一组（`theme/accent`）只写一次。 */
   private paintTermThemes(): void {
-    const key = `${this.prefs.theme}/${this.prefs.accent}`;
+    const key = `${this.prefs.theme}/${activeAccent(this.prefs.theme, this.prefs)}`;
     if (key === this.termThemeKey) return;
     this.termThemeKey = key;
     const palette = this.termPalette();
@@ -18698,7 +18942,7 @@ export class App {
         if (this.capturing || ev.isComposing) return;
         const combo = comboOf(ev);
         if (!combo || !shortcutAllowed(combo)) return;
-        const act = Object.keys(this.keys).find((id) => this.keys[id] === combo);
+        const act = Object.keys(this.keys).find((id) => this.keys[id] === combo) ?? this.macKeyAction(combo);
         if (!act) return;
         const target = ev.target as HTMLElement | null;
         const typing = Boolean(target?.isContentEditable) || target?.tagName === "INPUT" || target?.tagName === "TEXTAREA";
@@ -18719,6 +18963,15 @@ export class App {
       ev.preventDefault();
       this.withdrawBoot();
     });
+  }
+
+  /**
+   * Mac 风格主题下的系统式快捷键（⌘, 设置、⌘K 搜索、⌃⌘S 侧栏、⌘. 中断）。⌘ 与 Ctrl 都认，
+   * Windows 上照样用 Ctrl。用户自己绑过同一个组合时上面那次查找已经先命中了，这里只做兜底。
+   */
+  private macKeyAction(combo: string): string | null {
+    if (!isMacTheme(this.prefs.theme)) return null;
+    return MAC_KEYS[combo] ?? null;
   }
 
   private runAction(id: string): void {
@@ -20176,6 +20429,8 @@ type Prefs = {
   /** 整套配色（theme.ts 的稳定 id）；默认 midnight 就是原来那套。 */
   theme: ThemeId;
   accent: string;
+  /** Mac 风格主题下的强调色（palette.ts 的 MAC_ACCENT_IDS）；和 `accent` 分开存，换主题互不覆盖。 */
+  macAccent: string;
   text: "soft" | "normal" | "bright";
   lang: Lang;
   /** 收起的工作区（#95）：组 id 列表，跟 accent 一起存在 `pi.prefs` 里，不另开 storage key。 */
@@ -20201,6 +20456,7 @@ const DEFAULT_PREFS: Prefs = {
   scale: DEFAULT_SCALE,
   theme: DEFAULT_THEME,
   accent: "ice",
+  macAccent: DEFAULT_MAC_ACCENT,
   text: "normal",
   lang: "zh-Hans",
   wsCollapsed: [],
@@ -20634,6 +20890,27 @@ const SHORTCUTS: { id: string; label: string }[] = [
   { id: "interrupt", label: tr("中断当前回复") },
 ];
 
+/** Mac 风格主题的兜底快捷键（`macKeyAction`）：⌘ 与 Ctrl 两份都登记。 */
+const MAC_KEYS: Record<string, string> = {
+  "meta+,": "look",
+  "ctrl+,": "look",
+  "meta+k": "filesearch",
+  "ctrl+k": "filesearch",
+  "ctrl+meta+s": "sessions",
+  "ctrl+alt+s": "sessions",
+  "meta+.": "interrupt",
+  "ctrl+.": "interrupt",
+};
+
+/** 设置里「Mac 快捷键」那一行：按平台给出键帽。 */
+const MAC_KEY_HINTS: [(mac: boolean) => string[], string][] = [
+  [(m) => (m ? ["⌘", ","] : ["Ctrl", ","]), "设置"],
+  [(m) => (m ? ["⌘", "K"] : ["Ctrl", "K"]), "搜索"],
+  [(m) => (m ? ["⌃", "⌘", "S"] : ["Ctrl", "Alt", "S"]), "收起 / 展开左栏"],
+  [(m) => (m ? ["⌘", "."] : ["Ctrl", "."]), "中断当前回复"],
+  [() => ["Esc"], "逐层关闭弹层"],
+];
+
 /** 出厂就带的组合键；用户改过的以 localStorage 里的为准。 */
 const DEFAULT_KEYS: Record<string, string> = { notes: "ctrl+shift+b", filesearch: "ctrl+shift+f" };
 
@@ -20847,6 +21124,18 @@ const ACCENT_LABELS: [string, string][] = [
   ["slate", tr("银灰")],
 ];
 
+/** Mac 主题的八色（macOS「系统设置 → 外观 → 强调色」的顺序）。 */
+const MAC_ACCENT_LABELS: [string, string][] = [
+  ["blue", tr("蓝色")],
+  ["purple", tr("紫色")],
+  ["pink", tr("粉色")],
+  ["red", tr("红色")],
+  ["orange", tr("橙色")],
+  ["yellow", tr("黄色")],
+  ["green", tr("绿色")],
+  ["graphite", tr("石墨色")],
+];
+
 /** D110 之前 `pi.prefs.accent` 存的是中文色名，读到就换成新 id。 */
 const LEGACY_ACCENTS: Record<string, string> = {
   冰蓝: "ice",
@@ -20892,6 +21181,7 @@ function readPrefs(): Prefs {
       scale: prefScale(p?.scale),
       theme: isTheme(p?.theme) ? p.theme : DEFAULT_PREFS.theme,
       accent: ACCENTS[accent] ? accent : DEFAULT_PREFS.accent,
+      macAccent: typeof p?.macAccent === "string" && MAC_ACCENTS[p.macAccent] ? p.macAccent : DEFAULT_PREFS.macAccent,
       text: TEXT_STEPS.some(([k]) => k === p?.text) ? (p.text as Prefs["text"]) : DEFAULT_PREFS.text,
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
       lang: isLang(p?.lang) ? p.lang : detectLang(),

@@ -6601,7 +6601,69 @@ Esc 之后 dialog: 0
 
 
 
-## D341 内网通：附件先进输入框、基础群聊、固定消息、名字跟备注走、@ 与标为未读（用户要求 2026-11-20）
+## D341 Jira 面板加「最近消息」：@我的 / 我回复过的（用户需求 2026-11-20）
+
+**需求。** Jira dialog 左栏新增一页「最近消息」，分两段：别人在哪些工单里 @ 了我、我最近在哪些工单里回复过。默认最新 10 条、新的在上，「显示更多」每次再加 10 条；每行照样能展开详情、下载附件、交给 agent。
+
+**能不能做（在 kaigit.atlassian.net 上实测）。** Jira 没有「我的通知」REST API，也没有 `commentedBy`，所以两段都是「JQL 粗筛 + 逐单读评论精筛」：
+- **@我的**：`comment ~ "<accountId>"`（ADF 的 mention 节点按 accountId 进索引）按 `updated DESC` 取 50 张，再读 `/issue/KEY/comment?orderBy=-created`，挑**别人写的、mention 节点 `attrs.id` 等于我**的最新一条。只认评论里的 @，描述里的 @ 不算。
+- **我回复过的**：`issuekey in updatedBy("<accountId>", "-90d")` 取 100 张（只改字段也会命中），再挑**我自己写的**最新一条，没有就丢掉。窗口定死 90 天。`updatedBy(currentUser(), …)` 在 issuekey 子句里会 400，必须传 accountId。
+- 每段约 50～100 次评论请求，8 路并发，实测 2.4s；桥端按段缓存 60 秒，「↻」/ 顶部刷新绕过缓存。读不到评论的单（非鉴权、非网络错误）跳过并计数，不让整段失败。
+
+**决定。**
+- 桥：`GET /api/jira/recent?kind=mentions|replied` → `{ kind, items: JiraRecentItem[], skipped }`，`JiraRecentItem = JiraIssue + comment{id, at, author, body(ADF)}`，按 `comment.at` 降序，最多 50 条。JQL 由桥写死，页面只能选 kind（同 D203）。
+- 页面：分段切换（原型里比过「上下两块」「左右两栏」，选了分段）；每行复用「我的未完成」的 `issueEl`，在标题下插一行评论摘要（作者：正文前 160 字 · 相对时间）。只拉「@我的」随面板打开一起取（左栏角标要用），「我回复过的」切过去才取。
+- **新消息 = 上次查看之后**：没有已读 API，用 `localStorage["pi.jira.recent.seen\n<站点>\n<accountId>"]` 记「上次进这一页的时间」。不在这一页时左栏角标显示 `@N`；进页时按旧值画蓝点并把记录更新成现在，所以蓝点本次可见、下次消失。从没看过（无记录）一律不算新，免得第一次满屏蓝点。只给 @我的 算，自己的回复没有「未读」。
+- 顺手修 `adfToText`：Jira Cloud 的 mention `attrs.text` 自带「@」，原来拼成「@@名字」（详情评论里也一样）。
+
+## D342 Mac 风格：一个 `data-ui="mac"` 开关换掉整套材质、动效与快捷键
+
+- **决定**：Mac 三套主题（mac-light / mac-dark / mac-midnight）由 `paintTheme` 在 `<html>` 上挂 `data-ui="mac"`，`web/src/mac.css` 里所有规则都挂在这个开关下：壁纸式渐变底 + 毛玻璃顶栏 / 悬浮侧栏 / 弹层 / 菜单，iMessage 气泡，macOS 按钮、分段控件、开关，Apple 弹簧缓动，弹层落下与退场动画（`retireOverlay` + `.mac-leaving`），以及兜底快捷键 `MAC_KEYS`（⌘/Ctrl + , 设置、+K 搜索、⌃⌘S 左栏、+. 中断）。强调色在 Mac 主题下改用 `prefs.macAccent`（macOS 八色，默认系统蓝），与原来的 `prefs.accent` 分开存；文字亮度三档在 Mac 主题下固定为 normal（Apple 标签色层级）并在设置里隐藏。
+- **为什么**：用户要的是「改天换地」的整体体验，不是第十套配色。把所有改动关在一个属性开关后面，其它七套主题一个像素都不变，也不用给每条旧规则加分支；强调色分开存，切回普通主题时原来的选择还在。位移动画只用独立的 `translate` / `scale` 属性，因为不少浮层本来用 `transform` 定位。
+
+## D343 运行时面板的内存：Windows 按 pid 逐个问 `tasklist`
+
+- **决定**：win32 不再跑一次不带过滤的 `tasklist /FO CSV /NH`，改成对每个 `RpcChild` pid 各跑一次 `tasklist /FO CSV /NH /FI "PID eq N"`（最多 4 个并发），结果拼起来交给同一个 `parseProcessTable`。单条命令超时从 2 s 放到 5 s。任何一条失败整次采样算失败（照旧显示「不可用」、水位不动手）；pid 不在表里（进程刚退）只是这一行没数字。darwin / linux 的 `ps` 不变。
+- **为什么**：运行时面板「占用内存」和每行会话一直是「不可用」。实测这台机器忙时不过滤的 `tasklist` 要 2–18 s（它要问遍所有进程，含服务与受保护进程），D120 §2 的 2 s 超时几乎每次都触发；带 PID 过滤的稳定在 0.3–0.8 s。
+- **代价**：pi 多时一次采样会多 spawn 几个 `tasklist`（7 个会话 = 2 批）；仍只在 GC tick / 面板刷新时跑。
+
+## D344 问卷里的「在预览里打开」当场打开，预览让出「需要你」栏（用户报障 2026-11-20）
+
+**症状。** 模型把「要在预览里打开吗？」和「三个变体选哪个」塞进同一份问卷。用户点了「在预览里打开」，什么都没出来，下一题已经在问选哪个 —— 还没看就要选。
+
+**根因（三层叠在一起）。**
+1. 多题问卷要整份提交，模型才拿得到答案（`askPanel` 的提交钮「还差 N 题」时禁用）；模型没拿到「打开」就调不了 `open_preview`。
+2. 交付提示词（D226）只说「用问卷问一句」，没说要单独问；全局规则「把问题合成一次提问」把模型推向合并。
+3. 预览浮窗 `.viewer` 固定在右缘，正好整栏盖住「需要你」：就算先开了预览，下一道题也被压在它底下。
+
+**决定。**
+- 提示词（`bridge/src/delivery.ts`）：这一问**单独**发，优先于「合并提问」；题干写文件的**绝对路径**；要先看过产物才答得了的题等预览开了再问。`test:hint` 补三个关键词。
+- 前端（`web/src/ask-preview.ts`）：单选题点的选项以「在预览里打开」开头（兼认英 / 日说法）时，从选项说明、再从题干里找第一个带扩展名的**绝对路径**，当场 `openPreview`，答案照旧记草稿 / 提交，回给模型的选项原文不变。模型拿到答案后照提示词再调一次 `open_preview` 也无害（同路径 `pushStep` 去重、原地刷新）。
+  - 只认绝对路径：相对路径要按会话 cwd 解析，而产物常在别的 worktree 里（这次就是），猜错会打开同名的另一份或报错页。认不出就什么都不做，退回原来的模型往返。
+  - 这就是 D226 记下的 Out of Scope「问卷卡直连预览」，但不走 `/api/preview/open`（那是给子进程的回环入口），直接用页面自己的 `openPreview`。
+- 布局：题目在「需要你」栏里（`askDock()`）时，预览加 `.beside-ask`，`right` 让到那一栏左缘（`--ask-right`，按 `uiScale` 换算成布局 px，D123）；全屏预览不让；题答完、收起右栏、窗口变化时 `syncViewerBesideAsk` 复位。拖宽度改成从面板自己的右缘量。
+
+**验证。** `npm run test:ask-preview`（8 项纯函数，含截图那句「相对路径 + worktree 目录」不猜）；`node probes/ask-preview.mjs`（9 项：2 题问卷，「先不看」不开，点「在预览里打开」当场弹 viewer、停在第 2 题且提交仍禁用、第 2 题选项在最上层未被盖、提交后两条答案原文回给发起方、答完预览回到右缘）；`npm run test:hint`（20 项）；`npm --prefix web run typecheck`。`probes/preview-open.mjs` 在 main 上就因 `.topbar` 的「文件」按钮已隐藏而卡住（与本改动无关），临时换掉那个等待后预览相关 13 项都过。
+
+## D345 产物弹窗改成设置控制台样式（方案 A，用户选定 2026-11-20）
+
+**需求。** 「本会话的产物」弹窗的 UI 按本项目设置控制台（`st-console`）的模板重做。先出三版原型（A 设置式分组 / B 目录树 + 对照表 / C 主从详情，分支 `proto/artifacts-console`，未进主线），用户选 A。
+
+**决定。**
+- 外壳：`section.st-console.settings-sheet.art-sheet`。head 放 eyebrow、标题、会话工作目录与状态徽章；左栏 nav 分「状态」（全部 / 新增 / 修改 / 已删除 / 未知 / 未变）与「来源」（工具写入 / 在预览里打开 / 回复里提到），带计数；右栏是「按最近 / 按路径」切换 + 路径预览输入 + 四张统计卡 + `settings-panel` 行清单；底下是 `st-foot`。
+- 行：`button.settings-row.art-row`，三列「名字 + 路径 / 脚本说明 | 数字与工具名 | 状态胶囊」。能对比的行给「看改动」（打开 diff 弹窗）；不能对比的给「预览」（`openPreview`，不关弹窗）。
+- 列轨写成 `minmax(0,1fr)`：顶栏按钮会把隐式 auto 列撑到 min-content（390px 下实测 427px），和 `display-sheet` 同法修。
+- 样式全部挂在 `.st-console.art-sheet` 下，替换 `styles.css` 里旧的 `.art-*` 块；`.art-badge`、`.art-count`、`.art-est` 与 diff 弹窗共用，留在全局。
+- 数据层不动：`/api` 返回、D275 / D340 的来源收集与桥侧校验都没改。
+
+**验证。**
+- `npm run typecheck`（tsc、i18n 3983 键 × 3 语、视口守卫、层带、主题单测）通过。
+- `probes/artifacts-delivered.mjs` 9/9：原有 7 条，外加 390px 下弹窗与行不撑出视口、字号 150% 下底栏仍在弹窗里。
+- `web/tests/artifact-sources-unit.mjs`、`chrome-unit.mjs`、`commands-unit.mjs`、`settings-console-unit.mjs` 通过。
+
+**顺带。** `probes/artifacts-delivered.mjs` 在 Windows 上一跑就炸：会话目录名 `--C:-Users-…--` 里带冒号，`mkdirSync` 报 ENOENT。把编码里的 `:` 也替换成 `-`。
+
+## D346 内网通：附件先进输入框、基础群聊、固定消息、名字跟备注走、@ 与标为未读（用户要求 2026-11-20）
 
 **背景。** 粘贴 / 选择图片会立刻发出去，没机会配文字或反悔；不能拉群；给好友改的备注只在列表生效，气泡上还是对方自报的昵称；没有 Teams 那样的「固定消息」。
 
@@ -6614,7 +6676,7 @@ Esc 之后 dialog: 0
 
 **为什么不做中心服务器。** 内网通是对等的，没有常驻的「群主机」。快照随消息走 + 发送方扇出，任何一个成员在线就能把群续下去，代价是群越大发送方越累，所以上限 50 人。
 
-## D342 内网通：重要 / 紧急、群话题回复、已读名单、「已固定」会话分区（用户要求 2026-11-20）
+## D347 内网通：重要 / 紧急、群话题回复、已读名单、「已固定」会话分区（用户要求 2026-11-20）
 
 **决定。**
 - **重要 / 紧急**：输入框底栏「！」选优先级，只管下一条，发完清掉。消息带 `priority: "important" | "urgent"`，气泡上方彩色标签 + 左色条。收方会话列表显示「[紧急]」；**紧急和 @我 一样穿透免打扰**（`ThreadSummary.urgent / mention`，bridge 的 web-push 与页面通知都认）。

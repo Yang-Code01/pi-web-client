@@ -5,7 +5,8 @@
  * the parent" and never "everything named node.exe". A memory number that can be off by one
  * process is worse than no number: #79 will reap sessions with it.
  *
- * Reading the table is per-platform (`tasklist /FO CSV /NH`, `ps -A -o pid=,rss=`), and the
+ * Reading the table is per-platform (`tasklist /FO CSV /NH /FI "PID eq N"` once per pid,
+ * `ps -A -o pid=,rss=`), and the
  * parsing is a pure function so "the output format changed" is a test, not a support ticket. A
  * reading that cannot be trusted comes back as a failure, and the panel says 「不可用」 (D120 §6).
  */
@@ -29,19 +30,30 @@ export interface MemSample {
   failure: string | null;
 }
 
-/** D120 §2: a process table that takes longer than this is treated as unreadable. */
-export const SAMPLE_TIMEOUT_MS = 2000;
+/**
+ * D120 §2: a process table that takes longer than this is treated as unreadable. Per command, so on
+ * win32 it is per pid (D343: the unfiltered `tasklist` measured 2–18 s on a busy machine; one
+ * `/FI "PID eq N"` stayed under 0.8 s).
+ */
+export const SAMPLE_TIMEOUT_MS = 5000;
+
+/** win32 runs one `tasklist` per pid; at most this many at once. */
+const WIN32_PARALLEL = 4;
 
 /**
  * The command that lists every process with its resident size, or `null` on a platform we have no
  * rule for. `PI_WEB_PROCESS_TABLE_BIN` replaces the whole command with a **node script** for tests
  * (the same seam as `PI_BIN`, so the fixture is a `.mjs`); it is `PI_WEB_*` and never reaches pi.
  */
-export function processTableCommand(platform: NodeJS.Platform = process.platform): ProcessTableCommand | null {
+export function processTableCommand(platform: NodeJS.Platform = process.platform, pid?: number): ProcessTableCommand | null {
   const win32 = platform === "win32";
   if (!win32 && platform !== "darwin" && platform !== "linux") return null;
   const style: TableStyle = win32 ? "tasklist" : "ps";
-  const args = win32 ? ["/FO", "CSV", "/NH"] : ["-A", "-o", "pid=,rss="];
+  // win32: the unfiltered table asks every process on the box (services, protected ones) and is what
+  // timed out; a PID filter only touches ours (D343).
+  const args = win32
+    ? ["/FO", "CSV", "/NH", ...(pid === undefined ? [] : ["/FI", `PID eq ${pid}`])]
+    : ["-A", "-o", "pid=,rss="];
   const override = process.env.PI_WEB_PROCESS_TABLE_BIN;
   if (override) return { file: process.execPath, args: [override, ...args], style, label: "process table stub" };
   const file = win32 ? "tasklist" : "ps";
@@ -154,15 +166,21 @@ function readTable(cmd: ProcessTableCommand): Promise<string> {
 export async function sampleMemory(pids: readonly number[]): Promise<MemSample> {
   const none = new Map<number, number>();
   if (!pids.length) return { bytes: none, failure: null };
-  const cmd = processTableCommand();
-  if (!cmd) return { bytes: none, failure: `no process table command for platform ${process.platform}` };
-  let raw: string;
+  const probe = processTableCommand();
+  if (!probe) return { bytes: none, failure: `no process table command for platform ${process.platform}` };
+  const label = probe.label;
+  // One command for the whole table, or (win32) one per pid. Any command failing fails the sample:
+  // a total missing one pi is an undercount the watermark would act on (D120 §6).
+  const cmds = process.platform === "win32" ? pids.map((pid) => processTableCommand("win32", pid)!) : [probe];
+  const raws: string[] = [];
   try {
-    raw = await readTable(cmd);
+    for (let i = 0; i < cmds.length; i += WIN32_PARALLEL) {
+      raws.push(...(await Promise.all(cmds.slice(i, i + WIN32_PARALLEL).map(readTable))));
+    }
   } catch (err) {
     return { bytes: none, failure: String((err as Error)?.message ?? err) };
   }
-  const bytes = parseProcessTable(cmd.style, raw, pids);
-  if (!bytes.size) return { bytes, failure: `${cmd.label} listed none of our ${pids.length} pid(s)` };
+  const bytes = parseProcessTable(probe.style, raws.join("\n"), pids);
+  if (!bytes.size) return { bytes, failure: `${label} listed none of our ${pids.length} pid(s)` };
   return { bytes, failure: null };
 }

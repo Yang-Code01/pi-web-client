@@ -48,7 +48,7 @@ fs.writeFileSync(SCRIPT, "print('saved 期末成绩单.xlsx')\n");
 fs.writeFileSync(BOOK, "not really a workbook\n");
 
 // 会话文件：pi 的默认布局 `<root>/--<cwd>--/<ts>_<id>.jsonl`；不写 parentId 就是线性历史。
-const enc = `--${WORK.replace(/^\/+/, "").replace(/[\\/]/g, "-")}--`;
+const enc = `--${WORK.replace(/^\/+/, "").replace(/[\\/:]/g, "-")}--`;
 const dir = path.join(AGENT, "sessions", enc);
 fs.mkdirSync(dir, { recursive: true });
 const at = (s) => `2026-11-15T10:00:${String(s).padStart(2, "0")}.000Z`;
@@ -148,6 +148,32 @@ try {
   check("没有可对比的改动 → 不给空的 diff 入口", book?.hasDiff === false);
   check("写入过的 py 仍在列表里（write×1）", script?.tools === "write×1", script?.tools ?? "");
   await page.screenshot({ path: path.join(OUT, "1-artifacts.png"), animations: "disabled" });
+  // 窄屏（390px）：弹窗和行都不许撑出视口（settings-console 的列轨 minmax(0,1fr) 防的就是这个）
+  await page.setViewportSize({ width: 390, height: 844 });
+  await sleep(400);
+  const fit = await page.evaluate(() => {
+    const s = document.querySelector(".art-sheet");
+    if (!s) return { ok: false };
+    const box = s.getBoundingClientRect();
+    const rowsIn = [...s.querySelectorAll(".art-row")].every((r) => r.getBoundingClientRect().right <= box.right + 1);
+    return { ok: box.right <= window.innerWidth + 1 && rowsIn, width: Math.round(box.width), vw: window.innerWidth };
+  });
+  check("390px 下弹窗与行都不撑出视口", fit.ok === true, JSON.stringify(fit));
+  await page.screenshot({ path: path.join(OUT, "2-artifacts-390.png"), animations: "disabled" });
+  // 字号 150%：底栏（st-foot）还得在弹窗里看得见（AGENTS：弹层改完要看一眼底栏）
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await page.evaluate(() => document.documentElement.style.setProperty("--ui-scale", "1.5"));
+  await sleep(400);
+  const foot = await page.evaluate(() => {
+    const s = document.querySelector(".art-sheet");
+    const f = s?.querySelector(".st-foot");
+    if (!s || !f) return { ok: false };
+    const sb = s.getBoundingClientRect();
+    const fb = f.getBoundingClientRect();
+    return { ok: fb.bottom <= sb.bottom + 1 && fb.height > 0 && fb.bottom <= window.innerHeight + 1, footBottom: Math.round(fb.bottom), sheetBottom: Math.round(sb.bottom), vh: window.innerHeight };
+  });
+  check("字号 150% 下底栏仍在弹窗里", foot.ok === true, JSON.stringify(foot));
+  await page.screenshot({ path: path.join(OUT, "3-artifacts-150.png"), animations: "disabled" });
 } catch (err) {
   console.log("FAIL — 探针抛错：", err?.message ?? err);
   results.push({ name: "探针跑完", ok: false });

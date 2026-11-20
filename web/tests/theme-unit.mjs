@@ -10,7 +10,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { ACCENTS, ACCENTS_LIGHT } from "../src/palette.ts";
+import { ACCENTS, ACCENTS_LIGHT, MAC_ACCENTS, MAC_ACCENTS_LIGHT } from "../src/palette.ts";
 import {
   DEFAULT_THEME,
   TERM_THEMES,
@@ -32,8 +32,8 @@ function luma(hex) {
   return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
 
-test("七套主题：id 表、信息表、显示名一一对应，不重名", () => {
-  assert.deepEqual([...THEME_IDS], ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper"]);
+test("十套主题：id 表、信息表、显示名一一对应，不重名", () => {
+  assert.deepEqual([...THEME_IDS], ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper", "mac-light", "mac-dark", "mac-midnight"]);
   assert.equal(THEMES.length, THEME_IDS.length);
   assert.deepEqual(
     THEMES.map((t) => t.id),
@@ -64,8 +64,16 @@ test("light 标记跟配色一致：说浅底的，底比字亮", () => {
   }
 });
 
+test("Mac 主题的强调色走 macOS 八色表，不认识的回系统蓝", () => {
+  for (const t of THEMES.filter((x) => x.mac)) {
+    const table = t.light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
+    for (const id of Object.keys(MAC_ACCENTS)) assert.deepEqual(accentFor(t.id, id), table[id], `${t.id} / ${id}`);
+    assert.deepEqual(accentFor(t.id, "ice"), table.blue);
+  }
+});
+
 test("强调色选表：浅底用 ACCENTS_LIGHT，深底用 ACCENTS，不认识的 accent 回 ice", () => {
-  for (const t of THEMES) {
+  for (const t of THEMES.filter((x) => !x.mac)) {
     const table = t.light ? ACCENTS_LIGHT : ACCENTS;
     for (const id of Object.keys(ACCENTS)) {
       assert.deepEqual(accentFor(t.id, id), table[id], `${t.id} / ${id} 取错了表`);
@@ -105,4 +113,11 @@ test("每套主题在 styles.css 里都有自己那一块（midnight 落在 :roo
     assert.ok(CSS.includes(`:root[data-theme="${t.id}"][data-text="soft"]`), `${t.id} 缺少「柔和」文字档`);
     assert.ok(CSS.includes(`:root[data-theme="${t.id}"][data-text="bright"]`), `${t.id} 缺少「明亮」文字档`);
   }
+});
+
+test("Mac 风格：恰好三套、排在最后、浅深都有", () => {
+  const mac = THEMES.filter((t) => t.mac);
+  assert.deepEqual(mac.map((t) => t.id), ["mac-light", "mac-dark", "mac-midnight"]);
+  assert.deepEqual(THEMES.slice(-3), mac, "Mac 那页的三颗在表尾，「配色主题」那页的顺序不被打乱");
+  assert.ok(mac.some((t) => t.light) && mac.some((t) => !t.light));
 });

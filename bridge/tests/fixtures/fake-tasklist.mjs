@@ -26,6 +26,9 @@ try {
 }
 
 const csv = process.argv.includes("/FO");
+// win32 asks one pid at a time (`/FI "PID eq N"`, D343); honour the filter like tasklist does.
+const filter = /^PID eq (\d+)$/.exec(process.argv[process.argv.indexOf("/FI") + 1] ?? "");
+if (filter) rows = rows.filter(([pid]) => pid === filter[1]);
 for (const [pid, kib] of rows) {
   const k = Number(kib).toLocaleString("en-US");
   if (csv) process.stdout.write(`"node.exe","${pid}","Console","1","${k} K"\r\n`);
