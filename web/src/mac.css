@@ -16,122 +16,7 @@
  * 尺寸：这份文件里没有裸 vh / vw（#app 有 zoom，见 AGENTS.md）。
  */
 
-/* ---------------------------------------------------------------- 1. 材质：每套主题的玻璃与壁纸 */
-:root[data-theme="mac-light"] {
-  --mac-wall:
-    radial-gradient(1100px 760px at 8% -6%, rgba(110, 168, 255, 0.5), transparent 62%),
-    radial-gradient(980px 720px at 104% 12%, rgba(255, 150, 196, 0.42), transparent 62%),
-    radial-gradient(1000px 760px at 52% 112%, rgba(140, 226, 204, 0.5), transparent 62%),
-    linear-gradient(180deg, #eef1f7, #f3eff5);
-  --mac-glass: rgba(255, 255, 255, 0.58);
-  --mac-glass-strong: rgba(252, 252, 254, 0.8);
-  --mac-glass-solid: rgba(255, 255, 255, 0.92);
-  --mac-glass-line: rgba(0, 0, 0, 0.09);
-  --mac-glass-hi: rgba(255, 255, 255, 0.85);
-  --mac-fill: rgba(0, 0, 0, 0.045);
-  --mac-fill-2: rgba(0, 0, 0, 0.085);
-  --mac-control: linear-gradient(180deg, #ffffff, #f6f6f8);
-  --mac-control-line: rgba(0, 0, 0, 0.12);
-  --mac-knob: #ffffff;
-  --mac-track: rgba(120, 120, 128, 0.24);
-  --mac-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.14), 0 22px 70px rgba(30, 40, 80, 0.22), 0 4px 14px rgba(0, 0, 0, 0.08);
-  --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 8px 30px rgba(40, 50, 90, 0.1);
-  --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 12px 36px rgba(0, 0, 0, 0.18);
-  --mac-scrim: rgba(40, 44, 60, 0.18);
-  --mac-scroll: rgba(0, 0, 0, 0.28);
-}
-:root[data-theme="mac-dark"] {
-  --mac-wall:
-    radial-gradient(1100px 760px at 6% -8%, rgba(94, 92, 230, 0.4), transparent 62%),
-    radial-gradient(980px 720px at 106% 8%, rgba(191, 90, 242, 0.26), transparent 62%),
-    radial-gradient(1000px 760px at 56% 118%, rgba(10, 132, 255, 0.26), transparent 62%),
-    linear-gradient(180deg, #131316, #18171c);
-  --mac-glass: rgba(38, 38, 42, 0.56);
-  --mac-glass-strong: rgba(36, 36, 40, 0.8);
-  --mac-glass-solid: rgba(40, 40, 44, 0.94);
-  --mac-glass-line: rgba(255, 255, 255, 0.1);
-  --mac-glass-hi: rgba(255, 255, 255, 0.09);
-  --mac-fill: rgba(255, 255, 255, 0.06);
-  --mac-fill-2: rgba(255, 255, 255, 0.11);
-  --mac-control: linear-gradient(180deg, #5b5b60, #4a4a4f);
-  --mac-control-line: rgba(0, 0, 0, 0.5);
-  --mac-knob: #f2f2f4;
-  --mac-track: rgba(120, 120, 128, 0.36);
-  --mac-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(255, 255, 255, 0.12), 0 26px 80px rgba(0, 0, 0, 0.55);
-  --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.6), inset 0 0.5px 0 rgba(255, 255, 255, 0.08), 0 10px 34px rgba(0, 0, 0, 0.35);
-  --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(255, 255, 255, 0.12), 0 14px 40px rgba(0, 0, 0, 0.5);
-  --mac-scrim: rgba(0, 0, 0, 0.32);
-  --mac-scroll: rgba(255, 255, 255, 0.3);
-}
-:root[data-theme="mac-midnight"] {
-  --mac-wall:
-    radial-gradient(1100px 760px at 4% -10%, rgba(40, 110, 230, 0.48), transparent 62%),
-    radial-gradient(980px 720px at 106% 10%, rgba(110, 80, 230, 0.32), transparent 62%),
-    radial-gradient(1000px 760px at 52% 120%, rgba(0, 170, 210, 0.24), transparent 62%),
-    linear-gradient(180deg, #0e1422, #121a2b);
-  --mac-glass: rgba(30, 38, 58, 0.55);
-  --mac-glass-strong: rgba(28, 35, 54, 0.8);
-  --mac-glass-solid: rgba(32, 40, 60, 0.94);
-  --mac-glass-line: rgba(170, 195, 255, 0.13);
-  --mac-glass-hi: rgba(200, 220, 255, 0.1);
-  --mac-fill: rgba(170, 195, 255, 0.07);
-  --mac-fill-2: rgba(170, 195, 255, 0.13);
-  --mac-control: linear-gradient(180deg, #46506a, #394259);
-  --mac-control-line: rgba(0, 0, 0, 0.45);
-  --mac-knob: #f1f4fb;
-  --mac-track: rgba(130, 145, 180, 0.34);
-  --mac-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(200, 220, 255, 0.14), 0 26px 80px rgba(0, 6, 20, 0.6);
-  --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.55), inset 0 0.5px 0 rgba(200, 220, 255, 0.1), 0 10px 34px rgba(0, 6, 20, 0.4);
-  --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(200, 220, 255, 0.14), 0 14px 40px rgba(0, 6, 20, 0.55);
-  --mac-scrim: rgba(2, 6, 16, 0.34);
-  --mac-scroll: rgba(200, 215, 255, 0.3);
-}
-
-html[data-ui="mac"] {
-  /* Apple 的系统字体与等宽字体排在最前；Windows 上自然退回 Segoe UI / 雅黑。 */
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", "PingFang SC", "Hiragino Sans", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei", sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
-  --r: 10px;
-  /* 全局缓动换成 Apple 的：iOS 弹层那条「快出慢收」，以及带一点回弹的弹簧。 */
-  --mac-ease: cubic-bezier(0.32, 0.72, 0, 1);
-  --mac-spring: cubic-bezier(0.34, 1.42, 0.64, 1);
-  --ease: var(--mac-ease);
-  --dur-1: 160ms;
-  --dur-2: 300ms;
-  --mac-blur: saturate(180%) blur(28px);
-  --mac-blur-strong: saturate(190%) blur(44px);
-  color-scheme: light;
-}
-html[data-ui="mac"][data-theme="mac-dark"],
-html[data-ui="mac"][data-theme="mac-midnight"] { color-scheme: dark; }
-
-html[data-ui="mac"] body {
-  background: var(--mac-wall);
-  background-attachment: fixed;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-size: 14px;
-  letter-spacing: -0.003em;
-}
-html[data-ui="mac"] ::selection { background: color-mix(in srgb, var(--accent) 34%, transparent); }
-
-/* 叠加式滚动条：细、圆、只在 hover 时变深。 */
-html[data-ui="mac"] ::-webkit-scrollbar { width: 11px; height: 11px; background: transparent; }
-html[data-ui="mac"] ::-webkit-scrollbar-track { background: transparent; }
-html[data-ui="mac"] ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--mac-scroll) 70%, transparent);
-  border: 3px solid transparent;
-  background-clip: content-box;
-  border-radius: 999px;
-}
-html[data-ui="mac"] ::-webkit-scrollbar-thumb:hover { background-color: var(--mac-scroll); }
-html[data-ui="mac"] ::-webkit-scrollbar-corner { background: transparent; }
-
-/* macOS 的焦点环：一圈半透明强调色光晕，不是 2px 实线。 */
-html[data-ui="mac"] :is(button, a, [role="button"], [role="tab"], [role="menuitem"], summary, .session-card):focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 50%, transparent) !important;
-  outline-offset: 1px !important;
-}
+@import "./mac-base.css";
 
 /* ---------------------------------------------------------------- 2a. 窗口骨架：工具栏 + 浮动侧栏 */
 html[data-ui="mac"] .topbar {
@@ -464,16 +349,6 @@ html[data-ui="mac"] :is(.fail-toast, .update-bar) { background: var(--mac-glass-
 /* 右栏的卡片（需要你 / 执行）：发丝线 + 圆角，悬停微微浮起。 */
 html[data-ui="mac"] .queue > * { border-radius: 12px; }
 
-/* ---------------------------------------------------------------- 3. 动效 */
-@keyframes mac-fade-in { from { opacity: 0; } }
-@keyframes mac-fade-out { to { opacity: 0; } }
-/* 窗口 / 设置台：从上方落下来，带一点回弹（macOS 的 sheet 从标题栏滑出）。 */
-@keyframes mac-window-in { from { opacity: 0; translate: 0 -26px; scale: 0.94; } }
-@keyframes mac-window-out { to { opacity: 0; translate: 0 -14px; scale: 0.96; } }
-@keyframes mac-drawer-in { from { opacity: 0.4; translate: 0 48px; } }
-@keyframes mac-menu-in { from { opacity: 0; scale: 0.92; translate: 0 -4px; } }
-@keyframes mac-toast-in { from { opacity: 0; translate: 0 18px; scale: 0.96; } }
-@keyframes mac-bubble-in { from { opacity: 0; scale: 0.9; translate: 0 8px; } }
 
 /* 退场（app.ts 的 retireOverlay 挂 `.mac-leaving`，动画放完再真正移除）。 */
 html[data-ui="mac"] .mac-leaving { pointer-events: none; animation: mac-fade-out 200ms var(--mac-ease) forwards !important; }

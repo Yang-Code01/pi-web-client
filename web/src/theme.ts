@@ -110,20 +110,28 @@ export function paintTheme(theme: ThemeId, accent: string): void {
   if (meta) meta.content = themeInfo(theme).demo.bg;
 }
 
-/** 登录页之前：按已存偏好（没有就默认）把主题先挂上。 */
+/**
+ * 按已存偏好（没有就默认）把主题挂上：主界面在登录页之前跑一次；内网通页面（peer.html，独立文档）
+ * 靠它跟主界面同一套主题，主界面改了偏好时它再跑一次（`storage` 事件，D350）。
+ * 文字三档（`data-text`）也一起落：主界面随后 applyPrefs 会再写一遍同样的值。
+ */
 export function bootTheme(): void {
   let theme: ThemeId = DEFAULT_THEME;
   let accent = "ice";
   let macAccent = DEFAULT_MAC_ACCENT;
+  let text = "normal";
   try {
     const p = JSON.parse(localStorage.getItem("pi.prefs") ?? "null");
     if (isTheme(p?.theme)) theme = p.theme;
     if (typeof p?.accent === "string" && ACCENTS[p.accent]) accent = p.accent;
     if (typeof p?.macAccent === "string" && MAC_ACCENTS[p.macAccent]) macAccent = p.macAccent;
+    if (p?.text === "soft" || p?.text === "bright") text = p.text;
   } catch {
     // 读不到就按默认。
   }
   paintTheme(theme, activeAccent(theme, { accent, macAccent }));
+  // Mac 主题不分三档（同 app.ts 的 applyPrefs）。
+  document.documentElement.dataset.text = isMacTheme(theme) ? "normal" : text;
 }
 
 /**

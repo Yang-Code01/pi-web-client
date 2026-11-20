@@ -1,0 +1,334 @@
+/*
+ * 主题 token（底 / 线 / 字 / 信号色）的唯一真源：主界面（styles.css）与内网通页面（peer/peer.css）都 @import 这一份。
+ * 内网通是独立文档（peer.html，主界面里以 iframe 打开），以前自带一份写死的「午夜」配色，换主题它不跟（D350）。
+ * 这里只放 `:root` 上的变量，不写任何元素规则 —— 两份文档的 class 名会撞（.btn / .modal / .main），规则不能共用。
+ */
+:root {
+  /* 表面：底 / 内嵌 / 面板 / 抬起 / 浮层。四档够用，别再为某一处调一个明度。 */
+  --bg: #0b0d10;
+  --sunken: #0a0e13;
+  --panel: #12151a;
+  --panel-2: #171b22;
+  --panel-3: #1c2129;
+  /* 线：卡片 / 内部分隔 / 悬停与输入框 / 边缘高光 */
+  --line: #232833;
+  --line-soft: #1b2028;
+  --line-strong: #2f3a48;
+  --line-lit: #3a4658;
+  /* 字：这里是「标准」档的默认值；柔和/明亮在下面按 [data-text] 覆盖（D158：只有这一份真源）。 */
+  --text: #e7eaf0;
+  --dim: #9aa2b1;
+  --faint: #8b93a1;
+  /* 信号色四档：本色 / 淡底 / 淡边 / 亮底上的深字 */
+  --accent: #7dd3fc;
+  --accent-hover: #9adcf9;
+  --accent-bg: #0e2a36;
+  --accent-dim: #0e3a4d;
+  --accent-ink: #04202b;
+  --ok: #4ade80;
+  --ok-bg: #0d2016;
+  --ok-dim: #1d3a2a;
+  --ok-ink: #06141b;
+  --warn: #fbbf24;
+  --warn-bg: #241d0a;
+  --warn-dim: #3a2f14;
+  --warn-ink: #241a06;
+  --danger: #fb7185;
+  --danger-bg: #2a1016;
+  --danger-dim: #40222a;
+  --danger-ink: #1a0708;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --r: 12px;
+  /* 一条缓动、两档时长：整套界面只有这两种动，别处不再写各自的时间曲线。 */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-1: 140ms;
+  --dur-2: 180ms;
+  /* 视口单位的「缩放修正」：`#app` 上挂着 zoom，CSS 里的 `78vh` 会被再乘一次缩放（D123 的同一个坑）。
+     要写几成视口，就写 `calc(var(--vh1) * 78)` —— 这已经是 1% 视口高、除过缩放的长度，
+     乘上 zoom 之后刚好就是 78% 视口。宽度的 `--vw1` 同理。
+     这条不是约定而是硬规则：`node web/tests/viewport-units-unit.mjs`（跑在 web 的 typecheck 里）
+     会把本文件里任何裸 vh / vw 当成失败。确实不在 #app 里（document.body.append 上去、没有 zoom 的
+     浮层）的那几条，行尾有一条「不在 #app」注释豁免 —— 别的新东西不要抄这个豁口，把浮层挂进 #app。 */
+  --vh1: calc(1vh / var(--ui-scale, 1));
+  --vw1: calc(1vw / var(--ui-scale, 1));
+  color-scheme: dark;
+}
+
+/* D158：文字三档亮度的唯一真源。app.ts 只往 <html> 上写 data-text，不再把颜色抄进 TS ——
+   抄一份就会分叉：46e8c64 那次 CSS 改了、运行时仍是旧值，就是因为 TS 里还留着旧色。
+   每档 faint 都要在 --panel-3 上过 AA 4.5:1（列表行、sheet 底最深的那个面），
+   并且跟同档 dim 保留可见层级差（>=1.3:1），否则「弱化」和「次要」看起来一样灰。 */
+:root[data-text="soft"] { --text: #d2d7e1; --dim: #98a0af; --faint: #828a99; }
+:root[data-text="bright"] { --text: #fbfcff; --dim: #b9c1d0; --faint: #959ead; }
+
+/* 主题（设置 → 外观 → 主题，theme.ts）。默认「午夜」就是上面 :root 那一套，不另写块。
+   每一块都放在 data-text 之后：同一特异度，后写的赢；所以每套主题自带三档文字的组合规则。
+   强调色两个变量（--accent / --accent-dim）由 theme.ts 按主题挑表后写成行内样式，这里不写。 */
+:root[data-theme="daylight"] {
+  --bg: #f5f6f8;
+  --sunken: #eceff3;
+  --panel: #ffffff;
+  --panel-2: #f3f5f8;
+  --panel-3: #e9edf2;
+  --line: #dce1e8;
+  --line-soft: #e8ecf1;
+  --line-strong: #c9d1db;
+  --line-lit: #aeb8c6;
+  --text: #1f2430;
+  --dim: #4f5866;
+  --faint: #616a7a;
+  --accent-hover: color-mix(in srgb, var(--accent) 82%, #000);
+  --accent-bg: color-mix(in srgb, var(--accent) 9%, #fff);
+  --accent-ink: #ffffff;
+  --ok: #15803d;
+  --ok-bg: #ecfaf1;
+  --ok-dim: #c3ecd2;
+  --ok-ink: #ffffff;
+  --warn: #b45309;
+  --warn-bg: #fff8e6;
+  --warn-dim: #f6dfa8;
+  --warn-ink: #ffffff;
+  --danger: #be123c;
+  --danger-bg: #fff1f3;
+  --danger-dim: #f8cdd5;
+  --danger-ink: #ffffff;
+  color-scheme: light;
+}
+:root[data-theme="daylight"][data-text="soft"] { --text: #353c49; --dim: #5b6472; --faint: #626b7b; }
+:root[data-theme="daylight"][data-text="bright"] { --text: #0b0e14; --dim: #3a4250; --faint: #5a6372; }
+
+:root[data-theme="ember"] {
+  --bg: #151210;
+  --sunken: #110e0c;
+  --panel: #1c1815;
+  --panel-2: #241f1b;
+  --panel-3: #2b2520;
+  --line: #352d27;
+  --line-soft: #29231f;
+  --line-strong: #4a3f36;
+  --line-lit: #5c4f44;
+  --text: #efe7df;
+  --dim: #b3a89d;
+  --faint: #9d9184;
+  --accent-hover: color-mix(in srgb, var(--accent) 80%, #fff);
+  --accent-bg: color-mix(in srgb, var(--accent) 12%, #151210);
+  --accent-ink: #1a1009;
+}
+:root[data-theme="ember"][data-text="soft"] { --text: #dcd3ca; --dim: #a99e93; --faint: #958a7e; }
+:root[data-theme="ember"][data-text="bright"] { --text: #fffaf5; --dim: #c9bfb4; --faint: #a69a8e; }
+
+:root[data-theme="fjord"] {
+  --bg: #2a303b;
+  --sunken: #252a34;
+  --panel: #2f3542;
+  --panel-2: #353c4a;
+  --panel-3: #3b4252;
+  --line: #444c5e;
+  --line-soft: #3a4151;
+  --line-strong: #555f73;
+  --line-lit: #677287;
+  --text: #eceff4;
+  --dim: #c0c8d6;
+  --faint: #a9b2c2;
+  --accent-hover: color-mix(in srgb, var(--accent) 80%, #fff);
+  --accent-bg: color-mix(in srgb, var(--accent) 14%, #2a303b);
+  --accent-ink: #1b2330;
+  --ok: #a3d98c;
+  --ok-bg: #2f3b33;
+  --ok-dim: #3e5243;
+  --warn: #ebcb8b;
+  --warn-bg: #3c3a32;
+  --warn-dim: #575038;
+  --danger: #f29ba3;
+  --danger-bg: #40323a;
+  --danger-dim: #5a3f49;
+}
+:root[data-theme="fjord"][data-text="soft"] { --text: #d8dde6; --dim: #b4bccb; --faint: #a3acbc; }
+:root[data-theme="fjord"][data-text="bright"] { --text: #ffffff; --dim: #d3dae5; --faint: #b8c0ce; }
+
+/* 素白：纯白画布 + 极浅灰面板，跟「晨光」的冷灰底拉开一档（这是三套浅色里最亮的一套）。 */
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --sunken: #f1f3f6;
+  --panel: #f8f9fb;
+  --panel-2: #eef1f5;
+  --panel-3: #e6eaf0;
+  --line: #dde1e8;
+  --line-soft: #e9edf2;
+  --line-strong: #c3cad4;
+  --line-lit: #a8b2bf;
+  --text: #101216;
+  --dim: #4a5261;
+  --faint: #5d6675;
+  --accent-hover: color-mix(in srgb, var(--accent) 82%, #000);
+  --accent-bg: color-mix(in srgb, var(--accent) 8%, #fff);
+  --accent-ink: #ffffff;
+  --ok: #15803d;
+  --ok-bg: #ecfaf1;
+  --ok-dim: #c3ecd2;
+  --ok-ink: #ffffff;
+  --warn: #b45309;
+  --warn-bg: #fff8e6;
+  --warn-dim: #f6dfa8;
+  --warn-ink: #ffffff;
+  --danger: #be123c;
+  --danger-bg: #fff1f3;
+  --danger-dim: #f8cdd5;
+  --danger-ink: #ffffff;
+  color-scheme: light;
+}
+:root[data-theme="light"][data-text="soft"] { --text: #2b313c; --dim: #5a6473; --faint: #5f6975; }
+:root[data-theme="light"][data-text="bright"] { --text: #06080b; --dim: #3a424f; --faint: #4f5866; }
+
+/* 深海：比「峡湾」暗一整档、偏蓝黑，像凌晨四点的海面。信号色沿用 :root 那套（深底通用）。 */
+:root[data-theme="dusk"] {
+  --bg: #070b14;
+  --sunken: #060912;
+  --panel: #0c1220;
+  --panel-2: #111a2b;
+  --panel-3: #162136;
+  --line: #1c2740;
+  --line-soft: #151e33;
+  --line-strong: #2a3a5c;
+  --line-lit: #3d5178;
+  --text: #e3eaf7;
+  --dim: #9aa7bd;
+  --faint: #8b98ae;
+  --accent-hover: color-mix(in srgb, var(--accent) 84%, #fff);
+  --accent-bg: color-mix(in srgb, var(--accent) 14%, #070b14);
+  --accent-ink: #04202b;
+}
+:root[data-theme="dusk"][data-text="soft"] { --text: #ccd6e6; --dim: #8d9ab0; --faint: #7f8ca2; }
+:root[data-theme="dusk"][data-text="bright"] { --text: #f5f8ff; --dim: #aebbd0; --faint: #9dabc2; }
+
+/* 沙丘：暖沙底配米白面板，七套里唯一的暖色浅底。线偏棕，信号色压深到能读。 */
+:root[data-theme="paper"] {
+  --bg: #f4efe4;
+  --sunken: #ebe4d5;
+  --panel: #fcf9f2;
+  --panel-2: #f6f1e6;
+  --panel-3: #ece5d3;
+  --line: #ded4c0;
+  --line-soft: #e8dfcd;
+  --line-strong: #c7b99e;
+  --line-lit: #ad9c7c;
+  --text: #2a2419;
+  --dim: #5f5749;
+  --faint: #6d6455;
+  --accent-hover: color-mix(in srgb, var(--accent) 82%, #000);
+  --accent-bg: color-mix(in srgb, var(--accent) 9%, #fff);
+  --accent-ink: #ffffff;
+  --ok: #3f7f42;
+  --ok-bg: #eaf2e2;
+  --ok-dim: #c3d9b3;
+  --ok-ink: #ffffff;
+  --warn: #8a5a00;
+  --warn-bg: #f8edd2;
+  --warn-dim: #e3cfa0;
+  --warn-ink: #ffffff;
+  --danger: #b03038;
+  --danger-bg: #f9e7e6;
+  --danger-dim: #e8c2c0;
+  --danger-ink: #ffffff;
+  color-scheme: light;
+}
+:root[data-theme="paper"][data-text="soft"] { --text: #3e3729; --dim: #6a6152; --faint: #6f6553; }
+:root[data-theme="paper"][data-text="bright"] { --text: #1a1610; --dim: #4a4335; --faint: #564e3f; }
+
+/* Mac 风格（设置里单独一页）：照 macOS 的系统配色。灰阶一律中性（R=G≈B），不像其它几套带冷/暖偏色；
+   信号色用 Apple 的 systemGreen / Orange / Red，浅底用它的「高对比」版本。 */
+:root[data-theme="mac-light"] {
+  --bg: #f5f5f7;
+  --sunken: #ececef;
+  --panel: #ffffff;
+  --panel-2: #f2f2f4;
+  --panel-3: #e8e8ed;
+  --line: #dedee3;
+  --line-soft: #ebebef;
+  --line-strong: #c7c7cc;
+  --line-lit: #aeaeb2;
+  --text: #1d1d1f;
+  --dim: #515154;
+  --faint: #636366;
+  --accent-hover: color-mix(in srgb, var(--accent) 82%, #000);
+  --accent-bg: color-mix(in srgb, var(--accent) 9%, #fff);
+  --accent-ink: #ffffff;
+  --ok: #248a3d;
+  --ok-bg: #eaf7ee;
+  --ok-dim: #bfe6c9;
+  --ok-ink: #ffffff;
+  --warn: #b25000;
+  --warn-bg: #fff6e5;
+  --warn-dim: #f5d9a6;
+  --warn-ink: #ffffff;
+  --danger: #d70015;
+  --danger-bg: #fff0f1;
+  --danger-dim: #f7c6cb;
+  --danger-ink: #ffffff;
+  color-scheme: light;
+}
+:root[data-theme="mac-light"][data-text="soft"] { --text: #3a3a3c; --dim: #58585c; --faint: #636366; }
+:root[data-theme="mac-light"][data-text="bright"] { --text: #000000; --dim: #3a3a3c; --faint: #545458; }
+
+/* Mac 深色：石墨中性灰，比「午夜」亮一档、不带蓝。 */
+:root[data-theme="mac-dark"] {
+  --bg: #1c1c1e;
+  --sunken: #161618;
+  --panel: #232325;
+  --panel-2: #2c2c2e;
+  --panel-3: #343436;
+  --line: #38383a;
+  --line-soft: #2e2e30;
+  --line-strong: #48484a;
+  --line-lit: #5a5a5e;
+  --text: #f5f5f7;
+  --dim: #b8b8bd;
+  --faint: #a1a1a6;
+  --accent-hover: color-mix(in srgb, var(--accent) 80%, #fff);
+  --accent-bg: color-mix(in srgb, var(--accent) 14%, #1c1c1e);
+  --accent-ink: #04202b;
+  --ok: #30d158;
+  --ok-bg: #102a18;
+  --ok-dim: #1f4a2c;
+  --ok-ink: #04140a;
+  --warn: #ffd60a;
+  --warn-bg: #2b2508;
+  --warn-dim: #4a400f;
+  --danger: #ff453a;
+  --danger-bg: #331311;
+  --danger-dim: #55221e;
+}
+:root[data-theme="mac-dark"][data-text="soft"] { --text: #e5e5ea; --dim: #aeaeb2; --faint: #a1a1a6; }
+:root[data-theme="mac-dark"][data-text="bright"] { --text: #ffffff; --dim: #d1d1d6; --faint: #aeaeb2; }
+
+/* Mac 午夜蓝：MacBook「午夜色」的蓝黑，比「峡湾」暗、比「深海」亮；信号色与 Mac 深色同一套。 */
+:root[data-theme="mac-midnight"] {
+  --bg: #171c26;
+  --sunken: #131720;
+  --panel: #1d2330;
+  --panel-2: #242b3a;
+  --panel-3: #2b3343;
+  --line: #333c4e;
+  --line-soft: #283041;
+  --line-strong: #434d63;
+  --line-lit: #56617a;
+  --text: #eef1f7;
+  --dim: #b3bccc;
+  --faint: #a3adbf;
+  --accent-hover: color-mix(in srgb, var(--accent) 80%, #fff);
+  --accent-bg: color-mix(in srgb, var(--accent) 14%, #171c26);
+  --accent-ink: #04202b;
+  --ok: #30d158;
+  --ok-bg: #11291f;
+  --ok-dim: #1f4733;
+  --ok-ink: #04140a;
+  --warn: #ffd60a;
+  --warn-bg: #2a2614;
+  --warn-dim: #48401b;
+  --danger: #ff453a;
+  --danger-bg: #33171d;
+  --danger-dim: #55252b;
+}
+:root[data-theme="mac-midnight"][data-text="soft"] { --text: #d9dfe9; --dim: #a7b1c2; --faint: #9aa4b6; }
+:root[data-theme="mac-midnight"][data-text="bright"] { --text: #ffffff; --dim: #ccd4e1; --faint: #b0b9c9; }

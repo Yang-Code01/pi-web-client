@@ -1,0 +1,239 @@
+/*
+ * 内网通页面的 Mac 风格（D350）：跟主界面 mac.css 同一身——毛玻璃、发丝线、iMessage 气泡、弹簧动效。
+ *
+ * 开关同主界面：`html[data-ui="mac"]`（peer/main.ts 用 theme.ts 的 bootTheme 挂上）。别的主题一条都不生效。
+ * 材质变量、字体、滚动条、关键帧在 `../mac-base.css`（两份文档共用）；这里只写内网通自己的 class。
+ * 不 import mac.css：它的 `.modal` 是背景遮罩、`.main` 是三栏，跟这页同名不同义。
+ *
+ * 气泡上不写 box-shadow：置顶 / 重要 / 紧急 / @我 / 搜索命中 / 多选，都是用 inset box-shadow 画的那条色条，
+ * 写了就把它们盖掉。
+ */
+@import "../mac-base.css";
+
+/* ---------------------------------------------------------------- 骨架：壁纸上的玻璃 */
+html[data-ui="mac"] body { font-size: 13px; }
+/* 弹框 iframe 里：外层的 sheet 已经是一块玻璃，这页透明，让它透上来（mac.css 里 .peer-frame 也是透明的）。 */
+html[data-ui="mac"] body.embedded { background: transparent; }
+html[data-ui="mac"] :is(.app, .main) { background: transparent; }
+
+html[data-ui="mac"] .bar {
+  background: var(--mac-glass);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border-bottom: 0.5px solid var(--mac-glass-line);
+  box-shadow: inset 0 -0.5px 0 var(--mac-glass-hi);
+}
+html[data-ui="mac"] .rail {
+  background: color-mix(in srgb, var(--mac-glass) 70%, transparent);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border-right: 0.5px solid var(--mac-glass-line);
+}
+html[data-ui="mac"] .rail button { border-radius: 10px; transition: background var(--dur-1) var(--mac-ease), color var(--dur-1) var(--mac-ease), scale 240ms var(--mac-spring); }
+html[data-ui="mac"] .rail button:hover { background: var(--mac-fill-2); }
+html[data-ui="mac"] .rail button:active { scale: 0.92; }
+html[data-ui="mac"] .rail button.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+/* 列表栏：Finder 那种侧栏 */
+html[data-ui="mac"] .list {
+  background: var(--mac-glass);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border-right: 0.5px solid var(--mac-glass-line);
+}
+html[data-ui="mac"] .search {
+  border: 0;
+  border-radius: 8px;
+  background: var(--mac-fill-2);
+  transition: box-shadow var(--dur-1) var(--mac-ease);
+}
+html[data-ui="mac"] .search:focus-within { box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 26%, transparent); }
+html[data-ui="mac"] :is(.row, .trow) { border-radius: 10px; transition: background var(--dur-1) var(--mac-ease), scale 260ms var(--mac-spring); }
+html[data-ui="mac"] :is(.row, .trow, .fwd-row, .pin-row, .group-row):hover { background: var(--mac-fill); }
+html[data-ui="mac"] :is(.row, .trow):active { scale: 0.985; }
+html[data-ui="mac"] :is(.row, .trow).on,
+html[data-ui="mac"] :is(.row, .trow).on:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+html[data-ui="mac"] .pill { background: var(--mac-fill-2); border-radius: 5px; }
+html[data-ui="mac"] .avwrap .unread { box-shadow: 0 0 0 2px var(--mac-glass-solid); }
+html[data-ui="mac"] .av .st { border-color: var(--mac-glass-solid); }
+
+/* 主区：顶上一条、底下输入区、固定条、记录内搜索，都是薄玻璃。 */
+html[data-ui="mac"] :is(.head, .pinbar, .searchbar) {
+  background: var(--mac-glass);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border-bottom: 0.5px solid var(--mac-glass-line);
+}
+html[data-ui="mac"] .compose { background: transparent; border-top: 0; }
+html[data-ui="mac"] .day { letter-spacing: 0; font-family: var(--sans); font-weight: 500; }
+
+/* ---------------------------------------------------------------- 气泡：iMessage */
+html[data-ui="mac"] .bub {
+  border: 0.5px solid var(--mac-glass-line);
+  border-radius: 18px 18px 18px 6px;
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  padding: 8px 13px;
+  animation: mac-bubble-in 420ms var(--mac-spring) backwards;
+  transform-origin: 0 100%;
+}
+html[data-ui="mac"] .bub:hover { border-color: var(--mac-glass-line); }
+html[data-ui="mac"] .msg.mine .bub {
+  border-color: transparent;
+  border-radius: 18px 18px 6px 18px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  transform-origin: 100% 100%;
+}
+html[data-ui="mac"] .msg .bub.failed { border-color: var(--danger); }
+html[data-ui="mac"] .msg.prio-urgent .bub:not(.failed) { border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+html[data-ui="mac"] .bub-body.clip::after { background: linear-gradient(to bottom, transparent, var(--panel-2)); }
+html[data-ui="mac"] .msg.mine .bub-body.clip::after { background: linear-gradient(to bottom, transparent, var(--accent)); }
+/* 强调色底上的强调色字会看不见：链接、引用人、「显示全文」都跟着气泡的字色走。 */
+html[data-ui="mac"] .msg.mine .bub :is(a, .link, .bub-more, .quote .who) { color: inherit; }
+html[data-ui="mac"] .msg.mine .bub :is(.quote, .quote .ex) { color: inherit; opacity: 0.9; }
+html[data-ui="mac"] .msg.mine .bub .quote { background: rgb(255 255 255 / 18%); border-left-color: currentColor; }
+html[data-ui="mac"] .msg.mine .bub :is(code, pre) { background: rgb(255 255 255 / 20%); color: inherit; }
+html[data-ui="mac"] .msg.mine .bub blockquote { color: inherit; border-left-color: currentColor; opacity: 0.85; }
+html[data-ui="mac"] .quote { border-radius: 6px; }
+
+html[data-ui="mac"] :is(.fcard, .ncard, .card, .react, .topic-link) {
+  border: 0.5px solid var(--mac-glass-line);
+  background: var(--mac-glass-solid);
+}
+html[data-ui="mac"] :is(.fcard, .ncard, .card) { border-radius: 12px; }
+html[data-ui="mac"] .msg.mine :is(.fcard, .ncard) { background: var(--mine-bg); border-color: var(--mine-line); }
+html[data-ui="mac"] .react.on { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+html[data-ui="mac"] .card > h3 { border-bottom: 0.5px solid var(--mac-glass-line); letter-spacing: 0; }
+html[data-ui="mac"] .toggle { border-bottom: 0.5px solid var(--mac-glass-line); }
+
+/* ---------------------------------------------------------------- 输入区：浮在底部的玻璃胶囊 */
+html[data-ui="mac"] .box {
+  border: 0.5px solid var(--mac-glass-line);
+  border-radius: 16px;
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  box-shadow: var(--mac-shadow-panel);
+  transition: box-shadow var(--dur-2) var(--mac-ease), border-color var(--dur-1) var(--mac-ease);
+}
+html[data-ui="mac"] .box:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: var(--mac-shadow-panel), 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+html[data-ui="mac"] .peer-tools .tb-btn:hover { background: var(--mac-fill-2); }
+html[data-ui="mac"] .stage-item { background: var(--mac-glass-solid); border: 0.5px solid var(--mac-glass-line); }
+
+/* ---------------------------------------------------------------- 控件 */
+html[data-ui="mac"] :is(.btn, .send) {
+  border-radius: 8px;
+  border: 0.5px solid var(--mac-control-line);
+  background: var(--mac-control);
+  color: var(--text);
+  box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.12), inset 0 0.5px 0 rgba(255, 255, 255, 0.14);
+  font-weight: 500;
+  transition: filter var(--dur-1) var(--mac-ease), scale 260ms var(--mac-spring);
+}
+html[data-ui="mac"] :is(.btn, .send):hover:not(:disabled) { filter: brightness(1.04); border-color: var(--mac-control-line); }
+html[data-ui="mac"] :is(.btn, .send):active:not(:disabled) { scale: 0.96; filter: brightness(0.94); }
+html[data-ui="mac"] :is(.btn.pri, .send),
+html[data-ui="mac"] .btn.pri:hover {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, #fff), var(--accent));
+  color: var(--accent-ink);
+  border-color: color-mix(in srgb, var(--accent) 70%, #000);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 40%, transparent), inset 0 0.5px 0 rgba(255, 255, 255, 0.3);
+}
+html[data-ui="mac"] .btn.dng { color: var(--danger); }
+
+html[data-ui="mac"] .icon-btn { transition: background var(--dur-1) var(--mac-ease), color var(--dur-1) var(--mac-ease), scale 240ms var(--mac-spring); }
+html[data-ui="mac"] .icon-btn:hover { background: var(--mac-fill-2); border-color: transparent; }
+html[data-ui="mac"] .icon-btn:active:not(:disabled) { scale: 0.92; }
+
+/* 开关：iOS / macOS 那颗 */
+html[data-ui="mac"] .sw { width: 34px; height: 20px; background: var(--mac-track); }
+html[data-ui="mac"] .sw::after {
+  top: 2px; left: 2px; width: 16px; height: 16px;
+  background: var(--mac-knob);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 320ms var(--mac-spring), background var(--dur-1) var(--mac-ease);
+}
+html[data-ui="mac"] .sw.on { background: var(--accent); }
+html[data-ui="mac"] .sw.on::after { transform: translateX(14px); background: var(--mac-knob); }
+
+/* 文本框：圆角 + 发丝线 + 光晕焦点 */
+html[data-ui="mac"] :is(.field input, .ppath input, .searchbar input, .group-filter, .modal.fwd .body > input, .topic-compose textarea) {
+  border: 0.5px solid var(--mac-control-line);
+  border-radius: 8px;
+  background: var(--mac-glass-solid);
+  transition: box-shadow var(--dur-1) var(--mac-ease), border-color var(--dur-1) var(--mac-ease);
+}
+html[data-ui="mac"] :is(.field input, .ppath input, .searchbar input, .group-filter, .modal.fwd .body > input, .topic-compose textarea):focus {
+  outline: 0;
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* ---------------------------------------------------------------- 浮层：菜单 / 弹窗 / 选择器 / toast */
+html[data-ui="mac"] :is(.scrim, .picker) {
+  background: var(--mac-scrim);
+  -webkit-backdrop-filter: blur(6px) saturate(120%);
+  backdrop-filter: blur(6px) saturate(120%);
+  animation: mac-fade-in 260ms var(--mac-ease) backwards;
+}
+html[data-ui="mac"] .menu {
+  border: 0.5px solid var(--mac-glass-line);
+  border-radius: 12px;
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  box-shadow: var(--mac-shadow-menu);
+  animation: mac-menu-in 260ms var(--mac-spring) backwards;
+  transform-origin: 50% 0;
+}
+/* macOS 菜单：悬停整行涂强调色、字变白（表情那一排除外）。 */
+html[data-ui="mac"] .menu > button:not(:disabled):hover { background: var(--accent); color: var(--accent-ink); border-radius: 6px; }
+html[data-ui="mac"] .menu > button:not(:disabled):hover svg { color: inherit; }
+html[data-ui="mac"] .menu .rstrip button:hover { background: var(--mac-fill-2); }
+html[data-ui="mac"] .menu hr { background: var(--mac-glass-line); }
+
+html[data-ui="mac"] :is(.modal, .pbox, .emoji-panel) {
+  border: 0.5px solid var(--mac-glass-line);
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  box-shadow: var(--mac-shadow-window);
+}
+html[data-ui="mac"] :is(.modal, .pbox) { border-radius: 14px; animation: mac-window-in 460ms var(--mac-spring) backwards; }
+html[data-ui="mac"] .emoji-panel { border-radius: 14px; animation: mac-menu-in 260ms var(--mac-spring) backwards; transform-origin: 0 100%; }
+html[data-ui="mac"] .ep-sec { background: transparent; -webkit-backdrop-filter: var(--mac-blur); backdrop-filter: var(--mac-blur); }
+html[data-ui="mac"] :is(.ep-jump, .ep-e):hover { background: var(--mac-fill-2); }
+html[data-ui="mac"] :is(.modal header, .modal.preview .meta, .phead, .crumbs, .pside, .pfoot, .ep-tabs, .ep-nav, .ep-tip, .rstrip) { border-color: var(--mac-glass-line); }
+html[data-ui="mac"] :is(.crumbs button, .pside li, .files li):hover { background: var(--mac-fill); }
+html[data-ui="mac"] .files li.on { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+
+html[data-ui="mac"] .topic-pane {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border-left: 0.5px solid var(--mac-glass-line);
+  box-shadow: var(--mac-shadow-panel);
+}
+
+html[data-ui="mac"] .toast {
+  border: 0.5px solid var(--mac-glass-line);
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  box-shadow: var(--mac-shadow-menu);
+  transition: opacity var(--dur-2) var(--mac-ease), transform 420ms var(--mac-spring);
+}
+
+/* 窄屏底部导航：iOS 的 tab bar */
+html[data-ui="mac"] .mobnav {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border-top: 0.5px solid var(--mac-glass-line);
+}
+html[data-ui="mac"] .mobnav button.on { color: var(--accent); background: transparent; }

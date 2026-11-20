@@ -4,6 +4,7 @@ import { RichEditor } from "../notes/editor.ts";
 import { hasRichMarkup, isRichEmpty, plainText, sanitizeRich } from "../notes/rich.ts";
 import { SheetDialog } from "../sheet/dialog.ts";
 import "../sheet/sheet.css";
+import { bootTheme } from "../theme.ts";
 import { emojiPanel, QUICK_REACTIONS, type Sticker } from "./emoji.ts";
 import { imageViewer, type ViewerItem } from "./viewer.ts";
 
@@ -16,6 +17,13 @@ import { imageViewer, type ViewerItem } from "./viewer.ts";
  */
 
 applyLang(bootLang());
+
+// 主题跟主界面走（D350）：同源，读同一份 `pi.prefs`。主界面在设置里换了主题 / 强调色时，
+// 别的文档（包括开着的这个 iframe）会收到 `storage` 事件 —— 当场重画，不用关了重开。
+bootTheme();
+window.addEventListener("storage", (ev) => {
+  if (ev.key === "pi.prefs" || ev.key === null) bootTheme();
+});
 
 // 塞在弹框 iframe 里时，外层已经有「内网通 / 关闭」那一行标题了，这页的顶栏就不用再写一遍名字。
 if (window.self !== window.top) document.body.classList.add("embedded");
