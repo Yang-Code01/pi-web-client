@@ -3844,6 +3844,7 @@ export const en: Dict = {
   "连接中…": "Connecting…",
   "重建索引": "Rebuild index",
   "在这台电脑上按名字找文件：索引建在本机，不依赖 Everything": "Find files on this machine by name: the index is built locally, no Everything needed",
+  "在这台电脑的文件管理器里打开 {p1}": "Open {p1} in this machine's file manager",
   "在这台电脑的文件管理器里显示 {p1}": "Show {p1} in this machine's file manager",
   "🔎 Everything|顶栏按钮": "🔎 Everything",
   "Everything|搜索面板": "Everything",

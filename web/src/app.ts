@@ -16342,12 +16342,8 @@ export class App {
         }
         void this.openPreview(abs);
       },
-      // 文件 → 「📂 在文件夹中显示」（桥端 explorer /select，面板不关）；目录 → 直接进去看。
-      onReveal: (abs, isDir) => {
-        if (isDir) {
-          openDir(abs);
-          return;
-        }
+      // 文件与目录统一交给本机系统文件管理器（桥端 /api/reveal：文件选中、目录打开；面板不关）。
+      onReveal: (abs) => {
         void this.reveal(abs);
       },
       onClose: () => this.closeSheet(),

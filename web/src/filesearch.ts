@@ -61,7 +61,25 @@ export interface FileSearchHandle {
 
 const LIMIT = 200;
 const DEBOUNCE_MS = 120;
+const QUERY_STORAGE_KEY = "pi.filesearch.query";
 const SORT_LABEL: Record<SortKey, string> = { name: "名称", size: "大小", mtime: "修改时间" };
+
+function loadSavedQuery(): string {
+  try {
+    return localStorage.getItem(QUERY_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveQuery(q: string): void {
+  try {
+    if (q) localStorage.setItem(QUERY_STORAGE_KEY, q);
+    else localStorage.removeItem(QUERY_STORAGE_KEY);
+  } catch {
+    /* 隐私模式或存储受限时忽略 */
+  }
+}
 
 export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
   const back = el("div", "sys-back fse-back");
@@ -104,11 +122,12 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
   input.placeholder = tr("搜索文件名或路径…");
   input.spellcheck = false;
   input.autocomplete = "off";
+  input.value = loadSavedQuery();
   const chips = el("div", "fse-chips");
   const clearBtn = el("button", "fse-clear", "×") as HTMLButtonElement;
   clearBtn.type = "button";
   clearBtn.title = tr("清空");
-  clearBtn.hidden = true;
+  clearBtn.hidden = !input.value;
   searchRow.append(input, clearBtn, chips);
 
   const sortChip = (key: SortKey): HTMLButtonElement => {
@@ -369,13 +388,17 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
           },
         ),
       );
-      // 目录的第二颗已经是「打开目录」，第三颗再画一颗「打开目录」就是重复（用户 2026-11-19 指出 2 个）：
-      // 目录没有「在文件管理器里选中」这回事，只有文件才有「位置」。
-      if (!row.isDir) {
-        acts.append(
-          act(tr("位置"), tr("在这台电脑的文件管理器里显示 {p1}", { p1: row.name }), () => opts.onReveal(row.path, false)),
-        );
-      }
+      // 第三颗「位置」：文件和目录都有 —— 文件在系统文件管理器里选中，目录直接在系统文件管理器里打开
+      // （区别于第二颗「打开目录」：那是留在网页客户端内建的文件浏览器里看；用户 2026-11-20）。
+      acts.append(
+        act(
+          tr("位置"),
+          row.isDir
+            ? tr("在这台电脑的文件管理器里打开 {p1}", { p1: row.name })
+            : tr("在这台电脑的文件管理器里显示 {p1}", { p1: row.name }),
+          () => opts.onReveal(row.path, row.isDir),
+        ),
+      );
       node.append(name, dir, el("span", "fse-c3", row.isDir ? "" : fmtSize(row.size)), el("span", "fse-c4", fmtTime(row.mtime)), acts);
       node.onclick = () => {
         select(i);
@@ -440,6 +463,7 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
 
   // ---------------------------------------------------------------- events
   input.oninput = () => {
+    saveQuery(input.value);
     clearBtn.hidden = !input.value;
     sel = -1;
     schedule();
@@ -467,6 +491,7 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
   };
   clearBtn.onclick = () => {
     input.value = "";
+    saveQuery("");
     clearBtn.hidden = true;
     input.focus();
     void run();

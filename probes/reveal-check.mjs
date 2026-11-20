@@ -34,7 +34,7 @@ const ok = (cond, what) => {
 };
 
 // --- 1) command shapes ---------------------------------------------------------------------------
-const { revealCommand } = await import(new URL("../bridge/dist/terminal.js", import.meta.url).href);
+const { revealCommand, openCommand } = await import(new URL("../bridge/dist/terminal.js", import.meta.url).href);
 const win = revealCommand("C:\\Users\\me\\我的 文档\\a.xlsm", "win32");
 ok(win.cmd === "explorer.exe", "windows uses explorer.exe");
 ok(win.args.length === 1 && win.args[0] === "/select,C:\\Users\\me\\我的 文档\\a.xlsm", `windows passes /select,<file> as one argument (${JSON.stringify(win.args)})`);
@@ -44,6 +44,13 @@ ok(mac.cmd === "open" && mac.args.join(" ") === "-R /Users/me/a b/a.xlsm", `macO
 
 const linux = revealCommand("/home/me/a b/a.xlsm", "linux");
 ok(linux.cmd === "xdg-open" && linux.args[0] === "/home/me/a b", `linux opens the directory (${JSON.stringify(linux.args)})`);
+
+const winDir = openCommand("C:\\Users\\me\\我的 文档", "win32");
+ok(winDir.cmd === "explorer.exe" && winDir.args.length === 1 && winDir.args[0] === "C:\\Users\\me\\我的 文档", `windows opens directory directly (${JSON.stringify(winDir.args)})`);
+const macDir = openCommand("/Users/me/a b", "darwin");
+ok(macDir.cmd === "open" && macDir.args.length === 1 && macDir.args[0] === "/Users/me/a b", `macOS opens directory directly (${JSON.stringify(macDir.args)})`);
+const linuxDir = openCommand("/home/me/a b", "linux");
+ok(linuxDir.cmd === "xdg-open" && linuxDir.args.length === 1 && linuxDir.args[0] === "/home/me/a b", `linux opens directory directly (${JSON.stringify(linuxDir.args)})`);
 
 // --- 2) the route on a real bridge ---------------------------------------------------------------
 fs.rmSync(ROOT, { recursive: true, force: true });
@@ -96,20 +103,23 @@ const missing = await post({ path: path.join(ROOT, "不存在的文件.xlsm") })
 const missingBody = await missing.json();
 ok(missing.status === 400 && /文件不存在/.test(missingBody.error ?? ""), `missing file → 400 「${missingBody.error}」`);
 
-const dir = await post({ path: ROOT });
-ok(dir.status === 400 && /目录/.test((await dir.json()).error ?? ""), "a directory is refused (the viewer only calls this with files)");
-
 const tunnel = await post({ path: real }, { "cf-connecting-ip": "203.0.113.9" });
 ok(tunnel.status === 403, `tunnel caller → 403 (${(await tunnel.json()).error})`);
+
+const tunnelDir = await post({ path: ROOT }, { "cf-connecting-ip": "203.0.113.9" });
+ok(tunnelDir.status === 403, `tunnel caller (dir) → 403 (${(await tunnelDir.json()).error})`);
 
 if (process.env.REVEAL_OPEN === "1") {
   const opened = await post({ path: real });
   const body = await opened.json();
   ok(opened.status === 200 && body.ok === true, `real file → 200 「${body.message}」`);
+  const openedDir = await post({ path: ROOT });
+  const dirBody = await openedDir.json();
+  ok(openedDir.status === 200 && dirBody.ok === true, `real dir → 200 「${dirBody.message}」`);
   await sleep(800);
   const logged = logLines.join("");
   ok(/reveal .*→ ok/.test(logged), "the bridge logged the reveal");
-  console.log(`     ↳ 检查一下桌面：应该弹出一个资源管理器窗口，文件「${path.basename(real)}」被选中`);
+  console.log(`     ↳ 检查一下桌面：应该弹出资源管理器窗口，文件「${path.basename(real)}」被选中，并打开目录「${ROOT}」`);
 } else {
   console.log("skip  成功路径需要真的弹出资源管理器：REVEAL_OPEN=1 node probes/reveal-check.mjs");
 }
