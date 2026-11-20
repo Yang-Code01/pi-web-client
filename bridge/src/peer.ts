@@ -275,6 +275,21 @@ export class PeerHost {
     return this.request("POST", "/react", { peer, id, emoji, on });
   }
 
+  /** 固定消息（会话顶部的置顶条）：`on:false` 取消固定；双方 / 群成员都会看到。 */
+  pin(peer: string, id: string, on: boolean): Promise<{ ok: boolean; at: number }> {
+    return this.request("POST", "/pin", { peer, id, on });
+  }
+
+  /** 群聊：列表。 */
+  groups(): Promise<{ ok: boolean; groups: unknown[] }> {
+    return this.request("GET", "/groups");
+  }
+
+  /** 群聊：create / rename / invite / leave（D-群聊，见 peer/src/groups.ts）。 */
+  group(body: Record<string, unknown>): Promise<{ ok: boolean; group?: unknown }> {
+    return this.request("POST", "/groups", body);
+  }
+
   /** P3：输入中。刻意不 await 结果也不报错：心跳丢了就丢了。 */
   typing(peer: string): Promise<{ ok: boolean }> {
     return this.request("POST", "/typing", { peer }, { repoll: false });

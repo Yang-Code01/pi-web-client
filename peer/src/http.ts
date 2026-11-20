@@ -17,6 +17,7 @@ import type { Relations } from "./peers.ts";
 import { MAX_MARKET_FRAME, ingest, manifestResponse, parseFrame, touchBlob } from "./market.ts";
 import type { LocalActivity } from "./presence.ts";
 import type { Threads } from "./threads.ts";
+import type { Groups } from "./groups.ts";
 
 export interface PeerContext {
   cfg: PeerConfig;
@@ -29,6 +30,7 @@ export interface PeerContext {
   ignored: Ignored;
   threads: Threads;
   activity: LocalActivity;
+  groups: Groups;
 }
 
 const MAX_BODY = 1024 * 1024;
@@ -141,7 +143,7 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
 }
 
 export function createPeerServer(ctx: PeerContext): http.Server {
-  const { cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity } = ctx;
+  const { cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity, groups } = ctx;
   const identity = () => ({
     nodeId,
     nickname: cfg.nickname,
@@ -286,8 +288,43 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             meta: (id) => threads.get(id),
             typing: (id) => messages.typing(id),
             pending: (id) => messages.pending(id),
+            group: (id) => groups.get(id),
           }),
         });
+      }
+
+      // 群聊：列表 + create / rename / invite / leave（都只在回环上）。
+      if (url.pathname === "/groups" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        return json(res, 200, { ok: true, groups: groups.list() });
+      }
+      if (url.pathname === "/groups" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const ids = Array.isArray(body?.members) ? body.members.map((x: unknown) => String(x)).filter(Boolean) : [];
+        const id = String(body?.id ?? "");
+        try {
+          activity.touch();
+          const action = String(body?.action ?? "");
+          if (action === "create") return json(res, 200, { ok: true, group: messages.createGroup(String(body?.name ?? ""), ids) });
+          if (action === "rename") return json(res, 200, { ok: true, group: messages.renameGroup(id, String(body?.name ?? "")) });
+          if (action === "invite") return json(res, 200, { ok: true, group: messages.inviteGroup(id, ids) });
+          if (action === "leave") return json(res, 200, { ok: true, group: messages.leaveGroup(id) });
+          return json(res, 400, { error: "action 只能是 create / rename / invite / leave" });
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      // 固定消息：本机落一条 pin，再通知对端 / 群成员。
+      if (url.pathname === "/pin" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          return json(res, 200, messages.pin(String(body?.peer ?? ""), String(body?.id ?? ""), body?.on !== false));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
       }
 
       // 会话元数据（D299 / P1）：三个开关 + 已读水位 + 草稿，都只改本机那份小 json。

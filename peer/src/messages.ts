@@ -3,7 +3,8 @@ import os from "node:os";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
-import { foldEntries, type Entry, type History, type NotePayload, type PeerIdentity, type ViewEntry } from "./history.ts";
+import { foldEntries, type Entry, type History, type NotePayload, type PeerIdentity, type SysInfo, type ViewEntry } from "./history.ts";
+import { GROUP_PREFIX, MAX_GROUP_MEMBERS, isGroupId, normalizeGroup, snapshot, type Group, type Groups } from "./groups.ts";
 import { normalizeNote } from "./note.ts";
 import type { Outbox, Queued, Verdict } from "./outbox.ts";
 import type { Relations } from "./peers.ts";
@@ -97,6 +98,7 @@ export class Messages {
       history: History;
       outbox: Outbox | null;
       relations: Relations;
+      groups: Groups;
       log: (msg: string) => void;
     },
   ) {}
@@ -111,13 +113,63 @@ export class Messages {
   }
 
   private entry(id: string, at: number, from: PeerIdentity, to: string, kind: Entry["kind"], extra: Partial<Entry> = {}): Entry {
-    return { id, at, from, to: { kind: "node", id: to }, kind, ...extra };
+    return { id, at, from, to: { kind: isGroupId(to) ? "group" : "node", id: to }, kind, ...extra };
+  }
+
+  /**
+   * 这个会话要投给谁：1:1 = 对方（`needOnline` 时必须在线）；群 = 除我以外的成员，
+   * 离线的也排队（地址留空，上线后 outbox 的 `locate` 会把地址补上）。
+   */
+  private targets(threadId: string, needOnline = true): { peerId: string; addr: string; port: number }[] {
+    if (isGroupId(threadId)) {
+      const group = this.ctx.groups.get(threadId);
+      if (!group) throw new Error("没有这个群");
+      if (group.left) throw new Error("你已经不在这个群里了");
+      return this.memberTargets(group.members);
+    }
+    const peer = this.ctx.discovery.byId(threadId);
+    if (!peer) {
+      if (needOnline) throw new Error("这个人已经不在线了：刷新在线列表再试");
+      return [];
+    }
+    return [{ peerId: threadId, addr: peer.addr, port: peer.port }];
+  }
+
+  private memberTargets(members: PeerIdentity[]): { peerId: string; addr: string; port: number }[] {
+    return members
+      .filter((m) => m.nodeId !== this.ctx.nodeId)
+      .map((m) => {
+        const live = this.ctx.discovery.byId(m.nodeId);
+        return { peerId: m.nodeId, addr: live?.addr ?? "", port: live?.port ?? (Number(m.port) || 0) };
+      });
+  }
+
+  /** 入队：1:1 一条；群按成员拆成多条（id = `<原 id>@<成员>`），各自补投。 */
+  private enqueue(threadId: string, id: string, kind: Queued["kind"], payload: unknown, at: number, targets: { peerId: string; addr: string; port: number }[]): void {
+    const outbox = this.ctx.outbox;
+    if (!outbox) throw new Error("outbox 还没准备好");
+    const group = isGroupId(threadId);
+    for (const t of targets) {
+      outbox.add({
+        id: group ? `${id}@${t.peerId}` : id,
+        peerId: t.peerId,
+        addr: t.addr,
+        port: t.port,
+        kind,
+        payload,
+        at,
+        tries: 0,
+        nextAt: 0,
+        ...(group ? { thread: threadId, msgId: id } : {}),
+      });
+    }
   }
 
   /** 本机发出：先落历史（bubble 立刻出现），再进 outbox 补投。`retryable` 的失败不在这里发生。 */
   /** 发一条记录包：正文 + 截图清单走 inbox，截图本体随后逐张走文件通道（#507）。 */
   sendNote(peerId: string, raw: unknown): { ok: true; id: string; at: number; seq: number } {
     const note = normalizeNote(raw);
+    if (isGroupId(peerId)) throw new Error("群里暂不支持发记录");
     const peer = this.ctx.discovery.byId(peerId);
     if (!peer) throw new Error("这个人已经不在线了：刷新在线列表再试");
     const at = Date.now();
@@ -138,17 +190,13 @@ export class Messages {
     if (bytes > MAX_TEXT_BYTES) {
       throw new Error(`太长（${Math.round(bytes / 1024)} KB，上限 32 KB）：改用文件发`);
     }
-    const peer = this.ctx.discovery.byId(peerId);
-    if (!peer) throw new Error("这个人已经不在线了：刷新在线列表再试");
+    const targets = this.targets(peerId);
     const at = Date.now();
     const id = uuidv7(at);
     const seq = this.ctx.history.nextSeq(peerId);
     const entry = this.entry(id, at, this.me(), peerId, "text", { text: trimmed, seq, ...(via ? { via } : {}), ...(replyTo ? { replyTo } : {}) });
     this.ctx.history.append(peerId, entry);
-    const item: Queued = { id, peerId, addr: peer.addr, port: peer.port, kind: "text", payload: entry, at, tries: 0, nextAt: 0 };
-    const outbox = this.ctx.outbox;
-    if (!outbox) throw new Error("outbox 还没准备好");
-    outbox.add(item);
+    this.enqueue(peerId, id, "text", entry, at, targets);
     return { ok: true, id, at, seq };
   }
 
@@ -163,15 +211,15 @@ export class Messages {
     if (!entry) throw new Error("找不到这条消息");
     if (entry.from.nodeId !== this.ctx.nodeId) throw new Error("不是自己发的，重发不了");
     if (entry.kind !== "text" && entry.kind !== "note") throw new Error("文件重发请从磁盘再选一次");
-    const peer = this.ctx.discovery.byId(peerId);
-    if (!peer) throw new Error("这个人已经不在线了：等他上线再重发");
     const outbox = this.ctx.outbox;
     if (!outbox) throw new Error("outbox 还没准备好");
     // 还在排队的那条（页面上的「立即重试」）：只把下一次尝试提前。
     // 不能再 `add()` 一次 —— 它按 id 去重，什么也不会发生，用户点完会以为按钮坏了。
     if (outbox.nudge(entry.id)) return { ok: true };
+    const targets = isGroupId(peerId) ? this.targets(peerId) : this.targets(peerId, false);
+    if (!targets.length) throw new Error("这个人已经不在线了：等他上线再重发");
     const kind = entry.kind === "note" ? "note" : "text";
-    outbox.add({ id: entry.id, peerId, addr: peer.addr, port: peer.port, kind, payload: entry, at: Date.now(), tries: 0, nextAt: 0 });
+    this.enqueue(peerId, entry.id, kind, entry, Date.now(), targets);
     return { ok: true };
   }
 
@@ -189,14 +237,18 @@ export class Messages {
     const at = Date.now();
     if (at - entry.at > RECALL_MS) throw new Error("超过撤回时间，不能被撤回");
     this.ctx.history.append(peerId, this.entry(uuidv7(at), at, this.me(), peerId, "recall", { ref: id }));
-    const peer = this.ctx.discovery.byId(peerId);
-    const outbox = this.ctx.outbox;
-    if (peer && outbox) {
-      const control = { id: uuidv7(at), at, from: this.me(), target: id };
-      outbox.add({ id: control.id, peerId, addr: peer.addr, port: peer.port, kind: "recall", payload: control, at, tries: 0, nextAt: 0 });
+    const targets = this.targets(peerId, false);
+    if (targets.length) {
+      const control = { id: uuidv7(at), at, from: this.me(), target: id, ...this.groupField(peerId) };
+      this.enqueue(peerId, control.id, "recall", control, at, targets);
     }
-    this.ctx.log(`撤回 ${id.slice(0, 8)}${peer ? "" : "（对方不在线：只在本机生效）"}`);
+    this.ctx.log(`撤回 ${id.slice(0, 8)}${targets.length ? "" : "（对方不在线：只在本机生效）"}`);
     return { ok: true, at };
+  }
+
+  /** 群会话的控制消息要带上群 id：对方得知道这条撤回 / 回应 / 固定落在哪个会话里。 */
+  private groupField(threadId: string): { group?: string } {
+    return isGroupId(threadId) ? { group: threadId } : {};
   }
 
   /**
@@ -211,12 +263,30 @@ export class Messages {
     if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") throw new Error("这条不能回应");
     const at = Date.now();
     this.ctx.history.append(peerId, this.entry(uuidv7(at), at, this.me(), peerId, "react", { ref: id, emoji: e, on }));
-    // 对方不在线时只在本机生效（和撤回一样）：outbox 需要地址，离线的人没有。
-    const peer = this.ctx.discovery.byId(peerId);
-    const outbox = this.ctx.outbox;
-    if (peer && outbox) {
-      const control = { id: uuidv7(at), at, from: this.me(), target: id, emoji: e, on };
-      outbox.add({ id: control.id, peerId, addr: peer.addr, port: peer.port, kind: "react", payload: control, at, tries: 0, nextAt: 0 });
+    // 对方不在线时只在本机生效（和撤回一样）：outbox 需要地址，离线的人没有。群里照样排队。
+    const targets = this.targets(peerId, false);
+    if (targets.length) {
+      const control = { id: uuidv7(at), at, from: this.me(), target: id, emoji: e, on, ...this.groupField(peerId) };
+      this.enqueue(peerId, control.id, "react", control, at, targets);
+    }
+    return { ok: true, at };
+  }
+
+  /**
+   * 固定消息（像 Teams 的「固定」）：本机先落一条 `kind:"pin"`，再通知对端 / 群成员，
+   * 大家会话顶上都多一条。同一条消息最后一次 pin / unpin 说了算。
+   */
+  pin(peerId: string, id: string, on: boolean): { ok: true; at: number } {
+    const entry = this.ctx.history.find(peerId, id);
+    if (!entry) throw new Error("找不到这条消息");
+    if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") throw new Error("这条不能固定");
+    if (on && this.isRecalled(peerId, id)) throw new Error("撤回了的消息不能固定");
+    const at = Date.now();
+    this.ctx.history.append(peerId, this.entry(uuidv7(at), at, this.me(), peerId, "pin", { ref: id, on }));
+    const targets = this.targets(peerId, false);
+    if (targets.length) {
+      const control = { id: uuidv7(at), at, from: this.me(), target: id, on, ...this.groupField(peerId) };
+      this.enqueue(peerId, control.id, "pin", control, at, targets);
     }
     return { ok: true, at };
   }
@@ -227,6 +297,7 @@ export class Messages {
 
   /** 输入中：直接 POST，不落盘、不进 outbox —— 一条心跳丢了就丢了。 */
   async sendTyping(peerId: string): Promise<void> {
+    if (isGroupId(peerId)) return;
     const peer = this.ctx.discovery.byId(peerId);
     if (!peer) return;
     const now = Date.now();
@@ -251,16 +322,20 @@ export class Messages {
 
   /** 这个会话里还有没送到的消息（页面拿它画「发送中」）。 */
   pending(peerId: string): boolean {
-    return (this.ctx.outbox?.pendingFor(peerId).length ?? 0) > 0;
+    return (this.ctx.outbox?.pendingFor(peerId) ?? []).some((item) => item.kind === "text" || item.kind === "note");
   }
 
   /** outbox 的投递器：一次 HTTP POST，4xx 里带 `retryable` 决定「等 24 小时」还是「立刻红」。 */
   async deliver(item: Queued): Promise<Verdict> {
+    // 群里离线的成员：入队时没有地址，等他上线（`locate` 补上地址）再投。
+    if (!item.addr || !item.port) return { ok: false, retryable: true, error: "对方不在线" };
     try {
+      const group = item.thread ? this.ctx.groups.get(item.thread) : null;
+      const extra = group ? { group: snapshot(group) } : {};
       const body =
         item.kind === "text"
-          ? { proto: PROTO, kind: "text", message: item.payload }
-          : { proto: PROTO, kind: item.kind, control: item.payload };
+          ? { proto: PROTO, kind: "text", message: item.payload, ...extra }
+          : { proto: PROTO, kind: item.kind, control: item.payload, ...extra };
       const res = await fetch(`http://${item.addr}:${item.port}/peer/inbox`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -280,21 +355,192 @@ export class Messages {
   async accept(fromAddr: string, body: any): Promise<InboxResult> {
     if (body?.proto !== PROTO) return { status: 400, body: { error: `proto 不匹配（我这边 ${PROTO}）`, retryable: false } };
     const kind = String(body.kind ?? "");
-    if (kind === "text") return this.acceptText(fromAddr, body.message);
+    if (kind === "text") return this.acceptText(fromAddr, body.message, body.group);
     if (kind === "receipt") return this.acceptReceipt(body.receipt);
     if (kind === "friend-request") return this.acceptFriendRequest(fromAddr, body.control);
     if (kind === "friend-accept") return this.acceptFriendAccept(fromAddr, body.control);
     // 老版本不认识这个 kind，回 400 + retryable:false：新版照写本机 quick，旧版只丢这一条。
     if (kind === "friend-quick") return this.acceptFriendQuick(fromAddr, body.control);
     // 第 3 片：撤回 / 输入中。同样是加性的 kind，旧对端回 `unknown kind` 直接丢掉。
-    if (kind === "recall") return this.acceptRecall(fromAddr, body.control);
+    if (kind === "recall") return this.acceptRecall(fromAddr, body.control, body.group);
     if (kind === "note") return this.acceptNote(fromAddr, body.control);
-    if (kind === "react") return this.acceptReact(fromAddr, body.control);
+    if (kind === "react") return this.acceptReact(fromAddr, body.control, body.group);
+    if (kind === "pin") return this.acceptPin(fromAddr, body.control, body.group);
+    if (kind === "group") return this.acceptGroup(fromAddr, body.control);
     if (kind === "typing") return this.acceptTyping(fromAddr, body.control);
     return { status: 400, body: { error: "unknown kind", retryable: false } };
   }
 
-  private async acceptText(fromAddr: string, message: any): Promise<InboxResult> {
+  // ---------------------------------------------------------------- 群
+
+  /** 一个人的对外身份：用他自报的昵称（我给他起的备注只在本机，D303），不在线就用通讯录里那份。 */
+  private identity(nodeId: string): PeerIdentity {
+    if (nodeId === this.ctx.nodeId) return this.me();
+    const live = this.ctx.discovery.byId(nodeId);
+    const known = this.ctx.relations.get(nodeId);
+    return {
+      nodeId,
+      nickname: live?.nickname || known?.nickname || nodeId.slice(0, 8),
+      hostname: live?.hostname || known?.hostname || "",
+      port: live?.port || known?.port || 0,
+    };
+  }
+
+  private appendSys(threadId: string, actor: PeerIdentity, sys: SysInfo, at = Date.now()): void {
+    this.ctx.history.append(threadId, this.entry(uuidv7(at), at, actor, threadId, "sys", { sys }));
+  }
+
+  /** 把新的名单告诉大家：按成员逐人排队，离线的人上线后补到。`extra` = 不在新名单里但也要通知的人。 */
+  private broadcastGroup(group: Group, extra: PeerIdentity[] = []): void {
+    const at = Date.now();
+    const control = { id: uuidv7(at), at, from: this.me(), group: snapshot(group) };
+    const seen = new Set<string>();
+    const all = [...group.members, ...extra].filter((m) => !seen.has(m.nodeId) && Boolean(seen.add(m.nodeId)));
+    this.enqueue(group.id, control.id, "group", control, at, this.memberTargets(all));
+  }
+
+  private nameOf(m: PeerIdentity): string {
+    return m.nickname || m.nodeId.slice(0, 8);
+  }
+
+  createGroup(name: string, memberIds: string[]): Group {
+    const others = [...new Set(memberIds)].filter((id) => id && id !== this.ctx.nodeId && !isGroupId(id));
+    if (!others.length) throw new Error("至少拉一个人");
+    if (others.length + 1 > MAX_GROUP_MEMBERS) throw new Error(`一个群最多 ${MAX_GROUP_MEMBERS} 人`);
+    const at = Date.now();
+    const members = [this.me(), ...others.map((id) => this.identity(id))];
+    const title = name.trim().slice(0, 64) || members.map((m) => this.nameOf(m)).slice(0, 3).join("、");
+    const group: Group = { id: `${GROUP_PREFIX}${uuidv7(at)}`, name: title, members, owner: this.ctx.nodeId, createdAt: at, v: 1, at };
+    this.ctx.groups.put(group);
+    this.appendSys(group.id, this.me(), { op: "create", actor: this.nameOf(this.me()), name: title, names: members.slice(1).map((m) => this.nameOf(m)) }, at);
+    this.broadcastGroup(group);
+    this.ctx.log(`建群「${title}」（${members.length} 人）`);
+    return group;
+  }
+
+  private mine(groupId: string): Group {
+    const group = this.ctx.groups.get(groupId);
+    if (!group) throw new Error("没有这个群");
+    if (group.left) throw new Error("你已经不在这个群里了");
+    return group;
+  }
+
+  renameGroup(groupId: string, name: string): Group {
+    const group = this.mine(groupId);
+    const title = name.trim().slice(0, 64);
+    if (!title) throw new Error("群名不能空");
+    if (title === group.name) return group;
+    const next: Group = { ...group, name: title, v: group.v + 1, at: Date.now() };
+    this.ctx.groups.put(next);
+    this.appendSys(groupId, this.me(), { op: "rename", actor: this.nameOf(this.me()), name: title });
+    this.broadcastGroup(next);
+    return next;
+  }
+
+  inviteGroup(groupId: string, memberIds: string[]): Group {
+    const group = this.mine(groupId);
+    const have = new Set(group.members.map((m) => m.nodeId));
+    const fresh = [...new Set(memberIds)].filter((id) => id && !have.has(id) && !isGroupId(id));
+    if (!fresh.length) throw new Error("这些人已经在群里了");
+    if (group.members.length + fresh.length > MAX_GROUP_MEMBERS) throw new Error(`一个群最多 ${MAX_GROUP_MEMBERS} 人`);
+    const added = fresh.map((id) => this.identity(id));
+    const next: Group = { ...group, members: [...group.members, ...added], v: group.v + 1, at: Date.now() };
+    this.ctx.groups.put(next);
+    this.appendSys(groupId, this.me(), { op: "invite", actor: this.nameOf(this.me()), names: added.map((m) => this.nameOf(m)) });
+    this.broadcastGroup(next);
+    return next;
+  }
+
+  /** 退群：名单里去掉自己、版本 +1，通知剩下的人；本机会话留着（能看历史），不能再发。 */
+  leaveGroup(groupId: string): Group {
+    const group = this.mine(groupId);
+    const members = group.members.filter((m) => m.nodeId !== this.ctx.nodeId);
+    const next: Group = { ...group, members, v: group.v + 1, at: Date.now() };
+    this.broadcastGroup(next);
+    const left: Group = { ...next, left: true };
+    this.ctx.groups.put(left);
+    this.appendSys(groupId, this.me(), { op: "leave", actor: this.nameOf(this.me()) });
+    return left;
+  }
+
+  /** 收到新的名单：新于本机才收，差异写成灰条。 */
+  private mergeGroup(raw: unknown, actor: PeerIdentity): void {
+    const changed = this.ctx.groups.merge(raw, this.ctx.nodeId);
+    if (!changed) return;
+    const { before, after } = changed;
+    const who = this.nameOf(actor);
+    if (!before) {
+      const others = after.members.filter((m) => m.nodeId !== after.owner).map((m) => this.nameOf(m));
+      if (after.v === 1) this.appendSys(after.id, actor, { op: "create", actor: who, name: after.name, names: others });
+      else this.appendSys(after.id, actor, { op: "invite", actor: who, names: [this.nameOf(this.me())] });
+      return;
+    }
+    if (before.name !== after.name) this.appendSys(after.id, actor, { op: "rename", actor: who, name: after.name });
+    const had = new Set(before.members.map((m) => m.nodeId));
+    const has = new Set(after.members.map((m) => m.nodeId));
+    const added = after.members.filter((m) => !had.has(m.nodeId)).map((m) => this.nameOf(m));
+    if (added.length) this.appendSys(after.id, actor, { op: "invite", actor: who, names: added });
+    for (const m of before.members) {
+      if (!has.has(m.nodeId)) this.appendSys(after.id, m, { op: "leave", actor: this.nameOf(m) });
+    }
+  }
+
+  /**
+   * 群消息进门：先收信封里的名单快照（发送方必须在快照里），再看他是不是成员。
+   * `null` = 放行；我已经退了的群回 200 ignored（对方别再重试）。
+   */
+  private admitGroup(groupId: string, claimed: PeerIdentity, snap: unknown): InboxResult | null {
+    if (!isGroupId(groupId)) return { status: 400, body: { error: "bad group", retryable: false } };
+    const s = snap ? normalizeGroup(snap) : null;
+    if (s && s.id === groupId && s.members.some((m) => m.nodeId === claimed.nodeId)) this.mergeGroup(s, claimed);
+    const group = this.ctx.groups.get(groupId);
+    if (!group) return { status: 404, body: { error: "不认识这个群", retryable: false } };
+    if (group.left) return { status: 200, body: { ok: true, ignored: true } };
+    if (!group.members.some((m) => m.nodeId === claimed.nodeId)) return { status: 403, body: { error: "不是群成员", retryable: false } };
+    return null;
+  }
+
+  /** 收到名单变化（建群 / 改名 / 拉人 / 退群）。退群的人不在新名单里，所以看「旧名单里有没有他」。 */
+  private async acceptGroup(fromAddr: string, control: any): Promise<InboxResult> {
+    const claimed = control?.from as PeerIdentity | undefined;
+    const next = normalizeGroup(control?.group);
+    if (!claimed?.nodeId || !next) return { status: 400, body: { error: "bad group", retryable: false } };
+    const check = await this.verifySource(fromAddr, claimed);
+    if (check) return check;
+    const before = this.ctx.groups.get(next.id);
+    const inNew = next.members.some((m) => m.nodeId === claimed.nodeId);
+    const inOld = before?.members.some((m) => m.nodeId === claimed.nodeId) ?? false;
+    if (!inNew && !inOld) return { status: 403, body: { error: "不是群成员", retryable: false } };
+    this.mergeGroup(next, claimed);
+    return { status: 200, body: { ok: true } };
+  }
+
+  /** 控制消息落在哪个会话：带群 id 的进群（先过门），否则就是和发送方的 1:1。 */
+  private controlThread(control: any, claimed: PeerIdentity, snap: unknown): { thread: string } | InboxResult {
+    const groupId = typeof control?.group === "string" ? control.group : "";
+    if (!groupId) return { thread: claimed.nodeId };
+    const gate = this.admitGroup(groupId, claimed, snap);
+    return gate ?? { thread: groupId };
+  }
+
+  /** 收到固定 / 取消固定：同一个 control id 只记一次。 */
+  private async acceptPin(fromAddr: string, control: any, snap: unknown): Promise<InboxResult> {
+    const claimed = control?.from as PeerIdentity | undefined;
+    const id = String(control?.id ?? "");
+    const target = String(control?.target ?? "");
+    if (!claimed?.nodeId || !id || !target) return { status: 400, body: { error: "bad pin", retryable: false } };
+    const check = await this.verifySource(fromAddr, claimed);
+    if (check) return check;
+    const where = this.controlThread(control, claimed, snap);
+    if (!("thread" in where)) return where;
+    if (this.ctx.history.recentIds(where.thread, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
+    const at = Number(control?.at) || Date.now();
+    const to = isGroupId(where.thread) ? where.thread : this.ctx.nodeId;
+    this.ctx.history.append(where.thread, this.entry(id, at, claimed, to, "pin", { ref: target, on: control?.on !== false }));
+    return { status: 200, body: { ok: true } };
+  }
+
+  private async acceptText(fromAddr: string, message: any, snap?: unknown): Promise<InboxResult> {
     const id = String(message?.id ?? "");
     const text = typeof message?.text === "string" ? message.text : "";
     const claimed = message?.from as PeerIdentity | undefined;
@@ -304,7 +550,15 @@ export class Messages {
     const check = await this.verifySource(fromAddr, claimed);
     if (check) return check;
 
-    const seen = this.ctx.history.recentIds(claimed.nodeId, 2000);
+    // 群消息落到群会话；1:1 落到和发送方的会话。
+    const groupId = message?.to?.kind === "group" ? String(message.to.id ?? "") : "";
+    if (groupId) {
+      const gate = this.admitGroup(groupId, claimed, snap);
+      if (gate) return gate;
+    }
+    const thread = groupId || claimed.nodeId;
+
+    const seen = this.ctx.history.recentIds(thread, 2000);
     if (seen.has(id)) return { status: 200, body: { ok: true, dup: true } };
 
     const at = Number(message?.at) || Date.now();
@@ -312,8 +566,8 @@ export class Messages {
     const replyTo = message?.replyTo && typeof message.replyTo === "object" ? message.replyTo : undefined;
     // `via` 跟着消息走：对端也要能看见「这条是 agent 代发的」，不能只在自己这边挂徽章。
     this.ctx.history.append(
-      claimed.nodeId,
-      this.entry(id, at, claimed, this.ctx.nodeId, "text", {
+      thread,
+      this.entry(id, at, claimed, groupId || this.ctx.nodeId, "text", {
         text,
         ...(message?.via === "pi" ? { via: "pi" as const } : {}),
         ...(Number.isFinite(seq) ? { seq } : {}),
@@ -361,21 +615,27 @@ export class Messages {
    * 收到撤回：**不删原消息**，追加一条 `kind:"recall"` 指向它（D299）。
    * 页面把原气泡换成灰条「X 撤回了一条消息」，历史文件里原文还在。
    */
-  private async acceptRecall(fromAddr: string, control: any): Promise<InboxResult> {
+  private async acceptRecall(fromAddr: string, control: any, snap?: unknown): Promise<InboxResult> {
     const claimed = control?.from as PeerIdentity | undefined;
     const target = String(control?.target ?? "");
     if (!claimed?.nodeId || !target) return { status: 400, body: { error: "bad recall", retryable: false } };
     const check = await this.verifySource(fromAddr, claimed);
     if (check) return check;
-    if (this.isRecalled(claimed.nodeId, target)) return { status: 200, body: { ok: true, dup: true } };
+    const where = this.controlThread(control, claimed, snap);
+    if (!("thread" in where)) return where;
+    if (this.isRecalled(where.thread, target)) return { status: 200, body: { ok: true, dup: true } };
+    // 群里只认发送者本人撤回自己的消息。
+    const original = this.ctx.history.find(where.thread, target);
+    if (original && original.from.nodeId !== claimed.nodeId) return { status: 403, body: { error: "只能撤回自己发的", retryable: false } };
     const at = Number(control?.at) || Date.now();
-    this.ctx.history.append(claimed.nodeId, this.entry(uuidv7(at), at, claimed, this.ctx.nodeId, "recall", { ref: target }));
+    const to = isGroupId(where.thread) ? where.thread : this.ctx.nodeId;
+    this.ctx.history.append(where.thread, this.entry(uuidv7(at), at, claimed, to, "recall", { ref: target }));
     this.ctx.log(`${claimed.nickname || claimed.nodeId.slice(0, 8)} 撤回了一条消息`);
     return { status: 200, body: { ok: true } };
   }
 
   /** 收到表情回应：同一个 control id 只记一次（outbox 补投会重发）。 */
-  private async acceptReact(fromAddr: string, control: any): Promise<InboxResult> {
+  private async acceptReact(fromAddr: string, control: any, snap?: unknown): Promise<InboxResult> {
     const claimed = control?.from as PeerIdentity | undefined;
     const id = String(control?.id ?? "");
     const target = String(control?.target ?? "");
@@ -383,9 +643,12 @@ export class Messages {
     if (!claimed?.nodeId || !id || !target || !emoji) return { status: 400, body: { error: "bad react", retryable: false } };
     const check = await this.verifySource(fromAddr, claimed);
     if (check) return check;
-    if (this.ctx.history.recentIds(claimed.nodeId, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
+    const where = this.controlThread(control, claimed, snap);
+    if (!("thread" in where)) return where;
+    if (this.ctx.history.recentIds(where.thread, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
     const at = Number(control?.at) || Date.now();
-    this.ctx.history.append(claimed.nodeId, this.entry(id, at, claimed, this.ctx.nodeId, "react", { ref: target, emoji, on: control?.on !== false }));
+    const to = isGroupId(where.thread) ? where.thread : this.ctx.nodeId;
+    this.ctx.history.append(where.thread, this.entry(id, at, claimed, to, "react", { ref: target, emoji, on: control?.on !== false }));
     return { status: 200, body: { ok: true } };
   }
 
@@ -485,9 +748,24 @@ export class Messages {
   /** 页面要的那一份：receipt / recall 已折叠进消息（P2）。 */
   view(peerId: string, limit: number): ViewEntry[] {
     const queued = this.ctx.outbox?.pendingFor(peerId) ?? [];
-    const pending = new Set(queued.map((item) => item.id));
-    const why = new Map(queued.map((item) => [item.id, { tries: item.tries, error: item.lastError }]));
-    return foldEntries(this.ctx.history.read(peerId, limit), this.ctx.nodeId, pending, why);
+    const pending = new Set(queued.map((item) => item.msgId ?? item.id));
+    const why = new Map(queued.map((item) => [item.msgId ?? item.id, { tries: item.tries, error: item.lastError }]));
+    // 固定的消息可能很早：多折叠一段，把窗口外被固定的也带上（页面顶上那条要用）。
+    const folded = foldEntries(this.ctx.history.read(peerId, Math.max(limit, 2000)), this.ctx.nodeId, pending, why);
+    if (isGroupId(peerId)) {
+      // 群：有一个人收到就算送到了（离线的人还在排队，但不该让气泡一直转圈）。
+      for (const view of folded) {
+        if (view.state === "sending" && view.ack?.status === "delivered") {
+          view.state = "delivered";
+          delete view.tries;
+          delete view.sendError;
+        }
+      }
+    }
+    const tail = folded.slice(-limit);
+    const shown = new Set(tail.map((view) => view.id));
+    const pinnedEarlier = folded.filter((view) => view.pinned && !shown.has(view.id)).map((view) => ({ ...view, outside: true }));
+    return [...pinnedEarlier, ...tail];
   }
 
   version(): string {

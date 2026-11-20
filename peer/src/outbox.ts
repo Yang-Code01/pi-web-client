@@ -9,7 +9,13 @@ export interface Queued {
   addr: string;
   port: number;
   /** 信封类型：`text` 要收据，好友/快捷/撤回这些控制消息不要。 */
-  kind: "text" | "note" | "friend-request" | "friend-accept" | "friend-quick" | "recall" | "react";
+  kind: "text" | "note" | "friend-request" | "friend-accept" | "friend-quick" | "recall" | "react" | "pin" | "group";
+  /**
+   * 群消息才有：这条属于哪个会话（群 id）、原消息 id 是什么。一条群消息会拆成每个成员
+   * 一条（`id` = `<原 id>@<成员>`），各按各的人补投；页面和回执只认 `msgId`。
+   */
+  thread?: string;
+  msgId?: string;
   /** text 时是整条 Entry，其余是控制消息体。 */
   payload: unknown;
   at: number;
@@ -104,8 +110,8 @@ export class Outbox {
    * 不只是一个 id 集合 —— `tries` / `lastError` 一起交出去，否则「发送中」永远说不出
    * 自己卡在哪（真事：对端防火墙挡了 7865，气泡能显示一整天「发送中…」）。
    */
-  pendingFor(peerId: string): Queued[] {
-    return this.items.filter((item) => item.peerId === peerId);
+  pendingFor(threadId: string): Queued[] {
+    return this.items.filter((item) => (item.thread ?? item.peerId) === threadId);
   }
 
   /**
@@ -115,10 +121,11 @@ export class Outbox {
    * 按钮坏了），所以由这里直接改 `nextAt` 并踢一脚 flush。返回 false = 它已经不在队列里。
    */
   nudge(id: string): boolean {
-    const item = this.items.find((other) => other.id === id);
-    if (!item) return false;
+    const hits = this.items.filter((other) => other.id === id || other.msgId === id);
+    if (!hits.length) return false;
     // 同一个人的队列是串行的：只提前这一条，队头还在退避就等于没点。
-    for (const other of this.items) if (other.peerId === item.peerId) other.nextAt = 0;
+    const peers = new Set(hits.map((item) => item.peerId));
+    for (const other of this.items) if (peers.has(other.peerId)) other.nextAt = 0;
     this.save();
     void this.flush();
     return true;

@@ -908,6 +908,30 @@ async function main(): Promise<void> {
         return json(res, 400, { error: (err as Error).message });
       }
     }
+    // 固定消息 + 群聊（create / rename / invite / leave）：原样转给 peer。
+    if (url.pathname === "/api/peer/pin" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.pin(String(body?.peer ?? ""), String(body?.id ?? ""), body?.on !== false));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/groups" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.groups());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/groups" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.group(body && typeof body === "object" ? body : {}));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
     // P1：已读水位 / 置顶 / 静音 / 草稿（都只改本机 peer 的那份 threads.json）。
     if (url.pathname === "/api/peer/read" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
