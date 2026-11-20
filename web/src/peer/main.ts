@@ -59,6 +59,12 @@ interface Entry {
   pinned?: { by: string; at: number };
   /** 视图字段：比最近一页更早、只因为被固定才带回来的那条；消息流里不画。 */
   outside?: boolean;
+  /** 「重要 / 紧急」。 */
+  priority?: "important" | "urgent";
+  /** 话题回复：话题第一条消息的 id（不进主消息流，在话题面板里看）。 */
+  topic?: string;
+  /** 视图字段：我发的消息谁读了（nodeId）。 */
+  readBy?: string[];
   text?: string;
   ack?: { id: string; status: "delivered" | "failed"; error?: string };
   file?: { name: string; size: number; mime: string; sha256?: string; w?: number; h?: number };
@@ -120,6 +126,9 @@ interface Thread {
   lastMine: boolean;
   sending: boolean;
   typing: boolean;
+  /** 未读里有紧急消息 / 有人 @ 我（peer 算好的，免打扰也提醒）。 */
+  urgent?: boolean;
+  mention?: boolean;
   /** 群会话才有：成员名单（含自己）、群主、本机是否已退出。 */
   group?: { members: { nodeId: string; nickname?: string; hostname?: string }[]; owner: string; left: boolean };
 }
@@ -211,6 +220,10 @@ const ICONS: Record<string, string[]> = {
   pin: ["M9 4h6", "M10 4v5.5L7 13h10l-3-3.5V4", "M12 13v7"],
   group: ["M9 4.5a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4Z", "M3.5 19.5v-1a4.6 4.6 0 0 1 4.6-4.6h1.8a4.6 4.6 0 0 1 4.6 4.6v1", "M15.5 5a3 3 0 0 1 0 5.8", "M17.5 14a4.4 4.4 0 0 1 3 4.2v1.3"],
   at: ["M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z", "M15.5 12v1.3a2.4 2.4 0 0 0 4.8 0V12a8.3 8.3 0 1 0-3.3 6.6"],
+  chevR: ["M9.5 6l6 6-6 6"],
+  chevD: ["M6 9.5l6 6 6-6"],
+  bang: ["M12 4.5v10", "M12 19.2h.01"],
+  eye: ["M3 12s3.2-6 9-6 9 6 9 6-3.2 6-9 6-9-6-9-6Z", "M12 9.6a2.4 2.4 0 1 1 0 4.8 2.4 2.4 0 0 1 0-4.8Z"],
   select: ["M4.5 4.5h6v6h-6z", "M13.5 7.5H20", "M4.5 13.5h6v6h-6z", "M6 16.5l1.4 1.4L10 15.2", "M13.5 16.5H20"],
 };
 
@@ -252,6 +265,8 @@ const S = {
   sending: false,
   /** P3：正在引用的那条（发送后清空）。 */
   replyTo: null as Entry | null,
+  /** 群里开着的话题（话题第一条消息的 id），右侧话题面板据此画。 */
+  topic: null as string | null,
   /** P4：上一次通知过的未读数，按 nodeId 记（只在页面隐藏时用来比）。 */
   unreadSeen: new Map<string, number>(),
   /** D302：会话列表折叠（跨刷新记住），折叠后整块宽度让给对话。 */
@@ -520,7 +535,7 @@ function pingUnread(): void {
     if (!unreadPrimed || !canNotify) continue;
     if (t.unread <= prev || t.unread === 0) continue;
     // 群里有人 @ 我：免打扰的群也照样提醒（Teams 的规矩），全局勿扰才挡。
-    if ((t.muted && !mentionsMe(t.last)) || S.view?.status?.config.dnd) continue;
+    if ((t.muted && !t.mention && !t.urgent && !mentionsMe(t.last)) || S.view?.status?.config.dnd) continue;
     const last = t.last;
     const body = last ? (last.text ?? (last.file ? tr("[文件] {p1}", { p1: last.file.name }) : tr("发来一条新消息"))) : "";
     try {
@@ -617,7 +632,7 @@ async function loadContacts(): Promise<void> {
 /** 一串消息的指纹：id + 回执状态。轮询拿回来跟上次一样就不必重画。 */
 function msgSig(): string {
   return S.msgs
-    .map((m) => `${m.id}:${m.ack?.status ?? ""}:${m.state ?? ""}:${m.recalled ? 1 : 0}:${(m.reactions ?? []).map((r) => r.emoji + r.who.length).join(",")}`)
+    .map((m) => `${m.id}:${m.ack?.status ?? ""}:${m.state ?? ""}:${m.recalled ? 1 : 0}:${(m.reactions ?? []).map((r) => r.emoji + r.who.length).join(",")}:${m.readBy?.length ?? 0}:${m.pinned ? 1 : 0}`)
     .join("|");
 }
 
@@ -671,6 +686,7 @@ function go(page: Page): void {
 }
 
 function openThread(id: string): void {
+  if (S.thread !== id) S.topic = null;
   S.thread = id;
   S.page = "msg";
   S.mview = "chat";
@@ -913,37 +929,73 @@ function renderThreadList(): void {
       ),
     );
   }
-  for (const t of rows) {
-    const row = h("div", `row${S.thread === t.nodeId ? " on" : ""}${t.pinned ? " pinned" : ""}`);
-    const wrap = h("span", "avwrap");
-    wrap.append(avatar(t.nickname, t.nodeId, t.online));
-    if (t.unread > 0) wrap.append(h("i", `unread${t.muted ? " quiet" : ""}`, t.muted ? "" : badgeText(t.unread)));
-    row.append(wrap);
-    const tbox = h("div", "t");
-    const name = h("div", "n");
-    name.append(h("span", "nm", t.nickname));
-    if (t.pinned) name.append(ic("star", "pin"));
-    if (t.last?.via === "pi") name.append(h("span", "pill pi", "pi"));
-    const sub = h("div", "s");
-    if (t.typing) sub.append(h("span", "typing", tr("对方正在输入…")));
-    else if (t.draft) sub.append(h("span", "draft", tr("草稿：{p1}", { p1: plainText(t.draft).slice(0, 80) })));
-    else {
-      if (t.unread > 0 && mentionsMe(t.last)) sub.append(h("span", "at-me", tr("[有人@我]")));
-      sub.append(h("span", "", preview(t)));
-    }
-    if (t.muted) sub.append(ic("bellOff", "mute"));
-    tbox.append(name, sub);
-    const right = h("div", "r");
-    right.append(h("span", "tm", t.last ? ago(t.last.at) : ""));
-    row.append(tbox, right);
-    row.addEventListener("click", () => openThread(t.nodeId));
-    row.addEventListener("contextmenu", (ev) => {
-      ev.preventDefault();
-      threadMenu(ev.clientX, ev.clientY, t);
+  // 像 Teams：固定的会话单独一段「已固定」（可折叠），其余在「最近」。搜索时不分段。
+  const pinnedRows = S.query ? [] : rows.filter((t) => t.pinned);
+  if (pinnedRows.length) {
+    const fold = pinFolded();
+    const title = h("div", "group-title fold", tr("已固定"));
+    title.prepend(ic(fold ? "chevR" : "chevD", "chev"));
+    title.append(h("span", "n", String(pinnedRows.length)));
+    title.title = fold ? tr("展开") : tr("收起");
+    title.addEventListener("click", () => {
+      setPinFolded(!fold);
+      renderList();
     });
-    box.append(row);
+    box.append(title);
+    if (!fold) for (const t of pinnedRows) box.append(threadRow(t));
+    box.append(h("div", "group-title", tr("最近")));
   }
+  for (const t of rows) if (!pinnedRows.includes(t)) box.append(threadRow(t));
   listEl.append(box);
+}
+
+/** 会话列表的一行。 */
+function threadRow(t: Thread): HTMLElement {
+  const row = h("div", `row${S.thread === t.nodeId ? " on" : ""}${t.pinned ? " pinned" : ""}`);
+  const wrap = h("span", "avwrap");
+  wrap.append(avatar(t.nickname, t.nodeId, t.online));
+  if (t.unread > 0) wrap.append(h("i", `unread${t.muted ? " quiet" : ""}`, t.muted ? "" : badgeText(t.unread)));
+  row.append(wrap);
+  const tbox = h("div", "t");
+  const name = h("div", "n");
+  name.append(h("span", "nm", t.nickname));
+  if (t.pinned) name.append(ic("pin", "pin"));
+  if (t.last?.via === "pi") name.append(h("span", "pill pi", "pi"));
+  const sub = h("div", "s");
+  if (t.typing) sub.append(h("span", "typing", tr("对方正在输入…")));
+  else if (t.draft) sub.append(h("span", "draft", tr("草稿：{p1}", { p1: plainText(t.draft).slice(0, 80) })));
+  else {
+    if (t.unread > 0 && t.urgent) sub.append(h("span", "at-me", tr("[紧急]")));
+    if (t.unread > 0 && (t.mention || mentionsMe(t.last))) sub.append(h("span", "at-me", tr("[有人@我]")));
+    sub.append(h("span", "", preview(t)));
+  }
+  if (t.muted) sub.append(ic("bellOff", "mute"));
+  tbox.append(name, sub);
+  const right = h("div", "r");
+  right.append(h("span", "tm", t.last ? ago(t.last.at) : ""));
+  row.append(tbox, right);
+  row.addEventListener("click", () => openThread(t.nodeId));
+  row.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    threadMenu(ev.clientX, ev.clientY, t);
+  });
+  return row;
+}
+
+function pinFolded(): boolean {
+  try {
+    return window.localStorage.getItem("peer.pinFold") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setPinFolded(on: boolean): void {
+  try {
+    window.localStorage.setItem("peer.pinFold", on ? "1" : "0");
+  } catch {
+    /* 隐私模式：不记就是了 */
+  }
 }
 
 interface Group {
@@ -1226,6 +1278,8 @@ function renderChat(): void {
   const hits: HTMLElement[] = [];
   for (const e of S.msgs) {
     if (e.kind === "receipt" || e.kind === "recall" || e.kind === "react" || e.kind === "pin" || e.outside) continue;
+    // 话题里的回复不进主消息流（Teams 的做法）：话题第一条下面挂「N 条回复」，点开在右边看。
+    if (inTopic(e)) continue;
     const day = dayLabel(e.at);
     if (day !== lastDay) {
       stream.append(h("div", "day", day));
@@ -1245,6 +1299,8 @@ function renderChat(): void {
   mainEl.append(stream);
   const compose = S.picked ? pickBar() : t.group?.left ? leftBar() : composeBox(t);
   mainEl.append(compose);
+  const topic = S.topic && t.group ? topicPane(t) : null;
+  if (topic) mainEl.append(topic);
   searchHits = hits;
   paintSearchCount();
   if (q && hits.length && searchJump) {
@@ -1810,6 +1866,9 @@ async function acceptNote(e: Entry, t: Thread, btn: HTMLButtonElement): Promise<
   try {
     const res = await postJson<{ ok: boolean; noteId: string; warning?: string }>("/api/peer/note/accept", { peer: t.nodeId, id: e.id });
     if (e.note) e.note.accepted = { noteId: res.noteId, at: Date.now() };
+    // 轮询可能已经把 S.msgs 换成新数组（签名没变就不重画），手里这个 e 可能是旧对象：按 id 再标一次。
+    const cur = S.msgs.find((x) => x.id === e.id);
+    if (cur?.note) cur.note.accepted = { noteId: res.noteId, at: Date.now() };
     toast(res.warning || tr("记录已导入"));
     renderMain();
   } catch (err) {
@@ -1920,7 +1979,7 @@ function sendStateMeta(e: Entry): (HTMLElement | SVGSVGElement)[] {
   return [];
 }
 
-function entryNode(e: Entry, t: Thread): HTMLElement {
+function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
   const mine = e.from.nodeId === S.view?.status?.nodeId;
   // 撤回（P3）：原气泡换成一整行灰条，原文不再显示（文件里还在，见 D299）。
   if (e.kind === "sys") return sysTip(e);
@@ -1936,6 +1995,12 @@ function entryNode(e: Entry, t: Thread): HTMLElement {
   if (t.group && !mine) box.append(h("div", "sender", who));
   if (t.group && !mine && mentionsMe(e)) msg.classList.add("mention");
   if (e.pinned) msg.classList.add("pinned");
+  if (e.priority) {
+    msg.classList.add(`prio-${e.priority}`);
+    const tag = h("div", `prio ${e.priority}`);
+    tag.append(ic("bang"), h("span", "", e.priority === "urgent" ? tr("紧急！") : tr("重要！")));
+    box.append(tag);
+  }
   if (e.replyTo) box.append(quoteBlock(e.replyTo));
   if (e.kind === "note" && e.note) {
     box.append(noteCard(e, t, mine));
@@ -1972,10 +2037,12 @@ function entryNode(e: Entry, t: Thread): HTMLElement {
   const meta = h("div", "tm");
   if (e.via === "pi") meta.append(h("span", "pill pi", tr("pi 代发")));
   meta.append(h("span", "", clock(e.at)));
-  if (mine) meta.append(...sendStateMeta(e));
+  if (mine) meta.append(...readStateMeta(e, t));
   const rx = reactionRow(e, t);
   if (rx) box.append(rx);
   box.append(meta);
+  const thread = inPane ? null : topicSummary(e, t);
+  if (thread) box.append(thread);
   msg.append(box);
   if (e.kind !== "note") {
     // 悬停出来的小笑脸：不用右键也能回应。
@@ -2078,6 +2145,7 @@ function messageMenu(x: number, y: number, e: Entry, t: Thread, mine: boolean): 
   }
   if (e.text) items.push({ label: tr("复制文字"), icon: "copy", run: () => void copyText(e.text ?? "") });
   items.push({ label: tr("引用"), icon: "quote", run: () => startReply(e) });
+  if (t.group && !t.group.left) items.push({ label: tr("回复话题"), icon: "msg", run: () => openTopic(e.topic ?? e.id) });
   if (canForward(e)) items.push({ label: tr("转发"), icon: "forward", run: () => forwardModal([e]) });
   items.push({ label: tr("多选"), icon: "select", run: () => startPick(e) });
   items.push({ label: e.pinned ? tr("取消固定") : tr("固定"), icon: "pin", run: () => void pinMessage(e, !e.pinned) });
@@ -2089,6 +2157,178 @@ function messageMenu(x: number, y: number, e: Entry, t: Thread, mine: boolean): 
   openMenu(x, y, items);
   // 快捷回应放在菜单最上面（和微信 / Slack 一样）。
   layerEl.querySelector(".menu")?.prepend(reactStrip(e, t));
+}
+
+// ---------------------------------------------------------------- 已读
+
+/** 自己这条的状态：送达之后再看谁读了（1:1「已读」，群里「N 人已读」点开看名单）。 */
+function readStateMeta(e: Entry, t: Thread): (HTMLElement | SVGSVGElement)[] {
+  const readers = e.readBy ?? [];
+  if (e.state === "sending" || e.state === "failed" || !readers.length) return sendStateMeta(e);
+  if (!t.group) return [ic("eye", "ok"), h("span", "ok", tr("已读"))];
+  const others = t.group.members.filter((m) => m.nodeId !== myId());
+  const count = others.filter((m) => readers.includes(m.nodeId)).length;
+  const all = others.length > 0 && count >= others.length;
+  const btn = h("button", "link readers", all ? tr("全部已读") : tr("{p1} 人已读", { p1: String(count) }));
+  (btn as HTMLButtonElement).type = "button";
+  btn.title = tr("看谁读了");
+  btn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    readersModal(e, t);
+  });
+  return [ic("eye", "ok"), btn];
+}
+
+/** 群里一条消息的已读 / 未读名单。 */
+function readersModal(e: Entry, t: Thread): void {
+  const others = (t.group?.members ?? []).filter((m) => m.nodeId !== myId());
+  const readers = new Set(e.readBy ?? []);
+  const read = others.filter((m) => readers.has(m.nodeId));
+  const unread = others.filter((m) => !readers.has(m.nodeId));
+  const title = tr("已读 {p1} · 未读 {p2}", { p1: String(read.length), p2: String(unread.length) });
+  const { body, foot, mount } = modalShell(title, "modal group-modal readers-modal");
+  const groups: [string, typeof others][] = [
+    [tr("已读"), read],
+    [tr("未读"), unread],
+  ];
+  for (const [label, list] of groups) {
+    if (!list.length) continue;
+    body.append(h("div", "readers-title", label));
+    for (const m of list) {
+      const row = h("div", "readers-row");
+      const name = nameOf(m.nodeId, m.nickname);
+      row.append(avatar(name, m.nodeId), h("span", "nm", name));
+      body.append(row);
+    }
+  }
+  foot.append(btnEl(tr("关闭"), "", () => closeLayer()));
+  mount();
+}
+
+// ---------------------------------------------------------------- 话题（群里「回复这条话题」）
+
+/** 这条是话题里的回复，而且话题第一条就在当前页里：主消息流不画它。 */
+function inTopic(e: Entry): boolean {
+  if (!e.topic || e.to?.kind !== "group") return false;
+  return S.msgs.some((x) => x.id === e.topic);
+}
+
+function topicReplies(rootId: string): Entry[] {
+  return S.msgs.filter(
+    (x) => x.topic === rootId && (x.kind === "text" || x.kind === "file" || x.kind === "note"),
+  );
+}
+
+/** 话题第一条下面那行「3 条回复 · 小王 14:20」。 */
+function topicSummary(e: Entry, t: Thread): HTMLElement | null {
+  if (!t.group || e.topic || e.recalled) return null;
+  const replies = topicReplies(e.id);
+  if (!replies.length) return null;
+  const last = replies[replies.length - 1];
+  const btn = h("button", "topic-link") as HTMLButtonElement;
+  btn.type = "button";
+  btn.append(
+    ic("msg"),
+    h("span", "n", tr("{p1} 条回复", { p1: String(replies.length) })),
+    h("span", "who", `${nameOf(last.from.nodeId, last.from.nickname)} ${clock(last.at)}`),
+  );
+  btn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    openTopic(e.id);
+  });
+  return btn;
+}
+
+let topicArea: HTMLTextAreaElement | null = null;
+let topicAreaFor = "";
+/** 话题面板的滚动位置；-1 = 贴底（新回复来了跟着走）。 */
+let topicScroll = -1;
+
+function openTopic(id: string): void {
+  S.topic = id;
+  topicScroll = -1;
+  renderMain();
+  topicArea?.focus();
+}
+
+function closeTopic(): void {
+  S.topic = null;
+  topicArea = null;
+  topicAreaFor = "";
+  renderMain();
+}
+
+function topicInput(rootId: string): HTMLTextAreaElement {
+  if (topicArea && topicAreaFor === rootId) return topicArea;
+  const area = document.createElement("textarea");
+  area.rows = 2;
+  area.placeholder = tr("回复这条话题（Enter 发送，Shift+Enter 换行）");
+  area.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
+      ev.preventDefault();
+      void sendTopic(rootId);
+    }
+  });
+  topicArea = area;
+  topicAreaFor = rootId;
+  return area;
+}
+
+/** 右侧话题面板：第一条 + 全部回复 + 只回这条话题的输入框。轮询重画时输入框整个复用，打到一半的字不丢。 */
+function topicPane(t: Thread): HTMLElement | null {
+  const root = S.msgs.find((x) => x.id === S.topic);
+  if (!root) {
+    S.topic = null;
+    return null;
+  }
+  const pane = h("div", "topic-pane");
+  const head = h("div", "topic-head");
+  head.append(h("span", "tt", tr("话题")), h("span", "grow"), iconBtn("close", tr("关闭话题"), () => closeTopic()));
+  const list = h("div", "topic-list");
+  list.append(entryNode(root, t, true));
+  const replies = topicReplies(root.id);
+  const count = replies.length ? tr("{p1} 条回复", { p1: String(replies.length) }) : tr("还没有回复，说点什么吧");
+  list.append(h("div", "topic-count", count));
+  for (const r of replies) list.append(entryNode(r, t, true));
+  list.addEventListener("scroll", () => {
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 24;
+    topicScroll = atBottom ? -1 : list.scrollTop;
+  });
+  pane.append(head, list);
+  if (!t.group?.left) {
+    const foot = h("div", "topic-compose");
+    const send = h("button", "send", tr("回复")) as HTMLButtonElement;
+    send.type = "button";
+    send.addEventListener("click", () => void sendTopic(root.id));
+    foot.append(topicInput(root.id), send);
+    pane.append(foot);
+  }
+  requestAnimationFrame(() => {
+    list.scrollTop = topicScroll < 0 ? list.scrollHeight : topicScroll;
+  });
+  return pane;
+}
+
+async function sendTopic(rootId: string): Promise<void> {
+  const area = topicArea;
+  const id = S.thread;
+  if (!area || !id) return;
+  const text = area.value.trimEnd();
+  if (!text.trim()) return;
+  if (byteLen(text) > MAX_TEXT_BYTES) return toast(tr("太长（上限 32 KB），改用文件发"));
+  area.disabled = true;
+  try {
+    await postJson("/api/peer/send", { peer: id, text, topic: rootId });
+    area.value = "";
+    topicScroll = -1;
+    await loadMessages(id);
+    renderMain();
+  } catch (err) {
+    toast((err as Error).message);
+  } finally {
+    area.disabled = false;
+    area.focus();
+  }
 }
 
 // ---------------------------------------------------------------- 固定消息
@@ -2725,10 +2965,41 @@ function paintReplyBar(): void {
   replyHost.append(bar);
 }
 
+/** 下一条要标的优先级，按会话记；发出去就清掉（Teams 也是只管这一条）。 */
+const composePrio = new Map<string, "important" | "urgent">();
+
+/** 输入框底栏的「！」：普通 / 重要 / 紧急，选了就在按钮旁边亮一个小标签。 */
+function prioButton(id: string): HTMLElement {
+  const cur = composePrio.get(id);
+  const wrap = h("span", "prio-pick");
+  const btn = iconBtn("bang", tr("标为重要 / 紧急"), (ev) => {
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    const set = (p: "important" | "urgent" | null) => () => {
+      if (p) composePrio.set(id, p);
+      else composePrio.delete(id);
+      renderMain();
+      textInput?.focus();
+    };
+    openMenu(r.left, r.top - 4, [
+      { label: tr("普通"), run: set(null) },
+      { label: tr("重要！"), icon: "bang", run: set("important") },
+      { label: tr("紧急！（免打扰也会提醒）"), icon: "bang", danger: true, run: set("urgent") },
+    ]);
+  });
+  btn.addEventListener("mousedown", (ev) => ev.preventDefault());
+  wrap.append(btn);
+  if (cur) {
+    btn.classList.add("on", cur);
+    wrap.append(h("span", `prio-chip ${cur}`, cur === "urgent" ? tr("紧急！") : tr("重要！")));
+  }
+  return wrap;
+}
+
 function composeBox(t: Thread): HTMLElement {
   if (composeEl && composeFor === t.nodeId) {
     (composeEl.querySelector(".hintline") as HTMLElement | null)?.replaceChildren();
     paintReplyBar();
+    composeEl.querySelector(".prio-pick")?.replaceWith(prioButton(t.nodeId));
     return composeEl;
   }
   // 换会话：旧编辑器在 document 上挂着 mousedown / keydown，不拆会跟着整页活着。
@@ -2774,7 +3045,7 @@ function composeBox(t: Thread): HTMLElement {
   btn.addEventListener("click", () => void send());
   const at = t.group ? iconBtn("at", tr("提到某人（@）"), (ev) => mentionMenu(ev.currentTarget as HTMLElement, t)) : null;
   at?.addEventListener("mousedown", (ev) => ev.preventDefault());
-  bar2.append(smile, ...(at ? [at] : []), attach, hint, btn);
+  bar2.append(smile, ...(at ? [at] : []), attach, prioButton(t.nodeId), hint, btn);
   box.append(trayHost, toolbar, body, bar2);
   wrap.append(replyHost, box);
   sendBtn = btn;
@@ -2865,6 +3136,8 @@ async function send(): Promise<void> {
       return;
     }
     const body: Record<string, unknown> = { peer: id, text };
+    const priority = composePrio.get(id);
+    if (priority) body.priority = priority;
     if (reply) {
       body.replyTo = {
         id: reply.id,
@@ -2878,6 +3151,7 @@ async function send(): Promise<void> {
     ed.setHtml("");
     if (textInput) textInput.dataset.empty = "1";
     S.replyTo = null;
+    composePrio.delete(id);
     // 草稿跟着消息一起清掉；不刷会话列表（下一轮轮询会自己拉）。
     void postJson("/api/peer/thread", { peer: id, draft: "" }).catch(() => {});
     forceBottom = true;
@@ -3439,7 +3713,7 @@ function threadMenu(x: number, y: number, t: Thread): void {
     { label: tr("打开对话"), icon: "msg", run: () => openThread(t.nodeId) },
     // D300：传文件只要求对方在线，不再要求是好友。
     ...(t.online ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(t.nodeId, true) }] : []),
-    { label: t.pinned ? tr("取消置顶") : tr("置顶会话"), icon: "star", run: () => void patchThread(t.nodeId, { pinned: !t.pinned }) },
+    { label: t.pinned ? tr("取消固定") : tr("固定"), icon: "pin", run: () => void patchThread(t.nodeId, { pinned: !t.pinned }) },
     { label: t.muted ? tr("取消免打扰") : tr("消息免打扰"), icon: "bellOff", run: () => void patchThread(t.nodeId, { muted: !t.muted }) },
     ...(t.unread ? [] : [{ label: tr("标为未读"), icon: "msg", run: () => void markUnread(t) }]),
     { label: tr("标记为已读"), icon: "check", run: () => void markRead(t).then(() => loadThreads()).then(() => { if (S.page === "msg") renderList(); }) },
