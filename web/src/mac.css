@@ -171,6 +171,10 @@ html[data-ui="mac"] .pin-chip.cur:hover {
   color: var(--accent-ink);
   box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 40%, transparent);
 }
+/* D351: 选中胶囊是实心强调色底，里面「运行中 / 进行中」那行小字和 ★ 原本也是强调色——同色叠在一起就看不见了。
+   一律跟胶囊的白字走；状态靠字本身区分，不靠颜色。 */
+html[data-ui="mac"] .pin-chip.cur :is(small, .pin-star, .pin-name, .badge) { color: inherit; border-color: transparent; }
+html[data-ui="mac"] .pin-chip.cur small { opacity: 0.85; }
 
 /* 桌面布局：左右两栏变成浮在壁纸上的玻璃面板（macOS 26 那种悬浮侧栏）；中间是内容区。
    用 margin 往里收，不动 .main 的列宽 —— 拖拽分隔条的换算（col-grip）一点不受影响。 */
@@ -230,6 +234,17 @@ html[data-ui="mac"] .msg.user .body {
   animation: mac-bubble-in 420ms var(--mac-spring) backwards;
   transform-origin: 100% 100%;
 }
+/* D350: 用户消息长了会包进 .foldable > .fold-body。那两层是 flex 子项、按内容收缩，
+   气泡的 78% 就成了「自己宽度的 78%」：短消息被折成「mer / ge」，长气泡贴左、右边空一截。
+   宽度上限挪到 .foldable 上，里面两层贴右、气泡不再自己限宽。 */
+html[data-ui="mac"] .msg.user .foldable {
+  max-width: min(78%, 760px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+html[data-ui="mac"] .msg.user .foldable .fold-body { max-width: 100%; }
+html[data-ui="mac"] .msg.user .foldable .body { max-width: 100%; }
 html[data-ui="mac"] .msg.user .body code { background: rgba(255, 255, 255, 0.22); color: inherit; }
 html[data-ui="mac"] .msg.user .body a { color: inherit; text-decoration: underline; }
 html[data-ui="mac"] .msg.user .notice { color: inherit; opacity: 0.8; }

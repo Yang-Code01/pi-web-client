@@ -6717,3 +6717,11 @@ Esc 之后 dialog: 0
 - 去重仍是 D292 的「先落盘 lastFiredDate」：页面广播与推送是同一次触发，不会多发。
 
 **验证：** `npm run test:attendance` 61 + 39 + 14 全绿（e2e 新增：到点 `onFire` 恰一次、推送带 `tag` 与 `sticky`）；测试实例 17864 上用 Playwright 开着页面（有焦点、在最前）把提醒时间设成当前分钟：8 秒内出现「加班申请提醒：…」页内提示，并以 tag `pi-attendance-reminder`、`requireInteraction: true` 调了 `showNotification`。
+
+## D351 Mac 风格：用户气泡宽度、选中胶囊里的状态字（用户报 bug 2026-11-20）
+
+**决定。**
+- 用户消息会包进 `.foldable > .fold-body`，Mac 下 `.msg.user` 是 flex 列、子项按内容收缩，气泡的 `max-width: 78%` 就成了「自己宽度的 78%」：短消息被折成「mer / ge」，长气泡贴左、右边空一截。宽度上限挪到 `.foldable`，里面两层贴右、气泡只限 100%。
+- 钉条里当前会话那颗胶囊是实心强调色底，里面的状态小字（运行中 / 进行中）和 ★ 也是强调色，叠在一起看不见。选中胶囊里一律跟胶囊白字走。
+
+**守卫。** `node probes/mac-chat.mjs`：四套主题下量短气泡单行、气泡贴右、选中胶囊对比度，并扫整页「自己带字、对比度 < 2」的元素（展开 / 收起左栏各一遍）。
