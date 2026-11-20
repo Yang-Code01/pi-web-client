@@ -14,6 +14,7 @@ import { createEl as el, openImage } from "./chat.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
+import { pushEscLayer } from "./modal.ts";
 import { tr } from "./i18n/index.ts";
 import { groupModels, modelGroupSection, rememberRecentModel } from "./modelgroups.ts";
 import type { Item, ModelInfo, SessionState } from "./types.ts";
@@ -148,6 +149,7 @@ export class ScratchChat {
   private titleEl!: HTMLElement;
   private modelEl!: HTMLButtonElement;
   private modelMenu!: HTMLElement;
+  private escPop: (() => void) | null = null;
   private remindEl!: HTMLElement;
   private reclaimEl!: HTMLElement;
   private sendBtn!: HTMLButtonElement;
@@ -189,6 +191,7 @@ export class ScratchChat {
   open(): void {
     if (!this.root) this.build();
     this.root!.hidden = false;
+    if (!this.escPop && this.root) this.escPop = pushEscLayer({ el: this.root, onEsc: () => this.onEscape() });
     if (!this.asked) {
       this.asked = true;
       this.starting = true;
@@ -200,6 +203,14 @@ export class ScratchChat {
 
   close(): void {
     if (this.root) this.root.hidden = true;
+    this.escPop?.();
+    this.escPop = null;
+  }
+
+  /** Esc 到了随手问这一层：模型菜单开着先关菜单，否则关面板。 */
+  private onEscape(): void {
+    if (this.modelMenu && !this.modelMenu.hidden) this.modelMenu.hidden = true;
+    else this.close();
   }
 
   get isOpen(): boolean {
@@ -378,12 +389,6 @@ export class ScratchChat {
       void this.attach(Array.from(ev.dataTransfer?.files ?? []));
     };
     const sheet = el("div", "sheet scratch-sheet");
-    sheet.onkeydown = (ev) => {
-      if (ev.key !== "Escape") return;
-      // 模型菜单开着时，Esc 先关菜单（不然一下关掉整个 dialog 很意外）。
-      if (this.modelMenu && !this.modelMenu.hidden) this.modelMenu.hidden = true;
-      else this.close();
-    };
 
     const head = el("div", "sheet-head scratch-head");
     this.titleEl = el("div", "sheet-title", tr("随手问"));
