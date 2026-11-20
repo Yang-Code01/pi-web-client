@@ -6,7 +6,7 @@
  * - id 是稳定标识，存在 `pi.prefs.theme` 里：不能翻译、不能改名；显示名走 `tr()`。
  * - 默认 `midnight` 就是原来那套，`<html>` 上不写 `data-theme` 时 CSS 也落在它。
  */
-import { ACCENTS, ACCENTS_LIGHT } from "./palette.ts";
+import { ACCENTS, ACCENTS_LIGHT, DEFAULT_MAC_ACCENT, MAC_ACCENTS, MAC_ACCENTS_LIGHT } from "./palette.ts";
 
 export const THEME_IDS = ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper", "mac-light", "mac-dark", "mac-midnight"] as const;
 export type ThemeId = (typeof THEME_IDS)[number];
@@ -48,10 +48,45 @@ export function themeInfo(id: ThemeId): ThemeInfo {
   return THEMES.find((t) => t.id === id) ?? THEMES[0];
 }
 
-/** 某套主题下某个强调色的实际色值（浅底用深一档的那张表）。 */
+/** 是不是 Mac 风格那一族：强调色换 macOS 八色、文字不分三档、界面换 Mac 的质感与动效（mac.css）。 */
+export function isMacTheme(theme: ThemeId): boolean {
+  return themeInfo(theme).mac === true;
+}
+
+/**
+ * 这套主题下真正生效的强调色 id：Mac 主题读 `macAccent`（macOS 八色），别的读 `accent`（原来六色）。
+ * 两份分开存，换来换去谁也不覆盖谁。
+ */
+export function activeAccent(theme: ThemeId, prefs: { accent: string; macAccent: string }): string {
+  return isMacTheme(theme) ? prefs.macAccent : prefs.accent;
+}
+
+/** 某套主题下某个强调色的实际色值（浅底用深一档的那张表；Mac 主题用 macOS 八色那张表）。 */
 export function accentFor(theme: ThemeId, accent: string): { accent: string; dim: string } {
-  const table = themeInfo(theme).light ? ACCENTS_LIGHT : ACCENTS;
+  const info = themeInfo(theme);
+  if (info.mac) {
+    const mac = info.light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
+    return mac[accent] ?? mac[DEFAULT_MAC_ACCENT];
+  }
+  const table = info.light ? ACCENTS_LIGHT : ACCENTS;
   return table[accent] ?? table.ice;
+}
+
+/** 粗算相对亮度，只用来给强调色底挑黑字还是白字。 */
+function luminance(hex: string): number {
+  const v = hex.replace("#", "");
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16) / 255);
+  const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+/**
+ * 强调色底上的字：Mac 主题跟 macOS 一样默认白字（蓝底白字），只有黄、橙这种亮色换深字。
+ * 别的主题由 styles.css 各自的 `--accent-ink` 决定，这里返回 null（并且清掉 Mac 留下的行内值）。
+ */
+export function accentInk(theme: ThemeId, accent: string): string | null {
+  if (!isMacTheme(theme)) return null;
+  return luminance(accentFor(theme, accent).accent) > 0.4 ? "#1d1d1f" : "#ffffff";
 }
 
 /**
@@ -61,9 +96,16 @@ export function accentFor(theme: ThemeId, accent: string): { accent: string; dim
 export function paintTheme(theme: ThemeId, accent: string): void {
   const html = document.documentElement;
   html.dataset.theme = theme;
+  // `data-ui="mac"`：mac.css 只认这一个开关（毛玻璃、圆角、动效、控件形状都挂在它下面），
+  // 别的主题不写这个属性，一像素也不受影响。
+  if (isMacTheme(theme)) html.dataset.ui = "mac";
+  else delete html.dataset.ui;
   const a = accentFor(theme, accent);
   html.style.setProperty("--accent", a.accent);
   html.style.setProperty("--accent-dim", a.dim);
+  const ink = accentInk(theme, accent);
+  if (ink) html.style.setProperty("--accent-ink", ink);
+  else html.style.removeProperty("--accent-ink");
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
   if (meta) meta.content = themeInfo(theme).demo.bg;
 }
@@ -72,14 +114,16 @@ export function paintTheme(theme: ThemeId, accent: string): void {
 export function bootTheme(): void {
   let theme: ThemeId = DEFAULT_THEME;
   let accent = "ice";
+  let macAccent = DEFAULT_MAC_ACCENT;
   try {
     const p = JSON.parse(localStorage.getItem("pi.prefs") ?? "null");
     if (isTheme(p?.theme)) theme = p.theme;
     if (typeof p?.accent === "string" && ACCENTS[p.accent]) accent = p.accent;
+    if (typeof p?.macAccent === "string" && MAC_ACCENTS[p.macAccent]) macAccent = p.macAccent;
   } catch {
     // 读不到就按默认。
   }
-  paintTheme(theme, accent);
+  paintTheme(theme, activeAccent(theme, { accent, macAccent }));
 }
 
 /**

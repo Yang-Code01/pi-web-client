@@ -1,0 +1,498 @@
+/*
+ * Mac 风格（mac-light / mac-dark / mac-midnight）：不只是换配色，而是换一身「系统」。
+ *
+ * 开关是 `html[data-ui="mac"]`（theme.ts 的 paintTheme 在 Mac 主题时挂上、别的主题摘掉），
+ * 所以这一整份规则在其它七套主题下一条都不生效 —— 它们的像素不动。
+ *
+ * 分四层：
+ *   1. 材质：壁纸式渐变底 + 毛玻璃（backdrop-filter）的顶栏 / 侧栏 / 弹层 / 菜单 / 输入框；
+ *   2. 形态：macOS 的圆角、窗口阴影、发丝线、工具栏按钮、分段控件、iOS 开关、iMessage 气泡；
+ *   3. 动效：全局缓动换成 Apple 的弹簧曲线；弹层从上方落下、菜单缩放淡入、按钮按下回弹；
+ *      关闭时的退场动画由 app.ts 的 retireOverlay() 配合（`.mac-leaving`）。
+ *   4. 交互：快捷键（⌘/Ctrl + , 等）在 app.ts 的 installShortcuts() 里，只在 Mac 主题下生效。
+ *
+ * 位移动画一律用独立的 `translate` / `scale` 属性，不写 `transform`：不少浮层（终端弹层、菜单）
+ * 本来就用 transform 定位，写 transform 会把它们的位置冲掉；独立属性和 transform 是叠加的。
+ * 尺寸：这份文件里没有裸 vh / vw（#app 有 zoom，见 AGENTS.md）。
+ */
+
+/* ---------------------------------------------------------------- 1. 材质：每套主题的玻璃与壁纸 */
+:root[data-theme="mac-light"] {
+  --mac-wall:
+    radial-gradient(1100px 760px at 8% -6%, rgba(110, 168, 255, 0.5), transparent 62%),
+    radial-gradient(980px 720px at 104% 12%, rgba(255, 150, 196, 0.42), transparent 62%),
+    radial-gradient(1000px 760px at 52% 112%, rgba(140, 226, 204, 0.5), transparent 62%),
+    linear-gradient(180deg, #eef1f7, #f3eff5);
+  --mac-glass: rgba(255, 255, 255, 0.58);
+  --mac-glass-strong: rgba(252, 252, 254, 0.8);
+  --mac-glass-solid: rgba(255, 255, 255, 0.92);
+  --mac-glass-line: rgba(0, 0, 0, 0.09);
+  --mac-glass-hi: rgba(255, 255, 255, 0.85);
+  --mac-fill: rgba(0, 0, 0, 0.045);
+  --mac-fill-2: rgba(0, 0, 0, 0.085);
+  --mac-control: linear-gradient(180deg, #ffffff, #f6f6f8);
+  --mac-control-line: rgba(0, 0, 0, 0.12);
+  --mac-knob: #ffffff;
+  --mac-track: rgba(120, 120, 128, 0.24);
+  --mac-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.14), 0 22px 70px rgba(30, 40, 80, 0.22), 0 4px 14px rgba(0, 0, 0, 0.08);
+  --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 8px 30px rgba(40, 50, 90, 0.1);
+  --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 12px 36px rgba(0, 0, 0, 0.18);
+  --mac-scrim: rgba(40, 44, 60, 0.18);
+  --mac-scroll: rgba(0, 0, 0, 0.28);
+}
+:root[data-theme="mac-dark"] {
+  --mac-wall:
+    radial-gradient(1100px 760px at 6% -8%, rgba(94, 92, 230, 0.4), transparent 62%),
+    radial-gradient(980px 720px at 106% 8%, rgba(191, 90, 242, 0.26), transparent 62%),
+    radial-gradient(1000px 760px at 56% 118%, rgba(10, 132, 255, 0.26), transparent 62%),
+    linear-gradient(180deg, #131316, #18171c);
+  --mac-glass: rgba(38, 38, 42, 0.56);
+  --mac-glass-strong: rgba(36, 36, 40, 0.8);
+  --mac-glass-solid: rgba(40, 40, 44, 0.94);
+  --mac-glass-line: rgba(255, 255, 255, 0.1);
+  --mac-glass-hi: rgba(255, 255, 255, 0.09);
+  --mac-fill: rgba(255, 255, 255, 0.06);
+  --mac-fill-2: rgba(255, 255, 255, 0.11);
+  --mac-control: linear-gradient(180deg, #5b5b60, #4a4a4f);
+  --mac-control-line: rgba(0, 0, 0, 0.5);
+  --mac-knob: #f2f2f4;
+  --mac-track: rgba(120, 120, 128, 0.36);
+  --mac-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(255, 255, 255, 0.12), 0 26px 80px rgba(0, 0, 0, 0.55);
+  --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.6), inset 0 0.5px 0 rgba(255, 255, 255, 0.08), 0 10px 34px rgba(0, 0, 0, 0.35);
+  --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(255, 255, 255, 0.12), 0 14px 40px rgba(0, 0, 0, 0.5);
+  --mac-scrim: rgba(0, 0, 0, 0.32);
+  --mac-scroll: rgba(255, 255, 255, 0.3);
+}
+:root[data-theme="mac-midnight"] {
+  --mac-wall:
+    radial-gradient(1100px 760px at 4% -10%, rgba(40, 110, 230, 0.48), transparent 62%),
+    radial-gradient(980px 720px at 106% 10%, rgba(110, 80, 230, 0.32), transparent 62%),
+    radial-gradient(1000px 760px at 52% 120%, rgba(0, 170, 210, 0.24), transparent 62%),
+    linear-gradient(180deg, #0e1422, #121a2b);
+  --mac-glass: rgba(30, 38, 58, 0.55);
+  --mac-glass-strong: rgba(28, 35, 54, 0.8);
+  --mac-glass-solid: rgba(32, 40, 60, 0.94);
+  --mac-glass-line: rgba(170, 195, 255, 0.13);
+  --mac-glass-hi: rgba(200, 220, 255, 0.1);
+  --mac-fill: rgba(170, 195, 255, 0.07);
+  --mac-fill-2: rgba(170, 195, 255, 0.13);
+  --mac-control: linear-gradient(180deg, #46506a, #394259);
+  --mac-control-line: rgba(0, 0, 0, 0.45);
+  --mac-knob: #f1f4fb;
+  --mac-track: rgba(130, 145, 180, 0.34);
+  --mac-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(200, 220, 255, 0.14), 0 26px 80px rgba(0, 6, 20, 0.6);
+  --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.55), inset 0 0.5px 0 rgba(200, 220, 255, 0.1), 0 10px 34px rgba(0, 6, 20, 0.4);
+  --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(200, 220, 255, 0.14), 0 14px 40px rgba(0, 6, 20, 0.55);
+  --mac-scrim: rgba(2, 6, 16, 0.34);
+  --mac-scroll: rgba(200, 215, 255, 0.3);
+}
+
+html[data-ui="mac"] {
+  /* Apple 的系统字体与等宽字体排在最前；Windows 上自然退回 Segoe UI / 雅黑。 */
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", "PingFang SC", "Hiragino Sans", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  --r: 10px;
+  /* 全局缓动换成 Apple 的：iOS 弹层那条「快出慢收」，以及带一点回弹的弹簧。 */
+  --mac-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --mac-spring: cubic-bezier(0.34, 1.42, 0.64, 1);
+  --ease: var(--mac-ease);
+  --dur-1: 160ms;
+  --dur-2: 300ms;
+  --mac-blur: saturate(180%) blur(28px);
+  --mac-blur-strong: saturate(190%) blur(44px);
+  color-scheme: light;
+}
+html[data-ui="mac"][data-theme="mac-dark"],
+html[data-ui="mac"][data-theme="mac-midnight"] { color-scheme: dark; }
+
+html[data-ui="mac"] body {
+  background: var(--mac-wall);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
+  letter-spacing: -0.003em;
+}
+html[data-ui="mac"] ::selection { background: color-mix(in srgb, var(--accent) 34%, transparent); }
+
+/* 叠加式滚动条：细、圆、只在 hover 时变深。 */
+html[data-ui="mac"] ::-webkit-scrollbar { width: 11px; height: 11px; background: transparent; }
+html[data-ui="mac"] ::-webkit-scrollbar-track { background: transparent; }
+html[data-ui="mac"] ::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--mac-scroll) 70%, transparent);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+html[data-ui="mac"] ::-webkit-scrollbar-thumb:hover { background-color: var(--mac-scroll); }
+html[data-ui="mac"] ::-webkit-scrollbar-corner { background: transparent; }
+
+/* macOS 的焦点环：一圈半透明强调色光晕，不是 2px 实线。 */
+html[data-ui="mac"] :is(button, a, [role="button"], [role="tab"], [role="menuitem"], summary, .session-card):focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 50%, transparent) !important;
+  outline-offset: 1px !important;
+}
+
+/* ---------------------------------------------------------------- 2a. 窗口骨架：工具栏 + 浮动侧栏 */
+html[data-ui="mac"] .topbar {
+  background: var(--mac-glass);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border-bottom: 0.5px solid var(--mac-glass-line);
+  box-shadow: inset 0 -0.5px 0 var(--mac-glass-hi);
+}
+/* 工具栏按钮：平的、无边框，悬停才浮出一块圆角底（Finder / Xcode 工具栏那样）。 */
+html[data-ui="mac"] .topbar .icon-btn {
+  border-color: transparent;
+  background: transparent;
+  color: var(--dim);
+  border-radius: 8px;
+  font-family: var(--sans);
+  transition: background var(--dur-1) var(--mac-ease), color var(--dur-1) var(--mac-ease), scale 220ms var(--mac-spring);
+}
+html[data-ui="mac"] .topbar .icon-btn:hover { background: var(--mac-fill-2); color: var(--text); }
+html[data-ui="mac"] .topbar .icon-btn:active { scale: 0.94; background: var(--mac-fill-2); }
+
+html[data-ui="mac"] .ws-session-row { border-bottom: 0; background: transparent; }
+html[data-ui="mac"] .pin-chip {
+  background: var(--mac-glass);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border: 0.5px solid var(--mac-glass-line);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  transition: background var(--dur-1) var(--mac-ease), scale 240ms var(--mac-spring);
+}
+html[data-ui="mac"] .pin-chip:hover { background: var(--mac-glass-strong); border-color: var(--mac-glass-line); }
+html[data-ui="mac"] .pin-chip:active { scale: 0.96; }
+html[data-ui="mac"] .pin-chip.cur,
+html[data-ui="mac"] .pin-chip.cur:hover {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-ink);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* 桌面布局：左右两栏变成浮在壁纸上的玻璃面板（macOS 26 那种悬浮侧栏）；中间是内容区。
+   用 margin 往里收，不动 .main 的列宽 —— 拖拽分隔条的换算（col-grip）一点不受影响。 */
+:where(html[data-ui="mac"]:not([data-compact="true"])) .main > .pane:not(.chat-pane) {
+  margin: 8px 0 10px 10px;
+  border-radius: 16px;
+  border: 0.5px solid var(--mac-glass-line) !important;
+  background: var(--mac-glass);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  box-shadow: var(--mac-shadow-panel);
+}
+:where(html[data-ui="mac"]:not([data-compact="true"])) .main > .pane:not(.chat-pane):last-child { margin: 8px 10px 10px 0; }
+/* 分隔条的那根线跟着面板之间的缝走：hover 时是一条强调色细线，平时看不见。 */
+:where(html[data-ui="mac"]:not([data-compact="true"])) .col-grip::after { border-radius: 1px; }
+
+/* 窄屏（手机）：没有三栏，整块内容区直接铺一层薄玻璃，底部页签做成 iOS 的 tab bar。 */
+html[data-ui="mac"][data-compact="true"] .pane:not(.chat-pane) { background: var(--mac-glass); -webkit-backdrop-filter: var(--mac-blur); backdrop-filter: var(--mac-blur); }
+html[data-ui="mac"] .tabs {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border-top: 0.5px solid var(--mac-glass-line);
+}
+
+/* ---------------------------------------------------------------- 2b. 侧栏行（会话列表） */
+html[data-ui="mac"] .session-list { gap: 2px; padding: 8px; }
+html[data-ui="mac"] .session-card {
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+  padding: 9px 12px;
+  transition: background var(--dur-1) var(--mac-ease), scale 260ms var(--mac-spring);
+}
+html[data-ui="mac"] .session-card:hover { background: var(--mac-fill); border-color: transparent; }
+html[data-ui="mac"] .session-card:active { scale: 0.985; }
+/* 选中：Finder 侧栏那块圆角强调色底，不再是左边一条竖线。 */
+html[data-ui="mac"] .session-card.active,
+html[data-ui="mac"] .session-card.active:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  box-shadow: none;
+}
+html[data-ui="mac"] .session-card.active .name { color: var(--text); font-weight: 600; }
+html[data-ui="mac"] .session-card .src-tag { border-radius: 5px; border-color: transparent; background: var(--mac-fill-2); }
+
+/* ---------------------------------------------------------------- 2c. 对话：iMessage 式气泡 */
+html[data-ui="mac"] .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
+html[data-ui="mac"] .msg.user .who { margin-right: 6px; }
+html[data-ui="mac"] .msg.user .body {
+  max-width: min(78%, 760px);
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: 0;
+  border-radius: 20px 20px 6px 20px;
+  padding: 9px 15px;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 28%, transparent);
+  animation: mac-bubble-in 420ms var(--mac-spring) backwards;
+  transform-origin: 100% 100%;
+}
+html[data-ui="mac"] .msg.user .body code { background: rgba(255, 255, 255, 0.22); color: inherit; }
+html[data-ui="mac"] .msg.user .body a { color: inherit; text-decoration: underline; }
+html[data-ui="mac"] .msg.user .notice { color: inherit; opacity: 0.8; }
+html[data-ui="mac"] .msg.user .msg-skill { background: rgba(255, 255, 255, 0.2); border-color: rgba(255, 255, 255, 0.35); color: inherit; }
+html[data-ui="mac"] .msg.assistant .body {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border: 0.5px solid var(--mac-glass-line);
+  border-radius: 6px 20px 20px 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+html[data-ui="mac"] .msg .body pre { border-radius: 10px; border-color: var(--mac-glass-line); }
+html[data-ui="mac"] .msg .who { letter-spacing: 0; font-weight: 500; }
+
+/* 输入框：浮在内容区底部的一块玻璃胶囊。 */
+html[data-ui="mac"] .composer { background: transparent; border-top: 0; }
+html[data-ui="mac"] .composer textarea {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border: 0.5px solid var(--mac-glass-line);
+  border-radius: 18px;
+  padding: 12px 16px;
+  box-shadow: var(--mac-shadow-panel);
+  transition: box-shadow var(--dur-2) var(--mac-ease), border-color var(--dur-1) var(--mac-ease);
+}
+html[data-ui="mac"] .composer textarea:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: var(--mac-shadow-panel), 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+html[data-ui="mac"] .chat-jump {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border: 0.5px solid var(--mac-glass-line);
+}
+
+/* ---------------------------------------------------------------- 2d. 控件：按钮 / 胶囊 / 分段 / 开关 */
+html[data-ui="mac"] .btn {
+  border-radius: 8px;
+  padding: 6px 14px;
+  border: 0.5px solid var(--mac-control-line);
+  background: var(--mac-control);
+  box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.12), inset 0 0.5px 0 rgba(255, 255, 255, 0.14);
+  font-family: var(--sans);
+  font-weight: 500;
+  transition: filter var(--dur-1) var(--mac-ease), scale 260ms var(--mac-spring), background var(--dur-1) var(--mac-ease);
+}
+html[data-ui="mac"] .btn:hover { filter: brightness(1.04); border-color: var(--mac-control-line); background: var(--mac-control); }
+html[data-ui="mac"] .btn:active { transform: none; scale: 0.96; filter: brightness(0.94); }
+html[data-ui="mac"] .btn.primary {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, #fff), var(--accent));
+  color: var(--accent-ink);
+  border-color: color-mix(in srgb, var(--accent) 70%, #000);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 40%, transparent), inset 0 0.5px 0 rgba(255, 255, 255, 0.3);
+}
+html[data-ui="mac"] .btn.primary:hover { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 80%, #fff), var(--accent)); }
+html[data-ui="mac"] .btn.ghost { background: transparent; border-color: transparent; box-shadow: none; }
+html[data-ui="mac"] .btn.ghost:hover { background: var(--mac-fill-2); }
+html[data-ui="mac"] .btn.danger { color: var(--danger); }
+html[data-ui="mac"] .btn:disabled { scale: 1; filter: none; }
+
+html[data-ui="mac"] .icon-btn { border-radius: 8px; border-color: var(--mac-glass-line); background: var(--mac-fill); transition: background var(--dur-1) var(--mac-ease), scale 240ms var(--mac-spring); }
+html[data-ui="mac"] .icon-btn:hover { background: var(--mac-fill-2); }
+html[data-ui="mac"] .icon-btn:active { scale: 0.92; }
+
+html[data-ui="mac"] .chip {
+  border-radius: 7px;
+  border: 0.5px solid var(--mac-control-line);
+  background: var(--mac-control);
+  color: var(--text);
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.1);
+  transition: background var(--dur-1) var(--mac-ease), scale 260ms var(--mac-spring);
+}
+html[data-ui="mac"] .chip:hover { border-color: var(--mac-control-line); filter: brightness(1.04); }
+html[data-ui="mac"] .chip:active { scale: 0.95; }
+html[data-ui="mac"] .chip.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; box-shadow: 0 1px 4px color-mix(in srgb, var(--accent) 40%, transparent); }
+
+/* 分段控件（设置的「外观 / 连接与设置」、范围切换）：灰槽 + 白色滑块，跟 macOS 一样。 */
+html[data-ui="mac"] .st-tabs,
+html[data-ui="mac"] .st-seg {
+  background: var(--mac-fill-2);
+  border: 0;
+  border-radius: 9px;
+  padding: 2px;
+}
+html[data-ui="mac"] .st-tabs__btn,
+html[data-ui="mac"] .st-seg__btn {
+  border-radius: 7px;
+  font-weight: 500;
+  color: var(--text);
+  transition: background var(--dur-2) var(--mac-ease), box-shadow var(--dur-2) var(--mac-ease), scale 240ms var(--mac-spring);
+}
+html[data-ui="mac"] .st-tabs__btn:active,
+html[data-ui="mac"] .st-seg__btn:active { scale: 0.96; }
+html[data-ui="mac"] .st-tabs__btn.on,
+html[data-ui="mac"] .st-seg__btn.on {
+  color: var(--text);
+  background: var(--mac-knob);
+  border-color: transparent;
+  box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.04), 0 1px 4px rgba(0, 0, 0, 0.16);
+}
+html[data-ui="mac"][data-theme="mac-dark"] .st-tabs__btn.on,
+html[data-ui="mac"][data-theme="mac-dark"] .st-seg__btn.on { background: #636366; }
+html[data-ui="mac"][data-theme="mac-midnight"] .st-tabs__btn.on,
+html[data-ui="mac"][data-theme="mac-midnight"] .st-seg__btn.on { background: #4b5675; }
+
+/* 设置里的勾选框 → iOS / macOS 开关。只改设置台与设置行里的，列表多选的勾选框保持勾选框。 */
+html[data-ui="mac"] :is(.settings-row, .st-console) input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border-radius: 999px;
+  border: 0;
+  cursor: pointer;
+  background-color: var(--mac-track);
+  background-image: radial-gradient(circle, var(--mac-knob) 0 7.5px, rgba(0, 0, 0, 0.14) 8px, transparent 9px);
+  background-size: 20px 20px;
+  background-repeat: no-repeat;
+  background-position: 0 50%;
+  transition: background-color 220ms var(--mac-ease), background-position 320ms var(--mac-spring);
+  vertical-align: middle;
+}
+html[data-ui="mac"] :is(.settings-row, .st-console) input[type="checkbox"]:checked {
+  background-color: var(--accent);
+  background-position: 14px 50%;
+}
+html[data-ui="mac"] :is(.settings-row, .st-console) input[type="checkbox"]:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 文本框 / 下拉：圆角 + 发丝线 + 光晕焦点。 */
+html[data-ui="mac"] :is(.st-console, .sheet, .modal) :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, select) {
+  border-radius: 8px;
+  border: 0.5px solid var(--mac-control-line);
+  background-color: var(--mac-glass-solid);
+  transition: box-shadow var(--dur-1) var(--mac-ease), border-color var(--dur-1) var(--mac-ease);
+}
+html[data-ui="mac"] :is(.st-console, .sheet, .modal) :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, select):focus {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+html[data-ui="mac"] .swatch { transition: box-shadow 160ms var(--mac-ease), scale 300ms var(--mac-spring); }
+html[data-ui="mac"] .swatch:hover { scale: 1.12; }
+html[data-ui="mac"] .swatch:active { scale: 0.92; }
+html[data-ui="mac"] .theme-chip { transition: background var(--dur-1) var(--mac-ease), scale 300ms var(--mac-spring); }
+html[data-ui="mac"] .theme-chip:hover { scale: 1.03; }
+html[data-ui="mac"] .theme-chip:active { scale: 0.97; }
+
+/* ---------------------------------------------------------------- 2e. 窗口：设置台 / 弹层 / 模态 */
+html[data-ui="mac"] :is(.st-back, .sheet-back, .modal) {
+  background: var(--mac-scrim);
+  -webkit-backdrop-filter: blur(6px) saturate(120%);
+  backdrop-filter: blur(6px) saturate(120%);
+  animation: mac-fade-in 260ms var(--mac-ease) backwards;
+}
+html[data-ui="mac"] .st-console,
+html[data-ui="mac"] .sheet,
+html[data-ui="mac"] .modal form,
+html[data-ui="mac"] .argdialog-panel {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border: 0.5px solid var(--mac-glass-line);
+  box-shadow: var(--mac-shadow-window);
+  animation: mac-window-in 460ms var(--mac-spring) backwards;
+  transform-origin: 50% 0;
+}
+html[data-ui="mac"] .st-console { border-radius: 14px; }
+html[data-ui="mac"] .sheet-back.center .sheet,
+html[data-ui="mac"] .modal form,
+html[data-ui="mac"] .argdialog-panel { border-radius: 14px; }
+/* 底部抽屉（手机 / 非居中）：iOS 那样从下面弹上来。 */
+html[data-ui="mac"] .sheet-back:not(.center) .sheet { animation-name: mac-drawer-in; transform-origin: 50% 100%; border-radius: 16px 16px 0 0; }
+
+html[data-ui="mac"] .st-head,
+html[data-ui="mac"] .sheet-head { border-bottom: 0.5px solid var(--mac-glass-line); }
+html[data-ui="mac"] .st-title { letter-spacing: -0.01em; font-weight: 700; }
+html[data-ui="mac"] .st-nav {
+  background: color-mix(in srgb, var(--mac-fill) 60%, transparent);
+  border-right: 0.5px solid var(--mac-glass-line);
+}
+html[data-ui="mac"] .st-nav__item { border-radius: 7px; color: var(--text); transition: background var(--dur-1) var(--mac-ease), scale 240ms var(--mac-spring); }
+html[data-ui="mac"] .st-nav__item:hover { background: var(--mac-fill); }
+html[data-ui="mac"] .st-nav__item:active { scale: 0.98; }
+/* 系统设置的侧栏选中：实心强调色、白字。 */
+html[data-ui="mac"] .st-nav__item.on,
+html[data-ui="mac"] .st-nav__item.on:hover {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+  box-shadow: none;
+}
+html[data-ui="mac"] .st-nav__item.on * { color: inherit; }
+html[data-ui="mac"] .st-foot { border-top: 0.5px solid var(--mac-glass-line); }
+/* 设置项：一组组白色圆角卡片（系统设置的分组样式）。 */
+html[data-ui="mac"] .settings-panel {
+  background: var(--mac-glass-solid);
+  border: 0.5px solid var(--mac-glass-line);
+  border-radius: 12px;
+}
+html[data-ui="mac"] .settings-row + .settings-row { border-top-color: var(--mac-glass-line); }
+
+/* ---------------------------------------------------------------- 2f. 菜单与浮层：毛玻璃 + 缩放淡入 */
+html[data-ui="mac"] :is(.ctx-menu, .pin-menu, .perm-menu, .term-menu, .fail-menu, .go-cmp-menu, .mk-task-menu, .mk-filter-menu, .mk-menu, .ws-pop, .act-pop, .complete-pop, .jira-user-pop, .jira-handoff-pop, .choose, .skill-panel, .turn-note, .pin-note) {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border: 0.5px solid var(--mac-glass-line);
+  border-radius: 12px;
+  box-shadow: var(--mac-shadow-menu);
+  animation: mac-menu-in 260ms var(--mac-spring) backwards;
+  transform-origin: 50% 0;
+}
+/* 菜单项：macOS 菜单那样，悬停整行涂成强调色、字变白。 */
+html[data-ui="mac"] :is(.ctx-menu, .pin-menu, .term-menu, .fail-menu, .mk-menu, .mk-task-menu, .mk-filter-menu, .go-cmp-menu) :is(button, [role="menuitem"]):not(:disabled):hover {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-radius: 6px;
+}
+html[data-ui="mac"] :is(.fail-toast, .update-bar, .turn-surface, .term-dock, .branch-sheet, .repos-sheet, .jira-picker-box, .go-card) {
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border-radius: 14px;
+  box-shadow: var(--mac-shadow-window);
+}
+html[data-ui="mac"] :is(.fail-toast, .update-bar) { background: var(--mac-glass-strong); animation: mac-toast-in 520ms var(--mac-spring) backwards; }
+
+/* 右栏的卡片（需要你 / 执行）：发丝线 + 圆角，悬停微微浮起。 */
+html[data-ui="mac"] .queue > * { border-radius: 12px; }
+
+/* ---------------------------------------------------------------- 3. 动效 */
+@keyframes mac-fade-in { from { opacity: 0; } }
+@keyframes mac-fade-out { to { opacity: 0; } }
+/* 窗口 / 设置台：从上方落下来，带一点回弹（macOS 的 sheet 从标题栏滑出）。 */
+@keyframes mac-window-in { from { opacity: 0; translate: 0 -26px; scale: 0.94; } }
+@keyframes mac-window-out { to { opacity: 0; translate: 0 -14px; scale: 0.96; } }
+@keyframes mac-drawer-in { from { opacity: 0.4; translate: 0 48px; } }
+@keyframes mac-menu-in { from { opacity: 0; scale: 0.92; translate: 0 -4px; } }
+@keyframes mac-toast-in { from { opacity: 0; translate: 0 18px; scale: 0.96; } }
+@keyframes mac-bubble-in { from { opacity: 0; scale: 0.9; translate: 0 8px; } }
+
+/* 退场（app.ts 的 retireOverlay 挂 `.mac-leaving`，动画放完再真正移除）。 */
+html[data-ui="mac"] .mac-leaving { pointer-events: none; animation: mac-fade-out 200ms var(--mac-ease) forwards !important; }
+html[data-ui="mac"] .mac-leaving > :is(.st-console, .sheet, form, .argdialog-panel) { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
+/* 同一个面板被重画（换页、恢复默认）：新的那份不再演一遍入场。 */
+html[data-ui="mac"] .mac-instant,
+html[data-ui="mac"] .mac-instant > * { animation: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-ui="mac"] *,
+  html[data-ui="mac"] *::before,
+  html[data-ui="mac"] *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}
+
+/* 设置里「Mac 风格」那一节下面的快捷键提示。 */
+.mac-keys { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0 0; padding: 0; list-style: none; color: var(--dim); font-size: 12px; }
+.mac-keys kbd {
+  display: inline-block; min-width: 1.6em; margin-right: 4px; padding: 1px 6px; text-align: center;
+  font: 11px/1.5 var(--sans); color: var(--text);
+  background: var(--mac-fill-2, var(--panel-2)); border-radius: 5px;
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.14);
+}

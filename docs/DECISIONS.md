@@ -6600,3 +6600,8 @@ Esc 之后 dialog: 0
 - **桥侧校验过滤**（`bridge/src/sessions.ts`、`bridge/src/artifacts.ts`、`bridge/src/index.ts`）：`locate()` 一并返回 `startedAt`，`listArtifacts()` 对 `mentioned` 条目校验「文件存在、是普通文件、且 `mtimeMs >= startedAt - 1000`」，过滤掉旧参考文件、目录与不存在的路径；同一 `abs` 撞车时保留非 `mentioned` 记录；无基线时返回 `why: "mentioned-only"`，页面显示「回复提及」及对应说明（三语同步）。
 
 
+
+## D341 Mac 风格：一个 `data-ui="mac"` 开关换掉整套材质、动效与快捷键
+
+- **决定**：Mac 三套主题（mac-light / mac-dark / mac-midnight）由 `paintTheme` 在 `<html>` 上挂 `data-ui="mac"`，`web/src/mac.css` 里所有规则都挂在这个开关下：壁纸式渐变底 + 毛玻璃顶栏 / 悬浮侧栏 / 弹层 / 菜单，iMessage 气泡，macOS 按钮、分段控件、开关，Apple 弹簧缓动，弹层落下与退场动画（`retireOverlay` + `.mac-leaving`），以及兜底快捷键 `MAC_KEYS`（⌘/Ctrl + , 设置、+K 搜索、⌃⌘S 左栏、+. 中断）。强调色在 Mac 主题下改用 `prefs.macAccent`（macOS 八色，默认系统蓝），与原来的 `prefs.accent` 分开存；文字亮度三档在 Mac 主题下固定为 normal（Apple 标签色层级）并在设置里隐藏。
+- **为什么**：用户要的是「改天换地」的整体体验，不是第十套配色。把所有改动关在一个属性开关后面，其它七套主题一个像素都不变，也不用给每条旧规则加分支；强调色分开存，切回普通主题时原来的选择还在。位移动画只用独立的 `translate` / `scale` 属性，因为不少浮层本来用 `transform` 定位。

@@ -196,7 +196,7 @@ const snap = () =>
       cardBg: bgOf(".session-card"),
       navBg: bgOf(".display-sheet .st-nav"),
       composerBg: bgOf(".composer textarea") ?? bgOf(".composer"),
-      swatch: bgOf(".display-sheet .swatch"),
+      swatch: bgOf(".display-sheet .swatch[data-accent]"),
       title: sheet?.querySelector('[data-role="dtitle"]')?.textContent ?? "",
       activeSec: sheet?.querySelector(".st-nav__item.on")?.textContent?.replace(/\s+/g, " ").trim() ?? "",
       navSecs: [...(sheet?.querySelectorAll(".st-nav__item") ?? [])].map((n) => n.textContent?.replace(/\s+/g, " ").trim() ?? ""),
@@ -330,15 +330,42 @@ ok(JSON.stringify(s.onChips) === JSON.stringify(["mac-dark"]), `两页合起来�
 ok(s.cardText.includes("Mac 深色"), `顶上卡片写的是 Mac 深色（${s.cardText}）`);
 ok(s.footBottom !== null && Math.abs(s.footBottom - s.sheetBottom) <= 1, `Mac 风格页底栏贴底（${s.footBottom} vs ${s.sheetBottom}）`);
 
+// 4c) Mac 模式：html 挂 data-ui=mac；颜色页换成 macOS 八色、六色与文字亮度两行藏起来；点紫色强调色就跟着换
+const macUi = await page.evaluate(() => document.documentElement.dataset.ui ?? "");
+ok(macUi === "mac", `Mac 主题下 html[data-ui=mac]（${macUi}）`);
+const rows = await page.evaluate(() => {
+  const vis = (r) => { const n = document.querySelector(`.display-sheet [data-role="${r}"]`); return n ? !n.hidden : null; };
+  return { mac: vis("mac-accent-row"), six: vis("accent-row"), text: vis("text-row") };
+});
+ok(rows.mac === true && rows.six === false && rows.text === false, `八色行露出、六色与文字亮度藏起（${JSON.stringify(rows)}）`);
+const macSw = await page.locator(".display-sheet .swatch[data-mac-accent]").count();
+ok(macSw === 8, `macOS 强调色八颗（${macSw}）`);
+await page.evaluate(() => document.querySelector('.display-sheet .swatch[data-mac-accent="purple"]').click());
+await sleep(150);
+const purple = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim().toLowerCase());
+ok(purple === "#bf5af2", `Mac 深色点紫色 → --accent #bf5af2（${purple}）`);
+const glass = await page.evaluate(() => getComputedStyle(document.querySelector(".display-sheet")).backdropFilter);
+ok(/blur/.test(glass), `设置台是毛玻璃（backdrop-filter: ${glass}）`);
+
+// 4d) Mac 快捷键：Esc 关掉（带退场动画），Ctrl+, 再打开
+await page.keyboard.press("Escape");
+await sleep(400);
+ok((await page.locator(".display-sheet").count()) === 0, "Esc 关掉设置台（退场动画后移除）");
+await page.keyboard.press("Control+,");
+await sleep(400);
+ok((await page.locator(".display-sheet").count()) === 1, "Mac 主题下 Ctrl+, 打开设置");
+
 // 5) 强调色跟明暗走、但不被主题重置：暖炉是深底拿亮粉彩，沙丘是浅底拿深饱和
 await pick("ember");
 s = await snap();
 ok(s.accent === "#7dd3fc", `暖炉（深底）ice 取亮粉彩 #7dd3fc（${s.accent}）`);
 ok(lum(s.swatch) > 0.5, `强调色块跟着回亮色（${s.swatch}）`);
+const offMac = await page.evaluate(() => document.documentElement.dataset.ui ?? "");
+ok(offMac === "", `离开 Mac 主题后 data-ui 摘掉（${offMac || "无"}）`);
 await pick("paper");
 s = await snap();
 ok(s.accent === "#0369a1", `沙丘（浅底）ice 取深饱和 #0369a1（${s.accent}）`);
-const onAccents = await page.locator(".display-sheet .swatch.on").count();
+const onAccents = await page.locator(".display-sheet .swatch[data-accent].on").count();
 ok(onAccents === 1, `强调色选项没被主题重置（亮着的色块 ${onAccents} 个）`);
 
 // 6) 刷新后主题还在（bootTheme 在登录页之前就落了）

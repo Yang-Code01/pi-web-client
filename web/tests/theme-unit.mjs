@@ -10,7 +10,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { ACCENTS, ACCENTS_LIGHT } from "../src/palette.ts";
+import { ACCENTS, ACCENTS_LIGHT, MAC_ACCENTS, MAC_ACCENTS_LIGHT } from "../src/palette.ts";
 import {
   DEFAULT_THEME,
   TERM_THEMES,
@@ -64,8 +64,16 @@ test("light 标记跟配色一致：说浅底的，底比字亮", () => {
   }
 });
 
+test("Mac 主题的强调色走 macOS 八色表，不认识的回系统蓝", () => {
+  for (const t of THEMES.filter((x) => x.mac)) {
+    const table = t.light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
+    for (const id of Object.keys(MAC_ACCENTS)) assert.deepEqual(accentFor(t.id, id), table[id], `${t.id} / ${id}`);
+    assert.deepEqual(accentFor(t.id, "ice"), table.blue);
+  }
+});
+
 test("强调色选表：浅底用 ACCENTS_LIGHT，深底用 ACCENTS，不认识的 accent 回 ice", () => {
-  for (const t of THEMES) {
+  for (const t of THEMES.filter((x) => !x.mac)) {
     const table = t.light ? ACCENTS_LIGHT : ACCENTS;
     for (const id of Object.keys(ACCENTS)) {
       assert.deepEqual(accentFor(t.id, id), table[id], `${t.id} / ${id} 取错了表`);

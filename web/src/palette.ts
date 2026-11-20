@@ -30,3 +30,33 @@ export const ACCENTS_LIGHT: Record<string, { accent: string; dim: string }> = {
   rose: { accent: "#be123c", dim: "#fbe0e5" },
   slate: { accent: "#475569", dim: "#e3e8ef" },
 };
+
+/**
+ * Mac 风格主题专用的强调色：照 macOS「系统设置 → 外观 → 强调色」那一排八颗。
+ * 存在 `pi.prefs.macAccent`（和 `accent` 分开）：离开 Mac 主题时，原来那一颗原样还在。id 同样不能改名。
+ * 深底用 Apple 深色模式的 system 色；浅底取亮色模式与「提高对比度」之间的那一档，白底上还读得清。
+ */
+export const MAC_ACCENT_IDS = ["blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite"] as const;
+export const DEFAULT_MAC_ACCENT = "blue";
+
+export const MAC_ACCENTS: Record<string, { accent: string; dim: string }> = {
+  blue: { accent: "#0a84ff", dim: "#0d2a4d" },
+  purple: { accent: "#bf5af2", dim: "#3a1f4a" },
+  pink: { accent: "#ff375f", dim: "#4a1622" },
+  red: { accent: "#ff453a", dim: "#4a1714" },
+  orange: { accent: "#ff9f0a", dim: "#4a3008" },
+  yellow: { accent: "#ffd60a", dim: "#4a3f08" },
+  green: { accent: "#30d158", dim: "#0f3d1c" },
+  graphite: { accent: "#98989d", dim: "#2e2e31" },
+};
+
+export const MAC_ACCENTS_LIGHT: Record<string, { accent: string; dim: string }> = {
+  blue: { accent: "#007aff", dim: "#dbeaff" },
+  purple: { accent: "#8944ab", dim: "#efe3f6" },
+  pink: { accent: "#d1306b", dim: "#fbe2eb" },
+  red: { accent: "#d70015", dim: "#fde0e2" },
+  orange: { accent: "#c93400", dim: "#fde6dc" },
+  yellow: { accent: "#a05a00", dim: "#f8ebd6" },
+  green: { accent: "#248a3d", dim: "#ddf0e1" },
+  graphite: { accent: "#6e6e73", dim: "#e8e8ea" },
+};
