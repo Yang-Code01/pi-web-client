@@ -60,7 +60,7 @@ export class Manage {
   }
 
   /**
-   * D327 (was Q-022, strip ＋ only): every newly created session arrives pinned. Appended, not
+   * D349 (was Q-022, strip ＋ only): every newly created session arrives pinned. Appended, not
    * unshifted, so it lands right next to the strip's ＋ instead of jumping over older pins.
    */
   pinLast(id: string): void {

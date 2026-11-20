@@ -873,18 +873,29 @@ test("提醒：定时器到点只发一次，重启也不补第二遍", async ()
   const notifier = {
     enabled: true,
     subscriptionCount: () => 1,
-    push: async (title, body, url, force) => {
-      pushes.push({ title, body, url, force });
+    push: async (title, body, url, force, extra) => {
+      pushes.push({ title, body, url, force, extra });
       return { sent: 1, failed: 0 };
     },
   };
 
-  const stop = startReminderLoop({ notifier, url: () => "http://127.0.0.1:7864/", intervalMs: 60_000 });
+  const fired = [];
+  const stop = startReminderLoop({
+    notifier,
+    url: () => "http://127.0.0.1:7864/",
+    intervalMs: 60_000,
+    onFire: (title, body) => fired.push({ title, body }),
+  });
   await new Promise((r) => setTimeout(r, 120));
   stop();
   assert.equal(pushes.length, 1, "到点了就该发一条");
   assert.equal(pushes[0].force, true, "要 force，否则页面开着就看不到");
   assert.match(pushes[0].body, /该交加班了/);
+  // D349：页面开着也要提醒 —— 同时告诉页面，推送带固定 tag + 不自动消失。
+  assert.equal(fired.length, 1, "到点要同时告诉开着的页面");
+  assert.match(fired[0].body, /该交加班了/);
+  assert.equal(pushes[0].extra?.tag, "pi-attendance-reminder");
+  assert.equal(pushes[0].extra?.sticky, true);
 
   const again = startReminderLoop({ notifier, url: () => "http://127.0.0.1:7864/", intervalMs: 60_000 });
   await new Promise((r) => setTimeout(r, 120));

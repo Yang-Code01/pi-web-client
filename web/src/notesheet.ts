@@ -1725,7 +1725,7 @@ export class NotesSheet {
       status: this.editing.note.status ?? "pending",
     });
     // 状态是「立刻落盘」的；手上还有没存的正文 / 标题就顺手一起存掉，不能只把脏标记抹了——
-    // 那样 900ms 的定时器到点看到不脏就不存，改动白丢（D347）。ack 回来再清 dirty，「交给 agent」随后可用。
+    // 那样 900ms 的定时器到点看到不脏就不存，改动白丢（D350）。ack 回来再清 dirty，「交给 agent」随后可用。
     if (this.dirty) {
       window.clearTimeout(this.saveTimer);
       this.saveTimer = 0;

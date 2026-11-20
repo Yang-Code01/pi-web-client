@@ -90,7 +90,7 @@
     "test:hint": "node bridge/tests/hint-spawn.mjs",
     "test:rules": "node --experimental-strip-types web/tests/rules-unit.mjs && node --experimental-strip-types bridge/tests/rules-unit.mjs",
     "test:probes": "node web/tests/probes-unit.mjs",
-    "test:peer": "node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-history.mjs",
+    "test:peer": "node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-history.mjs && node bridge/tests/peer-group-e2e.mjs",
     "test:peer:ui": "node bridge/tests/peer-ui.mjs",
     "probe:sheet": "node probes/sheet-hit.mjs",
     "probe:jira-handoff": "node probes/jira-handoff-name.mjs",

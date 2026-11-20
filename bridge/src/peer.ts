@@ -33,6 +33,9 @@ export interface PeerThread {
   nodeId: string;
   nickname: string;
   muted?: boolean;
+  /** 未读里有「紧急」/ 有人 @ 我：免打扰也要提醒。 */
+  urgent?: boolean;
+  mention?: boolean;
   pinned?: boolean;
   unread?: number;
   last: { id: string; at: number; kind: string; text?: string; from: { nodeId: string; nickname?: string }; file?: { name: string } } | null;
@@ -161,7 +164,7 @@ export class PeerHost {
       }
       if (!this.threadPollPrimed) continue;
       if (last.from.nodeId === me) continue;
-      if (thread.muted) continue;
+      if (thread.muted && !thread.urgent && !thread.mention) continue;
       if (dnd) continue;
       this.onNewMessage?.(thread);
     }
@@ -253,8 +256,16 @@ export class PeerHost {
     return this.request("POST", "/note", { peer, note });
   }
 
-  sendText(peer: string, text: string, via?: "pi", replyTo?: { id: string; from: string; excerpt: string }): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
+  sendText(
+    peer: string,
+    text: string,
+    via?: "pi",
+    replyTo?: { id: string; from: string; excerpt: string },
+    extra: { priority?: string; topic?: string } = {},
+  ): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
     const body: Record<string, unknown> = { peer, text };
+    if (extra.priority) body.priority = extra.priority;
+    if (extra.topic) body.topic = extra.topic;
     if (via) body.via = via;
     if (replyTo) body.replyTo = replyTo;
     return this.request("POST", "/send", body);
@@ -275,6 +286,21 @@ export class PeerHost {
     return this.request("POST", "/react", { peer, id, emoji, on });
   }
 
+  /** 固定消息（会话顶部的置顶条）：`on:false` 取消固定；双方 / 群成员都会看到。 */
+  pin(peer: string, id: string, on: boolean): Promise<{ ok: boolean; at: number }> {
+    return this.request("POST", "/pin", { peer, id, on });
+  }
+
+  /** 群聊：列表。 */
+  groups(): Promise<{ ok: boolean; groups: unknown[] }> {
+    return this.request("GET", "/groups");
+  }
+
+  /** 群聊：create / rename / invite / leave（D-群聊，见 peer/src/groups.ts）。 */
+  group(body: Record<string, unknown>): Promise<{ ok: boolean; group?: unknown }> {
+    return this.request("POST", "/groups", body);
+  }
+
   /** P3：输入中。刻意不 await 结果也不报错：心跳丢了就丢了。 */
   typing(peer: string): Promise<{ ok: boolean }> {
     return this.request("POST", "/typing", { peer }, { repoll: false });
@@ -285,7 +311,7 @@ export class PeerHost {
     return this.request("POST", "/threads/read", { peer, at, id });
   }
 
-  patchThread(peer: string, patch: { pinned?: boolean; muted?: boolean; draft?: string }): Promise<{ ok: boolean }> {
+  patchThread(peer: string, patch: { pinned?: boolean; muted?: boolean; draft?: string; unread?: boolean }): Promise<{ ok: boolean }> {
     return this.request("POST", "/threads/patch", { peer, ...patch });
   }
 

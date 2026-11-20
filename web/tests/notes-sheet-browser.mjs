@@ -118,7 +118,7 @@ const out = await page.evaluate(async () => {
   qa(".note-handoff button")[1].click();
   result.statusMsg = sent.filter((m) => m.type === "notes.status").at(-1) ?? null;
 
-  // 6b. 改了标题还没到 900ms 就点状态：改动要顺手存掉，不能被状态那一下抹掉脏标记（D347）
+  // 6b. 改了标题还没到 900ms 就点状态：改动要顺手存掉，不能被状态那一下抹掉脏标记（D350）
   const savesBefore = sent.filter((m) => m.type === "notes.save").length;
   title.value = "状态前刚改的标题";
   fire(title, "input");

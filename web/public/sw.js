@@ -24,8 +24,11 @@ self.addEventListener("push", (event) => {
       return self.registration.showNotification(payload.title || "pi", {
         body: payload.body || "",
         data: { url: payload.url || "/" },
-        tag: payload.url || "pi",
+        // 加班提醒带自己的 tag：页面也会弹同一条（D349），同 tag 系统只留一条。
+        tag: payload.tag || payload.url || "pi",
         renotify: true,
+        // sticky：不自动消失，人点掉为止（加班提醒）。
+        requireInteraction: payload.sticky === true,
         icon: "/icon-192.png",
         badge: "/icon-192.png",
       });

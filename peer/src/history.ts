@@ -12,7 +12,15 @@ import type { ThreadMeta } from "./threads.ts";
  *
  * D299 之后这是**加性**扩展：新字段全部可选，旧版本读新文件只是看不见它们。
  */
-export type EntryKind = "text" | "receipt" | "file" | "recall" | "note" | "react";
+export type EntryKind = "text" | "receipt" | "file" | "recall" | "note" | "react" | "pin" | "sys";
+
+/** 群里的系统灰条：谁建了群 / 改了名 / 拉了谁 / 退了群。页面按 `op` 翻译，不落中文原句。 */
+export interface SysInfo {
+  op: "create" | "rename" | "invite" | "leave";
+  actor: string;
+  names?: string[];
+  name?: string;
+}
 
 export interface PeerIdentity {
   nodeId: string;
@@ -66,6 +74,10 @@ export interface Entry {
   seq?: number;
   /** 引用回复。 */
   replyTo?: ReplyRef;
+  /** 「重要 / 紧急」（Teams 的传递选项），普通消息不带。 */
+  priority?: "important" | "urgent";
+  /** 话题回复：话题第一条消息的 id（群里「回复这条话题」）。 */
+  topic?: string;
   /** `kind:"recall"` 时指向被撤回的那条消息的 id。 */
   ref?: string;
   /** `kind:"note"` 的记录包（#507）。 */
@@ -73,6 +85,8 @@ export interface Entry {
   /** `kind:"react"`：对 `ref` 那条消息点的表情；`on:false` 是取消（同一个人同一个表情最后一条说了算）。 */
   emoji?: string;
   on?: boolean;
+  /** `kind:"sys"`：群的系统灰条。 */
+  sys?: SysInfo;
 }
 
 /** 折叠后挂在消息上的表情回应：每个表情一组，`who` 是点了它的 nodeId（按先后）。 */
@@ -95,6 +109,12 @@ export interface ViewEntry extends Entry {
   tries?: number;
   /** 上一次没送到的原因，原样是网络错误那串字（`fetch` 的 `The operation was aborted…`）。 */
   sendError?: string;
+  /** 被谁固定在会话顶上（`kind:"pin"` 折叠出来的，最后一条说了算）。 */
+  pinned?: { by: string; at: number };
+  /** 不在这一页里、只因为被固定才带上的早期消息：页面只拿它画顶上的固定条，不进消息流。 */
+  outside?: boolean;
+  /** 我发的消息：哪些人已读（nodeId）。 */
+  readBy?: string[];
 }
 
 /** 排队中的那条现在什么情况：重试过几次、上一次说了什么。 */
@@ -124,9 +144,22 @@ export interface ThreadSummary {
   sending: boolean;
   /** 对方正在输入（3 秒内的 typing 心跳，不落盘）。 */
   typing: boolean;
+  /** 未读里有标「紧急」的消息：免打扰也照样提醒。 */
+  urgent: boolean;
+  /** 未读里有人 @ 我（或 @所有人）：免打扰也照样提醒。 */
+  mention: boolean;
+  /** 群会话才有：成员、群主、我是不是已经退出。 */
+  group?: { members: PeerIdentity[]; owner: string; left: boolean };
 }
 
 const TAIL_BYTES = 512 * 1024;
+
+/** 这段文字有没有 @ 到我（`@所有人` 也算）。正文可能是富文本 HTML，先剥标签。 */
+export function mentioned(text: string, name: string | undefined): boolean {
+  const plain = text.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ");
+  if (plain.includes("@所有人")) return true;
+  return Boolean(name) && plain.includes(`@${name}`);
+}
 
 function safeName(nodeId: string): string {
   return nodeId.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -152,7 +185,7 @@ export function foldEntries(entries: Entry[], me: string, pending: Set<string>, 
   const byId = new Map<string, ViewEntry>();
   const out: ViewEntry[] = [];
   for (const entry of entries) {
-    if (entry.kind === "text" || entry.kind === "file" || entry.kind === "note") {
+    if (entry.kind === "text" || entry.kind === "file" || entry.kind === "note" || entry.kind === "sys") {
       const view: ViewEntry = { ...entry };
       byId.set(entry.id, view);
       out.push(view);
@@ -172,9 +205,17 @@ export function foldEntries(entries: Entry[], me: string, pending: Set<string>, 
       const target = byId.get(entry.ref);
       if (target) applyReaction(target, entry.from.nodeId, entry.emoji, entry.on !== false);
     }
+    if (entry.kind === "pin" && entry.ref) {
+      const target = byId.get(entry.ref);
+      if (target) {
+        if (entry.on === false) delete target.pinned;
+        else target.pinned = { by: entry.from.nodeId, at: entry.at };
+      }
+    }
   }
   for (const view of out) {
-    if (view.from.nodeId !== me) continue;
+    if (view.pinned && view.recalled) delete view.pinned;
+    if (view.from.nodeId !== me || view.kind === "sys") continue;
     if (pending.has(view.id)) {
       view.state = "sending";
       const info = why?.get(view.id);
@@ -285,9 +326,12 @@ export class History {
     online: { nodeId: string; nickname: string; hostname: string; port: number; status?: string; lastSeen: number }[];
     contacts: { nodeId: string; nickname: string; hostname: string; port: number }[];
     me: string;
+    /** 我的昵称：未读里有没有人 @ 我。 */
+    meName?: string;
     meta: (nodeId: string) => ThreadMeta;
     typing: (nodeId: string) => boolean;
     pending: (nodeId: string) => boolean;
+    group?: (id: string) => { name: string; members: PeerIdentity[]; owner: string; left?: boolean } | null;
   }): ThreadSummary[] {
     const byId = new Map(input.online.map((peer) => [peer.nodeId, peer]));
     const byContact = new Map(input.contacts.map((contact) => [contact.nodeId, contact]));
@@ -308,36 +352,43 @@ export class History {
           break;
         }
       }
+      const group = nodeId.startsWith("grp-") ? (input.group?.(nodeId) ?? null) : null;
+      // 刚建好的群还没人说话：拿最后一条灰条（「X 创建了群」）占住会话行。
+      if (!last && group) last = [...tail].reverse().find((entry) => entry.kind === "sys") ?? null;
       if (!last) continue;
       // 最后一条是我发的（回执 / 回信）时 `last.from` 是我，`from` 为 null：
       // 这时候只有通讯录还记着他的名字，不回退就会把 uuid 前 8 位当昵称显示。
-      const known =
-        byId.get(nodeId) ??
-        byContact.get(nodeId) ??
-        byId.get(last.from.nodeId) ??
-        byContact.get(last.from.nodeId);
+      // 名字先看通讯录：那里是我给他起的备注（D303 改名只改本机），在线表里是他自报的昵称。
+      const live = byId.get(nodeId);
+      const contact = byContact.get(nodeId);
+      const known = contact ?? live ?? byId.get(last.from.nodeId) ?? byContact.get(last.from.nodeId);
       const from = last.from.nodeId === nodeId ? last.from : null;
       const meta = input.meta(nodeId);
       // 未读 = 对方发来的**消息**：文本与文件都算（D300 之后文件谁都能发，再不计数就会
       // 出现「文件悄悄落在会话里、列表上一点动静都没有」）。回执与撤回记录不算。
       let unread = 0;
+      let urgent = false;
+      let mention = false;
       for (const entry of tail) {
         if (!isMessage(entry)) continue;
         if (entry.from.nodeId === input.me) continue;
         if (meta.readAt !== undefined && !afterWatermark(entry, meta.readAt, meta.readId ?? "")) continue;
         unread += 1;
+        if (entry.priority === "urgent") urgent = true;
+        if (entry.kind === "text" && mentioned(entry.text ?? "", input.meName)) mention = true;
       }
       const texts = tail.filter((entry) => entry.kind === "text").length;
+      const anyOnline = group ? group.members.some((m) => m.nodeId !== input.me && byId.has(m.nodeId)) : false;
       out.push({
         nodeId,
-        nickname: known?.nickname || from?.nickname || nodeId.slice(0, 8),
-        hostname: known?.hostname || from?.hostname || "",
-        port: known?.port ?? from?.port ?? 0,
+        nickname: group ? group.name : known?.nickname || from?.nickname || nodeId.slice(0, 8),
+        hostname: group ? "" : live?.hostname || known?.hostname || from?.hostname || "",
+        port: group ? 0 : (live?.port ?? known?.port ?? from?.port ?? 0),
         last,
         count: texts,
-        online: byId.has(nodeId),
-        status: byId.get(nodeId)?.status ?? (byId.has(nodeId) ? "online" : "offline"),
-        lastSeen: byId.get(nodeId)?.lastSeen ?? 0,
+        online: group ? anyOnline : byId.has(nodeId),
+        status: group ? (anyOnline ? "online" : "offline") : (live?.status ?? (live ? "online" : "offline")),
+        lastSeen: live?.lastSeen ?? 0,
         unread,
         pinned: meta.pinned === true,
         muted: meta.muted === true,
@@ -345,6 +396,9 @@ export class History {
         lastMine: last.from.nodeId === input.me,
         sending: input.pending(nodeId),
         typing: input.typing(nodeId),
+        urgent,
+        mention,
+        ...(group ? { group: { members: group.members, owner: group.owner, left: group.left === true } } : {}),
       });
     }
     return out.sort((a, b) => Number(b.pinned) - Number(a.pinned) || (b.last?.at ?? 0) - (a.last?.at ?? 0));
@@ -357,7 +411,7 @@ export class History {
  * 同毫秒没法靠时间区分（uuidv7 的随机位不保证顺序），用 id 字典序兜底：它只在本机一致，
  * 而水位本来也只在本机用 —— 不拿它跟对端对表。
  */
-export function afterWatermark(entry: Entry, readAt: number, readId: string): boolean {
+export function afterWatermark(entry: Pick<Entry, "at" | "id">, readAt: number, readId: string): boolean {
   if (entry.at !== readAt) return entry.at > readAt;
   return readId ? entry.id > readId : true;
 }

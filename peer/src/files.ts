@@ -7,6 +7,7 @@ import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import type { Entry, History, PeerIdentity } from "./history.ts";
+import { isGroupId } from "./groups.ts";
 import { uuidv7 } from "./messages.ts";
 import { imageSize, type ImageSize } from "./image.ts";
 
@@ -63,6 +64,9 @@ interface Waiting {
   token: string;
   messageId: string;
   peerId: string;
+  /** 群文件：落到哪个群会话（没有就是 1:1，落到 `peerId`）。 */
+  thread?: string;
+  from?: PeerIdentity;
   name: string;
   size: number;
   mime: string;
@@ -103,6 +107,8 @@ export class Files {
       discovery: Discovery;
       history: History;
       log: (msg: string) => void;
+      /** 群：成员（不含我）；不认识这个群 / 我已退出时是 `null`。 */
+      groupMembers?: (groupId: string) => string[] | null;
     },
   ) {
     for (const dir of [this.inbox(), statePath("out")]) fs.mkdirSync(dir, { recursive: true });
@@ -182,6 +188,12 @@ export class Files {
       }
       const check = await verify(fromAddr, from);
       if (check) return check;
+      const thread = typeof body?.group === "string" && isGroupId(body.group) ? body.group : undefined;
+      if (thread) {
+        const members = this.ctx.groupMembers?.(thread);
+        if (!members) return { status: 404, body: { error: "不认识这个群（或已退出）", retryable: false } };
+        if (!members.includes(from.nodeId)) return { status: 403, body: { error: "不是群成员", retryable: false } };
+      }
       if (this.ctx.cfg.pauseFiles) return { status: 503, body: { error: "我这边暂停收文件了", retryable: true } };
       const free = this.free();
       if (free < size + KEEP_BYTES || free < size / KEEP_RATIO) {
@@ -201,6 +213,8 @@ export class Files {
         token,
         messageId,
         peerId: from.nodeId,
+        ...(thread ? { thread } : {}),
+        from: { nodeId: from.nodeId, ...(from.nickname ? { nickname: String(from.nickname).slice(0, 64) } : {}) },
         name,
         size,
         mime: mimeOf(name),
@@ -269,11 +283,11 @@ export class Files {
     this.stored[waiting.messageId] = { path: final, name: path.basename(final), size: waiting.size, mime: waiting.mime };
     this.saveStored();
     const dims: ImageSize | null = /^image\//.test(waiting.mime) ? imageSize(final) : null;
-    this.ctx.history.append(waiting.peerId, {
+    this.ctx.history.append(waiting.thread ?? waiting.peerId, {
       id: waiting.messageId,
       at: Date.now(),
-      from: { nodeId: waiting.peerId },
-      to: { kind: "node", id: this.ctx.nodeId },
+      from: waiting.thread && waiting.from ? waiting.from : { nodeId: waiting.peerId },
+      to: waiting.thread ? { kind: "group", id: waiting.thread } : { kind: "node", id: this.ctx.nodeId },
       kind: "file",
       file: {
         name: path.basename(final),
@@ -345,16 +359,68 @@ export class Files {
     return { ok: true, id };
   }
 
-  private async run(peerId: string, localPath: string, name: string, id: string, size: number): Promise<void> {
-    const peer = this.ctx.discovery.byId(peerId);
-    if (!peer) throw new Error("这个人已经不在线了");
+  private async run(threadId: string, localPath: string, name: string, id: string, size: number): Promise<void> {
+    const group = isGroupId(threadId);
+    const targets = group ? (this.ctx.groupMembers?.(threadId) ?? null) : [threadId];
+    if (!targets) throw new Error("不在这个群里了");
+    if (!group && !this.ctx.discovery.byId(threadId)) throw new Error("这个人已经不在线了");
     const sha256 = await this.sha256(localPath);
+    // 群文件：挑在线的成员逐个传（文件不走 outbox，离线的人这次收不到）；只要有一个人收到就算发出去了。
+    let endName = name;
+    let sent = 0;
+    let lastError = "";
+    for (const peerId of targets) {
+      const peer = this.ctx.discovery.byId(peerId);
+      if (!peer) {
+        lastError = "群里没有在线的人";
+        continue;
+      }
+      try {
+        endName = await this.push(peer, localPath, name, id, size, sha256, group ? threadId : undefined);
+        sent += 1;
+      } catch (err) {
+        if (!group) throw err;
+        lastError = (err as Error).message;
+        this.ctx.log(`群文件 ${name} → ${peer.nickname} 没发出去：${lastError}`);
+      }
+    }
+    if (!sent) throw new Error(lastError || "群里没有在线的人");
+
+    // 自己这边也留一张卡片：发出去的东西在对话里要看得见。
+    const mime = mimeOf(name);
+    const dims: ImageSize | null = /^image\//.test(mime) ? imageSize(localPath) : null;
+    this.ctx.history.append(threadId, {
+      id,
+      at: Date.now(),
+      from: { nodeId: this.ctx.nodeId, nickname: this.ctx.cfg.nickname, port: this.ctx.cfg.port },
+      to: group ? { kind: "group", id: threadId } : { kind: "node", id: threadId },
+      kind: "file",
+      file: { name: endName, size, mime, sha256, ...(dims ? { w: dims.w, h: dims.h } : {}) },
+    });
+    const transfer = this.transfers.get(id);
+    if (transfer) {
+      transfer.status = "done";
+      transfer.bytes = size;
+    }
+    this.ctx.log(`发出 ${name}（${Math.round(size / 1024)} KB）`);
+  }
+
+  /** 一次 begin → 分块 → end，返回对方落盘后的文件名。 */
+  private async push(
+    peer: { addr: string; port: number },
+    localPath: string,
+    name: string,
+    id: string,
+    size: number,
+    sha256: string,
+    group?: string,
+  ): Promise<string> {
     const me = { nodeId: this.ctx.nodeId, nickname: this.ctx.cfg.nickname, hostname: process.env.COMPUTERNAME ?? "", port: this.ctx.cfg.port };
     const base = `http://${peer.addr}:${peer.port}`;
     const beginRes = await fetch(`${base}/peer/file/begin`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proto: PROTO, messageId: id, name, size, sha256, from: me }),
+      body: JSON.stringify({ proto: PROTO, messageId: id, name, size, sha256, from: me, ...(group ? { group } : {}) }),
       signal: AbortSignal.timeout(8000),
     });
     const begin = (await beginRes.json().catch(() => ({}))) as { token?: string; offset?: number; error?: string };
@@ -386,24 +452,7 @@ export class Files {
     const endRes = await fetch(`${base}/peer/file/end?token=${encodeURIComponent(begin.token)}`, { method: "POST", signal: AbortSignal.timeout(8000) });
     const end = (await endRes.json().catch(() => ({}))) as { name?: string; error?: string };
     if (!endRes.ok) throw new Error(end.error ?? `收尾失败（HTTP ${endRes.status}）`);
-
-    // 自己这边也留一张卡片：发出去的东西在对话里要看得见。
-    const mime = mimeOf(name);
-    const dims: ImageSize | null = /^image\//.test(mime) ? imageSize(localPath) : null;
-    this.ctx.history.append(peerId, {
-      id,
-      at: Date.now(),
-      from: { nodeId: this.ctx.nodeId, nickname: this.ctx.cfg.nickname, port: this.ctx.cfg.port },
-      to: { kind: "node", id: peerId },
-      kind: "file",
-      file: { name: end.name ?? name, size, mime, sha256, ...(dims ? { w: dims.w, h: dims.h } : {}) },
-    });
-    const transfer = this.transfers.get(id);
-    if (transfer) {
-      transfer.status = "done";
-      transfer.bytes = size;
-    }
-    this.ctx.log(`发出 ${name}（${Math.round(size / 1024)} KB）`);
+    return end.name ?? name;
   }
 
   private sha256(file: string): Promise<string> {

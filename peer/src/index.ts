@@ -5,10 +5,12 @@ import { createPeerServer, Ignored } from "./http.ts";
 import { History } from "./history.ts";
 import { Outbox } from "./outbox.ts";
 import { Messages, uuidv7 } from "./messages.ts";
+import { Reads } from "./reads.ts";
 import { Relations } from "./peers.ts";
 import { Files } from "./files.ts";
 import { LocalActivity } from "./presence.ts";
 import { Threads } from "./threads.ts";
+import { Groups } from "./groups.ts";
 
 const cfg = loadConfig();
 const nodeId = ensureNodeId();
@@ -40,7 +42,9 @@ const history = new History(log);
 const relations = new Relations(log);
 const ignored = new Ignored(log);
 const threads = new Threads(log);
-const messages = new Messages({ cfg, nodeId, discovery, history, outbox: null as never, relations, log });
+const groups = new Groups(log);
+const reads = new Reads(log);
+const messages = new Messages({ cfg, nodeId, discovery, history, outbox: null as never, relations, groups, reads, log });
 // 回环没注入 outbox 之前先建好：`deliver` 只依赖网络，`settled` 才依赖 outbox 本身。
 const outbox = new Outbox({
   log,
@@ -54,22 +58,42 @@ const outbox = new Outbox({
       return;
     }
     const status = verdict.ok ? "delivered" : "failed";
-    history.append(item.peerId, {
+    const thread = item.thread ?? item.peerId;
+    const msgId = item.msgId ?? item.id;
+    if (item.thread && !verdict.ok) {
+      // 群：某个人没送到不把整条标红。只有「谁都没送到、也没人在排队了」才记一条失败。
+      log(`群消息 ${msgId.slice(0, 8)} → ${item.peerId.slice(0, 8)} 没送到：${verdict.error}`);
+      const queued = outbox.pending().some((other) => other.msgId === msgId);
+      const delivered = history.read(thread, 2000).some((e) => e.kind === "receipt" && e.ack?.id === msgId && e.ack.status === "delivered");
+      if (queued || delivered) return;
+    }
+    history.append(thread, {
       id: uuidv7(),
       at: Date.now(),
       from: { nodeId, nickname: cfg.nickname, port: cfg.port },
-      to: { kind: "node", id: item.peerId },
+      to: item.thread ? { kind: "group", id: thread } : { kind: "node", id: item.peerId },
       kind: "receipt",
-      ack: { id: item.id, status, ...(verdict.ok ? {} : { error: verdict.error }) },
+      ack: { id: msgId, status, ...(verdict.ok ? {} : { error: verdict.error }) },
     });
     if (!verdict.ok) log(`投递失败 ${item.id.slice(0, 8)} → ${item.addr}:${item.port}：${verdict.error}`);
   },
 });
 messages.attachOutbox(outbox);
 
-const files = new Files({ cfg, nodeId, discovery, history, log });
+const files = new Files({
+  cfg,
+  nodeId,
+  discovery,
+  history,
+  log,
+  groupMembers: (id) => {
+    const group = groups.get(id);
+    if (!group || group.left) return null;
+    return group.members.map((m) => m.nodeId).filter((m) => m !== nodeId);
+  },
+});
 
-const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity });
+const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity, groups });
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   // 端口被占 = 已经有一份 peer 在跑。直接退出而不是自动换端口：bridge 要能看出「没起来」。
