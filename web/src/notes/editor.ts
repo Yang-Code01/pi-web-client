@@ -89,6 +89,9 @@ export class RichEditor {
     this.body.spellcheck = false;
     this.body.classList.add("rich");
     this.body.addEventListener("input", (ev) => this.onInput(ev));
+    // 中文输入法上屏：Chrome 的最后一次 input 还带着 isComposing=true，之后只有 compositionend，
+    // 不补这一下，最后上屏的那句永远不算「改过」，停手自动保存 / 关面板时就丢了。
+    this.body.addEventListener("compositionend", () => this.afterInput());
     this.body.addEventListener("keydown", (ev) => this.onKeydown(ev));
     this.body.addEventListener("keyup", () => this.saveRange());
     this.body.addEventListener("mouseup", () => this.saveRange());

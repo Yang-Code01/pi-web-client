@@ -215,6 +215,8 @@ export class NotesSheet {
   private view: View = this.memory.view;
   /** 面板第一次拿到列表时把上次的记录接回来；接完就关掉。 */
   private restoring = true;
+  /** 列表还没到就被要求「把光标放进去」：等上次选中的那条接回来再决定聚焦哪里。 */
+  private focusAfterRestore = false;
   /** AI 出错记录那份账本（D164）：跟笔记不是一回事，但共用一个面板。 */
   private ledger: FailLedger | null = null;
   private failPanel!: FailPanel;
@@ -245,7 +247,9 @@ export class NotesSheet {
   private pendingShots: string[] = [];
   private dirty = false;
   /** 这一次保存属于哪个编辑器实例：切走之后到达的 ack 不许改当前选择。 */
-  private saveTicket: { editing: unknown } | null = null;
+  private saveTicket: { editing: unknown; edits: number } | null = null;
+  /** 编辑次数：存盘 ack 回来时只有「发出去之后没再改过」才算干净，不然 ack 会把后来敲的那句标成已存。 */
+  private edits = 0;
   /** 提交前等保存 ack 的回调（#509）。 */
   private saveWaiters: Array<{ resolve: (note: Note | null) => void; timer: number }> = [];
   /** 内网通请求在飞：菜单与按钮置灰，防连点。 */
@@ -298,10 +302,12 @@ export class NotesSheet {
       say: (text, bad = false) => this.say(text, bad),
     });
     this.failPanel.mount(this.failEl);
+    // 账本跟笔记共用左侧分区栏：只替换「列表 + 正文」两栏。整块三栏一起藏掉的话，进了出错记录就回不去了。
+    this.consoleEl.append(this.failEl);
 
-    // 笔记三栏和只读账本互斥，包一层 `notes-main` 好让 sheet 的三行网格（头 / 身 / 脚）不变。
+    // 包一层 `notes-main` 好让 sheet 的三行网格（头 / 身 / 脚）不变。
     const main = el("div", "notes-main");
-    main.append(this.bodyEl, this.failEl);
+    main.append(this.bodyEl);
     sheet.append(this.head(), main, this.foot());
     back.append(sheet);
     this.root = back;
@@ -586,7 +592,7 @@ export class NotesSheet {
   private paintMode(): void {
     // 全局检索期间不摆 AI 出错账本：结果画在中栏列表里，账本留着会把结果盖住。
     const fail = this.view === "failures" && !this.searching();
-    this.consoleEl.hidden = fail;
+    this.consoleEl.classList.toggle("in-fail", fail);
     this.failEl.hidden = !fail;
     this.root.firstElementChild?.classList.toggle("in-failures", fail);
   }
@@ -703,6 +709,8 @@ export class NotesSheet {
       return;
     }
     if (this.editing) this.editor?.focus();
+    // 上次选着某条、列表还在路上：别急着开新草稿——那会把记忆里的 sel 写成 null，接回来就落空了。
+    else if (this.restoring && this.memory.sel) this.focusAfterRestore = true;
     else this.newNote();
   }
 
@@ -1099,6 +1107,7 @@ export class NotesSheet {
 
   private markDirty(): void {
     this.dirty = true;
+    this.edits += 1;
     // 自动保存：停手 900ms 就落盘（#486「标题和正文都自动保存」，不再要用户按保存）。
     this.say(tr("正在写…"));
     window.clearTimeout(this.saveTimer);
@@ -1666,7 +1675,7 @@ export class NotesSheet {
       this.say(tr("先写点什么再存"), true);
       return;
     }
-    this.saveTicket = { editing: this.editing };
+    this.saveTicket = { editing: this.editing, edits: this.edits };
     this.host.send({
       type: "notes.save",
       ...(this.editing.id ? { id: this.editing.id } : {}),
@@ -1741,9 +1750,20 @@ export class NotesSheet {
     if (this.restoring) {
       this.restoring = false;
       this.restorePick(notes);
+      const focus = this.focusAfterRestore;
+      this.focusAfterRestore = false;
+      if (focus) {
+        if (this.editing) this.editor?.focus();
+        else this.newNote();
+      }
+      this.paintNav();
+      this.paintList();
+      // 接回来的那条可能在列表下半截：滚到眼前（只在打开时这一下，广播刷新不动滚动位置）。
+      this.rowListEl.querySelector<HTMLElement>(".nc-row.on")?.scrollIntoView({ block: "nearest" });
+    } else {
+      this.paintNav();
+      this.paintList();
     }
-    this.paintNav();
-    this.paintList();
     if (!this.sel) return;
     const n = notes.find((x) => x.id === this.sel);
     // 只在「这条不该待在这堆里了」时关编辑器；只是被「显示已处理」过滤掉的不算，不然点个状态就把编辑器关了。
@@ -1787,6 +1807,7 @@ export class NotesSheet {
     if (!note) return;
     // 存完之后用户已经点到别处：这次 ack 只让列表刷新，不动编辑器。
     const mine = !this.saveTicket || this.saveTicket.editing === this.editing;
+    const sentAt = this.saveTicket?.edits ?? this.edits;
     this.saveTicket = null;
     if (!mine) return;
     if (this.editing && !this.editing.id) this.editing.id = note.id;
@@ -1797,7 +1818,8 @@ export class NotesSheet {
     }
     this.sel = note.id;
     if (this.editing?.id === note.id) this.paintedId = note.id;
-    this.dirty = false;
+    // 存盘在路上时又敲了字：保持 dirty，让停手定时器 / 关面板的 flush 把后来那句也存上。
+    this.dirty = this.edits !== sentAt;
     this.remember();
     this.paintList();
     this.uploadPending(note.id);
