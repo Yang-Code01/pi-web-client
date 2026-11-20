@@ -2987,8 +2987,9 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .st-console.art-sheet .art-row.settings-row:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
 .st-console.art-sheet .art-row.settings-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .st-console.art-sheet .art-row > .settings-hint { grid-column: 1; grid-row: 2; display: flex; flex-direction: column; min-width: 0; }
-.st-console.art-sheet .art-row > .settings-ctl { grid-column: 2; grid-row: 1 / span 2; min-width: 0; gap: 8px; }
-.st-console.art-sheet .art-row > .art-badge { grid-column: 3; grid-row: 1 / span 2; justify-self: end; }
+/* 多带一个 .settings-row：settings-console.css 晚于本文件加载，它的 `.settings-row > .settings-ctl { grid-column: 2 / span 2 }` 同权重会赢，控件格就压到徽章底下 */
+.st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 2; grid-row: 1 / span 2; min-width: 0; gap: 8px; }
+.st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 3; grid-row: 1 / span 2; justify-self: end; }
 .st-console.art-sheet .art-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-console.art-sheet .art-path,
 .st-console.art-sheet .art-why {
@@ -3020,15 +3021,15 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .art-badge.st-same { color: var(--faint); }
 /* 窄屏：状态挪到第二行，工具名隐掉 */
 :where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr) auto; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row > .settings-ctl { grid-column: 2; grid-row: 1; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row > .art-badge { grid-column: 2; grid-row: 2; }
+:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 2; grid-row: 1; }
+:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 2; grid-row: 2; }
 :where(html[data-console-narrow="true"]) .st-console.art-sheet .art-tools { display: none; }
 :where(html[data-console-narrow="true"]) .st-console.art-sheet .art-bar { flex-wrap: wrap; }
 :where(html[data-console-narrow="true"]) .st-console.art-sheet .art-bar .ns-input { flex-basis: 100%; order: 3; }
 /* 最窄：单列，控件与状态各占一行 */
 :where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr); }
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row > .settings-ctl { grid-column: 1; grid-row: 3; justify-content: flex-start; }
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row > .art-badge { grid-column: 1; grid-row: 4; justify-self: start; }
+:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 1; grid-row: 3; justify-content: flex-start; }
+:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 1; grid-row: 4; justify-self: start; }
 
 /* D208 C 方案：独立 diff 弹窗（左栏换文件 + 左右对照）。 */
 .diff-sheet { height: calc(var(--vh1) * 86); max-height: calc(var(--vh1) * 88); }
