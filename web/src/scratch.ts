@@ -15,7 +15,7 @@ import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { tr } from "./i18n/index.ts";
-import { groupModels, modelGroupSection } from "./modelgroups.ts";
+import { groupModels, modelGroupSection, rememberRecentModel } from "./modelgroups.ts";
 import type { Item, ModelInfo, SessionState } from "./types.ts";
 
 export interface ScratchHost {
@@ -571,16 +571,22 @@ export class ScratchChat {
       return;
     }
     const current = this.state?.model;
-    const { pinned, groups } = groupModels(list, { id: current });
-    const sections = [...(pinned ? [{ title: tr("当前使用"), models: [pinned] }] : []), ...groups.map((g) => ({ title: g.provider, models: g.models }))];
+    const { pinned, recent, groups } = groupModels(list, { id: current });
+    const sections: { title: string; models: typeof list; pinned?: boolean; fixed?: boolean }[] = [
+      ...(pinned ? [{ title: tr("当前使用"), models: [pinned], pinned: true }] : []),
+      ...(recent.length ? [{ title: tr("最近使用"), models: recent, fixed: true }] : []),
+      ...groups.map((g) => ({ title: g.provider, models: g.models })),
+    ];
     for (const section of sections) {
-      const group = modelGroupSection(section.title, section.models.length, { pinned: !!pinned && section.models[0] === pinned });
+      const group = modelGroupSection(section.title, section.models.length, { pinned: section.pinned, fixed: section.fixed });
       this.modelMenu.append(group.node);
       for (const m of section.models) {
       const row = el("button", `scratch-model${m.id === current ? " on" : ""}`);
       row.append(el("span", "m-name", m.name || m.id), el("span", "m-prov", m.provider));
       row.onclick = () => {
         this.modelMenu.hidden = true;
+        rememberRecentModel(pinned?.provider, pinned?.id);
+        rememberRecentModel(m.provider, m.id);
         // 档位跟着一起发：pi 换模型时会把它 clamp 到新模型的默认档（实测 off → max），
         // 不带 level 的话，用户刚调好的档位会被悄悄改掉。
         this.host.send({
