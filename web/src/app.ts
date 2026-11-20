@@ -94,6 +94,7 @@ import {
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
+import { escapeTopLayer, pushEscLayer } from "./modal.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -430,6 +431,7 @@ export class App {
   private skillPop: HTMLElement | null = null;
   /** Document-level "clicked outside" listener while the palette is open (removed on close). */
   private skillAway: ((ev: Event) => void) | null = null;
+  private skillEscPop: (() => void) | null = null;
   private skillQuery = "";
   private skillSel = 0;
   /** Desktop only: hide the session column / the queue column to give the chat more room. */
@@ -3253,6 +3255,10 @@ export class App {
       this.socket.send({ type: "stepup", passphrase: value });
     };
     this.overlay(modal);
+    pushEscLayer({ el: modal, onEsc: () => {
+      this.pending = [];
+      modal.remove();
+    } });
     input.focus();
   }
 
@@ -4411,8 +4417,7 @@ export class App {
 
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
-    document.addEventListener("keydown", this.settingsEsc, true);
+    this.setSheet(back);
     this.paintSwatches();
     this.paintLookCards();
     this.setDisplayTab(this.prefs.settingsTab);
@@ -5250,9 +5255,19 @@ export class App {
     frame.src = `/peer?v=${Date.now()}`;
 
     sheet.append(head, frame);
+    // 内网通页面里没人接的 Esc 会 postMessage 回来（peer/main.ts）：交给外层 Esc 栈，关的是这个面板。
+    const onPeerEsc = (ev: MessageEvent): void => {
+      if (!frame.isConnected) {
+        window.removeEventListener("message", onPeerEsc);
+        return;
+      }
+      if (ev.source !== frame.contentWindow || ev.data?.type !== "peer-esc") return;
+      escapeTopLayer();
+    };
+    window.addEventListener("message", onPeerEsc);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
   }
 
   /**
@@ -5266,12 +5281,23 @@ export class App {
   }
 
   // ---------------------------------------------------------------- model sheet
+  /** 登记当前面板的 Esc 层（统一弹层栈，见 modal.ts）；换面板时旧的先摘掉。 */
+  private setSheet(back: HTMLElement): void {
+    this.sheetEscPop?.();
+    this.sheet = back;
+    this.sheetEscPop = pushEscLayer({ el: back, onEsc: () => this.closeSheet() });
+    this.syncViewerLayer();
+  }
+
+  private sheetEscPop: (() => void) | null = null;
+
   private closeSheet(): void {
+    this.sheetEscPop?.();
+    this.sheetEscPop = null;
     // 开新会话的面板被关掉（取消 / 点背景）= 放弃「交给 agent → 新开会话」那段待填的文字：
     // 留着它，下一次开的会话会莫名其妙带着别的会话的笔记（见 prefillNext）。
     if (this.sheetKind === "new") this.prefillNext = null;
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
-    document.removeEventListener("keydown", this.settingsEsc, true);
     // D308: 面板没了，从它里面开的预览 / 表格 / 幻灯片不再压着谁 —— 回到普通浮窗层带（46/47）。
     this.retireOverlay(this.sheet);
     this.sheet = null;
@@ -5400,7 +5426,7 @@ export class App {
       refreshFoot();
       back.append(sheet);
       this.overlay(back);
-      this.sheet = back;
+      this.setSheet(back);
       return;
     }
 
@@ -5490,13 +5516,15 @@ export class App {
 
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
   }
 
   // ---------------------------------------------------------------- skill palette
   private closeSkillPalette(): void {
     this.skillPop?.remove();
     this.skillPop = null;
+    this.skillEscPop?.();
+    this.skillEscPop = null;
     if (this.skillAway) {
       document.removeEventListener("pointerdown", this.skillAway, true);
       this.skillAway = null;
@@ -5596,6 +5624,7 @@ export class App {
     };
     this.skillAway = away;
     document.addEventListener("pointerdown", away, true);
+    this.skillEscPop = pushEscLayer({ el: pop, onEsc: () => this.closeSkillPalette() });
   }
 
   /** Always ranked locally, so a use counted a moment ago reorders the list without a bridge trip. */
@@ -5757,7 +5786,7 @@ export class App {
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     // The installed list is a local disk scan; the store waits for a query (its API needs 2 chars).
     this.loadSkillInventory();
     this.paintSkillSheet(host);
@@ -5823,7 +5852,7 @@ export class App {
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     const view = new ContextInsightsView(host, {
       currentId: this.currentId,
       openSession: (id) => {
@@ -5873,7 +5902,7 @@ export class App {
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     this.contextPanel = new ContextPanel(host);
     this.contextPanel.update(this.contextPanelData());
     // 打开就问一次：stats 只在 pi 跑着时刷新，冷会话也得看得到当前生效的线。
@@ -5898,17 +5927,12 @@ export class App {
   private subSheet: HTMLElement | null = null;
   private subSheetKind: "policy" | "handoff" | null = null;
   private subSheetPaint: (() => void) | null = null;
-  private subEsc = (ev: KeyboardEvent): void => {
-    if (ev.key !== "Escape" || ev.defaultPrevented || !this.subSheet) return;
-    // D308: 从子层里开的预览或表格/幻灯片浮窗压在子层上面，Esc 先收它 —— 收的得是最上面那层。
-    if (document.querySelector(".viewer.hi, .sd.hi")) return;
-    ev.stopPropagation();
-    this.closeSubSheet();
-  };
+  private subSheetEscPop: (() => void) | null = null;
 
   private closeSubSheet(): void {
     if (!this.subSheet) return;
-    document.removeEventListener("keydown", this.subEsc, true);
+    this.subSheetEscPop?.();
+    this.subSheetEscPop = null;
     this.subSheet.remove();
     this.subSheet = null;
     this.subSheetKind = null;
@@ -5936,7 +5960,7 @@ export class App {
     this.overlay(back);
     this.subSheet = back;
     this.subSheetKind = kind;
-    document.addEventListener("keydown", this.subEsc, true);
+    this.subSheetEscPop = pushEscLayer({ el: back, onEsc: () => this.closeSubSheet() });
   }
 
   private paintPolicySheetIfOpen(): void {
@@ -6810,7 +6834,7 @@ export class App {
     );
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     paintSide();
     paintFoot();
 
@@ -7280,7 +7304,7 @@ export class App {
 
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     this.sheetKind = "intro";
   }
 
@@ -7703,7 +7727,7 @@ export class App {
     back.append(sheet);
     this.sheetKind = "wsdelete";
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     cancel.focus();
   }
 
@@ -7878,7 +7902,7 @@ export class App {
     sheet.append(head, body, foot);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     picker = mountDirPicker(dirHost, {
       start: picked,
       filter: true,
@@ -8105,7 +8129,10 @@ export class App {
     this.showPool(id);
     this.dragCleanup?.();
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") this.endDrag();
+      if (ev.key !== "Escape") return;
+      // 拖动中的 Esc 只结束拖动，不往下传给弹层栈。
+      ev.preventDefault();
+      this.endDrag();
     };
     const onBlur = () => this.endDrag();
     window.addEventListener("keydown", onKey, true);
@@ -8395,7 +8422,7 @@ export class App {
     sheet.append(head, main, foot);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
 
     // 工具条：排序段 + 路径预览。整条只建一次，换筛选不重建，输入到一半的字不丢。
     const bar = el("div", "st-scopebar art-bar");
@@ -8629,7 +8656,7 @@ export class App {
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     back.focus();
 
     let data = known;
@@ -8885,20 +8912,15 @@ export class App {
     close.type = "button";
     close.title = tr("关闭");
     close.setAttribute("aria-label", tr("关闭"));
+    const popEsc = pushEscLayer({ onEsc: () => shut() });
     const shut = (): void => {
-      window.removeEventListener("keydown", onKey, true);
+      popEsc();
       back.remove();
-    };
-    const onKey = (ev: KeyboardEvent): void => {
-      if (ev.key !== "Escape") return;
-      ev.stopPropagation();
-      shut();
     };
     close.onclick = shut;
     back.onclick = (ev) => {
       if (ev.target === back) shut();
     };
-    window.addEventListener("keydown", onKey, true);
     back.append(img, close);
     this.overlay(back);
     close.focus();
@@ -8930,6 +8952,7 @@ export class App {
     // D308：从弹层里打开（sheet / 子层 / 设置台 / Everything / 附件弹层 / Jira）时浮窗压在父层上，
     // 收掉浮窗或点「←」父层还在原地 —— 「从哪来，回哪去」。面板关掉时 `syncViewerLayer` 会把它摘掉。
     v.root.classList.toggle("hi", overParent);
+    this.syncFloatLayers();
     // 换了一份文件：上一个文件的译文状态（含轮询）跟着走。得在改 v.path 之前问，否则永远相等。
     const switched = v.sessionId !== sessionId || v.path !== path;
     // 刚打开 / 换了一份文件：它该在终端上面（否则点了链接却看不见内容）。
@@ -9049,13 +9072,13 @@ export class App {
       onClose: () => {
         if (this.winFront === dialog.root) this.winFront = null;
         if (this.sheetDock === dialog) this.sheetDock = null;
-        this.syncDockEsc();
+        this.syncFloatLayers();
       },
       onRaise: () => this.raiseWindow(dialog.root),
     });
     this.sheetDock = dialog;
     dialog.root.classList.toggle("hi", this.viewerOverParent());
-    this.syncDockEsc();
+    this.syncFloatLayers();
     this.overlay(dialog.root);
     this.raiseWindow(dialog.root);
     dialog.open();
@@ -9091,13 +9114,13 @@ export class App {
       onClose: () => {
         if (this.winFront === dialog.root) this.winFront = null;
         if (this.sheetDock === dialog) this.sheetDock = null;
-        this.syncDockEsc();
+        this.syncFloatLayers();
       },
       onRaise: () => this.raiseWindow(dialog.root),
     });
     this.sheetDock = dialog;
     dialog.root.classList.toggle("hi", this.viewerOverParent());
-    this.syncDockEsc();
+    this.syncFloatLayers();
     this.overlay(dialog.root);
     this.raiseWindow(dialog.root);
     dialog.open();
@@ -9120,13 +9143,13 @@ export class App {
       onClose: () => {
         if (this.winFront === dialog.root) this.winFront = null;
         if (this.slidesDock === dialog) this.slidesDock = null;
-        this.syncDockEsc();
+        this.syncFloatLayers();
       },
       onRaise: () => this.raiseWindow(dialog.root),
     });
     this.slidesDock = dialog;
     dialog.root.classList.toggle("hi", this.viewerOverParent());
-    this.syncDockEsc();
+    this.syncFloatLayers();
     this.overlay(dialog.root);
     this.raiseWindow(dialog.root);
     dialog.open();
@@ -9176,56 +9199,36 @@ export class App {
     }
     this.sheetDock?.root.classList.toggle("hi", hi);
     this.slidesDock?.root.classList.toggle("hi", hi);
-    this.syncDockEsc();
+    this.syncFloatLayers();
   }
 
-  /** 压在父弹层之上的表格 / 幻灯片浮窗挂捕获阶段 Esc，避免按 Esc 误关底层父面板。 */
-  private syncDockEsc(): void {
-    const need = Boolean(this.sheetDock?.root.classList.contains("hi") || this.slidesDock?.root.classList.contains("hi"));
-    document.removeEventListener("keydown", this.dockEsc, true);
-    if (need) document.addEventListener("keydown", this.dockEsc, true);
+  /** 浮窗（预览 / 表格 / 幻灯片）的 Esc 层：开着的登记，关掉的摘；`.hi`（压在父层上）的登记在栈顶，不在父层上的只在焦点落进窗里时接 Esc。 */
+  private floatEscs = new Map<HTMLElement, { hi: boolean; pop: () => void }>();
+
+  private syncFloatLayers(): void {
+    const floats: Array<[HTMLElement, () => void]> = [];
+    if (this.viewer) floats.push([this.viewer.root, () => this.closeViewer()]);
+    if (this.sheetDock) {
+      const dock = this.sheetDock;
+      floats.push([dock.root, () => dock.destroy()]);
+    }
+    if (this.slidesDock) {
+      const dock = this.slidesDock;
+      floats.push([dock.root, () => dock.destroy()]);
+    }
+    for (const [root, entry] of this.floatEscs) {
+      if (floats.some(([r]) => r === root)) continue;
+      entry.pop();
+      this.floatEscs.delete(root);
+    }
+    for (const [root, close] of floats) {
+      const hi = root.classList.contains("hi");
+      const cur = this.floatEscs.get(root);
+      if (cur?.hi === hi) continue;
+      cur?.pop();
+      this.floatEscs.set(root, { hi, pop: pushEscLayer({ el: root, focusScoped: !hi, onEsc: close }) });
+    }
   }
-
-  private dockEsc = (ev: KeyboardEvent): void => {
-    if (ev.key !== "Escape" || ev.defaultPrevented) return;
-    if (this.higherLayerOpen() || this.viewer?.root.classList.contains("hi")) return;
-    const target =
-      this.winFront === this.slidesDock?.root && this.slidesDock?.root.classList.contains("hi")
-        ? this.slidesDock
-        : this.sheetDock?.root.classList.contains("hi")
-          ? this.sheetDock
-          : this.slidesDock?.root.classList.contains("hi")
-            ? this.slidesDock
-            : null;
-    if (!target) return;
-    // 表格浮窗内正在查找时，留给表格自己先关查找栏。
-    if (target === this.sheetDock && target.root.querySelector(".sd-find:not([hidden])")) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    target.destroy();
-  };
-
-  /**
-   * D308：`.viewer.hi` 上面还压着更高的层时，Esc 不该越过它们去收预览 —— 先收最上面那层。
-   * 大图不用列：它挂在 `window` 捕获阶段并 `stopPropagation()`，轮不到这里。
-   */
-  private higherLayerOpen(): boolean {
-    return Boolean(document.querySelector(".modal.hi, .choose-back"));
-  }
-
-  /**
-   * D308：Esc 先收「压在面板上的预览」。面板自己的 Esc 都挂在元素上（`settingsEsc` 除外），
-   * 焦点还留在面板里时事件根本走不到这扇窗，所以这一层要在捕获阶段拦。只管 `.hi`：
-   * 普通层带的预览（46/47）不能抢掉面板的 Esc。
-   */
-  private viewerEsc = (ev: KeyboardEvent): void => {
-    const root = this.viewer?.root;
-    if (ev.key !== "Escape" || ev.defaultPrevented || !root || !root.classList.contains("hi")) return;
-    if (this.higherLayerOpen()) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    this.closeViewer();
-  };
 
   private ensureViewer(): Viewer {
     if (this.viewer) return this.viewer;
@@ -9283,13 +9286,6 @@ export class App {
     root.append(grip, head, body);
     root.tabIndex = -1;
     this.wireWindowRaise(root);
-    root.onkeydown = (ev) => {
-      if (ev.key === "Escape") {
-        ev.stopPropagation();
-        this.closeViewer();
-      }
-    };
-    document.addEventListener("keydown", this.viewerEsc, true);
     this.overlay(root);
     this.raiseWindow(root);
     this.viewer = {
@@ -9375,12 +9371,12 @@ export class App {
       return;
     }
     if (this.winFront === v.root) this.winFront = null;
-    document.removeEventListener("keydown", this.viewerEsc, true);
     this.stopTrPoll(v);
     v.tr = null;
     stopMedia(v.root);
     v.root.remove();
     this.viewer = null;
+    this.syncViewerLayer();
   }
 
   /**
@@ -10138,7 +10134,9 @@ export class App {
       this.closeFailMenu();
     };
     const esc = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") this.closeFailMenu();
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      this.closeFailMenu();
     };
     this.failMenuAway = away;
     this.failMenuEsc = esc;
@@ -10470,6 +10468,7 @@ export class App {
       v.parentFloor = -1;
     }
     v.root.classList.toggle("hi", overParent);
+    this.syncFloatLayers();
     v.pane = "browse";
     this.paintViewer();
   }
@@ -10818,15 +10817,14 @@ export class App {
     menu.style.left = `${Math.min(x, window.innerWidth - 220)}px`;
     menu.style.top = `${Math.min(y, window.innerHeight - 40 * items.length - 12)}px`;
     document.body.append(menu);
+    pushEscLayer({ el: menu, onEsc: () => menu.remove() });
+    // Esc 交给统一弹层栈（上面登记的那一层），这里只管点外面。
     const close = (e: Event): void => {
-      if (e.type === "keydown" && (e as KeyboardEvent).key !== "Escape") return;
       if (e.type === "pointerdown" && menu.contains(e.target as Node)) return;
       menu.remove();
       window.removeEventListener("pointerdown", close, true);
-      window.removeEventListener("keydown", close, true);
     };
     window.addEventListener("pointerdown", close, true);
-    window.addEventListener("keydown", close, true);
   }
 
   /** 浏览里点了一个文件：交给现有五种 kind 打开。 */
@@ -11383,15 +11381,8 @@ export class App {
       box.append(el("div", "choose-title", title));
       const row = el("div", "choose-row");
       const done = (id: string): void => {
-        document.removeEventListener("keydown", onKey, true);
         back.remove();
         resolve(id);
-      };
-      const onKey = (ev: KeyboardEvent): void => {
-        if (ev.key === "Escape") {
-          ev.stopPropagation();
-          done("cancel");
-        }
       };
       for (const b of buttons) {
         const btn = el("button", `btn${b.primary ? " primary" : ""}${b.danger ? " danger" : ""}`, b.label);
@@ -11401,7 +11392,7 @@ export class App {
       back.onclick = (ev) => {
         if (ev.target === back) done("cancel");
       };
-      document.addEventListener("keydown", onKey, true);
+      pushEscLayer({ el: back, onEsc: () => done("cancel") });
       box.append(row);
       back.append(box);
       this.overlay(back);
@@ -11937,7 +11928,7 @@ export class App {
 
     this.mgrRefresh = paint;
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     paint();
     q.focus();
   }
@@ -12573,8 +12564,7 @@ export class App {
     consoleNode.append(head, dirty, main, foot);
     back.append(consoleNode);
     this.overlay(back);
-    this.sheet = back;
-    document.addEventListener("keydown", this.settingsEsc, true);
+    this.setSheet(back);
     this.socket.send({ type: "settings.get", scope: "global" });
     this.socket.send({ type: "lockext.get" });
     if (this.session?.cwd) {
@@ -12583,17 +12573,6 @@ export class App {
     }
     this.paintSettings();
   }
-
-  /** #283：Escape 关设置面板。压着别的浮层时不越级关自己 —— 先关的该是最上面那层。 */
-  private settingsEsc = (ev: KeyboardEvent): void => {
-    if (ev.key !== "Escape" || ev.defaultPrevented || (this.sheetKind !== "settings" && this.sheetKind !== "display")) return;
-    // D308: 从面板里打开的预览或表格/幻灯片浮窗夹在中间时，Esc 先收它，面板还是父层。
-    if (document.querySelector(".viewer.hi, .sd.hi")) return;
-    // 更高的层（口令框 64 / 选择框 66）压着时也不越级。
-    if (this.higherLayerOpen()) return;
-    if (document.querySelectorAll(".st-back, .sheet-back, .sheet-sub-back, .image-view").length > 1) return;
-    this.closeSheet();
-  };
 
   /** #283 header 的「刷新」：把打开面板时问过的东西重问一遍，再照当前页重画。不写盘。 */
   private refreshSettings(): void {
@@ -13987,7 +13966,7 @@ export class App {
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note share-note"), body);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     return { back, sheet, body };
   }
 
@@ -14256,6 +14235,7 @@ export class App {
     form.append(foot);
     modal.append(form);
     this.overlay(modal);
+    pushEscLayer({ el: modal, onEsc: () => modal.remove() });
   }
 
   /** D248 两种发布入口：从已安装一键发布 + 上传手工 zip（共用 manifest.json）。 */
@@ -14653,6 +14633,7 @@ export class App {
       this.piCli({ op: "pkg.update", target: "self", ...(force ? { force: true } : {}) }, "pi");
     };
     this.overlay(modal);
+    pushEscLayer({ el: modal, onEsc: () => modal.remove() });
   }
 
   /** The dialog the composer's 扩展 button opens. */
@@ -14678,7 +14659,7 @@ export class App {
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     // D113: keep the last inventory on screen (it is the fastest thing we have); the bridge pushes a
     // fresh one in stages, so 「联网检查」 never hides the rows again.
     this.loadExtInventory();
@@ -15766,7 +15747,7 @@ export class App {
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     this.socket.send({ type: "tree", sessionId: this.currentId });
   }
 
@@ -16146,7 +16127,7 @@ export class App {
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     this.bgSheet = { sessionId: sid, body, runs: new Map() };
     const tick = () => {
       if (!this.bgSheet || this.bgSheet.sessionId !== sid) return;
@@ -16313,6 +16294,7 @@ export class App {
     menu.style.right = `${Math.max(8, window.innerWidth - r.right)}px`;
     menu.style.bottom = `${window.innerHeight - r.top + 6}px`;
     document.body.append(menu);
+    pushEscLayer({ el: menu, onEsc: () => menu.remove() });
     document.addEventListener("pointerdown", outside, true);
     document.addEventListener("keydown", onKey, true);
   }
@@ -16647,7 +16629,7 @@ export class App {
     home.bind(handle.picker);
     ref.bind();
     this.overlay(handle.root);
-    this.sheet = handle.root;
+    this.setSheet(handle.root);
     handle.focus();
   }
 
@@ -16686,7 +16668,7 @@ export class App {
     this.fileSearch = handle;
     this.sheetKind = "filesearch";
     this.overlay(handle.root);
-    this.sheet = handle.root;
+    this.setSheet(handle.root);
     handle.focus();
   }
 
@@ -16809,7 +16791,7 @@ export class App {
 
     back.append(sheet);
     this.overlay(back);
-    this.sheet = back;
+    this.setSheet(back);
     paint();
   }
 
@@ -18733,6 +18715,7 @@ export class App {
     menu.style.left = `${Math.round(r.left)}px`;
     menu.style.bottom = `${Math.round(window.innerHeight - r.top + 4)}px`;
     document.body.append(menu);
+    pushEscLayer({ el: menu, onEsc: () => menu.remove() });
     const away = (ev: MouseEvent) => {
       if (menu.contains(ev.target as Node) || ev.target === anchor) return;
       menu.remove();
@@ -18958,7 +18941,7 @@ export class App {
     // 阶段 stopPropagation）；运行态的 Esc 仍然只走「中断」那条绑定，不在这里改语义。
     // #202 / D183: 判据看气泡不看 `starting`（首条已交出时 `starting` 已 false）。
     window.addEventListener("keydown", (ev) => {
-      if (ev.isComposing || ev.key !== "Escape") return;
+      if (ev.isComposing || ev.defaultPrevented || ev.key !== "Escape") return;
       if (this.chat.bootingCount() < 1) return;
       ev.preventDefault();
       this.withdrawBoot();
@@ -19099,7 +19082,7 @@ export class App {
     foot.append(clearAll, done);
     sheet.append(foot);
     back.append(sheet);
-    this.sheet = back;
+    this.setSheet(back);
     document.body.append(back);
   }
 
