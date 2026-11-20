@@ -1043,49 +1043,82 @@ body.embedded .brand .nm { display: none; }
 /* ------------------------------------------------------------------ 表情面板 */
 
 .compose { position: relative; }
+/*
+ * 照 macOS「表情与符号」弹窗：340×372，顶部圆角搜索框，9 列 36px 格子、26px 字形，
+ * 组标题 11.5px 半粗次要色，底部一排 16px 线条分类图标（当前组垫一块圆角浅底）。
+ */
 .emoji-panel {
+  --ep-fill: color-mix(in srgb, var(--text) 9%, transparent);
+  --ep-fill-2: color-mix(in srgb, var(--text) 14%, transparent);
+  --ep-sep: color-mix(in srgb, var(--text) 12%, transparent);
+  --ep-bg: var(--panel-2);
   position: absolute;
   left: 14px;
   bottom: calc(100% - 6px);
   z-index: 30;
   display: flex;
   flex-direction: column;
-  width: min(380px, calc(100% - 28px));
-  height: 330px;
-  border: 1px solid var(--line);
+  width: min(340px, calc(100% - 28px));
+  height: 372px;
+  border: 0.5px solid var(--line);
   border-radius: 12px;
-  background: var(--panel-2);
-  box-shadow: 0 16px 40px rgb(0 0 0 / 55%);
+  background: var(--ep-bg);
+  box-shadow: 0 0 0 0.5px rgb(0 0 0 / 18%), 0 12px 36px rgb(0 0 0 / 38%);
   overflow: hidden;
+  font-family: var(--sans);
 }
-.ep-tabs { display: flex; gap: 2px; padding: 6px 6px 0; border-bottom: 1px solid var(--line-soft); }
-.ep-tab {
-  height: 28px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent;
-  background: transparent; color: var(--dim); font-size: 12px; cursor: pointer;
+.ep-top { flex: none; padding: 10px 10px 4px; }
+.emoji-panel.stickers-on .ep-top { display: none; }
+.ep-search {
+  display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
+  border-radius: 7px; background: var(--ep-fill); color: var(--faint); cursor: text;
 }
-.ep-tab.on { color: var(--text); border-bottom-color: var(--accent); }
+.ep-search:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); }
+.ep-search .ep-ico { width: 13px; height: 13px; flex: none; }
+.ep-search input {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0;
+  background: transparent; color: var(--text); font: 13px var(--sans);
+}
+.ep-search input::placeholder { color: var(--faint); }
+.ep-search input::-webkit-search-cancel-button { cursor: pointer; }
 .ep-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.ep-nav { display: flex; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--line-soft); flex: none; }
-.ep-jump { width: 28px; height: 26px; border: 0; border-radius: 6px; background: transparent; font-size: 15px; cursor: pointer; }
-.ep-jump:hover { background: var(--panel-3); }
-.ep-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 10px; }
-.ep-sec { position: sticky; top: -4px; z-index: 1; padding: 6px 2px 4px; background: var(--panel-2); font-size: 11px; color: var(--faint); }
-.ep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 2px; }
-.ep-e {
-  height: 34px; border: 0; border-radius: 7px; background: transparent;
-  font: 21px/1 "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif; cursor: pointer;
+.ep-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: 0 7px 8px; scrollbar-width: thin; }
+.ep-group { position: relative; }
+.ep-sec {
+  position: sticky; top: 0; z-index: 1; padding: 7px 5px 4px;
+  background: var(--ep-bg); color: var(--faint); font-size: 11.5px; font-weight: 600; letter-spacing: .01em;
 }
-.ep-e:hover { background: var(--panel-3); transform: scale(1.12); }
-.ep-grid.stickers { grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 6px; padding-top: 6px; }
+.ep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); }
+.ep-e {
+  height: 36px; padding: 0; border: 0; border-radius: 6px; background: transparent; cursor: default;
+  font: 26px/36px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  text-align: center; overflow: hidden;
+}
+.ep-e:hover { background: var(--ep-fill-2); }
+.ep-e:active { background: var(--accent); }
+.ep-bar {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 2px;
+  height: 36px; padding: 0 8px; border-top: 0.5px solid var(--ep-sep);
+}
+.ep-jump {
+  display: grid; place-items: center; width: 26px; height: 24px; padding: 0;
+  border: 0; border-radius: 6px; background: transparent; color: var(--faint); cursor: default;
+}
+.ep-jump:hover { color: var(--dim); }
+.ep-jump.on { background: var(--ep-fill-2); color: var(--text); }
+.ep-bar-sep { width: 0.5px; height: 16px; background: var(--ep-sep); flex: none; }
+.ep-ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.ep-ico .f { fill: currentColor; stroke: none; }
+.ep-grid.stickers { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; padding: 2px 3px 0; }
 .ep-s {
   display: grid; place-items: center; aspect-ratio: 1; padding: 4px;
-  border: 1px solid var(--line-soft); border-radius: 9px; background: var(--sunken); cursor: pointer;
+  border: 0; border-radius: 8px; background: var(--ep-fill); cursor: default;
 }
-.ep-s:hover { border-color: var(--accent-dim); }
+.ep-s:hover { background: var(--ep-fill-2); }
 .ep-s img { max-width: 100%; max-height: 100%; object-fit: contain; }
-.ep-add { color: var(--dim); font-size: 26px; border-style: dashed; }
-.ep-empty { padding: 18px 6px; font-size: 11.5px; color: var(--faint); text-align: center; }
-.ep-tip { flex: none; padding: 5px 10px 6px; border-top: 1px solid var(--line-soft); font-size: 10.5px; color: var(--faint); }
+.ep-add { color: var(--faint); font-size: 26px; font-weight: 300; outline: 1px dashed var(--ep-sep); outline-offset: -1px; }
+.ep-empty { padding: 40px 6px; font-size: 13px; color: var(--faint); text-align: center; }
+.ep-tip { padding: 10px 6px; font-size: 11.5px; color: var(--faint); }
 
 /* ------------------------------------------------------------------ 聊天记录内搜索 */
 

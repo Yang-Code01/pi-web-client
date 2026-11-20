@@ -1465,7 +1465,17 @@ document.addEventListener("selectionchange", () => {
 });
 
 function closeEmoji(): void {
+  // 焦点在面板里（搜索框）时，关掉后把光标还给输入框原处：否则焦点掉到 body，接着敲 Enter 发不出去。
+  const inside = document.activeElement?.closest(".emoji-panel");
   for (const p of document.querySelectorAll(".emoji-panel")) p.remove();
+  if (inside && textInput) {
+    textInput.focus({ preventScroll: true });
+    const sel = document.getSelection();
+    if (sel && lastRange && textInput.contains(lastRange.startContainer)) {
+      sel.removeAllRanges();
+      sel.addRange(lastRange);
+    }
+  }
   document.removeEventListener("pointerdown", emojiOutside, true);
   document.removeEventListener("keydown", emojiEsc, true);
 }
