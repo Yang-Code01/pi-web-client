@@ -4765,6 +4765,23 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-handoff-err { padding: 2px 8px 6px; font-size: 11px; color: var(--danger); }
 .jira-list-placeholder,
 .jira-empty { font-size: 12px; color: var(--dim); }
+/* 最近消息（@我的 / 我回复过的）：分段切换 + 评论摘要行 */
+.jira-recent { display: grid; gap: 10px; min-width: 0; }
+.jira-recent-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.jira-recent-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: none; }
+.jira-recent-seg button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 0; background: transparent; color: var(--dim); font: inherit; font-size: 12px; cursor: pointer; }
+.jira-recent-seg button + button { border-left: 1px solid var(--line); }
+.jira-recent-seg button.on { background: var(--accent-soft, rgba(80, 140, 255, 0.14)); color: var(--fg); }
+.jira-recent-seg button b { font-weight: 500; font-size: 11px; color: var(--dim); }
+.jira-recent-bar .jira-refresh { margin-left: auto; }
+.jira-recent-hint { font-size: 12px; color: var(--dim); }
+.jira-recent-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); align-self: center; }
+.jira-recent-quote { display: flex; align-items: baseline; gap: 6px; min-width: 0; margin: 4px 0 2px; padding: 4px 8px; border-left: 2px solid var(--line); font-size: 12px; color: var(--dim); }
+.jira-recent-who { flex: none; color: var(--fg); }
+.jira-recent-who.me { color: var(--accent); }
+.jira-recent-snip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jira-recent-when { flex: none; font-size: 11px; }
+.jira-recent-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--dim); }
 .jira-list-error { font-size: 12px; color: var(--danger); white-space: pre-wrap; }
 .jira-expired { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .jira-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }

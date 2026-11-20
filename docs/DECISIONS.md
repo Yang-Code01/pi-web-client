@@ -6600,3 +6600,18 @@ Esc 之后 dialog: 0
 - **桥侧校验过滤**（`bridge/src/sessions.ts`、`bridge/src/artifacts.ts`、`bridge/src/index.ts`）：`locate()` 一并返回 `startedAt`，`listArtifacts()` 对 `mentioned` 条目校验「文件存在、是普通文件、且 `mtimeMs >= startedAt - 1000`」，过滤掉旧参考文件、目录与不存在的路径；同一 `abs` 撞车时保留非 `mentioned` 记录；无基线时返回 `why: "mentioned-only"`，页面显示「回复提及」及对应说明（三语同步）。
 
 
+
+## D341 Jira 面板加「最近消息」：@我的 / 我回复过的（用户需求 2026-11-20）
+
+**需求。** Jira dialog 左栏新增一页「最近消息」，分两段：别人在哪些工单里 @ 了我、我最近在哪些工单里回复过。默认最新 10 条、新的在上，「显示更多」每次再加 10 条；每行照样能展开详情、下载附件、交给 agent。
+
+**能不能做（在 kaigit.atlassian.net 上实测）。** Jira 没有「我的通知」REST API，也没有 `commentedBy`，所以两段都是「JQL 粗筛 + 逐单读评论精筛」：
+- **@我的**：`comment ~ "<accountId>"`（ADF 的 mention 节点按 accountId 进索引）按 `updated DESC` 取 50 张，再读 `/issue/KEY/comment?orderBy=-created`，挑**别人写的、mention 节点 `attrs.id` 等于我**的最新一条。只认评论里的 @，描述里的 @ 不算。
+- **我回复过的**：`issuekey in updatedBy("<accountId>", "-90d")` 取 100 张（只改字段也会命中），再挑**我自己写的**最新一条，没有就丢掉。窗口定死 90 天。`updatedBy(currentUser(), …)` 在 issuekey 子句里会 400，必须传 accountId。
+- 每段约 50～100 次评论请求，8 路并发，实测 2.4s；桥端按段缓存 60 秒，「↻」/ 顶部刷新绕过缓存。读不到评论的单（非鉴权、非网络错误）跳过并计数，不让整段失败。
+
+**决定。**
+- 桥：`GET /api/jira/recent?kind=mentions|replied` → `{ kind, items: JiraRecentItem[], skipped }`，`JiraRecentItem = JiraIssue + comment{id, at, author, body(ADF)}`，按 `comment.at` 降序，最多 50 条。JQL 由桥写死，页面只能选 kind（同 D203）。
+- 页面：分段切换（原型里比过「上下两块」「左右两栏」，选了分段）；每行复用「我的未完成」的 `issueEl`，在标题下插一行评论摘要（作者：正文前 160 字 · 相对时间）。只拉「@我的」随面板打开一起取（左栏角标要用），「我回复过的」切过去才取。
+- **新消息 = 上次查看之后**：没有已读 API，用 `localStorage["pi.jira.recent.seen\n<站点>\n<accountId>"]` 记「上次进这一页的时间」。不在这一页时左栏角标显示 `@N`；进页时按旧值画蓝点并把记录更新成现在，所以蓝点本次可见、下次消失。从没看过（无记录）一律不算新，免得第一次满屏蓝点。只给 @我的 算，自己的回复没有「未读」。
+- 顺手修 `adfToText`：Jira Cloud 的 mention `attrs.text` 自带「@」，原来拼成「@@名字」（详情评论里也一样）。

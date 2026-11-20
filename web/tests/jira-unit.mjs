@@ -11,7 +11,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, normalizeSearch, readSavedSearch, searchQuery, searchCountNote, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_STORAGE_KEY } from "../src/jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, isUnread, issueMeta, recentSeenKey, recentSnippet, relativeTime, keyMask, mergeSearchPage, normalizeSearch, readSavedSearch, searchQuery, searchCountNote, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_STORAGE_KEY } from "../src/jira-shared.ts";
 
 const bad = (raw) => {
   const problem = siteUrlProblem(raw);
@@ -403,4 +403,44 @@ test("搜索条件往返：工单号存进 localStorage，读回来还在", () =
   const legacy = readSavedSearch(JSON.stringify({ v: 1, title: "登录" }));
   assert.equal(legacy.key, "");
   assert.equal(legacy.title, "登录");
+});
+
+// ---------------------------------------------------------------- 最近消息
+
+const recentItem = (at) => ({ key: "A-1", summary: "", status: "", statusCategory: "", priority: "", updated: at, comment: { id: "1", at, author: "x", body: null } });
+
+test("isUnread：没看过（null）一律不算新；之后的评论才算", () => {
+  assert.equal(isUnread(recentItem("2026-11-20T10:00:00Z"), null), false);
+  const seen = Date.parse("2026-11-20T09:00:00Z");
+  assert.equal(isUnread(recentItem("2026-11-20T10:00:00Z"), seen), true);
+  assert.equal(isUnread(recentItem("2026-11-20T08:00:00Z"), seen), false);
+  assert.equal(isUnread(recentItem("坏时间"), seen), false);
+});
+
+test("recentSeenKey：站点去尾斜杠，按账号分开", () => {
+  assert.equal(recentSeenKey("https://a.atlassian.net/", "u1"), recentSeenKey("https://a.atlassian.net", "u1"));
+  assert.notEqual(recentSeenKey("https://a.atlassian.net", "u1"), recentSeenKey("https://a.atlassian.net", "u2"));
+});
+
+test("recentSnippet：ADF 压成一行并截断", () => {
+  const body = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "第一行" }] }, { type: "paragraph", content: [{ type: "text", text: "第二行" }] }] };
+  assert.equal(recentSnippet(body), "第一行 第二行");
+  assert.equal(recentSnippet({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "x".repeat(20) }] }] }, 5), "xxxxx…");
+  assert.equal(recentSnippet(null), "");
+});
+
+test("relativeTime：分 / 时 / 天，一周以上给日期", () => {
+  const now = Date.parse("2026-11-20T12:00:00Z");
+  assert.equal(relativeTime("2026-11-20T11:59:50Z", now), "刚刚");
+  assert.equal(relativeTime("2026-11-20T11:30:00Z", now), "30 分钟前");
+  assert.equal(relativeTime("2026-11-20T09:00:00Z", now), "3 小时前");
+  assert.equal(relativeTime("2026-11-18T12:00:00Z", now), "2 天前");
+  assert.match(relativeTime("2026-10-01T12:00:00Z", now), /^2026-10-0[12]$/);
+  assert.equal(relativeTime("坏", now), "");
+});
+
+test("adfToText：mention 的 text 自带 @ 时不叠成 @@", () => {
+  const p = (attrs) => ({ type: "doc", content: [{ type: "paragraph", content: [{ type: "mention", attrs }] }] });
+  assert.equal(adfToText(p({ id: "1", text: "@Weichen Jiang" })), "@Weichen Jiang");
+  assert.equal(adfToText(p({ id: "1", text: "Weichen Jiang" })), "@Weichen Jiang");
 });
