@@ -75,12 +75,19 @@ export class Notifier {
   }
 
   /** `force`: show it even on a page that is in front (the 发测试通知 button is clicked from one). */
-  async push(title: string, body: string, url: string, force = false): Promise<{ sent: number; failed: number }> {
+  /** `extra.tag`：同一 tag 的通知系统只留一条；`extra.sticky`：不自动消失（加班提醒用，D349）。 */
+  async push(
+    title: string,
+    body: string,
+    url: string,
+    force = false,
+    extra: { tag?: string; sticky?: boolean } = {},
+  ): Promise<{ sent: number; failed: number }> {
     let sent = 0;
     let failed = 0;
     for (const sub of [...this.subs]) {
       try {
-        await webpush.sendNotification(sub as any, JSON.stringify({ title, body, url, ...(force ? { force: true } : {}) }), { TTL: 600 });
+        await webpush.sendNotification(sub as any, JSON.stringify({ title, body, url, ...(force ? { force: true } : {}), ...(extra.tag ? { tag: extra.tag } : {}), ...(extra.sticky ? { sticky: true } : {}) }), { TTL: 600 });
         sent += 1;
       } catch (err: any) {
         failed += 1;

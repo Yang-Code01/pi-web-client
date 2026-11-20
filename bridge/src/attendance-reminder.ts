@@ -32,6 +32,10 @@ export interface ReminderRecord {
 export const REMINDER_TITLE = "加班申请提醒";
 export const DEFAULT_REMINDER_TEXT = "该提交本周的加班申请了";
 export const MAX_REMINDER_TEXT = 200;
+/**
+ * 系统通知的 tag：推送（sw.js）和页面自己弹的那条用同一个，系统只留一条，不会叠两遍。
+ */
+export const REMINDER_TAG = "pi-attendance-reminder";
 
 export const DEFAULT_RULE: ReminderRule = {
   enabled: false,
@@ -163,7 +167,13 @@ export function writeReminder(rec: ReminderRecord): void {
 export interface ReminderSink {
   enabled: boolean;
   subscriptionCount: () => number;
-  push: (title: string, body: string, url: string, force?: boolean) => Promise<{ sent: number; failed: number }>;
+  push: (
+    title: string,
+    body: string,
+    url: string,
+    force?: boolean,
+    extra?: { tag?: string; sticky?: boolean },
+  ) => Promise<{ sent: number; failed: number }>;
 }
 
 export interface ReminderLoopOptions {
@@ -171,6 +181,11 @@ export interface ReminderLoopOptions {
   /** 通知点开时打开的地址。 */
   url: () => string;
   log?: (line: string) => void;
+  /**
+   * 到点时同时告诉正开着的页面（D349）：Web Push 在「页面就在眼前」时可能被浏览器 / 旧 sw 吞掉，
+   * 页面自己再弹一条系统通知 + 页内提示，保证任何情况下都看得到。
+   */
+  onFire?: (title: string, body: string) => void;
   /** 单测用的短间隔。 */
   intervalMs?: number;
   now?: () => Date;
@@ -203,7 +218,14 @@ export function startReminderLoop(opts: ReminderLoopOptions): () => void {
         lastFiredAt: new Date().toISOString(),
         lastSent: rec.lastSent,
       });
-      const result = await opts.notifier.push(REMINDER_TITLE, body, opts.url(), true).catch(() => ({ sent: 0, failed: 0 }));
+      try {
+        opts.onFire?.(REMINDER_TITLE, body);
+      } catch {
+        /* 页面通道坏了不影响推送 */
+      }
+      const result = await opts.notifier
+        .push(REMINDER_TITLE, body, opts.url(), true, { tag: REMINDER_TAG, sticky: true })
+        .catch(() => ({ sent: 0, failed: 0 }));
       writeReminder({
         rule: rec.rule,
         lastFiredDate: dateKey(at),

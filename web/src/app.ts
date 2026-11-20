@@ -1132,7 +1132,7 @@ export class App {
       onStar: (id) => this.togglePin(id),
       tail: () => {
         // Q-013: with the left pane hidden this is the only visible way to start a session.
-        // Q-022 / D327: 新建的会话一律由桥置顶到这条末尾（不再只有这颗 ＋ 才置顶）。
+        // Q-022 / D349: 新建的会话一律由桥置顶到这条末尾（不再只有这颗 ＋ 才置顶）。
         const add = el("button", "pin-chip pin-new", tr("＋"));
         add.title = tr("开新会话（自动置顶到这条里）");
         add.dataset.act = "new";
@@ -2356,6 +2356,9 @@ export class App {
         break;
       case "passphrase.error":
         this.flashSettings(String(msg.message ?? tr("保存失败")), true);
+        break;
+      case "attendance.reminder":
+        this.showAttendanceReminder(String(msg.title ?? tr("加班申请提醒")), String(msg.body ?? ""), String(msg.tag ?? ""));
         break;
       case "notify":
         this.me = { ...this.me, notify: msg.on !== false };
@@ -10303,6 +10306,39 @@ export class App {
   }
 
   /** 一条几秒后自己消失的小提示（入账可撤销 / #175 新建的组收进了 ＋N）。同一时刻只留一条。 */
+  /**
+   * D349：加班提醒到点时桥直接告诉开着的页面。以前只靠 Web Push，页面在眼前时会被吞掉（D91 的
+   * 「页面在前不弹」），加班提醒要求任何情况都提醒：这里自己弹一条系统通知（与推送同 tag，系统
+   * 只留一条），再在页面上挂一条 10 分钟的提示，没给通知权限也看得到。
+   */
+  private showAttendanceReminder(title: string, body: string, tag: string): void {
+    this.flashToast(tr("加班申请提醒：{p1}", { p1: body }), false, 10 * 60_000);
+    const box = this.failToast;
+    if (box) {
+      box.title = tr("点一下关掉");
+      box.style.cursor = "pointer";
+      box.onclick = () => box.remove();
+    }
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const options: NotificationOptions & { renotify?: boolean } = {
+      body,
+      tag: tag || "pi-attendance-reminder",
+      requireInteraction: true,
+      icon: "/icon-192.png",
+      data: { url: location.href },
+    };
+    const viaSw = "serviceWorker" in navigator ? navigator.serviceWorker.getRegistration() : Promise.resolve(undefined);
+    void viaSw
+      .then((reg) => (reg ? reg.showNotification(title, options) : void new Notification(title, options)))
+      .catch(() => {
+        try {
+          new Notification(title, options);
+        } catch {
+          /* 页内提示已经挂上了 */
+        }
+      });
+  }
+
   private flashToast(text: string, bad: boolean, ms: number, token = "", onUndo?: () => void): void {
     this.failToast?.remove();
     window.clearTimeout(this.failToastTimer);

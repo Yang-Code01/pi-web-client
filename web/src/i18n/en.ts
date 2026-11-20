@@ -3545,6 +3545,8 @@ export const en: Dict = {
 "周末加班 {p1} 小时": "{p1} h weekend overtime",
 "提醒": "Reminders",
 "加班申请提醒": "Overtime reminder",
+"点一下关掉": "Click to dismiss",
+"加班申请提醒：{p1}": "Overtime reminder: {p1}",
 "到点提醒我提交加班申请": "Remind me to file the overtime request when it's time",
 "每周几": "Days",
 "几点": "Time",

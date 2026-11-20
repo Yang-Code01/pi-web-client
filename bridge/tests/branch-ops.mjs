@@ -113,7 +113,7 @@ const waitFor = (pred, ms, what, from = 0) => {
   });
 };
 const send = (m) => ws.send(JSON.stringify(m));
-// D327：分叉 / 复制出来的会话也置顶，排在 pin 末尾；原会话的置顶不动。
+// D349：分叉 / 复制出来的会话也置顶，排在 pin 末尾；原会话的置顶不动。
 const pinnedLast = (id, from) => waitFor((m) => m.type === "manage" && Array.isArray(m.manage?.pin) && m.manage.pin.at(-1) === id, 5000, `manage 帧 pin 末尾 = ${id}`, from).then(() => true, () => false);
 
 try {
@@ -158,7 +158,7 @@ try {
   check(newFile && JSON.stringify(userTexts(newFile)) === JSON.stringify(["first question", "second question"]), `new file = history before it (${newFile && JSON.stringify(userTexts(newFile))})`);
   check(newFile && readRows(newFile)[0].parentSession && path.resolve(readRows(newFile)[0].parentSession) === path.resolve(file), "new header points at the source (parentSession)");
   check(Buffer.compare(fs.readFileSync(file), sourceBytes) === 0, "source file untouched");
-  check(await pinnedLast(res.sessionId, mark), "the fork is pinned at the end (D327)");
+  check(await pinnedLast(res.sessionId, mark), "the fork is pinned at the end (D349)");
 
   // C. fork on the abandoned branch
   log("C. fork on the abandoned branch, and by position for a live bubble");
@@ -184,7 +184,7 @@ try {
   check(!res.error && newFile && JSON.stringify(userTexts(newFile)) === JSON.stringify(["first question", "second question", "third question"]), `clone = current branch only (${res.error ?? JSON.stringify(newFile && userTexts(newFile))})`);
   const listed = await (await fetch(`${BASE}/api/sessions`, { headers: { cookie } })).json();
   check(listed.sessions.some((x) => x.id === res.sessionId), "the clone is on the session list");
-  check(await pinnedLast(res.sessionId, mark), "the clone is pinned at the end (D327)");
+  check(await pinnedLast(res.sessionId, mark), "the clone is pinned at the end (D349)");
 
   // E. import
   log("E. import");
