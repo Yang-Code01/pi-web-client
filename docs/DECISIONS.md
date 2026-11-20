@@ -6615,3 +6615,21 @@ Esc 之后 dialog: 0
 - 页面：分段切换（原型里比过「上下两块」「左右两栏」，选了分段）；每行复用「我的未完成」的 `issueEl`，在标题下插一行评论摘要（作者：正文前 160 字 · 相对时间）。只拉「@我的」随面板打开一起取（左栏角标要用），「我回复过的」切过去才取。
 - **新消息 = 上次查看之后**：没有已读 API，用 `localStorage["pi.jira.recent.seen\n<站点>\n<accountId>"]` 记「上次进这一页的时间」。不在这一页时左栏角标显示 `@N`；进页时按旧值画蓝点并把记录更新成现在，所以蓝点本次可见、下次消失。从没看过（无记录）一律不算新，免得第一次满屏蓝点。只给 @我的 算，自己的回复没有「未读」。
 - 顺手修 `adfToText`：Jira Cloud 的 mention `attrs.text` 自带「@」，原来拼成「@@名字」（详情评论里也一样）。
+
+## D342 产物弹窗改成设置控制台样式（方案 A，用户选定 2026-11-20）
+
+**需求。** 「本会话的产物」弹窗的 UI 按本项目设置控制台（`st-console`）的模板重做。先出三版原型（A 设置式分组 / B 目录树 + 对照表 / C 主从详情，分支 `proto/artifacts-console`，未进主线），用户选 A。
+
+**决定。**
+- 外壳：`section.st-console.settings-sheet.art-sheet`。head 放 eyebrow、标题、会话工作目录与状态徽章；左栏 nav 分「状态」（全部 / 新增 / 修改 / 已删除 / 未知 / 未变）与「来源」（工具写入 / 在预览里打开 / 回复里提到），带计数；右栏是「按最近 / 按路径」切换 + 路径预览输入 + 四张统计卡 + `settings-panel` 行清单；底下是 `st-foot`。
+- 行：`button.settings-row.art-row`，三列「名字 + 路径 / 脚本说明 | 数字与工具名 | 状态胶囊」。能对比的行给「看改动」（打开 diff 弹窗）；不能对比的给「预览」（`openPreview`，不关弹窗）。
+- 列轨写成 `minmax(0,1fr)`：顶栏按钮会把隐式 auto 列撑到 min-content（390px 下实测 427px），和 `display-sheet` 同法修。
+- 样式全部挂在 `.st-console.art-sheet` 下，替换 `styles.css` 里旧的 `.art-*` 块；`.art-badge`、`.art-count`、`.art-est` 与 diff 弹窗共用，留在全局。
+- 数据层不动：`/api` 返回、D275 / D340 的来源收集与桥侧校验都没改。
+
+**验证。**
+- `npm run typecheck`（tsc、i18n 3983 键 × 3 语、视口守卫、层带、主题单测）通过。
+- `probes/artifacts-delivered.mjs` 9/9：原有 7 条，外加 390px 下弹窗与行不撑出视口、字号 150% 下底栏仍在弹窗里。
+- `web/tests/artifact-sources-unit.mjs`、`chrome-unit.mjs`、`commands-unit.mjs`、`settings-console-unit.mjs` 通过。
+
+**顺带。** `probes/artifacts-delivered.mjs` 在 Windows 上一跑就炸：会话目录名 `--C:-Users-…--` 里带冒号，`mkdirSync` 报 ENOENT。把编码里的 `:` 也替换成 `-`。
