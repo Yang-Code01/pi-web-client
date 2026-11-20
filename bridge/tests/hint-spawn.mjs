@@ -192,7 +192,7 @@ ${bridgeLog.slice(-3000)}`));
   return { argv, stop, log: () => bridgeLog };
 }
 
-const HINT_NEEDS = ["覆盖", "要在预览里打开吗", "先不看", "open_preview", "no-page", "untrusted-path", "用本机程序打开"];
+const HINT_NEEDS = ["覆盖", "要在预览里打开吗", "先不看", "单独", "绝对路径", "预览开了再问", "open_preview", "no-page", "untrusted-path", "用本机程序打开"];
 /** 计划提示词要讲的是机制 + 三条硬约束；`todo` / `in_progress` / `completed` 少一个就说明写歪了。 */
 const PLAN_NEEDS = ["todo", "in_progress", "completed", "批量", "快照"];
 const lessonFileOf = (ps) => ps.find((p) => p.includes("lessons")) ?? "";

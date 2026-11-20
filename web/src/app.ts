@@ -20,6 +20,7 @@ import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
+import { previewTargetOf } from "./ask-preview.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
 import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, markKeyword, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
@@ -1632,6 +1633,7 @@ export class App {
         paneFrame = 0;
         this.syncCompact();
         this.renderPanes();
+        this.syncViewerBesideAsk();
         // #316: the composer's cap switched between half and 40% of the pane. A width-only change
         // does not resize the pane, so the pane's ResizeObserver never fires and the box would keep
         // the old cap.
@@ -9137,7 +9139,9 @@ export class App {
         // `clientX` / `innerWidth` 是**视觉** px，写进 `--viewer-w` 的是**布局** px（#app 的 zoom）——
         // 不除这个系数，1.25 字号下拖出来的面板会比鼠标宽 25%，分隔条永远跑在指针前面。
         const s = this.uiScale();
-        const w = Math.max(320, Math.min((window.innerWidth - 120) / s, (window.innerWidth - e.clientX) / s));
+        // 让出「需要你」栏时右缘不在视口边上：宽度从面板自己的右缘量。
+        const edge = root.getBoundingClientRect().right;
+        const w = Math.max(320, Math.min((edge - 120) / s, (edge - e.clientX) / s));
         root.style.setProperty("--viewer-w", `${Math.round(w)}px`);
       };
       const up = () => {
@@ -9189,6 +9193,7 @@ export class App {
       trTimer: null,
       parentFloor: -1,
     };
+    this.syncViewerBesideAsk();
     return this.viewer;
   }
 
@@ -16737,6 +16742,23 @@ export class App {
     return this.askWanted() && !this.collapsed.queue;
   }
 
+  /**
+   * 预览浮窗铺在右缘，会把「需要你」栏整栏盖住。题目还住在那一栏时，浮窗往左让出它：
+   * 否则问卷里点了「在预览里打开」，下一题立刻被压在预览底下，又回到「没法边看边答」。
+   * 全屏预览不让（那是用户自己要的一整屏，CSS 里 `.full` 优先）；题答完就回到右缘。
+   */
+  private syncViewerBesideAsk(): void {
+    const v = this.viewer;
+    if (!v) return;
+    const pane = this.els.queuePane;
+    const beside = this.askDock() && Boolean(pane?.offsetWidth);
+    v.root.classList.toggle("beside-ask", beside);
+    if (!beside) return;
+    // getBoundingClientRect 是视觉 px，写进 #app 里的 style 要换算成布局 px（D123）。
+    const right = Math.max(0, (window.innerWidth - pane.getBoundingClientRect().left) / this.uiScale());
+    v.root.style.setProperty("--ask-right", `${Math.round(right)}px`);
+  }
+
   private askWanted(): boolean {
     return Boolean(this.asks.length && this.currentId && !this.compact() && !this.askDockMuted);
   }
@@ -16812,6 +16834,7 @@ export class App {
     // 槽一删，寄居在里面的 ⚡ 按钮也跟着没了（后面的分支还可能提前 return），先把它捞出来。
     this.placeFailCta();
     this.syncAskDock();
+    this.syncViewerBesideAsk();
     this.fillHintStatus();
     if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
     if (this.askLost && !this.asks.length) {
@@ -16883,8 +16906,13 @@ export class App {
         if (on) btn.classList.add("on");
         btn.append(el("div", "l", `${q.multiSelect ? (on ? "☑ " : "☐ ") : ""}${opt.label}`));
         if (opt.description) btn.append(el("div", "d", opt.description));
-        btn.onclick = () =>
-          q.multiSelect ? this.togglePick(ask, q, i + 1) : this.pickAnswer(ask, { id: q.id, value: opt.value, label: opt.label, index: i + 1 });
+        btn.onclick = () => {
+          // 「在预览里打开」当场打开：多题问卷要全答完模型才拿得到答案，不能让用户没看就答下一题（ask-preview.ts）。
+          const target = q.multiSelect ? null : previewTargetOf(q.prompt, opt);
+          if (target) void this.openPreview(target, ask.sessionId);
+          if (q.multiSelect) this.togglePick(ask, q, i + 1);
+          else this.pickAnswer(ask, { id: q.id, value: opt.value, label: opt.label, index: i + 1 });
+        };
         list.append(btn);
       });
       slot.append(list);
