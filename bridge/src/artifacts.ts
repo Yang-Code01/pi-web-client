@@ -258,6 +258,23 @@ async function gitRoot(cwd: string): Promise<string | null> {
   return text ? path.resolve(text) : null;
 }
 
+function realOr(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/**
+ * 文件相对仓库根的路径（git 命令都在仓库根跑）。cwd 可能是子目录，也可能是 Windows 的 8.3 短名
+ * （`YANGQM~1`），而 `rev-parse --show-toplevel` 给的是长名 —— 两边都走 realpath 再比。
+ * 文件本身可能已经删了，所以只 realpath cwd，再把「相对 cwd 的那段」接上去。
+ */
+function gitRel(root: string, cwd: string, abs: string): string {
+  return path.relative(realOr(root), path.resolve(realOr(cwd), path.relative(cwd, abs)));
+}
+
 async function gitTracked(root: string, rel: string): Promise<boolean> {
   const out = await gitBytes(root, ["ls-files", "--error-unmatch", "--", rel]);
   return out !== null;
@@ -271,7 +288,6 @@ async function gitHeadBytes(root: string, rel: string): Promise<Buffer | null> {
 interface Resolved {
   input: ArtifactInput;
   abs: string;
-  rel: string;
 }
 
 // ------------------------------------------------------------------ 列表
@@ -316,7 +332,6 @@ export async function listArtifacts(
     const next: Resolved = {
       input: { ...input, writes: Math.max(1, Number(input.writes) || 1) },
       abs,
-      rel: path.relative(cwd, abs),
     };
     if (!prev) {
       byKey.set(key, next);
@@ -343,15 +358,18 @@ export async function listArtifacts(
     let before: Buffer | null = null;
     let known = false;
     let estimate = false;
+    // HEAD 里没有、又没有快照：按 git 估算就是「新增」，不能拿空基线算成「修改 +N −0」。
+    let gitNew = false;
     let why: ArtifactWhy | undefined;
+    // git 命令在仓库根跑，路径就得按仓库根算；cwd 是子目录时 r.rel（相对 cwd）会对不上。
+    const rel = root ? gitRel(root, cwd, r.abs) : "";
 
     if (snap) {
       before = baselineBytes(dir, snap);
       known = before !== null;
       if (!known && !snap.binary) why = "snapshot-too-big";
       if (before !== null) exact++;
-    } else if (root && !r.rel.startsWith("..") && !path.isAbsolute(r.rel)) {
-      const rel = r.rel;
+    } else if (root && rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
       if (await gitTracked(root, rel)) {
         before = await gitHeadBytes(root, rel);
         known = before !== null;
@@ -361,6 +379,7 @@ export async function listArtifacts(
         before = Buffer.alloc(0);
         known = true;
         estimate = true;
+        gitNew = true;
       }
     }
     // 脚本 / 程序生成的交付文件本来就没有写入前原文（D275）：别把「桥没在运行」这句错话扣在它头上。
@@ -371,7 +390,7 @@ export async function listArtifacts(
     }
 
     const binary = Boolean(snap?.binary) || Boolean(now && looksBinary(now)) || Boolean(!now && before && looksBinary(before));
-    const sizeBefore = snap ? (snap.existed ? snap.size : null) : before ? before.length : null;
+    const sizeBefore = snap ? (snap.existed ? snap.size : null) : before && !gitNew ? before.length : null;
     const sizeAfter = st ? st.size : null;
 
     let status: ArtifactStatus = "unknown";
@@ -380,7 +399,7 @@ export async function listArtifacts(
     let diffable = false;
 
     if (known && before) {
-      if (!snap?.existed && snap) {
+      if ((snap && !snap.existed) || gitNew) {
         // 基线明确「当时不存在」。
         if (st) {
           status = "new";
@@ -463,11 +482,18 @@ export async function diffArtifact(sessionId: string, cwd: string, rawPath: stri
     if (!snap.existed) before = Buffer.alloc(0);
   } else {
     const root = await gitRoot(cwd);
-    const rel = root ? path.relative(root, abs) : "";
-    if (root && rel && !rel.startsWith("..") && !path.isAbsolute(rel) && (await gitTracked(root, rel))) {
-      before = await gitHeadBytes(root, rel);
-      estimate = true;
-      status = st ? "modified" : "deleted";
+    const rel = root ? gitRel(root, cwd, abs) : "";
+    if (root && rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+      if (await gitTracked(root, rel)) {
+        before = await gitHeadBytes(root, rel);
+        estimate = true;
+        status = st ? "modified" : "deleted";
+      } else if (st) {
+        // 跟列表一致：HEAD 里没有的文件按 git 估算是新增，全文都算加的行。
+        before = Buffer.alloc(0);
+        estimate = true;
+        status = "new";
+      }
     }
   }
 
@@ -504,7 +530,7 @@ export async function diffArtifact(sessionId: string, cwd: string, rawPath: stri
   const same = d.added === 0 && d.removed === 0;
   return {
     ...base,
-    status: same ? "same" : snap && !snap.existed ? "new" : "modified",
+    status: same ? "same" : (snap && !snap.existed) || status === "new" ? "new" : "modified",
     added: d.added,
     removed: d.removed,
     hunks: d.hunks,
