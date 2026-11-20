@@ -4,6 +4,7 @@ import { RichEditor } from "../notes/editor.ts";
 import { hasRichMarkup, isRichEmpty, plainText, sanitizeRich } from "../notes/rich.ts";
 import { SheetDialog } from "../sheet/dialog.ts";
 import "../sheet/sheet.css";
+import { bootTheme } from "../theme.ts";
 import { emojiPanel, QUICK_REACTIONS, type Sticker } from "./emoji.ts";
 import { imageViewer, type ViewerItem } from "./viewer.ts";
 
@@ -16,6 +17,13 @@ import { imageViewer, type ViewerItem } from "./viewer.ts";
  */
 
 applyLang(bootLang());
+
+// 主题跟主界面走（D350）：同源，读同一份 `pi.prefs`。主界面在设置里换了主题 / 强调色时，
+// 别的文档（包括开着的这个 iframe）会收到 `storage` 事件 —— 当场重画，不用关了重开。
+bootTheme();
+window.addEventListener("storage", (ev) => {
+  if (ev.key === "pi.prefs" || ev.key === null) bootTheme();
+});
 
 // 塞在弹框 iframe 里时，外层已经有「内网通 / 关闭」那一行标题了，这页的顶栏就不用再写一遍名字。
 if (window.self !== window.top) document.body.classList.add("embedded");
@@ -1276,6 +1284,13 @@ function renderChat(): void {
   let lastDay = "";
   const q = S.search?.q.trim().toLowerCase() ?? "";
   const hits: HTMLElement[] = [];
+  // D351：每次轮询 / 发送都整段重画消息流。入场动画只给「这次才出现的」那几条，
+  // 不然每发一条，屏幕上所有气泡都跟着弹一下。换会话后第一次画不算新。
+  const firstPaint = shownThread !== t.nodeId;
+  if (firstPaint) {
+    shownIds.clear();
+    shownThread = t.nodeId;
+  }
   for (const e of S.msgs) {
     if (e.kind === "receipt" || e.kind === "recall" || e.kind === "react" || e.kind === "pin" || e.outside) continue;
     // 话题里的回复不进主消息流（Teams 的做法）：话题第一条下面挂「N 条回复」，点开在右边看。
@@ -1286,6 +1301,8 @@ function renderChat(): void {
       lastDay = day;
     }
     const node = entryNode(e, t);
+    if (!firstPaint && !shownIds.has(e.id)) node.classList.add("fresh");
+    shownIds.add(e.id);
     if (q && !e.recalled && searchText(e).toLowerCase().includes(q)) {
       node.classList.add("hit");
       hits.push(node);
@@ -1978,6 +1995,10 @@ function sendStateMeta(e: Entry): (HTMLElement | SVGSVGElement)[] {
   if (e.state === "delivered") return [ic("check", "ok"), h("span", "ok", tr("已送达"))];
   return [];
 }
+
+/** 消息流里已经画过的消息 id（只记当前会话），用来判断谁是新来的、该放入场动画。 */
+let shownThread = "";
+const shownIds = new Set<string>();
 
 function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
   const mine = e.from.nodeId === S.view?.status?.nodeId;

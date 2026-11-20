@@ -6717,3 +6717,22 @@ Esc 之后 dialog: 0
 - 去重仍是 D292 的「先落盘 lastFiredDate」：页面广播与推送是同一次触发，不会多发。
 
 **验证：** `npm run test:attendance` 61 + 39 + 14 全绿（e2e 新增：到点 `onFire` 恰一次、推送带 `tag` 与 `sticky`）；测试实例 17864 上用 Playwright 开着页面（有焦点、在最前）把提醒时间设成当前分钟：8 秒内出现「加班申请提醒：…」页内提示，并以 tag `pi-attendance-reminder`、`requireInteraction: true` 调了 `showNotification`。
+
+## D350 内网通页面跟主题走，Mac 风格也覆盖到（用户要求 2026-11-20）
+
+**决定。**
+- `/peer` 是独立文档（主界面弹框里是 iframe），以前 `peer.css` 自己写死一套「午夜」配色，换主题它不跟。现在把全部主题令牌从 `styles.css` 抽到 `web/src/theme-tokens.css`，主界面和 `peer.css` 都 `@import` 它；`peer/main.ts` 启动时调 `bootTheme()`，并监听 `storage` 事件，在别的标签页换主题时当场跟。
+- Mac 的公共底子（材质变量、字体、壁纸、滚动条、焦点环、动效）抽到 `web/src/mac-base.css`，`mac.css` 引它；内网通自己的 Mac 覆写放 `web/src/peer/peer-mac.css`（毛玻璃栏、iMessage 气泡、胶囊输入框、Mac 按钮 / 开关 / 菜单 / 弹窗）。
+- 弹框里 iframe 与页面底在 Mac 下都透明，外层弹框的玻璃透上来，和主界面是同一块窗。
+- `peer.css` 里的硬编码颜色改成主题变量的 `color-mix`；看图器固定深色（照片底不跟主题）。
+
+**为什么抽文件而不是复制。** 复制一份令牌，下次加主题又会漏掉内网通——这次的 bug 就是这么来的。守卫：`node probes/peer-theme.mjs <A> <B> <B peer>`（六套主题各自换底、Mac 挂 `data-ui`、跨标签页实时切换、弹框透明）。
+
+## D351 Mac 风格：用户气泡宽度、选中胶囊里的状态字（用户报 bug 2026-11-20）
+
+**决定。**
+- 用户消息会包进 `.foldable > .fold-body`，Mac 下 `.msg.user` 是 flex 列、子项按内容收缩，气泡的 `max-width: 78%` 就成了「自己宽度的 78%」：短消息被折成「mer / ge」，长气泡贴左、右边空一截。宽度上限挪到 `.foldable`，里面两层贴右、气泡只限 100%。
+- 内网通消息流每次轮询 / 发送都整段重画，Mac 的入场动画挂在 `.bub` 上，发一条消息所有气泡一起弹。改为只给这次新出现的消息打 `.fresh` 再放动画；换会话后第一次画不算新。守卫在 `probes/peer-theme.mjs` 第 4 段（数 `animationstart`）。
+- 钉条里当前会话那颗胶囊是实心强调色底，里面的状态小字（运行中 / 进行中）和 ★ 也是强调色，叠在一起看不见。选中胶囊里一律跟胶囊白字走。
+
+**守卫。** `node probes/mac-chat.mjs`：四套主题下量短气泡单行、气泡贴右、选中胶囊对比度，并扫整页「自己带字、对比度 < 2」的元素（展开 / 收起左栏各一遍）。

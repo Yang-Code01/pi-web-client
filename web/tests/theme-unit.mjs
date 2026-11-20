@@ -22,7 +22,8 @@ import {
 } from "../src/theme.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const CSS = fs.readFileSync(path.join(REPO, "web/src/styles.css"), "utf8");
+// 主题 token 从 styles.css 拆到了 theme-tokens.css（主界面与内网通页面共用，D350）。
+const CSS = fs.readFileSync(path.join(REPO, "web/src/theme-tokens.css"), "utf8");
 
 /** 粗略的相对亮度：只用来分「浅底 / 深底」，不是精确对比度。 */
 function luma(hex) {
@@ -103,7 +104,7 @@ test("终端配色：每套主题都齐 16 色 + 底/字/选区，浅底主题�
   }
 });
 
-test("每套主题在 styles.css 里都有自己那一块（midnight 落在 :root 上，不另写）", () => {
+test("每套主题在 theme-tokens.css 里都有自己那一块（midnight 落在 :root 上，不另写）", () => {
   for (const t of THEMES) {
     if (t.id === DEFAULT_THEME) {
       assert.ok(/:root\s*\{[^}]*--bg:\s*#0b0d10/m.test(CSS), "默认那套应该就是 :root");
