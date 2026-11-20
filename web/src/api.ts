@@ -1,5 +1,5 @@
 import type { ArtifactDiff, ArtifactList, GitCommitDetail, GitDiff, GitDiffFile, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetEditOp, SheetMatches, SheetMeta, SheetStructOp, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
-import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
+import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraRecentItem, JiraSearchMeta, JiraUserOption, RecentKind } from "./jira-shared.ts";
 import type { MailAccountInput, MailAccountView, MailConfigView, MailDetailView, MailFolderView, MailOAuthLoginView, MailOAuthPollView, MailPolicyView, MailSendInput, MailSummary } from "./mail-shared.ts";
 import type { AttendanceCancelResult, AttendanceLeave, AttendanceReminder, AttendanceReminderRule, AttendanceOvertime, AttendanceRecords, AttendanceState, AttendanceSubmitResult, DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 import type { HotdeployRemoveResult, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
@@ -452,6 +452,10 @@ export const api = {
     req<{ accountId: string; displayName: string; email: string; timezone: string; avatarUrl: string }>("/api/jira/me"),
   /** #249：桥固定查「分配给我 + 未解决」；refresh 绕过桥的 60 秒缓存（D203）。 */
   jiraIssues: (refresh = false) => req<{ issues: JiraIssue[] }>(`/api/jira/issues${refresh ? "?refresh=1" : ""}`),
+  jiraRecent: (kind: RecentKind, refresh = false) =>
+    req<{ kind: RecentKind; items: JiraRecentItem[]; skipped: number }>(
+      `/api/jira/recent?kind=${kind}${refresh ? "&refresh=1" : ""}`,
+    ),
   jiraProjects: (refresh = false) => req<{ projects: JiraProject[] }>(`/api/jira/projects${refresh ? "?refresh=1" : ""}`),
   /** #257：结构化条件由页面拼 query，桥端负责校验、拼 JQL 与关注者降级。#407：工单号模糊时回 `fuzzy`（D243）。 */
   jiraSearch: (params: string) =>
