@@ -87,7 +87,7 @@ import { marketDelete, marketInstall, marketList, marketPublish, marketSources, 
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
-import { startReminderLoop } from "./attendance-reminder.ts";
+import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
 import { handleAttendance } from "./attendance.ts";
 import { handleSysmanage } from "./sysmanage.ts";
@@ -557,8 +557,6 @@ async function main(): Promise<void> {
     }
   };
 
-  // 加班提醒：自己的定时器，不跟着 HTTP 请求走 —— 面板关着、没人点也得能提醒。
-  startReminderLoop({ notifier, url: () => `http://127.0.0.1:${cfg.port}/`, log });
 
   log(`${APP_NAME} ${VERSION} — pi ${piVersion} @ ${pi.cli}`);
   // Q-032: 扩展丢了就只剩「模型把表单写成文字」，而那是无声的。启动时把在场情况写进日志。
@@ -2313,6 +2311,21 @@ async function main(): Promise<void> {
     }
   };
 
+  // 加班提醒：自己的定时器，不跟着 HTTP 请求走 —— 面板关着、没人点也得能提醒。
+  // D349：到点同时广播给开着的本机页面（隧道访客看不到考勤，跳过），页面自己再弹一遍系统通知。
+  startReminderLoop({
+    notifier,
+    url: () => `http://127.0.0.1:${cfg.port}/`,
+    log,
+    onFire: (title, body) => {
+      const data = JSON.stringify({ type: "attendance.reminder", title, body, tag: REMINDER_TAG });
+      for (const client of wss.clients) {
+        if (client.readyState !== WebSocket.OPEN || (client as ClientSocket).publicReq) continue;
+        client.send(data);
+      }
+    },
+  });
+
   // D321：文件搜索索引（node:sqlite）。一个进程一份，落盘在 state 目录；页面只发查询，不碰磁盘。
   const fileIndex = new FileIndex({ dbFile: statePath("filesearch.db"), log });
   fileIndex.onChange((status) => broadcast({ type: "filesearch.status", status }));
@@ -2926,7 +2939,7 @@ async function main(): Promise<void> {
             // #28: CLI flags for this session, validated before anything is spawned.
             const launch = cleanLaunch(msg.options);
             const session = await sessions.create(String(msg.cwd || process.cwd()), name, launch);
-            // D327: sessions.create() pins every new session at the end of the strip and broadcasts
+            // D349: sessions.create() pins every new session at the end of the strip and broadcasts
             // the arrangement itself, whichever entry made it; an old page's `pin` flag is ignored.
             (ws as any).watching = session.state.id;
             send(frameFor(ws, { ...sessionFrameOf(session.pagedSnapshot()), trust: await trustFor(session.state.cwd) }));

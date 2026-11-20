@@ -51,6 +51,7 @@ import {
 } from "./attendance-model.ts";
 import { SecretError, readSecret, removeSecret, writeSecret } from "./dpapi.ts";
 import {
+  REMINDER_TAG,
   REMINDER_TITLE,
   normalizeRule,
   readReminder,
@@ -925,7 +926,7 @@ export async function handleAttendance(
         return stop(res, 409, "no_subscription", "还没有设备订阅推送：去 pi 设置 → 通知里打开推送并允许浏览器通知");
       }
       const rec = readReminder();
-      const result = await sink.push(REMINDER_TITLE, reminderBody(rec.rule, false), ctx.pageUrl ?? "/", true);
+      const result = await sink.push(REMINDER_TITLE, reminderBody(rec.rule, false), ctx.pageUrl ?? "/", true, { tag: REMINDER_TAG, sticky: true });
       json(res, 200, { sent: result.sent, failed: result.failed });
       return true;
     }

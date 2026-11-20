@@ -6703,3 +6703,17 @@ Esc 之后 dialog: 0
 - **「已固定」分区**：会话菜单的「置顶」改叫「固定」，固定的会话单独成可折叠的一段，其余在「最近」；折叠状态存 `localStorage`。
 
 **为什么回执只发给作者。** 群里每读一次都广播给全员，消息量是成员数的平方；只告诉写了被读消息的人，量和「回执」本来的用途对得上。代价是第三人看不到别人对别人消息的已读，这和 Teams 一致。
+
+## D349 加班提醒在任何情况下都要看得到：页面开着也提醒（用户要求 2026-11-20）
+
+**问题：** D292 的加班提醒只走 Web Push。用户反馈「打开这个工程页面时加班申请的提醒不生效」—— 那是 D91「页面在前不弹系统通知」的老规矩；D292 虽在 sw.js 里加了 `force`，但推送在页面就在眼前时仍可能被浏览器 / 旧 sw / 系统吞掉，而且页面上什么都看不到。用户要的是「加班申请所有情况都提醒」。
+
+**决定：**
+
+- **到点同时走两条路。** `startReminderLoop` 新增 `onFire(title, body)`；桥在到点时除了推送，还给所有开着的**本机**页面广播 `attendance.reminder` 帧（隧道连接跳过，考勤对公网整页隐身）。
+- **页面自己再弹一遍。** 收到帧后 `App.showAttendanceReminder`：挂一条 10 分钟、点一下才关的页内提示（没给通知权限也看得到），有权限再用 `registration.showNotification` 弹系统通知。
+- **同 tag 不叠两条。** 推送与页面弹的都用 `REMINDER_TAG = "pi-attendance-reminder"`（`Notifier.push` 新增 `extra.tag`，sw.js 认 `payload.tag`），系统只留一条。
+- **不自动消失。** 两条路都带 `requireInteraction`（推送里叫 `sticky`），人点掉为止；只用于加班提醒，D91 的其它通知不变。
+- 去重仍是 D292 的「先落盘 lastFiredDate」：页面广播与推送是同一次触发，不会多发。
+
+**验证：** `npm run test:attendance` 61 + 39 + 14 全绿（e2e 新增：到点 `onFire` 恰一次、推送带 `tag` 与 `sticky`）；测试实例 17864 上用 Playwright 开着页面（有焦点、在最前）把提醒时间设成当前分钟：8 秒内出现「加班申请提醒：…」页内提示，并以 tag `pi-attendance-reminder`、`requireInteraction: true` 调了 `showNotification`。
