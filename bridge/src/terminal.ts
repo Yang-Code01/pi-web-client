@@ -255,6 +255,10 @@ export function openConsole(options: { cwd?: string; file?: string; admin?: bool
  * The command is `explorer /select,` on Windows (folder + selection), `open -R` on macOS (Finder
  * reveal), and `xdg-open <dir>` on Linux, which has no portable "reveal" verb.
  */
+/**
+ * Command to reveal a file in the desktop file manager: `explorer /select,<file>` on Windows,
+ * `open -R <file>` on macOS (Finder reveal), and `xdg-open <parent>` on Linux.
+ */
 export function revealCommand(file: string, platform: NodeJS.Platform = process.platform): { cmd: string; args: string[] } {
   if (platform === "win32") return { cmd: "explorer.exe", args: [`/select,${file}`] };
   if (platform === "darwin") return { cmd: "open", args: ["-R", file] };
@@ -262,8 +266,8 @@ export function revealCommand(file: string, platform: NodeJS.Platform = process.
 }
 
 /**
- * Open the folder holding `file` in the desktop file manager. Fire-and-forget: `explorer.exe` exits
- * with code 1 even on success, so the only honest report is "the command was started".
+ * Open a directory or the folder holding `file` in the desktop file manager. Fire-and-forget:
+ * `explorer.exe` exits with code 1 even on success, so the only honest report is "the command was started".
  */
 export function revealInFileManager(file: string): { ok: boolean; message: string } {
   const abs = path.resolve(file.trim().replace(/^["'`]+|["'`]+$/g, ""));
@@ -273,8 +277,9 @@ export function revealInFileManager(file: string): { ok: boolean; message: strin
   } catch {
     return { ok: false, message: `文件不存在：${abs}` };
   }
-  if (st.isDirectory()) return { ok: false, message: `这是个目录，不是文件：${abs}` };
-  const { cmd, args } = revealCommand(abs);
+  const isDir = st.isDirectory();
+  // 目录直接用系统文件管理器打开本身（explorer <dir> / open <dir> / xdg-open <dir>），文件则定位选中。
+  const { cmd, args } = isDir ? openCommand(abs) : revealCommand(abs);
   try {
     // Not detached: on Windows a DETACHED_PROCESS has no desktop association, and Start-Process-style
     // launchers silently do nothing. explorer hands the window to its own process and exits at once.
@@ -282,7 +287,7 @@ export function revealInFileManager(file: string): { ok: boolean; message: strin
   } catch (err) {
     return { ok: false, message: `打不开文件管理器：${(err as Error).message}` };
   }
-  return { ok: true, message: `已在这台电脑的文件管理器里打开 ${path.dirname(abs)}` };
+  return { ok: true, message: `已在这台电脑的文件管理器里打开 ${isDir ? abs : path.dirname(abs)}` };
 }
 
 /**

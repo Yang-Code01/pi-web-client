@@ -190,12 +190,22 @@ try {
   assert(!overlap.some(Boolean), `行尾动作压到了修改时间（重叠行：${overlap.map((v, i) => (v ? i : -1)).filter((i) => i >= 0).join(",")}）`);
   log("2b 行尾动作：", [...new Set(actLabels)].join(" / "), "| 徽章", kinds.join(","));
 
-  // ---- 2c. 目录行：没有「预览」这回事，两颗动作都改成「打开目录」（用户 2026-11-18）
+  // ---- 2c. 目录行：引用 / 打开目录（应用内文件管理器） / 位置（本机系统文件管理器）
   await page.locator(".fse-input").fill("subfolder");
   await until(async () => (await page.locator(".fse-body .fse-row").count()) === 1, 15000, "一个目录结果");
   const dirActs = await page.$$eval(".fse-row .fse-acts .fse-act", (els) => els.map((e) => e.textContent.trim()));
-  // 目录只有「引用 / 打开目录」两颗：第三颗原先也画成「打开目录」，点了做的事完全一样（用户 2026-11-19）。
-  assert(dirActs.join("/") === "引用/打开目录", `目录行应是 引用/打开目录（实际 ${dirActs.join("/")}）`);
+  assert(dirActs.join("/") === "引用/打开目录/位置", `目录行应是 引用/打开目录/位置（实际 ${dirActs.join("/")}）`);
+  const dirRevealTitle = await page.locator(".fse-row .fse-acts .fse-act").last().getAttribute("title");
+  assert(dirRevealTitle && dirRevealTitle.includes("文件管理器"), `目录「位置」的 title 没写清去哪（${dirRevealTitle}）`);
+  // 目录行三颗按钮也不许压到「修改时间」列。
+  const dirOverlap = await page.$$eval(".fse-row", (rows) =>
+    rows.map((row) => {
+      const time = row.querySelector(".fse-c4").getBoundingClientRect();
+      const acts = row.querySelector(".fse-acts").getBoundingClientRect();
+      return acts.left < time.right - 0.5;
+    }),
+  );
+  assert(!dirOverlap.some(Boolean), "目录行尾动作压到了修改时间");
   // 类型徽章：目录写「文件夹」，文件写后缀（用户 2026-11-19 分不清一坨名字是文件夹还是文件）。
   const dirKind = await page.locator(".fse-row .fse-kind").textContent();
   assert(dirKind.trim() === "文件夹", `目录的类型徽章应是「文件夹」（实际「${dirKind.trim()}」）`);
@@ -232,12 +242,13 @@ try {
   log("3 引用 ok：", composer.trim());
   await page.screenshot({ path: path.join(OUT, "3-quoted.png"), animations: "disabled" });
 
-  // ---- 4. 再开一次，Ctrl+Enter 在预览里打开
+  // ---- 4. 再开一次：上次填的搜索内容应被记住并自动搜出结果；Ctrl+Enter 在预览里打开
   const btn2 = fsearchBtn;
   await btn2.first().click();
   await page.locator(".fse-back .fse-console").waitFor({ timeout: 10000 });
-  await page.locator(".fse-input").fill("quarterly");
-  await until(async () => (await page.locator(".fse-row").count()) >= 1, 15000, "quarterly 结果");
+  const remembered = await page.locator(".fse-input").inputValue();
+  assert(remembered === "quarterly", `重开面板应记住上次搜索词 "quarterly"（实际「${remembered}」）`);
+  await until(async () => (await page.locator(".fse-row", { hasText: "quarterly-report.md" }).count()) === 1, 15000, "记忆词自动搜出结果");
   await page.locator(".fse-input").focus();
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Control+Enter");
@@ -245,9 +256,9 @@ try {
   const viewerCount = await page.locator(".viewer, .image-view").count();
   assert(viewerCount > 0, "Ctrl+Enter 之后预览层应出现");
   await page.screenshot({ path: path.join(OUT, "4-preview.png"), animations: "disabled" });
-  log("4 Ctrl+Enter 预览 ok");
+  log("4 搜索词记忆 + Ctrl+Enter 预览 ok");
 
-  // ---- 5. 目录 → 打开目录：真进到那一层（应用内文件管理器，不弹资源管理器）
+  // ---- 5. 刷新后仍记住搜索词；点清空后再开应为空；目录 → 打开目录：真进到那一层（应用内文件管理器）
   // 预览面板盖住顶栏，点了也没反应 —— 重新加载一次最稳（偏好与索引都在桥端）。
   await page.reload({ waitUntil: "networkidle" });
   await until(async () => (await page.locator(".session-card").count()) >= 1, 15000, "one card");
@@ -255,6 +266,10 @@ try {
   await until(async () => fsearchBtn.isVisible(), 8000, "顶栏 Everything");
   await fsearchBtn.first().click();
   await page.locator(".fse-back .fse-console").waitFor({ timeout: 10000 });
+  const afterReload = await page.locator(".fse-input").inputValue();
+  assert(afterReload === "quarterly", `刷新页面后也应记住搜索词 "quarterly"（实际「${afterReload}」）`);
+  await page.locator(".fse-clear").click();
+  assert((await page.locator(".fse-input").inputValue()) === "", "点 × 应清空搜索词");
   await page.locator(".fse-input").fill("subfolder");
   await until(async () => (await page.locator(".fse-body .fse-row").count()) === 1, 15000, "目录结果");
   await page.locator(".fse-row .fse-act", { hasText: "打开目录" }).first().click();
@@ -262,7 +277,7 @@ try {
   await page.waitForSelector(".viewer", { timeout: 10000 });
   const shown = await page.locator(".viewer").first().innerText();
   assert(shown.includes("subfolder"), `文件管理器应落在 subfolder 这一层（实际：${shown.slice(0, 200)}）`);
-  log("5 目录 → 打开目录 ok");
+  log("5 刷新记忆 + 目录 → 打开目录 ok");
   await page.screenshot({ path: path.join(OUT, "5-dir.png"), animations: "disabled" });
 } catch (err) {
   console.error("FAIL:", err?.message ?? err);
