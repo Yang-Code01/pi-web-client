@@ -2687,6 +2687,8 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
    子树里会被再乘一次：1.25 字号下的 `100vw` 是 1800px（视口 1440px）而 `right: 0` 又把右缘钉在视口上，
    于是面板多出 360px 全往左边溢出 —— 标题 / 后退前进 / 目录名被切掉，只剩右对齐的工具列（D123）。 */
 .viewer.full { left: 0; right: 0; width: auto; border-left: 0; }
+/* 待答的题还在「需要你」栏：浮窗让出那一栏，边看预览边答题（`syncViewerBesideAsk`）。全屏不让。 */
+.viewer.beside-ask:not(.full) { right: var(--ask-right, 0px); max-width: calc(var(--vw1) * 100 - var(--ask-right, 0px)); }
 .viewer.resizing { user-select: none; }
 .viewer.resizing iframe { pointer-events: none; }
 .viewer-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 2; }
