@@ -3616,6 +3616,39 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* #14 queue bar: what pi will take after this step (引导) or after this run (之后) */
 .composer .queue-bar { margin-bottom: 6px; padding: 4px 8px; border: 1px dashed var(--line); border-radius: 8px; background: var(--panel); display: flex; flex-direction: column; gap: 4px; }
 .composer .queue-bar[hidden] { display: none; }
+
+/* D358：输入框上方那一行「重讲」。常驻一行，不动草稿；灰的时候只有药丸退色，文字照常读。 */
+.composer .retell-bar {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 2px 2px 0;
+  min-width: 0;
+}
+.composer .retell-bar[hidden] { display: none; }
+.composer .retell-lead { color: var(--faint); font-size: 12px; }
+.composer .retell-sub { color: var(--faint); font-size: 11px; margin-left: auto; }
+.composer .retell-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: center;
+  padding: 1px 10px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.composer .retell-btn:hover:not(:disabled) { border-color: var(--accent); }
+.composer .retell-btn:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+.composer .retell-btn:disabled { border-color: var(--line); background: transparent; color: var(--faint); cursor: default; }
+.composer .retell-btn .glyph { font-size: 12px; line-height: 1; }
 .composer .queue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--faint); }
 .composer .queue-item { display: flex; gap: 8px; align-items: baseline; font-size: 12px; min-width: 0; }
 .composer .queue-tag { flex: none; font-size: 11px; padding: 0 4px; border-radius: 6px; border: 1px solid var(--line); color: var(--accent); }

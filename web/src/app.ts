@@ -27,6 +27,7 @@ import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
+import { retellState } from "./retell-state.ts";
 import { DEFAULT_MAC_ACCENT } from "./palette.ts";
 import { accentFor, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, themeInfo, type ThemeId, type ThemeInfo } from "./theme.ts";
 import { JiraPanel } from "./jira.ts";
@@ -418,6 +419,9 @@ export class App {
   private textarea: HTMLTextAreaElement | null = null;
   /** 「继续」按钮（D159）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
   private continueBtn: HTMLButtonElement | null = null;
+  /** D358：输入框上方那一行「重讲」。常驻，位置固定，不随回答长短漂移。 */
+  private retellBar: HTMLElement | null = null;
+  private retellBtn: HTMLButtonElement | null = null;
   /** D170: 输入框上方那条「子代理运行中」。`syncBgBar()` 造它，重画后要重新挂。 */
   private bgBar: HTMLElement | null = null;
   /** D170 详情弹层：正在看的那一屏，和它 1.5 秒一次的轮询。关掉就 null。 */
@@ -1988,6 +1992,7 @@ export class App {
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
+        this.syncRetellBar();
         break;
       case "plan":
         if (msg.sessionId !== this.currentId) break;
@@ -2821,6 +2826,7 @@ export class App {
           this.fillHintStatus();
           // 跑着 ↔ 空闲是「继续」按钮亮/灰的翻转点（D159）。
           this.syncContinueButton();
+          this.syncRetellBar();
           // 任务结束才问「要不要把这一轮的错误记下来」（D164）。
           this.syncFailCta();
           if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
@@ -3160,6 +3166,7 @@ export class App {
         this.fillHintStatus();
         // 上面那条 else 走的就是「flags 变了但不用重画」：`starting` / 闲忙都可能在这里翻，「继续」跟着刷。
         this.syncContinueButton();
+        this.syncRetellBar();
         this.syncBgBar();
       }
     }
@@ -12165,6 +12172,8 @@ export class App {
     this.extButton = null;
     this.textarea = null;
     this.continueBtn = null;
+    this.retellBar = null;
+    this.retellBtn = null;
     this.bgBar = null;
     this.closeSkillPalette();
     this.imageBadge = null;
@@ -12304,7 +12313,8 @@ export class App {
     this.extBelow = extBelow;
     const queueBar = el("div", "queue-bar");
     this.queueBar = queueBar;
-    host.append(extAbove, queueBar, row, hint, extBelow);
+    host.append(extAbove, queueBar, this.retellRow(), row, hint, extBelow);
+    this.syncRetellBar();
     // D170: 提示条插在输入框上方（`row` 是锚点），重画后要重新挂回去。
     this.syncBgBar();
     this.fillExt();
@@ -16069,6 +16079,65 @@ export class App {
             ? tr("子代理还在后台跑，pi 会在它回来时接着做")
             : tr("这条会话还没有说过话，没有可继续的");
     btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
+  }
+
+  // ---------------------------------------------------------------- retell (D358)
+  /**
+   * D358：输入框上方那一行「重讲」。`wait-what` 那套「没看懂就让人用简化技术语言重讲一遍」的
+   * 常驻入口：位置固定，不随回答长短漂移；点一下才发，不发就不打扰。
+   */
+  private retellRow(): HTMLElement {
+    const bar = el("div", "retell-bar");
+    const btn = el("button", "retell-btn") as HTMLButtonElement;
+    btn.type = "button";
+    btn.append(el("span", "glyph", "↻"), el("span", "", tr("重讲")));
+    btn.onclick = () => this.retellLastAnswer();
+    bar.append(
+      el("span", "retell-lead", tr("没看懂最后一条回答？")),
+      btn,
+      el("span", "retell-sub", tr("先交代背景，再用简化技术中文说结论")),
+    );
+    this.retellBar = bar;
+    this.retellBtn = btn;
+    return bar;
+  }
+
+  /** 灰 / 亮全部走 `retellState()`（web/src/retell-state.ts），这里只写原因。 */
+  private syncRetellBar(): void {
+    const bar = this.retellBar;
+    const btn = this.retellBtn;
+    if (!bar || !btn) return;
+    const state = retellState(this.session, this.chat.lastAssistantText() !== null);
+    bar.hidden = state === "hidden";
+    btn.disabled = state !== "ready";
+    btn.title =
+      state === "ready"
+        ? tr("把「重讲」发出去：先交代背景，再用简化技术中文说结论。")
+        : this.session?.running
+          ? tr("这一轮还在跑，等它讲完再重讲")
+          : tr("还没有回答可以重讲");
+  }
+
+  /**
+   * 「重讲」：把本地那条指令当成下一条用户消息发出去。不走 `sendPrompt()` —— 它读输入框，
+   * 而这里不能动用户的草稿（正在写的东西比这一下点击重要）。气泡照 `sendPrompt` 的乐观画法，
+   * 桥把 `clientId` 回声回来时页面认领它自己那条（#19）。
+   */
+  private retellLastAnswer(): void {
+    const sessionId = this.currentId;
+    if (!sessionId) return;
+    if (retellState(this.session, this.chat.lastAssistantText() !== null) !== "ready") return;
+    const text = tr("没看懂上面这条回答。用简化技术中文重讲一遍：先交代背景，再说结论和下一步。");
+    const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    const payload = { type: "prompt", sessionId, text, images: [], clientId, behavior: "steer" };
+    this.act(() => {
+      if (this.currentId !== sessionId) return;
+      this.chat.add({ id: clientId, kind: "user", text, images: [], ts: new Date().toISOString() });
+      this.renderChat();
+      this.chat.follow();
+      this.socket.send(payload);
+    });
+    if (navigator.storage?.persist) void navigator.storage.persist();
   }
 
   /**
