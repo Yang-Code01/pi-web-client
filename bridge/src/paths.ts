@@ -167,6 +167,21 @@ export function readJsonChecked<T>(file: string, fallback: T): { ok: boolean; va
   }
 }
 
+/**
+ * 把读不出来的状态文件原地留档，再让调用方从空状态起步。
+ * 重命名失败（目录只读 / 被独占）返回 null —— 调用方应暂停落盘，别拿空状态覆盖它。
+ */
+export function quarantineStateFile(file: string): string | null {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const bak = `${file}.corrupt-${stamp}`;
+  try {
+    fs.renameSync(file, bak);
+    return bak;
+  } catch {
+    return null;
+  }
+}
+
 export function readJson<T>(file: string, fallback: T): T {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8")) as T;

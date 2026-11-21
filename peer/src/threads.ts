@@ -1,5 +1,4 @@
-import fs from "node:fs";
-import { statePath, writeJson } from "./config.ts";
+import { quarantineStateFile, readJsonChecked, statePath, writeJson } from "./config.ts";
 
 /**
  * 会话元数据（D299 / P1）：置顶、静音、草稿、已读水位。
@@ -28,6 +27,8 @@ function safeName(nodeId: string): boolean {
 
 export class Threads {
   private map: Record<string, ThreadMeta> = {};
+  /** 旧文件读不出来且没能留档时，拒绝落盘 —— 不能拿空表覆盖它。 */
+  private blocked = false;
 
   constructor(private readonly log: (msg: string) => void) {
     this.load();
@@ -38,15 +39,27 @@ export class Threads {
   }
 
   private load(): void {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.file(), "utf8")) as unknown;
-      this.map = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, ThreadMeta>) : {};
-    } catch {
+    const res = readJsonChecked<unknown>(this.file(), {});
+    if (!res.ok) {
+      const bak = quarantineStateFile(this.file());
+      this.blocked = !bak;
       this.map = {};
+      this.log(`会话元数据读失败（${res.error ?? "?"}）${bak ? `，已备份到 ${bak}` : "，备份失败，暂停落盘"}`);
+      return;
     }
+    const raw = res.value;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      const bak = quarantineStateFile(this.file());
+      this.blocked = !bak;
+      this.map = {};
+      this.log(`会话元数据内容不是对象${bak ? `，已备份到 ${bak}` : "，备份失败，暂停落盘"}`);
+      return;
+    }
+    this.map = raw as Record<string, ThreadMeta>;
   }
 
   private save(): void {
+    if (this.blocked) return;
     try {
       writeJson(this.file(), this.map);
     } catch (err) {

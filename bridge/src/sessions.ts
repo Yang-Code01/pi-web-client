@@ -12,7 +12,7 @@ import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions
 import { lessonFile } from "./lessons.ts";
 import { DELIVERY_HINT, PLAN_HINT } from "./delivery.ts";
 import { forgetSession } from "./artifacts.ts";
-import { agentDir, ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
+import { agentDir, ensureDir, quarantineStateFile, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, readJsonChecked, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { Workspaces, groupId, normalizePath, type PlaceContext, type WsGroup } from "./workspaces.ts";
@@ -323,13 +323,24 @@ function moveFile(src: string, dst: string): void {
   }
 }
 
+/** 回收站文件读不出来且没能留档时为真：此时任何 writeTrash 都会拿空表覆盖原文件。 */
+let trashBlocked = false;
+
 function readTrash(): TrashItem[] {
-  const raw = readJson<{ items?: unknown }>(statePath("trash.json"), {});
-  const items = Array.isArray(raw.items) ? (raw.items as TrashItem[]) : [];
+  const file = statePath("trash.json");
+  const res = readJsonChecked<{ items?: unknown }>(file, {});
+  if (!res.ok) {
+    const bak = quarantineStateFile(file);
+    trashBlocked = !bak;
+    console.warn(`trash.json 读失败（${res.error ?? "?"}）${bak ? `，已备份到 ${bak}` : "，备份失败，暂停写入回收站"}`);
+    return [];
+  }
+  const items = Array.isArray(res.value.items) ? (res.value.items as TrashItem[]) : [];
   return items.filter((it) => it && typeof it.id === "string" && typeof it.file === "string");
 }
 
 function writeTrash(items: TrashItem[]): void {
+  if (trashBlocked) return;
   writeJson(statePath("trash.json"), { items });
 }
 

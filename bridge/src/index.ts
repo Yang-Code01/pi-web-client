@@ -823,8 +823,11 @@ async function main(): Promise<void> {
     // ---------------------------------------------------------------- peer (#45)
     // 页面要 cookie；本机回环不加 cookie 也放行，方便 e2e 与 `/api/peer` 的健康检查。
     // 隧道过来又没 cookie 的请求一律 401，否则 `/api/peer/add` 就能被公网改配置。
+    //
+    // 这里必须同时看 publicReq：cloudflared 由本进程本地起（tunnel.ts 的 --url 127.0.0.1），
+    // 隧道请求的 remoteAddress 也是回环，只判 loopbackPeer 等于给公网开了后门。
     const loopbackPeer = isLoopbackPeer(req.socket.remoteAddress ?? "");
-    if (url.pathname.startsWith("/api/peer") && !ok && !loopbackPeer) {
+    if (url.pathname.startsWith("/api/peer") && !ok && (publicReq || !loopbackPeer)) {
       return json(res, 401, { error: "unauthorized" });
     }
     if (url.pathname === "/api/peer") {
