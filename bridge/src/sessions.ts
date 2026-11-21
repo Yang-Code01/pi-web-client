@@ -1517,10 +1517,23 @@ export class Session extends EventEmitter {
     const from = Math.max(0, size - CTX_LOG_TAIL_BYTES);
     // 多读窗口前面那一个字节：它是换行符就说明窗口正好落在行首，不用丢行。
     const readStart = from > 0 ? from - 1 : 0;
+    // 只读窗口那一段（`readFileSync` 会把整份 74 MB 都读进来，白占内存也白等盘）。
     let buf: Buffer;
     try {
-      const all = fs.readFileSync(file);
-      buf = all.subarray(readStart);
+      const want = size - readStart;
+      buf = Buffer.allocUnsafe(want);
+      const fd = fs.openSync(file, "r");
+      try {
+        let read = 0;
+        while (read < want) {
+          const n = fs.readSync(fd, buf, read, want - read, readStart + read);
+          if (n <= 0) break;
+          read += n;
+        }
+        if (read < want) buf = buf.subarray(0, read);
+      } finally {
+        fs.closeSync(fd);
+      }
     } catch {
       return cached?.window ?? empty;
     }

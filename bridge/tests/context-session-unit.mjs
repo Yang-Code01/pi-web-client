@@ -273,6 +273,33 @@ test("D359 带 seq 重启的旧日志：帧内 seq 唯一且升序，窗口前�
   }
 });
 
+test("D359 读窗口只做定位读：不许把整份文件 readFileSync 进内存", async () => {
+  const id = "5678abcd-1111-2222-3333-444455556666";
+  const { file, restore } = ctxlogFixture(id);
+  try {
+    const pad = "w".repeat(200);
+    const rows = [];
+    for (let i = 1; i <= 40_000; i++) rows.push(JSON.stringify({ v: 3, seq: i, kind: "activity", label: `r${i} ${pad}` }));
+    fs.writeFileSync(file, `${rows.join("\n")}\n`);
+    assert.ok(fs.statSync(file).size > 8 * 1024 * 1024, "夹具要比窗口大几倍");
+    const { session } = makeSession(id);
+    const hits = [];
+    const orig = fs.readFileSync;
+    fs.readFileSync = function (target, ...rest) {
+      if (target === file) hits.push(String(target));
+      return orig.call(this, target, ...rest);
+    };
+    try {
+      session.readContextLog();
+    } finally {
+      fs.readFileSync = orig;
+    }
+    assert.deepEqual(hits, [], "8 MB 的文件只该定位读 2 MB 那段，不该整份读进来");
+  } finally {
+    restore();
+  }
+});
+
 test("D359 读不到文件时保持面板不动（不发空的 full 帧）", async () => {
   const id = "9999aaaa-1111-2222-3333-444455556666";
   const { file, restore } = ctxlogFixture(id);
