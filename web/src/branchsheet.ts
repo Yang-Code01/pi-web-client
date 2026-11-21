@@ -159,6 +159,10 @@ export class BranchSheet {
     row.append(all, ai);
     const copy = btn(tr("复制分支名"));
     copy.onclick = () => void this.copy(copy);
+    // 复制路径也收进标题栏：路径 chip 单击恒为开窗，不再兼复制。
+    const copyPath = btn(tr("复制路径"));
+    copyPath.dataset.copyPath = "1";
+    copyPath.onclick = () => void this.copyText(this.data?.repo || this.dir, copyPath, tr("复制路径"));
     const close = el("button", "branch-x", "✕") as HTMLButtonElement;
     close.type = "button";
     close.setAttribute("aria-label", tr("关闭"));
@@ -173,7 +177,10 @@ export class BranchSheet {
       close.hidden = true;
       row.append(this.sideToggle);
     }
-    tools.append(row, copy, close);
+    tools.append(row, copy);
+    // embedded 时外窗（目录与仓库）已有复制路径，别重复一颗。
+    if (!this.embedded) tools.append(copyPath);
+    tools.append(close);
     head.append(title, tools);
 
     this.cmpEl = el("div", "branch-cmp");

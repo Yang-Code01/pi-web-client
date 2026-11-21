@@ -7375,3 +7375,21 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - 未合并的 testbook 分支（`feat/testbook-video` / PR #421、`feat/testbook-catalog`）随之作废；要再合会撞 delete/modify 冲突，需先把用例重写成 e2e 技能的形式。
 - 截图 + xlsx 这种「一 case 一 sheet、能拷走的验收表」没有替代品；真需要时按 e2e 技能的 `finalize` 输出改一份，而不是恢复旧流水线。
 - 历史产物 `.scratch/testbook/`（workclock / translate-sync 两本书）仍在主检出里，不进版本库，也没被这次删除动到。
+## D382 目录与分支合成一颗入口：`仓库名/子目录 ⎇ •`，单击恒开窗（用户「a 情况下目录和分支都显示太占空间；b 情况没有分支表示，用户也不知道能点」2026-11-22）
+
+**问题。** 状态行原来有两套形态：cwd 在 git 仓库里时是「路径 chip + `⎇ main · 3`」两颗并排，占掉输入框下方大半行；cwd 不是仓库、但下面有 git 子目录时只剩一颗路径 chip，没有任何「可以点」或「这里有分支」的标记。窄屏还把路径 chip 整个藏掉（D263 留下的入口不可达）。
+
+**决定。** A/B 统一成一颗扁平入口（样张 E）：
+
+- 仓库内：`仓库名/相对子目录` + `⎇`，未提交时再一个 5px 圆点；**不写分支名、不写 dirty 数**。cwd 就是仓库根时只写仓库名。
+- 非仓库：路径最后一段 + `›`，不探测子仓库。
+- 单击恒为开窗：仓库内开「分支操作工作台」，非仓库开「目录与仓库」；不再兼复制。复制路径搬进两扇窗的标题栏（BranchSheet 新增一颗，ReposSheet 原本就有）。
+- 完整路径、分支名、dirty 数、detached / empty 说明、Enter/Shift+Enter/粘贴截图提示全部放进 chip 的 `title`。
+- 运行中只留这一颗：原尾部扁平 `⎇` 删除，忙态行 = chip + 转圈 + 活动 + 计时 + 中断，窄了先截断活动文本。
+- 窄屏也显示入口，只把 `.cwd-sub` 藏掉（修 D263 的「入口不可达」）；桌面与窄屏都不再出现第二颗分支 chip。
+
+**为什么。** 一颗入口同时回答「现在在哪」与「这里有没有 git」，A/B 两种目录形状看起来一致；分支名是长尾信息，悬停和窗里都有，不值得常驻一整段。若只留目录 + `⎇`（样张更窄），用户仍然不知道当前分支；若保留完整分支名，空间问题原样复发。
+
+**代价 / 可改。** 同级多分支（`feat/a` 与 `feat/b`）在行内都只显示 `feat` 首段，要靠悬停或开窗分辨；窄屏藏掉子目录后同名仓库会重名；非仓库只显示末段，跨目录同名也要靠悬停。BranchSheet 标题栏多一颗按钮，窄版 embedded 时不重复加。**没做**：伞形目录的懒探测、点击 chip 直接切分支、分支名首段做成可配置。
+
+**验证。** `probes/round15-git.mjs`：仓库内 chip 不含分支名/数字、title 含路径/分支/脏数/快捷键，点击开 BranchSheet 且标题栏有「复制分支名」「复制路径」，忙态仍只有一颗 chip 且排第一；非仓库 `not-a-repo ›` 点击开 ReposSheet。`probes/round21-cwd-line.mjs`：桌面 `alpha/web`、收起左栏仍在、点开窗复制路径、非仓库 `beta ›`、760px 入口仍在且 `.cwd-sub` 为 `display:none`、回到桌面恢复。两条探针均 ALL OK；`npm --prefix web run typecheck` 通过；真机截图见 `.scratch/cwd-branch-chip/ui-*.png`。D235 / D237 的「按 cwd 分叉两扇窗」不变；D244 的「左栏收起也显示」保留，D263 的「窄屏藏入口」被本条推翻。
