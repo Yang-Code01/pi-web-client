@@ -1852,28 +1852,46 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 /* ---------------------------------------------------------------- model chip (composer readout) */
 /* One pill in the composer's hint row: model · context used/window · output rate · thinking level.
    It is a normal flow child of the composer, so it never floats over the transcript. */
+/* 组合区的模型 chip：模型名 · 思考档位（带一个点）· 上下文条 + 用量 · 速率（只在流式时露）· ▾。
+   空闲时不再占一格「– tok/s」：那不是信息，是噪声。 */
 .model-chip {
   flex: none; min-width: 0; max-width: 100%; display: inline-flex; align-items: center;
-  padding: 0; overflow: hidden;
+  height: 22px; padding: 0 5px 0 9px;
   border-radius: 999px; border: 1px solid var(--line);
-  background: var(--panel); color: var(--text); font: 11px/1 var(--mono); cursor: pointer;
+  background: var(--panel); color: var(--text); font: 10.5px/1 var(--mono); cursor: pointer;
 }
-.model-chip > span:not([hidden]) { padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.model-chip > span[hidden] { display: none; }
-.model-chip > span:not([hidden]) + span:not([hidden]) { border-left: 1px solid var(--line); }
-.model-chip .chip-model { color: var(--text); max-width: calc(var(--vw1) * 22); }
-.model-chip .chip-ctx { color: var(--dim); }
-.model-chip .chip-ctx.hot { color: var(--warn); }
-.model-chip .chip-rate { color: var(--faint); }
-.model-chip .chip-rate.live { color: var(--accent); }
-.model-chip .chip-level { color: var(--dim); }
-.model-chip .chip-level.off { color: var(--faint); text-decoration: line-through; text-decoration-thickness: 1px; }
 .model-chip:hover { border-color: var(--line-strong); background: var(--panel-2); }
 .model-chip[hidden] { display: none; }
+.model-chip > span { white-space: nowrap; }
+.model-chip > span[hidden] { display: none; }
+.model-chip .chip-model { flex: 0 1 auto; min-width: 3.5em; color: var(--text); font-weight: 500; max-width: calc(var(--vw1) * 20); overflow: hidden; text-overflow: ellipsis; }
+.model-chip .chip-level { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; color: var(--accent); font-weight: 500; }
+.model-chip .chip-level::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.model-chip .chip-level.off { color: var(--faint); }
+.model-chip .chip-level.off::before { background: transparent; box-shadow: inset 0 0 0 1px currentColor; }
+.model-chip .chip-ctx { display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; padding-left: 7px; border-left: 1px solid var(--line); color: var(--dim); }
+.model-chip .chip-ctx.hot { color: var(--warn); }
+.model-chip .chip-meter { flex: none; width: 26px; height: 4px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.model-chip .chip-meter > i { display: block; height: 100%; border-radius: inherit; background: currentColor; }
+.model-chip .chip-rate { margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--line); color: var(--faint); }
+.model-chip .chip-rate.live { color: var(--accent); }
+/* 倍率（`x0.11`）跟目录里同一个口径，没有就不占位。 */
+.model-chip .chip-mult { margin-left: 8px; color: var(--faint); }
+.model-chip .chip-caret { margin-left: 4px; color: var(--faint); font-size: 9px; }
+/* 这一行本来就挤（技能 / 上下文 / 插件 / 文件 / 释放会话）：窄了只留「模型 · 档位 · ▾」，
+   上下文数字让位给同一行的「上下文」按钮，别把「释放会话」挤到第二行。 */
+.hint { container-type: inline-size; }
+@container (max-width: 620px) {
+  .model-chip .chip-ctx { display: none; }
+}
+/* 倍率（x0.11）比上下文数字更晚出场：1600 宽的工具行只有 652px，ctx 加上倍率就要换行，
+   「上下文」按钮本来就并排在这儿，数字让位、倍率也让位，宽到 700px 以上才两个都给。 */
+@container (max-width: 700px) {
+  .model-chip .chip-mult { display: none; }
+}
 @media (max-width: 620px) {
-  .model-chip { font-size: 11px; }
-  .model-chip > span:not([hidden]) { padding: 4px 4px; }
-  .model-chip .chip-model { max-width: calc(var(--vw1) * 34); }
+  .model-chip .chip-model { max-width: calc(var(--vw1) * 30); }
+  .model-chip .chip-meter { width: 18px; }
 }
 
 .sheet-back {
@@ -2846,12 +2864,71 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .dir-mkrow .ns-input { padding: 8px 8px; }
 .dir-mkrow .dir-mkerr { padding-top: 4px; min-height: 0; }
 
-/* ---------------------------------------------------------------- model sheet: draft + confirm */
-.sheet.model-sheet { grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
-.model-sheet .sheet-foot { align-items: center; gap: 8px; padding: 8px 16px 16px; }
-.model-sheet .sheet-foot-hint { flex: 1; min-width: 0; font-size: 12px; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-sheet .sheet-foot .btn.primary { min-width: 76px; }
-.model-row .m-cur { margin-left: 8px; padding: 1px 4px; border-radius: 6px; border: 1px solid var(--line); color: var(--faint); font: 11px/1.4 var(--sans); font-weight: 400; vertical-align: 1px; }
+/* ---------------------------------------------------------------- model sheet: 设置控制台外壳 + 草稿确认 */
+/* D373：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。 */
+.st-console.model-sheet { width: min(1000px, 100%); height: min(760px, 100%); }
+/* 列表自己滚，档位条钉在滚动区外：模型一大堆时，选完不用滚回顶部才能换档。 */
+.st-console.model-sheet .st-pane { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.model-sheet .pm-body { flex: 1 1 auto; min-height: 0; padding: 18px 22px 22px; overflow-y: auto; scrollbar-gutter: stable; }
+.model-sheet .pm-lvbar { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 22px; border-top: 1px solid var(--line-soft); background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
+.model-sheet .pm-lvbar[hidden] { display: none; }
+.model-sheet .pm-lvbar__label { flex: none; font: 600 10.5px/1 var(--sans); letter-spacing: 0.1em; color: var(--faint); }
+.model-sheet .pm-lvbar__model { flex: none; max-width: 40%; font: 500 12px/1 var(--sans); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-sheet .pm-lvbar__model.draft { color: var(--accent); }
+.model-sheet .pm-lvbar .st-seg { flex: 0 1 auto; margin-left: auto; flex-wrap: nowrap; }
+.model-sheet .st-cards { margin-bottom: 6px; }
+.model-sheet .settings-group:first-child { margin-top: 10px; }
+/* 一行模型：名字 + 使用中/待切换 + id；第二行档位；右侧窗口。整行是按钮，所以把 .settings-row 的网格改掉。 */
+.st-console.model-sheet .settings-row.pm-row {
+  grid-template-columns: minmax(0, 1fr) 52px;
+  grid-template-rows: auto auto;
+  gap: 2px 10px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+}
+.st-console.model-sheet .settings-panel > .pm-row:first-child { border-top: 0; }
+.st-console.model-sheet .pm-row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.st-console.model-sheet .pm-row.on { background: color-mix(in srgb, var(--accent) 11%, var(--panel)); }
+.st-console.model-sheet .pm-row.on .settings-name::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: 1px; }
+.st-console.model-sheet .pm-row > .settings-label { grid-column: 1; grid-row: 1; display: flex; align-items: baseline; gap: 7px; min-width: 0; overflow: hidden; }
+.st-console.model-sheet .pm-row > .settings-hint { grid-column: 1; grid-row: 2; font-size: 10.5px; }
+.st-console.model-sheet .pm-row > .pm-win { grid-column: 2; grid-row: 1 / span 2; justify-self: end; font: 10.5px/1 var(--mono); color: var(--faint); }
+/* 「使用中 / 待切换」小胶囊 */
+.model-sheet .pm-who { flex: none; height: 15px; padding: 0 5px; display: inline-flex; align-items: center; border-radius: 999px; border: 1px solid var(--line); color: var(--faint); font: 500 9.5px/1 var(--sans); letter-spacing: 0; }
+.model-sheet .pm-who.draft { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-bg); color: var(--accent); }
+/* 只读值（本会话一页） */
+.model-sheet .settings-row > .pm-kv { grid-column: 2 / span 2; grid-row: 1; justify-self: end; min-width: 0; max-width: calc(var(--vw1) * 34); font: 10.5px/1.5 var(--mono); color: var(--dim); text-align: right; overflow-wrap: anywhere; }
+/* 搜索 */
+/* 搜索框坐在滚动区外面：自己带边距，跟 .pm-body 的 22px 对齐。 */
+.model-sheet .pm-search { flex: none; padding: 10px 22px 0; }
+.model-sheet .pm-search[hidden] { display: none; }
+.model-sheet .pm-search__input { width: 100%; height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); font: inherit; }
+.model-sheet .pm-search__input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.model-sheet .pm-empty { padding: 22px 14px; border-radius: 10px; background: var(--panel-2); color: var(--faint); font-size: 11.5px; text-align: center; }
+/* 来源组头：跟 .settings-group 同样的字号与间距，但整行可点、带个折叠箭头。 */
+.model-sheet .pm-group { display: flex; align-items: center; gap: 6px; width: 100%; margin: 10px 0 4px; padding: 2px; border: 0; background: none; color: var(--faint); font: 600 10.5px/1.2 var(--sans); letter-spacing: 0.08em; text-align: left; cursor: pointer; }
+.model-sheet .pm-group:hover .pm-group__label { color: var(--dim); }
+.model-sheet .pm-group__chev { flex: none; width: 11px; font-size: 11px; line-height: 1; letter-spacing: 0; color: var(--faint); transform-origin: 50% 50%; transition: transform var(--dur-1) var(--ease); }
+.model-sheet .pm-group.folded .pm-group__chev { transform: rotate(-90deg); }
+.model-sheet .pm-group__label { min-width: 0; color: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-sheet .pm-group__meta { flex: none; margin-left: auto; font-weight: 500; letter-spacing: 0; color: var(--faint); }
+/* 底栏：未改动时只有提示，改了才长出取消 + 确认 */
+.model-sheet .pm-foot-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.model-sheet .pm-foot-actions { display: flex; align-items: center; gap: 8px; }
+.model-sheet .pm-foot-actions[hidden] { display: none; }
+.model-sheet .pm-foot-actions .btn { height: 26px; padding: 0 12px; font-size: 12px; }
+.model-sheet .st-foot__hint { font-size: 11px; color: var(--faint); }
+.model-sheet .st-badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: color-mix(in srgb, var(--warn) 12%, transparent); }
 
 /* ---------------------------------------------------------------- continue (D159) */
 /* 权限按钮 44px 贴底，输入框默认两行 72.5px —— 它上方那 28.5px 本来就是空的。
@@ -3688,7 +3765,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .msg.bash .bash-foot.bad { color: var(--danger); }
 
 /* #15 会话 section of the model sheet (a grid item: min-width 0, or the long path widens the sheet) */
-.model-sheet .sheet-top { min-width: 0; max-height: calc(var(--vh1) * 46); overflow-y: auto; }
+.model-sheet .session-info { min-width: 0; }
 .session-info { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 .session-info .info-grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 12px; margin: 4px 0 8px; }
 .session-info .info-k { color: var(--faint); }

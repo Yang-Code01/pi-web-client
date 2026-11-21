@@ -358,6 +358,8 @@ html[data-ui="mac"] .st-nav__item.on:hover {
   box-shadow: none;
 }
 html[data-ui="mac"] .st-nav__item.on * { color: inherit; }
+/* 计数胶囊在选中项里不能跟着变白：它的底是浅色 --panel-3，白字等于什么都看不见（设置页与模型弹窗都踩到）。 */
+html[data-ui="mac"] .st-nav__item.on .st-nav__count { color: var(--accent); background: color-mix(in srgb, #fff 72%, transparent); }
 html[data-ui="mac"] .st-foot { border-top: 0.5px solid var(--mac-glass-line); }
 /* 设置项：一组组白色圆角卡片（系统设置的分组样式）。 */
 html[data-ui="mac"] .settings-panel {

@@ -59,15 +59,22 @@ export function groupModels(
 ): { pinned: ModelInfo | null; recent: ModelInfo[]; groups: ModelGroup[] } {
   const pinned =
     (current?.id && models.find((m) => m.id === current.id && (!current.provider || m.provider === current.provider))) || null;
+  // 最近使用的也照样留在各自的来源组里：这一组是快捷入口，不是搬家。
+  return { pinned, recent: recentModels(models, pinned), groups: groupByProvider(models.filter((m) => m !== pinned)) };
+}
+
+/**
+ * The catalog split by provider, in first-seen order, models in catalog order. No pinning and
+ * no recents — 「全部模型」 wants the plain shape, and `groupModels` builds on this too.
+ */
+export function groupByProvider(models: ModelInfo[]): ModelGroup[] {
   const groups = new Map<string, ModelInfo[]>();
   for (const m of models) {
-    if (m === pinned) continue;
     const list = groups.get(m.provider);
     if (list) list.push(m);
     else groups.set(m.provider, [m]);
   }
-  // 最近使用的也照样留在各自的来源组里：这一组是快捷入口，不是搬家。
-  return { pinned, recent: recentModels(models, pinned), groups: [...groups].map(([provider, list]) => ({ provider, models: list })) };
+  return [...groups].map(([provider, list]) => ({ provider, models: list }));
 }
 
 /** Fills a `<select>` with the grouped catalog: pinned first, then recent (when `recentLabel` is given), then one `<optgroup>` per provider. */
@@ -112,6 +119,23 @@ function openSet(): Set<string> {
   }
 }
 
+/** Whether the provider group `key` was left open by this browser (fold state is shared by all pickers). */
+export function isModelGroupOpen(key: string): boolean {
+  return openSet().has(key);
+}
+
+/** Remember whether `key` is open; private mode just means the choice won't stick. */
+export function setModelGroupOpen(key: string, open: boolean): void {
+  const set = openSet();
+  if (open) set.add(key);
+  else set.delete(key);
+  try {
+    localStorage.setItem(OPEN_KEY, JSON.stringify([...set]));
+  } catch {
+    /* private mode: fold state won't stick */
+  }
+}
+
 /**
  * One foldable provider section: a clickable head and a body to put the rows in. Groups start
  * folded (a long catalog is the reason for grouping); which ones the user opened is remembered
@@ -136,19 +160,12 @@ export function modelGroupSection(
     head.textContent = `${fixed ? "" : open ? "▾ " : "▸ "}${title} · ${count}`;
     head.setAttribute("aria-expanded", String(open));
   };
-  paint(fixed || openSet().has(key));
+  paint(fixed || isModelGroupOpen(key));
   if (!fixed) {
     head.onclick = (ev) => {
       ev.stopPropagation();
-      const set = openSet();
-      const open = !set.has(key);
-      if (open) set.add(key);
-      else set.delete(key);
-      try {
-        localStorage.setItem(OPEN_KEY, JSON.stringify([...set]));
-      } catch {
-        /* private mode: fold state just won't stick */
-      }
+      const open = !isModelGroupOpen(key);
+      setModelGroupOpen(key, open);
       paint(open);
     };
   }
