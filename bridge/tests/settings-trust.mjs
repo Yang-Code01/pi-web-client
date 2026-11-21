@@ -168,6 +168,11 @@ try {
   const argvFor = (id) => piLog().filter((e) => e.t === "argv" && e.argv.includes("--mode") && (e.argv.includes(id) || e.argv.some((a) => a.includes(id))));
   await until(() => argvFor(sid2).length >= 1, 5000, "argv ask");
   check(argvFor(sid2)[0].argv.includes("--approve"), `undecided ask project starts pi with --approve (${JSON.stringify(argvFor(sid2)[0].argv)})`);
+  const picliMark = seen.length;
+  send({ type: "picli", op: "mcp.list", cwd: PROJECT2, reqId: "auto-approve" });
+  await waitFor((m) => m.type === "picli.done" && m.reqId === "auto-approve", 8000, "picli done", picliMark);
+  const probe = piLog().filter((e) => e.t === "argv" && e.argv.includes("mcp")).pop();
+  check(probe?.argv.includes("--approve") === true, `project-scope pi mcp list gets --approve too (${JSON.stringify(probe?.argv)})`);
 
   log("B2. global never wins: no --approve, trust snapshot false");
   await ask({ type: "settings.set", scope: "global", patch: { defaultProjectTrust: "never" } }, (m) => m.type === "settings" && m.saved, "global never");

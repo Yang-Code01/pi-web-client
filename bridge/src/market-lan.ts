@@ -637,7 +637,7 @@ export async function marketInstall(
     } else if (item.type === "extension" && item.delivery === "source-ref") {
       if (!item.source) return { ok: false, error: "这个扩展缺来源地址" };
       say(`正在运行 pi install ${item.source}（需要联网）…`);
-      const run = runPiCli(pi.cli, { op: "pkg.install", source: item.source, local: scope === "project", cwd: cwd ?? undefined }, () => {});
+      const run = await runPiCli(pi.cli, { op: "pkg.install", source: item.source, local: scope === "project", cwd: cwd ?? undefined }, () => {});
       const out = await run.done;
       if (out.code !== 0) return { ok: false, error: `pi install 失败：${String(out.output ?? "").slice(-400)}` };
     } else if (item.type === "extension") {
