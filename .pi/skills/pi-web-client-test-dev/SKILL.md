@@ -40,7 +40,7 @@ node <skill>/bin/env.mjs ports [--peers 2]
 - 端口与实例登记在 `~/.pi/agent/state/pi-web-test-dev/instances.json`，不同 worktree 的实例都在同一张表里，所以多开不需要人工指定端口。
 - 缺 `dist` 会自动装依赖并 `npm run build`；已有构建默认复用（输出里写明「复用已有构建 @HEAD」），要重建加 `--build`；工作区脏会提示。
 - 启动末尾会**真的 POST `/api/login` 试口令**，打印 `登录自检 HTTP 200（口令 test 生效）`——不是只看 pid。
-- **tab 标题是「测试 <实例名>」**：`PI_WEB_WINDOW_TITLE` 交给桥，桥写进页面 `<title>` 和 `window.__piWindowTitle`（D358）。所以同一份实例谁打开都是这个标题，进会话后变成「测试 <id> · 会话名」。
+- **tab 标题是「测试 <实例名>」**：桥按 `PI_WEB_WINDOW_TITLE` 改写主页面标题（D358；`/peer` 页的例外与细节见下面「窗口」一节）。
 - **启动完自动开一个新窗口**（下面「窗口」一节）；不想开加 `--no-open`。
 
 ## 启动后自检
@@ -54,20 +54,18 @@ curl -s -m 3 http://127.0.0.1:<peer>/status                             # 期望
 
 失败先看 `~/.pi/agent/state/pi-web-test-dev/<id>/bridge.err.log`（peer 的日志在同目录 `peer-*.out.log`）。
 
-## 交给用户看
-
 ## 窗口：脚本自己开，tab 是「测试 <实例名>」
 
-`start` 成功后会**自己开一个新的浏览器窗口**（Windows `msedge --new-window`，没 Edge 就交回默认浏览器；macOS `open -n`；Linux `xdg-open`），并且等 Edge 的窗口标题真的多出一条才报「新开了一个：测试 t1」。退出码什么都证明不了 —— Edge 常驻时丢 URL 只会在后台开标签，用户看到的还是「没打开」。
+`start` 成功后会**自己开一个新的浏览器窗口**（Windows 先按 App Paths / 标准安装路径找到 `msedge.exe` 再 `--new-window`；macOS 先试 Edge 再回退 `open`；Linux `xdg-open`），并且等 Edge 的窗口标题里真的多出一条**等于「测试 <id>」**的才报「新开了一个：测试 t1」—— 只多出一条别的标题不算成功。退出码什么都证明不了：Edge 常驻时丢 URL 只会在后台开标签，用户看到的还是「没打开」。
 
-- **标题从哪来**：`PI_WEB_WINDOW_TITLE=测试 <实例名>` 交给桥，桥把 `index.html` 的 `<title>` 和 `window.__piWindowTitle` 一起换掉（D358）。所以同一份实例不管谁打开、哪个窗口，tab 上都是「测试 <id>」；进了某个会话就是「测试 <id> · 会话名」。
+- **标题从哪来**：`PI_WEB_WINDOW_TITLE=测试 <实例名>` 交给桥，桥把 `index.html` 的 `<title>` 和 `window.__piWindowTitle` 一起换掉（D358）。打开主页面就是「测试 <id>」，进了某个会话变成「测试 <id> · 会话名」。两个例外：`/peer`（内网通）页固定是「内网通 · pi」；这段前缀是**实例数据**，不跟界面语言切换。
 - **不想要窗口**：加 `--no-open`，只打印地址（CI、或用户就想贴链接时）。
-- **没开成**（输出 `没等到新窗口`）：把地址发出来让用户自己点，**别反复重开**。手动再开一次：
+- **没开成**（输出 `没等到标题是「测试 <id>」的新窗口` 或 `没找到 Edge，交给默认浏览器了`）：把地址发出来让用户自己点，**别反复重开**。手动再开一次：
   ```bash
   powershell -NoProfile -Command "Start-Process msedge -ArgumentList '--new-window','http://127.0.0.1:<bridge>/'"
   ```
   页面首次打开要输口令 `test`。
-- **不要再问「要现在打开吗」**：窗口已经开着、标题也核过了；只有 `--no-open` 或开失败时才问。这条优先于 AGENTS.md 里「产物交付先问一句」—— 这里的产物是给人点的测试环境，开窗本身就是本技能的一部分（D358）。
+- **开完别再问「要现在打开吗」**：窗口已经开着、标题也核过了；只有 `--no-open` 或没开成时才把地址发出来让用户自己点。开窗是本技能交付的一部分（D358），不是顺手替用户开个产物；仓库里没有相反的规定。
 
 ## 多开
 

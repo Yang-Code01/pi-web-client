@@ -6866,17 +6866,17 @@ Esc 之后 dialog: 0
 
 **症状。** 正式的 7864 和一两份测试实例同时开着，浏览器上一排 tab 全叫「pi」，分不出哪个是刚起来的那份；测试脚本起完只打印一个地址，窗口还得人自己开、开完也认不出来。
 
-**根因。** 正式和测试跑的是同一份前端、同一份 HTML（`web/index.html:11` 的 `<title>pi</title>`），`document.title` 全仓只有 `fillExt()` 里一处设置（`web/src/app.ts:16004`），算出来只可能是「会话标题 · pi」或「pi」。实例名只活在脚本的标准输出和 `~/.pi/agent/state/pi-web-test-dev/instances.json` 里，从来没进过页面。
+**根因。** 正式和测试跑的是同一份前端、同一份 HTML（`web/index.html:9` 的 `<title>pi</title>`），`document.title` 全仓只有 `fillExt()` 里一处设置（`web/src/app.ts:16004`），算出来只可能是「会话标题 · pi」或「pi」。实例名只活在脚本的标准输出和 `~/.pi/agent/state/pi-web-test-dev/instances.json` 里，从来没进过页面。
 
 **决定。** 把实例名交给**桥**，由桥写进它送出的页面 —— 不是 URL 参数，也不是前端写死。
 
 - 测试脚本起桥时带 `PI_WEB_WINDOW_TITLE=测试 <实例名>`（`bin/env.mjs:324`），`--name` 缺省时是 `t<N>`，标题也随之变成「测试 t2」。
 - 桥端 `serveStatic()` 只在「变量非空 + 送的是 index.html」时改正文（`bridge/src/index.ts:261`）：`injectWindowTitle()`（`bridge/src/window-title.ts`）把 `<title>` 换成实例名、并往 `</head>` 前挂 `window.__piWindowTitle`。首帧 tab 就对，不靠 JS。
 - 前端把标题算法收成 `documentTitle()`（`web/src/window-title.ts`）：前缀顶在最前，会话标题接在后面 —— 测试实例里进某个会话就是「测试 t1 · 会话名」；没有前缀时与原来一模一样。
-- 脚本启动成功后**自己开一个窗口**（`openWindow()`，`bin/env.mjs:237`）：Windows 走 `msedge --new-window`、没 Edge 交回默认浏览器，macOS `open -n`，Linux `xdg-open`；开完等 Edge 的窗口标题真的多出一条才报「新开了一个：测试 t1」。退出码不算数 —— Edge 常驻时丢 URL 只会在后台开标签，用户看到的还是「没打开」。`--no-open` 只打印地址。
+- 脚本启动成功后**自己开一个窗口**（`openWindow()`，`bin/env.mjs:237`）：Windows 先按 App Paths / `Program Files` 标准路径找到 `msedge.exe` 再 `--new-window`（`Get-Command msedge` 不可靠，Edge 不在 PATH 上），macOS 先试 Edge 再回退 `open`，Linux `xdg-open`；开完等 Edge 的窗口标题里多出一条**等于「测试 <id>」**的才报「新开了一个：测试 t1」。退出码不算数 —— Edge 常驻时丢 URL 只会在后台开标签，用户看到的还是「没打开」。`--no-open` 只打印地址。
 
 为什么不走 `?tab=测试 t1` 那种 query 参数：标题该是**实例**的属性，不是某一次打开方式的属性。同一份实例谁打开、哪个窗口都该叫「测试 t1」；query 只对带参数的那一次有效，还会一路跟着 URL 被复制出去。
 
-**代价。** 正式实例一个字节都不变（`WINDOW_TITLE` 为空时仍走原来的流式发送，不读全文）。测试实例里 `document.title` 的最前面是实例名，会话名被挤到第二段；浏览器通知 / 书签这些跟着标题走的入口也会变 —— 这正是想要的。
+**代价。** 正式实例一个字节都不变（`WINDOW_TITLE` 为空时仍走原来的流式发送，不读全文）。测试实例里 `document.title` 的最前面是实例名，会话名被挤到第二段；浏览器通知 / 书签这些跟着标题走的入口也会变 —— 这正是想要的。前缀是**实例数据**（`windowTitleFor()` 里的「测试」写在脚本里），不跟界面语言切换：静态 `<title>` 得在 JS 之前就正确，桥那边也没有用户语言可查；`/peer`（内网通）页固定「内网通 · pi」，不跟实例名走。
 
-**守卫。** `npm run test:title`：`bridge/tests/window-title-unit.mjs`（无标题时页面原样、`<title>` 与注入脚本的位置、标题里的 `</script>` / `<` 不把页面写坏、没有 `</head>` 的畸形页面不把脚本塞进 body）与 `web/tests/window-title-unit.mjs`（前缀 × 会话标题四种组合，正式实例必须还是「会话 · pi」/「pi」）。真机：`env.mjs start` 的输出里出现「新开了一个：测试 t1」才算开成，标题核对不上就报「没等到新窗口」。
+**守卫。** `npm run test:window-title`：`bridge/tests/window-title-unit.mjs`（无标题时页面原样、`<title>` 与注入脚本的位置、标题里的 `</script>` / `<` 不把页面写坏、没有 `</head>` 的畸形页面补 `<head>` 且不把脚本塞到 `<!doctype>` 之前）与 `web/tests/window-title-unit.mjs`（前缀 × 会话标题四种组合，正式实例必须还是「会话 · pi」/「pi」）。真机：`env.mjs start` 的输出里出现「新开了一个：测试 t1」才算开成（新增标题必须**等于**「测试 <id>」，别的新窗口不算），找不到 Edge 或标题一直对不上就明说，不要报成功。

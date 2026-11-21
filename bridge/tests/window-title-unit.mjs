@@ -38,9 +38,14 @@ test("标题里的尖括号与引号不会把标签 / 脚本提前闭合", () =>
   assert.ok(!scripts[0].includes("</script><b>"), "script 被提前闭合");
 });
 
-test("没有 </head> 的畸形页面也不会把脚本塞进 body", () => {
+test("没有 </head> 的畸形页面：补 <head> 塞在 <html> 后面，不许跑到 doctype 前面", () => {
   const bare = `<html><body>hi</body></html>`;
   const out = injectWindowTitle(bare, "测试 t9");
-  assert.ok(out.startsWith("<script>"), "没有 head 时脚本应置顶");
+  assert.ok(out.startsWith("<html><head><script>"), out);
   assert.ok(out.indexOf("__piWindowTitle") < out.indexOf("<body>"), "脚本跑到 body 里了");
+
+  const withDoctype = `<!doctype html><html><body>hi</body></html>`;
+  const out2 = injectWindowTitle(withDoctype, "测试 t9");
+  assert.ok(out2.startsWith("<!doctype html>"), "script 跑到 doctype 前面了（quirks 模式）");
+  assert.ok(out2.indexOf("__piWindowTitle") < out2.indexOf("<body>"), "脚本跑到 body 里了");
 });

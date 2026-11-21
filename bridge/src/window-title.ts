@@ -22,5 +22,11 @@ export function injectWindowTitle(html: string, title: string): string {
   const script = `<script>window.__piWindowTitle=${forJs}</script>`;
   const titled = html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${forTag}</title>`);
   if (/<\/head>/i.test(titled)) return titled.replace(/<\/head>/i, `${script}</head>`);
-  return `${script}${titled}`;
+  // 没有 </head>：自己补一个 <head>，塞在 <html> 后面。放最前面会让 <script> 跑到 <!doctype> 之前，
+  // 页面被打进 quirks 模式。
+  const block = `<head>${script}</head>`;
+  if (/<html[^>]*>/i.test(titled)) return titled.replace(/<html[^>]*>/i, (tag) => `${tag}${block}`);
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(titled);
+  if (doctype) return `${doctype[0]}${block}${titled.slice(doctype[0].length)}`;
+  return `${block}${titled}`;
 }

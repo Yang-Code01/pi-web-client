@@ -212,26 +212,13 @@ function killTree(pid) {
   }
 }
 
-/** D358：交给桥、再由桥写进页面 <title> 的那段文字。 */
+/** D358：交给桥、再由桥写进页面 <title> 的那段文字。实例数据，不跟界面语言走（见 D358 代价）。 */
 function windowTitleFor(id) {
   return `测试 ${id}`;
 }
 
-/** Windows 上现在的 Edge 窗口标题（判「新窗口开出来了没有」）。 */
-function edgeTitles() {
-  const r = spawnSync(
-    "powershell",
-    ["-NoProfile", "-Command", "Get-Process msedge -EA SilentlyContinue | ? {$_.MainWindowTitle} | select -Expand MainWindowTitle"],
-    { encoding: "utf8", timeout: 15000 },
-  );
-  return String(r.stdout ?? "")
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 /**
- * D358：开一个新的浏览器窗口。标题由桥注入，这里只核「真的多了一条窗口标题」—— 退出码什么都证明不了
+ * D358：开一个新的浏览器窗口。标题由桥注入，这里只核「真的多了一条标题是它的窗口」—— 退出码什么都证明不了
  * （Edge 常驻时丢 URL 只会在后台开标签）。
  */
 async function openWindow(url, id, opts) {
@@ -242,34 +229,84 @@ async function openWindow(url, id, opts) {
     return;
   }
   if (process.platform === "win32") {
-    const before = edgeTitles();
-    // 64 位 Edge 在 Program Files 下，写死 x86 路径会白跑一次；交给 App Paths 解析。
-    spawnSync(
-      "powershell",
-      [
-        "-NoProfile",
-        "-Command",
-        `if (Get-Command msedge -EA SilentlyContinue) { Start-Process msedge -ArgumentList '--new-window','${page}' } else { Start-Process '${page}' }`,
-      ],
-      { stdio: "ignore", timeout: 20000 },
-    );
-    const deadline = Date.now() + 12000;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 500));
-      const added = edgeTitles().filter((t) => !before.includes(t));
-      if (added.length) {
-        say(`  窗口    新开了一个：${added[0]}`);
-        return;
-      }
+    // `MainWindowTitle` 一个进程只报一个窗口，而 Edge 的所有窗口都挂在同一个浏览器进程上 —— 数不出来。
+    // 只能枚举顶层窗口自己数；“快照 → 启动 → 等标题”整套放在一次 PowerShell 里跑（不必每 500ms 重编
+    // 一遍 C#），标题匹配也在 PS 里做（免掉控制台编码把中文变成乱码）。
+    const ps = String.raw`
+Add-Type @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class W {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  public static string[] Titles() {
+    var list = new System.Collections.Generic.List<string>();
+    EnumWindows((h, l) => {
+      if (!IsWindowVisible(h)) return true;
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      try { if (System.Diagnostics.Process.GetProcessById((int)pid).ProcessName != "msedge") return true; } catch { return true; }
+      var sb = new StringBuilder(512); GetWindowText(h, sb, 512);
+      if (sb.Length > 0) list.Add(sb.ToString());
+      return true;
+    }, IntPtr.Zero);
+    return list.ToArray();
+  }
+}
+'@
+$want = $env:PI_WIN_TITLE
+function CountMine { @([W]::Titles() | Where-Object { $_ -eq $want -or $_.StartsWith($want + ' ') }).Count }
+$before = CountMine
+$exe = (Get-Command msedge -EA SilentlyContinue).Source
+$dirs = @([Environment]::GetEnvironmentVariable('ProgramFiles(x86)'), $env:ProgramFiles)
+$cands = @($dirs | ForEach-Object { if ($_) { Join-Path $_ 'Microsoft\Edge\Application\msedge.exe' } })
+$cands += (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe' -EA SilentlyContinue).'(default)'
+$exe = @($exe) + @($cands) | ForEach-Object { if ($_ -and (Test-Path -LiteralPath $_)) { $_ } } | Select-Object -First 1
+if ($exe) { Write-Output 'EDGE'; Start-Process -FilePath $exe -ArgumentList '--new-window', $env:PI_WIN_PAGE }
+else { Write-Output 'DEFAULT'; Start-Process $env:PI_WIN_PAGE }
+$deadline = (Get-Date).AddSeconds(12)
+while ((Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 500
+  if ((CountMine) -gt $before) { Write-Output 'OPENED'; exit 0 }
+}
+Write-Output 'NONE'`;
+    const launched = spawnSync("powershell", ["-NoProfile", "-Command", ps], {
+      encoding: "utf8",
+      timeout: 25000,
+      env: { ...process.env, PI_WIN_TITLE: title, PI_WIN_PAGE: page },
+    });
+    const out = String(launched.stdout ?? "");
+    if (/^OPENED$/m.test(out)) {
+      say(`  窗口    新开了一个：${title}`);
+      return;
     }
-    say(`  窗口    没等到新窗口（也可能用别的浏览器开的）；点上面的地址，tab 会是「${title}」`);
+    if (/^DEFAULT$/m.test(out)) {
+      say(`  窗口    没找到 Edge，交给默认浏览器了：标题核不了，tab 应是「${title}」`);
+      return;
+    }
+    say(`  窗口    没等到标题是「${title}」的新窗口（Edge 可能把地址开进了旧窗口）；点地址自己看`);
     return;
   }
-  const [cmd, args] =
-    process.platform === "darwin" ? ["open", ["-n", "-a", "Microsoft Edge", page]] : ["xdg-open", [page]];
-  const r = spawnSync(cmd, args, { stdio: "ignore", timeout: 20000 });
+  if (process.platform === "darwin") {
+    const edge = spawnSync("open", ["-n", "-a", "Microsoft Edge", page], { stdio: "ignore", timeout: 20000 });
+    if (edge.status === 0) {
+      say(`  窗口    已请求打开（tab 会是「${title}」）`);
+      return;
+    }
+    const fallback = spawnSync("open", [page], { stdio: "ignore", timeout: 20000 });
+    say(
+      fallback.status === 0
+        ? `  窗口    没找到 Edge，交给默认浏览器了（tab 应是「${title}」）`
+        : `  窗口    没开成；点上面的地址，tab 会是「${title}」`,
+    );
+    return;
+  }
+  const opened = spawnSync("xdg-open", [page], { stdio: "ignore", timeout: 20000 });
   say(
-    r.status === 0
+    opened.status === 0
       ? `  窗口    已请求打开（tab 会是「${title}」）`
       : `  窗口    没开成；点上面的地址，tab 会是「${title}」`,
   );
