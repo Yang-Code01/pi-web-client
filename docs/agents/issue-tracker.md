@@ -6,14 +6,21 @@ Issues and specs for this repo live as GitHub issues in `Yang-Code01/pi-web-clie
 
 **先直连**：`gh api repos/Yang-Code01/pi-web-client --jq .full_name`。能返回名字就直接用，不要加代理。
 
-直连失败（超时 / 403）时才把本机代理挂在命令上（热部署 worker 的代理选择见 D272，不适用本节）：
+直连失败（超时 / 403）时才把本机代理挂在命令上（热部署 worker 的代理选择见 D272，不适用本节）。**端口不要照抄**：`18791` / `7899` 在不同机器、不同时间都当过活端口，现在可能没一个在听 —— 从实际监听里取：
 
-- `HTTPS_PROXY=http://127.0.0.1:18791 gh issue list …` —— `gh` 没有配置文件可读，只能逐条给。
-- `git` **故意**没有全局代理（会漏到别的 host），逐条给：`git -c http.https://github.com/.proxy=http://127.0.0.1:18791 push`。
+```bash
+netstat -ano -p tcp | grep LISTENING | grep -E "127\.0\.0\.1:(789[0-9]|1879[0-9])"
+```
+
+另一个已踩过的坑：进程环境里残留一个**死代理变量**（`https_proxy` 指向没启动的端口）时，`curl` / `git` / `gh` 都会先撞代理、报 `Failed to connect ... over proxy`，看起来像“直连不通”。直连测试先脱掉：`env -u https_proxy -u HTTPS_PROXY gh api repos/Yang-Code01/pi-web-client --jq .full_name`。pi 自己的出口在 `~/.pi/agent/settings.json` 的 `httpProxy`，代理没启动就别留这个键。
+
+- `HTTPS_PROXY=http://127.0.0.1:<port> gh issue list …` —— `gh` 没有配置文件可读，只能逐条给。
+- `git` **故意**没有全局代理（会漏到别的 host），逐条给：`git -c http.https://github.com/.proxy=http://127.0.0.1:<port> push`。
 
 两个坑（都真碰过）：
 
 1. **curl 判不准**：`curl https://api.github.com` 可能回 403（WAF / UA），而 `gh` 打同一个域名完全正常。判网络用 `gh`，不用 curl。
+   更阴的一层（2026-11-22 实测）：**`api.github.com` 直连 200 不代表 `github.com` 能连** —— 同一次里 `api.github.com` 回 200 / `gh api` 正常，而 `github.com:443` 直连 TCP 超时（DNS 被污到 `20.6.7.17` / `57.155.223.240` 这种被污染的地址）。要判 git 能不能用，就直接 `git ls-remote --heads origin main`，别拿 api 的成功当结论。
 2. **403 往往是账号，不是网络**：`gh auth status` 可以同时登好几个账号，`git push` 用的是 **active** 那个；账号不在仓库里就 403。**哪些账号算「在仓库里」见 `AGENTS.md` 的「账号」一节**：`Yang-Code01`（主人）与 `qingmin-new` 都有写权限；本机（macOS）只登了后者，直接用它，别为了照文档去切 `Yang-Code01`。另一类机器上 active 是 `xyang-qingmin`（没有写权限）时，不改全局状态的做法：
 
    ```bash
