@@ -124,7 +124,7 @@ wss.on("connection", (ws) => {
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 log("fake bridge on", BASE);
 
-const ZH_TEXT = "没看懂上面这条回答。用简化技术中文重讲一遍：先交代背景，再说结论和下一步。";
+const ZH_TEXT = "我没跟上你刚才讲的内容。用简化技术中文重讲一遍：先交代背景，再说结论和下一步。";
 
 let browser;
 try {
@@ -159,13 +159,16 @@ try {
   const field = page.locator(".composer textarea");
   await field.fill("我正在写的草稿");
   await btn.click();
+  await btn.click({ force: true }); // 双击的第二下：桥的 running 还没到，也该被按住
   await until(async () => prompts.length >= 1, 5000, "prompt frame");
+  await page.waitForTimeout(600);
+  assert(prompts.length === 1, `连点两下只该发一句，实际 ${prompts.length} 句`);
   const sent = prompts[0];
   assert(sent.text === ZH_TEXT, `发出去的指令不对：${JSON.stringify(sent.text)}`);
   assert(sent.behavior === "steer", `behavior 应为 steer：${sent.behavior}`);
   assert(sent.type === "prompt" && sent.sessionId === ANSWERED.id, "prompt 帧的会话不对");
   assert((await field.inputValue()) === "我正在写的草稿", "重讲不该动输入框里的草稿");
-  await until(async () => (await page.locator(".msg.user", { hasText: "没看懂上面这条回答" }).count()) === 1, 3000, "own bubble");
+  await until(async () => (await page.locator(".msg.user", { hasText: "我没跟上你刚才讲的内容" }).count()) === 1, 3000, "own bubble");
   await page.screenshot({ path: path.join(OUT, "2-sent.png"), clip: await page.locator(".composer").boundingBox() });
 
   // 4. 跑着一轮 → 灰，原因写进 title。
@@ -201,7 +204,7 @@ try {
   assert(prompts[1].text.includes("Simplified Technical English"), `英文指令不对：${JSON.stringify(prompts[1].text)}`);
   await page.screenshot({ path: path.join(OUT, "4-en.png"), clip: await page.locator(".composer").boundingBox() });
 
-  log("ok — 位置 / 三态 / 发送内容 / 草稿保留 / 英文文案都对");
+  log("ok — 位置 / 三态 / 发送内容 / 草稿保留 / 双击只发一句 / 英文文案都对");
 } finally {
   await browser?.close();
   wss.close();

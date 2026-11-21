@@ -67,6 +67,7 @@
     "test:permission": "node bridge/tests/default-permission.mjs && node bridge/tests/gate-modes.mjs",
     "test:pending": "node --experimental-strip-types web/tests/pending-unit.mjs",
     "test:continue": "node --experimental-strip-types web/tests/continue-unit.mjs",
+    "test:retell": "node --experimental-strip-types web/tests/retell-state-unit.mjs",
     "test:bgruns": "node --experimental-strip-types bridge/tests/bgruns-unit.mjs",
     "test:whatsnew": "node --experimental-strip-types bridge/tests/whatsnew-unit.mjs",
     "test:sysmanage": "node bridge/tests/sysmanage-unit.mjs && node bridge/tests/workclock-unit.mjs && node web/tests/sysmanage-unit.mjs",

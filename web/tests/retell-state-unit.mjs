@@ -2,7 +2,7 @@
  * 输入框上方那一行「重讲」的三态（D358）。纯函数只有 `retellState()` 一个口 —— 什么时候灰、
  * 什么时候不画全部由它决定，`app.ts` 不另写判断。
  *
- * Run: node --experimental-transform-types web/tests/retell-state-unit.mjs
+ * Run: node --experimental-strip-types web/tests/retell-state-unit.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";

@@ -422,6 +422,10 @@ export class App {
   /** D358：输入框上方那一行「重讲」。常驻，位置固定，不随回答长短漂移。 */
   private retellBar: HTMLElement | null = null;
   private retellBtn: HTMLButtonElement | null = null;
+  /** 刚点过「重讲」：桥的 `running:true` 回来之前，先把按钮按住，免得双击发两句。 */
+  private retellSent = { id: "", at: 0 };
+  /** 那 1.5 秒按住到期后自己松手：状态帧可能先于到期就来了，不补一次 sync 就一直灰着。 */
+  private retellTimer: number | null = null;
   /** D170: 输入框上方那条「子代理运行中」。`syncBgBar()` 造它，重画后要重新挂。 */
   private bgBar: HTMLElement | null = null;
   /** D170 详情弹层：正在看的那一屏，和它 1.5 秒一次的轮询。关掉就 null。 */
@@ -16107,13 +16111,26 @@ export class App {
     const bar = this.retellBar;
     const btn = this.retellBtn;
     if (!bar || !btn) return;
-    const state = retellState(this.session, this.chat.lastAssistantText() !== null);
+    if (this.retellTimer !== null) {
+      clearTimeout(this.retellTimer);
+      this.retellTimer = null;
+    }
+    // 刚发出去的那 1.5 秒当作「在跑」：`pi.status running:true` 一般几十毫秒就到，到之前
+    // 按钮若还亮着，双击会发两句同样的指令。
+    const justSent = Date.now() - this.retellSent.at < 1500 && this.retellSent.id === this.currentId;
+    if (justSent && this.session?.running !== true) {
+      this.retellTimer = window.setTimeout(() => this.syncRetellBar(), 1520 - (Date.now() - this.retellSent.at));
+    }
+    const state = retellState(
+      this.session ? { running: this.session.running === true || justSent } : null,
+      this.chat.lastAssistantText() !== null,
+    );
     bar.hidden = state === "hidden";
     btn.disabled = state !== "ready";
     btn.title =
       state === "ready"
         ? tr("把「重讲」发出去：先交代背景，再用简化技术中文说结论。")
-        : this.session?.running
+        : this.session?.running || justSent
           ? tr("这一轮还在跑，等它讲完再重讲")
           : tr("还没有回答可以重讲");
   }
@@ -16127,7 +16144,10 @@ export class App {
     const sessionId = this.currentId;
     if (!sessionId) return;
     if (retellState(this.session, this.chat.lastAssistantText() !== null) !== "ready") return;
-    const text = tr("没看懂上面这条回答。用简化技术中文重讲一遍：先交代背景，再说结论和下一步。");
+    // 上一发还没被桥确认（`running` 没到）就再来一下：忽略，别发两句。
+    if (this.retellSent.id === sessionId && Date.now() - this.retellSent.at < 1500) return;
+    this.retellSent = { id: sessionId, at: Date.now() };
+    const text = tr("我没跟上你刚才讲的内容。用简化技术中文重讲一遍：先交代背景，再说结论和下一步。");
     const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
     const payload = { type: "prompt", sessionId, text, images: [], clientId, behavior: "steer" };
     this.act(() => {
@@ -16137,7 +16157,6 @@ export class App {
       this.chat.follow();
       this.socket.send(payload);
     });
-    if (navigator.storage?.persist) void navigator.storage.persist();
   }
 
   /**

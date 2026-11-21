@@ -1120,7 +1120,7 @@ export const en: Dict = {
   "没看懂最后一条回答？": "Didn't follow the last answer?",
   "先交代背景，再用简化技术中文说结论": "Context first, then the conclusion in Simplified Technical English",
   "把「重讲」发出去：先交代背景，再用简化技术中文说结论。": "Send “Re-pitch”: context first, then the conclusion in Simplified Technical English.",
-  "没看懂上面这条回答。用简化技术中文重讲一遍：先交代背景，再说结论和下一步。": "I didn't follow that answer. Re-pitch it in Simplified Technical English: context first, then the conclusion and the next step.",
+  "我没跟上你刚才讲的内容。用简化技术中文重讲一遍：先交代背景，再说结论和下一步。": "I lost track of what you just said. Re-pitch it in Simplified Technical English: context first, then the conclusion and the next step.",
   "这一轮还在跑，等它讲完再重讲": "This turn is still running — re-pitch once it stops",
   "还没有回答可以重讲": "No answer to re-pitch yet",
   "子代理运行中": "Subagent running",
