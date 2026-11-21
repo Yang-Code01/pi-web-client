@@ -233,3 +233,5 @@ This is not something to drop on the public internet for multiple tenants. It li
 ## License
 
 [Apache-2.0](LICENSE) © 2026 Yang-Code01
+
+The copyright and license notices for the third-party code in the UI (highlight.js, xterm.js, …) and for the bridge runtime dependencies live in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), generated from the lockfiles; the same text is available under Settings → About → “Open source licenses”. Ship that file with any build you redistribute.

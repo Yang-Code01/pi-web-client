@@ -6926,3 +6926,19 @@ Esc 之后 dialog: 0
 **代价。** 正式实例一个字节都不变（`WINDOW_TITLE` 为空时仍走原来的流式发送，不读全文）。测试实例里 `document.title` 的最前面是实例名，会话名被挤到第二段；浏览器通知 / 书签这些跟着标题走的入口也会变 —— 这正是想要的。前缀是**实例数据**（`windowTitleFor()` 里的「测试」写在脚本里），不跟界面语言切换：静态 `<title>` 得在 JS 之前就正确，桥那边也没有用户语言可查；`/peer`（内网通）页固定「内网通 · pi」，不跟实例名走。
 
 **守卫。** `npm run test:window-title`：`bridge/tests/window-title-unit.mjs`（无标题时页面原样、`<title>` 与注入脚本的位置、标题里的 `</script>` / `<` 不把页面写坏、没有 `</head>` 的畸形页面补 `<head>` 且不把脚本塞到 `<!doctype>` 之前）与 `web/tests/window-title-unit.mjs`（前缀 × 会话标题四种组合，正式实例必须还是「会话 · pi」/「pi」）。真机：`env.mjs start` 的输出里出现「新开了一个：测试 t1」才算开成（新增标题必须**等于**「测试 <id>」，别的新窗口不算），找不到 Edge 或标题一直对不上就明说，不要报成功。
+
+## D361 分发构建产物要随附第三方版权声明：清单由锁文件生成，设置里能看（2026-11-21）
+
+**症状。** 仓库只有根目录 `LICENSE`（Apache-2.0）与 README 里一行「[Apache-2.0](LICENSE)」，没有 NOTICE，也没有任何第三方清单。而 `web/dist` 是单文件 bundle：`highlight.js`（BSD-3-Clause）、`@xterm/xterm` 与 `@xterm/addon-fit`（MIT）的版权头在压缩后一个都不剩（这三个包发出来的 ESM 本身就没有 `/*!` 头 —— xterm 是压好的 UMD），`vite.config.ts` 也没开 `legalComments`。源码分发有 `node_modules/*/LICENSE` 兜着，一旦把 `web/dist` 交给别人（或发 npm 包），BSD-3 / MIT 的「保留版权与许可声明」就落空了；桥端 `web-push`（MPL-2.0）还要求给出源码地址。
+
+**决定。** 声明不手写，由锁文件生成，三处消费同一份事实。
+
+- `tools/notices.mjs` 读四个 `package-lock.json`（根 / web / bridge / peer）的**非 dev** 条目（传递依赖一样进产物），从每个包自己的 `LICENSE*` 里取版权行与正文，生成根目录 `THIRD-PARTY-NOTICES.md`（约 99 KB）与 `web/src/legal/bundle-notices.txt`（只含真正打进 dist 的三个，约 0.4 KB）。包内没有 LICENSE 文件、只声明 MIT 的（`http_ece`）补标准正文并写明版权人取自 `package.json` 的 author，不假装它随包发过。
+- `web/vite.config.ts` 把后者读成 `build.rollupOptions.output.banner`；**不能指望 `esbuild.legalComments`**（没有可识别的许可注释可保）。banner 落在 ESM 的 import 之后，仍然在文件里。
+- 桥加 `GET /api/notices`（在 cookie 闸之后，100 KB 文本，`cache-control: no-store`），`bridge/src/notices.ts` 按 `import.meta.url` 上两级找仓库根那份文件，读不到就 404 `notices-missing`，不拿空串糊弄。
+- 设置 → 关于多一行「开源许可」，点了**原地展开** `<pre>`（要能选中、能 Ctrl+F，不套弹层），高度用 `calc(var(--vh1) * 42)` 而不是裸 `vh`（D123 / D263）。
+- 四个 `package.json` 补 `"license": "Apache-2.0"`；三份 README 的许可段指向这份清单，并说明「分发产物时一起带上」。
+
+**代价。** 99 KB 的生成文件进 git（依赖不动就不变，diff 只在升级时出现），每次改依赖都要 `npm run notices`，忘了就在 typecheck 里红。清单是**运行时**从仓库根读的，发行包丢了它，设置里只会得到 404 —— 这是有意的：产物里的清单会跟装的依赖不一致。
+
+**守卫。** `npm run test:notices`（`bridge/tests/notices-unit.mjs`）：`tools/notices.mjs --check` 通过、三个打包组件的段落里有版本 / 许可名 / 版权人 / 许可正文、`web-push` 的 MPL-2.0 带源码指引、页首声明里不出现没进产物的桥端依赖、`noticesText()` 读得到仓库根那份。`npm run typecheck` 第一步就是 `node tools/notices.mjs --check`。构建后 `grep -c Copyright web/dist/assets/*.js` 每块非零（本次 3 / 3 / 4）。
