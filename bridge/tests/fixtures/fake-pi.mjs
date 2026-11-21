@@ -403,6 +403,79 @@ async function turn(text) {
     }
     return;
   }
+  if (text.startsWith("BGSCRIPT")) {
+    // 脚本式 workflow（实测 `1f34ca75-e6e0-…`，2026-11-21）：原文只在 `options.script` 里，
+    // details 里没有 `workflowChildren`，args 里没有 `tasks[]` —— 名字与任务只能从 `status.json`
+    // 的 `steps[]` / `workflowChildren.children[]` 兑底，而它比派活晚 ~1.4 秒才落盘。
+    const runId = process.env.FAKE_PI_SCRIPT_RUN_ID || `1f34ca75-0000-4000-8000-${String(process.pid).padStart(12, "0")}`;
+    const dir = path.join(os.tmpdir(), "pi-subagents-user-yqm", "async-subagent-runs", runId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.rmSync(path.join(dir, "status.json"), { force: true });
+    fs.rmSync(path.join(dir, "workflow-receipt.json"), { force: true });
+    const callId = "call-script";
+    const standards = "reviewer: Code review: STANDARDS axis only. Read-only, do not modif...";
+    const spec = "reviewer: Code review: SPEC axis only. Read-only, do not modify any...";
+    const args = { cwd: process.cwd(), options: { script: "await runs.all([{ key: 'standards' }, { key: 'spec' }])" } };
+    const details = { mode: "workflow", runId, asyncDir: dir, workflow: "parallel" };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "subagent", args });
+    out({
+      type: "tool_execution_end",
+      toolCallId: callId,
+      toolName: "subagent",
+      isError: false,
+      result: { content: [{ type: "text", text: `Async workflow [${runId}]` }], details },
+    });
+    out({ type: "message_end", message: assistant("两个评审跑起来了。", { stopReason: "stop" }) });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    const timer = setTimeout(() => {
+      fs.writeFileSync(
+        path.join(dir, "status.json"),
+        JSON.stringify({
+          runId,
+          mode: "workflow",
+          state: "running",
+          steps: [
+            { agent: "reviewer", sessionName: standards },
+            { agent: "reviewer", sessionName: spec },
+          ],
+          workflowChildren: {
+            version: 1,
+            inventoryComplete: true,
+            children: [
+              { childId: "standards", state: "running", agent: "reviewer", sessionName: standards },
+              { childId: "spec", state: "running", agent: "reviewer", sessionName: spec },
+            ],
+          },
+        }),
+      );
+    }, Number(process.env.FAKE_PI_SCRIPT_DELAY_MS || 1200));
+    timer.unref?.();
+    return;
+  }
+  if (text.startsWith("BGFAIL")) {
+    // 前台派活当场失败（实测 `call_00_79ZGyKVyGhxhy8l7XsKw7723`）：`workflow: true` 但同一条
+    // 助手消息里没有 js 围栏 —— 结果里没有 `Return: {…}`，报错只在这条工具结果里。
+    const callId = "call_00_79ZGyKVyGhxhy8l7XsKw7723";
+    const why = [
+      "The workflow script is missing.",
+      "`workflow: true` runs the workflow block written in this same assistant message. This message has no workflow block (no `text` content), so nothing was launched.",
+      'Retry with the complete block in the same message, or pass the script explicitly with `options: { script: "…" }`.',
+    ].join("\n");
+    const args = { workflow: true, cwd: process.cwd(), async: false };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "subagent", args });
+    out({
+      type: "tool_execution_end",
+      toolCallId: callId,
+      toolName: "subagent",
+      isError: true,
+      result: { content: [{ type: "text", text: why }] },
+    });
+    out({ type: "message_end", message: assistant("", { stopReason: "stop" }) });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   if (text.startsWith("BGSTART")) {
     // D170: 派一个后台子代理，这一轮正常收尾 —— 会话自己 settle 了，runner 还在跑。
     // 形状照真 pi 来：`result` 是 `{ content, details }`（pi docs/json.md），活动路径在结果文本的

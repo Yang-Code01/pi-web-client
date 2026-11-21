@@ -6887,3 +6887,34 @@ Esc 之后 dialog: 0
 
 **守卫。** `npm run test:whatsnew-popup`（`bridge/tests/whatsnew-popup-unit.mjs`）：批次切分（含 `###` 分组与注释）、没记录 / 已读在中间 / 已读就是最新、已读那批被改写、闸未满与正好满、开关关着、`older` 列表与顺序。`node probes/whatsnew-dialog.mjs`：真桥 + 真页面，验首弹内容与 N、一打开即已读、刷新不重弹、重启不重弹、闸挡住且已读不前进、只差一批时不出「还有 N 批」、Esc 能关、设置页那两行与开关落盘、在设置页翻完不推进已读、草稿没发出去时先不弹、窄屏铺满整屏、字号 150% 时底栏仍在屏幕里。派发窗口的到期单独在单测里验（`claimExpired`）。
 
+
+## D359 子代理详情卡跟着数据长：原文晚到就补，失败就说为什么（用户报「任务原文没传到桥」2026-11-21；修正 D185 决定 6 的前提）
+
+**修正 D185：** 第 6 条把 `workflow-receipt.json` 当成「runner 早就把清单写进去了」，实测它在跑完那一刻才写（上游「问题」第 1 条）；回填来源改为 `status.json`，其余各条（`args.args.tasks[]` 优先、已有值不覆盖、`hasOut` 按跑完没跑完判）不变。
+
+**问题：** 同一层弹层里两张卡都写着「（任务原文没传到桥）」。查下来是两个不同的毛病叠在一起，而 D185 把这两个形状当成一个处理了。
+
+1. **脚本式 workflow**（`subagent({cwd, options:{script:"await runs.all([…])"}})`，实测 `1f34ca75-e6e0-4529-ba74-2e35f4cf496a`）：任务原文只在 `options.script` 里，`args` 里没有 `tasks[]`、`details` 里没有 `workflowChildren`，桥只剩 `sessionName` 一条路 —— 而它只在 `status.json` 的 `steps[]` / `workflowChildren.children[]` 里。D185 第 6 条的回填读的是 `workflow-receipt.json`，理由写的是「runner 早就把清单写进了同目录」；实测不成立：开跑 17:24:14，`steps[0].sessionName` 17:24:15.099 就有，receipt 的 `createdAt` 是 17:27:03.637 —— **跑完那一刻才写**。于是卡片在跑着的那几分钟里一直空着，而且 `prune()` 之外没人再读盘，即使数据到了也要等 30 秒或重开弹层。
+2. **前台派活当场失败**（`subagent({workflow:true, cwd, async:false})` 而那条助手消息里没有 ```js 围栏，实测 `call_00_79ZGyKVyGhxhy8l7XsKw7723`）：runner 的报错只存在于那一条工具结果里，`foregroundOutput()` 只认 `Return: {…}`，`BgRun` 也没有装错误的字段 —— 于是卡片只有「失败 · 0:00」，任务、过程、原因全是空的。
+3. **前端只画一次**：`paintBgSheet()` 建节点时就写死了 `task` 的文字，`BgRunNode` 里也没有 `agent` / `task` 的引用，桥后来回填也永远显示占位；`hasLog` 同样只在建节点时取一次。
+
+**决定：**
+
+1. **读盘顺序 `recordedChildren(dir)`：`workflow-receipt.json` → `status.json.workflowChildren.children[]` → `status.json.steps[]`。** receipt 先读（它是独立文件，没有 `status.json` 也要读），后两者是跑着的那几分钟里唯一读得到任务的来源。任务文字仍是 `summarizeChildren()` 那份截断过的 `sessionName`（`1. Code review: STANDARDS axis only…`）—— 不假装是原文。
+2. **三处都顺手补：** 建卡时（`noteToolEnd` 的 `kids` 链尾）、`readLog()`（`bg.log` 每 1.5 秒一轮，比 30 秒滴答快）、`prune()`（改调同一个 `backfillNames()`）。`readLog` 不回写 `onChange()`：页面每个滴答本来就会再要一次 `bg.list`，同 D185「补 `logPath`」的补法。
+3. **失败原因存下来：** `BgRun.error` / `BgRunView.error`。前台失败且没有 `outText` 时存工具结果的开头（`clipError()`：去空行、前 3 行、最多 600 字，只截断不改字）；后台完成通知里带 `failed` 的也存一份（`run.error ??= clipError(text)`）。前端在任务行下面用 `.bg-run-err` 原样显示。
+4. **占位文案不再指认桥：**「（任务原文没传到桥）」→「（没有任务原文）」（`en` / `ja` 同键跟着改）。这次就是桥收到了才写出占位，把责任写成桥没收到，用户只能来问。
+5. **失败且没有过程记录的卡不摆空过程框：** `state === "failed" && !hasLog` 时「过程」两个字与框一起藏 —— 派活当场就挂的调用没有 runner，说「桥还没接上」等于叫人去查一个不存在的东西。
+6. **不去 `options.script` 里抠原文：** 那是任意 JS，正则提取会造出**假的**原文（可能是别的任务的 prompt 片段），比截断的名字危险得多，也违反 D185「一个字不改」的取向。要真原文只能读子会话 transcript，得另开白名单与一条决定。
+
+**代价 / 可改：**
+
+- **卡片上的任务仍是截断名**：`reviewer: Code review: STANDARDS axis only, do not modif...`。完整 prompt 只在子会话的 session 文件里，见第 6 条。
+- **`status.json` 每次详情轮询/日志轮询各 parse 一次**（几十 KB）：沿用 D185 的取舍，量级是单会话 1.5 秒一次；真嫌慢再加 mtime 缓存。
+- **错误只留三行 600 字**：够放 runner 那几句（"The workflow script is missing." + 怎么重试），长栈会截尾。要看全文仍去会话里翻那条工具结果。
+- **回填只在名字空着时动手**：`agent` / `task` 一旦有值就不再覆盖，误填与真值无法靠后续数据纠正 —— 与 D185 第 5 条一致。
+- **回填不按 `run.workflow` 卡**：单 run / parallel 的卡名字缺了也照同一个顺序补。`status.json` 里没有 `workflowChildren` / `steps` 时 `recordedChildren()` 返回空，不会凭空造任务；派活时 `details` 缺 `agent` 的不只脚本式 workflow 一种（D185 第 2 条）。
+- **后台 run 只在完成通知带了 `failed` 时才写原因**：`prune()` 从 `status.json` 看出失败的（没有通知，或通知里没写失败）卡片仍只有「失败」二字 —— 那个文件里没有一段能当理由的文字。要看原因得去会话里翻工具结果。
+
+**验证：** `npm run test:bgruns` 新增两段：脚本式 workflow 形（`options.script`、无 `workflowChildren`、`status.json` 带 `steps[]` + `workflowChildren.children[]`）→ `readLog()` 后 `agent` 是 `reviewer`、`task` 是两条编号行、`prune()` 之后不变；前台失败（`workflow:true` + `async:false`）→ `state` `failed`、`hasOut` false、`error` 以 `The workflow script is missing.` 开头且正好三行，成功卡没有 `error`。第一版把 `status.json` 放在读 receipt 之前，`bridge/tests/bgruns-unit.mjs` 里原有的「receipt 里的 agent 补回来」当场变红（`'' !== 'planner'`），改成先读 receipt 才绿。
+`node probes/bg-runs.mjs`（新探针，丢弃式 bridge + fake-pi 的 `BGSCRIPT` / `BGFAIL` 两个场景，真 Chromium）：停在会话列表点「后台」徽标开弹层，断言开卡那刻是「（没有任务原文）」、留在同一张卡上 12 秒内自己换成两条任务、卡片头变 `reviewer`；前台失败那张卡标「失败」、错误三行原样在卡上、没有「最终输出」、没有空过程框；界面不再出现「任务原文没传到桥」；10 项全过，无 `pageerror`。`npm --prefix web run typecheck`（含 i18n / viewport / layers 单测 14 项）与 `npm --prefix bridge run typecheck` 均绿。

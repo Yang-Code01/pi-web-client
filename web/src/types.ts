@@ -158,6 +158,8 @@ export interface BgRunView {
   endedAt?: number;
   hasLog: boolean;
   hasOut: boolean;
+  /** 失败原因（桥从工具结果 / 完成通知里截的前几行）。卡片上原样显示。 */
+  error?: string;
 }
 
 export interface ApprovalRequest {

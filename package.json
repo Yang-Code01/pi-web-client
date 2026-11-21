@@ -95,6 +95,7 @@
     "test:probes": "node web/tests/probes-unit.mjs",
     "test:peer": "node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-history.mjs && node bridge/tests/peer-group-e2e.mjs",
     "test:peer:ui": "node bridge/tests/peer-ui.mjs",
+    "probe:bg-runs": "node probes/bg-runs.mjs",
     "probe:sheet": "node probes/sheet-hit.mjs",
     "probe:jira-handoff": "node probes/jira-handoff-name.mjs",
     "probe:workspace": "node probes/run-all.mjs",

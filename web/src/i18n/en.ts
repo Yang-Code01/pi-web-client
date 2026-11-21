@@ -1130,7 +1130,7 @@ export const en: Dict = {
   "过程": "Activity",
   "还没有活动记录。": "Nothing written yet.",
   "这个会话没有子代理在跑。": "No subagents running in this session.",
-  "（任务原文没传到桥）": "(the original task text did not reach the bridge)",
+  "（没有任务原文）": "(no original task text)",
   "点开看它在干什么；pi 会在它回来时自己接着做，这时点「继续」等于插队多推一轮。": "Click to see what it's doing. pi continues on its own when it comes back — pressing Continue now jumps the queue.",
   "子代理已结束": "Subagent finished",
   "子代理已结束 · {p1}": "Subagent finished · {p1}",

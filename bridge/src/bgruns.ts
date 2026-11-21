@@ -79,6 +79,10 @@ export interface BgRun {
   children?: FgChild[];
   /** 前台跑完的答复：结果文本里那坨 `Return: {…}` 的 `children[].output`（D187）。 */
   outText?: string;
+  /** 失败原因：工具结果 / 完成通知里的一小段（`clipError`）。前台派活失败时 runner 的报错
+   * 只存在于那条工具结果里 —— `workflow: true` 而消息里没有 ```js 块就是这么挂的：
+   * 卡片会写「失败 · 0:00」，任务原文和过程都是空的，不说为什么。 */
+  error?: string;
 }
 
 /** 会话快照 / `SessionState.bg` 里那一小块：前端只画「N 个 · 谁 · 从什么时候」。 */
@@ -107,6 +111,8 @@ export interface BgRunView {
   endedAt?: number;
   hasLog: boolean;
   hasOut: boolean;
+  /** 失败原因（`failed` 时可能有）。原文照抄，前端原样显示。 */
+  error?: string;
 }
 
 /** 一个从没报过完成、也没再被 `details` 提过的 run 判死的期限。给得很宽：真跑几小时的任务
@@ -334,14 +340,69 @@ function logPathFor(dir: string, workflow: boolean): string | undefined {
 }
 
 /**
- * 派活那一刻 `details.workflowChildren.children[]` 还可能空着（脚本式 workflow 边跑边建孩子），
- * 但 runner 早就把清单写进了同目录的 `workflow-receipt.json`：`workflowChildren.children[]`
- * 带 `agent` 与 `sessionName`。空着的 agent / task 在 30 秒滴答里从这里补回来。
+ * 脚本式 workflow 跑完时 runner 会在同目录写 `workflow-receipt.json`：`workflowChildren.children[]`
+ * 带 `agent` 与 `sessionName`。**但它只在跑完那一刻写**（实测开跑 17:24:14、receipt 17:27:03），
+ * 跑着的那几分钟里读不到 —— 想在那时回填 task 用 `statusChildren`。
  */
 function receiptChildren(dir: string): Child[] {
   const wf = statusObject(dir, "workflow-receipt.json")?.workflowChildren;
   const raw = wf && typeof wf === "object" ? (wf as Record<string, unknown>).children : undefined;
   return Array.isArray(raw) ? pickChildren(raw as unknown[], true) : [];
+}
+
+/**
+ * 盘上记着的孩子清单，依次退：`workflow-receipt.json` → `status.json.workflowChildren.children[]`
+ * → `status.json.steps[].sessionName`。
+ * 后两者都比 receipt 早得多（`steps` 从开跑 ~1 秒起就有），是跑着的那几分钟里唯一能读到任务的
+ * 地方（原文仍在 `options.script` 里，桥不读它）。
+ * `sessionName` 是 runner 截断过的（`reviewer: Code review: STANDARDS axis only, do not modif...`）：
+ * 比「（任务原文没传到桥）」强，但仍不是原文 —— 全文只有子会话 transcript 里有。
+ */
+function recordedChildren(dir: string): Child[] {
+  // receipt 是独立的文件：没有 status.json 也要读它（实测 receipt 比 status.json 晚一分钟多才写，
+  // 但别因为 status.json 缺一眼就把 receipt 里已经有的清单丢掉）。
+  const receipt = receiptChildren(dir);
+  if (receipt.length) return receipt;
+  const obj = statusObject(dir);
+  if (!obj) return [];
+  const inv = obj.workflowChildren;
+  const kids = inv && typeof inv === "object" ? (inv as Record<string, unknown>).children : undefined;
+  if (Array.isArray(kids) && kids.length) return pickChildren(kids, true);
+  return Array.isArray(obj.steps) ? pickChildren(obj.steps, true) : [];
+}
+
+/**
+ * 失败原因取前面几行：runner 的报错常有引用块、换行，整段塞进卡片会把它撑成一堵墙。
+ * 不加工文字，只截断。
+ */
+function clipError(text: string): string | undefined {
+  const lines = text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return undefined;
+  const head = lines.slice(0, 3).join("\n");
+  return head.length > 600 ? `${head.slice(0, 600)}…` : head;
+}
+
+/**
+ * agent / task 的回填：几处读盘的地方（建卡、`bg.log`、prune 滴答）都顺手补一眼。
+ * 返回是否改过 —— `prune()` 靠它决定要不要推一次快照。
+ */
+function backfillNames(run: BgRun): boolean {
+  if (run.source !== "subagents" || !run.dir || (run.agent && run.task)) return false;
+  const summary = summarizeChildren(recordedChildren(run.dir));
+  let changed = false;
+  if (!run.agent && summary.agent) {
+    run.agent = summary.agent;
+    changed = true;
+  }
+  if (!run.task && summary.task) {
+    run.task = summary.task;
+    changed = true;
+  }
+  return changed;
 }
 
 /**
@@ -601,6 +662,10 @@ export class BgRuns {
       const out = foregroundOutput(text, 20_000);
       if (out) known.outText = out;
       known.children = fgChildren(id, known.startedAt);
+      // 失败时 runner 的报错只在这条工具结果里（`workflow: true` 但同一条消息没写 ```js 块
+      // 就是这么挂的）。不存下来的话，卡片只有「失败 · 0:00」和两行占位字。
+      // `??=` 而不是赋值：与完成通知那条（`noteText`）同一个语义 —— 只补空位。
+      if (failed && !known.outText) known.error ??= clipError(text);
       this.end(id, failed ? "failed" : "done");
       return;
     }
@@ -620,11 +685,15 @@ export class BgRuns {
     // （pi-subagents 落盘时把任务原文打成 `[prompt redacted]`，只有 args 里还是原话）。
     const fromText = AGENT.exec(text);
     // workflow 的派活把原文藏在 `args.args.tasks[]` / `details.workflowChildren.children[]` 里，
-    // 顶层两个字段都是空的（D185）。这两个位置只在 pi-subagents 侧有意义。
+    // 顶层两个字段都是空的（D185）。脚本式 workflow 两者都没有（脚本在 `options.script` 里），
+    // 所以再加一步：`status.json` 已经在的话，从它里面读孩子。
+    const dir = source === "subagents" ? str(d.asyncDir) : undefined;
+    const inside = dir && underSubagents(resolve(dir)) ? dir : undefined;
     let kids: Child[] = [];
     if (source === "subagents") {
       kids = taskList(a);
       if (!kids.length) kids = childList(d);
+      if (!kids.length && inside) kids = recordedChildren(inside);
     }
     const childSummary = summarizeChildren(kids);
     const agent = (str(d.agent) ?? str(a.agent) ?? fromText?.[1] ?? fromText?.[2] ?? childSummary.agent ?? "").trim();
@@ -639,12 +708,11 @@ export class BgRuns {
       // pi-subagents 的 asyncDir 布局是公开契约（它自己的 docs/observability.md「Async run artifacts」）：
       // `status.json` 的 `outputFile` 就是实时过程记录，`subagent-log-<id>.md` 是完成态摘要。
       // workflow 两者都没有：过程记录退到 `events.jsonl`，最终答复由 `workflowOutput()` 现拼。
-      const dir = str(d.asyncDir);
-      if (dir && underSubagents(resolve(dir))) {
-        run.dir = dir;
-        const out = logPathFor(dir, workflow);
+      if (inside) {
+        run.dir = inside;
+        const out = logPathFor(inside, workflow);
         if (out) run.logPath = out;
-        if (!workflow) run.outPath = join(dir, `subagent-log-${id}.md`);
+        if (!workflow) run.outPath = join(inside, `subagent-log-${id}.md`);
       }
     }
     this.runs.set(id, run);
@@ -665,6 +733,8 @@ export class BgRuns {
       if (!run || run.state !== "running") continue;
       run.state = FAILED.test(text) ? "failed" : "done";
       run.endedAt = Date.now();
+      // 完成通知里那句「failed: …」往往是后端唯一的失败原因。
+      if (run.state === "failed" && !run.outText) run.error ??= clipError(text);
       touched = true;
     }
     if (touched) this.onChange();
@@ -691,6 +761,7 @@ export class BgRuns {
         hasLog: r.foreground ? Boolean(r.children?.length) : Boolean(r.logPath),
         // workflow 的答复在 `status.json` 里现拼：跑完才有，别在 running 时撒谎说「有输出」。
         hasOut: r.foreground ? Boolean(r.outText) : r.workflow ? r.state !== "running" : Boolean(r.outPath),
+        ...(r.error ? { error: r.error } : {}),
       }));
   }
 
@@ -740,6 +811,10 @@ export class BgRuns {
     const run = this.runs.get(id);
     if (!run) return {};
     const view: { run?: BgRun; log?: string; out?: string } = { run };
+    // 卡片刚立起来时 `status.json` 往往还没落盘（实测派活后 ~1.4 s），而 `prune()` 的滴答是
+    // 30 秒 —— 脚本式 workflow 的孩子清单就落在那里面。`bg.log` 每 1.5 秒来一次，在这里顺手
+    // 补一眼；不回写 `onChange()`：页面每个滴答本来就会再要一次 `bg.list`（同 `logPath` 的补法）。
+    backfillNames(run);
     if (run.foreground) {
       // 前台派活没有可 tail 的文件：过程 = 孩子们 `status.json` 现拼的时间线。
       const text = fgTimeline(run, limit);
@@ -849,18 +924,9 @@ export class BgRuns {
             const out = logPathFor(run.dir, Boolean(run.workflow));
             if (out) run.logPath = out;
           }
-          if (run.workflow && (!run.agent || !run.task)) {
-            // 脚本式 workflow 的孩子清单可能晚于派活那刻才齐：agent / task 空着的在这里补。
-            const summary = summarizeChildren(receiptChildren(run.dir));
-            if (!run.agent && summary.agent) {
-              run.agent = summary.agent;
-              changed = true;
-            }
-            if (!run.task && summary.task) {
-              run.task = summary.task;
-              changed = true;
-            }
-          }
+          // 脚本式 workflow：派活那一刻 args 里没有 `tasks[]`（脚本在 `options.script`），
+          // 而 receipt 要等跑完才写，所以名字与原文在这里按 `status.json` 补。
+          if (backfillNames(run)) changed = true;
           const st = statusField(run.dir, "state");
           if (st === "complete" || st === "completed") {
             this.end(id, "done");
