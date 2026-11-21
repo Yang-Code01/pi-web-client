@@ -13,11 +13,19 @@ export function psQuote(value) {
  * 循环窗口脚本。PS 5.1 按 ANSI 读无 BOM 文件；窗口标题与路径都可能是中文，必须带 BOM。
  * 直接跑 node，别经过 npm：npm.cmd 把窗口标题改回 PowerShell，那扇窗口就认不出来了。
  * 分支每轮现查：脚本只在开窗那次写，复用窗口时写死的分支名就过期了。
+ *
+ * 编码：桥的日志是 UTF-8，PS 5.1 在真控制台里却按代码页（简中是 936）解原生命令的输出 ——
+ * 中文于是变成「宸插惎鍔紝」这类乱码，控制台和 Tee 到磁盘的日志一起烂（D378）。
+ * `[Console]::OutputEncoding` 是那条解码路径的开关：指到无 BOM 的 UTF-8（带 BOM 会让
+ * 每次写窗口多一个 U+FEFF）。放在 `while` 外面一次就够。它只换 .NET 解原生输出这一条路径：
+ * 实测设完 `chcp` 仍报 936（控制台代码页没动），所以不用再补 `chcp 65001` 之类的动作。
  */
 export function windowScript({ repo, port, node, live, relaunch }) {
   return [
     `\uFEFF$host.ui.RawUI.WindowTitle = 'pi bridge · ${port}'`,
     `Set-Location -LiteralPath ${psQuote(repo)}`,
+    // 老系统/被改过的控制台可能不给设：设不了就退回原样，别让开窗这一步炸掉。
+    "try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }",
     `$relaunch = ${psQuote(relaunch)}`,
     "Remove-Item -LiteralPath $relaunch -Force -ErrorAction SilentlyContinue",
     "while ($true) {",
