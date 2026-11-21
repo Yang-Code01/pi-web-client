@@ -4303,7 +4303,7 @@ export class App {
     const themeChips = el("div", "chips theme-chips");
     for (const t of THEMES) themeChips.append(themeChipEl(t, this.prefs.theme, () => this.sheet, (id) => this.pickTheme(id)));
     const themePanel = section("theme");
-    const themeRow = this.stRow(tr("外观主题"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效"), themeChips);
+    const themeRow = this.stRow(tr("外观主题"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、圆角气泡、弹簧动效"), themeChips);
     themeRow.classList.add("wide");
     themePanel.append(themeRow);
     // Mac 主题下多出来的几颗快捷键（installShortcuts 里的 MAC_KEYS）：Mac 上显示 ⌘，别处显示 Ctrl。
@@ -4671,7 +4671,6 @@ export class App {
   private licensesRow(): HTMLElement {
     const wrap = el("div", "set-notices");
     const row = el("button", "set-copy") as HTMLButtonElement;
-    row.title = tr("第三方组件的许可证与版权声明");
     row.append(el("span", "k", tr("开源许可")), el("span", "v", tr("第三方组件的版权与许可声明")));
     const pre = el("pre", "notices-text");
     pre.hidden = true;

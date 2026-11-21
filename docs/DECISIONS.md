@@ -5200,7 +5200,7 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **验证：**
 
 - `npm run test:mail`：`bridge/tests/mail-unit.mjs` 68/68、`mail-list-unit.mjs` 43/43（新增 cid 元数据、`keepCidLinks`、`htmlToText` 图片标记、无 disposition 的内嵌图、截断前去掉 head/style）、`web/tests/mail-unit.mjs` 15/15（新增 `cidKey`、`inlineImageMap`、`srcset` 首个候选、CSP 默认/放行远程图）。
-- 真信箱（作者自测的一个信箱）：uid=1328 面板渲染 11 张内嵌图（naturalWidth 800、iframe 高度 4,703px），附件区只列 `resume.pdf · 152 KB`；uid=1321 远程图 92 张，默认 `img[data-mc-blocked]` 全部收起、iframe 419px，点「显示图片（92）」后 92 张 `src` 全部恢复为原 `https://...`。
+- 真信箱（作者自测的一个信箱，地址已脱敏，见 D362）：uid=1328 面板渲染 11 张内嵌图（naturalWidth 800、iframe 高度 4,703px），附件区只列 `resume.pdf · 152 KB`；uid=1321 远程图 92 张，默认 `img[data-mc-blocked]` 全部收起、iframe 419px，点「显示图片（92）」后 92 张 `src` 全部恢复为原 `https://...`。
 - `mail_image` 工具口实测 uid=1328 index=0：`image/jpeg`、61,660 字节、base64 82,216 字符；`mail_read` 回 12 个附件（11 inline + 1 PDF），HTML 保留 `cid:` 且截断在 20,029 字。
 - `npm run test:mail:html`（真 Chromium）：script/iframe/on*/javascript: 清理、`cid:` 映射、`srcset`-only 图、远程图拦截与放行 CSP 全绿；`npm run test:permission` 也覆盖 `mail_image` 在只读模式放行、`mail_attachment` / `mail_send` 被拦。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3180 键 × 3 + viewport）、`npm run build` 全绿。
@@ -6945,18 +6945,18 @@ Esc 之后 dialog: 0
 
 ## D362 公开仓库里的真第三方隐私要脱敏，作者自己的现场路径不动（2026-11-21）
 
-**症状。** 这是一份公开仓库（Apache-2.0），但两处验证记录里直接写了作者的真信箱 `1304049579@qq.com`，其中一条还带着别人投递的简历文件名 `Jenil_Soni_-_Resume.pdf`；`docs/shots/peer-chat.png` 更是整块个人主目录的截图（`C:\Users\GG_Bond` 下的 `AI`、`clip`、`ansel`、`Contacts`、`Cookies`…），而且它是个**孤儿文件**：三份 README 引用的是 `peer-agent.png`（正常的对话截图，没有 PII），没有任何文档引用 `peer-chat.png`。邮箱同时是 git 历史的作者地址，也出现在 D229 的「真信箱（…）」证据行里。
+**症状。** 这是一份公开仓库（Apache-2.0），但两处验证记录里直接写了作者的真信箱（QQ 邮箱，地址在正文里已换成描述），其中一条还带着别人投递的简历文件名（`…_Resume.pdf`）；`docs/shots/peer-chat.png` 更是整块个人主目录的截图（`C:\Users\GG_Bond` 下的 `AI`、`clip`、`ansel`、`Contacts`、`Cookies`…），而且它是个**孤儿文件**：三份 README 引用的是 `peer-agent.png`（正常的对话截图，没有 PII），没有任何文档引用 `peer-chat.png`。邮箱同时是 git 历史的作者地址，也出现在 D229 的「真信箱（…）」证据行里。
 
 **决定。** 只处理**真第三方**的隐私，作者自己的现场记录照 D114 不动。
 
-- 两处 `真信箱（1304049579@qq.com…）` 改成 `真信箱（作者自测的一个信箱…）`，附件名改成 `resume.pdf`，都在句子后标「见 D362」，让读者知道这里被改过、而不是原本就没有。
-- `docs/shots/peer-chat.png` 直接删掉（孤儿 + 个人主目录）。`git log --diff-filter=D` 还找得到，`peer-agent.png` 不受影响。
+- 两处「真信箱（真地址）」改成「真信箱（作者自测的一个信箱…）」，附件名改成 `resume.pdf`，都在句子后标「见 D362」，让读者知道这里被改过、而不是原本就没有。这条记录自己也只写掩码 —— 把原串抄进来，守卫一 grep 就红，等于没脱敏。
+- `docs/shots/peer-chat.png`（`C:\Users\GG_Bond` 的完整目录清单）与 `docs/shots/peer-picker-new.png`（`C:\Users\yangqm.HYRON-JS` 与对端主机名 `DESKTOP-VANQ2M`）直接删掉：两张都是孤儿，没有任何文档引用。`git log --diff-filter=D` 还找得到，`peer-agent.png` 不受影响；`peer-picker.png` 留着（只露 `F:\pi-web-client\docs\shots`）。
 - `docs/shots/xlsx-ribbon.png` **保留**：它露出的只是本仓库自己的工作树路径（`F:\pi-web-client-wt\feat\xlsx-render\.scratch\…`）与分支名，没有第三方身份信息，属于 D114 说的「当时怎么验的现场记录」。想重拍时注意 `probes/xlsx.mjs` 现在在 `openSession()` 就红（1440×900 下 `.topbar .icon-btn.wide` 的「文件管理器」是 hidden，等了 15 秒），得先修探针，别拿它当重拍工具。
 - **历史 commit 不改：** 改写历史会让所有 fork、PR 引用与 issue 里的 SHA 全部失效，收益只是把一个已经公开过的信箱从 packfile 里挪走 —— 与 D114 的取向一致，也避免不可逆的操作。真要清理得整库重建，那不是一个文档 PR 该做的事。
 
 **代价。** 被删的图和被改的字都不再是「原样证据」，但两句都留了指向 D362 的标记，读者能分清「当时就是这样」与「这里被脱敏了」。git 历史里的信箱仍可被 `git log -p` 翻到。
 
-**守卫。** `grep -rn '1304049579\|Jenil_Soni' docs README*.md` 为空；`docs/shots/` 下不再有个人目录截图；`git config user.email` 已是 GitHub noreply 地址（`57058104+Yang-Code01@users.noreply.github.com`），新提交不再写真实信箱。
+**守卫。** `grep -rn '13040495[0-9][0-9]\|Jenil_Son[i]' docs README*.md` 为空（正则里各拆一位，免得这行自己命中 —— 这条记录自己也只写掩码）；`docs/shots/` 下不再有个人主目录清单的截图；`git config user.email` 已是 GitHub noreply 地址（`57058104+Yang-Code01@users.noreply.github.com`），新提交不再写真实信箱。
 
 ## D363 局域网聊天仍叫「内网通」：名字撞了商业产品，但这是一个私有项目的功能名（2026-11-21）
 
@@ -6985,10 +6985,10 @@ Esc 之后 dialog: 0
 
 - `docs/SHEET-WPS.md` 顶部加一节「参照物与边界」：取用的只有函数名与格式代码两类公开事实，没有取用图标/皮肤/位图/翻译文件/代码；文档保留原样清单是为了可复核。正文里「逐字照抄」「值得抄」改成「原样记下来」「值得对齐」，对照表表头改成「WPS / Excel 的命令」，灯位说明改成「排法与 Excel / WPS 一致」。
 - `bridge/src/sheet/numfmt.ts:2-5`、`web/src/sheet/ribbon.ts:2,10-12,15` 的注释改成同一口径：按 Excel 的格式语法重写、用本机 WPS 的 cfg 做对照、命令名用 Excel 中文界面的通用叫法。
-- `web/src/mac.css`、`web/src/peer/peer-mac.css` 里的「iMessage 气泡」改成「圆角气泡」；`web/src/mac-base.css` 头注释加一条：壁纸是 CSS 渐变、圆角/阴影/缓动是自己写的数值，没有 Apple 的图片、图标或字体，名字里出现 macOS 只是描述观感。
+- `web/src/mac.css`、`web/src/peer/peer-mac.css` 小节标题里的「iMessage 气泡」，以及 `web/src/app.ts` 主题说明那句里的「iMessage 气泡」，都改成「圆角气泡」（`en.ts` / `ja.ts` 的三语译文同步换键）；`web/src/mac-base.css` 头注释加一条：壁纸是 CSS 渐变、圆角/阴影/缓动是自己写的数值，没有 Apple 的图片、图标或字体，名字里出现 macOS 只是描述观感。
 - `web/src/peer/emoji.ts:4` 改成「排法跟 macOS 的表情面板一样」（描述布局，不声明来历）。
 - 三份 README 在「许可」前加一节「与别人的东西的关系」：非官方前端（上游 `@earendil-works/pi-coding-agent`，MIT，© Mario Zechner，地址取自该包的 `repository` 字段）、商标归各自主人且不使用其图标、表格对标 Excel 的公开约定、Mac 风格与「内网通」名字的说明。
 
 **代价。** 文档里不再有「照抄」这种直白说法，读者得看「参照物与边界」才知道那些清单是怎么来的；两处注释变长了几行。功能行为、产物像素一个都没变。
 
-**守卫。** `grep -rn '逐字照抄\|照 WPS 抄' docs web bridge --include=*.md --include=*.ts` 只剩 D364 自己在引述旧说法（其余为空）；三份 README 都有那一节（`grep -c '与别人的东西的关系\|How this relates\|他の人のものとの関係' README.md README.en.md README.ja.md` 各 1）；`npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck` 照旧全绿（只动注释与文档）。
+**守卫。** `grep -rn '逐字照抄\|照 WPS 抄' docs web bridge --include=*.md --include=*.ts` 只剩 D364 自己在引述旧说法（其余为空）；`grep -rn 'iMessage' web/src` 只剩 `mac-base.css` 头注释里「名字里出现 macOS / iMessage 只是描述观感（D364）」这一句；三份 README 都有那一节（`grep -c '与别人的东西的关系\|How this relates\|他の人のものとの関係' README.md README.en.md README.ja.md` 各 1）；`npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck` 照旧全绿（只动注释与文档）。

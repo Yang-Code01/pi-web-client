@@ -67,7 +67,7 @@ html[data-ui="mac"] :is(.head, .pinbar, .searchbar) {
 html[data-ui="mac"] .compose { background: transparent; border-top: 0; }
 html[data-ui="mac"] .day { letter-spacing: 0; font-family: var(--sans); font-weight: 500; }
 
-/* ---------------------------------------------------------------- 气泡：iMessage */
+/* ---------------------------------------------------------------- 气泡：圆角 */
 html[data-ui="mac"] .bub {
   border: 0.5px solid var(--mac-glass-line);
   border-radius: 18px 18px 18px 6px;

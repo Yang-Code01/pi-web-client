@@ -105,7 +105,7 @@ html[data-ui="mac"] .session-card.active:hover {
 html[data-ui="mac"] .session-card.active .name { color: var(--text); font-weight: 600; }
 html[data-ui="mac"] .session-card .src-tag { border-radius: 5px; border-color: transparent; background: var(--mac-fill-2); }
 
-/* ---------------------------------------------------------------- 2c. 对话：iMessage 式气泡 */
+/* ---------------------------------------------------------------- 2c. 对话：圆角气泡 */
 html[data-ui="mac"] .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
 html[data-ui="mac"] .msg.user .who { margin-right: 6px; }
 html[data-ui="mac"] .msg.user .body {
