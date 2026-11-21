@@ -11,6 +11,7 @@ import { createEl as el } from "./chat.ts";
 import { api } from "./api.ts";
 import { errText, fmtRelative, tr } from "./i18n/index.ts";
 import type { GitCommit, GitCommitDetail, GitDiff, GitDiffFile, GitExecResult, GitHistory, GitOpParams, GitRefs, GitWorktreeState } from "./types.ts";
+import { retireOverlay } from "./modal.ts";
 import { GIT_OPS, MANUAL_FILTERS, OPS_BY_ID, OP_GROUPS, opFrames, buildHandoffPrompt, type GitOpDef } from "./git-ops.ts";
 import { sessionNameFromBranchRef } from "./session-name.ts";
 
@@ -222,8 +223,9 @@ export class BranchSheet {
 
   close(): void {
     if (this.esc) document.removeEventListener("keydown", this.esc, true);
+    // embedded 时 `sheet` 是别的面板里的一块子区域，退场会把整张父面板一起拖下水，只能直接拆。
     if (this.embedded) this.sheet.remove();
-    else this.root.remove();
+    else retireOverlay(this.root);
     this.onClose?.();
   }
 

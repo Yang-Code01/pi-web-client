@@ -6736,3 +6736,21 @@ Esc 之后 dialog: 0
 - 钉条里当前会话那颗胶囊是实心强调色底，里面的状态小字（运行中 / 进行中）和 ★ 也是强调色，叠在一起看不见。选中胶囊里一律跟胶囊白字走。
 
 **守卫。** `node probes/mac-chat.mjs`：四套主题下量短气泡单行、气泡贴右、选中胶囊对比度，并扫整页「自己带字、对比度 < 2」的元素（展开 / 收起左栏各一遍）。
+
+## D352 Mac 风格：弹层外壳清单集中一处，自管弹层的退场走同一个出口（用户报「只有 Everything 不兼容」2026-11-21）
+
+**症状。** 同一份 CSS 下，产物（`.st-back`）是毛玻璃 + 浅遮罩 + 460ms 窗口入场，Everything（`.sys-back`）还是深黑遮罩 + 纯白面板 + 没有动画；bug 反馈（`.notes-sheet`）居中却演成底部抽屉。
+
+**根因。** `mac.css` 的白名单只认 `.st-console` / `.sheet` / `.modal form` / `.argdialog-panel` 四个外壳类，而 `sys` / `jc` / `mc` 是系统管理 / Jira / 邮箱各抄一份的控制台（`sysmanage.css:3-30`、`jira-console.css:5-30`、`mail-console.css:3-30` 三段几乎逐行相同），一个都不在名单里；零散弹层（`.jira-ask`、`.peer-pick`、`.image-view`、`.sheet-sub-back`、`.choose-back`、`.jira-picker`）同理。笔记面板没挂 `.center` 类，被 `.sheet-back:not(.center)` 判成抽屉。
+
+**决定。**
+- 外壳清单在 `web/src/mac.css` 一处写全：遮罩组 `:is(.st-back, .sheet-back, .modal, .sys-back, .jc-back, .mc-back, .jira-ask-back, .jira-picker, .sheet-sub-back, .choose-back, .peer-pick, .image-view)`，窗口组 `:is(.st-console, .sheet, .modal form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .mc-confirm, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box)`。尺寸与内部布局仍留各自文件，`mac.css` 只管材质、圆角 14px、入场与退场。**同一套控制台里再分出的小卡片也要单独写进名单**：邮箱的发信确认框外壳是 `.mc-back`、面板却叫 `.mc-confirm`（`mail-console.css:957`），只收 `.mc-console` 会让它退回纯色面板 —— 第一版就是这么漏的，review 才逮到。
+- 笔记面板按名字判（`.sheet-back.notes-back .sheet` 播 `mac-window-in`），不靠没人维护的 `.center`；随手问是右侧抽屉，单独 `mac-side-in`。
+- 退场：`web/src/modal.ts` 新增 `startLeaving(node)`（判 `html[data-ui="mac"]` + reduced-motion，加 `.mac-leaving` / `inert`）、`LEAVE_MS = 210`、`retireOverlay(node)`。sysmanage / jira（面板与选目录）/ mail / mailconfirm / notesheet（面板与选人框）/ hotdeploy / branchsheet / repossheet / translateview / app 的子弹层一律换 `retireOverlay`。原来是 `node.remove()`，Mac 下没有退场。`branchsheet` 的 `embedded` 分支不换：那 `sheet` 是别的面板里的一块，退场会把父面板一起拖下水。
+- app.ts 里那个私有版本改名为 `retireSheet`，**只给 `this.sheet` 本身用**：它多一段「同一轮又开了新面板就当场拆旧的、给新的挂 `mac-instant`」的判定，而灯箱 / 小选择器是**浮在 sheet 之上**的浮层，关闭时底下那张 sheet 本来就还在，走它会误判成同帧重开 —— 动画被掐掉，还给 sheet 挂上一个永不摘掉的 `mac-instant`。浮层一律调 `modal.ts` 的 `retireOverlay`。
+
+**为什么不是逐文件加规则。** 三套控制台是复制粘贴出来的，下一套新控制台再抄一遍时，只有「清单在 `mac.css` 里、守卫会数」才拦得住；分散到 `sysmanage.css` 之类的文件里，下次照样漏。
+
+**守卫。** `npm --prefix web run build && node probes/mac-dialogs.mjs`：真 Chromium 起一份隔离 bridge，真开 Everything / 产物 / 笔记 / 设置四层，另注 16 个骨架，逐项跟「产物」对齐遮罩 blur 与动画名、面板动画与圆角、阴影；另对 10 个外壳家族注入 `.mac-leaving` 断言面板拿到 `mac-window-out`（这条查 CSS 白名单，不依赖哪个模块记得调 JS）；再在 700px 视口下断言铺满整屏的仓库面板圆角与边框都是 0。21 行全绿才过；`.choose`（alert 形，缩放淡入）和灯箱（图不是窗口，12px）写成带 label 的豁免表，表里任何一条对不上实测行也红 —— 免得改了骨架名就静默失效。
+
+**特异性的坑（写覆盖规则时先数一遍）。** 窗口组那条 `:is()` 的参数里有 `.modal form`，所以整条的特异性是 `(0,2,2)` 而不是 `(0,2,1)` —— `:is()` 取参数里最高的那个。窄屏复位写成 `html[data-ui="mac"] .repos-sheet`（`(0,2,1)`）压不过它，`border: 0` 静默失效、只剩圆角生效；改成 `html[data-ui="mac"] .sheet-back .repos-sheet`（`(0,3,1)`）才对。窄屏那条用 `@media (max-width: 720px)` 而不是 `@container`：面板铺满整屏时已经没有「自己的宽度」可判。

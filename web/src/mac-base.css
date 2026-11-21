@@ -129,6 +129,8 @@ html[data-ui="mac"] :is(button, a, [role="button"], [role="tab"], [role="menuite
 @keyframes mac-window-in { from { opacity: 0; translate: 0 -26px; scale: 0.94; } }
 @keyframes mac-window-out { to { opacity: 0; translate: 0 -14px; scale: 0.96; } }
 @keyframes mac-drawer-in { from { opacity: 0.4; translate: 0 48px; } }
+/* 右侧抽屉（随手问）：从右边推进来，幅度比窗口小——它贴着屏幕边。 */
+@keyframes mac-side-in { from { opacity: 0; translate: 28px 0; } }
 @keyframes mac-menu-in { from { opacity: 0; scale: 0.92; translate: 0 -4px; } }
 @keyframes mac-toast-in { from { opacity: 0; translate: 0 18px; scale: 0.96; } }
 @keyframes mac-bubble-in { from { opacity: 0; scale: 0.9; translate: 0 8px; } }
