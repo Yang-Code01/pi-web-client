@@ -8,6 +8,7 @@
  */
 import { spawn } from "node:child_process";
 import { piChildEnv } from "./paths.ts";
+import { trustInfo } from "./pisettings.ts";
 
 export type PiCliOp =
   | { op: "pkg.list"; cwd?: string }
@@ -124,13 +125,23 @@ export function parsePackages(out: string): PackageRow[] {
 }
 
 /** Run one op. `onOutput` gets stdout+stderr as it arrives; resolves with the exit code and parsed data. */
-export function runPiCli(
+export async function runPiCli(
   cli: string,
   req: Record<string, unknown>,
   onOutput: (chunk: string) => void,
-): { done: Promise<{ code: number | null; data: unknown; output: string }>; kill: () => void } {
+): Promise<{ done: Promise<{ code: number | null; data: unknown; output: string }>; kill: () => void }> {
   const { args, timeoutMs, parse } = buildArgs(req);
-  const cwd = typeof req.cwd === "string" && req.cwd ? req.cwd : process.cwd();
+  const projectCwd = typeof req.cwd === "string" && req.cwd ? req.cwd : null;
+  const cwd = projectCwd ?? process.cwd();
+  // D370: project-scope probes (`pi mcp list`, project installs) must see the project's `.pi` the
+  // same way sessions do — undecided + global ask is trusted, so ask pi for `--approve` too.
+  const trust = projectCwd
+    ? await trustInfo(cli, projectCwd).catch((err) => {
+        console.error(`[trust] 读不到 ${projectCwd} 的信任状态，按未信任处理：`, err);
+        return null;
+      })
+    : null;
+  if (trust && trust.needed && !trust.saved && trust.fallback === "ask") args.unshift("--approve");
   const env = piChildEnv();
   const child = spawn(process.execPath, [cli, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let stdout = "";

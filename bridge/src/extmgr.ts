@@ -48,7 +48,7 @@ export interface Inventory {
 }
 
 async function cli(cliPath: string, req: Record<string, unknown>): Promise<{ code: number | null; data: unknown; output: string }> {
-  return runPiCli(cliPath, req, () => {}).done;
+  return (await runPiCli(cliPath, req, () => {})).done;
 }
 
 /** Both `packages` lists (global, and the project's when there is a cwd) — unreadable ones become null. */

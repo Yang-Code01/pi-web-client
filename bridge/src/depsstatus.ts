@@ -42,7 +42,7 @@ export function readBootstrapRun(): BootstrapRun | null {
 }
 
 export async function depsReport(cliPath: string, piVersion: string): Promise<DepsReport> {
-  const list = await runPiCli(cliPath, { op: "pkg.list" }, () => {}).done;
+  const list = await (await runPiCli(cliPath, { op: "pkg.list" }, () => {})).done;
   const rows = Array.isArray(list.data) ? (list.data as ListedPackage[]) : [];
   const found = foundPackages(rows, readPackageJson);
   const packages = depStatus(found);

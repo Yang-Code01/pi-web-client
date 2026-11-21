@@ -140,7 +140,7 @@ export interface TrustInfo {
   needed: boolean;
   /** Saved decision that applies (closest folder up), or null. */
   saved: { path: string; decision: boolean } | null;
-  /** Global `defaultProjectTrust`; RPC cannot ask, so "ask" behaves like "never". */
+  /** Global `defaultProjectTrust`. RPC cannot ask, so the web reads "ask" as "trust" (D370). */
   fallback: "ask" | "always" | "never";
   /** What the web's pi will do right now. */
   effective: boolean;
@@ -155,7 +155,7 @@ export async function trustInfo(cli: string, cwd: string): Promise<TrustInfo> {
   const entry = store.getEntry(cwd) as { path: string; decision: boolean } | null;
   const raw = readJson<{ defaultProjectTrust?: unknown }>(path.join(agentDir(), "settings.json"), {}).defaultProjectTrust;
   const fallback = raw === "always" || raw === "never" ? raw : "ask";
-  const effective = entry ? entry.decision : fallback === "always";
+  const effective = entry ? entry.decision : fallback !== "never";
   const options = (mod.getProjectTrustOptions(cwd) as { label: string; trusted: boolean }[]).map((o) => ({ label: o.label, trusted: o.trusted }));
   return { cwd, needed, saved: entry, fallback, effective, options };
 }
