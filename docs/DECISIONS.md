@@ -6947,7 +6947,7 @@ Esc 之后 dialog: 0
 
 **症状。** 这是一份公开仓库（Apache-2.0），但两处验证记录里直接写了作者的真信箱（QQ 邮箱，地址在正文里已换成描述），其中一条还带着别人投递的简历文件名（`…_Resume.pdf`）；`docs/shots/peer-chat.png` 更是整块个人主目录的截图（`C:\Users\GG_Bond` 下的 `AI`、`clip`、`ansel`、`Contacts`、`Cookies`…），而且它是个**孤儿文件**：三份 README 引用的是 `peer-agent.png`（正常的对话截图，没有 PII），没有任何文档引用 `peer-chat.png`。邮箱同时是 git 历史的作者地址，也出现在 D229 的「真信箱（…）」证据行里。
 
-**决定。** 只处理**真第三方**的隐私，作者自己的现场记录照 D114 不动。
+**决定。** 分两类处理，**不是**按「谁的隐私」分：**有证据价值的验证记录**（工作树路径、分支名、命令输出）照 D114 不动 —— 包括 README 图里 `E:\yqm\pi-web-client` 这种项目路径；**孤儿截图里任何人（含作者本人）的家庭目录清单**一律删掉，它不承担任何证据作用，留着只暴露账号名与机器名。
 
 - 两处「真信箱（真地址）」改成「真信箱（作者自测的一个信箱…）」，附件名改成 `resume.pdf`，都在句子后标「见 D362」，让读者知道这里被改过、而不是原本就没有。这条记录自己也只写掩码 —— 把原串抄进来，守卫一 grep 就红，等于没脱敏。
 - `docs/shots/peer-chat.png`（`C:\Users\GG_Bond` 的完整目录清单）与 `docs/shots/peer-picker-new.png`（`C:\Users\yangqm.HYRON-JS` 与对端主机名 `DESKTOP-VANQ2M`）直接删掉：两张都是孤儿，没有任何文档引用。`git log --diff-filter=D` 还找得到，`peer-agent.png` 不受影响；`peer-picker.png` 留着（只露 `F:\pi-web-client\docs\shots`）。
