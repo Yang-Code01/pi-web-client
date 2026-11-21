@@ -824,7 +824,7 @@
    - 运行中能改的四项（引导 / 后续消息的处理方式、自动压缩、自动重试）保存时顺带用 RPC `set_*` 应用到当前会话。其余设置要 `/reload`：网页里的 reload 就是重启这个会话的 pi，历史在磁盘上。`/changelog` 读 pi 包里的 `CHANGELOG.md`。
 3. **项目信任（#21）**：用 pi 的 `ProjectTrustStore`、`hasTrustRequiringProjectResources`、`getProjectTrustOptions`，选项和终端 `/trust` 完全相同，决定写进 `<agentDir>/trust.json`。
    - 会话快照带上 `trust`。项目需要信任、又没有保存过决定、实际也不会加载时，输入框上方出现提示条。
-   - **不做**「仅本次信任」（`--approve`）：网页里的会话会反复重启 pi，一次性的决定没有落脚的地方。要么保存，要么不信任。**（被 D367 取代的部分）**：未决定 + 全局 `ask` 时由桥自动补 `--approve`（未决定按信任处理）；仍然不提供「仅本次」的按钮。
+   - **不做**「仅本次信任」（`--approve`）：网页里的会话会反复重启 pi，一次性的决定没有落脚的地方。要么保存，要么不信任。**（被 D370 取代的部分）**：未决定 + 全局 `ask` 时由桥自动补 `--approve`（未决定按信任处理）；仍然不提供「仅本次」的按钮。
 4. **启动参数（#28）**：新建会话的「高级」里可以设 `--model` `--thinking` `--tools` `--no-builtin-tools` `-e` `--skill` `--append-system-prompt` `-ne` `-nc` `--no-mcp` `--offline`。
    - `launch.ts` 在拉起进程**之前**校验：一个字段一条规则，`--tools` 不能把普通名字和 `+x` / `-x` 混用（pi 也拒绝）。
    - 参数存在 `state/launch/<id>.json`，每次这个会话的 pi 启动（含接管、`/reload`）都带上；审批门禁的 `-e` 始终在最前面。
@@ -7026,8 +7026,73 @@ Esc 之后 dialog: 0
 **代价。** 用 `PI_WEB_STATE` 起的实例（测试环境、多开）升级后各自要重登一次；默认实例不受影响。cookie 名不再是一个固定字符串 —— 本机现在会同时有 `pwc` 与 `pwc_<hash>`，排查时别只 `grep pwc=`。state 目录搬家等于换了实例身份，得重新登录。
 
 **守卫。** `bridge/tests/auth-cookie-scope.mjs`：开三份真实桥（A、B 各自 state 目录，另有一份**不设 `PI_WEB_STATE`** 的默认实例），用一个**忽略端口**的 cookie 罐走真实 HTTP —— 登录 A、再登录 B，回头问 A 的 `/api/me` 必须仍是 200，且两枚 cookie 名不同；把 B 的 cookie 原样递给 A 必须 401（名字分开不等于密钥共享）；默认实例登录后拿到的名字必须是 `pwc`（升级不用重登）。把 cookie 名改回共用一个，第四条立刻红；把名字改成永远哈希，最后一条红。跑法：`npm --prefix bridge run build && node bridge/tests/auth-cookie-scope.mjs`（约 3 秒）。「默认目录」的判据只认 `bridge/src/paths.ts` 的 `stateDirIsDefault()`，auth 不再自己读 `PI_WEB_STATE`。
+## D367 设置里「装行的容器」是 `.settings-panel`，`.settings-group` 只做小节头（#588 那一页的版面从上线起就是竖的，2026-11-21）
 
-## D367 网页里未决定的项目默认按信任处理：spawn 时补 `--approve`，新用户不再静默丢掉 `.pi` 配置（#21 续，2026-11-21）
+**背景。** #588（D354）在「设置 → 更新日志 → 本项目」里加了一个开关与一行「上次看到」。写的时候把这两行塞进了 `el("div", "settings-group")`，而 `.settings-group` 在设置控制台里是**横排的小节头**（`display: flex; justify-content: space-between`，`settings-console.css`）：于是「小节头 + 两行设置」排成了一条 flex 行，每行只剩一列字的宽度，整页变成一根竖条（实测 435×1002 与 350×551，名字列 17px）。
+
+文字断言拦不住它 —— `querySelector(".settings-row")` / `.settings-name` 照样拿得到，只是高度 1000px。三个会打开这一页的守卫（`bridge/tests/settings-console-ui.mjs`、`bridge/tests/whatsnew-ui.mjs`、`probes/whatsnew-dialog.mjs`）当时都只比文字和点击，所以从 `567dd66` 上线到被发现，没红过一次。
+
+**决定。** 这一页改回全站同一套「小节头 + 面板 + 行」：小节头 `stSection()` 留在外面，两行装进 `.settings-panel`。「上次看到」的值不再借用 `.settings-path`（那是可点路径的样式：`word-break: break-all` + `margin-bottom`），换成新增的 `.settings-value`（等宽一档、长了省略、全文进 `title`）。
+
+- `.settings-group` 从此**只**做小节头。要装行就 `el("div", "settings-panel")`，别拿它当外框 —— 它自己的 `justify-content: space-between` 与 `align-items: baseline` 会把子项当标题栏里的两段文字。
+- 想验证「这一页摆对了」，**只能看几何**：`.settings-row` 高过宽、或名字列超过 2.5 行，就是外层容器错了。文字与 DOM 查询都过得去。
+
+**代价。** 无。这是把一处笔误改回全站模板；`.settings-value` 只多一条样式。
+
+**守卫。** `bridge/tests/whatsnew-ui.mjs` 的 A 段与 `probes/whatsnew-dialog.mjs` 的第 6 段各加一条几何断言（行不能高过宽、名字列不超过 2.5 行），并断言两行确实装在 `.settings-panel` 里；两处本来就会打开这一页，成本为零。**`bridge/tests/settings-console-ui.mjs` 没加**：它自己在 main 上就是红的（左栏分组 / 十项文案 / 头部 scope 的旧断言与后来的改版对不上，B 段之后、G1 直接抛 timeout），那条「每个设置页扫一遍行几何」的通用断言得等它先修好 —— 记在这里，别以为已经覆盖。
+
+## D368 长回答收尾回到第一行，而不是留在末尾（用户报「回答完成后得自己滚回最上面」2026-11-21）
+
+**症状。** 回答流式长出来时视口一直贴底；等它结束，人停在最后一屏，要读开头得自己往上滚好几屏。短回答没有这个问题，只有长到超过一屏的回答才有。
+
+**根因。** 跟流只有往下这一条路：`delta()` 每来一段就 `scrollToEnd()`（`web/src/chat.ts:1321`），`message_end` 的 `replace()` 收尾时又贴一次底；`setRunning(false)` 只重画最后一枚用户气泡的「处理中」，不碰滚动。没有任何一处会在收尾时把视口送回回答开头。
+
+**决定。** 选「收尾回开头」：`running` 从 true 翻成 false、且用户此刻仍在跟流时，把**最后一条 assistant** 的第一行送到视口顶部（留 6px）。做成 `ChatView` 内部的一个收尾动作，不动 app、桥、协议与样式：
+
+- `setRunning()` 记下 `wasRunning`，true → false 后等两帧再量（`replace()` 已经把流式节点换成最终节点，高度要等排版）。
+- `settleScroll()` 只在「最后一块内容就是这条 assistant」时动手：后面还跟着工具卡 / 下一轮用户气泡就不算收尾；手动折叠过的不动；回答不到视口 90% 不动（整段都看得见，动了像页面抽了）；`touching` / `staging` / `pendingJump` / 已经停跟都不动。
+- 动手时置 `following=false`、`unread=false`，先 `renderJump()` 再量（钮显隐会改一点 `scrollHeight`）；`holdFollow = now + 900` 挡住从底部往上跳的头几帧 scroll 事件，避免 `resumeFollowing()` 把视口拽回底部；最后 `scrollTo({behavior:"smooth"})`。目标本来就在最后一屏里（`startTop >= maxScroll - 1`）时留在底部。
+- 不调 `stopFollowing()`：它会报 `onScrollUp`，让提问面板以为人自己往上滚了而收起来。也不调 `jumpToTurn()`：那是定位用户轮次、还会闪用户气泡。
+- `reset()` 静默清 `running` 并取消待跑的帧：换会话 / 重连时旧会话的 true 会让新会话的 false 被当成「刚结束」，不取消就会滚到别人的回答上；app 随后那句 `setRunning(新会话.running)` 因此成为一次真正的跃迁。
+
+**顺带修掉的单位混用（D123）。** `getBoundingClientRect()` 是视觉 px，`scrollTop` 是布局 px，`#app` 上挂着 `zoom: var(--ui-scale)`；原来的 `rect.top - root.top + scrollTop` 在默认字号 125% 时会把目标算大 0.25×局部距离，`scrollTop` 过冲，收尾停在回答首行上方几百像素。新 `contentTopOf(node)` 把 rect 差除以 `--ui-scale` 再相加；`jumpToTurn()` 的同一段也改用它（右侧刻度带跳到轮次时同样受益）。
+
+**代价 / 可改。** 收尾会动一次视口（这正是 A 的定义）；回答在 0.9–1.0 屏之间时首行已经落进最后一屏，`startTop >= maxScroll - 1` 会走 `follow()`，仍停在底部（不会再往上顶）；阈值、6px 呼吸、900ms 冷却、平滑动画都是可调的常量，先按实测手感取这组。用户一旦上滚、手指还在屏上、或收尾后又有新内容，都只点亮「有新内容」，不再自动移动。
+
+**守卫。** 新增 `probes/settle-top.mjs`（`npm run probe:settle`）：长回答收尾停在首行、↓ 可见且无「new」、点 ↓ 回底；短回答也真正流完并收尾一次，视口不动；流式中途上滚不被拽回；收尾后补一条 delta 也不拽回。`probes/scroll-race.mjs`（D68 / D94）、`probes/turn-rail-last.mjs`（D244 / D60）、`probes/rail-click.mjs` 仍要跑；后者把固定 900ms 等待换成了「等滚动停稳」再量落点。`npm --prefix web run typecheck` 全绿。
+
+## D369 一轮恒一个操作框：技能组插到框前，而不是把框收掉（用户截图报障「一次回复中，操作框出现了两次」2026-11-21）
+
+**取代。** D199 决定 7 里「卡到达时页面收掉已经开着的那一掽操作（`closeOps()`）」那句作废：那时以为不收就会把下面那张 read 画进上面那掽，其实只有本轮第一张卡需要挪位，而挪位靠插入位置就够了。D200「组不移动」不变。
+
+**背景。** 会话「模型ui重新设计」的一轮回复里出现了两个操作框：`2 个操作 · read ×1 · bash ×1` 和 `7 个操作 · read ×1 · bash ×6`。那一轮的工具顺序是 `read grill-me/SKILL.md` → `bash` → `read grilling/SKILL.md` → 6 个 `bash`，两次 `skill` 项正好落在两个分界上。
+
+根因是 `web/src/chat.ts` 里 `add()` 的一行：每个 `skill` 项到达都无条件 `closeOps()`。当时的注释说「隐式技能卡是下面那张 read 的前言，不能落在它后面」——这个意图**只对本轮第一张技能卡成立**：技能组只在本轮第一张卡到达时 `push()` 一次、之后不移动（D200），第二张以后的卡只会 `append` 进顶部那个组，本来就到不了自己那次 read 上面。所以那次关框换不来任何版面收益，只把一轮的操作切成两撮。D200 里写的是「拆成两摞」，实际是**每个后续技能各拆一撮**：一轮 N 个技能最多 N 个框。
+
+实测（一次性探针，手写会话 + 私有端口，跑的是与截图同源的构建）：真会话顺序 → `2 | 7`；两个技能连读 `read,read,bash×7` → 仍 `1 | 8`（所以「两个技能之间夹没夹工具」不是必要条件，只要技能到达时模块里已有卡片就拆）；单个技能来晚 `bash,read,bash×7` → `1 | 7`。
+
+一直没被发现，是因为 `probes/skill-group.mjs` 只数 `.skillgroup`、从不断言 `.ops` 数量，而它的 fixture 本身就把一轮拆成了 3 个框。
+
+**决定。** 两条一起改（缺一条都治不干净）：
+
+- `add()` 删掉 `if (item.kind === "skill") this.closeOps();`。
+- `ensureSkillGroup()` 插入组时：本轮已有操作框（`this.opsBox` 且 `parentNode === this.root`）就 `current.before(box)`，否则照旧 `this.push(box)`。
+
+于是「技能卡在所有工具之上」这条从*靠收掉模块*改成*靠插入位置*，而且比从前更彻底（以前只保证在**自己那次** read 上面，现在在**本轮所有**工具上面）；一轮任何到达顺序都只有一个框。**例外**：问答卡与待办卡不住在操作框里（`add()` 里它们直接 `push()` 到会话流），技能组不会为它们让位——先有问答卡、后有技能时，组落在卡下面。D200「组不移动」不变：组仍然只在第一张卡时插入一次，之后只往组里加卡。
+
+为什么不用只加一个条件的版本（`&& !this.skillGroup`）：它只治「同一轮多个技能」，`bash → read 技能 → bash` 这种「第一个技能来在工具之后」仍然两个框——用户下次撞上还是一样的观感。改插入位置以后，那种情形里技能组从两框之间挪到最上面，这是本条唯一会让元素移动的地方。
+
+为什么不改成「技能并进操作框内部」：那要重做 D199 的卡片形态，属于新设计而不是修 bug，另有样张（`.scratch/ops-split/prototype/s4-b-flat.html`）留档，用户选了不改。
+
+**代价。** 技能来晚时（`bash → read 技能 → bash`）技能组的位置从「两框之间」挪到「最上面」，读法从「工具 / 技能 / 工具」变成「技能 / 工具」；组件形态、标题文案、折叠行为都不变。
+
+**守卫。** `probes/skill-group.mjs` 新增按 `.msg.user` 切轮的断言：每轮只有一个 `.ops`、行数等于本轮工具数、标题计数对得上、技能组排在操作框前面。fixture 第二轮故意做成「工具先跑、技能后到」（`bash → read 技能 → bash`），第三轮就是报障那一轮的原序（`read → bash → read → bash×6`，合并后标题 `9 个操作 · read ×2 · bash ×7`）。改前这三条都红（一轮 3 个框 / 技能来晚 2 个框 / 原序 `2 | 7`），改后全绿；同一个探针也参进了 `probes/run-all.mjs` 和 `npm run test:skill-group`，不再只是一次性脚本。
+
+顺手修了这条探针自己的假红：原来卡 `summary` 盒高 `< 40px`，而折叠态盒高自上线起就是 43.3px（inline 徽标的行框比一行字高），所以它一直是红的、当不了闸门。现在比的是「3 个名字的组与 1 个名字的组一样高」——名字多了走省略号、高度不变，这才是那条不变量。
+
+同一修法下，一次性复现探针的三个变体（真会话顺序 / 技能连读 / 技能来晚）都只剩一个框，标题分别是 `9 个操作 · read ×2 · bash ×7`、`9 个操作 · read ×2 · bash ×7`、`8 个操作 · bash ×7 · read ×1`。`npm --prefix web run typecheck` 全绿；`bridge/tests/ops-tabs-ui.mjs`（27/28，那条「失败计数是红的」在 main HEAD 上就红）与本条无关。
+
+## D370 网页里未决定的项目默认按信任处理：spawn 时补 `--approve`，新用户不再静默丢掉 `.pi` 配置（#21 续，2026-11-21）
 
 **背景。** pi 的默认值是 `defaultProjectTrust: "ask"`（[chunk-62VOPMLK.js:43]），终端里第一次进入带 `.pi` 资源的目录会弹一次「是否信任」。桥走 `--mode rpc`，没有这个提示通道，所以网页以前把 `ask` 读成 `never`：目录没在 `~/.pi/agent/trust.json` 里保存过决定，`.pi/settings.json`、`.pi/mcp.json`、`.pi/extensions|skills|prompts|themes`、`SYSTEM.md` 就全部静默不加载，用户也看不到任何解释。`AGENTS.md` / `CLAUDE.md` 本来就不受信任门管。用户的原话是「改这个没有用，新用户，咋办？」—— 只在机器上把全局默认改成 `always` 解决不了别人的新环境。
 

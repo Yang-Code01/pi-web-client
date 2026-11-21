@@ -133,7 +133,7 @@ export async function runPiCli(
   const { args, timeoutMs, parse } = buildArgs(req);
   const projectCwd = typeof req.cwd === "string" && req.cwd ? req.cwd : null;
   const cwd = projectCwd ?? process.cwd();
-  // D367: project-scope probes (`pi mcp list`, project installs) must see the project's `.pi` the
+  // D370: project-scope probes (`pi mcp list`, project installs) must see the project's `.pi` the
   // same way sessions do — undecided + global ask is trusted, so ask pi for `--approve` too.
   const trust = projectCwd
     ? await trustInfo(cli, projectCwd).catch((err) => {

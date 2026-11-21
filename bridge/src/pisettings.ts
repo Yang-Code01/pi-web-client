@@ -140,7 +140,7 @@ export interface TrustInfo {
   needed: boolean;
   /** Saved decision that applies (closest folder up), or null. */
   saved: { path: string; decision: boolean } | null;
-  /** Global `defaultProjectTrust`. RPC cannot ask, so the web reads "ask" as "trust" (D367). */
+  /** Global `defaultProjectTrust`. RPC cannot ask, so the web reads "ask" as "trust" (D370). */
   fallback: "ask" | "always" | "never";
   /** What the web's pi will do right now. */
   effective: boolean;

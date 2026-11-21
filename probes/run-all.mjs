@@ -38,6 +38,7 @@ const ALL = [
   "chrome-narrow",
   "composer-grow",
   "retell-hint",
+  "skill-group",
 ];
 
 const argv = process.argv.slice(2);

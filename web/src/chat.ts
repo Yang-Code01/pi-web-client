@@ -35,8 +35,9 @@ interface TurnState {
 
 /**
  * 一轮里自动加载的技能合成一个折叠组（用户要求）：不展开时永远只有一行 ——「自动加载 N 个技能 ·
- * 名字…」，点开才是每张技能卡的全文。组落在本轮第一张技能卡的位置，后续同类卡追加进来，
- * 摘要行跟着刷新；换一条用户消息就是新一轮，指针清空。
+ * 名字…」，点开才是每张技能卡的全文。位置：本轮已经有过工具时插在操作框**前面**（D369），
+ * 否则落在本轮第一张技能卡处，后续同类卡追加进来，摘要行跟着刷新；换一条用户消息就是新一轮，
+ * 指针清空。
  */
 interface SkillGroup {
   body: HTMLElement;
@@ -250,6 +251,11 @@ export class ChatView {
   /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
   private pendingScroll = 0;
   /**
+   * 一轮结束后「把长回答送回开头」等的那两帧（见 `settleScroll`）。
+   * 存下来是为了换会话 / 新一轮开始时能取消，不让它落到别人的记录上。
+   */
+  private settleFrame = 0;
+  /**
    * #244: 往前翻一页后的锚点会钉三次（立刻 / 下一帧 / 150ms），而自动翻页可能在同一拍里就要跳走。
    * 每发起一轮锚点就换一代，跳转把代数往前推 — 还没跑的那几次钉作废，不能把视口拽回底部。
    */
@@ -437,6 +443,18 @@ export class ChatView {
     return this.root.scrollHeight - this.root.clientHeight > BOTTOM_SLACK;
   }
 
+  /**
+   * 节点首行在滚动内容里的位置（`scrollTop` 的单位）。
+   * `getBoundingClientRect()` 量到的是视觉 px，`scrollTop` 是布局 px；`#app` 上挂着
+   * `zoom: var(--ui-scale)`（外观字号），两者差一个倍数。不除的话字号 125% 时滚不到首行
+   * ——默认字号下会把首行滚过头（D123）。
+   */
+  private contentTopOf(node: HTMLElement): number {
+    const raw = Number.parseFloat(getComputedStyle(this.root).getPropertyValue("--ui-scale"));
+    const scale = Number.isFinite(raw) && raw > 0 ? raw : 1;
+    return (node.getBoundingClientRect().top - this.root.getBoundingClientRect().top) / scale + this.root.scrollTop;
+  }
+
   /** Wheel / key up: stop following and keep the follow closed while the smooth-scroll animation plays out. */
   private holdUp(): void {
     // #244: 用户一动手就不再把他拽到别处去 —— 已经取回的页留着，滚动位置不动。
@@ -468,6 +486,41 @@ export class ChatView {
     this.unread = false;
     this.renderJump();
     this.onSettleBottom?.();
+  }
+
+  /**
+   * 一轮结束：最后一条回答长过一屏、且用户还在跟流（没自己往上读）时，把它的第一行送到视口顶部。
+   * 这是「收尾回开头」，不是「回到底部」——所以不调 `follow()`；也不调 `stopFollowing()`：
+   * 后者会报 `onScrollUp`，让提问面板以为人自己往上滚了而收起来。
+   *
+   * 只在「最后一块内容就是这条 assistant」时动手：后面还跟着工具卡 / 用户气泡（下一轮已经开了），
+   * 那就不算「回答收尾」，别把视口从新内容上挪走。
+   */
+  private settleScroll(): void {
+    if (this.running || !this.following || this.touching || this.staging || this.pendingJump) return;
+    const node = this.jump.previousElementSibling;
+    if (!(node instanceof HTMLElement) || !node.classList.contains("msg") || !node.classList.contains("assistant")) return;
+    if (node.classList.contains("collapsed") || !this.hasRoomBelow()) return;
+    const viewport = this.root.clientHeight;
+    // 不到一屏的回答整段都看得见，收尾时再动一下只会让人以为页面抽了。
+    if (node.offsetHeight <= viewport * 0.9) return;
+    // 先把「回到底部」点亮再量：钮显隐会改一点 scrollHeight，量晚了会滚到几像素外（同 jumpToTurn）。
+    this.following = false;
+    this.unread = false;
+    this.renderJump();
+    if (this.pendingScroll) cancelAnimationFrame(this.pendingScroll);
+    this.pendingScroll = 0;
+    // 从底部往上跳的头几帧 scroll 事件里视口还在底部；不挡住它就会立刻 resumeFollowing。
+    this.holdFollow = performance.now() + 900;
+    const startTop = this.contentTopOf(node) - 6;
+    const maxScroll = this.root.scrollHeight - this.root.clientHeight;
+    if (startTop >= maxScroll - 1) {
+      // 回答的开头本来就在最后一屏里：滚不过去，留在底部更自然。
+      this.follow();
+      return;
+    }
+    this.root.scrollTo({ top: Math.max(0, startTop), behavior: "smooth" });
+    this.queueRailSync();
   }
 
   private renderJump(): void {
@@ -559,8 +612,7 @@ export class ChatView {
     if (!turn || !turn.node.isConnected) return;
     this.flashTurn(index, 1200);
     /** 那一轮的用户气泡「顶到视口顶部」要滚到的位置（留 6px 呼吸）。 */
-    const startTop = (): number =>
-      turn.node.getBoundingClientRect().top - this.root.getBoundingClientRect().top + this.root.scrollTop - 6;
+    const startTop = (): number => this.contentTopOf(turn.node) - 6;
     const maxScroll = this.root.scrollHeight - this.root.clientHeight;
     if (startTop() >= maxScroll - 1) {
       this.follow();
@@ -774,6 +826,11 @@ export class ChatView {
 
   reset(items: Item[], history?: SessionHistory): void {
     this.loaded = [];
+    // 换会话 / 重连：上一轮排着的「收尾回开头」不能落到新会话上。运行态静默清零，
+    // 让 app 随后的 `setRunning(新会话.running)` 成为一次真正的跃迁（不然旧 true 会把它吞掉）。
+    if (this.settleFrame) cancelAnimationFrame(this.settleFrame);
+    this.settleFrame = 0;
+    this.running = false;
     // #244: 换会话 / 重连换了内容 —— 那个「要去的轮次」已经不在这份记录里了。
     this.cancelPendingJump();
     clearTimeout(this.moreNoteTimer);
@@ -1021,8 +1078,10 @@ export class ChatView {
       // #341: 计划卡也按轮分：新的一轮从一张新卡开始。
       this.todoGroup = null;
     }
-    // 隐式技能卡是「下面那张 read」的前言，不能落在它后面：收掉已有模块，让这张 read 自己开一个。
-    if (item.kind === "skill") this.closeOps();
+    // 隐式技能卡是「下面那张 read」的前言，不能落在它后面 —— 但那件事由 `ensureSkillGroup()`
+    // 把组插到当前操作框之前来完成（D369）。这里**不能**再 `closeOps()`：组只在本轮第一张卡
+    // 到达时插一次、之后不移动（D200），所以第二张以后的技能卡本来就到不了自己那次 read 的
+    // 上面，关框换不来任何版面收益，只会把一轮的操作切成好几撮。
     if (item.kind === "assistant") {
       this.assistantTexts.set(item.id, item.text ?? "");
       if ((item.text ?? "").trim()) this.noteAnswered();
@@ -1060,7 +1119,7 @@ export class ChatView {
     }
     const node = this.build(item);
     this.cards.set(item.id, node);
-    // 本轮所有自动加载的技能只占一个折叠组（用户要求），组落在第一张卡的位置。
+    // 本轮所有自动加载的技能只占一个折叠组（用户要求）；位置由 `groupSkill()` 决定（D369）。
     if (item.kind === "skill") {
       this.groupSkill(node, item);
       this.scrollToEnd();
@@ -1239,11 +1298,25 @@ export class ChatView {
     this.imageSource = fn;
   }
 
-  /** 运行态变了：只有最后一枚用户消息会因为「处理中」而变样。 */
+  /** 运行态变了：只有最后一枚用户消息会因为「处理中」而变样；收尾那一下把长回答送回开头。 */
   setRunning(running: boolean): void {
     if (this.running === running) return;
     this.running = running;
     this.paintPending();
+    if (running) {
+      // 新一轮开始了：上一轮排着的收尾帧不能再动视口。
+      if (this.settleFrame) cancelAnimationFrame(this.settleFrame);
+      this.settleFrame = 0;
+      return;
+    }
+    // 同值守卫保证走到这里时上一态是 true（true → false），只需要等排版落定。
+    if (this.settleFrame) cancelAnimationFrame(this.settleFrame);
+    this.settleFrame = requestAnimationFrame(() => {
+      this.settleFrame = requestAnimationFrame(() => {
+        this.settleFrame = 0;
+        this.settleScroll();
+      });
+    });
   }
 
   delta(id: string, field: "text" | "thinking", text: string): void {
@@ -1872,7 +1945,11 @@ export class ChatView {
     summary.append(el("span", "chev", "▸"), el("span", "auto", tr("自动加载")), count, names);
     const body = el("div", "skillgroup-body");
     box.append(summary, body);
-    this.push(box);
+    // 一轮恒一个操作框（D369）：本轮已经跑过工具时，组插在那个框**前面**，不再收掉它。
+    // 这样技能卡照样在所有工具之上，而一轮的卡片不会被技能劈成一撮一撮。
+    const current = this.opsBox;
+    if (current && current.parentNode === this.root) current.before(box);
+    else this.push(box);
     this.skillGroup = { body, count, names, skillNames: [] };
     return this.skillGroup;
   }

@@ -933,6 +933,17 @@
   font-size: 12px;
 }
 
+/* 只读的值（不是可点的路径，也不是键名）：等宽一档，长了省略，全文在 title 里。 */
+.st-console.settings-sheet .settings-ctl > .settings-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .st-switch {
   position: relative;
   display: inline-flex;
