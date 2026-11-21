@@ -132,6 +132,23 @@ try {
   bad(noMsg, "空提交说明被 invalid_params 挡住");
   assert.equal(noMsg.code, "invalid_params");
 
+  // ---------------------------------------------------------------- 一个文件既暂存又改过（`MM`）只算一个
+  commit("mm.txt", "one\n", "mm: base");
+  put("mm.txt", "two\n");
+  git(dir, "add", "mm.txt");
+  put("mm.txt", "three\n");
+  put("untracked.txt", "u\n");
+  const sMM = await gitState(dir);
+  assert.equal(`${sMM.staged.length}/${sMM.unstaged.length}`, "1/1", "MM 在两组里都该列出来");
+  assert.equal(sMM.untracked.length, 1);
+  // 以前是 staged + unstaged + untracked 直接相加：一个 MM 文件 + 一个未跟踪报成 3，
+  // 而界面写的是「N 个文件」，git 自己报的是 2。
+  assert.equal(sMM.dirty, 2, "MM 只算一个文件，加未跟踪共 2 个");
+  // 收尾：后面的用例都按干净的树走
+  git(dir, "checkout", "HEAD", "--", "mm.txt"); // 连索引一起回到 HEAD
+  rmSync(join(dir, "untracked.txt"));
+  assert.equal((await gitState(dir)).dirty, 0, "清理后干净");
+
   // 缓存失效：gitInfo / gitHistory 有 5s TTL，写成功后必须拿到新 head。
   const before = await gitInfo(dir, true);
   assert.equal(before?.branch, "main");
