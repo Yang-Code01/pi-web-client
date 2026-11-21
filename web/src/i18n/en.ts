@@ -654,6 +654,8 @@ export const en: Dict = {
   "用户消息": "User messages",
   "工具结果": "Tool results",
   "技能列表还没到，稍等一下…": "The skill list hasn't arrived yet, hold on…",
+  "pi 正在启动（加载扩展，通常几秒）…命令表随后到": "pi is starting up (loading extensions — usually a few seconds)… its command list lands right after",
+  "pi 正在启动（加载扩展，通常几秒）…技能表随后到": "pi is starting up (loading extensions — usually a few seconds)… its skill list lands right after",
   "使用": "Use",
   "查看": "View",
   "扩展提供的技能，本机没有它的 SKILL.md": "Provided by an extension — there is no SKILL.md on this machine",

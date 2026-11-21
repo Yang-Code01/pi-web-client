@@ -787,9 +787,16 @@ async function run(first) {
  */
 const BOOT_MS = Number(process.env.FAKE_PI_BOOT_MS || 0);
 let booted = !BOOT_MS;
+/**
+ * `FAKE_PI_STARTUP_MS`：整段启动期里一条命令都不答 —— 真 pi 冷启就是这样（扩展没加载完之前
+ * `get_state` / `get_commands` 全都压着，D357）。`FAKE_PI_BOOT_MS` 只压第一条，两码事。
+ */
+const STARTUP_MS = Number(process.env.FAKE_PI_STARTUP_MS || 0);
+const startedUp = STARTUP_MS ? new Promise((r) => setTimeout(r, STARTUP_MS)) : null;
 
 async function handle(cmd) {
   const { id, type } = cmd;
+  if (startedUp) await startedUp;
   if (!booted) {
     booted = true;
     note({ t: "boot-slow", ms: BOOT_MS });

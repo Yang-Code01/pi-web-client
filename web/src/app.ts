@@ -1772,6 +1772,8 @@ export class App {
         if (this.complete?.mode === "cmd") this.updateComplete();
         break;
       case "skills":
+        // 启动完成后桥会主动补推一帧（D357）：会话切走了就不能拿别人的清单盖住当前这个。
+        if (msg.sessionId !== this.currentId) break;
         this.skills = (msg.commands ?? []) as SkillInfo[];
         this.skillsAt = Date.now();
         if (this.skillPop) this.renderSkillList();
@@ -5599,7 +5601,8 @@ export class App {
     list.replaceChildren();
 
     if (!this.skills.length) {
-      list.append(el("div", "skill-empty", tr("技能列表还没到，稍等一下…")));
+      // D357：pi 还在启动 —— 磁盘那份清单几十毫秒就到，真空着也只能说「还没到」，不能说「没有」。
+      list.append(el("div", "skill-empty", this.session?.starting ? tr("pi 正在启动（加载扩展，通常几秒）…技能表随后到") : tr("技能列表还没到，稍等一下…")));
       return;
     }
     if (!items.length) {
@@ -15881,7 +15884,16 @@ export class App {
     if (!c) return;
     c.node.replaceChildren();
     if (!c.items.length) {
-      c.node.append(el("div", "complete-empty", c.mode === "file" ? (c.query ? tr("找不到「{p1}」", { p1: c.query }) : tr("输入文件名的一部分…")) : tr("没有匹配的命令")));
+      // D357：pi 还在启动时「没有匹配的命令」是句假话 —— 扩展命令 / 提示词模板都在它手里，清单还没到。
+      const empty =
+        c.mode === "file"
+          ? c.query
+            ? tr("找不到「{p1}」", { p1: c.query })
+            : tr("输入文件名的一部分…")
+          : this.session?.starting
+            ? tr("pi 正在启动（加载扩展，通常几秒）…命令表随后到")
+            : tr("没有匹配的命令");
+      c.node.append(el("div", "complete-empty", empty));
       return;
     }
     c.items.forEach((item, i) => {
