@@ -355,6 +355,12 @@ RPC 下**不可用/降级**（网页端不要假装实现）：
     证据：`docs/security.md:77`
 16. **精确的实时成本**：流式期间 `usage` 可能恒为 0，`get_session_stats` 是快照；逐 token 计费只能自己按 provider usage 累加，且 compaction 后 `contextUsage` 可能为 null。
     证据：`docs/json.md`、`dist/core/agent-session.d.ts:218`
+17. **MCP 服务器名**：只允许 `[A-Za-z0-9_-]`（`SERVER_NAME`）。`pi mcp add` 在 cli.js:318 调 `validateMcpServerConfig()`，不合法会打印 `invalid server name "…" (use letters, digits, "_" and "-")` 并以 1 退出 —— 界面这一层不必再赌它接不接受。
+    证据：`dist/extensions/mcp/cli.js:318`、`dist/core/mcp-servers.js:151-153`、`docs/mcp.md:77`
+18. **同名安装是静默覆盖**：`pi mcp add` 遇到已有名字只打 `Replaced … MCP server "x" in <file>.`，退出码 0；只有 `-` 与 `_` 不同的两个名字算同一个 server（后者会被拒）。所以「会不会盖掉别人」只能调用方自己先判。
+    证据：`dist/extensions/mcp/cli.js:334`、`docs/mcp.md:77`
+19. **两档 mcp.json**：默认写用户级 `~/.pi/agent/mcp.json`，`--local`/`-l` 写项目级 `<cwd>/.pi/mcp.json`；解析时项目条目**替换**同名的用户条目（同名不是叠加）。
+    证据：`docs/mcp.md:22`、`docs/mcp.md:32`、`bridge/src/extmgr.ts:142`
 
 ## 三个接入路线对比
 

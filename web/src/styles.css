@@ -3992,6 +3992,11 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .ext-host .ext-kind { font-size: 11px; color: var(--accent); border: 1px solid var(--line); border-radius: 6px; padding: 0 4px; }
 .ext-host .ext-kind.off { color: var(--faint); text-decoration: line-through; }
 .ext-host .ext-form { flex: 1 1 100%; display: grid; gap: 4px; padding: 8px 8px; border: 1px dashed var(--line); border-radius: 8px; }
+/* 名字这一格：撞名是提醒（黄）、不能用是错（红），两者都不能只写在按钮的 disabled 里。 */
+.ext-host .ext-namehint { font-size: 11px; line-height: 1.5; color: var(--faint); }
+.ext-host .ext-namehint.warn { color: var(--warn); }
+.ext-host .ext-namehint.bad { color: var(--danger); }
+.ext-host .ext-namehint:empty { display: none; }
 .ext-host .ext-tools > summary { cursor: pointer; font-size: 12px; color: var(--faint); }
 .ext-host .ext-reload { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
 .ext-host .login-row a { color: var(--accent); text-decoration: none; }

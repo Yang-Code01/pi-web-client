@@ -138,6 +138,9 @@
     "test:repos:ui": "node bridge/tests/repos-ui.mjs",
     "test:pluginmarket": "node --experimental-strip-types web/tests/pluginmarket-unit.mjs",
     "test:mcpmarket": "node --experimental-strip-types web/tests/mcpmarket-unit.mjs",
+    "test:mcpstore": "node --experimental-strip-types web/tests/mcpstore-unit.mjs",
+    "test:extmgr-names": "node --experimental-strip-types bridge/tests/extmgr-names-unit.mjs",
+    "test:market": "node --experimental-strip-types bridge/tests/market-unit.mjs",
     "test:skill:ui": "node bridge/tests/skill-view-ui.mjs",
     "test:note": "node --experimental-strip-types --test bridge/tests/peer-note-unit.mjs && npm run build:peer && node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-ui.mjs"
   },

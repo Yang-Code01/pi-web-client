@@ -219,24 +219,27 @@ export function filterPackages(items: MarketPackage[], category: string, onlyIns
 }
 
 /**
- * Search ranking: an exact package name (or exact scoped tail) is always first, then a package whose
- * name starts with the query, then the rest in the chosen sort order. Without a query this is just
- * `sortPackages()`.
+ * Search ranking, not a leaderboard: a cold package whose *name* matches the query has to come before a
+ * popular one that merely mentions the word in its description (npm answers in download order, so
+ * `rankSearchResults` is the only place relevance can win). Tiers, best first; the chosen sort only
+ * orders *inside* a tier:
+ *
+ *   0 名字就是它 / 1 名字前缀 / 2 名字里含它 / 3 描述或关键词里含它 / 4 npm 因为别的原因返回了它
+ *
+ * Without a query this is just `sortPackages()`.
  */
 export function rankSearchResults(items: MarketPackage[], query: string, sort: MarketSort, dir: MarketDir): MarketPackage[] {
   const q = query.trim().toLowerCase();
   if (!q) return sortPackages(items, sort, dir);
-  const exact: MarketPackage[] = [];
-  const prefix: MarketPackage[] = [];
-  const rest: MarketPackage[] = [];
+  const tiers: MarketPackage[][] = [[], [], [], [], []];
   for (const pkg of items) {
     const name = pkg.name.toLowerCase();
     const tail = name.split("/").pop() ?? name;
-    if (name === q || tail === q) exact.push(pkg);
-    else if (name.startsWith(q) || tail.startsWith(q)) prefix.push(pkg);
-    else rest.push(pkg);
+    const text = `${pkg.description ?? ""} ${(pkg.keywords ?? []).join(" ")}`.toLowerCase();
+    const tier = name === q || tail === q ? 0 : name.startsWith(q) || tail.startsWith(q) ? 1 : name.includes(q) ? 2 : text.includes(q) ? 3 : 4;
+    tiers[tier]!.push(pkg);
   }
-  return [...sortPackages(exact, sort, dir), ...sortPackages(prefix, sort, dir), ...sortPackages(rest, sort, dir)];
+  return tiers.flatMap((tier) => sortPackages(tier, sort, dir));
 }
 
 /** Deal items alternately into N columns, like dshmarket's Masonry. */
@@ -618,7 +621,6 @@ function categoryRow(state: MarketViewState, items: MarketPackage[], actions: Ma
   wrap.append(pill(tr("全部 ({p1})", { p1: formatCount(items.length) }), state.category === "all", () => actions.onCategory("all")));
   for (const def of CATEGORY_DEFS) {
     if (def.id === "other") continue;
-    const count = items.filter((p) => categoriesOf(p).includes(def.id)).length;
     wrap.append(pill(categoryLabel(def.id), state.category === def.id, () => actions.onCategory(def.id)));
   }
   cats.append(wrap);
@@ -737,7 +739,7 @@ function favoritesPage(state: MarketViewState, actions: MarketActions): HTMLElem
 }
 
 /** Inner 已安装：直接把外层「已安装」那块清单嵌进来，不再跳回左侧页签。 */
-function installedPage(state: MarketViewState, actions: MarketActions): HTMLElement {
+function installedPage(actions: MarketActions): HTMLElement {
   const page = el("div", "mk-page mk-installed-page");
   const host = el("div", "mk-installed-embed");
   actions.renderInstalled(host);
@@ -826,7 +828,7 @@ export function renderPluginMarket(state: MarketViewState, actions: MarketAction
   }
   if (state.tab === "discover") body.append(discoverPage(state, actions));
   else if (state.tab === "favorites") body.append(favoritesPage(state, actions));
-  else if (state.tab === "installed") body.append(installedPage(state, actions));
+  else if (state.tab === "installed") body.append(installedPage(actions));
   else if (state.tab === "blocked") body.append(blockedPage(state, actions));
   else if (state.tab === "advanced") body.append(advancedPage(state, actions));
   root.append(body);

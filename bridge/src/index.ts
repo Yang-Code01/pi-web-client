@@ -44,7 +44,7 @@ import { Notifier } from "./notify.ts";
 import { anyPresent, dropClient, reportPresence } from "./presence.ts";
 import { Tunnel, findCloudflared, type TunnelState } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
-import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
+import { APP_NAME, VERSION, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
 import { BUILD_ID } from "./build-id.ts";
 import { removePidFile, writePidFile } from "./pidfile.ts";
 import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
@@ -82,7 +82,7 @@ import { actOnFailure, emptyLedger, mergeFailures, readLedger, undoFailures, typ
 import { allowRemind, reminderText, reviewPrompt } from "./lessons.ts";
 import { deleteRule, markReviewed, readRules, setRule } from "./rules.ts";
 import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, STORE_MAX, type McpInstallOption } from "./market.ts";
-import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, togglePackage, updateCount, writeUiPrefs } from "./extmgr.ts";
+import { bumpMcp, inventory, mcpFilePath, mcpNameTaken, readUiPrefs, toggleExtension, toggleMcp, togglePackage, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
@@ -556,7 +556,7 @@ async function main(): Promise<void> {
    * toggles take `mcp:<file>` as their lock, so an add has to take it too — otherwise it can land on
    * top of a toggle that read the same file a moment earlier.
    */
-  const mcpFileLock = (local: boolean, cwd: string | null) => `mcp:${path.join(local && cwd ? path.join(cwd, ".pi") : agentDir(), "mcp.json")}`;
+  const mcpFileLock = (local: boolean, cwd: string | null) => `mcp:${mcpFilePath(local, cwd)}`;
   const notifier = new Notifier();
   const tunnelBin = findCloudflared();
   const tunnel = new Tunnel(cfg.port, tunnelBin ?? "");
@@ -3610,9 +3610,10 @@ async function main(): Promise<void> {
             const reqId = typeof msg.reqId === "string" ? msg.reqId.slice(0, 60) : null;
             const fail = (err: unknown) => {
               const text = String((err as any)?.message ?? err);
+              const errCode = (err as any)?.errCode;
               send({ type: "notice", text, level: "error" });
               send({ type: "ext.error", message: text });
-              send({ type: "ext.op", reqId, op, state: "done", code: -1, error: text });
+              send({ type: "ext.op", reqId, op, state: "done", code: -1, error: text, ...(errCode ? { errCode: String(errCode) } : {}) });
             };
             if ((ws as any).publicReq) {
               send({ type: "notice", text: "通过公网访问时扩展与 MCP 只能查看", level: "warn" });
@@ -3658,8 +3659,24 @@ async function main(): Promise<void> {
                   description: typeof msg.description === "string" ? msg.description : undefined,
                 });
                 const runId = `cli_${Date.now().toString(36)}`;
+                const cwd = typeof msg.cwd === "string" ? msg.cwd : null;
+                const local = msg.local === true;
                 const out = await writeLock("npm", () =>
-                  writeLock(mcpFileLock(msg.local === true, typeof msg.cwd === "string" ? msg.cwd : null), async () => {
+                  writeLock(mcpFileLock(local, cwd), async () => {
+                    // D379: `pi mcp add` on a name that already exists prints "Replaced" and exits 0 —
+                    // the first server's config is gone and nobody was asked. The page prefills a free
+                    // name; this refuses the silent overwrite even if the page's inventory is stale.
+                    const taken = mcpNameTaken(String(req.name ?? ""), cwd);
+                    const want = mcpFilePath(local, cwd);
+                    const sameFile = taken !== null && path.resolve(taken) === path.resolve(want);
+                    // 项目档里的同名项会盖住全局那份，pi 的解析顺序如此：往项目装是合法遮蔽，
+                    // 往全局装则装完也看不见 —— 后者得当错误拦下来，前者不能报「会替换」。
+                    if (taken && !sameFile && !local) {
+                      throw Object.assign(new Error(`项目里已经有叫「${req.name}」的 MCP 服务器（${taken}）；装到全局也会被项目那份盖住，换个名字，或先改项目档。`), { errCode: "mcp_name_shadowed" });
+                    }
+                    if (sameFile && msg.overwrite !== true) {
+                      throw Object.assign(new Error(`已经有一个叫「${req.name}」的 MCP 服务器（${taken}），换个名字，或者确认替换它。`), { errCode: "mcp_name_taken" });
+                    }
                     send({ type: "picli.start", reqId, runId, op: "mcp.add" });
                     return (await runPiCli(pi.cli, { ...req, cwd: msg.cwd ? String(msg.cwd) : undefined }, (chunk) => send({ type: "picli.out", runId, text: chunk }))).done;
                   }),

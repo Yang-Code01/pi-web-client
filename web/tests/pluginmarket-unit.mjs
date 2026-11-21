@@ -69,6 +69,32 @@ test("rankSearchResults：精确名字永远排第一，再看前缀，再按选
   ]);
 });
 
+test("rankSearchResults：名字撞上的冷门包排在「描述里碰巧有这个词」的热门包前面", () => {
+  // 以前只有 exact / prefix / 其余三桶，其余桶内按下载量排 —— 一个刚发的 xlsx 包永远追不过
+  // 描述里写了一句 xlsx 的明星包，于是「搜不到冷门包」。
+  const list = [
+    pkg("pi-excel-godmode", { monthly: 2_300_000, description: "Excel / xlsx / csv 读写、公式与图表" }),
+    pkg("pi-xlsx", { monthly: 3 }),
+    pkg("whatever", { monthly: 900_000 }),
+  ];
+  assert.deepEqual(rankSearchResults(list, "xlsx", "downloads", "desc").map((p) => p.name), ["pi-xlsx", "pi-excel-godmode", "whatever"]);
+});
+
+test("rankSearchResults：描述与关键词命中单列一档，仍在无关项之前", () => {
+  const list = [
+    pkg("a", { monthly: 500, description: "" }),
+    pkg("b", { monthly: 100, keywords: ["sheet"] }),
+    pkg("c", { monthly: 900, description: "sheet 处理" }),
+  ];
+  assert.deepEqual(rankSearchResults(list, "sheet", "downloads", "desc").map((p) => p.name), ["c", "b", "a"]);
+});
+
+test("rankSearchResults：档内仍然尊重用户选的排序", () => {
+  const list = [pkg("xlsx-a", { monthly: 10 }), pkg("xlsx-b", { monthly: 20 })];
+  assert.deepEqual(rankSearchResults(list, "xlsx", "downloads", "asc").map((p) => p.name), ["xlsx-a", "xlsx-b"]);
+  assert.deepEqual(rankSearchResults(list, "xlsx", "name", "desc").map((p) => p.name), ["xlsx-b", "xlsx-a"]);
+});
+
 test("filterPackages：分类与只看已安装", () => {
   const list = [
     pkg("ctx", { keywords: ["context"] }),

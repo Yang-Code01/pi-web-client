@@ -57,6 +57,7 @@ import {
   type McpSort,
   type McpTab,
 } from "./mcpmarket.ts";
+import { checkName, freeName, secretVarName, serverNameFor } from "./mcpstore.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { queueWhatsnew } from "./whatsnew.ts";
@@ -15791,7 +15792,7 @@ export class App {
       },
       onOpenInstall: (item) => {
         const first = Math.max(0, item.options.findIndex((o) => !o.unavailable));
-        this.mcpForm = { item: item.name, name: this.slug(item), option: first, values: {}, exposure: "", description: "", local: this.extScope === "project" };
+        this.mcpForm = { item: item.name, name: freeName(serverNameFor(item.name, item.title), this.extInv?.mcp ?? []), option: first, values: {}, exposure: "", description: "", local: this.extScope === "project" };
         this.paintExtIfOpen();
       },
       renderInstallForm: (panel, item) => {
@@ -15848,11 +15849,6 @@ export class App {
     return new RegExp(`(?:^|[\\s="'([{])${esc}(?=$|[\\s@/"'\\]),:])`).test(haystack);
   }
 
-  private slug(m: StoreMcpItem): string {
-    const base = (m.name.split("/").pop() || m.title).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-    return base.replace(/-mcp(-server)?$/, "").replace(/^mcp-/, "") || "mcp";
-  }
-
   /** Name, required fields (secrets become ${VAR}), scope; advanced: exposure, description. */
   private mcpInstallForm(m: StoreMcpItem): HTMLElement {
     const f = this.mcpForm!;
@@ -15867,7 +15863,7 @@ export class App {
       pick.value = String(f.option);
       pick.onchange = () => {
         f.option = Number(pick.value);
-        f.values = {};
+        // 已填的值不清：换一种运行方式（npm ↔ docker）问的往往是同一批 env，清空只会让人重填。
         this.paintExtIfOpen();
       };
       box.append(this.formRow(tr("运行方式"), pick));
@@ -15879,12 +15875,15 @@ export class App {
     if (!opt) return box;
     const name = el("input", "ns-input mono") as HTMLInputElement;
     name.value = f.name;
-    name.oninput = () => (f.name = name.value.trim());
-    box.append(this.formRow(tr("服务名"), name));
+    name.placeholder = tr("字母、数字、「-」和「_」");
+    const nameHint = el("div", "ext-namehint");
+    box.append(this.formRow(tr("服务名"), name), nameHint);
+    const secretHints: { node: HTMLElement; field: McpFieldView; isHeader: boolean }[] = [];
     const field = (key: string, fd: McpFieldView) => {
       if (fd.secret) {
-        const v = key.startsWith("env:") ? fd.name : `${f.name}_${fd.name}`.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
-        box.append(this.formRow(`${fd.name}${fd.required ? " *" : ""}`, el("span", "settings-hint", tr("密钥：mcp.json 里写成 ${{p1}}，请在系统环境变量里设置它。{p2}", { p1: v, p2: fd.description ? ` ${fd.description}` : "" }))));
+        const hintNode = el("span", "settings-hint");
+        secretHints.push({ node: hintNode, field: fd, isHeader: !key.startsWith("env:") });
+        box.append(this.formRow(`${fd.name}${fd.required ? " *" : ""}`, hintNode));
         return;
       }
       const input = el("input", "ns-input mono") as HTMLInputElement;
@@ -15901,8 +15900,9 @@ export class App {
     const adv = el("details", "ns-advanced");
     adv.append(el("summary", "", tr("高级")));
     const exp = el("select", "ns-input") as HTMLSelectElement;
-    // D161: 「codemode」跟 pi 的 codemode.mode 撞名，这里其实是 MCP 的暴露方式。
-    exp.append(new Option(tr("默认（deferred：模型用 searchTools 找）"), ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
+    // D161: 「codemode」跟 pi 的 codemode.mode 撞名，这里其实是 MCP 的暴露方式；空值就是 pi 的默认
+    // codemode（模型自己写脚本调），以前这条写成了 deferred，照它选会白降一档（D379）。
+    exp.append(new Option(tr("默认（codemode：模型自己写脚本调，也能用 searchTools 找）"), ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
     exp.value = f.exposure;
     exp.onchange = () => (f.exposure = exp.value);
     const desc = el("input", "ns-input") as HTMLInputElement;
@@ -15920,15 +15920,46 @@ export class App {
       this.paintExtIfOpen();
     };
     const go = el("button", "btn primary", this.opLabel(`mcpadd:${f.item}`, tr("安装中…")) ?? tr("安装到{p1}", { p1: this.extScope === "project" ? tr("当前项目") : tr("全局") })) as HTMLButtonElement;
-    go.disabled = Boolean(this.me.public) || Boolean(this.opFor(`mcpadd:${f.item}`)) || Boolean(opt.unavailable);
+    const idleLabel = tr("安装到{p1}", { p1: this.extScope === "project" ? tr("当前项目") : tr("全局") });
+    const installed = this.extInv?.mcp ?? [];
+    // D379: 名字是可编辑的，所以「这一装会不会替换掉谁」必须跟着输入重算；空名 / 非法字符点下去
+    // 只会让 pi 报一句 stderr，按钮当场拦住。替换不禁用按钮 —— 把话写清楚，让人自己决定。
+    // 同名分两种：同目标档（项目/全局）才是替换，项目档里面的同名只会盖住全局的。
+    const target = this.extScope;
+    // 输入事件与点击看同一份判断：点击前先 syncName() 一遍，比再算一次更不容易漂。
+    let check = checkName(f.name, installed, target);
+    const syncName = () => {
+      f.name = name.value.trim();
+      check = checkName(f.name, installed, target);
+      const running = this.opLabel(`mcpadd:${f.item}`, tr("安装中…"));
+      nameHint.textContent = !check.ok
+        ? (check.problem ?? "")
+        : check.taken
+          ? tr("已有同名服务器（{p1}）：这一装会替换它的配置。", { p1: check.taken.name })
+          : check.shadow
+            ? tr("全局已有同名服务器（{p1}）：项目档会盖住它。", { p1: check.shadow.name })
+            : "";
+      nameHint.classList.toggle("warn", check.ok && Boolean(check.taken));
+      nameHint.classList.toggle("bad", !check.ok);
+      for (const h of secretHints) {
+        h.node.textContent = tr("密钥：mcp.json 里写成 ${{p1}}，请在系统环境变量里设置它。{p2}", { p1: secretVarName(f.name, h.field.name, h.isHeader), p2: h.field.description ? ` ${h.field.description}` : "" });
+      }
+      go.disabled = Boolean(this.me.public) || Boolean(running) || Boolean(opt.unavailable) || !check.ok;
+      go.textContent = running ?? (check.ok && check.taken ? tr("替换安装") : idleLabel);
+    };
     go.onclick = () => {
+      syncName();
+      if (!check.ok) return;
       this.piCli(
-        { type: "mcp.install", option: opt, name: f.name, values: f.values, local: this.extScope === "project", exposure: f.exposure, description: f.description },
+        { type: "mcp.install", option: opt, name: f.name, overwrite: Boolean(check.taken), values: f.values, local: this.extScope === "project", exposure: f.exposure, description: f.description },
         `mcpadd:${f.item}`,
       );
     };
     foot.append(el("span", "spacer"), cancel, go);
     box.append(foot);
+    name.oninput = syncName;
+    // 撞名 / 空名的第一屏就要说清楚，别等点了按钮退回来才提示。
+    syncName();
     return box;
   }
 

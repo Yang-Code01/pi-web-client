@@ -1828,7 +1828,6 @@ export const en: Dict = {
   "项目设置": "project settings",
   "已经把这 {p1} 个会话的权限改成默认值": "Set {p1} sessions to the default permission",
   "MCP 暴露方式": "MCP exposure",
-  "默认（deferred：模型用 searchTools 找）": "Default (deferred: the model finds it with searchTools)",
 
   "拖动改高度（双击复原）": "Drag to change height (double-click to reset)",
   "拖动改大小（双击复原）": "Drag to resize (double-click to reset)",
@@ -4221,4 +4220,12 @@ export const en: Dict = {
   "窗口": "Window",
   "该模型固定档位": "This model has fixed levels",
   "会话还没报出模型": "The session has not reported a model yet",
+  "默认（codemode：模型自己写脚本调，也能用 searchTools 找）": "Default (codemode: the model calls it from its own scripts, or finds it with searchTools)",
+  "替换安装": "Replace and install",
+  "已有同名服务器（{p1}）：这一装会替换它的配置。": "A server named {p1} already exists; installing this replaces its config.",
+  "字母、数字、「-」和「_」": "Letters, digits, \"-\" and \"_\"",
+  "名字不能为空。": "The name cannot be empty.",
+  "全局已有同名服务器（{p1}）：项目档会盖住它。": "A global server named {p1} already exists; the project entry shadows it.",
+  "项目里已有同名服务器（{p1}）：装到全局也会被项目档盖住，换个名字或先改项目那份。": "The project already has a server named {p1}; a global entry would be shadowed by it. Rename this one, or edit the project entry first.",
+  "只能用字母、数字、「-」和「_」。": "Use letters, digits, \"-\" and \"_\" only.",
 };

@@ -7323,3 +7323,32 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** 这扇窗口的原生输出从此只按 UTF-8 解：若哪天它要跑一个只吐 GBK 的老工具，那个工具的中文会反过来乱（现在窗口里只跑 node 与 `git rev-parse`，都 ASCII 或 UTF-8）。测试里读日志仍按 UTF-16（`Tee-Object` 在 PS 5.1 就是写 UTF-16LE），没跟着改。**没做**：把日志改成 UTF-8（那要换掉 `Tee-Object`，`ForEach-Object` 逐行 `Add-Content` 会拖慢每行日志）；`2>&1 |` 让 node 的 stderr 每行都被包成红色 `NativeCommandError`（`node.exe : …` + `所在位置`），那是 PS 5.1 的既定行为，这次没动。
 
 **验证。** `npm run test:hotdeploy-window` 新增第 ④ 段（真窗口，`Start-Process powershell`，另起临时仓库与只打两行中文就退出的假桥，stdout / stderr 各一行），断言读回的日志原样含「中文测试 已启动 http://127.0.0.1:7998」「银锭拷：系统告警」，且不含 `涓枃` / `宸插惎鍔` / `閾跺畾` 三个已知乱码串。把那行编码设置注释掉复跑即红（实测日志开头 `涓枃娴嬭瘯 宸插惎鍔?http://127.0.0.1:7998`、`node.exe : 閾堕敪鎷凤細绯荤粺鍛婅`）；带上就绿。肉眼对照过两扇真窗口：不加这一行是「涓枃娴嬭瘯 node 鐨勬棩蹇 宸插惎鍔?http://…」，加了是「中文测试 node 打的日志 已启动 http://…」。`npm run test:hotdeploy` 仍 ok。另外单独验过 `npm run … | Tee-Object` 那条形状（临时 `package.json` + 只打两行中文的假脚本，真窗口跑 `restart.mjs` 生成的同款启动器）：不带这一行日志是「涓枃娴嬭瘯 宸插惎鍔?http://127.0.0.1:7998」「閾堕敪鎷凤細绯荤粺鍛婅」，带上就是「中文测试 已启动 http://127.0.0.1:7998」「银锭拷：系统告警」，npm 自己那两行 `> npmprobe@1.0.0 start:nobuild` 照旧正常。
+
+## D379 商店审计的九条：名字撞车、冷门包搜不到、索引不可续、暴露方式那行文案（用户「下面的bug是否都存在：如果存在，直接修改」2026-11-22）
+
+**问题。** 用户给了九条关于「隧道 / MCP 商店 / 扩展商店」的指控，要求核实并直接修。逐条核实后**五条不成立、四条成立**：
+
+- 隧道默认 http2 —— 已不成立：`bridge/src/tunnel.ts:31` 的 `tunnelProtocol()` 早就默认 `"http2"`（D184 / #209）。
+- 已安装标记用 name+transport 做包含判断 —— 已不成立：`web/src/app.ts` 的 `mcpInstalled` 是整词正则，`transport` 对远程项就是 URL（`bridge/src/extmgr.ts` 的 `transportOf`），尾斜杠也能命中。
+- 每次搜索同步解析两遍 16MB 索引、前端每次输入发两遍请求（第 5 条）、扩展商店出错后不换关键词不重试（第 8 条）—— 已不成立：#308（`3bc81cc8`）的 `readIndexDisk` 按 mtime+size 缓存解析结果，前端的 `requestExtStore` / `requestMcpStore` 以 `${query}\u0000${limit}` 做在途去重。
+- docker 选项丢掉用户填的 env —— 不成立：`mcpAddRequest` 只拼 `-e NAME`，值走 `base.env` 交给 docker CLI 进程；pi 的 `StdioTransport.start()` 用 `{...process.env, ...options.env}` 起容器，`docker run -e NAME` 正好从未经 argv 泄露的环境里取值（密钥因此不进 `ps`）。
+
+成立的四条与它们的修法：
+
+**① 服务名撞车。** `slug()` 把 `ac.inference.sh/mcp`、`ad.pantheon/mcp`… 都折成 `mcp`：真实索引 21,328 条里 987 个 slug 撞车、最大一组 2,240 个；而 `pi mcp add` 对同名只打一行 `Replaced` 就退出 0，于是第二个静默覆盖第一个。新的 `web/src/mcpstore.ts` 定三条规则：只保留 pi 认的 `[a-z0-9._-]`（点号折成 `-`，pi 的校验只放 `-`/`_`）；短名是泛称（`mcp`/`server`/`site`…）时借命名空间的最后一段（`ac.inference.sh` → `inference`）；与本机已装的撞名就加 `-2`…`-99`。撞车组从 2,240 降到 42，非法名从 3 降到 0。表单不再替用户默默改名：撞名给黄字「已有同名服务器（{p1}）：这一装会替换它的配置。」、按钮变「替换安装」并带 `overwrite: true`；空名或含 `[A-Za-z0-9_-]` 以外的字符都给红字并禁用（`checkName`）—— pi 的 `validateMcpServerConfig` 会直接拒（`invalid server name "…"`），放过去只是白失败一次。
+
+同名分两档，表单与桥端都按「这次要写哪个 mcp.json」判：同档同名才是**替换**（黄字 + `overwrite`）；项目档同名而这次装全局，是**遮蔽** —— pi 解析时项目档盖住全局，装完也看不见，表单直接报错拦下；全局同名而这次装项目，是合法遮蔽，只给一句「项目档会盖住它」、正常安装。桥端 `mcp.install` 在 `writeLock` 里按 `mcpFilePath(local, cwd)` 算出目标文件：命中同一个文件且没有 `overwrite` 抛 `mcp_name_taken`；目标全局而命中项目档抛 `mcp_name_shadowed`；目标项目而命中全局时放行。绕开界面直接发帧也改不掉别人的配置。`fail()` 先前把 `errCode` 丢在了原地，这次一并透传（与同文件 `picli_public` 的写法一致）。
+
+**② 冷门包搜不到。** `searchPackages` 只把 `keywords:pi-package <q>` 交给 npm、再按 popularity 权重取前 250 条，前端只在**这 250 条里**重排 —— 命中在 251 名之后的包永远不可见；用户说的「乱码查询搜不到」是同一件事：乱码不会命中任何关键词，于是列表空。改法两处：后端在「有查询词、且返回的结果里没有一个名字命中」时（零结果也算）再发一次不带 `keywords` 的 `text=<q>`（`store:loose:` 缓存 10 分钟，判据是 `needsLooseRecall`），只留 `keywords` 含 `pi-package` 的条目 —— 只在零结果时补仍然救不了「描述命中一堆、名字命中的一个在 251 名之后」；前端 `rankSearchResults` 改成五档 —— 名字精确 > 名字前缀 > 名字包含 > 描述/关键词命中 > 其余，**档内**才用用户选的排序（默认月下载量）。以前「描述里命中」和「完全无关」同档，于是一个月下载 40 万的包把名字里带查询词的冷门包压在底下。
+
+**③ MCP 索引不可续、一页 4xx 全盘重来、starsComplete 误报。** 三件事在同一段代码里：`buildIndex` 从 `cursor=null` 走 300 页（分钟级），任何一页 4xx 直接抛出 → 60 秒冷却后**从第 0 页再来**；`fillStars` 只看 HTTP 状态和抛异常，于是 GraphQL 200 里的 `errors`、以及「仓库被删/改名/私有」返回的 `null` 节点全被当成「确认 0 星」，`starsComplete` 就说 true。改法：`walkIndex()` 把 (第 N 页之后的光标, 到第 N 页为止的条目) **一起**写进 `state/market/mcp-index.partial.json`（每 25 页一次；瞬态错误先落盘再抛），下次从断点续走，最多重走最近 25 页、不跳页；非 429/408 的 4xx 视为「注册表不给这页」，保留已抓的 200 页、以 `truncated: true` 收尾；`readStarsBatch()` 只把响应里真有 `stargazerCount` 的算作已知，`errors` 非空或节点为 `null` 都让 `starsComplete = false`。断点超过 6 小时就丢掉（注册表早就变了）；断点文件在**索引写盘之后**才删 —— 先删再写的话，两步之间崩一次，下次又得从第 0 页走。
+
+**④ 暴露方式那行文案（表单状态三处）。** 默认项写的是「deferred：模型用 searchTools 找」，可 pi 的默认是 `codemode`，照它选会**白降一档**；另外两处：切换「运行方式」会把用户已填的 env / header 值清空；密钥提示里的变量名（`${NAME}` / `${服务名_HEADER}`）只在渲染时算一次，改服务名后就不再对。
+
+**决定。** 名字规则放前端也放桥端（界面是给人看的，桥端才是最后一道门）。表单里撞名不禁用按钮 —— 替换是合法操作，禁止它反而逼人去手改 mcp.json；只把「这一下会覆盖」说清楚。索引断点用 json 整块覆写而不是追加日志：每次 16MB 的写入只有 12 次，比维护一份 NDJSON 的解析路径便宜；代价是崩溃时最多重走 25 页。
+
+**验证。** 新增 `web/tests/mcpstore-unit.mjs`（11 项：短名 / 泛称借命名空间 / 只用合法字符 / 空名退回 / `freeName` / `nameKey` / 同档撞名与遮蔽两档 / 非法字符拦下 / `secretVarName` 与桥端同规则且去首尾下划线）、`bridge/tests/extmgr-names-unit.mjs`（6 项：`-`/`_` 等价、项目档也算、前缀相近不算撞、`mcpFilePath` 的全局/项目落点）、`bridge/tests/market-unit.mjs`（8 项：`pageRefused` 的 4xx/429 分界、`readStarsBatch` 的 errors/null/非 JSON、`walkToResume` 的 schema/过期/半写文件、`walkIndex` 三张连续页在第二页 5xx 后**从断点续走且不重取前两页**、4xx 页保留已抓部分、断点里的旧版本被新版本覆盖、`needsLooseRecall` 的名字命中/描述命中/CJK）；`web/tests/pluginmarket-unit.mjs` 加 3 项（冷门但名字命中的排在热门描述命中之前、描述档单列、档内尊重排序）。`npm run typecheck` 全绿；`npm run test:mcpstore / test:extmgr-names / test:market / test:pluginmarket / test:mcpmarket` 全绿。
+
+**没进单测的。** 真索引 21,328 条的撞名统计（987 个重复 slug、最大一组 2,240 → 42）是本地拿 `state/…/mcp-index.json` 手工跑的，没进仓库夹具：那个文件 16 MB，放在测试里每次解析一遍不划算。`pi mcp add` 撞名只打 `Replaced`、名字只允许 `[A-Za-z0-9_-]`（`validateMcpServerConfig` 直接拒非法名）、项目档按名字替换全局档 —— 这三条都在 pi 自己的文档 / 源码里，落在 `docs/pi-integration-facts.md` §10 第 17-19 条。
+
+**代价 / 可改。** `walkIndex` 的圈复杂度 21（`run-tests` 的 lens 会提示），换来的是三种失败路径写在一处；断点每 25 页一次是「重走量」与「写入量」的折中，可以调 `INDEX_CHECKPOINT`。`fillStars` 里查不到星的条目仍是 `stars: 0`（排序与界面都在做算术），诚实性交给 `starsComplete` 标志——**没做**：把未查到的改成 `null` 并让排序把 null 排最后（要动 `StoreMcp` 类型与前端两处渲染）。
