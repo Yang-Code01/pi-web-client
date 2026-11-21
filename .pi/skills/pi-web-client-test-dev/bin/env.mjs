@@ -212,13 +212,13 @@ function killTree(pid) {
   }
 }
 
-/** D358：交给桥、再由桥写进页面 <title> 的那段文字。实例数据，不跟界面语言走（见 D358 代价）。 */
+/** D360：交给桥、再由桥写进页面 <title> 的那段文字。实例数据，不跟界面语言走（见 D360 代价）。 */
 function windowTitleFor(id) {
   return `测试 ${id}`;
 }
 
 /**
- * D358：开一个新的浏览器窗口。标题由桥注入，这里只核「真的多了一条标题是它的窗口」—— 退出码什么都证明不了
+ * D360：开一个新的浏览器窗口。标题由桥注入，这里只核「真的多了一条标题是它的窗口」—— 退出码什么都证明不了
  * （Edge 常驻时丢 URL 只会在后台开标签）。
  */
 async function openWindow(url, id, opts) {
@@ -357,7 +357,7 @@ async function cmdStart(opts) {
       PI_PEER_PORT: String(ports.peer),
       PI_PEER_ANNOUNCE_PORT: String(ports.announce),
       PI_PEER_NICKNAME: `测试机 ${id}`,
-      // D358：桥把它写进页面 <title>，tab 上就是「测试 <实例名>」。
+      // D360：桥把它写进页面 <title>，tab 上就是「测试 <实例名>」。
       PI_WEB_WINDOW_TITLE: windowTitleFor(id),
     },
     dir,

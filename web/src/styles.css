@@ -4208,6 +4208,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .bg-run-agent { font-size: 13px; font-weight: 600; color: var(--text); }
 .bg-run-state { font: 11px/1 var(--mono); color: var(--accent); }
 .bg-run-task { font-size: 13px; line-height: 1.5; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 失败原因：runner 的报错原文（前台派活挂掉时它是唯一的线索）。 */
+.bg-run-err { font-size: 12.5px; line-height: 1.5; color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; }
 .bg-run-id { font: 11px/1 var(--mono); color: var(--faint); }
 .bg-run-lab { font-size: 11px; color: var(--faint); letter-spacing: 0.02em; }
 .bg-run-log,

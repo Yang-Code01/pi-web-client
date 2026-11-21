@@ -62,6 +62,7 @@ try {
   const env = {
     ...process.env,
     PI_WEB_STATE: STATE,
+    PI_WEB_WHATS_NEW: "0",
     PI_AGENT_DIR: path.join(ROOT, "agent"),
     PI_WEB_PORT: String(PORT),
     PI_WEB_HOST: "127.0.0.1",

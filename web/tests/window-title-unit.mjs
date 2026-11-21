@@ -1,5 +1,5 @@
 /**
- * D358：浏览器 tab 标题只有一个算法 —— 注入前缀（测试实例）→ 会话标题 → `pi`。
+ * D360：浏览器 tab 标题只有一个算法 —— 注入前缀（测试实例）→ 会话标题 → `pi`。
  * 正式实例没有前缀，必须还是原来的「会话 · pi」/「pi」。
  *
  *   node --experimental-strip-types --test web/tests/window-title-unit.mjs

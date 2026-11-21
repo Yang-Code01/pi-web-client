@@ -53,7 +53,7 @@ import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitStat
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { FileIndex } from "./fileindex.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
-import { selfChangelog } from "./whatsnew.ts";
+import { markWhatsnewSeen, selfChangelog, setWhatsnewPopup, takeWhatsnew, whatsnewStatus } from "./whatsnew.ts";
 import { scanSubagents } from "./subagents.ts";
 import { acpConfigPath, readAcpDelegate, writeAcpDelegate, writeThinkingFix } from "./acpdelegate.ts";
 import { cleanLaunch } from "./launch.ts";
@@ -225,7 +225,7 @@ const WEB_ROOT = (() => {
 })();
 
 const INDEX_HTML = path.join(WEB_ROOT, "index.html");
-// D358：测试实例的窗口标题（`PI_WEB_WINDOW_TITLE`，由测试环境脚本设成「测试 <实例名>」）。正式实例没设。
+// D360：测试实例的窗口标题（`PI_WEB_WINDOW_TITLE`，由测试环境脚本设成「测试 <实例名>」）。正式实例没设。
 const WINDOW_TITLE = windowTitleFromEnv();
 
 const MIME: Record<string, string> = {
@@ -520,6 +520,13 @@ function handlePassphraseFlag(argv: string[]): boolean {
 
 async function main(): Promise<void> {
   if (handlePassphraseFlag(process.argv.slice(2))) return;
+  // #588：只有「这台机器以前跑过这个服务」才值得告知更新。全新的一份状态目录属于第一次装 ——
+  // 「本服务变了什么」那时对他没有意义（顺手也让每份临时状态目录的测试不至于一开门就被弹窗盖住）。
+  // 判据是口令文件：它由 `ensurePassphrase()` 在首次启动时写下，必须在 ensureStateDirs() 之前问。
+  // `PI_WEB_WHATS_NEW=0` 是给测试的开关（同 `PI_PEER=0`）：临时状态目录里那些「以前跑过」的痕迹
+  // 本来是给别的测试造的，不该让一张模态弹窗盖住它们要点的东西。
+  const whatsnewVeteran =
+    process.env.PI_WEB_WHATS_NEW !== "0" && fs.existsSync(statePath("passphrase.hash"));
   ensureStateDirs();
   // 随手问 (#86): nothing can be live at this point (it is created lazily), so wiping its dir is
   // unconditional — that is what makes 「桥重启 = 清空」 true, crashes included.
@@ -2169,9 +2176,27 @@ async function main(): Promise<void> {
 
     // `/changelog` (#26): what is new in the installed pi; `scope=self` is this project's own
     // log (D195), read from `<检出>/CHANGELOG.md` — the two are different documents.
+    // #588 `self&unread=1` 是「领取启动时要弹的那一批」：同一个进程只发一次（多标签不重复弹），
+    // 领走不等于看过 —— 页面真把 dialog 打开了才 POST `/api/changelog/seen` 落盘。
     if (url.pathname === "/api/changelog" && req.method === "GET") {
-      if (url.searchParams.get("scope") === "self") return json(res, 200, await selfChangelog());
+      if (url.searchParams.get("scope") === "self") {
+        if (url.searchParams.get("unread") === "1") return json(res, 200, takeWhatsnew(Date.now(), whatsnewVeteran));
+        // 设置页那一页要的两样（开关与「上次看到」）一起带上：同一个资源，不新开路由（D358）。
+        const popup = whatsnewStatus();
+        return json(res, 200, { ...(await selfChangelog()), whatsnewSeen: popup.seenTitle, whatsnewEnabled: popup.enabled });
+      }
       return json(res, 200, { version: piVersion, text: changelog(pi.cli) });
+    }
+    // #588 弹窗一打开就写「上次看到哪一批」（D358：已读 = 知道，不是确认）。
+    if (url.pathname === "/api/changelog/seen" && req.method === "POST") {
+      const seen = markWhatsnewSeen();
+      if (!seen.ok) return fail(res, 409, "not-claimed", "这次启动没有派发过未读的更新日志批次");
+      return json(res, 200, seen);
+    }
+    // #588 设置页「更新日志 → 本项目」那一页上的开关。
+    if (url.pathname === "/api/changelog/popup" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      return json(res, 200, { ok: true, ...setWhatsnewPopup(body?.enabled !== false) });
     }
 
     // 本项目需要什么（pi 够不够新、三个扩展在不在）。只读、只问本地 `pi list`，页面每次打开

@@ -1,5 +1,5 @@
 /**
- * D358：把实例名写进页面标题。
+ * D360：把实例名写进页面标题。
  *
  * 测试环境（`.pi/skills/pi-web-client-test-dev/bin/env.mjs`）和正式的 7864 常同时开着，浏览器 tab 上
  * 一排都是「pi」，认不出哪个是刚起来的那份。桥启动时读 `PI_WEB_WINDOW_TITLE`，把这段文字塞进它送出的

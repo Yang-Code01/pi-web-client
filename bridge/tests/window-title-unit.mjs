@@ -1,5 +1,5 @@
 /**
- * D358：桥只在 `PI_WEB_WINDOW_TITLE` 非空时动 index.html；动的是 `<title>` 和注入的全局，
+ * D360：桥只在 `PI_WEB_WINDOW_TITLE` 非空时动 index.html；动的是 `<title>` 和注入的全局，
  * 其余字节原样，且标题里的 `</script>` / `<` 不能把页面写坏。
  *
  *   node --experimental-strip-types --test bridge/tests/window-title-unit.mjs
