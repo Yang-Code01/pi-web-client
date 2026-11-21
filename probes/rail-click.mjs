@@ -207,6 +207,23 @@ const dashBox = (page, i) => page.evaluate((k) => {
   const r = document.querySelector(`.turn-row[data-i="${k}"]`).getBoundingClientRect();
   return { x: r.right - 4, y: r.top + r.height / 2 };
 }, i);
+/** 等平滑滚动真的停住：长距离跳转（几千像素）会超过 900ms，固定等待会量到半路。 */
+async function settleScroll(page, ms = 5000) {
+  const t0 = Date.now();
+  let last = null;
+  let since = Date.now();
+  while (Date.now() - t0 < ms) {
+    const top = await page.evaluate(() => document.querySelector(".chat-scroll")?.scrollTop ?? -1);
+    if (top !== last) {
+      last = top;
+      since = Date.now();
+    } else if (Date.now() - since >= 200) {
+      return top;
+    }
+    await sleep(50);
+  }
+  return last;
+}
 /** 一次人手点击：移过去停 pause 毫秒，按下停 80ms，抬起。 */
 async function clickAt(page, x, y, pause) {
   await page.mouse.move(x, y);
@@ -236,7 +253,7 @@ try {
     const box = await dashBox(page, target);
     const before = await S(page);
     await clickAt(page, box.x, box.y, 120);
-    await sleep(900);
+    await settleScroll(page);
     const after = await S(page);
     log(`收起态点短横 data-i=${target}: topTurn ${before.topTurn}→${after.topTurn} 距顶 ${after.top} 面板=${after.rail}`);
     assert(after.topTurn === target, `one click on a dash jumps to that turn (got ${after.topTurn}, want ${target})`);
@@ -255,7 +272,7 @@ try {
     return { i: row.i, x: row.r.x + row.r.width / 2, y: row.r.top + row.r.height / 2 };
   });
   await clickAt(page, rowBox.x, rowBox.y, 120);
-  await sleep(900);
+  await settleScroll(page);
   const openCase = await S(page);
   log(`展开态点行 data-i=${rowBox.i}: topTurn=${openCase.topTurn} 距顶 ${openCase.top}`);
   assert(openCase.topTurn === rowBox.i, `one click on a row jumps to that turn (got ${openCase.topTurn}, want ${rowBox.i})`);
@@ -272,7 +289,7 @@ try {
   const spot = { x: rail.right - 160, y: rail.top + 150 };   // 面板左侧那片「还没长出来」的区域
   const before3 = await S(page);
   await clickAt(page, spot.x, spot.y, 20);
-  await sleep(900);
+  await settleScroll(page);
   const after3 = await S(page);
   log(`动画中在文字区点：topTurn ${before3.topTurn}→${after3.topTurn}（以前是纹丝不动）`);
   assert(after3.topTurn !== before3.topTurn || before3.topTurn === null, `a click during the expansion is not swallowed (topTurn stayed ${before3.topTurn})`);
@@ -287,7 +304,7 @@ try {
     return { i: row.i, x: row.r.x + row.r.width / 2, y: row.r.bottom - 1 };
   });
   await clickAt(page, edge.x, edge.y, 120);
-  await sleep(900);
+  await settleScroll(page);
   const edgeCase = await S(page);
   log(`点行底边（data-i=${edge.i}）：topTurn=${edgeCase.topTurn}`);
   assert(edgeCase.topTurn === edge.i, `clicking the last pixel of a row still picks that row (got ${edgeCase.topTurn}, want ${edge.i})`);

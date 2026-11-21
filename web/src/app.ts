@@ -2971,18 +2971,30 @@ export class App {
         }
         for (const id of gone) this.drafts.delete(id);
         this.persistDrafts();
-        if (this.currentId && gone.has(this.currentId)) {
-          this.currentId = null;
-          this.session = null;
-          this.composerText = "";
-          this.images = [];
-          this.pastes = [];
-          this.chat.reset([]);
-          this.renderAll();
-          this.go("sessions", true);
-        } else {
+        const left = this.currentId;
+        if (!left || !gone.has(left)) {
           this.renderSessions();
+          break;
         }
+        // 当前会话被删掉了：落点与「归档当前会话」同一套（D176）—— ★ 行右邻 → 左邻 → 空态。
+        // 不落点的话 currentId 会是 null，而 ★ 行在没有当前会话时按 D210 一颗都不排：删掉自己那一颗，
+        // 整条置顶跟着消失（只剩 ＋），要等点一次工作区标签（它会打开本区第一颗会话）才回来。
+        // 同批被删掉的那几颗不能当邻居，所以整批 gone 都传进 `alsoArchived`。
+        const next = neighborAfterArchive(this.rowIds.includes(left) ? this.rowIds : [left, ...this.rowIds], left, [...gone]);
+        if (next) {
+          this.openSession(next);
+          this.go(this.tab);
+          break;
+        }
+        // 左右都没有邻居：中栏回到现成的空态（与 D176 的决定一致）。
+        this.currentId = null;
+        this.session = null;
+        this.composerText = "";
+        this.images = [];
+        this.pastes = [];
+        this.chat.reset([]);
+        this.renderAll();
+        this.go("sessions", true);
         break;
       }
       case "ws.delete.result": {
@@ -12535,7 +12547,8 @@ export class App {
     }
     const s = this.session;
 
-    // #21: RPC cannot show pi's trust prompt, so an undecided project silently loses its .pi config.
+    // #21 / D370: RPC cannot show pi's trust prompt. The web reads "ask" as "trust", so the bar
+    // only appears when the folder really will not load (saved "do not trust" or global "never").
     const t = this.trust;
     if (t && s && t.cwd === s.cwd && t.needed && !t.saved && !t.effective) {
       const bar = el("div", "takeover warn trust-bar");
@@ -14300,15 +14313,16 @@ export class App {
       body.append(el("div", "empty", cwd ? tr("读取中…") : tr("先打开一个会话")));
       return;
     }
+    const fallbackText = t.effective ? tr("按信任处理（会加载）") : tr("按不信任处理（不会加载）");
     const lines = [
       t.needed ? tr("这个目录有需要信任才会加载的 pi 资源（.pi/settings.json、.pi/mcp.json、.pi/extensions|skills|prompts|themes、SYSTEM.md 等）。") : tr("这个目录没有需要信任的 pi 资源，信任与否都不影响。"),
-      t.saved ? tr("已保存的决定：{p1}（{p2}）", { p1: t.saved.decision ? tr("信任") : tr("不信任"), p2: t.saved.path }) : tr("没有保存的决定。全局 defaultProjectTrust = {p1}，网页里的 pi 不能弹提示，所以{p2}。", { p1: t.fallback, p2: t.effective ? tr("会加载") : tr("不会加载") }),
+      t.saved ? tr("已保存的决定：{p1}（{p2}）", { p1: t.saved.decision ? tr("信任") : tr("不信任"), p2: t.saved.path }) : tr("没有保存的决定。全局 defaultProjectTrust = {p1}；网页里的 pi 不能弹提示，因此{p2}。", { p1: t.fallback, p2: fallbackText }),
       tr("决定写在 ~/.pi/agent/trust.json，和终端里的 /trust 是同一份。"),
     ];
     body.append(
       this.stCards([
         { label: tr("需要信任"), value: t.needed ? tr("是") : tr("否"), sub: t.needed ? tr("有项目级 pi 资源") : tr("信不信都不影响") },
-        { label: tr("已保存的决定"), value: t.saved ? (t.saved.decision ? tr("信任") : tr("不信任")) : tr("没有"), sub: t.saved ? t.saved.path : `defaultProjectTrust = ${t.fallback}` },
+        { label: tr("已保存的决定"), value: t.saved ? (t.saved.decision ? tr("信任") : tr("不信任")) : tr("没有"), sub: t.saved ? t.saved.path : `defaultProjectTrust = ${t.fallback} · ${fallbackText}` },
         { label: tr("现在"), value: t.effective ? tr("会加载") : tr("不会加载"), sub: tr("项目的 .pi 资源"), cls: t.needed && !t.effective ? "warn" : "" },
       ]),
     );
@@ -16078,8 +16092,10 @@ export class App {
         body.append(el("div", "settings-path", tr("当前版本 {p1}", { p1: where })));
 
         // #588：这个提示的开关与「上次看到」都放在这一页 —— 想开想关、想知道自己读到哪，同一个地方。
-        const box = el("div", "settings-group");
-        box.append(this.stSection(tr("启动时的提示"), tr("桥启动后第一次有人连上时才判一次；两次弹出之间至少隔一天")));
+        // D367：小节头在外面、行装进 `.settings-panel`（全站同一套「小节头 + 面板 + 行」）。
+        // `.settings-group` 是那个横排的小节头，拿它当外框会把两行设置挤成一根竖条。
+        body.append(this.stSection(tr("启动时的提示"), tr("桥启动后第一次有人连上时才判一次；两次弹出之间至少隔一天")));
+        const panel = el("div", "settings-panel");
         const toggle = el("input", "") as HTMLInputElement;
         toggle.type = "checkbox";
         toggle.checked = out.whatsnewEnabled !== false;
@@ -16093,21 +16109,20 @@ export class App {
             /* 桥不在就当没点过：下次打开这一页会照盘上的真值重画 */
           });
         };
-        box.append(
+        panel.append(
           this.stRow(
             tr("启动时自动打开更新日志"),
             tr("关掉之后不再自动弹；这一页照样能看，关着期间攒下的批次等你重新打开还会出现"),
             this.stSwitch(toggle),
           ),
         );
-        box.append(
-          this.stRow(
-            tr("上次看到"),
-            tr("弹窗打开的那一刻就记下；自己在这一页翻完不算"),
-            el("span", "settings-path", out.whatsnewSeen || tr("还没看过任何一批")),
-          ),
+        // 「上次看到」是只读的值，不是可点的路径：长了就省略，全文进 title。
+        const seen = el("span", "settings-value", out.whatsnewSeen || tr("还没看过任何一批"));
+        if (out.whatsnewSeen) seen.title = out.whatsnewSeen;
+        panel.append(
+          this.stRow(tr("上次看到"), tr("弹窗打开的那一刻就记下；自己在这一页翻完不算"), seen),
         );
-        body.append(box);
+        body.append(panel);
         const md = el("div", "settings-changelog");
         md.append(
           renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
@@ -21363,7 +21378,7 @@ function settingFields(): SettingField[] {
 
   { key: "enableInstallTelemetry", label: tr("安装/更新匿名上报"), kind: "bool", group: tr("隐私与信任"), hint: tr("不控制更新检查，只控制那条安装/更新记录") },
   { key: "enableAnalytics", label: tr("分析数据共享"), kind: "bool", hint: tr("目前只有实验性的首次设置会用到") },
-  { key: "defaultProjectTrust", label: tr("没有决定时的项目信任"), kind: "select", options: ["ask", "always", "never"], globalOnly: true, hint: tr("网页里 ask 等于 never（不能弹提示）") },
+  { key: "defaultProjectTrust", label: tr("没有决定时的项目信任"), kind: "select", options: ["ask", "always", "never"], globalOnly: true, hint: tr("网页里 ask 按信任处理（不能弹提示）") },
 
   { key: "shellCommandPrefix", label: tr("命令前缀"), kind: "text", advanced: true, hint: tr("拼在每条 shell 命令前面，例如 source ~/.bashrc &&") },
   { key: "npmCommand", label: tr("npm 命令"), kind: "list", advanced: true, hint: tr("装扩展/查包时用的命令与参数，逗号分隔") },

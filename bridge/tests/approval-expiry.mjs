@@ -29,7 +29,7 @@ const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
 /** The GC tick the tests inject: a real one is 60 s, and the expiry rides it. */
 const TICK_MS = 1000;
 const TICK_WAIT = TICK_MS * 4;
-/** The threshold the tests inject: 30 minutes would take 30 minutes. */
+/** The threshold the tests inject: the real default (two hours, D372) would take two hours. */
 const IDLE_MS = 2000;
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);

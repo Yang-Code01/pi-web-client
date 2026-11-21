@@ -39,7 +39,7 @@ import {
   type ContextPolicyView,
   type ContextSettings,
 } from "./context-policy.ts";
-import { readSettings } from "./pisettings.ts";
+import { readSettings, trustInfo } from "./pisettings.ts";
 import { renumberCtxLog } from "./ctxlog-seq.ts";
 
 /**
@@ -415,7 +415,7 @@ function idleEvictionAgeMs(): number {
 /** 模型目录的缓存寿命：models.json / 装的扩展很少在一次运行中间变，两段各自记一份。 */
 const MODEL_TTL_MS = 10 * 60_000;
 
-/** Rounded-up whole units for the watchdog's notices: 30 minutes and 60 seconds read like D120. */
+/** Rounded-up whole units for the watchdog's notices: the idle threshold in minutes, the abort grace in seconds (D120). */
 const minutes = (ms: number): number => Math.max(1, Math.round(ms / 60_000));
 const seconds = (ms: number): number => Math.max(1, Math.round(ms / 1000));
 
@@ -1335,6 +1335,15 @@ export class Session extends EventEmitter {
     // 邮箱：读、写、发用户的邮箱。发送前的确认由桥推给正在看这个会话的页面，不走审批弹窗。
     args.push("-e", mailToolPath());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
+    // D370: RPC 里 ask 等同 never，网页又弹不了提示 —— 没保存决定的目录会被静默丢掉项目配置。
+    // 这里把网页的语义统一成「未决定 = 信任」：只对这类目录补 --approve，显式保存的决定
+    // （信任/不信任）和全局 never 都不碰，子进程照旧自己读 trust.json。
+    const trust = await trustInfo(this.cli, cwd).catch((err) => {
+      // 回退成「不信任」安全，但不能静默：否则新 CLI 改了 trustInfo 形状就会重演 #21 的静默丢配置。
+      console.error(`[trust] 读不到 ${cwd} 的信任状态，按未信任处理：`, err);
+      return null;
+    });
+    if (trust && trust.needed && !trust.saved && trust.fallback === "ask") args.push("--approve");
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);
     args.push(...launchArgs(launch));
@@ -3194,7 +3203,7 @@ export class Session extends EventEmitter {
    * #82/D120: the approval or the questionnaire on screen is waiting on nobody. Two clocks have to
    * agree before it is dropped — nobody has had a page in front for the whole threshold, *and* this
    * card has been hanging for the whole threshold itself. Without the second clock a card that pops
-   * up 30 minutes after you left would be thrown away on the very next tick, before you could even
+   * up an hour after you left would be thrown away on the very next tick, before you could even
    * come back. Expired ones get a line in the timeline saying which died; the session sleeps only
    * when nothing is left pending, and `close()` aborts first, so the interrupted turn still lands on
    * disk.

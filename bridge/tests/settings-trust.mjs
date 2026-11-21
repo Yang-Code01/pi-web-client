@@ -20,6 +20,7 @@ const ROOT = path.join(REPO, ".scratch", "settings-trust");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const PROJECT = path.join(ROOT, "project");
+const PROJECT2 = path.join(ROOT, "project2");
 const PI_LOG = path.join(ROOT, "fake-pi.jsonl");
 const BASE = `http://127.0.0.1:${PORT}`;
 
@@ -33,6 +34,8 @@ fs.mkdirSync(STATE, { recursive: true });
 fs.mkdirSync(path.join(AGENT, "sessions"), { recursive: true });
 fs.mkdirSync(path.join(PROJECT, ".pi"), { recursive: true });
 fs.writeFileSync(path.join(PROJECT, ".pi", "settings.json"), JSON.stringify({ defaultThinkingLevel: "low" }, null, 2));
+fs.mkdirSync(path.join(PROJECT2, ".pi"), { recursive: true });
+fs.writeFileSync(path.join(PROJECT2, ".pi", "settings.json"), JSON.stringify({ defaultThinkingLevel: "low" }, null, 2));
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let failed = false;
@@ -151,6 +154,48 @@ try {
   check(t.trust.effective && t.trust.saved?.decision === true && fs.existsSync(trustFile) && fs.readFileSync(trustFile, "utf8").includes("true"), `decision saved in <agentDir>/trust.json (${fs.existsSync(trustFile) ? fs.readFileSync(trustFile, "utf8").replace(/\s+/g, "") : "missing"})`);
   await ask({ type: "settings.set", scope: "project", cwd: PROJECT, patch: { defaultThinkingLevel: "high" } }, (m) => m.type === "settings" && m.saved && m.scope === "project", "trusted write");
   check(readJson(path.join(PROJECT, ".pi", "settings.json")).defaultThinkingLevel === "high", "trusted project settings written");
+
+  // ------------------------------------------------------------------ B2. undecided = trusted (#367)
+  log("B2. undecided project + global ask: trusted, pi gets --approve, project settings writable");
+  await ask({ type: "settings.set", scope: "global", patch: { defaultProjectTrust: "ask" } }, (m) => m.type === "settings" && m.saved, "global ask");
+  t = await ask({ type: "trust.get", cwd: PROJECT2 }, (m) => m.type === "trust" && m.cwd === PROJECT2, "trust.get ask");
+  check(t.trust.needed && !t.trust.saved && t.trust.fallback === "ask" && t.trust.effective === true, `undecided project with ask → loaded (${JSON.stringify(t.trust)})`);
+  await ask({ type: "settings.set", scope: "project", cwd: PROJECT2, patch: { defaultThinkingLevel: "high" } }, (m) => m.type === "settings" && m.saved && m.scope === "project", "undecided project write");
+  check(readJson(path.join(PROJECT2, ".pi", "settings.json")).defaultThinkingLevel === "high", "undecided project settings are writable in the web (D367)");
+  const c2 = await ask({ type: "create", cwd: PROJECT2, name: "auto trust" }, (m) => m.type === "session" && m.sessionId, "create ask");
+  const sid2 = c2.sessionId;
+  check(c2.trust?.effective === true, "ask session snapshot says trusted");
+  const argvFor = (id) => piLog().filter((e) => e.t === "argv" && e.argv.includes("--mode") && (e.argv.includes(id) || e.argv.some((a) => a.includes(id))));
+  await until(() => argvFor(sid2).length >= 1, 5000, "argv ask");
+  check(argvFor(sid2)[0].argv.includes("--approve"), `undecided ask project starts pi with --approve (${JSON.stringify(argvFor(sid2)[0].argv)})`);
+  const picliMark = seen.length;
+  send({ type: "picli", op: "mcp.list", cwd: PROJECT2, reqId: "auto-approve" });
+  await waitFor((m) => m.type === "picli.done" && m.reqId === "auto-approve", 8000, "picli done", picliMark);
+  const probe = piLog().filter((e) => e.t === "argv" && e.argv.includes("mcp")).pop();
+  check(probe?.argv.includes("--approve") === true, `project-scope pi mcp list gets --approve too (${JSON.stringify(probe?.argv)})`);
+
+  log("B2. global never wins: no --approve, trust snapshot false");
+  await ask({ type: "settings.set", scope: "global", patch: { defaultProjectTrust: "never" } }, (m) => m.type === "settings" && m.saved, "global never");
+  t = await ask({ type: "trust.get", cwd: PROJECT2 }, (m) => m.type === "trust" && m.cwd === PROJECT2, "trust.get never");
+  check(!t.trust.saved && t.trust.effective === false, `undecided project with never → not loaded (${JSON.stringify(t.trust)})`);
+  const c3 = await ask({ type: "create", cwd: PROJECT2, name: "never" }, (m) => m.type === "session" && m.sessionId, "create never");
+  check(c3.trust?.effective === false, "never session snapshot says untrusted");
+  await until(() => argvFor(c3.sessionId).length >= 1, 5000, "argv never");
+  check(!argvFor(c3.sessionId)[0].argv.includes("--approve"), "global never does not get --approve");
+
+  log("B2. global always trusts without the flag (pi loads its own settings)");
+  await ask({ type: "settings.set", scope: "global", patch: { defaultProjectTrust: "always" } }, (m) => m.type === "settings" && m.saved, "global always");
+  t = await ask({ type: "trust.get", cwd: PROJECT2 }, (m) => m.type === "trust" && m.cwd === PROJECT2, "trust.get always");
+  check(!t.trust.saved && t.trust.effective === true, `undecided project with always → loaded (${JSON.stringify(t.trust)})`);
+  const c4 = await ask({ type: "create", cwd: PROJECT2, name: "always" }, (m) => m.type === "session" && m.sessionId, "create always");
+  await until(() => argvFor(c4.sessionId).length >= 1, 5000, "argv always");
+  check(!argvFor(c4.sessionId)[0].argv.includes("--approve"), "global always needs no --approve");
+
+  log("B2. a saved \"do not trust\" beats global always");
+  const noOption = t.trust.options.findIndex((o) => /Do not trust/.test(o.label));
+  check(noOption >= 0, "pi still offers Do not trust");
+  t = await ask({ type: "trust.set", cwd: PROJECT2, option: noOption }, (m) => m.type === "trust" && m.saved, "trust.set false");
+  check(t.trust.saved?.decision === false && t.trust.effective === false, `saved false wins over always (${JSON.stringify(t.trust)})`);
 
   // ------------------------------------------------------------------ C. launch options (#28)
   log("C. launch options reach pi's argv, survive /reload, bad ones are refused");

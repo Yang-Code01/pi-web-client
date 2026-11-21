@@ -40,7 +40,7 @@ const PORTS = { order: await freePort(), keepOne: await freePort(), protect: awa
 const TICK_MS = 1000;
 const TICK_WAIT = TICK_MS * 4;
 const MB = 1024 * 1024;
-/** 30 minutes squeezed out of the way: the idle rule must not be what reaps anybody here. */
+/** The idle threshold squeezed out of the way: the idle rule must not be what reaps anybody here. */
 const IDLE_MS = 600_000;
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
