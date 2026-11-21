@@ -160,6 +160,9 @@ export interface AskOutcome {
   cancelled: boolean;
 }
 
+/** pi `get_commands` 回包里我们用到的那几列。 */
+type PiCommand = { name: string; description: string; source: string };
+
 interface PendingAsk extends AskRequest {
   resolve: (out: AskOutcome) => void;
 }
@@ -252,7 +255,10 @@ export interface SessionState {
   archived?: boolean;
   /** #484: 这个会话把任务交接给了哪个新会话（旧会话就停在那一刻，不再自动压缩/交接）。 */
   handoffTo?: string;
-  /** 工作区（一级分组 = 工程）的组 id，只有 list() 填（#72/#94）。空串 = 没有 cwd，不属于任何工作区。 */
+  /**
+   * 工作区（一级分组 = 工程）的组 id，`list()` 与每一条会话帧都填（#72/#94、D355）。
+   * 空串 = 没有 cwd，不属于任何工作区。
+   */
   ws?: string;
   /** Tool permission mode the approval gate enforces (state/allow/<id>.json `mode`). */
   permission?: PermissionMode;
@@ -910,6 +916,8 @@ export class Session extends EventEmitter {
   private autoCompactUsed = false;
   /** get_commands results, refreshed every couple of minutes. */
   private skillsCache: { at: number; list: SkillInfo[] } | null = null;
+  /** D357：启动窗口里给过磁盘清单，等 pi 答得动那一下补推权威版（一次启动只排一份）。 */
+  private pendingBootPush: Promise<void> | null = null;
 
   private lastActivity = Date.now();
   /**
@@ -2686,34 +2694,102 @@ export class Session extends EventEmitter {
     current?.resolve();
   }
 
-  /** Skills pi knows about (via get_commands), with a disk fallback for sessions with no rpc child. */
+  /**
+   * Skills pi knows about (via get_commands), with a disk fallback for sessions with no rpc child.
+   *
+   * D357：pi 刚 spawn 的那几秒它答不了 get_commands —— 得先把所有扩展加载完（本机实测 4.9 秒，忙时
+   * 更久），而磁盘扫描只要 27 毫秒。启动窗口里先给磁盘那份，别让 `/` 菜单和技能面板空着；等 pi 答得
+   * 动了再把权威清单推回去（`queueCommandsPush`）：扩展自带的技能与扩展命令只有它知道。
+   */
   async skills(): Promise<SkillInfo[]> {
     if (this.skillsCache && Date.now() - this.skillsCache.at < 120_000) return this.skillsCache.list;
-    let list: SkillInfo[] = [];
-    let fromPi = false;
-    if (this.rpc?.alive) {
-      try {
-        // A freshly spawned pi answers only after loading every extension; that can take >8s.
-        const res = await this.rpc.request<any>("get_commands", {}, 30000);
-        fromPi = true;
-        for (const c of res?.commands ?? []) {
-          if (c?.source !== "skill") continue;
-          const name = String(c.name ?? "").replace(/^skill:/, "");
-          if (!name) continue;
-          list.push({ name, description: String(c.description ?? ""), source: "user", uses: 0, lastUsed: 0, viewable: false });
-        }
-      } catch {
-        /* fall through to the disk scan */
+    if (this.startingNow()) {
+      this.queueCommandsPush();
+      return this.diskSkills();
+    }
+    const fromPi = await this.piCommands();
+    if (fromPi?.length) {
+      const ranked = this.skillInfos(fromPi);
+      if (ranked.length) {
+        this.skillsCache = { at: Date.now(), list: ranked };
+        return ranked;
       }
     }
-    if (!list.length) list = scanSkills(this.state.cwd || process.cwd());
-    // #462：pi 的清单里也有盘上没有文件的（扩展自己带进来的技能）。「查看」能不能点按盘上的扫描算：
-    // 两边认的是同一个名字（frontmatter 的 `name:`，没有就用目录名），对得上就能开它那份 SKILL.md。
-    const onDisk = new Set(this.skillsHere().map((s) => s.name));
-    const ranked = rankSkills(list.map((s) => ({ ...s, viewable: onDisk.has(s.name) })));
     // Only pi's own answer is worth keeping; a fallback list is retried on the next open.
-    this.skillsCache = fromPi ? { at: Date.now(), list: ranked } : null;
-    return ranked;
+    this.skillsCache = null;
+    return this.diskSkills();
+  }
+
+  /** 盘上的技能（pi 还没答得动时先顶上）；名字与计数器都按扫描来的算。 */
+  private diskSkills(): SkillInfo[] {
+    return rankSkills(scanSkills(this.state.cwd || process.cwd()));
+  }
+
+  /** pi 报的技能清单；「查看」能不能点按盘上的同一份扫描算（#462）。 */
+  private skillInfos(all: PiCommand[]): SkillInfo[] {
+    // #462：pi 的清单里也有盘上没有文件的（扩展自己带进来的技能）。两边认的是同一个名字（frontmatter
+    // 的 `name:`，没有就用目录名），对得上就能开它那份 SKILL.md。
+    const onDisk = new Set(this.skillsHere().map((s) => s.name));
+    const list: SkillInfo[] = [];
+    for (const c of all) {
+      if (c.source !== "skill") continue;
+      const name = c.name.replace(/^skill:/, "");
+      if (!name) continue;
+      list.push({ name, description: c.description, source: "user", uses: 0, lastUsed: 0, viewable: onDisk.has(name) });
+    }
+    return rankSkills(list);
+  }
+
+  /**
+   * D357：pi 刚起来时先给页面磁盘那份清单，启动完成后再把 pi 的权威版推过去。只在启动窗口里排一次；
+   * 页面那边收到 `commands` / `skills` 帧会自己重画，不用它再问一遍。
+   */
+  private queueCommandsPush(): void {
+    if (this.pendingBootPush || !this.startingNow()) return;
+    this.pendingBootPush = this.waitBooted()
+      .then(() => this.pushCommands())
+      .catch(() => {})
+      .finally(() => {
+        this.pendingBootPush = null;
+      });
+  }
+
+  /** `starting` 变 false（启动完成 / 进程没了）就返回；5 分钟后放弃，别留常驻监听。 */
+  private waitBooted(): Promise<void> {
+    return new Promise((resolve) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        this.off("state", check);
+        resolve();
+      };
+      const check = (state: SessionState): void => {
+        if (!state.starting) finish();
+      };
+      const timer = setTimeout(finish, 5 * 60_000);
+      this.on("state", check);
+    });
+  }
+
+  private async pushCommands(): Promise<void> {
+    const all = await this.piCommands();
+    // 空清单就是把页面上的磁盘清单盖成「没有」—— 宁可不推。
+    if (!all?.length) return;
+    this.dropSkillCache();
+    this.emitWs({ type: "commands", sessionId: this.state.id, commands: all });
+    this.emitWs({ type: "skills", sessionId: this.state.id, commands: this.skillInfos(all) });
+  }
+
+  /** pi 的原始命令表；没有活进程或这一问没答上来就是 null（调用方退回磁盘清单）。 */
+  private async piCommands(): Promise<PiCommand[] | null> {
+    if (!this.rpc?.alive) return null;
+    try {
+      const res = await this.rpc.request<any>("get_commands", {}, 30000);
+      return (res?.commands ?? [])
+        .filter((c: any) => c && typeof c.name === "string" && c.name)
+        .map((c: any) => ({ name: String(c.name), description: String(c.description ?? ""), source: String(c.source ?? "") }));
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -2732,19 +2808,25 @@ export class Session extends EventEmitter {
   /**
    * Everything `/` can reach in this session (#25): extension commands, prompt templates and skills,
    * as pi reports them (get_commands). Without a live pi only the skills on disk are known.
+   *
+   * D357：启动窗口里 pi 还没答得动，先给磁盘那份（几十毫秒），别让人对着「没有匹配的命令」干等 5 秒；
+   * 启动完成后 `queueCommandsPush` 会把权威清单推回来。
    */
   async commands(): Promise<{ name: string; description: string; source: string }[]> {
-    if (this.rpc?.alive) {
-      try {
-        const res = await this.rpc.request<any>("get_commands", {}, 30000);
-        return (res?.commands ?? [])
-          .filter((c: any) => c && typeof c.name === "string" && c.name)
-          .map((c: any) => ({ name: String(c.name), description: String(c.description ?? ""), source: String(c.source ?? "") }));
-      } catch {
-        /* fall through */
-      }
+    if (this.startingNow()) {
+      this.queueCommandsPush();
+      return this.diskCommands();
     }
-    return scanSkills(this.state.cwd || process.cwd()).map((sk) => ({ name: `skill:${sk.name}`, description: sk.description, source: "skill" }));
+    return (await this.piCommands()) ?? this.diskCommands();
+  }
+
+  private diskCommands(): { name: string; description: string; source: string }[] {
+    return this.diskSkills().map((sk) => ({ name: `skill:${sk.name}`, description: sk.description, source: "skill" }));
+  }
+
+  /** 有活进程但还在启动：清单只能靠磁盘，别去问一个答不了的进程（D357）。 */
+  private startingNow(): boolean {
+    return Boolean(this.rpc?.alive) && this.state.starting === true;
   }
 
   /** Called after a pick so the next list reflects the new usage count. */
@@ -3354,7 +3436,7 @@ export class SessionManager extends EventEmitter {
   }
 
   private wire(session: Session): void {
-    session.on("ws", (payload: any) => this.emit("ws", payload));
+    session.on("ws", (payload: any) => this.emit("ws", this.stateFrameWithWs(payload)));
     session.loopbackUrl = this.loopbackUrl;
     // #484: 阈值要在桥这边读（页面关着也得能压、能交接），所以把「解析三层」绑给会话。
     session.contextPolicyView = () => this.contextPolicyFor(session.state.id);
@@ -3363,7 +3445,7 @@ export class SessionManager extends EventEmitter {
         /* startHandoff 自己通知并回滚 */
       });
     });
-    session.on("state", (state: SessionState) => this.emit("ws", { type: "session.state", session: state }));
+    session.on("state", (state: SessionState) => this.emitState(state));
     session.on("approval", (approval: ApprovalRequest) => this.emit("approval", approval));
     session.on("ask", (ask: AskRequest, tool: string) => this.emit("ask", ask, tool));
     session.on("ask-resolved", (sessionId: string, id: string, status: string) =>
@@ -3404,10 +3486,18 @@ export class SessionManager extends EventEmitter {
     await session.pinPermission();
     this.wire(session);
     this.sessions.set(id, session);
-    await session.startLive({ resume: false, cwd, ws: this.workspaces.groupFor(id, cwd, this.place()), name });
-    this.emit("ws", { type: "session.state", session: session.state });
+    // D355：`session.state` 在 `startLive()` 里就会发出来（页面靠它当场建出会话），而它会带
+    // `ws` = 这个 cwd 的组 id，页面拿到后要去手里的工作区快照里找这个组 —— 组是刚建的就先
+    // 把快照发出去，否则那一帧查不到组，第二排会闪一下空的置顶横排。
+    const hadGroup = Boolean(this.workspaces.lookup(id, cwd));
+    const ws = this.workspaces.groupFor(id, cwd, this.place());
+    if (!hadGroup) this.emit("ws", { type: "workspaces", workspace: this.workspaces.snapshot() });
+    await session.startLive({ resume: false, cwd, ws, name });
     // 随手问不是用户的会话（#86），不占置顶。
     if (!opts.scratch) this.pinNew(id);
+    this.emitState(session.state);
+    // 新会话可能开在一个 workspace 缓存里从没有的目录里：补缓存并广播新快照（见 refreshWorkspaces）。
+    void this.refreshWorkspaces();
     return session;
   }
 
@@ -3419,6 +3509,51 @@ export class SessionManager extends EventEmitter {
   private pinNew(id: string): void {
     this.manage.pinLast(id);
     this.emit("ws", { type: "manage", ...this.manageSnapshot() });
+  }
+
+  /**
+   * 会话快照补上它所在的组（`ws`）。页面按会话反查工作区时有几条来源：override、
+   * 列表条目的 `ws`、会话快照的 `ws`，最后才轮得到 `keys[cwd]`；`session.state` 这条帧是
+   * 页面**当场建出会话**的唯一依据（新建、跑起来、改状态都走它），所以它必须自带 `ws`，
+   * 否则新目录里的会话在页面里没有工作区 —— 横排的置顶会整条空掉，胶囊也丢工作区色点。
+   *
+   * 现算而不是缓存：拖动、改名、合并工作区之后旧值就是错的。查表用 `lookup()` 而不是
+   * `groupFor()`：发帧是热读路径，不该顺手往工作区表里写组（`Workspaces.lookup` 的注释）。
+   */
+  stateWithWs<T extends { id: string; cwd?: string; ws?: string }>(state: T): T {
+    const ws = this.workspaces.lookup(state.id, state.cwd ?? "");
+    return ws ? { ...state, ws } : state;
+  }
+
+  /** 会话自己发出的帧里，只有 `session.state` 需要补 ws，其余原样转发。 */
+  private stateFrameWithWs(payload: any): any {
+    if (payload?.type !== "session.state" || !payload.session) return payload;
+    return { ...payload, session: this.stateWithWs(payload.session) };
+  }
+
+  private emitState(state: SessionState): void {
+    this.emit("ws", { type: "session.state", session: this.stateWithWs(state) });
+  }
+
+  /**
+   * 补一次工作区缓存并广播（客户端连上、`ws.list`、新建会话之后都走这里，有改动才广播）。
+   *
+   * `keys` 是惰性补的（`resolve()` 跑 git 才知道 worktree 的真根），而 `resolve()` 原来只在
+   * 客户端连上时跑一次：页面**先开着**、随后在新目录里开新会话，这个目录就既不在 `keys` 里、
+   * 会话条目也没有 `ws` —— 页面的 `wsOf()` 三条来源全空，第二排的置顶随之清空。
+   */
+  async refreshWorkspaces(): Promise<void> {
+    try {
+      await this.refreshWorkspacesNow();
+    } catch {
+      /* 补缓存失败只影响分组精度，不影响会话本身 —— 随手调的补丁，不往上抛（D355）。 */
+    }
+  }
+
+  private async refreshWorkspacesNow(): Promise<void> {
+    if (!(await this.resolveWorkspaces())) return;
+    this.emit("ws", { type: "workspaces", workspace: this.workspaces.snapshot() });
+    this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
   }
 
   /** `manage` 帧的正文：置顶 / 归档 / 标签 + 工作区排列。桥里所有广播 manage 的地方共用这一份。 */
@@ -3659,7 +3794,7 @@ export class SessionManager extends EventEmitter {
     if (!this.known(id)) throw new Error("找不到这个会话");
     const session = this.ensure(id);
     await session.rename(name);
-    this.emit("ws", { type: "session.state", session: session.state });
+    this.emitState(session.state);
     return session;
   }
 
@@ -3972,7 +4107,7 @@ export class SessionManager extends EventEmitter {
       session.state.handoffTo = next.state.id;
       writeHandoffTo(id, next.state.id);
       // 接棒的会话已经在 create() 里置顶（D349），这里不再重复。
-      this.emit("ws", { type: "session.state", session: session.state });
+      this.emitState(session.state);
       // 先报完成，再收旧会话：归档回声会让页面「当前会话被归档 → 切邻居 / 回空态」，
       // 排在 done 前面的话，done 到达时页面已经不在旧会话上，看起来就是「交接完成了但页面空白」。
       emitPhase("done", { newId: next.state.id });
@@ -4107,7 +4242,7 @@ export class SessionManager extends EventEmitter {
     // #200: 接管也是「重试」的入口 —— pi 已经活着时 `openLive` 什么也不做，但失败的那几条还在
     // 等一个人点一下，所以直接沿这条现成的路径补发，不新增协议帧。
     session.retryBootMessages();
-    this.emit("ws", { type: "session.state", session: session.state });
+    this.emitState(session.state);
     return session;
   }
 
@@ -4173,7 +4308,7 @@ export class SessionManager extends EventEmitter {
     }
     await session.pinPermission();
     await session.startLive({ resume: Boolean(session.state.file), ws: this.workspaces.groupFor(id, session.state.cwd ?? "", this.place()) });
-    this.emit("ws", { type: "session.state", session: session.state });
+    this.emitState(session.state);
     if (session.state.origin !== "web") {
       // pi's TUI reads the session file once at startup: an open terminal will not see what the web adds.
       this.emit("ws", {

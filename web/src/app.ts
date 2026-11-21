@@ -28,7 +28,7 @@ import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } fro
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
 import { DEFAULT_MAC_ACCENT } from "./palette.ts";
-import { accentFor, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, type ThemeId, type ThemeInfo } from "./theme.ts";
+import { accentFor, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, themeInfo, type ThemeId, type ThemeInfo } from "./theme.ts";
 import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
 import { MailConfirmDialog } from "./mailconfirm.ts";
@@ -845,11 +845,13 @@ export class App {
       const d = (ev as CustomEvent<{ src?: string; alt?: string }>).detail;
       if (d?.src) this.openImage(d.src, d.alt ?? "");
     });
-    // 聊天区与 dirpicker 都没有 app 的引用：产物 chip 的「引用」走这个事件。
+    // 聊天区与 dirpicker 都没有 app 的引用：产物卡／chip 的「引用」走这个事件。
     window.addEventListener("pi-quote", (ev) => {
       const path = (ev as CustomEvent<{ path?: string }>).detail?.path;
       if (path) this.insertPaths([path]);
     });
+    // 产物卡装不下的那些，交给顶栏同一个「产物」面板（D208），别在消息流里再长一截。
+    window.addEventListener("pi-artifacts", () => void this.openArtifactsSheet());
     this.startClock();
     this.socket.connect();
     this.routeFromHash();
@@ -1557,7 +1559,7 @@ export class App {
     // 热部署跑完（成功或失败）都可能把主检出留在别的分支上：就着这一刻刷新那颗提醒。
     window.addEventListener("pi-hotdeploy-done", () => void this.refreshHotBranch());
     window.addEventListener("pi-hotdeploy-closed", () => void this.refreshHotBranch());
-    // #588 D354：启动时把「本项目更新日志」的新批次推一次。该不该弹、弹哪一批、24 小时闸与
+    // #588 D358：启动时把「本项目更新日志」的新批次推一次。该不该弹、弹哪一批、24 小时闸与
     // 「同一个窗口只派发一次」全在桥端；这里只负责找一个不打断人的时机，并把「看全部日志」送到设置页。
     queueWhatsnew({
       canShow: () =>
@@ -1784,6 +1786,8 @@ export class App {
         if (this.complete?.mode === "cmd") this.updateComplete();
         break;
       case "skills":
+        // 启动完成后桥会主动补推一帧（D357）：会话切走了就不能拿别人的清单盖住当前这个。
+        if (msg.sessionId !== this.currentId) break;
         this.skills = (msg.commands ?? []) as SkillInfo[];
         this.skillsAt = Date.now();
         if (this.skillPop) this.renderSkillList();
@@ -4064,7 +4068,7 @@ export class App {
     const reset = el("button", "btn ghost", tr("恢复默认")) as HTMLButtonElement;
     reset.type = "button";
     reset.dataset.role = "dreset";
-    reset.title = tr("字号、主题、颜色、布局回到默认；语言与界面元素不动");
+    reset.title = tr("字号、主题与强调色、布局回到默认；语言与界面元素不动");
     reset.onclick = () => {
       // 恢复默认只恢复字号/主题/颜色/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
       // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
@@ -4286,12 +4290,13 @@ export class App {
 
     // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
     // 外观只剩 Mac 风格三套（D353）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
+    // #591：主题与强调色同住一页 —— 用户要换的是「样子」，这两项是一件事的两半。
     const themeChips = el("div", "chips theme-chips");
     for (const t of THEMES) themeChips.append(themeChipEl(t, this.prefs.theme, () => this.sheet, (id) => this.pickTheme(id)));
-    const macPanel = section("mac");
-    const macRow = this.stRow(tr("Mac 风格"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效；强调色在「颜色」里换成 macOS 八色"), themeChips);
-    macRow.classList.add("wide");
-    macPanel.append(macRow);
+    const themePanel = section("theme");
+    const themeRow = this.stRow(tr("外观主题"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效"), themeChips);
+    themeRow.classList.add("wide");
+    themePanel.append(themeRow);
     // Mac 主题下多出来的几颗快捷键（installShortcuts 里的 MAC_KEYS）：Mac 上显示 ⌘，别处显示 Ctrl。
     const onMac = /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
     const keys = el("ul", "mac-keys");
@@ -4301,12 +4306,9 @@ export class App {
       li.append(tr(label));
       keys.append(li);
     }
-    const keysRow = this.stRow(tr("Mac 快捷键"), tr("系统式快捷键，⌘ 与 Ctrl 都认；你在「快捷键」里绑过的组合优先"), keys);
-    keysRow.classList.add("wide");
-    macPanel.append(keysRow);
 
-    const colorPanel = section("color");
     // 强调色只有 macOS 那一排八色（D353：六色表随「配色主题」一起删了）。
+    // 紧跟在主题 chip 下面（D356）：点主题 chip 不会重建这一行，选中的那颗与 hover 都留在原地。
     const macSwatches = el("div", "swatches mac-swatches");
     for (const [id, label] of MAC_ACCENT_LABELS) {
       const sw = el("button", `swatch${this.prefs.macAccent === id ? " on" : ""}`);
@@ -4323,7 +4325,11 @@ export class App {
     }
     const accentRow = this.stRow(tr("强调色"), tr("照 macOS「系统设置 → 外观」的八色；默认系统蓝"), macSwatches);
     accentRow.dataset.role = "accent-row";
-    colorPanel.append(accentRow);
+    themePanel.append(accentRow);
+
+    const keysRow = this.stRow(tr("Mac 快捷键"), tr("系统式快捷键，⌘ 与 Ctrl 都认；你在「快捷键」里绑过的组合优先"), keys);
+    keysRow.classList.add("wide");
+    themePanel.append(keysRow);
 
     // #97：工作区布局。四颗 chip 各带一张 CSS 画的小示意图（不引图片：设置面板要能离线打开，
     // 一张 png 就得多一条资源路径）。这一票只点亮 A，其余三颗置灰 + 悬停说明「下一步补上」——
@@ -4389,8 +4395,7 @@ export class App {
         label: tr("外观"),
         items: [
           { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
-          { sec: "mac", label: tr("Mac 风格"), sub: tr("仿 macOS 的浅色、深色与午夜蓝三套") },
-          { sec: "color", label: tr("颜色"), sub: tr("强调色（macOS 八色）") },
+          { sec: "theme", label: tr("主题与强调色"), sub: tr("三套 macOS 观感，加一组强调色") },
           { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
           { sec: "chrome", label: tr("界面元素"), sub: tr("顶栏与输入框下沿的按钮；点预览里的按钮就收起 / 放回") },
         ],
@@ -4418,7 +4423,7 @@ export class App {
     }
   }
 
-  /** 外观各子类顶上那排卡（语言与字号 / 颜色 / 工作区；界面元素没有卡）。applyPrefs 之后跟着重画。 */
+  /** 外观各子类顶上那排卡（语言与字号 / 主题与强调色 / 工作区；界面元素没有卡）。applyPrefs 之后跟着重画。 */
   private paintLookCards(): void {
     const box = this.sheet?.querySelector<HTMLElement>('[data-role="look-cards"]');
     if (!box) return;
@@ -4434,10 +4439,15 @@ export class App {
             { label: tr("语言"), value: lang, sub: tr("界面与推送") },
             { label: tr("字号"), value: `${scale}%`, sub: scale === Math.round(DEFAULT_PREFS.scale * 100) ? tr("默认") : tr("已调整") },
           ]
-        : sec === "mac"
-          ? [{ label: tr("Mac 风格"), value: tr(THEMES.find((t) => t.id === this.prefs.theme)?.label ?? this.prefs.theme), sub: this.prefs.theme === DEFAULT_PREFS.theme ? tr("默认") : tr("已调整") }]
-          : sec === "color"
-          ? [{ label: tr("强调色"), value: tr(accent), sub: tr("按钮与选中项") }]
+        : sec === "theme"
+          ? [
+              {
+                label: tr("外观主题"),
+                value: tr(themeInfo(this.prefs.theme).label),
+                sub: this.prefs.theme === DEFAULT_PREFS.theme ? tr("默认") : tr("已调整"),
+              },
+              { label: tr("强调色"), value: tr(accent), sub: tr("按钮与选中项") },
+            ]
           : sec === "layout"
             ? [{ label: tr("工作区布局"), value: tr(layout), sub: tr("会话与侧栏的摆法") }]
             : [];
@@ -5605,7 +5615,8 @@ export class App {
     list.replaceChildren();
 
     if (!this.skills.length) {
-      list.append(el("div", "skill-empty", tr("技能列表还没到，稍等一下…")));
+      // D357：pi 还在启动 —— 磁盘那份清单几十毫秒就到，真空着也只能说「还没到」，不能说「没有」。
+      list.append(el("div", "skill-empty", this.session?.starting ? tr("pi 正在启动（加载扩展，通常几秒）…技能表随后到") : tr("技能列表还没到，稍等一下…")));
       return;
     }
     if (!items.length) {
@@ -7179,6 +7190,7 @@ export class App {
    * 第一次打开：弹一张主题选择（D353：只剩 Mac 风格三套，一排三颗）。默认亮着 Mac 浅色。
    * 点一颗立即换上（同设置里的 chip，存进 `pi.prefs.theme`）；「开始使用」/ 关掉都算看过 ——
    * 弹出的那一刻就记 `themeIntroSeen`，刷新也不会再来一次（以后去 设置 → 外观 改）。
+   * #591：不再加一层「Mac 风格」分组标题 —— 标题已经说了「选一套主题」，底下直接三颗。
    */
   private maybeThemeIntro(): void {
     if (this.prefs.themeIntroSeen || this.sheetKind) return;
@@ -7206,15 +7218,12 @@ export class App {
 
     const body = el("div", "theme-intro");
     body.append(el("p", "theme-intro-lead", tr("先挑一套顺眼的；以后随时可以在 设置 → 外观 里换。")));
-    const group = (title: string, role: string, list: typeof THEMES): HTMLElement => {
-      const box = el("div", "theme-intro-group");
-      box.dataset.role = role;
-      const row = el("div", "chips theme-chips");
-      for (const t of list) row.append(themeChipEl(t, this.prefs.theme, () => sheet, (id) => this.pickTheme(id)));
-      box.append(el("div", "theme-intro-title", title), row);
-      return box;
-    };
-    body.append(group(tr("Mac 风格"), "theme-intro-mac", THEMES));
+    const introMac = el("div", "theme-intro-group");
+    introMac.dataset.role = "theme-intro-mac";
+    const introRow = el("div", "chips theme-chips");
+    for (const t of THEMES) introRow.append(themeChipEl(t, this.prefs.theme, () => sheet, (id) => this.pickTheme(id)));
+    introMac.append(introRow);
+    body.append(introMac);
 
     const foot = el("div", "sheet-foot");
     const go = el("button", "btn primary", tr("开始使用")) as HTMLButtonElement;
@@ -15921,7 +15930,16 @@ export class App {
     if (!c) return;
     c.node.replaceChildren();
     if (!c.items.length) {
-      c.node.append(el("div", "complete-empty", c.mode === "file" ? (c.query ? tr("找不到「{p1}」", { p1: c.query }) : tr("输入文件名的一部分…")) : tr("没有匹配的命令")));
+      // D357：pi 还在启动时「没有匹配的命令」是句假话 —— 扩展命令 / 提示词模板都在它手里，清单还没到。
+      const empty =
+        c.mode === "file"
+          ? c.query
+            ? tr("找不到「{p1}」", { p1: c.query })
+            : tr("输入文件名的一部分…")
+          : this.session?.starting
+            ? tr("pi 正在启动（加载扩展，通常几秒）…命令表随后到")
+            : tr("没有匹配的命令");
+      c.node.append(el("div", "complete-empty", empty));
       return;
     }
     c.items.forEach((item, i) => {

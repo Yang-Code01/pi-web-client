@@ -1,3 +1,4 @@
+import { addTurnArtifact, createArtifactCard } from "./artifact-card.ts";
 import { artifactSources, noteArtifact, noteMentioned, toolPath, type ArtifactSource } from "./artifact-sources.ts";
 import { askQuestions, askTurnLabel, parseAskResult } from "./ask-result.ts";
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
@@ -1645,36 +1646,21 @@ export class ChatView {
     return artifactSources(this.written);
   }
 
-  /** A write/edit lands in the session's artifact list and as a chip under this turn's module. */
+  /**
+   * 写入落到本场会话的产物列表，也落到这一轮的产物卡上。
+   * 卡片只画「写过」：交付（open_preview）不进这一轮（见 D275 与 artifact-sources 的注释）。
+   */
   private noteWrite(name: unknown, args: unknown): void {
     const hit = noteArtifact(this.written, name, args);
-    // 打开（交付）只进产物列表；这一轮下面的芯片仍然只画「写过」。
     if (!hit || !hit.isWrite) return;
     const path = hit.path;
     const box = this.opsBox;
     if (!box || box.parentNode !== this.root) return;
     if (!this.opsFiles || !this.opsFiles.isConnected) {
-      this.opsFiles = el("div", "ops-files");
-      this.opsFiles.append(el("span", "ops-files-label", tr("产物")));
+      this.opsFiles = createArtifactCard(() => window.dispatchEvent(new CustomEvent("pi-artifacts")));
       box.after(this.opsFiles);
     }
-    const files = this.opsFiles;
-    if ([...files.querySelectorAll<HTMLElement>(".file-chip")].some((c) => c.dataset.path === path)) return;
-    // #421：chip 主体不再可点，动作拆成右边两颗按钮（引用 / 打开）——套 <button> 里不能再嵌按钮，所以容器是 span。
-    const chip = el("span", "file-chip");
-    chip.dataset.path = path;
-    chip.title = path;
-    chip.append(el("span", "ico", fileIcon(path)), el("span", "nm fc-chip-name", baseName(path)));
-    const quote = el("button", "fc-chip-act quote", tr("引用")) as HTMLButtonElement;
-    quote.type = "button";
-    quote.title = tr("把路径引用到输入框");
-    quote.onclick = () => window.dispatchEvent(new CustomEvent("pi-quote", { detail: { path } }));
-    const open = el("button", "fc-chip-act", tr("打开")) as HTMLButtonElement;
-    open.type = "button";
-    open.title = tr("在预览里打开");
-    open.onclick = () => openPreview(path);
-    chip.append(quote, open);
-    files.append(chip);
+    addTurnArtifact(this.opsFiles, path);
   }
 
   /**
@@ -2305,10 +2291,6 @@ function buildFailureItem(input: FailureInput, ms?: number): HTMLElement {
   foot.append(el("span", undefined, meta.join(" · ")), rawBox);
   item.append(foot);
   return item;
-}
-
-function baseName(p: string): string {
-  return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 }
 
 export function fileIcon(p: string): string {

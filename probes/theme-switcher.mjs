@@ -5,8 +5,9 @@
  * 文字亮度三档退场，老偏好按明暗 + 最近色落进三套。
  *
  * 这里量的是「换完以后整页真的换了」——不是某个变量改了：
- *  - 开箱是 Mac 浅色且 `data-ui=mac` 恒挂；设置里只剩「Mac 风格」与「颜色」两页，三颗 chip；
- *  - 「颜色」页只剩 macOS 八色一行（六色行与文字亮度行都不在了）；点色块立即换 `--accent`；
+ *  - 开箱是 Mac 浅色且 `data-ui=mac` 恒挂；设置 → 外观只剩四页，第二页叫「主题与强调色」；
+ *  - 主题与强调色同住一页（#591）：三颗 chip、macOS 八色、Mac 快捷键按这个顺序，顶上两张卡；
+ *    原先独立的「Mac 风格」「颜色」两页都不在了，点色块立即换 `--accent`、点 chip 不重建色块行；
  *  - 三套主题逐套：'<html data-theme>'、`--bg`、color-scheme、三档文字对比度，以及浅底下
  *    设置面板 / 顶栏 / 输入框 / 会话卡都真的是浅的（漏网的写死深色会红）；
  *  - 「恢复默认」把主题拉回 Mac 浅色；刷新后主题还在（bootTheme 在登录页之前就落过）；
@@ -203,6 +204,11 @@ const snap = () =>
       title: sheet?.querySelector('[data-role="dtitle"]')?.textContent ?? "",
       activeSec: sheet?.querySelector(".st-nav__item.on")?.textContent?.replace(/\s+/g, " ").trim() ?? "",
       navSecs: [...(sheet?.querySelectorAll(".st-nav__item") ?? [])].map((n) => n.textContent?.replace(/\s+/g, " ").trim() ?? ""),
+      // 主题页现在身兼两职：chip 行、强调色行、快捷键行都在 data-sec="theme" 里。
+      themeRows: [...(sheet?.querySelectorAll('.set-sub[data-sec="theme"] .settings-row') ?? [])].map((n) => n.querySelector(".settings-name")?.textContent?.trim() ?? ""),
+      themeSwatches: sheet?.querySelectorAll('.set-sub[data-sec="theme"] .swatch[data-mac-accent]').length ?? 0,
+      accentSec: sheet?.querySelector('[data-role="accent-row"]')?.closest(".set-sub")?.dataset.sec ?? "",
+      cards: [...(sheet?.querySelectorAll('[data-role="look-cards"] .st-card') ?? [])].map((n) => (n.textContent ?? "").replace(/\s+/g, " ").trim()),
       chips: [...(sheet?.querySelectorAll(".theme-chip") ?? [])].map((n) => n.textContent?.trim() ?? ""),
       onChips: [...(sheet?.querySelectorAll(".theme-chip.on") ?? [])].map((n) => n.dataset.theme ?? ""),
       demoBgs: [...(sheet?.querySelectorAll(".theme-demo") ?? [])].map((n) => getComputedStyle(n).getPropertyValue("--td-bg").trim()),
@@ -218,9 +224,9 @@ const openSheet = async () => {
     await page.locator('.icon-btn[data-act="look"]').click();
     await page.waitForSelector(".display-sheet", { timeout: 5000 });
   }
-  const macNav = page.locator(".display-sheet .st-nav__item", { hasText: "Mac 风格" });
-  if (!(await page.locator(".display-sheet .st-nav__item.on", { hasText: "Mac 风格" }).count())) {
-    await macNav.click();
+  const themeNav = page.locator(".display-sheet .st-nav__item", { hasText: "主题与强调色" });
+  if (!(await page.locator(".display-sheet .st-nav__item.on", { hasText: "主题与强调色" }).count())) {
+    await themeNav.click();
     await sleep(250);
   }
   await sleep(150);
@@ -248,29 +254,46 @@ ok(s.meta === "#f5f5f7", `meta theme-color 跟着底色（${s.meta}）`);
 ok(s.scheme === "light", `默认 color-scheme 是 light（${s.scheme}）`);
 ok(!(await page.locator(".theme-intro-sheet").count()), "自动化下不弹主题选择");
 
-// 2) 设置 → 外观：外观只剩「Mac 风格」「颜色」两页；Mac 风格一页三颗；「配色主题」整页没了
+// 2) 设置 → 外观：五项收成四项，强调色并进「主题与强调色」一页；「Mac 风格」「颜色」两页都没了
 await openSheet();
 s = await snap();
-ok(s.navSecs.some((t) => t.startsWith("Mac 风格")), `左栏有「Mac 风格」（${s.navSecs.join(" | ")}）`);
+const WANT_NAV = ["语言与字号", "主题与强调色", "工作区", "界面元素"];
+ok(s.navSecs.length === WANT_NAV.length, `外观左栏四项（${s.navSecs.length}：${s.navSecs.join(" | ")}）`);
+ok(WANT_NAV.every((t, i) => (s.navSecs[i] ?? "").startsWith(t)), `四项依次是语言 / 主题与强调色 / 工作区 / 界面元素（${s.navSecs.join(" | ")}）`);
+ok(!s.navSecs.some((t) => t.startsWith("Mac 风格") || t.startsWith("颜色")), `「Mac 风格」与「颜色」都不在左栏了（${s.navSecs.join(" | ")}）`);
 ok(!s.navSecs.some((t) => t.includes("配色主题")), `左栏不再有「配色主题」（${s.navSecs.join(" | ")}）`);
-ok(s.activeSec.includes("Mac 风格"), `打开设置落在 Mac 风格（${s.activeSec}）`);
+ok(s.activeSec.includes("主题与强调色"), `打开设置落在主题与强调色（${s.activeSec}）`);
+ok(s.title === "主题与强调色", `页标题跟着改名（${s.title}）`);
 const WANT_CHIPS = ["Mac 浅色", "Mac 深色", "Mac 午夜蓝"];
 ok(JSON.stringify(s.chips) === JSON.stringify(WANT_CHIPS), `三颗主题按顺序列出（${s.chips.join(" / ")}）`);
 ok(JSON.stringify(s.onChips) === JSON.stringify(["mac-light"]), `当前那套亮着（${s.onChips.join(",")}）`);
 const WANT_DEMO_BG = ["#f5f5f7", "#1c1c1e", "#171c26"];
 ok(JSON.stringify(s.demoBgs) === JSON.stringify(WANT_DEMO_BG), `三个小样各自是自己的底色（${s.demoBgs.join(",")}）`);
-const lights = await page.locator('.display-sheet .set-sub[data-sec="mac"] .theme-demo.mac .td-lights').count();
+const lights = await page.locator('.display-sheet .set-sub[data-sec="theme"] .theme-demo.mac .td-lights').count();
 ok(lights === 3, `每颗小样都画了红绿灯（${lights}）`);
-ok(s.cardText.includes("Mac 浅色") && s.cardText.includes("默认"), `顶上卡片写清当前主题（${s.cardText}）`);
+ok(
+  JSON.stringify(s.themeRows) === JSON.stringify(["外观主题", "强调色", "Mac 快捷键"]),
+  `主题页三行按 chip → 强调色 → 快捷键排（${s.themeRows.join(" / ")}）`,
+);
+ok(s.themeSwatches === 8 && s.accentSec === "theme", `八色块就在这一页里（${s.themeSwatches} 颗 / ${s.accentSec}）`);
+const sameScreen = await page.evaluate(() => {
+  const pane = document.querySelector(".display-sheet .st-pane")?.getBoundingClientRect();
+  const rows = [...document.querySelectorAll('.display-sheet .set-sub[data-sec="theme"] .settings-row')];
+  const chips = rows[0]?.getBoundingClientRect();
+  const accent = rows[1]?.getBoundingClientRect();
+  if (!pane || !chips || !accent) return null;
+  return { chips: chips.bottom <= pane.bottom + 1 && chips.top >= pane.top - 1, accent: accent.bottom <= pane.bottom + 1 && accent.top >= pane.top - 1 };
+});
+ok(sameScreen?.chips === true && sameScreen?.accent === true, `chip 行与强调色行同屏可见（${JSON.stringify(sameScreen)}）`);
+ok(s.cards.length === 2 && s.cards[0].includes("外观主题") && s.cards[0].includes("Mac 浅色"), `顶上两张卡，第一张写当前主题（${s.cards.join(" | ")}）`);
+ok(s.cards[1]?.includes("强调色") && s.cards[1].includes("蓝色"), `第二张写当前强调色（${s.cards[1] ?? ""}）`);
 ok(s.resetTitle.includes("主题"), `「恢复默认」的说明覆盖了主题（${s.resetTitle}）`);
 ok(s.footBottom !== null && Math.abs(s.footBottom - s.sheetBottom) <= 1, `底栏仍贴底（${s.footBottom} vs ${s.sheetBottom}）`);
 const glass = await page.evaluate(() => getComputedStyle(document.querySelector(".display-sheet")).backdropFilter);
 ok(/blur/.test(glass), `设置台是毛玻璃（backdrop-filter: ${glass}）`);
 
-// 2b) 「颜色」页：只剩 macOS 八色一行；六色行与文字亮度行都不在了
-await page.locator(".display-sheet .st-nav__item", { hasText: "颜色" }).click();
-await sleep(250);
-const swatches = await page.locator(".display-sheet .swatch[data-mac-accent]").count();
+// 2b) 同一页调强调色：点一下立即换 `--accent`；点主题 chip 不把这一行重建（选中那颗还亮着）
+const swatches = await page.locator('.display-sheet .set-sub[data-sec="theme"] .swatch[data-mac-accent]').count();
 ok(swatches === 8, `macOS 强调色八颗（${swatches}）`);
 const goneRows = await page.evaluate(() => ({
   six: document.querySelectorAll(".display-sheet .swatch[data-accent]").length,
@@ -281,6 +304,16 @@ await page.locator('.display-sheet .swatch[data-mac-accent="purple"]').click();
 await sleep(200);
 s = await snap();
 ok(s.accent === "#8944ab", `Mac 浅色点紫色 → 亮色表那档 #8944ab（${s.accent}）`);
+await page.locator('.display-sheet .theme-chip[data-theme="mac-dark"]').click();
+await sleep(250);
+const keptRow = await page.evaluate(() => {
+  const row = document.querySelector('.display-sheet .set-sub[data-sec="theme"] [data-role="accent-row"]');
+  const on = row?.querySelector(".swatch.on");
+  return { row: !!row, on: on?.dataset.macAccent ?? "", accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim().toLowerCase() };
+});
+ok(keptRow.row && keptRow.on === "purple" && keptRow.accent === "#bf5af2", `换主题后强调色行还在、紫色仍亮着且换到深色那档（${JSON.stringify(keptRow)}）`);
+await page.locator('.display-sheet .theme-chip[data-theme="mac-light"]').click();
+await sleep(200);
 
 // 3) 三套主题逐套量：底色、color-scheme、材质开关、三档文字对比度、强调色跟明暗换表
 const THEMES = [
@@ -415,6 +448,7 @@ const withPrefs = async (prefs, fn) => {
     return {
       ids,
       groups,
+      titles: [...(sh?.querySelectorAll(".theme-intro-title") ?? [])].map((n) => n.textContent?.trim() ?? ""),
       on: [...(sh?.querySelectorAll(".theme-chip.on") ?? [])].map((n) => n.dataset.theme),
       theme: document.documentElement.dataset.theme,
       footIn: !!foot && foot.bottom <= innerHeight + 1,
@@ -423,6 +457,7 @@ const withPrefs = async (prefs, fn) => {
   });
   ok(JSON.stringify(intro.ids) === JSON.stringify(["mac-light", "mac-dark", "mac-midnight"]), `弹窗只有一排三颗（${intro.ids.join(",")}）`);
   ok(JSON.stringify(intro.groups) === JSON.stringify(["theme-intro-mac"]), `弹窗只有 Mac 那一组（${intro.groups.join(",")}）`);
+  ok(intro.titles.length === 0, `分组标题不再重复「Mac 风格」（${intro.titles.join(" | ") || "无"}）`);
   ok(JSON.stringify(intro.on) === JSON.stringify(["mac-light"]) && intro.theme === "mac-light", `默认亮着 Mac 浅色（${intro.on.join(",")} / ${intro.theme}）`);
   ok(intro.footIn, "「开始使用」在视口里");
   ok(intro.seen === true, "弹出即记 themeIntroSeen");

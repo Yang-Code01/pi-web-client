@@ -84,7 +84,7 @@ export async function selfChangelog(maxBytes = 200_000): Promise<SelfChangelog> 
   return { version: productVersion(), branch, commit, root: ROOT, text };
 }
 
-// ---------------------------------------------------------------- 启动时的「本项目更新日志」弹窗（#588 D354）
+// ---------------------------------------------------------------- 启动时的「本项目更新日志」弹窗（#588 D358）
 
 /** 一批 = 日志里一个 `## ` 小节。`title` 是那一行去掉 `## ` 之后的原文，也就是它的身份。 */
 export interface WhatsnewBatch {
@@ -100,7 +100,7 @@ export interface WhatsnewState {
   enabled?: boolean;
 }
 
-/** D354：两次弹出之间至少隔一天。也是「判定机会」本身，不是额外的第二层。 */
+/** D358：两次弹出之间至少隔一天。也是「判定机会」本身，不是额外的第二层。 */
 export const WHATSNEW_THROTTLE_MS = 24 * 60 * 60 * 1000;
 
 export type WhatsnewDecision =

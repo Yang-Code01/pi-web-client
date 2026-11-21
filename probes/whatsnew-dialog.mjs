@@ -1,5 +1,5 @@
 /**
- * #588 D354 守卫：启动时那张「本服务更新了什么」（本项目更新日志的新批次）。
+ * #588 D358 守卫：启动时那张「本服务更新了什么」（本项目更新日志的新批次）。
  *
  * 要守的六件事，每一件都真的起桥、真的开页面：
  *  1. 全新状态 → 弹；内容是最新一批，`还有 N 批更早的` 的 N = 总批数 - 1；一打开就把已读写盘。
@@ -112,6 +112,21 @@ async function stopBridge() {
     }
   }
 }
+/** 起桥并等 /healthz：端口刚放掉的几百毫秒里偶发 EADDRINUSE，重试一次再判死。 */
+async function startBridgeUp(label) {
+  for (let attempt = 1; ; attempt++) {
+    startBridge();
+    try {
+      await until(async () => (await fetch(`${BASE}/healthz`)).ok, 10000, label);
+      return;
+    } catch (err) {
+      await stopBridge();
+      if (attempt >= 3) throw err;
+      await sleep(800);
+    }
+  }
+}
+
 async function until(fn, ms, label) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
@@ -172,8 +187,7 @@ async function noDialog(page, ms = 2500) {
 let page = null;
 let context = null;
 try {
-  startBridge();
-  await until(async () => (await fetch(`${BASE}/healthz`)).ok, 20000, "bridge up");
+  await startBridgeUp("bridge up");
   const login = await fetch(`${BASE}/api/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -210,8 +224,7 @@ try {
   // ---- 3) 重启桥、已读没动：不弹
   log("3) 重启桥，已读仍是最新那批");
   await stopBridge();
-  startBridge();
-  await until(async () => (await fetch(`${BASE}/healthz`)).ok, 20000, "bridge up#2");
+  await startBridgeUp("bridge up#2");
   ({ page, context } = await openPage());
   ok(await noDialog(page, 3500), "重启后仍不弹（最新那批看过了）");
 
@@ -221,8 +234,7 @@ try {
   await context.close();
   await stopBridge();
   writeState({ seenTitle: "", lastShownAt: Date.now() });
-  startBridge();
-  await until(async () => (await fetch(`${BASE}/healthz`)).ok, 20000, "bridge up#3");
+  await startBridgeUp("bridge up#3");
   ({ page, context } = await openPage());
   ok(await noDialog(page, 3500), "不满 24 小时不弹");
   ok((readState()?.seenTitle ?? "") === "", "被闸挡下的已读没有前进（那几批还能在下次弹出来）");
@@ -233,8 +245,7 @@ try {
   await context.close();
   await stopBridge();
   writeState({ seenTitle: SECOND, lastShownAt: 0 });
-  startBridge();
-  await until(async () => (await fetch(`${BASE}/healthz`)).ok, 20000, "bridge up#4");
+  await startBridgeUp("bridge up#4");
   ({ page, context } = await openPage());
   await waitDialog(page);
   const body5 = await page.evaluate(() => ({
@@ -246,6 +257,8 @@ try {
 
   // ---- 6) 「看全部日志」把人送到设置那一页；那一页上看得到「上次看到」与开关，且翻完不算已读
   log("6) 看全部日志 → 设置页那一页");
+  // 「打开即已读」是一次 fire-and-forget 的 POST：先等它真落盘，否则下面「一个字节没动」比的是两份空。
+  await until(() => readState()?.seenTitle === NEWEST, 5000, "seen 落盘");
   const beforeSettings = readState();
   await page.locator(".whatsnew-foot .btn", { hasText: "看全部日志" }).click();
   await page.waitForSelector(".st-console .settings-row", { timeout: 15000 });
@@ -286,8 +299,7 @@ try {
   log("7) 空着输入框才弹 + 窄屏 + 字号 150%");
   await stopBridge();
   writeState({ seenTitle: SECOND, lastShownAt: 0, enabled: true });
-  startBridge();
-  await until(async () => (await fetch(`${BASE}/healthz`)).ok, 20000, "bridge up#5");
+  await startBridgeUp("bridge up#5");
   // 直接路由到桩会话：输入框从第一帧就在，草稿也从 `pi.drafts` 里恢复（没会话时编辑器整块不画，
   // 「输入框空着」这条就无从验起）。
   ({ page, context } = await openPage({

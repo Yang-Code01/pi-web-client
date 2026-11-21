@@ -1,5 +1,5 @@
 /**
- * #588 D354：老用户某天第一次启动时，把「本项目更新日志」的新批次弹一次。
+ * #588 D358：老用户某天第一次启动时，把「本项目更新日志」的新批次弹一次。
  *
  * 分工是刻意的：
  * - **该不该弹、弹哪一批、还有几批没看**都在桥端算（`bridge/src/whatsnew.ts` 的纯函数 + 24 小时闸），
@@ -9,7 +9,7 @@
  * - 「领取」在桥端是一次性的（同一进程只发给一个页面），所以这里不用自己防重复弹；但页面仍要
  *   防「已经开着一个」的重复调用。
  *
- * 已读在 dialog 打开的那一刻就写（D354）：这个功能的目的是**知道**，不是**确认**。所以不存在
+ * 已读在 dialog 打开的那一刻就写（D358）：这个功能的目的是**知道**，不是**确认**。所以不存在
  * 「必须点知道了才不算没看过」那套纠缠。
  */
 import { createEl as el } from "./chat.ts";
@@ -32,7 +32,7 @@ export interface WhatsnewClaim {
   root?: string;
 }
 
-/** 排不上队就放弃的时限（D354）。从桥派发起算，不是从页面打开算。 */
+/** 排不上队就放弃的时限（D358）。从桥派发起算，不是从页面打开算。 */
 export const WHATSNEW_WAIT_MS = 10 * 60_000;
 
 export interface WhatsnewQueueOptions {
@@ -93,7 +93,7 @@ export interface WhatsnewDialogOptions {
 /** 画出来并立即记已读。同一时刻只允许一个（重复调用直接忽略）。 */
 export function openWhatsnew(opts: WhatsnewDialogOptions): void {
   if (document.querySelector(".whatsnew-back")) return;
-  // 打开即已读（D354）。失败也无所谓：下次判定还看得见，只是可能要重看一遍。
+  // 打开即已读（D358）。失败也无所谓：下次判定还看得见，只是可能要重看一遍。
   void fetch("/api/changelog/seen", { method: "POST", credentials: "same-origin" }).catch(() => {});
 
   const back = el("div", "sheet-back center whatsnew-back");
