@@ -116,6 +116,7 @@ import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { countSlides, slidesAvailable, slidesPdfFile, slidesPdfKey, slidesPdfStatus, slidesProbe } from "./slides/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
 import { openPage, shouldOpenPage } from "./openbrowser.ts";
+import { injectWindowTitle, windowTitleFromEnv } from "./window-title.ts";
 
 interface Config {
   port: number;
@@ -223,6 +224,10 @@ const WEB_ROOT = (() => {
   return found.find((p) => fs.existsSync(p)) ?? found[found.length - 1];
 })();
 
+const INDEX_HTML = path.join(WEB_ROOT, "index.html");
+// D360：测试实例的窗口标题（`PI_WEB_WINDOW_TITLE`，由测试环境脚本设成「测试 <实例名>」）。正式实例没设。
+const WINDOW_TITLE = windowTitleFromEnv();
+
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -240,7 +245,7 @@ function serveStatic(res: http.ServerResponse, rel: string): void {
   // 第二张页面：`/peer` 落到 peer.html，不能掉进 index.html 兜底（否则打开的是聊天界面）。
   const wanted = clean === "/peer" || clean === "/peer/" ? "/peer.html" : clean;
   const target = path.join(WEB_ROOT, path.normalize(wanted).replace(/^([/\\])+/, ""));
-  const file = target.startsWith(WEB_ROOT) && fs.existsSync(target) && fs.statSync(target).isFile() ? target : path.join(WEB_ROOT, "index.html");
+  const file = target.startsWith(WEB_ROOT) && fs.existsSync(target) && fs.statSync(target).isFile() ? target : INDEX_HTML;
   if (!fs.existsSync(file)) {
     res.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
     res.end("web 前端还没构建：在 web/ 下跑 npm run build");
@@ -252,6 +257,11 @@ function serveStatic(res: http.ServerResponse, rel: string): void {
     // peer.html 之前按「非 index.html」拿 3600 秒缓存 —— 改完页面，弹框里还是旧 JS。
     "cache-control": file.endsWith(".html") ? "no-store" : "public, max-age=3600",
   });
+  // 换标题要改 HTML 正文，加不进去的时候仍然走流式（大文件、非入口页都这样）。
+  if (WINDOW_TITLE && file === INDEX_HTML) {
+    res.end(injectWindowTitle(fs.readFileSync(file, "utf8"), WINDOW_TITLE));
+    return;
+  }
   fs.createReadStream(file).pipe(res);
 }
 

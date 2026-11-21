@@ -1114,7 +1114,6 @@
 
 **验证**：`npm run build` 后 `web/dist/peer.html` 存在；`curl -H 'cookie: …' http://127.0.0.1:7864/peer` 返回的 HTML 里含 `<title>局域网 · pi</title>` 与 peer 的 bundle；截图见 `.scratch/peer/online.png`（在线列表里有一台对端）。
 
-
 ## D102 消息与回执都只追加：回执是新的一行，过期判断靠「最近 2000 条 id」
 
 **症状**：一条消息发出后想显示「已送达」，最自然的写法是把那行 JSONL 改一遍（把 `status: sent` 改成 `delivered`）；一旦中途断电，文件里就留半行坏 JSON，而且第 3 片的好友请求、第 4 片的文件卡都会各自再改一遍同一行。
@@ -1290,7 +1289,6 @@
 **已知限制**：`zh-TW` / `zh-HK` 落简体中文（繁体本次不做）；`pi` / 命令 / 路径 / `md`·`json` 这些不译；界面把一句话拆成几段拼接的地方（`"打开 "` + 链接）在语序不同的语言里依赖键保留首尾空格，译文顺序无法自由调整（**可改**：真要治得重排 DOM）。
 
 **验证**：`npm --prefix web run typecheck`（含 i18n-check）；`bridge/tests/i18n-ui.mjs`（en-US 上下文里登录 → 开「Appearance & language」→ 切三语 → 发一条消息，断言 `<html lang>`、顶栏按钮文字、面板标题都跟着变，截中 / 英 / 日三张图）；其余既有 Playwright 脚本全部固定 `locale: "zh-CN"` 后原样通过。
-
 
 ## D111 文件预览与终端按「最后被点 / 聚焦的那扇在前」叠放
 
@@ -3195,7 +3193,6 @@ D
 - **`for-each-ref --format` 不认 `%x1f`**：那是 pretty format 的写法，会原样吐出来；分支名不许有空格，所以用空格分隔。踩过。
 - **`--graph` 没有画**：样张 C（真实 lane 图）用户没选，选的是 A（计数胶囊 + 线性两列）。要换回图线，桥端得再跑一趟 `git log --graph` 并把前缀原样带上 —— 样张里那套逐字渲染的代码还在 `.scratch/git-history-dialog/prototype/c-lanes.html`。
 
-
 **补（review 后）：** ① 界面文案不许走 ASCII 键 —— `Fetch origin` / `remote` / `detached` 换成「拉取最新」「远程」「游离 HEAD」（`HEAD`、`merge` 是 git 概念本身，留裸串，`i18n-check` 也只认含中文的键）。② 下拉首项是「自动 · 跟随 origin/HEAD」：选项值为空串，桥端重新走三级兜底，`baseAuto` 时前端也把 `this.base` 留空，否则换回一次就再也回不到自动。③ 分页对齐桥端的 300 封顶：到了把按钮换成一句「只显示最近 300 条」，不再给一颗点了不动的按钮。④ 换对照分支失败时留着上一份数据与下拉（失败态只占领列区），否则 `base_unknown` 时只剩关窗重开。⑤ `npm run test:githist:ui` 从「只 log」改真断言（胶囊/两列/公共行/下拉首项/数据时间格式/复制按钮/300 封顶/窄屏 2 tab 1 列），失败退出码 1。
 
 **验证：** `npm run test:githist`（新）—— 现搭裸库当 origin，断言分类（左 2 独有 + 3 公共、右侧 3 条 common）、ahead/behind、分叉点、`n` 下限 10、分页 `more`、`gitFetch` 之后 behind 从 0 变 1 且分叉点不动、空仓库 `empty`、非仓库 `null`、坏对照分支 `base_unknown`、detached HEAD 能读。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1680 keys × 3 langs`）。
@@ -3676,7 +3673,6 @@ D
 **验证：** harness `F:/pi-web-client-wt/fix-diff-sheet-overflow/.scratch/diff-overlap/repro.html`（链接真 `web/src/styles.css`，DOM 照 `web/src/app.ts:5744-5820` 拼）+ `check.mjs`（Playwright）：修前 1280 宽下 head 594.1 > 560、close 58.9×58.3、`在查看器里打开` 右缘 943.1 > 920；修后 360 / 420 / 560 / 640 / 760 / 800 / 900 / 1100 / 1280 / 1600 十个宽度全过 —— 关闭恒 60×38.1、head 不溢出不折行、按钮全在 sheet 内，<760 仍是 `x=0` 全宽。`node bridge/tests/whatsnew-ui.mjs` 全绿（设置页也是 `.sheet`，确认基础规则的改动没伤到别的抽屉）；`npm run build` 与 `npm run typecheck`（含 i18n-check）通过。
 
 **可改：** 920 / 94vw 两个数是按「两列各 356px 能读 48 列左右」定的；hint 在窄一点的窗口会先出省略号，如果更想让它换行就换成两行 grid。
-
 
 ## D212 本机管理：独立控制台，读走 REST、DNS 写走 UAC 助手，公网只读打码
 
@@ -6001,7 +5997,6 @@ Esc 之后 dialog: 0
 
 **验证：** `npm run test:notes` 四段全绿：`web/tests/notes-rich-unit.mjs`（22：白名单 / 事件属性 / 字号只认 em / 表格 / 幂等 / 老文本迁移）、`web/tests/notes-editor-browser.mjs`（真 Chromium：选区加粗、``` 回车转代码块、粘贴净化、颜色包裹、选区丢失时不改正文）、`web/tests/notes-sheet-browser.mjs`（三栏骨架 / 列表行 / 自动存 / 状态菜单 / 两栏折叠 / 搜索 / 归档只读，`locale: zh-CN`）。`cd web && npm run typecheck`（tsc + i18n 3475 键 × 3 语 + viewport 守卫）通过。
 
-
 ## D306 考勤：设置页能看回本机存着的密码，token 过期自动续登（用户要求 2026-11-18）
 
 **问题：** 用户提了两件事：「之前已经登陆过了，每次打开考勤自动更新」——可界面在 token 一过期就说「未登录」，而实际上记录页一拉数据，`session()` 就会拿存着的密码自动重登，提示与事实相反；「设置里面密码现在默认不显示，设置为显示状态。但是不是直接显示，应该有一个眼睛的图标，点击能显示」——要看的是**本机存着的那个**密码，不是重敲一遍。
@@ -6240,7 +6235,6 @@ Esc 之后 dialog: 0
 **取舍：** 不做「每步耗时」与「执行到第几步」—— 子步骤仍然是从源码解析出来的要求，不是浏览器回传的轨迹（D310），折叠行能说的只是「这一步被要求做过」。也不把 `read` / `shot` 留在链里凑信息：留着就回到「七张卡同一行」的老问题。
 
 **验证：** `npm run test:browser-ops`（31 条，新增两条：`foldedSteps()` 在真实脚本上只剩「打开 → 输入 → 点击」；只有读页面时兜底、且被 wait 隔开的两步并成一条）；`npm run test:browser-ops:ui`（42 条，假 pi 的 `BROWSER` 场景多了两颗 `write` + `bash node x.mjs` 的脚本卡：折叠行要点出打开的网址与输入的值，链再宽也要整条挂在 `title` 上）。红过的判定：改动前两张脚本卡分别是 `search.mjs · 读取页面信息 ×2` 与 `inspect.mjs · 读取页面信息`，与用户截图逐字一致。
-
 
 ## D319 正文里提问不再放过：停下前核对，没走 `ask_user_question` 就续跑一次（用户要求 2026-11-18）
 
@@ -6600,8 +6594,6 @@ Esc 之后 dialog: 0
 - **前端收集优先级**（`web/src/artifact-sources.ts`、`web/src/chat.ts`）：在 `noteAnswer` 中提取回复正文路径，经 `noteMentioned` 记入 `this.written`（带 `mentioned: true`）；优先级严格为「写入 > 交付 > 提及」，不覆盖真实写入或 `open_preview` 记录。
 - **桥侧校验过滤**（`bridge/src/sessions.ts`、`bridge/src/artifacts.ts`、`bridge/src/index.ts`）：`locate()` 一并返回 `startedAt`，`listArtifacts()` 对 `mentioned` 条目校验「文件存在、是普通文件、且 `mtimeMs >= startedAt - 1000`」，过滤掉旧参考文件、目录与不存在的路径；同一 `abs` 撞车时保留非 `mentioned` 记录；无基线时返回 `why: "mentioned-only"`，页面显示「回复提及」及对应说明（三语同步）。
 
-
-
 ## D341 Jira 面板加「最近消息」：@我的 / 我回复过的（用户需求 2026-11-20）
 
 **需求。** Jira dialog 左栏新增一页「最近消息」，分两段：别人在哪些工单里 @ 了我、我最近在哪些工单里回复过。默认最新 10 条、新的在上，「显示更多」每次再加 10 条；每行照样能展开详情、下载附件、交给 agent。
@@ -6682,7 +6674,6 @@ Esc 之后 dialog: 0
 **验证。** `npm --prefix web run typecheck`（含 layers、viewport 守卫）；`node probes/esc-dialogs.mjs`（上下文 / 模型 / 开新会话 / 技能面板 / 技能商店 / 内网通，各测「焦点在内」与「焦点在 body」两种，无弹层时 Esc 不动输入框）；`web/tests/notes-sheet-browser.mjs`、`web/tests/layers-unit.mjs`、`web/tests/ask-tab-unit.mjs` 通过。
 
 **未覆盖（待补）。** 邮箱的 Esc（`trapEscape` 改冒泡）、预览 / 表格 / 幻灯片浮窗的焦点分支、选择框 `choose`、口令框 `askStepUp`、升级确认、终端菜单 `openShellMenu`、图片查看，现在只有代码审查，没有 probe。`probes/skill-palette.mjs` 在 origin/main 的基线上就卡在「点对话区关闭」那一步（`.skill-panel` 截住了点击），与本改动无关。
-
 
 ## D347 内网通：附件先进输入框、基础群聊、固定消息、名字跟备注走、@ 与标为未读（用户要求 2026-11-20）
 
@@ -6887,7 +6878,6 @@ Esc 之后 dialog: 0
 
 **守卫。** `npm run test:whatsnew-popup`（`bridge/tests/whatsnew-popup-unit.mjs`）：批次切分（含 `###` 分组与注释）、没记录 / 已读在中间 / 已读就是最新、已读那批被改写、闸未满与正好满、开关关着、`older` 列表与顺序。`node probes/whatsnew-dialog.mjs`：真桥 + 真页面，验首弹内容与 N、一打开即已读、刷新不重弹、重启不重弹、闸挡住且已读不前进、只差一批时不出「还有 N 批」、Esc 能关、设置页那两行与开关落盘、在设置页翻完不推进已读、草稿没发出去时先不弹、窄屏铺满整屏、字号 150% 时底栏仍在屏幕里。派发窗口的到期单独在单测里验（`claimExpired`）。
 
-
 ## D359 子代理详情卡跟着数据长：原文晚到就补，失败就说为什么（用户报「任务原文没传到桥」2026-11-21；修正 D185 决定 6 的前提）
 
 **修正 D185：** 第 6 条把 `workflow-receipt.json` 当成「runner 早就把清单写进去了」，实测它在跑完那一刻才写（上游「问题」第 1 条）；回填来源改为 `status.json`，其余各条（`args.args.tasks[]` 优先、已有值不覆盖、`hasOut` 按跑完没跑完判）不变。
@@ -6918,3 +6908,21 @@ Esc 之后 dialog: 0
 
 **验证：** `npm run test:bgruns` 新增两段：脚本式 workflow 形（`options.script`、无 `workflowChildren`、`status.json` 带 `steps[]` + `workflowChildren.children[]`）→ `readLog()` 后 `agent` 是 `reviewer`、`task` 是两条编号行、`prune()` 之后不变；前台失败（`workflow:true` + `async:false`）→ `state` `failed`、`hasOut` false、`error` 以 `The workflow script is missing.` 开头且正好三行，成功卡没有 `error`。第一版把 `status.json` 放在读 receipt 之前，`bridge/tests/bgruns-unit.mjs` 里原有的「receipt 里的 agent 补回来」当场变红（`'' !== 'planner'`），改成先读 receipt 才绿。
 `node probes/bg-runs.mjs`（新探针，丢弃式 bridge + fake-pi 的 `BGSCRIPT` / `BGFAIL` 两个场景，真 Chromium）：停在会话列表点「后台」徽标开弹层，断言开卡那刻是「（没有任务原文）」、留在同一张卡上 12 秒内自己换成两条任务、卡片头变 `reviewer`；前台失败那张卡标「失败」、错误三行原样在卡上、没有「最终输出」、没有空过程框；界面不再出现「任务原文没传到桥」；10 项全过，无 `pageerror`。`npm --prefix web run typecheck`（含 i18n / viewport / layers 单测 14 项）与 `npm --prefix bridge run typecheck` 均绿。
+## D360 测试实例的浏览器 tab 上是「测试 <实例名>」（用户要求「启动新的测试窗口，窗口的 tab 名称是测试+启动测试环境的会话名」2026-11-21）
+
+**症状。** 正式的 7864 和一两份测试实例同时开着，浏览器上一排 tab 全叫「pi」，分不出哪个是刚起来的那份；测试脚本起完只打印一个地址，窗口还得人自己开、开完也认不出来。
+
+**根因。** 正式和测试跑的是同一份前端、同一份 HTML（`web/index.html:9` 的 `<title>pi</title>`），`document.title` 全仓只有 `fillExt()` 里一处设置（`web/src/app.ts:16004`），算出来只可能是「会话标题 · pi」或「pi」。实例名只活在脚本的标准输出和 `~/.pi/agent/state/pi-web-test-dev/instances.json` 里，从来没进过页面。
+
+**决定。** 把实例名交给**桥**，由桥写进它送出的页面 —— 不是 URL 参数，也不是前端写死。
+
+- 测试脚本起桥时带 `PI_WEB_WINDOW_TITLE=测试 <实例名>`（`bin/env.mjs:324`），`--name` 缺省时是 `t<N>`，标题也随之变成「测试 t2」。
+- 桥端 `serveStatic()` 只在「变量非空 + 送的是 index.html」时改正文（`bridge/src/index.ts:261`）：`injectWindowTitle()`（`bridge/src/window-title.ts`）把 `<title>` 换成实例名、并往 `</head>` 前挂 `window.__piWindowTitle`。首帧 tab 就对，不靠 JS。
+- 前端把标题算法收成 `documentTitle()`（`web/src/window-title.ts`）：前缀顶在最前，会话标题接在后面 —— 测试实例里进某个会话就是「测试 t1 · 会话名」；没有前缀时与原来一模一样。
+- 脚本启动成功后**自己开一个窗口**（`openWindow()`，`bin/env.mjs:237`）：Windows 先按 App Paths / `Program Files` 标准路径找到 `msedge.exe` 再 `--new-window`（`Get-Command msedge` 不可靠，Edge 不在 PATH 上），macOS 先试 Edge 再回退 `open`，Linux `xdg-open`；开完等 Edge 的窗口标题里多出一条**等于「测试 <id>」**的才报「新开了一个：测试 t1」。退出码不算数 —— Edge 常驻时丢 URL 只会在后台开标签，用户看到的还是「没打开」。`--no-open` 只打印地址。
+
+为什么不走 `?tab=测试 t1` 那种 query 参数：标题该是**实例**的属性，不是某一次打开方式的属性。同一份实例谁打开、哪个窗口都该叫「测试 t1」；query 只对带参数的那一次有效，还会一路跟着 URL 被复制出去。
+
+**代价。** 正式实例一个字节都不变（`WINDOW_TITLE` 为空时仍走原来的流式发送，不读全文）。测试实例里 `document.title` 的最前面是实例名，会话名被挤到第二段；浏览器通知 / 书签这些跟着标题走的入口也会变 —— 这正是想要的。前缀是**实例数据**（`windowTitleFor()` 里的「测试」写在脚本里），不跟界面语言切换：静态 `<title>` 得在 JS 之前就正确，桥那边也没有用户语言可查；`/peer`（内网通）页固定「内网通 · pi」，不跟实例名走。
+
+**守卫。** `npm run test:window-title`：`bridge/tests/window-title-unit.mjs`（无标题时页面原样、`<title>` 与注入脚本的位置、标题里的 `</script>` / `<` 不把页面写坏、没有 `</head>` 的畸形页面补 `<head>` 且不把脚本塞到 `<!doctype>` 之前）与 `web/tests/window-title-unit.mjs`（前缀 × 会话标题四种组合，正式实例必须还是「会话 · pi」/「pi」）。真机：`env.mjs start` 的输出里出现「新开了一个：测试 t1」才算开成（新增标题必须**等于**「测试 <id>」，别的新窗口不算），找不到 Edge 或标题一直对不上就明说，不要报成功。

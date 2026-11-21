@@ -3,7 +3,7 @@
 //
 //   node env.mjs list
 //   node env.mjs ports [--peers 1]
-//   node env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build]
+//   node env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build] [--no-open]
 //   node env.mjs stop --id t1 | --all
 //
 // 端口布局（base = 第一个空闲的 17864+）：bridge=base、peer=base+1、announce(UDP)=base+2、
@@ -212,6 +212,106 @@ function killTree(pid) {
   }
 }
 
+/** D360：交给桥、再由桥写进页面 <title> 的那段文字。实例数据，不跟界面语言走（见 D360 代价）。 */
+function windowTitleFor(id) {
+  return `测试 ${id}`;
+}
+
+/**
+ * D360：开一个新的浏览器窗口。标题由桥注入，这里只核「真的多了一条标题是它的窗口」—— 退出码什么都证明不了
+ * （Edge 常驻时丢 URL 只会在后台开标签）。
+ */
+async function openWindow(url, id, opts) {
+  const page = `${url}/`;
+  const title = windowTitleFor(id);
+  if (opts["no-open"]) {
+    say(`  窗口    --no-open：没开；点上面的地址，tab 会是「${title}」`);
+    return;
+  }
+  if (process.platform === "win32") {
+    // `MainWindowTitle` 一个进程只报一个窗口，而 Edge 的所有窗口都挂在同一个浏览器进程上 —— 数不出来。
+    // 只能枚举顶层窗口自己数；“快照 → 启动 → 等标题”整套放在一次 PowerShell 里跑（不必每 500ms 重编
+    // 一遍 C#），标题匹配也在 PS 里做（免掉控制台编码把中文变成乱码）。
+    const ps = String.raw`
+Add-Type @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class W {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  public static string[] Titles() {
+    var list = new System.Collections.Generic.List<string>();
+    EnumWindows((h, l) => {
+      if (!IsWindowVisible(h)) return true;
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      try { if (System.Diagnostics.Process.GetProcessById((int)pid).ProcessName != "msedge") return true; } catch { return true; }
+      var sb = new StringBuilder(512); GetWindowText(h, sb, 512);
+      if (sb.Length > 0) list.Add(sb.ToString());
+      return true;
+    }, IntPtr.Zero);
+    return list.ToArray();
+  }
+}
+'@
+$want = $env:PI_WIN_TITLE
+function CountMine { @([W]::Titles() | Where-Object { $_ -eq $want -or $_.StartsWith($want + ' ') }).Count }
+$before = CountMine
+$exe = (Get-Command msedge -EA SilentlyContinue).Source
+$dirs = @([Environment]::GetEnvironmentVariable('ProgramFiles(x86)'), $env:ProgramFiles)
+$cands = @($dirs | ForEach-Object { if ($_) { Join-Path $_ 'Microsoft\Edge\Application\msedge.exe' } })
+$cands += (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe' -EA SilentlyContinue).'(default)'
+$exe = @($exe) + @($cands) | ForEach-Object { if ($_ -and (Test-Path -LiteralPath $_)) { $_ } } | Select-Object -First 1
+if ($exe) { Write-Output 'EDGE'; Start-Process -FilePath $exe -ArgumentList '--new-window', $env:PI_WIN_PAGE }
+else { Write-Output 'DEFAULT'; Start-Process $env:PI_WIN_PAGE }
+$deadline = (Get-Date).AddSeconds(12)
+while ((Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 500
+  if ((CountMine) -gt $before) { Write-Output 'OPENED'; exit 0 }
+}
+Write-Output 'NONE'`;
+    const launched = spawnSync("powershell", ["-NoProfile", "-Command", ps], {
+      encoding: "utf8",
+      timeout: 25000,
+      env: { ...process.env, PI_WIN_TITLE: title, PI_WIN_PAGE: page },
+    });
+    const out = String(launched.stdout ?? "");
+    if (/^OPENED$/m.test(out)) {
+      say(`  窗口    新开了一个：${title}`);
+      return;
+    }
+    if (/^DEFAULT$/m.test(out)) {
+      say(`  窗口    没找到 Edge，交给默认浏览器了：标题核不了，tab 应是「${title}」`);
+      return;
+    }
+    say(`  窗口    没等到标题是「${title}」的新窗口（Edge 可能把地址开进了旧窗口）；点地址自己看`);
+    return;
+  }
+  if (process.platform === "darwin") {
+    const edge = spawnSync("open", ["-n", "-a", "Microsoft Edge", page], { stdio: "ignore", timeout: 20000 });
+    if (edge.status === 0) {
+      say(`  窗口    已请求打开（tab 会是「${title}」）`);
+      return;
+    }
+    const fallback = spawnSync("open", [page], { stdio: "ignore", timeout: 20000 });
+    say(
+      fallback.status === 0
+        ? `  窗口    没找到 Edge，交给默认浏览器了（tab 应是「${title}」）`
+        : `  窗口    没开成；点上面的地址，tab 会是「${title}」`,
+    );
+    return;
+  }
+  const opened = spawnSync("xdg-open", [page], { stdio: "ignore", timeout: 20000 });
+  say(
+    opened.status === 0
+      ? `  窗口    已请求打开（tab 会是「${title}」）`
+      : `  窗口    没开成；点上面的地址，tab 会是「${title}」`,
+  );
+}
+
 async function cmdStart(opts) {
   const dir = path.resolve(opts.dir ?? process.cwd());
   if (!fs.existsSync(path.join(dir, "package.json"))) throw new Error(`${dir} 不像 pi-web-client 的仓库根（没有 package.json）`);
@@ -257,6 +357,8 @@ async function cmdStart(opts) {
       PI_PEER_PORT: String(ports.peer),
       PI_PEER_ANNOUNCE_PORT: String(ports.announce),
       PI_PEER_NICKNAME: `测试机 ${id}`,
+      // D360：桥把它写进页面 <title>，tab 上就是「测试 <实例名>」。
+      PI_WEB_WINDOW_TITLE: windowTitleFor(id),
     },
     dir,
     path.join(state, "bridge.out.log"),
@@ -325,6 +427,7 @@ async function cmdStart(opts) {
   say(`  状态    ${path.join(state, "bridge.out.log")}`);
   say(`  登录自检 HTTP ${login}${login === 200 || login === 204 ? "（口令 test 生效）" : "（口令没生效，看日志）"}`);
   if (dirty) say("  注意：工作区有别的未提交改动，构建用的是当前文件内容。");
+  await openWindow(url, id, opts);
 }
 
 function cmdList() {
@@ -378,7 +481,7 @@ try {
   else if (cmd === "list") cmdList();
   else if (cmd === "ports") await cmdPorts(opts);
   else {
-    say("用法：node env.mjs list | ports [--peers N] | start --dir <path> [--name t1] [--peers 1] [--build] | stop --id t1|--all");
+    say("用法：node env.mjs list | ports [--peers N] | start --dir <path> [--name t1] [--peers 1] [--build] [--no-open] | stop --id t1|--all");
     process.exitCode = 2;
   }
 } catch (err) {
