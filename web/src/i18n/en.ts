@@ -803,7 +803,7 @@ export const en: Dict = {
   "写入前那份原文超过 2 MB，只能比较大小": "The copy from before the write was over 2 MB, so only sizes can be compared",
   "二进制文件，只能比较大小": "Binary file — only sizes can be compared",
   "建过又删掉了": "Created and then removed",
-  "文件太大，只给行数统计": "File too large — only line counts are given",
+  "文件太大，没有逐行比对（只比了大小）": "File too large for a line diff (sizes compared only)",
   "改动太大，按「整体重写」统计": "Change too large — counted as a full rewrite",
   "改动太多，只显示了前面一部分。": "Too many changes — only the first part is shown.",
   "改动太大，按「整体重写」处理，没有逐行比对。": "The change is too large; treated as a full rewrite, no line-by-line diff.",
