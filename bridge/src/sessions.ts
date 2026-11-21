@@ -917,7 +917,7 @@ export class Session extends EventEmitter {
   /** get_commands results, refreshed every couple of minutes. */
   private skillsCache: { at: number; list: SkillInfo[] } | null = null;
   /** D356：启动窗口里给过磁盘清单，等 pi 答得动那一下补推权威版（一次启动只排一份）。 */
-  private bootPush: Promise<void> | null = null;
+  private pendingBootPush: Promise<void> | null = null;
 
   private lastActivity = Date.now();
   /**
@@ -2745,12 +2745,12 @@ export class Session extends EventEmitter {
    * 页面那边收到 `commands` / `skills` 帧会自己重画，不用它再问一遍。
    */
   private queueCommandsPush(): void {
-    if (this.bootPush || !this.startingNow()) return;
-    this.bootPush = this.waitBooted()
+    if (this.pendingBootPush || !this.startingNow()) return;
+    this.pendingBootPush = this.waitBooted()
       .then(() => this.pushCommands())
       .catch(() => {})
       .finally(() => {
-        this.bootPush = null;
+        this.pendingBootPush = null;
       });
   }
 
@@ -2772,7 +2772,8 @@ export class Session extends EventEmitter {
 
   private async pushCommands(): Promise<void> {
     const all = await this.piCommands();
-    if (!all) return;
+    // 空清单就是把页面上的磁盘清单盖成「没有」—— 宁可不推。
+    if (!all?.length) return;
     this.dropSkillCache();
     this.emitWs({ type: "commands", sessionId: this.state.id, commands: all });
     this.emitWs({ type: "skills", sessionId: this.state.id, commands: this.skillInfos(all) });
@@ -2820,10 +2821,10 @@ export class Session extends EventEmitter {
   }
 
   private diskCommands(): { name: string; description: string; source: string }[] {
-    return scanSkills(this.state.cwd || process.cwd()).map((sk) => ({ name: `skill:${sk.name}`, description: sk.description, source: "skill" }));
+    return this.diskSkills().map((sk) => ({ name: `skill:${sk.name}`, description: sk.description, source: "skill" }));
   }
 
-  /** pi 还没起来（或者正在启动）：清单只能靠磁盘，别去问一个答不了的进程。 */
+  /** 有活进程但还在启动：清单只能靠磁盘，别去问一个答不了的进程（D356）。 */
   private startingNow(): boolean {
     return Boolean(this.rpc?.alive) && this.state.starting === true;
   }

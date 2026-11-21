@@ -6837,4 +6837,6 @@ Esc 之后 dialog: 0
 **守卫。** 两层，都红过（先在没有 `startingNow()` 短路的 dist 上跑，`commands` 3101 ms，红了 4 条）。
 
 - `npm run test:skill-boot`（`bridge/tests/skill-boot-list.mjs`）：桩 pi 的 `FAKE_PI_STARTUP_MS` 演「启动期一条都不答」，桥的启动窗口压到 1000 ms。断言启动窗口里 `commands` / `skills` 都在 1 秒内回来且只含盘上的技能、不含 `boot-only` 与 `mcp`；启动完成后桥**自己推**两帧补齐、且窗口里问两次也只推一次。
-- `node probes/skill-boot-hint.mjs`：桩桥 + 真 Chromium，同一个空回答下 `starting` 真 / 假两个会话，断言文字分别是「还在启动」与「没有匹配的命令」；再让桩桥主动推两帧，断言补全与面板不重新问也当场换人。
+- `node probes/skill-boot-hint.mjs`：桩桥 + 真 Chromium，同一个空回答下 `starting` 真 / 假两个会话，断言文字分别是「还在启动」与「没有匹配的命令」；再让桩桥主动推两帧，断言补全与面板不重新问也当场换人；最后推一帧**别的会话**的技能，断言不盖住当前面板（`web/src/app.ts` 的 `case "skills"` 补了 `sessionId` 比对 —— 广播推送是这一条的新入口，去掉它这条就红）。
+
+推送能推空的这一点也收了一下：`pushCommands()` 里 pi 回空清单不推（`if (!all?.length) return;`），否则刚启动完那一瞬会把盘上那份盖成「没有」。

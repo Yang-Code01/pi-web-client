@@ -20,7 +20,7 @@ const { chromium } = await loadPlaywright();
 const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = Number(process.env.PI_WEB_PORT ?? 7925);
+const PORT = Number(process.env.PI_WEB_PORT ?? 7926);
 const BASE = `http://127.0.0.1:${PORT}`;
 const OUT = path.join(REPO, ".scratch", "skill-boot-hint", "shots");
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
@@ -205,6 +205,12 @@ try {
   await until(async () => (await rSkillEmpty.count()) === 1, 4000, "对照：技能面板的空态");
   check("已启动：面板照旧说「技能列表还没到」", (await rSkillEmpty.innerText()).trim() === READY_SKILL_EMPTY, (await rSkillEmpty.innerText()).trim());
   await ready.screenshot({ path: path.join(OUT, "4-ready.png") });
+
+  // ---- 4. 别的会话的推送不许盖住当前这个（D356 的推送是广播，切走之后才到的那种）
+  push({ type: "skills", sessionId: "probe-boot", commands: PUSHED_SKILLS });
+  await ready.waitForTimeout(400);
+  check("别的会话的推送不盖住当前面板", (await ready.locator(".skill-row").count()) === 0, (await ready.locator(".skill-row .sk-name").allInnerTexts()).join(","));
+  check("当前面板的空态照旧", (await rSkillEmpty.innerText()).trim() === READY_SKILL_EMPTY, (await rSkillEmpty.innerText()).trim());
 
   check("页面没有 JS 异常", errors.length === 0, errors.join(" | "));
 } finally {

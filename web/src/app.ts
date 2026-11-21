@@ -1772,6 +1772,8 @@ export class App {
         if (this.complete?.mode === "cmd") this.updateComplete();
         break;
       case "skills":
+        // 启动完成后桥会主动补推一帧（D356）：会话切走了就不能拿别人的清单盖住当前这个。
+        if (msg.sessionId !== this.currentId) break;
         this.skills = (msg.commands ?? []) as SkillInfo[];
         this.skillsAt = Date.now();
         if (this.skillPop) this.renderSkillList();
