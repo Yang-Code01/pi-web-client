@@ -4210,6 +4210,7 @@ export const en: Dict = {
   "本会话": "This session",
   "没有匹配的模型": "No matching models",
   "点一行选模型，点档位换思考；改了才出现取消 / 确认": "Click a row to pick a model, a level to change thinking; Cancel / Save show up once you change something",
+  "这个会话没有写入权，先接管会话再切模型": "This session is read-only; take it over before switching models",
   "确认后生效": "Applies on save",
   "窗口": "Window",
   "该模型固定档位": "This model has fixed levels",

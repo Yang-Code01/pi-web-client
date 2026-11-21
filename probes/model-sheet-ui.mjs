@@ -67,11 +67,14 @@ const SESSION = {
 };
 
 const MODELS = [
-  { id: "cn:kimi-k3-1", name: "Kimi-K3", provider: "probe", contextWindow: 1_000_000, levels: ["off", "medium"] },
-  { id: "cn:kimi-k3.1-pro", name: "Kimi-K3.1-Pro", provider: "probe", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
-  { id: "cn:deepseek-v4.1-flash", name: "Deepseek-V4.1-Flash", provider: "probe", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
-  { id: "cn:glm-5.3", name: "GLM-5.3", provider: "probe", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
-  { id: "cn:hy4flash", name: "hy4flash", provider: "probe", contextWindow: 960_000, levels: ["off", "high"] },
+  { id: "cn:kimi-k3-1", name: "Kimi-K3", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "medium"] },
+  { id: "cn:kimi-k3.1-pro", name: "Kimi-K3.1-Pro", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
+  { id: "cn:deepseek-v4.1-flash", name: "Deepseek-V4.1-Flash", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
+  { id: "cn:glm-5.3", name: "GLM-5.3", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
+  { id: "cn:hy4flash", name: "hy4flash", provider: "wb2api", contextWindow: 960_000, levels: ["off", "high"] },
+  { id: "or:claude-sonnet-4.6", name: "Claude Sonnet 4.6", provider: "openrouter", contextWindow: 200_000, levels: ["off", "low", "medium", "high", "xhigh", "max"] },
+  { id: "or:gpt-5.2", name: "GPT-5.2", provider: "openrouter", contextWindow: 400_000, levels: ["off", "low", "high"] },
+  { id: "lm:qwen3-coder-30b", name: "Qwen3 Coder 30B", provider: "lmstudio", contextWindow: 128_000, levels: [] },
 ];
 
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
@@ -228,7 +231,34 @@ try {
   await page.locator(".model-sheet .st-nav__item", { hasText: "全部模型" }).first().click();
   await sleep(200);
   const rowsBefore = await page.locator(".model-sheet .pm-row").evaluateAll((els) => els.map((e) => e.dataset?.id ?? ""));
-  check("全部模型列出 5 个", rowsBefore.length === 5);
+  check("默认只展开当前来源（5 行）", rowsBefore.length === 5);
+
+  // 多来源：每个来源一组，组头能折叠；当前模型所在组默认开，其余默认折（跟目录选择器共用 pi.modelGroups.open）。
+  const groupHeads = await page.locator(".model-sheet .pm-group").evaluateAll((els) =>
+    els.map((e) => `${e.getAttribute("aria-expanded") === "true" ? "open" : "folded"}:${e.innerText.replace(/\s+/g, " ")}`),
+  );
+  check(
+    "按来源分组、当前来源展开、其余折叠",
+    groupHeads.length === 3 && /^open:.*wb2api 5 个/.test(groupHeads[0]) && /^folded:.*openrouter 2 个/.test(groupHeads[1]) && /^folded:.*lmstudio 1 个/.test(groupHeads[2]),
+    groupHeads.join(" | "),
+  );
+  await page.screenshot({ path: path.join(OUT, "groups.png") });
+  await page.locator(".model-sheet .pm-group", { hasText: "openrouter" }).click();
+  await sleep(200);
+  check("点组头展开该来源", (await page.locator(".model-sheet .pm-row").count()) === 7);
+  await page.locator(".model-sheet .pm-group", { hasText: "openrouter" }).click();
+  await sleep(200);
+  check("再点一下折回去", (await page.locator(".model-sheet .pm-row").count()) === 5);
+  await page.fill(".model-sheet .pm-search__input", "gpt");
+  await sleep(250);
+  const gptHeads = await page.locator(".model-sheet .pm-group").allInnerTexts();
+  check(
+    "搜索时折叠组自动展开、组头报命中数",
+    (await page.locator(".model-sheet .pm-row").count()) === 1 && gptHeads.length === 1 && /1 \/ 2 个/.test(gptHeads[0].replace(/\s+/g, " ")),
+    gptHeads.join(" | ").replace(/\n/g, " "),
+  );
+  await page.fill(".model-sheet .pm-search__input", "");
+  await sleep(200);
   check("当前模型标着「使用中」", /使用中/.test(await page.locator(".model-sheet .pm-row.on .settings-name").first().innerText()));
   // 这一页就能选档位：草稿模型是 Kimi-K3，它的档位只有 off / medium
   const segsHere = await page.locator(".model-sheet .pm-lvbar .st-seg__btn").allInnerTexts();
@@ -249,6 +279,12 @@ try {
   check("点一行后档位跟着换成那模型的", (await page.locator(".model-sheet .pm-lvbar .st-seg__btn").allInnerTexts()).join("/") === "off/low/high/max");
 
   // 模型多的时候列表要滚很久：档位条必须钉在滚动区外，滚到底也能直接改（用户报的第二个问题）。
+  // 先把所有来源展开，否则 5 行不够高、根本滚动不了。
+  while ((await page.locator(".model-sheet .pm-group.folded").count()) > 0) {
+    await page.locator(".model-sheet .pm-group.folded").first().click();
+    await sleep(150);
+  }
+  await sleep(300);
   await page.setViewportSize({ width: 1440, height: 620 });
   await sleep(300);
   await page.locator(".model-sheet .pm-body").evaluate((b) => {
@@ -312,7 +348,7 @@ try {
   await sleep(200);
   await page.locator(".model-sheet .pm-foot-actions .btn.primary").click();
   await until(async () => seen.setModel.length === 1, 4000, "setModel");
-  check("确认发 setModel（带 provider / modelId / level）", seen.setModel[0].modelId === "cn:kimi-k3.1-pro" && seen.setModel[0].provider === "probe", JSON.stringify(seen.setModel[0]));
+  check("确认发 setModel（带 provider / modelId / level）", seen.setModel[0].modelId === "cn:kimi-k3.1-pro" && seen.setModel[0].provider === "wb2api", JSON.stringify(seen.setModel[0]));
   await sleep(400); // 弹窗是带着退场动画关的，节点不是当场就没了
   check("确认后弹窗关掉", (await sheet.count()) === 0);
   check("这次没有 setThinking", seen.setThinking.length === 0);

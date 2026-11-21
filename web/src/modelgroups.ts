@@ -112,6 +112,23 @@ function openSet(): Set<string> {
   }
 }
 
+/** Whether the provider group `key` was left open by this browser (fold state is shared by all pickers). */
+export function isModelGroupOpen(key: string): boolean {
+  return openSet().has(key);
+}
+
+/** Remember whether `key` is open; private mode just means the choice won't stick. */
+export function setModelGroupOpen(key: string, open: boolean): void {
+  const set = openSet();
+  if (open) set.add(key);
+  else set.delete(key);
+  try {
+    localStorage.setItem(OPEN_KEY, JSON.stringify([...set]));
+  } catch {
+    /* private mode: fold state won't stick */
+  }
+}
+
 /**
  * One foldable provider section: a clickable head and a body to put the rows in. Groups start
  * folded (a long catalog is the reason for grouping); which ones the user opened is remembered
@@ -136,19 +153,12 @@ export function modelGroupSection(
     head.textContent = `${fixed ? "" : open ? "▾ " : "▸ "}${title} · ${count}`;
     head.setAttribute("aria-expanded", String(open));
   };
-  paint(fixed || openSet().has(key));
+  paint(fixed || isModelGroupOpen(key));
   if (!fixed) {
     head.onclick = (ev) => {
       ev.stopPropagation();
-      const set = openSet();
-      const open = !set.has(key);
-      if (open) set.add(key);
-      else set.delete(key);
-      try {
-        localStorage.setItem(OPEN_KEY, JSON.stringify([...set]));
-      } catch {
-        /* private mode: fold state just won't stick */
-      }
+      const open = !isModelGroupOpen(key);
+      setModelGroupOpen(key, open);
       paint(open);
     };
   }

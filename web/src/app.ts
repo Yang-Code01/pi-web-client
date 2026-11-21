@@ -67,7 +67,7 @@ import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
-import { appendModelOptions, groupModels, rememberRecentModel } from "./modelgroups.ts";
+import { appendModelOptions, groupModels, isModelGroupOpen, rememberRecentModel, setModelGroupOpen } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isDefaultHidden, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { type CtxLine, type CtxPolicy } from "./context.ts";
@@ -5381,6 +5381,8 @@ export class App {
     // Everything below is a draft until 确认: browsing models must not switch the live session.
     const startModel = this.session?.model;
     const startLevel = this.session?.thinkingLevel ?? "";
+    // 当前模型属于哪个来源：它的组默认展开，否则新开场就只看得见一组折叠标题。
+    const startProvider = this.models.find((m) => m.id === startModel)?.provider ?? "";
     let draftModel = startModel;
     let draftLevel = startLevel;
     type ModelTab = "now" | "all" | "session";
@@ -5480,7 +5482,7 @@ export class App {
     confirm.onclick = () => commit();
 
     /** 一行模型：名字 + 「使用中 / 待切换」+ id，右侧窗口大小。 */
-    const modelRow = (m: ModelInfo): HTMLElement => {
+    const modelRow = (m: ModelInfo, opts: { provider?: boolean } = {}): HTMLElement => {
       const on = m.id === draftModel;
       const row = el("button", `settings-row pm-row${on ? " on" : ""}`) as HTMLButtonElement;
       row.type = "button";
@@ -5497,7 +5499,7 @@ export class App {
       }
       label.append(nameEl, el("code", "settings-key", m.id));
       row.append(label);
-      row.append(el("span", "settings-hint", m.levels?.length ? m.levels.join(tr(" · ")) : tr("固定档位")));
+      row.append(el("span", "settings-hint", [opts.provider ? m.provider : "", m.levels?.length ? m.levels.join(tr(" · ")) : tr("固定档位")].filter(Boolean).join(" · ")));
       row.append(el("span", "pm-win", m.contextWindow ? compactSize(m.contextWindow) : "–"));
       row.onclick = () => {
         draftModel = m.id;
@@ -5653,11 +5655,14 @@ export class App {
       }
 
       const { pinned, recent } = groupModels(this.models, { id: startModel });
-      if (dirty() && m) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([modelRow(m)], ""));
-      const current = [pinned ? modelRow(pinned) : null].filter((x): x is HTMLElement => !!x);
+      // 来源不止一个时，这几块是平铺的，得在行里标出它属于哪个来源。
+      const multi = new Set(this.models.map((x) => x.provider)).size > 1;
+      const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
+      if (dirty() && m) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
+      const current = [pinned ? flatRow(pinned) : null].filter((x): x is HTMLElement => !!x);
       out.push(this.stSection(tr("当前使用"), tr("1 个")), panel(current, tr("会话还没报出模型")));
       const rest = recent.filter((x) => x.id !== startModel && x.id !== draftModel);
-      if (rest.length) out.push(this.stSection(tr("最近使用"), tr("{p1} 个", { p1: String(rest.length) })), panel(rest.map(modelRow), ""));
+      if (rest.length) out.push(this.stSection(tr("最近使用"), tr("{p1} 个", { p1: String(rest.length) })), panel(rest.map(flatRow), ""));
       return out;
     };
 
@@ -5669,8 +5674,45 @@ export class App {
         return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
       }
       const out: HTMLElement[] = [searchBox()];
-      out.push(this.stSection(tr("全部模型"), tr("{p1} / {p2} 个", { p1: String(list.length), p2: String(this.models.length) })));
-      out.push(panel(list.map(modelRow), tr("没有匹配的模型")));
+      if (this.session && !this.session.owned) {
+        const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
+        notice.append(this.claimButton());
+        out.push(notice);
+      }
+      // 来源多了就得能分开看，也得分得开：按目录顺序一行一个来源，组头可折叠（状态记在 pi.modelGroups.open，跟目录选择器同一份）。
+      const groups = new Map<string, ModelInfo[]>();
+      for (const m of list) {
+        const rows = groups.get(m.provider);
+        if (rows) rows.push(m);
+        else groups.set(m.provider, [m]);
+      }
+      if (!groups.size) {
+        out.push(panel([], tr("没有匹配的模型")));
+        return out;
+      }
+      // 只有一个来源时不加组头（当前真机就是这个案子），搜索时才重新拿出来报命中数。
+      const showHead = groups.size > 1 || !!q;
+      for (const [provider, models] of groups) {
+        const total = this.models.filter((m) => m.provider === provider).length;
+        // 搜索时全部展开：否则搜出来的东西藏在折了几周的组里，等于没搜。
+        const open = !!q || provider === startProvider || isModelGroupOpen(provider);
+        if (showHead) {
+          const head = el("button", `pm-group${open ? "" : " folded"}`) as HTMLButtonElement;
+          head.type = "button";
+          head.setAttribute("aria-expanded", String(open));
+          head.append(
+            el("span", "pm-group__chev", "▾"),
+            el("span", "pm-group__label", provider),
+            el("span", "pm-group__meta", q ? tr("{p1} / {p2} 个", { p1: String(models.length), p2: String(total) }) : tr("{p1} 个", { p1: String(total) })),
+          );
+          head.onclick = () => {
+            setModelGroupOpen(provider, !open);
+            paint();
+          };
+          out.push(head);
+        }
+        if (open || !showHead) out.push(panel(models.map((m) => modelRow(m)), ""));
+      }
       return out;
     };
 
@@ -5723,8 +5765,14 @@ export class App {
       navItem("session", tr("本会话"), tr("只读"));
 
       const ch = changes();
-      footActions.hidden = !ch.length;
-      footHint.textContent = ch.length ? tr("未保存：{p1}", { p1: ch.join(tr("，")) }) : tr("点一行选模型，点档位换思考；改了才出现取消 / 确认");
+      // 没接管就没有写入权：草稿可以随便看，但别把「确认」摆在那儿让人白点（桥会直接丢掉）。
+      const owned = !this.session || this.session.owned;
+      footActions.hidden = !ch.length || !owned;
+      footHint.textContent = !owned
+        ? tr("这个会话没有写入权，先接管会话再切模型")
+        : ch.length
+          ? tr("未保存：{p1}", { p1: ch.join(tr("，")) })
+          : tr("点一行选模型，点档位换思考；改了才出现取消 / 确认");
       footHint.title = footHint.textContent;
 
       let body: HTMLElement[];
