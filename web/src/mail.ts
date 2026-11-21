@@ -196,6 +196,9 @@ const SECTIONS: { id: Section; label: string }[] = [
 export class MailPanel {
   private readonly host: MailHost;
   private root: HTMLElement | null = null;
+  /** `.mc-console` 本体：开面板时建一次，`render()` 只换它里面的内容。
+   *  以前每次重画都整棵重建，入场动画跟着重演（一次 open 能演三遍），正文滚动和焦点也被打回原点。 */
+  private shell: HTMLElement | null = null;
   private lastFocus: HTMLElement | null = null;
   private untrap: (() => void) | null = null;
   /** 面板「代」：只在开/关时 +1，用来判断整个面板是不是已经换了。
@@ -292,6 +295,7 @@ export class MailPanel {
     this.confirmDeleteId = "";
     this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.untrap = trapEscape(() => this.close());
+    this.mountShell();
     this.render();
     void this.reload();
   }
@@ -315,6 +319,7 @@ export class MailPanel {
     this.oauth = null;
     retireOverlay(this.root);
     this.root = null;
+    this.shell = null;
     const back = this.lastFocus;
     this.lastFocus = null;
     back?.focus();
@@ -567,7 +572,9 @@ export class MailPanel {
 
   // -------------------------------------------------------------- 外壳
 
-  private render(): void {
+  /** 建外壳：一次 open 只挂一次，之后的重画只换内容，入场动画不会重演。 */
+  private mountShell(): void {
+    if (this.root) return;
     const back = el("div", "mc-back");
     back.addEventListener("mousedown", (ev) => {
       if (ev.target === back) this.close();
@@ -575,13 +582,17 @@ export class MailPanel {
     const shell = el("section", "mc-console");
     shell.setAttribute("role", "dialog");
     shell.setAttribute("aria-modal", "true");
-    shell.setAttribute("aria-label", tr("邮箱"));
-
-    shell.append(this.headEl(), this.bannerEl(), this.mainEl(), this.footEl());
     back.append(shell);
-    this.root?.remove();
     this.root = back;
+    this.shell = shell;
     mountOverlay(back);
+  }
+
+  private render(): void {
+    // 关掉之后迟到的重画（请求回来、定时器）不许把面板重新挂出来。
+    if (!this.shell) return;
+    this.shell.setAttribute("aria-label", tr("邮箱"));
+    this.shell.replaceChildren(this.headEl(), this.bannerEl(), this.mainEl(), this.footEl());
   }
 
   private headEl(): HTMLElement {
