@@ -5603,6 +5603,29 @@ export class App {
       win: this.usage.contextWindow ?? draftInfo()?.contextWindow ?? null,
     });
 
+    const levelMeta = (m: ModelInfo): string => {
+      const tail = m.levels?.length ? tr("{p1} 档", { p1: String(m.levels.length) }) : tr("固定档位");
+      return [shortModelName(m.name), tail].join(tr(" · "));
+    };
+
+    const levelSection = (meta?: string): HTMLElement[] => {
+      const m = draftInfo();
+      const out: HTMLElement[] = [
+        this.stSection(tr("思考档位"), meta ?? (m?.levels?.length ? tr("{p1} 档", { p1: String(m.levels.length) }) : tr("固定"))),
+      ];
+      const levelLine = el("div", "settings-panel");
+      const levelRow = el("div", "settings-row");
+      const levelLabel = el("span", "settings-label");
+      levelLabel.append(el("span", "settings-name", tr("思考档位")), el("code", "settings-key", "thinking"));
+      levelRow.append(levelLabel, el("span", "settings-hint", tr("换模型时若当前档位不支持，会落到该模型的最高档")));
+      const levelCtl = el("div", "settings-ctl");
+      levelCtl.append(levelSeg(m));
+      levelRow.append(levelCtl);
+      levelLine.append(levelRow);
+      out.push(levelLine);
+      return out;
+    };
+
     const nowPane = (): HTMLElement[] => {
       const out: HTMLElement[] = [];
       const m = draftInfo();
@@ -5623,17 +5646,7 @@ export class App {
         notice.append(this.claimButton());
         out.push(notice);
       }
-      out.push(this.stSection(tr("思考档位"), m?.levels?.length ? tr("{p1} 档", { p1: String(m.levels.length) }) : tr("固定")));
-      const levelLine = el("div", "settings-panel");
-      const levelRow = el("div", "settings-row");
-      const levelLabel = el("span", "settings-label");
-      levelLabel.append(el("span", "settings-name", tr("思考档位")), el("code", "settings-key", "thinking"));
-      levelRow.append(levelLabel, el("span", "settings-hint", tr("换模型时若当前档位不支持，会落到该模型的最高档")));
-      const levelCtl = el("div", "settings-ctl");
-      levelCtl.append(levelSeg(m));
-      levelRow.append(levelCtl);
-      levelLine.append(levelRow);
-      out.push(levelLine);
+      out.push(...levelSection());
 
       if (this.models.length === 0) {
         out.push(emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true));
@@ -5651,14 +5664,15 @@ export class App {
 
     const allPane = (): HTMLElement[] => {
       const q = query.trim().toLowerCase();
-      const list = this.models
-        .slice()
-        .sort((a, b) => (b.id === draftModel ? 1 : 0) - (a.id === draftModel ? 1 : 0))
-        .filter((m) => !q || `${m.name} ${m.id}`.toLowerCase().includes(q));
+      // 不按「草稿排第一」重排：点一行就把它提到最上面，看起来像「选择后自动跳到第一个」，鼠标底下的行都换了位。
+      const list = this.models.filter((m) => !q || `${m.name} ${m.id}`.toLowerCase().includes(q));
       if (this.models.length === 0) {
         return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
       }
       const out: HTMLElement[] = [searchBox()];
+      // 在这一页也能直接改思考档位：否则选完模型还得再切回「当前使用」才能选档，等于两步跳。
+      const draft = draftInfo();
+      if (draft) out.push(...levelSection(levelMeta(draft)));
       out.push(this.stSection(tr("全部模型"), tr("{p1} / {p2} 个", { p1: String(list.length), p2: String(this.models.length) })));
       out.push(panel(list.map(modelRow), tr("没有匹配的模型")));
       return out;

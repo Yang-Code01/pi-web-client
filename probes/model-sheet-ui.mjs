@@ -227,8 +227,12 @@ try {
 
   await page.locator(".model-sheet .st-nav__item", { hasText: "全部模型" }).first().click();
   await sleep(200);
-  check("全部模型列出 5 个", (await page.locator(".model-sheet .pm-row").count()) === 5);
-  check("当前模型排第一并高亮", (await page.locator(".model-sheet .pm-row.on .settings-name").first().innerText()).includes("Kimi-K3"));
+  const rowsBefore = await page.locator(".model-sheet .pm-row").evaluateAll((els) => els.map((e) => e.dataset?.id ?? ""));
+  check("全部模型列出 5 个", rowsBefore.length === 5);
+  check("当前模型标着「使用中」", /使用中/.test(await page.locator(".model-sheet .pm-row.on .settings-name").first().innerText()));
+  // 这一页就能选档位：草稿模型是 Kimi-K3，它的档位只有 off / medium
+  const segsHere = await page.locator(".model-sheet .settings-ctl .st-seg__btn").allInnerTexts();
+  check("全部模型页也有思考档位（跟着草稿模型）", segsHere.join("/") === "off/medium", segsHere.join("/"));
 
   await page.fill(".model-sheet .pm-search__input", "kimi");
   await sleep(250);
@@ -236,6 +240,16 @@ try {
   check("搜索 kimi 过滤到 2 个", hits.length === 2, hits.join(" / "));
   await page.fill(".model-sheet .pm-search__input", "");
   await sleep(200);
+
+  // BUG 修掉后：点一行只是选中，不能把它提到最上面（否则鼠标底下的列表整体换位）
+  await page.locator(".model-sheet .pm-row", { hasText: "GLM-5.3" }).first().click();
+  await sleep(250);
+  const rowsAfter = await page.locator(".model-sheet .pm-row").evaluateAll((els) => els.map((e) => e.dataset?.id ?? ""));
+  check("点一行不会把它提到最上面", rowsAfter[0] === rowsBefore[0], `${rowsBefore[0]} → ${rowsAfter[0]}`);
+  check("点一行后档位跟着换成那模型的", (await page.locator(".model-sheet .settings-ctl .st-seg__btn").allInnerTexts()).join("/") === "off/low/high/max");
+  await page.locator(".model-sheet .settings-ctl .st-seg__btn", { hasText: "low" }).click();
+  await sleep(250);
+  check("同一页改档位也进草稿", /思考/.test(await page.locator(".model-sheet .st-foot__hint").innerText()), await page.locator(".model-sheet .st-foot__hint").innerText());
 
   // 选一个思考档位不含 max 的模型：应落到它的最高档 medium（不是 off）
   await page.locator(".model-sheet .pm-row", { hasText: "Kimi-K3.1-Pro" }).first().click();
