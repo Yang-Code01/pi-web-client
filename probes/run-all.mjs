@@ -37,6 +37,7 @@ const ALL = [
   "chrome-sheet",
   "chrome-narrow",
   "composer-grow",
+  "retell-hint",
 ];
 
 const argv = process.argv.slice(2);
