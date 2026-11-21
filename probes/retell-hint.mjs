@@ -124,7 +124,7 @@ wss.on("connection", (ws) => {
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 log("fake bridge on", BASE);
 
-const ZH_TEXT = "我没跟上你刚才讲的内容。用简化技术中文重讲一遍：先交代背景，再说结论和下一步。";
+const ZH_TEXT = "等一下。我不明白你在这里进行到哪一步。请重新说明。先提供上下文。然后使用简体技术中文来说明。";
 
 let browser;
 try {
@@ -152,7 +152,7 @@ try {
   assert(await bar.isVisible(), ".retell-bar 应该可见");
   assert((await btn.innerText()).includes("重讲"), "按钮文字应该是「重讲」");
   assert(!(await btn.isDisabled()), "有回答、没在跑，按钮应该可点");
-  assert((await btn.getAttribute("title"))?.includes("先交代背景"), "title 应说明重讲要什么");
+  assert((await btn.getAttribute("title"))?.includes("先提供上下文"), "title 应说明重讲要什么");
   await page.screenshot({ path: path.join(OUT, "1-ready.png"), clip: await page.locator(".composer").boundingBox() });
 
   // 3. 点一下：发一条普通 prompt（带本地化指令、behavior steer），草稿一个字节都不动。
@@ -168,7 +168,7 @@ try {
   assert(sent.behavior === "steer", `behavior 应为 steer：${sent.behavior}`);
   assert(sent.type === "prompt" && sent.sessionId === ANSWERED.id, "prompt 帧的会话不对");
   assert((await field.inputValue()) === "我正在写的草稿", "重讲不该动输入框里的草稿");
-  await until(async () => (await page.locator(".msg.user", { hasText: "我没跟上你刚才讲的内容" }).count()) === 1, 3000, "own bubble");
+  await until(async () => (await page.locator(".msg.user", { hasText: "我不明白你在这里进行到哪一步" }).count()) === 1, 3000, "own bubble");
   await page.screenshot({ path: path.join(OUT, "2-sent.png"), clip: await page.locator(".composer").boundingBox() });
 
   // 4. 跑着一轮 → 灰，原因写进 title。
@@ -180,17 +180,38 @@ try {
   send({ type: "state", state: { ...ANSWERED, running: false } });
   await until(async () => !(await btn.isDisabled()), 3000, "enabled again");
 
-  // 5. 还没有回答的会话 → 灰。
+  // 5. 新建的空会话（还没有回答）→ 整行不画，只留输入框。
   await page.locator(".session-card", { hasText: "空会话" }).first().click();
-  await until(async () => (await page.locator(".composer .retell-bar").count()) === 1, 5000, "bar on empty session");
-  const emptyBtn = page.locator(".composer .retell-btn");
-  await until(async () => await emptyBtn.isDisabled(), 3000, "disabled with no answer");
-  assert((await emptyBtn.getAttribute("title"))?.includes("还没有回答"), "没回答时 title 应说明原因");
+  await until(async () => (await page.locator(".composer textarea").count()) === 1, 5000, "composer on empty session");
+  await page.waitForTimeout(400);
+  assert(!(await page.locator(".composer .retell-bar").isVisible()), "空会话不该画「重讲」那一行");
 
-  // 6. 语言跟着界面走：英文界面下同一行的三个文字都换掉。
+  // 5b. 设置 → 对话 里那颗拨杆：关掉立刻收起，打开立刻回来（不刷新）。
+  await page.locator(".session-card", { hasText: "重讲探针" }).first().click();
+  await until(async () => await page.locator(".composer .retell-bar").isVisible(), 5000, "bar back on answered session");
+  await page.locator(".icon-btn.set-btn").click();
+  await page.locator(".st-nav__item", { hasText: "对话" }).first().click();
+  const hintBox = () => page.evaluate(() => document.querySelector('.set-sub[data-sec="chat"] input[type="checkbox"]')?.click());
+  await hintBox();
+  await until(async () => !(await page.locator(".composer .retell-bar").isVisible()), 3000, "switch hides bar");
+  await hintBox();
+  await until(async () => await page.locator(".composer .retell-bar").isVisible(), 3000, "switch shows bar");
+  await page.keyboard.press("Escape");
+
+  // 5b. 设置里关掉：整个不画；再打开回来（存在 pi.prefs，跟着这台机器）。
   await page.evaluate(() => {
     const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
-    localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, lang: "en" }));
+    localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, retellHint: false }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await until(async () => (await page.locator(".session-card").count()) >= 2, 8000, "cards after reload");
+  await page.locator(".session-card", { hasText: "重讲探针" }).first().click();
+  await until(async () => (await page.locator(".composer textarea").count()) === 1, 5000, "composer after reload");
+  await page.waitForTimeout(500);
+  assert(!(await page.locator(".composer .retell-bar").isVisible()), "关掉后不该再画「重讲」那一行");
+  await page.evaluate(() => {
+    const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+    localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, retellHint: true, lang: "en" }));
   });
   await page.reload({ waitUntil: "networkidle" });
   await until(async () => (await page.locator(".session-card").count()) >= 2, 8000, "cards after reload");
@@ -204,7 +225,7 @@ try {
   assert(prompts[1].text.includes("Simplified Technical English"), `英文指令不对：${JSON.stringify(prompts[1].text)}`);
   await page.screenshot({ path: path.join(OUT, "4-en.png"), clip: await page.locator(".composer").boundingBox() });
 
-  log("ok — 位置 / 三态 / 发送内容 / 草稿保留 / 双击只发一句 / 英文文案都对");
+  log("ok — 位置 / 三态 / 空会话不出 / 开关生效 / 发送内容 / 草稿保留 / 双击只发一句 / 英文文案都对");
 } finally {
   await browser?.close();
   wss.close();

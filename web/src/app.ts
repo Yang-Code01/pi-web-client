@@ -4123,6 +4123,24 @@ export class App {
     }
     langPanel.append(this.stRow(tr("语言"), tr("界面文字、推送标题都跟着换"), langChips));
 
+    // D358：重讲那一行是纯前端的东西，开关不放桥端 settings，进 `pi.prefs`（换浏览器就没了，
+    // 但它本来就是「这台机器的输入区多不多一行」，跟着设备走更合理）。关掉时整个不画。
+    const chatPanel = section("chat");
+    const hintBox = document.createElement("input");
+    hintBox.checked = this.prefs.retellHint;
+    hintBox.onchange = () => {
+      this.prefs = { ...this.prefs, retellHint: hintBox.checked };
+      savePrefs(this.prefs);
+      this.renderChat();
+    };
+    chatPanel.append(
+      this.stRow(
+        tr("输入框上方的「重讲」"),
+        tr("默认开。关掉后输入框上面那一行不再出现；随时可以在这里打开"),
+        this.stSwitch(hintBox),
+      ),
+    );
+
     const sizeRead = el("span", "size-read");
 
     const rail = el("div", "size-rail");
@@ -4392,6 +4410,7 @@ export class App {
         label: tr("外观"),
         items: [
           { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
+          { sec: "chat", label: tr("对话"), sub: tr("输入框上方那一行「重讲」开不开") },
           { sec: "theme", label: tr("主题与强调色"), sub: tr("三套 macOS 观感，加一组强调色") },
           { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
           { sec: "chrome", label: tr("界面元素"), sub: tr("顶栏与输入框下沿的按钮；点预览里的按钮就收起 / 放回") },
@@ -16099,7 +16118,7 @@ export class App {
     bar.append(
       el("span", "retell-lead", tr("没看懂最后一条回答？")),
       btn,
-      el("span", "retell-sub", tr("先交代背景，再用简化技术中文说结论")),
+      el("span", "retell-sub", tr("先提供上下文，再用简体技术中文说明")),
     );
     this.retellBar = bar;
     this.retellBtn = btn;
@@ -16121,18 +16140,18 @@ export class App {
     if (justSent && this.session?.running !== true) {
       this.retellTimer = window.setTimeout(() => this.syncRetellBar(), 1520 - (Date.now() - this.retellSent.at));
     }
-    const state = retellState(
-      this.session ? { running: this.session.running === true || justSent } : null,
-      this.chat.lastAssistantText() !== null,
-    );
+    const state = this.prefs.retellHint
+      ? retellState(
+          this.session ? { running: this.session.running === true || justSent } : null,
+          this.chat.lastAssistantText() !== null,
+        )
+      : "hidden";
     bar.hidden = state === "hidden";
     btn.disabled = state !== "ready";
     btn.title =
       state === "ready"
-        ? tr("把「重讲」发出去：先交代背景，再用简化技术中文说结论。")
-        : this.session?.running || justSent
-          ? tr("这一轮还在跑，等它讲完再重讲")
-          : tr("还没有回答可以重讲");
+        ? tr("把「重讲」发出去：先提供上下文，再用简体技术中文说明。")
+        : tr("这一轮还在跑，等它讲完再重讲");
   }
 
   /**
@@ -16142,12 +16161,12 @@ export class App {
    */
   private retellLastAnswer(): void {
     const sessionId = this.currentId;
-    if (!sessionId) return;
+    if (!sessionId || !this.prefs.retellHint) return;
     if (retellState(this.session, this.chat.lastAssistantText() !== null) !== "ready") return;
     // 上一发还没被桥确认（`running` 没到）就再来一下：忽略，别发两句。
     if (this.retellSent.id === sessionId && Date.now() - this.retellSent.at < 1500) return;
     this.retellSent = { id: sessionId, at: Date.now() };
-    const text = tr("我没跟上你刚才讲的内容。用简化技术中文重讲一遍：先交代背景，再说结论和下一步。");
+    const text = tr("等一下。我不明白你在这里进行到哪一步。请重新说明。先提供上下文。然后使用简体技术中文来说明。");
     const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
     const payload = { type: "prompt", sessionId, text, images: [], clientId, behavior: "steer" };
     this.act(() => {
@@ -20541,6 +20560,8 @@ type Prefs = {
   wsIntroSeen: boolean;
   /** 第一次打开时的主题选择弹窗弹过没有（弹出即记，关掉也不再弹）。老用户（已有 pi.prefs、没这个键）当作弹过。 */
   themeIntroSeen: boolean;
+  /** D358：输入框上方那一行「重讲」开着没有。默认开；关掉后整个不画（设置 → 对话里改）。 */
+  retellHint: boolean;
 };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
@@ -20562,6 +20583,7 @@ const DEFAULT_PREFS: Prefs = {
   settingsTab: "look",
   wsIntroSeen: false,
   themeIntroSeen: false,
+  retellHint: true,
 };
 
 /** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
@@ -21272,6 +21294,8 @@ function readPrefs(): Prefs {
       wsIntroSeen: p?.wsIntroSeen === true,
       // 只有明确写着 false 的（新用户第一次存盘）才算没弹过；升级上来的老用户已经在用自己的主题，不打扰。
       themeIntroSeen: p?.themeIntroSeen !== false,
+      // D358：只有明确写着 false 的才算关（老版本升上来没这个键＝开着）。
+      retellHint: p?.retellHint !== false,
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
     if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);

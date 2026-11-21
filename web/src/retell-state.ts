@@ -16,12 +16,14 @@ export type RetellState = "hidden" | "off" | "ready";
 export type RetellSession = Partial<Pick<SessionState, "running">>;
 
 /**
- * - `hidden`：没开会话，这一行整个不画。
- * - `off`：还没人答过（没有可重讲的对象），或者这一轮还在跑 —— 半截回答重讲没有意义。
+ * - `hidden`：没开会话，或者这一条会话还没人答过（新建的空会话 —— 没有可重讲的对象，
+ *   一行灰按钮只会占地方）。
+ * - `off`：有回答，但这一轮还在跑 —— 半截回答重讲没有意义。
  * - `ready`：可以点。
  */
 export function retellState(s: RetellSession | null | undefined, hasAnswer: boolean): RetellState {
   if (!s) return "hidden";
-  if (s.running || !hasAnswer) return "off";
+  if (!hasAnswer) return "hidden";
+  if (s.running) return "off";
   return "ready";
 }

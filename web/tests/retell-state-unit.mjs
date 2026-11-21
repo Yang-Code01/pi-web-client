@@ -15,11 +15,12 @@ test("没开会话 → 不画（不是灰）", () => {
   assert.equal(retellState(undefined, true), "hidden");
 });
 
-// ---------------------------------------------------------------- 灰
-
-test("还没人答过 → 灰：没有可重讲的对象", () => {
-  assert.equal(retellState({ running: false }, false), "off");
+test("新建会话、还没人答过 → 不画：没有可重讲的对象，一行灰按钮只占地方", () => {
+  assert.equal(retellState({ running: false }, false), "hidden");
+  assert.equal(retellState({ running: true }, false), "hidden");
 });
+
+// ---------------------------------------------------------------- 灰
 
 test("这一轮还在跑 → 灰：半截回答重讲没有意义", () => {
   assert.equal(retellState({ running: true }, true), "off");
@@ -27,7 +28,7 @@ test("这一轮还在跑 → 灰：半截回答重讲没有意义", () => {
 
 test("老桥不发 running 字段也照常判断（缺省=闲，看回答有没有）", () => {
   assert.equal(retellState({}, true), "ready");
-  assert.equal(retellState({}, false), "off");
+  assert.equal(retellState({}, false), "hidden");
 });
 
 // ---------------------------------------------------------------- 亮
