@@ -4812,7 +4812,7 @@ D
 **验证：**
 
 - `npm run test:mail`：`bridge/tests/mail-unit.mjs` 44 → **65**（新增 21 条：读权限关着页面照样能读、缺 uid 才 400、页面发信不看 AI 权限、AI 仍被 `policy-denied:send` 拦、白名单只拦 AI、日上限只数 AI、草稿不占上限、停用账号页面也 409、删账号清 `accountIds`、默认账号停了不报、`mail_accounts` 不报 `mutate`、坏配置 409 且磁盘不动）；新增 `bridge/tests/mail-list-unit.mjs` **34** 条（序号窗口、按时间挑、翻页、地址解析、`bad-input`、附件口径、HTML 扒标签）；`web/tests/mail-unit.mjs` 5 → **10**（`secureForPort`/`portOf`、`MailConfirmQueue` 的排队与回执、`MAIL_ERROR_TEXT` 的说法）。
-- 真信箱（1304049579@qq.com，INBOX 1092 封）：改前 `limit=20` 最新 **2022-01-31**、未读 6 封；改后最新 **2026-11-14**、未读 100+；`offset=300` 能翻到 2025-03，与「整箱排序后第 301–320 封」逐条一致；`📎` 只为最终那几封补，不再整箱取 `bodyStructure`。
+- 真信箱（作者自测的一个信箱，附件名与地址已脱敏，见 D362；INBOX 1092 封）：改前 `limit=20` 最新 **2022-01-31**、未读 6 封；改后最新 **2026-11-14**、未读 100+；`offset=300` 能翻到 2025-03，与「整箱排序后第 301–320 封」逐条一致；`📎` 只为最终那几封补，不再整箱取 `bodyStructure`。
 - 假桥（临时 `PI_WEB_STATE` + 指向 `127.0.0.1:9` 的账号）：坏配置 → 409 且 `REALSECRET` 原封不动；页面发信不看 `policy.send`；AI 发信仍被拦；白名单只拦 AI。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（tsc + i18n-check 3040 键 × 3 + `test:viewport`）全绿。
 - **复审（两轴：标准 / 需求）之后补的一轮**，对着 `git diff main...HEAD` 逐条核：页面口补上 `account.enabled`（以前停用账号在面板里照样能读能发，CHANGELOG 那句「页面只受账号停用限制」才成立）；草稿不再占 AI 的日上限；`mutate` 真的从 `mail_accounts` 回包里去掉（不只是文案）；审计失败改成「错误码 → 人话」的映射（`MAIL_ERROR_TEXT`，认不出来的码只说「失败」）；详情的 `finally` 也比 `detailSeq`（先发的慢详情不会提前收掉后发请求的「正在读」）；确认框挂进 `#app`；超时只留一份 `MAIL_CONFIRM_PAGE_MS`；删掉没人读的 `downloadable`、页面上的「附件（取附件权限关着）」死分支与 `MailConfirmFrame` 的 `as any`；`normalizeAccount` 改用 `mailaddr.isEmailAddress`；`mailconfig.ts` 头部注释改成「`policyDenial` 是给 AI 的唯一判据」；GLOSSARY 补「邮箱面板 / AI 权限 / 发送前确认」、README 补邮箱一条与 `test:mail`。
@@ -5200,7 +5200,7 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **验证：**
 
 - `npm run test:mail`：`bridge/tests/mail-unit.mjs` 68/68、`mail-list-unit.mjs` 43/43（新增 cid 元数据、`keepCidLinks`、`htmlToText` 图片标记、无 disposition 的内嵌图、截断前去掉 head/style）、`web/tests/mail-unit.mjs` 15/15（新增 `cidKey`、`inlineImageMap`、`srcset` 首个候选、CSP 默认/放行远程图）。
-- 真信箱（1304049579@qq.com）：uid=1328 面板渲染 11 张内嵌图（naturalWidth 800、iframe 高度 4,703px），附件区只列 `Jenil_Soni_-_Resume.pdf · 152 KB`；uid=1321 远程图 92 张，默认 `img[data-mc-blocked]` 全部收起、iframe 419px，点「显示图片（92）」后 92 张 `src` 全部恢复为原 `https://...`。
+- 真信箱（作者自测的一个信箱）：uid=1328 面板渲染 11 张内嵌图（naturalWidth 800、iframe 高度 4,703px），附件区只列 `resume.pdf · 152 KB`；uid=1321 远程图 92 张，默认 `img[data-mc-blocked]` 全部收起、iframe 419px，点「显示图片（92）」后 92 张 `src` 全部恢复为原 `https://...`。
 - `mail_image` 工具口实测 uid=1328 index=0：`image/jpeg`、61,660 字节、base64 82,216 字符；`mail_read` 回 12 个附件（11 inline + 1 PDF），HTML 保留 `cid:` 且截断在 20,029 字。
 - `npm run test:mail:html`（真 Chromium）：script/iframe/on*/javascript: 清理、`cid:` 映射、`srcset`-only 图、远程图拦截与放行 CSP 全绿；`npm run test:permission` 也覆盖 `mail_image` 在只读模式放行、`mail_attachment` / `mail_send` 被拦。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3180 键 × 3 + viewport）、`npm run build` 全绿。
@@ -6942,3 +6942,31 @@ Esc 之后 dialog: 0
 **代价。** 99 KB 的生成文件进 git（依赖不动就不变，diff 只在升级时出现），每次改依赖都要 `npm run notices`，忘了就在 typecheck 里红。清单是**运行时**从仓库根读的，发行包丢了它，设置里只会得到 404 —— 这是有意的：产物里的清单会跟装的依赖不一致。
 
 **守卫。** `npm run test:notices`（`bridge/tests/notices-unit.mjs`）：`tools/notices.mjs --check` 通过、三个打包组件的段落里有版本 / 许可名 / 版权人 / 许可正文、`web-push` 的 MPL-2.0 带源码指引、页首声明里不出现没进产物的桥端依赖、`noticesText()` 读得到仓库根那份。`npm run typecheck` 第一步就是 `node tools/notices.mjs --check`。构建后 `grep -c Copyright web/dist/assets/*.js` 每块非零（本次 3 / 3 / 4）。
+
+## D362 公开仓库里的真第三方隐私要脱敏，作者自己的现场路径不动（2026-11-21）
+
+**症状。** 这是一份公开仓库（Apache-2.0），但两处验证记录里直接写了作者的真信箱 `1304049579@qq.com`，其中一条还带着别人投递的简历文件名 `Jenil_Soni_-_Resume.pdf`；`docs/shots/peer-chat.png` 更是整块个人主目录的截图（`C:\Users\GG_Bond` 下的 `AI`、`clip`、`ansel`、`Contacts`、`Cookies`…），而且它是个**孤儿文件**：三份 README 引用的是 `peer-agent.png`（正常的对话截图，没有 PII），没有任何文档引用 `peer-chat.png`。邮箱同时是 git 历史的作者地址，也出现在 D229 的「真信箱（…）」证据行里。
+
+**决定。** 只处理**真第三方**的隐私，作者自己的现场记录照 D114 不动。
+
+- 两处 `真信箱（1304049579@qq.com…）` 改成 `真信箱（作者自测的一个信箱…）`，附件名改成 `resume.pdf`，都在句子后标「见 D362」，让读者知道这里被改过、而不是原本就没有。
+- `docs/shots/peer-chat.png` 直接删掉（孤儿 + 个人主目录）。`git log --diff-filter=D` 还找得到，`peer-agent.png` 不受影响。
+- `docs/shots/xlsx-ribbon.png` **保留**：它露出的只是本仓库自己的工作树路径（`F:\pi-web-client-wt\feat\xlsx-render\.scratch\…`）与分支名，没有第三方身份信息，属于 D114 说的「当时怎么验的现场记录」。想重拍时注意 `probes/xlsx.mjs` 现在在 `openSession()` 就红（1440×900 下 `.topbar .icon-btn.wide` 的「文件管理器」是 hidden，等了 15 秒），得先修探针，别拿它当重拍工具。
+- **历史 commit 不改：** 改写历史会让所有 fork、PR 引用与 issue 里的 SHA 全部失效，收益只是把一个已经公开过的信箱从 packfile 里挪走 —— 与 D114 的取向一致，也避免不可逆的操作。真要清理得整库重建，那不是一个文档 PR 该做的事。
+
+**代价。** 被删的图和被改的字都不再是「原样证据」，但两句都留了指向 D362 的标记，读者能分清「当时就是这样」与「这里被脱敏了」。git 历史里的信箱仍可被 `git log -p` 翻到。
+
+**守卫。** `grep -rn '1304049579\|Jenil_Soni' docs README*.md` 为空；`docs/shots/` 下不再有个人目录截图；`git config user.email` 已是 GitHub noreply 地址（`57058104+Yang-Code01@users.noreply.github.com`），新提交不再写真实信箱。
+
+## D363 局域网聊天仍叫「内网通」：名字撞了商业产品，但这是一个私有项目的功能名（2026-11-21）
+
+**问题。** 侵权体检时发现「内网通」是别人的在售商业产品名 —— 南通艾睦网络科技有限公司的局域网即时通讯软件（官网 51nwt.com，苏ICP备18049291号-2，2025 年仍在更新 v3.4.3055，常被写作「IMO 内网通」）。我们这套局域网聊天的 UI 标题、README、`web/peer.html:6` 的 `<title>` 都叫「内网通」，与它**同名同品类**。
+
+**决定。** 改名的事评估过一轮（候选 LAN / 局域网 / 邻网 / 内网），最后**不改**：这是作者自用、不对外销售、不投放的应用，「内网通」在这里是功能名而不是商品名；同一类词在 IT 里属于描述性用法（局域网内通信），且仓库没有任何对方商标、图标或界面素材。
+
+- 三份 README 加一句声明：本项目与南通艾睦的「内网通 / IMO 内网通」**没有关系**，名字只是描述「内网里通消息」这件事。
+- 将来若对外发布、上架或做推广，先改名再说 —— 那时才需要商标检索，现在没有商业使用，构不成实际的混淆来源。
+
+**代价。** 搜索「内网通」会混进对方的官网与下载页，别人可能误以为这是它的插件；README 那句声明就是为这个准备的。i18n 的英文译文一直是 `LAN`（`web/src/i18n/en.ts`），日文同理，外语界面本来就没有这个问题。
+
+**可改。** 真要改名，全仓库 332 处 / 54 个文件（`docs/DECISIONS.md` 65 处最多），历史文档按 D114 不改，只改代码与 README。
