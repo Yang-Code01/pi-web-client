@@ -29,6 +29,7 @@ import {
   type Val,
 } from "./value.ts";
 import { formatValue } from "./numfmt.ts";
+import { decimalFixed, roundDecimal } from "./decimal.ts";
 
 /** 第四个参数是「这次调用」的语法节点：ROW()/COLUMN() 要从参数上读坐标。 */
 export type Fn = (args: EvalVal[], ctx: CalcCtx, sheet: string | null, node?: FnNode) => EvalVal;
@@ -78,10 +79,7 @@ function colValues(m: Matrix, col: number): Val[] {
 
 /** 数字四舍五入（远离 0，Excel 的 ROUND 就是这样）。 */
 function roundAway(x: number, d = 0): number {
-  const p = Math.pow(10, d);
-  const v = x * p;
-  const r = Math.sign(v) * Math.round(Math.abs(v) + Math.abs(v) * 1e-12 + 1e-12);
-  return r / p;
+  return roundDecimal(x, d, 0);
 }
 
 function sigma(xs: number[]): number {
@@ -342,10 +340,10 @@ export const EXTRA_FNS: Record<string, Fn> = {
     if (typeof d !== "number") return d;
     if (typeof noComma !== "boolean") return noComma;
     const digits = Math.max(0, Math.trunc(d));
-    const body = Math.abs(roundAway(x, digits)).toFixed(digits);
-    const [int, frac] = body.split(".");
+    const body = decimalFixed(Math.abs(x), digits);
+    const [int, frac = ""] = body.split(".");
     const grouped = noComma ? int! : int!.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    return `${x < 0 ? "-" : ""}${grouped}${frac ? `.${frac}` : digits ? `.${"0".repeat(digits)}` : ""}`;
+    return `${x < 0 && /[1-9]/.test(body) ? "-" : ""}${grouped}${frac ? `.${frac}` : digits ? `.${"0".repeat(digits)}` : ""}`;
   },
   DOLLAR: (a) => {
     const x = arg(a, 0);

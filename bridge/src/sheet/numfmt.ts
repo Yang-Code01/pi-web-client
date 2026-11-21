@@ -10,6 +10,8 @@
  * 月份 / 星期仍用英文（与 Excel 的 C 区行为一致，不跟浏览器语言走）。
  */
 
+import { decimalFixed } from "./decimal.ts";
+
 /** Excel 内置数字格式：id → 格式代码。id 0 是 General。 */
 const BUILTIN: Record<number, string> = {
   0: "General",
@@ -352,11 +354,10 @@ function numberBody(body: Body, value: number): string {
   if (body.scale) n /= Math.pow(1000, body.scale);
 
   const decCount = Math.min(body.dec.length, 15);
-  const abs = Math.abs(n);
-  // JS 的 toFixed 按二进制值截断，1.005 会变成 1.00；Excel 按十进制四舍五入。
-  const nudged = abs + (abs > 0 ? abs * 1e-12 : 0);
-  let fixed = nudged.toFixed(decCount);
-  let [int, frac = ""] = fixed.split(".");
+  // JS 的 toFixed 按二进制值截断（1.005 → 1.00），Excel 按十进制四舍五入；
+  // 也别用 `abs + abs*1e-12` 这种相对补偿 —— 值越大补得越多，1e12 会被补成 …001。
+  const fixed = decimalFixed(Math.abs(n), decCount);
+  const [int, frac = ""] = fixed.split(".");
 
   // `#` 位不补零（小数末尾的 0 去掉），`?` 位补空格，`0` 位补零。
   let decOut = "";
@@ -728,8 +729,9 @@ function formatNumberSection(section: string, value: number): string {
   }
   if (dbnum) return cnNumber(value, dbnum.style, body.dec.length);
 
-  const neg = value < 0;
   const shown = numberBody(body, Math.abs(value));
+  // 舍入到零之后不该再留负号：-0.4 按 `0` 显示成 `0`，不是 `-0`。
+  const neg = value < 0 && /[1-9]/.test(shown);
   const prefix = literal(nodes, 0, body.start);
   const suffix = skipRunTail(literal(nodes, body.end, nodes.length));
   return `${neg ? "-" : ""}${prefix}${shown}${suffix}`;
