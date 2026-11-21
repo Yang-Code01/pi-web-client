@@ -17,7 +17,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { proxyCandidates, stashPush, stashRestore } from "./hotdeploy-git.mjs";
+import { FETCH_ATTEMPTS, FETCH_DIRECT_TIMEOUT_MS, FETCH_PROXY_TIMEOUT_MS, FETCH_RETRY_DELAY_MS, FETCH_SSH_TIMEOUT_MS, FETCH_TOTAL_BUDGET_MS, resolveProxyCandidates, ssh443InsteadOf, stashPush, stashRestore } from "./hotdeploy-git.mjs";
 import { psQuote, windowHostOf, windowScript } from "./hotdeploy-window.mjs";
 
 const WIN = process.platform === "win32";
@@ -103,23 +103,45 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** `fetchOrigin()` 是同步流程，重试间隔不能靠 setTimeout。 */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 function sh(file, args, opts = {}) {
   // windowsHide：worker 是 detached 起的（无控制台），不带它每个 git / powershell / taskkill 都会弹一扇窗再关掉。
   return spawnSync(file, args, { cwd: REPO, encoding: "utf8", windowsHide: true, ...opts });
 }
 
-function git(args, env) {
-  return sh("git", args, env ? { env } : {});
+/** `env` 为 undefined 时不动环境；`opts` 目前只用来传 `timeout`（D375）。 */
+function git(args, env, opts = {}) {
+  return sh("git", args, { ...(env ? { env } : {}), ...opts });
 }
 
 /** 真直连：去掉进程里的代理变量，并显式清空 git 的 http.proxy；否则残留的 HTTPS_PROXY 仍会被 libcurl 使用。 */
 function proxyFreeEnv() {
   const env = { ...process.env };
   for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "GIT_PROXY_COMMAND"]) delete env[key];
+  // worker 没有控制台：谁要凭据就会卡到超时，直接让它失败。
+  env.GIT_TERMINAL_PROMPT = "0";
   return env;
 }
 
-function gitReason(result) {
+/** 走代理时保留 env（libcurl 要读），但同样不允许停下来问凭据。 */
+function proxyEnv() {
+  return { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+}
+
+/** SSH 443 那条路：绝不留代理变量（它就是绕开 HTTPS 的），也不能让 ssh 停下来问密码或主机指纹。 */
+function sshEnv() {
+  const env = proxyFreeEnv();
+  env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new";
+  return env;
+}
+
+/** `spawnSync` 超时时 stderr 是空的，只剩 `error.code` —— 不翻译的话用户只看到一句 spawnSync git ETIMEDOUT。 */
+function gitReason(result, timeoutMs = 0) {
+  if (result?.error?.code === "ETIMEDOUT") return `超过 ${Math.round(timeoutMs / 1000)}s 没连上`;
   return String(result.stderr || result.stdout || result.error?.message || "无输出").trim().slice(0, 300);
 }
 
@@ -311,25 +333,101 @@ function failAfterStash(step, result, code, message) {
   fail(step, result, code, message);
 }
 
-/** 本机 GitHub 直连常不通：按 AGENTS.md，失败才按需带代理，不写进全局 config。 */
-function fetchOrigin() {
-  const direct = git(["-c", "http.proxy=", "-c", "https.proxy=", "fetch", "--prune", "--quiet", "origin"], proxyFreeEnv());
-  if (direct.status === 0) return { ok: true };
-  const failures = [`直连：${gitReason(direct)}`];
-  log("git fetch 直连失败，改用代理", gitReason(direct));
-  for (const proxy of proxyCandidates()) {
-    const viaProxy = git(["-c", `http.proxy=${proxy}`, "-c", `https.proxy=${proxy}`, "fetch", "--prune", "--quiet", "origin"]);
-    if (viaProxy.status === 0) {
+/**
+ * 本机 GitHub 直连常不通：按 AGENTS.md，失败才按需带代理，不写进全局 config。
+ *
+ * 候选不能只看 env：worker 的 env 通常是空的（bridge 是手起的），只看 env 等于只试那个写死的
+ * 18791 —— 它现在多数机器上都不在监听。所以先读 pi 设置里的 httpProxy，再读系统代理（D376）。
+ */
+/** 直连：清掉代理变量，上限见 FETCH_DIRECT_TIMEOUT_MS（D375）。 */
+function fetchDirectOnce(nth, budget) {
+  log(`git fetch 直连，最多等 ${FETCH_DIRECT_TIMEOUT_MS / 1000}s${nth}`);
+  const result = git(
+    ["-c", "http.proxy=", "-c", "https.proxy=", "fetch", "--prune", "--quiet", "origin"],
+    proxyFreeEnv(),
+    { timeout: budget(FETCH_DIRECT_TIMEOUT_MS) },
+  );
+  return result.status === 0 ? { ok: true } : { reason: gitReason(result, FETCH_DIRECT_TIMEOUT_MS) };
+}
+
+/** 走一个候选代理（D376）。 */
+function fetchProxyOnce(proxy, budget) {
+  const result = git(
+    ["-c", `http.proxy=${proxy}`, "-c", `https.proxy=${proxy}`, "fetch", "--prune", "--quiet", "origin"],
+    proxyEnv(),
+    { timeout: budget(FETCH_PROXY_TIMEOUT_MS) },
+  );
+  return result.status === 0 ? { ok: true } : { reason: gitReason(result, FETCH_PROXY_TIMEOUT_MS) };
+}
+
+/** 换传输：SSH over 443，不接受任何代理变量（D377）。 */
+function fetchSshOnce(insteadOf, budget) {
+  const result = git(
+    ["-c", insteadOf, "-c", "http.proxy=", "fetch", "--prune", "--quiet", "origin"],
+    sshEnv(),
+    { timeout: budget(FETCH_SSH_TIMEOUT_MS) },
+  );
+  return result.status === 0 ? { ok: true } : { reason: gitReason(result, FETCH_SSH_TIMEOUT_MS) };
+}
+
+/** 一轮：直连 → 每个候选代理 → 换传输。任一成功即返回，失败原因都记进 failures。 */
+function fetchRound({ nth, proxies, insteadOf, left, budget, failures }) {
+  if (left() < 1_000) return null;
+  const direct = fetchDirectOnce(nth, budget);
+  if (direct.ok) return direct;
+  failures.push(`直连${nth}：${direct.reason}`);
+  log("git fetch 直连失败，改用代理", direct.reason);
+  for (const proxy of proxies) {
+    if (left() < 1_000) break;
+    const viaProxy = fetchProxyOnce(proxy, budget);
+    if (viaProxy.ok) {
       log("git fetch 代理成功", proxy);
+      return viaProxy;
+    }
+    failures.push(`代理 ${proxy}${nth}：${viaProxy.reason}`);
+    log("git fetch 代理失败", proxy, viaProxy.reason);
+  }
+  // 换传输：HTTPS 被整段掉线、代理全不通时，GitHub 的 SSH 端点还常能从 443 走通（D377）。
+  if (!insteadOf || left() < 1_000) return null;
+  log(`git fetch 换传输 ssh.github.com:443，最多等 ${FETCH_SSH_TIMEOUT_MS / 1000}s${nth}`);
+  const viaSsh = fetchSshOnce(insteadOf, budget);
+  if (viaSsh.ok) {
+    log("git fetch 走 SSH 443 成功");
+    return viaSsh;
+  }
+  failures.push(`ssh.github.com:443${nth}：${viaSsh.reason}`);
+  log("git fetch 走 SSH 443 失败", viaSsh.reason, /publickey/i.test(viaSsh.reason) ? "（这台机器的 SSH key 没登记到 GitHub，这条路要先加 key）" : "");
+  return null;
+}
+
+/**
+ * 拉取 origin。每次尝试都有上限（D375），候选不止 env（D376），全失败再试一轮，最后换传输（D377）。
+ * 任何一条路径都不许等凭据、不许等满 libcurl 默认的 300s —— 界面只在「检查更新」上，卡住会被当成死机。
+ */
+function fetchOrigin() {
+  const proxies = resolveProxyCandidates();
+  log(`代理候选 ${proxies.length} 个`, proxies.join("、"));
+  // 只能顶替 GitHub 的 HTTPS 远程：origin 是 SSH 或别的宿主时这条路没意义（D377）。
+  const insteadOf = ssh443InsteadOf(String(git(["remote", "get-url", "origin"]).stdout ?? ""));
+  const deadline = Date.now() + FETCH_TOTAL_BUDGET_MS;
+  const left = () => deadline - Date.now();
+  // 又要受总预算约束，否则候选一多，两轮能把「检查更新」拖回五分钟（D376）。
+  const budget = (want) => Math.max(1_000, Math.min(want, left()));
+  const failures = [];
+  for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      if (left() < FETCH_RETRY_DELAY_MS + 1_000) break;
+      log(`所有路径都不通，等 ${FETCH_RETRY_DELAY_MS / 1000}s 后重试一轮（第 ${attempt}/${FETCH_ATTEMPTS} 轮）`);
+      sleepSync(FETCH_RETRY_DELAY_MS);
+    }
+    const nth = FETCH_ATTEMPTS > 1 ? `，第 ${attempt}/${FETCH_ATTEMPTS} 轮` : "";
+    if (fetchRound({ nth, proxies, insteadOf, left, budget, failures })) {
+      if (attempt > 1) log(`第 ${attempt} 轮通了`);
       return { ok: true };
     }
-    const reason = gitReason(viaProxy);
-    failures.push(`代理 ${proxy}：${reason}`);
-    log("git fetch 代理失败", proxy, reason);
   }
   return { ok: false, err: `${failures.join("；")}；如果 bridge 启动时继承了旧代理，重启 bridge 后再试` };
 }
-
 function occupiedBy(branch) {
   const out = git(["worktree", "list", "--porcelain"]).stdout ?? "";
   let cur = "";

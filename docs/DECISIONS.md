@@ -5167,7 +5167,7 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 
 **代价 / 可改：**
 
-- 代理候选多时，全失败会多花几次 git 超时；但成功路径不受影响。要更快可以给每个候选加独立超时。
+- 代理候选多时，全失败会多花几次 git 超时；但成功路径不受影响。要更快可以给每个候选加独立超时（**D374 起已给每次尝试加上限**）。
 - `http.proxy` 只对 HTTP(S) 远程生效；`origin` 是 SSH 地址时，候选代理不会生效。
 - `ALL_PROXY` 若是 socks 代理，是否可用取决于本机 git/curl；失败会出现在错误列表里，不会静默跳过。
 - AGENTS.md / issue-tracker 里「直连失败才加 `HTTPS_PROXY=18791`」是 `gh` CLI 的手工代理约定，不适用于热部署 worker；worker 的规则以本条为准。
@@ -7231,3 +7231,70 @@ chip 一起改：模型名 · 思考档位（带点）· 上下文（进度条 +
 - 窄屏（compact）没有气泡入口：那颗仍是「点开工作区浮层 / 展开左栏」，触屏用户走左栏卡片上的归档 / 删除。
 
 **验证。** `probes/empty-workspace.mjs`（新，桩桥 + 真 Chromium，9 段）先把这几条跑红再转绿：0 前置（只剩一颗、没 ★ ⇒ ★ 行 0 颗胶囊、NowChip 露着）；1 NowChip 悬停出气泡、三项动作齐全且没有「取消置顶」；1b 气泡里改名（`rename` 帧 + NowChip 换名字）；2 点标签行里的空工作区 → 横杠与 `aria-current` 落过去、中栏认领、NowChip 收起、`#/`；3 刷新仍停在那；4 空态按钮与 ★ 行 ＋ 都预填该组目录；5 组里后来有会话 → 文案换成「还没打开」且不自动打开；6 / 7 从 NowChip 气泡归档、删除 → 中栏进空态、横杠留在原组；8 / 9 壳 C 竖列、壳 D 色点条的高亮跟着同一份选中态走、从这两处也能切到空工作区，壳 B 的工作区浮层段头同样能切过去（并顺手验了段头高亮仍在会话所在组）。另跑 `npm run test:pillbar`（20 条，`neighborAfterArchive` 不回归）、`npm --prefix web run typecheck`（i18n 4076 → 4079 键 × 3 语言、`#app` 里没有裸 `vh`/`vw`）、`npm run build:web`。回归本来就绿的 `pin-delete-current` / `pin-archive-jitter` / `workspace-tree` / `rail-click` / `round16-pin` → 全过。**本来就红的记录在案、本轮不救**：`archive-switch`、`pin-auto-open`、`nowchip`、`round4-pin`、`workspace-shells`、`round24-pinactions` 的过时期望、`workspace-tabs`（等不到可见的 `.session-card`）、`rail-ghost`（滚动锚定）、`a11y-workspace`（`.ws-pop` 那条）、`workspace-manage`（取消删除那条）、`manage-ui`（要真桥口令文件）—— 都在 `origin/main` 的另一份检出上逐条复跑确认过是同一个失败，与这次改动无关。
+
+## D375 热部署的每次 `git fetch` 都有上限：直连 20s、每个代理 90s（用户问「为啥热部署一直卡在那里」2026-11-21）
+
+**问题。** 用户点热部署，进度停在「检查更新」（`step: 0`）、用时一直涨到 210s 以上，看起来像卡死。真机证据：`.scratch/hot-deploy/worker.log` 在 `[13:52:40] 当前 main 6f27e8fc` 之后静默整整 5 分钟，然后 `[13:57:40] git fetch 直连失败 … Connection timed out after 300001 milliseconds`；两秒后唯一回退代理 `127.0.0.1:18791` 也连不上（`Failed to connect to github.com:443 over proxy 127.0.0.1 after 2119 ms: Could not connect to server`），`=== fetch-failed ===`，state.json 落成 `phase: "fail"`。也就是说「卡住」= libcurl 默认的 300s 连接超时，这段里界面没有任何进度可画；等它超时，本轮也一定失败。
+
+**为什么之前没有上限。** `fetchOrigin()`（`scripts/hotdeploy.mjs`）先用 `spawnSync` 直连、失败再逐个代理，两边都没传 `timeout`。D272 的「代价 / 可改」里写这句地雷：要更快可以给每个候选加独立超时 —— 一直没落地。
+
+**决定。** 直连尝试 20s 封顶，每个代理 90s 封顶（`scripts/hotdeploy-git.mjs` 的 `FETCH_DIRECT_TIMEOUT_MS` / `FETCH_PROXY_TIMEOUT_MS`）。超时在错误与日志里写成「超过 20s 没连上」，不再露出 `spawnSync git ETIMEDOUT`；直连一开始先写一行日志（`git fetch 直连，最多等 20s`），日志里能看出它在动。
+
+**为什么两个数不同。** 直连要么秒通、要么根本不通（本机被墙时 SYN 全丢），20s 足够；代理要传对象，首次拉取比握手慢得多，90s 才不误杀真拉得下来的部署。
+
+**不改什么。** 代理候选链不动（仍是 env → `127.0.0.1:18791` 兜底，D272），也**不**替用户去探测系统代理（`HKCU\…\Internet Settings\ProxyServer`）。本次只解决「等多久」，不解决「bridge 进程 env 里没代理、18791 又死了」——那种情况下现在的表现是 20s 内明确报失败，而不是坐满 5 分钟。要让它真拉下来，得用带 `HTTPS_PROXY` 的环境重启 bridge。（**D376 起这两条都变了**：候选加上 pi 设置的 `httpProxy` 与系统代理，全失败还会再试一轮——这条只记录当时的边界。）
+
+**代价 / 可改。** 直连若是「慢但能通」的网络，会提前落到代理路径（代理通就没影响；代理也坏时错误里两边原因都会列出）。`spawnSync` 超时只杀 `git` 本体，`git-remote-https` 子进程可能把那次连接超时走完才退；那时 fetch 还没写 refs，不影响仓库状态。
+
+**验证。** `npm run test:hotdeploy` 新增两条：常数在合理区间（直连 5~60s、代理 > 直连），以及 `scripts/hotdeploy.mjs` 里两处 `fetch` 调用必须带 `timeout: FETCH_*_TIMEOUT_MS`（源码守卫，和 windowsHide 那条同一手法）。真机：本机直连不通时「检查更新」应当约 2 分钟内落地（直连 20s + 18791 秒拒），不再是 300s 静默。
+
+## D376 热部署自己找代理：pi 设置 → 系统代理 → env → 18791，全部失败再试一轮（D375 的续，2026-11-21）
+
+**问题。** D375 只给了每次 `git fetch` 一个上限，没解决「直连一坏就必失败」：`fetchOrigin()` 的候选只有进程 env 与写死的 `127.0.0.1:18791`。这台机器上两点都不满足 —— bridge 进程的 `HTTP(S)_PROXY` 全空（桥是手起的，env 是那个 shell 的），`18791` 也没有监听（当时监听里的代理只有 `7899`）。于是直连不通时热部署一定失败，尽管这台机器**明明配了代理**：pi 的 `settings.json` 里 `httpProxy = "http://127.0.0.1:7899"`，Windows 系统代理 `ProxyEnable=1 / ProxyServer=127.0.0.1:7899`。D272 当时把 18791 定成「历史默认端口」，那份默认写在代码里，换机器就失效。
+
+**顺带纠正一个判断。** 用户看到的是「无法连接 GitHub」，但重测时直连是通的：`git ls-remote --heads origin` 2s、`git fetch --prune origin` 3.4s、走 7899 的 fetch 1.1s（`github.com` 的 DNS 落在 `57.155.223.240`，中间有东西接管，但证书与内容都是真的）。所以 13:52 那次 300s 卡死是网络瞬时坏掉，不是常态；真正要修的是「网络一抖，热部署就再没有第二次机会」。
+
+**决定。**
+
+1. 候选顺序改成 **pi 设置里的 `httpProxy` → 系统代理 → 进程 env → `18791`**，同一个代理只留一次。pi 设置排第一是因为它是产品自己的约定（扩展市场的 `bridge/src/market.ts` 读的就是这一份），用户在一个地方填一次，两边都生效。
+2. 系统代理只取「手动配置」那一栏：Windows 读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings` 的 `ProxyEnable` / `ProxyServer`（`127.0.0.1:7899` 与 `http=…;https=…` 两种写法都认），macOS 问 `scutil --proxy`。**PAC 自动脚本（`ProxyAutoConfigEnable`）不猜** —— 那要跑一遍 JS 才知道地址。
+3. 所有候选都不通时 **等 3s 再整轮重试一次**（`FETCH_ATTEMPTS = 2`），网络抖动几秒就好的情况靠这一轮吃掉。
+4. 加一个**总预算** `FETCH_TOTAL_BUDGET_MS = 240s`：每次尝试的 timeout 取 `min(该路径上限, 预算剩余)`。没有它，候选变多以后「两轮」能把「检查更新」又拖回五分钟 —— 正是 D375 要修掉的那个体感。
+5. `proxyCandidates(env, extra)` 保持**纯函数**（系统代理由调用方探好从 `extra.system` 传进来，好测）；worker 用 `resolveProxyCandidates()` 把 pi 设置与系统代理读进来。`18791` 仍留在链尾当兜底，不当主路径。
+
+**代价 / 可改。**
+
+- Windows 上每次热部署多两次 `reg query`（约几十毫秒），macOS 多一次 `scutil`；读失败一律当「没有」，不会让部署停摆。
+- 「慢但能通」的直连会提前落到代理路径（代理通就无影响）；代理也不通时错误里两条原因都会列出，末尾还会带「如果 bridge 启动时继承了旧代理，重启 bridge 后再试」。
+- 注定失败的部署，最坏等待从 20s 级涨到预算上限（240s）；换来的是抖动场景能自愈。要更快可把 `FETCH_TOTAL_BUDGET_MS` 调小。
+- **没做**：PAC 解析、`socks5` 代理的可用性探测（候选会照试，失败写进错误列表）、以及「所有 fetch 都失败时改用本地已有的分支离线部署」—— 那是另一个能力（要动面板与 worker 状态机），留给后续决定。
+
+**验证。** `bridge/tests/hotdeploy-unit.mjs` 新增：候选顺序（设置 → 系统 → env → 默认、去重、空设置当没填）、`ProxyServer` 两种写法、`scutil` 文本解析与 PAC 忽略、重试常数与总预算区间、以及 worker 源码守卫（必须调 `resolveProxyCandidates()`、要有 `for (let attempt = 1; attempt <= FETCH_ATTEMPTS` 循环、重试间隔用 `sleepSync`、两次 fetch 的 timeout 要经过 `budget(`）。本机实测：`resolveProxyCandidates({})` 返回 `["http://127.0.0.1:7899", "http://127.0.0.1:18791"]`（设置与系统代理同值被去重），走该代理 `git fetch` 1.1s 成功。
+
+## D377 直连与代理都不通时，最后再走一次 SSH over 443（D376 的续，2026-11-21）
+
+**问题。** D376 让热部署自己找代理，但「一个代理都没配、18791 也死了」仍然必失败。用户先问「网上国内连不上 GitHub 的方案里有没有比走代理更有用的」，调研后挑了一条能自动兜底的：GitHub 的 SSH 端点 `ssh.github.com:443`。
+
+**调研结论（2025–2026 的中文资料，实测过坐标）。** 四类常见方案里没有比「用用户已有的代理」更通用的：
+
+- **改 hosts / DNS**（GitHub520、ineo6/hosts、SwitchHosts）：只治 DNS 污染；要管理员权限；那类项目自己在 README 里写「手抄的固定 IP 极易过期」。
+- **镜像站**（kgithub / kkgithub / gitclone / githubfast / bgithub）：只镜像公开库、**不能 push**；`fastgit`、`cnpmjs.org` 已失效；换域名就等于把用户的历史与身份交给第三方。
+- **文件加速**（gh-proxy、`ghfast.top`、`gh-proxy.com`、`ghproxy.net`）：只加速 raw / release 下载，**不走 git 协议**；`ghproxy.com` / `mirror.ghproxy.com` 已关停；有 66MB 上限与黑名单审计。
+- **本地反代 + 本地根证书**（Watt Toolkit ≡ Steam++、FastGithub、flashgithub）：本质还是代理，只是把这些步骤自动化。它的「系统代理模式」会写 `HKCU\…\Internet Settings\ProxyServer` —— D376 的注册表读取**已经能自动发现它**；「hosts + MITM」模式要装根证书，产品不能替用户做这个决定。
+- **SSH over 443**：不依赖代理与 DNS 欺骗，只依赖能连 `20.205.243.160:443`；一个已经登记过 SSH key 的机器开箱可用。
+
+本机实测：`ssh -p 443 git@ssh.github.com` 与 `git -c url.ssh://git@ssh.github.com:443/.insteadOf=https://github.com/ ls-remote origin` 都在 1.6s 内返回 `Permission denied (publickey)` —— 通道是通的，只是这台机器没把 `~/.ssh` 里的 key 加到 GitHub。
+
+**决定。** `fetchOrigin()` 每轮在「直连 → 各代理」都失败之后，如果 `origin` 是 `https://github.com/…`，再加一次换传输：
+
+- `git -c "url.ssh://git@ssh.github.com:443/.insteadOf=https://github.com/" -c "http.proxy=" fetch --prune --quiet origin`，走 `scripts/hotdeploy-git.mjs` 的 `SSH_443_INSTEADOF`，上限 `FETCH_SSH_TIMEOUT_MS = 25_000`（同样经过总预算）。
+- 环境：`sshEnv()` = 去掉全部代理变量（这条路就是绕开 HTTPS 的，留着代理反而让 ssh 去连代理）+ `GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"`，不许它停下来问密码或指纹。
+- 只有 `origin` 命中 `^https://github\.com/` 才加这一步（`ssh443InsteadOf()`）：origin 已是 SSH 地址或别的宿主时，这条 `insteadOf` 会把请求送到错误的地方。
+- 失败原因里若出现 `publickey`，日志直接补一句「这台机器的 SSH key 没登记到 GitHub，这条路要先加 key」，不让人对着 `Permission denied (publickey)` 猜。
+- 顺带把 `GIT_TERMINAL_PROMPT="0"` 铺到所有 fetch 上（worker 没有控制台，任何一条路径等凭据都会卡到超时，等于换个理由重演 D375）。
+
+**为什么要而不是不做。** 它不花用户的钱、不换域名、不改仓库身份，且只在「别的路都死」时才发生：直连通、代理通时一次都不会走到。25s 的上限让最坏情况仍在 D376 的总预算内。
+
+**代价 / 可改。** 没登记 SSH key 的机器上这一步必然失败（约 1~2s，实测 1603ms），只多一条日志与一条错误原因；总预算因此更早耗尽。要更省可以把它挪到最后一轮才试。**没做**：镜像站与 hosts 写进产品流程（只写进用户答复当手动出路）、Watt Toolkit 之类的 MITM 自动安装、`ssh` 用自定义 key 的配置项（现在用 `~/.ssh/config` 的默认身份）。
+
+**验证。** `npm run test:hotdeploy` 扩到三次 fetch（直连 / 代理 / 换传输都要带 timeout 且经过 `budget(`）、`ssh443InsteadOf` 四种 origin（GitHub HTTPS 带/不带 `.git`、SSH、别的宿主、空串）、源码守卫（要从 `origin` 读 URL、要带 `GIT_SSH_COMMAND`、要有 `GIT_TERMINAL_PROMPT = "0"`）。本机手工按同一命令跑过：`debug1: Connecting to ssh.github.com [20.205.243.160] port 443` → 1.8s `Permission denied (publickey)`，exit 128 —— 说明换传输真的把请求送到了 443，而不是原地报「未知选项」。
