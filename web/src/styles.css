@@ -1023,33 +1023,6 @@ html[data-ui="mac"] .peer-frame { background: transparent; }
 .composer .hint-status { display: flex; gap: 4px; align-items: center; min-width: 0; flex: 1 1 260px; }
 .composer .hint-status.busy { color: var(--accent); font-size: 12px; }
 .composer .hint-status.wait { color: var(--warn, var(--warn)); }
-/* Q-021: 会话目录是 git 仓库时，这颗 chip 顶掉右边的按键提示（提示挪进 title） */
-.composer .hint-status .git-chip {
-  flex: none;
-  display: inline-flex; align-items: center; gap: 4px;
-  max-width: 26ch;
-  border: 1px solid var(--line-soft); background: var(--panel); color: var(--text);
-  border-radius: 999px; padding: 2px 8px;
-  font-family: var(--mono); font-size: 11px;
-  cursor: pointer;
-}
-.composer .hint-status .git-chip:hover { border-color: var(--line); background: var(--panel-2); }
-.composer .hint-status .git-chip:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
-.composer .hint-status .git-chip .git-glyph { flex: none; color: var(--accent); font-size: 12px; line-height: 1; }
-.composer .hint-status .git-chip .git-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.composer .hint-status .git-chip .git-dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--warn, var(--warn)); }
-.composer .hint-status .git-chip .git-count { flex: none; color: var(--warn, var(--warn)); font-size: 11px; }
-.composer .hint-status .git-chip .git-tag { flex: none; color: var(--faint); font-size: 11px; letter-spacing: 0.04em; }
-/* 运行态：分支只是一枚尾标，窄了就让它先被切掉 */
-.composer .hint-status .git-chip.flat {
-  flex: 0 1 auto; overflow: hidden;
-  max-width: 18ch; padding: 0 2px;
-  border: 0; background: none; color: var(--faint);
-}
-.composer .hint-status .git-chip.flat .git-glyph { color: var(--dim); }
-.composer .hint-status .git-chip.flat .git-dot,
-.composer .hint-status .git-chip.flat .git-count,
-.composer .hint-status .git-chip.flat .git-tag { display: none; }
 .composer .hint-status .act-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
 .composer .hint-status .act-time { flex: none; color: var(--faint); font-family: var(--mono); }
 .composer .hint-status .btn { flex: none; padding: 4px 8px; font-size: 12px; }
@@ -3556,18 +3529,28 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 :where(html[data-compact="true"]) .turn-rail { display: none; }
 
 /* ---------------------------------------------------------------- 状态行最前面的路径（D61 / D244）
-   当前会话的 cwd 常驻在状态行最前面、分支 chip 旁边（见 app.ts 的 syncCwdChip / fillHintStatus）。
-   D244 起左栏展开也显示；窄屏（左栏是一页 tab）仍由 syncCwdChip 藏起来。 */
+   当前会话的 cwd 常驻在状态行最前面；cwd 在仓库里时同一颗里带分支标记与未提交圆点，
+   不再另起一颗分支 chip。完整路径/分支名在 title 和点开后的窗里。 */
 .cwd-chip {
-  flex: 0 1 auto; min-width: 0; max-width: 42ch;
-  display: inline-flex; align-items: center;
-  padding: 0; border: 0; background: none; cursor: pointer;
-  font: inherit; font-size: 11px; font-family: var(--mono); color: var(--dim);
+  flex: none; min-width: 0; max-width: 48ch;
+  display: inline-flex; align-items: center; gap: 4px;
+  margin: -1px 0; padding: 1px 5px; border: 0; border-radius: 6px; background: none;
+  font: inherit; font-size: 11px; font-family: var(--mono); color: var(--faint);
+  cursor: pointer;
 }
-.cwd-chip[hidden] { display: none; }
-.cwd-chip:hover { color: var(--text); }
-.cwd-chip:focus-visible { outline: 1px solid var(--accent-dim); outline-offset: 3px; border-radius: 4px; }
+.cwd-chip:hover { color: var(--text); background: var(--panel-2); }
+.cwd-chip:focus-visible { outline: 1px solid var(--accent-dim); outline-offset: 1px; }
 .cwd-chip .cwd-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cwd-chip .cwd-name { color: var(--dim); }
+.cwd-chip:hover .cwd-name { color: var(--text); }
+.cwd-chip .cwd-sub { color: var(--faint); }
+.cwd-chip .cwd-glyph { flex: none; color: var(--accent); font-size: 12px; line-height: 1; }
+.cwd-chip .cwd-dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--warn, var(--warn)); }
+.cwd-chip .cwd-chev { flex: none; color: var(--faint); font-size: 12px; line-height: 1; transition: transform 0.14s ease; }
+.cwd-chip:hover .cwd-chev { transform: translateX(2px); }
+/* compact（窄屏 / 字号放大）：子目录藏掉，整颗入口仍在，不把入口一起藏没。 */
+:where(html[data-compact="true"]) .cwd-chip { max-width: 32ch; padding: 0 2px; }
+:where(html[data-compact="true"]) .cwd-chip .cwd-sub { display: none; }
 
 /* ---------------------------------------------------------------- pin chip actions (Q-035) */
 /* 悬停气泡只能挂在 body 上：.pin-strip 是 overflow-x:auto，条里溢出的部分会被裁掉，
