@@ -1,11 +1,11 @@
 /**
- * D356：pi 还在启动时，`/` 补全和技能面板不能说「没有」—— 清单只是还没到（扩展命令、提示词模板、
+ * D357：pi 还在启动时，`/` 补全和技能面板不能说「没有」—— 清单只是还没到（扩展命令、提示词模板、
  * 扩展自带的技能都在 pi 手里，它冷启要几秒才答得出 `get_commands`）。
  *
  * 桩桥 + 真 Chromium：同一个「空回答」，两个会话只有 `starting` 不同，断言文字不一样 ——
  *   - starting：`/` 补全说「pi 正在启动…命令表随后到」，技能面板说「…技能表随后到」；
  *   - 不是 starting：照旧「没有匹配的命令」/「技能列表还没到，稍等一下…」。
- * 再验桥端 D356 的推送：桩桥主动推 `commands` / `skills` 帧，页面不重新问也要当场换成真清单。
+ * 再验桥端 D357 的推送：桩桥主动推 `commands` / `skills` 帧，页面不重新问也要当场换成真清单。
  *
  * 跑：npm --prefix web run build && node probes/skill-boot-hint.mjs
  */
@@ -206,7 +206,7 @@ try {
   check("已启动：面板照旧说「技能列表还没到」", (await rSkillEmpty.innerText()).trim() === READY_SKILL_EMPTY, (await rSkillEmpty.innerText()).trim());
   await ready.screenshot({ path: path.join(OUT, "4-ready.png") });
 
-  // ---- 4. 别的会话的推送不许盖住当前这个（D356 的推送是广播，切走之后才到的那种）
+  // ---- 4. 别的会话的推送不许盖住当前这个（D357 的推送是广播，切走之后才到的那种）
   push({ type: "skills", sessionId: "probe-boot", commands: PUSHED_SKILLS });
   await ready.waitForTimeout(400);
   check("别的会话的推送不盖住当前面板", (await ready.locator(".skill-row").count()) === 0, (await ready.locator(".skill-row .sk-name").allInnerTexts()).join(","));

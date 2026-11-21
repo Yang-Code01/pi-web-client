@@ -916,7 +916,7 @@ export class Session extends EventEmitter {
   private autoCompactUsed = false;
   /** get_commands results, refreshed every couple of minutes. */
   private skillsCache: { at: number; list: SkillInfo[] } | null = null;
-  /** D356：启动窗口里给过磁盘清单，等 pi 答得动那一下补推权威版（一次启动只排一份）。 */
+  /** D357：启动窗口里给过磁盘清单，等 pi 答得动那一下补推权威版（一次启动只排一份）。 */
   private pendingBootPush: Promise<void> | null = null;
 
   private lastActivity = Date.now();
@@ -2697,7 +2697,7 @@ export class Session extends EventEmitter {
   /**
    * Skills pi knows about (via get_commands), with a disk fallback for sessions with no rpc child.
    *
-   * D356：pi 刚 spawn 的那几秒它答不了 get_commands —— 得先把所有扩展加载完（本机实测 4.9 秒，忙时
+   * D357：pi 刚 spawn 的那几秒它答不了 get_commands —— 得先把所有扩展加载完（本机实测 4.9 秒，忙时
    * 更久），而磁盘扫描只要 27 毫秒。启动窗口里先给磁盘那份，别让 `/` 菜单和技能面板空着；等 pi 答得
    * 动了再把权威清单推回去（`queueCommandsPush`）：扩展自带的技能与扩展命令只有它知道。
    */
@@ -2741,7 +2741,7 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * D356：pi 刚起来时先给页面磁盘那份清单，启动完成后再把 pi 的权威版推过去。只在启动窗口里排一次；
+   * D357：pi 刚起来时先给页面磁盘那份清单，启动完成后再把 pi 的权威版推过去。只在启动窗口里排一次；
    * 页面那边收到 `commands` / `skills` 帧会自己重画，不用它再问一遍。
    */
   private queueCommandsPush(): void {
@@ -2809,7 +2809,7 @@ export class Session extends EventEmitter {
    * Everything `/` can reach in this session (#25): extension commands, prompt templates and skills,
    * as pi reports them (get_commands). Without a live pi only the skills on disk are known.
    *
-   * D356：启动窗口里 pi 还没答得动，先给磁盘那份（几十毫秒），别让人对着「没有匹配的命令」干等 5 秒；
+   * D357：启动窗口里 pi 还没答得动，先给磁盘那份（几十毫秒），别让人对着「没有匹配的命令」干等 5 秒；
    * 启动完成后 `queueCommandsPush` 会把权威清单推回来。
    */
   async commands(): Promise<{ name: string; description: string; source: string }[]> {
@@ -2824,7 +2824,7 @@ export class Session extends EventEmitter {
     return this.diskSkills().map((sk) => ({ name: `skill:${sk.name}`, description: sk.description, source: "skill" }));
   }
 
-  /** 有活进程但还在启动：清单只能靠磁盘，别去问一个答不了的进程（D356）。 */
+  /** 有活进程但还在启动：清单只能靠磁盘，别去问一个答不了的进程（D357）。 */
   private startingNow(): boolean {
     return Boolean(this.rpc?.alive) && this.state.starting === true;
   }
