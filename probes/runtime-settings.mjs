@@ -41,11 +41,12 @@ const until = async (fn, ms, what) => {
 
 const MIN = 60_000;
 const GB = 1024 * 1024 * 1024;
-const DEFAULT_IDLE_MS = 30 * MIN;
-const DEFAULT_WATERMARK_BYTES = 2.5 * GB;
+/** 桩桥自己发的阈值，**不是**代码默认值（真默认见 D369）：探针验的是换算与保存，不是默认值。 */
+const STUB_IDLE_MS = 30 * MIN;
+const STUB_WATERMARK_BYTES = 2.5 * GB;
 
 /** The frame the bridge would send: `runtime.stats` with the thresholds in force (#78). */
-const statsFrame = ({ idleMs = DEFAULT_IDLE_MS, watermarkBytes = DEFAULT_WATERMARK_BYTES, saved } = {}) => ({
+const statsFrame = ({ idleMs = STUB_IDLE_MS, watermarkBytes = STUB_WATERMARK_BYTES, saved } = {}) => ({
   type: "runtime.stats",
   running: 0,
   totalBytes: null,
@@ -106,7 +107,7 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 /** What the stub bridge holds, and every `runtime.settings` the page sent it. */
-const world = { idleMs: DEFAULT_IDLE_MS, watermarkBytes: DEFAULT_WATERMARK_BYTES, writes: [] };
+const world = { idleMs: STUB_IDLE_MS, watermarkBytes: STUB_WATERMARK_BYTES, writes: [] };
 wss.on("connection", (ws) => {
   const send = (msg) => ws.send(JSON.stringify(msg));
   ws.on("message", (raw) => {
@@ -203,7 +204,7 @@ try {
   ok(world.writes.length === 1, `点保存发了一条 runtime.settings（${world.writes.length}）`);
   const sent = world.writes[0] ?? {};
   ok(sent.type === "runtime.settings" && sent.idleMs === 5 * MIN, `空闲阈值按分钟换成毫秒（${sent.idleMs}）`);
-  ok(sent.watermarkBytes === DEFAULT_WATERMARK_BYTES, `没改的水位原样带回去（${sent.watermarkBytes}）`);
+  ok(sent.watermarkBytes === STUB_WATERMARK_BYTES, `没改的水位原样带回去（${sent.watermarkBytes}）`);
 
   // 3) 桥回 saved: true → 面板跟着变成新值 + 提示 --------------------------
   await until(async () => (await idleInput(zh.page).inputValue()) === "5", 5000, "idle box repainted");
