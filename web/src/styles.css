@@ -1875,12 +1875,19 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .model-chip .chip-meter > i { display: block; height: 100%; border-radius: inherit; background: currentColor; }
 .model-chip .chip-rate { margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--line); color: var(--faint); }
 .model-chip .chip-rate.live { color: var(--accent); }
+/* 倍率（`x0.11`）跟目录里同一个口径，没有就不占位。 */
+.model-chip .chip-mult { margin-left: 8px; color: var(--faint); }
 .model-chip .chip-caret { margin-left: 4px; color: var(--faint); font-size: 9px; }
 /* 这一行本来就挤（技能 / 上下文 / 插件 / 文件 / 释放会话）：窄了只留「模型 · 档位 · ▾」，
    上下文数字让位给同一行的「上下文」按钮，别把「释放会话」挤到第二行。 */
 .hint { container-type: inline-size; }
 @container (max-width: 620px) {
   .model-chip .chip-ctx { display: none; }
+}
+/* 倍率（x0.11）比上下文数字更晚出场：1600 宽的工具行只有 652px，ctx 加上倍率就要换行，
+   「上下文」按钮本来就并排在这儿，数字让位、倍率也让位，宽到 700px 以上才两个都给。 */
+@container (max-width: 700px) {
+  .model-chip .chip-mult { display: none; }
 }
 @media (max-width: 620px) {
   .model-chip .chip-model { max-width: calc(var(--vw1) * 30); }
@@ -2858,7 +2865,7 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .dir-mkrow .dir-mkerr { padding-top: 4px; min-height: 0; }
 
 /* ---------------------------------------------------------------- model sheet: 设置控制台外壳 + 草稿确认 */
-/* D-model-switch：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。 */
+/* D367：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。 */
 .st-console.model-sheet { width: min(1000px, 100%); height: min(760px, 100%); }
 /* 列表自己滚，档位条钉在滚动区外：模型一大堆时，选完不用滚回顶部才能换档。 */
 .st-console.model-sheet .st-pane { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
@@ -2869,9 +2876,7 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .model-sheet .pm-lvbar__model { flex: none; max-width: 40%; font: 500 12px/1 var(--sans); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-sheet .pm-lvbar__model.draft { color: var(--accent); }
 .model-sheet .pm-lvbar .st-seg { flex: 0 1 auto; margin-left: auto; flex-wrap: nowrap; }
-.model-sheet .pm-lvbar__seg { margin-left: auto; }
 .model-sheet .st-cards { margin-bottom: 6px; }
-.model-sheet .st-seg { flex-wrap: wrap; }
 .model-sheet .settings-group:first-child { margin-top: 10px; }
 /* 一行模型：名字 + 使用中/待切换 + id；第二行档位；右侧窗口。整行是按钮，所以把 .settings-row 的网格改掉。 */
 .st-console.model-sheet .settings-row.pm-row {
@@ -2904,7 +2909,9 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 /* 只读值（本会话一页） */
 .model-sheet .settings-row > .pm-kv { grid-column: 2 / span 2; grid-row: 1; justify-self: end; min-width: 0; max-width: calc(var(--vw1) * 34); font: 10.5px/1.5 var(--mono); color: var(--dim); text-align: right; overflow-wrap: anywhere; }
 /* 搜索 */
-.model-sheet .pm-search { padding: 10px 0 2px; }
+/* 搜索框坐在滚动区外面：自己带边距，跟 .pm-body 的 22px 对齐。 */
+.model-sheet .pm-search { flex: none; padding: 10px 22px 0; }
+.model-sheet .pm-search[hidden] { display: none; }
 .model-sheet .pm-search__input { width: 100%; height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); font: inherit; }
 .model-sheet .pm-search__input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
 .model-sheet .pm-empty { padding: 22px 14px; border-radius: 10px; background: var(--panel-2); color: var(--faint); font-size: 11.5px; text-align: center; }

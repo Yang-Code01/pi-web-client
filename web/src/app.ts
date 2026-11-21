@@ -67,7 +67,7 @@ import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
-import { appendModelOptions, groupModels, isModelGroupOpen, rememberRecentModel, setModelGroupOpen } from "./modelgroups.ts";
+import { appendModelOptions, groupByProvider, groupModels, isModelGroupOpen, rememberRecentModel, setModelGroupOpen } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isDefaultHidden, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { type CtxLine, type CtxPolicy } from "./context.ts";
@@ -5383,6 +5383,8 @@ export class App {
     const startLevel = this.session?.thinkingLevel ?? "";
     // 当前模型属于哪个来源：它的组默认展开，否则新开场就只看得见一组折叠标题。
     const startProvider = this.models.find((m) => m.id === startModel)?.provider ?? "";
+    // 默认展开是「第一眼」的事，不是「锁死」：用户把这一组折上后，下次 paint 不能再把它擑开。
+    const forceOpen = new Set<string>(startProvider ? [startProvider] : []);
     let draftModel = startModel;
     let draftLevel = startLevel;
     type ModelTab = "now" | "all" | "session";
@@ -5416,10 +5418,22 @@ export class App {
     const nav = el("nav", "st-nav");
     nav.setAttribute("aria-label", tr("模型与思考"));
     const pane = el("div", "st-pane");
+    // 搜索框常驻在滚动区外面：跟 body 一起重建的话，每敲一个字输入框就换一个节点，中文输入法的候选词会断。
+    const searchBar = el("div", "pm-search");
+    const searchInput = document.createElement("input");
+    searchInput.type = "search";
+    searchInput.className = "pm-search__input";
+    searchInput.placeholder = tr("搜索模型名或 id");
+    searchInput.setAttribute("aria-label", tr("搜索模型名或 id"));
+    searchInput.oninput = () => {
+      query = searchInput.value;
+      paint();
+    };
+    searchBar.append(searchInput);
     // 滚动区与常驻的档位条分开：模型很多时，选完模型不用滚回顶部才能换档位。
     const bodyWrap = el("div", "pm-body");
     const lvBar = el("div", "pm-lvbar");
-    pane.append(bodyWrap, lvBar);
+    pane.append(searchBar, bodyWrap, lvBar);
     main.append(nav, pane);
 
     const foot = el("footer", "st-foot");
@@ -5438,6 +5452,13 @@ export class App {
 
     sheet.append(head, main, foot);
 
+    // 底栏的「确认」不是唯一一条路：⌘/Ctrl+Enter 也算，跟双击行一个意思。
+    sheet.addEventListener("keydown", (ev) => {
+      if (!(ev.metaKey || ev.ctrlKey) || ev.key !== "Enter") return;
+      ev.preventDefault();
+      commit();
+    });
+
     const draftInfo = (): ModelInfo | undefined => this.models.find((m) => m.id === draftModel);
     const draftLevels = (): string[] => draftInfo()?.levels ?? [];
     const dirty = (): boolean => draftModel !== startModel || draftLevel !== startLevel;
@@ -5450,6 +5471,8 @@ export class App {
 
     const commit = (): void => {
       const sessionId = this.currentId;
+      // 没接管＝没写入权：行双击也会走到这里，别把 setModel 发给桥让它默默丢掉。
+      if (this.session && !this.session.owned) return;
       const model = this.models.find((m) => m.id === draftModel);
       const modelChanged = draftModel !== startModel && !!model;
       const levelChanged = draftLevel !== startLevel && !!draftLevel;
@@ -5499,7 +5522,7 @@ export class App {
       }
       label.append(nameEl, el("code", "settings-key", m.id));
       row.append(label);
-      row.append(el("span", "settings-hint", [opts.provider ? m.provider : "", m.levels?.length ? m.levels.join(tr(" · ")) : tr("固定档位")].filter(Boolean).join(" · ")));
+      row.append(el("span", "settings-hint", [opts.provider ? m.provider : "", modelMultiplier(m.name), m.levels?.length ? m.levels.join(tr(" · ")) : tr("固定档位")].filter(Boolean).join(" · ")));
       row.append(el("span", "pm-win", m.contextWindow ? compactSize(m.contextWindow) : "–"));
       row.onclick = () => {
         draftModel = m.id;
@@ -5578,32 +5601,6 @@ export class App {
       return rows;
     };
 
-    const searchBox = (): HTMLElement => {
-      const box = el("div", "pm-search");
-      const input = document.createElement("input");
-      input.type = "search";
-      input.className = "pm-search__input";
-      input.placeholder = tr("搜索模型名或 id");
-      input.value = query;
-      input.setAttribute("aria-label", tr("搜索模型名或 id"));
-      input.oninput = () => {
-        const pos = input.selectionStart ?? input.value.length;
-        query = input.value;
-        paint();
-        const next = pane.querySelector<HTMLInputElement>(".pm-search__input");
-        if (next) {
-          next.focus();
-          try {
-            next.setSelectionRange(pos, pos);
-          } catch {
-            /* search 输入在某些浏览器里不支持 setSelectionRange，光标就跟着走 */
-          }
-        }
-      };
-      box.append(input);
-      return box;
-    };
-
     const used = (): { used: number | null; win: number | null } => ({
       used: this.usage.contextTokens,
       win: this.usage.contextWindow ?? draftInfo()?.contextWindow ?? null,
@@ -5640,7 +5637,7 @@ export class App {
           sub: pct != null ? tr("已用 {p1}%", { p1: String(pct) }) : win ? tr("压缩后要等下一轮才有数") : tr("会话还没报出模型"),
         },
         { label: tr("思考档位"), value: m?.levels?.length ? draftLevel : "—", sub: m?.levels?.length ? tr("{p1} 档可选", { p1: String(m.levels.length) }) : tr("固定档位") },
-        { label: tr("窗口"), value: m?.contextWindow ? compactSize(m.contextWindow) : "–", sub: m?.provider ?? "—" },
+        { label: tr("窗口"), value: m?.contextWindow ? compactSize(m.contextWindow) : "–", sub: [m ? modelMultiplier(m.name) : "", m?.provider].filter(Boolean).join(" · ") || "—" },
       ]);
       out.push(cards);
       if (this.session && !this.session.owned) {
@@ -5658,7 +5655,8 @@ export class App {
       // 来源不止一个时，这几块是平铺的，得在行里标出它属于哪个来源。
       const multi = new Set(this.models.map((x) => x.provider)).size > 1;
       const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
-      if (dirty() && m) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
+      // 只换档位时草稿就是当前模型：再插一块「待切换」＝同一行画两遍。
+      if (dirty() && m && m.id !== startModel) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
       const current = [pinned ? flatRow(pinned) : null].filter((x): x is HTMLElement => !!x);
       out.push(this.stSection(tr("当前使用"), tr("1 个")), panel(current, tr("会话还没报出模型")));
       const rest = recent.filter((x) => x.id !== startModel && x.id !== draftModel);
@@ -5673,32 +5671,28 @@ export class App {
       if (this.models.length === 0) {
         return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
       }
-      const out: HTMLElement[] = [searchBox()];
+      const out: HTMLElement[] = [];
       if (this.session && !this.session.owned) {
         const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
         notice.append(this.claimButton());
         out.push(notice);
       }
-      // 来源多了就得能分开看，也得分得开：按目录顺序一行一个来源，组头可折叠（状态记在 pi.modelGroups.open，跟目录选择器同一份）。
-      const groups = new Map<string, ModelInfo[]>();
-      for (const m of list) {
-        const rows = groups.get(m.provider);
-        if (rows) rows.push(m);
-        else groups.set(m.provider, [m]);
-      }
-      if (!groups.size) {
+      // 来源多了就得能分开看：按目录顺序一个来源一组，组头可折（状态记在 pi.modelGroups.open，跟目录选择器同一份）。
+      const groups = groupByProvider(list);
+      if (!groups.length) {
         out.push(panel([], tr("没有匹配的模型")));
         return out;
       }
       // 只有一个来源时不加组头（当前真机就是这个案子），搜索时才重新拿出来报命中数。
-      const showHead = groups.size > 1 || !!q;
-      for (const [provider, models] of groups) {
+      const showHead = groups.length > 1 || !!q;
+      for (const { provider, models } of groups) {
         const total = this.models.filter((m) => m.provider === provider).length;
         // 搜索时全部展开：否则搜出来的东西藏在折了几周的组里，等于没搜。
-        const open = !!q || provider === startProvider || isModelGroupOpen(provider);
+        const open = !!q || forceOpen.has(provider) || isModelGroupOpen(provider);
         if (showHead) {
           const head = el("button", `pm-group${open ? "" : " folded"}`) as HTMLButtonElement;
           head.type = "button";
+          head.dataset.provider = provider;
           head.setAttribute("aria-expanded", String(open));
           head.append(
             el("span", "pm-group__chev", "▾"),
@@ -5706,6 +5700,7 @@ export class App {
             el("span", "pm-group__meta", q ? tr("{p1} / {p2} 个", { p1: String(models.length), p2: String(total) }) : tr("{p1} 个", { p1: String(total) })),
           );
           head.onclick = () => {
+            forceOpen.delete(provider);
             setModelGroupOpen(provider, !open);
             paint();
           };
@@ -5736,7 +5731,7 @@ export class App {
     const paint = (): void => {
       const m = draftInfo();
       title.textContent = shortModelName(m?.name ?? this.session?.modelName ?? draftModel ?? "") || tr("模型");
-      sub.textContent = [m?.provider, m?.id, m?.contextWindow ? tr("窗口 {p1}", { p1: compactSize(m.contextWindow) }) : ""].filter(Boolean).join(" · ");
+      sub.textContent = [m?.provider, m ? modelMultiplier(m.name) : "", m?.id, m?.contextWindow ? tr("窗口 {p1}", { p1: compactSize(m.contextWindow) }) : ""].filter(Boolean).join(" · ");
       badges.replaceChildren(el("span", "st-badge", tr("{p1} 个模型", { p1: String(this.models.length) })));
       if (dirty()) badges.append(el("span", "st-badge warn", tr("未保存")));
 
@@ -5779,6 +5774,8 @@ export class App {
       if (tab === "now") body = nowPane();
       else if (tab === "all") body = allPane();
       else body = sessionPane();
+      // 搜索框只属于「全部模型」：它常驻在滚动区外边，所以只切可见性，不重建节点。
+      searchBar.hidden = tab !== "all";
       levelSection();
       const top = bodyWrap.scrollTop;
       bodyWrap.replaceChildren(...body);
@@ -7373,10 +7370,17 @@ export class App {
     const meterBar = chip.querySelector<HTMLElement>(".chip-meter > i");
     const rateEl = chip.querySelector<HTMLElement>(".chip-rate");
     const levelEl = chip.querySelector<HTMLElement>(".chip-level");
-    if (!model || !ctx || !ctxText || !meterBar || !rateEl || !levelEl) return;
+    const multEl = chip.querySelector<HTMLElement>(".chip-mult");
+    if (!model || !ctx || !ctxText || !meterBar || !rateEl || !levelEl || !multEl) return;
 
     const name = shortModelName(this.session?.modelName ?? this.session?.model ?? "");
     model.textContent = name || tr("模型");
+
+    // 倍率是目录塞在名字里的（`Kimi-K3 · x1.62 · 1M`）：有就露，没有（自定义 provider）就整格隐。
+    const mult = modelMultiplier(this.models.find((m) => m.id === this.session?.model)?.name ?? "");
+    multEl.textContent = mult;
+    multEl.hidden = !mult;
+    multEl.title = mult ? tr("计费倍率 {p1}", { p1: mult }) : "";
 
     const thinking = this.session?.thinkingLevel ?? "";
     levelEl.textContent = thinking || "–";
@@ -12628,7 +12632,7 @@ export class App {
     this.attachButton = pathBtn;
     const chip = el("button", "model-chip");
     chip.onclick = () => this.openModelSheet();
-    // 模型 · 思考档位 · 上下文（条 + 数字）· 速率（只在流式时露）· 展开箭头：见 styles.css 的 .model-chip。
+    // 模型 · 档位 · 上下文（条 + 数字）· 倍率 · 速率（只在流式时露）· 展开箭头：见 styles.css 的 .model-chip。
     const ctx = el("span", "chip-ctx");
     const meter = el("span", "chip-meter");
     meter.append(el("i", ""));
@@ -12637,6 +12641,7 @@ export class App {
       el("span", "chip-model", ""),
       el("span", "chip-level", ""),
       ctx,
+      el("span", "chip-mult", ""),
       el("span", "chip-rate", ""),
       el("span", "chip-caret", "▾"),
     );
@@ -22136,6 +22141,14 @@ function stopMedia(root: ParentNode): void {
 /** "Deepseek-V4.1-Flash · x0.11 · 1M" -> "Deepseek-V4.1-Flash": the chip has no room for pricing. */
 function shortModelName(name: string): string {
   return name.split(" · ")[0] ?? name;
+}
+
+/**
+ * wb2api 的目录把倍率塞在模型名里：`Kimi-K3 · x1.62 · 1M`。倍率是计费口径，不是名字的一部分，
+ * 弹窗和 chip 要分开摆，所以单独取出来；没有倍率段的目录（自定义 provider）返回空串。
+ */
+function modelMultiplier(name: string): string {
+  return name.split(" · ").find((part) => /^x[-\d.]+$/i.test(part.trim()))?.trim() ?? "";
 }
 
 /** 192000 -> "192K", 1000000 -> "1M". */

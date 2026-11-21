@@ -67,10 +67,10 @@ const SESSION = {
 };
 
 const MODELS = [
-  { id: "cn:kimi-k3-1", name: "Kimi-K3", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "medium"] },
-  { id: "cn:kimi-k3.1-pro", name: "Kimi-K3.1-Pro", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
+  { id: "cn:kimi-k3-1", name: "Kimi-K3 · x1.62 · 1M", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "medium"] },
+  { id: "cn:kimi-k3.1-pro", name: "Kimi-K3.1-Pro · x0.97 · 1M", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
   { id: "cn:deepseek-v4.1-flash", name: "Deepseek-V4.1-Flash", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
-  { id: "cn:glm-5.3", name: "GLM-5.3", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
+  { id: "cn:glm-5.3", name: "GLM-5.3 · x0.69 · 1M", provider: "wb2api", contextWindow: 1_000_000, levels: ["off", "low", "high", "max"] },
   { id: "cn:hy4flash", name: "hy4flash", provider: "wb2api", contextWindow: 960_000, levels: ["off", "high"] },
   { id: "or:claude-sonnet-4.6", name: "Claude Sonnet 4.6", provider: "openrouter", contextWindow: 200_000, levels: ["off", "low", "medium", "high", "xhigh", "max"] },
   { id: "or:gpt-5.2", name: "GPT-5.2", provider: "openrouter", contextWindow: 400_000, levels: ["off", "low", "high"] },
@@ -102,6 +102,11 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/api/login" && req.method === "POST") {
     res.writeHead(200, { "content-type": "application/json", "set-cookie": "pwc=probe; Path=/; HttpOnly; SameSite=Lax" });
     return res.end('{"ok":true}');
+  }
+  if (url.pathname === "/__owned") {
+    // 探针要试「没接管」的分支：下一次 hello 就带着翻转后的 owned。
+    SESSION.owned = url.searchParams.get("v") !== "0";
+    return res.writeHead(200, { "content-type": "text/plain" }).end("ok");
   }
   if (url.pathname === "/api/me") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -243,6 +248,13 @@ try {
     groupHeads.join(" | "),
   );
   await page.screenshot({ path: path.join(OUT, "groups.png") });
+  // 当前来源默认展开，但用户得能把它折上：以前每次 paint 都又摊开，点一下等于没点。
+  await page.locator(".model-sheet .pm-group", { hasText: "wb2api" }).click();
+  await sleep(250);
+  check("当前来源也能折回去", (await page.locator(".model-sheet .pm-row").count()) === 0);
+  await page.locator(".model-sheet .pm-group", { hasText: "wb2api" }).click();
+  await sleep(250);
+  check("再展开又是 5 行", (await page.locator(".model-sheet .pm-row").count()) === 5);
   await page.locator(".model-sheet .pm-group", { hasText: "openrouter" }).click();
   await sleep(200);
   check("点组头展开该来源", (await page.locator(".model-sheet .pm-row").count()) === 7);
@@ -275,7 +287,7 @@ try {
   await page.locator(".model-sheet .pm-row", { hasText: "GLM-5.3" }).first().click();
   await sleep(250);
   const rowsAfter = await page.locator(".model-sheet .pm-row").evaluateAll((els) => els.map((e) => e.dataset?.id ?? ""));
-  check("点一行不会把它提到最上面", rowsAfter[0] === rowsBefore[0], `${rowsBefore[0]} → ${rowsAfter[0]}`);
+  check("点一行不会把它提到最上面", rowsAfter.join() === rowsBefore.join(), `${rowsBefore.join()} → ${rowsAfter.join()}`);
   check("点一行后档位跟着换成那模型的", (await page.locator(".model-sheet .pm-lvbar .st-seg__btn").allInnerTexts()).join("/") === "off/low/high/max");
 
   // 模型多的时候列表要滚很久：档位条必须钉在滚动区外，滚到底也能直接改（用户报的第二个问题）。
@@ -310,6 +322,12 @@ try {
   await page.locator(".model-sheet .pm-lvbar .st-seg__btn", { hasText: "low" }).click();
   await sleep(250);
   check("同一页改档位也进草稿", /思考/.test(await page.locator(".model-sheet .st-foot__hint").innerText()), await page.locator(".model-sheet .st-foot__hint").innerText());
+
+  // 目标模型没有当前档位（low 不在 off/medium 里）时落它的**最高档**，不是 off——落到 off 等于默默把思考关了。
+  await page.locator(".model-sheet .pm-row", { hasText: "Kimi-K3" }).first().click();
+  await sleep(250);
+  const fell = await page.locator(".model-sheet .pm-lvbar .st-seg__btn.on").allInnerTexts();
+  check("档位不支持时落最高档", fell.join() === "medium", fell.join("/"));
 
   // 选一个思考档位不含 max 的模型：应落到它的最高档 medium（不是 off）
   await page.locator(".model-sheet .pm-row", { hasText: "Kimi-K3.1-Pro" }).first().click();
@@ -385,6 +403,38 @@ try {
   check("窄容器整行仍是一行", narrow.toolsH <= 40, `hint-tools 高 ${narrow.toolsH}px`);
   check("窄容器 chip 仍报模型与档位", /Kimi-K3\.1-Pro/.test(narrow.chipText) && /off/.test(narrow.chipText), JSON.stringify(narrow));
   await page.locator(".model-chip").screenshot({ path: path.join(OUT, "chip-narrow.png") });
+
+  // 宽到一行放得下时，倍率（目录塞在名字里的 x0.97）才露出来：窄窗先让它让位，再让上下文数字。
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await sleep(500);
+  const wide = await page.evaluate(() => ({
+    hintW: Math.round(document.querySelector(".composer .hint")?.clientWidth ?? 0),
+    toolsH: Math.round(document.querySelector(".hint-tools")?.getBoundingClientRect().height ?? 0),
+    text: (document.querySelector(".model-chip")?.innerText ?? "").replace(/s+/g, " ").trim(),
+  }));
+  check("宽窗才显示倍率", /x0.97/.test(wide.text), JSON.stringify(wide));
+  check("宽窗仍是一行", wide.toolsH <= 40, JSON.stringify(wide));
+
+  // 没接管（owned:false）：草稿随便点，但底栏不许给「确认」——桥会直接丢掉 setModel。
+  await page.request.get(`${BASE}/__owned?v=0`);
+  await page.reload({ waitUntil: "networkidle" });
+  await until(async () => (await composer.count()) === 1, 8000, "composer(只读)");
+  await page.locator(".model-chip").click();
+  await until(async () => (await sheet.count()) === 1, 4000, "弹窗(只读)");
+  await page.locator(".model-sheet .st-nav__item", { hasText: "全部模型" }).first().click();
+  await sleep(200);
+  const sentBefore = seen.setModel.length;
+  await page.locator(".model-sheet .pm-row", { hasText: "GLM-5.3" }).first().click();
+  await sleep(250);
+  const readOnly = {
+    foot: await footHidden(),
+    hint: await page.locator(".model-sheet .st-foot__hint").innerText(),
+    notice: await page.locator(".model-sheet .takeover").count(),
+    sent: seen.setModel.length - sentBefore,
+  };
+  check("没接管时不给确认", readOnly.foot === true && readOnly.sent === 0, JSON.stringify(readOnly));
+  check("没接管时底栏说清原因", /没有写入权/.test(readOnly.hint), readOnly.hint);
+  check("没接管时全部模型页也有接管入口", readOnly.notice >= 1, JSON.stringify(readOnly));
 
   check("页面没有 JS 异常", errors.length === 0, errors.slice(0, 3).join(" | "));
 } finally {

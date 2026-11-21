@@ -4206,6 +4206,7 @@ export const en: Dict = {
   "待切换": "Pending",
   "换模型时若当前档位不支持，会落到该模型的最高档": "If the current level isn't supported, switching falls back to that model's highest",
   "搜索模型名或 id": "Search model name or id",
+  "计费倍率 {p1}": "Billing multiplier {p1}",
   "未保存：{p1}": "Unsaved: {p1}",
   "本会话": "This session",
   "没有匹配的模型": "No matching models",
