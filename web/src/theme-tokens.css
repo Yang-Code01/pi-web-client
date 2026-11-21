@@ -58,7 +58,7 @@
   color-scheme: light;
 }
 
-/* Mac 深色（设置 → 外观 → Mac 风格，theme.ts）：石墨中性灰，不带蓝。灰阶一律中性（R=G≈B）；
+/* Mac 深色（设置 → 外观 → 主题与强调色，theme.ts）：石墨中性灰，不带蓝。灰阶一律中性（R=G≈B）；
    信号色用 Apple 的 systemGreen / Orange / Red。强调色变量同样由 theme.ts 写成行内样式，这里不写。 */
 :root[data-theme="mac-dark"] {
   --bg: #1c1c1e;
