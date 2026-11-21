@@ -15808,8 +15808,10 @@ export class App {
         body.append(el("div", "settings-path", tr("当前版本 {p1}", { p1: where })));
 
         // #588：这个提示的开关与「上次看到」都放在这一页 —— 想开想关、想知道自己读到哪，同一个地方。
-        const box = el("div", "settings-group");
-        box.append(this.stSection(tr("启动时的提示"), tr("桥启动后第一次有人连上时才判一次；两次弹出之间至少隔一天")));
+        // D367：小节头在外面、行装进 `.settings-panel`（全站同一套「小节头 + 面板 + 行」）。
+        // `.settings-group` 是那个横排的小节头，拿它当外框会把两行设置挤成一根竖条。
+        body.append(this.stSection(tr("启动时的提示"), tr("桥启动后第一次有人连上时才判一次；两次弹出之间至少隔一天")));
+        const panel = el("div", "settings-panel");
         const toggle = el("input", "") as HTMLInputElement;
         toggle.type = "checkbox";
         toggle.checked = out.whatsnewEnabled !== false;
@@ -15823,21 +15825,20 @@ export class App {
             /* 桥不在就当没点过：下次打开这一页会照盘上的真值重画 */
           });
         };
-        box.append(
+        panel.append(
           this.stRow(
             tr("启动时自动打开更新日志"),
             tr("关掉之后不再自动弹；这一页照样能看，关着期间攒下的批次等你重新打开还会出现"),
             this.stSwitch(toggle),
           ),
         );
-        box.append(
-          this.stRow(
-            tr("上次看到"),
-            tr("弹窗打开的那一刻就记下；自己在这一页翻完不算"),
-            el("span", "settings-path", out.whatsnewSeen || tr("还没看过任何一批")),
-          ),
+        // 「上次看到」是只读的值，不是可点的路径：长了就省略，全文进 title。
+        const seen = el("span", "settings-value", out.whatsnewSeen || tr("还没看过任何一批"));
+        if (out.whatsnewSeen) seen.title = out.whatsnewSeen;
+        panel.append(
+          this.stRow(tr("上次看到"), tr("弹窗打开的那一刻就记下；自己在这一页翻完不算"), seen),
         );
-        body.append(box);
+        body.append(panel);
         const md = el("div", "settings-changelog");
         md.append(
           renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {

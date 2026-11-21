@@ -149,6 +149,24 @@ try {
   check(!ours.includes("<!--") && !ours.includes("写到 10f96a0"), "HTML 注释没漏到页面上");
   const title = await page.locator(".st-title").innerText();
   check(title === "更新日志", `面板标题（${title}）`);
+  // D367：这一页自带的「开关 / 上次看到」两行要装进 `.settings-panel`。`.settings-group` 是横排的
+  // 小节头，拿它当外框时文字断言照样过得去（`querySelector(".settings-row")` 照样拿得到），
+  // 但整页会被挤成一根竖条 —— 只有几何能露出来。
+  const squished = await page.evaluate(() =>
+    [...document.querySelectorAll(".st-pane .settings-row")]
+      .filter((r) => {
+        const box = r.getBoundingClientRect();
+        const name = r.querySelector(".settings-name");
+        if (!name) return false;
+        const cs = getComputedStyle(name);
+        const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5;
+        return box.height > box.width || name.getBoundingClientRect().height > lh * 2.5;
+      })
+      .map((r) => (r.querySelector(".settings-name")?.textContent ?? "").trim()),
+  );
+  check(squished.length === 0, `两行设置是横条不是竖条（${squished.join(" / ") || "0 条被压竖"}）`);
+  const panelRows = await page.locator(".st-pane .settings-panel > .settings-row").count();
+  check(panelRows === 2, `两行都装在 .settings-panel 里（${panelRows}）`);
   await page.screenshot({ path: path.join(SHOTS, "whatsnew-self.png") });
 
   // ---------------------------------------------------------------- B. 切回 pi 那份

@@ -286,6 +286,20 @@ try {
   ok(Boolean(seenRow), "设置页有「上次看到」这一行");
   ok((seenRow?.ctl ?? "").includes(NEWEST.slice(0, 12)), `「上次看到」显示的是最新那批（${(seenRow?.ctl ?? "").slice(0, 26)}…）`);
   ok(switchRow?.checked === true, "开关默认开");
+  // D367：这两行的容器曾经拿成横排小节头，整页被挤成一列字 —— 文字断言拦不住，只有几何能露出来。
+  const squished = await page.evaluate(() =>
+    [...document.querySelectorAll(".st-pane .settings-row")]
+      .filter((r) => {
+        const box = r.getBoundingClientRect();
+        const name = r.querySelector(".settings-name");
+        if (!name) return false;
+        const cs = getComputedStyle(name);
+        const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5;
+        return box.height > box.width || name.getBoundingClientRect().height > lh * 2.5;
+      })
+      .map((r) => (r.querySelector(".settings-name")?.textContent ?? "").trim()),
+  );
+  ok(squished.length === 0, `这两行设置是横条不是竖条（${squished.join(" / ") || "0 条被压竖"}）`);
   await page.locator(".settings-row", { hasText: "启动时自动打开更新日志" }).locator('input[type="checkbox"]').click();
   await until(() => readState()?.enabled === false, 5000, "enabled=false 落盘");
   ok(readState()?.enabled === false, "关掉开关会写进状态目录（关着期间已读不前进）");

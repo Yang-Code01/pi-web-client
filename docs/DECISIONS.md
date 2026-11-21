@@ -7026,8 +7026,22 @@ Esc 之后 dialog: 0
 **代价。** 用 `PI_WEB_STATE` 起的实例（测试环境、多开）升级后各自要重登一次；默认实例不受影响。cookie 名不再是一个固定字符串 —— 本机现在会同时有 `pwc` 与 `pwc_<hash>`，排查时别只 `grep pwc=`。state 目录搬家等于换了实例身份，得重新登录。
 
 **守卫。** `bridge/tests/auth-cookie-scope.mjs`：开三份真实桥（A、B 各自 state 目录，另有一份**不设 `PI_WEB_STATE`** 的默认实例），用一个**忽略端口**的 cookie 罐走真实 HTTP —— 登录 A、再登录 B，回头问 A 的 `/api/me` 必须仍是 200，且两枚 cookie 名不同；把 B 的 cookie 原样递给 A 必须 401（名字分开不等于密钥共享）；默认实例登录后拿到的名字必须是 `pwc`（升级不用重登）。把 cookie 名改回共用一个，第四条立刻红；把名字改成永远哈希，最后一条红。跑法：`npm --prefix bridge run build && node bridge/tests/auth-cookie-scope.mjs`（约 3 秒）。「默认目录」的判据只认 `bridge/src/paths.ts` 的 `stateDirIsDefault()`，auth 不再自己读 `PI_WEB_STATE`。
+## D367 设置里「装行的容器」是 `.settings-panel`，`.settings-group` 只做小节头（#588 那一页的版面从上线起就是竖的，2026-11-21）
 
-## D367 长回答收尾回到第一行，而不是留在末尾（用户报「回答完成后得自己滚回最上面」2026-11-21）
+**背景。** #588（D354）在「设置 → 更新日志 → 本项目」里加了一个开关与一行「上次看到」。写的时候把这两行塞进了 `el("div", "settings-group")`，而 `.settings-group` 在设置控制台里是**横排的小节头**（`display: flex; justify-content: space-between`，`settings-console.css`）：于是「小节头 + 两行设置」排成了一条 flex 行，每行只剩一列字的宽度，整页变成一根竖条（实测 435×1002 与 350×551，名字列 17px）。
+
+文字断言拦不住它 —— `querySelector(".settings-row")` / `.settings-name` 照样拿得到，只是高度 1000px。三个会打开这一页的守卫（`bridge/tests/settings-console-ui.mjs`、`bridge/tests/whatsnew-ui.mjs`、`probes/whatsnew-dialog.mjs`）当时都只比文字和点击，所以从 `567dd66` 上线到被发现，没红过一次。
+
+**决定。** 这一页改回全站同一套「小节头 + 面板 + 行」：小节头 `stSection()` 留在外面，两行装进 `.settings-panel`。「上次看到」的值不再借用 `.settings-path`（那是可点路径的样式：`word-break: break-all` + `margin-bottom`），换成新增的 `.settings-value`（等宽一档、长了省略、全文进 `title`）。
+
+- `.settings-group` 从此**只**做小节头。要装行就 `el("div", "settings-panel")`，别拿它当外框 —— 它自己的 `justify-content: space-between` 与 `align-items: baseline` 会把子项当标题栏里的两段文字。
+- 想验证「这一页摆对了」，**只能看几何**：`.settings-row` 高过宽、或名字列超过 2.5 行，就是外层容器错了。文字与 DOM 查询都过得去。
+
+**代价。** 无。这是把一处笔误改回全站模板；`.settings-value` 只多一条样式。
+
+**守卫。** `bridge/tests/whatsnew-ui.mjs` 的 A 段与 `probes/whatsnew-dialog.mjs` 的第 6 段各加一条几何断言（行不能高过宽、名字列不超过 2.5 行），并断言两行确实装在 `.settings-panel` 里；两处本来就会打开这一页，成本为零。**`bridge/tests/settings-console-ui.mjs` 没加**：它自己在 main 上就是红的（左栏分组 / 十项文案 / 头部 scope 的旧断言与后来的改版对不上，B 段之后、G1 直接抛 timeout），那条「每个设置页扫一遍行几何」的通用断言得等它先修好 —— 记在这里，别以为已经覆盖。
+
+## D368 长回答收尾回到第一行，而不是留在末尾（用户报「回答完成后得自己滚回最上面」2026-11-21）
 
 **症状。** 回答流式长出来时视口一直贴底；等它结束，人停在最后一屏，要读开头得自己往上滚好几屏。短回答没有这个问题，只有长到超过一屏的回答才有。
 
