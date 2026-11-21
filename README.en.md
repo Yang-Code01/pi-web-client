@@ -61,6 +61,7 @@ This is why there is a second, independent process `peer/` (7865) next to `bridg
 - **The agent is in the loop**: `peer_find` / `peer_history` / `peer_send` are registered in the approval-gate extension and talk straight to the peer loopback. Messages sent by the agent carry `via:"pi"` and both sides show `🤖 sent by agent` — whether a line came from a human decides whether you trust it. Read-only mode still blocks `peer_send` (it reaches other people).
 - **Where it lives**: the `🌐 内网通` button in the top bar opens it as a dialog without leaving the session; `/peer` opens it directly. State lives in `~/.pi-peer` (`PI_PEER_STATE`), the inbox defaults to `~/.pi-peer/inbox` (`PI_PEER_INBOX`), and history is an append-only JSONL file per conversation.
 - **Boundaries**: plaintext HTTP, no end-to-end encryption, no key pairs — anyone sniffing the same network sees nicknames, text and file contents. Identity is a stable `nodeId` per machine with no signatures (impersonation inside the subnet is only fenced off by IP sets plus a handshake, see [D103](docs/DECISIONS.md)). v1 has no group chat, the phone cannot be a sender, and there is no recall (over P2P you can only delete your local copy — a button would be lying to you).
+- **The name**: unrelated to "内网通 / IMO 内网通", the commercial LAN messenger by 南通艾睦 — here it just describes "messages that travel inside one network" (D363).
 
 ## Requirements
 
