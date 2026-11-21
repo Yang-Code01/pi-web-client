@@ -54,7 +54,7 @@ async function until(fn, ms = 20000, what = "") {
   }
 }
 
-const env = { ...process.env, PI_WEB_STATE: STATE, PI_WEB_PORT: String(PORT), PI_WEB_HOST: "127.0.0.1", PI_WEB_TUNNEL: "0" };
+const env = { ...process.env, PI_WEB_STATE: STATE, PI_WEB_WHATS_NEW: "0", PI_WEB_PORT: String(PORT), PI_WEB_HOST: "127.0.0.1", PI_WEB_TUNNEL: "0" };
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 const bridge = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });
 let bridgeLog = "";

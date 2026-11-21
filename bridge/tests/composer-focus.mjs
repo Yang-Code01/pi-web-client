@@ -57,6 +57,7 @@ const env = {
   ...process.env,
   PI_WEB_PORT: String(PORT),
   PI_WEB_STATE: STATE,
+  PI_WEB_WHATS_NEW: "0",
   PI_WEB_TUNNEL: "0",
   PI_WEB_HOST: "127.0.0.1",
   PI_WEB_ROOT: path.join(REPO, "web", "dist"),

@@ -1,5 +1,5 @@
 /**
- * #588 守卫：启动时那张「本服务更新了什么」（本项目更新履历）。
+ * #588 D354 守卫：启动时那张「本服务更新了什么」（本项目更新日志的新批次）。
  *
  * 要守的六件事，每一件都真的起桥、真的开页面：
  *  1. 全新状态 → 弹；内容是最新一批，`还有 N 批更早的` 的 N = 总批数 - 1；一打开就把已读写盘。
@@ -15,6 +15,7 @@
  * Run: npm --prefix web run build && node probes/whatsnew-dialog.mjs
  * （起自己的一份 bridge（临时状态目录 + 桩会话），不碰 7864，也不花模型调用。）
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -52,11 +53,18 @@ fs.mkdirSync(dir, { recursive: true });
 const at = new Date().toISOString();
 const rows = [
   { type: "session", version: 3, id: SID, timestamp: at, cwd: WORK },
-  { type: "message", id: "m1", parentId: null, timestamp: at, message: { role: "user", content: [{ type: "text", text: "更新履历弹窗探针" }] } },
+  { type: "message", id: "m1", parentId: null, timestamp: at, message: { role: "user", content: [{ type: "text", text: "更新日志弹窗探针" }] } },
   { type: "message", id: "m2", parentId: "m1", timestamp: at, message: { role: "assistant", content: [{ type: "text", text: "好。" }] } },
-  { type: "session_info", id: "n1", parentId: "m2", timestamp: at, name: "更新履历弹窗探针" },
+  { type: "session_info", id: "n1", parentId: "m2", timestamp: at, name: "更新日志弹窗探针" },
 ];
 fs.writeFileSync(path.join(dir, `${SID}.jsonl`), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+
+// 桥只在「这台机器以前跑过」（口令文件已在）时才派发更新日志，所以先把口令种下：这份探针验的就是
+// 老用户看到的那条路。口令固定，后面直接拿它登录。
+const PASS = "whatsnew-probe";
+const salt = crypto.randomBytes(16).toString("hex");
+fs.writeFileSync(path.join(STATE, "passphrase.hash"), `scrypt$${salt}$${crypto.scryptSync(PASS, salt, 32).toString("hex")}`);
+fs.writeFileSync(path.join(STATE, "passphrase.txt"), `${PASS}\n`);
 
 /** CHANGELOG.md 里的批次标题（文件顺序 = 新的在前），探针自己解析一遍当期望值。 */
 const LOG_TEXT = fs.readFileSync(path.join(REPO, "CHANGELOG.md"), "utf8");
@@ -165,13 +173,11 @@ let page = null;
 let context = null;
 try {
   startBridge();
-  await until(() => fs.existsSync(path.join(STATE, "passphrase.txt")), 20000, "passphrase");
   await until(async () => (await fetch(`${BASE}/healthz`)).ok, 20000, "bridge up");
-  const pass = fs.readFileSync(path.join(STATE, "passphrase.txt"), "utf8").trim();
   const login = await fetch(`${BASE}/api/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ passphrase: pass }),
+    body: JSON.stringify({ passphrase: PASS }),
   });
   cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
   browser = await chromium.launch({ headless: true });
@@ -238,8 +244,9 @@ try {
   ok(body5.title.trim() === NEWEST, "弹的还是最新那一批");
   ok(!body5.hasOlder, "只差一批时不出「还有 N 批」那一段");
 
-  // ---- 6) 「看全部日志」把人送到设置那一页；那一页上看得到「上次看到」与开关
+  // ---- 6) 「看全部日志」把人送到设置那一页；那一页上看得到「上次看到」与开关，且翻完不算已读
   log("6) 看全部日志 → 设置页那一页");
+  const beforeSettings = readState();
   await page.locator(".whatsnew-foot .btn", { hasText: "看全部日志" }).click();
   await page.waitForSelector(".st-console .settings-row", { timeout: 15000 });
   const landed = await page.evaluate(() => ({
@@ -248,6 +255,11 @@ try {
   }));
   ok(landed.nav.includes("更新日志"), `落在「更新日志」那一格（${landed.nav.trim()}）`);
   ok(landed.seg.trim() === "本项目", `页内分段切在「本项目」（${landed.seg.trim()}）`);
+  const afterSettings = readState();
+  ok(
+    afterSettings?.seenTitle === beforeSettings?.seenTitle && afterSettings?.lastShownAt === beforeSettings?.lastShownAt,
+    "在设置页里自己翻完不算已读（状态文件一个字节没动）",
+  );
   const settings = await page.evaluate(() => {
     const rows = [...document.querySelectorAll(".settings-row")].map((r) => ({
       name: r.querySelector(".settings-name")?.textContent ?? "",
@@ -257,14 +269,14 @@ try {
     return rows;
   });
   const seenRow = settings.find((r) => r.name.includes("上次看到"));
-  const switchRow = settings.find((r) => r.name.includes("启动时提示更新履历"));
+  const switchRow = settings.find((r) => r.name.includes("启动时自动打开更新日志"));
   ok(Boolean(seenRow), "设置页有「上次看到」这一行");
   ok((seenRow?.ctl ?? "").includes(NEWEST.slice(0, 12)), `「上次看到」显示的是最新那批（${(seenRow?.ctl ?? "").slice(0, 26)}…）`);
   ok(switchRow?.checked === true, "开关默认开");
-  await page.locator(".settings-row", { hasText: "启动时提示更新履历" }).locator('input[type="checkbox"]').click();
+  await page.locator(".settings-row", { hasText: "启动时自动打开更新日志" }).locator('input[type="checkbox"]').click();
   await until(() => readState()?.enabled === false, 5000, "enabled=false 落盘");
   ok(readState()?.enabled === false, "关掉开关会写进状态目录（关着期间已读不前进）");
-  await page.locator(".settings-row", { hasText: "启动时提示更新履历" }).locator('input[type="checkbox"]').click();
+  await page.locator(".settings-row", { hasText: "启动时自动打开更新日志" }).locator('input[type="checkbox"]').click();
   await until(() => readState()?.enabled === true, 5000, "enabled=true 落盘");
   await page.screenshot({ path: path.join(OUT, "02-settings-page.png") });
   await page.close();
@@ -336,5 +348,5 @@ if (fails.length) {
   for (const f of fails) console.log("  " + f);
   process.exitCode = 1;
 } else {
-  console.log("ALL OK — 更新履历弹窗的认定、节流、排队与外观都对得上");
+  console.log("ALL OK — 更新日志弹窗的认定、节流、排队与外观都对得上");
 }

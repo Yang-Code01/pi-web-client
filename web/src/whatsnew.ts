@@ -1,5 +1,5 @@
 /**
- * #588：老用户某天第一次启动时，把「本项目的更新履历」弹一次。
+ * #588 D354：老用户某天第一次启动时，把「本项目更新日志」的新批次弹一次。
  *
  * 分工是刻意的：
  * - **该不该弹、弹哪一批、还有几批没看**都在桥端算（`bridge/src/whatsnew.ts` 的纯函数 + 24 小时闸），
@@ -119,7 +119,7 @@ export function openWhatsnew(opts: WhatsnewDialogOptions): void {
   head.append(x);
 
   const body = el("div", "whatsnew-body");
-  body.append(el("div", "whatsnew-eyebrow", tr("这个检出里的更新履历")));
+  body.append(el("div", "whatsnew-eyebrow", tr("这个检出里的更新日志")));
   body.append(el("div", "whatsnew-title", opts.batch.title));
   const md = el("div", "whatsnew-md settings-changelog");
   const paint = (host: HTMLElement, batch: WhatsnewBatch): void => {
@@ -130,7 +130,7 @@ export function openWhatsnew(opts: WhatsnewDialogOptions): void {
 
   if (opts.older.length) {
     const more = el("details", "whatsnew-older") as HTMLDetailsElement;
-    more.append(el("summary", "", tr("还有 {n} 批更早的", { n: String(opts.older.length) })));
+    more.append(el("summary", "", tr("还有 {p1} 批更早的", { p1: String(opts.older.length) })));
     for (const batch of opts.older) {
       const one = el("div", "whatsnew-older__one");
       one.append(el("div", "whatsnew-title whatsnew-title--small", batch.title));

@@ -1,119 +1,43 @@
 /**
- * Unit: `bridge/src/whatsnew.ts` —— 「启动时自动打开本项目更新履历」的判定（#588）。
+ * D195: 设置页「本项目更新日志」读的是检出根的 `CHANGELOG.md`，不是装机里 pi 包那份。
+ * 这个文件守四件事：① 日志在 → 顶栏要的 version / branch / commit 都有值；② 条目带 `#PR`
+ * 或 `D` 号，页面上点不着但人能照着查；③ 超长按**字节**截断、尾巴留「更早的批次略」，
+ * 允许多切一个字符的余量但绝不允许整份 500KB 一次推给浏览器；④ 文件缺了返回空串而不是抛
+ * —— 面板显示「还没有 CHANGELOG.md」，桥不能因为少一个文件就 500。
  *
- * 只测纯的那一半：给定 CHANGELOG 原文 + 已读状态 + 当前时刻，算出「该不该弹、弹哪一批、还有几批
- * 更早的」。不启桥、不碰文件、不碰 HTTP —— 文件读写与路由接线在 `bridge/src/index.ts` 里，
- * 由 `probes/whatsnew-dialog.mjs` 走真流程验。
- *
- *   node --test bridge/tests/whatsnew-unit.mjs
+ *   node --experimental-transform-types bridge/tests/whatsnew-unit.mjs
  */
-import test from "node:test";
 import assert from "node:assert/strict";
-import { WHATSNEW_THROTTLE_MS, whatsnewBatches, whatsnewDecision } from "../src/whatsnew.ts";
+import { readFileSync } from "node:fs";
+import { selfChangelog } from "../src/whatsnew.ts";
 
-/** 手工写的三段日志：顶部有锚点注释与大标题，批次之间夹着 `###` 分组与列表项。 */
-const LOG = `# pi-web-client 更新日志
+const root = new URL("../../", import.meta.url);
+const pkg = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
 
-<!-- 写到 103a01a · 2026-11-20 -->
-<!-- 下一批从这里往后读：git log --first-parent 103a01a..origin/main -->
+// ------------------------------------------------- ① 正常的检出
+const full = await selfChangelog();
+assert.equal(full.version, pkg.version, `版本要取根 package.json（${pkg.version}），拿到 ${full.version}`);
+assert.ok(full.text.startsWith("# pi-web-client 更新日志"), "正文第一行是标题");
+assert.ok(full.text.includes("## 2026-"), "至少有一批带日期的段落");
+assert.ok(full.commit.length >= 7, `短 SHA 至少 7 位，拿到「${full.commit}」`);
+// detached HEAD 时分支就是空串（接口本身这么说），别让这种检出假失败。
+assert.equal(typeof full.branch, "string", "分支名是字符串，detached 时为空串");
+const rootPkg = JSON.parse(readFileSync(`${full.root}/package.json`, "utf8"));
+assert.equal(rootPkg.version, pkg.version, `root 要指向检出根，拿到「${full.root}」`);
 
-## 未发布 · 外观只剩 Mac 风格
+// ------------------------------------------------- ② 条目带锚点
+assert.match(full.text, /#\d+/, "每条要能指回 PR");
+assert.match(full.text, /\bD\d+\b/, "设计决定那条要能指回 D 编号");
+assert.ok(!full.text.includes("<!--"), "HTML 注释（增量锚点）不能泄到面板里");
 
-### 设计决定
+// ------------------------------------------------- ③ 按字节截断
+const limit = 120;
+const cut = await selfChangelog(limit);
+const cutBytes = Buffer.byteLength(cut.text, "utf8");
+assert.ok(cut.text.endsWith("（更早的批次略）"), "截断后要有省略提示");
+assert.ok(cutBytes < limit + 120, `截断后不该远超 ${limit} 字节，实际 ${cutBytes}`);
+assert.ok(!cut.text.includes("\uFFFD"), "不能把多字节字符切一半留在正文里");
+assert.ok(cut.text.startsWith("# pi-web-client 更新日志"), "截断的是尾巴：文档开头还在");
+assert.ok(cut.text.length < full.text.length, "120 字节必须比整份短");
 
-- 删掉「配色主题」那七套 #583 D353
-- 已经选过配色主题的人不会被扔回白底 #583 D353
-
-## 2026-11-20 · 十套配色，内网通开群
-
-### 新增
-
-- 配色主题再添三套 #559 D337
-
-### 修复
-
-- 执行面板的 Copilot 积分块 #564
-
-## 2026-11-19 · 四套配色
-
-### 新增
-
-- 设置控制台照「本机管理」重排 #551
-`;
-
-const EMPTY = { seenTitle: "", lastShownAt: 0 };
-const NOW = Date.parse("2026-11-21T12:00:00Z");
-const LONG_AGO = NOW - WHATSNEW_THROTTLE_MS - 1;
-
-test("批次按 `## ` 切，注释与大标题不进批次", () => {
-  const batches = whatsnewBatches(LOG);
-  assert.deepEqual(
-    batches.map((b) => b.title),
-    ["未发布 · 外观只剩 Mac 风格", "2026-11-20 · 十套配色，内网通开群", "2026-11-19 · 四套配色"],
-  );
-  // 正文是这一批自己的内容，不越过下一个 `## `
-  assert.match(batches[0].body, /删掉「配色主题」那七套/);
-  assert.doesNotMatch(batches[0].body, /配色主题再添三套/);
-  assert.match(batches[1].body, /配色主题再添三套/);
-  // `<!-- -->` 本来就会被 selfChangelog 抹掉；万一漏进来也不能当成正文
-  assert.doesNotMatch(batches[0].body, /写到 103a01a/);
-});
-
-test("没有日志 / 没有批次时不弹", () => {
-  assert.equal(whatsnewDecision({ text: "", state: EMPTY, now: NOW }).status, "none");
-  assert.equal(whatsnewDecision({ text: "# 只有大标题\n\n没有批次", state: EMPTY, now: NOW }).status, "none");
-});
-
-test("从没看过：弹最新一批，更早的都算「还有 N 批」", () => {
-  const d = whatsnewDecision({ text: LOG, state: EMPTY, now: NOW });
-  assert.equal(d.status, "ok");
-  if (d.status !== "ok") return;
-  assert.equal(d.batch.title, "未发布 · 外观只剩 Mac 风格");
-  assert.equal(d.olderCount, 2);
-  // 「还有 N 批」展开后看到的就是这两批，顺序与文件一致（新的在前）
-  assert.deepEqual(
-    d.older.map((b) => b.title),
-    ["2026-11-20 · 十套配色，内网通开群", "2026-11-19 · 四套配色"],
-  );
-});
-
-test("已读就是最新那批：没有新的，不弹", () => {
-  const state = { seenTitle: "未发布 · 外观只剩 Mac 风格", lastShownAt: LONG_AGO };
-  assert.equal(whatsnewDecision({ text: LOG, state, now: NOW }).status, "no-new");
-});
-
-test("已读停在中间：弹最新一批，中间的几批算「还有 N 批」", () => {
-  const state = { seenTitle: "2026-11-19 · 四套配色", lastShownAt: LONG_AGO };
-  const d = whatsnewDecision({ text: LOG, state, now: NOW });
-  assert.equal(d.status, "ok");
-  if (d.status !== "ok") return;
-  assert.equal(d.batch.title, "未发布 · 外观只剩 Mac 风格");
-  assert.equal(d.olderCount, 1);
-  assert.deepEqual(d.older.map((b) => b.title), ["2026-11-20 · 十套配色，内网通开群"]);
-});
-
-test("已读的那批被改写/删掉了：当作没记录，仍然弹", () => {
-  const state = { seenTitle: "2026-11-18 · 早被重写的那批", lastShownAt: LONG_AGO };
-  const d = whatsnewDecision({ text: LOG, state, now: NOW });
-  assert.equal(d.status, "ok");
-  if (d.status !== "ok") return;
-  assert.equal(d.olderCount, 2);
-});
-
-test("不满 24 小时：闸住（有新批次也不弹）", () => {
-  const state = { seenTitle: "2026-11-20 · 十套配色，内网通开群", lastShownAt: NOW - 1000 };
-  assert.equal(whatsnewDecision({ text: LOG, state, now: NOW }).status, "throttled");
-});
-
-test("正好满 24 小时：放行", () => {
-  const state = { seenTitle: "2026-11-20 · 十套配色，内网通开群", lastShownAt: NOW - WHATSNEW_THROTTLE_MS };
-  const d = whatsnewDecision({ text: LOG, state, now: NOW });
-  assert.equal(d.status, "ok");
-  if (d.status !== "ok") return;
-  assert.equal(d.olderCount, 0);
-});
-
-test("开关关着：一律不弹（哪怕从没看过）", () => {
-  const state = { seenTitle: "", lastShownAt: 0, enabled: false };
-  assert.equal(whatsnewDecision({ text: LOG, state, now: NOW }).status, "disabled");
-});
+console.log(`whatsnew-unit: ok — ${full.text.length} 字符 / ${Buffer.byteLength(full.text, "utf8")} 字节`);

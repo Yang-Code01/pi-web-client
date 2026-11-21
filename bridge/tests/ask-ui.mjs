@@ -31,7 +31,7 @@ fs.mkdirSync(OUT, { recursive: true });
 fs.rmSync(STATE, { recursive: true, force: true });
 fs.mkdirSync(STATE, { recursive: true });
 
-const env = { ...process.env, PI_WEB_STATE: STATE, PI_WEB_PORT: String(PORT), PI_WEB_HOST: "127.0.0.1", PI_WEB_TUNNEL: "0", PI_WEB_ROOT: path.join(ROOT, "web", "dist") };
+const env = { ...process.env, PI_WEB_STATE: STATE, PI_WEB_WHATS_NEW: "0", PI_WEB_PORT: String(PORT), PI_WEB_HOST: "127.0.0.1", PI_WEB_TUNNEL: "0", PI_WEB_ROOT: path.join(ROOT, "web", "dist") };
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 const bridge = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });
 let bridgeLog = "";

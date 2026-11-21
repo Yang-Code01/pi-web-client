@@ -84,7 +84,7 @@ export async function selfChangelog(maxBytes = 200_000): Promise<SelfChangelog> 
   return { version: productVersion(), branch, commit, root: ROOT, text };
 }
 
-// ---------------------------------------------------------------- 启动时的「更新履历」弹窗（#588）
+// ---------------------------------------------------------------- 启动时的「本项目更新日志」弹窗（#588 D354）
 
 /** 一批 = 日志里一个 `## ` 小节。`title` 是那一行去掉 `## ` 之后的原文，也就是它的身份。 */
 export interface WhatsnewBatch {
@@ -105,7 +105,7 @@ export const WHATSNEW_THROTTLE_MS = 24 * 60 * 60 * 1000;
 
 export type WhatsnewDecision =
   /** `older` = 比 `batch` 更早、但同样没看过的那几批（「还有 N 批」展开的就是它们）。 */
-  | { status: "ok"; batch: WhatsnewBatch; older: WhatsnewBatch[]; olderCount: number }
+  | { status: "ok"; batch: WhatsnewBatch; older: WhatsnewBatch[] }
   /** 没有日志文件，或者里面一批也没有。 */
   | { status: "none" }
   /** 最新一批已经看过了。 */
@@ -163,14 +163,22 @@ export function whatsnewDecision(input: {
   if (!unread) return { status: "no-new" };
   const throttle = input.throttleMs ?? WHATSNEW_THROTTLE_MS;
   if (state.lastShownAt && now - state.lastShownAt < throttle) return { status: "throttled" };
-  return { status: "ok", batch: batches[0], older: batches.slice(1, unread), olderCount: unread - 1 };
+  return { status: "ok", batch: batches[0], older: batches.slice(1, unread) };
 }
 
 
 // ---------------------------------------------------------------- 状态与派发（#588）
 
-/** 「这次启动已经把未读交给了某个页面」—— 只在进程内，重启就清。 */
-let claimedTitle: string | null = null;
+/** 「这次启动已经把未读交给了某个页面」—— 只在进程内，重启就清；窗口过了就能再派一次。 */
+let claimed: { title: string; at: number } | null = null;
+
+/**
+ * 这次派发还作不作数。同一个窗口内只给第一个来领取的页面（多标签、多设备不重复弹）；而窗口就是
+ * 那条 24 小时的闸 —— 过了它，「满一天后的下一次连接」才拿得到新的判定机会，桥常驻不重启也有用。
+ */
+export function claimExpired(claimedAt: number | null, now: number): boolean {
+  return claimedAt === null || now - claimedAt >= WHATSNEW_THROTTLE_MS;
+}
 
 function whatsnewFile(): string {
   return statePath("whatsnew.json");
@@ -202,20 +210,23 @@ export function whatsnewStatus(): { seenTitle: string; enabled: boolean } {
  */
 export function takeWhatsnew(
   now = Date.now(),
+  /** 这份状态目录在本次启动**之前**就存在吗？不在就是第一次装，不弹（见 index.ts 的调用处）。 */
+  veteran = true,
 ): (WhatsnewDecision & { root?: string }) | { status: "taken" } {
-  if (claimedTitle !== null) return { status: "taken" };
+  if (!veteran) return { status: "none" };
+  if (!claimExpired(claimed?.at ?? null, now)) return { status: "taken" };
   const decision = whatsnewDecision({ text: changelogText(), state: readWhatsnewState(), now });
-  if (decision.status === "ok") claimedTitle = decision.batch.title;
+  if (decision.status === "ok") claimed = { title: decision.batch.title, at: now };
   // `root` 只为正文里的相对链接（`docs/DECISIONS.md`）能落到这份检出上，和设置页同一个用法（D195）。
   return { ...decision, root: ROOT };
 }
 
 /** 弹窗真的打开了：把「看到哪一批」与「上次弹出时刻」一起写盘。 */
 export function markWhatsnewSeen(now = Date.now()): { ok: true; seenTitle: string } | { ok: false; reason: "not-claimed" } {
-  if (claimedTitle === null) return { ok: false, reason: "not-claimed" };
+  if (!claimed) return { ok: false, reason: "not-claimed" };
   const state = readWhatsnewState();
-  writeJson(whatsnewFile(), { ...state, seenTitle: claimedTitle, lastShownAt: now });
-  return { ok: true, seenTitle: claimedTitle };
+  writeJson(whatsnewFile(), { ...state, seenTitle: claimed.title, lastShownAt: now });
+  return { ok: true, seenTitle: claimed.title };
 }
 
 /** 设置页的开关。关着时已读一概不前进，重新打开还能看到积压的那几批。 */

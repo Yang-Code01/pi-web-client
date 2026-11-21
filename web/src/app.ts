@@ -95,7 +95,7 @@ import {
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
-import { escapeTopLayer, LEAVE_MS, pushEscLayer, retireOverlay, startLeaving } from "./modal.ts";
+import { escapeTopLayer, LEAVE_MS, overlaysOpen, pushEscLayer, retireOverlay, startLeaving } from "./modal.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -1557,15 +1557,15 @@ export class App {
     // 热部署跑完（成功或失败）都可能把主检出留在别的分支上：就着这一刻刷新那颗提醒。
     window.addEventListener("pi-hotdeploy-done", () => void this.refreshHotBranch());
     window.addEventListener("pi-hotdeploy-closed", () => void this.refreshHotBranch());
-    // #588：启动时把「本项目的更新履历」推一次。该不该弹、弹哪一批、24 小时闸与「同一进程只发一次」
-    // 全在桥端（D354）；这里只负责找一个不打断人的时机，并在「看全部日志」时把设置页那一页打开。
+    // #588 D354：启动时把「本项目更新日志」的新批次推一次。该不该弹、弹哪一批、24 小时闸与
+    // 「同一个窗口只派发一次」全在桥端；这里只负责找一个不打断人的时机，并把「看全部日志」送到设置页。
     queueWhatsnew({
       canShow: () =>
         document.visibilityState === "visible" &&
         this.runSince === null &&
         this.composerText.trim() === "" &&
         // 已经有别的弹层开着就先别叠上去：读日志不急，10 分钟之内总还有机会。
-        !document.querySelector(".sheet-back, .sys-back, .jc-back, .mc-back, .modal, .whatsnew-back"),
+        !overlaysOpen(),
       onOpenAll: () => this.openSettingsSheet("whatsnew"),
       openPath: (file, root) =>
         window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(root, file) } })),
@@ -15731,8 +15731,8 @@ export class App {
         };
         box.append(
           this.stRow(
-            tr("启动时提示更新履历"),
-            tr("关掉之后不再自动弹；这一页照样能看，关着期间积压的批次等你重新打开还会出现"),
+            tr("启动时自动打开更新日志"),
+            tr("关掉之后不再自动弹；这一页照样能看，关着期间攒下的批次等你重新打开还会出现"),
             this.stSwitch(toggle),
           ),
         );

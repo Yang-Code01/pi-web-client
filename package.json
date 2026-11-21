@@ -33,7 +33,7 @@
     "test:browser-ops:ui": "node bridge/tests/browser-ops-ui.mjs",
     "test:exec-plan": "node --experimental-strip-types web/tests/exec-view-unit.mjs && node bridge/tests/plan-nudge-unit.mjs && npm run build:bridge && node bridge/tests/exec-plan-e2e.mjs",
     "test:ask-nudge": "node bridge/tests/ask-nudge-unit.mjs",
-    "test:whatsnew": "node --experimental-strip-types --test bridge/tests/whatsnew-unit.mjs",
+    "test:whatsnew-popup": "node --experimental-strip-types --test bridge/tests/whatsnew-popup-unit.mjs",
     "test:preview": "node bridge/tests/preview-tool.mjs && node bridge/tests/media-raw.mjs && node --experimental-strip-types bridge/tests/media-grant-unit.mjs && node --experimental-strip-types bridge/tests/open-preview-unit.mjs",
     "test:translate": "node --experimental-strip-types bridge/tests/translate-unit.mjs && node --experimental-strip-types web/tests/translateview-unit.mjs",
     "test:translate:e2e": "npm run build:bridge && node bridge/tests/translate-e2e.mjs",

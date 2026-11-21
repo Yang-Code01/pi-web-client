@@ -88,6 +88,7 @@ fs.mkdirSync(STATE, { recursive: true });
 const env = {
   ...process.env,
   PI_WEB_STATE: STATE,
+  PI_WEB_WHATS_NEW: "0",
   PI_AGENT_DIR: path.join(ROOT, "agent"),
   PI_WEB_PORT: String(PORT),
   PI_WEB_HOST: "0.0.0.0", // D240: 让局域网非回环地址也能连回来，验「不再只认 127.0.0.1」。

@@ -12,7 +12,6 @@
   grid-template-rows: auto minmax(0, 1fr) auto;
   padding: 0;
 }
-.whatsnew-head { padding-inline: 16px; }
 .whatsnew-body { overflow: auto; padding: 4px 16px 12px; min-height: 0; }
 .whatsnew-eyebrow { font: 11px var(--mono); color: var(--faint); margin: 6px 0 2px; }
 .whatsnew-title { font-size: 15px; font-weight: 650; line-height: 1.45; margin-bottom: 8px; }

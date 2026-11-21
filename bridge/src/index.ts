@@ -510,6 +510,13 @@ function handlePassphraseFlag(argv: string[]): boolean {
 
 async function main(): Promise<void> {
   if (handlePassphraseFlag(process.argv.slice(2))) return;
+  // #588：只有「这台机器以前跑过这个服务」才值得告知更新。全新的一份状态目录属于第一次装 ——
+  // 「本服务变了什么」那时对他没有意义（顺手也让每份临时状态目录的测试不至于一开门就被弹窗盖住）。
+  // 判据是口令文件：它由 `ensurePassphrase()` 在首次启动时写下，必须在 ensureStateDirs() 之前问。
+  // `PI_WEB_WHATS_NEW=0` 是给测试的开关（同 `PI_PEER=0`）：临时状态目录里那些「以前跑过」的痕迹
+  // 本来是给别的测试造的，不该让一张模态弹窗盖住它们要点的东西。
+  const whatsnewVeteran =
+    process.env.PI_WEB_WHATS_NEW !== "0" && fs.existsSync(statePath("passphrase.hash"));
   ensureStateDirs();
   // 随手问 (#86): nothing can be live at this point (it is created lazily), so wiping its dir is
   // unconditional — that is what makes 「桥重启 = 清空」 true, crashes included.
@@ -2163,7 +2170,7 @@ async function main(): Promise<void> {
     // 领走不等于看过 —— 页面真把 dialog 打开了才 POST `/api/changelog/seen` 落盘。
     if (url.pathname === "/api/changelog" && req.method === "GET") {
       if (url.searchParams.get("scope") === "self") {
-        if (url.searchParams.get("unread") === "1") return json(res, 200, takeWhatsnew());
+        if (url.searchParams.get("unread") === "1") return json(res, 200, takeWhatsnew(Date.now(), whatsnewVeteran));
         // 设置页那一页要的两样（开关与「上次看到」）一起带上：同一个资源，不新开路由（D354）。
         const popup = whatsnewStatus();
         return json(res, 200, { ...(await selfChangelog()), whatsnewSeen: popup.seenTitle, whatsnewEnabled: popup.enabled });
@@ -2173,7 +2180,7 @@ async function main(): Promise<void> {
     // #588 弹窗一打开就写「上次看到哪一批」（D354：已读 = 知道，不是确认）。
     if (url.pathname === "/api/changelog/seen" && req.method === "POST") {
       const seen = markWhatsnewSeen();
-      if (!seen.ok) return fail(res, 409, "not-claimed", "这次启动没有派发过未读的更新履历");
+      if (!seen.ok) return fail(res, 409, "not-claimed", "这次启动没有派发过未读的更新日志批次");
       return json(res, 200, seen);
     }
     // #588 设置页「更新日志 → 本项目」那一页上的开关。
