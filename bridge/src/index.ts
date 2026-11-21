@@ -2293,7 +2293,13 @@ async function main(): Promise<void> {
    * 一条会话的 `session` 帧：subscribe / claim / create / reload 四条路径共用这一处，
    * `trust` 由调用方补 —— 形状（隧道一页 / 本机整段）交给 `frameFor`（D215）。
    */
-  const sessionFrameOf = (snap: { state: { id: string } }) => ({ type: "session", sessionId: snap.state.id, ...snap });
+  // `ws` 也一样：页面当场建出会话靠的就是这份快照（`this.session`），反查工作区要用它。
+  const sessionFrameOf = (snap: { state: { id: string; cwd?: string; ws?: string } }) => ({
+    type: "session",
+    sessionId: snap.state.id,
+    ...snap,
+    state: sessions.stateWithWs(snap.state),
+  });
 
   const broadcast = (payload: any) => {
     // 整页帧只会有两种形状（隧道一页 / 本机整段），每份只序列化一次；其余帧所有连接共用一份字节。
@@ -2601,9 +2607,8 @@ async function main(): Promise<void> {
      */
     const syncWorkspaces = async (): Promise<void> => {
       try {
-        if (!(await sessions.resolveWorkspaces())) return;
-        broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
-        broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
+        // 与「新建会话之后」共用一份（`Sessions.refreshWorkspaces`）：有改动才广播。
+        await sessions.refreshWorkspaces();
       } catch {
         /* 补缓存失败只影响分组精度，不影响会话本身 */
       }
@@ -2943,7 +2948,7 @@ async function main(): Promise<void> {
             // the arrangement itself, whichever entry made it; an old page's `pin` flag is ignored.
             (ws as any).watching = session.state.id;
             send(frameFor(ws, { ...sessionFrameOf(session.pagedSnapshot()), trust: await trustFor(session.state.cwd) }));
-            broadcast({ type: "session.state", session: session.state });
+            broadcast({ type: "session.state", session: sessions.stateWithWs(session.state) });
             return;
           }
           case "mkdir": {

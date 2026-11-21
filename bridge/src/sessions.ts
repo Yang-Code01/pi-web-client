@@ -3354,7 +3354,7 @@ export class SessionManager extends EventEmitter {
   }
 
   private wire(session: Session): void {
-    session.on("ws", (payload: any) => this.emit("ws", payload));
+    session.on("ws", (payload: any) => this.emit("ws", this.withWs(payload)));
     session.loopbackUrl = this.loopbackUrl;
     // #484: 阈值要在桥这边读（页面关着也得能压、能交接），所以把「解析三层」绑给会话。
     session.contextPolicyView = () => this.contextPolicyFor(session.state.id);
@@ -3363,7 +3363,7 @@ export class SessionManager extends EventEmitter {
         /* startHandoff 自己通知并回滚 */
       });
     });
-    session.on("state", (state: SessionState) => this.emit("ws", { type: "session.state", session: state }));
+    session.on("state", (state: SessionState) => this.emitState(state));
     session.on("approval", (approval: ApprovalRequest) => this.emit("approval", approval));
     session.on("ask", (ask: AskRequest, tool: string) => this.emit("ask", ask, tool));
     session.on("ask-resolved", (sessionId: string, id: string, status: string) =>
@@ -3405,9 +3405,13 @@ export class SessionManager extends EventEmitter {
     this.wire(session);
     this.sessions.set(id, session);
     await session.startLive({ resume: false, cwd, ws: this.workspaces.groupFor(id, cwd, this.place()), name });
-    this.emit("ws", { type: "session.state", session: session.state });
+    this.emitState(session.state);
     // 随手问不是用户的会话（#86），不占置顶。
     if (!opts.scratch) this.pinNew(id);
+    // 新会话可能开在一个 workspace 缓存里从没有的目录里：补缓存并广播新快照（见 refreshWorkspaces）。
+    void this.refreshWorkspaces().catch(() => {
+      /* 补缓存失败只影响分组精度，不影响会话本身 */
+    });
     return session;
   }
 
@@ -3419,6 +3423,42 @@ export class SessionManager extends EventEmitter {
   private pinNew(id: string): void {
     this.manage.pinLast(id);
     this.emit("ws", { type: "manage", ...this.manageSnapshot() });
+  }
+
+  /**
+   * 会话快照补上它所在的组（`ws`）。页面按会话反查工作区时有几条来源：override、
+   * 列表条目的 `ws`、会话快照的 `ws`，最后才轮得到 `keys[cwd]`；`session.state` 这条帧是
+   * 页面**当场建出会话**的唯一依据（新建、跑起来、改状态都走它），所以它必须自带 `ws`，
+   * 否则新目录里的会话在页面里没有工作区 —— 横排的置顶会整条空掉，胶囊也丢工作区色点。
+   *
+   * 现算而不是缓存：拖动、改名、合并工作区之后旧值就是错的。
+   */
+  stateWithWs<T extends { id: string; cwd?: string; ws?: string }>(state: T): T {
+    const ws = this.workspaces.groupFor(state.id, state.cwd ?? "");
+    return ws ? { ...state, ws } : state;
+  }
+
+  /** 会话自己发出的帧里，只有 `session.state` 需要补 ws，其余原样转发。 */
+  private withWs(payload: any): any {
+    if (payload?.type !== "session.state" || !payload.session) return payload;
+    return { ...payload, session: this.stateWithWs(payload.session) };
+  }
+
+  private emitState(state: SessionState): void {
+    this.emit("ws", { type: "session.state", session: this.stateWithWs(state) });
+  }
+
+  /**
+   * 补一次工作区缓存并广播（与客户端连上时 `syncWorkspaces()` 做的是同一件事，有改动才广播）。
+   *
+   * `keys` 是惰性补的（`resolve()` 跑 git 才知道 worktree 的真根），而 `resolve()` 原来只在
+   * 客户端连上时跑一次：页面**先开着**、随后在新目录里开新会话，这个目录就既不在 `keys` 里、
+   * 会话条目也没有 `ws` —— 页面的 `wsOf()` 三条来源全空，第二排的置顶随之清空。
+   */
+  async refreshWorkspaces(): Promise<void> {
+    if (!(await this.resolveWorkspaces())) return;
+    this.emit("ws", { type: "workspaces", workspace: this.workspaces.snapshot() });
+    this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
   }
 
   /** `manage` 帧的正文：置顶 / 归档 / 标签 + 工作区排列。桥里所有广播 manage 的地方共用这一份。 */
@@ -3659,7 +3699,7 @@ export class SessionManager extends EventEmitter {
     if (!this.known(id)) throw new Error("找不到这个会话");
     const session = this.ensure(id);
     await session.rename(name);
-    this.emit("ws", { type: "session.state", session: session.state });
+    this.emitState(session.state);
     return session;
   }
 
@@ -3972,7 +4012,7 @@ export class SessionManager extends EventEmitter {
       session.state.handoffTo = next.state.id;
       writeHandoffTo(id, next.state.id);
       // 接棒的会话已经在 create() 里置顶（D349），这里不再重复。
-      this.emit("ws", { type: "session.state", session: session.state });
+      this.emitState(session.state);
       // 先报完成，再收旧会话：归档回声会让页面「当前会话被归档 → 切邻居 / 回空态」，
       // 排在 done 前面的话，done 到达时页面已经不在旧会话上，看起来就是「交接完成了但页面空白」。
       emitPhase("done", { newId: next.state.id });
@@ -4107,7 +4147,7 @@ export class SessionManager extends EventEmitter {
     // #200: 接管也是「重试」的入口 —— pi 已经活着时 `openLive` 什么也不做，但失败的那几条还在
     // 等一个人点一下，所以直接沿这条现成的路径补发，不新增协议帧。
     session.retryBootMessages();
-    this.emit("ws", { type: "session.state", session: session.state });
+    this.emitState(session.state);
     return session;
   }
 
@@ -4173,7 +4213,7 @@ export class SessionManager extends EventEmitter {
     }
     await session.pinPermission();
     await session.startLive({ resume: Boolean(session.state.file), ws: this.workspaces.groupFor(id, session.state.cwd ?? "", this.place()) });
-    this.emit("ws", { type: "session.state", session: session.state });
+    this.emitState(session.state);
     if (session.state.origin !== "web") {
       // pi's TUI reads the session file once at startup: an open terminal will not see what the web adds.
       this.emit("ws", {
