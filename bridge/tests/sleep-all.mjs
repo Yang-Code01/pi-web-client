@@ -8,7 +8,7 @@
  *   4. 从公共隧道来的连接按不了这个钮：先要口令（`need-stepup`），一个会话都不睡 ——
  *      这个动作会结束进程，和 `runtime.settings` 同一条规矩（公网只读）。
  *
- * 阈值不用挤：这条消息不吃空闲阈值，所以 `idleMs` 留在 30 分钟、GC tick 留在 60 秒，
+ * 阈值不用挤：这条消息不吃空闲阈值，所以 `idleMs` 留在默认的 120 分钟（D369）、GC tick 留在 60 秒，
  * 期间发生的任何休眠都只可能是按钮点出来的。
  *
  * Run: npm --prefix bridge run build && node bridge/tests/sleep-all.mjs

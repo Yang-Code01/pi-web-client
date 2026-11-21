@@ -153,7 +153,11 @@ const browser = await chromium.launch();
  * 而设置面板的「全局」一页会先画一次。探针只对本票新增的文案负责，所以把它列为例外 ——
  * 任何**新**的缺键仍然会让这一项失败。
  */
-const KNOWN_MISSING = new Set(["{p1}{p2}"]);
+/**
+ * 词典只收含中文的原文（与 i18n-check 同一口径），纯 ASCII / emoji 开头的那几条本来就不翻译：
+ * 顶栏「🔷 Jira」、工具与通道页里的「Jira」「Web Push」，以及「关于」页统计卡上的「bridge」。
+ */
+const KNOWN_MISSING = new Set(["{p1}{p2}", "🔷 Jira", "Jira", "Web Push", "bridge"]);
 
 /** Open the app, pick a session, then 设置 → 运行时. Returns the page and the i18n warnings it saw. */
 async function openRuntime(locale, tabName) {
@@ -167,7 +171,11 @@ async function openRuntime(locale, tabName) {
   await page.goto(BASE, { waitUntil: "networkidle" });
   await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card");
   await page.locator(".session-card").first().click();
-  await page.getByRole("button", { name: tabName === "运行时" ? "pi 设置" : /pi settings|pi 設定/i, exact: true }).click();
+  // 齿轮 → 「连接与设置」→ 工具 → pi 设置：9f00bbd 之后 pi 设置是工具页里的一行「打开」，不再是顶栏按钮。
+  await page.locator('.icon-btn[data-act="look"]').click();
+  await page.locator('.display-sheet .st-tabs__btn[data-tab="conn"]').click();
+  await page.locator('.display-sheet .st-nav__item[data-sec="tools"]').click();
+  await page.getByRole("button", { name: tabName === "运行时" ? "pi 设置" : /pi settings|pi 設定/i }).click();
   await until(async () => (await page.locator(".settings-sheet").count()) === 1, 5000, "settings sheet");
   await page.getByRole("button", { name: tabName, exact: true }).click();
   await until(async () => (await page.locator(".runtime-summary").count()) === 1, 5000, "runtime summary");
@@ -218,7 +226,8 @@ try {
   ok(/运行中 pi：2 个 · 不可用/.test(bad), `摘要写「不可用」（${bad}）`);
   const badRows = await rows(zh.page);
   ok(badRows.every((r) => r.bytes === "不可用"), `每一行也写「不可用」（${JSON.stringify(badRows.map((r) => r.bytes))}）`);
-  const panelText = await zh.page.locator(".settings-body").innerText();
+  // 9f00bbd 之后 pi 设置是控制台（`.st-console` + `.st-pane`），旧的 `.settings-body` 只剩别的面板在用。
+  const panelText = await zh.page.locator(".settings-sheet").innerText();
   ok(!/\b0 B\b/.test(panelText), "不可用时不留 0 B");
   ok(badRows.every((r) => r.idle !== ""), "字节读不到，闲了多久照样有");
   await zh.page.screenshot({ path: path.join(SHOTS, "runtime-unavailable.png") });

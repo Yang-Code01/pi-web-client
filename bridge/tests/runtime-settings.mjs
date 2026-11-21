@@ -2,7 +2,7 @@
  * 运行时阈值的写的那一半（#78 / D120）：面板上那两个数能改，而且改了不会丢。
  *
  * 观察面全是 WS：
- *   A. 改值 → 回一条带新值的 `runtime.stats`；**重启桥**之后再问，还是新值（不是默认的 30 分钟 / 2.5 GB）；
+ *   A. 改值 → 回一条带新值的 `runtime.stats`；**重启桥**之后再问，还是新值（不是默认值，D369）；
  *   B. 非法值（0 / 负数 / 非数字 / 空 / 什么都没有）被拒绝：回 `saved: false`，值不变，也不写盘
  *      （重启后依旧不变）—— **整份 patch 要么都过、要么都不写**（一好一坏也不写）；
  *      走公共隧道来的连接连改都不许改（step-up，与其它写设置的动作同级）；
@@ -18,6 +18,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { freePort } from "../../tools/free-port.mjs";
+/** Imported, not copied: a test that hard-codes the defaults breaks every time one is raised (D369). */
+import { DEFAULT_IDLE_MS, DEFAULT_WATERMARK_BYTES } from "../src/lifecycle.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "runtime-settings");
@@ -28,8 +30,6 @@ const TICK_MS = 1000;
 const TICK_WAIT = TICK_MS * 5;
 const MIN = 60_000;
 const GB = 1024 * 1024 * 1024;
-const DEFAULT_IDLE_MS = 30 * MIN;
-const DEFAULT_WATERMARK_BYTES = 2.5 * GB;
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let failed = false;
@@ -212,7 +212,7 @@ async function persists() {
     const before = await stats(page, "defaults");
     check(
       before.lifecycle?.idleMs === DEFAULT_IDLE_MS && before.lifecycle?.watermarkBytes === DEFAULT_WATERMARK_BYTES,
-      `没改过时是默认的 30 分钟 / 2.5 GB（${JSON.stringify(before.lifecycle)}）`,
+      `没改过时是默认值 ${DEFAULT_IDLE_MS / MIN} 分钟 / ${DEFAULT_WATERMARK_BYTES / GB} GB（${JSON.stringify(before.lifecycle)}）`,
     );
 
     const saved = await edit(page, { idleMs, watermarkBytes }, "saved");
@@ -302,7 +302,7 @@ async function refusedValues() {
 
 // ------------------------------- C. the idle threshold takes effect on the next tick
 async function idleTakesEffectNow() {
-  log("C. 改空闲阈值不用重启：默认 30 分钟回收不了，改成 2 秒之后下一个 tick 就休眠");
+  log(`C. 改空闲阈值不用重启：默认 ${DEFAULT_IDLE_MS / MIN} 分钟回收不了，改成 2 秒之后下一个 tick 就休眠`);
   const bridge = await startBridge({ name: "idle-now" });
   try {
     const page = await client(bridge);
@@ -310,10 +310,10 @@ async function idleTakesEffectNow() {
     await runOneTurn(page, sid, "hello");
     const pid = launches(bridge.records(), sid).at(-1)?.pid;
 
-    // Two whole ticks at the default 30 minutes: nothing may happen (that is the "before" state).
+    // Two whole ticks at the default (two hours, D369): nothing may happen (that is the "before" state).
     const mark = page.seen.length;
     await sleep(TICK_MS * 2 + 500);
-    check(!page.since(mark, (m) => m.type === "notice" && m.sessionId === sid).length, "默认的 30 分钟还没到：两个 tick 都没休眠");
+    check(!page.since(mark, (m) => m.type === "notice" && m.sessionId === sid).length, `默认的 ${DEFAULT_IDLE_MS / MIN} 分钟还没到：两个 tick 都没休眠`);
     check(exited(bridge.records(), pid) === false, "pi 进程还在");
 
     const editedAt = Date.now();
@@ -333,7 +333,7 @@ async function idleTakesEffectNow() {
 // ------------- D. the watermark the tick judges by is re-read, not cached at boot
 async function watermarkOnTheNextTick() {
   log("D. 改小水位 → 下一个 tick 的广播里就是新值（判定读的那个数每个 tick 重取）");
-  const bridge = await startBridge({ name: "watermark", lifecycle: { watermarkBytes: 2.5 * GB } });
+  const bridge = await startBridge({ name: "watermark", lifecycle: { watermarkBytes: DEFAULT_WATERMARK_BYTES } });
   try {
     const page = await client(bridge);
     // Ask once: only a page that wants the numbers gets the tick broadcast (#77).
@@ -347,7 +347,7 @@ async function watermarkOnTheNextTick() {
     const mark = page.seen.length;
     const ticked = await page.waitAfter(mark, (m) => m.type === "runtime.stats", TICK_WAIT, "tick 广播");
     check(ticked.lifecycle?.watermarkBytes === small, `下一个 tick 的广播带的就是 600 MB（${ticked.lifecycle?.watermarkBytes}）`);
-    check(ticked.lifecycle?.idleMs === DEFAULT_IDLE_MS, `没改空闲阈值，所以它还是 30 分钟（${ticked.lifecycle?.idleMs}）`);
+    check(ticked.lifecycle?.idleMs === DEFAULT_IDLE_MS, `没改空闲阈值，所以它还是默认的 ${DEFAULT_IDLE_MS / MIN} 分钟（${ticked.lifecycle?.idleMs}）`);
   } finally {
     await bridge.stop();
   }

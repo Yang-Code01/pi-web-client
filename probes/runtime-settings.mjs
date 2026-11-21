@@ -2,7 +2,7 @@
  * Probe: #78 / D120 —— 设置 → 运行时：两个阈值能改，而且改了不会丢。
  *
  * 桩桥 + 真 Chromium。断言五件事：
- *   1. 两个输入框带当前值与单位（30 分钟 / 2.5 GB）；
+ *   1. 两个输入框带当前值与单位（桩桥发的是 30 分钟 / 2.5 GB，真默认值见 D369）；
  *   2. 改值 → 点保存 → 页面真的发出 `runtime.settings`，没改的那个原样带回去（可只传其一）；
  *   3. 桥回 `runtime.stats` + `saved: true` → 输入框跟着变成新值，并有一条「已保存」提示；
  *   4. 非法值（0 / 负数 / 非数字 / 空）被界面拦下：一条消息都不发，写红提示，输入框回到旧值；
@@ -144,7 +144,11 @@ console.log("fake bridge on", BASE);
 const browser = await chromium.launch();
 
 /** 已知的历史缺键，不属本票（见 probes/runtime-panel.mjs）。 */
-const KNOWN_MISSING = new Set(["{p1}{p2}"]);
+/**
+ * 词典只收含中文的原文（与 i18n-check 同一口径），纯 ASCII / emoji 开头的那几条本来就不翻译：
+ * 顶栏「🔷 Jira」、工具与通道页里的「Jira」「Web Push」，以及「关于」页统计卡上的「bridge」。
+ */
+const KNOWN_MISSING = new Set(["{p1}{p2}", "🔷 Jira", "Jira", "Web Push", "bridge"]);
 
 /** Open the app, pick a session, then 设置 → 运行时. Returns the page and the i18n warnings it saw. */
 async function openRuntime(locale, tabName) {
@@ -158,7 +162,11 @@ async function openRuntime(locale, tabName) {
   await page.goto(BASE, { waitUntil: "networkidle" });
   await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card");
   await page.locator(".session-card").first().click();
-  await page.getByRole("button", { name: tabName === "运行时" ? "pi 设置" : /pi settings|pi 設定/i, exact: true }).click();
+  // 齿轮 → 「连接与设置」→ 工具 → pi 设置：9f00bbd 之后 pi 设置是工具页里的一行「打开」，不再是顶栏按钮。
+  await page.locator('.icon-btn[data-act="look"]').click();
+  await page.locator('.display-sheet .st-tabs__btn[data-tab="conn"]').click();
+  await page.locator('.display-sheet .st-nav__item[data-sec="tools"]').click();
+  await page.getByRole("button", { name: tabName === "运行时" ? "pi 设置" : /pi settings|pi 設定/i }).click();
   await until(async () => (await page.locator(".settings-sheet").count()) === 1, 5000, "settings sheet");
   await page.getByRole("button", { name: tabName, exact: true }).click();
   await until(async () => (await page.locator(".runtime-thresholds").count()) === 1, 5000, "thresholds");

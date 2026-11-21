@@ -3,7 +3,7 @@
  * Same shape as `budget.json`: one small file in the bridge's state dir, read whenever a rule needs
  * it — not pi's `settings.json`, because what to keep running is the bridge's decision, not pi's.
  *
- * The `PI_WEB_*` overrides are test seams, not a user knob: they squeeze the 30-minute rules into
+ * The `PI_WEB_*` overrides are test seams, not a user knob: they squeeze the two-hour rules into
  * seconds so the behaviour can be asserted in a test. The bridge strips `PI_WEB_*` before it spawns
  * pi (`rpc.ts`), so they never reach a child.
  */
@@ -23,12 +23,16 @@ export interface Lifecycle {
   watermarkBytes: number;
 }
 
-/** Defaults from D120; all are "可改". */
-export const DEFAULT_IDLE_MS = 30 * 60 * 1000;
+/**
+ * Defaults from D120 §5, numbers raised by D369; all are "可改".
+ * `DEFAULT_IDLE_MS` is one value serving three rules (D120 §8): idle sleep, the watchdog's stuck-run
+ * judgement, and approval/question expiry when nobody is in front of a page.
+ */
+export const DEFAULT_IDLE_MS = 120 * 60 * 1000;
 /** 随手问 (#86): 0 disables auto-sleep; users may opt back in with a positive threshold. */
 export const DEFAULT_SCRATCH_IDLE_MS = 0;
 export const DEFAULT_ABORT_GRACE_MS = 60 * 1000;
-export const DEFAULT_WATERMARK_BYTES = 2.5 * 1024 ** 3;
+export const DEFAULT_WATERMARK_BYTES = 5 * 1024 ** 3;
 
 /**
  * How long a pi that was just started or just woken is off limits to the watermark (#79). Not a

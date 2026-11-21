@@ -23,7 +23,7 @@
 为什么：RPC 已给结构化口子（`get_available_models`/`set_model`/`set_thinking_level`）；slash 全集每个命令的参数与确认都要单独写 UI，而手机上敲命令的体验远差于点按钮。
 
 ## D6 会话 = 进程，一进程一会话
-决定：网页里的每个会话是一个 `pi --mode rpc` 子进程；回收判据与内存上限见 **D120**（2026-11-04 由「空闲 2 小时」改为「完成 + 30 分钟无事件 + 2.5 GB 水位」），下次点开复活（同 session path）。
+决定：网页里的每个会话是一个 `pi --mode rpc` 子进程；回收判据与内存上限见 **D120**（2026-11-04 由「空闲 2 小时」改为「完成 + 30 分钟无事件 + 2.5 GB 水位」；**这两个数 2026-11-21 由 D369 改为默认 120 分钟 / 5 GiB**），下次点开复活（同 session path）。
 为什么：pi 的 RPC 一个进程只有一个 active 会话（`switchSession` 是替换），想并行就得并行进程；这也是唯一能让「关了页面它还在跑」成立的结构。
 
 ## D7 新建会话的 cwd：最近列表 + 手输
@@ -1436,6 +1436,8 @@
 - `npm --prefix web run typecheck`（含 i18n 1001 键 × 3 语言）干净。
 
 ## D120 会话进程生命周期：完成 + 30 分钟无事件回收，2.5 GB 水位兜底（`#75`）
+
+> **D369 修订（2026-11-21）：** 下面第 1、2、5、8 条里的两个默认值已改为**空闲 120 分钟 / 水位 5 GiB**（`bridge/src/lifecycle.ts` 的 `DEFAULT_IDLE_MS` / `DEFAULT_WATERMARK_BYTES`）。「一个 `idleMs` 同时服务三处」的结构不变，所以 watchdog 的卡住判定与审批过期也一起变成 120 分钟。正文里的 30 分钟 / 2.5 GB 保留为当时的记录。
 
 **问题**（2026-11-04 用户报的「会不会随着会话增加一直不关，把电脑拖卡」）：D6 定的「空闲 2 小时回收」在真实使用下太宽松，而且 `sessions.ts:2288` 的 GC 里有三个**永久豁免**，一旦命中就再也不会回收。实测本机 4 个 `pi --mode rpc` 子进程合计 ~1.2 GB，单个 237–474 MB：
 
@@ -7060,3 +7062,44 @@ Esc 之后 dialog: 0
 **代价 / 可改。** 收尾会动一次视口（这正是 A 的定义）；回答在 0.9–1.0 屏之间时首行已经落进最后一屏，`startTop >= maxScroll - 1` 会走 `follow()`，仍停在底部（不会再往上顶）；阈值、6px 呼吸、900ms 冷却、平滑动画都是可调的常量，先按实测手感取这组。用户一旦上滚、手指还在屏上、或收尾后又有新内容，都只点亮「有新内容」，不再自动移动。
 
 **守卫。** 新增 `probes/settle-top.mjs`（`npm run probe:settle`）：长回答收尾停在首行、↓ 可见且无「new」、点 ↓ 回底；短回答也真正流完并收尾一次，视口不动；流式中途上滚不被拽回；收尾后补一条 delta 也不拽回。`probes/scroll-race.mjs`（D68 / D94）、`probes/turn-rail-last.mjs`（D244 / D60）、`probes/rail-click.mjs` 仍要跑；后者把固定 900ms 等待换成了「等滚动停稳」再量落点。`npm --prefix web run typecheck` 全绿。
+
+## D369 运行时阈值默认改为空闲 120 分钟 / 内存水位 5 GiB（用户「我希望修改将本项目默认设置为 120 分钟，5G」2026-11-21）
+
+**问题。** D120 定的默认是「完成 + 30 分钟无事件就休眠、水位 2.5 GB」。用户要求把**项目默认**改成 120 分钟 / 5 GB：一轮长任务或长思考跑完就被收掉太早，回来再发消息要等 1–3 秒冷启、还要重载上下文，不值。
+
+**决定。** 只改 `bridge/src/lifecycle.ts` 的两个默认常量：
+
+- `DEFAULT_IDLE_MS`：`30 * 60 * 1000` → `120 * 60 * 1000`。
+- `DEFAULT_WATERMARK_BYTES`：`2.5 * 1024 ** 3` → `5 * 1024 ** 3`（面板除以 1024³ 渲染，所以 5 GiB 显示成「5 GB」，与既有单位一致）。
+- 随手问的 `DEFAULT_SCRATCH_IDLE_MS` 不动，仍是 0（D233：永不自动睡）。
+
+四条边界：
+
+- **`idleMs` 仍是一个值服务三处**（D120 §8）：空闲休眠、watchdog 的卡住判定、所有页面都不 present 时审批 / 问卷过期。三处一起变成 120 分钟 —— 这是明确接受的代价，不新增第二个字段，面板上的「空闲多久休眠」仍然就是这三处共用的那个数。
+- **只改默认，不改优先级**：`PI_WEB_IDLE_MS` / `PI_WEB_WATERMARK_BYTES`（测试钩子）> `<state>/lifecycle.json` > 代码默认（`lifecycle()` 的顺序没动）。已经在面板上保存过阈值的实例不受影响 —— 本机就是这种情况，`lifecycle.json` 早就是 120 分钟 / 5 GiB，所以这次改动在本机看不到行为变化。
+- **测试不再抄默认值**：`bridge/tests/runtime-settings.mjs` 里原本自己写了一份 `30 * MIN` / `2.5 * GB` 并断言「没改过时是默认的 30 分钟 / 2.5 GB」，改成从 `../src/lifecycle.ts` import 两个常量、断言文案按常量渲染。以后再调默认，不会先把这个测试弄红（这次它本来会红）。
+- **注释里写死数字的句子一起改**：`lifecycle.ts` 头部「squeeze the 30-minute rules」、`sessions.ts` 里 watchdog 取整函数的说明与审批过期那段「30 minutes after you left」。
+
+**为什么 30 分钟变 120 分钟。** 30 分钟对「跑完一轮、人离开一会儿再回来接着追问」太紧：休眠本身无害（消息、文件、上下文都在，下一条消息自动唤醒），代价全在唤醒那 1–3 秒冷启与上下文重载上，而长任务跑完之后恰恰最可能马上要接着问。放宽到两小时，把「同一段工作时间内的来回对话」留在热态。
+
+**代价 / 可改。**
+
+- **watchdog 同步放宽到 120 分钟**：真正会 `abort` 的只有「没有任何东西在途却长时间没有事件」的回合（有工具 / `!` 命令 / 待批审批在途时只推一条 notice，绝不 abort，D120 §3），所以受影响的本就是罕见的僵死回合；代价是一个真卡死的回合要多占两小时的内存。要收紧就得把 watchdog 拆成独立阈值 —— 面板、`runtime.stats`、三语文案、测试都要跟着扩，这次不做。
+- **审批 / 问卷过期同步放宽**：所有页面都不 present 时，挂着的审批要两小时才被丢弃。人离开一小时再回来，那张卡还在（这是这次放宽带来的好处，也是它丢掉那一次工具调用的最坏时机）。
+- 默认更宽松 = 更多 pi 进程可以同时睡着不睡；内存侧由水位兜底，5 GiB 比原来宽一倍。两手是同一套机制，「内存紧」时把水位调小就回到激进回收，不用改代码。
+- 已经手动保存过阈值的实例**不会**跟着变（`lifecycle.json` 优先）。想让某台机器回到新默认，删掉它的 `lifecycle.json`。
+
+**验证（实测）。**
+
+- `npm --prefix bridge run build && node bridge/tests/runtime-settings.mjs` → PASS。默认值取的就是新常量（断言文案现在是「默认的 120 分钟」）、改值落盘且跨重启保留、非法值整份拒绝、隧道来的写要 step-up。
+- `node bridge/tests/session-lifecycle.mjs` → PASS（C 段：`lifecycle.json` 里的秒级阈值生效，默认的两小时没生效）。
+- `node bridge/tests/memory-cap.mjs` → PASS（A–D 四段，采样不可用时一个都不收）。
+- `node bridge/tests/stuck-run.mjs`、`approval-expiry.mjs`、`sleep-all.mjs` → PASS。前两个自己注入秒级 `idleMs` 验 watchdog 与审批过期（它们吃同一个值，改默认后必须重跑）；`sleep-all` 不吃这个值，但靠「默认值长到不会自己休眠」成立。
+- `npm --prefix web run typecheck` → 4071 键 × 3 语言无缺键，`#app` 里没有裸 `vh` / `vw`。
+- `node probes/runtime-settings.mjs`、`probes/runtime-panel.mjs`、`probes/runtime-sleep-all.mjs` → all checks passed。
+
+**顺手修掉的探针（必须说明）。** 这三个 runtime 探针从 `9f00bbd`（2026-11-19 把齿轮设置改成两大类页签）起就是红的：那次改了设置导航与 pi 设置的容器（`.settings-body` → 控制台 `.st-console` / `.st-pane`）并更新了另外六个探针，漏了这三个。不改它们，这次就无从验证「面板把 120 分钟 / 5 GB 显示成一个整数」：
+
+- 入口从「顶栏 `pi 设置` 按钮」改成「齿轮 → 连接与设置 → 工具 → pi 设置」。
+- `runtime-panel` 那条「不可用时不留 0 B」改读 `.settings-sheet`。
+- `KNOWN_MISSING` 补上 `🔷 Jira` / `Jira` / `Web Push` / `bridge`：词典只收含中文的原文，这几条纯 ASCII 的键本来就不翻译，不是漏翻。

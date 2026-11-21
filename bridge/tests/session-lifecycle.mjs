@@ -24,7 +24,7 @@ const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
 /** The GC tick the tests inject: a real one is 60 s, and a phase may sit out a whole one. */
 const TICK_MS = 1000;
 const TICK_WAIT = TICK_MS * 4;
-/** The idle threshold the tests inject: 30 minutes would take 30 minutes. */
+/** The idle threshold the tests inject: the real default (two hours, D369) would take two hours. */
 const IDLE_MS = 2000;
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -262,7 +262,7 @@ async function thresholdFile() {
       TICK_WAIT,
       "sleep notice from the file's threshold",
     );
-    check(Boolean(slept), "the threshold in lifecycle.json took effect (the 30-minute default did not)");
+    check(Boolean(slept), "the threshold in lifecycle.json took effect (the default did not)");
     // The panel can write this file too (`runtime.settings`, #78); nothing in this run edits it,
     // so the value on disk must still be the one the test put there.
     const onDisk = JSON.parse(fs.readFileSync(path.join(ROOT, "file", "state", "lifecycle.json"), "utf8"));

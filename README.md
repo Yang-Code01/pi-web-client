@@ -259,7 +259,7 @@ node bridge/tests/session-lifecycle.mjs                               # 会话�
 node bridge/tests/create-fast.mjs                                    # 新建会话不等 pi 启动：桩 pi「启动」4 秒，create 应答仍要 1.5 秒内到、starting 之后翻回 false（D122）
 node bridge/tests/approval-expiry.mjs                                 # 审批 / 问卷过期：没有任何页面 present 满阈值就丢弃 + 休眠 + notice，有一个 present 就永不过期（#82，假 pi，约 15 秒）
 node bridge/tests/runtime-panel.mjs                                   # 运行时面板：tasklist / ps 解析、runtime.stats 的总额与排序、采样坏掉时「不可用」且不影响空闲回收（D120，假 pi + 桩进程表，约 20 秒）
-node bridge/tests/memory-cap.mjs                                      # 内存水位兜底：超 2.5 GB 按空闲降序收、在跑 / 保护期内 / 最后一个都不收、读不到数就一个都不收（D120，假 pi + 桩进程表，约 45 秒）
+node bridge/tests/memory-cap.mjs                                      # 内存水位兜底：超 5 GB 按空闲降序收、在跑 / 保护期内 / 最后一个都不收、读不到数就一个都不收（D120 / D369，假 pi + 桩进程表，约 45 秒）
 node bridge/tests/pi-cli.mjs                                          # pi install / list / remove 与 pi mcp add / list / remove（D79，真 pi CLI，fixture 目录）
 node bridge/tests/share-bug.mjs                                       # /share（假 gh）与 /bug（zip / 离线拒绝上传）（D80，不联网）
 node bridge/tests/ext-manager.mjs                                     # 扩展管理：清单与版本、启停、MCP 改版本、商店→pi mcp add、按钮开关、公网只读（D81）
