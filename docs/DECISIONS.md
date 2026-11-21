@@ -6861,3 +6861,32 @@ Esc 之后 dialog: 0
 - `node probes/skill-boot-hint.mjs`：桩桥 + 真 Chromium，同一个空回答下 `starting` 真 / 假两个会话，断言文字分别是「还在启动」与「没有匹配的命令」；再让桩桥主动推两帧，断言补全与面板不重新问也当场换人；最后推一帧**别的会话**的技能，断言不盖住当前面板（`web/src/app.ts` 的 `case "skills"` 补了 `sessionId` 比对 —— 广播推送是这一条的新入口，去掉它这条就红）。
 
 推送能推空的这一点也收了一下：`pushCommands()` 里 pi 回空清单不推（`if (!all?.length) return;`），否则刚启动完那一瞬会把盘上那份盖成「没有」。
+
+## D358 切会话不再整份重读 / 重推 ctxlog；桥的 log() 不许递归（用户报「会话切换很卡顿」2026-11-21）
+
+**症状。** 点一下左栏另一条会话，画面要 5–15 秒才换过来，期间整个页面（包括别的标签页、终端、审批）都僵住，有时干脆一直显示上一个会话的内容；同一条会话切走再切回来还是这么慢。本机 `load average` 长期 80–136，`/healthz` 这种纯空活从 5 ms 抖到 6.5 秒。
+
+**根因（两个，互相放大）。**
+
+1. **`subscribe` 把整份 ctxlog 同步重读一遍。** D271 定的是「订阅时补一次 `emitContextLog(true)`」，那时日志还小；但它是只增不减的 append，本机 46 份共 **410 MB**，27 份 >1 MB，最大 **73.7 MB**。一次订阅要做：`fs.readFileSync` 整份 → `split("\n")` → 每行 `JSON.parse` → `renumberCtxLog` → 整帧 `JSON.stringify`。实测 24 MB 要 **5.0 s CPU**（读 814 / 切分 987 / 解析 1649 / 序列化 1584 ms），74 MB 要 **13.9 s**。全是同步代码，压在桥**唯一**的事件循环上：这段时间所有页面、终端与 `/healthz` 一起停（实测切一次会话，`/healthz` **5216 ms** 不应答）。`agent_end` / `agent_settled` 那条「增量」也一样重读整份，只为了发尾部几行。
+2. **残留的测试桥把自己写死了。** 测试跑完把桥留下，它的 stdout 管道早断了：`console.log` 抛 EPIPE → `survive`（uncaughtException 处理器）又调 `log()` 记这条错误 → 再抛 EPIPE …… 无限递归。本机实测 **22 个**残留桥里 18 个正在死循环，每个每秒写 200–500 KB，日志涨到 **3.5 GB**，整机 8 核被抢到「一个纯 CPU 忙循环只能拿到 3–8% 的一个核」（正常 ~80%）。
+
+**决定。**
+
+- `readContextLog()` 只读**尾部窗口**（`CTX_LOG_TAIL_BYTES` = 2 MB，按行边界切，窗口正好落在行首时不丢行），并缓存 `(size, mtimeMs)` —— 文件没变就零成本重发，变了也最多重读 2 MB。`ctxlog` 帧多一个 `omitted`（没下发的更早字节数），页面暂时不画它。
+- 增量那条的基线改记**最后一行 `seq`**：窗口会往前走，拿行数当基线会在文件超过 2 MB 之后错位（要么永远不再推，要么把旧行当新行又推一遍）。找不到「比基线新」的行就整段重发（`full: true`，页面是替换语义）。
+- `log()` 绝不抛、绝不重入：stdout / stderr 出错一次就永久停掉控制台输出（文件照写），重入直接丢弃。
+- 左栏点会话改成**一次重画**：先改 `tab` 与地址栏，再 `openSession()`（内部先 `send` 后 `renderAll`）。原来 `go()` 先画一遍、`openSession()` 又画一遍，而 `subscribe` 要等这两遍画完才出门。`routeFromHash()` 里「已经在这个会话上」直接返回，省掉 `hashchange` 带来的第三遍整页重画。
+
+**代价。** 很老的会话在 Context 面板里只剩最近 2 MB 的组成行，更早的不再下发（面板暂时不提示，`omitted` 字段留给以后）。`ctxlog` 本身仍然不设上限，只是「读它」和「推它」不再跟着文件大小走。
+
+**验证。** 同一台机器、同一份状态目录，把改动 stash 掉重建再测的 A/B（点卡片 → 发 `subscribe` → 收帧 → DOM 安静）：
+
+| | 修复前 | 修复后 |
+| --- | --- | --- |
+| `ctxlog` 帧（同一条会话） | 1778 ms / 5.4–6.9 MB | **641 ms / 1.8 MB** |
+| 点一下到发 `subscribe` | 130 ms | 97 ms |
+| 一次切换的浏览器 CPU | 527 ms | **406 ms** |
+| 机器负载下切一次会话 | 5–15 s，桥 5.2 s 不应答 | 1.5–2.4 s，桥 1–2 ms |
+
+**守卫。** `npm run test:context` 新增三条（`bridge/tests/context-session-unit.mjs`）：8 MB 夹具只读到尾部窗口、`omitted` 报出被截掉的字节、`(size, mtime)` 未变时返回同一份缓存、追加一行后能看到新行；小文件整份都在；窗口被顶出去之后增量帧要么只发新行（20 行）、要么整段替换，不会把旧行当新行重发。`npm run test:logloop`（新，`bridge/tests/log-loop.mjs`）把桥的 stdout / stderr 剪断再让它写一条日志，断言 1.5 秒内日志只涨几十字节、那条日志照样进文件、桥还应答 `/healthz` —— 在修复前的 dist 上跑红（**4498155 字节 / 6558 行 EPIPE**），修复后绿。UI 路径靠 `node bridge/tests/history-paths-ui.mjs`（深链 `#/s/<id>` 28/28）。

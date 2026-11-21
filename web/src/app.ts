@@ -1656,6 +1656,9 @@ export class App {
     const hash = location.hash.replace(/^#\/?/, "");
     if (hash.startsWith("s/")) {
       const id = hash.slice(2);
+      // D358：已经在这个会话里（点卡片时 `openFromList()` 先改了 hash）就不要再整页重画一遍；
+      // 前进 / 后退换到的是**别的**会话，照旧走完这条。
+      if (this.tab === "chat" && this.currentId === id) return;
       this.openSession(id);
       this.go("chat", false);
     } else if (hash === "q") {
@@ -11420,9 +11423,22 @@ export class App {
     });
   }
 
+  /**
+   * 左栏点会话卡片。D358：一次重画，而且 `subscribe` 要在重画之前出门。
+   *
+   * 以前是 `go("chat", true)` 先把顶栏 / 页签 / 面板画一遍，再 `openSession()` → `renderAll()`
+   * 又画一遍，而 `subscribe` 要等这两遍画完才发。桥那边读历史与 ctxlog（长会话以秒计）才开始回帧，
+   * 两段活本该重叠：实测点一下到发帧 300–500ms，而浏览器 CPU 又多数花在第二遍重画上。
+   * 现在：先改状态与地址栏（不发帧），再 `openSession()`（内部先 `send` 后 `renderAll`）。
+   */
   private openFromList(id: string): void {
-    this.go("chat", true);
-    location.hash = `#/s/${id}`;
+    if (this.currentId === id) {
+      this.go("chat", true);
+      return;
+    }
+    this.tab = "chat";
+    const hash = `#/s/${id}`;
+    if (location.hash !== hash) location.hash = hash;
     this.openSession(id);
   }
 

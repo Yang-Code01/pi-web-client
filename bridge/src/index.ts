@@ -547,13 +547,40 @@ async function main(): Promise<void> {
   // rpc.ts 起子进程时是 `{...process.env, ...opts.env}`，所以这里设一次就传下去了。
   process.env.PI_PEER_PORT = String(cfg.peerPort);
 
+  /**
+   * D358：log() 必须「绝不抛、绝不重入」。
+   *
+   * 测试桥跑完被留了下来，它的 stdout 管道早断了：`console.log` 抛 EPIPE → `survive`（下面那个
+   * uncaughtException 处理器）又调 `log()` 把这条错误记下来 → 再抛 EPIPE …… 同一条错误无限递归。
+   * 实测 22 个残留桥里 18 个正在死循环，每个每秒写 200–500KB，日志涨到 3.5GB，整台机器 load 130。
+   * 所以：stdout/stderr 出错一次就永久停掉控制台输出（文件照写），重入直接丢弃。
+   */
+  let consoleBroken = false;
+  let inLog = false;
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on("error", () => {
+      consoleBroken = true;
+    });
+  }
   const log = (msg: string) => {
-    const line = `${new Date().toISOString()} ${msg}`;
-    console.log(line);
+    if (inLog) return;
+    inLog = true;
     try {
-      fs.appendFileSync(statePath("logs", "bridge.log"), `${line}\n`);
-    } catch {
-      /* ignore */
+      const line = `${new Date().toISOString()} ${msg}`;
+      if (!consoleBroken) {
+        try {
+          console.log(line);
+        } catch {
+          consoleBroken = true;
+        }
+      }
+      try {
+        fs.appendFileSync(statePath("logs", "bridge.log"), `${line}\n`);
+      } catch {
+        /* 状态目录也写不了（盘满 / 权限）就算了，日志不能反咬进程 */
+      }
+    } finally {
+      inLog = false;
     }
   };
 

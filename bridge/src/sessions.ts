@@ -98,6 +98,18 @@ export function contextLogDir(): string {
   return statePath("ctxlog");
 }
 
+/**
+ * D358：一次下发 / 解析的组成日志窗口（尾部字节数）。
+ *
+ * D271 定的是「订阅时补一次全量 `emitContextLog(true)`」。那时日志还小，但它是**只增不减**的
+ * append：实测单文件已经到 73MB（同机 27 份 >1MB）。全量读的代价是同步的 `readFileSync` +
+ * 逐行 `JSON.parse` + `renumberCtxLog` + 整帧 `JSON.stringify` —— 24MB 要 5.0 秒 CPU，74MB 要
+ * 13.9 秒，而且压在桥的**唯一**事件循环上：期间所有页面、终端与 `/healthz` 一起停（实测切一次
+ * 会话桥 5.2 秒不应答）。面板要看的是最近几轮，所以只读尾部这一段，再按 (size, mtime) 缓存：
+ * 切走再切回来是零成本。更早的行不再下发。
+ */
+const CTX_LOG_TAIL_BYTES = 2 * 1024 * 1024;
+
 export interface ApprovalRequest {
   id: string;
   sessionId: string;
@@ -898,8 +910,10 @@ export class Session extends EventEmitter {
   handoffPending = false;
   /** 上一次自动交接失败的时刻：5 分钟内不再重试，不然每条消息都弹一次同样的错。 */
   private handoffFailedAt = 0;
-  /** #384：ctxlog 增量基线（已推给前端的行数；null = 还没推过全量）。 */
-  private ctxBaseline: number | null = null;
+  /** #384：ctxlog 增量基线（已推到的最后一行 `seq` + 那时的文件大小；null = 还没推过全量）。 */
+  private ctxBaseline: { seq: number; size: number } | null = null;
+  /** D358：读过的组成日志缓存；`omitted` = 没下发的更早字节数（0 = 整份）。 */
+  private ctxLogCache: { size: number; mtimeMs: number; omitted: number; lines: CtxLine[] } | null = null;
   /** Copilot 积分：增量扫会话 JSONL 的读书指针 + 它盯的是哪个文件。 */
   private copilotTally: CopilotTally | null = null;
   private copilotFile: string | null = null;
@@ -1457,15 +1471,54 @@ export class Session extends EventEmitter {
     return path.join(contextLogDir(), id.slice(0, 8), `${id}.ctx.jsonl`);
   }
 
-  /** 读整个组成日志（启动时/面板全量刷新）；坏行跳过，从不抛。 */
+  /**
+   * 读组成日志（只有尾部窗口，见 `CTX_LOG_TAIL_BYTES`）；坏行跳过，从不抛。
+   * 缓存键是文件的 (size, mtime)：没变就不重读，变了也最多重读那 2MB。
+   */
   readContextLog(): CtxLine[] {
     const file = this.contextLogFile();
     if (!file) return [];
+    let size = 0;
+    let mtimeMs = 0;
+    try {
+      const st = fs.statSync(file);
+      size = st.size;
+      mtimeMs = st.mtimeMs;
+    } catch {
+      this.ctxLogCache = null;
+      return [];
+    }
+    const cached = this.ctxLogCache;
+    if (cached && cached.size === size && cached.mtimeMs === mtimeMs) return cached.lines;
+    const from = Math.max(0, size - CTX_LOG_TAIL_BYTES);
     let text: string;
     try {
-      text = fs.readFileSync(file, "utf8");
+      if (from === 0) {
+        text = fs.readFileSync(file, "utf8");
+      } else {
+        // 多读窗口前面那一个字节：它是换行符就说明窗口正好落在行首，不用丢行。
+        const head = from - 1;
+        const buf = Buffer.allocUnsafe(size - head);
+        const fd = fs.openSync(file, "r");
+        try {
+          let read = 0;
+          while (read < buf.length) {
+            const n = fs.readSync(fd, buf, read, buf.length - read, head + read);
+            if (n <= 0) break;
+            read += n;
+          }
+          text = buf.subarray(0, read).toString("utf8");
+        } finally {
+          fs.closeSync(fd);
+        }
+        if (buf[0] !== 0x0a) {
+          // 窗口从半行开始：丢掉第一个换行符之前那段（不是一个完整的 JSON）。
+          const nl = text.indexOf("\n");
+          text = nl >= 0 ? text.slice(nl + 1) : "";
+        }
+      }
     } catch {
-      return [];
+      return cached?.lines ?? [];
     }
     const out: CtxLine[] = [];
     for (const line of text.split("\n")) {
@@ -1482,26 +1535,39 @@ export class Session extends EventEmitter {
       }
     }
     // 旧扩展每次 session_start 都从 seq 1 重数，同一文件里会撞号；见 ctxlog-seq.ts。
-    return renumberCtxLog(out);
+    const lines = renumberCtxLog(out);
+    this.ctxLogCache = { size, mtimeMs, omitted: from, lines };
+    return lines;
   }
 
   /**
-   * #384：把组成日志推给前端（增量）。`full` 时先推全部，供面板初始化。
+   * #384：把组成日志推给前端（增量）。`full` 时推尾部窗口，供面板初始化。
    * 在 agent_end / agent_settled 后和 stats 一起走，不用 fs.watch —— 写入节奏和请求一致，够了。
+   * `omitted` 是没下发的更早字节数（0 = 整份都在这一帧里），前端目前不画它，留给提示用。
+   *
+   * 基线记的是**最后一行 seq**而不是行数：窗口会往前走，行号也跟着挪，拿行数当基线会在文件
+   * 长大到 2 MB 之后错位（要么永远不再推，要么把旧行当新行又推一遍）。找不到「比基线新」的行时
+   * 就整段重发 —— 前端 `full` 是替换语义，不会叠加。
    */
   async emitContextLog(full = false): Promise<void> {
-    if (!full && this.ctxBaseline === null) return;
+    const base = this.ctxBaseline;
+    if (!full && !base) return; // 还没推过全量：先等 subscribe 那条
     const lines = this.readContextLog();
-    const base = this.ctxBaseline ?? 0;
-    if (!full && lines.length <= base) return;
-    this.ctxBaseline = lines.length;
-    this.emitWs({
-      type: "ctxlog",
-      sessionId: this.state.id,
-      full,
-      total: lines.length,
-      lines: full ? lines : lines.slice(base),
-    });
+    const size = this.ctxLogCache?.size ?? 0;
+    const omitted = this.ctxLogCache?.omitted ?? 0;
+    const lastSeq = lines.length ? Number(lines[lines.length - 1].seq) || 0 : 0;
+    if (!full && base) {
+      if (base.size === size) return; // 文件没动过
+      const at = lines.findIndex((l) => typeof l.seq === "number" && l.seq > base.seq);
+      if (at > 0) {
+        this.ctxBaseline = { seq: lastSeq, size };
+        this.emitWs({ type: "ctxlog", sessionId: this.state.id, full: false, total: lines.length, omitted, lines: lines.slice(at) });
+        return;
+      }
+      // 一行也不比基线新，或者整个窗口已经翻过去了：这两种都按整段重发。
+    }
+    this.ctxBaseline = { seq: lastSeq, size };
+    this.emitWs({ type: "ctxlog", sessionId: this.state.id, full: true, total: lines.length, omitted, lines });
   }
 
   /** Token/context numbers for the composer HUD and new subscribers; best effort, never throws. */
