@@ -57,6 +57,7 @@
     "test:copilot": "node --experimental-strip-types bridge/tests/copilot-credits-unit.mjs && node --experimental-strip-types web/tests/copilot-unit.mjs",
     "test:exec-view": "node --experimental-strip-types web/tests/exec-view-unit.mjs",
     "test:wsmanage": "node --experimental-strip-types web/tests/wsmanage-unit.mjs",
+    "test:ws-row": "npm run build:bridge && node bridge/tests/ws-row-drift.mjs",
     "test:menuplace": "node --experimental-strip-types web/tests/menuplace-unit.mjs",
     "test:viewport": "node web/tests/viewport-units-unit.mjs",
     "test:theme": "node --experimental-strip-types --test web/tests/theme-unit.mjs",

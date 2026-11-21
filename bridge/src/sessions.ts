@@ -252,7 +252,10 @@ export interface SessionState {
   archived?: boolean;
   /** #484: 这个会话把任务交接给了哪个新会话（旧会话就停在那一刻，不再自动压缩/交接）。 */
   handoffTo?: string;
-  /** 工作区（一级分组 = 工程）的组 id，只有 list() 填（#72/#94）。空串 = 没有 cwd，不属于任何工作区。 */
+  /**
+   * 工作区（一级分组 = 工程）的组 id，`list()` 与每一条会话帧都填（#72/#94、D355）。
+   * 空串 = 没有 cwd，不属于任何工作区。
+   */
   ws?: string;
   /** Tool permission mode the approval gate enforces (state/allow/<id>.json `mode`). */
   permission?: PermissionMode;
@@ -3354,7 +3357,7 @@ export class SessionManager extends EventEmitter {
   }
 
   private wire(session: Session): void {
-    session.on("ws", (payload: any) => this.emit("ws", this.withWs(payload)));
+    session.on("ws", (payload: any) => this.emit("ws", this.stateFrameWithWs(payload)));
     session.loopbackUrl = this.loopbackUrl;
     // #484: 阈值要在桥这边读（页面关着也得能压、能交接），所以把「解析三层」绑给会话。
     session.contextPolicyView = () => this.contextPolicyFor(session.state.id);
@@ -3404,14 +3407,18 @@ export class SessionManager extends EventEmitter {
     await session.pinPermission();
     this.wire(session);
     this.sessions.set(id, session);
-    await session.startLive({ resume: false, cwd, ws: this.workspaces.groupFor(id, cwd, this.place()), name });
-    this.emitState(session.state);
+    // D355：`session.state` 在 `startLive()` 里就会发出来（页面靠它当场建出会话），而它会带
+    // `ws` = 这个 cwd 的组 id，页面拿到后要去手里的工作区快照里找这个组 —— 组是刚建的就先
+    // 把快照发出去，否则那一帧查不到组，第二排会闪一下空的置顶横排。
+    const hadGroup = Boolean(this.workspaces.lookup(id, cwd));
+    const ws = this.workspaces.groupFor(id, cwd, this.place());
+    if (!hadGroup) this.emit("ws", { type: "workspaces", workspace: this.workspaces.snapshot() });
+    await session.startLive({ resume: false, cwd, ws, name });
     // 随手问不是用户的会话（#86），不占置顶。
     if (!opts.scratch) this.pinNew(id);
+    this.emitState(session.state);
     // 新会话可能开在一个 workspace 缓存里从没有的目录里：补缓存并广播新快照（见 refreshWorkspaces）。
-    void this.refreshWorkspaces().catch(() => {
-      /* 补缓存失败只影响分组精度，不影响会话本身 */
-    });
+    void this.refreshWorkspaces();
     return session;
   }
 
@@ -3431,15 +3438,16 @@ export class SessionManager extends EventEmitter {
    * 页面**当场建出会话**的唯一依据（新建、跑起来、改状态都走它），所以它必须自带 `ws`，
    * 否则新目录里的会话在页面里没有工作区 —— 横排的置顶会整条空掉，胶囊也丢工作区色点。
    *
-   * 现算而不是缓存：拖动、改名、合并工作区之后旧值就是错的。
+   * 现算而不是缓存：拖动、改名、合并工作区之后旧值就是错的。查表用 `lookup()` 而不是
+   * `groupFor()`：发帧是热读路径，不该顺手往工作区表里写组（`Workspaces.lookup` 的注释）。
    */
   stateWithWs<T extends { id: string; cwd?: string; ws?: string }>(state: T): T {
-    const ws = this.workspaces.groupFor(state.id, state.cwd ?? "");
+    const ws = this.workspaces.lookup(state.id, state.cwd ?? "");
     return ws ? { ...state, ws } : state;
   }
 
   /** 会话自己发出的帧里，只有 `session.state` 需要补 ws，其余原样转发。 */
-  private withWs(payload: any): any {
+  private stateFrameWithWs(payload: any): any {
     if (payload?.type !== "session.state" || !payload.session) return payload;
     return { ...payload, session: this.stateWithWs(payload.session) };
   }
@@ -3449,13 +3457,21 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * 补一次工作区缓存并广播（与客户端连上时 `syncWorkspaces()` 做的是同一件事，有改动才广播）。
+   * 补一次工作区缓存并广播（客户端连上、`ws.list`、新建会话之后都走这里，有改动才广播）。
    *
    * `keys` 是惰性补的（`resolve()` 跑 git 才知道 worktree 的真根），而 `resolve()` 原来只在
    * 客户端连上时跑一次：页面**先开着**、随后在新目录里开新会话，这个目录就既不在 `keys` 里、
    * 会话条目也没有 `ws` —— 页面的 `wsOf()` 三条来源全空，第二排的置顶随之清空。
    */
   async refreshWorkspaces(): Promise<void> {
+    try {
+      await this.refreshWorkspacesNow();
+    } catch {
+      /* 补缓存失败只影响分组精度，不影响会话本身 —— 随手调的补丁，不往上抛（D355）。 */
+    }
+  }
+
+  private async refreshWorkspacesNow(): Promise<void> {
     if (!(await this.resolveWorkspaces())) return;
     this.emit("ws", { type: "workspaces", workspace: this.workspaces.snapshot() });
     this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });

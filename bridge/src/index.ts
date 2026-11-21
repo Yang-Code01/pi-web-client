@@ -2604,16 +2604,10 @@ async function main(): Promise<void> {
     /**
      * 补一次工作区缓存（git 是子进程，慢），有改动才广播。页面进来时跑一次：worktree 在这时候
      * 才并回主仓，于是分组从「按 cwd 暂时分的」变成真的。
+     *
+     * 与「新建会话之后」「ws.list」共用一份实现（`Sessions.refreshWorkspaces`，失败它自己吞）。
      */
-    const syncWorkspaces = async (): Promise<void> => {
-      try {
-        // 与「新建会话之后」共用一份（`Sessions.refreshWorkspaces`）：有改动才广播。
-        await sessions.refreshWorkspaces();
-      } catch {
-        /* 补缓存失败只影响分组精度，不影响会话本身 */
-      }
-    };
-    void syncWorkspaces();
+    void sessions.refreshWorkspaces();
 
     // A login waiting on this page's answers (or an OAuth callback server) must not outlive it.
     ws.on("close", () => {
@@ -2947,8 +2941,9 @@ async function main(): Promise<void> {
             // D349: sessions.create() pins every new session at the end of the strip and broadcasts
             // the arrangement itself, whichever entry made it; an old page's `pin` flag is ignored.
             (ws as any).watching = session.state.id;
+            // 只补「发给发起方」的那一帧：`session.state` 已经由 create() 广播给所有页面了
+            // （`Sessions.emitState`），这里再 broadcast 一次就是同一帧发两遍（D355）。
             send(frameFor(ws, { ...sessionFrameOf(session.pagedSnapshot()), trust: await trustFor(session.state.cwd) }));
-            broadcast({ type: "session.state", session: sessions.stateWithWs(session.state) });
             return;
           }
           case "mkdir": {
@@ -4098,7 +4093,7 @@ async function main(): Promise<void> {
             if (action === "ws.list") {
               // 只回缓存里的快照（快）；缓存里没有的 cwd 顺手补上，补齐后会再来一条广播。
               send({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
-              void syncWorkspaces();
+              void sessions.refreshWorkspaces();
               return;
             }
             if (action === "ws.rename") {

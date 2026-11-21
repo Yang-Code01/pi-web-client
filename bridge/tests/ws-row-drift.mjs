@@ -8,12 +8,14 @@
  * 而这条帧原来不带 `ws`；`keys[cwd]` 又要等 `resolve()` 补缓存，而那只在客户端连上时跑
  * —— 于是三条来源全空，`starredRow()` 按 D210 回空。
  *
- * 钉住两件事（都是桥对外的行为，不看内部字段）：
+ * 钉住三件事（都是桥对外的行为，不看内部字段）：
  *   1. `session.state` 帧带着这个会话的工作区（`session.ws` = 组 id）；
  *   2. `create` 之后桥自己补一次工作区缓存，并广播 `sessions.list` + `workspaces`，
- *      那份快照里 `keys[cwd]` 已经有了 —— 页面即使错过了 `ws` 也能按 cwd 反查到本区。
+ *      那份快照里 `keys[cwd]` 已经有了 —— 页面即使错过了 `ws` 也能按 cwd 反查到本区；
+ *   3. 把收到的帧按顺序**增量重放**一遍（`wsOf()` 的镜像），从页面知道这个会话的那一帧起，
+ *      每帧之后反查本区都不能是 null —— 顺序错了（`session.state` 早于含新组的快照）也红。
  *
- * Run: npm run build:bridge && node bridge/tests/ws-row-drift.mjs
+ * Run: npm run test:ws-row
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -167,12 +169,50 @@ try {
     `列表条目的 ws 也是它（拿到 ${JSON.stringify(lastList?.sessions?.find((s) => s.id === sid)?.ws)}）`,
   );
 
-  // ---- 3. 页面侧反查本区的三条来源，至少有一条能命中（这就是「第二排不为空」的充分条件）----
-  const entryWs = lastList?.sessions?.find((s) => s.id === sid)?.ws ?? null;
-  const keysHit = list?.workspace?.keys?.[CWD_KEY] ?? null;
+  // ---- 3. 页面侧：按帧顺序增量重放，从「页面知道这个会话」起，每帧之后反查本区都不许是 null ----
+  // 镜像 web/src/nowchip.ts:67-86 `wsOf()`（override → 列表条目 ws → 会话快照 ws → keys[cwd]），
+  // 以及 `starredRow()` 按 D210 的回空规则（解析不到本区 → 第二排整条空）。
+  const wsOf = (session, workspace, listedWs) => {
+    const groups = workspace?.groups ?? [];
+    const wanted = [workspace?.overrides?.[session.id], listedWs, session.ws].find((v) => Boolean(v));
+    if (wanted) {
+      const hit = groups.find((g) => g.id === wanted);
+      if (hit) return hit.id;
+    }
+    const cwd = String(session.cwd ?? "").replace(/\\/g, "/");
+    if (!cwd) return null;
+    const root = workspace?.keys?.[cwd.toLowerCase()];
+    if (!root) return null;
+    const id = String(root).replace(/\\/g, "/").toLowerCase();
+    return groups.some((g) => g.id === id) ? id : null;
+  };
+
+  const page = { workspace: null, sessions: [], known: false };
+  const drifted = [];
+  for (const m of seen) {
+    // 页面每收到一帧就更新手里的快照（app.ts 的 manage / workspaces / sessions.list / session.state 分支）
+    if (m.workspace) page.workspace = m.workspace;
+    if (m.type === "sessions.list" && Array.isArray(m.sessions)) page.sessions = m.sessions;
+    if (m.type === "session.state" && m.session?.id === sid) {
+      // app.ts:3133 mergeSession：有就展开合并，没有就插到最前面
+      const i = page.sessions.findIndex((x) => x.id === sid);
+      if (i >= 0) page.sessions[i] = { ...page.sessions[i], ...m.session };
+      else page.sessions = [{ ...m.session }, ...page.sessions];
+      page.known = true;
+    }
+    const answer = m.state ?? m.session;
+    if (answer?.id === sid || (m.type === "sessions.list" && page.sessions.some((x) => x.id === sid)))
+      page.known = true;
+    if (!page.known) continue;
+    const self = page.sessions.find((x) => x.id === sid) ?? answer;
+    const listed = page.sessions.find((x) => x.id === sid);
+    const group = wsOf(self, page.workspace, listed?.ws);
+    if (group !== GROUP) drifted.push({ type: m.type, got: group });
+  }
+  check(page.known, "重放里确实遇到了「页面知道这个会话」的那一刻");
   check(
-    anyState?.session?.ws === GROUP || entryWs === GROUP || keysHit,
-    "页面反查本区的来源里至少一条命中（state.ws / 列表 ws / keys[cwd]）",
+    drifted.length === 0,
+    `从知道这个会话起，反查本区始终命中（漂掉 ${drifted.length} 帧：${JSON.stringify(drifted.slice(0, 3))}）`,
   );
 
   ws.close();

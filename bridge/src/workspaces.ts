@@ -307,6 +307,19 @@ export class Workspaces {
     return this.ensure(key, place).id;
   }
 
+  /**
+   * 与 `groupFor()` 同一条映射规则，但**只查不建**。给会话帧盖 `ws` 是热读路径：`ensure()` 会写
+   * `workspaces.json`，还会把第一次遇到的组追加到标签行末尾（不带 `place` 时 `placeIn` 的老行为），
+   * 所以读路径只能查表。
+   */
+  lookup(sessionId: string, cwd: string): string {
+    const override = this.state.value().overrides[sessionId];
+    if (override && this.group(override)) return override;
+    const key = this.keyOf(cwd);
+    if (!key) return "";
+    return this.group(groupId(key))?.id ?? "";
+  }
+
   private ensure(key: string, place?: PlaceContext): WsGroup {
     const id = groupId(key);
     const existing = this.group(id);
