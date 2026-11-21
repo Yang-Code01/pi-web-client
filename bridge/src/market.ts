@@ -492,6 +492,19 @@ export async function searchPackages(query: string, limit: number): Promise<Stor
     list.push(...page);
     if (page.length < STORE_PAGE) break;
   }
+  // 查询词被 `keywords:pi-package` AND 起来以后，npm 只认它索引过的那份词表（README 里的中文、
+  // 生僻词、纯名字都不在里面），于是冷门包与 CJK 查询直接零结果。这里只在这种情况下补一页不限
+  // keywords 的搜索，再按 pi-package 标签滤回来 —— 限定是过滤器，不该同时当召回手段。
+  if (q && !list.length) {
+    list.push(
+      ...(await cached(`store:loose:${q}`, 10 * 60_000, async () => {
+        const text = encodeURIComponent(q);
+        const data = await getJson<{ objects?: any[] }>(`https://registry.npmjs.org/-/v1/search?text=${text}&size=${STORE_PAGE}&from=0`);
+        const hits = (data.objects ?? []).filter((o) => Array.isArray(o?.package?.keywords) && o.package.keywords.includes("pi-package"));
+        return hits.map(toStore);
+      })),
+    );
+  }
   const seen = new Set<string>();
   const unique = list.filter((p) => !seen.has(p.name) && seen.add(p.name));
   if (!q) return unique.sort((a, b) => b.monthly - a.monthly).slice(0, limit);
@@ -638,6 +651,38 @@ export interface McpIndex {
   v?: number;
 }
 
+/** Where a half-finished walk stands; see `INDEX_PARTIAL`. */
+export interface WalkState {
+  at: number;
+  cursor: string | null;
+  pages: number;
+  items: StoreMcp[];
+}
+
+/**
+ * A checkpoint from disk, or null when it must not be trusted: wrong schema, older than the resume
+ * window, or shaped wrong (a half-written file). `now` is passed in so the test can age it.
+ */
+export function walkToResume(raw: unknown, now: number): WalkState | null {
+  const w = raw as Partial<WalkState> | null;
+  if (!w || typeof w !== "object") return null;
+  if ((w as { v?: unknown }).v !== INDEX_SCHEMA) return null;
+  if (typeof w.at !== "number" || !Number.isFinite(w.at) || now - w.at > INDEX_RESUME_TTL) return null;
+  if (!Array.isArray(w.items) || typeof w.pages !== "number" || !Number.isFinite(w.pages)) return null;
+  if (w.cursor !== null && typeof w.cursor !== "string") return null;
+  return { at: w.at, cursor: w.cursor ?? null, pages: w.pages, items: w.items as StoreMcp[] };
+}
+
+/**
+ * A page the registry refuses outright (400 / 403 / 404 / 410 / 422 …): asking again changes nothing.
+ * 429 and 408 are the opposite — the same page will answer later, so they stay "transient".
+ */
+export function pageRefused(err: unknown): boolean {
+  const status = Number((err as { status?: unknown })?.status ?? 0);
+  if (!status || status === 408 || status === 429) return false;
+  return status >= 400 && status < 500;
+}
+
 /**
  * 2: walk only `version=latest`. Version 1 walked every version of every server, hit the page cap at
  * ~22k names (Nov 2026) and silently lost the long tail (desktop-touch-mcp, the JetBrains servers…).
@@ -648,6 +693,16 @@ const INDEX_SCHEMA = 2;
 const INDEX_MAX_PAGES = 600;
 /** A walk that died costs minutes, so the next keystroke must not start it over. */
 const INDEX_FAILURE_COOLDOWN = 60_000;
+/**
+ * D379: the walking state (cursor + what is already collected), written every `INDEX_CHECKPOINT` pages.
+ * The walk is ~300 pages and minutes long; one proxy reset on page 240 used to throw all of them away.
+ * A checkpoint is (cursor_after_page_N, items_after_page_N) recorded together, so resuming from it
+ * re-walks only the pages that never made it to disk — nothing is skipped.
+ */
+const INDEX_PARTIAL = () => statePath("market", "mcp-index.partial.json");
+const INDEX_CHECKPOINT = 25;
+/** An abandoned checkpoint is not worth resuming once it is this old (the registry moved on anyway). */
+const INDEX_RESUME_TTL = 6 * 3600_000;
 
 let building: Promise<McpIndex> | null = null;
 let lastFailure = 0;
@@ -714,14 +769,63 @@ function readIndexDisk(): McpIndex | null {
   }
 }
 
-async function buildIndex(): Promise<McpIndex> {
-  const items = new Map<string, StoreMcp>();
-  let cursor: string | null = null;
-  let pages = 0;
-  for (; pages < INDEX_MAX_PAGES; pages++) {
-    const url = `https://registry.modelcontextprotocol.io/v0/servers?limit=100&version=latest${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-    const data: any = await getJsonRetry(url);
-    for (const e of data.servers ?? []) {
+/** One page of `GET /v0/servers`: the entries plus where the cursor goes next. */
+export interface IndexPage {
+  servers?: any[];
+  metadata?: { nextCursor?: string | null };
+}
+
+export interface WalkResult {
+  items: StoreMcp[];
+  /** Pages walked in total, including the ones a previous run did (it is the checkpoint's number). */
+  pages: number;
+  /** Where the walk stopped; null means the registry had no more pages. */
+  cursor: string | null;
+  /** The registry refused a page (`pageRefused`): the catalog is served short instead of not at all. */
+  refused: boolean;
+  at: number;
+}
+
+/**
+ * Walk the registry, resuming from `resume` when there is one (D379). Passed its dependencies so the
+ * resume behaviour is testable without a network: `fetchPage(cursor)` answers one page, `checkpoint`
+ * persists `(cursor_after_page_N, items_after_page_N)` every `every` pages so a later run continues
+ * exactly where this one stopped — never skipping pages, at worst repeating the ones since the last
+ * checkpoint.
+ *
+ * A page error is either transient (checkpoint *first*, then throw: the next run resumes here) or a
+ * refusal (keep what we have, stop, report `refused`) — the old code treated both as "start over".
+ */
+export async function walkIndex(opts: {
+  resume: WalkState | null;
+  fetchPage: (cursor: string | null) => Promise<IndexPage>;
+  checkpoint: (state: Omit<WalkState, "v">) => void;
+  now?: () => number;
+  maxPages?: number;
+  every?: number;
+}): Promise<WalkResult> {
+  const now = opts.now ?? Date.now;
+  const maxPages = opts.maxPages ?? INDEX_MAX_PAGES;
+  const every = Math.max(1, opts.every ?? INDEX_CHECKPOINT);
+  const items = new Map<string, StoreMcp>((opts.resume?.items ?? []).map((it) => [it.name, it]));
+  const at = opts.resume?.at ?? now();
+  let cursor: string | null = opts.resume?.cursor ?? null;
+  let pages = opts.resume?.pages ?? 0;
+  let refused = false;
+  const save = (next: string | null) => opts.checkpoint({ at, cursor: next, pages, items: [...items.values()] });
+  while (pages < maxPages) {
+    let data: IndexPage;
+    try {
+      data = await opts.fetchPage(cursor);
+    } catch (err) {
+      if (pageRefused(err)) {
+        refused = true;
+        break;
+      }
+      save(cursor);
+      throw err;
+    }
+    for (const e of data?.servers ?? []) {
       const n = normalize(e);
       if (!n) continue;
       // Several versions of one name arrive; the newest wins whatever the order (the old code kept
@@ -729,12 +833,34 @@ async function buildIndex(): Promise<McpIndex> {
       const prev = items.get(n.name);
       if (!prev || newer(n.version, prev.version)) items.set(n.name, n);
     }
-    cursor = data.metadata?.nextCursor ?? null;
-    if (!cursor || !(data.servers ?? []).length) break;
+    pages++;
+    cursor = data?.metadata?.nextCursor ?? null;
+    if (!cursor || !(data?.servers ?? []).length) break;
+    if (pages % every === 0) save(cursor);
   }
-  const list = [...items.values()];
+  return { items: [...items.values()], pages, cursor, refused, at };
+}
+
+async function buildIndex(): Promise<McpIndex> {
+  // One page is the only thing that can go wrong mid-walk; walkIndex owns the retry story.
+  const walk = await walkIndex({
+    resume: walkToResume(readJson<unknown>(INDEX_PARTIAL(), null), Date.now()),
+    fetchPage: (cursor) => getJsonRetry(`https://registry.modelcontextprotocol.io/v0/servers?limit=100&version=latest${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+    checkpoint: (state) => {
+      ensureDir(path.dirname(INDEX_PARTIAL()));
+      writeJson(INDEX_PARTIAL(), { v: INDEX_SCHEMA, ...state });
+    },
+  });
+  const list = walk.items;
   const starsComplete = await fillStars(list);
-  return { at: Date.now(), items: list, starsComplete, truncated: Boolean(cursor) && pages >= INDEX_MAX_PAGES, v: INDEX_SCHEMA };
+  // The walk is done (or gave up): the checkpoint has no future. This runs before the caller writes
+  // the index, so a crash in between leaves a checkpoint that resuming finishes from — never a false index.
+  try {
+    fs.rmSync(INDEX_PARTIAL(), { force: true });
+  } catch {
+    /* nothing to clean up */
+  }
+  return { at: Date.now(), items: list, starsComplete, truncated: walk.refused || (Boolean(walk.cursor) && walk.pages >= INDEX_MAX_PAGES), v: INDEX_SCHEMA };
 }
 
 const GH_TOKEN_TTL = 10 * 60_000;
@@ -757,6 +883,34 @@ export function ghToken(): Promise<string | null> {
   return ghTokenCache.value;
 }
 
+/**
+ * One GraphQL batch answer → the stars it actually carries, per repo URL (null = "not on GitHub").
+ *
+ * D379: a 200 does not mean the question was answered. GitHub rides rate limits and bad nodes on
+ * `errors`, and a repo that is gone, renamed or private comes back as a `null` node under `data`.
+ * The old code read both as "we know: 0 stars", so `starsComplete` was true while half the table was
+ * zeros. Anything the answer does not state keeps `complete` false.
+ */
+export function readStarsBatch(text: string, repos: (string | null)[]): { stars: Map<string, number>; complete: boolean } {
+  const stars = new Map<string, number>();
+  let body: any;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return { stars, complete: false };
+  }
+  if (!body || typeof body !== "object") return { stars, complete: false };
+  let complete = !(Array.isArray(body.errors) && body.errors.length > 0);
+  const data = body.data ?? {};
+  repos.forEach((repo, j) => {
+    if (!repo) return; // not a GitHub repo: there is nothing to know
+    const n = data[`r${j}`]?.stargazerCount;
+    if (typeof n === "number") stars.set(repo, n);
+    else complete = false;
+  });
+  return { stars, complete };
+}
+
 /** Stars per repo: GraphQL in batches with a token, else anonymous REST for as many as allowed. */
 async function fillStars(list: StoreMcp[]): Promise<boolean> {
   const repos = [...new Set(list.map((x) => x.repo).filter((x): x is string => Boolean(x)))];
@@ -769,15 +923,14 @@ async function fillStars(list: StoreMcp[]): Promise<boolean> {
   let complete = true;
   if (token) {
     for (let i = 0; i < repos.length; i += 80) {
-      const batch = repos.slice(i, i + 80).map(key);
+      const slice = repos.slice(i, i + 80);
+      const batch = slice.map(key);
       const parts = batch.map((r, j) => (r ? `r${j}: repository(owner: ${JSON.stringify(r.owner)}, name: ${JSON.stringify(r.name)}) { stargazerCount }` : "")).filter(Boolean);
       try {
         const res = await request("https://api.github.com/graphql", { method: "POST", headers: { authorization: `bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ query: `{ ${parts.join("\n")} }` }), timeoutMs: 30_000 });
-        const data = JSON.parse(res.text)?.data ?? {};
-        batch.forEach((_, j) => {
-          const n = data[`r${j}`]?.stargazerCount;
-          if (typeof n === "number") stars.set(repos[i + j], n);
-        });
+        const got = readStarsBatch(res.text, slice.map((repo, j) => (batch[j] ? repo : null)));
+        for (const [repo, n] of got.stars) stars.set(repo, n);
+        if (!got.complete) complete = false;
       } catch {
         complete = false;
       }
@@ -796,6 +949,8 @@ async function fillStars(list: StoreMcp[]): Promise<boolean> {
       }
     }
   }
+  // Unknown stars stay 0 because the ranker and the UI do arithmetic with them; `starsComplete`
+  // is what tells the client whether a 0 means "no stars" or "not looked up".
   for (const item of list) item.stars = item.repo ? (stars.get(item.repo) ?? 0) : 0;
   return complete;
 }

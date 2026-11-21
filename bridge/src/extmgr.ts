@@ -105,6 +105,26 @@ function serversIn(file: string): [string, Record<string, unknown>][] {
   return Object.entries(servers).filter((e): e is [string, Record<string, unknown>] => Boolean(e[1]) && typeof e[1] === "object");
 }
 
+/** pi 认为只有 `-` 和 `_` 不同的两个名字是同一个 server，这里照它判。 */
+function sameServerName(a: string, b: string): boolean {
+  return a.trim().toLowerCase().replace(/_/g, "-") === b.trim().toLowerCase().replace(/_/g, "-");
+}
+
+/**
+ * 这个名字是否已经有人用了；返回命中的 mcp.json（没有则 null）。
+ *
+ * D379：`pi mcp add` 撞名只打一行 `Replaced`，所以「要不要覆盖」必须由调用的地方先判 ——
+ * 这里读的是落盘文件，不依赖页面上那份可能过期的清单。
+ */
+export function mcpNameTaken(name: string, cwd: string | null): string | null {
+  const want = name.trim();
+  if (!want) return null;
+  for (const file of mcpFiles(cwd)) {
+    if (serversIn(file).some(([n]) => sameServerName(n, want))) return file;
+  }
+  return null;
+}
+
 /**
  * The servers pi will list, read straight from its mcp.json files — no connection, so the page can
  * show every row at once while `pi mcp list` connects them in the background. A later file wins a

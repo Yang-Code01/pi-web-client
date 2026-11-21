@@ -82,7 +82,7 @@ import { actOnFailure, emptyLedger, mergeFailures, readLedger, undoFailures, typ
 import { allowRemind, reminderText, reviewPrompt } from "./lessons.ts";
 import { deleteRule, markReviewed, readRules, setRule } from "./rules.ts";
 import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, STORE_MAX, type McpInstallOption } from "./market.ts";
-import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, togglePackage, updateCount, writeUiPrefs } from "./extmgr.ts";
+import { bumpMcp, inventory, mcpNameTaken, readUiPrefs, toggleExtension, toggleMcp, togglePackage, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
@@ -3660,6 +3660,13 @@ async function main(): Promise<void> {
                 const runId = `cli_${Date.now().toString(36)}`;
                 const out = await writeLock("npm", () =>
                   writeLock(mcpFileLock(msg.local === true, typeof msg.cwd === "string" ? msg.cwd : null), async () => {
+                    // D379: `pi mcp add` on a name that already exists prints "Replaced" and exits 0 —
+                    // the first server's config is gone and nobody was asked. The page prefills a free
+                    // name; this refuses the silent overwrite even if the page's inventory is stale.
+                    const taken = mcpNameTaken(String(req.name ?? ""), typeof msg.cwd === "string" ? msg.cwd : null);
+                    if (taken && msg.overwrite !== true) {
+                      throw Object.assign(new Error(`已经有一个叫「${req.name}」的 MCP 服务器（${taken}），换个名字，或者确认替换它。`), { errCode: "mcp_name_taken" });
+                    }
                     send({ type: "picli.start", reqId, runId, op: "mcp.add" });
                     return (await runPiCli(pi.cli, { ...req, cwd: msg.cwd ? String(msg.cwd) : undefined }, (chunk) => send({ type: "picli.out", runId, text: chunk }))).done;
                   }),
