@@ -1763,6 +1763,10 @@ export class App {
     if (this.sessionReclaimId !== id && this.sessionReclaimEl) this.sessionReclaimEl.hidden = true;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
     this.resetSessionView();
+    // D385：打开的是一颗**已归档**的会话，就把它请回来（取消归档 + 置顶到最前）。
+    // 别的会话照旧不动排列（D146）；不这么做的话 `starredRow()` 排掉归档会话、
+    // `renderSessionRow()` 藏掉当前胶囊，顶栏那一行里只剩别颗的名字，左栏也放不回所属工作区。
+    if (this.manage.archived.includes(id)) this.reviveArchived(id);
     this.socket.send({ type: "subscribe", sessionId: id });
     this.renderAll();
   }
@@ -11788,6 +11792,21 @@ export class App {
   private archiveIds(ids: string[], on: boolean): void {
     if (!ids.length) return;
     this.act(() => this.socket.send({ type: "manage", action: "archive", ids, on }));
+  }
+
+  /**
+   * D385：打开归档会话时把它请回来。先乐观改一遍本地 `manage` 再发桥命令 —— 顶栏 ★ 行、
+   * 当前会话胶囊、左栏分组全都按 `manage` 现算，等桥的快照回来才改的话，画面上就会先闪一帧
+   * 「打开了、可上面写着别人」；桥广播的快照随后把这里再抹一次，不会错。
+   */
+  private reviveArchived(id: string): void {
+    this.manage = {
+      ...this.manage,
+      archived: this.manage.archived.filter((x) => x !== id),
+      pin: [id, ...this.manage.pin.filter((x) => x !== id)],
+      order: this.manage.order.filter((x) => x !== id),
+    };
+    this.act(() => this.socket.send({ type: "manage", action: "revive", id }));
   }
 
   /** Per-card delete needs a second click within 4s. */

@@ -7416,3 +7416,22 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** 外壳自身的属性（`aria-label`）不再随重建刷新，改为在 `render()` 里重设；以后若想让某次重画**重演**入场，得显式加类触发，不能靠重建。`List` 与 `main` 仍是每次新建，滚动容器 `.mc-main` 原地重置到顶部，切分区的手感不变。
 
 **验证。** `probes/mail-panel-single-mount.mjs`：改前一次点击挂载 3 次、带 `mac-window-in` 3 次、切分区累计 4 次（4 条全红）；改后 1 / 1 / 1，切分区不重挂、Esc 后不复活、`关闭前后没有新的挂载`（5 条全绿）。`npm --prefix web run typecheck` 通过；截屏 `.scratch/mail-single-mount/shots/panel-open.png`。
+
+## D385 打开一条**已归档**的会话 = 请它回来（取消归档 + 置顶到最前）（用户「打开已经归档的回话，现在会显示在 chat 框中，但是上面的所属回话，是一个已经其他的回话名……应该自动取消归档，并且自动置顶，这样就能导航到正确的工作区，回话名也正常」2026-11-22）
+
+**问题。** 在「会话管理 → 状态=已归档 → 打开」打开一条归档回话，正文是对的，但画出的是别人的身份：顶栏那一行（★ 本区行）还是打开前那颗的名字，当前会话胶囊被整颗藏掉，这条会话也仍旧躺在「已归档」里、左栏回不到所属工作区。三处各有各的原因，叠在一起就是用户看到的样子：
+
+- `openSession()`（`web/src/app.ts:1757`）只切视图（`switchDraft → currentId → setSelectedWs(null) → subscribe → renderAll()`），从不回写归档/置顶；`openFromList()`（管理面板「打开」与左栏卡片都走它）也只是改 hash 再调它。
+- 桥一侧同样没有：`bridge/src/manage.ts` 的注释写明 **D146 废止了 D125「打开即置顶」**，`bridge/src/index.ts` 收到 `action:"opened"` 只回一份快照、什么都不写；而 `setArchived(on=true)` 又会把它从 `pin` 里摘掉 —— 归档一条会话等于把它从两个可见位置同时抹掉。
+- 归属是现算的：`renderSessionRow()` 里 `setNowChipHidden(… || currentArchived())` 藏掉胶囊，`starredRow()` 把 `archived` 整个过滤掉，`web/src/tree.ts` 的 `buildTree()` 又 `continue` 掉归档会话。当前会话一旦在归档里，顶栏只剩别颗的名字（「上面写着别人的回话名」），左栏也放不回它的组。
+
+**决定。** 只给「打开一条**已归档**的会话」开口子，D146 照旧管其它一切：
+
+- 桥：`Manage.revive(id)` 在**一个** `state.update` 里取消归档、把它插到 `pin[0]`、从 `order` 摘掉；非归档会话调用是空操作。WS 动作名 `manage.action = "revive"`（`bridge/src/index.ts`，紧挨 `opened`），写完照常广播 `manage + workspace` 快照。
+- 页面：`openSession()` 里 `if (this.manage.archived.includes(id)) this.reviveArchived(id)`，`reviveArchived()` 先**乐观**改本地 `manage`（从 `archived` 删、插 `pin` 首位、摘 `order`）再发 `{type:"manage", action:"revive", id}`；桥的快照回来再抹一次。
+
+**为什么。** 三处现象是同一个「它既不在 pin 也不在归档之外」造成的，所以修在一个动作上，而不是分别去补胶囊/★ 行/tree 的兜底。`revive` 必须原子：分两步（先取消归档、再置顶）会露出「已取消归档但 ★ 行里还没有它」的中间态，顶栏那一瞬间仍然算不出归属。乐观更新同样是为了这个中间态 —— 等桥往返才改的话，画面上会先闪一帧「打开了、上面写着别人」，而这正是用户报的那个现象。只对归档会话生效，是为了不让 D146 重新变成「每开一个会话就重排一次 ★ 行」：普通会话的打开仍然什么都不改。
+
+**代价 / 可改。** 打开归档会话会**改用户手工排的 ★ 顺序**（插到最前）—— 这是用户要的，但它确实推翻 D146 的一句「打开不改排列」，以后想改成「追加到末尾」只需改 `revive()` 里那一行拼接。带 `#/s/<id>` 的旧书签/外链指向一颗归档会话时，打开即解除归档（不再静默打开）。**没做**：把「打开过的排在 ★ 行前面」推广成通用规则；也没做「归档时记住原位置、恢复时插回原处」，插到最前就够了。
+
+**验证。** `.pi/skills/pi-web-e2e-test` 的 change 模式（同一份 case 跑改前/改后）：改前 3 条红 —— ★ 行里没有刚打开的那颗、★ 行只剩原来那颗、打开后它仍在「已归档」；改后全绿，顶栏与 ★ 行都写对了名字。`npm run typecheck`（bridge + peer + web，含 i18n 与 viewport 守卫）通过；`npm run test:nowchip` / `test:wsmanage` / `test:ws-row` 通过。

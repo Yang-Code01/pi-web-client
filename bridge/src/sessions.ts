@@ -4455,6 +4455,11 @@ export class SessionManager extends EventEmitter {
     this.manage.setArchived(ids, on);
   }
 
+  /** D385：打开一条已归档的会话时把它请回来（取消归档 + 置顶到最前）。 */
+  revive(id: string): void {
+    this.manage.revive(id);
+  }
+
   /**
    * Delete session files. The only destructive operation in the bridge.
    *
