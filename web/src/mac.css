@@ -414,7 +414,7 @@ html[data-ui="mac"] .mac-instant > * { animation: none !important; }
   html[data-ui="mac"] *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
 }
 
-/* 设置里「Mac 风格」那一节下面的快捷键提示。 */
+/* 设置里「主题与强调色」那一页下面的快捷键提示（D356）。 */
 .mac-keys { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0 0; padding: 0; list-style: none; color: var(--dim); font-size: 12px; }
 .mac-keys kbd {
   display: inline-block; min-width: 1.6em; margin-right: 4px; padding: 1px 6px; text-align: center;

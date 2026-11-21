@@ -430,7 +430,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .theme-intro { padding: 14px 16px 6px; display: grid; gap: 14px; max-height: calc(var(--vh1) * 70); overflow-y: auto; }
 .theme-intro-lead { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--dim); }
 .theme-intro-group { display: grid; gap: 8px; }
-.theme-intro-title { font-size: 12px; font-weight: 600; color: var(--text); }
 .theme-intro .theme-chips { display: flex; flex-wrap: wrap; }
 .ws-intro-sheet { width: min(520px, 100%); }
 .ws-intro { padding: 14px 16px 6px; display: grid; gap: 10px; max-height: calc(var(--vh1) * 60); overflow-y: auto; }
