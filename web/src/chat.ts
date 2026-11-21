@@ -35,8 +35,9 @@ interface TurnState {
 
 /**
  * 一轮里自动加载的技能合成一个折叠组（用户要求）：不展开时永远只有一行 ——「自动加载 N 个技能 ·
- * 名字…」，点开才是每张技能卡的全文。组落在本轮第一张技能卡的位置，后续同类卡追加进来，
- * 摘要行跟着刷新；换一条用户消息就是新一轮，指针清空。
+ * 名字…」，点开才是每张技能卡的全文。位置：本轮已经有过工具时插在操作框**前面**（D369），
+ * 否则落在本轮第一张技能卡处，后续同类卡追加进来，摘要行跟着刷新；换一条用户消息就是新一轮，
+ * 指针清空。
  */
 interface SkillGroup {
   body: HTMLElement;
@@ -1077,8 +1078,10 @@ export class ChatView {
       // #341: 计划卡也按轮分：新的一轮从一张新卡开始。
       this.todoGroup = null;
     }
-    // 隐式技能卡是「下面那张 read」的前言，不能落在它后面：收掉已有模块，让这张 read 自己开一个。
-    if (item.kind === "skill") this.closeOps();
+    // 隐式技能卡是「下面那张 read」的前言，不能落在它后面 —— 但那件事由 `ensureSkillGroup()`
+    // 把组插到当前操作框之前来完成（D369）。这里**不能**再 `closeOps()`：组只在本轮第一张卡
+    // 到达时插一次、之后不移动（D200），所以第二张以后的技能卡本来就到不了自己那次 read 的
+    // 上面，关框换不来任何版面收益，只会把一轮的操作切成好几撮。
     if (item.kind === "assistant") {
       this.assistantTexts.set(item.id, item.text ?? "");
       if ((item.text ?? "").trim()) this.noteAnswered();
@@ -1116,7 +1119,7 @@ export class ChatView {
     }
     const node = this.build(item);
     this.cards.set(item.id, node);
-    // 本轮所有自动加载的技能只占一个折叠组（用户要求），组落在第一张卡的位置。
+    // 本轮所有自动加载的技能只占一个折叠组（用户要求）；位置由 `groupSkill()` 决定（D369）。
     if (item.kind === "skill") {
       this.groupSkill(node, item);
       this.scrollToEnd();
@@ -1942,7 +1945,11 @@ export class ChatView {
     summary.append(el("span", "chev", "▸"), el("span", "auto", tr("自动加载")), count, names);
     const body = el("div", "skillgroup-body");
     box.append(summary, body);
-    this.push(box);
+    // 一轮恒一个操作框（D369）：本轮已经跑过工具时，组插在那个框**前面**，不再收掉它。
+    // 这样技能卡照样在所有工具之上，而一轮的卡片不会被技能劈成一撮一撮。
+    const current = this.opsBox;
+    if (current && current.parentNode === this.root) current.before(box);
+    else this.push(box);
     this.skillGroup = { body, count, names, skillNames: [] };
     return this.skillGroup;
   }
