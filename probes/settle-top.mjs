@@ -20,8 +20,7 @@ import { loadPlaywright } from "../tools/playwright.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(REPO, "web/dist");
-const PORT = 7897;
-const BASE = `http://127.0.0.1:${PORT}`;
+const PORT = Number(process.env.PI_WEB_PORT ?? 0);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const PARAS = [
@@ -61,7 +60,11 @@ const longItems = [
   mkUser(7, "长回答收尾时，能不能直接把我送回它的第一行？"),
   { id: "draft:long", kind: "assistant", text: "", thinking: "", model: "stub", ts: new Date().toISOString() },
 ];
-const shortItems = [...history, mkUser(7, "短回答也试一下。"), mkAssistant(7, SHORT)];
+const shortItems = [
+  ...history,
+  mkUser(7, "短回答也试一下。"),
+  { id: "draft:short", kind: "assistant", text: "", thinking: "", model: "stub", ts: new Date().toISOString() },
+];
 const upItems = [
   ...history,
   mkUser(7, "我在流式的时候先往上读，收尾别把我拽走。"),
@@ -93,7 +96,7 @@ const makeSession = (id, name, items, running) => ({
 
 const sessions = new Map([
   ["s-long", makeSession("s-long", "长回答收尾", longItems, true)],
-  ["s-short", makeSession("s-short", "短回答对照", shortItems, false)],
+  ["s-short", makeSession("s-short", "短回答对照", shortItems, true)],
   ["s-up", makeSession("s-up", "长回答·上滚中", upItems, true)],
 ]);
 
@@ -102,7 +105,7 @@ const ME = { version: "stub", pi: "stub", public: false, tunnel: TUNNEL, pushKey
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json", ".webmanifest": "application/manifest+json" };
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url ?? "/", BASE);
+  const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const json = (code, body) => {
     res.writeHead(code, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
@@ -168,77 +171,11 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+const BASE = `http://127.0.0.1:${server.address().port}`;
 
 const send = (body) => {
   for (const ws of sockets) ws.send(JSON.stringify(body));
 };
-
-const { chromium } = await loadPlaywright();
-const browser = await chromium.launch();
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: "zh-CN" });
-const page = await ctx.newPage();
-page.on("pageerror", (e) => console.log("pageerror:", e.message));
-await page.goto(BASE, { waitUntil: "domcontentloaded" });
-if (await page.locator('input[type="password"]').count()) {
-  await page.fill('input[type="password"]', "probe");
-  await page.click('button:has-text("进入")');
-}
-await page.waitForSelector(".session-card", { timeout: 15000 });
-
-const geom = () =>
-  page.evaluate(() => {
-    const root = document.querySelector(".chat-scroll");
-    const nodes = [...root.querySelectorAll(":scope > .msg.assistant")];
-    const node = nodes[nodes.length - 1];
-    const jump = document.querySelector(".chat-jump");
-    const raw = Number.parseFloat(getComputedStyle(root).getPropertyValue("--ui-scale"));
-    const scale = Number.isFinite(raw) && raw > 0 ? raw : 1;
-    return {
-      top: Math.round(root.scrollTop),
-      max: Math.round(root.scrollHeight - root.clientHeight),
-      answerTop: node ? Math.round((node.getBoundingClientRect().top - root.getBoundingClientRect().top) / scale + root.scrollTop - 6) : null,
-      answerHeight: node ? Math.round(node.offsetHeight) : 0,
-      scale,
-      viewport: root.clientHeight,
-      jumpHidden: jump?.hidden ?? null,
-      hasNew: jump?.classList.contains("has-new") ?? null,
-    };
-  });
-
-async function open(name) {
-  await page.locator(".session-card", { hasText: name }).first().click();
-  await sleep(900);
-}
-
-/** Stream `text` into one draft in small chunks; returns the stop function. */
-function stream(sessionId, itemId, text) {
-  const step = Math.max(24, Math.ceil(text.length / 90));
-  let at = 0;
-  const timer = setInterval(() => {
-    if (at >= text.length) return;
-    const chunk = text.slice(at, at + step);
-    at += step;
-    send({ type: "delta", sessionId, id: itemId, field: "text", text: chunk });
-  }, 35);
-  return async () => {
-    clearInterval(timer);
-    await sleep(120);
-  };
-}
-
-/** Finish the draft the way the bridge does: replace the streaming node, then flip running off. */
-async function finish(sessionId, itemId, text) {
-  send({
-    type: "item.replace",
-    sessionId,
-    id: itemId,
-    item: { id: itemId, kind: "assistant", text, thinking: "", model: "stub", ts: new Date().toISOString() },
-  });
-  const entry = sessions.get(sessionId);
-  entry.session = { ...entry.session, running: false, done: true };
-  entry.items = entry.items.map((it) => (it.id === itemId ? { ...it, text } : it));
-  send({ type: "session.state", session: entry.session });
-}
 
 const result = {};
 const record = (name, ok, detail) => {
@@ -246,74 +183,172 @@ const record = (name, ok, detail) => {
   console.log(`${name.padEnd(14)} ${ok ? "PASS" : "FAIL"}  ${detail}`);
 };
 
-// --- 1. long answer: settle at its first line -----------------------------------------------------
-await open("长回答收尾");
-let g = await geom();
-console.log("long before:", JSON.stringify(g));
-const stopLong = stream("s-long", "draft:long", LONG);
-for (let i = 0; i < 80; i += 1) {
-  await sleep(100);
+let browser = null;
+try {
+  const { chromium } = await loadPlaywright();
+  browser = await chromium.launch();
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: "zh-CN" });
+  const page = await ctx.newPage();
+  page.on("pageerror", (e) => console.log("pageerror:", e.message));
+  await page.goto(BASE, { waitUntil: "domcontentloaded" });
+  if (await page.locator('input[type="password"]').count()) {
+    await page.fill('input[type="password"]', "probe");
+    await page.click('button:has-text("进入")');
+  }
+  await page.waitForSelector(".session-card", { timeout: 15000 });
+
+  const geom = () =>
+    page.evaluate(() => {
+      const root = document.querySelector(".chat-scroll");
+      const nodes = [...root.querySelectorAll(":scope > .msg.assistant")];
+      const node = nodes[nodes.length - 1];
+      const jump = document.querySelector(".chat-jump");
+      const raw = Number.parseFloat(getComputedStyle(root).getPropertyValue("--ui-scale"));
+      const scale = Number.isFinite(raw) && raw > 0 ? raw : 1;
+      return {
+        top: Math.round(root.scrollTop),
+        max: Math.round(root.scrollHeight - root.clientHeight),
+        answerTop: node ? Math.round((node.getBoundingClientRect().top - root.getBoundingClientRect().top) / scale + root.scrollTop - 6) : null,
+        answerHeight: node ? Math.round(node.offsetHeight) : 0,
+        scale,
+        viewport: root.clientHeight,
+        jumpHidden: jump?.hidden ?? null,
+        hasNew: jump?.classList.contains("has-new") ?? null,
+      };
+    });
+
+  /** Wait until the transcript's scrollTop has been unchanged for three samples. */
+  async function waitScrollSettled(timeout = 5000) {
+    let last = Number.NaN;
+    let stable = 0;
+    const started = Date.now();
+    while (Date.now() - started < timeout) {
+      const top = await page.evaluate(() => Math.round(document.querySelector(".chat-scroll")?.scrollTop ?? 0));
+      if (top === last) stable += 1;
+      else {
+        stable = 0;
+        last = top;
+      }
+      if (stable >= 3) return;
+      await sleep(50);
+    }
+  }
+
+  async function open(name) {
+    await page.locator(".session-card", { hasText: name }).first().click();
+    await sleep(900);
+  }
+
+  /** Stream `text` into one draft in small chunks; returns the stop function. */
+  function stream(sessionId, itemId, text) {
+    const step = Math.max(24, Math.ceil(text.length / 90));
+    let at = 0;
+    const timer = setInterval(() => {
+      if (at >= text.length) return;
+      const chunk = text.slice(at, at + step);
+      at += step;
+      send({ type: "delta", sessionId, id: itemId, field: "text", text: chunk });
+    }, 35);
+    return async () => {
+      clearInterval(timer);
+      await sleep(120);
+    };
+  }
+
+  /** Finish the draft the way the bridge does: replace the streaming node, then flip running off. */
+  async function finish(sessionId, itemId, text) {
+    send({
+      type: "item.replace",
+      sessionId,
+      id: itemId,
+      item: { id: itemId, kind: "assistant", text, thinking: "", model: "stub", ts: new Date().toISOString() },
+    });
+    const entry = sessions.get(sessionId);
+    entry.session = { ...entry.session, running: false, done: true };
+    entry.items = entry.items.map((it) => (it.id === itemId ? { ...it, text } : it));
+    send({ type: "session.state", session: entry.session });
+  }
+
+  // --- 1. long answer: settle at its first line ---------------------------------------------------
+  await open("长回答收尾");
+  let g = await geom();
+  console.log("long before:", JSON.stringify(g));
+  record("scale-not-1", g.scale > 1.01, `scale=${g.scale} (default 1.25)`);
+  const stopLong = stream("s-long", "draft:long", LONG);
+  for (let i = 0; i < 80; i += 1) {
+    await sleep(100);
+    g = await geom();
+    if (g.answerHeight > g.viewport * 2.5 && g.top >= g.max - 2) break;
+  }
+  await stopLong();
+  await finish("s-long", "draft:long", LONG);
+  await waitScrollSettled();
   g = await geom();
-  if (g.answerHeight > g.viewport * 2.5 && g.top >= g.max - 2) break;
-}
-await stopLong();
-await finish("s-long", "draft:long", LONG);
-await sleep(1500);
-g = await geom();
-console.log("long after: ", JSON.stringify(g));
-record(
-  "long-settle",
-  g.answerTop !== null && Math.abs(g.top - g.answerTop) <= 16 && g.jumpHidden === false && g.hasNew === false,
-  `top=${g.top} answerTop=${g.answerTop} max=${g.max} jumpHidden=${g.jumpHidden} hasNew=${g.hasNew}`,
-);
-record("long-scrolled", g.top < g.max - 200, `top=${g.top} max=${g.max} (should leave the bottom)`);
+  console.log("long after: ", JSON.stringify(g));
+  record(
+    "long-settle",
+    g.answerTop !== null && Math.abs(g.top - g.answerTop) <= 16 && g.jumpHidden === false && g.hasNew === false,
+    `top=${g.top} answerTop=${g.answerTop} max=${g.max} jumpHidden=${g.jumpHidden} hasNew=${g.hasNew}`,
+  );
+  record("long-scrolled", g.top < g.max - 200, `top=${g.top} max=${g.max} (should leave the bottom)`);
 
-// A late delta must not drag the viewport back (following is off after settle), and the jump
-// button must advertise it, then take us back to the bottom.
-send({ type: "delta", sessionId: "s-long", id: "draft:long", field: "text", text: "\n\n（收尾之后又补了一句。）\n" });
-await sleep(350);
-const afterLate = await geom();
-record("late-no-pull", Math.abs(afterLate.top - g.top) <= 2 && afterLate.hasNew === true, `top=${afterLate.top} was=${g.top} hasNew=${afterLate.hasNew}`);
-await page.locator(".chat-jump").click();
-await sleep(500);
-const back = await geom();
-record("jump-back", back.top >= back.max - 2 && back.jumpHidden === true, `top=${back.top} max=${back.max} hidden=${back.jumpHidden}`);
+  // A late delta must not drag the viewport back (following is off after settle), and the jump
+  // button must advertise it, then take us back to the bottom.
+  send({ type: "delta", sessionId: "s-long", id: "draft:long", field: "text", text: "\n\n（收尾之后又补了一句。）\n" });
+  await sleep(350);
+  const afterLate = await geom();
+  record("late-no-pull", Math.abs(afterLate.top - g.top) <= 2 && afterLate.hasNew === true, `top=${afterLate.top} was=${g.top} hasNew=${afterLate.hasNew}`);
+  await page.locator(".chat-jump").click();
+  await waitScrollSettled(3000);
+  const back = await geom();
+  record("jump-back", back.top >= back.max - 2 && back.jumpHidden === true, `top=${back.top} max=${back.max} hidden=${back.jumpHidden}`);
 
-// --- 2. short answer: no movement ----------------------------------------------------------------
-await open("短回答对照");
-await sleep(300);
-g = await geom();
-console.log("short:      ", JSON.stringify(g));
-record("short-stays", g.answerHeight < g.viewport && Math.abs(g.top - g.max) <= 2, `top=${g.top} max=${g.max} answerHeight=${g.answerHeight} view=${g.viewport}`);
-
-// --- 3. already reading up: settle must not yank ------------------------------------------------
-await open("长回答·上滚中");
-const stopUp = stream("s-up", "draft:up", LONG);
-for (let i = 0; i < 60; i += 1) {
-  await sleep(100);
+  // --- 2. short answer: no movement --------------------------------------------------------------
+  await open("短回答对照");
+  const stopShort = stream("s-short", "draft:short", SHORT);
+  await sleep(700);
+  await stopShort();
+  await finish("s-short", "draft:short", SHORT);
+  await waitScrollSettled(2000);
   g = await geom();
-  if (g.answerHeight > g.viewport * 2.5) break;
+  console.log("short:      ", JSON.stringify(g));
+  record(
+    "short-stays",
+    g.answerHeight < g.viewport && Math.abs(g.top - g.max) <= 2 && g.jumpHidden === true,
+    `top=${g.top} max=${g.max} answerHeight=${g.answerHeight} view=${g.viewport} hidden=${g.jumpHidden}`,
+  );
+
+  // --- 3. already reading up: settle must not yank ----------------------------------------------
+  await open("长回答·上滚中");
+  const stopUp = stream("s-up", "draft:up", LONG);
+  for (let i = 0; i < 60; i += 1) {
+    await sleep(100);
+    g = await geom();
+    if (g.answerHeight > g.viewport * 2.5) break;
+  }
+  await page.mouse.move(640, 420);
+  await page.mouse.wheel(0, -900);
+  await sleep(250);
+  const upBefore = await geom();
+  await stopUp();
+  await finish("s-up", "draft:up", LONG);
+  await waitScrollSettled();
+  const upAfter = await geom();
+  console.log("up before:  ", JSON.stringify(upBefore));
+  console.log("up after:   ", JSON.stringify(upAfter));
+  record(
+    "up-held",
+    upBefore.top < upBefore.max - 100 && Math.abs(upAfter.top - upBefore.top) <= 2 && upAfter.jumpHidden === false,
+    `before=${upBefore.top} after=${upAfter.top} max=${upAfter.max} hidden=${upAfter.jumpHidden}`,
+  );
+
+  fs.mkdirSync(path.join(REPO, ".scratch/settle-top"), { recursive: true });
+  await page.screenshot({ path: path.join(REPO, ".scratch/settle-top/long-settle.png") });
+} finally {
+  if (browser) await browser.close().catch(() => {});
+  await new Promise((r) => server.close(r));
 }
-await page.mouse.move(640, 420);
-await page.mouse.wheel(0, -900);
-await sleep(250);
-const upBefore = await geom();
-await stopUp();
-await finish("s-up", "draft:up", LONG);
-await sleep(1500);
-const upAfter = await geom();
-console.log("up before:  ", JSON.stringify(upBefore));
-console.log("up after:   ", JSON.stringify(upAfter));
-record(
-  "up-held",
-  upBefore.top < upBefore.max - 100 && Math.abs(upAfter.top - upBefore.top) <= 2 && upAfter.jumpHidden === false,
-  `before=${upBefore.top} after=${upAfter.top} max=${upAfter.max} hidden=${upAfter.jumpHidden}`,
-);
 
-await page.screenshot({ path: path.join(REPO, ".scratch/settle-top/long-settle.png") }).catch(() => {});
-
-await browser.close();
-await new Promise((r) => server.close(r));
 const passed = Object.values(result).every(Boolean);
 console.log(passed ? "PASS: 长回答收尾回到开头，短回答 / 上滚中都不动" : "FAIL: 收尾滚动不符合预期");
 process.exitCode = passed ? 0 : 1;

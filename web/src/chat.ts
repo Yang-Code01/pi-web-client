@@ -446,7 +446,7 @@ export class ChatView {
    * 节点首行在滚动内容里的位置（`scrollTop` 的单位）。
    * `getBoundingClientRect()` 量到的是视觉 px，`scrollTop` 是布局 px；`#app` 上挂着
    * `zoom: var(--ui-scale)`（外观字号），两者差一个倍数。不除的话字号 125% 时滚不到首行
-   * ——正是这颗「收尾回开头」钮在默认字号下会暴露的坑（D123）。
+   * ——默认字号下会把首行滚过头（D123）。
    */
   private contentTopOf(node: HTMLElement): number {
     const raw = Number.parseFloat(getComputedStyle(this.root).getPropertyValue("--ui-scale"));
@@ -1298,7 +1298,6 @@ export class ChatView {
   /** 运行态变了：只有最后一枚用户消息会因为「处理中」而变样；收尾那一下把长回答送回开头。 */
   setRunning(running: boolean): void {
     if (this.running === running) return;
-    const wasRunning = this.running;
     this.running = running;
     this.paintPending();
     if (running) {
@@ -1307,8 +1306,7 @@ export class ChatView {
       this.settleFrame = 0;
       return;
     }
-    if (!wasRunning) return;
-    // `message_end` 的 replace() 已把流式节点换成最终节点，但高度要等排版；等两帧再量。
+    // 同值守卫保证走到这里时上一态是 true（true → false），只需要等排版落定。
     if (this.settleFrame) cancelAnimationFrame(this.settleFrame);
     this.settleFrame = requestAnimationFrame(() => {
       this.settleFrame = requestAnimationFrame(() => {
