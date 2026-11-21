@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="mac-dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型 · 模型选择弹窗（4 个方案）</title>
+<!--
+  快速原型，不进 main。要回答的问题：对话框下面那颗 model chip 点开的弹窗，按「设置页」(.st-console 控制台)
+  的视觉语言重做之后长什么样。五个结构不同的方案，底部黑色胶囊 / ← → / 1-5 切换（?variant=A|B|C|D|E）：
+
+    A 控制台式双栏    左栏来源导航 + 右栏模型行 + 顶部搜索与思考档位分段，设置页外壳原样搬过来
+    B 居中卡片栈      没有左栏：当前模型一张大卡、最近使用一排 chip、分组行 + 思考档位一行（设置页「行」语言）
+    C 底部抽屉改造    位置不变（还是贴底那条），顶部来源页签 + 两列模型卡网格
+    D 贴 chip 即时面板  不做确认步：搜索优先、扁平列表、思考档位一排小段，点一下立刻生效
+    E A + 即时生效      A 的外壳（已选定），把底栏的「未改动 / 取消 / 确认」换成「已切到 X · 撤销」
+
+  数据是这台机器 ~/.pi/agent/models.json 里的真实目录（3 个来源 / 46 个模型），长名字「Hy4（x0.29）｜hy4std」
+  这类正好用来压省略号。样式里的 token 由 build.mjs 从 web/src/theme-tokens.css 原样注入，颜色和真界面一致。
+-->
+<style>/*__TOKENS__*/</style>
+<style>
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { overflow: hidden; color: var(--text); background: var(--bg); font: 13px/1.5 var(--sans); }
+button { font: inherit; }
+.mono { font-family: var(--mono); }
+.dim { color: var(--faint); }
+
+/* ---------------------------------------------------------------- 主界面（只画够当背景的一层） */
+/* 底部那截 46px 是给原型切换胶囊让位：它压在真界面底栏上会盖住 model chip，看着像设计坏了 */
+.app { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; padding-bottom: 46px; }
+.topbar { display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.topbar .name { font-size: 13px; font-weight: 600; }
+.topbar .right { display: flex; gap: 8px; margin-left: auto; }
+.chat { display: flex; flex-direction: column; gap: 12px; padding: 16px 16px 8px; overflow: hidden; }
+.msg { max-width: 74%; padding: 8px 12px; border-radius: 12px; font-size: 13px; }
+.msg .who { margin-bottom: 2px; color: var(--faint); font-size: 10.5px; }
+.msg.user { align-self: flex-end; background: var(--accent-bg); border: 1px solid var(--accent-dim); }
+.msg.ai { align-self: flex-start; color: var(--dim); background: var(--panel); border: 1px solid var(--line-soft); }
+.composer { display: grid; gap: 8px; padding: 12px; background: color-mix(in srgb, var(--bg) 96%, transparent); border-top: 1px solid var(--line-soft); }
+.composer .row { display: flex; gap: 8px; align-items: flex-end; }
+.composer textarea { flex: 1; min-height: 44px; padding: 12px; resize: none; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; outline: none; font: 15px/1.5 var(--sans); }
+.composer textarea::placeholder { color: var(--faint); }
+.composer .hint { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--faint); }
+.composer .hint-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 620px) { .composer .hint-status { display: none; } }
+.composer .hint-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-left: auto; justify-content: flex-end; }
+.composer .hint-tools .btn { padding: 4px 12px; border-radius: 8px; font-size: 12px; }
+
+.btn { padding: 8px 16px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; cursor: pointer; transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease); }
+.btn:hover { background: var(--accent-bg); border-color: var(--line-strong); }
+.btn.ghost { background: transparent; }
+.btn.primary { color: var(--accent-ink); background: var(--accent); border-color: transparent; font-weight: 500; }
+.btn.primary:hover { background: var(--accent-hover); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:disabled:hover { background: transparent; border-color: var(--line); }
+
+/* 触发弹窗的那颗 chip（真界面 .model-chip）：弹窗开着时点成按下态，方便对照锚点 */
+.model-chip { display: inline-flex; align-items: center; padding: 0; color: var(--dim); background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; cursor: pointer; font-size: 12px; }
+.model-chip > span { padding: 4px 8px; white-space: nowrap; }
+.model-chip > span + span { border-left: 1px solid var(--line); }
+.model-chip .chip-model { color: var(--text); font-family: var(--mono); font-size: 11.5px; }
+.model-chip .chip-ctx, .model-chip .chip-level { color: var(--faint); font-family: var(--mono); font-size: 11px; }
+.model-chip[data-open="1"] { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent); }
+
+/* ---------------------------------------------------------------- 共用件 */
+/* 底下留 56px 给原型胶囊：不然贴底的抽屉，它的「取消 / 确认」正好被胶囊压住 */
+.back { position: fixed; inset: 0 0 56px; z-index: 60; background: rgba(3, 5, 8, 0.62); backdrop-filter: blur(2px); }
+.search { display: flex; flex: 1; gap: 8px; align-items: center; min-width: 0; height: 32px; padding: 0 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; }
+.search input { flex: 1; min-width: 0; color: var(--text); background: none; border: 0; outline: none; font: 12.5px/1 var(--sans); }
+.search input::placeholder { color: var(--faint); }
+.search .lg { flex: none; color: var(--faint); font: 11px/1 var(--mono); }
+kbd, .kbd { padding: 2px 4px; color: var(--faint); background: none; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; font: 10px/1 var(--mono); white-space: nowrap; }
+.seg { display: inline-flex; flex: none; gap: 2px; padding: 2px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; }
+.seg button { padding: 4px 10px; color: var(--dim); background: transparent; border: 1px solid transparent; border-radius: 6px; cursor: pointer; font: 11.5px/1 var(--mono); }
+.seg button:hover { color: var(--text); }
+.seg button.on { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.tag { flex: none; padding: 1px 6px; white-space: nowrap; color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 999px; font-size: 10.5px; }
+.x { display: grid; flex: none; place-items: center; width: 28px; height: 28px; padding: 0; color: var(--dim); background: transparent; border: 1px solid transparent; border-radius: 8px; cursor: pointer; font: 16px/1 var(--mono); }
+.x:hover { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+.none { padding: 22px 8px; color: var(--faint); font-size: 12px; text-align: center; }
+.lv-label { flex: none; color: var(--faint); font-size: 11.5px; }
+.foot-hint { overflow: hidden; color: var(--faint); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.foot-hint.changed { color: var(--accent); }
+
+/* 模型行（A / D 共用） */
+.mrow { display: flex; gap: 10px; align-items: center; width: 100%; padding: 8px 10px; color: var(--text); text-align: left; background: transparent; border: 1px solid transparent; border-radius: 10px; cursor: pointer; }
+.mrow:hover { background: var(--panel-2); }
+.mrow.on { background: var(--accent-bg); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.mrow .mid { display: grid; flex: 1; gap: 1px; min-width: 0; }
+.mrow .mname { display: block; overflow: hidden; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .mmeta { display: block; overflow: hidden; color: var(--faint); font: 11px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.mcheck { flex: none; color: var(--accent); font-size: 13px; }
+.radio { display: grid; flex: none; place-items: center; width: 14px; height: 14px; border: 1.5px solid var(--line-strong); border-radius: 999px; }
+.mrow.on .radio { border-color: var(--accent); }
+.mrow.on .radio::after { content: ""; width: 7px; height: 7px; background: var(--accent); border-radius: 999px; }
+
+.toast { position: fixed; bottom: 66px; left: 50%; z-index: 90; padding: 8px 14px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); font-size: 12px; opacity: 0; transform: translateX(-50%); transition: opacity var(--dur-2) var(--ease); pointer-events: none; }
+.toast.on { opacity: 1; }
+
+/* ---------------------------------------------------------------- A · 控制台式双栏 */
+.vA-back { display: grid; place-items: center; padding: 20px; }
+.vA { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(900px, 100%); height: min(680px, 100%); overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5); }
+.vA .head { display: flex; gap: 16px; justify-content: space-between; padding: 18px 20px 14px; border-bottom: 1px solid var(--line-soft); }
+.vA .eyebrow { color: var(--faint); font: 650 10px/1.4 var(--sans); letter-spacing: 0.14em; text-transform: uppercase; }
+.vA h1 { margin: 4px 0 0; font-size: 24px; font-weight: 650; line-height: 1.15; }
+.vA .sub { margin-top: 4px; color: var(--dim); font-size: 12px; }
+.vA .sub .mono { color: var(--faint); font-size: 11.5px; }
+.vA .badges { display: flex; gap: 6px; margin-top: 9px; }
+.vA .badge { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; color: var(--dim); background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; font-size: 10.5px; }
+.vA .badge.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-dim); }
+.vA .main { display: grid; grid-template-columns: 214px minmax(0, 1fr); min-height: 0; }
+.vA .nav { display: flex; flex-direction: column; gap: 3px; min-height: 0; padding: 12px; overflow: auto; background: color-mix(in srgb, var(--panel-2) 55%, var(--panel)); border-right: 1px solid var(--line-soft); }
+.vA .nav-group { padding: 12px 11px 4px; color: var(--faint); font: 650 9.5px/1.4 var(--sans); letter-spacing: 0.08em; text-transform: uppercase; }
+.vA .nav-item { display: flex; gap: 8px; align-items: center; justify-content: space-between; width: 100%; padding: 8px 11px; color: var(--dim); text-align: left; background: transparent; border: 1px solid transparent; border-radius: 8px; cursor: pointer; font-size: 12.5px; }
+.vA .nav-item:hover { color: var(--text); background: color-mix(in srgb, var(--text) 4%, transparent); }
+.vA .nav-item.on { color: var(--text); background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 28%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
+.vA .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vA .nav-count { min-width: 18px; padding: 1px 5px; color: var(--faint); background: var(--panel-3); border-radius: 999px; font: 10px/1.5 var(--mono); text-align: center; }
+.vA .nav-item.on .nav-count { color: var(--accent); }
+.vA .pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
+.vA .scopebar { display: flex; gap: 8px; align-items: center; padding: 16px 20px 10px; }
+.vA .list { min-height: 0; padding: 0 12px 12px; overflow: auto; }
+.vA .mgroup { position: sticky; top: 0; z-index: 1; padding: 8px 4px 4px; color: var(--faint); background: var(--panel); font: 650 10px/1.4 var(--sans); letter-spacing: 0.06em; text-transform: uppercase; }
+.vA .foot { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 16px; border-top: 1px solid var(--line-soft); }
+.vA .foot-actions { display: flex; flex: none; gap: 8px; }
+/* E：立即生效的撤销胶囊 —— 只留一步，点完就没了 */
+.vA .foot-left { display: flex; flex: 1; gap: 8px; align-items: center; min-width: 0; }
+.undo { flex: none; padding: 4px 10px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent); border-radius: 999px; cursor: pointer; font-size: 11.5px; }
+.undo:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+
+@media (max-width: 760px) {
+  .vA-back { padding: 10px; }
+  .vA { width: 100%; height: 100%; }
+  .vA .head { padding: 14px; }
+  .vA h1 { font-size: 20px; }
+  .vA .badges { display: none; }
+  .vA .main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .vA .nav { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px; overflow: visible; border-right: 0; border-bottom: 1px solid var(--line-soft); }
+  .vA .nav-group, .vA .nav-count { display: none; }
+  .vA .nav-item { width: auto; padding: 6px 10px; }
+  .vA .nav-item.on { box-shadow: none; }
+  .vA .scopebar { flex-wrap: wrap; padding: 12px 14px 8px; }
+  .vA .search { flex-basis: 100%; }
+}
+
+/* ---------------------------------------------------------------- B · 居中卡片栈 */
+.vB-back { display: grid; place-items: center; padding: 20px; }
+.vB { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(560px, 100%); max-height: min(760px, 100%); overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5); }
+.vB .head { display: flex; gap: 10px; align-items: center; padding: 14px 16px 12px; border-bottom: 1px solid var(--line-soft); }
+.vB .head h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.vB .head .sub { color: var(--faint); font: 11px/1.4 var(--mono); }
+.vB .head .x { margin-left: auto; }
+.vB .body { display: grid; gap: 12px; align-content: start; min-height: 0; padding: 14px 16px 10px; overflow: auto; }
+.vB .hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 12px 14px; background: var(--accent-bg); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 12px; }
+.vB .hero .k { grid-column: 1; color: var(--faint); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+.vB .hero .n { grid-column: 1; overflow: hidden; font-size: 17px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.vB .hero .m { grid-column: 1; color: var(--dim); font: 11px/1.4 var(--mono); }
+.vB .hero .ok { grid-row: 1 / span 3; grid-column: 2; align-self: center; color: var(--accent); font-size: 18px; }
+.vB .chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
+.vB .chip { display: inline-flex; gap: 6px; align-items: center; max-width: 250px; padding: 5px 10px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; cursor: pointer; font-size: 12px; }
+.vB .chip:hover { background: var(--accent-bg); border-color: var(--line-strong); }
+.vB .chip .cv { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vB .glabel { display: flex; gap: 8px; align-items: center; padding: 8px 2px 2px; color: var(--faint); font: 650 10px/1.4 var(--sans); letter-spacing: 0.06em; text-transform: uppercase; }
+.vB .gline { flex: 1; height: 1px; background: var(--line-soft); }
+.vB .rows { display: grid; gap: 2px; }
+.vB .rowx { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 10px; align-items: center; width: 100%; padding: 8px 10px; color: var(--text); text-align: left; background: transparent; border: 1px solid transparent; border-radius: 10px; cursor: pointer; }
+.vB .rowx:hover { background: var(--panel-2); }
+.vB .rowx.on { background: var(--accent-bg); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+.vB .rowx .rn { display: flex; grid-column: 1; gap: 6px; align-items: center; overflow: hidden; font-size: 12.5px; white-space: nowrap; }
+.vB .rowx .rn b { overflow: hidden; font-weight: 500; text-overflow: ellipsis; }
+.vB .rowx .rm { display: block; grid-column: 1; overflow: hidden; color: var(--faint); font: 10.5px/1.5 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.vB .rowx .rc { grid-row: 1 / span 2; grid-column: 2; color: var(--accent); font-size: 13px; }
+.vB .more { justify-self: start; padding: 6px 10px; color: var(--accent); background: transparent; border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 8px; cursor: pointer; font-size: 11.5px; }
+.vB .srow { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 10px; align-items: center; padding: 10px 2px 0; border-top: 1px solid var(--line-soft); }
+.vB .srow .sl { color: var(--dim); font-size: 12px; }
+.vB .foot { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 16px 12px; border-top: 1px solid var(--line-soft); }
+.vB .foot .acts { display: flex; flex: none; gap: 8px; }
+
+/* ---------------------------------------------------------------- C · 底部抽屉 · 页签 + 卡片 */
+.vC-back { display: grid; align-items: end; }
+.vC { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 78%; overflow: hidden; background: var(--panel); border-top: 1px solid var(--line); border-radius: 16px 16px 0 0; box-shadow: 0 -20px 60px rgba(0, 0, 0, 0.45); }
+.vC .dhead { display: flex; gap: 10px; align-items: baseline; padding: 14px 16px 10px; }
+.vC .dhead .t { flex: none; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.vC .dhead .s { flex: 1; min-width: 0; overflow: hidden; color: var(--faint); font: 11px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.vC .dhead .x { margin-left: auto; align-self: center; }
+.vC .tabs { display: flex; gap: 6px; padding: 0 16px 10px; overflow-x: auto; scrollbar-width: none; }
+.vC .tab { flex: none; padding: 6px 11px; color: var(--dim); background: transparent; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; font-size: 12px; }
+.vC .tab:hover { color: var(--text); border-color: var(--line-strong); }
+.vC .tab.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.vC .dbody { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px; min-height: 0; padding: 0 16px; }
+.vC .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(228px, 1fr)); gap: 8px; align-content: start; min-height: 0; padding-bottom: 12px; overflow: auto; }
+.vC .mcard { display: grid; gap: 2px; padding: 10px 12px; color: var(--text); text-align: left; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+.vC .mcard:hover { border-color: var(--line-strong); }
+.vC .mcard.on { background: var(--accent-bg); border-color: var(--accent); }
+.vC .mcard .cname { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.vC .mcard .cn { overflow: hidden; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.vC .mcard .cm { overflow: hidden; color: var(--faint); font: 10.5px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.vC .dfoot { display: flex; gap: 12px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--line-soft); }
+.vC .dfoot .acts { display: flex; flex: none; gap: 8px; margin-left: auto; }
+
+/* 窄屏：底栏一行塞不下 5 档 + 取消 + 确认，档位和按钮分两行 */
+@media (max-width: 620px) {
+  .vC .dfoot { flex-wrap: wrap; row-gap: 8px; }
+  .vC .dfoot .seg { order: 1; }
+  .vC .dfoot .foot-hint { order: 2; flex: 1; }
+  .vC .dfoot .acts { order: 3; }
+}
+
+/* ---------------------------------------------------------------- D · 贴 chip 即时面板 */
+.vD-scrim { position: fixed; inset: 0; z-index: 59; }
+.vD { position: fixed; z-index: 61; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(420px, calc(100vw - 24px)); overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55); }
+.vD .psearch { display: flex; gap: 8px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line-soft); }
+.vD .psearch .lg { color: var(--faint); font: 12px/1 var(--mono); }
+.vD .psearch input { flex: 1; min-width: 0; color: var(--text); background: none; border: 0; outline: none; font: 13px/1.4 var(--sans); }
+.vD .psearch input::placeholder { color: var(--faint); }
+.vD .plist { min-height: 0; padding: 6px; overflow: auto; }
+.vD .pgroup { padding: 6px 8px 2px; color: var(--faint); font: 650 9.5px/1.4 var(--sans); letter-spacing: 0.08em; text-transform: uppercase; }
+.vD .prow { display: flex; gap: 8px; align-items: center; width: 100%; padding: 7px 9px; color: var(--text); text-align: left; background: transparent; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
+.vD .prow:hover { background: var(--panel-2); }
+.vD .prow.on { background: var(--accent-bg); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+.vD .prow .pn { overflow: hidden; min-width: 0; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.vD .prow .pv { flex: none; margin-left: auto; color: var(--faint); font: 10px/1 var(--mono); }
+.vD .pfoot { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-top: 1px solid var(--line-soft); }
+.vD .miniseg { display: inline-flex; flex: none; gap: 1px; padding: 2px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; }
+.vD .miniseg button { padding: 3px 7px; color: var(--dim); background: transparent; border: 0; border-radius: 5px; cursor: pointer; font: 10.5px/1 var(--mono); }
+.vD .miniseg button.on { color: var(--accent-ink); background: var(--accent); }
+.vD .pfoot .hintx { overflow: hidden; margin-left: auto; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- 原型的切换胶囊（刻意不像设计的一部分） */
+.proto-bar { position: fixed; bottom: 14px; left: 50%; z-index: 200; display: flex; gap: 6px; align-items: center; padding: 5px 6px; color: #fff; background: #000; border: 1px solid #3a3a3c; border-radius: 999px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6); font: 12px/1 var(--sans); transform: translateX(-50%); }
+.proto-bar .arrow { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; color: #fff; background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 999px; cursor: pointer; font: 13px/1 var(--mono); }
+.proto-bar .arrow:hover { background: #2c2c2e; }
+.proto-bar .label { padding: 0 10px; white-space: nowrap; }
+.proto-bar .label b { color: #ffd60a; }
+.proto-bar .keys { padding-right: 8px; color: #8e8e93; font: 10px/1 var(--mono); white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <span class="name">优化模型选择弹窗</span>
+    <span class="dim">· pi-web-client · main</span>
+    <span class="right"><span class="dim mono">web/</span></span>
+  </div>
+  <div class="chat">
+    <div class="msg user"><div class="who">你</div>按照设置页面的 UI 风格，优化一下对话框下面的模型选择弹窗。</div>
+    <div class="msg ai"><div class="who">pi · 4 个方案</div>点右上那颗 chip 可以随时重新打开弹窗；底部胶囊切方案。</div>
+  </div>
+  <div class="composer">
+    <div class="row">
+      <textarea rows="2" placeholder="给 pi 发消息…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button class="btn primary" style="flex: none">发送</button>
+    </div>
+    <div class="hint">
+      <span class="hint-status"><span class="mono">~/pi-web-client</span> · <span class="mono">main</span> · 3 个改动</span>
+      <span class="hint-tools">
+        <button class="btn ghost">技能</button>
+        <button class="btn ghost">文件</button>
+        <button class="btn ghost">插件</button>
+        <button class="model-chip" id="chip" data-act="open"><span class="chip-model" id="chipModel">Deepseek-V4.1-Flash</span><span class="chip-ctx" id="chipCtx">1M</span><span class="chip-level" id="chipLevel">max</span></button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<div id="stage"></div>
+<div class="toast" id="toast"></div>
+<div class="proto-bar">
+  <button class="arrow" data-arrow="-1" title="上一个（←）">‹</button>
+  <span class="label" id="barLabel"></span>
+  <button class="arrow" data-arrow="1" title="下一个（→）">›</button>
+  <span class="keys">← → 切换 · 1–5 直达 · esc 关弹窗</span>
+</div>
+
+<script>
+const CATALOG = /*__CATALOG__*/ [];
+
+const VARIANTS = [
+  { key: "A", name: "控制台式双栏" },
+  { key: "B", name: "居中卡片栈" },
+  { key: "C", name: "底部抽屉 · 页签 + 卡片" },
+  { key: "D", name: "贴 chip 即时面板" },
+  { key: "E", name: "A + 点一下立即生效（你选的）" },
+];
+const LEVELS = ["off", "low", "medium", "high", "max"];
+const RECENT = ["wb2_mac/cn:kimi-k3.1-pro", "sensenova-platform/glm-5.2", "wb2api/cn:auto", "wb2_mac/cn:glm-5.3-flash"];
+const START = "wb2_mac/cn:deepseek-v4.1-flash";
+
+const applied = { key: START, level: "max" };        // 会话上真正生效的
+const draft = { key: START, level: "max" };          // A / B / C 里的草稿（确认才落）
+let undo = null;                                     // E：上一次生效前的 { key, level }，只留一步
+let variant = (new URLSearchParams(location.search).get("variant") || "A").toUpperCase();
+if (!VARIANTS.some((v) => v.key === variant)) variant = "A";
+let open = true;
+let filter = "";
+let scope = "all";
+const expanded = new Set();
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ctxLabel = (n) => (n >= 1000000 ? (n / 1000000).toFixed(n % 1000000 ? 1 : 0) + "M" : Math.round(n / 1000) + "k");
+const modelOf = (key) => CATALOG.find((m) => m.key === key) || CATALOG[0];
+const nameOf = (key) => modelOf(key).name;
+
+function providers() {
+  const map = new Map();
+  for (const m of CATALOG) map.set(m.provider, (map.get(m.provider) || 0) + 1);
+  return [...map].map(([provider, n]) => ({ provider, n }));
+}
+function recent() {
+  return RECENT.map((k) => CATALOG.find((m) => m.key === k)).filter(Boolean);
+}
+function visible() {
+  const q = filter.trim().toLowerCase();
+  let list = CATALOG;
+  if (scope === "cur") list = list.filter((m) => m.key === applied.key);
+  else if (scope === "recent") list = list.filter((m) => RECENT.includes(m.key));
+  else if (scope !== "all") list = list.filter((m) => m.provider === scope);
+  if (q) list = list.filter((m) => (m.name + " " + m.id + " " + m.provider).toLowerCase().includes(q));
+  return list;
+}
+function grouped(list) {
+  const out = [];
+  for (const m of list) {
+    const last = out[out.length - 1];
+    if (last && last.provider === m.provider) last.models.push(m);
+    else out.push({ provider: m.provider, models: [m] });
+  }
+  return out;
+}
+function changes() {
+  const out = [];
+  if (draft.key !== applied.key) out.push("模型 → " + nameOf(draft.key));
+  if (draft.level !== applied.level) out.push("思考 → " + draft.level);
+  return out;
+}
+function levelsHTML(cls = "seg", act = "level") {
+  const picked = act === "levelI" ? applied.level : draft.level;
+  return '<div class="' + cls + '">' + LEVELS.map((lv) =>
+    '<button data-act="' + act + '" data-level="' + lv + '" class="' + (lv === picked ? "on" : "") + '">' + lv + "</button>").join("") + "</div>";
+}
+function footHTML(actsCls) {
+  const ch = changes();
+  const hint = ch.length ? ch.join("，") : "未改动";
+  return '<span class="foot-hint' + (ch.length ? " changed" : "") + '">' + esc(hint) + '</span>' +
+    '<span class="' + (actsCls || "foot-actions") + '">' +
+      '<button class="btn ghost" data-act="cancel">取消</button>' +
+      '<button class="btn primary" data-act="confirm"' + (ch.length ? "" : " disabled") + ">确认</button></span>";
+}
+/* 全部视图里「当前 / 最近」钉在最上面，和真弹窗一致：46 个模型按来源铺开时，正在用的那个会跑到第三屏去 */
+function groupsA() {
+  if (filter.trim() || scope !== "all") return [{ label: "", models: visible() }];
+  const cur = modelOf(applied.key);
+  const rec = recent().filter((m) => m.key !== applied.key);
+  const rest = CATALOG.filter((m) => m.key !== applied.key && !rec.some((r) => r.key === m.key));
+  const out = [{ label: "当前使用", models: [cur] }];
+  if (rec.length) out.push({ label: "最近使用", models: rec });
+  for (const g of grouped(rest)) out.push({ label: g.provider, models: g.models });
+  return out;
+}
+function rowA(m, act = "pick") {
+  const on = m.key === (act === "applyA" ? applied.key : draft.key);
+  return '<button class="mrow' + (on ? " on" : "") + '" data-act="' + act + '" data-key="' + esc(m.key) + '">' +
+    '<span class="radio"></span><span class="mid">' +
+      '<span class="mname">' + esc(m.name) + (m.key === applied.key ? ' <span class="tag">当前</span>' : "") + "</span>" +
+      '<span class="mmeta">' + ctxLabel(m.ctx) + " · " + esc(m.id) + "</span></span>" +
+    (on ? '<span class="mcheck">✓</span>' : "") + "</button>";
+}
+
+/* ---------------------------------------------------------------- A */
+function viewA(instant = false) {
+  const groups = groupsA();
+  const cur = instant ? applied : draft;
+  const nav = (key, label, n) =>
+    '<button class="nav-item' + (scope === key ? " on" : "") + '" data-act="scope" data-scope="' + esc(key) + '">' +
+    '<span class="nav-label">' + esc(label) + '</span><span class="nav-count">' + n + "</span></button>";
+  const foot = instant
+    ? '<span class="foot-left"><span class="foot-hint' + (undo ? " changed" : "") + '">' +
+        (undo ? "已切到 " + esc(nameOf(applied.key)) + " · 思考 " + esc(applied.level) : "点一下模型就生效") + "</span>" +
+      (undo ? '<button class="undo" data-act="undo">撤销</button>' : "") + "</span>" +
+      '<span class="foot-actions"><button class="btn ghost" data-act="close">完成</button></span>'
+    : footHTML();
+  return '<div class="back vA-back" data-act="bg"><div class="vA">' +
+    '<header class="head"><div>' +
+      '<div class="eyebrow">会话 · 模型</div><h1>模型与思考</h1>' +
+      '<div class="sub">' + esc(nameOf(cur.key)) + ' · <span class="mono">' + esc(cur.key) + '</span> · 上下文 ' + ctxLabel(modelOf(cur.key).ctx) + ' · 思考 ' + cur.level + '</div>' +
+      '<div class="badges"><span class="badge ok">本页可写</span>' +
+        (instant ? '<span class="badge ok">点一下立即生效</span>' : '<span class="badge">思考档位跟着模型一起提交</span>') + '</div>' +
+    '</div><div><button class="x" data-act="close" title="关闭（esc）">×</button></div></header>' +
+    '<div class="main"><nav class="nav">' +
+      '<div class="nav-group">范围</div>' + nav("all", "全部", CATALOG.length) + nav("cur", "当前使用", 1) + nav("recent", "最近使用", recent().length) +
+      '<div class="nav-group">来源</div>' + providers().map((p) => nav(p.provider, p.provider, p.n)).join("") +
+    '</nav><section class="pane"><div class="scopebar">' +
+      '<label class="search"><span class="lg">搜索</span><input data-filter placeholder="名字 / id / 来源…" value="' + esc(filter) + '"><kbd>⌘K</kbd></label>' +
+      levelsHTML("seg", instant ? "levelI" : "level") +
+    '</div><div class="list">' +
+      (groups.some((g) => g.models.length) ? groups.map((g) => (g.label ? '<div class="mgroup">' + esc(g.label) + "</div>" : "") + g.models.map((m) => rowA(m, instant ? "applyA" : "pick")).join("")).join("") : '<div class="none">没有匹配的模型</div>') +
+    '</div></section></div>' +
+    '<footer class="foot">' + foot + "</footer>" +
+  "</div></div>";
+}
+
+/* ---------------------------------------------------------------- B */
+function rowB(m) {
+  const on = m.key === draft.key;
+  return '<button class="rowx' + (on ? " on" : "") + '" data-act="pick" data-key="' + esc(m.key) + '">' +
+    '<span class="rn"><b>' + esc(m.name) + "</b>" + (m.key === applied.key ? '<span class="tag">当前</span>' : "") + "</span>" +
+    '<span class="rm">' + esc(m.id) + " · " + ctxLabel(m.ctx) + "</span>" +
+    (on ? '<span class="rc">✓</span>' : "") + "</button>";
+}
+function viewB() {
+  const list = visible();
+  const groups = filter.trim() ? [{ provider: "", models: list }] : grouped(list);
+  const cur = modelOf(draft.key);
+  return '<div class="back vB-back" data-act="bg"><div class="vB">' +
+    '<header class="head"><h1>选择模型</h1><span class="sub">' + esc(cur.provider) + '</span><button class="x" data-act="close" title="关闭（esc）">×</button></header>' +
+    '<div class="body">' +
+      '<div class="hero"><span class="k">当前使用</span><span class="n">' + esc(cur.name) + "</span>" +
+        '<span class="m">' + esc(cur.provider) + " · 上下文 " + ctxLabel(cur.ctx) + " · 思考 " + draft.level + '</span><span class="ok">✓</span></div>' +
+      '<div><div class="glabel">最近使用<div class="gline"></div></div><div class="chiprow">' +
+        recent().map((m) => '<button class="chip" data-act="pick" data-key="' + esc(m.key) + '"><span class="cv">' + esc(m.name) + "</span></button>").join("") +
+      "</div></div>" +
+      '<label class="search"><span class="lg">搜索</span><input data-filter placeholder="' + CATALOG.length + ' 个模型里找…" value="' + esc(filter) + '"></label>' +
+      (groups.length ? groups.map((g) => {
+        const openGroup = g.provider && (expanded.has(g.provider) || g.models.length <= 4);
+        const shown = openGroup || !g.provider ? g.models : g.models.slice(0, 4);
+        return '<div>' + (g.provider ? '<div class="glabel">' + esc(g.provider) + " · " + g.models.length + '<div class="gline"></div></div>' : "") +
+          '<div class="rows">' + shown.map(rowB).join("") + "</div>" +
+          (openGroup || !g.provider || g.models.length <= 4 ? "" : '<button class="more" data-act="expand" data-p="' + esc(g.provider) + '">展开全部 ' + g.models.length + " 个</button>") +
+        "</div>";
+      }).join("") : '<div class="none">没有匹配的模型</div>') +
+      '<div class="srow"><span class="sl">思考档位</span>' + levelsHTML() + "</div>" +
+    "</div>" +
+    '<footer class="foot">' + footHTML("acts") + "</footer>" +
+  "</div></div>";
+}
+
+/* ---------------------------------------------------------------- C */
+function cardC(m) {
+  const on = m.key === draft.key;
+  return '<button class="mcard' + (on ? " on" : "") + '" data-act="pick" data-key="' + esc(m.key) + '">' +
+    '<span class="cname"><span class="cn">' + esc(m.name) + "</span>" + (m.key === applied.key ? '<span class="tag">当前</span>' : "") + "</span>" +
+    '<span class="cm">' + esc(m.provider) + " · " + ctxLabel(m.ctx) + " · " + esc(m.id) + "</span></button>";
+}
+function viewC() {
+  const list = visible();
+  const tab = (key, label) => '<button class="tab' + (scope === key ? " on" : "") + '" data-act="scope" data-scope="' + esc(key) + '">' + esc(label) + "</button>";
+  return '<div class="back vC-back" data-act="bg"><div class="vC">' +
+    '<header class="dhead"><span class="t">模型与思考</span><span class="s">' + esc(nameOf(draft.key)) + " · " + ctxLabel(modelOf(draft.key).ctx) + ' · 思考 ' + draft.level + '</span><button class="x" data-act="close" title="关闭（esc）">×</button></header>' +
+    '<div class="tabs">' + tab("all", "全部 " + CATALOG.length) + tab("cur", "当前") + tab("recent", "最近 " + recent().length) +
+      providers().map((p) => tab(p.provider, p.provider + " " + p.n)).join("") + "</div>" +
+    '<div class="dbody"><label class="search"><span class="lg">搜索</span><input data-filter placeholder="名字 / id / 来源…" value="' + esc(filter) + '"><kbd>⌘K</kbd></label>' +
+      '<div class="grid">' + (list.length ? list.map(cardC).join("") : '<div class="none">没有匹配的模型</div>') + "</div></div>" +
+    '<footer class="dfoot"><span class="lv-label">思考</span>' + levelsHTML() + footHTML("acts") + "</footer>" +
+  "</div></div>";
+}
+
+/* ---------------------------------------------------------------- D */
+function viewD() {
+  const list = visible();
+  const rows = (ms) => ms.map((m) =>
+    '<button class="prow' + (m.key === applied.key ? " on" : "") + '" data-act="apply" data-key="' + esc(m.key) + '">' +
+      '<span class="pn">' + esc(m.name) + "</span><span class=\"pv\">" + esc(m.provider) + "</span></button>").join("");
+  const rec = recent().filter((m) => m.key !== applied.key);
+  const rest = list.filter((m) => m.key !== applied.key && !rec.some((r) => r.key === m.key));
+  return '<div class="vD-scrim" data-act="close"></div><div class="vD">' +
+    '<div class="psearch"><span class="lg">⌘</span><input data-filter placeholder="筛选模型：名字或 id…" value="' + esc(filter) + '"><kbd>esc</kbd></div>' +
+    '<div class="plist">' +
+      '<div class="pgroup">当前</div>' + rows([modelOf(applied.key)]) +
+      (filter.trim() ? "" : '<div class="pgroup">最近使用</div>' + rows(rec)) +
+      '<div class="pgroup">其他 · ' + rest.length + "</div>" +
+      (rest.length ? rows(rest) : '<div class="none">没有匹配的模型</div>') +
+    "</div>" +
+    '<div class="pfoot"><span class="lv-label">思考</span>' + levelsHTML("miniseg") + '<span class="hintx">点一下立即生效 · 不设确认</span></div>' +
+  "</div>";
+}
+
+/* ---------------------------------------------------------------- 渲染 */
+const stage = document.getElementById("stage");
+const toastEl = document.getElementById("toast");
+let toastTimer = 0;
+
+function toast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove("on"), 1800);
+}
+function paintChip() {
+  document.getElementById("chipModel").textContent = nameOf(applied.key);
+  document.getElementById("chipCtx").textContent = ctxLabel(modelOf(applied.key).ctx);
+  document.getElementById("chipLevel").textContent = applied.level;
+  document.getElementById("chip").dataset.open = open ? "1" : "0";
+}
+function paintBar() {
+  const v = VARIANTS.find((x) => x.key === variant);
+  document.getElementById("barLabel").innerHTML = "<b>" + v.key + "</b> · " + v.name;
+  try { history.replaceState(null, "", "?variant=" + v.key); } catch { /* 沙盒 iframe 里改不了地址，无妨 */ }
+}
+function placeD() {
+  const pop = stage.querySelector(".vD");
+  const chip = document.getElementById("chip");
+  if (!pop || !chip) return;
+  const r = chip.getBoundingClientRect();
+  pop.style.right = Math.max(12, innerWidth - r.right) + "px";
+  pop.style.bottom = Math.round(innerHeight - r.top + 8) + "px";
+  pop.style.maxHeight = Math.round(Math.min(r.top - 24, innerHeight * 0.66)) + "px";
+}
+function paint() {
+  stage.innerHTML = !open ? "" : variant === "A" ? viewA(false) : variant === "E" ? viewA(true) : variant === "B" ? viewB() : variant === "C" ? viewC() : viewD();
+  paintChip();
+  paintBar();
+  if (open && variant === "D") placeD();
+  const search = stage.querySelector("[data-filter]");
+  if (search && filter) {
+    search.focus();
+    search.setSelectionRange(search.value.length, search.value.length);
+  }
+}
+function setVariant(key) {
+  variant = key;
+  filter = "";
+  scope = "all";
+  open = true;
+  undo = null;
+  draft.key = applied.key;
+  draft.level = applied.level;
+  paint();
+}
+function cycle(step) {
+  const i = VARIANTS.findIndex((v) => v.key === variant);
+  setVariant(VARIANTS[(i + step + VARIANTS.length) % VARIANTS.length].key);
+}
+
+stage.addEventListener("input", (ev) => {
+  if (!ev.target.matches("[data-filter]")) return;
+  filter = ev.target.value;
+  paint();
+});
+stage.addEventListener("click", (ev) => {
+  const el = ev.target.closest("[data-act]");
+  if (!el) return;
+  const act = el.dataset.act;
+  if (act === "bg") { if (ev.target === el) { open = false; paint(); } return; }
+  if (act === "close") { open = false; paint(); return; }
+  if (act === "scope") { scope = el.dataset.scope; paint(); return; }
+  if (act === "level") { draft.level = el.dataset.level; paint(); return; }
+  // E：点一下就落到会话上，撤一步放底栏
+  if (act === "levelI") {
+    undo = { key: applied.key, level: applied.level };
+    applied.level = el.dataset.level;
+    draft.level = applied.level;
+    paint();
+    return;
+  }
+  if (act === "applyA") {
+    if (el.dataset.key === applied.key) return;
+    undo = { key: applied.key, level: applied.level };
+    applied.key = el.dataset.key;
+    draft.key = applied.key;
+    draft.level = applied.level;
+    scope = scope === "cur" ? "all" : scope;
+    toast("已切到 " + nameOf(applied.key));
+    paint();
+    return;
+  }
+  if (act === "undo") {
+    if (!undo) return;
+    applied.key = undo.key;
+    applied.level = undo.level;
+    draft.key = applied.key;
+    draft.level = applied.level;
+    toast("已撤销 → " + nameOf(applied.key));
+    undo = null;
+    paint();
+    return;
+  }
+  if (act === "expand") { expanded.add(el.dataset.p); paint(); return; }
+  if (act === "cancel") { draft.key = applied.key; draft.level = applied.level; filter = ""; paint(); return; }
+  if (act === "confirm") {
+    if (!changes().length) return;
+    const wasModel = draft.key !== applied.key;
+    applied.key = draft.key;
+    applied.level = draft.level;
+    toast("已切到 " + nameOf(applied.key) + " · 思考 " + applied.level);
+    if (wasModel) scope = "all";
+    paint();
+    return;
+  }
+  if (act === "pick") { draft.key = el.dataset.key; paint(); return; }
+  if (act === "apply") {
+    applied.key = el.dataset.key;
+    applied.level = draft.level;
+    toast("已切到 " + nameOf(applied.key) + " · 思考 " + applied.level);
+    open = false;
+    paint();
+    return;
+  }
+});
+document.getElementById("chip").addEventListener("click", () => {
+  open = true;
+  draft.key = applied.key;
+  draft.level = applied.level;
+  filter = "";
+  paint();
+});
+document.querySelector(".proto-bar").addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-arrow]");
+  if (b) cycle(Number(b.dataset.arrow));
+});
+window.addEventListener("keydown", (ev) => {
+  const typing = ev.target.matches && ev.target.matches("input, textarea");
+  if (ev.key === "Escape") { open = false; paint(); return; }
+  if (typing) return;
+  if (ev.key === "ArrowLeft") { cycle(-1); return; }
+  if (ev.key === "ArrowRight") { cycle(1); return; }
+  const key = { 1: "A", 2: "B", 3: "C", 4: "D", 5: "E" }[ev.key];
+  if (key) setVariant(key);
+});
+window.addEventListener("resize", () => { if (variant === "D") placeD(); });
+
+paint();
+</script>
+</body>
+</html>
