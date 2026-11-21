@@ -14,7 +14,7 @@ function finite(value, fallback) {
 /**
  * Turn `h.moment()` entries into non-overlapping slow ranges in raw time.
  *
- * @param {Array<{t:number, lead?:number, tail?:number, slow?:number}>} moments
+ * @param {Array<{t:number, lead?:number, tail?:number, start?:number, end?:number, slow?:number}>} moments
  * @param {number} duration raw video duration in seconds
  * @param {{lead?:number, tail?:number, slow?:number}} [defaults]
  * @returns {Array<{start:number, end:number, slow:number}>}
@@ -32,8 +32,10 @@ export function mergeSlowSegments(moments, duration, defaults = {}) {
     const lead = Math.max(0, finite(moment?.lead, leadDefault));
     const tail = Math.max(0, finite(moment?.tail, tailDefault));
     const slow = Math.min(1, Math.max(1e-6, finite(moment?.slow, slowDefault)));
-    const start = Math.max(0, t - lead);
-    const end = Math.min(total, t + tail);
+    // driver 的 moment() 把 lead/tail 折算成 start/end 存下来；手写的用例可能只给 lead/tail。
+    // 两边都有时以已经解析好的 start/end 为准，否则 h.moment({lead, tail}) 会被悄悄忽略。
+    const start = Math.max(0, finite(moment?.start, t - lead));
+    const end = Math.min(total, finite(moment?.end, t + tail));
     if (end <= start + EPS) continue;
     ranges.push({ start, end, slow });
   }

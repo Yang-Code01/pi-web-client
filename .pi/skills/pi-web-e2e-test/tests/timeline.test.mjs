@@ -88,6 +88,23 @@ test("mergeSlowSegments merges overlaps and keeps the slowest speed", () => {
   ]);
 });
 
+test("mergeSlowSegments honors the resolved start/end the driver records", () => {
+  const segments = mergeSlowSegments([{ t: 10, start: 7, end: 11.5, slow: 0.25 }], 20);
+  assert.deepEqual(segments, [{ start: 7, end: 11.5, slow: 0.25 }]);
+});
+
+test("explicit start/end win over lead/tail when both are present", () => {
+  const segments = mergeSlowSegments([{ t: 10, lead: 5, tail: 5, start: 9, end: 10.5 }], 20);
+  assert.deepEqual(segments, [{ start: 9, end: 10.5, slow: 0.25 }]);
+});
+
+test("start/end are clamped to the video and inverted ranges are dropped", () => {
+  assert.deepEqual(mergeSlowSegments([{ t: 9.8, start: 9, end: 14 }], 10), [
+    { start: 9, end: 10, slow: 0.25 },
+  ]);
+  assert.deepEqual(mergeSlowSegments([{ t: 5, start: 6, end: 4 }], 10), []);
+});
+
 test("mergeSlowSegments rejects unusable moments", () => {
   assert.deepEqual(mergeSlowSegments([{ t: Number.NaN }, { t: -1, lead: 0, tail: 0 }], 10), []);
   assert.deepEqual(mergeSlowSegments([{ t: 20, lead: 1, tail: 1 }], 10), []);
