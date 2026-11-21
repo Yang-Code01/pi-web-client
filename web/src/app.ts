@@ -28,6 +28,7 @@ import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
+import { retellState } from "./retell-state.ts";
 import { DEFAULT_MAC_ACCENT } from "./palette.ts";
 import { accentFor, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, themeInfo, type ThemeId, type ThemeInfo } from "./theme.ts";
 import { JiraPanel } from "./jira.ts";
@@ -428,6 +429,13 @@ export class App {
   private textarea: HTMLTextAreaElement | null = null;
   /** 「继续」按钮（D159）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
   private continueBtn: HTMLButtonElement | null = null;
+  /** D365：输入框上方那一行「重讲」。常驻，位置固定，不随回答长短漂移。 */
+  private retellBar: HTMLElement | null = null;
+  private retellBtn: HTMLButtonElement | null = null;
+  /** 刚点过「重讲」：桥的 `running:true` 回来之前，先把按钮按住，免得双击发两句。 */
+  private retellSent = { id: "", at: 0 };
+  /** 那 1.5 秒按住到期后自己松手：状态帧可能先于到期就来了，不补一次 sync 就一直灰着。 */
+  private retellTimer: number | null = null;
   /** D170: 输入框上方那条「子代理运行中」。`syncBgBar()` 造它，重画后要重新挂。 */
   private bgBar: HTMLElement | null = null;
   /** D170 详情弹层：正在看的那一屏，和它 1.5 秒一次的轮询。关掉就 null。 */
@@ -2011,6 +2019,7 @@ export class App {
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
+        this.syncRetellBar();
         break;
       case "plan":
         if (msg.sessionId !== this.currentId) break;
@@ -2844,6 +2853,7 @@ export class App {
           this.fillHintStatus();
           // 跑着 ↔ 空闲是「继续」按钮亮/灰的翻转点（D159）。
           this.syncContinueButton();
+          this.syncRetellBar();
           // 任务结束才问「要不要把这一轮的错误记下来」（D164）。
           this.syncFailCta();
           if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
@@ -3183,6 +3193,7 @@ export class App {
         this.fillHintStatus();
         // 上面那条 else 走的就是「flags 变了但不用重画」：`starting` / 闲忙都可能在这里翻，「继续」跟着刷。
         this.syncContinueButton();
+        this.syncRetellBar();
         this.syncBgBar();
       }
     }
@@ -4135,6 +4146,24 @@ export class App {
     }
     langPanel.append(this.stRow(tr("语言"), tr("界面文字、推送标题都跟着换"), langChips));
 
+    // D365：重讲那一行是纯前端的东西，开关不放桥端 settings，进 `pi.prefs`（换浏览器就没了，
+    // 但它本来就是「这台机器的输入区多不多一行」，跟着设备走更合理）。关掉时整个不画。
+    const chatPanel = section("chat");
+    const hintBox = document.createElement("input");
+    hintBox.checked = this.prefs.retellHint;
+    hintBox.onchange = () => {
+      this.prefs = { ...this.prefs, retellHint: hintBox.checked };
+      savePrefs(this.prefs);
+      this.renderChat();
+    };
+    chatPanel.append(
+      this.stRow(
+        tr("输入框上方的「重讲」"),
+        tr("默认开。关掉后输入框上面那一行不再出现；随时可以在这里打开"),
+        this.stSwitch(hintBox),
+      ),
+    );
+
     const sizeRead = el("span", "size-read");
 
     const rail = el("div", "size-rail");
@@ -4303,7 +4332,7 @@ export class App {
     const themeChips = el("div", "chips theme-chips");
     for (const t of THEMES) themeChips.append(themeChipEl(t, this.prefs.theme, () => this.sheet, (id) => this.pickTheme(id)));
     const themePanel = section("theme");
-    const themeRow = this.stRow(tr("外观主题"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效"), themeChips);
+    const themeRow = this.stRow(tr("外观主题"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、圆角气泡、弹簧动效"), themeChips);
     themeRow.classList.add("wide");
     themePanel.append(themeRow);
     // Mac 主题下多出来的几颗快捷键（installShortcuts 里的 MAC_KEYS）：Mac 上显示 ⌘，别处显示 Ctrl。
@@ -4404,6 +4433,7 @@ export class App {
         label: tr("外观"),
         items: [
           { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
+          { sec: "chat", label: tr("对话"), sub: tr("输入框上方那一行「重讲」开不开") },
           { sec: "theme", label: tr("主题与强调色"), sub: tr("三套 macOS 观感，加一组强调色") },
           { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
           { sec: "chrome", label: tr("界面元素"), sub: tr("顶栏与输入框下沿的按钮；点预览里的按钮就收起 / 放回") },
@@ -4619,6 +4649,7 @@ export class App {
     about.classList.add("set-about");
     about.append(this.copyRow(tr("版本"), `pi ${this.me.pi} · bridge ${this.me.version}`));
     about.append(this.copyRow(tr("会话目录"), this.me.sessionsRoot));
+    about.append(this.licensesRow());
   }
 
   /** 子面板关掉后回到齿轮设置：那时已经有别的面板开着（用户顺手开了别的）就不抢。 */
@@ -4659,6 +4690,48 @@ export class App {
         .catch(() => this.flashToast(tr("复制失败：手动选中它复制"), true, 6000));
     };
     return row;
+  }
+
+  /**
+   * 设置 → 关于里的「开源许可」：把 `THIRD-PARTY-NOTICES.md` 原地展开。
+   *
+   * 清单不塞进产物：内容由桥按**当前安装的依赖**给（`/api/notices`），换一份依赖不用重发前端，
+   * 也不会出现「产物里的清单跟装的不一样」。展开而不是弹层：它是给人选取、Ctrl+F 的文本。
+   */
+  private licensesRow(): HTMLElement {
+    const wrap = el("div", "set-notices");
+    const row = el("button", "set-copy") as HTMLButtonElement;
+    row.append(el("span", "k", tr("开源许可")), el("span", "v", tr("第三方组件的版权与许可声明")));
+    const pre = el("pre", "notices-text");
+    pre.hidden = true;
+    let state: "idle" | "loading" | "ready" = "idle";
+    row.onclick = () => {
+      if (state === "ready") {
+        pre.hidden = !pre.hidden;
+        return;
+      }
+      if (state === "loading") return;
+      state = "loading";
+      row.classList.add("loading");
+      void fetch("/api/notices", { credentials: "same-origin" })
+        .then(async (r) => {
+          if (!r.ok) throw new Error(`${r.status}`);
+          return r.text();
+        })
+        .then((text) => {
+          pre.textContent = text;
+          state = "ready";
+          pre.hidden = false;
+          row.classList.remove("loading");
+        })
+        .catch((err) => {
+          state = "idle";
+          row.classList.remove("loading");
+          this.flashToast(tr("读不到许可清单：{p1}", { p1: errText(err) }), true, 6000);
+        });
+    };
+    wrap.append(row, pre);
+    return wrap;
   }
 
   /**
@@ -12188,6 +12261,8 @@ export class App {
     this.extButton = null;
     this.textarea = null;
     this.continueBtn = null;
+    this.retellBar = null;
+    this.retellBtn = null;
     this.bgBar = null;
     this.closeSkillPalette();
     this.imageBadge = null;
@@ -12327,7 +12402,8 @@ export class App {
     this.extBelow = extBelow;
     const queueBar = el("div", "queue-bar");
     this.queueBar = queueBar;
-    host.append(extAbove, queueBar, row, hint, extBelow);
+    host.append(extAbove, queueBar, this.retellRow(), row, hint, extBelow);
+    this.syncRetellBar();
     // D170: 提示条插在输入框上方（`row` 是锚点），重画后要重新挂回去。
     this.syncBgBar();
     this.fillExt();
@@ -16124,6 +16200,80 @@ export class App {
             ? tr("子代理还在后台跑，pi 会在它回来时接着做")
             : tr("这条会话还没有说过话，没有可继续的");
     btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
+  }
+
+  // ---------------------------------------------------------------- retell (D365)
+  /**
+   * D365：输入框上方那一行「重讲」。`wait-what` 那套「没看懂就让人用简化技术语言重讲一遍」的
+   * 常驻入口：位置固定，不随回答长短漂移；点一下才发，不发就不打扰。
+   */
+  private retellRow(): HTMLElement {
+    const bar = el("div", "retell-bar");
+    const btn = el("button", "retell-btn") as HTMLButtonElement;
+    btn.type = "button";
+    btn.append(el("span", "glyph", "↻"), el("span", "", tr("重讲")));
+    btn.onclick = () => this.retellLastAnswer();
+    bar.append(
+      el("span", "retell-lead", tr("没看懂最后一条回答？")),
+      btn,
+      el("span", "retell-sub", tr("先提供上下文，再用简体技术中文说明")),
+    );
+    this.retellBar = bar;
+    this.retellBtn = btn;
+    return bar;
+  }
+
+  /** 灰 / 亮全部走 `retellState()`（web/src/retell-state.ts），这里只写原因。 */
+  private syncRetellBar(): void {
+    const bar = this.retellBar;
+    const btn = this.retellBtn;
+    if (!bar || !btn) return;
+    if (this.retellTimer !== null) {
+      clearTimeout(this.retellTimer);
+      this.retellTimer = null;
+    }
+    // 刚发出去的那 1.5 秒当作「在跑」：`pi.status running:true` 一般几十毫秒就到，到之前
+    // 按钮若还亮着，双击会发两句同样的指令。
+    const justSent = Date.now() - this.retellSent.at < 1500 && this.retellSent.id === this.currentId;
+    if (justSent && this.session?.running !== true) {
+      this.retellTimer = window.setTimeout(() => this.syncRetellBar(), 1520 - (Date.now() - this.retellSent.at));
+    }
+    const state = this.prefs.retellHint
+      ? retellState(
+          this.session ? { running: this.session.running === true || justSent } : null,
+          this.chat.lastAssistantText() !== null,
+        )
+      : "hidden";
+    bar.hidden = state === "hidden";
+    btn.disabled = state !== "ready";
+    btn.title =
+      state === "ready"
+        ? tr("把「重讲」发出去：先提供上下文，再用简体技术中文说明。")
+        : tr("这一轮还在跑，等它讲完再重讲");
+  }
+
+  /**
+   * 「重讲」：把本地那条指令当成下一条用户消息发出去。不走 `sendPrompt()` —— 它读输入框，
+   * 而这里不能动用户的草稿（正在写的东西比这一下点击重要）。气泡照 `sendPrompt` 的乐观画法，
+   * 桥把 `clientId` 回声回来时页面认领它自己那条（#19）。
+   */
+  private retellLastAnswer(): void {
+    const sessionId = this.currentId;
+    if (!sessionId || !this.prefs.retellHint) return;
+    if (retellState(this.session, this.chat.lastAssistantText() !== null) !== "ready") return;
+    // 上一发还没被桥确认（`running` 没到）就再来一下：忽略，别发两句。
+    if (this.retellSent.id === sessionId && Date.now() - this.retellSent.at < 1500) return;
+    this.retellSent = { id: sessionId, at: Date.now() };
+    const text = tr("等一下。我不明白你在这里进行到哪一步。请重新说明。先提供上下文。然后使用简体技术中文来说明。");
+    const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    const payload = { type: "prompt", sessionId, text, images: [], clientId, behavior: "steer" };
+    this.act(() => {
+      if (this.currentId !== sessionId) return;
+      this.chat.add({ id: clientId, kind: "user", text, images: [], ts: new Date().toISOString() });
+      this.renderChat();
+      this.chat.follow();
+      this.socket.send(payload);
+    });
   }
 
   /**
@@ -20537,6 +20687,8 @@ type Prefs = {
   wsIntroSeen: boolean;
   /** 第一次打开时的主题选择弹窗弹过没有（弹出即记，关掉也不再弹）。老用户（已有 pi.prefs、没这个键）当作弹过。 */
   themeIntroSeen: boolean;
+  /** D365：输入框上方那一行「重讲」开着没有。默认开；关掉后整个不画（设置 → 对话里改）。 */
+  retellHint: boolean;
 };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
@@ -20558,6 +20710,7 @@ const DEFAULT_PREFS: Prefs = {
   settingsTab: "look",
   wsIntroSeen: false,
   themeIntroSeen: false,
+  retellHint: true,
 };
 
 /** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
@@ -21268,6 +21421,8 @@ function readPrefs(): Prefs {
       wsIntroSeen: p?.wsIntroSeen === true,
       // 只有明确写着 false 的（新用户第一次存盘）才算没弹过；升级上来的老用户已经在用自己的主题，不打扰。
       themeIntroSeen: p?.themeIntroSeen !== false,
+      // D365：只有明确写着 false 的才算关（老版本升上来没这个键＝开着）。
+      retellHint: p?.retellHint !== false,
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
     if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);
