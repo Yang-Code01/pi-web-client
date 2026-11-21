@@ -212,6 +212,8 @@ function startBridge() {
       // PS 5.1 按 ANSI 读无 BOM 文件；窗口标题与路径都可能是中文，必须带 BOM。
       "﻿$host.ui.RawUI.WindowTitle = 'pi bridge'",
       `Set-Location -LiteralPath ${psQuote(REPO)}`,
+      // 桥的日志是 UTF-8，PS 5.1 在真控制台里却按代码页（简中 936）解，中文会烂成「宸插惎鍔」（D378）。
+      "try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }",
       `npm run start:nobuild 2>&1 | Tee-Object -FilePath ${psQuote(LIVE)} -Append`,
       "",
     ].join("\r\n"),

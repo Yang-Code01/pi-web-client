@@ -7313,11 +7313,13 @@ chip 一起改：模型名 · 思考档位（带点）· 上下文（进度条 +
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
 ```
 
-- **不加 `chcp 65001`。** 实测只改这一项，node 的日志与 PowerShell 自己打的 `Write-Host` 中文在同一扇窗口里都正常（PS 5.1 写自家字符串走 Unicode，不受代码页影响；代码页留在 936）。
+- **不加 `chcp 65001`。** 实测只改这一项，node 的日志与 PowerShell 自己打的 `Write-Host` 中文在同一扇窗口里都正常（PS 5.1 写自家字符串走 Unicode，不受代码页影响）。设完 `chcp` 仍报 **936**，变的只是 `[Console]::OutputEncoding`（`gb2312` → `utf-8`）—— 它换的是 .NET 解原生输出那一条路径，不动控制台代码页，所以再补 `chcp` 是多余动作。
 - **必须 `$false`（无 BOM）。** 带 BOM 的 UTF-8 会让它在每次写到窗口时补一个 U+FEFF。
 - **用 `try/catch` 包住。** 老系统或被改过的控制台可能不给设，设不了就退回原样，别让「开窗」这一步本身炸掉。
 - **放 `while` 外面一次就够。** 进程级设置，热部署复用同一扇窗口换构建时不需要重设。
 
+**同一处症状的另一个入口。** `.pi/skills/bridge-update/bin/restart.mjs` 生成的 `start-bridge.ps1`（`npm run start:nobuild 2>&1 | Tee-Object -FilePath …`）是 `AGENTS.md` 指定的「更新 / 重启 bridge」那条路，那扇窗口里一样烂：同一份 UTF-8 被按 936 解。同一个提交在它的 `Set-Location` 之后补了同一行。它中间多两层 `npm` / `cmd.exe` 转交字节，实测直接 `node` 与 `npm run` 两种形状都正常（见验证）。
+
 **代价 / 可改。** 这扇窗口的原生输出从此只按 UTF-8 解：若哪天它要跑一个只吐 GBK 的老工具，那个工具的中文会反过来乱（现在窗口里只跑 node 与 `git rev-parse`，都 ASCII 或 UTF-8）。测试里读日志仍按 UTF-16（`Tee-Object` 在 PS 5.1 就是写 UTF-16LE），没跟着改。**没做**：把日志改成 UTF-8（那要换掉 `Tee-Object`，`ForEach-Object` 逐行 `Add-Content` 会拖慢每行日志）；`2>&1 |` 让 node 的 stderr 每行都被包成红色 `NativeCommandError`（`node.exe : …` + `所在位置`），那是 PS 5.1 的既定行为，这次没动。
 
-**验证。** `npm run test:hotdeploy-window` 新增第 ④ 段（真窗口，`Start-Process powershell`，另起临时仓库与只打两行中文就退出的假桥，stdout / stderr 各一行），断言读回的日志原样含「中文测试 已启动 http://127.0.0.1:7998」「银锭拷：系统告警」，且不含 `涓枃` / `宸插惎鍔` / `閾跺畾` 三个已知乱码串。把那行编码设置注释掉复跑即红（实测日志开头 `涓枃娴嬭瘯 宸插惎鍔?http://127.0.0.1:7998`、`node.exe : 閾堕敪鎷凤細绯荤粺鍛婅`）；带上就绿。肉眼对照过两扇真窗口：不加这一行是「涓枃娴嬭瘯 node 鐨勬棩蹇 宸插惎鍔?http://…」，加了是「中文测试 node 打的日志 已启动 http://…」。`npm run test:hotdeploy` 仍 ok。
+**验证。** `npm run test:hotdeploy-window` 新增第 ④ 段（真窗口，`Start-Process powershell`，另起临时仓库与只打两行中文就退出的假桥，stdout / stderr 各一行），断言读回的日志原样含「中文测试 已启动 http://127.0.0.1:7998」「银锭拷：系统告警」，且不含 `涓枃` / `宸插惎鍔` / `閾跺畾` 三个已知乱码串。把那行编码设置注释掉复跑即红（实测日志开头 `涓枃娴嬭瘯 宸插惎鍔?http://127.0.0.1:7998`、`node.exe : 閾堕敪鎷凤細绯荤粺鍛婅`）；带上就绿。肉眼对照过两扇真窗口：不加这一行是「涓枃娴嬭瘯 node 鐨勬棩蹇 宸插惎鍔?http://…」，加了是「中文测试 node 打的日志 已启动 http://…」。`npm run test:hotdeploy` 仍 ok。另外单独验过 `npm run … | Tee-Object` 那条形状（临时 `package.json` + 只打两行中文的假脚本，真窗口跑 `restart.mjs` 生成的同款启动器）：不带这一行日志是「涓枃娴嬭瘯 宸插惎鍔?http://127.0.0.1:7998」「閾堕敪鎷凤細绯荤粺鍛婅」，带上就是「中文测试 已启动 http://127.0.0.1:7998」「银锭拷：系统告警」，npm 自己那两行 `> npmprobe@1.0.0 start:nobuild` 照旧正常。
