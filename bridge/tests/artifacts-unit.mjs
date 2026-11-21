@@ -223,6 +223,26 @@ function sid(tag) {
   assert.equal(row.diffable, false);
 }
 
+// ---------------------------------------------------------------- 文件涨到 2 MB 以上：内容读不到了，不能说「删掉了全部行」
+{
+  const dir = tmpdir();
+  const id = sid("oversize");
+  const abs = write(dir, "grew.csv", "a,b\n1,2\n3,4\n");
+  recordSnapshot(id, abs);
+  fs.writeFileSync(path.join(dir, "grew.csv"), "x".repeat(3 * 1024 * 1024));
+  const out = await listArtifacts(id, dir, [{ path: "grew.csv", tool: "write", writes: 1 }]);
+  const row = out.items[0];
+  assert.equal(row.status, "modified", "大小确实变了，这一点是能证明的");
+  assert.equal(row.added, 0);
+  assert.equal(row.removed, 0, "没有逐行比对，不能报成「删掉了全部行」");
+  assert.equal(row.diffable, false);
+  assert.equal(row.why, "diff-too-large");
+  // 详情页说的必须是同一件事，不能一个是「改了 3 行」一个是「文件太大」。
+  const d = await diffArtifact(id, dir, "grew.csv");
+  assert.equal(d.status, "modified");
+  assert.equal(d.reason, "too-large");
+}
+
 // ---------------------------------------------------------------- 没有基线、按 git 估算：未跟踪 = 新增；cwd 是子目录也要对上路径
 {
   const { execFileSync } = await import("node:child_process");

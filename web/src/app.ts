@@ -9165,7 +9165,7 @@ export class App {
       case "built-then-deleted":
         return tr("建过又删掉了");
       case "diff-too-large":
-        return tr("文件太大，只给行数统计");
+        return tr("文件太大，没有逐行比对（只比了大小）");
       case "diff-rewrite":
         return tr("改动太大，按「整体重写」统计");
       default:

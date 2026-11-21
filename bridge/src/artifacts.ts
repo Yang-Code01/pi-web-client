@@ -415,7 +415,13 @@ export async function listArtifacts(
         diffable = !binary;
       } else if (binary) {
         status = before.length === st.size && now && before.equals(now) ? "same" : "modified";
-      } else if (now && before.equals(now)) {
+      } else if (!now) {
+        // 没取到内容（超过 2 MB / 读不了）：只能证明「大小变了」，不能拿空文本当真去 diff。
+        // 以前 `now` 为 null 时按空串比，报成「删掉了全部行」，跟详情页的 too-large 自相矛盾。
+        status = "modified";
+        diffable = false;
+        why = "diff-too-large";
+      } else if (before.equals(now)) {
         status = "same";
       } else {
         // 不直接比字节：CRLF ↔ LF 在 diff 里会被归一，比字节会把它算成「整个文件重写」。
