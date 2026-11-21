@@ -42,6 +42,18 @@ export const FETCH_RETRY_DELAY_MS = 3_000;
  */
 export const FETCH_TOTAL_BUDGET_MS = 240_000;
 
+/**
+ * 换传输兜底（D376）：HTTPS 被整段掉线时，GitHub 的 SSH 端点还常能从 443 走通。
+ * 这是一条独立于代理的路 —— 上面所有代理都不通时再试它。
+ */
+export const FETCH_SSH_TIMEOUT_MS = 25_000;
+export const SSH_443_INSTEADOF = "url.ssh://git@ssh.github.com:443/.insteadOf=https://github.com/";
+
+/** 只在 `origin` 是 GitHub 的 HTTPS 地址时才能换成 SSH（私有部署 / 公司 GitLab 不猜）。 */
+export function ssh443InsteadOf(originUrl) {
+  return /^https:\/\/github\.com\//i.test(String(originUrl ?? "").trim()) ? SSH_443_INSTEADOF : "";
+}
+
 /** 统一代理 URL：补 http://、压小写、去末尾斜杠，避免同一代理因写法不同重复尝试。 */
 function normalizeProxy(value) {
   const raw = String(value ?? "").trim();

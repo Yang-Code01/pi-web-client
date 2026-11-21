@@ -7237,3 +7237,31 @@ chip 一起改：模型名 · 思考档位（带点）· 上下文（进度条 +
 - **没做**：PAC 解析、`socks5` 代理的可用性探测（候选会照试，失败写进错误列表）、以及「所有 fetch 都失败时改用本地已有的分支离线部署」—— 那是另一个能力（要动面板与 worker 状态机），留给后续决定。
 
 **验证。** `bridge/tests/hotdeploy-unit.mjs` 新增：候选顺序（设置 → 系统 → env → 默认、去重、空设置当没填）、`ProxyServer` 两种写法、`scutil` 文本解析与 PAC 忽略、重试常数与总预算区间、以及 worker 源码守卫（必须调 `resolveProxyCandidates()`、要有 `for (let attempt = 1; attempt <= FETCH_ATTEMPTS` 循环、重试间隔用 `sleepSync`、两次 fetch 的 timeout 要经过 `budget(`）。本机实测：`resolveProxyCandidates({})` 返回 `["http://127.0.0.1:7899", "http://127.0.0.1:18791"]`（设置与系统代理同值被去重），走该代理 `git fetch` 1.1s 成功。
+
+## D376 直连与代理都不通时，最后再走一次 SSH over 443（D375 的续，2026-11-21）
+
+**问题。** D375 让热部署自己找代理，但「一个代理都没配、18791 也死了」仍然必失败。用户先问「网上国内连不上 GitHub 的方案里有没有比走代理更有用的」，调研后挑了一条能自动兜底的：GitHub 的 SSH 端点 `ssh.github.com:443`。
+
+**调研结论（2025–2026 的中文资料，实测过坐标）。** 四类常见方案里没有比「用用户已有的代理」更通用的：
+
+- **改 hosts / DNS**（GitHub520、ineo6/hosts、SwitchHosts）：只治 DNS 污染；要管理员权限；那类项目自己在 README 里写「手抄的固定 IP 极易过期」。
+- **镜像站**（kgithub / kkgithub / gitclone / githubfast / bgithub）：只镜像公开库、**不能 push**；`fastgit`、`cnpmjs.org` 已失效；换域名就等于把用户的历史与身份交给第三方。
+- **文件加速**（gh-proxy、`ghfast.top`、`gh-proxy.com`、`ghproxy.net`）：只加速 raw / release 下载，**不走 git 协议**；`ghproxy.com` / `mirror.ghproxy.com` 已关停；有 66MB 上限与黑名单审计。
+- **本地反代 + 本地根证书**（Watt Toolkit ≡ Steam++、FastGithub、flashgithub）：本质还是代理，只是把这些步骤自动化。它的「系统代理模式」会写 `HKCU\…\Internet Settings\ProxyServer` —— D375 的注册表读取**已经能自动发现它**；「hosts + MITM」模式要装根证书，产品不能替用户做这个决定。
+- **SSH over 443**：不依赖代理与 DNS 欺骗，只依赖能连 `20.205.243.160:443`；一个已经登记过 SSH key 的机器开箱可用。
+
+本机实测：`ssh -p 443 git@ssh.github.com` 与 `git -c url.ssh://git@ssh.github.com:443/.insteadOf=https://github.com/ ls-remote origin` 都在 1.6s 内返回 `Permission denied (publickey)` —— 通道是通的，只是这台机器没把 `~/.ssh` 里的 key 加到 GitHub。
+
+**决定。** `fetchOrigin()` 每轮在「直连 → 各代理」都失败之后，如果 `origin` 是 `https://github.com/…`，再加一次换传输：
+
+- `git -c "url.ssh://git@ssh.github.com:443/.insteadOf=https://github.com/" -c "http.proxy=" fetch --prune --quiet origin`，走 `scripts/hotdeploy-git.mjs` 的 `SSH_443_INSTEADOF`，上限 `FETCH_SSH_TIMEOUT_MS = 25_000`（同样经过总预算）。
+- 环境：`sshEnv()` = 去掉全部代理变量（这条路就是绕开 HTTPS 的，留着代理反而让 ssh 去连代理）+ `GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"`，不许它停下来问密码或指纹。
+- 只有 `origin` 命中 `^https://github\.com/` 才加这一步（`ssh443InsteadOf()`）：origin 已是 SSH 地址或别的宿主时，这条 `insteadOf` 会把请求送到错误的地方。
+- 失败原因里若出现 `publickey`，日志直接补一句「这台机器的 SSH key 没登记到 GitHub，这条路要先加 key」，不让人对着 `Permission denied (publickey)` 猜。
+- 顺带把 `GIT_TERMINAL_PROMPT="0"` 铺到所有 fetch 上（worker 没有控制台，任何一条路径等凭据都会卡到超时，等于换个理由重演 D374）。
+
+**为什么要而不是不做。** 它不花用户的钱、不换域名、不改仓库身份，且只在「别的路都死」时才发生：直连通、代理通时一次都不会走到。25s 的上限让最坏情况仍在 D375 的总预算内。
+
+**代价 / 可改。** 没登记 SSH key 的机器上这一步必然失败（约 1~2s，实测 1603ms），只多一条日志与一条错误原因；总预算因此更早耗尽。要更省可以把它挪到最后一轮才试。**没做**：镜像站与 hosts 写进产品流程（只写进用户答复当手动出路）、Watt Toolkit 之类的 MITM 自动安装、`ssh` 用自定义 key 的配置项（现在用 `~/.ssh/config` 的默认身份）。
+
+**验证。** `npm run test:hotdeploy` 扩到三次 fetch（直连 / 代理 / 换传输都要带 timeout 且经过 `budget(`）、`ssh443InsteadOf` 四种 origin（GitHub HTTPS 带/不带 `.git`、SSH、别的宿主、空串）、源码守卫（要从 `origin` 读 URL、要带 `GIT_SSH_COMMAND`、要有 `GIT_TERMINAL_PROMPT = "0"`）。本机手工按同一命令跑过：`debug1: Connecting to ssh.github.com [20.205.243.160] port 443` → 1.8s `Permission denied (publickey)`，exit 128 —— 说明换传输真的把请求送到了 443，而不是原地报「未知选项」。

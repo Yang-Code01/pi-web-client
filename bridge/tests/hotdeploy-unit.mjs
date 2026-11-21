@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildBranchRows, parseRefLines, parseTrack, parseWorktrees, tailLines } from "../src/hotdeploy.ts";
-import { DEFAULT_HOTDEPLOY_PROXY, FETCH_ATTEMPTS, FETCH_DIRECT_TIMEOUT_MS, FETCH_PROXY_TIMEOUT_MS, FETCH_RETRY_DELAY_MS, FETCH_TOTAL_BUDGET_MS, parseScutilProxy, parseWindowsProxyServer, proxyCandidates } from "../../scripts/hotdeploy-git.mjs";
+import { DEFAULT_HOTDEPLOY_PROXY, FETCH_ATTEMPTS, FETCH_DIRECT_TIMEOUT_MS, FETCH_PROXY_TIMEOUT_MS, FETCH_RETRY_DELAY_MS, FETCH_SSH_TIMEOUT_MS, FETCH_TOTAL_BUDGET_MS, parseScutilProxy, parseWindowsProxyServer, proxyCandidates, SSH_443_INSTEADOF, ssh443InsteadOf } from "../../scripts/hotdeploy-git.mjs";
 
 const TAB = String.fromCharCode(9);
 
@@ -167,10 +167,10 @@ const workerSrc = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "sc
 const fetchCalls = [...workerSrc.matchAll(/git\(\s*\[[^\]]*"fetch"[^\]]*\]/g)].map((m) =>
   workerSrc.slice(m.index, workerSrc.indexOf(");", m.index) + 2),
 );
-assert.equal(fetchCalls.length, 2, "worker 里只有直连与代理两次 fetch");
+assert.equal(fetchCalls.length, 3, "worker 里是直连、代理、换传输三次 fetch");
 for (const call of fetchCalls) {
   assert.ok(
-    /timeout: [^\n]*FETCH_(DIRECT|PROXY)_TIMEOUT_MS/.test(call),
+    /timeout: [^\n]*FETCH_(DIRECT|PROXY|SSH)_TIMEOUT_MS/.test(call),
     `fetch 调用没带上限（直连被墙时会坐满 300s）：${call.slice(0, 120)}`,
   );
   assert.ok(/timeout: budget\(/.test(call), `fetch 的上限要经过总预算（D375），否则候选一多又回到五分钟：${call.slice(0, 120)}`);
@@ -194,6 +194,22 @@ assert.ok(
 assert.ok(/resolveProxyCandidates\(\)/.test(workerSrc), "worker 要读 pi 设置与系统代理，不能只看 env（D375）");
 assert.ok(/for \(let attempt = 1; attempt <= FETCH_ATTEMPTS/.test(workerSrc), "fetch 要有「再试一轮」的循环");
 assert.ok(/sleepSync\(FETCH_RETRY_DELAY_MS\)/.test(workerSrc), "重试间隔要用同步等待（worker 是同步流程）");
+
+// ------------------------------------------------- ⑦ 换传输：SSH over 443 当最后一条路（D376）
+
+assert.ok(
+  Number.isInteger(FETCH_SSH_TIMEOUT_MS) && FETCH_SSH_TIMEOUT_MS >= 10_000 && FETCH_SSH_TIMEOUT_MS <= 60_000,
+  `换传输的上限要在 10~60s 之间，现在是 ${FETCH_SSH_TIMEOUT_MS}`,
+);
+// 只顶替 https://github.com/… ：origin 是 SSH 地址或别的宿主时这条 insteadOf 会把请求送到错误的地方。
+assert.equal(ssh443InsteadOf("https://github.com/Yang-Code01/pi-web-client.git"), SSH_443_INSTEADOF);
+assert.equal(ssh443InsteadOf("https://github.com/Yang-Code01/pi-web-client"), SSH_443_INSTEADOF, "不带 .git 也认");
+assert.equal(ssh443InsteadOf("git@github.com:Yang-Code01/pi-web-client.git"), "", "已经是 SSH 了不用顶替");
+assert.equal(ssh443InsteadOf("https://gitlab.com/a/b.git"), "", "别的宿主不吃 GitHub 的 insteadOf");
+assert.equal(ssh443InsteadOf(""), "");
+assert.ok(/ssh443InsteadOf\(String\(git\(\["remote", "get-url", "origin"\]\)/.test(workerSrc), "换传输前要先从 origin 读出 URL，不能硬猜");
+assert.ok(/GIT_SSH_COMMAND/.test(workerSrc), "ssh 要带 BatchMode/ConnectTimeout，否则会停下来等人输密码");
+assert.ok(/GIT_TERMINAL_PROMPT = "0"/.test(workerSrc), "worker 没有控制台，任何路径都不许等凭据");
 
 // ------------------------------------------------- 不闪窗：worker 无控制台，每个子进程都要 windowsHide
 
