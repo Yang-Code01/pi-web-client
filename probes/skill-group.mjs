@@ -87,6 +87,15 @@ const read = (id, parentId, callId, skill) =>
   });
 const result = (id, parentId, callId) =>
   entry(id, parentId, { role: "toolResult", toolCallId: callId, toolName: "read", content: [{ type: "text", text: "# skill" }] });
+// 普通工具（`bash`）：用来把技能卡顶到「模块已经有卡片」的时机上。
+const bash = (id, parentId, callId, command) =>
+  entry(id, parentId, {
+    role: "assistant",
+    content: [{ type: "toolCall", id: callId, name: "bash", arguments: { command } }],
+    model: "probe",
+  });
+const bashResult = (id, parentId, callId) =>
+  entry(id, parentId, { role: "toolResult", toolCallId: callId, toolName: "bash", content: [{ type: "text", text: "" }] });
 
 const lines = [
   { type: "session", version: 3, id: SID, timestamp: at, cwd: WORK },
@@ -101,8 +110,33 @@ const lines = [
   read("a5", "r2", "t3", "anatomy"),
   result("r3", "a5", "t3"),
   entry("u2", "r3", { role: "user", content: [{ type: "text", text: "第二件事" }] }),
-  read("a7", "u2", "t4", "jira"),
-  result("r4", "a7", "t4"),
+  // 第二轮故意「工具先跑、技能后到」：技能项到达时模块里已经有卡片 —— 一轮一个框的关键情形。
+  bash("a6", "u2", "t4", "git status --short"),
+  bashResult("rb1", "a6", "t4"),
+  read("a7", "rb1", "t5", "jira"),
+  result("r4", "a7", "t5"),
+  bash("a8", "r4", "t6", "git rev-parse --short HEAD"),
+  bashResult("rb2", "a8", "t6"),
+  // 第 3 轮 = 报障那一轮的原序：read → bash → read → bash×6，两个技能项正好落在两掽之间。
+  entry("u3", "rb2", { role: "user", content: [{ type: "text", text: "照截图那一轮的顺序再跑一遍" }] }),
+  read("a9", "u3", "t7", "grill-me"),
+  result("r5", "a9", "t7"),
+  bash("a10", "r5", "t8", "git status --short"),
+  bashResult("rb3", "a10", "t8"),
+  read("a11", "rb3", "t9", "grilling"),
+  result("r6", "a11", "t9"),
+  bash("a12", "r6", "t10", "git rev-parse --short HEAD"),
+  bashResult("rb4", "a12", "t10"),
+  bash("a13", "rb4", "t11", "git log -1 --format=%s"),
+  bashResult("rb5", "a13", "t11"),
+  bash("a14", "rb5", "t12", "ls -la"),
+  bashResult("rb6", "a14", "t12"),
+  bash("a15", "rb6", "t13", "sed -i s/a/b/ notes.md"),
+  bashResult("rb7", "a15", "t13"),
+  bash("a16", "rb7", "t14", "npm run build"),
+  bashResult("rb8", "a16", "t14"),
+  bash("a17", "rb8", "t15", "npm test"),
+  bashResult("rb9", "a17", "t15"),
 ];
 fs.writeFileSync(path.join(SESSIONS, "--skill-group-probe--", `${SID}.jsonl`), lines.map((r) => JSON.stringify(r)).join("\n") + "\n");
 
@@ -183,7 +217,59 @@ try {
   );
   console.log("GROUPS:", JSON.stringify(groups, null, 1));
 
-  check("两轮各一组，不是每个技能一张卡", groups.length === 2, `${groups.length} group(s)`);
+  // 操作框按轮分：一轮里的工具无论夹了几个技能，都该收在同一个框里。
+  // 这里按 `.msg.user` 切轮，逐轮数框与行（不是数全页，两轮的框不能互相抵消）。
+  const turns = await page.evaluate(() => {
+    const stream = document.querySelector(".chat-scroll");
+    const out = [];
+    let cur = null;
+    for (const n of stream.children) {
+      if (n.matches(".msg.user")) {
+        cur = { ops: [], skills: 0, order: [] };
+        out.push(cur);
+        continue;
+      }
+      if (!cur) continue;
+      if (n.matches(".skillgroup")) {
+        cur.skills += 1;
+        cur.order.push("skillgroup");
+      }
+      if (n.matches(".ops")) {
+        cur.ops.push({
+          title: (n.querySelector(".ops-title")?.textContent ?? "").trim(),
+          rows: n.querySelectorAll('.ops-panel[data-panel="ops"] .tool').length,
+        });
+        cur.order.push("ops");
+      }
+    }
+    return out;
+  });
+  console.log("TURNS:", JSON.stringify(turns));
+
+  check("第 1 轮只有一个操作框", turns[0]?.ops.length === 1, `${turns[0]?.ops.length} 个：${turns[0]?.ops.map((o) => o.title).join(" | ")}`);
+  check("第 1 轮的框装着全部 3 次工具", turns[0]?.ops[0]?.rows === 3, `${turns[0]?.ops[0]?.rows} 行`);
+  check("第 1 轮的标题点名 read ×3", /3 个操作 · read ×3/.test(turns[0]?.ops[0]?.title ?? ""), turns[0]?.ops[0]?.title ?? "");
+  check("第 2 轮只有一个操作框", turns[1]?.ops.length === 1, `${turns[1]?.ops.length} 个：${turns[1]?.ops.map((o) => o.title).join(" | ")}`);
+  check("第 2 轮的框装着 3 行（技能前 1 次 + 技能后 2 次）", turns[1]?.ops[0]?.rows === 3, `${turns[1]?.ops[0]?.rows} 行`);
+  check(
+    "技能来在工具之后时，组仍然排在框前",
+    turns[1]?.order[0] === "skillgroup" && turns[1]?.order[1] === "ops",
+    JSON.stringify(turns[1]?.order),
+  );
+  // 第 3 轮就是报障那一轮的顺序（read → bash → read → bash×6）：改前这里会拆成 `2 | 7`。
+  check("第 3 轮（报障原序）只有一个操作框", turns[2]?.ops.length === 1, `${turns[2]?.ops.length} 个：${turns[2]?.ops.map((o) => o.title).join(" | ")}`);
+  check(
+    "第 3 轮标题与截图那一轮合并后对得上",
+    /9 个操作 · read ×2 · bash ×7/.test(turns[2]?.ops[0]?.title ?? ""),
+    turns[2]?.ops[0]?.title ?? "",
+  );
+  check(
+    "技能组排在操作框前面",
+    turns[0]?.order[0] === "skillgroup" && turns[0]?.order[1] === "ops",
+    JSON.stringify(turns[0]?.order),
+  );
+
+  check("三轮各一组，不是每个技能一张卡", groups.length === 3, `${groups.length} group(s)`);
   check("第一组默认折叠", groups[0]?.open === false, String(groups[0]?.open));
   check("摘要行点名本轮 3 个技能", /3 个技能/.test(groups[0]?.text ?? ""), groups[0]?.text ?? "");
   check(
@@ -206,9 +292,17 @@ try {
   check("第二轮的技能另起一组", (groups[1]?.text ?? "").includes("1 个技能"), groups[1]?.text ?? "");
   check("第二组只有 jira", (groups[1]?.text ?? "").includes("jira") && groups[1]?.cards.length === 1, groups[1]?.text ?? "");
 
-  // 折叠时是一行：摘要行的实际高度只有一行字那么高（换行就会翻倍）。
-  const summaryBox = await page.locator(".skillgroup > summary").first().boundingBox();
-  check("折叠时摘要只有一行高", summaryBox !== null && summaryBox.height < 40, `${summaryBox?.height}px`);
+  // 折叠时永远只有一行：名字多少不影响高度（多出来的名字走省略号，见 `.skillgroup-names` 的
+  // text-overflow）。比较两个组的盒高 —— 不拿绝对像素卡阈值：摘要里有个带行框的 inline 徽标，
+  // 盒高（43.3px）本来就大于一行字（18.6px），旧的 `height < 40` 从上线起就是假红。
+  const summaryH = await page.locator(".skillgroup > summary").evaluateAll((ns) =>
+    ns.map((n) => n.getBoundingClientRect().height),
+  );
+  check(
+    "折叠时摘要只有一行（3 个名字与 1 个名字一样高）",
+    summaryH.length >= 2 && Math.abs(summaryH[0] - summaryH[1]) < 1,
+    summaryH.map((h) => `${h.toFixed(1)}px`).join(" / "),
+  );
 
   // 点开：详情全展开，chevron 转过去。
   await page.locator(".skillgroup > summary").first().click();
