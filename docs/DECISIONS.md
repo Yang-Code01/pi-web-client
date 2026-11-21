@@ -6926,3 +6926,23 @@ Esc 之后 dialog: 0
 **代价。** 正式实例一个字节都不变（`WINDOW_TITLE` 为空时仍走原来的流式发送，不读全文）。测试实例里 `document.title` 的最前面是实例名，会话名被挤到第二段；浏览器通知 / 书签这些跟着标题走的入口也会变 —— 这正是想要的。前缀是**实例数据**（`windowTitleFor()` 里的「测试」写在脚本里），不跟界面语言切换：静态 `<title>` 得在 JS 之前就正确，桥那边也没有用户语言可查；`/peer`（内网通）页固定「内网通 · pi」，不跟实例名走。
 
 **守卫。** `npm run test:window-title`：`bridge/tests/window-title-unit.mjs`（无标题时页面原样、`<title>` 与注入脚本的位置、标题里的 `</script>` / `<` 不把页面写坏、没有 `</head>` 的畸形页面补 `<head>` 且不把脚本塞到 `<!doctype>` 之前）与 `web/tests/window-title-unit.mjs`（前缀 × 会话标题四种组合，正式实例必须还是「会话 · pi」/「pi」）。真机：`env.mjs start` 的输出里出现「新开了一个：测试 t1」才算开成（新增标题必须**等于**「测试 <id>」，别的新窗口不算），找不到 Edge 或标题一直对不上就明说，不要报成功。
+
+## D361 长回答收尾回到第一行，而不是留在末尾（用户报「回答完成后得自己滚回最上面」2026-11-21）
+
+**症状。** 回答流式长出来时视口一直贴底；等它结束，人停在最后一屏，要读开头得自己往上滚好几屏。短回答没有这个问题，只有长到超过一屏的回答才有。
+
+**根因。** 跟流只有往下这一条路：`delta()` 每来一段就 `scrollToEnd()`（`web/src/chat.ts:1249`），`message_end` 的 `replace()` 收尾时又贴一次底；`setRunning(false)` 只重画最后一枚用户气泡的「处理中」，不碰滚动。没有任何一处会在收尾时把视口送回回答开头。
+
+**决定。** 选「收尾回开头」：`running` 从 true 翻成 false、且用户此刻仍在跟流时，把**最后一条 assistant** 的第一行送到视口顶部（留 6px）。做成 `ChatView` 内部的一个收尾动作，不动 app、桥、协议与样式：
+
+- `setRunning()` 记下 `wasRunning`，true → false 后等两帧再量（`replace()` 已经把流式节点换成最终节点，高度要等排版）。
+- `settleScroll()` 只在「最后一块内容就是这条 assistant」时动手：后面还跟着工具卡 / 下一轮用户气泡就不算收尾；手动折叠过的不动；回答不到视口 90% 不动（整段都看得见，动了像页面抽了）；`touching` / `staging` / `pendingJump` / 已经停跟都不动。
+- 动手时置 `following=false`、`unread=false`，先 `renderJump()` 再量（钮显隐会改一点 `scrollHeight`）；`holdFollow = now + 900` 挡住从底部往上跳的头几帧 scroll 事件，避免 `resumeFollowing()` 把视口拽回底部；最后 `scrollTo({behavior:"smooth"})`。目标本来就在最后一屏里（`startTop >= maxScroll - 1`）时留在底部。
+- 不调 `stopFollowing()`：它会报 `onScrollUp`，让提问面板以为人自己往上滚了而收起来。也不调 `jumpToTurn()`：那是定位用户轮次、还会闪用户气泡。
+- `reset()` 静默清 `running` 并取消待跑的帧：换会话 / 重连时旧会话的 true 会让新会话的 false 被当成「刚结束」，不取消就会滚到别人的回答上；app 随后那句 `setRunning(新会话.running)` 因此成为一次真正的跃迁。
+
+**顺带修掉的单位混用（D123）。** `getBoundingClientRect()` 是视觉 px，`scrollTop` 是布局 px，`#app` 上挂着 `zoom: var(--ui-scale)`；原来的 `rect.top - root.top + scrollTop` 在默认字号 125% 时会把目标算少一截，收尾停在回答上方几百像素。新 `contentTopOf(node)` 把 rect 差除以 `--ui-scale` 再相加；`jumpToTurn()` 的同一段也改用它（右侧刻度带跳到轮次时同样受益）。
+
+**代价 / 可改。** 收尾会动一次视口（这正是 A 的定义）；回答在 0.9–1.0 屏之间时视口顶部会留一点底部内边距的空白；阈值、6px 呼吸、900ms 冷却、平滑动画都是可调的常量，先按实测手感取这组。用户一旦上滚、手指还在屏上、或收尾后又有新内容，都只点亮「有新内容」，不再自动移动。
+
+**守卫。** 新增 `probes/settle-top.mjs`（`npm run probe:settle`）：长回答收尾停在首行、↓ 可见且无「new」、点 ↓ 回底；短回答不动；流式中途上滚不被拽回；收尾后补一条 delta 也不拽回。`probes/scroll-race.mjs`（D68 / D94）、`probes/turn-rail-last.mjs`（D244 / D60）、`probes/rail-click.mjs` 照旧跑；`npm --prefix web run typecheck` 全绿。
