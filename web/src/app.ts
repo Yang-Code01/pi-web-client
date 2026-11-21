@@ -94,7 +94,7 @@ import {
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
-import { escapeTopLayer, pushEscLayer } from "./modal.ts";
+import { escapeTopLayer, LEAVE_MS, pushEscLayer, startLeaving } from "./modal.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -3528,20 +3528,17 @@ export class App {
    */
   private retireOverlay(node: HTMLElement | null): void {
     if (!node) return;
-    const animate = isMacTheme(this.prefs.theme) && !matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!animate) {
+    if (!startLeaving(node)) {
       node.remove();
       return;
     }
-    node.classList.add("mac-leaving");
-    node.inert = true;
     queueMicrotask(() => {
       if (this.sheet && this.sheet !== node) {
         node.remove();
         this.sheet.classList.add("mac-instant");
         return;
       }
-      window.setTimeout(() => node.remove(), 210);
+      window.setTimeout(() => node.remove(), LEAVE_MS);
     });
   }
 
@@ -9002,7 +8999,7 @@ export class App {
     const popEsc = pushEscLayer({ onEsc: () => shut() });
     const shut = (): void => {
       popEsc();
-      back.remove();
+      this.retireOverlay(back);
     };
     close.onclick = shut;
     back.onclick = (ev) => {
@@ -11501,7 +11498,7 @@ export class App {
       box.append(el("div", "choose-title", title));
       const row = el("div", "choose-row");
       const done = (id: string): void => {
-        back.remove();
+        this.retireOverlay(back);
         resolve(id);
       };
       for (const b of buttons) {

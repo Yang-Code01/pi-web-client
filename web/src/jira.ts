@@ -14,6 +14,7 @@ import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
 import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, isUnread, issueMeta, keyMask, mergeSearchPage, recentSeenKey, recentSnippet, relativeTime, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
+import { retireOverlay } from "./modal.ts";
 import { sessionNameFromIssueKey } from "./session-name.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraRecentItem, JiraSearchMeta, JiraUserOption, RecentKind, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
@@ -306,7 +307,7 @@ export class JiraPanel {
     this.searchSeq += 1;
     this.metaSeq += 1;
     window.clearTimeout(this.userTimer);
-    this.root?.remove();
+    retireOverlay(this.root);
     this.root = null;
     this.pane = null;
     this.host.onClose?.();

@@ -14,7 +14,7 @@
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
-import { mountOverlay, trapEscape } from "./modal.ts";
+import { mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
 import "./mail-console.css";
 import { errText, tr } from "./i18n/index.ts";
 import type {
@@ -313,7 +313,7 @@ export class MailPanel {
     this.oauthTimer = 0;
     if (this.oauth) void api.mailOAuthCancel(this.oauth.accountId).catch(() => {});
     this.oauth = null;
-    this.root?.remove();
+    retireOverlay(this.root);
     this.root = null;
     const back = this.lastFocus;
     this.lastFocus = null;

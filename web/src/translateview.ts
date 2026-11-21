@@ -1,4 +1,5 @@
 import { createEl as el } from "./chat.ts";
+import { retireOverlay } from "./modal.ts";
 import { tr } from "./i18n/index.ts";
 import { renderMarkdown } from "./md.ts";
 import type { TrDoc, TrJob, TrSyncResp } from "./types.ts";
@@ -354,7 +355,7 @@ export function openTrPicker(o: PickerOpts, mount: (node: HTMLElement) => void):
   const go = el("button", "btn primary", tr("开始")) as HTMLButtonElement;
   const close = (): void => {
     document.removeEventListener("keydown", onKey, true);
-    back.remove();
+    retireOverlay(back);
   };
   go.onclick = () => {
     const [provider, ...rest] = sel.value.split("/");
@@ -415,7 +416,7 @@ export function openSyncReview(
   const ok = el("button", "btn primary", tr("写回原文")) as HTMLButtonElement;
   const close = (): void => {
     document.removeEventListener("keydown", onKey, true);
-    back.remove();
+    retireOverlay(back);
   };
   ok.onclick = () => {
     close();

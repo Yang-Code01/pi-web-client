@@ -13,7 +13,7 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 import { MAIL_CONFIRM_PAGE_MS, MailConfirmQueue, type MailConfirmAck, type MailConfirmRequest } from "./mail-shared.ts";
-import { mountOverlay, trapEscape } from "./modal.ts";
+import { mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
 import "./mail-console.css";
 
 export interface MailConfirmHost {
@@ -61,7 +61,7 @@ export class MailConfirmDialog {
     this.timer = 0;
     this.untrap?.();
     this.untrap = null;
-    this.root?.remove();
+    retireOverlay(this.root);
     this.root = null;
     const back = this.lastFocus;
     this.lastFocus = null;
@@ -123,7 +123,7 @@ export class MailConfirmDialog {
     this.untrap?.();
     this.untrap = trapEscape(() => this.answer(false, "declined", tr("你按了 Esc，这封信没有发出去。")));
 
-    this.root?.remove();
+    retireOverlay(this.root);
     this.root = back;
     // 挂进 #app（跟「本机管理」同一个挂法）：浮层跟着外观「字号」一起缩放（D123 / D263）。
     mountOverlay(back);

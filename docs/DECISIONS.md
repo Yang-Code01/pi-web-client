@@ -6736,3 +6736,18 @@ Esc 之后 dialog: 0
 - 钉条里当前会话那颗胶囊是实心强调色底，里面的状态小字（运行中 / 进行中）和 ★ 也是强调色，叠在一起看不见。选中胶囊里一律跟胶囊白字走。
 
 **守卫。** `node probes/mac-chat.mjs`：四套主题下量短气泡单行、气泡贴右、选中胶囊对比度，并扫整页「自己带字、对比度 < 2」的元素（展开 / 收起左栏各一遍）。
+
+## D352 Mac 风格：弹层外壳清单集中一处，自管弹层的退场走同一个出口（用户报「只有 Everything 不兼容」2026-11-21）
+
+**症状。** 同一份 CSS 下，产物（`.st-back`）是毛玻璃 + 浅遮罩 + 460ms 窗口入场，Everything（`.sys-back`）还是深黑遮罩 + 纯白面板 + 没有动画；bug 反馈（`.notes-sheet`）居中却演成底部抽屉。
+
+**根因。** `mac.css` 的白名单只认 `.st-console` / `.sheet` / `.modal form` / `.argdialog-panel` 四个外壳类，而 `sys` / `jc` / `mc` 是系统管理 / Jira / 邮箱各抄一份的控制台（`sysmanage.css:3-30`、`jira-console.css:5-30`、`mail-console.css:3-30` 三段几乎逐行相同），一个都不在名单里；零散弹层（`.jira-ask`、`.peer-pick`、`.image-view`、`.sheet-sub-back`、`.choose-back`、`.jira-picker`）同理。笔记面板没挂 `.center` 类，被 `.sheet-back:not(.center)` 判成抽屉。
+
+**决定。**
+- 外壳清单在 `web/src/mac.css` 一处写全：遮罩组 `:is(.st-back, .sheet-back, .modal, .sys-back, .jc-back, .mc-back, .jira-ask-back, .jira-picker, .sheet-sub-back, .choose-back, .peer-pick, .image-view)`，窗口组 `:is(.st-console, .sheet, .modal form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box)`。尺寸与内部布局仍留各自文件，`mac.css` 只管材质、圆角 14px、入场与退场。
+- 笔记面板按名字判（`.sheet-back.notes-back .sheet` 播 `mac-window-in`），不靠没人维护的 `.center`；随手问是右侧抽屉，单独 `mac-side-in`。
+- 退场：`web/src/modal.ts` 新增 `startLeaving(node)`（判 `html[data-ui="mac"]` + reduced-motion，加 `.mac-leaving` / `inert`）、`LEAVE_MS = 210`、`retireOverlay(node)`。app.ts 的私有版本改成调 `startLeaving`（保留「同一轮又开新面板就跳过入场」那段）；sysmanage / jira / mail / mailconfirm / notesheet 的选人框 / translateview 的选择器 / app 的灯箱与小选择器一律换 `retireOverlay`。原来是 `node.remove()`，Mac 下没有退场。
+
+**为什么不是逐文件加规则。** 三套控制台是复制粘贴出来的，下一套新控制台再抄一遍时，只有「清单在 `mac.css` 里、守卫会数」才拦得住；分散到 `sysmanage.css` 之类的文件里，下次照样漏。
+
+**守卫。** `npm --prefix web run build && node probes/mac-dialogs.mjs`：真 Chromium 起一份隔离 bridge，真开 Everything / 产物 / 笔记 / 设置四层，另注 15 个骨架，逐项跟「产物」对齐遮罩 blur 与动画名、面板动画与圆角、阴影，另外断言 Esc 后 `.mac-leaving` 里有 `mac-window-out`。19 行全绿才过；`.choose`（alert 形，缩放淡入）和灯箱（图不是窗口，12px）在白名单里写明例外。

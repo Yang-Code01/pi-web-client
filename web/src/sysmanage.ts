@@ -8,6 +8,7 @@ import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { paintAttendance } from "./attendance.ts";
 import { errText, fmtTime, tr } from "./i18n/index.ts";
+import { retireOverlay } from "./modal.ts";
 import {
   DNS_PRESETS,
   clockText,
@@ -178,7 +179,7 @@ class SysPanel {
     document.removeEventListener("keydown", this.keyHandler, true);
     if (this.noticeTimer !== null) window.clearTimeout(this.noticeTimer);
     this.stopCountdown();
-    this.root?.remove();
+    retireOverlay(this.root);
     this.root = null;
     if (current === this) current = null;
     const back = this.onClose;

@@ -283,16 +283,20 @@ html[data-ui="mac"] .theme-chip:hover { scale: 1.03; }
 html[data-ui="mac"] .theme-chip:active { scale: 0.97; }
 
 /* ---------------------------------------------------------------- 2e. 窗口：设置台 / 弹层 / 模态 */
-html[data-ui="mac"] :is(.st-back, .sheet-back, .modal) {
+/* 外壳清单一处写全，别再按文件散着加：`st` 与 `sheet` 是 app 自己的两层，`sys` / `jc` / `mc` 是
+   系统管理 / Jira / 邮箱三个模块各抄一份的控制台（sysmanage.css / jira-console.css / mail-console.css
+   里那三段几乎逐行相同），外壳长得一样、类名不同；`jira-ask` / `peer-pick` 是零散确认层，
+   `image-view` 是灯箱。漏一个，那个弹层就退回「深黑遮罩 + 纯白面板 + 没有入场」。 */
+html[data-ui="mac"] :is(.st-back, .sheet-back, .modal, .sys-back, .jc-back, .mc-back, .jira-ask-back, .jira-picker, .sheet-sub-back, .choose-back, .peer-pick, .image-view) {
   background: var(--mac-scrim);
   -webkit-backdrop-filter: blur(6px) saturate(120%);
   backdrop-filter: blur(6px) saturate(120%);
   animation: mac-fade-in 260ms var(--mac-ease) backwards;
 }
-html[data-ui="mac"] .st-console,
-html[data-ui="mac"] .sheet,
-html[data-ui="mac"] .modal form,
-html[data-ui="mac"] .argdialog-panel {
+/* 看图是暗场：别的弹层压暗背景是为了看清前面那张纸，灯箱压暗是为了看清这张图，
+   所以它比 --mac-scrim 暗得多 —— 但同样要毛玻璃与淡入，不再是那层死死的黑。 */
+html[data-ui="mac"] .image-view { background: rgba(6, 8, 12, 0.76); }
+html[data-ui="mac"] :is(.st-console, .sheet, .modal form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box) {
   background: var(--mac-glass-strong);
   -webkit-backdrop-filter: var(--mac-blur-strong);
   backdrop-filter: var(--mac-blur-strong);
@@ -305,8 +309,29 @@ html[data-ui="mac"] .st-console { border-radius: 14px; }
 html[data-ui="mac"] .sheet-back.center .sheet,
 html[data-ui="mac"] .modal form,
 html[data-ui="mac"] .argdialog-panel { border-radius: 14px; }
+/* 抄来的那几个控制台原来是 16px 圆角 + 直角表头，统一成 macOS 窗口的 14px。 */
+html[data-ui="mac"] :is(.sys-console, .jc-console, .mc-console, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box, .notes-sheet, .sub-sheet, .choose) { border-radius: 14px; }
+/* 灯箱：图本身当一张纸，圆角 + 窗口阴影 + 同一道入场；背景在遮罩组把自己调暗了就够。 */
+html[data-ui="mac"] .image-view-img {
+  border-radius: 12px;
+  box-shadow: var(--mac-shadow-window);
+  animation: mac-window-in 460ms var(--mac-spring) backwards;
+}
 /* 底部抽屉（手机 / 非居中）：iOS 那样从下面弹上来。 */
 html[data-ui="mac"] .sheet-back:not(.center) .sheet { animation-name: mac-drawer-in; transform-origin: 50% 100%; border-radius: 16px 16px 0 0; }
+/* 笔记面板视觉上是居中的（notes.css 自己写了 align-items:center），却没挂 `.center` 类，
+   按 `:not(.center)` 会演成底部抽屉——从屏幕底下蹿上来。按类判不了就按名字判。 */
+html[data-ui="mac"] .sheet-back.notes-back .sheet {
+  animation: mac-window-in 460ms var(--mac-spring) backwards;
+  transform-origin: 50% 0;
+  border-radius: 14px;
+}
+/* 随手问是右侧抽屉（items 贴右、整高）：mac 下从右边推出来，圆角只留靠内那侧。 */
+html[data-ui="mac"] .sheet-back.scratch-back .sheet {
+  animation: mac-side-in 380ms var(--mac-spring) backwards;
+  transform-origin: 100% 50%;
+  border-radius: 14px 0 0 14px;
+}
 
 html[data-ui="mac"] .st-head,
 html[data-ui="mac"] .sheet-head { border-bottom: 0.5px solid var(--mac-glass-line); }
@@ -353,7 +378,7 @@ html[data-ui="mac"] :is(.ctx-menu, .pin-menu, .term-menu, .fail-menu, .mk-menu, 
   color: var(--accent-ink);
   border-radius: 6px;
 }
-html[data-ui="mac"] :is(.fail-toast, .update-bar, .turn-surface, .term-dock, .branch-sheet, .repos-sheet, .jira-picker-box, .go-card) {
+html[data-ui="mac"] :is(.fail-toast, .update-bar, .turn-surface, .term-dock, .go-card) {
   -webkit-backdrop-filter: var(--mac-blur-strong);
   backdrop-filter: var(--mac-blur-strong);
   border-radius: 14px;
@@ -363,11 +388,16 @@ html[data-ui="mac"] :is(.fail-toast, .update-bar) { background: var(--mac-glass-
 
 /* 右栏的卡片（需要你 / 执行）：发丝线 + 圆角，悬停微微浮起。 */
 html[data-ui="mac"] .queue > * { border-radius: 12px; }
+/* `.choose` 是两三选项的小弹窗（未保存离开 / 放弃改动）：动画像菜单（缩放淡入，alert 就是这个手感），
+   但形体要跟其它窗口一致 —— 它比菜单大一截，12px 的圆角在 420px 宽的小窗口上显得方。 */
+html[data-ui="mac"] .choose { border-radius: 14px; }
 
 
-/* 退场（app.ts 的 retireOverlay 挂 `.mac-leaving`，动画放完再真正移除）。 */
+/* 退场（app.ts 与 modal.ts 的 retireOverlay 挂 `.mac-leaving`，动画放完再真正移除）。 */
 html[data-ui="mac"] .mac-leaving { pointer-events: none; animation: mac-fade-out 200ms var(--mac-ease) forwards !important; }
-html[data-ui="mac"] .mac-leaving > :is(.st-console, .sheet, form, .argdialog-panel) { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
+html[data-ui="mac"] .mac-leaving > :is(.st-console, .sheet, form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box, .choose) { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
+/* 灯箱的根自己就是 `.mac-leaving`（它不套在别的遮罩里），图跟着一起收。 */
+html[data-ui="mac"] .mac-leaving .image-view-img { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
 /* 同一个面板被重画（换页、恢复默认）：新的那份不再演一遍入场。 */
 html[data-ui="mac"] .mac-instant,
 html[data-ui="mac"] .mac-instant > * { animation: none !important; }

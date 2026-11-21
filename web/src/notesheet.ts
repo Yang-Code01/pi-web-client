@@ -19,7 +19,7 @@ import type { RuleBook } from "./rules.ts";
 import type { Note, NoteKind, NoteStatus, NotesLayout } from "./types.ts";
 import "./notes.css";
 import { tr } from "./i18n/index.ts";
-import { pushEscLayer } from "./modal.ts";
+import { pushEscLayer, retireOverlay } from "./modal.ts";
 
 export const NOTE_KINDS: { id: NoteKind; label: string; glyph: string }[] = [
   { id: "bug", label: "bug", glyph: "🐞" },
@@ -1521,7 +1521,7 @@ export class NotesSheet {
       panel.append(head, search, list);
       wrap.append(panel);
       const done = (person: PeerPerson | null): void => {
-        wrap.remove();
+        retireOverlay(wrap);
         resolve(person);
       };
       pushEscLayer({ el: wrap, onEsc: () => done(null) });
@@ -1612,7 +1612,7 @@ export class NotesSheet {
       panel.append(head, body, foot);
       wrap.append(panel);
       const done = (yes: boolean): void => {
-        wrap.remove();
+        retireOverlay(wrap);
         resolve(yes);
       };
       pushEscLayer({ el: wrap, onEsc: () => done(false) });
