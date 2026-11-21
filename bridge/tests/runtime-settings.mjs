@@ -2,7 +2,7 @@
  * 运行时阈值的写的那一半（#78 / D120）：面板上那两个数能改，而且改了不会丢。
  *
  * 观察面全是 WS：
- *   A. 改值 → 回一条带新值的 `runtime.stats`；**重启桥**之后再问，还是新值（不是默认值，D369）；
+ *   A. 改值 → 回一条带新值的 `runtime.stats`；**重启桥**之后再问，还是新值（不是默认值，D372）；
  *   B. 非法值（0 / 负数 / 非数字 / 空 / 什么都没有）被拒绝：回 `saved: false`，值不变，也不写盘
  *      （重启后依旧不变）—— **整份 patch 要么都过、要么都不写**（一好一坏也不写）；
  *      走公共隧道来的连接连改都不许改（step-up，与其它写设置的动作同级）；
@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { freePort } from "../../tools/free-port.mjs";
-/** Imported, not copied: a test that hard-codes the defaults breaks every time one is raised (D369). */
+/** Imported, not copied: a test that hard-codes the defaults breaks every time one is raised (D372). */
 import { DEFAULT_IDLE_MS, DEFAULT_WATERMARK_BYTES } from "../src/lifecycle.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -310,7 +310,7 @@ async function idleTakesEffectNow() {
     await runOneTurn(page, sid, "hello");
     const pid = launches(bridge.records(), sid).at(-1)?.pid;
 
-    // Two whole ticks at the default (two hours, D369): nothing may happen (that is the "before" state).
+    // Two whole ticks at the default (two hours, D372): nothing may happen (that is the "before" state).
     const mark = page.seen.length;
     await sleep(TICK_MS * 2 + 500);
     check(!page.since(mark, (m) => m.type === "notice" && m.sessionId === sid).length, `默认的 ${DEFAULT_IDLE_MS / MIN} 分钟还没到：两个 tick 都没休眠`);

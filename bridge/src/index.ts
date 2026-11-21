@@ -3446,9 +3446,9 @@ async function main(): Promise<void> {
             }
             const runId = `cli_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
             const exec = async (): Promise<{ code: number | null; data?: unknown; error?: string }> => {
-              let run: ReturnType<typeof runPiCli>;
+              let run: Awaited<ReturnType<typeof runPiCli>>;
               try {
-                run = runPiCli(pi.cli, msg, (chunk) => send({ type: "picli.out", runId, text: chunk }));
+                run = await runPiCli(pi.cli, msg, (chunk) => send({ type: "picli.out", runId, text: chunk }));
               } catch (err: any) {
                 return { code: -1, error: String(err?.message ?? err) };
               }
@@ -3661,7 +3661,7 @@ async function main(): Promise<void> {
                 const out = await writeLock("npm", () =>
                   writeLock(mcpFileLock(msg.local === true, typeof msg.cwd === "string" ? msg.cwd : null), async () => {
                     send({ type: "picli.start", reqId, runId, op: "mcp.add" });
-                    return runPiCli(pi.cli, { ...req, cwd: msg.cwd ? String(msg.cwd) : undefined }, (chunk) => send({ type: "picli.out", runId, text: chunk })).done;
+                    return (await runPiCli(pi.cli, { ...req, cwd: msg.cwd ? String(msg.cwd) : undefined }, (chunk) => send({ type: "picli.out", runId, text: chunk }))).done;
                   }),
                 );
                 send({ type: "picli.done", reqId, runId, op: "mcp.add", code: out.code, vars });

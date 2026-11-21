@@ -24,7 +24,7 @@ export interface Lifecycle {
 }
 
 /**
- * Defaults from D120 §5, numbers raised by D369; all are "可改".
+ * Defaults from D120 §5, numbers raised by D372; all are "可改".
  * `DEFAULT_IDLE_MS` is one value serving three rules (D120 §8): idle sleep, the watchdog's stuck-run
  * judgement, and approval/question expiry when nobody is in front of a page.
  */

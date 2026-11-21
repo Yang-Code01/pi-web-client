@@ -27,7 +27,7 @@ const ROOT = path.join(REPO, ".scratch", "stuck-run");
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
 /** The GC tick the tests inject: a real one is 60 s, and the watchdog needs a few of them. */
 const TICK_MS = 1000;
-/** D369's two hours, squeezed. */
+/** D372's two hours, squeezed. */
 const IDLE_MS = 2000;
 /** D120's 60 s grace, squeezed. */
 const GRACE_MS = 1500;

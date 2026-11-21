@@ -24,7 +24,7 @@ const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
 /** The GC tick the tests inject: a real one is 60 s, and a phase may sit out a whole one. */
 const TICK_MS = 1000;
 const TICK_WAIT = TICK_MS * 4;
-/** The idle threshold the tests inject: the real default (two hours, D369) would take two hours. */
+/** The idle threshold the tests inject: the real default (two hours, D372) would take two hours. */
 const IDLE_MS = 2000;
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
