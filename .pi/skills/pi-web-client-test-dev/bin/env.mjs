@@ -3,7 +3,7 @@
 //
 //   node env.mjs list
 //   node env.mjs ports [--peers 1]
-//   node env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build]
+//   node env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build] [--no-open]
 //   node env.mjs stop --id t1 | --all
 //
 // 端口布局（base = 第一个空闲的 17864+）：bridge=base、peer=base+1、announce(UDP)=base+2、
@@ -212,6 +212,69 @@ function killTree(pid) {
   }
 }
 
+/** D358：交给桥、再由桥写进页面 <title> 的那段文字。 */
+function windowTitleFor(id) {
+  return `测试 ${id}`;
+}
+
+/** Windows 上现在的 Edge 窗口标题（判「新窗口开出来了没有」）。 */
+function edgeTitles() {
+  const r = spawnSync(
+    "powershell",
+    ["-NoProfile", "-Command", "Get-Process msedge -EA SilentlyContinue | ? {$_.MainWindowTitle} | select -Expand MainWindowTitle"],
+    { encoding: "utf8", timeout: 15000 },
+  );
+  return String(r.stdout ?? "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * D358：开一个新的浏览器窗口。标题由桥注入，这里只核「真的多了一条窗口标题」—— 退出码什么都证明不了
+ * （Edge 常驻时丢 URL 只会在后台开标签）。
+ */
+async function openWindow(url, id, opts) {
+  const page = `${url}/`;
+  const title = windowTitleFor(id);
+  if (opts["no-open"]) {
+    say(`  窗口    --no-open：没开；点上面的地址，tab 会是「${title}」`);
+    return;
+  }
+  if (process.platform === "win32") {
+    const before = edgeTitles();
+    // 64 位 Edge 在 Program Files 下，写死 x86 路径会白跑一次；交给 App Paths 解析。
+    spawnSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-Command",
+        `if (Get-Command msedge -EA SilentlyContinue) { Start-Process msedge -ArgumentList '--new-window','${page}' } else { Start-Process '${page}' }`,
+      ],
+      { stdio: "ignore", timeout: 20000 },
+    );
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 500));
+      const added = edgeTitles().filter((t) => !before.includes(t));
+      if (added.length) {
+        say(`  窗口    新开了一个：${added[0]}`);
+        return;
+      }
+    }
+    say(`  窗口    没等到新窗口（也可能用别的浏览器开的）；点上面的地址，tab 会是「${title}」`);
+    return;
+  }
+  const [cmd, args] =
+    process.platform === "darwin" ? ["open", ["-n", "-a", "Microsoft Edge", page]] : ["xdg-open", [page]];
+  const r = spawnSync(cmd, args, { stdio: "ignore", timeout: 20000 });
+  say(
+    r.status === 0
+      ? `  窗口    已请求打开（tab 会是「${title}」）`
+      : `  窗口    没开成；点上面的地址，tab 会是「${title}」`,
+  );
+}
+
 async function cmdStart(opts) {
   const dir = path.resolve(opts.dir ?? process.cwd());
   if (!fs.existsSync(path.join(dir, "package.json"))) throw new Error(`${dir} 不像 pi-web-client 的仓库根（没有 package.json）`);
@@ -257,6 +320,8 @@ async function cmdStart(opts) {
       PI_PEER_PORT: String(ports.peer),
       PI_PEER_ANNOUNCE_PORT: String(ports.announce),
       PI_PEER_NICKNAME: `测试机 ${id}`,
+      // D358：桥把它写进页面 <title>，tab 上就是「测试 <实例名>」。
+      PI_WEB_WINDOW_TITLE: windowTitleFor(id),
     },
     dir,
     path.join(state, "bridge.out.log"),
@@ -325,6 +390,7 @@ async function cmdStart(opts) {
   say(`  状态    ${path.join(state, "bridge.out.log")}`);
   say(`  登录自检 HTTP ${login}${login === 200 || login === 204 ? "（口令 test 生效）" : "（口令没生效，看日志）"}`);
   if (dirty) say("  注意：工作区有别的未提交改动，构建用的是当前文件内容。");
+  await openWindow(url, id, opts);
 }
 
 function cmdList() {
@@ -378,7 +444,7 @@ try {
   else if (cmd === "list") cmdList();
   else if (cmd === "ports") await cmdPorts(opts);
   else {
-    say("用法：node env.mjs list | ports [--peers N] | start --dir <path> [--name t1] [--peers 1] [--build] | stop --id t1|--all");
+    say("用法：node env.mjs list | ports [--peers N] | start --dir <path> [--name t1] [--peers 1] [--build] [--no-open] | stop --id t1|--all");
     process.exitCode = 2;
   }
 } catch (err) {

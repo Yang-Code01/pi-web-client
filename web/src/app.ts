@@ -6,6 +6,7 @@ import { api, type DepPackageId, type DepsReport } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { atSpan, filterCommands, PANEL_COMMANDS, slashSpan, type CommandItem } from "./commands.ts";
+import { documentTitle } from "./window-title.ts";
 import { creditsToUsd, formatAge, formatCredits, formatReset, isMixed, usedPercent, type CopilotView } from "./copilot.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
@@ -16000,7 +16001,7 @@ export class App {
   /** Extension widgets above / below the editor, status lines below, title on the browser tab. */
   private fillExt(): void {
     const ext = this.currentId ? this.ext : { status: [], widgets: [], title: null };
-    document.title = ext.title ? `${ext.title} · pi` : "pi";
+    document.title = documentTitle(ext.title);
     const block = (lines: string[], cls: string, title: string) => {
       const node = el("pre", cls, lines.join("\n"));
       node.title = title;

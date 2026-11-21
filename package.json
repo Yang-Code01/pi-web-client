@@ -48,6 +48,7 @@
     "test:mail:html": "node web/tests/mailhtml-browser.mjs",
     "test:skill": "node bridge/tests/skill-implicit.mjs",
     "test:skill-boot": "node bridge/tests/skill-boot-list.mjs",
+    "test:title": "node --experimental-strip-types --test bridge/tests/window-title-unit.mjs web/tests/window-title-unit.mjs",
     "test:models": "node bridge/tests/models-unit.mjs",
     "test:stat": "node bridge/tests/stat-path.mjs",
     "test:dirpage": "node bridge/tests/dirpage.mjs",

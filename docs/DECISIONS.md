@@ -6861,3 +6861,22 @@ Esc 之后 dialog: 0
 - `node probes/skill-boot-hint.mjs`：桩桥 + 真 Chromium，同一个空回答下 `starting` 真 / 假两个会话，断言文字分别是「还在启动」与「没有匹配的命令」；再让桩桥主动推两帧，断言补全与面板不重新问也当场换人；最后推一帧**别的会话**的技能，断言不盖住当前面板（`web/src/app.ts` 的 `case "skills"` 补了 `sessionId` 比对 —— 广播推送是这一条的新入口，去掉它这条就红）。
 
 推送能推空的这一点也收了一下：`pushCommands()` 里 pi 回空清单不推（`if (!all?.length) return;`），否则刚启动完那一瞬会把盘上那份盖成「没有」。
+
+## D358 测试实例的浏览器 tab 上是「测试 <实例名>」（用户要求「启动新的测试窗口，窗口的 tab 名称是测试+启动测试环境的会话名」2026-11-21）
+
+**症状。** 正式的 7864 和一两份测试实例同时开着，浏览器上一排 tab 全叫「pi」，分不出哪个是刚起来的那份；测试脚本起完只打印一个地址，窗口还得人自己开、开完也认不出来。
+
+**根因。** 正式和测试跑的是同一份前端、同一份 HTML（`web/index.html:11` 的 `<title>pi</title>`），`document.title` 全仓只有 `fillExt()` 里一处设置（`web/src/app.ts:16004`），算出来只可能是「会话标题 · pi」或「pi」。实例名只活在脚本的标准输出和 `~/.pi/agent/state/pi-web-test-dev/instances.json` 里，从来没进过页面。
+
+**决定。** 把实例名交给**桥**，由桥写进它送出的页面 —— 不是 URL 参数，也不是前端写死。
+
+- 测试脚本起桥时带 `PI_WEB_WINDOW_TITLE=测试 <实例名>`（`bin/env.mjs:324`），`--name` 缺省时是 `t<N>`，标题也随之变成「测试 t2」。
+- 桥端 `serveStatic()` 只在「变量非空 + 送的是 index.html」时改正文（`bridge/src/index.ts:261`）：`injectWindowTitle()`（`bridge/src/window-title.ts`）把 `<title>` 换成实例名、并往 `</head>` 前挂 `window.__piWindowTitle`。首帧 tab 就对，不靠 JS。
+- 前端把标题算法收成 `documentTitle()`（`web/src/window-title.ts`）：前缀顶在最前，会话标题接在后面 —— 测试实例里进某个会话就是「测试 t1 · 会话名」；没有前缀时与原来一模一样。
+- 脚本启动成功后**自己开一个窗口**（`openWindow()`，`bin/env.mjs:237`）：Windows 走 `msedge --new-window`、没 Edge 交回默认浏览器，macOS `open -n`，Linux `xdg-open`；开完等 Edge 的窗口标题真的多出一条才报「新开了一个：测试 t1」。退出码不算数 —— Edge 常驻时丢 URL 只会在后台开标签，用户看到的还是「没打开」。`--no-open` 只打印地址。
+
+为什么不走 `?tab=测试 t1` 那种 query 参数：标题该是**实例**的属性，不是某一次打开方式的属性。同一份实例谁打开、哪个窗口都该叫「测试 t1」；query 只对带参数的那一次有效，还会一路跟着 URL 被复制出去。
+
+**代价。** 正式实例一个字节都不变（`WINDOW_TITLE` 为空时仍走原来的流式发送，不读全文）。测试实例里 `document.title` 的最前面是实例名，会话名被挤到第二段；浏览器通知 / 书签这些跟着标题走的入口也会变 —— 这正是想要的。
+
+**守卫。** `npm run test:title`：`bridge/tests/window-title-unit.mjs`（无标题时页面原样、`<title>` 与注入脚本的位置、标题里的 `</script>` / `<` 不把页面写坏、没有 `</head>` 的畸形页面不把脚本塞进 body）与 `web/tests/window-title-unit.mjs`（前缀 × 会话标题四种组合，正式实例必须还是「会话 · pi」/「pi」）。真机：`env.mjs start` 的输出里出现「新开了一个：测试 t1」才算开成，标题核对不上就报「没等到新窗口」。
