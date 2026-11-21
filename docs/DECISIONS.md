@@ -7031,7 +7031,7 @@ Esc 之后 dialog: 0
 
 **背景。** pi 的默认值是 `defaultProjectTrust: "ask"`（[chunk-62VOPMLK.js:43]），终端里第一次进入带 `.pi` 资源的目录会弹一次「是否信任」。桥走 `--mode rpc`，没有这个提示通道，所以网页以前把 `ask` 读成 `never`：目录没在 `~/.pi/agent/trust.json` 里保存过决定，`.pi/settings.json`、`.pi/mcp.json`、`.pi/extensions|skills|prompts|themes`、`SYSTEM.md` 就全部静默不加载，用户也看不到任何解释。`AGENTS.md` / `CLAUDE.md` 本来就不受信任门管。用户的原话是「改这个没有用，新用户，咋办？」—— 只在机器上把全局默认改成 `always` 解决不了别人的新环境。
 
-**决定。** 网页把「未决定」当成信任：`bridge/src/pisettings.ts` 的 effective 改成 `entry ? entry.decision : fallback !== "never"`；`bridge/src/sessions.ts` 在拉起 pi 前算一次 `trustInfo`，只有 `needed && !saved && fallback === "ask"` 时补 `--approve`。显式保存过的信任/不信任、全局 `never` 与 `always` 都不碰（`always` 下 pi 自己会加载，不需要旗标；`never` 下照旧不加载）。信任面板与设置提示同步改成「ask 按信任处理（不能弹提示）」，面板里写明未决定时是自动信任。项目设置在未决定时也可写（与「按信任处理」保持一致）。
+**决定。** 网页把「未决定」当成信任：`bridge/src/pisettings.ts` 的 effective 改成 `entry ? entry.decision : fallback !== "never"`；`bridge/src/sessions.ts` 在拉起 pi 前算一次 `trustInfo`，只有 `needed && !saved && fallback === "ask"` 时补 `--approve`。显式保存过的信任/不信任、全局 `never` 与 `always` 都不碰（`always` 下 pi 自己会加载，不需要旗标；`never` 下照旧不加载）。信任面板与设置提示同步改成「ask 按信任处理（不能弹提示）」，面板里写明未决定时是自动信任。项目设置在未决定时也可写（与「按信任处理」保持一致）。本决定取代 D78 第 3 条，并修订其第 2 条里「未信任的项目拒绝写入」的判据。
 
 **为什么不用别的。**
 
