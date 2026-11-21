@@ -310,6 +310,17 @@ node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id t1 # 或 --all
 
 产物固定在**主检出**的 `.scratch/testbook/<用例集>/`，即使命令是在某个 worktree 里跑的 —— `git worktree remove` 会连未跟踪文件一起删，这本书真这么丢过一次。跑完用 `bin/env.sh down` 关实例，并确认记录器计划任务之类没有残留。
 
+## 跑 e2e 录像（`/pi-web-e2e-test`）
+
+把一次端到端操作录成带红框、字幕和中文旁白的视频，再包成一份能直接打开的 HTML。两种用法：
+
+```text
+/pi-web-e2e-test 复现：点发送后草稿没清空       # bug 模式：先诊断根因，只写方案不改代码
+/pi-web-e2e-test 验收：会话列表按更新时间排序   # change 模式：改前/改后各录一遍并排对照
+```
+
+技能在 `.pi/skills/pi-web-e2e-test/`，带 `disable-model-invocation: true`，只能由命令或 `/skill:pi-web-e2e-test` 呼出。bug 产物是 `<描述>bug.html`（现象 / 原因 / 复现手顺 / 修改方案），change 产物是 `<描述>变更.html`（结论表 + 每条用例的改前/改后双视频 + 同步播放）。视频 H.264 + AAC，点击有红框、按键有键帽、瞬时 bug 自动慢放；产物默认写主检出的 `.scratch/e2e/`，跑完自动停隔离环境、删 before worktree。用法与用例 API 见该目录的 `SKILL.md`，写法见 `references/writing-cases.md`。
+
 ## 补更新日志（`/whatsnew-write`）
 
 `CHANGELOG.md` 由 AI 写、人扫一眼（D195）；写的那一步是一条命令（D196）：
