@@ -17,7 +17,14 @@ import { pathToFileURL } from "node:url";
 import { recordSide } from "../lib/driver.mjs";
 import { finalizeRun } from "../lib/finalize.mjs";
 import { renderReport } from "../lib/report.mjs";
-import { startEnv, stopEnv, listEnv, PASSPHRASE, normalizeBaseUrl } from "../lib/env.mjs";
+import {
+  startEnv,
+  stopEnv,
+  listEnv,
+  PASSPHRASE,
+  normalizeBaseUrl,
+  findReusableEnv
+} from "../lib/env.mjs";
 import {
   mainRoot,
   gitInfo,
@@ -29,7 +36,7 @@ import { asciiSlug, safeFileStem, runStamp } from "../lib/slug.mjs";
 import { findFfmpeg, ffmpegInfo } from "../lib/ffmpeg.mjs";
 import { listTtsVoices } from "../lib/tts.mjs";
 
-const FLAGS = new Set(["keep", "no-tts", "build", "force", "help"]);
+const FLAGS = new Set(["keep", "no-tts", "build", "force", "help", "fresh"]);
 
 function camel(name) {
   return name.replace(/-([a-z])/g, (_, char) => char.toUpperCase());
@@ -78,6 +85,7 @@ function usage() {
     "  --slug <名字>       报告文件名前缀（默认取 meta.slug / 标题）",
     "  --meta <文件|JSON>  现象/原因/修改方案/覆盖矩阵等报告内容",
     "  --env <URL|ID>      复用已有测试环境；change 模式下作为「修改后」环境",
+    "  --fresh             不复用已在跑的环境，另起一份用完就停的（旧行为）",
     "  --before <ref>      change 的修改前基准（默认 git merge-base HEAD main）",
     "  --no-tts            不生成中文旁白，只保留字幕",
     "  --voice <名字>      SAPI 语音（默认 Microsoft Huihui Desktop）",
@@ -150,11 +158,15 @@ function envFromUrlOrId(repoDir, value) {
   return { ...found, reused: true };
 }
 
-async function startOrReuseEnv({ repoDir, value, name, build, log }) {
+async function startOrReuseEnv({ repoDir, value, name, build, fresh, log }) {
   const reused = envFromUrlOrId(repoDir, value);
   if (reused) {
     log(`复用测试环境：${reused.id || "外部 URL"} ${reused.url}`);
     return reused;
+  }
+  if (!fresh && !build) {
+    const auto = await findReusableEnv({ repoDir, log });
+    if (auto) return auto;
   }
   const entry = await startEnv({ repoDir, name, build, log });
   return { ...entry, reused: false };
@@ -254,6 +266,7 @@ async function runBug(args, context) {
     value: args.env,
     name,
     build: args.build,
+    fresh: args.fresh,
     log
   });
   try {
@@ -340,6 +353,7 @@ async function runChange(args, context) {
     value: args.env,
     name: `${envBase}-after`,
     build: args.build,
+    fresh: args.fresh,
     log
   });
   try {
