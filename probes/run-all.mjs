@@ -32,6 +32,7 @@ const ALL = [
   "workspace-drag",
   "a11y-workspace",
   "round16-pin",
+  "pin-delete-current",
   "chrome-topbar",
   "chrome-bottom",
   "chrome-sheet",
