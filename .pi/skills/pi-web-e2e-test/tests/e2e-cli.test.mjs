@@ -163,6 +163,11 @@ test(
       const paused = await page.$$eval("video", (videos) => videos.map((video) => video.paused));
       assert.ok(paused.length >= 2, "报告里没有 before/after 两段视频");
       assert.ok(paused.every((value) => value === false), "点同步播放后仍有视频没有播放");
+      await page.$eval('video[data-side="after"]', (video) => video.pause());
+      await page.waitForTimeout(300);
+      const solo = await page.$$eval("video", (videos) => videos.map((video) => ({ side: video.dataset.side, paused: video.paused })));
+      assert.equal(solo.find((item) => item.side === "before").paused, false, "单独暂停 after 后 before 不应被带着暂停");
+      assert.equal(solo.find((item) => item.side === "after").paused, true, "单独暂停 after 失败");
       assert.deepEqual(pageErrors, [], `报告脚本报错：${pageErrors.join("; ")}`);
       const active = await page.$$eval(".chip.active", (chips) => chips.length);
       assert.ok(active >= 1, "播放时步骤 chip 没有高亮");

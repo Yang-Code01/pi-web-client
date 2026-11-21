@@ -445,7 +445,7 @@ function changeBody(spec) {
     `</section>` +
     `<section class="section" id="cases">` +
     `<div class="section-kicker">03 · 用例</div><h2>修改前后对照</h2>` +
-    `<p class="section-lede">两侧默认同步播放；点步骤 chip 会分别跳到该步在两侧的时间。修改前默认静音，避免两段旁白叠在一起。</p>` +
+    `<p class="section-lede">两侧可各自播放；点「同步播放」才一起开始。点步骤 chip 会分别跳到该步在两侧的时间。修改前默认静音，避免两段旁白叠在一起。</p>` +
     (cases.length ? cases.map(caseCard).join("") : `<p class="muted">没有用例。</p>`) +
     `</section>` +
     `<section class="section" id="coverage">` +
@@ -570,7 +570,6 @@ const JS = `
     var after=card.querySelector('video[data-side="after"]');
     var time=card.querySelector('[data-time]');
     var speed=card.querySelector('[data-speed]');
-    var syncing=false;
     function highlightChips(){
       var t=after?after.currentTime:(before?before.currentTime:0);
       var chips=Array.prototype.slice.call(card.querySelectorAll('.chip'));
@@ -588,18 +587,6 @@ const JS = `
     if(pauseBtn)pauseBtn.addEventListener('click',pauseAll);
     if(speed)speed.addEventListener('change',function(){var r=Number(speed.value)||1;videos.forEach(function(v){v.playbackRate=r;});});
     videos.forEach(function(v){
-      v.addEventListener('play',function(){
-        if(syncing)return;
-        syncing=true;
-        videos.forEach(function(o){if(o!==v)o.play().catch(function(){});});
-        setTimeout(function(){syncing=false;},80);
-      });
-      v.addEventListener('pause',function(){
-        if(syncing)return;
-        syncing=true;
-        videos.forEach(function(o){if(o!==v)o.pause();});
-        setTimeout(function(){syncing=false;},80);
-      });
       v.addEventListener('timeupdate',function(){
         if(!time)return;
         time.textContent='前 '+(before?fmt(before.currentTime):'—')+' / 后 '+(after?fmt(after.currentTime):'—');
