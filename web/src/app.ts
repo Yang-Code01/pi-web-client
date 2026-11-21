@@ -783,6 +783,12 @@ export class App {
   private rowIds: string[] = [];
   /** #94 工作区快照：桥是唯一的推导者，前端只读。 */
   private workspaces: WorkspaceState = { groups: [], overrides: {}, keys: {} };
+  /**
+   * D373：页面记住的「选中的工作区」（键 `pi.ws.selected`）。它只在**没有当前会话**的时候才会被算进去 ——
+   * 切到一个没有会话的工作区时，中栏进空态、横杠与竖列都指着它，刷新后还停在那。
+   * 优先级永远是「当前会话所在组 > 它 > 无」，所以打开任何会话就把它清掉。
+   */
+  private selectedWs: string | null = readSelectedWs();
   /** #101 迁移预览：这张页面已经弹过 / 关过一次就不再弹（取消 = 下次打开还弹，确认才写 prefs）。 */
   private wsIntroShown = false;
   /** #96 顶栏那颗「当前在哪」：组件只认挂载点，换布局时换位置而不是换组件。 */
@@ -1157,7 +1163,7 @@ export class App {
         add.title = tr("开新会话（自动置顶到这条里）");
         add.dataset.act = "new";
         add.dataset.pinKey = "new";
-        add.onclick = () => this.openNewSessionSheet();
+        add.onclick = () => this.openNewSessionSheet(this.emptyWsPreset());
         // 同一动作不要两颗按钮：顶栏左上角那颗就能展开左栏，行 2 右端不再摆第二颗。
         return [add];
       },
@@ -1172,7 +1178,15 @@ export class App {
     const nowBtn = el("button", "now-btn") as HTMLButtonElement;
     nowBtn.type = "button";
     nowBtn.dataset.act = "where";
-    nowBtn.onclick = () => this.onWhereClick();
+    // 点它是「打开工作区浮层」/ 展开左栏 —— 气泡不能叠在它上面。
+    nowBtn.onclick = () => {
+      this.closePinMenu();
+      this.onWhereClick();
+    };
+    // D373：★ 行那张气泡也挂到这颗上。没点 ★ 的当前会话在 ★ 行里**根本没有胶囊**（D146/D210），
+    // 于是「工作区里只剩一颗会话」时，归档 / 重命名 / 删除一个入口都没有。
+    nowBtn.addEventListener("pointerenter", () => this.openNowMenuSoon());
+    nowBtn.addEventListener("pointerleave", () => this.closePinMenuSoon());
     nowBtn.append(this.nowChip.el);
     nowSlotRow.append(nowBtn);
     this.nowSlotRow = nowSlotRow;
@@ -1745,6 +1759,8 @@ export class App {
     if (this.currentId === id) return;
     this.switchDraft(id);
     this.currentId = id;
+    // D373：打开会话就归它所在的那一组 —— 页面记的空工作区让位（否则横杠会晚一拍才跟上）。
+    this.setSelectedWs(null);
     if (this.sessionReclaimId !== id && this.sessionReclaimEl) this.sessionReclaimEl.hidden = true;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
     this.resetSessionView();
@@ -2965,6 +2981,8 @@ export class App {
       }
       case "session.gone": {
         const gone = new Set<string>((msg.ids ?? []) as string[]);
+        // D373：删完落到空态时要归它原来那个工作区 —— 列表一滤就没处问了，先记下来。
+        const leftWs = this.currentWsId();
         this.sessions = this.sessions.filter((s) => !gone.has(s.id));
         for (const id of gone) this.mgrPicked.delete(id);
         if (this.renameId && gone.has(this.renameId)) {
@@ -2988,7 +3006,8 @@ export class App {
           this.go(this.tab);
           break;
         }
-        // 左右都没有邻居：中栏回到现成的空态（与 D176 的决定一致）。
+        // 左右都没有邻居：中栏回到现成的空态（与 D176 的决定一致）。D373：归它原来那个工作区。
+        this.setSelectedWs(leftWs);
         this.currentId = null;
         this.session = null;
         this.composerText = "";
@@ -7175,6 +7194,8 @@ export class App {
    * 每次拖动、每次点 ★ 最后都落到一条 arrange 消息上。
    */
   private renderSessions(): void {
+    // D373：选中的组要是已经从桥的快照里消失（删组 / 临时组被 prune），选中态自己退场。
+    this.pruneSelectedWs();
     this.renderSessionRow();
     this.renderWorkspaceTabs();
     this.renderNowChip();
@@ -7571,7 +7592,7 @@ export class App {
   /** #276：⊙ 移出横条；当前组仍临时占最后一格，所以提示里把这件事说清。 */
   private removeWsRow(group: TreeGroup<SessionState>): void {
     this.setWsRow(group.id, false);
-    const current = group.id === this.currentWsId();
+    const current = group.id === this.effectiveWsId();
     this.flashToast(
       current
         ? tr("已把 {p1} 移出横条；还是当前组，只能占最后一格", { p1: group.name })
@@ -12282,8 +12303,20 @@ export class App {
       // 没开会话时的空状态：整块居中（styles.css 用 `:has(> .composer > .chat-empty)` 把
       // 中栏从「滚动区 + 贴底输入框」改成一块空白），别让提示贴着底边像界面坏了。
       const box = el("div", "chat-empty");
-      box.append(el("div", "chat-empty-title", tr("还没有打开会话")));
-      box.append(el("div", "chat-empty-hint", tr("左边选一个，或者开一个新的")));
+      // D373：停在一个**选中的工作区**里时，标题认领它 —— 但只能说真话：组里一颗会话都没有
+      // 才说「还没有会话」；有会话（含只剩已归档那种）只是没打开，就说「还没打开」。
+      const group = this.emptyWs();
+      if (group) {
+        box.append(el("div", "chat-empty-title", group.count ? tr("{p1} 里的会话还没打开", { p1: group.name }) : tr("{p1} 里还没有会话", { p1: group.name })));
+        box.append(el("div", "chat-empty-hint", tr("左边选一个，或者开一个新的")));
+        const here = el("button", "btn primary chat-empty-go", tr("在 {p1} 里开一个会话", { p1: group.name })) as HTMLButtonElement;
+        here.type = "button";
+        here.onclick = () => this.openNewSessionSheet(this.emptyWsPreset());
+        box.append(here);
+      } else {
+        box.append(el("div", "chat-empty-title", tr("还没有打开会话")));
+        box.append(el("div", "chat-empty-hint", tr("左边选一个，或者开一个新的")));
+      }
       host.append(box);
       return;
     }
@@ -19442,7 +19475,7 @@ export class App {
   /** 竖列 / 色点条的一格：色点（与树同一个 `wsColor()`）+ 两字头 + 待处理角标。 */
   private paintAxis(host: HTMLElement, kind: "rail" | "strip"): void {
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
-    const cur = this.currentWsId();
+    const cur = this.effectiveWsId();
     const now = this.session;
     host.replaceChildren();
     host.dataset.kind = kind;
@@ -19564,7 +19597,7 @@ export class App {
     // #119：窄屏也照画 —— 它现在就在 A 的顶栏那一行里，收起它就等于 A 的顶栏没标签了。
     const parts = shellParts(activeLayout(this.prefs));
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
-    const cur = this.currentWsId();
+    const cur = this.effectiveWsId();
     // 锚点那颗不重建，但它列的是「被折叠的组」—— 组序跟着活动时间换人，开着的那张先收掉。
     this.closeTabsMore();
     wsTabs.replaceChildren();
@@ -19931,15 +19964,71 @@ export class App {
     return wsOf(s, this.workspaces, listed?.ws)?.id ?? null;
   }
 
-  /** 标签页点击：切到那一组 = 打开它排在最上面的那颗；手建的空组没有会话可开，就把左栏展开。 */
+  /**
+   * D373：页面记住的组现在还在不在。存档里的 id 可能已经被删 / 被桥的 `prune()` 清掉，
+   * 那种情况一律当成「没选」—— 一个不存在的组不该占着横杠。
+   */
+  private selectedWsId(): string | null {
+    const id = this.selectedWs;
+    if (!id) return null;
+    return this.workspaces?.groups?.some((g) => g.id === id) ? id : null;
+  }
+
+  /** D373：当前高亮的那个组 —— 会话所在组优先，其次页面记住的空工作区。只该从这里问「我在哪」。 */
+  private effectiveWsId(): string | null {
+    return this.currentWsId() ?? this.selectedWsId();
+  }
+
+  /** D373：选中的空工作区（它现在一棵会话都没打开）。中栏空态、＋ 预填都从这里取。 */
+  private emptyWs(): TreeGroup<SessionState> | null {
+    if (this.currentId) return null;
+    const id = this.selectedWsId();
+    if (!id) return null;
+    // 用未过滤的树：左栏搜索时这一组可能被筛掉，但「我停在哪」不该跟着搜索变。
+    return buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === id) ?? null;
+  }
+
+  /** D373：选中的空工作区「开新会话」时预填的目录 —— 只给 ★ 行尾巴那颗 ＋ 与中栏那颗按钮用。 */
+  private emptyWsPreset(): { cwd: string } | undefined {
+    const group = this.emptyWs();
+    const cwd = group ? cleanDirPath(group.key) : "";
+    return cwd ? { cwd } : undefined;
+  }
+
+  /** 换一下选中的空工作区（null = 不记）。只动状态与 localStorage，重画由调用方负责。 */
+  private setSelectedWs(id: string | null): void {
+    const next = id || null;
+    if (this.selectedWs === next) return;
+    this.selectedWs = next;
+    writeSelectedWs(next);
+  }
+
+  /** 桥的快照里已经没有它了（删组 / 临时组被 prune）：选中态自己退场。 */
+  private pruneSelectedWs(): void {
+    if (!this.selectedWs) return;
+    // 快照还没到（刚刷新、还没连上桥）：此时 groups 是空数组，别把存着的选中态当成「组已经没了」。
+    if (!this.workspaces.groups.length) return;
+    if (!this.selectedWsId()) this.setSelectedWs(null);
+  }
+
+  /**
+   * 工作区点击：切到那一组 = 打开它排在最上面的那颗。**没有会话的组也切得过去**（D373）：
+   * 选中它、中栏进空态，再照旧把左栏展开并滚到它 —— 以前这里只把左栏亮出来，横杠还停在
+   * 上一个工作区上，看上去就是「点了没反应」。
+   */
   private gotoGroup(group: TreeGroup<SessionState>): void {
     const first = group.sessions[0];
     if (first) {
       this.openFromList(first.id);
       return;
     }
+    // 先定归属再清中栏：`renderAll()` 里的空态与横杠都读它。
+    this.setSelectedWs(group.id);
+    if (this.currentId) this.closeCurrentSession();
     if (this.collapsed.sessions) this.togglePane("sessions");
     if (this.prefs.wsCollapsed.includes(group.id)) this.toggleWs(group.id);
+    this.renderAll();
+    this.go(this.tab);
   }
 
   /* ------------------------------------------------- 壳 B / C / D（#98） */
@@ -20037,7 +20126,7 @@ export class App {
     const body = this.wsPopBody;
     if (!body) return;
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
-    const curWs = this.currentWsId();
+    const curWs = this.effectiveWsId();
     body.replaceChildren();
     if (!tree.groups.length) {
       body.append(el("div", "ws-pop-empty", tr("还没有工作区。")));
@@ -20198,8 +20287,9 @@ export class App {
     // 当前会话没点 ★ 时它自己就是第 1 格（#188 的口径）：补上去，右邻不因这一格而变。
     const next = neighborAfterArchive(this.rowIds.includes(id) ? this.rowIds : [id, ...this.rowIds], id, alsoArchived);
     // #190：左右都没有邻居 → 中栏回到现成的空态，不再把一颗归档会话留在中栏。
+    // D373：这个空态归它**原来那个工作区**（横杠留在那）—— 刚离开的那一秒 `currentWsId()` 还答得出来。
     if (!next) {
-      this.closeCurrentSession();
+      this.closeCurrentSession(this.currentWsId());
       return;
     }
     this.openSession(next);
@@ -20211,8 +20301,12 @@ export class App {
    * #190：★ 行里左右都没有邻居时，「归档它 = 离开它」的落点就是空态 —— `renderChat()` 里现成的
    * 「还没有打开会话 / 左边选一个，或者开一个新的」，不加文案、不改样式。
    * 草稿照存（`switchDraft(null)`），归档本身不动；之后从左侧点任意会话都能正常回去。
+   *
+   * D373：`landingWs` 是空态该归的那个工作区（不传 = 无归属）。删/归档当前会话之后横杠留在它原来
+   * 那个组上，而不是掉回「哪儿也不在」。
    */
-  private closeCurrentSession(): void {
+  private closeCurrentSession(landingWs?: string | null): void {
+    if (landingWs !== undefined) this.setSelectedWs(landingWs);
     if (!this.currentId) return;
     // #224 复审：告诉桥「这张页面不再看它了」。否则桥还会对已关掉的页面投递、并把它当成功。
     this.socket.send({ type: "unsubscribe", sessionId: this.currentId });
@@ -20403,6 +20497,43 @@ export class App {
   }
 
   /**
+   * D373：NowChip 上那张气泡 —— 与 ★ 行胶囊同一套手势（180ms 后弹、离开 220ms 才收）。
+   * 为什么要有它：★ 行只列本区打过 ★ 的会话，没点 ★ 的当前会话只有这颗代表；工作区里只剩
+   * 一颗会话时它通常也没 ★，于是整条行里没有任何可悬停的胶囊（用户报的「只剩一个会话时没有弹出」）。
+   *
+   * 只在桌面挂：窄屏那颗的点击是「打开工作区浮层 / 展开左栏」，而触屏的 pointerenter 是点下去
+   * 才触发 —— 气泡会抢在那一下点击前面，得额外定优先级才能不出错，不如窄屏就保持原样。
+   */
+  private openNowMenuSoon(): void {
+    window.clearTimeout(this.pinMenuTimer);
+    if (this.compact() || this.pinAnim || this.pinMenu?.chip === this.nowBtn) return;
+    if (!this.session) return;
+    this.pinMenuTimer = window.setTimeout(() => this.showNowMenu(), 180);
+  }
+
+  private showNowMenu(): void {
+    const chip = this.nowBtn;
+    const s = this.session;
+    if (!chip || !s || this.compact() || this.pinAnim || !chip.isConnected) return;
+    this.closePinMenu();
+    const handle = openPinMenu(chip, {
+      name: s.name || s.id,
+      cwd: s.cwd,
+      onArchive: () => this.archiveFromNowChip(s.id),
+      onRename: (name) => {
+        this.closePinMenu();
+        this.applyRename(s.id, name);
+        // 与胶囊那边同一个理由：applyRename 只改数据，不重画。
+        this.renderSessions();
+      },
+      onDelete: () => this.deleteFromNowChip(s.id),
+    });
+    this.pinMenu = { handle, chip, id: s.id };
+    handle.node.addEventListener("pointerenter", () => window.clearTimeout(this.pinMenuTimer));
+    handle.node.addEventListener("pointerleave", () => this.closePinMenuSoon());
+  }
+
+  /**
    * 归档动效：胶囊原地淡出 → 横向收拢让位（后面的胶囊平滑左移），然后才真的发归档。
    * 先演后发：归档是幂等的，而桥的回声会重建整条 ★ 行，收拢完的几何必须和重建后一模一样，
    * 否则回声那一帧会跳。早先版本在条尾插一个抽屉（把「＋」挤开 35px、回声时再弹回）、
@@ -20509,6 +20640,43 @@ export class App {
         this.pinNote(tr("已移入垃圾箱 · 在左栏🗑里可以还原"));
       };
     }, 220);
+  }
+
+  /**
+   * D373：NowChip 上的归档 —— **只淡出**，不演 ★ 行那种「横向收拢让位」：那颗没有邻居，
+   * 收拢只能看着像被挤坏。动画结束先 `cancel()` 再发归档，否则 forwards 留下的 opacity 0
+   * 会粘在这颗身上（下一颗会话回来时它就是隐形的）。
+   */
+  private archiveFromNowChip(id: string): void {
+    if (this.pinAnim) return;
+    this.closePinMenu();
+    const chip = this.nowChip?.el;
+    if (this.calm() || !chip) {
+      this.archiveIds([id], true);
+      this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
+      return;
+    }
+    this.pinAnim = id;
+    chip.style.pointerEvents = "none";
+    const fade = chip.animate([{ opacity: "1" }, { opacity: "0" }], { duration: 220, easing: "ease-out", fill: "forwards" });
+    fade.onfinish = () => {
+      this.pinAnim = null;
+      chip.style.pointerEvents = "";
+      fade.cancel();
+      this.archiveIds([id], true);
+      this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
+    };
+  }
+
+  /** D373：NowChip 上的删除 —— 轨迹、垃圾桶反馈与 ★ 行胶囊同一套，只是飞行体换成这颗。 */
+  private deleteFromNowChip(id: string): void {
+    const chip = this.nowChip?.el;
+    if (!chip) {
+      this.closePinMenu();
+      this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
+      return;
+    }
+    this.deleteFromPin(id, chip);
   }
 
   /** 「少动」偏好下不演动效，直接做那一步。 */
@@ -20682,6 +20850,27 @@ function writeFlag(key: string, value: boolean): void {
     localStorage.setItem(key, value ? "1" : "0");
   } catch {
     // private mode etc: collapsing just won't be remembered.
+  }
+}
+
+/** D373：页面记住的空工作区（组 id，不是目录）—— 刷新后还停在那里。 */
+const SELECTED_WS_KEY = "pi.ws.selected";
+
+function readSelectedWs(): string | null {
+  try {
+    const raw = localStorage.getItem(SELECTED_WS_KEY)?.trim() ?? "";
+    return raw || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSelectedWs(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(SELECTED_WS_KEY, id);
+    else localStorage.removeItem(SELECTED_WS_KEY);
+  } catch {
+    // private mode: 选中态就只在这一次会话里有效。
   }
 }
 
