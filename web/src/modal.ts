@@ -85,7 +85,7 @@ export function mountOverlay(root: HTMLElement): void {
 
 /**
  * Mac 主题下给浮层挂退场（`.mac-leaving`，mac.css 里配 `mac-fade-out` / `mac-window-out`）。
- * 返回 true 表示动画已经挂上，调用方负责在 MOVE_MS 之后把它移除；false 就当场移除。
+ * 返回 true 表示动画已经挂上，调用方负责在 LEAVE_MS 之后把它移除；false 就当场移除。
  *
  * 判断主题看 `html[data-ui]` 而不是传给各模块的 prefs：动画是 CSS 按这个属性挑的，
  * 两边用同一个开关才不会出现「JS 以为在演、CSS 不认」的一帧空白。

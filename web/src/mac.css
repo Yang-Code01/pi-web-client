@@ -296,7 +296,7 @@ html[data-ui="mac"] :is(.st-back, .sheet-back, .modal, .sys-back, .jc-back, .mc-
 /* 看图是暗场：别的弹层压暗背景是为了看清前面那张纸，灯箱压暗是为了看清这张图，
    所以它比 --mac-scrim 暗得多 —— 但同样要毛玻璃与淡入，不再是那层死死的黑。 */
 html[data-ui="mac"] .image-view { background: rgba(6, 8, 12, 0.76); }
-html[data-ui="mac"] :is(.st-console, .sheet, .modal form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box) {
+html[data-ui="mac"] :is(.st-console, .sheet, .modal form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .mc-confirm, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box) {
   background: var(--mac-glass-strong);
   -webkit-backdrop-filter: var(--mac-blur-strong);
   backdrop-filter: var(--mac-blur-strong);
@@ -310,7 +310,13 @@ html[data-ui="mac"] .sheet-back.center .sheet,
 html[data-ui="mac"] .modal form,
 html[data-ui="mac"] .argdialog-panel { border-radius: 14px; }
 /* 抄来的那几个控制台原来是 16px 圆角 + 直角表头，统一成 macOS 窗口的 14px。 */
-html[data-ui="mac"] :is(.sys-console, .jc-console, .mc-console, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box, .notes-sheet, .sub-sheet, .choose) { border-radius: 14px; }
+html[data-ui="mac"] :is(.sys-console, .jc-console, .mc-console, .mc-confirm, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box, .notes-sheet, .sub-sheet, .choose) { border-radius: 14px; }
+/* 手机上仓库面板铺满整屏（styles.css 里那条 `@media (max-width: 720px)` 就是干这个的），
+   14px 圆角 + 发丝线必须让位，否则整屏四周浮出一圈边。这里判的是视口而不是卡片宽度：
+   铺满整屏时它已经没有「自己的宽度」可判了。 */
+@media (max-width: 720px) {
+  html[data-ui="mac"] .sheet-back .repos-sheet { border-radius: 0; border: 0; }
+}
 /* 灯箱：图本身当一张纸，圆角 + 窗口阴影 + 同一道入场；背景在遮罩组把自己调暗了就够。 */
 html[data-ui="mac"] .image-view-img {
   border-radius: 12px;
@@ -395,7 +401,7 @@ html[data-ui="mac"] .choose { border-radius: 14px; }
 
 /* 退场（app.ts 与 modal.ts 的 retireOverlay 挂 `.mac-leaving`，动画放完再真正移除）。 */
 html[data-ui="mac"] .mac-leaving { pointer-events: none; animation: mac-fade-out 200ms var(--mac-ease) forwards !important; }
-html[data-ui="mac"] .mac-leaving > :is(.st-console, .sheet, form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box, .choose) { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
+html[data-ui="mac"] .mac-leaving > :is(.st-console, .sheet, form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .mc-confirm, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box, .choose) { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
 /* 灯箱的根自己就是 `.mac-leaving`（它不套在别的遮罩里），图跟着一起收。 */
 html[data-ui="mac"] .mac-leaving .image-view-img { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
 /* 同一个面板被重画（换页、恢复默认）：新的那份不再演一遍入场。 */

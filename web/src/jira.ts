@@ -2064,7 +2064,7 @@ export class JiraPanel {
         if (done) return;
         done = true;
         document.removeEventListener("keydown", onKey, true);
-        back.remove();
+        retireOverlay(back);
         resolve(value);
       };
       const onKey = (ev: KeyboardEvent) => {
@@ -2280,7 +2280,7 @@ export class JiraPanel {
   }
 
   private closePicker(): void {
-    this.pickerLayer?.remove();
+    retireOverlay(this.pickerLayer);
     this.pickerLayer = null;
   }
 

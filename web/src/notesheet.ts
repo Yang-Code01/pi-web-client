@@ -724,7 +724,7 @@ export class NotesSheet {
     if (this.shortcut) document.removeEventListener("keydown", this.shortcut, true);
     document.querySelector(".note-handoff")?.remove();
     this.editor?.destroy();
-    this.root.remove();
+    retireOverlay(this.root);
     this.onClose?.();
   }
 

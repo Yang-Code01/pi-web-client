@@ -94,7 +94,7 @@ import {
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
-import { escapeTopLayer, LEAVE_MS, pushEscLayer, startLeaving } from "./modal.ts";
+import { escapeTopLayer, LEAVE_MS, pushEscLayer, retireOverlay, startLeaving } from "./modal.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -3522,11 +3522,16 @@ export class App {
   }
 
   /**
-   * 关掉一层面板。Mac 风格主题下先放一段退场动画（`.mac-leaving`，mac.css）再真正移除；
-   * 同一轮同步代码里又开了新面板（换页、重画、恢复默认）就当场移除旧的，并让新的跳过入场动画，
-   * 免得「重画」看起来像关了又开。其它主题直接移除，行为与以前一致。
+   * 关掉**面板层**（`this.sheet` 本身）。Mac 风格主题下先放一段退场动画（`.mac-leaving`，mac.css）
+   * 再真正移除；同一轮同步代码里又开了新面板（换页、重画、恢复默认）就当场移除旧的，并让新的
+   * 跳过入场动画，免得「重画」看起来像关了又开。其它主题直接移除，行为与以前一致。
+   *
+   * 只给 sheet 层用：那个 `mac-instant` 判据要的是「旧 sheet 还在退场、新 sheet 已经铺上」。
+   * 灯箱 / 选择器这些**浮在 sheet 之上**的浮层调的是 modal.ts 的 `retireOverlay` —— 它们关闭时
+   * 底下那张 sheet 本来就还在，走这里会被误判成「同帧重开」，动画被掐掉还得给 sheet 挂上
+   * 一个永不摘掉的 `mac-instant`。
    */
-  private retireOverlay(node: HTMLElement | null): void {
+  private retireSheet(node: HTMLElement | null): void {
     if (!node) return;
     if (!startLeaving(node)) {
       node.remove();
@@ -5299,7 +5304,7 @@ export class App {
     if (this.sheetKind === "new") this.prefillNext = null;
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
     // D308: 面板没了，从它里面开的预览 / 表格 / 幻灯片不再压着谁 —— 回到普通浮窗层带（46/47）。
-    this.retireOverlay(this.sheet);
+    this.retireSheet(this.sheet);
     this.sheet = null;
     this.sheetKind = null;
     this.syncViewerLayer();
@@ -5933,7 +5938,7 @@ export class App {
     if (!this.subSheet) return;
     this.subSheetEscPop?.();
     this.subSheetEscPop = null;
-    this.subSheet.remove();
+    retireOverlay(this.subSheet);
     this.subSheet = null;
     this.subSheetKind = null;
     this.subSheetPaint = null;
@@ -8999,7 +9004,7 @@ export class App {
     const popEsc = pushEscLayer({ onEsc: () => shut() });
     const shut = (): void => {
       popEsc();
-      this.retireOverlay(back);
+      retireOverlay(back);
     };
     close.onclick = shut;
     back.onclick = (ev) => {
@@ -11498,7 +11503,7 @@ export class App {
       box.append(el("div", "choose-title", title));
       const row = el("div", "choose-row");
       const done = (id: string): void => {
-        this.retireOverlay(back);
+        retireOverlay(back);
         resolve(id);
       };
       for (const b of buttons) {

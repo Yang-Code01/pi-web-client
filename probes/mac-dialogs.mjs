@@ -18,6 +18,13 @@ import { loadPlaywright } from "../tools/playwright.mjs";
 
 const { chromium } = await loadPlaywright();
 
+// 探针驱动的是构建产物：dist 比 src 旧的话，测的是上一个提交，失败原因会骗人。
+const DIST = path.join(REPO, "bridge/dist/index.js");
+if (!fs.existsSync(DIST)) {
+  console.error("bridge/dist/index.js 不存在：先 npm run build");
+  process.exit(2);
+}
+
 const PORT = Number(process.env.PI_WEB_PORT ?? 7924);
 const ROOT = path.join(REPO, ".scratch/mac-dialogs");
 const STATE = path.join(ROOT, "state");
@@ -95,7 +102,7 @@ const MEASURE = (sel) => {
   const back = document.querySelector(sel);
   if (!back) return null;
   const PANELS =
-    ".sys-console, .jc-console, .mc-console, .st-console, .argdialog-panel, .notes-sheet, .branch-sheet, .repos-sheet, .choose, .jira-ask, .jira-picker-box, .peer-pick-panel, .image-view-img, .sheet, form";
+    ".sys-console, .jc-console, .mc-console, .mc-confirm, .st-console, .argdialog-panel, .notes-sheet, .branch-sheet, .repos-sheet, .choose, .jira-ask, .jira-picker-box, .peer-pick-panel, .image-view-img, .sheet, form";
   const panel = back.matches(PANELS) ? back : back.querySelector(PANELS);
   const cs = (el, p) => (el ? getComputedStyle(el)[p] : null);
   return {
@@ -135,6 +142,7 @@ const SKELETONS = [
   ["Jira 确认层", `<div class="jira-ask-back"><div class="jira-ask"></div></div>`],
   ["Jira 附件根目录", `<div class="jira-picker"><div class="jira-picker-box"></div></div>`],
   ["邮箱", `<div class="mc-back"><section class="mc-console"></section></div>`],
+  ["邮箱确认框 mc-confirm", `<div class="mc-back mc-back--confirm"><section class="mc-confirm"></section></div>`],
   ["笔记（sheet 家族）", `<div class="sheet-back notes-back"><div class="sheet notes-sheet"></div></div>`],
   ["分支面板 branch-sheet", `<div class="sheet-back center branch-back"><div class="branch-sheet go-sheet"></div></div>`],
   ["仓库面板 repos-sheet", `<div class="sheet-back center repos-back"><div class="repos-sheet"></div></div>`],
@@ -242,6 +250,70 @@ try {
     await page.evaluate(() => document.querySelector('[data-mac-probe="x"]')?.remove());
   }
 
+  // ---- 4. 退场：每个外壳家族都要能被 `.mac-leaving` 叫出 mac-window-out。
+  // 这一层只验证 CSS 白名单，不依赖哪个模块记得调 retireOverlay；JS 那条路靠 Everything 真开那条。
+  const leaveProbe = async (frag) => {
+    await page.evaluate((h) => {
+      const host = document.getElementById("app") ?? document.body;
+      const box = document.createElement("div");
+      box.append(document.createRange().createContextualFragment(h));
+      const node = box.firstElementChild;
+      if (!node) throw new Error("退场骨架没解析出来: " + h.slice(0, 60));
+      node.classList.add("mac-leaving");
+      node.dataset.macProbe = "leave";
+      host.append(node);
+    }, frag);
+    const anim = await page.evaluate(() => {
+      const PANELS =
+        ".sys-console, .jc-console, .mc-console, .mc-confirm, .st-console, .sheet, form, .argdialog-panel, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box, .choose";
+      const back = document.querySelector('[data-mac-probe="leave"]');
+      const p = back?.matches(PANELS) ? back : back?.querySelector(PANELS);
+      const a = p ? getComputedStyle(p).animationName : "";
+      back?.remove();
+      return a;
+    });
+    return anim;
+  };
+  const leaves = [];
+  for (const [label, frag] of [
+    ["系统管理 sysmanage", `<div class="sys-back"><section class="sys-console"></section></div>`],
+    ["Jira 面板", `<div class="jc-back"><section class="jc-console"></section></div>`],
+    ["邮箱", `<div class="mc-back"><section class="mc-console"></section></div>`],
+    ["邮箱确认框", `<div class="mc-back mc-back--confirm"><section class="mc-confirm"></section></div>`],
+    ["笔记选人 peer-pick", `<div class="peer-pick"><div class="peer-pick-panel"></div></div>`],
+    ["选择器 choose", `<div class="choose-back"><div class="choose"></div></div>`],
+    ["子弹层 sheet-sub", `<div class="sheet-sub-back"><div class="sheet sub-sheet"></div></div>`],
+    ["分支面板", `<div class="sheet-back center branch-back"><div class="branch-sheet go-sheet"></div></div>`],
+    ["仓库面板", `<div class="sheet-back center repos-back"><div class="repos-sheet"></div></div>`],
+    ["Jira 附件根目录", `<div class="jira-picker"><div class="jira-picker-box"></div></div>`],
+  ]) {
+    const anim = await leaveProbe(frag);
+    log(`退场（${label}）:`, anim || "—");
+    leaves.push({ label, anim });
+  }
+
+  // ---- 3b. 窄屏（700）：铺满整屏的仓库面板不许带圆角与发丝线。styles.css 那条 `@media`
+  // 比 `html[data-ui] :is(...)` 弱，mac.css 必须自己再把它们让回去，否则整屏四周浮出一圈边。
+  await page.setViewportSize({ width: 700, height: 860 });
+  await page.evaluate(() => {
+    const host = document.getElementById("app") ?? document.body;
+    const box = document.createElement("div");
+    box.append(
+      document.createRange().createContextualFragment(`<div class="sheet-back center repos-back"><div class="repos-sheet"></div></div>`),
+    );
+    box.firstElementChild.dataset.macProbe = "narrow";
+    host.append(box.firstElementChild);
+  });
+  const narrow = await page.evaluate(() => {
+    const p = document.querySelector('[data-mac-probe="narrow"] .repos-sheet');
+    const cs = p ? getComputedStyle(p) : null;
+    const v = cs ? { radius: cs.borderRadius, border: cs.borderTopWidth } : null;
+    document.querySelector('[data-mac-probe="narrow"]')?.remove();
+    return v;
+  });
+  await page.setViewportSize({ width: 1280, height: 860 });
+  log("窄屏（700）仓库面板:", JSON.stringify(narrow));
+
   // ---- 汇总
   const pad = (s, n) => String(s ?? "—").padEnd(n).slice(0, n);
   console.log("\n" + pad("弹层", 30) + pad("遮罩blur", 26) + pad("遮罩动画", 22) + pad("面板动画", 24) + pad("圆角", 10) + "面板背景/阴影");
@@ -264,20 +336,25 @@ try {
 
   // ---- 断言：除白名单里的例外，每一行都要和「产物」对齐。
   // 例外只写「它确实不同而且应该不同」的：`.choose` 是 alert 形的小弹窗（缩放淡入更像），
-  // 灯箱的图不是窗口（没有毛玻璃、圆角 12px）。
-  const EXEMPT = {
-    "注入：选择器 choose": { anim: "mac-menu-in" },
-    "注入：图片灯箱 image-view": { anim: "mac-window-in", radius: "12px" },
-  };
+  // 灯箱的图不是窗口（没有毛玻璃、圆角 12px）。写成表并反查：改了骨架名字而忘了同步这里，
+  // 下面会直接红，不会静默失效。
+  const EXEMPT = [
+    { label: "注入：选择器 choose", anim: "mac-menu-in" },
+    { label: "注入：图片灯箱 image-view", anim: "mac-window-in", radius: "12px" },
+  ];
+  const exemptOf = (label) => EXEMPT.find((e) => e.label === label) ?? {};
   const base = results.find((r) => r.label === "产物（真开）");
   const fails = [];
-  if (!base?.panel) fails.push("对照组「产物」没量到面板 —— 这探针自己坏了");
+  if (!base?.panel) throw new Error("对照组「产物」没量到面板 —— 探针自己坏了，先看 02-artifacts.png");
+  for (const e of EXEMPT) {
+    if (!results.some((r) => r.label === e.label)) fails.push(`豁免表里的「${e.label}」在实测结果里不存在（骨架改名了？）`);
+  }
   for (const r of results) {
     if (r.missing || !r.back) {
       fails.push(`${r.label}: 没找到 ${r.sel}`);
       continue;
     }
-    const ex = EXEMPT[r.label] ?? {};
+    const ex = exemptOf(r.label);
     if (r.back.blur !== base.back.blur) fails.push(`${r.label}: 遮罩 ${r.back.blur} ≠ ${base.back.blur}`);
     if (r.back.anim !== base.back.anim) fails.push(`${r.label}: 遮罩动画 ${r.back.anim} ≠ ${base.back.anim}`);
     if (!r.panel) {
@@ -292,6 +369,12 @@ try {
   }
   if (!leaving.found) fails.push("退场：Esc 后没有 .mac-leaving");
   else if (!String(leaving.panel).includes("mac-window-out")) fails.push(`退场：面板动画 ${leaving.panel}`);
+  for (const l of leaves) {
+    if (!String(l.anim).includes("mac-window-out")) fails.push(`退场（${l.label}）: 面板动画 ${l.anim || "none"} ≠ mac-window-out`);
+  }
+  if (narrow?.radius !== "0px" || narrow?.border !== "0px") {
+    fails.push(`窄屏仓库面板还带 radius=${narrow?.radius ?? "?"} border=${narrow?.border ?? "?"} —— 铺满整屏不该有圆角/边框`);
+  }
 
   if (fails.length) {
     console.log(`\nFAIL — ${fails.length} 处没跟上 Mac 风格:`);
