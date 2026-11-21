@@ -671,7 +671,8 @@ export const EXTRA_FNS: Record<string, Fn> = {
     const sig = a.length > 1 ? arg(a, 1) : 1;
     if (typeof x !== "number") return x;
     if (typeof sig !== "number") return sig;
-    if (sig === 0) return x > 0 ? 0 : err("#DIV/0!");
+    if (sig === 0) return 0; // Excel：significance 为 0 时 CEILING 返回 0
+    if (x > 0 && sig < 0) return err("#NUM!"); // 正数配负的 significance 才是 #NUM!
     // Excel：正数向上、负数朝 0 取（CEILING(-2.5,2) = -2）
     return x / sig >= 0 ? Math.ceil(x / sig) * sig : -Math.floor(Math.abs(x / sig)) * Math.abs(sig);
   },
@@ -681,6 +682,7 @@ export const EXTRA_FNS: Record<string, Fn> = {
     if (typeof x !== "number") return x;
     if (typeof sig !== "number") return sig;
     if (sig === 0) return x === 0 ? 0 : err("#DIV/0!");
+    if (x > 0 && sig < 0) return err("#NUM!");
     return x / sig >= 0 ? Math.floor(x / sig) * sig : -Math.ceil(Math.abs(x / sig)) * Math.abs(sig);
   },
   MROUND: (a) => {
@@ -985,13 +987,17 @@ export const EXTRA_FNS: Record<string, Fn> = {
     const rowIdx = arg(a, 2);
     if (!m) return err("#VALUE!");
     if (typeof rowIdx !== "number") return rowIdx;
+    // 行号越界要向 VLOOKUP 看齐：<1 是 #VALUE!，超出矩阵行数才是 #REF!
+    const row = Math.trunc(rowIdx);
+    if (row < 1) return err("#VALUE!");
+    if (row > m.m.length) return err("#REF!");
     const approx = a.length > 3 ? toBool(a[3]) !== false : true;
     const head = rowValues(m, 0);
     let found: Val | undefined;
     for (let i = 0; i < head.length; i++) {
       const c = cmp(head[i]!, key as Val);
       if (approx ? c <= 0 : c === 0) {
-        found = colValues(m, i)[Math.trunc(rowIdx) - 1] ?? null;
+        found = colValues(m, i)[row - 1] ?? null;
         if (!approx) break;
       }
     }
@@ -1028,26 +1034,26 @@ export const EXTRA_FNS: Record<string, Fn> = {
       hit = keys.findIndex((v) => typeof v === "string" && rx.test(v));
     } else {
       for (let i = 0; i < keys.length; i++) {
-        const k = keys[i]!;
-        if (cmp(k, key as Val) === 0) {
+        if (cmp(keys[i]!, key as Val) === 0) {
           hit = i;
           break;
         }
       }
-      if (hit < 0 && Math.trunc(matchMode) !== 0) {
-        let best = { err: Infinity, i: -1 };
+      const mm = Math.trunc(matchMode);
+      if (hit < 0 && mm !== 0) {
+        // -1 = 不比 key 大的里面取最大，1 = 不比 key 小的里面取最小。
+        // 以前 -1 拿 Math.abs(cmp(...)) 比距离，而 cmp 只回 -1/0/1，所有候选都算等距（取第一个）。
+        let bestKey: Val | null = null;
         for (let i = 0; i < keys.length; i++) {
-          const c = cmp(keys[i]!, key as Val);
-          if (Math.trunc(matchMode) < 0 && c < 0) {
-            const d = Math.abs(cmp(keys[i]!, key as Val));
-            if (d < best.err) best = { err: d, i };
-            else if (best.i < 0) best = { err: d, i };
-          } else if (Math.trunc(matchMode) > 0 && c > 0) {
-            if (best.i < 0) best = { err: 0, i };
+          const k = keys[i]!;
+          if (isErr(k) || isMx(k)) continue;
+          const c = cmp(k, key as Val);
+          if (mm < 0 ? c > 0 : c < 0) continue;
+          if (bestKey === null || (mm < 0 ? cmp(k, bestKey) > 0 : cmp(k, bestKey) < 0)) {
+            bestKey = k;
+            hit = i;
           }
         }
-        if (Math.trunc(matchMode) < 0 && best.i < 0) hit = keys.length - 1;
-        else hit = best.i;
       }
     }
     if (hit < 0) return ifNotFound !== undefined ? ifNotFound : err("#N/A");
@@ -1062,13 +1068,22 @@ export const EXTRA_FNS: Record<string, Fn> = {
     if (typeof mode !== "number") return mode;
     const keys = m.m.length === 1 ? rowValues(m, 0) : colValues(m, 0);
     for (let i = 0; i < keys.length; i++) if (cmp(keys[i]!, key as Val) === 0) return i + 1;
-    if (Math.trunc(mode) < 0) {
+    // 与 XLOOKUP 同一套：-1 取「≤ key 的最大值」，1 取「≥ key 的最小值」
+    const mm = Math.trunc(mode);
+    if (mm < 0 || mm > 0) {
       let best = -1;
-      for (let i = 0; i < keys.length; i++) if (cmp(keys[i]!, key as Val) < 0) best = i;
+      let bestKey: Val | null = null;
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i]!;
+        if (isErr(k) || isMx(k)) continue;
+        const c = cmp(k, key as Val);
+        if (mm < 0 ? c > 0 : c < 0) continue;
+        if (bestKey === null || (mm < 0 ? cmp(k, bestKey) > 0 : cmp(k, bestKey) < 0)) {
+          bestKey = k;
+          best = i;
+        }
+      }
       return best < 0 ? err("#N/A") : best + 1;
-    }
-    if (Math.trunc(mode) > 0) {
-      for (let i = 0; i < keys.length; i++) if (cmp(keys[i]!, key as Val) > 0) return i + 1;
     }
     return err("#N/A");
   },

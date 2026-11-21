@@ -236,6 +236,61 @@ eq("1/0", "#DIV/0!");
 eq("\"3\"+4", 7);
 eq("\"x\"+4", "#VALUE!");
 
+
+// 省略的参数：空位算 0（以前整条公式解析失败，被报成「函数名拼错」的 #NAME?）
+eq("IF(1>0,42,)", 42);
+eq("SUM(1,,2)", 3);
+eq("IFERROR(1/0,)", 0);
+eq("SUM(1,2,)", 3);
+eq("IF(FALSE,1)", false);
+eq("IF(TRUE,,)", 0);
+
+// SUBSTITUTE 的第 4 个参数：只换第 n 个
+eq('SUBSTITUTE("a-b-c","-","+")', "a+b+c");
+eq('SUBSTITUTE("a-b-c","-","+",2)', "a-b+c");
+eq('SUBSTITUTE("a-b-c","-","+",9)', "a-b-c"); // 不足 n 个：原样返回
+eq('SUBSTITUTE("a-b-c","-","+",0)', "#VALUE!");
+
+// MID / LEFT / RIGHT：非法参数报 #VALUE!，不能静默截
+eq('MID("hello",0,2)', "#VALUE!");
+eq('MID("hello",2,-1)', "#VALUE!");
+eq('LEFT("abc",-1)', "#VALUE!");
+eq('RIGHT("abc",-1)', "#VALUE!");
+eq('RIGHT("abc",0)', ""); // slice(-0) 会取整串，得单独挡
+eq('RIGHT("abc",2)', "bc");
+
+// CEILING / FLOOR：正数配负的 significance 是 #NUM!；负数配正数照旧合法
+eq("CEILING(3,-2)", "#NUM!");
+eq("FLOOR(3,-2)", "#NUM!");
+eq("CEILING(-3,2)", -2);
+eq("FLOOR(-3,2)", -4);
+eq("CEILING(0,0)", 0);
+
+// XLOOKUP / XMATCH 的 match_mode：-1 取「≤ key 的最大值」、1 取「≥ key 的最小值」。
+// 列 C 故意乱序（2,5,3,1）——按「第一个比它小的」实现会拿错。
+eq('XLOOKUP(4,C2:C5,B2:B5,"缺",-1)', 300);
+eq('XLOOKUP(4,C2:C5,B2:B5,"缺",1)', 250);
+eq('XLOOKUP(1.5,C2:C5,B2:B5,"缺",-1)', 50);
+eq('XLOOKUP(9,C2:C5,B2:B5,"缺",-1)', 250);
+eq('XLOOKUP(5,C2:C5,B2:B5,"缺",-1)', 250); // 有精确值就先精确
+eq('XLOOKUP(9,C2:C5,B2:B5,"缺",1)', "缺");
+eq("XMATCH(4,C2:C5,-1)", 3);
+eq("XMATCH(4,C2:C5,1)", 2);
+
+// HLOOKUP 行号越界向 VLOOKUP 看齐
+eq('HLOOKUP("金额",B1:D2,3,FALSE)', "#REF!");
+eq('HLOOKUP("金额",B1:D2,0,FALSE)', "#VALUE!");
+
+
+// 非法日期不能静默进位（Date.UTC 会把 2 月 31 日算成 3 月 2 日）
+eq('DATEVALUE("2024-02-31")', "#VALUE!");
+eq('DATEVALUE("2024-04-31")', "#VALUE!");
+eq('DATEVALUE("2023-02-29")', "#VALUE!");
+eq('DATEVALUE("2024-02-29")', 45351);
+eq('DATEVALUE("1900-02-29")', "#VALUE!"); // Excel 的假闰日，我们无法与 1900-03-01 区分
+eq('DATEVALUE("2024-01-05 24:30")', "#VALUE!");
+eq('TEXT("2024-02-31","yyyy-mm-dd")', "2024-02-31"); // 认不出就原样当文本
+
 if (failures) {
   console.error(`\n${failures}/${n} 条不符合预期`);
   process.exit(1);

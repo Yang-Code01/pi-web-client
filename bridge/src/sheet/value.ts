@@ -187,6 +187,13 @@ export function serialToday(): number {
 }
 
 const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/** 那个月有几天（2 月按公历闰年算）。1900-02-29 是 Excel 的假闰日，我们认不出：它只会撞上 3 月 1 日。 */
+function daysInMonth(y: number, mo: number): number {
+  if (mo === 2 && y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) return 29;
+  return MONTH_DAYS[mo - 1]!;
+}
 
 /**
  * 把 `2024-01-05`、`2024/1/5`、`2024年1月5日`、`1/5/2024`、`18:30`、`2024-01-05 18:30`
@@ -238,7 +245,11 @@ export function dateSerialOf(text: string, date1904 = false): number | null {
     d = Number(isMonthFirst ? named[2] : first);
     y = Number(named[3]);
   }
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  if (mo < 1 || mo > 12 || d < 1) return null;
+  // `Date.UTC(2024, 1, 31)` 会静默进位到 3 月 2 日：拿它当筛选条件就成了另一天。
+  // 非法日期一律认不出（返回 null），让调用方报 #VALUE! 或按文本比。
+  if (d > daysInMonth(y, mo)) return null;
+  if (h > 23 || mi > 59 || s > 59) return null;
   const serial = dateToSerial(y, mo, d, date1904);
   return serial + (h * 3600 + mi * 60 + s) / 86400;
 }
