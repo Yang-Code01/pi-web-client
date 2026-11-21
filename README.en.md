@@ -199,19 +199,6 @@ node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id t1 # or --all
 
 Ports, pids and per-instance state directories are recorded in `~/.pi/agent/state/pi-web-test-dev/instances.json`; 7864 / 7865 / 7866 stay reserved for the production instance. `--peers 1` also starts an isolated peer, so you can play "two machines" LAN on one box.
 
-## Test books (`/pi-web-test-html`)
-
-Runs a module's acceptance flow as a **test book**: isolated instance → screenshots step by step → xlsx (one sheet per case) → a single-file HTML that reproduces that sheet 1:1 → shut the instance down (D247).
-
-```text
-/pi-web-test-html                        # default: the 12 cases of machine console / working hours
-/pi-web-test-html workclock add a 640px narrow case  # trailing words go to the skill as extra requirements
-```
-
-The three stages run on their own: `bin/run-book.mjs` (Playwright, produces `spec.json` + `shots/`), `bin/build-xlsx.py` (openpyxl; recalculates formula caches if LibreOffice is installed) and `bin/build-html.mjs` (reproduces the Excel look from `layout.json`, inlines both screenshots and the xlsx as data URIs so one file can be carried away). Cases live in `cases/<name>.mjs` and only use `h.openCase / h.step / h.ok / h.fail / h.shot`; how to write them is in `references/writing-cases.md`, the traps already hit are in `references/pitfalls.md`.
-
-Output always lands in the **main checkout's** `.scratch/testbook/<case set>/`, even when the command ran in a worktree — `git worktree remove` deletes untracked files with everything else, and this book really was lost that way once. Finish with `bin/env.sh down`, and check that nothing (a recorder task, say) is left behind.
-
 ## Writing the changelog (`/whatsnew-write`)
 
 `CHANGELOG.md` is written by the AI and skimmed by a human (D195); the writing step is one command (D196):

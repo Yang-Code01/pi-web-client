@@ -201,19 +201,6 @@ node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id t1 # または --al
 
 ポート、pid、インスタンスごとの state ディレクトリは `~/.pi/agent/state/pi-web-test-dev/instances.json` に記録されます。7864 / 7865 / 7866 は本番用に確保され、割り当てられません。`--peers 1` は隔離した peer も追加で起動するので、一台で「二台のマシン」の LAN を演じられます。
 
-## テストブック（`/pi-web-test-html`）
-
-あるモジュールの受け入れ手順を一冊の「テストブック」として走らせます：隔離インスタンスを立てる → 段階ごとにスクリーンショット → xlsx（一ケース一シート）→ その表を 1:1 で再現した単一ファイル HTML → インスタンスを閉じる（D247）。
-
-```text
-/pi-web-test-html                        # 既定は「マシン管理／勤務時間」の 12 ケース
-/pi-web-test-html workclock 640px の狭い画面を追加  # 後ろの言葉は追加要求としてスキルに渡されます
-```
-
-三つの段はそれぞれ単独で走ります：`bin/run-book.mjs`（Playwright で駆動、`spec.json` + `shots/` を出す）、`bin/build-xlsx.py`（openpyxl。LibreOffice があれば数式のキャッシュ値も計算し直す）、`bin/build-html.mjs`（`layout.json` どおりに Excel の見た目を再現、スクリーンショットも xlsx も data URI で埋め込むので、一ファイルを持ち運べます）。ケースは `cases/<name>.mjs` に書き、使うのは `h.openCase / h.step / h.ok / h.fail / h.shot` だけ。書き方は `references/writing-cases.md`、踏んだ薄は `references/pitfalls.md` にあります。
-
-産物は**メインの作業ツリー**の `.scratch/testbook/<ケース集>/` に固定です——コマンドを worktree で走らせても同じで、`git worktree remove` は未追跡ファイルも一緒に消すからです（この本は実際に一度それで失いました）。終わったら `bin/env.sh down` でインスタンスを閉じ、記録器のタスクなどが残っていないか確かめます。
-
 ## 更新ログの補完（`/whatsnew-write`）
 
 `CHANGELOG.md` は AI が書き、人が目を通します（D195）。書く工程はコマンド一つです（D196）：

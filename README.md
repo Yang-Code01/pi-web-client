@@ -297,19 +297,6 @@ node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id t1 # 或 --all
 
 端口、pid 与实例 state 目录登记在 `~/.pi/agent/state/pi-web-test-dev/instances.json`；7864 / 7865 / 7866 硬保留给正式实例，不会被分配。`--peers 1` 会额外起一份隔离的 peer，用来本机演「两台机器」的内网通。
 
-## 跑测试书（`/pi-web-test-html`）
-
-把一个模块的验收流程跑成一本「测试书」：起隔离实例 → 逐步截图 → xlsx（一 case 一 sheet）→ 1:1 复刻该表格的单文件 HTML → 关实例（D247）。
-
-```text
-/pi-web-test-html                        # 默认跑「本机管理 / 上下班」那套 12 条用例
-/pi-web-test-html workclock 补一条 640 窄屏  # 后面的话作为补充要求交给技能
-```
-
-三段各能单独跑：`bin/run-book.mjs`（Playwright 驱动，产出 `spec.json` + `shots/`）、`bin/build-xlsx.py`（openpyxl；装了 LibreOffice 就顺手重算公式缓存值）、`bin/build-html.mjs`（照 `layout.json` 复刻 Excel 观感，截图与 xlsx 都内联成 data URI，单文件可拷走）。用例写在 `cases/<name>.mjs`，只用 `h.openCase / h.step / h.ok / h.fail / h.shot`；怎么写见 `references/writing-cases.md`，踩过的坑见 `references/pitfalls.md`。
-
-产物固定在**主检出**的 `.scratch/testbook/<用例集>/`，即使命令是在某个 worktree 里跑的 —— `git worktree remove` 会连未跟踪文件一起删，这本书真这么丢过一次。跑完用 `bin/env.sh down` 关实例，并确认记录器计划任务之类没有残留。
-
 ## 跑 e2e 录像（`/pi-web-e2e-test`）
 
 把一次端到端操作录成带红框、字幕和中文旁白的视频，再包成一份能直接打开的 HTML。两种用法：
