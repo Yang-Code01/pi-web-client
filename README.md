@@ -297,16 +297,16 @@ node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id t1 # 或 --all
 
 端口、pid 与实例 state 目录登记在 `~/.pi/agent/state/pi-web-test-dev/instances.json`；7864 / 7865 / 7866 硬保留给正式实例，不会被分配。`--peers 1` 会额外起一份隔离的 peer，用来本机演「两台机器」的内网通。
 
-## 跑 e2e 录像（`/pi-web-e2e-test`）
+## 跑 e2e 录像（`/skill:pi-web-e2e-test`）
 
 把一次端到端操作录成带红框、字幕和中文旁白的视频，再包成一份能直接打开的 HTML。两种用法：
 
 ```text
-/pi-web-e2e-test 复现：点发送后草稿没清空       # bug 模式：先诊断根因，只写方案不改代码
-/pi-web-e2e-test 验收：会话列表按更新时间排序   # change 模式：改前/改后各录一遍并排对照
+/skill:pi-web-e2e-test 复现：点发送后草稿没清空       # bug 模式：先诊断根因，只写方案不改代码
+/skill:pi-web-e2e-test 验收：会话列表按更新时间排序   # change 模式：改前/改后各录一遍并排对照
 ```
 
-技能在 `.pi/skills/pi-web-e2e-test/`，带 `disable-model-invocation: true`，只能由命令或 `/skill:pi-web-e2e-test` 呼出。bug 产物是 `<描述>bug.html`（现象 / 原因 / 复现手顺 / 修改方案），change 产物是 `<描述>变更.html`（结论表 + 每条用例的改前/改后双视频 + 同步播放）。视频 H.264 + AAC，点击有红框、按键有键帽、瞬时 bug 自动慢放；产物默认写主检出的 `.scratch/e2e/`，跑完自动停隔离环境、删 before worktree。用法与用例 API 见该目录的 `SKILL.md`，写法见 `references/writing-cases.md`。
+技能在 `.pi/skills/pi-web-e2e-test/`，带 `disable-model-invocation: true`，只有这一个入口（不再配同名 `/` 命令，D383），手动敲 `/skill:pi-web-e2e-test` 后面跟 bug 描述或变更说明，可附额外要求。bug 产物是 `<描述>bug.html`（现象 / 原因 / 复现手顺 / 修改方案），change 产物是 `<描述>变更.html`（结论表 + 每条用例的改前/改后双视频 + 同步播放）。视频 H.264 + AAC，点击有红框、按键有键帽、瞬时 bug 自动慢放；产物默认写主检出的 `.scratch/e2e/`，跑完自动停隔离环境、删 before worktree。用法与用例 API 见该目录的 `SKILL.md`，写法见 `references/writing-cases.md`。
 
 ## 补更新日志（`/whatsnew-write`）
 
