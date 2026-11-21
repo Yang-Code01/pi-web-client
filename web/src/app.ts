@@ -12309,9 +12309,9 @@ export class App {
       // 才说「还没有会话」；有会话（含只剩已归档那种）只是没打开，就说「还没打开」。
       const group = this.emptyWs();
       if (group) {
-        box.append(el("div", "chat-empty-title", group.count ? tr("{p1} 里的会话还没打开", { p1: group.name }) : tr("{p1} 里还没有会话", { p1: group.name })));
+        box.append(el("div", "chat-empty-title", group.count ? tr("{p1}里的会话还没打开", { p1: group.name }) : tr("{p1}里还没有会话", { p1: group.name })));
         box.append(el("div", "chat-empty-hint", tr("左边选一个，或者开一个新的")));
-        const here = el("button", "btn primary", tr("在 {p1} 里开一个会话", { p1: group.name })) as HTMLButtonElement;
+        const here = el("button", "btn primary", tr("在{p1}里开一个会话", { p1: group.name })) as HTMLButtonElement;
         here.type = "button";
         here.onclick = () => this.openNewSessionSheet(this.wsPreset(group));
         box.append(here);

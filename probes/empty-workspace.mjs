@@ -242,7 +242,7 @@ try {
   log("snap:", JSON.stringify(s2));
   await page.screenshot({ path: `${OUT}/2-empty-workspace.png` });
   ok(s2.onTabCurrent === true, "横杠与 aria-current 都落在 beta 上");
-  ok(s2.title === "beta 里还没有会话", `中栏认领这个工作区（实际：${s2.title}）`);
+  ok(s2.title === "beta里还没有会话", `中栏认领这个工作区（实际：${s2.title}）`);
   ok((s2.action ?? "").includes("beta"), `空态里有一颗在 beta 里开新会话的按钮（实际：${s2.action}）`);
   ok(s2.nowHidden === true, "没有当前会话：NowChip 收起（★ 行只剩 ＋）");
   ok(s2.chips === 0, `★ 行仍没有胶囊（实际 ${s2.chips} 颗）`);
@@ -255,7 +255,7 @@ try {
   await until(async () => (await snap()).title !== null, 6000, "刷新后的空态");
   const s3 = await snap();
   log("snap:", JSON.stringify(s3));
-  ok(s3.title === "beta 里还没有会话", `刷新后仍停在这个空工作区（实际：${s3.title}）`);
+  ok(s3.title === "beta里还没有会话", `刷新后仍停在这个空工作区（实际：${s3.title}）`);
   ok(s3.nowHidden === true, "刷新也不会替你打开会话");
 
   /* --------------------------------------------------- 4. ＋ 预填该组目录 */
@@ -283,7 +283,7 @@ try {
   await until(async () => (await snap()).title !== null, 6000, "刷新后的空态（有会话版）");
   const s5 = await snap();
   log("snap:", JSON.stringify(s5));
-  ok(s5.title === "beta 里的会话还没打开", `文案换成「还没打开」，不说假话（实际：${s5.title}）`);
+  ok(s5.title === "beta里的会话还没打开", `文案换成「还没打开」，不说假话（实际：${s5.title}）`);
   ok(s5.hash === "#/", `没有替我们打开它（实际 ${s5.hash}）`);
   ok(s5.nowHidden === true, "NowChip 仍是收起的");
   SESSIONS.splice(SESSIONS.findIndex((s) => s.id === "ew-b"), 1);
@@ -301,7 +301,7 @@ try {
   const s6 = await snap();
   log("snap:", JSON.stringify(s6));
   ok(s6.hash === "#/", `归档后中栏进空态（实际 ${s6.hash}）`);
-  ok((s6.title ?? "").startsWith("alpha "), `空态归原来那个工作区（实际：${s6.title}）`);
+  ok((s6.title ?? "").startsWith("alpha"), `空态归原来那个工作区（实际：${s6.title}）`);
   await page.screenshot({ path: `${OUT}/6-after-archive.png` });
 
   /* --------------------------------------------------- 7. 回 alpha，从 NowChip 删除 */
@@ -319,7 +319,7 @@ try {
   const s7 = await snap();
   log("snap:", JSON.stringify(s7));
   ok(s7.hash === "#/", `删除后中栏进空态（实际 ${s7.hash}）`);
-  ok(s7.title === "alpha 里还没有会话", `一颗都不剩时文案是「还没有会话」（实际：${s7.title}）`);
+  ok(s7.title === "alpha里还没有会话", `一颗都不剩时文案是「还没有会话」（实际：${s7.title}）`);
   ok(s7.onTabCurrent === true, "横杠仍留在 alpha（不是无归属的空态）");
   await page.screenshot({ path: `${OUT}/7-after-delete.png` });
 
@@ -334,7 +334,7 @@ try {
   ok((await railOn()) === ALPHA, `刷新后竖列高亮仍在那个选中的空工作区上（实际 ${await railOn()}）`);
   await page.locator(`.ws-axis-item[data-ws="${BETA}"]`).click();
   await until(async () => (await railOn()) === BETA, 4000, "竖列高亮挪到 beta");
-  ok((await snap()).title === "beta 里还没有会话", "从竖列切到空工作区：中栏同样认领它");
+  ok((await snap()).title === "beta里还没有会话", "从竖列切到空工作区：中栏同样认领它");
   await page.screenshot({ path: `${OUT}/8-shell-c.png` });
 
   /* --------------------------------------------------- 9. 壳 D 色点条 / 壳 B 浮层段头 */
@@ -363,8 +363,8 @@ try {
   ok(popOn === ALPHA, `壳 B 浮层里段头高亮在会话所在那一组（实际 ${popOn}）`);
   await page.locator(`.ws-pop-sec-head[data-ws="${BETA}"]`).click();
   await until(async () => (await count(".ws-pop")) === 0, 3000, "点完段头浮层收掉");
-  await until(async () => (await snap()).title === "beta 里还没有会话", 6000, "从浮层切到一个空工作区");
-  ok((await snap()).title === "beta 里还没有会话", "从壳 B 的浮层段头也能切到没有会话的工作区");
+  await until(async () => (await snap()).title === "beta里还没有会话", 6000, "从浮层切到一个空工作区");
+  ok((await snap()).title === "beta里还没有会话", "从壳 B 的浮层段头也能切到没有会话的工作区");
   await page.screenshot({ path: `${OUT}/9-shell-b.png` });
 
   console.log(bad ? `\n${bad} FAIL` : "\nALL OK");
