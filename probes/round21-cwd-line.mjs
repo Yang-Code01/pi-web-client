@@ -1,8 +1,11 @@
 /**
- * Probe: D61 / D244 — the current working directory sits as one faint chip under the composer, and since
- * D244 it stays there whether the left column is open or collapsed (before it was collapse-only, because
- * the selected card carried the same path). On narrow screens the pane is a tab, not a collapse, so it
- * stays hidden.
+ * Probe: the one path chip under the composer (E).
+ *
+ * - repo session: `alpha/web ⎇`, one line, no separate branch chip; the full path, branch and
+ *   dirty count live in the tooltip and in the window the chip opens.
+ * - clicking opens the BranchSheet, whose header now owns `复制路径` (the chip no longer copies).
+ * - non-repo session: `beta ›`, clicking opens 目录与仓库.
+ * - narrow screens still show the entry (D263 fixed); only the sub-directory is dropped.
  *
  * Run: npm run build:web && node probes/round21-cwd-line.mjs
  */
@@ -51,7 +54,8 @@ const items = (n) => {
   return out;
 };
 
-const CWD_A = path.join(REPO, ".scratch/probe-work/alpha");
+const REPO_ROOT = path.join(REPO, ".scratch/probe-work/alpha");
+const CWD_A = path.join(REPO_ROOT, "web");
 const CWD_B = path.join(REPO, ".scratch/probe-work/beta");
 const base = (id, name, cwd, n) => ({
   id, name, cwd, file: null, owned: true, origin: "web", running: false, done: false,
@@ -77,8 +81,14 @@ const server = http.createServer((req, res) => {
     return res.end('{"ok":true}');
   }
   if (url.pathname === "/api/me") return json(200, ME);
-  if (url.pathname === "/api/git") return json(200, { repo: path.join(REPO, ".scratch/probe-work/alpha"), branch: "main", detached: false, empty: false, dirty: 3 });
+  if (url.pathname === "/api/git") {
+    const dir = path.resolve(url.searchParams.get("dir") ?? "");
+    const inside = dir === REPO_ROOT || dir.startsWith(REPO_ROOT + path.sep);
+    return json(200, inside ? { repo: REPO_ROOT, branch: "main", detached: false, empty: false, dirty: 3 } : { repo: null });
+  }
+  if (url.pathname === "/api/git/probe") return json(200, { probes: {}, truncated: false });
   if (url.pathname === "/api/dirs") return json(200, { path: url.searchParams.get("path") ?? "", parent: "F:", dirs: [], files: [], error: "" });
+  if (url.pathname.startsWith("/api/git/")) return json(500, { error: "probe: header only" });
   const rel = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//, "");
   const file = path.join(DIST, rel);
   if (!path.resolve(file).startsWith(path.resolve(DIST)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -131,21 +141,24 @@ const shown = (page) =>
     const cs = getComputedStyle(chip);
     const r = chip.getBoundingClientRect();
     const sr = status?.getBoundingClientRect();
+    const sub = chip.querySelector(".cwd-sub");
     return {
       exists: true,
       hidden: chip.hidden,
       display: cs.display,
       visible: !chip.hidden && cs.display !== "none" && r.height > 0,
       text: chip.querySelector(".cwd-path")?.textContent ?? "",
+      visibleText: chip.querySelector(".cwd-path")?.innerText ?? "",
+      chipText: chip.innerText,
+      subDisplay: sub ? getComputedStyle(sub).display : "none",
       title: chip.getAttribute("title") ?? "",
       inStatusRow: Boolean(status?.contains(chip)),
       firstChild: chip.parentElement?.firstElementChild === chip,
-      // 和分支 chip 的关系：同一个状态行里，路径在它左边一格
       rowTop: r.top,
       rowBottom: r.bottom,
       rowRight: r.right,
       statusLeft: sr?.left ?? null,
-      gitLeft: document.querySelector(".git-chip")?.getBoundingClientRect().left ?? null,
+      gitTails: document.querySelectorAll(".git-chip").length,
       strayRows: document.querySelectorAll(".cwd-line").length,
     };
   });
@@ -163,79 +176,102 @@ try {
   await until(async () => (await page.locator(".chat-scroll .msg.user").count()) === 3, 8000, "3 user messages");
   await sleep(400);
 
-  // 1) 左栏展开：路径也在（D244）—— 不另起一行，就在状态行里
+  // 1) 左栏展开：路径入口在，仓库内是 `alpha/web ⎇`，没有第二颗分支 chip
   const opened = await shown(page);
   log("left open:", opened);
   assert(opened.exists, "the path chip is mounted in the status row");
   assert(opened.strayRows === 0, "no separate cwd row is rendered any more");
   assert(opened.visible, `with the left column open the path shows too (got visible=${opened.visible}, display=${opened.display})`);
-  assert(opened.text === CWD_A, `path is the open session's cwd ${CWD_A} (got ${JSON.stringify(opened.text)})`);
+  assert(opened.text === "alpha/web", `repo + sub-directory, not the full path (got ${JSON.stringify(opened.text)})`);
+  assert(opened.title.includes(CWD_A), `tooltip carries the full path (got ${JSON.stringify(opened.title)})`);
+  assert(opened.title.includes("main"), "tooltip carries the branch name");
+  assert(opened.title.includes("3 个未提交改动"), "tooltip carries the dirty count");
+  assert(opened.gitTails === 0, "no separate .git-chip in the line");
+  assert(opened.inStatusRow && opened.firstChild, "the path is the first thing in the status row");
   await page.screenshot({ path: `${OUT}/1-open.png` });
 
-  // 2) 收起左栏：出现，且写的正是当前会话的目录
+  // 2) 收起左栏：同一颗仍在，位置不变
   const toggle = page.locator('.side-toggle[data-side="left"]');
   assert(await toggle.count() === 1, "there is a left collapse toggle");
   await toggle.click();
   await until(async () => (await shown(page)).visible, 4000, "the path chip to appear");
   const closed = await shown(page);
   log("left collapsed:", closed);
-  assert(closed.text === CWD_A, `path is the open session's cwd ${CWD_A} (got ${JSON.stringify(closed.text)})`);
-  assert(closed.title.includes(CWD_A), `tooltip carries the full path (got ${JSON.stringify(closed.title)})`);
-  assert(closed.inStatusRow && closed.firstChild, "the path sits at the head of the branch/status row, not on its own line");
-
-  // 位置：同一行、紧挨分支 chip 左边（不另起一行，也不掉到右边那堆按钮里）
+  assert(closed.text === "alpha/web", `path label survives the collapse (got ${JSON.stringify(closed.text)})`);
+  assert(closed.gitTails === 0, "still no separate branch chip");
   const chipBox = await rect(page, ".cwd-chip");
   const hintBox = await rect(page, ".composer .hint");
   const rowBox = await rect(page, ".composer .row");
   const composerBox = await rect(page, ".composer");
   const paneBox = await rect(page, ".chat-pane");
-  const gitBox = await rect(page, ".git-chip");
-  log("boxes:", { chipBox, hintBox, gitBox, rowBox });
+  log("boxes:", { chipBox, hintBox, rowBox });
   assert(hintBox.top >= rowBox.bottom - 1, "sanity: the hint row is under the input row");
-  assert(gitBox !== null, "the fake repo gives us a branch chip to sit next to");
-  assert(Math.abs(chipBox.top - gitBox.top) <= 4 && Math.abs(chipBox.bottom - gitBox.bottom) <= 4, `path and branch share a line (chip ${chipBox.top}-${chipBox.bottom} vs branch ${gitBox.top}-${gitBox.bottom})`);
-  assert(chipBox.right <= gitBox.left && gitBox.left - chipBox.right <= 14, `path sits right before the branch chip (gap ${gitBox.left - chipBox.right})`);
   assert(composerBox.bottom - hintBox.bottom <= 26, "the status row is still the bottom-most thing in the composer");
   assert(chipBox.left >= composerBox.left && chipBox.left < composerBox.left + 40, `path starts at the composer's left padding (${chipBox.left} vs ${composerBox.left})`);
   assert(chipBox.right <= paneBox.right, "the path does not overflow the chat pane");
   await page.screenshot({ path: `${OUT}/2-collapsed.png` });
 
-  // 3) 点一下复制路径
+  // 3) 点一下开分支工作台；复制路径已经搬进窗标题栏
   await page.locator(".cwd-chip").click();
-  await until(async () => (await page.evaluate(() => document.querySelector(".cwd-path")?.textContent)) === "已复制", 3000, "the 已复制 flash");
+  await until(async () => (await page.locator(".branch-sheet").count()) >= 1, 5000, "branch workbench");
+  const labels = await page.locator(".branch-sheet .branch-tools button").allInnerTexts();
+  log("branch header:", labels.map((s) => s.trim()).filter(Boolean).join(" · "));
+  assert(labels.some((s) => s.includes("复制分支名")), "the branch copy button is in the header");
+  assert(labels.some((s) => s.includes("复制路径")), "the path copy button is in the header");
+  await page.locator('.branch-sheet [data-copy-path="1"]').click();
+  await sleep(200);
   const clip = await page.evaluate(() => navigator.clipboard.readText());
   log("clipboard:", clip);
-  assert(clip === CWD_A, `clicking copies the path (clipboard=${JSON.stringify(clip)})`);
-  await sleep(1000);
-  assert((await page.evaluate(() => document.querySelector(".cwd-path")?.textContent)) === CWD_A, "the label comes back after the flash");
+  assert(path.resolve(clip) === path.resolve(CWD_A), `the window copies the full cwd (clipboard=${JSON.stringify(clip)})`);
+  await page.screenshot({ path: `${OUT}/3-workbench.png` });
+  await page.locator(".branch-sheet .branch-x").click();
+  await until(async () => (await page.locator(".branch-sheet").count()) === 0, 4000, "workbench closes");
 
-  // 4) 换一个会话：展开左栏后它照样在（D244），点另一张卡就换成 B 的目录
+  // 4) 换到非仓库会话：`beta ›`，点开目录与仓库
   await toggle.click();
   await until(async () => !(await page.evaluate(() => document.querySelector(".pane")?.hidden ?? true)), 4000, "the session list to reopen");
-  const openAgain = await shown(page);
-  log("left reopened:", openAgain);
-  assert(openAgain.visible, "opening the list keeps the path visible (D244)");
   await page.locator('.session-card[data-id="probe-b"]').click();
   await until(async () => (await page.locator(".chat-scroll .msg.user").count()) === 2, 8000, "session B transcript");
-  const afterSwitch = await shown(page);
-  log("after switch:", afterSwitch);
-  assert(afterSwitch.visible, "the path stays visible after switching sessions with the list open");
-  assert(afterSwitch.text === CWD_B, `switching sessions swaps the path to ${CWD_B} (got ${JSON.stringify(afterSwitch.text)})`);
-  await page.screenshot({ path: `${OUT}/3-session-b.png` });
+  await until(async () => (await page.locator(".cwd-chip").innerText()).includes("beta"), 5000, "chip for B");
+  const b = await shown(page);
+  log("session B:", b);
+  assert(b.visible, "the path stays visible after switching sessions with the list open");
+  assert(b.text === "beta", `non-repo shows the last segment (got ${JSON.stringify(b.text)})`);
+  assert(b.visibleText.includes("›") || b.chipText.includes("›"), "non-repo shows the chevron");
+  assert(!b.text.includes("⎇"), "no git mark outside a repo");
+  assert(b.title.includes("点一下打开目录与仓库"), "the tooltip explains the folder/repos click");
+  assert(b.gitTails === 0, "no branch chip outside a repo");
+  await page.screenshot({ path: `${OUT}/4-session-b.png` });
+  await page.locator(".cwd-chip").click();
+  await until(async () => (await page.locator(".repos-sheet").count()) >= 1, 5000, "folder + repos window");
+  assert((await page.locator(".repos-sheet .repos-copy").count()) === 1, "the folder window keeps its copy-path button");
+  await page.screenshot({ path: `${OUT}/5-repos.png` });
+  await page.locator(".repos-sheet .repos-x").click();
+  await until(async () => (await page.locator(".repos-sheet").count()) === 0, 4000, "folder window closes");
 
-  // 5) 窄屏：左栏是 tab 不是折叠，这一行不该占地方
+  // 5) 窄屏：入口还在，只把子目录藏掉（D263 修复）
+  await page.locator('.session-card[data-id="probe-a"]').click();
+  await until(async () => (await page.locator(".cwd-chip").innerText()).includes("alpha"), 5000, "chip for A again");
   await page.setViewportSize({ width: 760, height: 900 });
   await sleep(500);
   const narrow = await shown(page);
   log("narrow:", narrow);
-  assert(!narrow.visible, `below 900px the path stays hidden (got visible=${narrow.visible})`);
+  assert(narrow.visible, `below 900px the entry stays visible (got visible=${narrow.visible})`);
+  assert(narrow.text === "alpha/web", "the DOM still knows both parts");
+  assert(narrow.subDisplay === "none", `narrow hides the sub-directory (display=${narrow.subDisplay})`);
+  assert(narrow.visibleText === "alpha", `narrow shows only the repo name (got ${JSON.stringify(narrow.visibleText)})`);
+  assert(narrow.gitTails === 0, "narrow still has no second branch chip");
+  await page.screenshot({ path: `${OUT}/6-narrow.png` });
 
-  // 6) 回到桌面宽度：那一行也回来（左栏此刻是展开的）
+  // 6) 回到桌面：子目录回来，仍是一颗
   await page.setViewportSize({ width: 1400, height: 900 });
   await sleep(500);
   const back = await shown(page);
   log("back to desktop:", back);
-  assert(back.visible, "going back to desktop restores the path");
+  assert(back.visible, "going back to desktop restores the entry");
+  assert(back.subDisplay !== "none", "the sub-directory comes back");
+  assert(back.text === "alpha/web", "the full label comes back");
+  assert(back.gitTails === 0, "still one chip");
 
   log("ALL OK");
 } finally {
