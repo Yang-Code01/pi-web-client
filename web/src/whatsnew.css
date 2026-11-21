@@ -1,0 +1,57 @@
+/*
+ * #588 启动时那张「本服务更新了什么」。
+ *
+ * 外壳整个借 `.sheet-back.center` + `.sheet`（Mac 材质、退场、窄屏铺满都在 mac.css 与 styles.css
+ * 里现成），这里只给这一张面板自己的宽度、三行布局和正文排版。
+ * 尺寸一律走 `--vw1 / --vh1`：`#app` 有 zoom（外观「字号」），裸 vh/vw 会被缩放两次（D123 / D263）。
+ */
+.whatsnew-sheet {
+  width: min(680px, calc(var(--vw1) * 92));
+  max-height: calc(var(--vh1) * 82);
+  /* 头 / 正文 / 脚三行：正文自己滚，脚永远贴底（不靠 grid 的自动行，正文一长就把脚挤没）。 */
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding: 0;
+}
+.whatsnew-head { padding-inline: 16px; }
+.whatsnew-body { overflow: auto; padding: 4px 16px 12px; min-height: 0; }
+.whatsnew-eyebrow { font: 11px var(--mono); color: var(--faint); margin: 6px 0 2px; }
+.whatsnew-title { font-size: 15px; font-weight: 650; line-height: 1.45; margin-bottom: 8px; }
+.whatsnew-title--small { font-size: 13px; margin: 14px 0 6px; }
+.whatsnew-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+}
+.whatsnew-foot .btn { min-width: 84px; }
+.whatsnew-older { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.whatsnew-older > summary { cursor: pointer; color: var(--faint); font-size: 12.5px; }
+
+/* 正文：日志是「### 新增 / 修复 / 设计决定 + 列表」，不依赖设置页那套 `.settings-sheet` 作用域。 */
+.whatsnew-md { font-size: 13px; line-height: 1.62; }
+.whatsnew-md h1, .whatsnew-md h2, .whatsnew-md h3 { font-size: 12.5px; margin: 12px 0 4px; letter-spacing: 0.04em; color: var(--faint); }
+.whatsnew-md ul, .whatsnew-md ol { margin: 4px 0 10px; padding-left: 18px; }
+.whatsnew-md li { margin: 3px 0; }
+.whatsnew-md p { margin: 6px 0; }
+.whatsnew-md code {
+  font: 12px var(--mono); background: rgba(127, 127, 127, 0.16); border-radius: 4px; padding: 0 3px;
+}
+.whatsnew-md a { color: var(--accent); }
+
+/* 窄屏：和其它 sheet 一样铺满整屏（桌面那套居中卡片不受影响）。 */
+@media (max-width: 720px) {
+  /*
+   * 每一条都要带上那两个类：`.sheet-back.center` 的 padding(0,2,0) 与 mac.css 里
+   * `html[data-ui="mac"] .sheet-back.center .sheet` 的圆角 (0,4,1) 都比单类名强 —— D352 记的同一个坑。
+   */
+  .sheet-back.whatsnew-back { padding: 0; }
+  .sheet-back.whatsnew-back .sheet.whatsnew-sheet {
+    /* 100% 会在 grid 的 auto 轨里少掉一截（实测 683/700）；直接用 /1 视口单位，跟字号无关。 */
+    width: calc(var(--vw1) * 100);
+    max-width: none;
+    height: calc(var(--vh1) * 100);
+    max-height: calc(var(--vh1) * 100);
+    border: 0;
+    border-radius: 0;
+  }
+  html[data-ui="mac"] .sheet-back.whatsnew-back .sheet.whatsnew-sheet { border: 0; border-radius: 0; }
+}

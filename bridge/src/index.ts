@@ -53,7 +53,7 @@ import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitStat
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { FileIndex } from "./fileindex.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
-import { selfChangelog } from "./whatsnew.ts";
+import { markWhatsnewSeen, selfChangelog, setWhatsnewPopup, takeWhatsnew, whatsnewStatus } from "./whatsnew.ts";
 import { scanSubagents } from "./subagents.ts";
 import { acpConfigPath, readAcpDelegate, writeAcpDelegate, writeThinkingFix } from "./acpdelegate.ts";
 import { cleanLaunch } from "./launch.ts";
@@ -2159,9 +2159,27 @@ async function main(): Promise<void> {
 
     // `/changelog` (#26): what is new in the installed pi; `scope=self` is this project's own
     // log (D195), read from `<检出>/CHANGELOG.md` — the two are different documents.
+    // #588 `self&unread=1` 是「领取启动时要弹的那一批」：同一个进程只发一次（多标签不重复弹），
+    // 领走不等于看过 —— 页面真把 dialog 打开了才 POST `/api/changelog/seen` 落盘。
     if (url.pathname === "/api/changelog" && req.method === "GET") {
-      if (url.searchParams.get("scope") === "self") return json(res, 200, await selfChangelog());
+      if (url.searchParams.get("scope") === "self") {
+        if (url.searchParams.get("unread") === "1") return json(res, 200, takeWhatsnew());
+        // 设置页那一页要的两样（开关与「上次看到」）一起带上：同一个资源，不新开路由（D354）。
+        const popup = whatsnewStatus();
+        return json(res, 200, { ...(await selfChangelog()), whatsnewSeen: popup.seenTitle, whatsnewEnabled: popup.enabled });
+      }
       return json(res, 200, { version: piVersion, text: changelog(pi.cli) });
+    }
+    // #588 弹窗一打开就写「上次看到哪一批」（D354：已读 = 知道，不是确认）。
+    if (url.pathname === "/api/changelog/seen" && req.method === "POST") {
+      const seen = markWhatsnewSeen();
+      if (!seen.ok) return fail(res, 409, "not-claimed", "这次启动没有派发过未读的更新履历");
+      return json(res, 200, seen);
+    }
+    // #588 设置页「更新日志 → 本项目」那一页上的开关。
+    if (url.pathname === "/api/changelog/popup" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      return json(res, 200, { ok: true, ...setWhatsnewPopup(body?.enabled !== false) });
     }
 
     // 本项目需要什么（pi 够不够新、三个扩展在不在）。只读、只问本地 `pi list`，页面每次打开
