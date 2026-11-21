@@ -157,7 +157,11 @@ console.log("fake bridge on", BASE);
 const browser = await chromium.launch();
 
 /** 已知的历史缺键，不属本票（同 probes/runtime-panel.mjs 的理由）。 */
-const KNOWN_MISSING = new Set(["{p1}{p2}"]);
+/**
+ * 词典只收含中文的原文（与 i18n-check 同一口径），纯 ASCII / emoji 开头的那几条本来就不翻译：
+ * 顶栏「🔷 Jira」、工具与通道页里的「Jira」「Web Push」，以及「关于」页统计卡上的「bridge」。
+ */
+const KNOWN_MISSING = new Set(["{p1}{p2}", "🔷 Jira", "Jira", "Web Push", "bridge"]);
 
 /** 打开 app → 选一个会话 → pi 设置 → 运行时。返回页面与它看到的缺键警告。 */
 async function openRuntime(locale, tabName, settingsName) {
@@ -171,7 +175,11 @@ async function openRuntime(locale, tabName, settingsName) {
   await page.goto(BASE, { waitUntil: "networkidle" });
   await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card");
   await page.locator(".session-card").first().click();
-  await page.getByRole("button", { name: settingsName, exact: true }).click();
+  // 齿轮 → 「连接与设置」→ 工具 → pi 设置：9f00bbd 之后 pi 设置是工具页里的一行「打开」，不再是顶栏按钮。
+  await page.locator('.icon-btn[data-act="look"]').click();
+  await page.locator('.display-sheet .st-tabs__btn[data-tab="conn"]').click();
+  await page.locator('.display-sheet .st-nav__item[data-sec="tools"]').click();
+  await page.getByRole("button", { name: settingsName }).click();
   await until(async () => (await page.locator(".settings-sheet").count()) === 1, 5000, "settings sheet");
   await page.getByRole("button", { name: tabName, exact: true }).click();
   await until(async () => (await page.locator(".runtime-summary").count()) === 1, 5000, "runtime summary");

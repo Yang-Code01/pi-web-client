@@ -415,7 +415,7 @@ function idleEvictionAgeMs(): number {
 /** 模型目录的缓存寿命：models.json / 装的扩展很少在一次运行中间变，两段各自记一份。 */
 const MODEL_TTL_MS = 10 * 60_000;
 
-/** Rounded-up whole units for the watchdog's notices: 30 minutes and 60 seconds read like D120. */
+/** Rounded-up whole units for the watchdog's notices: the idle threshold in minutes, the abort grace in seconds (D120). */
 const minutes = (ms: number): number => Math.max(1, Math.round(ms / 60_000));
 const seconds = (ms: number): number => Math.max(1, Math.round(ms / 1000));
 
@@ -3203,7 +3203,7 @@ export class Session extends EventEmitter {
    * #82/D120: the approval or the questionnaire on screen is waiting on nobody. Two clocks have to
    * agree before it is dropped — nobody has had a page in front for the whole threshold, *and* this
    * card has been hanging for the whole threshold itself. Without the second clock a card that pops
-   * up 30 minutes after you left would be thrown away on the very next tick, before you could even
+   * up an hour after you left would be thrown away on the very next tick, before you could even
    * come back. Expired ones get a line in the timeline saying which died; the session sleeps only
    * when nothing is left pending, and `close()` aborts first, so the interrupted turn still lands on
    * disk.
