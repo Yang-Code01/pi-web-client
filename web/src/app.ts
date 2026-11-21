@@ -665,8 +665,8 @@ export class App {
   private peekSticky = false; // 停留够 3 秒：鼠标离开也不再关
   private peekWired = false;  // document 上的点击/键盘监听只挂一次
   private hintStatus: HTMLElement | null = null;
-  /** 左栏收起时补在状态行最前面的路径（和分支 chip 并排），只在那种状态下显示（见 syncCwdChip）。 */
-  private cwdChip: HTMLElement | null = null;
+  /** 状态行最前面的路径入口；cwd 在仓库里时同一颗里带分支标记（见 paintCwdChipContent）。 */
+  private cwdChip: HTMLButtonElement | null = null;
   private turnChars = { cjk: 0, other: 0 };
   private rateAt = 0;
   /** Sidebar rename: which card is an input, its draft, and whether to select the text. */
@@ -3699,7 +3699,7 @@ export class App {
       this.gitCwd = cwd;
       // #392: 「目录与仓库」属于上一个会话的 cwd，切走就关，别让面板停在前一个项目上。
       this.reposSheet?.close();
-      this.paintCwdChipTitle();
+      this.syncCwdChip();
       this.fillHintStatus();
     }
     let info: GitInfo | null = null;
@@ -3712,35 +3712,9 @@ export class App {
     if ((this.session?.cwd ?? "").trim() !== cwd) return;
     this.git = info;
     this.gitCwd = cwd;
-    // #392: git 到了再定 chip 的语义（复制 vs 浏览子仓库）。
-    this.paintCwdChipTitle();
+    // git 是异步到的：到了以后把同一颗路径 chip 的标记补上（不再另起一颗分支 chip）。
+    this.syncCwdChip();
     this.fillHintStatus();
-  }
-
-  private gitKey(git: GitInfo | null): string {
-    return git ? `${git.branch}|${git.dirty}|${git.detached}|${git.empty}` : "";
-  }
-
-  /**
-   * Q-021: `⎇ main` takes the slot the key hints used to hold. The hints are not gone — they move
-   * into the title, because Shift+Enter is the one shortcut nobody finds by accident alone.
-   */
-  private gitChip(git: GitInfo, flat = false): HTMLButtonElement {
-    const label = git.branch || (git.empty ? tr("(无提交)") : tr("(未知)"));
-    const chip = el("button", flat ? "git-chip flat" : "git-chip") as HTMLButtonElement;
-    chip.type = "button";
-    chip.dataset.act = "git";
-    chip.dataset.key = this.gitKey(git);
-    chip.append(el("span", "git-glyph", "⎇"), el("span", "git-branch", label));
-    if (git.dirty) chip.append(el("span", "git-dot", ""), el("span", "git-count", String(git.dirty)));
-    if (git.detached) chip.append(el("span", "git-tag", "detached"));
-    const lines = [tr("⎇ {p1}{p2}", { p1: label, p2: git.dirty ? tr(" · {p1} 个未提交改动", { p1: git.dirty }) : "" })];
-    if (git.detached) lines.push(tr("detached HEAD：不在任何分支上"));
-    if (git.empty) lines.push(tr("仓库里还没有提交"));
-    lines.push(git.repo, "", tr("Enter 发送 · Shift+Enter 换行 · {p1} 粘贴截图", { p1: PASTE_KEY }), tr("点一下打开分支操作工作台"));
-    chip.title = lines.join("\n");
-    chip.onclick = () => this.openBranchWorkbench(git);
-    return chip;
   }
 
   /**
@@ -3859,7 +3833,7 @@ export class App {
     this.paintHintStatus();
     const box = this.hintStatus;
     if (!box || !this.cwdChip) return;
-    // 状态行是整块重画的（`replaceChildren`），所以每次都要把路径接回最前面 —— 顺序就是「路径 · 分支」。
+    // 状态行是整块重画的（`replaceChildren`），所以每次都要把路径接回最前面 —— 分支标就在这颗里面。
     box.prepend(this.cwdChip);
   }
 
@@ -3910,7 +3884,6 @@ export class App {
       return;
     }
     const running = Boolean(this.session?.running);
-    const git = this.gitCwd === (this.session?.cwd ?? "").trim() ? this.git : null;
     if (!running) {
       this.runSince = null;
       // Q-029: a card must not outlive the run it describes — close it and drop its timers.
@@ -3921,13 +3894,10 @@ export class App {
       this.peekOpen = false;
       this.peekSticky = false;
       box.className = "hint-status";
-      // Q-021: in a repository the branch replaces the key hints (they live in the chip's title).
-      if (git) {
-        box.replaceChildren(this.gitChip(git));
-        this.paintWithdraw(box);
-        return;
-      }
-      box.replaceChildren(el("kbd", "", "Enter"), el("span", "", tr("发送 · Shift+Enter 换行 · ")), el("kbd", "", PASTE_KEY), el("span", "", tr(" 粘贴截图")));
+      // 路径 chip 独占这一行（分支标在它里面）；只有没有 cwd 的会话才退回按键提示。
+      // Enter/Shift+Enter/粘贴的完整说明在 chip 的 title 里，输入框的占位符也写着 Enter 发送。
+      if (this.cwdChip) box.replaceChildren();
+      else box.replaceChildren(el("kbd", "", "Enter"), el("span", "", tr("发送 · Shift+Enter 换行 · ")), el("kbd", "", PASTE_KEY), el("span", "", tr(" 粘贴截图")));
       this.paintWithdraw(box);
       return;
     }
@@ -3956,15 +3926,7 @@ export class App {
     const secs = Math.max(0, Math.round((Date.now() - this.runSince) / 1000));
     const dur = secs >= 60 ? tr("{p1}分{p2}秒", { p1: Math.floor(secs / 60), p2: String(secs % 60).padStart(2, "0") }) : tr("{p1}秒", { p1: secs });
     time.textContent = dur;
-    // Q-021: 运行态以运行信息为主，分支只是一枚扁平尾标 —— 窄了它先被省略，撑不掉「正在执行 …」。
-    const chip = box.querySelector<HTMLElement>(".git-chip");
-    if (git) {
-      if (chip?.dataset.key !== this.gitKey(git)) {
-        const next = this.gitChip(git, true);
-        if (chip) chip.replaceWith(next);
-        else box.append(next);
-      }
-    } else chip?.remove();
+    // 运行态不再挂第二颗分支尾标：路径 chip 一直在最前面，分支标就在它里面。
     // Hover detail: the whole activity string, not the truncated one in the line itself.
     let pop = box.querySelector<HTMLElement>(".act-pop");
     if (!pop) {
@@ -19834,56 +19796,76 @@ export class App {
   }
 
   /**
-   * 路径 chip 常驻（D244，改自 D61）：桌面宽度下不管左栏收没收起，都把当前会话的 cwd 接到状态行最前面、
-   * 分支 chip 旁边 ——「现在在哪个目录」不该取决于旁边那一列收没收起来。左栏展开时会话卡片上也写着同一个
-   * 路径，那是两处不同用途：卡片是列表里的一条，这颗是「当前」的那一颗。
-   * 窄屏仍不显示：左栏是一页 tab、没有折叠这回事，状态行本来就挤。
+   * 路径 chip 常驻（D244，改自 D61；本轮把分支标并进来）：当前会话的 cwd 在状态行最前面，
+   * 在仓库里时同一颗里再带 `⎇` 和未提交圆点，不再另起一颗分支 chip。
+   * 窄屏也显示 —— 左栏是一页 tab，没有折叠这回事；CSS 在 compact 下藏掉子目录。
    */
   private syncCwdChip(): void {
-    if (!this.cwdChip) return;
-    this.cwdChip.hidden = this.compact();
-  }
-
-  /** #392：chip 的说明随 git 探测结果更新；键里的 \n 会让 i18n 扫描把 `{p1}` 当成键本身，换行拼在键外。 */
-  private paintCwdChipTitle(): void {
     const chip = this.cwdChip;
     const cwd = chip?.dataset.cwd;
     if (!chip || !cwd) return;
-    const inRepo = this.gitCwd === cwd && this.git !== null;
-    chip.title = cwd + "\n" + (inRepo ? tr("点一下复制路径") : tr("点一下浏览子仓库（复制在窗内）"));
+    this.paintCwdChipContent(chip, cwd);
   }
 
-  private cwdChipNode(cwd: string): HTMLElement {
+  /** 目录名取仓库名 + 相对子目录（`pi-web-client/web`）；不在仓库里就取最后一段。 */
+  private cwdChipLabel(cwd: string, git: GitInfo | null): { name: string; sub: string } {
+    const clean = cwd.replace(/[\\/]+$/, "");
+    const base = (p: string): string => {
+      const parts = p.split(/[\\/]/).filter(Boolean);
+      return parts[parts.length - 1] ?? p;
+    };
+    const repo = git?.repo?.replace(/[\\/]+$/, "") ?? "";
+    if (!repo) return { name: base(clean), sub: "" };
+    const norm = (p: string): string => p.replace(/\\/g, "/").toLowerCase();
+    const root = norm(repo);
+    if (norm(clean) === root) return { name: base(repo), sub: "" };
+    if (norm(clean).startsWith(root + "/")) {
+      const rest = clean.slice(repo.length + 1).split(/[\\/]/).filter(Boolean).join("/");
+      return { name: base(repo), sub: rest ? `/${rest}` : "" };
+    }
+    return { name: base(clean), sub: "" };
+  }
+
+  /**
+   * 一棵 chip 里放三样东西：目录、git 标记（仓库内 `⎇` + 未提交圆点；伞形 `›`）、完整 title。
+   * git 是异步到的：建节点时和结果回来时都走这里，点击时再按 `gitCwd` 现算开哪扇窗。
+   */
+  private paintCwdChipContent(chip: HTMLButtonElement, cwd: string): void {
+    const git = this.gitCwd === cwd ? this.git : null;
+    const { name, sub } = this.cwdChipLabel(cwd, git);
+    const path = el("span", "cwd-path");
+    path.append(el("span", "cwd-name", name));
+    if (sub) path.append(el("span", "cwd-sub", sub));
+    chip.replaceChildren(path);
+    if (git) {
+      chip.append(el("span", "cwd-glyph", "⎇"));
+      if (git.dirty) chip.append(el("span", "cwd-dot", ""));
+    } else {
+      chip.append(el("span", "cwd-chev", "›"));
+    }
+    const lines = [cwd];
+    if (git) {
+      const label = git.branch || (git.empty ? tr("(无提交)") : tr("(未知)"));
+      lines.push(tr("⎇ {p1}{p2}", { p1: label, p2: git.dirty ? tr(" · {p1} 个未提交改动", { p1: git.dirty }) : "" }));
+      if (git.detached) lines.push(tr("detached HEAD：不在任何分支上"));
+      if (git.empty) lines.push(tr("仓库里还没有提交"));
+    }
+    lines.push(git ? tr("点一下打开分支操作工作台") : tr("点一下打开目录与仓库"));
+    lines.push(tr("Enter 发送 · Shift+Enter 换行 · {p1} 粘贴截图", { p1: PASTE_KEY }));
+    chip.title = lines.join("\n");
+  }
+
+  private cwdChipNode(cwd: string): HTMLButtonElement {
     const btn = el("button", "cwd-chip") as HTMLButtonElement;
-    const path = el("span", "cwd-path", cwd);
-    btn.append(path);
-    // #392: cwd 在仓库里时点一下还是复制；不在仓库里（伞形目录）时点开「目录与仓库」，复制放窗内。
-    // git 是异步到的：标题与点击都要现算，不能在建节点时把 inRepo 定死（否则首次渲染总是「浏览子仓库」）。
+    btn.type = "button";
     btn.dataset.cwd = cwd;
-    const inRepo = (): boolean => this.gitCwd === cwd && this.git !== null;
-    // 注意：此刻 this.cwdChip 还没指向这个节点（赋值在返回之后），要直接写 btn.title。
-    const paintTitle = (): void => {
-      btn.title = cwd + "\n" + (inRepo() ? tr("点一下复制路径") : tr("点一下浏览子仓库（复制在窗内）"));
-    };
-    paintTitle();
+    // 点击恒为开窗：仓库内开分支工作台，伞形 / 普通目录开「目录与仓库」。复制路径在窗的标题栏。
     btn.onclick = () => {
-      if (!inRepo()) {
-        this.openReposSheet(cwd);
-        return;
-      }
-      // 和 git chip 一样：`navigator.clipboard` 在局域网 http 下不存在，可选链要包住调用不是属性。
-      const copy = navigator.clipboard?.writeText(cwd);
-      if (!copy) return;
-      const back = path.textContent ?? cwd;
-      void copy
-        .then(() => {
-          path.textContent = tr("已复制");
-          setTimeout(() => {
-            if (path.isConnected && path.textContent === tr("已复制")) path.textContent = back;
-          }, 900);
-        })
-        .catch(() => {});
+      const git = this.gitCwd === cwd ? this.git : null;
+      if (git) this.openBranchWorkbench(git);
+      else this.openReposSheet(cwd);
     };
+    this.paintCwdChipContent(btn, cwd);
     return btn;
   }
 
