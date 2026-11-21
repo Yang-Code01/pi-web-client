@@ -7108,3 +7108,22 @@ Esc 之后 dialog: 0
 **代价 / 可改。** `--approve` 是 pi 的「本次信任」旗标，它也会压过**用户级扩展**对未决定目录抛的 `project_trust` 事件；要彻底关掉自动信任，在网页设置里把全局 `defaultProjectTrust` 设成 `never`，或对目录保存「不信任」（一个选项，优先级最高）。克隆来的仓库在网页里因此变成零点击加载 `.pi/extensions`，安全默认比终端松 —— 这是本决定的已知代价。改动对已经跑着的会话不生效，`/reload` 或新会话才重新算。
 
 **验证。** `npm --prefix bridge run build && node bridge/tests/settings-trust.mjs`：B2 段断言 `ask` + 未决定 → `effective === true` 且 fake pi 的 argv 带 `--approve`、项目设置可写；`never` → 无旗标且快照为不信任；`always` → 无需旗标；保存「不信任」后压过 `always`；项目级 `pi mcp list` 的 argv 是 `["--approve","mcp","list","--json"]`。真 pi 实测接受该旗标：`pi --help` 有 `--approve, -a  Trust project-local files for this run`，`pi --approve --mode rpc` 退出码 0、无未知选项报错。`npm --prefix web run typecheck` 覆盖 i18n 与 viewport 守卫。
+
+## D371 删掉当前会话的落点 = 「归档当前会话」那一套（★ 行右邻 → 左邻 → 空态）（用户「从横排置顶的会话中，删除会话，当前的横排置顶不显示了，必须要重新点击上方的工作区之后，才会显示」）
+
+**问题。** 从 ★ 行里删掉**当前打开的那颗**会话之后，整条 ★ 行只剩尾巴那颗 ＋，本区还在的置顶一颗都看不见；点一次上方的工作区标签（`gotoGroup()` 会打开本区第一颗会话）才回来。删一颗**非当前**的 ★ 一切正常。
+
+**根因（探针复现，不是推测）。** 桥的 `manage{action:"delete"}` 回声先发 `session.gone`，`App` 的 `session.gone` 分支在这时把 `currentId` / `session` 清空、把中栏 reset 进空态；而 ★ 行的数据是 `starredRow()`，D210 规定**没有当前会话就一颗都不排**。于是「删掉的是自己那颗」＝「当前会话没了」＝「整条置顶空了」。用户手点工作区标签之所以管用，是因为那颗标签走 `gotoGroup()` → `openFromList()`，**顺手打开了一颗会话**，`currentId` 又有了值。
+
+**决定。** 删掉当前会话之后不留在空态，按**「归档当前会话」同一套落点**（D176）走：`neighborAfterArchive()`（纯函数，`web/src/pillbar.ts`）算 ★ 行的右邻，没有右邻取左邻，左右都没有才进现成的「还没有打开会话」空态。
+
+- 行只认一份：`App.rowIds`（上一帧 `renderSessionRow()` 留底的 ★ 行序，与归档用的是同一个字段）。当前会话没打 ★ 时它自己占第 1 格 —— 补上去，右邻不因这一格而变。
+- 批量删：整批 `session.gone` 的 id 全传进 `alsoArchived`，同批一起消失的那几颗不能当落点。
+- 切换走现成入口：有邻居 → `openSession(next)` + `go(this.tab)`（草稿、订阅、hash 都照旧）；没有邻居 → 原来的空态代码原样保留。
+- 入口不新增：`session.gone` 是所有删除路径的唯一回声口（★ 行气泡、左栏卡片、管理面板批量、垃圾箱之外的 `trash`），规则写在这里一处，四个入口自动一致。
+
+**为什么是「落到邻居」而不是「让 ★ 行留着」。** 用户点上方工作区标签已经**事实上**打开了一颗会话 —— 他要的就是「删完之后接着干活」，不是「停在空态看一条空行」。让 ★ 行在没有当前会话时继续铺上一区（或全局）的置顶要推翻 D210，还得新记「上一个工作区」；落到邻居既不动 D210，又让中栏不留空，和关浏览器标签的直觉一致。
+
+**代价 / 可改。** 与 D176 同一档：**本区一颗 ★ 都没有**时删当前会话仍然进空态（严格只看 ★ 行），哪怕左栏还有几十个会话；要改只需把 `neighborAfterArchive()` 的兜底从 `null` 换成「左栏树里的下一颗 / 上一颗」。另外落点按上一帧画出来的行序算，两次回声之间别处改了 ★ 顺序会按旧序落点（D176 已记过同一档竞态）。
+
+**验证。** `probes/pin-delete-current.mjs`（新，桩桥 + 真工作区快照 + 真 Chromium，5 段）：删非当前 ★ 其余照旧；删当前 ★ → 剩下的两颗 ★ 仍在、落右邻「文档站」、`#/s/pd-c`；删行尾那颗 → 落左邻；删到最后一颗 → 空态 + `#/`；管理面板批量带走当前 + 右邻 → 跳过同批那颗落到再右边。**改前先在旧构建上跑过一遍确认会红**（第 1 段那 5 条全红：★ 行 0 颗、没有 `.cur`、`hash=#/`、中栏是空态），改后全绿。`npm run test:pillbar`（`neighborAfterArchive` 的右邻 / 左邻 / 同批跳过，D176 那组）不回归；`npm --prefix web run typecheck`（含 i18n-check 与 viewport 守卫）、`npm run build:web` 通过。顺手跑的相关探针：`pin-archive-jitter` STEADY、`round16-pin` ALL OK、`workspace-tree` 全过。**`pin-current`（字重 500 / 400 两条）、`archive-switch`（等不到 `.pin-strip .pin-chip[data-pin-id]`）、`round24-pinactions`（「左栏展开后置顶条应当整条收起」这条期望在壳 A 两行制之后已经过时）、`pin-auto-open`、`nowchip`、`round4-pin`（等「2 颗置顶胶囊」——D210 之后没有当前会话一颗都不排）、`workspace-shells` 在 origin/main 上就已经是红的**：另开一份 origin/main 工作树逐条复跑确认过，与这次改动无关，别以为是本次弄坏的，也别以为这些面已经覆盖。

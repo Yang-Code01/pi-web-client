@@ -2973,18 +2973,30 @@ export class App {
         }
         for (const id of gone) this.drafts.delete(id);
         this.persistDrafts();
-        if (this.currentId && gone.has(this.currentId)) {
-          this.currentId = null;
-          this.session = null;
-          this.composerText = "";
-          this.images = [];
-          this.pastes = [];
-          this.chat.reset([]);
-          this.renderAll();
-          this.go("sessions", true);
-        } else {
+        const left = this.currentId;
+        if (!left || !gone.has(left)) {
           this.renderSessions();
+          break;
         }
+        // 当前会话被删掉了：落点与「归档当前会话」同一套（D176）—— ★ 行右邻 → 左邻 → 空态。
+        // 不落点的话 currentId 会是 null，而 ★ 行在没有当前会话时按 D210 一颗都不排：删掉自己那一颗，
+        // 整条置顶跟着消失（只剩 ＋），要等点一次工作区标签（它会打开本区第一颗会话）才回来。
+        // 同批被删掉的那几颗不能当邻居，所以整批 gone 都传进 `alsoArchived`。
+        const next = neighborAfterArchive(this.rowIds.includes(left) ? this.rowIds : [left, ...this.rowIds], left, [...gone]);
+        if (next) {
+          this.openSession(next);
+          this.go(this.tab);
+          break;
+        }
+        // 左右都没有邻居：中栏回到现成的空态（与 D176 的决定一致）。
+        this.currentId = null;
+        this.session = null;
+        this.composerText = "";
+        this.images = [];
+        this.pastes = [];
+        this.chat.reset([]);
+        this.renderAll();
+        this.go("sessions", true);
         break;
       }
       case "ws.delete.result": {
