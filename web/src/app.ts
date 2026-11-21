@@ -94,7 +94,7 @@ import {
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
-import { escapeTopLayer, pushEscLayer } from "./modal.ts";
+import { escapeTopLayer, LEAVE_MS, pushEscLayer, retireOverlay, startLeaving } from "./modal.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -3522,26 +3522,28 @@ export class App {
   }
 
   /**
-   * 关掉一层面板。先放一段退场动画（`.mac-leaving`，mac.css）再真正移除；
-   * 同一轮同步代码里又开了新面板（换页、重画、恢复默认）就当场移除旧的，并让新的跳过入场动画，
-   * 免得「重画」看起来像关了又开。
+   * 关掉**面板层**（`this.sheet` 本身）。先放一段退场动画（`.mac-leaving`，mac.css；
+   * `prefers-reduced-motion` 下直接移除），同一轮同步代码里又开了新面板（换页、重画、恢复默认）
+   * 就当场移除旧的，并让新的跳过入场动画，免得「重画」看起来像关了又开。
+   *
+   * 只给 sheet 层用：那个 `mac-instant` 判据要的是「旧 sheet 还在退场、新 sheet 已经铺上」。
+   * 灯箱 / 选择器这些**浮在 sheet 之上**的浮层调的是 modal.ts 的 `retireOverlay` —— 它们关闭时
+   * 底下那张 sheet 本来就还在，走这里会被误判成「同帧重开」，动画被掐掉还得给 sheet 挂上
+   * 一个永不摘掉的 `mac-instant`。
    */
-  private retireOverlay(node: HTMLElement | null): void {
+  private retireSheet(node: HTMLElement | null): void {
     if (!node) return;
-    const animate = !matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!animate) {
+    if (!startLeaving(node)) {
       node.remove();
       return;
     }
-    node.classList.add("mac-leaving");
-    node.inert = true;
     queueMicrotask(() => {
       if (this.sheet && this.sheet !== node) {
         node.remove();
         this.sheet.classList.add("mac-instant");
         return;
       }
-      window.setTimeout(() => node.remove(), 210);
+      window.setTimeout(() => node.remove(), LEAVE_MS);
     });
   }
 
@@ -4269,7 +4271,7 @@ export class App {
     paintSize(this.prefs.scale);
 
     // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
-    // 外观只剩 Mac 风格三套（D352）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
+    // 外观只剩 Mac 风格三套（D353）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
     const themeChips = el("div", "chips theme-chips");
     for (const t of THEMES) themeChips.append(themeChipEl(t, this.prefs.theme, () => this.sheet, (id) => this.pickTheme(id)));
     const macPanel = section("mac");
@@ -4290,7 +4292,7 @@ export class App {
     macPanel.append(keysRow);
 
     const colorPanel = section("color");
-    // 强调色只有 macOS 那一排八色（D352：六色表随「配色主题」一起删了）。
+    // 强调色只有 macOS 那一排八色（D353：六色表随「配色主题」一起删了）。
     const macSwatches = el("div", "swatches mac-swatches");
     for (const [id, label] of MAC_ACCENT_LABELS) {
       const sw = el("button", `swatch${this.prefs.macAccent === id ? " on" : ""}`);
@@ -5219,7 +5221,7 @@ export class App {
     if (this.sheetKind === "new") this.prefillNext = null;
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
     // D308: 面板没了，从它里面开的预览 / 表格 / 幻灯片不再压着谁 —— 回到普通浮窗层带（46/47）。
-    this.retireOverlay(this.sheet);
+    this.retireSheet(this.sheet);
     this.sheet = null;
     this.sheetKind = null;
     this.syncViewerLayer();
@@ -5853,7 +5855,7 @@ export class App {
     if (!this.subSheet) return;
     this.subSheetEscPop?.();
     this.subSheetEscPop = null;
-    this.subSheet.remove();
+    retireOverlay(this.subSheet);
     this.subSheet = null;
     this.subSheetKind = null;
     this.subSheetPaint = null;
@@ -7160,7 +7162,7 @@ export class App {
   }
 
   /**
-   * 第一次打开：弹一张主题选择（D352：只剩 Mac 风格三套，一排三颗）。默认亮着 Mac 浅色。
+   * 第一次打开：弹一张主题选择（D353：只剩 Mac 风格三套，一排三颗）。默认亮着 Mac 浅色。
    * 点一颗立即换上（同设置里的 chip，存进 `pi.prefs.theme`）；「开始使用」/ 关掉都算看过 ——
    * 弹出的那一刻就记 `themeIntroSeen`，刷新也不会再来一次（以后去 设置 → 外观 改）。
    */
@@ -8892,7 +8894,7 @@ export class App {
     const popEsc = pushEscLayer({ onEsc: () => shut() });
     const shut = (): void => {
       popEsc();
-      back.remove();
+      retireOverlay(back);
     };
     close.onclick = shut;
     back.onclick = (ev) => {
@@ -11391,7 +11393,7 @@ export class App {
       box.append(el("div", "choose-title", title));
       const row = el("div", "choose-row");
       const done = (id: string): void => {
-        back.remove();
+        retireOverlay(back);
         resolve(id);
       };
       for (const b of buttons) {
@@ -20418,7 +20420,7 @@ function writeFlag(key: string, value: boolean): void {
 
 type Prefs = {
   scale: number;
-  /** 整套外观（theme.ts 的稳定 id）；只剩 Mac 浅色 / 深色 / 午夜蓝三套（D352），默认浅色。 */
+  /** 整套外观（theme.ts 的稳定 id）；只剩 Mac 浅色 / 深色 / 午夜蓝三套（D353），默认浅色。 */
   theme: ThemeId;
   /** 强调色（palette.ts 的 MAC_ACCENT_IDS，macOS 八色）；默认系统蓝。 */
   macAccent: string;
@@ -21098,7 +21100,7 @@ function layoutDemo(id: LayoutId): HTMLElement {
 }
 
 /**
- * 强调色只有 macOS 那一排八色（palette.ts，D352）：keys 是稳定 id，持久化在 `pi.prefs.macAccent` 里，
+ * 强调色只有 macOS 那一排八色（palette.ts，D353）：keys 是稳定 id，持久化在 `pi.prefs.macAccent` 里，
  * 不能翻译；tooltip 与 aria 走 `MAC_ACCENT_LABELS` + `tr()`。
  * D110 之前存的还是中文色名（那会儿是六色表）：`LEGACY_ACCENTS` 把它们换成旧 id，
  * 再由 `migrateThemePrefs()` 落成最近的那颗 macOS 色 —— 删掉它会把老用户的颜色静默清掉。

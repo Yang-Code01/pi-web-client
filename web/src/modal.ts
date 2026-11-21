@@ -11,6 +11,9 @@
  *
  * `mountOverlay` 认 `#app`：往 `document.body` 上挂就不吃 `#app` 的 `zoom`，外观「字号」调到
  * 125% 以上时同一个弹层会跟别的弹层两套尺寸（D123 / D263）。
+ *
+ * `retireOverlay`：Mac 主题下关闭时先演退场（`.mac-leaving`）再移除。app.ts 自己的 sheet 有一版
+ * 更复杂的（同一轮又开了新面板要跳过入场），其余自管弹层的模块用这里的简单版。
  */
 
 export interface EscLayer {
@@ -78,4 +81,36 @@ export function trapEscape(onEscape: () => void): () => void {
 /** 把浮层挂进 `#app`（拿不到才退回 body，比如单元测试里的假 DOM）。 */
 export function mountOverlay(root: HTMLElement): void {
   (document.getElementById("app") ?? document.body).append(root);
+}
+
+/**
+ * Mac 主题下给浮层挂退场（`.mac-leaving`，mac.css 里配 `mac-fade-out` / `mac-window-out`）。
+ * 返回 true 表示动画已经挂上，调用方负责在 LEAVE_MS 之后把它移除；false 就当场移除。
+ *
+ * 判断主题看 `html[data-ui]` 而不是传给各模块的 prefs：动画是 CSS 按这个属性挑的，
+ * 两边用同一个开关才不会出现「JS 以为在演、CSS 不认」的一帧空白。
+ */
+export function startLeaving(node: HTMLElement): boolean {
+  if (document.documentElement.dataset.ui !== "mac") return false;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return false;
+  node.classList.add("mac-leaving");
+  node.inert = true;
+  return true;
+}
+
+/** 退场动画的时长（mac.css 里那 200ms 留 10ms 余量）。 */
+export const LEAVE_MS = 210;
+
+/**
+ * 关掉一层浮层：Mac 主题下先演退场再移除，其它主题立即移除。
+ * 自管弹层的模块（系统管理 / Jira / 邮箱 / 确认框 / 灯箱 / 笔记选人 / 小选择器）都该走这里，
+ * 否则它们的关闭会和 app.ts 那批 sheet 两个手感。
+ */
+export function retireOverlay(node: HTMLElement | null): void {
+  if (!node) return;
+  if (!startLeaving(node)) {
+    node.remove();
+    return;
+  }
+  window.setTimeout(() => node.remove(), LEAVE_MS);
 }

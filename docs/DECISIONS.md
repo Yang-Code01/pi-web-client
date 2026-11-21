@@ -6558,7 +6558,7 @@ Esc 之后 dialog: 0
 - **2026-11-20 追加三套**（同一套机制，不另立结构）：`light`「素白」纯白画布（与晨光的冷灰底 #f5f6f8 拉开）、`dusk`「深海」（比峡湾暗一整档的蓝黑，`#070b14`）、`paper`「沙丘」（唯一的暖色浅底 `#f4efe4`）。小样 `.theme-demo` 的内联 `--td-*` 就是各自的底色；三套与原本四套一样补了 `[data-theme][data-text]` 的 soft / bright 两条。
 - **终端跟着主题**（推翻下面「不在范围」里终端那条）：`theme.ts` 的 `TERM_THEMES` 给七套各一份 xterm 调色板（底 / 字 / 选区 + 16 色 ANSI），`applyPrefs` 经 `paintTermThemes()` 把已经开着的终端一起换（缓存键 `theme/accent`，没变就不写），新开的走 `termPalette()`，光标色取当前强调色。
 - **顺手修**：强调色块改成取当前主题那一支 ramp（`paintSwatches()`），浅底上不再是一圈看不清的粉彩点；晨光的 `--faint` 压深到 `#616a7a`（soft 组 `#626b7b`），对面板 3 从 4.2:1 拉到 4.6:1，过 AA。
-- **2026-11-21 反转：** 上文那七套配色主题（连同文字亮度三档与六色强调色）已经整项删掉，外观只剩 Mac 风格三套 —— 见 D352。
+- **2026-11-21 反转：** 上文那七套配色主题（连同文字亮度三档与六色强调色）已经整项删掉，外观只剩 Mac 风格三套 —— 见 D353。
 
 **不在范围。** 表格查看器（自带浅色）、内网通独立页 `peer.css`（自己一套变量）。终端配色已跟主题（见上）。
 
@@ -6622,7 +6622,7 @@ Esc 之后 dialog: 0
 - **决定**：Mac 三套主题（mac-light / mac-dark / mac-midnight）由 `paintTheme` 在 `<html>` 上挂 `data-ui="mac"`，`web/src/mac.css` 里所有规则都挂在这个开关下：壁纸式渐变底 + 毛玻璃顶栏 / 悬浮侧栏 / 弹层 / 菜单，iMessage 气泡，macOS 按钮、分段控件、开关，Apple 弹簧缓动，弹层落下与退场动画（`retireOverlay` + `.mac-leaving`），以及兜底快捷键 `MAC_KEYS`（⌘/Ctrl + , 设置、+K 搜索、⌃⌘S 左栏、+. 中断）。强调色在 Mac 主题下改用 `prefs.macAccent`（macOS 八色，默认系统蓝），与原来的 `prefs.accent` 分开存；文字亮度三档在 Mac 主题下固定为 normal（Apple 标签色层级）并在设置里隐藏。
 - **为什么**：用户要的是「改天换地」的整体体验，不是第十套配色。把所有改动关在一个属性开关后面，其它七套主题一个像素都不变，也不用给每条旧规则加分支；强调色分开存，切回普通主题时原来的选择还在。位移动画只用独立的 `translate` / `scale` 属性，因为不少浮层本来用 `transform` 定位。
 
-- **2026-11-21 反转：** 「Mac 风格与配色主题并存」这一半已经推翻 —— 配色七套删掉，`data-ui="mac"` 现在恒挂，强调色只剩 macOS 八色那一份。开关与文件分层保留。见 D352。
+- **2026-11-21 反转：** 「Mac 风格与配色主题并存」这一半已经推翻 —— 配色七套删掉，`data-ui="mac"` 现在恒挂，强调色只剩 macOS 八色那一份。开关与文件分层保留。见 D353。
 
 ## D343 运行时面板的内存：Windows 按 pid 逐个问 `tasklist`
 
@@ -6740,7 +6740,25 @@ Esc 之后 dialog: 0
 
 **守卫。** `node probes/mac-chat.mjs`：四套主题下量短气泡单行、气泡贴右、选中胶囊对比度，并扫整页「自己带字、对比度 < 2」的元素（展开 / 收起左栏各一遍）。
 
-## D352 删掉「配色主题」，外观只剩 Mac 风格三套（用户要求 2026-11-20，反转 D337 的一半与 D342 的并存结构）
+## D352 Mac 风格：弹层外壳清单集中一处，自管弹层的退场走同一个出口（用户报「只有 Everything 不兼容」2026-11-21）
+
+**症状。** 同一份 CSS 下，产物（`.st-back`）是毛玻璃 + 浅遮罩 + 460ms 窗口入场，Everything（`.sys-back`）还是深黑遮罩 + 纯白面板 + 没有动画；bug 反馈（`.notes-sheet`）居中却演成底部抽屉。
+
+**根因。** `mac.css` 的白名单只认 `.st-console` / `.sheet` / `.modal form` / `.argdialog-panel` 四个外壳类，而 `sys` / `jc` / `mc` 是系统管理 / Jira / 邮箱各抄一份的控制台（`sysmanage.css:3-30`、`jira-console.css:5-30`、`mail-console.css:3-30` 三段几乎逐行相同），一个都不在名单里；零散弹层（`.jira-ask`、`.peer-pick`、`.image-view`、`.sheet-sub-back`、`.choose-back`、`.jira-picker`）同理。笔记面板没挂 `.center` 类，被 `.sheet-back:not(.center)` 判成抽屉。
+
+**决定。**
+- 外壳清单在 `web/src/mac.css` 一处写全：遮罩组 `:is(.st-back, .sheet-back, .modal, .sys-back, .jc-back, .mc-back, .jira-ask-back, .jira-picker, .sheet-sub-back, .choose-back, .peer-pick, .image-view)`，窗口组 `:is(.st-console, .sheet, .modal form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .mc-confirm, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box)`。尺寸与内部布局仍留各自文件，`mac.css` 只管材质、圆角 14px、入场与退场。**同一套控制台里再分出的小卡片也要单独写进名单**：邮箱的发信确认框外壳是 `.mc-back`、面板却叫 `.mc-confirm`（`mail-console.css:957`），只收 `.mc-console` 会让它退回纯色面板 —— 第一版就是这么漏的，review 才逮到。
+- 笔记面板按名字判（`.sheet-back.notes-back .sheet` 播 `mac-window-in`），不靠没人维护的 `.center`；随手问是右侧抽屉，单独 `mac-side-in`。
+- 退场：`web/src/modal.ts` 新增 `startLeaving(node)`（判 `html[data-ui="mac"]` + reduced-motion，加 `.mac-leaving` / `inert`）、`LEAVE_MS = 210`、`retireOverlay(node)`。sysmanage / jira（面板与选目录）/ mail / mailconfirm / notesheet（面板与选人框）/ hotdeploy / branchsheet / repossheet / translateview / app 的子弹层一律换 `retireOverlay`。原来是 `node.remove()`，Mac 下没有退场。`branchsheet` 的 `embedded` 分支不换：那 `sheet` 是别的面板里的一块，退场会把父面板一起拖下水。
+- app.ts 里那个私有版本改名为 `retireSheet`，**只给 `this.sheet` 本身用**：它多一段「同一轮又开了新面板就当场拆旧的、给新的挂 `mac-instant`」的判定，而灯箱 / 小选择器是**浮在 sheet 之上**的浮层，关闭时底下那张 sheet 本来就还在，走它会误判成同帧重开 —— 动画被掐掉，还给 sheet 挂上一个永不摘掉的 `mac-instant`。浮层一律调 `modal.ts` 的 `retireOverlay`。
+
+**为什么不是逐文件加规则。** 三套控制台是复制粘贴出来的，下一套新控制台再抄一遍时，只有「清单在 `mac.css` 里、守卫会数」才拦得住；分散到 `sysmanage.css` 之类的文件里，下次照样漏。
+
+**守卫。** `npm --prefix web run build && node probes/mac-dialogs.mjs`：真 Chromium 起一份隔离 bridge，真开 Everything / 产物 / 笔记 / 设置四层，另注 16 个骨架，逐项跟「产物」对齐遮罩 blur 与动画名、面板动画与圆角、阴影；另对 10 个外壳家族注入 `.mac-leaving` 断言面板拿到 `mac-window-out`（这条查 CSS 白名单，不依赖哪个模块记得调 JS）；再在 700px 视口下断言铺满整屏的仓库面板圆角与边框都是 0。21 行全绿才过；`.choose`（alert 形，缩放淡入）和灯箱（图不是窗口，12px）写成带 label 的豁免表，表里任何一条对不上实测行也红 —— 免得改了骨架名就静默失效。
+
+**特异性的坑（写覆盖规则时先数一遍）。** 窗口组那条 `:is()` 的参数里有 `.modal form`，所以整条的特异性是 `(0,2,2)` 而不是 `(0,2,1)` —— `:is()` 取参数里最高的那个。窄屏复位写成 `html[data-ui="mac"] .repos-sheet`（`(0,2,1)`）压不过它，`border: 0` 静默失效、只剩圆角生效；改成 `html[data-ui="mac"] .sheet-back .repos-sheet`（`(0,3,1)`）才对。窄屏那条用 `@media (max-width: 720px)` 而不是 `@container`：面板铺满整屏时已经没有「自己的宽度」可判。
+
+## D353 删掉「配色主题」，外观只剩 Mac 风格三套（用户要求 2026-11-20，反转 D337 的一半与 D342 的并存结构）
 
 **问题。** D337 加的七套配色主题与 D342 的 Mac 风格三套共用 `pi.prefs.theme`，在设置里占两页、在首跑弹窗里占两排。两族换的东西根本不是一回事：Mac 三套换的是材质（壁纸渐变、毛玻璃、iMessage 气泡、弹簧动效、⌘ 快捷键），配色七套只换底色 —— 选了配色主题就没有 Mac 材质，而配色主题的暖底 / 冷底在 Mac 里也没有对应。维护上每加一条颜色都要同时写 Mac 内与 Mac 外两条；文字亮度在 Mac 下是隐藏且失效的；六色强调色表退化成只服务左栏色点。用户要的是「一套观感」。
 

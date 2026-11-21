@@ -3,7 +3,7 @@
  *
  * 只测纯函数层；DOM 那颗在 `probes/nowchip.mjs` 的浏览器探针里把关（收起、展开都在，
  * 切会话立刻变，待处理角标与树里同一套）。颜色不许新造调色板 —— 只能是 macOS 那八颗
- * 强调色 id（D352：六色表已随「配色主题」一起删掉）。
+ * 强调色 id（D353：六色表已随「配色主题」一起删掉）。
  *
  * Run: node --experimental-transform-types web/tests/nowchip-unit.mjs
  */

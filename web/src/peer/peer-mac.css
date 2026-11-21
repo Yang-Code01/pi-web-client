@@ -1,7 +1,7 @@
 /*
  * 内网通页面的 Mac 风格（D350）：跟主界面 mac.css 同一身——毛玻璃、发丝线、iMessage 气泡、弹簧动效。
  *
- * 开关同主界面：`html[data-ui="mac"]`（peer/main.ts 用 theme.ts 的 bootTheme 挂上；D352 之后外观只有 Mac 风格，它恒挂）。
+ * 开关同主界面：`html[data-ui="mac"]`（peer/main.ts 用 theme.ts 的 bootTheme 挂上；D353 之后外观只有 Mac 风格，它恒挂）。
  * 材质变量、字体、滚动条、关键帧在 `../mac-base.css`（两份文档共用）；这里只写内网通自己的 class。
  * 不 import mac.css：它的 `.modal` 是背景遮罩、`.main` 是三栏，跟这页同名不同义。
  *
