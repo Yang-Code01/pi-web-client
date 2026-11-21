@@ -12277,7 +12277,8 @@ export class App {
     }
     const s = this.session;
 
-    // #21: RPC cannot show pi's trust prompt, so an undecided project silently loses its .pi config.
+    // #21 / D367: RPC cannot show pi's trust prompt. The web reads "ask" as "trust", so the bar
+    // only appears when the folder really will not load (saved "do not trust" or global "never").
     const t = this.trust;
     if (t && s && t.cwd === s.cwd && t.needed && !t.saved && !t.effective) {
       const bar = el("div", "takeover warn trust-bar");
@@ -14030,15 +14031,16 @@ export class App {
       body.append(el("div", "empty", cwd ? tr("读取中…") : tr("先打开一个会话")));
       return;
     }
+    const fallbackText = t.effective ? tr("按信任处理（会加载）") : tr("按不信任处理（不会加载）");
     const lines = [
       t.needed ? tr("这个目录有需要信任才会加载的 pi 资源（.pi/settings.json、.pi/mcp.json、.pi/extensions|skills|prompts|themes、SYSTEM.md 等）。") : tr("这个目录没有需要信任的 pi 资源，信任与否都不影响。"),
-      t.saved ? tr("已保存的决定：{p1}（{p2}）", { p1: t.saved.decision ? tr("信任") : tr("不信任"), p2: t.saved.path }) : tr("没有保存的决定。全局 defaultProjectTrust = {p1}，网页里的 pi 不能弹提示，所以{p2}。", { p1: t.fallback, p2: t.effective ? tr("会加载") : tr("不会加载") }),
+      t.saved ? tr("已保存的决定：{p1}（{p2}）", { p1: t.saved.decision ? tr("信任") : tr("不信任"), p2: t.saved.path }) : tr("没有保存的决定。全局 defaultProjectTrust = {p1}；网页里的 pi 不能弹提示，因此{p2}。", { p1: t.fallback, p2: fallbackText }),
       tr("决定写在 ~/.pi/agent/trust.json，和终端里的 /trust 是同一份。"),
     ];
     body.append(
       this.stCards([
         { label: tr("需要信任"), value: t.needed ? tr("是") : tr("否"), sub: t.needed ? tr("有项目级 pi 资源") : tr("信不信都不影响") },
-        { label: tr("已保存的决定"), value: t.saved ? (t.saved.decision ? tr("信任") : tr("不信任")) : tr("没有"), sub: t.saved ? t.saved.path : `defaultProjectTrust = ${t.fallback}` },
+        { label: tr("已保存的决定"), value: t.saved ? (t.saved.decision ? tr("信任") : tr("不信任")) : tr("没有"), sub: t.saved ? t.saved.path : `defaultProjectTrust = ${t.fallback} · ${fallbackText}` },
         { label: tr("现在"), value: t.effective ? tr("会加载") : tr("不会加载"), sub: tr("项目的 .pi 资源"), cls: t.needed && !t.effective ? "warn" : "" },
       ]),
     );
@@ -21093,7 +21095,7 @@ function settingFields(): SettingField[] {
 
   { key: "enableInstallTelemetry", label: tr("安装/更新匿名上报"), kind: "bool", group: tr("隐私与信任"), hint: tr("不控制更新检查，只控制那条安装/更新记录") },
   { key: "enableAnalytics", label: tr("分析数据共享"), kind: "bool", hint: tr("目前只有实验性的首次设置会用到") },
-  { key: "defaultProjectTrust", label: tr("没有决定时的项目信任"), kind: "select", options: ["ask", "always", "never"], globalOnly: true, hint: tr("网页里 ask 等于 never（不能弹提示）") },
+  { key: "defaultProjectTrust", label: tr("没有决定时的项目信任"), kind: "select", options: ["ask", "always", "never"], globalOnly: true, hint: tr("网页里 ask 按信任处理（不能弹提示）") },
 
   { key: "shellCommandPrefix", label: tr("命令前缀"), kind: "text", advanced: true, hint: tr("拼在每条 shell 命令前面，例如 source ~/.bashrc &&") },
   { key: "npmCommand", label: tr("npm 命令"), kind: "list", advanced: true, hint: tr("装扩展/查包时用的命令与参数，逗号分隔") },

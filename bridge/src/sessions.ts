@@ -39,7 +39,7 @@ import {
   type ContextPolicyView,
   type ContextSettings,
 } from "./context-policy.ts";
-import { readSettings } from "./pisettings.ts";
+import { readSettings, trustInfo } from "./pisettings.ts";
 import { renumberCtxLog } from "./ctxlog-seq.ts";
 
 /**
@@ -1335,6 +1335,11 @@ export class Session extends EventEmitter {
     // 邮箱：读、写、发用户的邮箱。发送前的确认由桥推给正在看这个会话的页面，不走审批弹窗。
     args.push("-e", mailToolPath());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
+    // D367: RPC 里 ask 等同 never，网页又弹不了提示 —— 没保存决定的目录会被静默丢掉项目配置。
+    // 这里把网页的语义统一成「未决定 = 信任」：只对这类目录补 --approve，显式保存的决定
+    // （信任/不信任）和全局 never 都不碰，子进程照旧自己读 trust.json。
+    const trust = await trustInfo(this.cli, cwd).catch(() => null);
+    if (trust && trust.needed && !trust.saved && trust.fallback === "ask") args.push("--approve");
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);
     args.push(...launchArgs(launch));

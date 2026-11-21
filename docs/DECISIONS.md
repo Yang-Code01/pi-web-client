@@ -824,7 +824,7 @@
    - 运行中能改的四项（引导 / 后续消息的处理方式、自动压缩、自动重试）保存时顺带用 RPC `set_*` 应用到当前会话。其余设置要 `/reload`：网页里的 reload 就是重启这个会话的 pi，历史在磁盘上。`/changelog` 读 pi 包里的 `CHANGELOG.md`。
 3. **项目信任（#21）**：用 pi 的 `ProjectTrustStore`、`hasTrustRequiringProjectResources`、`getProjectTrustOptions`，选项和终端 `/trust` 完全相同，决定写进 `<agentDir>/trust.json`。
    - 会话快照带上 `trust`。项目需要信任、又没有保存过决定、实际也不会加载时，输入框上方出现提示条。
-   - **不做**「仅本次信任」（`--approve`）：网页里的会话会反复重启 pi，一次性的决定没有落脚的地方。要么保存，要么不信任。
+   - **不做**「仅本次信任」（`--approve`）：网页里的会话会反复重启 pi，一次性的决定没有落脚的地方。要么保存，要么不信任。**（被 D367 取代的部分）**：未决定 + 全局 `ask` 时由桥自动补 `--approve`（未决定按信任处理）；仍然不提供「仅本次」的按钮。
 4. **启动参数（#28）**：新建会话的「高级」里可以设 `--model` `--thinking` `--tools` `--no-builtin-tools` `-e` `--skill` `--append-system-prompt` `-ne` `-nc` `--no-mcp` `--offline`。
    - `launch.ts` 在拉起进程**之前**校验：一个字段一条规则，`--tools` 不能把普通名字和 `+x` / `-x` 混用（pi 也拒绝）。
    - 参数存在 `state/launch/<id>.json`，每次这个会话的 pi 启动（含接管、`/reload`）都带上；审批门禁的 `-e` 始终在最前面。
@@ -7026,3 +7026,20 @@ Esc 之后 dialog: 0
 **代价。** 用 `PI_WEB_STATE` 起的实例（测试环境、多开）升级后各自要重登一次；默认实例不受影响。cookie 名不再是一个固定字符串 —— 本机现在会同时有 `pwc` 与 `pwc_<hash>`，排查时别只 `grep pwc=`。state 目录搬家等于换了实例身份，得重新登录。
 
 **守卫。** `bridge/tests/auth-cookie-scope.mjs`：开三份真实桥（A、B 各自 state 目录，另有一份**不设 `PI_WEB_STATE`** 的默认实例），用一个**忽略端口**的 cookie 罐走真实 HTTP —— 登录 A、再登录 B，回头问 A 的 `/api/me` 必须仍是 200，且两枚 cookie 名不同；把 B 的 cookie 原样递给 A 必须 401（名字分开不等于密钥共享）；默认实例登录后拿到的名字必须是 `pwc`（升级不用重登）。把 cookie 名改回共用一个，第四条立刻红；把名字改成永远哈希，最后一条红。跑法：`npm --prefix bridge run build && node bridge/tests/auth-cookie-scope.mjs`（约 3 秒）。「默认目录」的判据只认 `bridge/src/paths.ts` 的 `stateDirIsDefault()`，auth 不再自己读 `PI_WEB_STATE`。
+
+## D367 网页里未决定的项目默认按信任处理：spawn 时补 `--approve`，新用户不再静默丢掉 `.pi` 配置（#21 续，2026-11-21）
+
+**背景。** pi 的默认值是 `defaultProjectTrust: "ask"`（[chunk-62VOPMLK.js:43]），终端里第一次进入带 `.pi` 资源的目录会弹一次「是否信任」。桥走 `--mode rpc`，没有这个提示通道，所以网页以前把 `ask` 读成 `never`：目录没在 `~/.pi/agent/trust.json` 里保存过决定，`.pi/settings.json`、`.pi/mcp.json`、`.pi/extensions|skills|prompts|themes`、`SYSTEM.md` 就全部静默不加载，用户也看不到任何解释。`AGENTS.md` / `CLAUDE.md` 本来就不受信任门管。用户的原话是「改这个没有用，新用户，咋办？」—— 只在机器上把全局默认改成 `always` 解决不了别人的新环境。
+
+**决定。** 网页把「未决定」当成信任：`bridge/src/pisettings.ts` 的 effective 改成 `entry ? entry.decision : fallback !== "never"`；`bridge/src/sessions.ts` 在拉起 pi 前算一次 `trustInfo`，只有 `needed && !saved && fallback === "ask"` 时补 `--approve`。显式保存过的信任/不信任、全局 `never` 与 `always` 都不碰（`always` 下 pi 自己会加载，不需要旗标；`never` 下照旧不加载）。信任面板与设置提示同步改成「ask 按信任处理（不能弹提示）」，面板里写明未决定时是自动信任。项目设置在未决定时也可写（与「按信任处理」保持一致）。
+
+**为什么不用别的。**
+
+- 网页首次运行就把全局 `defaultProjectTrust` 改成 `always`：会改掉用户在终端里也会用的全局配置，等于替所有 pi 实例做了决定，事后很难解释是谁改的。
+- 提上游让 RPC 在 `ask` 时直接信任：要等发布，而且上游未必愿意把「无人值守」的语义塞进通用 RPC。
+- 网页里加一次性确认弹窗：信任要在子进程读文件**之前**定下来，桥没有阻塞在 spawn 上等用户的地方；会话已经起来了再问，配置已经错过了。
+- 保持旧语义、只在界面上提示：新用户仍然要自己找到 `/trust`，正是这次要消除的静默失败。
+
+**代价 / 可改。** `--approve` 是 pi 的「本次信任」旗标，它也会压过**用户级扩展**对未决定目录抛的 `project_trust` 事件；要彻底关掉自动信任，在网页设置里把全局 `defaultProjectTrust` 设成 `never`，或对目录保存「不信任」（一个选项，优先级最高）。克隆来的仓库在网页里因此变成零点击加载 `.pi/extensions`，安全默认比终端松 —— 这是本决定的已知代价。改动对已经跑着的会话不生效，`/reload` 或新会话才重新算。
+
+**验证。** `npm --prefix bridge run build && node bridge/tests/settings-trust.mjs`：B2 段断言 `ask` + 未决定 → `effective === true` 且 fake pi 的 argv 带 `--approve`、项目设置可写；`never` → 无旗标且快照为不信任；`always` → 无需旗标；保存「不信任」后压过 `always`。`npm --prefix web run typecheck` 覆盖 i18n 与 viewport 守卫。
