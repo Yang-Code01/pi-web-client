@@ -85,7 +85,8 @@ node .pi/skills/pi-web-e2e-test/bin/e2e.mjs bug \
   --dir <仓库或 worktree>
 ```
 
-- 默认会自己起一个隔离测试环境（口令 `test`，不开窗口），跑完自动关。
+- 起环境前先看有没有能复用的：同一个目录、进程还活着、`bridge/src`/`web/src`/`peer/src` 没有比 `dist` 新、HEAD 与登记一致，就**直接用那份**，不再 build + 启动（日志会写明「复用已在跑的测试环境 <id>」）。复用的那份**跑完不停**，要停自己 `env.mjs stop --id <id>`；要回到「每次起一份用完就关」的旧行为，加 `--fresh`。
+- 什么都没复用到时才自己起一个隔离测试环境（口令 `test`，不开窗口），跑完自动关。
 - 想复用已经起好的环境：`--env http://127.0.0.1:17876/` 或 `--env <实例 id>`；这时不会关它。
 - 想看环境一直留着：`--keep`（会打印 stop 命令）。
 - 断言失败**不会**让这个模式退出非零；录制/转码失败才会。
@@ -179,7 +180,7 @@ PI_WEB_E2E_SMOKE=1 node --test tests/e2e-cli.test.mjs  # 真起环境跑 bug/cha
 - **bug 模式不改产品代码**；只写复现用例和报告。要修另开 worktree、另开 PR。
 - **产物不进 worktree 的 `.scratch`**：默认写主检出；`--out` 明确指定时除外。
 - **不碰 7864 的正式实例**：默认走 `pi-web-client-test-dev` 的隔离环境；端口从 17864 起。
-- **跑完清场**：不 `--keep` 时环境会停、修改前 worktree 会删；`--keep` 时把 stop 命令和目录路径告诉用户。
+- **跑完清场**：自起的环境不 `--keep` 时停、修改前 worktree 删；复用的环境不停（它不是这一轮起的），结束时把 stop 命令告诉用户；`--keep` 时把 stop 命令和目录路径都告诉用户。
 - **删 worktree 只用 `tools/worktree-remove.mjs`**，不要 `git worktree remove --force`。
 - **TTS 可关但不要默认关**：`--no-tts` 只在没有中文语音或用户明确要求静音时用；字幕仍然保留。
 - **视频要能看清**：每一步等旁白读完；点击前至少停 350ms；瞬时现象用 `h.moment`，不要靠加快节奏蒙混。
