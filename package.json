@@ -142,7 +142,8 @@
     "test:extmgr-names": "node --experimental-strip-types bridge/tests/extmgr-names-unit.mjs",
     "test:market": "node --experimental-strip-types bridge/tests/market-unit.mjs",
     "test:skill:ui": "node bridge/tests/skill-view-ui.mjs",
-    "test:note": "node --experimental-strip-types --test bridge/tests/peer-note-unit.mjs && npm run build:peer && node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-ui.mjs"
+    "test:note": "node --experimental-strip-types --test bridge/tests/peer-note-unit.mjs && npm run build:peer && node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-ui.mjs",
+    "test:audit-state": "npm run build:peer && npm run build:bridge && node bridge/tests/peer-state-corrupt.mjs && node bridge/tests/trash-corrupt.mjs && node bridge/tests/peer-tunnel-gate.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

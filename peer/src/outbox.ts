@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { statePath } from "./config.ts";
+import { quarantineStateFile, readJsonChecked, statePath } from "./config.ts";
 import type { Entry } from "./history.ts";
 
 /** 一条待投递的消息。落盘是为了「bridge 重启后还能补」——进程是会被父进程重启的。 */
@@ -37,6 +37,8 @@ export class Outbox {
   private flushing = false;
   /** flush 跑着的时候又有人要 flush（新消息 / 立即重试）：跑完这轮立刻再来一轮，不等 5 秒定时器。 */
   private again = false;
+  /** 旧文件读不出来且没能留档时，拒绝落盘 —— 不能拿空队列覆盖它。 */
+  private blocked = false;
 
   constructor(
     private readonly opts: {
@@ -59,19 +61,30 @@ export class Outbox {
   }
 
   private load(): void {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.file(), "utf8")) as Array<Queued & { entry?: Entry }>;
-      this.items = Array.isArray(raw)
-        ? raw
-            .filter((item) => item && item.id && (item.payload || item.entry))
-            .map((item) => (item.payload ? item : { ...item, kind: "text" as const, payload: item.entry }))
-        : [];
-    } catch {
+    const res = readJsonChecked<Array<Queued & { entry?: Entry }>>(this.file(), []);
+    if (!res.ok) {
+      // 截断 / 独占 / 权限不足：不知道盘上有什么，绝不能拿空队列回写。先留档再空跑。
+      const bak = quarantineStateFile(this.file());
+      this.blocked = !bak;
       this.items = [];
+      this.opts.log(`outbox 读失败（${res.error ?? "?"}）${bak ? `，已备份到 ${bak}` : "，备份失败，暂停落盘"}`);
+      return;
     }
+    const raw = res.value;
+    if (!Array.isArray(raw)) {
+      const bak = quarantineStateFile(this.file());
+      this.blocked = !bak;
+      this.items = [];
+      this.opts.log(`outbox 内容不是数组${bak ? `，已备份到 ${bak}` : "，备份失败，暂停落盘"}`);
+      return;
+    }
+    this.items = raw
+      .filter((item) => item && item.id && (item.payload || item.entry))
+      .map((item) => (item.payload ? item : { ...item, kind: "text" as const, payload: item.entry }));
   }
 
   private save(): void {
+    if (this.blocked) return;
     try {
       fs.writeFileSync(this.file(), JSON.stringify(this.items));
     } catch (err) {

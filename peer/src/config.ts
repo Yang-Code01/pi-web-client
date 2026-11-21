@@ -52,6 +52,38 @@ export function writeJson(file: string, value: unknown): void {
   fs.renameSync(tmp, file);
 }
 
+/**
+ * 读一个**会回写**的状态文件：把「文件不存在」和「读失败 / 解析失败」分开。
+ *
+ * `readJson` 把两者都揉成 fallback，对只读调用够用；但 outbox / peers / threads 这些
+ * 「开机读一次、改一次就整份写回」的存储不能这么用 —— 一次截断或 EBUSY 就会让内存从空状态
+ * 长出来，下一次写回把盘上的真数据整份覆盖，且不可逆。
+ */
+export function readJsonChecked<T>(file: string, fallback: T): { ok: boolean; value: T; error?: string; code?: string } {
+  try {
+    return { ok: true, value: JSON.parse(fs.readFileSync(file, "utf8")) as T };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { ok: true, value: fallback };
+    return { ok: false, value: fallback, error: (err as Error)?.message ?? String(err), code };
+  }
+}
+
+/**
+ * 把读不出来的状态文件原地留档，再让调用方从空状态起步。
+ * 重命名失败（目录只读 / 被独占）返回 null —— 调用方应暂停落盘，别拿空状态覆盖它。
+ */
+export function quarantineStateFile(file: string): string | null {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const bak = `${file}.corrupt-${stamp}`;
+  try {
+    fs.renameSync(file, bak);
+    return bak;
+  } catch {
+    return null;
+  }
+}
+
 function defaultNickname(): string {
   let user = "pi";
   try {

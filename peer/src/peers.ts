@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { statePath } from "./config.ts";
+import { quarantineStateFile, readJsonChecked, statePath } from "./config.ts";
 import type { PeerIdentity } from "./history.ts";
 
 /**
@@ -27,6 +27,8 @@ interface Stored extends Omit<Contact, "nodeId"> {}
 
 export class Relations {
   private map: Record<string, Stored> = {};
+  /** 旧文件读不出来且没能留档时，拒绝落盘 —— 不能拿空表覆盖它。 */
+  private blocked = false;
 
   constructor(private readonly log: (msg: string) => void) {
     this.load();
@@ -37,15 +39,27 @@ export class Relations {
   }
 
   private load(): void {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.file(), "utf8")) as Record<string, Stored>;
-      this.map = raw && typeof raw === "object" ? raw : {};
-    } catch {
+    const res = readJsonChecked<Record<string, Stored>>(this.file(), {});
+    if (!res.ok) {
+      const bak = quarantineStateFile(this.file());
+      this.blocked = !bak;
       this.map = {};
+      this.log(`好友关系读失败（${res.error ?? "?"}）${bak ? `，已备份到 ${bak}` : "，备份失败，暂停落盘"}`);
+      return;
     }
+    const raw = res.value;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      const bak = quarantineStateFile(this.file());
+      this.blocked = !bak;
+      this.map = {};
+      this.log(`好友关系内容不是对象${bak ? `，已备份到 ${bak}` : "，备份失败，暂停落盘"}`);
+      return;
+    }
+    this.map = raw;
   }
 
   private save(): void {
+    if (this.blocked) return;
     try {
       fs.writeFileSync(this.file(), JSON.stringify(this.map, null, 2));
     } catch (err) {
