@@ -217,7 +217,7 @@ async function fillStats(abs: string, entries: DirEntry[], deadline: number): Pr
     if (entry.kind === "file") entry.size = st.size;
     entry.mtime = st.mtime;
   }
-  return done && entries.length <= STAT_MAX;
+  return done && entries.every((e) => hit.stats.has(e.rel ?? e.name));
 }
 
 function errorOf(err: any): { error: string; errCode: string } {
@@ -228,8 +228,13 @@ function errorOf(err: any): { error: string; errCode: string } {
 
 /** 一页目录清单：过滤 → 排序 → 切页，都在桥端做完。盘符页不分页（最多 26 行）。 */
 export async function listDirPage(raw: string, opts: DirPageQuery = {}): Promise<DirPage> {
-  const limit = Math.min(PAGE_LIMIT_MAX, Math.max(1, Math.floor(opts.limit ?? PAGE_LIMIT)));
-  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  // 参数只能从 URL 来，`Number("abc")` 是 NaN：一路传给 slice 会让整页变空（total 却照旧）。
+  const int = (v: unknown, dflt: number): number => {
+    const n = Math.trunc(Number(v));
+    return Number.isFinite(n) ? n : dflt;
+  };
+  const limit = Math.min(PAGE_LIMIT_MAX, Math.max(1, int(opts.limit, PAGE_LIMIT)));
+  const offset = Math.max(0, int(opts.offset, 0));
   const sort: DirSort = opts.sort === "size" || opts.sort === "mtime" ? opts.sort : "name";
   const dirOrder = opts.dir === "desc" ? "desc" : "asc";
   const withFiles = opts.files !== false;

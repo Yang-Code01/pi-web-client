@@ -92,6 +92,17 @@ await check("清单：total 是过滤后的总数，一页只给 limit 条", asy
   assert.notEqual(second.entries[0].name, first.entries[0].name);
 });
 
+await check("清单：limit / offset 不是数字时回退到默认值，不能切出空页", async () => {
+  // URL 上 `?limit=abc` 就是 NaN：以前一路传到 slice，返回 0 条而 total 照旧。
+  const bad = await listDirPage(root, { limit: Number("abc"), offset: Number("abc") });
+  assert.equal(bad.total, 5);
+  assert.equal(bad.entries.length, 5, "NaN 应当当作没传，而不是空页");
+  const nan = await listDirPage(root, { limit: Number.NaN, offset: Number.NaN });
+  assert.equal(nan.entries.length, 5);
+  const inf = await listDirPage(root, { limit: Number.POSITIVE_INFINITY, offset: Number.NaN });
+  assert.equal(inf.entries.length, 5, "Infinity 也要兜住");
+});
+
 await check("清单：筛选词命中名字，total 跟着变", async () => {
   const hit = await listDirPage(root, { q: "txt" });
   assert.equal(hit.total, 2);
