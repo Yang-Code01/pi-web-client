@@ -7393,3 +7393,14 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** 同级多分支（`feat/a` 与 `feat/b`）在行内都只显示 `feat` 首段，要靠悬停或开窗分辨；窄屏藏掉子目录后同名仓库会重名；非仓库只显示末段，跨目录同名也要靠悬停。BranchSheet 标题栏多一颗按钮，窄版 embedded 时不重复加。**没做**：伞形目录的懒探测、点击 chip 直接切分支、分支名首段做成可配置。
 
 **验证。** `probes/round15-git.mjs`：仓库内 chip 不含分支名/数字、title 含路径/分支/脏数/快捷键，点击开 BranchSheet 且标题栏有「复制分支名」「复制路径」，忙态仍只有一颗 chip 且排第一；非仓库 `not-a-repo ›` 点击开 ReposSheet。`probes/round21-cwd-line.mjs`：桌面 `alpha/web`、收起左栏仍在、点开窗复制路径、非仓库 `beta ›`、760px 入口仍在且 `.cwd-sub` 为 `display:none`、回到桌面恢复。两条探针均 ALL OK；`npm --prefix web run typecheck` 通过；真机截图见 `.scratch/cwd-branch-chip/ui-*.png`。D235 / D237 的「按 cwd 分叉两扇窗」不变；D244 的「左栏收起也显示」保留，D263 的「窄屏藏入口」被本条推翻。
+## D383 一个技能一个入口：删掉 `pi-web-e2e-test` 的同名 `/` 命令（用户「做的时候，我只要求做一个skill。现在为啥会出现2份」2026-11-22）
+
+**问题。** `41f1cb66` 把 `.pi/skills/pi-web-e2e-test/SKILL.md` 和 `.pi/prompts/pi-web-e2e-test.md` 一起提交了：命令补全里因此出现「模板 / 技能」两条同名条目，用户只要了一个技能，看到两份来问「为啥会出现2份」。模板是照 D196（`/whatsnew-write`）、D247（`/pi-web-test-html`）的形状写的薄外壳：14 行，指向 `SKILL.md` 并复述边界（bug 模式不改代码、信息不足先 `ask_user_question`、产物写 `.scratch/e2e/`、报告生成后单独问要不要 `open_preview`）。这些边界 `SKILL.md` 第 11 / 42 / 14 / 96 行本来就有，模板实际只多两件事：补全里的 `argument-hint`，和用 `$@` 把命令行后面的话拼进正文。
+
+**决定。** 删 `.pi/prompts/pi-web-e2e-test.md`，README 的 e2e 小节改成 `/skill:pi-web-e2e-test`（标题 + 两条示例 + 说明段）。以后**新增技能不再顺手配同名模板命令**；确实需要人类友好的短命令时先问用户，别默认加。
+
+**为什么。** 两个入口走同一份流程，多的那个只会让人在补全里挑错、让维护者在两处改同一句话；并且模板那条路要多一轮 `read`，还依赖模型照做「第一步先读完 SKILL.md」，技能入口把正文直接加载进来，不依赖模型守规矩。`/whatsnew-write` 仍保留「模板 + 技能」（D196）：它的模板承担的是「只改 `CHANGELOG.md`、没有新提交别开 PR、开完 PR 停」这类跨会话的操作纪律，和 e2e 的纯复述不是一回事。
+
+**代价 / 可改。** 敲 `/pi-web-e2e-test` 不再有补全项，要打全 `/skill:pi-web-e2e-test`；补充要求照样能跟（`/skill:name` 后面的字作为用户请求追加到已加载指令后）。想恢复短命令就照 D196 的形状再加一个模板，但要先确认它带来的是 SKILL.md 里没有的边界。
+
+**验证。** `git ls-files .pi/prompts` 只剩 `whatsnew-write.md`；`grep -n "/pi-web-e2e-test " README.md` 无输出（说明段里只剩 `.pi/skills/pi-web-e2e-test/` 这种路径）；技能本身没改，`node .pi/skills/pi-web-e2e-test/bin/e2e.mjs --help` 照常打印用法。
