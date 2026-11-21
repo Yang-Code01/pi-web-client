@@ -7009,3 +7009,20 @@ Esc 之后 dialog: 0
 **代价。** 输入区常驻多一行（约 26px，字号放大时按比例涨），而且**每轮都在**，不是想知道时才出现。选它是因为另一头是「想不起来有这么个东西」—— 常驻的那点地方换「看得见」，值。灰态（跑着一轮、或还没有回答）会有一行点不动的药丸，title 写清楚原因。
 
 **守卫。** `npm run test:retell`（`web/tests/retell-state-unit.mjs`，6 条）：没开会话不画、还没回答也不画（新建空会话）、跑着才灰、老桥不发 `running` 也能判、只读预览照常可点。`probes/retell-hint.mjs`（已进 `probes/run-all.mjs` 名单）：位置、三态（含新建空会话不画）、设置里的拨杆关 / 开、发出去的指令、草稿保留、英文文案，以及**连点两下只发一句** —— 点下去到桥的 `running:true` 回来之间有一段空窗，那 1.5 秒里按钮自己按住，到期再自己松手（`retellTimer` 补一次 `sync`）。`npm --prefix web run typecheck` 追加七条 i18n 键（缺一条 `i18n-check` 就红）。样式遵守 `#app` 里不写裸 `vh/vw`（这一行是流式高度，不涉视口单位）。
+
+## D366 本机每个实例用自己的 cookie 名，测试环境登录不再把正式实例踢下线（用户「开了测试环境后，每次主环境都变成了未认证，每次都得刷新页面，重新登录口令」2026-11-21）
+
+**背景。** 浏览器存 cookie 只看 host、不看端口：`127.0.0.1:7864` 与 `127.0.0.1:17864` 上的同名 cookie 是**同一个槽**。桥的会话 cookie 一直叫 `pwc`，而签名用的 `secret` 在各自 state 目录里。测试环境（`.pi/skills/pi-web-client-test-dev/`）以 `PI_WEB_STATE=~/.pi/agent/state/pi-web-test-dev/<id>/bridge` 起桥、口令恒为 `test`；在测试窗口里一登录，浏览器就把正式实例的 `pwc` 顶成一枚用另一把 secret 签的 token，正式页面的下一次 `/api/me`（以及 WS 升级，`bridge/src/index.ts:2303`）就是 401 —— 页面停在登录页，得刷新重输口令。
+
+**决定。** cookie 名跟 state 目录走：默认 state 目录仍是 `pwc`（升级后现有的 cookie 继续有效，正式实例不用重新登录）；显式 `PI_WEB_STATE` 的实例用 `pwc_` + `sha256(stateDir)` 前 10 位。`bridge/src/auth.ts` 里 `sessionCookie` / `clearedCookie` / `authorized` 共用同一个常量，登录、退出、校验不会各说各话。名字锚在 state 目录而不是端口：端口重启会变，state 目录就是那把签名密钥的归属，也是实例的身份。
+
+**为什么不用别的。**
+
+- 给 cookie 加端口作用域：RFC 6265 的 cookie 没有端口维度，做不到。
+- 让所有实例共用同一把 `secret`：测试实例的 token 就能直接登进正式实例，而测试脚本的口令是公开的 `test`，等于把正式实例的门拆了。
+- 前端改成 localStorage token + `Authorization`：丢掉 HttpOnly，还要改所有请求与 service worker，换来的只是把冲突面挪个地方。
+- 只在测试脚本收尾时清 cookie：管不住用户手工多开的第二个实例，也没解释「为什么会串」，下次照样复发。
+
+**代价。** 用 `PI_WEB_STATE` 起的实例（测试环境、多开）升级后各自要重登一次；默认实例不受影响。cookie 名不再是一个固定字符串 —— 本机现在会同时有 `pwc` 与 `pwc_<hash>`，排查时别只 `grep pwc=`。state 目录搬家等于换了实例身份，得重新登录。
+
+**守卫。** `bridge/tests/auth-cookie-scope.mjs`：开三份真实桥（A、B 各自 state 目录，另有一份**不设 `PI_WEB_STATE`** 的默认实例），用一个**忽略端口**的 cookie 罐走真实 HTTP —— 登录 A、再登录 B，回头问 A 的 `/api/me` 必须仍是 200，且两枚 cookie 名不同；把 B 的 cookie 原样递给 A 必须 401（名字分开不等于密钥共享）；默认实例登录后拿到的名字必须是 `pwc`（升级不用重登）。把 cookie 名改回共用一个，第四条立刻红；把名字改成永远哈希，最后一条红。跑法：`npm --prefix bridge run build && node bridge/tests/auth-cookie-scope.mjs`（约 3 秒）。「默认目录」的判据只认 `bridge/src/paths.ts` 的 `stateDirIsDefault()`，auth 不再自己读 `PI_WEB_STATE`。

@@ -1,8 +1,22 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { statePath, ensureStateDirs } from "./paths.ts";
+import { stateDir, stateDirIsDefault, statePath, ensureStateDirs } from "./paths.ts";
 
-const COOKIE = "pwc";
+/**
+ * D366：cookie 名跟着**签名密钥**（state 目录）走，不能所有本机实例共用一个。
+ *
+ * 浏览器存 cookie 只看 host、不看端口：正式实例在 `127.0.0.1:7864`、测试实例在
+ * `127.0.0.1:17864`，同名 cookie 是同一个槽。以前两边都叫 `pwc`，在测试环境里输一次口令就把
+ * 正式实例的 cookie 顶掉；两边的 secret 各自在 state 目录里，被顶掉的那一边下一次请求就是 401
+ * （用户报「开了测试环境后，每次主环境都变成了未认证，得刷新页面重新登录」）。
+ *
+ * 默认 state 目录继续用 `pwc`（升级不用重新登录）；显式 `PI_WEB_STATE` 的实例按目录哈希取
+ * 自己的名字 —— state 目录就是密钥的归属，也是实例的身份，端口变了名字不该跟着变。
+ * 判据只认 `stateDirIsDefault()`：默认目录换了、环境变量改名，cookie 名跟着走，不另写一份。
+ */
+const COOKIE = stateDirIsDefault()
+  ? "pwc"
+  : `pwc_${crypto.createHash("sha256").update(stateDir()).digest("hex").slice(0, 10)}`;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 60_000;
 const LOGIN_MAX = 5;

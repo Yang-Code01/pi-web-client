@@ -5,6 +5,11 @@ import fs from "node:fs";
 export const APP_NAME = "pi-web-client";
 export const VERSION = "0.1.0";
 
+/** 是否没设 `PI_WEB_STATE`、在用默认 state 目录。cookie 名按这条分岔（D366），别在别处再读这个环境变量。 */
+export function stateDirIsDefault(): boolean {
+  return !process.env.PI_WEB_STATE;
+}
+
 export function stateDir(): string {
   const base = process.env.PI_WEB_STATE || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local", "share"), APP_NAME);
   // pi 子进程的 cwd 不一定是 bridge 的（scratch 会话有自己的中性 cwd），而 `--session-dir`、
