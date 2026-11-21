@@ -173,7 +173,7 @@ try {
   // 两种焦点：A 刚打开（焦点通常在弹层里）；B 点一下标题（不可聚焦区域 → 焦点落到 body），再按 Esc。
   const cases = [
     { name: "上下文面板", open: () => composer.locator('[data-act="context"]').click(), box: sheets },
-    { name: "模型面板", open: () => composer.locator(".model-chip").click(), box: sheets },
+    { name: "模型面板", open: () => composer.locator(".model-chip").click(), box: page.locator(".sheet-back, .st-back") },
     { name: "开新会话面板", open: () => page.locator('[data-act="new"]').first().click(), box: sheets },
     { name: "技能面板", open: () => composer.locator('[data-act="skills"]').click(), box: palette },
   ];
