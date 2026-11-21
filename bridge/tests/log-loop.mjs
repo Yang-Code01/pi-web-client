@@ -1,5 +1,5 @@
 /**
- * D358：桥的 stdout 断了（父进程先死掉 / 管道被关）时，`log()` 不许把自己递归成死循环。
+ * D359：桥的 stdout 断了（父进程先死掉 / 管道被关）时，`log()` 不许把自己递归成死循环。
  *
  * 现场：测试跑完把桥留了下来，它的 stdout 管道早断了。`console.log` 抛 EPIPE →
  * `survive`（uncaughtException 处理器）又调 `log()` 记这条错误 → 再抛 EPIPE …… 同一条错误无限

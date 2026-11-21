@@ -120,20 +120,31 @@ test("#484 交接开着但没设百分比：不压制压缩（否则等于两个
   assert.equal(compacts.length, 1);
 });
 
-// ---------------------------------------------------------------- D358：ctxlog 只读尾部窗口
+// ---------------------------------------------------------------- D359：ctxlog 只读尾部窗口
 
 /**
- * 一个 8 MB 的组成日志：每行 ~230 字节，最后 2 MB 约 9000 行。
- * 这条用例钉两件事 —— 订阅那一刻读的量有上限，以及 (size, mtime) 没变就不再读盘。
+ * 一个 8 MB 的组成日志：每行 ~230 字节，最后 2 MB 约 10000 行。
+ * 这几条钉四件事 —— 订阅那一刻读的量有上限、(size, mtime) 没变就不再读盘、
+ * 增量按**文件字节偏移**切（不是行号也不是 seq）、读不到文件时绝不发空帧清空面板。
  */
-test("D358 大会话的 ctxlog 只读尾部窗口，`omitted` 报出没下发的字节数", async () => {
+function ctxlogFixture(id) {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "pw-ctxlog-"));
+  const file = path.join(state, "ctxlog", id.slice(0, 8), `${id}.ctx.jsonl`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   const prev = process.env.PI_WEB_STATE;
   process.env.PI_WEB_STATE = state;
+  const restore = () => {
+    if (prev === undefined) delete process.env.PI_WEB_STATE;
+    else process.env.PI_WEB_STATE = prev;
+    fs.rmSync(state, { recursive: true, force: true });
+  };
+  return { state, file, restore };
+}
+
+test("D359 大会话的 ctxlog 只读尾部窗口，`omitted` 报出没下发的字节数", async () => {
+  const id = "aaaabbbb-1111-2222-3333-444455556666";
+  const { file, restore } = ctxlogFixture(id);
   try {
-    const id = "aaaabbbb-1111-2222-3333-444455556666";
-    const file = path.join(state, "ctxlog", id.slice(0, 8), `${id}.ctx.jsonl`);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
     const pad = "x".repeat(150);
     const rows = [];
     for (let i = 1; i <= 40_000; i++) rows.push(JSON.stringify({ v: 3, seq: i, kind: "activity", label: `row ${i} ${pad}` }));
@@ -142,44 +153,44 @@ test("D358 大会话的 ctxlog 只读尾部窗口，`omitted` 报出没下发的
     assert.ok(size > 7 * 1024 * 1024, `夹具要够大（实测 ${size} 字节）`);
 
     const { session, ws } = makeSession(id);
-    const lines = session.readContextLog();
+    const win = session.readContextLog();
     // 尾部 2 MB：行不能再多，也不能把半行当一行吞进来。
-    assert.ok(lines.length > 1000 && lines.length < 40_000, `只该读到尾部一段（读到 ${lines.length} 行）`);
-    assert.ok(lines.at(-1).seq === 40_000, "最后一行必须是文件末尾那行");
-    const bytes = lines.reduce((n, l) => n + JSON.stringify(l).length, 0);
-    assert.ok(bytes < 3 * 1024 * 1024, `读到的对象不该超过窗口量级（${(bytes / 1048576).toFixed(1)}MB）`);
+    assert.ok(win.lines.length > 1000 && win.lines.length < 40_000, `只该读到尾部一段（读到 ${win.lines.length} 行）`);
+    assert.equal(win.lines.at(-1).seq, 40_000, "最后一行必须是文件末尾那行");
+    assert.ok(win.end > size - 3 * 1024 * 1024, `end 要落在文件末尾附近（${win.end} / ${size}）`);
+    assert.equal(win.ends.length, win.lines.length, "ends 与 lines 一一对应");
+    assert.deepEqual([...win.ends].sort((a, b) => a - b), win.ends, "ends 是升序的文件偏移");
 
     await session.emitContextLog(true);
     const frame = ws.find((p) => p.type === "ctxlog");
     assert.ok(frame, "订阅后要有 ctxlog 帧");
     assert.equal(frame.full, true);
-    assert.equal(frame.total, lines.length);
+    assert.equal(frame.total, win.lines.length);
     assert.ok(frame.omitted > 5 * 1024 * 1024, `omitted 要报出被截掉的字节（${frame.omitted}）`);
-    assert.equal(frame.lines.length, lines.length);
+    assert.equal(frame.lines.length, win.lines.length);
 
-    // 文件没动 → 第二次是一条缓存捷径（同一个数组），也绝不重读盘。
-    const again = session.readContextLog();
-    assert.equal(again, lines, "size/mtime 未变时返回同一份缓存");
+    // 文件没动 → 第二次是一条缓存捷径（同一个窗口对象），也绝不重读盘。
+    assert.equal(session.readContextLog(), win, "size/mtime 未变时返回同一份缓存");
 
-    // 追加一行 → 缓存失效，新行必须在。
-    fs.appendFileSync(file, `${JSON.stringify({ v: 3, seq: 40_001, kind: "activity", label: "tail" })}\n`);
-    const grown = session.readContextLog();
-    assert.equal(grown.at(-1).seq, 40_001, "追加之后要看得到新行");
+    // 追加一行 → 缓存失效，那一行要在增量帧里出现，而且只出现一次。
+    const line = JSON.stringify({ v: 3, seq: 40_001, kind: "activity", label: "tail" });
+    fs.appendFileSync(file, `${line}\n`);
+    ws.length = 0;
+    await session.emitContextLog(false);
+    const inc = ws.filter((p) => p.type === "ctxlog").at(-1);
+    assert.ok(inc, "追加之后要有一帧");
+    assert.equal(inc.full, false, "只是新增 → 不该整段替换");
+    assert.equal(inc.lines.length, 1, `只该发这一行（发了 ${inc.lines.length}）`);
+    assert.equal(inc.lines[0].seq, 40_001);
   } finally {
-    if (prev === undefined) delete process.env.PI_WEB_STATE;
-    else process.env.PI_WEB_STATE = prev;
-    fs.rmSync(state, { recursive: true, force: true });
+    restore();
   }
 });
 
-test("D358 小文件（小于窗口）整份都在，omitted 是 0", async () => {
-  const state = fs.mkdtempSync(path.join(os.tmpdir(), "pw-ctxlog-"));
-  const prev = process.env.PI_WEB_STATE;
-  process.env.PI_WEB_STATE = state;
+test("D359 小文件（小于窗口）整份都在，omitted 是 0", async () => {
+  const id = "ccccdddd-1111-2222-3333-444455556666";
+  const { file, restore } = ctxlogFixture(id);
   try {
-    const id = "ccccdddd-1111-2222-3333-444455556666";
-    const file = path.join(state, "ctxlog", id.slice(0, 8), `${id}.ctx.jsonl`);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, [1, 2, 3].map((i) => JSON.stringify({ v: 3, seq: i, kind: "activity", label: `r${i}` })).join("\n") + "\n");
     const { session, ws } = makeSession(id);
     await session.emitContextLog(true);
@@ -187,55 +198,93 @@ test("D358 小文件（小于窗口）整份都在，omitted 是 0", async () =>
     assert.equal(frame.omitted, 0);
     assert.deepEqual(frame.lines.map((l) => l.seq), [1, 2, 3]);
   } finally {
-    if (prev === undefined) delete process.env.PI_WEB_STATE;
-    else process.env.PI_WEB_STATE = prev;
-    fs.rmSync(state, { recursive: true, force: true });
+    restore();
   }
 });
 
-test("D358 窗口被顶出去之后，增量帧不会把旧行当新行重发（要么只发新行，要么整段替换）", async () => {
-  const state = fs.mkdtempSync(path.join(os.tmpdir(), "pw-ctxlog-"));
-  const prev = process.env.PI_WEB_STATE;
-  process.env.PI_WEB_STATE = state;
+test("D359 窗口被顶出去之后整段替换一次，之后的增量仍然只发新行", async () => {
+  const id = "eeeeffff-1111-2222-3333-444455556666";
+  const { file, restore } = ctxlogFixture(id);
   try {
-    const id = "eeeeffff-1111-2222-3333-444455556666";
-    const file = path.join(state, "ctxlog", id.slice(0, 8), `${id}.ctx.jsonl`);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
     const pad = "y".repeat(200);
-    const row = (i) => JSON.stringify({ v: 3, seq: i, kind: "activity", label: `r${i} ${pad}` });
     let seq = 0;
     const write = (n) => {
       const rows = [];
-      for (let i = 0; i < n; i++) rows.push(row(++seq));
+      for (let i = 0; i < n; i++) rows.push(JSON.stringify({ v: 3, seq: ++seq, kind: "activity", label: `r${seq} ${pad}` }));
       fs.appendFileSync(file, `${rows.join("\n")}\n`);
     };
     write(9000); // ~2.5 MB：已经超过 2 MB 窗口
     const { session, ws } = makeSession(id);
     await session.emitContextLog(true);
-    const full = ws.filter((p) => p.type === "ctxlog").at(-1);
-    assert.equal(full.full, true);
+    assert.equal(ws.filter((p) => p.type === "ctxlog").at(-1).full, true);
 
-    // 再写 25k 行（~6 MB）：整段旧窗口都被顶出去，基线那行已经不在文件里了。
+    // 再写 25k 行（~6 MB）：基线整个被甩到窗口之前。
     write(25_000);
     ws.length = 0;
     await session.emitContextLog(false);
-    const inc = ws.filter((p) => p.type === "ctxlog").at(-1);
-    assert.ok(inc, "追加之后要有一帧");
-    assert.equal(inc.full, true, "窗口翻过基线时按整段重发（前端 full 是替换，不会叠加）");
-    assert.ok(inc.lines.length > 1000 && inc.lines.length < 20_000, `整段也只有窗口那么大（${inc.lines.length} 行）`);
+    const rolled = ws.filter((p) => p.type === "ctxlog").at(-1);
+    assert.ok(rolled, "追加之后要有一帧");
+    assert.equal(rolled.full, true, "落后超过一整个窗口 → 整段替换");
+    assert.ok(rolled.lines.length > 1000 && rolled.lines.length < 20_000, `整段也只有窗口那么大（${rolled.lines.length} 行）`);
 
-    // 再追加一点点：这次基线还在窗口里，应该只是「新行」。
+    // 再追加一点点：基线回到窗口里，只发新行 —— 而且**不会被 seq 编号影响**。
     write(20);
     ws.length = 0;
     await session.emitContextLog(false);
     const small = ws.filter((p) => p.type === "ctxlog").at(-1);
     assert.ok(small, "再追加也要有一帧");
-    assert.equal(small.full, false, "基线还在窗口里 → 只发新增");
+    assert.equal(small.full, false, "基线回到窗口里 → 只发新增");
     assert.equal(small.lines.length, 20, `只该发这 20 行（发了 ${small.lines.length}）`);
-    assert.equal(small.lines.at(-1).seq, seq);
   } finally {
-    if (prev === undefined) delete process.env.PI_WEB_STATE;
-    else process.env.PI_WEB_STATE = prev;
-    fs.rmSync(state, { recursive: true, force: true });
+    restore();
+  }
+});
+
+test("D359 带 seq 重启的旧日志：帧内 seq 唯一且升序，窗口前移不会让增量退化成整段重发", async () => {
+  const id = "1234abcd-1111-2222-3333-444455556666";
+  const { file, restore } = ctxlogFixture(id);
+  try {
+    const pad = "z".repeat(200);
+    // 两段：旧扩展每次 session_start 都从 1 重数（正是 renumberCtxLog 要修的形状）。
+    const seg = (from, n, turnBase) => {
+      const rows = [];
+      for (let i = 0; i < n; i++) rows.push(JSON.stringify({ v: 3, seq: from + i, kind: "request", turn: turnBase + i, label: `q${from + i} ${pad}` }));
+      return rows;
+    };
+    fs.writeFileSync(file, `${[...seg(1, 3000, 1), ...seg(1, 3000, 1)].join("\n")}\n`);
+    const { session, ws } = makeSession(id);
+    await session.emitContextLog(true);
+    const full = ws.filter((p) => p.type === "ctxlog").at(-1);
+    assert.equal(full.full, true);
+    assert.equal(full.renumbered, true, "撞号要标出来");
+    const seqs = full.lines.map((l) => l.seq);
+    assert.equal(new Set(seqs).size, seqs.length, "帧内 seq 必须唯一（否则面板按 seq 选请求会串）");
+    assert.deepEqual([...seqs].sort((a, b) => a - b), seqs, "帧内 seq 必须升序");
+
+    // 追加一小段：窗口里仍然有重启段，但增量只该发新行。
+    fs.appendFileSync(file, `${seg(3001, 3, 3001).join("\n")}\n`);
+    ws.length = 0;
+    await session.emitContextLog(false);
+    const inc = ws.filter((p) => p.type === "ctxlog").at(-1);
+    assert.equal(inc.full, false, "seq 编号变化不该逼出整段重发");
+    assert.equal(inc.lines.length, 3, `只该发这 3 行（发了 ${inc.lines.length}）`);
+  } finally {
+    restore();
+  }
+});
+
+test("D359 读不到文件时保持面板不动（不发空的 full 帧）", async () => {
+  const id = "9999aaaa-1111-2222-3333-444455556666";
+  const { file, restore } = ctxlogFixture(id);
+  try {
+    fs.writeFileSync(file, [1, 2, 3].map((i) => JSON.stringify({ v: 3, seq: i, kind: "activity", label: `r${i}` })).join("\n") + "\n");
+    const { session, ws } = makeSession(id);
+    await session.emitContextLog(true);
+    ws.length = 0;
+    fs.rmSync(file); // 扩展重写 / 被人挪走的形状
+    await session.emitContextLog(false);
+    assert.equal(ws.filter((p) => p.type === "ctxlog").length, 0, "读不到就别发帧，面板保持原样");
+  } finally {
+    restore();
   }
 });

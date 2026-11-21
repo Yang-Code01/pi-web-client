@@ -548,7 +548,7 @@ async function main(): Promise<void> {
   process.env.PI_PEER_PORT = String(cfg.peerPort);
 
   /**
-   * D358：log() 必须「绝不抛、绝不重入」。
+   * D359：log() 必须「绝不抛、绝不重入」。
    *
    * 测试桥跑完被留了下来，它的 stdout 管道早断了：`console.log` 抛 EPIPE → `survive`（下面那个
    * uncaughtException 处理器）又调 `log()` 把这条错误记下来 → 再抛 EPIPE …… 同一条错误无限递归。

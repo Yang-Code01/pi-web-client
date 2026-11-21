@@ -1656,7 +1656,7 @@ export class App {
     const hash = location.hash.replace(/^#\/?/, "");
     if (hash.startsWith("s/")) {
       const id = hash.slice(2);
-      // D358：已经在这个会话里（点卡片时 `openFromList()` 先改了 hash）就不要再整页重画一遍；
+      // D359：已经在这个会话里（点卡片时 `openFromList()` 先改了 hash）就不要再整页重画一遍；
       // 前进 / 后退换到的是**别的**会话，照旧走完这条。
       if (this.tab === "chat" && this.currentId === id) return;
       this.openSession(id);
@@ -11424,7 +11424,7 @@ export class App {
   }
 
   /**
-   * 左栏点会话卡片。D358：一次重画，而且 `subscribe` 要在重画之前出门。
+   * 左栏点会话卡片。D359：一次重画，而且 `subscribe` 要在重画之前出门。
    *
    * 以前是 `go("chat", true)` 先把顶栏 / 页签 / 面板画一遍，再 `openSession()` → `renderAll()`
    * 又画一遍，而 `subscribe` 要等这两遍画完才发。桥那边读历史与 ctxlog（长会话以秒计）才开始回帧，

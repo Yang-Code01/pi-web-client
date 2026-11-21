@@ -99,7 +99,7 @@ export function contextLogDir(): string {
 }
 
 /**
- * D358：一次下发 / 解析的组成日志窗口（尾部字节数）。
+ * D359：一次下发 / 解析的组成日志窗口（尾部字节数）。
  *
  * D271 定的是「订阅时补一次全量 `emitContextLog(true)`」。那时日志还小，但它是**只增不减**的
  * append：实测单文件已经到 73MB（同机 27 份 >1MB）。全量读的代价是同步的 `readFileSync` +
@@ -880,6 +880,21 @@ export interface CtxLine {
   [key: string]: any;
 }
 
+/**
+ * 一份组成日志的**尾部窗口**（D359）：`lines` 是解析出来的行，`ends` 是它们在文件里的结束
+ * 偏移（一一对应，升序）。`from` / `end` 都是文件字节偏移：`from` 之前的没读进来（`omitted`），
+ * `end` 是最后一整行的结尾 —— 增量基线用它，写到一半的那行下次再收。
+ */
+export interface CtxLogWindow {
+  lines: CtxLine[];
+  ends: number[];
+  size: number;
+  from: number;
+  end: number;
+  /** 本帧因为 seq 撞号被 `renumberCtxLog` 重排过（只有带 seq 重启的旧日志会为 true）。 */
+  renumbered: boolean;
+}
+
 export class Session extends EventEmitter {
   readonly state: SessionState;
   items: Item[] = [];
@@ -910,10 +925,10 @@ export class Session extends EventEmitter {
   handoffPending = false;
   /** 上一次自动交接失败的时刻：5 分钟内不再重试，不然每条消息都弹一次同样的错。 */
   private handoffFailedAt = 0;
-  /** #384：ctxlog 增量基线（已推到的最后一行 `seq` + 那时的文件大小；null = 还没推过全量）。 */
-  private ctxBaseline: { seq: number; size: number } | null = null;
-  /** D358：读过的组成日志缓存；`omitted` = 没下发的更早字节数（0 = 整份）。 */
-  private ctxLogCache: { size: number; mtimeMs: number; omitted: number; lines: CtxLine[] } | null = null;
+  /** #384：ctxlog 增量基线 = 已经推给前端的**文件字节偏移**；null = 还没推过全量。 */
+  private ctxBaseline: number | null = null;
+  /** D359：读过的组成日志窗口，按 (size, mtime) 缓存。 */
+  private ctxLogCache: { size: number; mtimeMs: number; window: CtxLogWindow } | null = null;
   /** Copilot 积分：增量扫会话 JSONL 的读书指针 + 它盯的是哪个文件。 */
   private copilotTally: CopilotTally | null = null;
   private copilotFile: string | null = null;
@@ -1474,10 +1489,17 @@ export class Session extends EventEmitter {
   /**
    * 读组成日志（只有尾部窗口，见 `CTX_LOG_TAIL_BYTES`）；坏行跳过，从不抛。
    * 缓存键是文件的 (size, mtime)：没变就不重读，变了也最多重读那 2MB。
+   *
+   * 返回的是一个小记录而不是裸数组：帧要知道「这段窗口从文件第几字节开始」（`omitted`）、
+   * 「已经消费到第几字节」（`end`，增量基线）以及每行的结束偏移（`ends`，切片增量用）。
    */
-  readContextLog(): CtxLine[] {
+  readContextLog(): CtxLogWindow {
+    const empty: CtxLogWindow = { lines: [], ends: [], size: 0, from: 0, end: 0, renumbered: false };
     const file = this.contextLogFile();
-    if (!file) return [];
+    if (!file) {
+      this.ctxLogCache = null;
+      return empty;
+    }
     let size = 0;
     let mtimeMs = 0;
     try {
@@ -1485,89 +1507,110 @@ export class Session extends EventEmitter {
       size = st.size;
       mtimeMs = st.mtimeMs;
     } catch {
+      // 文件暂时读不到（扩展正在重写 / 被挪走）：给空窗口，调用方按「没有新内容」处理，
+      // 绝不因此发一帧空的 `full` 把面板清掉。
       this.ctxLogCache = null;
-      return [];
+      return empty;
     }
     const cached = this.ctxLogCache;
-    if (cached && cached.size === size && cached.mtimeMs === mtimeMs) return cached.lines;
+    if (cached && cached.size === size && cached.mtimeMs === mtimeMs) return cached.window;
     const from = Math.max(0, size - CTX_LOG_TAIL_BYTES);
-    let text: string;
+    // 多读窗口前面那一个字节：它是换行符就说明窗口正好落在行首，不用丢行。
+    const readStart = from > 0 ? from - 1 : 0;
+    let buf: Buffer;
     try {
-      if (from === 0) {
-        text = fs.readFileSync(file, "utf8");
-      } else {
-        // 多读窗口前面那一个字节：它是换行符就说明窗口正好落在行首，不用丢行。
-        const head = from - 1;
-        const buf = Buffer.allocUnsafe(size - head);
-        const fd = fs.openSync(file, "r");
-        try {
-          let read = 0;
-          while (read < buf.length) {
-            const n = fs.readSync(fd, buf, read, buf.length - read, head + read);
-            if (n <= 0) break;
-            read += n;
-          }
-          text = buf.subarray(0, read).toString("utf8");
-        } finally {
-          fs.closeSync(fd);
-        }
-        if (buf[0] !== 0x0a) {
-          // 窗口从半行开始：丢掉第一个换行符之前那段（不是一个完整的 JSON）。
-          const nl = text.indexOf("\n");
-          text = nl >= 0 ? text.slice(nl + 1) : "";
-        }
-      }
+      const all = fs.readFileSync(file);
+      buf = all.subarray(readStart);
     } catch {
-      return cached?.lines ?? [];
+      return cached?.window ?? empty;
+    }
+    let p = 0;
+    if (from > 0 && buf[0] !== 0x0a) {
+      // 窗口从半行开始：丢掉第一个换行符之前那段（不是一个完整的 JSON）。
+      const nl = buf.indexOf(0x0a);
+      if (nl < 0) return { ...empty, size, from, end: size };
+      p = nl + 1;
     }
     const out: CtxLine[] = [];
-    for (const line of text.split("\n")) {
-      const s = line.trim();
+    const ends: number[] = [];
+    while (p < buf.length) {
+      const nl = buf.indexOf(0x0a, p);
+      if (nl < 0) break; // 写完一半的行：不算，「下次再收」
+      const s = buf.subarray(p, nl).toString("utf8").trim();
+      p = nl + 1;
       if (!s) continue;
       try {
         const obj = JSON.parse(s);
         if (obj && typeof obj === "object" && typeof obj.seq === "number" && (typeof obj.kind === "string" || obj.cats)) {
           if (!obj.kind && obj.cats) obj.kind = "request"; // PR #386 初版的日志没有 kind
           out.push(obj);
+          ends.push(readStart + nl + 1);
         }
       } catch {
-        /* 半行（正在写）下次再收 */
+        /* 坏行（写坏的半行）跳过 */
       }
     }
     // 旧扩展每次 session_start 都从 seq 1 重数，同一文件里会撞号；见 ctxlog-seq.ts。
+    //
+    // 这里只管**这一帧内部**的唯一性：窗口往前挪之后，同一行可能在下一帧里排在另一段后面，
+    // 编号随之变化（洞察页按整份编号，两者在带 seq 重启的旧日志上会分叉 —— D359 的「代价」）。
+    // 新写的日志由扩展接着文件末尾续号（D335），本来就不重启，窗口里原样透传、与整份一致。
     const lines = renumberCtxLog(out);
-    this.ctxLogCache = { size, mtimeMs, omitted: from, lines };
-    return lines;
+    const window: CtxLogWindow = {
+      lines,
+      ends, // renumberCtxLog 只改 seq/turn 的值、不重排顺序，ends 仍然一一对应
+      size,
+      from,
+      end: ends.length ? ends[ends.length - 1] : from,
+      renumbered: lines !== out,
+    };
+    this.ctxLogCache = { size, mtimeMs, window };
+    return window;
   }
 
   /**
-   * #384：把组成日志推给前端（增量）。`full` 时推尾部窗口，供面板初始化。
+   * #384：把组成日志推给前端。`full` 时推尾部窗口，供面板初始化；否则只推「基线之后」的行。
    * 在 agent_end / agent_settled 后和 stats 一起走，不用 fs.watch —— 写入节奏和请求一致，够了。
-   * `omitted` 是没下发的更早字节数（0 = 整份都在这一帧里），前端目前不画它，留给提示用。
    *
-   * 基线记的是**最后一行 seq**而不是行数：窗口会往前走，行号也跟着挪，拿行数当基线会在文件
-   * 长大到 2 MB 之后错位（要么永远不再推，要么把旧行当新行又推一遍）。找不到「比基线新」的行时
-   * 就整段重发 —— 前端 `full` 是替换语义，不会叠加。
+   * 增量基线是**文件字节偏移**（`end`），不是行号也不是 seq：窗口会往前挪、旧日志的 seq 还会
+   * 被本帧的 renumber 重排，拿它们当基线会在文件超过窗口之后失配（要么永远不再推，要么每轮都
+   * 整段重发）。字节偏移只跟着文件增长走。
+   * `omitted` = 窗口之前没下发的字节数（0 = 整份都在这一帧里）；`renumbered` = 本帧撞过号。
    */
   async emitContextLog(full = false): Promise<void> {
     const base = this.ctxBaseline;
-    if (!full && !base) return; // 还没推过全量：先等 subscribe 那条
-    const lines = this.readContextLog();
-    const size = this.ctxLogCache?.size ?? 0;
-    const omitted = this.ctxLogCache?.omitted ?? 0;
-    const lastSeq = lines.length ? Number(lines[lines.length - 1].seq) || 0 : 0;
-    if (!full && base) {
-      if (base.size === size) return; // 文件没动过
-      const at = lines.findIndex((l) => typeof l.seq === "number" && l.seq > base.seq);
-      if (at > 0) {
-        this.ctxBaseline = { seq: lastSeq, size };
-        this.emitWs({ type: "ctxlog", sessionId: this.state.id, full: false, total: lines.length, omitted, lines: lines.slice(at) });
+    if (!full && base === null) return; // 还没推过全量：先等 subscribe 那条
+    const win = this.readContextLog();
+    const frame = (payload: CtxLine[], isFull: boolean) => {
+      this.ctxBaseline = win.end;
+      this.emitWs({
+        type: "ctxlog",
+        sessionId: this.state.id,
+        full: isFull,
+        total: win.lines.length,
+        omitted: win.from,
+        renumbered: win.renumbered,
+        lines: payload,
+      });
+    };
+    if (!full && base !== null) {
+      if (win.end <= base) return; // 没有新的整行（文件没动，或只有一条半行）
+      if (win.from > base) {
+        // 落后超过一整个窗口：中间那段已经被甩掉了，只能整段替换。
+        frame(win.lines, true);
         return;
       }
-      // 一行也不比基线新，或者整个窗口已经翻过去了：这两种都按整段重发。
+      let at = 0;
+      while (at < win.ends.length && win.ends[at] <= base) at += 1;
+      if (at >= win.ends.length) return;
+      frame(win.lines.slice(at), false);
+      return;
     }
-    this.ctxBaseline = { seq: lastSeq, size };
-    this.emitWs({ type: "ctxlog", sessionId: this.state.id, full: true, total: lines.length, omitted, lines });
+    if (!win.lines.length && base !== null) {
+      // 之前推过内容，这次却读不到（文件被临时挪走 / stat 失败）：保持面板不动。
+      return;
+    }
+    frame(win.lines, true);
   }
 
   /** Token/context numbers for the composer HUD and new subscribers; best effort, never throws. */
