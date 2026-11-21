@@ -6,7 +6,7 @@
  *
  * 分四层：
  *   1. 材质：壁纸式渐变底 + 毛玻璃（backdrop-filter）的顶栏 / 侧栏 / 弹层 / 菜单 / 输入框；
- *   2. 形态：macOS 的圆角、窗口阴影、发丝线、工具栏按钮、分段控件、iOS 开关、iMessage 气泡；
+ *   2. 形态：macOS 的圆角、窗口阴影、发丝线、工具栏按钮、分段控件、iOS 开关、圆角气泡；
  *   3. 动效：全局缓动换成 Apple 的弹簧曲线；弹层从上方落下、菜单缩放淡入、按钮按下回弹；
  *      关闭时的退场动画由 app.ts 的 retireOverlay() 配合（`.mac-leaving`）。
  *   4. 交互：快捷键（⌘/Ctrl + , 等）在 app.ts 的 installShortcuts() 里，只在 Mac 主题下生效。
@@ -105,7 +105,7 @@ html[data-ui="mac"] .session-card.active:hover {
 html[data-ui="mac"] .session-card.active .name { color: var(--text); font-weight: 600; }
 html[data-ui="mac"] .session-card .src-tag { border-radius: 5px; border-color: transparent; background: var(--mac-fill-2); }
 
-/* ---------------------------------------------------------------- 2c. 对话：iMessage 式气泡 */
+/* ---------------------------------------------------------------- 2c. 对话：圆角气泡 */
 html[data-ui="mac"] .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
 html[data-ui="mac"] .msg.user .who { margin-right: 6px; }
 html[data-ui="mac"] .msg.user .body {

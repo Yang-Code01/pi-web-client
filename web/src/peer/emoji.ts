@@ -2,7 +2,7 @@ import { tr } from "../i18n/index.ts";
 import { EMOJI_GROUPS, type EmojiItem, groupItems } from "./emoji-data.ts";
 
 /**
- * 表情面板（内网通输入区左下角的 😊），照 macOS「表情与符号」弹窗做：
+ * 表情面板（内网通输入区左下角的 😊），排法跟 macOS 的表情面板一样：
  * - 顶部搜索框；中间整页分组（常用 + 8 类，组标题在组内吸顶）；底部一排线条分类图标，滚到哪组亮哪个。
  * - 底栏最右「我的表情」：本机收藏的图片表情（`/api/peer/stickers`），点一下直接作为图片发出。
  * - 选 Unicode emoji 插进输入框，面板不关，可以连点。

@@ -4812,7 +4812,7 @@ D
 **验证：**
 
 - `npm run test:mail`：`bridge/tests/mail-unit.mjs` 44 → **65**（新增 21 条：读权限关着页面照样能读、缺 uid 才 400、页面发信不看 AI 权限、AI 仍被 `policy-denied:send` 拦、白名单只拦 AI、日上限只数 AI、草稿不占上限、停用账号页面也 409、删账号清 `accountIds`、默认账号停了不报、`mail_accounts` 不报 `mutate`、坏配置 409 且磁盘不动）；新增 `bridge/tests/mail-list-unit.mjs` **34** 条（序号窗口、按时间挑、翻页、地址解析、`bad-input`、附件口径、HTML 扒标签）；`web/tests/mail-unit.mjs` 5 → **10**（`secureForPort`/`portOf`、`MailConfirmQueue` 的排队与回执、`MAIL_ERROR_TEXT` 的说法）。
-- 真信箱（1304049579@qq.com，INBOX 1092 封）：改前 `limit=20` 最新 **2022-01-31**、未读 6 封；改后最新 **2026-11-14**、未读 100+；`offset=300` 能翻到 2025-03，与「整箱排序后第 301–320 封」逐条一致；`📎` 只为最终那几封补，不再整箱取 `bodyStructure`。
+- 真信箱（作者自测的一个信箱，附件名与地址已脱敏，见 D362；INBOX 1092 封）：改前 `limit=20` 最新 **2022-01-31**、未读 6 封；改后最新 **2026-11-14**、未读 100+；`offset=300` 能翻到 2025-03，与「整箱排序后第 301–320 封」逐条一致；`📎` 只为最终那几封补，不再整箱取 `bodyStructure`。
 - 假桥（临时 `PI_WEB_STATE` + 指向 `127.0.0.1:9` 的账号）：坏配置 → 409 且 `REALSECRET` 原封不动；页面发信不看 `policy.send`；AI 发信仍被拦；白名单只拦 AI。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（tsc + i18n-check 3040 键 × 3 + `test:viewport`）全绿。
 - **复审（两轴：标准 / 需求）之后补的一轮**，对着 `git diff main...HEAD` 逐条核：页面口补上 `account.enabled`（以前停用账号在面板里照样能读能发，CHANGELOG 那句「页面只受账号停用限制」才成立）；草稿不再占 AI 的日上限；`mutate` 真的从 `mail_accounts` 回包里去掉（不只是文案）；审计失败改成「错误码 → 人话」的映射（`MAIL_ERROR_TEXT`，认不出来的码只说「失败」）；详情的 `finally` 也比 `detailSeq`（先发的慢详情不会提前收掉后发请求的「正在读」）；确认框挂进 `#app`；超时只留一份 `MAIL_CONFIRM_PAGE_MS`；删掉没人读的 `downloadable`、页面上的「附件（取附件权限关着）」死分支与 `MailConfirmFrame` 的 `as any`；`normalizeAccount` 改用 `mailaddr.isEmailAddress`；`mailconfig.ts` 头部注释改成「`policyDenial` 是给 AI 的唯一判据」；GLOSSARY 补「邮箱面板 / AI 权限 / 发送前确认」、README 补邮箱一条与 `test:mail`。
@@ -5200,7 +5200,7 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **验证：**
 
 - `npm run test:mail`：`bridge/tests/mail-unit.mjs` 68/68、`mail-list-unit.mjs` 43/43（新增 cid 元数据、`keepCidLinks`、`htmlToText` 图片标记、无 disposition 的内嵌图、截断前去掉 head/style）、`web/tests/mail-unit.mjs` 15/15（新增 `cidKey`、`inlineImageMap`、`srcset` 首个候选、CSP 默认/放行远程图）。
-- 真信箱（1304049579@qq.com）：uid=1328 面板渲染 11 张内嵌图（naturalWidth 800、iframe 高度 4,703px），附件区只列 `Jenil_Soni_-_Resume.pdf · 152 KB`；uid=1321 远程图 92 张，默认 `img[data-mc-blocked]` 全部收起、iframe 419px，点「显示图片（92）」后 92 张 `src` 全部恢复为原 `https://...`。
+- 真信箱（作者自测的一个信箱，地址已脱敏，见 D362）：uid=1328 面板渲染 11 张内嵌图（naturalWidth 800、iframe 高度 4,703px），附件区只列 `resume.pdf · 152 KB`；uid=1321 远程图 92 张，默认 `img[data-mc-blocked]` 全部收起、iframe 419px，点「显示图片（92）」后 92 张 `src` 全部恢复为原 `https://...`。
 - `mail_image` 工具口实测 uid=1328 index=0：`image/jpeg`、61,660 字节、base64 82,216 字符；`mail_read` 回 12 个附件（11 inline + 1 PDF），HTML 保留 `cid:` 且截断在 20,029 字。
 - `npm run test:mail:html`（真 Chromium）：script/iframe/on*/javascript: 清理、`cid:` 映射、`srcset`-only 图、远程图拦截与放行 CSP 全绿；`npm run test:permission` 也覆盖 `mail_image` 在只读模式放行、`mail_attachment` / `mail_send` 被拦。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3180 键 × 3 + viewport）、`npm run build` 全绿。
@@ -6926,3 +6926,69 @@ Esc 之后 dialog: 0
 **代价。** 正式实例一个字节都不变（`WINDOW_TITLE` 为空时仍走原来的流式发送，不读全文）。测试实例里 `document.title` 的最前面是实例名，会话名被挤到第二段；浏览器通知 / 书签这些跟着标题走的入口也会变 —— 这正是想要的。前缀是**实例数据**（`windowTitleFor()` 里的「测试」写在脚本里），不跟界面语言切换：静态 `<title>` 得在 JS 之前就正确，桥那边也没有用户语言可查；`/peer`（内网通）页固定「内网通 · pi」，不跟实例名走。
 
 **守卫。** `npm run test:window-title`：`bridge/tests/window-title-unit.mjs`（无标题时页面原样、`<title>` 与注入脚本的位置、标题里的 `</script>` / `<` 不把页面写坏、没有 `</head>` 的畸形页面补 `<head>` 且不把脚本塞到 `<!doctype>` 之前）与 `web/tests/window-title-unit.mjs`（前缀 × 会话标题四种组合，正式实例必须还是「会话 · pi」/「pi」）。真机：`env.mjs start` 的输出里出现「新开了一个：测试 t1」才算开成（新增标题必须**等于**「测试 <id>」，别的新窗口不算），找不到 Edge 或标题一直对不上就明说，不要报成功。
+
+## D361 分发构建产物要随附第三方版权声明：清单由锁文件生成，设置里能看（2026-11-21）
+
+**症状。** 仓库只有根目录 `LICENSE`（Apache-2.0）与 README 里一行「[Apache-2.0](LICENSE)」，没有 NOTICE，也没有任何第三方清单。而 `web/dist` 是单文件 bundle：`highlight.js`（BSD-3-Clause）、`@xterm/xterm` 与 `@xterm/addon-fit`（MIT）的版权头在压缩后一个都不剩（这三个包发出来的 ESM 本身就没有 `/*!` 头 —— xterm 是压好的 UMD），`vite.config.ts` 也没开 `legalComments`。源码分发有 `node_modules/*/LICENSE` 兜着，一旦把 `web/dist` 交给别人（或发 npm 包），BSD-3 / MIT 的「保留版权与许可声明」就落空了；桥端 `web-push`（MPL-2.0）还要求给出源码地址。
+
+**决定。** 声明不手写，由锁文件生成，三处消费同一份事实。
+
+- `tools/notices.mjs` 读四个 `package-lock.json`（根 / web / bridge / peer）的**非 dev** 条目（传递依赖一样进产物），从每个包自己的 `LICENSE*` 里取版权行与正文，生成根目录 `THIRD-PARTY-NOTICES.md`（约 99 KB）与 `web/src/legal/bundle-notices.txt`（只含真正打进 dist 的三个，约 0.4 KB）。包内没有 LICENSE 文件、只声明 MIT 的（`http_ece`）补标准正文并写明版权人取自 `package.json` 的 author，不假装它随包发过。
+- `web/vite.config.ts` 把后者读成 `build.rollupOptions.output.banner`；**不能指望 `esbuild.legalComments`**（没有可识别的许可注释可保）。banner 落在 ESM 的 import 之后，仍然在文件里。
+- 桥加 `GET /api/notices`（在 cookie 闸之后，100 KB 文本，`cache-control: no-store`），`bridge/src/notices.ts` 按 `import.meta.url` 上两级找仓库根那份文件，读不到就 404 `notices-missing`，不拿空串糊弄。
+- 设置 → 关于多一行「开源许可」，点了**原地展开** `<pre>`（要能选中、能 Ctrl+F，不套弹层），高度用 `calc(var(--vh1) * 42)` 而不是裸 `vh`（D123 / D263）。
+- 四个 `package.json` 补 `"license": "Apache-2.0"`；三份 README 的许可段指向这份清单，并说明「分发产物时一起带上」。
+
+**代价。** 99 KB 的生成文件进 git（依赖不动就不变，diff 只在升级时出现），每次改依赖都要 `npm run notices`，忘了就在 typecheck 里红。清单是**运行时**从仓库根读的，发行包丢了它，设置里只会得到 404 —— 这是有意的：产物里的清单会跟装的依赖不一致。
+
+**守卫。** `npm run test:notices`（`bridge/tests/notices-unit.mjs`）：`tools/notices.mjs --check` 通过、三个打包组件的段落里有版本 / 许可名 / 版权人 / 许可正文、`web-push` 的 MPL-2.0 带源码指引、页首声明里不出现没进产物的桥端依赖、`noticesText()` 读得到仓库根那份。`npm run typecheck` 第一步就是 `node tools/notices.mjs --check`。构建后 `grep -c Copyright web/dist/assets/*.js` 每块非零（本次 3 / 3 / 4）。
+
+## D362 公开仓库里的真第三方隐私要脱敏，作者自己的现场路径不动（2026-11-21）
+
+**症状。** 这是一份公开仓库（Apache-2.0），但两处验证记录里直接写了作者的真信箱（QQ 邮箱，地址在正文里已换成描述），其中一条还带着别人投递的简历文件名（`…_Resume.pdf`）；`docs/shots/peer-chat.png` 更是整块个人主目录的截图（`C:\Users\GG_Bond` 下的 `AI`、`clip`、`ansel`、`Contacts`、`Cookies`…），而且它是个**孤儿文件**：三份 README 引用的是 `peer-agent.png`（正常的对话截图，没有 PII），没有任何文档引用 `peer-chat.png`。邮箱同时是 git 历史的作者地址，也出现在 D229 的「真信箱（…）」证据行里。
+
+**决定。** 分两类处理，**不是**按「谁的隐私」分：**有证据价值的验证记录**（工作树路径、分支名、命令输出）照 D114 不动 —— 包括 README 图里 `E:\yqm\pi-web-client` 这种项目路径；**孤儿截图里任何人（含作者本人）的家庭目录清单**一律删掉，它不承担任何证据作用，留着只暴露账号名与机器名。
+
+- 两处「真信箱（真地址）」改成「真信箱（作者自测的一个信箱…）」，附件名改成 `resume.pdf`，都在句子后标「见 D362」，让读者知道这里被改过、而不是原本就没有。这条记录自己也只写掩码 —— 把原串抄进来，守卫一 grep 就红，等于没脱敏。
+- `docs/shots/peer-chat.png`（`C:\Users\GG_Bond` 的完整目录清单）与 `docs/shots/peer-picker-new.png`（`C:\Users\yangqm.HYRON-JS` 与对端主机名 `DESKTOP-VANQ2M`）直接删掉：两张都是孤儿，没有任何文档引用。`git log --diff-filter=D` 还找得到，`peer-agent.png` 不受影响；`peer-picker.png` 留着（只露 `F:\pi-web-client\docs\shots`）。
+- `docs/shots/xlsx-ribbon.png` **保留**：它露出的只是本仓库自己的工作树路径（`F:\pi-web-client-wt\feat\xlsx-render\.scratch\…`）与分支名，没有第三方身份信息，属于 D114 说的「当时怎么验的现场记录」。想重拍时注意 `probes/xlsx.mjs` 现在在 `openSession()` 就红（1440×900 下 `.topbar .icon-btn.wide` 的「文件管理器」是 hidden，等了 15 秒），得先修探针，别拿它当重拍工具。
+- **历史 commit 不改：** 改写历史会让所有 fork、PR 引用与 issue 里的 SHA 全部失效，收益只是把一个已经公开过的信箱从 packfile 里挪走 —— 与 D114 的取向一致，也避免不可逆的操作。真要清理得整库重建，那不是一个文档 PR 该做的事。
+
+**代价。** 被删的图和被改的字都不再是「原样证据」，但两句都留了指向 D362 的标记，读者能分清「当时就是这样」与「这里被脱敏了」。git 历史里的信箱仍可被 `git log -p` 翻到。
+
+**守卫。** `grep -rn '13040495[0-9][0-9]\|Jenil_Son[i]' docs README*.md` 为空（正则里各拆一位，免得这行自己命中 —— 这条记录自己也只写掩码）；`docs/shots/` 下不再有个人主目录清单的截图；`git config user.email` 已是 GitHub noreply 地址（`57058104+Yang-Code01@users.noreply.github.com`），新提交不再写真实信箱。
+
+## D363 局域网聊天仍叫「内网通」：名字撞了商业产品，但这是一个私有项目的功能名（2026-11-21）
+
+**问题。** 侵权体检时发现「内网通」是别人的在售商业产品名 —— 南通艾睦网络科技有限公司的局域网即时通讯软件（官网 51nwt.com，苏ICP备18049291号-2，2025 年仍在更新 v3.4.3055，常被写作「IMO 内网通」）。我们这套局域网聊天的 UI 标题、README、`web/peer.html:6` 的 `<title>` 都叫「内网通」，与它**同名同品类**。
+
+**决定。** 改名的事评估过一轮（候选 LAN / 局域网 / 邻网 / 内网），最后**不改**：这是作者自用、不对外销售、不投放的应用，「内网通」在这里是功能名而不是商品名；同一类词在 IT 里属于描述性用法（局域网内通信），且仓库没有任何对方商标、图标或界面素材。
+
+- 三份 README 加一句声明：本项目与南通艾睦的「内网通 / IMO 内网通」**没有关系**，名字只是描述「内网里通消息」这件事。
+- 将来若对外发布、上架或做推广，先改名再说 —— 那时才需要商标检索，现在没有商业使用，构不成实际的混淆来源。
+
+**代价。** 搜索「内网通」会混进对方的官网与下载页，别人可能误以为这是它的插件；README 那句声明就是为这个准备的。i18n 的英文译文一直是 `LAN`（`web/src/i18n/en.ts`），日文同理，外语界面本来就没有这个问题。
+
+**可改。** 真要改名，全仓库 332 处 / 54 个文件（`docs/DECISIONS.md` 65 处最多），历史文档按 D114 不改，只改代码与 README。
+
+## D364 界面风格与命令名：仿的是观感与公开约定，不搬别人的素材（2026-11-21）
+
+**问题。** 侵权体检把仓库里所有「对标别人」的地方都翻了一遍，结论是：**没有资产层面的风险，只有措辞层面的**。代码与文档里到处是「照 WPS 抄」「iMessage 气泡」「照 macOS 表情弹窗做」，读起来像是把别人的界面搬了过来；而实际上仓库里一个外部图标、字体文件、皮肤位图都没有——图标全是内联手绘 SVG（`web/src/app.ts` 那一批 24×24），壁纸是 CSS 渐变，字体只写系统字体名、不打包 webfont（D110）。
+
+真正的争议点只有两处：表格功能区的**中文命令名**与**数字格式代码**，以及 Mac 主题的**观感**。
+
+- **命令名与格式代码是公开约定，不是 WPS 的创作。** 「加粗 / 冻结窗格 / 中文大写数字 / 单位：万元」这些是 Excel 中文界面的通用叫法，`[DBNum2][$-804]G/通用格式` 这类格式代码是 Excel 文件格式的语法，Excel 存出来一模一样（WPS 兼容它）。函数名同理：`SUM` / `XLOOKUP` / `SUMPRODUCT` 是公开的事实清单。我们取的是「同一套叫法与语法」，用户按这个找按钮、按这个打开文件。
+- **观感可以接近，素材不能取。** 圆角、玻璃、发丝线、弹簧曲线、气泡形状都是自己写的数值；「iMessage 气泡」只是描述「一侧收口」这个形状。
+- **读资源文件的目的写清。** `docs/SHEET-WPS.md` 一开始就写「拿本机的 WPS 当参照物，把资源读出来对行为」，但通篇用「逐字照抄」「原样输出」的口气，容易被读成「抄资源」。
+
+**决定。** 只改措辞与归属，不动代码行为（这一轮一个字的功能代码都没改）。
+
+- `docs/SHEET-WPS.md` 顶部加一节「参照物与边界」：取用的只有函数名与格式代码两类公开事实，没有取用图标/皮肤/位图/翻译文件/代码；文档保留原样清单是为了可复核。正文里「逐字照抄」「值得抄」改成「原样记下来」「值得对齐」，对照表表头改成「WPS / Excel 的命令」，灯位说明改成「排法与 Excel / WPS 一致」。
+- `bridge/src/sheet/numfmt.ts:2-5`、`web/src/sheet/ribbon.ts:2,10-12,15` 的注释改成同一口径：按 Excel 的格式语法重写、用本机 WPS 的 cfg 做对照、命令名用 Excel 中文界面的通用叫法。
+- `web/src/mac.css`、`web/src/peer/peer-mac.css` 小节标题里的「iMessage 气泡」，以及 `web/src/app.ts` 主题说明那句里的「iMessage 气泡」，都改成「圆角气泡」（`en.ts` / `ja.ts` 的三语译文同步换键）；`web/src/mac-base.css` 头注释加一条：壁纸是 CSS 渐变、圆角/阴影/缓动是自己写的数值，没有 Apple 的图片、图标或字体，名字里出现 macOS 只是描述观感。
+- `web/src/peer/emoji.ts:4` 改成「排法跟 macOS 的表情面板一样」（描述布局，不声明来历）。
+- 三份 README 在「许可」前加一节「与别人的东西的关系」：非官方前端（上游 `@earendil-works/pi-coding-agent`，MIT，© Mario Zechner，地址取自该包的 `repository` 字段）、商标归各自主人且不使用其图标、表格对标 Excel 的公开约定、Mac 风格与「内网通」名字的说明。
+
+**代价。** 文档里不再有「照抄」这种直白说法，读者得看「参照物与边界」才知道那些清单是怎么来的；两处注释变长了几行。功能行为、产物像素一个都没变。
+
+**守卫。** `grep -rn '逐字照抄\|照 WPS 抄' docs web bridge --include=*.md --include=*.ts` 只剩 D364 自己在引述旧说法（其余为空）；`grep -rn 'iMessage' web/src` 只剩 `mac-base.css` 头注释里「名字里出现 macOS / iMessage 只是描述观感（D364）」这一句；三份 README 都有那一节（`grep -c '与别人的东西的关系\|How this relates\|他の人のものとの関係' README.md README.en.md README.ja.md` 各 1）；`npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck` 照旧全绿（只动注释与文档）。

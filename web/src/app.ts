@@ -4303,7 +4303,7 @@ export class App {
     const themeChips = el("div", "chips theme-chips");
     for (const t of THEMES) themeChips.append(themeChipEl(t, this.prefs.theme, () => this.sheet, (id) => this.pickTheme(id)));
     const themePanel = section("theme");
-    const themeRow = this.stRow(tr("外观主题"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效"), themeChips);
+    const themeRow = this.stRow(tr("外观主题"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、圆角气泡、弹簧动效"), themeChips);
     themeRow.classList.add("wide");
     themePanel.append(themeRow);
     // Mac 主题下多出来的几颗快捷键（installShortcuts 里的 MAC_KEYS）：Mac 上显示 ⌘，别处显示 Ctrl。
@@ -4619,6 +4619,7 @@ export class App {
     about.classList.add("set-about");
     about.append(this.copyRow(tr("版本"), `pi ${this.me.pi} · bridge ${this.me.version}`));
     about.append(this.copyRow(tr("会话目录"), this.me.sessionsRoot));
+    about.append(this.licensesRow());
   }
 
   /** 子面板关掉后回到齿轮设置：那时已经有别的面板开着（用户顺手开了别的）就不抢。 */
@@ -4659,6 +4660,48 @@ export class App {
         .catch(() => this.flashToast(tr("复制失败：手动选中它复制"), true, 6000));
     };
     return row;
+  }
+
+  /**
+   * 设置 → 关于里的「开源许可」：把 `THIRD-PARTY-NOTICES.md` 原地展开。
+   *
+   * 清单不塞进产物：内容由桥按**当前安装的依赖**给（`/api/notices`），换一份依赖不用重发前端，
+   * 也不会出现「产物里的清单跟装的不一样」。展开而不是弹层：它是给人选取、Ctrl+F 的文本。
+   */
+  private licensesRow(): HTMLElement {
+    const wrap = el("div", "set-notices");
+    const row = el("button", "set-copy") as HTMLButtonElement;
+    row.append(el("span", "k", tr("开源许可")), el("span", "v", tr("第三方组件的版权与许可声明")));
+    const pre = el("pre", "notices-text");
+    pre.hidden = true;
+    let state: "idle" | "loading" | "ready" = "idle";
+    row.onclick = () => {
+      if (state === "ready") {
+        pre.hidden = !pre.hidden;
+        return;
+      }
+      if (state === "loading") return;
+      state = "loading";
+      row.classList.add("loading");
+      void fetch("/api/notices", { credentials: "same-origin" })
+        .then(async (r) => {
+          if (!r.ok) throw new Error(`${r.status}`);
+          return r.text();
+        })
+        .then((text) => {
+          pre.textContent = text;
+          state = "ready";
+          pre.hidden = false;
+          row.classList.remove("loading");
+        })
+        .catch((err) => {
+          state = "idle";
+          row.classList.remove("loading");
+          this.flashToast(tr("读不到许可清单：{p1}", { p1: errText(err) }), true, 6000);
+        });
+    };
+    wrap.append(row, pre);
+    return wrap;
   }
 
   /**

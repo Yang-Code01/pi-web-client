@@ -1,8 +1,8 @@
 /**
  * 数字格式（#108 / D266）：把文件里 `styles.xml` 的 numFmt 代码套到数字上，得到该显示的字。
  *
- * 这一版按 WPS（`Resources/office6/mui/zh_CN/config/numberformat.cfg`、
- * `datetimeformat.cfg`）里那一套格式代码重写过：分区（正;负;零;文本）、
+ * 这一版按 Excel 的数字格式语法重写过（本机 WPS 的 `numberformat.cfg` / `datetimeformat.cfg`
+ * 与它兼容，拿来做对照）：分区（正;负;零;文本）、
  * 字面量与转义、`#`/`0`/`?` 三种占位、千分位与「缩放逗号」、百分比、
  * 科学记数、分数、日期与累计时长（`[h]`）、中文数字（`[DBNum1/2/3]`）都认。
  * 认不出来的代码退回 `General` 的样子（原样数字），不猜、不四舍五入。
