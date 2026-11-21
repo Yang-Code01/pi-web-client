@@ -337,63 +337,60 @@ ok(s.theme === "mac-midnight", `刷新后还是 Mac 午夜蓝（${s.theme}）`);
 ok(s.bg === "#171c26", `午夜蓝底 #171c26（${s.bg}）`);
 ok(s.meta === "#171c26", `刷新后 meta theme-color 也是午夜蓝（${s.meta}）`);
 
+/** 种一份 `pi.prefs` 再开一张页面（登录、等设置入口就位），跑完自动关 context。 */
+const withPrefs = async (prefs, fn) => {
+  const ctx = await browser.newContext({ viewport: { width: 1000, height: 900 }, locale: "zh-CN" });
+  await ctx.addInitScript((p) => localStorage.setItem("pi.prefs", JSON.stringify(p)), prefs);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/#/s/${SESSION.id}`, { waitUntil: "networkidle" });
+  if (await p.locator('input[type="password"]').count()) {
+    await p.fill('input[type="password"]', "probe");
+    await p.click('button:has-text("进入")');
+  }
+  await p.waitForSelector('.icon-btn[data-act="look"]', { timeout: 15000 });
+  await sleep(400);
+  try {
+    return await fn(p);
+  } finally {
+    await ctx.close();
+  }
+};
+
 // 6) 老偏好迁移：旧配色主题 + 旧六色强调色落进 Mac 三套，并当场写回 pi.prefs
 {
-  const ctx3 = await browser.newContext({ viewport: { width: 1000, height: 900 }, locale: "zh-CN" });
-  await ctx3.addInitScript(() => {
-    localStorage.setItem("pi.prefs", JSON.stringify({ theme: "fjord", accent: "teal", scale: 1.25 }));
-  });
-  const p3 = await ctx3.newPage();
-  await p3.goto(`${BASE}/#/s/${SESSION.id}`, { waitUntil: "networkidle" });
-  if (await p3.locator('input[type="password"]').count()) {
-    await p3.fill('input[type="password"]', "probe");
-    await p3.click('button:has-text("进入")');
-  }
-  await p3.waitForSelector('.icon-btn[data-act="look"]', { timeout: 15000 });
-  await sleep(500);
-  const m = await p3.evaluate(() => {
-    const stored = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
-    return {
-      theme: document.documentElement.dataset.theme ?? "",
-      accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim().toLowerCase(),
-      storedTheme: stored.theme,
-      storedAccent: stored.macAccent,
-      keptOld: "accent" in stored || "text" in stored,
-    };
-  });
+  const m = await withPrefs({ theme: "fjord", accent: "teal", scale: 1.25 }, (p3) =>
+    p3.evaluate(() => {
+      const stored = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+      return {
+        theme: document.documentElement.dataset.theme ?? "",
+        accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim().toLowerCase(),
+        storedTheme: stored.theme,
+        storedAccent: stored.macAccent,
+        keptOld: "accent" in stored || "text" in stored,
+      };
+    }),
+  );
   ok(m.theme === "mac-dark", `旧主题 fjord → Mac 深色（${m.theme}）`);
   ok(m.accent === "#30d158", `旧强调色 teal → macOS 绿（${m.accent}）`);
   ok(m.storedTheme === "mac-dark" && m.storedAccent === "green", `迁移当场写回 pi.prefs（${m.storedTheme} / ${m.storedAccent}）`);
   ok(!m.keptOld, "旧键（accent / text）不再留在 pi.prefs 里");
-  await ctx3.close();
 }
 
 // 6b) 已经用着 Mac 主题的人：旧 accent 是残值，不许盖掉他选的 macAccent
 {
-  const ctx4 = await browser.newContext({ viewport: { width: 1000, height: 900 }, locale: "zh-CN" });
-  await ctx4.addInitScript(() => {
-    localStorage.setItem("pi.prefs", JSON.stringify({ theme: "mac-dark", accent: "teal", macAccent: "pink" }));
-  });
-  const p4 = await ctx4.newPage();
-  await p4.goto(`${BASE}/#/s/${SESSION.id}`, { waitUntil: "networkidle" });
-  if (await p4.locator('input[type="password"]').count()) {
-    await p4.fill('input[type="password"]', "probe");
-    await p4.click('button:has-text("进入")');
-  }
-  await p4.waitForSelector('.icon-btn[data-act="look"]', { timeout: 15000 });
-  await sleep(400);
-  const m = await p4.evaluate(() => {
-    const stored = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
-    return {
-      theme: document.documentElement.dataset.theme ?? "",
-      accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim().toLowerCase(),
-      keptOld: "accent" in stored || "text" in stored,
-    };
-  });
+  const m = await withPrefs({ theme: "mac-dark", accent: "teal", macAccent: "pink" }, (p4) =>
+    p4.evaluate(() => {
+      const stored = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+      return {
+        theme: document.documentElement.dataset.theme ?? "",
+        accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim().toLowerCase(),
+        keptOld: "accent" in stored || "text" in stored,
+      };
+    }),
+  );
   ok(m.theme === "mac-dark", `已是 Mac 深色的用户主题不动（${m.theme}）`);
   ok(m.accent === "#ff375f", `强调色仍是自己选的粉（${m.accent}）`);
   ok(!m.keptOld, "已经是 Mac 主题的人，旧键也被顺手清掉");
-  await ctx4.close();
 }
 
 // 7) 第一次打开：主题选择弹窗只有一排三颗；点了立即换，刷新不再弹

@@ -79,7 +79,10 @@ export function migrateThemePrefs(raw: unknown): { theme: ThemeId; macAccent: st
   const stored = typeof p.macAccent === "string" && Object.hasOwn(MAC_ACCENTS, p.macAccent) ? p.macAccent : undefined;
   const legacyAccent =
     typeof p.accent === "string" && Object.hasOwn(LEGACY_ACCENT_MAP, p.accent) ? LEGACY_ACCENT_MAP[p.accent] : undefined;
-  const macAccent = (legacyTheme ? legacyAccent ?? stored : stored) ?? DEFAULT_MAC_ACCENT;
+  // D337 之前的版本根本没有 `theme` 键：那时生效的就是 `accent`，同样算「旧用户」。
+  // 漏掉这一支会把他们的颜色静默换成系统蓝，而且写回之后再也找不回来。
+  const legacyUser = legacyTheme !== null || p.theme === undefined;
+  const macAccent = (legacyUser ? legacyAccent ?? stored : stored) ?? DEFAULT_MAC_ACCENT;
   return { theme, macAccent };
 }
 

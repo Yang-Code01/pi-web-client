@@ -20,6 +20,7 @@ import {
   THEMES,
   THEME_IDS,
   accentFor,
+  accentInk,
   isTheme,
   migrateThemePrefs,
   themeInfo,
@@ -82,6 +83,16 @@ test("强调色统一走 macOS 八色表：浅底用亮色表，深底用深色�
   assert.deepEqual(accentFor("nope", "purple"), MAC_ACCENTS_LIGHT.purple, "不认识的主题按默认那套（Mac 浅色）算");
 });
 
+test("强调色底上的字：亮的换深字、深的留白字，不认识的颜色按系统蓝算", () => {
+  // 深底那张表：黄 / 橙 / 绿够亮，要深字；蓝 / 紫 / 粉 / 红 / 石墨留白字。
+  for (const bright of ["yellow", "orange", "green"]) assert.equal(accentInk("mac-dark", bright), "#1d1d1f", `mac-dark / ${bright}`);
+  for (const deep of ["blue", "purple", "pink", "red", "graphite"]) assert.equal(accentInk("mac-dark", deep), "#ffffff", `mac-dark / ${deep}`);
+  // 浅底那张表的黄已经压深（#a05a00），白字才读得清。
+  assert.equal(accentInk("mac-light", "yellow"), "#ffffff");
+  assert.equal(accentInk("mac-light", "graphite"), "#ffffff");
+  assert.equal(accentInk("mac-dark", "constructor"), accentInk("mac-dark", "blue"), "不认识的颜色按系统蓝算");
+});
+
 test("终端配色：三套都齐 16 色 + 底/字/选区，浅底主题的底确实比字亮", () => {
   const ANSI = [
     "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
@@ -114,7 +125,7 @@ test("主题令牌：兜底即 Mac 浅色，深色与午夜蓝各一块，浅色
 });
 
 test("删掉的东西不许回来：七套配色主题与文字亮度三档在令牌文件里都不留规则", () => {
-  for (const gone of ["midnight", "daylight", "ember", "fjord", "dusk", "paper"]) {
+  for (const gone of ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper"]) {
     assert.ok(!CSS.includes(`[data-theme="${gone}"]`), `旧主题 ${gone} 的令牌还留在 CSS 里`);
   }
   assert.ok(!/\[data-text=/.test(CSS), "文字亮度三档的覆盖规则还在");
@@ -153,6 +164,11 @@ test("迁移不碰已选 Mac 主题的人：主题原样、强调色原样", () 
   for (const id of THEME_IDS) {
     assert.deepEqual(migrateThemePrefs({ theme: id, accent: "teal", macAccent: "pink" }), { theme: id, macAccent: "pink" }, `${id} 被改了`);
   }
+});
+
+test("D337 之前的偏好没有 theme 键：那时生效的 accent 照样要搬过去", () => {
+  assert.deepEqual(migrateThemePrefs({ accent: "teal" }), { theme: DEFAULT_THEME, macAccent: "green" });
+  assert.deepEqual(migrateThemePrefs({ scale: 1.25 }), { theme: DEFAULT_THEME, macAccent: "blue" });
 });
 
 test("迁移不认原型链上的名字：constructor / toString 这类值一律落默认", () => {
