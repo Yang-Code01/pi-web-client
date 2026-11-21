@@ -7416,3 +7416,15 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** 外壳自身的属性（`aria-label`）不再随重建刷新，改为在 `render()` 里重设；以后若想让某次重画**重演**入场，得显式加类触发，不能靠重建。`List` 与 `main` 仍是每次新建，滚动容器 `.mc-main` 原地重置到顶部，切分区的手感不变。
 
 **验证。** `probes/mail-panel-single-mount.mjs`：改前一次点击挂载 3 次、带 `mac-window-in` 3 次、切分区累计 4 次（4 条全红）；改后 1 / 1 / 1，切分区不重挂、Esc 后不复活、`关闭前后没有新的挂载`（5 条全绿）。`npm --prefix web run typecheck` 通过；截屏 `.scratch/mail-single-mount/shots/panel-open.png`。
+
+## D385 输入框的玻璃胶囊只长在 `.composer-input` 上，textarea 保持透明无框（用户「如图chat框内容很奇怪 / 边框边缘有三层」2026-11-22）
+
+**问题。** `mac.css` 的 `html[data-ui="mac"] .composer textarea` 把整套胶囊画在 textarea 自己身上：`background: var(--mac-glass-strong)`、`border: 0.5px solid var(--mac-glass-line)`、`border-radius: 18px`、`box-shadow: var(--mac-shadow-panel)`，`:focus` 再叠一道 accent 边框与 `0 0 0 4px` 光晕。但 #317 之后 textarea 住进了 `.composer-input` 这个 wrapper（`styles.css:3026`：面板、1px 描边、焦点环、12px 圆角都在它身上，textarea 是透明无框的薄片），于是同一个框画了两套：外圈 1px accent / 12px 圆角，内圈 accent 55% / 18px 圆角，再加 textarea 自己的 4px 光晕与 `0 0 0 0.5px` 暗描边 —— 用户看到「边框边缘有三层」，两个半径还在四角互相错位。同一套规则还误伤了 `.composer textarea.paste-body`（优先级 0,2,2 压过 0,2,1），粘贴折叠块也被画成玻璃胶囊，内边距从 8px 变成 12/16px。
+
+**决定。** 把 `mac.css` 那两条规则的选择器从 `.composer textarea` / `.composer textarea:focus` 改为 `.composer .composer-input` / `.composer .composer-input:focus-within`：底色、backdrop、描边颜色、18px 圆角、面板阴影、焦点光晕与 transition 全部落在 wrapper 上，边框宽度沿用 `styles.css` 的 1px（只换颜色成 `--mac-glass-line`，焦点时换 accent 55%）。textarea 只保留 `padding: 12px 16px`，且写成 `.composer .composer-input > textarea`，折叠块的 `8px 8px` 回到自己身上。
+
+**为什么。** #317 的 mask（顶部 24px 文字淡出）只作用在 textarea 上，mask 带的是「整块元素绘制的 alpha」—— 任何画在 textarea 上的背景与边框都会被一起淡出，这正是当初把面板搬到 wrapper 的原因。所以不能反过来「把 wrapper 的背景撤掉、让 textarea 当面板」：滚动到中段时整个框会跟着渐隐。修法是让 mac 主题服从这条已经成立的宿主划分，而不是第二次把它画回去。
+
+**代价 / 可改。** mac 主题下描边宽度是 1px（`--line` → `--mac-glass-line`），不再是 0.5px hairline；玻璃质感靠 backdrop-filter 与面板阴影维持。若以后想让胶囊更细，把 wrapper 的 `border-width` 一起改，别再拆成两层。`html[data-ui="mac"] .composer { background: transparent; border-top: 0 }` 原样保留。
+
+**验证。** `probes/composer-grow.mjs` 新增第 17 段（mac-dark / mac-light 各跑一次）：两条边框里只有一条可见、textarea 的 border 与 radius 都是 0、焦点光晕只在 wrapper 上、textarea 背景透明而 wrapper 不是 —— 加上「未聚焦的空输入框」再断一次并截屏（`17-capsule-*.png` / `17-idle-*.png`）。改前同一探针第 9 段先红（`no transition on the fade`，`0.3s, 0.16s` 来自被误画的 textarea transition；`inputBg` / `inputBorder` 也红）；改后 1–17 段全绿、`ALL OK`。探针同时补了一处既有红：`getBoundingClientRect` 在 `DEFAULT_SCALE = 1.25`（`app.ts:21188`）下返回的是缩放后的尺寸，而期望值全是布局 px，故开头把 `pi.prefs.scale` 钉到 1 再继续。`npm --prefix web run typecheck` 通过。`npm run test:composer-focus:ui` 仍红（新会话 sheet 的「新文件夹名」不可见），在未改动的 `mac.css` 上同样红，属既有失败。

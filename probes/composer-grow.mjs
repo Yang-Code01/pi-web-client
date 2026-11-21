@@ -184,6 +184,15 @@ try {
     if (m.type() === "error") log("console error:", m.text().slice(0, 160));
   });
   await page.goto(BASE, { waitUntil: "networkidle" });
+  // Every expected height below is layout px (#316: `#app { zoom: var(--ui-scale) }`), while
+  // `getBoundingClientRect` reports the zoomed size. Pin the appearance slider to 100% once here;
+  // the default stop is 125% now, which would scale every measurement by 1.25. Section 8 moves the
+  // slider on purpose, so this is a one-off write rather than an init script.
+  await page.evaluate(() => {
+    const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+    localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, scale: 1 }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
   await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card");
   await page.locator(".session-card").first().click();
 
@@ -205,6 +214,10 @@ try {
         border: parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth),
         maxHeight: cs.maxHeight,
         value: t.value,
+        styleHeight: t.style.height,
+        offsetHeight: t.offsetHeight,
+        boxSizing: cs.boxSizing,
+        lineHeight: cs.lineHeight,
       };
     });
 
@@ -1130,6 +1143,94 @@ try {
     "16 grow mid-stream",
     `band ${streamStart.view.height.toFixed(0)} → ${streamGrown.view.height.toFixed(0)}px, gap ${streamGrown.gap.toFixed(0)}, tail visible`,
   );
+
+  // 17. The box states its owner once. Under the Mac shell (#316 wrapper `#317`) the glass capsule
+  //     — panel fill, hairline, radius, focus halo — belongs to `.composer-input`; the textarea is a
+  //     transparent frameless sheet inside it. Drawn on both, the two rings plus the halo read as
+  //     three stacked borders, and their radii (18px vs 12px) disagree at every corner.
+  for (const theme of ["mac-dark", "mac-light"]) {
+    await page.evaluate((t) => {
+      const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+      localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, theme: t, scale: 1 }));
+    }, theme);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await until(async () => (await field.count()) === 1, 8000, "composer textarea after reload");
+    await field.click();
+    await sleep(250);
+    const rings = await page.evaluate(() => {
+      const t = document.querySelector(".composer textarea");
+      const w = document.querySelector(".composer-input");
+      const view = (e) => {
+        const cs = getComputedStyle(e);
+        return {
+          border: cs.borderTopWidth,
+          radius: cs.borderTopLeftRadius,
+          bg: cs.backgroundColor,
+          shadow: cs.boxShadow,
+        };
+      };
+      return { ui: document.documentElement.dataset.ui, ta: view(t), wrap: view(w) };
+    });
+    assert(rings.ui === "mac", `17 [${theme}] the Mac shell is the one under test (data-ui=${rings.ui})`);
+    const visible = [rings.ta.border, rings.wrap.border].filter((v) => parseFloat(v) > 0).length;
+    assert(
+      visible === 1,
+      `17 [${theme}] exactly one visible border, not a stack (textarea ${rings.ta.border}, wrapper ${rings.wrap.border})`,
+    );
+    assert(
+      parseFloat(rings.ta.border) === 0,
+      `17 [${theme}] the textarea draws no border of its own — the wrapper owns the panel (got ${rings.ta.border})`,
+    );
+    assert(
+      parseFloat(rings.ta.radius) === 0,
+      `17 [${theme}] the textarea has no radius of its own, so the two rings cannot disagree (got ${rings.ta.radius})`,
+    );
+    assert(
+      parseFloat(rings.wrap.radius) > 0 && parseFloat(rings.wrap.border) > 0,
+      `17 [${theme}] the wrapper carries the capsule (border ${rings.wrap.border}, radius ${rings.wrap.radius})`,
+    );
+    const haloSpread = (shadow) =>
+      Math.max(0, ...[...shadow.matchAll(/0px 0px 0px ([0-9.]+)px/g)].map((m) => Number(m[1])));
+    assert(haloSpread(rings.ta.shadow) <= 1, `17 [${theme}] no focus halo on the textarea (${rings.ta.shadow})`);
+    assert(haloSpread(rings.wrap.shadow) > 2, `17 [${theme}] the focus halo sits on the wrapper (${rings.wrap.shadow})`);
+    const clear = (bg) => bg === "rgba(0, 0, 0, 0)" || bg === "transparent";
+    assert(clear(rings.ta.bg), `17 [${theme}] the textarea is a clear sheet (${rings.ta.bg})`);
+    assert(!clear(rings.wrap.bg), `17 [${theme}] the capsule fill is on the wrapper (${rings.wrap.bg})`);
+    await page.screenshot({
+      path: path.join(OUT, `17-capsule-${theme}.png`),
+      clip: await page.locator(".composer .row").boundingBox().then((b) => ({
+        x: b.x - 16,
+        y: b.y - 16,
+        width: b.width + 32,
+        height: b.height + 32,
+      })),
+    });
+    // The screenshot the user actually complained about: an empty, unfocused box. Same single ring.
+    await field.fill("");
+    await page.locator(".chat-pane").click({ position: { x: 40, y: 40 } });
+    await sleep(250);
+    const idle = await page.evaluate(() => {
+      const t = document.querySelector(".composer textarea");
+      const w = document.querySelector(".composer-input");
+      const a = getComputedStyle(t);
+      const b = getComputedStyle(w);
+      return { taBorder: a.borderTopWidth, wrapBorder: b.borderTopWidth, taShadow: a.boxShadow };
+    });
+    assert(
+      parseFloat(idle.taBorder) === 0 && parseFloat(idle.wrapBorder) > 0,
+      `17 [${theme}] unfocused: still one ring, on the wrapper (textarea ${idle.taBorder}, wrapper ${idle.wrapBorder})`,
+    );
+    await page.screenshot({
+      path: path.join(OUT, `17-idle-${theme}.png`),
+      clip: await page.locator(".composer .row").boundingBox().then((b) => ({
+        x: b.x - 16,
+        y: b.y - 16,
+        width: b.width + 32,
+        height: b.height + 32,
+      })),
+    });
+    log("17 capsule", theme, `wrapper ${rings.wrap.border}/${rings.wrap.radius}, textarea ${rings.ta.border}/${rings.ta.radius}`, `\n  ta shadow ${rings.ta.shadow}\n  wrap shadow ${rings.wrap.shadow}`);
+  }
 
   log("ALL OK");
 } finally {
