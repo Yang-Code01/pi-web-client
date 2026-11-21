@@ -78,6 +78,20 @@ export function trapEscape(onEscape: () => void): () => void {
   return pushEscLayer({ onEsc: onEscape });
 }
 
+/**
+ * 现在有没有弹层开着（模态 / 抽屉 / 控制台 / 灯箱）。
+ *
+ * 名单与 `mac.css` 里那组外壳一致 —— 别在调用处手抄第四份：抄漏一个，自动弹出的东西就会压在
+ * 灯箱或子弹层上面。给「先别叠上去」这类判断用。
+ */
+export function overlaysOpen(root: ParentNode = document): boolean {
+  return Boolean(
+    root.querySelector(
+      ".st-back, .sheet-back, .modal, .sys-back, .jc-back, .mc-back, .jira-ask-back, .jira-picker, .sheet-sub-back, .choose-back, .peer-pick, .image-view",
+    ),
+  );
+}
+
 /** 把浮层挂进 `#app`（拿不到才退回 body，比如单元测试里的假 DOM）。 */
 export function mountOverlay(root: HTMLElement): void {
   (document.getElementById("app") ?? document.body).append(root);
