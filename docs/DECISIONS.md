@@ -6792,3 +6792,24 @@ Esc 之后 dialog: 0
 - 收起态那行 0fr 只压扁 `.ac-clip`：内边距留在里层 `.ac-inner` 被裁掉，否则收起时卡片还留 9px 的底（第一版就多出 11px）。
 
 **守卫。** `npm run build && node probes/artifact-card.mjs`：丢弃式 bridge + 手写会话（一轮 15 次写入、14 个唯一文件），断言只有一张卡、药丸清零、默认收起（身体高度 0）、标题 14、小结数全部 14 块（与标题同口径）、分组顺序、悬停才出动作、点「引用」进输入框、窄栏（@container 520px）隐藏「最近」。13 行全绿。
+
+## D355 会话帧自带工作区，新建之后补一次工作区缓存（用户报「置顶的会话没出现在横排」2026-11-21）
+
+**症状。** `window_dev` 里三条会话 ★ 都亮着，第二排横排却只剩一颗当前会话胶囊 —— 置顶的没出现，胶囊的左侧工作区色点也没有；左栏和上面的工作区标签一切正常（`window_dev` 计数 3）。F5 之后好，另一台设备连上之后也好（"之前出现了，现在又好了"）。
+
+**根因。** 两条叠在一起。
+
+- 页面反查工作区有这几条来源（`web/src/nowchip.ts:67-86`）：override、列表条目的 `ws`、会话快照的 `ws`，最后才是 `keys[cwd]`。而桥在 `create` 之后只广播 `session.state`（当时没有 `ws`）和 `manage` 帧；唯一带 `ws` 的 `sessions.list` 只在客户端**连上**时由 `syncWorkspaces()` 补一次（`bridge/src/index.ts:2602-2608`）。
+- `Workspaces.ensure()`（`bridge/src/workspaces.ts:306`）建组**不写 `keys`**，`keys` 只有 `resolve()`（`:326`，跑 git 才知道 worktree 的真根）写。于是「页面先开着、随后在新目录里开新会话」的窗口期里：`groups` 有该组、`keys` 没有该 cwd、会话条目也没有 `ws` —— 三条来源全空 → `wsOf()` 返回 null → `starredRow()`（`web/src/app.ts:19996`）按 D210 返回 `[]` → 第二排只剩胶囊和 ＋；`nowChipView` 的 `accent` 也就成了 null（`web/src/nowchip.ts:115`），胶囊丢色点。
+
+左栏和标签行看不出异常，是因为 `buildTree()`（`web/src/tree.ts:123`）对没有 `ws` 的会话按 `normalizePath(cwd)` 兜底分桶。`pi-web-client` 不受影响：它的 cwd 早就在 `keys` 里，第四条来源能命中。
+
+**决定。**
+
+- 帧盖 `ws` 用只读版 `Workspaces.lookup()`（`bridge/src/workspaces.ts:315`）：与 `groupFor()` 同一条映射规则，但**只查不建** —— 发帧是热读路径，`ensure()` 会落盘，且不带 `place` 时把组追加到标签行末尾。
+- 每一条 `session.state` 都带 `ws`：`Sessions.emitState()`、`stateFrameWithWs()`（会话自身冒泡上来的帧），以及 `index.ts` 的 `sessionFrameOf()`（subscribe / claim / create 回放都要）。
+- `create()` 在**建组之后、`startLive()` 之前**先广播一次 `workspaces` 快照：`session.state` 是 `startLive()` 里就发出来的（页面靠它当场建会话），快照晚到那一帧里的 `ws` 就指向页面还不认识的组。先 `pinNew` 再 `emitState` 不够 —— 实测首帧仍空排。
+- 新建之后补一次缓存：`Sessions.refreshWorkspaces()`（失败自己吞），客户端连上 / `ws.list` / 新建三处共用；`index.ts` 里 create 不再二次广播 `session.state`（`create()` 已经广播过）。
+- **没有**让 `ensure()` 顺手写 `keys[cwd]`：那样 `resolve()` 的 `known` 会命中、永远不去探测真 git 根，worktree 就永久停在按 cwd 分的临时组上。
+
+**守卫。** `npm run test:ws-row`（`bridge/tests/ws-row-drift.mjs`）：起一份隔离 bridge，在一个**全新目录**里 `create`，断言 `session.state` 帧带 `ws`、create 之后 `keys[cwd]` 补上并重播了 `sessions.list`、列表条目的 `ws` 与之一致；再把收到的帧按顺序**增量重放**（`wsOf()` 的镜像），从页面知道这个会话的那一帧起，每帧之后反查本区都不能为 null —— 顺序错了也红。

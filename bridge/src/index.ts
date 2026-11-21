@@ -2293,7 +2293,13 @@ async function main(): Promise<void> {
    * 一条会话的 `session` 帧：subscribe / claim / create / reload 四条路径共用这一处，
    * `trust` 由调用方补 —— 形状（隧道一页 / 本机整段）交给 `frameFor`（D215）。
    */
-  const sessionFrameOf = (snap: { state: { id: string } }) => ({ type: "session", sessionId: snap.state.id, ...snap });
+  // `ws` 也一样：页面当场建出会话靠的就是这份快照（`this.session`），反查工作区要用它。
+  const sessionFrameOf = (snap: { state: { id: string; cwd?: string; ws?: string } }) => ({
+    type: "session",
+    sessionId: snap.state.id,
+    ...snap,
+    state: sessions.stateWithWs(snap.state),
+  });
 
   const broadcast = (payload: any) => {
     // 整页帧只会有两种形状（隧道一页 / 本机整段），每份只序列化一次；其余帧所有连接共用一份字节。
@@ -2598,17 +2604,10 @@ async function main(): Promise<void> {
     /**
      * 补一次工作区缓存（git 是子进程，慢），有改动才广播。页面进来时跑一次：worktree 在这时候
      * 才并回主仓，于是分组从「按 cwd 暂时分的」变成真的。
+     *
+     * 与「新建会话之后」「ws.list」共用一份实现（`Sessions.refreshWorkspaces`，失败它自己吞）。
      */
-    const syncWorkspaces = async (): Promise<void> => {
-      try {
-        if (!(await sessions.resolveWorkspaces())) return;
-        broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
-        broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
-      } catch {
-        /* 补缓存失败只影响分组精度，不影响会话本身 */
-      }
-    };
-    void syncWorkspaces();
+    void sessions.refreshWorkspaces();
 
     // A login waiting on this page's answers (or an OAuth callback server) must not outlive it.
     ws.on("close", () => {
@@ -2942,8 +2941,9 @@ async function main(): Promise<void> {
             // D349: sessions.create() pins every new session at the end of the strip and broadcasts
             // the arrangement itself, whichever entry made it; an old page's `pin` flag is ignored.
             (ws as any).watching = session.state.id;
+            // 只补「发给发起方」的那一帧：`session.state` 已经由 create() 广播给所有页面了
+            // （`Sessions.emitState`），这里再 broadcast 一次就是同一帧发两遍（D355）。
             send(frameFor(ws, { ...sessionFrameOf(session.pagedSnapshot()), trust: await trustFor(session.state.cwd) }));
-            broadcast({ type: "session.state", session: session.state });
             return;
           }
           case "mkdir": {
@@ -4093,7 +4093,7 @@ async function main(): Promise<void> {
             if (action === "ws.list") {
               // 只回缓存里的快照（快）；缓存里没有的 cwd 顺手补上，补齐后会再来一条广播。
               send({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
-              void syncWorkspaces();
+              void sessions.refreshWorkspaces();
               return;
             }
             if (action === "ws.rename") {
