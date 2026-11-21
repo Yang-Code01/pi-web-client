@@ -4181,4 +4181,8 @@ export const en: Dict = {
   "上次看到": "Last seen",
   "弹窗打开的那一刻就记下；自己在这一页翻完不算": "Recorded the moment the dialog opens; reading here doesn't count",
   "还没看过任何一批": "No batch seen yet",
+  "开源许可": "Open source licenses",
+  "第三方组件的版权与许可声明": "Copyright and license notices for third-party components",
+  "第三方组件的许可证与版权声明": "Licenses and copyright notices for third-party components",
+  "读不到许可清单：{p1}": "Could not load the license list: {p1}",
 };

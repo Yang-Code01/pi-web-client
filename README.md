@@ -331,3 +331,5 @@ node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id t1 # 或 --all
 ## 许可
 
 [Apache-2.0](LICENSE) © 2026 Yang-Code01
+
+界面里的第三方组件（highlight.js、xterm.js 等）以及桥端运行时依赖的版权与许可声明，按依赖锁文件生成在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)；设置 → 关于 → 「开源许可」里也能直接看。分发构建产物时请把它一起带上。

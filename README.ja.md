@@ -235,3 +235,5 @@ node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id t1 # または --al
 ## ライセンス
 
 [Apache-2.0](LICENSE) © 2026 Yang-Code01
+
+UI に組み込んでいるサードパーティ製コード（highlight.js、xterm.js など）と bridge の実行時依存の著作権・ライセンス表示は、ロックファイルから生成した [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) にまとめています（設定 → このアプリについて → 「オープンソースライセンス」でも読めます）。ビルド成果物を再配布するときはこのファイルも一緒に添付してください。
