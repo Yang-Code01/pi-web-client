@@ -331,11 +331,41 @@ try {
   await until(async () => (await count(".ws-axis-item")) === 2, 8000, "竖列两格");
   // 壳 C 不画标签行（`parts.tabsRow` 为假），高亮只能从竖列上看。
   await until(async () => (await railOn()) === ALPHA, 8000, "竖列高亮落在 alpha");
-  ok(true, "刷新后竖列高亮仍在这个选中的空工作区上");
+  ok((await railOn()) === ALPHA, `刷新后竖列高亮仍在那个选中的空工作区上（实际 ${await railOn()}）`);
   await page.locator(`.ws-axis-item[data-ws="${BETA}"]`).click();
   await until(async () => (await railOn()) === BETA, 4000, "竖列高亮挪到 beta");
   ok((await snap()).title === "beta 里还没有会话", "从竖列切到空工作区：中栏同样认领它");
   await page.screenshot({ path: `${OUT}/8-shell-c.png` });
+
+  /* --------------------------------------------------- 9. 壳 D 色点条 / 壳 B 浮层段头 */
+  log("9) 壳 D 的色点条与壳 B 的浮层段头也认这份选中态");
+  // 删除动效会把左栏自动展开并写进 pi.collapse.sessions；色点条只在左栏收起时才有，先收回去。
+  await page.evaluate(() => {
+    localStorage.setItem("pi.collapse.sessions", "1");
+    localStorage.setItem("pi.prefs", JSON.stringify({ layout: "d" }));
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const stripOn = () => page.evaluate(() => document.querySelector(".ws-strip .ws-axis-item.on")?.dataset.ws ?? null);
+  await until(async () => (await count(".ws-strip .ws-axis-item")) === 2, 8000, "色点条两格");
+  await until(async () => (await stripOn()) === BETA, 8000, "色点条高亮落在 beta");
+  ok((await stripOn()) === BETA, `壳 D 色点条的高亮跟着选中的空工作区（实际 ${await stripOn()}）`);
+  await page.screenshot({ path: `${OUT}/9-shell-d.png` });
+
+  // 壳 B 的那颗只在有当前会话时才画得出内容（没会话时它整颗是空壳、点不到），先开一颗。
+  resetFixtures();
+  await page.evaluate(() => localStorage.setItem("pi.prefs", JSON.stringify({ layout: "b" })));
+  await page.goto(`${BASE}/#/s/ew-a`, { waitUntil: "domcontentloaded" });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await until(async () => (await snap()).nowHidden === false, 8000, "顶栏那颗有内容");
+  await page.locator(".now-btn").click();
+  await until(async () => (await count(".ws-pop")) === 1, 4000, "工作区浮层");
+  const popOn = await page.evaluate(() => document.querySelector(".ws-pop-sec-head.on")?.dataset.ws ?? null);
+  ok(popOn === ALPHA, `壳 B 浮层里段头高亮在会话所在那一组（实际 ${popOn}）`);
+  await page.locator(`.ws-pop-sec-head[data-ws="${BETA}"]`).click();
+  await until(async () => (await count(".ws-pop")) === 0, 3000, "点完段头浮层收掉");
+  await until(async () => (await snap()).title === "beta 里还没有会话", 6000, "从浮层切到一个空工作区");
+  ok((await snap()).title === "beta 里还没有会话", "从壳 B 的浮层段头也能切到没有会话的工作区");
+  await page.screenshot({ path: `${OUT}/9-shell-b.png` });
 
   console.log(bad ? `\n${bad} FAIL` : "\nALL OK");
   process.exitCode = bad ? 1 : 0;

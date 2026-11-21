@@ -7194,6 +7194,8 @@ Esc 之后 dialog: 0
 
 **为什么不把 NowChip 塞进 ★ 行**（另一条候选路）：那样要推翻 D210「没有『我在哪』就谈不上本区」与 D146「打开 ≠ 置顶」，还会在行 2 里出现两份「我在哪」。补一张气泡只动入口，不动 ★ 行的口径 —— D146 / D210 这一轮一个字都没改。
 
+**为什么是这个形状。** 两件事其实是同一个缺口：页面只有「当前会话」这一个位置来源。补上的第二件事（选中的工作区）不是新概念，而是把「没有会话时我在哪」显式记下来；它只在 `effectiveWsId()` 一处参与排序，所以标签行、竖列、色点条、浮层段头都不必知道「这个组是从会话来的还是记住的」，也不用为「空工作区」写第二套渲染分支。第一件事走同一思路：不把 NowChip 塞进 ★ 行（那会改 ★ 行的定义），只把它接上同一张气泡 —— 入口变了，行还是那一条行。
+
 **代价 / 可改。**
 
 - 选中态存 `localStorage` 而不进 hash：刷新能恢复、换标签页也在，但「我在这个空工作区」分享不了，也没有浏览器历史。
@@ -7202,4 +7204,4 @@ Esc 之后 dialog: 0
 - 左栏组头本来就没有「当前组」这个视觉，这次也没加：归属靠标签行的横杠与竖列的 `.on`。加了就得定义「空组」在左栏里的展开态是选中还是折叠，容易和折叠手势打架。
 - 窄屏（compact）没有气泡入口：那颗仍是「点开工作区浮层 / 展开左栏」，触屏用户走左栏卡片上的归档 / 删除。
 
-**验证。** `probes/empty-workspace.mjs`（新，桩桥 + 真 Chromium，8 段）先把这几条跑红再转绿：0 前置（只剩一颗、没 ★ ⇒ ★ 行 0 颗胶囊、NowChip 露着）；1 NowChip 悬停出气泡、三项动作齐全且没有「取消置顶」；1b 气泡里改名（`rename` 帧 + NowChip 换名字）；2 点标签行里的空工作区 → 横杠与 `aria-current` 落过去、中栏认领、NowChip 收起、`#/`；3 刷新仍停在那；4 空态按钮与 ★ 行 ＋ 都预填该组目录；5 组里后来有会话 → 文案换成「还没打开」且不自动打开；6 / 7 从 NowChip 气泡归档、删除 → 中栏进空态、横杠留在原组；8 壳 C 竖列的高亮跟着同一份选中态走、从竖列也能切到空工作区。另跑 `npm run test:pillbar`（20 条，`neighborAfterArchive` 不回归）、`npm --prefix web run typecheck`（i18n 4076 → 4079 键 × 3 语言、`#app` 里没有裸 `vh`/`vw`）、`npm run build:web`。回归本来就绿的 `pin-delete-current` / `pin-archive-jitter` / `workspace-tree` / `rail-click` / `round16-pin` → 全过。**本来就红的记录在案、本轮不救**：`archive-switch`、`pin-auto-open`、`nowchip`、`round4-pin`、`workspace-shells`、`round24-pinactions` 的过时期望、`workspace-tabs`（等不到可见的 `.session-card`）、`rail-ghost`（滚动锚定）、`a11y-workspace`（`.ws-pop` 那条）、`workspace-manage`（取消删除那条）、`manage-ui`（要真桥口令文件）—— 都在 `origin/main` 的另一份检出上逐条复跑确认过是同一个失败，与这次改动无关。
+**验证。** `probes/empty-workspace.mjs`（新，桩桥 + 真 Chromium，9 段）先把这几条跑红再转绿：0 前置（只剩一颗、没 ★ ⇒ ★ 行 0 颗胶囊、NowChip 露着）；1 NowChip 悬停出气泡、三项动作齐全且没有「取消置顶」；1b 气泡里改名（`rename` 帧 + NowChip 换名字）；2 点标签行里的空工作区 → 横杠与 `aria-current` 落过去、中栏认领、NowChip 收起、`#/`；3 刷新仍停在那；4 空态按钮与 ★ 行 ＋ 都预填该组目录；5 组里后来有会话 → 文案换成「还没打开」且不自动打开；6 / 7 从 NowChip 气泡归档、删除 → 中栏进空态、横杠留在原组；8 / 9 壳 C 竖列、壳 D 色点条的高亮跟着同一份选中态走、从这两处也能切到空工作区，壳 B 的工作区浮层段头同样能切过去（并顺手验了段头高亮仍在会话所在组）。另跑 `npm run test:pillbar`（20 条，`neighborAfterArchive` 不回归）、`npm --prefix web run typecheck`（i18n 4076 → 4079 键 × 3 语言、`#app` 里没有裸 `vh`/`vw`）、`npm run build:web`。回归本来就绿的 `pin-delete-current` / `pin-archive-jitter` / `workspace-tree` / `rail-click` / `round16-pin` → 全过。**本来就红的记录在案、本轮不救**：`archive-switch`、`pin-auto-open`、`nowchip`、`round4-pin`、`workspace-shells`、`round24-pinactions` 的过时期望、`workspace-tabs`（等不到可见的 `.session-card`）、`rail-ghost`（滚动锚定）、`a11y-workspace`（`.ws-pop` 那条）、`workspace-manage`（取消删除那条）、`manage-ui`（要真桥口令文件）—— 都在 `origin/main` 的另一份检出上逐条复跑确认过是同一个失败，与这次改动无关。

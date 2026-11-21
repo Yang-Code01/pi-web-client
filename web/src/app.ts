@@ -1163,7 +1163,7 @@ export class App {
         add.title = tr("开新会话（自动置顶到这条里）");
         add.dataset.act = "new";
         add.dataset.pinKey = "new";
-        add.onclick = () => this.openNewSessionSheet(this.emptyWsPreset());
+        add.onclick = () => this.openNewSessionSheet(this.wsPreset(this.emptyWs()));
         // 同一动作不要两颗按钮：顶栏左上角那颗就能展开左栏，行 2 右端不再摆第二颗。
         return [add];
       },
@@ -1948,6 +1948,9 @@ export class App {
             this.switchDraft(nextId);
           }
           this.currentId = nextId;
+          // D373：有会话就有归属 —— 页面记的空工作区让位（新建的会话也是从这条帧进来的，
+          // 它不走 `openSession()`，所以这一句不能只写在那边）。
+          this.setSelectedWs(null);
         }
         this.execRoundStats = this.currentId ? readExecRoundStats(this.currentId) : {};
         this.usage = { contextTokens: null, contextWindow: null };
@@ -3008,12 +3011,11 @@ export class App {
         }
         // 左右都没有邻居：中栏回到现成的空态（与 D176 的决定一致）。D373：归它原来那个工作区。
         this.setSelectedWs(leftWs);
-        this.currentId = null;
-        this.session = null;
+        this.detachSession();
+        // 这颗会话已经没了：草稿与待发的东西留着也无处可去（与「离开会话」不同，这里不存草稿）。
         this.composerText = "";
         this.images = [];
         this.pastes = [];
-        this.chat.reset([]);
         this.renderAll();
         this.go("sessions", true);
         break;
@@ -12309,9 +12311,9 @@ export class App {
       if (group) {
         box.append(el("div", "chat-empty-title", group.count ? tr("{p1} 里的会话还没打开", { p1: group.name }) : tr("{p1} 里还没有会话", { p1: group.name })));
         box.append(el("div", "chat-empty-hint", tr("左边选一个，或者开一个新的")));
-        const here = el("button", "btn primary chat-empty-go", tr("在 {p1} 里开一个会话", { p1: group.name })) as HTMLButtonElement;
+        const here = el("button", "btn primary", tr("在 {p1} 里开一个会话", { p1: group.name })) as HTMLButtonElement;
         here.type = "button";
-        here.onclick = () => this.openNewSessionSheet(this.emptyWsPreset());
+        here.onclick = () => this.openNewSessionSheet(this.wsPreset(group));
         box.append(here);
       } else {
         box.append(el("div", "chat-empty-title", tr("还没有打开会话")));
@@ -19988,9 +19990,8 @@ export class App {
     return buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === id) ?? null;
   }
 
-  /** D373：选中的空工作区「开新会话」时预填的目录 —— 只给 ★ 行尾巴那颗 ＋ 与中栏那颗按钮用。 */
-  private emptyWsPreset(): { cwd: string } | undefined {
-    const group = this.emptyWs();
+  /** D373：这个选中的空工作区「开新会话」时预填的目录 —— 只给 ★ 行尾巴那颗 ＋ 与中栏那颗按钮用。 */
+  private wsPreset(group: TreeGroup<SessionState> | null): { cwd: string } | undefined {
     const cwd = group ? cleanDirPath(group.key) : "";
     return cwd ? { cwd } : undefined;
   }
@@ -20289,7 +20290,8 @@ export class App {
     // #190：左右都没有邻居 → 中栏回到现成的空态，不再把一颗归档会话留在中栏。
     // D373：这个空态归它**原来那个工作区**（横杠留在那）—— 刚离开的那一秒 `currentWsId()` 还答得出来。
     if (!next) {
-      this.closeCurrentSession(this.currentWsId());
+      this.setSelectedWs(this.currentWsId());
+      this.closeCurrentSession();
       return;
     }
     this.openSession(next);
@@ -20302,23 +20304,31 @@ export class App {
    * 「还没有打开会话 / 左边选一个，或者开一个新的」，不加文案、不改样式。
    * 草稿照存（`switchDraft(null)`），归档本身不动；之后从左侧点任意会话都能正常回去。
    *
-   * D373：`landingWs` 是空态该归的那个工作区（不传 = 无归属）。删/归档当前会话之后横杠留在它原来
-   * 那个组上，而不是掉回「哪儿也不在」。
+   * D373：空态要归哪个工作区由调用方用 `setSelectedWs()` 先定下（删/归档当前会话时就是它原来
+   * 那个组）—— 这里只管离开，不管归属，免得一个参数既可以是值又可以是「别动」。
    */
-  private closeCurrentSession(landingWs?: string | null): void {
-    if (landingWs !== undefined) this.setSelectedWs(landingWs);
+  private closeCurrentSession(): void {
+    if (!this.currentId) return;
+    this.switchDraft(null);
+    this.detachSession();
+    this.renderAll();
+    // 地址栏回到无会话的形态：`go()` 里 currentId 为空就是 `#/`。
+    this.go(this.tab);
+  }
+
+  /**
+   * 真的离开当前会话：告诉桥别再看这张页面、把「上一颗的现场」清干净。
+   * 不碰草稿：`closeCurrentSession()` 要存（D190），而会话已经被删的那条路存了也没处还原。
+   */
+  private detachSession(): void {
     if (!this.currentId) return;
     // #224 复审：告诉桥「这张页面不再看它了」。否则桥还会对已关掉的页面投递、并把它当成功。
     this.socket.send({ type: "unsubscribe", sessionId: this.currentId });
-    this.switchDraft(null);
     this.currentId = null;
     this.session = null;
     // 与 `openSession()` 换会话时清的是同一批：否则上一颗的待批 / 待答会挂进空态。
     this.resetSessionView();
     this.chat.reset([]);
-    this.renderAll();
-    // 地址栏回到无会话的形态：`go()` 里 currentId 为空就是 `#/`。
-    this.go(this.tab);
   }
 
   /** #127：那颗 `NowChip` 什么时候出场 —— 只在「当前会话没出现在 ★ 行里」时。 */
@@ -20526,7 +20536,7 @@ export class App {
         // 与胶囊那边同一个理由：applyRename 只改数据，不重画。
         this.renderSessions();
       },
-      onDelete: () => this.deleteFromNowChip(s.id),
+      onDelete: () => this.deleteFromPin(s.id, this.nowChip.el),
     });
     this.pinMenu = { handle, chip, id: s.id };
     handle.node.addEventListener("pointerenter", () => window.clearTimeout(this.pinMenuTimer));
@@ -20543,8 +20553,7 @@ export class App {
     if (this.pinAnim) return;
     this.closePinMenu();
     if (this.calm()) {
-      this.archiveIds([id], true);
-      this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
+      this.archiveOne(id);
       return;
     }
     const host = this.els.pinStrip;
@@ -20579,8 +20588,7 @@ export class App {
       );
       shut.onfinish = () => {
         this.pinAnim = null;
-        this.archiveIds([id], true);
-        this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
+        this.archiveOne(id);
       };
     };
   }
@@ -20642,8 +20650,7 @@ export class App {
     }, 220);
   }
 
-  /**
-   * D373：NowChip 上的归档 —— **只淡出**，不演 ★ 行那种「横向收拢让位」：那颗没有邻居，
+  /** D373：NowChip 上的归档 —— **只淡出**，不演 ★ 行那种「横向收拢让位」：那颗没有邻居，
    * 收拢只能看着像被挤坏。动画结束先 `cancel()` 再发归档，否则 forwards 留下的 opacity 0
    * 会粘在这颗身上（下一颗会话回来时它就是隐形的）。
    */
@@ -20652,8 +20659,7 @@ export class App {
     this.closePinMenu();
     const chip = this.nowChip?.el;
     if (this.calm() || !chip) {
-      this.archiveIds([id], true);
-      this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
+      this.archiveOne(id);
       return;
     }
     this.pinAnim = id;
@@ -20663,20 +20669,14 @@ export class App {
       this.pinAnim = null;
       chip.style.pointerEvents = "";
       fade.cancel();
-      this.archiveIds([id], true);
-      this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
+      this.archiveOne(id);
     };
   }
 
-  /** D373：NowChip 上的删除 —— 轨迹、垃圾桶反馈与 ★ 行胶囊同一套，只是飞行体换成这颗。 */
-  private deleteFromNowChip(id: string): void {
-    const chip = this.nowChip?.el;
-    if (!chip) {
-      this.closePinMenu();
-      this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
-      return;
-    }
-    this.deleteFromPin(id, chip);
+  /** 归档的最后一步（★ 行胶囊与 NowChip 共用）：发消息 + 一句话交代去向。 */
+  private archiveOne(id: string): void {
+    this.archiveIds([id], true);
+    this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
   }
 
   /** 「少动」偏好下不演动效，直接做那一步。 */
