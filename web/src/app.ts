@@ -844,11 +844,13 @@ export class App {
       const d = (ev as CustomEvent<{ src?: string; alt?: string }>).detail;
       if (d?.src) this.openImage(d.src, d.alt ?? "");
     });
-    // 聊天区与 dirpicker 都没有 app 的引用：产物 chip 的「引用」走这个事件。
+    // 聊天区与 dirpicker 都没有 app 的引用：产物卡／chip 的「引用」走这个事件。
     window.addEventListener("pi-quote", (ev) => {
       const path = (ev as CustomEvent<{ path?: string }>).detail?.path;
       if (path) this.insertPaths([path]);
     });
+    // 产物卡装不下的那些，交给顶栏同一个「产物」面板（D208），别在消息流里再长一截。
+    window.addEventListener("pi-artifacts", () => void this.openArtifactsSheet());
     this.startClock();
     this.socket.connect();
     this.routeFromHash();

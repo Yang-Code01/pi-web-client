@@ -2419,14 +2419,62 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
   background: transparent; color: var(--accent); font-size: 11px; cursor: pointer;
 }
 .tool-preview:hover { background: var(--accent-bg); border-color: var(--accent-dim); }
-.ops-files { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 8px; }
-.ops-files .ops-files-label { font-size: 11px; color: var(--faint); margin-right: 2px; }
-.file-chip {
-  display: inline-flex; align-items: center; gap: 4px; max-width: 320px; padding: 4px 5px 4px 8px; border-radius: 999px;
-  border: 1px solid var(--line); background: var(--panel); color: var(--text); font: 12px/1.2 var(--mono);
+/* 这一轮的产物卡（D361）：收起只有一行，点开在同一个位置长成按类型分组的网格。 */
+.artcard {
+  margin: 6px 0 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+  overflow: hidden; container-type: inline-size;
 }
-.file-chip .fc-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-chip:hover { border-color: var(--accent-dim); }
+.artcard-head {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 11px; border: 0;
+  background: none; color: var(--text); text-align: left; font: inherit; cursor: pointer;
+}
+.artcard-head:hover { background: var(--panel-2); }
+.artcard-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ac-fan { position: relative; flex: none; width: 26px; height: 24px; }
+.ac-sheet {
+  position: absolute; left: 6px; top: 3px; width: 15px; height: 18px; border-radius: 4px;
+  background: var(--c); box-shadow: 0 0 0 1.5px var(--panel);
+}
+.ac-fan.is-stack .ac-sheet:nth-child(1) { left: 0; top: 4px; rotate: -11deg; }
+.ac-fan.is-stack .ac-sheet:nth-child(2) { left: 6px; top: 2px; rotate: 6deg; }
+.ac-fan.is-stack .ac-sheet:nth-child(3) { left: 11px; top: 4px; rotate: -2deg; }
+.ac-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ac-title { font: 600 12.5px/1.3 var(--sans); }
+.ac-sub { overflow: hidden; min-width: 0; color: var(--faint); font: 11px/1.3 var(--sans); text-overflow: ellipsis; white-space: nowrap; }
+.ac-recent {
+  flex: 0 1 auto; overflow: hidden; max-width: 38%; margin-left: auto; color: var(--faint);
+  font: 11px/1.3 var(--mono); text-overflow: ellipsis; white-space: nowrap;
+}
+.ac-chev {
+  flex: none; width: 7px; height: 7px; margin-right: 3px; border-right: 1.6px solid var(--faint);
+  border-bottom: 1.6px solid var(--faint); transform: rotate(45deg); transition: transform 0.18s var(--ease);
+}
+.artcard[data-open="1"] .ac-chev { transform: rotate(-135deg); }
+.ac-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.26s var(--ease); }
+.artcard[data-open="1"] .ac-body { grid-template-rows: 1fr; }
+.ac-clip { overflow: hidden; min-height: 0; }
+.ac-inner { padding: 0 11px 9px; }
+.ac-gl { display: flex; align-items: center; gap: 6px; margin: 7px 1px 2px; color: var(--faint); font: 11px/1.2 var(--sans); }
+.ac-gl b { font-weight: 600; }
+.ac-gl::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.ac-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(188px, 1fr)); gap: 0 6px; }
+.ac-tile { display: flex; align-items: center; gap: 7px; min-width: 0; height: 32px; padding: 0 5px 0 3px; border-radius: 7px; }
+.ac-tile:hover { background: var(--panel-2); }
+.ac-badge {
+  display: grid; flex: none; place-items: center; width: 26px; height: 21px; border-radius: 5px;
+  background: var(--c); color: #fff; font: 600 8.5px/1 var(--sans); letter-spacing: 0.02em;
+}
+.ac-nm { flex: 1; overflow: hidden; min-width: 0; font: 12px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.ac-acts { display: flex; flex: none; gap: 1px; opacity: 0; transition: opacity 0.12s ease; }
+.ac-tile:hover .ac-acts, .ac-tile:focus-within .ac-acts { opacity: 1; }
+@media (hover: none) { .ac-acts { opacity: 1; } }
+.ac-more {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 7px;
+  border-top: 1px solid var(--line-soft); color: var(--faint); font: 11.5px/1.2 var(--sans);
+}
+.ac-link { margin-left: auto; padding: 0; border: 0; background: none; color: var(--accent); font: 11.5px/1.2 var(--sans); cursor: pointer; }
+.ac-link:hover { text-decoration: underline; }
+@container (max-width: 520px) { .ac-recent { display: none; } }
 .fc-chip-act {
   display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border: 0; border-radius: 999px;
   background: transparent; color: var(--faint); font: 11px/1 var(--sans); cursor: pointer;
