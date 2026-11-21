@@ -4225,5 +4225,7 @@ export const en: Dict = {
   "已有同名服务器（{p1}）：这一装会替换它的配置。": "A server named {p1} already exists; installing this replaces its config.",
   "字母、数字、「-」和「_」": "Letters, digits, \"-\" and \"_\"",
   "名字不能为空。": "The name cannot be empty.",
+  "全局已有同名服务器（{p1}）：项目档会盖住它。": "A global server named {p1} already exists; the project entry shadows it.",
+  "项目里已有同名服务器（{p1}）：装到全局也会被项目档盖住，换个名字或先改项目那份。": "The project already has a server named {p1}; a global entry would be shadowed by it. Rename this one, or edit the project entry first.",
   "只能用字母、数字、「-」和「_」。": "Use letters, digits, \"-\" and \"_\" only.",
 };

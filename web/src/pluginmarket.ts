@@ -739,7 +739,7 @@ function favoritesPage(state: MarketViewState, actions: MarketActions): HTMLElem
 }
 
 /** Inner 已安装：直接把外层「已安装」那块清单嵌进来，不再跳回左侧页签。 */
-function installedPage(state: MarketViewState, actions: MarketActions): HTMLElement {
+function installedPage(actions: MarketActions): HTMLElement {
   const page = el("div", "mk-page mk-installed-page");
   const host = el("div", "mk-installed-embed");
   actions.renderInstalled(host);
@@ -828,7 +828,7 @@ export function renderPluginMarket(state: MarketViewState, actions: MarketAction
   }
   if (state.tab === "discover") body.append(discoverPage(state, actions));
   else if (state.tab === "favorites") body.append(favoritesPage(state, actions));
-  else if (state.tab === "installed") body.append(installedPage(state, actions));
+  else if (state.tab === "installed") body.append(installedPage(actions));
   else if (state.tab === "blocked") body.append(blockedPage(state, actions));
   else if (state.tab === "advanced") body.append(advancedPage(state, actions));
   root.append(body);

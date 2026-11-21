@@ -52,19 +52,46 @@ test("名字键：大小写与 - / _ 归一", () => {
 
 test("表单校验：空名 / 非法字符 / 撞名各有话说", () => {
   const installed = [{ name: "exa" }];
-  assert.equal(checkName("   ", installed).ok, false);
-  assert.equal(checkName("my server", installed).ok, false);
+  const empty = checkName("   ", installed);
+  assert.equal(empty.ok, false);
+  assert.match(empty.problem ?? "", /空/);
+  const spaced = checkName("my server", installed);
+  assert.equal(spaced.ok, false);
+  // 文案与 pi 的 `invalid server name "…" (use letters, digits, "_" and "-")` 对得上
+  assert.match(spaced.problem ?? "", /只能/);
   assert.equal(checkName("dot.name", installed).ok, false);
   const ok = checkName("mintlify", installed);
   assert.equal(ok.ok, true);
-  assert.equal(ok.taken, null);
+  assert.equal(ok.taken, undefined);
   const taken = checkName("EXA", installed);
   assert.equal(taken.ok, true);
   assert.equal(taken.taken?.name, "exa");
+});
+
+test("同档同名才是替换，跨档按 pi 的解析顺序判", () => {
+  const globalEntry = { name: "exa", scope: "global" };
+  const projectEntry = { name: "exa", scope: "project" };
+  // 装到项目档、全局已有 → 项目档会盖住它，合法遮蔽
+  const shadow = checkName("exa", [globalEntry], "project");
+  assert.equal(shadow.ok, true);
+  assert.equal(shadow.shadow?.name, "exa");
+  assert.equal(shadow.taken, undefined);
+  // 装到全局、项目档已有 → 装上也会被盖住，拦下
+  const blocked = checkName("exa", [projectEntry], "global");
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.problem ?? "", /盖住/);
+  // 同一档里已有 → 替换
+  assert.equal(checkName("exa", [projectEntry], "project").taken?.name, "exa");
+  assert.equal(checkName("exa", [globalEntry], "global").taken?.name, "exa");
+  // 老桥没给 scope 时当全局：宁可多说一句「会替换」
+  assert.equal(checkName("exa", [{ name: "exa" }], "global").taken?.name, "exa");
 });
 
 test("密钥变量名与 bridge 的规则一致", () => {
   assert.equal(secretVarName("exa", "EXA_API_KEY", false), "EXA_API_KEY");
   assert.equal(secretVarName("my-server", "Authorization", true), "MY_SERVER_AUTHORIZATION");
   assert.equal(secretVarName("my.server", "x-key", true), "MY_SERVER_X_KEY");
+  // bridge/src/market.ts 的 upper() 还会去掉首尾下划线，差一步就提示一个、实际写另一个
+  assert.equal(secretVarName("my", "_Authorization_", true), "MY_AUTHORIZATION");
+  assert.equal(secretVarName("名字", "x", true), "X");
 });

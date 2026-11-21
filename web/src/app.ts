@@ -15924,11 +15924,21 @@ export class App {
     const installed = this.extInv?.mcp ?? [];
     // D379: 名字是可编辑的，所以「这一装会不会替换掉谁」必须跟着输入重算；空名 / 非法字符点下去
     // 只会让 pi 报一句 stderr，按钮当场拦住。替换不禁用按钮 —— 把话写清楚，让人自己决定。
+    // 同名分两种：同目标档（项目/全局）才是替换，项目档里面的同名只会盖住全局的。
+    const target = this.extScope;
+    // 输入事件与点击看同一份判断：点击前先 syncName() 一遍，比再算一次更不容易漂。
+    let check = checkName(f.name, installed, target);
     const syncName = () => {
       f.name = name.value.trim();
-      const check = checkName(f.name, installed);
+      check = checkName(f.name, installed, target);
       const running = this.opLabel(`mcpadd:${f.item}`, tr("安装中…"));
-      nameHint.textContent = check.ok ? (check.taken ? tr("已有同名服务器（{p1}）：这一装会替换它的配置。", { p1: check.taken.name }) : "") : check.problem;
+      nameHint.textContent = !check.ok
+        ? (check.problem ?? "")
+        : check.taken
+          ? tr("已有同名服务器（{p1}）：这一装会替换它的配置。", { p1: check.taken.name })
+          : check.shadow
+            ? tr("全局已有同名服务器（{p1}）：项目档会盖住它。", { p1: check.shadow.name })
+            : "";
       nameHint.classList.toggle("warn", check.ok && Boolean(check.taken));
       nameHint.classList.toggle("bad", !check.ok);
       for (const h of secretHints) {
@@ -15938,9 +15948,10 @@ export class App {
       go.textContent = running ?? (check.ok && check.taken ? tr("替换安装") : idleLabel);
     };
     go.onclick = () => {
-      const check = checkName(f.name, installed);
+      syncName();
+      if (!check.ok) return;
       this.piCli(
-        { type: "mcp.install", option: opt, name: f.name, overwrite: check.ok && Boolean(check.taken), values: f.values, local: this.extScope === "project", exposure: f.exposure, description: f.description },
+        { type: "mcp.install", option: opt, name: f.name, overwrite: Boolean(check.taken), values: f.values, local: this.extScope === "project", exposure: f.exposure, description: f.description },
         `mcpadd:${f.item}`,
       );
     };

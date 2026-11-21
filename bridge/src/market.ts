@@ -473,6 +473,23 @@ export const STORE_PAGE = 250;
 export const STORE_MAX = 1000;
 
 /**
+ * 这一批里有没有一个包是**靠名字**命中的；没有就说明查询词只落在了描述 / 关键词上。
+ *
+ * 冷门包搜不到的原因有两层：`keywords:pi-package <q>` 先让 npm 按 popularity 截了前 250 条，
+ * 名字命中但没人下载的包进不来；查询词是 CJK 或 README 里的生僻词时，连这层词表都对不上，
+ * 直接零结果。两种情况都该再搜一次不带 keywords 的 `text=<q>`（`store:loose:` 那一段），
+ * 而「已经有名字命中」时再搜只是自费一次请求。
+ */
+export function needsLooseRecall(items: StorePackage[], q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return false;
+  return !items.some((p) => {
+    const name = p.name.toLowerCase();
+    return name.includes(needle) || name.split("/").pop()!.includes(needle);
+  });
+}
+
+/**
  * Ranked by monthly downloads. Without a query: the top of everything with `pi-package` (14k+ in
  * Nov 2026, so `limit` pages further than the first 250 when the page asks for more). With a query an
  * exact package name always comes first — also one npm's `pi-package` search does not return (not
@@ -493,9 +510,11 @@ export async function searchPackages(query: string, limit: number): Promise<Stor
     if (page.length < STORE_PAGE) break;
   }
   // 查询词被 `keywords:pi-package` AND 起来以后，npm 只认它索引过的那份词表（README 里的中文、
-  // 生僻词、纯名字都不在里面），于是冷门包与 CJK 查询直接零结果。这里只在这种情况下补一页不限
-  // keywords 的搜索，再按 pi-package 标签滤回来 —— 限定是过滤器，不该同时当召回手段。
-  if (q && !list.length) {
+  // 生僻词、纯名字都不在里面），于是冷门包与 CJK 查询直接零结果。名字一个都没命中时也一样：
+  // 说明这次匹配全落在描述/关键词上，真正叫这个名字的包被 popularity 压在前面 250 条之外。
+  // 这两种情况补一页不限 keywords 的搜索，再按 pi-package 标签滤回来 —— 限定是过滤器，
+  // 不该同时当召回手段。
+  if (q && needsLooseRecall(list, q)) {
     list.push(
       ...(await cached(`store:loose:${q}`, 10 * 60_000, async () => {
         const text = encodeURIComponent(q);
@@ -725,6 +744,13 @@ export function mcpIndex(force = false, preloaded?: McpIndex | null): Promise<{ 
       .then((idx) => {
         ensureDir(path.dirname(INDEX_FILE()));
         writeJson(INDEX_FILE(), idx);
+        // The checkpoint only loses its future once the index is on disk: deleting it first (as the
+        // first version did) left a crash window where the next walk started from page 0.
+        try {
+          fs.rmSync(INDEX_PARTIAL(), { force: true });
+        } catch {
+          /* nothing to clean up */
+        }
         indexCache = null;
         indexListener?.(idx);
         return idx;
@@ -799,7 +825,7 @@ export interface WalkResult {
 export async function walkIndex(opts: {
   resume: WalkState | null;
   fetchPage: (cursor: string | null) => Promise<IndexPage>;
-  checkpoint: (state: Omit<WalkState, "v">) => void;
+  checkpoint: (state: WalkState) => void;
   now?: () => number;
   maxPages?: number;
   every?: number;
@@ -853,13 +879,6 @@ async function buildIndex(): Promise<McpIndex> {
   });
   const list = walk.items;
   const starsComplete = await fillStars(list);
-  // The walk is done (or gave up): the checkpoint has no future. This runs before the caller writes
-  // the index, so a crash in between leaves a checkpoint that resuming finishes from — never a false index.
-  try {
-    fs.rmSync(INDEX_PARTIAL(), { force: true });
-  } catch {
-    /* nothing to clean up */
-  }
   return { at: Date.now(), items: list, starsComplete, truncated: walk.refused || (Boolean(walk.cursor) && walk.pages >= INDEX_MAX_PAGES), v: INDEX_SCHEMA };
 }
 

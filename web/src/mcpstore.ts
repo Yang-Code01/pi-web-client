@@ -13,7 +13,12 @@ import { tr } from "./i18n/index.ts";
 export interface InstalledMcpView {
   name: string;
   transport?: string | null;
+  /** `ext.inventory` 原样传过来的是字符串（`"global" | "project"`），这里不 tighter，免得前端两处结构对不上。 */
+  scope?: string | null;
 }
+
+/** 要装到哪一档：项目档写 `<cwd>/.pi/mcp.json`，全局档写 agent 目录那份。 */
+export type InstallScope = "global" | "project";
 
 /** 这些短名说明不了是什么服务：registry 里几千条都叫 `mcp` / `site` / `server`。 */
 const GENERIC = new Set([
@@ -83,8 +88,7 @@ function shortSlug(short: string): string {
  */
 function ownerSlug(ns: string): string {
   const parts = ns.split(/[./\\-]+/).map(slugifyName).filter(Boolean);
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const part = parts[i]!;
+  for (const part of parts.reverse()) {
     if (part.length >= 3 && !GENERIC.has(part.replace(/-/g, ""))) return part;
   }
   return "";
@@ -111,7 +115,10 @@ export function serverNameFor(name: string, title = ""): string {
   return slugifyName(short) || slugifyName(title) || "mcp";
 }
 
-/** 只有 `-` 和 `_` 不同的名字算同一个 server（pi 的规则），大小写也不分。 */
+/**
+ * 只有 `-` 和 `_` 不同的名字算同一个 server（pi 的规则），大小写也不分。
+ * 桥端 `bridge/src/extmgr.ts` 的 `sameServerName` 是同一条规则，改一处要改两处。
+ */
 export function nameKey(name: string): string {
   return name.trim().toLowerCase().replace(/_/g, "-");
 }
@@ -135,12 +142,38 @@ export function sameName(name: string, installed: InstalledMcpView[]): Installed
   return installed.find((m) => nameKey(m.name) === want) ?? null;
 }
 
-/** 表单里名字这一格的状态：不能用时给一句人话（同时当 i18n 键），能用时说会不会替换已装的。 */
-export function checkName(name: string, installed: InstalledMcpView[]): { ok: true; taken: InstalledMcpView | null } | { ok: false; problem: string } {
+/** 表单里名字这一格的状态：不能用时给一句人话（同时当 i18n 键），能用时说会不会替换、会不会被盖住。 */
+export interface NameCheck {
+  ok: boolean;
+  problem?: string;
+  /** 同名项就在目标那一档：这一装会替换它（需要 overwrite）。 */
+  taken?: InstalledMcpView;
+  /** 同名项在另一档：项目档会盖住全局的（pi 的解析顺序），不换名字也装得进去。 */
+  shadow?: InstalledMcpView;
+}
+
+/**
+ * 名字这一格该说什么。
+ *
+ * pi 里同名不是只有「替换」一种：项目档 `.pi/mcp.json` 会盖住全局那份。所以判断要带上要装的
+ * 目标档 —— 往项目装一个全局已有的同名项是合法的遮蔽，不该报「会替换」；往全局装一个项目已有
+ * 的同名项则装完也看不见（被项目档盖住），得当错误拦下来。
+ */
+export function checkName(name: string, installed: InstalledMcpView[], target: InstallScope = "global"): NameCheck {
   const raw = name.trim();
   if (!raw) return { ok: false, problem: tr("名字不能为空。") };
+  // pi 的 `validateMcpServerConfig` 用同一条规则（`dist/core/mcp-servers.js:152`）：不合法就
+  // `invalid server name …`、`pi mcp add` 退出 1。这里放过去，安装只会白失败一次。
   if (!/^[A-Za-z0-9_-]+$/.test(raw)) return { ok: false, problem: tr("只能用字母、数字、「-」和「_」。") };
-  return { ok: true, taken: sameName(raw, installed) };
+  const hit = sameName(raw, installed);
+  if (!hit) return { ok: true };
+  // 除 "project" 以外的值（含旧桥没这个字段）都当全局：宁可多说一句「会替换」。
+  const hitScope = hit.scope === "project" ? "project" : "global";
+  if (target === "project" && hitScope !== "project") return { ok: true, shadow: hit };
+  if (target === "global" && hitScope === "project") {
+    return { ok: false, problem: tr("项目里已有同名服务器（{p1}）：装到全局也会被项目档盖住，换个名字或先改项目那份。", { p1: hit.name }) };
+  }
+  return { ok: true, taken: hit };
 }
 
 /**
@@ -152,5 +185,7 @@ export function checkName(name: string, installed: InstalledMcpView[]): { ok: tr
  */
 export function secretVarName(serverName: string, fieldName: string, isHeader: boolean): string {
   if (!isHeader) return fieldName;
-  return `${serverName}_${fieldName}`.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+  // 首尾的下划线也要去掉：`bridge/src/market.ts` 的 `upper()` 就是这么折的，差一步就会提示一个
+  // 变量名、实际写进 mcp.json 的却是另一个。
+  return `${serverName}_${fieldName}`.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
 }

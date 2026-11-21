@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pageRefused, readStarsBatch, walkIndex, walkToResume } from "../src/market.ts";
+import { needsLooseRecall, pageRefused, readStarsBatch, walkIndex, walkToResume } from "../src/market.ts";
 
 const HOUR = 3600_000;
 
@@ -155,4 +155,18 @@ test("walkIndex: a resumed page merges into what the checkpoint already had", as
   });
   assert.equal(done.items.length, 1, "the same server must not appear twice");
   assert.equal(done.items[0].version, "1.0.0", "the newer version wins");
+});
+
+test("needsLooseRecall: only when nothing matched by name", () => {
+  const pkg = (name, description = "") => ({ name, title: name, description, version: "1.0.0", monthly: 1, published: 0, keywords: [], blocked: false });
+  const hot = pkg("some-popular-thing", "a search helper for chinese text");
+  const cold = pkg("@scope/正字-search", "");
+  // 名字里已经命中 → 不再发第二次请求
+  assert.equal(needsLooseRecall([hot, pkg("chinese-helper")], "chinese"), false);
+  assert.equal(needsLooseRecall([cold], "正字"), false, "scoped packages count by their tail");
+  // 只有描述/关键词命中 → 名字可能在 250 名之外，该补一次
+  assert.equal(needsLooseRecall([hot], "chinese"), true);
+  // 零结果、CJK 查询（keywords 分词对不上）也要补
+  assert.equal(needsLooseRecall([], "看不懂的查询"), true);
+  assert.equal(needsLooseRecall([hot], "   "), false, "an empty query never recalls");
 });

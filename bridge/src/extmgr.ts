@@ -105,9 +105,14 @@ function serversIn(file: string): [string, Record<string, unknown>][] {
   return Object.entries(servers).filter((e): e is [string, Record<string, unknown>] => Boolean(e[1]) && typeof e[1] === "object");
 }
 
-/** pi 认为只有 `-` 和 `_` 不同的两个名字是同一个 server，这里照它判。 */
+/** pi 认为只有 `-` 和 `_` 不同的两个名字是同一个 server，这里照它判（与 `web/src/mcpstore.ts` 的 `nameKey` 同规则）。 */
 function sameServerName(a: string, b: string): boolean {
   return a.trim().toLowerCase().replace(/_/g, "-") === b.trim().toLowerCase().replace(/_/g, "-");
+}
+
+/** `pi mcp add` 会写哪个 mcp.json：`--local` 写 `<cwd>/.pi/mcp.json`，否则写 agent 目录那份。 */
+export function mcpFilePath(local: boolean, cwd: string | null): string {
+  return path.join(local && cwd ? path.join(cwd, ".pi") : agentDir(), "mcp.json");
 }
 
 /**
