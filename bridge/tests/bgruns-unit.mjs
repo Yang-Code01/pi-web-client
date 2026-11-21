@@ -260,6 +260,55 @@ backfillRuns.prune();
 assert.equal(backfillRuns.list()[0]?.agent, "planner", "receipt 里的 agent 补回来（不是空的「子代理」）");
 assert.equal(backfillRuns.list()[0]?.task, "1. 先读一遍 README\n2. 再拆成小任务", "receipt 里的 sessionName 补回任务原文");
 
+// 脚本式 workflow 的第二种形状（实测 `1f34ca75-e6e0-…`）：原文只在 `options.script` 里，
+// details 里连 `workflowChildren` 都没有，而 `workflow-receipt.json` 要等**跑完**才写
+// （实测开跑 17:24:14、receipt 17:27:03）。开跑之后唯一能读到名字的是 `status.json` 的
+// `steps[]` / `workflowChildren.children[]`：卡片不该在那几分钟里一直写「（没有任务原文）」。
+const SW_ID = "1f34ca75-0000-4000-8000-000000000001";
+const swDir = mkdtempSync(join(tmpdir(), "pi-subagents-sw-"));
+const swRuns = new BgRuns(() => {});
+swRuns.noteToolEnd(
+  "subagent",
+  { mode: "workflow", runId: SW_ID, asyncDir: swDir, workflow: "parallel" },
+  "Async workflow [" + SW_ID + "]",
+  { cwd: "F:/pi-web-client-wt/fix-skill-list-boot", options: { script: "await runs.all([{ key: 'standards', agent: 'reviewer', task: '…' }])" } },
+);
+assert.equal(swRuns.list()[0]?.agent, "", "派活那刻 status.json 还没落盘");
+assert.equal(swRuns.list()[0]?.task, "", "原文在 options.script 里，桥不读脚本");
+const swStandards = "reviewer: Code review: STANDARDS axis only. Read-only, do not modif...";
+const swSpec = "reviewer: Code review: SPEC axis only. Read-only, do not modify any...";
+writeFileSync(
+  join(swDir, "status.json"),
+  JSON.stringify({
+    runId: SW_ID,
+    mode: "workflow",
+    state: "running",
+    steps: [
+      { agent: "reviewer", sessionName: swStandards },
+      { agent: "reviewer", sessionName: swSpec },
+    ],
+    workflowChildren: {
+      version: 1,
+      inventoryComplete: true,
+      children: [
+        { childId: "standards", state: "running", agent: "reviewer", sessionName: swStandards },
+        { childId: "spec", state: "running", agent: "reviewer", sessionName: swSpec },
+      ],
+    },
+  }),
+);
+// `bg.log` 每 1.5 秒来一轮：读痕迹这条路径先抬手，不必等 30 秒的 prune 滴答。
+assert.equal(swRuns.readLog(SW_ID).log, undefined, "events.jsonl 还没写：过程记录先空着");
+assert.equal(swRuns.list()[0]?.agent, "reviewer", "agent 从 status.json 的孩子清单补");
+assert.equal(
+  swRuns.list()[0]?.task,
+  "1. Code review: STANDARDS axis only. Read-only, do not modif...\n2. Code review: SPEC axis only. Read-only, do not modify any...",
+  "两条孩子都列出来（sessionName 被 runner 截断过，但比占位强）",
+);
+assert.equal(swRuns.list()[0]?.state, "running", "status.json 说 running：卡片继续立着");
+swRuns.prune();
+assert.equal(swRuns.list()[0]?.task?.startsWith("1. Code review: STANDARDS"), true, "补上之后没人把它改回去");
+
 // 单 run / parallel：`??` 只在空位补，已有值一字不改（D185 决定 5）。
 const PL_ID = "eeeeeeee-1111-2222-3333-ffffffffffff";
 const parallelRuns = new BgRuns(() => {});
@@ -363,6 +412,25 @@ assert.equal(scriptFg.list()[0]?.agent, "planner");
 assert.equal(scriptFg.list()[0]?.task, "拆一下这个需求再分下去", "任务原文从 sessionName 兑底");
 rmSync(scriptFgRoot, { recursive: true, force: true });
 rmSync(fgRoot, { recursive: true, force: true });
+
+// 失败的前台派活（实测 `call_00_79ZGyKVyGhxhy8l7XsKw7723`）：`workflow: true` 但同一条助手
+// 消息里没有 js 围栏 —— runner 当场报错，结果里没有 `Return: {…}`，卡片就只剩「失败 · 0:00」。
+// 报错只存在那条工具结果里，桥必须留下来。
+const failId = "call_00_79ZGyKVyGhxhy8l7XsKw7723";
+const failRuns = new BgRuns(() => {});
+failRuns.noteToolStart("subagent", { workflow: true, cwd: "F:/pi-web-client-wt/fix-skill-list-boot", async: false }, failId);
+assert.equal(failRuns.list()[0]?.task, "", "这次调用根本没有任务原文");
+const failText =
+  "The workflow script is missing.\n" +
+  "`workflow: true` runs the workflow block written in this same assistant message. This message has no workflow block (no `text` content), so nothing was launched.\n" +
+  "Retry with the complete block in the same message, or pass the script explicitly with `options: { script: \"…\" }`.";
+failRuns.noteToolEnd("subagent", { runId: failId }, failText, { workflow: true, async: false }, failId, true);
+const failCard = failRuns.list()[0];
+assert.equal(failCard?.state, "failed");
+assert.equal(failCard?.hasOut, false, "没有 `Return: {…}` 就没有最终输出");
+assert.match(failCard?.error ?? "", /^The workflow script is missing\./, "失败原因留在卡片上，不是一句空「失败」");
+assert.equal((failCard?.error ?? "").split("\n").length, 3, "只留前 3 行，别把报错撑成一堵墙");
+assert.equal(fgRuns.list()[0]?.error, undefined, "跑成功的不挂红字");
 
 // ---------------------------------------------------------------- 读痕迹
 

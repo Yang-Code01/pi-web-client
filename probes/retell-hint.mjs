@@ -1,5 +1,5 @@
 /**
- * Probe: D358 — 输入框上方那一行「重讲」。
+ * Probe: D361 — 输入框上方那一行「重讲」。
  *
  * 用桩桥 + 真 Chromium（要 `npm run build:web` 先）：这一行的三态判在 `retellState()` 里单测过，
  * 剩下全是「页面上到底长在哪、点了发什么」：位置在输入框上方（`.composer > .retell-bar` 紧挨

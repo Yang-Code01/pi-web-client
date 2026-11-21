@@ -28,7 +28,7 @@ function check(name, ok, detail = "") {
 
 fs.rmSync(STATE, { recursive: true, force: true });
 fs.mkdirSync(STATE, { recursive: true });
-const env = { ...process.env, PI_WEB_STATE: STATE, PI_WEB_PORT: String(PORT), PI_WEB_HOST: "127.0.0.1", PI_WEB_TUNNEL: "0", PI_WEB_ROOT: path.join(ROOT, "web", "dist") };
+const env = { ...process.env, PI_WEB_STATE: STATE, PI_WEB_WHATS_NEW: "0", PI_WEB_PORT: String(PORT), PI_WEB_HOST: "127.0.0.1", PI_WEB_TUNNEL: "0", PI_WEB_ROOT: path.join(ROOT, "web", "dist") };
 // --passphrase 只改口令然后退出（bridge/src/index.ts:358），不能拿它起常驻进程。
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 const child = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });

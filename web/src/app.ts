@@ -6,6 +6,7 @@ import { api, type DepPackageId, type DepsReport } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { atSpan, filterCommands, PANEL_COMMANDS, slashSpan, type CommandItem } from "./commands.ts";
+import { documentTitle } from "./window-title.ts";
 import { creditsToUsd, formatAge, formatCredits, formatReset, isMixed, usedPercent, type CopilotView } from "./copilot.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
@@ -58,6 +59,7 @@ import {
 } from "./mcpmarket.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
+import { queueWhatsnew } from "./whatsnew.ts";
 import { openHotdeploy } from "./hotdeploy.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { ReposSheet } from "./repossheet.ts";
@@ -95,7 +97,7 @@ import {
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
-import { escapeTopLayer, LEAVE_MS, pushEscLayer, retireOverlay, startLeaving } from "./modal.ts";
+import { escapeTopLayer, LEAVE_MS, overlaysOpen, pushEscLayer, retireOverlay, startLeaving } from "./modal.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -187,6 +189,14 @@ interface ExecChildState {
 interface BgRunNode {
   root: HTMLElement;
   state: HTMLElement;
+  /** 卡片头那个名字（`agent`）。桥的 30 秒滴答会回填，不是建好就定死。 */
+  agent: HTMLElement;
+  /** 任务原文那一行：同样会回填（脚本式 workflow 的孩子清单要等 `status.json` 落盘）。 */
+  task: HTMLElement;
+  /** 失败原因（`r.error`）。没有就 hidden。 */
+  err: HTMLElement;
+  /** 「过程」两个字：失败且压根没启动 runner 的卡上要跟着过程框一起藏。 */
+  labLog: HTMLElement;
   log: HTMLElement;
   out: HTMLElement;
   labOut: HTMLElement;
@@ -419,7 +429,7 @@ export class App {
   private textarea: HTMLTextAreaElement | null = null;
   /** 「继续」按钮（D159）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
   private continueBtn: HTMLButtonElement | null = null;
-  /** D358：输入框上方那一行「重讲」。常驻，位置固定，不随回答长短漂移。 */
+  /** D361：输入框上方那一行「重讲」。常驻，位置固定，不随回答长短漂移。 */
   private retellBar: HTMLElement | null = null;
   private retellBtn: HTMLButtonElement | null = null;
   /** 刚点过「重讲」：桥的 `running:true` 回来之前，先把按钮按住，免得双击发两句。 */
@@ -1566,6 +1576,19 @@ export class App {
     // 热部署跑完（成功或失败）都可能把主检出留在别的分支上：就着这一刻刷新那颗提醒。
     window.addEventListener("pi-hotdeploy-done", () => void this.refreshHotBranch());
     window.addEventListener("pi-hotdeploy-closed", () => void this.refreshHotBranch());
+    // #588 D358：启动时把「本项目更新日志」的新批次推一次。该不该弹、弹哪一批、24 小时闸与
+    // 「同一个窗口只派发一次」全在桥端；这里只负责找一个不打断人的时机，并把「看全部日志」送到设置页。
+    queueWhatsnew({
+      canShow: () =>
+        document.visibilityState === "visible" &&
+        this.runSince === null &&
+        this.composerText.trim() === "" &&
+        // 已经有别的弹层开着就先别叠上去：读日志不急，10 分钟之内总还有机会。
+        !overlaysOpen(),
+      onOpenAll: () => this.openSettingsSheet("whatsnew"),
+      openPath: (file, root) =>
+        window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(root, file) } })),
+    });
     window.addEventListener("pi-session-not-found", (ev) => {
       const id = String((ev as CustomEvent<{ sessionId?: string }>).detail?.sessionId ?? "");
       if (id && id === this.currentId) this.showSessionReclaim(id);
@@ -4123,7 +4146,7 @@ export class App {
     }
     langPanel.append(this.stRow(tr("语言"), tr("界面文字、推送标题都跟着换"), langChips));
 
-    // D358：重讲那一行是纯前端的东西，开关不放桥端 settings，进 `pi.prefs`（换浏览器就没了，
+    // D361：重讲那一行是纯前端的东西，开关不放桥端 settings，进 `pi.prefs`（换浏览器就没了，
     // 但它本来就是「这台机器的输入区多不多一行」，跟着设备走更合理）。关掉时整个不画。
     const chatPanel = section("chat");
     const hintBox = document.createElement("input");
@@ -15734,12 +15757,44 @@ export class App {
     body.append(el("div", "empty", tr("读取中…")));
     fetch("/api/changelog?scope=self", { credentials: "same-origin" })
       .then((r) => r.json())
-      .then((out: { version?: string; branch?: string; commit?: string; root?: string; text?: string }) => {
+      .then((out: { version?: string; branch?: string; commit?: string; root?: string; text?: string; whatsnewSeen?: string; whatsnewEnabled?: boolean }) => {
         if (this.settingsTab !== "whatsnew") return;
         body.replaceChildren();
         const head = [out.branch, out.commit].filter(Boolean).join("@");
         const where = [out.version, head].filter(Boolean).join(" · ");
         body.append(el("div", "settings-path", tr("当前版本 {p1}", { p1: where })));
+
+        // #588：这个提示的开关与「上次看到」都放在这一页 —— 想开想关、想知道自己读到哪，同一个地方。
+        const box = el("div", "settings-group");
+        box.append(this.stSection(tr("启动时的提示"), tr("桥启动后第一次有人连上时才判一次；两次弹出之间至少隔一天")));
+        const toggle = el("input", "") as HTMLInputElement;
+        toggle.type = "checkbox";
+        toggle.checked = out.whatsnewEnabled !== false;
+        toggle.onchange = () => {
+          void fetch("/api/changelog/popup", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ enabled: toggle.checked }),
+          }).catch(() => {
+            /* 桥不在就当没点过：下次打开这一页会照盘上的真值重画 */
+          });
+        };
+        box.append(
+          this.stRow(
+            tr("启动时自动打开更新日志"),
+            tr("关掉之后不再自动弹；这一页照样能看，关着期间攒下的批次等你重新打开还会出现"),
+            this.stSwitch(toggle),
+          ),
+        );
+        box.append(
+          this.stRow(
+            tr("上次看到"),
+            tr("弹窗打开的那一刻就记下；自己在这一页翻完不算"),
+            el("span", "settings-path", out.whatsnewSeen || tr("还没看过任何一批")),
+          ),
+        );
+        body.append(box);
         const md = el("div", "settings-changelog");
         md.append(
           renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
@@ -16033,7 +16088,7 @@ export class App {
   /** Extension widgets above / below the editor, status lines below, title on the browser tab. */
   private fillExt(): void {
     const ext = this.currentId ? this.ext : { status: [], widgets: [], title: null };
-    document.title = ext.title ? `${ext.title} · pi` : "pi";
+    document.title = documentTitle(ext.title);
     const block = (lines: string[], cls: string, title: string) => {
       const node = el("pre", cls, lines.join("\n"));
       node.title = title;
@@ -16104,9 +16159,9 @@ export class App {
     btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
   }
 
-  // ---------------------------------------------------------------- retell (D358)
+  // ---------------------------------------------------------------- retell (D361)
   /**
-   * D358：输入框上方那一行「重讲」。`wait-what` 那套「没看懂就让人用简化技术语言重讲一遍」的
+   * D361：输入框上方那一行「重讲」。`wait-what` 那套「没看懂就让人用简化技术语言重讲一遍」的
    * 常驻入口：位置固定，不随回答长短漂移；点一下才发，不发就不打扰。
    */
   private retellRow(): HTMLElement {
@@ -16295,8 +16350,11 @@ export class App {
       if (!node) {
         const root = el("div", "bg-run");
         const line = el("div", "bg-run-head");
-        line.append(el("span", "bg-run-agent", r.agent || tr("子代理")), el("span", "bg-run-state"));
-        const task = el("div", "bg-run-task", r.task || tr("（任务原文没传到桥）"));
+        const agentEl = el("span", "bg-run-agent", r.agent || tr("子代理"));
+        line.append(agentEl, el("span", "bg-run-state"));
+        const task = el("div", "bg-run-task", r.task || tr("（没有任务原文）"));
+        const err = el("div", "bg-run-err");
+        err.hidden = true;
         const id = el("div", "bg-run-id", r.id);
         const labLog = el("div", "bg-run-lab", tr("过程"));
         const logEl = el("pre", "bg-run-log");
@@ -16304,12 +16362,38 @@ export class App {
         labOut.hidden = true;
         const outEl = el("pre", "bg-run-out");
         outEl.hidden = true;
-        root.append(line, task, id, labLog, logEl, labOut, outEl);
+        root.append(line, task, err, id, labLog, logEl, labOut, outEl);
         sheet.body.append(root);
-        node = { root, state: line.lastElementChild as HTMLElement, log: logEl, out: outEl, labOut, hasLog: Boolean(r.hasLog) };
+        node = {
+          root,
+          state: line.lastElementChild as HTMLElement,
+          agent: agentEl,
+          task,
+          err,
+          labLog,
+          log: logEl,
+          out: outEl,
+          labOut,
+          hasLog: Boolean(r.hasLog),
+        };
         if (!r.hasLog) logEl.textContent = tr("桥还没接上这个 runner 的过程记录。");
         sheet.runs.set(r.id, node);
       }
+      // 卡片是活的：桥在后面的 `bg.list` 里才把 agent / task 补上（脚本式 workflow 的原文要等
+      // `status.json` 落盘）。只写建卡那一刻的话，回填永远看不到 —— 关弹层重开才行。
+      const agentText = r.agent || tr("子代理");
+      if (node.agent.textContent !== agentText) node.agent.textContent = agentText;
+      const taskText = r.task || tr("（没有任务原文）");
+      if (node.task.textContent !== taskText) node.task.textContent = taskText;
+      // `hasLog` 也一样：派活那一刻文件还没写出来，`bg.log` 回来时会用它决定占位文案。
+      node.hasLog = Boolean(r.hasLog);
+      const errText = typeof r.error === "string" ? r.error : "";
+      node.err.hidden = !errText;
+      if (errText && node.err.textContent !== errText) node.err.textContent = errText;
+      // 派活当场就失败的（没有 runner，也不会有过程）：不摆空的过程框，错误行已经说清了。
+      const noLog = r.state === "failed" && !r.hasLog;
+      node.labLog.hidden = noLog;
+      node.log.hidden = noLog;
       const state = r.state === "running" ? tr("运行中") : r.state === "failed" ? tr("失败") : tr("已完成");
       // 跑完了报总耗时（结束 − 开始）；还在跑就报「已跑多久」，两者都是「从开始起的钟」。
       node.state.textContent =
@@ -20560,7 +20644,7 @@ type Prefs = {
   wsIntroSeen: boolean;
   /** 第一次打开时的主题选择弹窗弹过没有（弹出即记，关掉也不再弹）。老用户（已有 pi.prefs、没这个键）当作弹过。 */
   themeIntroSeen: boolean;
-  /** D358：输入框上方那一行「重讲」开着没有。默认开；关掉后整个不画（设置 → 对话里改）。 */
+  /** D361：输入框上方那一行「重讲」开着没有。默认开；关掉后整个不画（设置 → 对话里改）。 */
   retellHint: boolean;
 };
 
@@ -21294,7 +21378,7 @@ function readPrefs(): Prefs {
       wsIntroSeen: p?.wsIntroSeen === true,
       // 只有明确写着 false 的（新用户第一次存盘）才算没弹过；升级上来的老用户已经在用自己的主题，不打扰。
       themeIntroSeen: p?.themeIntroSeen !== false,
-      // D358：只有明确写着 false 的才算关（老版本升上来没这个键＝开着）。
+      // D361：只有明确写着 false 的才算关（老版本升上来没这个键＝开着）。
       retellHint: p?.retellHint !== false,
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。

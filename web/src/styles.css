@@ -3617,7 +3617,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .composer .queue-bar { margin-bottom: 6px; padding: 4px 8px; border: 1px dashed var(--line); border-radius: 8px; background: var(--panel); display: flex; flex-direction: column; gap: 4px; }
 .composer .queue-bar[hidden] { display: none; }
 
-/* D358：输入框上方那一行「重讲」。常驻一行，不动草稿；灰的时候只有药丸退色，文字照常读。 */
+/* D361：输入框上方那一行「重讲」。常驻一行，不动草稿；灰的时候只有药丸退色，文字照常读。 */
 .composer .retell-bar {
   display: flex;
   align-items: baseline;
@@ -4241,6 +4241,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .bg-run-agent { font-size: 13px; font-weight: 600; color: var(--text); }
 .bg-run-state { font: 11px/1 var(--mono); color: var(--accent); }
 .bg-run-task { font-size: 13px; line-height: 1.5; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 失败原因：runner 的报错原文（前台派活挂掉时它是唯一的线索）。 */
+.bg-run-err { font-size: 12.5px; line-height: 1.5; color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; }
 .bg-run-id { font: 11px/1 var(--mono); color: var(--faint); }
 .bg-run-lab { font-size: 11px; color: var(--faint); letter-spacing: 0.02em; }
 .bg-run-log,
