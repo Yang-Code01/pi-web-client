@@ -160,6 +160,9 @@ export interface AskOutcome {
   cancelled: boolean;
 }
 
+/** pi `get_commands` 回包里我们用到的那几列。 */
+type PiCommand = { name: string; description: string; source: string };
+
 interface PendingAsk extends AskRequest {
   resolve: (out: AskOutcome) => void;
 }
@@ -913,6 +916,8 @@ export class Session extends EventEmitter {
   private autoCompactUsed = false;
   /** get_commands results, refreshed every couple of minutes. */
   private skillsCache: { at: number; list: SkillInfo[] } | null = null;
+  /** D356：启动窗口里给过磁盘清单，等 pi 答得动那一下补推权威版（一次启动只排一份）。 */
+  private bootPush: Promise<void> | null = null;
 
   private lastActivity = Date.now();
   /**
@@ -2689,34 +2694,101 @@ export class Session extends EventEmitter {
     current?.resolve();
   }
 
-  /** Skills pi knows about (via get_commands), with a disk fallback for sessions with no rpc child. */
+  /**
+   * Skills pi knows about (via get_commands), with a disk fallback for sessions with no rpc child.
+   *
+   * D356：pi 刚 spawn 的那几秒它答不了 get_commands —— 得先把所有扩展加载完（本机实测 4.9 秒，忙时
+   * 更久），而磁盘扫描只要 27 毫秒。启动窗口里先给磁盘那份，别让 `/` 菜单和技能面板空着；等 pi 答得
+   * 动了再把权威清单推回去（`queueCommandsPush`）：扩展自带的技能与扩展命令只有它知道。
+   */
   async skills(): Promise<SkillInfo[]> {
     if (this.skillsCache && Date.now() - this.skillsCache.at < 120_000) return this.skillsCache.list;
-    let list: SkillInfo[] = [];
-    let fromPi = false;
-    if (this.rpc?.alive) {
-      try {
-        // A freshly spawned pi answers only after loading every extension; that can take >8s.
-        const res = await this.rpc.request<any>("get_commands", {}, 30000);
-        fromPi = true;
-        for (const c of res?.commands ?? []) {
-          if (c?.source !== "skill") continue;
-          const name = String(c.name ?? "").replace(/^skill:/, "");
-          if (!name) continue;
-          list.push({ name, description: String(c.description ?? ""), source: "user", uses: 0, lastUsed: 0, viewable: false });
-        }
-      } catch {
-        /* fall through to the disk scan */
+    if (this.startingNow()) {
+      this.queueCommandsPush();
+      return this.diskSkills();
+    }
+    const fromPi = await this.piCommands();
+    if (fromPi?.length) {
+      const ranked = this.skillInfos(fromPi);
+      if (ranked.length) {
+        this.skillsCache = { at: Date.now(), list: ranked };
+        return ranked;
       }
     }
-    if (!list.length) list = scanSkills(this.state.cwd || process.cwd());
-    // #462：pi 的清单里也有盘上没有文件的（扩展自己带进来的技能）。「查看」能不能点按盘上的扫描算：
-    // 两边认的是同一个名字（frontmatter 的 `name:`，没有就用目录名），对得上就能开它那份 SKILL.md。
-    const onDisk = new Set(this.skillsHere().map((s) => s.name));
-    const ranked = rankSkills(list.map((s) => ({ ...s, viewable: onDisk.has(s.name) })));
     // Only pi's own answer is worth keeping; a fallback list is retried on the next open.
-    this.skillsCache = fromPi ? { at: Date.now(), list: ranked } : null;
-    return ranked;
+    this.skillsCache = null;
+    return this.diskSkills();
+  }
+
+  /** 盘上的技能（pi 还没答得动时先顶上）；名字与计数器都按扫描来的算。 */
+  private diskSkills(): SkillInfo[] {
+    return rankSkills(scanSkills(this.state.cwd || process.cwd()));
+  }
+
+  /** pi 报的技能清单；「查看」能不能点按盘上的同一份扫描算（#462）。 */
+  private skillInfos(all: PiCommand[]): SkillInfo[] {
+    // #462：pi 的清单里也有盘上没有文件的（扩展自己带进来的技能）。两边认的是同一个名字（frontmatter
+    // 的 `name:`，没有就用目录名），对得上就能开它那份 SKILL.md。
+    const onDisk = new Set(this.skillsHere().map((s) => s.name));
+    const list: SkillInfo[] = [];
+    for (const c of all) {
+      if (c.source !== "skill") continue;
+      const name = c.name.replace(/^skill:/, "");
+      if (!name) continue;
+      list.push({ name, description: c.description, source: "user", uses: 0, lastUsed: 0, viewable: onDisk.has(name) });
+    }
+    return rankSkills(list);
+  }
+
+  /**
+   * D356：pi 刚起来时先给页面磁盘那份清单，启动完成后再把 pi 的权威版推过去。只在启动窗口里排一次；
+   * 页面那边收到 `commands` / `skills` 帧会自己重画，不用它再问一遍。
+   */
+  private queueCommandsPush(): void {
+    if (this.bootPush || !this.startingNow()) return;
+    this.bootPush = this.waitBooted()
+      .then(() => this.pushCommands())
+      .catch(() => {})
+      .finally(() => {
+        this.bootPush = null;
+      });
+  }
+
+  /** `starting` 变 false（启动完成 / 进程没了）就返回；5 分钟后放弃，别留常驻监听。 */
+  private waitBooted(): Promise<void> {
+    return new Promise((resolve) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        this.off("state", check);
+        resolve();
+      };
+      const check = (state: SessionState): void => {
+        if (!state.starting) finish();
+      };
+      const timer = setTimeout(finish, 5 * 60_000);
+      this.on("state", check);
+    });
+  }
+
+  private async pushCommands(): Promise<void> {
+    const all = await this.piCommands();
+    if (!all) return;
+    this.dropSkillCache();
+    this.emitWs({ type: "commands", sessionId: this.state.id, commands: all });
+    this.emitWs({ type: "skills", sessionId: this.state.id, commands: this.skillInfos(all) });
+  }
+
+  /** pi 的原始命令表；没有活进程或这一问没答上来就是 null（调用方退回磁盘清单）。 */
+  private async piCommands(): Promise<PiCommand[] | null> {
+    if (!this.rpc?.alive) return null;
+    try {
+      const res = await this.rpc.request<any>("get_commands", {}, 30000);
+      return (res?.commands ?? [])
+        .filter((c: any) => c && typeof c.name === "string" && c.name)
+        .map((c: any) => ({ name: String(c.name), description: String(c.description ?? ""), source: String(c.source ?? "") }));
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -2735,19 +2807,25 @@ export class Session extends EventEmitter {
   /**
    * Everything `/` can reach in this session (#25): extension commands, prompt templates and skills,
    * as pi reports them (get_commands). Without a live pi only the skills on disk are known.
+   *
+   * D356：启动窗口里 pi 还没答得动，先给磁盘那份（几十毫秒），别让人对着「没有匹配的命令」干等 5 秒；
+   * 启动完成后 `queueCommandsPush` 会把权威清单推回来。
    */
   async commands(): Promise<{ name: string; description: string; source: string }[]> {
-    if (this.rpc?.alive) {
-      try {
-        const res = await this.rpc.request<any>("get_commands", {}, 30000);
-        return (res?.commands ?? [])
-          .filter((c: any) => c && typeof c.name === "string" && c.name)
-          .map((c: any) => ({ name: String(c.name), description: String(c.description ?? ""), source: String(c.source ?? "") }));
-      } catch {
-        /* fall through */
-      }
+    if (this.startingNow()) {
+      this.queueCommandsPush();
+      return this.diskCommands();
     }
+    return (await this.piCommands()) ?? this.diskCommands();
+  }
+
+  private diskCommands(): { name: string; description: string; source: string }[] {
     return scanSkills(this.state.cwd || process.cwd()).map((sk) => ({ name: `skill:${sk.name}`, description: sk.description, source: "skill" }));
+  }
+
+  /** pi 还没起来（或者正在启动）：清单只能靠磁盘，别去问一个答不了的进程。 */
+  private startingNow(): boolean {
+    return Boolean(this.rpc?.alive) && this.state.starting === true;
   }
 
   /** Called after a pick so the next list reflects the new usage count. */

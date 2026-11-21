@@ -5593,7 +5593,8 @@ export class App {
     list.replaceChildren();
 
     if (!this.skills.length) {
-      list.append(el("div", "skill-empty", tr("技能列表还没到，稍等一下…")));
+      // D356：pi 还在启动 —— 磁盘那份清单几十毫秒就到，真空着也只能说「还没到」，不能说「没有」。
+      list.append(el("div", "skill-empty", this.session?.starting ? tr("pi 正在启动（加载扩展，通常几秒）…技能表随后到") : tr("技能列表还没到，稍等一下…")));
       return;
     }
     if (!items.length) {
@@ -15877,7 +15878,16 @@ export class App {
     if (!c) return;
     c.node.replaceChildren();
     if (!c.items.length) {
-      c.node.append(el("div", "complete-empty", c.mode === "file" ? (c.query ? tr("找不到「{p1}」", { p1: c.query }) : tr("输入文件名的一部分…")) : tr("没有匹配的命令")));
+      // D356：pi 还在启动时「没有匹配的命令」是句假话 —— 扩展命令 / 提示词模板都在它手里，清单还没到。
+      const empty =
+        c.mode === "file"
+          ? c.query
+            ? tr("找不到「{p1}」", { p1: c.query })
+            : tr("输入文件名的一部分…")
+          : this.session?.starting
+            ? tr("pi 正在启动（加载扩展，通常几秒）…命令表随后到")
+            : tr("没有匹配的命令");
+      c.node.append(el("div", "complete-empty", empty));
       return;
     }
     c.items.forEach((item, i) => {
