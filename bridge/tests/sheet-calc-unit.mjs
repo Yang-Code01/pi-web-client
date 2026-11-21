@@ -281,6 +281,16 @@ eq("XMATCH(4,C2:C5,1)", 2);
 eq('HLOOKUP("金额",B1:D2,3,FALSE)', "#REF!");
 eq('HLOOKUP("金额",B1:D2,0,FALSE)', "#VALUE!");
 
+
+// 非法日期不能静默进位（Date.UTC 会把 2 月 31 日算成 3 月 2 日）
+eq('DATEVALUE("2024-02-31")', "#VALUE!");
+eq('DATEVALUE("2024-04-31")', "#VALUE!");
+eq('DATEVALUE("2023-02-29")', "#VALUE!");
+eq('DATEVALUE("2024-02-29")', 45351);
+eq('DATEVALUE("1900-02-29")', "#VALUE!"); // Excel 的假闰日，我们无法与 1900-03-01 区分
+eq('DATEVALUE("2024-01-05 24:30")', "#VALUE!");
+eq('TEXT("2024-02-31","yyyy-mm-dd")', "2024-02-31"); // 认不出就原样当文本
+
 if (failures) {
   console.error(`\n${failures}/${n} 条不符合预期`);
   process.exit(1);
