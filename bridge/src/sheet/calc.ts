@@ -292,9 +292,16 @@ class Parser {
       const args: Node[] = [];
       if (!this.eat(")")) {
         for (;;) {
-          const a = this.expr();
-          if (!a) return null;
-          args.push(a);
+          // 省略的参数（`IF(A1>0,A1,)`、`SUM(1,,2)`）算一个空值。以前这里直接 `return null`，
+          // 整条公式被当成解析失败，界面上报成「函数名拼错」的 #NAME?。
+          const t = this.peek();
+          if (t && (t.t === "p" || t.t === "op") && (t.s === "," || t.s === ")")) {
+            args.push({ k: "val", v: null });
+          } else {
+            const a = this.expr();
+            if (!a) return null;
+            args.push(a);
+          }
           if (this.eat(")")) break;
           if (!this.eat(",")) return null;
         }
@@ -434,15 +441,19 @@ const FNS: Record<string, Fn> = {
   IF: (a) => {
     const c = toBool(a[0] ?? null);
     if (typeof c !== "boolean") return c;
-    return c ? (a[1] ?? true) : (a[2] ?? false);
+    // 参数整个省掉时 Excel 给 TRUE/FALSE（`IF(A1>0,A1)`）；写成空参数 `IF(A1>0,A1,)` 则是 0。
+    const pick = (v: EvalVal | undefined, dflt: boolean): EvalVal => (v === undefined ? dflt : (v ?? 0));
+    return c ? pick(a[1], true) : pick(a[2], false);
   },
   IFERROR: (a) => {
     const v = a[0] ?? null;
-    return isErr(scalar(v)) ? (a[1] ?? "") : v;
+    if (!isErr(scalar(v))) return v;
+    return a[1] === undefined ? "" : (a[1] ?? 0);
   },
   IFNA: (a) => {
     const v = scalar(a[0] ?? null);
-    return isErr(v) && v.v === "#N/A" ? (a[1] ?? "") : v;
+    if (!(isErr(v) && v.v === "#N/A")) return v;
+    return a[1] === undefined ? "" : (a[1] ?? 0);
   },
   AND: (a) => {
     for (const v of flatten(a)) {
@@ -476,13 +487,19 @@ const FNS: Record<string, Fn> = {
     const s = toStr(a[0] ?? null);
     if (typeof s !== "string") return s;
     const n = a.length > 1 ? toNum(a[1]!) : 1;
-    return typeof n === "number" ? s.slice(0, Math.max(0, Math.trunc(n))) : n;
+    if (typeof n !== "number") return n;
+    if (n < 0) return err("#VALUE!"); // Excel：个数不能为负
+    return s.slice(0, Math.trunc(n));
   },
   RIGHT: (a) => {
     const s = toStr(a[0] ?? null);
     if (typeof s !== "string") return s;
     const n = a.length > 1 ? toNum(a[1]!) : 1;
-    return typeof n === "number" ? s.slice(-Math.max(0, Math.trunc(n))) : n;
+    if (typeof n !== "number") return n;
+    if (n < 0) return err("#VALUE!");
+    // 注意 `slice(-0)` 会取整串，0 个字符要单独挡一下
+    const k = Math.trunc(n);
+    return k === 0 ? "" : s.slice(-k);
   },
   MID: (a) => {
     const s = toStr(a[0] ?? null);
@@ -491,7 +508,9 @@ const FNS: Record<string, Fn> = {
     if (typeof s !== "string") return s;
     if (typeof st !== "number") return st;
     if (typeof len !== "number") return len;
-    return s.substr(Math.max(0, Math.trunc(st) - 1), Math.max(0, Math.trunc(len)));
+    // Excel：起点从 1 算，起点 < 1 或长度 < 0 都是 #VALUE!（以前静默当成 1 / 空串）
+    if (st < 1 || len < 0) return err("#VALUE!");
+    return s.substr(Math.trunc(st) - 1, Math.trunc(len));
   },
   TRIM: (a) => {
     const s = toStr(a[0] ?? null);
@@ -527,10 +546,24 @@ const FNS: Record<string, Fn> = {
     const s = toStr(a[0] ?? null);
     const from = toStr(a[1] ?? null);
     const to = toStr(a[2] ?? null);
+    const which = a.length > 3 ? toNum(a[3]!) : 0;
     if (typeof s !== "string") return s;
     if (typeof from !== "string") return from;
     if (typeof to !== "string") return to;
-    return s.split(from).join(to);
+    if (typeof which !== "number") return which;
+    if (from === "") return s;
+    const n = Math.trunc(which);
+    if (a.length > 3 && n < 1) return err("#VALUE!"); // Excel：第几个不能是 0 / 负数
+    if (n < 1) return s.split(from).join(to); // 不指定就全换
+    // 只换第 n 个：定位那一段再拼三段，别沿用 split/join 把所有的都换掉
+    let at = -1;
+    let pos = 0;
+    for (let k = 0; k < n; k++) {
+      at = s.indexOf(from, pos);
+      if (at < 0) return s; // 不足 n 个：原样返回
+      pos = at + from.length;
+    }
+    return s.slice(0, at) + to + s.slice(at + from.length);
   },
   REPT: (a) => {
     const s = toStr(a[0] ?? null);
