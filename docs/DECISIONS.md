@@ -6753,6 +6753,8 @@ Esc 之后 dialog: 0
 - 老偏好由 `migrateThemePrefs()`（主题模块里的纯函数，不读存储、不碰 DOM）迁移：旧主题按明暗与色相（midnight / dusk → 午夜蓝，fjord / ember → 深色，daylight / light / paper → 浅色），旧强调色按最近色（ice→blue、teal→green、violet→purple、amber→yellow、rose→pink、slate→graphite）。**只有存的主题是旧配色主题时才搬强调色** —— 那时生效的是 `accent`；已经选了 Mac 主题的人则相反（`macAccent` 才是他选的，`accent` 是残值）。读偏好时一次写回 `pi.prefs`，旧键不再留着。
 - 首跑弹窗保留，收成一排三颗；终端三份调色板照旧（浅色 GitHub 风、深色 Apple system 色）。
 
+**为什么。** 两族并存的成本不在代码量，而在**心智**：用户看到一个十选一的货架，实际是「换皮」与「换系统」两种东西并排；维护者每加一条颜色要写两遍（Mac 内 / Mac 外），而两条里只有一条会被大多数人看到。而「换皮」那七套从来没有带来 Mac 材质 —— 选了它们反而离 Mac 更远，与 D342 想要的「整体体验」直接相反。收敛到一族之后，三套主题之间的差异只剩明暗与色温，是同一套设计语言里的三种取值，不是三种设计。反过来若保留配色主题、只删 Mac 材质，代价是把已经做完的材质层（210 条规则、动效、快捷键）整块扔掉，收益更小。
+
 **不做。** 跟随系统外观（`prefers-color-scheme`）、终端换 Terminal.app 调色板、把 Mac 材质并进基础样式。
 
 **守卫。** `web/tests/theme-unit.mjs`：只剩三套 id、CSS 里不许再出现旧主题块与 `[data-text]`、`TERM_THEMES` 只有三份、迁移七个旧主题与六个旧强调色的落点 + 不覆盖已选 Mac 的人 + 幂等。`probes/theme-switcher.mjs`：设置只剩「Mac 风格」「颜色」两页、三颗 chip、八色行（六色行与文字亮度行不再存在）、三套主题的底色 / color-scheme / 对比度 / 浅底不漏深色、旧偏好迁移与写回、首跑弹窗一排三颗。`probes/peer-theme.mjs` 与 `probes/mac-chat.mjs` 的循环表改三套。

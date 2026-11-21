@@ -9,7 +9,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WS_ACCENTS, nowChipView, wsAccent, wsOf, wsTitle } from "../src/nowchip.ts";
+import { MAC_ACCENT_IDS } from "../src/palette.ts";
+import { nowChipView, wsAccent, wsOf, wsTitle } from "../src/nowchip.ts";
 
 const group = (id, name = "", key = "", manual = false) => ({ id, name, key, manual });
 const ws = (over = {}) => ({ groups: [], overrides: {}, keys: {}, ...over });
@@ -17,9 +18,9 @@ const ws = (over = {}) => ({ groups: [], overrides: {}, keys: {}, ...over });
 test("色点稳定：同一个工作区永远同一色，且只从 macOS 八色里挑", () => {
   for (const id of ["f:/pi-web-client", "f:/other", "manual:abc123", ""]) {
     assert.equal(wsAccent(id), wsAccent(id));
-    assert.ok(WS_ACCENTS.includes(wsAccent(id)), `${id} → ${wsAccent(id)} 不在八色里`);
+    assert.ok(MAC_ACCENT_IDS.includes(wsAccent(id)), `${id} → ${wsAccent(id)} 不在八色里`);
   }
-  assert.deepEqual([...WS_ACCENTS], ["blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite"]);
+  assert.deepEqual([...MAC_ACCENT_IDS], ["blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite"]);
 });
 
 test("色点不是全挤在一个颜色上：一串真实路径能散开", () => {

@@ -15,9 +15,6 @@ import { MAC_ACCENTS, MAC_ACCENT_IDS, type MacAccentId } from "./palette.ts";
 import { tr } from "./i18n/index.ts";
 import type { WorkspaceState, WsGroup } from "./types.ts";
 
-/** 工作区色点可用的八个 accent id（顺序就是把 id 散列上去的桶）。 */
-export const WS_ACCENTS = MAC_ACCENT_IDS;
-
 /** 组 id → 稳定颜色。同一个工作区在任何设备、任何会话里都是同一色。 */
 export function wsAccent(id: string | null | undefined): MacAccentId {
   const text = String(id ?? "");

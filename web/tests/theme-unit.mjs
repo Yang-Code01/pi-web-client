@@ -155,6 +155,13 @@ test("迁移不碰已选 Mac 主题的人：主题原样、强调色原样", () 
   }
 });
 
+test("迁移不认原型链上的名字：constructor / toString 这类值一律落默认", () => {
+  assert.deepEqual(migrateThemePrefs({ theme: "constructor" }), { theme: DEFAULT_THEME, macAccent: "blue" });
+  assert.deepEqual(migrateThemePrefs({ theme: "mac-dark", macAccent: "toString" }), { theme: "mac-dark", macAccent: "blue" });
+  assert.deepEqual(migrateThemePrefs({ theme: "fjord", accent: "hasOwnProperty" }), { theme: "mac-dark", macAccent: "blue" });
+  assert.deepEqual(accentFor("mac-dark", "constructor"), MAC_ACCENTS.blue);
+});
+
 test("迁移对错值落默认，且幂等（迁过一次再迁不会再变）", () => {
   assert.deepEqual(migrateThemePrefs({}), { theme: DEFAULT_THEME, macAccent: "blue" });
   assert.deepEqual(migrateThemePrefs({ theme: "nope", accent: "chartreuse", macAccent: "nope" }), { theme: DEFAULT_THEME, macAccent: "blue" });

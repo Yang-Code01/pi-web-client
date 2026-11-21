@@ -27,8 +27,8 @@ import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
-import { DEFAULT_MAC_ACCENT, MAC_ACCENTS } from "./palette.ts";
-import { accentFor, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, type ThemeId } from "./theme.ts";
+import { DEFAULT_MAC_ACCENT } from "./palette.ts";
+import { accentFor, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, type ThemeId, type ThemeInfo } from "./theme.ts";
 import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
 import { MailConfirmDialog } from "./mailconfirm.ts";
@@ -3934,6 +3934,13 @@ export class App {
   }
 
   // ---------------------------------------------------------------- appearance
+  /** 点一颗主题 chip：写偏好 → `applyPrefs` 把主题、强调色块、终端一次落下去。 */
+  private pickTheme(id: ThemeId): void {
+    this.prefs = { ...this.prefs, theme: id };
+    savePrefs(this.prefs);
+    this.applyPrefs();
+  }
+
   private applyPrefs(): void {
     const root = document.documentElement.style;
     root.setProperty("--ui-scale", String(this.prefs.scale));
@@ -4041,9 +4048,9 @@ export class App {
     const reset = el("button", "btn ghost", tr("恢复默认")) as HTMLButtonElement;
     reset.type = "button";
     reset.dataset.role = "dreset";
-    reset.title = tr("字号、主题、颜色、文字亮度、布局回到默认；语言与界面元素不动");
+    reset.title = tr("字号、主题、颜色、布局回到默认；语言与界面元素不动");
     reset.onclick = () => {
-      // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
+      // 恢复默认只恢复字号/主题/颜色/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
       // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
       this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen, themeIntroSeen: this.prefs.themeIntroSeen, settingsTab: this.prefs.settingsTab };
       savePrefs(this.prefs);
@@ -4263,34 +4270,10 @@ export class App {
 
     // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
     // 外观只剩 Mac 风格三套（D352）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
-    const themeChipRow = (): HTMLElement => {
-      const row = el("div", "chips theme-chips");
-      for (const t of THEMES) row.append(themeChip(t));
-      return row;
-    };
-    const themeChip = (t: (typeof THEMES)[number]): HTMLElement => {
-      const chip = el("button", `chip theme-chip${this.prefs.theme === t.id ? " on" : ""}`);
-      chip.dataset.theme = t.id;
-      chip.title = tr(t.label);
-      const demo = el("span", "theme-demo");
-      demo.style.setProperty("--td-bg", t.demo.bg);
-      demo.style.setProperty("--td-panel", t.demo.panel);
-      demo.style.setProperty("--td-text", t.demo.text);
-      demo.style.setProperty("--td-line", t.demo.line);
-      demo.append(el("span", "td-side"), el("span", "td-l1"), el("span", "td-l2"), el("span", "td-btn"));
-      demo.classList.add("mac");
-      demo.append(el("span", "td-lights"));
-      chip.append(demo, el("span", "theme-chip-label", tr(t.label)));
-      chip.onclick = () => {
-        this.prefs = { ...this.prefs, theme: t.id };
-        savePrefs(this.prefs);
-        this.applyPrefs();
-        for (const other of this.sheet?.querySelectorAll<HTMLElement>(".theme-chip") ?? []) other.classList.toggle("on", other.dataset.theme === t.id);
-      };
-      return chip;
-    };
+    const themeChips = el("div", "chips theme-chips");
+    for (const t of THEMES) themeChips.append(themeChipEl(t, this.prefs.theme, () => this.sheet, (id) => this.pickTheme(id)));
     const macPanel = section("mac");
-    const macRow = this.stRow(tr("Mac 风格"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效；强调色在「颜色」里换成 macOS 八色"), themeChipRow());
+    const macRow = this.stRow(tr("Mac 风格"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效；强调色在「颜色」里换成 macOS 八色"), themeChips);
     macRow.classList.add("wide");
     macPanel.append(macRow);
     // Mac 主题下多出来的几颗快捷键（installShortcuts 里的 MAC_KEYS）：Mac 上显示 ⌘，别处显示 Ctrl。
@@ -4302,7 +4285,7 @@ export class App {
       li.append(tr(label));
       keys.append(li);
     }
-    const keysRow = this.stRow(tr("Mac 快捷键"), tr("只在 Mac 风格主题下生效；你在「快捷键」里绑过的组合优先"), keys);
+    const keysRow = this.stRow(tr("Mac 快捷键"), tr("系统式快捷键，⌘ 与 Ctrl 都认；你在「快捷键」里绑过的组合优先"), keys);
     keysRow.classList.add("wide");
     macPanel.append(keysRow);
 
@@ -7207,33 +7190,11 @@ export class App {
 
     const body = el("div", "theme-intro");
     body.append(el("p", "theme-intro-lead", tr("先挑一套顺眼的；以后随时可以在 设置 → 外观 里换。")));
-    const chip = (t: (typeof THEMES)[number]): HTMLElement => {
-      const b = el("button", `chip theme-chip${this.prefs.theme === t.id ? " on" : ""}`) as HTMLButtonElement;
-      b.type = "button";
-      b.dataset.theme = t.id;
-      b.title = tr(t.label);
-      const demo = el("span", "theme-demo");
-      demo.style.setProperty("--td-bg", t.demo.bg);
-      demo.style.setProperty("--td-panel", t.demo.panel);
-      demo.style.setProperty("--td-text", t.demo.text);
-      demo.style.setProperty("--td-line", t.demo.line);
-      demo.append(el("span", "td-side"), el("span", "td-l1"), el("span", "td-l2"), el("span", "td-btn"));
-      demo.classList.add("mac");
-      demo.append(el("span", "td-lights"));
-      b.append(demo, el("span", "theme-chip-label", tr(t.label)));
-      b.onclick = () => {
-        this.prefs = { ...this.prefs, theme: t.id };
-        savePrefs(this.prefs);
-        this.applyPrefs();
-        for (const other of sheet.querySelectorAll<HTMLElement>(".theme-chip")) other.classList.toggle("on", other.dataset.theme === t.id);
-      };
-      return b;
-    };
     const group = (title: string, role: string, list: typeof THEMES): HTMLElement => {
       const box = el("div", "theme-intro-group");
       box.dataset.role = role;
       const row = el("div", "chips theme-chips");
-      for (const t of list) row.append(chip(t));
+      for (const t of list) row.append(themeChipEl(t, this.prefs.theme, () => sheet, (id) => this.pickTheme(id)));
       box.append(el("div", "theme-intro-title", title), row);
       return box;
     };
@@ -21205,11 +21166,36 @@ function readPrefs(): Prefs {
       themeIntroSeen: p?.themeIntroSeen !== false,
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
-    if (p?.theme !== next.theme || p?.macAccent !== next.macAccent) savePrefs(next);
+    if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);
     return next;
   } catch {
     return { ...DEFAULT_PREFS, lang: detectLang() };
   }
+}
+
+/**
+ * 带小样的主题 chip（设置抽屉与首跑弹窗共用一个，别再各抄一遍）：点一下立即换上并写回偏好。
+ * `scope` 返回「哪些 chip 的亮着状态要一起改」—— 抽屉里是整张 sheet，弹窗里是那张弹窗。
+ */
+function themeChipEl(t: ThemeInfo, current: ThemeId, scope: () => ParentNode | null, onPick: (id: ThemeId) => void): HTMLElement {
+  const chip = el("button", `chip theme-chip${current === t.id ? " on" : ""}`) as HTMLButtonElement;
+  chip.type = "button";
+  chip.dataset.theme = t.id;
+  chip.title = tr(t.label);
+  const demo = el("span", "theme-demo");
+  demo.style.setProperty("--td-bg", t.demo.bg);
+  demo.style.setProperty("--td-panel", t.demo.panel);
+  demo.style.setProperty("--td-text", t.demo.text);
+  demo.style.setProperty("--td-line", t.demo.line);
+  demo.append(el("span", "td-side"), el("span", "td-l1"), el("span", "td-l2"), el("span", "td-btn"));
+  demo.classList.add("mac");
+  demo.append(el("span", "td-lights"));
+  chip.append(demo, el("span", "theme-chip-label", tr(t.label)));
+  chip.onclick = () => {
+    onPick(t.id);
+    for (const other of scope()?.querySelectorAll<HTMLElement>(".theme-chip") ?? []) other.classList.toggle("on", other.dataset.theme === t.id);
+  };
+  return chip;
 }
 
 function savePrefs(prefs: Prefs): void {

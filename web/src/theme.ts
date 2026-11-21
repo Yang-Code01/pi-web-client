@@ -73,11 +73,13 @@ const LEGACY_ACCENT_MAP: Record<string, string> = {
  */
 export function migrateThemePrefs(raw: unknown): { theme: ThemeId; macAccent: string } {
   const p = (raw && typeof raw === "object" ? raw : {}) as { theme?: unknown; accent?: unknown; macAccent?: unknown };
-  const fromLegacy = typeof p.theme === "string" && p.theme in LEGACY_THEME_MAP;
-  const theme: ThemeId = isTheme(p.theme) ? p.theme : (fromLegacy ? LEGACY_THEME_MAP[p.theme as string] : undefined) ?? DEFAULT_THEME;
-  const stored = typeof p.macAccent === "string" && MAC_ACCENTS[p.macAccent] ? p.macAccent : undefined;
-  const legacyAccent = typeof p.accent === "string" ? LEGACY_ACCENT_MAP[p.accent] : undefined;
-  const macAccent = (fromLegacy ? legacyAccent ?? stored : stored) ?? DEFAULT_MAC_ACCENT;
+  // 一律 hasOwn：这些都是普通对象，`in` / 取下标会让 "constructor" / "toString" 混进来。
+  const legacyTheme = typeof p.theme === "string" && Object.hasOwn(LEGACY_THEME_MAP, p.theme) ? p.theme : null;
+  const theme: ThemeId = isTheme(p.theme) ? p.theme : (legacyTheme ? LEGACY_THEME_MAP[legacyTheme] : undefined) ?? DEFAULT_THEME;
+  const stored = typeof p.macAccent === "string" && Object.hasOwn(MAC_ACCENTS, p.macAccent) ? p.macAccent : undefined;
+  const legacyAccent =
+    typeof p.accent === "string" && Object.hasOwn(LEGACY_ACCENT_MAP, p.accent) ? LEGACY_ACCENT_MAP[p.accent] : undefined;
+  const macAccent = (legacyTheme ? legacyAccent ?? stored : stored) ?? DEFAULT_MAC_ACCENT;
   return { theme, macAccent };
 }
 
@@ -85,7 +87,8 @@ export function migrateThemePrefs(raw: unknown): { theme: ThemeId; macAccent: st
 export function accentFor(theme: ThemeId, accent: string): { accent: string; dim: string } {
   const info = themeInfo(theme);
   const mac = info.light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
-  return mac[accent] ?? mac[DEFAULT_MAC_ACCENT];
+  // hasOwn：认的是「表里有的 id」，不是原型链上的名字（"constructor" 之类会返回函数）。
+  return Object.hasOwn(mac, accent) ? mac[accent] : mac[DEFAULT_MAC_ACCENT];
 }
 
 /** 粗算相对亮度，只用来给强调色底挑黑字还是白字。 */

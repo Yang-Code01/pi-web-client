@@ -382,12 +382,17 @@ ok(s.meta === "#171c26", `刷新后 meta theme-color 也是午夜蓝（${s.meta}
   }
   await p4.waitForSelector('.icon-btn[data-act="look"]', { timeout: 15000 });
   await sleep(400);
-  const m = await p4.evaluate(() => ({
-    theme: document.documentElement.dataset.theme ?? "",
-    accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim().toLowerCase(),
-  }));
+  const m = await p4.evaluate(() => {
+    const stored = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+    return {
+      theme: document.documentElement.dataset.theme ?? "",
+      accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim().toLowerCase(),
+      keptOld: "accent" in stored || "text" in stored,
+    };
+  });
   ok(m.theme === "mac-dark", `已是 Mac 深色的用户主题不动（${m.theme}）`);
   ok(m.accent === "#ff375f", `强调色仍是自己选的粉（${m.accent}）`);
+  ok(!m.keptOld, "已经是 Mac 主题的人，旧键也被顺手清掉");
   await ctx4.close();
 }
 
