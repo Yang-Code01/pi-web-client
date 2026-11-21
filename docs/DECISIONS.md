@@ -6559,6 +6559,8 @@ Esc 之后 dialog: 0
 - **终端跟着主题**（推翻下面「不在范围」里终端那条）：`theme.ts` 的 `TERM_THEMES` 给七套各一份 xterm 调色板（底 / 字 / 选区 + 16 色 ANSI），`applyPrefs` 经 `paintTermThemes()` 把已经开着的终端一起换（缓存键 `theme/accent`，没变就不写），新开的走 `termPalette()`，光标色取当前强调色。
 - **顺手修**：强调色块改成取当前主题那一支 ramp（`paintSwatches()`），浅底上不再是一圈看不清的粉彩点；晨光的 `--faint` 压深到 `#616a7a`（soft 组 `#626b7b`），对面板 3 从 4.2:1 拉到 4.6:1，过 AA。
 
+- **2026-11-21 反转：** 下面那七套配色主题（连同文字亮度三档与六色强调色）已经整项删掉，外观只剩 Mac 风格三套 —— 见 D352。
+
 **不在范围。** 表格查看器（自带浅色）、内网通独立页 `peer.css`（自己一套变量）。终端配色已跟主题（见上）。
 
 ## D338 内网通：弹框最大化、表情 / 我的表情、表情回应、记录内搜索、多选转发、看图器（用户要求 2026-11-20）
@@ -6620,6 +6622,8 @@ Esc 之后 dialog: 0
 
 - **决定**：Mac 三套主题（mac-light / mac-dark / mac-midnight）由 `paintTheme` 在 `<html>` 上挂 `data-ui="mac"`，`web/src/mac.css` 里所有规则都挂在这个开关下：壁纸式渐变底 + 毛玻璃顶栏 / 悬浮侧栏 / 弹层 / 菜单，iMessage 气泡，macOS 按钮、分段控件、开关，Apple 弹簧缓动，弹层落下与退场动画（`retireOverlay` + `.mac-leaving`），以及兜底快捷键 `MAC_KEYS`（⌘/Ctrl + , 设置、+K 搜索、⌃⌘S 左栏、+. 中断）。强调色在 Mac 主题下改用 `prefs.macAccent`（macOS 八色，默认系统蓝），与原来的 `prefs.accent` 分开存；文字亮度三档在 Mac 主题下固定为 normal（Apple 标签色层级）并在设置里隐藏。
 - **为什么**：用户要的是「改天换地」的整体体验，不是第十套配色。把所有改动关在一个属性开关后面，其它七套主题一个像素都不变，也不用给每条旧规则加分支；强调色分开存，切回普通主题时原来的选择还在。位移动画只用独立的 `translate` / `scale` 属性，因为不少浮层本来用 `transform` 定位。
+
+- **2026-11-21 反转：** 「Mac 风格与配色主题并存」这一半已经推翻 —— 配色七套删掉，`data-ui="mac"` 现在恒挂，强调色只剩 macOS 八色那一份。开关与文件分层保留。见 D352。
 
 ## D343 运行时面板的内存：Windows 按 pid 逐个问 `tasklist`
 
@@ -6736,3 +6740,19 @@ Esc 之后 dialog: 0
 - 钉条里当前会话那颗胶囊是实心强调色底，里面的状态小字（运行中 / 进行中）和 ★ 也是强调色，叠在一起看不见。选中胶囊里一律跟胶囊白字走。
 
 **守卫。** `node probes/mac-chat.mjs`：四套主题下量短气泡单行、气泡贴右、选中胶囊对比度，并扫整页「自己带字、对比度 < 2」的元素（展开 / 收起左栏各一遍）。
+
+## D352 删掉「配色主题」，外观只剩 Mac 风格三套（用户要求 2026-11-20，反转 D337 的一半与 D342 的并存结构）
+
+**问题。** D337 加的七套配色主题与 D342 的 Mac 风格三套共用 `pi.prefs.theme`，在设置里占两页、在首跑弹窗里占两排。两族换的东西根本不是一回事：Mac 三套换的是材质（壁纸渐变、毛玻璃、iMessage 气泡、弹簧动效、⌘ 快捷键），配色七套只换底色 —— 选了配色主题就没有 Mac 材质，而配色主题的暖底 / 冷底在 Mac 里也没有对应。维护上每加一条颜色都要同时写 Mac 内与 Mac 外两条；文字亮度在 Mac 下是隐藏且失效的；六色强调色表退化成只服务左栏色点。用户要的是「一套观感」。
+
+**决定。**
+- 主题只剩 `mac-light` / `mac-dark` / `mac-midnight`；`isMacTheme()` 与「配色主题」那一页一起删，`data-ui="mac"` 恒挂 —— 材质仍集中在那三个 CSS 文件里，没有并进基础样式（那是一次纯靠肉眼验收的重排，风险大、收益小）。
+- `:root` 兜底从午夜深色换成 Mac 浅色（含 `color-scheme: light`），浅色令牌只保留一处（不再另写 `[data-theme="mac-light"]`）；`bootTheme()` 跑之前页面就是白底。
+- 文字亮度三档（`prefs.text`、`[data-text]` 规则）整项退休，Mac 固定 Apple 的标签色层级。
+- 强调色只剩 macOS 八色（`MAC_ACCENT_IDS`）；`prefs.accent` 与六色表 `ACCENTS` / `ACCENTS_LIGHT` 退休。左栏工作区色点改用八色哈希（模数 6→8），已有组会换色 —— 纯装饰，名字仍是主线索。
+- 老偏好由 `migrateThemePrefs()`（主题模块里的纯函数，不读存储、不碰 DOM）迁移：旧主题按明暗与色相（midnight / dusk → 午夜蓝，fjord / ember → 深色，daylight / light / paper → 浅色），旧强调色按最近色（ice→blue、teal→green、violet→purple、amber→yellow、rose→pink、slate→graphite）。**只有存的主题是旧配色主题时才搬强调色** —— 那时生效的是 `accent`；已经选了 Mac 主题的人则相反（`macAccent` 才是他选的，`accent` 是残值）。读偏好时一次写回 `pi.prefs`，旧键不再留着。
+- 首跑弹窗保留，收成一排三颗；终端三份调色板照旧（浅色 GitHub 风、深色 Apple system 色）。
+
+**不做。** 跟随系统外观（`prefers-color-scheme`）、终端换 Terminal.app 调色板、把 Mac 材质并进基础样式。
+
+**守卫。** `web/tests/theme-unit.mjs`：只剩三套 id、CSS 里不许再出现旧主题块与 `[data-text]`、`TERM_THEMES` 只有三份、迁移七个旧主题与六个旧强调色的落点 + 不覆盖已选 Mac 的人 + 幂等。`probes/theme-switcher.mjs`：设置只剩「Mac 风格」「颜色」两页、三颗 chip、八色行（六色行与文字亮度行不再存在）、三套主题的底色 / color-scheme / 对比度 / 浅底不漏深色、旧偏好迁移与写回、首跑弹窗一排三颗。`probes/peer-theme.mjs` 与 `probes/mac-chat.mjs` 的循环表改三套。

@@ -9,24 +9,24 @@
  * 纯函数里（`nowChipView`），DOM 类只负责把一份 view 抹到自己的节点上。切会话、改工作区名、
  * 待处理数变化，重画一次 `render()` 就全变。
  *
- * 颜色从这里来：`hash(组 id) % 6` 取既有六个 accent —— 不新造调色板（见 palette.ts）。
+ * 颜色从这里来：`hash(组 id) % 8` 取 macOS 八色 —— 不新造调色板（见 palette.ts）。
  */
-import { ACCENTS, ACCENT_IDS, type AccentId } from "./palette.ts";
+import { MAC_ACCENTS, MAC_ACCENT_IDS, type MacAccentId } from "./palette.ts";
 import { tr } from "./i18n/index.ts";
 import type { WorkspaceState, WsGroup } from "./types.ts";
 
-/** 工作区色点可用的六个 accent id（顺序就是把 id 散列上去的桶）。 */
-export const WS_ACCENTS = ACCENT_IDS;
+/** 工作区色点可用的八个 accent id（顺序就是把 id 散列上去的桶）。 */
+export const WS_ACCENTS = MAC_ACCENT_IDS;
 
 /** 组 id → 稳定颜色。同一个工作区在任何设备、任何会话里都是同一色。 */
-export function wsAccent(id: string | null | undefined): AccentId {
+export function wsAccent(id: string | null | undefined): MacAccentId {
   const text = String(id ?? "");
   let h = 0x811c9dc5; // FNV-1a 32-bit
   for (let i = 0; i < text.length; i += 1) {
     h ^= text.charCodeAt(i);
     h = Math.imul(h, 0x01000193);
   }
-  return ACCENT_IDS[(h >>> 0) % ACCENT_IDS.length];
+  return MAC_ACCENT_IDS[(h >>> 0) % MAC_ACCENT_IDS.length];
 }
 
 /** 与桥的 `normalizePath` 同一套折叠规则：反斜杠、重复斜杠、盘符根。 */
@@ -103,7 +103,7 @@ export interface NowChipView {
   hidden: boolean;
   workspace: string;
   name: string;
-  accent: AccentId | null;
+  accent: MacAccentId | null;
   /** 与顶栏那颗状态点同一套优先级：离线 > 运行中 > 本地会话。 */
   live: "" | "live" | "busy" | "bad";
   badge: NowChipPending | null;
@@ -165,7 +165,7 @@ export class NowChip {
     this.el.hidden = view.hidden;
     if (view.hidden) return;
     this.dot.hidden = view.accent === null;
-    if (view.accent) this.dot.style.background = ACCENTS[view.accent].accent;
+    if (view.accent) this.dot.style.background = MAC_ACCENTS[view.accent].accent;
     this.ws.textContent = view.name;
     this.live.hidden = !view.live;
     this.live.className = view.live ? `now-live ${view.live}` : "now-live";

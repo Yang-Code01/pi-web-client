@@ -168,7 +168,7 @@ async function scanContrast(page, label) {
 let browser;
 try {
   browser = await chromium.launch();
-  for (const theme of ["mac-dark", "mac-light", "mac-midnight", "midnight"]) {
+  for (const theme of ["mac-dark", "mac-light", "mac-midnight"]) {
     const context = await browser.newContext({ viewport: { width: 1400, height: 860 }, locale: "zh-CN" });
     await context.addInitScript((t) => {
       const p = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
