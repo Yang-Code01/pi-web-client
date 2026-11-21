@@ -115,6 +115,7 @@
     "test:loadolder:ui": "node --experimental-strip-types bridge/tests/history-ui.mjs",
     "test:tail": "node --experimental-strip-types bridge/tests/tail-read-error.mjs",
     "test:stateguard": "node --experimental-strip-types bridge/tests/state-read-guard.mjs",
+    "test:logloop": "npm run build:bridge && node bridge/tests/log-loop.mjs",
     "test:githist": "node --experimental-strip-types bridge/tests/git-history-unit.mjs && node --experimental-strip-types bridge/tests/gitops-unit.mjs && node --experimental-strip-types bridge/tests/git-commit-unit.mjs && node --experimental-strip-types bridge/tests/git-probe-unit.mjs && node --experimental-strip-types web/tests/git-handoff-unit.mjs",
     "test:githist:ui": "node bridge/tests/git-history-ui.mjs",
     "test:subagents": "node --experimental-strip-types bridge/tests/subagents-unit.mjs && node --experimental-strip-types bridge/tests/subagents-basics-unit.mjs && node --experimental-strip-types bridge/tests/subagents-overrides-unit.mjs && node --experimental-strip-types bridge/tests/subagents-advanced-unit.mjs && node --experimental-strip-types bridge/tests/acpdelegate-unit.mjs",
