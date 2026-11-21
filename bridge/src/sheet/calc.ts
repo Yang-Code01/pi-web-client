@@ -10,8 +10,9 @@
  * 宁可显示错误，也不显示一个看起来像对的错数。
  */
 
-import { criteria, cmp, err, firstErr, flatten, isErr, isMx, numbers, scalar, serialToday, serialToDate, toBool, toNum, toStr, type CalcCtx, type EvalVal, type ErrVal, type Matrix, type Val } from "./value.ts";
+import { criteria, cmp, err, firstErr, flatten, isErr, isMx, numbers, scalar, serialToday, serialToDate, toBool, toNum, toStr, type CalcCtx, type EvalVal, type Val } from "./value.ts";
 import { EXTRA_FNS } from "./functions.ts";
+import { roundDecimal } from "./decimal.ts";
 
 export { err, isErr } from "./value.ts";
 export type { CalcCtx, ErrVal, EvalVal, Matrix, Val } from "./value.ts";
@@ -658,14 +659,12 @@ function roundTo(a: EvalVal[], mode: number): EvalVal {
   const d = a.length > 1 ? toNum(a[1]!) : 0;
   if (typeof x !== "number") return x;
   if (typeof d !== "number") return d;
-  const p = Math.pow(10, Math.trunc(d));
-  const scaled = x * p;
-  let r = Math.floor(scaled);
-  if (mode === 0) {
-    const abs = Math.abs(scaled);
-    r = Math.sign(scaled) * Math.round(abs + abs * 1e-12 + 1e-12);
-  } else if (mode > 0) r = Math.ceil(scaled);
-  return r / p;
+  // mode: 0 = ROUND（half-up）、>0 = ROUNDUP（远离 0）、<0 = ROUNDDOWN（朝 0）。
+  // 方向要按**绝对值**定，否则负数会朝反方向跑；舍入本身走十进制（`x * 10^d` 有二进制误差）。
+  let dir: -1 | 0 | 1 = 0;
+  if (mode > 0) dir = 1;
+  else if (mode < 0) dir = -1;
+  return roundDecimal(x, Math.trunc(d), dir);
 }
 
 function callFn(n: Node & { k: "fn" }, ctx: CalcCtx, sheet: string | null): EvalVal {
