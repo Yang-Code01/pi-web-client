@@ -7404,3 +7404,15 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** 敲 `/pi-web-e2e-test` 不再有补全项，要打全 `/skill:pi-web-e2e-test`；补充要求照样能跟（`/skill:name` 后面的字作为用户请求追加到已加载指令后）。想恢复短命令就照 D196 的形状再加一个模板，但要先确认它带来的是 SKILL.md 里没有的边界。
 
 **验证。** `git ls-files .pi/prompts` 只剩 `whatsnew-write.md`；`grep -n "/pi-web-e2e-test " README.md` 无输出（说明段里只剩 `.pi/skills/pi-web-e2e-test/` 这种路径）；技能本身没改，`node .pi/skills/pi-web-e2e-test/bin/e2e.mjs --help` 照常打印用法。
+
+## D384 邮箱面板的外壳只建一次，`render()` 只换内容（用户「点击邮箱按钮，会连续弹出3次dialog」2026-11-22）
+
+**问题。** `MailPanel.render()` 每次都 `new .mc-back` + `new .mc-console`，`this.root?.remove()` 再 `mountOverlay()` 挂新的；而一次 `open()` 会 render 三次（`open()` 自己一次、`mailConfig()` 回来一次、`loadFolders()` 置 `listLoading` 一次）。mac 材质给这两层挂的 `mac-fade-in 260ms` / `mac-window-in 460ms` 就跟着演三遍 —— 用户看到「点一下，面板闪三下」。重挂还顺带把正文滚动位置与输入焦点打回原点，并让每次重画都多一次全屏 `backdrop-filter` 重绘。
+
+**决定。** 外壳（`.mc-back` + `.mc-console`）在 `open()` 里由新的 `mountShell()` 建一次并 `mountOverlay()`；`render()` 改为 `this.shell.replaceChildren(headEl(), bannerEl(), mainEl(), footEl())`，`close()` 把 `shell` 一起置空。重画不再碰外壳节点，入场动画只在真正开场时演一次。
+
+**为什么。** 另一条路是照 `retireSheet()` 的做法给重画的新节点加 `mac-instant`（`mac.css:410` 已有规则），一行就能消掉重影；但节点仍然每次重建，滚动与焦点照丢，而且旧代码里 `render()` 末尾无条件 `mountOverlay()`，关闭后迟到的请求回来会把面板**重新挂出来** —— 这个副作用顺带被 `if (!this.shell) return` 堵掉了，`mac-instant` 路线堵不到。
+
+**代价 / 可改。** 外壳自身的属性（`aria-label`）不再随重建刷新，改为在 `render()` 里重设；以后若想让某次重画**重演**入场，得显式加类触发，不能靠重建。`List` 与 `main` 仍是每次新建，滚动容器 `.mc-main` 原地重置到顶部，切分区的手感不变。
+
+**验证。** `probes/mail-panel-single-mount.mjs`：改前一次点击挂载 3 次、带 `mac-window-in` 3 次、切分区累计 4 次（4 条全红）；改后 1 / 1 / 1，切分区不重挂、Esc 后不复活、`关闭前后没有新的挂载`（5 条全绿）。`npm --prefix web run typecheck` 通过；截屏 `.scratch/mail-single-mount/shots/panel-open.png`。
