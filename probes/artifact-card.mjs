@@ -1,5 +1,5 @@
 /**
- * 这一轮的产物收成一张卡（D353）：12 个以上写入不再铺三四行药丸。
+ * 这一轮的产物收成一张卡（D354）：12 个以上写入不再铺三四行药丸。
  *
  * 自带丢弃式 bridge + 一个手写会话文件（不花模型 turn、不碰 7864）：一轮里写了 14 个文件
  * （其中一个写两次）。断言：
@@ -168,7 +168,7 @@ try {
     `open=${shape.open} h=${shape.bodyHeight} inert=${shape.inert}`,
   );
   check("标题报总数，重复写入不重复计数", shape.title === "14 个产物", shape.title);
-  check("类型小结只数画出来的 12 块", shape.sub === "样式 2 · 脚本 8 · 图片 1 · 文档 1", shape.sub);
+  check("类型小结与标题同口径（14 块全数）", shape.sub === "样式 3 · 脚本 9 · 图片 1 · 文档 1", shape.sub);
   check("收起时给最近两个新文件", shape.recent.includes("palette.ts") && shape.recent.includes("theme-tokens.css"), shape.recent);
   await page.screenshot({ path: path.join(OUT, "1-collapsed.png"), animations: "disabled" });
 
@@ -202,7 +202,7 @@ try {
   check("动作平时透明，悬停才浮出来", Number(before) < 0.05 && Number(after) > 0.9, `${before} → ${after}`);
   await page.screenshot({ path: path.join(OUT, "3-hover.png"), animations: "disabled" });
 
-  await tile.locator('.fc-chip-act.quote').click();
+  await tile.locator('.ac-act.quote').click();
   await sleep(200);
   const quoted = await page.evaluate(() => document.querySelector(".composer-input textarea")?.value ?? "");
   check("点「引用」把路径带进输入框", quoted.includes("mac.css"), quoted.slice(0, 80));

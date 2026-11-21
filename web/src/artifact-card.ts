@@ -1,5 +1,5 @@
 /**
- * 这一轮写过的产物，收成一张卡（D361）。
+ * 这一轮写过的产物，收成一张卡（D354）。
  *
  * 以前每个文件一行芯片（图标 / 名字 / 引用 / 打开），一次重构能写八十几个文件，聊天框里
  * 于是铺开三四行药丸，动作比文件名还显眼。现在一轮只有一张卡：收起时一行（一叠纸 +
@@ -75,7 +75,6 @@ const MAX_TILES = 12;
 
 export interface TurnArtifact {
   path: string;
-  tool: string;
   writes: number;
 }
 
@@ -116,15 +115,22 @@ function badgeOf(p: string): string {
   return BADGE[ext] ?? ext.toUpperCase().slice(0, 3);
 }
 
+/** 按类型分组，组序 = 首次出现序。扇形、小结、展开网格都吃这一份。 */
+function groupByKind(items: TurnArtifact[]): { kind: Kind; items: TurnArtifact[] }[] {
+  const groups: { kind: Kind; items: TurnArtifact[] }[] = [];
+  for (const item of items) {
+    const k = kindOf(item.path);
+    const hit = groups.find((g) => g.kind.id === k.id);
+    if (hit) hit.items.push(item);
+    else groups.push({ kind: k, items: [item] });
+  }
+  return groups;
+}
+
 /** 收起态左边那叠纸：每种类型一张，最多三张，颜色一眼看出「这轮动了什么」。 */
 function fan(items: TurnArtifact[]): HTMLElement {
   const wrap = el("span", "ac-fan");
-  const kinds: Kind[] = [];
-  for (const item of items) {
-    const k = kindOf(item.path);
-    if (!kinds.some((x) => x.id === k.id)) kinds.push(k);
-    if (kinds.length === 3) break;
-  }
+  const kinds = groupByKind(items).slice(0, 3).map((g) => g.kind);
   if (!kinds.length) kinds.push(OTHER);
   wrap.classList.toggle("is-stack", kinds.length > 1);
   for (const k of kinds) {
@@ -135,19 +141,15 @@ function fan(items: TurnArtifact[]): HTMLElement {
   return wrap;
 }
 
+/** 「样式 3 · 脚本 9」：数的是全部条目，和标题的件数同一口径。 */
 function summary(items: TurnArtifact[]): string {
-  const counts: { kind: Kind; n: number }[] = [];
-  for (const item of items) {
-    const k = kindOf(item.path);
-    const hit = counts.find((c) => c.kind.id === k.id);
-    if (hit) hit.n += 1;
-    else counts.push({ kind: k, n: 1 });
-  }
-  return counts.map((c) => `${tr(c.kind.label)} ${c.n}`).join(" · ");
+  return groupByKind(items)
+    .map((g) => `${tr(g.kind.label)} ${g.items.length}`)
+    .join(" · ");
 }
 
 function actButton(text: string, title: string, cls: string, onclick: () => void): HTMLButtonElement {
-  const btn = el("button", `fc-chip-act${cls ? ` ${cls}` : ""}`, text) as HTMLButtonElement;
+  const btn = el("button", `ac-act${cls ? ` ${cls}` : ""}`, text) as HTMLButtonElement;
   btn.type = "button";
   btn.title = title;
   btn.onclick = onclick;
@@ -158,7 +160,8 @@ function tile(item: TurnArtifact): HTMLElement {
   const k = kindOf(item.path);
   const box = el("div", "ac-tile");
   box.dataset.path = item.path;
-  box.title = item.path;
+  // 写了几次只进悬停提示：格子上再挤一列数字就认不出文件名了。
+  box.title = item.writes > 1 ? `${item.path} ×${item.writes}` : item.path;
   const badge = el("span", "ac-badge", badgeOf(item.path));
   badge.style.setProperty("--c", k.color);
   const quote = actButton(tr("引用"), tr("把路径引用到输入框"), "quote", () => {
@@ -179,13 +182,13 @@ function focusedSlot(card: HTMLElement): { path: string; act: string } | "head" 
   if (!active || !card.contains(active)) return null;
   if (active.classList.contains("artcard-head")) return "head";
   const box = active.closest<HTMLElement>(".ac-tile");
-  if (!box?.dataset.path || !active.classList.contains("fc-chip-act")) return null;
+  if (!box?.dataset.path || !active.classList.contains("ac-act")) return null;
   return { path: box.dataset.path, act: active.classList.contains("quote") ? "quote" : "open" };
 }
 
 function restoreFocus(card: HTMLElement, slot: { path: string; act: string }): void {
   const box = [...card.querySelectorAll<HTMLElement>(".ac-tile")].find((t) => t.dataset.path === slot.path);
-  const btn = box?.querySelector<HTMLButtonElement>(slot.act === "quote" ? ".fc-chip-act.quote" : ".ac-acts .fc-chip-act:not(.quote)");
+  const btn = box?.querySelector<HTMLButtonElement>(slot.act === "quote" ? ".ac-act.quote" : ".ac-acts .ac-act:not(.quote)");
   btn?.focus({ preventScroll: true });
 }
 
@@ -193,7 +196,7 @@ function paint(card: HTMLElement): void {
   const st = STATE.get(card);
   if (!st) return;
   const total = st.items.length;
-  // 卡片最多画 MAX_TILES 块；标题报总数，小结与分组只报画出来的那些，两者对不上时脚注补一句。
+  // 卡片最多画 MAX_TILES 块：标题与小结都数全部条目，画不下的那些交给脚注和产物面板。
   const shown = st.items.slice(0, MAX_TILES);
   const id = card.dataset.body ?? "";
 
@@ -215,22 +218,15 @@ function paint(card: HTMLElement): void {
   const main = el("span", "ac-main");
   main.append(
     el("b", "ac-title", tr("{p1} 个产物", { p1: String(total) })),
-    el("span", "ac-sub", summary(shown)),
+    el("span", "ac-sub", summary(st.items)),
   );
   const recent = el("span", "ac-recent");
   const last = st.items.slice(Math.max(0, total - 2)).reverse().map((i) => baseName(i.path));
   if (last.length) recent.textContent = tr("最近 {p1}", { p1: last.join(tr("、")) });
   head.append(fan(st.items), main, recent, el("span", "ac-chev"));
 
-  const groups: { kind: Kind; items: TurnArtifact[] }[] = [];
-  for (const item of shown) {
-    const k = kindOf(item.path);
-    const hit = groups.find((g) => g.kind.id === k.id);
-    if (hit) hit.items.push(item);
-    else groups.push({ kind: k, items: [item] });
-  }
   const inner = el("div", "ac-inner");
-  for (const g of groups) {
+  for (const g of groupByKind(shown)) {
     const row = el("div", "ac-group");
     const label = el("div", "ac-gl");
     label.append(el("b", undefined, tr(g.kind.label)), el("span", undefined, String(g.items.length)));
@@ -271,26 +267,14 @@ export function createArtifactCard(onOpenPanel: () => void): HTMLElement {
 }
 
 /**
- * 记一次写入。同一路径再写只加次数（卡片靠类型与件数讲话，不逐行报工具），
- * 新路径才会重画。返回是不是新条目 —— 调用方要据此决定还要不要别的事。
+ * 记一次写入。同一路径再写只加次数 —— 卡片靠类型与件数讲话，不逐行报工具。
+ * 重写也会重画：分组与件数不变，但「最近」、「还有 N 个」和悬停提示里的次数会变。
  */
-export function addTurnArtifact(card: HTMLElement, path: string, tool: string): boolean {
+export function addTurnArtifact(card: HTMLElement, path: string): void {
   const st = STATE.get(card);
-  if (!st) return false;
+  if (!st) return;
   const hit = st.items.find((i) => i.path === path);
-  if (hit) {
-    hit.writes += 1;
-    hit.tool = tool;
-    // 重写不改分组与件数，只有「最近」那行和悬停提示会变；重画一次最省心。
-    paint(card);
-    return false;
-  }
-  st.items.push({ path, tool, writes: 1 });
+  if (hit) hit.writes += 1;
+  else st.items.push({ path, writes: 1 });
   paint(card);
-  return true;
-}
-
-/** 这一轮卡里的条目（按写入顺序）；测试与导出用。 */
-export function turnArtifacts(card: HTMLElement): TurnArtifact[] {
-  return [...(STATE.get(card)?.items ?? [])];
 }

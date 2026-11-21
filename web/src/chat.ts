@@ -1660,7 +1660,7 @@ export class ChatView {
       this.opsFiles = createArtifactCard(() => window.dispatchEvent(new CustomEvent("pi-artifacts")));
       box.after(this.opsFiles);
     }
-    addTurnArtifact(this.opsFiles, path, typeof name === "string" ? name.toLowerCase() : "");
+    addTurnArtifact(this.opsFiles, path);
   }
 
   /**

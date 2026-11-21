@@ -2419,7 +2419,7 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
   background: transparent; color: var(--accent); font-size: 11px; cursor: pointer;
 }
 .tool-preview:hover { background: var(--accent-bg); border-color: var(--accent-dim); }
-/* 这一轮的产物卡（D361）：收起只有一行，点开在同一个位置长成按类型分组的网格。 */
+/* 这一轮的产物卡（D354）：收起只有一行，点开在同一个位置长成按类型分组的网格。 */
 .artcard {
   margin: 6px 0 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
   overflow: hidden; container-type: inline-size;
@@ -2457,11 +2457,11 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .ac-gl { display: flex; align-items: center; gap: 6px; margin: 7px 1px 2px; color: var(--faint); font: 11px/1.2 var(--sans); }
 .ac-gl b { font-weight: 600; }
 .ac-gl::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-.ac-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(188px, 1fr)); gap: 0 6px; }
+.ac-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(188px, 100%), 1fr)); gap: 0 6px; }
 .ac-tile { display: flex; align-items: center; gap: 7px; min-width: 0; height: 32px; padding: 0 5px 0 3px; border-radius: 7px; }
 .ac-tile:hover { background: var(--panel-2); }
 .ac-badge {
-  display: grid; flex: none; place-items: center; width: 26px; height: 21px; border-radius: 5px;
+  display: grid; flex: none; place-items: center; min-width: 26px; height: 21px; padding: 0 4px; box-sizing: border-box; border-radius: 5px;
   background: var(--c); color: #fff; font: 600 8.5px/1 var(--sans); letter-spacing: 0.02em;
 }
 .ac-nm { flex: 1; overflow: hidden; min-width: 0; font: 12px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
@@ -2475,12 +2475,12 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .ac-link { margin-left: auto; padding: 0; border: 0; background: none; color: var(--accent); font: 11.5px/1.2 var(--sans); cursor: pointer; }
 .ac-link:hover { text-decoration: underline; }
 @container (max-width: 520px) { .ac-recent { display: none; } }
-.fc-chip-act {
+.ac-act {
   display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border: 0; border-radius: 999px;
   background: transparent; color: var(--faint); font: 11px/1 var(--sans); cursor: pointer;
 }
-.fc-chip-act:hover { background: var(--panel-3); color: var(--text); }
-.fc-chip-act.quote:hover { color: var(--accent); background: var(--accent-bg); }
+.ac-act:hover { background: var(--panel-3); color: var(--text); }
+.ac-act.quote:hover { color: var(--accent); background: var(--accent-bg); }
 
 .msg .body .md-table, .md-doc .md-table { overflow-x: auto; margin: 8px 0; }
 .msg .body table, .md-doc table { border-collapse: collapse; font-size: 13px; }
