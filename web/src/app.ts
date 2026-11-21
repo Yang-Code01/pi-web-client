@@ -67,7 +67,7 @@ import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
-import { appendModelOptions, groupModels, modelGroupSection, rememberRecentModel } from "./modelgroups.ts";
+import { appendModelOptions, groupModels, rememberRecentModel } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isDefaultHidden, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { type CtxLine, type CtxPolicy } from "./context.ts";
@@ -116,12 +116,10 @@ import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, 
 type Tab = "sessions" | "chat" | "queue";
 
 /**
- * 面板等目录的两个时间窗（D150）：过了 REASK 就当「刚问的那次没结果」，自己再问一遍；
- * 还没过 WAIT 就先说「正在读取」而不是「还没加载好」。两个数对着 bridge 那趟完整清单的预算
- * （`bridge/src/pi.ts` 的 `fetchModels` 默认 45 s）写，改那边记得改这边。
+ * 面板等目录的时间窗（D150）：过了 REASK 就当「刚问的那次没结果」，自己再问一遍。
+ * 这个数对着 bridge 那趟完整清单的预算（`bridge/src/pi.ts` 的 `fetchModels` 默认 45 s）写，改那边记得改这边。
  */
 const MODEL_REASK_MS = 15_000;
-const MODEL_WAIT_MS = 45_000;
 
 /**
  * 点了「继续」之后多久内不再认第二次点击（D159）。`pi.status(running)` 回到页面之前按钮还亮着，
@@ -5368,6 +5366,10 @@ export class App {
   /** The model sheet's 会话 section: folded unless asked for (/session). */
   private sessionInfoOpen = false;
 
+  /**
+   * 模型与思考：外壳同设置控制台（.st-console），左栏「当前使用 / 全部模型 / 本会话」，右栏一页内容。
+   * 仍然是草稿 + 确认 —— 点一行只是把 draft 挪过去，chip 与真实会话都不动，直到点「确认」。
+   */
   private openModelSheet(expandSession = false): void {
     if (!this.currentId) return;
     // Re-renders (catalog arrived, takeover finished) keep what the user unfolded; a fresh open folds.
@@ -5375,44 +5377,80 @@ export class App {
     this.sessionInfoOpen = expandSession || (reopening && this.sessionInfoOpen);
     this.closeSheet();
     this.sheetKind = "model";
-    const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
-
-    const sheet = el("div", "sheet model-sheet");
-    const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("模型与思考")));
-    const close = el("button", "btn ghost", tr("关闭"));
-    close.onclick = () => this.closeSheet();
-    head.append(close);
-    sheet.append(head);
 
     // Everything below is a draft until 确认: browsing models must not switch the live session.
     const startModel = this.session?.model;
     const startLevel = this.session?.thinkingLevel ?? "";
     let draftModel = startModel;
     let draftLevel = startLevel;
-    const foot = el("div", "sheet-foot");
-    const footHint = el("div", "sheet-foot-hint");
-    const cancel = el("button", "btn ghost", tr("取消"));
+    type ModelTab = "now" | "all" | "session";
+    let tab: ModelTab = expandSession ? "session" : "now";
+    let query = "";
+
+    const back = el("div", "st-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+
+    const sheet = el("section", "st-console settings-sheet model-sheet");
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-modal", "true");
+    sheet.setAttribute("aria-label", tr("模型与思考"));
+
+    const head = el("header", "st-head");
+    const headMain = el("div", "st-head__main");
+    const title = el("h2", "st-title");
+    const sub = el("div", "st-sub");
+    const badges = el("div", "st-badges");
+    headMain.append(el("div", "st-eyebrow", tr("模型与思考")), title, sub, badges);
+    const actions = el("div", "st-head__actions");
+    const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
+    close.onclick = () => this.closeSheet();
+    actions.append(close);
+    head.append(headMain, actions);
+
+    const main = el("div", "st-main");
+    const nav = el("nav", "st-nav");
+    nav.setAttribute("aria-label", tr("模型与思考"));
+    const pane = el("div", "st-pane");
+    main.append(nav, pane);
+
+    const foot = el("footer", "st-foot");
+    const footHint = el("span", "st-foot__hint");
+    const footRight = el("span", "pm-foot-right");
+    const cancel = el("button", "btn", tr("取消")) as HTMLButtonElement;
+    cancel.type = "button";
     cancel.onclick = () => this.closeSheet();
     const confirm = el("button", "btn primary", tr("确认")) as HTMLButtonElement;
-    foot.append(footHint, cancel, confirm);
-    const refreshFoot = (): void => {
-      const changes: string[] = [];
-      if (draftModel !== startModel) changes.push(tr("模型 → {p1}", { p1: shortModelName(this.models.find((m) => m.id === draftModel)?.name ?? draftModel ?? "") }));
-      if (draftLevel !== startLevel) changes.push(tr("思考 → {p1}", { p1: draftLevel }));
-      confirm.disabled = !changes.length;
-      footHint.textContent = changes.length ? changes.join(tr("，")) : tr("未改动");
-      footHint.title = footHint.textContent;
+    confirm.type = "button";
+    const footActions = el("span", "pm-foot-actions");
+    footActions.hidden = true;
+    footActions.append(cancel, confirm);
+    footRight.append(el("span", "st-foot__meta", "pi"), footActions);
+    foot.append(footHint, footRight);
+
+    sheet.append(head, main, foot);
+
+    const draftInfo = (): ModelInfo | undefined => this.models.find((m) => m.id === draftModel);
+    const draftLevels = (): string[] => draftInfo()?.levels ?? [];
+    const dirty = (): boolean => draftModel !== startModel || draftLevel !== startLevel;
+    const changes = (): string[] => {
+      const out: string[] = [];
+      if (draftModel !== startModel) out.push(tr("模型 → {p1}", { p1: shortModelName(draftInfo()?.name ?? draftModel ?? "") }));
+      if (draftLevel !== startLevel) out.push(tr("思考 → {p1}", { p1: draftLevel }));
+      return out;
     };
-    confirm.onclick = () => {
+
+    const commit = (): void => {
       const sessionId = this.currentId;
       const model = this.models.find((m) => m.id === draftModel);
       const modelChanged = draftModel !== startModel && !!model;
       const levelChanged = draftLevel !== startLevel && !!draftLevel;
-      if (!sessionId || (!modelChanged && !levelChanged)) return;
+      if (!sessionId || (!modelChanged && !levelChanged)) {
+        this.closeSheet();
+        return;
+      }
       const level = draftLevel;
       this.act(() => {
         // The level rides along with the model switch so the bridge applies it after pi's clamp.
@@ -5422,126 +5460,275 @@ export class App {
           rememberRecentModel(prev?.provider, prev?.id);
           rememberRecentModel(model.provider, model.id);
           this.socket.send({ type: "setModel", sessionId, provider: model.provider, modelId: model.id, level: level || undefined });
-        }
-        else if (levelChanged) this.socket.send({ type: "setThinking", sessionId, level });
+        } else if (levelChanged) this.socket.send({ type: "setThinking", sessionId, level });
         if (this.session && this.session.id === sessionId && (modelChanged || levelChanged)) {
-          this.session = { ...this.session, ...(modelChanged && model ? { model: model.id, modelName: model.name } : {}), thinkingLevel: level || this.session.thinkingLevel };
+          this.session = {
+            ...this.session,
+            ...(modelChanged && model ? { model: model.id, modelName: model.name } : {}),
+            thinkingLevel: level || this.session.thinkingLevel,
+          };
         }
         this.fillModelChip();
         this.renderTop();
       });
       this.closeSheet();
     };
+    confirm.onclick = () => commit();
 
-    // #484：阈值不再在这个弹窗里设（绝对 token 预算已删）。这里只报告当前生效的两条线，
-    // 真改去上下文面板：那里能分「当前会话 / 项目 / 全局」三层。
-    const policyBox = el("div", "levels");
-    policyBox.append(el("div", "levels-label", tr("上下文阈值")));
-    const lineText: string[] = [];
-    if (this.policy?.compact) lineText.push(tr("自动压缩 {p1}% ≈ {p2}", { p1: String(Math.round(this.policy.compact.percent)), p2: compactSize(this.policy.compact.line) }));
-    if (this.policy?.handoff) lineText.push(tr("自动交接 {p1}% ≈ {p2}", { p1: String(Math.round(this.policy.handoff.percent)), p2: compactSize(this.policy.handoff.line) }));
-    policyBox.append(el("div", "budget-hint", lineText.length ? lineText.join(tr(" · ")) : tr("还没拿到窗口大小；到上下文面板里设置。")));
-    // One grid row for both: the sheet's rows are fixed (the model list is the 1fr one).
-    const top = el("div", "sheet-top");
-    top.append(policyBox, this.sessionInfoBox());
-    sheet.append(top);
-
-    // Switching only works on a session this bridge owns; a terminal-owned one has no rpc child.
-    if (this.session && !this.session.owned) {
-      const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
-      notice.append(this.claimButton());
-      sheet.append(notice, foot);
-      refreshFoot();
-      back.append(sheet);
-      this.overlay(back);
-      this.setSheet(back);
-      return;
-    }
-
-    if (!this.models.length) {
-      // 面板开得比目录早（bridge 只在连接时推一次，D150）：自己再问一次，别让这一格永远挂着「稍等」。
-      if (Date.now() - this.modelsAsked > MODEL_REASK_MS) this.requestModels();
-      const waiting = !this.modelsError && Date.now() - this.modelsAsked < MODEL_WAIT_MS;
-      const empty = el(
-        "div",
-        "empty",
-        this.modelsError
-          ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError })
-          : waiting
-            ? tr("正在读取模型列表…")
-            : tr("模型列表还没加载好，稍等一下，或者点这里重试。"),
-      );
-      empty.onclick = () => {
-        this.modelsError = "";
-        this.requestModels(true);
-        if (this.sheetKind === "model") this.openModelSheet();
-      };
-      sheet.append(empty);
-    }
-
-    const list = el("div", "model-list");
-    const levelsBox = el("div", "levels");
-    const chips = el("div", "chips");
-    const paintLevels = (): void => {
-      const picked = this.models.find((m) => m.id === draftModel);
-      const levels = picked?.levels ?? ["off", "low", "medium", "high"];
-      // Same rule pi applies when switching: keep the level if the new model has it.
-      if (!levels.includes(draftLevel)) draftLevel = levels.includes(startLevel) ? startLevel : levels[0] ?? "";
-      chips.replaceChildren();
-      for (const level of levels) {
-        const chip = el("button", `chip${level === draftLevel ? " on" : ""}`, level);
-        chip.onclick = () => {
-          draftLevel = level;
-          paintLevels();
-          refreshFoot();
-        };
-        chips.append(chip);
-      }
-    };
-    // 在用的模型钉在最上面（每次打开按当前会话重画，换了模型就跟着换），其余按来源分组。
-    // 「最近使用」紧跟其后、不折叠，方便来回切。
-    const { pinned, recent, groups } = groupModels(this.models, { id: startModel });
-    const sections: { title: string; models: ModelInfo[]; pinned?: boolean; fixed?: boolean }[] = [];
-    if (pinned) sections.push({ title: tr("当前使用"), models: [pinned], pinned: true });
-    if (recent.length) sections.push({ title: tr("最近使用"), models: recent, fixed: true });
-    for (const g of groups) sections.push({ title: g.provider, models: g.models });
-    for (const section of sections) {
-      const group = modelGroupSection(section.title, section.models.length, { pinned: section.pinned, fixed: section.fixed });
-      list.append(group.node);
-      for (const m of section.models) {
-      const row = el("button", `model-row${m.id === draftModel ? " on" : ""}`);
+    /** 一行模型：名字 + 「使用中 / 待切换」+ id，右侧窗口大小。 */
+    const modelRow = (m: ModelInfo): HTMLElement => {
+      const on = m.id === draftModel;
+      const row = el("button", `settings-row pm-row${on ? " on" : ""}`) as HTMLButtonElement;
+      row.type = "button";
       row.dataset.id = m.id;
-      const nameEl = el("span", "m-name", shortModelName(m.name));
-      if (m.id === startModel) nameEl.append(el("span", "m-cur", tr("当前")));
-      row.append(nameEl);
-      const meta = [compactSize(m.contextWindow), m.id].filter(Boolean).join(" · ");
-      row.append(el("span", "m-meta", meta));
-      const check = el("span", "m-check", m.id === draftModel ? "✓" : "");
-      row.append(check);
+      const label = el("span", "settings-label");
+      const nameEl = el("span", "settings-name", shortModelName(m.name));
+      let who = "";
+      if (m.id === draftModel) who = m.id === startModel ? tr("使用中") : tr("待切换");
+      else if (m.id === startModel) who = tr("使用中");
+      if (who) {
+        const tag = el("span", "pm-who", who);
+        if (m.id === draftModel && m.id !== startModel) tag.classList.add("draft");
+        nameEl.append(tag);
+      }
+      label.append(nameEl, el("code", "settings-key", m.id));
+      row.append(label);
+      row.append(el("span", "settings-hint", m.levels?.length ? m.levels.join(tr(" · ")) : tr("固定档位")));
+      row.append(el("span", "pm-win", m.contextWindow ? compactSize(m.contextWindow) : "–"));
       row.onclick = () => {
         draftModel = m.id;
-        for (const other of list.querySelectorAll<HTMLElement>(".model-row")) {
-          const on = other.dataset.id === m.id;
-          other.classList.toggle("on", on);
-          const c = other.querySelector(".m-check");
-          if (c) c.textContent = on ? "✓" : "";
-        }
-        paintLevels();
-        refreshFoot();
+        const levels = draftLevels();
+        // 当前档位在这张模型上没有时落到它的最高档（弹窗里那句话就是这么写的）：
+        // 落到最低档（off）等于默默把思考关掉，用户根本看不出发生了什么。
+        if (levels.length && !levels.includes(draftLevel)) draftLevel = levels.includes(startLevel) ? startLevel : levels[levels.length - 1] ?? "";
+        paint();
       };
       row.ondblclick = () => {
-        if (!confirm.disabled) confirm.click();
+        if (dirty()) commit();
       };
-      group.body.append(row);
+      return row;
+    };
+
+    /** 空态：模型目录没到时点一下重试，跟设置页的空态一样是「点这里」。 */
+    const emptyState = (text: string, retry = false): HTMLElement => {
+      const d = el("div", "pm-empty", text);
+      if (retry) {
+        d.style.cursor = "pointer";
+        d.onclick = () => {
+          this.modelsError = "";
+          this.requestModels(true);
+          if (this.sheetKind === "model") this.openModelSheet();
+        };
       }
-    }
-    sheet.append(list);
+      return d;
+    };
 
-    levelsBox.append(el("div", "levels-label", tr("思考档位")), chips);
-    paintLevels();
-    sheet.append(levelsBox, foot);
-    refreshFoot();
+    const panel = (rows: HTMLElement[], empty: HTMLElement | string): HTMLElement => {
+      const box = el("div", "settings-panel");
+      if (rows.length) box.append(...rows);
+      else box.append(typeof empty === "string" ? el("div", "pm-empty", empty) : empty);
+      return box;
+    };
 
+    /** 段控：思考档位。点一下就换 draft，不碰真实会话。 */
+    const levelSeg = (m: ModelInfo | undefined): HTMLElement => {
+      const seg = el("div", "st-seg");
+      seg.setAttribute("role", "group");
+      const levels = m?.levels ?? [];
+      if (!levels.length) return el("span", "settings-hint", tr("该模型固定档位"));
+      for (const level of levels) {
+        const b = el("button", `st-seg__btn${level === draftLevel ? " on" : ""}`) as HTMLButtonElement;
+        b.type = "button";
+        b.textContent = level;
+        b.onclick = () => {
+          draftLevel = level;
+          paint();
+        };
+        seg.append(b);
+      }
+      return seg;
+    };
+
+    const kvRow = (name: string, key: string, value: string): HTMLElement => {
+      const row = el("div", "settings-row");
+      const label = el("span", "settings-label");
+      label.append(el("span", "settings-name", name), el("code", "settings-key", key));
+      row.append(label, el("span", "pm-kv", value));
+      return row;
+    };
+
+    const policyRows = (): HTMLElement[] => {
+      const rows: HTMLElement[] = [];
+      const compact = this.policy?.compact;
+      const handoff = this.policy?.handoff;
+      rows.push(
+        kvRow(
+          tr("自动压缩"),
+          "compaction",
+          compact ? tr("{p1}% ≈ {p2}", { p1: String(Math.round(compact.percent)), p2: compactSize(compact.line) }) : tr("还没拿到窗口大小；到上下文面板里设置。"),
+        ),
+      );
+      if (handoff) rows.push(kvRow(tr("自动交接"), "handoff", tr("{p1}% ≈ {p2}", { p1: String(Math.round(handoff.percent)), p2: compactSize(handoff.line) })));
+      return rows;
+    };
+
+    const searchBox = (): HTMLElement => {
+      const box = el("div", "pm-search");
+      const input = document.createElement("input");
+      input.type = "search";
+      input.className = "pm-search__input";
+      input.placeholder = tr("搜索模型名或 id");
+      input.value = query;
+      input.setAttribute("aria-label", tr("搜索模型名或 id"));
+      input.oninput = () => {
+        const pos = input.selectionStart ?? input.value.length;
+        query = input.value;
+        paint();
+        const next = pane.querySelector<HTMLInputElement>(".pm-search__input");
+        if (next) {
+          next.focus();
+          try {
+            next.setSelectionRange(pos, pos);
+          } catch {
+            /* search 输入在某些浏览器里不支持 setSelectionRange，光标就跟着走 */
+          }
+        }
+      };
+      box.append(input);
+      return box;
+    };
+
+    const used = (): { used: number | null; win: number | null } => ({
+      used: this.usage.contextTokens,
+      win: this.usage.contextWindow ?? draftInfo()?.contextWindow ?? null,
+    });
+
+    const nowPane = (): HTMLElement[] => {
+      const out: HTMLElement[] = [];
+      const m = draftInfo();
+      const { used: u, win } = used();
+      const pct = u != null && win ? Math.round((u / win) * 100) : null;
+      const cards = this.stCards([
+        {
+          label: tr("上下文"),
+          value: `${u != null ? compactSize(u) : "–"} / ${win ? compactSize(win) : "–"}`,
+          sub: pct != null ? tr("已用 {p1}%", { p1: String(pct) }) : win ? tr("压缩后要等下一轮才有数") : tr("会话还没报出模型"),
+        },
+        { label: tr("思考档位"), value: m?.levels?.length ? draftLevel : "—", sub: m?.levels?.length ? tr("{p1} 档可选", { p1: String(m.levels.length) }) : tr("固定档位") },
+        { label: tr("窗口"), value: m?.contextWindow ? compactSize(m.contextWindow) : "–", sub: m?.provider ?? "—" },
+      ]);
+      out.push(cards);
+      if (this.session && !this.session.owned) {
+        const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
+        notice.append(this.claimButton());
+        out.push(notice);
+      }
+      out.push(this.stSection(tr("思考档位"), m?.levels?.length ? tr("{p1} 档", { p1: String(m.levels.length) }) : tr("固定")));
+      const levelLine = el("div", "settings-panel");
+      const levelRow = el("div", "settings-row");
+      const levelLabel = el("span", "settings-label");
+      levelLabel.append(el("span", "settings-name", tr("思考档位")), el("code", "settings-key", "thinking"));
+      levelRow.append(levelLabel, el("span", "settings-hint", tr("换模型时若当前档位不支持，会落到该模型的最高档")));
+      const levelCtl = el("div", "settings-ctl");
+      levelCtl.append(levelSeg(m));
+      levelRow.append(levelCtl);
+      levelLine.append(levelRow);
+      out.push(levelLine);
+
+      if (this.models.length === 0) {
+        out.push(emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true));
+        return out;
+      }
+
+      const { pinned, recent } = groupModels(this.models, { id: startModel });
+      if (dirty() && m) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([modelRow(m)], ""));
+      const current = [pinned ? modelRow(pinned) : null].filter((x): x is HTMLElement => !!x);
+      out.push(this.stSection(tr("当前使用"), tr("1 个")), panel(current, tr("会话还没报出模型")));
+      const rest = recent.filter((x) => x.id !== startModel && x.id !== draftModel);
+      if (rest.length) out.push(this.stSection(tr("最近使用"), tr("{p1} 个", { p1: String(rest.length) })), panel(rest.map(modelRow), ""));
+      return out;
+    };
+
+    const allPane = (): HTMLElement[] => {
+      const q = query.trim().toLowerCase();
+      const list = this.models
+        .slice()
+        .sort((a, b) => (b.id === draftModel ? 1 : 0) - (a.id === draftModel ? 1 : 0))
+        .filter((m) => !q || `${m.name} ${m.id}`.toLowerCase().includes(q));
+      if (this.models.length === 0) {
+        return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
+      }
+      const out: HTMLElement[] = [searchBox()];
+      out.push(this.stSection(tr("全部模型"), tr("{p1} / {p2} 个", { p1: String(list.length), p2: String(this.models.length) })));
+      out.push(panel(list.map(modelRow), tr("没有匹配的模型")));
+      return out;
+    };
+
+    const sessionPane = (): HTMLElement[] => {
+      const m = this.models.find((x) => x.id === startModel);
+      const { used: u, win } = used();
+      const rows = [
+        kvRow(tr("模型"), "model", startModel ?? "–"),
+        kvRow(tr("来源"), "provider", m?.provider ?? "–"),
+        kvRow(tr("上下文窗口"), "contextWindow", win ? `${compactSize(win)} tokens` : "–"),
+        kvRow(tr("已用上下文"), "used", u != null ? `${compactSize(u)}${win ? ` · ${Math.round((u / win) * 100)}%` : ""}` : "–"),
+        kvRow(tr("思考档位"), "thinking", startLevel ? `${startLevel}${m?.levels?.length ? ` · ${m.levels.join(" / ")}` : ""}` : "–"),
+        ...policyRows(),
+      ];
+      if (this.session?.cwd) rows.push(kvRow(tr("工作目录"), "cwd", this.session.cwd));
+      const out: HTMLElement[] = [this.stSection(tr("本会话"), tr("只读")), panel(rows, "")];
+      out.push(this.sessionInfoBox());
+      return out;
+    };
+
+    const paint = (): void => {
+      const m = draftInfo();
+      title.textContent = shortModelName(m?.name ?? this.session?.modelName ?? draftModel ?? "") || tr("模型");
+      sub.textContent = [m?.provider, m?.id, m?.contextWindow ? tr("窗口 {p1}", { p1: compactSize(m.contextWindow) }) : ""].filter(Boolean).join(" · ");
+      badges.replaceChildren(el("span", "st-badge", tr("{p1} 个模型", { p1: String(this.models.length) })));
+      if (dirty()) badges.append(el("span", "st-badge warn", tr("未保存")));
+
+      nav.replaceChildren();
+      const navGroup = (label: string): void => {
+        nav.append(el("div", "st-nav__group", label));
+      };
+      const navItem = (id: ModelTab, label: string, count: string): void => {
+        const on = tab === id;
+        const b = el("button", `st-nav__item${on ? " on" : ""}`) as HTMLButtonElement;
+        b.type = "button";
+        if (on) b.setAttribute("aria-current", "page");
+        b.append(el("span", "st-nav__label", label), el("span", "st-nav__count", count));
+        b.onclick = () => {
+          if (tab === id) return;
+          tab = id;
+          paint();
+          pane.scrollTop = 0;
+        };
+        nav.append(b);
+      };
+      navGroup(tr("切换"));
+      navItem("now", tr("当前使用"), "1");
+      navItem("all", tr("全部模型"), String(this.models.length));
+      navGroup(tr("信息"));
+      navItem("session", tr("本会话"), tr("只读"));
+
+      const ch = changes();
+      footActions.hidden = !ch.length;
+      footHint.textContent = ch.length ? tr("未保存：{p1}", { p1: ch.join(tr("，")) }) : tr("点一行选模型，点档位换思考；改了才出现取消 / 确认");
+      footHint.title = footHint.textContent;
+
+      let body: HTMLElement[];
+      if (tab === "now") body = nowPane();
+      else if (tab === "all") body = allPane();
+      else body = sessionPane();
+      const top = pane.scrollTop;
+      pane.replaceChildren(...body);
+      pane.scrollTop = top;
+    };
+
+    // 面板可能开得比目录早（bridge 只在连接时推一次，D150）：过期了再问一次，别让这一格一直挂着「稍等」。
+    if (this.models.length === 0 && Date.now() - this.modelsAsked > MODEL_REASK_MS) this.requestModels();
+    paint();
     back.append(sheet);
     this.overlay(back);
     this.setSheet(back);
@@ -7123,9 +7310,11 @@ export class App {
     if (!chip) return;
     const model = chip.querySelector<HTMLElement>(".chip-model");
     const ctx = chip.querySelector<HTMLElement>(".chip-ctx");
+    const ctxText = chip.querySelector<HTMLElement>(".chip-ctx-text");
+    const meterBar = chip.querySelector<HTMLElement>(".chip-meter > i");
     const rateEl = chip.querySelector<HTMLElement>(".chip-rate");
     const levelEl = chip.querySelector<HTMLElement>(".chip-level");
-    if (!model || !ctx || !rateEl || !levelEl) return;
+    if (!model || !ctx || !ctxText || !meterBar || !rateEl || !levelEl) return;
 
     const name = shortModelName(this.session?.modelName ?? this.session?.model ?? "");
     model.textContent = name || tr("模型");
@@ -7137,22 +7326,28 @@ export class App {
     const win = this.usage.contextWindow ?? this.models.find((m) => m.id === this.session?.model)?.contextWindow ?? null;
     const used = this.usage.contextTokens;
     if (used != null && win) {
-      ctx.textContent = `${compactSize(used)}/${compactSize(win)}`;
+      ctxText.textContent = `${compactSize(used)}/${compactSize(win)}`;
       const line = this.policy?.compact?.line ?? null;
       ctx.classList.toggle("hot", line != null && used >= line);
       ctx.title = this.policy?.compact ? tr("自动压缩线 {p1}%（{p2}）", { p1: String(Math.round(this.policy.compact.percent)), p2: compactSize(this.policy.compact.line) }) : "";
+      meterBar.style.width = `${Math.min(100, Math.max(2, Math.round((used / win) * 100)))}%`;
     } else if (win) {
-      ctx.textContent = `–/${compactSize(win)}`;
+      ctxText.textContent = `–/${compactSize(win)}`;
       ctx.classList.remove("hot");
+      meterBar.style.width = "2%";
     } else {
-      ctx.textContent = used != null ? compactSize(used) : "–";
+      ctxText.textContent = used != null ? compactSize(used) : "–";
       ctx.classList.remove("hot");
+      meterBar.style.width = "0%";
     }
 
-    rateEl.textContent = this.rate >= 1 ? `${Math.round(this.rate)} tok/s` : "– tok/s";
+    // 空闲时不再占一格「– tok/s」：速率是流式的副产物，没在跑就不显示。
+    const live = this.rate >= 1;
+    rateEl.hidden = !live;
+    rateEl.textContent = live ? `${Math.round(this.rate)} tok/s` : "";
     rateEl.classList.toggle("live", this.turnAt != null);
 
-    chip.title = [this.session?.modelName ?? this.session?.model ?? tr("模型"), ctx.textContent, rateEl.textContent, thinking ? tr("思考 {p1}", { p1: thinking }) : tr("思考 –")]
+    chip.title = [this.session?.modelName ?? this.session?.model ?? tr("模型"), thinking ? tr("思考 {p1}", { p1: thinking }) : tr("思考 –"), ctxText.textContent, live ? rateEl.textContent : ""]
       .filter(Boolean)
       .join(" · ");
   }
@@ -12374,7 +12569,18 @@ export class App {
     this.attachButton = pathBtn;
     const chip = el("button", "model-chip");
     chip.onclick = () => this.openModelSheet();
-    chip.append(el("span", "chip-model", ""), el("span", "chip-ctx", ""), el("span", "chip-rate", ""), el("span", "chip-level", ""));
+    // 模型 · 思考档位 · 上下文（条 + 数字）· 速率（只在流式时露）· 展开箭头：见 styles.css 的 .model-chip。
+    const ctx = el("span", "chip-ctx");
+    const meter = el("span", "chip-meter");
+    meter.append(el("i", ""));
+    ctx.append(meter, el("span", "chip-ctx-text", ""));
+    chip.append(
+      el("span", "chip-model", ""),
+      el("span", "chip-level", ""),
+      ctx,
+      el("span", "chip-rate", ""),
+      el("span", "chip-caret", "▾"),
+    );
     this.modelChip = chip;
     const extBtn = el("button", "btn ghost ext-btn", tr("插件")) as HTMLButtonElement;
     extBtn.title = tr("已安装的插件与 MCP、插件市场、MCP 市场（可在 pi 设置 → 插件与 MCP 里隐藏这个按钮）");
@@ -21875,7 +22081,9 @@ function shortModelName(name: string): string {
 
 /** 192000 -> "192K", 1000000 -> "1M". */
 function compactSize(n?: number): string {
-  if (!n) return "";
+  // 0 与 undefined 不一样：会话刚开、还没跑过一轮时上下文就是 0，chip 上要显示「0/1M」而不是「/1M」。
+  if (n == null || Number.isNaN(n)) return "";
+  if (n === 0) return "0";
   if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`;
   return `${Math.round(n / 1000)}K`;
 }
