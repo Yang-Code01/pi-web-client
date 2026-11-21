@@ -120,7 +120,7 @@ assert.deepEqual(
   "ALL_PROXY 排在 HTTP(S)_PROXY 之后",
 );
 
-// D375：只看 env 等于只试写死的那个端口 —— bridge 是手起的，env 里常常什么都没有。
+// D376：只看 env 等于只试写死的那个端口 —— bridge 是手起的，env 里常常什么都没有。
 assert.deepEqual(
   proxyCandidates({}, { httpProxy: "127.0.0.1:7899", system: ["http://127.0.0.1:7899"] }),
   ["http://127.0.0.1:7899", DEFAULT_PROXY],
@@ -151,7 +151,7 @@ assert.deepEqual(
 );
 assert.deepEqual(parseScutilProxy("ProxyAutoConfigEnable : 1\n"), [], "PAC 自动脚本拿不到具体地址，不猜");
 
-// ------------------------------------------------- ④ fetch 每次尝试都有上限（D374）
+// ------------------------------------------------- ④ fetch 每次尝试都有上限（D375）
 
 assert.ok(
   Number.isInteger(FETCH_DIRECT_TIMEOUT_MS) && FETCH_DIRECT_TIMEOUT_MS >= 5_000 && FETCH_DIRECT_TIMEOUT_MS <= 60_000,
@@ -173,10 +173,10 @@ for (const call of fetchCalls) {
     /timeout: [^\n]*FETCH_(DIRECT|PROXY|SSH)_TIMEOUT_MS/.test(call),
     `fetch 调用没带上限（直连被墙时会坐满 300s）：${call.slice(0, 120)}`,
   );
-  assert.ok(/timeout: budget\(/.test(call), `fetch 的上限要经过总预算（D375），否则候选一多又回到五分钟：${call.slice(0, 120)}`);
+  assert.ok(/timeout: budget\(/.test(call), `fetch 的上限要经过总预算（D376），否则候选一多又回到五分钟：${call.slice(0, 120)}`);
 }
 
-// ------------------------------------------------- ⑥ 失败后重试一轮，但总时长有预算（D375）
+// ------------------------------------------------- ⑥ 失败后重试一轮，但总时长有预算（D376）
 
 assert.equal(FETCH_ATTEMPTS, 2, "所有候选都不通时只再试一轮，不无限重试");
 assert.ok(
@@ -191,11 +191,11 @@ assert.ok(
   FETCH_TOTAL_BUDGET_MS < 2 * (FETCH_DIRECT_TIMEOUT_MS + 3 * FETCH_PROXY_TIMEOUT_MS),
   "三个代理候选时总预算必须真的能截住两轮",
 );
-assert.ok(/resolveProxyCandidates\(\)/.test(workerSrc), "worker 要读 pi 设置与系统代理，不能只看 env（D375）");
+assert.ok(/resolveProxyCandidates\(\)/.test(workerSrc), "worker 要读 pi 设置与系统代理，不能只看 env（D376）");
 assert.ok(/for \(let attempt = 1; attempt <= FETCH_ATTEMPTS/.test(workerSrc), "fetch 要有「再试一轮」的循环");
 assert.ok(/sleepSync\(FETCH_RETRY_DELAY_MS\)/.test(workerSrc), "重试间隔要用同步等待（worker 是同步流程）");
 
-// ------------------------------------------------- ⑦ 换传输：SSH over 443 当最后一条路（D376）
+// ------------------------------------------------- ⑦ 换传输：SSH over 443 当最后一条路（D377）
 
 assert.ok(
   Number.isInteger(FETCH_SSH_TIMEOUT_MS) && FETCH_SSH_TIMEOUT_MS >= 10_000 && FETCH_SSH_TIMEOUT_MS <= 60_000,

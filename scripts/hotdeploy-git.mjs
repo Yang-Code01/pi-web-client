@@ -22,7 +22,7 @@ const DEFAULT_HOTDEPLOY_PROXY = "http://127.0.0.1:18791";
 export { DEFAULT_HOTDEPLOY_PROXY };
 
 /**
- * `git fetch` 每次尝试的等待上限（D374）。libcurl 的连接超时是 300s，直连被墙时
+ * `git fetch` 每次尝试的等待上限（D375）。libcurl 的连接超时是 300s，直连被墙时
  * 「检查更新」会静默坐满五分钟、界面看起来就是卡死；部署用的 fetch 宁可早点判不通。
  * 直连给得短（本机直连一旦通，握手在 1~2s 内完成）；代理给得长，首次拉取要传对象。
  */
@@ -30,20 +30,20 @@ export const FETCH_DIRECT_TIMEOUT_MS = 20_000;
 export const FETCH_PROXY_TIMEOUT_MS = 90_000;
 
 /**
- * 全部候选都不通时再试一轮（D375）：网络抖动几秒就好的情况，一次失败即终止太脆。
+ * 全部候选都不通时再试一轮（D376）：网络抖动几秒就好的情况，一次失败即终止太脆。
  * 重试前等 3s，然后把「直连 + 每个代理」原样再走一遍。
  */
 export const FETCH_ATTEMPTS = 2;
 export const FETCH_RETRY_DELAY_MS = 3_000;
 
 /**
- * 所有尝试加起来的上限（D375）。候选一多，一轮就是 20s + N×90s，两轮能把「检查更新」又拖回五分钟；
+ * 所有尝试加起来的上限（D376）。候选一多，一轮就是 20s + N×90s，两轮能把「检查更新」又拖回五分钟；
  * 到这个预算还没通就收工，错误里带上每个候选的原因。
  */
 export const FETCH_TOTAL_BUDGET_MS = 240_000;
 
 /**
- * 换传输兜底（D376）：HTTPS 被整段掉线时，GitHub 的 SSH 端点还常能从 443 走通。
+ * 换传输兜底（D377）：HTTPS 被整段掉线时，GitHub 的 SSH 端点还常能从 443 走通。
  * 这是一条独立于代理的路 —— 上面所有代理都不通时再试它。
  */
 export const FETCH_SSH_TIMEOUT_MS = 25_000;
