@@ -4194,7 +4194,6 @@ export const en: Dict = {
   "{p1} 个": "{p1}",
   "{p1} / {p2} 个": "{p1} / {p2}",
   "{p1} 个模型": "{p1} models",
-  "{p1} 档": "{p1} levels",
   "{p1} 档可选": "{p1} levels available",
   "上下文窗口": "Context window",
   "使用中": "In use",

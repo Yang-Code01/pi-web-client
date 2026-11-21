@@ -2860,6 +2860,16 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 /* ---------------------------------------------------------------- model sheet: 设置控制台外壳 + 草稿确认 */
 /* D-model-switch：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。 */
 .st-console.model-sheet { width: min(1000px, 100%); height: min(760px, 100%); }
+/* 列表自己滚，档位条钉在滚动区外：模型一大堆时，选完不用滚回顶部才能换档。 */
+.st-console.model-sheet .st-pane { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.model-sheet .pm-body { flex: 1 1 auto; min-height: 0; padding: 18px 22px 22px; overflow-y: auto; scrollbar-gutter: stable; }
+.model-sheet .pm-lvbar { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 22px; border-top: 1px solid var(--line-soft); background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
+.model-sheet .pm-lvbar[hidden] { display: none; }
+.model-sheet .pm-lvbar__label { flex: none; font: 600 10.5px/1 var(--sans); letter-spacing: 0.1em; color: var(--faint); }
+.model-sheet .pm-lvbar__model { flex: none; max-width: 40%; font: 500 12px/1 var(--sans); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-sheet .pm-lvbar__model.draft { color: var(--accent); }
+.model-sheet .pm-lvbar .st-seg { flex: 0 1 auto; margin-left: auto; flex-wrap: nowrap; }
+.model-sheet .pm-lvbar__seg { margin-left: auto; }
 .model-sheet .st-cards { margin-bottom: 6px; }
 .model-sheet .st-seg { flex-wrap: wrap; }
 .model-sheet .settings-group:first-child { margin-top: 10px; }

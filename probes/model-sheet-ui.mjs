@@ -231,7 +231,7 @@ try {
   check("全部模型列出 5 个", rowsBefore.length === 5);
   check("当前模型标着「使用中」", /使用中/.test(await page.locator(".model-sheet .pm-row.on .settings-name").first().innerText()));
   // 这一页就能选档位：草稿模型是 Kimi-K3，它的档位只有 off / medium
-  const segsHere = await page.locator(".model-sheet .settings-ctl .st-seg__btn").allInnerTexts();
+  const segsHere = await page.locator(".model-sheet .pm-lvbar .st-seg__btn").allInnerTexts();
   check("全部模型页也有思考档位（跟着草稿模型）", segsHere.join("/") === "off/medium", segsHere.join("/"));
 
   await page.fill(".model-sheet .pm-search__input", "kimi");
@@ -246,8 +246,32 @@ try {
   await sleep(250);
   const rowsAfter = await page.locator(".model-sheet .pm-row").evaluateAll((els) => els.map((e) => e.dataset?.id ?? ""));
   check("点一行不会把它提到最上面", rowsAfter[0] === rowsBefore[0], `${rowsBefore[0]} → ${rowsAfter[0]}`);
-  check("点一行后档位跟着换成那模型的", (await page.locator(".model-sheet .settings-ctl .st-seg__btn").allInnerTexts()).join("/") === "off/low/high/max");
-  await page.locator(".model-sheet .settings-ctl .st-seg__btn", { hasText: "low" }).click();
+  check("点一行后档位跟着换成那模型的", (await page.locator(".model-sheet .pm-lvbar .st-seg__btn").allInnerTexts()).join("/") === "off/low/high/max");
+
+  // 模型多的时候列表要滚很久：档位条必须钉在滚动区外，滚到底也能直接改（用户报的第二个问题）。
+  await page.setViewportSize({ width: 1440, height: 620 });
+  await sleep(300);
+  await page.locator(".model-sheet .pm-body").evaluate((b) => {
+    b.scrollTop = b.scrollHeight;
+  });
+  await sleep(200);
+  const barAtBottom = await page.evaluate(() => {
+    const body = document.querySelector(".model-sheet .pm-body");
+    const bar = document.querySelector(".model-sheet .pm-lvbar");
+    const pane = document.querySelector(".model-sheet .st-pane");
+    const b = bar?.getBoundingClientRect();
+    const p = pane?.getBoundingClientRect();
+    return {
+      scrolled: (body?.scrollTop ?? 0) > 0,
+      visible: !!b && !!p && b.top >= p.top - 1 && b.bottom <= p.bottom + 1 && b.height > 24,
+      segs: [...document.querySelectorAll(".model-sheet .pm-lvbar .st-seg__btn")].length,
+    };
+  });
+  check("滚到底部时档位条仍在视口内", barAtBottom.scrolled && barAtBottom.visible && barAtBottom.segs === 4, JSON.stringify(barAtBottom));
+  await page.screenshot({ path: path.join(OUT, "scrolled.png") });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await sleep(300);
+  await page.locator(".model-sheet .pm-lvbar .st-seg__btn", { hasText: "low" }).click();
   await sleep(250);
   check("同一页改档位也进草稿", /思考/.test(await page.locator(".model-sheet .st-foot__hint").innerText()), await page.locator(".model-sheet .st-foot__hint").innerText());
 

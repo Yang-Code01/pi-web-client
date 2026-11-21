@@ -5414,6 +5414,10 @@ export class App {
     const nav = el("nav", "st-nav");
     nav.setAttribute("aria-label", tr("模型与思考"));
     const pane = el("div", "st-pane");
+    // 滚动区与常驻的档位条分开：模型很多时，选完模型不用滚回顶部才能换档位。
+    const bodyWrap = el("div", "pm-body");
+    const lvBar = el("div", "pm-lvbar");
+    pane.append(bodyWrap, lvBar);
     main.append(nav, pane);
 
     const foot = el("footer", "st-foot");
@@ -5603,27 +5607,23 @@ export class App {
       win: this.usage.contextWindow ?? draftInfo()?.contextWindow ?? null,
     });
 
-    const levelMeta = (m: ModelInfo): string => {
-      const tail = m.levels?.length ? tr("{p1} 档", { p1: String(m.levels.length) }) : tr("固定档位");
-      return [shortModelName(m.name), tail].join(tr(" · "));
-    };
-
-    const levelSection = (meta?: string): HTMLElement[] => {
+    const levelSection = (): void => {
       const m = draftInfo();
-      const out: HTMLElement[] = [
-        this.stSection(tr("思考档位"), meta ?? (m?.levels?.length ? tr("{p1} 档", { p1: String(m.levels.length) }) : tr("固定"))),
-      ];
-      const levelLine = el("div", "settings-panel");
-      const levelRow = el("div", "settings-row");
-      const levelLabel = el("span", "settings-label");
-      levelLabel.append(el("span", "settings-name", tr("思考档位")), el("code", "settings-key", "thinking"));
-      levelRow.append(levelLabel, el("span", "settings-hint", tr("换模型时若当前档位不支持，会落到该模型的最高档")));
-      const levelCtl = el("div", "settings-ctl");
-      levelCtl.append(levelSeg(m));
-      levelRow.append(levelCtl);
-      levelLine.append(levelRow);
-      out.push(levelLine);
-      return out;
+      lvBar.hidden = tab === "session" || !m;
+      if (!m) {
+        lvBar.replaceChildren();
+        return;
+      }
+      const who = el("span", "pm-lvbar__model", shortModelName(m.name));
+      const moved = m.id !== startModel;
+      if (moved) who.classList.add("draft");
+      const fell = moved && !!startLevel && !!m.levels?.length && !m.levels.includes(startLevel);
+      who.title = [m.levels?.length ? m.levels.join(" / ") : tr("该模型固定档位"), fell ? tr("换模型时若当前档位不支持，会落到该模型的最高档") : ""]
+        .filter(Boolean)
+        .join(" · ");
+      const seg = levelSeg(m);
+      seg.classList.add("pm-lvbar__seg");
+      lvBar.replaceChildren(el("span", "pm-lvbar__label", tr("思考档位")), who, seg);
     };
 
     const nowPane = (): HTMLElement[] => {
@@ -5646,7 +5646,6 @@ export class App {
         notice.append(this.claimButton());
         out.push(notice);
       }
-      out.push(...levelSection());
 
       if (this.models.length === 0) {
         out.push(emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true));
@@ -5670,9 +5669,6 @@ export class App {
         return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
       }
       const out: HTMLElement[] = [searchBox()];
-      // 在这一页也能直接改思考档位：否则选完模型还得再切回「当前使用」才能选档，等于两步跳。
-      const draft = draftInfo();
-      if (draft) out.push(...levelSection(levelMeta(draft)));
       out.push(this.stSection(tr("全部模型"), tr("{p1} / {p2} 个", { p1: String(list.length), p2: String(this.models.length) })));
       out.push(panel(list.map(modelRow), tr("没有匹配的模型")));
       return out;
@@ -5716,7 +5712,7 @@ export class App {
           if (tab === id) return;
           tab = id;
           paint();
-          pane.scrollTop = 0;
+          bodyWrap.scrollTop = 0;
         };
         nav.append(b);
       };
@@ -5735,9 +5731,10 @@ export class App {
       if (tab === "now") body = nowPane();
       else if (tab === "all") body = allPane();
       else body = sessionPane();
-      const top = pane.scrollTop;
-      pane.replaceChildren(...body);
-      pane.scrollTop = top;
+      levelSection();
+      const top = bodyWrap.scrollTop;
+      bodyWrap.replaceChildren(...body);
+      bodyWrap.scrollTop = top;
     };
 
     // 面板可能开得比目录早（bridge 只在连接时推一次，D150）：过期了再问一次，别让这一格一直挂着「稍等」。
