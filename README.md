@@ -329,6 +329,13 @@ node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id t1 # 或 --all
 
 这不是一个能直接丢到公网多租户跑的东西。默认只监听 `127.0.0.1`，登录靠首次生成的随机口令（3 个词 + 3 位数字，约 2.7×10⁷ 种组合；可用 `node bridge/dist/index.js --passphrase <更长的口令>` 换成更强的）。存储方式是 scrypt 哈希 + HMAC cookie，HTTP 登录和 step-up 共用每 IP 限流。开隧道时隧道只是运输层，唯一屏障是口令；公网进来的连接默认只读，要发消息和审批得再输一次口令（step-up）。会话文件是 append-only 且没有跨进程锁，所以「一个会话同一时间只有一个写者」是硬约束，bridge 只会拒绝，不会替你覆盖。内网通另算一套：它绑 `0.0.0.0:7865` 给同网段投递，读历史与配置的接口只认回环，协议面只有 `/peer/hello` 与 `/peer/inbox`，文件写入要收方签发 token——但它**不加密、不签名**，别把它当保密通道。
 
+## 与别人的东西的关系
+
+- **不是官方客户端。** 这是 [`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi)（MIT，© Mario Zechner）的第三方网页前端；仓库跟上游没有隶属关系，名字里的 pi 与 π 图标是它们的。
+- **商标归各自的主人。** 界面里出现的名字 —— pi、Jira / Atlassian、GitHub、Microsoft（Excel / Outlook / PowerPoint）、Copilot、微信、WPS —— 只用来描述「这里能接上它」。没有使用它们的图标或美术资源，也不暗示任何背书。
+- **表格对标的是 Excel 的文件格式与通用叫法。** 函数名、数字格式代码、功能区的中文叫法都是 Excel 的公开约定（WPS 与它兼容，拿来做对照）；仓库里没有任何 WPS 或 Microsoft 的素材，原因与边界写在 [`docs/SHEET-WPS.md`](docs/SHEET-WPS.md) 的「参照物与边界」。
+- **Mac 风格是一套自己写的 CSS**（壁纸、圆角、玻璃、缓动），没有取用 Apple 的图片、图标或字体。局域网聊天叫「内网通」，与南通艾睦的商业产品无关（D363）。
+
 ## 许可
 
 [Apache-2.0](LICENSE) © 2026 Yang-Code01

@@ -231,6 +231,13 @@ The second half of M5 and all of M6 in [`docs/PLAN.md`](docs/PLAN.md): public-ne
 
 This is not something to drop on the public internet for multiple tenants. It listens on `127.0.0.1` only by default, and login uses a randomly generated passphrase (three words plus three digits, about 2.7×10⁷ combinations; `node bridge/dist/index.js --passphrase <longer>` swaps in something stronger). It is stored as a scrypt hash plus an HMAC cookie, and HTTP login and step-up share a per-IP rate limit. When the tunnel is on, the tunnel is only transport and the passphrase is the only barrier; connections from the public internet are read-only by default, and sending or approving requires the passphrase again (step-up). Session files are append-only with no cross-process lock, so "one writer per session at a time" is a hard constraint: the bridge refuses, it never overwrites for you. The LAN page has its own budget: it binds `0.0.0.0:7865` for delivery inside the subnet, its history and config endpoints accept loopback only, its protocol surface is `/peer/hello` and `/peer/inbox`, and writing a file requires a token the receiver issued — but it is **neither encrypted nor signed**, so do not treat it as a confidential channel.
 
+## How this relates to other people's work
+
+- **Not an official client.** This is a third-party web frontend for [`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi) (MIT, © Mario Zechner). The repo has no affiliation with upstream; the name "pi" and the π icon are theirs.
+- **Trademarks belong to their owners.** The names you see in the UI — pi, Jira / Atlassian, GitHub, Microsoft (Excel / Outlook / PowerPoint), Copilot, WeChat, WPS — only describe what this window can plug into. No icons or artwork of theirs are used, and no endorsement is implied.
+- **The spreadsheet targets Excel's file format and common naming.** Function names, number-format codes and the ribbon's Chinese labels are Excel's public conventions (WPS is compatible and serves as a reference); the repo contains no WPS or Microsoft assets. The reasoning lives in [`docs/SHEET-WPS.md`](docs/SHEET-WPS.md) (Chinese).
+- **The Mac look is hand-written CSS** (wallpaper, radii, glass, easing) with no Apple images, icons or font files. The LAN chat is called "内网通" and is unrelated to the commercial product of that name (D363).
+
 ## License
 
 [Apache-2.0](LICENSE) © 2026 Yang-Code01
