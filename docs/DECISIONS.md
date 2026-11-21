@@ -7209,8 +7209,31 @@ chip 一起改：模型名 · 思考档位（带点）· 上下文（进度条 +
 
 **为什么两个数不同。** 直连要么秒通、要么根本不通（本机被墙时 SYN 全丢），20s 足够；代理要传对象，首次拉取比握手慢得多，90s 才不误杀真拉得下来的部署。
 
-**不改什么。** 代理候选链不动（仍是 env → `127.0.0.1:18791` 兜底，D272），也**不**替用户去探测系统代理（`HKCU\…\Internet Settings\ProxyServer`）。本次只解决「等多久」，不解决「bridge 进程 env 里没代理、18791 又死了」——那种情况下现在的表现是 20s 内明确报失败，而不是坐满 5 分钟。要让它真拉下来，得用带 `HTTPS_PROXY` 的环境重启 bridge。
+**不改什么。** 代理候选链不动（仍是 env → `127.0.0.1:18791` 兜底，D272），也**不**替用户去探测系统代理（`HKCU\…\Internet Settings\ProxyServer`）。本次只解决「等多久」，不解决「bridge 进程 env 里没代理、18791 又死了」——那种情况下现在的表现是 20s 内明确报失败，而不是坐满 5 分钟。要让它真拉下来，得用带 `HTTPS_PROXY` 的环境重启 bridge。（**D375 起这两条都变了**：候选加上 pi 设置的 `httpProxy` 与系统代理，全失败还会再试一轮——这条只记录当时的边界。）
 
 **代价 / 可改。** 直连若是「慢但能通」的网络，会提前落到代理路径（代理通就没影响；代理也坏时错误里两边原因都会列出）。`spawnSync` 超时只杀 `git` 本体，`git-remote-https` 子进程可能把那次连接超时走完才退；那时 fetch 还没写 refs，不影响仓库状态。
 
 **验证。** `npm run test:hotdeploy` 新增两条：常数在合理区间（直连 5~60s、代理 > 直连），以及 `scripts/hotdeploy.mjs` 里两处 `fetch` 调用必须带 `timeout: FETCH_*_TIMEOUT_MS`（源码守卫，和 windowsHide 那条同一手法）。真机：本机直连不通时「检查更新」应当约 2 分钟内落地（直连 20s + 18791 秒拒），不再是 300s 静默。
+
+## D375 热部署自己找代理：pi 设置 → 系统代理 → env → 18791，全部失败再试一轮（D374 的续，2026-11-21）
+
+**问题。** D374 只给了每次 `git fetch` 一个上限，没解决「直连一坏就必失败」：`fetchOrigin()` 的候选只有进程 env 与写死的 `127.0.0.1:18791`。这台机器上两点都不满足 —— bridge 进程的 `HTTP(S)_PROXY` 全空（桥是手起的，env 是那个 shell 的），`18791` 也没有监听（当时监听里的代理只有 `7899`）。于是直连不通时热部署一定失败，尽管这台机器**明明配了代理**：pi 的 `settings.json` 里 `httpProxy = "http://127.0.0.1:7899"`，Windows 系统代理 `ProxyEnable=1 / ProxyServer=127.0.0.1:7899`。D272 当时把 18791 定成「历史默认端口」，那份默认写在代码里，换机器就失效。
+
+**顺带纠正一个判断。** 用户看到的是「无法连接 GitHub」，但重测时直连是通的：`git ls-remote --heads origin` 2s、`git fetch --prune origin` 3.4s、走 7899 的 fetch 1.1s（`github.com` 的 DNS 落在 `57.155.223.240`，中间有东西接管，但证书与内容都是真的）。所以 13:52 那次 300s 卡死是网络瞬时坏掉，不是常态；真正要修的是「网络一抖，热部署就再没有第二次机会」。
+
+**决定。**
+
+1. 候选顺序改成 **pi 设置里的 `httpProxy` → 系统代理 → 进程 env → `18791`**，同一个代理只留一次。pi 设置排第一是因为它是产品自己的约定（扩展市场的 `bridge/src/market.ts` 读的就是这一份），用户在一个地方填一次，两边都生效。
+2. 系统代理只取「手动配置」那一栏：Windows 读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings` 的 `ProxyEnable` / `ProxyServer`（`127.0.0.1:7899` 与 `http=…;https=…` 两种写法都认），macOS 问 `scutil --proxy`。**PAC 自动脚本（`ProxyAutoConfigEnable`）不猜** —— 那要跑一遍 JS 才知道地址。
+3. 所有候选都不通时 **等 3s 再整轮重试一次**（`FETCH_ATTEMPTS = 2`），网络抖动几秒就好的情况靠这一轮吃掉。
+4. 加一个**总预算** `FETCH_TOTAL_BUDGET_MS = 240s`：每次尝试的 timeout 取 `min(该路径上限, 预算剩余)`。没有它，候选变多以后「两轮」能把「检查更新」又拖回五分钟 —— 正是 D374 要修掉的那个体感。
+5. `proxyCandidates(env, extra)` 保持**纯函数**（系统代理由调用方探好从 `extra.system` 传进来，好测）；worker 用 `resolveProxyCandidates()` 把 pi 设置与系统代理读进来。`18791` 仍留在链尾当兜底，不当主路径。
+
+**代价 / 可改。**
+
+- Windows 上每次热部署多两次 `reg query`（约几十毫秒），macOS 多一次 `scutil`；读失败一律当「没有」，不会让部署停摆。
+- 「慢但能通」的直连会提前落到代理路径（代理通就无影响）；代理也不通时错误里两条原因都会列出，末尾还会带「如果 bridge 启动时继承了旧代理，重启 bridge 后再试」。
+- 注定失败的部署，最坏等待从 20s 级涨到预算上限（240s）；换来的是抖动场景能自愈。要更快可把 `FETCH_TOTAL_BUDGET_MS` 调小。
+- **没做**：PAC 解析、`socks5` 代理的可用性探测（候选会照试，失败写进错误列表）、以及「所有 fetch 都失败时改用本地已有的分支离线部署」—— 那是另一个能力（要动面板与 worker 状态机），留给后续决定。
+
+**验证。** `bridge/tests/hotdeploy-unit.mjs` 新增：候选顺序（设置 → 系统 → env → 默认、去重、空设置当没填）、`ProxyServer` 两种写法、`scutil` 文本解析与 PAC 忽略、重试常数与总预算区间、以及 worker 源码守卫（必须调 `resolveProxyCandidates()`、要有 `for (let attempt = 1; attempt <= FETCH_ATTEMPTS` 循环、重试间隔用 `sleepSync`、两次 fetch 的 timeout 要经过 `budget(`）。本机实测：`resolveProxyCandidates({})` 返回 `["http://127.0.0.1:7899", "http://127.0.0.1:18791"]`（设置与系统代理同值被去重），走该代理 `git fetch` 1.1s 成功。

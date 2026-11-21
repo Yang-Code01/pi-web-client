@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildBranchRows, parseRefLines, parseTrack, parseWorktrees, tailLines } from "../src/hotdeploy.ts";
-import { DEFAULT_HOTDEPLOY_PROXY, FETCH_DIRECT_TIMEOUT_MS, FETCH_PROXY_TIMEOUT_MS, proxyCandidates } from "../../scripts/hotdeploy-git.mjs";
+import { DEFAULT_HOTDEPLOY_PROXY, FETCH_ATTEMPTS, FETCH_DIRECT_TIMEOUT_MS, FETCH_PROXY_TIMEOUT_MS, FETCH_RETRY_DELAY_MS, FETCH_TOTAL_BUDGET_MS, parseScutilProxy, parseWindowsProxyServer, proxyCandidates } from "../../scripts/hotdeploy-git.mjs";
 
 const TAB = String.fromCharCode(9);
 
@@ -120,6 +120,37 @@ assert.deepEqual(
   "ALL_PROXY 排在 HTTP(S)_PROXY 之后",
 );
 
+// D375：只看 env 等于只试写死的那个端口 —— bridge 是手起的，env 里常常什么都没有。
+assert.deepEqual(
+  proxyCandidates({}, { httpProxy: "127.0.0.1:7899", system: ["http://127.0.0.1:7899"] }),
+  ["http://127.0.0.1:7899", DEFAULT_PROXY],
+  "pi 设置排在最前，同一代理只留一次",
+);
+assert.deepEqual(
+  proxyCandidates(
+    { HTTPS_PROXY: "http://127.0.0.1:1087" },
+    { httpProxy: "http://127.0.0.1:7899", system: ["http://127.0.0.1:7890"] },
+  ),
+  ["http://127.0.0.1:7899", "http://127.0.0.1:7890", "http://127.0.0.1:1087", DEFAULT_PROXY],
+  "顺序：pi 设置 → 系统代理 → env → 默认",
+);
+assert.deepEqual(proxyCandidates({}, { httpProxy: "  ", system: [] }), [DEFAULT_PROXY], "设置里是空的就当没填");
+
+// 系统代理的两种写法（只解文本，不去碰真注册表）
+assert.deepEqual(parseWindowsProxyServer("127.0.0.1:7899"), ["http://127.0.0.1:7899"], "一个地址时所有协议共用");
+assert.deepEqual(
+  parseWindowsProxyServer("http=127.0.0.1:7899;https=127.0.0.1:7900"),
+  ["http://127.0.0.1:7899", "http://127.0.0.1:7900"],
+  "分协议写法：CONNECT 代理本身走 http",
+);
+assert.deepEqual(parseWindowsProxyServer(""), [], "空值不算候选");
+assert.deepEqual(
+  parseScutilProxy("HTTPProxy : 127.0.0.1\nHTTPPort : 7899\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 7899\nSOCKSEnable : 0\n"),
+  ["http://127.0.0.1:7899"],
+  "scutil 的 HTTP/HTTPS 合并去重",
+);
+assert.deepEqual(parseScutilProxy("ProxyAutoConfigEnable : 1\n"), [], "PAC 自动脚本拿不到具体地址，不猜");
+
 // ------------------------------------------------- ④ fetch 每次尝试都有上限（D374）
 
 assert.ok(
@@ -132,17 +163,37 @@ assert.ok(
 );
 
 const workerSrc = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "scripts", "hotdeploy.mjs"), "utf8");
-// 直连与代理那两次 fetch 各是一条 git([... "fetch" ...], env, { timeout })；解析到本条语句结束为止。
+// 直连与代理那两次 fetch 各是一条 git([... "fetch" ...], env, { timeout: budget(FETCH_*_TIMEOUT_MS) })；解析到本条语句结束为止。
 const fetchCalls = [...workerSrc.matchAll(/git\(\s*\[[^\]]*"fetch"[^\]]*\]/g)].map((m) =>
   workerSrc.slice(m.index, workerSrc.indexOf(");", m.index) + 2),
 );
 assert.equal(fetchCalls.length, 2, "worker 里只有直连与代理两次 fetch");
 for (const call of fetchCalls) {
   assert.ok(
-    /timeout: FETCH_(DIRECT|PROXY)_TIMEOUT_MS/.test(call),
+    /timeout: [^\n]*FETCH_(DIRECT|PROXY)_TIMEOUT_MS/.test(call),
     `fetch 调用没带上限（直连被墙时会坐满 300s）：${call.slice(0, 120)}`,
   );
+  assert.ok(/timeout: budget\(/.test(call), `fetch 的上限要经过总预算（D375），否则候选一多又回到五分钟：${call.slice(0, 120)}`);
 }
+
+// ------------------------------------------------- ⑥ 失败后重试一轮，但总时长有预算（D375）
+
+assert.equal(FETCH_ATTEMPTS, 2, "所有候选都不通时只再试一轮，不无限重试");
+assert.ok(
+  Number.isInteger(FETCH_RETRY_DELAY_MS) && FETCH_RETRY_DELAY_MS >= 1_000 && FETCH_RETRY_DELAY_MS <= 10_000,
+  `重试前的等待要在 1~10s 之间（网络抖动几秒就好的量级），现在是 ${FETCH_RETRY_DELAY_MS}`,
+);
+assert.ok(
+  Number.isInteger(FETCH_TOTAL_BUDGET_MS) && FETCH_TOTAL_BUDGET_MS >= 60_000 && FETCH_TOTAL_BUDGET_MS <= 300_000,
+  `所有尝试合计的上限要在 1~5 分钟之间，现在是 ${FETCH_TOTAL_BUDGET_MS}`,
+);
+assert.ok(
+  FETCH_TOTAL_BUDGET_MS < 2 * (FETCH_DIRECT_TIMEOUT_MS + 3 * FETCH_PROXY_TIMEOUT_MS),
+  "三个代理候选时总预算必须真的能截住两轮",
+);
+assert.ok(/resolveProxyCandidates\(\)/.test(workerSrc), "worker 要读 pi 设置与系统代理，不能只看 env（D375）");
+assert.ok(/for \(let attempt = 1; attempt <= FETCH_ATTEMPTS/.test(workerSrc), "fetch 要有「再试一轮」的循环");
+assert.ok(/sleepSync\(FETCH_RETRY_DELAY_MS\)/.test(workerSrc), "重试间隔要用同步等待（worker 是同步流程）");
 
 // ------------------------------------------------- 不闪窗：worker 无控制台，每个子进程都要 windowsHide
 
