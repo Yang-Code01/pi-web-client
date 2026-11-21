@@ -542,6 +542,8 @@ export async function recordSide(options) {
     moments.push({
       label: String(label || "现象"),
       t,
+      lead,
+      tail,
       start: Math.max(0, t - lead),
       end: t + tail,
       slow
