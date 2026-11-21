@@ -113,6 +113,7 @@
     "probe:skill-boot": "node probes/skill-boot-hint.mjs",
     "probe:rail": "node probes/rail-click.mjs && node probes/round20-turns.mjs && node probes/turn-rail-last.mjs && node probes/rail-ghost.mjs",
     "probe:rail-click": "node probes/rail-click.mjs",
+    "probe:settle": "node probes/settle-top.mjs",
     "test:history": "node --experimental-strip-types bridge/tests/history-page-unit.mjs",
     "test:head": "node --experimental-strip-types bridge/tests/session-head-unit.mjs",
     "test:msgtime": "node --experimental-strip-types bridge/tests/message-time-unit.mjs && node --experimental-strip-types web/tests/chat-head-unit.mjs",

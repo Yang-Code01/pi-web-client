@@ -7040,3 +7040,23 @@ Esc 之后 dialog: 0
 **代价。** 无。这是把一处笔误改回全站模板；`.settings-value` 只多一条样式。
 
 **守卫。** `bridge/tests/whatsnew-ui.mjs` 的 A 段与 `probes/whatsnew-dialog.mjs` 的第 6 段各加一条几何断言（行不能高过宽、名字列不超过 2.5 行），并断言两行确实装在 `.settings-panel` 里；两处本来就会打开这一页，成本为零。**`bridge/tests/settings-console-ui.mjs` 没加**：它自己在 main 上就是红的（左栏分组 / 十项文案 / 头部 scope 的旧断言与后来的改版对不上，B 段之后、G1 直接抛 timeout），那条「每个设置页扫一遍行几何」的通用断言得等它先修好 —— 记在这里，别以为已经覆盖。
+
+## D368 长回答收尾回到第一行，而不是留在末尾（用户报「回答完成后得自己滚回最上面」2026-11-21）
+
+**症状。** 回答流式长出来时视口一直贴底；等它结束，人停在最后一屏，要读开头得自己往上滚好几屏。短回答没有这个问题，只有长到超过一屏的回答才有。
+
+**根因。** 跟流只有往下这一条路：`delta()` 每来一段就 `scrollToEnd()`（`web/src/chat.ts:1321`），`message_end` 的 `replace()` 收尾时又贴一次底；`setRunning(false)` 只重画最后一枚用户气泡的「处理中」，不碰滚动。没有任何一处会在收尾时把视口送回回答开头。
+
+**决定。** 选「收尾回开头」：`running` 从 true 翻成 false、且用户此刻仍在跟流时，把**最后一条 assistant** 的第一行送到视口顶部（留 6px）。做成 `ChatView` 内部的一个收尾动作，不动 app、桥、协议与样式：
+
+- `setRunning()` 记下 `wasRunning`，true → false 后等两帧再量（`replace()` 已经把流式节点换成最终节点，高度要等排版）。
+- `settleScroll()` 只在「最后一块内容就是这条 assistant」时动手：后面还跟着工具卡 / 下一轮用户气泡就不算收尾；手动折叠过的不动；回答不到视口 90% 不动（整段都看得见，动了像页面抽了）；`touching` / `staging` / `pendingJump` / 已经停跟都不动。
+- 动手时置 `following=false`、`unread=false`，先 `renderJump()` 再量（钮显隐会改一点 `scrollHeight`）；`holdFollow = now + 900` 挡住从底部往上跳的头几帧 scroll 事件，避免 `resumeFollowing()` 把视口拽回底部；最后 `scrollTo({behavior:"smooth"})`。目标本来就在最后一屏里（`startTop >= maxScroll - 1`）时留在底部。
+- 不调 `stopFollowing()`：它会报 `onScrollUp`，让提问面板以为人自己往上滚了而收起来。也不调 `jumpToTurn()`：那是定位用户轮次、还会闪用户气泡。
+- `reset()` 静默清 `running` 并取消待跑的帧：换会话 / 重连时旧会话的 true 会让新会话的 false 被当成「刚结束」，不取消就会滚到别人的回答上；app 随后那句 `setRunning(新会话.running)` 因此成为一次真正的跃迁。
+
+**顺带修掉的单位混用（D123）。** `getBoundingClientRect()` 是视觉 px，`scrollTop` 是布局 px，`#app` 上挂着 `zoom: var(--ui-scale)`；原来的 `rect.top - root.top + scrollTop` 在默认字号 125% 时会把目标算大 0.25×局部距离，`scrollTop` 过冲，收尾停在回答首行上方几百像素。新 `contentTopOf(node)` 把 rect 差除以 `--ui-scale` 再相加；`jumpToTurn()` 的同一段也改用它（右侧刻度带跳到轮次时同样受益）。
+
+**代价 / 可改。** 收尾会动一次视口（这正是 A 的定义）；回答在 0.9–1.0 屏之间时首行已经落进最后一屏，`startTop >= maxScroll - 1` 会走 `follow()`，仍停在底部（不会再往上顶）；阈值、6px 呼吸、900ms 冷却、平滑动画都是可调的常量，先按实测手感取这组。用户一旦上滚、手指还在屏上、或收尾后又有新内容，都只点亮「有新内容」，不再自动移动。
+
+**守卫。** 新增 `probes/settle-top.mjs`（`npm run probe:settle`）：长回答收尾停在首行、↓ 可见且无「new」、点 ↓ 回底；短回答也真正流完并收尾一次，视口不动；流式中途上滚不被拽回；收尾后补一条 delta 也不拽回。`probes/scroll-race.mjs`（D68 / D94）、`probes/turn-rail-last.mjs`（D244 / D60）、`probes/rail-click.mjs` 仍要跑；后者把固定 900ms 等待换成了「等滚动停稳」再量落点。`npm --prefix web run typecheck` 全绿。
