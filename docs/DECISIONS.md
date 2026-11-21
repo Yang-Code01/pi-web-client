@@ -5167,7 +5167,7 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 
 **代价 / 可改：**
 
-- 代理候选多时，全失败会多花几次 git 超时；但成功路径不受影响。要更快可以给每个候选加独立超时。
+- 代理候选多时，全失败会多花几次 git 超时；但成功路径不受影响。要更快可以给每个候选加独立超时（**D374 起已给每次尝试加上限**）。
 - `http.proxy` 只对 HTTP(S) 远程生效；`origin` 是 SSH 地址时，候选代理不会生效。
 - `ALL_PROXY` 若是 socks 代理，是否可用取决于本机 git/curl；失败会出现在错误列表里，不会静默跳过。
 - AGENTS.md / issue-tracker 里「直连失败才加 `HTTPS_PROXY=18791`」是 `gh` CLI 的手工代理约定，不适用于热部署 worker；worker 的规则以本条为准。
@@ -7198,3 +7198,19 @@ chip 一起改：模型名 · 思考档位（带点）· 上下文（进度条 +
 **代价。** 多一层左栏，在 1000px 宽的弹窗里占 214px；「全部模型」要滚动才能看完 19 个。草稿只活在弹窗里：弹窗被后台事件重建（模型目录刷新、接管完成）时不保留未确认的选择 —— 与旧版 `draftModel` 的行为一致，但确认步骤让这种丢失更显眼。草稿现在只按 `id` 认模型（不认 provider）：两个来源撞同一个 id 时会认第一个，这在现有目录里还没发生，真发生了再把 draft 改成 `{provider, id}`。
 
 **守卫。** `npm --prefix web run typecheck`（i18n 三份齐全 + `#app` 里没有裸 `vh/vw` + 弹层层带单调）；`node probes/model-sheet-ui.mjs`（桩桥 + Chromium，不花模型调用，目录里放了 wb2api / openrouter / lmstudio 三个来源）盯住：按来源分组且当前来源默认展开、组头点了能折回去、搜索时自动展开并报命中数、点一行只改草稿且**不重排列表**、**列表滚到底时档位条仍在视口内**、取消/Esc 丢弃、确认才发 `setModel` / `setThinking`、目标模型没有当前档位时落最高档、窄容器里上下文数字让位但整行不换行。`.model-row` / `.model-list` 被目录选择器与工作区新建面板复用，这次没有动它们：模型行另起 `.pm-row` / `.pm-*`。顺手修了 `mac.css` 的 `html[data-ui="mac"] .st-nav__item.on * { color: inherit }` —— 它把选中项里的 `.st-nav__count` 也刷成白字，浅色胶囊上的数字看不见（设置页同样受影响）。
+
+## D374 热部署的每次 `git fetch` 都有上限：直连 20s、每个代理 90s（用户问「为啥热部署一直卡在那里」2026-11-21）
+
+**问题。** 用户点热部署，进度停在「检查更新」（`step: 0`）、用时一直涨到 210s 以上，看起来像卡死。真机证据：`.scratch/hot-deploy/worker.log` 在 `[13:52:40] 当前 main 6f27e8fc` 之后静默整整 5 分钟，然后 `[13:57:40] git fetch 直连失败 … Connection timed out after 300001 milliseconds`；两秒后唯一回退代理 `127.0.0.1:18791` 也连不上（`Failed to connect to github.com:443 over proxy 127.0.0.1 after 2119 ms: Could not connect to server`），`=== fetch-failed ===`，state.json 落成 `phase: "fail"`。也就是说「卡住」= libcurl 默认的 300s 连接超时，这段里界面没有任何进度可画；等它超时，本轮也一定失败。
+
+**为什么之前没有上限。** `fetchOrigin()`（`scripts/hotdeploy.mjs`）先用 `spawnSync` 直连、失败再逐个代理，两边都没传 `timeout`。D272 的「代价 / 可改」里写这句地雷：要更快可以给每个候选加独立超时 —— 一直没落地。
+
+**决定。** 直连尝试 20s 封顶，每个代理 90s 封顶（`scripts/hotdeploy-git.mjs` 的 `FETCH_DIRECT_TIMEOUT_MS` / `FETCH_PROXY_TIMEOUT_MS`）。超时在错误与日志里写成「超过 20s 没连上」，不再露出 `spawnSync git ETIMEDOUT`；直连一开始先写一行日志（`git fetch 直连，最多等 20s`），日志里能看出它在动。
+
+**为什么两个数不同。** 直连要么秒通、要么根本不通（本机被墙时 SYN 全丢），20s 足够；代理要传对象，首次拉取比握手慢得多，90s 才不误杀真拉得下来的部署。
+
+**不改什么。** 代理候选链不动（仍是 env → `127.0.0.1:18791` 兜底，D272），也**不**替用户去探测系统代理（`HKCU\…\Internet Settings\ProxyServer`）。本次只解决「等多久」，不解决「bridge 进程 env 里没代理、18791 又死了」——那种情况下现在的表现是 20s 内明确报失败，而不是坐满 5 分钟。要让它真拉下来，得用带 `HTTPS_PROXY` 的环境重启 bridge。
+
+**代价 / 可改。** 直连若是「慢但能通」的网络，会提前落到代理路径（代理通就没影响；代理也坏时错误里两边原因都会列出）。`spawnSync` 超时只杀 `git` 本体，`git-remote-https` 子进程可能把那次连接超时走完才退；那时 fetch 还没写 refs，不影响仓库状态。
+
+**验证。** `npm run test:hotdeploy` 新增两条：常数在合理区间（直连 5~60s、代理 > 直连），以及 `scripts/hotdeploy.mjs` 里两处 `fetch` 调用必须带 `timeout: FETCH_*_TIMEOUT_MS`（源码守卫，和 windowsHide 那条同一手法）。真机：本机直连不通时「检查更新」应当约 2 分钟内落地（直连 20s + 18791 秒拒），不再是 300s 静默。

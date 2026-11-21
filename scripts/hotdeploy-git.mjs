@@ -18,6 +18,14 @@ function gitIn(repo, args) {
 const DEFAULT_HOTDEPLOY_PROXY = "http://127.0.0.1:18791";
 export { DEFAULT_HOTDEPLOY_PROXY };
 
+/**
+ * `git fetch` 每次尝试的等待上限（D374）。libcurl 的连接超时是 300s，直连被墙时
+ * 「检查更新」会静默坐满五分钟、界面看起来就是卡死；部署用的 fetch 宁可早点判不通。
+ * 直连给得短（本机直连一旦通，握手在 1~2s 内完成）；代理给得长，首次拉取要传对象。
+ */
+export const FETCH_DIRECT_TIMEOUT_MS = 20_000;
+export const FETCH_PROXY_TIMEOUT_MS = 90_000;
+
 /** 统一代理 URL：补 http://、压小写、去末尾斜杠，避免同一代理因写法不同重复尝试。 */
 function normalizeProxy(value) {
   const raw = String(value ?? "").trim();

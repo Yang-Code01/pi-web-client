@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildBranchRows, parseRefLines, parseTrack, parseWorktrees, tailLines } from "../src/hotdeploy.ts";
-import { DEFAULT_HOTDEPLOY_PROXY, proxyCandidates } from "../../scripts/hotdeploy-git.mjs";
+import { DEFAULT_HOTDEPLOY_PROXY, FETCH_DIRECT_TIMEOUT_MS, FETCH_PROXY_TIMEOUT_MS, proxyCandidates } from "../../scripts/hotdeploy-git.mjs";
 
 const TAB = String.fromCharCode(9);
 
@@ -119,6 +119,30 @@ assert.deepEqual(
   ["http://127.0.0.1:7899", "socks5://127.0.0.1:1080", DEFAULT_PROXY],
   "ALL_PROXY 排在 HTTP(S)_PROXY 之后",
 );
+
+// ------------------------------------------------- ④ fetch 每次尝试都有上限（D374）
+
+assert.ok(
+  Number.isInteger(FETCH_DIRECT_TIMEOUT_MS) && FETCH_DIRECT_TIMEOUT_MS >= 5_000 && FETCH_DIRECT_TIMEOUT_MS <= 60_000,
+  `直连上限要在 5~60s 之间，现在是 ${FETCH_DIRECT_TIMEOUT_MS}`,
+);
+assert.ok(
+  Number.isInteger(FETCH_PROXY_TIMEOUT_MS) && FETCH_PROXY_TIMEOUT_MS > FETCH_DIRECT_TIMEOUT_MS,
+  `代理上限要比直连长，现在是 ${FETCH_PROXY_TIMEOUT_MS}`,
+);
+
+const workerSrc = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "scripts", "hotdeploy.mjs"), "utf8");
+// 直连与代理那两次 fetch 各是一条 git([... "fetch" ...], env, { timeout })；解析到本条语句结束为止。
+const fetchCalls = [...workerSrc.matchAll(/git\(\s*\[[^\]]*"fetch"[^\]]*\]/g)].map((m) =>
+  workerSrc.slice(m.index, workerSrc.indexOf(");", m.index) + 2),
+);
+assert.equal(fetchCalls.length, 2, "worker 里只有直连与代理两次 fetch");
+for (const call of fetchCalls) {
+  assert.ok(
+    /timeout: FETCH_(DIRECT|PROXY)_TIMEOUT_MS/.test(call),
+    `fetch 调用没带上限（直连被墙时会坐满 300s）：${call.slice(0, 120)}`,
+  );
+}
 
 // ------------------------------------------------- 不闪窗：worker 无控制台，每个子进程都要 windowsHide
 

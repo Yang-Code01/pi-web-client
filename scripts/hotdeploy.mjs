@@ -17,7 +17,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { proxyCandidates, stashPush, stashRestore } from "./hotdeploy-git.mjs";
+import { FETCH_DIRECT_TIMEOUT_MS, FETCH_PROXY_TIMEOUT_MS, proxyCandidates, stashPush, stashRestore } from "./hotdeploy-git.mjs";
 import { psQuote, windowHostOf, windowScript } from "./hotdeploy-window.mjs";
 
 const WIN = process.platform === "win32";
@@ -108,8 +108,9 @@ function sh(file, args, opts = {}) {
   return spawnSync(file, args, { cwd: REPO, encoding: "utf8", windowsHide: true, ...opts });
 }
 
-function git(args, env) {
-  return sh("git", args, env ? { env } : {});
+/** `env` 为 undefined 时不动环境；`opts` 目前只用来传 `timeout`（D374）。 */
+function git(args, env, opts = {}) {
+  return sh("git", args, { ...(env ? { env } : {}), ...opts });
 }
 
 /** 真直连：去掉进程里的代理变量，并显式清空 git 的 http.proxy；否则残留的 HTTPS_PROXY 仍会被 libcurl 使用。 */
@@ -119,7 +120,9 @@ function proxyFreeEnv() {
   return env;
 }
 
-function gitReason(result) {
+/** `spawnSync` 超时时 stderr 是空的，只剩 `error.code` —— 不翻译的话用户只看到一句 spawnSync git ETIMEDOUT。 */
+function gitReason(result, timeoutMs = 0) {
+  if (result?.error?.code === "ETIMEDOUT") return `超过 ${Math.round(timeoutMs / 1000)}s 没连上`;
   return String(result.stderr || result.stdout || result.error?.message || "无输出").trim().slice(0, 300);
 }
 
@@ -313,17 +316,28 @@ function failAfterStash(step, result, code, message) {
 
 /** 本机 GitHub 直连常不通：按 AGENTS.md，失败才按需带代理，不写进全局 config。 */
 function fetchOrigin() {
-  const direct = git(["-c", "http.proxy=", "-c", "https.proxy=", "fetch", "--prune", "--quiet", "origin"], proxyFreeEnv());
+  // 每次尝试都要有上限：直连被墙时 git 自己会坐满 300s，界面就是「卡在检查更新」（D374）。
+  log(`git fetch 直连，最多等 ${FETCH_DIRECT_TIMEOUT_MS / 1000}s`);
+  const direct = git(
+    ["-c", "http.proxy=", "-c", "https.proxy=", "fetch", "--prune", "--quiet", "origin"],
+    proxyFreeEnv(),
+    { timeout: FETCH_DIRECT_TIMEOUT_MS },
+  );
   if (direct.status === 0) return { ok: true };
-  const failures = [`直连：${gitReason(direct)}`];
-  log("git fetch 直连失败，改用代理", gitReason(direct));
+  const directReason = gitReason(direct, FETCH_DIRECT_TIMEOUT_MS);
+  const failures = [`直连：${directReason}`];
+  log("git fetch 直连失败，改用代理", directReason);
   for (const proxy of proxyCandidates()) {
-    const viaProxy = git(["-c", `http.proxy=${proxy}`, "-c", `https.proxy=${proxy}`, "fetch", "--prune", "--quiet", "origin"]);
+    const viaProxy = git(
+      ["-c", `http.proxy=${proxy}`, "-c", `https.proxy=${proxy}`, "fetch", "--prune", "--quiet", "origin"],
+      undefined,
+      { timeout: FETCH_PROXY_TIMEOUT_MS },
+    );
     if (viaProxy.status === 0) {
       log("git fetch 代理成功", proxy);
       return { ok: true };
     }
-    const reason = gitReason(viaProxy);
+    const reason = gitReason(viaProxy, FETCH_PROXY_TIMEOUT_MS);
     failures.push(`代理 ${proxy}：${reason}`);
     log("git fetch 代理失败", proxy, reason);
   }
