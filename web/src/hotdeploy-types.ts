@@ -50,6 +50,8 @@ export interface HotdeploySnapshot {
   busy: boolean;
   run: HotdeployRun | null;
   linkedWorktree: boolean;
+  /** 壳在前面挡着（#634）：换代只换脑，页面重连后接着看，会话不被切断。旧桥没有这个字段。 */
+  hosted?: boolean;
   log: string;
   branches: HotdeployBranch[];
 }

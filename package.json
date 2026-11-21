@@ -10,8 +10,8 @@
   "scripts": {
     "postinstall": "node scripts/bootstrap.mjs",
     "setup": "node scripts/bootstrap.mjs",
-    "start": "node scripts/bootstrap.mjs --start && npm run build && node bridge/dist/index.js",
-    "start:nobuild": "node bridge/dist/index.js",
+    "start": "node scripts/bootstrap.mjs --start && npm run build && node scripts/start.mjs",
+    "start:nobuild": "node scripts/start.mjs",
     "build": "node scripts/build.mjs",
     "build:bridge": "node scripts/build.mjs --only bridge",
     "build:peer": "node scripts/build.mjs --only peer",

@@ -46,6 +46,7 @@ import { Tunnel, findCloudflared, type TunnelState } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
 import { APP_NAME, VERSION, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
 import { BUILD_ID } from "./build-id.ts";
+import { BrainLink, setBrainLink } from "./brainlink.ts";
 import { removePidFile, writePidFile } from "./pidfile.ts";
 import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
 import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
@@ -334,7 +335,17 @@ function fail(
 /** 回环对端（`::1` / IPv4-mapped / `127.0.0.1`）。/api/ask、/api/preview/open 与 /api/peer 共用一份，
  *  将来放宽一处（比如局域网）不会再漏掉另一处。 */
 function isLoopbackPeer(addr: string): boolean {
-  return /^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(addr);
+  // 有壳时，壳会按真实对端写 `x-pi-peer: loopback|remote`（转发之后 socket 地址永远是 127.0.0.1）。
+  return addr === "loopback" || /^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(addr);
+}
+
+/** 对端身份：壳标过的头优先，没有头（直连模式 / 测试）才看 socket 地址。 */
+function peerOf(req: http.IncomingMessage): string {
+  // 只有「壳拉起来的脑」才看得见 x-pi-peer：壳建连前先剥掉客户端自带的这个头，
+  // 再按真实 remoteAddress 重写。没有壳的时候信它，等于谁都能自称回环。
+  const tagged = process.env.PI_HOST_LINK ? req.headers["x-pi-peer"] : undefined;
+  if (typeof tagged === "string" && tagged) return tagged;
+  return req.socket.remoteAddress ?? "";
 }
 
 /**
@@ -673,7 +684,7 @@ async function main(): Promise<void> {
       // Q-032: 403 不能是哑的 —— 用户看到的只是「表单没弹出来」，无从知道原因。这里把理由
       // 写进该会话的 notice（隧道 + 非回环对端都是同一个理由）。
       if (publicReq) return askRefused(req, res, "你正通过公网隧道访问，浏览器里的表单回不到本机；请用 127.0.0.1 的地址打开再提问。", "tunnel");
-      const peer = req.socket.remoteAddress ?? "";
+      const peer = peerOf(req);
       if (!isLoopbackPeer(peer)) return askRefused(req, res, "提问只接受本机回环的请求（扩展与网页必须在这台电脑上）。", "non-loopback");
       let body: any;
       try {
@@ -709,7 +720,7 @@ async function main(): Promise<void> {
     // 没有这样的连接就明确失败 —— 工具不能把「没人看见」当成「打开了」（投递范围的收紧见 #225）。
     if (url.pathname === "/api/preview/open" && req.method === "POST") {
       if (publicReq) return json(res, 403, { ok: false, reason: "tunnel", text: "预览只接受本机回环的请求（公网隧道进不来）。" });
-      const peer = req.socket.remoteAddress ?? "";
+      const peer = peerOf(req);
       if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, reason: "non-loopback", text: "预览只接受本机回环的请求。" });
       const body = await readBody(req).catch(() => ({}));
       const session = sessions.byLoopbackToken(String(body.token ?? ""));
@@ -770,7 +781,7 @@ async function main(): Promise<void> {
     // 只认回环对端 + 会话级 token。策略、凭据、发送全在桥这一侧，扩展只负责转发。
     if (url.pathname.startsWith("/api/mail/tool/") && req.method === "POST") {
       if (publicReq) return json(res, 403, { ok: false, code: "tunnel", error: "邮箱工具口只接受本机回环的请求（公网隧道进不来）。" });
-      const peer = req.socket.remoteAddress ?? "";
+      const peer = peerOf(req);
       if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, code: "non-loopback", error: "邮箱工具口只接受本机回环的请求。" });
       const handled = await handleMailTool(req, res, url, {
         publicReq,
@@ -789,7 +800,7 @@ async function main(): Promise<void> {
     // 失败一律 200：记账失败不能让一次写入失败，扩展那边也不解析错误体。
     if (url.pathname === "/api/artifacts/snapshot" && req.method === "POST") {
       if (publicReq) return json(res, 403, { ok: false, reason: "tunnel" });
-      const peer = req.socket.remoteAddress ?? "";
+      const peer = peerOf(req);
       if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, reason: "non-loopback" });
       const body = await readBody(req).catch(() => ({}));
       const session = sessions.byLoopbackToken(String(body.token ?? ""));
@@ -826,7 +837,7 @@ async function main(): Promise<void> {
     //
     // 这里必须同时看 publicReq：cloudflared 由本进程本地起（tunnel.ts 的 --url 127.0.0.1），
     // 隧道请求的 remoteAddress 也是回环，只判 loopbackPeer 等于给公网开了后门。
-    const loopbackPeer = isLoopbackPeer(req.socket.remoteAddress ?? "");
+    const loopbackPeer = isLoopbackPeer(peerOf(req));
     if (url.pathname.startsWith("/api/peer") && !ok && (publicReq || !loopbackPeer)) {
       return json(res, 401, { error: "unauthorized" });
     }
@@ -4278,14 +4289,47 @@ async function main(): Promise<void> {
 
   sessions.startGc((id) => [...wss.clients].some((client) => (client as any).watching === id));
 
+  // 有壳时（壳把 `PI_HOST_LINK` 塞进环境）：监听零号口，流量全由壳转进来；pid 文件、公网口、隧道都归壳。
+  const linkedPath = process.env.PI_HOST_LINK ?? "";
+
   process.on("exit", () => {
     peer.stop();
-    removePidFile(cfg.port);
+    // 有壳时 pid 文件写的是壳的 pid，脑不许动它。
+    if (!linkedPath) removePidFile(cfg.port);
   });
 
-  server.listen(cfg.port, cfg.host, () => {
-    // pid 文件：更新器靠它找到并重启「这一个」进程（见 pidfile.ts 的注释）。
-    writePidFile(cfg.port);
+  // 有壳时脑只接受壳的转发，所以只绑回环；公网面那个口子由壳来听。
+  server.listen(linkedPath ? 0 : cfg.port, linkedPath ? "127.0.0.1" : cfg.host, async () => {
+    let pagePort = cfg.port;
+    if (linkedPath) {
+      const addr = server.address();
+      const internalPort = typeof addr === "object" && addr ? addr.port : 0;
+      try {
+        const link = await BrainLink.connect(linkedPath);
+        const welcome = await link.hello({ buildId: BUILD_ID, internalPort });
+        setBrainLink(link);
+        if (welcome.publicPort) pagePort = welcome.publicPort;
+        // 壳叫停：先收会话再退，子进程的生死本来就在壳手里。
+        link.on("shutdown", () => void shutdown());
+        link.on("closed", () => {
+          log("host: 壳断开了，脑退出");
+          process.exit(0);
+        });
+        // 被换下的那一代：先把隧道收回来再走，不然 cloudflared 会成孤儿。
+        link.on("retire", () => {
+          log("host: 被换下，退出");
+          tunnel.stop();
+          void shutdown();
+        });
+        link.ready();
+        log(`host: 接上壳 ${welcome.hostBuildId}（公网口 ${pagePort}，内部 ${internalPort}）`);
+      } catch (err) {
+        log(`host: 连不上壳 ${linkedPath}：${(err as Error).message}`);
+        process.exit(1);
+      }
+    }
+    // pid 文件：更新器靠它找到并重启「这一个」进程（见 pidfile.ts 的注释）。有壳时写的是壳的 pid。
+    if (!linkedPath) writePidFile(cfg.port);
     // #455：上传暂存区顺手清掉 30 天没动过的会话目录与残留临时文件；失败只当没看见。
     const prunedUploads = pruneUploads();
     if (prunedUploads) log(`uploads: cleaned ${prunedUploads} stale item(s)`);
@@ -4296,7 +4340,7 @@ async function main(): Promise<void> {
       `slides: ${slidesProbed.available ? "PowerPoint" : "no PowerPoint"}` +
         `${slidesProbed.exe ? ` (${slidesProbed.exe})` : ""}`,
     );
-    const pageUrl = `http://127.0.0.1:${cfg.port}`;
+    const pageUrl = `http://127.0.0.1:${pagePort}`;
     console.log(`\n  pi-web-client 已启动：${pageUrl}`);
     if (fresh) console.log(`  口令（首次生成，只显示这一次）：${fresh}\n`);
     else console.log(`  口令在 ${statePath("passphrase.txt")}\n`);

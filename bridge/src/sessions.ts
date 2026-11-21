@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
+import { brainLink } from "./brainlink.ts";
 import { displayUserText, loadEntries, loadEntryImage, listSessionFiles, normalizeUserText, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
 import { CopilotTally, fetchCopilotAccount, type CopilotAccountView, type CopilotView } from "./copilot-credits.ts";
 import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, skillItemFor, summarizeToolArgs, withSkillItems, type BashItem, type Item, type ToolItem, type UserItem } from "./items.ts";
@@ -1383,6 +1384,9 @@ export class Session extends EventEmitter {
       cli: this.cli,
       args,
       cwd,
+      // 有壳：这个 id 用来向壳认领管道（attach / stdin / kill 都带它）。没壳时无副作用。
+      sessionId: id,
+      link: brainLink(),
       logPath: statePath("logs", `${id}.log`),
       env: {
         PI_WEB_ALLOW_FILE: allowFile(id),
@@ -1762,7 +1766,11 @@ export class Session extends EventEmitter {
         }
         this.draftId = null;
         this.draftTs = null;
-        if (msg.usage) this.emitWs({ type: "usage", sessionId: this.state.id, usage: msg.usage });
+        if (msg.usage) {
+          this.emitWs({ type: "usage", sessionId: this.state.id, usage: msg.usage });
+          // 壳记账：换代之后这些数字还得在（D385）。
+          brainLink()?.usage(this.state.id, msg.usage);
+        }
         void this.refreshStats();
         // 长任务一轮里可能调几十次工具、跑十几分钟；如果等到 agent_end 才读 JSONL，整轮期间
         // 面板都不会出现 Copilot 积分块（或数字僵在上一轮）。增量读只扫新增字节，开销极小（D339）。

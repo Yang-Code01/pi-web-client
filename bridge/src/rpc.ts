@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
+import type { BrainLink } from "./brainlink.ts";
 import { ensureDir, piChildEnv } from "./paths.ts";
 
 export interface RpcSpawnOptions {
@@ -10,6 +11,10 @@ export interface RpcSpawnOptions {
   cwd: string;
   logPath: string;
   env?: Record<string, string | undefined>;
+  /** 会话 id：有壳时用它认领管道（`spawn` / `attach` / `stdin` 都要带）。 */
+  sessionId?: string;
+  /** 有壳时非空：进程由壳 spawn、管道由壳持有，这里只说话。 */
+  link?: BrainLink | null;
 }
 
 export interface RpcResponse {
@@ -37,12 +42,17 @@ export class RpcChild extends EventEmitter {
   private log: fs.WriteStream | null = null;
   private _alive = false;
   private stderrBuf = "";
+  /** 有壳时：pid 来自壳的 spawn/attach，进程不是这里生的。 */
+  private viaPid: number | null = null;
+  private detachLink: (() => void) | null = null;
+  private readonly sessionId: string;
 
   private opts: RpcSpawnOptions;
 
   constructor(opts: RpcSpawnOptions) {
     super();
     this.opts = opts;
+    this.sessionId = opts.sessionId ?? "";
   }
 
   get alive(): boolean {
@@ -54,13 +64,18 @@ export class RpcChild extends EventEmitter {
    * these numbers (D120 §2) — matching a parent process or a process name guesses at who we mean.
    */
   get pid(): number | null {
-    return this._alive ? (this.child?.pid ?? null) : null;
+    return this._alive ? (this.child?.pid ?? this.viaPid) : null;
   }
 
   start(): void {
     ensureDir(path.dirname(this.opts.logPath));
     this.log = fs.createWriteStream(this.opts.logPath, { flags: "a" });
     this.log.write(`\n===== ${new Date().toISOString()} spawn =====\n`);
+
+    if (this.opts.link && this.sessionId) {
+      this.startLinked(this.opts.link, this.sessionId);
+      return;
+    }
 
     const child = spawn(process.execPath, [this.opts.cli, ...this.opts.args], {
       cwd: this.opts.cwd,
@@ -101,9 +116,69 @@ export class RpcChild extends EventEmitter {
     });
   }
 
+  /**
+   * 有壳时的启动：进程由壳 spawn（或早就活着、只是换了个脑来认领），管道也在壳手里。
+   * 这里只做三件事：认领、把壳留着的未确认行喂进来、之后每行处理完回 ack。
+   */
+  private startLinked(link: BrainLink, sessionId: string): void {
+    this._alive = true;
+    this.detachLink = link.watch(sessionId, {
+      line: (line, seq) => {
+        this.handleLine(line);
+        // 处理完才 ack：壳据此判断哪一帧可以不用再交给下一个脑。
+        if (seq > 0) link.ack(sessionId, seq);
+      },
+      stderr: (text) => {
+        this.stderrBuf = (this.stderrBuf + text).slice(-4000);
+        this.log?.write(text);
+        this.emit("stderr", text);
+      },
+      exit: (reason) => this.finish(reason),
+    });
+    void this.claimChild(link, sessionId);
+  }
+
+  private async claimChild(link: BrainLink, sessionId: string): Promise<void> {
+    try {
+      let pid: number;
+      try {
+        const got = await link.attachSession(sessionId);
+        pid = got.pid;
+        // 先喂旧行再算命：新脑看到的是「上一个人没承认过的那一段」，不多不少。
+        for (const { line, seq } of got.pending.lines) {
+          this.handleLine(line);
+          if (seq > 0) link.ack(sessionId, seq);
+        }
+        if (got.pending.overflowed) {
+          this.emit("log", "换脑时未确认的行超过 8 MB，这一段交给上层从会话文件补齐");
+        }
+        // 换脑窗口里进程若已退出 / 吐过错误，新脑得看到，不能装作一切正常。
+        if (got.lastExit) {
+          this.emit("log", `attach: 这个会话的进程已经退出（${got.lastExit.code ?? got.lastExit.signal}）`);
+        }
+        if (got.lastStderr) this.emit("log", `attach: 最近的 stderr：\n${got.lastStderr.slice(-800)}`);
+      } catch (err) {
+        // 只有「壳那边没有这个会话的子进程」才该新开；其余（超时、壳拒绝）保持原样失败。
+        if ((err as Error).message !== "no-child") throw err;
+        const got = await link.spawnSession({
+          sessionId,
+          argv: [this.opts.cli, ...this.opts.args],
+          cwd: this.opts.cwd,
+          env: { ...piChildEnv(), ...this.opts.env } as Record<string, string>,
+        });
+        pid = got.pid;
+      }
+      this.viaPid = pid;
+    } catch (err) {
+      this.finish(`link: ${(err as Error).message}`);
+    }
+  }
+
   private finish(reason: string): void {
     if (!this._alive) return;
     this._alive = false;
+    this.detachLink?.();
+    this.detachLink = null;
     this.failAll(new Error(`pi process ended (${reason})`));
     this.log?.write(`\n===== ended: ${reason} =====\n`);
     this.log?.end();
@@ -126,28 +201,32 @@ export class RpcChild extends EventEmitter {
       this.buf = this.buf.slice(idx + 1);
       if (line.endsWith("\r")) line = line.slice(0, -1);
       if (!line) continue;
-      let msg: any;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        this.emit("log", `non-JSON stdout line: ${line.slice(0, 200)}`);
-        continue;
-      }
-      if (msg.type === "response") {
-        const p = msg.id ? this.pending.get(msg.id) : undefined;
-        if (p) {
-          this.pending.delete(msg.id);
-          clearTimeout(p.timer);
-          if (msg.success) p.resolve(msg.data);
-          else p.reject(new Error(msg.error || `command failed: ${msg.command}`));
-        } else {
-          this.emit("response", msg);
-        }
-      } else if (msg.type === "extension_ui_request") {
-        this.emit("ui_request", msg);
+      this.handleLine(line);
+    }
+  }
+
+  private handleLine(line: string): void {
+    let msg: any;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      this.emit("log", `non-JSON stdout line: ${line.slice(0, 200)}`);
+      return;
+    }
+    if (msg.type === "response") {
+      const p = msg.id ? this.pending.get(msg.id) : undefined;
+      if (p) {
+        this.pending.delete(msg.id);
+        clearTimeout(p.timer);
+        if (msg.success) p.resolve(msg.data);
+        else p.reject(new Error(msg.error || `command failed: ${msg.command}`));
       } else {
-        this.emit("event", msg);
+        this.emit("response", msg);
       }
+    } else if (msg.type === "extension_ui_request") {
+      this.emit("ui_request", msg);
+    } else {
+      this.emit("event", msg);
     }
   }
 
@@ -157,6 +236,10 @@ export class RpcChild extends EventEmitter {
    * never be able to kill the process that serves every other session.
    */
   private write(obj: unknown): boolean {
+    if (this.opts.link && this.sessionId) {
+      if (!this._alive) return false;
+      return this.opts.link.stdin(this.sessionId, JSON.stringify(obj) + "\n");
+    }
     const stdin = this.child?.stdin;
     if (!stdin || !this._alive) return false;
     if (stdin.destroyed || stdin.writableEnded || !stdin.writable) return false;
@@ -199,6 +282,10 @@ export class RpcChild extends EventEmitter {
   }
 
   kill(): void {
+    if (this.opts.link && this.sessionId) {
+      if (this._alive) this.opts.link.kill(this.sessionId, "end");
+      return;
+    }
     const child = this.child;
     if (!child || !this._alive) return;
     try {
@@ -218,6 +305,10 @@ export class RpcChild extends EventEmitter {
   }
 
   killNow(): void {
+    if (this.opts.link && this.sessionId) {
+      this.opts.link.kill(this.sessionId, "now");
+      return;
+    }
     try {
       this.child?.kill();
     } catch {

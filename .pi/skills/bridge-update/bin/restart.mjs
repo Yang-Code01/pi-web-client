@@ -23,6 +23,11 @@ const DEFAULT_REPO = path.resolve(import.meta.dirname, "../../../..");
 
 const REPO = path.resolve(argOf("--dir", DEFAULT_REPO));
 const PORT = Number(argOf("--port", process.env.PI_WEB_PORT || 7864));
+/** 有壳就走壳（#634）：换的是脑，壳守着端口与管道；没有壳的旧检出照旧起 index.js。 */
+const ENTRY =
+  process.env.PI_HOST_DISABLE === "1" || !fs.existsSync(path.join(REPO, "bridge", "dist", "host.js"))
+    ? "bridge/dist/index.js"
+    : "bridge/dist/host.js";
 const CHECK = process.argv.includes("--check");
 const DRY = process.argv.includes("--dry-run");
 const NO_START = process.argv.includes("--no-start");
@@ -94,10 +99,10 @@ function looksLikeBridge(pid) {
     ]);
     // 命令行里的路径可能是反斜杠形式：归一成 / 再比（不在源码里写反斜杠字面量）。
     const cmd = String(r.stdout || "").split(String.fromCharCode(92)).join("/");
-    return cmd.includes("bridge/dist/index.js");
+    return cmd.includes("bridge/dist/index.js") || cmd.includes("bridge/dist/host.js");
   }
   const r = sh("bash", ["-lc", `ps -p ${pid} -o command= 2>/dev/null || true`]);
-  return /bridge\/dist\/index\.js/.test(String(r.stdout || ""));
+  return /bridge\/dist\/(index|host)\.js/.test(String(r.stdout || ""));
 }
 
 /** bridge 自己在监听到端口时写的 pid 文件（`bridge/src/pidfile.ts`）。 */
@@ -228,7 +233,7 @@ function startBridge() {
     return;
   }
   const out = fs.openSync(LIVE, "a");
-  const child = spawn(process.execPath, ["bridge/dist/index.js"], {
+  const child = spawn(process.execPath, [ENTRY], {
     cwd: REPO,
     detached: true,
     stdio: ["ignore", out, out],

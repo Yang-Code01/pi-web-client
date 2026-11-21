@@ -5,6 +5,8 @@ import type { Dict } from "./index.ts";
  * 键里常有全角括号、空格、箭头，不加引号会语法报错。生成方式见 .scratch/i18n/merge.mjs。
  */
 export const en: Dict = {
+  "{n} 个会话正在跑。换代只换桥本身，它们不会被切断，页面会自己接上。": "{n} session(s) running. The deploy swaps the bridge itself; they are not cut off and the page reconnects on its own.",
+  "将先暂存主检出的未提交改动，编译完成后自动恢复；本次构建不包含这些改动。继续？": "Your uncommitted changes in the main checkout will be stashed and restored after the build, so this build will not include them. Continue?",
   "输入口令。第一次启动时，bridge 会在终端里打印一个。": "Enter the passphrase. On first start the bridge prints it in its terminal.",
   "口令": "Passphrase",
   "当前口令": "Current passphrase",

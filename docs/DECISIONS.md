@@ -7416,3 +7416,27 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** 外壳自身的属性（`aria-label`）不再随重建刷新，改为在 `render()` 里重设；以后若想让某次重画**重演**入场，得显式加类触发，不能靠重建。`List` 与 `main` 仍是每次新建，滚动容器 `.mc-main` 原地重置到顶部，切分区的手感不变。
 
 **验证。** `probes/mail-panel-single-mount.mjs`：改前一次点击挂载 3 次、带 `mac-window-in` 3 次、切分区累计 4 次（4 条全红）；改后 1 / 1 / 1，切分区不重挂、Esc 后不复活、`关闭前后没有新的挂载`（5 条全绿）。`npm --prefix web run typecheck` 通过；截屏 `.scratch/mail-single-mount/shots/panel-open.png`。
+
+## D385 壳 / 脑分层：热部署不再打断正在跑的会话（#634）
+
+**问题。** 热部署过去是「杀掉整个桥 → 起新桥」。pi 子进程是桥的孩子，匿名管道随父进程一起消失，于是正在跑的那一轮跟着断。用户的原话是「能不能让热部署不打断已经在跑的回话」——他要的不是「重启快一点」，而是那一轮**照跑完**。
+
+**决定。** 拆成两层：**壳**（`bridge/dist/host.js`）持有公网端口、内网通连接、隧道与所有 pi 子进程的管道；**脑**（`bridge/dist/index.js`，原来整个桥）只负责解释 pi 的协议、画页面、答 HTTP。热部署只换脑，壳与子进程不动。
+
+**为什么这样做。** 管道不是数据，是内核对象，只有持有它的进程还活着才传得下去 —— 所以必须有一个进程**比换代长寿**，而且它得自己持有 pipe 句柄，不能只「转发 HTTP」（把 pi 挂到别处再转发，等于把管道搬走，死法不变）。壳是那唯一一个。
+
+**机制要点。**
+- 控制通道：Windows 命名管道 / POSIX unix socket，NDJSON，`\n` 分帧（口子是字符串，不是字节流，按 `\n` 切不会切坏多字节字符）。
+- 每条 pi 输出行带壳发的 `seq`。脑处理完回 `ack{sessionId,seq}`；没 ack 的行留在壳里（单会话上限 8 MB），下一个 attach 的脑原样拿走。**seq 由壳发号**：壳是唯一写者，它的计数器就是真相，老脑排队帧不会因它退出而消失。
+- 写 stdin 只认「当前 owner 脑」，非 owner 的帧回 `stale-owner` 并丢弃 —— 防止两代脑同时往一个 pi 里写字。
+- 换脑：新脑 hello → `ready` → 壳**先观察 5 秒**（用户选了「切完老脑立刻退」，所以观察只能在切换之前）→ 设新 owner、发 `activate`、老脑 `retire` 后 3 秒关连接、5 秒强杀；切换失败保留老脑，页面上的失败看得见。
+- 来源标识：壳转发时**删掉客户端带来的 `x-pi-peer` 与所有 `x-forwarded-*`**，按真实 `remoteAddress` 重写 `x-pi-peer: loopback|remote`；脑的 5 处回环守卫改成读它。转发之后 `remoteAddress` 全是 127.0.0.1，这层要是不做，回环口就对公网开了。
+- 用量账本：壳里 append-only（`state/host/usage.jsonl`，超 1 MB 压缩成每会话一条），跨换代、跨整组重启都在；脑换代后拿 `usage-snapshot` 接上。
+- 关窗保留、后台接着跑；90 秒没有可用脑才整组自尽（不把孤儿 pi 留在机器上）。
+- pid 语义：pid 文件与 `/healthz` 的空闲 pid 现在指**壳**；会话 pid 由壳的状态快照给出（运行面板的采样不变）。
+- 启动链四处分派到 `scripts/start.mjs` / `bridgeEntry()`：热部署窗口、`npm start`（`start:nobuild`）、看门狗、`restart.mjs`。逃生口 `PI_HOST_DISABLE=1`：当它等于 1 时全部退回老的单进程 index.js。
+- 壳自己变了（`dist/host.js` 与 `dist/host/*.js` 指纹不同）：不换脑，提示整组重启 —— 用户选的就是「壳变了就整组重启」。
+
+**代价 / 可改。** 多一个常驻进程（约 40–50 MB）。壳里出现 bug 时，最坏情况下整个桥都起不来 —— 所以 `PI_HOST_DISABLE=1` 必须长期留着，它是这个设计的保险丝。单轮里还没被确认的行超过 8 MB（极少）时这一轮不跨代，界面会明说。
+
+**验证。** `node bridge/tests/host-broker-unit.mjs`（未确认窗口、8 MB 降级、owner 规则）、`node bridge/tests/host-ledger-unit.mjs`（账本重放与压缩）、`node bridge/tests/host-shell-e2e.mjs`（真壳 + 假脑 + 假 pi：peer 头改写、tick 回脑、写入往返、kill 通知、attach 交回窗口、账本落盘、停机干净退出）。

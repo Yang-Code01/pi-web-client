@@ -14,6 +14,7 @@ import type * as http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readJsonChecked } from "./paths.ts";
+import { brainLink } from "./brainlink.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** `bridge/dist/hotdeploy.js` → 仓库根。桥在哪个检出里跑，热部署就管哪个检出。 */
@@ -434,6 +435,45 @@ export async function handleHotdeploy(
 ): Promise<boolean> {
   const p = url.pathname;
   if (p !== "/api/hotdeploy" && !p.startsWith("/api/hotdeploy/")) return false;
+  // 有壳时真干活的是壳 —— 脑自己会被换掉，进程必须由活过这一次的东西来杀。
+  const host = brainLink();
+  if (host) {
+    if (ctx.publicReq) return fail(res, 403, "hotdeploy_public", "公网不能换本机进程；请回本机操作"), true;
+    try {
+      if (p === "/api/hotdeploy" && req.method === "GET") {
+        const snap = await snapshot(ctx);
+        json(res, 200, {
+          ...snap,
+          hosted: true,
+          port: host.publicPort || snap.port,
+          hostBuildId: host.hostBuildId,
+          busy: host.deployState.phase === "running" || host.deployState.phase === "observing",
+          run: host.deployState.phase === "idle" ? snap.run : { ...host.deployState, phase: host.deployState.phase },
+        });
+        return true;
+      }
+      if (p === "/api/hotdeploy/log" && req.method === "GET") {
+        json(res, 200, { lines: [`deploy|${host.deployState.phase}${host.deployState.reason ? ` ${host.deployState.reason}` : ""}`] });
+        return true;
+      }
+      if (p === "/api/hotdeploy/run" && req.method === "POST") {
+        const body = await readJsonBody(req).catch(() => null);
+        const branch = typeof body?.branch === "string" ? body.branch.trim() : "";
+        if (!branch) return fail(res, 400, "hotdeploy_branch", "没说要部署哪条分支"), true;
+        host.deploy(branch, body?.stash === true);
+        return json(res, 202, {
+          ok: true,
+          run: { pid: 0, branch, step: 0, phase: "running", startedAt: new Date().toISOString(), port: host.publicPort },
+        }), true;
+      }
+      fail(res, 405, "hotdeploy_method", "这个接口不支持这个请求方法");
+      return true;
+    } catch (err) {
+      ctx.log?.(`hotdeploy: ${(err as Error)?.stack ?? err}`);
+      fail(res, 500, "hotdeploy_failed", `热部署接口挂了：${(err as Error).message}`);
+      return true;
+    }
+  }
   try {
     if (p === "/api/hotdeploy" && req.method === "GET") {
       // 快照里有仓库路径、分支表、会话数：跟 /run 一样只给本机看。
