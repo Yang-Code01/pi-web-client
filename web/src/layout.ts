@@ -4,7 +4,7 @@
  * 画 chip 用的清单。
  *
  * 存的值是稳定 id（`a`/`b`/`c`/`d`），**不是**标签文字 —— 标签要过 `tr()`，id 进了
- * localStorage 就不能再随语言变（同 `ACCENTS` 的理由）。#98 点亮其余三颗时只在这里
+ * localStorage 就不能再随语言变（同 `MAC_ACCENTS` 的理由）。#98 点亮其余三颗时只在这里
  * 把 id 加进 `IMPLEMENTED`，渲染层不用改。
  */
 

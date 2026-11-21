@@ -113,27 +113,24 @@ const look = (p) =>
 // ---- 1. 独立页：每套主题都真的换了底；Mac 三套挂上 data-ui 和玻璃
 await page.goto(`${A}/`);
 const seen = new Map();
-for (const theme of ["midnight", "daylight", "paper", "mac-light", "mac-dark", "mac-midnight"]) {
+for (const theme of ["mac-light", "mac-dark", "mac-midnight"]) {
   await setTheme(page, theme);
   await page.goto(`${A}/peer`);
   await openChat(page);
   const l = await look(page);
   check(`${theme}：<html data-theme> 跟偏好走`, l.theme === theme, String(l.theme));
-  const mac = theme.startsWith("mac-");
-  check(`${theme}：data-ui ${mac ? "是 mac" : "没有"}`, mac ? l.ui === "mac" : l.ui === null, String(l.ui));
-  if (mac) {
-    check(`${theme}：顶栏是毛玻璃`, Boolean(l.barBlur && l.barBlur !== "none"), String(l.barBlur));
-    check(`${theme}：底是壁纸渐变`, l.bodyImg.includes("gradient"), l.bodyImg.slice(0, 40));
-  }
+  check(`${theme}：data-ui 是 mac`, l.ui === "mac", String(l.ui));
+  check(`${theme}：顶栏是毛玻璃`, Boolean(l.barBlur && l.barBlur !== "none"), String(l.barBlur));
+  check(`${theme}：底是壁纸渐变`, l.bodyImg.includes("gradient"), l.bodyImg.slice(0, 40));
   seen.set(theme, `${l.bodyBg}|${l.bodyImg.slice(0, 60)}|${l.text}`);
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `standalone-${theme}.png`) });
 }
-check("六套主题画出来六种底 / 字", new Set(seen.values()).size === seen.size, [...seen.values()].join(" ; "));
+check("三套主题画出来三种底 / 字", new Set(seen.values()).size === seen.size, [...seen.values()].join(" ; "));
 
 // ---- 2. 主界面里改了主题，开着的 /peer 当场跟（storage 事件），不用关了重开
 const other = await ctx.newPage();
 await other.goto(`${A}/`);
-await setTheme(page, "midnight");
+await setTheme(page, "mac-midnight");
 await page.reload();
 await openChat(page);
 await setTheme(other, "mac-light");

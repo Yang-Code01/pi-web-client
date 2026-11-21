@@ -10,7 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildTree, wsColor, WS_COLORS } from "../src/tree.ts";
 import { wsAccent } from "../src/nowchip.ts";
-import { ACCENTS } from "../src/palette.ts";
+import { MAC_ACCENTS } from "../src/palette.ts";
 
 const ws = (id, name, key, manual = false) => ({ id, name, key, manual });
 const LIB = ws("c:/ai/library/performance/library", "", "C:/ai/library/performance/library");
@@ -102,7 +102,7 @@ test("#279 真的空组 count 是 0（手动组与目录组都算）", () => {
 
 // ---------------------------------------------------------------- 颜色
 
-test("组色按 id 稳定，取自既有调色板", () => {
+test("组色按 id 稳定，取自 macOS 八色调色板", () => {
   assert.equal(wsColor(LIB.id), wsColor(LIB.id));
   assert.ok(WS_COLORS.includes(wsColor(LIB.id)));
   assert.ok(WS_COLORS.includes(wsColor(PWC.id)));
@@ -112,7 +112,7 @@ test("组色按 id 稳定，取自既有调色板", () => {
 test("#102：树组色与顶栏 accent 同源（同一 FNV-1a 桶），不是两套哈希", () => {
   const ids = [LIB.id, PWC.id, "manual:demo", ...[...Array(24).keys()].map((i) => `g:${i}`)];
   for (const id of ids) {
-    assert.equal(wsColor(id), ACCENTS[wsAccent(id)].accent, id);
+    assert.equal(wsColor(id), MAC_ACCENTS[wsAccent(id)].accent, id);
   }
 });
 

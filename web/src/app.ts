@@ -27,8 +27,8 @@ import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
-import { ACCENTS, DEFAULT_MAC_ACCENT, MAC_ACCENTS } from "./palette.ts";
-import { accentFor, activeAccent, DEFAULT_THEME, isMacTheme, TERM_THEMES, THEMES, isTheme, paintTheme, themeInfo, type ThemeId } from "./theme.ts";
+import { DEFAULT_MAC_ACCENT } from "./palette.ts";
+import { accentFor, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, type ThemeId, type ThemeInfo } from "./theme.ts";
 import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
 import { MailConfirmDialog } from "./mailconfirm.ts";
@@ -3522,9 +3522,9 @@ export class App {
   }
 
   /**
-   * 关掉**面板层**（`this.sheet` 本身）。Mac 风格主题下先放一段退场动画（`.mac-leaving`，mac.css）
-   * 再真正移除；同一轮同步代码里又开了新面板（换页、重画、恢复默认）就当场移除旧的，并让新的
-   * 跳过入场动画，免得「重画」看起来像关了又开。其它主题直接移除，行为与以前一致。
+   * 关掉**面板层**（`this.sheet` 本身）。先放一段退场动画（`.mac-leaving`，mac.css；
+   * `prefers-reduced-motion` 下直接移除），同一轮同步代码里又开了新面板（换页、重画、恢复默认）
+   * 就当场移除旧的，并让新的跳过入场动画，免得「重画」看起来像关了又开。
    *
    * 只给 sheet 层用：那个 `mac-instant` 判据要的是「旧 sheet 还在退场、新 sheet 已经铺上」。
    * 灯箱 / 选择器这些**浮在 sheet 之上**的浮层调的是 modal.ts 的 `retireOverlay` —— 它们关闭时
@@ -3936,18 +3936,21 @@ export class App {
   }
 
   // ---------------------------------------------------------------- appearance
+  /** 点一颗主题 chip：写偏好 → `applyPrefs` 把主题、强调色块、终端一次落下去。 */
+  private pickTheme(id: ThemeId): void {
+    this.prefs = { ...this.prefs, theme: id };
+    savePrefs(this.prefs);
+    this.applyPrefs();
+  }
+
   private applyPrefs(): void {
     const root = document.documentElement.style;
     root.setProperty("--ui-scale", String(this.prefs.scale));
     this.syncCompact();
-    // 主题与强调色一起落：浅底主题用深一档的强调色表（theme.ts）。
-    paintTheme(this.prefs.theme, activeAccent(this.prefs.theme, this.prefs));
+    // 主题与强调色一起落：浅底主题用亮色模式那一档的强调色表（theme.ts）。
+    paintTheme(this.prefs.theme, this.prefs.macAccent);
     // 终端也要跟着换底：浅底主题里终端还是黑的话，切过去就像贴了块黑纸。
     this.paintTermThemes();
-    // D158：三档文字颜色（--text/--dim/--faint）只有 styles.css 里 [data-text] 那一份，这里只标档位。
-    // 读回来时 readPrefs 已经按 TEXT_STEPS 校验过，不会给 CSS 一个没有对应规则的值。
-    // Mac 主题不分三档：文字层级照 Apple 的 label / secondaryLabel 那一套固定下来（设置里那一行也藏起来）。
-    document.documentElement.dataset.text = isMacTheme(this.prefs.theme) ? "normal" : this.prefs.text;
     // #97：布局也是外观偏好，但「哪一种壳」影响的是行与列的摆法，#98 还要在自己的 CSS 里挑壳。
     // 存的值原样留在 prefs 里，这里只标出这一版真正画出来的那一种（见 layout.ts 的 activeLayout）。
     this.paintLayout();
@@ -4047,9 +4050,9 @@ export class App {
     const reset = el("button", "btn ghost", tr("恢复默认")) as HTMLButtonElement;
     reset.type = "button";
     reset.dataset.role = "dreset";
-    reset.title = tr("字号、主题、颜色、文字亮度、布局回到默认；语言与界面元素不动");
+    reset.title = tr("字号、主题、颜色、布局回到默认；语言与界面元素不动");
     reset.onclick = () => {
-      // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
+      // 恢复默认只恢复字号/主题/颜色/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
       // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
       this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen, themeIntroSeen: this.prefs.themeIntroSeen, settingsTab: this.prefs.settingsTab };
       savePrefs(this.prefs);
@@ -4268,42 +4271,11 @@ export class App {
     paintSize(this.prefs.scale);
 
     // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
-    // 「配色主题」与「Mac 风格」两页各一排，写的是同一个 `prefs.theme`：点任一颗，两页的「亮着」一起改。
-    const themeChipRow = (list: typeof THEMES): HTMLElement => {
-      const row = el("div", "chips theme-chips");
-      for (const t of list) row.append(themeChip(t));
-      return row;
-    };
-    const themeChip = (t: (typeof THEMES)[number]): HTMLElement => {
-      const chip = el("button", `chip theme-chip${this.prefs.theme === t.id ? " on" : ""}`);
-      chip.dataset.theme = t.id;
-      chip.title = tr(t.label);
-      const demo = el("span", "theme-demo");
-      demo.style.setProperty("--td-bg", t.demo.bg);
-      demo.style.setProperty("--td-panel", t.demo.panel);
-      demo.style.setProperty("--td-text", t.demo.text);
-      demo.style.setProperty("--td-line", t.demo.line);
-      demo.append(el("span", "td-side"), el("span", "td-l1"), el("span", "td-l2"), el("span", "td-btn"));
-      if (t.mac) {
-        demo.classList.add("mac");
-        demo.append(el("span", "td-lights"));
-      }
-      chip.append(demo, el("span", "theme-chip-label", tr(t.label)));
-      chip.onclick = () => {
-        this.prefs = { ...this.prefs, theme: t.id };
-        savePrefs(this.prefs);
-        this.applyPrefs();
-        for (const other of this.sheet?.querySelectorAll<HTMLElement>(".theme-chip") ?? []) other.classList.toggle("on", other.dataset.theme === t.id);
-      };
-      return chip;
-    };
-    const themePanel = section("theme");
-    const themeRow = this.stRow(tr("配色主题"), tr("换整套底色、面板、线条与文字；强调色与文字亮度在「颜色」里另调"), themeChipRow(THEMES.filter((t) => !t.mac)));
-    themeRow.classList.add("wide");
-    themePanel.append(themeRow);
-
+    // 外观只剩 Mac 风格三套（D353）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
+    const themeChips = el("div", "chips theme-chips");
+    for (const t of THEMES) themeChips.append(themeChipEl(t, this.prefs.theme, () => this.sheet, (id) => this.pickTheme(id)));
     const macPanel = section("mac");
-    const macRow = this.stRow(tr("Mac 风格"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效；强调色在「颜色」里换成 macOS 八色"), themeChipRow(THEMES.filter((t) => t.mac)));
+    const macRow = this.stRow(tr("Mac 风格"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效；强调色在「颜色」里换成 macOS 八色"), themeChips);
     macRow.classList.add("wide");
     macPanel.append(macRow);
     // Mac 主题下多出来的几颗快捷键（installShortcuts 里的 MAC_KEYS）：Mac 上显示 ⌘，别处显示 Ctrl。
@@ -4315,12 +4287,12 @@ export class App {
       li.append(tr(label));
       keys.append(li);
     }
-    const keysRow = this.stRow(tr("Mac 快捷键"), tr("只在 Mac 风格主题下生效；你在「快捷键」里绑过的组合优先"), keys);
+    const keysRow = this.stRow(tr("Mac 快捷键"), tr("系统式快捷键，⌘ 与 Ctrl 都认；你在「快捷键」里绑过的组合优先"), keys);
     keysRow.classList.add("wide");
     macPanel.append(keysRow);
 
     const colorPanel = section("color");
-    // Mac 主题下换成 macOS 那一排八色（存在 macAccent 里，和原来六色互不覆盖）；两行都建好，按主题只露一行。
+    // 强调色只有 macOS 那一排八色（D353：六色表随「配色主题」一起删了）。
     const macSwatches = el("div", "swatches mac-swatches");
     for (const [id, label] of MAC_ACCENT_LABELS) {
       const sw = el("button", `swatch${this.prefs.macAccent === id ? " on" : ""}`);
@@ -4335,42 +4307,9 @@ export class App {
       };
       macSwatches.append(sw);
     }
-    const macAccentRow = this.stRow(tr("强调色（macOS）"), tr("照 macOS「系统设置 → 外观」的八色；默认系统蓝"), macSwatches);
-    macAccentRow.dataset.role = "mac-accent-row";
-    colorPanel.append(macAccentRow);
-    const swatches = el("div", "swatches");
-    for (const [id, label] of ACCENT_LABELS) {
-      const sw = el("button", `swatch${this.prefs.accent === id ? " on" : ""}`);
-      sw.dataset.accent = id;
-      sw.style.setProperty("--sw", accentFor(this.prefs.theme, id).accent);
-      sw.title = tr(label);
-      sw.setAttribute("aria-label", tr(label));
-      sw.onclick = () => {
-        this.prefs = { ...this.prefs, accent: id };
-        savePrefs(this.prefs);
-        this.applyPrefs();
-        for (const other of swatches.querySelectorAll(".swatch")) other.classList.toggle("on", other === sw);
-      };
-      swatches.append(sw);
-    }
-    const accentRow = this.stRow(tr("强调色"), tr("按钮、选中项、进度条用的那一种颜色"), swatches);
+    const accentRow = this.stRow(tr("强调色"), tr("照 macOS「系统设置 → 外观」的八色；默认系统蓝"), macSwatches);
     accentRow.dataset.role = "accent-row";
     colorPanel.append(accentRow);
-
-    const textChips = el("div", "chips");
-    for (const [key, label] of TEXT_STEPS) {
-      const chip = el("button", `chip${this.prefs.text === key ? " on" : ""}`, tr(label));
-      chip.onclick = () => {
-        this.prefs = { ...this.prefs, text: key };
-        savePrefs(this.prefs);
-        this.applyPrefs();
-        for (const other of textChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
-      };
-      textChips.append(chip);
-    }
-    const textRow = this.stRow(tr("文字亮度"), tr("正文 / 次要 / 提示三档文字一起调亮或调暗"), textChips);
-    textRow.dataset.role = "text-row";
-    colorPanel.append(textRow);
 
     // #97：工作区布局。四颗 chip 各带一张 CSS 画的小示意图（不引图片：设置面板要能离线打开，
     // 一张 png 就得多一条资源路径）。这一票只点亮 A，其余三颗置灰 + 悬停说明「下一步补上」——
@@ -4436,9 +4375,8 @@ export class App {
         label: tr("外观"),
         items: [
           { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
-          { sec: "theme", label: tr("配色主题"), sub: tr("整套底色、线条与文字；默认是 Mac 浅色") },
           { sec: "mac", label: tr("Mac 风格"), sub: tr("仿 macOS 的浅色、深色与午夜蓝三套") },
-          { sec: "color", label: tr("颜色"), sub: tr("强调色与文字亮度") },
+          { sec: "color", label: tr("颜色"), sub: tr("强调色（macOS 八色）") },
           { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
           { sec: "chrome", label: tr("界面元素"), sub: tr("顶栏与输入框下沿的按钮；点预览里的按钮就收起 / 放回") },
         ],
@@ -4456,28 +4394,14 @@ export class App {
   }
 
   /**
-   * 强调色块换表：深底主题用亮粉彩、浅底主题用深饱和（`ACCENTS` / `ACCENTS_LIGHT`）。
+   * 强调色块换表：浅底主题用亮色模式那一档（深饱和）、深底用深色模式那一档（亮粉彩）。
    * 只改色块自己的 `--sw`，不动选中的那颗、也不重建这一行 —— 重建会把焦点和 hover 丢掉。
    */
   private paintSwatches(): void {
-    const mac = isMacTheme(this.prefs.theme);
-    for (const sw of this.sheet?.querySelectorAll<HTMLElement>(".swatch[data-accent]") ?? []) {
-      const id = sw.dataset.accent;
-      // 六色那行在 Mac 主题下是藏着的；仍按「同明暗的普通主题」上色，切回来时不闪一下错色。
-      if (id) sw.style.setProperty("--sw", accentFor(mac ? (themeInfo(this.prefs.theme).light ? "daylight" : "midnight") : this.prefs.theme, id).accent);
-    }
     for (const sw of this.sheet?.querySelectorAll<HTMLElement>(".swatch[data-mac-accent]") ?? []) {
       const id = sw.dataset.macAccent;
-      if (id) sw.style.setProperty("--sw", accentFor(mac ? this.prefs.theme : (themeInfo(this.prefs.theme).light ? "mac-light" : "mac-dark"), id).accent);
+      if (id) sw.style.setProperty("--sw", accentFor(this.prefs.theme, id).accent);
     }
-    // Mac 主题：六色与文字亮度两行让位，换成 macOS 八色那一行。
-    const row = (role: string) => this.sheet?.querySelector<HTMLElement>(`[data-role="${role}"]`);
-    const macRow = row("mac-accent-row");
-    const accentRow = row("accent-row");
-    const textRow = row("text-row");
-    if (macRow) macRow.hidden = !mac;
-    if (accentRow) accentRow.hidden = mac;
-    if (textRow) textRow.hidden = mac;
   }
 
   /** 外观各子类顶上那排卡（语言与字号 / 颜色 / 工作区；界面元素没有卡）。applyPrefs 之后跟着重画。 */
@@ -4486,11 +4410,7 @@ export class App {
     if (!box) return;
     const sec = this.displaySec.look ?? "lang";
     const lang = LANGS.find(([code]) => code === this.prefs.lang)?.[1] ?? this.prefs.lang;
-    const mac = isMacTheme(this.prefs.theme);
-    const accent = mac
-      ? (MAC_ACCENT_LABELS.find(([id]) => id === this.prefs.macAccent)?.[1] ?? this.prefs.macAccent)
-      : (ACCENT_LABELS.find(([id]) => id === this.prefs.accent)?.[1] ?? this.prefs.accent);
-    const text = TEXT_STEPS.find(([k]) => k === this.prefs.text)?.[1] ?? this.prefs.text;
+    const accent = MAC_ACCENT_LABELS.find(([id]) => id === this.prefs.macAccent)?.[1] ?? this.prefs.macAccent;
     const layoutId = activeLayout(this.prefs);
     const layout = LAYOUTS.find((l) => l.id === layoutId)?.label ?? layoutId;
     const scale = Math.round(this.prefs.scale * 100);
@@ -4500,13 +4420,10 @@ export class App {
             { label: tr("语言"), value: lang, sub: tr("界面与推送") },
             { label: tr("字号"), value: `${scale}%`, sub: scale === Math.round(DEFAULT_PREFS.scale * 100) ? tr("默认") : tr("已调整") },
           ]
-        : sec === "theme" || sec === "mac"
-          ? [{ label: tr("配色主题"), value: tr(THEMES.find((t) => t.id === this.prefs.theme)?.label ?? this.prefs.theme), sub: this.prefs.theme === DEFAULT_PREFS.theme ? tr("默认") : tr("已调整") }]
+        : sec === "mac"
+          ? [{ label: tr("Mac 风格"), value: tr(THEMES.find((t) => t.id === this.prefs.theme)?.label ?? this.prefs.theme), sub: this.prefs.theme === DEFAULT_PREFS.theme ? tr("默认") : tr("已调整") }]
           : sec === "color"
-          ? [
-              { label: tr("强调色"), value: tr(accent), sub: tr("按钮与选中项") },
-              mac ? { label: tr("文字层级"), value: tr("Apple 标签色"), sub: tr("Mac 主题按 macOS 固定") } : { label: tr("文字亮度"), value: tr(text), sub: tr("三档文字一起调") },
-            ]
+          ? [{ label: tr("强调色"), value: tr(accent), sub: tr("按钮与选中项") }]
           : sec === "layout"
             ? [{ label: tr("工作区布局"), value: tr(layout), sub: tr("会话与侧栏的摆法") }]
             : [];
@@ -7245,7 +7162,7 @@ export class App {
   }
 
   /**
-   * 第一次打开：弹一张主题选择。上排 Mac 风格三套、下排配色主题七套，默认亮着 Mac 浅色。
+   * 第一次打开：弹一张主题选择（D353：只剩 Mac 风格三套，一排三颗）。默认亮着 Mac 浅色。
    * 点一颗立即换上（同设置里的 chip，存进 `pi.prefs.theme`）；「开始使用」/ 关掉都算看过 ——
    * 弹出的那一刻就记 `themeIntroSeen`，刷新也不会再来一次（以后去 设置 → 外观 改）。
    */
@@ -7275,42 +7192,15 @@ export class App {
 
     const body = el("div", "theme-intro");
     body.append(el("p", "theme-intro-lead", tr("先挑一套顺眼的；以后随时可以在 设置 → 外观 里换。")));
-    const chip = (t: (typeof THEMES)[number]): HTMLElement => {
-      const b = el("button", `chip theme-chip${this.prefs.theme === t.id ? " on" : ""}`) as HTMLButtonElement;
-      b.type = "button";
-      b.dataset.theme = t.id;
-      b.title = tr(t.label);
-      const demo = el("span", "theme-demo");
-      demo.style.setProperty("--td-bg", t.demo.bg);
-      demo.style.setProperty("--td-panel", t.demo.panel);
-      demo.style.setProperty("--td-text", t.demo.text);
-      demo.style.setProperty("--td-line", t.demo.line);
-      demo.append(el("span", "td-side"), el("span", "td-l1"), el("span", "td-l2"), el("span", "td-btn"));
-      if (t.mac) {
-        demo.classList.add("mac");
-        demo.append(el("span", "td-lights"));
-      }
-      b.append(demo, el("span", "theme-chip-label", tr(t.label)));
-      b.onclick = () => {
-        this.prefs = { ...this.prefs, theme: t.id };
-        savePrefs(this.prefs);
-        this.applyPrefs();
-        for (const other of sheet.querySelectorAll<HTMLElement>(".theme-chip")) other.classList.toggle("on", other.dataset.theme === t.id);
-      };
-      return b;
-    };
     const group = (title: string, role: string, list: typeof THEMES): HTMLElement => {
       const box = el("div", "theme-intro-group");
       box.dataset.role = role;
       const row = el("div", "chips theme-chips");
-      for (const t of list) row.append(chip(t));
+      for (const t of list) row.append(themeChipEl(t, this.prefs.theme, () => sheet, (id) => this.pickTheme(id)));
       box.append(el("div", "theme-intro-title", title), row);
       return box;
     };
-    body.append(
-      group(tr("Mac 风格"), "theme-intro-mac", THEMES.filter((t) => t.mac)),
-      group(tr("配色主题"), "theme-intro-color", THEMES.filter((t) => !t.mac)),
-    );
+    body.append(group(tr("Mac 风格"), "theme-intro-mac", THEMES));
 
     const foot = el("div", "sheet-foot");
     const go = el("button", "btn primary", tr("开始使用")) as HTMLButtonElement;
@@ -18903,14 +18793,14 @@ export class App {
   }
 
   /** One tab = one shell: its own xterm, its own body, its own socket id. */
-  /** 终端配色：主题那套 16 色 + 当前强调色当光标（浅底主题下已经是深一档的强调色表）。 */
+  /** 终端配色：主题那套 16 色 + 当前强调色当光标（浅底主题下已经是亮色模式那一档）。 */
   private termPalette(): { [key: string]: string } {
-    return { ...TERM_THEMES[this.prefs.theme], cursor: accentFor(this.prefs.theme, activeAccent(this.prefs.theme, this.prefs)).accent };
+    return { ...TERM_THEMES[this.prefs.theme], cursor: accentFor(this.prefs.theme, this.prefs.macAccent).accent };
   }
 
   /** 主题/强调色变了就把配色写给所有已开的终端；同一组（`theme/accent`）只写一次。 */
   private paintTermThemes(): void {
-    const key = `${this.prefs.theme}/${activeAccent(this.prefs.theme, this.prefs)}`;
+    const key = `${this.prefs.theme}/${this.prefs.macAccent}`;
     if (key === this.termThemeKey) return;
     this.termThemeKey = key;
     const palette = this.termPalette();
@@ -19071,11 +18961,10 @@ export class App {
   }
 
   /**
-   * Mac 风格主题下的系统式快捷键（⌘, 设置、⌘K 搜索、⌃⌘S 侧栏、⌘. 中断）。⌘ 与 Ctrl 都认，
+   * 系统式快捷键（⌘, 设置、⌘K 搜索、⌃⌘S 侧栏、⌘. 中断）。⌘ 与 Ctrl 都认，
    * Windows 上照样用 Ctrl。用户自己绑过同一个组合时上面那次查找已经先命中了，这里只做兜底。
    */
   private macKeyAction(combo: string): string | null {
-    if (!isMacTheme(this.prefs.theme)) return null;
     return MAC_KEYS[combo] ?? null;
   }
 
@@ -20531,14 +20420,12 @@ function writeFlag(key: string, value: boolean): void {
 
 type Prefs = {
   scale: number;
-  /** 整套配色（theme.ts 的稳定 id）；默认 mac-light（Mac 浅色）。 */
+  /** 整套外观（theme.ts 的稳定 id）；只剩 Mac 浅色 / 深色 / 午夜蓝三套（D353），默认浅色。 */
   theme: ThemeId;
-  accent: string;
-  /** Mac 风格主题下的强调色（palette.ts 的 MAC_ACCENT_IDS）；和 `accent` 分开存，换主题互不覆盖。 */
+  /** 强调色（palette.ts 的 MAC_ACCENT_IDS，macOS 八色）；默认系统蓝。 */
   macAccent: string;
-  text: "soft" | "normal" | "bright";
   lang: Lang;
-  /** 收起的工作区（#95）：组 id 列表，跟 accent 一起存在 `pi.prefs` 里，不另开 storage key。 */
+  /** 收起的工作区（#95）：组 id 列表，跟 macAccent 一起存在 `pi.prefs` 里，不另开 storage key。 */
   wsCollapsed: string[];
   /** 设置抽屉停在哪一页（样张 V2 定的）：只记选择，不参与「恢复默认」。 */
   settingsTab: "look" | "conn";
@@ -20562,9 +20449,7 @@ const DEFAULT_SCALE = 1.25;
 const DEFAULT_PREFS: Prefs = {
   scale: DEFAULT_SCALE,
   theme: DEFAULT_THEME,
-  accent: "ice",
   macAccent: DEFAULT_MAC_ACCENT,
-  text: "normal",
   lang: "zh-Hans",
   wsCollapsed: [],
   layout: "a",
@@ -21215,24 +21100,13 @@ function layoutDemo(id: LayoutId): HTMLElement {
 }
 
 /**
- * Accent pairs live in `palette.ts` because the workspace colour dot (#96) picks from the same six.
- * Keys are stable ids — they are persisted in `pi.prefs`, so they must not be translated; the
- * tooltip goes through `ACCENT_LABELS` + `tr()`. Older builds stored the Chinese colour names:
- * `LEGACY_ACCENTS` is the migration `readPrefs` uses, and deleting it would silently reset
- * everyone's colour.
+ * 强调色只有 macOS 那一排八色（palette.ts，D353）：keys 是稳定 id，持久化在 `pi.prefs.macAccent` 里，
+ * 不能翻译；tooltip 与 aria 走 `MAC_ACCENT_LABELS` + `tr()`。
+ * D110 之前存的还是中文色名（那会儿是六色表）：`LEGACY_ACCENTS` 把它们换成旧 id，
+ * 再由 `migrateThemePrefs()` 落成最近的那颗 macOS 色 —— 删掉它会把老用户的颜色静默清掉。
  */
 
-/** 色块的显示名（中文原文，交给 tr() 翻）：顺序就是面板里色块的顺序。 */
-const ACCENT_LABELS: [string, string][] = [
-  ["ice", tr("冰蓝")],
-  ["teal", tr("青绿")],
-  ["violet", tr("紫")],
-  ["amber", tr("琥珀")],
-  ["rose", tr("玫瑰")],
-  ["slate", tr("银灰")],
-];
-
-/** Mac 主题的八色（macOS「系统设置 → 外观 → 强调色」的顺序）。 */
+/** Mac 那一排八色的显示名（macOS「系统设置 → 外观 → 强调色」的顺序）。 */
 const MAC_ACCENT_LABELS: [string, string][] = [
   ["blue", tr("蓝色")],
   ["purple", tr("紫色")],
@@ -21244,7 +21118,7 @@ const MAC_ACCENT_LABELS: [string, string][] = [
   ["graphite", tr("石墨色")],
 ];
 
-/** D110 之前 `pi.prefs.accent` 存的是中文色名，读到就换成新 id。 */
+/** D110 之前 `pi.prefs.accent` 存的是中文色名（六色那套），读到就换成旧 id（再由迁移表落成 macOS 八色）。 */
 const LEGACY_ACCENTS: Record<string, string> = {
   冰蓝: "ice",
   青绿: "teal",
@@ -21253,12 +21127,6 @@ const LEGACY_ACCENTS: Record<string, string> = {
   玫瑰: "rose",
   银灰: "slate",
 };
-
-const TEXT_STEPS: [Prefs["text"], string][] = [
-  ["soft", tr("柔和")],
-  ["normal", tr("标准")],
-  ["bright", tr("明亮")],
-];
 
 /** 读取一个字号值：滑杆是连续的，只夹范围、留两位小数（老的 0.9 / 1 / 1.12 / 1.25 原样还能读回来）。 */
 function prefScale(raw: unknown): number {
@@ -21284,13 +21152,11 @@ function readPrefs(): Prefs {
     const raw = localStorage.getItem("pi.prefs");
     if (!raw) return { ...DEFAULT_PREFS, lang: detectLang() };
     const p = JSON.parse(raw);
-    const accent = LEGACY_ACCENTS[String(p?.accent)] ?? String(p?.accent);
-    return {
+    // 中文色名（D110 前）→ 旧六色 id，剩下的一并交给纯函数（旧主题按明暗、旧强调色按最近色）。
+    const legacyName = LEGACY_ACCENTS[String(p?.accent)];
+    const next: Prefs = {
       scale: prefScale(p?.scale),
-      theme: isTheme(p?.theme) ? p.theme : DEFAULT_PREFS.theme,
-      accent: ACCENTS[accent] ? accent : DEFAULT_PREFS.accent,
-      macAccent: typeof p?.macAccent === "string" && MAC_ACCENTS[p.macAccent] ? p.macAccent : DEFAULT_PREFS.macAccent,
-      text: TEXT_STEPS.some(([k]) => k === p?.text) ? (p.text as Prefs["text"]) : DEFAULT_PREFS.text,
+      ...migrateThemePrefs({ ...p, accent: legacyName ?? p?.accent }),
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
       lang: isLang(p?.lang) ? p.lang : detectLang(),
       wsCollapsed: Array.isArray(p?.wsCollapsed) ? p.wsCollapsed.filter((x: unknown): x is string => typeof x === "string") : [],
@@ -21301,9 +21167,37 @@ function readPrefs(): Prefs {
       // 只有明确写着 false 的（新用户第一次存盘）才算没弹过；升级上来的老用户已经在用自己的主题，不打扰。
       themeIntroSeen: p?.themeIntroSeen !== false,
     };
+    // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
+    if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);
+    return next;
   } catch {
     return { ...DEFAULT_PREFS, lang: detectLang() };
   }
+}
+
+/**
+ * 带小样的主题 chip（设置抽屉与首跑弹窗共用一个，别再各抄一遍）：点一下立即换上并写回偏好。
+ * `scope` 返回「哪些 chip 的亮着状态要一起改」—— 抽屉里是整张 sheet，弹窗里是那张弹窗。
+ */
+function themeChipEl(t: ThemeInfo, current: ThemeId, scope: () => ParentNode | null, onPick: (id: ThemeId) => void): HTMLElement {
+  const chip = el("button", `chip theme-chip${current === t.id ? " on" : ""}`) as HTMLButtonElement;
+  chip.type = "button";
+  chip.dataset.theme = t.id;
+  chip.title = tr(t.label);
+  const demo = el("span", "theme-demo");
+  demo.style.setProperty("--td-bg", t.demo.bg);
+  demo.style.setProperty("--td-panel", t.demo.panel);
+  demo.style.setProperty("--td-text", t.demo.text);
+  demo.style.setProperty("--td-line", t.demo.line);
+  demo.append(el("span", "td-side"), el("span", "td-l1"), el("span", "td-l2"), el("span", "td-btn"));
+  demo.classList.add("mac");
+  demo.append(el("span", "td-lights"));
+  chip.append(demo, el("span", "theme-chip-label", tr(t.label)));
+  chip.onclick = () => {
+    onPick(t.id);
+    for (const other of scope()?.querySelectorAll<HTMLElement>(".theme-chip") ?? []) other.classList.toggle("on", other.dataset.theme === t.id);
+  };
+  return chip;
 }
 
 function savePrefs(prefs: Prefs): void {

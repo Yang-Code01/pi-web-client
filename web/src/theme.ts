@@ -1,15 +1,15 @@
 /**
- * 主题（设置 → 外观 → 主题）：整套底色 / 线 / 文字 / 状态色。
+ * 主题（设置 → 外观 → Mac 风格）：整套底色 / 线 / 文字 / 状态色。
  *
- * - 颜色的唯一真源在 `styles.css` 的 `:root[data-theme="…"]`；这里只管 id、显示名、预览小样用的几个色，
- *   以及「这一套是不是浅底」（浅底要换一张更深的强调色表，否则冰蓝字在白底上看不清）。
+ * - 外观只有 Mac 风格三套（浅色 / 深色 / 午夜蓝，D353）：七套「配色主题」已删，把它与 Mac 分两页
+ *   并列的那套结构一起退场。所以这里不再有「这套是不是 Mac」的判断 —— 界面就是 Mac 风格。
+ * - 颜色的唯一真源在 `theme-tokens.css`：`:root` 就是 Mac 浅色，深色与午夜蓝各一块覆盖。
  * - id 是稳定标识，存在 `pi.prefs.theme` 里：不能翻译、不能改名；显示名走 `tr()`。
- * - 默认是 `mac-light`（第一次打开时还会弹一张主题选择，见 app.ts 的 maybeThemeIntro）。
- *   CSS 的 `:root` 兜底仍是 `midnight` 那套：`<html>` 上不写 `data-theme` 时落在它；JS 一跑就会写上默认的 mac-light。
+ * - 默认是 `mac-light`；旧版本存过的七套配色主题由 `migrateThemePrefs()` 按明暗与色相映射过来。
  */
-import { ACCENTS, ACCENTS_LIGHT, DEFAULT_MAC_ACCENT, MAC_ACCENTS, MAC_ACCENTS_LIGHT } from "./palette.ts";
+import { DEFAULT_MAC_ACCENT, MAC_ACCENTS, MAC_ACCENTS_LIGHT } from "./palette.ts";
 
-export const THEME_IDS = ["midnight", "daylight", "ember", "fjord", "light", "dusk", "paper", "mac-light", "mac-dark", "mac-midnight"] as const;
+export const THEME_IDS = ["mac-light", "mac-dark", "mac-midnight"] as const;
 export type ThemeId = (typeof THEME_IDS)[number];
 export const DEFAULT_THEME: ThemeId = "mac-light";
 
@@ -20,25 +20,14 @@ export type ThemeInfo = {
   /** 设置里那颗小样：底 / 面板 / 字 / 线。强调色用用户当前选的那个。 */
   demo: { bg: string; panel: string; text: string; line: string };
   light: boolean;
-  /** 归在「Mac 风格」那一页（设置里单独一个子类），小样左上角画三颗红绿灯。不写就是「配色主题」那一页。 */
-  mac?: true;
 };
 
 export const THEMES: ThemeInfo[] = [
-  { id: "midnight", label: "午夜", demo: { bg: "#0b0d10", panel: "#171b22", text: "#e7eaf0", line: "#2f3a48" }, light: false },
-  { id: "daylight", label: "晨光", demo: { bg: "#f5f6f8", panel: "#ffffff", text: "#1f2430", line: "#c9d1db" }, light: true },
-  { id: "ember", label: "暖炉", demo: { bg: "#151210", panel: "#241f1b", text: "#efe7df", line: "#4a3f36" }, light: false },
-  { id: "fjord", label: "峡湾", demo: { bg: "#2a303b", panel: "#3b4252", text: "#eceff4", line: "#5a6578" }, light: false },
-  // 下面三套与上面四套并列提供，各自与同族的那套拉开：素白是纯白画布（晨光是冷灰底），
-  // 深海比峡湾暗一整档、偏蓝黑，沙丘是暖沙浅底（四套里唯一的暖色浅底）。
-  { id: "light", label: "素白", demo: { bg: "#ffffff", panel: "#f8f9fb", text: "#101216", line: "#c3cad4" }, light: true },
-  { id: "dusk", label: "深海", demo: { bg: "#070b14", panel: "#111a2b", text: "#e3eaf7", line: "#2a3a5c" }, light: false },
-  { id: "paper", label: "沙丘", demo: { bg: "#f4efe4", panel: "#fcf9f2", text: "#2a2419", line: "#c7b99e" }, light: true },
-  // Mac 风格（设置里单独一页）：照 macOS 的系统配色取值 —— 中性灰阶、不带色偏，信号色用 Apple 的 system 色
+  // 照 macOS 的系统配色取值 —— 中性灰阶、不带色偏，信号色用 Apple 的 system 色
   // （浅底用它的高对比版本）。浅色是 Sonoma 窗口那种 #f5f5f7，深色是石墨中性灰，午夜蓝取 MacBook「午夜色」的蓝黑。
-  { id: "mac-light", label: "Mac 浅色", demo: { bg: "#f5f5f7", panel: "#ffffff", text: "#1d1d1f", line: "#c7c7cc" }, light: true, mac: true },
-  { id: "mac-dark", label: "Mac 深色", demo: { bg: "#1c1c1e", panel: "#2c2c2e", text: "#f5f5f7", line: "#48484a" }, light: false, mac: true },
-  { id: "mac-midnight", label: "Mac 午夜蓝", demo: { bg: "#171c26", panel: "#242b3a", text: "#eef1f7", line: "#434d63" }, light: false, mac: true },
+  { id: "mac-light", label: "Mac 浅色", demo: { bg: "#f5f5f7", panel: "#ffffff", text: "#1d1d1f", line: "#c7c7cc" }, light: true },
+  { id: "mac-dark", label: "Mac 深色", demo: { bg: "#1c1c1e", panel: "#2c2c2e", text: "#f5f5f7", line: "#48484a" }, light: false },
+  { id: "mac-midnight", label: "Mac 午夜蓝", demo: { bg: "#171c26", panel: "#242b3a", text: "#eef1f7", line: "#434d63" }, light: false },
 ];
 
 export function isTheme(v: unknown): v is ThemeId {
@@ -49,28 +38,60 @@ export function themeInfo(id: ThemeId): ThemeInfo {
   return THEMES.find((t) => t.id === id) ?? THEMES.find((t) => t.id === DEFAULT_THEME) ?? THEMES[0];
 }
 
-/** 是不是 Mac 风格那一族：强调色换 macOS 八色、文字不分三档、界面换 Mac 的质感与动效（mac.css）。 */
-export function isMacTheme(theme: ThemeId): boolean {
-  return themeInfo(theme).mac === true;
-}
+/**
+ * 旧版本那七套「配色主题」落到哪一套 Mac：蓝黑底的落午夜蓝、中性 / 暖深底落深色、三套浅底落浅色。
+ * 只在 `migrateThemePrefs()` 里用一次，别在别处再认这些 id —— 它们在 `isTheme()` 里已经不认识了。
+ */
+const LEGACY_THEME_MAP: Record<string, ThemeId> = {
+  midnight: "mac-midnight",
+  dusk: "mac-midnight",
+  fjord: "mac-dark",
+  ember: "mac-dark",
+  daylight: "mac-light",
+  light: "mac-light",
+  paper: "mac-light",
+};
+
+/** 旧六色强调色落哪一颗 macOS 八色（最近色相；slate 是中性灰，落 graphite）。 */
+const LEGACY_ACCENT_MAP: Record<string, string> = {
+  ice: "blue",
+  teal: "green",
+  violet: "purple",
+  amber: "yellow",
+  rose: "pink",
+  slate: "graphite",
+};
 
 /**
- * 这套主题下真正生效的强调色 id：Mac 主题读 `macAccent`（macOS 八色），别的读 `accent`（原来六色）。
- * 两份分开存，换来换去谁也不覆盖谁。
+ * 把存在 `pi.prefs` 里的老值换成人认得的新值（纯函数：不读存储、不碰 DOM，单测直接调）。
+ *
+ * - 主题：认得的 Mac 三套原样；旧配色主题按明暗与色相映射；别的落默认。
+ * - 强调色：**只有存的主题是旧配色主题时才搬** —— 那时候真正生效的是 `accent`（六色），
+ *   `macAccent` 可能是很久以前用过 Mac 主题留下的残值。已经选了 Mac 主题的人则相反：
+ *   `macAccent` 才是他选的，`accent` 是残值。
+ * - 幂等：迁过一次之后 `theme` 已经是 Mac 三套之一，第二次不会再动。
  */
-export function activeAccent(theme: ThemeId, prefs: { accent: string; macAccent: string }): string {
-  return isMacTheme(theme) ? prefs.macAccent : prefs.accent;
+export function migrateThemePrefs(raw: unknown): { theme: ThemeId; macAccent: string } {
+  const p = (raw && typeof raw === "object" ? raw : {}) as { theme?: unknown; accent?: unknown; macAccent?: unknown };
+  // 一律 hasOwn：这些都是普通对象，`in` / 取下标会让 "constructor" / "toString" 混进来。
+  const legacyTheme = typeof p.theme === "string" && Object.hasOwn(LEGACY_THEME_MAP, p.theme) ? p.theme : null;
+  const theme: ThemeId = isTheme(p.theme) ? p.theme : (legacyTheme ? LEGACY_THEME_MAP[legacyTheme] : undefined) ?? DEFAULT_THEME;
+  const stored = typeof p.macAccent === "string" && Object.hasOwn(MAC_ACCENTS, p.macAccent) ? p.macAccent : undefined;
+  const legacyAccent =
+    typeof p.accent === "string" && Object.hasOwn(LEGACY_ACCENT_MAP, p.accent) ? LEGACY_ACCENT_MAP[p.accent] : undefined;
+  // D337 之前的版本根本没有 `theme` 键：那时生效的就是 `accent`，同样算「旧用户」。
+  // 漏掉这一支会把他们的颜色静默换成系统蓝，而且写回之后再也找不回来。
+  const legacyUser = legacyTheme !== null || p.theme === undefined;
+  const macAccent = (legacyUser ? legacyAccent ?? stored : stored) ?? DEFAULT_MAC_ACCENT;
+  return { theme, macAccent };
 }
 
-/** 某套主题下某个强调色的实际色值（浅底用深一档的那张表；Mac 主题用 macOS 八色那张表）。 */
+/** 某套主题下某个强调色的实际色值（浅底用亮色模式那一档、深底用深色模式那一档）。 */
 export function accentFor(theme: ThemeId, accent: string): { accent: string; dim: string } {
   const info = themeInfo(theme);
-  if (info.mac) {
-    const mac = info.light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
-    return mac[accent] ?? mac[DEFAULT_MAC_ACCENT];
-  }
-  const table = info.light ? ACCENTS_LIGHT : ACCENTS;
-  return table[accent] ?? table.ice;
+  const mac = info.light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
+  // hasOwn：认的是「表里有的 id」，不是原型链上的名字（"constructor" 之类会返回函数）。
+  return Object.hasOwn(mac, accent) ? mac[accent] : mac[DEFAULT_MAC_ACCENT];
 }
 
 /** 粗算相对亮度，只用来给强调色底挑黑字还是白字。 */
@@ -82,31 +103,27 @@ function luminance(hex: string): number {
 }
 
 /**
- * 强调色底上的字：Mac 主题跟 macOS 一样默认白字（蓝底白字），只有黄、橙这种亮色换深字。
- * 别的主题由 styles.css 各自的 `--accent-ink` 决定，这里返回 null（并且清掉 Mac 留下的行内值）。
+ * 强调色底上的字：跟 macOS 一样默认白字（蓝底白字），只有黄、橙这种亮色换深字。
  */
-export function accentInk(theme: ThemeId, accent: string): string | null {
-  if (!isMacTheme(theme)) return null;
+export function accentInk(theme: ThemeId, accent: string): string {
   return luminance(accentFor(theme, accent).accent) > 0.4 ? "#1d1d1f" : "#ffffff";
 }
 
 /**
- * 把主题落到 `<html>`：`data-theme`、强调色两个变量、浏览器地址栏颜色（`meta[name=theme-color]`）。
+ * 把主题落到 `<html>`：`data-theme` + 固定的 `data-ui="mac"`、强调色两个变量、浏览器地址栏颜色
+ * （`meta[name=theme-color]`）。
  * 登录页在 App 之前画，`main.ts` 用 `bootTheme()` 先跑一次，别让浅色用户第一眼闪一下黑。
  */
 export function paintTheme(theme: ThemeId, accent: string): void {
   const html = document.documentElement;
   html.dataset.theme = theme;
-  // `data-ui="mac"`：mac.css 只认这一个开关（毛玻璃、圆角、动效、控件形状都挂在它下面），
-  // 别的主题不写这个属性，一像素也不受影响。
-  if (isMacTheme(theme)) html.dataset.ui = "mac";
-  else delete html.dataset.ui;
+  // `data-ui="mac"`：mac.css 只认这一个开关（毛玻璃、圆角、动效、控件形状都挂在它下面）。
+  // 外观只剩 Mac 风格，所以它恒挂 —— 留着这层是为了把 Mac 材质集中在那几个文件里，而不是在每条规则上加分支。
+  html.dataset.ui = "mac";
   const a = accentFor(theme, accent);
   html.style.setProperty("--accent", a.accent);
   html.style.setProperty("--accent-dim", a.dim);
-  const ink = accentInk(theme, accent);
-  if (ink) html.style.setProperty("--accent-ink", ink);
-  else html.style.removeProperty("--accent-ink");
+  html.style.setProperty("--accent-ink", accentInk(theme, accent));
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
   if (meta) meta.content = themeInfo(theme).demo.bg;
 }
@@ -114,25 +131,17 @@ export function paintTheme(theme: ThemeId, accent: string): void {
 /**
  * 按已存偏好（没有就默认）把主题挂上：主界面在登录页之前跑一次；内网通页面（peer.html，独立文档）
  * 靠它跟主界面同一套主题，主界面改了偏好时它再跑一次（`storage` 事件，D350）。
- * 文字三档（`data-text`）也一起落：主界面随后 applyPrefs 会再写一遍同样的值。
+ * 旧版本存的配色主题（fjord / dusk …）在这里就按迁移表换掉，不会先闪一帧旧观感。
  */
 export function bootTheme(): void {
-  let theme: ThemeId = DEFAULT_THEME;
-  let accent = "ice";
-  let macAccent = DEFAULT_MAC_ACCENT;
-  let text = "normal";
+  let raw: unknown = null;
   try {
-    const p = JSON.parse(localStorage.getItem("pi.prefs") ?? "null");
-    if (isTheme(p?.theme)) theme = p.theme;
-    if (typeof p?.accent === "string" && ACCENTS[p.accent]) accent = p.accent;
-    if (typeof p?.macAccent === "string" && MAC_ACCENTS[p.macAccent]) macAccent = p.macAccent;
-    if (p?.text === "soft" || p?.text === "bright") text = p.text;
+    raw = JSON.parse(localStorage.getItem("pi.prefs") ?? "null");
   } catch {
     // 读不到就按默认。
   }
-  paintTheme(theme, activeAccent(theme, { accent, macAccent }));
-  // Mac 主题不分三档（同 app.ts 的 applyPrefs）。
-  document.documentElement.dataset.text = isMacTheme(theme) ? "normal" : text;
+  const { theme, macAccent } = migrateThemePrefs(raw);
+  paintTheme(theme, macAccent);
 }
 
 /**
@@ -164,27 +173,7 @@ export type TermPalette = {
   brightWhite: string;
 };
 
-/** 冷调深色（午夜 / 深海共用一套，底色不同、字色各自微调）。 */
-const COOL_DARK_ANSI = {
-  black: "#1b2028",
-  red: "#fb7185",
-  green: "#4ade80",
-  yellow: "#fbbf24",
-  blue: "#7dd3fc",
-  magenta: "#c4b5fd",
-  cyan: "#5eead4",
-  white: "#d6deeb",
-  brightBlack: "#4b5563",
-  brightRed: "#fda4af",
-  brightGreen: "#86efac",
-  brightYellow: "#fde68a",
-  brightBlue: "#bae6fd",
-  brightMagenta: "#ddd6fe",
-  brightCyan: "#99f6e4",
-  brightWhite: "#f8fafc",
-};
-
-/** 浅底（晨光 / 素白 / 沙丘共用）：同样的色相，压深到白底上能读。 */
+/** 浅底（Mac 浅色）：同样的色相，压深到白底上能读。终端配色没跟着换成 Terminal.app（D353）。 */
 const LIGHT_ANSI = {
   black: "#1f2328",
   red: "#b4232f",
@@ -225,55 +214,6 @@ const APPLE_DARK_ANSI = {
 };
 
 export const TERM_THEMES: Record<ThemeId, TermPalette> = {
-  midnight: { background: "#0b0d10", foreground: "#d6deeb", selectionBackground: "#334155", ...COOL_DARK_ANSI },
-  daylight: { background: "#f7f8fa", foreground: "#1f2328", selectionBackground: "#cfe0ef", ...LIGHT_ANSI },
-  // 暖炉：底是暖黑，红绿黄都往暖里偏一点，不然在棕底上发脏。
-  ember: {
-    background: "#151210",
-    foreground: "#efe7df",
-    selectionBackground: "#46372c",
-    black: "#2b2520",
-    red: "#f28f8f",
-    green: "#b6d98c",
-    yellow: "#f0c674",
-    blue: "#9fc4e0",
-    magenta: "#d9a6d0",
-    cyan: "#93d3c8",
-    white: "#efe7df",
-    brightBlack: "#5c4f44",
-    brightRed: "#ffb3b3",
-    brightGreen: "#cfe8a8",
-    brightYellow: "#ffe0a3",
-    brightBlue: "#bcd8ee",
-    brightMagenta: "#ecc3e6",
-    brightCyan: "#b3e6dd",
-    brightWhite: "#fffdf9",
-  },
-  // 峡湾：slate 底配 Nord 那套色。
-  fjord: {
-    background: "#2a303b",
-    foreground: "#eceff4",
-    selectionBackground: "#434c5e",
-    black: "#3b4252",
-    red: "#f08c96",
-    green: "#a3be8c",
-    yellow: "#ebcb8b",
-    blue: "#81a1c1",
-    magenta: "#b48ead",
-    cyan: "#88c0d0",
-    white: "#e5e9f0",
-    brightBlack: "#4c566a",
-    brightRed: "#f2a6b0",
-    brightGreen: "#b8d0a0",
-    brightYellow: "#f5dba0",
-    brightBlue: "#9db8d6",
-    brightMagenta: "#c9a3c3",
-    brightCyan: "#9dd2df",
-    brightWhite: "#eceff4",
-  },
-  light: { background: "#ffffff", foreground: "#101216", selectionBackground: "#d6e4f2", ...LIGHT_ANSI },
-  dusk: { background: "#070b14", foreground: "#d6e2f5", selectionBackground: "#263a58", ...COOL_DARK_ANSI },
-  paper: { background: "#fcf9f2", foreground: "#2a2419", selectionBackground: "#e6dcc2", ...LIGHT_ANSI },
   "mac-light": { background: "#ffffff", foreground: "#1d1d1f", selectionBackground: "#b3d7ff", ...LIGHT_ANSI },
   "mac-dark": { background: "#1c1c1e", foreground: "#f5f5f7", selectionBackground: "#3f638b", ...APPLE_DARK_ANSI },
   "mac-midnight": { background: "#171c26", foreground: "#eef1f7", selectionBackground: "#34507a", ...APPLE_DARK_ANSI },

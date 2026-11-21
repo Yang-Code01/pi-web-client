@@ -115,7 +115,7 @@ function inLogicCall(node) {
       const e = n.expression;
       if (ts.isIdentifier(e) && e.text === "Error") return true;
     }
-    // 模块级 const 数组里的标签表（SIZES / TEXT_STEPS / ACCENT_LABELS）：值的语言在**使用处**
+    // 模块级 const 数组里的标签表（SIZES / MAC_ACCENT_LABELS）：值的语言在**使用处**
     // 由 tr(label) 决定，所以这里不算「漏翻」，但要算进键集合（否则词典里会多出一堆废键）。
     if (ts.isArrayLiteralExpression(n) && inModuleConst(n)) return false;
     if (ts.isSourceFile(n)) return false;
@@ -145,7 +145,7 @@ function walk(file, out) {
         } else if (inLangNames(node)) {
           // LANGS 的标签是各自语言的原生写法（简体中文 / English / 日本語），永远不翻译。
         } else if (inModuleConst(node)) {
-          // 模块级标签表（SIZES / TEXT_STEPS / ACCENT_LABELS）：值的语言在使用处由 tr(label) 决定，
+          // 模块级标签表（SIZES / MAC_ACCENT_LABELS）：值的语言在使用处由 tr(label) 决定，
           // 所以这里既不算漏翻，也要算成键（否则词典里会多出「代码里没有」的废键）。
           out.keys.add(text);
         } else if (!inLogicCall(node)) out.bare.push({ file: path.relative(here, file), line: sf.getLineAndCharacterOfPosition(node.getStart()).line + 1, start: node.getStart(sf), end: node.getEnd(), text });

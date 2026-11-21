@@ -2,24 +2,25 @@
  * 「当前在哪」那颗（#96）：工作区色点 / 名字 / 读屏文案 的纯函数映射。
  *
  * 只测纯函数层；DOM 那颗在 `probes/nowchip.mjs` 的浏览器探针里把关（收起、展开都在，
- * 切会话立刻变，待处理角标与树里同一套）。颜色不许新造调色板 —— 只能是 #93 之前就有的
- * 六个 accent id。
+ * 切会话立刻变，待处理角标与树里同一套）。颜色不许新造调色板 —— 只能是 macOS 那八颗
+ * 强调色 id（D353：六色表已随「配色主题」一起删掉）。
  *
  * Run: node --experimental-transform-types web/tests/nowchip-unit.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WS_ACCENTS, nowChipView, wsAccent, wsOf, wsTitle } from "../src/nowchip.ts";
+import { MAC_ACCENT_IDS } from "../src/palette.ts";
+import { nowChipView, wsAccent, wsOf, wsTitle } from "../src/nowchip.ts";
 
 const group = (id, name = "", key = "", manual = false) => ({ id, name, key, manual });
 const ws = (over = {}) => ({ groups: [], overrides: {}, keys: {}, ...over });
 
-test("色点稳定：同一个工作区永远同一色，且只从既有六个 accent 里挑", () => {
+test("色点稳定：同一个工作区永远同一色，且只从 macOS 八色里挑", () => {
   for (const id of ["f:/pi-web-client", "f:/other", "manual:abc123", ""]) {
     assert.equal(wsAccent(id), wsAccent(id));
-    assert.ok(WS_ACCENTS.includes(wsAccent(id)), `${id} → ${wsAccent(id)} 不在六个 accent 里`);
+    assert.ok(MAC_ACCENT_IDS.includes(wsAccent(id)), `${id} → ${wsAccent(id)} 不在八色里`);
   }
-  assert.deepEqual([...WS_ACCENTS], ["ice", "teal", "violet", "amber", "rose", "slate"]);
+  assert.deepEqual([...MAC_ACCENT_IDS], ["blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite"]);
 });
 
 test("色点不是全挤在一个颜色上：一串真实路径能散开", () => {
