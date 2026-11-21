@@ -166,11 +166,6 @@ node .pi/skills/pi-web-e2e-test/bin/e2e.mjs change \
 
 `target` 可以是 CSS 字符串或 Playwright Locator；页面对象是 `h.page`，需要原生操作时直接用。
 
-## 与 `pi-web-test-html` 的区别
-
-- 要**截图 + xlsx + 单文件测试书**、按 case 出工作表：用 `pi-web-test-html`。
-- 要**录像 + 红框/字幕/旁白 + bug 复现或改前改后对照**：用本技能。
-
 ## 自测
 
 ```bash

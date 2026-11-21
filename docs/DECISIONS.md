@@ -7361,3 +7361,17 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **为什么是 15 位。** Excel 单元格只存 15 位有效数字，`0.1+0.2` 在它那里就是 `0.3`。截到 15 位顺带把 `1.005`、`2.675` 这类「十进制下刚好落在 .xx5、二进制下差一点」的值拉回十进制直觉，不用为它们单独写特例。
 
 **代价 / 可改。** 每个带格式的单元格多一次 `toExponential` + BigInt 运算（都是短串，`test:sheet` 仍是毫秒级）。位数离谱的输入要挡：`roundDecimal` 对 `d > 15` 原样返回（15 位之外没有可舍的位），`d < -308` 返回 0，避免 `10n ** BigInt(1e9)` 这种爆炸。`-0` 统一收成 `0`：值舍到 0 之后不再留负号（`-0.4` 按 `0` 显示为 `0`）。
+
+## D381 退役「测试书」技能 `/pi-web-test-html`：验收统一走 `pi-web-e2e-test`（用户「需要删除本项目的 skill: /pi-web-test-html . 这个已经过时」2026-11-22）
+
+**问题。** D247 那套测试书流水线（截图书 → xlsx 一 case 一 sheet → 复刻 Excel 的单文件 HTML）只用过 workclock 一本书：`cases/workclock.mjs` 把分区序号、按钮文案、接口路径写死，`build-xlsx.py` 的结论段与复跑步骤一度也是照那本书硬编码（#421 才改成 spec 驱动，至今未合）。换模块等于重写一遍用例，出的还是一份人要自己对着读的表；与此同时 e2e 技能已经能录像 + 红框/字幕/旁白 + 改前改后对照，两条验收路径并存只会让人挑错。
+
+**决定。** 删除 `.pi/skills/pi-web-test-html/`（9 个文件）与命令 `.pi/prompts/pi-web-test-html.md`；README 三语里的「测试书」小节、`GLOSSARY.md` 的「测试书」词条、`pi-web-e2e-test/SKILL.md` 末尾那段「与 pi-web-test-html 的区别」一并删掉。D247 保留为历史记录，不再指向现有文件。
+
+**为什么整条删、不留 `disabled`。** 技能、命令、文档是三处指引同一件事：留一个空目录或留着 `/pi-web-test-html` 命令，下次会话还会读到它、还会照它起环境跑脚本；`disable-model-invocation` 只挡自动触发，挡不住人照着 README 敲。
+
+**代价 / 可改。**
+
+- 未合并的 testbook 分支（`feat/testbook-video` / PR #421、`feat/testbook-catalog`）随之作废；要再合会撞 delete/modify 冲突，需先把用例重写成 e2e 技能的形式。
+- 截图 + xlsx 这种「一 case 一 sheet、能拷走的验收表」没有替代品；真需要时按 e2e 技能的 `finalize` 输出改一份，而不是恢复旧流水线。
+- 历史产物 `.scratch/testbook/`（workclock / translate-sync 两本书）仍在主检出里，不进版本库，也没被这次删除动到。
