@@ -187,6 +187,14 @@ interface ExecChildState {
 interface BgRunNode {
   root: HTMLElement;
   state: HTMLElement;
+  /** 卡片头那个名字（`agent`）。桥的 30 秒滴答会回填，不是建好就定死。 */
+  agent: HTMLElement;
+  /** 任务原文那一行：同样会回填（脚本式 workflow 的孩子清单要等 `status.json` 落盘）。 */
+  task: HTMLElement;
+  /** 失败原因（`r.error`）。没有就 hidden。 */
+  err: HTMLElement;
+  /** 「过程」两个字：失败且压根没启动 runner 的卡上要跟着过程框一起藏。 */
+  labLog: HTMLElement;
   log: HTMLElement;
   out: HTMLElement;
   labOut: HTMLElement;
@@ -16234,8 +16242,11 @@ export class App {
       if (!node) {
         const root = el("div", "bg-run");
         const line = el("div", "bg-run-head");
-        line.append(el("span", "bg-run-agent", r.agent || tr("子代理")), el("span", "bg-run-state"));
-        const task = el("div", "bg-run-task", r.task || tr("（任务原文没传到桥）"));
+        const agentEl = el("span", "bg-run-agent", r.agent || tr("子代理"));
+        line.append(agentEl, el("span", "bg-run-state"));
+        const task = el("div", "bg-run-task", r.task || tr("（没有任务原文）"));
+        const err = el("div", "bg-run-err");
+        err.hidden = true;
         const id = el("div", "bg-run-id", r.id);
         const labLog = el("div", "bg-run-lab", tr("过程"));
         const logEl = el("pre", "bg-run-log");
@@ -16243,12 +16254,38 @@ export class App {
         labOut.hidden = true;
         const outEl = el("pre", "bg-run-out");
         outEl.hidden = true;
-        root.append(line, task, id, labLog, logEl, labOut, outEl);
+        root.append(line, task, err, id, labLog, logEl, labOut, outEl);
         sheet.body.append(root);
-        node = { root, state: line.lastElementChild as HTMLElement, log: logEl, out: outEl, labOut, hasLog: Boolean(r.hasLog) };
+        node = {
+          root,
+          state: line.lastElementChild as HTMLElement,
+          agent: agentEl,
+          task,
+          err,
+          labLog,
+          log: logEl,
+          out: outEl,
+          labOut,
+          hasLog: Boolean(r.hasLog),
+        };
         if (!r.hasLog) logEl.textContent = tr("桥还没接上这个 runner 的过程记录。");
         sheet.runs.set(r.id, node);
       }
+      // 卡片是活的：桥在后面的 `bg.list` 里才把 agent / task 补上（脚本式 workflow 的原文要等
+      // `status.json` 落盘）。只写建卡那一刻的话，回填永远看不到 —— 关弹层重开才行。
+      const agentText = r.agent || tr("子代理");
+      if (node.agent.textContent !== agentText) node.agent.textContent = agentText;
+      const taskText = r.task || tr("（没有任务原文）");
+      if (node.task.textContent !== taskText) node.task.textContent = taskText;
+      // `hasLog` 也一样：派活那一刻文件还没写出来，`bg.log` 回来时会用它决定占位文案。
+      node.hasLog = Boolean(r.hasLog);
+      const errText = typeof r.error === "string" ? r.error : "";
+      node.err.hidden = !errText;
+      if (errText && node.err.textContent !== errText) node.err.textContent = errText;
+      // 派活当场就失败的（没有 runner，也不会有过程）：不摆空的过程框，错误行已经说清了。
+      const noLog = r.state === "failed" && !r.hasLog;
+      node.labLog.hidden = noLog;
+      node.log.hidden = noLog;
       const state = r.state === "running" ? tr("运行中") : r.state === "failed" ? tr("失败") : tr("已完成");
       // 跑完了报总耗时（结束 − 开始）；还在跑就报「已跑多久」，两者都是「从开始起的钟」。
       node.state.textContent =
