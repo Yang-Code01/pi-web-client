@@ -7042,4 +7042,4 @@ Esc 之后 dialog: 0
 
 **代价 / 可改。** `--approve` 是 pi 的「本次信任」旗标，它也会压过**用户级扩展**对未决定目录抛的 `project_trust` 事件；要彻底关掉自动信任，在网页设置里把全局 `defaultProjectTrust` 设成 `never`，或对目录保存「不信任」（一个选项，优先级最高）。克隆来的仓库在网页里因此变成零点击加载 `.pi/extensions`，安全默认比终端松 —— 这是本决定的已知代价。改动对已经跑着的会话不生效，`/reload` 或新会话才重新算。
 
-**验证。** `npm --prefix bridge run build && node bridge/tests/settings-trust.mjs`：B2 段断言 `ask` + 未决定 → `effective === true` 且 fake pi 的 argv 带 `--approve`、项目设置可写；`never` → 无旗标且快照为不信任；`always` → 无需旗标；保存「不信任」后压过 `always`。`npm --prefix web run typecheck` 覆盖 i18n 与 viewport 守卫。
+**验证。** `npm --prefix bridge run build && node bridge/tests/settings-trust.mjs`：B2 段断言 `ask` + 未决定 → `effective === true` 且 fake pi 的 argv 带 `--approve`、项目设置可写；`never` → 无旗标且快照为不信任；`always` → 无需旗标；保存「不信任」后压过 `always`；项目级 `pi mcp list` 的 argv 是 `["--approve","mcp","list","--json"]`。真 pi 实测接受该旗标：`pi --help` 有 `--approve, -a  Trust project-local files for this run`，`pi --approve --mode rpc` 退出码 0、无未知选项报错。`npm --prefix web run typecheck` 覆盖 i18n 与 viewport 守卫。

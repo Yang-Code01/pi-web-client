@@ -135,7 +135,12 @@ export async function runPiCli(
   const cwd = projectCwd ?? process.cwd();
   // D367: project-scope probes (`pi mcp list`, project installs) must see the project's `.pi` the
   // same way sessions do — undecided + global ask is trusted, so ask pi for `--approve` too.
-  const trust = projectCwd ? await trustInfo(cli, projectCwd).catch(() => null) : null;
+  const trust = projectCwd
+    ? await trustInfo(cli, projectCwd).catch((err) => {
+        console.error(`[trust] 读不到 ${projectCwd} 的信任状态，按未信任处理：`, err);
+        return null;
+      })
+    : null;
   if (trust && trust.needed && !trust.saved && trust.fallback === "ask") args.unshift("--approve");
   const env = piChildEnv();
   const child = spawn(process.execPath, [cli, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
