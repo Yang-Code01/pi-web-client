@@ -7298,3 +7298,26 @@ chip 一起改：模型名 · 思考档位（带点）· 上下文（进度条 +
 **代价 / 可改。** 没登记 SSH key 的机器上这一步必然失败（约 1~2s，实测 1603ms），只多一条日志与一条错误原因；总预算因此更早耗尽。要更省可以把它挪到最后一轮才试。**没做**：镜像站与 hosts 写进产品流程（只写进用户答复当手动出路）、Watt Toolkit 之类的 MITM 自动安装、`ssh` 用自定义 key 的配置项（现在用 `~/.ssh/config` 的默认身份）。
 
 **验证。** `npm run test:hotdeploy` 扩到三次 fetch（直连 / 代理 / 换传输都要带 timeout 且经过 `budget(`）、`ssh443InsteadOf` 四种 origin（GitHub HTTPS 带/不带 `.git`、SSH、别的宿主、空串）、源码守卫（要从 `origin` 读 URL、要带 `GIT_SSH_COMMAND`、要有 `GIT_TERMINAL_PROMPT = "0"`）。本机手工按同一命令跑过：`debug1: Connecting to ssh.github.com [20.205.243.160] port 443` → 1.8s `Permission denied (publickey)`，exit 128 —— 说明换传输真的把请求送到了 443，而不是原地报「未知选项」。
+
+## D378 热部署那扇窗口按 UTF-8 解桥的日志：`[Console]::OutputEncoding` 指到无 BOM 的 UTF-8（用户「在 window 环境，热部署启动的命令行面板是乱码」2026-11-21）
+
+**问题。** Windows 上热部署开的循环窗口（`scripts/hotdeploy-window.mjs` 生成的 `bridge-window-<port>.ps1`）里，桥的日志中文全成乱码：`已启动` 变成 `宸插惎鍔紝`，还有 `锟斤拷锟斤拷: 系统…` 那种，`Tee-Object` 落到 `.scratch/hot-deploy/bridge-live.log` 的同样烂（那是同一份字符串）。窗口标题与 PowerShell 自己打的灰/青两行提示却是好的 —— 用户截图里正是这个形态。
+
+**根因。** 桥是 node，往 stdout 写 UTF-8；PS 5.1 在**真控制台**里按控制台代码页（简中 936）解原生命令的输出。两套编码对不上，一次错位就是 `宸插惎鍔`；日志里再被加工一遍（含非法序列 → U+FFFD → 再按 UTF-8 写）就成 `锟斤拷`。`[Console]::OutputEncoding` 就是那条解码路径的开关。
+
+**为什么以前没发现。** 同样的脚本把输出重定向到管道（`> file`、bun/bash 里 `-Command` 捕获）时**看不出**这个 bug：没有控制台时 .NET 退回按 UTF-8 解原生输出，中文反而正确。只有开真窗口（`Start-Process powershell`）才复现 —— 排查时别用管道版「验过了」。
+
+**决定。** `windowScript()` 在 `while` 外面加一行：
+
+```powershell
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
+```
+
+- **不加 `chcp 65001`。** 实测只改这一项，node 的日志与 PowerShell 自己打的 `Write-Host` 中文在同一扇窗口里都正常（PS 5.1 写自家字符串走 Unicode，不受代码页影响；代码页留在 936）。
+- **必须 `$false`（无 BOM）。** 带 BOM 的 UTF-8 会让它在每次写到窗口时补一个 U+FEFF。
+- **用 `try/catch` 包住。** 老系统或被改过的控制台可能不给设，设不了就退回原样，别让「开窗」这一步本身炸掉。
+- **放 `while` 外面一次就够。** 进程级设置，热部署复用同一扇窗口换构建时不需要重设。
+
+**代价 / 可改。** 这扇窗口的原生输出从此只按 UTF-8 解：若哪天它要跑一个只吐 GBK 的老工具，那个工具的中文会反过来乱（现在窗口里只跑 node 与 `git rev-parse`，都 ASCII 或 UTF-8）。测试里读日志仍按 UTF-16（`Tee-Object` 在 PS 5.1 就是写 UTF-16LE），没跟着改。**没做**：把日志改成 UTF-8（那要换掉 `Tee-Object`，`ForEach-Object` 逐行 `Add-Content` 会拖慢每行日志）；`2>&1 |` 让 node 的 stderr 每行都被包成红色 `NativeCommandError`（`node.exe : …` + `所在位置`），那是 PS 5.1 的既定行为，这次没动。
+
+**验证。** `npm run test:hotdeploy-window` 新增第 ④ 段（真窗口，`Start-Process powershell`，另起临时仓库与只打两行中文就退出的假桥，stdout / stderr 各一行），断言读回的日志原样含「中文测试 已启动 http://127.0.0.1:7998」「银锭拷：系统告警」，且不含 `涓枃` / `宸插惎鍔` / `閾跺畾` 三个已知乱码串。把那行编码设置注释掉复跑即红（实测日志开头 `涓枃娴嬭瘯 宸插惎鍔?http://127.0.0.1:7998`、`node.exe : 閾堕敪鎷凤細绯荤粺鍛婅`）；带上就绿。肉眼对照过两扇真窗口：不加这一行是「涓枃娴嬭瘯 node 鐨勬棩蹇 宸插惎鍔?http://…」，加了是「中文测试 node 打的日志 已启动 http://…」。`npm run test:hotdeploy` 仍 ok。
