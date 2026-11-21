@@ -23,6 +23,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
+import { noticesText } from "./notices.ts";
 import { describeContextError } from "./context-policy.ts";
 import { pageBefore } from "./history.ts";
 import type { StateFailure } from "./statefile.ts";
@@ -1378,6 +1379,17 @@ async function main(): Promise<void> {
         sessionsRoot: sessionsRootInfo().dir,
         sessionsRootSource: sessionsRootInfo().source,
       });
+    }
+
+    // 设置 → 关于 → 开源许可：MIT / BSD-3 要求分发时随附的版权与许可声明。
+    // 文件在仓库根（由 tools/notices.mjs 生成），不打包进 web/dist —— 以当前安装的依赖为准。
+    if (url.pathname === "/api/notices" && req.method === "GET") {
+      const text = noticesText();
+      if (!text) {
+        return fail(res, 404, "notices-missing", "找不到 THIRD-PARTY-NOTICES.md（发行包缺了这份文件）");
+      }
+      res.writeHead(200, { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store" });
+      return void res.end(text);
     }
 
     // Folder picker for new sessions: the browser cannot see this machine's absolute paths.

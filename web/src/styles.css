@@ -1824,6 +1824,17 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .set-copy .v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .set-copy .done { color: var(--faint); font: 11px/1 var(--sans); }
 .set-copy .done.on { color: var(--ok); }
+
+/* 设置 → 关于 → 开源许可：展开在面板里的一段文本，要能选中、能 Ctrl+F，所以不套弹层。
+   高度用 --vh1 不写裸 vh（D123 / D263：`#app` 有 zoom，裸视口单位会被乘第二次）；
+   守卫见 `npm run test:viewport`。 */
+.set-notices { display: grid; }
+.set-notices .set-copy.loading { cursor: progress; }
+.notices-text {
+  margin: 4px 0 8px; padding: 10px 12px; max-height: calc(var(--vh1) * 42); overflow: auto;
+  border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel-2);
+  color: var(--muted); font: 11px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .levels + .levels { border-top: 1px solid var(--line-soft); }
 .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
 .swatch {
@@ -3617,7 +3628,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .composer .queue-bar { margin-bottom: 6px; padding: 4px 8px; border: 1px dashed var(--line); border-radius: 8px; background: var(--panel); display: flex; flex-direction: column; gap: 4px; }
 .composer .queue-bar[hidden] { display: none; }
 
-/* D361：输入框上方那一行「重讲」。常驻一行，不动草稿；灰的时候只有药丸退色，文字照常读。 */
+/* D365：输入框上方那一行「重讲」。常驻一行，不动草稿；灰的时候只有药丸退色，文字照常读。 */
 .composer .retell-bar {
   display: flex;
   align-items: baseline;

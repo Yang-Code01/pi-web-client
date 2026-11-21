@@ -1,7 +1,7 @@
 import type { SessionState } from "./types.ts";
 
 /**
- * 输入框上方那一行「重讲」的三态（D361）。它是 `wait-what` 那套「没看懂就让人重讲一遍」的
+ * 输入框上方那一行「重讲」的三态（D365）。它是 `wait-what` 那套「没看懂就让人重讲一遍」的
  * 常驻入口：不命令模型自己反思，而是把「重讲」变成一个看得见、点一下就发的动作。
  *
  * 判据全在这里（纯函数，`web/tests/retell-state-unit.mjs` 只测这一个口），`app.ts` 只负责画和发。

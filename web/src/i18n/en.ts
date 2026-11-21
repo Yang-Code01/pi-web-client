@@ -4089,7 +4089,7 @@ export const en: Dict = {
   "Mac 浅色": "Mac Light",
   "Mac 深色": "Mac Dark",
   "Mac 午夜蓝": "Mac Midnight",
-  "整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效": "A full macOS look: frosted glass, floating sidebars, iMessage bubbles and spring motion",
+  "整套换成 macOS 的观感：毛玻璃、悬浮侧栏、圆角气泡、弹簧动效": "A full macOS look: frosted glass, floating sidebars, rounded bubbles and spring motion",
   "Mac 快捷键": "Mac shortcuts",
   "系统式快捷键，⌘ 与 Ctrl 都认；你在「快捷键」里绑过的组合优先": "System shortcuts — both ⌘ and Ctrl work; your own bindings under Shortcuts take precedence",
   "逐层关闭弹层": "Close overlays one by one",
@@ -4190,4 +4190,7 @@ export const en: Dict = {
   "上次看到": "Last seen",
   "弹窗打开的那一刻就记下；自己在这一页翻完不算": "Recorded the moment the dialog opens; reading here doesn't count",
   "还没看过任何一批": "No batch seen yet",
+  "开源许可": "Open source licenses",
+  "第三方组件的版权与许可声明": "Copyright and license notices for third-party components",
+  "读不到许可清单：{p1}": "Could not load the license list: {p1}",
 };

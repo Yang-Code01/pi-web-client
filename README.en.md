@@ -61,6 +61,7 @@ This is why there is a second, independent process `peer/` (7865) next to `bridg
 - **The agent is in the loop**: `peer_find` / `peer_history` / `peer_send` are registered in the approval-gate extension and talk straight to the peer loopback. Messages sent by the agent carry `via:"pi"` and both sides show `🤖 sent by agent` — whether a line came from a human decides whether you trust it. Read-only mode still blocks `peer_send` (it reaches other people).
 - **Where it lives**: the `🌐 内网通` button in the top bar opens it as a dialog without leaving the session; `/peer` opens it directly. State lives in `~/.pi-peer` (`PI_PEER_STATE`), the inbox defaults to `~/.pi-peer/inbox` (`PI_PEER_INBOX`), and history is an append-only JSONL file per conversation.
 - **Boundaries**: plaintext HTTP, no end-to-end encryption, no key pairs — anyone sniffing the same network sees nicknames, text and file contents. Identity is a stable `nodeId` per machine with no signatures (impersonation inside the subnet is only fenced off by IP sets plus a handshake, see [D103](docs/DECISIONS.md)). v1 has no group chat, the phone cannot be a sender, and there is no recall (over P2P you can only delete your local copy — a button would be lying to you).
+- **The name**: unrelated to "内网通 / IMO 内网通", the commercial LAN messenger by 南通艾睦 — here it just describes "messages that travel inside one network" (D363).
 
 ## Requirements
 
@@ -230,6 +231,15 @@ The second half of M5 and all of M6 in [`docs/PLAN.md`](docs/PLAN.md): public-ne
 
 This is not something to drop on the public internet for multiple tenants. It listens on `127.0.0.1` only by default, and login uses a randomly generated passphrase (three words plus three digits, about 2.7×10⁷ combinations; `node bridge/dist/index.js --passphrase <longer>` swaps in something stronger). It is stored as a scrypt hash plus an HMAC cookie, and HTTP login and step-up share a per-IP rate limit. When the tunnel is on, the tunnel is only transport and the passphrase is the only barrier; connections from the public internet are read-only by default, and sending or approving requires the passphrase again (step-up). Session files are append-only with no cross-process lock, so "one writer per session at a time" is a hard constraint: the bridge refuses, it never overwrites for you. The LAN page has its own budget: it binds `0.0.0.0:7865` for delivery inside the subnet, its history and config endpoints accept loopback only, its protocol surface is `/peer/hello` and `/peer/inbox`, and writing a file requires a token the receiver issued — but it is **neither encrypted nor signed**, so do not treat it as a confidential channel.
 
+## How this relates to other people's work
+
+- **Not an official client.** This is a third-party web frontend for [`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi) (MIT, © Mario Zechner). The repo has no affiliation with upstream; the name "pi" and the π icon are theirs.
+- **Trademarks belong to their owners.** The names you see in the UI — pi, Jira / Atlassian, GitHub, Microsoft (Excel / Outlook / PowerPoint), Copilot, WeChat, WPS — only describe what this window can plug into. No icons or artwork of theirs are used, and no endorsement is implied.
+- **The spreadsheet targets Excel's file format and common naming.** Function names, number-format codes and the ribbon's Chinese labels are Excel's public conventions (WPS is compatible and serves as a reference); the repo contains no WPS or Microsoft assets. The reasoning lives in [`docs/SHEET-WPS.md`](docs/SHEET-WPS.md) (Chinese).
+- **The Mac look is hand-written CSS** (wallpaper, radii, glass, easing) with no Apple images, icons or font files. The LAN chat is called "内网通" and is unrelated to the commercial product of that name (D363).
+
 ## License
 
 [Apache-2.0](LICENSE) © 2026 Yang-Code01
+
+The copyright and license notices for the third-party code in the UI (highlight.js, xterm.js, …) and for the bridge runtime dependencies live in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), generated from the lockfiles; the same text is available under Settings → About → “Open source licenses”. Ship that file with any build you redistribute.

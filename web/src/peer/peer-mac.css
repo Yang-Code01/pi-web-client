@@ -1,5 +1,5 @@
 /*
- * 内网通页面的 Mac 风格（D350）：跟主界面 mac.css 同一身——毛玻璃、发丝线、iMessage 气泡、弹簧动效。
+ * 内网通页面的 Mac 风格（D350）：跟主界面 mac.css 同一身——毛玻璃、发丝线、圆角气泡、弹簧动效。
  *
  * 开关同主界面：`html[data-ui="mac"]`（peer/main.ts 用 theme.ts 的 bootTheme 挂上；D353 之后外观只有 Mac 风格，它恒挂）。
  * 材质变量、字体、滚动条、关键帧在 `../mac-base.css`（两份文档共用）；这里只写内网通自己的 class。
@@ -67,7 +67,7 @@ html[data-ui="mac"] :is(.head, .pinbar, .searchbar) {
 html[data-ui="mac"] .compose { background: transparent; border-top: 0; }
 html[data-ui="mac"] .day { letter-spacing: 0; font-family: var(--sans); font-weight: 500; }
 
-/* ---------------------------------------------------------------- 气泡：iMessage */
+/* ---------------------------------------------------------------- 气泡：圆角 */
 html[data-ui="mac"] .bub {
   border: 0.5px solid var(--mac-glass-line);
   border-radius: 18px 18px 18px 6px;

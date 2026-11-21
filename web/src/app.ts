@@ -429,7 +429,7 @@ export class App {
   private textarea: HTMLTextAreaElement | null = null;
   /** 「继续」按钮（D159）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
   private continueBtn: HTMLButtonElement | null = null;
-  /** D361：输入框上方那一行「重讲」。常驻，位置固定，不随回答长短漂移。 */
+  /** D365：输入框上方那一行「重讲」。常驻，位置固定，不随回答长短漂移。 */
   private retellBar: HTMLElement | null = null;
   private retellBtn: HTMLButtonElement | null = null;
   /** 刚点过「重讲」：桥的 `running:true` 回来之前，先把按钮按住，免得双击发两句。 */
@@ -4146,7 +4146,7 @@ export class App {
     }
     langPanel.append(this.stRow(tr("语言"), tr("界面文字、推送标题都跟着换"), langChips));
 
-    // D361：重讲那一行是纯前端的东西，开关不放桥端 settings，进 `pi.prefs`（换浏览器就没了，
+    // D365：重讲那一行是纯前端的东西，开关不放桥端 settings，进 `pi.prefs`（换浏览器就没了，
     // 但它本来就是「这台机器的输入区多不多一行」，跟着设备走更合理）。关掉时整个不画。
     const chatPanel = section("chat");
     const hintBox = document.createElement("input");
@@ -4332,7 +4332,7 @@ export class App {
     const themeChips = el("div", "chips theme-chips");
     for (const t of THEMES) themeChips.append(themeChipEl(t, this.prefs.theme, () => this.sheet, (id) => this.pickTheme(id)));
     const themePanel = section("theme");
-    const themeRow = this.stRow(tr("外观主题"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、iMessage 气泡、弹簧动效"), themeChips);
+    const themeRow = this.stRow(tr("外观主题"), tr("整套换成 macOS 的观感：毛玻璃、悬浮侧栏、圆角气泡、弹簧动效"), themeChips);
     themeRow.classList.add("wide");
     themePanel.append(themeRow);
     // Mac 主题下多出来的几颗快捷键（installShortcuts 里的 MAC_KEYS）：Mac 上显示 ⌘，别处显示 Ctrl。
@@ -4649,6 +4649,7 @@ export class App {
     about.classList.add("set-about");
     about.append(this.copyRow(tr("版本"), `pi ${this.me.pi} · bridge ${this.me.version}`));
     about.append(this.copyRow(tr("会话目录"), this.me.sessionsRoot));
+    about.append(this.licensesRow());
   }
 
   /** 子面板关掉后回到齿轮设置：那时已经有别的面板开着（用户顺手开了别的）就不抢。 */
@@ -4689,6 +4690,48 @@ export class App {
         .catch(() => this.flashToast(tr("复制失败：手动选中它复制"), true, 6000));
     };
     return row;
+  }
+
+  /**
+   * 设置 → 关于里的「开源许可」：把 `THIRD-PARTY-NOTICES.md` 原地展开。
+   *
+   * 清单不塞进产物：内容由桥按**当前安装的依赖**给（`/api/notices`），换一份依赖不用重发前端，
+   * 也不会出现「产物里的清单跟装的不一样」。展开而不是弹层：它是给人选取、Ctrl+F 的文本。
+   */
+  private licensesRow(): HTMLElement {
+    const wrap = el("div", "set-notices");
+    const row = el("button", "set-copy") as HTMLButtonElement;
+    row.append(el("span", "k", tr("开源许可")), el("span", "v", tr("第三方组件的版权与许可声明")));
+    const pre = el("pre", "notices-text");
+    pre.hidden = true;
+    let state: "idle" | "loading" | "ready" = "idle";
+    row.onclick = () => {
+      if (state === "ready") {
+        pre.hidden = !pre.hidden;
+        return;
+      }
+      if (state === "loading") return;
+      state = "loading";
+      row.classList.add("loading");
+      void fetch("/api/notices", { credentials: "same-origin" })
+        .then(async (r) => {
+          if (!r.ok) throw new Error(`${r.status}`);
+          return r.text();
+        })
+        .then((text) => {
+          pre.textContent = text;
+          state = "ready";
+          pre.hidden = false;
+          row.classList.remove("loading");
+        })
+        .catch((err) => {
+          state = "idle";
+          row.classList.remove("loading");
+          this.flashToast(tr("读不到许可清单：{p1}", { p1: errText(err) }), true, 6000);
+        });
+    };
+    wrap.append(row, pre);
+    return wrap;
   }
 
   /**
@@ -16159,9 +16202,9 @@ export class App {
     btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
   }
 
-  // ---------------------------------------------------------------- retell (D361)
+  // ---------------------------------------------------------------- retell (D365)
   /**
-   * D361：输入框上方那一行「重讲」。`wait-what` 那套「没看懂就让人用简化技术语言重讲一遍」的
+   * D365：输入框上方那一行「重讲」。`wait-what` 那套「没看懂就让人用简化技术语言重讲一遍」的
    * 常驻入口：位置固定，不随回答长短漂移；点一下才发，不发就不打扰。
    */
   private retellRow(): HTMLElement {
@@ -20644,7 +20687,7 @@ type Prefs = {
   wsIntroSeen: boolean;
   /** 第一次打开时的主题选择弹窗弹过没有（弹出即记，关掉也不再弹）。老用户（已有 pi.prefs、没这个键）当作弹过。 */
   themeIntroSeen: boolean;
-  /** D361：输入框上方那一行「重讲」开着没有。默认开；关掉后整个不画（设置 → 对话里改）。 */
+  /** D365：输入框上方那一行「重讲」开着没有。默认开；关掉后整个不画（设置 → 对话里改）。 */
   retellHint: boolean;
 };
 
@@ -21378,7 +21421,7 @@ function readPrefs(): Prefs {
       wsIntroSeen: p?.wsIntroSeen === true,
       // 只有明确写着 false 的（新用户第一次存盘）才算没弹过；升级上来的老用户已经在用自己的主题，不打扰。
       themeIntroSeen: p?.themeIntroSeen !== false,
-      // D361：只有明确写着 false 的才算关（老版本升上来没这个键＝开着）。
+      // D365：只有明确写着 false 的才算关（老版本升上来没这个键＝开着）。
       retellHint: p?.retellHint !== false,
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
