@@ -303,7 +303,7 @@ export async function gitState(dir: string): Promise<GitState> {
     branch: detached ? head : branch,
     detached,
     empty,
-    dirty: parsed.staged.length + parsed.unstaged.length + parsed.untracked.length,
+    dirty: new Set([...parsed.staged, ...parsed.unstaged, ...parsed.untracked].map((f) => f.path)).size,
     upstream: up,
     ahead,
     behind,
