@@ -7428,3 +7428,24 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** 三处可见变化，都是有意的：①mac 主题下描边宽度是 1px（`--line` → `--mac-glass-line`），不再是 0.5px hairline；玻璃质感靠 backdrop-filter 与面板阴影维持。若以后想让胶囊更细，把 wrapper 的 `border-width` 一起改，别再拆成两层。②外层圆角从 `styles.css` 的 12px 变成 mac 面的 18px（原本画在 textarea 上也是 18px，只是那时它套在 12px 里）；展开的粘贴折叠块（`styles.css:3034-3036` 按 12px 弧排的 8px 内缩与 8px 圆角）会不会出角，由探针 `17-paste-*.png` 一起截。③`:focus` 改成 `:focus-within`，焦点落进折叠块的 `.paste-body` 时整颗胶囊也亮光晕与 accent 描边 —— 语义上是对的（面板内的任何焦点都算这张面），但比原来只在主输入框聚焦时亮要宽一拍。`html[data-ui="mac"] .composer { background: transparent; border-top: 0 }` 原样保留。
 
 **验证。** `probes/composer-grow.mjs` 新增第 17 段（mac-dark / mac-light 各跑一次）：两条边框里只有一条可见、textarea 的 border 与 radius 都是 0、焦点光晕只在 wrapper 上、textarea 背景透明而 wrapper 不是；展开一个粘贴折叠块，断言它仍是自己的 `8px 8px` 内边距、0 圆角与 1px 上 hairline（被误画时会变成 12/16px、18px、0.5px）；最后在「未聚焦的空输入框」上再断一次。四组截图：`17-capsule-*.png` / `17-paste-*.png` / `17-idle-*.png`。改前同一探针第 9 段先红（`no transition on the fade`，`0.3s, 0.16s` 来自被误画的 textarea transition；`inputBg` / `inputBorder` 也红）；改后 1–17 段全绿、`ALL OK`。探针同时补了一处既有红：`getBoundingClientRect` 在 `DEFAULT_SCALE = 1.25`（`app.ts:21188`）下返回的是缩放后的尺寸，而期望值全是布局 px，故开头把 `pi.prefs.scale` 钉到 1 再继续。`npm --prefix web run typecheck` 通过。`npm run test:composer-focus:ui` 仍红（新会话 sheet 的「新文件夹名」不可见），在未改动的 `mac.css` 上同样红，属既有失败。
+
+## D386 打开一条**已归档**的会话 = 请它回来（取消归档 + 置顶到最前）（D146 的唯一例外；用户「打开已经归档的回话，现在会显示在 chat 框中，但是上面的所属回话，是一个已经其他的回话名……应该自动取消归档，并且自动置顶，这样就能导航到正确的工作区，回话名也正常」2026-11-22）
+
+**问题。** 在「会话管理 → 状态=已归档 → 打开」打开一条归档回话，正文是对的，但画出的是别人的身份：顶栏那一行（★ 本区行）还是打开前那颗的名字，当前会话胶囊被整颗藏掉，这条会话也仍旧躺在「已归档」里、左栏回不到所属工作区。三处各有各的原因，叠在一起就是用户看到的样子：
+
+- `openSession()`（`web/src/app.ts:1757`）只切视图（`switchDraft → currentId → setSelectedWs(null) → subscribe → renderAll()`），从不回写归档/置顶；`openFromList()`（管理面板「打开」与左栏卡片都走它）也只是改 hash 再调它。
+- 桥一侧同样没有：`bridge/src/manage.ts` 的注释写明 **D146 废止了 D125「打开即置顶」**，`bridge/src/index.ts` 收到 `action:"opened"` 只回一份快照、什么都不写；而 `setArchived(on=true)` 又会把它从 `pin` 里摘掉 —— 归档一条会话等于把它从两个可见位置同时抹掉。
+- 归属是现算的：`renderSessionRow()` 里 `setNowChipHidden(… || currentArchived())` 藏掉胶囊，`starredRow()` 把 `archived` 整个过滤掉，`web/src/tree.ts` 的 `buildTree()` 又 `continue` 掉归档会话。当前会话一旦在归档里，顶栏只剩别颗的名字（「上面写着别人的回话名」），左栏也放不回它的组。
+
+**决定。** 只给「打开一条**已归档**的会话」开口子，D146 照旧管其它一切：
+
+- 桥：`Manage.revive(id)` 在**一个** `state.update` 里取消归档、把它插到 `pin[0]`、从 `order` 摘掉；非归档会话调用是空操作。WS 动作名 `manage.action = "revive"`（`bridge/src/index.ts`，紧挨 `opened`），写完照常广播 `manage + workspace` 快照。
+- 页面：`openSession()` 里 `if (this.manage.archived.includes(id)) this.reviveArchived(id)`，`reviveArchived()` 先**乐观**改本地 `manage`（从 `archived` 删、插 `pin` 首位、摘 `order`）再发 `{type:"manage", action:"revive", id}`；桥的快照回来再抹一次。两个入口都要盖到：`openSession()` 原来的 `if (this.currentId === id) return;` 会在「它已经是当前会话、只是被别处归档了」时把请求吞掉，所以那条早退里也补了一次；刷新 `#/s/<归档 id>` 时 `routeFromHash()` 跑在 `manage` 快照之前（那时 `archived` 还是空壳），所以 `case "manage"` 收到快照时发现当前会话归档了，再补发一次（同一颗只补一次，不认这个动作的旧桥不会来回刷）。
+
+**为什么。** 三处现象是同一个「它既不在 pin 也不在归档之外」造成的，所以修在一个动作上，而不是分别去补胶囊/★ 行/tree 的兜底。`revive` 必须原子：分两步（先取消归档、再置顶）会露出「已取消归档但 ★ 行里还没有它」的中间态，顶栏那一瞬间仍然算不出归属。乐观更新同样是为了这个中间态 —— 等桥往返才改的话，画面上会先闪一帧「打开了、上面写着别人」，而这正是用户报的那个现象。只对归档会话生效，是为了不让 D146 重新变成「每开一个会话就重排一次 ★ 行」：普通会话的打开仍然什么都不改。
+
+**代价 / 可改。** 打开归档会话会**改用户手工排的 ★ 顺序**（插到最前）—— 这是用户要的，但它确实推翻了 D146 的两句：标题里的「打开 ≠ 解归档」，以及它那条「**归档会话可以打开**，但它仍然在归档里；要出来得自己点「恢复」」（`docs/DECISIONS.md:2029`）—— 现在点开就是「恢复」。D146 的其余部分（普通会话打开不改排列、组内顺序是人手工拖的）原样生效，所以这是**唯一**的例外，不是把 D125 整体复活：D125 的「打开 = 置顶」对非归档会话仍然不成立。想改成「追加到末尾」只需改 `revive()` 里那一行拼接。带 `#/s/<id>` 的旧书签/外链指向一颗归档会话时，打开（含刷新后 `routeFromHash()` 那一次）即解除归档（不再静默打开）。**没做**：把「打开过的排在 ★ 行前面」推广成通用规则；也没做「归档时记住原位置、恢复时插回原处」，插到最前就够了。
+
+**验证。** `.pi/skills/pi-web-e2e-test` 的 change 模式（同一份 case 跑改前/改后）：改前 3 条红 —— ★ 行里没有刚打开的那颗、★ 行只剩原来那颗、打开后它仍在「已归档」；改后全绿，顶栏与 ★ 行都写对了名字。`npm run typecheck`（bridge + peer + web，含 i18n 与 viewport 守卫）通过；`npm run test:nowchip` / `test:wsmanage` / `test:ws-row` 通过。
+
+

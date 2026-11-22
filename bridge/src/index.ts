@@ -4128,6 +4128,13 @@ async function main(): Promise<void> {
               broadcast({ type: "manage", ...manageSnapshot() });
               return;
             }
+            if (action === "revive") {
+              // D386：页面只在打开的是一颗**已归档**的会话时才发这条 —— 取消归档 + 置顶到最前，
+              // 否则顶栏那一行与 ★ 行里都没有它（`starredRow()` 排掉归档），左栏也放不回所属工作区。
+              sessions.revive(String(msg.id ?? ""));
+              broadcast({ type: "manage", ...manageSnapshot() });
+              return;
+            }
             if (action === "trash" || action === "delete") {
               const report = await sessions.trash(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
               if (report.removed.length) broadcast({ type: "session.gone", ids: report.removed });
