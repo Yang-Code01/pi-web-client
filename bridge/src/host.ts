@@ -306,7 +306,7 @@ async function main(): Promise<void> {
     if (!brain) {
       brain = next;
       conn.send({ t: "welcome", proto: CONTROL_PROTO, peerHeader: "x-pi-peer", hostBuildId, publicPort: port });
-      conn.send({ t: "snapshot", hostBuildId, publicPort: port, buildId: next.buildId, sessions: broker.sessions });
+      conn.send({ t: "snapshot", hostBuildId, publicPort: port, buildId: next.buildId, sessions: broker.sessions() });
       conn.send({ t: "usage-snapshot", sessions: ledger.snapshot() });
       log(`脑 ${next.pid} 连上（首个，buildId ${next.buildId || "?"}）`);
       return next;
@@ -323,7 +323,7 @@ async function main(): Promise<void> {
         publicPort: port,
         swap: true,
       });
-      conn.send({ t: "snapshot", hostBuildId, publicPort: port, buildId: next.buildId, sessions: broker.sessions });
+      conn.send({ t: "snapshot", hostBuildId, publicPort: port, buildId: next.buildId, sessions: broker.sessions() });
       conn.send({ t: "usage-snapshot", sessions: ledger.snapshot() });
       return next;
     }
