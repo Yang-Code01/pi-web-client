@@ -30,6 +30,7 @@ import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
 import { SessionManager, contextLogDir, isPermissionMode, type AskAnswer, type AskQuestion, type RuntimeStats } from "./sessions.ts";
+import { FRAMES_CAP, type ClientFrameType } from "./frames.ts";
 import { collectContextInsight } from "./context-insight.ts";
 import { resolveChildSessionFile } from "./bgruns.ts";
 import { entriesToItems } from "./items.ts";
@@ -2633,7 +2634,7 @@ async function main(): Promise<void> {
       // #278：页面据此决定 ＋ 是「挑目录建组」还是退回「空壳组 + 就地改名」（旧桥没有这项）；
       // `ws.resolve.dir` = 对话框能问「这个目录折回到哪个组」（子目录 / worktree）。
       // #499：`dirs.page` = /api/dirs 认 page/q/sort/sub（旧桥只会给截断过的整目录）。
-      caps: ["ws.create.dir", "ws.resolve.dir", "exec.child.subscribe", "dirs.page"],
+      caps: ["ws.create.dir", "ws.resolve.dir", "exec.child.subscribe", "dirs.page", FRAMES_CAP],
     });
     // 先用 1–2 s 的快清单打招呼，带扩展的完整清单十几秒后自己补上（D150）。
     void pushCatalog(ws, { resend: true });
@@ -2678,7 +2679,9 @@ async function main(): Promise<void> {
         return;
       }
       try {
-        switch (msg.type) {
+        // `as ClientFrameType`：case 标签不在帧词表里（拼错、已删的帧）当场 TS2678，不用等收到那一帧
+        // 才发现。臂里的 `msg.foo` 仍是 any —— 见 frames.ts 文件头「怎么用它」。
+        switch (msg.type as ClientFrameType) {
           case "presence": {
             reportPresence(ws, msg.active === true);
             return;

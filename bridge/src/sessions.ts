@@ -5,6 +5,17 @@ import path from "node:path";
 import { RpcChild } from "./rpc.ts";
 import { displayUserText, loadEntries, loadEntryImage, listSessionFiles, normalizeUserText, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
 import { CopilotTally, fetchCopilotAccount, type CopilotAccountView, type CopilotView } from "./copilot-credits.ts";
+import {
+  approvalAddFrame,
+  approvalRemoveFrame,
+  askAddFrame,
+  askRemoveFrame,
+  copilotFrame,
+  ctxlogFrame,
+  piStatusFrame,
+  statsFrame,
+  usageFrame,
+} from "./frames.ts";
 import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, skillItemFor, summarizeToolArgs, withSkillItems, type BashItem, type Item, type ToolItem, type UserItem } from "./items.ts";
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
@@ -1515,13 +1526,7 @@ export class Session extends EventEmitter {
     const base = this.ctxBaseline ?? 0;
     if (!full && lines.length <= base) return;
     this.ctxBaseline = lines.length;
-    this.emitWs({
-      type: "ctxlog",
-      sessionId: this.state.id,
-      full,
-      total: lines.length,
-      lines: full ? lines : lines.slice(base),
-    });
+    this.emitWs(ctxlogFrame(this.state.id, { full, total: lines.length, lines: full ? lines : lines.slice(base) }));
   }
 
   /** Token/context numbers for the composer HUD and new subscribers; best effort, never throws. */
@@ -1536,14 +1541,14 @@ export class Session extends EventEmitter {
       // #484: the policy read is cached in the manager (1.5 s) — this stays a cheap call.
       const policy = await (this.contextPolicyView?.() ?? Promise.resolve(null));
       if (policy) this.lastPolicy = policy;
-      this.emitWs({
-        type: "stats",
-        sessionId: this.state.id,
-        tokens: stats?.tokens ?? null,
-        cost: stats?.cost ?? null,
-        context: stats?.contextUsage ?? null,
-        policy,
-      });
+      this.emitWs(
+        statsFrame(this.state.id, {
+          tokens: stats?.tokens ?? null,
+          cost: stats?.cost ?? null,
+          context: stats?.contextUsage ?? null,
+          policy,
+        }),
+      );
       this.maybeContextAction(policy);
     } catch {
       /* stats are decoration; the chat still works without them */
@@ -1596,7 +1601,7 @@ export class Session extends EventEmitter {
     // 账号额度是另一次异步抓的，合在这里一次，顺带留一份给 `session` 帧（`snapshot()`）。
     const merged: CopilotView = { ...view, account: view.account ?? this.copilotAccount };
     this.copilotView = merged;
-    this.emitWs({ type: "copilot", sessionId: this.state.id, ...merged });
+    this.emitWs(copilotFrame(this.state.id, merged));
   }
 
   /**
@@ -1650,7 +1655,7 @@ export class Session extends EventEmitter {
         // A new run is a new verdict: a previous abort's grace clock must not carry over (#81).
         this.stuckAbortedAt = null;
         this.stuckNoticed = false;
-        this.emitWs({ type: "pi.status", sessionId: this.state.id, running: true });
+        this.emitWs(piStatusFrame(this.state.id, true));
         // #197 / #200: 这一轮真的开始了，启动期（或失败重试）剩下没交出去的消息现在可以按插话送。
         // #198: 泵可能正挂在等这个信号 —— 先叫醒它（它在等的时候占着 `flushingBoot`）。
         this.wakeRunStart();
@@ -1678,7 +1683,7 @@ export class Session extends EventEmitter {
         if (this.plan?.sinceUpdate) this.emitWs({ type: "plan", sessionId: this.state.id, plan: this.plan });
         // D162: 完成状态跟着会话走：桥重启、GC 回收、换设备都还能看到，直到下一次运行。
         writeFinishedAt(this.state.id, Date.now());
-        this.emitWs({ type: "pi.status", sessionId: this.state.id, running: false });
+        this.emitWs(piStatusFrame(this.state.id, false));
         // #200: 泵在「第一条开出的那一轮」里等过 agent_start；这一轮已经结束而队里还有东西（那条
         // 正好没赶上插话），就当下一轮的开头送出去 —— 别让它们等在一条再也不会出现的启动信号上。
         this.flushBootQueue();
@@ -1762,7 +1767,7 @@ export class Session extends EventEmitter {
         }
         this.draftId = null;
         this.draftTs = null;
-        if (msg.usage) this.emitWs({ type: "usage", sessionId: this.state.id, usage: msg.usage });
+        if (msg.usage) this.emitWs(usageFrame(this.state.id, msg.usage));
         void this.refreshStats();
         // 长任务一轮里可能调几十次工具、跑十几分钟；如果等到 agent_end 才读 JSONL，整轮期间
         // 面板都不会出现 Copilot 积分块（或数字僵在上一轮）。增量读只扫新增字节，开销极小（D339）。
@@ -1951,7 +1956,7 @@ export class Session extends EventEmitter {
       };
       this.approvals.set(id, approval);
       this.state.approvals = this.approvals.size;
-      this.emitWs({ type: "approval.add", sessionId: this.state.id, approval });
+      this.emitWs(approvalAddFrame(this.state.id, approval));
       this.emit("approval", approval);
       return;
     }
@@ -2071,7 +2076,7 @@ export class Session extends EventEmitter {
     if (decision === "approve" || decision === "always") this.rpc?.uiRespond({ id, confirmed: true });
     else if (decision === "reject") this.rpc?.uiRespond({ id, confirmed: false });
     else this.rpc?.uiRespond({ id, cancelled: true });
-    this.emitWs({ type: "approval.remove", sessionId: this.state.id, id, decision });
+    this.emitWs(approvalRemoveFrame(this.state.id, id, decision));
     this.emit("approval-resolved", this.state.id, id, decision);
   }
 
@@ -2097,7 +2102,7 @@ export class Session extends EventEmitter {
     });
     this.asks.set(ask.id, ask);
     this.state.asks = this.asks.size;
-    this.emitWs({ type: "ask.add", sessionId: this.state.id, ask: publicAsk(ask), tool });
+    this.emitWs(askAddFrame(this.state.id, publicAsk(ask), tool));
     this.emit("ask", publicAsk(ask), tool);
     return { id: ask.id, outcome: pending };
   }
@@ -2129,7 +2134,7 @@ export class Session extends EventEmitter {
     }
     this.asks.delete(id);
     this.state.asks = this.asks.size;
-    this.emitWs({ type: "ask.remove", sessionId: this.state.id, id, status: "answered", answers: clean });
+    this.emitWs(askRemoveFrame(this.state.id, id, { status: "answered", answers: clean }));
     this.emit("ask-resolved", this.state.id, id, "answered");
     ask.resolve({ answers: clean, cancelled: false });
   }
@@ -2139,7 +2144,7 @@ export class Session extends EventEmitter {
     if (!ask) return;
     this.asks.delete(id);
     this.state.asks = this.asks.size;
-    this.emitWs({ type: "ask.remove", sessionId: this.state.id, id, status: "cancelled", reason });
+    this.emitWs(askRemoveFrame(this.state.id, id, { status: "cancelled", reason }));
     this.emit("ask-resolved", this.state.id, id, "cancelled");
     ask.resolve({ answers: null, cancelled: true });
   }

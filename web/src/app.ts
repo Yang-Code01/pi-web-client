@@ -7,7 +7,8 @@ import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { atSpan, filterCommands, PANEL_COMMANDS, slashSpan, type CommandItem } from "./commands.ts";
 import { documentTitle } from "./window-title.ts";
-import { creditsToUsd, formatAge, formatCredits, formatReset, isMixed, usedPercent, type CopilotView } from "./copilot.ts";
+import { applyFrame, type FrameView, type RedrawKey, type ServerFrameType } from "./frames.ts";
+import { copilotFromFrame, creditsToUsd, formatAge, formatCredits, formatReset, isMixed, usedPercent, type CopilotView } from "./copilot.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
@@ -20,7 +21,7 @@ import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toC
 import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
-import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
+import { badgeSession, syncPending, type PendingCounts } from "./pending.ts";
 import { previewTargetOf } from "./ask-preview.ts";
 import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
 import { BROWSER_OPS_DEFAULTS, BROWSER_TOOL_PATTERNS, browserOpsView, foldedSteps, markKeyword, type BrowserOpCard, type BrowserOpStep, type BrowserOpsSummary, type BrowserOpsThresholds } from "./browser-ops.ts";
@@ -1803,11 +1804,78 @@ export class App {
     this.runSince = null;
   }
 
+  /**
+   * 帧表看到的这一面。字段全是现成的 private 字段（改 public 会为了这一张表把封装松一圈），
+   * 所以这里有一处转换。`web/tests/frames-unit.mjs` 有一条源码守卫核对：FrameView 的每个字段名
+   * 在 App 里确实以 `private <name>` 存在 —— 表能碰到的只能是 App 真有的东西。
+   */
+  private frameView(): FrameView {
+    return this as unknown as FrameView;
+  }
+
+  /**
+   * 帧表只说「这一帧要重画什么」，怎么画留在这里：一个键对应一次绘制，别在这里加连带调用
+   * （连带要画的东西应当由表返回第二个键）。顺序就是收到的顺序。
+   */
+  private redraw(k: RedrawKey): void {
+    switch (k) {
+      case "approvals":
+        this.renderApprovals();
+        break;
+      case "asks":
+        this.renderAsks();
+        break;
+      case "queue":
+        this.renderQueue();
+        break;
+      case "tabs":
+        this.renderTabs();
+        break;
+      case "sessions":
+        this.renderSessions();
+        break;
+      case "hint":
+        this.fillHintStatus();
+        break;
+      case "nowchip":
+        this.renderNowChip();
+        break;
+      case "roundstats":
+        this.updateExecRoundStats();
+        break;
+      case "modelchip":
+        this.fillModelChip();
+        break;
+      case "context":
+        this.paintContextIfOpen();
+        break;
+      case "top":
+        this.renderTop();
+        break;
+      case "continue":
+        // D159：跑着 ↔ 空闲是「继续」按钮亮/灰的翻转点。
+        this.syncContinueButton();
+        break;
+      case "retell":
+        this.syncRetellBar();
+        break;
+      case "failcta":
+        // D164：任务结束才问「要不要把这一轮的错误记下来」。
+        this.syncFailCta();
+        break;
+      case "placeholder":
+        if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
+        break;
+    }
+  }
+
   // ---------------------------------------------------------------- ws
   private onMessage(msg: any): void {
     // #86：随手问的帧先给它自己认领。它的 sessionId 永远不是当前会话，下面那些 case 本来也会忽略它。
     if (this.scratch.handle(msg)) return;
-    switch (msg.type) {
+    // `as ServerFrameType` 是这一行的全部作用：case 标签只要不在帧词表里（拼错、已被删的帧），
+    // 这里当场 TS2678，不用等运行到那一帧才发现。臂里的 `msg.foo` 仍是 any。
+    switch (msg.type as ServerFrameType) {
       case "catalog": {
         const next = (msg.models ?? []) as ModelInfo[];
         const error = typeof msg.error === "string" ? msg.error.trim() : "";
@@ -1985,7 +2053,7 @@ export class App {
         this.stats = { tokens: null, cost: null };
         // Copilot 积分跟着会话帧一起下来（bridge 的 `snapshot()` 带了最近一份）：不要在这里清空 ——
         // 订阅（重连 / 切会话 / stepup 重同步）会重发会话帧，清掉就得到下一轮结束才回来。
-        this.copilot = msg.copilot && typeof msg.copilot === "object" ? this.copilotFromFrame(msg.copilot) : null;
+        this.copilot = msg.copilot && typeof msg.copilot === "object" ? copilotFromFrame(msg.copilot) : null;
         // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
         this.sessionFails.clear();
         this.failReminded.clear();
@@ -2170,39 +2238,13 @@ export class App {
         this.setActivity(field === "thinking" ? tr("思考中") : tr("正在写回复"));
         this.refreshExecClock();
         break;
+      // 帧表：usage / stats / copilot / ctxlog 这四个臂的「改哪些字段 + 重画哪些东西」都搬进了
+      // `web/src/frames.ts` 的 applyFrame()。这里只剩一条路：给它帧，按它说的重画。
       case "usage":
-        if (msg.sessionId !== this.currentId) break;
-        this.settleRate(msg.usage);
-        break;
       case "stats":
-        if (msg.sessionId !== this.currentId) break;
-        if ("policy" in msg) this.policy = (msg.policy as CtxPolicy | null) ?? null;
-        this.stats = { tokens: msg.tokens && typeof msg.tokens === "object" ? msg.tokens : null, cost: typeof msg.cost === "number" ? msg.cost : null };
-        this.usage = {
-          contextTokens: typeof msg.context?.tokens === "number" ? msg.context.tokens : null,
-          contextWindow: typeof msg.context?.contextWindow === "number" ? msg.context.contextWindow : this.usage.contextWindow,
-        };
-        this.updateExecRoundStats();
-        this.fillModelChip();
-        if (this.execTabLive()) this.renderQueue();
-        this.paintContextIfOpen();
-        break;
-      case "copilot": {
-        if (msg.sessionId !== this.currentId) break;
-        this.copilot = this.copilotFromFrame(msg);
-        this.updateExecRoundStats();
-        this.fillModelChip();
-        if (this.execTabLive()) this.renderQueue();
-        break;
-      }
+      case "copilot":
       case "ctxlog": {
-        // #384：组成日志增量。非当前会话的也存（切换会话时面板要画全量），只重画打开着的面板。
-        if (typeof msg.sessionId !== "string") break;
-        const arr = Array.isArray(msg.lines) ? (msg.lines as CtxLine[]) : [];
-        const cur = this.ctxLogs.get(msg.sessionId) ?? [];
-        const next = msg.full ? arr : [...cur, ...arr.filter((l) => l && typeof l.seq === "number")];
-        this.ctxLogs.set(msg.sessionId, next);
-        if (msg.sessionId === this.currentId) this.paintContextIfOpen();
+        for (const k of applyFrame(this.frameView(), msg, performance.now())) this.redraw(k);
         break;
       }
       case "filesearch.status":
@@ -2263,68 +2305,12 @@ export class App {
         }
         if (msg.phase !== "update" && this.execTabLive()) this.renderQueue();
         break;
+      // 帧表：审批 / 问卷四臂。计数（applyPending）、队列页签、失败残影都在表里，顺序与原来一样。
       case "approval.add":
-        // D156：当前会话也照加 —— 列表里的计数和本地队列是两份账，只给「不在看的会话」加会让
-        // 切过去再答的批准永远减不掉；卡片是否重画也跟着这条走。
-        this.countPending(msg.sessionId, "approvals", 1);
-        if (msg.sessionId === this.currentId) {
-          this.approvals = [...this.approvals, msg.approval];
-          this.applyQueueTabEvent({ type: "approvals", count: this.approvals.length });
-        }
-        this.renderApprovals();
-        this.renderQueue();
-        this.renderTabs();
-        this.fillHintStatus();
-        this.renderSessions();
-        break;
       case "approval.remove":
-        this.approvals = this.approvals.filter((a) => a.id !== msg.id);
-        if (msg.sessionId === this.currentId) this.applyQueueTabEvent({ type: "approvals", count: this.approvals.length });
-        // 和 approval.add 对称：不管这条批准是不是当前会话的，都得减回去，否则卡片上永远「待确认」。
-        this.countPending(msg.sessionId, "approvals", -1);
-        this.fillHintStatus();
-        this.renderApprovals();
-        this.renderQueue();
-        this.renderTabs();
-        this.renderSessions();
-        break;
-      case "ask.add": {
-        const ask = msg.ask as AskRequest;
-        if (!ask) break;
-        // 提问记在 asks 上（不是 approvals），当前会话也记 —— 见 D156。
-        this.countPending(msg.sessionId, "asks", 1);
-        if (msg.sessionId !== this.currentId) {
-          this.renderSessions();
-          break;
-        }
-        this.asks = [...this.asks.filter((a) => a.id !== ask.id), ask];
-        this.applyQueueTabEvent({ type: "asks", count: this.asks.length, arrived: true });
-        this.askFolded = false;
-        this.askAutoFolded = false;
-        // 新的这一份是新的「这一次」：上一道题时用户收起过右栏，不该连带着压下这一道。
-        this.askDockMuted = false;
-        this.renderAsks();
-        this.renderQueue();
-        this.renderTabs();
-        this.renderSessions();
-        this.renderNowChip();
-        break;
-      }
+      case "ask.add":
       case "ask.remove": {
-        // The bridge tells us why an ask disappeared. Dropping the id silently is how answers used
-        // to vanish: the panel closed, the drafts died with it, and nothing on screen said so.
-        const gone = this.asks.find((a) => a.id === msg.id);
-        const mine = msg.sessionId === this.currentId;
-        this.asks = this.asks.filter((a) => a.id !== msg.id);
-        if (mine) this.applyQueueTabEvent({ type: "asks", count: this.asks.length, arrived: false });
-        // 答完 / 被取消都走这条：计数必须跟着回落（D156）。
-        this.countPending(msg.sessionId, "asks", -1);
-        if (gone && mine && gone.id !== this.lastAnsweredAsk) this.keepLostAsk(gone, String(msg.reason ?? tr("问卷已关闭")));
-        if (gone && mine) this.lastAnsweredAsk = null;
-        this.renderAsks();
-        this.renderQueue();
-        this.renderTabs();
-        this.renderSessions();
+        for (const k of applyFrame(this.frameView(), msg, performance.now())) this.redraw(k);
         break;
       }
       case "ext.ui":
@@ -2866,36 +2852,11 @@ export class App {
         if (texts.length) this.putInComposer(texts.join("\n\n"));
         break;
       }
-      case "pi.status":
-        if (this.session && this.session.id === msg.sessionId) this.session = { ...this.session, running: msg.running };
-        if (msg.sessionId === this.currentId) {
-          if (msg.running) {
-            this.runSince = Date.now();
-            this.setExecPhase("waiting");
-            this.execStreamChars = 0;
-            this.execStreamText = "";
-            this.activity = tr("思考中");
-            // Q-024: the hover card says "本轮第 N 次工具调用", so N is per run and starts over here.
-            this.stepCount = 0;
-          } else {
-            this.setExecPhase("idle");
-            this.activity = "";
-          }
-          this.fillHintStatus();
-          // 跑着 ↔ 空闲是「继续」按钮亮/灰的翻转点（D159）。
-          this.syncContinueButton();
-          this.syncRetellBar();
-          // 任务结束才问「要不要把这一轮的错误记下来」（D164）。
-          this.syncFailCta();
-          if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
-        }
-        if (!msg.running) this.turnAt = null;
-        this.renderTop();
-        this.renderSessions();
-        this.renderQueue();
-        this.renderTabs();
-        this.fillModelChip();
+      // 帧表：运行状态。见 web/src/frames.ts 的 pi.status —— 改字段、算重画都搬过去了。
+      case "pi.status": {
+        for (const k of applyFrame(this.frameView(), msg, performance.now())) this.redraw(k);
         break;
+      }
       case "manage": {
         // #189：先留一份「回声之前的归档集合」—— 只有本次新变归档的那批才可能触发切邻居。
         const wasArchived = new Set(this.manage.archived);
@@ -3260,11 +3221,6 @@ export class App {
       if (!this.connected) return;
       this.socket.send({ type: "presence", active: document.visibilityState === "visible" && document.hasFocus() });
     }, 0);
-  }
-
-  /** D156：把一条待办事件记到列表里那行上（`onMessage` 的 `msg` 是 any，这里统一成字符串）。 */
-  private countPending(sessionId: unknown, kind: PendingKind, delta: number): void {
-    applyPending(this.sessions, String(sessionId ?? ""), kind, delta);
   }
 
   /** 当前会话自己的两份队列长度（`badgeSession` 用）。 */
@@ -3971,16 +3927,6 @@ export class App {
     rows.push(el("div", "act-pop-meta", tr("已运行 {p1}{p2}", { p1: dur, p2: this.stepCount > 1 ? tr(" · 本轮第 {p1} 次工具调用", { p1: this.stepCount }) : "" })));
     pop.replaceChildren(...rows);
     this.paintWithdraw(box);
-  }
-
-  /** usage.output is the whole message's output tokens, so this is the average over the turn. */
-  private settleRate(usage: any): void {
-    const out = Number(usage?.output ?? 0);
-    if (!out || this.turnAt == null) return;
-    const secs = Math.max(0.3, (performance.now() - this.turnAt) / 1000);
-    this.rate = out / secs;
-    this.turnAt = null;
-    this.fillModelChip();
   }
 
   // ---------------------------------------------------------------- appearance
@@ -17715,23 +17661,6 @@ export class App {
     this.renderAsks();
   }
 
-  /**
-   * Remember a questionnaire that disappeared while it still had answers in it, so the user can see
-   * it happened and get the text back. Filled answers are also persisted (see saveAskDrafts).
-   */
-  private keepLostAsk(ask: AskRequest, reason: string): void {
-    const st = this.askDrafts.get(ask.id);
-    const lines = ask.questions
-      .map((q) => {
-        const a = st?.drafts.get(q.id);
-        return a ? `${q.prompt}\n→ ${a.label ?? a.value}` : null;
-      })
-      .filter((x): x is string => x !== null);
-    if (!lines.length) return; // nothing was filled in: losing it costs the user nothing
-    const title = ask.questions.length === 1 ? ask.questions[0].prompt : tr("{p1} 题的问卷", { p1: ask.questions.length });
-    this.askLost = { id: ask.id, title: title.slice(0, 80), reason, lines };
-  }
-
   private askLostBlock(): HTMLElement {
     const lost = this.askLost!;
     const box = el("div", "ask-slot ask-lost");
@@ -18357,21 +18286,6 @@ export class App {
       return this.execMoneyText({ cost: this.stats.cost, credits: this.copilot.credits, otherCost: this.copilot.otherCost });
     }
     return this.stats.cost === null ? "–" : `$${this.stats.cost.toFixed(4)}`;
-  }
-
-  /** bridge 的 `copilot` 帧 → 前端类型；字段不全就当没有（旧 bridge 不发这个帧）。 */
-  private copilotFromFrame(msg: Record<string, unknown>): CopilotView | null {
-    if (msg.hasCopilot !== true) return null;
-    const account = msg.account && typeof msg.account === "object" ? (msg.account as CopilotView["account"]) : null;
-    return {
-      hasCopilot: true,
-      credits: typeof msg.credits === "number" ? msg.credits : null,
-      requests: typeof msg.requests === "number" ? msg.requests : 0,
-      lastAt: typeof msg.lastAt === "string" ? msg.lastAt : null,
-      otherCost: typeof msg.otherCost === "number" ? msg.otherCost : 0,
-      account,
-      reconcile: msg.reconcile && typeof msg.reconcile === "object" ? (msg.reconcile as CopilotView["reconcile"]) : null,
-    };
   }
 
   /**
