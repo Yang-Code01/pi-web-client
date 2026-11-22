@@ -757,8 +757,8 @@ export class App {
   private sheetDock: SheetDialog | null = null;
   /** D209：幻灯片浮窗（与表格浮窗并列，各自记住自己的几何）。 */
   private slidesDock: SlidesDialog | null = null;
-  /** D388：表格 / 幻灯片浮窗里正在画的是哪份文件（mtime / size 用来判断要不要重载）。 */
-  private dockInfo: PreviewInfo | null = null;
+  /** D388：每扇浮窗（表格 / 幻灯片）里正在画的是哪份文件 —— 按浮窗对象记，两扇并存也不会串。 */
+  private dockFiles = new WeakMap<object, PreviewInfo>();
   /** D388：同一份文件正在打开的那一趟；同路径的重复投递复用它，不另发请求。 */
   private previewOpens = new Map<string, Promise<boolean>>();
   private termTabStrip: HTMLElement | null = null;
@@ -9288,10 +9288,14 @@ export class App {
 
   private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<boolean> {
     if (!sessionId) return false;
+    // D388：⟳ 刷新 / 返回前进要的是「重新读一遍」，不跟正在跑的那一趟合并。
+    if (replace) return this.openPreviewNow(path, sessionId, true);
     // D388：同一次「打开」可能有两位作者 —— 问卷里点「在预览里打开」当场开过一次，模型拿到
     // 答案后按交付提示词又调一次 open_preview（D344）。同一份文件正在开就等同一趟；
     // 各自再打一个 /api/preview 会让两个响应各画一遍，用户看到「又打开了一次」。
-    const key = `${sessionId}\u0000${path}`;
+    // 键按 samePath 归一：题干里的路径是模型写的（多为 `/`），桥回来的 info.abs 是 Windows
+    // 原生 `\`，不归一这两个就合并不上。
+    const key = `${sessionId}\u0000${normPath(path)}`;
     const inflight = this.previewOpens.get(key);
     if (inflight) return inflight;
     const run = this.openPreviewNow(path, sessionId, replace);
@@ -9311,23 +9315,31 @@ export class App {
    */
   private async alreadySeen(path: string, sessionId: string): Promise<boolean> {
     const v = this.viewer;
-    const inViewer = Boolean(v && v.sessionId === sessionId && v.pane !== "browse" && !v.error && samePath(v.path, path));
+    // 只认预览态：目录页、译文态、报错态都不是「在看这份文件的预览」，交给正常流程。
+    if (v && v.pane === "preview" && v.sessionId === sessionId && !v.error && v.info && samePath(v.path, path)) {
+      return this.sameFile(v.info, v.root, path, sessionId);
+    }
     // 编辑中的草稿不能丢（D50）：同路径再打开只抬一下窗口，切回预览交给用户自己点。
-    if (inViewer && v!.pane === "edit" && v!.dirty) {
-      this.raiseWindow(v!.root);
+    if (v && v.pane === "edit" && v.dirty && v.sessionId === sessionId && samePath(v.path, path)) {
+      this.raiseWindow(v.root);
       return true;
     }
-    const dock = this.sheetDock ?? this.slidesDock;
-    const dockInfo = this.dockInfo;
-    const dockHit = Boolean(dock && dockInfo && dockInfo.abs && samePath(dockInfo.abs, path));
-    const info = inViewer && v!.pane !== "edit" ? v!.info : dockHit ? dockInfo : null;
-    const root = info ? (inViewer ? v!.root : dock!.root) : null;
-    if (!info || !root || !root.isConnected) return false;
+    // 浮窗按对象查自己那份 info：sheet 与 slides 可以并存，单槽会抬错窗。
+    for (const dock of [this.sheetDock, this.slidesDock]) {
+      const info = dock ? this.dockFiles.get(dock) : null;
+      if (dock && info && samePath(info.abs, path)) return this.sameFile(info, dock.root, path, sessionId);
+    }
+    return false;
+  }
+
+  /** D388：磁盘上还是那一版（mtime + size 都没变）就只抬面板；读不到就让正常流程画错误。 */
+  private async sameFile(info: PreviewInfo, root: HTMLElement, path: string, sessionId: string): Promise<boolean> {
+    if (!root.isConnected) return false;
     let fresh: PreviewInfo;
     try {
       fresh = await api.preview(sessionId, path);
     } catch {
-      return false; // 读不到了：让正常流程把错误画进面板
+      return false;
     }
     if (fresh.mtime !== info.mtime || fresh.size !== info.size) return false;
     this.raiseWindow(root);
@@ -9445,7 +9457,6 @@ export class App {
     const saveable = !data.truncated && info.size <= CSV_MAX_BYTES;
     this.sheetDock?.destroy();
     this.sheetDock = null;
-    this.dockInfo = info;
     const dialog = new SheetDialog({
       token: info.token,
       name: info.name,
@@ -9487,6 +9498,7 @@ export class App {
       onRaise: () => this.raiseWindow(dialog.root),
     });
     this.sheetDock = dialog;
+    this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
     this.overlay(dialog.root);
@@ -9498,7 +9510,6 @@ export class App {
   private openSheet(info: PreviewInfo): void {
     this.sheetDock?.destroy();
     this.sheetDock = null;
-    this.dockInfo = info;
     const dialog = new SheetDialog({
       token: info.token,
       name: info.name,
@@ -9512,9 +9523,20 @@ export class App {
       // #427：表里的图片走独立的字节端点，凭据还是这扇窗的 token。
       mediaUrl: (sheet, id) => api.sheetMediaUrl(info.token, sheet, id),
       // #432：改过的格子写回原文件（桥端只认这张表的凭据）。
-      saveSheet: (sheet, ops) => api.sheetEdit(info.token, sheet, ops),
+      // 保存之后文件变了：顺手更新 info，免得同路径再打开被当成「别的内容」整扇重开（D388）。
+      saveSheet: async (sheet, ops) => {
+        const res = await api.sheetEdit(info.token, sheet, ops);
+        info.mtime = res.mtime;
+        info.size = res.size;
+        return res;
+      },
       // #434：合并 / 插删行列 / 排序，当场落盘再重读元数据。
-      saveStruct: (sheet, op) => api.sheetStruct(info.token, sheet, op),
+      saveStruct: async (sheet, op) => {
+        const res = await api.sheetStruct(info.token, sheet, op);
+        info.mtime = res.mtime;
+        info.size = res.size;
+        return res;
+      },
       onQuote: (text) => this.quoteInto(text),
       // #112：有图表的文件自动转一次 PDF；没有的也能手动切过去看打印版式。
       page: { token: info.token },
@@ -9530,6 +9552,7 @@ export class App {
       onRaise: () => this.raiseWindow(dialog.root),
     });
     this.sheetDock = dialog;
+    this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
     this.overlay(dialog.root);
@@ -9541,7 +9564,6 @@ export class App {
   private openSlides(info: PreviewInfo): void {
     this.slidesDock?.destroy();
     this.slidesDock = null;
-    this.dockInfo = info;
     const dialog = new SlidesDialog({
       token: info.token,
       name: info.name,
@@ -9560,6 +9582,7 @@ export class App {
       onRaise: () => this.raiseWindow(dialog.root),
     });
     this.slidesDock = dialog;
+    this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
     this.overlay(dialog.root);
@@ -22223,10 +22246,14 @@ function resolveFrom(docAbs: string, p: string): string {
 
 /** 页面里的外链只认 http(s)：`javascript:` / `file:` / 自定义协议一律当没给。 */
 /** 同一个文件的两种写法（\\ 与 /）算同一份。 */
+/** D388：同一份文件的不同写法（分隔符、大小写、尾斜杠）归一成一个键。 */
+function normPath(p: string | null | undefined): string {
+  return (p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
 function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
-  const na = (a ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  const nb = (b ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  return na !== "" && na === nb;
+  const na = normPath(a);
+  return na !== "" && na === normPath(b);
 }
 
 function safeExternalUrl(raw: string): string | null {

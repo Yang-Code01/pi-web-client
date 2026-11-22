@@ -71,6 +71,7 @@ const piLog = () =>
 const spawnLine = (sid) => piLog().find((l) => l.t === "argv" && (l.argv ?? []).includes(sid) && l.loopback);
 
 let browser = null;
+let ws = null;
 try {
   for (let i = 0; i < 100; i++) {
     try {
@@ -87,7 +88,7 @@ try {
   });
   const [cookieName, cookieValue] = (login.headers.get("set-cookie") ?? "").split(";")[0].split("=");
 
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie: `${cookieName}=${cookieValue}` } });
+  ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie: `${cookieName}=${cookieValue}` } });
   const seen = [];
   ws.on("message", (b) => seen.push(JSON.parse(b.toString())));
   await new Promise((r) => ws.on("open", r));
@@ -187,8 +188,9 @@ try {
   await armFlash();
   fs.appendFileSync(DOC, "\n<p>changed</p>\n", "utf8");
   const before = await page.evaluate(() => window.__srcBefore);
-  const reopen2 = await openTool(DOC);
-  check("改过之后 open_preview 的回执 ok", reopen2.ok === true, JSON.stringify(reopen2));
+  // 并发两趟：第二趟必须并进第一趟（previewOpens），不能各画一遍。
+  const [c1, c2] = await Promise.all([openTool(DOC), openTool(DOC)]);
+  check("改过之后并发两次投递：两趟都回 ok", c1.ok === true && c2.ok === true, JSON.stringify([c1.ok, c2.ok]));
   const reloaded = await page
     .waitForFunction(
       (src) => {
@@ -204,6 +206,7 @@ try {
   const f3 = await flash();
   console.log("  flash (改过之后):", JSON.stringify(f3));
   check("那次重载确实重建了 iframe", f3.iframeRemoved >= 1);
+  check("并发两趟只重载一次", f3.iframeRemoved === 1, `iframeRemoved=${f3.iframeRemoved}`);
   await sleep(500);
 
   // ---------------------------------------------------------------- 4. 重载之后再看同一份 → 又不重画
@@ -240,11 +243,11 @@ try {
   console.log("  sheet:", JSON.stringify(sd));
   check("xlsx 第二次打开没有销毁 / 重开浮窗", sd.removed === 0 && sd.added === 0 && sd.sameNode === true && sd.count === 1);
 
-  ws.close();
 } catch (err) {
   console.error(bridgeOut.join("").slice(-3000));
   check(`unexpected: ${err?.message ?? String(err)}`, false);
 } finally {
+  ws?.close();
   await browser?.close();
   bridge.kill();
   const failed = results.filter((r) => !r.ok).length;

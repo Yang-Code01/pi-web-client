@@ -7469,14 +7469,14 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **根因。** 同一次「打开」被两条路各调一遍 `openPreview`：问卷按钮的即时打开（D344）先开；模型拿到答案后照交付提示词再调 `open_preview` → `bridge/ext/open-preview.ts` → `POST /api/preview/open` → 桥发 `preview.open` → `answerPreviewOpen()` → 再开一次。第二次**不是**原地刷新：`openPreview` 无条件 `v.info = null; v.text = null; v.pane = "preview"` 再 `paintViewer()`（`body.replaceChildren()` + 「正在打开…」），而 `/api/preview` 每次都签发新 token，回来的 iframe `src` 就变了 → 重建、重载；xlsx / slides 更狠，`closeViewer()` + `openSheet()`，浮窗整个销毁重开。`pushStep` 只去重历史栈，不阻止渲染。
 
 **决定。**
-- `openPreview` 拆成薄壳 + `openPreviewNow`。薄壳按 `sessionId + path` 记住正在打开的那一趟（`previewOpens`），同路径的重复投递直接复用同一个 promise —— 否则两个响应各自 `paintViewer()` 仍然闪。
+- `openPreview` 拆成薄壳 + `openPreviewNow`。薄壳按 `sessionId + normPath(path)` 记住正在打开的那一趟（`previewOpens`），同路径的重复投递直接复用同一个 promise —— 否则两个响应各自 `paintViewer()` 仍然闪。键必须归一：题干里的路径是模型写的（多为 `/`），桥回来的 `info.abs` 是 Windows 原生 `\`，不归一就合并不上。`replace === true`（⟳ / 返回前进）不进这张表，它要的是重新读一遍。
 - `alreadySeen()` 在未保存询问 / `rememberScroll` / `pushStep` / `ensureViewer` **之前**判定：同 sessionId、`samePath()`、面板在 `preview` 态（`browse` 目录页不算、`error` 允许重试）、内容未变（静默 `api.preview()` 比对 `mtime` / `size`）→ `raiseWindow()` 后 `return true`。`replace === true`（⟳ 刷新、返回/前进）一律绕过。
 - 编辑态有未保存草稿（D50）：同路径再打开只抬窗口，切回预览交给用户自己点。
-- 表格 / 幻灯片 / CSV 浮窗记 `dockInfo`（打开时写，内容未变时命中），命中就 `raiseWindow(dock.root)`，不再先 `ensureViewer()` 建一个马上被关掉的面板。
+- 表格 / 幻灯片 / CSV 浮窗按**对象**记自己那份 `PreviewInfo`（`dockFiles` WeakMap）：两扇浮窗可以并存（`openSheet` 只拆自己那扇），单槽会抬错窗；浮窗内保存 / 改结构后回写 `mtime` / `size`（`saveSheet` / `saveStruct`），否则下次同路径投递会被当成「别的内容」整扇重开。
 - 为什么不改成「让模型别调第二次」：模型不知道前端已经开过，照交付提示词再调一次是合理的；幂等放在唯一入口更稳。
 
-**代价 / 可改。** ①命中时要多一次静默 `/api/preview` 来核对 `mtime` / `size`（换回一个不重建的 iframe）；它签发的新 token 落在 500 个的 LRU 里，只有连开 500 份不同文件才会把正在看的那份挤掉 —— 本会话正常用法碰不到。②历史栈里仍会多记一条 `preview` 步（`pushStep` 照旧），返回时多按一次 ←。**没做**：换文件时的 stale-while-revalidate（先留着旧内容不白屏）；xlsx 第一次打开仍会先建 viewer 再换浮窗（独立票，与「第二次」无关）。
+**代价 / 可改。** ①命中时要多一次静默 `/api/preview` 来核对 `mtime` / `size`（换回一个不重建的 iframe）；它签发的新 token 落在 500 个的 LRU 里，只有连开 500 份不同文件才会把正在看的那份挤掉 —— 本会话正常用法碰不到。**没做**：换文件时的 stale-while-revalidate（先留着旧内容不白屏）；xlsx 第一次打开仍会先建 viewer 再换浮窗（独立票，与「第二次」无关）。
 
-**验证。** `probes/preview-reopen.mjs` 11 项全绿（同路径再投：`iframeRemoved / loading / bodyCleared / viewerRemoved` 全 0；`fs.appendFileSync` 改过内容后再投 → 新 src 且 `iframeRemoved >= 1`，之后第三次又回到 0；xlsx 两次投递后同一个 `section.sd` 节点）。把 `web/src/app.ts` 的改动 `git stash` 掉重新 build，同一探针 8/11（红的 3 条正是症状：`iframeRemoved:1, loading:1, bodyCleared:2`，`section.sd` 被摘又加）。`npm run build:bridge`、`npm run build:web`、`npm --prefix web run typecheck` 通过。
+**验证。** `probes/preview-reopen.mjs` 11 项全绿（同路径再投：`iframeRemoved / loading / bodyCleared / viewerRemoved` 全 0；`fs.appendFileSync` 改过内容后**并发**两趟再投 → 新 src 且只重载一次（`iframeRemoved: 1`），之后第三次又回到 0；xlsx 两次投递后同一个 `section.sd` 节点）。把 `web/src/app.ts` 的改动 `git stash` 掉重新 build，同一探针 8/11（红的 3 条正是症状：`iframeRemoved:1, loading:1, bodyCleared:2`，`section.sd` 被摘又加）。`npm run build:bridge`、`npm run build:web`、`npm --prefix web run typecheck` 通过。
 
 
