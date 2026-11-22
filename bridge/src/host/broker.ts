@@ -119,6 +119,19 @@ export class Broker {
     this.conns.delete(sessionId);
   }
 
+  /**
+   * 这一轮结束了（pi 报 `agent_end`）：未确认窗口只对「同一轮跨代」有用。
+   * 留着它，下一代脑会把上一轮的行当成没发生过的事再放一遍 —— 页面上凭空多出气泡、
+   * 审批框、甚至被回答两次。溢出标记也按轮清：否则一次超长之后就永远不跨代了。
+   */
+  endTurn(sessionId: string): void {
+    const e = this.conns.get(sessionId);
+    if (!e) return;
+    e.held = [];
+    e.heldBytes = 0;
+    e.overflowed = false;
+  }
+
   has(sessionId: string): boolean {
     return this.conns.has(sessionId);
   }

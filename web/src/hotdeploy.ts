@@ -16,6 +16,20 @@ import "./hotdeploy.css";
 
 /** 步骤名与 worker 的 step 序号一一对应；中文原文就是 i18n 键。 */
 const STEPS = ["检查更新", "拉取所选分支", "编译前端与桥", "恢复本地改动", "换进程", "健康检查"];
+/** 步骤表里「换进程」那一行的下标：有壳时整条换脑链都落在它上面。 */
+const SWAP_STEP = 4;
+
+/**
+ * 有壳时 `run.stage` 的人话（D385）：壳把换脑拆成四步，步骤表只画得出「换进程」那一格，
+ * 具体卡在哪一步得靠这句说清楚，否则用户只看到「部署中」。
+ */
+const STAGE_TEXT: Record<string, string> = {
+  running: "正在编译并拉起新脑",
+  observing: "新脑就绪，观察 5 秒确认它不会立刻掉线，再切",
+  switched: "已切换到新脑：会话没断，pid 不变",
+  failed: "换脑失败，老脑继续服务",
+  "needs-group-restart": "壳的代码也变了，这次要整组重启（会话会被切断）",
+};
 const RESTORE_STEP = 3;
 /** worker 写回来的 error 是稳定代号（D110），界面上得说人话。 */
 const FAIL_WHY: Record<string, string> = {
@@ -319,6 +333,8 @@ class HotdeployPanel {
     this.nowBox.append(el("span", "hot-k", tr("会话")), el("span", "hot-mono", tr("{n} 个在跑", { n: snap.sessions })));
     if (this.down) this.nowBox.append(el("span", "hot-down", tr("（桥已停，等新进程）")));
     if (run?.phase === "running") this.nowBox.append(el("span", "hot-down", tr("（部署中）")));
+    // 壳自己的代码变了：等到构建完才说就晚了 —— 用户点下去之前就得知道这回会连会话一起重启。
+    if (snap.hostStale) this.nowBox.append(el("span", "hot-down", tr("（壳的代码也变了：这次部署会连会话一起重启）")));
   }
 
   private paintBranches(snap: HotdeploySnapshot | null, phase: Phase): void {
@@ -398,6 +414,20 @@ class HotdeployPanel {
   }
 
   private paintSteps(run: HotdeployRun | null, phase: Phase): void {
+    // 有壳时整条链都在「换进程」那一步里（编译 → 拉新脑 → 观察 → 切换），别的行没真的走过。
+    // 把它们画成绿的等于骗人：只点亮第 5 行，其余留空。
+    if (run?.stage) {
+      this.steps.forEach((row, i) => {
+        let cls = "";
+        if (i === SWAP_STEP) cls = phase === "fail" ? "fail" : phase === "ok" ? "ok" : phase === "running" ? "run" : "";
+        row.className = `hot-step${cls ? ` ${cls}` : ""}`;
+        const [ico, , info] = Array.from(row.children) as HTMLElement[];
+        ico.textContent = cls === "ok" ? "✓" : cls === "fail" ? "✕" : cls === "run" ? "◐" : "○";
+        ico.classList.toggle("hot-spin", cls === "run");
+        info.textContent = "";
+      });
+      return;
+    }
     const step = typeof run?.step === "number" ? run.step : 0;
     const stamps = run?.stamps ?? [];
     const hasStash = Boolean(run?.stash);
@@ -467,16 +497,24 @@ class HotdeployPanel {
     if (phase === "running") {
       const box = this.banner("warn");
       box.textContent = tr("正在部署：桥会被换掉，这页稍后自己刷新。");
+      if (run?.stage && STAGE_TEXT[run.stage]) box.append(el("div", "hot-why", tr(STAGE_TEXT[run.stage])));
       banners.push(box);
     } else if (phase === "ok") {
       const box = this.banner("ok");
       const body = el("div", "hot-banner__body");
       const line = el("div", "");
-      line.append(
-        el("b", "", tr("已部署 {branch}", { branch: run?.branch ?? "" })),
-        el("span", "hot-mono", ` · ${run?.toSha || run?.buildId || ""}`),
-        el("span", "", tr(" —— {port} 上跑的就是这份构建。", { port: this.snap?.port ?? 7864 })),
-      );
+      if (run?.stage) {
+        line.append(
+          el("b", "", tr("已切换到新脑")),
+          el("span", "", tr(" —— 正在跑的会话没有断，pid 不变，页面会自己接上。")),
+        );
+      } else {
+        line.append(
+          el("b", "", tr("已部署 {branch}", { branch: run?.branch ?? "" })),
+          el("span", "hot-mono", ` · ${run?.toSha || run?.buildId || ""}`),
+          el("span", "", tr(" —— {port} 上跑的就是这份构建。", { port: this.snap?.port ?? 7864 })),
+        );
+      }
       const acts = el("div", "hot-acts");
       const refresh = el("button", "btn tiny primary", tr("刷新页面")) as HTMLButtonElement;
       refresh.onclick = () => window.location.reload();

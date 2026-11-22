@@ -49,6 +49,8 @@ export class BrainLink extends EventEmitter {
   private rid = 0;
   /** 壳的构建指纹（面板用来提示「壳也变了」）。 */
   hostBuildId = "";
+  /** 壳自己那份代码已经和磁盘不一样了：面板要在点之前就红字预告「会连会话一起重启」。 */
+  hostStale = false;
   publicPort = 0;
   /** 换到了新一代（壳通知 activate 时置位）。 */
   activated = false;
@@ -200,6 +202,7 @@ export class BrainLink extends EventEmitter {
         return;
       case "snapshot": {
         // 壳发的是 [{id, turnActive}]；旧形态是纯 id 数组，两种都认。
+        this.hostStale = Boolean(msg.hostStale);
         const list = (msg.sessions ?? []) as Array<string | { id?: string; turnActive?: boolean }>;
         this.liveIds = list
           .map((s) => (typeof s === "string" ? s : String(s?.id ?? "")))
@@ -226,6 +229,9 @@ export class BrainLink extends EventEmitter {
       case "deploy-state":
         this.deployState = msg as DeployState;
         this.emit("deploy-state", msg as DeployState);
+        return;
+      case "host-stale":
+        this.hostStale = Boolean(msg.stale);
         return;
       case "line": {
         const w = this.watchers.get(String(msg.sessionId));

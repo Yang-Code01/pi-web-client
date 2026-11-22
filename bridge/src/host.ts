@@ -39,6 +39,8 @@ interface Brain {
   ready: boolean;
   /** 这个脑知道自己该解释哪些会话（spawn 或 attach 过）。其余的行走壳的未确认缓冲。 */
   sessions: Set<string>;
+  /** 已经叫它去接管壳里活着的会话了（每个脑只叫一次，别重复 adopt）。 */
+  askedAdopt: boolean;
   attachedAt: number;
 }
 
@@ -157,6 +159,19 @@ async function main(): Promise<void> {
   /** 刚为换脑拉起了一代、还没握手：它的 hello 要当候选，而不是「多余的脑」。 */
   let expectingSwap = false;
   let hostBuildId = selfFingerprint();
+  /**
+   * 磁盘上的壳代码已经和正在跑的这份不一样了？面板要在用户点下去之前就说「这一次会连会话
+   * 一起重启」（D385 story 23）—— 等到构建完才发现就晚了。指纹读文件，5 秒缓存。
+   */
+  let staleAt = 0;
+  let stale = false;
+  const hostStale = (): boolean => {
+    if (Date.now() - staleAt > 5000) {
+      staleAt = Date.now();
+      stale = selfFingerprint() !== hostBuildId;
+    }
+    return stale;
+  };
   let deploy: DeployState = { phase: "idle", at: 0 };
   let shuttingDown = false;
 
@@ -196,7 +211,11 @@ async function main(): Promise<void> {
       // 这一轮还在不在跑，只有壳看得见（脑换代时它的状态就丢了）。就按 pi 自己的事件记：
       // agent_start 开一轮，agent_end 收一轮 —— 新脑接管时靠这个把「思考中」恢复出来。
       if (line.includes('"agent_start"')) turns.set(sessionId, true);
-      else if (line.includes('"agent_end"')) turns.set(sessionId, false);
+      else if (line.includes('"agent_end"')) {
+        turns.set(sessionId, false);
+        // 一轮结束了：重放窗口留着只会把上一轮的行倒给下一代脑（D385「turn 结束即丢弃」）。
+        broker.endTurn(sessionId);
+      }
       // 还没答的问卷 / 审批留在壳里：换脑后由新脑重放，否则页面那张表单就哑了（D385）。
       if (line.includes('"extension_ui_request"')) rememberUi(sessionId, line);
       const target = brain && brain.sessions.has(sessionId) ? brain : null;
@@ -212,6 +231,8 @@ async function main(): Promise<void> {
       sessions.delete(sessionId);
       turns.delete(sessionId);
       pendingUi.delete(sessionId);
+      // 进程没了，这一轮的窗口也就没人可交了：留着它只会让下一次 attach 拿到幽灵行。
+      broker.detach(sessionId);
       // 子进程是壳的，退出只有壳看得到；认领这个会话的脑要收到一声，否则它会一直以为还在跑。
       if (brain && brain.sessions.has(sessionId)) brain.conn.send({ t: "child-exit", sessionId, code, signal });
     },
@@ -224,6 +245,7 @@ async function main(): Promise<void> {
     ok: true,
     version: VERSION,
     buildId: hostBuildId,
+    hostStale: hostStale(),
     pid: process.pid,
     uptime: Math.round(process.uptime()),
     brain: brain ? { pid: brain.pid, buildId: brain.buildId, ready: brain.ready } : null,
@@ -293,6 +315,12 @@ async function main(): Promise<void> {
       if (!sameOrigin(req)) return void json(res, 403, { ok: false, code: "cross-origin" });
       const action = url.searchParams.get("action") ?? "run";
       if (action === "run") void runDeploy(url.searchParams.get("branch") ?? undefined, url.searchParams.get("stash") === "1");
+      // 跳过构建、直接拉一代新脑：e2e 和手工排障用（真部署只是多一步编译）。
+      // 改不到壳自己：壳的指纹变了 runDeploy 才会要求整组重启，这里只是换脑。
+      else if (action === "swap" && deploy.phase !== "running" && deploy.phase !== "observing") {
+        deploy = { phase: "running", at: Date.now() };
+        spawnBrain({ swap: true });
+      }
       return void json(res, 200, { ok: true, accepted: true, deploy });
     }
     proxy.handle(req, res);
@@ -340,6 +368,7 @@ async function main(): Promise<void> {
       internalPort: Number(msg.internalPort) || 0,
       ready: false,
       sessions: new Set(),
+      askedAdopt: false,
       attachedAt: Date.now(),
     };
     if (msg.proto !== CONTROL_PROTO) {
@@ -351,7 +380,7 @@ async function main(): Promise<void> {
     if (!brain) {
       brain = next;
       conn.send({ t: "welcome", proto: CONTROL_PROTO, peerHeader: "x-pi-peer", hostBuildId, publicPort: port });
-      conn.send({ t: "snapshot", hostBuildId, publicPort: port, buildId: next.buildId, sessions: snapshotSessions() });
+      conn.send({ t: "snapshot", hostBuildId, hostStale: hostStale(), publicPort: port, buildId: next.buildId, sessions: snapshotSessions() });
       conn.send({ t: "usage-snapshot", sessions: ledger.snapshot() });
       log(`脑 ${next.pid} 连上（首个，buildId ${next.buildId || "?"}）`);
       return next;
@@ -370,7 +399,7 @@ async function main(): Promise<void> {
         publicPort: port,
         swap: true,
       });
-      conn.send({ t: "snapshot", hostBuildId, publicPort: port, buildId: next.buildId, sessions: snapshotSessions() });
+      conn.send({ t: "snapshot", hostBuildId, hostStale: hostStale(), publicPort: port, buildId: next.buildId, sessions: snapshotSessions() });
       conn.send({ t: "usage-snapshot", sessions: ledger.snapshot() });
       return next;
     }
@@ -388,6 +417,13 @@ async function main(): Promise<void> {
         if (brain === b) {
           log(`脑 ${b.pid} 就绪`);
           proxy.release();
+          // 壳崩后重拉的那代脑是「首个」，但它接手的不是空壳：子进程还在跑、行还在窗口里。
+          // 必须叫它 adopt，否则页面退回只读、running 报 0，会话就成了没人解释的孤儿（D385）。
+          if (!b.askedAdopt && broker.sessions().length) {
+            b.askedAdopt = true;
+            log(`叫脑 ${b.pid} 接管 ${broker.sessions().length} 个还活着的会话`);
+            b.conn.send({ t: "activate", buildId: b.buildId, resumed: true });
+          }
           return;
         }
         if (starting === b) {
@@ -547,6 +583,7 @@ async function main(): Promise<void> {
     starting = null;
     swapPid = null;
     expectingSwap = false;
+    next.askedAdopt = true;
     // 老脑认识、新脑还不认识的会话：把所有权先放空，等新脑 attach 时再给。
     for (const id of broker.sessions()) broker.setOwner(id, next.sessions.has(id) ? next.id : null);
     next.conn.send({ t: "activate", buildId: next.buildId });
@@ -716,9 +753,16 @@ async function main(): Promise<void> {
 
   // 无人接的壳：90 秒没有脑连上就带着孩子一起走（不留幽灵）。
   let lastBrainSeen = Date.now();
+  let lastStale = hostStale();
   setInterval(() => {
     if (brain?.ready) lastBrainSeen = Date.now();
     if (shuttingDown) return;
+    // 壳自己的代码变了要尽快让面板知道（点击前红字预告，D385 story 23）。
+    const stale = hostStale();
+    if (stale !== lastStale) {
+      lastStale = stale;
+      brain?.conn.send({ t: "host-stale", stale });
+    }
     if (Date.now() - lastBrainSeen > 90_000) {
       log("90 秒没有可用的脑，收掉这一组");
       void stop("group");

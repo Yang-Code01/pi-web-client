@@ -427,6 +427,35 @@ async function removeWorktree(req: http.IncomingMessage, res: http.ServerRespons
   });
 }
 
+/**
+ * 壳那边的部署阶段 → 页面认的 run 形状。页面的步骤表只认 `running|ok|fail`，而壳还会停在
+ * `observing`（观察期、还没切）与 `needs-group-restart`（壳自己也变了）。不给映射的话，
+ * 切成功与构建失败都会从面板上掉下去（D385 的 story 6 / 7）。
+ * `stage` 原样带上：面板用它说明「正在观察」「已切换」。
+ */
+function shellRun(
+  st: { phase: string; at?: number; ok?: boolean; reason?: string; buildId?: string },
+  hostBuildId: string,
+  port: number,
+): Record<string, unknown> {
+  const at = st.at ? new Date(st.at).toISOString() : new Date().toISOString();
+  const live = st.phase === "running" || st.phase === "observing";
+  return {
+    pid: 0,
+    branch: "",
+    // 步骤表里「换进程」那一行：有壳时编译、拉新脑、观察、切换都在这一步里。
+    step: 4,
+    phase: live ? "running" : st.ok ? "ok" : "fail",
+    startedAt: at,
+    finishedAt: live ? null : at,
+    updatedAt: at,
+    buildId: st.buildId ?? hostBuildId,
+    error: live ? null : (st.reason ?? null),
+    port,
+    stage: st.phase,
+  };
+}
+
 export async function handleHotdeploy(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -445,10 +474,11 @@ export async function handleHotdeploy(
         json(res, 200, {
           ...snap,
           hosted: true,
-          port: host.publicPort || snap.port,
+          port: host.publicPort || ctx.port,
           hostBuildId: host.hostBuildId,
+          hostStale: host.hostStale,
           busy: host.deployState.phase === "running" || host.deployState.phase === "observing",
-          run: host.deployState.phase === "idle" ? snap.run : { ...host.deployState, phase: host.deployState.phase },
+          run: host.deployState.phase === "idle" ? snap.run : shellRun(host.deployState, host.hostBuildId, host.publicPort || ctx.port),
         });
         return true;
       }

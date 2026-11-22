@@ -574,6 +574,8 @@ export const api = {
     postJson<{ ok: boolean; run: HotdeployRun }>("/api/hotdeploy/run", { branch, ...(stash ? { stash: true } : {}) }),
   hotdeployRemoveWorktree: (path: string, force = false) =>
     postJson<HotdeployRemoveResult>("/api/hotdeploy/remove-worktree", { path, force }),
+  /** 有壳时唯一那个「一次性全停」的入口：壳 → 收会话 → 退出。没壳（旧桥）会 404。 */
+  hostStop: () => postJson<{ ok: boolean; stopping: boolean }>("/api/host/stop", {}),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),

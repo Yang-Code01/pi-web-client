@@ -7442,4 +7442,4 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **代价 / 可改。** 多一个常驻进程（约 40–50 MB）。壳里出现 bug 时，最坏情况下整个桥都起不来 —— 所以 `PI_HOST_DISABLE=1` 必须长期留着，它是这个设计的保险丝。单轮里还没被确认的行超过 8 MB（极少）时这一轮不跨代，界面会明说。
 
-**验证。** `node bridge/tests/host-broker-unit.mjs`（未确认窗口、8 MB 降级、owner 规则）、`node bridge/tests/host-ledger-unit.mjs`（账本重放与压缩）、`node bridge/tests/host-shell-e2e.mjs`（真壳 + 假脑 + 假 pi：peer 头改写、tick 回脑、写入往返、kill 通知、attach 交回窗口、账本落盘、停机干净退出）。真浏览器的验收在 `.scratch/e2e/20261122-1050-hot-deploy-keeps-turn/`：`change` 模式下「换完之后页面没退回只读预览」「换脑没换掉子进程（还是同一个 pid）」「部署前后页面没被刷新」三条，改前全红、改后全绿。
+**验证。** `node bridge/tests/host-broker-unit.mjs`（未确认窗口与按轮清理、8 MB 降级与按轮重置、owner 规则）、`node bridge/tests/host-ledger-unit.mjs`（账本重放与压缩）、`node bridge/tests/host-shell-e2e.mjs`（真壳 + **假脑** + 假 pi：peer 头改写、tick 回脑、写入往返、kill 通知、attach 交回窗口、账本落盘、停机干净退出）、`node bridge/tests/host-real-brain-e2e.mjs`（真壳 + **真脑** + 假 pi，走 WS：开一轮 → 答一次审批 → 换脑 → **pi 的 pid 不变、这一轮还在跑、答过的审批不重问** → kill -9 脑让壳重拉并接管 → `/api/host/stop` 整组收掉）。真浏览器的验收在 `.scratch/e2e/20261122-1050-hot-deploy-keeps-turn/`：`change` 模式下「换完之后页面没退回只读预览」「换脑没换掉子进程（还是同一个 pid）」「部署前后页面没被刷新」三条，改前全红、改后全绿。

@@ -77,7 +77,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .pi\skills\bridge-update\bin
 
 异构实例（别的端口、别的检出）：`-Dir <仓库根> -Port <端口>`，两个参数都会传进计划任务；看门狗脚本本身也认 `--dir` / `--port`。
 
-每 1 分钟探测 `/healthz`；不通且没在更新（`restart.lock` 新鲜）就 detached 拉起 `node bridge/dist/index.js`。5 分钟内只拉一次，避免崩循环刷进程。
+每 1 分钟探测 `/healthz`；不通且没在更新（`restart.lock` 新鲜）就 detached 拉起壳 `node bridge/dist/host.js`（#634 之后入口是壳；`PI_HOST_DISABLE=1` 或没有 `host.js` 时才退回 `bridge/dist/index.js`）。5 分钟内只拉一次，避免崩循环刷进程。
+
+**看门狗只重拉壳，不管脑**：脑崩了是壳自己的事（1 秒后重拉、新脑接管在跑的会话）。反过来说，壳崩了会话跟着没 —— 这一层没有第二道兜底，靠这个计划任务。
 
 - 不想让它自己重启（演示、调试）：`node .pi/skills/bridge-update/bin/watchdog.mjs --stop`；恢复 `--start`。
 - 卸载任务：同一脚本加 `-Uninstall`。
@@ -85,6 +87,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .pi\skills\bridge-update\bin
 
 ## 六、边界
 
+- 关机口令：`npm run bridge:stop`（或面板「全部停止」）交给壳，由壳先收会话再退；不要 `kill -9` 壳。
 - 合并只做 `git merge --ff-only origin/main`，**绝不** `stash`、`rebase`、`reset`，也绝不替用户提交他工作区的改动。dirty 或分叉就停（`merge-failed`）。
 - 绝不 `taskkill /T`：进程树里可能连着别的会话；只按 pid 杀 bridge 本体，再单独清它自己的 `pi` 子进程。
 - 不要自动 reload 页面。build 变了前端只在顶部显示「服务已更新，刷新后生效」，让用户自己点——他可能正在输入框里打字。

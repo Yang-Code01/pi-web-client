@@ -120,6 +120,34 @@ test("未 attach 的会话收行直接丢，不建账（壳不会为幽灵会话
   assert.equal(b.enqueueWrite("nope", "a", "x"), null);
 });
 
+test("一轮结束（endTurn）丢掉重放窗口，但不丢分帧序号", () => {
+  const b = new Broker();
+  b.attach("s1");
+  b.push("s1", enc("1\n2\n"));
+  b.endTurn("s1");
+  const p = b.pending("s1");
+  assert.deepEqual(p.lines, [], "上一轮没确认的行不能重放进下一代脑");
+  assert.equal(p.fromSeq, 3, "fromSeq 接着 toSeq 走，不回头");
+  assert.equal(p.toSeq, 2);
+  assert.equal(b.bufferedBytes("s1"), 0);
+  // 下一轮的行照旧记、照旧能跨代。
+  const next = b.push("s1", enc("3\n"));
+  assert.deepEqual(next.map((l) => l.seq), [3]);
+  assert.deepEqual(b.pending("s1").lines.map((l) => l.line), ["3"]);
+});
+
+test("溢出标记按轮清掉：一次超长不能永远断掉跨代", () => {
+  const b = new Broker({ maxBytes: 16 });
+  b.attach("s1");
+  b.push("s1", enc("x".repeat(40) + "\n"));
+  assert.equal(b.pending("s1").overflowed, true);
+  b.endTurn("s1");
+  b.push("s1", enc("ok\n"));
+  const p = b.pending("s1");
+  assert.equal(p.overflowed, false, "新一轮没过上限就不该带旧标记");
+  assert.deepEqual(p.lines.map((l) => l.line), ["ok"]);
+});
+
 test("detach 把缓冲与 owner 一起清掉", () => {
   const b = new Broker();
   b.attach("s1");

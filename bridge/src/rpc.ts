@@ -168,6 +168,9 @@ export class RpcChild extends EventEmitter {
       } catch (err) {
         // 只有「壳那边没有这个会话的子进程」才该新开；其余（超时、壳拒绝）保持原样失败。
         if ((err as Error).message !== "no-child") throw err;
+        // 接管（换脑后的 adopt）不许顺手新开：壳里没有就是没有，拉起第二个 pi 会让同一条会话
+        // 多出一个写者（DECISIONS 里那条「一个会话文件同一时刻只有一个写者」）。
+        if (this.opts.adoptOnly) throw err;
         const got = await link.spawnSession({
           sessionId,
           argv: [this.opts.cli, ...this.opts.args],
