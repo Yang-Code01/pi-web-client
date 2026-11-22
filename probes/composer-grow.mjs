@@ -34,6 +34,11 @@
  * on the bottom without moving a mid-transcript reading position, and a stream in flight keeps
  * following across the growth.
  *
+ * #385 (D385) adds the capsule's owner, under both Mac themes, focused and not: the glass panel — fill,
+ * hairline, arc and focus halo — belongs to `.composer-input`, the textarea inside it draws no border
+ * and no radius of its own, and the paste fold keeps its own 8px inset, square corners and 1px top
+ * hairline instead of being repainted as a capsule.
+ *
  * Run: node probes/composer-grow.mjs   (needs `npm run build:web` first)
  */
 import fs from "node:fs";
@@ -1147,19 +1152,12 @@ try {
   // 17. The box states its owner once. Under the Mac shell (#316 wrapper `#317`) the glass capsule
   //     — panel fill, hairline, radius, focus halo — belongs to `.composer-input`; the textarea is a
   //     transparent frameless sheet inside it. Drawn on both, the two rings plus the halo read as
-  //     three stacked borders, and their radii (18px vs 12px) disagree at every corner.
-  for (const theme of ["mac-dark", "mac-light"]) {
-    await page.evaluate((t) => {
-      const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
-      localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, theme: t, scale: 1 }));
-    }, theme);
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await until(async () => (await field.count()) === 1, 8000, "composer textarea after reload");
-    await field.click();
-    await sleep(250);
-    const rings = await page.evaluate(() => {
-      const t = document.querySelector(".composer textarea");
-      const w = document.querySelector(".composer-input");
+  //     three stacked borders, and their radii (18px vs 12px) disagree at every corner. The same rule
+  //     used to outrank `.composer textarea.paste-body` (0,2,2 over 0,2,1) and repainted the paste
+  //     fold, so the fold keeps its own inset, corners and top hairline now that the rule moved.
+  /** Border, radius, fill and shadow of the sheet and of the wrapper that owns the capsule. */
+  const capsuleView = () =>
+    page.evaluate(() => {
       const view = (e) => {
         const cs = getComputedStyle(e);
         return {
@@ -1169,8 +1167,34 @@ try {
           shadow: cs.boxShadow,
         };
       };
-      return { ui: document.documentElement.dataset.ui, ta: view(t), wrap: view(w) };
+      return {
+        ui: document.documentElement.dataset.ui,
+        ta: view(document.querySelector(".composer textarea")),
+        wrap: view(document.querySelector(".composer-input")),
+      };
     });
+  /** Both capsule screenshots are the row plus 16px, so the ring is never cropped at the edges. */
+  const capsuleShot = async (name) => {
+    const b = await page.locator(".composer .row").boundingBox();
+    await page.screenshot({
+      path: path.join(OUT, name),
+      clip: { x: b.x - 16, y: b.y - 16, width: b.width + 32, height: b.height + 32 },
+    });
+  };
+  for (const theme of ["mac-dark", "mac-light"]) {
+    await page.evaluate((t) => {
+      const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+      localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, theme: t, scale: 1 }));
+    }, theme);
+    await page.reload({ waitUntil: "networkidle" });
+    if ((await field.count()) === 0) {
+      await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card after reload");
+      await page.locator(".session-card").first().click();
+    }
+    await until(async () => (await field.count()) === 1, 8000, "composer textarea after reload");
+    await field.click();
+    await sleep(250);
+    const rings = await capsuleView();
     assert(rings.ui === "mac", `17 [${theme}] the Mac shell is the one under test (data-ui=${rings.ui})`);
     const visible = [rings.ta.border, rings.wrap.border].filter((v) => parseFloat(v) > 0).length;
     assert(
@@ -1196,40 +1220,60 @@ try {
     const clear = (bg) => bg === "rgba(0, 0, 0, 0)" || bg === "transparent";
     assert(clear(rings.ta.bg), `17 [${theme}] the textarea is a clear sheet (${rings.ta.bg})`);
     assert(!clear(rings.wrap.bg), `17 [${theme}] the capsule fill is on the wrapper (${rings.wrap.bg})`);
-    await page.screenshot({
-      path: path.join(OUT, `17-capsule-${theme}.png`),
-      clip: await page.locator(".composer .row").boundingBox().then((b) => ({
-        x: b.x - 16,
-        y: b.y - 16,
-        width: b.width + 32,
-        height: b.height + 32,
-      })),
+    await capsuleShot(`17-capsule-${theme}.png`);
+
+    // The other half of the same root cause: the fold is its own box, not a second capsule.
+    await page.evaluate((text) => {
+      const t = document.querySelector(".composer-input > textarea");
+      const dt = new DataTransfer();
+      dt.setData("text/plain", text);
+      t.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, Array.from({ length: 30 }, (_, i) => `第 ${i + 1} 行`).join("\n"));
+    await until(async () => (await page.locator(".paste-block").count()) === 1, 4000, "paste fold");
+    await page.locator(".paste-toggle").first().click();
+    await until(async () => (await page.locator(".paste-body").count()) === 1, 4000, "paste editor");
+    await sleep(150);
+    const fold = await page.evaluate(() => {
+      const cs = getComputedStyle(document.querySelector(".composer textarea.paste-body"));
+      return {
+        padTop: cs.paddingTop,
+        padLeft: cs.paddingLeft,
+        radius: cs.borderTopLeftRadius,
+        borderTop: cs.borderTopWidth,
+      };
     });
+    assert(
+      fold.padTop === "8px" && fold.padLeft === "8px",
+      `17 [${theme}] the paste fold keeps its own 8px inset, not the capsule's (${fold.padTop} ${fold.padLeft})`,
+    );
+    assert(
+      parseFloat(fold.radius) === 0,
+      `17 [${theme}] the paste fold keeps its square corners, not the 18px arc (${fold.radius})`,
+    );
+    assert(
+      Math.abs(parseFloat(fold.borderTop) - 1) < 0.01,
+      `17 [${theme}] the paste fold keeps its own 1px top hairline (${fold.borderTop})`,
+    );
+    await capsuleShot(`17-paste-${theme}.png`);
+    await page.locator(".paste-x").first().click();
+    await until(async () => (await page.locator(".paste-block").count()) === 0, 4000, "paste fold removed");
+
     // The screenshot the user actually complained about: an empty, unfocused box. Same single ring.
     await field.fill("");
     await page.locator(".chat-pane").click({ position: { x: 40, y: 40 } });
     await sleep(250);
-    const idle = await page.evaluate(() => {
-      const t = document.querySelector(".composer textarea");
-      const w = document.querySelector(".composer-input");
-      const a = getComputedStyle(t);
-      const b = getComputedStyle(w);
-      return { taBorder: a.borderTopWidth, wrapBorder: b.borderTopWidth, taShadow: a.boxShadow };
-    });
+    const idle = await capsuleView();
     assert(
-      parseFloat(idle.taBorder) === 0 && parseFloat(idle.wrapBorder) > 0,
-      `17 [${theme}] unfocused: still one ring, on the wrapper (textarea ${idle.taBorder}, wrapper ${idle.wrapBorder})`,
+      parseFloat(idle.ta.border) === 0 && parseFloat(idle.wrap.border) > 0,
+      `17 [${theme}] unfocused: still one ring, on the wrapper (textarea ${idle.ta.border}, wrapper ${idle.wrap.border})`,
     );
-    await page.screenshot({
-      path: path.join(OUT, `17-idle-${theme}.png`),
-      clip: await page.locator(".composer .row").boundingBox().then((b) => ({
-        x: b.x - 16,
-        y: b.y - 16,
-        width: b.width + 32,
-        height: b.height + 32,
-      })),
-    });
-    log("17 capsule", theme, `wrapper ${rings.wrap.border}/${rings.wrap.radius}, textarea ${rings.ta.border}/${rings.ta.radius}`, `\n  ta shadow ${rings.ta.shadow}\n  wrap shadow ${rings.wrap.shadow}`);
+    await capsuleShot(`17-idle-${theme}.png`);
+    log(
+      "17 capsule",
+      theme,
+      `wrapper ${rings.wrap.border}/${rings.wrap.radius}, textarea ${rings.ta.border}/${rings.ta.radius}`,
+      `\n  ta shadow ${rings.ta.shadow}\n  wrap shadow ${rings.wrap.shadow}`,
+    );
   }
 
   log("ALL OK");
