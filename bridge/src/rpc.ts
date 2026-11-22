@@ -162,6 +162,9 @@ export class RpcChild extends EventEmitter {
           this.emit("log", `attach: 这个会话的进程已经退出（${got.lastExit.code ?? got.lastExit.signal}）`);
         }
         if (got.lastStderr) this.emit("log", `attach: 最近的 stderr：\n${got.lastStderr.slice(-800)}`);
+        // 换脑前还挂着的问卷 / 审批：当它刚发过来一样重放 —— 页面那张表单接着能答（D385）。
+        // 不重放的话，用户眼前是一张永远交不出去的问卷，pi 那边还在等这个 id 的回答。
+        for (const line of got.pendingUi ?? []) this.handleLine(line);
       } catch (err) {
         // 只有「壳那边没有这个会话的子进程」才该新开；其余（超时、壳拒绝）保持原样失败。
         if ((err as Error).message !== "no-child") throw err;

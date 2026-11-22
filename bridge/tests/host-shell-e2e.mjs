@@ -181,6 +181,9 @@ try {
   const oldPid = (await get("/api/host/status")).body.brain.pid;
   await brainGet("/pause-ack?on=1", oldPid);
   await brainGet("/spawn?sessionId=s3", oldPid);
+  // 换脑前挂着一张问卷：换完之后新脑必须还能把它交还出来（D385）。
+  await brainGet("/spawn?sessionId=s4&ask=1", oldPid);
+  await until(async () => (readBrain(oldPid)?.lines ?? 0) >= 4, "s4 的问卷行进了壳");
   await until(async () => readBrain(oldPid)?.lines >= 3, "s3 的 tick 攒起来");
   await sleep(400); // 让几行排进未确认窗口
   await brainGet("/deploy?action=swap", oldPid);
@@ -198,6 +201,13 @@ try {
   await until(async () => readBrain(oldPid)?.retired >= 1, "老脑收到 retire");
   // 页面地址不变：公网口一直在壳手里。
   assert.equal((await get("/echo")).body.peer, "loopback", "换脑之后仍然由壳写对端头");
+  // 还没答的问卷也一起交回来：页面那张表单换脑后照样能答。
+  await brainGet("/attach?sessionId=s4", nextBrain.pid);
+  const uiCarried = await until(async () => {
+    const st = readBrain(nextBrain.pid);
+    return st?.attachedUi?.length ? st.attachedUi : null;
+  }, "s4 的问卷交回新脑");
+  assert.ok(String(uiCarried[0]).includes("u-ask"), "交回来的应该是原来那条 extension_ui_request");
   // 新脑接回 s3：老脑没确认的行必须原样交给它。
   await brainGet("/attach?sessionId=s3", nextBrain.pid);
   const carried = await until(async () => readBrain(nextBrain.pid)?.attached, "新脑 attach 的回报");

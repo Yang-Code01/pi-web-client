@@ -147,6 +147,8 @@ async function main(): Promise<void> {
   const ledger = new UsageLedger(statePath("host", "usage.jsonl"));
   if (ledger.size) log(`账本里已有 ${ledger.size} 个会话的用量`);
   const sessions = new Map<string, SpawnSpec>();
+  /** 每个会话还没被回答的 extension_ui_request（问卷 / 审批）：换脑时页面上的表单不能凭空消失。 */
+  const pendingUi = new Map<string, Map<string, string>>();
   /** 每个会话这一轮还在不在跑（换脑后脑要靠它把 running 恢复出来）。 */
   const turns = new Map<string, boolean>();
   const snapshotSessions = () => broker.sessions().map((id) => ({ id, turnActive: Boolean(turns.get(id)) }));
@@ -158,12 +160,45 @@ async function main(): Promise<void> {
   let deploy: DeployState = { phase: "idle", at: 0 };
   let shuttingDown = false;
 
+  /** 记下一条还没答的 extension_ui_request（按 id 去重；同一条被重放多少次都只有一份）。 */
+  function rememberUi(sessionId: string, line: string): void {
+    try {
+      const msg = JSON.parse(line);
+      const id = String(msg?.id ?? "");
+      if (!id) return;
+      let box = pendingUi.get(sessionId);
+      if (!box) {
+        box = new Map();
+        pendingUi.set(sessionId, box);
+      }
+      box.set(id, line);
+    } catch {
+      /* 不是 JSON 就不是我们的活 */
+    }
+  }
+
+  /** 脑把回答写回 stdin 了：这条不用再重放。 */
+  function forgetAnsweredUi(sessionId: string, data: string): void {
+    const box = pendingUi.get(sessionId);
+    if (!box?.size || !data.includes('"extension_ui_response"')) return;
+    for (const raw of data.split("\n")) {
+      if (!raw.includes('"extension_ui_response"')) continue;
+      try {
+        box.delete(String(JSON.parse(raw)?.id ?? ""));
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   const children = new Children(broker, {
     line(sessionId, seq, line) {
       // 这一轮还在不在跑，只有壳看得见（脑换代时它的状态就丢了）。就按 pi 自己的事件记：
       // agent_start 开一轮，agent_end 收一轮 —— 新脑接管时靠这个把「思考中」恢复出来。
       if (line.includes('"agent_start"')) turns.set(sessionId, true);
       else if (line.includes('"agent_end"')) turns.set(sessionId, false);
+      // 还没答的问卷 / 审批留在壳里：换脑后由新脑重放，否则页面那张表单就哑了（D385）。
+      if (line.includes('"extension_ui_request"')) rememberUi(sessionId, line);
       const target = brain && brain.sessions.has(sessionId) ? brain : null;
       // 没有脑（或新脑还不认识这个会话）时，行留在 broker 的未确认窗口里：
       // 下一个 attach 的脑会从 pending 里原样拿走，不丢也不重。
@@ -176,6 +211,7 @@ async function main(): Promise<void> {
       log(`会话 ${sessionId} 的子进程退出（code=${code} signal=${signal}）`);
       sessions.delete(sessionId);
       turns.delete(sessionId);
+      pendingUi.delete(sessionId);
       // 子进程是壳的，退出只有壳看得到；认领这个会话的脑要收到一声，否则它会一直以为还在跑。
       if (brain && brain.sessions.has(sessionId)) brain.conn.send({ t: "child-exit", sessionId, code, signal });
     },
@@ -394,6 +430,8 @@ async function main(): Promise<void> {
           // 换脑窗口里子进程若退出 / 吐过错误，通知发给的是老脑；新脑得知道。
           lastExit: children.lastExit(sessionId),
           lastStderr: children.lastStderr(sessionId),
+          // 换脑前还挂着的问卷：新脑拿去重放，页面那张表单接着能答。
+          pendingUi: [...(pendingUi.get(sessionId)?.values() ?? [])],
         });
         return;
       }
@@ -408,6 +446,7 @@ async function main(): Promise<void> {
           b.conn.send({ t: "write-failed", sessionId, seq });
           return;
         }
+        forgetAnsweredUi(sessionId, String(msg.data ?? ""));
         broker.written(sessionId, seq);
         b.conn.send({ t: "written", sessionId, seq });
         return;

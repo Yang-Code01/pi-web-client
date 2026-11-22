@@ -65,7 +65,7 @@ const server = http.createServer((req, res) => {
       sessionId,
       argv: [fakePi],
       cwd: process.cwd(),
-      env: {},
+      env: url.searchParams.get("ask") === "1" ? { TINY_PI_ASK: "1" } : {},
     });
     body = { ok: true };
   } else if (url.pathname === "/usage") {
@@ -138,6 +138,7 @@ function handle(msg) {
       break;
     case "attached":
       stats.attached = msg.pending;
+      stats.attachedUi = msg.pendingUi ?? [];
       stats.attachPid = msg.pid;
       break;
     case "spawned":

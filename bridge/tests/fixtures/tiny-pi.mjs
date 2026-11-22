@@ -36,6 +36,19 @@ process.stdin.on("data", (chunk) => {
 process.stdin.on("end", () => process.exit(0));
 process.stdin.on("close", () => process.exit(0));
 
+// 问卷：TINY_PI_ASK=1 时开场抛一条，测试用来看「换脑后它还在不在」。
+if (process.env.TINY_PI_ASK === "1") {
+  process.stdout.write(
+    JSON.stringify({
+      type: "extension_ui_request",
+      id: "u-ask",
+      method: "select",
+      title: "换脑前问过的问题",
+      options: [{ label: "甲" }, { label: "乙" }],
+    }) + String.fromCharCode(10),
+  );
+}
+
 let n = 0;
 setInterval(() => {
   process.stdout.write(JSON.stringify({ type: "event", name: "tick", n: ++n }) + "\n");

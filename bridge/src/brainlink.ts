@@ -21,6 +21,8 @@ export interface AttachResult {
   lastWritten: number;
   lastExit?: { code: number | null; signal: string | null; at: number } | null;
   lastStderr?: string | null;
+  /** 换脑前还挂着的问卷 / 审批（原始 extension_ui_request 行）。 */
+  pendingUi?: string[];
 }
 
 export type DeployPhase = "idle" | "running" | "observing" | "switched" | "failed" | "needs-group-restart";
