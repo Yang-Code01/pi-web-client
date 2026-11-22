@@ -46,7 +46,10 @@ async function loadModules() {
     };
   } catch (err) {
     if (!process.allowedNodeEnvironmentFlags.has(FLAG)) throw err;
-    const r = spawnSync(process.execPath, [FLAG, fileURLToPath(import.meta.url), ...process.argv.slice(2)], { stdio: "inherit" });
+    const r = spawnSync(process.execPath, [FLAG, fileURLToPath(import.meta.url), ...process.argv.slice(2)], {
+      stdio: "inherit",
+      windowsHide: true,
+    });
     process.exit(r.status ?? 1);
   }
 }

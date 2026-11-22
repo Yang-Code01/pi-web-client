@@ -257,6 +257,7 @@ function startBridge() {
   const child = spawn(process.execPath, [path.join(REPO, "bridge", "dist", "index.js")], {
     cwd: REPO,
     detached: true,
+    windowsHide: true,
     stdio: ["ignore", out, out],
   });
   child.unref();
@@ -321,16 +322,17 @@ function fail(step, result, code, message) {
 
 /** 失败时若还留着本轮 stash，先尝试恢复；恢复失败要把 stash message 留在 error 里。 */
 function failAfterStash(step, result, code, message) {
+  let finalMessage = message;
   if (state.stash && !state.stashRestored) {
     const restored = stashRestore(REPO, state.stash);
     if (restored.ok) {
       state.stashRestored = true;
-      message = `${message}\n（本地改动已恢复到工作区）`;
+      finalMessage = `${message}\n（本地改动已恢复到工作区）`;
     } else {
-      message = `${message}\n本地改动恢复失败（stash: ${state.stash}）：${restored.why}`;
+      finalMessage = `${message}\n本地改动恢复失败（stash: ${state.stash}）：${restored.why}`;
     }
   }
-  fail(step, result, code, message);
+  fail(step, result, code, finalMessage);
 }
 
 /**
@@ -462,7 +464,7 @@ function build() {
   const out = fs.openSync(LOG, "a");
   const r = WIN
     ? spawnSync(`npm run build`, { cwd: REPO, stdio: ["ignore", out, out], shell: true, windowsHide: true, env: process.env })
-    : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env });
+    : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env, windowsHide: true });
   fs.closeSync(out);
   if (r.error) return { code: 1, why: r.error.message };
   const code = r.status ?? 1;
