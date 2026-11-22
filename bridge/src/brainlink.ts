@@ -54,8 +54,10 @@ export class BrainLink extends EventEmitter {
   deployState: DeployState = { phase: "idle" };
   /** 壳给的用量底账（换代之后账还在，脑拿它接上）。 */
   usageTotals: Record<string, unknown> = {};
-  /** 壳的 snapshot 里列着的会话 id：换脑后要接管的就是这些（D385）。 */
+  /** 壳的 snapshot 里列着的会话：换脑后要接管的就是这些（D385）。 */
   private liveIds: string[] = [];
+  /** 其中哪些这一轮还在跑 —— 接管时要据此把页面的「思考中」恢复出来。 */
+  private turns = new Map<string, boolean>();
 
   constructor(conn: ControlConn) {
     super();
@@ -74,6 +76,11 @@ export class BrainLink extends EventEmitter {
   /** 壳里还活着的会话 id（snapshot 时刻的）。页面与新脑不是同一个进程，只能靠这个对齐。 */
   liveSessionIds(): string[] {
     return [...this.liveIds];
+  }
+
+  /** 壳说这个会话这一轮还在跑吗（snapshot 时刻的）。 */
+  turnActive(sessionId: string): boolean {
+    return Boolean(this.turns.get(sessionId));
   }
 
   /** 握手；等壳的 welcome。 */
@@ -189,13 +196,20 @@ export class BrainLink extends EventEmitter {
       case "reject":
         this.emit("reject", String(msg.reason ?? ""));
         return;
-      case "snapshot":
-        // 壳发的是会话 id 数组（`broker.sessions()`）；旧形态是 `{id}` 对象，两种都认。
-        this.liveIds = ((msg.sessions ?? []) as Array<string | { id?: string }>)
+      case "snapshot": {
+        // 壳发的是 [{id, turnActive}]；旧形态是纯 id 数组，两种都认。
+        const list = (msg.sessions ?? []) as Array<string | { id?: string; turnActive?: boolean }>;
+        this.liveIds = list
           .map((s) => (typeof s === "string" ? s : String(s?.id ?? "")))
           .filter(Boolean);
+        this.turns = new Map(
+          list
+            .filter((s): s is { id: string; turnActive?: boolean } => typeof s === "object" && s !== null && Boolean(s.id))
+            .map((s) => [String(s.id), Boolean(s.turnActive)]),
+        );
         this.emit("snapshot", msg);
         return;
+      }
       case "activate":
         this.activated = true;
         this.emit("activate", msg);

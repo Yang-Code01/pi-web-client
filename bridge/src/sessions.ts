@@ -1388,7 +1388,9 @@ export class Session extends EventEmitter {
     rpc.start();
     // 故意不推 `items`：页面上这一轮的文字在它自己的 DOM 里（owned 一直没翻成 false，它就没重画）。
     // 这里推一份从磁盘读的帧，反而会把正在写的那段顶掉。
-    this.setState({ starting: false });
+    // **running 也要跟着壳走**：不然页面以为这一轮结束了 —— 「思考中」消失、「重讲」亮起来，
+    // 再发一句 pi 会回「Agent is already processing」。
+    this.setState({ starting: false, running: link.turnActive(id) });
     return true;
   }
 
@@ -2236,7 +2238,18 @@ export class Session extends EventEmitter {
     }
     if (message.streamingBehavior) this.queuedUser.push({ id: userId, text });
     const res = await this.rpc.request<any>("prompt", { ...message }, 60000);
-    if (res?.disposition === "handled" && res?.error) throw new Error(String(res.error));
+    if (res?.disposition === "handled" && res?.error) {
+      const said = String(res.error);
+      // 换脑交接的竞态：页面以为这一轮结束了（running 没跟上），pi 却说还在跑。
+      // 把状态纠正过来，按「插话」再发一次 —— 用户看到的是消息照常发出去，而不是一句英文报错。
+      if (/already processing/i.test(said) && !message.streamingBehavior) {
+        this.setState({ running: true });
+        const retry = await this.rpc.request<any>("prompt", { ...message, streamingBehavior: "steer" }, 60000);
+        if (retry?.disposition === "handled" && retry?.error) throw new Error(String(retry.error));
+        return;
+      }
+      throw new Error(said);
+    }
   }
 
   /**

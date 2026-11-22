@@ -147,6 +147,9 @@ async function main(): Promise<void> {
   const ledger = new UsageLedger(statePath("host", "usage.jsonl"));
   if (ledger.size) log(`账本里已有 ${ledger.size} 个会话的用量`);
   const sessions = new Map<string, SpawnSpec>();
+  /** 每个会话这一轮还在不在跑（换脑后脑要靠它把 running 恢复出来）。 */
+  const turns = new Map<string, boolean>();
+  const snapshotSessions = () => broker.sessions().map((id) => ({ id, turnActive: Boolean(turns.get(id)) }));
   let brain: Brain | null = null;
   let starting: Brain | null = null;
   /** 刚为换脑拉起了一代、还没握手：它的 hello 要当候选，而不是「多余的脑」。 */
@@ -157,6 +160,10 @@ async function main(): Promise<void> {
 
   const children = new Children(broker, {
     line(sessionId, seq, line) {
+      // 这一轮还在不在跑，只有壳看得见（脑换代时它的状态就丢了）。就按 pi 自己的事件记：
+      // agent_start 开一轮，agent_end 收一轮 —— 新脑接管时靠这个把「思考中」恢复出来。
+      if (line.includes('"agent_start"')) turns.set(sessionId, true);
+      else if (line.includes('"agent_end"')) turns.set(sessionId, false);
       const target = brain && brain.sessions.has(sessionId) ? brain : null;
       // 没有脑（或新脑还不认识这个会话）时，行留在 broker 的未确认窗口里：
       // 下一个 attach 的脑会从 pending 里原样拿走，不丢也不重。
@@ -168,6 +175,7 @@ async function main(): Promise<void> {
     exit(sessionId, code, signal) {
       log(`会话 ${sessionId} 的子进程退出（code=${code} signal=${signal}）`);
       sessions.delete(sessionId);
+      turns.delete(sessionId);
       // 子进程是壳的，退出只有壳看得到；认领这个会话的脑要收到一声，否则它会一直以为还在跑。
       if (brain && brain.sessions.has(sessionId)) brain.conn.send({ t: "child-exit", sessionId, code, signal });
     },
@@ -189,6 +197,7 @@ async function main(): Promise<void> {
       return {
         id,
         pid: children.pid(id),
+        turnActive: Boolean(turns.get(id)),
         owner: broker.ownerOf(id) === brain?.id ? "current" : broker.ownerOf(id) ? "other" : null,
         fromSeq: p.fromSeq,
         toSeq: p.toSeq,
@@ -306,7 +315,7 @@ async function main(): Promise<void> {
     if (!brain) {
       brain = next;
       conn.send({ t: "welcome", proto: CONTROL_PROTO, peerHeader: "x-pi-peer", hostBuildId, publicPort: port });
-      conn.send({ t: "snapshot", hostBuildId, publicPort: port, buildId: next.buildId, sessions: broker.sessions() });
+      conn.send({ t: "snapshot", hostBuildId, publicPort: port, buildId: next.buildId, sessions: snapshotSessions() });
       conn.send({ t: "usage-snapshot", sessions: ledger.snapshot() });
       log(`脑 ${next.pid} 连上（首个，buildId ${next.buildId || "?"}）`);
       return next;
@@ -323,7 +332,7 @@ async function main(): Promise<void> {
         publicPort: port,
         swap: true,
       });
-      conn.send({ t: "snapshot", hostBuildId, publicPort: port, buildId: next.buildId, sessions: broker.sessions() });
+      conn.send({ t: "snapshot", hostBuildId, publicPort: port, buildId: next.buildId, sessions: snapshotSessions() });
       conn.send({ t: "usage-snapshot", sessions: ledger.snapshot() });
       return next;
     }
