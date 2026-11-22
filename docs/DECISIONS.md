@@ -7463,3 +7463,26 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **验证。** `node tools/check-spawn-hidden.mjs` 改前 42 个文件里报 31 处（`bridge/src/pi.ts:95` 的 `npm root -g`、`bridge/src/hotdeploy.ts:108/407` 的 git 与 worktree-remove、`scripts/hotdeploy.mjs:257/465` 的起桥与 build、`.pi/skills/pi-web-client-test-dev/bin/env.mjs` 9 处、`.pi/skills/bridge-update/bin/restart.mjs` 4 处等），改后 0 处；范围加上 `bridge/ext` 与别名/options 识别后是 43 个文件 0 处；`node tools/check-spawn-hidden.mjs --self-test` 的夹具里 4 条反例（漏写、`windowsHide: false`、`promisify(execFile)` 别名、options 常量写 false）全红，4 条正例（inline、`spawn-visible-ok` 标记、options 常量、`RegExp.exec`）全绿；守卫还有 `MIN_FILES = 30` 下限与「路径不存在即红」，免得目录改名后静默变绿。`npm run typecheck`（含新接的守卫）通过，`npm run test:spawn-hidden` 通过。机制实测（`.scratch/popup-probe/leak2.mjs`，父进程 = `detached + windowsHide` 拉起、真的没有控制台）：旧写法 `spawn(node)` 与 `spawnSync("npm",["root","-g"],{shell:true})` 各自让可见窗口数从 31 涨到 34（新增标题正是 `node.exe` / `npm root` 那一类），同样两条换上 `windowsHide: true` 后新增为 0 —— 证明这个开关就是修法本身。**没做到的**：没能把「改后的 31 处逐一从无控制台父进程跑一遍并数出 0」做成可复现的探针 —— 外部按「新增标题」采样会被机器上常驻的旧桥（还没更新到这份代码）自己弹的 `git.exe` / `npm root` 污染（`noop` 基线轮也能数到它们），而改成在子进程内部数窗口时，对照组也数不到（`ping` 存活 1.5 秒仍报 0，原因未查清），所以覆盖度靠静态守卫保证，不靠这一次窗口计数。
 
 
+## D388 帧的词表与帧表：两侧各 128 个 `msg.type` 进类型，9 个最要命的帧进一张表（feat/frame-vocab；用户选「先 9 个帧 / 一个 PR 全做完 / 就地改 + 返回重画清单 / 先记基线读数」2026-11-22）
+
+**问题。** 桥与页面之间那条 WS 上没有帧的模型：`bridge/src/index.ts:2675` 的 `ws.on("message", …)` 里 `switch (msg.type)` 约 128 个臂，`web/src/app.ts` 的 `private onMessage(msg: any)` 里也是 128 个，入口签名是 `(msg: any) => void`（`web/src/ws.ts`）。`web/src/types.ts` 只有载荷类型、没有帧种类，桥从不 import 页面的类型，两边一致全靠注释互指（`bridge/src/extmgr.ts`「与 web/src/mcpstore.ts 的 nameKey 同规则」）。后果不是「丑」，是**页面帧处理是整个客户端最脏的地方却没人测**：20 多类帧既无单测也无探针断言，而手抄的重复（`execPlanRounds` 在 session 与 items 各算一遍、审批/问答四臂把同一串五连画抄 4 遍）和漏画只能等用户的「数字不对」暴露。D77 第 8 条删过 `shared/protocol.ts`（#32），理由是「没人 import 的旧协议草稿，`t:` 与实际 `type:` 对不上」——那次失败的不是「共享类型」这个主意，是「先画一张草稿、没人接线」。
+
+**决定。** 帧的名字与这 9 个最要命的帧的载荷/构造器住进 `bridge/src/frames.ts`，页面侧 `web/src/frames.ts` 第一行 `export *` 转发，再用一张表实现「帧 → 改什么字段 + 重画什么」。
+
+- **词表是叶子**：0 import，只有类型与字符串常量。它不能 import `bridge/src/index.ts`（末行 `main()` 会真的起服务）或 `web/src/app.ts`（头两行 import CSS，桥侧编不过）。
+- **两个方向分开**：`ServerFrameType`（桥→页面 128 个）与 `ClientFrameType`（页面→桥 128 个）不合成一张扁表——有 9 个名字两个方向都有但载荷不同（presence / commands / manage / term.list / runtime.stats / ext.inventory / subagents.agents / market.list / mcp.store）。名字从两侧**现有的 switch 标签**生成，不是重新设计。
+- **载荷只收窄 9 个**：usage / stats / copilot / ctxlog / pi.status / approval.add / approval.remove / ask.add / ask.remove，`TypedServerFrame` 是它们的联合；其余 119 帧不带载荷类型。
+- **两侧 switch 只改判据**：`switch (msg.type as ServerFrameType)`（页面）与 `as ClientFrameType`（桥），128 个臂一行没动。写错的 case 标签当场 TS2678（实测两条：`Type '"nope.not.a.frame"' is not comparable to type 'ClientFrameType'.` 与 `Type '"typo.frame"' is not comparable to type 'ServerFrameType'.`）。
+- **表在页面**：`applyFrame(view, frame, now)` 9 个 case，返回 `RedrawKey[]`（15 个键）；App 的 `redraw(k)` 一个 case 一句绘制；`FrameView` 是 App 必须实现的那一小块（23 字段 + 3 方法），因此只有一处 `this as unknown as FrameView`（注释指向守卫单测），没有为了过编译把 20 个字段改 public。
+- **`copilotFromFrame` 搬进 `web/src/copilot.ts`**：它本来就是纯函数，搬过去两处调用点与桥侧共用同一份读法。
+- **`FRAMES_CAP = "frames.v1"`** 与词表同住一个文件，进 hello 的 caps，页面按 `bridgeCaps` 认（与 `ws.create.dir` / `ws.resolve.dir` / `exec.child.subscribe` 同一套）。新旧错配沿用 `default: break` 静默跳过。
+
+**为什么这层壳有深度、而直接拆 App 没有。** 删除测试：只删掉那两个联合，两侧 switch 的标签立刻回到裸字符串，下一次改名还是两端各改一遍、拼错靠人眼——复杂度散回 128×2 处，而不是集中到别处，所以这层壳不自欺。App（22 462 行、688 成员）反过来：删掉一个「框架」不成立的中间层，复杂度只会搬家。真正的接缝是「帧 → 视图模型」这条，它与 App 的 HTTP / WS / 绘制细节可以分开演进；**同一个形状的第二个实例是 `web/src/peer/main.ts`（4 139 行）**，等它也要这张表时再谈把表抽成不依赖 App 的形态。
+
+**为什么不用 index signature 的「松袋子帧」。** 原设计是 `{ type: ServerFrameType | ClientFrameType } & Record<string, any>`，写的时候被 lint 拦下（`Record<K, any>` 不给调用方任何契约）。用 `unknown` 会逼着改 119 个未迁移臂里的几百处 `as`，而收益只有「字段名拼错也被抓」——这一片要抓的是**词表**（case 标签、命令名），那部分 `any` 抓不到、`unknown` 也不需要。于是改成「只在 switch 判据上铸型」，干净且不改任何臂。
+
+**代价 / 可改。** ①`approval.add.approval`、`ask.add.ask`、`ask.add.tool` 的参数类型是 `unknown`：形状归页面（`ApprovalRequest` / `AskRequest` 住在 `web/src/types.ts`），复制一份只会多一处会分叉的定义。②`pi.status` 的 5 个无条件重画照原样保留，没有顺手收窄——这一片要的是「行为一字不差」，收窄留给下一次有读数可比对的时候。③`web` 目录里出现一条指向 `bridge/src/frames.ts` 的相对路径（`bridge/tsconfig.json` 的 `rootDir: "src"` 让它只能背自己的文件，没有 npm workspaces）。④页面 `switch` 里的 119 个未迁移臂仍是 `any`，名字拼错只能靠 TS2678 抓 case 标签这一层。
+
+**验证。** `node --experimental-strip-types web/tests/frames-unit.mjs` 26 项全绿（9 帧的字段 / 重画清单 / 别的会话 / 缺省语义，加构造器键名漂移、`FrameView`↔`app.ts` 的 `private` 对齐、`RedrawKey`↔`redraw()` 覆盖三条守卫；后两条读源码断言，改一个名字就红）。`npm --prefix web run build`（含 i18n-check）与 `npm --prefix bridge run build` 通过。`.scratch/frame-vocab/baseline.txt` 的 6 条探针改后逐条比对：`pending-badge` 的 4 条 OK 与 ALL OK 一字不差，`round5-asklost` 的 `after reload the panel remembers: 2 marked option(s)` 一致，`copilot-panel-resubscribe` 8 条 ok 一致，`ask-preview` 仍 1/2 且仍卡在 `whatsnew-back` 浮层拦截，`copilot-on-subscribe` 仍因「7864 上现场没有带 copilot 用量的会话」未跑成（与基线同因，不参与判定）。`probes/rail-ask.mjs` 的「ghost 被新载入的两格吃掉」在**主检出**上 3 次里也只过 1 次，是既有的时机抖动，不是这次引入的。`web/src/app.ts` 22 462 → 22 376 行。
+
+**下一步（没做）。** 剩下 119 帧逐步按同样形状（一个帧一族字段 + 一个重画键）搬进表；`pi.status` 的 5 个无条件重画可以按 `runSince` / `phase` 是否真的变了收窄。
