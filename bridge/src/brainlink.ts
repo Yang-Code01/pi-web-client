@@ -190,8 +190,9 @@ export class BrainLink extends EventEmitter {
         this.emit("reject", String(msg.reason ?? ""));
         return;
       case "snapshot":
-        this.liveIds = ((msg.sessions ?? []) as Array<{ id?: string }>)
-          .map((s) => String(s?.id ?? ""))
+        // 壳发的是会话 id 数组（`broker.sessions()`）；旧形态是 `{id}` 对象，两种都认。
+        this.liveIds = ((msg.sessions ?? []) as Array<string | { id?: string }>)
+          .map((s) => (typeof s === "string" ? s : String(s?.id ?? "")))
           .filter(Boolean);
         this.emit("snapshot", msg);
         return;
