@@ -14,6 +14,7 @@ import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
+import { cardPieces, unfoldNewlines } from "./ask-text.ts";
 import { renderMarkdown } from "./md.ts";
 import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, type TrAct, type TrView } from "./translateview.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
@@ -17584,6 +17585,18 @@ export class App {
    * 得到输入框上方的面板，收起时只剩一行（`askStrip`）。两种位置都能直接打字作答。用户去别的
    * 会话转一圈回来，桥会重发待答的题目；到货时右栏自己打开一次，除此之外不弹任何东西。
    */
+  /**
+   * 卡片上的文字：反引号包住的片段走 `<code>`（不再露出反引号），字面 `\n` 折成真换行。
+   * 题干和选项说明都是模型给的自由文本，纯文本渲染会把这两种痕迹原样摊给用户（D389）。
+   */
+  private askText(tag: keyof HTMLElementTagNameMap, cls: string, text: string): HTMLElement {
+    const node = el(tag, cls);
+    for (const p of cardPieces(text)) {
+      node.append(p.kind === "code" ? el("code", "", p.text) : document.createTextNode(p.text));
+    }
+    return node;
+  }
+
   private renderAsks(): void {
     const host = this.els.composerHost;
     host.querySelector(".ask-slot, .ask-strip")?.remove();
@@ -17652,7 +17665,7 @@ export class App {
       });
       slot.append(tabs);
     }
-    slot.append(el("div", "ask-prompt", q.prompt));
+    slot.append(this.askText("div", "ask-prompt", q.prompt));
     const chosen = st.drafts.get(q.id);
     if (q.options.length) {
       const list = el("div", "ask-opts");
@@ -17660,8 +17673,8 @@ export class App {
         const btn = el("button", "ask-opt");
         const on = q.multiSelect ? Boolean(chosen?.picks?.includes(i + 1)) : Boolean(chosen && !chosen.wasCustom && chosen.value === opt.value);
         if (on) btn.classList.add("on");
-        btn.append(el("div", "l", `${q.multiSelect ? (on ? "☑ " : "☐ ") : ""}${opt.label}`));
-        if (opt.description) btn.append(el("div", "d", opt.description));
+        btn.append(this.askText("div", "l", `${q.multiSelect ? (on ? "☑ " : "☐ ") : ""}${opt.label}`));
+        if (opt.description) btn.append(this.askText("div", "d", opt.description));
         btn.onclick = () => {
           // 「在预览里打开」当场打开：多题问卷要全答完模型才拿得到答案，不能让用户没看就答下一题（ask-preview.ts）。
           const target = q.multiSelect ? null : previewTargetOf(q.prompt, opt);
@@ -17701,7 +17714,7 @@ export class App {
     const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
     const strip = el("div", "ask-strip");
     strip.append(el("span", "k", tr("提问")));
-    strip.append(el("span", "q", `${q.prompt.split("\n")[0]}${more}`));
+    strip.append(el("span", "q", `${unfoldNewlines(q.prompt).split("\n")[0]}${more}`));
     strip.append(el("span", "grow"));
     const open = el("button", "btn primary", tr("回答"));
     open.onclick = () => {

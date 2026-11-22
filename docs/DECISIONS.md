@@ -7503,3 +7503,19 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **验证。** `node --experimental-strip-types web/tests/frames-unit.mjs` 26 项全绿（9 帧的字段 / 重画清单 / 别的会话 / 缺省语义，加构造器键名漂移、`FrameView`↔`app.ts` 的 `private` 对齐、`RedrawKey`↔`redraw()` 覆盖三条守卫；后两条读源码断言，改一个名字就红）。`npm --prefix web run build`（含 i18n-check）与 `npm --prefix bridge run build` 通过。`.scratch/frame-vocab/baseline.txt` 的 6 条探针改后逐条比对：`pending-badge` 的 4 条 OK 与 ALL OK 一字不差，`round5-asklost` 的 `after reload the panel remembers: 2 marked option(s)` 一致，`copilot-panel-resubscribe` 8 条 ok 一致，`ask-preview` 仍 1/2 且仍卡在 `whatsnew-back` 浮层拦截，`copilot-on-subscribe` 仍因「7864 上现场没有带 copilot 用量的会话」未跑成（与基线同因，不参与判定）。`probes/rail-ask.mjs` 的「ghost 被新载入的两格吃掉」在**主检出**上 3 次里也只过 1 次，是既有的时机抖动，不是这次引入的。`web/src/app.ts` 22 462 → 22 376 行。
 
 **下一步（没做）。** 剩下 119 帧逐步按同样形状（一个帧一族字段 + 一个重画键）搬进表；`pi.status` 的 5 个无条件重画可以按 `runSince` / `phase` 是否真的变了收窄。
+
+## D389 提问卡片按「自由文本」显示：字面 `\n` 折行、反引号片段成行内代码（用户「提问卡片有bug。竟然出现了奇怪的格式，并且还有代码」2026-11-22）
+
+**症状。** 用户报卡片出现奇怪格式，还夹带代码。查本机这几天的问卷载荷，两处真实形态：一张的题干里横着字面的 `\n\n`（模型把换行二次转义了一次），后面紧跟一条 `F:/…/architecture-review.html`；另一张的选项说明里写着 `` `bridge/src/rpc.ts` `` 与 Windows 路径。卡片是纯文本渲染，于是反斜杠、反引号和路径原样摊开来，看起来就像漏了代码进来。用户当时在另一台机器上测，没留截图，所以没有把「那张」钉到具体某一条。
+
+**修法。** 新增 `web/src/ask-text.ts` 两个纯函数，`App.askText()` 用它拼节点：
+
+- `unfoldNewlines(s)`：`\n` 折成真换行，但**只在整段没有真换行时**才折 —— 已经分行的文本里出现 `\n`，多半是代码或正则本身，折了才是错。
+- `splitInlineCode(s)`：按反引号切段，反引号本身不进文字，渲染成 `<code>`；不配对的反引号按普通字符留着，绝不吞掉后半段。
+- CSS：`.ask-prompt` / `.ask-opt .l` / `.ask-opt .d` 一律 `pre-wrap` + `overflow-wrap: anywhere`（长路径顶出卡片的问题），行内代码用等宽小字 + `--panel-3` 底色。
+
+**为什么不去猜那张卡的像素级形态。** 没有截图，凭猜改版式只会改错地方；这三条是无论哪张卡都会犯的毛病，且都能用纯函数钉住。真正的排版判断（要不要渲染 Markdown 粗体/列表）没做 —— 卡片只需要「读得懂」，不需要渲染引擎。
+
+**没做。** ①选项的 `preview` 字段卡片完全不显示（多选预览只在单选用）；如果用户看到的是「预览里的 ASCII 图被塞进说明」，那是另一件事。②`\t` 与字面 `\r` 没折。③没有改 `question` / `questionnaire` 两个旧工具名的载荷路径，它们与 `ask_user_question` 共用同一段渲染。
+
+**验证。** `node --experimental-strip-types --test web/tests/ask-text-unit.mjs` 7 项（折行 / 真换行不误伤 / 空串 / 切段 / 不配对反引号 / 纯代码 / 组合），`web/tests/ask-tab-unit.mjs` + `ask-card-unit.mjs` 共 24 项不回归，`npm --prefix web run typecheck`（含 i18n-check、视口单位与层叠守卫）通过。
