@@ -110,7 +110,7 @@ async function findSlot(peers) {
 }
 
 function git(dir, ...args) {
-  const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+  const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", windowsHide: true });
   return r.status === 0 ? r.stdout.trim() : "";
 }
 
@@ -151,6 +151,7 @@ function ensureDeps(dir) {
     const r = spawnSync("npm", ["--prefix", path.join(dir, pkg), "install", "--no-audit", "--no-fund"], {
       stdio: "inherit",
       shell: process.platform === "win32",
+      windowsHide: true,
     });
     if (r.status !== 0) throw new Error(`npm --prefix ${pkg} install 失败`);
   }
@@ -158,7 +159,7 @@ function ensureDeps(dir) {
 
 function build(dir) {
   say("构建 bridge / peer / web …");
-  const r = spawnSync("npm", ["run", "build"], { cwd: dir, stdio: "inherit", shell: process.platform === "win32" });
+  const r = spawnSync("npm", ["run", "build"], { cwd: dir, stdio: "inherit", shell: process.platform === "win32", windowsHide: true });
   if (r.status !== 0) throw new Error("npm run build 失败（先看上面的报错）");
 }
 
@@ -198,7 +199,7 @@ function spawnHidden(file, args, env, cwd, outPath, errPath) {
 function killTree(pid) {
   if (!pid) return;
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
   } else {
     try {
       process.kill(-pid, "SIGTERM");
@@ -276,6 +277,7 @@ Write-Output 'NONE'`;
     const launched = spawnSync("powershell", ["-NoProfile", "-Command", ps], {
       encoding: "utf8",
       timeout: 25000,
+      windowsHide: true,
       env: { ...process.env, PI_WIN_TITLE: title, PI_WIN_PAGE: page },
     });
     const out = String(launched.stdout ?? "");
@@ -291,12 +293,12 @@ Write-Output 'NONE'`;
     return;
   }
   if (process.platform === "darwin") {
-    const edge = spawnSync("open", ["-n", "-a", "Microsoft Edge", page], { stdio: "ignore", timeout: 20000 });
+    const edge = spawnSync("open", ["-n", "-a", "Microsoft Edge", page], { stdio: "ignore", timeout: 20000, windowsHide: true });
     if (edge.status === 0) {
       say(`  窗口    已请求打开（tab 会是「${title}」）`);
       return;
     }
-    const fallback = spawnSync("open", [page], { stdio: "ignore", timeout: 20000 });
+    const fallback = spawnSync("open", [page], { stdio: "ignore", timeout: 20000, windowsHide: true });
     say(
       fallback.status === 0
         ? `  窗口    没找到 Edge，交给默认浏览器了（tab 应是「${title}」）`
@@ -304,7 +306,7 @@ Write-Output 'NONE'`;
     );
     return;
   }
-  const opened = spawnSync("xdg-open", [page], { stdio: "ignore", timeout: 20000 });
+  const opened = spawnSync("xdg-open", [page], { stdio: "ignore", timeout: 20000, windowsHide: true });
   say(
     opened.status === 0
       ? `  窗口    已请求打开（tab 会是「${title}」）`
@@ -334,7 +336,7 @@ async function cmdStart(opts) {
     say(`复用已有构建（${head}）；想强制重建加 --build`);
   }
 
-  const { base, ports } = await findSlot(peers);
+  const { ports } = await findSlot(peers);
   const state = path.join(HOME, id);
   fs.mkdirSync(path.join(state, "bridge"), { recursive: true });
 
@@ -343,6 +345,7 @@ async function cmdStart(opts) {
     env: { ...process.env, PI_WEB_STATE: path.join(state, "bridge") },
     encoding: "utf8",
     timeout: 20000,
+    windowsHide: true,
   });
   if (preset.status !== 0) throw new Error(`设置口令失败：${preset.stderr || preset.stdout}`);
 

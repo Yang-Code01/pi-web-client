@@ -58,7 +58,7 @@ function sleep(ms) {
 }
 
 function sh(file, args, opts = {}) {
-  return spawnSync(file, args, { cwd: REPO, encoding: "utf8", ...opts });
+  return spawnSync(file, args, { cwd: REPO, encoding: "utf8", windowsHide: true, ...opts });
 }
 
 function git(args) {
@@ -231,6 +231,7 @@ function startBridge() {
   const child = spawn(process.execPath, ["bridge/dist/index.js"], {
     cwd: REPO,
     detached: true,
+    windowsHide: true,
     stdio: ["ignore", out, out],
   });
   child.unref();
@@ -358,8 +359,8 @@ async function main() {
   const out = fs.openSync(LOG, "a");
   // Windows 上 .cmd 只能过 shell（否则 EINVAL）；整条命令当一个字符串传，避开 DEP0190。
   const built = WIN
-    ? spawnSync("npm run build", { cwd: REPO, shell: true, stdio: ["ignore", out, out], env: process.env })
-    : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env });
+    ? spawnSync("npm run build", { cwd: REPO, shell: true, stdio: ["ignore", out, out], env: process.env, windowsHide: true })
+    : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env, windowsHide: true });
   fs.closeSync(out);
   if ((built.status ?? 1) !== 0) {
     finish("build-failed", { error: `npm run build 退出码 ${built.status ?? "?"}；旧进程未动，7864 仍在服务旧代码。` });
