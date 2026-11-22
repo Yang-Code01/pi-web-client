@@ -222,6 +222,9 @@ function windowTitleFor(id) {
  * D360：开一个新的浏览器窗口。标题由桥注入，这里只核「真的多了一条标题是它的窗口」—— 退出码什么都证明不了
  * （Edge 常驻时丢 URL 只会在后台开标签）。
  */
+/** 打开浏览器的三条命令（macOS 的两种、Linux 的 xdg-open）共用一份 options：忽略输出、20 秒上限，且不弹控制台窗口。 */
+const OPEN_OPTS = { stdio: "ignore", timeout: 20000, windowsHide: true };
+
 async function openWindow(url, id, opts) {
   const page = `${url}/`;
   const title = windowTitleFor(id);
@@ -293,12 +296,12 @@ Write-Output 'NONE'`;
     return;
   }
   if (process.platform === "darwin") {
-    const edge = spawnSync("open", ["-n", "-a", "Microsoft Edge", page], { stdio: "ignore", timeout: 20000, windowsHide: true });
+    const edge = spawnSync("open", ["-n", "-a", "Microsoft Edge", page], OPEN_OPTS);
     if (edge.status === 0) {
       say(`  窗口    已请求打开（tab 会是「${title}」）`);
       return;
     }
-    const fallback = spawnSync("open", [page], { stdio: "ignore", timeout: 20000, windowsHide: true });
+    const fallback = spawnSync("open", [page], OPEN_OPTS);
     say(
       fallback.status === 0
         ? `  窗口    没找到 Edge，交给默认浏览器了（tab 应是「${title}」）`
@@ -306,7 +309,7 @@ Write-Output 'NONE'`;
     );
     return;
   }
-  const opened = spawnSync("xdg-open", [page], { stdio: "ignore", timeout: 20000, windowsHide: true });
+  const opened = spawnSync("xdg-open", [page], OPEN_OPTS);
   say(
     opened.status === 0
       ? `  窗口    已请求打开（tab 会是「${title}」）`

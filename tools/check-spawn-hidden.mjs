@@ -198,8 +198,11 @@ function marked(lines, line) {
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** windowsHide 判定：inline、引用的 options 常量两种都算；返回 null 表示「确实没开」。 */
-function hiddenIssue(args, objects) {
+/**
+ * windowsHide 判定：inline、引用的 options 常量两种都算。返回 null 表示没问题，否则一句话说清哪不对。
+ * 名字回找是同文件级的启发式：同名变量后写覆盖先写，局部形参也会被算进去 —— 真撞名时把 options 写成 inline。
+ */
+function windowsHideProblem(args, objects) {
   const direct = /windowsHide\s*:\s*(true|false)/.exec(args);
   if (direct) return direct[1] === "true" ? null : "显式写了 windowsHide: false";
   for (const [name, body] of objects) {
@@ -231,11 +234,11 @@ function scanFile(file, problems) {
     if (qualifier ? !spaces.has(qualifier) : !viaAlias && !names.has(callee)) continue;
     const start = m.index ?? 0;
     if (/\bfunction\s*\*?\s*$/.test(masked.slice(Math.max(0, start - 40), start))) continue; // 定义处
-    const issue = hiddenIssue(callArgs(masked, start + m[0].length - 1), objects);
-    if (!issue) continue;
+    const problem = windowsHideProblem(callArgs(masked, start + m[0].length - 1), objects);
+    if (!problem) continue;
     const line = lineOf(raw, start);
     if (marked(lines, line)) continue;
-    problems.push({ file: path.relative(ROOT, file).replaceAll("\\", "/"), line, callee, issue });
+    problems.push({ file: path.relative(ROOT, file).replaceAll("\\", "/"), line, callee, problem });
   }
   return true;
 }
@@ -287,6 +290,9 @@ function selfTest() {
     if (hits.has(name)) failures.push(`正例 ${name} 被误报`);
   }
   if (scanned < 7) failures.push(`只扫到 ${scanned} 个文件（应 ≥ 7）`);
+  // 两道防「静默变绿」机关也必须被这条自测盯住：范围写错 / 目录改名时要红，不是绿。
+  const missing = check([path.join(dir, "no-such-dir")]).missing;
+  if (missing.length !== 1) failures.push("路径不存在时没有报 missing（守卫会静默放过那片目录）");
   fs.rmSync(dir, { recursive: true, force: true });
   if (failures.length) {
     console.error(`check-spawn-hidden --self-test 失败：\n  - ${failures.join("\n  - ")}`);
@@ -312,7 +318,7 @@ if (argv.includes("--self-test")) {
   }
   if (problems.length) {
     console.error(`有 ${problems.length} 处子进程调用会在 bridge / 技能里弹出可见控制台窗口（见 D387）：\n`);
-    for (const p of problems) console.error(`  ${p.file}:${p.line}  ${p.callee}()  ${p.issue}`);
+    for (const p of problems) console.error(`  ${p.file}:${p.line}  ${p.callee}()  ${p.problem}`);
     console.error(
       "\n修法：参数里加 `windowsHide: true`（或让它引用的 options 常量里有）；确实要可见窗口的" +
         "（打开文件管理器之类），在调用那一行或上面两行写 `spawn-visible-ok: <这是功能本身，为什么>` 。",

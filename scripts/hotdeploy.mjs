@@ -460,11 +460,11 @@ function distBuildId() {
 }
 
 function build() {
-  // Node 在 Windows 上不能直接 spawn .cmd（EINVAL），整条命令过 shell。
+  // Node 在 Windows 上不能直接 spawn .cmd（EINVAL），整条命令过 shell；输出走日志文件，不占终端。
   const out = fs.openSync(LOG, "a");
-  const r = WIN
-    ? spawnSync(`npm run build`, { cwd: REPO, stdio: ["ignore", out, out], shell: true, windowsHide: true, env: process.env })
-    : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env, windowsHide: true });
+  const opts = { stdio: ["ignore", out, out], env: process.env };
+  if (WIN) opts.shell = true;
+  const r = sh("npm", ["run", "build"], opts);
   fs.closeSync(out);
   if (r.error) return { code: 1, why: r.error.message };
   const code = r.status ?? 1;
