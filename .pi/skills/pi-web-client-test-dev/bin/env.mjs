@@ -35,7 +35,7 @@ function readRegistry() {
 
 function writeRegistry(data) {
   fs.mkdirSync(HOME, { recursive: true });
-  fs.writeFileSync(REGISTRY, JSON.stringify(data, null, 2) + "\n");
+  fs.writeFileSync(REGISTRY, `${JSON.stringify(data, null, 2)}\n`);
 }
 
 /** 有人在这个端口上监听吗：先真连一次，再试独占绑定（Windows 上 SO_REUSEADDR 会「绑得上但其实是抢别人端口」）。 */
@@ -116,6 +116,18 @@ function git(dir, ...args) {
 
 function hasPeer(dir) {
   return fs.existsSync(path.join(dir, "peer", "package.json"));
+}
+
+/**
+ * 壳（D385）存在就起壳：测试环境要验「热部署不切会话」，只有壳在的时候才成立。
+ * 和 scripts/start.mjs 同一条规则，PI_HOST_DISABLE=1 退回旧的 index.js。
+ */
+function bridgeEntry(dir) {
+  const host = path.join(dir, "bridge", "dist", "host.js");
+  if (process.env.PI_HOST_DISABLE === "1" || !fs.existsSync(host)) {
+    return path.join(dir, "bridge", "dist", "index.js");
+  }
+  return host;
 }
 
 function needsBuild(dir) {
@@ -334,7 +346,7 @@ async function cmdStart(opts) {
     say(`复用已有构建（${head}）；想强制重建加 --build`);
   }
 
-  const { base, ports } = await findSlot(peers);
+  const { ports } = await findSlot(peers);
   const state = path.join(HOME, id);
   fs.mkdirSync(path.join(state, "bridge"), { recursive: true });
 
@@ -348,7 +360,7 @@ async function cmdStart(opts) {
 
   const bridgePid = spawnHidden(
     process.execPath,
-    [path.join(dir, "bridge", "dist", "index.js")],
+    [bridgeEntry(dir)],
     {
       ...process.env,
       PI_WEB_PORT: String(ports.bridge),
