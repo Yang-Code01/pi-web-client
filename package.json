@@ -74,6 +74,7 @@
     "test:defaults": "node --experimental-strip-types bridge/tests/settings-defaults.mjs",
     "test:permission": "node bridge/tests/default-permission.mjs && node bridge/tests/gate-modes.mjs",
     "test:pending": "node --experimental-strip-types web/tests/pending-unit.mjs",
+    "test:frames": "node --experimental-strip-types web/tests/frames-unit.mjs",
     "test:continue": "node --experimental-strip-types web/tests/continue-unit.mjs",
     "test:retell": "node --experimental-strip-types web/tests/retell-state-unit.mjs",
     "test:bgruns": "node --experimental-strip-types bridge/tests/bgruns-unit.mjs",
