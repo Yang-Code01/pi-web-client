@@ -283,6 +283,7 @@ export function revealInFileManager(file: string): { ok: boolean; message: strin
   try {
     // Not detached: on Windows a DETACHED_PROCESS has no desktop association, and Start-Process-style
     // launchers silently do nothing. explorer hands the window to its own process and exits at once.
+    // spawn-visible-ok: 弹出的文件管理器窗口就是这次操作的结果，藏起来等于没打开。
     spawn(cmd, args, { stdio: "ignore", windowsHide: false }).unref();
   } catch (err) {
     return { ok: false, message: `打不开文件管理器：${(err as Error).message}` };
@@ -314,6 +315,7 @@ export function openWithApp(file: string): { ok: boolean; message: string } {
   }
   const { cmd, args } = openCommand(abs);
   try {
+    // spawn-visible-ok: 用本机程序打开文件，让程序自己的窗口出现是功能本身。
     spawn(cmd, args, { stdio: "ignore", windowsHide: false }).unref();
   } catch (err) {
     return { ok: false, message: `打不开文件：${(err as Error).message}` };

@@ -118,7 +118,7 @@ export function systemProxyCandidates(platform = process.platform) {
       return m ? parseWindowsProxyServer(m[1]) : [];
     }
     if (platform === "darwin") {
-      return parseScutilProxy(execFileSync("scutil", ["--proxy"], { encoding: "utf8", timeout: 3_000 }));
+      return parseScutilProxy(execFileSync("scutil", ["--proxy"], { encoding: "utf8", timeout: 3_000, windowsHide: true }));
     }
   } catch {
     // 读不到就是没有。

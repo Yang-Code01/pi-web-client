@@ -75,7 +75,7 @@ const csv = (name) =>
 function killTree(child) {
   if (!child.pid || child.exitCode !== null) return;
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     return;
   }
   try {
@@ -128,7 +128,7 @@ function flagsFor(name) {
   return raw.filter((f) => {
     if (!f.startsWith("--")) return true;
     if (!supported.has(f)) {
-      const r = spawnSync(process.execPath, [f, "-e", ""], { stdio: "ignore" });
+      const r = spawnSync(process.execPath, [f, "-e", ""], { stdio: "ignore", windowsHide: true });
       supported.set(f, r.status === 0);
       if (r.status !== 0) console.warn(`（现装的 node 不认 ${f}，跑 ${name} 时已略过；package.json 里那份该清掉了）`);
     }
@@ -173,6 +173,7 @@ const runOne = async (t) => {
       cwd: REPO,
       env: { ...process.env, PI_PEER_PORT: peerPort },
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
       // POSIX 上单独一个进程组，超时好整组杀（见 killTree）
       detached: process.platform !== "win32",
     });

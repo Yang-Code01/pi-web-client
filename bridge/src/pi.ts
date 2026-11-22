@@ -97,6 +97,7 @@ function npmRootBySpawn(p: PiProbe): string | null {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5000,
+      windowsHide: true,
     }).trim();
     return root || null;
   } catch {
