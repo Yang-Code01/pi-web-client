@@ -7431,6 +7431,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - 写 stdin 只认「当前 owner 脑」，非 owner 的帧回 `stale-owner` 并丢弃 —— 防止两代脑同时往一个 pi 里写字。
 - 换脑：新脑 hello → `ready` → 壳**先观察 5 秒**（用户选了「切完老脑立刻退」，所以观察只能在切换之前）→ 设新 owner、发 `activate`、老脑 `retire` 后 3 秒关连接、5 秒强杀；切换失败保留老脑，页面上的失败看得见。
 - **换完要接管，不然页面会退回「只读预览」**（2026-11-22 用户实测打回）：新脑在 `activate` 时把壳 snapshot 里的会话逐个 `attach`（`adoptOnly`：壳里没有就失败，绝不顺手新开一个 pi，否则同一条会话会多出两个写者），`owned` 一直是 true，页面那一段正文不会重画、WS 重连后接着往下接。
+- **「这一轮还在跑」要跟着壳走**：壳按 pi 自己的 `agent_start` / `agent_end` 记每个会话在不在跑，snapshot 带 `turnActive`，新脑 adopt 时用它恢复 `running`。不然页面会以为这轮结束了 ——「思考中」消失、「重讲」亮起，用户再发一句，pi 回一句英文 `Agent is already processing`。真撞上这句时的兜底：纠正状态并按插话重发一次。
 - **被换下的脑绝不 `sessions.shutdown()`**：子进程这时归壳持有、正在跑，关会话就是 `rpc.kill()`，等于亲手把正在写的那一轮杀掉 —— 这就是最初报的那个 bug。retire 只做三件事：收隧道、把锁交出去（`releaseLocks`，新脑要能立刻 `takeLock`）、退出。
 - 来源标识：壳转发时**删掉客户端带来的 `x-pi-peer` 与所有 `x-forwarded-*`**，按真实 `remoteAddress` 重写 `x-pi-peer: loopback|remote`；脑的 5 处回环守卫改成读它。转发之后 `remoteAddress` 全是 127.0.0.1，这层要是不做，回环口就对公网开了。
 - 用量账本：壳里 append-only（`state/host/usage.jsonl`，超 1 MB 压缩成每会话一条），跨换代、跨整组重启都在；脑换代后拿 `usage-snapshot` 接上。
