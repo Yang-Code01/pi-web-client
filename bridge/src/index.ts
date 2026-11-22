@@ -96,13 +96,13 @@ import { handleSysmanage } from "./sysmanage.ts";
 import { handleHotdeploy } from "./hotdeploy.ts";
 
 /**
- * 热部署对话框上的「会话 N 个在跑」。sessions.list() 会顺带刷新各会话状态（几百个会话时秒级），
- * 900ms 一枪的轮询扛不住 —— 缓存 5 秒，够用。
+ * 热部署对话框上的「会话 N 个在跑」：只数有活进程、且这一轮没结束的（`liveRunning`）。
+ * 旧算法数的是磁盘列表里标着 running 的条目 —— 壳模式下一个都数不到。轮询 900ms 一枪，缓存 5 秒。
  */
 let sessCountCache = { at: 0, n: 0 };
-function runningSessions(sessions: { list(): { running: boolean }[] }): number {
+function runningSessions(sessions: { liveRunning(): number }): number {
   if (Date.now() - sessCountCache.at > 5000) {
-    sessCountCache = { at: Date.now(), n: sessions.list().filter((s) => s.running).length };
+    sessCountCache = { at: Date.now(), n: sessions.liveRunning() };
   }
   return sessCountCache.n;
 }

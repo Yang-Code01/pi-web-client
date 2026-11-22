@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
+import { countRunning } from "./runningcount.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
@@ -3508,7 +3509,13 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  /** Sessions that some other process owns (e.g. the terminal) — read-only. */  lockedIds(): string[] {
+  /** 真在跑一轮的会话数（热部署对话框上的那个数字）。 **/
+  liveRunning(): number {
+    return countRunning(this.sessions.values());
+  }
+
+  /** Sessions that some other process owns (e.g. the terminal) — read-only. */
+  lockedIds(): string[] {
     const out: string[] = [];
     for (const m of this.metas()) {
       const lock = readLock(m.id);

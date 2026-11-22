@@ -357,6 +357,8 @@ async function main(): Promise<void> {
       return next;
     }
     if (expectingSwap && (!swapPid || swapPid === next.pid)) {
+      // 上一次拉起的候选脑还没切就被这次顶掉了（重试 / 双开）：把旧连接关掉，别让它挂在壳上。
+      if (starting && starting !== next && starting.conn.alive) starting.conn.close();
       starting = next;
       expectingSwap = false;
       log(`新脑 ${next.pid} 连上，等待 ready（buildId ${next.buildId || "?"}）`);
