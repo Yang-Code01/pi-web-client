@@ -3,7 +3,7 @@
 //
 //   node env.mjs list
 //   node env.mjs ports [--peers 1]
-//   node env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build] [--no-open]
+//   node env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build] [--no-open] [--hotdeploy]
 //   node env.mjs stop --id t1 | --all
 //
 // 端口布局（base = 第一个空闲的 17864+）：bridge=base、peer=base+1、announce(UDP)=base+2、
@@ -229,6 +229,23 @@ function windowTitleFor(id) {
   return `测试 ${id}`;
 }
 
+/** 桥的环境变量。`--hotdeploy` 时额外放行热部署（linked worktree 里默认是禁的）。 */
+function bridgeSpawnEnv({ id, state, ports, hotdeploy }) {
+  const env = {
+    ...process.env,
+    PI_WEB_PORT: String(ports.bridge),
+    PI_WEB_STATE: path.join(state, "bridge"),
+    PI_PEER_STATE: path.join(state, "peer-a"),
+    PI_PEER_PORT: String(ports.peer),
+    PI_PEER_ANNOUNCE_PORT: String(ports.announce),
+    PI_PEER_NICKNAME: `测试机 ${id}`,
+    // D360：桥把它写进页面 <title>，tab 上就是「测试 <实例名>」。
+    PI_WEB_WINDOW_TITLE: windowTitleFor(id),
+  };
+  if (hotdeploy) env.PI_HOTDEPLOY_ALLOW_WORKTREE = "1";
+  return env;
+}
+
 /**
  * D360：开一个新的浏览器窗口。标题由桥注入，这里只核「真的多了一条标题是它的窗口」—— 退出码什么都证明不了
  * （Edge 常驻时丢 URL 只会在后台开标签）。
@@ -361,17 +378,7 @@ async function cmdStart(opts) {
   const bridgePid = spawnHidden(
     process.execPath,
     [bridgeEntry(dir)],
-    {
-      ...process.env,
-      PI_WEB_PORT: String(ports.bridge),
-      PI_WEB_STATE: path.join(state, "bridge"),
-      PI_PEER_STATE: path.join(state, "peer-a"),
-      PI_PEER_PORT: String(ports.peer),
-      PI_PEER_ANNOUNCE_PORT: String(ports.announce),
-      PI_PEER_NICKNAME: `测试机 ${id}`,
-      // D360：桥把它写进页面 <title>，tab 上就是「测试 <实例名>」。
-      PI_WEB_WINDOW_TITLE: windowTitleFor(id),
-    },
+    bridgeSpawnEnv({ id, state, ports, hotdeploy: Boolean(opts.hotdeploy) }),
     dir,
     path.join(state, "bridge.out.log"),
     path.join(state, "bridge.err.log"),
@@ -422,7 +429,7 @@ async function cmdStart(opts) {
     login = 0;
   }
 
-  const entry = { id, dir, branch, head, dirty, url, ports, state, pids: { bridge: bridgePid, extra: extraPids }, startedAt: new Date().toISOString() };
+  const entry = { id, dir, branch, head, dirty, url, ports, state, hotdeploy: Boolean(opts.hotdeploy), pids: { bridge: bridgePid, extra: extraPids }, startedAt: new Date().toISOString() };
   reg.instances = reg.instances.filter((i) => i.id !== id).concat(entry);
   writeRegistry(reg);
 
@@ -438,6 +445,7 @@ async function cmdStart(opts) {
   say(`  端口    ${portLine}`);
   say(`  状态    ${path.join(state, "bridge.out.log")}`);
   say(`  登录自检 HTTP ${login}${login === 200 || login === 204 ? "（口令 test 生效）" : "（口令没生效，看日志）"}`);
+  if (opts.hotdeploy) say("  热部署  已放行（--hotdeploy）：面板里可以直接点部署");
   if (dirty) say("  注意：工作区有别的未提交改动，构建用的是当前文件内容。");
   await openWindow(url, id, opts);
 }
@@ -449,7 +457,7 @@ function cmdList() {
     return;
   }
   for (const inst of reg.instances) {
-    say(`${inst.id}\t${inst.url}\t${inst.branch}@${inst.head}\tbridge=${inst.ports.bridge}\tpeer=${inst.ports.peer}\t${inst.startedAt}`);
+    say(`${inst.id}\t${inst.url}\t${inst.branch}@${inst.head}\tbridge=${inst.ports.bridge}\tpeer=${inst.ports.peer}\t${inst.startedAt}${inst.hotdeploy ? "\t热部署已放行" : ""}`);
   }
 }
 
@@ -493,7 +501,7 @@ try {
   else if (cmd === "list") cmdList();
   else if (cmd === "ports") await cmdPorts(opts);
   else {
-    say("用法：node env.mjs list | ports [--peers N] | start --dir <path> [--name t1] [--peers 1] [--build] [--no-open] | stop --id t1|--all");
+    say("用法：node env.mjs list | ports [--peers N] | start --dir <path> [--name t1] [--peers 1] [--build] [--no-open] [--hotdeploy] | stop --id t1|--all");
     process.exitCode = 2;
   }
 } catch (err) {
