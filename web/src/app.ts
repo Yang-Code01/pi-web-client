@@ -757,6 +757,10 @@ export class App {
   private sheetDock: SheetDialog | null = null;
   /** D209：幻灯片浮窗（与表格浮窗并列，各自记住自己的几何）。 */
   private slidesDock: SlidesDialog | null = null;
+  /** D388：表格 / 幻灯片浮窗里正在画的是哪份文件（mtime / size 用来判断要不要重载）。 */
+  private dockInfo: PreviewInfo | null = null;
+  /** D388：同一份文件正在打开的那一趟；同路径的重复投递复用它，不另发请求。 */
+  private previewOpens = new Map<string, Promise<boolean>>();
   private termTabStrip: HTMLElement | null = null;
   private termBodies: HTMLElement | null = null;
   private termTabs = new Map<string, TermTab>();
@@ -9284,6 +9288,55 @@ export class App {
 
   private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<boolean> {
     if (!sessionId) return false;
+    // D388：同一次「打开」可能有两位作者 —— 问卷里点「在预览里打开」当场开过一次，模型拿到
+    // 答案后按交付提示词又调一次 open_preview（D344）。同一份文件正在开就等同一趟；
+    // 各自再打一个 /api/preview 会让两个响应各画一遍，用户看到「又打开了一次」。
+    const key = `${sessionId}\u0000${path}`;
+    const inflight = this.previewOpens.get(key);
+    if (inflight) return inflight;
+    const run = this.openPreviewNow(path, sessionId, replace);
+    this.previewOpens.set(key, run);
+    try {
+      return await run;
+    } finally {
+      if (this.previewOpens.get(key) === run) this.previewOpens.delete(key);
+    }
+  }
+
+  /**
+   * D388：这份文件已经在看、磁盘上也没变 —— 只把面板抬到前面，一个像素都不重画。
+   *
+   * 为什么还要问一次桥：模型第二次调 open_preview 常常是「刚又改过文件」，只看路径会把旧内容
+   * 留在屏幕上。只比 mtime + size；真变了就走下面的正常流程重载（那一次闪是应该的）。
+   */
+  private async alreadySeen(path: string, sessionId: string): Promise<boolean> {
+    const v = this.viewer;
+    const inViewer = Boolean(v && v.sessionId === sessionId && v.pane !== "browse" && !v.error && samePath(v.path, path));
+    // 编辑中的草稿不能丢（D50）：同路径再打开只抬一下窗口，切回预览交给用户自己点。
+    if (inViewer && v!.pane === "edit" && v!.dirty) {
+      this.raiseWindow(v!.root);
+      return true;
+    }
+    const dock = this.sheetDock ?? this.slidesDock;
+    const dockInfo = this.dockInfo;
+    const dockHit = Boolean(dock && dockInfo && dockInfo.abs && samePath(dockInfo.abs, path));
+    const info = inViewer && v!.pane !== "edit" ? v!.info : dockHit ? dockInfo : null;
+    const root = info ? (inViewer ? v!.root : dock!.root) : null;
+    if (!info || !root || !root.isConnected) return false;
+    let fresh: PreviewInfo;
+    try {
+      fresh = await api.preview(sessionId, path);
+    } catch {
+      return false; // 读不到了：让正常流程把错误画进面板
+    }
+    if (fresh.mtime !== info.mtime || fresh.size !== info.size) return false;
+    this.raiseWindow(root);
+    return true;
+  }
+
+  private async openPreviewNow(path: string, sessionId: string, replace: boolean): Promise<boolean> {
+    // D388：同一份文件已经在看、内容也没变：只抬面板，不重建 iframe / 表格浮窗。
+    if (!replace && (await this.alreadySeen(path, sessionId))) return true;
     // 编辑中直接点别的文件：先问一句未保存的改动（D50）。
     const open = this.viewer;
     if (open?.pane === "edit" && open.dirty && open.info?.abs !== path) {
@@ -9392,6 +9445,7 @@ export class App {
     const saveable = !data.truncated && info.size <= CSV_MAX_BYTES;
     this.sheetDock?.destroy();
     this.sheetDock = null;
+    this.dockInfo = info;
     const dialog = new SheetDialog({
       token: info.token,
       name: info.name,
@@ -9444,6 +9498,7 @@ export class App {
   private openSheet(info: PreviewInfo): void {
     this.sheetDock?.destroy();
     this.sheetDock = null;
+    this.dockInfo = info;
     const dialog = new SheetDialog({
       token: info.token,
       name: info.name,
@@ -9486,6 +9541,7 @@ export class App {
   private openSlides(info: PreviewInfo): void {
     this.slidesDock?.destroy();
     this.slidesDock = null;
+    this.dockInfo = info;
     const dialog = new SlidesDialog({
       token: info.token,
       name: info.name,
