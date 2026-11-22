@@ -108,6 +108,11 @@ try {
   page.on("pageerror", (e) => console.log("page error:", e.message));
   await page.goto(`${BASE}/#/s/${sid}`, { waitUntil: "networkidle" });
   await page.locator("textarea").first().waitFor({ timeout: 15000 });
+  // 首次在一个全新的 state 上打开会弹「更新内容」，不关掉会抓住点下去的鼠标。
+  if (await page.locator(".whatsnew-back").count()) {
+    await page.keyboard.press("Escape");
+    await page.locator(".whatsnew-back").waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+  }
 
   // 截图里的那份问卷，只是题干写的是绝对路径（交付提示词现在要求这么写）。
   const asked = fetch(`${BASE}/api/ask`, {

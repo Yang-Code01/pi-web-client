@@ -7,7 +7,7 @@
  *
  * 只认**绝对路径**：相对路径在桥那边按会话 cwd 解析，而产物常写在别的 worktree 里，猜错就打开
  * 另一份同名文件或一张报错页。认不出路径时什么都不做，交给模型拿到答案后照旧调 `open_preview`
- * （同一路径再开一次只是原地刷新，`pushStep` 会去重）。
+ * （同路径再开一次是幂等的：只抬面板，不重建 iframe —— D388；`pushStep` 仍会记一步）。
  */
 
 export interface PreviewOption {

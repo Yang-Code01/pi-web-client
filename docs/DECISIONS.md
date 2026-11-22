@@ -6635,7 +6635,7 @@ Esc 之后 dialog: 0
 
 **决定。**
 - 提示词（`bridge/src/delivery.ts`）：这一问**单独**发，优先于「合并提问」；题干写文件的**绝对路径**；要先看过产物才答得了的题等预览开了再问。`test:hint` 补三个关键词。
-- 前端（`web/src/ask-preview.ts`）：单选题点的选项以「在预览里打开」开头（兼认英 / 日说法）时，从选项说明、再从题干里找第一个带扩展名的**绝对路径**，当场 `openPreview`，答案照旧记草稿 / 提交，回给模型的选项原文不变。模型拿到答案后照提示词再调一次 `open_preview` 也无害（同路径 `pushStep` 去重、原地刷新）。
+- 前端（`web/src/ask-preview.ts`）：单选题点的选项以「在预览里打开」开头（兼认英 / 日说法）时，从选项说明、再从题干里找第一个带扩展名的**绝对路径**，当场 `openPreview`，答案照旧记草稿 / 提交，回给模型的选项原文不变。模型拿到答案后照提示词再调一次 `open_preview` 也无害（同路径 `pushStep` 去重）—— **但「原地刷新」这句是错的**：那条第二次投递会清屏重建 iframe / 重开表格浮窗，画面闪一下（用户报障 2026-11-22），已修，见 D388。
   - 只认绝对路径：相对路径要按会话 cwd 解析，而产物常在别的 worktree 里（这次就是），猜错会打开同名的另一份或报错页。认不出就什么都不做，退回原来的模型往返。
   - 这就是 D226 记下的 Out of Scope「问卷卡直连预览」，但不走 `/api/preview/open`（那是给子进程的回环入口），直接用页面自己的 `openPreview`。
 - 布局：题目在「需要你」栏里（`askDock()`）时，预览加 `.beside-ask`，`right` 让到那一栏左缘（`--ask-right`，按 `uiScale` 换算成布局 px，D123）；全屏预览不让；题答完、收起右栏、窗口变化时 `syncViewerBesideAsk` 复位。拖宽度改成从面板自己的右缘量。
@@ -7461,6 +7461,23 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** ①父进程是 `detached + windowsHide` 时，它自己也**没有控制台**，`execFileSync(..., { stdio: "inherit" })` 拿到的是空管道而不是终端 —— 本来也没有终端可用，后续依赖 `isTTY` 的分支会走非交互路径，这是既有行为，不是本次引入的。②真正需要把窗口给人看的脚本（比如 `scripts/hotdeploy.mjs` 里 `Start-Process powershell` 另起一个可见窗口那条分支）不受影响：它压根不走 `windowsHide`，可见性由 `Start-Process` 决定。③守卫按「同一行 / 上面两行内有 `spawn-visible-ok:`」认标记；想给整段豁免就在循环外标注，别在调用的上一行再塞别的东西（中间隔一行就认不到了）。
 
 **验证。** `node tools/check-spawn-hidden.mjs` 改前 42 个文件里报 31 处（`bridge/src/pi.ts:95` 的 `npm root -g`、`bridge/src/hotdeploy.ts:108/407` 的 git 与 worktree-remove、`scripts/hotdeploy.mjs:257/465` 的起桥与 build、`.pi/skills/pi-web-client-test-dev/bin/env.mjs` 9 处、`.pi/skills/bridge-update/bin/restart.mjs` 4 处等），改后 0 处；范围加上 `bridge/ext` 与别名/options 识别后是 43 个文件 0 处；`node tools/check-spawn-hidden.mjs --self-test` 的夹具里 4 条反例（漏写、`windowsHide: false`、`promisify(execFile)` 别名、options 常量写 false）全红，4 条正例（inline、`spawn-visible-ok` 标记、options 常量、`RegExp.exec`）全绿；守卫还有 `MIN_FILES = 30` 下限与「路径不存在即红」，免得目录改名后静默变绿。`npm run typecheck`（含新接的守卫）通过，`npm run test:spawn-hidden` 通过。机制实测（`.scratch/popup-probe/leak2.mjs`，父进程 = `detached + windowsHide` 拉起、真的没有控制台）：旧写法 `spawn(node)` 与 `spawnSync("npm",["root","-g"],{shell:true})` 各自让可见窗口数从 31 涨到 34（新增标题正是 `node.exe` / `npm root` 那一类），同样两条换上 `windowsHide: true` 后新增为 0 —— 证明这个开关就是修法本身。**没做到的**：没能把「改后的 31 处逐一从无控制台父进程跑一遍并数出 0」做成可复现的探针 —— 外部按「新增标题」采样会被机器上常驻的旧桥（还没更新到这份代码）自己弹的 `git.exe` / `npm root` 污染（`noop` 基线轮也能数到它们），而改成在子进程内部数窗口时，对照组也数不到（`ping` 存活 1.5 秒仍报 0，原因未查清），所以覆盖度靠静态守卫保证，不靠这一次窗口计数。
+
+## D388 同一份文件再「打开」一次是幂等的：只抬面板，不重建（用户报障 2026-11-22）
+
+**症状。** 问卷里点「在预览里打开」，预览开了，紧接着又开了一次，画面闪一下（iframe 白一下 / 表格浮窗闪一下）。
+
+**根因。** 同一次「打开」被两条路各调一遍 `openPreview`：问卷按钮的即时打开（D344）先开；模型拿到答案后照交付提示词再调 `open_preview` → `bridge/ext/open-preview.ts` → `POST /api/preview/open` → 桥发 `preview.open` → `answerPreviewOpen()` → 再开一次。第二次**不是**原地刷新：`openPreview` 无条件 `v.info = null; v.text = null; v.pane = "preview"` 再 `paintViewer()`（`body.replaceChildren()` + 「正在打开…」），而 `/api/preview` 每次都签发新 token，回来的 iframe `src` 就变了 → 重建、重载；xlsx / slides 更狠，`closeViewer()` + `openSheet()`，浮窗整个销毁重开。`pushStep` 只去重历史栈，不阻止渲染。
+
+**决定。**
+- `openPreview` 拆成薄壳 + `openPreviewNow`。薄壳按 `sessionId + normPath(path)` 记住正在打开的那一趟（`previewOpens`），同路径的重复投递直接复用同一个 promise —— 否则两个响应各自 `paintViewer()` 仍然闪。键必须归一：题干里的路径是模型写的（多为 `/`），桥回来的 `info.abs` 是 Windows 原生 `\`，不归一就合并不上。`replace === true`（⟳ / 返回前进）不进这张表，它要的是重新读一遍。
+- `alreadySeen()` 在未保存询问 / `rememberScroll` / `pushStep` / `ensureViewer` **之前**判定：同 sessionId、`samePath()`、面板在 `preview` 态（`browse` 目录页不算、`error` 允许重试）、内容未变（静默 `api.preview()` 比对 `mtime` / `size`）→ `raiseWindow()` 后 `return true`。`replace === true`（⟳ 刷新、返回/前进）一律绕过。
+- 编辑态有未保存草稿（D50）：同路径再打开只抬窗口，切回预览交给用户自己点。
+- 表格 / 幻灯片 / CSV 浮窗按**对象**记自己那份 `PreviewInfo`（`dockFiles` WeakMap）：两扇浮窗可以并存（`openSheet` 只拆自己那扇），单槽会抬错窗；浮窗内保存 / 改结构后回写 `mtime` / `size`（`saveSheet` / `saveStruct`），否则下次同路径投递会被当成「别的内容」整扇重开。
+- 为什么不改成「让模型别调第二次」：模型不知道前端已经开过，照交付提示词再调一次是合理的；幂等放在唯一入口更稳。
+
+**代价 / 可改。** ①命中时要多一次静默 `/api/preview` 来核对 `mtime` / `size`（换回一个不重建的 iframe）；它签发的新 token 落在 500 个的 LRU 里，只有连开 500 份不同文件才会把正在看的那份挤掉 —— 本会话正常用法碰不到。**没做**：换文件时的 stale-while-revalidate（先留着旧内容不白屏）；xlsx 第一次打开仍会先建 viewer 再换浮窗（独立票，与「第二次」无关）。
+
+**验证。** `probes/preview-reopen.mjs` 11 项全绿（同路径再投：`iframeRemoved / loading / bodyCleared / viewerRemoved` 全 0；`fs.appendFileSync` 改过内容后**并发**两趟再投 → 新 src 且只重载一次（`iframeRemoved: 1`），之后第三次又回到 0；xlsx 两次投递后同一个 `section.sd` 节点）。把 `web/src/app.ts` 的改动 `git stash` 掉重新 build，同一探针 8/11（红的 3 条正是症状：`iframeRemoved:1, loading:1, bodyCleared:2`，`section.sd` 被摘又加）。`npm run build:bridge`、`npm run build:web`、`npm --prefix web run typecheck` 通过。
 
 
 ## D388 帧的词表与帧表：两侧各 128 个 `msg.type` 进类型，9 个最要命的帧进一张表（feat/frame-vocab；用户选「先 9 个帧 / 一个 PR 全做完 / 就地改 + 返回重画清单 / 先记基线读数」2026-11-22）
