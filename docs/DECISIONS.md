@@ -7417,7 +7417,19 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **验证。** `probes/mail-panel-single-mount.mjs`：改前一次点击挂载 3 次、带 `mac-window-in` 3 次、切分区累计 4 次（4 条全红）；改后 1 / 1 / 1，切分区不重挂、Esc 后不复活、`关闭前后没有新的挂载`（5 条全绿）。`npm --prefix web run typecheck` 通过；截屏 `.scratch/mail-single-mount/shots/panel-open.png`。
 
-## D385 打开一条**已归档**的会话 = 请它回来（取消归档 + 置顶到最前）（D146 的唯一例外；用户「打开已经归档的回话，现在会显示在 chat 框中，但是上面的所属回话，是一个已经其他的回话名……应该自动取消归档，并且自动置顶，这样就能导航到正确的工作区，回话名也正常」2026-11-22）
+## D385 输入框的玻璃胶囊只长在 `.composer-input` 上，textarea 保持透明无框（用户「如图chat框内容很奇怪 / 边框边缘有三层」2026-11-22）
+
+**问题。** `mac.css` 的 `html[data-ui="mac"] .composer textarea` 把整套胶囊画在 textarea 自己身上：`background: var(--mac-glass-strong)`、`border: 0.5px solid var(--mac-glass-line)`、`border-radius: 18px`、`box-shadow: var(--mac-shadow-panel)`，`:focus` 再叠一道 accent 边框与 `0 0 0 4px` 光晕。但 #317 之后 textarea 住进了 `.composer-input` 这个 wrapper（`styles.css:3026`：面板、1px 描边、焦点环、12px 圆角都在它身上，textarea 是透明无框的薄片），于是同一个框画了两套：外圈 1px accent / 12px 圆角，内圈 accent 55% / 18px 圆角，再加 textarea 自己的 4px 光晕与 `0 0 0 0.5px` 暗描边 —— 用户看到「边框边缘有三层」，两个半径还在四角互相错位。同一套规则还误伤了 `.composer textarea.paste-body`（优先级 0,2,2 压过 0,2,1），粘贴折叠块也被画成玻璃胶囊，内边距从 8px 变成 12/16px。
+
+**决定。** 把 `mac.css` 那两条规则的选择器从 `.composer textarea` / `.composer textarea:focus` 改为 `.composer .composer-input` / `.composer .composer-input:focus-within`：底色、backdrop、描边颜色、18px 圆角、面板阴影、焦点光晕与 transition 全部落在 wrapper 上，边框宽度沿用 `styles.css` 的 1px（只换颜色成 `--mac-glass-line`，焦点时换 accent 55%）。textarea 只保留 `padding: 12px 16px`，且写成 `.composer .composer-input > textarea`，折叠块的 `8px 8px` 回到自己身上。
+
+**为什么。** #317 的 mask（顶部 24px 文字淡出）只作用在 textarea 上，mask 带的是「整块元素绘制的 alpha」—— 任何画在 textarea 上的背景与边框都会被一起淡出，这正是当初把面板搬到 wrapper 的原因。所以不能反过来「把 wrapper 的背景撤掉、让 textarea 当面板」：滚动到中段时整个框会跟着渐隐。修法是让 mac 主题服从这条已经成立的宿主划分，而不是第二次把它画回去。
+
+**代价 / 可改。** 三处可见变化，都是有意的：①mac 主题下描边宽度是 1px（`--line` → `--mac-glass-line`），不再是 0.5px hairline；玻璃质感靠 backdrop-filter 与面板阴影维持。若以后想让胶囊更细，把 wrapper 的 `border-width` 一起改，别再拆成两层。②外层圆角从 `styles.css` 的 12px 变成 mac 面的 18px（原本画在 textarea 上也是 18px，只是那时它套在 12px 里）；展开的粘贴折叠块（`styles.css:3034-3036` 按 12px 弧排的 8px 内缩与 8px 圆角）会不会出角，由探针 `17-paste-*.png` 一起截。③`:focus` 改成 `:focus-within`，焦点落进折叠块的 `.paste-body` 时整颗胶囊也亮光晕与 accent 描边 —— 语义上是对的（面板内的任何焦点都算这张面），但比原来只在主输入框聚焦时亮要宽一拍。`html[data-ui="mac"] .composer { background: transparent; border-top: 0 }` 原样保留。
+
+**验证。** `probes/composer-grow.mjs` 新增第 17 段（mac-dark / mac-light 各跑一次）：两条边框里只有一条可见、textarea 的 border 与 radius 都是 0、焦点光晕只在 wrapper 上、textarea 背景透明而 wrapper 不是；展开一个粘贴折叠块，断言它仍是自己的 `8px 8px` 内边距、0 圆角与 1px 上 hairline（被误画时会变成 12/16px、18px、0.5px）；最后在「未聚焦的空输入框」上再断一次。四组截图：`17-capsule-*.png` / `17-paste-*.png` / `17-idle-*.png`。改前同一探针第 9 段先红（`no transition on the fade`，`0.3s, 0.16s` 来自被误画的 textarea transition；`inputBg` / `inputBorder` 也红）；改后 1–17 段全绿、`ALL OK`。探针同时补了一处既有红：`getBoundingClientRect` 在 `DEFAULT_SCALE = 1.25`（`app.ts:21188`）下返回的是缩放后的尺寸，而期望值全是布局 px，故开头把 `pi.prefs.scale` 钉到 1 再继续。`npm --prefix web run typecheck` 通过。`npm run test:composer-focus:ui` 仍红（新会话 sheet 的「新文件夹名」不可见），在未改动的 `mac.css` 上同样红，属既有失败。
+
+## D386 打开一条**已归档**的会话 = 请它回来（取消归档 + 置顶到最前）（D146 的唯一例外；用户「打开已经归档的回话，现在会显示在 chat 框中，但是上面的所属回话，是一个已经其他的回话名……应该自动取消归档，并且自动置顶，这样就能导航到正确的工作区，回话名也正常」2026-11-22）
 
 **问题。** 在「会话管理 → 状态=已归档 → 打开」打开一条归档回话，正文是对的，但画出的是别人的身份：顶栏那一行（★ 本区行）还是打开前那颗的名字，当前会话胶囊被整颗藏掉，这条会话也仍旧躺在「已归档」里、左栏回不到所属工作区。三处各有各的原因，叠在一起就是用户看到的样子：
 
@@ -7435,3 +7447,5 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** 打开归档会话会**改用户手工排的 ★ 顺序**（插到最前）—— 这是用户要的，但它确实推翻了 D146 的两句：标题里的「打开 ≠ 解归档」，以及它那条「**归档会话可以打开**，但它仍然在归档里；要出来得自己点「恢复」」（`docs/DECISIONS.md:2029`）—— 现在点开就是「恢复」。D146 的其余部分（普通会话打开不改排列、组内顺序是人手工拖的）原样生效，所以这是**唯一**的例外，不是把 D125 整体复活：D125 的「打开 = 置顶」对非归档会话仍然不成立。想改成「追加到末尾」只需改 `revive()` 里那一行拼接。带 `#/s/<id>` 的旧书签/外链指向一颗归档会话时，打开（含刷新后 `routeFromHash()` 那一次）即解除归档（不再静默打开）。**没做**：把「打开过的排在 ★ 行前面」推广成通用规则；也没做「归档时记住原位置、恢复时插回原处」，插到最前就够了。
 
 **验证。** `.pi/skills/pi-web-e2e-test` 的 change 模式（同一份 case 跑改前/改后）：改前 3 条红 —— ★ 行里没有刚打开的那颗、★ 行只剩原来那颗、打开后它仍在「已归档」；改后全绿，顶栏与 ★ 行都写对了名字。`npm run typecheck`（bridge + peer + web，含 i18n 与 viewport 守卫）通过；`npm run test:nowchip` / `test:wsmanage` / `test:ws-row` 通过。
+
+

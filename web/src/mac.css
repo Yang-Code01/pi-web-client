@@ -145,22 +145,25 @@ html[data-ui="mac"] .msg.assistant .body {
 html[data-ui="mac"] .msg .body pre { border-radius: 10px; border-color: var(--mac-glass-line); }
 html[data-ui="mac"] .msg .who { letter-spacing: 0; font-weight: 500; }
 
-/* 输入框：浮在内容区底部的一块玻璃胶囊。 */
+/* 输入框：浮在内容区底部的一块玻璃胶囊。底色、描边、焦点环和圆角都长在 `.composer-input`
+   上 —— #317 之后这是面板的宿主，textarea 只是里面一张透明无框、带 mask 的薄片。两边各画
+   一套就会叠成三层描边（外边框 + 内边框 + 焦点光晕），两个圆角还会在四角互相错位。 */
 html[data-ui="mac"] .composer { background: transparent; border-top: 0; }
-html[data-ui="mac"] .composer textarea {
+html[data-ui="mac"] .composer .composer-input {
   background: var(--mac-glass-strong);
   -webkit-backdrop-filter: var(--mac-blur-strong);
   backdrop-filter: var(--mac-blur-strong);
-  border: 0.5px solid var(--mac-glass-line);
+  border-color: var(--mac-glass-line);
   border-radius: 18px;
-  padding: 12px 16px;
   box-shadow: var(--mac-shadow-panel);
   transition: box-shadow var(--dur-2) var(--mac-ease), border-color var(--dur-1) var(--mac-ease);
 }
-html[data-ui="mac"] .composer textarea:focus {
+html[data-ui="mac"] .composer .composer-input:focus-within {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   box-shadow: var(--mac-shadow-panel), 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
 }
+/* 只有主输入区那一片薄片吃胶囊的内边距；粘贴折叠块里的 textarea 是自己的 8px（#318）。 */
+html[data-ui="mac"] .composer .composer-input > textarea { padding: 12px 16px; }
 html[data-ui="mac"] .chat-jump {
   background: var(--mac-glass-strong);
   -webkit-backdrop-filter: var(--mac-blur);

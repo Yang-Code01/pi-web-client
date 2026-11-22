@@ -732,7 +732,7 @@ export class App {
   private chromePreviewNarrow = false;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
-  /** D385：正在请回来的那一颗（`revive` 已经发出，等桥的快照确认它出了归档）。 */
+  /** D386：正在请回来的那一颗（`revive` 已经发出，等桥的快照确认它出了归档）。 */
   private reviving: string | null = null;
   private archivedOpen = false;
   private filter = "";
@@ -1758,7 +1758,7 @@ export class App {
 
   private openSession(id: string): void {
     if (this.currentId === id) {
-      // D385：已经是当前会话，也可能已经被别处归档了（另一个标签页、或刷新时快照还没到）——
+      // D386：已经是当前会话，也可能已经被别处归档了（另一个标签页、或刷新时快照还没到）——
       // 在管理面板里再点一次「打开」就得把它请回来，否则这个早退把请求吞掉。
       if (this.manage.archived.includes(id)) this.reviveArchived(id);
       return;
@@ -1770,7 +1770,7 @@ export class App {
     if (this.sessionReclaimId !== id && this.sessionReclaimEl) this.sessionReclaimEl.hidden = true;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
     this.resetSessionView();
-    // D385：打开的是一颗**已归档**的会话，就把它请回来（取消归档 + 置顶到最前）。
+    // D386：打开的是一颗**已归档**的会话，就把它请回来（取消归档 + 置顶到最前）。
     // 别的会话照旧不动排列（D146）；不这么做的话 `starredRow()` 排掉归档会话、
     // `renderSessionRow()` 藏掉当前胶囊，顶栏那一行里只剩别颗的名字，左栏也放不回所属工作区。
     if (this.manage.archived.includes(id)) this.reviveArchived(id);
@@ -1934,7 +1934,7 @@ export class App {
         // 重连的 hello 带的是**连上那一刻**的隧道快照：它可能比手里那份还旧（正好在这时候关掉了隧道），
         // 盖回去会让按钮又变回「关掉公网隧道」。只认更新的（web/src/tunnel-snapshot.ts，D197）。
         this.tunnel = newerTunnel(this.tunnel, msg.tunnel);
-        // D385：首屏/重连的 hello 才第一次带来 `manage` —— 深链 `#/s/<归档 id>` 就是在这一步补请回来的。
+        // D386：首屏/重连的 hello 才第一次带来 `manage` —— 深链 `#/s/<归档 id>` 就是在这一步补请回来的。
         this.maybeReviveCurrent();
         this.renderAll();
         // Q-021: 新会话 / 首屏恢复都可能带着另一个 cwd 进来。
@@ -2902,7 +2902,7 @@ export class App {
         if (msg.manage) this.manage = msg.manage as ManageState;
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         this.switchAfterArchive(wasArchived);
-        // D385：刷新 `#/s/<归档 id>` 时 `routeFromHash()` 跑在快照前面（`this.manage` 还是空壳），
+        // D386：刷新 `#/s/<归档 id>` 时 `routeFromHash()` 跑在快照前面（`this.manage` 还是空壳），
         // 那一次 `openSession()` 等于没请回来。快照到了补这一次。
         this.maybeReviveCurrent();
         this.renderSessions();
@@ -11807,12 +11807,12 @@ export class App {
   }
 
   /**
-   * D385：打开归档会话时把它请回来。先乐观改一遍本地 `manage` 再发桥命令 —— 顶栏 ★ 行、
+   * D386：打开归档会话时把它请回来。先乐观改一遍本地 `manage` 再发桥命令 —— 顶栏 ★ 行、
    * 当前会话胶囊、左栏分组全都按 `manage` 现算，等桥的快照回来才改的话，画面上就会先闪一帧
    * 「打开了、可上面写着别人」；桥广播的快照随后把这里再抹一次，不会错。
    */
   /**
-   * D385：快照（`hello` 或 `manage`）到了才发现当前会话在归档里 —— 补发一次请回来。
+   * D386：快照（`hello` 或 `manage`）到了才发现当前会话在归档里 —— 补发一次请回来。
    * 「同一颗只补一次」是防着不识 `revive` 的旧桥：它不回快照，页面就不会反复发；
    * 一旦这颗出了归档，`reviving` 就清空，以后再归档还能再请一次。
    */
