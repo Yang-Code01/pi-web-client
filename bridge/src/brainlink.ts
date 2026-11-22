@@ -54,6 +54,8 @@ export class BrainLink extends EventEmitter {
   deployState: DeployState = { phase: "idle" };
   /** 壳给的用量底账（换代之后账还在，脑拿它接上）。 */
   usageTotals: Record<string, unknown> = {};
+  /** 壳的 snapshot 里列着的会话 id：换脑后要接管的就是这些（D385）。 */
+  private liveIds: string[] = [];
 
   constructor(conn: ControlConn) {
     super();
@@ -67,6 +69,11 @@ export class BrainLink extends EventEmitter {
 
   static async connect(socketPath: string): Promise<BrainLink> {
     return new BrainLink(await connectControl(socketPath));
+  }
+
+  /** 壳里还活着的会话 id（snapshot 时刻的）。页面与新脑不是同一个进程，只能靠这个对齐。 */
+  liveSessionIds(): string[] {
+    return [...this.liveIds];
   }
 
   /** 握手；等壳的 welcome。 */
@@ -183,6 +190,9 @@ export class BrainLink extends EventEmitter {
         this.emit("reject", String(msg.reason ?? ""));
         return;
       case "snapshot":
+        this.liveIds = ((msg.sessions ?? []) as Array<{ id?: string }>)
+          .map((s) => String(s?.id ?? ""))
+          .filter(Boolean);
         this.emit("snapshot", msg);
         return;
       case "activate":

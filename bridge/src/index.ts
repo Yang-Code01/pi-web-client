@@ -4319,7 +4319,16 @@ async function main(): Promise<void> {
         link.on("retire", () => {
           log("host: 被换下，退出");
           tunnel.stop();
-          void shutdown();
+          // **这里绝不能 sessions.shutdown()**（D385）：子进程的生死在壳手里，关一批会话就会把
+          // 正在跑的那一轮杀掉 —— 那正是「热部署打断回话」本身。把锁交出去就好。
+          sessions.releaseLocks();
+          process.exit(0);
+        });
+        // 新脑上来之后接管壳里还活着的会话：页面不必重新点，否则它会退回「只读预览」。
+        link.on("activate", () => {
+          void sessions
+            .adoptLinked(link.liveSessionIds())
+            .catch((err) => log(`host: 接管在跑的会话失败：${(err as Error).message}`));
         });
         link.ready();
         log(`host: 接上壳 ${welcome.hostBuildId}（公网口 ${pagePort}，内部 ${internalPort}）`);

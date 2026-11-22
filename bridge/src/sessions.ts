@@ -1314,6 +1314,84 @@ export class Session extends EventEmitter {
   }
 
   // ---------------------------------------------------------------- live (RPC)
+  /**
+   * 把一个 RpcChild 接到这个会话上：事件分流与退出清理。`startLive` 与 `adopt` 共用这一段，
+   * 两者的差别只在「进程从哪来」—— 一个是壳里新开的，一个是换脑前就在跑的。
+   */
+  private wireRpc(rpc: RpcChild, id: string): void {
+    rpc.on("event", (ev: any) => this.onPiEvent(ev));
+    rpc.on("ui_request", (req: any) => this.onUiRequest(req));
+    rpc.on("stderr", () => this.touch());
+    rpc.on("log", (line: string) => this.emitWs({ type: "notice", sessionId: id, text: line, level: "warn" }));
+    rpc.on("exit", (reason: string) => {
+      const closing = this.closing;
+      const quiet = this.closeQuietly;
+      this.closing = false;
+      this.closeQuietly = false;
+      this.ownExitAt = Date.now();
+      this.state.owned = false;
+      // A pi that died while still booting must not leave the page on 「正在启动…」 forever.
+      this.setState({ running: false, starting: false });
+      // 进程没了，等「这一轮开始」的那条路也断了：先放它下来，它自己会看到 rpc 已死并标红剩下的。
+      this.wakeRunStart();
+      // #197 / D178: 启动期收下的消息跟着这个进程一起没戏了 —— 气泡标红、给一句人话，不静默吞掉。
+      const lost = this.bootQueue.splice(0);
+      if (lost.length) this.failBoot(lost, closing ? "stopped" : "boot");
+      releaseLock(id);
+      this.clearApprovals();
+      this.clearAsks();
+      this.endCompaction();
+      // The extensions that drew these live in the process that just ended.
+      this.resetExtUi();
+      this.setQueue([], []);
+      this.bashRun = null;
+      // #202 / D183: 排着还没跑的 `!` 也随这个进程作废，否则卡片会一直停在「等待 pi 启动」。
+      for (const b of this.bootBash.splice(0)) this.failBash(b.itemId, "pi 进程退出了，这条命令没有跑");
+      // A stop the user asked for is not news; only an exit nobody asked for is worth the stderr tail.
+      if (closing) {
+        if (!quiet) this.emitWs({ type: "notice", sessionId: id, text: "已停止运行，历史留在磁盘，发消息会自动接管。", level: "info" });
+      } else {
+        // #200 AC6 / D183: 退出原因里的 exit code / signal 是给日志看的，界面只留人话。
+        console.log(`[exit] ${id} pi 进程退出：${reason}`);
+        this.emitWs({ type: "notice", sessionId: id, text: "pi 进程意外退出了（可能有别的终端占着这个会话）。历史留在磁盘，发消息会重新接管。", level: "warn" });
+      }
+      // A deliberately paused 随手问 has no external writer and keeps its live transcript snapshot.
+      // Other closed sessions still tail the file so terminal updates remain visible.
+      if (!(this.state.scratch && this.state.paused)) this.startTail();
+    });
+  }
+
+  /**
+   * 换脑后接管一个壳里还在跑的进程（D385）。不发消息、不开新进程：壳里没有这个会话的子进程就
+   * 什么都不做 —— 页面上宁可显示「只读预览」，也不能凭空多出第二个写者。
+   */
+  async adopt(): Promise<boolean> {
+    if (this.live) return true;
+    const link = brainLink();
+    const id = this.state.id;
+    if (!link || !id) return false;
+    if (!takeLock(id)) return false;
+    this.stopTail();
+    this.state.owned = true;
+    const rpc = new RpcChild({
+      cli: this.cli,
+      args: [],
+      cwd: this.state.cwd,
+      sessionId: id,
+      link,
+      // 只认领壳里现成的那个；没有就失败，不许顺手起一个新的。
+      adoptOnly: true,
+      logPath: statePath("logs", `${id}.log`),
+    });
+    this.rpc = rpc;
+    this.wireRpc(rpc, id);
+    rpc.start();
+    // 故意不推 `items`：页面上这一轮的文字在它自己的 DOM 里（owned 一直没翻成 false，它就没重画）。
+    // 这里推一份从磁盘读的帧，反而会把正在写的那段顶掉。
+    this.setState({ starting: false });
+    return true;
+  }
+
   async startLive(opts: { resume: boolean; cwd?: string; name?: string; ws?: string }): Promise<void> {
     if (this.live) return;
     // A pi we are just spawning counts as activity on this session's clock: the watermark's
@@ -1397,46 +1475,7 @@ export class Session extends EventEmitter {
       },
     });
 
-    this.rpc.on("event", (ev: any) => this.onPiEvent(ev));
-    this.rpc.on("ui_request", (req: any) => this.onUiRequest(req));
-    this.rpc.on("stderr", () => this.touch());
-    this.rpc.on("log", (line: string) => this.emitWs({ type: "notice", sessionId: id, text: line, level: "warn" }));
-    this.rpc.on("exit", (reason: string) => {
-      const closing = this.closing;
-      const quiet = this.closeQuietly;
-      this.closing = false;
-      this.closeQuietly = false;
-      this.ownExitAt = Date.now();
-      this.state.owned = false;
-      // A pi that died while still booting must not leave the page on 「正在启动…」 forever.
-      this.setState({ running: false, starting: false });
-      // 进程没了，等「这一轮开始」的那条路也断了：先放它下来，它自己会看到 rpc 已死并标红剩下的。
-      this.wakeRunStart();
-      // #197 / D178: 启动期收下的消息跟着这个进程一起没戏了 —— 气泡标红、给一句人话，不静默吞掉。
-      const lost = this.bootQueue.splice(0);
-      if (lost.length) this.failBoot(lost, closing ? "stopped" : "boot");
-      releaseLock(id);
-      this.clearApprovals();
-      this.clearAsks();
-      this.endCompaction();
-      // The extensions that drew these live in the process that just ended.
-      this.resetExtUi();
-      this.setQueue([], []);
-      this.bashRun = null;
-      // #202 / D183: 排着还没跑的 `!` 也随这个进程作废，否则卡片会一直停在「等待 pi 启动」。
-      for (const b of this.bootBash.splice(0)) this.failBash(b.itemId, "pi 进程退出了，这条命令没有跑");
-      // A stop the user asked for is not news; only an exit nobody asked for is worth the stderr tail.
-      if (closing) {
-        if (!quiet) this.emitWs({ type: "notice", sessionId: id, text: "已停止运行，历史留在磁盘，发消息会自动接管。", level: "info" });
-      } else {
-        // #200 AC6 / D183: 退出原因里的 exit code / signal 是给日志看的，界面只留人话。
-        console.log(`[exit] ${id} pi 进程退出：${reason}`);
-        this.emitWs({ type: "notice", sessionId: id, text: "pi 进程意外退出了（可能有别的终端占着这个会话）。历史留在磁盘，发消息会重新接管。", level: "warn" });
-      }
-      // A deliberately paused 随手问 has no external writer and keeps its live transcript snapshot.
-      // Other closed sessions still tail the file so terminal updates remain visible.
-      if (!(this.state.scratch && this.state.paused)) this.startTail();
-    });
+    this.wireRpc(this.rpc, id);
 
     this.rpc.start();
 
@@ -3434,8 +3473,29 @@ export class SessionManager extends EventEmitter {
     return out;
   }
 
-  /** Sessions that some other process owns (e.g. the terminal) — read-only. */
-  lockedIds(): string[] {
+  /**
+   * 换脑后接管壳里还活着的会话（D385）。壳的 snapshot 是唯一真相：里面有子进程的才算数 ——
+   * 宁可让页面显示「只读预览」，也不能凭空多出一个写者。
+   */
+  async adoptLinked(ids: string[]): Promise<void> {
+    if (!brainLink() || !ids.length) return;
+    for (const id of ids) {
+      const s = this.ensure(id);
+      if (s.live) continue;
+      const ok = await s.adopt();
+      console.log(`[adopt] ${id} ${ok ? "接管了壳里的进程" : "没接管（锁在别处，或壳里已经没有这个子进程）"}`);
+    }
+  }
+
+  /** 换脑前把锁交出去（D385）：子进程还活着，新脑要能立刻接上。**不碰进程。** */
+  releaseLocks(): void {
+    for (const s of this.sessions.values()) {
+      if (s.state.owned) releaseLock(s.state.id);
+      s.state.owned = false;
+    }
+  }
+
+  /** Sessions that some other process owns (e.g. the terminal) — read-only. */  lockedIds(): string[] {
     const out: string[] = [];
     for (const m of this.metas()) {
       const lock = readLock(m.id);

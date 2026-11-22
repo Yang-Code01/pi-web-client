@@ -15,6 +15,11 @@ export interface RpcSpawnOptions {
   sessionId?: string;
   /** 有壳时非空：进程由壳 spawn、管道由壳持有，这里只说话。 */
   link?: BrainLink | null;
+  /**
+   * 只接管壳里现成的子进程，**不许新开**（换脑后接管在跑的会话）。壳里没有就算失败：
+   * 不能像发消息那样顺手拉起一个新的 pi —— 那会让同一条会话多出两个写者。
+   */
+  adoptOnly?: boolean;
 }
 
 export interface RpcResponse {
