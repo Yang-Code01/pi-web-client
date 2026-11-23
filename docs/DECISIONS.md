@@ -7644,6 +7644,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改：**
 
 - 升级发生在 `npm install`，跑着的桥要重启才用上新版本（与装扩展一贯如此）。
+- **热部署 / `bridge-update` 不跑整备，所以它们不会把旧版本升上去，也不会被拦。** `scripts/hotdeploy.mjs` 只跑 `npm run build` 然后直接 `spawn bridge/dist/index.js`；`bridge-update` 的 `restart.mjs` 起的是 `npm run start:nobuild`（即同一个入口）—— 两者都不经过 `scripts/bootstrap.mjs`，而 D224 那个关卡只挂在 `npm start` 上。结果：只靠热部署的机器会一直停在旧版，页面一直挂着「要升级」，功能不受影响（桥不在运行期校验下限）。想让它们对齐，只能自己跑一次 `npm install`。没在 hotdeploy 里顺手加 `npm install`：那会在杀进程前动 `node_modules` 与用户的全局目录，与 D220「装东西只在用户按下 `npm install` 时」的边界冲突，也会把「构建失败时旧服务原样活着」这条保证弄复杂。
 - 启动关卡现在会拦「旧」：低于下限的人下次 `npm start` 起不来，得先 `npm install`。这是故意的 —— 不拦的话「已装就不动」会让这批人继续停在旧版本上。
 - 样本是某一版的快照，会过时；它守的是「网页认的字段还在不在」，不是「上游行为完全没变」。换下限时按 fixture 里的 README 重取一次（约两分钟，两次副代理调用）。
 - 想回到「旧了只提示」：把 `depAction` 的 `upgrade` 分支去掉、页面文案改回一句即可，真样本与版本一致性断言在任何方案下都成立。
