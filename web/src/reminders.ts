@@ -88,7 +88,9 @@ export class ReminderCenter {
     this.button.type = "button";
     this.button.hidden = true;
     this.badgeEl = el("span", "remind-bell-count");
-    this.button.append(el("span", "remind-bell-icon", "🔔"), this.badgeEl);
+    /* 线描铃（不是 emoji）：与顶栏那排单色图标同一种语言，颜色走 currentColor。
+       数量是叠在图标右上角的一枚小徽标 —— macOS 的 Dock / 邮箱那套（原型 F 片）。 */
+    this.button.append(bellIcon(), this.badgeEl);
     this.button.onclick = (e) => {
       e.stopPropagation();
       this.toggle(!this.open);
@@ -337,6 +339,29 @@ export class ReminderCenter {
 }
 
 const ICONS: Record<ReminderKind, string> = { approval: "⚠", ask: "❓", notice: "•" };
+
+/** 铃铛图标：一段两笔的线描，`currentColor` 让它在 hover / 有事情时跟着文字色变。 */
+function bellIcon(): SVGSVGElement {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("remind-bell-icon");
+  for (const d of [
+    "M8 2.2c-2 0-3.2 1.5-3.2 3.4 0 2.4-.7 3.3-1.3 3.9h9c-.6-.6-1.3-1.5-1.3-3.9 0-1.9-1.2-3.4-3.2-3.4Z",
+    "M6.6 11.6a1.5 1.5 0 0 0 2.8 0",
+  ]) {
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.2");
+    path.setAttribute("stroke-linejoin", "round");
+    path.setAttribute("stroke-linecap", "round");
+    svg.append(path);
+  }
+  return svg;
+}
 
 /** 已处理的按天分组（D389 第 8 条）：今天 / 昨天 / 更早。 */
 type Bucket = "today" | "yesterday" | "earlier";
