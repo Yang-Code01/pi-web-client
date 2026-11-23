@@ -137,6 +137,8 @@ export interface DepsReport {
 
 export const api = {
   me: () => req<Me>("/api/me"),
+  /** D389 提醒中心：整份清单（平时靠 WS 的 `reminders` 帧，刷新 / 重连时取一次）。 */
+  reminders: () => req<{ items: any[]; muted: string[]; settings: any; badge: number }>("/api/reminders"),
   /** 本项目需要什么（pi 版本 + 三个扩展）。只读；装是 `npm install` 的 postinstall 干的。 */
   deps: () => req<DepsReport>("/api/deps"),
   login: (passphrase: string) =>

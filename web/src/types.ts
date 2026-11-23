@@ -334,6 +334,8 @@ export interface Me {
   pushCount: number;
   /** 「pi 设置 → 通知」总开关（D91）。 */
   notify?: boolean;
+  /** D389 提醒中心的三档开关（缺省：总开关开、阻塞类弹、其它不弹）。 */
+  reminders?: { enabled: boolean; blocking: boolean; others: boolean };
   sessionsRoot: string;
 }
 
