@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./settings-console.css";
 import { api, type DepPackageId, type DepsReport } from "./api.ts";
+import { icon, face, isIconName, fileIcon, type IconName } from "./icons.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { atSpan, filterCommands, PANEL_COMMANDS, slashSpan, type CommandItem } from "./commands.ts";
@@ -262,13 +263,20 @@ function bgTookText(ms: number): string {
 }
 
 /**
- * 「📂 产物」在第一个空格处拆成图标与名字。宽按钮（`setWideLabel`）与 Aa 里的预览胶囊共用
- * 这一份，不然同一套文案在两处各按各的规则拆，改一处忘另一处。
+ * 顶栏那几颗宽按钮的图标（D138 的「图标与文字分开包」不变，只是图标从文案里搬到了这张表）。
+ * 文案里不再带 emoji，所以窄屏「收成方块」那套拆法不必再在第一个空格处切字符串。
  */
-function splitWideLabel(label: string): [string, string] {
-  const cut = label.indexOf(" ");
-  return cut > 0 ? [label.slice(0, cut), label.slice(cut + 1)] : ["", label];
-}
+const TOPBAR_ICON = {
+  artifacts: "layers",
+  terminal: "terminal",
+  files: "folder",
+  notes: "bug",
+  peer: "users",
+  scratch: "bubble",
+  jira: "lozenge",
+  mail: "mail",
+  filesearch: "search",
+} satisfies Record<string, IconName>;
 
 export class App {
   private socket = new Socket();
@@ -895,22 +903,21 @@ export class App {
   }
 
   /**
-   * 顶栏那几颗「图标 + 文字」的按钮。窄屏上六个宽按钮写不下（「📁 文件管理器」一颗就 90px，
-   * 390px 的手机加上「产物」就溢出），所以图标与文字分开包：`@media (max-width: 620px)` 只把
-   * `.lb` 收掉，按钮回成 28px 方块，文字还在 title / aria-label 里。
-   * 切分用的是 `tr()` 之后的文案（形如「📂 产物」，第一个空格前是图标），所以不必再为窄屏添一套 key。
+   * 顶栏那几颗「图标 + 文字」的按钮。窄屏上六个宽按钮写不下（「文件管理器」一颗就 90px，
+   * 390px 的手机加上「产物」就溢出），所以图标与文字分开包：`@media (max-width: 560px)` 只把
+   * `.lb` 收掉，按钮回成 28px 方块，文字还在 title / aria-label 里。图标名走 `TOPBAR_ICON`。
    */
-  private wideBtn(label: string, extra = ""): HTMLButtonElement {
+  private wideBtn(iconName: IconName, label: string, extra = ""): HTMLButtonElement {
     const b = el("button", `icon-btn wide ${extra}`.trim()) as HTMLButtonElement;
-    this.setWideLabel(b, label);
+    this.setWideLabel(b, iconName, label);
     return b;
   }
 
-  /** 同一颗宽按钮的字会换（终端跑起来之后是「>_ 终端 2」），所以拆开这件事得能重做一遍。 */
-  private setWideLabel(btn: HTMLElement, label: string): void {
-    const [ic, name] = splitWideLabel(label);
-    btn.replaceChildren(el("span", "ic", ic || name));
-    if (ic) btn.append(el("span", "lb", name));
+  /** 同一颗宽按钮的字会换（终端跑起来之后是「终端 2」），所以拆开这件事得能重做一遍。 */
+  private setWideLabel(btn: HTMLElement, iconName: IconName, label: string): void {
+    const box = el("span", "ic");
+    box.append(icon(iconName, { size: 15 }));
+    btn.replaceChildren(box, el("span", "lb", label));
   }
 
   // ---------------------------------------------------------------- layout
@@ -933,9 +940,10 @@ export class App {
     collapseRight.dataset.side = "right";
     collapseRight.dataset.act = "queue";
     collapseRight.onclick = () => this.togglePane("queue");
-    // 这颗以前是「Aa」：现在它是整个设置抽屉（外观 + 语言 + 通道 + 工具）的入口，所以画成齿轮。
-    // 16px 是量出来的：13px 的 ⚙ 在这个等宽字体里糊成一圈，看不出八颗齿；U+FE0E 要单色字形，不要彩色 emoji。
-    const look = el("button", "icon-btn set-btn", "\u2699\uFE0E");
+    // 这颗以前是「Aa」：现在它是整个设置抽屉（外观 + 语言 + 通道 + 工具）的入口。
+    // 用滑杆不是齿轮：16px 的齿轮在这个字号下糊成一朵花，两根滑杆还认得出。
+    const look = el("button", "icon-btn set-btn") as HTMLButtonElement;
+    look.append(icon("sliders", { size: 16 }));
     look.title = tr("设置：外观 / 连接与设置");
     look.setAttribute("aria-label", look.title);
     look.dataset.act = "look";
@@ -945,33 +953,33 @@ export class App {
     this.hotChip.hidden = true;
     this.hotChip.dataset.act = "hotdeploy";
     this.hotChip.onclick = () => openHotdeploy();
-    const files = this.wideBtn(tr("📂 产物"));
+    const files = this.wideBtn(TOPBAR_ICON.artifacts, tr("产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
     files.onclick = () => void this.openArtifactsSheet();
     files.hidden = true;
     // D92: the shell sits next to 产物 now — it is a dialog over the page, and this button is both
     // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
-    const term = this.wideBtn(tr(">_ 终端"));
+    const term = this.wideBtn(TOPBAR_ICON.terminal, tr("终端"));
     term.dataset.act = "terminal";
     term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
     term.onclick = () => this.openTerminal();
     this.els.term = term;
-    const fs = this.wideBtn(tr("📁 文件管理器"));
+    const fs = this.wideBtn(TOPBAR_ICON.files, tr("文件管理器|顶栏按钮"));
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     fs.dataset.act = "files";
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
     // D108：记录不跟会话绑定，所以它跟终端一样常显；计数只在 title 里。
-    const notes = this.wideBtn("🐞 bug", "notes-btn");
+    const notes = this.wideBtn(TOPBAR_ICON.notes, "bug", "notes-btn");
     notes.title = tr("记录 bug / 变更 / 想法 / 杂事");
     notes.dataset.act = "notes";
     notes.onclick = () => this.openNotes();
     this.els.notes = notes;
     // #45: the peer is a dialog over the page, not a separate tab — same as 终端.
-    const peer = this.wideBtn(tr("🌐 内网通"));
+    const peer = this.wideBtn(TOPBAR_ICON.peer, tr("内网通"));
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     // 点它是一次用户手势：顺手把通知权限问一次（没问过才问，问过就不再打扰）。
@@ -987,26 +995,26 @@ export class App {
     peer.append(this.peerBadge);
     this.startPeerWatch();
     // #86：随手问也不跟会话绑定（它不进列表），所以跟终端 / 记录一样常显。
-    const scratch = this.wideBtn(tr("💭 随手问"));
+    const scratch = this.wideBtn(TOPBAR_ICON.scratch, tr("随手问"));
     scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     scratch.dataset.act = "scratch";
     scratch.onclick = () => this.scratch.open();
     this.els.scratch = scratch;
     // #248：Jira 面板。跟「随手问」一样是顶栏常驻的 dialog 入口（窄屏只留 🔷）。
-    const jira = this.wideBtn(tr("🔷 Jira"));
+    const jira = this.wideBtn(TOPBAR_ICON.jira, "Jira");
     jira.title = tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP");
     jira.dataset.act = "jira";
     jira.onclick = () => this.openJira();
     this.els.jira = jira;
     // 邮箱：跟「随手问」一样是顶栏常驻的 dialog 入口（窄屏只留 📮）。
-    const mail = this.wideBtn(tr("📮 邮箱"));
+    const mail = this.wideBtn(TOPBAR_ICON.mail, tr("邮箱"));
     mail.title = tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管");
     mail.dataset.act = "mail";
     mail.onclick = () => this.openMail();
     this.els.mail = mail;
     // D321：整机文件搜索（名字就叫 Everything）。跟终端 / 记录一样常驻（不绑会话）；
     // 默认画在顶栏（D332，2026-11-19 用户要求与文件管理器对调），用户在「设置 → 外观」里可以关。
-    const fsearch = this.wideBtn(tr("🔎 Everything|顶栏按钮"));
+    const fsearch = this.wideBtn(TOPBAR_ICON.filesearch, tr("Everything|顶栏按钮"));
     fsearch.title = tr("在这台电脑上按名字 / 路径找文件（本机索引，毫秒级）");
     fsearch.dataset.act = "filesearch";
     fsearch.onclick = () => this.openFileSearch();
@@ -4803,25 +4811,25 @@ export class App {
     const pv = el("div", `chrome-pv${this.chromePreviewNarrow ? " narrow" : ""}`);
     const pvTop = el("div", "chrome-pv-top");
     pvTop.append(el("span", "chrome-pv-title", tr("会话名")));
-    const topItems: [ChromeId, string][] = [
-      ["artifacts", tr("📂 产物")],
-      ["terminal", tr(">_ 终端")],
-      ["files", tr("📁 文件管理器")],
-      ["notes", "🐞 bug"],
-      ["peer", tr("🌐 内网通")],
-      ["scratch", tr("💭 随手问")],
-      ["jira", tr("🔷 Jira")],
-      ["mail", tr("📮 邮箱")],
-      ["filesearch", tr("🔎 Everything|顶栏按钮")],
+    const topItems: [ChromeId, IconName, string][] = [
+      ["artifacts", "layers", tr("产物")],
+      ["terminal", "terminal", tr("终端")],
+      ["files", "folder", tr("文件管理器|顶栏按钮")],
+      ["notes", "bug", "bug"],
+      ["peer", "users", tr("内网通")],
+      ["scratch", "bubble", tr("随手问")],
+      ["jira", "lozenge", "Jira"],
+      ["mail", "mail", tr("邮箱")],
+      ["filesearch", "search", tr("Everything|顶栏按钮")],
     ];
-    for (const [id, label] of topItems) {
-      const [ic, name] = splitWideLabel(label);
+    for (const [id, iconName, name] of topItems) {
       const btn = el("button", "chrome-pv-btn") as HTMLButtonElement;
       btn.type = "button";
       btn.dataset.chrome = id;
       btn.dataset.act = `pv-${id}`;
-      if (ic) btn.append(el("span", "ic", ic));
-      btn.append(el("span", "pv-name", name));
+      const ic = el("span", "ic");
+      ic.append(icon(iconName, { size: 11 }));
+      btn.append(ic, el("span", "pv-name", name));
       btn.hidden = !lit(id);
       btn.disabled = offline;
       btn.title = tr("点一下隐藏「{p1}」", { p1: name });
@@ -4830,10 +4838,11 @@ export class App {
       pvTop.append(keep(btn));
     }
     // `Aa` 就在这颗位置上，但它不在 `CHROME_IDS` 里：这张表靠它进来，关掉就再也打不开了。
-    const gear = el("button", "chrome-pv-btn chrome-pv-gear", "\u2699\uFE0E") as HTMLButtonElement;
+    const gear = el("button", "chrome-pv-btn chrome-pv-gear") as HTMLButtonElement;
     gear.type = "button";
     gear.disabled = true;
-    gear.title = tr("⚙ 关不掉：这张表靠它进来");
+    gear.append(icon("sliders", { size: 11 }));
+    gear.title = tr("关不掉：这张表靠它进来");
     pvTop.append(gear);
     pv.append(pvTop);
 
@@ -4884,7 +4893,7 @@ export class App {
     const wall = el("div", "chrome-wall");
     wall.append(el("div", "levels-label", tr("点一下就收起来，再点一下放回来")));
     const groups: [string, string, [ChromeId, string, string][]][] = [
-      ["top", tr("顶栏按钮"), topItems.map(([id, label]) => { const [ic, name] = splitWideLabel(label); return [id, ic, name]; })],
+      ["top", tr("顶栏按钮"), topItems.map(([id, iconName, name]) => [id, iconName, name] as [ChromeId, IconName, string])],
       ["bottom", tr("输入框下沿"), bottomItems.map(([id, name]) => [id, "·", name] as [ChromeId, string, string])],
     ];
     for (const [group, label, items] of groups) {
@@ -4915,8 +4924,11 @@ export class App {
         tile.dataset.act = `tile-${id}`;
         tile.disabled = offline;
         tile.setAttribute("aria-pressed", String(on));
+        const tileIc = el("span", "chrome-tile-ic");
+        if (isIconName(ic)) tileIc.append(icon(ic, { size: 12 }));
+        else tileIc.textContent = ic || "·";
         tile.append(
-          el("span", "chrome-tile-ic", ic || "·"),
+          tileIc,
           el("span", "chrome-tile-name", name),
           el("span", "chrome-tile-eye", on ? "●" : "○"),
         );
@@ -5080,12 +5092,12 @@ export class App {
     };
     look.title = tr("设置：外观 / 连接与设置");
     look.setAttribute("aria-label", look.title);
-    this.setWideLabel(files, tr("📂 产物"));
+    this.setWideLabel(files, TOPBAR_ICON.artifacts, tr("产物"));
     show("artifacts", files, tr("本会话写过的文件（md / html / 图片…点开预览）"), true);
-    this.setWideLabel(term, tr(">_ 终端"));
+    this.setWideLabel(term, TOPBAR_ICON.terminal, tr("终端"));
     term.setAttribute("aria-label", tr("终端"));
     show("terminal", term, tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）"));
-    this.setWideLabel(fs, tr("📁 文件管理器"));
+    this.setWideLabel(fs, TOPBAR_ICON.files, tr("文件管理器|顶栏按钮"));
     show("files", fs, tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件"), true);
     // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写；这里只按它的结果决定画不画。
     if (notes) {
@@ -5093,30 +5105,30 @@ export class App {
       show("notes", notes, notes.title);
     }
     if (peer) {
-      this.setWideLabel(peer, tr("🌐 内网通"));
+      this.setWideLabel(peer, TOPBAR_ICON.peer, tr("内网通"));
       show("peer", peer, tr("内网通：发现同一内网里的人，直接对话、传文件"));
       // setWideLabel() 把子节点全换掉了：徽标与提示要重新挂回去。
       if (this.peerBadge) peer.append(this.peerBadge);
       this.paintPeerBadge();
     }
     if (scratch) {
-      this.setWideLabel(scratch, tr("💭 随手问"));
+      this.setWideLabel(scratch, TOPBAR_ICON.scratch, tr("随手问"));
       show("scratch", scratch, tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog"));
     }
     if (jira) {
-      this.setWideLabel(jira, tr("🔷 Jira"));
+      this.setWideLabel(jira, TOPBAR_ICON.jira, "Jira");
       jira.setAttribute("aria-label", tr("Jira"));
       show("jira", jira, tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP"));
     }
     if (mail) {
-      this.setWideLabel(mail, tr("📮 邮箱"));
+      this.setWideLabel(mail, TOPBAR_ICON.mail, tr("邮箱"));
       mail.setAttribute("aria-label", tr("邮箱"));
       show("mail", mail, tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管"));
     }
     // 文件搜索也进 chrome 表（D321）：这颗是机器级的，没开会话也照样能用，所以不进 `SESSION_ONLY`；
     // D332 起它默认就画（与文件管理器对调）。
     if (fsearch) {
-      this.setWideLabel(fsearch, tr("🔎 Everything|顶栏按钮"));
+      this.setWideLabel(fsearch, TOPBAR_ICON.filesearch, tr("Everything|顶栏按钮"));
       show("filesearch", fsearch, tr("在这台电脑上按名字找文件：索引建在本机，不依赖 Everything"));
     }
     // #290：下沿四颗是在拼 composer 时一次建好的，重画 composer 时不经过这里 —— 它自己也会调
@@ -8432,7 +8444,8 @@ export class App {
           ev.stopPropagation();
           this.togglePin(s.id);
         };
-        const rename = el("button", "rename-btn", "✎");
+        const rename = el("button", "rename-btn") as HTMLButtonElement;
+        rename.append(icon("pencil", { size: 13 }));
         rename.title = tr("改个名字");
         rename.setAttribute("aria-label", tr("重命名会话"));
         rename.onclick = (ev) => {
@@ -8441,7 +8454,7 @@ export class App {
         };
         const archived = this.manage.archived.includes(s.id);
         const archive = el("button", "card-act");
-        archive.append(...iconNodes(archived ? ICON_UNARCHIVE : ICON_ARCHIVE));
+        archive.append(icon(archived ? "unarchive" : "archive", { size: 14 }));
         archive.title = archived ? tr("取消归档（放回列表）") : tr("归档（收进「已归档」，文件不动）");
         archive.setAttribute("aria-label", archive.title);
         archive.onclick = (ev) => {
@@ -8453,7 +8466,7 @@ export class App {
         const held = App.deleteBlocked(s);
         const del = el("button", `card-act del${armed ? " armed" : ""}`) as HTMLButtonElement;
         if (armed) del.textContent = tr("删除?");
-        else del.append(...iconNodes(ICON_TRASH));
+        else del.append(icon("trash", { size: 14 }));
         del.disabled = held;
         del.title = App.deleteWhy(s, armed, tr("删除（先进垃圾箱，可在会话管理里还原）"));
         del.setAttribute("aria-label", tr("删除会话"));
@@ -9078,7 +9091,9 @@ export class App {
       const row = files[current];
       if (!row) return;
       const nm = fileNameOf(row.path);
-      title.replaceChildren(el("span", "art-ico", previewIcon(row.path)), el("span", "diff-name", nm));
+      const artIc = el("span", "art-ico");
+      artIc.append(icon(fileIcon(row.path), { size: 14 }));
+      title.replaceChildren(artIc, el("span", "diff-name", nm));
       title.append(el("span", `art-badge st-${row.status}`, this.artStatusLabel(row.status)), el("span", "art-count", `+${row.added} −${row.removed}`));
       if (row.estimate) title.append(el("span", "art-est", tr("按 git 估算")));
       main.replaceChildren(el("div", "empty", tr("正在读改动…")));
@@ -9867,7 +9882,8 @@ export class App {
    * 只对本机 / 局域网开放 —— 桥那边对公网连接直接 403。
    */
   private revealButton(abs: string): HTMLButtonElement {
-    const btn = el("button", "btn", tr("📂 在文件夹中显示")) as HTMLButtonElement;
+    const btn = el("button", "btn") as HTMLButtonElement;
+    btn.append(icon("folder", { size: 14 }), el("span", "", tr("在文件夹中显示")));
     btn.title = tr("在这台电脑的文件管理器里打开 {p1}，文件会被选中", { p1: abs });
     btn.onclick = () => {
       btn.disabled = true;
@@ -10067,7 +10083,9 @@ export class App {
     const title = el("div", "viewer-title");
     const browsing = v.pane === "browse";
     const name = info?.name ?? (v.ext ? v.ext.label : browsing ? tr("浏览本机文件") : (v.path.split(/[\\/]/).filter(Boolean).pop() ?? v.path));
-    title.append(el("span", "viewer-ico", browsing && !info ? "📁" : v.ext ? "🔗" : previewIcon(name)), el("span", "viewer-name", name));
+    const viewerFace = el("span", "viewer-ico");
+    viewerFace.append(icon(browsing && !info ? "folder" : v.ext ? "link" : fileIcon(name), { size: 14 }));
+    title.append(viewerFace, el("span", "viewer-name", name));
     const subText = info ? `${info.abs} · ${fmtSize(info.size)}` : v.ext ? v.ext.url : browsing ? v.lastDir || this.session?.cwd || tr("此电脑") : v.path;
     const sub = el("div", "viewer-path", subText);
     sub.title = info?.abs ?? subText;
@@ -10088,8 +10106,9 @@ export class App {
     if (!fwd.disabled) fwd.onclick = () => this.goStep(1);
     nav.append(back, fwd);
     const tools = el("div", "viewer-tools");
-    const tbtn = (text: string, tip: string, fn: () => void, on = false) => {
-      const b = el("button", `viewer-btn${on ? " on" : ""}`, text) as HTMLButtonElement;
+    const tbtn = (f: IconName | string, tip: string, fn: () => void, on = false) => {
+      const b = el("button", `viewer-btn${on ? " on" : ""}`) as HTMLButtonElement;
+      b.append(face(f));
       b.title = tip;
       b.onclick = fn;
       tools.append(b);
@@ -10151,20 +10170,20 @@ export class App {
       }
       tools.append(seg);
     }
-    tbtn("⟳", tr("刷新（重新读取文件）"), () => void this.openPreview(v.path, v.sessionId, true));
+    tbtn("refresh", tr("刷新（重新读取文件）"), () => void this.openPreview(v.path, v.sessionId, true));
     if (info) {
       // D209 的第一步出口在 binary 支线的提示框里；那里看不到的格式（现在的 pdf）在头部补一颗，
       // 否则「用本机程序打开」对它们是句空话（D50 修订：pdf 不再落 binary）。
       if (info.kind !== "binary" && DESKTOP_OPEN.test(info.name))
-        tbtn("🖥", tr("用默认程序打开"), () => void this.openInApp(info.token));
+        tbtn("monitor", tr("用默认程序打开"), () => void this.openInApp(info.token));
       const open = tbtn("↗", tr("在新标签页打开"), () => this.openRawTab(rawUrl(info)));
       open.classList.add("wide-only");
       const copy = tbtn("⧉", tr("复制路径"), () => void navigator.clipboard?.writeText(info.abs));
       copy.classList.add("wide-only");
-      tbtn("📎", tr("把这个路径引用到输入框"), () => this.insertPaths([info.abs]));
+      tbtn("clip", tr("把这个路径引用到输入框"), () => this.insertPaths([info.abs]));
     }
-    tbtn(v.full ? "🗗" : "⛶", v.full ? tr("退出全屏") : tr("全屏"), () => this.viewerFull(!v.full), v.full);
-    tbtn("✕", tr("关闭（Esc）"), () => this.closeViewer());
+    tbtn(v.full ? "collapse" : "expand", v.full ? tr("退出全屏") : tr("全屏"), () => this.viewerFull(!v.full), v.full);
+    tbtn("close", tr("关闭（Esc）"), () => this.closeViewer());
     head.append(nav, left, tools);
 
     // 浏览态：列表挂上就保持状态（滚动、筛选、当前位置），重绘时不要拆掉（D50）。
@@ -10485,19 +10504,23 @@ export class App {
       return;
     }
     if (this.failReviewPending) {
-      btn.replaceChildren(el("span", "fail-cta-glyph", "⚡"), el("span", "fail-cta-text", tr("复盘进行中…")), el("span", "fail-cta-n", String(n)));
+      const glyph = el("span", "fail-cta-glyph");
+      glyph.append(icon("bolt", { size: 14 }));
+      btn.replaceChildren(glyph, el("span", "fail-cta-text", tr("复盘进行中…")), el("span", "fail-cta-n", String(n)));
       btn.title = tr("正在把这一轮失败发给 pi 复盘");
       return;
     }
     const reviewed = this.failReviewed();
+    const ctaGlyph = el("span", "fail-cta-glyph");
+    ctaGlyph.append(icon("bolt", { size: 14 }));
     btn.replaceChildren(
-      el("span", "fail-cta-glyph", "⚡"),
+      ctaGlyph,
       el("span", "fail-cta-text", tr("总结本轮错误")),
       el("span", "fail-cta-n", String(n)),
       el("span", "fail-cta-caret", "▾"),
     );
     btn.classList.toggle("done", reviewed >= n);
-    btn.title = tr("把这次会话里的 {p1} 次失败归并进「⚡ AI 出错记录」：同类只加次数", { p1: n });
+    btn.title = tr("把这次会话里的 {p1} 次失败归并进「AI 出错记录」：同类只加次数", { p1: n });
     if (this.failMenu) this.paintFailMenu();
   }
 
@@ -10620,12 +10643,14 @@ export class App {
     head.append(el("span", "", tr("本轮 {p1} 次失败 · 归成 {p2} 类", { p1: n, p2: classes })));
     if (reviewed > 0) head.append(el("span", `fail-menu-state${reviewed >= n ? " done" : ""}`, tr("已复盘 {p1}", { p1: reviewed })));
 
-    const item = (glyph: string, title: string, desc: string, act: () => void): HTMLButtonElement => {
+    const item = (f: IconName | string, title: string, desc: string, act: () => void): HTMLButtonElement => {
       const b = el("button", "fail-menu-item") as HTMLButtonElement;
       b.type = "button";
       b.setAttribute("role", "menuitem");
       const t = el("div", "fail-menu-t");
-      t.append(el("span", "fail-menu-glyph", glyph), el("span", "", title));
+      const faceBox = el("span", "fail-menu-glyph");
+      faceBox.append(face(f));
+      t.append(faceBox, el("span", "", title));
       b.append(t, el("div", "fail-menu-d", desc));
       b.onclick = (ev) => {
         ev.stopPropagation();
@@ -10634,9 +10659,9 @@ export class App {
       return b;
     };
 
-    const commit = item("🗂", tr("记进账本"), tr("同类只加次数，不花 token"), () => this.commitFails());
+    const commit = item("box", tr("记进账本"), tr("同类只加次数，不花 token"), () => this.commitFails());
     const review = item(
-      "⚡",
+      "bolt",
       this.failReviewPending ? tr("正在复盘…") : tr("发到会话复盘"),
       reviewed >= n && !this.failReviewPending
         ? tr("这 {p1} 次已经复盘过；再发会再烧一轮 token", { p1: reviewed })
@@ -10873,7 +10898,9 @@ export class App {
     if (!btn) return;
     const count = this.notes.filter((n) => n.status === "pending").length;
     // 顶栏只要图标：小字「bug N」把这一行挤得没地方，计数放 title 里。
-    btn.replaceChildren(el("span", "notes-glyph", "🐞"));
+    const noteGlyph = el("span", "notes-glyph");
+    noteGlyph.append(icon("bug", { size: 15 }));
+    btn.replaceChildren(noteGlyph);
     btn.classList.toggle("has-pending", count > 0);
     btn.title = count ? tr("记录：{p1} 条待处理（Ctrl+Shift+B）", { p1: count }) : tr("记录 bug / 变更 / 想法 / 杂事（Ctrl+Shift+B）");
   }
@@ -10965,7 +10992,8 @@ export class App {
    * breadcrumb crawl. `getCwd` is re-read on click, so 切会话 while the pane is open still lands right.
    */
   private dirHome(getCwd: () => string): { node: HTMLButtonElement; bind: (picker: DirPicker) => void } {
-    const node = el("button", "btn ghost dir-home", tr("⌂ 工作目录")) as HTMLButtonElement;
+    const node = el("button", "btn ghost dir-home") as HTMLButtonElement;
+    node.append(icon("home", { size: 14 }), el("span", "", tr("工作目录")));
     node.dataset.act = "dir-home";
     const sync = (): void => {
       const cwd = (getCwd() || "").trim();
@@ -11027,18 +11055,22 @@ export class App {
    * 含空格才包引号：`C:\Program Files\x` 裸着会被读成两个路径；没空格的包上反而多两处要删。
    */
   private dirRef(getPath: () => string): { node: HTMLButtonElement; bind: () => void } {
-    const label = tr("📎 引用当前文件夹");
-    const node = el("button", "btn ghost dir-ref", label) as HTMLButtonElement;
+    const node = el("button", "btn ghost dir-ref") as HTMLButtonElement;
+    node.append(icon("clip", { size: 14 }), el("span", "", tr("引用当前文件夹")));
     node.dataset.act = "dir-ref";
     const sync = (): void => {
       const path = (getPath() || "").trim();
       node.disabled = !path;
       node.title = path ? tr("把目录 {p1} 引用到输入框", { p1: path }) : tr("盘符列表没有目录可引用，先点进一个文件夹");
     };
+    const paint = (text?: string): void => {
+      node.replaceChildren(icon("clip", { size: 14 }), el("span", "", text ?? tr("引用当前文件夹")));
+    };
+    paint();
     const flash = (text: string): void => {
-      node.textContent = text;
+      node.replaceChildren(el("span", "", text));
       setTimeout(() => {
-        if (node.isConnected) node.textContent = label;
+        if (node.isConnected) paint();
       }, 1200);
     };
     sync();
@@ -12407,7 +12439,7 @@ export class App {
       const inTrash = this.mgrView === "trash";
       titleEl.textContent = inTrash ? tr("垃圾箱") : tr("会话管理");
       if (inTrash) bin.textContent = tr("← 会话列表");
-      else bin.textContent = this.trash.length ? tr("🗑 垃圾箱 ({p1})", { p1: this.trash.length }) : tr("🗑 垃圾箱");
+      else bin.replaceChildren(icon("trash", { size: 14 }), el("span", "", this.trash.length ? tr("垃圾箱 ({p1})", { p1: this.trash.length }) : tr("垃圾箱")));
       bin.classList.toggle("on", inTrash);
       bin.title = inTrash ? tr("回到会话列表") : tr("最近删除的会话都在这里，清空才真的销毁");
       // The toolbar itself stays (it carries the bin toggle); only the filters go away,
@@ -12570,9 +12602,9 @@ export class App {
     }
 
     const acts = el("div", "mgr-acts");
-    const act = (html: string, title: string, fn: () => void, cls = "card-act") => {
+    const act = (f: IconName | string, title: string, fn: () => void, cls = "card-act") => {
       const b = el("button", cls) as HTMLButtonElement;
-      b.append(glyph(html));
+      b.append(face(f));
       b.title = title;
       b.setAttribute("aria-label", title);
       b.onclick = (ev) => {
@@ -12590,16 +12622,16 @@ export class App {
     };
     acts.append(open);
     act(pinned ? "★" : "☆", pinned ? tr("取消置顶") : tr("置顶"), () => this.pinIds([s.id], !pinned), `card-act${pinned ? " pinned" : ""}`);
-    act("✎", tr("重命名"), () => {
+    act("pencil", tr("重命名"), () => {
       this.mgrRename = { id: s.id, draft: s.name || "" };
       repaint();
     });
-    act(archived ? ICON_UNARCHIVE : ICON_ARCHIVE, archived ? tr("恢复（取消归档）") : tr("归档（文件不动，只是收起来）"), () => this.archiveIds([s.id], !archived));
+    act(archived ? "unarchive" : "archive", archived ? tr("恢复（取消归档）") : tr("归档（文件不动，只是收起来）"), () => this.archiveIds([s.id], !archived));
     const key = `one:${s.id}`;
     const armed = this.mgrDelArm?.key === key;
     const held = App.deleteBlocked(s);
     const del = act(
-      armed ? tr("删除?") : ICON_TRASH,
+      armed ? tr("删除?") : "trash",
       App.deleteWhy(s, armed, tr("删除（先进垃圾箱，可还原）")),
       () => {
         if (this.mgrArm(key)) this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [s.id] }));
@@ -17053,7 +17085,9 @@ export class App {
     const mode = this.session?.permission ?? "ask";
     const meta = permMode(mode);
     const btn = el("button", `perm-btn perm-${mode}`) as HTMLButtonElement;
-    btn.append(el("span", "perm-ico", meta.icon), el("span", "perm-label", meta.label), el("span", "perm-caret", "▾"));
+    const permIc = el("span", "perm-ico");
+    permIc.append(icon(meta.icon, { size: 14 }));
+    btn.append(permIc, el("span", "perm-label", meta.label), el("span", "perm-caret", "▾"));
     btn.title = tr("权限模式：{p1}——{p2}", { p1: meta.label, p2: meta.desc });
     btn.onclick = (ev) => {
       ev.stopPropagation();
@@ -17089,7 +17123,9 @@ export class App {
     };
     for (const m of PERM_MODES) {
       const row = el("button", `perm-opt perm-${m.id}${m.id === current ? " on" : ""}`);
-      row.append(el("span", "perm-ico", m.icon), el("span", "perm-name", m.label), el("span", "perm-check", m.id === current ? "✓" : ""), el("span", "perm-desc", m.desc));
+      const rowIc = el("span", "perm-ico");
+      rowIc.append(icon(m.icon, { size: 14 }));
+      row.append(rowIc, el("span", "perm-name", m.label), el("span", "perm-check", m.id === current ? "✓" : ""), el("span", "perm-desc", m.desc));
       row.onclick = () => {
         close();
         if (m.id === current) return;
@@ -18443,7 +18479,8 @@ export class App {
       const done = navigator.clipboard?.writeText(text);
       done?.then(() => this.flashToast(tr("已复制到剪贴板"), false, 1600), () => this.flashToast(tr("复制失败"), true, 1600));
     };
-    const close = el("button", "argdialog-btn argdialog-close", "✕") as HTMLButtonElement;
+    const close = el("button", "argdialog-btn argdialog-close") as HTMLButtonElement;
+    close.append(icon("close", { size: 13 }));
     close.type = "button";
     close.setAttribute("aria-label", tr("关闭"));
     head.append(copy, close);
@@ -18836,7 +18873,8 @@ export class App {
       const keyword = loaded?.kind === "tool" && !browserCalls.has(loaded.toolCallId) ? markKeyword(loaded) : null;
       if (keyword) {
         entry.classList.add("markable");
-        const mark = el("button", "exec-step-mark", "🌐") as HTMLButtonElement;
+        const mark = el("button", "exec-step-mark") as HTMLButtonElement;
+    mark.append(icon("window", { size: 13 }));
         mark.type = "button";
         mark.title = tr("这是浏览器操作：把「{p1}」加进命令关键词，以后的调用都算", { p1: keyword });
         mark.onclick = () => {
@@ -18928,7 +18966,7 @@ export class App {
     if (this.browserCfgOpen) panel.append(this.browserCfgEditor());
     if (!model.cards.length) {
       panel.append(el("div", "exec-empty", tr("这一轮没有浏览器操作")));
-      panel.append(el("div", "hint", tr("认得出的有：浏览器工具（MCP、agent_browser），以及运行时真的拉起或连上了浏览器的命令。还漏了的话：脚本里打印「::browser 步骤」行，或在「执行」页那一步右边点 🌐。")));
+      panel.append(el("div", "hint", tr("认得出的有：浏览器工具（MCP、agent_browser），以及运行时真的拉起或连上了浏览器的命令。还漏了的话：脚本里打印「::browser 步骤」行，或在「执行」页那一步右边点那颗浏览器图标。")));
       return panel;
     }
     const list = el("div", "browser-list");
@@ -18995,7 +19033,8 @@ export class App {
       for (const card of model.cards) this.browserFold.set(card.toolCallId, allFolded);
       this.renderQueue();
     };
-    const gear = el("button", "browser-gear", "⚙") as HTMLButtonElement;
+    const gear = el("button", "browser-gear") as HTMLButtonElement;
+    gear.append(icon("sliders", { size: 13 }));
     gear.type = "button";
     gear.title = tr("阈值与工具名单");
     gear.setAttribute("aria-expanded", String(this.browserCfgOpen));
@@ -19464,7 +19503,7 @@ export class App {
     const btn = this.els.term;
     if (!btn) return;
     const n = this.termTabs.size;
-    this.setWideLabel(btn, n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端"));
+    this.setWideLabel(btn, TOPBAR_ICON.terminal, n > 1 ? tr("终端 {p1}", { p1: n }) : tr("终端"));
     btn.classList.toggle("term-live", n > 0);
   }
 
@@ -21133,7 +21172,7 @@ export class App {
     this.closePinMenu();
     if (this.calm()) {
       this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
-      this.pinNote(tr("已移入垃圾箱 · 在左栏🗑里可以还原"));
+      this.pinNote(tr("已移入垃圾箱 · 在左栏的垃圾箱里可以还原"));
       return;
     }
     const r = chip.getBoundingClientRect();
@@ -21177,7 +21216,7 @@ export class App {
         this.pinAnim = null;
         this.pulseBin();
         this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
-        this.pinNote(tr("已移入垃圾箱 · 在左栏🗑里可以还原"));
+        this.pinNote(tr("已移入垃圾箱 · 在左栏的垃圾箱里可以还原"));
       };
     }, 220);
   }
@@ -21474,12 +21513,6 @@ const DEFAULT_PREFS: Prefs = {
 };
 
 /** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
-
-const SVG = (body: string) =>
-  `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
-const ICON_ARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/>');
-const ICON_UNARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M12 17v-6"/><path d="m9.5 13.5 2.5-2.5 2.5 2.5"/>');
-const ICON_TRASH = SVG('<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/><path d="M9 7V4h6v3"/>');
 
 /** `/` menu entries the page runs itself (see runBuiltinCommand), with what they do. */
 const BUILTIN_COMMANDS: [string, string][] = [
@@ -21888,7 +21921,7 @@ const SHORTCUTS: { id: string; label: string }[] = [
   { id: "sessions", label: tr("收起 / 展开左栏") },
   { id: "queue", label: tr("收起 / 展开右栏") },
   { id: "artifacts", label: tr("产物列表") },
-  { id: "files", label: tr("文件管理器") },
+  { id: "files", label: tr("文件管理器|顶栏按钮") },
   { id: "filesearch", label: tr("Everything|搜索面板") },
   { id: "notes", label: tr("bug 记录") },
   { id: "look", label: tr("设置：外观 / 连接与设置") },
@@ -22009,27 +22042,6 @@ function saveKeys(keys: Record<string, string>): void {
   } catch {
     // storage blocked or full: the bindings still work until the next reload
   }
-}
-
-/**
- * ICON_* strings become real SVG nodes here. Building them through DOMParser keeps innerHTML out of
- * the picture entirely, so an icon string can never be an injection path (the constants are nested
- * in the bundle and a stray `<script>` would otherwise be parsed as markup).
- */
-function iconNodes(svg: string): Element[] {
-  // The HTML fragment parser is what puts `<svg>` into the SVG namespace. DOMParser with
-  // "image/svg+xml" handed back a null-namespace element here, and a null-namespace `svg` renders
-  // as an unknown inline element — invisible, only an empty button was left behind.
-  return [...document.createRange().createContextualFragment(svg).children];
-}
-
-/** A button's face: SVG markup becomes an icon, anything else (★ / ☆) stays text. */
-function glyph(src: string): Node {
-  if (src.trimStart().startsWith("<")) {
-    const first = iconNodes(src)[0];
-    if (first) return first;
-  }
-  return document.createTextNode(src);
 }
 
 /** Opens a link in a new tab, but only if it stays on this origin (previews are same-origin /raw/…). */
@@ -22310,11 +22322,11 @@ interface VStep {
   y?: number;
 }
 
-const PERM_MODES: { id: PermissionMode; icon: string; label: string; desc: string }[] = [
-  { id: "readonly", icon: "🔒", label: tr("只读"), desc: tr("只放行读文件 / 搜索 / 列目录这类只看的工具，写文件、执行命令、MCP 与扩展工具一律拦下（适合先出方案）") },
-  { id: "strict", icon: "✋", label: tr("逐个确认"), desc: tr("写文件、执行命令、调用 MCP / 扩展工具都要你批准；只看的工具不用") },
-  { id: "ask", icon: "🛡", label: tr("危险时确认"), desc: tr("只拦删除、push、装依赖、写项目外文件等危险操作（默认）") },
-  { id: "auto", icon: "⚡", label: tr("全自动"), desc: tr("不拦截任何操作，风险自负") },
+const PERM_MODES: { id: PermissionMode; icon: IconName; label: string; desc: string }[] = [
+  { id: "readonly", icon: "lock", label: tr("只读"), desc: tr("只放行读文件 / 搜索 / 列目录这类只看的工具，写文件、执行命令、MCP 与扩展工具一律拦下（适合先出方案）") },
+  { id: "strict", icon: "pointer", label: tr("逐个确认"), desc: tr("写文件、执行命令、调用 MCP / 扩展工具都要你批准；只看的工具不用") },
+  { id: "ask", icon: "shield", label: tr("危险时确认"), desc: tr("只拦删除、push、装依赖、写项目外文件等危险操作（默认）") },
+  { id: "auto", icon: "bolt", label: tr("全自动"), desc: tr("不拦截任何操作，风险自负") },
 ];
 
 type PermMode = (typeof PERM_MODES)[number];
@@ -22324,7 +22336,7 @@ function permMode(id: string): PermMode {
   for (const m of PERM_MODES) if (m.id === id) return m;
   for (const m of PERM_MODES) if (m.id === "ask") return m;
   // Unreachable: the literal above always contains `ask`.
-  return { id: "ask", icon: "🛡", label: tr("危险时确认"), desc: "" };
+  return { id: "ask", icon: "shield", label: tr("危险时确认"), desc: "" };
 }
 
 type PasteBlock = { text: string; open: boolean };
@@ -22434,14 +22446,6 @@ function absFromRel(root: string, rel: string): string {
     out += sep + seg;
   }
   return out;
-}
-
-function previewIcon(p: string): string {
-  const ext = p.split(".").pop()?.toLowerCase() ?? "";
-  if (/^(md|markdown|mdx)$/.test(ext)) return "📝";
-  if (/^html?$/.test(ext)) return "🌐";
-  if (/^(png|jpe?g|gif|svg|webp|bmp|ico|avif)$/.test(ext)) return "🖼";
-  return "📄";
 }
 
 /** Last segment of a path, for a tab label ("pwsh · pi-web-client"). */

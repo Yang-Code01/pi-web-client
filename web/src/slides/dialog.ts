@@ -9,6 +9,7 @@
  * 页数超限 / 转换失败则给原文 + 重试 + 「用本机程序打开」。
  */
 import { api } from "../api.ts";
+import { icon } from "../icons.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { errText, fmtNum, tr } from "../i18n/index.ts";
 
@@ -72,24 +73,29 @@ export class SlidesDialog {
     this.head = el("header", "sd-head");
     const who = el("div", "sd-who");
     who.append(el("span", "sd-name", opts.name), el("span", "sd-path", opts.path));
-    this.head.append(el("span", "sd-ico", "🎬"), who);
+    const headIc = el("span", "sd-ico");
+    headIc.append(icon("slide", { size: 15 }));
+    this.head.append(headIc, who);
 
     if (opts.engine) {
-      const reload = el("button", "sd-btn", "⟳");
+      const reload = el("button", "sd-btn");
+      reload.append(icon("refresh", { size: 13 }));
       reload.type = "button";
       reload.title = tr("重新生成页面");
       reload.setAttribute("aria-label", tr("重新生成页面"));
       reload.onclick = () => void this.request(true);
       this.head.append(reload);
     }
-    const open = el("button", "sd-btn", "🖥");
+    const open = el("button", "sd-btn");
+    open.append(icon("monitor", { size: 13 }));
     open.type = "button";
     open.title = tr("用本机程序打开");
     open.setAttribute("aria-label", tr("用本机程序打开"));
     open.onclick = () => void opts.onOpen();
     this.head.append(open);
 
-    const close = el("button", "sd-btn sd-close", "✕");
+    const close = el("button", "sd-btn sd-close");
+    close.append(icon("close", { size: 13 }));
     close.type = "button";
     close.title = tr("关闭");
     close.setAttribute("aria-label", tr("关闭"));
@@ -102,7 +108,8 @@ export class SlidesDialog {
 
     this.note = el("span", "sd-note");
     this.foot = el("footer", "sd-foot");
-    const reveal = el("button", "sd-act", tr("📂 在文件夹中显示"));
+    const reveal = el("button", "sd-act");
+    reveal.append(icon("folder", { size: 13 }), el("span", "", tr("在文件夹中显示")));
     reveal.type = "button";
     reveal.onclick = () => void opts.onReveal();
     this.foot.append(this.note, reveal);

@@ -13,6 +13,7 @@
  * 发不发、怎么问，由用户决定。
  */
 import { api } from "./api.ts";
+import { icon } from "./icons.ts";
 import { createEl as el } from "./chat.ts";
 import { markSurface, mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
 import "./mail-console.css";
@@ -851,7 +852,11 @@ export class MailPanel {
         top.append(el("span", "mc-row__when", whenText(m.date)));
         row.append(top);
         const mid = el("div", "mc-row__subject");
-        if (m.hasAttachments) mid.append(el("span", "mc-row__clip", "📎"));
+        if (m.hasAttachments) {
+      const clip = el("span", "mc-row__clip");
+      clip.append(icon("clip", { size: 12 }));
+      mid.append(clip);
+    }
         mid.append(document.createTextNode(m.subject || tr("（无主题）")));
         row.append(mid);
         row.onclick = () => void this.openMessage(m.uid);

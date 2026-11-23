@@ -101,7 +101,7 @@ try {
   await page.press(".note-body", "Enter");
   await until(async () => (await page.locator(".note-row").count()) === 1, 6000, "列表出现一条");
   check("左栏多一条", true, await page.locator(".note-row-title").first().textContent());
-  check("按钮只有图标（没有小字）", ((await btn.textContent()) ?? "").trim() === "🐞", await btn.textContent());
+  check("按钮只有图标（没有小字）", ((await btn.textContent()) ?? "").trim() === "" && (await btn.locator("svg.ico").count()) === 1, await btn.textContent());
   check("待处理计数挪到 title 里", /1 条待处理/.test((await btn.getAttribute("title")) ?? ""), await btn.getAttribute("title"));
   check("落盘的标题 = 正文首行", JSON.parse(fs.readFileSync(path.join(STATE, "notes", "bug-notes.json"), "utf8")).notes[0].title === "手机横屏时顶栏被挤出屏幕");
 
