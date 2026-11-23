@@ -9,6 +9,7 @@ import { fillUserBody } from "./skill.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { BashItem, Item, SessionHistory, SkillItem, ToolItem, UserItem } from "./types.ts";
 import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
+import { appZoom } from "./modal.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
 const BASH_SHOW = 20000;
@@ -450,8 +451,7 @@ export class ChatView {
    * ——默认字号下会把首行滚过头（D123）。
    */
   private contentTopOf(node: HTMLElement): number {
-    const raw = Number.parseFloat(getComputedStyle(this.root).getPropertyValue("--ui-scale"));
-    const scale = Number.isFinite(raw) && raw > 0 ? raw : 1;
+    const scale = appZoom();
     return (node.getBoundingClientRect().top - this.root.getBoundingClientRect().top) / scale + this.root.scrollTop;
   }
 
