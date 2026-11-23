@@ -21297,9 +21297,9 @@ export class App {
 }
 
 function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
-  // Expanded: the chevron points at the edge it will retract to. Collapsed: it points back out.
-  const right = btn.dataset.side === "right";
-  btn.textContent = collapsed ? (right ? "«" : "»") : (right ? "»" : "«");
+  // 一颗「带侧栏的窗口」：右栏那颗由 CSS 镜像（`.side-toggle[data-side="right"] .ico`），
+  // 于是两边各指着自己要收的那一侧。折叠与否看 aria-pressed 与 title，不再靠箭头翻方向。
+  if (!btn.firstElementChild) btn.append(icon("sidebar", { size: 15 }));
   btn.title = collapsed ? tr("展开{p1}", { p1: label }) : tr("收起{p1}", { p1: label });
   btn.setAttribute("aria-pressed", String(collapsed));
 }

@@ -199,6 +199,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .icon-btn.notes-btn.has-pending { color: var(--danger); --ico-tint: var(--danger); }
 .icon-btn.notes-btn.has-pending:hover { background: var(--danger-bg); border-color: var(--danger-dim); }
 .icon-btn.side-toggle { display: none; }
+/* 右栏那颗是同一颗图标镜像过来（CSS 的 scale 与 transform 是两个属性，别写成 transform）。 */
+.icon-btn.side-toggle[data-side="right"] .ico { scale: -1 1; }
 :where(html:not([data-compact="true"])) .icon-btn.side-toggle { display: grid; }
 
 /* ---------------------------------------------------------------- sessions */
