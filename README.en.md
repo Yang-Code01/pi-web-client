@@ -66,7 +66,7 @@ This is why there is a second, independent process `peer/` (7865) next to `bridg
 ## Requirements
 
 - **Node ≥ 22.19** (v24.11.1 here; LTS 22/24 both fine). `.nvmrc` points at 24.
-- **pi ≥ 1.5.0**. It is not an npm dependency of this project, but `npm install` installs it for you (see "What this project needs" below); a machine that already has ≥ 1.5.0 is left alone. At startup the bridge only looks for its `cli.js` on disk and, if it cannot find it, fails with every path it tried.
+- **pi ≥ 1.6.0**. It is not an npm dependency of this project, but `npm install` installs it for you (see "What this project needs" below); a machine that already has ≥ 1.6.0 is left alone. At startup the bridge only looks for its `cli.js` on disk and, if it cannot find it, fails with every path it tried.
   - Search order: `PI_BIN` → nvm (`%LOCALAPPDATA%\nvm\v*`, Windows only) → the `pi` / `pi.cmd` / `pi.bat` launcher on `PATH` → `node_modules` next to node → `npm root -g` → `%APPDATA%\npm`, `%ProgramData%\npm` (Windows only).
   - In other words: **a global npm install is found automatically** (Linux/macOS via `npm root -g`); with pnpm / bun / a project-local install, point `PI_BIN` at `.../pi-coding-agent/dist/bundle/cli.js`.
 - Optional: cloudflared (`winget install Cloudflare.cloudflared` on Windows, `brew install cloudflared` on macOS), only needed for public access. It is looked up as `CLOUDFLARED_BIN` → `PATH` → a few common install locations.
@@ -79,20 +79,20 @@ Missing them usually shows up as **one silently missing tool**, so `npm install`
 
 | Package | Version | What you lose without it |
 | --- | --- | --- |
-| `pi-subagents` | pinned to `0.86.0` | settings → subagents, the background cards and the subagent tools are all gone; the page reads its session directory (`%TEMP%\pi-subagents-*`) and async JSON events directly, so a changed layout reads as nothing — hence the pin |
-| `@juicesharp/rpiv-ask-user-question` | pinned to `2.15.0` | questionnaires on the page cannot be answered: `bridge/src/questionnaire.ts` fills the answers back in its per-question dialog format |
-| `@juicesharp/rpiv-todo` | pinned to `2.15.0` | the run panel has no AI plan; the page shows progress from its `details.tasks` snapshot |
+| `pi-subagents` | at least `0.90.0` | settings → subagents, the background cards and the subagent tools are all gone; the page reads its session directory (`%TEMP%\pi-subagents-*`) and async JSON events directly, so a changed layout reads as nothing — hence the floor, and anything below it is upgraded |
+| `@juicesharp/rpiv-ask-user-question` | at least `2.15.0` | questionnaires on the page cannot be answered: `bridge/src/questionnaire.ts` fills the answers back in its per-question dialog format |
+| `@juicesharp/rpiv-todo` | at least `2.15.0` | the run panel has no AI plan; the page shows progress from its `details.tasks` snapshot |
 | `pi-web-access` | latest | `web_search` / `fetch_content` / `source_check` are missing, leaving diagnosis and "quick ask" with local abilities only |
 
-The versions in the table and the `pi ≥ 1.5.0` above are copied from `bridge/src/deps.ts` (the list lives only there); `npm run test:deps` compares this table against it.
+The versions in the table and the `pi ≥ 1.6.0` above are copied from `bridge/src/deps.ts` (the list lives only there); `npm run test:deps` compares this table against it.
 
 `npm install` runs `scripts/bootstrap.mjs`, which does three things in order:
 
-1. Find pi: only if it is missing, or older than 1.5.0 (pre-releases like `1.5.0-rc.x` count as older), it runs `npm i -g @earendil-works/pi-coding-agent@latest`; anything already ≥ 1.5.0 is left alone.
-2. Asks `pi list` which packages the user level has, matches them by name against the four above, and `pi install`s only the missing ones. A same-named package installed from npm, git or a local path counts as installed and is not duplicated with the npm build; one installed only inside a project (project-level `.pi/settings.json`) does not count.
+1. Find pi: only if it is missing, or older than 1.6.0 (pre-releases like `1.6.0-rc.x` count as older), it runs `npm i -g @earendil-works/pi-coding-agent@latest`; anything already ≥ 1.6.0 is left alone.
+2. Asks `pi list` which packages the user level has, matches them by name against the four above, and `pi install`s the missing ones — and **upgrades anything below its floor to that floor** (the version from the table, not latest). A same-named package installed from npm, git or a local path counts as installed and is not duplicated with the npm build; one installed only inside a project (project-level `.pi/settings.json`) does not count.
 3. Installs the dependencies of bridge / peer / web (the three `npm --prefix … install` lines).
 
-**Packages already installed are left alone**: no upgrade, no downgrade, even when the version is older than the pin (the page says "older than x, works").
+**Upgrade only, never downgrade**: anything below the floor is raised to it, anything at or above it is left alone — a version you installed yourself that is newer than the floor is never pushed back, and the page does not mention it.
 The page's "what this project needs" check uses the same rules, so whatever the page marks ✓ the script will not install either.
 The result is written to `bootstrap.json` in the state directory; "settings → extensions" shows it at the top under "what this project needs", with a copyable command when something is missing.
 
@@ -119,7 +119,7 @@ When you run `npm start` / `npm run start:nobuild` by hand in a terminal, the se
 The first start prints a passphrase once (also written to `passphrase.txt` in the state directory):
 
 ```text
-pi-web-client 0.1.0 — pi 1.5.0 @ C:\...\dist\bundle\cli.js
+pi-web-client 0.1.0 — pi 1.6.0 @ C:\...\dist\bundle\cli.js
 listening on http://127.0.0.1:7864
 passphrase (generated once, shown only this time): nectar-juniper-willow-238
 ```
