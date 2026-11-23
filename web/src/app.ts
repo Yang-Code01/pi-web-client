@@ -20391,14 +20391,14 @@ export class App {
   private wsLanding(wsId: string): string | null {
     const group = buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === wsId);
     if (!group) return null;
-    // 旧桥 / 桩桥不发工作区快照：组是从 cwd 现推的，既没有存档的组 id 也没有记忆 —— 照旧开
-    // 排最上面那颗（D390 之前的行为），别跌进「空工作区」那条路把当前会话关掉。
-    if (!this.workspaces?.groups?.length) return group.sessions[0]?.id ?? null;
     const last = readWsLast();
-    const landing = pickLanding(group.sessions, last[wsId]?.id);
-    if (last[wsId] && last[wsId].id !== landing) {
-      writeWsLast(pruneLast(last, (entry, id) => id !== wsId || entry.id === landing));
-    }
+    const prev = last[wsId];
+    const landing = pickLanding(group.sessions, prev?.id);
+    // 读时就顺手剪：组已经不在了、或这一组的记忆已经不是要落地的那颗（被删 / 被归档 / 被拖走），
+    // 都不留到下一次写。（`pruneLast()` 没东西可剪时返回同一份，不必白写一次 localStorage。）
+    const live = new Set((this.workspaces?.groups ?? []).map((g) => g.id));
+    const kept = pruneLast(last, (entry, id) => (live.size ? live.has(id) : true) && (id !== wsId || entry.id === landing));
+    if (kept !== last) writeWsLast(kept);
     return landing;
   }
 

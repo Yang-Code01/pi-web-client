@@ -33,9 +33,9 @@ export interface LandingSession {
  * 记忆失效（被删 / 被归档 / 被拖去别的工作区）由第 2 条兜底 —— 这里只回答「落哪」，清死记忆是
  * 调用方的事（它才知道快照里现在有什么）。
  */
-export function pickLanding<T extends LandingSession>(sessions: readonly T[], lastId: string | null | undefined): string | null {
+export function pickLanding(sessions: readonly LandingSession[], lastId: string | null | undefined): string | null {
   if (lastId && sessions.some((s) => s.id === lastId)) return lastId;
-  let best: T | null = null;
+  let best: LandingSession | null = null;
   for (const s of sessions) {
     if (!best || stamp(s) > stamp(best)) best = s;
   }

@@ -4,7 +4,7 @@
  * 只测纯函数这一层：落点选择（记忆 → 最近活动）、`pi.ws.last` 的解析 / 写入 / 剪枝。
  * 「点标签到底开了哪颗」由 `probes/ws-memory.mjs` 的浏览器探针把关 —— 那才是它的公开缝。
  *
- * Run: node --experimental-transform-types web/tests/ws-memory-unit.mjs
+ * Run: npm run test:ws-memory
  */
 import test from "node:test";
 import assert from "node:assert/strict";

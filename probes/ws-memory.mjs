@@ -5,7 +5,8 @@
  * 而不是之前切换的会话。现在想要会话在切换工作区时具有记忆功能。」
  *
  * 桩桥发一份真工作区快照：alpha 与 beta 各有两颗会话（各一颗「新」、一颗「旧」），gamma 是空组。
- * 只看用户看得见的三件事：地址栏 hash、中栏里是哪颗、横杠停在哪一组 —— 外加 `pi.ws.last` 本身。
+ * 只看用户看得见的东西：地址栏 hash、中栏里是哪颗、横杠停在哪一组。只有第 5、7 段读一次
+ * `pi.ws.last` 本身 —— 「死记忆被换掉」「空组没写记忆」这两条在界面上看不出差别。
  *
  * 十二段：
  *   0. 深链 `#/s/wm-a1` 打开 → alpha 那颗成为记忆（任何来源都算）；
@@ -218,18 +219,16 @@ const setLayout = async (id) => {
 await boot("#/s/wm-a1");
 let s = await snap();
 ok(s.hash === "#/s/wm-a1" && s.onTab === A, `0. 深链打开 alpha 那颗（${s.hash} / ${s.onTab}）`);
-ok((await last())[A]?.id === "wm-a1", `0. 深链也算「我看过它」：alpha → wm-a1（${JSON.stringify((await last())[A])}）`);
+// 「深链写没写记忆」不在这里断言：第 2 段切回 alpha 会落在 wm-a1（它比 wm-a2 旧）—— 落点本身就是证据。
 
 // ---------------------------------------------------------------- 1. 没有记忆时按最近活动
 await tab(B).click();
 s = await opens("wm-b2");
 ok(s.onTab === B, `1. 切 beta 落在 updatedAt 最大的 wm-b2（没有记忆，不是数组第一颗）`);
-ok((await last())[B]?.id === "wm-b2", `1. beta 的记忆跟上（${JSON.stringify((await last())[B])}）`);
 
 // ---------------------------------------------------------------- 2/3. 记忆压过「更新」
 await card("wm-b1").click();
 await opens("wm-b1");
-ok((await last())[B]?.id === "wm-b1", "2. 在 beta 里点旧的那颗：记忆换人");
 await tab(A).click();
 s = await opens("wm-a1");
 ok(s.onTab === A, `2. 切回 alpha 落在记忆里的 wm-a1（它比 wm-a2 旧，照样赢）`);
@@ -290,7 +289,6 @@ await tab(A).click();
 await opens("wm-a2");
 await card("wm-a1").click();
 await opens("wm-a1");
-ok((await last())[A]?.id === "wm-a1", "8. 记忆回到 wm-a1");
 await page.locator(".session-filter").fill("新");
 await sleep(400);
 ok((await page.locator('.session-card[data-id="wm-a1"]').count()) === 0, "8. 过滤把 wm-a1 从左栏藏掉了");
@@ -321,14 +319,25 @@ await until(async () => (await page.locator(`.ws-pop-sec-head[data-ws="${B}"]`).
 await page.locator(`.ws-pop-sec-head[data-ws="${B}"]`).first().click();
 s = await opens("wm-b2");
 ok(s.hash === "#/s/wm-b2", `10. 壳 B 浮层段头切 beta 落在记忆里的 wm-b2（${s.hash}）`);
-// 新会话不走 `openSession()`：`session` 帧到了就该记下它。
+// 新会话不走 `openSession()`：`session` 帧到了就该记下它。不过 `session` 帧不改地址栏，
+// 所以这里先回壳 A 刷新一次，再靠「切走 → 切回来」看落点：wm-a3 比 wm-a2 旧，能回去只可能是记忆。
 const a3 = state("wm-a3", "alpha 刚建", CWD_A, A, 1_700_000_050_000);
 SESSIONS.push(a3);
 cast({ type: "session", sessionId: a3.id, state: stripOf(a3), items: [], approvals: [], asks: [], budget: null });
-await until(async () => (await last())[A]?.id === "wm-a3", 5000, "会话帧写进记忆");
-ok(true, "10. `session` 帧送来的新会话也成为 alpha 的记忆（不走 openSession）");
+await sleep(500);
+await setLayout("a");
+await tab(A).click();
+s = await opens("wm-a3");
+ok(s.hash === "#/s/wm-a3", "10. `session` 帧送来的新会话成了 alpha 的记忆（切过去是它，不是更新的 wm-a2）");
+await tab(B).click();
+await opens("wm-b2");
+await tab(A).click();
+s = await opens("wm-a3");
+ok(s.hash === "#/s/wm-a3", "10. 切走再切回来仍是 wm-a3（记忆不是一次性落点）");
 
 // ---------------------------------------------------------------- 11. 旧桥（没有工作区快照）
+// ★ 一颗压在 wm-b1 上：这次要证明的不是「打了 ★ 就走它」，而是「没有工作区快照也照同一条规则落点」。
+manage.pin = ["wm-b1"];
 legacyHello = true;
 const legacy = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "zh-CN" });
 const lp = await legacy.newPage();
@@ -339,7 +348,7 @@ await sleep(500);
 await lp.locator(`.ws-tab[data-ws="${B}"]`).first().click();
 await until(async () => (await lp.evaluate(() => location.hash)).startsWith("#/s/wm-"), 8000, "旧桥切组也开会话");
 const legacyHash = await lp.evaluate(() => location.hash);
-ok(legacyHash === "#/s/wm-b2", `11. 旧桥没有工作区快照：切组照旧开排最上面那颗（${legacyHash}）`);
+ok(legacyHash === "#/s/wm-b2", `11. 旧桥没有工作区快照：同一条规则落到最近活动那颗（★ 那颗是 wm-b1，实际 ${legacyHash}）`);
 legacyHello = false;
 await legacy.close();
 
