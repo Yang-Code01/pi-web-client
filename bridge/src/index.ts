@@ -55,7 +55,7 @@ import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from ".
 import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
-import { RotatingLog, logMaxBytes } from "./logfile.ts";
+import { RotatingLog, LogStorm, logMaxBytes, logMaxLinesPerSecond } from "./logfile.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
 import { markWhatsnewSeen, selfChangelog, setWhatsnewPopup, takeWhatsnew, whatsnewStatus } from "./whatsnew.ts";
 import { scanSubagents } from "./subagents.ts";
@@ -605,10 +605,11 @@ async function main(): Promise<void> {
   // rpc.ts 起子进程时是 `{...process.env, ...opts.env}`，所以这里设一次就传下去了。
   process.env.PI_PEER_PORT = String(cfg.peerPort);
 
-  /* D395：日志有上限（默认 8 MB，保留一代 `.1`）。以前是纯 append，一份探针 / 测试桥能写到 GB 级。 */
+  /* D396：日志有上限（默认 8 MB，保留一代 `.1`），而且一秒超过 500 行就只记一条风暴摘要。
+     以前是纯 append，一份探针 / 测试桥能写到 GB 级 —— 关键是那条路是 **同步** 写，
+     1500 行/秒时桥自己先卡死。 */
   const logFile = new RotatingLog(statePath("logs", "bridge.log"), logMaxBytes());
-  const log = (msg: string) => {
-    const line = `${new Date().toISOString()} ${msg}`;
+  const logOut = (line: string) => {
     console.log(line);
     try {
       logFile.write(line);
@@ -616,6 +617,8 @@ async function main(): Promise<void> {
       /* ignore */
     }
   };
+  const logStorm = new LogStorm(logOut, logMaxLinesPerSecond());
+  const log = (msg: string) => logStorm.write(`${new Date().toISOString()} ${msg}`);
 
 
   log(`${APP_NAME} ${VERSION} — pi ${piVersion} @ ${pi.cli}`);
