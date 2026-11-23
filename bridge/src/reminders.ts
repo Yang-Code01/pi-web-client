@@ -34,6 +34,8 @@ export interface Reminder {
   state: ReminderState;
   outcome?: ReminderOutcome;
   settledAt?: number;
+  /** 非阻塞类可以带一条同源路径（脚本说「点开看这里」）；审批 / 问卷永远没有。 */
+  url?: string;
 }
 
 export interface ReminderSettings {
@@ -52,6 +54,7 @@ export interface ReminderInput {
   sessionName: string;
   title: string;
   body: string;
+  url?: string;
 }
 
 export interface ReminderView {
@@ -119,6 +122,7 @@ export class Reminders {
       body: input.body,
       createdAt: now,
       state: "waiting",
+      ...(input.url ? { url: input.url } : {}),
     };
     this.items.unshift(reminder);
     const toast = this.takeToast(input, now);

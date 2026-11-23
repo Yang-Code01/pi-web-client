@@ -739,16 +739,20 @@ async function main(): Promise<void> {
       const remote = req.socket.remoteAddress ?? "";
       const loopback = !publicReq && (remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1");
       const token = String(req.headers["x-notify-token"] ?? "");
-      if (!loopback || !token || token !== notifyToken()) {
-        return fail(res, 403, "notify_denied", "只接受本机回环请求，并带上 X-Notify-Token（见状态目录的 notify-token）");
+      /* 两条路：登录过的页面（cookie）随便塞；脚本没有 cookie，就只认「本机回环 + token」。 */
+      const byCookie = ok && !publicReq;
+      const byToken = loopback && !!token && token === notifyToken();
+      if (!byCookie && !byToken) {
+        return fail(res, 403, "notify_denied", "要么用登录过的页面，要么从本机回环带上 X-Notify-Token（见状态目录的 notify-token）");
       }
       const body = (await readBody(req).catch(() => null)) as any;
       const title = String(body?.title ?? "").trim();
       if (!title) return fail(res, 400, "bad_title", "title 不能为空");
       const text = String(body?.body ?? "").replace(/\s+/g, " ").slice(0, 140);
       const source = String(body?.source ?? body?.sessionName ?? "脚本").slice(0, 40);
+      const url = typeof body?.url === "string" && body.url.startsWith("/") ? body.url.slice(0, 300) : "";
       const id = `notice_${randomUUID().slice(0, 8)}`;
-      recordReminder("notice", id, undefined, source, text, title.slice(0, 80));
+      recordReminder("notice", id, undefined, source, text, title.slice(0, 80), url);
       log(`notify ${source}: ${title}`);
       return json(res, 200, { ok: true, id });
     }
@@ -2435,8 +2439,9 @@ async function main(): Promise<void> {
     sessionName: string,
     body: string,
     title = "",
+    url = "",
   ): void => {
-    const { reminder, toast } = reminders.add({ id, kind, sessionId, sessionName, body, title });
+    const { reminder, toast } = reminders.add({ id, kind, sessionId, sessionName, body, title, url });
     broadcastReminders();
     if (toast) broadcast({ type: "reminder.toast", reminder });
   };
@@ -2590,7 +2595,7 @@ async function main(): Promise<void> {
     const name = session?.state.name ?? approval.sessionId.slice(0, 8);
     const body = approval.message.replace(/\s+/g, " ").slice(0, 140);
     recordReminder("approval", approval.id, approval.sessionId, name, body);
-    if (!shouldNotify()) return;
+    if (!shouldNotify() || reminders.muted(approval.sessionId)) return;
     const link = tunnel.state.url ? `${tunnel.state.url}/#/s/${approval.sessionId}` : `http://127.0.0.1:${cfg.port}/#/s/${approval.sessionId}`;
     void notifier.notify(notifyTitle("approval", name, 1), body, link);
   });
@@ -2601,7 +2606,7 @@ async function main(): Promise<void> {
     const body = (first?.prompt ?? "").replace(/\s+/g, " ").slice(0, 140);
     recordReminder("ask", ask.id, ask.sessionId, name, body);
     const link = tunnel.state.url ? `${tunnel.state.url}/#/s/${ask.sessionId}` : `http://127.0.0.1:${cfg.port}/#/s/${ask.sessionId}`;
-    if (!shouldNotify()) {
+    if (!shouldNotify() || reminders.muted(ask.sessionId)) {
       log(`ask-push skipped ${String(tool)} ${ask.id} (${notifier.enabled ? "page in front" : "notifications off"})`);
       return;
     }
@@ -2795,6 +2800,8 @@ async function main(): Promise<void> {
             return;
           }
           case "reminder.set": {
+            /* 与 `notify.set` 同级：这是写进状态文件的总开关，静音 / 已读才是低风险那两档。 */
+            if (!(await requireStepUp())) return;
             const patch: Partial<ReminderSettings> = {};
             if (typeof msg.enabled === "boolean") patch.enabled = msg.enabled;
             if (typeof msg.blocking === "boolean") patch.blocking = msg.blocking;

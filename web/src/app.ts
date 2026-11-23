@@ -1157,6 +1157,7 @@ export class App {
       stage: () => this.shellEl,
       openSession: (sessionId, reminderId) => this.jumpToReminder(sessionId, reminderId),
       currentSessionId: () => this.currentId,
+      hasSession: (sessionId) => this.sessions.some((x) => x.id === sessionId),
       send: (frame) => this.socket.send(frame as any),
     });
     // #315: the composer's cap is half of this pane, so any change to the pane's height (a window

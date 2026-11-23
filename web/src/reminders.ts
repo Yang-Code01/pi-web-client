@@ -32,6 +32,8 @@ export interface Reminder {
   state: ReminderState;
   outcome?: ReminderOutcome;
   settledAt?: number;
+  /** 非阻塞类带的同源路径，点了就跳过去。 */
+  url?: string;
 }
 
 export interface ReminderSettings {
@@ -64,6 +66,8 @@ export interface ReminderHooks {
   /** 切到那个会话；`reminderId` 用来滚到那张卡（D389 第 5 条）。 */
   openSession(sessionId: string, reminderId?: string): void;
   currentSessionId(): string | null;
+  /** 这条提醒挂的会话还在不在（不在就灰掉不可点）。 */
+  hasSession(sessionId: string): boolean;
   send(frame: unknown): void;
 }
 
@@ -218,9 +222,9 @@ export class ReminderCenter {
     head.append(el("b", "", tr("等你的事")), el("span", "remind-pop-count", waiting.length ? tr("{p1} 件在等你", { p1: waiting.length }) : tr("都处理完了")));
     const modes = el("div", "remind-modes");
     for (const [key, label] of [["event", tr("按事件")], ["session", tr("按会话")]] as const) {
-      const b = el("button", `remind-mode${(key === "session") === this.grouped && key !== "event" ? " on" : ""}`, label);
+      const on = (key === "session") === this.grouped;
+      const b = el("button", `remind-mode${on ? " on" : ""}`, label);
       b.type = "button";
-      if ((key === "session") !== this.grouped) b.classList.add("on");
       b.onclick = () => {
         this.grouped = key === "session";
         localStorage.setItem(GROUP_KEY, this.grouped ? "session" : "event");
@@ -237,8 +241,15 @@ export class ReminderCenter {
     else {
       if (waiting.length) body.append(el("div", "remind-group-label", tr("等你 · {p1}", { p1: waiting.length })));
       for (const r of waiting) body.append(this.row(r, false, muted.has(r.sessionId ?? "")));
-      if (settled.length) body.append(el("div", "remind-group-label", tr("处理过 / 失效")));
-      for (const r of settled.slice(0, 40)) body.append(this.row(r, true, false));
+      let bucket = "";
+      for (const r of settled.slice(0, 40)) {
+        const next = dayBucket(r.settledAt ?? r.createdAt);
+        if (next !== bucket) {
+          bucket = next;
+          body.append(el("div", "remind-group-label", BUCKET_LABEL[next]()));
+        }
+        body.append(this.row(r, true, false));
+      }
     }
     this.pop.append(body);
 
@@ -286,9 +297,12 @@ export class ReminderCenter {
   }
 
   private row(r: Reminder, settled: boolean, isMuted: boolean): HTMLElement {
-    const row = el("button", `remind-row${settled ? " settled" : ""}${isMuted ? " muted" : ""}`);
+    /* 会话已经不在（删了 / 换了机器）→ 那一条灰掉不可点：点过去只会开一个空会话。 */
+    const gone = !!r.sessionId && !this.hooks.hasSession(r.sessionId);
+    const row = el("button", `remind-row${settled ? " settled" : ""}${isMuted ? " muted" : ""}${gone ? " missing" : ""}`);
     row.type = "button";
     row.dataset.reminderId = r.id;
+    if (gone) row.disabled = true;
     const main = el("span", "remind-row-main");
     main.append(el("span", "remind-row-title", titleOf(r)));
     if (r.body) main.append(el("span", "remind-row-body", r.body));
@@ -313,6 +327,8 @@ export class ReminderCenter {
     /* 非阻塞那条点一下就消（= 已读），但**不关清单**：你还在看，只是把它标成看过了。 */
     if (r.kind === "notice") {
       if (r.state === "waiting") this.hooks.send({ type: "reminder.read", id: r.id });
+      /* 脚本可以带一条同源路径（`url`）：有就顺手把人带过去，没有就只是「看过了」。 */
+      if (r.url && r.url.startsWith("/")) location.assign(r.url);
       return;
     }
     this.toggle(false);
@@ -321,6 +337,25 @@ export class ReminderCenter {
 }
 
 const ICONS: Record<ReminderKind, string> = { approval: "⚠", ask: "❓", notice: "•" };
+
+/** 已处理的按天分组（D389 第 8 条）：今天 / 昨天 / 更早。 */
+type Bucket = "today" | "yesterday" | "earlier";
+
+function dayBucket(at: number): Bucket {
+  const same = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const when = new Date(at);
+  const now = new Date();
+  if (same(when, now)) return "today";
+  const y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  return same(when, y) ? "yesterday" : "earlier";
+}
+
+const BUCKET_LABEL: Record<Bucket, () => string> = {
+  today: () => tr("今天"),
+  yesterday: () => tr("昨天"),
+  earlier: () => tr("更早"),
+};
 
 /** 标题：审批 / 问卷按界面语言现拼；非阻塞类用发送方给的标题。 */
 export function titleOf(r: Reminder): string {

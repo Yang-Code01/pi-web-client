@@ -127,9 +127,11 @@ try {
   check("新提醒实时涨到 3", (await page.locator(".remind-bell-count").textContent()) === "3");
 
   /* 两种读法 */
+  check("默认「按事件」那颗是亮的", (await page.locator(".remind-pop .remind-mode.on").textContent()) === "按事件");
   await page.click(".remind-pop .remind-mode:nth-child(2)"); // 按会话
   await page.waitForSelector(".remind-card", { timeout: 4000 }).catch(() => {});
   check("切到「按会话」：没有会话来源的落到一张卡里", (await page.locator(".remind-card").count()) >= 1);
+  check("灯跟着切到「按会话」", (await page.locator(".remind-pop .remind-mode.on").textContent()) === "按会话");
   await shot("grouped");
   await page.click(".remind-pop .remind-mode:nth-child(1)"); // 按事件
   await page.waitForSelector(".remind-pop .remind-row", { timeout: 4000 });
@@ -146,6 +148,8 @@ try {
   await new Promise((r) => ws.on("open", r));
   const before = await (await fetch(`${BASE}/api/reminders`, { headers: { cookie } })).json();
   check("默认设置：其它 = 关（只进清单不弹）", before.settings.others === false, JSON.stringify(before.settings));
+  /* 本机 / 局域网连接建连时就是「已 step-up」（index.ts:2372），所以设置直接生效 ——
+     与 `notify.set` 走同一条门；只有公网隧道上的页面才会被要口令。 */
   ws.send(JSON.stringify({ type: "reminder.set", others: true }));
   await sleep(400);
   const after = await (await fetch(`${BASE}/api/reminders`, { headers: { cookie } })).json();
