@@ -94,11 +94,36 @@ function modelName(doc: TrDoc | null, job: TrJob | null): string {
   return m.split("/").pop() ?? m;
 }
 
+/** 已经跑了多久；只在 running 时有字（跟随轮询刷新，不用自己跳秒）。 */
+export function trElapsed(job: TrJob | null | undefined): string {
+  if (!job || job.status !== "running") return "";
+  const s = Math.max(0, Math.round((Date.now() - job.startedAt) / 1000));
+  return tr("已用 {s} s", { s });
+}
+
+/** 队列里还没到的节那一行字：左边是还差几节，右边是现在几块在飞。 */
+export function trPendingHead(left: number, inflight: number): string {
+  const tail = inflight > 0 ? ` · ${tr("正在翻 {k} 块", { k: inflight })}` : "";
+  return `${tr("还有 {n} 节在队列里", { n: left })}${tail}`;
+}
+
+/** 副行：正在翻哪一节 + 还有几块在飞。
+ * D392：主进度（`翻译中 3/6`）仍按**节**，并发只在副行露一面，否则用户得重新理解一个数。 */
+export function trNote(job: TrJob | null | undefined): string {
+  if (!job) return "";
+  const bits: string[] = [];
+  if (job.note) bits.push(job.note);
+  if ((job.inflight ?? 0) > 0) bits.push(tr("正在翻 {n} 块", { n: job.inflight ?? 0 }));
+  return bits.join(" · ");
+}
+
 export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   body.replaceChildren();
   body.classList.add("tr-body");
 
   const running = v.job?.status === "running";
+  // 空壳节：`out` 还是空串（视口优先时先翻中间那几节，前面的会晚点回来，D392 修订）。
+  const holes = v.doc ? v.doc.sections.filter((s) => !s.out).length : 0;
   const bar = el("div", "tr-bar");
   const chips = el("div", "tr-chips");
   chips.append(el("span", "tr-chip lang", trLangLabel(v.lang)));
@@ -118,15 +143,20 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   else if (v.error) brief = v.error;
   else if (v.msg) brief = v.msg;
   else if (v.stale && v.doc) brief = tr("原文改过了，点「更新」只重翻变了的节");
+  else if (v.doc && holes) brief = tr("还有 {n} 节没翻完", { n: holes });
   else if (v.doc) {
     const n = v.doc.sections.filter((s) => s.failed || s.out === s.src).length;
     brief = n ? tr("{n} 节没翻成，点「更新」重翻", { n }) : tr("译文是 {p1} 生成的", { p1: modelName(v.doc, null) });
   }
   status.append(el("span", "tr-brief", brief));
-  if (running && v.job?.note) {
-    const note = el("span", "tr-note", v.job.note);
-    note.title = v.job.note;
+  if (running) {
+    // 始终留一个（空时 hidden）：`paintTrLive()` 只改不重建，第一波块刚起飞时这行还没字。
+    const noteText = trNote(v.job);
+    const note = el("span", "tr-note", noteText);
+    note.title = noteText;
+    note.hidden = !noteText;
     status.append(note);
+    status.append(el("span", "tr-elapsed", trElapsed(v.job)));
   }
   if (v.doc?.warnings.length) {
     const w = el("button", "tr-warn", tr("⚠ {n} 处告警", { n: v.doc.warnings.length }));
@@ -161,6 +191,9 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
         v.dirty ? "primary" : "",
       );
       btn(tr("看对照"), tr("回到只读的左右对照"), () => act.edit(false));
+    } else if (holes) {
+      // 还有空壳：编辑整篇 / 写回原文都还不该开（会把没翻的节当成空白提交）。
+      btn(tr("继续翻译"), tr("把还没翻的 {n} 节接着翻，先翻你正在看的那一节", { n: holes }), () => act.update(false), "primary");
     } else {
       btn(tr("改译文"), tr("直接编辑译文；存了只改缓存，不碰原文"), () => act.edit(true));
       btn(tr("同步原文"), tr("把你在译文里改的地方写回原文文件（会先给你看差异）"), () => act.sync());
@@ -173,6 +206,15 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   btn(tr("返回预览"), tr("回到预览，译文还留着"), () => act.back());
   bar.append(tools);
   body.append(bar);
+
+  // 顶上一条细进度：不滚到正文末尾也知道走到哪了（D392 的提示那块）。
+  if (running && v.job?.total) {
+    const prog = el("div", "tr-prog tr-prog-bar");
+    const fill = el("div", "tr-prog-fill");
+    fill.style.width = `${Math.round((v.job.done / v.job.total) * 100)}%`;
+    prog.append(fill);
+    body.append(prog);
+  }
 
   if (v.error && !v.doc && !running) {
     body.append(el("div", "tr-msg err", v.error));
@@ -218,6 +260,19 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
     const src = el("div", "tr-src md-doc");
     src.append(renderMarkdown(sec.src, { doc: true }));
     const out = el("div", "tr-out md-doc");
+    if (!sec.out) {
+      // 还没翻到：右边画骨架，左边照常给原文 —— 「排队中」是看得见的。
+      out.classList.add("hole");
+      out.append(el("div", "tr-hole-head", tr("还没翻到这一节")));
+      for (const width of ["84%", "62%", "73%"]) {
+        const line = el("div", "tr-skel");
+        line.style.width = width;
+        out.append(line);
+      }
+      row.append(src, out);
+      cmp.append(row);
+      return;
+    }
     out.append(renderMarkdown(sec.out, { doc: true }));
     if (sec.failed || sec.out === sec.src) {
       out.classList.add("raw");
@@ -233,6 +288,25 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
     cmp.append(row);
   });
   body.append(cmp);
+
+  // 还没到的节：画一条骨架 + 一句「还差几节」，否则下面一片空白，看不出是在排队还是卡住了。
+  if (running) {
+    const total = v.job?.total ?? 0;
+    const left = Math.max(0, total - v.doc.sections.length);
+    if (left > 0) body.append(pendingBlock(left, v.job?.inflight ?? 0));
+  }
+}
+
+/** 队尾那块占位（没翻译的节还没法逐节画，就先画一坨骨架把「在排队」说清楚）。 */
+function pendingBlock(left: number, inflight: number): HTMLElement {
+  const box = el("div", "tr-pending");
+  box.append(el("div", "tr-pending-head", trPendingHead(left, inflight)));
+  for (const width of ["72%", "88%", "54%"]) {
+    const line = el("div", "tr-skel");
+    line.style.width = width;
+    box.append(line);
+  }
+  return box;
 }
 
 interface TrEditor {

@@ -109,7 +109,7 @@ function runningSessions(sessions: { list(): { running: boolean }[] }): number {
 }
 import { piLatest } from "./piupdate.ts";
 import { isSkillPreviewPath, isTrustedPreviewPath, kindOf, openPreview, openSkillPreview, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
-import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
+import { MAX_TRANSLATE_BYTES, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, trDefaultModel, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
 import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow, readMedia as readSheetMedia, registerFileGrant } from "./sheet/index.ts";
@@ -570,6 +570,16 @@ async function main(): Promise<void> {
   };
   const sessions = new SessionManager(pi.cli, `http://127.0.0.1:${cfg.port}`);
   const translateJobs = new TranslateJobs();
+  /**
+   * 「从哪一节先翻」（D392 修订）：页面只报一个 0–1 的滚动位置（`at`），切节是桥的事 ——
+   * 客户端不用跟着 `cutSections` 的规则走，免得两边漂移。没传/读不懂就是 undefined（按原文顺序）。
+   */
+  const startFrom = (body: any, text: string): number | undefined => {
+    const at = Number(body?.at);
+    const n = cutSections(text).length;
+    if (!Number.isFinite(at) || n <= 1) return undefined;
+    return Math.min(n - 1, Math.max(0, Math.round(at * (n - 1))));
+  };
   /** D113: one writer per shared resource (`npm` root, each settings scope, each mcp.json). */
   const writeLock = createWriteLock();
   /**
@@ -1944,7 +1954,7 @@ async function main(): Promise<void> {
           size: st.size,
           job: translateJobs.active(abs, lang),
           prefs: readTrPrefs(),
-          defaultModel: TR_DEFAULT_MODEL,
+          defaultModel: trDefaultModel(),
         });
       } catch (err: any) {
         return trFail(res, err);
@@ -1955,10 +1965,16 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/translate/prefs" && (req.method === "GET" || req.method === "POST")) {
       if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
       try {
-        // GET 只读（设置页打开时看一眼）；POST 带 `model` 就写，不带就只回显。
+        // GET 只读（设置页打开时看一眼）；POST 带 `model` / `concurrency` 就写，都不带就只回显。
         const body = req.method === "POST" ? await readBody(req).catch(() => ({})) : {};
-        const prefs = typeof body.model === "string" ? writeTrPrefs({ model: body.model }) : readTrPrefs();
-        return json(res, 200, { prefs, defaultModel: TR_DEFAULT_MODEL });
+        const wants = typeof body.model === "string" || typeof body.concurrency === "number";
+        const prefs = wants
+          ? writeTrPrefs({
+              model: typeof body.model === "string" ? body.model : undefined,
+              concurrency: typeof body.concurrency === "number" ? body.concurrency : undefined,
+            })
+          : readTrPrefs();
+        return json(res, 200, { prefs, defaultModel: trDefaultModel() });
       } catch (err: any) {
         return trFail(res, err);
       }
@@ -1996,6 +2012,11 @@ async function main(): Promise<void> {
           run,
           runner: runPiTranslate,
           keep: reuse ? cached.sections : [],
+          // D392：同时翻几块。旋钮在设置 → 预览与翻译，存本机 prefs。
+          limit: readTrPrefs().concurrency,
+          // D392 修订：视口优先。页面传 `at`（0–1 的滚动位置），这里换成节号 ——
+          // 客户端不需要知道桥怎么切节，只要报「我大概看到哪儿了」。
+          from: startFrom(body, text),
         });
         translateJobs.stamp(job.id, st.mtimeMs, st.size);
         log(`translate ${path.basename(abs)} → ${lang} via ${provider}/${model}${reuse ? " (update)" : ""}`);

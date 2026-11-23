@@ -15,7 +15,7 @@ import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
-import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, type TrAct, type TrView } from "./translateview.ts";
+import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, trElapsed, trNote, trPendingHead, type TrAct, type TrView } from "./translateview.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
@@ -512,6 +512,8 @@ export class App {
   /** D245: 翻译用的默认模型（`provider/id`）与出厂默认，来自桥的偏好；还没读过时为空串。 */
   private trModelPref = "";
   private trDefaultModel = "";
+  /** D392: 同时翻几块（1–8），同样存桥的本机偏好。 */
+  private trConcurrency = 4;
   /** #285: the form's two scopes share one tab id; this is what the segment and the form follow. */
   private settingsScope: "global" | "project" = "global";
   /** #285: flattened drafts + the on-disk snapshot they diff against, kept per scope while the sheet is open. */
@@ -11647,6 +11649,7 @@ export class App {
       t.error = "";
       this.trModelPref = res.prefs?.model ?? this.trModelPref;
       this.trDefaultModel = res.defaultModel ?? this.trDefaultModel;
+      this.trConcurrency = res.prefs?.concurrency ?? this.trConcurrency;
       if (res.job?.status === "running") this.pollTr(v);
     } catch (err: any) {
       if (this.viewer !== v) return;
@@ -11658,7 +11661,7 @@ export class App {
   /** 语言 + 模型的选择器：模型目录是会话里那份（便宜的也在一起）。 */
   private trPicker(v: Viewer): void {
     const t = this.trOf(v);
-    // D245: 默认模型是桥那边记的偏好（copilot/gpt-6-luna），没有就退到当前会话的模型。
+    // D245 / D392: 默认模型是桥那边记的偏好，没有就跟随 pi 全局设置，再没有才退到当前会话的模型。
     const sessionModel = this.models.find((m) => m.id === this.session?.model);
     const pref = this.trModelPref || (t.doc ? `${t.doc.provider}/${t.doc.model}` : "") || this.trDefaultModel;
     const values = this.models.map((m) => `${m.provider}/${m.id}`);
@@ -11684,6 +11687,8 @@ export class App {
   private async startTr(v: Viewer, lang: string, provider: string, model: string, force: boolean): Promise<void> {
     const info = v.info;
     if (!info) return;
+    // 视口在整篇的哪个位置：要在切到对照面板**之前**量，切了之后滚动容器就换了。
+    const at = this.scrollRatio(v.body);
     const t = this.trOf(v);
     t.lang = lang;
     t.busy = true;
@@ -11694,7 +11699,7 @@ export class App {
     v.full = true;
     this.paintViewer();
     try {
-      const { job } = await api.trStart(v.sessionId, { path: info.abs, lang, provider, model, force });
+      const { job } = await api.trStart(v.sessionId, { path: info.abs, lang, provider, model, force, at });
       // 选过一次就记住，下次直接用它（设置页里能改回去）。
       this.rememberTrModel(`${provider}/${model}`);
       if (this.viewer !== v) return;
@@ -11707,6 +11712,17 @@ export class App {
       t.error = errText(err);
     }
     this.paintViewer();
+  }
+
+  /**
+   * 视口在整篇的 0–1 位置（D392 修订）：桥拿它决定先翻哪一节 —— 滚到中间点「译」，
+   * 就先翻你正在看的那节，而不是从头开始。量不出来（不能滚 / 太短）就返回 undefined。
+   */
+  private scrollRatio(box: HTMLElement | null): number | undefined {
+    if (!box) return undefined;
+    const span = box.scrollHeight - box.clientHeight;
+    if (span <= 4) return undefined;
+    return Math.min(1, Math.max(0, box.scrollTop / span));
   }
 
   /** 进度轮询：只刷条上的字；新的一节到了才重画（重画会重建 DOM，保住滚动位置）。 */
@@ -11758,9 +11774,22 @@ export class App {
       brief.textContent = job.status === "running" ? tr("翻译中 {done}/{total}", { done: job.done, total: job.total || "?" }) : job.note || brief.textContent;
     }
     const note = v.body.querySelector(".tr-note");
-    if (note && job.note) note.textContent = job.note;
+    const noteText = job.status === "running" ? trNote(job) : "";
+    if (note) {
+      note.textContent = noteText;
+      note.setAttribute("title", noteText);
+      (note as HTMLElement).hidden = !noteText;
+    }
     const fill = v.body.querySelector<HTMLElement>(".tr-prog-fill");
     if (fill && job.total) fill.style.width = `${Math.round((job.done / job.total) * 100)}%`;
+    const elapsed = v.body.querySelector(".tr-elapsed");
+    if (elapsed) elapsed.textContent = trElapsed(job);
+    // 队尾那句「还差几节 · 正在翻几块」也要跟着走，不然它停在起飞时那一刻的样子。
+    const pending = v.body.querySelector(".tr-pending-head");
+    if (pending && job.total) {
+      const left = Math.max(0, job.total - (t.doc?.sections.length ?? 0));
+      pending.textContent = trPendingHead(left, job.inflight ?? 0);
+    }
   }
 
   /** 重画时保住滚动位置：每翻完一节都会重画一遍。 */
@@ -13151,6 +13180,7 @@ export class App {
         .then((res) => {
           this.trModelPref = res.prefs.model;
           this.trDefaultModel = res.defaultModel;
+          this.trConcurrency = res.prefs.concurrency ?? this.trConcurrency;
           this.paintSettings();
         })
         .catch(() => {
@@ -13758,8 +13788,8 @@ export class App {
   }
 
   /**
-   * D245: 预览里的翻译默认用哪个模型。出厂默认是 copilot/gpt-6-luna，这里选的会记住；
-   * 不写进 settings.json，免得跟「本机才有这份模型目录」的事实对不上。
+   * D245 / D392: 预览里的翻译默认用哪个模型。默认**跟随 pi 全局设置**里的 `defaultProvider` +
+   * `defaultModel`（不再写死 copilot）；这里选过的会记住，存桥的本机偏好，不写 settings.json。
    */
   private paintPreviewSettings(pane: HTMLElement): void {
     const want = this.trModelPref || this.trDefaultModel;
@@ -13767,11 +13797,11 @@ export class App {
       this.models.map((m) => `${m.provider}/${m.id}`),
       want,
     );
-    const fallback = this.trDefaultModel || "copilot/gpt-6-luna";
+    const fallback = this.trDefaultModel;
     pane.append(
       this.stCards([
-        { label: tr("翻译模型"), value: resolved || want || "—", sub: this.trModelPref ? tr("你选的") : tr("出厂默认"), cls: "wide" },
-        { label: tr("出厂默认"), value: fallback, sub: tr("恢复默认会回到它"), cls: "wide" },
+        { label: tr("翻译模型"), value: resolved || want || "—", sub: this.trModelPref ? tr("你选的") : tr("跟随 pi 默认"), cls: "wide" },
+        { label: tr("pi 默认模型"), value: fallback || "—", sub: fallback ? tr("恢复默认会回到它") : tr("pi 全局设置里没设"), cls: "wide" },
       ]),
     );
     if (want && !resolved) {
@@ -13785,11 +13815,34 @@ export class App {
       this.rememberTrModel(sel.value);
       this.flashSettings(tr("以后翻译默认用 {p1}", { p1: sel.options[sel.selectedIndex]?.textContent ?? sel.value }));
     };
-    const reset = el("button", "btn", tr("恢复默认（{p1}）", { p1: fallback })) as HTMLButtonElement;
+    const reset = el("button", "btn", tr("恢复默认（{p1}）", { p1: fallback || "—" })) as HTMLButtonElement;
+    reset.disabled = !fallback;
     reset.onclick = () => {
+      if (!fallback) return;
       this.rememberTrModel(fallback);
       this.flashSettings(tr("已恢复默认模型"));
       this.paintSettings();
+    };
+    // D392：同时翻几块。主进度仍按节，这个旋钮只影响「多久能看完全篇」。
+    const conc = el("select", "ns-input tr-conc") as HTMLSelectElement;
+    for (let n = 1; n <= 8; n++) {
+      const opt = el("option", "", String(n)) as HTMLOptionElement;
+      opt.value = String(n);
+      conc.append(opt);
+    }
+    conc.value = String(this.trConcurrency);
+    conc.onchange = () => {
+      const n = Number(conc.value);
+      this.trConcurrency = n;
+      void api
+        .trPrefs(undefined, n)
+        .then((res) => {
+          this.trConcurrency = res.prefs.concurrency ?? n;
+        })
+        .catch(() => {
+          /* 记不住不影响这一次设置 */
+        });
+      this.flashSettings(tr("以后同时翻 {n} 块", { n }));
     };
     pane.append(this.stSection(tr("翻译")));
     const panel = el("div", "settings-panel");
@@ -13798,6 +13851,12 @@ export class App {
         tr("翻译用的默认模型"),
         tr("预览右上角的「译」会用这里选的模型：另起一个 pi 子进程翻，不占当前对话的上下文。译文只存在本机，原文不动；在对照里改的译文可以再写回原文。"),
         sel,
+        "label",
+      ),
+      this.stRow(
+        tr("同时翻几块"),
+        tr("每个往返的固定等待（起进程 + 等模型开口）跟正文长短无关，所以几块一起翻才快；撞到模型限流会自动降并发、退避重发。"),
+        conc,
         "label",
       ),
       this.stRow(tr("恢复默认"), tr("换模型不会重翻已有的译文：点「更新」时才按新模型整篇重来。"), reset),

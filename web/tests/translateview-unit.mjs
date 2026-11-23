@@ -6,7 +6,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { guessTrLang, resolveTrModel, trLangLabel, trText, TR_LANGS } from "../src/translateview.ts";
+import { guessTrLang, resolveTrModel, trElapsed, trLangLabel, trNote, trPendingHead, trText, TR_LANGS } from "../src/translateview.ts";
 
 // ---------------------------------------------------------------- 默认翻成什么
 
@@ -67,4 +67,27 @@ test("默认模型：精确命中、同 id 换个 provider、彻底没有", () =
   assert.equal(resolveTrModel(cat, "copilot/gone"), "");
   // 只有裸 id 的旧偏好也能救回来，但返回的一定是目录里的全名（带 provider）
   assert.equal(resolveTrModel(cat, "gpt-6"), "copilot/gpt-6");
+});
+
+// ---------------------------------------------------------------- 副行（D392）
+
+test("副行把「正在翻 N 块」跟在节标题后面", () => {
+  assert.equal(trNote({ note: "## 対象ツール", inflight: 2 }), "## 対象ツール · 正在翻 2 块");
+});
+
+test("没有在飞的块只写节标题；旧桥不带 inflight 也不炸", () => {
+  assert.equal(trNote({ note: "## 対象ツール", inflight: 0 }), "## 対象ツール");
+  assert.equal(trNote({ note: "开头" }), "开头");
+  assert.equal(trNote(null), "");
+});
+
+test("队尾那行：还差几节 + 正在翻几块", () => {
+  assert.equal(trPendingHead(3, 2), "还有 3 节在队列里 · 正在翻 2 块");
+  assert.equal(trPendingHead(1, 0), "还有 1 节在队列里");
+});
+
+test("已用时间只在跑的时候有字", () => {
+  assert.equal(trElapsed(null), "");
+  assert.equal(trElapsed({ status: "done", startedAt: Date.now() - 5000 }), "");
+  assert.match(trElapsed({ status: "running", startedAt: Date.now() - 4200 }), /^已用 \d+ s$/);
 });

@@ -50,6 +50,12 @@ fs.mkdirSync(STATE, { recursive: true });
 fs.mkdirSync(path.join(AGENT, "sessions"), { recursive: true });
 fs.mkdirSync(WORK, { recursive: true });
 fs.writeFileSync(DOC, SRC);
+// D392: 翻译的默认模型跟随 pi 的全局设置（defaultProvider + defaultModel），不再写死 copilot。
+const PI_DEFAULT = "fixture-provider/fixture-model";
+fs.writeFileSync(
+  path.join(AGENT, "settings.json"),
+  JSON.stringify({ defaultProvider: "fixture-provider", defaultModel: "fixture-model" }, null, 2),
+);
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let failed = 0;
@@ -175,12 +181,12 @@ try {
   check(before.body.stale === true, "标着「过期」（没有译文）");
   check((before.body.langs ?? []).length === 4, `四种目标语言（${(before.body.langs ?? []).map((l) => String(l)).join(",")}）`);
 
-  // D245: 默认模型是这台机器上的偏好，出厂值 copilot/gpt-6-luna，和 settings.json 无关。
+  // D392: 默认模型跟随 pi 全局设置里的 defaultProvider + defaultModel（不再写死 copilot）。
   check(before.body.prefs?.model === "", "偏好里还没记模型");
-  check(before.body.defaultModel === "copilot/gpt-6-luna", `出厂默认模型 copilot/gpt-6-luna（${before.body.defaultModel}）`);
+  check(before.body.defaultModel === PI_DEFAULT, `默认模型跟随 pi 全局设置（${before.body.defaultModel}）`);
 
   const prefs0 = await post("prefs", {});
-  check(prefs0.status === 200 && prefs0.body.defaultModel === "copilot/gpt-6-luna", "不带 model 只读偏好");
+  check(prefs0.status === 200 && prefs0.body.defaultModel === PI_DEFAULT, "不带 model 只读偏好");
   const prefsSet = await post("prefs", { model: "stub/fake-model" });
   check(prefsSet.status === 200 && prefsSet.body.prefs.model === "stub/fake-model", `记住选过的模型（${prefsSet.body.prefs.model}）`);
   const prefsBad = await post("prefs", { model: "no-slash" });
