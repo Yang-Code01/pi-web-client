@@ -7679,7 +7679,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **验证：** `npm run typecheck`（bridge / peer / web + i18n-check 4141 键 × 3 语 + viewport + layers + theme）通过；`node probes/chrome-topbar.mjs`（四档宽度、切英文后标签、不横向溢出）全过；`node probes/mac-chat.mjs`（三套底色、对比度、气泡贴边）全过；`node probes/round21-cwd-line.mjs`、`node probes/notes-panel-regress.mjs` 与 `main` 一致通过（`round24-pinactions` / `round15-git` / `archive-switch` / `fs-ui` / `bug-notes-ui` 在 `main` 上已经红，不是这次引入）。三套底色 + 设置抽屉 + 记录面板的截图在原型目录里（`.scratch/icons-sheet/`，不进版本库）。
 
-## D395 一份桥日志封顶 16 MB，临时状态目录不再开机扫全盘（#PR；用户「为啥本项目在我这台 mac 上占用这么多内存」「还有硬盘空间」2026-11-24）
+## D395 一份桥日志封顶 16 MB，临时状态目录不再开机扫全盘（#654；用户「为啥本项目在我这台 mac 上占用这么多内存」「还有硬盘空间」2026-11-24）
 
 **问题：** 这台机器上 40 GB 是 pi-web-client 占的，其中 38 GB 全在 `.scratch/` 里，而里面**只有两样东西**：28.9 GB 的 `logs/bridge.log`，加 9.0 GB 的 `filesearch.db` 副本（313 份，单份到 1.2 GB）。两者都不是功能要的，是没人设上限的副作用：
 
