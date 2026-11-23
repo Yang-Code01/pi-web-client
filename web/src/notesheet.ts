@@ -19,7 +19,7 @@ import type { RuleBook } from "./rules.ts";
 import type { Note, NoteKind, NoteStatus, NotesLayout } from "./types.ts";
 import "./notes.css";
 import { tr } from "./i18n/index.ts";
-import { pushEscLayer, retireOverlay } from "./modal.ts";
+import { markSurface, pushEscLayer, retireOverlay } from "./modal.ts";
 
 export const NOTE_KINDS: { id: NoteKind; label: string; glyph: string }[] = [
   { id: "bug", label: "bug", glyph: "🐞" },
@@ -283,7 +283,7 @@ export class NotesSheet {
   }
 
   private build(): void {
-    const back = el("div", "sheet-back notes-back");
+    const back = markSurface(el("div", "sheet-back notes-back"), "window", { enter: "none" });
     back.onclick = (ev) => {
       if (ev.target === back) this.close();
     };

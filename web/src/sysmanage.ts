@@ -8,7 +8,7 @@ import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { paintAttendance } from "./attendance.ts";
 import { errText, fmtTime, tr } from "./i18n/index.ts";
-import { retireOverlay } from "./modal.ts";
+import { markSurface, retireOverlay } from "./modal.ts";
 import {
   DNS_PRESETS,
   clockText,
@@ -190,7 +190,7 @@ class SysPanel {
   // ---------------------------------------------------------------- 外壳
 
   private build(): void {
-    const root = el("div", "sys-back");
+    const root = markSurface(el("div", "sys-back"), "window");
     root.addEventListener("mousedown", (ev) => {
       if (ev.target === root) this.close();
     });

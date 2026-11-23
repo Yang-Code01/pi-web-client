@@ -1,5 +1,5 @@
 import { createEl as el } from "./chat.ts";
-import { retireOverlay } from "./modal.ts";
+import { markSurface, retireOverlay } from "./modal.ts";
 import { tr } from "./i18n/index.ts";
 import { renderMarkdown } from "./md.ts";
 import type { TrDoc, TrJob, TrSyncResp } from "./types.ts";
@@ -320,7 +320,7 @@ export interface PickerOpts {
  * 默认取上次用过的那个。
  */
 export function openTrPicker(o: PickerOpts, mount: (node: HTMLElement) => void): void {
-  const back = el("div", "choose-back");
+  const back = markSurface(el("div", "choose-back"), "window", { enter: "alert" });
   const box = el("div", "choose tr-pick");
   box.append(el("div", "choose-title", tr("翻译成什么？用什么翻？")));
   let lang = o.lang || o.fallbackLang;
@@ -395,7 +395,7 @@ export function openSyncReview(
   onApply: () => void,
   mount: (node: HTMLElement) => void,
 ): void {
-  const back = el("div", "choose-back");
+  const back = markSurface(el("div", "choose-back"), "window", { enter: "alert" });
   const box = el("div", "choose tr-review");
   box.append(el("div", "choose-title", tr("把 {n} 处改动写回原文？", { n: r.edits })));
   box.append(el("div", "tr-tip", path));

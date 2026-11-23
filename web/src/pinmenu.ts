@@ -1,6 +1,7 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 import { stickMenu } from "./menuplace.ts";
+import { markSurface } from "./modal.ts";
 
 /**
  * 置顶条每颗会话胶囊的悬停气泡（Q-035）：归档 / 重命名 / 删除。
@@ -34,7 +35,7 @@ export function openPinMenu(anchor: HTMLElement, opts: PinMenuOpts): PinMenuHand
   let closed = false;
   let editing = false;
 
-  const node = el("div", "pin-menu");
+  const node = markSurface(el("div", "pin-menu"), "menu");
   node.setAttribute("role", "menu");
   node.dataset.pinMenu = opts.name;
 

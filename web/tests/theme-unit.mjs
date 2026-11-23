@@ -184,3 +184,74 @@ test("迁移对错值落默认，且幂等（迁过一次再迁不会再变）",
   const once = migrateThemePrefs({ theme: "dusk", accent: "teal" });
   assert.deepEqual(migrateThemePrefs(once), once, "已经是新值了，第二次迁移不该再动");
 });
+
+// ---------------------------------------------------------------- 材质由标记驱动（#644）
+// 以前材质靠 mac.css 里四张手抄的类名名单（遮罩 / 窗口 / 菜单 / 吐司）：每加一个面板都要记得去补名字，
+// 漏了就静默退回纯色板（D352 漏过一次、D389 又漏了四个）。现在由浮层自己在创建处打
+// `data-mac-surface`，CSS 只认这个属性。下面这组断言守的是「名单不许回来」与「每个创建点都打了标记」。
+const MAC_CSS = fs.readFileSync(path.join(REPO, "web/src/mac.css"), "utf8");
+
+/** 曾经写在名单里的外壳类名。它们现在只允许作为「这一面自己的覆盖」出现，不许再被批量列进 :is()。 */
+const OLD_SHELLS = [
+  "st-back", "sheet-back", "sys-back", "jc-back", "mc-back", "jira-ask-back", "jira-picker", "sheet-sub-back",
+  "choose-back", "peer-pick", "image-view", "st-console", "sys-console", "jc-console", "mc-console", "mc-confirm",
+  "argdialog-panel", "jira-ask", "peer-pick-panel", "branch-sheet", "repos-sheet", "jira-picker-box",
+  "ctx-menu", "pin-menu", "perm-menu", "term-menu", "fail-menu", "go-cmp-menu", "mk-menu", "ws-pop", "act-pop",
+  "complete-pop", "jira-user-pop", "jira-handoff-pop", "skill-panel", "turn-note", "pin-note", "fail-toast", "update-bar",
+];
+
+test("材质级由标记驱动：mac.css 只认 data-mac-surface，四张手抄名单不许回来", () => {
+  const kinds = new Set([...MAC_CSS.matchAll(/data-mac-surface="([a-z]+)"/g)].map((m) => m[1]));
+  for (const k of ["window", "menu", "toast", "dock"]) {
+    assert.ok(kinds.has(k), `mac.css 里没有 [data-mac-surface="${k}"] —— 材质级少了这一档`);
+  }
+  // 名单的判据：:is(...) 的参数里同时列了两个以上旧外壳类名。单条覆盖（.viewer、.notes-sheet）不算。
+  const offenders = [];
+  for (const m of MAC_CSS.matchAll(/:is\(([^)]*)\)/g)) {
+    const hit = OLD_SHELLS.filter((c) => new RegExp(`\\.${c}(?![\\w-])`).test(m[1]));
+    if (hit.length >= 2) offenders.push(hit.join(", "));
+  }
+  assert.deepEqual(offenders, [], `mac.css 里还有手抄的外壳名单：${offenders.join(" / ")}`);
+});
+
+test("材质级的取值表两侧一致：TS 的联合类型与 CSS 选择器用的是同一组值", async () => {
+  const { SURFACE_KINDS } = await import("../src/modal.ts");
+  // `paper` 故意没有 CSS 规则（它就是「不套材质」），所以 CSS 侧是四个材质级。
+  const css = new Set([...MAC_CSS.matchAll(/data-mac-surface="([a-z]+)"/g)].map((m) => m[1]));
+  assert.deepEqual([...css].sort(), ["dock", "menu", "toast", "window"], "CSS 侧的材质级变了");
+  assert.deepEqual([...SURFACE_KINDS].sort(), ["dock", "menu", "paper", "toast", "window"], "TS 侧的材质级变了");
+  assert.match(MAC_CSS, /paper[^\n]*不套材质/, "mac.css 里要写明 paper 是「故意不套材质」的那一档");
+});
+
+test("每个浮层创建点都打了标记（删掉一行 markSurface 就红）", () => {
+  // 文件 → 这个文件里必须出现的材质级。表外的新模块由探针的全局扫描兜（页面上不许有裸浮层）。
+  const SITES = [
+    ["web/src/app.ts", ["menu", "toast", "dock"]],  // sheet 走 overlay() 的默认，菜单 / 吐司 / 预览 / 终端单独打
+    ["web/src/notesheet.ts", ["window", "menu"]],
+    ["web/src/reminders.ts", ["menu", "toast"]],
+    ["web/src/sysmanage.ts", ["window"]],
+    ["web/src/jira.ts", ["window", "menu"]],
+    ["web/src/mail.ts", ["window"]],
+    ["web/src/mailconfirm.ts", ["window"]],
+    ["web/src/hotdeploy.ts", ["window"]],
+    ["web/src/branchsheet.ts", ["window", "menu"]],
+    ["web/src/repossheet.ts", ["window"]],
+    ["web/src/pinmenu.ts", ["menu"]],
+    ["web/src/pluginmarket.ts", ["menu"]],
+    ["web/src/notes/editor.ts", ["menu"]],
+    ["web/src/whatsnew.ts", ["window"]],
+    ["web/src/filesearch.ts", ["window"]],
+    ["web/src/fileconsole.ts", ["window"]],
+  ];
+  for (const [rel, kinds] of SITES) {
+    const src = fs.readFileSync(path.join(REPO, rel), "utf8");
+    for (const k of kinds) {
+      assert.match(src, new RegExp(`(?:markSurface|overlay)\\([\\s\\S]{0,240}?"${k}"`), `${rel} 没有给 "${k}" 级打标记`);
+    }
+  }
+});
+
+test("浮层一律挂进 #app：笔记的两个浮层不再往 body 上塞", () => {
+  const src = fs.readFileSync(path.join(REPO, "web/src/notesheet.ts"), "utf8");
+  assert.ok(!/document\.body\.append/.test(src), "notesheet.ts 还在往 body 上挂浮层 —— 它们不会跟着字号缩放");
+});

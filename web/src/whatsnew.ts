@@ -15,7 +15,7 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 import { renderMarkdown } from "./md.ts";
-import { mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
+import { markSurface, mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
 import "./whatsnew.css";
 
 export interface WhatsnewBatch {
@@ -96,7 +96,7 @@ export function openWhatsnew(opts: WhatsnewDialogOptions): void {
   // 打开即已读（D358）。失败也无所谓：下次判定还看得见，只是可能要重看一遍。
   void fetch("/api/changelog/seen", { method: "POST", credentials: "same-origin" }).catch(() => {});
 
-  const back = el("div", "sheet-back center whatsnew-back");
+  const back = markSurface(el("div", "sheet-back center whatsnew-back"), "window");
   const sheet = el("section", "sheet whatsnew-sheet");
   sheet.setAttribute("role", "dialog");
   sheet.setAttribute("aria-modal", "true");

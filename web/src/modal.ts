@@ -12,9 +12,40 @@
  * `mountOverlay` 认 `#app`：往 `document.body` 上挂就不吃 `#app` 的 `zoom`，外观「字号」调到
  * 125% 以上时同一个弹层会跟别的弹层两套尺寸（D123 / D263）。
  *
+ * `markSurface`：浮层在**创建处**声明自己是哪一档材质，`mac.css` 只按这个属性挑玻璃 / 圆角 / 入场。
+ * 以前材质靠 CSS 里四张手抄的类名名单（遮罩 / 窗口 / 菜单 / 吐司），每加一个面板都要记得去补名字，
+ * 漏了就静默退回纯色板（D352 漏过一次、D389 又漏了四个）。现在漏的是「没打标记」，由探针扫出来。
+ *
  * `retireOverlay`：Mac 主题下关闭时先演退场（`.mac-leaving`）再移除。app.ts 自己的 sheet 有一版
  * 更复杂的（同一轮又开了新面板要跳过入场），其余自管弹层的模块用这里的简单版。
  */
+
+/**
+ * 材质级（#644）：`window` 是带遮罩的窗口（根 = 遮罩，直接子元素 = 面板），`menu` / `toast` 是浮在
+ * 页面上的小块，`dock` 是贴边的窗（预览右栏 / 终端），`paper` 是「登记在案、故意不套 Mac 材质」
+ * （表格与幻灯片浮窗永远是浅色纸）。CSS 侧的取值集合必须与这张表一致（`theme-unit.mjs` 会红）。
+ */
+export type SurfaceKind = "window" | "menu" | "toast" | "dock" | "paper";
+export const SURFACE_KINDS: readonly SurfaceKind[] = ["window", "menu", "toast", "dock", "paper"];
+
+export interface SurfaceOpts {
+  /** `window` 的入场：底部抽屉 / 贴右边推进 / alert 形缩放 / 不演。不写就是窗口从上方落下。 */
+  enter?: "drawer" | "side" | "alert" | "none";
+  /** 灯箱那种更暗的遮罩（`mac.css` 里 `--mac-scrim` 之外的一档）。 */
+  dim?: "dark";
+}
+
+/**
+ * 给浮层打上材质标记；返回节点本身，方便 `const pop = markSurface(el("div", "remind-pop"), "menu")`。
+ *
+ * 只在**创建处**调一次。别在别处补调 —— 那等于又把「谁忘了」变成一个人肉约定。
+ */
+export function markSurface<T extends HTMLElement>(node: T, kind: SurfaceKind, opts: SurfaceOpts = {}): T {
+  node.dataset.macSurface = kind;
+  if (opts.enter) node.dataset.macEnter = opts.enter;
+  if (opts.dim) node.dataset.macDim = opts.dim;
+  return node;
+}
 
 export interface EscLayer {
   /** 层的根元素；`focusScoped` 时用它判断焦点是否在层里。 */
@@ -81,15 +112,11 @@ export function trapEscape(onEscape: () => void): () => void {
 /**
  * 现在有没有弹层开着（模态 / 抽屉 / 控制台 / 灯箱）。
  *
- * 名单与 `mac.css` 里那组外壳一致 —— 别在调用处手抄第四份：抄漏一个，自动弹出的东西就会压在
- * 灯箱或子弹层上面。给「先别叠上去」这类判断用。
+ * 判据是材质标记（#644），不再另抄一份类名名单 —— 抄漏一个，自动弹出的东西就会压在灯箱或
+ * 子弹层上面。`paper` 也算：表格浮窗开着时同样不该往上叠。
  */
 export function overlaysOpen(root: ParentNode = document): boolean {
-  return Boolean(
-    root.querySelector(
-      ".st-back, .sheet-back, .modal, .sys-back, .jc-back, .mc-back, .jira-ask-back, .jira-picker, .sheet-sub-back, .choose-back, .peer-pick, .image-view",
-    ),
-  );
+  return Boolean(root.querySelector("[data-mac-surface]"));
 }
 
 /** 把浮层挂进 `#app`（拿不到才退回 body，比如单元测试里的假 DOM）。 */

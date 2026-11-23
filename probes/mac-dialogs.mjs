@@ -98,14 +98,21 @@ async function until(fn, ms, label) {
   throw new Error(`timeout: ${label}`);
 }
 
+/**
+ * 量一扇浮层：材质现在由 `data-mac-surface` 挑（#644），面板就是 window 根的**直接子元素**，
+ * 其余材质级（menu / toast / dock / paper）节点自己就是面板。不再按类名认面板 ——
+ * 那正是这次要消灭的东西（panel 名单抄漏一个就静默通过）。
+ */
 const MEASURE = (sel) => {
   const back = document.querySelector(sel);
   if (!back) return null;
-  const PANELS =
-    ".sys-console, .jc-console, .mc-console, .mc-confirm, .st-console, .argdialog-panel, .notes-sheet, .branch-sheet, .repos-sheet, .choose, .jira-ask, .jira-picker-box, .peer-pick-panel, .image-view-img, .sheet, form";
-  const panel = back.matches(PANELS) ? back : back.querySelector(PANELS);
+  const kind = back.dataset.macSurface ?? null;
+  const panel = kind === "window" ? back.firstElementChild : back;
   const cs = (el, p) => (el ? getComputedStyle(el)[p] : null);
   return {
+    kind,
+    enter: back.dataset.macEnter ?? null,
+    inApp: Boolean(back.closest("#app")),
     back: {
       bg: cs(back, "backgroundColor"),
       blur: cs(back, "backdropFilter"),
@@ -116,15 +123,34 @@ const MEASURE = (sel) => {
       ? {
           tag: panel.tagName.toLowerCase() + "." + (panel.className || "").split(/\s+/).filter(Boolean).join("."),
           bg: cs(panel, "backgroundColor"),
-          bgImg: cs(panel, "backgroundImage"),
           blur: cs(panel, "backdropFilter"),
           radius: cs(panel, "borderRadius"),
           shadow: cs(panel, "boxShadow"),
           anim: cs(panel, "animationName"),
-          dur: cs(panel, "animationDuration"),
         }
       : null,
   };
+};
+
+/**
+ * 全局扫描（#644）：页面上任何「可见 + fixed/absolute + z-index ≥ 40」的块，要么自己带
+ * `data-mac-surface`，要么有一个带了标记的祖先（它是那扇窗里的零件），要么登记在豁免表里。
+ * 这条是「下次漏项会红」的那张网：新面板忘了打标记，这里当场抓到，不用等用户半年后发现。
+ */
+const SCAN_EXEMPT = [];
+const SCAN = (exempt) => {
+  const hits = [];
+  for (const el of document.querySelectorAll("#app *, body > *")) {
+    if (el.hasAttribute("data-mac-surface")) continue;
+    if (el.closest("[data-mac-surface]")) continue;      // 已归属某扇浮层的零件
+    if (exempt.some((x) => el.matches(x))) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) === 0) continue;
+    if (cs.position !== "fixed" && cs.position !== "absolute") continue;
+    if (!(parseInt(cs.zIndex, 10) >= 40)) continue;
+    hits.push({ cls: typeof el.className === "string" ? el.className : el.tagName, z: cs.zIndex });
+  }
+  return hits;
 };
 
 const results = [];
@@ -135,22 +161,33 @@ const measure = async (page, label, sel) => {
 };
 
 const SKELETONS = [
-  ["系统管理 sysmanage", `<div class="sys-back"><section class="sys-console"></section></div>`],
-  ["文件管理器 fileconsole", `<div class="sys-back fc-back"><section class="sys-console fc-console"></section></div>`],
-  ["热部署 hotdeploy", `<div class="sys-back hot-back"><section class="sys-console hot"></section></div>`],
-  ["Jira 面板", `<div class="jc-back"><section class="jc-console"></section></div>`],
-  ["Jira 确认层", `<div class="jira-ask-back"><div class="jira-ask"></div></div>`],
-  ["Jira 附件根目录", `<div class="jira-picker"><div class="jira-picker-box"></div></div>`],
-  ["邮箱", `<div class="mc-back"><section class="mc-console"></section></div>`],
-  ["邮箱确认框 mc-confirm", `<div class="mc-back mc-back--confirm"><section class="mc-confirm"></section></div>`],
-  ["笔记（sheet 家族）", `<div class="sheet-back notes-back"><div class="sheet notes-sheet"></div></div>`],
-  ["分支面板 branch-sheet", `<div class="sheet-back center branch-back"><div class="branch-sheet go-sheet"></div></div>`],
-  ["仓库面板 repos-sheet", `<div class="sheet-back center repos-back"><div class="repos-sheet"></div></div>`],
-  ["子弹层 sheet-sub", `<div class="sheet-sub-back"><div class="sheet sub-sheet"></div></div>`],
-  ["选择器 choose", `<div class="choose-back"><div class="choose"></div></div>`],
-  ["图片灯箱 image-view", `<div class="image-view"><img class="image-view-img" alt=""></div>`],
-  ["笔记选人 peer-pick", `<div class="peer-pick"><div class="peer-pick-panel"></div></div>`],
-  ["新建会话（骨架对照）", `<div class="sheet-back center"><div class="sheet new-sheet"></div></div>`],
+  // 每条骨架自己带 `data-mac-surface` —— 与真组件走的是同一个属性、同一张材质表。
+  ["系统管理 sysmanage", `<div class="sys-back" data-mac-surface="window"><section class="sys-console"></section></div>`],
+  ["文件管理器 fileconsole", `<div class="sys-back fc-back" data-mac-surface="window"><section class="sys-console fc-console"></section></div>`],
+  ["热部署 hotdeploy", `<div class="sys-back hot-back" data-mac-surface="window"><section class="sys-console hot"></section></div>`],
+  ["Jira 面板", `<div class="jc-back" data-mac-surface="window"><section class="jc-console"></section></div>`],
+  ["Jira 确认层", `<div class="jira-ask-back" data-mac-surface="window"><div class="jira-ask"></div></div>`],
+  ["Jira 附件根目录", `<div class="jira-picker" data-mac-surface="window"><div class="jira-picker-box"></div></div>`],
+  ["邮箱", `<div class="mc-back" data-mac-surface="window"><section class="mc-console"></section></div>`],
+  ["邮箱确认框 mc-confirm", `<div class="mc-back mc-back--confirm" data-mac-surface="window"><section class="mc-confirm"></section></div>`],
+  ["笔记（sheet 家族）", `<div class="sheet-back notes-back" data-mac-surface="window" data-mac-enter="none"><div class="sheet notes-sheet"></div></div>`],
+  ["分支面板 branch-sheet", `<div class="sheet-back center branch-back" data-mac-surface="window"><div class="branch-sheet go-sheet"></div></div>`],
+  ["仓库面板 repos-sheet", `<div class="sheet-back center repos-back" data-mac-surface="window"><div class="repos-sheet"></div></div>`],
+  ["子弹层 sheet-sub", `<div class="sheet-sub-back" data-mac-surface="window"><div class="sheet sub-sheet"></div></div>`],
+  ["选择器 choose", `<div class="choose-back" data-mac-surface="window" data-mac-enter="alert"><div class="choose"></div></div>`],
+  ["图片灯箱 image-view", `<div class="image-view" data-mac-surface="window" data-mac-dim="dark"><img class="image-view-img" alt=""></div>`],
+  ["笔记选人 peer-pick", `<div class="peer-pick" data-mac-surface="window"><div class="peer-pick-panel"></div></div>`],
+  ["新建会话（骨架对照）", `<div class="sheet-back center" data-mac-surface="window"><div class="sheet new-sheet"></div></div>`],
+  ["底部抽屉（手机 sheet）", `<div class="sheet-back" data-mac-surface="window" data-mac-enter="drawer"><div class="sheet"></div></div>`],
+  ["随手问（右侧抽屉）", `<div class="sheet-back scratch-back" data-mac-surface="window" data-mac-enter="side"><div class="sheet"></div></div>`],
+  // ---- 这次补的四个面（#644）：以前它们根本不在任何名单里。
+  ["预览右栏 viewer", `<aside class="viewer" data-mac-surface="dock"><div class="viewer-head"></div><div class="viewer-body"></div></aside>`],
+  ["提醒清单 remind-pop", `<div class="remind-pop" data-mac-surface="menu"></div>`],
+  ["提醒吐司 remind-toast", `<div class="remind-toast" data-mac-surface="toast"></div>`],
+  ["笔记工具条弹层 tb-pop", `<div class="tb-pop" data-mac-surface="menu"></div>`],
+  ["交给 agent note-handoff", `<div class="note-handoff" data-mac-surface="menu"></div>`],
+  // `paper`：登记在案、故意不套材质。
+  ["表格浮窗（纸）", `<section class="sd" data-mac-surface="paper"></section>`],
 ];
 
 let browser = null;
@@ -226,6 +263,8 @@ try {
       await page.locator(sel).first().waitFor({ timeout: 8000 });
       await sleep(700);
       await measure(page, label, backSel);
+      const hits = await page.evaluate(SCAN, SCAN_EXEMPT.map((x) => x.sel));
+      for (const h of hits) scanHits.push({ where: label, ...h });
       await page.screenshot({ path: path.join(OUT, shot) });
       await page.keyboard.press("Escape");
       await sleep(400);
@@ -264,10 +303,9 @@ try {
       host.append(node);
     }, frag);
     const anim = await page.evaluate(() => {
-      const PANELS =
-        ".sys-console, .jc-console, .mc-console, .mc-confirm, .st-console, .sheet, form, .argdialog-panel, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box, .choose";
+      // 与材质同一套判据：window 的面板是直接子元素，其余材质级节点自己就是面板。
       const back = document.querySelector('[data-mac-probe="leave"]');
-      const p = back?.matches(PANELS) ? back : back?.querySelector(PANELS);
+      const p = back?.dataset.macSurface === "window" ? back.firstElementChild : back;
       const a = p ? getComputedStyle(p).animationName : "";
       back?.remove();
       return a;
@@ -276,16 +314,16 @@ try {
   };
   const leaves = [];
   for (const [label, frag] of [
-    ["系统管理 sysmanage", `<div class="sys-back"><section class="sys-console"></section></div>`],
-    ["Jira 面板", `<div class="jc-back"><section class="jc-console"></section></div>`],
-    ["邮箱", `<div class="mc-back"><section class="mc-console"></section></div>`],
-    ["邮箱确认框", `<div class="mc-back mc-back--confirm"><section class="mc-confirm"></section></div>`],
-    ["笔记选人 peer-pick", `<div class="peer-pick"><div class="peer-pick-panel"></div></div>`],
-    ["选择器 choose", `<div class="choose-back"><div class="choose"></div></div>`],
-    ["子弹层 sheet-sub", `<div class="sheet-sub-back"><div class="sheet sub-sheet"></div></div>`],
-    ["分支面板", `<div class="sheet-back center branch-back"><div class="branch-sheet go-sheet"></div></div>`],
-    ["仓库面板", `<div class="sheet-back center repos-back"><div class="repos-sheet"></div></div>`],
-    ["Jira 附件根目录", `<div class="jira-picker"><div class="jira-picker-box"></div></div>`],
+    ["系统管理 sysmanage", `<div class="sys-back" data-mac-surface="window"><section class="sys-console"></section></div>`],
+    ["Jira 面板", `<div class="jc-back" data-mac-surface="window"><section class="jc-console"></section></div>`],
+    ["邮箱", `<div class="mc-back" data-mac-surface="window"><section class="mc-console"></section></div>`],
+    ["邮箱确认框", `<div class="mc-back mc-back--confirm" data-mac-surface="window"><section class="mc-confirm"></section></div>`],
+    ["笔记选人 peer-pick", `<div class="peer-pick" data-mac-surface="window"><div class="peer-pick-panel"></div></div>`],
+    ["选择器 choose", `<div class="choose-back" data-mac-surface="window" data-mac-enter="alert"><div class="choose"></div></div>`],
+    ["子弹层 sheet-sub", `<div class="sheet-sub-back" data-mac-surface="window"><div class="sheet sub-sheet"></div></div>`],
+    ["分支面板", `<div class="sheet-back center branch-back" data-mac-surface="window"><div class="branch-sheet go-sheet"></div></div>`],
+    ["仓库面板", `<div class="sheet-back center repos-back" data-mac-surface="window"><div class="repos-sheet"></div></div>`],
+    ["Jira 附件根目录", `<div class="jira-picker" data-mac-surface="window"><div class="jira-picker-box"></div></div>`],
   ]) {
     const anim = await leaveProbe(frag);
     log(`退场（${label}）:`, anim || "—");
@@ -299,7 +337,7 @@ try {
     const host = document.getElementById("app") ?? document.body;
     const box = document.createElement("div");
     box.append(
-      document.createRange().createContextualFragment(`<div class="sheet-back center repos-back"><div class="repos-sheet"></div></div>`),
+      document.createRange().createContextualFragment(`<div class="sheet-back center repos-back" data-mac-surface="window"><div class="repos-sheet"></div></div>`),
     );
     box.firstElementChild.dataset.macProbe = "narrow";
     host.append(box.firstElementChild);
@@ -334,48 +372,60 @@ try {
   fs.writeFileSync(path.join(OUT, "results.json"), JSON.stringify(results, null, 2));
   log("写入", path.join(OUT, "results.json"));
 
-  // ---- 断言：除白名单里的例外，每一行都要和「产物」对齐。
-  // 例外只写「它确实不同而且应该不同」的：`.choose` 是 alert 形的小弹窗（缩放淡入更像），
-  // 灯箱的图不是窗口（没有毛玻璃、圆角 12px）。写成表并反查：改了骨架名字而忘了同步这里，
-  // 下面会直接红，不会静默失效。
-  const EXEMPT = [
-    { label: "注入：选择器 choose", anim: "mac-menu-in" },
-    { label: "注入：图片灯箱 image-view", anim: "mac-window-in", radius: "12px" },
-  ];
-  const exemptOf = (label) => EXEMPT.find((e) => e.label === label) ?? {};
-  const base = results.find((r) => r.label === "产物（真开）");
+  // ---- 断言：材质由标记挑（#644）。
+  // 每一行按它自己的 data-mac-surface 去比一张「材质级 → 期望值」的表；不再拿某一层当对照组 ——
+  // 对照组本身也可能被改坏，而这张表是决策日志里写下的值。例外只剩灯箱的圆角（图不是窗口）。
+  const MATERIAL = {
+    window: { scrimBlur: true, scrimAnim: "mac-fade-in", anim: "mac-window-in", radius: "14px", shadow: true },
+    menu: { scrimBlur: false, scrimAnim: "none", anim: "mac-menu-in", radius: "12px", shadow: true },
+    toast: { scrimBlur: false, scrimAnim: "none", anim: "mac-toast-in", radius: "14px", shadow: true },
+    dock: { scrimBlur: true, scrimAnim: null, anim: null, radius: "14px", shadow: true },
+    paper: { scrimBlur: false, scrimAnim: null, anim: null, radius: null, shadow: null },
+  };
+  const ENTER = {
+    drawer: { anim: "mac-drawer-in", radius: "16px 16px 0px 0px" },
+    side: { anim: "mac-side-in", radius: "14px 0px 0px 14px" },
+    alert: { anim: "mac-menu-in", radius: "14px" },
+    none: { anim: "none", radius: "14px" },
+  };
+  // 只写「它确实不同、而且应该不同」的两条：灯箱的图圆角小一档；预览右栏有自己的入场（D111 那扇窗）。
+  const OVERRIDE = {
+    "注入：图片灯箱 image-view": { radius: "12px" },
+    "注入：预览右栏 viewer": { anim: "viewer-in" },
+  };
   const fails = [];
-  if (!base?.panel) throw new Error("对照组「产物」没量到面板 —— 探针自己坏了，先看 02-artifacts.png");
-  for (const e of EXEMPT) {
-    if (!results.some((r) => r.label === e.label)) fails.push(`豁免表里的「${e.label}」在实测结果里不存在（骨架改名了？）`);
+  for (const e of SCAN_EXEMPT) {
+    const seen = await page.evaluate((sel) => Boolean(document.querySelector(sel)), e.sel);
+    if (!seen) fails.push(`扫描豁免表里的「${e.sel}」在页面上不存在（改名了？）—— ${e.why}`);
   }
+  if (!results.length) fails.push("一行都没量到 —— 探针自己坏了");
   for (const r of results) {
     if (r.missing || !r.back) {
       fails.push(`${r.label}: 没找到 ${r.sel}`);
       continue;
     }
-    const ex = exemptOf(r.label);
-    if (r.back.blur !== base.back.blur) fails.push(`${r.label}: 遮罩 ${r.back.blur} ≠ ${base.back.blur}`);
-    if (r.back.anim !== base.back.anim) fails.push(`${r.label}: 遮罩动画 ${r.back.anim} ≠ ${base.back.anim}`);
+    if (!r.kind) {
+      fails.push(`${r.label}: 根上没有 data-mac-surface —— 材质不会被认出来`);
+      continue;
+    }
     if (!r.panel) {
       fails.push(`${r.label}: 里面没找到面板`);
       continue;
     }
-    const anim = ex.anim ?? base.panel.anim;
-    const radius = ex.radius ?? base.panel.radius;
-    if (r.panel.anim !== anim) fails.push(`${r.label}: 面板动画 ${r.panel.anim} ≠ ${anim}`);
-    if (r.panel.radius !== radius) fails.push(`${r.label}: 圆角 ${r.panel.radius} ≠ ${radius}`);
-    if (r.panel.shadow === "none") fails.push(`${r.label}: 面板没阴影`);
+    const want = MATERIAL[r.kind];
+    const enter = r.enter ? ENTER[r.enter] : null;
+    const ov = OVERRIDE[r.label] ?? {};
+    if (r.kind === "window") {
+      if (want.scrimBlur && (!r.back.blur || r.back.blur === "none")) fails.push(`${r.label}: 遮罩没有毛玻璃`);
+      if (want.scrimAnim && r.back.anim !== want.scrimAnim) fails.push(`${r.label}: 遮罩动画 ${r.back.anim} ≠ ${want.scrimAnim}`);
+    }
+    const anim = ov.anim ?? enter?.anim ?? want.anim;
+    if (anim && r.panel.anim !== anim) fails.push(`${r.label}: 面板动画 ${r.panel.anim} ≠ ${anim}`);
+    const radius = ov.radius ?? enter?.radius ?? want.radius;
+    if (radius && r.panel.radius !== radius) fails.push(`${r.label}: 圆角 ${r.panel.radius} ≠ ${radius}`);
+    if (want.shadow === true && r.panel.shadow === "none") fails.push(`${r.label}: 面板没阴影`);
+    if (!r.inApp) fails.push(`${r.label}: 没挂在 #app 里 —— 字号缩放时它会跟别人两套尺寸`);
   }
-  if (!leaving.found) fails.push("退场：Esc 后没有 .mac-leaving");
-  else if (!String(leaving.panel).includes("mac-window-out")) fails.push(`退场：面板动画 ${leaving.panel}`);
-  for (const l of leaves) {
-    if (!String(l.anim).includes("mac-window-out")) fails.push(`退场（${l.label}）: 面板动画 ${l.anim || "none"} ≠ mac-window-out`);
-  }
-  if (narrow?.radius !== "0px" || narrow?.border !== "0px") {
-    fails.push(`窄屏仓库面板还带 radius=${narrow?.radius ?? "?"} border=${narrow?.border ?? "?"} —— 铺满整屏不该有圆角/边框`);
-  }
-
   if (fails.length) {
     console.log(`\nFAIL — ${fails.length} 处没跟上 Mac 风格:`);
     for (const f of fails) console.log("  " + f);

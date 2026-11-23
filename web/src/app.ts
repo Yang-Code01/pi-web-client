@@ -100,7 +100,7 @@ import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } f
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { ReminderCenter, type Reminder } from "./reminders.ts";
-import { escapeTopLayer, LEAVE_MS, overlaysOpen, pushEscLayer, retireOverlay, startLeaving } from "./modal.ts";
+import { escapeTopLayer, LEAVE_MS, markSurface, overlaysOpen, pushEscLayer, retireOverlay, startLeaving, type SurfaceKind, type SurfaceOpts } from "./modal.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -3643,8 +3643,15 @@ export class App {
     });
   }
 
-  /** Overlays live inside #app so they scale with the appearance zoom. */
-  private overlay(node: HTMLElement): void {
+  /**
+   * Overlays live inside #app so they scale with the appearance zoom.
+   *
+   * 顺带打上材质标记（#644）：`mac.css` 只认 `data-mac-surface`，不再维护一份类名名单。
+   * `enter` 给非「窗口从上方落下」的那几档：手机上的 sheet 是抽屉、随手问是右侧推进、
+   * 两三选项的小弹窗是 alert 形的缩放淡入。
+   */
+  private overlay(node: HTMLElement, kind: SurfaceKind = "window", opts: SurfaceOpts = {}): void {
+    markSurface(node, kind, opts);
     (document.getElementById("app") ?? document.body).append(node);
   }
 
@@ -3956,7 +3963,7 @@ export class App {
     // Hover detail: the whole activity string, not the truncated one in the line itself.
     let pop = box.querySelector<HTMLElement>(".act-pop");
     if (!pop) {
-      pop = el("div", "act-pop");
+      pop = markSurface(el("div", "act-pop"), "menu");
       box.append(pop);
       this.wirePeekTarget(pop);
     }
@@ -5828,7 +5835,7 @@ export class App {
     if (Date.now() - this.skillsAt > 60_000) this.socket.send({ type: "skills", sessionId: this.currentId });
 
     const pop = el("div", "skill-pop");
-    const panel = el("div", "skill-panel");
+    const panel = markSurface(el("div", "skill-panel"), "menu");
     const search = el("input", "skill-search") as HTMLInputElement;
     search.placeholder = tr("搜索技能：名字或描述…");
     search.spellcheck = false;
@@ -6070,7 +6077,7 @@ export class App {
     body.append(host);
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     // The installed list is a local disk scan; the store waits for a query (its API needs 2 chars).
     this.loadSkillInventory();
@@ -6091,7 +6098,7 @@ export class App {
       document.querySelector(".update-bar")
     )
       return;
-    const bar = el("div", "update-bar");
+    const bar = markSurface(el("div", "update-bar"), "toast");
     const btn = el("button", "btn primary", tr("刷新"));
     btn.onclick = () => location.reload();
     const close = el("button", "update-bar-x", "×");
@@ -6136,7 +6143,7 @@ export class App {
     body.append(host);
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     const view = new ContextInsightsView(host, {
       currentId: this.currentId,
@@ -6186,7 +6193,7 @@ export class App {
     body.append(host);
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.contextPanel = new ContextPanel(host);
     this.contextPanel.update(this.contextPanelData());
@@ -7957,7 +7964,7 @@ export class App {
   private startWsTabRename(group: TreeGroup<SessionState>): void {
     this.cancelWsTabRename();
     const raw = this.workspaces.groups.find((g) => g.id === group.id)?.name ?? "";
-    const input = el("input", "rename-input ws-tab-rename-input") as HTMLInputElement;
+    const input = markSurface(el("input", "rename-input ws-tab-rename-input") as HTMLInputElement, "paper");
     input.value = raw;
     // 还没起名的组：输入框留空，占位显示目录名，和左栏改名的手感一致。
     input.placeholder = group.name;
@@ -9012,7 +9019,7 @@ export class App {
     body.append(rail, main);
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     back.focus();
 
@@ -9279,7 +9286,7 @@ export class App {
       if (ev.target === back) shut();
     };
     back.append(img, close);
-    this.overlay(back);
+    this.overlay(back, "window", { dim: "dark" });
     close.focus();
   }
 
@@ -9498,7 +9505,7 @@ export class App {
     this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
-    this.overlay(dialog.root);
+    this.overlay(dialog.root, "paper");
     this.raiseWindow(dialog.root);
     dialog.open();
   }
@@ -9552,7 +9559,7 @@ export class App {
     this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
-    this.overlay(dialog.root);
+    this.overlay(dialog.root, "paper");
     this.raiseWindow(dialog.root);
     dialog.open();
   }
@@ -9582,7 +9589,7 @@ export class App {
     this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
-    this.overlay(dialog.root);
+    this.overlay(dialog.root, "paper");
     this.raiseWindow(dialog.root);
     dialog.open();
   }
@@ -9718,7 +9725,7 @@ export class App {
     root.append(grip, head, body);
     root.tabIndex = -1;
     this.wireWindowRaise(root);
-    this.overlay(root);
+    this.overlay(root, "dock");
     this.raiseWindow(root);
     this.viewer = {
       root,
@@ -10548,7 +10555,7 @@ export class App {
     const row = this.els.composerHost.querySelector(".row");
     if (!btn || !row) return;
     this.closeFailMenu();
-    const box = el("div", "fail-menu");
+    const box = markSurface(el("div", "fail-menu"), "menu");
     box.setAttribute("role", "menu");
     row.append(box);
     // ⚡ 按钮在哪，菜单就在它头顶 8px 之外：固定的 `calc(100% + 46px)` 只在它浮着时对。
@@ -10771,7 +10778,7 @@ export class App {
   private flashToast(text: string, bad: boolean, ms: number, token = "", onUndo?: () => void): void {
     this.failToast?.remove();
     window.clearTimeout(this.failToastTimer);
-    const box = el("div", `fail-toast${bad ? " bad" : ""}`);
+    const box = markSurface(el("div", `fail-toast${bad ? " bad" : ""}`), "toast");
     box.append(el("span", "", text));
     if (token || onUndo) {
       const undo = el("button", "fail-toast-undo", tr("撤销"));
@@ -11270,7 +11277,7 @@ export class App {
 
   private showMenu(x: number, y: number, items: { label: string; run: () => void }[]): void {
     document.querySelector(".ctx-menu")?.remove();
-    const menu = el("div", "ctx-menu");
+    const menu = markSurface(el("div", "ctx-menu"), "menu");
     for (const item of items) {
       const button = el("button", "ctx-item", item.label);
       button.onclick = () => {
@@ -11860,7 +11867,7 @@ export class App {
       pushEscLayer({ el: back, onEsc: () => done("cancel") });
       box.append(row);
       back.append(box);
-      this.overlay(back);
+    this.overlay(back, "window", { enter: "alert" });
     });
   }
 
@@ -14518,7 +14525,7 @@ export class App {
     const body = el("div", "settings-body");
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note share-note"), body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     return { back, sheet, body };
   }
@@ -15211,7 +15218,7 @@ export class App {
     body.append(host);
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     // D113: keep the last inventory on screen (it is the fastest thing we have); the bridge pushes a
     // fresh one in stages, so 「联网检查」 never hides the rows again.
@@ -16362,7 +16369,7 @@ export class App {
     const body = el("div", "tree-body", tr("读取中…"));
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.socket.send({ type: "tree", sessionId: this.currentId });
   }
@@ -16464,7 +16471,7 @@ export class App {
   private showComplete(mode: "cmd" | "file", start: number, end: number, query: string, items: CommandItem[]): void {
     let node = this.complete?.node;
     if (!node || !node.isConnected) {
-      node = el("div", "complete-pop");
+      node = markSurface(el("div", "complete-pop"), "menu");
       const row = this.els.composerHost.querySelector(".row");
       if (row) this.els.composerHost.insertBefore(node, row);
       else this.els.composerHost.append(node);
@@ -16825,7 +16832,7 @@ export class App {
     const body = el("div", "bg-sheet-body");
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.bgSheet = { sessionId: sid, body, runs: new Map() };
     const tick = () => {
@@ -16986,7 +16993,7 @@ export class App {
     const sessionId = this.currentId;
     if (!sessionId) return;
     const current = this.session?.permission ?? "ask";
-    const menu = el("div", "perm-menu");
+    const menu = markSurface(el("div", "perm-menu"), "menu");
     menu.append(el("div", "perm-menu-title", tr("工具权限（只对这个会话）")));
     const close = (): void => {
       menu.remove();
@@ -17356,7 +17363,7 @@ export class App {
     pickerPath = () => handle.picker.path();
     home.bind(handle.picker);
     ref.bind();
-    this.overlay(handle.root);
+    this.overlay(handle.root, "window", { enter: "drawer" });
     this.setSheet(handle.root);
     handle.focus();
   }
@@ -17518,7 +17525,7 @@ export class App {
     this.imageSheetPaint = paint;
 
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     paint();
   }
@@ -19400,7 +19407,7 @@ export class App {
       this.requestTerminal();
       return;
     }
-    const menu = el("div", "term-menu");
+    const menu = markSurface(el("div", "term-menu"), "menu");
     for (const sh of this.termShells) {
       const item = el("button", "term-menu-item", sh.label) as HTMLButtonElement;
       item.type = "button";
@@ -19464,7 +19471,7 @@ export class App {
     this.wireWindowRaise(dock);
     // 浮在页面上（overlay 进 #app，跟着外观缩放）：终端不再占对话栏的宽度，也就没有 Q-026 里
     // 「先折叠右栏」那件事了。
-    this.overlay(dock);
+    this.overlay(dock, "dock");
     this.wireTermGrip(grip, dock);
     this.wireTermMove(head, dock);
     this.wireTermResize(resize, dock);
@@ -20467,7 +20474,7 @@ export class App {
 
   private openWsPop(anchor: HTMLElement): void {
     this.closeWsPop();
-    const pop = el("div", "ws-pop");
+    const pop = markSurface(el("div", "ws-pop"), "menu");
     pop.setAttribute("role", "dialog");
     pop.setAttribute("aria-label", tr("工作区与会话"));
     const body = el("div", "ws-pop-body");
@@ -21011,7 +21018,7 @@ export class App {
       return;
     }
     const r = chip.getBoundingClientRect();
-    const clone = chip.cloneNode(true) as HTMLElement;
+    const clone = markSurface(chip.cloneNode(true) as HTMLElement, "paper");
     clone.classList.add("pin-flyer");
     clone.removeAttribute("data-pin-key");
     Object.assign(clone.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
@@ -21100,7 +21107,7 @@ export class App {
   /** 删除/归档之后一句话交代去向；不占状态行，2.6s 自己走。 */
   private pinNote(text: string): void {
     document.querySelector(".pin-note")?.remove();
-    const note = el("div", "pin-note", text);
+    const note = markSurface(el("div", "pin-note", text), "menu");
     document.body.append(note);
     note.animate([{ opacity: "0", transform: "translateY(6px)" }, { opacity: "1", transform: "none" }], { duration: 160, easing: "ease-out" });
     window.setTimeout(() => {
