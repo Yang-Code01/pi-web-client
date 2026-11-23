@@ -8,6 +8,7 @@
 - `meta.json` 里有版本号（**手写**，抓完自己填对）、抓取时间、以及每份产物的 run id。`bridge/tests/deps-unit.mjs` 断言
   `meta.json` 的版本跟 `bridge/src/deps.ts` 里 `pi-subagents` 的下限一致：**换钉子却忘了重取样本，
   单测会红**。
+- 仓根的 `.gitignore` 忽略 `*.log`，这个目录里的 `output-0.log`（`status.json` 的 `outputFile` 指向它）是**唯一例外**，规则见 `.gitignore` 里那条 `!bridge/tests/fixtures/…`。重取样本后跑一次 `git status`，确认它也进了版本库。
 - 样本是**脱敏过的**：绝对路径换成 `<TMP>` / `<AGENT>` / `<CWD>` 占位（回放测试会把 `<TMP>` 换回
   它自己那份临时拷贝的路径），长字符串（孩子的消息正文）超过 400 字截断，其余原样。文件总数与
   目录形状与真机一致：`async-subagent-runs/<runId>/…`。
