@@ -231,8 +231,8 @@ export const api = {
   /** D235: 本地 + 远程分组的分支列表，给切换、合并和对照检索用。 */
   gitRefs: (dir: string) => postJson<GitRefs>("/api/git/refs", { dir }),
   /** D235: 当前分支 vs 对照 / 单条提交 vs 父提交的并排富视图。 */
-  gitDiff: (dir: string, base = "", target = "HEAD", commit = "") =>
-    postJson<GitDiff>("/api/git/diff", { dir, base, target, commit }),
+  gitDiff: (dir: string, base = "", target = "HEAD", commit = "", worktree = false) =>
+    postJson<GitDiff>("/api/git/diff", { dir, base, target, commit, worktree }),
   /**
    * D289: 历史里点一行 → 这条提交的详情。桥端只读元信息 + `--numstat` 文件名，
    * **不读 blob**，所以比 `gitDiff(commit)` 便宜得多；单个文件的并排差异再点着拉 `gitCommitFile`。

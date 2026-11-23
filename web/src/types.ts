@@ -988,6 +988,8 @@ export interface GitDiff {
   target: string;
   files: GitDiffFile[];
   limit: { lines: number; bytes: number };
+  /** #651：这一份是「工作区改动 vs HEAD」，不是两个提交之间的对照。 */
+  worktree?: boolean;
 }
 /** D289: 历史里点一行弹出的提交详情（`/api/git/commit`）。不含 blob，文件内容单独拉。 */
 export interface GitCommitDetail {

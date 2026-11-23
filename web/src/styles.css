@@ -5758,3 +5758,59 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .exec-step-entry:hover .exec-step-mark, .exec-step-mark:focus-visible { opacity: .75; }
 .exec-step-mark:hover { opacity: 1; background: var(--panel-2); }
 @media (hover: none) { .exec-step-mark { opacity: .6; } }
+
+/* ---------------------------------------------------------------- 代码评审 (#651) */
+/* 右栏只有 190–300px：一律 flex 列、一行一条，不在栏里画 diff（点一条跳分支工作台的差异页签）。 */
+.review { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; }
+.review .rv-form { display: flex; flex-direction: column; gap: 6px; }
+.review .rv-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.review .rv-mode,
+.review .rv-model,
+.review .rv-ref {
+  flex: 1 1 0; min-width: 0; max-width: 100%;
+  padding: 4px 6px; font-size: 12px; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+}
+.review .rv-run { flex: none; }
+.review .rv-run:disabled { opacity: 0.45; cursor: default; }
+.review .rv-install { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed var(--line); border-radius: 10px; }
+.review .rv-hint { font-size: 12px; color: var(--faint); line-height: 1.5; }
+.review .rv-log { max-height: 120px; overflow: auto; margin: 0; font-size: 11px; white-space: pre-wrap; color: var(--faint); }
+.review .rv-cmd { font-size: 11px; color: var(--accent); word-break: break-all; }
+.review .rv-progress { display: flex; flex-direction: column; gap: 2px; }
+.review .rv-current { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.review .rv-meta { font-size: 11px; color: var(--faint); }
+.review .rv-error { font-size: 12px; color: var(--bad, #d0453c); line-height: 1.5; }
+.review .rv-skipped { font-size: 12px; color: var(--faint); }
+.review .rv-skipped > summary { cursor: pointer; }
+.review .rv-skip-row { display: flex; gap: 6px; justify-content: space-between; padding: 2px 0; }
+.review .rv-skip-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review .rv-why { flex: none; opacity: 0.8; }
+.review .rv-file { display: flex; flex-direction: column; gap: 2px; }
+.review .rv-file-head { display: flex; gap: 6px; align-items: baseline; justify-content: space-between; padding: 6px 0 2px; font-size: 12px; color: var(--faint); }
+.review .rv-file-head code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.review .rv-count { flex: none; }
+.review .rv-finding { display: flex; flex-direction: column; }
+.review .rv-line {
+  display: flex; gap: 6px; align-items: baseline; width: 100%; text-align: left;
+  padding: 5px 6px; font-size: 12px; line-height: 1.45; color: var(--text);
+  background: transparent; border: 0; border-radius: 8px; cursor: pointer;
+}
+.review .rv-line:hover { background: var(--panel); }
+.review .rv-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review .rv-sev { flex: none; font-size: 10px; padding: 0 5px; border-radius: 6px; border: 1px solid currentColor; }
+.review .rv-sev.critical { color: #c0392b; }
+.review .rv-sev.high { color: #d4691a; }
+.review .rv-sev.medium { color: #b58a12; }
+.review .rv-sev.low { color: var(--faint); }
+.review .rv-mark,
+.review .rv-persist { flex: none; font-size: 10px; color: var(--faint); border: 1px dashed var(--line); border-radius: 6px; padding: 0 4px; }
+.review .rv-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 6px 8px 18px; }
+.review .rv-body[hidden] { display: none; }
+.review .rv-place { align-self: flex-start; font-size: 11px; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; word-break: break-all; text-align: left; }
+.review .rv-code { margin: 0; max-height: 140px; overflow: auto; padding: 6px 8px; font-size: 11px; line-height: 1.45; white-space: pre-wrap; background: var(--panel); border-radius: 8px; }
+.review .rv-code.rv-sugg { border-left: 2px solid var(--accent); }
+.review .rv-acts { display: flex; flex-wrap: wrap; gap: 4px; }
+.review .rv-mark-btn.on { color: var(--accent); border-color: var(--accent); }
+.review .rv-foot { display: flex; justify-content: flex-end; padding-top: 4px; }
+.go-code.rv-hit { background: color-mix(in srgb, var(--accent) 22%, transparent); outline: 1px solid var(--accent); }

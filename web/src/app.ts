@@ -76,6 +76,18 @@ import { type CtxLine, type CtxPolicy } from "./context.ts";
 import { ContextPanel, type ContextPanelData } from "./context-panel.ts";
 import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
+import {
+  fixPrompt as reviewFixPrompt,
+  renderReview,
+  reviewView,
+  type Mark as ReviewMark,
+  type OcrStatus as ReviewOcr,
+  type ReviewFinding,
+  type ReviewMode,
+  type ReviewPanelInput,
+  type ReviewProgress,
+  type ReviewState,
+} from "./review.ts";
 import { execView, type ExecChildRunInput, type ExecMetricsView, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { pickLanding, parseLast, pruneLast, recordLast, type WsLast } from "./wsmemory.ts";
@@ -115,7 +127,7 @@ import {
 } from "./settings-matrix.ts";
 import { paintSubagentsPage, type SubagentScan } from "./subagents.ts";
 import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
-import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
+import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, getLang, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
@@ -384,6 +396,22 @@ export class App {
   private mail: MailPanel | null = null;
   /** D264：AI 发信前的确认框。跟 MailPanel 分开：没开邮箱面板也得能弹。 */
   private mailConfirm: MailConfirmDialog | null = null;
+  // #651 代码评审：桥发来的状态 + 面板自己的那点选择（模式 / 对照分支 / 提交 / 模型）。
+  private reviewState: ReviewState | null = null;
+  private reviewProgress: ReviewProgress | null = null;
+  private reviewOcr: ReviewOcr | null = null;
+  private reviewInstalling = false;
+  private reviewInstallLog: string[] = [];
+  private reviewError = "";
+  private reviewNotGit = false;
+  private reviewMode: ReviewMode = "range";
+  private reviewBase = "main";
+  private reviewCommit = "";
+  private reviewModel = "";
+  private reviewRefs: string[] = [];
+  private reviewAsked = "";
+  /** 桥算出来的仓库根（页面只给 cwd）；帧用它做过滤。 */
+  private reviewRepo = "";
   private models: ModelInfo[] = [];
   /** D150：目录是两段式（快的先到、带扩展的补上），所以记住最近一次失败原因与「什么时候问过」。 */
   private modelsError = "";
@@ -2529,6 +2557,44 @@ export class App {
         window.open(String(msg.url), "_blank", "noopener");
         break;
       }
+      // ------------------------------------------------ 代码评审（#651）
+      case "review.state": {
+        const dir = this.reviewDir();
+        if (msg.dir && dir && String(msg.dir) !== dir) break;
+        if (msg.error) {
+          this.reviewError = errText(msg);
+          this.reviewState = null;
+          this.reviewProgress = null;
+          this.reviewNotGit = msg.code === "not_git";
+          if (this.queueTab === "review") this.renderQueue();
+          break;
+        }
+        this.reviewError = "";
+        this.reviewNotGit = false;
+        this.reviewState = (msg.state ?? null) as ReviewState | null;
+        this.reviewProgress = (msg.progress ?? null) as ReviewProgress | null;
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      }
+      case "review.ocr":
+        this.reviewOcr = (msg.ocr ?? null) as ReviewOcr | null;
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      case "review.progress":
+        if (msg.progress) this.reviewProgress = msg.progress as ReviewProgress;
+        else this.reviewProgress = null;
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      case "review.install.log":
+        this.reviewInstallLog = [...this.reviewInstallLog, String(msg.line ?? "")].slice(-50);
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      case "review.install.done":
+        this.reviewInstalling = false;
+        this.reviewOcr = (msg.ocr ?? null) as ReviewOcr | null;
+        if (!msg.ok) this.reviewError = errText(msg) || tr("没有装上");
+        if (this.queueTab === "review") this.renderQueue();
+        break;
       case "notes":
         this.setNotes((msg.notes ?? []) as Note[]);
         break;
@@ -18096,12 +18162,172 @@ export class App {
 
   private selectQueueTab(tab: QueueTab): void {
     this.applyQueueTabEvent({ type: "user-tab", tab });
+    if (tab === "review") this.loadReview();
     try {
       localStorage.setItem("pi.queueTab", tab);
     } catch {
       // Private browsing may disable storage; the current page still remembers the selection.
     }
     this.renderQueue();
+  }
+
+  // ---------------------------------------------------------------- 代码评审（#651）
+
+  /** 面板评的是**当前会话所在目录**；仓库根由桥自己找（返回的帧里 `dir` 就是根）。 */
+  private reviewDir(): string {
+    return (this.session?.cwd ?? "").trim();
+  }
+
+  private loadReview(): void {
+    const dir = this.reviewDir();
+    if (!dir) {
+      this.reviewError = tr("先打开一个会话：评审评的是它的目录。");
+      this.reviewState = null;
+      this.reviewProgress = null;
+      return;
+    }
+    this.reviewAsked = dir;
+    this.socket.send({ type: "review.get", dir });
+    void api.gitRefs(dir).then((refs) => {
+      const all = refs.groups.flatMap((g) => g.refs.map((r) => r.name)).filter(Boolean);
+      this.reviewRefs = all.slice(0, 60);
+      if (!this.reviewBase || this.reviewBase === "main") {
+        const base = (refs.defaultBase || "").trim();
+        if (base) this.reviewBase = base;
+      }
+      if (this.queueTab === "review") this.renderQueue();
+    }).catch(() => {});
+  }
+
+  private reviewModelOptions(): { value: string; label: string }[] {
+    return this.models.map((m) => ({ value: `${m.provider}/${m.id}`, label: m.name || m.id }));
+  }
+
+  private renderReviewPanel(): HTMLElement {
+    const dir = this.reviewDir();
+    // 换过会话 / 第一次进这一页：问一次桥。放在这里是因为面板可能是「记住上次页签」直接打开的，
+    // 那一路不会走 selectQueueTab()。
+    if (dir && this.reviewAsked !== dir) {
+      this.reviewAsked = dir;
+      this.socket.send({ type: "review.get", dir });
+    }
+    const view = reviewView({
+      state: this.reviewState,
+      progress: this.reviewProgress,
+      ocr: this.reviewOcr,
+      installing: this.reviewInstalling,
+      error: dir ? this.reviewError : tr("先打开一个会话：评审评的是它的目录。"),
+      notGit: this.reviewNotGit,
+      mode: this.reviewMode,
+      base: this.reviewBase,
+      commit: this.reviewCommit,
+      model: this.reviewModel,
+    });
+    return renderReview({
+      view,
+      models: this.reviewModelOptions(),
+      refs: this.reviewRefs,
+      installLog: this.reviewInstallLog,
+      markLabels: { accept: tr("接受"), ignore: tr("忽略"), "false-positive": tr("误报") },
+      severityLabels: { critical: tr("严重"), high: tr("高"), medium: tr("中"), low: tr("低") },
+      actions: {
+        onMode: (mode) => {
+          this.reviewMode = mode;
+          this.renderQueue();
+        },
+        onBase: (value) => {
+          this.reviewBase = value;
+        },
+        onCommit: (value) => {
+          this.reviewCommit = value;
+        },
+        onModel: (value) => {
+          this.reviewModel = value;
+          this.renderQueue();
+        },
+        onRun: () => this.startReview(),
+        onStop: () => this.socket.send({ type: "review.cancel", dir: this.reviewDir() }),
+        onMark: (key, mark: ReviewMark | "") => this.socket.send({ type: "review.mark", dir: this.reviewDir(), key, mark }),
+        onOpen: (path, line) => this.openReviewFinding(path, line),
+        onFix: (f: ReviewFinding) => {
+          this.prefill(reviewFixPrompt(f, getLang()));
+          this.flashToast(tr("已放进输入框（还没发）"), false, 3000);
+        },
+        onInstall: () => {
+          this.reviewInstalling = true;
+          this.reviewInstallLog = [];
+          this.reviewError = "";
+          this.socket.send({ type: "review.install" });
+          this.renderQueue();
+        },
+        onClean: () => this.socket.send({ type: "review.clean", dir: this.reviewDir() }),
+      },
+    });
+  }
+
+  private startReview(): void {
+    const dir = this.reviewDir();
+    if (!dir) return;
+    const mode = this.reviewMode;
+    if (mode === "commit" && !this.reviewCommit.trim()) {
+      this.flashToast(tr("先填一个提交号"), true, 4000);
+      return;
+    }
+    this.reviewError = "";
+    this.reviewProgress = {
+      repo: dir,
+      runId: "",
+      status: "running",
+      phase: "preview",
+      totalFiles: 0,
+      reviewedFiles: 0,
+      currentFile: "",
+      tokens: 0,
+      startedAt: new Date().toISOString(),
+      error: "",
+      errorCode: "",
+    };
+    this.socket.send({
+      type: "review.run",
+      dir,
+      mode,
+      base: this.reviewBase,
+      commit: this.reviewCommit.trim(),
+      model: this.reviewModel,
+      lang: getLang(),
+    });
+    this.renderQueue();
+  }
+
+  /** 一条意见 → 分支工作台的「差异」页签，选中那个文件并把命中的那段代码标出来。 */
+  private openReviewFinding(path: string, line: number): void {
+    const dir = this.reviewDir();
+    if (!dir) return;
+    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    const finding = run?.findings?.find((f) => f.path === path && (line === 0 || f.startLine === line)) ?? null;
+    const code = finding?.existingCode ?? "";
+    // 工作区模式比的是「工作区 vs HEAD」，提交模式比的是「这条提交 vs 父提交」——
+    // 都别拿对照分支硬套，否则 diff 是空的、跳过去只剩一句「两边没有差异」。
+    const base = run?.mode === "commit" || run?.mode === "workspace" ? "" : run?.mergeBase || this.reviewBase;
+    const commit = run?.mode === "commit" ? run.to : "";
+    const worktree = run?.mode === "workspace";
+    const open = (sheet: BranchSheet) => void sheet.openDiffAt({ base, commit, worktree, path, line, code });
+    if (this.branchSheet) {
+      open(this.branchSheet);
+      return;
+    }
+    const sheet = new BranchSheet({
+      dir,
+      branch: this.git?.branch ?? "",
+      refreshChip: () => { void this.refreshGit(true); },
+      handoff: { prefill: (text, name) => this.prefill(text, name), newSessionWith: (text, name) => this.newSessionWith(text, name) },
+    });
+    sheet.onClose = () => {
+      if (this.branchSheet === sheet) this.branchSheet = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.branchSheet = sheet;
+    open(sheet);
   }
 
   private openExecPlanFromChat(): void {
@@ -19380,7 +19606,19 @@ export class App {
       pip.setAttribute("aria-label", tr("正在操作浏览器"));
       browser.append(pip);
     }
-    tabs.append(needs, execution, browser);
+    const review = el("button", this.queueTab === "review" ? "on" : "", tr("代码评审")) as HTMLButtonElement;
+    review.type = "button";
+    review.dataset.execTab = "review";
+    review.setAttribute("aria-selected", String(this.queueTab === "review"));
+    review.onclick = () => this.selectQueueTab("review");
+    const reviewRunning = Boolean((this.reviewProgress ?? null) && this.reviewProgress?.status === "running");
+    if (this.queueTab !== "review" && reviewRunning) {
+      const pip = el("span", "exec-pip");
+      pip.title = tr("正在评审");
+      pip.setAttribute("aria-label", tr("正在评审"));
+      review.append(pip);
+    }
+    tabs.append(needs, execution, browser, review);
     host.append(tabs);
     if (this.queueTab === "exec") {
       host.append(this.renderExecPanel());
@@ -19389,6 +19627,11 @@ export class App {
     }
     if (this.queueTab === "browser") {
       host.append(this.renderBrowserPanel());
+      this.els.queuePane.scrollTop = kept;
+      return;
+    }
+    if (this.queueTab === "review") {
+      host.append(this.renderReviewPanel());
       this.els.queuePane.scrollTop = kept;
       return;
     }
@@ -21323,7 +21566,7 @@ function writeBrowserCfg(cfg: BrowserCfg): void {
 function readQueueTab(): QueueTab {
   try {
     const saved = localStorage.getItem("pi.queueTab");
-    return saved === "exec" || saved === "browser" ? saved : "needs";
+    return saved === "exec" || saved === "browser" || saved === "review" ? saved : "needs";
   } catch {
     return "needs";
   }
