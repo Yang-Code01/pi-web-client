@@ -28,7 +28,7 @@ for (const v of which) {
   await page.waitForTimeout(200);
   /* 把清单打开，否则截图里只有一个角标 —— 变体的差别全在清单上。
      D 没有角标（它用底部那条状态带），所以点的是 strip。 */
-  await page.click(v === "D" ? "#remindStrip" : "#remindBtn");
+  await page.click("#remindBtn");
   await page.waitForTimeout(150);
   const out = path.join(here, `shot-${v}.png`);
   await page.screenshot({ path: out });

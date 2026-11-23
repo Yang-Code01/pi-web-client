@@ -168,19 +168,12 @@
   }
   body[data-variant="C"] .pop-body { flex: 1; }
 
-  /* D：底部状态带，输入框上方，点开往上长 */
+  /* D：角标 / 位置都不变，只把面板换成一整条贴着输入框的宽面板，列表走两栏 */
   body[data-variant="D"] .remind-pop {
-    position: fixed; left: 16px; right: 16px; bottom: 126px; width: auto; max-height: 42vh;
+    position: fixed; left: 16px; right: 16px; bottom: 84px; width: auto; max-height: 46vh;
   }
-  body[data-variant="D"] .remind-btn { display: none; }
-  .remind-strip { display: none; }
-  body[data-variant="D"] .remind-strip {
-    display: flex; align-items: center; gap: 8px; margin: 0 16px 8px; cursor: pointer;
-    border: 1px solid var(--warn-dim); background: var(--warn-bg); color: var(--warn);
-    border-radius: 9px; padding: 6px 10px; font-size: 12px;
-  }
-  .remind-strip b { font-weight: 600; }
-  .remind-strip .more { margin-left: auto; color: var(--dim); font-size: 11px; }
+  body[data-variant="D"] .pop-body { display: grid; grid-template-columns: 1fr 1fr; align-content: start; column-gap: 8px; }
+  body[data-variant="D"] .pop-body > .grp { grid-column: 1 / -1; }
 
   /* ── 提醒：吐司（右上角，自己消失，悬停暂停） ────────────────────────────── */
   .toasts { position: fixed; top: 146px; right: 16px; z-index: 60; display: flex; flex-direction: column; gap: 8px; width: 320px; }
@@ -287,11 +280,6 @@
   </main>
 
   <footer class="composer">
-    <div class="remind-strip" id="remindStrip">
-      <span aria-hidden="true">⚠</span>
-      <span><b>2 件在等你</b> · 审批 rm -rf dist/ · 问卷「选哪个迁移方式」</span>
-      <span class="more">点开 ▴</span>
-    </div>
     <div class="box">问点什么，或 / 命令 · <span style="color:var(--faint)">这里只是摆设</span></div>
   </footer>
 </div>
@@ -325,13 +313,13 @@ const BETS = {
   A: "<b>A · 会话行右侧 + 下拉清单</b><br>赌「情报比操作重要」：角标钉在 ★ 行右端（不挤顶栏那 10 颗），点开是 340px 的两行清单，只负责让你知道、跳过去，不复制审批 UI。",
   B: "<b>B · 同一个位置 + 极密列表</b><br>赌「你一屏能扫完」：单行只留标题与时间，正文悬停才出。看得多、认得快，但「rm -rf dist/」这种要点得先悬停才敢点。",
   C: "<b>C · 右侧窄抽屉</b><br>赌「你愿意腾出 320px」：清单固定不随顶栏滚走，能停在那儿一格一格处理。代价是窄屏要么全宽盖住正文，要么干脆不出。",
-  D: "<b>D · 底部状态带</b><br>赌「右上角是黄金位置」：不占顶栏，紧贴输入框，向上长。你正在打字时它的视线成本最低；反过来，全屏阅读时它离眼睛最远。",
+  D: "<b>D · 从底部升起的宽面板</b><br>赌「一屏看完」：角标还在 ★ 行，点开后不开小下拉，而是在输入框上方升起一整条两栏面板 —— 条目多时最省滚动；代价是它盖住正文底部，读长文时最碍事。",
   E: "<b>E · 按会话分组</b><br>赌「你关心的是哪个会话，不是哪一条」：一张会话卡里装它全部的等待（待确认 2 + 待回答 1），点卡 = 切过去。会话一多卡就少；但跨会话的「最近的先看」就读不出来了。",
 };
 
 const $ = (s, r = document) => r.querySelector(s);
 const state = { variant: "A", open: false, narrow: false, dark: false };
-const NAMES = { A: "会话行右侧 + 下拉清单", B: "会话行右侧 + 极密列表", C: "右侧窄抽屉", D: "底部状态带", E: "按会话分组" };
+const NAMES = { A: "会话行右侧 + 下拉清单", B: "会话行右侧 + 极密列表", C: "右侧窄抽屉", D: "底部升起的宽面板", E: "按会话分组" };
 
 function rel(at) {
   if (at > -60) return `${Math.abs(at)} 分钟前`;
@@ -405,9 +393,6 @@ function renderList() {
   }
   $("#remindBadge").textContent = String(waiting.length);
   $("#remindBtn").dataset.count = String(waiting.length);
-  $("#remindStrip").innerHTML = waiting.length
-    ? `<span aria-hidden="true">⚠</span><span><b>${waiting.length} 件在等你</b> · ${waiting.map((r) => r.body).join(" · ")}</span><span class="more">点开 ▴</span>`
-    : `<span aria-hidden="true">✓</span><span><b>没有在等你的了</b></span><span class="more"></span>`;
 }
 
 function toast(title, body) {
@@ -451,10 +436,9 @@ function step(delta) {
 
 /* ── 接线 ─────────────────────────────────────────────────────────────────── */
 $("#remindBtn").addEventListener("click", (e) => { e.stopPropagation(); setOpen(!state.open); });
-$("#remindStrip").addEventListener("click", () => setOpen(!state.open));
 document.addEventListener("click", (e) => {
   if (!state.open) return;
-  if (e.target.closest("#remindPop") || e.target.closest("#remindBtn") || e.target.closest("#remindStrip")) return;
+  if (e.target.closest("#remindPop") || e.target.closest("#remindBtn")) return;
   setOpen(false);
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") setOpen(false); });
