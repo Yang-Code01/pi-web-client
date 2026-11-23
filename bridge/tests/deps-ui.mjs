@@ -74,9 +74,9 @@ try {
   const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
 
   const report = await (await fetch(`${BASE}/api/deps`, { headers: { cookie } })).json();
-  log("api/deps:", JSON.stringify({ pi: report.pi, missing: report.missing, ready: report.ready, optional: report.optional }));
+  log("api/deps:", JSON.stringify({ pi: report.pi, missing: report.missing, pending: report.pending, ready: report.ready, optional: report.optional }));
   check("后端说得清 pi 版本", typeof report.pi.version === "string" && /^\d+\.\d+\.\d+$/.test(report.pi.min), `${report.pi.version} ≥ ${report.pi.min}`);
-  check("三个包都在清单里", Array.isArray(report.packages) && report.packages.length === 3);
+  check("四个包都在清单里", Array.isArray(report.packages) && report.packages.length === 4);
 
   // 设置页的入口在聊天里，先建一个会话。
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie } });

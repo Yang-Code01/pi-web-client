@@ -66,7 +66,7 @@ UI の言語（「外観と言語」パネル。切り替えは即時で、日�
 ## 動作環境
 
 - **Node ≥ 22.19**（ここでは v24.11.1、LTS の 22／24 どちらでも可）。リポジトリの `.nvmrc` は 24 を指します。
-- **pi ≥ 1.5.0**。このプロジェクトの npm 依存ではありませんが、`npm install` が一緒に入れてくれます（下の「このプロジェクトに必要なもの」を参照）。すでに ≥ 1.5.0 が入っているマシンでは何もしません。bridge は起動時にディスク上の `cli.js` を探すだけで、見つからなければ試したすべてのパスを挙げてエラーにします。
+- **pi ≥ 1.6.0**。このプロジェクトの npm 依存ではありませんが、`npm install` が一緒に入れてくれます（下の「このプロジェクトに必要なもの」を参照）。すでに ≥ 1.6.0 が入っているマシンでは何もしません。bridge は起動時にディスク上の `cli.js` を探すだけで、見つからなければ試したすべてのパスを挙げてエラーにします。
   - 探索順：`PI_BIN` → nvm（`%LOCALAPPDATA%\nvm\v*`、Windows のみ）→ `PATH` 上の `pi` / `pi.cmd` / `pi.bat` ランチャー → node と同じ階層の `node_modules` → `npm root -g` → `%APPDATA%\npm`、`%ProgramData%\npm`（Windows のみ）。
   - つまり：**npm のグローバルインストールなら自動で見つかります**（Linux／macOS は `npm root -g`）。pnpm／bun／プロジェクト内インストールの場合は `PI_BIN` を `.../pi-coding-agent/dist/bundle/cli.js` に向けてください。
 - 任意：cloudflared（Windows は `winget install Cloudflare.cloudflared`、macOS は `brew install cloudflared`）。公衆網からアクセスするときだけ必要です。`CLOUDFLARED_BIN` → `PATH` → いくつかの定番のインストール先、の順に探します。
@@ -79,20 +79,20 @@ UI の言語（「外観と言語」パネル。切り替えは即時で、日�
 
 | パッケージ | バージョン | 無いとどうなるか |
 | --- | --- | --- |
-| `pi-subagents` | `0.86.0` に固定 | 設定→サブエージェント、背後で走るカード、サブエージェントの道具が丸ごと消えます。ページはこのセッションのディレクトリ（`%TEMP%\pi-subagents-*`）と async JSON イベントを直接読むので、配置が変われば何も無いのと同じになります。だから固定です |
-| `@juicesharp/rpiv-ask-user-question` | `2.15.0` に固定 | ページ上のアンケートに答えられません：`bridge/src/questionnaire.ts` がこの逐問ダイアログの形で回答を書き戻します |
-| `@juicesharp/rpiv-todo` | `2.15.0` に固定 | 実行パネルに AI の計画が出ません。ページはこの `details.tasks` スナップショットから進み具合を読みます |
+| `pi-subagents` | `0.90.0` 以上 | 設定→サブエージェント、背後で走るカード、サブエージェントの道具が丸ごと消えます。ページはこのセッションのディレクトリ（`%TEMP%\pi-subagents-*`）と async JSON イベントを直接読むので、配置が変われば何も無いのと同じになります。だから下限を決め、それより古ければ上げます |
+| `@juicesharp/rpiv-ask-user-question` | `2.15.0` 以上 | ページ上のアンケートに答えられません：`bridge/src/questionnaire.ts` がこの逐問ダイアログの形で回答を書き戻します |
+| `@juicesharp/rpiv-todo` | `2.15.0` 以上 | 実行パネルに AI の計画が出ません。ページはこの `details.tasks` スナップショットから進み具合を読みます |
 | `pi-web-access` | latest | `web_search` / `fetch_content` / `source_check` が消え、診断も「ちょっと聞く」も手元の能力だけでやることになります |
 
-表のバージョンと上の `pi ≥ 1.5.0` は `bridge/src/deps.ts` からの写しです（一覧があるのはそこだけ）。`npm run test:deps` がこの表と突き合わせます。
+表のバージョンと上の `pi ≥ 1.6.0` は `bridge/src/deps.ts` からの写しです（一覧があるのはそこだけ）。`npm run test:deps` がこの表と突き合わせます。
 
 `npm install` は `scripts/bootstrap.mjs` を走らせ、三つのことを順にやります：
 
-1. pi を探す：無い、または 1.5.0 より古い（`1.5.0-rc.x` のようなプレリリースも古い側）ときだけ `npm i -g @earendil-works/pi-coding-agent@latest`；すでに ≥ 1.5.0 なら何もしません。
-2. `pi list` にユーザー階層のパッケージを聞き、名前で上の四つと突き合わせ、欠けているものだけ `pi install`。npm・git・ローカルパスのどれで入れた同名パッケージも「入っている」と数え、npm 版を重ねて入れません。プロジェクト側（プロジェクトの `.pi/settings.json`）にしか無いものは数えません。
+1. pi を探す：無い、または 1.6.0 より古い（`1.6.0-rc.x` のようなプレリリースも古い側）ときだけ `npm i -g @earendil-works/pi-coding-agent@latest`；すでに ≥ 1.6.0 なら何もしません。
+2. `pi list` にユーザー階層のパッケージを聞き、名前で上の四つと突き合わせ、欠けているものを `pi install`。**下限より古いものは下限まで上げます**（入れるのは表の版で、latest ではありません）。npm・git・ローカルパスのどれで入れた同名パッケージも「入っている」と数え、npm 版を重ねて入れません。プロジェクト側（プロジェクトの `.pi/settings.json`）にしか無いものは数えません。
 3. bridge / peer / web の依存を入れます（もとの `npm --prefix … install` 三行）。
 
-**入っているパッケージには触りません**：上げも下げもしません。固定の版より古くてもそのままです（ページは「x より古い、動きます」と書きます）。
+**上げるだけで下げません**：下限より古ければ上げ、下限以上なら何もしません。自分で下限より新しい版を入れた場合も下げませんし、ページでも触れません。
 ページの「このプロジェクトに必要なもの」も同じ規則で判定するので、ページが ✓ を付けたものをスクリプトが入れることはありません。
 結果は状態ディレクトリの `bootstrap.json` に書かれ、「設定 → 拡張」の上部が「このプロジェクトに必要なもの」として表示します。欠けていればコピーできるコマンドも出ます。
 
@@ -121,7 +121,7 @@ pull してきた変更がサブパッケージの依存（`bridge/` `peer/` `we
 初回起動時に合言葉が一度だけ表示されます（状態ディレクトリの `passphrase.txt` にも書かれます）：
 
 ```text
-pi-web-client 0.1.0 — pi 1.5.0 @ C:\...\dist\bundle\cli.js
+pi-web-client 0.1.0 — pi 1.6.0 @ C:\...\dist\bundle\cli.js
 listening on http://127.0.0.1:7864
 合言葉（初回生成、今回だけ表示）：nectar-juniper-willow-238
 ```

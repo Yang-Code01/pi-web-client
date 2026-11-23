@@ -66,7 +66,7 @@
 ## 要求
 
 - **Node ≥ 22.19**（本机 v24.11.1，LTS 22/24 都可以）。仓库里的 `.nvmrc` 指向 24。
-- **pi ≥ 1.5.0**，它不是本项目的 npm 依赖，但 `npm install` 会顺带帮你装（见下面「这个项目需要什么」）；机器上已经装着 ≥ 1.5.0 的就一动不动。bridge 启动时只负责去磁盘上找它的 `cli.js`，找不到会直接报错并列出所有试过的路径。
+- **pi ≥ 1.6.0**，它不是本项目的 npm 依赖，但 `npm install` 会顺带帮你装（见下面「这个项目需要什么」）；机器上已经装着 ≥ 1.6.0 的就一动不动。bridge 启动时只负责去磁盘上找它的 `cli.js`，找不到会直接报错并列出所有试过的路径。
   - 查找顺序：`PI_BIN` → nvm（`%LOCALAPPDATA%\nvm\v*`，仅 Windows）→ PATH 里的 `pi` / `pi.cmd` / `pi.bat` 启动器 → node 同级的 `node_modules` → `npm root -g` → `%APPDATA%\npm`、`%ProgramData%\npm`（仅 Windows）。
   - 也就是说：**pi 是用 npm 全局装的就能自动找到**（Linux/macOS 走 `npm root -g`）；用 pnpm / bun / 装在项目里，就把 `PI_BIN` 指到 `.../pi-coding-agent/dist/bundle/cli.js`。
 - 可选：cloudflared（Windows `winget install Cloudflare.cloudflared`，macOS `brew install cloudflared`），只有要从公网访问才需要。找它时依次试 `CLOUDFLARED_BIN` → `PATH` → 几个常见安装位置。
@@ -79,20 +79,20 @@
 
 | 包 | 版本 | 缺了会怎样 |
 | --- | --- | --- |
-| `pi-subagents` | 钉 `0.86.0` | 设置→子代理、后台卡、子代理工具都没有；网页直接读它的会话目录（`%TEMP%\pi-subagents-*`）与 async JSON 事件，目录布局变了就静默读不到，所以钉住 |
-| `@juicesharp/rpiv-ask-user-question` | 钉 `2.15.0` | 网页上的问卷点不了：`bridge/src/questionnaire.ts` 按它的逐题对话框格式回填答案 |
-| `@juicesharp/rpiv-todo` | 钉 `2.15.0` | 执行面板没有 AI 计划；网页按它的 `details.tasks` 快照显示进度 |
+| `pi-subagents` | 不低于 `0.90.0` | 设置→子代理、后台卡、子代理工具都没有；网页直接读它的会话目录（`%TEMP%\pi-subagents-*`）与 async JSON 事件，目录布局变了就静默读不到，所以写下限，低于它自动升上去 |
+| `@juicesharp/rpiv-ask-user-question` | 不低于 `2.15.0` | 网页上的问卷点不了：`bridge/src/questionnaire.ts` 按它的逐题对话框格式回填答案 |
+| `@juicesharp/rpiv-todo` | 不低于 `2.15.0` | 执行面板没有 AI 计划；网页按它的 `details.tasks` 快照显示进度 |
 | `pi-web-access` | latest | `web_search` / `fetch_content` / `source_check` 这些联网工具没有，诊断与「随手问」只剩本地能力 |
 
-表里的版本号和上面的 `pi ≥ 1.5.0` 都抄自 `bridge/src/deps.ts`（清单只有那一处），`npm run test:deps` 会把这张表和它对一遍。
+表里的版本号和上面的 `pi ≥ 1.6.0` 都抄自 `bridge/src/deps.ts`（清单只有那一处），`npm run test:deps` 会把这张表和它对一遍。
 
 `npm install` 会跑 `scripts/bootstrap.mjs`，按顺序做三件事：
 
-1. 找 pi：没有、或低于 1.5.0（`1.5.0-rc.x` 这类预发布也算低）才 `npm i -g @earendil-works/pi-coding-agent@latest`；已有 ≥ 1.5.0 的一动不动。
-2. 问 `pi list` 用户级装了哪些包，按包名对上面四个，缺的才 `pi install`。npm、git 地址、本地路径装的同名包都算已装，不会再装一份 npm 版；只装在某个工程里（项目级 `.pi/settings.json`）的不算。
+1. 找 pi：没有、或低于 1.6.0（`1.6.0-rc.x` 这类预发布也算低）才 `npm i -g @earendil-works/pi-coding-agent@latest`；已有 ≥ 1.6.0 的一动不动。
+2. 问 `pi list` 用户级装了哪些包，按包名对上面四个：**没装的才装，低于下限的升到下限**（`pi install` 带上版本，落点是表里那个数，不是 latest）。npm、git 地址、本地路径装的同名包都算已装，不会再装一份 npm 版；只装在某个工程里（项目级 `.pi/settings.json`）的不算。
 3. 装 bridge / peer / web 的依赖（就是原来那三条 `npm --prefix … install`）。
 
-**已经装着的包不动**：不升级、不降级，哪怕版本比钉的旧（页面上会标一句「比 x 旧，能用」）。
+**只升不降**：低于下限的升上去，等于或高于下限的一动不动 —— 自己装了比下限新的版本不会被降回去，页面上也不提。
 页面上「本项目需要」判断装没装用的是同一套规则，所以页面说 ✓ 的，脚本也不会去装。
 结果写在状态目录的 `bootstrap.json`，页面上「设置 → 扩展」顶部的「本项目需要」会照着说，缺东西时给一条可复制的命令。
 
@@ -124,7 +124,7 @@ pull 进来的改动如果动了子包的依赖（`bridge/` `peer/` `web/` 的 `
 首次启动会打印一次口令（也写在状态目录的 `passphrase.txt`）：
 
 ```text
-pi-web-client 0.1.0 — pi 1.5.0 @ C:\...\dist\bundle\cli.js
+pi-web-client 0.1.0 — pi 1.6.0 @ C:\...\dist\bundle\cli.js
 listening on http://127.0.0.1:7864
 口令（首次生成，只显示这一次）：nectar-juniper-willow-238
 ```

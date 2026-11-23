@@ -99,17 +99,17 @@ function legacyPage(raw: { path: string; parent: string | null; dirs: string[]; 
 /** 缺了少哪块功能的 id：和 `bridge/src/deps.ts` 的 `PackageId` 同一组值（前端不 import 桥的源码，所以抄一份）。 */
 export type DepPackageId = "subagents" | "questionnaire" | "todo" | "web-access";
 
-/** 一个“本项目需要”的 pi 包：来源、钉住的版本、缺了少哪块功能、现在装没装。 */
+/** 一个“本项目需要”的 pi 包：来源、下限版本、缺了少哪块功能、现在装没装。 */
 export interface DepPackageStatus {
   source: string;
   name: string;
-  /** 钉死的版本；null = 跟 latest。 */
+  /** 最低可接受版本；null = 不写下限。 */
   version: string | null;
   /** 缺了少哪块功能：id，文案在 app.ts 的 depsFeature() 里用 tr() 写。 */
   id: DepPackageId;
   installed: boolean;
   foundVersion: string | null;
-  /** 装了但比钉的旧：只提示，不自动升（已装就不动）。 */
+  /** 装了但低于下限：下次 npm install 会升上去（D393）。 */
   behind: boolean;
 }
 
@@ -123,13 +123,16 @@ export interface DepsBootstrap {
   pi: string | null;
 }
 
-/** `/api/deps`：pi 够不够新 + 三个扩展在不在（只读，只问本地 `pi list`）。 */
+/** `/api/deps`：pi 够不够新 + 四个扩展在不在、要不要升（只读，只问本地 `pi list`）。 */
 export interface DepsReport {
   pi: { version: string; min: string; ok: boolean };
   packages: DepPackageStatus[];
   /** 可选包（例如 billion-context）：没装不拦人，界面自己决定要不要灰掉。 */
   optional: { name: string; id: string; installed: boolean }[];
+  /** 缺的个数（只数「根本没有」的）。 */
   missing: number;
+  /** 下次 npm install 要动的个数：缺的 + 低于下限的（D393）。 */
+  pending: number;
   ready: boolean;
   bootstrap: DepsBootstrap | null;
   command: string;

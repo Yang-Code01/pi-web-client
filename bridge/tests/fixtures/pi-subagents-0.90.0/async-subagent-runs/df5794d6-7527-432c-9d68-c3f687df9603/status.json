@@ -1,0 +1,253 @@
+{
+ "lifecycleArtifactVersion": 3,
+ "runId": "df5794d6-7527-432c-9d68-c3f687df9603",
+ "toolCallId": "call_00_luYu91O0iPco233SDoW65705",
+ "sessionId": "<AGENT>/sessions/--private-tmp--/2026-11-23T14-23-33-105Z_01a208ca-6af0-72e1-93a6-fa577f29f927.jsonl",
+ "completionOwnerId": "505e4a9b-5920-4dbf-8463-e09d38612a4f",
+ "completionOwnerProcess": {
+  "pid": 11612,
+  "bootId": "279F0B8E-25D3-45DA-8941-6A5F02ED2B7C"
+ },
+ "mode": "single",
+ "state": "complete",
+ "steering": {
+  "requested": 0,
+  "scheduled": 0,
+  "pending": 0,
+  "delivered": 0,
+  "failed": 0,
+  "recovered": 0,
+  "recent": []
+ },
+ "lastActivityAt": 1795443820937,
+ "startedAt": 1795443818332,
+ "lastUpdate": 1795443820944,
+ "timeoutMs": 1800000,
+ "deadlineAt": 1795445617278,
+ "pid": 11786,
+ "bootId": "279F0B8E-25D3-45DA-8941-6A5F02ED2B7C",
+ "cwd": "<CWD>",
+ "currentStep": 0,
+ "chainStepCount": 1,
+ "parallelGroups": [],
+ "launchContractDigest": "f5bbb555ae56e50941d6136870c240d6762ba1b59bd6ddf1d1f6b9e7b07ed0c2",
+ "launchResolvedExtensions": {
+  "version": 1,
+  "source": "launch-resolved",
+  "disableAmbientExtensions": false,
+  "runtime": [
+   "sha256:8b704c22dd38f437"
+  ],
+  "configured": [],
+  "required": [],
+  "effective": [
+   "sha256:8b704c22dd38f437"
+  ],
+  "omitted": {
+   "runtime": 0,
+   "configured": 0,
+   "required": 0,
+   "effective": 0
+  }
+ },
+ "runFanoutBudget": {
+  "used": 1,
+  "limit": 64,
+  "remaining": 63
+ },
+ "processTerminal": {
+  "version": 1,
+  "state": "observed",
+  "runId": "df5794d6-7527-432c-9d68-c3f687df9603",
+  "runnerProcessInstanceId": "f4ed9380-36cb-4af1-83b5-cf1aa4bd9d06",
+  "observedAt": 1795443820956,
+  "instances": [
+   {
+    "kind": "runner",
+    "processInstanceId": "f4ed9380-36cb-4af1-83b5-cf1aa4bd9d06",
+    "closeObservedAt": 1795443820956,
+    "exitCode": 0,
+    "signal": null
+   }
+  ],
+  "resumeDisposition": "resumable"
+ },
+ "steps": [
+  {
+   "agent": "worker",
+   "sessionName": "worker: Reply with the single word ok. Do not use any tools.",
+   "description": "[prompt redacted]",
+   "context": "fresh",
+   "launchContractDigest": "f5bbb555ae56e50941d6136870c240d6762ba1b59bd6ddf1d1f6b9e7b07ed0c2",
+   "launchResolvedExtensions": {
+    "version": 1,
+    "source": "launch-resolved",
+    "disableAmbientExtensions": false,
+    "runtime": [
+     "sha256:8b704c22dd38f437"
+    ],
+    "configured": [],
+    "required": [],
+    "effective": [
+     "sha256:8b704c22dd38f437"
+    ],
+    "omitted": {
+     "runtime": 0,
+     "configured": 0,
+     "required": 0,
+     "effective": 0
+    }
+   },
+   "status": "complete",
+   "sessionFile": "<AGENT>/sessions/--private-tmp--/2026-11-23T14-23-33-105Z_01a208ca-6af0-72e1-93a6-fa577f29f927/df5794d6-7527-432c-9d68-c3f687df9603/run-0/session.jsonl",
+   "transcriptPath": "<AGENT>/sessions/--private-tmp--/subagent-artifacts/df5794d6-7527-432c-9d68-c3f687df9603_worker_transcript.jsonl",
+   "skills": [],
+   "model": "wb2_mac/cn:deepseek-v4.1-flash",
+   "contextLimit": 1000000,
+   "thinking": "high",
+   "recentTools": [],
+   "recentOutput": [
+    "ok"
+   ],
+   "processTerminal": {
+    "version": 1,
+    "runId": "df5794d6-7527-432c-9d68-c3f687df9603",
+    "childIndex": 0,
+    "runnerProcessInstanceId": "f4ed9380-36cb-4af1-83b5-cf1aa4bd9d06",
+    "resumeDisposition": "resumable",
+    "state": "not-started"
+   },
+   "startedAt": 1795443818336,
+   "lastActivityAt": 1795443820937,
+   "turnCount": 1,
+   "launchModel": "wb2_mac/cn:deepseek-v4.1-flash:high",
+   "resolvedModel": {
+    "provider": "wb2_mac",
+    "model": "cn:deepseek-v4.1-flash"
+   },
+   "tokens": {
+    "input": 1852,
+    "output": 105,
+    "total": 1957,
+    "window": 3004,
+    "windowPeak": 3004
+   },
+   "endedAt": 1795443820943,
+   "durationMs": 2607,
+   "exitCode": 0,
+   "totalCost": {
+    "inputTokens": 1852,
+    "outputTokens": 105,
+    "costUsd": 0
+   },
+   "acceptance": {
+    "status": "rejected",
+    "evidenceStatus": "rejected",
+    "explicit": false,
+    "effectiveAcceptance": {
+     "level": "checked",
+     "explicit": false,
+     "inferredReason": [
+      "async declared writer"
+     ],
+     "criteria": [
+      {
+       "id": "criterion-1",
+       "must": "Implement the requested change without widening scope",
+       "evidence": [
+        "changed-files",
+        "tests-added",
+        "commands-run",
+        "residual-risks",
+        "no-staged-files"
+       ],
+       "severity": "required"
+      },
+      {
+       "id": "criterion-2",
+       "must": "Return evidence sufficient for an independent acceptance review",
+       "evidence": [
+        "changed-files",
+        "tests-added",
+        "commands-run",
+        "residual-risks",
+        "no-staged-files"
+       ],
+       "severity": "required"
+      }
+     ],
+     "evidence": [
+      "changed-files",
+      "tests-added",
+      "commands-run",
+      "residual-risks",
+      "no-staged-files"
+     ],
+     "verify": [],
+     "review": {
+      "agent": "reviewer",
+      "required": true
+     },
+     "stopRules": []
+    },
+    "inferredReason": [
+     "async declared writer"
+    ],
+    "criteria": [
+     {
+      "id": "criterion-1",
+      "must": "Implement the requested change without widening scope",
+      "evidence": [
+       "changed-files",
+       "tests-added",
+       "commands-run",
+       "residual-risks",
+       "no-staged-files"
+      ],
+      "severity": "required"
+     },
+     {
+      "id": "criterion-2",
+      "must": "Return evidence sufficient for an independent acceptance review",
+      "evidence": [
+       "changed-files",
+       "tests-added",
+       "commands-run",
+       "residual-risks",
+       "no-staged-files"
+      ],
+      "severity": "required"
+     }
+    ],
+    "runtimeChecks": [
+     {
+      "id": "attestation",
+      "status": "failed",
+      "message": "Structured acceptance report not found."
+     }
+    ],
+    "verifyRuns": [],
+    "childReportParseError": "Structured acceptance report not found."
+   }
+  }
+ ],
+ "artifactsDir": "<AGENT>/sessions/--private-tmp--/subagent-artifacts",
+ "sessionDir": "<AGENT>/sessions/--private-tmp--/2026-11-23T14-23-33-105Z_01a208ca-6af0-72e1-93a6-fa577f29f927/df5794d6-7527-432c-9d68-c3f687df9603/async-df5794d6-7527-432c-9d68-c3f687df9603",
+ "outputFile": "<TMP>/async-subagent-runs/df5794d6-7527-432c-9d68-c3f687df9603/output-0.log",
+ "totalTokens": {
+  "input": 1852,
+  "output": 105,
+  "total": 1957,
+  "window": 3004,
+  "windowPeak": 3004
+ },
+ "turnCount": 1,
+ "outputs": {},
+ "endedAt": 1795443820944,
+ "sessionFile": "<AGENT>/sessions/--private-tmp--/2026-11-23T14-23-33-105Z_01a208ca-6af0-72e1-93a6-fa577f29f927/df5794d6-7527-432c-9d68-c3f687df9603/run-0/session.jsonl",
+ "totalCost": {
+  "inputTokens": 1852,
+  "outputTokens": 105,
+  "costUsd": 0
+ }
+}

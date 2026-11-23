@@ -15118,7 +15118,13 @@ export class App {
     if (this.depsLoading) hint.textContent = tr("检查中…");
     else if (!report) hint.textContent = this.depsError ? tr("问不到：{p1}", { p1: this.depsError }) : "";
     else if (report.ready) hint.textContent = tr("都齐了");
+    else if (report.missing && report.pending > report.missing)
+      hint.textContent = tr("缺 {p1} 个，另有 {p2} 个要升级", {
+        p1: String(report.missing),
+        p2: String(report.pending - report.missing),
+      });
     else if (report.missing) hint.textContent = tr("缺 {p1} 个", { p1: String(report.missing) });
+    else if (report.pending) hint.textContent = tr("{p1} 个要在下次 npm install 时升级", { p1: String(report.pending) });
     else hint.textContent = tr("要 pi {p1} 或更新", { p1: report.pi.min });
     row.append(hint, el("span", "spacer"));
     const recheck = el("button", "btn ghost", tr("重新检查")) as HTMLButtonElement;
@@ -15146,7 +15152,8 @@ export class App {
       );
       for (const pkg of report.packages) {
         const ver = pkg.foundVersion ? ` ${pkg.foundVersion}` : "";
-        const behind = pkg.behind && pkg.version ? tr("（比 {p1} 旧，能用）", { p1: pkg.version }) : "";
+        // 低于下限不是「能用就行」：下次 npm install 会把它升上去（D393）。
+        const behind = pkg.behind && pkg.version ? tr("（比 {p1} 旧，下次 npm install 会升上去）", { p1: pkg.version }) : "";
         const what = this.depsFeature(pkg.id);
         line(pkg.installed, pkg.name, pkg.installed ? ver + behind : what, what);
       }

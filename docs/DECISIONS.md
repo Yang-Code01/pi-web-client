@@ -3859,6 +3859,8 @@ D
 
 ## D220 部署时一次把依赖备齐：`npm install` 顺手装 pi 与三个扩展（用户要求）
 
+> **D393 修订（2026-11-23）：** 第 2、3 点与「代价 / 可改」里那条「已装就不动、不升级不降级、页面上只说『比 x 旧，能用』」都已作废。清单里的版本现在是**下限**：没装就装它，低于它就升到它，等于或高于它一动不动；低于下限的包在启动关卡里跟「缺」同等对待。`pi-subagents` 从 0.86.0 推到 0.90.0，`MIN_PI_VERSION` 从 1.5.0 推到 1.6.0。下文其余部分（先查再动、按包名对、共用同一个判据、缺了要看得见、能关掉）不变。
+
 **问题：** 这个网页有三块能力不在仓库里：设置→子代理直接读 `pi-subagents` 的会话目录（`bridge/src/subagents.ts`、`bridge/src/bgruns.ts`），网页问卷按 `@juicesharp/rpiv-ask-user-question` 的 rpc-fallback 对话框格式回填（`bridge/src/questionnaire.ts`），随手问的联网工具由 `pi-web-access` 提供。它们住在 pi 自己的全局目录（`~/.pi/agent`），clone 下来 `npm install` 拿不到 —— 于是同一份代码在两个人的机器上表现不同，而缺的那块通常只是**静默少一个工具**，不报错，也不在界面上说。
 
 **决定：**
@@ -7622,3 +7624,31 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - 反例（写在这里是为了记住退避基数为啥从 0.8 s 拉到 3 s）：`sensenova-platform/deepseek-flash` 27 次调用里 19 次 429，1.5 s 起步的退避只够再吃一次限流 —— 串行那趟还撞上一次 180 s 超时，两趟都有块没翻成（×4.88 那个数因此不当作验收）。
 - `npm run test:translate:e2e` 全部通过；`npm run typecheck`（bridge / peer / web + i18n-check + viewport + layers + spawn-hidden）通过。
 - 1.7 KB / 6 块这种小文档只有 **2 波**，收益约 2×（不是 4×）；吃满 4 路要 20 块以上的长文 —— 这也是验收线定在「≥20 块、≥2.5×」的原因。
+
+## D393 依赖清单的版本从「钉死」改成「下限」：低于它必须升，高于它不降级（#649）
+
+**问题：** `npm install` 无条件把 pi 装成 `@latest`（当时是 1.6.0），而清单里钉死的 `pi-subagents@0.86.0` 比它早两周、比当时的最新版（0.90.0）落后四个小版本 —— 新机器上是一个谁都没验过的组合。而已经装着 0.86.0 的机器更尴尬：整备按包名判「已装就不动」，它们会**永远**停在 0.86.0，不管 pi 涨到多少。这种不匹配又是静默的：桥直接读 `pi-subagents` 落在 `%TEMP%` 下的 `status.json` / `events.jsonl` / `workflow-receipt.json`，布局一变，网页不报错，只是后台卡与子代理面板悄悄变空。当初钉住正是为了挡这件事，结果钉子自己成了「和不认识的那版 pi 搭班」的来源。
+
+**查证（决定前先查，不是推测）：** 这台机器就是 pi 1.6.0 + 0.86.0，桥一直在跑，`bridge-live.log` 1695 行里没有一条 `extension_error`。pi 1.6.0 的 Breaking Changes 只有一条跟扩展有关 —— 组件 `render()` 返回只读数组、`Container` 复用缓存数组，是 TUI 渲染面，而桥用 `pi --mode rpc` 根本不渲染 TUI。`pi-subagents` 0.90.0 的 CHANGELOG 里唯一提 1.6 的一条是「对着 Pi 1.6 修好类型检查，**没有**改依赖钉法」。0.86 → 0.90 之间网页依赖的字段（`state` / `outputFile` / `workflow.value.children` / `workflowChildren.children` / `steps[].sessionName` / `parentWorkflowRunId` / `events.jsonl` / `workflow-receipt.json`）全部还在。所以问题不是「钉子必须拆」，而是「钉子太靠后」。
+
+**决定：**
+
+1. **清单里的 `version` 语义改成「最低可接受版本」。** 判据还是同一个纯函数（`bridge/src/deps.ts` 的 `depStatus` + `depAction`），脚本与页面共用：没装 → `install`；装了但低于下限 → `upgrade`；其余（含比下限新、读了但读不出版本号）→ `keep`。**不降级**：自己装了 0.92.0 的人不会被按回 0.90.0，页面上也不提「你太新了」。
+2. **`pi-subagents` 0.86.0 → 0.90.0；`MIN_PI_VERSION` 1.5.0 → 1.6.0。** 下限已经跟 pi 1.6 同期，1.5 那组组合没人验过；`npm install` 本来就会把低于下限的 pi 升到 latest，所以这条不额外增负担。两个 `@juicesharp` 包今天本就等于 latest，同一条机制对它们无动作；`pi-web-access` 仍然不写下限（只调它的工具，不解析输出）。
+3. **启动关卡把「旧」当「缺」。** `npm start` 前那一查（D224）原来只拦缺的包；低于下限一样拦，并说出现在是哪版、该升到哪版，以及一条能粘贴的 `pi install` 命令（缺的、旧的都列出命令，不只是关了自动安装的时候）。`--check` 也把「旧」判为不及格（退出码非 0），但仍然一个字节都不写全局目录。
+4. **用一份真样本兜住静默失效。** `bridge/tests/fixtures/pi-subagents-0.90.0/` 是隔离的 agent 目录里真跑出来的 async 单跑 + workflow 产物（路径换成占位、长正文截断），`test:bgruns` 拿它回放同一个解析器；`test:deps` 断言样本 `meta.json` 的版本 == 清单里的下限 —— **换了钉子却忘了重取样本，单测先红**，而不是等用户报「卡片空了」。样本版本是手写在 `meta.json` 里的，所以这条守卫挡的是「忘了重取」与「重取了忘了改名」，不是上游偷偷换版本（那由 `test:bgruns` 的字段断言挡）。
+5. **页面那句话说它会发生的事。** 「比 x 旧，能用」改成「比 x 旧，下次 npm install 会升上去」：它不再是安慰，而是预告。
+
+**为什么不直接改成不写版本（跟 latest）：** 那样确实能让新机器拿到最新版，但对已经装着 0.86.0 的机器零效果（判据还是「已装就不动」），而静默失效的风险一分钟都没减少 —— 换来的只是「每次 npm install 落点不确定，回滚没有确定坐标」。上游一旦改布局，`install` 到 latest 也修不好，只会让下一个人拿到的还是坏的。
+
+**代价 / 可改：**
+
+- 升级发生在 `npm install`，跑着的桥要重启才用上新版本（与装扩展一贯如此）。
+- **热部署 / `bridge-update` 不跑整备，所以它们不会把旧版本升上去，也不会被拦。** `scripts/hotdeploy.mjs` 只跑 `npm run build` 然后直接 `spawn bridge/dist/index.js`；`bridge-update` 的 `restart.mjs` 起的是 `npm run start:nobuild`（即同一个入口）—— 两者都不经过 `scripts/bootstrap.mjs`，而 D224 那个关卡只挂在 `npm start` 上。结果：只靠热部署的机器会一直停在旧版，页面一直挂着「要升级」，功能不受影响（桥不在运行期校验下限）。想让它们对齐，只能自己跑一次 `npm install`。没在 hotdeploy 里顺手加 `npm install`：那会在杀进程前动 `node_modules` 与用户的全局目录，与 D220「装东西只在用户按下 `npm install` 时」的边界冲突，也会把「构建失败时旧服务原样活着」这条保证弄复杂。
+- 启动关卡现在会拦「旧」：低于下限的人下次 `npm start` 起不来，得先 `npm install`。这是故意的 —— 不拦的话「已装就不动」会让这批人继续停在旧版本上。
+- 样本是某一版的快照，会过时；它守的是「网页认的字段还在不在」，不是「上游行为完全没变」。换下限时按 fixture 里的 README 重取一次（约两分钟，两次副代理调用）。
+- 想回到「旧了只提示」：把 `depAction` 的 `upgrade` 分支去掉、页面文案改回一句即可，真样本与版本一致性断言在任何方案下都成立。
+- 页面的「本项目需要」只在**失败**时说原因（`bootstrap.error`）；成功装了 / 升了什么只留在状态文件的 `installed[]` 里，没有单独列表。这次没加那块界面。
+- 顺手修了 `bridge/tests/deps-ui.mjs` 里一句陈旧断言（「三个包都在清单里」——清单早就是四个，`main` 上就红）。一行、不改行为，与本次同一块代码，所以没拆出去。
+
+**验证：** `npm run test:deps`（三份 README 的表对账、四态判据、样本版本断言）、`npm run test:start-check`（新增「低于下限就拦」「整备脚本真的升到下限」「`--check` 判旧不及格」「到了下限就记住、不再问 `pi list`」）、`npm run test:bgruns`（0.90.0 真样本回放：单跑、workflow、脚本式 workflow 的 receipt 回填、前台派活按 `parentWorkflowRunId` 认孩子）、`npm run test:deps:ui`、`npm --prefix bridge run typecheck`。**`npm run typecheck` 这一条在这台机器上过不了**：`web` 那半截挂在 `src/translateview.ts` 的两条中文没走 `tr()` 与 en/ja 缺键上（D392 那批留下的），在 `main` 上逐字相同 —— 与本次改动无关，也不该由这次顺手改别人的在飞代码。
