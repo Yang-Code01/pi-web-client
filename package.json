@@ -60,6 +60,7 @@
     "test:dirpage": "node bridge/tests/dirpage.mjs",
     "test:dirpage-big": "node --experimental-strip-types bridge/tests/dirpage-big.mjs",
     "test:fileindex": "node bridge/tests/fileindex.mjs",
+    "test:logfile": "node --experimental-strip-types bridge/tests/logfile-unit.mjs",
     "test:mk": "node bridge/tests/mk-file.mjs",
     "test:uploads": "node --experimental-strip-types bridge/tests/uploads-unit.mjs",
     "test:nowchip": "node --experimental-strip-types web/tests/nowchip-unit.mjs",
