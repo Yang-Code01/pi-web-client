@@ -60,7 +60,7 @@ const check = (name, ok, detail = "") => {
 
 fs.rmSync(ROOT, { recursive: true, force: true });
 for (const d of [STATE, AGENT, WORK, OUT]) fs.mkdirSync(d, { recursive: true });
-// D390: 翻译的默认模型跟随 pi 的全局设置。这里钉死一个「不在桩目录里」的默认，
+// D392: 翻译的默认模型跟随 pi 的全局设置。这里钉死一个「不在桩目录里」的默认，
 // 好让下面那句「默认模型找不到 → 让人重挑」仍然测得到。
 fs.writeFileSync(
   path.join(AGENT, "settings.json"),

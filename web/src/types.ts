@@ -578,7 +578,7 @@ export interface TrJob {
   done: number;
   total: number;
   note: string;
-  /** 正在翻的块数（D390）：主进度按节，这个只上副行。 */
+  /** 正在翻的块数（D392）：主进度按节，这个只上副行。 */
   inflight?: number;
   error?: string;
   startedAt: number;

@@ -1,6 +1,7 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 import "./filesearch.css";
+import { markSurface } from "./modal.ts";
 
 /**
  * D321：整机文件搜索面板（控制台式）。
@@ -82,7 +83,7 @@ function saveQuery(q: string): void {
 }
 
 export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
-  const back = el("div", "sys-back fse-back");
+  const back = markSurface(el("div", "sys-back fse-back"), "window");
   back.onclick = (ev) => {
     if (ev.target === back) opts.onClose();
   };

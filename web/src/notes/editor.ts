@@ -11,6 +11,7 @@
 import { tr } from "../i18n/index.ts";
 import { matchBlock, matchInline, type BlockHit } from "../md-input.ts";
 import { fenceLanguage, hasAnyStructure, sanitizeRich, textToRich } from "./rich.ts";
+import { appZoom, markSurface, mountOverlay } from "../modal.ts";
 
 const SIZES: [string, string][] = [
   ["1em", "正常"],
@@ -555,10 +556,13 @@ export class RichEditor {
     this.closePop();
     this.saveRange();
     node.className = "tb-pop";
+    markSurface(node, "menu");
     const box = anchor.getBoundingClientRect();
-    node.style.left = `${Math.max(8, Math.min(box.left, window.innerWidth - 260))}px`;
-    node.style.top = `${box.bottom + 6}px`;
-    document.body.append(node);
+    // 挂进 #app 才跟「外观 → 字号」的 zoom 一起缩；量到的是视觉 px，写进 style 前先除一次缩放。
+    const z = appZoom();
+    node.style.left = `${Math.max(8, Math.min(box.left, window.innerWidth - 260)) / z}px`;
+    node.style.top = `${(box.bottom + 6) / z}px`;
+    mountOverlay(node);
     this.pop = node;
   }
 

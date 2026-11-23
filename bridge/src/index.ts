@@ -571,7 +571,7 @@ async function main(): Promise<void> {
   const sessions = new SessionManager(pi.cli, `http://127.0.0.1:${cfg.port}`);
   const translateJobs = new TranslateJobs();
   /**
-   * 「从哪一节先翻」（D390 修订）：页面只报一个 0–1 的滚动位置（`at`），切节是桥的事 ——
+   * 「从哪一节先翻」（D392 修订）：页面只报一个 0–1 的滚动位置（`at`），切节是桥的事 ——
    * 客户端不用跟着 `cutSections` 的规则走，免得两边漂移。没传/读不懂就是 undefined（按原文顺序）。
    */
   const startFrom = (body: any, text: string): number | undefined => {
@@ -2012,9 +2012,9 @@ async function main(): Promise<void> {
           run,
           runner: runPiTranslate,
           keep: reuse ? cached.sections : [],
-          // D390：同时翻几块。旋钮在设置 → 预览与翻译，存本机 prefs。
+          // D392：同时翻几块。旋钮在设置 → 预览与翻译，存本机 prefs。
           limit: readTrPrefs().concurrency,
-          // D390 修订：视口优先。页面传 `at`（0–1 的滚动位置），这里换成节号 ——
+          // D392 修订：视口优先。页面传 `at`（0–1 的滚动位置），这里换成节号 ——
           // 客户端不需要知道桥怎么切节，只要报「我大概看到哪儿了」。
           from: startFrom(body, text),
         });

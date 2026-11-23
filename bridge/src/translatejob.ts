@@ -62,7 +62,7 @@ export class TranslateJobs {
     runner: TrRunner;
     keep?: TrSection[];
     limit?: number;
-    /** 视口所在的那一节：先派它的活（D390 修订）。 */
+    /** 视口所在的那一节：先派它的活（D392 修订）。 */
     from?: number;
   }): JobView {
     // 同一份文件同一种语言只留一个在跑的：重复点「开始」不该烧两遍钱。

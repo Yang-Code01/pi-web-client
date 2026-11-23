@@ -78,6 +78,7 @@ import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
 import { execView, type ExecChildRunInput, type ExecMetricsView, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
+import { pickLanding, parseLast, pruneLast, recordLast, type WsLast } from "./wsmemory.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, birthReveal, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type BirthReveal, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
@@ -100,7 +101,7 @@ import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } f
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { ReminderCenter, type Reminder } from "./reminders.ts";
-import { escapeTopLayer, LEAVE_MS, overlaysOpen, pushEscLayer, retireOverlay, startLeaving } from "./modal.ts";
+import { appZoom, escapeTopLayer, LEAVE_MS, markSurface, mountOverlay, overlaysOpen, pushEscLayer, retireOverlay, startLeaving, type SurfaceKind, type SurfaceOpts } from "./modal.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -511,7 +512,7 @@ export class App {
   /** D245: 翻译用的默认模型（`provider/id`）与出厂默认，来自桥的偏好；还没读过时为空串。 */
   private trModelPref = "";
   private trDefaultModel = "";
-  /** D390: 同时翻几块（1–8），同样存桥的本机偏好。 */
+  /** D392: 同时翻几块（1–8），同样存桥的本机偏好。 */
   private trConcurrency = 4;
   /** #285: the form's two scopes share one tab id; this is what the segment and the form follow. */
   private settingsScope: "global" | "project" = "global";
@@ -1797,6 +1798,8 @@ export class App {
     this.setSelectedWs(null);
     if (this.sessionReclaimId !== id && this.sessionReclaimEl) this.sessionReclaimEl.hidden = true;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
+    // D391：任何来源打开一颗会话（左栏 / ★ 行 / 搜索 / 深链 / 刷新 / 自动落点）都写成这一组的记忆。
+    this.noteLastSession();
     this.resetSessionView();
     // D386：打开的是一颗**已归档**的会话，就把它请回来（取消归档 + 置顶到最前）。
     // 别的会话照旧不动排列（D146）；不这么做的话 `starredRow()` 排掉归档会话、
@@ -2052,6 +2055,9 @@ export class App {
         this.tunnel = newerTunnel(this.tunnel, msg.tunnel);
         // D386：首屏/重连的 hello 才第一次带来 `manage` —— 深链 `#/s/<归档 id>` 就是在这一步补请回来的。
         this.maybeReviveCurrent();
+        // D391：深链 `#/s/<id>` 与刷新都是在快照到达之前跑 `routeFromHash()` 的 —— 那时还不知道
+        // 这颗会话属于哪个工作区。快照到了补记一次（同一组同一颗只写一次，便宜）。
+        this.noteLastSession();
         this.renderAll();
         // Q-021: 新会话 / 首屏恢复都可能带着另一个 cwd 进来。
         void this.refreshGit(true);
@@ -2087,6 +2093,8 @@ export class App {
         this.turnChars = { cjk: 0, other: 0 };
         if (msg.state) this.session = msg.state as SessionState;
         else if (msg.session) this.session = msg.session;
+        // D391：新建 / 还原的会话不走 `openSession()`，但「当前会话是哪颗」一样算一层记忆。
+        this.noteLastSession();
         this.policy = (msg.policy as CtxPolicy | null) ?? null;
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         if ("trust" in msg) this.trust = (msg.trust as TrustState | null) ?? null;
@@ -3645,8 +3653,15 @@ export class App {
     });
   }
 
-  /** Overlays live inside #app so they scale with the appearance zoom. */
-  private overlay(node: HTMLElement): void {
+  /**
+   * Overlays live inside #app so they scale with the appearance zoom.
+   *
+   * 顺带打上材质标记（#644）：`mac.css` 只认 `data-mac-surface`，不再维护一份类名名单。
+   * `enter` 给非「窗口从上方落下」的那几档：手机上的 sheet 是抽屉、随手问是右侧推进、
+   * 两三选项的小弹窗是 alert 形的缩放淡入。
+   */
+  private overlay(node: HTMLElement, kind: SurfaceKind = "window", opts: SurfaceOpts = {}): void {
+    markSurface(node, kind, opts);
     (document.getElementById("app") ?? document.body).append(node);
   }
 
@@ -3958,7 +3973,7 @@ export class App {
     // Hover detail: the whole activity string, not the truncated one in the line itself.
     let pop = box.querySelector<HTMLElement>(".act-pop");
     if (!pop) {
-      pop = el("div", "act-pop");
+      pop = markSurface(el("div", "act-pop"), "menu");
       box.append(pop);
       this.wirePeekTarget(pop);
     }
@@ -5830,7 +5845,7 @@ export class App {
     if (Date.now() - this.skillsAt > 60_000) this.socket.send({ type: "skills", sessionId: this.currentId });
 
     const pop = el("div", "skill-pop");
-    const panel = el("div", "skill-panel");
+    const panel = markSurface(el("div", "skill-panel"), "menu");
     const search = el("input", "skill-search") as HTMLInputElement;
     search.placeholder = tr("搜索技能：名字或描述…");
     search.spellcheck = false;
@@ -6072,7 +6087,7 @@ export class App {
     body.append(host);
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     // The installed list is a local disk scan; the store waits for a query (its API needs 2 chars).
     this.loadSkillInventory();
@@ -6093,7 +6108,7 @@ export class App {
       document.querySelector(".update-bar")
     )
       return;
-    const bar = el("div", "update-bar");
+    const bar = markSurface(el("div", "update-bar"), "toast");
     const btn = el("button", "btn primary", tr("刷新"));
     btn.onclick = () => location.reload();
     const close = el("button", "update-bar-x", "×");
@@ -6138,7 +6153,7 @@ export class App {
     body.append(host);
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     const view = new ContextInsightsView(host, {
       currentId: this.currentId,
@@ -6188,7 +6203,7 @@ export class App {
     body.append(host);
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.contextPanel = new ContextPanel(host);
     this.contextPanel.update(this.contextPanelData());
@@ -7950,7 +7965,7 @@ export class App {
   }
 
   /**
-   * #277 横条标签双击改名：浮层是 body 上的 fixed 输入框，锚在标签的视口矩形上（`tabRenameBox()`），
+   * #277 横条标签双击改名：浮层是挂进 #app 的 fixed 输入框，锚在标签的视口矩形上（`tabRenameBox()`），
    * 不插进 `.ws-tabs`，所以不会把整行撑高或推走；窄窗口由几何函数夹回视口。
    *
    * 双击非当前组时第一下只切组（见 `tab.onclick` 的两下判断），第二下才进编辑 ——
@@ -7959,7 +7974,7 @@ export class App {
   private startWsTabRename(group: TreeGroup<SessionState>): void {
     this.cancelWsTabRename();
     const raw = this.workspaces.groups.find((g) => g.id === group.id)?.name ?? "";
-    const input = el("input", "rename-input ws-tab-rename-input") as HTMLInputElement;
+    const input = markSurface(el("input", "rename-input ws-tab-rename-input") as HTMLInputElement, "paper");
     input.value = raw;
     // 还没起名的组：输入框留空，占位显示目录名，和左栏改名的手感一致。
     input.placeholder = group.name;
@@ -7985,7 +8000,7 @@ export class App {
       this.commitWsTabRename();
     };
     this.wsTabRename = { id: group.id, input, away };
-    document.body.append(input);
+    mountOverlay(input);
     // 捕获阶段：点标签 / 左栏 / 空白都先提交，再让那一下自己的点击继续走。
     document.addEventListener("pointerdown", away, true);
     this.placeWsTabRename();
@@ -8024,9 +8039,11 @@ export class App {
       return;
     }
     const box = tabRenameBox(tab.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
-    st.input.style.left = `${box.left}px`;
-    st.input.style.top = `${box.top}px`;
-    st.input.style.width = `${box.width}px`;
+    // 挂进 #app 后要按 zoom 换算：`tabRenameBox()` 给的是视觉 px。
+    const z = appZoom();
+    st.input.style.left = `${box.left / z}px`;
+    st.input.style.top = `${box.top / z}px`;
+    st.input.style.width = `${box.width / z}px`;
   }
 
   private dropWs(id: string): void {
@@ -8103,6 +8120,8 @@ export class App {
     // 用未过滤的树找落点：过滤态下邻居可能整组被藏起来，那也不该停在半路。
     const tree = buildTree(this.sessions, this.manage, this.workspaces, "");
     for (const id of wsNeighborsAfterDrop(orderBefore, gone)) {
+      // D391 划定的范围到这里为止：这一步是**补救**（工作区被删了，得离开），不是用户在导航，
+      // 所以仍开邻居排最上面那颗，不走「记忆 → 最近活动」那套落点。改之前先读 D391 末段。
       const first = tree.groups.find((g) => g.id === id)?.sessions[0];
       if (first) {
         this.openFromList(first.id);
@@ -9014,7 +9033,7 @@ export class App {
     body.append(rail, main);
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     back.focus();
 
@@ -9281,7 +9300,7 @@ export class App {
       if (ev.target === back) shut();
     };
     back.append(img, close);
-    this.overlay(back);
+    this.overlay(back, "window", { dim: "dark" });
     close.focus();
   }
 
@@ -9500,7 +9519,7 @@ export class App {
     this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
-    this.overlay(dialog.root);
+    this.overlay(dialog.root, "paper");
     this.raiseWindow(dialog.root);
     dialog.open();
   }
@@ -9554,7 +9573,7 @@ export class App {
     this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
-    this.overlay(dialog.root);
+    this.overlay(dialog.root, "paper");
     this.raiseWindow(dialog.root);
     dialog.open();
   }
@@ -9584,7 +9603,7 @@ export class App {
     this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
-    this.overlay(dialog.root);
+    this.overlay(dialog.root, "paper");
     this.raiseWindow(dialog.root);
     dialog.open();
   }
@@ -9720,7 +9739,7 @@ export class App {
     root.append(grip, head, body);
     root.tabIndex = -1;
     this.wireWindowRaise(root);
-    this.overlay(root);
+    this.overlay(root, "dock");
     this.raiseWindow(root);
     this.viewer = {
       root,
@@ -10550,7 +10569,7 @@ export class App {
     const row = this.els.composerHost.querySelector(".row");
     if (!btn || !row) return;
     this.closeFailMenu();
-    const box = el("div", "fail-menu");
+    const box = markSurface(el("div", "fail-menu"), "menu");
     box.setAttribute("role", "menu");
     row.append(box);
     // ⚡ 按钮在哪，菜单就在它头顶 8px 之外：固定的 `calc(100% + 46px)` 只在它浮着时对。
@@ -10773,7 +10792,7 @@ export class App {
   private flashToast(text: string, bad: boolean, ms: number, token = "", onUndo?: () => void): void {
     this.failToast?.remove();
     window.clearTimeout(this.failToastTimer);
-    const box = el("div", `fail-toast${bad ? " bad" : ""}`);
+    const box = markSurface(el("div", `fail-toast${bad ? " bad" : ""}`), "toast");
     box.append(el("span", "", text));
     if (token || onUndo) {
       const undo = el("button", "fail-toast-undo", tr("撤销"));
@@ -11272,7 +11291,7 @@ export class App {
 
   private showMenu(x: number, y: number, items: { label: string; run: () => void }[]): void {
     document.querySelector(".ctx-menu")?.remove();
-    const menu = el("div", "ctx-menu");
+    const menu = markSurface(el("div", "ctx-menu"), "menu");
     for (const item of items) {
       const button = el("button", "ctx-item", item.label);
       button.onclick = () => {
@@ -11642,7 +11661,7 @@ export class App {
   /** 语言 + 模型的选择器：模型目录是会话里那份（便宜的也在一起）。 */
   private trPicker(v: Viewer): void {
     const t = this.trOf(v);
-    // D245 / D390: 默认模型是桥那边记的偏好，没有就跟随 pi 全局设置，再没有才退到当前会话的模型。
+    // D245 / D392: 默认模型是桥那边记的偏好，没有就跟随 pi 全局设置，再没有才退到当前会话的模型。
     const sessionModel = this.models.find((m) => m.id === this.session?.model);
     const pref = this.trModelPref || (t.doc ? `${t.doc.provider}/${t.doc.model}` : "") || this.trDefaultModel;
     const values = this.models.map((m) => `${m.provider}/${m.id}`);
@@ -11696,7 +11715,7 @@ export class App {
   }
 
   /**
-   * 视口在整篇的 0–1 位置（D390 修订）：桥拿它决定先翻哪一节 —— 滚到中间点「译」，
+   * 视口在整篇的 0–1 位置（D392 修订）：桥拿它决定先翻哪一节 —— 滚到中间点「译」，
    * 就先翻你正在看的那节，而不是从头开始。量不出来（不能滚 / 太短）就返回 undefined。
    */
   private scrollRatio(box: HTMLElement | null): number | undefined {
@@ -11889,7 +11908,7 @@ export class App {
       pushEscLayer({ el: back, onEsc: () => done("cancel") });
       box.append(row);
       back.append(box);
-      this.overlay(back);
+    this.overlay(back, "window", { enter: "alert" });
     });
   }
 
@@ -13769,7 +13788,7 @@ export class App {
   }
 
   /**
-   * D245 / D390: 预览里的翻译默认用哪个模型。默认**跟随 pi 全局设置**里的 `defaultProvider` +
+   * D245 / D392: 预览里的翻译默认用哪个模型。默认**跟随 pi 全局设置**里的 `defaultProvider` +
    * `defaultModel`（不再写死 copilot）；这里选过的会记住，存桥的本机偏好，不写 settings.json。
    */
   private paintPreviewSettings(pane: HTMLElement): void {
@@ -13804,7 +13823,7 @@ export class App {
       this.flashSettings(tr("已恢复默认模型"));
       this.paintSettings();
     };
-    // D390：同时翻几块。主进度仍按节，这个旋钮只影响「多久能看完全篇」。
+    // D392：同时翻几块。主进度仍按节，这个旋钮只影响「多久能看完全篇」。
     const conc = el("select", "ns-input tr-conc") as HTMLSelectElement;
     for (let n = 1; n <= 8; n++) {
       const opt = el("option", "", String(n)) as HTMLOptionElement;
@@ -14577,7 +14596,7 @@ export class App {
     const body = el("div", "settings-body");
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note share-note"), body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     return { back, sheet, body };
   }
@@ -15270,7 +15289,7 @@ export class App {
     body.append(host);
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     // D113: keep the last inventory on screen (it is the fastest thing we have); the bridge pushes a
     // fresh one in stages, so 「联网检查」 never hides the rows again.
@@ -16421,7 +16440,7 @@ export class App {
     const body = el("div", "tree-body", tr("读取中…"));
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.socket.send({ type: "tree", sessionId: this.currentId });
   }
@@ -16523,7 +16542,7 @@ export class App {
   private showComplete(mode: "cmd" | "file", start: number, end: number, query: string, items: CommandItem[]): void {
     let node = this.complete?.node;
     if (!node || !node.isConnected) {
-      node = el("div", "complete-pop");
+      node = markSurface(el("div", "complete-pop"), "menu");
       const row = this.els.composerHost.querySelector(".row");
       if (row) this.els.composerHost.insertBefore(node, row);
       else this.els.composerHost.append(node);
@@ -16884,7 +16903,7 @@ export class App {
     const body = el("div", "bg-sheet-body");
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.bgSheet = { sessionId: sid, body, runs: new Map() };
     const tick = () => {
@@ -17045,7 +17064,7 @@ export class App {
     const sessionId = this.currentId;
     if (!sessionId) return;
     const current = this.session?.permission ?? "ask";
-    const menu = el("div", "perm-menu");
+    const menu = markSurface(el("div", "perm-menu"), "menu");
     menu.append(el("div", "perm-menu-title", tr("工具权限（只对这个会话）")));
     const close = (): void => {
       menu.remove();
@@ -17415,7 +17434,7 @@ export class App {
     pickerPath = () => handle.picker.path();
     home.bind(handle.picker);
     ref.bind();
-    this.overlay(handle.root);
+    this.overlay(handle.root, "window", { enter: "drawer" });
     this.setSheet(handle.root);
     handle.focus();
   }
@@ -17577,7 +17596,7 @@ export class App {
     this.imageSheetPaint = paint;
 
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     paint();
   }
@@ -19459,7 +19478,7 @@ export class App {
       this.requestTerminal();
       return;
     }
-    const menu = el("div", "term-menu");
+    const menu = markSurface(el("div", "term-menu"), "menu");
     for (const sh of this.termShells) {
       const item = el("button", "term-menu-item", sh.label) as HTMLButtonElement;
       item.type = "button";
@@ -19523,7 +19542,7 @@ export class App {
     this.wireWindowRaise(dock);
     // 浮在页面上（overlay 进 #app，跟着外观缩放）：终端不再占对话栏的宽度，也就没有 Q-026 里
     // 「先折叠右栏」那件事了。
-    this.overlay(dock);
+    this.overlay(dock, "dock");
     this.wireTermGrip(grip, dock);
     this.wireTermMove(head, dock);
     this.wireTermResize(resize, dock);
@@ -20431,6 +20450,47 @@ export class App {
   }
 
   /**
+   * D391：这一组该打开哪颗 —— 记忆里的那颗，其次最近写过文件的那颗（`pickLanding()`）。
+   *
+   * 用**未过滤**的树算落点，与 `emptyWs()` 同一条理由：左栏搜索时这一组可能被筛掉，但「切过去
+   * 打开哪颗」不该跟着搜索变。记忆里的那颗被删 / 被归档 / 被拖去别的工作区时落到 `updatedAt`
+   * 最大的那颗；那条死记忆顺手清掉，下次不必再猜一遍。
+   */
+  private wsLanding(wsId: string): string | null {
+    const group = buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === wsId);
+    if (!group) return null;
+    const last = readWsLast();
+    const prev = last[wsId];
+    const landing = pickLanding(group.sessions, prev?.id);
+    // 读时就顺手剪：组已经不在了、或这一组的记忆已经不是要落地的那颗（被删 / 被归档 / 被拖走），
+    // 都不留到下一次写。（`pruneLast()` 没东西可剪时返回同一份，不必白写一次 localStorage。）
+    const live = new Set((this.workspaces?.groups ?? []).map((g) => g.id));
+    const kept = pruneLast(last, (entry, id) => (live.size ? live.has(id) : true) && (id !== wsId || entry.id === landing));
+    if (kept !== last) writeWsLast(kept);
+    return landing;
+  }
+
+  /**
+   * D391：当前会话是哪颗，它所在工作区的记忆就是哪颗。任何来源成为当前会话都走这一处
+   * （打开 / 新建 / 深链 / 刷新 / 归档或删组后的自动落点）；同一组同一颗不重写。
+   *
+   * 前提是 `this.session` 已经是那颗（`currentWsId()` 从它反查工作区），所以调用点都守在
+   * 「`this.session` 刚被赋上」之后；反查不到（旧桥 / 桩桥没有分组）就什么也不记。
+   */
+  private noteLastSession(): void {
+    const id = this.currentId;
+    if (!id) return;
+    const wsId = this.currentWsId();
+    if (!wsId) return;
+    const last = readWsLast();
+    if (last[wsId]?.id === id) return;
+    // 组已经不在快照里（删了 / 被 prune）的条目别一直留着：写入时顺手剪一遍。
+    const live = new Set(this.workspaces.groups.map((g) => g.id));
+    const kept = pruneLast(last, (_entry, groupId) => live.has(groupId));
+    writeWsLast(recordLast(kept, wsId, id));
+  }
+
+  /**
    * D374：页面记住的组现在还在不在。存档里的 id 可能已经被删 / 被桥的 `prune()` 清掉，
    * 那种情况一律当成「没选」—— 一个不存在的组不该占着横杠。
    */
@@ -20477,14 +20537,14 @@ export class App {
   }
 
   /**
-   * 工作区点击：切到那一组 = 打开它排在最上面的那颗。**没有会话的组也切得过去**（D374）：
-   * 选中它、中栏进空态，再照旧把左栏展开并滚到它 —— 以前这里只把左栏亮出来，横杠还停在
-   * 上一个工作区上，看上去就是「点了没反应」。
+   * 工作区点击：切到那一组 = 打开这一组的**落点**（D391：记忆里那颗，其次最近写过文件的那颗）。
+   * **没有会话的组也切得过去**（D374）：选中它、中栏进空态，再照旧把左栏展开并滚到它 ——
+   * 以前这里只把左栏亮出来，横杠还停在上一个工作区上，看上去就是「点了没反应」。
    */
   private gotoGroup(group: TreeGroup<SessionState>): void {
-    const first = group.sessions[0];
-    if (first) {
-      this.openFromList(first.id);
+    const landing = this.wsLanding(group.id);
+    if (landing) {
+      this.openFromList(landing);
       return;
     }
     // 先定归属再清中栏：`renderAll()` 里的空态与横杠都读它。
@@ -20526,7 +20586,7 @@ export class App {
 
   private openWsPop(anchor: HTMLElement): void {
     this.closeWsPop();
-    const pop = el("div", "ws-pop");
+    const pop = markSurface(el("div", "ws-pop"), "menu");
     pop.setAttribute("role", "dialog");
     pop.setAttribute("aria-label", tr("工作区与会话"));
     const body = el("div", "ws-pop-body");
@@ -21072,6 +21132,7 @@ export class App {
     const r = chip.getBoundingClientRect();
     const clone = chip.cloneNode(true) as HTMLElement;
     clone.classList.add("pin-flyer");
+    markSurface(clone, "paper");
     clone.removeAttribute("data-pin-key");
     Object.assign(clone.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
     document.body.append(clone);
@@ -21159,7 +21220,7 @@ export class App {
   /** 删除/归档之后一句话交代去向；不占状态行，2.6s 自己走。 */
   private pinNote(text: string): void {
     document.querySelector(".pin-note")?.remove();
-    const note = el("div", "pin-note", text);
+    const note = markSurface(el("div", "pin-note", text), "menu");
     document.body.append(note);
     note.animate([{ opacity: "0", transform: "translateY(6px)" }, { opacity: "1", transform: "none" }], { duration: 160, easing: "ease-out" });
     window.setTimeout(() => {
@@ -21335,6 +21396,30 @@ function writeSelectedWs(id: string | null): void {
     else localStorage.removeItem(SELECTED_WS_KEY);
   } catch {
     // private mode: 选中态就只在这一次会话里有效。
+  }
+}
+
+/**
+ * D391：工作区的「上次的会话」（组 id → 会话 id）。与 `pi.ws.selected` 同一层，都是「我在哪」的
+ * 页面记忆：不进桥、不进地址栏、换设备不跟随。解析与剪枝在 `wsmemory.ts`（纯函数、可单测）。
+ */
+const WS_LAST_KEY = "pi.ws.last";
+
+function readWsLast(): WsLast {
+  try {
+    return parseLast(localStorage.getItem(WS_LAST_KEY));
+  } catch {
+    // private mode: 读不了就当没有记忆（落到最近活动那颗）。
+    return {};
+  }
+}
+
+function writeWsLast(last: WsLast): void {
+  try {
+    if (Object.keys(last).length) localStorage.setItem(WS_LAST_KEY, JSON.stringify(last));
+    else localStorage.removeItem(WS_LAST_KEY);
+  } catch {
+    // 配额 / private mode：这次不记住，页面照常工作。
   }
 }
 

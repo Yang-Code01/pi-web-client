@@ -13,7 +13,7 @@ import { createEl as el } from "./chat.ts";
 import { api } from "./api.ts";
 import { errText, tr } from "./i18n/index.ts";
 import { BranchSheet } from "./branchsheet.ts";
-import { retireOverlay } from "./modal.ts";
+import { markSurface, retireOverlay } from "./modal.ts";
 import { cleanPath, isAbsolutePath, resolveTyped } from "./dirpicker.ts";
 import type { GitInfo } from "./types.ts";
 
@@ -118,7 +118,7 @@ export class ReposSheet {
     this.refreshChip = opts.refreshChip ?? null;
     this.handoff = opts.handoff ?? null;
 
-    this.root = el("div", "sheet-back center repos-back");
+    this.root = markSurface(el("div", "sheet-back center repos-back"), "window");
     this.root.onclick = (ev) => {
       if (ev.target === this.root) this.close();
     };

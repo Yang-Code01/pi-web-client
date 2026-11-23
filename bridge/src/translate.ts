@@ -36,7 +36,7 @@ export const MAX_TRANSLATE_BYTES = 512 * 1024;
  * 一块交给模型的正文字符数。**这不是「越大越快」**：总时长 ≈ 块数 × 每个往返的固定成本
  * （起进程 + 首字节 ≈ 2–5 s）+ 总输出字的生成时间，而块内是串行生成的。实测一份 6.7 KB
  * 文档（3 节 / 4 块）里最大的那块一个人拉了 18–25 s，是并发之后仅剩的尾巴 —— 所以
- * 把块切小、让 4 路去吃掉多出来的往返（D390 的补充）。太小会被「每块一次启动」吃掉。
+ * 把块切小、让 4 路去吃掉多出来的往返（D392 的补充）。太小会被「每块一次启动」吃掉。
  */
 export const CHUNK_CHARS = 1400;
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -413,7 +413,7 @@ export interface TrSection {
   failed?: boolean;
 }
 
-/* ── 并发调度：块是派活的单位，节是落盘与对齐的单位（D390） ──────── */
+/* ── 并发调度：块是派活的单位，节是落盘与对齐的单位（D392） ──────── */
 
 /** 取消信号。页面点「取消」时桥置 `aborted`，并立刻杀掉在飞的子进程。 */
 export interface CancelSignal {
@@ -625,7 +625,7 @@ export async function translateDoc(
   const secFail: string[][] = cuts.map(() => []);
   /**
    * 缓存里那份「节」的数组：**长度永远等于原文的节数**，没翻到的节是空壳（`out === ""`）。
-   * 这样页面上能按节画骨架、视口优先才有意义（D390 修订）。旧缓存是「连续前缀」，
+   * 这样页面上能按节画骨架、视口优先才有意义（D392 修订）。旧缓存是「连续前缀」，
    * 读回来照样合法 —— 只是后面几节不在数组里。
    */
   const slots: TrSection[] = cuts.map((c) => ({ heading: c.heading, src: c.text, gen: "", out: "" }));
@@ -922,7 +922,7 @@ export function cacheFile(abs: string, lang: TrLang): string {
 export function readDoc(abs: string, lang: TrLang): TrDoc | null {
   const raw = readJson<TrDoc | null>(cacheFile(abs, lang), null);
   if (!raw || !Array.isArray(raw.sections) || !raw.sections.length) return null;
-  // D390 修订：允许**空洞**（`src` 在、`out` 还是空串）—— 视口优先时先翻中间几节，
+  // D392 修订：允许**空洞**（`src` 在、`out` 还是空串）—— 视口优先时先翻中间几节，
   // 前面的晚点回来。旧缓存是「连续前缀」，读回来同样合法。
   const sections = raw.sections.filter((s) => s?.src).map((s) => ({ ...s, gen: s.gen ?? "", out: s.out ?? "" }));
   // 一节都没翻成（整份都是空壳）时仍然当「没有译文」：否则页面会显示一排空骨架、
@@ -937,7 +937,7 @@ export function writeDoc(doc: TrDoc): void {
 
 
 /**
- * 翻译用的默认模型（D245 / D390）：**跟随 pi 的全局设置**（`defaultProvider` + `defaultModel`），
+ * 翻译用的默认模型（D245 / D392）：**跟随 pi 的全局设置**（`defaultProvider` + `defaultModel`），
  * 不再写死 copilot —— 写死那个值在没登 copilot 的机器上就是个“一定跑不了”的默认。
  * 读的是文件、不 spawn pi；拿不到就返回空串，页面让用户自己挑一次（选择会记住）。
  */
@@ -946,7 +946,7 @@ export const trDefaultModel = (): string => defaultModelRef();
 export interface TrPrefs {
   /** "provider/id"；空串表示「还没设过」，页面按 pi 全局设置的默认模型去解析。 */
   model: string;
-  /** 同时翻几块（1–8，缺省 `TR_CONCURRENCY`）：D390 那只旋钮。 */
+  /** 同时翻几块（1–8，缺省 `TR_CONCURRENCY`）：D392 那只旋钮。 */
   concurrency: number;
 }
 

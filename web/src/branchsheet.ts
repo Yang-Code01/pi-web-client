@@ -11,7 +11,7 @@ import { createEl as el } from "./chat.ts";
 import { api } from "./api.ts";
 import { errText, fmtRelative, tr } from "./i18n/index.ts";
 import type { GitCommit, GitCommitDetail, GitDiff, GitDiffFile, GitExecResult, GitHistory, GitOpParams, GitRefs, GitWorktreeState } from "./types.ts";
-import { retireOverlay } from "./modal.ts";
+import { markSurface, retireOverlay } from "./modal.ts";
 import { GIT_OPS, MANUAL_FILTERS, OPS_BY_ID, OP_GROUPS, opFrames, buildHandoffPrompt, type GitOpDef } from "./git-ops.ts";
 import { sessionNameFromBranchRef } from "./session-name.ts";
 
@@ -125,7 +125,7 @@ export class BranchSheet {
     this.handoff = opts.handoff ?? null;
     this.embedded = opts.embedded === true;
 
-    this.root = el("div", "sheet-back center branch-back");
+    this.root = markSurface(el("div", "sheet-back center branch-back"), "window");
     this.root.onclick = (ev) => { if (ev.target === this.root) this.close(); };
     this.sheet = el("div", "branch-sheet go-sheet");
     this.sheet.classList.toggle("go-embedded", this.embedded);
@@ -492,7 +492,7 @@ export class BranchSheet {
     input.setAttribute("aria-label", opts.ariaLabel);
     input.setAttribute(`data-${opts.key}-input`, "1");
 
-    const menu = el("div", "go-cmp-menu");
+    const menu = markSurface(el("div", "go-cmp-menu"), "menu");
     menu.hidden = true;
     menu.setAttribute(`data-${opts.key}-menu`, "1");
 

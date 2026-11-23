@@ -1,5 +1,5 @@
 /**
- * Probe: 翻译对照的并发（D390）——同一份语料，串行 vs 4 路。
+ * Probe: 翻译对照的并发（D392）——同一份语料，串行 vs 4 路。
  *
  * 两段：
  *   1. 桩（默认跑）：每次调用人为睡 250 ms，模拟「一个往返的固定等待」。
@@ -160,7 +160,7 @@ if (!flag("real")) {
       realConc.sections.every((s, i) => s.heading === realSerial.sections[i].heading && tableDiff(s.src, s.out) === null);
     check("真模型下结构一致（节数 / 标题 / 表格形状）", sameShape, `${realSerial.sections.length} 节`);
     check("真模型下没翻成的块为 0", realConc.failures.length === 0, JSON.stringify(realConc.failures.slice(0, 2)));
-    // 绝对秒数只作参考（D390 的验收线是相对倍数），所以这里只报不断言。
+    // 绝对秒数只作参考（D392 的验收线是相对倍数），所以这里只报不断言。
     console.log(`  参考：绝对秒数随模型与 provider 波动很大，验收只看上面的倍数。`);
   }
 }

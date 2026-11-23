@@ -2,6 +2,7 @@ import { createEl as el } from "./chat.ts";
 import { ATTACHABLE_IMAGE, fileNameOf, joinPath, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { tr } from "./i18n/index.ts";
 import "./fileconsole.css";
+import { markSurface } from "./modal.ts";
 
 /**
  * 目录入口的控制台：**一份实现、两种壳**。
@@ -78,7 +79,7 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
   let root: HTMLElement = shell;
 
   // ---- 壳
-  const back = el("div", "sys-back fc-back");
+  const back = markSurface(el("div", "sys-back fc-back"), "window");
   back.onclick = (ev) => {
     if (ev.target === back) opts.onClose?.();
   };

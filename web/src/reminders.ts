@@ -12,7 +12,7 @@
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
-import { pushEscLayer } from "./modal.ts";
+import { markSurface, pushEscLayer } from "./modal.ts";
 import { tr } from "./i18n/index.ts";
 import "./reminders.css";
 
@@ -133,7 +133,7 @@ export class ReminderCenter {
       this.toastBox = el("div", "remind-toasts");
       stage.append(this.toastBox);
     }
-    const box = el("div", "remind-toast");
+    const box = markSurface(el("div", "remind-toast"), "toast");
     let timer = 0;
     const close = (): void => {
       window.clearTimeout(timer);
@@ -180,7 +180,7 @@ export class ReminderCenter {
       this.closeEsc = null;
       return;
     }
-    this.pop = el("div", "remind-pop");
+    this.pop = markSurface(el("div", "remind-pop"), "menu");
     this.paintPop();
     this.hooks.stage()?.append(this.pop);
     this.position();

@@ -50,7 +50,7 @@ fs.mkdirSync(STATE, { recursive: true });
 fs.mkdirSync(path.join(AGENT, "sessions"), { recursive: true });
 fs.mkdirSync(WORK, { recursive: true });
 fs.writeFileSync(DOC, SRC);
-// D390: 翻译的默认模型跟随 pi 的全局设置（defaultProvider + defaultModel），不再写死 copilot。
+// D392: 翻译的默认模型跟随 pi 的全局设置（defaultProvider + defaultModel），不再写死 copilot。
 const PI_DEFAULT = "fixture-provider/fixture-model";
 fs.writeFileSync(
   path.join(AGENT, "settings.json"),
@@ -181,7 +181,7 @@ try {
   check(before.body.stale === true, "标着「过期」（没有译文）");
   check((before.body.langs ?? []).length === 4, `四种目标语言（${(before.body.langs ?? []).map((l) => String(l)).join(",")}）`);
 
-  // D390: 默认模型跟随 pi 全局设置里的 defaultProvider + defaultModel（不再写死 copilot）。
+  // D392: 默认模型跟随 pi 全局设置里的 defaultProvider + defaultModel（不再写死 copilot）。
   check(before.body.prefs?.model === "", "偏好里还没记模型");
   check(before.body.defaultModel === PI_DEFAULT, `默认模型跟随 pi 全局设置（${before.body.defaultModel}）`);
 

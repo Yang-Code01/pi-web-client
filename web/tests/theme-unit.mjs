@@ -184,3 +184,79 @@ test("迁移对错值落默认，且幂等（迁过一次再迁不会再变）",
   const once = migrateThemePrefs({ theme: "dusk", accent: "teal" });
   assert.deepEqual(migrateThemePrefs(once), once, "已经是新值了，第二次迁移不该再动");
 });
+
+// ---------------------------------------------------------------- 材质由标记驱动（#644）
+// 以前材质靠 mac.css 里四张手抄的类名名单（遮罩 / 窗口 / 菜单 / 吐司）：每加一个面板都要记得去补名字，
+// 漏了就静默退回纯色板（D352 漏过一次、D389 又漏了四个）。现在由浮层自己在创建处打
+// `data-mac-surface`，CSS 只认这个属性。下面这组断言守的是「名单不许回来」与「每个创建点都打了标记」。
+const MAC_CSS = fs.readFileSync(path.join(REPO, "web/src/mac.css"), "utf8");
+
+/** 曾经写在名单里的外壳类名。它们现在只允许作为「这一面自己的覆盖」出现，不许再被批量列进 :is()。 */
+const OLD_SHELLS = [
+  "st-back", "sheet-back", "sys-back", "jc-back", "mc-back", "jira-ask-back", "jira-picker", "sheet-sub-back",
+  "choose-back", "peer-pick", "image-view", "st-console", "sys-console", "jc-console", "mc-console", "mc-confirm",
+  "argdialog-panel", "jira-ask", "peer-pick-panel", "branch-sheet", "repos-sheet", "jira-picker-box",
+  "ctx-menu", "pin-menu", "perm-menu", "term-menu", "fail-menu", "go-cmp-menu", "mk-menu", "ws-pop", "act-pop",
+  "complete-pop", "jira-user-pop", "jira-handoff-pop", "skill-panel", "turn-note", "pin-note", "fail-toast", "update-bar",
+];
+
+test("材质级由标记驱动：mac.css 只认 data-mac-surface，四张手抄名单不许回来", () => {
+  const kinds = new Set([...MAC_CSS.matchAll(/data-mac-surface="([a-z]+)"/g)].map((m) => m[1]));
+  for (const k of ["window", "menu", "toast", "dock"]) {
+    assert.ok(kinds.has(k), `mac.css 里没有 [data-mac-surface="${k}"] —— 材质级少了这一档`);
+  }
+  // 名单的判据：:is(...) 的参数里同时列了两个以上旧外壳类名。单条覆盖（.viewer、.notes-sheet）不算。
+  const offenders = [];
+  for (const m of MAC_CSS.matchAll(/:is\(([^)]*)\)/g)) {
+    const hit = OLD_SHELLS.filter((c) => new RegExp(`\\.${c}(?![\\w-])`).test(m[1]));
+    if (hit.length >= 2) offenders.push(hit.join(", "));
+  }
+  assert.deepEqual(offenders, [], `mac.css 里还有手抄的外壳名单：${offenders.join(" / ")}`);
+});
+
+test("材质级的取值表两侧一致：TS 的联合类型与 CSS 选择器用的是同一组值", async () => {
+  const { SURFACE_KINDS } = await import("../src/modal.ts");
+  // `paper` 故意没有 CSS 规则（它就是「不套材质」），所以 CSS 侧是四个材质级。
+  const css = new Set([...MAC_CSS.matchAll(/data-mac-surface="([a-z]+)"/g)].map((m) => m[1]));
+  assert.deepEqual([...css].sort(), ["dock", "menu", "toast", "window"], "CSS 侧的材质级变了");
+  assert.deepEqual([...SURFACE_KINDS].sort(), ["dock", "menu", "paper", "toast", "window"], "TS 侧的材质级变了");
+  assert.match(MAC_CSS, /paper[^\n]*不套材质/, "mac.css 里要写明 paper 是「故意不套材质」的那一档");
+});
+
+test("每个浮层创建点都打了标记，且打的是这一面该有的材质级（换错档就红）", () => {
+  // 逐**创建点**断言（不是逐文件）：把 remind-pop 和 remind-toast 的材质级互换，下面当场红。
+  // 表外的模块由探针的全局扫描兜（页面上不许有裸浮层）。
+  const MARKED = [
+    ["web/src/reminders.ts", "remind-pop", "menu"],
+    ["web/src/reminders.ts", "remind-toast", "toast"],
+    ["web/src/notesheet.ts", "note-handoff", "menu"],
+    ["web/src/notesheet.ts", "peer-pick", "window"],
+    ["web/src/pinmenu.ts", "pin-menu", "menu"],
+    ["web/src/pluginmarket.ts", "mk-menu", "menu"],
+    ["web/src/jira.ts", "jira-handoff-pop", "menu"],
+    ["web/src/jira.ts", "jira-user-pop", "menu"],
+    ["web/src/branchsheet.ts", "go-cmp-menu", "menu"],
+    ["web/src/app.ts", "ctx-menu", "menu"],
+    ["web/src/app.ts", "ws-pop", "menu"],
+    ["web/src/app.ts", "skill-panel", "menu"],
+    ["web/src/app.ts", "update-bar", "toast"],
+    ["web/src/app.ts", "fail-toast", "toast"],
+    ["web/src/app.ts", "ws-tab-rename-input", "paper"],
+  ];
+  for (const [rel, cls, kind] of MARKED) {
+    const src = fs.readFileSync(path.join(REPO, rel), "utf8");
+    const re = new RegExp(`markSurface\\([^;]{0,200}?${cls}[^;]{0,160}?"${kind}"`);
+    assert.match(src, re, `${rel} 里的 ${cls} 没有打上 "${kind}" — 材质级换了或这行被删了`);
+  }
+  // 走 app.overlay() 收口的那几档（sheet 走默认的 window，不在这里逐条列）。
+  const app = fs.readFileSync(path.join(REPO, "web/src/app.ts"), "utf8");
+  for (const kind of ["dock", "paper"]) {
+    assert.match(app, new RegExp(`overlay\\([^;]{0,80}?"${kind}"`), `app.ts 里没有 overlay(…, "${kind}")`);
+  }
+  assert.match(app, /overlay\([^;]{0,80}"window", \{ dim: "dark" \}/, "灯箱没有走 window + dim=dark");
+});
+
+test("浮层一律挂进 #app：笔记的两个浮层不再往 body 上塞", () => {
+  const src = fs.readFileSync(path.join(REPO, "web/src/notesheet.ts"), "utf8");
+  assert.ok(!/document\.body\.append/.test(src), "notesheet.ts 还在往 body 上挂浮层 —— 它们不会跟着字号缩放");
+});

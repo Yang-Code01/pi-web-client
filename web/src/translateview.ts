@@ -1,5 +1,5 @@
 import { createEl as el } from "./chat.ts";
-import { retireOverlay } from "./modal.ts";
+import { markSurface, retireOverlay } from "./modal.ts";
 import { tr } from "./i18n/index.ts";
 import { renderMarkdown } from "./md.ts";
 import type { TrDoc, TrJob, TrSyncResp } from "./types.ts";
@@ -108,7 +108,7 @@ export function trPendingHead(left: number, inflight: number): string {
 }
 
 /** 副行：正在翻哪一节 + 还有几块在飞。
- * D390：主进度（`翻译中 3/6`）仍按**节**，并发只在副行露一面，否则用户得重新理解一个数。 */
+ * D392：主进度（`翻译中 3/6`）仍按**节**，并发只在副行露一面，否则用户得重新理解一个数。 */
 export function trNote(job: TrJob | null | undefined): string {
   if (!job) return "";
   const bits: string[] = [];
@@ -122,7 +122,7 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   body.classList.add("tr-body");
 
   const running = v.job?.status === "running";
-  // 空壳节：`out` 还是空串（视口优先时先翻中间那几节，前面的会晚点回来，D390 修订）。
+  // 空壳节：`out` 还是空串（视口优先时先翻中间那几节，前面的会晚点回来，D392 修订）。
   const holes = v.doc ? v.doc.sections.filter((s) => !s.out).length : 0;
   const bar = el("div", "tr-bar");
   const chips = el("div", "tr-chips");
@@ -207,7 +207,7 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   bar.append(tools);
   body.append(bar);
 
-  // 顶上一条细进度：不滚到正文末尾也知道走到哪了（D390 的提示那块）。
+  // 顶上一条细进度：不滚到正文末尾也知道走到哪了（D392 的提示那块）。
   if (running && v.job?.total) {
     const prog = el("div", "tr-prog tr-prog-bar");
     const fill = el("div", "tr-prog-fill");
@@ -394,7 +394,7 @@ export interface PickerOpts {
  * 默认取上次用过的那个。
  */
 export function openTrPicker(o: PickerOpts, mount: (node: HTMLElement) => void): void {
-  const back = el("div", "choose-back");
+  const back = markSurface(el("div", "choose-back"), "window", { enter: "alert" });
   const box = el("div", "choose tr-pick");
   box.append(el("div", "choose-title", tr("翻译成什么？用什么翻？")));
   let lang = o.lang || o.fallbackLang;
@@ -469,7 +469,7 @@ export function openSyncReview(
   onApply: () => void,
   mount: (node: HTMLElement) => void,
 ): void {
-  const back = el("div", "choose-back");
+  const back = markSurface(el("div", "choose-back"), "window", { enter: "alert" });
   const box = el("div", "choose tr-review");
   box.append(el("div", "choose-title", tr("把 {n} 处改动写回原文？", { n: r.edits })));
   box.append(el("div", "tr-tip", path));

@@ -356,7 +356,7 @@ check(
 );
 if (savedUpper === undefined) delete process.env.NO_PROXY; else process.env.NO_PROXY = savedUpper;
 if (savedLower === undefined) delete process.env.no_proxy; else process.env.no_proxy = savedLower;
-/* ── D390：块级并发 ───────────────────────────────────────────────────── */
+/* ── D392：块级并发 ───────────────────────────────────────────────────── */
 
 // 8 节 × 3 块：块名带节号，拼错位置一眼就看得出来。源文用拉丁字，避免撞上「译文照抄」护栏。
 const WIDE = Array.from({ length: 8 }, (_, si) =>
@@ -405,7 +405,7 @@ await translateDoc(WIDE, run, uneven, {
   onSection: (s) => snaps.push(s.filter((x) => x.out).length),
   onProgress: (done, total, note) => progress.push([done, total, note]),
 });
-// D390 修订：onSection 每次给整份数组（可以有空洞），所以看的是「已翻节数」而不是数组长度。
+// D392 修订：onSection 每次给整份数组（可以有空洞），所以看的是「已翻节数」而不是数组长度。
 check("onSection 的已翻节数每次加一、不回头", snaps.every((n, i) => (i === 0 ? n === 0 : n === snaps[i - 1] + 1)) && snaps.length === 9, JSON.stringify(snaps));
 check("onProgress 的 done 单调不减且到顶", progress.every((p, i) => i === 0 || p[0] >= progress[i - 1][0]) && progress.at(-1)?.[0] === 8, JSON.stringify(progress.slice(-2)));
 
@@ -482,7 +482,7 @@ check("prefs 读回刚存的值，且不碰模型偏好", readTrPrefs().concurre
 
 
 
-/* ── D390 修订：缓存可以有空洞（视口优先） ─────────────────────────────── */
+/* ── D392 修订：缓存可以有空洞（视口优先） ─────────────────────────────── */
 
 // 整份数组一次给（骨架先落盘），长度永远等于原文的节数。
 const shapes = [];
@@ -529,7 +529,7 @@ check("readDoc 保留空洞（长度仍是 2）", back?.sections.length === 2 &&
 writeDoc(holeDoc(false));
 check("整份都是空壳时当作没有译文", readDoc(holesAbs, "zh") === null);
 
-/* ── D390：默认模型跟随 pi 全局设置，不写死 ───────────────────────────── */
+/* ── D392：默认模型跟随 pi 全局设置，不写死 ───────────────────────────── */
 
 const AGENT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tr-agent-"));
 process.env.PI_AGENT_DIR = AGENT_DIR;
