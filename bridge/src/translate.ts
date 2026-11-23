@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { piChildEnv, readJson, statePath, writeJson } from "./paths.ts";
+import { defaultModelRef } from "./pisettings.ts";
 
 export type TrLang = "zh" | "en" | "ja" | "ko";
 export const TR_LANGS: TrLang[] = ["zh", "en", "ja", "ko"];
@@ -908,13 +909,14 @@ export function writeDoc(doc: TrDoc): void {
 
 
 /**
- * 默认拿哪个模型翻（D245）：用户没设过就用 `copilot/gpt-6-luna` —— 翻译这种活，便宜快就够。
- * 只存 `provider/id`，找不到这个模型时页面会让人重挑，并把选择写回这里。
+ * 翻译用的默认模型（D245 / D390）：**跟随 pi 的全局设置**（`defaultProvider` + `defaultModel`），
+ * 不再写死 copilot —— 写死那个值在没登 copilot 的机器上就是个“一定跑不了”的默认。
+ * 读的是文件、不 spawn pi；拿不到就返回空串，页面让用户自己挑一次（选择会记住）。
  */
-export const TR_DEFAULT_MODEL = "copilot/gpt-6-luna";
+export const trDefaultModel = (): string => defaultModelRef();
 
 export interface TrPrefs {
-  /** "provider/id"；空串表示「还没设过」，页面按 TR_DEFAULT_MODEL 去解析。 */
+  /** "provider/id"；空串表示「还没设过」，页面按 pi 全局设置的默认模型去解析。 */
   model: string;
   /** 同时翻几块（1–8，缺省 `TR_CONCURRENCY`）：D390 那只旋钮。 */
   concurrency: number;

@@ -22,6 +22,7 @@ import {
   splitSections,
   tableDiff,
   translateDoc,
+  trDefaultModel,
   writeTrPrefs,
   Aborted,
   isRateLimit,
@@ -475,6 +476,19 @@ writeTrPrefs({ concurrency: 99 });
 check("prefs 存并发时也夹紧", readTrPrefs().concurrency === 8, String(readTrPrefs().concurrency));
 writeTrPrefs({ concurrency: 2 });
 check("prefs 读回刚存的值，且不碰模型偏好", readTrPrefs().concurrency === 2 && readTrPrefs().model === "", JSON.stringify(readTrPrefs()));
+
+
+/* ── D390：默认模型跟随 pi 全局设置，不写死 ───────────────────────────── */
+
+const AGENT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tr-agent-"));
+process.env.PI_AGENT_DIR = AGENT_DIR;
+check("pi 没有 settings.json 时默认模型为空（不写死 copilot）", trDefaultModel() === "", trDefaultModel());
+fs.writeFileSync(path.join(AGENT_DIR, "settings.json"), JSON.stringify({ defaultProvider: "p1", defaultModel: "m1" }));
+check("跟随 pi 全局设置里的 defaultProvider/defaultModel", trDefaultModel() === "p1/m1", trDefaultModel());
+fs.writeFileSync(path.join(AGENT_DIR, "settings.json"), JSON.stringify({ defaultProvider: "p1" }));
+check("只写了一半也算没设", trDefaultModel() === "", trDefaultModel());
+fs.rmSync(AGENT_DIR, { recursive: true, force: true });
+delete process.env.PI_AGENT_DIR;
 
 fs.rmSync(STATE, { recursive: true, force: true });
 

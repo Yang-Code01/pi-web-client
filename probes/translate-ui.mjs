@@ -60,6 +60,12 @@ const check = (name, ok, detail = "") => {
 
 fs.rmSync(ROOT, { recursive: true, force: true });
 for (const d of [STATE, AGENT, WORK, OUT]) fs.mkdirSync(d, { recursive: true });
+// D390: 翻译的默认模型跟随 pi 的全局设置。这里钉死一个「不在桩目录里」的默认，
+// 好让下面那句「默认模型找不到 → 让人重挑」仍然测得到。
+fs.writeFileSync(
+  path.join(AGENT, "settings.json"),
+  JSON.stringify({ defaultProvider: "copilot", defaultModel: "gpt-6-luna" }, null, 2),
+);
 fs.writeFileSync(DOC, SRC, "utf8");
 
 function killPort(port) {
@@ -299,7 +305,7 @@ try {
   check("选了就记住（写 prefs.json）", prefModel === opts[opts.length - 1], prefModel);
   await pane.getByRole("button", { name: /恢复默认/ }).click();
   await new Promise((r) => setTimeout(r, 800));
-  check("恢复默认回到 copilot/gpt-6-luna", JSON.parse(fs.readFileSync(prefsFile, "utf8")).model === "copilot/gpt-6-luna");
+  check("恢复默认回到 pi 全局设置里的默认模型", JSON.parse(fs.readFileSync(prefsFile, "utf8")).model === "copilot/gpt-6-luna");
   // 桩目录里没有 luna：正好验「默认模型找不到时让人重挑」那一行提示。
   const lunaWarn = await page
     .waitForFunction(() => (document.querySelector(".st-pane .hint.warn")?.textContent ?? "").includes("不在模型目录里"), null, { timeout: 10000 })

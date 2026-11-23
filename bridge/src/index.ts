@@ -109,7 +109,7 @@ function runningSessions(sessions: { list(): { running: boolean }[] }): number {
 }
 import { piLatest } from "./piupdate.ts";
 import { isSkillPreviewPath, isTrustedPreviewPath, kindOf, openPreview, openSkillPreview, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
-import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
+import { MAX_TRANSLATE_BYTES, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, trDefaultModel, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
 import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow, readMedia as readSheetMedia, registerFileGrant } from "./sheet/index.ts";
@@ -1944,7 +1944,7 @@ async function main(): Promise<void> {
           size: st.size,
           job: translateJobs.active(abs, lang),
           prefs: readTrPrefs(),
-          defaultModel: TR_DEFAULT_MODEL,
+          defaultModel: trDefaultModel(),
         });
       } catch (err: any) {
         return trFail(res, err);
@@ -1964,7 +1964,7 @@ async function main(): Promise<void> {
               concurrency: typeof body.concurrency === "number" ? body.concurrency : undefined,
             })
           : readTrPrefs();
-        return json(res, 200, { prefs, defaultModel: TR_DEFAULT_MODEL });
+        return json(res, 200, { prefs, defaultModel: trDefaultModel() });
       } catch (err: any) {
         return trFail(res, err);
       }

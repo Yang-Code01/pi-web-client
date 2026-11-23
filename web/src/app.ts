@@ -11642,7 +11642,7 @@ export class App {
   /** 语言 + 模型的选择器：模型目录是会话里那份（便宜的也在一起）。 */
   private trPicker(v: Viewer): void {
     const t = this.trOf(v);
-    // D245: 默认模型是桥那边记的偏好（copilot/gpt-6-luna），没有就退到当前会话的模型。
+    // D245 / D390: 默认模型是桥那边记的偏好，没有就跟随 pi 全局设置，再没有才退到当前会话的模型。
     const sessionModel = this.models.find((m) => m.id === this.session?.model);
     const pref = this.trModelPref || (t.doc ? `${t.doc.provider}/${t.doc.model}` : "") || this.trDefaultModel;
     const values = this.models.map((m) => `${m.provider}/${m.id}`);
@@ -13748,8 +13748,8 @@ export class App {
   }
 
   /**
-   * D245: 预览里的翻译默认用哪个模型。出厂默认是 copilot/gpt-6-luna，这里选的会记住；
-   * 不写进 settings.json，免得跟「本机才有这份模型目录」的事实对不上。
+   * D245 / D390: 预览里的翻译默认用哪个模型。默认**跟随 pi 全局设置**里的 `defaultProvider` +
+   * `defaultModel`（不再写死 copilot）；这里选过的会记住，存桥的本机偏好，不写 settings.json。
    */
   private paintPreviewSettings(pane: HTMLElement): void {
     const want = this.trModelPref || this.trDefaultModel;
@@ -13757,11 +13757,11 @@ export class App {
       this.models.map((m) => `${m.provider}/${m.id}`),
       want,
     );
-    const fallback = this.trDefaultModel || "copilot/gpt-6-luna";
+    const fallback = this.trDefaultModel;
     pane.append(
       this.stCards([
-        { label: tr("翻译模型"), value: resolved || want || "—", sub: this.trModelPref ? tr("你选的") : tr("出厂默认"), cls: "wide" },
-        { label: tr("出厂默认"), value: fallback, sub: tr("恢复默认会回到它"), cls: "wide" },
+        { label: tr("翻译模型"), value: resolved || want || "—", sub: this.trModelPref ? tr("你选的") : tr("跟随 pi 默认"), cls: "wide" },
+        { label: tr("pi 默认模型"), value: fallback || "—", sub: fallback ? tr("恢复默认会回到它") : tr("pi 全局设置里没设"), cls: "wide" },
       ]),
     );
     if (want && !resolved) {
@@ -13775,8 +13775,10 @@ export class App {
       this.rememberTrModel(sel.value);
       this.flashSettings(tr("以后翻译默认用 {p1}", { p1: sel.options[sel.selectedIndex]?.textContent ?? sel.value }));
     };
-    const reset = el("button", "btn", tr("恢复默认（{p1}）", { p1: fallback })) as HTMLButtonElement;
+    const reset = el("button", "btn", tr("恢复默认（{p1}）", { p1: fallback || "—" })) as HTMLButtonElement;
+    reset.disabled = !fallback;
     reset.onclick = () => {
+      if (!fallback) return;
       this.rememberTrModel(fallback);
       this.flashSettings(tr("已恢复默认模型"));
       this.paintSettings();
