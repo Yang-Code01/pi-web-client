@@ -7678,3 +7678,28 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - 探针里凡按 emoji 选元素的都得改：`bug-notes-ui.mjs` 改成断言 `svg.ico` 存在且没有文字，`fs-ui.mjs` 那颗「引用路径」改成按 `title` 选（它本来就因为别的原因在 `main` 上红着）。
 
 **验证：** `npm run typecheck`（bridge / peer / web + i18n-check 4141 键 × 3 语 + viewport + layers + theme）通过；`node probes/chrome-topbar.mjs`（四档宽度、切英文后标签、不横向溢出）全过；`node probes/mac-chat.mjs`（三套底色、对比度、气泡贴边）全过；`node probes/round21-cwd-line.mjs`、`node probes/notes-panel-regress.mjs` 与 `main` 一致通过（`round24-pinactions` / `round15-git` / `archive-switch` / `fs-ui` / `bug-notes-ui` 在 `main` 上已经红，不是这次引入）。三套底色 + 设置抽屉 + 记录面板的截图在原型目录里（`.scratch/icons-sheet/`，不进版本库）。
+
+## D395 一份桥日志封顶 16 MB，临时状态目录不再开机扫全盘（#PR；用户「为啥本项目在我这台 mac 上占用这么多内存」「还有硬盘空间」2026-11-24）
+
+**问题：** 这台机器上 40 GB 是 pi-web-client 占的，其中 38 GB 全在 `.scratch/` 里，而里面**只有两样东西**：28.9 GB 的 `logs/bridge.log`，加 9.0 GB 的 `filesearch.db` 副本（313 份，单份到 1.2 GB）。两者都不是功能要的，是没人设上限的副作用：
+
+- `log()` 是纯 `appendFileSync`，没有轮转、没有上限。单个文件实测长到 **17 GB**（`feat-code-review-panel/.scratch/session-flags/`），7.9 GB 一份的还有一个、1.8 GB 的第三个。日志本身是给「刚才发生了什么」用的，GB 级的日志既打不开也没人读。
+- 每份桥启动时 `if (st.state === "off") fileIndex.start()` —— 「开库不耗时，没有索引才起首次扫描」。但测试 / 探针 / 第二实例各自都有一份空的状态目录，于是**每一份都扫一遍整盘**：1.2 GB 的库 + 满盘 IO。那天 11 个桥里 9 个是探针 / 测试组留下的，load average 顶到 20，SIGTERM 之后还要 SIGKILL 才肯退。
+
+**查证（先数的）：** `.scratch/` 合计 38.0 GB = logs 28.9 GB + filesearch.db 9.0 GB + 其他 0.2 GB；313 份索引副本；`rg` 过 `bridge/tests/`，只有 `fileindex.mjs`（直接 import `FileIndex` 的单元测试）碰索引，没有一条 UI 用例看搜索面板。前端也只在打开搜索面板时发 `filesearch.status`，`filesearch.scan` 只由「开始」按钮触发 —— 开机自动扫描是纯背景便利，不是面板需要的东西。
+
+**决定：**
+
+1. **`RotatingLog`（`bridge/src/logfile.ts`）**：默认 8 MB 一代，越过上限把这一代搬成 `bridge.log.1`，只留一代，所以一份日志最多 16 MB。`PI_WEB_LOG_MAX_BYTES` 改上限，`0` 回到老行为（永不轮转）。
+2. **两条不对称的规则，各自对应各自的现场**：运行中越限 → 搬成 `.1`（刚写满的那 8 MB 就是最近的现场，值得留）；**开写时发现已经越限** → 直接截断不搬 —— 那说明文件是没上限时代留下的怪物，或者上一次进程没来得及轮转就被杀，把它改名成 `.1` 只是让怪物换个名字继续占盘。
+3. **开机自动扫描只给「用户自己的那份状态目录」**（`stateDirIsDefault()`，`bridge/src/fileindex.ts` 的 `autoScanOnBoot()`）。测试 / 探针 / 第二实例都用 `PI_WEB_STATE` 指到别处，它们不搜文件；要它们也扫就 `PI_WEB_FILEINDEX=1`。`PI_WEB_FILEINDEX=0` 仍然是无条件关闭。
+4. **没做「多份桥共享同一份索引」**：索引是每实例一份，因为一次扫描会重写 `gen` 并删掉 `gen < thisGen` 的行（`DELETE FROM files WHERE gen < ?`），两个桥同扫一份库会互相删掉对方的行。共享要么加跨进程扫描锁，要么把 `gen` 换成「按实例分段」——两者都比这次的收益（9 GB，且只在跑测试时才长）贵得多。测试改成不自动扫之后，这 9 GB 不再产生。
+
+**代价 / 可改：**
+
+- 日志只留一代：要更长的历史得调 `PI_WEB_LOG_MAX_BYTES`，或者从 `.1` 里翻。找「昨天那次」不可能了 —— 之前也没有人翻得动 17 GB。
+- `PI_WEB_STATE` 指到别处的**真实**用户（第二份个人实例）不会自动建索引，得在面板里按一次「开始」或设 `PI_WEB_FILEINDEX=1`。默认状态目录的用户行为一字未变。
+- 每个会话的 pi stderr 日志（`state/logs/<session>.log`，`rpc.ts` 的 `createWriteStream`）**没有**封顶：那是诊断页要读的原样输出，量级几十 MB 以内，先不动。真要封顶得先决定诊断页怎么表达「被截断」，那是另一个决定。
+- `.1` 在 Windows 上被别的进程打开时改不了名，`rotate()` 退化成原地截断 —— 少一代，不会写不进去。
+
+**验证：** `node --experimental-strip-types bridge/tests/logfile-unit.mjs`（新增，`npm run test:logfile`：不越限不产生 `.1`、越限搬一代且只留一代、开门就是怪物时截断、`maxBytes=0` 保持老行为、写失败照旧抛、环境变量四种读法）；`node bridge/tests/fileindex.mjs`（新增 `autoScanOnBoot` 四态）；`npm run typecheck`；`npm run build:bridge` 后用 `PI_WEB_STATE=<tmp> PI_WEB_LOG_MAX_BYTES=600` 真起一份桥，日志里是 `filesearch: off (0 entries)，临时状态目录不自动扫描`，`filesearch.db` 只有开库的 96 KB（不再有 1.2 GB 的索引）。
