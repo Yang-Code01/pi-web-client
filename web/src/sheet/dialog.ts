@@ -5,6 +5,7 @@
  * 拖标题栏移动、拖右下角改宽高、拖顶边只改高、双击复原、打开时 clamp 回可视区。
  */
 import { tr, errText, fmtTime, fmtNum } from "../i18n/index.ts";
+import { icon } from "../icons.ts";
 import type { SheetEditOp, SheetStructOp, SheetInfo, SheetMatches, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { SheetGrid, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP, type SheetGridState } from "./grid.ts";
@@ -150,9 +151,12 @@ export class SheetDialog {
     this.head = el("header", "sd-head");
     const who = el("div", "sd-who");
     who.append(el("span", "sd-name", opts.name), el("span", "sd-path", opts.path));
-    this.head.append(el("span", "sd-ico", "📊"), who);
+    const headIc = el("span", "sd-ico");
+    headIc.append(icon("table", { size: 15 }));
+    this.head.append(headIc, who);
 
-    const close = el("button", "sd-btn sd-close", "✕");
+    const close = el("button", "sd-btn sd-close");
+    close.append(icon("close", { size: 13 }));
     close.type = "button";
     close.title = tr("关闭");
     close.setAttribute("aria-label", tr("关闭"));
@@ -433,7 +437,8 @@ export class SheetDialog {
         open.disabled = false;
       });
     };
-    const reveal = el("button", "sd-act", tr("📂 在文件夹中显示"));
+    const reveal = el("button", "sd-act");
+    reveal.append(icon("folder", { size: 13 }), el("span", "", tr("在文件夹中显示")));
     reveal.type = "button";
     reveal.title = tr("在文件管理器里定位这个文件");
     reveal.onclick = () => void opts.onReveal();

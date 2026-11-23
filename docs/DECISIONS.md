@@ -7652,3 +7652,29 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - 顺手修了 `bridge/tests/deps-ui.mjs` 里一句陈旧断言（「三个包都在清单里」——清单早就是四个，`main` 上就红）。一行、不改行为，与本次同一块代码，所以没拆出去。
 
 **验证：** `npm run test:deps`（三份 README 的表对账、四态判据、样本版本断言）、`npm run test:start-check`（新增「低于下限就拦」「整备脚本真的升到下限」「`--check` 判旧不及格」「到了下限就记住、不再问 `pi list`」）、`npm run test:bgruns`（0.90.0 真样本回放：单跑、workflow、脚本式 workflow 的 receipt 回填、前台派活按 `parentWorkflowRunId` 认孩子）、`npm run test:deps:ui`、`npm --prefix bridge run typecheck`。**`npm run typecheck` 这一条在这台机器上过不了**：`web` 那半截挂在 `src/translateview.ts` 的两条中文没走 `tr()` 与 en/ja 缺键上（D392 那批留下的），在 `main` 上逐字相同 —— 与本次改动无关，也不该由这次顺手改别人的在飞代码。
+
+## D394 图标换成一套手绘线性 SVG，emoji 从界面与词典里退场（#653；用户「按照 mac 的主题，重新设计一下本项目所有的图标」）
+
+**问题：** 界面上的图标其实有**四套**：`app.ts` 那批 24×24 内联 SVG（归档 / 复原 / 删除）、`dirpicker.ts` 的文件夹与上一级（16×16）、`peer/main.ts` 与 `peer/emoji.ts` 的 ICONS 表，其余全是 emoji（📂 📁 🌐 🐞 💭 📮 🔷 🔎 🖼 📎 🗑 …）。后者的毛病不是「不好看」而是不成立：每个平台一套字形（macOS 的 📁 是蓝的、Windows 的是卡其色）、跟着字号变彩色、宽度占不进图标那一列（`.icon-btn` 里 emoji 与 `>_` 混排时基线永远差一两像素），还有 28 条 i18n 文案把 emoji 写进了 key（`"📂 产物"`），顶栏宽按钮靠 `splitWideLabel()` 在第一个空格处把它切出来当图标用（D138）—— 换图标就得改词典。唯一做对的是内网通表情面板（`peer/emoji.ts`）：那轮已经把底栏 9 个 emoji 换成了手绘线条图标，注释写着「不用彩色 emoji 当图标 —— 那正是旧面板看着乱的原因」。
+
+**查证（决定前先数的，不是估的）：** 当成图标用的单字形字面量 149 处（`app.ts` 52、`chat.ts` 14、`notesheet.ts` 12、`branchsheet.ts` 10…），涉及 26 个源文件 + `styles.css`；词典里 28 条 key 带 emoji；排版符号（★ ▾ ▸ ✓ ✗ ✕ ● ○ ◌ ⎇ ⌘ ⌂ ⑂ ＋）另算，不在这次范围里。SF Symbols 是 Apple 的资产，不能随包分发（D-侵权那一轮已经确认仓库里没有任何外部图标 / 字体 / 位图），所以这套是**照 SF 的量感手绘**：16×16 画布、1.5px 描边、圆头圆角。
+
+**决定：**
+
+1. **一个源：`web/src/icons.ts`。** 50 个图形（`sidebar` / `layers` / `terminal` / `folder` / `bug` / `users` / `bubble` / `lozenge` / `mail` / `search` / `sliders` / `trash` / `pencil` / `archive` / `unarchive` / `plus` / `close` / `chevron` / `star` / 四个文件类型 / `link` / `monitor` / `clip` / `expand` / `collapse` / `home` / `save` / `laptop` / `clock` / `arrowUp` / `updown` / `checklist` / `bolt` / `shield` / `lock` / `refresh` / `image` / `box` / `sparkle` / `tool` / `pointer` / `palette` / `eye` / `slide` / `table` / `alert` / `scissors` / `window` / `dots`），每条 1–3 段路径。`icon(name)` 给 DOM 节点、`iconMarkup(name)` 给字符串、`face(nameOrText)` 给「图标名或现成文字」这两种脸（菜单行、状态按钮用），`fileIcon(path)` 把原来 `chat.ts` / `app.ts` 各一份的扩展名映射合成一处。
+2. **颜色只有两种：`currentColor`，以及破坏性与状态的语义色。** `tint` 只给垃圾桶 / ⚡ / ⚠ / 锁 / 盾（bug 不带色，见第 4 条）；功能入口（产物、文件夹、邮箱、内网通、Jira）一律灰 —— 顶栏九颗要是五颗同色，换强调色时整排跟着变，比 emoji 更吵。
+3. **实心强调色底上自动退回单色。** 语义色走 `--ico-tint` 变量，`.btn.primary` / `.chip.on` / `.pin-chip.cur` / `.viewer-seg button.on` 里由一条 CSS 把它覆盖成 `currentColor`（新加的实心面记得进这一串，或就地给图标加 `.ico-flat`）。不这么做就会出现「红垃圾桶压蓝底、白字里冒出黄闪电」。
+4. **记录那颗平时是灰的，有待处理才红**（`.notes-btn.has-pending`）。样张里它常红，落地时改了这一处：顶栏一排灰图标里唯一一颗红点太像报错，而「红 = 有活没干」才是这颗按钮真正的状态。
+5. **排版符号不进图标表。** `★ ☆ ▾ ▸ ✓ ✗ ✕ ● ○ ◌ ⎇ ⌘ ⌂ ⑂ ＋` 继续留在文案里：它们跟着字重字号走、可选中可复制、有的还能当字读（★ 本身是那颗可点的置顶开关）。**按钮的「脸」用图标，列表与句子里的状态符号用文字** —— 这是这次唯一的划线标准。git 操作动词表格（`git-ops.ts` 的 `glyph`）也按这条留着：那是密集动词网格，`⎇` `✖` `❖` 比 16px 图标好读。
+6. **文案与图标彻底分开。** 28 条 key 里的 emoji 全部摘掉（`"📂 产物"` → `"产物"`），顶栏宽按钮改成 `wideBtn(TOPBAR_ICON.artifacts, tr("产物"))`，`splitWideLabel()` 退休。句子中间提到图标的地方改说法（「在左栏🗑里可以还原」→「在左栏的垃圾箱里可以还原」，提示语里的 🌐 改「那颗浏览器图标」）。「文件管理器」在顶栏用带上下文后缀的键 `文件管理器|顶栏按钮`（→ Files / ファイル），别处的同一个词仍是 File manager。
+7. **顺手修掉 i18n-check 误报。** 原来它拿整个模板串的 `getText()` 判中文，`\`${tr("还有 {n} 节在队列里")}${tail}\`` 这种「中文全在里面的 tr() 里」的串会被当成漏翻；D392 之后 `main` 上就一直红着两条（连 en/ja 缺 `正在翻 {k} 块` 一起）。现在只看模板串的字面量段，缺的两个键也补了 —— `npm run typecheck` 在 `main` 上红了几天，这次一起回绿。
+
+**代价 / 可改：**
+
+- 13px 以下（窄屏方块按钮、行内小图标）线条会发灰；比起 emoji 的「一眼认出」，线性图标要靠形状记。样张里备过 1.9px 加粗版（B）与圆角底板版（D），都能一行切回去。
+- `tool`（扳手）现在读着更像一把小锤子，`archive` / `unarchive` 只差箭头方向 —— 想改就是改 `icons.ts` 里那几段 `d`，不用动任何调用处。
+- 内网通的两个 ICONS 表（`main.ts` 的头像/动作、`emoji.ts` 的贴纸分类）**没有**并进来：它们本来就已是线性 SVG，词汇与主界面不重叠（杯子、熊、车、旗）。要收的话是下一轮的事。
+- `.ico` 的垂直对齐用 `vertical-align: -0.14em` 凑基线，换字号时可能要再调一次；`gap` 与内边距在 `icon-btn` / `mib` 这类容器里各自定，不统一。
+- 探针里凡按 emoji 选元素的都得改：`bug-notes-ui.mjs` 改成断言 `svg.ico` 存在且没有文字，`fs-ui.mjs` 那颗「引用路径」改成按 `title` 选（它本来就因为别的原因在 `main` 上红着）。
+
+**验证：** `npm run typecheck`（bridge / peer / web + i18n-check 4141 键 × 3 语 + viewport + layers + theme）通过；`node probes/chrome-topbar.mjs`（四档宽度、切英文后标签、不横向溢出）全过；`node probes/mac-chat.mjs`（三套底色、对比度、气泡贴边）全过；`node probes/round21-cwd-line.mjs`、`node probes/notes-panel-regress.mjs` 与 `main` 一致通过（`round24-pinactions` / `round15-git` / `archive-switch` / `fs-ui` / `bug-notes-ui` 在 `main` 上已经红，不是这次引入）。三套底色 + 设置抽屉 + 记录面板的截图在原型目录里（`.scratch/icons-sheet/`，不进版本库）。

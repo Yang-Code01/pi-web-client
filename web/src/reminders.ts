@@ -14,6 +14,7 @@ import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { markSurface, pushEscLayer } from "./modal.ts";
 import { tr } from "./i18n/index.ts";
+import { icon, type IconName } from "./icons.ts";
 import "./reminders.css";
 
 export type ReminderKind = "approval" | "ask" | "notice";
@@ -147,7 +148,9 @@ export class ReminderCenter {
       close();
       this.go(reminder);
     };
-    box.append(el("span", "remind-toast-icon", ICONS[reminder.kind]), text, go);
+    const toastIc = el("span", "remind-toast-icon");
+    toastIc.append(icon(ICONS[reminder.kind], { size: 13 }));
+    box.append(toastIc, text, go);
     timer = window.setTimeout(close, 6000);
     box.addEventListener("pointerenter", () => window.clearTimeout(timer));
     box.addEventListener("pointerleave", () => {
@@ -284,7 +287,9 @@ export class ReminderCenter {
       for (const r of rows) {
         const line = el("button", "remind-card-line");
         line.type = "button";
-        line.append(el("span", "remind-row-icon", ICONS[r.kind]), el("span", "remind-card-text", r.body || titleOf(r)));
+        const rowIc = el("span", "remind-row-icon");
+        rowIc.append(icon(ICONS[r.kind], { size: 13 }));
+        line.append(rowIc, el("span", "remind-card-text", r.body || titleOf(r)));
         line.onclick = () => this.go(r);
         card.append(line);
       }
@@ -311,7 +316,9 @@ export class ReminderCenter {
     const meta = el("span", "remind-row-meta");
     if (settled) meta.append(el("span", "remind-outcome", outcomeLabel(r)));
     meta.append(el("span", "remind-row-time", relativeTime(r.settledAt ?? r.createdAt)));
-    row.append(el("span", "remind-row-icon", ICONS[r.kind]), main, meta);
+    const rowIc = el("span", "remind-row-icon");
+    rowIc.append(icon(ICONS[r.kind], { size: 13 }));
+    row.append(rowIc, main, meta);
     row.onclick = () => this.go(r);
     if (!settled && r.sessionId) {
       const mute = el("button", `remind-mute${isMuted ? " on" : ""}`, isMuted ? tr("取消静音") : tr("静音"));
@@ -338,7 +345,7 @@ export class ReminderCenter {
   }
 }
 
-const ICONS: Record<ReminderKind, string> = { approval: "⚠", ask: "❓", notice: "•" };
+const ICONS: Record<ReminderKind, IconName> = { approval: "alert", ask: "bubble", notice: "dots" };
 
 /** 铃铛图标：一段两笔的线描，`currentColor` 让它在 hover / 有事情时跟着文字色变。 */
 function bellIcon(): SVGSVGElement {

@@ -8,6 +8,7 @@
  * - 图解、红色确认卡、脏区三选一、冲突逐文件标记、交给 agent 两个出口，都在这一张卡里收口。
  */
 import { createEl as el } from "./chat.ts";
+import { icon, face, type IconName } from "./icons.ts";
 import { api } from "./api.ts";
 import { errText, fmtRelative, tr } from "./i18n/index.ts";
 import type { GitCommit, GitCommitDetail, GitDiff, GitDiffFile, GitExecResult, GitHistory, GitOpParams, GitRefs, GitWorktreeState } from "./types.ts";
@@ -30,8 +31,9 @@ function headTag(data: GitHistory): string {
 function baseTag(data: GitHistory): string {
   return data.branches.some((b) => b.name === data.base) ? tr("远程") : tr("本地");
 }
-function btn(text: string, cls = "btn ghost"): HTMLButtonElement {
-  const b = el("button", cls, text) as HTMLButtonElement;
+function btn(label: IconName | string, cls = "btn ghost"): HTMLButtonElement {
+  const b = el("button", cls) as HTMLButtonElement;
+  b.append(face(label, 14));
   b.type = "button";
   return b;
 }
@@ -163,7 +165,8 @@ export class BranchSheet {
     const copyPath = btn(tr("复制路径"));
     copyPath.dataset.copyPath = "1";
     copyPath.onclick = () => void this.copyText(this.data?.repo || this.dir, copyPath, tr("复制路径"));
-    const close = el("button", "branch-x", "✕") as HTMLButtonElement;
+    const close = el("button", "branch-x") as HTMLButtonElement;
+    close.append(icon("close", { size: 14 }));
     close.type = "button";
     close.setAttribute("aria-label", tr("关闭"));
     close.title = tr("Esc 关闭");
@@ -737,7 +740,8 @@ export class BranchSheet {
     ask.dataset.agent = "branch";
     ask.onclick = () => this.openHandoff(this.branchPrompt());
     side.append(ask);
-    const ai = btn(tr("✎ 选分支 + 写要求 → 交给 AI 操作"), "btn ghost go-side-cta go-side-ai");
+    const ai = btn("", "btn ghost go-side-cta go-side-ai");
+    ai.append(icon("pencil", { size: 13 }), el("span", "", tr("选分支 + 写要求 → 交给 AI 操作")));
     ai.dataset.ai = "1";
     ai.onclick = () => this.openAi();
     side.append(ai);
@@ -1346,7 +1350,7 @@ export class BranchSheet {
     head.append(el("span", "go-card-glyph", glyph), el("div", "go-card-titles", ""));
     const titles = head.lastElementChild as HTMLElement;
     titles.append(el("div", "go-card-title", title), el("div", "go-card-sub", sub));
-    const x = btn("✕", "go-card-x");
+    const x = btn("close", "go-card-x");
     x.onclick = () => this.closeOp();
     head.append(x);
     return head;

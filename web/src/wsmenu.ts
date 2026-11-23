@@ -1,5 +1,6 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
+import { face } from "./icons.ts";
 import { stickMenu } from "./menuplace.ts";
 
 /**
@@ -54,7 +55,9 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
     btn.type = "button";
     btn.dataset.act = act;
     btn.setAttribute("role", "menuitem");
-    btn.append(el("span", "pm-ico", icon), el("span", "pm-text", text));
+    const icoBox = el("span", "pm-ico");
+    icoBox.append(face(icon, 13));
+    btn.append(icoBox, el("span", "pm-text", text));
     btn.onclick = (ev) => {
       ev.stopPropagation();
       if (btn.disabled) return;
@@ -64,7 +67,7 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
     return btn;
   };
 
-  const rename = item("rename", "✎", tr("重命名"), () => opts.onRename());
+  const rename = item("rename", "pencil", tr("重命名"), () => opts.onRename());
   rename.title = tr("清空名字就恢复成目录名");
 
   // #276：旧桥没有成员字段 → 这一行整个不画（不是置灰）；新桥用 aria-checked 表示在不在横条里。
@@ -88,7 +91,7 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
     front.title = tr("排到第一位，横条与左栏一起跟着变");
   }
 
-  const drop = item("drop", "🗑", tr("删除工作区"), () => opts.onDrop());
+  const drop = item("drop", "trash", tr("删除工作区"), () => opts.onDrop());
   if (opts.dropBlocker) {
     drop.disabled = true;
     drop.classList.add("blocked");
