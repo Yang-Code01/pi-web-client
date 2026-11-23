@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型 · 提醒中心（状态机，一次性）</title>
+<!--
+  一次性原型，别合进 main。回答的问题：
+  「提醒」从『有人在等你』到『处理完』这一路，状态与角标是不是真能自洽？
+  形状照 docs/PLAN-reminders.md 的 Reminder；决定照 docs/DECISIONS.md 的 D389。
+
+  页面是抛的；下面那个 <script> 里的纯函数是值得留的那部分 —— 它不碰 DOM、不读时钟，
+  now 一律由外面传进来，可以整段拎进 bridge/src/reminders.ts。
+-->
+<style>
+  :root {
+    --bg: #f5f5f7; --sunken: #ececef; --panel: #fff; --panel-2: #f2f2f4; --panel-3: #e8e8ed;
+    --line: #dedee3; --line-soft: #ebebef; --line-strong: #c7c7cc;
+    --text: #1d1d1f; --dim: #515154; --faint: #636366;
+    --accent: #007aff; --accent-bg: color-mix(in srgb, var(--accent) 8%, #fff); --accent-dim: #dbeaff;
+    --ok: #248a3d; --ok-bg: #eaf7ee; --ok-dim: #bfe6c9;
+    --warn: #b25000; --warn-bg: #fff6e5; --warn-dim: #f5d9a6;
+    --danger: #d70015;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", sans-serif;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13.5px/1.6 var(--sans); }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 28px 20px 80px; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0 0 6px; letter-spacing: -.01em; }
+  .lead { color: var(--dim); max-width: 760px; margin: 0 0 4px; }
+  .q { border-left: 3px solid var(--accent); background: var(--accent-bg); padding: 10px 14px; border-radius: 0 10px 10px 0; margin: 14px 0 0; max-width: 760px; }
+  .q b { display: block; font-size: 12px; color: var(--accent); letter-spacing: .04em; margin-bottom: 3px; }
+  h2 { font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--faint); margin: 30px 0 10px; text-transform: none; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+  .lastact { margin: 16px 0 0; padding: 9px 12px; border-radius: 10px; border: 1px dashed var(--line-strong); color: var(--dim); font-size: 12.5px; }
+  .lastact b { color: var(--text); }
+
+  /* 状态面板 */
+  .state { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 0; overflow: hidden; }
+  .kpi { border-right: 1px solid var(--line-soft); padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .kpi .big { font-size: 42px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+  .kpi .lab { font-size: 11px; color: var(--faint); letter-spacing: .04em; }
+  .kpi .clock { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+  .col { padding: 14px 16px; }
+  .col + .col { border-left: 1px solid var(--line-soft); }
+  .col h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .04em; color: var(--faint); font-weight: 600; }
+  .empty { color: var(--faint); font-size: 12.5px; }
+  .it { padding: 7px 9px; border-radius: 9px; border: 1px solid var(--line-soft); margin-bottom: 6px; font-size: 12.5px; background: var(--panel); }
+  .it.fresh { animation: pop 900ms var(--ease, ease); }
+  @keyframes pop { from { background: var(--accent-bg); } }
+  .it .t { font-weight: 500; }
+  .it .b { color: var(--dim); font-size: 12px; margin-top: 1px; }
+  .it .m { color: var(--faint); font-size: 11px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .it.muted { opacity: .55; }
+  .toastbox { padding: 12px 16px; border-top: 1px solid var(--line-soft); display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .toastcard { border: 1px solid var(--warn-dim); background: var(--warn-bg); color: var(--warn); border-radius: 9px; padding: 6px 10px; font-size: 12px; }
+  .toastcard.silent { border-color: var(--line); background: var(--panel-2); color: var(--faint); }
+
+  /* 按钮 */
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+  .grp { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--panel); }
+  .grp .gl { font-size: 11px; color: var(--faint); letter-spacing: .04em; margin-bottom: 8px; }
+  .grps { display: grid; grid-template-columns: repeat(auto-fit, minmax(236px, 1fr)); gap: 12px; }
+  button.b {
+    border: 1px solid var(--line-strong); background: var(--panel); color: var(--text);
+    border-radius: 9px; padding: 7px 11px; font: 12.5px var(--sans); cursor: pointer;
+  }
+  button.b:hover { border-color: var(--accent); color: var(--accent); }
+  button.b.primary { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
+  button.b:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* 场景 */
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tab { border: 1px solid var(--line); background: var(--panel); color: var(--dim); border-radius: 999px; padding: 5px 12px; font: 12.5px var(--sans); cursor: pointer; }
+  .tab.on { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+  .script { padding: 16px; }
+  .script p { margin: 0 0 12px; color: var(--dim); max-width: 720px; }
+  .steps { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .steps .arrow { color: var(--faint); font-size: 12px; }
+  .step.done { border-color: var(--ok-dim); background: var(--ok-bg); color: var(--ok); }
+  .step.next { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
+  .hint { margin-top: 10px; font-size: 12px; color: var(--faint); }
+  .note { margin-top: 34px; font-size: 12px; color: var(--faint); border-top: 1px solid var(--line-soft); padding-top: 14px; }
+  code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 5px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>提醒中心 · 状态机原型</h1>
+  <p class="lead">
+    这是给「提醒中心」做的第二份一次性原型：第一份问<em>长什么样</em>，这一份只问<em>状态对不对</em>。
+    按钮随便点，右边（下面）的状态面板每次都整份重画 —— 重点看三件事：角标数得对不对、同一条会话会不会把屏幕刷爆、桥重启之后有没有留下骗人的条目。
+  </p>
+
+  <div class="q">
+    <b>这份原型要回答的问题</b>
+    一个提醒只有四种归宿：<em>还在等你</em>、<em>处理完了</em>（批了 / 拒了 / 答了）、<em>已读</em>（只对构建失败这类非阻塞的事）、<em>已失效</em>（桥重启，那几个 pi 进程已经死了）。
+    把「静音一个会话」「一个会话连着要十次审批」「桥半夜重启」这些情况推过去，这条流水还站得住吗？
+  </div>
+
+  <div class="lastact" id="lastact">还没动过。随便按一个按钮。</div>
+
+  <h2>当前状态</h2>
+  <div class="card state">
+    <div class="kpi">
+      <div>
+        <div class="lab">角标</div>
+        <div class="big" id="badge">0</div>
+        <div class="lab" id="badgeSub">全部在等的（含当前会话）</div>
+      </div>
+      <div>
+        <div class="lab">吐司</div>
+        <div class="big" style="font-size:26px" id="toastCount">0</div>
+        <div class="lab" id="toastSub">本次一共弹了几条</div>
+      </div>
+      <div>
+        <div class="lab">时钟</div>
+        <div class="clock" id="clock">+0 秒</div>
+      </div>
+    </div>
+    <div>
+      <div class="cols">
+        <div class="col">
+          <h3 id="hWait">在等你 · 0</h3>
+          <div id="listWait"><div class="empty">没有人卡在等你。</div></div>
+        </div>
+        <div class="col">
+          <h3 id="hDone">处理过 / 失效 · 0</h3>
+          <div id="listDone"><div class="empty">还没有处理过的。</div></div>
+        </div>
+      </div>
+      <div class="toastbox">
+        <span class="lab" style="font-size:11px;color:var(--faint)">刚才弹的</span>
+        <span id="toastWhat" class="toastcard silent">一条都没弹</span>
+        <span id="mutedWhat" style="font-size:11.5px;color:var(--faint)"></span>
+      </div>
+    </div>
+  </div>
+
+  <h2>自由点</h2>
+  <div class="grps">
+    <div class="grp">
+      <div class="gl">有人来找你</div>
+      <div class="btns">
+        <button class="b" data-a="approval">审批 · api 重构</button>
+        <button class="b" data-a="ask">问卷 · go-svc</button>
+        <button class="b" data-a="approval-api">连来 5 条审批（同一会话）</button>
+        <button class="b" data-a="notice">构建失败（非阻塞）</button>
+      </div>
+    </div>
+    <div class="grp">
+      <div class="gl">你动手了</div>
+      <div class="btns">
+        <button class="b" data-a="approve">批了最早那条审批</button>
+        <button class="b" data-a="reject">拒了最早那条审批</button>
+        <button class="b" data-a="answer">答了问卷</button>
+        <button class="b" data-a="read">点开非阻塞那一条（=已读）</button>
+      </div>
+    </div>
+    <div class="grp">
+      <div class="gl">系统 / 你不想被吵</div>
+      <div class="btns">
+        <button class="b" data-a="mute">静音 go-svc</button>
+        <button class="b" data-a="unmute">取消静音 go-svc</button>
+        <button class="b" data-a="restart">桥重启</button>
+        <button class="b" data-a="flood">塞满 520 条</button>
+      </div>
+    </div>
+    <div class="grp">
+      <div class="gl">时间（不用等真的 30 秒）</div>
+      <div class="btns">
+        <button class="b" data-a="t30">+30 秒</button>
+        <button class="b" data-a="t1h">+1 小时</button>
+        <button class="b" data-a="t1d">+1 天</button>
+        <button class="b primary" data-a="reset">从头来（清空）</button>
+      </div>
+    </div>
+  </div>
+
+  <h2>跟着走一遍</h2>
+  <div class="tabs" id="tabs"></div>
+  <div class="card script">
+    <p id="desc"></p>
+    <div class="steps" id="steps"></div>
+    <div class="hint" id="hint"></div>
+  </div>
+
+  <p class="note">
+    这是<strong>一次性原型</strong>：页面为「被手点」优化，逻辑模块（下面的纯函数）才是值得留的那块 —— 它不碰 DOM、不读时钟，可以整段拎进 <code>bridge/src/reminders.ts</code>。
+    七个数字是原型自己定的默认值（7 天 / 500 条 / 30 秒），改起来就是改常量。
+  </p>
+</div>
+
+<script type="module">
+/* ═════════════════════════════════════════════════════════════════════════════
+   ↓↓↓ 可以整段拎走的纯逻辑：不碰 DOM、不读时钟（now 一律由外面传进来）↓↓↓
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+export const KEEP_DAYS = 7;
+export const CAP = 500;
+export const COALESCE_MS = 30_000;
+
+const DAY = 86_400_000;
+
+export function emptyStore() {
+  return { seq: 0, items: [], muted: [], lastToastAt: {}, toasts: 0 };
+}
+
+const isWaiting = (r) => r.state === "waiting";
+const mutedSet = (s) => new Set(s.muted);
+
+/** 来了一件「有人在等你」的事。返回 (新状态, 有没有弹一条吐司, 是不是被 30 秒合并掉了)。 */
+export function raise(store, ev, now) {
+  const seq = store.seq + 1;
+  const item = {
+    id: ev.id ?? `${ev.kind}:${seq}`,
+    kind: ev.kind,
+    sessionId: ev.sessionId,
+    sessionName: ev.sessionName,
+    title: ev.title,
+    body: ev.body,
+    createdAt: now,
+    state: "waiting",
+  };
+  const items = [item, ...store.items];
+  const key = ev.sessionId ?? "notice";
+  let lastToastAt = store.lastToastAt;
+  let toasts = store.toasts;
+  let toast = null;
+  let merged = false;
+  const muted = store.muted.includes(ev.sessionId);
+
+  if (ev.kind === "notice") {
+    /* 非阻塞：默认不弹，只让角标涨（D389 第 7 条） */
+  } else if (muted) {
+    /* 静音的会话：不弹、不计角标、不推，但清单里仍在（D389 第 9 条） */
+  } else if (now - (store.lastToastAt[key] ?? -Infinity) < COALESCE_MS) {
+    merged = true; /* 同一会话 30 秒内只弹一条（D389 第 6 条） */
+  } else {
+    toast = { key, title: item.title, body: item.body, at: now };
+    lastToastAt = { ...store.lastToastAt, [key]: now };
+    toasts += 1;
+  }
+  return { store: { ...store, seq, items, lastToastAt, toasts }, toast, merged };
+}
+
+/** 批了 / 拒了 / 答了 / 过期：这件事有了归宿。 */
+export function settle(store, id, outcome, now) {
+  const items = store.items.map((r) =>
+    r.id === id && isWaiting(r)
+      ? { ...r, state: outcome === "stale" ? "stale" : "handled", outcome, settledAt: now }
+      : r,
+  );
+  return { ...store, items };
+}
+
+/** 非阻塞那条点一下就消（= 已读）。 */
+export function read(store, id, now) {
+  const items = store.items.map((r) =>
+    r.id === id && isWaiting(r) ? { ...r, state: "read", outcome: "read", settledAt: now } : r,
+  );
+  return { ...store, items };
+}
+
+export function mute(store, sessionId) {
+  return store.muted.includes(sessionId) ? store : { ...store, muted: [...store.muted, sessionId] };
+}
+export function unmute(store, sessionId) {
+  return { ...store, muted: store.muted.filter((x) => x !== sessionId) };
+}
+
+/** 桥重启：还「在等」的一律失效 —— 那几个 pi 子进程已经跟着死了（D389 第 12 条）。 */
+export function restart(store, now) {
+  const items = store.items.map((r) =>
+    isWaiting(r) ? { ...r, state: "stale", outcome: "stale", settledAt: now } : r,
+  );
+  return { ...store, items };
+}
+
+/** 7 天 / 500 条封顶；在等的一条都不丢（D389 第 8 条）。 */
+export function prune(store, now) {
+  const kept = [];
+  let others = 0;
+  for (const r of store.items) {
+    if (isWaiting(r)) { kept.push(r); continue; }
+    if (now - (r.settledAt ?? r.createdAt) > KEEP_DAYS * DAY) continue;
+    if (kept.length + others >= CAP) continue;
+    kept.push(r);
+    others += 1;
+  }
+  return { ...store, items: kept };
+}
+
+/** 角标：全部在等的（含当前会话、两类卡各算 1），静音的会话不算（D389 第 4 / 9 条）。 */
+export function badge(store) {
+  const m = mutedSet(store);
+  return store.items.filter((r) => isWaiting(r) && !m.has(r.sessionId)).length;
+}
+
+export const waitingOf = (store) => store.items.filter(isWaiting);
+export const doneOf = (store) => store.items.filter((r) => !isWaiting(r));
+/* ═════════════════════════════════════════════════════════════════════════════
+   ↑↑↑ 纯逻辑到此为止 ↑↑↑
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+/* ── 下面都是页面：只为让人用手点得动 ─────────────────────────────────────── */
+const BASE = Date.now();
+let now = 0;          // 虚拟时钟（毫秒，从 BASE 起算）
+let store = emptyStore();
+let lastAction = "";
+let freshId = null;
+
+const $ = (s) => document.querySelector(s);
+const fmt = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 90) return `+${s} 秒`;
+  if (s < 5400) return `+${Math.round(s / 60)} 分`;
+  if (s < 172800) return `+${Math.round(s / 3600)} 小时`;
+  return `+${Math.round(s / 86400)} 天`;
+};
+const ago = (t) => (t === now ? "刚刚" : `${fmt(now - t).slice(1)}前`);
+const ICON = { approval: "⚠", ask: "❓", notice: "•" };
+const OUT = { approved: "已批准", rejected: "已拒绝", answered: "已回答", read: "已读", stale: "已失效" };
+
+function apply(next, note) {
+  store = prune(next, now);
+  lastAction = note;
+  render();
+}
+
+function render() {
+  const n = badge(store);
+  $("#badge").textContent = String(n);
+  $("#toastCount").textContent = String(store.toasts);
+  $("#clock").textContent = fmt(now);
+
+  const wait = waitingOf(store);
+  const done = doneOf(store);
+  const m = mutedSet(store);
+
+  $("#hWait").textContent = `在等你 · ${wait.length}${store.muted.length ? `（静音 ${store.muted.length} 个会话）` : ""}`;
+  $("#hDone").textContent = `处理过 / 失效 · ${done.length}`;
+
+  const item = (r, isDone) => `
+    <div class="it${r.id === freshId ? " fresh" : ""}${!isDone && m.has(r.sessionId) ? " muted" : ""}">
+      <div class="t">${ICON[r.kind]} ${r.title}</div>
+      <div class="b">${r.body}</div>
+      <div class="m">${r.sessionName} · ${isDone ? OUT[r.outcome] ?? "" : m.has(r.sessionId) ? "静音中（不计角标）" : "在等你"} · ${ago(r.createdAt)}</div>
+    </div>`;
+
+  $("#listWait").innerHTML = wait.length ? wait.map((r) => item(r, false)).join("") : `<div class="empty">没有人卡在等你。</div>`;
+  $("#listDone").innerHTML = done.length ? done.slice(0, 6).map((r) => item(r, true)).join("") : `<div class="empty">还没有处理过的。</div>`;
+
+  const lastToast = Object.entries(store.lastToastAt).sort((a, b) => b[1] - a[1])[0];
+  $("#toastWhat").className = "toastcard" + (lastToast ? "" : " silent");
+  $("#toastWhat").textContent = lastToast
+    ? `弹过「${store.items.find((r) => r.sessionId === lastToast[0] || lastToast[0] === "notice")?.title ?? "…"}」，${fmt(now - lastToast[1]).slice(1)}前（各会话互相独立计时）`
+    : "一条都没弹";
+  $("#mutedWhat").textContent = store.muted.length ? `静音：${store.muted.join("、")}` : "";
+  $("#badgeSub").textContent = n === 0 && wait.length ? "在等，但全被静音了" : "全部在等的（含当前会话）";
+  $("#lastact").innerHTML = lastAction ? `<b>${lastAction}</b>` : "还没动过。随便按一个按钮。";
+}
+
+/* ── 自由点的动作 ─────────────────────────────────────────────────────────── */
+const SESSIONS = { api: "api 重构", go: "go-svc 迁移" };
+
+function push(ev) {
+  const before = store.toasts;
+  const r = raise(store, ev, now);
+  const toastNote = r.toast ? "，弹了一条吐司" : r.merged ? "，吐司被 30 秒窗口合并掉了" : ev.kind === "notice" ? "，非阻塞所以不弹" : store.muted.includes(ev.sessionId) ? "，这个会话静音了所以不弹" : "";
+  store = r.store;
+  freshId = store.items[0].id;
+  apply(store, `「${ev.title}」来了${toastNote}（本次共弹 ${store.toasts} 条，之前 ${before} 条）`);
+  freshId = null;
+  render();
+}
+
+const ACTIONS = {
+  approval: () => push({ kind: "approval", sessionId: "api", sessionName: SESSIONS.api, title: "需要你批准 · api 重构", body: "rm -rf dist/ && npm run build" }),
+  ask: () => push({ kind: "ask", sessionId: "go", sessionName: SESSIONS.go, title: "需要你回答 · go-svc 迁移", body: "选哪个迁移方式？" }),
+  notice: () => push({ kind: "notice", sessionName: "构建", title: "prisma 迁移失败", body: 'exit 1：relation "users" already exists' }),
+  "approval-api": () => {
+    for (let i = 0; i < 5; i++) {
+      const r = raise(store, { kind: "approval", sessionId: "api", sessionName: SESSIONS.api, title: "需要你批准 · api 重构", body: `第 ${i + 1} 条：npm run build` }, now);
+      store = r.store;
+    }
+    apply(store, `同一会话连来 5 条审批：角标 +5，吐司只弹 1 条（30 秒窗口）`);
+  },
+  approve: () => {
+    const r = waitingOf(store).find((x) => x.kind === "approval");
+    if (!r) return apply(store, "没有在等的审批可批。");
+    apply(settle(store, r.id, "approved", now), `批了「${r.title}」→ 已处理，角标 -1`);
+  },
+  reject: () => {
+    const r = waitingOf(store).find((x) => x.kind === "approval");
+    if (!r) return apply(store, "没有在等的审批可拒。");
+    apply(settle(store, r.id, "rejected", now), `拒了「${r.title}」→ 已处理，角标 -1`);
+  },
+  answer: () => {
+    const r = waitingOf(store).find((x) => x.kind === "ask");
+    if (!r) return apply(store, "没有在等的问卷可答。");
+    apply(settle(store, r.id, "answered", now), `答了「${r.title}」→ 已处理，角标 -1`);
+  },
+  read: () => {
+    const r = waitingOf(store).find((x) => x.kind === "notice");
+    if (!r) return apply(store, "没有非阻塞的提醒；先按「构建失败」。");
+    apply(read(store, r.id, now), `点开「${r.title}」→ 已读，角标 -1（它没有「批准」这种动作，点过就算）`);
+  },
+  mute: () => apply(mute(store, "go"), "静音了 go-svc 迁移：它再来事也不弹、不计角标，清单里仍在"),
+  unmute: () => apply(unmute(store, "go"), "取消静音 go-svc 迁移"),
+  restart: () => {
+    const stale = waitingOf(store).length;
+    apply(restart(store, now), `桥重启：${stale} 条还「在等」的全部转「已失效」——那些 pi 子进程已经死了`);
+  },
+  flood: () => {
+    for (let i = 0; i < 520; i++) {
+      store = raise(store, { kind: "approval", sessionId: i % 7 === 0 ? "go" : "api", sessionName: i % 7 === 0 ? SESSIONS.go : SESSIONS.api, title: `需要你批准 · 第 ${i + 1} 条`, body: "npm run build" }, now - i * 1000).store;
+    }
+    /* 批掉 400 条，好让 500 条上限真的有东西可丢（在等的永远不会被 cap 丢） */
+    for (const r of waitingOf(store).slice(0, 400)) store = settle(store, r.id, "approved", now);
+    store = prune(store, now);
+    const note = `塞了 520 条、批掉 400 条：上限只裁最旧的已处理条目 → 现在 ${store.items.length} 条里还有 ${waitingOf(store).length} 条在等，一条没丢`;
+    apply(store, note);
+  },
+  t30: () => { now += 30_000; apply(store, "时钟 +30 秒：现在同一会话可以再弹一条吐司了"); },
+  t1h: () => { now += 3_600_000; apply(store, "时钟 +1 小时"); },
+  t1d: () => { now += 8 * DAY; apply(store, "时钟 +8 天：超过 7 天的已处理条目会被丢掉，在等的不动"); },
+  reset: () => { now = 0; store = emptyStore(); apply(store, "清空，时钟归零"); },
+};
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-a]");
+  if (b) ACTIONS[b.dataset.a]();
+});
+
+/* ── 引导场景 ─────────────────────────────────────────────────────────────── */
+const SCENARIOS = [
+  {
+    tab: "一晚上没人管",
+    desc: "审 19:00 来一条审批，你去睡了。第二天早上它还在「在等」—— 角标一直亮着。中间桥重过一次，这条就变成「已失效」：不是它被处理了，是那张卡本身已经不存在了。",
+    steps: [
+      ["审批来了", () => push({ kind: "approval", sessionId: "api", sessionName: SESSIONS.api, title: "需要你批准 · api 重构", body: "rm -rf dist/ && npm run build" })],
+      ["又来个问卷", () => push({ kind: "ask", sessionId: "go", sessionName: SESSIONS.go, title: "需要你回答 · go-svc 迁移", body: "选哪个迁移方式？" })],
+      ["过了一晚", ACTIONS.t1d],
+      ["桥重启了", ACTIONS.restart],
+    ],
+  },
+  {
+    tab: "同一会话刷屏",
+    desc: "一个会话连着要五次审批。要的是「角标 +5，吐司只 1 条」—— 合并的是吐司，不是事实。等 30 秒之后再要一次，才该再弹。",
+    steps: [
+      ["连来 5 条", ACTIONS["approval-api"]],
+      ["再要一条（30 秒内）", () => push({ kind: "approval", sessionId: "api", sessionName: SESSIONS.api, title: "需要你批准 · api 重构", body: "第 6 条：npm run build" })],
+      ["等 30 秒", ACTIONS.t30],
+      ["再要一条", () => push({ kind: "approval", sessionId: "api", sessionName: SESSIONS.api, title: "需要你批准 · api 重构", body: "第 7 条：npm run build" })],
+    ],
+  },
+  {
+    tab: "静音之后",
+    desc: "静音不是「不看」，是「别打断我」。go-svc 之后来的事仍然进清单、仍然等在那里，但不弹、不计角标。你要是把角标也当静音，就会「角标 0 但清单里有两条」。",
+    steps: [
+      ["静音 go-svc", ACTIONS.mute],
+      ["go-svc 来问卷", ACTIONS.ask],
+      ["go-svc 再来一条", ACTIONS.ask],
+      ["取消静音", ACTIONS.unmute],
+    ],
+  },
+  {
+    tab: "非阻塞怎么消",
+    desc: "构建失败没有「批准」这个动作 —— 它只能靠「点过 = 看过」离开「在等」。不定这条，角标就会永远亮着一条构建失败。",
+    steps: [
+      ["构建失败", ACTIONS.notice],
+      ["再来一条", ACTIONS.notice],
+      ["点开其中一条", ACTIONS.read],
+    ],
+  },
+  {
+    tab: "塞满会怎样",
+    desc: "520 条一起塞进来、批掉 400 条。500 条封顶只裁最旧的已处理条目，在等的一条都不丢 —— 否则「有人在等你」会被容量策略悄悄吞掉。",
+    steps: [
+      ["塞 520 条 + 批掉 400", ACTIONS.flood],
+      ["批掉一条", ACTIONS.approve],
+      ["过 8 天", ACTIONS.t1d],
+    ],
+  },
+];
+
+let scn = 0;
+let stepAt = 0;
+
+function renderScenario() {
+  $("#tabs").innerHTML = SCENARIOS.map((s, i) => `<button class="tab${i === scn ? " on" : ""}" data-s="${i}">${i + 1}. ${s.tab}</button>`).join("");
+  const s = SCENARIOS[scn];
+  $("#desc").textContent = s.desc;
+  $("#steps").innerHTML = s.steps
+    .map(([label], i) => `<button class="b step${i < stepAt ? " done" : i === stepAt ? " next" : ""}" data-step="${i}">${i < stepAt ? "✓ " : ""}${label}</button>`)
+    .join(`<span class="arrow">→</span>`);
+  $("#hint").textContent = stepAt >= s.steps.length ? "走完了。要再看一遍就点「从头来」再选这个场景。" : `下一步：${s.steps[stepAt][0]}（点那颗高亮的按钮；也可以随便按别的）`;
+}
+
+$("#tabs").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-s]");
+  if (!t) return;
+  scn = Number(t.dataset.s);
+  ACTIONS.reset();
+  stepAt = 0;
+  renderScenario();
+});
+$("#steps").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-step]");
+  if (!b) return;
+  const i = Number(b.dataset.step);
+  /* 点哪一步就跑哪一步，但只推进到那一步 —— 允许跳着点，方便重复观察 */
+  SCENARIOS[scn].steps[i][1]();
+  stepAt = Math.max(stepAt, i + 1);
+  renderScenario();
+});
+
+render();
+renderScenario();
+</script>
+</body>
+</html>
