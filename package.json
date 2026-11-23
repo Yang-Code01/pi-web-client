@@ -114,6 +114,7 @@
     "probe:media": "node probes/media-preview.mjs",
     "probe:filesearch": "node probes/filesearch.mjs",
     "probe:translate": "node probes/translate-ui.mjs",
+    "probe:translate-speed": "node probes/translate-speed.mjs",
     "probe:extstore": "node probes/ext-store-paint.mjs",
     "probe:skill-boot": "node probes/skill-boot-hint.mjs",
     "probe:rail": "node probes/rail-click.mjs && node probes/round20-turns.mjs && node probes/turn-rail-last.mjs && node probes/rail-ghost.mjs",

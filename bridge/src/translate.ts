@@ -262,9 +262,17 @@ export interface TrRun {
   /** 模型出现在 fast 目录里 → 加 `-ne` 省掉扩展加载（实测快 12–15 秒）。 */
   fast: boolean;
   timeoutMs?: number;
+  /** 撞限流的退避基数（毫秒）。测试里传 0，别让用例真的睡。 */
+  backoffMs?: number;
 }
 
-export type TrRunner = (chunk: string, o: TrRun, kind: "forward" | "reverse") => Promise<string>;
+/** `signal`：取消时要立刻停手（杀子进程），别等这一块翻完。 */
+export type TrRunner = (
+  chunk: string,
+  o: TrRun,
+  kind: "forward" | "reverse",
+  signal?: CancelSignal,
+) => Promise<string>;
 
 const RULES = [
   "你是一个只做翻译的引擎，不做任何解释。",
@@ -317,8 +325,14 @@ export function translateArgs(o: TrRun, kind: "forward" | "reverse" = "forward")
 }
 
 /** 一块正文 → 一次独立的 pi 调用。正文走 stdin（不会被命令行长度限制截断）。 */
-export function runPiTranslate(chunk: string, o: TrRun, kind: "forward" | "reverse" = "forward"): Promise<string> {
+export function runPiTranslate(
+  chunk: string,
+  o: TrRun,
+  kind: "forward" | "reverse" = "forward",
+  signal?: CancelSignal,
+): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Aborted());
     const args = translateArgs(o, kind);
     const child = spawn(process.execPath, args, {
       cwd: o.cwd,
@@ -335,6 +349,14 @@ export function runPiTranslate(chunk: string, o: TrRun, kind: "forward" | "rever
       child.kill();
       reject(new Error(`模型 ${Math.round((o.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000)} 秒没有答完`));
     }, o.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    // 并发之后「取消」不能只在节边界生效：几块同时在飞时，那一等就是几十秒。
+    const offAbort = signal?.onAbort?.(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      reject(new Aborted());
+    });
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -343,12 +365,14 @@ export function runPiTranslate(chunk: string, o: TrRun, kind: "forward" | "rever
       err = (err + d).slice(-2000);
     });
     child.on("error", (e) => {
+      offAbort?.();
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       reject(e);
     });
     child.on("close", (code) => {
+      offAbort?.();
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -383,68 +407,197 @@ export interface TrSection {
   failed?: boolean;
 }
 
-/** 翻一节：代码段原样拼回，正文分块翻。 */
+/* ── 并发调度：块是派活的单位，节是落盘与对齐的单位（D390） ──────── */
+
+/** 取消信号。页面点「取消」时桥置 `aborted`，并立刻杀掉在飞的子进程。 */
+export interface CancelSignal {
+  aborted: boolean;
+  /** 登记「取消时要立刻做的事」，返回反注册函数。 */
+  onAbort?: (fn: () => void) => () => void;
+}
+
+/** 取消是用户按的，不是「这块翻坏了」：不重试、不告警、不保留原文。 */
+export class Aborted extends Error {
+  constructor() {
+    super("已取消");
+    this.name = "Aborted";
+  }
+}
+
+const errText = (e: unknown) => String((e as Error)?.message ?? e);
+
+/** 429 / 限流：不是坏块，是「这一路先别问了」。 */
+export function isRateLimit(msg: string): boolean {
+  return /429|rate.?limit|RateLimitExceeded|RPM/i.test(msg);
+}
+
+/** 默认同时几块。并发是这条链上唯一能真把「一分多钟」压下去的手段：
+ * 每个往返的固定成本（1.7 s 启动 + 5–10 s 首字节）跟正文长短无关，叠起来才快。 */
+export const TR_CONCURRENCY = 4;
+export const TR_CONCURRENCY_MAX = 8;
+/** 撞一次限流退避多久，之后翻倍。RPM 窗口是按分钟算的，所以这个数不能小 ——
+ * 实测限流后 1.5 s 就重发只会再吃一次 429（每次重发本身还要先起进程）。 */
+export const TR_RATE_BACKOFF_MS = 3000;
+/** 限流最多重发几次。它**不**占 `MAX_RETRY` 的名额 —— 那个是给「翻坏了」用的。 */
+export const TR_RATE_RETRY = 5;
+/** 单次退避的上限。 */
+const TR_RATE_BACKOFF_MAX = 60_000;
+
+export function clampConcurrency(n: unknown): number {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return TR_CONCURRENCY;
+  return Math.min(TR_CONCURRENCY_MAX, Math.max(1, v));
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** 有上限的在飞任务表；撞限流时可以临时把上限砍半。 */
+class Pool {
+  private limit: number;
+  private waiting: (() => void)[] = [];
+  private onChange?: (n: number) => void;
+  active = 0;
+  constructor(limit: number, onChange?: (n: number) => void) {
+    this.limit = limit;
+    this.onChange = onChange;
+  }
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.active >= this.limit) await new Promise<void>((r) => this.waiting.push(r));
+    else this.active++;
+    this.onChange?.(this.active);
+    try {
+      return await fn();
+    } finally {
+      this.active--;
+      const next = this.waiting.shift();
+      if (next) {
+        this.active++;
+        next();
+      }
+      this.onChange?.(this.active);
+    }
+  }
+  halve(): void {
+    this.limit = Math.max(1, Math.floor(this.limit / 2));
+  }
+}
+
+/** 一节的骶架：围栏代码原样保留，正文段切成块（块 = 一次模型调用的单位）。 */
+type Seg = { code: true; text: string } | { code: false; lead: string; trail: string; chunks: string[] };
+
+function planSection(text: string): Seg[] {
+  return splitCode(text).map((part): Seg => {
+    if (part.code) return { code: true, text: part.text };
+    // 代码段是独立 part，文本 part 的首尾空行要原样留住，否则围栏会粘到上一段上
+    // （后果：块的划分和原文对不上，同步时会退化成整节重译）。
+    return {
+      code: false,
+      lead: /^\s*/.exec(part.text)?.[0] ?? "",
+      trail: /\s*$/.exec(part.text)?.[0] ?? "",
+      chunks: packChunks(splitBlocks(part.text)),
+    };
+  });
+}
+
+/** 按原位置把块拼回一节；代码段原样。段与段之间用一个换行接上（与重构前 `res.join("\n")` 一致）。 */
+function assemble(segs: Seg[], outs: (string[] | null)[]): string {
+  return segs
+    .map((s, i) => {
+      if (s.code) return s.text;
+      const got = outs[i];
+      return s.lead + (got?.length ? got.join("\n\n") : "") + s.trail;
+    })
+    .join("\n");
+}
+
+interface ChunkOut {
+  out: string;
+  warnings: string[];
+  failures: string[];
+}
+
+/**
+ * 一块正文 → 译文。翻坏了（表格散架 / 照抄原文）重问一次，还坏就保留原文并记一条失败；
+ * 撞上限流则降并发、退避重发，不占重试名额 —— 这两件事的后果完全不同：
+ * 前者是「这块没翻成」，后者是「这一路先歇会儿」。
+ */
+async function translateChunk(
+  chunk: string,
+  o: TrRun,
+  run: TrRunner,
+  signal: CancelSignal | undefined,
+  onRateLimit: () => void,
+): Promise<ChunkOut> {
+  const warnings: string[] = [];
+  let attempt = 0;
+  let rate = 0;
+  for (;;) {
+    if (signal?.aborted) throw new Aborted();
+    let got = "";
+    try {
+      got = cleanOut(await run(chunk, o, "forward", signal));
+    } catch (e) {
+      if (e instanceof Aborted || signal?.aborted) throw new Aborted();
+      const msg = errText(e);
+      warnings.push(msg);
+      if (isRateLimit(msg) && rate < TR_RATE_RETRY) {
+        rate++;
+        onRateLimit();
+        await sleep(Math.min(TR_RATE_BACKOFF_MAX, (o.backoffMs ?? TR_RATE_BACKOFF_MS) * 2 ** (rate - 1)));
+        continue;
+      }
+      // 连接抖动这类瞬时错误值得再问一次；重试也耗尽了才把这一块记成「没翻成」。
+      if (attempt >= MAX_RETRY) return { out: chunk, warnings, failures: [msg] };
+      attempt++;
+      continue;
+    }
+    const bad = tableDiff(chunk, got) ?? looksUntranslated(o.lang, chunk, got);
+    if (!bad) return { out: got || chunk, warnings, failures: [] };
+    if (attempt >= MAX_RETRY) {
+      const msg = `${bad}；这一段保留原文`;
+      warnings.push(msg);
+      return { out: chunk, warnings, failures: [msg] };
+    }
+    attempt++;
+  }
+}
+
+/** 翻一节（串行）。`translateDoc` 现在按块并发，这个入口留给单节调用与测试。 */
 export async function translateSection(
   text: string,
   o: TrRun,
   run: TrRunner,
-  hooks: { onChunk?: () => void; onFailure?: (msg: string) => void } = {},
+  hooks: { onChunk?: () => void; onFailure?: (msg: string) => void; signal?: CancelSignal } = {},
 ): Promise<{ out: string; warnings: string[] }> {
+  const segs = planSection(text);
+  const outs: (string[] | null)[] = segs.map((s) => (s.code ? null : []));
   const warnings: string[] = [];
-  const parts = splitCode(text);
-  const res: string[] = [];
 
-  for (const part of parts) {
-    if (part.code) {
-      res.push(part.text);
-      hooks.onChunk?.();
-      continue;
-    }
-    // 代码段是独立 part，文本 part 的首尾空行要原样留住，否则围栏会粘到上一段上
-    // （后果：块的划分和原文对不上，同步时会退化成整节重译）。
-    const lead = /^\s*/.exec(part.text)?.[0] ?? "";
-    const trail = /\s*$/.exec(part.text)?.[0] ?? "";
-    const chunks = packChunks(splitBlocks(part.text));
-    const done: string[] = [];
-    for (const chunk of chunks) {
-      let got = "";
-      for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
-        got = "";
-        const last = attempt === MAX_RETRY;
-        try {
-          got = cleanOut(await run(chunk, o, "forward"));
-        } catch (e) {
-          const msg = (e as Error).message;
-          warnings.push(msg);
-          // 连接抖动这类瞬时错误值得再问一次；重试也耗尽了才把这一块记成「没翻成」。
-          if (last) {
-            hooks.onFailure?.(msg);
-            got = "";
-          }
-          continue;
-        }
-        const bad = tableDiff(chunk, got) ?? looksUntranslated(o.lang, chunk, got);
-        if (!bad) break;
-        if (last) {
-          const msg = `${bad}；这一段保留原文`;
-          warnings.push(msg);
-          hooks.onFailure?.(msg);
-          got = "";
-        }
-      }
-      done.push(got || chunk);
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    if (seg.code) continue;
+    const got = outs[i] as string[];
+    for (const chunk of seg.chunks) {
+      const r = await translateChunk(chunk, o, run, hooks.signal, () => {});
+      warnings.push(...r.warnings);
+      if (r.failures.length) hooks.onFailure?.(r.failures[0]);
+      got.push(r.out);
       hooks.onChunk?.();
     }
-    res.push(lead + done.join("\n\n") + trail);
   }
-  return { out: res.join("\n"), warnings };
+  return { out: assemble(segs, outs), warnings };
 }
 
 export interface TranslateHooks {
+  /** `done` 是**落盘到哪一节**（只能按原文顺序往前涨），不是「翻完了几节」。 */
   onProgress?: (done: number, total: number, note: string) => void;
-  /** 每完成一节就回调一次，调用方可以边翻边落盘（页面能看到进度，不用等整篇）。 */
+  /** 每往前推进一节就回调一次，调用方可以边翻边落盘（页面能看到进度，不用等整篇）。 */
   onSection?: (sections: TrSection[]) => void;
-  signal?: { aborted: boolean };
+  /** 正在翻的块数，供页面写「正在翻 N 块」。 */
+  onInflight?: (n: number) => void;
+  signal?: CancelSignal;
+  /** 同时最多几块；缺省 `TR_CONCURRENCY`。 */
+  limit?: number;
 }
 
 /** 只翻想要的节；`keep` 里给出旧节（原文没变就沿用旧译文）。 */
@@ -456,38 +609,81 @@ export async function translateDoc(
 ): Promise<{ sections: TrSection[]; warnings: string[]; failures: string[] }> {
   const cuts = cutSections(text);
   const total = cuts.length;
-  const sections: TrSection[] = [];
-  const warnings: string[] = [];
-  const failures: string[] = [];
-  let done = 0;
+  if (!total) return { sections: [], warnings: [], failures: [] };
 
-  for (const cut of cuts) {
-    if (hooks.signal?.aborted) throw new Error("已取消");
-    const old = hooks.keep?.get(keyOf(cut));
+  const segs = cuts.map((c) => planSection(c.text));
+  const outs: (string[] | null)[][] = segs.map((s) => s.map((seg) => (seg.code ? null : [])));
+  const secWarn: string[][] = cuts.map(() => []);
+  const secFail: string[][] = cuts.map(() => []);
+  const doneSec: (TrSection | undefined)[] = cuts.map(() => undefined);
+  /** 这一节还剩几块没回来；0 = 这一节完了。 */
+  const left = segs.map((s) => s.reduce((n, seg) => n + (seg.code ? 0 : seg.chunks.length), 0));
+
+  const make = (si: number): TrSection => {
+    const out = assemble(segs[si], outs[si]);
+    const sec: TrSection = { heading: cuts[si].heading, gen: out, out, src: cuts[si].text };
+    if (secFail[si].length) sec.failed = true;
+    return sec;
+  };
+
+  // 只能按原文顺序往前推进：缓存里出现「第 4 节好了、第 2 节空着」，读回来会被 `readDoc` 丢掉，
+  // 页面按下标配对左右栏也会错位。慢的那一节会挡住后面显示 —— 翻译本身照旧并行。
+  let flushed = 0;
+  const flush = () => {
+    while (flushed < total && doneSec[flushed]) {
+      flushed++;
+      hooks.onSection?.(doneSec.slice(0, flushed) as TrSection[]);
+      hooks.onProgress?.(flushed, total, cuts[flushed - 1].heading || "开头");
+    }
+  };
+
+  // 没变的节直接沿用旧译文：不调模型，也不去抢并发名额。
+  for (let si = 0; si < total; si++) {
+    const old = hooks.keep?.get(keyOf(cuts[si]));
     // 失败节（含旧缓存里 out === src 的坏结果）绝不复用，否则「更新」会一直把原文摆回来；
     // 但人已经接手改过的译文（out !== gen）以人写的为准，别再让机器覆盖掉。
-    if (old && old.src === cut.text && old.out && old.out !== old.src && (!old.failed || old.out !== old.gen)) {
-      sections.push({ ...old, heading: cut.heading });
-      done++;
-      hooks.onSection?.(sections);
-      hooks.onProgress?.(done, total, cut.heading || "开头");
-      continue;
+    if (old && old.src === cuts[si].text && old.out && old.out !== old.src && (!old.failed || old.out !== old.gen)) {
+      doneSec[si] = { ...old, heading: cuts[si].heading };
+      left[si] = 0;
     }
-    const secFailures: string[] = [];
-    const { out, warnings: w } = await translateSection(cut.text, o, run, {
-      onChunk: () => hooks.onProgress?.(done, total, cut.heading || "开头"),
-      onFailure: (msg) => secFailures.push(msg),
-    });
-    warnings.push(...w);
-    failures.push(...secFailures);
-    const sec: TrSection = { heading: cut.heading, gen: out, out, src: cut.text };
-    if (secFailures.length) sec.failed = true;
-    sections.push(sec);
-    done++;
-    hooks.onSection?.(sections);
-    hooks.onProgress?.(done, total, cut.heading || "开头");
   }
-  return { sections, warnings, failures };
+  flush();
+
+  const tasks: { si: number; seg: number; ci: number; chunk: string }[] = [];
+  for (let si = 0; si < total; si++) {
+    if (doneSec[si]) continue;
+    segs[si].forEach((seg, i) => {
+      if (seg.code) return;
+      seg.chunks.forEach((chunk, ci) => tasks.push({ si, seg: i, ci, chunk }));
+    });
+    // 整节都是代码（或只有空白）：没有块要翻，直接算完成。
+    if (!left[si]) doneSec[si] = make(si);
+  }
+  flush();
+
+  const pool = new Pool(clampConcurrency(hooks.limit), (n) => hooks.onInflight?.(n));
+  await Promise.all(
+    tasks.map((t) =>
+      pool.run(async () => {
+        if (hooks.signal?.aborted) throw new Aborted();
+        const r = await translateChunk(t.chunk, o, run, hooks.signal, () => pool.halve());
+        (outs[t.si][t.seg] as string[])[t.ci] = r.out;
+        secWarn[t.si].push(...r.warnings);
+        secFail[t.si].push(...r.failures);
+        if (--left[t.si] === 0) {
+          doneSec[t.si] = make(t.si);
+          flush();
+        }
+      }),
+    ),
+  );
+  hooks.onInflight?.(0);
+
+  return {
+    sections: doneSec.slice(0, flushed) as TrSection[],
+    warnings: secWarn.flat(),
+    failures: secFail.flat(),
+  };
 }
 
 const keyOf = (c: Cut) => c.heading || "\u0000preamble";
@@ -720,22 +916,27 @@ export const TR_DEFAULT_MODEL = "copilot/gpt-6-luna";
 export interface TrPrefs {
   /** "provider/id"；空串表示「还没设过」，页面按 TR_DEFAULT_MODEL 去解析。 */
   model: string;
+  /** 同时翻几块（1–8，缺省 `TR_CONCURRENCY`）：D390 那只旋钮。 */
+  concurrency: number;
 }
 
 const PREFS_FILE = (): string => statePath("translate", "prefs.json");
 
 export function readTrPrefs(): TrPrefs {
-  const raw = readJson<TrPrefs | null>(PREFS_FILE(), null);
+  const raw = readJson<Partial<TrPrefs> | null>(PREFS_FILE(), null);
   const model = typeof raw?.model === "string" ? raw.model.trim() : "";
-  return { model };
+  return { model, concurrency: clampConcurrency(raw?.concurrency ?? TR_CONCURRENCY) };
 }
 
 /** 只认 `provider/id` 这一种形状：别的写法存进去只会让下次解析不出来。 */
-export function writeTrPrefs(patch: { model?: string }): TrPrefs {
+export function writeTrPrefs(patch: { model?: string; concurrency?: number }): TrPrefs {
   const cur = readTrPrefs();
   const model = typeof patch.model === "string" ? patch.model.trim() : cur.model;
   const ok = /^[^/\s]+\/[^/\s]+$/.test(model);
-  const next: TrPrefs = { model: ok ? model : cur.model };
+  const next: TrPrefs = {
+    model: ok ? model : cur.model,
+    concurrency: typeof patch.concurrency === "number" ? clampConcurrency(patch.concurrency) : cur.concurrency,
+  };
   writeJson(PREFS_FILE(), next);
   return next;
 }

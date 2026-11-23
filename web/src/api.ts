@@ -378,8 +378,12 @@ export const api = {
     }),
   /** 预览里的翻译对照：翻一份、缓存在桥的状态目录、可改译文、可把改动写回原文。 */
   trDoc: (sessionId: string, path: string, lang: string) => postJson<TrDocResp>("/api/translate/doc", { sessionId, path, lang }),
-  /** 本机偏好：不传 `model` 只读，传了就写。 */
-  trPrefs: (model?: string) => postJson<TrPrefsResp>("/api/translate/prefs", model === undefined ? {} : { model }),
+  /** 本机偏好：不传 `model` / `concurrency` 只读，传了就写。 */
+  trPrefs: (model?: string, concurrency?: number) =>
+    postJson<TrPrefsResp>("/api/translate/prefs", {
+      ...(model === undefined ? {} : { model }),
+      ...(concurrency === undefined ? {} : { concurrency }),
+    }),
   trStart: (sessionId: string, body: { path: string; lang: string; provider: string; model: string; force?: boolean }) =>
     postJson<{ job: TrJob }>("/api/translate/start", { sessionId, ...body }),
   trJob: (id: string) => req<{ job: TrJob }>(`/api/translate/job?id=${encodeURIComponent(id)}`),

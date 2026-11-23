@@ -15,7 +15,7 @@ import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
-import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, type TrAct, type TrView } from "./translateview.ts";
+import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, trNote, type TrAct, type TrView } from "./translateview.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
@@ -511,6 +511,8 @@ export class App {
   /** D245: 翻译用的默认模型（`provider/id`）与出厂默认，来自桥的偏好；还没读过时为空串。 */
   private trModelPref = "";
   private trDefaultModel = "";
+  /** D390: 同时翻几块（1–8），同样存桥的本机偏好。 */
+  private trConcurrency = 4;
   /** #285: the form's two scopes share one tab id; this is what the segment and the form follow. */
   private settingsScope: "global" | "project" = "global";
   /** #285: flattened drafts + the on-disk snapshot they diff against, kept per scope while the sheet is open. */
@@ -11628,6 +11630,7 @@ export class App {
       t.error = "";
       this.trModelPref = res.prefs?.model ?? this.trModelPref;
       this.trDefaultModel = res.defaultModel ?? this.trDefaultModel;
+      this.trConcurrency = res.prefs?.concurrency ?? this.trConcurrency;
       if (res.job?.status === "running") this.pollTr(v);
     } catch (err: any) {
       if (this.viewer !== v) return;
@@ -11739,7 +11742,12 @@ export class App {
       brief.textContent = job.status === "running" ? tr("翻译中 {done}/{total}", { done: job.done, total: job.total || "?" }) : job.note || brief.textContent;
     }
     const note = v.body.querySelector(".tr-note");
-    if (note && job.note) note.textContent = job.note;
+    const noteText = job.status === "running" ? trNote(job) : "";
+    if (note) {
+      note.textContent = noteText;
+      note.setAttribute("title", noteText);
+      (note as HTMLElement).hidden = !noteText;
+    }
     const fill = v.body.querySelector<HTMLElement>(".tr-prog-fill");
     if (fill && job.total) fill.style.width = `${Math.round((job.done / job.total) * 100)}%`;
   }
@@ -13132,6 +13140,7 @@ export class App {
         .then((res) => {
           this.trModelPref = res.prefs.model;
           this.trDefaultModel = res.defaultModel;
+          this.trConcurrency = res.prefs.concurrency ?? this.trConcurrency;
           this.paintSettings();
         })
         .catch(() => {
@@ -13772,6 +13781,27 @@ export class App {
       this.flashSettings(tr("已恢复默认模型"));
       this.paintSettings();
     };
+    // D390：同时翻几块。主进度仍按节，这个旋钮只影响「多久能看完全篇」。
+    const conc = el("select", "ns-input tr-conc") as HTMLSelectElement;
+    for (let n = 1; n <= 8; n++) {
+      const opt = el("option", "", String(n)) as HTMLOptionElement;
+      opt.value = String(n);
+      conc.append(opt);
+    }
+    conc.value = String(this.trConcurrency);
+    conc.onchange = () => {
+      const n = Number(conc.value);
+      this.trConcurrency = n;
+      void api
+        .trPrefs(undefined, n)
+        .then((res) => {
+          this.trConcurrency = res.prefs.concurrency ?? n;
+        })
+        .catch(() => {
+          /* 记不住不影响这一次设置 */
+        });
+      this.flashSettings(tr("以后同时翻 {n} 块", { n }));
+    };
     pane.append(this.stSection(tr("翻译")));
     const panel = el("div", "settings-panel");
     panel.append(
@@ -13779,6 +13809,12 @@ export class App {
         tr("翻译用的默认模型"),
         tr("预览右上角的「译」会用这里选的模型：另起一个 pi 子进程翻，不占当前对话的上下文。译文只存在本机，原文不动；在对照里改的译文可以再写回原文。"),
         sel,
+        "label",
+      ),
+      this.stRow(
+        tr("同时翻几块"),
+        tr("每个往返的固定等待（起进程 + 等模型开口）跟正文长短无关，所以几块一起翻才快；撞到模型限流会自动降并发、退避重发。"),
+        conc,
         "label",
       ),
       this.stRow(tr("恢复默认"), tr("换模型不会重翻已有的译文：点「更新」时才按新模型整篇重来。"), reset),

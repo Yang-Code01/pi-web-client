@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  type CancelSignal,
   type TrDoc,
   type TrLang,
   type TrRun,
@@ -33,13 +34,17 @@ export interface JobView {
   /** 正在翻的那一节（标题行，或「开头」）。 */
   note: string;
   error?: string;
+  /** 正在翻的块数；主进度是按节的，这里只给副行写「正在翻 N 块」。 */
+  inflight: number;
   startedAt: number;
   finishedAt?: number;
 }
 
 interface Job extends JobView {
   doc: TrDoc;
-  signal: { aborted: boolean };
+  signal: CancelSignal;
+  /** 在飞的子进程登记进来的「取消时杀了我」。 */
+  subs: Set<() => void>;
 }
 
 /** 只留最近这些任务；页面一般只轮询手上那一个。 */
@@ -48,7 +53,16 @@ const MAX_JOBS = 12;
 export class TranslateJobs {
   private jobs = new Map<string, Job>();
 
-  start(input: { text: string; abs: string; rel: string; lang: TrLang; run: TrRun; runner: TrRunner; keep?: TrSection[] }): JobView {
+  start(input: {
+    text: string;
+    abs: string;
+    rel: string;
+    lang: TrLang;
+    run: TrRun;
+    runner: TrRunner;
+    keep?: TrSection[];
+    limit?: number;
+  }): JobView {
     // 同一份文件同一种语言只留一个在跑的：重复点「开始」不该烧两遍钱。
     for (const j of this.jobs.values()) {
       if (j.status === "running" && j.doc.abs === input.abs && j.lang === input.lang) return view(j);
@@ -65,6 +79,7 @@ export class TranslateJobs {
       warnings: [],
       sections: [],
     };
+    const subs = new Set<() => void>();
     const job: Job = {
       id: randomUUID().slice(0, 8),
       status: "running",
@@ -74,9 +89,17 @@ export class TranslateJobs {
       done: 0,
       total: cutSections(input.text).length,
       note: "",
+      inflight: 0,
       startedAt: Date.now(),
       doc,
-      signal: { aborted: false },
+      signal: {
+        aborted: false,
+        onAbort: (fn) => {
+          subs.add(fn);
+          return () => subs.delete(fn);
+        },
+      },
+      subs,
     };
     this.jobs.set(job.id, job);
     this.trim();
@@ -84,6 +107,10 @@ export class TranslateJobs {
     const keep = input.keep?.length ? mapKeep(input.keep) : undefined;
     void translateDoc(input.text, input.run, input.runner, {
       signal: job.signal,
+      limit: input.limit,
+      onInflight: (n) => {
+        job.inflight = n;
+      },
       keep,
       onProgress: (done, total, note) => {
         job.done = done;
@@ -143,6 +170,16 @@ export class TranslateJobs {
     const job = this.jobs.get(id);
     if (!job || job.status !== "running") return false;
     job.signal.aborted = true;
+    // 并发之后不能只在下一块的边界上看标志：几块同时在飞，那一等就是几十秒。
+    // 这里当场把在飞的子进程全杀掉，已经落盘的节照旧留着。
+    for (const kill of [...job.subs]) {
+      try {
+        kill();
+      } catch {
+        /* 一个杀不掉不该拦住其余几块 */
+      }
+    }
+    job.subs.clear();
     return true;
   }
 
@@ -186,6 +223,7 @@ const view = (j: Job): JobView => ({
   done: j.done,
   total: j.total,
   note: j.note,
+  inflight: j.inflight,
   error: j.error,
   startedAt: j.startedAt,
   finishedAt: j.finishedAt,

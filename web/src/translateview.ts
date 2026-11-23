@@ -94,6 +94,16 @@ function modelName(doc: TrDoc | null, job: TrJob | null): string {
   return m.split("/").pop() ?? m;
 }
 
+/** 副行：正在翻哪一节 + 还有几块在飞。
+ * D390：主进度（`翻译中 3/6`）仍按**节**，并发只在副行露一面，否则用户得重新理解一个数。 */
+export function trNote(job: TrJob | null | undefined): string {
+  if (!job) return "";
+  const bits: string[] = [];
+  if (job.note) bits.push(job.note);
+  if ((job.inflight ?? 0) > 0) bits.push(tr("正在翻 {n} 块", { n: job.inflight ?? 0 }));
+  return bits.join(" · ");
+}
+
 export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   body.replaceChildren();
   body.classList.add("tr-body");
@@ -123,9 +133,12 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
     brief = n ? tr("{n} 节没翻成，点「更新」重翻", { n }) : tr("译文是 {p1} 生成的", { p1: modelName(v.doc, null) });
   }
   status.append(el("span", "tr-brief", brief));
-  if (running && v.job?.note) {
-    const note = el("span", "tr-note", v.job.note);
-    note.title = v.job.note;
+  if (running) {
+    // 始终留一个（空时 hidden）：`paintTrLive()` 只改不重建，第一波块刚起飞时这行还没字。
+    const noteText = trNote(v.job);
+    const note = el("span", "tr-note", noteText);
+    note.title = noteText;
+    note.hidden = !noteText;
     status.append(note);
   }
   if (v.doc?.warnings.length) {

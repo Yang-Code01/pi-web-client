@@ -1955,9 +1955,15 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/translate/prefs" && (req.method === "GET" || req.method === "POST")) {
       if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
       try {
-        // GET 只读（设置页打开时看一眼）；POST 带 `model` 就写，不带就只回显。
+        // GET 只读（设置页打开时看一眼）；POST 带 `model` / `concurrency` 就写，都不带就只回显。
         const body = req.method === "POST" ? await readBody(req).catch(() => ({})) : {};
-        const prefs = typeof body.model === "string" ? writeTrPrefs({ model: body.model }) : readTrPrefs();
+        const wants = typeof body.model === "string" || typeof body.concurrency === "number";
+        const prefs = wants
+          ? writeTrPrefs({
+              model: typeof body.model === "string" ? body.model : undefined,
+              concurrency: typeof body.concurrency === "number" ? body.concurrency : undefined,
+            })
+          : readTrPrefs();
         return json(res, 200, { prefs, defaultModel: TR_DEFAULT_MODEL });
       } catch (err: any) {
         return trFail(res, err);
@@ -1996,6 +2002,8 @@ async function main(): Promise<void> {
           run,
           runner: runPiTranslate,
           keep: reuse ? cached.sections : [],
+          // D390：同时翻几块。旋钮在设置 → 预览与翻译，存本机 prefs。
+          limit: readTrPrefs().concurrency,
         });
         translateJobs.stamp(job.id, st.mtimeMs, st.size);
         log(`translate ${path.basename(abs)} → ${lang} via ${provider}/${model}${reuse ? " (update)" : ""}`);

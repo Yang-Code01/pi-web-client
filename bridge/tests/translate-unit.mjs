@@ -10,16 +10,21 @@ import path from "node:path";
 
 import {
   applySync,
+  clampConcurrency,
   cleanOut,
   joinSections,
   packChunks,
   planSync,
+  readTrPrefs,
   reverseBlock,
   splitBlocks,
   splitCode,
   splitSections,
   tableDiff,
   translateDoc,
+  writeTrPrefs,
+  Aborted,
+  isRateLimit,
 } from "../src/translate.ts";
 import { TranslateJobs } from "../src/translatejob.ts";
 import { piChildEnv } from "../src/paths.ts";
@@ -348,6 +353,129 @@ check(
 );
 if (savedUpper === undefined) delete process.env.NO_PROXY; else process.env.NO_PROXY = savedUpper;
 if (savedLower === undefined) delete process.env.no_proxy; else process.env.no_proxy = savedLower;
+/* ── D390：块级并发 ───────────────────────────────────────────────────── */
+
+// 8 节 × 3 块：块名带节号，拼错位置一眼就看得出来。源文用拉丁字，避免撞上「译文照抄」护栏。
+const WIDE = Array.from({ length: 8 }, (_, si) =>
+  [
+    `## 節${si}`,
+    "",
+    `B${si}-0 alpha beta gamma delta. `.repeat(8),
+    "",
+    `B${si}-1 epsilon zeta eta theta. `.repeat(8),
+    "",
+    `B${si}-2 iota kappa lambda mu. `.repeat(8),
+    "",
+  ].join("\n"),
+).join("\n");
+
+const secNo = (chunk) => Number(/B(\d+)-/.exec(chunk)?.[1] ?? -1);
+/** 越靠前的节越慢 → 完成顺序一定跟原文顺序不一样，才能看出「乱序完成、按位置拼」。 */
+const uneven = async (chunk) => {
+  await new Promise((r) => setTimeout(r, (8 - secNo(chunk)) * 3));
+  return fake(chunk);
+};
+
+const serial = await translateDoc(WIDE, run, uneven, { limit: 1 });
+const conc = await translateDoc(WIDE, run, uneven, { limit: 4 });
+check("并发与串行的输出逐节一致", conc.sections.length === serial.sections.length && conc.sections.every((s, i) => s.out === serial.sections[i].out), `${serial.sections.length} 节`);
+check("并发也不丢节、顺序按原文", conc.sections.map((s) => s.heading).join("|") === serial.sections.map((s) => s.heading).join("|"), conc.sections.map((s) => s.heading).join("|"));
+
+// 同时在飞的数量不许超过 limit。
+let live = 0;
+let peak = 0;
+const peaky = async (chunk) => {
+  live++;
+  peak = Math.max(peak, live);
+  await new Promise((r) => setTimeout(r, 4));
+  live--;
+  return fake(chunk);
+};
+await translateDoc(WIDE, run, peaky, { limit: 3 });
+check("同时在飞不超过 limit", peak <= 3 && peak >= 2, `peak ${peak}`);
+
+// 落盘只能往前推：每次 onSection 都比上一次多一节，且最后一节正好对得上。
+const snaps = [];
+const progress = [];
+await translateDoc(WIDE, run, uneven, {
+  limit: 4,
+  onSection: (s) => snaps.push(s.length),
+  onProgress: (done, total, note) => progress.push([done, total, note]),
+});
+check("onSection 每次多一节、不回头", snaps.every((n, i) => n === i + 1) && snaps.length === 8, JSON.stringify(snaps));
+check("onProgress 的 done 单调不减且到顶", progress.every((p, i) => i === 0 || p[0] >= progress[i - 1][0]) && progress.at(-1)?.[0] === 8, JSON.stringify(progress.slice(-2)));
+
+// 在飞块数要报给页面（副行那句「正在翻 N 块」）。
+const inflight = [];
+await translateDoc(WIDE, run, peaky, { limit: 4, onInflight: (n) => inflight.push(n) });
+check("onInflight 报过正数、结尾归零", inflight.some((n) => n > 0) && inflight.at(-1) === 0, JSON.stringify([...new Set(inflight)]));
+
+// 复用（keep）在并发下一样成立：一场也不调模型。
+const keepWide = new Map(conc.sections.map((s) => [s.heading || "\u0000preamble", s]));
+let keptCalls = 0;
+const counted = async (c) => {
+  keptCalls++;
+  return fake(c);
+};
+const keptAll = await translateDoc(WIDE, run, counted, { limit: 4, keep: keepWide });
+check("keep 命中时并发一场也不跑", keptCalls === 0, `calls ${keptCalls}`);
+check("keep 复用后内容一致", keptAll.sections.every((s, i) => s.out === conc.sections[i].out));
+
+// 429 不是「这块翻坏了」：降并发、退避重发，不计入 MAX_RETRY、不写 failure。
+const fast = { ...run, backoffMs: 0 };
+let n429 = 0;
+const onceLimited = async (chunk) => {
+  if (n429++ === 0) throw new Error('failed: 429 {"message":"inference exceeds tpm/rpm limit","type":"rate_limit_error"}');
+  return fake(chunk);
+};
+const recovered = await translateDoc(jpOne, fast, onceLimited);
+check("429 认得出是限流", isRateLimit('429 rate_limit_error'), "isRateLimit");
+check("撞一次 429 退避后仍然翻成", recovered.failures.length === 0 && recovered.sections[0].out !== recovered.sections[0].src, JSON.stringify(recovered.failures));
+check("429 不计进「保留原文」的告警", !recovered.warnings.some((w) => w.includes("保留原文")), JSON.stringify(recovered.warnings));
+
+// 一直限流：重发名额用完后才当失败（保留原文 + 一条 failure）。
+const always429 = async () => {
+  throw new Error('429 {"message":"inference exceeds tpm/rpm limit"}');
+};
+const dead429 = await translateDoc(jpOne, fast, always429);
+check("连续限流用尽重发后记为没翻成", dead429.failures.length === 1 && dead429.sections[0].failed === true, JSON.stringify(dead429.failures));
+check("连续限流时保留原文", dead429.sections[0].out === dead429.sections[0].src);
+
+// 取消：不等这一块翻完，在飞的子进程当场全杀。
+const sig = {
+  aborted: false,
+  subs: new Set(),
+  onAbort(fn) {
+    this.subs.add(fn);
+    return () => this.subs.delete(fn);
+  },
+};
+let killed = 0;
+const hang = (chunk, o, kind, signal) =>
+  new Promise((_, reject) => {
+    signal?.onAbort?.(() => {
+      killed++;
+      reject(new Aborted());
+    });
+  });
+const cancelled = translateDoc(WIDE, run, hang, { limit: 4, signal: sig }).then(
+  () => null,
+  (e) => e,
+);
+await new Promise((r) => setTimeout(r, 30)); // 让几块真的在飞
+sig.aborted = true;
+for (const fn of [...sig.subs]) fn();
+const cancelErr = await cancelled;
+check("取消立刻抛出 Aborted", cancelErr?.name === "Aborted", String(cancelErr));
+check("取消时在飞的几块全被杀", killed === 4, `killed ${killed}`);
+
+// 旋钮的边界。
+check("并发度夹在 1–8", clampConcurrency(0) === 1 && clampConcurrency(99) === 8 && clampConcurrency(3.6) === 4 && clampConcurrency("abc") === 4, [clampConcurrency(0), clampConcurrency(99), clampConcurrency(3.6), clampConcurrency("abc")].join(","));
+writeTrPrefs({ concurrency: 99 });
+check("prefs 存并发时也夹紧", readTrPrefs().concurrency === 8, String(readTrPrefs().concurrency));
+writeTrPrefs({ concurrency: 2 });
+check("prefs 读回刚存的值，且不碰模型偏好", readTrPrefs().concurrency === 2 && readTrPrefs().model === "", JSON.stringify(readTrPrefs()));
+
 fs.rmSync(STATE, { recursive: true, force: true });
 
 const failed = results.filter((r) => !r.ok);

@@ -578,6 +578,8 @@ export interface TrJob {
   done: number;
   total: number;
   note: string;
+  /** 正在翻的块数（D390）：主进度按节，这个只上副行。 */
+  inflight?: number;
   error?: string;
   startedAt: number;
   finishedAt?: number;
@@ -600,6 +602,8 @@ export interface TrDocResp {
 export interface TrPrefs {
   /** `provider/id`；空串 = 还没设过。 */
   model: string;
+  /** 同时翻几块（1–8）；旧桥不认这个字段，读不到就当默认值。 */
+  concurrency?: number;
 }
 
 export interface TrPrefsResp {
