@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_LOG_MAX_BYTES, RotatingLog, logMaxBytes } from "../src/logfile.ts";
+import { DEFAULT_LOG_MAX_BYTES, DEFAULT_MAX_LINES_PER_SECOND, LogStorm, RotatingLog, logMaxBytes, logMaxLinesPerSecond } from "../src/logfile.ts";
 
 let failures = 0;
 const check = async (name, fn) => {
@@ -93,6 +93,109 @@ await check("PI_WEB_LOG_MAX_BYTES：正整数改上限，0 关掉，读不懂用
   assert.equal(logMaxBytes({ PI_WEB_LOG_MAX_BYTES: "abc" }), DEFAULT_LOG_MAX_BYTES);
   assert.equal(logMaxBytes({ PI_WEB_LOG_MAX_BYTES: "-5" }), DEFAULT_LOG_MAX_BYTES);
   assert.equal(DEFAULT_LOG_MAX_BYTES, 8 * 1024 * 1024);
+});
+
+/** 假时钟 + 可控定时器：风暴的窗口与尾巴都靠它们，测试里不真等一秒。 */
+function harness(maxPerSecond) {
+  const out = [];
+  const clock = { t: 1000 };
+  const timers = [];
+  const storm = new LogStorm((line) => out.push(line), maxPerSecond, {
+    now: () => clock.t,
+    schedule: (fn, ms) => {
+      const handle = { fn, ms };
+      timers.push(handle);
+      return handle;
+    },
+    cancel: (handle) => {
+      const i = timers.indexOf(handle);
+      if (i >= 0) timers.splice(i, 1);
+    },
+  });
+  /** 让时间前进，并把到点的定时器跑掉（跟真实 setTimeout 一样：先摘掉再从表里消失）。 */
+  const tick = (ms) => {
+    clock.t += ms;
+    for (const handle of [...timers]) {
+      const i = timers.indexOf(handle);
+      if (i >= 0) timers.splice(i, 1);
+      handle.fn();
+    }
+  };
+  return { out, clock, timers, storm, tick };
+}
+
+await check("风暴罩子：阀值内一行不少地透传", async () => {
+  const { out, clock, storm } = harness(5);
+  for (const name of ["a", "b", "c", "d", "e"]) {
+    clock.t += 100;
+    storm.write(name);
+  }
+  assert.deepEqual(out, ["a", "b", "c", "d", "e"], "一秒 5 行（= 阀值）不算风暴");
+});
+
+await check("风暴罩子：超了只写一条头，中间全吞，安静下来写一条尾", async () => {
+  const { out, clock, storm, tick } = harness(3);
+  storm.write("a");
+  storm.write("b");
+  storm.write("c");
+  storm.write("d"); // 第 4 行 → 进风暴，自己也被吞
+  storm.write("e");
+  storm.write("f");
+  assert.equal(out.length, 4, "三条正常 + 一条风暴头");
+  assert.match(out[3], /^⚠️ 日志风暴：一秒内超过 3 行/);
+  assert.ok(out[3].includes("d"), "头里带样本行，能认出是哪一条在刷");
+  // 第二个窗口还在刷：只说「还在」，不再逐条写
+  tick(1000);
+  for (let i = 0; i < 30; i += 1) storm.write(`still-${i}`);
+  assert.equal(out.length, 4, "风暴期间一行都不再落 sink");
+  // 第三个窗口真的安静下来：一条尾巴带上吞了多少，随后恢复正常逐行写
+  tick(1000);
+  storm.write("calm"); // 这一行还在被吞的那一段里
+  assert.equal(out.length, 4);
+  tick(1000); // 窗口收尾，发现上一轮只有 1 行 → 收工
+  assert.equal(out.length, 5, "一条尾巴");
+  assert.match(out[4], /^⚠️ 日志风暴结束：.*吞掉 34 行/);
+  assert.ok(out[4].includes("calm"), "尾巴带最后一条样本");
+  storm.write("after");
+  assert.equal(out[5], "after", "之后一行不吞");
+});
+
+await check("风暴罩子：刷完直接彻底安静，结尾那行也得落下来（靠窗口定时器）", async () => {
+  const { out, storm, tick, timers } = harness(3);
+  for (let i = 0; i < 10; i += 1) storm.write(`flood-${i}`);
+  assert.equal(out.length, 4, "三条正常 + 一条风暴头");
+  assert.equal(timers.length, 1, "风暴里挂着一个窗口定时器");
+  tick(1000); // 这一个窗口还在刷（10 行）→ 不收工，重新挂一个
+  assert.equal(out.length, 4, "窗口过去了但上一轮还在刷，不收工");
+  assert.equal(timers.length, 1, "定时器续上");
+  tick(1000); // 这 1 秒一行没写 → 安静
+  assert.equal(out.length, 5, "没人再写，尾巴也照样落下来");
+  assert.match(out[4], /^⚠️ 日志风暴结束：.*吞掉 7 行/);
+  assert.equal(timers.length, 0, "结束了就把定时器摘掉");
+});
+
+await check("风暴罩子：样本截到 200 字符，长行不把日志自己撑爆", async () => {
+  const { out, storm } = harness(1);
+  storm.write("x".repeat(5000));
+  storm.write("y".repeat(5000));
+  const head = out.at(-1);
+  assert.match(head, /^⚠️ 日志风暴/);
+  assert.ok(head.length < 400, `样本被截断（实际 ${head.length} 字符）`);
+  assert.ok(head.includes("…"), "截断处有个省略号");
+});
+
+await check("风暴罩子：maxPerSecond=0 整个罩子关掉，一行不少", async () => {
+  const { out, storm } = harness(0);
+  for (let i = 0; i < 50; i += 1) storm.write(`n${i}`);
+  assert.equal(out.length, 50);
+});
+
+await check("PI_WEB_LOG_MAX_LINES_PER_S：正整数改阀值，0 关掉，读不懂用默认", async () => {
+  assert.equal(logMaxLinesPerSecond({}), DEFAULT_MAX_LINES_PER_SECOND);
+  assert.equal(logMaxLinesPerSecond({ PI_WEB_LOG_MAX_LINES_PER_S: "0" }), 0);
+  assert.equal(logMaxLinesPerSecond({ PI_WEB_LOG_MAX_LINES_PER_S: "20" }), 20);
+  assert.equal(logMaxLinesPerSecond({ PI_WEB_LOG_MAX_LINES_PER_S: "abc" }), DEFAULT_MAX_LINES_PER_SECOND);
+  assert.equal(logMaxLinesPerSecond({ PI_WEB_LOG_MAX_LINES_PER_S: "-1" }), DEFAULT_MAX_LINES_PER_SECOND);
 });
 
 if (failures) {

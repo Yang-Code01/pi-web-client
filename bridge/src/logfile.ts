@@ -90,3 +90,140 @@ export function logMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
   const value = Number(raw);
   return Number.isFinite(value) && value >= 0 ? Math.round(value) : DEFAULT_LOG_MAX_BYTES;
 }
+
+/** 一个窗口就是一秒。 */
+const STORM_WINDOW_MS = 1000;
+/** 一秒内超过这么多行就当风暴。正常一份桥一天几百行，这个阀值是「差了三个数量级」的位置。 */
+export const DEFAULT_MAX_LINES_PER_SECOND = 500;
+
+/** 样本行截多长：够认出是哪一条在刷就行。 */
+const SAMPLE_CHARS = 200;
+
+/**
+ * 日志风暴罩子：把「事件循环里顺手写一行」和「同一个循环失控地写一万行」分开。
+ *
+ * 为什么需要它（除了轮转已经管住的盘）：`log()` 写盘是 `appendFileSync`，**同步**的。
+ * 实测有一份桥日志 50 分钟长到 17 GB，折下来 1500 行/秒 —— 那不是占多少盘的问题，
+ * 是每个事件循环里多了一次同步系统调用，桥自己先卡死。轮转只能把磁盘封在 16 MB，
+ * 但 1500 次/秒的同步写还在。所以这里在「写」之前先算频率：
+ *
+ * - 一秒内超过 `maxPerSecond` 行 → 写**一条**`⚠️ 日志风暴`摘要（带样本行的前 200 字符），
+ *   之后的每一行只计数、不碰盘、不碰 stdout。
+ * - 某个窗口降回到阀值一半以下 → 写一条`⚠️ 日志风暴结束`，带上吞掉多少行、持续多久、
+ *   最后一条是什么，然后恢复正常逐行写。
+ *
+ * 被吞掉的行不丢诊断价值：下一次再出这事，文件里留着「什么形状的行、什么速率、持续多久」，
+ * 正是要查的东西；而逐条留下 4 百万行副本本来也没人看。`maxPerSecond = 0` 关掉整个罩子。
+ */
+export class LogStorm {
+  private readonly sink: (line: string) => void;
+  private readonly maxPerSecond: number;
+  private readonly now: () => number;
+  private readonly schedule: (fn: () => void, ms: number) => unknown;
+  private readonly cancel: (handle: unknown) => void;
+  private started = false;
+  private windowStart = 0;
+  /** 当前窗口里已经过去的行数（含被吞的）。 */
+  private count = 0;
+  private storming = false;
+  private stormStart = 0;
+  private suppressed = 0;
+  private firstSample = "";
+  private lastSample = "";
+  /** 风暴期间按窗口重排的定时器：不打这个，刷了一阵之后彻底安静下来的桥就永远写不出结尾那一行。 */
+  private timer: unknown = null;
+
+  constructor(
+    sink: (line: string) => void,
+    maxPerSecond: number = DEFAULT_MAX_LINES_PER_SECOND,
+    opts: { now?: () => number; schedule?: (fn: () => void, ms: number) => unknown; cancel?: (handle: unknown) => void } = {},
+  ) {
+    this.sink = sink;
+    this.maxPerSecond = maxPerSecond;
+    this.now = opts.now ?? Date.now;
+    this.schedule = opts.schedule ?? ((fn, ms) => {
+      const timer = setTimeout(fn, ms);
+      timer.unref?.();
+      return timer;
+    });
+    this.cancel = opts.cancel ?? ((handle) => clearTimeout(handle as NodeJS.Timeout));
+  }
+
+  /** 外面写日志只有这一个入口；风暴自己产生的摘要行不进这里，直接落 sink。 */
+  write(line: string): void {
+    if (this.maxPerSecond <= 0) {
+      this.sink(line);
+      return;
+    }
+    const t = this.now();
+    this.advance(t);
+    if (this.storming) {
+      // 风暴里的行不进 sink，但**计数不能停**：不然下一个窗口永远是 0 行，
+      // 罩子会以为「已经安静了」马上关门，而实际上还在刷。
+      this.suppressed += 1;
+      this.count += 1;
+      this.lastSample = clip(line);
+      return;
+    }
+    this.count += 1;
+    if (this.count > this.maxPerSecond) {
+      this.storming = true;
+      this.stormStart = t;
+      this.suppressed = 1;
+      this.firstSample = clip(line);
+      this.lastSample = this.firstSample;
+      this.sink(`⚠️ 日志风暴：一秒内超过 ${this.maxPerSecond} 行，接下来只计数不逐条写（样本：${this.firstSample}）`);
+      this.arm();
+      return;
+    }
+    this.sink(line);
+  }
+
+  /** 推进窗口；一个窗口过去就看看上一轮是不是已经安静了。 */
+  private advance(t: number): void {
+    if (!this.started) {
+      this.started = true;
+      this.windowStart = t;
+      return;
+    }
+    if (t - this.windowStart < STORM_WINDOW_MS) return;
+    const previous = this.count;
+    this.windowStart = t;
+    this.count = 0;
+    // 风暴里：只有窗口真的降下来才收工。阀值一半给的是「抖一下别结束」的余量。
+    if (this.storming && previous <= Math.floor(this.maxPerSecond / 2)) this.endStorm(t);
+  }
+
+  private arm(): void {
+    if (this.timer !== null) return;
+    this.timer = this.schedule(() => {
+      this.timer = null;
+      this.advance(this.now());
+      if (this.storming) this.arm();
+    }, STORM_WINDOW_MS);
+  }
+
+  private endStorm(t: number): void {
+    const seconds = Math.max(0.1, (t - this.stormStart) / 1000);
+    const sunk = this.suppressed;
+    this.storming = false;
+    this.suppressed = 0;
+    if (this.timer !== null) {
+      this.cancel(this.timer);
+      this.timer = null;
+    }
+    this.sink(`⚠️ 日志风暴结束：${seconds.toFixed(1)} 秒里吞掉 ${sunk} 行（最后一条：${this.lastSample || this.firstSample}）`);
+  }
+}
+
+function clip(line: string): string {
+  return line.length > SAMPLE_CHARS ? `${line.slice(0, SAMPLE_CHARS)}…` : line;
+}
+
+/** `PI_WEB_LOG_MAX_LINES_PER_S`：正整数改阀值，`0` 关掉风暴罩子；读不懂就用默认值。 */
+export function logMaxLinesPerSecond(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.PI_WEB_LOG_MAX_LINES_PER_S ?? "").trim();
+  if (!raw) return DEFAULT_MAX_LINES_PER_SECOND;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : DEFAULT_MAX_LINES_PER_SECOND;
+}
