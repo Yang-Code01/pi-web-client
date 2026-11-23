@@ -595,15 +595,17 @@ export async function translateSection(
 }
 
 export interface TranslateHooks {
-  /** `done` 是**落盘到哪一节**（只能按原文顺序往前涨），不是「翻完了几节」。 */
+  /** `done` 是**已经翻好几节**（可以有空洞，不再要求从前往后）。 */
   onProgress?: (done: number, total: number, note: string) => void;
-  /** 每往前推进一节就回调一次，调用方可以边翻边落盘（页面能看到进度，不用等整篇）。 */
+  /** 每翻完一节就回调一次；传的是**整份数组**，没翻到的节是空壳（`out === ""`）。 */
   onSection?: (sections: TrSection[]) => void;
   /** 正在翻的块数，供页面写「正在翻 N 块」。 */
   onInflight?: (n: number) => void;
   signal?: CancelSignal;
   /** 同时最多几块；缺省 `TR_CONCURRENCY`。 */
   limit?: number;
+  /** 先翻哪一节（视口所在的那一节）：派活顺序从这里往后绕一圈。 */
+  from?: number;
 }
 
 /** 只翻想要的节；`keep` 里给出旧节（原文没变就沿用旧译文）。 */
@@ -621,9 +623,16 @@ export async function translateDoc(
   const outs: (string[] | null)[][] = segs.map((s) => s.map((seg) => (seg.code ? null : [])));
   const secWarn: string[][] = cuts.map(() => []);
   const secFail: string[][] = cuts.map(() => []);
-  const doneSec: (TrSection | undefined)[] = cuts.map(() => undefined);
-  /** 这一节还剩几块没回来；0 = 这一节完了。 */
+  /**
+   * 缓存里那份「节」的数组：**长度永远等于原文的节数**，没翻到的节是空壳（`out === ""`）。
+   * 这样页面上能按节画骨架、视口优先才有意义（D390 修订）。旧缓存是「连续前缀」，
+   * 读回来照样合法 —— 只是后面几节不在数组里。
+   */
+  const slots: TrSection[] = cuts.map((c) => ({ heading: c.heading, src: c.text, gen: "", out: "" }));
+  /** 这一节还剩几块没回来；0 = 这一节完了（空壳不算完）。 */
   const left = segs.map((s) => s.reduce((n, seg) => n + (seg.code ? 0 : seg.chunks.length), 0));
+  /** 已经翻好几节（含复用的、整节都是代码的）。 */
+  let finished = 0;
 
   const make = (si: number): TrSection => {
     const out = assemble(segs[si], outs[si]);
@@ -631,16 +640,10 @@ export async function translateDoc(
     if (secFail[si].length) sec.failed = true;
     return sec;
   };
-
-  // 只能按原文顺序往前推进：缓存里出现「第 4 节好了、第 2 节空着」，读回来会被 `readDoc` 丢掉，
-  // 页面按下标配对左右栏也会错位。慢的那一节会挡住后面显示 —— 翻译本身照旧并行。
-  let flushed = 0;
-  const flush = () => {
-    while (flushed < total && doneSec[flushed]) {
-      flushed++;
-      hooks.onSection?.(doneSec.slice(0, flushed) as TrSection[]);
-      hooks.onProgress?.(flushed, total, cuts[flushed - 1].heading || "开头");
-    }
+  const report = (si: number) => {
+    finished++;
+    hooks.onSection?.(slots.slice());
+    hooks.onProgress?.(finished, total, cuts[si].heading || "开头");
   };
 
   // 没变的节直接沿用旧译文：不调模型，也不去抢并发名额。
@@ -649,23 +652,39 @@ export async function translateDoc(
     // 失败节（含旧缓存里 out === src 的坏结果）绝不复用，否则「更新」会一直把原文摆回来；
     // 但人已经接手改过的译文（out !== gen）以人写的为准，别再让机器覆盖掉。
     if (old && old.src === cuts[si].text && old.out && old.out !== old.src && (!old.failed || old.out !== old.gen)) {
-      doneSec[si] = { ...old, heading: cuts[si].heading };
+      slots[si] = { ...old, heading: cuts[si].heading };
       left[si] = 0;
+      finished++;
     }
   }
-  flush();
+  // 整节都是代码（或只有空白）：没有块要翻，直接算完成。
+  for (let si = 0; si < total; si++) {
+    if (slots[si].out) continue;
+    if (!left[si]) {
+      slots[si] = make(si);
+      finished++;
+    }
+  }
+  // 先把整份骨架落一次盘（页面立刻知道总共有几节、哪些还空着），再把已复用的节报出去。
+  hooks.onSection?.(slots.slice());
+  hooks.onProgress?.(finished, total, "开头");
 
   const tasks: { si: number; seg: number; ci: number; chunk: string }[] = [];
   for (let si = 0; si < total; si++) {
-    if (doneSec[si]) continue;
+    if (slots[si].out) continue;
     segs[si].forEach((seg, i) => {
       if (seg.code) return;
       seg.chunks.forEach((chunk, ci) => tasks.push({ si, seg: i, ci, chunk }));
     });
-    // 整节都是代码（或只有空白）：没有块要翻，直接算完成。
-    if (!left[si]) doneSec[si] = make(si);
   }
-  flush();
+
+  // 视口优先：从 `from` 那一节开始往后派活，绕一圈回到开头。只影响**派的顺序**，
+  // 不影响落盘（每节翻完就写，谁先好了谁先显示）。
+  if (typeof hooks.from === "number" && total > 1) {
+    const from = Math.min(total - 1, Math.max(0, Math.round(hooks.from)));
+    const rank = (si: number) => (si >= from ? si - from : total - from + si);
+    tasks.sort((a, b) => rank(a.si) - rank(b.si) || a.si - b.si);
+  }
 
   const pool = new Pool(clampConcurrency(hooks.limit), (n) => hooks.onInflight?.(n));
   await Promise.all(
@@ -677,8 +696,8 @@ export async function translateDoc(
         secWarn[t.si].push(...r.warnings);
         secFail[t.si].push(...r.failures);
         if (--left[t.si] === 0) {
-          doneSec[t.si] = make(t.si);
-          flush();
+          slots[t.si] = make(t.si);
+          report(t.si);
         }
       }),
     ),
@@ -686,7 +705,7 @@ export async function translateDoc(
   hooks.onInflight?.(0);
 
   return {
-    sections: doneSec.slice(0, flushed) as TrSection[],
+    sections: slots,
     warnings: secWarn.flat(),
     failures: secFail.flat(),
   };
@@ -903,8 +922,12 @@ export function cacheFile(abs: string, lang: TrLang): string {
 export function readDoc(abs: string, lang: TrLang): TrDoc | null {
   const raw = readJson<TrDoc | null>(cacheFile(abs, lang), null);
   if (!raw || !Array.isArray(raw.sections) || !raw.sections.length) return null;
-  const sections = raw.sections.filter((s) => s?.out && s?.src);
-  if (!sections.length) return null;
+  // D390 修订：允许**空洞**（`src` 在、`out` 还是空串）—— 视口优先时先翻中间几节，
+  // 前面的晚点回来。旧缓存是「连续前缀」，读回来同样合法。
+  const sections = raw.sections.filter((s) => s?.src).map((s) => ({ ...s, gen: s.gen ?? "", out: s.out ?? "" }));
+  // 一节都没翻成（整份都是空壳）时仍然当「没有译文」：否则页面会显示一排空骨架、
+  // 却没有任何任务在跑，看起来像卡死了。
+  if (!sections.some((s) => s.out)) return null;
   return { ...raw, sections, warnings: raw.warnings ?? [] };
 }
 

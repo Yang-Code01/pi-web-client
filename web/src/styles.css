@@ -2653,6 +2653,8 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .tr-pending { margin: 10px 16px 20px; padding: 12px 14px; border: 1px dashed var(--line); border-radius: 8px; }
 .tr-pending-head { font-size: 12px; color: var(--dim); margin-bottom: 10px; }
 .tr-skel { height: 10px; border-radius: 4px; background: var(--line-soft); margin: 8px 0; animation: tr-pulse 1.4s ease-in-out infinite; }
+.tr-out.hole { padding-top: 14px; }
+.tr-hole-head { font-size: 12px; color: var(--faint); margin-bottom: 10px; }
 @keyframes tr-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
 .tr-cmp { display: block; }
 .tr-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-bottom: 1px solid var(--line-soft); }

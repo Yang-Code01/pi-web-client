@@ -122,6 +122,8 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   body.classList.add("tr-body");
 
   const running = v.job?.status === "running";
+  // 空壳节：`out` 还是空串（视口优先时先翻中间那几节，前面的会晚点回来，D390 修订）。
+  const holes = v.doc ? v.doc.sections.filter((s) => !s.out).length : 0;
   const bar = el("div", "tr-bar");
   const chips = el("div", "tr-chips");
   chips.append(el("span", "tr-chip lang", trLangLabel(v.lang)));
@@ -141,6 +143,7 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   else if (v.error) brief = v.error;
   else if (v.msg) brief = v.msg;
   else if (v.stale && v.doc) brief = tr("原文改过了，点「更新」只重翻变了的节");
+  else if (v.doc && holes) brief = tr("还有 {n} 节没翻完", { n: holes });
   else if (v.doc) {
     const n = v.doc.sections.filter((s) => s.failed || s.out === s.src).length;
     brief = n ? tr("{n} 节没翻成，点「更新」重翻", { n }) : tr("译文是 {p1} 生成的", { p1: modelName(v.doc, null) });
@@ -188,6 +191,9 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
         v.dirty ? "primary" : "",
       );
       btn(tr("看对照"), tr("回到只读的左右对照"), () => act.edit(false));
+    } else if (holes) {
+      // 还有空壳：编辑整篇 / 写回原文都还不该开（会把没翻的节当成空白提交）。
+      btn(tr("继续翻译"), tr("把还没翻的 {n} 节接着翻，先翻你正在看的那一节", { n: holes }), () => act.update(false), "primary");
     } else {
       btn(tr("改译文"), tr("直接编辑译文；存了只改缓存，不碰原文"), () => act.edit(true));
       btn(tr("同步原文"), tr("把你在译文里改的地方写回原文文件（会先给你看差异）"), () => act.sync());
@@ -254,6 +260,19 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
     const src = el("div", "tr-src md-doc");
     src.append(renderMarkdown(sec.src, { doc: true }));
     const out = el("div", "tr-out md-doc");
+    if (!sec.out) {
+      // 还没翻到：右边画骨架，左边照常给原文 —— 「排队中」是看得见的。
+      out.classList.add("hole");
+      out.append(el("div", "tr-hole-head", tr("还没翻到这一节")));
+      for (const width of ["84%", "62%", "73%"]) {
+        const line = el("div", "tr-skel");
+        line.style.width = width;
+        out.append(line);
+      }
+      row.append(src, out);
+      cmp.append(row);
+      return;
+    }
     out.append(renderMarkdown(sec.out, { doc: true }));
     if (sec.failed || sec.out === sec.src) {
       out.classList.add("raw");

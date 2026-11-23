@@ -15,6 +15,7 @@ import {
   joinSections,
   packChunks,
   planSync,
+  readDoc,
   readTrPrefs,
   reverseBlock,
   splitBlocks,
@@ -23,6 +24,7 @@ import {
   tableDiff,
   translateDoc,
   trDefaultModel,
+  writeDoc,
   writeTrPrefs,
   Aborted,
   isRateLimit,
@@ -400,10 +402,11 @@ const snaps = [];
 const progress = [];
 await translateDoc(WIDE, run, uneven, {
   limit: 4,
-  onSection: (s) => snaps.push(s.length),
+  onSection: (s) => snaps.push(s.filter((x) => x.out).length),
   onProgress: (done, total, note) => progress.push([done, total, note]),
 });
-check("onSection 每次多一节、不回头", snaps.every((n, i) => n === i + 1) && snaps.length === 8, JSON.stringify(snaps));
+// D390 修订：onSection 每次给整份数组（可以有空洞），所以看的是「已翻节数」而不是数组长度。
+check("onSection 的已翻节数每次加一、不回头", snaps.every((n, i) => (i === 0 ? n === 0 : n === snaps[i - 1] + 1)) && snaps.length === 9, JSON.stringify(snaps));
 check("onProgress 的 done 单调不减且到顶", progress.every((p, i) => i === 0 || p[0] >= progress[i - 1][0]) && progress.at(-1)?.[0] === 8, JSON.stringify(progress.slice(-2)));
 
 // 在飞块数要报给页面（副行那句「正在翻 N 块」）。
@@ -477,6 +480,54 @@ check("prefs 存并发时也夹紧", readTrPrefs().concurrency === 8, String(rea
 writeTrPrefs({ concurrency: 2 });
 check("prefs 读回刚存的值，且不碰模型偏好", readTrPrefs().concurrency === 2 && readTrPrefs().model === "", JSON.stringify(readTrPrefs()));
 
+
+
+/* ── D390 修订：缓存可以有空洞（视口优先） ─────────────────────────────── */
+
+// 整份数组一次给（骨架先落盘），长度永远等于原文的节数。
+const shapes = [];
+await translateDoc(WIDE, run, uneven, { limit: 4, onSection: (s) => shapes.push(s.map((x) => (x.out ? "x" : "·")).join("")) });
+check("onSection 每次给整份数组（长度 = 总节数）", shapes.every((x) => x.length === 8), shapes[0]);
+check("第一份是全空壳（先把骨架落盘）", /^·+$/.test(shapes[0] ?? ""), shapes[0]);
+check("最后一份全填满", /^x+$/.test(shapes.at(-1) ?? ""), shapes.at(-1));
+
+// 视口优先：从 from 那一节开始派活，绕一圈回到开头。
+const filled = [];
+let seen = new Set();
+await translateDoc(WIDE, run, uneven, {
+  limit: 1,
+  from: 2,
+  onSection: (s) => {
+    s.forEach((x, i) => {
+      if (x.out && !seen.has(i)) filled.push(i);
+    });
+    seen = new Set(s.flatMap((x, i) => (x.out ? [i] : [])));
+  },
+});
+check("视口优先：先翻 from 那一节", filled[0] === 2, JSON.stringify(filled));
+check("然后绕一圈回到开头", filled.at(-1) === 1 && filled.length === 8, JSON.stringify(filled));
+
+// readDoc 保留空洞；整份都是空壳时仍然当「没有译文」。
+const holesAbs = path.join(STATE, "holes.md");
+const holeDoc = (fills) => ({
+  abs: holesAbs,
+  lang: "zh",
+  provider: "p",
+  model: "m",
+  mtime: 1,
+  size: 1,
+  startedAt: 1,
+  warnings: [],
+  sections: [
+    { heading: "## a", src: "## a\n\na", gen: fills ? "甲" : "", out: fills ? "甲" : "" },
+    { heading: "## b", src: "## b\n\nb", gen: "", out: "" },
+  ],
+});
+writeDoc(holeDoc(true));
+const back = readDoc(holesAbs, "zh");
+check("readDoc 保留空洞（长度仍是 2）", back?.sections.length === 2 && back.sections[1].out === "", JSON.stringify(back?.sections.map((x) => x.out)));
+writeDoc(holeDoc(false));
+check("整份都是空壳时当作没有译文", readDoc(holesAbs, "zh") === null);
 
 /* ── D390：默认模型跟随 pi 全局设置，不写死 ───────────────────────────── */
 

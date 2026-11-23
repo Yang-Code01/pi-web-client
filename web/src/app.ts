@@ -11668,6 +11668,8 @@ export class App {
   private async startTr(v: Viewer, lang: string, provider: string, model: string, force: boolean): Promise<void> {
     const info = v.info;
     if (!info) return;
+    // 视口在整篇的哪个位置：要在切到对照面板**之前**量，切了之后滚动容器就换了。
+    const at = this.scrollRatio(v.body);
     const t = this.trOf(v);
     t.lang = lang;
     t.busy = true;
@@ -11678,7 +11680,7 @@ export class App {
     v.full = true;
     this.paintViewer();
     try {
-      const { job } = await api.trStart(v.sessionId, { path: info.abs, lang, provider, model, force });
+      const { job } = await api.trStart(v.sessionId, { path: info.abs, lang, provider, model, force, at });
       // 选过一次就记住，下次直接用它（设置页里能改回去）。
       this.rememberTrModel(`${provider}/${model}`);
       if (this.viewer !== v) return;
@@ -11691,6 +11693,17 @@ export class App {
       t.error = errText(err);
     }
     this.paintViewer();
+  }
+
+  /**
+   * 视口在整篇的 0–1 位置（D390 修订）：桥拿它决定先翻哪一节 —— 滚到中间点「译」，
+   * 就先翻你正在看的那节，而不是从头开始。量不出来（不能滚 / 太短）就返回 undefined。
+   */
+  private scrollRatio(box: HTMLElement | null): number | undefined {
+    if (!box) return undefined;
+    const span = box.scrollHeight - box.clientHeight;
+    if (span <= 4) return undefined;
+    return Math.min(1, Math.max(0, box.scrollTop / span));
   }
 
   /** 进度轮询：只刷条上的字；新的一节到了才重画（重画会重建 DOM，保住滚动位置）。 */

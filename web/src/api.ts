@@ -384,7 +384,8 @@ export const api = {
       ...(model === undefined ? {} : { model }),
       ...(concurrency === undefined ? {} : { concurrency }),
     }),
-  trStart: (sessionId: string, body: { path: string; lang: string; provider: string; model: string; force?: boolean }) =>
+  /** `at`：页面视口在整篇的 0–1 位置，桥拿它决定先翻哪一节（D390 修订）。 */
+  trStart: (sessionId: string, body: { path: string; lang: string; provider: string; model: string; force?: boolean; at?: number }) =>
     postJson<{ job: TrJob }>("/api/translate/start", { sessionId, ...body }),
   trJob: (id: string) => req<{ job: TrJob }>(`/api/translate/job?id=${encodeURIComponent(id)}`),
   trCancel: (id: string) => postJson<{ ok: boolean }>("/api/translate/cancel", { id }),
