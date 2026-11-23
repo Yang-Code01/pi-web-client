@@ -92,6 +92,44 @@
   body[data-variant="E"] .bell:hover { color: var(--text); }
   body[data-variant="E"] .bell-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--warn); flex: none; }
 
+  /* ── Mac idiom（F–I）：单色线描图标 + 图标右上角的小徽标，macOS 那套 ────────── */
+  .bell-badge {
+    display: none;
+    align-items: center; justify-content: center;
+    min-width: 14px; height: 14px; padding: 0 3px;
+    border-radius: 999px;
+    background: var(--danger); color: #fff;
+    font-size: 9.5px; font-weight: 600; line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+  }
+
+  /* F：线描铃 + 把徽标叠在图标右上角（不占额外宽度，像 macOS 的 Dock / 邮箱） */
+  body[data-variant="F"] .bell { position: relative; border: 1px solid transparent; background: transparent; color: var(--dim); padding: 3px 9px 3px 7px; }
+  body[data-variant="F"] .bell:hover { background: var(--panel-2); border-color: var(--line); }
+  body[data-variant="F"] .bell.has { color: var(--text); }
+  body[data-variant="F"] .bell-badge { display: inline-flex; position: absolute; top: -3px; right: 0; transform: scale(0.86); transform-origin: top right; }
+  body[data-variant="F"] #count { display: none; }
+
+  /* G：不要图标 —— ★ 行右端就一枚 mac 徽标（数字在里面），比 F 再少一层 */
+  body[data-variant="G"] .bell { border: 1px solid transparent; background: transparent; padding: 3px 6px; }
+  body[data-variant="G"] .bell:hover { background: var(--panel-2); }
+  body[data-variant="G"] .bell svg { display: none; }
+  body[data-variant="G"] .bell-badge { display: inline-flex; min-width: 17px; height: 17px; font-size: 10.5px; }
+  body[data-variant="G"] #count { display: none; }
+
+  /* H：工具条上的裸文字（macOS 工具条那种没有边框的文字按钮） */
+  body[data-variant="H"] .bell { border: 0; background: transparent; color: var(--dim); padding: 3px 6px; font-size: 12px; }
+  body[data-variant="H"] .bell:hover { color: var(--text); }
+  body[data-variant="H"] .bell svg { display: none; }
+  body[data-variant="H"] .bell-badge { display: none; }
+
+  /* I：图标升成 accent 蓝（macOS 的选中态），不显示数字 —— 数量只在清单里 */
+  body[data-variant="I"] .bell { border: 1px solid transparent; background: transparent; color: var(--accent); padding: 3px 6px; }
+  body[data-variant="I"] .bell:hover { background: var(--accent-bg); border-color: var(--accent-dim); }
+  body[data-variant="I"] .bell-badge { display: none; }
+  body[data-variant="I"] #count { display: none; }
+
   .count-empty { display: none; }
 
   /* 其余场景的说明块 */
@@ -144,6 +182,7 @@
         <path d="M6.6 11.6a1.5 1.5 0 0 0 2.8 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
       </svg>
       <span class="bell-dot" aria-hidden="true"></span>
+      <span class="bell-badge" id="badge" aria-hidden="true">2</span>
       <span id="count">等你 2</span>
     </button>
     <button class="plus" title="置顶">＋</button>
@@ -174,12 +213,16 @@
 </div>
 
 <script type="module">
-const NAMES = { A: "文字胶囊", B: "线描铃铛", C: "方章数字", D: "挂在胶囊上", E: "一个点 + 小字" };
+const NAMES = { A: "文字胶囊", B: "线描铃铛", C: "方章数字", D: "挂在胶囊上", E: "一个点 + 小字", F: "Mac · 图标带徽标", G: "Mac · 只留徽标", H: "Mac · 工具条裸文字", I: "Mac · 图标升蓝" };
 const BETS = {
   A: "<b>A · 文字胶囊</b>：跟 ★ 行的 pin-chip、标签行的 ws-tab 同一种语言 —— 圆角、细边、12px 文字，<b>没有图标</b>。赌的是「这一排已经是文字了，多一个 emoji 就是异类」。代价：占宽（「等你 2」≈ 52px），而且和 pin-chip 长得差不多，容易被当成可点的会话。",
   B: "<b>B · 线描铃铛</b>：把 emoji 换成与顶栏同stroke 的 SVG，颜色只到 <code>--dim</code>；有件事在等时才升到 <code>--text</code>。赌「换个图标就够」，继续用铃铛这个全世界都认识的隐喻。代价：仍然是一枚图标，与这一排的文字不齐。",
   C: "<b>C · 方章数字</b>：不做图标，就一个 <b>1px 细边的方块，里面是数字</b>。赌「你要的是数字，不是铃铛」—— 它像计数器，不像提醒。代价：第一眼没人知道那是什么，得靠 hover title 或首次出现的说明。",
   D: "<b>D · 挂在当前会话胶囊上</b>：不新增任何控件，2 件在等就画在 <code>api 重构</code> 那颗胶囊的尾巴上。赌「你在等的是会话，不是『通知』」。代价：★ 行空着（没有本区会话）时无处可挂，得退回别的位置；而且那个数字看起来像这个小会话自己的未读数。",
+  F: "<b>F · Mac：图标带徽标</b>：单色线描铃（<code>currentColor</code>），数量是<b>叠在图标右上角的一枚红圆徽标</b>，不占额外宽度 —— macOS 的 Dock / 邮箱就是这套。赌「一套排版里只应该有一种提醒语言」。代价：徽标压在图标上，字号小一点时 9px 的数字会糊。",
+  G: "<b>G · Mac：只留徽标</b>：连图标都不要，★★ 行右端就一枚红圆数字。比 F 更少一层视觉，但「这是提醒还是未读」全靠位置与上下文。",
+  H: "<b>H · Mac：工具条裸文字</b>：不带边框的文字按钮（macOS 工具条里那种），写「2 件在等」。与 ★ 行的胶囊相比，它<b>没有底色也没有描边</b>，只在 hover 时浮一个浅灰块。赌「文字比图标更不像装饰」。",
+  I: "<b>I · Mac：图标升蓝</b>：有事情在等时，铃铛直接变成 <code>--accent</code> 蓝（macOS 的选中态），<b>完全不显示数字</b>。赌「知道有人在等就够了，具体几件点开看」。代价：多件与一件长得一样，也没法一眼看出堆了三条。",
   E: "<b>E · 一个点 + 小字</b>：最弱的一档 —— 6px 的点 + 「2 件在等」的小字，颜色只到 <code>--faint</code>。赌「这条指示器不该抢任何注意力」。代价：太安静，盯着中间看的时候根本注意不到 —— 而这正是当初要做它的理由。",
 };
 
@@ -192,17 +235,19 @@ function paint() {
   $("#curV").textContent = `${state.variant} · ${NAMES[state.variant]}`;
   $("#bet").innerHTML = BETS[state.variant];
   const n = state.count;
-  const label = state.variant === "A" ? `等你 ${n}` : state.variant === "E" ? `${n} 件在等` : String(n);
+  const label = state.variant === "A" ? `等你 ${n}` : state.variant === "E" || state.variant === "H" ? `${n} 件在等` : String(n);
   $("#count").textContent = n ? label : "";
   $("#c1").textContent = String(state.count);
 
   /* 数字为 0 时：A / C 直接不出现（没有事情在等就不该占位置），B / E 退成灰的图标，D 的尾巴消失 */
   const bell = $("#bell");
   bell.classList.toggle("has", state.count > 0);
-  bell.hidden = state.count === 0 && (state.variant === "A" || state.variant === "C");
+  /* 0 件时整颗消失（已定）：A / C / F / G / H / I 都收起来；B / E 留一枚灰的 */
+  bell.hidden = state.count === 0 && !["B", "E", "D"].includes(state.variant);
   const svg = bell.querySelector("svg");
-  svg.hidden = state.variant === "A" || state.variant === "C" || state.variant === "D";
+  svg.hidden = ["A", "C", "D", "G", "H"].includes(state.variant);
   bell.querySelector(".bell-dot").hidden = state.variant !== "E";
+  $("#badge").textContent = String(state.count);
   $("#chipTail").textContent = String(state.count);
   $("#chipTail").style.display = state.count ? "" : "none";
 }
@@ -216,8 +261,9 @@ function setVariant(v) {
   history.replaceState(null, "", url);
 }
 
-$("#prevV").onclick = () => setVariant(VARIANT_KEYS[(VARIANT_KEYS.indexOf(state.variant) - 1 + 5) % 5]);
-$("#nextV").onclick = () => setVariant(VARIANT_KEYS[(VARIANT_KEYS.indexOf(state.variant) + 1) % 5]);
+const step = (d) => setVariant(VARIANT_KEYS[(VARIANT_KEYS.indexOf(state.variant) + d + VARIANT_KEYS.length) % VARIANT_KEYS.length]);
+$("#prevV").onclick = () => step(-1);
+$("#nextV").onclick = () => step(1);
 document.addEventListener("keydown", (e) => {
   if (e.target.closest("input, textarea, [contenteditable]")) return;
   if (e.key === "ArrowLeft") $("#prevV").click();

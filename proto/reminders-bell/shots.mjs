@@ -14,7 +14,7 @@ const require = createRequire(path.join(here, "../../../../pi-web-client/package
 const { chromium } = require("playwright");
 
 const file = pathToFileURL(path.join(here, "index.html")).href;
-const which = process.argv.slice(2).length ? process.argv.slice(2) : ["A", "B", "C", "D", "E"];
+const which = process.argv.slice(2).length ? process.argv.slice(2) : ["A", "B", "C", "D", "E", "F", "G", "H", "I"];
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1180, height: 420 }, locale: "zh-CN", deviceScaleFactor: 2 });
@@ -42,7 +42,7 @@ for (const v of which) {
 }
 
 /* 0 件时各变体怎么收场 */
-for (const v of ["A", "B", "C", "D", "E"]) {
+for (const v of ["A", "B", "C", "D", "E", "F", "G", "H", "I"]) {
   await page.goto(`${file}?variant=${v}`);
   await page.click("#btnCount");
   await page.waitForTimeout(80);
