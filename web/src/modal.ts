@@ -125,6 +125,16 @@ export function mountOverlay(root: HTMLElement): void {
 }
 
 /**
+ * `#app` 上挂着 `zoom: var(--ui-scale)`（外观「字号」）：`getBoundingClientRect()` 量到的是**视觉** px，
+ * 而写进 `style.left/top` 的是布局 px，中间差一个缩放。挂进 `#app` 的浮层贴锚点时先除一次。
+ */
+export function appZoom(): number {
+  const app = document.getElementById("app");
+  const raw = Number.parseFloat(getComputedStyle(app ?? document.documentElement).getPropertyValue("--ui-scale"));
+  return Number.isFinite(raw) && raw > 0 ? raw : 1;
+}
+
+/**
  * Mac 主题下给浮层挂退场（`.mac-leaving`，mac.css 里配 `mac-fade-out` / `mac-window-out`）。
  * 返回 true 表示动画已经挂上，调用方负责在 LEAVE_MS 之后把它移除；false 就当场移除。
  *

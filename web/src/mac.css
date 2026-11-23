@@ -342,6 +342,22 @@ html[data-ui="mac"] [data-mac-surface="dock"] {
 @media (max-width: 720px) {
   html[data-ui="mac"] [data-mac-surface="window"] > .repos-sheet { border-radius: 0; border: 0; }
 }
+/* 预览右栏是「纸」：正文 / 代码 / PDF 要读，底保持不透明；圆角只留靠内那侧，头部换成玻璃。
+   它贴的是窗口右缘，不是浮在中间的一扇窗（D111 那两扇平等的窗里的预览那扇）。 */
+html[data-ui="mac"] .viewer {
+  background: var(--bg);
+  border-left: 0.5px solid var(--mac-glass-line);
+  border-radius: 14px 0 0 14px;
+  box-shadow: var(--mac-shadow-window);
+}
+html[data-ui="mac"] .viewer.full { border-radius: 0; }
+html[data-ui="mac"] .viewer-head {
+  background: var(--mac-glass);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border-bottom: 0.5px solid var(--mac-glass-line);
+  box-shadow: inset 0 -0.5px 0 var(--mac-glass-hi);
+}
 /* 灯箱：图本身当一张纸，圆角比窗口小一档；背景在遮罩那一半已经调暗了。 */
 html[data-ui="mac"] [data-mac-surface="window"] > .image-view-img { border-radius: 12px; }
 /* 对话里的侧卡与分支卡不是浮层，材质级管不到它们：只借玻璃与窗影。 */

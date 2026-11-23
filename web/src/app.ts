@@ -100,7 +100,7 @@ import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } f
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { ReminderCenter, type Reminder } from "./reminders.ts";
-import { escapeTopLayer, LEAVE_MS, markSurface, overlaysOpen, pushEscLayer, retireOverlay, startLeaving, type SurfaceKind, type SurfaceOpts } from "./modal.ts";
+import { appZoom, escapeTopLayer, LEAVE_MS, markSurface, mountOverlay, overlaysOpen, pushEscLayer, retireOverlay, startLeaving, type SurfaceKind, type SurfaceOpts } from "./modal.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -7990,7 +7990,7 @@ export class App {
       this.commitWsTabRename();
     };
     this.wsTabRename = { id: group.id, input, away };
-    document.body.append(input);
+    mountOverlay(input);
     // 捕获阶段：点标签 / 左栏 / 空白都先提交，再让那一下自己的点击继续走。
     document.addEventListener("pointerdown", away, true);
     this.placeWsTabRename();
@@ -8029,9 +8029,11 @@ export class App {
       return;
     }
     const box = tabRenameBox(tab.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
-    st.input.style.left = `${box.left}px`;
-    st.input.style.top = `${box.top}px`;
-    st.input.style.width = `${box.width}px`;
+    // 挂进 #app 后要按 zoom 换算：`tabRenameBox()` 给的是视觉 px。
+    const z = appZoom();
+    st.input.style.left = `${box.left / z}px`;
+    st.input.style.top = `${box.top / z}px`;
+    st.input.style.width = `${box.width / z}px`;
   }
 
   private dropWs(id: string): void {

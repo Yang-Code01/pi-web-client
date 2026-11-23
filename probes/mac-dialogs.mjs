@@ -391,7 +391,7 @@ try {
   // 只写「它确实不同、而且应该不同」的两条：灯箱的图圆角小一档；预览右栏有自己的入场（D111 那扇窗）。
   const OVERRIDE = {
     "注入：图片灯箱 image-view": { radius: "12px" },
-    "注入：预览右栏 viewer": { anim: "viewer-in" },
+    "注入：预览右栏 viewer": { anim: "viewer-in", radius: "14px 0px 0px 14px" },
   };
   const fails = [];
   for (const e of SCAN_EXEMPT) {
