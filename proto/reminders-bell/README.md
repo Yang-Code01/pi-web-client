@@ -43,4 +43,8 @@
 
 ## 结论
 
-方向已指到 Mac idiom（F–I 那四片）。还没定的是其中哪一片 —— 也可以组合（比如「F 的徽标 + D 的位置」、「B 的图标 + G 的纯数字」）。落地时按 `web/src` 的规矩重写：`tr()` 三语、`#app` 里不许裸 `vh`/`vw`、图标走 `currentColor` 而不是 emoji。
+**F 赢了**（2026-11-23）：线描铃 + 图标右上角一枚小徽标。理由是这套界面本来就是 macOS 的排版语言 —— 工具条单色线描图标 + 徽标，而不是图标旁边跟一枚黄药丸。
+
+已落进 `feat/reminders` 的真实代码（`web/src/reminders.ts` 的 `bellIcon()` + `reminders.css` 的 `.remind-bell-count`）：图标走 `currentColor`（有事情在等时升到 `--text`），徽标用 `--danger`、9.5px、`transform: scale(.86)` 挂在角上。0 件时整颗消失（先定下的那条）。
+
+B–E、G–I 作为反例留在这里：B 证明「换个图标不够」（数字还是得另占一块），C 证明「只有数字没人认得」，D 的代价是 ★ 行空着没处挂，I 丢掉了「有几件」这个信息。落地时按 `web/src` 的规矩重写：`tr()` 三语、`#app` 里不许裸 `vh`/`vw`、图标走 `currentColor` 而不是 emoji。
