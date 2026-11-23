@@ -7704,7 +7704,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **验证：** `node --experimental-strip-types bridge/tests/logfile-unit.mjs`（新增，`npm run test:logfile`：不越限不产生 `.1`、越限搬一代且只留一代、开门就是怪物时截断、`maxBytes=0` 保持老行为、写失败照旧抛、环境变量四种读法）；`node bridge/tests/fileindex.mjs`（新增 `autoScanOnBoot` 四态）；`npm run typecheck`；`npm run build:bridge` 后用 `PI_WEB_STATE=<tmp> PI_WEB_LOG_MAX_BYTES=600` 真起一份桥，日志里是 `filesearch: off (0 entries)，临时状态目录不自动扫描`，`filesearch.db` 只有开库的 96 KB（不再有 1.2 GB 的索引）。
 
-## D396 日志风暴罩子：一秒超过 500 行就不再逐条写（#PR；用户「为啥会产生这么多 log」2026-11-24）
+## D396 日志风暴罩子：一秒超过 500 行就不再逐条写（#656；用户「为啥会产生这么多 log」2026-11-24）
 
 **问题（先数出来的量级，不是"感觉日志多"）：**
 
