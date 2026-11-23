@@ -42,6 +42,7 @@ import { defaultPermission } from "./permissiondefault.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { describeStoreSkills, installSkill, installedSkills, previewSource, removeSkill, searchSkillStore } from "./skillstore.ts";
 import { Notifier } from "./notify.ts";
+import { diskReminders, type Reminder, type ReminderSettings } from "./reminders.ts";
 import { anyPresent, dropClient, reportPresence } from "./presence.ts";
 import { Tunnel, findCloudflared, type TunnelState } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
@@ -265,6 +266,25 @@ function serveStatic(res: http.ServerResponse, rel: string): void {
     return;
   }
   fs.createReadStream(file).pipe(res);
+}
+
+/**
+ * D389：`/api/notify` 的凭据。一个本机 token 文件（首次用到时生成、600），脚本可以
+ * `curl -H "X-Notify-Token: $(cat <state>/notify-token)"`。它只证明「你有本机文件系统权限」，
+ * 所以回环之外一律不认（路由那边还挡了隧道）。
+ */
+function notifyToken(): string {
+  const file = statePath("notify-token");
+  try {
+    const existing = fs.readFileSync(file, "utf8").trim();
+    if (existing) return existing;
+  } catch {
+    /* 还没有：生成一份 */
+  }
+  const token = randomUUID().replace(/-/g, "");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, token, { mode: 0o600 });
+  return token;
 }
 
 function readBody(req: http.IncomingMessage): Promise<any> {
@@ -559,6 +579,14 @@ async function main(): Promise<void> {
    */
   const mcpFileLock = (local: boolean, cwd: string | null) => `mcp:${mcpFilePath(local, cwd)}`;
   const notifier = new Notifier();
+  /* D389：提醒中心。桥一重启，上一次还挂着的审批 / 问卷已经跟着 pi 子进程一起死了 —— 先把它们
+     全部转「已失效」，免得页面上一觉醒来还挂着几条永远点不动的「在等你」。 */
+  const reminders = diskReminders();
+  reminders.markStaleAll();
+  /* 提前把 `/api/notify` 的 token 落盘：脚本 / 定时任务不用等第一次调用才看见它。 */
+  notifyToken();
+  /** 清单里一条非阻塞提醒的来源标签（脚本没给就用这个）。 */
+  const reminderView = () => ({ type: "reminders", ...reminders.view() });
   const tunnelBin = findCloudflared();
   const tunnel = new Tunnel(cfg.port, tunnelBin ?? "");
 
@@ -702,6 +730,31 @@ async function main(): Promise<void> {
       settled = true;
       log(`ask ${handle.id} → ${outcome.cancelled ? "cancelled" : `${outcome.answers?.length ?? 0} answer(s)`}`);
       return json(res, 200, outcome);
+    }
+
+    // ------------------------------------------------------------ 提醒中心的通用入口（D389）
+    // 脚本 / 定时任务 / 构建往这里塞一句「跑完了 / 失败了」。它站在 cookie 闸**前面**（cron 没有
+    // cookie），所以只认「本机回环 + state/notify-token」，公网隧道一律 403。
+    if (url.pathname === "/api/notify" && req.method === "POST") {
+      const remote = req.socket.remoteAddress ?? "";
+      const loopback = !publicReq && (remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1");
+      const token = String(req.headers["x-notify-token"] ?? "");
+      /* 两条路：登录过的页面（cookie）随便塞；脚本没有 cookie，就只认「本机回环 + token」。 */
+      const byCookie = ok && !publicReq;
+      const byToken = loopback && !!token && token === notifyToken();
+      if (!byCookie && !byToken) {
+        return fail(res, 403, "notify_denied", "要么用登录过的页面，要么从本机回环带上 X-Notify-Token（见状态目录的 notify-token）");
+      }
+      const body = (await readBody(req).catch(() => null)) as any;
+      const title = String(body?.title ?? "").trim();
+      if (!title) return fail(res, 400, "bad_title", "title 不能为空");
+      const text = String(body?.body ?? "").replace(/\s+/g, " ").slice(0, 140);
+      const source = String(body?.source ?? body?.sessionName ?? "脚本").slice(0, 40);
+      const url = typeof body?.url === "string" && body.url.startsWith("/") ? body.url.slice(0, 300) : "";
+      const id = `notice_${randomUUID().slice(0, 8)}`;
+      recordReminder("notice", id, undefined, source, text, title.slice(0, 80), url);
+      log(`notify ${source}: ${title}`);
+      return json(res, 200, { ok: true, id });
     }
 
     // ------------------------------------------------------------ open_preview (loopback only, #224)
@@ -1380,10 +1433,14 @@ async function main(): Promise<void> {
         pushKey: notifier.vapidPublicKey,
         pushCount: notifier.subscriptionCount(),
         notify: notifier.enabled,
+        reminders: reminders.settings(),
         sessionsRoot: sessionsRootInfo().dir,
         sessionsRootSource: sessionsRootInfo().source,
       });
     }
+
+    // D389 提醒中心：刷新 / 重连时整份取一次（平时靠 WS 的 `reminders` 帧）。
+    if (url.pathname === "/api/reminders" && req.method === "GET") return json(res, 200, reminders.view());
 
     // 设置 → 关于 → 开源许可：MIT / BSD-3 要求分发时随附的版权与许可声明。
     // 文件在仓库根（由 tools/notices.mjs 生成），不打包进 web/dist —— 以当前安装的依赖为准。
@@ -2368,6 +2425,27 @@ async function main(): Promise<void> {
     }
   };
 
+  /** 提醒中心变了就整份广播（列表 ≤ 500 条，整份比增量省心，也不会漂）。 */
+  const broadcastReminders = () => broadcast(reminderView());
+
+  /**
+   * 记一条提醒并按规则弹吐司。`title` 只给非阻塞类用（审批 / 问卷的标题由页面按界面语言拼，
+   * 桥这边给空串 —— 否则英文界面里会冒出中文标题）。
+   */
+  const recordReminder = (
+    kind: Reminder["kind"],
+    id: string,
+    sessionId: string | undefined,
+    sessionName: string,
+    body: string,
+    title = "",
+    url = "",
+  ): void => {
+    const { reminder, toast } = reminders.add({ id, kind, sessionId, sessionName, body, title, url });
+    broadcastReminders();
+    if (toast) broadcast({ type: "reminder.toast", reminder });
+  };
+
   // 加班提醒：自己的定时器，不跟着 HTTP 请求走 —— 面板关着、没人点也得能提醒。
   // D349：到点同时广播给开着的本机页面（隧道访客看不到考勤，跳过），页面自己再弹一遍系统通知。
   startReminderLoop({
@@ -2513,10 +2591,11 @@ async function main(): Promise<void> {
     void notifier.notify(`内网通 · ${thread.nickname}`, body, link);
   });
   sessions.on("approval", (approval) => {
-    if (!shouldNotify()) return;
     const session = sessions.get(approval.sessionId);
     const name = session?.state.name ?? approval.sessionId.slice(0, 8);
     const body = approval.message.replace(/\s+/g, " ").slice(0, 140);
+    recordReminder("approval", approval.id, approval.sessionId, name, body);
+    if (!shouldNotify() || reminders.muted(approval.sessionId)) return;
     const link = tunnel.state.url ? `${tunnel.state.url}/#/s/${approval.sessionId}` : `http://127.0.0.1:${cfg.port}/#/s/${approval.sessionId}`;
     void notifier.notify(notifyTitle("approval", name, 1), body, link);
   });
@@ -2525,13 +2604,24 @@ async function main(): Promise<void> {
     const name = session?.state.name ?? ask.sessionId.slice(0, 8);
     const first = ask.questions[0];
     const body = (first?.prompt ?? "").replace(/\s+/g, " ").slice(0, 140);
+    recordReminder("ask", ask.id, ask.sessionId, name, body);
     const link = tunnel.state.url ? `${tunnel.state.url}/#/s/${ask.sessionId}` : `http://127.0.0.1:${cfg.port}/#/s/${ask.sessionId}`;
-    if (!shouldNotify()) {
+    if (!shouldNotify() || reminders.muted(ask.sessionId)) {
       log(`ask-push skipped ${String(tool)} ${ask.id} (${notifier.enabled ? "page in front" : "notifications off"})`);
       return;
     }
     void notifier.notify(notifyTitle("ask", name, ask.questions.length), body, link);
     log(`ask-push ${String(tool)} ${ask.id} → ${name}`);
+  });
+  /* 归宿只认这两条流：批/拒/取消、答/取消。过期与整轮结束都会走到它们（sessions.ts 的三个调用点），
+     所以这里不需要另外去猜「那条卡还在不在」。 */
+  sessions.on("approval-resolved", (_sessionId, id, decision) => {
+    reminders.settle(id, decision);
+    broadcastReminders();
+  });
+  sessions.on("ask-resolved", (_sessionId, id, status) => {
+    reminders.settle(id, status);
+    broadcastReminders();
   });
   tunnel.on("state", (state) => {
     broadcast({ type: "tunnel", tunnel: state });
@@ -2696,6 +2786,28 @@ async function main(): Promise<void> {
             notifier.setEnabled(msg.on === true);
             log(`notifications ${notifier.enabled ? "on" : "off"}`);
             broadcast({ type: "notify", on: notifier.enabled });
+            return;
+          }
+          case "reminder.mute": {
+            const sid = String(msg.sessionId ?? "");
+            if (sid) reminders.mute(sid, msg.on === true);
+            broadcastReminders();
+            return;
+          }
+          case "reminder.read": {
+            reminders.read(String(msg.id ?? ""));
+            broadcastReminders();
+            return;
+          }
+          case "reminder.set": {
+            /* 与 `notify.set` 同级：这是写进状态文件的总开关，静音 / 已读才是低风险那两档。 */
+            if (!(await requireStepUp())) return;
+            const patch: Partial<ReminderSettings> = {};
+            if (typeof msg.enabled === "boolean") patch.enabled = msg.enabled;
+            if (typeof msg.blocking === "boolean") patch.blocking = msg.blocking;
+            if (typeof msg.others === "boolean") patch.others = msg.others;
+            reminders.setSettings(patch);
+            broadcastReminders();
             return;
           }
           case "stepup": {

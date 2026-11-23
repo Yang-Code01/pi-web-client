@@ -99,6 +99,7 @@ import {
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
+import { ReminderCenter, type Reminder } from "./reminders.ts";
 import { escapeTopLayer, LEAVE_MS, overlaysOpen, pushEscLayer, retireOverlay, startLeaving } from "./modal.ts";
 import {
   buildMatrix,
@@ -782,6 +783,10 @@ export class App {
   private stepCount = 0;
   /** #93: 横栏里那三样（胶囊 / 「＋N」 / 浮层）是共用组件，这里只留外壳 —— 它自己管焦点。 */
   private pillBar!: PillBar<SessionState>;
+  /** D389 提醒中心：★ 行右端那颗角标 + 清单 + 吐司。 */
+  private reminders: ReminderCenter | null = null;
+  /** `.app` 这个 grid 容器：清单与吐司挂它上面，跟着字号一起缩（D123）。 */
+  private shellEl: HTMLElement | null = null;
   /**
    * #189：上一次画出来的 ★ 行（从左到右的 id）。manage 回声到达时那颗会话已经不在行里了，
    * 「右邻」只能按归档前这一份算；窄屏与壳 B/C/D 不画这一行，顺序照样记。
@@ -1141,6 +1146,20 @@ export class App {
     app.append(shell);
 
     Object.assign(this.els, { topbar, wsTabsRow, wsTabs, wsTabsAdd, wsTabsMore, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    this.shellEl = shell;
+    this.reminders = new ReminderCenter({
+      /* A 壳（且不窄）钉在 ★ 行右端；B/C/D 与窄屏退回顶栏 —— 那几套壳里这一行根本不画。 */
+      mount: (button) => {
+        const parts = shellParts(activeLayout(this.prefs));
+        const host = parts.sessionRow && !this.compact() && sessionRow ? sessionRow : topbar;
+        if (button.parentElement !== host) host.append(button);
+      },
+      stage: () => this.shellEl,
+      openSession: (sessionId, reminderId) => this.jumpToReminder(sessionId, reminderId),
+      currentSessionId: () => this.currentId,
+      hasSession: (sessionId) => this.sessions.some((x) => x.id === sessionId),
+      send: (frame) => this.socket.send(frame as any),
+    });
     // #315: the composer's cap is half of this pane, so any change to the pane's height (a window
     // drag, collapsing the right column, another tab on a narrow screen) has to re-measure it.
     // Observe the pane, not the composer: the composer grows inside the pane, so watching it would
@@ -1338,6 +1357,7 @@ export class App {
       // 换壳跟窗口跨过 900px 是同一件事：那颗「当前在哪」和标签行都得挪位置（构造期还没搭 DOM）。
       this.placeNowChip();
       this.placeWsTabs();
+      this.reminders?.place();
     }
     const previousQueueTab = this.queueTab;
     if (changed) this.syncQueueTabMemory(true);
@@ -1617,6 +1637,7 @@ export class App {
       this.connected = s === "open";
       if (this.connected) this.reportPresence();
       if (this.connected) void this.refreshHotBranch();
+      if (this.connected) void this.reminders?.refresh();
       this.renderTop();
       this.renderSessions();
       // #291：断桥时开关墙整块置灰，连上再亮回来 —— 这块的重画点跟着连接状态走。
@@ -1781,6 +1802,27 @@ export class App {
     if (this.manage.archived.includes(id)) this.reviveArchived(id);
     this.socket.send({ type: "subscribe", sessionId: id });
     this.renderAll();
+  }
+
+  /**
+   * D389：点清单里一条 = 切到那个会话**并滚到那张卡**。卡片要等 queue 快照回来才画出来，
+   * 所以这里轮询几次（约 1.6 秒），拿到就滚到视口中间并闪一下；拿不到就算了（会话那边已经切过去了）。
+   */
+  private jumpToReminder(sessionId: string, reminderId?: string): void {
+    this.openSession(sessionId);
+    if (!reminderId) return;
+    let tries = 0;
+    const seek = (): void => {
+      const card = this.els.scroll?.querySelector<HTMLElement>(`[data-reminder-id="${reminderId}"]`);
+      if (card) {
+        card.scrollIntoView({ block: "center" });
+        card.classList.add("remind-flash");
+        window.setTimeout(() => card.classList.remove("remind-flash"), 1800);
+        return;
+      }
+      if (tries++ < 20) window.setTimeout(seek, 80);
+    };
+    seek();
   }
 
   /**
@@ -2417,6 +2459,14 @@ export class App {
       case "attendance.reminder":
         this.showAttendanceReminder(String(msg.title ?? tr("加班申请提醒")), String(msg.body ?? ""), String(msg.tag ?? ""));
         break;
+      case "reminders": {
+        this.reminders?.setView(msg as any);
+        break;
+      }
+      case "reminder.toast": {
+        if (msg.reminder) this.reminders?.toast(msg.reminder as Reminder);
+        break;
+      }
       case "notify":
         this.me = { ...this.me, notify: msg.on !== false };
         if (this.sheetKind === "settings" && this.settingsTab === "notify") this.paintSettings();
@@ -3977,6 +4027,7 @@ export class App {
     this.closeWsPop();
     this.placeNowChip();
     this.placeWsTabs();
+    this.reminders?.place();
     // 构造里 `applyPrefs()` 先跑一次（那时 DOM 还没搭）：只落 `<html data-layout>`，别去碰 els。
     if (!this.nowBtn) return;
     this.renderPanes();
@@ -13735,6 +13786,29 @@ export class App {
     pane.append(panel);
   }
 
+  /** D389：设置 →「通知」里的「页面内提醒」一组（总开关 + 阻塞 / 其它两档）。 */
+  private remindSettingRows(): HTMLElement {
+    const settings = this.me.reminders ?? { enabled: true, blocking: true, others: false };
+    const panel = el("div", "settings-panel");
+    const row = (label: string, hint: string, key: "enabled" | "blocking" | "others") => {
+      const input = el("input") as HTMLInputElement;
+      input.type = "checkbox";
+      input.checked = settings[key] !== false;
+      input.onchange = () => {
+        this.socket.send({ type: "reminder.set", [key]: input.checked });
+        this.me.reminders = { ...settings, [key]: input.checked };
+        this.flashSettings(input.checked ? tr("已打开「{p1}」", { p1: label }) : tr("已关掉「{p1}」", { p1: label }));
+      };
+      const wrap = this.stRow(label, hint, this.stSwitch(input), "label");
+      panel.append(wrap);
+      return wrap;
+    };
+    row(tr("页面内提醒"), tr("关掉只是不弹：★ 行那颗角标照常计数，清单里也照旧留着。"), "enabled");
+    row(tr("阻塞类（审批 / 提问）"), tr("别的会话在等你点头或回答时，右上角弹一条、自己消失。"), "blocking");
+    row(tr("其它（脚本 / 构建 / 定时）"), tr("默认不弹，只让角标涨；打开了才跟着弹。"), "others");
+    return panel;
+  }
+
   private paintNotify(body: HTMLElement): void {
     const on = this.me.notify !== false;
     body.append(
@@ -13774,6 +13848,10 @@ export class App {
       this.stRow(tr("发一条试试"), tr("Web Push 已订阅 {p1} 台设备。测试通知不受开关影响，页面在前也会弹。", { p1: this.me.pushCount }), test),
     );
     body.append(panel2);
+
+    // D389：上面那组管「越过屏幕」，这一组管「就在屏幕里」—— 两件事，别混成一个开关。
+    body.append(this.stSection(tr("页面内提醒"), tr("别的会话在等你时，页面里叫到你")));
+    body.append(this.remindSettingRows());
   }
 
   /**
@@ -17898,6 +17976,8 @@ export class App {
 
   private askCard(ask: AskRequest): HTMLElement {
     const card = el("div", "approval");
+    /* D389：提醒中心点一条要滚到这张卡，靠这个 id 找它。 */
+    card.dataset.reminderId = ask.id;
     const t = el("div", "t", ask.questions.length > 1 ? tr("需要你回答 · {p1} 题", { p1: ask.questions.length }) : tr("需要你回答"));
     // Q-033: 提问不设上限；发问方若给了时长，只在 tooltip 里交代一句。
     if (ask.timeoutMs) t.title = tr("发问方要求 {p1} 秒内作答，已忽略（提问不设上限）", { p1: Math.round(ask.timeoutMs / 1000) });
@@ -19148,6 +19228,7 @@ export class App {
    */
   private approvalCard(a: ApprovalRequest): HTMLElement {
     const card = el("div", "approval");
+    card.dataset.reminderId = a.id;
     const t = el("div", "t", a.title);
     const m = el("div", "m", a.message);
     const actions = el("div", "actions");

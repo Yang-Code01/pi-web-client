@@ -3476,6 +3476,9 @@ export class SessionManager extends EventEmitter {
     session.on("ask-resolved", (sessionId: string, id: string, status: string) =>
       this.emit("ask-resolved", sessionId, id, status),
     );
+    session.on("approval-resolved", (sessionId: string, id: string, decision: string) =>
+      this.emit("approval-resolved", sessionId, id, decision),
+    );
   }
 
   private ensure(id: string): Session {
