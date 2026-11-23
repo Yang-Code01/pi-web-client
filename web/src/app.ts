@@ -941,9 +941,9 @@ export class App {
     collapseRight.dataset.act = "queue";
     collapseRight.onclick = () => this.togglePane("queue");
     // 这颗以前是「Aa」：现在它是整个设置抽屉（外观 + 语言 + 通道 + 工具）的入口。
-    // 用滑杆不是齿轮：16px 的齿轮在这个字号下糊成一朵花，两根滑杆还认得出。
+    // 图形用齿轮（用户定的）：八颗短齿 + 大轮毂，16px 下不会糊成一朵太阳花。
     const look = el("button", "icon-btn set-btn") as HTMLButtonElement;
-    look.append(icon("sliders", { size: 16 }));
+    look.append(icon("gear", { size: 16 }));
     look.title = tr("设置：外观 / 连接与设置");
     look.setAttribute("aria-label", look.title);
     look.dataset.act = "look";
@@ -4841,7 +4841,7 @@ export class App {
     const gear = el("button", "chrome-pv-btn chrome-pv-gear") as HTMLButtonElement;
     gear.type = "button";
     gear.disabled = true;
-    gear.append(icon("sliders", { size: 11 }));
+    gear.append(icon("gear", { size: 11 }));
     gear.title = tr("关不掉：这张表靠它进来");
     pvTop.append(gear);
     pv.append(pvTop);
@@ -19034,7 +19034,7 @@ export class App {
       this.renderQueue();
     };
     const gear = el("button", "browser-gear") as HTMLButtonElement;
-    gear.append(icon("sliders", { size: 13 }));
+    gear.append(icon("gear", { size: 13 }));
     gear.type = "button";
     gear.title = tr("阈值与工具名单");
     gear.setAttribute("aria-expanded", String(this.browserCfgOpen));
