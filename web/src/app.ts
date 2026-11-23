@@ -941,9 +941,9 @@ export class App {
     collapseRight.dataset.act = "queue";
     collapseRight.onclick = () => this.togglePane("queue");
     // 这颗以前是「Aa」：现在它是整个设置抽屉（外观 + 语言 + 通道 + 工具）的入口。
-    // 用滑杆不是齿轮：16px 的齿轮在这个字号下糊成一朵花，两根滑杆还认得出。
+    // 图形用齿轮（用户定的）：八颗短齿 + 大轮毂，16px 下不会糊成一朵太阳花。
     const look = el("button", "icon-btn set-btn") as HTMLButtonElement;
-    look.append(icon("sliders", { size: 16 }));
+    look.append(icon("gear", { size: 16 }));
     look.title = tr("设置：外观 / 连接与设置");
     look.setAttribute("aria-label", look.title);
     look.dataset.act = "look";
@@ -4841,7 +4841,7 @@ export class App {
     const gear = el("button", "chrome-pv-btn chrome-pv-gear") as HTMLButtonElement;
     gear.type = "button";
     gear.disabled = true;
-    gear.append(icon("sliders", { size: 11 }));
+    gear.append(icon("gear", { size: 11 }));
     gear.title = tr("关不掉：这张表靠它进来");
     pvTop.append(gear);
     pv.append(pvTop);
@@ -19034,7 +19034,7 @@ export class App {
       this.renderQueue();
     };
     const gear = el("button", "browser-gear") as HTMLButtonElement;
-    gear.append(icon("sliders", { size: 13 }));
+    gear.append(icon("gear", { size: 13 }));
     gear.type = "button";
     gear.title = tr("阈值与工具名单");
     gear.setAttribute("aria-expanded", String(this.browserCfgOpen));
@@ -21297,9 +21297,9 @@ export class App {
 }
 
 function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
-  // Expanded: the chevron points at the edge it will retract to. Collapsed: it points back out.
-  const right = btn.dataset.side === "right";
-  btn.textContent = collapsed ? (right ? "«" : "»") : (right ? "»" : "«");
+  // 一颗「带侧栏的窗口」：右栏那颗由 CSS 镜像（`.side-toggle[data-side="right"] .ico`），
+  // 于是两边各指着自己要收的那一侧。折叠与否看 aria-pressed 与 title，不再靠箭头翻方向。
+  if (!btn.firstElementChild) btn.append(icon("sidebar", { size: 15 }));
   btn.title = collapsed ? tr("展开{p1}", { p1: label }) : tr("收起{p1}", { p1: label });
   btn.setAttribute("aria-pressed", String(collapsed));
 }
