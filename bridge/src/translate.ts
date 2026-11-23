@@ -32,8 +32,13 @@ export function isTrLang(v: unknown): v is TrLang {
 
 /** 整篇上限：再大就不是「预览里顺手翻一下」的场景了。 */
 export const MAX_TRANSLATE_BYTES = 512 * 1024;
-/** 一块交给模型的正文字符数。太小慢、太大容易被截断。 */
-const CHUNK_CHARS = 4000;
+/**
+ * 一块交给模型的正文字符数。**这不是「越大越快」**：总时长 ≈ 块数 × 每个往返的固定成本
+ * （起进程 + 首字节 ≈ 2–5 s）+ 总输出字的生成时间，而块内是串行生成的。实测一份 6.7 KB
+ * 文档（3 节 / 4 块）里最大的那块一个人拉了 18–25 s，是并发之后仅剩的尾巴 —— 所以
+ * 把块切小、让 4 路去吃掉多出来的往返（D390 的补充）。太小会被「每块一次启动」吃掉。
+ */
+export const CHUNK_CHARS = 1400;
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_RETRY = 1;
 

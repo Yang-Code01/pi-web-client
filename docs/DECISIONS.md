@@ -7532,6 +7532,10 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **状态。** 词进了 `GLOSSARY.md`，实现拆在 `docs/PLAN-reminders.md`。形态与状态机各有一份一次性原型（分支 `proto/reminders`，`proto/reminders-ui/` 与 `proto/reminders-logic/`）：UI 选了「★ 行右端的角标 + 贴角标的小下拉 + 流水/分组切换」；状态机的四个归宿（waiting / handled / read / stale）跑过五个场景都成立，另带两条要盯的坑（`lastToastAt` 不能用时间戳当「没有记录」；`badge()` 与清单必须共用一个谓词）。代码未动。
 
 ## D390 翻译对照：块级并发 4 路，落盘仍按节、并且只能往前推（grill 结论 2026-11-23）
+> **D390 修订（2026-11-23，默认模型跟随 pi）。** `TR_DEFAULT_MODEL = "copilot/gpt-6-luna"` 是写死的，而它只在登了 copilot 的机器上存在 —— 没有 copilot 的机器上，模型的预选就落到目录第一项，实测正好落在连不通的 provider（`wb2api` → `192.168.31.36`，本机在 `192.168.1.17`）上，一整篇翻译每个块都是 `Connection error`。改成 `trDefaultModel()`：读 pi 全局设置的 `defaultProvider` + `defaultModel`（`settingsPath("global")`，**只读文件、不 spawn pi**），拿不到就返回空串、页面让用户挑一次并记住（`translate/prefs.json`）。设置页那张卡从「出厂默认」改成「pi 默认模型」，没设时「恢复默认」置灰。代价：pi 设置里只写了一半（有 provider 没 model）时按「没设」处理；这台机器的「默认」从此跟着 pi 走，换全局默认模型会连带改变翻译的预选（用户已经手动选过的仍然优先）。
+
+> **D390 修订（2026-11-23，块切小 + 提示可见）。** ① `CHUNK_CHARS` 4000 → **1400**：并发之后仅剩的尾巴是「最大那一块的生成时间」，实测一份 6.7 KB / 4 块的文档里最大一块一个人拉了 18–25 s（4 路总 30.3 s），切小之后尾巴跟着块长线性下降；代价是块数变多，`limit` 调成 1–2 时会比原来慢。② 提示：顶栏下加一条 2px 进度条、状态行加「已用 N s」、正文末尾画一条骨架 + 「还有 N 节在队列里 · 正在翻 K 块」（`paintTrLive` 每 1.2 s 刷新已用时间、块数与骨架那行）。这三处都只动前端与一个常量，不动缓存。③ **「视口优先」没做**：它与「前缀落盘」直接冲突 —— 用户在文档中段点「译」，想先读眼前那一节，就得允许缓存里出现「第 10 节好了、第 1–9 节还空着」的空洞，而 `readDoc()` 会把这些节整条丢掉、保存译文那条路（`translateJobs.patch`）也假定每节都有 `out`。要做得先改这个契约（另立一条决定），不能顺手塞进这一票。
+
 
 **问题。** 一次翻译的耗时几乎全在「等一个往返开始」：`bridge/src/translate.ts`（D245）每 4000 字一块、**每块各起一个** `pi --mode text` 子进程，节与节严格串行（`translateDoc` 的 for 循环）。本机实测（macOS，`--mode text --no-extensions`，`sensenova-platform/deepseek-flash`）：
 

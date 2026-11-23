@@ -94,6 +94,19 @@ function modelName(doc: TrDoc | null, job: TrJob | null): string {
   return m.split("/").pop() ?? m;
 }
 
+/** 已经跑了多久；只在 running 时有字（跟随轮询刷新，不用自己跳秒）。 */
+export function trElapsed(job: TrJob | null | undefined): string {
+  if (!job || job.status !== "running") return "";
+  const s = Math.max(0, Math.round((Date.now() - job.startedAt) / 1000));
+  return tr("已用 {s} s", { s });
+}
+
+/** 队列里还没到的节那一行字：左边是还差几节，右边是现在几块在飞。 */
+export function trPendingHead(left: number, inflight: number): string {
+  const tail = inflight > 0 ? ` · ${tr("正在翻 {k} 块", { k: inflight })}` : "";
+  return `${tr("还有 {n} 节在队列里", { n: left })}${tail}`;
+}
+
 /** 副行：正在翻哪一节 + 还有几块在飞。
  * D390：主进度（`翻译中 3/6`）仍按**节**，并发只在副行露一面，否则用户得重新理解一个数。 */
 export function trNote(job: TrJob | null | undefined): string {
@@ -140,6 +153,7 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
     note.title = noteText;
     note.hidden = !noteText;
     status.append(note);
+    status.append(el("span", "tr-elapsed", trElapsed(v.job)));
   }
   if (v.doc?.warnings.length) {
     const w = el("button", "tr-warn", tr("⚠ {n} 处告警", { n: v.doc.warnings.length }));
@@ -186,6 +200,15 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   btn(tr("返回预览"), tr("回到预览，译文还留着"), () => act.back());
   bar.append(tools);
   body.append(bar);
+
+  // 顶上一条细进度：不滚到正文末尾也知道走到哪了（D390 的提示那块）。
+  if (running && v.job?.total) {
+    const prog = el("div", "tr-prog tr-prog-bar");
+    const fill = el("div", "tr-prog-fill");
+    fill.style.width = `${Math.round((v.job.done / v.job.total) * 100)}%`;
+    prog.append(fill);
+    body.append(prog);
+  }
 
   if (v.error && !v.doc && !running) {
     body.append(el("div", "tr-msg err", v.error));
@@ -246,6 +269,25 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
     cmp.append(row);
   });
   body.append(cmp);
+
+  // 还没到的节：画一条骨架 + 一句「还差几节」，否则下面一片空白，看不出是在排队还是卡住了。
+  if (running) {
+    const total = v.job?.total ?? 0;
+    const left = Math.max(0, total - v.doc.sections.length);
+    if (left > 0) body.append(pendingBlock(left, v.job?.inflight ?? 0));
+  }
+}
+
+/** 队尾那块占位（没翻译的节还没法逐节画，就先画一坨骨架把「在排队」说清楚）。 */
+function pendingBlock(left: number, inflight: number): HTMLElement {
+  const box = el("div", "tr-pending");
+  box.append(el("div", "tr-pending-head", trPendingHead(left, inflight)));
+  for (const width of ["72%", "88%", "54%"]) {
+    const line = el("div", "tr-skel");
+    line.style.width = width;
+    box.append(line);
+  }
+  return box;
 }
 
 interface TrEditor {

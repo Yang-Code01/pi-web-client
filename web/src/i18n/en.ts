@@ -2763,6 +2763,8 @@ export const en: Dict = {
   "跟随 pi 默认": "Follows pi default",
   "pi 默认模型": "pi default model",
   "pi 全局设置里没设": "not set in pi global settings",
+  "已用 {s} s": "{s} s elapsed",
+  "还有 {n} 节在队列里": "{n} more sections queued",
   "翻译中 {done}/{total}": "Translating {done}/{total}",
   "正在翻 {n} 块": "{n} blocks in flight",
   "同时翻几块": "Blocks in parallel",

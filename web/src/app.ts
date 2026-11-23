@@ -15,7 +15,7 @@ import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
-import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, trNote, type TrAct, type TrView } from "./translateview.ts";
+import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, trElapsed, trNote, trPendingHead, type TrAct, type TrView } from "./translateview.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
@@ -11750,6 +11750,14 @@ export class App {
     }
     const fill = v.body.querySelector<HTMLElement>(".tr-prog-fill");
     if (fill && job.total) fill.style.width = `${Math.round((job.done / job.total) * 100)}%`;
+    const elapsed = v.body.querySelector(".tr-elapsed");
+    if (elapsed) elapsed.textContent = trElapsed(job);
+    // 队尾那句「还差几节 · 正在翻几块」也要跟着走，不然它停在起飞时那一刻的样子。
+    const pending = v.body.querySelector(".tr-pending-head");
+    if (pending && job.total) {
+      const left = Math.max(0, job.total - (t.doc?.sections.length ?? 0));
+      pending.textContent = trPendingHead(left, job.inflight ?? 0);
+    }
   }
 
   /** 重画时保住滚动位置：每翻完一节都会重画一遍。 */
