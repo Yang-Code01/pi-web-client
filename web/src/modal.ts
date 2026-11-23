@@ -110,13 +110,16 @@ export function trapEscape(onEscape: () => void): () => void {
 }
 
 /**
- * 现在有没有弹层开着（模态 / 抽屉 / 控制台 / 灯箱）。
+ * 现在有没有「大块浮层」开着（窗口 / 贴边窗 / 表格浮窗）。
  *
  * 判据是材质标记（#644），不再另抄一份类名名单 —— 抄漏一个，自动弹出的东西就会压在灯箱或
- * 子弹层上面。`paper` 也算：表格浮窗开着时同样不该往上叠。
+ * 子弹层上面。菜单与吐司不算：它们随手一关就没了，为了它们把更新日志压掉整场不划算
+ * （`.update-bar` 是长期挂着的一条）。
  */
-export function overlaysOpen(root: ParentNode = document): boolean {
-  return Boolean(root.querySelector("[data-mac-surface]"));
+export function overlaysOpen(): boolean {
+  return Boolean(
+    document.querySelector('[data-mac-surface="window"], [data-mac-surface="dock"], [data-mac-surface="paper"]'),
+  );
 }
 
 /** 把浮层挂进 `#app`（拿不到才退回 body，比如单元测试里的假 DOM）。 */
