@@ -14,7 +14,7 @@ import { createEl as el, openImage } from "./chat.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
-import { pushEscLayer } from "./modal.ts";
+import { markSurface, pushEscLayer } from "./modal.ts";
 import { tr } from "./i18n/index.ts";
 import { groupModels, modelGroupSection, rememberRecentModel } from "./modelgroups.ts";
 import type { Item, ModelInfo, SessionState } from "./types.ts";
@@ -373,7 +373,7 @@ export class ScratchChat {
   // ---------------------------------------------------------------- internals
 
   private build(): void {
-    const back = el("div", "sheet-back scratch-back");
+    const back = markSurface(el("div", "sheet-back scratch-back"), "window", { enter: "side" });
     back.onclick = (ev) => {
       if (ev.target === back) this.close();
     };

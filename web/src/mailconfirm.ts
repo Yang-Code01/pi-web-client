@@ -13,7 +13,7 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 import { MAIL_CONFIRM_PAGE_MS, MailConfirmQueue, type MailConfirmAck, type MailConfirmRequest } from "./mail-shared.ts";
-import { mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
+import { markSurface, mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
 import "./mail-console.css";
 
 export interface MailConfirmHost {
@@ -74,7 +74,7 @@ export class MailConfirmDialog {
     const m = cur.mail;
     if (!this.root) this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
-    const back = el("div", "mc-back mc-back--confirm");
+    const back = markSurface(el("div", "mc-back mc-back--confirm"), "window");
     back.addEventListener("mousedown", (ev) => {
       // 点遮罩 = 不发。别让它在键盘外悄悄消失，人得知道自己拒了这封。
       if (ev.target === back) this.answer(false, "declined", tr("你在确认框外面点了，这封信没有发。"));

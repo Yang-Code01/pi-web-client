@@ -19,7 +19,7 @@ import type { RuleBook } from "./rules.ts";
 import type { Note, NoteKind, NoteStatus, NotesLayout } from "./types.ts";
 import "./notes.css";
 import { tr } from "./i18n/index.ts";
-import { pushEscLayer, retireOverlay } from "./modal.ts";
+import { appZoom, markSurface, mountOverlay, pushEscLayer, retireOverlay } from "./modal.ts";
 
 export const NOTE_KINDS: { id: NoteKind; label: string; glyph: string }[] = [
   { id: "bug", label: "bug", glyph: "🐞" },
@@ -283,7 +283,7 @@ export class NotesSheet {
   }
 
   private build(): void {
-    const back = el("div", "sheet-back notes-back");
+    const back = markSurface(el("div", "sheet-back notes-back"), "window", { enter: "none" });
     back.onclick = (ev) => {
       if (ev.target === back) this.close();
     };
@@ -1255,9 +1255,10 @@ export class NotesSheet {
   private statusMenu(anchor: HTMLElement): void {
     document.querySelector(".note-handoff")?.remove();
     const r = anchor.getBoundingClientRect();
-    const pop = el("div", "note-handoff");
-    pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - 274))}px`;
-    pop.style.top = `${r.bottom + 6}px`;
+    const pop = markSurface(el("div", "note-handoff"), "menu");
+    // 挂进 #app 才跟「外观 → 字号」的 zoom 一起缩；量到的是视觉 px，写进 style 前先除一次缩放。
+    pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - 274)) / appZoom()}px`;
+    pop.style.top = `${(r.bottom + 6) / appZoom()}px`;
     const add = (label: string, hint: string, run: () => void): void => {
       const b = el("button");
       b.append(el("span", "handoff-label", label), el("span", "handoff-hint", hint));
@@ -1274,7 +1275,7 @@ export class NotesSheet {
       add(tr("📦 归档"), tr("不在列表里，复原才回来"), () => this.editing?.id && this.setLife(this.editing.id, "archived"));
       add(tr("🗑️ 删除"), tr("放进垃圾箱，可复原"), () => this.editing?.id && this.setLife(this.editing.id, "trashed"));
     }
-    document.body.append(pop);
+    mountOverlay(pop);
     setTimeout(
       () =>
         document.addEventListener(
@@ -1291,10 +1292,10 @@ export class NotesSheet {
   handoffMenu(anchor: HTMLElement, text: string): void {
     document.querySelector(".note-handoff")?.remove();
     const r = anchor.getBoundingClientRect();
-    const pop = el("div", "note-handoff");
+    const pop = markSurface(el("div", "note-handoff"), "menu");
     pop.style.position = "fixed";
-    pop.style.left = `${Math.max(12, Math.min(r.right - 260, innerWidth - 274))}px`;
-    pop.style.top = `${r.bottom + 6}px`;
+    pop.style.left = `${Math.max(12, Math.min(r.right - 260, innerWidth - 274)) / appZoom()}px`;
+    pop.style.top = `${(r.bottom + 6) / appZoom()}px`;
     const add = (label: string, hint: string, run: () => void) => {
       const b = el("button");
       b.append(el("span", "handoff-label", label), el("span", "handoff-hint", hint));
@@ -1312,7 +1313,7 @@ export class NotesSheet {
       this.host.newSessionWith(text);
       this.close();
     });
-    document.body.append(pop);
+    mountOverlay(pop);
     setTimeout(
       () =>
         document.addEventListener(
@@ -1337,9 +1338,9 @@ export class NotesSheet {
     const blank = !String(note.title ?? "").trim() && !plainText(note.body ?? "").trim();
     document.querySelector(".note-handoff")?.remove();
     const r = anchor.getBoundingClientRect();
-    const pop = el("div", "note-handoff note-peer-menu");
-    pop.style.left = `${Math.max(12, Math.min(r.right - 300, innerWidth - 314))}px`;
-    pop.style.top = `${r.bottom + 6}px`;
+    const pop = markSurface(el("div", "note-handoff note-peer-menu"), "menu");
+    pop.style.left = `${Math.max(12, Math.min(r.right - 300, innerWidth - 314)) / appZoom()}px`;
+    pop.style.top = `${(r.bottom + 6) / appZoom()}px`;
     const add = (label: string, hint: string, disabled: boolean, run: () => void): void => {
       const b = el("button") as HTMLButtonElement;
       b.append(el("span", "handoff-label", label), el("span", "handoff-hint", hint));
@@ -1355,7 +1356,7 @@ export class NotesSheet {
     waiting.disabled = true;
     waiting.append(el("span", "handoff-label", tr("正在问内网通…")), el("span", "handoff-hint", tr("只看一眼它开没开")));
     pop.append(waiting);
-    document.body.append(pop);
+    mountOverlay(pop);
     setTimeout(
       () =>
         document.addEventListener(
@@ -1509,7 +1510,7 @@ export class NotesSheet {
   private pickPeer(title: string): Promise<PeerPerson | null> {
     return new Promise((resolve) => {
       const last = readLastPeer();
-      const wrap = el("div", "peer-pick");
+      const wrap = markSurface(el("div", "peer-pick"), "window");
       const panel = el("div", "peer-pick-panel");
       const head = el("div", "peer-pick-head");
       const cancel = el("button", "btn ghost", tr("取消"));
@@ -1529,7 +1530,7 @@ export class NotesSheet {
       wrap.onclick = (ev) => {
         if (ev.target === wrap) done(null);
       };
-      document.body.append(wrap);
+      mountOverlay(wrap);
       search.focus();
       list.append(el("div", "peer-pick-empty", tr("正在问内网通…")));
       void this.peerPeople()
@@ -1589,7 +1590,7 @@ export class NotesSheet {
   private confirmSubmit(note: Note, person: PeerPerson, shots: ShotMeta[], missing: number): Promise<boolean> {
     return new Promise((resolve) => {
       const total = shots.reduce((sum, s) => sum + s.size, 0);
-      const wrap = el("div", "peer-pick");
+      const wrap = markSurface(el("div", "peer-pick"), "window");
       const panel = el("div", "peer-pick-panel peer-confirm");
       const head = el("div", "peer-pick-head");
       head.append(el("span", "peer-pick-title", tr("提交给好友")));
@@ -1621,7 +1622,7 @@ export class NotesSheet {
       wrap.onclick = (ev) => {
         if (ev.target === wrap) done(false);
       };
-      document.body.append(wrap);
+      mountOverlay(wrap);
       ok.focus();
     });
   }

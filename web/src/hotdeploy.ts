@@ -11,7 +11,7 @@ import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import type { HotdeployBranch, HotdeployPhase, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { retireOverlay } from "./modal.ts";
+import { markSurface, retireOverlay } from "./modal.ts";
 import "./hotdeploy.css";
 
 /** 步骤名与 worker 的 step 序号一一对应；中文原文就是 i18n 键。 */
@@ -124,7 +124,7 @@ class HotdeployPanel {
   };
 
   mount(): void {
-    this.root = el("div", "sys-back hot-back");
+    this.root = markSurface(el("div", "sys-back hot-back"), "window");
     this.root.addEventListener("mousedown", (e) => {
       if (e.target === this.root) this.close();
     });
