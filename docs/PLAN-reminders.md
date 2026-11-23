@@ -75,8 +75,9 @@ const REMINDER_COALESCE_MS = 30_000;
 
 新文件 `web/src/reminders.ts`（数据 + 清单渲染）与 `web/src/remind-toast.ts`（吐司队列），`app.ts` 只负责接线：
 
-- **角标**：`button.remind-badge` 插在顶栏 `collapseRight` 之前（`web/src/app.ts:1008` 那个 `topbar.append(...)` 一行里加）。零条时 `hidden`，数字 = `waiting` 条数（含当前会话）。
-- **清单**：点角标开 `div.remind-pop`，跟现有浮层的开关语义一致（点外面关、Esc 关、不做模态 dialog）。分组：`等你` / 已处理（按天分组，折叠）。
+- **角标**：钉在 **★ 行（会话层）最右端**，插在 `sessionRow` 里 `pinStrip` 之后、那颗 `＋` 之前（`web/src/app.ts:1115-1116` 建 `pinStrip` 的地方；别放 `topbar.append(...)` 那一排 —— 那儿已经十颗按钮，原型里试过会被淹掉）。零条时 `hidden`，数字 = `waiting` 条数（含当前会话）。
+- **清单**：点角标开 `div.remind-pop`，**贴在角标下方的小下拉**（约 340px），跟现有浮层的开关语义一致（点外面关、Esc 关、不做模态 dialog）。**不做**右侧抽屉、不做出现在输入框上方的全宽面板 —— 原型里这两种都试过：抽屉吃掉 320px 正文，宽面板在读长文时盖住底部。
+- **两种读法，一个切换**：默认「按事件」流水（最新在上、按天分组、`等你` / 已处理），表头切一下变「按会话」分组（一张卡一个会话，卡里列它全部的等待）。切换键是**纯前端状态**（`localStorage` 记最后一次），不进桥、不发帧；分组视图要求 `sessionId` 必填，非阻塞条目没有会话时落到「其它」一组。
 - **跳转**：`openSession(id)` 之后滚到那张卡 —— 审批卡 `approvalCard(a)`（`app.ts:17475`）、问答卡走 `askCard`，给两种卡加一个稳定的 `data-reminder-id`，跳转时 `querySelector` 然后 `scrollIntoView({ block: "center" })`，加一次 `.pulse` 高亮。会话已经不在（被删 / 归档）→ 那一条灰掉不可点。
 - **吐司**：右上角，6 秒，悬停暂停，最多同时 3 条（多了排队）。整块挂进 `#app`（跟随 `--ui-scale`），**不许写裸 `vh` / `vw`**；`npm run test:viewport` 会红。窄版用 `@container` 判宽，不用 `@media`。
 - **静态样式**：照 `.fail-toast`（`web/src/styles.css:4171`）那套来，别另发明一套视觉。
@@ -85,7 +86,7 @@ const REMINDER_COALESCE_MS = 30_000;
 
 | 行 | 控件 | 文案要点 |
 | --- | --- | --- |
-| 页面内提醒 | 开关 | 关掉只是不弹，顶栏角标照常计数 |
+| 页面内提醒 | 开关 | 关掉只是不弹，★ 行那颗角标照常计数 |
 | 阻塞类（审批 / 提问） | 开关 | 弹右上角 |
 | 其它（脚本 / 构建 / 定时） | 开关 | 只进清单，默认不弹 |
 
@@ -110,14 +111,15 @@ const REMINDER_COALESCE_MS = 30_000;
    - 静音该会话 → 不再弹、角标 0、清单里仍在（灰）；
    - 关总开关 → 不弹、角标照常；
    - `POST /api/notify` 塞一条 → 角标 +1、**不弹**、点一下就消；
-   - 左栏收起（`◧`）状态下同样能看见角标。
+   - 左栏收起（`◧`）状态下同样能看见角标；★ 行空（没有本区会话）时角标仍在那儿。
+   - 表头切一下 → 清单从「按事件」变「按会话」，角标数字不动；刷新后记住上次的读法。
 3. `npm run typecheck`（含 i18n、viewport、spawn-hidden、notices）、`npm run build:bridge`、`npm run build:web`。
 
 ## 分步（一个 PR 一条，按这个顺序）
 
 1. **桥端 store + 单测**（不碰 UI，先让不变量有守卫）。
 2. **帧 + HTTP + `/api/me`**（页面还看不见，用 `curl` 验）。
-3. **顶栏角标 + 清单**（能看见、能跳，还没有吐司）。
+3. **★ 行角标 + 清单**（能看见、能跳，还没有吐司）。
 4. **吐司 + 合并 + 静音**。
 5. **设置页那一组 + i18n 三份 + 探针**。
 
