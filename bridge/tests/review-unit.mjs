@@ -17,6 +17,8 @@ import {
   findingKey,
   mergeFindings,
   parsePreview,
+  sameScope,
+  unaccounted,
   previewArgs,
   readReviewState,
   repoKey,
@@ -283,6 +285,7 @@ check("mergeFindings 分得出 新增 / 仍在 / 已解决，并保住已标的�
     ],
   );
   assert.deepEqual(out.resolved, [findingKey(a)]);
+  assert.deepEqual(out.resolvedPaths, ["a.ts"], "已解决也要说得出是哪个文件");
   assert.equal(out.findings[0].mark, "false-positive");
   assert.equal(out.findings[1].mark, "", "没标过的就不带处理态");
 });
@@ -291,6 +294,39 @@ check("mergeFindings 第一次跑（没有上一轮）全部是 new", () => {
   const out = mergeFindings([], [finding()], {});
   assert.equal(out.findings[0].state, "new");
   assert.deepEqual(out.resolved, []);
+});
+
+check("sameScope：工作区 / 同一对照分支 / 同一提交才算同一个范围", () => {
+  const ws = { mode: "workspace", from: "", to: "HEAD", mergeBase: "" };
+  const rangeMain = { mode: "range", from: "main", to: "HEAD", mergeBase: "abc" };
+  const rangeOther = { mode: "range", from: "develop", to: "HEAD", mergeBase: "def" };
+  const commit1 = { mode: "commit", from: "", to: "sha1", mergeBase: "" };
+  assert.equal(sameScope(ws, { ...ws }), true);
+  assert.equal(sameScope(rangeMain, { ...rangeMain }), true);
+  assert.equal(sameScope(rangeMain, rangeOther), false, "换了对照分支就不是同一个范围");
+  assert.equal(sameScope(commit1, { ...commit1, to: "sha2" }), false);
+  assert.equal(sameScope(ws, rangeMain), false, "工作区那次不能当分支评审的基线");
+  assert.equal(sameScope(ws, commit1), false);
+});
+
+check("unaccounted：preview 说可评、模型既没报也没 skip 的文件要显式列出来", () => {
+  const preview = parsePreview(
+    JSON.stringify({
+      mode: "workspace",
+      reviewable_files: [{ path: "a.ts" }, { path: "b.ts" }, { path: "c.ts" }],
+      excluded_files: [{ path: "big.bin", reason: "too_large" }],
+    }),
+  );
+  const out = unaccounted(preview, [{ path: "c.ts", reason: "skipped" }], [{ path: "a.ts", category: "bug", existingCode: "x" }]);
+  assert.deepEqual(
+    out.map((s) => [s.path, s.reason]),
+    [
+      ["big.bin", "too_large"],
+      ["c.ts", "skipped"],
+      ["b.ts", "not_reported"],
+    ],
+    "有意见的文件算交代过了，只把真正没提的那个列出来",
+  );
 });
 
 // ---------------------------------------------------------------- 落盘

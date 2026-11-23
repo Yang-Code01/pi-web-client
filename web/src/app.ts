@@ -18250,7 +18250,7 @@ export class App {
         onMark: (key, mark: ReviewMark | "") => this.socket.send({ type: "review.mark", dir: this.reviewDir(), key, mark }),
         onOpen: (path, line) => this.openReviewFinding(path, line),
         onFix: (f: ReviewFinding) => {
-          this.prefill(reviewFixPrompt(f, getLang()));
+          this.prefill(reviewFixPrompt(f));
           this.flashToast(tr("已放进输入框（还没发）"), false, 3000);
         },
         onInstall: () => {

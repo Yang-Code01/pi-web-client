@@ -17,12 +17,27 @@ import readline from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { ensureDir, piChildEnv, quarantineStateFile, readJsonChecked, statePath } from "./paths.ts";
 import { resolvePi } from "./pi.ts";
+import type {
+  ReviewCategory,
+  ReviewFinding,
+  ReviewMark,
+  ReviewMode,
+  ReviewOcrStatus,
+  ReviewProgress,
+  ReviewRun,
+  ReviewRunStatus,
+  ReviewSeverity,
+  ReviewSkip,
+  ReviewState,
+} from "./frames.ts";
 
-export type ReviewMode = "workspace" | "range" | "commit";
-export type Severity = "critical" | "high" | "medium" | "low";
-export type Category = "bug" | "security" | "performance" | "maintainability" | "test" | "style" | "documentation" | "other";
-export type Mark = "accept" | "ignore" | "false-positive";
-export type RunStatus = "running" | "done" | "stopped" | "failed" | "stale";
+// 形状住在 `frames.ts`（桥与页面共用一份），这里给本文件与其它桥模块沿用原来的名字。
+export type { ReviewFinding, ReviewMark, ReviewMode, ReviewRun, ReviewRunStatus, ReviewSkip, ReviewState } from "./frames.ts";
+export type Severity = ReviewSeverity;
+export type Category = ReviewCategory;
+
+export type Mark = ReviewMark;
+export type RunStatus = ReviewRunStatus;
 
 const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
 const CATEGORIES: Category[] = ["bug", "security", "performance", "maintainability", "test", "style", "documentation", "other"];
@@ -47,11 +62,8 @@ export interface PreviewFile {
   deletions: number;
 }
 
-/** 没评的文件与原因（太大 / 规则排除 / 超预算）。面板要把它们列出来 —— 静默丢掉等于说谎。 */
-export interface PreviewSkip {
-  path: string;
-  reason: string;
-}
+/** 没评的文件与原因（太大 / 规则排除 / 超预算 / 模型没说）。静默丢掉等于说谎。 */
+type PreviewSkip = ReviewSkip;
 
 export interface Preview {
   mode: ReviewMode;
@@ -217,9 +229,7 @@ export function buildPrompt(p: Preview, lang: ReviewLang, rules: string): string
     `## 要评的文件\n\n${files}`,
     "",
     `## 语言\n\ncontent / reason 用${LANG_NAME[lang]}写；existing_code 与 suggestion_code 必须是原文代码，不翻译。`,
-  ]
-    .filter((line) => line !== undefined)
-    .join("\n");
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -286,19 +296,17 @@ const pick = (o: any, ...keys: string[]): unknown => {
  * 一条没有 path 或没有 content 的「意见」只会变成噪音。
  */
 export function toFindings(raw: string): ParsedFindings {
-  const text = raw ?? "";
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) return { findings: [], skipped: [] };
-  let body: any;
+  const body = sliceJson(raw ?? "");
+  if (!body.trim().startsWith("{")) return { findings: [], skipped: [] };
+  let parsed: any;
   try {
-    body = JSON.parse(text.slice(start, end + 1));
+    parsed = JSON.parse(body);
   } catch {
     return { findings: [], skipped: [] };
   }
 
   const findings: Finding[] = [];
-  for (const item of arr(body?.findings)) {
+  for (const item of arr(parsed?.findings)) {
     const filePath = str(pick(item, "path", "file")).trim();
     const content = str(pick(item, "content", "message", "text")).trim();
     if (!filePath || !content) continue;
@@ -320,7 +328,7 @@ export function toFindings(raw: string): ParsedFindings {
   }
 
   const skipped: PreviewSkip[] = [];
-  for (const item of arr(body?.skipped)) {
+  for (const item of arr(parsed?.skipped)) {
     const filePath = str(pick(item, "path", "file")).trim();
     if (!filePath) continue;
     skipped.push({ path: filePath, reason: str(pick(item, "reason")).trim() || "skipped" });
@@ -349,16 +357,13 @@ export function findingKey(f: Pick<Finding, "path" | "category" | "existingCode"
     .slice(0, 16);
 }
 
-export interface MergedFinding extends Finding {
-  key: string;
-  state: "new" | "persisting";
-  mark: Mark | "";
-}
+export type MergedFinding = ReviewFinding;
 
 export interface MergeResult {
   findings: MergedFinding[];
-  /** 上一轮有、这一轮没有的那几条的 key（面板标「已解决」）。 */
+  /** 上一轮有、这一轮没有的那几条（key + 路径，面板要说得出是哪个文件）。 */
   resolved: string[];
+  resolvedPaths: string[];
 }
 
 /** 这一轮的意见对上一轮：新的 / 还在的，外加上一轮消失了的那批。 */
@@ -367,58 +372,46 @@ export function mergeFindings(
   next: readonly Finding[],
   marks: Record<string, Mark>,
 ): MergeResult {
-  const prevKeys = new Set(prev.map((f) => findingKey(f)));
+  const prevByKey = new Map<string, string>();
+  for (const f of prev) if (!prevByKey.has(findingKey(f))) prevByKey.set(findingKey(f), f.path);
   const findings = next.map((f) => {
     const key = findingKey(f);
     return {
       ...f,
       key,
-      state: (prevKeys.has(key) ? "persisting" : "new") as "new" | "persisting",
+      state: (prevByKey.has(key) ? "persisting" : "new") as "new" | "persisting",
       mark: (marks[key] ?? "") as Mark | "",
     };
   });
   const nextKeys = new Set(findings.map((f) => f.key));
   const resolved: string[] = [];
-  for (const f of prev) {
-    const key = findingKey(f);
-    if (!nextKeys.has(key) && !resolved.includes(key)) resolved.push(key);
+  const resolvedPaths: string[] = [];
+  for (const [key, p] of prevByKey) {
+    if (nextKeys.has(key)) continue;
+    resolved.push(key);
+    if (!resolvedPaths.includes(p)) resolvedPaths.push(p);
   }
-  return { findings, resolved };
+  return { findings, resolved, resolvedPaths };
+}
+
+/**
+ * 两次评审是不是「同一个范围」：工作区 / 分支 vs 主干（同一对照分支）/ 同一个提交。
+ *
+ * 不判这个的话，拿工作区那次当基线去比一次提交评审，会把整批意见都写成「已解决」。
+ */
+export function sameScope(
+  run: Pick<ReviewRun, "mode" | "from" | "to" | "mergeBase">,
+  next: Pick<ReviewRun, "mode" | "from" | "to" | "mergeBase">,
+): boolean {
+  if (run.mode !== next.mode) return false;
+  if (run.mode === "range") return (run.mergeBase || run.from) === (next.mergeBase || next.from);
+  if (run.mode === "commit") return run.to === next.to;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
 // 落盘
 // ---------------------------------------------------------------------------
-
-export interface ReviewRun {
-  id: string;
-  dir: string;
-  mode: ReviewMode;
-  from: string;
-  to: string;
-  mergeBase: string;
-  status: RunStatus;
-  startedAt: string;
-  finishedAt: string;
-  model: string;
-  lang: ReviewLang;
-  findings: MergedFinding[];
-  resolved: string[];
-  /** 模型说没评的 + preview 就没给的文件，合成一张表给面板列出来。 */
-  skipped: PreviewSkip[];
-  reviewedFiles: number;
-  totalFiles: number;
-  tokens: number;
-  error: string;
-  errorCode: string;
-}
-
-export interface ReviewState {
-  repo: string;
-  runs: ReviewRun[];
-  /** 用户标的处理态，按 `findingKey` 记在仓库上：跨轮次，不跟某一次评审走。 */
-  marks: Record<string, Mark>;
-}
 
 /** 同一个仓库只有一个 key：尾斜杠与大小写差异（macOS / Windows 常见）不该分家。 */
 export function repoKey(dir: string): string {
@@ -499,19 +492,7 @@ export function cleanRuns(repo: string): ReviewState {
 const REVIEW_TIMEOUT_MS = 30 * 60_000;
 
 /** 面板轮询/广播的那个「现在到哪了」。 */
-export interface Progress {
-  repo: string;
-  runId: string;
-  status: RunStatus;
-  phase: "preview" | "rules" | "review" | "done";
-  totalFiles: number;
-  reviewedFiles: number;
-  currentFile: string;
-  tokens: number;
-  startedAt: string;
-  error: string;
-  errorCode: string;
-}
+export type Progress = ReviewProgress;
 
 interface Active {
   cancel: () => void;
@@ -615,7 +596,7 @@ function runCapture(cmd: string, args: string[], cwd: string, timeoutMs: number,
 
 async function runOcr(argv: string[], cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
   const { cmd, prefix } = ocrInvocation();
-  const args = prefix.length ? [...prefix, ...quoteForCmd(prefix, argv)] : argv;
+  const args = prefix.length ? [...prefix, ...quoteForCmd(argv)] : argv;
   const out = await runCapture(cmd, args, cwd, timeoutMs, signal);
   const kind = classifyOcrFailure(out.stderr, out.code);
   if (kind === "ocr_missing") throw new ReviewError("ocr_missing", "没装 ocr");
@@ -625,8 +606,7 @@ async function runOcr(argv: string[], cwd: string, timeoutMs: number, signal?: A
 }
 
 /** 过 `cmd.exe /c` 时把参数逐条加引号：`Program Files` 这种路径不能被空格拆开。 */
-function quoteForCmd(prefix: string[], args: string[]): string[] {
-  if (!prefix.length) return args;
+function quoteForCmd(args: string[]): string[] {
   return args.map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a));
 }
 
@@ -677,7 +657,6 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
   const startedAt = new Date().toISOString();
   const run: ReviewRun = {
     id: runId,
-    dir: root,
     mode: o.mode,
     from: o.base ?? "",
     to: o.mode === "commit" ? o.commit ?? "HEAD" : "HEAD",
@@ -689,6 +668,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     lang: o.lang,
     findings: [],
     resolved: [],
+    resolvedPaths: [],
     skipped: [],
     reviewedFiles: 0,
     totalFiles: 0,
@@ -750,6 +730,33 @@ export function cancelReview(dir: string): boolean {
   return true;
 }
 
+/** 上一次**同一个范围**里完成的评审：三态只跟它比。 */
+function prevDoneRun(state: ReviewState, scope: Pick<ReviewRun, "mode" | "from" | "to" | "mergeBase">): ReviewRun | null {
+  for (let i = state.runs.length - 1; i >= 0; i -= 1) {
+    const run = state.runs[i];
+    if (run.status !== "done") continue;
+    if (sameScope(run, scope)) return run;
+  }
+  return null;
+}
+
+/**
+ * 没被交代的文件也要列出来：`preview` 说可评、模型既没给意见也没说 skip 的那些，
+ * 说明这一轮它没看到 —— 归到 `not_reported`，不许当「评过了没问题」。
+ */
+export function unaccounted(preview: Preview | null, reported: PreviewSkip[], findings: readonly Finding[]): PreviewSkip[] {
+  const out: PreviewSkip[] = [...(preview?.skipped ?? [])];
+  for (const item of reported) if (!out.some((x) => x.path === item.path)) out.push(item);
+  // 有意见的文件当然算交代过了 —— 只看 skipped 会把它们误报成「模型没说」。
+  const handled = new Set([...out.map((s) => s.path), ...findings.map((f) => f.path)]);
+  for (const file of preview?.files ?? []) {
+    if (handled.has(file.path)) continue;
+    handled.add(file.path);
+    out.push({ path: file.path, reason: "not_reported" });
+  }
+  return out;
+}
+
 interface ExecuteCtx {
   root: string;
   run: ReviewRun;
@@ -762,7 +769,6 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
   const { root, run, opts, signal, emit } = ctx;
   const key = repoKey(root);
   let tokens = 0;
-  let reviewed = 0;
   let currentFile = "";
   let preview: Preview | null = null;
   let partialText = "";
@@ -861,7 +867,6 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
             ? ev.message.content.filter((b: any) => b?.type === "text").map((b: any) => String(b.text ?? "")).join("")
             : "";
           if (text.trim()) partialText = text;
-          reviewed += 0;
         }
         emit({ tokens, reviewedFiles: touched.size });
       }
@@ -872,12 +877,19 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     signal.removeEventListener("abort", onAbort);
 
     if (signal.aborted) {
+      // 已经落地的意见留着，并且照「完成」那条路一样对上一次：否则重跑时「上次就有」与
+      // 你标过的处理态都会在这一停里丢掉。
+      const state = readReviewState(root);
       const partial = toFindings(partialText);
+      const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview?.mergeBase ?? "" });
+      const merged = mergeFindings(prevRun?.findings ?? [], partial.findings, state.marks);
       finish({
         status: "stopped",
         finishedAt: new Date().toISOString(),
-        findings: partial.findings.map((f) => ({ ...f, key: findingKey(f), state: "new" as const, mark: (readReviewState(root).marks[findingKey(f)] ?? "") as Mark | "" })),
-        skipped: [...(preview?.skipped ?? []), ...partial.skipped],
+        findings: merged.findings,
+        resolved: merged.resolved,
+        resolvedPaths: merged.resolvedPaths,
+        skipped: unaccounted(preview, partial.skipped, partial.findings),
         reviewedFiles: touched.size,
         tokens,
         error: "已停止",
@@ -901,9 +913,9 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
 
     const parsed = toFindings(partialText);
     const state = readReviewState(root);
-    const prevRun = [...state.runs].reverse().find((r) => r.id !== run.id && r.status === "done");
+    const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview.mergeBase });
     const merged = mergeFindings(prevRun?.findings ?? [], parsed.findings, state.marks);
-    const skipped = [...preview.skipped, ...parsed.skipped];
+    const skipped = unaccounted(preview, parsed.skipped, parsed.findings);
     const accounted = new Set([...parsed.findings.map((f) => f.path), ...parsed.skipped.map((s) => s.path)]);
     const total = preview.files.length;
     finish({
@@ -911,6 +923,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       finishedAt: new Date().toISOString(),
       findings: merged.findings,
       resolved: merged.resolved,
+      resolvedPaths: merged.resolvedPaths,
       skipped,
       totalFiles: total,
       reviewedFiles: accounted.size,
@@ -923,7 +936,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       status: cancelled ? "stopped" : "failed",
       finishedAt: new Date().toISOString(),
       totalFiles: preview?.files.length ?? 0,
-      reviewedFiles: reviewed,
+      reviewedFiles: 0,
       tokens,
       skipped: preview?.skipped ?? [],
       error: cancelled ? "已停止" : String(err?.message ?? err),
@@ -953,13 +966,7 @@ function relativeTo(root: string, value: string): string {
 // ocr 装没装
 // ---------------------------------------------------------------------------
 
-export interface OcrStatus {
-  installed: boolean;
-  version: string;
-  /** delegation 的 `--format json` 要 1.9.0 起；低于它按「太老」扱。 */
-  tooOld: boolean;
-  error: string;
-}
+export type OcrStatus = ReviewOcrStatus;
 
 const MIN_OCR_VERSION = [1, 9, 0] as const;
 

@@ -11,78 +11,19 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 
-export type Severity = "critical" | "high" | "medium" | "low";
-export type Category = "bug" | "security" | "performance" | "maintainability" | "test" | "style" | "documentation" | "other";
-export type Mark = "accept" | "ignore" | "false-positive";
-export type ReviewMode = "workspace" | "range" | "commit";
-export type RunStatus = "running" | "done" | "stopped" | "failed" | "stale";
+import type {
+  ReviewFinding,
+  ReviewMark as Mark,
+  ReviewMode,
+  ReviewOcrStatus as OcrStatus,
+  ReviewProgress,
+  ReviewRun,
+  ReviewSeverity as Severity,
+  ReviewSkip,
+  ReviewState,
+} from "./frames.ts";
 
-export interface ReviewFinding {
-  key: string;
-  path: string;
-  startLine: number;
-  endLine: number;
-  category: Category;
-  severity: Severity;
-  content: string;
-  existingCode: string;
-  suggestionCode: string;
-  anchored: boolean;
-  state: "new" | "persisting";
-  mark: Mark | "";
-}
-
-export interface ReviewSkip {
-  path: string;
-  reason: string;
-}
-
-export interface ReviewRun {
-  id: string;
-  status: RunStatus;
-  startedAt: string;
-  finishedAt: string;
-  mode: ReviewMode;
-  from: string;
-  to: string;
-  mergeBase: string;
-  model: string;
-  findings: ReviewFinding[];
-  resolved: string[];
-  skipped: ReviewSkip[];
-  reviewedFiles: number;
-  totalFiles: number;
-  tokens: number;
-  error: string;
-  errorCode: string;
-}
-
-export interface ReviewState {
-  repo: string;
-  runs: ReviewRun[];
-  marks: Record<string, Mark>;
-}
-
-export interface ReviewProgress {
-  repo: string;
-  runId: string;
-  status: RunStatus;
-  phase: "preview" | "rules" | "review" | "done";
-  totalFiles: number;
-  reviewedFiles: number;
-  currentFile: string;
-  tokens: number;
-  startedAt: string;
-  error: string;
-  errorCode: string;
-}
-
-export interface OcrStatus {
-  installed: boolean;
-  version: string;
-  tooOld: boolean;
-  error?: string;
-}
+export type { Mark, OcrStatus, ReviewFinding, ReviewMode, ReviewProgress, ReviewRun, ReviewSkip, ReviewState };
 
 export interface ReviewInput {
   state: ReviewState | null;
@@ -118,14 +59,38 @@ export interface ReviewView {
   model: string;
   progress: { totalFiles: number; reviewedFiles: number; currentFile: string; tokens: number } | null;
   meta: { files: number; reviewed: number; skipped: number; unresolved: number; tokens: number; durationMs: number | null; when: string } | null;
-  groups: { path: string; worst: Severity; findings: (ReviewFinding & { severity: Severity })[] }[];
+  groups: { path: string; worst: Severity; findings: ReviewFinding[] }[];
   severity: Record<Severity, number>;
   skipped: ReviewSkip[];
   resolved: number;
+  resolvedPaths: string[];
   history: number;
 }
 
 const RANK: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+/**
+ * 桥带回来的 `errorCode` 才是给用户看的那句话（中文兜底只留给认不出的码）：
+ * 直接画 `run.error` 会让英文 / 日文界面里冒出一句桥写死的中文。
+ */
+function errorText(run: ReviewRun | null, fallback: string): string {
+  const code = (run?.errorCode || "").trim();
+  const known: Record<string, string> = {
+    stopped: tr("已停止"),
+    "bridge-restart": tr("桥重启了，这次评审没跑完。重跑一次就行。"),
+    busy: tr("这个仓库已经在评了"),
+    not_git: tr("这个目录不是 git 仓库，没有东西可评。"),
+    ocr_missing: tr("没装 ocr（代码评审要用）"),
+    ocr_too_old: tr("ocr 版本太老，需要 1.9.0 以上"),
+    ocr_failed: tr("ocr 出错，没能说清这次要评哪些文件"),
+    child_failed: tr("评审进程挂了"),
+    timeout: tr("评审超时了"),
+    cancelled: tr("已停止"),
+    not_reported: tr("模型没交代这个文件"),
+  };
+  if (code && known[code]) return known[code];
+  return (run?.error || fallback || "").trim();
+}
 
 const asRun = (s: ReviewState | null): ReviewRun | null => {
   if (!s || !Array.isArray(s.runs) || !s.runs.length) return null;
@@ -141,7 +106,7 @@ const durationOf = (run: ReviewRun): number | null => {
 /**
  * 桥的状态 → 面板要显示的东西。
  *
- * 排法： файл 按「最坏事的那条」从重到轻；同一文件里也按严重度；同为严重度时能定位的按行号、
+ * 排法：文件按「最坏事的那条」从重到轻；同一文件里也按严重度；同为严重度时能定位的按行号、
  * 定位不到的（`start_line: 0`）排最后 —— 它们是「说不清在哪」的那批，不该插在精确意见之间。
  */
 export function reviewView(input: ReviewInput): ReviewView {
@@ -175,7 +140,7 @@ export function reviewView(input: ReviewInput): ReviewView {
   const severity: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
   for (const f of findings) severity[f.severity] = (severity[f.severity] ?? 0) + 1;
 
-  const byFile = new Map<string, (ReviewFinding & { severity: Severity })[]>();
+  const byFile = new Map<string, ReviewFinding[]>();
   for (const f of findings) {
     const list = byFile.get(f.path);
     if (list) list.push(f);
@@ -234,7 +199,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     needsInstall,
     needsUpgrade,
     empty: phase === "done" && findings.length === 0,
-    error: (latest?.error || input.error || "").trim(),
+    error: errorText(latest, input.error),
     serverVersion: ocr?.version ?? "",
     installing: input.installing,
     mode: input.mode ?? "range",
@@ -247,6 +212,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     severity,
     skipped,
     resolved: latest?.resolved?.length ?? 0,
+    resolvedPaths: latest?.resolvedPaths ?? [],
     history: state?.runs?.length ?? 0,
   };
 }
@@ -435,6 +401,14 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     root.append(el("div", "rv-hint", tr("桥重启了，这次评审没跑完。重跑一次就行。")));
   }
 
+  // ---- 已解决：只给个数会让人问「哪几条」，把文件列出来
+  if (view.resolvedPaths.length) {
+    const box = el("details", "rv-skipped") as HTMLDetailsElement;
+    box.append(el("summary", "", tr("已解决 {p1} 条", { p1: view.resolved })));
+    for (const p of view.resolvedPaths) box.append(el("div", "rv-skip-row", p));
+    root.append(box);
+  }
+
   // ---- 空态
   if (view.empty) {
     root.append(el("div", "empty", tr("评过了，一条意见都没有。"))) ;
@@ -523,7 +497,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
 }
 
 /** 把一条意见折成送进输入框的一段话（不自动发送）。 */
-export function fixPrompt(f: ReviewFinding, _lang?: string): string {
+export function fixPrompt(f: ReviewFinding): string {
   const head = f.anchored ? `${f.path}:${f.startLine}` : f.path;
   const lines = [tr("代码评审意见（{p1}）：", { p1: head }), "", f.content];
   if (f.existingCode) lines.push("", tr("命中的代码："), "```", f.existingCode, "```");

@@ -306,6 +306,93 @@ export type ClientFrameType =
   | "unsubscribe";
 
 // ---------------------------------------------------------------------------
+// #651 代码评审：桥与页面共用的形状
+//
+// 两侧都要认它（桥落盘 / 页面画），所以住在这个叶子里 —— 和在各自文件里各抄一份相比，
+// 抄的那份已经在 `OcrStatus.error` 上漂过一次（一边必填、一边可选）。
+// ---------------------------------------------------------------------------
+
+export type ReviewMode = "workspace" | "range" | "commit";
+export type ReviewSeverity = "critical" | "high" | "medium" | "low";
+export type ReviewCategory = "bug" | "security" | "performance" | "maintainability" | "test" | "style" | "documentation" | "other";
+export type ReviewMark = "accept" | "ignore" | "false-positive";
+export type ReviewRunStatus = "running" | "done" | "stopped" | "failed" | "stale";
+
+/** 没评的文件与原因（太大 / 规则排除 / 超预算 / 模型没说）。 */
+export interface ReviewSkip {
+  path: string;
+  reason: string;
+}
+
+export interface ReviewFinding {
+  /** `path + 类别 + 命中的代码片段` 的哈希：跨轮次认「还是那一条」。 */
+  key: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  category: ReviewCategory;
+  severity: ReviewSeverity;
+  content: string;
+  existingCode: string;
+  suggestionCode: string;
+  /** `start_line: 0` = 定位不到行。 */
+  anchored: boolean;
+  state: "new" | "persisting";
+  mark: ReviewMark | "";
+}
+
+export interface ReviewRun {
+  id: string;
+  status: ReviewRunStatus;
+  startedAt: string;
+  finishedAt: string;
+  mode: ReviewMode;
+  from: string;
+  to: string;
+  mergeBase: string;
+  model: string;
+  lang: string;
+  findings: ReviewFinding[];
+  /** 上一次有、这一次没有的那几条（key + path，面板要能说出是哪个文件）。 */
+  resolved: string[];
+  resolvedPaths: string[];
+  skipped: ReviewSkip[];
+  reviewedFiles: number;
+  totalFiles: number;
+  tokens: number;
+  error: string;
+  errorCode: string;
+}
+
+export interface ReviewState {
+  repo: string;
+  runs: ReviewRun[];
+  marks: Record<string, ReviewMark>;
+}
+
+export interface ReviewProgress {
+  repo: string;
+  runId: string;
+  status: ReviewRunStatus;
+  phase: "preview" | "rules" | "review" | "done";
+  totalFiles: number;
+  reviewedFiles: number;
+  currentFile: string;
+  tokens: number;
+  startedAt: string;
+  error: string;
+  errorCode: string;
+}
+
+export interface ReviewOcrStatus {
+  installed: boolean;
+  version: string;
+  /** delegation 的 `--format json` 要 1.9.0 起。 */
+  tooOld: boolean;
+  error?: string;
+}
+
+// ---------------------------------------------------------------------------
 // 载荷：先给最要命的 9 个帧（审批 / 问卷 / 用量 / 上下文 / 运行状态）
 // ---------------------------------------------------------------------------
 

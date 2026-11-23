@@ -164,13 +164,23 @@ test("定位不到行的意见排在文件最后，并被标出来", () => {
   assert.equal(view.groups[0].findings[0].anchored, false);
 });
 
-test("已解决的那几条只给个数，不进正文", () => {
+test("已解决的那几条不进正文，但要说得出来是哪些文件", () => {
   const view = reviewView({
     ...base,
-    state: { runs: [run({ findings: [finding()], resolved: ["gone1", "gone2"] })], marks: {} },
+    state: { runs: [run({ findings: [finding()], resolved: ["gone1", "gone2"], resolvedPaths: ["a.ts", "b.ts"] })], marks: {} },
   });
   assert.equal(view.resolved, 2);
+  assert.deepEqual(view.resolvedPaths, ["a.ts", "b.ts"]);
   assert.equal(view.groups.length, 1);
+});
+
+test("错误说人话：认得出 errorCode 就不画桥写死的那句中文", () => {
+  const stopped = reviewView({ ...base, state: { runs: [run({ status: "stopped", error: "已停止", errorCode: "stopped" })], marks: {} } });
+  assert.equal(stopped.error, "已停止");
+  const stale = reviewView({ ...base, state: { runs: [run({ status: "stale", error: "桥重启了，这次评审没跑完", errorCode: "bridge-restart" })], marks: {} } });
+  assert.ok(stale.error.includes("重跑"), stale.error);
+  const unknown = reviewView({ ...base, state: { runs: [run({ status: "failed", error: "自己写的怪错误", errorCode: "weird" })], marks: {} } });
+  assert.equal(unknown.error, "自己写的怪错误", "认不出的码才回退原文");
 });
 
 test("停了 / 失败 / 桥重启：各是各的态，跑的人一眼能分辨", () => {

@@ -4315,4 +4315,11 @@ export const en: Dict = {
   "请先找到这段代码再修掉它，并说明改了什么。": "Find this code first, then fix it and say what changed.",
   "正在读评审状态…": "Loading review state…",
   "变更文件 · 工作区改动": "Changed files · working tree",
+  "没装 ocr（代码评审要用）": "ocr is not installed (code review needs it)",
+  "ocr 版本太老，需要 1.9.0 以上": "ocr is too old — 1.9.0 or newer is required",
+  "ocr 出错，没能说清这次要评哪些文件": "ocr failed and could not say which files to review",
+  "评审进程挂了": "The review process died",
+  "评审超时了": "The review timed out",
+  "这个仓库已经在评了": "This repository is already being reviewed",
+  "模型没交代这个文件": "The model did not account for this file",
 };
