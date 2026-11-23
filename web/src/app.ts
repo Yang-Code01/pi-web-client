@@ -78,6 +78,7 @@ import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
 import { execView, type ExecChildRunInput, type ExecMetricsView, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
+import { pickLanding, parseLast, pruneLast, recordLast, type WsLast } from "./wsmemory.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, birthReveal, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type BirthReveal, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
@@ -1795,6 +1796,8 @@ export class App {
     this.setSelectedWs(null);
     if (this.sessionReclaimId !== id && this.sessionReclaimEl) this.sessionReclaimEl.hidden = true;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
+    // D390：任何来源打开一颗会话（左栏 / ★ 行 / 搜索 / 深链 / 刷新 / 自动落点）都写成这一组的记忆。
+    this.noteLastSession();
     this.resetSessionView();
     // D386：打开的是一颗**已归档**的会话，就把它请回来（取消归档 + 置顶到最前）。
     // 别的会话照旧不动排列（D146）；不这么做的话 `starredRow()` 排掉归档会话、
@@ -2050,6 +2053,9 @@ export class App {
         this.tunnel = newerTunnel(this.tunnel, msg.tunnel);
         // D386：首屏/重连的 hello 才第一次带来 `manage` —— 深链 `#/s/<归档 id>` 就是在这一步补请回来的。
         this.maybeReviveCurrent();
+        // D390：深链 `#/s/<id>` 与刷新都是在快照到达之前跑 `routeFromHash()` 的 —— 那时还不知道
+        // 这颗会话属于哪个工作区。快照到了补记一次（同一组同一颗只写一次，便宜）。
+        this.noteLastSession();
         this.renderAll();
         // Q-021: 新会话 / 首屏恢复都可能带着另一个 cwd 进来。
         void this.refreshGit(true);
@@ -2085,6 +2091,8 @@ export class App {
         this.turnChars = { cjk: 0, other: 0 };
         if (msg.state) this.session = msg.state as SessionState;
         else if (msg.session) this.session = msg.session;
+        // D390：新建 / 还原的会话不走 `openSession()`，但「当前会话是哪颗」一样算一层记忆。
+        this.noteLastSession();
         this.policy = (msg.policy as CtxPolicy | null) ?? null;
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         if ("trust" in msg) this.trust = (msg.trust as TrustState | null) ?? null;
@@ -8101,6 +8109,8 @@ export class App {
     // 用未过滤的树找落点：过滤态下邻居可能整组被藏起来，那也不该停在半路。
     const tree = buildTree(this.sessions, this.manage, this.workspaces, "");
     for (const id of wsNeighborsAfterDrop(orderBefore, gone)) {
+      // D390 划定的范围到这里为止：这一步是**补救**（工作区被删了，得离开），不是用户在导航，
+      // 所以仍开邻居排最上面那颗，不走「记忆 → 最近活动」那套落点。改之前先读 D390 末段。
       const first = tree.groups.find((g) => g.id === id)?.sessions[0];
       if (first) {
         this.openFromList(first.id);
@@ -20372,6 +20382,47 @@ export class App {
   }
 
   /**
+   * D390：这一组该打开哪颗 —— 记忆里的那颗，其次最近写过文件的那颗（`pickLanding()`）。
+   *
+   * 用**未过滤**的树算落点，与 `emptyWs()` 同一条理由：左栏搜索时这一组可能被筛掉，但「切过去
+   * 打开哪颗」不该跟着搜索变。记忆里的那颗被删 / 被归档 / 被拖去别的工作区时落到 `updatedAt`
+   * 最大的那颗；那条死记忆顺手清掉，下次不必再猜一遍。
+   */
+  private wsLanding(wsId: string): string | null {
+    const group = buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === wsId);
+    if (!group) return null;
+    // 旧桥 / 桩桥不发工作区快照：组是从 cwd 现推的，既没有存档的组 id 也没有记忆 —— 照旧开
+    // 排最上面那颗（D390 之前的行为），别跌进「空工作区」那条路把当前会话关掉。
+    if (!this.workspaces?.groups?.length) return group.sessions[0]?.id ?? null;
+    const last = readWsLast();
+    const landing = pickLanding(group.sessions, last[wsId]?.id);
+    if (last[wsId] && last[wsId].id !== landing) {
+      writeWsLast(pruneLast(last, (entry, id) => id !== wsId || entry.id === landing));
+    }
+    return landing;
+  }
+
+  /**
+   * D390：当前会话是哪颗，它所在工作区的记忆就是哪颗。任何来源成为当前会话都走这一处
+   * （打开 / 新建 / 深链 / 刷新 / 归档或删组后的自动落点）；同一组同一颗不重写。
+   *
+   * 前提是 `this.session` 已经是那颗（`currentWsId()` 从它反查工作区），所以调用点都守在
+   * 「`this.session` 刚被赋上」之后；反查不到（旧桥 / 桩桥没有分组）就什么也不记。
+   */
+  private noteLastSession(): void {
+    const id = this.currentId;
+    if (!id) return;
+    const wsId = this.currentWsId();
+    if (!wsId) return;
+    const last = readWsLast();
+    if (last[wsId]?.id === id) return;
+    // 组已经不在快照里（删了 / 被 prune）的条目别一直留着：写入时顺手剪一遍。
+    const live = new Set(this.workspaces.groups.map((g) => g.id));
+    const kept = pruneLast(last, (_entry, groupId) => live.has(groupId));
+    writeWsLast(recordLast(kept, wsId, id));
+  }
+
+  /**
    * D374：页面记住的组现在还在不在。存档里的 id 可能已经被删 / 被桥的 `prune()` 清掉，
    * 那种情况一律当成「没选」—— 一个不存在的组不该占着横杠。
    */
@@ -20418,14 +20469,14 @@ export class App {
   }
 
   /**
-   * 工作区点击：切到那一组 = 打开它排在最上面的那颗。**没有会话的组也切得过去**（D374）：
-   * 选中它、中栏进空态，再照旧把左栏展开并滚到它 —— 以前这里只把左栏亮出来，横杠还停在
-   * 上一个工作区上，看上去就是「点了没反应」。
+   * 工作区点击：切到那一组 = 打开这一组的**落点**（D390：记忆里那颗，其次最近写过文件的那颗）。
+   * **没有会话的组也切得过去**（D374）：选中它、中栏进空态，再照旧把左栏展开并滚到它 ——
+   * 以前这里只把左栏亮出来，横杠还停在上一个工作区上，看上去就是「点了没反应」。
    */
   private gotoGroup(group: TreeGroup<SessionState>): void {
-    const first = group.sessions[0];
-    if (first) {
-      this.openFromList(first.id);
+    const landing = this.wsLanding(group.id);
+    if (landing) {
+      this.openFromList(landing);
       return;
     }
     // 先定归属再清中栏：`renderAll()` 里的空态与横杠都读它。
@@ -21276,6 +21327,30 @@ function writeSelectedWs(id: string | null): void {
     else localStorage.removeItem(SELECTED_WS_KEY);
   } catch {
     // private mode: 选中态就只在这一次会话里有效。
+  }
+}
+
+/**
+ * D390：工作区的「上次的会话」（组 id → 会话 id）。与 `pi.ws.selected` 同一层，都是「我在哪」的
+ * 页面记忆：不进桥、不进地址栏、换设备不跟随。解析与剪枝在 `wsmemory.ts`（纯函数、可单测）。
+ */
+const WS_LAST_KEY = "pi.ws.last";
+
+function readWsLast(): WsLast {
+  try {
+    return parseLast(localStorage.getItem(WS_LAST_KEY));
+  } catch {
+    // private mode: 读不了就当没有记忆（落到最近活动那颗）。
+    return {};
+  }
+}
+
+function writeWsLast(last: WsLast): void {
+  try {
+    if (Object.keys(last).length) localStorage.setItem(WS_LAST_KEY, JSON.stringify(last));
+    else localStorage.removeItem(WS_LAST_KEY);
+  } catch {
+    // 配额 / private mode：这次不记住，页面照常工作。
   }
 }
 
