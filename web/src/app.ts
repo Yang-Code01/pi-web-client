@@ -21020,8 +21020,9 @@ export class App {
       return;
     }
     const r = chip.getBoundingClientRect();
-    const clone = markSurface(chip.cloneNode(true) as HTMLElement, "paper");
+    const clone = chip.cloneNode(true) as HTMLElement;
     clone.classList.add("pin-flyer");
+    markSurface(clone, "paper");
     clone.removeAttribute("data-pin-key");
     Object.assign(clone.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
     document.body.append(clone);

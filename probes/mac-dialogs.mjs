@@ -137,6 +137,8 @@ const MEASURE = (sel) => {
  * `data-mac-surface`，要么有一个带了标记的祖先（它是那扇窗里的零件），要么登记在豁免表里。
  * 这条是「下次漏项会红」的那张网：新面板忘了打标记，这里当场抓到，不用等用户半年后发现。
  */
+// 现在没有需要豁免的东西：例外一律走 `paper` 标记（登记在案、不套材质），
+// 所以这一层不需要一张「可以不遵守」的名单 —— 表空着比填满更难腐烂。
 const SCAN_EXEMPT = [];
 const SCAN = (exempt) => {
   const hits = [];
@@ -154,6 +156,7 @@ const SCAN = (exempt) => {
 };
 
 const results = [];
+const fails = [];
 const measure = async (page, label, sel) => {
   const r = await page.evaluate(MEASURE, sel);
   results.push(r ? { label, sel, ...r } : { label, sel, missing: true });
@@ -352,6 +355,87 @@ try {
   await page.setViewportSize({ width: 1280, height: 860 });
   log("窄屏（700）仓库面板:", JSON.stringify(narrow));
 
+  // ---- 6. 三套主题各跑一遍：材质与入场是按标记挑的，不跟主题走；换个底再量一遍，防止某套
+  // 主题里的覆盖把圆角 / 动画写没了。
+  const themes = [];
+  for (const t of ["mac-light", "mac-dark", "mac-midnight"]) {
+    await page.evaluate((theme) => {
+      document.documentElement.dataset.theme = theme;
+      const host = document.getElementById("app") ?? document.body;
+      const box = document.createElement("div");
+      box.append(
+        document.createRange().createContextualFragment(
+          `<div class="sheet-back center" data-mac-surface="window"><div class="sheet"></div></div>`,
+        ),
+      );
+      box.firstElementChild.dataset.macProbe = "theme";
+      host.append(box.firstElementChild);
+    }, t);
+    const m = await page.evaluate(() => {
+      const back = document.querySelector('[data-mac-probe="theme"]');
+      const panel = back?.firstElementChild;
+      const cs = (el, p) => (el ? getComputedStyle(el)[p] : null);
+      const out = {
+        scrimBlur: cs(back, "backdropFilter"),
+        scrimAnim: cs(back, "animationName"),
+        panelAnim: cs(panel, "animationName"),
+        radius: cs(panel, "borderRadius"),
+        shadow: cs(panel, "boxShadow") !== "none",
+        panelBg: cs(panel, "backgroundColor"),
+      };
+      back?.remove();
+      return out;
+    });
+    themes.push({ theme: t, ...m });
+  }
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "mac-light";
+  });
+  for (const t of themes) {
+    if (t.panelAnim !== "mac-window-in") fails.push(`主题 ${t.theme}: 面板动画 ${t.panelAnim}`);
+    if (t.radius !== "14px") fails.push(`主题 ${t.theme}: 圆角 ${t.radius}`);
+    if (!t.scrimBlur || t.scrimBlur === "none") fails.push(`主题 ${t.theme}: 遮罩没有毛玻璃`);
+    if (!t.shadow) fails.push(`主题 ${t.theme}: 没有窗影`);
+  }
+  log("三套主题的窗口材质:", themes.map((t) => `${t.theme} ${t.radius} ${t.panelAnim}`).join(" / "));
+
+  // ---- 7. 搬进 #app 的三个浮层：把字号调到 150%，双击一颗标签改名，量输入框是不是真的跟着缩放。
+  // 这一条验的是 D390 §6 的 `appZoom()`：坐标与宽度都要先除一次缩放。
+  let zoomCheck = { skipped: true };
+  const tab = page.locator(".ws-tab").first();
+  if (await tab.count()) {
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty("--ui-scale", "1.5");
+      document.getElementById("app")?.style.setProperty("--ui-scale", "1.5");
+    });
+    await tab.dblclick();
+    await sleep(200);
+    zoomCheck = await page.evaluate(() => {
+      const el = document.querySelector(".ws-tab-rename-input");
+      if (!el) return { found: false };
+      const r = el.getBoundingClientRect();
+      const t = document.querySelector(".ws-tab")?.getBoundingClientRect();
+      return { found: true, inApp: Boolean(el.closest("#app")), w: Math.round(r.width), tabW: t ? Math.round(t.width) : null };
+    });
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => {
+      document.documentElement.style.removeProperty("--ui-scale");
+      document.getElementById("app")?.style.removeProperty("--ui-scale");
+    });
+    await sleep(100);
+    if (zoomCheck.found) {
+      if (!zoomCheck.inApp) fails.push("改名输入框没挂进 #app（字号缩放时它会比周围小一号）");
+      if (zoomCheck.tabW && Math.abs(zoomCheck.w - zoomCheck.tabW) > 3) {
+        fails.push(`字号 150% 下改名输入框宽 ${zoomCheck.w} ≠ 标签宽 ${zoomCheck.tabW} —— 坐标没除 appZoom()`);
+      }
+      log(`字号 150% 改名输入框: ${zoomCheck.w}px / 标签 ${zoomCheck.tabW}px, inApp=${zoomCheck.inApp}`);
+    } else {
+      log("字号 150% 改名输入框: 没打开（跳过这一条）");
+    }
+  } else {
+    log("没有 .ws-tab，跳过「搬进 #app 后按 zoom 换算」这条");
+  }
+
   // ---- 汇总
   const pad = (s, n) => String(s ?? "—").padEnd(n).slice(0, n);
   console.log("\n" + pad("弹层", 30) + pad("遮罩blur", 26) + pad("遮罩动画", 22) + pad("面板动画", 24) + pad("圆角", 10) + "面板背景/阴影");
@@ -393,11 +477,6 @@ try {
     "注入：图片灯箱 image-view": { radius: "12px" },
     "注入：预览右栏 viewer": { anim: "viewer-in", radius: "14px 0px 0px 14px" },
   };
-  const fails = [];
-  for (const e of SCAN_EXEMPT) {
-    const seen = await page.evaluate((sel) => Boolean(document.querySelector(sel)), e.sel);
-    if (!seen) fails.push(`扫描豁免表里的「${e.sel}」在页面上不存在（改名了？）—— ${e.why}`);
-  }
   if (!results.length) fails.push("一行都没量到 —— 探针自己坏了");
   for (const r of results) {
     if (r.missing || !r.back) {

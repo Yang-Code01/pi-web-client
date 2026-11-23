@@ -223,32 +223,37 @@ test("材质级的取值表两侧一致：TS 的联合类型与 CSS 选择器用
   assert.match(MAC_CSS, /paper[^\n]*不套材质/, "mac.css 里要写明 paper 是「故意不套材质」的那一档");
 });
 
-test("每个浮层创建点都打了标记（删掉一行 markSurface 就红）", () => {
-  // 文件 → 这个文件里必须出现的材质级。表外的新模块由探针的全局扫描兜（页面上不许有裸浮层）。
-  const SITES = [
-    ["web/src/app.ts", ["menu", "toast", "dock"]],  // sheet 走 overlay() 的默认，菜单 / 吐司 / 预览 / 终端单独打
-    ["web/src/notesheet.ts", ["window", "menu"]],
-    ["web/src/reminders.ts", ["menu", "toast"]],
-    ["web/src/sysmanage.ts", ["window"]],
-    ["web/src/jira.ts", ["window", "menu"]],
-    ["web/src/mail.ts", ["window"]],
-    ["web/src/mailconfirm.ts", ["window"]],
-    ["web/src/hotdeploy.ts", ["window"]],
-    ["web/src/branchsheet.ts", ["window", "menu"]],
-    ["web/src/repossheet.ts", ["window"]],
-    ["web/src/pinmenu.ts", ["menu"]],
-    ["web/src/pluginmarket.ts", ["menu"]],
-    ["web/src/notes/editor.ts", ["menu"]],
-    ["web/src/whatsnew.ts", ["window"]],
-    ["web/src/filesearch.ts", ["window"]],
-    ["web/src/fileconsole.ts", ["window"]],
+test("每个浮层创建点都打了标记，且打的是这一面该有的材质级（换错档就红）", () => {
+  // 逐**创建点**断言（不是逐文件）：把 remind-pop 和 remind-toast 的材质级互换，下面当场红。
+  // 表外的模块由探针的全局扫描兜（页面上不许有裸浮层）。
+  const MARKED = [
+    ["web/src/reminders.ts", "remind-pop", "menu"],
+    ["web/src/reminders.ts", "remind-toast", "toast"],
+    ["web/src/notesheet.ts", "note-handoff", "menu"],
+    ["web/src/notesheet.ts", "peer-pick", "window"],
+    ["web/src/pinmenu.ts", "pin-menu", "menu"],
+    ["web/src/pluginmarket.ts", "mk-menu", "menu"],
+    ["web/src/jira.ts", "jira-handoff-pop", "menu"],
+    ["web/src/jira.ts", "jira-user-pop", "menu"],
+    ["web/src/branchsheet.ts", "go-cmp-menu", "menu"],
+    ["web/src/app.ts", "ctx-menu", "menu"],
+    ["web/src/app.ts", "ws-pop", "menu"],
+    ["web/src/app.ts", "skill-panel", "menu"],
+    ["web/src/app.ts", "update-bar", "toast"],
+    ["web/src/app.ts", "fail-toast", "toast"],
+    ["web/src/app.ts", "ws-tab-rename-input", "paper"],
   ];
-  for (const [rel, kinds] of SITES) {
+  for (const [rel, cls, kind] of MARKED) {
     const src = fs.readFileSync(path.join(REPO, rel), "utf8");
-    for (const k of kinds) {
-      assert.match(src, new RegExp(`(?:markSurface|overlay)\\([\\s\\S]{0,240}?"${k}"`), `${rel} 没有给 "${k}" 级打标记`);
-    }
+    const re = new RegExp(`markSurface\\([^;]{0,200}?${cls}[^;]{0,160}?"${kind}"`);
+    assert.match(src, re, `${rel} 里的 ${cls} 没有打上 "${kind}" — 材质级换了或这行被删了`);
   }
+  // 走 app.overlay() 收口的那几档（sheet 走默认的 window，不在这里逐条列）。
+  const app = fs.readFileSync(path.join(REPO, "web/src/app.ts"), "utf8");
+  for (const kind of ["dock", "paper"]) {
+    assert.match(app, new RegExp(`overlay\\([^;]{0,80}?"${kind}"`), `app.ts 里没有 overlay(…, "${kind}")`);
+  }
+  assert.match(app, /overlay\([^;]{0,80}"window", \{ dim: "dark" \}/, "灯箱没有走 window + dim=dark");
 });
 
 test("浮层一律挂进 #app：笔记的两个浮层不再往 body 上塞", () => {

@@ -458,7 +458,7 @@
   .notes-console.in-fail.nav-rail { grid-template-columns: 44px minmax(0, 1fr); }
 }
 
-/* 交给 agent / 改状态的浮层：挂 body（不在 #app），跟以前的 .note-handoff 长得一样。 */
+/* 交给 agent / 改状态的浮层：挂进 #app（跟着字号缩放），材质走 data-mac-surface="menu"。 */
 .note-handoff {
   position: fixed; z-index: 80; min-width: 260px; display: grid; gap: 2px; padding: 4px;
   border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2);
@@ -473,7 +473,7 @@
 .handoff-hint { font-size: 11px; color: var(--faint); }
 .note-handoff button:disabled { opacity: 0.42; cursor: not-allowed; }
 
-/* 选人 / 提交确认：挂在 body 上（不在 #app），从连动菜单弹出来，所以压在 .note-handoff 之上。 */
+/* 选人 / 提交确认：挂进 #app（跟着字号缩放），从连动菜单弹出来，所以压在 .note-handoff 之上。 */
 .peer-pick {
   position: fixed; inset: 0; z-index: 82; display: grid; place-items: center;
   background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px);
