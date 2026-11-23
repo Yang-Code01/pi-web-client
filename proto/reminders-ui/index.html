@@ -49,7 +49,8 @@
   button { font: inherit; color: inherit; }
 
   /* ── 假的应用外壳（只为让角标出现在它该在的位置上） ───────────────────────── */
-  .app { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100dvh; }
+  /* 五行对应五个子元素：顶栏 / 标签行 / ★ 行 / 主体 / 输入框。多一个子元素就多一行，主体会掉进 auto 行 */
+  .app { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; height: 100dvh; }
   .topbar {
     display: flex; align-items: center; gap: 8px; padding: 11px 16px;
     border-bottom: 1px solid var(--line-soft); background: var(--bg); position: relative; z-index: 20;
@@ -90,8 +91,20 @@
   .composer { border-top: 1px solid var(--line-soft); padding: 10px 16px 14px; }
   .box { border: 1px solid var(--line); background: var(--panel); border-radius: var(--r); padding: 10px 12px; color: var(--faint); font-size: 12.5px; }
 
+  /* ── ★ 行（会话层）：角标就挂在这一行的最右端 ────────────────────────────── */
+  .sess-row {
+    position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 16px;
+    border-bottom: 1px solid var(--line-soft); background: var(--bg);
+  }
+  .pin-strip { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; overflow: hidden; }
+  .pin-chip {
+    flex: none; border: 1px solid var(--line-soft); background: var(--panel); color: var(--dim);
+    border-radius: 999px; padding: 2px 10px; font-size: 12px; white-space: nowrap;
+  }
+  .pin-chip.on { border-color: var(--accent-dim); background: var(--accent-bg); color: var(--accent); }
+
   /* ── 提醒：角标 ──────────────────────────────────────────────────────────── */
-  .remind-btn { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+  .remind-btn { position: relative; display: inline-flex; align-items: center; gap: 6px; flex: none; }
   .remind-badge {
     min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px;
     background: var(--warn); color: var(--warn-ink, #fff); font-size: 10.5px; font-weight: 600;
@@ -132,7 +145,7 @@
   .pop-foot a { color: var(--accent); text-decoration: none; }
 
   /* E：按会话分组（结构上不是流水，是一张张会话卡） */
-  body[data-variant="E"] .remind-pop { top: 40px; right: 12px; width: 400px; max-height: 66vh; }
+  body[data-variant="E"] .remind-pop { top: calc(100% - 2px); right: 12px; width: 400px; max-height: 66vh; }
   .grpcard { border-top: 1px solid var(--line-soft); padding: 9px 12px 4px; cursor: pointer; }
   .grpcard:hover { background: var(--panel-2); }
   .grpcard .gh { display: flex; align-items: center; gap: 8px; }
@@ -142,8 +155,8 @@
   .grpcard .gi .gt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .grpcard .gsub { padding: 0 0 5px 22px; font-size: 10.5px; color: var(--faint); }
 
-  body[data-variant="A"] .remind-pop { top: 40px; right: 12px; width: 340px; max-height: 62vh; }
-  body[data-variant="B"] .remind-pop { top: 40px; right: 8px; width: 256px; max-height: 66vh; }
+  body[data-variant="A"] .remind-pop { top: calc(100% - 2px); right: 12px; width: 340px; max-height: 62vh; }
+  body[data-variant="B"] .remind-pop { top: calc(100% - 2px); right: 8px; width: 256px; max-height: 66vh; }
   body[data-variant="B"] .row { padding: 6px 10px; grid-template-columns: 14px minmax(0, 1fr) auto; }
   body[data-variant="B"] .row .sub { display: none; }
   body[data-variant="B"] .row:hover .sub { display: block; }
@@ -170,7 +183,7 @@
   .remind-strip .more { margin-left: auto; color: var(--dim); font-size: 11px; }
 
   /* ── 提醒：吐司（右上角，自己消失，悬停暂停） ────────────────────────────── */
-  .toasts { position: fixed; top: 64px; right: 16px; z-index: 60; display: flex; flex-direction: column; gap: 8px; width: 320px; }
+  .toasts { position: fixed; top: 146px; right: 16px; z-index: 60; display: flex; flex-direction: column; gap: 8px; width: 320px; }
   .toast {
     display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: start;
     background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px;
@@ -223,24 +236,9 @@
     <button class="tbtn">🌐 内网通</button>
     <button class="tbtn">🐞 bug</button>
 
-    <!-- 提醒：角标。B / C / D 里位置或形态不同，都不改这段 markup -->
-    <button class="tbtn remind-btn alert" data-count="2" id="remindBtn" title="等你的事">
-      <span aria-hidden="true">🔔</span>
-      <span class="remind-badge" id="remindBadge">2</span>
-    </button>
-
     <button class="tbtn">⚙ 外观</button>
     <button class="tbtn icobtn">◨</button>
 
-    <!-- 清单：A / B / C 共用这一份 -->
-    <div class="remind-pop" id="remindPop" role="dialog" aria-label="等你的事">
-      <div class="pop-head"><b>等你的事</b><span class="n" id="popCount">2 件在等你</span></div>
-      <div class="pop-body" id="popBody"></div>
-      <div class="pop-foot">
-        <span>点一条 = 切过去并滚到那张卡</span>
-        <a href="#" onclick="return false">全部已读</a>
-      </div>
-    </div>
   </header>
 
   <nav class="ws-tabs">
@@ -249,6 +247,29 @@
     <span class="ws-tab">go-svc</span>
     <span class="ws-tab">＋5</span>
   </nav>
+
+  <!-- ★ 行（会话层）：右上角那颗角标挂在这一行的最右端，不占顶栏 -->
+  <div class="sess-row">
+    <div class="pin-strip">
+      <span class="pin-chip on">api 重构</span>
+      <span class="pin-chip">go-svc 迁移</span>
+      <span class="pin-chip">日志排查</span>
+      <span class="pin-chip">README 中英对照</span>
+    </div>
+    <button class="tbtn remind-btn alert" data-count="2" id="remindBtn" title="等你的事">
+      <span aria-hidden="true">🔔</span>
+      <span class="remind-badge" id="remindBadge">2</span>
+    </button>
+    <button class="tbtn icobtn" title="置顶">＋</button>
+    <div class="remind-pop" id="remindPop" role="dialog" aria-label="等你的事">
+      <div class="pop-head"><b>等你的事</b><span class="n" id="popCount">2 件在等你</span></div>
+      <div class="pop-body" id="popBody"></div>
+      <div class="pop-foot">
+        <span>点一条 = 切过去并滚到那张卡</span>
+        <a href="#" onclick="return false">全部已读</a>
+      </div>
+    </div>
+  </div>
 
   <main class="main">
     <aside class="side">
@@ -301,8 +322,8 @@ const REMINDERS = [
 ];
 
 const BETS = {
-  A: "<b>A · 顶栏角标 + 下拉清单</b><br>赌「情报比操作重要」：清单只负责让你知道、跳过去；不复制审批 UI，窄屏也不抢正文。清单宽度 340，每条两行。",
-  B: "<b>B · 同排一格 + 极密列表</b><br>赌「你一屏能扫完」：单行只留标题与时间，正文悬停才出。看得多、认得快，但「rm -rf dist/」这种要点得先悬停才敢点。",
+  A: "<b>A · 会话行右侧 + 下拉清单</b><br>赌「情报比操作重要」：角标钉在 ★ 行右端（不挤顶栏那 10 颗），点开是 340px 的两行清单，只负责让你知道、跳过去，不复制审批 UI。",
+  B: "<b>B · 同一个位置 + 极密列表</b><br>赌「你一屏能扫完」：单行只留标题与时间，正文悬停才出。看得多、认得快，但「rm -rf dist/」这种要点得先悬停才敢点。",
   C: "<b>C · 右侧窄抽屉</b><br>赌「你愿意腾出 320px」：清单固定不随顶栏滚走，能停在那儿一格一格处理。代价是窄屏要么全宽盖住正文，要么干脆不出。",
   D: "<b>D · 底部状态带</b><br>赌「右上角是黄金位置」：不占顶栏，紧贴输入框，向上长。你正在打字时它的视线成本最低；反过来，全屏阅读时它离眼睛最远。",
   E: "<b>E · 按会话分组</b><br>赌「你关心的是哪个会话，不是哪一条」：一张会话卡里装它全部的等待（待确认 2 + 待回答 1），点卡 = 切过去。会话一多卡就少；但跨会话的「最近的先看」就读不出来了。",
@@ -310,7 +331,7 @@ const BETS = {
 
 const $ = (s, r = document) => r.querySelector(s);
 const state = { variant: "A", open: false, narrow: false, dark: false };
-const NAMES = { A: "顶栏角标 + 下拉清单", B: "同排一格 + 极密列表", C: "右侧窄抽屉", D: "底部状态带", E: "按会话分组" };
+const NAMES = { A: "会话行右侧 + 下拉清单", B: "会话行右侧 + 极密列表", C: "右侧窄抽屉", D: "底部状态带", E: "按会话分组" };
 
 function rel(at) {
   if (at > -60) return `${Math.abs(at)} 分钟前`;
