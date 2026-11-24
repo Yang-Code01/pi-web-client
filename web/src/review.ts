@@ -509,19 +509,38 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   };
 
   if (view.mode === "range") {
-    modeRow.remove();
     form.append(refSelect(tr("目标分支"), view.target, actions.onTarget), refSelect(tr("对照分支"), view.base, actions.onBase));
   } else if (view.mode === "pr") {
-    modeRow.remove();
     // 一个格子同时干三件事：输号、检索、从列表里点。分成「搜索框 + 下拉 + 号输入」三行
     // 在 300px 里又挤又丑（用户直接说了），所以合成一个 combobox。
     const box = el("div", "rv-prbox");
     box.append(el("span", "rv-lab", "PR"));
     const input = el("input", "rv-prq") as HTMLInputElement;
-    input.value = view.prQuery || (view.pr ? `#${view.pr}` : "");
+    input.value = view.prQuery;
     input.placeholder = tr("输号或搜：号 / 标题 / 分支");
     input.autocomplete = "off";
     input.spellcheck = false;
+    // 弹层里的行与「没匹配」那行，输入时只改可见性（重画会把焦点和滚动位置一起丢掉）。
+    let menuRows: HTMLElement[] = [];
+    let menuEmpty: HTMLElement | null = null;
+    const filterMenu = (raw: string) => {
+      if (!menuRows.length) return;
+      // 纯数字当「号」处理：按号的前缀收窄（输 646 只剩 #646），而不是全文匹配
+      // 也不是「什么都不筛」—— 后者会让「输号然后点第一条」点到别的 PR 上去。
+      const digits = /^\s*#?\s*(\d+)\s*$/.exec(raw);
+      const q = (digits ? digits[1] : raw.replace(/^#/, "").trim()).toLowerCase();
+      let shown = 0;
+      for (const row of menuRows) {
+        const hit = !q
+          ? true
+          : digits
+            ? String(row.dataset.num ?? "").startsWith(q)
+            : (row.dataset.search ?? "").includes(q);
+        row.hidden = !hit;
+        if (hit) shown += 1;
+      }
+      if (menuEmpty) menuEmpty.hidden = shown > 0;
+    };
     input.oninput = () => {
       const raw = input.value;
       actions.onPrQuery(raw);
@@ -530,6 +549,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       const asNumber = /^\s*#?\s*\d+\s*$/.test(raw) ? digits : "";
       actions.onPrInput(asNumber);
       if (runBtn) runBtn.disabled = !asNumber;
+      filterMenu(raw);
       actions.onPrMenu(true);
     };
     input.onfocus = () => actions.onPrMenu(true);
@@ -556,10 +576,16 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       else if (view.prsLoading) menu.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
       else if (!view.prs.length) menu.append(el("div", "rv-hint", view.prQuery ? tr("没有匹配的 PR") : tr("没有 open 的 PR")));
       else {
+        menuEmpty = el("div", "rv-hint", tr("没有匹配的 PR"));
+        menuEmpty.hidden = true;
+        menu.append(menuEmpty);
         for (const item of view.prs.slice(0, 40)) {
           const row = el("button", `rv-prrow${String(item.number) === view.pr ? " on" : ""}`) as HTMLButtonElement;
           row.type = "button";
           row.dataset.num = String(item.number);
+          row.dataset.search = [`#${item.number}`, String(item.number), item.title, item.headRefName, item.baseRefName, item.author]
+            .join(" ")
+            .toLowerCase();
           const head = el("span", "rv-prrow-head", `${item.draft ? tr("[草稿] ") : ""}#${item.number}`);
           const title = el("span", "rv-prrow-title", item.title);
           const meta = el("span", "rv-prrow-meta", `${item.headRefName} → ${item.baseRefName}`);
@@ -569,11 +595,23 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
             actions.onPrMenu(false);
           };
           menu.append(row);
+          menuRows.push(row);
         }
+        // 打开时可能已经带着检索词（先打字再展开 ▾）：按当前文字收窄一次。
+        filterMenu(input.value);
       }
       form.append(menu);
     }
-    if (view.prAll > 1 && !view.prMenuOpen) form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
+    if (!view.prMenuOpen) {
+      const chosen = view.prs.find((item) => String(item.number) === view.pr) ?? null;
+      if (chosen) {
+        const picked = el("div", "rv-picked", tr("已选 #{p1} {p2}", { p1: chosen.number, p2: chosen.title }));
+        picked.title = `#${chosen.number} ${chosen.title} · ${chosen.headRefName} → ${chosen.baseRefName}`;
+        form.append(picked);
+      } else if (view.prAll > 1) {
+        form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
+      }
+    }
   } else if (view.mode === "commit") {
     const sha = el("input", "rv-ref") as HTMLInputElement;
     sha.value = view.commit;
@@ -611,6 +649,8 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     actRow.append(details);
   }
   form.append(actRow);
+  // 模式下拉钉在最上面：PR / 分支那些行是后加的，不 reorder 就会把它挤到下面去。
+  form.prepend(modeRow);
   root.append(form);
 
   if (view.phase === "loading") root.append(el("div", "rv-hint", tr("正在读评审状态…")));

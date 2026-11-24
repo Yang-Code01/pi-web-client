@@ -4342,4 +4342,5 @@ export const en: Dict = {
   "展开 PR 列表": "Show pull requests",
   "没有 open 的 PR": "No open pull requests",
   "输号或搜：号 / 标题 / 分支": "Type a number, or search: number / title / branch",
+  "已选 #{p1} {p2}": "Selected #{p1} {p2}",
 };

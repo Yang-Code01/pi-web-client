@@ -5844,6 +5844,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* ---------------------------------------------------------------- 评审：检索 / 时间线 / 详情 (#651) */
 /* PR 那一格：输入框 + 展开按钮 + 弹层列表（一个 combobox，不是「搜索框 + 下拉 + 号输入」三行）。 */
 .rv-scope .rv-prbox { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.rv-scope .rv-picked { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-scope .rv-prq {
   flex: 1 1 0; min-width: 0; width: 0;
   padding: 4px 6px; font-size: 12px; color: var(--text);

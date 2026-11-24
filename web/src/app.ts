@@ -18416,7 +18416,8 @@ export class App {
       },
       onPr: (value) => {
         this.reviewPr = value;
-        this.reviewPrQuery = value ? `#${value}` : "";
+        // 选完把检索词清掉：下次展开看到的是完整列表，而不是被「#658」筛成一条。
+        this.reviewPrQuery = "";
         this.reviewPrMenu = false;
         this.renderQueue();
       },
