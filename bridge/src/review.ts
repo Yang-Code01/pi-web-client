@@ -447,12 +447,23 @@ export function reviewDir(): string {
   return statePath("review");
 }
 
-export function reviewStateFile(repo: string): string {
-  return path.join(reviewDir(), `${repoKey(repo)}.json`);
+/** 会话 id 直接进文件名不安全（可能带奇怪字符），换成短哈希。 */
+export function sessionKey(session: string): string {
+  const text = String(session ?? "").trim();
+  if (!text) return "_nosession";
+  return crypto.createHash("sha1").update(text).digest("hex").slice(0, 16);
 }
 
-export function readReviewState(repo: string): ReviewState {
-  const file = reviewStateFile(repo);
+/**
+ * 评审状态按「仓库 + 会话」分（#651）：同一个仓库开两个会话，各自有自己的一批评审。
+ * 以前只按仓库分，于是「在一个会话里评过，切到另一个会话还看得到」——用户报的就是这个。
+ */
+export function reviewStateFile(repo: string, session = ""): string {
+  return path.join(reviewDir(), repoKey(repo), `${sessionKey(session)}.json`);
+}
+
+export function readReviewState(repo: string, session = ""): ReviewState {
+  const file = reviewStateFile(repo, session);
   const read = readJsonChecked<ReviewState>(file, { repo, runs: [], marks: {} });
   if (!read.ok) {
     // 读坏了就留档、从空状态起步：一次瞬时读失败不该让这个仓库的历史永远消失。
@@ -467,8 +478,8 @@ export function readReviewState(repo: string): ReviewState {
   };
 }
 
-export function writeReviewState(repo: string, state: ReviewState): void {
-  const file = reviewStateFile(repo);
+export function writeReviewState(repo: string, state: ReviewState, session = ""): void {
+  const file = reviewStateFile(repo, session);
   ensureDir(path.dirname(file));
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
@@ -484,20 +495,20 @@ export function newRunId(): string {
 }
 
 /** 用户给某一条标的处理态：跨轮次写在仓库上，重跑不改它。 */
-export function markFinding(repo: string, key: string, mark: Mark | ""): ReviewState {
-  const state = readReviewState(repo);
+export function markFinding(repo: string, key: string, mark: Mark | "", session = ""): ReviewState {
+  const state = readReviewState(repo, session);
   if (mark) state.marks[key] = mark;
   else delete state.marks[key];
   for (const run of state.runs) for (const f of run.findings) if (f.key === key) f.mark = mark;
-  writeReviewState(repo, state);
+  writeReviewState(repo, state, session);
   return state;
 }
 
 /** 「清理」只清历史评审（留着 marks：那些是「这条我判过了」，不该因为清历史又复活）。 */
-export function cleanRuns(repo: string): ReviewState {
-  const state = readReviewState(repo);
+export function cleanRuns(repo: string, session = ""): ReviewState {
+  const state = readReviewState(repo, session);
   state.runs = [];
-  writeReviewState(repo, state);
+  writeReviewState(repo, state, session);
   return state;
 }
 
@@ -518,21 +529,29 @@ interface Active {
 const active = new Map<string, Active>();
 const progressMap = new Map<string, Progress>();
 
-export function reviewProgress(repo: string): Progress | null {
-  return progressMap.get(repoKey(repo)) ?? null;
+const activeKey = (repo: string, session: string) => `${repoKey(repo)}\u0000${sessionKey(session)}`;
+
+export function reviewProgress(repo: string, session = ""): Progress | null {
+  return progressMap.get(activeKey(repo, session)) ?? null;
 }
 
 /** 桥重启后，盘上还写着 running 的那几次永远不会再有人收尾 —— 开机时统一转成「已失效」。 */
 export function sweepStaleRuns(): number {
-  let files: string[] = [];
+  const files: string[] = [];
   try {
-    files = fs.readdirSync(reviewDir()).filter((f) => f.endsWith(".json"));
+    for (const entry of fs.readdirSync(reviewDir(), { withFileTypes: true })) {
+      const full = path.join(reviewDir(), entry.name);
+      if (entry.isDirectory()) {
+        for (const f of fs.readdirSync(full)) if (f.endsWith(".json")) files.push(path.join(full, f));
+      } else if (entry.name.endsWith(".json")) {
+        files.push(full); // 老版本按仓库单文件放的，一起收拾
+      }
+    }
   } catch {
     return 0;
   }
   let changed = 0;
-  for (const name of files) {
-    const file = path.join(reviewDir(), name);
+  for (const file of files) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, "utf8")) as ReviewState;
       let dirty = false;
@@ -657,6 +676,8 @@ export interface StartOptions {
   commit?: string;
   /** `mode: "pr"` 时要评的 PR 号。 */
   pr?: number;
+  /** 哪个会话发起的：评审状态按「仓库 + 会话」分开存。 */
+  session?: string;
   model?: string;
   provider?: string;
   lang: ReviewLang;
@@ -667,10 +688,11 @@ export interface StartOptions {
 
 export function startReview(o: StartOptions): { runId: string; repo: string } {
   const root = gitRoot(o.dir);
-  const key = repoKey(root);
-  if (active.has(key)) throw new ReviewError("busy", "这个仓库已经在评了");
+  const session = String(o.session ?? "");
+  const key = activeKey(root, session);
+  if (active.has(key)) throw new ReviewError("busy", "这个会话已经在评了");
 
-  const state = readReviewState(root);
+  const state = readReviewState(root, session);
   const runId = newRunId();
   const startedAt = new Date().toISOString();
   const run: ReviewRun = {
@@ -700,7 +722,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     log: [],
   };
   state.runs.push(run);
-  writeReviewState(root, state);
+  writeReviewState(root, state, session);
 
   const abort = new AbortController();
   const emit = (patch: Partial<Progress>) => {
@@ -750,7 +772,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
   );
   o.onState?.();
 
-  void execute({ root, run, opts: o, signal: abort.signal, emit, note })
+  void execute({ root, run, opts: o, session, signal: abort.signal, emit, note })
     .catch((err: any) => {
       // execute 自己兜底写盘；这里只防「兜底本身抛了」把进程带走。
       console.error("[review] 收尾失败", err?.message ?? err);
@@ -763,8 +785,8 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
   return { runId, repo: root };
 }
 
-export function cancelReview(dir: string): boolean {
-  const key = repoKey(dir);
+export function cancelReview(dir: string, session = ""): boolean {
+  const key = activeKey(dir, session);
   const running = active.get(key);
   if (!running) return false;
   running.cancel();
@@ -800,6 +822,7 @@ export function unaccounted(preview: Preview | null, reported: PreviewSkip[], fi
 
 interface ExecuteCtx {
   root: string;
+  session: string;
   run: ReviewRun;
   opts: StartOptions;
   signal: AbortSignal;
@@ -809,14 +832,14 @@ interface ExecuteCtx {
 }
 
 async function execute(ctx: ExecuteCtx): Promise<void> {
-  const { root, run, opts, signal, emit, note } = ctx;
-  const key = repoKey(root);
+  const { root, session, run, opts, signal, emit, note } = ctx;
+  const key = activeKey(root, session);
   let tokens = 0;
   let currentFile = "";
   let preview: Preview | null = null;
 
   const finish = (patch: Pick<ReviewRun, "status"> & Partial<ReviewRun>) => {
-    const state = readReviewState(root);
+    const state = readReviewState(root, session);
     const onDisk = state.runs.find((r) => r.id === run.id);
     // 先把最后一行写进时间线，再连同日志一起落盘（顺序反了，日志就永远追不上这次写盘）。
     if (patch.status === "done") note(`完成：${patch.findings?.length ?? 0} 条意见`);
@@ -827,7 +850,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     (patch as Partial<ReviewRun>).log = prevProgress?.log ?? [];
     if (onDisk) Object.assign(onDisk, patch);
     else state.runs.push({ ...run, ...patch });
-    writeReviewState(root, state);
+    writeReviewState(root, state, session);
     emit({
       status: patch.status,
       phase: "done",
@@ -1000,7 +1023,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     }
 
     const stopped = signal.aborted;
-    const state = readReviewState(root);
+    const state = readReviewState(root, session);
     const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview.mergeBase, pr: run.pr });
     const merged = mergeFindings(prevRun?.findings ?? [], collected, state.marks);
     const skipped = unaccounted(preview, lastSkipped, collected);

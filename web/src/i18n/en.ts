@@ -4366,4 +4366,9 @@ export const en: Dict = {
   "详情 ›": "Details ›",
   "评审中：等跑完再交给 agent": "Reviewing — wait until it finishes",
   "评审中：等这次跑完再换模型": "Reviewing — wait until it finishes to switch models",
+  "这段意见放哪儿：当前会话，还是新开一个": "Where should these findings go: this session, or a new one?",
+  "插到当前会话": "Insert into this session",
+  "新开会话": "Start a new session",
+  "新开会话的名字：{p1}": "New session name: {p1}",
+  "评审 {p1}": "Review {p1}",
 };

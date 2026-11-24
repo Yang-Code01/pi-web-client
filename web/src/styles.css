@@ -5965,3 +5965,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .pr-sheet-body { grid-template-columns: minmax(0, 1fr); }
   .pr-col { max-height: calc(var(--vh1) * 26); }
 }
+
+/* 交给 agent：去处选择 */
+.handoff-sheet { width: min(560px, 94%); }
+.handoff-body { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 16px; }
+.handoff-preview {
+  margin: 0; max-height: calc(var(--vh1) * 38); overflow: auto;
+  padding: 8px 10px; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+  background: var(--panel); border-radius: 10px;
+}
+.handoff-actions { display: flex; gap: 8px; justify-content: flex-end; }

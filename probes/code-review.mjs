@@ -228,6 +228,8 @@ try {
   const bulkAll = page.locator(".rv-bulk-btn.all");
   check("详情里有一键交给 agent", (await bulkAll.count()) === 1, "");
   await bulkAll.click();
+  await page.locator(".handoff-sheet").waitFor({ timeout: 10000 });
+  await page.locator(".handoff-actions .btn.primary").click();
   const bulkText = await page.locator(".composer-input textarea").first().inputValue();
   check("批量交给 agent 说清先判断是否真的成立", /先判断/.test(bulkText), bulkText.slice(0, 60).replace(/\n/g, " "));
   await page.locator(".rv-sheet-head .btn:not([hidden])").last().click();
@@ -268,8 +270,12 @@ try {
   // 上一步已经把它展开了；再点一次等于收起，所以先看状态。
   if (!(await page.locator(".rv-body").first().isVisible())) await page.locator(".rv-line").first().click();
   await page.locator(".rv-fix").first().click();
+  await page.locator(".handoff-sheet").waitFor({ timeout: 10000 });
+  const handoffName = await page.locator(".handoff-body .rv-hint").first().innerText().catch(() => "");
+  check("交给 agent 先问去处（当前会话 / 新开会话）", /名字/.test(handoffName), handoffName.slice(0, 40));
+  await page.locator(".handoff-actions .btn.primary").click();
   const composer = await page.locator(".composer-input textarea").first().inputValue();
-  check("「交给 AI 修」把意见放进输入框", composer.includes("代码评审意见"), composer.slice(0, 40).replace(/\n/g, " "));
+  check("选「插到当前会话」后把意见放进输入框", composer.includes("代码评审意见"), composer.slice(0, 40).replace(/\n/g, " "));
 
   // ---------------------------------------------------------------- 5) 中途停止
   await page.locator(".rv-run").first().click();

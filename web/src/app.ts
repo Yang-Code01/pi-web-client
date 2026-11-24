@@ -68,6 +68,7 @@ import { BranchSheet } from "./branchsheet.ts";
 import { ReposSheet } from "./repossheet.ts";
 import { ReviewSheet } from "./review-sheet.ts";
 import { PrSheet, type PrInfo } from "./pr-sheet.ts";
+import { HandoffSheet } from "./handoff-sheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
@@ -444,6 +445,8 @@ export class App {
   private reviewToasted = new Set<string>();
   /** 最近一次发 `review.get` 的时刻：ocr 那一帧丢了要能自己补一次，别死等。 */
   private reviewOcrAskedAt = 0;
+  /** `会话id|cwd`：变了就把面板状态清空（评审按会话分开）。 */
+  private reviewSessionKey = "";
   /** 定时补问一次：页面重连后没人触发重画时，光靠 render 里的自愈等不到下一次重画。 */
   private reviewRetryTimer: number | null = null;
   private reviewModel = "";
@@ -2599,7 +2602,10 @@ export class App {
       // ------------------------------------------------ 代码评审（#651）
       case "review.state": {
         const dir = this.reviewDir();
-        if (msg.dir && dir && String(msg.dir) !== dir) break;
+        // 评审按会话分开存：别的会话的帧不许动这一个（以前只按仓库分，切会话还看得到上一份）。
+        const session = String(msg.sessionId ?? "");
+        if (session && this.currentId && session !== this.currentId) break;
+        if (msg.dir && dir && String(msg.dir) !== dir && String(msg.dir) !== this.reviewRepo) break;
         if (msg.error) {
           this.reviewError = errText(msg);
           this.reviewState = null;
@@ -2648,6 +2654,7 @@ export class App {
         this.syncReviewSheet();
         break;
       case "review.progress":
+        if (String(msg.sessionId ?? "") && this.currentId && String(msg.sessionId) !== this.currentId) break;
         if (msg.progress) {
           this.reviewProgress = msg.progress as ReviewProgress;
           const id = String((msg.progress as ReviewProgress).runId ?? "");
@@ -18294,6 +18301,21 @@ export class App {
     return (this.session?.cwd ?? "").trim();
   }
 
+  /** 会话或目录变了：把面板状态清干净，否则会把上一个会话的评审画在这一次上面。 */
+  private syncReviewSession(): void {
+    const key = `${this.currentId ?? ""}|${this.reviewDir()}`;
+    if (key === this.reviewSessionKey) return;
+    this.reviewSessionKey = key;
+    this.reviewState = null;
+    this.reviewProgress = null;
+    this.reviewError = "";
+    this.reviewNotGit = false;
+    this.reviewAsked = "";
+    this.reviewPrMenu = false;
+    this.reviewSheet?.close();
+    this.reviewPrSheet?.close();
+  }
+
   private loadReview(): void {
     const dir = this.reviewDir();
     if (!dir) {
@@ -18304,7 +18326,7 @@ export class App {
     }
     this.reviewAsked = dir;
     this.reviewOcrAskedAt = Date.now();
-    this.socket.send({ type: "review.get", dir });
+    this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
     if (this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
     void api.gitRefs(dir).then((refs) => {
       const all = refs.groups.flatMap((g) => g.refs.map((r) => r.name)).filter(Boolean);
@@ -18368,13 +18390,14 @@ export class App {
   }
 
   private renderReviewPanel(): HTMLElement {
+    this.syncReviewSession();
     const dir = this.reviewDir();
     // 换过会话 / 第一次进这一页：问一次桥。放在这里是因为面板可能是「记住上次页签」直接打开的，
     // 那一路不会走 selectQueueTab()。
     if (dir && this.reviewAsked !== dir) {
       this.reviewAsked = dir;
       this.reviewOcrAskedAt = Date.now();
-      this.socket.send({ type: "review.get", dir });
+      this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
     } else if (dir && !this.reviewOcr && this.reviewRetryTimer === null) {
       // ocr 那一帧丢了（桥重启、页面重连、连接刚建就被打断）：面板会永远停在「正在读评审状态」。
       // 页面重连后不会有人再触发重画，所以这里挂一次定时补问，而不是等下一次 render。
@@ -18492,17 +18515,15 @@ export class App {
         });
       },
       onRun: () => this.startReview(),
-      onStop: () => this.socket.send({ type: "review.cancel", dir: this.reviewDir() }),
-      onMark: (key, mark: ReviewMark | "") => this.socket.send({ type: "review.mark", dir: this.reviewDir(), key, mark }),
+      onStop: () => this.socket.send({ type: "review.cancel", dir: this.reviewDir(), sessionId: this.currentId }),
+      onMark: (key, mark: ReviewMark | "") => this.socket.send({ type: "review.mark", dir: this.reviewDir(), sessionId: this.currentId, key, mark }),
       onOpen: (path, line) => this.openReviewFinding(path, line),
       onFix: (f: ReviewFinding) => {
-        this.prefill(reviewFixPrompt(f, this.reviewFixContext()));
-        this.flashToast(tr("已放进输入框（还没发）"), false, 3000);
+        this.reviewHandoff(reviewFixPrompt(f, this.reviewFixContext()));
       },
       onFixMany: (list) => {
         if (!list.length) return;
-        this.prefill(reviewFixManyPrompt(list, this.reviewFixContext()));
-        this.flashToast(tr("已把 {p1} 条意见放进输入框（还没发）", { p1: list.length }), false, 3500);
+        this.reviewHandoff(reviewFixManyPrompt(list, this.reviewFixContext()), list.length);
       },
       onPrInfo: () => this.openPrInfo(),
       onInstall: () => {
@@ -18512,7 +18533,7 @@ export class App {
         this.socket.send({ type: "review.install" });
         this.renderQueue();
       },
-      onClean: () => this.socket.send({ type: "review.clean", dir: this.reviewDir() }),
+      onClean: () => this.socket.send({ type: "review.clean", dir: this.reviewDir(), sessionId: this.currentId }),
       onDetails: () => this.openReviewSheet(),
     };
   }
@@ -18530,6 +18551,39 @@ export class App {
       from: run?.from ?? this.reviewBase,
       to: run?.to ?? this.reviewTarget,
     };
+  }
+
+  /** 新开会话的默认名字：PR 就用 tag（`#636`），其余用分支名 / 「代码评审」。 */
+  private reviewHandoffName(): string {
+    if (this.reviewMode === "pr") return `#${Number(this.reviewPr) || 0}`;
+    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    const branch = (this.git?.branch ?? "").trim() || (run?.prHead ?? "").trim();
+    return branch ? tr("评审 {p1}", { p1: branch }) : tr("代码评审");
+  }
+
+  /**
+   * 「交给 agent」先问去处：当前会话 / 新开会话。
+   * 多个 PR 的评审全塞进同一个会话会把上下文搅在一起，所以新开会话是常用那条路。
+   */
+  private reviewHandoff(text: string, count = 1): void {
+    const name = this.reviewHandoffName();
+    const sheet = new HandoffSheet({
+      text,
+      name,
+      onPick: (target, body) => {
+        if (target === "new") {
+          this.newSessionWith(body, name);
+          return;
+        }
+        this.prefill(body);
+        this.flashToast(
+          count > 1 ? tr("已把 {p1} 条意见放进输入框（还没发）", { p1: count }) : tr("已放进输入框（还没发）"),
+          false,
+          count > 1 ? 3500 : 3000,
+        );
+      },
+    });
+    sheet.mount(document.getElementById("app") ?? document.body);
   }
 
   /** 「PR 信息」dialog：标题 / 描述 / 统计 / 文件清单 / 提交时间线（不显示 diff）。 */
@@ -18615,6 +18669,7 @@ export class App {
     this.socket.send({
       type: "review.run",
       dir,
+      sessionId: this.currentId,
       mode,
       base: this.reviewBase,
       target: this.reviewTarget,

@@ -1554,17 +1554,18 @@ async function main(): Promise<void> {
       if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径");
       try {
         const repo = gitRoot(dir);
+        const session = String(body?.session ?? "");
         if (url.pathname === "/api/review/state") {
-          return json(res, 200, { ok: true, state: readReviewState(repo), progress: reviewProgress(repo), ocr: await ocrStatus() });
+          return json(res, 200, { ok: true, state: readReviewState(repo, session), progress: reviewProgress(repo, session), ocr: await ocrStatus() });
         }
         if (url.pathname === "/api/review/mark") {
           const key = String(body?.key ?? "").trim();
           if (!key) return fail(res, 400, "key_empty", "key 不能为空");
           const mark = String(body?.mark ?? "");
-          return json(res, 200, { ok: true, state: markFinding(repo, key, isMark(mark) ? mark : "") });
+          return json(res, 200, { ok: true, state: markFinding(repo, key, isMark(mark) ? mark : "", session) });
         }
         if (url.pathname === "/api/review/clean") {
-          return json(res, 200, { ok: true, state: cleanRuns(repo) });
+          return json(res, 200, { ok: true, state: cleanRuns(repo, session) });
         }
       } catch (err: any) {
         return json(res, 200, { ok: false, code: String(err?.code ?? "failed"), error: String(err?.message ?? err).slice(0, 300) });
@@ -4008,9 +4009,10 @@ async function main(): Promise<void> {
           // 这里只做三件事：开跑、停、以及把盘上的状态发回去。
           case "review.get": {
             const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
             try {
               const repo = gitRoot(dir);
-              send({ type: "review.state", dir: repo, state: readReviewState(repo), progress: reviewProgress(repo) });
+              send({ type: "review.state", dir: repo, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) });
               void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
             } catch (err: any) {
               send({ type: "review.state", dir, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
@@ -4046,6 +4048,7 @@ async function main(): Promise<void> {
           }
           case "review.run": {
             const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
             const mode = ["workspace", "range", "commit", "pr"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "workspace";
             const lang: ReviewLang = ["zh", "en", "ja"].includes(String(msg.lang)) ? (String(msg.lang) as ReviewLang) : "zh";
             const full = String(msg.model ?? "");
@@ -4061,11 +4064,12 @@ async function main(): Promise<void> {
                 target: String(msg.target ?? ""),
                 commit: String(msg.commit ?? ""),
                 pr: Number(msg.pr) || 0,
+                session,
                 model,
                 provider,
                 lang,
                 onProgress: (p) => broadcast({ type: "review.progress", dir: repo, progress: p }),
-                onState: () => broadcast({ type: "review.state", dir: repo, state: readReviewState(repo) }),
+                onState: () => broadcast({ type: "review.state", dir: repo, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) }),
               });
             } catch (err: any) {
               send({ type: "review.state", dir, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
@@ -4074,8 +4078,9 @@ async function main(): Promise<void> {
           }
           case "review.cancel": {
             const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
             try {
-              if (!cancelReview(dir)) send({ type: "review.progress", dir, progress: reviewProgress(dir) });
+              if (!cancelReview(dir, session)) send({ type: "review.progress", dir, progress: reviewProgress(dir, session) });
             } catch {
               /* 目录已经不是仓库了：没什么可停的 */
             }
@@ -4085,10 +4090,11 @@ async function main(): Promise<void> {
             const dir = String(msg.dir ?? "");
             const key = String(msg.key ?? "");
             const mark = String(msg.mark ?? "");
+            const session = String(msg.sessionId ?? "");
             try {
               const repo = gitRoot(dir);
-              const state = markFinding(repo, key, isMark(mark) ? mark : "");
-              broadcast({ type: "review.state", dir: repo, state });
+              const state = markFinding(repo, key, isMark(mark) ? mark : "", session);
+              broadcast({ type: "review.state", dir: repo, sessionId: session, state });
             } catch (err: any) {
               send({ type: "review.state", dir, error: String(err?.message ?? err) });
             }
@@ -4096,9 +4102,10 @@ async function main(): Promise<void> {
           }
           case "review.clean": {
             const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
             try {
               const repo = gitRoot(dir);
-              broadcast({ type: "review.state", dir: repo, state: cleanRuns(repo) });
+              broadcast({ type: "review.state", dir: repo, sessionId: session, state: cleanRuns(repo, session) });
             } catch (err: any) {
               send({ type: "review.state", dir, error: String(err?.message ?? err) });
             }

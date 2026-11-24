@@ -22,6 +22,7 @@ import {
   previewArgs,
   readReviewState,
   repoKey,
+  sessionKey,
   reviewArgs,
   reviewStateFile,
   toFindings,
@@ -393,6 +394,18 @@ check("落盘读回：没有文件给空状态，写进去什么读出来什么"
   const back = readReviewState(repo);
   assert.equal(back.runs.length, 1);
   assert.equal(back.marks.k1, "ignore");
+});
+
+check("会话隔离：同一个仓库里两个会话各有各的评审与处理态", () => {
+  const repo = "/Users/me/two-sessions";
+  writeReviewState(repo, { repo, runs: [{ id: "a", status: "done", findings: [] }], marks: {} }, "s1");
+  writeReviewState(repo, { repo, runs: [{ id: "b", status: "done", findings: [] }], marks: { k: "accept" } }, "s2");
+  assert.equal(readReviewState(repo, "s1").runs[0].id, "a");
+  assert.equal(readReviewState(repo, "s2").runs[0].id, "b");
+  assert.deepEqual(readReviewState(repo, "s1").marks, {}, "处理态也不许串");
+  assert.equal(readReviewState(repo, "s3").runs.length, 0, "没评过的会话是空的");
+  assert.notEqual(reviewStateFile(repo, "s1"), reviewStateFile(repo, "s2"));
+  assert.equal(sessionKey(""), "_nosession");
 });
 
 check("历史全留：写第二十一次不裁掉前面的", () => {
