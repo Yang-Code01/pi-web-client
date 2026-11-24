@@ -5844,7 +5844,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* ---------------------------------------------------------------- 评审：检索 / 时间线 / 详情 (#651) */
 /* PR 那一格：输入框 + 展开按钮 + 弹层列表（一个 combobox，不是「搜索框 + 下拉 + 号输入」三行）。 */
 .rv-scope .rv-prbox { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.rv-scope .rv-picked { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-picked {
+  display: block; width: 100%; text-align: left; padding: 0;
+  font-size: 11px; color: var(--faint); background: none; border: 0; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rv-scope .rv-picked:hover { color: var(--text); text-decoration: underline; }
 .rv-scope .rv-prq {
   flex: 1 1 0; min-width: 0; width: 0;
   padding: 4px 6px; font-size: 12px; color: var(--text);
@@ -5919,4 +5924,33 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 @container (max-width: 680px) {
   .rv-sheet-body { grid-template-columns: minmax(0, 1fr); }
   .rv-sheet-col { max-height: calc(var(--vh1) * 26); }
+}
+
+/* ---------------------------------------------------------------- 评审：批量交给 agent / PR 信息 (#651) */
+.rv-sheet .rv-bulk { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 10px; }
+.rv-sheet .rv-bulk-btn { font-size: 12px; padding: 3px 8px; }
+.rv-sheet .rv-bulk-btn.all { color: var(--accent); border-color: var(--accent); }
+.rv-sheet .rv-bulk-btn.critical { color: var(--danger); }
+.rv-sheet .rv-bulk-btn.high { color: var(--warn); }
+
+.pr-sheet { container-type: inline-size; width: min(1040px, 94%); }
+.pr-sheet-body {
+  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 16px; padding: 12px 16px 16px; min-height: 0; overflow: hidden;
+}
+.pr-col { min-width: 0; max-height: calc(var(--vh1) * 58); overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.pr-body { font-size: 12px; line-height: 1.65; word-break: break-word; color: var(--text); }
+.pr-body > :first-child { margin-top: 0; }
+.pr-commits, .pr-files { display: flex; flex-direction: column; gap: 4px; }
+.pr-commit { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1px 8px; font-size: 12px; }
+.pr-commit-oid { color: var(--accent); font-size: 11px; }
+.pr-commit-head { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-commit-meta { grid-column: 2; font-size: 10px; color: var(--faint); }
+.pr-file { display: flex; gap: 8px; justify-content: space-between; font-size: 12px; }
+.pr-file code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-file-stat { flex: none; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.rv-sheet-headright { display: flex; gap: 8px; align-items: center; flex: none; }
+@container (max-width: 760px) {
+  .pr-sheet-body { grid-template-columns: minmax(0, 1fr); }
+  .pr-col { max-height: calc(var(--vh1) * 26); }
 }

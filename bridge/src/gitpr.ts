@@ -115,6 +115,8 @@ export async function listPullRequests(dir: string, opts: { fresh?: boolean } = 
 export interface ResolvedPr {
   pr: number;
   title: string;
+  headRefName: string;
+  baseRefName: string;
   /** `origin/<base>` —— 对照侧（fetch 过，是新的）。 */
   from: string;
   /** `refs/pi-web/pr-N` —— 被评的那条提交。 */
@@ -152,10 +154,145 @@ export async function resolvePullRequest(dir: string, number: number, onLog?: (l
   const baseFetch = await run("git", ["-C", dir, "fetch", "origin", base, "--no-tags"], dir, 120_000);
   // base 已经在本地的仓库（常见）不该因为一次 fetch 失败就整票挂掉。
   if (baseFetch.code !== 0) onLog?.(`对照分支 fetch 失败，用本地的一版：${classify(baseFetch.stderr, "git fetch", baseFetch.code).error}`);
-  return { pr: number, title: String(meta?.title ?? ""), from: `origin/${base}`, to };
+  return {
+    pr: number,
+    title: String(meta?.title ?? ""),
+    headRefName: String(meta?.headRefName ?? ""),
+    baseRefName: base,
+    from: `origin/${base}`,
+    to,
+  };
 }
 
 /** 测试里要能清掉缓存。 */
 export function resetPrCache(): void {
   cache.clear();
+}
+
+// ---------------------------------------------------------------------------
+// PR 详情（点「已选 #N」那扇窗）
+// ---------------------------------------------------------------------------
+
+export interface PrFileInfo {
+  path: string;
+  additions: number;
+  deletions: number;
+  changeType: string;
+}
+
+export interface PrCommitInfo {
+  oid: string;
+  headline: string;
+  date: string;
+  author: string;
+}
+
+export interface PrInfo {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  draft: boolean;
+  url: string;
+  author: string;
+  createdAt: string;
+  updatedAt: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  headRefName: string;
+  baseRefName: string;
+  files: PrFileInfo[];
+  /** 文件太多时只列了前 N 个。 */
+  filesMore: number;
+  commits: PrCommitInfo[];
+  commitsMore: number;
+}
+
+export interface PrInfoResult {
+  ok: boolean;
+  info: PrInfo | null;
+  error: string;
+  code: PrListResult["code"];
+}
+
+const infoCache = new Map<string, { at: number; value: PrInfoResult }>();
+const FILE_CAP = 100;
+const COMMIT_CAP = 50;
+
+export async function pullRequestInfo(dir: string, number: number, opts: { fresh?: boolean } = {}): Promise<PrInfoResult> {
+  const key = `${dir}|${number}`;
+  const hit = infoCache.get(key);
+  if (!opts.fresh && hit && Date.now() - hit.at < CACHE_MS) return hit.value;
+  if (!Number.isFinite(number) || number <= 0) {
+    return { ok: false, info: null, error: "PR 号不对", code: "gh_failed" };
+  }
+  const out = await run(
+    ghBin(),
+    [
+      "pr",
+      "view",
+      String(number),
+      "--json",
+      "number,title,body,state,isDraft,url,author,createdAt,updatedAt,additions,deletions,changedFiles,baseRefName,headRefName,commits,files",
+    ],
+    dir,
+    30_000,
+  );
+  if (out.code !== 0) {
+    const why = classify(out.stderr, `gh pr view ${number}`, out.code);
+    const value: PrInfoResult = { ok: false, info: null, error: why.error || `读不到 PR #${number}`, code: why.code };
+    infoCache.set(key, { at: Date.now(), value });
+    return value;
+  }
+  let raw: any = null;
+  try {
+    raw = JSON.parse(out.stdout || "null");
+  } catch {
+    raw = null;
+  }
+  if (!raw || typeof raw !== "object") {
+    const value: PrInfoResult = { ok: false, info: null, error: "读不懂 gh 的输出", code: "gh_failed" };
+    infoCache.set(key, { at: Date.now(), value });
+    return value;
+  }
+  const files = Array.isArray(raw.files) ? raw.files : [];
+  const commits = Array.isArray(raw.commits) ? raw.commits : [];
+  const info: PrInfo = {
+    number: Number(raw.number) || number,
+    title: String(raw.title ?? ""),
+    body: String(raw.body ?? "").slice(0, 20_000),
+    state: String(raw.state ?? ""),
+    draft: Boolean(raw.isDraft),
+    url: String(raw.url ?? ""),
+    author: String(raw.author?.login ?? ""),
+    createdAt: String(raw.createdAt ?? ""),
+    updatedAt: String(raw.updatedAt ?? ""),
+    additions: Number(raw.additions) || 0,
+    deletions: Number(raw.deletions) || 0,
+    changedFiles: Number(raw.changedFiles) || files.length,
+    headRefName: String(raw.headRefName ?? ""),
+    baseRefName: String(raw.baseRefName ?? ""),
+    files: files.slice(0, FILE_CAP).map((f: any) => ({
+      path: String(f?.path ?? ""),
+      additions: Number(f?.additions) || 0,
+      deletions: Number(f?.deletions) || 0,
+      changeType: String(f?.changeType ?? ""),
+    })),
+    filesMore: Math.max(0, files.length - FILE_CAP),
+    commits: commits.slice(0, COMMIT_CAP).map((c: any) => ({
+      oid: String(c?.oid ?? ""),
+      headline: String(c?.messageHeadline ?? ""),
+      date: String(c?.committedDate ?? ""),
+      author: String(c?.authors?.[0]?.name ?? ""),
+    })),
+    commitsMore: Math.max(0, commits.length - COMMIT_CAP),
+  };
+  const value: PrInfoResult = { ok: true, info, error: "", code: "" };
+  infoCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+export function resetPrInfoCache(): void {
+  infoCache.clear();
 }

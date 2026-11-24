@@ -116,6 +116,7 @@ export type ServerFrameType =
   | "review.install.done"
   | "review.install.log"
   | "review.ocr"
+  | "review.prinfo"
   | "review.prs"
   | "review.progress"
   | "review.state"
@@ -261,6 +262,7 @@ export type ClientFrameType =
   | "review.get"
   | "review.install"
   | "review.mark"
+  | "review.prinfo.get"
   | "review.prs.get"
   | "review.run"
   | "rules.delete"
@@ -356,6 +358,10 @@ export interface ReviewRun {
   mergeBase: string;
   /** `pr` 模式下是哪个 PR（0 = 不是 PR 模式）；三态只跟同一个 PR 比。 */
   pr: number;
+  /** PR 的标题与两条分支（「交给 agent」那段话要带上它们）。老记录里没有，按空串处理。 */
+  prTitle: string;
+  prHead: string;
+  prBase: string;
   model: string;
   lang: string;
   findings: ReviewFinding[];

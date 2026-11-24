@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parsePrNumber, repoFromUrl, reviewView } from "../src/review.ts";
+import { fixPrompt, fixPromptMany, parsePrNumber, repoFromUrl, reviewView } from "../src/review.ts";
 
 const finding = (over = {}) => ({
   key: "k1",
@@ -254,6 +254,20 @@ test("从链接里认 owner/repo（用来提醒「这不是本仓库」）", () 
   assert.equal(repoFromUrl("https://github.com/Yang-Code01/pi-web-client/pull/658"), "yang-code01/pi-web-client");
   assert.equal(repoFromUrl("git@github.com:Yang-Code01/pi-web-client.git"), "yang-code01/pi-web-client");
   assert.equal(repoFromUrl("ask-card"), "");
+});
+
+test("交给 agent 的那段话带上 PR / 分支，并要求先判断是否真的成立", () => {
+  const f = finding({ key: "k1", path: "web/src/a.ts", startLine: 12, content: "空指针风险" });
+  const one = fixPrompt(f, { repo: "yang-code01/pi-web-client", pr: 658, prTitle: "加个面板", prHead: "feat/x", prBase: "main" });
+  for (const needle of ["PR #658", "feat/x", "main", "yang-code01/pi-web-client", "web/src/a.ts:12", "先判断"]) {
+    assert.ok(one.includes(needle), `缺 ${needle}：${one.slice(0, 60)}`);
+  }
+  const branch = fixPrompt(f, { mode: "range", from: "main", to: "dev" });
+  assert.ok(branch.includes("分支") && branch.includes("dev"), branch.slice(0, 60));
+  const many = fixPromptMany([f, finding({ key: "k2", path: "b.ts", startLine: 3 })], { pr: 658, prHead: "feat/x", prBase: "main" });
+  assert.ok(many.includes("PR #658"));
+  assert.ok(many.includes("2 条") || many.includes("2 findings"), many.slice(0, 80));
+  assert.ok(many.includes("web/src/a.ts:12") && many.includes("b.ts:3"));
 });
 
 test("PR 检索：号 / 标题 / 分支 / 作者都能搜，空串给全部", () => {

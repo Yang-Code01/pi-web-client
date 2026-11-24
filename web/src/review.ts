@@ -23,7 +23,7 @@ import type {
   ReviewState,
 } from "./frames.ts";
 
-export type { Mark, OcrStatus, ReviewFinding, ReviewMode, ReviewProgress, ReviewRun, ReviewSkip, ReviewState };
+export type { Mark, OcrStatus, ReviewFinding, ReviewMode, ReviewProgress, ReviewRun, ReviewSkip, ReviewState, Severity };
 
 export interface PullRequest {
   number: number;
@@ -356,6 +356,10 @@ export interface ReviewActions {
   onOpen: (path: string, line: number) => void;
   /** 把这条意见连同位置送进输入框（不自动发送）。 */
   onFix: (finding: ReviewFinding) => void;
+  /** 「一键交给 agent」：一批意见合成一段话（全部 / 按严重度）。 */
+  onFixMany: (findings: ReviewFinding[]) => void;
+  /** 打开「PR 信息」dialog。 */
+  onPrInfo: () => void;
   onInstall: () => void;
   onClean: () => void;
 }
@@ -626,8 +630,10 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     if (!view.prMenuOpen) {
       const chosen = view.prs.find((item) => String(item.number) === view.pr) ?? null;
       if (chosen) {
-        const picked = el("div", "rv-picked", tr("已选 #{p1} {p2}", { p1: chosen.number, p2: chosen.title }));
+        const picked = el("button", "rv-picked", tr("已选 #{p1} {p2}", { p1: chosen.number, p2: chosen.title })) as HTMLButtonElement;
+        picked.type = "button";
         picked.title = `#${chosen.number} ${chosen.title} · ${chosen.headRefName} → ${chosen.baseRefName}`;
+        picked.onclick = () => actions.onPrInfo();
         form.append(picked);
       } else if (view.prAll > 1) {
         form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
@@ -781,14 +787,85 @@ export function renderTimeline(view: ReviewView, limit = 0): HTMLElement {
   return box;
 }
 
-export function fixPrompt(f: ReviewFinding): string {
+/** 「交给 agent」时那段话要带的上下文：哪个仓库、哪个 PR / 分支。 */
+export interface FixContext {
+  repo?: string;
+  pr?: number;
+  prTitle?: string;
+  prHead?: string;
+  prBase?: string;
+  mode?: ReviewMode;
+  /** `range`/`commit` 模式下的两侧描述。 */
+  from?: string;
+  to?: string;
+}
+
+const SEVERITY_NAME: Record<Severity, () => string> = {
+  critical: () => tr("严重"),
+  high: () => tr("高"),
+  medium: () => tr("中"),
+  low: () => tr("低"),
+};
+
+/** 一段「这条意见在哪个 PR / 分支上」的抬头，让 agent 找得到地方。 */
+function whereText(ctx?: FixContext): string {
+  if (!ctx) return "";
+  const bits: string[] = [];
+  if (ctx.repo) bits.push(tr("仓库：{p1}", { p1: ctx.repo }));
+  if (ctx.pr) {
+    const title = ctx.prTitle ? ` ${ctx.prTitle}` : "";
+    const refs = ctx.prHead || ctx.prBase ? tr("（{p1} → {p2}）", { p1: ctx.prHead || "?", p2: ctx.prBase || "?" }) : "";
+    bits.push(tr("PR #{p1}{p2}{p3}", { p1: ctx.pr, p2: title, p3: refs }));
+  } else if (ctx.mode === "range") {
+    bits.push(tr("分支：{p1} → {p2}", { p1: ctx.to || "HEAD", p2: ctx.from || "?" }));
+  } else if (ctx.mode === "commit") {
+    bits.push(tr("提交：{p1}", { p1: ctx.to || "" }));
+  } else if (ctx.mode === "workspace") {
+    bits.push(tr("工作区改动（HEAD 之前）"));
+  }
+  if (ctx.from && ctx.to && ctx.mode === "pr" && !ctx.prHead) bits.push(`${ctx.from} → ${ctx.to}`);
+  return bits.join(tr("；"));
+}
+
+/**
+ * 把一条意见折成送进输入框的一段话（不自动发送）。
+ *
+ * 两个要点：①抬头写明**哪个 PR / 哪条分支**，agent 才知道去哪儿看；
+ * ②明确要求它先判断这条意见**是否真的成立** —— 评审是模型给的，会有误报。
+ */
+export function fixPrompt(f: ReviewFinding, ctx?: FixContext): string {
   const head = f.anchored ? `${f.path}:${f.startLine}` : f.path;
-  const lines = [tr("代码评审意见（{p1}）：", { p1: head }), "", f.content];
+  const where = whereText(ctx);
+  const lines: string[] = [];
+  lines.push(where ? tr("代码评审意见（{p1}）", { p1: where }) : tr("代码评审意见"));
+  lines.push("");
+  lines.push(tr("{p1} · {p2} · {p3}", { p1: head, p2: SEVERITY_NAME[f.severity](), p3: f.category }));
+  lines.push(f.content);
   if (f.existingCode) lines.push("", tr("命中的代码："), "```", f.existingCode, "```");
   if (f.suggestionCode) lines.push("", tr("建议的改法："), "```", f.suggestionCode, "```");
   lines.push(
     "",
-    f.anchored ? tr("请在这个位置修掉它，并说明改了什么。") : tr("请先找到这段代码再修掉它，并说明改了什么。"),
+    tr("先判断这条意见是否真的成立（对着改动读一遍相关代码）：不成立就说明理由、不要改代码；成立再动手，并说明改了什么。"),
+  );
+  return lines.join("\n");
+}
+
+/**
+ * 「一键交给 agent」：把一批意见合成一段话。按严重度筛选只是少写几条，开头同样要求逐条核实。
+ */
+export function fixPromptMany(findings: readonly ReviewFinding[], ctx?: FixContext): string {
+  const where = whereText(ctx);
+  const lines: string[] = [];
+  lines.push(where ? tr("代码评审意见（{p1}）", { p1: where }) : tr("代码评审意见"));
+  lines.push(tr("一共 {p1} 条，逐条核实并处理：", { p1: findings.length }));
+  for (const [i, f] of findings.entries()) {
+    const head = f.anchored ? `${f.path}:${f.startLine}` : f.path;
+    lines.push(`${i + 1}. ${head} · ${SEVERITY_NAME[f.severity]()} · ${f.category} — ${f.content}`);
+    if (f.existingCode) lines.push("   ```", ...f.existingCode.split("\n").map((l) => `   ${l}`), "   ```");
+  }
+  lines.push(
+    "",
+    tr("每条都先判断是否真的成立：不成立就说明理由、跳过；成立就修掉，并说明改了什么。不要为了对齐意见而改无关代码。"),
   );
   return lines.join("\n");
 }

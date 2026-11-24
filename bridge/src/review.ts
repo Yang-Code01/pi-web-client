@@ -680,6 +680,9 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     to: o.mode === "commit" ? o.commit ?? "HEAD" : "HEAD",
     mergeBase: "",
     pr: o.mode === "pr" ? Number(o.pr) || 0 : 0,
+    prTitle: "",
+    prHead: "",
+    prBase: "",
     status: "running",
     startedAt,
     finishedAt: "",
@@ -929,6 +932,9 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       base = resolved.from;
       target = resolved.to;
       run.pr = resolved.pr;
+      run.prTitle = resolved.title;
+      run.prHead = resolved.headRefName;
+      run.prBase = resolved.baseRefName;
       run.from = resolved.from;
       run.to = resolved.to;
       note(`PR #${resolved.pr} 的提交已取到：${resolved.to}（对照 ${resolved.from}）`);
@@ -1014,6 +1020,10 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         from: run.from,
         to: run.to,
         mergeBase: preview.mergeBase,
+        pr: run.pr,
+        prTitle: run.prTitle,
+        prHead: run.prHead,
+        prBase: run.prBase,
         error: firstLine(failed.stderr) || `第 ${failed.group} 组的评审进程退出码 ${failed.code}`,
         errorCode: "child_failed",
       });
@@ -1033,6 +1043,10 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         from: run.from,
         to: run.to,
         mergeBase: preview.mergeBase,
+        pr: run.pr,
+        prTitle: run.prTitle,
+        prHead: run.prHead,
+        prBase: run.prBase,
         error: `重试后仍然没有给出结论（已用 ${Math.round(tokens / 1000)}k token）。可以换个更便宜的模型，或把范围缩小（少选几个文件 / 换一次提交）再跑。`,
         errorCode: "child_no_output",
       });
@@ -1051,6 +1065,10 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       from: run.from,
       to: run.to,
       mergeBase: preview.mergeBase,
+      pr: run.pr,
+      prTitle: run.prTitle,
+      prHead: run.prHead,
+      prBase: run.prBase,
       ...(stopped ? { error: "已停止", errorCode: "stopped" } : {}),
     });
   } catch (err: any) {

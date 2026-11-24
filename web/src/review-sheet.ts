@@ -7,7 +7,7 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 import { markSurface, pushEscLayer } from "./modal.ts";
-import { renderFindings, renderTimeline, type ReviewPanelInput } from "./review.ts";
+import { renderFindings, renderTimeline, type ReviewPanelInput, type Severity } from "./review.ts";
 
 export class ReviewSheet {
   private readonly back: HTMLElement;
@@ -115,7 +115,30 @@ export class ReviewSheet {
     const right: HTMLElement[] = [el("div", "rv-sheet-caption", tr("结果"))];
     if (view.running) right.push(el("div", "rv-hint", tr("评审还在跑，意见会陆续出现。")));
     if (view.error) right.push(el("div", "rv-error", view.error));
+    const bulk = this.bulkRow();
+    if (bulk) right.push(bulk);
     right.push(renderFindings(this.input));
     this.right.replaceChildren(...right);
+  }
+
+  /** 一条条交太慢：上面一颗「全部」，再按严重度各一颗（只列真有的档位）。 */
+  private bulkRow(): HTMLElement | null {
+    const all = this.input.view.groups.flatMap((g) => g.findings);
+    if (!all.length) return null;
+    const box = el("div", "rv-bulk");
+    const make = (label: string, list: typeof all, cls: string) => {
+      const b = el("button", `btn ghost rv-bulk-btn ${cls}`, `${label} · ${list.length}`) as HTMLButtonElement;
+      b.type = "button";
+      b.onclick = () => this.input.actions.onFixMany(list);
+      return b;
+    };
+    box.append(make(tr("全部交给 agent"), all, "all"));
+    const order: Severity[] = ["critical", "high", "medium", "low"];
+    for (const sev of order) {
+      const list = all.filter((f) => f.severity === sev);
+      if (!list.length) continue;
+      box.append(make(this.input.severityLabels[sev] ?? sev, list, sev));
+    }
+    return box;
   }
 }

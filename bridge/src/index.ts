@@ -53,7 +53,7 @@ import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, st
 import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
-import { listPullRequests } from "./gitpr.ts";
+import { listPullRequests, pullRequestInfo } from "./gitpr.ts";
 import {
   cancelReview,
   cleanRuns,
@@ -4026,6 +4026,20 @@ async function main(): Promise<void> {
                 send({ type: "review.prs", dir: repo, ...out });
               } catch (err: any) {
                 send({ type: "review.prs", dir, ok: false, prs: [], error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              }
+            })();
+            return;
+          }
+          case "review.prinfo.get": {
+            const dir = String(msg.dir ?? "");
+            const number = Number(msg.pr) || 0;
+            void (async () => {
+              try {
+                const repo = gitRoot(dir);
+                const out = await pullRequestInfo(repo, number, { fresh: msg.fresh === true });
+                send({ type: "review.prinfo", dir: repo, pr: number, ...out });
+              } catch (err: any) {
+                send({ type: "review.prinfo", dir, pr: number, ok: false, info: null, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
               }
             })();
             return;

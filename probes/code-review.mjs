@@ -215,6 +215,12 @@ try {
   fs.mkdirSync(path.join(REPO, ".scratch", "shots"), { recursive: true });
   await page.waitForTimeout(500);
   await page.locator(".rv-sheet").screenshot({ path: path.join(REPO, ".scratch", "shots", "code-review-sheet.png") }).catch(() => {});
+  // 一键交给 agent：全部 / 按严重度；点「全部」应把整批连同上下文放进输入框。
+  const bulkAll = page.locator(".rv-bulk-btn.all");
+  check("详情里有一键交给 agent", (await bulkAll.count()) === 1, "");
+  await bulkAll.click();
+  const bulkText = await page.locator(".composer-input textarea").first().inputValue();
+  check("批量交给 agent 说清先判断是否真的成立", /先判断/.test(bulkText), bulkText.slice(0, 60).replace(/\n/g, " "));
   await page.locator(".rv-sheet-head .btn").first().click();
   await until(async () => (await page.locator(".rv-sheet").count()) === 0, 8000, "review sheet closed");
 

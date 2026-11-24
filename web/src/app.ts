@@ -67,6 +67,7 @@ import { openHotdeploy } from "./hotdeploy.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { ReposSheet } from "./repossheet.ts";
 import { ReviewSheet } from "./review-sheet.ts";
+import { PrSheet, type PrInfo } from "./pr-sheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
@@ -80,7 +81,9 @@ import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
 import {
   fixPrompt as reviewFixPrompt,
+  fixPromptMany as reviewFixManyPrompt,
   repoFromUrl as reviewRepoFromUrl,
+  type FixContext as ReviewFixContext,
   type PullRequest as ReviewPr,
   renderReview,
   reviewView,
@@ -425,6 +428,9 @@ export class App {
   private reviewPrQuery = "";
   private reviewPrMenu = false;
   private reviewSheet: ReviewSheet | null = null;
+  private reviewPrSheet: PrSheet | null = null;
+  /** 「PR 信息」dialog 的数据（按号缓存一次；点开时才拉）。 */
+  private reviewPrInfo: { number: number; info: PrInfo | null; error: string } = { number: 0, info: null, error: "" };
   private reviewPrs: ReviewPr[] = [];
   private reviewPrsLoading = false;
   private reviewPrError = "";
@@ -2624,6 +2630,12 @@ export class App {
         // 手输的号不在列表里时不要被第一项悄悄顶掉：只在没选过时挑第一个。
         if (!this.reviewPr && this.reviewPrs.length) this.reviewPr = String(this.reviewPrs[0].number);
         if (this.queueTab === "review") this.renderQueue();
+        break;
+      }
+      case "review.prinfo": {
+        const number = Number(msg.pr) || 0;
+        this.reviewPrInfo = { number, info: (msg.info ?? null) as PrInfo | null, error: msg.ok ? "" : errText(msg) || String(msg.error ?? "") };
+        this.reviewPrSheet?.set(number, this.reviewPrInfo.info, this.reviewPrInfo.error);
         break;
       }
       case "review.ocr":
@@ -18484,9 +18496,15 @@ export class App {
       onMark: (key, mark: ReviewMark | "") => this.socket.send({ type: "review.mark", dir: this.reviewDir(), key, mark }),
       onOpen: (path, line) => this.openReviewFinding(path, line),
       onFix: (f: ReviewFinding) => {
-        this.prefill(reviewFixPrompt(f));
+        this.prefill(reviewFixPrompt(f, this.reviewFixContext()));
         this.flashToast(tr("已放进输入框（还没发）"), false, 3000);
       },
+      onFixMany: (list) => {
+        if (!list.length) return;
+        this.prefill(reviewFixManyPrompt(list, this.reviewFixContext()));
+        this.flashToast(tr("已把 {p1} 条意见放进输入框（还没发）", { p1: list.length }), false, 3500);
+      },
+      onPrInfo: () => this.openPrInfo(),
       onInstall: () => {
         this.reviewInstalling = true;
         this.reviewInstallLog = [];
@@ -18497,6 +18515,44 @@ export class App {
       onClean: () => this.socket.send({ type: "review.clean", dir: this.reviewDir() }),
       onDetails: () => this.openReviewSheet(),
     };
+  }
+
+  /** 「交给 agent」那段话的上下文：哪个仓库、哪个 PR / 分支。 */
+  private reviewFixContext(): ReviewFixContext {
+    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    return {
+      repo: this.reviewRemoteRepo || this.reviewRepo || this.reviewDir(),
+      pr: Number(this.reviewPr) || 0,
+      prTitle: run?.prTitle ?? "",
+      prHead: run?.prHead ?? "",
+      prBase: run?.prBase ?? "",
+      mode: this.reviewMode,
+      from: run?.from ?? this.reviewBase,
+      to: run?.to ?? this.reviewTarget,
+    };
+  }
+
+  /** 「PR 信息」dialog：标题 / 描述 / 统计 / 文件清单 / 提交时间线（不显示 diff）。 */
+  private openPrInfo(): void {
+    const dir = this.reviewDir();
+    const number = Number(this.reviewPr) || 0;
+    if (!dir || !number) return;
+    if (this.reviewPrInfo.number !== number && this.reviewPrSheet) {
+      this.reviewPrSheet.close();
+      this.reviewPrSheet = null;
+    }
+    if (!this.reviewPrSheet) {
+      const sheet = new PrSheet(number);
+      sheet.onClose = () => {
+        if (this.reviewPrSheet === sheet) this.reviewPrSheet = null;
+      };
+      sheet.mount(document.getElementById("app") ?? document.body);
+      this.reviewPrSheet = sheet;
+    }
+    const cached = this.reviewPrInfo.number === number ? this.reviewPrInfo : null;
+    if (cached) this.reviewPrSheet.set(number, cached.info, cached.error);
+    else this.reviewPrSheet.setLoading();
+    this.socket.send({ type: "review.prinfo.get", dir, pr: number });
   }
 
   /** 「评审详情」dialog：跑着看时间线，跑完看结果；同一个会话只开一扇。 */
