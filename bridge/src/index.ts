@@ -90,6 +90,7 @@ import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
+import { handleGithub } from "./github.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
@@ -835,6 +836,26 @@ async function main(): Promise<void> {
       return json(res, 200, { ok: false, reason: "no-ack", text: "页面没有回应这次打开（可能刚关掉会话或在处理别的操作）。" });
     }
 
+    // ------------------------------------------------------------ GitHub 壳的工具口 (loopback only)
+    // `gh` 壳跑在子进程里，比页面更没有 cookie：和 /api/mail/tool、/api/preview/open 一样站在
+    // cookie 闸**前面**，只认回环对端 + 会话级令牌（`x-pi-loopback`）。这一条很关键：哪怕只是落到
+    // 闸门后面，壳的第一次调用就会拿到 `unauthorized`，于是 AI 转头去找 /usr/local/bin/gh 的真 gh ——
+    // 那整套「账号由会话决定」当场作废。
+    if (url.pathname.startsWith("/api/github/shim/") && req.method === "POST") {
+      const peer = req.socket.remoteAddress ?? "";
+      if (publicReq) return json(res, 403, { ok: false, code: "tunnel", error: "GitHub 壳的工具口只接受本机回环的请求（公网隧道进不来）。" });
+      if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, code: "non-loopback", error: "GitHub 壳的工具口只接受本机回环的请求。" });
+      const handled = await handleGithub(req, res, url, {
+        publicReq: false,
+        send: (frame) => broadcast(frame),
+        byLoopbackToken: (token) => {
+          const session = sessions.byLoopbackToken(token);
+          return session ? { id: session.state.id, cwd: session.state.cwd } : null;
+        },
+      });
+      if (handled) return;
+    }
+
     // ------------------------------------------------------------ 邮箱工具口 (loopback only)
     // `mail_*` 工具跑在子进程里，没有 cookie：和 /api/ask、/api/preview/open 一样站在 cookie 闸之前，
     // 只认回环对端 + 会话级 token。策略、凭据、发送全在桥这一侧，扩展只负责转发。
@@ -1429,6 +1450,18 @@ async function main(): Promise<void> {
     // #248 Jira 面板：单站点、只读、凭据不出桥。路由都在 jira.ts 里，这里只接线。
     if (await handleMail(req, res, url, { publicReq, confirm: (sid, mail) => askMailConfirm(sid, mail, wss) })) return;
     if (await handleJira(req, res, url, { publicReq })) return;
+    // GitHub 通道：账号与凭据在桥里，壳（pi 子进程的 `gh`）与页面都只跟这组路由说话。
+    if (
+      await handleGithub(req, res, url, {
+        publicReq,
+        send: (frame) => broadcast(frame),
+        byLoopbackToken: (token) => {
+          const session = sessions.byLoopbackToken(token);
+          return session ? { id: session.state.id, cwd: session.state.cwd } : null;
+        },
+      })
+    )
+      return;
     // 考勤：隧道访客整页隐身（模块内 return false → 落到底部的 404）。
     if (
       await handleAttendance(req, res, url, {

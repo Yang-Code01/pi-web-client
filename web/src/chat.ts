@@ -3,6 +3,7 @@ import { artifactSources, noteArtifact, noteMentioned, toolPath, type ArtifactSo
 import { askQuestions, askTurnLabel, parseAskResult } from "./ask-result.ts";
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { reviewBody, reviewDisplay } from "./failures.ts";
+import { githubCards } from "./github-cards.ts";
 import { highlightFragment } from "./highlight.ts";
 import { extractMentionedPaths, renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
@@ -271,6 +272,8 @@ export class ChatView {
   private collapsed = new Set<string>();
   /** Set by the app: the 停止 button on a running `!cmd` card. */
   onBashStop: ((id: string) => void) | null = null;
+  /** GitHub 链接卡 → 右栏面板。应用没接上就只画链接（卡片自己不做事）。 */
+  onGithubOpen: ((repo: string, number: number) => void) | null = null;
   /** Set by the app: ⑂ on a user message (#17). `index` = its position among user messages. */
   onFork: ((item: { id: string; text: string }, index: number) => void) | null = null;
   /**
@@ -1644,6 +1647,11 @@ export class ChatView {
         who.append(fork);
       }
       wrap.append(who, this.foldable(this.buildUserBody(item), 240));
+      // 别人发我一条 PR 链接，我也要能直接在面板里看 —— 同一个解析器，不看是谁写的消息。
+      if (this.onGithubOpen) {
+        const open = this.onGithubOpen.bind(this);
+        wrap.append(...githubCards(item.text, { open, max: 2 }));
+      }
     } else {
       who.textContent = headLine(item.model ?? "pi", item.ts, item.stopReason === "aborted" ? tr(" · 已中断") : "");
       if (item.text.trim()) who.append(copyButton(() => item.text));
@@ -1654,6 +1662,12 @@ export class ChatView {
       if ((item.text || "").trim()) {
         const body = el("div", "body");
         body.append(renderMarkdown(item.text));
+        // 正文里的 PR 链接本来就能点（`md.ts` 会给裸 URL 加锚点），但点完要切浏览器。
+        // 挂上卡片 = 当场看得见「这是哪个 PR」。每段最多两张。
+        if (this.onGithubOpen) {
+          const open = this.onGithubOpen.bind(this);
+          body.append(...githubCards(item.text, { open, max: 2 }));
+        }
         const peek = el("button", "msg-peek", previewLine(item.text));
         peek.title = tr("展开回答");
         const fold = foldHead("msg-fold");
@@ -2123,6 +2137,12 @@ export class ChatView {
         card.append(details);
       }
       card.append(out);
+      // 工具卡是 AI 自己跑 `gh …` 时输出的落脚处（`buildBash` 那个是用户的 `!cmd`）。
+      // `<pre>` 里的链接点不动，所以在这里挂卡 —— 这正是「AI 建完 PR 我看不到」那一条。
+      if (this.onGithubOpen && item.result) {
+        const open = this.onGithubOpen.bind(this);
+        card.append(...githubCards(String(item.result), { open, max: 3 }));
+      }
     }
     return card;
   }

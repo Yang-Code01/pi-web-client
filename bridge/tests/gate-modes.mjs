@@ -36,6 +36,19 @@ const expect = (got, want, label) => {
   console.log(`${ok ? "  ok" : "  FAIL"} ${++n}  ${label}  (blocked=${got.blocked} asked=${got.asked})`);
 };
 
+console.log("GitHub: 建 PR 不拦，合并要问（#661）");
+setMode("ask");
+{
+  // 「建 PR 是 AI 的本职活」这条规则得能被证明：它不该出现在 asked 里。
+  const created = await call("bash", { command: "gh pr create --fill --title 'x'" });
+  const merged = await call("bash", { command: "gh pr merge 12 --squash" });
+  const apiMerge = await call("bash", { command: "gh api -X PUT repos/a/b/pulls/12/merge -f merge_method=merge" });
+  expect({ blocked: false, asked: created.asked }, { blocked: false, asked: false }, "gh pr create 不问");
+  // 夹具里的 confirm 一律回 false，所以「问了」就等于「拦下了」——和上面那条 `rm` 同一个口径。
+  expect(merged, { blocked: true, asked: true }, "gh pr merge 要问");
+  expect(apiMerge, { blocked: true, asked: true }, "走 API 合并也要问");
+}
+
 console.log("readonly: a whitelist, not a blacklist");
 setMode("readonly");
 expect(await call("read", { path: "a.txt" }), { blocked: false, asked: false }, "read passes");

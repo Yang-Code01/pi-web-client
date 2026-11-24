@@ -7752,3 +7752,39 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - 「别的会话（不是当前会话）里问卷被中断」仍然不建残影，和原来一样：`ask.remove` 到达时当前会话对不上就不记。
 
 **验证：** `node probes/round5-asklost.mjs` 新增第二个会话：切过去 `.ask-lost` 必须是 0（改前红：`found 1`），切回来还在，答案只落到原会话输入框、另一个会话的草稿仍是空的。`node --experimental-strip-types web/tests/frames-unit.mjs` 27/27（新增「残影只属于丢问卷的那个会话：切到别的会话不画它」）。
+
+## D398 GitHub 通道：一个 `gh` 壳 + 会话级账号，PR 拿回右栏看（#661）
+
+**问题（三件事叠在一起）：**
+
+1. **AI 建的 PR，第一手证据恰恰是页面上点不动的地方。** `gh pr create` 的输出落在工具卡里（纯文本），只有模型**复述**在正文里的裸 URL 才有锚点。而 GitHub 页面永远嵌不进来（实测 `x-frame-options: deny` + `frame-ancestors 'none'`），所以「在应用里看 PR」只能是桥拿 API 重画。
+2. **建 PR 这件事完全不经过桥。** 模型自己在 shell 里跑 `gh`，桥既不知道用了哪个账号、也不知道 PR 号，事后也补不回来。
+3. **账号是机器级的。** 这台机器上 `gh` 登着两个账号（`Yang-Code01` active、`qingmin-new`），用哪个由 active 决定；想「这一次会话用另一个」只能靠 agent 读文档手搓 `GH_TOKEN=$(gh auth token --user X)`。换个会话就得再记一遍，忘了就是把 PR 建到别人名下。
+
+**为什么不是「给模型一套 `github_*` 工具」**（`bridge/ext/mail.ts` 那条路）：仓库里 41 处文档写的都是 `gh …`（`AGENTS.md` 9、`docs/agents/issue-tracker.md` 25、`whatsnew-write` 技能 7）。换工具要全改，**而且**模型习惯性敲 `gh` 时没有兜底，会退回机器上的 active 账号 —— 正是要消灭的那种失败。
+
+**决定（三层，各管一件事）：**
+
+1. **壳**（`bridge/src/github-shim.ts` → `<状态目录>/github/bin/gh` 与 `gh.cmd`，由 `ensureGithubBin()` 写）：只挂在**桥起的 pi 子进程**的 PATH 最前面（`sessions.ts` 的 `env:`，与 `PI_WEB_LOOPBACK` 同一处）。三件事，顺序不能变：问桥「这个会话是谁」（令牌**一次一取**，不留在子进程环境里，否则一次 `printenv` 就进聊天记录）→ 有真 gh 就带 `GH_TOKEN` 透传、没有就用 REST 实现 PR 核心 → 收尾把 argv / 退出码 / 输出尾巴回报给桥。未实现的子命令退出码 1 且说清「只覆盖 PR 核心」，桥不在 / 不认识这个会话也大声失败。
+2. **桥**（`bridge/src/github.ts`）：账号解析 **会话临时选定 > 工作区 `githubAccount` > 全局同键 > gh 的 active**；令牌来自 `gh auth token --user`（10 分钟缓存，绝不同步 spawn）或页面里存的 fine-grained PAT（`dpapi.ts` 加密落盘）；`/api/github/*` 一组只读接口 + 两条 shim 回环口。
+3. **页面**：链接卡（工具卡输出 / AI 正文 / **你自己发的消息**三处，滚进视口才要标题）+ `gh pr create` 成功后右栏自动推开面板（`github.pr` 帧）。面板**摘要优先**：标题、一行事实、四格数字（文件 / 新增 / 删除 / 评论）、逐文件一行（点行去 GitHub 看差异），**面板里不铺代码差异** —— 560px 里铺并排 diff 每边只剩 270px，折行反而更难读。
+
+**两条上一轮栽过的坑（写进决定里，别重犯）：**
+
+- **shim 的两条 HTTP 口必须站在 cookie 闸前面**（只认回环对端 + `x-pi-loopback` 会话令牌）。落到闸门后面就会拿到 `unauthorized`，而模型不会停：它会 `which gh` → 检查 `/opt/homebrew/bin/gh` → 最后用 `~/.local/bin/gh` 的真 gh 绝对路径跑通 —— 整套账号机制当场作废。
+- **链接卡要挂到工具卡**（AI 自己跑 `gh` 的输出），不只是用户的 `!cmd` 卡；只挂后者的话一个卡都不会出现。
+
+**合并 vs 建 PR**：建 PR 是 AI 的本职活，不拦；把代码合进 main 是人的决定 —— `approval-gate.ts` 的 `SHELL_PATTERNS` 加两条（`gh pr merge`、`gh api … /merge`），与已有的 `git push` 同一机制。面板那颗「合并 PR」因此**不自己打 GitHub**：它把一句话交给 agent（`gh pr merge <n>`），照样过审批闸，而不是第二条写路线。
+
+**两个开关**（设置 → 外观 → 对话，`pi.prefs` 跟着设备走）：`githubCards`（主）与 `githubAutoPanel`。主开关关掉时 `autoPanel` 跟着失效（`githubFeature()`）—— 否则会出现「面板弹出来了、聊天里却一张卡都没有」这种没法理解的状态。
+
+**代价 / 可改：**
+
+- **壳只能影响桥起的 pi 子进程**：终端里的 pi、用户自己的 shell 还是机器上的 active 账号（刻意，不往用户的 PATH 里塞东西）。
+- **壳可以被绕过**：它坏了的时候模型会去找真 gh。所以壳失败必须大声失败，这是设计约束不是巧合。
+- **`gh auth status` 的文本是解析来的**（新版才有 `--json`）：解析不出来就当作「登录态读不到」，不猜 —— 猜错就是把 PR 建到别人名下。
+- **checks 与评论是示例样本**：真 checks 要按 commit 拉 check-runs、真评论要拉 review comments，这一版没做，界面上标着「示例数据」。
+- **卡片的标题是异步补的**（滚进视口才请求）：一屏之外的那些卡，标题会晚一点出现。
+- **PAT 只在非 Windows 上是明文 + 0600**：Windows 走 DPAPI，换机器 / 换用户解不开，表现为「凭据读不到」，不会静默退回明文。
+
+**验证：** `npm run test:github` 三段共 40 条 —— 桥的 HTTP 面 21 条（账号解析四种来源的优先级、仓库识别、PR 列表/详情的归一化、没有远端时 409、上游 401 映射、隧道写 403、卡片缓存命中、PAT 存取与删除、shim 身份与记账三种帧）；前端纯函数 10 条（链接识别去重与标点、相对时间四档、`+/−` 文案、两个开关默认值与连坐、两个新帧不改纯视图状态）；壳 9 条（令牌交到真 gh、`pr create` 链接回报、退出码透传、没 gh 时内置实现真建 PR、未实现子命令明确失败、桥不在说人话、PATH 注入且本机 PATH 没被动过）。`npm run typecheck` 全绿（含 37 条新 i18n 键、`test:viewport`、`test:layers`、`test:theme`）。真机冒烟（隔离实例，真 gh 真令牌）：默认 `gh api user --jq .login` → `Yang-Code01`；会话切到 `qingmin-new` 后 → `qingmin-new`；`gh pr view 659` → 桥发出 `github.seen` 并认出 pull #659；面板接口真数据（20 条开着的 PR、#659 `+105 −21`、5 个文件）。

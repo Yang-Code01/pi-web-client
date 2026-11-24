@@ -4,6 +4,7 @@ import type { MailAccountInput, MailAccountView, MailConfigView, MailDetailView,
 import type { AttendanceCancelResult, AttendanceLeave, AttendanceReminder, AttendanceReminderRule, AttendanceOvertime, AttendanceRecords, AttendanceState, AttendanceSubmitResult, DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 import type { HotdeployRemoveResult, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
 import type { CtxInsightData } from "./context-insight-types.ts";
+import type { GithubStateView, PullDetailView, PullRow, PullsView } from "./github-shared.ts";
 
 /** 上传暂存区落盘后回给页面的那份文件。 */
 export type UploadedFile = { path: string; name: string; size: number };
@@ -587,4 +588,25 @@ export const api = {
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),
+};
+
+/**
+ * GitHub 通道（`bridge/src/github.ts`）。面板与链接卡共用这一组，不在两处各拼一串 URL。
+ * 账号与凭据只在桥那边：这里只能看到登录名与「PAT 存好了」。
+ */
+export const githubApi = {
+  state: (sessionId: string, cwd: string) =>
+    req<GithubStateView>(`/api/github/state?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}`),
+  pulls: (sessionId: string, cwd: string) =>
+    req<PullsView>(`/api/github/pulls?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}`),
+  pull: (sessionId: string, cwd: string, number: number) =>
+    req<PullDetailView>(`/api/github/pr?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}&number=${number}`),
+  /** 聊天里的链接卡只要一行（一次 REST，不拉文件差异）。仓库直接拿链接里的那个，不按会话算。 */
+  card: (repo: string, number: number) =>
+    req<{ ok: boolean; pull: PullRow }>(`/api/github/card?repo=${encodeURIComponent(repo)}&number=${number}`),
+  /** 会话级临时换号；`login` 给空串就回到「继承工作区」。 */
+  setAccount: (sessionId: string, login: string) => postJson<{ ok: true }>("/api/github/account", { sessionId, login }),
+  /** 存一枚 fine-grained PAT：桥先拿它问一次 `/user`，认不出是谁就不存。 */
+  putPat: (token: string) => postJson<{ ok: true; login: string; encrypted: boolean }>("/api/github/pat", { token }),
+  deletePat: (login: string) => req<{ ok: true }>(`/api/github/pat?login=${encodeURIComponent(login)}`, { method: "DELETE" }),
 };
