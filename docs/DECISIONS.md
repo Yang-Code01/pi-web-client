@@ -7732,3 +7732,34 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - 收工判定有最多 1 秒延迟（要等一个完整窗口），所以风暴尾巴可能比实际安静晚一行。
 
 **验证：** `npm run test:logfile` 12 项全过（轮转 6 项 + 风暴 6 项：阀值内不透传、超限只写头、安静写尾并带上吞了多少与最后样本、刷完彻底安静时靠定时器落尾、样本截断到 200 字符、`maxPerSecond=0` 全关、环境变量四种读法；时钟与定时器都是注入的假实现，不真等一秒）。真桥冒烟两次：`PI_WEB_LOG_MAX_LINES_PER_S=1` 时开机 8 行变成 3 行（头 + 尾 + 第一条），尾巴是 `2.0 秒里吞掉 5 行`；默认阀值下开机 6 行一字不少、没有 ⚠️。`npm --prefix bridge run typecheck`、`npm run build:bridge` 通过。
+
+## D397 GitHub 通道：一个 `gh` 壳 + 会话级账号，凭据只在桥里（用户「ai 用 gh 建 PR、我要打开看；别人可能没装 gh；gh 里登了多个账号」2026-11-24）
+
+**问题（三件事，表面上是三件）：**
+
+1. **AI 建的 PR，第一手证据在页面上是唯一不可点的地方**：`gh pr create` 的输出落在 `<pre class="bash-out">`（`web/src/chat.ts:2045`，纯文本），只有模型**复述**在正文里的裸 URL 才有锚点（`md.ts` 的 `INLINE`）。而 GitHub 页面永远嵌不进来 —— 实测 `x-frame-options: deny` + CSP `frame-ancestors 'none'`，所以「应用里看 PR」只能是桥拿 API 重画。
+2. **建 PR 这件事完全不经过桥**：模型自己在 bash 里跑 `gh`，桥既不知道用了哪个账号、也不知道 PR 号。gh 在桥里的既有触点只有 4 处，全是读或 gist（`pishare.ts` / `market.ts` / `skillstore.ts` / `mcpmarket.ts`）。
+3. **多账号是真的，但产品里没有这个概念**：本机实测 `gh auth status` 就登着两个账号（`Yang-Code01` active、`qingmin-new`）。`AGENTS.md` 里写着怎么绕（`GH_TOKEN=$(gh auth token --user X)`），但那是每个 agent 读文档自己记，换个会话就得再记一遍。
+
+**为什么不是「给模型一套 `github_*` 工具」**（`bridge/ext/mail.ts` 那条路）：仓库里 41 处文档写的是 `gh …` —— `AGENTS.md` 9 处、`docs/agents/issue-tracker.md` 25 处、`whatsnew-write` 技能 7 处。换工具要把这些全改掉，**而且**模型习惯性敲 `gh` 时没有兜底，会退回机器上的 active 账号：正是要消灭的那种「悄悄用错账号」。
+
+**决定（三层，各管一件事）：**
+
+1. **壳**（`bridge/src/github-shim.ts`，由 `ensureGithubBin()` 写成 `<状态目录>/github/bin/gh` 与 `gh.cmd`），挂在**桥起的 pi 子进程**的 PATH 最前面（`sessions.ts` 的 `env:`，与 `PI_WEB_LOOPBACK` 同一处）。它做三件事，顺序不能变：
+   - 问桥「这个会话是谁」（`POST /api/github/shim/identity`，用已有的 loopback token 认身份）。**令牌一次一取，不留在 pi 子进程的环境里** —— 留在 env 里的话，一次 `printenv` 就把它打进聊天记录。
+   - 有真 gh 就 `GH_TOKEN` 透传（实测：`GH_TOKEN=$(gh auth token --user qingmin-new) gh api user --jq .login` 拿到 `qingmin-new`，不动全局 active）；没装就自己用 REST 实现 `pr create/list/view/merge` 与 `auth status`，**其余子命令明确报错**、不假装成功。
+   - 收尾把 argv / 退出码 / 输出尾巴回报给桥（`/api/github/shim/report`）。
+2. **桥**（`bridge/src/github.ts`）：账号解析顺序 **会话临时选定 > 工作区 `.pi/settings.json` 的 `githubAccount` > 全局同键 > gh 的 active**；令牌两条来源（`gh auth token --user` 带 10 分钟缓存，或页面里存的细粒度 PAT 用 `dpapi.ts` 加密落盘）；`/api/github/*` 一组只读接口给面板与链接卡，写（存 PAT、换账号）对隧道访客 403。
+3. **页面**：聊天输出里的 GitHub 链接折成**链接卡**（滚进视口才去要标题，`IntersectionObserver`）；`gh pr create` 成功 → 桥发 `github.pr` → 当前会话的右栏**自动推出面板**。面板（`.ghp`，dock，层带 47）标题旁常驻**会话账号**与「在 GitHub 打开」；PR 正文 / 文件 / 差异是真数据，`checks` 与评论这一版是**示例样本**并在页面上标着。
+
+**为什么「建 PR 不拦、合并要拦」**：建 PR 是 AI 的本职活；把代码合进 main 是人的决定。拦在 `approval-gate.ts` 的 `SHELL_PATTERNS` 里加两条正则（`gh pr merge`、`gh api … /merge`），与已有的 `git push` 同一条机制 —— 只拦一条等于留个后门。面板那颗「合并 PR」因此**不自己打 GitHub**：它把一句话交给 agent，于是照样过审批闸，而不是第二条写路线。
+
+**代价 / 可改：**
+
+- **壳只能影响桥起的 pi 子进程**：终端里的 pi、用户自己的 shell 还是机器上的 active 账号。这是刻意的（不往用户的 PATH 里塞东西），也意味着「在终端里敲 `gh`」不受会话账号管辖。
+- **壳目录按状态目录共享**：两份桥共用同一份状态目录时，谁最后启动谁的 `dist/github-shim.js` 生效。两份桥共用一个状态目录本来就不受支持，所以没为它加锁；`ensureGithubBin()` 只在内容变了时重写，避免每次启动白刷 mtime。
+- **`gh auth status` 的文本是解析来的**（新版才有 `--json`）：解析不出来就当作「登录态读不到」，不猜 —— 猜错的代价是把 PR 建到别人名下。
+- **PAT 是桥持有写权限令牌的那一档**：只在没 gh / 没登录时才需要。`dpapi` 在这台机器之外（非 Windows、非当前用户）解不开，表现为「凭据读不到」，不是悄悄退回明文。
+- **面板的 checks 与评论还是样本**：这一版验的是「机制真跑 + 面板长什么样」，完整的 checks / 评审归一留着。
+
+**验证：** `npm run test:github` —— A 纯函数 13 条（`gh auth status` 两账号解析、远端 URL 四种写法、链接去重与 commit/sha）；B 审批闸 3 条（`gh pr merge` 要问、`gh api … /merge` 也要问、`gh pr create` 不问）；C 壳 **22 条里最后 6 条是真端点**：起一个只实现两条 shim 路由的假桥，用**真 gh、真令牌**跑 `gh api user --jq .login`，身份给的是本机**不是 active** 的 `qingmin-new`，输出就是 `qingmin-new`；回报里带着账号与退出码；`pr view` 也被记账；把身份换成 `realGh: null` 后 `auth status` 照样说得出在用谁、`issue list` 明确报「内置实现只覆盖 PR 核心」。`node bridge/tests/github-path.mjs`（同一个 `test:github` 里的第二段，5 条）用桩 pi 证明**PATH 最前面就是壳目录**、`PI_WEB_GITHUB_SHIM=1` 到了、壳文件真的落盘、**本机 PATH 没被动过**。隔离实例（`gh1`，17870）上真跑 `/api/github/state`（两个账号 + 仓库 `Yang-Code01/pi-web-client`）、`/api/github/pulls`（20 条开着的 PR）、`/api/github/pr?number=659`（5 个文件、`+105/−21`、真 patch）、`/api/github/card`。`npm run typecheck`（含 i18n 28 条新键、`test:viewport`、`test:layers`、`test:theme`）全绿。

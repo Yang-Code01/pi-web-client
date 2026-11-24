@@ -22,6 +22,10 @@ const SHELL_PATTERNS: { re: RegExp; why: string }[] = [
   { re: /(^|[\s;&|(])(rm|rmdir|del|erase|unlink)\s+/i, why: "删除文件" },
   { re: /(^|[\s;&|(])(mv|move|ren|rename)\s+/i, why: "移动/重命名文件" },
   { re: /\bgit\s+push\b/i, why: "推送到远端" },
+  // GitHub 通道（D 见 docs/DECISIONS.md）：建 PR 是 AI 的本职活，不拦；把代码合进 main 是人的决定。
+  // 壳里的 `gh pr merge` 与直接用 API 合并两条都拦 —— 只拦一条等于留个后门。
+  { re: /\bgh\s+pr\s+merge\b/i, why: "合并 PR" },
+  { re: /\bgh\s+api\b[^\n]*\/merge\b/i, why: "合并 PR（走 API）" },
   { re: /\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s)/i, why: "丢弃工作区改动" },
   { re: /(curl|wget)[^|;]*\|\s*(sudo\s+)?(ba|z|fi)?sh\b/i, why: "把网络内容直接喂给 shell" },
   { re: /\b(npm|pnpm|yarn|bun)\s+(i|install|add|remove|uninstall)\b/i, why: "安装/卸载依赖" },

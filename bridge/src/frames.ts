@@ -67,6 +67,10 @@ export type ServerFrameType =
   | "failures.saved"
   | "filesearch.result"
   | "filesearch.status"
+  // GitHub 通道：`github.pr` = 壳看见 `gh pr create` 成功（页面顺手把面板推开）；
+  // `github.seen` = 输出里有链接但不是新建（只挂卡，不抢栏位）。
+  | "github.pr"
+  | "github.seen"
   | "handoff.state"
   | "hello"
   | "history"

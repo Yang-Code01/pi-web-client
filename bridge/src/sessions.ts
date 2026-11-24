@@ -23,6 +23,7 @@ import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions
 import { lessonFile } from "./lessons.ts";
 import { DELIVERY_HINT, PLAN_HINT } from "./delivery.ts";
 import { forgetSession } from "./artifacts.ts";
+import { ensureGithubBin } from "./github.ts";
 import { agentDir, ensureDir, quarantineStateFile, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, readJsonChecked, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
@@ -1401,6 +1402,11 @@ export class Session extends EventEmitter {
         PI_WEB_SETTINGS_FILE: path.join(agentDir(), "settings.json"),
         // The ask-user / preview extensions post here instead of opening a dialog (see PLAN-ask.md).
         ...(this.loopbackUrl ? { PI_WEB_LOOPBACK: this.loopbackUrl, PI_WEB_LOOPBACK_TOKEN: this.loopbackToken } : {}),
+        // GitHub 通道：PATH 前面插一个只装着 `gh` 壳的目录 —— 模型照旧敲 `gh pr create`，壳去问桥
+        // 「这个会话是谁」，于是账号由会话决定，而不是机器上的 active 账号。只影响桥起的 pi 子进程，
+        // 用户的登录 shell 里没有这一层（`git` / `npm` 那些照常）。
+        PATH: `${ensureGithubBin()}${path.delimiter}${process.env.PATH ?? ""}`,
+        PI_WEB_GITHUB_SHIM: "1",
       },
     });
 

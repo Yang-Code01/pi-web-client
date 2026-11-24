@@ -111,6 +111,10 @@ note({
   // Values a test needs to call the bridge back itself (loopback origin + per-child token).
   loopback: process.env.PI_WEB_LOOPBACK ?? null,
   loopbackToken: process.env.PI_WEB_LOOPBACK_TOKEN ?? null,
+  // GitHub 通道：壳目录被插到 PATH 最前面，且 `PI_WEB_GITHUB_SHIM=1` 说明「你在壳底下」。
+  // 两条一起才说明 AI 敲的 `gh` 会落到壳上（`bridge/tests/github-path.mjs`）。
+  pathHead: (process.env.PATH ?? "").split(path.delimiter)[0] ?? "",
+  githubShim: process.env.PI_WEB_GITHUB_SHIM ?? null,
 });
 // One line per process that went away, so "it really exited" is provable from the log (#76).
 let exited = false;

@@ -12,6 +12,7 @@ import { applyFrame, type FrameView, type RedrawKey, type ServerFrameType } from
 import { copilotFromFrame, creditsToUsd, formatAge, formatCredits, formatReset, isMixed, usedPercent, type CopilotView } from "./copilot.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
+import { GithubPanel } from "./github-panel.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
@@ -857,6 +858,8 @@ export class App {
   private mgrRefresh: (() => void) | null = null;
   private mgrPainting = false;
   private viewer: Viewer | null = null;
+  /** GitHub 通道：右栏那块 dock 面板（`web/src/github-panel.ts`）。懒建，关掉就丢。 */
+  private githubPanel: GithubPanel | null = null;
   /** 预览历史，按会话分开（D63）：关预览保留、刷新页面清空、切会话各自一份。 */
   private vhist = new Map<string, { steps: VStep[]; at: number }>();
   private cardDelArm: { id: string; at: number } | null = null;
@@ -1244,6 +1247,8 @@ export class App {
       return id ? `/api/session/image?id=${encodeURIComponent(id)}&item=${encodeURIComponent(itemId)}&n=${index}` : null;
     });
     this.chat.onBashStop = () => this.act(() => this.socket.send({ type: "abortBash", sessionId: this.currentId }));
+    // GitHub 链接卡 → 右栏面板（`number` 是链接里的号，`repo` 是链接里的仓库）。
+    this.chat.onGithubOpen = (repo, number) => this.openGithubPanel(number, repo);
     this.chat.onFork = (item, index) => this.forkAt({ entryId: item.id, index, text: item.text });
     // 账本要的是「这次会话里所有失败」，聊天区只画本轮的红卡：两边各收各的，按 toolCallId 去重。
     this.chat.onFail = (f) => this.recordFail(f);
@@ -2535,6 +2540,19 @@ export class App {
         this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: tr("已分享到{p1}：{p2}{p3}", { p1: via, p2: msg.url, p3: msg.gistUrl ? `（gist：${msg.gistUrl}）` : "" }), level: "info" });
         void navigator.clipboard?.writeText(String(msg.url)).catch(() => {});
         window.open(String(msg.url), "_blank", "noopener");
+        break;
+      }
+      // GitHub 通道：壳看见 `gh pr create` 成功 → 把面板推开（你刚才让它建的那个 PR）。
+      // 只认当前会话：别的会话的 PR 不该抢你现在的右栏。
+      case "github.pr": {
+        if (msg.sessionId && msg.sessionId !== this.currentId) break;
+        const number = Number(msg.number);
+        this.openGithubPanel(Number.isFinite(number) && number > 0 ? number : undefined, String(msg.repo ?? "") || undefined);
+        break;
+      }
+      // `gh pr list` / `gh pr view` 这类的收尾：不抢栏位，面板开着就顺手刷一下下面那块。
+      case "github.seen": {
+        if (this.githubPanel && msg.sessionId === this.currentId) void this.githubPanel.reload();
         break;
       }
       case "notes":
@@ -9696,6 +9714,48 @@ export class App {
       cur?.pop();
       this.floatEscs.set(root, { hi, pop: pushEscLayer({ el: root, focusScoped: !hi, onEsc: close }) });
     }
+  }
+
+  /**
+   * GitHub 面板（右栏 dock）。两个入口：壳看见 `gh pr create` 成功（桥发 `github.pr`），
+   * 以及聊天里那张 PR 卡。
+   *
+   * 打开前先把预览收起：两扇都是右栏 dock，叠在一起分不清谁是谁；反方向（开预览时收面板）
+   * 在 `ensureViewer()` 里。
+   */
+  private openGithubPanel(number?: number, repo?: string): void {
+    if (this.viewer) this.closeViewer();
+    if (!this.githubPanel) {
+      this.githubPanel = new GithubPanel({
+        sessionId: () => this.currentId ?? "",
+        cwd: () => this.session?.cwd ?? "",
+        openExternal: (url) => openExternal(url),
+        askAgent: (text) => this.askAgent(text),
+        onClose: () => {
+          this.githubPanel = null;
+        },
+      });
+    }
+    void this.githubPanel.open({ number, repo });
+  }
+
+  /**
+   * 把一句话当成下一条用户消息发出去（和「重讲」同一条路，不读输入框，不动用户的草稿）。
+   * GitHub 面板的「合并 PR」走这里：于是它过 `approval-gate.ts` 的 `gh pr merge` 那道闸，
+   * 不是面板自己造的第二条写路线。
+   */
+  private askAgent(text: string): void {
+    const sessionId = this.currentId;
+    if (!sessionId) return;
+    const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    const payload = { type: "prompt", sessionId, text, images: [], clientId, behavior: "steer" };
+    this.act(() => {
+      if (this.currentId !== sessionId) return;
+      this.chat.add({ id: clientId, kind: "user", text, images: [], ts: new Date().toISOString() });
+      this.renderChat();
+      this.chat.follow();
+      this.socket.send(payload);
+    });
   }
 
   private ensureViewer(): Viewer {

@@ -4,6 +4,7 @@ import { askQuestions, askTurnLabel, parseAskResult } from "./ask-result.ts";
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { reviewBody, reviewDisplay } from "./failures.ts";
 import { highlightFragment } from "./highlight.ts";
+import { githubCards } from "./github-cards.ts";
 import { extractMentionedPaths, renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
@@ -271,6 +272,8 @@ export class ChatView {
   private collapsed = new Set<string>();
   /** Set by the app: the 停止 button on a running `!cmd` card. */
   onBashStop: ((id: string) => void) | null = null;
+  /** GitHub 链接卡 → 右栏面板。应用没接上就只画链接（卡片自己不做事）。 */
+  onGithubOpen: ((repo: string, number: number) => void) | null = null;
   /** Set by the app: ⑂ on a user message (#17). `index` = its position among user messages. */
   onFork: ((item: { id: string; text: string }, index: number) => void) | null = null;
   /**
@@ -1654,6 +1657,12 @@ export class ChatView {
       if ((item.text || "").trim()) {
         const body = el("div", "body");
         body.append(renderMarkdown(item.text));
+        // 正文里的 PR 链接本来就能点（`md.ts` 会给裸 URL 加锚点），但点完要切浏览器。
+        // 挂上卡片 = 当场看得见「这是哪个 PR」。只认 pull（issue / commit 不夹），每段最多两张。
+        if (this.onGithubOpen) {
+          const open = this.onGithubOpen.bind(this);
+          body.append(...githubCards(item.text, { open, max: 2 }));
+        }
         const peek = el("button", "msg-peek", previewLine(item.text));
         peek.title = tr("展开回答");
         const fold = foldHead("msg-fold");
@@ -2044,6 +2053,12 @@ export class ChatView {
     }
     const out = el("pre", "bash-out", item.output || (item.status === "done" ? tr("（没有输出）") : ""));
     card.append(head, out);
+    // `gh pr create` 的那行链接就在这里 —— `<pre>` 里是纯文本，点不动。挂一张卡补上这一下。
+    // 只在收尾时挂：运行中的输出一直在长，每帧建一次卡只会白费观察器。
+    if (item.status !== "running" && item.status !== "queued" && this.onGithubOpen) {
+      const open = this.onGithubOpen.bind(this);
+      card.append(...githubCards(item.output, { open, max: 3 }));
+    }
     if (item.error) card.append(el("div", "bash-foot bad", item.error));
     if (item.truncated) card.append(el("div", "bash-foot", tr("输出太长，只显示末尾。完整内容：{p1}", { p1: item.fullOutputPath ?? tr("（pi 没给路径）") })));
     wrap.append(card);
