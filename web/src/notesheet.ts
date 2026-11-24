@@ -15,7 +15,8 @@ import { icon, face, type IconName } from "./icons.ts";
 import { FailPanel } from "./failpanel.ts";
 import { ripeEntries, type FailLedger } from "./failures.ts";
 import { RichEditor } from "./notes/editor.ts";
-import { isRichEmpty, noteTextForPeer, plainText, richToMarkdown, textToRich } from "./notes/rich.ts";
+import { notePeerGuard, type PeerNoteBlock } from "./notes/peer-guard.ts";
+import { isRichEmpty, plainText, richToMarkdown, textToRich } from "./notes/rich.ts";
 import type { RuleBook } from "./rules.ts";
 import type { Note, NoteKind, NoteStatus, NotesLayout } from "./types.ts";
 import "./notes.css";
@@ -97,8 +98,13 @@ function writeMemory(memory: NotesMemory): void {
 
 /** 内网通连动（#509）：最后一位收件人只记 nodeId，换人或换机器就在列表里重选。 */
 const PEER_LAST_KEY = "notes.peerLast";
-/** 一条文字消息的硬上限（peer/src/messages.ts 的 MAX_TEXT_BYTES）。 */
-const PEER_TEXT_BYTES = 32 * 1024;
+
+/** 「提交给好友」超限时的提示（#663）：只说第一条超的，带数值。正文按 1000 进算 KB，跟服务端的「200 KB」对得上。 */
+function peerGuardHint(b: PeerNoteBlock): string {
+  if (b.blocked === "title") return tr("标题 {p1} 字，上限 {p2} 字", { p1: b.actual, p2: b.limit });
+  if (b.blocked === "shots") return tr("截图 {p1} 张，上限 {p2} 张", { p1: b.actual, p2: b.limit });
+  return tr("正文 {p1} KB，上限 {p2} KB", { p1: Math.ceil(b.actual / 1000), p2: b.limit / 1000 });
+}
 
 interface PeerOnline {
   nodeId: string;
@@ -1342,13 +1348,12 @@ export class NotesSheet {
 
   // ---------------------------------------------------------------- 内网通连动（#509）
 
-  /** 正文下的「内网通连动 ▾」：先问桥要内网通状态，再画两项。 */
+  /** 正文下的「内网通连动 ▾」：先问桥要内网通状态，再画「提交给好友」。 */
   private peerMenu(anchor: HTMLElement, note: Partial<Note>): void {
     const full = this.fullNote(note);
     if (!full) return;
-    const text = noteTextForPeer(full.title, full.body);
-    const bytes = new TextEncoder().encode(text).length;
     const blank = !String(note.title ?? "").trim() && !plainText(note.body ?? "").trim();
+    const tooBig = notePeerGuard(full.title, full.body, full.shots.length);
     document.querySelector(".note-handoff")?.remove();
     const r = anchor.getBoundingClientRect();
     const pop = markSurface(el("div", "note-handoff note-peer-menu"), "menu");
@@ -1387,44 +1392,18 @@ export class NotesSheet {
         pop.replaceChildren();
         const why = view.enabled ? "" : (view.reason || (view.running ? tr("内网通正在重启，等它起来再试") : tr("内网通没启用")));
         const empty = blank ? tr("先写点东西") : "";
-        const tooLong = bytes > PEER_TEXT_BYTES;
-        add(
-          tr("发送给好友"),
-          why || empty || (tooLong ? tr("正文 {p1} KB，超过 32 KB，改用「提交给好友」", { p1: Math.ceil(bytes / 1024) }) : tr("标题 + Markdown 正文")),
-          Boolean(why) || tooLong || blank,
-          () => void this.sendTextToPeer(text),
-        );
         add(
           tr("提交给好友"),
-          why || empty || tr("打包标题、正文、分类、状态与 {p1} 张图", { p1: full.shots.length }),
-          Boolean(why) || blank,
+          why || empty || (tooBig ? peerGuardHint(tooBig) : tr("打包标题、正文、分类、状态与 {p1} 张图", { p1: full.shots.length })),
+          Boolean(why) || blank || Boolean(tooBig),
           () => void this.submitToPeer(),
         );
       })
       .catch((err: Error) => {
         if (!pop.isConnected) return;
         pop.replaceChildren();
-        add(tr("发送给好友"), tr("连不上内网通：{p1}", { p1: err.message }), true, () => {});
         add(tr("提交给好友"), tr("连不上内网通：{p1}", { p1: err.message }), true, () => {});
       });
-  }
-
-  /** 发送给好友：标题 + 空行 + Markdown 正文，作为一条普通文字消息。 */
-  private async sendTextToPeer(text: string): Promise<void> {
-    if (this.peerBusy) return;
-    const person = await this.pickPeer(tr("发送给好友"));
-    if (!person) return;
-    this.peerBusy = true;
-    this.say(tr("发送中…"));
-    try {
-      await peerJson("/api/peer/send", { method: "POST", body: JSON.stringify({ peer: person.nodeId, text }) });
-      writeLastPeer(person.nodeId);
-      this.say(tr("已发送给 {p1}", { p1: person.nickname }));
-    } catch (err) {
-      this.say(tr("没发出去：{p1}", { p1: (err as Error).message }), true);
-    } finally {
-      this.peerBusy = false;
-    }
   }
 
   /** 提交给好友：先落盘拿 id，再选人、确认、发 note 帧，最后逐张补截图。 */

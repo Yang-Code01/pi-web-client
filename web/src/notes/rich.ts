@@ -457,17 +457,6 @@ export function richToMarkdown(html: string): string {
     .trim();
 }
 
-/**
- * 「发送给好友」的文本（#509 / #511）：标题 + 空行 + 正文 Markdown；正文为空只发标题。
- * 标题与正文的长度拦截在调用方（记录面板）做，这里只负责拼。
- */
-export function noteTextForPeer(title: string, html: string): string {
-  const head = title.trim();
-  const body = richToMarkdown(html).trim();
-  if (!body) return head;
-  return head ? `${head}\n\n${body}` : body;
-}
-
 /** 净化后的 HTML 再解析成一棵树（导出纯文本 / Markdown 用）。 */function parse(html: string): RichNode[] {
   const clean = sanitizeRich(html);
   const root: RichNode = { tag: null, attrs: {}, children: [] };
