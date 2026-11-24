@@ -5779,64 +5779,120 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* ---------------------------------------------------------------- 代码评审 (#651) */
 /* 右栏只有 190–300px：一律 flex 列、一行一条，不在栏里画 diff（点一条跳分支工作台的差异页签）。 */
 .review { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; min-width: 0; max-width: 100%; }
-.review .rv-form { display: flex; flex-direction: column; gap: 6px; }
-.review .rv-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
-.review .rv-mode,
-.review .rv-ref {
+.rv-scope .rv-form { display: flex; flex-direction: column; gap: 6px; }
+.rv-scope .rv-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.rv-scope .rv-mode,
+.rv-scope .rv-ref {
   /* 别写 max-width: 100%：它让下拉吃掉整行，把旁边的按钮挤出 300px 之外（截图上就只剩下拉）。 */
   flex: 1 1 0; min-width: 0; width: 0;
   padding: 4px 6px; font-size: 12px; color: var(--text);
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
 }
 /* 模型那颗是按钮：点开输入框那颗 chip 背后的同一个「模型与思考」弹层。 */
-.review .rv-model {
+.rv-scope .rv-model {
   flex: 1 1 auto; min-width: 0; max-width: 100%;
   padding: 4px 6px; font-size: 12px; line-height: 1.4; text-align: left;
   color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
 }
-.review .rv-model::after { content: " ▾"; color: var(--faint); }
-.review .rv-run { flex: none; }
-.review .rv-run:disabled { opacity: 0.45; cursor: default; }
-.review .rv-install { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed var(--line); border-radius: 10px; }
-.review .rv-hint { font-size: 12px; color: var(--faint); line-height: 1.5; }
-.review .rv-log { max-height: 120px; overflow: auto; margin: 0; font-size: 11px; white-space: pre-wrap; color: var(--faint); }
-.review .rv-cmd { font-size: 11px; color: var(--accent); word-break: break-all; }
+.rv-scope .rv-model::after { content: " ▾"; color: var(--faint); }
+.rv-scope .rv-run { flex: none; }
+.rv-scope .rv-run:disabled { opacity: 0.45; cursor: default; }
+.rv-scope .rv-install { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed var(--line); border-radius: 10px; }
+.rv-scope .rv-hint { font-size: 12px; color: var(--faint); line-height: 1.5; }
+.rv-scope .rv-log { max-height: 120px; overflow: auto; margin: 0; font-size: 11px; white-space: pre-wrap; color: var(--faint); }
+.rv-scope .rv-cmd { font-size: 11px; color: var(--accent); word-break: break-all; }
 /* 进度里那行「当前文件」是 nowrap 的：不给 min-width: 0，长路径会把整栏撑到 1500px 宽（2026-11-24 实测）。 */
-.review .rv-progress { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.review .rv-current { font-size: 11px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-.review .rv-meta { font-size: 11px; color: var(--faint); min-width: 0; }
-.review .rv-error { font-size: 12px; color: var(--danger); line-height: 1.5; }
-.review .rv-skipped { font-size: 12px; color: var(--faint); }
-.review .rv-skipped > summary { cursor: pointer; }
-.review .rv-skip-row { display: flex; gap: 6px; justify-content: space-between; padding: 2px 0; }
-.review .rv-skip-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.review .rv-why { flex: none; opacity: 0.8; }
-.review .rv-file { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.review .rv-file-head { display: flex; gap: 6px; align-items: baseline; justify-content: space-between; padding: 6px 0 2px; font-size: 12px; color: var(--faint); }
-.review .rv-file-head code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-.review .rv-count { flex: none; }
-.review .rv-finding { display: flex; flex-direction: column; }
-.review .rv-line {
+.rv-scope .rv-progress { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rv-scope .rv-current { font-size: 11px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.rv-scope .rv-meta { font-size: 11px; color: var(--faint); min-width: 0; }
+.rv-scope .rv-error { font-size: 12px; color: var(--danger); line-height: 1.5; }
+.rv-scope .rv-skipped { font-size: 12px; color: var(--faint); }
+.rv-scope .rv-skipped > summary { cursor: pointer; }
+.rv-scope .rv-skip-row { display: flex; gap: 6px; justify-content: space-between; padding: 2px 0; }
+.rv-scope .rv-skip-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-why { flex: none; opacity: 0.8; }
+.rv-scope .rv-file { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rv-scope .rv-file-head { display: flex; gap: 6px; align-items: baseline; justify-content: space-between; padding: 6px 0 2px; font-size: 12px; color: var(--faint); }
+.rv-scope .rv-file-head code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.rv-scope .rv-count { flex: none; }
+.rv-scope .rv-finding { display: flex; flex-direction: column; }
+.rv-scope .rv-line {
   display: flex; gap: 6px; align-items: baseline; width: 100%; text-align: left;
   padding: 5px 6px; font-size: 12px; line-height: 1.45; color: var(--text);
   background: transparent; border: 0; border-radius: 8px; cursor: pointer;
 }
-.review .rv-line:hover { background: var(--panel); }
-.review .rv-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.review .rv-sev { flex: none; font-size: 10px; padding: 0 5px; border-radius: 6px; border: 1px solid currentColor; }
-.review .rv-sev.critical { color: var(--danger); }
-.review .rv-sev.high { color: var(--warn); }
-.review .rv-sev.medium { color: var(--warn); opacity: 0.7; }
-.review .rv-sev.low { color: var(--faint); }
-.review .rv-mark,
-.review .rv-persist { flex: none; font-size: 10px; color: var(--faint); border: 1px dashed var(--line); border-radius: 6px; padding: 0 4px; }
-.review .rv-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 6px 8px 18px; }
-.review .rv-body[hidden] { display: none; }
-.review .rv-place { align-self: flex-start; font-size: 11px; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; word-break: break-all; text-align: left; }
-.review .rv-code { margin: 0; max-height: 140px; overflow: auto; padding: 6px 8px; font-size: 11px; line-height: 1.45; white-space: pre-wrap; background: var(--panel); border-radius: 8px; }
-.review .rv-code.rv-sugg { border-left: 2px solid var(--accent); }
-.review .rv-acts { display: flex; flex-wrap: wrap; gap: 4px; }
-.review .rv-mark-btn.on { color: var(--accent); border-color: var(--accent); }
-.review .rv-foot { display: flex; justify-content: flex-end; padding-top: 4px; }
+.rv-scope .rv-line:hover { background: var(--panel); }
+.rv-scope .rv-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-sev { flex: none; font-size: 10px; padding: 0 5px; border-radius: 6px; border: 1px solid currentColor; }
+.rv-scope .rv-sev.critical { color: var(--danger); }
+.rv-scope .rv-sev.high { color: var(--warn); }
+.rv-scope .rv-sev.medium { color: var(--warn); opacity: 0.7; }
+.rv-scope .rv-sev.low { color: var(--faint); }
+.rv-scope .rv-mark,
+.rv-scope .rv-persist { flex: none; font-size: 10px; color: var(--faint); border: 1px dashed var(--line); border-radius: 6px; padding: 0 4px; }
+.rv-scope .rv-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 6px 8px 18px; }
+.rv-scope .rv-body[hidden] { display: none; }
+.rv-scope .rv-place { align-self: flex-start; font-size: 11px; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; word-break: break-all; text-align: left; }
+.rv-scope .rv-code { margin: 0; max-height: 140px; overflow: auto; padding: 6px 8px; font-size: 11px; line-height: 1.45; white-space: pre-wrap; background: var(--panel); border-radius: 8px; }
+.rv-scope .rv-code.rv-sugg { border-left: 2px solid var(--accent); }
+.rv-scope .rv-acts { display: flex; flex-wrap: wrap; gap: 4px; }
+.rv-scope .rv-mark-btn.on { color: var(--accent); border-color: var(--accent); }
+.rv-scope .rv-foot { display: flex; justify-content: flex-end; padding-top: 4px; }
 .go-code.rv-hit { background: color-mix(in srgb, var(--accent) 22%, transparent); outline: 1px solid var(--accent); }
+
+/* ---------------------------------------------------------------- 评审：检索 / 时间线 / 详情 (#651) */
+.rv-scope .rv-prq {
+  flex: 1 1 0; min-width: 0; width: 0;
+  padding: 4px 6px; font-size: 12px; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+}
+.rv-scope .rv-details { flex: none; }
+.rv-scope .rv-credit {
+  display: flex; flex-direction: column; gap: 2px;
+  margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line-soft);
+  font-size: 10px; line-height: 1.5; color: var(--faint);
+}
+.rv-scope .rv-timeline { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 4px; }
+.rv-scope .rv-tl { display: flex; gap: 6px; align-items: baseline; font-size: 11px; color: var(--faint); }
+.rv-scope .rv-tl-dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--line); }
+.rv-scope .rv-tl:last-child .rv-tl-dot { background: var(--accent); }
+.rv-scope .rv-tl-at { flex: none; font-variant-numeric: tabular-nums; }
+.rv-scope .rv-tl-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 详情：一扇宽窗（左时间线、右结果）。窄了按自己的宽度改成上下叠。 */
+.rv-sheet {
+  container-type: inline-size;
+  width: min(980px, 94%);
+  max-height: calc(var(--vh1) * 78);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.rv-sheet-head {
+  display: flex; gap: 12px; align-items: flex-start; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.rv-sheet-headmain { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rv-sheet-title { margin: 0; font-size: 15px; }
+.rv-sheet-meta { font-size: 11px; color: var(--faint); }
+.rv-chip { align-self: flex-start; font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--faint); }
+.rv-chip[data-phase="running"] { color: var(--accent); border-color: var(--accent); }
+.rv-chip[data-phase="done"] { color: var(--ok); border-color: var(--ok); }
+.rv-chip[data-phase="failed"] { color: var(--danger); border-color: var(--danger); }
+.rv-sheet-body {
+  display: grid; grid-template-columns: minmax(200px, 0.85fr) minmax(0, 1.6fr);
+  gap: 14px; padding: 12px 16px 16px; min-height: 0; overflow: hidden;
+}
+.rv-sheet-col { min-width: 0; overflow: auto; max-height: calc(var(--vh1) * 54); }
+.rv-sheet-caption { font-size: 11px; color: var(--faint); margin-bottom: 6px; }
+.rv-sheet .rv-timeline { gap: 6px; }
+.rv-sheet .rv-tl { font-size: 12px; }
+.rv-sheet .rv-tl-text { white-space: normal; overflow: visible; }
+.rv-sheet .rv-findings { display: flex; flex-direction: column; gap: 10px; }
+/* 宽窗里不用省略号：一条意见的正文就该整句读得完 */
+.rv-sheet .rv-line .rv-text { white-space: normal; overflow: visible; }
+.rv-sheet .rv-file-head { font-size: 12px; }
+.rv-sheet .rv-code { max-height: 260px; }
+@container (max-width: 680px) {
+  .rv-sheet-body { grid-template-columns: minmax(0, 1fr); }
+  .rv-sheet-col { max-height: calc(var(--vh1) * 26); }
+}

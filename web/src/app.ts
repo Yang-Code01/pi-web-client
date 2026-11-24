@@ -66,6 +66,7 @@ import { queueWhatsnew } from "./whatsnew.ts";
 import { openHotdeploy } from "./hotdeploy.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { ReposSheet } from "./repossheet.ts";
+import { ReviewSheet } from "./review-sheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
@@ -85,6 +86,7 @@ import {
   type Mark as ReviewMark,
   type OcrStatus as ReviewOcr,
   type ReviewFinding,
+  type ReviewActions,
   type ReviewMode,
   type ReviewPanelInput,
   type ReviewProgress,
@@ -413,11 +415,14 @@ export class App {
   private reviewInstallLog: string[] = [];
   private reviewError = "";
   private reviewNotGit = false;
-  private reviewMode: ReviewMode = "range";
+  /** 默认「GitHub PR」：从 PR 里挑一个来评是主要用法。 */
+  private reviewMode: ReviewMode = "pr";
   private reviewBase = "main";
   private reviewTarget = "HEAD";
   private reviewCommit = "";
   private reviewPr = "";
+  private reviewPrQuery = "";
+  private reviewSheet: ReviewSheet | null = null;
   private reviewPrs: ReviewPr[] = [];
   private reviewPrsLoading = false;
   private reviewPrError = "";
@@ -2599,6 +2604,7 @@ export class App {
         this.reviewProgress = (msg.progress ?? null) as ReviewProgress | null;
         this.announceReviewDone();
         if (this.queueTab === "review") this.renderQueue();
+        this.syncReviewSheet();
         break;
       }
       case "review.prs": {
@@ -2619,6 +2625,7 @@ export class App {
         }
         this.reviewOcr = (msg.ocr ?? null) as ReviewOcr | null;
         if (this.queueTab === "review") this.renderQueue();
+        this.syncReviewSheet();
         break;
       case "review.progress":
         if (msg.progress) {
@@ -18355,6 +18362,12 @@ export class App {
         if (!this.reviewOcr) this.loadReview();
       }, 2500);
     }
+    return renderReview(this.reviewPanelInput());
+  }
+
+  /** 面板与「评审详情」dialog 共用同一份输入。 */
+  private reviewPanelInput(): ReviewPanelInput {
+    const dir = this.reviewDir();
     const view = reviewView({
       state: this.reviewState,
       progress: this.reviewProgress,
@@ -18367,12 +18380,13 @@ export class App {
       target: this.reviewTarget,
       commit: this.reviewCommit,
       pr: this.reviewPr,
+      prQuery: this.reviewPrQuery,
       prs: this.reviewPrs,
       prsLoading: this.reviewPrsLoading,
       prError: this.reviewPrError,
       model: this.reviewModel,
     });
-    return renderReview({
+    return {
       view,
       modelName: this.reviewModelInfo()?.name ?? "",
       modelId: this.reviewModel,
@@ -18380,61 +18394,90 @@ export class App {
       installLog: this.reviewInstallLog,
       markLabels: { accept: tr("接受"), ignore: tr("忽略"), "false-positive": tr("误报") },
       severityLabels: { critical: tr("严重"), high: tr("高"), medium: tr("中"), low: tr("低") },
-      actions: {
-        onMode: (mode) => {
-          this.reviewMode = mode;
-          const dir = this.reviewDir();
-          if (mode === "pr" && dir && !this.reviewPrs.length && this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
-          this.renderQueue();
-        },
-        onBase: (value) => {
-          this.reviewBase = value;
-        },
-        onTarget: (value) => {
-          this.reviewTarget = value;
-        },
-        onPr: (value) => {
-          this.reviewPr = value;
-          this.renderQueue();
-        },
-        onPrInput: (value) => {
-          this.reviewPr = value;
-        },
-        onRefreshPrs: () => {
-          const dir = this.reviewDir();
-          if (dir) this.loadPullRequests(dir);
-        },
-        onCommit: (value) => {
-          this.reviewCommit = value;
-        },
-        onPickModel: () => {
-          // 复用输入框那颗 chip 背后的同一个弹层（模型与思考），只是「确认」把模型交回面板。
-          this.openModelSheet(false, {
-            start: this.reviewModelInfo()?.id ?? "",
-            onPick: (m) => {
-              this.reviewModel = `${m.provider}/${m.id}`;
-              this.renderQueue();
-            },
-          });
-        },
-        onRun: () => this.startReview(),
-        onStop: () => this.socket.send({ type: "review.cancel", dir: this.reviewDir() }),
-        onMark: (key, mark: ReviewMark | "") => this.socket.send({ type: "review.mark", dir: this.reviewDir(), key, mark }),
-        onOpen: (path, line) => this.openReviewFinding(path, line),
-        onFix: (f: ReviewFinding) => {
-          this.prefill(reviewFixPrompt(f));
-          this.flashToast(tr("已放进输入框（还没发）"), false, 3000);
-        },
-        onInstall: () => {
-          this.reviewInstalling = true;
-          this.reviewInstallLog = [];
-          this.reviewError = "";
-          this.socket.send({ type: "review.install" });
-          this.renderQueue();
-        },
-        onClean: () => this.socket.send({ type: "review.clean", dir: this.reviewDir() }),
+      actions: this.reviewActions(),
+    };
+  }
+
+  private reviewActions(): ReviewActions {
+    return {
+      onMode: (mode) => {
+        this.reviewMode = mode;
+        const dir = this.reviewDir();
+        if (mode === "pr" && dir && !this.reviewPrs.length && this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
+        this.renderQueue();
       },
-    });
+      onBase: (value) => {
+        this.reviewBase = value;
+      },
+      onTarget: (value) => {
+        this.reviewTarget = value;
+      },
+      onPr: (value) => {
+        this.reviewPr = value;
+        this.renderQueue();
+      },
+      onPrInput: (value) => {
+        this.reviewPr = value;
+      },
+      onPrQuery: (value) => {
+        // 只记值、不重画：每敲一个字就重画会把输入框换成新节点、光标乱跳。
+        this.reviewPrQuery = value;
+      },
+      onRefreshPrs: () => {
+        const dir = this.reviewDir();
+        if (dir) this.loadPullRequests(dir);
+      },
+      onCommit: (value) => {
+        this.reviewCommit = value;
+      },
+      onPickModel: () => {
+        // 复用输入框那颗 chip 背后的同一个弹层（模型与思考），只是「确认」把模型交回面板。
+        this.openModelSheet(false, {
+          start: this.reviewModelInfo()?.id ?? "",
+          onPick: (m) => {
+            this.reviewModel = `${m.provider}/${m.id}`;
+            this.renderQueue();
+            this.syncReviewSheet();
+          },
+        });
+      },
+      onRun: () => this.startReview(),
+      onStop: () => this.socket.send({ type: "review.cancel", dir: this.reviewDir() }),
+      onMark: (key, mark: ReviewMark | "") => this.socket.send({ type: "review.mark", dir: this.reviewDir(), key, mark }),
+      onOpen: (path, line) => this.openReviewFinding(path, line),
+      onFix: (f: ReviewFinding) => {
+        this.prefill(reviewFixPrompt(f));
+        this.flashToast(tr("已放进输入框（还没发）"), false, 3000);
+      },
+      onInstall: () => {
+        this.reviewInstalling = true;
+        this.reviewInstallLog = [];
+        this.reviewError = "";
+        this.socket.send({ type: "review.install" });
+        this.renderQueue();
+      },
+      onClean: () => this.socket.send({ type: "review.clean", dir: this.reviewDir() }),
+      onDetails: () => this.openReviewSheet(),
+    };
+  }
+
+  /** 「评审详情」dialog：跑着看时间线，跑完看结果；同一个会话只开一扇。 */
+  private openReviewSheet(): void {
+    if (this.reviewSheet) {
+      this.reviewSheet.update(this.reviewPanelInput());
+      return;
+    }
+    const sheet = new ReviewSheet(this.reviewPanelInput());
+    sheet.onClose = () => {
+      if (this.reviewSheet === sheet) this.reviewSheet = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.reviewSheet = sheet;
+  }
+
+  /** 帧到了就同步 dialog（没开着就什么都不做）。 */
+  private syncReviewSheet(): void {
+    this.reviewSheet?.update(this.reviewPanelInput());
   }
 
   private startReview(): void {
@@ -18470,6 +18513,9 @@ export class App {
       startedAt: new Date().toISOString(),
       error: "",
       errorCode: "",
+      group: 0,
+      groups: 0,
+      log: [],
     };
     this.socket.send({
       type: "review.run",

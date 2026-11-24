@@ -368,6 +368,8 @@ export interface ReviewRun {
   tokens: number;
   error: string;
   errorCode: string;
+  /** 这一次的时间线（进度帧走完就没了，所以完成时也落一份进记录）。 */
+  log: { at: number; text: string }[];
 }
 
 export interface ReviewState {
@@ -388,6 +390,11 @@ export interface ReviewProgress {
   startedAt: string;
   error: string;
   errorCode: string;
+  /** 现在是第几组 / 一共几组（PR 与分支范围会分组跑）。 */
+  group: number;
+  groups: number;
+  /** 时间线：每件事一行，最多留 40 行（面板与详情 dialog 共用）。 */
+  log: { at: number; text: string }[];
 }
 
 export interface ReviewOcrStatus {

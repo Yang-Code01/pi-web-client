@@ -170,9 +170,11 @@ try {
   await until(async () => (await page.locator(".session-card").count()) >= 1, 30000, "session card");
   await page.locator(".session-card").first().click();
   await openReviewTab(page);
-  await page.locator(".rv-run:not([disabled])").first().waitFor({ timeout: 30000 });
-
+  const credit = (await page.locator(".rv-credit").first().innerText().catch(() => "")).trim();
+  check("写明评审内核来自 open code review", /open code review/.test(credit), credit.replace(/\n/g, " / ").slice(0, 60));
+  check("默认范围是「GitHub PR」", (await page.locator(".rv-mode").inputValue()) === "pr", await page.locator(".rv-mode").inputValue());
   await page.locator(".rv-mode").selectOption("workspace");
+  await page.locator(".rv-run:not([disabled])").first().waitFor({ timeout: 30000 });
   await page.locator(".rv-run").first().click();
 
   // 跑起来就该有进度（或直接完成），并且「开始评审」变成「停止」
@@ -203,6 +205,18 @@ try {
   // 跑完必须有一句提示（用户报过：「不确定有没有真正评审成功，没有信息提示」）。
   const toast = (await page.locator(".fail-toast").first().innerText().catch(() => "")).trim();
   check("跑完弹一句结果", /评审/.test(toast), toast.slice(0, 60));
+
+  // 「查看详情」：一扇宽窗，左边时间线、右边结果 —— 跑着的时候也能开。
+  await page.locator(".rv-details").first().click();
+  await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
+  const tl = await page.locator(".rv-sheet .rv-tl").count();
+  const sheetFindings = await page.locator(".rv-sheet .rv-finding").count();
+  check("详情 dialog 有时间线与结果", tl > 0 && sheetFindings > 0, `${tl} 行进度 · ${sheetFindings} 条意见`);
+  fs.mkdirSync(path.join(REPO, ".scratch", "shots"), { recursive: true });
+  await page.waitForTimeout(500);
+  await page.locator(".rv-sheet").screenshot({ path: path.join(REPO, ".scratch", "shots", "code-review-sheet.png") }).catch(() => {});
+  await page.locator(".rv-sheet-head .btn").first().click();
+  await until(async () => (await page.locator(".rv-sheet").count()) === 0, 8000, "review sheet closed");
 
   // 模型那颗 chip 走的是输入框背后同一个「模型与思考」弹层（不是面板自己的下拉）。
   const modelBefore = (await page.locator(".rv-model").innerText()).trim();

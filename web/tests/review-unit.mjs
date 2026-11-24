@@ -93,7 +93,8 @@ test("不是 git 仓库：一句话说清，别摆一堆按钮", () => {
 });
 
 test("还没跑过：空态但可以开始", () => {
-  const view = reviewView({ ...base, state: { runs: [], marks: {} } });
+  // 默认范围是 PR，而这里没选号：显式用「工作区改动」这种不需要额外输入的
+  const view = reviewView({ ...base, state: { runs: [], marks: {} }, mode: "workspace" });
   assert.equal(view.phase, "empty");
   assert.equal(view.canRun, true);
   assert.equal(view.meta, null);
@@ -206,7 +207,7 @@ test("停了 / 失败 / 桥重启：各是各的态，跑的人一眼能分辨",
 });
 
 test("一条意见都没有也是完成（不算失败），并且能再来一次", () => {
-  const view = reviewView({ ...base, state: { runs: [run({ findings: [] })], marks: {} } });
+  const view = reviewView({ ...base, state: { runs: [run({ findings: [] })], marks: {} }, mode: "workspace" });
   assert.equal(view.phase, "done");
   assert.equal(view.empty, true);
   assert.equal(view.canRun, true);
@@ -236,6 +237,21 @@ test("PR 模式：没选号就不能开评，选了就能", () => {
   });
   assert.equal(picked.canRun, true);
   assert.equal(picked.prs.length, 1);
+});
+
+test("PR 检索：号 / 标题 / 分支 / 作者都能搜，空串给全部", () => {
+  const prs = [
+    { number: 658, title: "右栏加一颗「代码评审」页签", headRefName: "feat/code-review-panel", baseRefName: "main", draft: false, author: "qingmin-new" },
+    { number: 640, title: "fix(web): 提问卡片把字面折行", headRefName: "fix/ask-card-text", baseRefName: "main", draft: false, author: "Yang-Code01" },
+  ];
+  const call = (q) => reviewView({ ...base, state: { runs: [], marks: {} }, mode: "pr", prs, prQuery: q });
+  assert.deepEqual(call("").prs.map((p) => p.number), [658, 640]);
+  assert.deepEqual(call("#64").prs.map((p) => p.number), [640], "带不带 # 都认");
+  assert.deepEqual(call("代码评审").prs.map((p) => p.number), [658], "标题");
+  assert.deepEqual(call("ask-card").prs.map((p) => p.number), [640], "分支名");
+  assert.deepEqual(call("yang-code").prs.map((p) => p.number), [640], "作者，大小写不敏感");
+  assert.deepEqual(call("没有这个东西").prs, []);
+  assert.equal(call("没有这个东西").prAll, 2, "total 仍然说全部有几个");
 });
 
 test("PR 列表拉不到：把原因说出来，号输入框照样能用", () => {

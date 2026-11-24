@@ -694,6 +694,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     tokens: 0,
     error: "",
     errorCode: "",
+    log: [],
   };
   state.runs.push(run);
   writeReviewState(root, state);
@@ -713,6 +714,9 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
       startedAt,
       error: "",
       errorCode: "",
+      group: 0,
+      groups: 0,
+      log: prev?.log ?? [],
       ...prev,
       ...patch,
     };
@@ -725,10 +729,25 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
       abort.abort();
     },
   });
+  /** 往时间线里加一行并发出去（面板与详情 dialog 都吃它）。 */
+  const note = (text: string) => {
+    const prev = progressMap.get(key);
+    const log = [...(prev?.log ?? []), { at: Date.now(), text }].slice(-40);
+    emit({ log });
+  };
   emit({});
+  note(
+    o.mode === "pr"
+      ? `开始评审：PR #${Number(o.pr) || 0}`
+      : o.mode === "range"
+        ? `开始评审：${o.target || "HEAD"} vs ${o.base || "主干"}`
+        : o.mode === "commit"
+          ? `开始评审：提交 ${o.commit || "HEAD"}`
+          : "开始评审：工作区改动",
+  );
   o.onState?.();
 
-  void execute({ root, run, opts: o, signal: abort.signal, emit })
+  void execute({ root, run, opts: o, signal: abort.signal, emit, note })
     .catch((err: any) => {
       // execute 自己兜底写盘；这里只防「兜底本身抛了」把进程带走。
       console.error("[review] 收尾失败", err?.message ?? err);
@@ -782,10 +801,12 @@ interface ExecuteCtx {
   opts: StartOptions;
   signal: AbortSignal;
   emit: (patch: Partial<Progress>) => void;
+  /** 往时间线里加一行。 */
+  note: (text: string) => void;
 }
 
 async function execute(ctx: ExecuteCtx): Promise<void> {
-  const { root, run, opts, signal, emit } = ctx;
+  const { root, run, opts, signal, emit, note } = ctx;
   const key = repoKey(root);
   let tokens = 0;
   let currentFile = "";
@@ -794,10 +815,16 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
   const finish = (patch: Pick<ReviewRun, "status"> & Partial<ReviewRun>) => {
     const state = readReviewState(root);
     const onDisk = state.runs.find((r) => r.id === run.id);
+    // 先把最后一行写进时间线，再连同日志一起落盘（顺序反了，日志就永远追不上这次写盘）。
+    if (patch.status === "done") note(`完成：${patch.findings?.length ?? 0} 条意见`);
+    else if (patch.status === "failed") note(`失败：${patch.error || patch.errorCode || ""}`);
+    else if (patch.status === "stopped") note("已停止");
+    const prevProgress = progressMap.get(key);
+    // 进度帧一消失日志就没了 —— 记录里留一份，面板/dialog 跑完还能看时间线。
+    (patch as Partial<ReviewRun>).log = prevProgress?.log ?? [];
     if (onDisk) Object.assign(onDisk, patch);
     else state.runs.push({ ...run, ...patch });
     writeReviewState(root, state);
-    const prevProgress = progressMap.get(key);
     emit({
       status: patch.status,
       phase: "done",
@@ -813,7 +840,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
 
   /** 起一个子进程评一组：边跑边发进度，结束时把它答的那段话交回来。 */
   const runChild = (prompt: string) =>
-    new Promise<{ code: number | null; text: string; stderr: string; aborted: boolean; touched: Set<string> }>((resolve) => {
+    new Promise<{ code: number | null; text: string; stderr: string; aborted: boolean; touched: Set<string>; tokens: number }>((resolve) => {
       const pi = resolvePi();
       const proc = spawn(process.execPath, [pi.cli, ...reviewArgs({ model: opts.model, provider: opts.provider })], {
         cwd: root,
@@ -823,6 +850,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       });
       let stderr = "";
       let text = "";
+      let localTokens = 0;
       const touched = new Set<string>();
       let settled = false;
       const finishChild = (code: number | null) => {
@@ -835,7 +863,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         } catch {
           /* 已经关了 */
         }
-        resolve({ code, text, stderr, aborted: signal.aborted, touched });
+        resolve({ code, text, stderr, aborted: signal.aborted, touched, tokens: localTokens });
       };
       const guard = setTimeout(() => {
         try {
@@ -872,7 +900,10 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         }
         if (ev?.type === "message_end") {
           const usage = ev.message?.usage;
-          if (usage && typeof usage.totalTokens === "number") tokens += usage.totalTokens;
+          if (usage && typeof usage.totalTokens === "number") {
+            tokens += usage.totalTokens;
+            localTokens += usage.totalTokens;
+          }
           if (ev.message?.role === "assistant" && Array.isArray(ev.message.content)) {
             const answered = ev.message.content.filter((b: any) => b?.type === "text").map((b: any) => String(b.text ?? "")).join("");
             if (answered.trim()) text = answered;
@@ -900,6 +931,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       run.pr = resolved.pr;
       run.from = resolved.from;
       run.to = resolved.to;
+      note(`PR #${resolved.pr} 的提交已取到：${resolved.to}（对照 ${resolved.from}）`);
     }
     const spec: PreviewTarget = { mode: opts.mode, base, target, commit: opts.commit, cwd: root };
     const { stdout } = await runOcr(previewArgs(spec), root, 120_000, signal);
@@ -908,6 +940,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     run.from = preview.from || run.from;
     run.to = preview.to || run.to;
     run.totalFiles = preview.files.length;
+    note(`ocr 分片：可评 ${preview.files.length} 个文件` + (preview.skipped.length ? `，另有 ${preview.skipped.length} 个被排除` : ""));
     emit({ phase: "rules", totalFiles: preview.files.length });
 
     if (!preview.files.length) {
@@ -919,6 +952,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     // 分组跑：每组一个子进程、一份小提示词，各自交 JSON，最后合起来。
     const rules = (await rulesFor(root, preview.files.map((f) => f.path), signal)).slice(0, 4000);
     const groups = chunkFiles(preview.files);
+    note(`分 ${groups.length} 组跑，每组最多 ${GROUP_FILES} 个文件`);
     const collected: Finding[] = [];
     const lastSkipped: PreviewSkip[] = [];
     const accountedPaths = new Set<string>();
@@ -928,14 +962,26 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
 
     for (let i = 0; i < groups.length; i += 1) {
       if (signal.aborted) break;
-      emit({ phase: "review", currentFile: groups[i][0]?.path ?? "" });
+      emit({ phase: "review", currentFile: groups[i][0]?.path ?? "", group: i + 1, groups: groups.length });
+      note(`第 ${i + 1}/${groups.length} 组开始：${groups[i].length} 个文件`);
       const sub: Preview = { ...preview, files: groups[i] };
       const prompt = buildPrompt(sub, opts.lang, rules, { index: i + 1, total: groups.length });
-      const res = await runChild(prompt);
+      let res = await runChild(prompt);
       if (res.aborted) break;
       if (res.code !== 0) {
         failed = { code: res.code, stderr: res.stderr, group: i + 1 };
         break;
+      }
+      if (!res.text.trim()) {
+        // 退出码 0、一句话没有：多半是工具调用把轮次/上下文吃掉了。重试一次，明确让它「别再调工具」。
+        note(`第 ${i + 1} 组没给结论（已用 ${Math.round(res.tokens / 1000)}k token），重试一次`);
+        const nudge = `${prompt}\n\n## 立即收尾\n\n不要再调用任何工具。根据你已经看到的内容直接输出上面那个 JSON 对象；宁可少报，也要把 JSON 交回来。`;
+        res = await runChild(nudge);
+        if (res.aborted) break;
+        if (res.code !== 0) {
+          failed = { code: res.code, stderr: res.stderr, group: i + 1 };
+          break;
+        }
       }
       const parsed = toFindings(res.text);
       if (res.text.trim()) answered = true;
@@ -943,6 +989,8 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       for (const f of parsed.findings) accountedPaths.add(f.path);
       for (const sk of parsed.skipped) accountedPaths.add(sk.path);
       lastSkipped.push(...parsed.skipped);
+      note(`第 ${i + 1} 组完成：${parsed.findings.length} 条`);
+      emit({ reviewedFiles: accountedPaths.size });
     }
 
     const stopped = signal.aborted;
@@ -973,6 +1021,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     }
     if (!stopped && !answered) {
       // 退出码 0、一个字都没答：这不是「没问题」，是这次没评成。别把空结果写成 done。
+      // 重试已经在组里做过一次了，这里把「哪一组、花了多少」说清楚，并给两条能自己动手的路。
       finish({
         status: "failed",
         finishedAt: new Date().toISOString(),
@@ -984,7 +1033,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         from: run.from,
         to: run.to,
         mergeBase: preview.mergeBase,
-        error: "评审进程跑完了却什么都没答（可能被上下文或轮次上限打断）",
+        error: `重试后仍然没有给出结论（已用 ${Math.round(tokens / 1000)}k token）。可以换个更便宜的模型，或把范围缩小（少选几个文件 / 换一次提交）再跑。`,
         errorCode: "child_no_output",
       });
       return;
