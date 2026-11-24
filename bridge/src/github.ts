@@ -25,8 +25,23 @@ const API = "https://api.github.com";
 const STATUS_TTL_MS = 30_000;
 const TOKEN_TTL_MS = 10 * 60_000;
 const REPO_TTL_MS = 60_000;
+/**
+ * 两张以请求参数为键的缓存的上限。键来自**请求**（隧道访客、历史消息里几十个不同的 PR），
+ * 只靠 TTL 不管大小的话，长时间跑的桥会慢慢吃内存。
+ */
+const CACHE_MAX = 200;
 const FETCH_TIMEOUT_MS = 15_000;
 const GH_TIMEOUT_MS = 10_000;
+
+/** 塞进有上限的缓存：超过上限丢最早进去的那个（Map 保持插入序，等于 FIFO）。 */
+function remember<K, V>(cache: Map<K, V>, key: K, value: V): void {
+  cache.set(key, value);
+  while (cache.size > CACHE_MAX) {
+    const oldest = cache.keys().next();
+    if (oldest.done) return;
+    cache.delete(oldest.value);
+  }
+}
 
 export interface GithubCtx {
   /** 公网隧道进来的请求：读照常，写（存 PAT、换账号）403。 */
@@ -35,6 +50,11 @@ export interface GithubCtx {
   send: (frame: Record<string, unknown>) => void;
   /** 由 loopback token 反查会话（`SessionsManager.byLoopbackToken`）。 */
   byLoopbackToken: (token: string) => { id: string; cwd: string } | null;
+  /**
+   * 按会话 id 取**这个会话自己的** cwd（`SessionsManager.get`）。有值就以它为准：URL 里的 `cwd`
+   * 只是页面/测试带过来的参数，不该成为「指定读哪个目录」的把手（读接口对隧道访客也开着）。
+   */
+  sessionCwd?: (id: string) => string | null;
   /** 桥内测试缝：出站请求改发这里（假 GitHub 是 `http://127.0.0.1:port`）。生产不传。 */
   upstreamApi?: string;
   /**
@@ -269,7 +289,7 @@ async function repoOf(cwd: string): Promise<string | null> {
       resolve(err ? null : repoFromRemote(stdout ?? ""));
     });
   });
-  repoCache.set(cwd, { at: Date.now(), repo });
+  remember(repoCache, cwd, { at: Date.now(), repo });
   return repo;
 }
 
@@ -283,6 +303,9 @@ export interface SeenLink {
   url: string;
 }
 
+/** URL 里的路名 → kind（`issues` 要单数化）。与前端 `web/src/github-shared.ts` 的 `LINK_KIND` 是同一张表。 */
+const LINK_KIND: Record<string, SeenLink["kind"]> = { pull: "pull", issues: "issue", commit: "commit" };
+
 /** 从一段输出里认出 GitHub 链接。一行里可能有好几个（gh 的表格输出），按出现顺序去重。 */
 export function seenLinks(text: string): SeenLink[] {
   const out: SeenLink[] = [];
@@ -293,7 +316,7 @@ export function seenLinks(text: string): SeenLink[] {
     const url = `https://github.com/${owner}/${repo}/${kind}/${id}`;
     if (seen.has(url)) continue;
     seen.add(url);
-    out.push({ kind: kind === "pull" ? "pull" : kind === "issues" ? "issue" : "commit", repo: `${owner}/${repo}`, id, url });
+    out.push({ kind: LINK_KIND[kind] ?? "commit", repo: `${owner}/${repo}`, id, url });
   }
   return out;
 }
@@ -376,12 +399,17 @@ export function pullRowOf(raw: any): PullRow {
   };
 }
 
-/** PR 详情里 checks 与评论这一版是**示例样本**：页面拿到 `sample` 就如实标注，不假装是真的。 */
+/**
+ * PR 详情里 checks 与评论这一版是**示例样本**（D397 就要求带上，页面逐处标「示例数据」）。
+ * 两条纪律：① 不要全绿 —— 一片绿太像真的 CI，样例里掺一条失败、一条在跑；
+ * ② 评论人用 GitHub 的吉祥物，不用仓库里真实的人名 —— 假的评审意见挂在真人名下最容易被当真。
+ * 真接上 GitHub 的 checks / review 之后，这两组东西应当整段删掉。
+ */
 const SAMPLE_CHECKS = [
   { name: "typecheck", state: "success" },
   { name: "unit / bridge", state: "success" },
-  { name: "ui / chrome", state: "success" },
-  { name: "e2e", state: "success" },
+  { name: "ui / chrome", state: "failure" },
+  { name: "e2e", state: "pending" },
 ];
 
 /**
@@ -390,14 +418,51 @@ const SAMPLE_CHECKS = [
  * 正文本身是**数据**（真评论也长这样），不是界面文案。
  */
 const SAMPLE_COMMENTS = [
-  { author: "Yang-Code01", body: "「已显示的内容不许变暗」那条守卫要不要顺手补进 probes？", at: "2026-11-24T03:10:00Z" },
-  { author: "qingmin-new", body: "补了：第 10 段逐帧采样，任何一帧 opacity < 0.99 就红。", at: "2026-11-24T04:20:00Z" },
+  { author: "octocat", body: "「已显示的内容不许变暗」那条守卫要不要顺手补进 probes？", at: "2026-11-24T03:10:00Z" },
+  { author: "hubot", body: "补了：第 10 段逐帧采样，任何一帧 opacity < 0.99 就红。", at: "2026-11-24T04:20:00Z" },
 ];
+
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/**
+ * URL 里的 `repo`：只认 `owner/name`。它会被原样拼进 `/repos/<repo>/…`，
+ * 放任 `..` 或 `?` 就是「用会话令牌去请求任意 GitHub 端点」。
+ * `cwd` 同理：面板把 `cwd` 原样给 `git -C` 用，而隧道访客也能打这两个读接口。
+ */
+function repoParam(url: URL): string {
+  const repo = url.searchParams.get("repo") ?? "";
+  if (repo && !REPO_RE.test(repo)) throw new GithubError("bad_args", 400, "repo 要写成 owner/name");
+  return repo;
+}
+
+/** 会话目录：必须是本机上真实存在的绝对路径，且不带 `..`（不许把它当任意目录的把手）。 */
+function cwdParam(url: URL): string {
+  const cwd = url.searchParams.get("cwd") ?? "";
+  if (!cwd) return "";
+  if (!path.isAbsolute(cwd) || cwd.split(/[\\/]/).includes("..")) throw new GithubError("bad_args", 400, "cwd 要是本机上一个真实存在的绝对目录");
+  let dir = false;
+  try {
+    dir = fs.statSync(cwd).isDirectory();
+  } catch {
+    /* 不存在：下面统一报 */
+  }
+  if (!dir) throw new GithubError("bad_args", 400, "cwd 要是本机上一个真实存在的绝对目录");
+  return cwd;
+}
+
+/**
+ * 这次请求该用哪个目录：会话自己的 cwd 优先，其次才是 URL 里那个（过 `cwdParam`）。
+ * 会话存在时 URL 里的 `cwd` 直接被无视 —— 那才是「AI 面板读的目录」的唯一权威。
+ */
+function cwdOf(url: URL, ctx: GithubCtx): string {
+  const sessionId = url.searchParams.get("sessionId") ?? "";
+  return (sessionId ? ctx.sessionCwd?.(sessionId) : null) || cwdParam(url);
+}
 
 async function getPulls(res: http.ServerResponse, url: URL, ctx: GithubCtx): Promise<void> {
   const sessionId = url.searchParams.get("sessionId") ?? "";
-  const cwd = url.searchParams.get("cwd") ?? "";
-  const repo = url.searchParams.get("repo") || (await repoOf(cwd));
+  const cwd = cwdOf(url, ctx);
+  const repo = repoParam(url) || (await repoOf(cwd));
   if (!repo) throw new GithubError("no-repo", 409, "这个会话的目录没有 GitHub 远端（git remote get-url origin 是空的）。");
   const pick = await pickAccount(cwd, sessionId, ctx);
   const token = await tokenOf(pick, ctx);
@@ -407,8 +472,8 @@ async function getPulls(res: http.ServerResponse, url: URL, ctx: GithubCtx): Pro
 
 async function getPull(res: http.ServerResponse, url: URL, ctx: GithubCtx): Promise<void> {
   const sessionId = url.searchParams.get("sessionId") ?? "";
-  const cwd = url.searchParams.get("cwd") ?? "";
-  const repo = url.searchParams.get("repo") || (await repoOf(cwd));
+  const cwd = cwdOf(url, ctx);
+  const repo = repoParam(url) || (await repoOf(cwd));
   const number = Number(url.searchParams.get("number") ?? "");
   if (!repo || !Number.isFinite(number) || number <= 0) throw new GithubError("bad_args", 400, "缺 repo 或 number");
   const pick = await pickAccount(cwd, sessionId, ctx);
@@ -444,9 +509,9 @@ async function getPull(res: http.ServerResponse, url: URL, ctx: GithubCtx): Prom
 const cardCache = new Map<string, { at: number; pull: PullRow }>();
 
 async function getCard(res: http.ServerResponse, url: URL, ctx: GithubCtx): Promise<void> {
-  const repo = url.searchParams.get("repo") ?? "";
+  const repo = repoParam(url);
   const number = Number(url.searchParams.get("number") ?? "");
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isFinite(number) || number <= 0) throw new GithubError("bad_args", 400, "缺 repo 或 number");
+  if (!repo || !Number.isFinite(number) || number <= 0) throw new GithubError("bad_args", 400, "缺 repo 或 number");
   const key = `${repo}#${number}`;
   const hit = cardCache.get(key);
   if (hit && Date.now() - hit.at < 60_000) {
@@ -457,7 +522,7 @@ async function getCard(res: http.ServerResponse, url: URL, ctx: GithubCtx): Prom
   const pick = await pickAccount("", "", ctx);
   const token = await tokenOf(pick, ctx);
   const pull = pullRowOf(await request(ctx, token, `/repos/${repo}/pulls/${number}`));
-  cardCache.set(key, { at: Date.now(), pull });
+  remember(cardCache, key, { at: Date.now(), pull });
   json(res, 200, { ok: true, pull });
 }
 
@@ -541,7 +606,7 @@ async function readBody(req: http.IncomingMessage): Promise<any> {
 
 async function getState(res: http.ServerResponse, url: URL, ctx: GithubCtx): Promise<void> {
   const sessionId = url.searchParams.get("sessionId") ?? "";
-  const cwd = url.searchParams.get("cwd") ?? "";
+  const cwd = cwdOf(url, ctx);
   const gh = resolveGhBinary(ctx);
   const status = await ghStatus(gh);
   const pats = readState().pats;
@@ -629,6 +694,9 @@ async function shimIdentity(req: http.IncomingMessage, res: http.ServerResponse,
     source: pick.source,
     token: await tokenOf(pick, ctx),
     realGh: resolveGhBinary(ctx),
+    // 测试缝：有它就 `node <它>` 顶替真 gh。**只能走这条响应**，不能用环境变量 ——
+    // 壳跑在 pi 子进程底下，而 `piChildEnv()` 会把所有 `PI_WEB_*` 剥掉（bridge/src/paths.ts）。
+    realGhJs: process.env.PI_WEB_GH_JS ?? null,
     sessionId: session.id,
     cwd: session.cwd,
     // 壳的 REST 兜底也走这里：生产是 api.github.com，桥内测试缝是假站点。

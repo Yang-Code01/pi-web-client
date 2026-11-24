@@ -110,6 +110,26 @@ export function contextLogDir(): string {
   return statePath("ctxlog");
 }
 
+/**
+ * GitHub 壳（#661）：把壳目录插到 pi 子进程 PATH 的最前面。两条兜底都是被评审点出来的：
+ *  ① 写壳是**同步写盘**。状态目录不可写 / 磁盘满时它一抱，本该只影响 gh 的故障会连带打挂所有会话
+ *     —— 所以写不出来就只 warn，不给 PATH，会话照起。
+ *  ② Windows 上 PATH 通常叫 `Path`。env 里再塞一个只有大小写不同的 `PATH`，系统取哪个由环境块
+ *     顺序决定 —— 壳目录可能静默不生效，「账号由会话决定」当场退化成机器上的 active 账号。
+ *     所以覆盖**已有的那个键名**，不新增一个。
+ */
+function githubPathEnv(): Record<string, string> {
+  let dir: string;
+  try {
+    dir = ensureGithubBin();
+  } catch (err) {
+    console.warn(`[github] 壳目录没写出来，这个会话的 gh 会落到机器上的真 gh：${(err as Error)?.message ?? err}`);
+    return {};
+  }
+  const key = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+  return { [key]: `${dir}${path.delimiter}${process.env[key] ?? ""}` };
+}
+
 export interface ApprovalRequest {
   id: string;
   sessionId: string;
@@ -1405,8 +1425,7 @@ export class Session extends EventEmitter {
         // GitHub 通道：PATH 前面插一个只装着 `gh` 壳的目录 —— 模型照旧敲 `gh pr create`，壳去问桥
         // 「这个会话是谁」，于是账号由会话决定，而不是机器上的 active 账号。只影响桥起的 pi 子进程，
         // 用户的登录 shell 里没有这一层。
-        PATH: `${ensureGithubBin()}${path.delimiter}${process.env.PATH ?? ""}`,
-        PI_WEB_GITHUB_SHIM: "1",
+        ...githubPathEnv(),
       },
     });
 

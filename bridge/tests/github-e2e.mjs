@@ -105,6 +105,8 @@ const bridge = http.createServer(async (req, res) => {
     publicReq: req.headers["x-test-tunnel"] === "1",
     send: (frame) => frames.push(frame),
     byLoopbackToken: (token) => sessions[token] ?? null,
+    // 真桥里是 `SessionsManager.get(id).state.cwd`：会话在的时候，URL 里的 `cwd` 不作数。
+    sessionCwd: (id) => ({ s1: work, s2: work, s3: emptyDir })[id] ?? null,
     upstreamApi: upBase,
     // 只给这条用例：假装这台机器没装 gh。
     ghPath: req.headers["x-test-no-gh"] === "1" ? null : undefined,
@@ -247,6 +249,32 @@ test("pulls：目录没有 GitHub 远端时说清楚，不瞎猜", async () => {
   assert.equal(r.json.code, "no-repo");
 });
 
+test("cwd：会话存在时以会话自己的目录为准（URL 里那个不算）", async () => {
+  resetGithubCaches();
+  const r = await call("GET", `/api/github/state?sessionId=s1&cwd=${encodeURIComponent(emptyDir)}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.json.repo, "acme/widgets", "emptyDir 没有远端，但 s1 的目录是 work");
+});
+
+test("读接口：repo / cwd 先校验再拼进上游（隧道访客也能打这两条）", async () => {
+  resetGithubCaches();
+  up.hits.pulls = 0;
+  // 用桥不认识的 sessionId：已知会话的 cwd 以会话为准（上一条），这里验的是 URL 参数本身。
+  // `..` 与 `?` 都能改写 `/repos/<repo>/…` 那段：要么拿到任意端点，要么往上游注入查询参数。
+  for (const repo of ["../../user", "acme/widgets?state=all", "acme", "acme/widgets/../.."]) {
+    const r = await call("GET", `/api/github/pulls?sessionId=s9&cwd=${encodeURIComponent(work)}&repo=${encodeURIComponent(repo)}`);
+    assert.equal(r.status, 400, `repo=${repo} 要拒`);
+    assert.equal(r.json.code, "bad_args");
+  }
+  // cwd 会被原样交给 `git -C` 与工作区设置：相对路径、带 `..`、不存在的目录都不收。
+  for (const cwd of ["..", "./x", `${work}/..`, path.join(tmp, "nope")]) {
+    const r = await call("GET", `/api/github/pulls?sessionId=s9&cwd=${encodeURIComponent(cwd)}`);
+    assert.equal(r.status, 400, `cwd=${cwd} 要拒`);
+    assert.equal(r.json.code, "bad_args");
+  }
+  assert.equal(up.hits.pulls ?? 0, 0, "被拒的请求一条也不许打到上游");
+});
+
 test("pr：正文 + 文件差异 + checks/评论是示例样本", async () => {
   resetGithubCaches();
   const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
@@ -256,6 +284,10 @@ test("pr：正文 + 文件差异 + checks/评论是示例样本", async () => {
   assert.equal(r.json.files[0].path, "bridge/src/sessions.ts");
   assert.match(r.json.files[0].patch, /^-old$/m);
   assert.ok(Array.isArray(r.json.sample.checks) && r.json.sample.checks.length > 0, "checks 是示例样本");
+  assert.ok(
+    r.json.sample.checks.some((c) => c.state !== "success"),
+    "样例不能全绿：一片绿太像真的 CI，而这是编的",
+  );
   assert.ok(Array.isArray(r.json.sample.comments), "comments 是示例样本");
 });
 
@@ -285,7 +317,7 @@ test("PAT：存之前先问一次 GitHub 这枚令牌是谁的，页面只见登
   const r = await call("PUT", "/api/github/pat", { token: "ghp_sentinel_token" });
   assert.equal(r.status, 200);
   assert.equal(r.json.login, "pat-user", "登录名来自上游 /user，不是页面自己说的");
-  assert.equal(r.json.encrypted, false, "这台机器（非 Windows）落盘是明文 + 0600");
+  assert.equal(r.json.encrypted, process.platform === "win32", "非 Windows 明文 + 0600，Windows 走 DPAPI");
   assert.equal(up.hits.user, 1);
 
   const st = await state("s1");

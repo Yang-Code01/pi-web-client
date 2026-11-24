@@ -20,6 +20,8 @@ interface Identity {
   source: string;
   token: string | null;
   realGh: string | null;
+  /** 测试缝：拿到的不是真 gh 的可执行文件，而是用 node 跑这个脚本（来自桥的环境，见 identity 路由）。 */
+  realGhJs?: string | null;
   sessionId: string;
   cwd: string;
   api?: string | null;
@@ -84,16 +86,18 @@ function passthrough(): Promise<number> {
     if (identity.token) env.GH_TOKEN = identity.token;
     else delete env.GH_TOKEN;
     // 桥里已有的测试缝：用 node 跑一个顶替真 gh 的脚本（Windows 上也能跑）。
-    const js = process.env.PI_WEB_GITHUB_REAL_GH_JS;
+    // 这个值只能从 identity 响应里拿：壳跑在 pi 子进程底下，而 `piChildEnv()` 会剥掉所有 `PI_WEB_*`。
+    const js = identity.realGhJs;
     const cmd = js ? process.execPath : (identity.realGh as string);
     const args = js ? [js, ...argv] : argv;
     const child = spawn(cmd, args, { env, stdio: ["inherit", "pipe", "pipe"], windowsHide: true });
     child.stdout.on("data", (b: Buffer) => {
-      out += b.toString("utf8");
+      // 边收边剪到 TAIL：`gh run watch` 那种长输出不剪的话内存随输出线性长，壳可能被 OOM 掉。
+      out = (out + b.toString("utf8")).slice(-TAIL);
       process.stdout.write(b);
     });
     child.stderr.on("data", (b: Buffer) => {
-      err += b.toString("utf8");
+      err = (err + b.toString("utf8")).slice(-TAIL);
       process.stderr.write(b);
     });
     child.on("error", (e) => {

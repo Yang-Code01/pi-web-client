@@ -2,7 +2,7 @@
  * GitHub 通道的壳（#661）：`gh` 真的落到本会话账号上，而且 PATH 真的被改了 —— 这两条都要能看见。
  *
  * 两块：
- *  A. **注入**：起一份真桥 + 桩 pi，读桩 pi 自己记下的启动环境（PATH 头、`PI_WEB_GITHUB_SHIM`），
+ *  A. **注入**：起一份真桥 + 桩 pi，读桩 pi 自己记下的启动环境（PATH 头），
  *     再断言壳目录里有 `gh` / `gh.cmd`，而且**本机 PATH 没被动过**。
  *  B. **壳自己的行为**：一个只实现两条 shim 路由的假桥 + 一个假的「真 gh」，验
  *     ①令牌交过去 ②回报给桥 ③没装 gh 时内置实现能建 PR ④没实现的子命令明确失败 ⑤桥不在时说人话。
@@ -24,6 +24,13 @@ const SHIM = path.join(REPO, "bridge", "dist", "github-shim.js");
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
 const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "pi-github-shim-")));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 等壳把 report POST 到假桥。固定 sleep 在慢机器上会随机失败（本文件的旧毛病）。 */
+async function waitReports(count, timeoutMs = 5000) {
+  const until = Date.now() + timeoutMs;
+  while (reports.length < count && Date.now() < until) await sleep(25);
+  return reports;
+}
 
 /** 假的「真 gh」：把收到的 argv 与 `GH_TOKEN` 原样打出来，让用例断言壳把令牌交了过去。 */
 const FAKE_REAL_GH = path.join(tmp, "fake-real-gh.mjs");
@@ -54,8 +61,13 @@ execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm
 
 /** 假桥收到的回报（壳每次收尾都会 POST 一条）。 */
 const reports = [];
-/** identity 的档位：`ok` / `no-gh`（没真 gh，有令牌）/ `nil`（令牌为空）/ `bare`（两者都没有）。 */
+/** 没有 origin 的目录：验「认不出仓库就明确失败」那条。 */
+const bareDir = path.join(tmp, "bare");
+fs.mkdirSync(bareDir, { recursive: true });
+
+/** identity 的档位（见下）。`cwdMode` 单独一个：验「这个目录没有 origin」。 */
 let identityMode = "ok";
+let cwdMode = "repo";
 /** 内置实现要打的上游（假 GitHub）。 */
 const upstreamCalls = [];
 
@@ -72,6 +84,19 @@ const upstream = http.createServer((req, res) => {
     }
     if (url.pathname === "/repos/acme/widgets/pulls" && req.method === "POST") {
       res.end(JSON.stringify({ number: 43, html_url: "https://github.com/acme/widgets/pull/43" }));
+      return;
+    }
+    // 内置实现对 PR 的路由：list / view / merge 各一条，壳的这几条主路径才跟着有测试（#662 评审）。
+    if (url.pathname === "/repos/acme/widgets/pulls" && req.method === "GET") {
+      res.end(JSON.stringify([{ number: 12, title: "修掉残影", draft: false, head: { ref: "fix/x" }, base: { ref: "main" }, html_url: "https://github.com/acme/widgets/pull/12" }]));
+      return;
+    }
+    if (url.pathname === "/repos/acme/widgets/pulls/12" && req.method === "GET") {
+      res.end(JSON.stringify({ number: 12, title: "修掉残影", state: "open", draft: false, body: "正文", html_url: "https://github.com/acme/widgets/pull/12", head: { ref: "fix/x" }, base: { ref: "main" } }));
+      return;
+    }
+    if (url.pathname === "/repos/acme/widgets/pulls/12/merge" && req.method === "PUT") {
+      res.end(JSON.stringify({ merged: true }));
       return;
     }
     res.end(JSON.stringify({}));
@@ -98,8 +123,10 @@ const shimBridge = http.createServer((req, res) => {
           source: "session",
           token: identityMode === "nil" || identityMode === "bare" ? null : "gho_fake_qingmin-new",
           realGh: identityMode === "no-gh" || identityMode === "bare" ? null : FAKE_REAL_GH,
+          // 测试缝走响应、不走环境变量：壳跑在 pi 子进程底下时 `PI_WEB_*` 会被剥掉（#662 评审）。
+          realGhJs: identityMode === "no-gh" || identityMode === "bare" ? null : FAKE_REAL_GH,
           sessionId: "s1",
-          cwd: work,
+          cwd: cwdMode === "bare" ? bareDir : work,
           api: upstreamBase,
         }),
       );
@@ -119,7 +146,7 @@ const shimBase = await new Promise((r) => shimBridge.listen(0, "127.0.0.1", () =
 function runShim(args, env = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [SHIM, ...args], {
-      env: { ...process.env, PI_WEB_LOOPBACK: shimBase, PI_WEB_LOOPBACK_TOKEN: "tok-shim", PI_WEB_GITHUB_REAL_GH_JS: FAKE_REAL_GH, ...env },
+      env: { ...process.env, PI_WEB_LOOPBACK: shimBase, PI_WEB_LOOPBACK_TOKEN: "tok-shim", ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -139,7 +166,7 @@ test("壳：把本会话的令牌交给真 gh（透传），并把这次调用�
   const got = JSON.parse(r.stdout.trim().split("\n")[0]);
   assert.equal(got.ghToken, "gho_fake_qingmin-new", "GH_TOKEN 就是本会话账号的令牌");
   assert.deepEqual(got.argv, ["api", "user", "--jq", ".login"]);
-  await sleep(150);
+  await waitReports(1);
   assert.equal(reports.length, 1);
   assert.deepEqual(reports[0].argv, ["api", "user", "--jq", ".login"]);
   assert.equal(reports[0].exit, 0);
@@ -151,7 +178,7 @@ test("壳：`pr create` 成功时输出里有 PR 链接（桥据此推帧）", a
   const r = await runShim(["pr", "create", "--fill"]);
   assert.equal(r.code, 0);
   assert.match(r.stdout, /github\.com\/acme\/widgets\/pull\/42/);
-  await sleep(150);
+  await waitReports(1);
   assert.equal(reports[0].exit, 0);
   assert.match(reports[0].stdout, /pull\/42/);
 });
@@ -180,6 +207,34 @@ test("壳：没装 gh 时对没实现的子命令明确失败，不假装成功"
   identityMode = "ok";
   assert.equal(r.code, 1);
   assert.match(r.stderr, /内置实现只覆盖 PR 核心/);
+});
+
+test("壳：内置实现的 pr list / pr view / pr merge 都按 gh 的样子干活", async () => {
+  identityMode = "no-gh";
+  const list = await runShim(["pr", "list"]);
+  const view = await runShim(["pr", "view", "12", "--json", "number,title,url"]);
+  upstreamCalls.length = 0;
+  const merge = await runShim(["pr", "merge", "12", "--squash"]);
+  identityMode = "ok";
+  assert.equal(list.code, 0, list.stderr);
+  assert.match(list.stdout, /#12\t.*修掉残影\tfix\/x → main\thttps:\/\/github\.com\/acme\/widgets\/pull\/12/);
+  assert.equal(view.code, 0, view.stderr);
+  assert.deepEqual(JSON.parse(view.stdout.trim()), { number: 12, title: "修掉残影", url: "https://github.com/acme/widgets/pull/12" });
+  const put = upstreamCalls.find((c) => c.method === "PUT" && c.path === "/repos/acme/widgets/pulls/12/merge");
+  assert.ok(put, "pr merge 打的是 /pulls/12/merge");
+  assert.match(put.body, /"merge_method":"squash"/);
+  assert.equal(merge.code, 0, merge.stderr);
+  assert.match(merge.stdout, /已合并 #12/);
+});
+
+test("壳：认不出仓库（没有 origin）时说清楚，不去猜一个", async () => {
+  identityMode = "no-gh";
+  cwdMode = "bare";
+  const r = await runShim(["pr", "list"]);
+  cwdMode = "repo";
+  identityMode = "ok";
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /没有 GitHub 远端/);
 });
 
 test("壳：没装 gh 也没有令牌时，`auth status` 仍然说得出在用谁", async () => {
@@ -267,7 +322,6 @@ test("注入：pi 子进程的 PATH 最前面就是壳目录，本机 PATH 没�
     }
     assert.ok(note, `桩 pi 没拿到会话进程的环境\n${out.split("\n").slice(-8).join("\n")}`);
     const binDir = path.join(state, "github", "bin");
-    assert.equal(note.githubShim, "1", "PI_WEB_GITHUB_SHIM 到了子进程");
     assert.equal(note.pathHead, binDir, "PATH 最前面就是壳目录");
     assert.ok(fs.existsSync(path.join(binDir, "gh")), "POSIX 的壳落盘了");
     assert.ok(fs.existsSync(path.join(binDir, "gh.cmd")), "Windows 的壳也落盘了");

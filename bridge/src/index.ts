@@ -90,7 +90,7 @@ import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
-import { handleGithub } from "./github.ts";
+import { handleGithub, type GithubCtx } from "./github.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
@@ -845,14 +845,7 @@ async function main(): Promise<void> {
       const peer = req.socket.remoteAddress ?? "";
       if (publicReq) return json(res, 403, { ok: false, code: "tunnel", error: "GitHub 壳的工具口只接受本机回环的请求（公网隧道进不来）。" });
       if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, code: "non-loopback", error: "GitHub 壳的工具口只接受本机回环的请求。" });
-      const handled = await handleGithub(req, res, url, {
-        publicReq: false,
-        send: (frame) => broadcast(frame),
-        byLoopbackToken: (token) => {
-          const session = sessions.byLoopbackToken(token);
-          return session ? { id: session.state.id, cwd: session.state.cwd } : null;
-        },
-      });
+      const handled = await handleGithub(req, res, url, githubCtx(false));
       if (handled) return;
     }
 
@@ -1452,14 +1445,7 @@ async function main(): Promise<void> {
     if (await handleJira(req, res, url, { publicReq })) return;
     // GitHub 通道：账号与凭据在桥里，壳（pi 子进程的 `gh`）与页面都只跟这组路由说话。
     if (
-      await handleGithub(req, res, url, {
-        publicReq,
-        send: (frame) => broadcast(frame),
-        byLoopbackToken: (token) => {
-          const session = sessions.byLoopbackToken(token);
-          return session ? { id: session.state.id, cwd: session.state.cwd } : null;
-        },
-      })
+      await handleGithub(req, res, url, githubCtx(publicReq))
     )
       return;
     // 考勤：隧道访客整页隐身（模块内 return false → 落到底部的 404）。
@@ -2484,6 +2470,22 @@ async function main(): Promise<void> {
       client.send(data);
     }
   };
+
+  /**
+   * GitHub 路由的 ctx。两个入口（回环工具口 / 常规路由）必须是**同一份**映射：壳拿到的 id/cwd
+   * 与页面拿到的如果不是一个，就会出现「壳去问了 A 会话、面板读的却是 B」。
+   */
+  function githubCtx(forPublic: boolean): GithubCtx {
+    return {
+      publicReq: forPublic,
+      send: (frame) => broadcast(frame),
+      byLoopbackToken: (token) => {
+        const session = sessions.byLoopbackToken(token);
+        return session ? { id: session.state.id, cwd: session.state.cwd } : null;
+      },
+      sessionCwd: (id) => sessions.get(id)?.state.cwd ?? null,
+    };
+  }
 
   /** 提醒中心变了就整份广播（列表 ≤ 500 条，整份比增量省心，也不会漂）。 */
   const broadcastReminders = () => broadcast(reminderView());
