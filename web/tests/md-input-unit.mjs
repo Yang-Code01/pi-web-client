@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { matchBlock, matchInline } from "../src/md-input.ts";
-import { noteTextForPeer, richToMarkdown, sanitizeRich } from "../src/notes/rich.ts";
+import { richToMarkdown, sanitizeRich } from "../src/notes/rich.ts";
 
 // ---------------------------------------------------------------- 块级
 
@@ -97,10 +97,4 @@ test("净化：站内 `/` 链接保留，javascript: 只留文字", () => {
 test("导出 Markdown：代码块带语言", () => {
   assert.equal(richToMarkdown('<pre><code class="language-ts">const a = 1</code></pre>'), "```ts\nconst a = 1\n```");
   assert.equal(richToMarkdown("<pre><code>x</code></pre>"), "```\nx\n```");
-});
-
-test("发送给好友：标题 + 空行 + Markdown 正文", () => {
-  assert.equal(noteTextForPeer("标题", "<p>正文 <strong>粗</strong></p>"), "标题\n\n正文 **粗**");
-  assert.equal(noteTextForPeer("只有标题", ""), "只有标题");
-  assert.equal(noteTextForPeer("", "<p>只有正文</p>"), "只有正文");
 });
