@@ -58,6 +58,18 @@ test("还没问出 ocr 装没装：先「读状态」，不许先喊没装", () 
   assert.equal(view.needsInstall, false);
 });
 
+test("ocr 那一帧丢了、桥又回了错：要把错摆出来，不许一直「读状态」", () => {
+  const view = reviewView({ ...base, state: null, ocr: null, error: "这个目录不是 git 仓库" });
+  assert.equal(view.phase, "failed");
+  assert.equal(view.error, "这个目录不是 git 仓库");
+});
+
+test("ocr 那一帧丢了、但已经有评审记录：照常显示那一次，不许回到「读状态」", () => {
+  const view = reviewView({ ...base, state: { runs: [run({ findings: [finding()] })], marks: {} }, ocr: null });
+  assert.equal(view.phase, "done");
+  assert.equal(view.groups.length, 1);
+});
+
 test("没装 ocr：说清要装，别给「开始评审」", () => {
   const view = reviewView({ ...base, state: null, ocr: { installed: false, version: "", tooOld: false } });
   assert.equal(view.phase, "no-ocr");

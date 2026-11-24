@@ -1058,7 +1058,7 @@ function olderThan(v: number[], floor: readonly number[]): boolean {
 /** 面板打开时问一句就够了；不要放到每次刷新里（一次 spawn 几十毫秒）。 */
 export async function ocrStatus(): Promise<OcrStatus> {
   try {
-    const { stdout, stderr } = await runOcr(["version"], process.cwd(), 15_000);
+    const { stdout, stderr } = await runOcr(["version"], process.cwd(), 5_000);
     const parts = parseVersion(`${stdout}\n${stderr}`);
     const version = parts.length ? parts.join(".") : "";
     return { installed: true, version, tooOld: olderThan(parts, MIN_OCR_VERSION), error: "" };

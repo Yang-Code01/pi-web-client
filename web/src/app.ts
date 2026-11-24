@@ -426,6 +426,10 @@ export class App {
   private reviewPendingToast = false;
   private reviewStartedRunId = "";
   private reviewToasted = new Set<string>();
+  /** 最近一次发 `review.get` 的时刻：ocr 那一帧丢了要能自己补一次，别死等。 */
+  private reviewOcrAskedAt = 0;
+  /** 定时补问一次：页面重连后没人触发重画时，光靠 render 里的自愈等不到下一次重画。 */
+  private reviewRetryTimer: number | null = null;
   private reviewModel = "";
   private reviewRefs: string[] = [];
   private reviewAsked = "";
@@ -2590,6 +2594,7 @@ export class App {
         }
         this.reviewError = "";
         this.reviewNotGit = false;
+        if (msg.dir) this.reviewRepo = String(msg.dir);
         this.reviewState = (msg.state ?? null) as ReviewState | null;
         this.reviewProgress = (msg.progress ?? null) as ReviewProgress | null;
         this.announceReviewDone();
@@ -2608,6 +2613,10 @@ export class App {
         break;
       }
       case "review.ocr":
+        if (this.reviewRetryTimer !== null) {
+          window.clearTimeout(this.reviewRetryTimer);
+          this.reviewRetryTimer = null;
+        }
         this.reviewOcr = (msg.ocr ?? null) as ReviewOcr | null;
         if (this.queueTab === "review") this.renderQueue();
         break;
@@ -18267,6 +18276,7 @@ export class App {
       return;
     }
     this.reviewAsked = dir;
+    this.reviewOcrAskedAt = Date.now();
     this.socket.send({ type: "review.get", dir });
     if (this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
     void api.gitRefs(dir).then((refs) => {
@@ -18335,7 +18345,15 @@ export class App {
     // 那一路不会走 selectQueueTab()。
     if (dir && this.reviewAsked !== dir) {
       this.reviewAsked = dir;
+      this.reviewOcrAskedAt = Date.now();
       this.socket.send({ type: "review.get", dir });
+    } else if (dir && !this.reviewOcr && this.reviewRetryTimer === null) {
+      // ocr 那一帧丢了（桥重启、页面重连、连接刚建就被打断）：面板会永远停在「正在读评审状态」。
+      // 页面重连后不会有人再触发重画，所以这里挂一次定时补问，而不是等下一次 render。
+      this.reviewRetryTimer = window.setTimeout(() => {
+        this.reviewRetryTimer = null;
+        if (!this.reviewOcr) this.loadReview();
+      }, 2500);
     }
     const view = reviewView({
       state: this.reviewState,

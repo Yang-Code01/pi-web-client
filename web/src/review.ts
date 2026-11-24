@@ -146,12 +146,13 @@ export function reviewView(input: ReviewInput): ReviewView {
   const needsUpgrade = Boolean(ocr && ocr.installed && ocr.tooOld);
 
   let phase: ReviewPhase;
+  // 「读状态」只在**一点信息都还没有**时出现：桥回了错、或者已经有评审记录，就不该死等 ocr 那一帧
+  // （用户报过「一直显示在读评审状态」——正是 ocr 帧丢了之后永远停在这一屏）。
   if (input.notGit) phase = "not-git";
-  // 还没问出 ocr 装没装：先说「读状态」，别先喊「没装」再把按钮收回去。
-  else if (!ocr) phase = "loading";
+  else if (input.error && !latest) phase = "failed";
+  else if (!ocr && !latest) phase = "loading";
   else if (needsInstall || needsUpgrade) phase = "no-ocr";
   else if (running) phase = "running";
-  else if (input.error && !latest) phase = "failed";
   else if (!latest) phase = "empty";
   else if (latest.status === "done") phase = "done";
   else if (latest.status === "stopped") phase = "stopped";
