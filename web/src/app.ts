@@ -414,6 +414,10 @@ export class App {
   private reviewPrsLoading = false;
   private reviewPrError = "";
   private reviewPrsAsked = "";
+  /** 这一次是**我们**点的「开始评审」：只有它跑完才弹提示（别的页签发起的别来抢）。 */
+  private reviewPendingToast = false;
+  private reviewStartedRunId = "";
+  private reviewToasted = new Set<string>();
   private reviewModel = "";
   private reviewRefs: string[] = [];
   private reviewAsked = "";
@@ -2580,6 +2584,7 @@ export class App {
         this.reviewNotGit = false;
         this.reviewState = (msg.state ?? null) as ReviewState | null;
         this.reviewProgress = (msg.progress ?? null) as ReviewProgress | null;
+        this.announceReviewDone();
         if (this.queueTab === "review") this.renderQueue();
         break;
       }
@@ -2599,8 +2604,11 @@ export class App {
         if (this.queueTab === "review") this.renderQueue();
         break;
       case "review.progress":
-        if (msg.progress) this.reviewProgress = msg.progress as ReviewProgress;
-        else this.reviewProgress = null;
+        if (msg.progress) {
+          this.reviewProgress = msg.progress as ReviewProgress;
+          const id = String((msg.progress as ReviewProgress).runId ?? "");
+          if (id && this.reviewPendingToast && !this.reviewStartedRunId) this.reviewStartedRunId = id;
+        } else this.reviewProgress = null;
         if (this.queueTab === "review") this.renderQueue();
         break;
       case "review.install.log":
@@ -18241,6 +18249,41 @@ export class App {
     return this.models.find((m) => `${m.provider}/${m.id}` === want) ?? this.models.find((m) => m.id === want) ?? null;
   }
 
+  /**
+   * 跑完了说一句。以前评审结束只换一下面板内容：跑失败的、一条意见都没有的，看上去都像「没反应」。
+   * 只announce自己点的那一次，别人的页签发起的不要抢话。
+   */
+  private announceReviewDone(): void {
+    if (!this.reviewPendingToast) return;
+    const latest = this.reviewState?.runs?.[this.reviewState.runs.length - 1];
+    if (!latest || latest.status === "running") return;
+    // 进度帧可能比 state 帧晚到：认不出 runId 时也把第一条终态当成自己的。
+    if (this.reviewStartedRunId && latest.id !== this.reviewStartedRunId) return;
+    if (this.reviewToasted.has(latest.id)) return;
+    this.reviewToasted.add(latest.id);
+    this.reviewPendingToast = false;
+    this.reviewStartedRunId = "";
+    const count = latest.findings?.length ?? 0;
+    if (latest.status === "done") {
+      if (!count) {
+        this.flashToast(tr("评审完成：没有发现意见"), false, 6000);
+        return;
+      }
+      let critical = 0;
+      let high = 0;
+      for (const f of latest.findings) {
+        if (f.severity === "critical") critical += 1;
+        else if (f.severity === "high") high += 1;
+      }
+      const detail = [critical ? tr("严重 {p1}", { p1: critical }) : "", high ? tr("高 {p1}", { p1: high }) : ""].filter(Boolean).join(tr(" · "));
+      this.flashToast(tr("评审完成：{p1} 条意见（{p2}）", { p1: count, p2: detail || tr("都能点开看") }), false, 7000);
+    } else if (latest.status === "failed") {
+      this.flashToast(tr("评审失败：{p1}", { p1: latest.error || latest.errorCode || "" }), true, 9000);
+    } else if (latest.status === "stopped") {
+      this.flashToast(tr("评审已停止，已收到的意见还在"), false, 5000);
+    }
+  }
+
   private loadPullRequests(dir: string): void {
     this.reviewPrsAsked = dir;
     this.reviewPrsLoading = true;
@@ -18357,6 +18400,8 @@ export class App {
       return;
     }
     this.reviewError = "";
+    this.reviewPendingToast = true;
+    this.reviewStartedRunId = "";
     this.reviewProgress = {
       repo: dir,
       runId: "",

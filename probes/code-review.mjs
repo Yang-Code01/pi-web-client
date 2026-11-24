@@ -200,6 +200,10 @@ try {
     Boolean(panel && btn) && panel.width <= 420 && btn.x >= panel.x && btn.x + btn.width <= panel.x + panel.width + 1,
     panel && btn ? `panel ${Math.round(panel.width)} / 按钮右缘 ${Math.round(btn.x + btn.width - panel.x)}` : "no box",
   );
+  // 跑完必须有一句提示（用户报过：「不确定有没有真正评审成功，没有信息提示」）。
+  const toast = (await page.locator(".fail-toast").first().innerText().catch(() => "")).trim();
+  check("跑完弹一句结果", /评审/.test(toast), toast.slice(0, 60));
+
   // 模型那颗 chip 走的是输入框背后同一个「模型与思考」弹层（不是面板自己的下拉）。
   const modelBefore = (await page.locator(".rv-model").innerText()).trim();
   await page.locator(".rv-model").click();

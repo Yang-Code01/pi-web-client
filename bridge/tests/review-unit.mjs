@@ -27,6 +27,7 @@ import {
   toFindings,
   writeReviewState,
   buildPrompt,
+  chunkFiles,
 } from "../src/review.ts";
 
 process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-"));
@@ -198,6 +199,23 @@ check("buildPrompt 点到每个文件、给出自己去取 diff 的命令、只�
   assert.ok(text.includes("只输出"), "得明确只回 JSON");
   assert.ok(/中文/.test(text), "语言要写进提示词");
   assert.ok(text.length > 400, "太短的提示词会漏掉协议");
+});
+
+check("chunkFiles：按 8 个一组切，最后一组不满也算", () => {
+  const files = Array.from({ length: 19 }, (_, i) => ({ path: `f${i}.ts` }));
+  const groups = chunkFiles(files);
+  assert.deepEqual(groups.map((g) => g.length), [8, 8, 3]);
+  assert.equal(new Set(groups.flat().map((f) => f.path)).size, 19, "切完不能丢文件");
+  assert.deepEqual(chunkFiles([]), []);
+});
+
+check("buildPrompt 带分组时只让评这一组、并说清这是第几组", () => {
+  const p = parsePreview(JSON.stringify({ mode: "workspace", files: [{ path: "a.ts" }, { path: "b.ts" }] }));
+  const text = buildPrompt(p, "zh", "", { index: 2, total: 5 });
+  assert.ok(text.includes("第 2 组"), text.slice(0, 120));
+  assert.ok(text.includes("5 组"));
+  const single = buildPrompt(p, "zh", "");
+  assert.ok(!single.includes("只负责第"), "只跑一组时不要多一段噪音");
 });
 
 check("buildPrompt 说清每个文件都得交代 reviewed 或 skipped", () => {

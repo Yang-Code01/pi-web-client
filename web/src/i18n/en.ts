@@ -4328,4 +4328,11 @@ export const en: Dict = {
   "目标分支": "Target branch",
   "提交号别带 #：要评 PR 请切到「GitHub PR」": "Leave the # off a commit id — to review a PR, switch to “GitHub PR”",
   "：{p1}": ": {p1}",
+  "评审完成：没有发现意见": "Review finished — no findings",
+  "评审完成：{p1} 条意见（{p2}）": "Review finished — {p1} findings ({p2})",
+  "评审失败：{p1}": "Review failed: {p1}",
+  "评审已停止，已收到的意见还在": "Review stopped; the findings that arrived are kept",
+  "严重 {p1}": "critical {p1}",
+  "高 {p1}": "high {p1}",
+  "都能点开看": "all open in the panel",
 };

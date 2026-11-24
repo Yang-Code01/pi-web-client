@@ -40,6 +40,9 @@ export type Category = ReviewCategory;
 export type Mark = ReviewMark;
 export type RunStatus = ReviewRunStatus;
 
+/** 一个子进程最多评几个文件：31 个文件一次塞给模型，它会把 46 万 token 花在逛仓库上、最后什么都不答。 */
+export const GROUP_FILES = 8;
+
 const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
 const CATEGORIES: Category[] = ["bug", "security", "performance", "maintainability", "test", "style", "documentation", "other"];
 
@@ -204,12 +207,20 @@ const PROTOCOL = `你是代码评审员。只按下面给的规则与文件清�
 - 形状：
   {"findings":[{"path":"相对路径","content":"一句话说清问题与影响","start_line":12,"end_line":14,"category":"bug|security|performance|maintainability|test|style|documentation|other","severity":"critical|high|medium|low","existing_code":"命中的原文片段（必须逐字来自文件）","suggestion_code":"可选的修改片段"}],"skipped":[{"path":"相对路径","reason":"为什么没评"}]}
 - 清单里的**每一个文件**都要交代：出现在 findings 里算 reviewed，没评的放 skipped 并写 reason，不许漏。
+- 先看 diff（git --no-pager diff / git show）。只有光看 diff 判断不了时才读整个文件，**不要**在整个仓库里检索无关代码 —— 那些 token 不会让意见变准。
 - 定位必须指向改动的那几行；找不到确切行就给 start_line: 0，不要编行号。
 - 只报真问题：没有缺陷就别硬凑，findings 允许是空数组。
 - 不报风格偏好、不报「建议加注释」这类空话；说不清影响的不报。`;
 
+/** 把可评文件切成若干组（每组的文件由一个子进程评完）。 */
+export function chunkFiles<T>(files: readonly T[], size = GROUP_FILES): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < files.length; i += Math.max(1, size)) out.push(files.slice(i, i + Math.max(1, size)));
+  return out;
+}
+
 /** 一次评审的提示词。规则来自 `ocr delegate rule`（可能为空），语言跟着界面走。 */
-export function buildPrompt(p: Preview, lang: ReviewLang, rules: string): string {
+export function buildPrompt(p: Preview, lang: ReviewLang, rules: string, group?: { index: number; total: number }): string {
   const files = p.files.map((f) => `- ${f.path}${f.status ? `（${f.status}）` : ""}`).join("\n");
   const cmd = diffCommandFor(p, "<文件>");
   const range =
@@ -224,6 +235,7 @@ export function buildPrompt(p: Preview, lang: ReviewLang, rules: string): string
   return [
     PROTOCOL,
     "",
+    group && group.total > 1 ? `## 分组\n\n这次评审分了 ${group.total} 组，你只负责第 ${group.index} 组：只评下面这些文件，评完就把 JSON 交回来，不要去看别的文件。\n` : "",
     `## 本次范围\n\n${range}`,
     "",
     `取 diff 的命令（把 <文件> 换成清单里的路径）：\`${cmd}\``,
@@ -778,8 +790,6 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
   let tokens = 0;
   let currentFile = "";
   let preview: Preview | null = null;
-  let partialText = "";
-  let child: ReturnType<typeof spawn> | null = null;
 
   const finish = (patch: Pick<ReviewRun, "status"> & Partial<ReviewRun>) => {
     const state = readReviewState(root);
@@ -800,6 +810,82 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     });
     progressMap.delete(key);
   };
+
+  /** 起一个子进程评一组：边跑边发进度，结束时把它答的那段话交回来。 */
+  const runChild = (prompt: string) =>
+    new Promise<{ code: number | null; text: string; stderr: string; aborted: boolean; touched: Set<string> }>((resolve) => {
+      const pi = resolvePi();
+      const proc = spawn(process.execPath, [pi.cli, ...reviewArgs({ model: opts.model, provider: opts.provider })], {
+        cwd: root,
+        env: piChildEnv(),
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      let stderr = "";
+      let text = "";
+      const touched = new Set<string>();
+      let settled = false;
+      const finishChild = (code: number | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(guard);
+        signal.removeEventListener("abort", onAbort);
+        try {
+          proc.stdout?.destroy();
+        } catch {
+          /* 已经关了 */
+        }
+        resolve({ code, text, stderr, aborted: signal.aborted, touched });
+      };
+      const guard = setTimeout(() => {
+        try {
+          proc.kill();
+        } catch {
+          /* 已经退了 */
+        }
+      }, REVIEW_TIMEOUT_MS);
+      const onAbort = () => {
+        try {
+          proc.kill();
+        } catch {
+          /* 已经退了 */
+        }
+      };
+      signal.addEventListener("abort", onAbort);
+      proc.stderr?.setEncoding("utf8");
+      proc.stderr?.on("data", (d: string) => (stderr = (stderr + d).slice(-4000)));
+      proc.stdin?.end(prompt);
+      const lines = readline.createInterface({ input: proc.stdout! });
+      lines.on("line", (line) => {
+        let ev: any;
+        try {
+          ev = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (ev?.type === "tool_execution_start") {
+          const rel = relativeTo(root, ev.args?.path || ev.args?.pattern || ev.args?.command || "");
+          if (rel) currentFile = rel.slice(0, 120);
+          if (ev.toolName === "read" && rel) touched.add(rel);
+          emit({ currentFile });
+          return;
+        }
+        if (ev?.type === "message_end") {
+          const usage = ev.message?.usage;
+          if (usage && typeof usage.totalTokens === "number") tokens += usage.totalTokens;
+          if (ev.message?.role === "assistant" && Array.isArray(ev.message.content)) {
+            const answered = ev.message.content.filter((b: any) => b?.type === "text").map((b: any) => String(b.text ?? "")).join("");
+            if (answered.trim()) text = answered;
+          }
+          emit({ tokens });
+        }
+      });
+      proc.on("error", (err) => {
+        stderr = `${stderr}\n${(err as Error)?.message ?? String(err)}`;
+        finishChild(-1);
+      });
+      proc.on("close", (code) => finishChild(code));
+    });
 
   try {
     let base = opts.base;
@@ -829,125 +915,94 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       return;
     }
 
-    const rules = await rulesFor(root, preview.files.map((f) => f.path), signal);
-    emit({ phase: "review" });
+    // 31 个文件一次塞给一个子进程，实测它把 46 万 token 花在逛仓库上、最后什么都不答 ——
+    // 分组跑：每组一个子进程、一份小提示词，各自交 JSON，最后合起来。
+    const rules = (await rulesFor(root, preview.files.map((f) => f.path), signal)).slice(0, 4000);
+    const groups = chunkFiles(preview.files);
+    const collected: Finding[] = [];
+    const lastSkipped: PreviewSkip[] = [];
+    const accountedPaths = new Set<string>();
+    const touched = new Set<string>();
+    let answered = false;
+    let failed: { code: number | null; stderr: string; group: number } | null = null;
 
-    const pi = resolvePi();
-    const prompt = buildPrompt(preview, opts.lang, rules);
-    const args = [pi.cli, ...reviewArgs({ model: opts.model, provider: opts.provider })];
-    const proc = spawn(process.execPath, args, {
-      cwd: root,
-      env: piChildEnv(),
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    child = proc;
-    const guard = setTimeout(() => {
-      try {
-        proc.kill();
-      } catch {
-        /* 已经退了 */
+    for (let i = 0; i < groups.length; i += 1) {
+      if (signal.aborted) break;
+      emit({ phase: "review", currentFile: groups[i][0]?.path ?? "" });
+      const sub: Preview = { ...preview, files: groups[i] };
+      const prompt = buildPrompt(sub, opts.lang, rules, { index: i + 1, total: groups.length });
+      const res = await runChild(prompt);
+      if (res.aborted) break;
+      if (res.code !== 0) {
+        failed = { code: res.code, stderr: res.stderr, group: i + 1 };
+        break;
       }
-    }, REVIEW_TIMEOUT_MS);
-    const onAbort = () => {
-      try {
-        proc.kill();
-      } catch {
-        /* 已经退了 */
-      }
-    };
-    signal.addEventListener("abort", onAbort);
+      const parsed = toFindings(res.text);
+      if (res.text.trim()) answered = true;
+      collected.push(...parsed.findings);
+      for (const f of parsed.findings) accountedPaths.add(f.path);
+      for (const sk of parsed.skipped) accountedPaths.add(sk.path);
+      lastSkipped.push(...parsed.skipped);
+    }
 
-    let stderr = "";
-    proc.stderr?.setEncoding("utf8");
-    proc.stderr?.on("data", (d: string) => (stderr = (stderr + d).slice(-4000)));
-    proc.stdin?.end(prompt);
+    const stopped = signal.aborted;
+    const state = readReviewState(root);
+    const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview.mergeBase, pr: run.pr });
+    const merged = mergeFindings(prevRun?.findings ?? [], collected, state.marks);
+    const skipped = unaccounted(preview, lastSkipped, collected);
+    const total = preview.files.length;
 
-    const touched = new Map<string, true>();
-    const lines = readline.createInterface({ input: proc.stdout! });
-    lines.on("line", (line) => {
-      let ev: any;
-      try {
-        ev = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (ev?.type === "tool_execution_start") {
-        const rel = relativeTo(root, ev.args?.path || ev.args?.pattern || ev.args?.command || "");
-        if (rel) currentFile = rel.slice(0, 120);
-        if (ev.toolName === "read" && rel) touched.set(rel, true);
-        emit({ reviewedFiles: touched.size, currentFile });
-        return;
-      }
-      if (ev?.type === "message_end") {
-        const usage = ev.message?.usage;
-        if (usage && typeof usage.totalTokens === "number") tokens += usage.totalTokens;
-        if (ev.message?.role === "assistant") {
-          const text = Array.isArray(ev.message.content)
-            ? ev.message.content.filter((b: any) => b?.type === "text").map((b: any) => String(b.text ?? "")).join("")
-            : "";
-          if (text.trim()) partialText = text;
-        }
-        emit({ tokens, reviewedFiles: touched.size });
-      }
-    });
-
-    const code: number | null = await new Promise((resolve) => proc.on("close", (c) => resolve(c)));
-    clearTimeout(guard);
-    signal.removeEventListener("abort", onAbort);
-
-    if (signal.aborted) {
-      // 已经落地的意见留着，并且照「完成」那条路一样对上一次：否则重跑时「上次就有」与
-      // 你标过的处理态都会在这一停里丢掉。
-      const state = readReviewState(root);
-      const partial = toFindings(partialText);
-      const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview?.mergeBase ?? "", pr: run.pr });
-      const merged = mergeFindings(prevRun?.findings ?? [], partial.findings, state.marks);
+    if (!stopped && failed) {
       finish({
-        status: "stopped",
+        status: "failed",
         finishedAt: new Date().toISOString(),
         findings: merged.findings,
         resolved: merged.resolved,
         resolvedPaths: merged.resolvedPaths,
-        skipped: unaccounted(preview, partial.skipped, partial.findings),
-        reviewedFiles: touched.size,
+        skipped,
+        totalFiles: total,
+        reviewedFiles: accountedPaths.size,
         tokens,
-        error: "已停止",
-        errorCode: "stopped",
-      });
-      return;
-    }
-
-    if (code !== 0) {
-      finish({
-        status: "failed",
-        finishedAt: new Date().toISOString(),
-        reviewedFiles: touched.size,
-        tokens,
-        skipped: preview.skipped,
-        error: firstLine(stderr) || `评审进程退出码 ${code}`,
+        from: run.from,
+        to: run.to,
+        mergeBase: preview.mergeBase,
+        error: firstLine(failed.stderr) || `第 ${failed.group} 组的评审进程退出码 ${failed.code}`,
         errorCode: "child_failed",
       });
       return;
     }
-
-    const parsed = toFindings(partialText);
-    const state = readReviewState(root);
-    const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview.mergeBase, pr: run.pr });
-    const merged = mergeFindings(prevRun?.findings ?? [], parsed.findings, state.marks);
-    const skipped = unaccounted(preview, parsed.skipped, parsed.findings);
-    const accounted = new Set([...parsed.findings.map((f) => f.path), ...parsed.skipped.map((s) => s.path)]);
-    const total = preview.files.length;
+    if (!stopped && !answered) {
+      // 退出码 0、一个字都没答：这不是「没问题」，是这次没评成。别把空结果写成 done。
+      finish({
+        status: "failed",
+        finishedAt: new Date().toISOString(),
+        findings: [],
+        skipped,
+        totalFiles: total,
+        reviewedFiles: accountedPaths.size,
+        tokens,
+        from: run.from,
+        to: run.to,
+        mergeBase: preview.mergeBase,
+        error: "评审进程跑完了却什么都没答（可能被上下文或轮次上限打断）",
+        errorCode: "child_no_output",
+      });
+      return;
+    }
     finish({
-      status: "done",
+      status: stopped ? "stopped" : "done",
       finishedAt: new Date().toISOString(),
       findings: merged.findings,
       resolved: merged.resolved,
       resolvedPaths: merged.resolvedPaths,
       skipped,
       totalFiles: total,
-      reviewedFiles: accounted.size,
+      reviewedFiles: accountedPaths.size,
       tokens,
+      from: run.from,
+      to: run.to,
+      mergeBase: preview.mergeBase,
+      ...(stopped ? { error: "已停止", errorCode: "stopped" } : {}),
     });
   } catch (err: any) {
     const code = String(err?.code ?? "failed");
@@ -963,11 +1018,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       errorCode: cancelled ? "stopped" : code,
     });
   } finally {
-    try {
-      child?.stdout?.destroy();
-    } catch {
-      /* 进程已经没了 */
-    }
+    // 每个子进程在 close 时自己关 stdout（`runChild` 里），这里没有要收拾的。
   }
 }
 
