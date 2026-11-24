@@ -90,6 +90,18 @@ const LIMIT_MAX = 1000;
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * D395: boot 时要不要自己去扫一遍全盘。只有在「用户自己的状态目录」默认扫：测试、探针、第二实例都用
+ * `PI_WEB_STATE` 指到别处，它们不搜文件，却每份都扫一次整盘（实测 313 份 1.2 GB 索引）。
+ * `PI_WEB_FILEINDEX=1` / `0` 是无条件的两头；没设就看状态目录是不是默认那个。
+ */
+export function autoScanOnBoot(stateIsDefault: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
+  const flag = (env.PI_WEB_FILEINDEX ?? "").trim();
+  if (flag === "1") return true;
+  if (flag === "0") return false;
+  return stateIsDefault;
+}
+
 /** `LIKE` 的通配符转义（`%` `_` 与转义符本身）。 */
 export function escapeLike(input: string): string {
   return input.replace(/[\\%_]/g, (ch) => `\\${ch}`);

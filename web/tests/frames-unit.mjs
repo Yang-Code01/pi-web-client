@@ -17,6 +17,7 @@ import {
   askRemoveFrame,
   copilotFrame,
   ctxlogFrame,
+  lostAskHere,
   piStatusFrame,
   statsFrame,
   usageFrame,
@@ -260,7 +261,7 @@ test("ask.remove：填过答案就留一块残影（问卷没答完就关了）"
   assert.deepEqual(out, ["asks", "queue", "tabs", "sessions"]);
   assert.deepEqual(v.asks, []);
   assert.equal(v.sessions[0].asks, 0);
-  assert.deepEqual(v.askLost, { id: "q1", title: "先问那个", reason: "工具被中断", lines: ["先问那个\n→ 甲"] });
+  assert.deepEqual(v.askLost, { sessionId: S1, id: "q1", title: "先问那个", reason: "工具被中断", lines: ["先问那个\n→ 甲"] });
 });
 
 test("ask.remove：自己刚答的不算「丢了」，空的也不留残影", () => {
@@ -282,6 +283,17 @@ test("ask.remove 别的会话：不建残影，但计数照样回落", () => {
   applyFrame(v, askRemoveFrame(S2, "q1", { status: "cancelled", reason: "x" }));
   assert.equal(v.sessions[1].asks, 0, "那张卡上的「待回答」必须掉下来");
   assert.equal(v.askLost, null, "只给当前会话留残影");
+});
+
+test("残影只属于丢问卷的那个会话：切到别的会话不画它", () => {
+  const lost = { sessionId: S1, id: "q1", title: "先问那个", reason: "工具被中断", lines: ["先问那个\n→ 甲"] };
+  assert.deepEqual(lostAskHere(view({ askLost: lost })), lost, "自己的会话里照画");
+  assert.equal(lostAskHere(view({ askLost: lost, currentId: S2 })), null, "别的会话不画");
+  assert.equal(lostAskHere(view({ askLost: lost, currentId: null })), null, "没开会话也不画");
+  // 同一会话里又来了一份问卷：先答新的，残影别抢位置。
+  const busy = view({ askLost: lost, asks: [ask1] });
+  assert.equal(lostAskHere(busy), null);
+  assert.equal(lostAskHere(view({ askLost: null })), null);
 });
 
 test("不认识的帧：什么都不画（119 个还没搬进表的帧走这条路）", () => {

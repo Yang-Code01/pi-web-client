@@ -7653,7 +7653,107 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **验证：** `npm run test:deps`（三份 README 的表对账、四态判据、样本版本断言）、`npm run test:start-check`（新增「低于下限就拦」「整备脚本真的升到下限」「`--check` 判旧不及格」「到了下限就记住、不再问 `pi list`」）、`npm run test:bgruns`（0.90.0 真样本回放：单跑、workflow、脚本式 workflow 的 receipt 回填、前台派活按 `parentWorkflowRunId` 认孩子）、`npm run test:deps:ui`、`npm --prefix bridge run typecheck`。**`npm run typecheck` 这一条在这台机器上过不了**：`web` 那半截挂在 `src/translateview.ts` 的两条中文没走 `tr()` 与 en/ja 缺键上（D392 那批留下的），在 `main` 上逐字相同 —— 与本次改动无关，也不该由这次顺手改别人的在飞代码。
 
-## D394 代码评审：OCR 的确定性分片 + 一次性只读 pi 子进程（#651，grill 结论 2026-11-23）
+## D394 图标换成一套手绘线性 SVG，emoji 从界面与词典里退场（#653；用户「按照 mac 的主题，重新设计一下本项目所有的图标」）
+
+**问题：** 界面上的图标其实有**四套**：`app.ts` 那批 24×24 内联 SVG（归档 / 复原 / 删除）、`dirpicker.ts` 的文件夹与上一级（16×16）、`peer/main.ts` 与 `peer/emoji.ts` 的 ICONS 表，其余全是 emoji（📂 📁 🌐 🐞 💭 📮 🔷 🔎 🖼 📎 🗑 …）。后者的毛病不是「不好看」而是不成立：每个平台一套字形（macOS 的 📁 是蓝的、Windows 的是卡其色）、跟着字号变彩色、宽度占不进图标那一列（`.icon-btn` 里 emoji 与 `>_` 混排时基线永远差一两像素），还有 28 条 i18n 文案把 emoji 写进了 key（`"📂 产物"`），顶栏宽按钮靠 `splitWideLabel()` 在第一个空格处把它切出来当图标用（D138）—— 换图标就得改词典。唯一做对的是内网通表情面板（`peer/emoji.ts`）：那轮已经把底栏 9 个 emoji 换成了手绘线条图标，注释写着「不用彩色 emoji 当图标 —— 那正是旧面板看着乱的原因」。
+
+**查证（决定前先数的，不是估的）：** 当成图标用的单字形字面量 149 处（`app.ts` 52、`chat.ts` 14、`notesheet.ts` 12、`branchsheet.ts` 10…），涉及 26 个源文件 + `styles.css`；词典里 28 条 key 带 emoji；排版符号（★ ▾ ▸ ✓ ✗ ✕ ● ○ ◌ ⎇ ⌘ ⌂ ⑂ ＋）另算，不在这次范围里。SF Symbols 是 Apple 的资产，不能随包分发（D-侵权那一轮已经确认仓库里没有任何外部图标 / 字体 / 位图），所以这套是**照 SF 的量感手绘**：16×16 画布、1.5px 描边、圆头圆角。
+
+**决定：**
+
+1. **一个源：`web/src/icons.ts`。** 50 个图形（`sidebar` / `layers` / `terminal` / `folder` / `bug` / `users` / `bubble` / `lozenge` / `mail` / `search` / `sliders` / `trash` / `pencil` / `archive` / `unarchive` / `plus` / `close` / `chevron` / `star` / 四个文件类型 / `link` / `monitor` / `clip` / `expand` / `collapse` / `home` / `save` / `laptop` / `clock` / `arrowUp` / `updown` / `checklist` / `bolt` / `shield` / `lock` / `refresh` / `image` / `box` / `sparkle` / `tool` / `pointer` / `palette` / `eye` / `slide` / `table` / `alert` / `scissors` / `window` / `dots`），每条 1–3 段路径。`icon(name)` 给 DOM 节点、`iconMarkup(name)` 给字符串、`face(nameOrText)` 给「图标名或现成文字」这两种脸（菜单行、状态按钮用），`fileIcon(path)` 把原来 `chat.ts` / `app.ts` 各一份的扩展名映射合成一处。
+2. **颜色只有两种：`currentColor`，以及破坏性与状态的语义色。** `tint` 只给垃圾桶 / ⚡ / ⚠ / 锁 / 盾（bug 不带色，见第 4 条）；功能入口（产物、文件夹、邮箱、内网通、Jira）一律灰 —— 顶栏九颗要是五颗同色，换强调色时整排跟着变，比 emoji 更吵。
+3. **实心强调色底上自动退回单色。** 语义色走 `--ico-tint` 变量，`.btn.primary` / `.chip.on` / `.pin-chip.cur` / `.viewer-seg button.on` 里由一条 CSS 把它覆盖成 `currentColor`（新加的实心面记得进这一串，或就地给图标加 `.ico-flat`）。不这么做就会出现「红垃圾桶压蓝底、白字里冒出黄闪电」。
+4. **记录那颗平时是灰的，有待处理才红**（`.notes-btn.has-pending`）。样张里它常红，落地时改了这一处：顶栏一排灰图标里唯一一颗红点太像报错，而「红 = 有活没干」才是这颗按钮真正的状态。
+5. **排版符号不进图标表。** `★ ☆ ▾ ▸ ✓ ✗ ✕ ● ○ ◌ ⎇ ⌘ ⌂ ⑂ ＋` 继续留在文案里：它们跟着字重字号走、可选中可复制、有的还能当字读（★ 本身是那颗可点的置顶开关）。**按钮的「脸」用图标，列表与句子里的状态符号用文字** —— 这是这次唯一的划线标准。git 操作动词表格（`git-ops.ts` 的 `glyph`）也按这条留着：那是密集动词网格，`⎇` `✖` `❖` 比 16px 图标好读。
+6. **文案与图标彻底分开。** 28 条 key 里的 emoji 全部摘掉（`"📂 产物"` → `"产物"`），顶栏宽按钮改成 `wideBtn(TOPBAR_ICON.artifacts, tr("产物"))`，`splitWideLabel()` 退休。句子中间提到图标的地方改说法（「在左栏🗑里可以还原」→「在左栏的垃圾箱里可以还原」，提示语里的 🌐 改「那颗浏览器图标」）。「文件管理器」在顶栏用带上下文后缀的键 `文件管理器|顶栏按钮`（→ Files / ファイル），别处的同一个词仍是 File manager。
+7. **顺手修掉 i18n-check 误报。** 原来它拿整个模板串的 `getText()` 判中文，`\`${tr("还有 {n} 节在队列里")}${tail}\`` 这种「中文全在里面的 tr() 里」的串会被当成漏翻；D392 之后 `main` 上就一直红着两条（连 en/ja 缺 `正在翻 {k} 块` 一起）。现在只看模板串的字面量段，缺的两个键也补了 —— `npm run typecheck` 在 `main` 上红了几天，这次一起回绿。
+
+**代价 / 可改：**
+
+- 13px 以下（窄屏方块按钮、行内小图标）线条会发灰；比起 emoji 的「一眼认出」，线性图标要靠形状记。样张里备过 1.9px 加粗版（B）与圆角底板版（D），都能一行切回去。
+- `tool`（扳手）现在读着更像一把小锤子，`archive` / `unarchive` 只差箭头方向 —— 想改就是改 `icons.ts` 里那几段 `d`，不用动任何调用处。
+- 内网通的两个 ICONS 表（`main.ts` 的头像/动作、`emoji.ts` 的贴纸分类）**没有**并进来：它们本来就已是线性 SVG，词汇与主界面不重叠（杯子、熊、车、旗）。要收的话是下一轮的事。
+- `.ico` 的垂直对齐用 `vertical-align: -0.14em` 凑基线，换字号时可能要再调一次；`gap` 与内边距在 `icon-btn` / `mib` 这类容器里各自定，不统一。
+- 探针里凡按 emoji 选元素的都得改：`bug-notes-ui.mjs` 改成断言 `svg.ico` 存在且没有文字，`fs-ui.mjs` 那颗「引用路径」改成按 `title` 选（它本来就因为别的原因在 `main` 上红着）。
+
+**验证：** `npm run typecheck`（bridge / peer / web + i18n-check 4141 键 × 3 语 + viewport + layers + theme）通过；`node probes/chrome-topbar.mjs`（四档宽度、切英文后标签、不横向溢出）全过；`node probes/mac-chat.mjs`（三套底色、对比度、气泡贴边）全过；`node probes/round21-cwd-line.mjs`、`node probes/notes-panel-regress.mjs` 与 `main` 一致通过（`round24-pinactions` / `round15-git` / `archive-switch` / `fs-ui` / `bug-notes-ui` 在 `main` 上已经红，不是这次引入）。三套底色 + 设置抽屉 + 记录面板的截图在原型目录里（`.scratch/icons-sheet/`，不进版本库）。
+
+## D395 一份桥日志封顶 16 MB，临时状态目录不再开机扫全盘（#654；用户「为啥本项目在我这台 mac 上占用这么多内存」「还有硬盘空间」2026-11-24）
+
+**问题：** 这台机器上 40 GB 是 pi-web-client 占的，其中 38 GB 全在 `.scratch/` 里，而里面**只有两样东西**：28.9 GB 的 `logs/bridge.log`，加 9.0 GB 的 `filesearch.db` 副本（313 份，单份到 1.2 GB）。两者都不是功能要的，是没人设上限的副作用：
+
+- `log()` 是纯 `appendFileSync`，没有轮转、没有上限。单个文件实测长到 **17 GB**（`feat-code-review-panel/.scratch/session-flags/`），7.9 GB 一份的还有一个、1.8 GB 的第三个。日志本身是给「刚才发生了什么」用的，GB 级的日志既打不开也没人读。
+- 每份桥启动时 `if (st.state === "off") fileIndex.start()` —— 「开库不耗时，没有索引才起首次扫描」。但测试 / 探针 / 第二实例各自都有一份空的状态目录，于是**每一份都扫一遍整盘**：1.2 GB 的库 + 满盘 IO。那天 11 个桥里 9 个是探针 / 测试组留下的，load average 顶到 20，SIGTERM 之后还要 SIGKILL 才肯退。
+
+**查证（先数的）：** `.scratch/` 合计 38.0 GB = logs 28.9 GB + filesearch.db 9.0 GB + 其他 0.2 GB；313 份索引副本；`rg` 过 `bridge/tests/`，只有 `fileindex.mjs`（直接 import `FileIndex` 的单元测试）碰索引，没有一条 UI 用例看搜索面板。前端也只在打开搜索面板时发 `filesearch.status`，`filesearch.scan` 只由「开始」按钮触发 —— 开机自动扫描是纯背景便利，不是面板需要的东西。
+
+**决定：**
+
+1. **`RotatingLog`（`bridge/src/logfile.ts`）**：默认 8 MB 一代，越过上限把这一代搬成 `bridge.log.1`，只留一代，所以一份日志最多 16 MB。`PI_WEB_LOG_MAX_BYTES` 改上限，`0` 回到老行为（永不轮转）。
+2. **两条不对称的规则，各自对应各自的现场**：运行中越限 → 搬成 `.1`（刚写满的那 8 MB 就是最近的现场，值得留）；**开写时发现已经越限** → 直接截断不搬 —— 那说明文件是没上限时代留下的怪物，或者上一次进程没来得及轮转就被杀，把它改名成 `.1` 只是让怪物换个名字继续占盘。
+3. **开机自动扫描只给「用户自己的那份状态目录」**（`stateDirIsDefault()`，`bridge/src/fileindex.ts` 的 `autoScanOnBoot()`）。测试 / 探针 / 第二实例都用 `PI_WEB_STATE` 指到别处，它们不搜文件；要它们也扫就 `PI_WEB_FILEINDEX=1`。`PI_WEB_FILEINDEX=0` 仍然是无条件关闭。
+4. **没做「多份桥共享同一份索引」**：索引是每实例一份，因为一次扫描会重写 `gen` 并删掉 `gen < thisGen` 的行（`DELETE FROM files WHERE gen < ?`），两个桥同扫一份库会互相删掉对方的行。共享要么加跨进程扫描锁，要么把 `gen` 换成「按实例分段」——两者都比这次的收益（9 GB，且只在跑测试时才长）贵得多。测试改成不自动扫之后，这 9 GB 不再产生。
+
+**代价 / 可改：**
+
+- 日志只留一代：要更长的历史得调 `PI_WEB_LOG_MAX_BYTES`，或者从 `.1` 里翻。找「昨天那次」不可能了 —— 之前也没有人翻得动 17 GB。
+- `PI_WEB_STATE` 指到别处的**真实**用户（第二份个人实例）不会自动建索引，得在面板里按一次「开始」或设 `PI_WEB_FILEINDEX=1`。默认状态目录的用户行为一字未变。
+- 每个会话的 pi stderr 日志（`state/logs/<session>.log`，`rpc.ts` 的 `createWriteStream`）**没有**封顶：那是诊断页要读的原样输出，量级几十 MB 以内，先不动。真要封顶得先决定诊断页怎么表达「被截断」，那是另一个决定。
+- `.1` 在 Windows 上被别的进程打开时改不了名，`rotate()` 退化成原地截断 —— 少一代，不会写不进去。
+
+**验证：** `node --experimental-strip-types bridge/tests/logfile-unit.mjs`（新增，`npm run test:logfile`：不越限不产生 `.1`、越限搬一代且只留一代、开门就是怪物时截断、`maxBytes=0` 保持老行为、写失败照旧抛、环境变量四种读法）；`node bridge/tests/fileindex.mjs`（新增 `autoScanOnBoot` 四态）；`npm run typecheck`；`npm run build:bridge` 后用 `PI_WEB_STATE=<tmp> PI_WEB_LOG_MAX_BYTES=600` 真起一份桥，日志里是 `filesearch: off (0 entries)，临时状态目录不自动扫描`，`filesearch.db` 只有开库的 96 KB（不再有 1.2 GB 的索引）。
+
+## D396 日志风暴罩子：一秒超过 500 行就不再逐条写（#656；用户「为啥会产生这么多 log」2026-11-24）
+
+**问题（先数出来的量级，不是"感觉日志多"）：**
+
+- 正常一份桥：11-18 之后 5 天，主桥 `bridge.log` 一共 **834 行 / 62 KB**（≈ 0.14 B/s）。
+- 历史遗留的大头不是正常量：那份 8 MB 日志里 **98.6% 是同一行** `[peer] … 在线 N 台`（112,574 / 114,187 行，每 6 秒一行，8 天 7 MB）。那行在 `ad1c4b7`（D313）已经删掉，11-18 之后一条都没有。
+- 但 GB 级的那几份不能用"累积"解释：`.scratch/session-flags/` 那份 **17 GB / 50 分钟 = 5.8 MB/s**，比正常快 **约 4000 万倍**。按 62 字节一行是 2.9 亿行；按 `log()` 里 4000 字符上限的异常行算，是 **1521 行/秒，持续 50 分钟**。
+
+**真正的代价不是盘：** `log()` 写盘是 `appendFileSync`，**同步**的。1500 行/秒意味着事件循环里每秒多 1500 次同步系统调用 —— 那份桥自己先卡死。这也是为什么那批残留桥 SIGTERM 不退、要 SIGKILL，以及那天的 load average 顶到 20。D395 的轮转只把磁盘封在 16 MB，同步写这一半没管。
+
+**为什么查不出是哪一条在刷：** 那份 17 GB 已经随清理删掉了（用户确认过）。能写 `bridge.log` 的只有三条路：桥自己的 82 个 `log()` 调用点、`bridge/src/peer.ts` 里 `[peer]` 子进程 stdout/stderr 的**逐行全量转发**、`uncaughtException` / `unhandledRejection`（每条带栈、截 4000 字符）。后两条都可能在热路径上失控，但没有证据就不指认。
+
+**决定（`LogStorm`，`bridge/src/logfile.ts`）：**
+
+1. **写之前先算频率**：1 秒窗口内超过 `maxPerSecond`（默认 500）行 → 写**一条** `⚠️ 日志风暴：一秒内超过 N 行（样本：<被吞的第一条，截 200 字符>）`，之后的每一行只计数：不碰盘、不碰 stdout（`console.log` 也在 sink 里，所以控制台一起安静）。
+2. **降下来要说话**：某个窗口的行数掉到阀值一半以下才收工，写一条 `⚠️ 日志风暴结束：N 秒里吞掉 M 行（最后一条：…）`。留一半的余量是为了「抖一下别结束」。
+3. **结尾那行由窗口定时器兜住**：只靠 `write()` 驱动的收工有个洞 —— 刷一阵之后彻底安静的桥永远不会再写，尾巴就永远不落。所以风暴期间挂一个 `unref()` 的 1 秒定时器，每轮自己推进窗口，安静了就写尾巴。`unref` 保证它不会拖住进程退出。
+4. **`PI_WEB_LOG_MAX_LINES_PER_S=0` 关掉整个罩子**，正整数改阀值。
+5. **不做的**：不去重、不聚合相似行。被吞掉的行本来也没人看，但「什么形状的行、什么速率、持续多久」正是要查的东西，头尾两条把它说全了。也不给 `console.log` 另做一套限流 —— 统一从 sink 出去，一处管住。
+
+**代价 / 可改：**
+
+- **阀值以下的慢速刷屏照样能写满 16MB**（比如 100 行/秒刷半小时）：那由 D395 的轮转兜底，磁盘不会失控，只是那 16 MB 里全是同一条。真遇上再降 `PI_WEB_LOG_MAX_LINES_PER_S`。
+- 风暴里被吞的行没有逐条副本：事后只能看到首尾两条样本。想留全量就得接一个环形缓冲或单独开 debug 通道 —— 那是另一个决定。
+- 阀值 500/秒是拍出来的：正常一份桥一秒最多几条（开机 7 行、一次 ask 一行），500 已经差了两个数量级以上，同时远低于失控时的 1500/秒。
+- 收工判定有最多 1 秒延迟（要等一个完整窗口），所以风暴尾巴可能比实际安静晚一行。
+
+**验证：** `npm run test:logfile` 12 项全过（轮转 6 项 + 风暴 6 项：阀值内不透传、超限只写头、安静写尾并带上吞了多少与最后样本、刷完彻底安静时靠定时器落尾、样本截断到 200 字符、`maxPerSecond=0` 全关、环境变量四种读法；时钟与定时器都是注入的假实现，不真等一秒）。真桥冒烟两次：`PI_WEB_LOG_MAX_LINES_PER_S=1` 时开机 8 行变成 3 行（头 + 尾 + 第一条），尾巴是 `2.0 秒里吞掉 5 行`；默认阀值下开机 6 行一字不少、没有 ⚠️。`npm --prefix bridge run typecheck`、`npm run build:bridge` 通过。
+
+## D397 问卷残影跟着会话走：切到别的会话不再挂在输入框上方（#659；用户「在调用表单提问时，点击了中断后，有时候，chat 框上面出现撤销提示。但是这个提示，出现了跨会话情况。导致错乱」2026-11-24）
+
+**问题：** 中断一份答了一半的问卷时，输入框上方会留一块「问卷没答完就关闭了：… 把已填答案放进输入框 / 忽略」（Q-010）。它存在 `App.askLost` 这一个整页槽位里，`renderAsks()` 只看「`askLost` 有值且当前没有待答问卷」就画 —— 不看这是哪个会话。于是在 A 里中断、切到 B，B 的输入框上方照样挂着 A 的残影；点「把已填答案放进输入框」，A 的答案就进了 B 的草稿。两个会话的草稿与上下文就这样串了。
+
+**决定：**
+
+1. `askLost` 记下 `sessionId`（`ask.remove` 那一帧的会话），`keepLostAsk()` 照旧只给当前会话建残影。
+2. 显示条件收进纯函数 `lostAskHere(view)`（`web/src/frames.ts`）：`askLost` 存在、`currentId` 就是它、且这个会话当前没有别的问卷在等，才返回它。`renderAsks()` 只看这个函数的返回值。
+3. 切走不清掉它：切回来残影还在（答案仍然只属于那个会话），只是不再跟到别处。
+
+**为什么放在 frames.ts 而不是 App 里：** 这是「这一帧状态该不该画」的纯判定，与 `continueState()` 同类；放纯函数里，`web/tests/frames-unit.mjs` 不用开浏览器就能钉住「别的会话不画」。
+
+**代价 / 可改：**
+
+- 残影仍然只有一个槽位：A 的还没处理，B 又丢了一份，A 的会被 B 的顶掉。真需要同时留多份再改成按会话的 Map。
+- `askLost` 不落盘：刷新页面后残影消失（已填答案仍在 `askDrafts` / localStorage 里，重新弹同一份问卷能带回来）。这与 Q-010 原样一致，不是这次改的。
+- 「别的会话（不是当前会话）里问卷被中断」仍然不建残影，和原来一样：`ask.remove` 到达时当前会话对不上就不记。
+
+**验证：** `node probes/round5-asklost.mjs` 新增第二个会话：切过去 `.ask-lost` 必须是 0（改前红：`found 1`），切回来还在，答案只落到原会话输入框、另一个会话的草稿仍是空的。`node --experimental-strip-types web/tests/frames-unit.mjs` 27/27（新增「残影只属于丢问卷的那个会话：切到别的会话不画它」）。
+
+## D398 代码评审：OCR 的确定性分片 + 一次性只读 pi 子进程（#651，grill 结论 2026-11-23）
 
 **问题。** 改完之后没有任何地方能回答「这次改动有没有问题」。现在只有两条路：开 PR 等人看，或者在会话里让 AI 顺手读一遍 diff。后者是粗放的 —— 模型的上下文只装得下它自己挑的那几段，跨文件、跨模块的问题它看不见；结论只活在聊天记录里，没有落盘、不能逐条处理、重跑一次全重来、也没人知道上次那批意见后来怎样了。
 
@@ -7676,7 +7776,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **修订（2026-11-24，分组跑 + 「没答」不算成功 + 跑完给提示）。** 用户报「不确定有没有真正评审成功，没有信息提示」，查下去发现三次 PR 评审都是 `done`、**0 条意见、0 token**：31 个文件一次塞给一个子进程，它把 46 万 token 花在满仓库逛、最后**一个字都没答**，而 exit code 是 0，于是被记成了「完成」。四处改：
 
-1. **分组**：`GROUP_FILES = 8`，一个子进程评一组（`chunkFiles()`），串行跑完再合并 —— 这也是 D394 原本写的「串行跑完所有分组」，之前只写了没说清是一组一个进程。
+1. **分组**：`GROUP_FILES = 8`，一个子进程评一组（`chunkFiles()`），串行跑完再合并 —— 这也是 D398 原本写的「串行跑完所有分组」，之前只写了没说清是一组一个进程。
 2. **退出 0 但一句话都没答 = 失败**（`child_no_output`），不能记成「完成」；某一组非零退出也记失败并保留已完成那几组的意见。
 3. **跑完弹一句**：完成 N 条（带严重/高计数）、一条没有、失败原因、已停止 —— 只提示**本页签发起**的那一次。
 4. **提示词收紧**：先看 diff，判断不了才读整个文件，别在全仓检索无关代码（那次 46 万 token 大半花在这上面）；`run` 记录补上 `from`/`to`/`mergeBase`（以前 `finish()` 只 patch 部分字段，盘上留着初始值，看起来像「评的是 main 工作区」）。

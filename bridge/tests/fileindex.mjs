@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { escapeLike, FileIndex, volumeOf } from "../src/fileindex.ts";
+import { autoScanOnBoot, escapeLike, FileIndex, volumeOf } from "../src/fileindex.ts";
 
 let failures = 0;
 const check = async (name, fn) => {
@@ -36,6 +36,14 @@ await check("volumeOf：Windows 取盘符，POSIX 归到 /", async () => {
   } else {
     assert.equal(volumeOf("/home/x"), "/");
   }
+});
+
+await check("autoScanOnBoot：只有用户自己的状态目录默认扫，临时目录等面板开口", async () => {
+  assert.equal(autoScanOnBoot(true, {}), true, "默认目录：开机自己扫");
+  assert.equal(autoScanOnBoot(false, {}), false, "PI_WEB_STATE 指向的临时目录：不扫");
+  assert.equal(autoScanOnBoot(false, { PI_WEB_FILEINDEX: "1" }), true, "显式要就扫");
+  assert.equal(autoScanOnBoot(true, { PI_WEB_FILEINDEX: "0" }), false, "显式不要就不扫");
+  assert.equal(autoScanOnBoot(true, { PI_WEB_FILEINDEX: "" }), true, "空串等于没设");
 });
 
 await check("扫描一个临时目录：前缀能命中、子串也能命中、SKIP 目录不进库", async () => {

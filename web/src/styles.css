@@ -195,7 +195,12 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* D92: 顶栏那颗「终端」—— 有 shell 在跑（含收起状态）就点亮，点一下回到同一个进程。 */
 .icon-btn.term-live { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
 .icon-btn.alert { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
+/* 记录那颗：平时灰的，有未处理条目才整颗（图标 + 悬停底）转危险色 —— 红等于「有活没干」。 */
+.icon-btn.notes-btn.has-pending { color: var(--danger); --ico-tint: var(--danger); }
+.icon-btn.notes-btn.has-pending:hover { background: var(--danger-bg); border-color: var(--danger-dim); }
 .icon-btn.side-toggle { display: none; }
+/* 右栏那颗是同一颗图标镜像过来（CSS 的 scale 与 transform 是两个属性，别写成 transform）。 */
+.icon-btn.side-toggle[data-side="right"] .ico { scale: -1 1; }
 :where(html:not([data-compact="true"])) .icon-btn.side-toggle { display: grid; }
 
 /* ---------------------------------------------------------------- sessions */
@@ -2113,7 +2118,7 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 /* 元素自己的 inline-flex 压得住 [hidden] 的 display:none，得显式写一条（原型里踩过）。 */
 .chrome-pv-btn[hidden] { display: none; }
 .chrome-pv-btn:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); }
-.chrome-pv-btn .ic { font-family: var(--mono); }
+.chrome-pv-btn .ic { display: inline-grid; place-items: center; }
 .chrome-pv-gear { font: 500 11px/1 var(--mono); opacity: 0.55; cursor: default; }
 .chrome-pv-comp { display: flex; align-items: center; gap: 4px; overflow: hidden; }
 .chrome-pv-in { flex: 1 1 auto; min-width: 0; height: 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
@@ -2388,10 +2393,22 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 /* A folded ask card must still be clickable as a whole to open the answer sheet. */
 .qa-card .foldable .fold-body { padding-bottom: 2px; }
 
+/* ---------------------------------------------------------------- 图标（web/src/icons.ts）
+   16×16 画布、1.5 描边，尺寸由 svg 自己的 width/height 属性给（不在 CSS 里写死，调用处好用）。
+   语义色走 `--ico-tint`：只有破坏性与状态带（垃圾桶 / bug = danger，⚡ / ⚠ = warn，锁 / 盾 = ok）。 */
+.ico { flex: none; display: inline-block; vertical-align: -0.14em; }
+.ico-danger { --ico-tint: var(--danger); }
+.ico-warn { --ico-tint: var(--warn); }
+.ico-ok { --ico-tint: var(--ok); }
+/* 强烈实心底上语义色退回文字色：红桶压蓝底、白字里冒出黄闪电都是抱色（D3xx）。
+   新的实心强调色面（背景 var(--accent) + 白字）记得也加进这一串，或就地给图标加 .ico-flat。 */
+:is(.btn.primary, .chip.on, .pin-chip.cur, .viewer-seg button.on, .chrome-pv-btn.on) :is(.ico-danger, .ico-warn, .ico-ok),
+.ico-flat { --ico-tint: currentColor; }
+
 /* ---------------------------------------------------------------- file preview */
 /* 图标 + 文字两颗 span（`wideBtn()` 拆的）。窄屏那一排写不下六颗宽按钮，见下面的 media 段。 */
 .icon-btn.wide { width: auto; padding: 0 8px; font: 12px/1 var(--sans, inherit); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
-.icon-btn.wide .ic { display: inline-block; }
+.icon-btn.wide .ic { display: inline-grid; place-items: center; }
 .icon-btn.wide .lb { display: inline-block; overflow: hidden; text-overflow: ellipsis; }
 .icon-btn[hidden] { display: none !important; }
 /* 390px 的手机上「📁 文件管理器」一颗就 90px，六颗连「产物」一起是 480px —— 顶栏只剩 60px 给标题，

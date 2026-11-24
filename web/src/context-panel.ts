@@ -38,6 +38,7 @@ import {
   type CtxTrendRow,
 } from "./context.ts";
 import { fmtTime, tr } from "./i18n/index.ts";
+import { face, icon as svgIcon, type IconName } from "./icons.ts";
 import { renderMarkdown } from "./md.ts";
 import { ctxSectionMarkdown, ctxSkillCatalog, type SkillCatalog, type SkillEntry } from "./context-viz.ts";
 import "./context-panel.css";
@@ -83,6 +84,13 @@ function button(cls: string, label: string, onClick: () => void): HTMLButtonElem
 
 function icon(cls: string, glyph: string): HTMLSpanElement {
   return span(`cx-ico ${cls}`, glyph);
+}
+
+/** 事件行那颗：给图标名就画图标，其余（`+` 这种）当文字。 */
+function eventIco(cls: string, glyph: IconName | string): HTMLSpanElement {
+  const box = span(cls);
+  box.append(face(glyph, 12));
+  return box;
 }
 
 const CAT_COLOR: Record<string, string> = {
@@ -224,19 +232,19 @@ function turnStepMap(lines: CtxLine[]): Map<number, { turn: number; step: number
 }
 
 /** 事件行的图标 / 名称 / 详情只推导一次，UI 循环不再写三组并行 ternary。 */
-function eventDisplay(e: CtxEvent): { icon: string; name: string; detail: string } {
+function eventDisplay(e: CtxEvent): { icon: IconName | string; name: string; detail: string } {
   switch (e.kind) {
     case "inject":
       return { icon: "+", name: tr("注入"), detail: e.label || "–" };
     case "compact":
     case "compact_failed":
       return {
-        icon: e.kind === "compact" ? "✂" : "⚠",
+        icon: e.kind === "compact" ? "scissors" : "alert",
         name: e.kind === "compact" ? tr("压缩上下文") : tr("压缩失败"),
         detail: [e.before == null ? "" : `${ctxFmt(e.before)} tokens`, e.reason].filter(Boolean).join(" · ") || "–",
       };
     case "model":
-      return { icon: "⇄", name: tr("模型切换"), detail: `${e.previous || "–"} → ${e.model || "–"}` };
+      return { icon: "updown", name: tr("模型切换"), detail: `${e.previous || "–"} → ${e.model || "–"}` };
   }
 }
 
@@ -995,7 +1003,7 @@ export class ContextPanel {
       const meta = eventDisplay(e);
       const at = ts.get(e.atSeq);
       row.append(
-        span(`cx-event-ico ${e.kind}`, meta.icon),
+        eventIco(`cx-event-ico ${e.kind}`, meta.icon),
         span("cx-event-name", meta.name),
         span("cx-event-detail", meta.detail),
         span("cx-event-at", at ? `T${at.turn} S${at.step}` : "–"),
@@ -1059,8 +1067,10 @@ export class ContextPanel {
       const row = div("cx-file");
       const main = div("cx-file-main", span("cx-file-name", baseName(f.path)), span("cx-file-path", shortPath(f.path)));
       main.title = f.path;
+      const fileIco = span("cx-file-ico");
+      fileIco.append(svgIcon(f.writes ? "pencil" : f.searches ? "search" : "fileText", { size: 13 }));
       row.append(
-        span("cx-file-ico", f.writes ? "✎" : f.searches ? "⌕" : "▤"),
+        fileIco,
         main,
         span("cx-file-delta", `+${f.added} −${f.removed}`),
         span("cx-file-count", `${f.ops}`),

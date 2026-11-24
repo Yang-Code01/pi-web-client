@@ -1,6 +1,7 @@
 import { createEl as el } from "./chat.ts";
 import { markSurface, retireOverlay } from "./modal.ts";
 import { tr } from "./i18n/index.ts";
+import { icon } from "./icons.ts";
 import { renderMarkdown } from "./md.ts";
 import type { TrDoc, TrJob, TrSyncResp } from "./types.ts";
 
@@ -159,7 +160,8 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
     status.append(el("span", "tr-elapsed", trElapsed(v.job)));
   }
   if (v.doc?.warnings.length) {
-    const w = el("button", "tr-warn", tr("⚠ {n} 处告警", { n: v.doc.warnings.length }));
+    const w = el("button", "tr-warn");
+    w.append(icon("alert", { size: 13 }), el("span", "", tr("{n} 处告警", { n: v.doc.warnings.length })));
     w.title = v.doc.warnings.slice(0, 20).join("\n");
     w.onclick = () => {
       w.title = v.doc?.warnings.slice(0, 20).join("\n") ?? "";
@@ -280,7 +282,8 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
       out.title = tr("这一节没翻成，原文留下了；点「更新」重翻");
     } else if (sec.out !== sec.gen) {
       out.classList.add("edited");
-      const dot = el("span", "tr-dot", "✎");
+      const dot = el("span", "tr-dot");
+    dot.append(icon("pencil", { size: 11 }));
       dot.title = tr("这一节你改过");
       out.append(dot);
     }

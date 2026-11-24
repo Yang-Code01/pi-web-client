@@ -287,7 +287,7 @@ button.cx-chip:hover { border-color: var(--line-strong); background: var(--panel
 
 .cx-file { display: flex; align-items: baseline; gap: 7px; min-width: 0; padding: 4px 0; border-bottom: 1px solid var(--line-soft); font-size: 11px; }
 .cx-file:last-child { border-bottom: 0; }
-.cx-file-ico { flex: 0 0 12px; text-align: center; color: var(--faint); }
+.cx-file-ico { flex: 0 0 13px; display: grid; place-items: center; color: var(--faint); }
 .cx-file-main { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; overflow: hidden; }
 .cx-file-name { flex: none; color: var(--text); white-space: nowrap; }
 .cx-file-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 9.5px; }

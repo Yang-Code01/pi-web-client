@@ -1,6 +1,7 @@
 import { api, type DirEntry, type DirPage, type DirSortKey } from "./api.ts";
 import { formatBytes } from "./bytes.ts";
-import { createEl as el, fileIcon } from "./chat.ts";
+import { createEl as el } from "./chat.ts";
+import { icon, fileIcon } from "./icons.ts";
 import { DEFAULT_SORT, loadDirSort, loadSubSearch, nextDirSort, saveDirSort, saveSubSearch, type DirSort } from "./dirsort.ts";
 import { tr } from "./i18n/index.ts";
 
@@ -14,26 +15,10 @@ const IMAGE_FILES = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
 /** 只敲盘符（`C:`）—— 那颗盘的根，不是相对路径。 */
 const BARE_DRIVE = /^[A-Za-z]:$/;
 
-/** 目录行的文件夹图标：内联 SVG（1.5 描边，和全站线性图标同一套）。
- * 以前是 emoji `📁`：每个平台字形都不一样、会跟着字号变彩，还占不进图标那一列。
- * 只在「只列目录」的入口里换成 SVG —— 列文件的入口里现有的文件行还是 emoji，
- * 两边混在一张表里会像两套图标语言。
- * 上一级那一行用同一个尺寸的箭头：以前是文本里的 `↑ `，名字开头和下面的行对不齐。 */
-const FOLDER_PATH = "M2.5 4.5a1 1 0 0 1 1-1h3l1.2 1.4h4.8a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z";
-const UP_PATH = "M8 12.5V4M4.5 7.5 8 4l3.5 3.5";
-function svgIcon(d: string): SVGSVGElement {
-  const NS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(NS, "svg");
-  svg.setAttribute("viewBox", "0 0 16 16");
-  svg.setAttribute("class", "dir-ico");
-  svg.setAttribute("aria-hidden", "true");
-  const path = document.createElementNS(NS, "path");
-  path.setAttribute("d", d);
-  svg.append(path);
-  return svg;
-}
-const folderIcon = (): SVGSVGElement => svgIcon(FOLDER_PATH);
-const upIcon = (): SVGSVGElement => svgIcon(UP_PATH);
+/** 目录行与「上一级」行共用全站的图标（`./icons.ts`）：以前这里自己画了一份 16×16，
+ * 而文件行还是 emoji，一张表里两套图标语言。 */
+const folderIcon = (): SVGSVGElement => icon("folder", { size: 14, cls: "dir-ico" });
+const upIcon = (): SVGSVGElement => icon("arrowUp", { size: 14, cls: "dir-ico" });
 
 type Volume = { root: string; total: number; free: number };
 type FileStat = { name: string; size: number; mtime: number };
@@ -504,11 +489,16 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
 
   const addDir = (entry: DirEntry): void => {
     const { name } = entry;
-    const icon = (): Node => (listFiles ? el("span", "ico", "📁") : folderIcon());
+    const face = (): Node => {
+      if (!listFiles) return folderIcon();
+      const box = el("span", "ico");
+      box.append(icon("folder", { size: 14 }));
+      return box;
+    };
     if (!table) {
       // 图标和名字分两个节点：图标占定宽那一列，名字自己省略号。
       const row = el("button", "model-row dir-row") as HTMLButtonElement;
-      row.append(icon(), el("span", "nm", name));
+      row.append(face(), el("span", "nm", name));
       if (marked(entry)) row.classList.add("hit");
       row.title = entry.rel ? `${join(name)} · ${entry.rel}` : join(name);
       row.onclick = () => void go(join(name));
@@ -519,7 +509,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     if (marked(entry)) row.classList.add("hit");
     const nameCell = el("td", "fc-namecell");
     const wrap = el("div", "fc-name");
-    wrap.append(icon(), el("span", "nm", name));
+    wrap.append(face(), el("span", "nm", name));
     if (entry.rel) wrap.append(el("span", "rel", entry.rel));
     nameCell.append(wrap);
     const timeText = typeof entry.mtime === "number" ? formatTime(entry.mtime) : "–";
@@ -567,12 +557,16 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
         ev.stopPropagation();
         pickFile(name, row);
       };
-      wrap.append(el("span", "ico", fileIcon(name)), pick);
+      const fileIc = el("span", "ico");
+      fileIc.append(icon(fileIcon(name), { size: 14 }));
+      wrap.append(fileIc, pick);
       if (entry.rel) wrap.append(el("span", "rel", entry.rel));
       nameCell.append(wrap);
       row.append(nameCell, size, time, el("td", "fc-ops"));
     } else {
-      row.append(el("span", "ico", fileIcon(name)), el("span", "nm", name), size, time);
+      const fileIc = el("span", "ico");
+      fileIc.append(icon(fileIcon(name), { size: 14 }));
+      row.append(fileIc, el("span", "nm", name), size, time);
       if (entry.rel) row.append(el("span", "rel", entry.rel));
     }
     if (actions.length) {

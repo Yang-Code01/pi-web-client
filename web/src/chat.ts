@@ -10,6 +10,7 @@ import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { BashItem, Item, SessionHistory, SkillItem, ToolItem, UserItem } from "./types.ts";
 import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
 import { appZoom } from "./modal.ts";
+import { icon } from "./icons.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
 const BASH_SHOW = 20000;
@@ -1620,7 +1621,7 @@ export class ChatView {
     // 原样排开（保留换行），不画气泡，免得人以为自己打过这一大段。
     if (reviewed !== null) {
       const head = el("div", "who");
-      head.textContent = tr("⚡ 自动复盘 · {p1}", { p1: timeOf(item.ts) });
+      head.append(icon("bolt", { size: 12 }), document.createTextNode(tr("自动复盘 · {p1}", { p1: timeOf(item.ts) })));
       const body = el("div", "body");
       body.textContent = reviewDisplay(reviewed);
       wrap.append(head, body);
@@ -2141,7 +2142,9 @@ export class ChatView {
     main.type = "button";
     main.title = tr("点击查看执行面板计划");
     const label = el("span", "todo-summary");
-    main.append(el("span", "todo-icon", "📋"), label);
+    const todoIc = el("span", "todo-icon");
+    todoIc.append(icon("checklist", { size: 14 }));
+    main.append(todoIc, label);
     main.onclick = () => this.onTodoClick?.();
     const toggle = el("button", "todo-toggle") as HTMLButtonElement;
     toggle.type = "button";
@@ -2368,14 +2371,6 @@ function buildFailureItem(input: FailureInput, ms?: number): HTMLElement {
   foot.append(el("span", undefined, meta.join(" · ")), rawBox);
   item.append(foot);
   return item;
-}
-
-export function fileIcon(p: string): string {
-  const ext = p.split(".").pop()?.toLowerCase() ?? "";
-  if (/^(md|markdown|mdx)$/.test(ext)) return "📝";
-  if (/^html?$/.test(ext)) return "🌐";
-  if (/^(png|jpe?g|gif|svg|webp|bmp|ico|avif)$/.test(ext)) return "🖼";
-  return "📄";
 }
 
 function openPreview(path: string): void {

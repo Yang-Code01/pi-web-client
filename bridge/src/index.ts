@@ -46,7 +46,7 @@ import { diskReminders, type Reminder, type ReminderSettings } from "./reminders
 import { anyPresent, dropClient, reportPresence } from "./presence.ts";
 import { Tunnel, findCloudflared, type TunnelState } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
-import { APP_NAME, VERSION, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
+import { APP_NAME, VERSION, ensureStateDirs, readJson, resetScratchDir, stateDirIsDefault, statePath, sessionsRootInfo } from "./paths.ts";
 import { BUILD_ID } from "./build-id.ts";
 import { removePidFile, writePidFile } from "./pidfile.ts";
 import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
@@ -70,7 +70,8 @@ import {
   type ReviewMode,
 } from "./review.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
-import { FileIndex } from "./fileindex.ts";
+import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
+import { RotatingLog, LogStorm, logMaxBytes, logMaxLinesPerSecond } from "./logfile.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
 import { markWhatsnewSeen, selfChangelog, setWhatsnewPopup, takeWhatsnew, whatsnewStatus } from "./whatsnew.ts";
 import { scanSubagents } from "./subagents.ts";
@@ -623,15 +624,20 @@ async function main(): Promise<void> {
   // rpc.ts 起子进程时是 `{...process.env, ...opts.env}`，所以这里设一次就传下去了。
   process.env.PI_PEER_PORT = String(cfg.peerPort);
 
-  const log = (msg: string) => {
-    const line = `${new Date().toISOString()} ${msg}`;
+  /* D396：日志有上限（默认 8 MB，保留一代 `.1`），而且一秒超过 500 行就只记一条风暴摘要。
+     以前是纯 append，一份探针 / 测试桥能写到 GB 级 —— 关键是那条路是 **同步** 写，
+     1500 行/秒时桥自己先卡死。 */
+  const logFile = new RotatingLog(statePath("logs", "bridge.log"), logMaxBytes());
+  const logOut = (line: string) => {
     console.log(line);
     try {
-      fs.appendFileSync(statePath("logs", "bridge.log"), `${line}\n`);
+      logFile.write(line);
     } catch {
       /* ignore */
     }
   };
+  const logStorm = new LogStorm(logOut, logMaxLinesPerSecond());
+  const log = (msg: string) => logStorm.write(`${new Date().toISOString()} ${msg}`);
 
 
   log(`${APP_NAME} ${VERSION} — pi ${piVersion} @ ${pi.cli}`);
@@ -4587,12 +4593,16 @@ async function main(): Promise<void> {
     if (shouldOpenPage()) openPage(pageUrl);
     if (cfg.tunnelAuto && tunnelBin) tunnel.start();
     // 文件搜索：开库几乎不耗时；已经有索引就直接能查，没有才起首次扫描（不堵住 listen 回调）。
+    // D395：**首次扫描只给用户自己的那份状态目录**。测试 / 探针 / 第二实例都用 `PI_WEB_STATE`
+    // 指到别处，它们并不会搜文件，却每一份都要扫一遍整盘（实测 313 份 1.2 GB 的索引、9 GB 磁盘、
+    // 满盘 IO 把 load 顶到 20）。那种实例等面板里真按「开始」再建；要它开机就扫就 `PI_WEB_FILEINDEX=1`。
+    const autoScan = autoScanOnBoot(stateDirIsDefault());
     void fileIndex
       .open()
       .then(() => {
         const st = fileIndex.status();
-        log(`filesearch: ${st.state} (${st.indexed} entries)`);
-        if (st.state === "off") fileIndex.start();
+        log(`filesearch: ${st.state} (${st.indexed} entries)${autoScan ? "" : "，临时状态目录不自动扫描"}`);
+        if (st.state === "off" && autoScan) fileIndex.start();
       })
       .catch((err) => log(`filesearch: open failed: ${String(err)}`));
     // D161: pin 「the default permission as of now」 onto sessions the bridge has never looked at.

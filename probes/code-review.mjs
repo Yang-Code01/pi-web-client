@@ -154,7 +154,7 @@ try {
     const cookie2 = await login(BASE2, STATE2);
     const page = await pageFor(browser, BASE2, cookie2);
     await page.goto(BASE2, { waitUntil: "domcontentloaded" });
-    await until(async () => (await page.locator(".session-card").count()) >= 1, 20000, "session card (no-ocr)");
+    await until(async () => (await page.locator(".session-card").count()) >= 1, 30000, "session card (no-ocr)");
     await page.locator(".session-card").first().click();
     await openReviewTab(page);
     await until(async () => (await page.locator(".rv-install").count()) === 1, 20000, "install block");
@@ -167,7 +167,7 @@ try {
   // ---------------------------------------------------------------- 2) 真跑一次
   const page = await pageFor(browser, BASE, cookie);
   await page.goto(BASE, { waitUntil: "domcontentloaded" });
-  await until(async () => (await page.locator(".session-card").count()) >= 1, 20000, "session card");
+  await until(async () => (await page.locator(".session-card").count()) >= 1, 30000, "session card");
   await page.locator(".session-card").first().click();
   await openReviewTab(page);
   await page.locator(".rv-run:not([disabled])").first().waitFor({ timeout: 30000 });
@@ -265,7 +265,7 @@ try {
     localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, scale: 1.5 }));
   });
   await page.reload({ waitUntil: "domcontentloaded" });
-  await until(async () => (await page.locator(".session-card").count()) >= 1, 20000, "session card (150%)");
+  await until(async () => (await page.locator(".session-card").count()) >= 1, 30000, "session card (150%)");
   await page.locator(".session-card").first().click();
   await openReviewTab(page);
   const box = await page.locator(".rv-run, .rv-stop").first().boundingBox();

@@ -13,6 +13,7 @@
  * 「必须点知道了才不算没看过」那套纠缠。
  */
 import { createEl as el } from "./chat.ts";
+import { icon } from "./icons.ts";
 import { tr } from "./i18n/index.ts";
 import { renderMarkdown } from "./md.ts";
 import { markSurface, mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
@@ -111,7 +112,8 @@ export function openWhatsnew(opts: WhatsnewDialogOptions): void {
 
   const head = el("header", "sheet-head whatsnew-head");
   head.append(el("div", "sheet-title", tr("本服务更新了什么")));
-  const x = el("button", "btn ghost", "✕") as HTMLButtonElement;
+  const x = el("button", "btn ghost") as HTMLButtonElement;
+    x.append(icon("close", { size: 13 }));
   x.type = "button";
   x.title = tr("关闭");
   x.setAttribute("aria-label", tr("关闭"));

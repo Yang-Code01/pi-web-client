@@ -12,6 +12,7 @@
 import { createEl as el } from "./chat.ts";
 import { api } from "./api.ts";
 import { errText, tr } from "./i18n/index.ts";
+import { icon } from "./icons.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { markSurface, retireOverlay } from "./modal.ts";
 import { cleanPath, isAbsolutePath, resolveTyped } from "./dirpicker.ts";
@@ -144,7 +145,8 @@ export class ReposSheet {
     const copy = el("button", "btn ghost repos-copy", tr("复制路径")) as HTMLButtonElement;
     copy.type = "button";
     copy.onclick = () => void this.copyPath(copy);
-    const close = el("button", "repos-x", "✕") as HTMLButtonElement;
+    const close = el("button", "repos-x") as HTMLButtonElement;
+    close.append(icon("close", { size: 14 }));
     close.type = "button";
     close.setAttribute("aria-label", tr("关闭"));
     close.title = tr("Esc 关闭");
