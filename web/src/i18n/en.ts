@@ -3978,7 +3978,6 @@ export const en: Dict = {
   "项目的 .pi 资源": "Project .pi resources",
   "项目覆盖": "Project overrides",
   "项目设置有 {p1} 处未保存": "{p1} unsaved project change(s)",
-  "：{p1}": ": {p1}",
   "上次出错": "Last attempt failed",
   "会话与侧栏的摆法": "How sessions and sidebars are arranged",
   "会话列表、对话与侧栏怎么摆；灰的几种还没做好": "How the session list, chat and sidebars are arranged; greyed ones aren't ready yet",
@@ -4327,4 +4326,6 @@ export const en: Dict = {
   "正在拉 PR 列表…": "Loading pull requests…",
   "先选一个 PR（或填个号）": "Pick a PR first (or type its number)",
   "目标分支": "Target branch",
+  "提交号别带 #：要评 PR 请切到「GitHub PR」": "Leave the # off a commit id — to review a PR, switch to “GitHub PR”",
+  "：{p1}": ": {p1}",
 };

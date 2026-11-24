@@ -18346,6 +18346,12 @@ export class App {
       this.flashToast(tr("先填一个提交号"), true, 4000);
       return;
     }
+    // `#636` 是 PR 号的手感：commitish() 会拒掉它（`--commit "#636" is not a valid commit ref`），
+    // 与其让 ocr 报一句看不懂的，不如当场说清该切哪个模式。
+    if (mode === "commit" && /^#\s*\d+$/.test(this.reviewCommit.trim())) {
+      this.flashToast(tr("提交号别带 #：要评 PR 请切到「GitHub PR」"), true, 5000);
+      return;
+    }
     if (mode === "pr" && !this.reviewPr.trim()) {
       this.flashToast(tr("先选一个 PR（或填个号）"), true, 4000);
       return;

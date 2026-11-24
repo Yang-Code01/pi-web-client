@@ -111,7 +111,10 @@ function errorText(run: ReviewRun | null, fallback: string): string {
     cancelled: tr("已停止"),
     not_reported: tr("模型没交代这个文件"),
   };
-  if (code && known[code]) return known[code];
+  if (code && known[code]) {
+    const detail = (run?.error || "").trim();
+    return detail && detail !== known[code] ? known[code] + tr("：{p1}", { p1: detail }) : known[code];
+  }
   return (run?.error || fallback || "").trim();
 }
 
@@ -211,7 +214,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     : null;
 
   const meta =
-    latest && !running
+    latest && !running && latest.status !== "failed"
       ? {
           files: latest.totalFiles ?? 0,
           reviewed: latest.reviewedFiles ?? 0,
