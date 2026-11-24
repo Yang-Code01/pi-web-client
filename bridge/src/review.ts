@@ -866,7 +866,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
 
   /** 起一个子进程评一组：边跑边发进度，结束时把它答的那段话交回来。 */
   const runChild = (prompt: string) =>
-    new Promise<{ code: number | null; text: string; stderr: string; aborted: boolean; touched: Set<string>; tokens: number }>((resolve) => {
+    new Promise<{ code: number | null; text: string; stderr: string; aborted: boolean; touched: Set<string>; tokens: number; lines: number; silent: boolean }>((resolve) => {
       const pi = resolvePi();
       const proc = spawn(process.execPath, [pi.cli, ...reviewArgs({ model: opts.model, provider: opts.provider })], {
         cwd: root,
@@ -877,19 +877,23 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       let stderr = "";
       let text = "";
       let localTokens = 0;
+      let outLines = 0;
+      let silent = false;
+      let lastOut = Date.now();
       const touched = new Set<string>();
       let settled = false;
       const finishChild = (code: number | null) => {
         if (settled) return;
         settled = true;
         clearTimeout(guard);
+        clearInterval(silence);
         signal.removeEventListener("abort", onAbort);
         try {
           proc.stdout?.destroy();
         } catch {
           /* 已经关了 */
         }
-        resolve({ code, text, stderr, aborted: signal.aborted, touched, tokens: localTokens });
+        resolve({ code, text, stderr, aborted: signal.aborted, touched, tokens: localTokens, lines: outLines, silent });
       };
       const guard = setTimeout(() => {
         try {
@@ -898,6 +902,17 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
           /* 已经退了 */
         }
       }, REVIEW_TIMEOUT_MS);
+      // 一行输出都没有超过 90 秒：正常跑着的 pi 最迟几秒就会吐 session/turn_start。
+      const silence = setInterval(() => {
+        if (Date.now() - lastOut < 90_000) return;
+        silent = true;
+        clearInterval(silence);
+        try {
+          proc.kill();
+        } catch {
+          /* 已经退了 */
+        }
+      }, 5_000);
       const onAbort = () => {
         try {
           proc.kill();
@@ -911,6 +926,8 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       proc.stdin?.end(prompt);
       const lines = readline.createInterface({ input: proc.stdout! });
       lines.on("line", (line) => {
+        outLines += 1;
+        lastOut = Date.now();
         let ev: any;
         try {
           ev = JSON.parse(line);
@@ -987,6 +1004,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     const accountedPaths = new Set<string>();
     const touched = new Set<string>();
     let answered = false;
+    let lastChildWhy = "";
     let failed: { code: number | null; stderr: string; group: number } | null = null;
 
     for (let i = 0; i < groups.length; i += 1) {
@@ -1003,7 +1021,11 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       }
       if (!res.text.trim()) {
         // 退出码 0、一句话没有：多半是工具调用把轮次/上下文吃掉了。重试一次，明确让它「别再调工具」。
-        note(`第 ${i + 1} 组没给结论（已用 ${Math.round(res.tokens / 1000)}k token），重试一次`);
+        const why = res.silent
+          ? "90 秒没有任何输出"
+          : firstLine(res.stderr) || `退出码 ${res.code}、输出 ${res.lines} 行`;
+        lastChildWhy = why;
+        note(`第 ${i + 1} 组没给结论（${why}；已用 ${Math.round(res.tokens / 1000)}k token），重试一次`);
         const nudge = `${prompt}\n\n## 立即收尾\n\n不要再调用任何工具。根据你已经看到的内容直接输出上面那个 JSON 对象；宁可少报，也要把 JSON 交回来。`;
         res = await runChild(nudge);
         if (res.aborted) break;
@@ -1070,7 +1092,10 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         prTitle: run.prTitle,
         prHead: run.prHead,
         prBase: run.prBase,
-        error: `重试后仍然没有给出结论（已用 ${Math.round(tokens / 1000)}k token）。可以换个更便宜的模型，或把范围缩小（少选几个文件 / 换一次提交）再跑。`,
+        error:
+          `重试后仍然没有给出结论（已用 ${Math.round(tokens / 1000)}k token）。` +
+          (lastChildWhy ? `子进程原话：${lastChildWhy}。` : "") +
+          "可以换个更便宜的模型，或把范围缩小（少选几个文件 / 换一次提交）再跑。",
         errorCode: "child_no_output",
       });
       return;
