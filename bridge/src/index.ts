@@ -4099,6 +4099,8 @@ async function main(): Promise<void> {
                 target: String(msg.target ?? ""),
                 commit: String(msg.commit ?? ""),
                 pr: Number(msg.pr) || 0,
+                // #666：从链接卡点过来时带的「这张卡属于哪个仓库」，桥上拿它拒掉别仓的号。
+                expectRepo: String(msg.expectRepo ?? ""),
                 session,
                 model,
                 provider,
@@ -4107,7 +4109,8 @@ async function main(): Promise<void> {
                 onState: () => broadcast({ type: "review.state", dir: repo, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) }),
               });
             } catch (err: any) {
-              send({ type: "review.state", dir, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              // #666：`params` 是给英文 / 日文界面翻译用的（中文直接看上面的 `error`）。
+              send({ type: "review.state", dir, error: String(err?.message ?? err), code: String(err?.code ?? "failed"), params: err?.params });
             }
             return;
           }

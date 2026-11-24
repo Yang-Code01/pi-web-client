@@ -157,3 +157,35 @@ export function ghChurn(additions: number, deletions: number): string {
   if (!additions && !deletions) return "";
   return `+${additions} −${deletions}`;
 }
+
+/** 评审钮被禁用的理由码（界面负责翻译成人话，纯函数不带中文）。 */
+export type ReviewBlock = "" | "foreign";
+
+export interface ReviewAffordance {
+  /** 画不画这颗钮。 */
+  show: boolean;
+  disabled: boolean;
+  /** 为什么禁用：`foreign` = 这张卡属于别的仓库。 */
+  reason: ReviewBlock;
+}
+
+/**
+ * 链接卡上那颗「代码评审」钮该长什么样（#666）。
+ *
+ * 为什么需要判：评审是**在本会话目录**里跑的 —— 桥先 `gh pr view <号>` 再 fetch
+ * `refs/pull/<号>/head`，拿别的仓库的卡去评，会静默评成本仓库同号的那一只（D399 记过同类错数据）。
+ *
+ * 三个分支：
+ * - 不是 PR 卡 → 不画（issue 没东西可评，commit 这次不做入口）。
+ * - 任一边的仓库名还空着（会话刚切、状态接口还没回）→ **先画成能点**：宁可点到后由桥拒（会说明理由），
+ *   也不要让人看到一屏灰钮再齐刷刷变亮。
+ * - 两边都有且不等 → 画但禁用，理由给 `foreign`。大小写不算差异（GitHub 的仓库名本来就不分大小写，
+ *   而两个来源一个是链接原文、一个是 `gh` 归一过的）。
+ */
+export function reviewAffordance(opts: { kind: GhLinkKind; cardRepo: string; sessionRepo: string }): ReviewAffordance {
+  if (opts.kind !== "pull") return { show: false, disabled: false, reason: "" };
+  const card = (opts.cardRepo ?? "").trim().toLowerCase();
+  const session = (opts.sessionRepo ?? "").trim().toLowerCase();
+  if (!card || !session || card === session) return { show: true, disabled: false, reason: "" };
+  return { show: true, disabled: true, reason: "foreign" };
+}

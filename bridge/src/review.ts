@@ -17,7 +17,7 @@ import readline from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { ensureDir, piChildEnv, quarantineStateFile, readJsonChecked, statePath } from "./paths.ts";
 import { resolvePi } from "./pi.ts";
-import { resolvePullRequest } from "./gitpr.ts";
+import { localRepoName, resolvePullRequest } from "./gitpr.ts";
 import type {
   ReviewCategory,
   ReviewFinding,
@@ -48,10 +48,13 @@ const CATEGORIES: Category[] = ["bug", "security", "performance", "maintainabili
 
 export class ReviewError extends Error {
   code: string;
-  constructor(code: string, message: string) {
+  /** 可选：给界面翻译用的参数（`bridge.err.<code>` 里的 `{p1}` 之类）。 */
+  params?: Record<string, string | number>;
+  constructor(code: string, message: string, params?: Record<string, string | number>) {
     super(message);
     this.name = "ReviewError";
     this.code = code;
+    this.params = params;
   }
 }
 
@@ -676,6 +679,11 @@ export interface StartOptions {
   commit?: string;
   /** `mode: "pr"` 时要评的 PR 号。 */
   pr?: number;
+  /**
+   * #666：这个号属于哪个仓库（从链接卡点过来时带上的）。
+   * 缺省（手输号、别的入口）不拦 —— 这里只堵「拿别的仓库的卡点了评审」这一条。
+   */
+  expectRepo?: string;
   /** 哪个会话发起的：评审状态按「仓库 + 会话」分开存。 */
   session?: string;
   model?: string;
@@ -686,8 +694,32 @@ export interface StartOptions {
   onState?: () => void;
 }
 
+/**
+ * 「这张卡属于的仓库」与「会话仓库」不是同一个吗？
+ *
+ * 任一方为空就不算不符：认不出本地仓库时不该把正常评审也堵死，老页面也不带这个字段。
+ */
+export function expectRepoMismatch(localRepo: string, expectRepo: string): boolean {
+  const local = (localRepo ?? "").trim().toLowerCase();
+  const want = (expectRepo ?? "").trim().toLowerCase();
+  if (!local || !want) return false;
+  return local !== want;
+}
+
 export function startReview(o: StartOptions): { runId: string; repo: string } {
   const root = gitRoot(o.dir);
+  // #666：评审只在**会话目录**里跑（`gh pr view <号>` 与 `git fetch refs/pull/<号>/head` 都拿 cwd），
+  // 号是别仓的那只就会把本仓同号的 PR 静默评掉（D399 记过同类错数据）。先拒，比给出错结果便宜。
+  if (o.mode === "pr" && o.expectRepo) {
+    const local = localRepoName(root);
+    if (expectRepoMismatch(local, o.expectRepo)) {
+      throw new ReviewError(
+        "pr_foreign_repo",
+        `这张卡是 ${o.expectRepo} 的 PR，本会话评的是 ${local || "另一个仓库"} —— 评审只在会话目录里跑`,
+        { p1: o.expectRepo, p2: local || "?" },
+      );
+    }
+  }
   const session = String(o.session ?? "");
   const key = activeKey(root, session);
   if (active.has(key)) throw new ReviewError("busy", "这个会话已经在评了");

@@ -274,6 +274,10 @@ export class ChatView {
   onBashStop: ((id: string) => void) | null = null;
   /** GitHub 链接卡 → 右栏面板。应用没接上就只画链接（卡片自己不做事）。 */
   onGithubOpen: ((repo: string, number: number) => void) | null = null;
+  /** #666：链接卡右缘那颗「代码评审」→ 右栏评审页签（不自动开跑）。没接上就只画普通卡片。 */
+  onGithubReview: ((repo: string, number: number) => void) | null = null;
+  /** #666：本会话所在仓库（`owner/repo`）；判据还没问回来时给空串，卡片据此决定评审钮灰不灰。 */
+  githubSessionRepo: (() => string) | null = null;
   /** Set by the app: ⑂ on a user message (#17). `index` = its position among user messages. */
   onFork: ((item: { id: string; text: string }, index: number) => void) | null = null;
   /**
@@ -1648,10 +1652,7 @@ export class ChatView {
       }
       wrap.append(who, this.foldable(this.buildUserBody(item), 240));
       // 别人发我一条 PR 链接，我也要能直接在面板里看 —— 同一个解析器，不看是谁写的消息。
-      if (this.onGithubOpen) {
-        const open = this.onGithubOpen.bind(this);
-        wrap.append(...githubCards(item.text, { open, max: 2 }));
-      }
+      if (this.onGithubOpen) wrap.append(...this.githubCardsFor(item.text, 2));
     } else {
       who.textContent = headLine(item.model ?? "pi", item.ts, item.stopReason === "aborted" ? tr(" · 已中断") : "");
       if (item.text.trim()) who.append(copyButton(() => item.text));
@@ -1664,10 +1665,7 @@ export class ChatView {
         body.append(renderMarkdown(item.text));
         // 正文里的 PR 链接本来就能点（`md.ts` 会给裸 URL 加锚点），但点完要切浏览器。
         // 挂上卡片 = 当场看得见「这是哪个 PR」。每段最多两张。
-        if (this.onGithubOpen) {
-          const open = this.onGithubOpen.bind(this);
-          body.append(...githubCards(item.text, { open, max: 2 }));
-        }
+        if (this.onGithubOpen) body.append(...this.githubCardsFor(item.text, 2));
         const peek = el("button", "msg-peek", previewLine(item.text));
         peek.title = tr("展开回答");
         const fold = foldHead("msg-fold");
@@ -1898,6 +1896,18 @@ export class ChatView {
     // The node is measured before it is in the document, so re-check once layout is real.
     requestAnimationFrame(measure);
     return box;
+  }
+
+  /**
+   * 三处挂卡（工具卡输出 / AI 正文 / 用户消息）共用的宿主：主区开右栏面板，右缘那颗去评审。
+   * 应用没接上 `onGithubOpen` 时返回空数组 —— 那时根本不画卡。
+   */
+  private githubCardsFor(text: string, max: number): HTMLElement[] {
+    const open = this.onGithubOpen;
+    if (!open) return [];
+    const review = this.onGithubReview;
+    const sessionRepo = this.githubSessionRepo;
+    return githubCards(text, { open, review: review ?? undefined, sessionRepo: sessionRepo ?? undefined, max });
   }
 
   private buildUserBody(item: UserItem): HTMLElement {
@@ -2139,10 +2149,7 @@ export class ChatView {
       card.append(out);
       // 工具卡是 AI 自己跑 `gh …` 时输出的落脚处（`buildBash` 那个是用户的 `!cmd`）。
       // `<pre>` 里的链接点不动，所以在这里挂卡 —— 这正是「AI 建完 PR 我看不到」那一条。
-      if (this.onGithubOpen && item.result) {
-        const open = this.onGithubOpen.bind(this);
-        card.append(...githubCards(String(item.result), { open, max: 3 }));
-      }
+      if (this.onGithubOpen && item.result) card.append(...this.githubCardsFor(String(item.result), 3));
     }
     return card;
   }

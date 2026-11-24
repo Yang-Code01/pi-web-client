@@ -5,7 +5,7 @@
  * （它自己跑 `git diff`），拿不到分片就丢掉这次评审最值钱的那一半（确定性分片 + 排除原因）。
  * 取的时候只写 `refs/pi-web/pr-N` 与 `origin/<base>`，**不动工作区、不动当前分支**。
  */
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 
 export interface PullRequest {
   number: number;
@@ -63,6 +63,24 @@ export function repoFromRemote(url: string): string {
   const http = /^https?:\/\/[^/]+\/([^/]+)\/(.+?)(?:\.git)?\/?$/i.exec(text);
   if (http) return `${http[1]}/${http[2].replace(/\.git$/i, "")}`.toLowerCase();
   return "";
+}
+
+/**
+ * 本地仓库名（`owner/repo`，从 origin 认）。认不出（没远端 / 不是 GitHub / 没装 git）给空串。
+ * 写成同步：评审**开始之前**就要拿它把别仓的号拒掉，没道理为一次比对跑一轮 await。
+ */
+export function localRepoName(dir: string): string {
+  try {
+    const out = execFileSync("git", ["-C", dir, "remote", "get-url", "origin"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+      windowsHide: true,
+    }).trim();
+    return out ? repoFromRemote(out) : "";
+  } catch {
+    return "";
+  }
 }
 
 /** 打开过 PR 列表的仓库记住一分钟：切页签、重画面板都不该再打一次 `gh`。 */

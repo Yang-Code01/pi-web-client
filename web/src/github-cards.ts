@@ -1,5 +1,5 @@
 /**
- * 聊天里的 GitHub 链接卡（#661）。
+ * 聊天里的 GitHub 链接卡（#661、#666）。
  *
  * 为什么需要它：AI 跑 `gh` 的输出落在工具卡里，那是一块纯文本 —— 唯一「第一手证据」的 URL 恰恰是
  * 页面上点不动的地方。卡片补的就是这一下：认出链接 → 挂一张能点的卡（号、标题、`+/−`、多久以前）。
@@ -9,6 +9,10 @@
  *  - AI 正文（复述在回答里的链接）
  *  - **用户自己发出的消息**（别人发我一条 PR 链接，我也要能直接在面板里看）
  *
+ * #666 起，PR 卡右侧多一颗「代码评审」：主区仍然点开右栏的 GitHub 面板，右边那颗把号送进右栏的
+ * 「代码评审」页签。两块是**兄弟**不是嵌套 —— `button` 套 `button` 是非法 DOM，点击还会冒泡到主区。
+ * 哪张卡该有这颗钮、灰不灰，问 `reviewAffordance()`（纯函数，单测盯着它）；这里只负责画。
+ *
  * 两条纪律：
  * - **不阻塞渲染**：卡片先挂一个只有号的骨架，滚进视口才去问桥要标题（`IntersectionObserver`），
  *   历史消息里几十张卡不会一次性打出几十个请求。
@@ -17,7 +21,7 @@
  * 这个文件被 `chat.ts` import，所以**不能**反过来 import chat.ts（会成环）—— 元素自己建。
  */
 import { githubApi } from "./api.ts";
-import { ghAge, ghAgeText, ghChurn, ghLinksIn, type GhLink, type PullRow } from "./github-shared.ts";
+import { ghAge, ghAgeText, ghChurn, ghLinksIn, reviewAffordance, type GhLink, type PullRow, type ReviewAffordance } from "./github-shared.ts";
 import { tr } from "./i18n/index.ts";
 import "./github-panel.css";
 
@@ -32,6 +36,21 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 const rowCache = new Map<string, PullRow>();
 /** 正在飞的请求：同一条消息重绘两次时不要打两发。 */
 const inFlight = new Map<string, Promise<PullRow | null>>();
+
+/** 宿主给的两个入口（应用没接上评审入口时退化成 #661 那张纯链接卡）。 */
+export interface GithubCardHosts {
+  /** 主区：在右栏的 GitHub 面板里看这个 PR。 */
+  open: (repo: string, number: number) => void;
+  /** 右缘那颗「代码评审」：把号交给右栏的评审页签（**不**自动开跑）。 */
+  review?: (repo: string, number: number) => void;
+  /**
+   * 本会话所在仓库（`owner/repo`）；还没问回来时返回空串。
+   * 卡片每次重刷都问一遍，所以判据晚到也不用重画聊天。
+   */
+  sessionRepo?: () => string;
+  /** 一张卡最多几张（工具卡输出给 3，正文 / 用户消息给 2）。 */
+  max?: number;
+}
 
 let observer: IntersectionObserver | null = null;
 const waiting = new WeakMap<Element, () => void>();
@@ -76,16 +95,16 @@ function hydrate(key: string, repo: string, number: number): Promise<PullRow | n
 const KIND_LABEL: Record<GhLink["kind"], string> = { pull: "PR", issue: tr("Issue"), commit: tr("Commit") };
 
 /**
- * 把一段文本里的 GitHub 链接折成卡片。`open` 是宿主的「打开面板」入口（只对 PR 有意义）。
+ * 把一段文本里的 GitHub 链接折成卡片。`hosts` 是宿主的两个入口。
  * 没有链接时返回空数组 —— 调用方可以直接展开它。
  */
-export function githubCards(text: string, opts: { open: (repo: string, number: number) => void; max?: number }): HTMLElement[] {
+export function githubCards(text: string, hosts: GithubCardHosts): HTMLElement[] {
   const links = ghLinksIn(text);
   if (links.length === 0) return [];
-  return links.slice(0, opts.max ?? 3).map((link) => cardFor(link, opts));
+  return links.slice(0, hosts.max ?? 3).map((link) => cardFor(link, hosts));
 }
 
-function cardFor(link: GhLink, opts: { open: (repo: string, number: number) => void }): HTMLElement {
+function cardFor(link: GhLink, hosts: GithubCardHosts): HTMLElement {
   const card = el("button", "ghlink") as HTMLButtonElement;
   card.type = "button";
   const top = el("div", "ghlink-top");
@@ -98,7 +117,7 @@ function cardFor(link: GhLink, opts: { open: (repo: string, number: number) => v
   const number = Number(link.id);
   const isPull = link.kind === "pull" && Number.isFinite(number) && number > 0;
   card.onclick = () => {
-    if (isPull) opts.open(link.repo, number);
+    if (isPull) hosts.open(link.repo, number);
     else window.open(link.url, "_blank", "noopener");
   };
   if (!isPull) {
@@ -107,6 +126,8 @@ function cardFor(link: GhLink, opts: { open: (repo: string, number: number) => v
   }
 
   card.title = tr("在右栏打开 {p1}#{p2}", { p1: link.repo, p2: String(number) });
+  // 「这张卡该不该有那颗钮」的 policy 住在纯函数里；这里只问一次，后面重刷时才重新问。
+  const affordance = reviewAffordance({ kind: link.kind, cardRepo: link.repo, sessionRepo: hosts.sessionRepo?.() ?? "" });
   const key = `${link.repo}#${number}`;
   const cached = rowCache.get(key);
   const fillIt = (row: PullRow) => {
@@ -116,7 +137,7 @@ function cardFor(link: GhLink, opts: { open: (repo: string, number: number) => v
   };
   if (cached) {
     fillIt(cached);
-    return card;
+    return withReview(card, link, number, hosts, affordance);
   }
   const run = () => {
     void hydrate(key, link.repo, number).then((row) => {
@@ -136,11 +157,84 @@ function cardFor(link: GhLink, opts: { open: (repo: string, number: number) => v
     waiting.set(card, run);
     io.observe(card);
   } else run();
-  return card;
+  return withReview(card, link, number, hosts, affordance);
+}
+
+// ---------------------------------------------------------------------------
+// #666：右缘那颗「代码评审」
+// ---------------------------------------------------------------------------
+
+/** 画出来的评审钮：判据（会话仓库）晚到时按它重刷，不用重画聊天。 */
+interface ReviewSlot {
+  card: HTMLElement;
+  button: HTMLButtonElement;
+  repo: string;
+  number: number;
+  hosts: GithubCardHosts;
+}
+
+const reviewSlots = new Set<ReviewSlot>();
+
+function applyReview(slot: ReviewSlot, affordance: ReviewAffordance): void {
+  const session = (slot.hosts.sessionRepo?.() ?? "").trim();
+  slot.button.disabled = affordance.disabled;
+  slot.button.title =
+    affordance.reason === "foreign"
+      ? tr("只能评本会话仓库的 PR：这张卡是 {p1}，本会话是 {p2}", { p1: slot.repo, p2: session })
+      : tr("在右栏的「代码评审」里评这个 PR（不自动开跑）");
+}
+
+/** 判据变了（会话仓库问回来了）之后重算一次。 */
+function paintReview(slot: ReviewSlot): void {
+  applyReview(slot, reviewAffordance({ kind: "pull", cardRepo: slot.repo, sessionRepo: slot.hosts.sessionRepo?.() ?? "" }));
+}
+
+/** 把一张只剩主区的 PR 卡包成「主区 + 右缘评审钮」。宿主没接评审入口时原样返回。 */
+function withReview(
+  card: HTMLButtonElement,
+  link: GhLink,
+  number: number,
+  hosts: GithubCardHosts,
+  affordance: ReviewAffordance,
+): HTMLElement {
+  if (!affordance.show || !hosts.review) return card;
+  // 顺手清掉已经从页面上拿掉的卡：`refreshGithubCards()` 只在判据**第一次**到达时跑一次，
+  // 之后不再有机会收尸，聊天重绘几十轮就会攒一堆脱离文档的 slot。
+  for (const stale of reviewSlots) if (!stale.card.isConnected) reviewSlots.delete(stale);
+
+  const review = el("button", "ghlink-review", tr("代码评审")) as HTMLButtonElement;
+  review.type = "button";
+  review.setAttribute("aria-label", tr("代码评审 {p1}#{p2}", { p1: link.repo, p2: String(number) }));
+  review.onclick = () => {
+    if (review.disabled) return;
+    hosts.review?.(link.repo, number);
+  };
+
+  const box = el("div", "ghcard");
+  box.append(card, review);
+  const slot: ReviewSlot = { card: box, button: review, repo: link.repo, number, hosts };
+  reviewSlots.add(slot);
+  applyReview(slot, affordance);
+  return box;
+}
+
+/**
+ * 会话仓库问回来之后叫一次：把已经画出来的按钮重刷一遍（判据没到时它们是亮的）。
+ * 顺手清掉已经从页面上拿掉的卡 —— 聊天重绘之后旧卡不会再回来。
+ */
+export function refreshGithubCards(): void {
+  for (const slot of reviewSlots) {
+    if (!slot.card.isConnected) {
+      reviewSlots.delete(slot);
+      continue;
+    }
+    paintReview(slot);
+  }
 }
 
 /** 测试用：清掉缓存（换一套假桥之后不能让上一张卡的结果留着）。 */
 export function resetGithubCards(): void {
   rowCache.clear();
   inFlight.clear();
+  reviewSlots.clear();
 }
