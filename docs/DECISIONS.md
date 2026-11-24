@@ -6208,12 +6208,14 @@ Esc 之后 dialog: 0
 
 ## D317 记录面板的「内网通连动」：发送是文字、提交是记录包，图永远后补（#518）
 
+> **后续（#663）：这里的「发送给好友」已经撤掉** —— 跟「提交给好友」重复、且更好用的是后者。现在菜单只剩一项，并加了体积护栏，见 D398。
+
 **问题：** 记录正文下方原本有一颗「复制 Markdown」；用户要把它换成「内网通连动」：发送给好友 = 一条普通消息，提交给好友 = 打包给对端，对端在气泡里看到卡片，能接受或只读预览。于是要定的是**入口放哪、发送与提交各发什么、截图什么时候走**。
 
 **决定：**
 
 - **入口**：active 与归档两个分支都用「内网通连动 ▾」替掉「复制 Markdown」；垃圾箱没有（那条已经删了，发不出去）。菜单先挂「正在问内网通…」，`GET /api/peer` 回来才换成两项；未启用、正在重启、连不上都写成禁用 + 原因，`> 32 KB` 的正文让「发送」禁用并提示改用提交。
-- **发送**：`noteTextForPeer(title, body)` = 标题 + 空行 + `richToMarkdown(body)`，走 `/api/peer/send` 的普通 `text` 帧，对端没有任何按钮。标题与正文都空时两项都禁用；发送允许草稿，不强迫先落盘。
+- **发送**：`noteTextForPeer(title, body)` = 标题 + 空行 + `richToMarkdown(body)`，走 `/api/peer/send` 的普通 `text` 帧，对端没有任何按钮。标题与正文都空时两项都禁用；发送允许草稿，不强迫先落盘。（**这一项已由 D398 撤掉**：`noteTextForPeer()` 与其测试并删除。）
 - **提交**：先 `saveAndWait()` 拿到桥发回来的真 id 与截图清单（dirty 时挂 waiter 等 `notes.saved`，6s 超时；`waitShots()` 每 100ms 轮询到张数齐，5s 上限），再选人、`POST /api/notes/measure` 拿每张图的体积与 sha256，确认页写「对方会收到什么」，最后 `POST /api/peer/sendnote` 发 note 帧、逐张 `POST /api/peer/sendfile` 补图。**note 先到、图后到**是正常状态：对端卡片按 sha 对齐，缺图时禁用接受（#517），不为此把整包改成一次上传。
 - **选人**：合并 `/api/peer` 的在线名单与 `/api/peer/contacts`，排除 `status.nodeId`，在线优先、离线置灰不可点，可按昵称与主机名搜；`localStorage["notes.peerLast"]` 记上次发给谁并打「上次」标。
 - **失败语义**：`sendnote` 成功、某张图失败 → 提示「记录包已发出，但第 n 张图没发出去：…」，不回滚 note（对端会按缺图处理）；`sendnote` 失败 → 提示错误、不重试，用户可再点一次。
@@ -7753,7 +7755,22 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **验证：** `node probes/round5-asklost.mjs` 新增第二个会话：切过去 `.ask-lost` 必须是 0（改前红：`found 1`），切回来还在，答案只落到原会话输入框、另一个会话的草稿仍是空的。`node --experimental-strip-types web/tests/frames-unit.mjs` 27/27（新增「残影只属于丢问卷的那个会话：切到别的会话不画它」）。
 
-## D398 GitHub 通道：一个 `gh` 壳 + 会话级账号，PR 拿回右栏看（#661）
+## D398 记录面板撤掉「发送给好友」：只剩「提交给好友」，顺带给提交加体积护栏（#663；用户「发送给好友没有提交给好友好用」2026-11-24）
+
+**问题：** bug 反馈面板的「内网通连动 ▾」里，两项对同一个意图给出两条路：发送 = 一条普通 `text` 帧（标题 + 空行 + Markdown 正文，≤32 KB，允许未保存的草稿，对端没有任何按钮）；提交 = 打包 note 帧 + 逐张补图，对端看到卡片、可只读预览、可接受进记录。用户报「功能重复，发送没有提交好用，想删掉发送」。顺带查出一个既有窟窿：**提交侧没有任何体积护栏** —— 正文超 200 KB 时只有服务端 400「正文太长」，用户点完、选完人才知道；而唯一提到体积的那句话（32 KB）偏偏挂在发送身上。
+
+**决定：**
+
+- **删发送，菜单留一项**：`peerMenu()` 只画「提交给好友」。菜单本体不动 ——「内网通连动 ▾」这个入口、「正在问内网通…」的占位、未启用 / 正在重启 / 连不上时的置灰 + 原因，以及**归档只读视图里照旧保留这颗菜单**（不脏时 `saveAndWait()` 直接返回，发得出去）。删掉的东西：`sendTextToPeer()`、`PEER_TEXT_BYTES`、`noteTextForPeer()` 与它的注释、`md-input-unit.mjs` 那条断言，以及 en/ja 的「发送给好友」「已发送给 {p1}」「标题 + Markdown 正文」「正文 {p1} KB，超过 32 KB，改用「提交给好友」」四条译文。共用的键不动（「发送中…」`mail.ts` 也在用、「没发出去：{p1}」`app.ts` 在用、「先写点东西」「连不上内网通：{p1}」提交自己也用）。
+- **护栏抽成纯函数**：新文件 `web/src/notes/peer-guard.ts`，`NOTE_TITLE_MAX 200` / `NOTE_BODY_MAX 200_000` / `NOTE_SHOTS_MAX 24` 照抄 `peer/src/note.ts`（web 包不能 import peer 包），`notePeerGuard(title, body, shots)` 只返回结构 `null | { blocked, actual, limit }`，文案由记录面板用 `tr()` 拼 —— 模型层不写中文。顺序 **正文 → 标题 → 截图**：正文是用户真能改的那条，标题多半是保存时从首行推出来的（60 字），先报标题会把人指去改一个他没写过的字段。正文按 UTF-8 字节、标题按 `String.length`（并先 trim）、截图按张数，全部与服务端一致。
+- **只判这三条，不判整帧 256 KB**：三条都在上限内时整帧必然小于 `MAX_NOTE_BYTES`。最坏算过：正文 200 KB + 标题 200 字（UTF-8 约 600 B）+ 24 张清单（文件名 200 字 + sha 64 位 + size ≈ 700 B × 24 ≈ 17 KB）≈ 217 KB。整帧体积要等每张图的 sha256 才知道，那是 `/api/notes/measure` 的活（现在的调用点在选人之后），不为它把菜单从「立刻出来」拖成「等一下」。
+- **判定只在菜单里做一次**：按 `fullNote(note)` 算（`editing.note.body` 随输入实时同步，所以这就是编辑器里现在的内容），落盘后不再复算 —— `save()` 不重写正文，只补空标题（首行 60 字），不会凭空变大。
+- **提示只说第一条超的，带数值**：「正文 {p1} KB，上限 {p2} KB」/「标题 {p1} 字，上限 {p2} 字」/「截图 {p1} 张，上限 {p2} 张」。菜单宽 300px、hint 只有一行 11px 小字，塞不下三条；正文按 1000 进算 KB，跟服务端那句「上限 200 KB」对得上。正常态仍是「打包标题、正文、分类、状态与 {p1} 张图」。
+
+**取舍：** 记录面板的**纯文字出口整个没了** —— D317 本来就是用这两项换掉「复制 Markdown」的，删掉发送之后没法把一条记录拷成文字带到微信 / 飞书 / 邮件，也没法不落盘就先发草稿，对方只是「看一眼给个意见」也得先点接受。这三条是用户明确接受的代价，不是遗漏。也没走「留着发送、只是折进二级菜单」（重复本身没解决，只是藏起来），没走「发送改成复制 Markdown」（用户要的是只剩一项），没顺手扫其它面板的重复入口（只收记录面板这一处）。守卫常量在前端再写一份确实是重复，靠单测直接 import `peer/src/note.ts` 对齐来防漂。
+
+**验证：** 新增 `web/tests/peer-guard-unit.mjs`（6 条：三条上限与服务端同源、正常能发、正文 200_000 / 200_001 字节与多字节边界、标题 200 / 201 与两端空白、截图 24 / 25、同时超时先报正文），挂进 `npm run test:notes` 的第三段；`web/tests/notes-sheet-browser.mjs` 第 15 段改成断言「菜单只剩一项 → 选人在线/离线/排除自己 → 确认页四项 → sendnote + sendfile → 空记录置灰说『先写点东西』→ 正文 210 KB 置灰且 hint 是『正文 211 KB，上限 200 KB』」，并去掉 `/api/peer/send` 的断言。`npm --prefix web run typecheck`（含 i18n 键集比对）通过。`npm run test:notes` 里 `md-input-unit` / `peer-guard-unit` / `notes-rich-unit` 全绿，而 `notes-editor-browser` 与 `notes-sheet-browser` **在本机 origin/main 上就已经红**（`.notes-console` 多出一个 `.fail-wrap` 子元素、编辑器回车那条 `onEnter` 断言），与本条无关；第 15 段因此另用 `.scratch/peer-send-dup/peer-menu.mjs` 探针单独跑过：一项菜单 / 空记录 / 超长正文 / 超长标题 / 25 张图 / 正常提交 / 归档里仍在，全绿，且全程没有 `/api/peer/send`。
+## D399 GitHub 通道：一个 `gh` 壳 + 会话级账号，PR 拿回右栏看（#661）
 
 **问题（三件事叠在一起）：**
 
@@ -7774,7 +7791,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - **shim 的两条 HTTP 口必须站在 cookie 闸前面**（只认回环对端 + `x-pi-loopback` 会话令牌）。落到闸门后面就会拿到 `unauthorized`，而模型不会停：它会 `which gh` → 检查 `/opt/homebrew/bin/gh` → 最后用 `~/.local/bin/gh` 的真 gh 绝对路径跑通 —— 整套账号机制当场作废。
 - **链接卡要挂到工具卡**（AI 自己跑 `gh` 的输出），不只是用户的 `!cmd` 卡；只挂后者的话一个卡都不会出现。
 
-**合并 vs 建 PR**：建 PR 是 AI 的本职活，不拦；把代码合进 main 是人的决定 —— `approval-gate.ts` 的 `SHELL_PATTERNS` 加两条（`gh pr merge`、`gh api … /merge`），与已有的 `git push` 同一机制。面板那颗「合并 PR」因此**不自己打 GitHub**：它把一句话交给 agent（`gh pr merge <n>`），照样过审批闸，而不是第二条写路线。
+**合并 vs 建 PR**：建 PR 是 AI 的本职活，不拦；把代码合进 main 是人的决定 —— `approval-gate.ts` 的 `SHELL_PATTERNS` 三条路都拦：`gh pr merge`（`gh` / `pr` / `merge` 之间放开，`gh -R a/b pr merge 1` 这类全局参数插中间也命中）、`gh api` 的 `…/merge` / `…/merges`、graphql 的 `mergePullRequest` / `enqueuePullRequest` / `enablePullRequestAutoMerge`，反斜杠续行在匹配前先接回去 —— 只拦一条等于留个后门。与已有的 `git push` 同一机制。面板那颗「合并 PR」因此**不自己打 GitHub**：它把一句话交给 agent（`gh pr merge <n>`），照样过审批闸，而不是第二条写路线。
 
 **两个开关**（设置 → 外观 → 对话，`pi.prefs` 跟着设备走）：`githubCards`（主）与 `githubAutoPanel`。主开关关掉时 `autoPanel` 跟着失效（`githubFeature()`）—— 否则会出现「面板弹出来了、聊天里却一张卡都没有」这种没法理解的状态。
 
@@ -7794,6 +7811,15 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - **点一行文件落到那个文件的差异**：锚点是 `#diff-<sha256(路径)>`，由桥算好放在 `files[].anchor` 里。算法对着真页面核过：`/pull/659/files` 的 HTML 里 `docs/DECISIONS.md` 那个块正是 `diff-1ea199fcea0d29740c9d…`，与桥算出来的前 15 位逐位相同。算错的最坏结果也只是落到 Files changed 顶部。
 - **跨仓链接卡不会显示本仓同号 PR**：卡片带 `repo`，`/api/github/pr` 显式传它；之前只传号，桥按会话 cwd 回落，点别人的卡会显示本仓同号的 PR（错数据）。
 
+**第二轮评审（23 条）后补的（都是实盘漏洞，不是格式问题）：**
+
+- **读接口先校验再拼上游**：`repo` 只认 `owner/name`、`cwd` 只认存在的绝对路径且不带 `..`；再加一层 `ctx.sessionCwd` —— 会话存在时以**会话自己的 cwd** 为准，URL 里那个作废。读接口对隧道访客是开着的，这三条是它够不着「任意 GitHub 端点 / 任意目录」的关键。
+- **示例样本不再全绿**：checks 掺一条失败、一条在跑，评论人换成 `octocat` / `hubot`。编的 CI 与挂在真人名下的假评审最容易被人当真（样本本身是这版的决定，不删）。
+- **壳的测试缝改走 identity 响应**：壳跑在 pi 子进程底下，而 `piChildEnv()` 会剥掉所有 `PI_WEB_*`，原来那条 `PI_WEB_GITHUB_REAL_GH_JS` 分支实际不可达；名字统一到桥里已有的 `PI_WEB_GH_JS`。
+- **起会话的那几处兜底**：PATH 覆盖**已有的键名**（Windows 上通常叫 `Path`，否则壳目录静默失效）、`ensureGithubBin()` 写盘失败只 warn 不让会话起不来、删掉没人读的 `PI_WEB_GITHUB_SHIM`。
+- **面板四条**：换 PR（含换仓库）时清 `detail`、列表带上 `repo`、checks 的分子改成**通过**条数、账号菜单关的时候把 document 监听一起摘掉。
+- **两张请求键缓存加上限**（`CACHE_MAX=200`，FIFO）：键来自请求，只靠 TTL 不管大小，长跑的桥会慢慢吃内存。
+
 **两份解析器是刻意留的**：桥的 `seenLinks()` 与页面的 `ghLinksIn()` 跨包，共享要新造第三处分包。代价用一条测试兜住 —— `bridge/tests/github-e2e.mjs` 里「口径一致」那条拿六组样本比对两边的 `kind|repo|id`，分叉就红。
 
-**验证：** `npm run test:github` 三段共 45 条 —— 桥的 HTTP 面 26 条（账号解析四种来源的优先级、工作区默认账号的写与读、逐文件锚点、跨仓 repo 透传、两份解析器口径一致、仓库识别、PR 列表/详情的归一化、没有远端时 409、上游 401 映射、隧道写 403、卡片缓存命中、PAT 存取与删除、shim 身份与记账三种帧）；前端纯函数 10 条（链接识别去重与标点、相对时间四档、`+/−` 文案、两个开关默认值与连坐、两个新帧不改纯视图状态）；壳 10 条（没令牌时还能读公开仓库、写才拦；令牌交到真 gh、`pr create` 链接回报、退出码透传、没 gh 时内置实现真建 PR、未实现子命令明确失败、桥不在说人话、PATH 注入且本机 PATH 没被动过）。`npm run typecheck` 全绿（含 37 条新 i18n 键、`test:viewport`、`test:layers`、`test:theme`）。真机冒烟（隔离实例，真 gh 真令牌）：默认 `gh api user --jq .login` → `Yang-Code01`；会话切到 `qingmin-new` 后 → `qingmin-new`；`gh pr view 659` → 桥发出 `github.seen` 并认出 pull #659；面板接口真数据（20 条开着的 PR、#659 `+105 −21`、5 个文件）。
+**验证：** `npm run test:github` 三段共 50 条 —— 桥的 HTTP 面 28 条（账号解析四种来源的优先级、工作区默认账号的写与读、逐文件锚点、跨仓 repo 透传、`repo`/`cwd` 校验与「会话 cwd 优先」、两份解析器口径一致、仓库识别、PR 列表/详情的归一化、没有远端时 409、上游 401 映射、隧道写 403、卡片缓存命中、PAT 存取与删除、shim 身份与记账三种帧）；前端纯函数 10 条（链接识别去重与标点、相对时间四档、`+/−` 文案、两个开关默认值与连坐、两个新帧不改纯视图状态）；壳 12 条（没令牌时还能读公开仓库、写才拦；令牌交到真 gh、`pr create` 链接回报、退出码透传、没 gh 时内置实现真建 PR / `pr list` / `pr view --json` / `pr merge`、未实现子命令明确失败、没 origin 时明确失败、桥不在说人话、PATH 注入且本机 PATH 没被动过）。`npm run typecheck` 全绿（含 37 条新 i18n 键、`test:viewport`、`test:layers`、`test:theme`）。真机冒烟（隔离实例，真 gh 真令牌）：默认 `gh api user --jq .login` → `Yang-Code01`；会话切到 `qingmin-new` 后 → `qingmin-new`；`gh pr view 659` → 桥发出 `github.seen` 并认出 pull #659；面板接口真数据（20 条开着的 PR、#659 `+105 −21`、5 个文件）。
