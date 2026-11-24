@@ -50,8 +50,10 @@ export interface ReviewInput {
   commit?: string;
   /** `pr` 模式要评的 PR 号（字符串，输入框原样）。 */
   pr?: string;
-  /** 在 PR 下拉上方的检索词（输 `#12`、标题、分支、作者都行）。 */
+  /** PR 那一格里的文字（可以是号，也可以是检索词）。 */
   prQuery?: string;
+  /** 那个列表弹层现在开没开（面板会重画，状态得放在外面）。 */
+  prMenuOpen?: boolean;
   prs?: PullRequest[];
   prsLoading?: boolean;
   prError?: string;
@@ -81,6 +83,7 @@ export interface ReviewView {
   prs: PullRequest[];
   prAll: number;
   prQuery: string;
+  prMenuOpen: boolean;
   /** 时间线：桥每做一件事加一行。 */
   timeline: { at: number; text: string }[];
   group: { index: number; total: number } | null;
@@ -282,6 +285,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     prs,
     prAll: allPrs.length,
     prQuery,
+    prMenuOpen: Boolean(input.prMenuOpen),
     timeline: log,
     group,
     elapsedMs,
@@ -314,8 +318,10 @@ export interface ReviewActions {
   onPrInput: (value: string) => void;
   /** 重拉一次 PR 列表（`gh` 挂了 / 刚在 GitHub 上开了新 PR）。 */
   onRefreshPrs: () => void;
-  /** PR 检索词（只记值，不重画，免得输入框换节点）。 */
+  /** PR 那一格里的文字（只记值，不重画，免得输入框换节点）。 */
   onPrQuery: (value: string) => void;
+  /** 展开 / 收起 PR 列表。 */
+  onPrMenu: (open: boolean) => void;
   /** 打开「评审详情」dialog（跑着看时间线，跑完看结果）。 */
   onDetails: () => void;
   onCommit: (value: string) => void;
@@ -507,45 +513,67 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     form.append(refSelect(tr("目标分支"), view.target, actions.onTarget), refSelect(tr("对照分支"), view.base, actions.onBase));
   } else if (view.mode === "pr") {
     modeRow.remove();
-    // PR 多的时候下拉找不动（动辄几十个）：先给一格检索，再是可点的列表。
-    const searchRow = el("div", "rv-row");
-    searchRow.append(el("span", "rv-lab", "PR"));
-    const query = el("input", "rv-prq") as HTMLInputElement;
-    query.value = view.prQuery;
-    query.placeholder = tr("搜 PR：号 / 标题 / 分支 / 作者");
-    query.oninput = () => actions.onPrQuery(query.value);
-    searchRow.append(query);
-    form.append(searchRow);
-
-    const row = el("div", "rv-row");
-    const pick = el("select", "rv-pr") as HTMLSelectElement;
-    for (const item of view.prs) {
-      const draft = item.draft ? tr("[草稿] ") : "";
-      const opt = el("option", "", `${draft}#${item.number} ${item.title}`.slice(0, 70)) as HTMLOptionElement;
-      opt.value = String(item.number);
-      if (String(item.number) === view.pr) opt.selected = true;
-      pick.append(opt);
-    }
-    pick.onchange = () => actions.onPr(pick.value);
-    const num = el("input", "rv-prnum") as HTMLInputElement;
-    num.value = view.pr;
-    num.placeholder = tr("PR 号");
-    num.inputMode = "numeric";
-    num.oninput = () => {
-      const value = num.value.replace(/[^0-9]/g, "");
-      actions.onPrInput(value);
-      // 号一填上就能点：只在本地翻一下那颗按钮，不重画整块（重画会把输入框换掉）。
-      if (runBtn) runBtn.disabled = !value;
+    // 一个格子同时干三件事：输号、检索、从列表里点。分成「搜索框 + 下拉 + 号输入」三行
+    // 在 300px 里又挤又丑（用户直接说了），所以合成一个 combobox。
+    const box = el("div", "rv-prbox");
+    box.append(el("span", "rv-lab", "PR"));
+    const input = el("input", "rv-prq") as HTMLInputElement;
+    input.value = view.prQuery || (view.pr ? `#${view.pr}` : "");
+    input.placeholder = tr("输号或搜：号 / 标题 / 分支");
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.oninput = () => {
+      const raw = input.value;
+      actions.onPrQuery(raw);
+      const digits = raw.replace(/[^0-9]/g, "");
+      // 纯数字（或 `#123`）直接当成号：边打边能点「开始评审」，不用再敲一次回车。
+      const asNumber = /^\s*#?\s*\d+\s*$/.test(raw) ? digits : "";
+      actions.onPrInput(asNumber);
+      if (runBtn) runBtn.disabled = !asNumber;
+      actions.onPrMenu(true);
     };
-    num.onchange = () => actions.onPr(num.value.replace(/[^0-9]/g, ""));
-    // 列表拉不到（没装 gh / 没登录 / 没有 remote）时，号输入框照样能用。
-    if (!view.prs.length) pick.hidden = true;
-    row.append(pick, num);
-    form.append(row);
-    if (view.prError) form.append(el("div", "rv-hint", view.prError));
-    else if (view.prsLoading) form.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
-    else if (view.prQuery && !view.prs.length) form.append(el("div", "rv-hint", tr("没有匹配的 PR")));
-    else if (view.prAll > 1) form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
+    input.onfocus = () => actions.onPrMenu(true);
+    input.onkeydown = (ev) => {
+      if (ev.key === "Escape") actions.onPrMenu(false);
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      const first = view.prs[0];
+      const digits = input.value.replace(/[^0-9]/g, "");
+      if (digits) actions.onPr(digits);
+      else if (first) actions.onPr(String(first.number));
+      actions.onPrMenu(false);
+    };
+    const toggle = el("button", "rv-prtoggle", "▾") as HTMLButtonElement;
+    toggle.type = "button";
+    toggle.setAttribute("aria-label", tr("展开 PR 列表"));
+    toggle.onclick = () => actions.onPrMenu(!view.prMenuOpen);
+    box.append(input, toggle);
+    form.append(box);
+
+    if (view.prMenuOpen) {
+      const menu = el("div", "rv-prmenu");
+      if (view.prError) menu.append(el("div", "rv-hint", view.prError));
+      else if (view.prsLoading) menu.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
+      else if (!view.prs.length) menu.append(el("div", "rv-hint", view.prQuery ? tr("没有匹配的 PR") : tr("没有 open 的 PR")));
+      else {
+        for (const item of view.prs.slice(0, 40)) {
+          const row = el("button", `rv-prrow${String(item.number) === view.pr ? " on" : ""}`) as HTMLButtonElement;
+          row.type = "button";
+          row.dataset.num = String(item.number);
+          const head = el("span", "rv-prrow-head", `${item.draft ? tr("[草稿] ") : ""}#${item.number}`);
+          const title = el("span", "rv-prrow-title", item.title);
+          const meta = el("span", "rv-prrow-meta", `${item.headRefName} → ${item.baseRefName}`);
+          row.append(head, title, meta);
+          row.onclick = () => {
+            actions.onPr(String(item.number));
+            actions.onPrMenu(false);
+          };
+          menu.append(row);
+        }
+      }
+      form.append(menu);
+    }
+    if (view.prAll > 1 && !view.prMenuOpen) form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
   } else if (view.mode === "commit") {
     const sha = el("input", "rv-ref") as HTMLInputElement;
     sha.value = view.commit;

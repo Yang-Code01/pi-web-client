@@ -267,11 +267,13 @@ try {
   // fixture 仓库没有 remote：`gh pr list` 这一步会失败。验收的是「说清原因 + 号输入框照样在」，
   // 真 PR 的端到端要联网与 gh 登录，探针不替环境赌这一把。
   await page.locator(".rv-mode").selectOption("pr");
-  await page.locator(".rv-prnum").waitFor({ timeout: 20000 });
-  const prHint = (await page.locator(".review .rv-hint").first().innerText().catch(() => "")).trim();
-  check("PR 模式：没有 remote 时说清原因、号输入框仍可用", prHint.length > 0, prHint.slice(0, 50));
-  await page.locator(".rv-prnum").fill("7");
-  check("PR 模式：填了号就能开评", await page.locator(".rv-run").first().isEnabled(), "");
+  await page.locator(".rv-prq").waitFor({ timeout: 20000 });
+  await page.locator(".rv-prq").click();
+  await page.locator(".rv-prmenu").waitFor({ timeout: 10000 });
+  const prHint = (await page.locator(".rv-prmenu .rv-hint").first().innerText().catch(() => "")).trim();
+  check("PR 模式：没有 remote 时列表里说清原因", prHint.length > 0, prHint.slice(0, 50));
+  await page.locator(".rv-prq").fill("7");
+  check("PR 模式：号也能直接输，填完就能开评", await page.locator(".rv-run").first().isEnabled(), "");
 
   // ---------------------------------------------------------------- 7) 字号 150%：面板底栏还在屏里
   await page.evaluate(() => {

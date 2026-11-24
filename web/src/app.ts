@@ -422,6 +422,7 @@ export class App {
   private reviewCommit = "";
   private reviewPr = "";
   private reviewPrQuery = "";
+  private reviewPrMenu = false;
   private reviewSheet: ReviewSheet | null = null;
   private reviewPrs: ReviewPr[] = [];
   private reviewPrsLoading = false;
@@ -18381,6 +18382,7 @@ export class App {
       commit: this.reviewCommit,
       pr: this.reviewPr,
       prQuery: this.reviewPrQuery,
+      prMenuOpen: this.reviewPrMenu,
       prs: this.reviewPrs,
       prsLoading: this.reviewPrsLoading,
       prError: this.reviewPrError,
@@ -18414,6 +18416,8 @@ export class App {
       },
       onPr: (value) => {
         this.reviewPr = value;
+        this.reviewPrQuery = value ? `#${value}` : "";
+        this.reviewPrMenu = false;
         this.renderQueue();
       },
       onPrInput: (value) => {
@@ -18422,6 +18426,15 @@ export class App {
       onPrQuery: (value) => {
         // 只记值、不重画：每敲一个字就重画会把输入框换成新节点、光标乱跳。
         this.reviewPrQuery = value;
+      },
+      onPrMenu: (open) => {
+        // 只在开关那一刻重画（有焦点要留住，所以打开时把焦点还给输入框）。
+        if (this.reviewPrMenu === open) return;
+        this.reviewPrMenu = open;
+        this.renderQueue();
+        if (open) {
+          requestAnimationFrame(() => this.els.queueInner?.querySelector<HTMLInputElement>(".rv-prq")?.focus());
+        }
       },
       onRefreshPrs: () => {
         const dir = this.reviewDir();
