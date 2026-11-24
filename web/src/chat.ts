@@ -2138,6 +2138,12 @@ export class ChatView {
         card.append(details);
       }
       card.append(out);
+      // 工具卡才是 AI 自己跑 `gh …` 时输出的落脚处（`buildBash` 那个是用户的 `!cmd`）。
+      // `<pre>` 里的链接点不动，所以在这里挂卡 —— 这正是「AI 建完 PR 我看不到」那一条。
+      if (this.onGithubOpen && item.result) {
+        const open = this.onGithubOpen.bind(this);
+        card.append(...githubCards(String(item.result), { open, max: 3 }));
+      }
     }
     return card;
   }
