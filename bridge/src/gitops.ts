@@ -87,6 +87,8 @@ export interface GitDiff {
   files: GitDiffFile[];
   /** 一侧最多 200 行 / 400 KB，超过就标 truncated。 */
   limit: { lines: number; bytes: number };
+  /** #651：这一份是「工作区改动 vs HEAD」，不是两个提交之间的对照。 */
+  worktree?: boolean;
 }
 
 export interface GitDiffFile {
@@ -367,6 +369,19 @@ async function blob(dir: string, ref: string, p: string, binary = false): Promis
   }
 }
 
+/** 差异的右侧可以是**工作区**而不是某个提交（#651：评审的「工作区改动」模式要看得见它）。 */
+const WORKTREE_SIDE = "\u0000worktree";
+
+async function sideBlob(dir: string, ref: string, p: string, binary = false): Promise<{ code: number; data: string | Buffer }> {
+  if (ref !== WORKTREE_SIDE) return blob(dir, ref, p, binary);
+  try {
+    const raw = fs.readFileSync(path.join(dir, p));
+    return { code: 0, data: binary ? raw : raw.toString("utf8") };
+  } catch {
+    return { code: 1, data: binary ? Buffer.alloc(0) : "" };
+  }
+}
+
 function sideBySide(base: string, target: string): GitDiffFile["lines"] {
   const a = base.split("\n");
   const b = target.split("\n");
@@ -491,7 +506,7 @@ async function diffOneFile(
     ...(old ? { old } : {}),
   };
   if (kind === "image") {
-    const [lb, rb] = await Promise.all([blob(dir, left, file.old ?? p, true), blob(dir, right, p, true)]);
+    const [lb, rb] = await Promise.all([sideBlob(dir, left, file.old ?? p, true), sideBlob(dir, right, p, true)]);
     const toUrl = (x: { code: number; data: string | Buffer }): string | null => {
       if (x.code !== 0 || !Buffer.isBuffer(x.data)) return null;
       if (x.data.length > 2 * 1024 * 1024) return null;
@@ -504,7 +519,7 @@ async function diffOneFile(
   } else if (kind !== "text" || meta.binary) {
     file.note = kind === "pdf" ? "PDF 用本机预览对比" : kind === "sheet" ? "表格用本机预览对比" : "二进制文件不显示内容";
   } else {
-    const [lb, rb] = await Promise.all([blob(dir, left, file.old ?? p), blob(dir, right, p)]);
+    const [lb, rb] = await Promise.all([sideBlob(dir, left, file.old ?? p), sideBlob(dir, right, p)]);
     const lt = truncate(String(lb.data));
     const rt = truncate(String(rb.data));
     file.lines = sideBySide(lt.text, rt.text);
@@ -516,8 +531,9 @@ async function diffOneFile(
 }
 
 /** 默认「当前分支 vs 对照」；`commit` 给了就切「该提交 vs 父提交」。 */
-export async function gitDiff(dir: string, base: string, target = "HEAD", commit = ""): Promise<GitDiff> {
+export async function gitDiff(dir: string, base: string, target = "HEAD", commit = "", worktree = false): Promise<GitDiff> {
   const state = await gitState(dir);
+  if (worktree) return worktreeDiff(dir, state.repo);
   // 对照检索器允许直接输入 `HEAD~3` / `HEAD^` / `HEAD@{1}` 这类 ref；`ref()` 会拒绝 `~^:`，
   // 那样会静默回退到 defaultBase，导致「历史」tab 对照 HEAD~3、「差异」tab 却对照 origin/main。
   const b = commitish(base, "") || (await gitRefs(dir)).defaultBase;
@@ -535,6 +551,29 @@ export async function gitDiff(dir: string, base: string, target = "HEAD", commit
     files.push(await diffOneFile(dir, left, right, row.path, row.old, { ...row, status: row.old ? "R" : "M" }));
   }
   return { repo: state.repo, base: b, target: right, files, limit: TEXT_LIMIT };
+}
+
+/**
+ * #651：工作区改动（staged + unstaged + untracked）vs HEAD。
+ *
+ * 和 `gitDiff()` 的两种模式都不同：右侧不是某个提交，而是**盘上的文件**（`sideBlob` 直接读盘）。
+ * 未跟踪的文件 `git diff` 根本不列，得单独从 `ls-files --others` 补进来。
+ */
+async function worktreeDiff(dir: string, repo: string): Promise<GitDiff> {
+  const head = (await read(dir, ["rev-parse", "--verify", "--quiet", "HEAD"])).stdout.trim();
+  const left = head || EMPTY_TREE;
+  const files: GitDiffFile[] = [];
+  const out = await read(dir, ["diff", "--numstat", "-z", "--find-renames", left], 12_000);
+  for (const row of numstatRows(out.stdout)) {
+    files.push(await diffOneFile(dir, left, WORKTREE_SIDE, row.path, row.old, { ...row, status: row.old ? "R" : "M" }));
+  }
+  const others = await read(dir, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  for (const p of others.stdout.split("\0").filter(Boolean)) {
+    const file = await diffOneFile(dir, EMPTY_TREE, WORKTREE_SIDE, p, undefined, { status: "A", additions: 0, deletions: 0, binary: false });
+    file.additions = file.lines.filter((l) => l.tag === "add" && l.right).length;
+    files.push(file);
+  }
+  return { repo, base: "", target: "HEAD", files, limit: TEXT_LIMIT, worktree: true };
 }
 
 export interface GitCommitDetail {

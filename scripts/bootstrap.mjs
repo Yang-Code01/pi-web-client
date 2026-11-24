@@ -171,6 +171,49 @@ function installPi() {
   return `pi 装不上：${why}`;
 }
 
+// ---------------------------------------------------------------- 1.5 ocr（代码评审）
+//
+// `ocr` 是阿里巴巴开源的代码评审 CLI（`@alibaba-group/open-code-review`），delegation 模式下
+// 只负责确定性分片与规则，真推理走网页那边起的 pi 子进程。它**不是**跑网页的硬依赖：没装时
+// 面板上有一颗「装 ocr」按钮，所以这里装失败只写进状态文件，不把整次 npm install 判成失败。
+
+function ocrArgv(args) {
+  return process.platform === "win32" ? ["cmd.exe", ["/c", "ocr", ...args]] : ["ocr", args];
+}
+
+function findOcr() {
+  const [cmd, args] = ocrArgv(["version"]);
+  const r = run(cmd, args, { timeout: 20_000 });
+  if (r.code !== 0) return null;
+  const m = /(\d+\.\d+\.\d+)/.exec(`${r.stdout}${r.stderr}`);
+  return { version: m ? m[1] : "" };
+}
+
+/** delegation 的 `--format json` 要 1.9.0 起；低了就等于没有（面板会把它当「太老」）。 */
+function ocrTooOld(version) {
+  const v = String(version ?? "")
+    .split(".")
+    .map((n) => Number(n) || 0);
+  if (!v.length) return false;
+  const floor = [1, 9, 0];
+  for (let i = 0; i < floor.length; i += 1) {
+    if ((v[i] ?? 0) < floor[i]) return true;
+    if ((v[i] ?? 0) > floor[i]) return false;
+  }
+  return false;
+}
+
+function installOcr() {
+  step("  没装 ocr（代码评审要用），装最新版…");
+  const npmArgs = ["install", "-g", "@alibaba-group/open-code-review@latest"];
+  let r = runNpm(npmArgs, { timeout: 30 * 60_000 });
+  if (r.code !== 0 && /EALLOWREMOTE/.test(`${r.stderr}${r.stdout}`)) {
+    r = runNpm([...npmArgs, "--allow-remote=all"], { timeout: 30 * 60_000 });
+  }
+  if (r.code === 0) return null;
+  return `ocr 装不上：${tail(r, 3, "\n")}`;
+}
+
 // ---------------------------------------------------------------- 2. 四个扩展
 
 /**
@@ -313,7 +356,7 @@ if (START) process.exit(startCheck());
 
 // ---------------------------------------------------------------- 主流程
 
-const record = { at: Date.now(), ok: true, error: null, installed: [], skipped: [], pi: null };
+const record = { at: Date.now(), ok: true, error: null, installed: [], skipped: [], pi: null, ocr: null, ocrError: null };
 const started = Date.now();
 step(`pi-web-client 依赖整备${CHECK ? "（--check：只看不动）" : ""}`);
 if (CI || NO_AUTO) step(CI ? "  （CI：只装子包依赖，不碰全局 pi 目录）" : "  （PI_WEB_NO_AUTOINSTALL=1：不碰全局 pi 目录，要装就 unset 后重跑）");
@@ -346,6 +389,29 @@ if (DEPS_ONLY && !CHECK) {
   }
 } else {
   step(`  ✓ pi ${pi.version}（≥ ${MIN_PI_VERSION}）`);
+}
+
+// ocr（代码评审）是可选件：装不上不把整次 install 判红，面板会给「装 ocr」按钮。
+let ocr = findOcr();
+record.ocr = ocr?.version ?? null;
+if (!ocr && !DEPS_ONLY && !CHECK) {
+  const err = installOcr();
+  ocr = findOcr();
+  record.ocr = ocr?.version ?? null;
+  if (err) {
+    record.ocrError = err;
+    step(`  ✗ ${err}`);
+  }
+}
+if (ocr) {
+  if (ocrTooOld(ocr.version)) {
+    record.ocrError = `ocr ${ocr.version} 太老（要 ≥ 1.9.0）`;
+    step(`  ✗ ${record.ocrError}`);
+  } else {
+    step(`  ✓ ocr ${ocr.version}`);
+  }
+} else if (!record.ocrError) {
+  step("  - ocr 没装（代码评审要用；面板上可以装）");
 }
 
 // --check 装不了东西，所以 DEPS_ONLY 也照查（不然「三个包全缺」会报 0）。

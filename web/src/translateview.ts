@@ -104,8 +104,8 @@ export function trElapsed(job: TrJob | null | undefined): string {
 
 /** 队列里还没到的节那一行字：左边是还差几节，右边是现在几块在飞。 */
 export function trPendingHead(left: number, inflight: number): string {
-  const tail = inflight > 0 ? ` · ${tr("正在翻 {k} 块", { k: inflight })}` : "";
-  return `${tr("还有 {n} 节在队列里", { n: left })}${tail}`;
+  const tail = inflight > 0 ? " · " + tr("正在翻 {k} 块", { k: inflight }) : "";
+  return tr("还有 {n} 节在队列里", { n: left }) + tail;
 }
 
 /** 副行：正在翻哪一节 + 还有几块在飞。

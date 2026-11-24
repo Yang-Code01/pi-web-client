@@ -117,6 +117,13 @@ export type ServerFrameType =
   | "reminder.toast"
   | "reminders"
   | "restore.result"
+  | "review.install.done"
+  | "review.install.log"
+  | "review.ocr"
+  | "review.prinfo"
+  | "review.prs"
+  | "review.progress"
+  | "review.state"
   | "rules"
   | "rules.saved"
   | "runtime.sleepAll"
@@ -254,6 +261,14 @@ export type ClientFrameType =
   | "reminder.read"
   | "reminder.set"
   | "rename"
+  | "review.cancel"
+  | "review.clean"
+  | "review.get"
+  | "review.install"
+  | "review.mark"
+  | "review.prinfo.get"
+  | "review.prs.get"
+  | "review.run"
   | "rules.delete"
   | "rules.get"
   | "rules.reviewed"
@@ -297,6 +312,108 @@ export type ClientFrameType =
   | "trust.set"
   | "ui.set"
   | "unsubscribe";
+
+// ---------------------------------------------------------------------------
+// #651 代码评审：桥与页面共用的形状
+//
+// 两侧都要认它（桥落盘 / 页面画），所以住在这个叶子里 —— 和在各自文件里各抄一份相比，
+// 抄的那份已经在 `OcrStatus.error` 上漂过一次（一边必填、一边可选）。
+// ---------------------------------------------------------------------------
+
+export type ReviewMode = "workspace" | "range" | "commit" | "pr";
+export type ReviewSeverity = "critical" | "high" | "medium" | "low";
+export type ReviewCategory = "bug" | "security" | "performance" | "maintainability" | "test" | "style" | "documentation" | "other";
+export type ReviewMark = "accept" | "ignore" | "false-positive";
+export type ReviewRunStatus = "running" | "done" | "stopped" | "failed" | "stale";
+
+/** 没评的文件与原因（太大 / 规则排除 / 超预算 / 模型没说）。 */
+export interface ReviewSkip {
+  path: string;
+  reason: string;
+}
+
+export interface ReviewFinding {
+  /** `path + 类别 + 命中的代码片段` 的哈希：跨轮次认「还是那一条」。 */
+  key: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  category: ReviewCategory;
+  severity: ReviewSeverity;
+  content: string;
+  existingCode: string;
+  suggestionCode: string;
+  /** `start_line: 0` = 定位不到行。 */
+  anchored: boolean;
+  state: "new" | "persisting";
+  mark: ReviewMark | "";
+}
+
+export interface ReviewRun {
+  id: string;
+  status: ReviewRunStatus;
+  startedAt: string;
+  finishedAt: string;
+  mode: ReviewMode;
+  /** 从哪评：`range` 的对照分支、`pr` 的 `origin/<base>`、`commit` 为空。 */
+  from: string;
+  /** 评到哪：`range` 的目标分支、`pr` 的 `refs/pi-web/pr-N`、`commit` 的 sha、`workspace` 的 HEAD。 */
+  to: string;
+  mergeBase: string;
+  /** `pr` 模式下是哪个 PR（0 = 不是 PR 模式）；三态只跟同一个 PR 比。 */
+  pr: number;
+  /** PR 的标题与两条分支（「交给 agent」那段话要带上它们）。老记录里没有，按空串处理。 */
+  prTitle: string;
+  prHead: string;
+  prBase: string;
+  model: string;
+  lang: string;
+  findings: ReviewFinding[];
+  /** 上一次有、这一次没有的那几条（key + path，面板要能说出是哪个文件）。 */
+  resolved: string[];
+  resolvedPaths: string[];
+  skipped: ReviewSkip[];
+  reviewedFiles: number;
+  totalFiles: number;
+  tokens: number;
+  error: string;
+  errorCode: string;
+  /** 这一次的时间线（进度帧走完就没了，所以完成时也落一份进记录）。 */
+  log: { at: number; text: string }[];
+}
+
+export interface ReviewState {
+  repo: string;
+  runs: ReviewRun[];
+  marks: Record<string, ReviewMark>;
+}
+
+export interface ReviewProgress {
+  repo: string;
+  runId: string;
+  status: ReviewRunStatus;
+  phase: "preview" | "fetch" | "rules" | "review" | "done";
+  totalFiles: number;
+  reviewedFiles: number;
+  currentFile: string;
+  tokens: number;
+  startedAt: string;
+  error: string;
+  errorCode: string;
+  /** 现在是第几组 / 一共几组（PR 与分支范围会分组跑）。 */
+  group: number;
+  groups: number;
+  /** 时间线：每件事一行，最多留 40 行（面板与详情 dialog 共用）。 */
+  log: { at: number; text: string }[];
+}
+
+export interface ReviewOcrStatus {
+  installed: boolean;
+  version: string;
+  /** delegation 的 `--format json` 要 1.9.0 起。 */
+  tooOld: boolean;
+  error?: string;
+}
 
 // ---------------------------------------------------------------------------
 // 载荷：先给最要命的 9 个帧（审批 / 问卷 / 用量 / 上下文 / 运行状态）

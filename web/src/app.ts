@@ -68,6 +68,9 @@ import { queueWhatsnew } from "./whatsnew.ts";
 import { openHotdeploy } from "./hotdeploy.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { ReposSheet } from "./repossheet.ts";
+import { ReviewSheet } from "./review-sheet.ts";
+import { PrSheet, type PrInfo } from "./pr-sheet.ts";
+import { HandoffSheet } from "./handoff-sheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
@@ -79,6 +82,23 @@ import { type CtxLine, type CtxPolicy } from "./context.ts";
 import { ContextPanel, type ContextPanelData } from "./context-panel.ts";
 import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
+import {
+  fixPrompt as reviewFixPrompt,
+  fixPromptMany as reviewFixManyPrompt,
+  repoFromUrl as reviewRepoFromUrl,
+  type FixContext as ReviewFixContext,
+  type PullRequest as ReviewPr,
+  renderReview,
+  reviewView,
+  type Mark as ReviewMark,
+  type OcrStatus as ReviewOcr,
+  type ReviewFinding,
+  type ReviewActions,
+  type ReviewMode,
+  type ReviewPanelInput,
+  type ReviewProgress,
+  type ReviewState,
+} from "./review.ts";
 import { execView, type ExecChildRunInput, type ExecMetricsView, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { pickLanding, parseLast, pruneLast, recordLast, type WsLast } from "./wsmemory.ts";
@@ -118,7 +138,7 @@ import {
 } from "./settings-matrix.ts";
 import { paintSubagentsPage, type SubagentScan } from "./subagents.ts";
 import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
-import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
+import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, getLang, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
@@ -394,6 +414,48 @@ export class App {
   private mail: MailPanel | null = null;
   /** D264：AI 发信前的确认框。跟 MailPanel 分开：没开邮箱面板也得能弹。 */
   private mailConfirm: MailConfirmDialog | null = null;
+  // #651 代码评审：桥发来的状态 + 面板自己的那点选择（模式 / 对照分支 / 提交 / 模型）。
+  private reviewState: ReviewState | null = null;
+  private reviewProgress: ReviewProgress | null = null;
+  private reviewOcr: ReviewOcr | null = null;
+  private reviewInstalling = false;
+  private reviewInstallLog: string[] = [];
+  private reviewError = "";
+  private reviewNotGit = false;
+  /** 默认「GitHub PR」：从 PR 里挑一个来评是主要用法。 */
+  private reviewMode: ReviewMode = "pr";
+  private reviewBase = "main";
+  private reviewTarget = "HEAD";
+  private reviewCommit = "";
+  private reviewPr = "";
+  private reviewPrQuery = "";
+  private reviewPrMenu = false;
+  private reviewSheet: ReviewSheet | null = null;
+  private reviewPrSheet: PrSheet | null = null;
+  /** 「PR 信息」dialog 的数据（按号缓存一次；点开时才拉）。 */
+  private reviewPrInfo: { number: number; info: PrInfo | null; error: string } = { number: 0, info: null, error: "" };
+  private reviewPrs: ReviewPr[] = [];
+  private reviewPrsLoading = false;
+  private reviewPrError = "";
+  private reviewPrsAsked = "";
+  private reviewPrsAt = 0;
+  /** 本仓库在 GitHub 上的 `owner/name`（桥从 origin 认出来的），用来比对粘贴的链接。 */
+  private reviewRemoteRepo = "";
+  /** 这一次是**我们**点的「开始评审」：只有它跑完才弹提示（别的页签发起的别来抢）。 */
+  private reviewPendingToast = false;
+  private reviewStartedRunId = "";
+  private reviewToasted = new Set<string>();
+  /** 最近一次发 `review.get` 的时刻：ocr 那一帧丢了要能自己补一次，别死等。 */
+  private reviewOcrAskedAt = 0;
+  /** `会话id|cwd`：变了就把面板状态清空（评审按会话分开）。 */
+  private reviewSessionKey = "";
+  /** 定时补问一次：页面重连后没人触发重画时，光靠 render 里的自愈等不到下一次重画。 */
+  private reviewRetryTimer: number | null = null;
+  private reviewModel = "";
+  private reviewRefs: string[] = [];
+  private reviewAsked = "";
+  /** 桥算出来的仓库根（页面只给 cwd）；帧用它做过滤。 */
+  private reviewRepo = "";
   private models: ModelInfo[] = [];
   /** D150：目录是两段式（快的先到、带扩展的补上），所以记住最近一次失败原因与「什么时候问过」。 */
   private modelsError = "";
@@ -2542,6 +2604,79 @@ export class App {
         window.open(String(msg.url), "_blank", "noopener");
         break;
       }
+      // ------------------------------------------------ 代码评审（#651）
+      case "review.state": {
+        const dir = this.reviewDir();
+        // 评审按会话分开存：别的会话的帧不许动这一个（以前只按仓库分，切会话还看得到上一份）。
+        const session = String(msg.sessionId ?? "");
+        if (session && this.currentId && session !== this.currentId) break;
+        if (msg.dir && dir && String(msg.dir) !== dir && String(msg.dir) !== this.reviewRepo) break;
+        if (msg.error) {
+          this.reviewError = errText(msg);
+          this.reviewState = null;
+          this.reviewProgress = null;
+          this.reviewNotGit = msg.code === "not_git";
+          if (this.queueTab === "review") this.renderQueue();
+          break;
+        }
+        this.reviewError = "";
+        this.reviewNotGit = false;
+        if (msg.dir) this.reviewRepo = String(msg.dir);
+        this.reviewState = (msg.state ?? null) as ReviewState | null;
+        this.reviewProgress = (msg.progress ?? null) as ReviewProgress | null;
+        this.announceReviewDone();
+        if (this.queueTab === "review") this.renderQueue();
+        this.syncReviewSheet();
+        break;
+      }
+      case "review.prs": {
+        // 不再按所在目录丢弃：`review.state` 与它谁先到没有保证，`reviewRepo` 空着时那张列表
+        // 会被整帧扔掉，面板就永远「点开没有数据」（用户实测）。
+        if (msg.dir) this.reviewRepo = String(msg.dir);
+        this.reviewPrs = Array.isArray(msg.prs) ? (msg.prs as ReviewPr[]) : [];
+        this.reviewRemoteRepo = String(msg.repo ?? "");
+        this.reviewPrsAt = Date.now();
+        this.reviewPrError = msg.ok ? "" : errText(msg) || String(msg.error ?? "");
+        this.reviewPrsLoading = false;
+        // 手输的号不在列表里时不要被第一项悄悄顶掉：只在没选过时挑第一个。
+        if (!this.reviewPr && this.reviewPrs.length) this.reviewPr = String(this.reviewPrs[0].number);
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      }
+      case "review.prinfo": {
+        const number = Number(msg.pr) || 0;
+        this.reviewPrInfo = { number, info: (msg.info ?? null) as PrInfo | null, error: msg.ok ? "" : errText(msg) || String(msg.error ?? "") };
+        this.reviewPrSheet?.set(number, this.reviewPrInfo.info, this.reviewPrInfo.error);
+        break;
+      }
+      case "review.ocr":
+        if (this.reviewRetryTimer !== null) {
+          window.clearTimeout(this.reviewRetryTimer);
+          this.reviewRetryTimer = null;
+        }
+        this.reviewOcr = (msg.ocr ?? null) as ReviewOcr | null;
+        if (this.queueTab === "review") this.renderQueue();
+        this.syncReviewSheet();
+        break;
+      case "review.progress":
+        if (String(msg.sessionId ?? "") && this.currentId && String(msg.sessionId) !== this.currentId) break;
+        if (msg.progress) {
+          this.reviewProgress = msg.progress as ReviewProgress;
+          const id = String((msg.progress as ReviewProgress).runId ?? "");
+          if (id && this.reviewPendingToast && !this.reviewStartedRunId) this.reviewStartedRunId = id;
+        } else this.reviewProgress = null;
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      case "review.install.log":
+        this.reviewInstallLog = [...this.reviewInstallLog, String(msg.line ?? "")].slice(-50);
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      case "review.install.done":
+        this.reviewInstalling = false;
+        this.reviewOcr = (msg.ocr ?? null) as ReviewOcr | null;
+        if (!msg.ok) this.reviewError = errText(msg) || tr("没有装上");
+        if (this.queueTab === "review") this.renderQueue();
+        break;
       // GitHub 通道：壳看见 `gh pr create` 成功 → 把面板推开（你刚才让它建的那个 PR）。
       // 只认当前会话：别的会话建的 PR 不该抢你现在的右栏。
       case "github.pr": {
@@ -5463,7 +5598,7 @@ export class App {
    * 模型与思考：外壳同设置控制台（.st-console），左栏「当前使用 / 全部模型 / 本会话」，右栏一页内容。
    * 仍然是草稿 + 确认 —— 点一行只是把 draft 挪过去，chip 与真实会话都不动，直到点「确认」。
    */
-  private openModelSheet(expandSession = false): void {
+  private openModelSheet(expandSession = false, pick?: { start: string; level?: string; onPick: (model: ModelInfo, level: string) => void }): void {
     if (!this.currentId) return;
     // Re-renders (catalog arrived, takeover finished) keep what the user unfolded; a fresh open folds.
     const reopening = this.sheetKind === "model";
@@ -5472,16 +5607,21 @@ export class App {
     this.sheetKind = "model";
 
     // Everything below is a draft until 确认: browsing models must not switch the live session.
-    const startModel = this.session?.model;
-    const startLevel = this.session?.thinkingLevel ?? "";
+    // `pick` 模式下草稿的起点是**别处记着的那个模型**（代码评审面板挑评审用的模型），
+    // 确认时也不发 `setModel` —— 这个面板没有会话可切。
+    const startModel = pick ? pick.start : this.session?.model;
+    const startLevel = pick ? (pick.level ?? "") : (this.session?.thinkingLevel ?? "");
     // 当前模型属于哪个来源：它的组默认展开，否则新开场就只看得见一组折叠标题。
     const startProvider = this.models.find((m) => m.id === startModel)?.provider ?? "";
     // 默认展开是「第一眼」的事，不是「锁死」：用户把这一组折上后，下次 paint 不能再把它擑开。
-    const forceOpen = new Set<string>(startProvider ? [startProvider] : []);
+    // 挑模型那条路没有「当前模型那一组」可言：全部展开，否则开场就是一排折叠标题。
+    const forceOpen = new Set<string>(pick ? this.models.map((m) => m.provider) : startProvider ? [startProvider] : []);
     let draftModel = startModel;
     let draftLevel = startLevel;
     type ModelTab = "now" | "all" | "session";
-    let tab: ModelTab = expandSession ? "session" : "now";
+    // 挑模型那条路没有「当前使用」可言（面板还没选过），直接落在「全部模型」上，
+    // 否则打开是一屏空态，得自己再点一次左栏。
+    let tab: ModelTab = pick ? "all" : expandSession ? "session" : "now";
     let query = "";
 
     const back = el("div", "st-back");
@@ -5535,7 +5675,7 @@ export class App {
     const cancel = el("button", "btn", tr("取消")) as HTMLButtonElement;
     cancel.type = "button";
     cancel.onclick = () => this.closeSheet();
-    const confirm = el("button", "btn primary", tr("确认")) as HTMLButtonElement;
+    const confirm = el("button", "btn primary", pick ? tr("用这个模型") : tr("确认")) as HTMLButtonElement;
     confirm.type = "button";
     const footActions = el("span", "pm-foot-actions");
     footActions.hidden = true;
@@ -5563,6 +5703,12 @@ export class App {
     };
 
     const commit = (): void => {
+      if (pick) {
+        const chosen = this.models.find((m) => m.id === draftModel);
+        if (chosen) pick.onPick(chosen, draftLevel);
+        this.closeSheet();
+        return;
+      }
       const sessionId = this.currentId;
       // 没接管＝没写入权：行双击也会走到这里，别把 setModel 发给桥让它默默丢掉。
       if (this.session && !this.session.owned) return;
@@ -5733,7 +5879,7 @@ export class App {
         { label: tr("窗口"), value: m?.contextWindow ? compactSize(m.contextWindow) : "–", sub: [m ? modelMultiplier(m.name) : "", m?.provider].filter(Boolean).join(" · ") || "—" },
       ]);
       out.push(cards);
-      if (this.session && !this.session.owned) {
+      if (!pick && this.session && !this.session.owned) {
         const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
         notice.append(this.claimButton());
         out.push(notice);
@@ -5765,7 +5911,7 @@ export class App {
         return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
       }
       const out: HTMLElement[] = [];
-      if (this.session && !this.session.owned) {
+      if (!pick && this.session && !this.session.owned) {
         const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
         notice.append(this.claimButton());
         out.push(notice);
@@ -5854,11 +6000,16 @@ export class App {
 
       const ch = changes();
       // 没接管就没有写入权：草稿可以随便看，但别把「确认」摆在那儿让人白点（桥会直接丢掉）。
-      const owned = !this.session || this.session.owned;
+      // pick 模式不发 setModel：没有写入权也照样能挑（评审用的模型与这个会话无关）。
+      const owned = pick ? true : !this.session || this.session.owned;
       footActions.hidden = !ch.length || !owned;
-      footHint.textContent = !owned
-        ? tr("这个会话没有写入权，先接管会话再切模型")
-        : ch.length
+      footHint.textContent = pick
+        ? ch.length
+          ? tr("未保存：{p1}", { p1: ch.join(tr("，")) })
+          : tr("点一行挑一个评审用的模型")
+        : !owned
+          ? tr("这个会话没有写入权，先接管会话再切模型")
+          : ch.length
           ? tr("未保存：{p1}", { p1: ch.join(tr("，")) })
           : tr("点一行选模型，点档位换思考；改了才出现取消 / 确认");
       footHint.title = footHint.textContent;
@@ -18234,12 +18385,431 @@ export class App {
 
   private selectQueueTab(tab: QueueTab): void {
     this.applyQueueTabEvent({ type: "user-tab", tab });
+    if (tab === "review") this.loadReview();
     try {
       localStorage.setItem("pi.queueTab", tab);
     } catch {
       // Private browsing may disable storage; the current page still remembers the selection.
     }
     this.renderQueue();
+  }
+
+  // ---------------------------------------------------------------- 代码评审（#651）
+
+  /** 面板评的是**当前会话所在目录**；仓库根由桥自己找（返回的帧里 `dir` 就是根）。 */
+  private reviewDir(): string {
+    return (this.session?.cwd ?? "").trim();
+  }
+
+  /** 会话或目录变了：把面板状态清干净，否则会把上一个会话的评审画在这一次上面。 */
+  private syncReviewSession(): void {
+    const key = `${this.currentId ?? ""}|${this.reviewDir()}`;
+    if (key === this.reviewSessionKey) return;
+    this.reviewSessionKey = key;
+    this.reviewState = null;
+    this.reviewProgress = null;
+    this.reviewError = "";
+    this.reviewNotGit = false;
+    this.reviewAsked = "";
+    this.reviewPrMenu = false;
+    this.reviewSheet?.close();
+    this.reviewPrSheet?.close();
+  }
+
+  private loadReview(): void {
+    const dir = this.reviewDir();
+    if (!dir) {
+      this.reviewError = tr("先打开一个会话：评审评的是它的目录。");
+      this.reviewState = null;
+      this.reviewProgress = null;
+      return;
+    }
+    this.reviewAsked = dir;
+    this.reviewOcrAskedAt = Date.now();
+    this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
+    if (this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
+    void api.gitRefs(dir).then((refs) => {
+      const all = refs.groups.flatMap((g) => g.refs.map((r) => r.name)).filter(Boolean);
+      this.reviewRefs = all.slice(0, 60);
+      if (!this.reviewBase || this.reviewBase === "main") {
+        const base = (refs.defaultBase || "").trim();
+        if (base) this.reviewBase = base;
+      }
+      if (this.queueTab === "review") this.renderQueue();
+    }).catch(() => {});
+  }
+
+  /** `reviewModel` 存的是 `provider/id`；弹层与目录用 `id`，这里来回换。 */
+  private reviewModelInfo(): ModelInfo | null {
+    const want = this.reviewModel.trim();
+    if (!want) return null;
+    return this.models.find((m) => `${m.provider}/${m.id}` === want) ?? this.models.find((m) => m.id === want) ?? null;
+  }
+
+  /**
+   * 跑完了说一句。以前评审结束只换一下面板内容：跑失败的、一条意见都没有的，看上去都像「没反应」。
+   * 只announce自己点的那一次，别人的页签发起的不要抢话。
+   */
+  private announceReviewDone(): void {
+    if (!this.reviewPendingToast) return;
+    const latest = this.reviewState?.runs?.[this.reviewState.runs.length - 1];
+    if (!latest || latest.status === "running") return;
+    // 进度帧可能比 state 帧晚到：认不出 runId 时也把第一条终态当成自己的。
+    if (this.reviewStartedRunId && latest.id !== this.reviewStartedRunId) return;
+    if (this.reviewToasted.has(latest.id)) return;
+    this.reviewToasted.add(latest.id);
+    this.reviewPendingToast = false;
+    this.reviewStartedRunId = "";
+    const count = latest.findings?.length ?? 0;
+    if (latest.status === "done") {
+      if (!count) {
+        this.flashToast(tr("评审完成：没有发现意见"), false, 6000);
+        return;
+      }
+      let critical = 0;
+      let high = 0;
+      for (const f of latest.findings) {
+        if (f.severity === "critical") critical += 1;
+        else if (f.severity === "high") high += 1;
+      }
+      const detail = [critical ? tr("严重 {p1}", { p1: critical }) : "", high ? tr("高 {p1}", { p1: high }) : ""].filter(Boolean).join(tr(" · "));
+      this.flashToast(tr("评审完成：{p1} 条意见（{p2}）", { p1: count, p2: detail || tr("都能点开看") }), false, 7000);
+    } else if (latest.status === "failed") {
+      this.flashToast(tr("评审失败：{p1}", { p1: latest.error || latest.errorCode || "" }), true, 9000);
+    } else if (latest.status === "stopped") {
+      this.flashToast(tr("评审已停止，已收到的意见还在"), false, 5000);
+    }
+  }
+
+  private loadPullRequests(dir: string): void {
+    this.reviewPrsAsked = dir;
+    this.reviewPrsAt = Date.now();
+    this.reviewPrsLoading = true;
+    this.reviewPrError = "";
+    this.socket.send({ type: "review.prs.get", dir });
+  }
+
+  private renderReviewPanel(): HTMLElement {
+    this.syncReviewSession();
+    const dir = this.reviewDir();
+    // 换过会话 / 第一次进这一页：问一次桥。放在这里是因为面板可能是「记住上次页签」直接打开的，
+    // 那一路不会走 selectQueueTab()。
+    if (dir && this.reviewAsked !== dir) {
+      this.reviewAsked = dir;
+      this.reviewOcrAskedAt = Date.now();
+      this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
+    } else if (dir && !this.reviewOcr && this.reviewRetryTimer === null) {
+      // ocr 那一帧丢了（桥重启、页面重连、连接刚建就被打断）：面板会永远停在「正在读评审状态」。
+      // 页面重连后不会有人再触发重画，所以这里挂一次定时补问，而不是等下一次 render。
+      this.reviewRetryTimer = window.setTimeout(() => {
+        this.reviewRetryTimer = null;
+        if (!this.reviewOcr) this.loadReview();
+      }, 2500);
+    }
+    return renderReview(this.reviewPanelInput());
+  }
+
+  /** 面板与「评审详情」dialog 共用同一份输入。 */
+  private reviewPanelInput(): ReviewPanelInput {
+    const dir = this.reviewDir();
+    const view = reviewView({
+      state: this.reviewState,
+      progress: this.reviewProgress,
+      ocr: this.reviewOcr,
+      installing: this.reviewInstalling,
+      error: dir ? this.reviewError : tr("先打开一个会话：评审评的是它的目录。"),
+      notGit: this.reviewNotGit,
+      mode: this.reviewMode,
+      base: this.reviewBase,
+      target: this.reviewTarget,
+      commit: this.reviewCommit,
+      pr: this.reviewPr,
+      prQuery: this.reviewPrQuery,
+      prMenuOpen: this.reviewPrMenu,
+      prs: this.reviewPrs,
+      prsLoading: this.reviewPrsLoading,
+      prError: this.reviewPrError,
+      model: this.reviewModel,
+    });
+    return {
+      view,
+      modelName: this.reviewModelInfo()?.name ?? "",
+      modelId: this.reviewModel,
+      refs: this.reviewRefs,
+      installLog: this.reviewInstallLog,
+      markLabels: { accept: tr("接受"), ignore: tr("忽略"), "false-positive": tr("误报") },
+      severityLabels: { critical: tr("严重"), high: tr("高"), medium: tr("中"), low: tr("低") },
+      actions: this.reviewActions(),
+    };
+  }
+
+  private reviewActions(): ReviewActions {
+    return {
+      onMode: (mode) => {
+        this.reviewMode = mode;
+        const dir = this.reviewDir();
+        if (mode === "pr" && dir && !this.reviewPrs.length && this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
+        this.renderQueue();
+      },
+      onBase: (value) => {
+        this.reviewBase = value;
+      },
+      onTarget: (value) => {
+        this.reviewTarget = value;
+      },
+      onPr: (value) => {
+        this.reviewPr = value;
+        // 选完把检索词清掉：下次展开看到的是完整列表，而不是被「#658」筛成一条。
+        this.reviewPrQuery = "";
+        this.reviewPrMenu = false;
+        this.renderQueue();
+      },
+      onPrInput: (value) => {
+        this.reviewPr = value;
+        const raw = this.reviewPrQuery;
+        const fromUrl = reviewRepoFromUrl(raw);
+        if (fromUrl && this.reviewRemoteRepo && fromUrl !== this.reviewRemoteRepo) {
+          // 粘了别的仓库的 PR 链接：号能认出来，但那是**另一个仓库**的同一个号，不能默默当成本仓库的。
+          this.flashToast(
+            tr("这个链接属于 {p1}，不是本仓库（{p2}）；要评请换本仓库的 PR 链接或直接填号", {
+              p1: fromUrl,
+              p2: this.reviewRemoteRepo,
+            }),
+            true,
+            9000,
+          );
+        }
+      },
+      onPrQuery: (value) => {
+        // 只记值、不重画：每敲一个字就重画会把输入框换成新节点、光标乱跳。
+        this.reviewPrQuery = value;
+      },
+      onPrMenu: (open) => {
+        // 只在开关那一刻重画（有焦点要留住，所以打开时把焦点还给输入框）。
+        if (this.reviewPrMenu === open) return;
+        this.reviewPrMenu = open;
+        const dir = this.reviewDir();
+        const stale = Date.now() - this.reviewPrsAt > 60_000;
+        if (open && dir && (!this.reviewPrs.length || stale || this.reviewPrError)) this.loadPullRequests(dir);
+        this.renderQueue();
+        if (open) {
+          requestAnimationFrame(() => this.els.queueInner?.querySelector<HTMLInputElement>(".rv-prq")?.focus());
+        }
+      },
+      onRefreshPrs: () => {
+        const dir = this.reviewDir();
+        if (dir) this.loadPullRequests(dir);
+      },
+      onCommit: (value) => {
+        this.reviewCommit = value;
+      },
+      onPickModel: () => {
+        // 复用输入框那颗 chip 背后的同一个弹层（模型与思考），只是「确认」把模型交回面板。
+        this.openModelSheet(false, {
+          start: this.reviewModelInfo()?.id ?? "",
+          onPick: (m) => {
+            this.reviewModel = `${m.provider}/${m.id}`;
+            this.renderQueue();
+            this.syncReviewSheet();
+          },
+        });
+      },
+      onRun: () => this.startReview(),
+      onStop: () => this.socket.send({ type: "review.cancel", dir: this.reviewDir(), sessionId: this.currentId }),
+      onMark: (key, mark: ReviewMark | "") => this.socket.send({ type: "review.mark", dir: this.reviewDir(), sessionId: this.currentId, key, mark }),
+      onOpen: (path, line) => this.openReviewFinding(path, line),
+      onFix: (f: ReviewFinding) => {
+        this.reviewHandoff(reviewFixPrompt(f, this.reviewFixContext()));
+      },
+      onFixMany: (list) => {
+        if (!list.length) return;
+        this.reviewHandoff(reviewFixManyPrompt(list, this.reviewFixContext()), list.length);
+      },
+      onPrInfo: () => this.openPrInfo(),
+      onInstall: () => {
+        this.reviewInstalling = true;
+        this.reviewInstallLog = [];
+        this.reviewError = "";
+        this.socket.send({ type: "review.install" });
+        this.renderQueue();
+      },
+      onClean: () => this.socket.send({ type: "review.clean", dir: this.reviewDir(), sessionId: this.currentId }),
+      onDetails: () => this.openReviewSheet(),
+    };
+  }
+
+  /** 「交给 agent」那段话的上下文：哪个仓库、哪个 PR / 分支。 */
+  private reviewFixContext(): ReviewFixContext {
+    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    return {
+      repo: this.reviewRemoteRepo || this.reviewRepo || this.reviewDir(),
+      pr: Number(this.reviewPr) || 0,
+      prTitle: run?.prTitle ?? "",
+      prHead: run?.prHead ?? "",
+      prBase: run?.prBase ?? "",
+      mode: this.reviewMode,
+      from: run?.from ?? this.reviewBase,
+      to: run?.to ?? this.reviewTarget,
+    };
+  }
+
+  /** 新开会话的默认名字：PR 就用 tag（`#636`），其余用分支名 / 「代码评审」。 */
+  private reviewHandoffName(): string {
+    if (this.reviewMode === "pr") return `#${Number(this.reviewPr) || 0}`;
+    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    const branch = (this.git?.branch ?? "").trim() || (run?.prHead ?? "").trim();
+    return branch ? tr("评审 {p1}", { p1: branch }) : tr("代码评审");
+  }
+
+  /**
+   * 「交给 agent」先问去处：当前会话 / 新开会话。
+   * 多个 PR 的评审全塞进同一个会话会把上下文搅在一起，所以新开会话是常用那条路。
+   */
+  private reviewHandoff(text: string, count = 1): void {
+    const name = this.reviewHandoffName();
+    const sheet = new HandoffSheet({
+      text,
+      name,
+      onPick: (target, body) => {
+        if (target === "new") {
+          this.newSessionWith(body, name);
+          return;
+        }
+        this.prefill(body);
+        this.flashToast(
+          count > 1 ? tr("已把 {p1} 条意见放进输入框（还没发）", { p1: count }) : tr("已放进输入框（还没发）"),
+          false,
+          count > 1 ? 3500 : 3000,
+        );
+      },
+    });
+    sheet.mount(document.getElementById("app") ?? document.body);
+  }
+
+  /** 「PR 信息」dialog：标题 / 描述 / 统计 / 文件清单 / 提交时间线（不显示 diff）。 */
+  private openPrInfo(): void {
+    const dir = this.reviewDir();
+    const number = Number(this.reviewPr) || 0;
+    if (!dir || !number) return;
+    if (this.reviewPrInfo.number !== number && this.reviewPrSheet) {
+      this.reviewPrSheet.close();
+      this.reviewPrSheet = null;
+    }
+    if (!this.reviewPrSheet) {
+      const sheet = new PrSheet(number);
+      sheet.onClose = () => {
+        if (this.reviewPrSheet === sheet) this.reviewPrSheet = null;
+      };
+      sheet.mount(document.getElementById("app") ?? document.body);
+      this.reviewPrSheet = sheet;
+    }
+    const cached = this.reviewPrInfo.number === number ? this.reviewPrInfo : null;
+    if (cached) this.reviewPrSheet.set(number, cached.info, cached.error);
+    else this.reviewPrSheet.setLoading();
+    this.socket.send({ type: "review.prinfo.get", dir, pr: number });
+  }
+
+  /** 「评审详情」dialog：跑着看时间线，跑完看结果；同一个会话只开一扇。 */
+  private openReviewSheet(): void {
+    if (this.reviewSheet) {
+      this.reviewSheet.update(this.reviewPanelInput());
+      return;
+    }
+    const sheet = new ReviewSheet(this.reviewPanelInput());
+    sheet.onClose = () => {
+      if (this.reviewSheet === sheet) this.reviewSheet = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.reviewSheet = sheet;
+  }
+
+  /** 帧到了就同步 dialog（没开着就什么都不做）。 */
+  private syncReviewSheet(): void {
+    this.reviewSheet?.update(this.reviewPanelInput());
+  }
+
+  private startReview(): void {
+    const dir = this.reviewDir();
+    if (!dir) return;
+    const mode = this.reviewMode;
+    if (mode === "commit" && !this.reviewCommit.trim()) {
+      this.flashToast(tr("先填一个提交号"), true, 4000);
+      return;
+    }
+    // `#636` 是 PR 号的手感：commitish() 会拒掉它（`--commit "#636" is not a valid commit ref`），
+    // 与其让 ocr 报一句看不懂的，不如当场说清该切哪个模式。
+    if (mode === "commit" && /^#\s*\d+$/.test(this.reviewCommit.trim())) {
+      this.flashToast(tr("提交号别带 #：要评 PR 请切到「GitHub PR」"), true, 5000);
+      return;
+    }
+    if (mode === "pr" && !this.reviewPr.trim()) {
+      this.flashToast(tr("先选一个 PR（或填个号）"), true, 4000);
+      return;
+    }
+    this.reviewError = "";
+    this.reviewPrMenu = false;
+    this.reviewPendingToast = true;
+    this.reviewStartedRunId = "";
+    this.reviewProgress = {
+      repo: dir,
+      runId: "",
+      status: "running",
+      phase: "preview",
+      totalFiles: 0,
+      reviewedFiles: 0,
+      currentFile: "",
+      tokens: 0,
+      startedAt: new Date().toISOString(),
+      error: "",
+      errorCode: "",
+      group: 0,
+      groups: 0,
+      log: [],
+    };
+    this.socket.send({
+      type: "review.run",
+      dir,
+      sessionId: this.currentId,
+      mode,
+      base: this.reviewBase,
+      target: this.reviewTarget,
+      commit: this.reviewCommit.trim(),
+      pr: Number(this.reviewPr) || 0,
+      model: this.reviewModel,
+      lang: getLang(),
+    });
+    this.renderQueue();
+  }
+
+  /** 一条意见 → 分支工作台的「差异」页签，选中那个文件并把命中的那段代码标出来。 */
+  private openReviewFinding(path: string, line: number): void {
+    const dir = this.reviewDir();
+    if (!dir) return;
+    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    const finding = run?.findings?.find((f) => f.path === path && (line === 0 || f.startLine === line)) ?? null;
+    const code = finding?.existingCode ?? "";
+    // 工作区模式比的是「工作区 vs HEAD」，提交模式比的是「这条提交 vs 父提交」——
+    // 都别拿对照分支硬套，否则 diff 是空的、跳过去只剩一句「两边没有差异」。
+    const base = run?.mode === "commit" || run?.mode === "workspace" ? "" : run?.mergeBase || this.reviewBase;
+    const commit = run?.mode === "commit" ? run.to : "";
+    const worktree = run?.mode === "workspace";
+    const open = (sheet: BranchSheet) => void sheet.openDiffAt({ base, commit, worktree, path, line, code });
+    if (this.branchSheet) {
+      open(this.branchSheet);
+      return;
+    }
+    const sheet = new BranchSheet({
+      dir,
+      branch: this.git?.branch ?? "",
+      refreshChip: () => { void this.refreshGit(true); },
+      handoff: { prefill: (text, name) => this.prefill(text, name), newSessionWith: (text, name) => this.newSessionWith(text, name) },
+    });
+    sheet.onClose = () => {
+      if (this.branchSheet === sheet) this.branchSheet = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.branchSheet = sheet;
+    open(sheet);
   }
 
   private openExecPlanFromChat(): void {
@@ -19521,7 +20091,19 @@ export class App {
       pip.setAttribute("aria-label", tr("正在操作浏览器"));
       browser.append(pip);
     }
-    tabs.append(needs, execution, browser);
+    const review = el("button", this.queueTab === "review" ? "on" : "", tr("代码评审")) as HTMLButtonElement;
+    review.type = "button";
+    review.dataset.execTab = "review";
+    review.setAttribute("aria-selected", String(this.queueTab === "review"));
+    review.onclick = () => this.selectQueueTab("review");
+    const reviewRunning = Boolean((this.reviewProgress ?? null) && this.reviewProgress?.status === "running");
+    if (this.queueTab !== "review" && reviewRunning) {
+      const pip = el("span", "exec-pip");
+      pip.title = tr("正在评审");
+      pip.setAttribute("aria-label", tr("正在评审"));
+      review.append(pip);
+    }
+    tabs.append(needs, execution, browser, review);
     host.append(tabs);
     if (this.queueTab === "exec") {
       host.append(this.renderExecPanel());
@@ -19530,6 +20112,11 @@ export class App {
     }
     if (this.queueTab === "browser") {
       host.append(this.renderBrowserPanel());
+      this.els.queuePane.scrollTop = kept;
+      return;
+    }
+    if (this.queueTab === "review") {
+      host.append(this.renderReviewPanel());
       this.els.queuePane.scrollTop = kept;
       return;
     }
@@ -21464,7 +22051,7 @@ function writeBrowserCfg(cfg: BrowserCfg): void {
 function readQueueTab(): QueueTab {
   try {
     const saved = localStorage.getItem("pi.queueTab");
-    return saved === "exec" || saved === "browser" ? saved : "needs";
+    return saved === "exec" || saved === "browser" || saved === "review" ? saved : "needs";
   } catch {
     return "needs";
   }

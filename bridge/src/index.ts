@@ -53,6 +53,22 @@ import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, st
 import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
+import { listPullRequests, pullRequestInfo } from "./gitpr.ts";
+import {
+  cancelReview,
+  cleanRuns,
+  gitRoot,
+  installOcr,
+  isMark,
+  markFinding,
+  ocrStatus,
+  readReviewState,
+  reviewProgress,
+  startReview,
+  sweepStaleRuns,
+  type ReviewLang,
+  type ReviewMode,
+} from "./review.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
 import { RotatingLog, LogStorm, logMaxBytes, logMaxLinesPerSecond } from "./logfile.ts";
@@ -555,6 +571,9 @@ async function main(): Promise<void> {
   // 随手问 (#86): nothing can be live at this point (it is created lazily), so wiping its dir is
   // unconditional — that is what makes 「桥重启 = 清空」 true, crashes included.
   resetScratchDir();
+  // #651 代码评审：盘上还写着 running 的那几次（上次桥被重启 / 被杀）永远不会再有人收尾，
+  // 开机时统一转成「已失效」，否则面板会一直转圈。
+  sweepStaleRuns();
   const cfg = loadConfig();
   const fresh = ensurePassphrase();
   const pi = resolvePi();
@@ -1545,6 +1564,34 @@ async function main(): Promise<void> {
       }
     }
 
+    // #651 代码评审：状态 / 标记 / 清理走 HTTP（跑本身走 WS，因为要流进度）。
+    // 与 D240 同一口径：登录后的本机 / 局域网 / 隧道访客都能用 —— 有意不设额外闸（见 D393）。
+    if (url.pathname.startsWith("/api/review/") && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const dir = String(body?.dir ?? "").trim();
+      if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空");
+      if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径");
+      try {
+        const repo = gitRoot(dir);
+        const session = String(body?.session ?? "");
+        if (url.pathname === "/api/review/state") {
+          return json(res, 200, { ok: true, state: readReviewState(repo, session), progress: reviewProgress(repo, session), ocr: await ocrStatus() });
+        }
+        if (url.pathname === "/api/review/mark") {
+          const key = String(body?.key ?? "").trim();
+          if (!key) return fail(res, 400, "key_empty", "key 不能为空");
+          const mark = String(body?.mark ?? "");
+          return json(res, 200, { ok: true, state: markFinding(repo, key, isMark(mark) ? mark : "", session) });
+        }
+        if (url.pathname === "/api/review/clean") {
+          return json(res, 200, { ok: true, state: cleanRuns(repo, session) });
+        }
+      } catch (err: any) {
+        return json(res, 200, { ok: false, code: String(err?.code ?? "failed"), error: String(err?.message ?? err).slice(0, 300) });
+      }
+      return fail(res, 404, "not_found", "没有这个接口");
+    }
+
     // 弹窗里那个「⧗ Fetch origin」。D240: 公网 / 局域网同样能发起；gitFetch 自己仍带
     // 45 秒超时与 GIT_TERMINAL_PROMPT=0 / GIT_ASKPASS=echo / credential.interactive=never 三件套。
     if (url.pathname === "/api/git/fetch" && req.method === "POST") {
@@ -1581,6 +1628,7 @@ async function main(): Promise<void> {
             String(body?.base ?? ""),
             String(body?.target ?? "HEAD"),
             String(body?.commit ?? ""),
+            body?.worktree === true,
           ));
         }
         // D289: 历史里点一行 → 提交详情小窗。两个都只读：一个给清单，一个给单文件并排内容。
@@ -3989,6 +4037,119 @@ async function main(): Promise<void> {
             } catch (err: any) {
               send({ type: "notes.saved", error: String(err?.message ?? err) });
             }
+            return;
+          }
+          // ------------------------------------------------ 代码评审（#651）
+          // 推理跑在一次性的 `pi -p --mode json` 子进程里（只读工具、不读 AGENTS.md），
+          // 这里只做三件事：开跑、停、以及把盘上的状态发回去。
+          case "review.get": {
+            const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
+            try {
+              const repo = gitRoot(dir);
+              send({ type: "review.state", dir: repo, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) });
+              void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
+            } catch (err: any) {
+              send({ type: "review.state", dir, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+            }
+            return;
+          }
+          case "review.prs.get": {
+            const dir = String(msg.dir ?? "");
+            void (async () => {
+              try {
+                const repo = gitRoot(dir);
+                const out = await listPullRequests(repo, { fresh: msg.fresh === true });
+                send({ type: "review.prs", dir: repo, ...out });
+              } catch (err: any) {
+                send({ type: "review.prs", dir, ok: false, prs: [], error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              }
+            })();
+            return;
+          }
+          case "review.prinfo.get": {
+            const dir = String(msg.dir ?? "");
+            const number = Number(msg.pr) || 0;
+            void (async () => {
+              try {
+                const repo = gitRoot(dir);
+                const out = await pullRequestInfo(repo, number, { fresh: msg.fresh === true });
+                send({ type: "review.prinfo", dir: repo, pr: number, ...out });
+              } catch (err: any) {
+                send({ type: "review.prinfo", dir, pr: number, ok: false, info: null, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              }
+            })();
+            return;
+          }
+          case "review.run": {
+            const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
+            const mode = ["workspace", "range", "commit", "pr"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "workspace";
+            const lang: ReviewLang = ["zh", "en", "ja"].includes(String(msg.lang)) ? (String(msg.lang) as ReviewLang) : "zh";
+            const full = String(msg.model ?? "");
+            const slash = full.indexOf("/");
+            const provider = slash > 0 ? full.slice(0, slash) : String(msg.provider ?? "");
+            const model = slash > 0 ? full.slice(slash + 1) : full;
+            try {
+              const repo = gitRoot(dir);
+              startReview({
+                dir: repo,
+                mode,
+                base: String(msg.base ?? ""),
+                target: String(msg.target ?? ""),
+                commit: String(msg.commit ?? ""),
+                pr: Number(msg.pr) || 0,
+                session,
+                model,
+                provider,
+                lang,
+                onProgress: (p) => broadcast({ type: "review.progress", dir: repo, progress: p }),
+                onState: () => broadcast({ type: "review.state", dir: repo, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) }),
+              });
+            } catch (err: any) {
+              send({ type: "review.state", dir, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+            }
+            return;
+          }
+          case "review.cancel": {
+            const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
+            try {
+              if (!cancelReview(dir, session)) send({ type: "review.progress", dir, progress: reviewProgress(dir, session) });
+            } catch {
+              /* 目录已经不是仓库了：没什么可停的 */
+            }
+            return;
+          }
+          case "review.mark": {
+            const dir = String(msg.dir ?? "");
+            const key = String(msg.key ?? "");
+            const mark = String(msg.mark ?? "");
+            const session = String(msg.sessionId ?? "");
+            try {
+              const repo = gitRoot(dir);
+              const state = markFinding(repo, key, isMark(mark) ? mark : "", session);
+              broadcast({ type: "review.state", dir: repo, sessionId: session, state });
+            } catch (err: any) {
+              send({ type: "review.state", dir, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "review.clean": {
+            const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
+            try {
+              const repo = gitRoot(dir);
+              broadcast({ type: "review.state", dir: repo, sessionId: session, state: cleanRuns(repo, session) });
+            } catch (err: any) {
+              send({ type: "review.state", dir, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "review.install": {
+            void installOcr((line) => broadcast({ type: "review.install.log", line })).then(async (out) => {
+              broadcast({ type: "review.install.done", ok: out.ok, error: out.error, ocr: await ocrStatus() });
+            });
             return;
           }
           // ------------------------------------------------ AI 出错记录（D164）
