@@ -8,7 +8,7 @@ import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { atSpan, filterCommands, PANEL_COMMANDS, slashSpan, type CommandItem } from "./commands.ts";
 import { documentTitle } from "./window-title.ts";
-import { applyFrame, type FrameView, type RedrawKey, type ServerFrameType } from "./frames.ts";
+import { applyFrame, lostAskHere, type FrameView, type RedrawKey, type ServerFrameType } from "./frames.ts";
 import { copilotFromFrame, creditsToUsd, formatAge, formatCredits, formatReset, isMixed, usedPercent, type CopilotView } from "./copilot.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
@@ -314,7 +314,7 @@ export class App {
    * A questionnaire that died before it was answered (tool call aborted, turn interrupted, session
    * released…). The panel is gone, but whatever was filled in is kept — see askLostBlock().
    */
-  private askLost: { id: string; title: string; reason: string; lines: string[] } | null = null;
+  private askLost: { sessionId: string; id: string; title: string; reason: string; lines: string[] } | null = null;
   /** The ask id this page submitted itself: its ask.remove is not a loss. */
   private lastAnsweredAsk: string | null = null;
   private askFolded = false;
@@ -17792,11 +17792,14 @@ export class App {
     this.syncViewerBesideAsk();
     this.fillHintStatus();
     if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
-    if (this.askLost && !this.asks.length) {
-      const lost = this.askLostBlock();
+    // Q-010b: 残影只画给「问卷死在那个会话里」的那个会话 —— 整页一份的话，切到别的会话它还在，
+    // 点「放进输入框」就把上一个会话的答案倒进这个会话的草稿里。
+    const lost = lostAskHere(this.frameView());
+    if (lost) {
+      const box = this.askLostBlock(lost);
       const row = host.querySelector(".row");
-      if (row) host.insertBefore(lost, row);
-      else host.append(lost);
+      if (row) host.insertBefore(box, row);
+      else host.append(box);
     }
     const ask = this.asks[0];
     if (!ask || !this.currentId) return;
@@ -17939,8 +17942,7 @@ export class App {
     this.renderAsks();
   }
 
-  private askLostBlock(): HTMLElement {
-    const lost = this.askLost!;
+  private askLostBlock(lost: NonNullable<FrameView["askLost"]>): HTMLElement {
     const box = el("div", "ask-slot ask-lost");
     box.append(el("div", "ask-lost-head", tr("问卷没答完就关闭了：{p1}", { p1: lost.reason })));
     box.append(el("div", "ask-lost-sub", tr("你已填的 {p1} 题还留着，可以接着用。", { p1: lost.lines.length })));
