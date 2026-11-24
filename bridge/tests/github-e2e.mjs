@@ -31,7 +31,8 @@ process.env.FAKE_GH_ACCOUNTS = JSON.stringify([
   { login: "qingmin-new", active: false },
 ]);
 
-const { handleGithub, resetGithubCaches } = await import("../src/github.ts");
+const { handleGithub, resetGithubCaches, seenLinks } = await import("../src/github.ts");
+const { ghLinksIn } = await import("../../web/src/github-shared.ts");
 
 /** 一个带 GitHub 远端的工作目录（真 `git remote get-url`，不联网）。 */
 const work = path.join(tmp, "work", "widgets");
@@ -44,7 +45,7 @@ fs.mkdirSync(emptyDir, { recursive: true });
 
 // ---------------------------------------------------------------- 假 GitHub（上游）
 
-const up = { hits: { pulls: 0, pull: 0, files: 0, user: 0 }, mode: "ok" };
+const up = { hits: { pulls: 0, pull: 0, files: 0, user: 0 }, mode: "ok", lastPullPath: "" };
 const PULLS = [
   {
     number: 12,
@@ -76,8 +77,9 @@ const upstream = http.createServer((req, res) => {
     up.hits.pulls += 1;
     return send(200, PULLS);
   }
-  const pull = /^\/repos\/acme\/widgets\/pulls\/(\d+)$/.exec(url.pathname);
-  if (pull) {
+  up.lastPullPath = url.pathname;
+  const pull = /^\/repos\/[\w.-]+\/[\w.-]+\/pulls\/(\d+)$/.exec(url.pathname);
+  if (pull && url.pathname.startsWith("/repos/acme/widgets/")) {
     up.hits.pull += 1;
     return send(200, PULLS[0]);
   }
@@ -388,6 +390,63 @@ test("shim report：命令失败时不发帧，也不编造链接", async () => 
 test("shim report：没有 loopback 令牌就拒绝", async () => {
   const r = await call("POST", "/api/github/shim/report", { argv: ["pr", "list"] });
   assert.equal(r.status, 401);
+});
+
+test("桥与页面认链接的口径一致（同一批样本必须得出一样的 kind / repo / id）", () => {
+  // US38：解析器有两份（跨包难共享），但口径不能分叉 —— 改动一处忘了另一处，这条会红。
+  const samples = [
+    "https://github.com/acme/widgets/pull/12",
+    "看这个 https://github.com/acme/widgets/pull/12。另外 https://gitlab.com/a/b/pull/3",
+    "https://github.com/a/b/issues/7\nhttps://github.com/a/b/commit/deadbeef",
+    "https://github.com/my-org.name/repo_1.x/pull/99",
+    "https://github.com/a/b/pull/1 https://github.com/a/b/pull/1",
+    "没有链接",
+  ];
+  for (const text of samples) {
+    const bridge = seenLinks(text).map((l) => `${l.kind}|${l.repo}|${l.id}`);
+    const page = ghLinksIn(text).map((l) => `${l.kind}|${l.repo}|${l.id}`);
+    assert.deepEqual(page, bridge, `口径分叉：${text}`);
+  }
+});
+
+test("工作区默认账号：能写进 .pi/settings.json，并且下一个会话就读到了（US15）", async () => {
+  freshPrefs();
+  const w = await call("POST", "/api/github/project-account", { cwd: work, login: "qingmin-new" });
+  assert.equal(w.status, 200);
+  const onDisk = JSON.parse(fs.readFileSync(path.join(work, ".pi", "settings.json"), "utf8"));
+  assert.equal(onDisk.githubAccount, "qingmin-new", "写的是项目文件，跟着仓库走");
+  resetGithubCaches();
+  const st = await call("GET", `/api/github/state?sessionId=s-new&cwd=${encodeURIComponent(work)}`);
+  assert.deepEqual(st.json.session, { login: "qingmin-new", kind: "gh", source: "project" }, "新会话读到了它");
+  // 清空同一入口也能做
+  await call("POST", "/api/github/project-account", { cwd: work, login: "" });
+  const cleared = JSON.parse(fs.readFileSync(path.join(work, ".pi", "settings.json"), "utf8"));
+  assert.equal(cleared.githubAccount, undefined);
+  freshPrefs();
+});
+
+test("隧道访客：改工作区设置也 403", async () => {
+  const r = await call("POST", "/api/github/project-account", { cwd: work, login: "x" }, { "x-test-tunnel": "1" });
+  assert.equal(r.status, 403);
+  assert.equal(r.json.code, "tunnel_readonly");
+});
+
+test("pr：每个文件带 GitHub 的 diff 锚点（点一行就落到那个文件）", async () => {
+  resetGithubCaches();
+  const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
+  const file = r.json.files[0];
+  assert.match(file.anchor, /^diff-[0-9a-f]{64}$/, "锚点是 diff-<sha256(路径)>");
+  // 口径：同一路径必须是同一个锚点（前端拼 #anchor 用的就是它）
+  const again = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
+  assert.equal(again.json.files[0].anchor, file.anchor);
+});
+
+test("pr：显式给 repo 时不按会话 cwd 算（跨仓链接卡不会显示本仓同号 PR）", async () => {
+  resetGithubCaches();
+  up.lastPullPath = "";
+  // 会话 cwd 是 acme/widgets，但卡片来自另一个仓库：路由必须照 repo 打过去。
+  await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12&repo=Yang-Code01/pi-web-client`);
+  assert.match(up.lastPullPath, /^\/repos\/Yang-Code01\/pi-web-client\/pulls\//, `按卡片里的仓库打了：${up.lastPullPath}`);
 });
 
 test.after(() => {

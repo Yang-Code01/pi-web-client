@@ -7787,4 +7787,13 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - **卡片的标题是异步补的**（滚进视口才请求）：一屏之外的那些卡，标题会晚一点出现。
 - **PAT 只在非 Windows 上是明文 + 0600**：Windows 走 DPAPI，换机器 / 换用户解不开，表现为「凭据读不到」，不会静默退回明文。
 
-**验证：** `npm run test:github` 三段共 40 条 —— 桥的 HTTP 面 21 条（账号解析四种来源的优先级、仓库识别、PR 列表/详情的归一化、没有远端时 409、上游 401 映射、隧道写 403、卡片缓存命中、PAT 存取与删除、shim 身份与记账三种帧）；前端纯函数 10 条（链接识别去重与标点、相对时间四档、`+/−` 文案、两个开关默认值与连坐、两个新帧不改纯视图状态）；壳 9 条（令牌交到真 gh、`pr create` 链接回报、退出码透传、没 gh 时内置实现真建 PR、未实现子命令明确失败、桥不在说人话、PATH 注入且本机 PATH 没被动过）。`npm run typecheck` 全绿（含 37 条新 i18n 键、`test:viewport`、`test:layers`、`test:theme`）。真机冒烟（隔离实例，真 gh 真令牌）：默认 `gh api user --jq .login` → `Yang-Code01`；会话切到 `qingmin-new` 后 → `qingmin-new`；`gh pr view 659` → 桥发出 `github.seen` 并认出 pull #659；面板接口真数据（20 条开着的 PR、#659 `+105 −21`、5 个文件）。
+**spec 评审后补的四条（都是它判 BLOCK 的实盘问题）：**
+
+- **工作区默认账号能写了**：之前只有读端（`githubAccount` 没人写）。新增 `POST /api/github/project-account`（写 `<cwd>/.pi/settings.json`，隧道 403），面板菜单加「设为这个工作区的默认」。
+- **没令牌也能读**：壳的内置实现原来一进 `api()` 就 die，连 `pr list` 都读不了公开仓库 —— 与「只能读公开仓库、写需要 PAT」正好相反。现在只有写（非 GET）才拦。
+- **点一行文件落到那个文件的差异**：锚点是 `#diff-<sha256(路径)>`，由桥算好放在 `files[].anchor` 里；算错的最坏结果只是落到 Files changed 顶部。
+- **跨仓链接卡不会显示本仓同号 PR**：卡片带 `repo`，`/api/github/pr` 显式传它；之前只传号，桥按会话 cwd 回落，点别人的卡会显示本仓同号的 PR（错数据）。
+
+**两份解析器是刻意留的**：桥的 `seenLinks()` 与页面的 `ghLinksIn()` 跨包，共享要新造第三处分包。代价用一条测试兜住 —— `bridge/tests/github-e2e.mjs` 里「口径一致」那条拿六组样本比对两边的 `kind|repo|id`，分叉就红。
+
+**验证：** `npm run test:github` 三段共 45 条 —— 桥的 HTTP 面 26 条（账号解析四种来源的优先级、工作区默认账号的写与读、逐文件锚点、跨仓 repo 透传、两份解析器口径一致、仓库识别、PR 列表/详情的归一化、没有远端时 409、上游 401 映射、隧道写 403、卡片缓存命中、PAT 存取与删除、shim 身份与记账三种帧）；前端纯函数 10 条（链接识别去重与标点、相对时间四档、`+/−` 文案、两个开关默认值与连坐、两个新帧不改纯视图状态）；壳 10 条（没令牌时还能读公开仓库、写才拦；令牌交到真 gh、`pr create` 链接回报、退出码透传、没 gh 时内置实现真建 PR、未实现子命令明确失败、桥不在说人话、PATH 注入且本机 PATH 没被动过）。`npm run typecheck` 全绿（含 37 条新 i18n 键、`test:viewport`、`test:layers`、`test:theme`）。真机冒烟（隔离实例，真 gh 真令牌）：默认 `gh api user --jq .login` → `Yang-Code01`；会话切到 `qingmin-new` 后 → `qingmin-new`；`gh pr view 659` → 桥发出 `github.seen` 并认出 pull #659；面板接口真数据（20 条开着的 PR、#659 `+105 −21`、5 个文件）。

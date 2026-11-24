@@ -144,7 +144,7 @@ export class GithubPanel {
       this.state = state;
       if (!this.repo && state.repo) this.repo = state.repo;
       if (this.view === "pull" && this.number) {
-        this.detail = await githubApi.pull(sessionId, cwd, this.number);
+        this.detail = await githubApi.pull(sessionId, cwd, this.number, this.repo || undefined);
         if (seq !== this.seq) return;
       } else {
         this.pulls = state.repo ? (await githubApi.pulls(sessionId, cwd)).pulls : [];
@@ -242,10 +242,14 @@ export class GithubPanel {
     };
     for (const account of state?.accounts ?? []) {
       const on = state?.session?.login === account.login;
-      const pat = state?.pats?.includes(account.login) ? ` · ${tr("PAT")}` : "";
-      add(`${account.login}${pat}${on ? " ✓" : ""}`, () => void this.choose(account.login), on ? "on" : "");
+      const hasPat = state?.pats?.includes(account.login);
+      add(`${account.login}${hasPat ? ` · ${tr("PAT")}` : ""}${on ? " ✓" : ""}`, () => void this.choose(account.login), on ? "on" : "");
+      if (hasPat) add(tr("删掉本机存的这枚 PAT"), () => void this.dropPat(account.login), "dim sub");
     }
-    if (state?.session) add(tr("回到工作区默认账号"), () => void this.choose(""), "dim");
+    if (state?.session) {
+      add(tr("只在这次会话里换（不记住）"), () => void this.choose(""), "dim");
+      add(tr("设为这个工作区的默认"), () => void this.rememberWorkspace(state.session!.login), "dim");
+    }
     add(tr("存一枚 PAT…"), () => this.patForm(menu), "sep");
     mountOverlay(menu);
     const r = anchor.getBoundingClientRect();
@@ -266,6 +270,27 @@ export class GithubPanel {
   private async choose(login: string): Promise<void> {
     try {
       await githubApi.setAccount(this.host.sessionId(), login);
+      await this.reload();
+    } catch (err) {
+      this.error = errText(err);
+      this.paint();
+    }
+  }
+
+  /** 把当前账号记成这个工作区的默认（写 `<cwd>/.pi/settings.json`，跟着仓库走）。 */
+  private async rememberWorkspace(login: string): Promise<void> {
+    try {
+      await githubApi.setProjectAccount(this.host.cwd(), login);
+      await this.reload();
+    } catch (err) {
+      this.error = errText(err);
+      this.paint();
+    }
+  }
+
+  private async dropPat(login: string): Promise<void> {
+    try {
+      await githubApi.deletePat(login);
       await this.reload();
     } catch (err) {
       this.error = errText(err);
@@ -367,6 +392,7 @@ export class GithubPanel {
       el("span", undefined, `${d.pull.head} → ${d.pull.base}`),
       age ? el("span", undefined, ghAgeText(age)) : el("span"),
       el("span", "ghp-pill", tr("{p1}/{p2} checks", { p1: d.sample.checks.length, p2: d.sample.checks.length })),
+      el("span", "ghp-sample", tr("示例数据")),
     );
     hero.append(meta);
     if (d.body) hero.append(el("div", "ghp-hero-body", d.body));
@@ -384,7 +410,7 @@ export class GithubPanel {
 
     const files = el("section", "ghp-sec");
     const fh = el("div", "ghp-sec-head");
-    fh.append(el("span", "ghp-sec-title", tr("改了哪 {p1} 个文件", { p1: d.files.length })), el("span", "ghp-sample", tr("示例数据")));
+    fh.append(el("span", "ghp-sec-title", tr("改了哪 {p1} 个文件", { p1: d.files.length })));
     files.append(fh);
     for (const f of d.files) {
       const row = el("button", "ghp-filestat") as HTMLButtonElement;
@@ -394,7 +420,8 @@ export class GithubPanel {
         el("span", "ghp-churn", ghChurn(f.additions, f.deletions)),
         el("span", "ghp-go", tr("在 GitHub 看 ↗")),
       );
-      row.onclick = () => this.host.openExternal(`${d.pull.url}/files`);
+      // 锚点由桥算好（`#diff-<sha256(路径)>`）：点一行就落到**这个文件**的差异，而不是整页顶部。
+      row.onclick = () => this.host.openExternal(`${d.pull.url}/files${f.anchor ? `#${f.anchor}` : ""}`);
       files.append(row);
     }
     cells.push(files);

@@ -599,13 +599,22 @@ export const githubApi = {
     req<GithubStateView>(`/api/github/state?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}`),
   pulls: (sessionId: string, cwd: string) =>
     req<PullsView>(`/api/github/pulls?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}`),
-  pull: (sessionId: string, cwd: string, number: number) =>
-    req<PullDetailView>(`/api/github/pr?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}&number=${number}`),
+  /**
+   * PR 详情。`repo` 来自**链接卡**：卡片可能指向别的仓库，不传它就落到「当前会话 cwd 那个仓库」，
+   * 于是点别的仓库的卡会显示本仓同号的 PR（评审抓到的错数据）。
+   */
+  pull: (sessionId: string, cwd: string, number: number, repo?: string) =>
+    req<PullDetailView>(
+      `/api/github/pr?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}&number=${number}` +
+        (repo ? `&repo=${encodeURIComponent(repo)}` : ""),
+    ),
   /** 聊天里的链接卡只要一行（一次 REST，不拉文件差异）。仓库直接拿链接里的那个，不按会话算。 */
   card: (repo: string, number: number) =>
     req<{ ok: boolean; pull: PullRow }>(`/api/github/card?repo=${encodeURIComponent(repo)}&number=${number}`),
   /** 会话级临时换号；`login` 给空串就回到「继承工作区」。 */
   setAccount: (sessionId: string, login: string) => postJson<{ ok: true }>("/api/github/account", { sessionId, login }),
+  /** 记成这个**工作区**的默认账号（写 `<cwd>/.pi/settings.json`，跟着仓库走）。 */
+  setProjectAccount: (cwd: string, login: string) => postJson<{ ok: true; file: string }>("/api/github/project-account", { cwd, login }),
   /** 存一枚 fine-grained PAT：桥先拿它问一次 `/user`，认不出是谁就不存。 */
   putPat: (token: string) => postJson<{ ok: true; login: string; encrypted: boolean }>("/api/github/pat", { token }),
   deletePat: (login: string) => req<{ ok: true }>(`/api/github/pat?login=${encodeURIComponent(login)}`, { method: "DELETE" }),

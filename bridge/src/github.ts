@@ -13,6 +13,7 @@
  * 全局 settings.json 的 `githubAccount` → `gh auth status` 的 active。
  */
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import type http from "node:http";
 import path from "node:path";
@@ -428,6 +429,9 @@ async function getPull(res: http.ServerResponse, url: URL, ctx: GithubCtx): Prom
       additions: Number(f?.additions ?? 0),
       deletions: Number(f?.deletions ?? 0),
       patch: String(f?.patch ?? ""),
+      // GitHub 的单文件 diff 锚点就是 `#diff-<sha256(路径)>`。算在这里是为了让前端直接拼 URL；
+      // 万一 GitHub 换了算法，最坏结果也只是落到「Files changed」顶部，不是打开错页。
+      anchor: `diff-${crypto.createHash("sha256").update(String(f?.filename ?? "")).digest("hex")}`,
     })),
     sample: { checks: SAMPLE_CHECKS, comments: SAMPLE_COMMENTS },
   });
@@ -659,6 +663,32 @@ async function shimReport(req: http.IncomingMessage, res: http.ServerResponse, c
   json(res, 200, { ok: true, opened: false });
 }
 
+/**
+ * 把某个账号记成**这个工作区**的默认（写 `<cwd>/.pi/settings.json` 的 `githubAccount`）。
+ * 与 `POST /api/github/account` 分开：那个只影响一个会话、只落桥的状态目录；这个写的是项目文件，
+ * 会跟着仓库走，所以要单独一条、单独问一次。
+ */
+async function setProjectAccount(req: http.IncomingMessage, res: http.ServerResponse, ctx: GithubCtx): Promise<void> {
+  if (ctx.publicReq) {
+    fail(res, 403, "tunnel_readonly", "改工作区设置只能在本机做");
+    return;
+  }
+  const body = await readBody(req);
+  const cwd = String(body?.cwd ?? "");
+  const login = String(body?.login ?? "");
+  if (!cwd || !fs.existsSync(cwd)) {
+    fail(res, 400, "bad_args", "缺一个存在的 cwd");
+    return;
+  }
+  const file = path.join(cwd, ".pi", "settings.json");
+  const raw = readJson<Record<string, unknown>>(file, {});
+  if (login) raw.githubAccount = login;
+  else delete raw.githubAccount;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeJson(file, raw);
+  json(res, 200, { ok: true, file });
+}
+
 async function setSessionAccount(req: http.IncomingMessage, res: http.ServerResponse, ctx: GithubCtx): Promise<void> {
   if (ctx.publicReq) {
     fail(res, 403, "tunnel_readonly", "换账号只能在本机做");
@@ -720,6 +750,10 @@ export async function handleGithub(req: http.IncomingMessage, res: http.ServerRe
       case "/api/github/shim/report":
         if (method !== "POST") break;
         await shimReport(req, res, ctx);
+        return true;
+      case "/api/github/project-account":
+        if (method !== "POST") break;
+        await setProjectAccount(req, res, ctx);
         return true;
       case "/api/github/account":
         if (method !== "POST") break;

@@ -114,7 +114,9 @@ function apiError(status: number, body: any): never {
 }
 
 async function api(pathname: string, init: RequestInit = {}): Promise<any> {
-  if (!identity.token) {
+  // 没有令牌也能**读**公开仓库（GitHub 的匿名额度 60 次/小时）；写才必须有一个账号。
+  const write = (init.method ?? "GET").toUpperCase() !== "GET";
+  if (!identity.token && write) {
     die(
       `gh（壳）：这台机器没装 gh，也没有给 ${identity.login ?? "任何账号"} 存 PAT —— 只能读公开仓库。` +
         `去「GitHub 面板 → 账号」里填一枚 fine-grained PAT。`,
@@ -124,7 +126,7 @@ async function api(pathname: string, init: RequestInit = {}): Promise<any> {
     accept: "application/vnd.github+json",
     "user-agent": "pi-web-client",
     "x-github-api-version": "2022-11-28",
-    authorization: `Bearer ${identity.token}`,
+    ...(identity.token ? { authorization: `Bearer ${identity.token}` } : {}),
     ...(init.headers as Record<string, string> | undefined),
   };
   const res = await fetch(`${API}${pathname}`, { ...init, headers, signal: AbortSignal.timeout(15_000) });

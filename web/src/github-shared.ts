@@ -55,6 +55,8 @@ export interface PullFile {
   additions: number;
   deletions: number;
   patch: string;
+  /** GitHub 的单文件 diff 锚点（`diff-<sha256(路径)>`），点一行文件直接落到它。 */
+  anchor?: string;
 }
 
 export interface PullCheck {

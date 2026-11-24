@@ -407,6 +407,7 @@
 .ghp-menu-row:hover { background: var(--panel-2); }
 .ghp-menu-row.on { color: var(--accent); }
 .ghp-menu-row.dim { color: var(--faint); }
+.ghp-menu-row.sub { padding-left: 20px; font-size: 11.5px; }
 .ghp-menu-row.sep { margin-top: 4px; border-top: 1px solid var(--line-soft); border-radius: 0 0 7px 7px; padding-top: 8px; }
 
 .ghp-pat { display: flex; gap: 6px; padding: 6px 4px 4px; }

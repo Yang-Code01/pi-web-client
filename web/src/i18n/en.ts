@@ -4300,4 +4300,7 @@ export const en: Dict = {
   "这个会话临时选的": "chosen for this session",
   "这台机器没装 gh：写操作走壳的内置实现，所以需要一枚 PAT。": "No gh on this machine: writes go through the shim's built-in implementation, which needs a PAT.",
   "正在读 PR…": "Reading pull requests…",
+  "删掉本机存的这枚 PAT": "Delete the PAT stored on this machine",
+  "设为这个工作区的默认": "Make this the workspace default",
+  "只在这次会话里换（不记住）": "Change for this session only (not remembered)",
 };

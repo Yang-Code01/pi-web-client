@@ -54,7 +54,7 @@ execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm
 
 /** 假桥收到的回报（壳每次收尾都会 POST 一条）。 */
 const reports = [];
-/** identity 的档位：`ok` / `no-gh` / `nil`（令牌为空）。 */
+/** identity 的档位：`ok` / `no-gh`（没真 gh，有令牌）/ `nil`（令牌为空）/ `bare`（两者都没有）。 */
 let identityMode = "ok";
 /** 内置实现要打的上游（假 GitHub）。 */
 const upstreamCalls = [];
@@ -96,8 +96,8 @@ const shimBridge = http.createServer((req, res) => {
           ok: true,
           login: identityMode === "nil" ? null : "qingmin-new",
           source: "session",
-          token: identityMode === "nil" ? null : "gho_fake_qingmin-new",
-          realGh: identityMode === "no-gh" ? null : FAKE_REAL_GH,
+          token: identityMode === "nil" || identityMode === "bare" ? null : "gho_fake_qingmin-new",
+          realGh: identityMode === "no-gh" || identityMode === "bare" ? null : FAKE_REAL_GH,
           sessionId: "s1",
           cwd: work,
           api: upstreamBase,
@@ -188,6 +188,16 @@ test("壳：没装 gh 也没有令牌时，`auth status` 仍然说得出在用�
   identityMode = "ok";
   assert.equal(r.code, 0);
   assert.match(r.stdout, /qingmin-new/);
+});
+
+test("壳：没有令牌时也能读公开仓库，只有写才拦（US17）", async () => {
+  identityMode = "bare"; // 没装 gh，也没有令牌
+  const read = await runShim(["pr", "list"]);
+  assert.equal(read.code, 0, read.stderr);
+  const write = await runShim(["pr", "create", "--fill", "--title", "x"]);
+  identityMode = "ok";
+  assert.equal(write.code, 1);
+  assert.match(write.stderr, /只能读公开仓库/);
 });
 
 test("壳：桥不认识这个会话时大声失败", async () => {
