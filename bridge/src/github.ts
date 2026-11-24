@@ -383,9 +383,14 @@ const SAMPLE_CHECKS = [
   { name: "e2e", state: "success" },
 ];
 
+/**
+ * 评论样本。`at` 是 **ISO 时间**（和真评论一样来自 GitHub），界面自己算「多久以前」——
+ * 别在这儿塞「2 小时前」这种成品文案：那是界面的话，得由页面过 `tr()`。
+ * 正文本身是**数据**（真评论也长这样），不是界面文案。
+ */
 const SAMPLE_COMMENTS = [
-  { author: "Yang-Code01", body: "「已显示的内容不许变暗」那条守卫要不要顺手补进 probes？", at: "2 小时前" },
-  { author: "qingmin-new", body: "补了：第 10 段逐帧采样，任何一帧 opacity < 0.99 就红。", at: "1 小时前" },
+  { author: "Yang-Code01", body: "「已显示的内容不许变暗」那条守卫要不要顺手补进 probes？", at: "2026-11-24T03:10:00Z" },
+  { author: "qingmin-new", body: "补了：第 10 段逐帧采样，任何一帧 opacity < 0.99 就红。", at: "2026-11-24T04:20:00Z" },
 ];
 
 async function getPulls(res: http.ServerResponse, url: URL, ctx: GithubCtx): Promise<void> {

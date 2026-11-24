@@ -17,7 +17,7 @@
  * 这个文件被 `chat.ts` import，所以**不能**反过来 import chat.ts（会成环）—— 元素自己建。
  */
 import { githubApi } from "./api.ts";
-import { ghAge, ghChurn, ghLinksIn, type GhLink, type PullRow } from "./github-shared.ts";
+import { ghAge, ghAgeText, ghChurn, ghLinksIn, type GhLink, type PullRow } from "./github-shared.ts";
 import { tr } from "./i18n/index.ts";
 import "./github-panel.css";
 
@@ -112,7 +112,7 @@ function cardFor(link: GhLink, opts: { open: (repo: string, number: number) => v
   const fillIt = (row: PullRow) => {
     if (row.title) title.textContent = row.title;
     const age = ghAge(row.updatedAt);
-    meta.textContent = [row.author, ghChurn(row.additions, row.deletions), age ? ageLabel(age) : ""].filter(Boolean).join(" · ");
+    meta.textContent = [row.author, ghChurn(row.additions, row.deletions), age ? ghAgeText(age) : ""].filter(Boolean).join(" · ");
   };
   if (cached) {
     fillIt(cached);
@@ -129,13 +129,6 @@ function cardFor(link: GhLink, opts: { open: (repo: string, number: number) => v
     io.observe(card);
   } else run();
   return card;
-}
-
-function ageLabel(age: { unit: "now" | "min" | "hour" | "day"; n: number }): string {
-  if (age.unit === "now") return tr("刚刚");
-  if (age.unit === "min") return tr("{p1} 分钟前", { p1: age.n });
-  if (age.unit === "hour") return tr("{p1} 小时前", { p1: age.n });
-  return tr("{p1} 天前", { p1: age.n });
 }
 
 /** 测试用：清掉缓存（换一套假桥之后不能让上一张卡的结果留着）。 */

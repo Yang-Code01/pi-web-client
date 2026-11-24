@@ -5,6 +5,8 @@
  * 的字段名也只在这份里钉一次（`bridge/src/github.ts` 的 `PullRow` 与它逐字对应）。
  */
 
+import { tr } from "./i18n/index.ts";
+
 export interface GhAccountView {
   login: string;
   /** `gh` = 借 gh 的登录态；`pat` = 本工程里存的一枚细粒度令牌。 */
@@ -129,6 +131,17 @@ export function ghAge(iso: string, now = Date.now()): { unit: "now" | "min" | "h
   const hours = Math.round(mins / 60);
   if (hours < 24) return { unit: "hour", n: hours };
   return { unit: "day", n: Math.round(hours / 24) };
+}
+
+/**
+ * 相对时间那句话。放在这里而不是两个调用点各写一份：面板与链接卡用的是同一批数字，
+ * 文案也该是同一条（评审时被点出来过）。
+ */
+export function ghAgeText(age: { unit: "now" | "min" | "hour" | "day"; n: number }): string {
+  if (age.unit === "now") return tr("刚刚");
+  if (age.unit === "min") return tr("{p1} 分钟前", { p1: age.n });
+  if (age.unit === "hour") return tr("{p1} 小时前", { p1: age.n });
+  return tr("{p1} 天前", { p1: age.n });
 }
 
 /** `+128 −42`；两个都是 0 时给空串（草稿 PR 常常还没有差异）。 */

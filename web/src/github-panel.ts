@@ -11,9 +11,9 @@
  */
 import { githubApi } from "./api.ts";
 import { createEl as el } from "./chat.ts";
-import { ghAge, ghChurn, type GhSessionAccount, type GithubStateView, type PullDetailView, type PullRow, type PullsView } from "./github-shared.ts";
+import { ghAge, ghAgeText, ghChurn, type GhSessionAccount, type GithubStateView, type PullDetailView, type PullRow, type PullsView } from "./github-shared.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { markSurface, mountOverlay, pushEscLayer } from "./modal.ts";
+import { appZoom, markSurface, mountOverlay, pushEscLayer } from "./modal.ts";
 import "./github-panel.css";
 
 export interface GithubPanelHost {
@@ -97,7 +97,7 @@ export class GithubPanel {
       root.classList.add("resizing");
       const startX = ev.clientX;
       const startW = root.getBoundingClientRect().width;
-      const s = uiScale();
+      const s = appZoom();
       const move = (e: PointerEvent) => {
         const w = Math.max(MIN_W, Math.min(window.innerWidth - 240, startW + (startX - e.clientX)));
         root.style.setProperty("--ghp-w", `${Math.round(w / s)}px`);
@@ -250,7 +250,7 @@ export class GithubPanel {
     mountOverlay(menu);
     const r = anchor.getBoundingClientRect();
     const w = 260;
-    const s = uiScale();
+    const s = appZoom();
     menu.style.top = `${Math.round(r.bottom / s + 6)}px`;
     menu.style.left = `${Math.round(Math.max(8, (r.right - w) / s))}px`;
     this.menu = menu;
@@ -339,7 +339,7 @@ export class GithubPanel {
     if (pr.draft) top.append(el("span", "ghp-badge", tr("草稿")));
     const meta = el("div", "ghp-row-meta");
     const age = ghAge(pr.updatedAt);
-    meta.append(el("span", undefined, [pr.author || "—", `${pr.head} → ${pr.base}`, ghChurn(pr.additions, pr.deletions), age ? ageText(age) : ""].filter(Boolean).join(" · ")));
+    meta.append(el("span", undefined, [pr.author || "—", `${pr.head} → ${pr.base}`, ghChurn(pr.additions, pr.deletions), age ? ghAgeText(age) : ""].filter(Boolean).join(" · ")));
     row.append(top, meta);
     row.onclick = () => {
       this.view = "pull";
@@ -365,7 +365,7 @@ export class GithubPanel {
       el("span", "ghp-pill ok", stateLabel),
       el("span", undefined, d.pull.author),
       el("span", undefined, `${d.pull.head} → ${d.pull.base}`),
-      age ? el("span", undefined, ageText(age)) : el("span"),
+      age ? el("span", undefined, ghAgeText(age)) : el("span"),
       el("span", "ghp-pill", tr("{p1}/{p2} checks", { p1: d.sample.checks.length, p2: d.sample.checks.length })),
     );
     hero.append(meta);
@@ -406,7 +406,8 @@ export class GithubPanel {
     const last = d.sample.comments[d.sample.comments.length - 1];
     if (last) {
       const one = el("div", "ghp-comment");
-      one.append(el("div", "ghp-comment-head", `${last.author} · ${last.at}`), el("div", "ghp-comment-body", last.body));
+      const when = ghAge(last.at);
+      one.append(el("div", "ghp-comment-head", [last.author, when ? ghAgeText(when) : ""].filter(Boolean).join(" · ")), el("div", "ghp-comment-body", last.body));
       comments.append(one);
     }
     if (d.sample.comments.length > 1) {
@@ -436,24 +437,10 @@ function statCell(label: string, value: string, cls = ""): HTMLElement {
   return box;
 }
 
-function ageText(age: { unit: "now" | "min" | "hour" | "day"; n: number }): string {
-  if (age.unit === "now") return tr("刚刚");
-  if (age.unit === "min") return tr("{p1} 分钟前", { p1: age.n });
-  if (age.unit === "hour") return tr("{p1} 小时前", { p1: age.n });
-  return tr("{p1} 天前", { p1: age.n });
-}
-
 function sourceLabel(session: GhSessionAccount): string {
   if (session.source === "session") return tr("这个会话临时选的");
   if (session.source === "project") return tr("工作区设置里定的");
   if (session.source === "global") return tr("全局设置里定的");
   if (session.source === "active") return tr("gh 的 active 账号");
   return tr("存过的那枚 PAT");
-}
-
-/** `#app` 上挂着 `zoom: var(--ui-scale)`：量到的是视觉 px，写回的是布局 px，中间要除一次（同 modal.ts）。 */
-function uiScale(): number {
-  const app = document.getElementById("app");
-  const raw = Number.parseFloat(getComputedStyle(app ?? document.documentElement).getPropertyValue("--ui-scale"));
-  return Number.isFinite(raw) && raw > 0 ? raw : 1;
 }

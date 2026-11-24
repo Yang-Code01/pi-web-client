@@ -374,7 +374,9 @@
 
 .ghp-menu {
   position: fixed;
-  z-index: 86;
+  /* 70 = 菜单档（`.act-pop` / `.complete-pop` 那一层）。面板自己是 47，所以菜单压得住；
+     不用 86 —— 那是 `.choose-back` 那种遮罩的数字，菜单不该越过 `.modal.hi`。 */
+  z-index: 70;
   width: 260px;
   max-width: calc(var(--vw1) * 92);
   padding: 4px;
