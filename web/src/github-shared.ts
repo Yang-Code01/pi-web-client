@@ -104,6 +104,12 @@ export interface GhLink {
 const LINK_RE = /https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues|commit)\/([\w-]+)/g;
 
 /**
+ * URL 里的路名 → 我们的 kind（`issues` 要单数化）。写成表，别写嵌套三元 —— 桥的 `seenLinks()`
+ * （`bridge/src/github.ts`）是同一张表，改一边就得改另一边。
+ */
+const LINK_KIND: Record<string, GhLinkKind> = { pull: "pull", issues: "issue", commit: "commit" };
+
+/**
  * 从一段文本里认出 GitHub 链接（工具卡 `<pre>` 里的裸 URL、AI 正文、用户自己敲的话）。
  * 同一 URL 只算一次，顺序按第一次出现。句尾标点不进来：`id` 只认 `[\w-]`。
  */
@@ -115,7 +121,7 @@ export function ghLinksIn(text: string): GhLink[] {
     const url = `https://github.com/${owner}/${repo}/${kind}/${id}`;
     if (seen.has(url)) continue;
     seen.add(url);
-    out.push({ kind: kind === "pull" ? "pull" : kind === "issues" ? "issue" : "commit", repo: `${owner}/${repo}`, id, url });
+    out.push({ kind: LINK_KIND[kind] ?? "commit", repo: `${owner}/${repo}`, id, url });
   }
   return out;
 }

@@ -120,7 +120,15 @@ function cardFor(link: GhLink, opts: { open: (repo: string, number: number) => v
   }
   const run = () => {
     void hydrate(key, link.repo, number).then((row) => {
-      if (row && card.isConnected) fillIt(row);
+      if (!card.isConnected) return;
+      if (row) {
+        fillIt(row);
+        return;
+      }
+      // 取不到就说取不到：吞成 null 的话卡片永远停在只有仓库名的骨架上，用户只能靠点开才发现。
+      // 不在这里自动重试 —— 重挂 IntersectionObserver 对已进视口的元素会立刻再发一次回调，变成热循环。
+      card.classList.add("ghlink-err");
+      meta.textContent = tr("取不到标题，点开看");
     });
   };
   const io = ensureObserver();

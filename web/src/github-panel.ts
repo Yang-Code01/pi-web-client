@@ -48,6 +48,8 @@ export class GithubPanel {
   private busy = false;
   private seq = 0;
   private menu: HTMLElement | null = null;
+  /** 菜单开着时挂在 document 上的那个监听；关菜单必须一起摘掉。 */
+  private menuOff: (() => void) | null = null;
 
   constructor(host: GithubPanelHost) {
     this.host = host;
@@ -60,8 +62,13 @@ export class GithubPanel {
   /** 打开面板。`number` 有值就进详情，否则停在列表。 */
   async open(opts: { repo?: string; number?: number } = {}): Promise<void> {
     if (!this.root) this.mount();
+    const prevRepo = this.repo;
     this.repo = opts.repo || this.repo;
+    // 换了号（或换了仓库）就得丢掉上一条的详情：否则先画出来的是上一个 PR 的标题/文件/评论，
+    // 而且这次请求一失败，旧内容会一直挂在面板上（列表行那条路径一直是对的，这里是漏的）。
+    const switched = (opts.number ?? 0) !== this.number || this.repo !== prevRepo;
     this.number = opts.number ?? 0;
+    if (switched) this.detail = null;
     this.view = this.number ? "pull" : "list";
     this.error = "";
     await this.reload();
@@ -70,8 +77,7 @@ export class GithubPanel {
   close(): void {
     if (!this.root) return;
     // 账号菜单挂在面板外面（fixed 定位），关面板时它不会跟着走。
-    this.menu?.remove();
-    this.menu = null;
+    this.closeMenu();
     this.esc?.();
     this.esc = null;
     this.root.remove();
@@ -147,7 +153,9 @@ export class GithubPanel {
         this.detail = await githubApi.pull(sessionId, cwd, this.number, this.repo || undefined);
         if (seq !== this.seq) return;
       } else {
-        this.pulls = state.repo ? (await githubApi.pulls(sessionId, cwd)).pulls : [];
+        // 列表要跟着头部的仓库走：从别的仓库的链接卡进来时，`this.repo` 才是那个仓库，
+        // 不传它就变成「头写 A 仓、内容是本仓的 PR」。
+        this.pulls = this.repo || state.repo ? (await githubApi.pulls(sessionId, cwd, this.repo || undefined)).pulls : [];
         if (seq !== this.seq) return;
       }
       this.error = "";
@@ -224,8 +232,7 @@ export class GithubPanel {
 
   private toggleMenu(anchor: HTMLElement): void {
     if (this.menu) {
-      this.menu.remove();
-      this.menu = null;
+      this.closeMenu();
       return;
     }
     const menu = markSurface(el("div", "ghp-menu"), "menu");
@@ -234,8 +241,7 @@ export class GithubPanel {
       const row = el("button", `ghp-menu-row ${cls}`.trim()) as HTMLButtonElement;
       row.append(el("span", "ghp-menu-label", label));
       row.onclick = () => {
-        menu.remove();
-        this.menu = null;
+        this.closeMenu();
         onClick();
       };
       menu.append(row);
@@ -260,11 +266,21 @@ export class GithubPanel {
     this.menu = menu;
     const off = (ev: MouseEvent) => {
       if (menu.contains(ev.target as Node) || anchor.contains(ev.target as Node)) return;
-      menu.remove();
-      this.menu = null;
-      document.removeEventListener("mousedown", off, true);
+      this.closeMenu();
     };
+    this.menuOff = () => document.removeEventListener("mousedown", off, true);
     document.addEventListener("mousedown", off, true);
+  }
+
+  /**
+   * 关掉账号菜单：元素、document 上的监听、闭包一起收。
+   * 只 `remove()` 元素的话监听会活到下一次 mousedown —— 反复开菜单就攒一堆同样的捕获监听。
+   */
+  private closeMenu(): void {
+    this.menu?.remove();
+    this.menu = null;
+    this.menuOff?.();
+    this.menuOff = null;
   }
 
   private async choose(login: string): Promise<void> {
@@ -309,8 +325,7 @@ export class GithubPanel {
       save.disabled = true;
       try {
         const r = await githubApi.putPat(input.value.trim());
-        menu.remove();
-        this.menu = null;
+        this.closeMenu();
         this.error = "";
         // 存完顺手把这个会话指到新账号上：用户点「存 PAT」的时候想的就是「用它」。
         await this.choose(r.login);
@@ -386,12 +401,18 @@ export class GithubPanel {
     const meta = el("div", "ghp-hero-meta");
     const age = ghAge(d.pull.updatedAt);
     const stateLabel = d.state === "open" ? tr("打开") : d.state === "merged" ? tr("已合并") : tr("已关闭");
+    // 分子是**通过**的条数：两边都填 length 永远渲染成 N/N，有失败也读起来像全绿。
+    const checks = d.sample?.checks ?? [];
+    const passing = checks.filter((c) => c.state === "success").length;
+    const checkPill = checks.length
+      ? [el("span", passing === checks.length ? "ghp-pill ok" : "ghp-pill", tr("{p1}/{p2} checks", { p1: passing, p2: checks.length }))]
+      : [];
     meta.append(
       el("span", "ghp-pill ok", stateLabel),
       el("span", undefined, d.pull.author),
       el("span", undefined, `${d.pull.head} → ${d.pull.base}`),
       age ? el("span", undefined, ghAgeText(age)) : el("span"),
-      el("span", "ghp-pill", tr("{p1}/{p2} checks", { p1: d.sample.checks.length, p2: d.sample.checks.length })),
+      ...checkPill,
       el("span", "ghp-sample", tr("示例数据")),
     );
     hero.append(meta);

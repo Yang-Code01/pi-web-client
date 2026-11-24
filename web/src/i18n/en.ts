@@ -4279,7 +4279,7 @@ export const en: Dict = {
   "合并会走审批闸": "Merging goes through the approval gate",
   "合并这个 PR：用 gh pr merge {p1} —— 先看一遍 checks 与差异，然后合并。": "Merge this PR: use gh pr merge {p1} — review the checks and the diff first, then merge.",
   "回到 PR 列表": "Back to the PR list",
-  "回到工作区默认账号": "Back to the workspace default account",
+  "取不到标题，点开看": "Title unavailable — click to open",
   "会话账号：{p1}": "Session account: {p1}",
   "建完 PR 自动打开面板": "Open the panel when a PR is created",
   "没有账号": "No account",

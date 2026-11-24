@@ -597,8 +597,11 @@ export const api = {
 export const githubApi = {
   state: (sessionId: string, cwd: string) =>
     req<GithubStateView>(`/api/github/state?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}`),
-  pulls: (sessionId: string, cwd: string) =>
-    req<PullsView>(`/api/github/pulls?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}`),
+  pulls: (sessionId: string, cwd: string, repo?: string) =>
+    req<PullsView>(
+      `/api/github/pulls?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}` +
+        (repo ? `&repo=${encodeURIComponent(repo)}` : ""),
+    ),
   /**
    * PR 详情。`repo` 来自**链接卡**：卡片可能指向别的仓库，不传它就落到「当前会话 cwd 那个仓库」，
    * 于是点别的仓库的卡会显示本仓同号的 PR（评审抓到的错数据）。

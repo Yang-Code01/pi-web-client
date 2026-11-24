@@ -465,3 +465,6 @@
 }
 
 .ghlink-meta { font-size: 11px; color: var(--faint); }
+/* 取标题失败：留一条看得见的痕迹（边框换色 + 文案在 meta 里），不要假装还在加载。 */
+.ghlink-err { border-left-color: var(--warn, #c08a2e); }
+.ghlink-err .ghlink-meta { color: var(--warn, #c08a2e); }

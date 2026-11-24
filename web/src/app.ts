@@ -4226,13 +4226,14 @@ export class App {
     cardsBox.onchange = () => {
       this.prefs = { ...this.prefs, githubCards: cardsBox.checked };
       savePrefs(this.prefs);
-      autoBox.disabled = !githubFeature(this.prefs).autoPanel;
+      // 灰不灰只看**主开关**：用 autoPanel 判会把「自动打开」自己关掉的人永久锁在关（它算出来的就是 false）。
+      autoBox.disabled = !githubFeature(this.prefs).cards;
       this.syncGithubCards();
       this.renderChat();
     };
     const autoBox = document.createElement("input");
     autoBox.checked = this.prefs.githubAutoPanel;
-    autoBox.disabled = !githubFeature(this.prefs).autoPanel;
+    autoBox.disabled = !githubFeature(this.prefs).cards;
     autoBox.onchange = () => {
       this.prefs = { ...this.prefs, githubAutoPanel: autoBox.checked };
       savePrefs(this.prefs);
@@ -9748,18 +9749,18 @@ export class App {
     }
   }
 
-  /**
-   * GitHub 面板（右栏 dock）。三个入口：壳看见 `gh pr create` 成功（桥发 `github.pr`）、
-   * 聊天里的链接卡、以及用户自己贴的链接。
-   *
-   * 打开前先把预览收起：两扇都是右栏 dock，叠在一起分不清谁是谁（反方向在 `ensureViewer()` 里）。
-   */
   /** 主开关关掉时连「挂卡」这一步都不做（不是画出来再藏起来）：重画一遍聊天即可。 */
   private syncGithubCards(): void {
     const on = githubFeature(this.prefs).cards;
     this.chat.onGithubOpen = on ? (repo, number) => this.openGithubPanel(number, repo) : null;
   }
 
+  /**
+   * GitHub 面板（右栏 dock）。三个入口：壳看见 `gh pr create` 成功（桥发 `github.pr`）、
+   * 聊天里的链接卡、以及用户自己贴的链接。
+   *
+   * 打开前先把预览收起：两扇都是右栏 dock，叠在一起分不清谁是谁（反方向在 `ensureViewer()` 里）。
+   */
   private openGithubPanel(number?: number, repo?: string): void {
     if (this.viewer) this.closeViewer();
     if (!this.githubPanel) {
