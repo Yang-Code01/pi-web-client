@@ -210,6 +210,44 @@ test("历史条数只数次数，正文只画最近一次", () => {
   assert.equal(view.groups.length, 1);
 });
 
+test("PR 模式：没选号就不能开评，选了就能", () => {
+  const empty = reviewView({ ...base, state: { runs: [], marks: {} }, mode: "pr", pr: "", prs: [] });
+  assert.equal(empty.mode, "pr");
+  assert.equal(empty.missing, true);
+  assert.equal(empty.canRun, false);
+  const picked = reviewView({
+    ...base,
+    state: { runs: [], marks: {} },
+    mode: "pr",
+    pr: "258",
+    prs: [{ number: 258, title: "加个面板", headRefName: "feat/x", baseRefName: "main", draft: false }],
+  });
+  assert.equal(picked.canRun, true);
+  assert.equal(picked.prs.length, 1);
+});
+
+test("PR 列表拉不到：把原因说出来，号输入框照样能用", () => {
+  const view = reviewView({
+    ...base,
+    state: { runs: [], marks: {} },
+    mode: "pr",
+    pr: "12",
+    prs: [],
+    prError: "gh 没登录",
+  });
+  assert.equal(view.prError, "gh 没登录");
+  assert.equal(view.prs.length, 0);
+  assert.equal(view.canRun, true, "手输的号仍然能评");
+});
+
+test("分支范围：两侧都要有值才算齐", () => {
+  const noTarget = reviewView({ ...base, state: { runs: [], marks: {} }, mode: "range", base: "main", target: "" });
+  assert.equal(noTarget.missing, true);
+  assert.equal(noTarget.canRun, false);
+  const ok = reviewView({ ...base, state: { runs: [], marks: {} }, mode: "range", base: "main", target: "HEAD" });
+  assert.equal(ok.canRun, true);
+});
+
 test("桥直接回了 error（没到状态那一层）：当失败显示", () => {
   const view = reviewView({ ...base, state: null, error: "这个目录不是 git 仓库" });
   assert.equal(view.phase, "failed");

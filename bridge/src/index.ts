@@ -53,6 +53,7 @@ import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, st
 import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
+import { listPullRequests } from "./gitpr.ts";
 import {
   cancelReview,
   cleanRuns,
@@ -4010,9 +4011,22 @@ async function main(): Promise<void> {
             }
             return;
           }
+          case "review.prs.get": {
+            const dir = String(msg.dir ?? "");
+            void (async () => {
+              try {
+                const repo = gitRoot(dir);
+                const out = await listPullRequests(repo, { fresh: msg.fresh === true });
+                send({ type: "review.prs", dir: repo, ...out });
+              } catch (err: any) {
+                send({ type: "review.prs", dir, ok: false, prs: [], error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              }
+            })();
+            return;
+          }
           case "review.run": {
             const dir = String(msg.dir ?? "");
-            const mode = ["workspace", "range", "commit"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "workspace";
+            const mode = ["workspace", "range", "commit", "pr"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "workspace";
             const lang: ReviewLang = ["zh", "en", "ja"].includes(String(msg.lang)) ? (String(msg.lang) as ReviewLang) : "zh";
             const full = String(msg.model ?? "");
             const slash = full.indexOf("/");
@@ -4026,6 +4040,7 @@ async function main(): Promise<void> {
                 base: String(msg.base ?? ""),
                 target: String(msg.target ?? ""),
                 commit: String(msg.commit ?? ""),
+                pr: Number(msg.pr) || 0,
                 model,
                 provider,
                 lang,

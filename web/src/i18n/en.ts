@@ -4273,7 +4273,6 @@ export const en: Dict = {
   "工作区改动": "Working tree",
   "分支 vs 主干": "Branch vs main",
   "单个提交": "Single commit",
-  "主干分支": "Main branch",
   "提交号": "Commit",
   "开始评审": "Start review",
   "正在评审": "Reviewing",
@@ -4324,4 +4323,8 @@ export const en: Dict = {
   "模型没交代这个文件": "The model did not account for this file",
   "用这个模型": "Use this model",
   "点一行挑一个评审用的模型": "Pick a model to review with",
+  "PR 号": "PR number",
+  "正在拉 PR 列表…": "Loading pull requests…",
+  "先选一个 PR（或填个号）": "Pick a PR first (or type its number)",
+  "目标分支": "Target branch",
 };

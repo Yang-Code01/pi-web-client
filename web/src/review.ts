@@ -25,6 +25,14 @@ import type {
 
 export type { Mark, OcrStatus, ReviewFinding, ReviewMode, ReviewProgress, ReviewRun, ReviewSkip, ReviewState };
 
+export interface PullRequest {
+  number: number;
+  title: string;
+  headRefName: string;
+  baseRefName: string;
+  draft: boolean;
+}
+
 export interface ReviewInput {
   state: ReviewState | null;
   progress: ReviewProgress | null;
@@ -32,10 +40,18 @@ export interface ReviewInput {
   installing: boolean;
   error: string;
   notGit: boolean;
-  /** 面板自己记住的那三样（不属于桥的状态）。 */
+  /** 面板自己记住的那几样（不属于桥的状态）。 */
   mode?: ReviewMode;
+  /** `range` 的对照分支。 */
   base?: string;
+  /** `range` 要评的那条分支（目标）。 */
+  target?: string;
   commit?: string;
+  /** `pr` 模式要评的 PR 号（字符串，输入框原样）。 */
+  pr?: string;
+  prs?: PullRequest[];
+  prsLoading?: boolean;
+  prError?: string;
   model?: string;
 }
 
@@ -55,7 +71,14 @@ export interface ReviewView {
   installing: boolean;
   mode: ReviewMode;
   base: string;
+  target: string;
   commit: string;
+  pr: string;
+  prs: PullRequest[];
+  prsLoading: boolean;
+  prError: string;
+  /** 这个模式下该填的那一格空着：按钮要点不着。 */
+  missing: boolean;
   model: string;
   progress: { totalFiles: number; reviewedFiles: number; currentFile: string; tokens: number } | null;
   meta: { files: number; reviewed: number; skipped: number; unresolved: number; tokens: number; durationMs: number | null; when: string } | null;
@@ -169,7 +192,15 @@ export function reviewView(input: ReviewInput): ReviewView {
     skipped.push({ path: p, reason: (item?.reason ?? "").trim() || "skipped" });
   }
 
-  const canRun = phase !== "loading" && phase !== "not-git" && phase !== "no-ocr" && !running && !input.installing;
+  const mode: ReviewMode = input.mode ?? "range";
+  const base = input.base ?? "main";
+  const target = input.target ?? "HEAD";
+  const commit = input.commit ?? "";
+  const pr = String(input.pr ?? "").trim();
+  const prs = Array.isArray(input.prs) ? input.prs : [];
+  const missing =
+    mode === "range" ? !target.trim() || !base.trim() : mode === "commit" ? !commit.trim() : mode === "pr" ? !pr : false;
+  const canRun = phase !== "loading" && phase !== "not-git" && phase !== "no-ocr" && !running && !input.installing && !missing;
   const progress = input.progress
     ? {
         totalFiles: input.progress.totalFiles,
@@ -202,9 +233,15 @@ export function reviewView(input: ReviewInput): ReviewView {
     error: errorText(latest, input.error),
     serverVersion: ocr?.version ?? "",
     installing: input.installing,
-    mode: input.mode ?? "range",
-    base: input.base ?? "main",
-    commit: input.commit ?? "",
+    mode,
+    base,
+    target,
+    commit,
+    pr,
+    prs,
+    prsLoading: Boolean(input.prsLoading),
+    prError: (input.prError ?? "").trim(),
+    missing,
     model: input.model ?? latest?.model ?? "",
     progress,
     meta,
@@ -224,6 +261,12 @@ export function reviewView(input: ReviewInput): ReviewView {
 export interface ReviewActions {
   onMode: (mode: ReviewMode) => void;
   onBase: (value: string) => void;
+  onTarget: (value: string) => void;
+  onPr: (value: string) => void;
+  /** 输入框每敲一个字：只把值记下来（重画会让正在输入的框换节点、光标乱跳）。 */
+  onPrInput: (value: string) => void;
+  /** 重拉一次 PR 列表（`gh` 挂了 / 刚在 GitHub 上开了新 PR）。 */
+  onRefreshPrs: () => void;
   onCommit: (value: string) => void;
   /** 打开「模型与思考」那个弹层（复用输入框那颗 chip 的同一个），挑评审用的模型。 */
   onPickModel: () => void;
@@ -282,6 +325,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     ["workspace", tr("工作区改动")],
     ["range", tr("分支 vs 主干")],
     ["commit", tr("单个提交")],
+    ["pr", tr("GitHub PR")],
   ] as [ReviewMode, string][]) {
     const opt = el("option", "", label) as HTMLOptionElement;
     opt.value = value;
@@ -291,20 +335,61 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   mode.onchange = () => actions.onMode(mode.value as ReviewMode);
   modeRow.append(mode);
 
-  if (view.mode === "range") {
-    const list = el("input", "rv-ref") as HTMLInputElement;
-    list.value = view.base;
-    list.setAttribute("list", "rv-refs");
-    list.placeholder = tr("主干分支");
-    list.onchange = () => actions.onBase(list.value.trim());
-    const dl = el("datalist");
-    dl.id = "rv-refs";
-    for (const ref of input.refs.slice(0, 40)) {
-      const opt = el("option") as HTMLOptionElement;
+  const refSelect = (label: string, value: string, onPick: (v: string) => void): HTMLElement => {
+    const row = el("div", "rv-row");
+    row.append(el("span", "rv-lab", label));
+    const pick = el("select", "rv-ref") as HTMLSelectElement;
+    // HEAD 永远在第一项：评「当前」是最常见的用法，而它不在 refs 里。
+    const values = ["HEAD", ...input.refs.filter((r) => r !== "HEAD")];
+    for (const ref of values) {
+      const opt = el("option", "", ref) as HTMLOptionElement;
       opt.value = ref;
-      dl.append(opt);
+      if (ref === value) opt.selected = true;
+      pick.append(opt);
     }
-    modeRow.append(list, dl);
+    if (!values.includes(value) && value) {
+      const opt = el("option", "", value) as HTMLOptionElement;
+      opt.value = value;
+      opt.selected = true;
+      pick.append(opt);
+    }
+    pick.onchange = () => onPick(pick.value);
+    row.append(pick);
+    return row;
+  };
+
+  if (view.mode === "range") {
+    modeRow.remove();
+    form.append(refSelect(tr("目标分支"), view.target, actions.onTarget), refSelect(tr("对照分支"), view.base, actions.onBase));
+  } else if (view.mode === "pr") {
+    modeRow.remove();
+    const row = el("div", "rv-row");
+    row.append(el("span", "rv-lab", "PR"));
+    const pick = el("select", "rv-pr") as HTMLSelectElement;
+    for (const item of view.prs) {
+      const opt = el("option", "", `#${item.number} ${item.title}`.slice(0, 60)) as HTMLOptionElement;
+      opt.value = String(item.number);
+      if (String(item.number) === view.pr) opt.selected = true;
+      pick.append(opt);
+    }
+    pick.onchange = () => actions.onPr(pick.value);
+    const num = el("input", "rv-prnum") as HTMLInputElement;
+    num.value = view.pr;
+    num.placeholder = tr("PR 号");
+    num.inputMode = "numeric";
+    num.oninput = () => {
+      const value = num.value.replace(/[^0-9]/g, "");
+      actions.onPrInput(value);
+      // 号一填上就能点：只在本地翻一下那颗按钮，不重画整块（重画会把输入框换掉）。
+      if (runBtn) runBtn.disabled = !value;
+    };
+    num.onchange = () => actions.onPr(num.value.replace(/[^0-9]/g, ""));
+    // 列表拉不到（没装 gh / 没登录 / 没有 remote）时，号输入框照样能用。
+    if (!view.prs.length) pick.hidden = true;
+    row.append(pick, num);
+    form.append(row);
+    if (view.prError) form.append(el("div", "rv-hint", view.prError));
+    else if (view.prsLoading) form.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
   } else if (view.mode === "commit") {
     const sha = el("input", "rv-ref") as HTMLInputElement;
     sha.value = view.commit;
@@ -321,6 +406,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   model.onclick = () => actions.onPickModel();
   actRow.append(model);
 
+  let runBtn: HTMLButtonElement | null = null;
   if (view.running) {
     const stop = el("button", "btn ghost rv-stop", tr("停止")) as HTMLButtonElement;
     stop.type = "button";
@@ -331,6 +417,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     run.type = "button";
     run.disabled = !view.canRun;
     run.onclick = () => actions.onRun();
+    runBtn = run;
     actRow.append(run);
   }
   form.append(actRow);

@@ -143,6 +143,19 @@ check("classifyOcrFailure 分得出「没装」「太老」「跑挂了」", () 
   assert.equal(classifyOcrFailure("", 0), "");
 });
 
+check("previewArgs：PR 与「分支范围」同形（from/to），单提交用 -c", () => {
+  assert.deepEqual(previewArgs({ mode: "pr", base: "origin/main", target: "refs/pi-web/pr-7", cwd: "/r" }), [
+    "delegate",
+    "preview",
+    "--from",
+    "origin/main",
+    "--to",
+    "refs/pi-web/pr-7",
+    "--format",
+    "json",
+  ]);
+});
+
 check("previewArgs 三种模式各拼各的参数", () => {
   assert.deepEqual(previewArgs({ mode: "workspace", cwd: "/r" }), ["delegate", "preview", "--format", "json"]);
   assert.deepEqual(previewArgs({ mode: "range", base: "main", target: "HEAD", cwd: "/r" }), [
@@ -294,6 +307,14 @@ check("mergeFindings 第一次跑（没有上一轮）全部是 new", () => {
   const out = mergeFindings([], [finding()], {});
   assert.equal(out.findings[0].state, "new");
   assert.deepEqual(out.resolved, []);
+});
+
+check("sameScope：PR 只跟同一个号比，分支范围要两侧都对上", () => {
+  const pr7 = { mode: "pr", from: "origin/main", to: "refs/pi-web/pr-7", mergeBase: "a", pr: 7 };
+  assert.equal(sameScope(pr7, { ...pr7 }), true);
+  assert.equal(sameScope(pr7, { ...pr7, pr: 8 }), false, "另一个 PR 不是同一个范围");
+  const range = { mode: "range", from: "main", to: "HEAD", mergeBase: "a", pr: 0 };
+  assert.equal(sameScope(range, { ...range, to: "dev" }), false, "目标分支变了就不是同一件事");
 });
 
 check("sameScope：工作区 / 同一对照分支 / 同一提交才算同一个范围", () => {

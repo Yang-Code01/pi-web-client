@@ -17,6 +17,7 @@ import readline from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
 import { ensureDir, piChildEnv, quarantineStateFile, readJsonChecked, statePath } from "./paths.ts";
 import { resolvePi } from "./pi.ts";
+import { resolvePullRequest } from "./gitpr.ts";
 import type {
   ReviewCategory,
   ReviewFinding,
@@ -169,7 +170,7 @@ export interface PreviewTarget {
 /** `ocr delegate preview` 的 argv（不含 ocr 自身）。三种模式一一对应。 */
 export function previewArgs(t: PreviewTarget): string[] {
   const args = ["delegate", "preview"];
-  if (t.mode === "range") {
+  if (t.mode === "range" || t.mode === "pr") {
     args.push("--from", String(t.base ?? "").trim() || "HEAD", "--to", String(t.target ?? "").trim() || "HEAD");
   } else if (t.mode === "commit") {
     args.push("-c", String(t.commit ?? "").trim() || "HEAD");
@@ -182,7 +183,7 @@ export function previewArgs(t: PreviewTarget): string[] {
 export function diffCommandFor(p: Preview, file: string): string {
   const target = p.to || "HEAD";
   if (p.mode === "commit") return `git --no-pager diff ${target === "HEAD" ? "HEAD" : target}~1 ${target} -- ${file}`;
-  if (p.mode === "range") {
+  if (p.mode === "range" || p.mode === "pr") {
     const base = p.mergeBase || p.from || "HEAD";
     return `git --no-pager diff ${base}..${target} -- ${file}`;
   }
@@ -214,9 +215,11 @@ export function buildPrompt(p: Preview, lang: ReviewLang, rules: string): string
   const range =
     p.mode === "commit"
       ? `这次评的是单个提交 ${p.to || "HEAD"}。`
-      : p.mode === "range"
-        ? `这次评的是 ${p.from || "?"} 到 ${p.to || "HEAD"} 的改动（合并基准 ${p.mergeBase || "未知"}）。`
-        : `这次评的是工作区里未提交的改动。`;
+      : p.mode === "pr"
+        ? `这次评的是一个 GitHub PR：${p.from || "?"} 到 ${p.to || "HEAD"}（合并基准 ${p.mergeBase || "未知"}）。`
+        : p.mode === "range"
+          ? `这次评的是 ${p.from || "?"} 到 ${p.to || "HEAD"} 的改动（合并基准 ${p.mergeBase || "未知"}）。`
+          : `这次评的是工作区里未提交的改动。`;
   const rulesBlock = rules.trim() ? `\n## 这个仓库命中的规则\n\n${rules.trim()}\n` : "";
   return [
     PROTOCOL,
@@ -400,11 +403,12 @@ export function mergeFindings(
  * 不判这个的话，拿工作区那次当基线去比一次提交评审，会把整批意见都写成「已解决」。
  */
 export function sameScope(
-  run: Pick<ReviewRun, "mode" | "from" | "to" | "mergeBase">,
-  next: Pick<ReviewRun, "mode" | "from" | "to" | "mergeBase">,
+  run: Pick<ReviewRun, "mode" | "from" | "to" | "mergeBase" | "pr">,
+  next: Pick<ReviewRun, "mode" | "from" | "to" | "mergeBase" | "pr">,
 ): boolean {
   if (run.mode !== next.mode) return false;
-  if (run.mode === "range") return (run.mergeBase || run.from) === (next.mergeBase || next.from);
+  if (run.mode === "pr") return run.pr > 0 && run.pr === next.pr;
+  if (run.mode === "range") return run.from === next.from && run.to === next.to;
   if (run.mode === "commit") return run.to === next.to;
   return true;
 }
@@ -639,6 +643,8 @@ export interface StartOptions {
   base?: string;
   target?: string;
   commit?: string;
+  /** `mode: "pr"` 时要评的 PR 号。 */
+  pr?: number;
   model?: string;
   provider?: string;
   lang: ReviewLang;
@@ -661,6 +667,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     from: o.base ?? "",
     to: o.mode === "commit" ? o.commit ?? "HEAD" : "HEAD",
     mergeBase: "",
+    pr: o.mode === "pr" ? Number(o.pr) || 0 : 0,
     status: "running",
     startedAt,
     finishedAt: "",
@@ -731,7 +738,7 @@ export function cancelReview(dir: string): boolean {
 }
 
 /** 上一次**同一个范围**里完成的评审：三态只跟它比。 */
-function prevDoneRun(state: ReviewState, scope: Pick<ReviewRun, "mode" | "from" | "to" | "mergeBase">): ReviewRun | null {
+function prevDoneRun(state: ReviewState, scope: Pick<ReviewRun, "mode" | "from" | "to" | "mergeBase" | "pr">): ReviewRun | null {
   for (let i = state.runs.length - 1; i >= 0; i -= 1) {
     const run = state.runs[i];
     if (run.status !== "done") continue;
@@ -795,8 +802,21 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
   };
 
   try {
-    const target: PreviewTarget = { mode: opts.mode, base: opts.base, target: opts.target, commit: opts.commit, cwd: root };
-    const { stdout } = await runOcr(previewArgs(target), root, 120_000, signal);
+    let base = opts.base;
+    let target = opts.target;
+    if (opts.mode === "pr") {
+      // PR 的代码不在本地：先把 `refs/pull/N/head` 与 base 分支 fetch 下来（不动工作区），
+      // 再按普通的「范围」走 —— 分片、规则、三态全复用。
+      emit({ phase: "fetch" } as Partial<Progress>);
+      const resolved = await resolvePullRequest(root, Number(opts.pr) || 0, (line) => emit({ currentFile: line } as Partial<Progress>));
+      base = resolved.from;
+      target = resolved.to;
+      run.pr = resolved.pr;
+      run.from = resolved.from;
+      run.to = resolved.to;
+    }
+    const spec: PreviewTarget = { mode: opts.mode, base, target, commit: opts.commit, cwd: root };
+    const { stdout } = await runOcr(previewArgs(spec), root, 120_000, signal);
     preview = parsePreview(stdout);
     run.mergeBase = preview.mergeBase;
     run.from = preview.from || run.from;
@@ -881,7 +901,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       // 你标过的处理态都会在这一停里丢掉。
       const state = readReviewState(root);
       const partial = toFindings(partialText);
-      const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview?.mergeBase ?? "" });
+      const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview?.mergeBase ?? "", pr: run.pr });
       const merged = mergeFindings(prevRun?.findings ?? [], partial.findings, state.marks);
       finish({
         status: "stopped",
@@ -913,7 +933,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
 
     const parsed = toFindings(partialText);
     const state = readReviewState(root);
-    const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview.mergeBase });
+    const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview.mergeBase, pr: run.pr });
     const merged = mergeFindings(prevRun?.findings ?? [], parsed.findings, state.marks);
     const skipped = unaccounted(preview, parsed.skipped, parsed.findings);
     const accounted = new Set([...parsed.findings.map((f) => f.path), ...parsed.skipped.map((s) => s.path)]);

@@ -7674,6 +7674,15 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 13. **「停止」= 杀子进程 + 保留已收到的**（整次标 `stopped`）；桥重启时盘上写着 `running` 的一次性转 `stale`（开机 `sweepStaleRuns()`），面板说「重跑一次就行」。
 14. **顺手补了 `/api/git/diff` 的「工作区」模式**（`worktree: true`，右侧直接读盘、未跟踪文件从 `ls-files --others` 补）。原来它只会比两个提交，于是「工作区改动」那次评审的意见跳过去只能看到「两边没有差异」。
 
+**修订（2026-11-24，选分支 + 评 GitHub PR）。** 范围从三种变成四种：多了「GitHub PR」。
+
+1. **分支范围改成两把下拉**（目标 / 对照），候选来自 `api.gitRefs` 的本地 + 远程 ref，`HEAD` 永远在第一项。以前对照侧是一个带补全的输入框、目标恒 HEAD —— 评不了「另一条分支 vs 主干」。
+2. **PR 的代码取到本地再评**：`gh pr view N --json baseRefName` 知道对照分支 → `git fetch origin refs/pull/N/head:refs/pi-web/pr-N --force` + `git fetch origin <base>` → 走「范围」同一条链路（`--from origin/<base> --to refs/pi-web/pr-N`）。**不动工作区、不动当前分支**，只往 `.git` 写一条 `refs/pi-web/pr-N`。为什么不只拿 `gh pr diff`：`ocr delegate preview` 认的是本地 ref，拿不到分片就丢掉这次评审最值钱的那一半（确定性分片 + 排除原因）。`refs/pull/N/head` 对 fork 来的 PR 同样存在，所以不需要知道 fork 的仓库地址。
+3. **PR 列表**在切到 PR 模式时由桥跑一次 `gh pr list --state open --limit 30`，按仓库缓存 60 秒；失败分四类说人话（`gh_missing` / `gh_failed` / `no_remote` / `not_github`），列表拉不到时号输入框照样能用（`gh pr view` 对已合/已关的 PR 也工作，所以手输老号能评）。
+4. **落盘多了 `pr` 字段**：三态只跟**同一个 PR 号**比；`range` 改成「目标与对照两侧都对上」才算同一件事（以前只比对照分支，换个目标分支会把整批意见写成「已解决」）。
+
+代价：PR 模式要联网 + 本机 `gh` 已登录；`refs/pi-web/pr-N` 评完不删（重跑省一次 fetch，`git fetch --prune` 也不会动它，要清得手删）；关闭/合并的 PR 不在下拉里，只能手输号。
+
 **修订（2026-11-24，模型 chip 复用现成的弹层）。** 面板上那颗模型一开始是自画的 `<select>`，与输入框那颗 chip 各说各的。改成复用输入框背后同一个「模型与思考」弹层：`openModelSheet(false, { start, onPick })` 多一条 **pick 模式** —— 确认时把挑中的模型交回面板、**不发 `setModel`**，所以不看会话有没有写入权；默认落在「全部模型」并把所有来源展开（否则开场是一排折叠标题），提示语也从「这个会话没有写入权」换成「点一行挑一个评审用的模型」。代价：`openModelSheet` 多了一个可空参数与三处 `pick` 分支；「本会话 / 思考档位」这两个面板在 pick 模式下仍然画着，但只影响草稿、不影响评审子进程（它固定 `--thinking low`）。
 
 **为什么。**

@@ -116,6 +116,7 @@ export type ServerFrameType =
   | "review.install.done"
   | "review.install.log"
   | "review.ocr"
+  | "review.prs"
   | "review.progress"
   | "review.state"
   | "rules"
@@ -260,6 +261,7 @@ export type ClientFrameType =
   | "review.get"
   | "review.install"
   | "review.mark"
+  | "review.prs.get"
   | "review.run"
   | "rules.delete"
   | "rules.get"
@@ -312,7 +314,7 @@ export type ClientFrameType =
 // 抄的那份已经在 `OcrStatus.error` 上漂过一次（一边必填、一边可选）。
 // ---------------------------------------------------------------------------
 
-export type ReviewMode = "workspace" | "range" | "commit";
+export type ReviewMode = "workspace" | "range" | "commit" | "pr";
 export type ReviewSeverity = "critical" | "high" | "medium" | "low";
 export type ReviewCategory = "bug" | "security" | "performance" | "maintainability" | "test" | "style" | "documentation" | "other";
 export type ReviewMark = "accept" | "ignore" | "false-positive";
@@ -347,9 +349,13 @@ export interface ReviewRun {
   startedAt: string;
   finishedAt: string;
   mode: ReviewMode;
+  /** 从哪评：`range` 的对照分支、`pr` 的 `origin/<base>`、`commit` 为空。 */
   from: string;
+  /** 评到哪：`range` 的目标分支、`pr` 的 `refs/pi-web/pr-N`、`commit` 的 sha、`workspace` 的 HEAD。 */
   to: string;
   mergeBase: string;
+  /** `pr` 模式下是哪个 PR（0 = 不是 PR 模式）；三态只跟同一个 PR 比。 */
+  pr: number;
   model: string;
   lang: string;
   findings: ReviewFinding[];
@@ -374,7 +380,7 @@ export interface ReviewProgress {
   repo: string;
   runId: string;
   status: ReviewRunStatus;
-  phase: "preview" | "rules" | "review" | "done";
+  phase: "preview" | "fetch" | "rules" | "review" | "done";
   totalFiles: number;
   reviewedFiles: number;
   currentFile: string;

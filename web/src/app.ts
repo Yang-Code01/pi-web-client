@@ -78,6 +78,7 @@ import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
 import {
   fixPrompt as reviewFixPrompt,
+  type PullRequest as ReviewPr,
   renderReview,
   reviewView,
   type Mark as ReviewMark,
@@ -406,7 +407,13 @@ export class App {
   private reviewNotGit = false;
   private reviewMode: ReviewMode = "range";
   private reviewBase = "main";
+  private reviewTarget = "HEAD";
   private reviewCommit = "";
+  private reviewPr = "";
+  private reviewPrs: ReviewPr[] = [];
+  private reviewPrsLoading = false;
+  private reviewPrError = "";
+  private reviewPrsAsked = "";
   private reviewModel = "";
   private reviewRefs: string[] = [];
   private reviewAsked = "";
@@ -2573,6 +2580,17 @@ export class App {
         this.reviewNotGit = false;
         this.reviewState = (msg.state ?? null) as ReviewState | null;
         this.reviewProgress = (msg.progress ?? null) as ReviewProgress | null;
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      }
+      case "review.prs": {
+        const dir = this.reviewDir();
+        if (msg.dir && dir && String(msg.dir) !== dir && String(msg.dir) !== this.reviewRepo) break;
+        this.reviewPrs = Array.isArray(msg.prs) ? (msg.prs as ReviewPr[]) : [];
+        this.reviewPrError = msg.ok ? "" : errText(msg) || String(msg.error ?? "");
+        this.reviewPrsLoading = false;
+        // 手输的号不在列表里时不要被第一项悄悄顶掉：只在没选过时挑第一个。
+        if (!this.reviewPr && this.reviewPrs.length) this.reviewPr = String(this.reviewPrs[0].number);
         if (this.queueTab === "review") this.renderQueue();
         break;
       }
@@ -18204,6 +18222,7 @@ export class App {
     }
     this.reviewAsked = dir;
     this.socket.send({ type: "review.get", dir });
+    if (this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
     void api.gitRefs(dir).then((refs) => {
       const all = refs.groups.flatMap((g) => g.refs.map((r) => r.name)).filter(Boolean);
       this.reviewRefs = all.slice(0, 60);
@@ -18220,6 +18239,13 @@ export class App {
     const want = this.reviewModel.trim();
     if (!want) return null;
     return this.models.find((m) => `${m.provider}/${m.id}` === want) ?? this.models.find((m) => m.id === want) ?? null;
+  }
+
+  private loadPullRequests(dir: string): void {
+    this.reviewPrsAsked = dir;
+    this.reviewPrsLoading = true;
+    this.reviewPrError = "";
+    this.socket.send({ type: "review.prs.get", dir });
   }
 
   private renderReviewPanel(): HTMLElement {
@@ -18239,7 +18265,12 @@ export class App {
       notGit: this.reviewNotGit,
       mode: this.reviewMode,
       base: this.reviewBase,
+      target: this.reviewTarget,
       commit: this.reviewCommit,
+      pr: this.reviewPr,
+      prs: this.reviewPrs,
+      prsLoading: this.reviewPrsLoading,
+      prError: this.reviewPrError,
       model: this.reviewModel,
     });
     return renderReview({
@@ -18253,10 +18284,26 @@ export class App {
       actions: {
         onMode: (mode) => {
           this.reviewMode = mode;
+          const dir = this.reviewDir();
+          if (mode === "pr" && dir && !this.reviewPrs.length && this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
           this.renderQueue();
         },
         onBase: (value) => {
           this.reviewBase = value;
+        },
+        onTarget: (value) => {
+          this.reviewTarget = value;
+        },
+        onPr: (value) => {
+          this.reviewPr = value;
+          this.renderQueue();
+        },
+        onPrInput: (value) => {
+          this.reviewPr = value;
+        },
+        onRefreshPrs: () => {
+          const dir = this.reviewDir();
+          if (dir) this.loadPullRequests(dir);
         },
         onCommit: (value) => {
           this.reviewCommit = value;
@@ -18299,6 +18346,10 @@ export class App {
       this.flashToast(tr("先填一个提交号"), true, 4000);
       return;
     }
+    if (mode === "pr" && !this.reviewPr.trim()) {
+      this.flashToast(tr("先选一个 PR（或填个号）"), true, 4000);
+      return;
+    }
     this.reviewError = "";
     this.reviewProgress = {
       repo: dir,
@@ -18318,7 +18369,9 @@ export class App {
       dir,
       mode,
       base: this.reviewBase,
+      target: this.reviewTarget,
       commit: this.reviewCommit.trim(),
+      pr: Number(this.reviewPr) || 0,
       model: this.reviewModel,
       lang: getLang(),
     });
