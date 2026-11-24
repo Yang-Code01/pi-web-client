@@ -7791,7 +7791,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 - **工作区默认账号能写了**：之前只有读端（`githubAccount` 没人写）。新增 `POST /api/github/project-account`（写 `<cwd>/.pi/settings.json`，隧道 403），面板菜单加「设为这个工作区的默认」。
 - **没令牌也能读**：壳的内置实现原来一进 `api()` 就 die，连 `pr list` 都读不了公开仓库 —— 与「只能读公开仓库、写需要 PAT」正好相反。现在只有写（非 GET）才拦。
-- **点一行文件落到那个文件的差异**：锚点是 `#diff-<sha256(路径)>`，由桥算好放在 `files[].anchor` 里；算错的最坏结果只是落到 Files changed 顶部。
+- **点一行文件落到那个文件的差异**：锚点是 `#diff-<sha256(路径)>`，由桥算好放在 `files[].anchor` 里。算法对着真页面核过：`/pull/659/files` 的 HTML 里 `docs/DECISIONS.md` 那个块正是 `diff-1ea199fcea0d29740c9d…`，与桥算出来的前 15 位逐位相同。算错的最坏结果也只是落到 Files changed 顶部。
 - **跨仓链接卡不会显示本仓同号 PR**：卡片带 `repo`，`/api/github/pr` 显式传它；之前只传号，桥按会话 cwd 回落，点别人的卡会显示本仓同号的 PR（错数据）。
 
 **两份解析器是刻意留的**：桥的 `seenLinks()` 与页面的 `ghLinksIn()` 跨包，共享要新造第三处分包。代价用一条测试兜住 —— `bridge/tests/github-e2e.mjs` 里「口径一致」那条拿六组样本比对两边的 `kind|repo|id`，分叉就红。
