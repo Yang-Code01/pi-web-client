@@ -47,6 +47,25 @@ setMode("ask");
   // 夹具里的 confirm 一律回 false，所以「问了」就等于「拦下了」——和上面那条 `rm` 同一个口径。
   expect(merged, { blocked: true, asked: true }, "gh pr merge 要问");
   expect(apiMerge, { blocked: true, asked: true }, "走 API 合并也要问");
+
+  // 绕过路径：全局参数插在中间、GraphQL、并分支的 /merges、反斜杠续行。
+  const repoFlag = await call("bash", { command: "gh -R a/b pr merge 12" });
+  const prGroupFlag = await call("bash", { command: "gh pr -R a/b merge 12 --squash" });
+  const graphql = await call("bash", { command: `gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:"x"}){pullRequest{merged}}}'` });
+  const autoMerge = await call("bash", { command: `gh api graphql -f query='mutation{enablePullRequestAutoMerge(input:{pullRequestId:"x"}){clientMutationId}}'` });
+  const merges = await call("bash", { command: "gh api -X POST repos/a/b/merges -f base=main -f head=feat" });
+  const continued = await call("bash", { command: "gh -R a/b \\\n  pr merge \\\n  12" });
+  expect(repoFlag, { blocked: true, asked: true }, "gh -R a/b pr merge 要问（全局参数插中间）");
+  expect(prGroupFlag, { blocked: true, asked: true }, "gh pr -R a/b merge 要问");
+  expect(graphql, { blocked: true, asked: true }, "graphql mergePullRequest 要问");
+  expect(autoMerge, { blocked: true, asked: true }, "graphql enablePullRequestAutoMerge 要问（自动合并就是稍后合）");
+  expect(merges, { blocked: true, asked: true }, "REST /merges（并分支）要问");
+  expect(continued, { blocked: true, asked: true }, "反斜杠续行拆开的 gh pr merge 要问");
+
+  // 不能因为放宽而误伤日常的只读 gh 命令（多看几眼，代价是多一次审批框）。
+  for (const command of ["gh pr view 12 --json state", "gh pr list --state open", "gh repo view a/b", "gh issue list -R a/b"]) {
+    expect(await call("bash", { command }), { blocked: false, asked: false }, `${command} 不问`);
+  }
 }
 
 console.log("readonly: a whitelist, not a blacklist");
