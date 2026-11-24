@@ -7,7 +7,10 @@
  * same way `bridge/src/sessions.ts` does (`ask.remove` with status/reason).
  *
  * Checks: the panel closes with a visible reason (not silently), the filled answers survive, they
- * can be dropped into the composer, and they come back after a reload (localStorage).
+ * can be dropped into the composer, and they come back after a reload (localStorage). Q-010b: the
+ * banner is bound to the session whose questionnaire died — switching to another session must not
+ * carry it over (and must not let its 「放进输入框」 write into that other session), while coming
+ * back keeps it.
  *
  * Run: node probes/round5-asklost.mjs   (needs `npm run build:web` first)
  */
@@ -48,6 +51,7 @@ const until = async (fn, ms, what) => {
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
 const SESSION = { id: "probe-sess", name: "问卷探针", cwd: REPO, file: null, owned: false, origin: "disk", running: true, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "问两个问题" };
+const SESSION2 = { ...SESSION, id: "probe-sess-2", name: "另一个会话", asks: 0 };
 const ASK = {
   id: "ask_probe1",
   sessionId: SESSION.id,
@@ -61,6 +65,8 @@ const ASK = {
 
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 let sock = null;
+// The tool call died, so a later subscribe must not resurrect it (the real bridge dropped it).
+let askGone = false;
 const send = (msg) => sock?.readyState === 1 && sock.send(JSON.stringify(msg));
 
 const server = http.createServer((req, res) => {
@@ -106,14 +112,15 @@ wss.on("connection", (ws) => {
     }
     log("client →", msg.type);
     if (msg.type === "subscribe") {
+      const other = msg.sessionId === SESSION2.id;
       ws.send(
         JSON.stringify({
           type: "session",
-          sessionId: SESSION.id,
-          state: { ...SESSION, asks: 1 },
-          items: [{ kind: "user", id: "u1", text: "帮我把问卷答了。" }],
+          sessionId: other ? SESSION2.id : SESSION.id,
+          state: other ? SESSION2 : { ...SESSION, asks: 1 },
+          items: [{ kind: "user", id: other ? "u2" : "u1", text: other ? "这是另一个会话。" : "帮我把问卷答了。" }],
           approvals: [],
-          asks: [ASK],
+          asks: other || askGone ? [] : [ASK],
           budget: null,
         }),
       );
@@ -123,7 +130,7 @@ wss.on("connection", (ws) => {
     JSON.stringify({
       type: "hello",
       me: { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "probe" },
-      sessions: [SESSION],
+      sessions: [SESSION, SESSION2],
       manage: { pin: [], order: [], archived: [] },
       trash: [],
       tunnel: TUNNEL,
@@ -162,6 +169,7 @@ try {
   await page.screenshot({ path: path.join(OUT, "1-answered.png") });
 
   // The tool call dies exactly like an aborted fetch: ask.remove, status cancelled.
+  askGone = true;
   send({ type: "ask.remove", sessionId: SESSION.id, id: ASK.id, status: "cancelled", reason: "发起方断开了" });
   const lost = page.locator(".ask-lost");
   await until(async () => lost.isVisible(), 4000, "ask-lost banner");
@@ -171,6 +179,22 @@ try {
   await page.screenshot({ path: path.join(OUT, "2-lost.png") });
   log("banner:", text.replace(/\s+/g, " ").slice(0, 90));
 
+  // Q-010b: that banner belongs to the session whose questionnaire died. Switching to another
+  // session must not carry it over — the answers it offers are that session's, and a user reading
+  // "问卷没答完就关闭了" in a session that never asked anything is exactly the confusion this
+  // guards (the block used to be app-global). Coming back must not lose it either.
+  const otherCard = page.locator(".session-card", { hasText: "另一个会话" }).first();
+  await otherCard.click();
+  await until(async () => (await page.locator(".chat-scroll").innerText().catch(() => "")).includes("这是另一个会话"), 6000, "second session open");
+  const leaked = await page.locator(".ask-lost").count();
+  assert(leaked === 0, `the lost-ask banner does not follow to another session (found ${leaked})`);
+  await page.screenshot({ path: path.join(OUT, "2b-other-session.png") });
+  log("other session: no lost-ask banner");
+
+  await page.locator(".session-card", { hasText: "问卷探针" }).first().click();
+  await until(async () => lost.isVisible(), 6000, "lost-ask banner back in its own session");
+  log("back in the first session: banner is still there");
+
   // The answers must be retrievable, not just announced.
   await lost.getByRole("button", { name: /放进输入框/ }).click();
   const composer = await page.locator("textarea").first().inputValue();
@@ -179,10 +203,20 @@ try {
   await page.screenshot({ path: path.join(OUT, "3-composer.png") });
   log("composer got", composer.split("\n").length, "lines");
 
-  // A reload keeps the drafts (they are in localStorage, the ask id is the key).
+  // The answers land in the composer of the session that lost them, not in whichever session is
+  // open afterwards (drafts are per session).
+  await otherCard.click();
+  await until(async () => (await page.locator(".chat-scroll").innerText().catch(() => "")).includes("这是另一个会话"), 6000, "second session open again");
+  const otherComposer = await page.locator("textarea").first().inputValue();
+  assert(!otherComposer.includes("这次改动要动 bridge 吗"), `the other session's composer stays clean (got ${JSON.stringify(otherComposer)})`);
+  log("other session's composer stayed clean");
+
+  // A reload keeps the drafts (they are in localStorage, the ask id is the key). The bridge here
+  // pretends the questionnaire is still open, which is what makes the panel come back with them.
+  askGone = false;
   await page.reload({ waitUntil: "networkidle" });
   await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "card after reload");
-  await page.locator(".session-card").first().click();
+  await page.locator(".session-card", { hasText: "问卷探针" }).first().click();
   await until(async () => (await page.locator(".ask-slot:not(.ask-lost)").count()) === 1, 8000, "ask panel again");
   const marks = await page.locator(".ask-slot:not(.ask-lost) .ask-tab.on, .ask-slot:not(.ask-lost) .ask-opt.on").count();
   const tabs = await page.locator(".ask-slot:not(.ask-lost)").innerText();
