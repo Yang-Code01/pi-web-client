@@ -225,7 +225,8 @@ export interface ReviewActions {
   onMode: (mode: ReviewMode) => void;
   onBase: (value: string) => void;
   onCommit: (value: string) => void;
-  onModel: (value: string) => void;
+  /** 打开「模型与思考」那个弹层（复用输入框那颗 chip 的同一个），挑评审用的模型。 */
+  onPickModel: () => void;
   onRun: () => void;
   onStop: () => void;
   onMark: (key: string, mark: Mark | "") => void;
@@ -239,7 +240,10 @@ export interface ReviewActions {
 
 export interface ReviewPanelInput {
   view: ReviewView;
-  models: { value: string; label: string }[];
+  /** 面板上那颗模型 chip 的文字（空 = 还没选，按设置里的默认走）。 */
+  modelName: string;
+  /** chip 的 tooltip：`provider/id`。 */
+  modelId: string;
   refs: string[];
   installLog: string[];
   markLabels: Record<Mark, string>;
@@ -311,16 +315,10 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   form.append(modeRow);
 
   const actRow = el("div", "rv-row");
-  const model = el("select", "rv-model") as HTMLSelectElement;
-  const current = view.model || input.models[0]?.value || "";
-  for (const item of input.models) {
-    const opt = el("option", "", item.label) as HTMLOptionElement;
-    opt.value = item.value;
-    if (item.value === current) opt.selected = true;
-    model.append(opt);
-  }
-  if (!input.models.length) model.append(el("option", "", tr("用设置里的默认模型")));
-  model.onchange = () => actions.onModel(model.value);
+  const model = el("button", "rv-model", input.modelName || tr("默认模型")) as HTMLButtonElement;
+  model.type = "button";
+  model.title = input.modelId || tr("用设置里的默认模型");
+  model.onclick = () => actions.onPickModel();
   actRow.append(model);
 
   if (view.running) {

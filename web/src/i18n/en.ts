@@ -4322,4 +4322,6 @@ export const en: Dict = {
   "评审超时了": "The review timed out",
   "这个仓库已经在评了": "This repository is already being reviewed",
   "模型没交代这个文件": "The model did not account for this file",
+  "用这个模型": "Use this model",
+  "点一行挑一个评审用的模型": "Pick a model to review with",
 };

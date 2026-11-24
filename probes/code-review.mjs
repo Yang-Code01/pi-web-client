@@ -200,6 +200,18 @@ try {
     Boolean(panel && btn) && panel.width <= 420 && btn.x >= panel.x && btn.x + btn.width <= panel.x + panel.width + 1,
     panel && btn ? `panel ${Math.round(panel.width)} / 按钮右缘 ${Math.round(btn.x + btn.width - panel.x)}` : "no box",
   );
+  // 模型那颗 chip 走的是输入框背后同一个「模型与思考」弹层（不是面板自己的下拉）。
+  const modelBefore = (await page.locator(".rv-model").innerText()).trim();
+  await page.locator(".rv-model").click();
+  await page.locator(".model-sheet").waitFor({ timeout: 15000 });
+  const pick = page.locator(".pm-row:not(.on)").first();
+  await pick.waitFor({ timeout: 10000 });
+  await pick.click();
+  await page.locator(".model-sheet .st-foot .btn.primary").click();
+  await until(async () => (await page.locator(".model-sheet").count()) === 0, 10000, "model sheet closed");
+  const modelAfter = (await page.locator(".rv-model").innerText()).trim();
+  check("模型 chip 打开的是「模型与思考」弹层，挑完会换掉", modelAfter !== modelBefore && modelAfter.length > 0, `${modelBefore} → ${modelAfter}`);
+
   const shots = path.join(REPO, ".scratch", "shots");
   fs.mkdirSync(shots, { recursive: true });
   await page.locator(".review").screenshot({ path: path.join(shots, "code-review-panel.png") }).catch(() => {});

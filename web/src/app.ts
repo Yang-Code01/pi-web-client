@@ -5466,7 +5466,7 @@ export class App {
    * 模型与思考：外壳同设置控制台（.st-console），左栏「当前使用 / 全部模型 / 本会话」，右栏一页内容。
    * 仍然是草稿 + 确认 —— 点一行只是把 draft 挪过去，chip 与真实会话都不动，直到点「确认」。
    */
-  private openModelSheet(expandSession = false): void {
+  private openModelSheet(expandSession = false, pick?: { start: string; level?: string; onPick: (model: ModelInfo, level: string) => void }): void {
     if (!this.currentId) return;
     // Re-renders (catalog arrived, takeover finished) keep what the user unfolded; a fresh open folds.
     const reopening = this.sheetKind === "model";
@@ -5475,16 +5475,21 @@ export class App {
     this.sheetKind = "model";
 
     // Everything below is a draft until 确认: browsing models must not switch the live session.
-    const startModel = this.session?.model;
-    const startLevel = this.session?.thinkingLevel ?? "";
+    // `pick` 模式下草稿的起点是**别处记着的那个模型**（代码评审面板挑评审用的模型），
+    // 确认时也不发 `setModel` —— 这个面板没有会话可切。
+    const startModel = pick ? pick.start : this.session?.model;
+    const startLevel = pick ? (pick.level ?? "") : (this.session?.thinkingLevel ?? "");
     // 当前模型属于哪个来源：它的组默认展开，否则新开场就只看得见一组折叠标题。
     const startProvider = this.models.find((m) => m.id === startModel)?.provider ?? "";
     // 默认展开是「第一眼」的事，不是「锁死」：用户把这一组折上后，下次 paint 不能再把它擑开。
-    const forceOpen = new Set<string>(startProvider ? [startProvider] : []);
+    // 挑模型那条路没有「当前模型那一组」可言：全部展开，否则开场就是一排折叠标题。
+    const forceOpen = new Set<string>(pick ? this.models.map((m) => m.provider) : startProvider ? [startProvider] : []);
     let draftModel = startModel;
     let draftLevel = startLevel;
     type ModelTab = "now" | "all" | "session";
-    let tab: ModelTab = expandSession ? "session" : "now";
+    // 挑模型那条路没有「当前使用」可言（面板还没选过），直接落在「全部模型」上，
+    // 否则打开是一屏空态，得自己再点一次左栏。
+    let tab: ModelTab = pick ? "all" : expandSession ? "session" : "now";
     let query = "";
 
     const back = el("div", "st-back");
@@ -5538,7 +5543,7 @@ export class App {
     const cancel = el("button", "btn", tr("取消")) as HTMLButtonElement;
     cancel.type = "button";
     cancel.onclick = () => this.closeSheet();
-    const confirm = el("button", "btn primary", tr("确认")) as HTMLButtonElement;
+    const confirm = el("button", "btn primary", pick ? tr("用这个模型") : tr("确认")) as HTMLButtonElement;
     confirm.type = "button";
     const footActions = el("span", "pm-foot-actions");
     footActions.hidden = true;
@@ -5566,6 +5571,12 @@ export class App {
     };
 
     const commit = (): void => {
+      if (pick) {
+        const chosen = this.models.find((m) => m.id === draftModel);
+        if (chosen) pick.onPick(chosen, draftLevel);
+        this.closeSheet();
+        return;
+      }
       const sessionId = this.currentId;
       // 没接管＝没写入权：行双击也会走到这里，别把 setModel 发给桥让它默默丢掉。
       if (this.session && !this.session.owned) return;
@@ -5736,7 +5747,7 @@ export class App {
         { label: tr("窗口"), value: m?.contextWindow ? compactSize(m.contextWindow) : "–", sub: [m ? modelMultiplier(m.name) : "", m?.provider].filter(Boolean).join(" · ") || "—" },
       ]);
       out.push(cards);
-      if (this.session && !this.session.owned) {
+      if (!pick && this.session && !this.session.owned) {
         const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
         notice.append(this.claimButton());
         out.push(notice);
@@ -5768,7 +5779,7 @@ export class App {
         return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
       }
       const out: HTMLElement[] = [];
-      if (this.session && !this.session.owned) {
+      if (!pick && this.session && !this.session.owned) {
         const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
         notice.append(this.claimButton());
         out.push(notice);
@@ -5857,11 +5868,16 @@ export class App {
 
       const ch = changes();
       // 没接管就没有写入权：草稿可以随便看，但别把「确认」摆在那儿让人白点（桥会直接丢掉）。
-      const owned = !this.session || this.session.owned;
+      // pick 模式不发 setModel：没有写入权也照样能挑（评审用的模型与这个会话无关）。
+      const owned = pick ? true : !this.session || this.session.owned;
       footActions.hidden = !ch.length || !owned;
-      footHint.textContent = !owned
-        ? tr("这个会话没有写入权，先接管会话再切模型")
-        : ch.length
+      footHint.textContent = pick
+        ? ch.length
+          ? tr("未保存：{p1}", { p1: ch.join(tr("，")) })
+          : tr("点一行挑一个评审用的模型")
+        : !owned
+          ? tr("这个会话没有写入权，先接管会话再切模型")
+          : ch.length
           ? tr("未保存：{p1}", { p1: ch.join(tr("，")) })
           : tr("点一行选模型，点档位换思考；改了才出现取消 / 确认");
       footHint.title = footHint.textContent;
@@ -18199,8 +18215,11 @@ export class App {
     }).catch(() => {});
   }
 
-  private reviewModelOptions(): { value: string; label: string }[] {
-    return this.models.map((m) => ({ value: `${m.provider}/${m.id}`, label: m.name || m.id }));
+  /** `reviewModel` 存的是 `provider/id`；弹层与目录用 `id`，这里来回换。 */
+  private reviewModelInfo(): ModelInfo | null {
+    const want = this.reviewModel.trim();
+    if (!want) return null;
+    return this.models.find((m) => `${m.provider}/${m.id}` === want) ?? this.models.find((m) => m.id === want) ?? null;
   }
 
   private renderReviewPanel(): HTMLElement {
@@ -18225,7 +18244,8 @@ export class App {
     });
     return renderReview({
       view,
-      models: this.reviewModelOptions(),
+      modelName: this.reviewModelInfo()?.name ?? "",
+      modelId: this.reviewModel,
       refs: this.reviewRefs,
       installLog: this.reviewInstallLog,
       markLabels: { accept: tr("接受"), ignore: tr("忽略"), "false-positive": tr("误报") },
@@ -18241,9 +18261,15 @@ export class App {
         onCommit: (value) => {
           this.reviewCommit = value;
         },
-        onModel: (value) => {
-          this.reviewModel = value;
-          this.renderQueue();
+        onPickModel: () => {
+          // 复用输入框那颗 chip 背后的同一个弹层（模型与思考），只是「确认」把模型交回面板。
+          this.openModelSheet(false, {
+            start: this.reviewModelInfo()?.id ?? "",
+            onPick: (m) => {
+              this.reviewModel = `${m.provider}/${m.id}`;
+              this.renderQueue();
+            },
+          });
         },
         onRun: () => this.startReview(),
         onStop: () => this.socket.send({ type: "review.cancel", dir: this.reviewDir() }),

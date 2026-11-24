@@ -5765,13 +5765,20 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .review .rv-form { display: flex; flex-direction: column; gap: 6px; }
 .review .rv-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
 .review .rv-mode,
-.review .rv-model,
 .review .rv-ref {
   /* 别写 max-width: 100%：它让下拉吃掉整行，把旁边的按钮挤出 300px 之外（截图上就只剩下拉）。 */
   flex: 1 1 0; min-width: 0; width: 0;
   padding: 4px 6px; font-size: 12px; color: var(--text);
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
 }
+/* 模型那颗是按钮：点开输入框那颗 chip 背后的同一个「模型与思考」弹层。 */
+.review .rv-model {
+  flex: 1 1 auto; min-width: 0; max-width: 100%;
+  padding: 4px 6px; font-size: 12px; line-height: 1.4; text-align: left;
+  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+}
+.review .rv-model::after { content: " ▾"; color: var(--faint); }
 .review .rv-run { flex: none; }
 .review .rv-run:disabled { opacity: 0.45; cursor: default; }
 .review .rv-install { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed var(--line); border-radius: 10px; }

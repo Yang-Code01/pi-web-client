@@ -7674,6 +7674,8 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 13. **「停止」= 杀子进程 + 保留已收到的**（整次标 `stopped`）；桥重启时盘上写着 `running` 的一次性转 `stale`（开机 `sweepStaleRuns()`），面板说「重跑一次就行」。
 14. **顺手补了 `/api/git/diff` 的「工作区」模式**（`worktree: true`，右侧直接读盘、未跟踪文件从 `ls-files --others` 补）。原来它只会比两个提交，于是「工作区改动」那次评审的意见跳过去只能看到「两边没有差异」。
 
+**修订（2026-11-24，模型 chip 复用现成的弹层）。** 面板上那颗模型一开始是自画的 `<select>`，与输入框那颗 chip 各说各的。改成复用输入框背后同一个「模型与思考」弹层：`openModelSheet(false, { start, onPick })` 多一条 **pick 模式** —— 确认时把挑中的模型交回面板、**不发 `setModel`**，所以不看会话有没有写入权；默认落在「全部模型」并把所有来源展开（否则开场是一排折叠标题），提示语也从「这个会话没有写入权」换成「点一行挑一个评审用的模型」。代价：`openModelSheet` 多了一个可空参数与三处 `pick` 分支；「本会话 / 思考档位」这两个面板在 pick 模式下仍然画着，但只影响草稿、不影响评审子进程（它固定 `--thinking low`）。
+
 **为什么。**
 
 - **delegation 而不是 native**：native 要多一份 API key、一份独立账单，还和页面上的模型选择器脱节；delegation 复用当前 pi 的模型目录，换模型即全局生效。
