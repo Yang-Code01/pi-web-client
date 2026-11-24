@@ -273,6 +273,8 @@ try {
   await page.locator(".handoff-sheet").waitFor({ timeout: 10000 });
   const handoffName = await page.locator(".handoff-body .rv-hint").first().innerText().catch(() => "");
   check("交给 agent 先问去处（当前会话 / 新开会话）", /名字/.test(handoffName), handoffName.slice(0, 40));
+  await page.waitForTimeout(300);
+  await page.locator(".handoff-sheet").screenshot({ path: path.join(REPO, ".scratch", "shots", "code-review-handoff.png") }).catch(() => {});
   await page.locator(".handoff-actions .btn.primary").click();
   const composer = await page.locator(".composer-input textarea").first().inputValue();
   check("选「插到当前会话」后把意见放进输入框", composer.includes("代码评审意见"), composer.slice(0, 40).replace(/\n/g, " "));
