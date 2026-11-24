@@ -192,6 +192,17 @@ try {
   check("带严重度徽标", ["严重", "高", "中", "低"].includes(sev.trim()), sev);
   const meta = await page.locator(".rv-meta").first().innerText();
   check("顶部写了耗时与 token", /tokens/.test(meta) && /\d/.test(meta), meta);
+  // 300px 里下拉吃掉整行时，旁边的按钮会被挤出面板 —— 用坐标钉住它（2026-11-24 真踩过）。
+  const panel = await page.locator(".review").boundingBox();
+  const btn = await page.locator(".rv-run, .rv-stop").first().boundingBox();
+  check(
+    "面板没被长路径撑宽，按钮也没被下拉挤出面板",
+    Boolean(panel && btn) && panel.width <= 420 && btn.x >= panel.x && btn.x + btn.width <= panel.x + panel.width + 1,
+    panel && btn ? `panel ${Math.round(panel.width)} / 按钮右缘 ${Math.round(btn.x + btn.width - panel.x)}` : "no box",
+  );
+  const shots = path.join(REPO, ".scratch", "shots");
+  fs.mkdirSync(shots, { recursive: true });
+  await page.locator(".review").screenshot({ path: path.join(shots, "code-review-panel.png") }).catch(() => {});
 
   // ---------------------------------------------------------------- 3) 点一条 → 分支工作台「差异」
   await page.locator(".rv-line").first().click();

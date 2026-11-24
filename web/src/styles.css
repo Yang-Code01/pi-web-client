@@ -5761,13 +5761,14 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 
 /* ---------------------------------------------------------------- 代码评审 (#651) */
 /* 右栏只有 190–300px：一律 flex 列、一行一条，不在栏里画 diff（点一条跳分支工作台的差异页签）。 */
-.review { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; }
+.review { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; min-width: 0; max-width: 100%; }
 .review .rv-form { display: flex; flex-direction: column; gap: 6px; }
 .review .rv-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
 .review .rv-mode,
 .review .rv-model,
 .review .rv-ref {
-  flex: 1 1 0; min-width: 0; max-width: 100%;
+  /* 别写 max-width: 100%：它让下拉吃掉整行，把旁边的按钮挤出 300px 之外（截图上就只剩下拉）。 */
+  flex: 1 1 0; min-width: 0; width: 0;
   padding: 4px 6px; font-size: 12px; color: var(--text);
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
 }
@@ -5777,16 +5778,17 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .review .rv-hint { font-size: 12px; color: var(--faint); line-height: 1.5; }
 .review .rv-log { max-height: 120px; overflow: auto; margin: 0; font-size: 11px; white-space: pre-wrap; color: var(--faint); }
 .review .rv-cmd { font-size: 11px; color: var(--accent); word-break: break-all; }
-.review .rv-progress { display: flex; flex-direction: column; gap: 2px; }
-.review .rv-current { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-.review .rv-meta { font-size: 11px; color: var(--faint); }
+/* 进度里那行「当前文件」是 nowrap 的：不给 min-width: 0，长路径会把整栏撑到 1500px 宽（2026-11-24 实测）。 */
+.review .rv-progress { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.review .rv-current { font-size: 11px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.review .rv-meta { font-size: 11px; color: var(--faint); min-width: 0; }
 .review .rv-error { font-size: 12px; color: var(--danger); line-height: 1.5; }
 .review .rv-skipped { font-size: 12px; color: var(--faint); }
 .review .rv-skipped > summary { cursor: pointer; }
 .review .rv-skip-row { display: flex; gap: 6px; justify-content: space-between; padding: 2px 0; }
 .review .rv-skip-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .review .rv-why { flex: none; opacity: 0.8; }
-.review .rv-file { display: flex; flex-direction: column; gap: 2px; }
+.review .rv-file { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .review .rv-file-head { display: flex; gap: 6px; align-items: baseline; justify-content: space-between; padding: 6px 0 2px; font-size: 12px; color: var(--faint); }
 .review .rv-file-head code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .review .rv-count { flex: none; }
