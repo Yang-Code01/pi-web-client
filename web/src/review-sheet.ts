@@ -14,6 +14,7 @@ export class ReviewSheet {
   private readonly title: HTMLElement;
   private readonly status: HTMLElement;
   private readonly meta: HTMLElement;
+  private readonly stopBtn: HTMLButtonElement;
   private readonly left: HTMLElement;
   private readonly right: HTMLElement;
   private popEsc: (() => void) | null = null;
@@ -42,7 +43,12 @@ export class ReviewSheet {
     const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
     close.type = "button";
     close.onclick = () => this.close();
-    head.append(headMain, close);
+    const headRight = el("div", "rv-sheet-headright");
+    this.stopBtn = el("button", "btn ghost rv-stop-btn", tr("中断评审")) as HTMLButtonElement;
+    this.stopBtn.type = "button";
+    this.stopBtn.onclick = () => this.input.actions.onStop();
+    headRight.append(this.stopBtn, close);
+    head.append(headMain, headRight);
 
     this.left = el("div", "rv-sheet-col rv-sheet-left");
     this.right = el("div", "rv-sheet-col rv-sheet-right");
@@ -89,6 +95,9 @@ export class ReviewSheet {
                   : "";
     this.status.textContent = label;
     this.status.dataset.phase = view.phase;
+    // 跑着的时候顶栏给一颗「中断评审」：详情窗开着也不该逼人回去点面板。
+    const stopBtn = this.stopBtn;
+    stopBtn.hidden = !view.running;
 
     const who =
       view.mode === "pr"
@@ -129,6 +138,8 @@ export class ReviewSheet {
     const make = (label: string, list: typeof all, cls: string) => {
       const b = el("button", `btn ghost rv-bulk-btn ${cls}`, `${label} · ${list.length}`) as HTMLButtonElement;
       b.type = "button";
+      b.disabled = this.input.view.running;
+      b.title = this.input.view.running ? tr("评审中：等跑完再交给 agent") : "";
       b.onclick = () => this.input.actions.onFixMany(list);
       return b;
     };

@@ -177,8 +177,17 @@ try {
   await page.locator(".rv-run:not([disabled])").first().waitFor({ timeout: 30000 });
   await page.locator(".rv-run").first().click();
 
-  // 跑起来就该有进度（或直接完成），并且「开始评审」变成「停止」
+  // 跑起来就该有进度（或直接完成），并且「开始评审」变成「中断评审」；这几样都不许再动
   await until(async () => (await page.locator(".rv-stop, .rv-file, .rv-error").count()) > 0, 60000, "review started");
+  const locked = await page.locator(".rv-stop").count();
+  if (locked) {
+    check(
+      "评审中锁住范围 / PR / 模型，只留中断",
+      await page.locator(".rv-mode").isDisabled(),
+      await page.locator(".rv-model").first().isDisabled().catch(() => true) ? "范围、模型都已锁" : "模型没锁",
+    );
+    check("评审中那颗按钮写着「中断评审」", (await page.locator(".rv-stop").first().innerText()).includes("中断"), "");
+  }
   const fileCount = await until(async () => {
     const n = await page.locator(".rv-file").count();
     if (n) return n;
@@ -221,7 +230,7 @@ try {
   await bulkAll.click();
   const bulkText = await page.locator(".composer-input textarea").first().inputValue();
   check("批量交给 agent 说清先判断是否真的成立", /先判断/.test(bulkText), bulkText.slice(0, 60).replace(/\n/g, " "));
-  await page.locator(".rv-sheet-head .btn").first().click();
+  await page.locator(".rv-sheet-head .btn:not([hidden])").last().click();
   await until(async () => (await page.locator(".rv-sheet").count()) === 0, 8000, "review sheet closed");
 
   // 模型那颗 chip 走的是输入框背后同一个「模型与思考」弹层（不是面板自己的下拉）。

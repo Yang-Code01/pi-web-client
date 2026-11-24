@@ -5844,12 +5844,23 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* ---------------------------------------------------------------- 评审：检索 / 时间线 / 详情 (#651) */
 /* PR 那一格：输入框 + 展开按钮 + 弹层列表（一个 combobox，不是「搜索框 + 下拉 + 号输入」三行）。 */
 .rv-scope .rv-prbox { display: flex; align-items: center; gap: 4px; min-width: 0; }
+/* 「已选」是**一张卡**：两行 + 右边「详情 ›」。以前是一行淡字，没人看出能点。 */
 .rv-scope .rv-picked {
-  display: block; width: 100%; text-align: left; padding: 0;
-  font-size: 11px; color: var(--faint); background: none; border: 0; cursor: pointer;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
+  padding: 6px 8px; font-size: 11px; color: var(--text); cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
 }
-.rv-scope .rv-picked:hover { color: var(--text); text-decoration: underline; }
+.rv-scope .rv-picked:hover { border-color: var(--accent); }
+.rv-scope .rv-picked-top { display: flex; gap: 5px; align-items: baseline; min-width: 0; }
+.rv-scope .rv-picked-num { flex: none; color: var(--accent); font-variant-numeric: tabular-nums; }
+.rv-scope .rv-picked-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-picked-meta { display: flex; gap: 6px; justify-content: space-between; font-size: 10px; color: var(--faint); }
+.rv-scope .rv-picked-more { flex: none; color: var(--accent); }
+/* 评审中：这几样都不许动 */
+.rv-scope select:disabled,
+.rv-scope input:disabled,
+.rv-scope button:disabled,
+.rv-scope .rv-model[disabled] { opacity: 0.5; cursor: default; }
 .rv-scope .rv-prq {
   flex: 1 1 0; min-width: 0; width: 0;
   padding: 4px 6px; font-size: 12px; color: var(--text);

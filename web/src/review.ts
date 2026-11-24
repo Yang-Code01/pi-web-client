@@ -497,6 +497,8 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
 
   const modeRow = el("div", "rv-row");
   const mode = el("select", "rv-mode") as HTMLSelectElement;
+  // 评审中不许再换范围：换了也不会立刻生效，只会让人以为「换了就会重跑」。
+  mode.disabled = view.running;
   for (const [value, label] of [
     ["workspace", tr("工作区改动")],
     ["range", tr("分支 vs 主干")],
@@ -540,9 +542,10 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     // 一个格子同时干三件事：输号、检索、从列表里点。分成「搜索框 + 下拉 + 号输入」三行
     // 在 300px 里又挤又丑（用户直接说了），所以合成一个 combobox。
     const box = el("div", "rv-prbox");
-    box.append(el("span", "rv-lab", "PR"));
     const input = el("input", "rv-prq") as HTMLInputElement;
-    input.value = view.prQuery;
+    // 选过就在框里显示 `#N`（用户要能看到「现在选的是哪个」），一聚焦就全选，接着打字即是搜索。
+    input.value = view.prQuery || (view.pr ? `#${view.pr}` : "");
+    input.disabled = view.running;
     input.placeholder = tr("输号或搜：号 / 标题 / 分支");
     input.autocomplete = "off";
     input.spellcheck = false;
@@ -553,6 +556,12 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       if (!menuRows.length) return;
       // 纯数字当「号」处理：按号的前缀收窄（输 646 只剩 #646），而不是全文匹配
       // 也不是「什么都不筛」—— 后者会让「输号然后点第一条」点到别的 PR 上去。
+      const chosenText = view.pr ? `#${view.pr}` : "";
+      if (chosenText && raw.trim() === chosenText) {
+        for (const row of menuRows) row.hidden = false;
+        if (menuEmpty) menuEmpty.hidden = true;
+        return;
+      }
       const digits = /^\s*#?\s*(\d+)\s*$/.exec(raw);
       const q = (digits ? digits[1] : raw.replace(/^#/, "").trim()).toLowerCase();
       let shown = 0;
@@ -577,7 +586,10 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       filterMenu(asNumber ? String(asNumber) : raw);
       actions.onPrMenu(true);
     };
-    input.onfocus = () => actions.onPrMenu(true);
+    input.onfocus = () => {
+      input.select();
+      actions.onPrMenu(true);
+    };
     input.onkeydown = (ev) => {
       if (ev.key === "Escape") actions.onPrMenu(false);
       if (ev.key !== "Enter") return;
@@ -590,6 +602,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     };
     const toggle = el("button", "rv-prtoggle", "▾") as HTMLButtonElement;
     toggle.type = "button";
+    toggle.disabled = view.running;
     toggle.setAttribute("aria-label", tr("展开 PR 列表"));
     toggle.onclick = () => actions.onPrMenu(!view.prMenuOpen);
     box.append(input, toggle);
@@ -630,10 +643,17 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     if (!view.prMenuOpen) {
       const chosen = view.prs.find((item) => String(item.number) === view.pr) ?? null;
       if (chosen) {
-        const picked = el("button", "rv-picked", tr("已选 #{p1} {p2}", { p1: chosen.number, p2: chosen.title })) as HTMLButtonElement;
+        // 以前这里是一行淡字，没人看出能点（用户原话：「用户不知道」）。改成一张有边框的卡片，
+        // 右边明写「详情 ›」，整张都能点。
+        const picked = el("button", "rv-picked") as HTMLButtonElement;
         picked.type = "button";
-        picked.title = `#${chosen.number} ${chosen.title} · ${chosen.headRefName} → ${chosen.baseRefName}`;
+        picked.title = `#${chosen.number} ${chosen.title}`;
         picked.onclick = () => actions.onPrInfo();
+        const top = el("span", "rv-picked-top");
+        top.append(el("span", "rv-picked-num", `#${chosen.number}`), el("span", "rv-picked-title", chosen.title));
+        const bottom = el("span", "rv-picked-meta");
+        bottom.append(el("span", "", `${chosen.headRefName} → ${chosen.baseRefName}`), el("span", "rv-picked-more", tr("详情 ›")));
+        picked.append(top, bottom);
         form.append(picked);
       } else if (view.prAll > 1) {
         form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
@@ -652,12 +672,14 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   const model = el("button", "rv-model", input.modelName || tr("默认模型")) as HTMLButtonElement;
   model.type = "button";
   model.title = input.modelId || tr("用设置里的默认模型");
+  model.disabled = view.running;
+  model.title = view.running ? tr("评审中：等这次跑完再换模型") : input.modelId || tr("用设置里的默认模型");
   model.onclick = () => actions.onPickModel();
   actRow.append(model);
 
   let runBtn: HTMLButtonElement | null = null;
   if (view.running) {
-    const stop = el("button", "btn ghost rv-stop", tr("停止")) as HTMLButtonElement;
+    const stop = el("button", "btn ghost rv-stop", tr("中断评审")) as HTMLButtonElement;
     stop.type = "button";
     stop.onclick = () => actions.onStop();
     actRow.append(stop);

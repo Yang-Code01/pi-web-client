@@ -18593,6 +18593,7 @@ export class App {
       return;
     }
     this.reviewError = "";
+    this.reviewPrMenu = false;
     this.reviewPendingToast = true;
     this.reviewStartedRunId = "";
     this.reviewProgress = {

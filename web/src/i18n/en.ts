@@ -4339,7 +4339,6 @@ export const en: Dict = {
   "展开 PR 列表": "Show pull requests",
   "没有 open 的 PR": "No open pull requests",
   "输号或搜：号 / 标题 / 分支": "Type a number, or search: number / title / branch",
-  "已选 #{p1} {p2}": "Selected #{p1} {p2}",
   "这个链接属于 {p1}，不是本仓库（{p2}）；要评请换本仓库的 PR 链接或直接填号": "That link belongs to {p1}, not this repo ({p2}); use a link from this repo or just type the number",
   "PR 信息": "Pull request",
   "在 GitHub 打开": "Open on GitHub",
@@ -4363,4 +4362,8 @@ export const en: Dict = {
   "先判断这条意见是否真的成立（对着改动读一遍相关代码）：不成立就说明理由、不要改代码；成立再动手，并说明改了什么。": "First decide whether this finding actually holds (read the code against the diff). If it does not, explain why and change nothing; if it does, fix it and say what you changed.",
   "一共 {p1} 条，逐条核实并处理：": "{p1} findings — verify and handle each:",
   "每条都先判断是否真的成立：不成立就说明理由、跳过；成立就修掉，并说明改了什么。不要为了对齐意见而改无关代码。": "For each one, first decide whether it really holds: if not, explain why and skip it; if it does, fix it and say what changed. Do not touch unrelated code just to match the list.",
+  "中断评审": "Stop review",
+  "详情 ›": "Details ›",
+  "评审中：等跑完再交给 agent": "Reviewing — wait until it finishes",
+  "评审中：等这次跑完再换模型": "Reviewing — wait until it finishes to switch models",
 };
