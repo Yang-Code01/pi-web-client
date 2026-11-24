@@ -7770,3 +7770,56 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **取舍：** 记录面板的**纯文字出口整个没了** —— D317 本来就是用这两项换掉「复制 Markdown」的，删掉发送之后没法把一条记录拷成文字带到微信 / 飞书 / 邮件，也没法不落盘就先发草稿，对方只是「看一眼给个意见」也得先点接受。这三条是用户明确接受的代价，不是遗漏。也没走「留着发送、只是折进二级菜单」（重复本身没解决，只是藏起来），没走「发送改成复制 Markdown」（用户要的是只剩一项），没顺手扫其它面板的重复入口（只收记录面板这一处）。守卫常量在前端再写一份确实是重复，靠单测直接 import `peer/src/note.ts` 对齐来防漂。
 
 **验证：** 新增 `web/tests/peer-guard-unit.mjs`（6 条：三条上限与服务端同源、正常能发、正文 200_000 / 200_001 字节与多字节边界、标题 200 / 201 与两端空白、截图 24 / 25、同时超时先报正文），挂进 `npm run test:notes` 的第三段；`web/tests/notes-sheet-browser.mjs` 第 15 段改成断言「菜单只剩一项 → 选人在线/离线/排除自己 → 确认页四项 → sendnote + sendfile → 空记录置灰说『先写点东西』→ 正文 210 KB 置灰且 hint 是『正文 211 KB，上限 200 KB』」，并去掉 `/api/peer/send` 的断言。`npm --prefix web run typecheck`（含 i18n 键集比对）通过。`npm run test:notes` 里 `md-input-unit` / `peer-guard-unit` / `notes-rich-unit` 全绿，而 `notes-editor-browser` 与 `notes-sheet-browser` **在本机 origin/main 上就已经红**（`.notes-console` 多出一个 `.fail-wrap` 子元素、编辑器回车那条 `onEnter` 断言），与本条无关；第 15 段因此另用 `.scratch/peer-send-dup/peer-menu.mjs` 探针单独跑过：一项菜单 / 空记录 / 超长正文 / 超长标题 / 25 张图 / 正常提交 / 归档里仍在，全绿，且全程没有 `/api/peer/send`。
+## D399 GitHub 通道：一个 `gh` 壳 + 会话级账号，PR 拿回右栏看（#661）
+
+**问题（三件事叠在一起）：**
+
+1. **AI 建的 PR，第一手证据恰恰是页面上点不动的地方。** `gh pr create` 的输出落在工具卡里（纯文本），只有模型**复述**在正文里的裸 URL 才有锚点。而 GitHub 页面永远嵌不进来（实测 `x-frame-options: deny` + `frame-ancestors 'none'`），所以「在应用里看 PR」只能是桥拿 API 重画。
+2. **建 PR 这件事完全不经过桥。** 模型自己在 shell 里跑 `gh`，桥既不知道用了哪个账号、也不知道 PR 号，事后也补不回来。
+3. **账号是机器级的。** 这台机器上 `gh` 登着两个账号（`Yang-Code01` active、`qingmin-new`），用哪个由 active 决定；想「这一次会话用另一个」只能靠 agent 读文档手搓 `GH_TOKEN=$(gh auth token --user X)`。换个会话就得再记一遍，忘了就是把 PR 建到别人名下。
+
+**为什么不是「给模型一套 `github_*` 工具」**（`bridge/ext/mail.ts` 那条路）：仓库里 41 处文档写的都是 `gh …`（`AGENTS.md` 9、`docs/agents/issue-tracker.md` 25、`whatsnew-write` 技能 7）。换工具要全改，**而且**模型习惯性敲 `gh` 时没有兜底，会退回机器上的 active 账号 —— 正是要消灭的那种失败。
+
+**决定（三层，各管一件事）：**
+
+1. **壳**（`bridge/src/github-shim.ts` → `<状态目录>/github/bin/gh` 与 `gh.cmd`，由 `ensureGithubBin()` 写）：只挂在**桥起的 pi 子进程**的 PATH 最前面（`sessions.ts` 的 `env:`，与 `PI_WEB_LOOPBACK` 同一处）。三件事，顺序不能变：问桥「这个会话是谁」（令牌**一次一取**，不留在子进程环境里，否则一次 `printenv` 就进聊天记录）→ 有真 gh 就带 `GH_TOKEN` 透传、没有就用 REST 实现 PR 核心 → 收尾把 argv / 退出码 / 输出尾巴回报给桥。未实现的子命令退出码 1 且说清「只覆盖 PR 核心」，桥不在 / 不认识这个会话也大声失败。
+2. **桥**（`bridge/src/github.ts`）：账号解析 **会话临时选定 > 工作区 `githubAccount` > 全局同键 > gh 的 active**；令牌来自 `gh auth token --user`（10 分钟缓存，绝不同步 spawn）或页面里存的 fine-grained PAT（`dpapi.ts` 加密落盘）；`/api/github/*` 一组只读接口 + 两条 shim 回环口。
+3. **页面**：链接卡（工具卡输出 / AI 正文 / **你自己发的消息**三处，滚进视口才要标题）+ `gh pr create` 成功后右栏自动推开面板（`github.pr` 帧）。面板**摘要优先**：标题、一行事实、四格数字（文件 / 新增 / 删除 / 评论）、逐文件一行（点行去 GitHub 看差异），**面板里不铺代码差异** —— 560px 里铺并排 diff 每边只剩 270px，折行反而更难读。
+
+**两条上一轮栽过的坑（写进决定里，别重犯）：**
+
+- **shim 的两条 HTTP 口必须站在 cookie 闸前面**（只认回环对端 + `x-pi-loopback` 会话令牌）。落到闸门后面就会拿到 `unauthorized`，而模型不会停：它会 `which gh` → 检查 `/opt/homebrew/bin/gh` → 最后用 `~/.local/bin/gh` 的真 gh 绝对路径跑通 —— 整套账号机制当场作废。
+- **链接卡要挂到工具卡**（AI 自己跑 `gh` 的输出），不只是用户的 `!cmd` 卡；只挂后者的话一个卡都不会出现。
+
+**合并 vs 建 PR**：建 PR 是 AI 的本职活，不拦；把代码合进 main 是人的决定 —— `approval-gate.ts` 的 `SHELL_PATTERNS` 三条路都拦：`gh pr merge`（`gh` / `pr` / `merge` 之间放开，`gh -R a/b pr merge 1` 这类全局参数插中间也命中）、`gh api` 的 `…/merge` / `…/merges`、graphql 的 `mergePullRequest` / `enqueuePullRequest` / `enablePullRequestAutoMerge`，反斜杠续行在匹配前先接回去 —— 只拦一条等于留个后门。与已有的 `git push` 同一机制。面板那颗「合并 PR」因此**不自己打 GitHub**：它把一句话交给 agent（`gh pr merge <n>`），照样过审批闸，而不是第二条写路线。
+
+**两个开关**（设置 → 外观 → 对话，`pi.prefs` 跟着设备走）：`githubCards`（主）与 `githubAutoPanel`。主开关关掉时 `autoPanel` 跟着失效（`githubFeature()`）—— 否则会出现「面板弹出来了、聊天里却一张卡都没有」这种没法理解的状态。
+
+**代价 / 可改：**
+
+- **壳只能影响桥起的 pi 子进程**：终端里的 pi、用户自己的 shell 还是机器上的 active 账号（刻意，不往用户的 PATH 里塞东西）。
+- **壳可以被绕过**：它坏了的时候模型会去找真 gh。所以壳失败必须大声失败，这是设计约束不是巧合。
+- **`gh auth status` 的文本是解析来的**（新版才有 `--json`）：解析不出来就当作「登录态读不到」，不猜 —— 猜错就是把 PR 建到别人名下。
+- **checks 与评论是示例样本**：真 checks 要按 commit 拉 check-runs、真评论要拉 review comments，这一版没做，界面上标着「示例数据」。
+- **卡片的标题是异步补的**（滚进视口才请求）：一屏之外的那些卡，标题会晚一点出现。
+- **PAT 只在非 Windows 上是明文 + 0600**：Windows 走 DPAPI，换机器 / 换用户解不开，表现为「凭据读不到」，不会静默退回明文。
+
+**spec 评审后补的四条（都是它判 BLOCK 的实盘问题）：**
+
+- **工作区默认账号能写了**：之前只有读端（`githubAccount` 没人写）。新增 `POST /api/github/project-account`（写 `<cwd>/.pi/settings.json`，隧道 403），面板菜单加「设为这个工作区的默认」。
+- **没令牌也能读**：壳的内置实现原来一进 `api()` 就 die，连 `pr list` 都读不了公开仓库 —— 与「只能读公开仓库、写需要 PAT」正好相反。现在只有写（非 GET）才拦。
+- **点一行文件落到那个文件的差异**：锚点是 `#diff-<sha256(路径)>`，由桥算好放在 `files[].anchor` 里。算法对着真页面核过：`/pull/659/files` 的 HTML 里 `docs/DECISIONS.md` 那个块正是 `diff-1ea199fcea0d29740c9d…`，与桥算出来的前 15 位逐位相同。算错的最坏结果也只是落到 Files changed 顶部。
+- **跨仓链接卡不会显示本仓同号 PR**：卡片带 `repo`，`/api/github/pr` 显式传它；之前只传号，桥按会话 cwd 回落，点别人的卡会显示本仓同号的 PR（错数据）。
+
+**第二轮评审（23 条）后补的（都是实盘漏洞，不是格式问题）：**
+
+- **读接口先校验再拼上游**：`repo` 只认 `owner/name`、`cwd` 只认存在的绝对路径且不带 `..`；再加一层 `ctx.sessionCwd` —— 会话存在时以**会话自己的 cwd** 为准，URL 里那个作废。读接口对隧道访客是开着的，这三条是它够不着「任意 GitHub 端点 / 任意目录」的关键。
+- **示例样本不再全绿**：checks 掺一条失败、一条在跑，评论人换成 `octocat` / `hubot`。编的 CI 与挂在真人名下的假评审最容易被人当真（样本本身是这版的决定，不删）。
+- **壳的测试缝改走 identity 响应**：壳跑在 pi 子进程底下，而 `piChildEnv()` 会剥掉所有 `PI_WEB_*`，原来那条 `PI_WEB_GITHUB_REAL_GH_JS` 分支实际不可达；名字统一到桥里已有的 `PI_WEB_GH_JS`。
+- **起会话的那几处兜底**：PATH 覆盖**已有的键名**（Windows 上通常叫 `Path`，否则壳目录静默失效）、`ensureGithubBin()` 写盘失败只 warn 不让会话起不来、删掉没人读的 `PI_WEB_GITHUB_SHIM`。
+- **面板四条**：换 PR（含换仓库）时清 `detail`、列表带上 `repo`、checks 的分子改成**通过**条数、账号菜单关的时候把 document 监听一起摘掉。
+- **两张请求键缓存加上限**（`CACHE_MAX=200`，FIFO）：键来自请求，只靠 TTL 不管大小，长跑的桥会慢慢吃内存。
+
+**两份解析器是刻意留的**：桥的 `seenLinks()` 与页面的 `ghLinksIn()` 跨包，共享要新造第三处分包。代价用一条测试兜住 —— `bridge/tests/github-e2e.mjs` 里「口径一致」那条拿六组样本比对两边的 `kind|repo|id`，分叉就红。
+
+**验证：** `npm run test:github` 三段共 50 条 —— 桥的 HTTP 面 28 条（账号解析四种来源的优先级、工作区默认账号的写与读、逐文件锚点、跨仓 repo 透传、`repo`/`cwd` 校验与「会话 cwd 优先」、两份解析器口径一致、仓库识别、PR 列表/详情的归一化、没有远端时 409、上游 401 映射、隧道写 403、卡片缓存命中、PAT 存取与删除、shim 身份与记账三种帧）；前端纯函数 10 条（链接识别去重与标点、相对时间四档、`+/−` 文案、两个开关默认值与连坐、两个新帧不改纯视图状态）；壳 12 条（没令牌时还能读公开仓库、写才拦；令牌交到真 gh、`pr create` 链接回报、退出码透传、没 gh 时内置实现真建 PR / `pr list` / `pr view --json` / `pr merge`、未实现子命令明确失败、没 origin 时明确失败、桥不在说人话、PATH 注入且本机 PATH 没被动过）。`npm run typecheck` 全绿（含 37 条新 i18n 键、`test:viewport`、`test:layers`、`test:theme`）。真机冒烟（隔离实例，真 gh 真令牌）：默认 `gh api user --jq .login` → `Yang-Code01`；会话切到 `qingmin-new` 后 → `qingmin-new`；`gh pr view 659` → 桥发出 `github.seen` 并认出 pull #659；面板接口真数据（20 条开着的 PR、#659 `+105 −21`、5 个文件）。

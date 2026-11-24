@@ -1,0 +1,470 @@
+/**
+ * GitHub 通道的样式（#661）：右栏面板 + 聊天里的链接卡。
+ *
+ * 面板是右栏的 **dock**（层带 47，压在预览 46 之上、模态 50 之下）。宽度走 `--ghp-w`，默认 560，
+ * 可拖、记在 localStorage。长度一律 `--vw1`：`#app` 上挂着 `zoom: var(--ui-scale)`，裸 `vw` 会被
+ * 乘第二次（D123 / D263，`npm run test:viewport` 守着）。
+ *
+ * 布局一律 flex 列，不写多轨 `grid-template-rows`：这块里有会 hidden 的降级提示，隐藏的子元素
+ * 不占格子、后面的会整体前挪一行（AGENTS.md 里踩过三次那个坑）。
+ */
+
+.ghp {
+  --ghp-w: 560px;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--ghp-w);
+  max-width: calc(var(--vw1) * 100);
+  z-index: 47;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+  box-shadow: -18px 0 50px rgba(0, 0, 0, 0.4);
+  animation: ghp-in var(--dur-2, 160ms) var(--ease, ease);
+  outline: none;
+  container-type: inline-size;
+}
+
+@keyframes ghp-in {
+  from { transform: translateX(24px); opacity: 0.4; }
+}
+
+/* 可拖宽的边：命中带 8px，看得见的只有 3px 那一道。 */
+.ghp-grip {
+  position: absolute;
+  left: -4px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 2;
+}
+
+.ghp-grip::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: transparent;
+}
+
+.ghp-grip:hover::after,
+.ghp.resizing .ghp-grip::after {
+  background: var(--accent-dim);
+}
+
+.ghp.resizing { user-select: none; }
+
+/* 窄面板（面板自己的宽度，不是视口）：仓库名让位，按钮缩成图标。 */
+@container (max-width: 430px) {
+  .ghp-repo { display: none; }
+  .ghp-open { font-size: 0; padding: 4px 8px; }
+  .ghp-open::before { content: "↗"; font-size: 13px; }
+}
+
+.ghp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px calc(8px + env(safe-area-inset-top, 0px));
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+  min-width: 0;
+}
+
+.ghp-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ghp-title { font-weight: 600; font-size: 13px; white-space: nowrap; }
+
+.ghp-repo {
+  font-size: 11.5px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ghp-icon {
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font-size: 13px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ghp-icon:hover { background: var(--panel-3); color: var(--text); }
+
+.ghp-acct {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 190px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 11.5px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.ghp-acct:hover { border-color: var(--line-strong); color: var(--text); }
+.ghp-acct-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ghp-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; }
+
+.ghp-open {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 11.5px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ghp-open:hover { border-color: var(--accent); color: var(--accent); }
+
+.ghp-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ghp-hint,
+.ghp-error {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dim);
+  background: var(--panel-2);
+}
+
+.ghp-error {
+  border-color: var(--danger-dim, #f0b8bd);
+  background: var(--danger-bg);
+  color: var(--text);
+}
+
+.ghp-empty { padding: 22px 6px; text-align: center; font-size: 12.5px; color: var(--faint); }
+.ghp-more { font-size: 11.5px; color: var(--faint); padding: 2px; }
+
+/* ---------------------------------------------------------------- 列表 */
+
+.ghp-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.ghp-row:hover { border-color: var(--accent); }
+.ghp-row-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+.ghp-num { font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; color: var(--accent); flex: 0 0 auto; }
+
+.ghp-row-title {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ghp-badge {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--faint);
+}
+
+.ghp-row-meta { font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- 详情 */
+
+.ghp-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.ghp-hero-title { margin: 0; font-size: 15px; line-height: 1.35; color: var(--text); }
+
+.ghp-hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.ghp-pill {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 10.5px;
+}
+
+.ghp-pill.ok { border-color: var(--ok-dim, #bfe6c9); color: var(--ok); background: var(--ok-bg); }
+
+.ghp-hero-body {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--dim);
+  white-space: pre-wrap;
+  max-height: 150px;
+  overflow: auto;
+}
+
+/* 四格数字：这一版的主菜 —— 不展开差异，也要说清改了多少。 */
+.ghp-stats {
+  display: flex;
+  gap: 1px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--line-soft);
+}
+
+.ghp-stat { flex: 1; background: var(--panel); padding: 8px 10px; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ghp-stat-k { font-size: 10.5px; color: var(--faint); letter-spacing: 0.04em; }
+.ghp-stat-v { font-family: var(--mono, ui-monospace, monospace); font-size: 17px; line-height: 1.25; font-weight: 600; }
+.ghp-stat-v.plus { color: var(--ok); }
+.ghp-stat-v.minus { color: var(--danger); }
+
+.ghp-sec { display: flex; flex-direction: column; gap: 4px; }
+
+.ghp-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--faint);
+  padding: 2px 2px 4px;
+}
+
+.ghp-sec-title { font-weight: 600; }
+
+.ghp-sample {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px dashed var(--line-strong);
+  color: var(--faint);
+}
+
+/* 逐文件一行：只给「这个文件改了几行」，看代码去 GitHub。 */
+.ghp-filestat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.ghp-filestat:last-of-type { border-bottom: 0; }
+.ghp-filestat:hover { background: var(--panel-2); }
+.ghp-filestat:hover .ghp-go { color: var(--accent); }
+
+.ghp-file-status {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  width: 14px;
+  text-align: center;
+  color: var(--faint);
+  flex: 0 0 auto;
+}
+
+.ghp-file-status.added { color: var(--ok); }
+.ghp-file-status.removed { color: var(--danger); }
+
+.ghp-file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11.5px;
+}
+
+.ghp-churn { font-family: var(--mono, ui-monospace, monospace); font-size: 11px; color: var(--faint); flex: 0 0 auto; }
+.ghp-go { font-size: 11px; color: var(--faint); flex: 0 0 auto; }
+
+.ghp-comment {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: var(--panel);
+}
+
+.ghp-comment-head { font-size: 11px; color: var(--faint); margin-bottom: 3px; }
+.ghp-comment-body { font-size: 12.5px; line-height: 1.55; color: var(--text); }
+
+.ghp-foot { display: flex; align-items: center; gap: 8px; padding: 4px 2px 0; flex-wrap: wrap; }
+
+.ghp-merge {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 12.5px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.ghp-merge:hover { background: var(--accent-hover, var(--accent)); filter: brightness(0.94); }
+
+.ghp-btn {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.ghp-btn:hover { border-color: var(--accent); color: var(--accent); }
+.ghp-foot-note { font-size: 11px; color: var(--faint); }
+
+/* ---------------------------------------------------------------- 账号菜单 */
+
+.ghp-menu {
+  position: fixed;
+  /* 70 = 菜单档（`.act-pop` / `.complete-pop` 那一层）。面板自己是 47，所以菜单压得住；
+     不用 86 —— 那是 `.choose-back` 那种遮罩的数字，菜单不该越过 `.modal.hi`。 */
+  z-index: 70;
+  width: 260px;
+  max-width: calc(var(--vw1) * 92);
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ghp-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ghp-menu-row:hover { background: var(--panel-2); }
+.ghp-menu-row.on { color: var(--accent); }
+.ghp-menu-row.dim { color: var(--faint); }
+.ghp-menu-row.sub { padding-left: 20px; font-size: 11.5px; }
+.ghp-menu-row.sep { margin-top: 4px; border-top: 1px solid var(--line-soft); border-radius: 0 0 7px 7px; padding-top: 8px; }
+
+.ghp-pat { display: flex; gap: 6px; padding: 6px 4px 4px; }
+
+.ghp-pat-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.ghp-pat-save {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- 链接卡（聊天区） */
+
+.ghlink {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  max-width: 100%;
+  margin: 6px 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line-soft);
+  border-left: 2px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel-2);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ghlink:hover { border-color: var(--accent); }
+.ghlink-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ghlink-kind { font-size: 10.5px; color: var(--faint); flex: 0 0 auto; }
+.ghlink-num { font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; color: var(--accent); flex: 0 0 auto; }
+
+.ghlink-title {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ghlink-meta { font-size: 11px; color: var(--faint); }
+/* 取标题失败：留一条看得见的痕迹（边框换色 + 文案在 meta 里），不要假装还在加载。 */
+.ghlink-err { border-left-color: var(--warn, #c08a2e); }
+.ghlink-err .ghlink-meta { color: var(--warn, #c08a2e); }
