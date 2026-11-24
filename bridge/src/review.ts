@@ -8,7 +8,7 @@
  *
  * 为什么推理不挂在当前会话上：评审要对**任意仓库**跑、要能中断、要不占用户对话的上下文。
  * 为什么子进程只有只读工具：它读的是本机代码，而「只读」由 argv 保证，不靠提示词自觉
- * （`edit` / `write` 根本不在 `--tools` 里）。这几条见 docs/DECISIONS.md 的 D398。
+ * （`edit` / `write` 根本不在 `--tools` 里）。这几条见 docs/DECISIONS.md 的 D400。
  */
 import fs from "node:fs";
 import path from "node:path";
