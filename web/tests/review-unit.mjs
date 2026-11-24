@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { reviewView } from "../src/review.ts";
+import { parsePrNumber, repoFromUrl, reviewView } from "../src/review.ts";
 
 const finding = (over = {}) => ({
   key: "k1",
@@ -237,6 +237,23 @@ test("PR 模式：没选号就不能开评，选了就能", () => {
   });
   assert.equal(picked.canRun, true);
   assert.equal(picked.prs.length, 1);
+});
+
+test("粘 GitHub 的 PR 链接也能认出号（不能只挑数字：账号名里有 01）", () => {
+  assert.equal(parsePrNumber("658"), 658);
+  assert.equal(parsePrNumber("#658"), 658);
+  assert.equal(parsePrNumber("  # 658 "), 658);
+  assert.equal(parsePrNumber("https://github.com/Yang-Code01/pi-web-client/pull/658"), 658);
+  assert.equal(parsePrNumber("https://github.com/o/r/pull/640/files"), 640);
+  assert.equal(parsePrNumber("https://github.com/Yang-Code01/pi-web-client"), null, "没有 /pull/ 的链接不是号");
+  assert.equal(parsePrNumber("ask-card"), null);
+  assert.equal(parsePrNumber(""), null);
+});
+
+test("从链接里认 owner/repo（用来提醒「这不是本仓库」）", () => {
+  assert.equal(repoFromUrl("https://github.com/Yang-Code01/pi-web-client/pull/658"), "yang-code01/pi-web-client");
+  assert.equal(repoFromUrl("git@github.com:Yang-Code01/pi-web-client.git"), "yang-code01/pi-web-client");
+  assert.equal(repoFromUrl("ask-card"), "");
 });
 
 test("PR 检索：号 / 标题 / 分支 / 作者都能搜，空串给全部", () => {

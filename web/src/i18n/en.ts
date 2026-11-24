@@ -4343,4 +4343,5 @@ export const en: Dict = {
   "没有 open 的 PR": "No open pull requests",
   "输号或搜：号 / 标题 / 分支": "Type a number, or search: number / title / branch",
   "已选 #{p1} {p2}": "Selected #{p1} {p2}",
+  "这个链接属于 {p1}，不是本仓库（{p2}）；要评请换本仓库的 PR 链接或直接填号": "That link belongs to {p1}, not this repo ({p2}); use a link from this repo or just type the number",
 };

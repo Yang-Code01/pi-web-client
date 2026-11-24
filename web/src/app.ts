@@ -80,6 +80,7 @@ import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
 import {
   fixPrompt as reviewFixPrompt,
+  repoFromUrl as reviewRepoFromUrl,
   type PullRequest as ReviewPr,
   renderReview,
   reviewView,
@@ -428,6 +429,9 @@ export class App {
   private reviewPrsLoading = false;
   private reviewPrError = "";
   private reviewPrsAsked = "";
+  private reviewPrsAt = 0;
+  /** 本仓库在 GitHub 上的 `owner/name`（桥从 origin 认出来的），用来比对粘贴的链接。 */
+  private reviewRemoteRepo = "";
   /** 这一次是**我们**点的「开始评审」：只有它跑完才弹提示（别的页签发起的别来抢）。 */
   private reviewPendingToast = false;
   private reviewStartedRunId = "";
@@ -2609,9 +2613,12 @@ export class App {
         break;
       }
       case "review.prs": {
-        const dir = this.reviewDir();
-        if (msg.dir && dir && String(msg.dir) !== dir && String(msg.dir) !== this.reviewRepo) break;
+        // 不再按所在目录丢弃：`review.state` 与它谁先到没有保证，`reviewRepo` 空着时那张列表
+        // 会被整帧扔掉，面板就永远「点开没有数据」（用户实测）。
+        if (msg.dir) this.reviewRepo = String(msg.dir);
         this.reviewPrs = Array.isArray(msg.prs) ? (msg.prs as ReviewPr[]) : [];
+        this.reviewRemoteRepo = String(msg.repo ?? "");
+        this.reviewPrsAt = Date.now();
         this.reviewPrError = msg.ok ? "" : errText(msg) || String(msg.error ?? "");
         this.reviewPrsLoading = false;
         // 手输的号不在列表里时不要被第一项悄悄顶掉：只在没选过时挑第一个。
@@ -18342,6 +18349,7 @@ export class App {
 
   private loadPullRequests(dir: string): void {
     this.reviewPrsAsked = dir;
+    this.reviewPrsAt = Date.now();
     this.reviewPrsLoading = true;
     this.reviewPrError = "";
     this.socket.send({ type: "review.prs.get", dir });
@@ -18423,6 +18431,19 @@ export class App {
       },
       onPrInput: (value) => {
         this.reviewPr = value;
+        const raw = this.reviewPrQuery;
+        const fromUrl = reviewRepoFromUrl(raw);
+        if (fromUrl && this.reviewRemoteRepo && fromUrl !== this.reviewRemoteRepo) {
+          // 粘了别的仓库的 PR 链接：号能认出来，但那是**另一个仓库**的同一个号，不能默默当成本仓库的。
+          this.flashToast(
+            tr("这个链接属于 {p1}，不是本仓库（{p2}）；要评请换本仓库的 PR 链接或直接填号", {
+              p1: fromUrl,
+              p2: this.reviewRemoteRepo,
+            }),
+            true,
+            9000,
+          );
+        }
       },
       onPrQuery: (value) => {
         // 只记值、不重画：每敲一个字就重画会把输入框换成新节点、光标乱跳。
@@ -18432,6 +18453,9 @@ export class App {
         // 只在开关那一刻重画（有焦点要留住，所以打开时把焦点还给输入框）。
         if (this.reviewPrMenu === open) return;
         this.reviewPrMenu = open;
+        const dir = this.reviewDir();
+        const stale = Date.now() - this.reviewPrsAt > 60_000;
+        if (open && dir && (!this.reviewPrs.length || stale || this.reviewPrError)) this.loadPullRequests(dir);
         this.renderQueue();
         if (open) {
           requestAnimationFrame(() => this.els.queueInner?.querySelector<HTMLInputElement>(".rv-prq")?.focus());

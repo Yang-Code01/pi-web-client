@@ -270,8 +270,18 @@ try {
   await page.locator(".rv-prq").waitFor({ timeout: 20000 });
   await page.locator(".rv-prq").click();
   await page.locator(".rv-prmenu").waitFor({ timeout: 10000 });
-  const prHint = (await page.locator(".rv-prmenu .rv-hint").first().innerText().catch(() => "")).trim();
-  check("PR 模式：没有 remote 时列表里说清原因", prHint.length > 0, prHint.slice(0, 50));
+  // 打开列表会顺手补拉一次，所以先等「正在拉…」过去，再断言它把原因说出来了。
+  const prHint = (
+    await until(
+      async () => {
+        const text = (await page.locator(".rv-prmenu .rv-hint").first().innerText().catch(() => "")).trim();
+        return text && !text.includes("正在拉") ? text : "";
+      },
+      20000,
+      "pr menu hint",
+    )
+  ).trim();
+  check("PR 模式：没有 remote 时列表里说清原因", /远程|gh|origin/i.test(prHint), prHint.slice(0, 50));
   await page.locator(".rv-prq").fill("7");
   check("PR 模式：号也能直接输，填完就能开评", await page.locator(".rv-run").first().isEnabled(), "");
 

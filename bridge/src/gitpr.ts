@@ -19,6 +19,8 @@ export interface PullRequest {
 export interface PrListResult {
   ok: boolean;
   prs: PullRequest[];
+  /** `owner/name`（从 origin 的 URL 认出来的，认不出就是空串）——面板拿它比对粘贴进来的链接。 */
+  repo: string;
   /** 认不出来的失败才给 message（`gh` 没装 / 没登录 / 没有 remote），面板按 code 说人话。 */
   error: string;
   code: "" | "gh_missing" | "gh_failed" | "no_remote" | "not_github";
@@ -53,16 +55,27 @@ function classify(stderr: string, cmd: string, code: number | null): { code: PrL
   return { code: "gh_failed", error: first || `${cmd} 退出码 ${code}` };
 }
 
+/** `git@github.com:o/r.git` / `https://github.com/o/r(.git)` → `o/r`。 */
+export function repoFromRemote(url: string): string {
+  const text = (url ?? "").trim();
+  const scp = /^[^@]+@[^:]+:([^/]+)\/(.+?)(?:\.git)?$/i.exec(text);
+  if (scp) return `${scp[1]}/${scp[2].replace(/\.git$/i, "")}`.toLowerCase();
+  const http = /^https?:\/\/[^/]+\/([^/]+)\/(.+?)(?:\.git)?\/?$/i.exec(text);
+  if (http) return `${http[1]}/${http[2].replace(/\.git$/i, "")}`.toLowerCase();
+  return "";
+}
+
 /** 打开过 PR 列表的仓库记住一分钟：切页签、重画面板都不该再打一次 `gh`。 */
 export async function listPullRequests(dir: string, opts: { fresh?: boolean } = {}): Promise<PrListResult> {
   const hit = cache.get(dir);
   if (!opts.fresh && hit && Date.now() - hit.at < CACHE_MS) return hit.value;
   const remote = await run("git", ["-C", dir, "remote", "get-url", "origin"], dir, 8000);
   if (remote.code !== 0 || !remote.stdout.trim()) {
-    const value: PrListResult = { ok: false, prs: [], error: "这个仓库没有 origin 远程", code: "no_remote" };
+    const value: PrListResult = { ok: false, prs: [], repo: "", error: "这个仓库没有 origin 远程", code: "no_remote" };
     cache.set(dir, { at: Date.now(), value });
     return value;
   }
+  const repoName = repoFromRemote(remote.stdout);
   const out = await run(
     ghBin(),
     ["pr", "list", "--state", "open", "--limit", "30", "--json", "number,title,headRefName,baseRefName,isDraft,author"],
@@ -70,7 +83,7 @@ export async function listPullRequests(dir: string, opts: { fresh?: boolean } = 
   );
   if (out.code !== 0) {
     const why = classify(out.stderr, "gh pr list", out.code);
-    const value: PrListResult = { ok: false, prs: [], error: why.error, code: why.code };
+    const value: PrListResult = { ok: false, prs: [], repo: repoName, error: why.error, code: why.code };
     cache.set(dir, { at: Date.now(), value });
     return value;
   }
@@ -78,7 +91,7 @@ export async function listPullRequests(dir: string, opts: { fresh?: boolean } = 
   try {
     rows = JSON.parse(out.stdout || "[]");
   } catch {
-    const value: PrListResult = { ok: false, prs: [], error: "读不懂 gh 的输出", code: "gh_failed" };
+    const value: PrListResult = { ok: false, prs: [], repo: repoName, error: "读不懂 gh 的输出", code: "gh_failed" };
     cache.set(dir, { at: Date.now(), value });
     return value;
   }
@@ -94,7 +107,7 @@ export async function listPullRequests(dir: string, opts: { fresh?: boolean } = 
     .filter((r) => r.number > 0)
     // 草稿排后面：它们多数还没准备好，但也不是不能评。
     .sort((a, b) => Number(a.draft) - Number(b.draft) || b.number - a.number);
-  const value: PrListResult = { ok: true, prs, error: "", code: "" };
+  const value: PrListResult = { ok: true, prs, repo: repoName, error: "", code: "" };
   cache.set(dir, { at: Date.now(), value });
   return value;
 }

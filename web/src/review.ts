@@ -109,6 +109,28 @@ export interface ReviewView {
 const RANK: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 /**
+ * 从用户输入里认出 PR 号：`#658` / `658` / `https://github.com/o/r/pull/658` 都算。
+ *
+ * **不能**直接 `raw.replace(/[^0-9]/g, "")` —— GitHub 链接里有账号名（`Yang-Code01`），
+ * 那样会拼出 `01658`，于是 `gh pr view 1658` 报 "could not resolve to a PullRequest"（用户实测踩到）。
+ */
+export function parsePrNumber(raw: string): number | null {
+  const text = (raw ?? "").trim();
+  if (!text) return null;
+  const fromUrl = /\/pull\/(\d+)/i.exec(text);
+  if (fromUrl) return Number(fromUrl[1]) || null;
+  const bare = /^#?\s*(\d+)\s*$/.exec(text);
+  return bare ? Number(bare[1]) || null : null;
+}
+
+/** 从一段粘贴的 GitHub 链接里认出 `owner/repo`（认不出就给空串）。 */
+export function repoFromUrl(raw: string): string {
+  const text = (raw ?? "").trim();
+  const m = /github\.com[/:]([^/\s]+)\/([^/\s]+)(?:[/.]|$)/i.exec(text);
+  return m ? `${m[1]}/${m[2]}`.replace(/\.git$/i, "").toLowerCase() : "";
+}
+
+/**
  * 桥带回来的 `errorCode` 才是给用户看的那句话（中文兜底只留给认不出的码）：
  * 直接画 `run.error` 会让英文 / 日文界面里冒出一句桥写死的中文。
  */
@@ -544,12 +566,11 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     input.oninput = () => {
       const raw = input.value;
       actions.onPrQuery(raw);
-      const digits = raw.replace(/[^0-9]/g, "");
-      // 纯数字（或 `#123`）直接当成号：边打边能点「开始评审」，不用再敲一次回车。
-      const asNumber = /^\s*#?\s*\d+\s*$/.test(raw) ? digits : "";
-      actions.onPrInput(asNumber);
+      // `#658` / `658` / GitHub 链接都能认出号来（链接里带账号名，不能只挑数字）。
+      const asNumber = parsePrNumber(raw);
+      actions.onPrInput(asNumber ? String(asNumber) : "");
       if (runBtn) runBtn.disabled = !asNumber;
-      filterMenu(raw);
+      filterMenu(asNumber ? String(asNumber) : raw);
       actions.onPrMenu(true);
     };
     input.onfocus = () => actions.onPrMenu(true);
@@ -558,8 +579,8 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       if (ev.key !== "Enter") return;
       ev.preventDefault();
       const first = view.prs[0];
-      const digits = input.value.replace(/[^0-9]/g, "");
-      if (digits) actions.onPr(digits);
+      const parsed = parsePrNumber(input.value);
+      if (parsed) actions.onPr(String(parsed));
       else if (first) actions.onPr(String(first.number));
       actions.onPrMenu(false);
     };
