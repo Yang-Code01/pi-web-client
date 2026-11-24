@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import {
   classifyOcrFailure,
@@ -29,6 +30,8 @@ import {
   writeReviewState,
   buildPrompt,
   chunkFiles,
+  expectRepoMismatch,
+  startReview,
 } from "../src/review.ts";
 
 process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-"));
@@ -406,6 +409,33 @@ check("会话隔离：同一个仓库里两个会话各有各的评审与处理�
   assert.equal(readReviewState(repo, "s3").runs.length, 0, "没评过的会话是空的");
   assert.notEqual(reviewStateFile(repo, "s1"), reviewStateFile(repo, "s2"));
   assert.equal(sessionKey(""), "_nosession");
+});
+
+check("期望仓库（#666）：同仓放行、跨仓拒、任一方为空不拦", () => {
+  // 两个来源一个是链接原文、一个是 git remote 归一过的：大小写与空格不算差异。
+  assert.equal(expectRepoMismatch("acme/widgets", "Acme/Widgets"), false);
+  assert.equal(expectRepoMismatch("acme/widgets", " acme/widgets "), false);
+  assert.equal(expectRepoMismatch("yang-code01/pi-web-client", "acme/widgets"), true);
+  // 不带这个字段（老页面、手输号、别的入口）或认不出本地仓库时一律不拦：这里不是新的闸。
+  assert.equal(expectRepoMismatch("acme/widgets", ""), false);
+  assert.equal(expectRepoMismatch("", "acme/widgets"), false);
+  assert.equal(expectRepoMismatch("", ""), false);
+});
+
+check("期望仓库：别仓的号在开跑之前就被拒（不 fetch、不起子进程）", () => {
+  // startReview 的这道闸必须在 resolvePullRequest 之前：那一步会 `git fetch refs/pull/N/head`，
+  // 号是别仓的就等于把错的东西拉进这个仓库。
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-pr-"));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  execFileSync("git", ["remote", "add", "origin", "git@github.com:acme/widgets.git"], { cwd: repo });
+  let code = "";
+  try {
+    startReview({ dir: repo, mode: "pr", pr: 12, expectRepo: "acme/other", lang: "zh" });
+  } catch (err) {
+    code = err.code;
+  }
+  assert.equal(code, "pr_foreign_repo");
+  assert.equal(fs.existsSync(reviewStateFile(repo, "")), false, "拒掉的那一次不该落状态");
 });
 
 check("历史全留：写第二十一次不裁掉前面的", () => {

@@ -1,5 +1,5 @@
 /**
- * GitHub 通道的两个开关（#661）：设置 →「外观」→「对话」里能开能关。
+ * GitHub 通道的两个开关（#661、#666）：设置 →「外观」→「对话」里能开能关。
  *
  * 为什么是纯函数：连坐规则（主开关关掉时「自动弹面板」跟着失效）是一条**行为**，不是一段画界面的
  * 代码 —— 放这里 `web/tests/github-unit.mjs` 能直接盯着它，界面那边只负责问一句。
@@ -20,11 +20,15 @@ export interface GithubFeature {
 }
 
 /**
- * 两个开关的**生效值**。默认都开；主开关关掉时 `autoPanel` 一定是 false —— 否则会出现
- * 「面板自己弹出来了、但聊天里一张卡都没有」这种用户没法理解的状态。
+ * 两个开关的**生效值**。`cards` 默认开；`autoPanel` 默认**关**（#666：建完 PR 自己推开右栏抢栏位，
+ * 用户得进设置关一次 —— 想当场看结果的人自己打开）。所以它只认显式的 `true`：
+ * 升级上来的老用户没有这个键，跟着新默认走关，不会「只有全新浏览器才是新默认」。
+ *
+ * 主开关关掉时 `autoPanel` 一定是 false —— 否则会出现「面板自己弹出来了、但聊天里一张卡都没有」
+ * 这种用户没法理解的状态。
  */
 export function githubFeature(prefs: GithubPrefs | null | undefined): GithubFeature {
   const cards = prefs?.githubCards !== false;
   if (!cards) return { cards: false, autoPanel: false };
-  return { cards: true, autoPanel: prefs?.githubAutoPanel !== false };
+  return { cards: true, autoPanel: prefs?.githubAutoPanel === true };
 }

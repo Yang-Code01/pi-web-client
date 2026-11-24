@@ -435,18 +435,23 @@
 
 /* ---------------------------------------------------------------- 链接卡（聊天区） */
 
-.ghlink {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+/* 外框只有一套：单张卡（issue / commit）与「主区 + 右缘」的 PR 卡共用边框与底色。 */
+.ghlink,
+.ghcard {
   width: 100%;
   max-width: 100%;
   margin: 6px 0;
-  padding: 7px 10px;
   border: 1px solid var(--line-soft);
   border-left: 2px solid var(--accent);
   border-radius: 8px;
   background: var(--panel-2);
+}
+
+.ghlink {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 10px;
   cursor: pointer;
   text-align: left;
 }
@@ -468,3 +473,49 @@
 /* 取标题失败：留一条看得见的痕迹（边框换色 + 文案在 meta 里），不要假装还在加载。 */
 .ghlink-err { border-left-color: var(--warn, #c08a2e); }
 .ghlink-err .ghlink-meta { color: var(--warn, #c08a2e); }
+
+/*
+ * #666：PR 卡拆成「主区 + 右缘评审钮」两块（兄弟，不是嵌套 —— button 套 button 是非法 DOM）。
+ * 竖排一条贴满卡高：点击区最大，也最像「卡片右侧多了一颗按钮」。
+ */
+.ghcard {
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+}
+/* 卡片自己的边框、外边距、圆角交给容器：两圈边框会变成一条双层线。 */
+.ghcard > .ghlink {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.ghcard > .ghlink:hover { background: var(--panel-3); }
+.ghcard > .ghlink-err { border-left: 0; background: color-mix(in srgb, var(--warn, #c08a2e) 6%, transparent); }
+
+.ghlink-review {
+  flex: 0 0 auto;
+  width: 82px;
+  padding: 0 6px;
+  border: 0;
+  border-left: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+
+.ghlink-review:hover:not(:disabled) { background: var(--accent-bg); }
+/* 禁用不用 opacity 压文字：浅色主题下会糊成一片，用 muted 底 + faint 字。 */
+.ghlink-review:disabled {
+  color: var(--faint);
+  background: var(--panel-3);
+  border-left-color: var(--line);
+  cursor: not-allowed;
+}

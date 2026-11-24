@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./settings-console.css";
-import { api, type DepPackageId, type DepsReport } from "./api.ts";
+import { api, githubApi, type DepPackageId, type DepsReport } from "./api.ts";
 import { icon, face, isIconName, fileIcon, type IconName } from "./icons.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
@@ -13,6 +13,7 @@ import { copilotFromFrame, creditsToUsd, formatAge, formatCredits, formatReset, 
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
 import { GithubPanel } from "./github-panel.ts";
+import { refreshGithubCards } from "./github-cards.ts";
 import { githubFeature } from "./github-settings.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
@@ -441,6 +442,11 @@ export class App {
   private reviewPrsAt = 0;
   /** 本仓库在 GitHub 上的 `owner/name`（桥从 origin 认出来的），用来比对粘贴的链接。 */
   private reviewRemoteRepo = "";
+  /**
+   * #666：这一次的 PR 号是从**哪张链接卡**来的（`owner/name`）。桥拿它拒掉别仓的号。
+   * 手输、从 PR 列表里选、切范围都算「人自己决定的号」，当场清掉（`clearReviewExpectRepo()`）。
+   */
+  private reviewExpectRepo = "";
   /** 这一次是**我们**点的「开始评审」：只有它跑完才弹提示（别的页签发起的别来抢）。 */
   private reviewPendingToast = false;
   private reviewStartedRunId = "";
@@ -4381,7 +4387,7 @@ export class App {
       ),
       this.stRow(
         tr("建完 PR 自动打开面板"),
-        tr("默认开。关掉后建完 PR 只挂一张卡，右栏等你点它再开 —— 不抢栏位"),
+        tr("默认关。打开后建完 PR 右栏自己推开面板；关着就只挂一张卡，等你点它 —— 不抢栏位"),
         this.stSwitch(autoBox),
       ),
     );
@@ -9904,6 +9910,81 @@ export class App {
   private syncGithubCards(): void {
     const on = githubFeature(this.prefs).cards;
     this.chat.onGithubOpen = on ? (repo, number) => this.openGithubPanel(number, repo) : null;
+    // #666：卡片右缘那颗「代码评审」。主开关关掉时整张卡都不画，这颗钮自然也不在。
+    this.chat.onGithubReview = on ? (repo, number) => this.openReviewForPull(repo, number) : null;
+    this.chat.githubSessionRepo = on ? () => this.githubSessionRepo() : null;
+  }
+
+  // ---------------------------------------------------------------- #666 链接卡 → 代码评审
+
+  /** 会话仓库（`owner/repo`，按会话 + cwd 缓存）：链接卡上那颗钮灰不灰就看它。 */
+  private githubRepos = new Map<string, string>();
+  private githubRepoAsked = new Set<string>();
+
+  private githubRepoKey(): string {
+    const id = this.currentId ?? "";
+    const cwd = (this.session?.cwd ?? "").trim();
+    return id && cwd ? `${id}|${cwd}` : "";
+  }
+
+  /**
+   * 卡片问「本会话是哪个仓库」。判据没问回来时给空串 —— 那颗钮先亮着（由桥兜底），
+   * 而不是让人看着一屏灰钮再齐刷刷变亮。第一次问会顺手打一发 `/api/github/state`，
+   * 之后靠 `githubRepoAsked` 挡住；所以只有真的画出了 PR 卡才会付这个代价。
+   */
+  private githubSessionRepo(): string {
+    const key = this.githubRepoKey();
+    if (!key) return "";
+    const hit = this.githubRepos.get(key);
+    if (hit !== undefined) return hit;
+    this.learnGithubRepo(key);
+    return "";
+  }
+
+  /** 判据到了要把**已经画出来的**钮重刷一遍 —— 聊天不重画（历史里几十张卡重绘一次代价太大）。 */
+  private learnGithubRepo(key: string): void {
+    if (this.githubRepoAsked.has(key)) return;
+    const id = this.currentId ?? "";
+    const cwd = (this.session?.cwd ?? "").trim();
+    if (!id || !cwd) return;
+    this.githubRepoAsked.add(key);
+    void githubApi
+      .state(id, cwd)
+      .then((state) => {
+        const repo = String(state?.repo ?? "").trim();
+        // 认不出仓库（不是 git 仓 / 没远端）也记一笔空值：别每次画卡都再问一遍。
+        this.githubRepos.set(key, repo);
+        if (this.githubRepoKey() === key) refreshGithubCards();
+      })
+      .catch(() => {
+        // 问不到就让它一直空着：钮是亮的，真点下去由桥拒并说清楚。
+        this.githubRepoAsked.delete(key);
+      });
+  }
+
+  /**
+   * 链接卡右缘那颗「代码评审」（#666）。只做「把号交过去」：关掉挡着的 GitHub 面板、右栏收着就
+   * 展开、范围选 GitHub PR、号填好，然后切到评审页签 —— **不**自动开跑（一次几分钟、烧额度，
+   * 误点的代价是钱和时间；而且同一仓库同时只允许一次评审）。
+   */
+  private openReviewForPull(repo: string, number: number): void {
+    const n = Number(number) || 0;
+    if (n <= 0) return;
+    this.githubPanel?.close();
+    if (this.collapsed.queue) this.togglePane("queue");
+    this.reviewMode = "pr";
+    this.reviewPr = String(n);
+    this.reviewPrQuery = "";
+    this.reviewPrMenu = false;
+    this.selectQueueTab("review");
+    // 一定要在切页签**之后**：首次画评审面板会走 `syncReviewSession()`，那里会把「期望仓库」清掉
+    // （它属于上一个会话）。先设再切 = 刚设完就被清，桥上就再也拒不了别仓的号。
+    this.reviewExpectRepo = repo.trim();
+  }
+
+  /** 人自己换了号 / 换了范围：那张卡的「期望仓库」不再适用。 */
+  private clearReviewExpectRepo(): void {
+    this.reviewExpectRepo = "";
   }
 
   /**
@@ -18412,6 +18493,7 @@ export class App {
     this.reviewNotGit = false;
     this.reviewAsked = "";
     this.reviewPrMenu = false;
+    this.reviewExpectRepo = "";
     this.reviewSheet?.close();
     this.reviewPrSheet?.close();
   }
@@ -18547,6 +18629,8 @@ export class App {
     return {
       onMode: (mode) => {
         this.reviewMode = mode;
+        // #666：范围是人自己换的，那张链接卡带来的「期望仓库」不再适用。
+        this.clearReviewExpectRepo();
         const dir = this.reviewDir();
         if (mode === "pr" && dir && !this.reviewPrs.length && this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
         this.renderQueue();
@@ -18559,6 +18643,7 @@ export class App {
       },
       onPr: (value) => {
         this.reviewPr = value;
+        this.clearReviewExpectRepo();
         // 选完把检索词清掉：下次展开看到的是完整列表，而不是被「#658」筛成一条。
         this.reviewPrQuery = "";
         this.reviewPrMenu = false;
@@ -18566,6 +18651,7 @@ export class App {
       },
       onPrInput: (value) => {
         this.reviewPr = value;
+        this.clearReviewExpectRepo();
         const raw = this.reviewPrQuery;
         const fromUrl = reviewRepoFromUrl(raw);
         if (fromUrl && this.reviewRemoteRepo && fromUrl !== this.reviewRemoteRepo) {
@@ -18774,6 +18860,8 @@ export class App {
       base: this.reviewBase,
       target: this.reviewTarget,
       commit: this.reviewCommit.trim(),
+      // #666：从链接卡点过来的那一次，带上「这张卡属于哪个仓库」；桥上拿它拒掉别仓的号。
+      expectRepo: mode === "pr" ? this.reviewExpectRepo : "",
       pr: Number(this.reviewPr) || 0,
       model: this.reviewModel,
       lang: getLang(),
@@ -22179,7 +22267,7 @@ type Prefs = {
   retellHint: boolean;
   /** #661：聊天里的 GitHub 链接变卡片（主开关）。默认开；关掉后退回普通链接、右栏也不会被推开。 */
   githubCards: boolean;
-  /** #661：AI 建完 PR 自动把右栏面板推开。主开关关掉时它跟着失效（`githubFeature()` 的连坐）。 */
+  /** #666：AI 建完 PR 自动把右栏面板推开。默认关（只认显式 true）；主开关关掉时它跟着失效（`githubFeature()` 的连坐）。 */
   githubAutoPanel: boolean;
 };
 
@@ -22204,7 +22292,7 @@ const DEFAULT_PREFS: Prefs = {
   themeIntroSeen: false,
   retellHint: true,
   githubCards: true,
-  githubAutoPanel: true,
+  githubAutoPanel: false,
 };
 
 /** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
@@ -22890,9 +22978,10 @@ function readPrefs(): Prefs {
       themeIntroSeen: p?.themeIntroSeen !== false,
       // D365：只有明确写着 false 的才算关（老版本升上来没这个键＝开着）。
       retellHint: p?.retellHint !== false,
-      // #661：同上 —— 老版本升上来没有这两个键，当作开着。
+      // #661：同上 —— 老版本升上来没有这个键，当作开着。
       githubCards: p?.githubCards !== false,
-      githubAutoPanel: p?.githubAutoPanel !== false,
+      // #666：这个反过来了 —— 老版本升上来没有这个键按**关**（默认值翻了，只有显式 true 才算开）。
+      githubAutoPanel: p?.githubAutoPanel === true,
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
     if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);
