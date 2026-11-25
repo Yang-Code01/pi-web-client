@@ -278,7 +278,6 @@
 }
 
 .ghp-doc > :first-child { margin-top: 0; }
-
 .ghp-doc h1,
 .ghp-doc h2,
 .ghp-doc h3,
@@ -293,8 +292,9 @@
   border-top: 1px solid var(--line-soft);
 }
 
+/* 只有首行标题需要去掉上边框与那 9px 的间距：h3–h6 本来（下文那条）就没有边框和 padding。 */
 .ghp-doc h1:first-child,
-.ghp-doc h2:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.ghp-doc h2:first-child { border-top: 0; padding-top: 0; }
 .ghp-doc h3,
 .ghp-doc h4,
 .ghp-doc h5,
@@ -350,7 +350,7 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 2px 2px 2px;
+  padding: 2px;
   font-size: 11.5px;
   font-weight: 650;
   color: var(--text);
@@ -367,7 +367,9 @@
 }
 
 /* 文件清单：两列。文件多时一屏还能放下十来个，而不是只放得下五六行。
-   降到一列的 @container 必须写在这条**后面**：规则同权重，后定义的赢（写在前面会被这里盖掉）。 */
+   降到一列的 @container 必须写在这条**后面**：规则同权重，后定义的赢（写在前面会被这里盖掉）。
+   断点 470px 的来历：面板内边距 12×2、列间距 14，470 时每列还剩 ~216px，路径能显 ~22 个字，
+   再窄就只能看到省略号了 —— 所以 470 及以下一律一列（路径仍可悬浮看全名）。 */
 .ghp-filegrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 14px; }
 
 @container (max-width: 470px) {

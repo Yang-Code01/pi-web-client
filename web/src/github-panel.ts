@@ -2,7 +2,7 @@
  * GitHub 面板（#661）：右侧那扇 dock，**摘要优先** —— 面板里不铺代码差异。
  *
  * 为什么是摘要：560px 的右栏里铺并排 diff 每边只剩 270px，代码会被折成两行反而更难读。所以首屏是
- * 「改了多少」（四格数字）+ 逐文件一行，想看代码点那一行去 GitHub。
+ * 一篇短报告（kicker → 标题 → 署名行 → 描述全文 → 文件清单 → 讨论），想看代码点一个文件去 GitHub。
  *
  * 两条边界：
  * - 凭据只在桥里。这里只看得到登录名与「PAT 存好了」。
@@ -16,6 +16,9 @@ import { errText, tr } from "./i18n/index.ts";
 import { renderMarkdown } from "./md.ts";
 import { appZoom, markSurface, mountOverlay, pushEscLayer } from "./modal.ts";
 import "./github-panel.css";
+
+/** 文件状态 → 清单里那枚字母（GitHub 的 A/D/R/M 口径）；不认识的状态按 M 画。 */
+const FILE_LETTER: Record<string, string> = { added: "A", removed: "D", renamed: "R", modified: "M", copied: "C", changed: "M" };
 
 export interface GithubPanelHost {
   sessionId(): string;
@@ -410,6 +413,7 @@ export class GithubPanel {
     kicker.append(el("span", `ghp-kicker-state ${d.state}`, stateLabel));
     // 分子是**通过**的条数：两边都填 length 永远渲染成 N/N，有失败也读起来像全绿。
     const checks = d.sample?.checks ?? [];
+    const comments = d.sample?.comments ?? [];
     const passing = checks.filter((c) => c.state === "success").length;
     if (checks.length) {
       kicker.append(el("span", "ghp-kicker-sep", "·"));
@@ -419,7 +423,10 @@ export class GithubPanel {
     }
     // checks 与评论这一版仍是样本（真 CI 要按 commit 拉 check-runs、真评论要拉 review comments）。
     // 只在这里标一次：之前 hero 与评论区各挂一个「示例数据」，两处都标等于两处都没人看。
-    kicker.append(el("span", "ghp-sample", tr("示例数据")));
+    // title 说明它盖的是「检查与评论两块」：没有 checks 时这枚 pill 紧贴状态，不说清就像在标状态。
+    const samplePill = el("span", "ghp-sample", tr("示例数据"));
+    samplePill.title = tr("检查与评论是样本数据，不是这个 PR 的真实 CI");
+    kicker.append(samplePill);
     cells.push(kicker);
 
     cells.push(el("h2", "ghp-doc-title", d.pull.title));
@@ -450,7 +457,8 @@ export class GithubPanel {
     for (const f of d.files) {
       const row = el("button", "ghp-frow") as HTMLButtonElement;
       row.type = "button";
-      const letter = f.status === "added" ? "A" : f.status === "removed" ? "D" : f.status === "renamed" ? "R" : "M";
+      // GitHub 的文件状态 → 一枚字母。未知状态（`changed` 之类）按 M 画，不抛错也不留空。
+      const letter = FILE_LETTER[f.status] ?? "M";
       row.append(
         el("span", `ghp-f-label ${f.status}`, letter),
         el("span", "ghp-f-path", f.path),
@@ -466,13 +474,13 @@ export class GithubPanel {
     cells.push(files);
 
     // 讨论：整串列出来（之前只露最后一条，「还有 N 条」还是死的）。一条竖线串起来，谁说的比说了什么轻。
-    if (d.sample.comments.length) {
-      const comments = el("section", "ghp-commentsec");
+    if (comments.length) {
+      const sec = el("section", "ghp-commentsec");
       const ch = el("div", "ghp-h");
-      ch.append(el("span", "ghp-h-t", tr("评论 · {p1}", { p1: d.sample.comments.length })));
-      comments.append(ch);
+      ch.append(el("span", "ghp-h-t", tr("评论 · {p1}", { p1: comments.length })));
+      sec.append(ch);
       const thread = el("div", "ghp-thread");
-      for (const c of d.sample.comments) {
+      for (const c of comments) {
         const when = ghAge(c.at);
         const post = el("div", "ghp-post");
         const head = el("div", "ghp-post-head");
@@ -481,8 +489,8 @@ export class GithubPanel {
         post.append(head, el("div", "ghp-post-body", c.body));
         thread.append(post);
       }
-      comments.append(thread);
-      cells.push(comments);
+      sec.append(thread);
+      cells.push(sec);
     }
 
     const foot = el("div", "ghp-foot");

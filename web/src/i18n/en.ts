@@ -4311,6 +4311,7 @@ export const en: Dict = {
   "评论 · {p1}": "Comments · {p1}",
   "全局设置里定的": "set in the global settings",
   "示例数据": "Sample data",
+  "检查与评论是样本数据，不是这个 PR 的真实 CI": "Checks and comments are sample data, not this PR's real CI",
   "我的 PR": "My PRs",
   "已关闭": "Closed",
   "已合并": "Merged",

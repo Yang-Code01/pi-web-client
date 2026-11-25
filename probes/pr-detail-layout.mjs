@@ -139,20 +139,19 @@ const DETAIL = {
 
 // ---------------------------------------------------------------- 桥
 
-// 我这个进程可能是由 7864 那份壳起的会话（继承了 PI_HOST_LINK）。带着它起探针，子桥会去连
-// 壳的命名管道、而不是自己开 7884，于是「等 healthz」永远超时。
 const env = {
   ...process.env,
-    PI_WEB_PORT: String(PORT),
-    PI_WEB_STATE: STATE,
-    PI_WEB_TUNNEL: "0",
-    PI_WEB_WHATS_NEW: "0",
-    PI_CODING_AGENT_SESSION_DIR: SESSIONS,
-    PI_WEB_GH_JS: path.join(REPO, "bridge", "tests", "fixtures", "fake-gh.mjs"),
-    FAKE_GH_STATE: path.join(ROOT, "gh-state.json"),
+  PI_WEB_PORT: String(PORT),
+  PI_WEB_STATE: STATE,
+  PI_WEB_TUNNEL: "0",
+  PI_WEB_WHATS_NEW: "0",
+  PI_CODING_AGENT_SESSION_DIR: SESSIONS,
+  PI_WEB_GH_JS: path.join(REPO, "bridge", "tests", "fixtures", "fake-gh.mjs"),
+  FAKE_GH_STATE: path.join(ROOT, "gh-state.json"),
   FAKE_GH_ACCOUNTS: JSON.stringify([{ login: "acme", active: true }]),
 };
-// 会话是 7864 那份壳起的：带着 PI_HOST_LINK 起探针，子桥会去连壳的命名管道、不去开 7884。
+// 本进程可能是 7864 那份壳起的会话，会带着 `PI_HOST_LINK`：那样子桥会去连壳的命名管道、不去开
+// 自己的端口，于「等 healthz」永远超时。
 delete env.PI_HOST_LINK;
 
 const out = [];
@@ -230,6 +229,21 @@ try {
   // ------------------------------------------------ 3) 文件清单
   check("8 个文件全在", (await page.locator(".ghp-frow").count()) === 8);
   check("560px 时文件清单两列", (await cols(page)) === 2, String(await cols(page)));
+  // 两列时必须给得出可读的路径：每列少于 210px 就该降成一列了（断点 470 的来历见 CSS 注释）。
+  const track = await page.locator(".ghp-filegrid").evaluate((n) => parseFloat(getComputedStyle(n).gridTemplateColumns));
+  check("560px 两列时每列还有可读的宽度", track >= 230, `${track}px`);
+  // 容器宽 = 面板宽 − 左侧那道 1px 边框，所以 472px 的面板才刚过 470 的断点。
+  await page.locator(".ghp").evaluate((n) => n.style.setProperty("--ghp-w", "480px"));
+  await sleep(250);
+  const wide = await cols(page);
+  check("480px 仍然两列", wide === 2, String(wide));
+  if (wide === 2) {
+    const tight = await page.locator(".ghp-filegrid").evaluate((n) => parseFloat(getComputedStyle(n).gridTemplateColumns));
+    check("480px 两列时每列仍不少于 210px", tight >= 210, `${tight}px`);
+  }
+  await page.locator(".ghp").evaluate((n) => n.style.setProperty("--ghp-w", "470px"));
+  await sleep(250);
+  check("断点本身（470px）已经是单列", (await cols(page)) === 1, String(await cols(page)));
   await page.locator(".ghp").evaluate((n) => n.style.setProperty("--ghp-w", "420px"));
   await sleep(250);
   check("面板收到 420px 时降到一列", (await cols(page)) === 1, String(await cols(page)));
@@ -257,7 +271,13 @@ try {
   console.log(out.join("").slice(-3000));
 } finally {
   await browser?.close().catch(() => {});
-  bridge.kill();
+  // 等子桥真的退出：Windows 上 kill 返回不等于端口已放掉，连着跑两次会卡在「等 healthz」。
+  if (bridge.exitCode === null && bridge.signalCode === null) {
+    const gone = new Promise((resolve) => bridge.once("exit", resolve));
+    bridge.kill();
+    await Promise.race([gone, sleep(5000)]);
+    if (bridge.exitCode === null && bridge.signalCode === null) bridge.kill("SIGKILL");
+  }
 }
 
 console.log(failures ? `\n${failures} 处不成立` : "\n全部成立");
