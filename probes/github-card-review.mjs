@@ -127,10 +127,13 @@ const GH_STATE = path.join(ROOT, "gh-state.json");
 // ---------------------------------------------------------------- 桥
 
 const out = [];
+// 本进程可能是 7864 那份壳起的会话，会带着 `PI_HOST_LINK`：那样子桥会去连壳的命名管道、不去开
+// 自己的端口，于「等 healthz」永远超时（与 `pr-detail-layout.mjs` 同一个处理）。
+const { PI_HOST_LINK: _hostLink, ...baseEnv } = process.env;
 const bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
   cwd: REPO,
   env: {
-    ...process.env,
+    ...baseEnv,
     PI_WEB_PORT: String(PORT),
     PI_WEB_STATE: STATE,
     PI_WEB_TUNNEL: "0",

@@ -244,6 +244,19 @@
 /* 有失败时用警告色：一片绿会让 2/4 读起来像 4/4。 */
 .ghp-kicker-checks { color: var(--warn); font-weight: 600; }
 .ghp-kicker-checks.ok { color: var(--ok); }
+/* 「还有更多」：条数不是全貌时的补语，跟在 checks 后面、比它轻，不另起一段。 */
+.ghp-kicker-more { color: var(--faint); font-weight: 400; margin-left: 4px; }
+
+/* 行内评论的位置小标：比作者轻，用等宽字体，过长时中间省略。 */
+.ghp-post-where {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .ghp-doc-title {
   margin: 0;
@@ -355,16 +368,8 @@
   font-weight: 650;
   color: var(--text);
 }
-
-.ghp-sample {
-  font-size: 10px;
-  padding: 0 5px;
-  border-radius: 999px;
-  border: 1px dashed var(--line-strong);
-  color: var(--faint);
-  font-family: var(--sans);
-  font-weight: 400;
-}
+/* 评论没读全：接在标题后面的补语，比标题轻。 */
+.ghp-h-more { color: var(--warn); font-weight: 500; }
 
 /* 文件清单：两列。文件多时一屏还能放下十来个，而不是只放得下五六行。
    降到一列的 @container 必须写在这条**后面**：规则同权重，后定义的赢（写在前面会被这里盖掉）。
@@ -432,6 +437,17 @@
 }
 
 .ghp-post { position: relative; }
+
+/* 评论正文里的块级元素：间距收紧，别让一条两行的评论占掉半屏。 */
+.ghp-post-body > :first-child { margin-top: 0; }
+.ghp-post-body > :last-child { margin-bottom: 0; }
+.ghp-post-body p { margin: 0 0 6px; }
+.ghp-post-body pre {
+  font-size: 11px;
+  max-height: 260px;
+  overflow: auto;
+}
+.ghp-post-body img { max-width: 100%; }
 
 .ghp-post::before {
   content: "";
