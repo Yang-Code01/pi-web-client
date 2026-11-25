@@ -3725,7 +3725,6 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .composer .retell-bar[hidden] { display: none; }
 .composer .retell-lead { color: var(--faint); font-size: 12px; }
-.composer .retell-sub { color: var(--faint); font-size: 11px; margin-left: auto; }
 .composer .retell-btn {
   display: inline-flex;
   align-items: center;
