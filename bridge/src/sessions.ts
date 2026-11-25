@@ -1395,7 +1395,17 @@ export class Session extends EventEmitter {
     // attach 是异步的：壳里没有这个会话、attach 超时、连接断了都要等认领落地才知道。
     // 先别报「接管了」—— 等它真的拿到 pid，换脑日志才不会说一套、exit 日志说另一套。
     const claimed = await rpc.whenLinked();
-    if ("error" in claimed) return false;
+    if ("error" in claimed) {
+      // 认领失败时 rpc 的 exit 清理已经把 tail 接回去、锁也放了；这里补一句人能看懂的，
+      // 别让页面只剩一句「pi 进程意外退出」——那是给所有退出用的通用文案。
+      this.emitWs({
+        type: "notice",
+        sessionId: id,
+        text: `换脑时没能接管这个会话（${claimed.error.message}）。历史还在磁盘上，发消息会重新接管。`,
+        level: "warn",
+      });
+      return false;
+    }
     return true;
   }
 

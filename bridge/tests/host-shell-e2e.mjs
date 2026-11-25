@@ -18,6 +18,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { controlPath } from "../dist/host/control.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const HOST = path.join(ROOT, "bridge", "dist", "host.js");
@@ -98,8 +99,8 @@ const get = async (url) => {
   const res = await fetch(base + url);
   return { status: res.status, body: await res.json().catch(() => null) };
 };
-const post = async (url) => {
-  const res = await fetch(base + url, { method: "POST" });
+const post = async (url, headers = {}) => {
+  const res = await fetch(base + url, { method: "POST", headers });
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 const brainGet = async (p, pid) => {
@@ -129,6 +130,23 @@ try {
   }, "壳的 /healthz 起来");
   const health = await get("/healthz");
   assert.equal(health.body.pid, host.pid, "healthz 报的 pid 应该是壳自己");
+  // 本机别的端口也是别的页面：Origin 不是本服务自己的 host:port，就不能停壳。
+  const cross = await post("/api/host/stop", { origin: "http://localhost:9999" });
+  assert.equal(cross.status, 403, "其它 localhost 端口的页面不能跨源停壳");
+  // 被拒绝的握手不能留下一个「候选脑」：同一包里紧跟 shutdown 也不能把壳停掉。
+  const bad = net.connect(controlPath(port));
+  await new Promise((resolve, reject) => {
+    bad.once("connect", resolve);
+    bad.once("error", reject);
+  });
+  bad.write(
+    `${JSON.stringify({ t: "hello", proto: 999, pid: process.pid, buildId: "bad", internalPort: 1 })}\n` +
+      `${JSON.stringify({ t: "shutdown", scope: "all" })}\n`,
+  );
+  await sleep(300);
+  const still = await get("/healthz");
+  assert.equal(still.status, 200, "proto 被拒后不能再执行 shutdown");
+  bad.destroy();
   // 2. 脑接上之后，状态里能看到它。
   await until(async () => (await get("/api/host/status")).body?.brain?.ready, "假脑就绪");
   const status = await get("/api/host/status");

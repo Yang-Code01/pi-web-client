@@ -5,6 +5,10 @@ import path from "node:path";
 import type { BrainLink } from "./brainlink.ts";
 import { ensureDir, piChildEnv } from "./paths.ts";
 
+/** 认领落地前最多攒这么多帧；超过就结算整条链路，别让一个挂着的 attach 把内存拖爆。 */
+const LINK_PENDING_MAX_FRAMES = 4096;
+const LINK_PENDING_MAX_BYTES = 8 * 1024 * 1024;
+
 export interface RpcSpawnOptions {
   cli: string;
   args: string[];
@@ -53,6 +57,7 @@ export class RpcChild extends EventEmitter {
   /** 有壳时：attach/spawn 还没落地前收到的帧先排这里，认领之后按顺序交给壳。 */
   private linkClaimed = false;
   private linkPending: string[] = [];
+  private linkPendingBytes = 0;
   /** 认领的最终结果：adopt() 要等它落地才敢说「接管了」。成功/失败都 resolve，避免没人接的 rejection。 */
   private linkResult: Promise<{ pid: number } | { error: Error }> | null = null;
   private settleLink: ((v: { pid: number } | { error: Error }) => void) | null = null;
@@ -205,11 +210,13 @@ export class RpcChild extends EventEmitter {
       // true，上层的请求只能干等超时。逐帧出队，发不出去就让 finish() 结算所有等待者。
       while (this.linkPending.length) {
         if (!this._alive) return;
-        if (!link.stdin(sessionId, this.linkPending[0])) {
+        const frame = this.linkPending[0];
+        if (!link.stdin(sessionId, frame)) {
           this.finish("link: 认领后补发失败");
           return;
         }
         this.linkPending.shift();
+        this.linkPendingBytes -= Buffer.byteLength(frame);
       }
       this.settleLink?.({ pid });
       this.settleLink = null;
@@ -223,6 +230,7 @@ export class RpcChild extends EventEmitter {
     this._alive = false;
     this.linkClaimed = false;
     this.linkPending = [];
+    this.linkPendingBytes = 0;
     this.settleLink?.({ error: new Error(reason) });
     this.settleLink = null;
     this.detachLink?.();
@@ -289,7 +297,18 @@ export class RpcChild extends EventEmitter {
       const frame = JSON.stringify(obj) + "\n";
       // 认领之前先攒着：壳还没把这个会话的管道交给本脑，此时直接发只会收到 stale-owner。
       if (!this.linkClaimed) {
+        const bytes = Buffer.byteLength(frame);
+        if (
+          this.linkPending.length >= LINK_PENDING_MAX_FRAMES ||
+          this.linkPendingBytes + bytes > LINK_PENDING_MAX_BYTES
+        ) {
+          // attach 有 15s 超时，本来不会永久挂；但积压本身没有上限。超限时立刻结算，
+          // 让 abort / 表单响应这类帧的等待者拿到明确错误，而不是在队列里无限排队。
+          this.finish("link: 认领前积压的帧太多");
+          return false;
+        }
         this.linkPending.push(frame);
+        this.linkPendingBytes += bytes;
         return true;
       }
       return this.opts.link.stdin(this.sessionId, frame);

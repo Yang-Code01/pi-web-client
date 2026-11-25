@@ -297,7 +297,11 @@ async function main(): Promise<void> {
     if (!origin) return true;
     try {
       const u = new URL(String(origin));
-      return u.host === (req.headers.host ?? "") || u.hostname === "127.0.0.1" || u.hostname === "localhost";
+      // 只认本服务自己的 host:port。放行任意 localhost 端口等于把本机其它 Web 服务
+      // 也当成自己页面 —— 它们可以跨源 POST 停机/部署。开发态的 Vite 代理会原样保留
+      // 浏览器的 Host（localhost:5173），所以精确比较仍然成立。
+      const host = String(req.headers.host ?? "");
+      return host !== "" && u.host === host;
     } catch {
       return false;
     }
@@ -306,9 +310,13 @@ async function main(): Promise<void> {
   const publicServer = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     if (url.pathname === "/healthz") {
-      const s = state();
+      // 回环请求才给完整 state；远程访客只拿「活着 + 版本」，别把会话 id、子进程 pid、
+      // 部署状态和缓冲窗口当成公开健康检查的一部分。
+      const body = hostOnly(req)
+        ? { ...state(), pid: process.pid, public: isTunnelish(req) }
+        : { ok: true, version: VERSION, buildId: hostBuildId, hostStale: hostStale(), public: true };
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      res.end(JSON.stringify({ ...s, pid: hostOnly(req) ? process.pid : undefined, public: isTunnelish(req) }));
+      res.end(JSON.stringify(body));
       return;
     }
     if (url.pathname === "/api/host/status") {
@@ -371,7 +379,7 @@ async function main(): Promise<void> {
     });
   }
 
-  function onHello(conn: ControlConn, msg: any): Brain {
+  function onHello(conn: ControlConn, msg: any): Brain | null {
     const next: Brain = {
       id: newBrainId(),
       conn,
@@ -387,7 +395,9 @@ async function main(): Promise<void> {
       log(`拒绝握手：proto ${msg.proto} ≠ ${CONTROL_PROTO}`);
       conn.send({ t: "reject", reason: `proto-mismatch:${CONTROL_PROTO}` });
       conn.close();
-      return next;
+      // 拒绝就是拒绝：不能把 next 交给 onMessage，否则 close 落地前的 ready / spawn /
+      // stdin / shutdown 仍会被当成一个合法脑执行。
+      return null;
     }
     if (!brain) {
       brain = next;
@@ -433,13 +443,13 @@ async function main(): Promise<void> {
       failDeployPid(gone, "候选脑在握手前退出");
       conn.send({ t: "reject", reason: "swap-child-gone" });
       conn.close();
-      return next;
+      return null;
     }
     // 既不是首个、也没有人在等它：多出来的脑，让它退。
     log(`多余的脑 ${next.pid}，拒绝`);
     conn.send({ t: "reject", reason: "unexpected" });
     conn.close();
-    return next;
+    return null;
   }
 
   function onBrainMessage(b: Brain, msg: any): void {
