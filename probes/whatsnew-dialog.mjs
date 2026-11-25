@@ -77,6 +77,21 @@ if (TITLES.length < 3) {
   process.exit(2);
 }
 const [NEWEST, SECOND] = TITLES;
+/** `2026-11-24 · 主题` → `主题`：结构化条目把日期画在单独一行（`.cl-date`），标题只剩主题。 */
+const shortTitle = (raw) => raw.replace(/^([0-9]{4}-[0-9]{2}-[0-9]{2}|未发布)(?: · |$)/, "");
+/**
+ * 最新那一批的第一条（去掉 markdown 记号）。`## 未发布` 那种批次没有标题，只好用条目正文
+ * 认「弹的是这一批」—— 只看标题的话这条断言会恒真。
+ */
+const NEWEST_FIRST = (() => {
+  const lines = LOG_TEXT.split(/\r?\n/);
+  const at = lines.findIndex((line) => /^##\s/.test(line));
+  for (const line of lines.slice(at)) {
+    if (line !== lines[at] && /^##\s/.test(line)) break;
+    if (/^\s*- /.test(line)) return line.replace(/^\s*-\s*/, "").replace(/[`*]/g, "").slice(0, 12);
+  }
+  return "";
+})();
 
 let bridge = null;
 let bridgeOut = [];
@@ -200,15 +215,24 @@ try {
   log("1) 全新状态：首次连接就弹");
   ({ page, context } = await openPage());
   await waitDialog(page);
-  const body1 = await page.evaluate(() => ({
-    title: document.querySelector(".whatsnew-title")?.textContent ?? "",
-    summary: document.querySelector(".whatsnew-older > summary")?.textContent ?? "",
-    md: document.querySelector(".whatsnew-md")?.textContent ?? "",
-    buttons: [...document.querySelectorAll(".whatsnew-foot .btn")].map((b) => b.textContent ?? ""),
-  }));
-  ok(body1.title.trim() === NEWEST, `弹的是最新一批（${body1.title.trim().slice(0, 24)}…）`);
+  const body1 = await page.evaluate(() => {
+    // 只看正文顶上那一块（最新一批）；`older` 里还有同一个选择器，先取父层级才不会摸到它们。
+    const main = document.querySelector(".whatsnew-body > .whatsnew-log, .whatsnew-body > .whatsnew-md");
+    return {
+      title: main?.querySelector(".cl-batch h3, .whatsnew-title")?.textContent ?? "",
+      structured: Boolean(main?.querySelector(".cl-batch")),
+      date: main?.querySelector(".cl-date")?.textContent ?? "",
+      summary: document.querySelector(".whatsnew-older > summary")?.textContent ?? "",
+      text: document.querySelector(".whatsnew-body")?.textContent ?? "",
+      buttons: [...document.querySelectorAll(".whatsnew-foot .btn")].map((b) => b.textContent ?? ""),
+    };
+  });
+  ok(body1.structured, "弹窗用的是与设置页同一套条目（.whatsnew-log）");
+  ok(body1.title.trim() === shortTitle(NEWEST), `弹的是最新一批（${body1.title.trim().slice(0, 24)}…）`);
+  ok(body1.date.trim().length > 0, `条目头上有日期或「未发布」（${body1.date.trim()}）`);
+  ok(body1.text.includes(NEWEST_FIRST), `正文里就是最新那批的第一条（${NEWEST_FIRST}…）`);
   ok(body1.summary.includes(String(TITLES.length - 1)), `「还有 N 批更早的」N=${TITLES.length - 1}（${body1.summary}）`);
-  ok(body1.md.length > 20, "正文渲染出了内容");
+  ok(body1.text.length > 20, "正文渲染出了内容");
   ok(body1.buttons.join("|").includes("知道了") && body1.buttons.join("|").includes("看全部日志"), `底部两颗按钮（${body1.buttons.join(" / ")}）`);
   await sleep(400);
   ok(readState()?.seenTitle === NEWEST, "一打开就把已读写到状态目录");
@@ -248,11 +272,14 @@ try {
   await startBridgeUp("bridge up#4");
   ({ page, context } = await openPage());
   await waitDialog(page);
-  const body5 = await page.evaluate(() => ({
-    title: document.querySelector(".whatsnew-title")?.textContent ?? "",
-    hasOlder: Boolean(document.querySelector(".whatsnew-older")),
-  }));
-  ok(body5.title.trim() === NEWEST, "弹的还是最新那一批");
+  const body5 = await page.evaluate(() => {
+    const main = document.querySelector(".whatsnew-body > .whatsnew-log, .whatsnew-body > .whatsnew-md");
+    return {
+      title: main?.querySelector(".cl-batch h3, .whatsnew-title")?.textContent ?? "",
+      hasOlder: Boolean(document.querySelector(".whatsnew-older")),
+    };
+  });
+  ok(body5.title.trim() === shortTitle(NEWEST), "弹的还是最新那一批");
   ok(!body5.hasOlder, "只差一批时不出「还有 N 批」那一段");
 
   // ---- 6) 「看全部日志」把人送到设置那一页；那一页上看得到「上次看到」与开关，且翻完不算已读
@@ -300,11 +327,40 @@ try {
       .map((r) => (r.querySelector(".settings-name")?.textContent ?? "").trim()),
   );
   ok(squished.length === 0, `这两行设置是横条不是竖条（${squished.join(" / ") || "0 条被压竖"}）`);
-  await page.locator(".settings-row", { hasText: "启动时自动打开更新日志" }).locator('input[type="checkbox"]').click();
-  await until(() => readState()?.enabled === false, 5000, "enabled=false 落盘");
-  ok(readState()?.enabled === false, "关掉开关会写进状态目录（关着期间已读不前进）");
-  await page.locator(".settings-row", { hasText: "启动时自动打开更新日志" }).locator('input[type="checkbox"]').click();
-  await until(() => readState()?.enabled === true, 5000, "enabled=true 落盘");
+  /**
+   * 点开关并等状态落盘。11:17 那天在步骤 6 抖过一次（点了但 enabled=false 没写进状态文件，重跑就好了），
+   * 所以先滚到中间、等一拍再点，第一次没落盘就再点一次；真·点了不生效仍然会红，只是把「重试过」写进断言里。
+   */
+  const quiet = async (fn, ms) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      try {
+        if (await fn()) return true;
+      } catch {}
+      await sleep(120);
+    }
+    return false;
+  };
+  const flipSwitch = async (want) => {
+    const input = page.locator(".settings-row", { hasText: "启动时自动打开更新日志" }).locator('input[type="checkbox"]');
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      // 上一次点击可能只是 POST 落盘慢一点：真值已经是 `want` 就直接算成，别再点一次 ——
+      // 第二次点击会把刚存下的值又翻回去，越点越不像。
+      if (readState()?.enabled === want) return attempt;
+      await input.scrollIntoViewIfNeeded();
+      await sleep(200);
+      await input.click();
+      if (await quiet(() => readState()?.enabled === want, 3000)) return attempt;
+      if (attempt === 2) break;
+    }
+    return 0;
+  };
+  const offTries = await flipSwitch(false);
+  ok(offTries > 0, `关掉开关会写进状态目录（关着期间已读不前进${offTries > 1 ? `，第 ${offTries} 次点击才生效` : ""}）`);
+  const onTries = await flipSwitch(true);
+  // `flipSwitch` 两次都没落盘时返回 0 —— 那种情况下只看 `readState().enabled` 可能被上一次
+  // 就已是 true 的状态蒙过去，这一次点击根本没验到。
+  ok(onTries > 0 && readState()?.enabled === true, `再打开也一样落盘${onTries > 1 ? `（第 ${onTries} 次）` : ""}`);
   await page.screenshot({ path: path.join(OUT, "02-settings-page.png") });
   await page.close();
   await context.close();

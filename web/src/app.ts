@@ -66,6 +66,7 @@ import { checkName, freeName, secretVarName, serverNameFor } from "./mcpstore.ts
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { queueWhatsnew } from "./whatsnew.ts";
+import { renderLogHead, renderLogPage, type SelfLog } from "./changelog.ts";
 import { openHotdeploy } from "./hotdeploy.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { ReposSheet } from "./repossheet.ts";
@@ -202,6 +203,20 @@ interface SessionBadge {
  */
 /** D170 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
 type BgRunDto = BgRunView;
+
+/// `/api/changelog?scope=self` 的回包：`log` / `repo` 是 D195 后来由桥端结构化解析出来的，
+/// 旧桥只给 `text`（markdown），没有前两项就退回 markdown 画法。
+interface selfChangelogOut {
+  version?: string;
+  branch?: string;
+  commit?: string;
+  root?: string;
+  text?: string;
+  log?: SelfLog;
+  repo?: { owner: string; name: string } | null;
+  whatsnewSeen?: string;
+  whatsnewEnabled?: boolean;
+}
 
 interface ExecChildState {
   items: Item[];
@@ -587,6 +602,11 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /**
+   * 更新日志现在是「阅读态」：整页收起左栏，靠页头那个「‹ 设置」退回来。退回哪一格由
+   * 进来之前那一页决定（默认落到「全局设置」，深链直接打开时不会退回到自己）。
+   */
+  private settingsReturnTab: SettingsTab = "global";
   /** D245: 翻译用的默认模型（`provider/id`）与出厂默认，来自桥的偏好；还没读过时为空串。 */
   private trModelPref = "";
   private trDefaultModel = "";
@@ -13481,6 +13501,8 @@ export class App {
     } else {
       this.settingsTab = tab;
     }
+    if (tab === "global" || tab === "project") this.settingsReturnTab = "global";
+    else if (tab !== "changelog" && tab !== "whatsnew") this.settingsReturnTab = tab;
     // Closing and reopening starts from what is on disk again; only scope switches keep drafts.
     this.settingsDrafts.clear();
     this.settingsSnapshots.clear();
@@ -13584,6 +13606,10 @@ export class App {
   /** #283：左栏点一格。照旧 chip 的 onclick（进 tab 该补的请求照发），落点是整页重画。 */
   private selectSettingsTab(tab: SettingsTab): void {
     const cwd = this.session?.cwd ?? "";
+    // 进更新日志前记下这一格：阅读态里没有左栏，回来全靠页头那个「‹ 设置」。
+    if ((tab === "changelog" || tab === "whatsnew") && this.settingsTab !== "changelog" && this.settingsTab !== "whatsnew") {
+      this.settingsReturnTab = this.settingsNavKey(this.settingsTab) as SettingsTab;
+    }
     this.settingsTab = tab;
     // #286: compare and its filter are modes of the settings page; leaving it drops them.
     this.settingsCompare = false;
@@ -13632,6 +13658,9 @@ export class App {
     if (!pane) return;
     // 子代理那一页整段样式挂在 `.subagents-sheet` 下（styles.css 3826 起），类还是照旧 toggle 在根上。
     consoleNode.classList.toggle("subagents-sheet", this.settingsTab === "subagents");
+    // 更新日志是阅读态：这一页自己排页头，左栏 / 头部 / 底栏都收起来（changelog.css 第一段）。
+    if (this.settingsTab === "changelog" || this.settingsTab === "whatsnew") consoleNode.dataset.reader = "true";
+    else delete consoleNode.dataset.reader;
     const cwd = this.session?.cwd ?? "";
     this.paintSettingsHead(consoleNode, cwd);
     this.paintSettingsNav(consoleNode, cwd);
@@ -13954,9 +13983,24 @@ export class App {
     return b;
   }
 
-  /** #283：两个更新日志合成一页 —— pi 那份与本项目那份用页内分段切，深链仍按 tab id 落到对应段。 */
+  /**
+   * #283：两个更新日志合成一页，pi 那份与本项目那份用页内分段切，深链仍按 tab id 落到对应段。
+   *
+   * 现在是「阅读态」：页头自己画（‹ 设置 / 分段 / 标题 / 一行说明 + 右侧筛选），设置页的左栏、
+   * 控制台头部与底栏都由 `changelog.css` 收起 —— 版面照 vibe-hub 那一页，正文得拿满宽度。
+   */
   private paintSettingsChangelog(pane: HTMLElement): void {
-    const current = this.settingsTab === "whatsnew" ? "whatsnew" : "changelog";
+    const current: "changelog" | "whatsnew" = this.settingsTab === "whatsnew" ? "whatsnew" : "changelog";
+
+    const back = el("button", "cl-back") as HTMLButtonElement;
+    back.type = "button";
+    back.title = tr("回到设置");
+    back.append(icon("chevron", { size: 11 }), el("span", undefined, tr("设置")));
+    back.onclick = () => {
+      const to = this.settingsReturnTab;
+      this.selectSettingsTab(to === "changelog" || to === "whatsnew" ? "global" : to);
+    };
+
     const seg = el("div", "st-seg");
     seg.setAttribute("role", "group");
     const make = (id: "changelog" | "whatsnew", label: string): HTMLButtonElement => {
@@ -13969,11 +14013,151 @@ export class App {
       return b;
     };
     seg.append(make("changelog", "pi"), make("whatsnew", tr("本项目")));
-    const page = el("div", "st-changelog");
-    pane.append(seg, page);
-    // 两个 painter 的「读回来时这个 tab 还在吗」守卫靠的就是 settingsTab，分段切换走的是整页重画。
-    if (current === "changelog") this.paintChangelog(page);
-    else this.paintWhatsnew(page);
+
+    // 阅读态没有头部那颗「关闭」，✕ 跟着页头右上角走（版面上就在筛选右边）。
+    const close = el("button", "cl-close") as HTMLButtonElement;
+    close.type = "button";
+    close.title = tr("关闭设置");
+    close.setAttribute("aria-label", tr("关闭设置"));
+    close.append(icon("close", { size: 13 }));
+    close.onclick = () => this.closeSheet();
+
+    const prefix: Node[] = [back, seg, close];
+    if (current === "changelog") {
+      const page = el("div", "cl-page");
+      const body = el("div", "cl-markdown");
+      body.append(el("div", "empty", tr("读取中…")));
+      page.append(
+        renderLogHead({
+          prefix,
+          title: tr("更新日志"),
+          subtitle: tr("这个 pi 包里带的改动记录，跟着发版走。"),
+        }),
+        body,
+      );
+      pane.append(page);
+      fetch("/api/changelog", { credentials: "same-origin" })
+        .then((r) => r.json())
+        .then((out: { version?: string; text?: string }) => {
+          if (this.settingsTab !== "changelog") return;
+          body.replaceChildren();
+          body.append(el("div", "settings-path", tr("当前 pi {p1}", { p1: out.version ?? "" })));
+          body.append(renderMarkdown(out.text || tr("（这个 pi 包里没有 CHANGELOG.md）")));
+        })
+        .catch((err: Error) => {
+          if (this.settingsTab !== "changelog") return;
+          body.replaceChildren(el("div", "empty", tr("读不到更新日志：{p1}", { p1: err.message })));
+        });
+      return;
+    }
+    // 本项目那一侧要等一次 HTTP（月份、统计都在解析结果里），所以正文由它自己画。
+    this.paintSelfChangelog(pane, prefix);
+  }
+
+  /**
+   * D195：本项目的 `CHANGELOG.md`，桥端已解析成 `log`（批次 / 组 / 引用）。
+   *
+   * #588：这个提示的开关与「上次看到」还在这页，但按用户要求放到**页面最下方** —— 页头让给
+   * 标题与筛选，设置项不抢眼。
+   */
+  private paintSelfChangelog(pane: HTMLElement, prefix: Node[]): void {
+    pane.append(el("div", "empty", tr("读取中…")));
+    fetch("/api/changelog?scope=self", { credentials: "same-origin" })
+      .then((r) => r.json())
+      .then((out: selfChangelogOut) => {
+        if (this.settingsTab !== "whatsnew") return;
+        pane.replaceChildren();
+        const root = out.root ?? "";
+        const log: SelfLog | undefined = out.log;
+        if (!log || !log.batches.length) {
+          // 桥不认（旧版）或检出里没有 CHANGELOG.md：退回 markdown，这一页不能空着。
+          const page = el("div", "cl-page");
+          const body = el("div", "cl-markdown");
+          body.append(
+            renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
+              // D308：正文里的 `docs/DECISIONS.md` 是可点的文件链接；链路相对**仓库根**写，
+              // 会话 cwd 可能不在这个仓库里（旧桥没有结构化日志时只剩这条路可走）。
+              openPath: (file) => {
+                window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(root, file) } }));
+              },
+            }),
+          );
+          page.append(
+            renderLogHead({
+              prefix,
+              title: tr("更新日志"),
+              subtitle: tr("本项目的每一批改动：新增了什么、修掉了什么、改过哪些设计决定。"),
+            }),
+            body,
+          );
+          pane.append(page, this.whatsnewPrefs(out));
+          return;
+        }
+        const page = renderLogPage(log, {
+          repo: out.repo ?? null,
+          seenTitle: out.whatsnewSeen || undefined,
+          scrollRoot: pane,
+          headPrefix: prefix,
+          title: tr("更新日志"),
+          subtitle: tr("本项目的每一批改动：新增了什么、修掉了什么、改过哪些设计决定。"),
+          footNote: tr("更早的记录与每条的出处都在 CHANGELOG.md · 共 {p1} 批", { p1: String(log.stats.batches) }),
+          // `D365` 只开文件：预览没有行锚点，跳不到那一行，标题里说清楚落在哪一份。
+          onOpenDecision: (n) => {
+            this.chat.add({
+              id: `n:${Date.now()}`,
+              kind: "notice",
+              text: tr("打开 docs/DECISIONS.md，搜 D{p1} 看这条决定的全文。", { p1: String(n) }),
+              level: "info",
+            });
+            window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(root, "docs/DECISIONS.md") } }));
+          },
+        });
+        page.append(this.whatsnewPrefs(out));
+        pane.append(page);
+      })
+      .catch((err: Error) => {
+        if (this.settingsTab !== "whatsnew") return;
+        pane.replaceChildren(el("div", "empty", tr("读不到本项目的更新日志：{p1}", { p1: err.message })));
+      });
+  }
+
+  /**
+   * 页底那一块：「启动时的提示」开关 + 「上次看到」。D367 的小节头 + `.settings-panel` 的写法照旧，
+   * 只是从页首挪到了时间线下面，外框换成 `.cl-settings`（跟着页面的左右内边距走）。
+   */
+  private whatsnewPrefs(out: selfChangelogOut): HTMLElement {
+    const wrap = el("div", "cl-settings");
+    wrap.append(this.stSection(tr("启动时的提示"), tr("桥启动后第一次有人连上时才判一次；两次弹出之间至少隔一天")));
+    const panel = el("div", "settings-panel");
+    const toggle = el("input", "") as HTMLInputElement;
+    toggle.type = "checkbox";
+    toggle.checked = out.whatsnewEnabled !== false;
+    toggle.onchange = () => {
+      void fetch("/api/changelog/popup", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: toggle.checked }),
+      }).catch(() => {
+        /* 桥不在就当没点过：下次打开这一页会照盘上的真值重画 */
+      });
+    };
+    panel.append(
+      this.stRow(
+        tr("启动时自动打开更新日志"),
+        tr("关掉之后不再自动弹；这一页照样能看，关着期间攒下的批次等你重新打开还会出现"),
+        this.stSwitch(toggle),
+      ),
+    );
+    // 「上次看到」是只读的值，不是可点的路径：长了就省略，全文进 title。
+    const seen = el("span", "settings-value", out.whatsnewSeen || tr("还没看过任何一批"));
+    if (out.whatsnewSeen) seen.title = out.whatsnewSeen;
+    panel.append(this.stRow(tr("上次看到"), tr("弹窗打开的那一刻就记下；自己在这一页翻完不算"), seen));
+    wrap.append(panel);
+    // 版本号原来在页首「当前版本 …」那一行，这里补一行，别把「现在跑的是哪一版」丢了。
+    const where = [out.version, [out.branch, out.commit].filter(Boolean).join("@")].filter(Boolean).join(" · ");
+    if (where) wrap.append(el("div", "cl-settings__meta", tr("当前版本 {p1}", { p1: where })));
+    return wrap;
   }
 
   /**
@@ -16741,85 +16925,6 @@ export class App {
     run.prompt = null;
     this.act(() => this.socket.send({ type: "auth.answer", loginId: run.loginId, promptId: p.promptId, value }));
     this.paintLoginIfOpen();
-  }
-
-  private paintChangelog(body: HTMLElement): void {
-    body.append(el("div", "empty", tr("读取中…")));
-    fetch("/api/changelog", { credentials: "same-origin" })
-      .then((r) => r.json())
-      .then((out: { version?: string; text?: string }) => {
-        if (this.settingsTab !== "changelog") return;
-        body.replaceChildren();
-        body.append(el("div", "settings-path", tr("当前 pi {p1}", { p1: out.version ?? "" })));
-        const md = el("div", "settings-changelog");
-        md.append(renderMarkdown(out.text || tr("（这个 pi 包里没有 CHANGELOG.md）")));
-        body.append(md);
-      })
-      .catch((err: Error) => {
-        body.replaceChildren(el("div", "empty", tr("读不到更新日志：{p1}", { p1: err.message })));
-      });
-  }
-
-  /** D195：本项目的 CHANGELOG.md（设置页里和 pi 那个分开放，两个文档不同）。 */
-  private paintWhatsnew(body: HTMLElement): void {
-    body.append(el("div", "empty", tr("读取中…")));
-    fetch("/api/changelog?scope=self", { credentials: "same-origin" })
-      .then((r) => r.json())
-      .then((out: { version?: string; branch?: string; commit?: string; root?: string; text?: string; whatsnewSeen?: string; whatsnewEnabled?: boolean }) => {
-        if (this.settingsTab !== "whatsnew") return;
-        body.replaceChildren();
-        const head = [out.branch, out.commit].filter(Boolean).join("@");
-        const where = [out.version, head].filter(Boolean).join(" · ");
-        body.append(el("div", "settings-path", tr("当前版本 {p1}", { p1: where })));
-
-        // #588：这个提示的开关与「上次看到」都放在这一页 —— 想开想关、想知道自己读到哪，同一个地方。
-        // D367：小节头在外面、行装进 `.settings-panel`（全站同一套「小节头 + 面板 + 行」）。
-        // `.settings-group` 是那个横排的小节头，拿它当外框会把两行设置挤成一根竖条。
-        body.append(this.stSection(tr("启动时的提示"), tr("桥启动后第一次有人连上时才判一次；两次弹出之间至少隔一天")));
-        const panel = el("div", "settings-panel");
-        const toggle = el("input", "") as HTMLInputElement;
-        toggle.type = "checkbox";
-        toggle.checked = out.whatsnewEnabled !== false;
-        toggle.onchange = () => {
-          void fetch("/api/changelog/popup", {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ enabled: toggle.checked }),
-          }).catch(() => {
-            /* 桥不在就当没点过：下次打开这一页会照盘上的真值重画 */
-          });
-        };
-        panel.append(
-          this.stRow(
-            tr("启动时自动打开更新日志"),
-            tr("关掉之后不再自动弹；这一页照样能看，关着期间攒下的批次等你重新打开还会出现"),
-            this.stSwitch(toggle),
-          ),
-        );
-        // 「上次看到」是只读的值，不是可点的路径：长了就省略，全文进 title。
-        const seen = el("span", "settings-value", out.whatsnewSeen || tr("还没看过任何一批"));
-        if (out.whatsnewSeen) seen.title = out.whatsnewSeen;
-        panel.append(
-          this.stRow(tr("上次看到"), tr("弹窗打开的那一刻就记下；自己在这一页翻完不算"), seen),
-        );
-        body.append(panel);
-        const md = el("div", "settings-changelog");
-        md.append(
-          renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
-            // 正文里的 `docs/DECISIONS.md` 是可点的文件链接（D195）。D308：不再先收面板 ——
-            // 预览会压在面板上（`.viewer.hi`），关掉预览就回到这一页。链接相对**仓库根**写，
-            // 会话 cwd 可能不在这个仓库里。
-            openPath: (file) => {
-              window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(out.root ?? "", file) } }));
-            },
-          }),
-        );
-        body.append(md);
-      })
-      .catch((err: Error) => {
-        body.replaceChildren(el("div", "empty", tr("读不到本项目的更新日志：{p1}", { p1: err.message })));
-      });
   }
 
   // ---------------------------------------------------------------- tree / fork / clone (#17)

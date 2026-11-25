@@ -2347,7 +2347,7 @@ async function main(): Promise<void> {
     // 领走不等于看过 —— 页面真把 dialog 打开了才 POST `/api/changelog/seen` 落盘。
     if (url.pathname === "/api/changelog" && req.method === "GET") {
       if (url.searchParams.get("scope") === "self") {
-        if (url.searchParams.get("unread") === "1") return json(res, 200, takeWhatsnew(Date.now(), whatsnewVeteran));
+        if (url.searchParams.get("unread") === "1") return json(res, 200, await takeWhatsnew(Date.now(), whatsnewVeteran));
         // 设置页那一页要的两样（开关与「上次看到」）一起带上：同一个资源，不新开路由（D358）。
         const popup = whatsnewStatus();
         return json(res, 200, { ...(await selfChangelog()), whatsnewSeen: popup.seenTitle, whatsnewEnabled: popup.enabled });
