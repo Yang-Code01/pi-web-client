@@ -226,8 +226,20 @@ const durationOf = (run: ReviewRun): number | null => {
 export function runTarget(run: ReviewRun): string {
   if (run.mode === "pr") return run.pr > 0 ? `PR #${run.pr}` : tr("GitHub PR");
   if (run.mode === "commit") return tr("提交 {p1}", { p1: (run.to || "?").slice(0, 7) });
-  if (run.mode === "range") return `${run.to || "HEAD"} ← ${run.from || "?"}`;
+  // 分支名可能是 `origin/main` 这种；卡片上只容纳一句话，去掉远程前缀（不是本机分支就换个地方看）。
+  if (run.mode === "range") return `${shortRef(run.to) || "HEAD"} ← ${shortRef(run.from) || "?"}`;
   return tr("工作区改动");
+}
+
+/** `origin/main` → `main`（只用于显示）。 */
+const shortRef = (ref: string): string => (ref || "").trim().replace(/^origin\//, "");
+
+/** 灰按钮旁边那句「还差什么」——没有就回空串。 */
+function missingHint(mode: ReviewMode): string {
+  if (mode === "pr") return tr("先选一个 PR（或填个号）");
+  if (mode === "commit") return tr("先填一个提交号");
+  if (mode === "range") return tr("两边分支都选一下");
+  return "";
 }
 
 /** 那次用的模型的完整标识（`provider/id`，老记录没有 provider 就只是 id）。 */
@@ -337,13 +349,7 @@ export function reviewView(input: ReviewInput): ReviewView {
   const missing =
     mode === "range" ? !target.trim() || !base.trim() : mode === "commit" ? !commit.trim() : mode === "pr" ? !pr : false;
   // 按钮灰着的时候得说清为什么：用户就是卡在一颗没解释的灰按钮上（报告的原话「不能评审了」）。
-  const missingWhy = !missing
-    ? ""
-    : mode === "pr"
-      ? tr("先选一个 PR（或填个号）")
-      : mode === "commit"
-        ? tr("先填一个提交号")
-        : tr("两边分支都选一下");
+  const missingWhy = missing ? missingHint(mode) : "";
   const canRun = phase !== "loading" && phase !== "not-git" && phase !== "no-ocr" && !running && !input.installing && !missing;
   // 跑着看进度帧的日志，跑完看记录里存的那份（进度帧已经没了）。
   const log = (live?.log?.length ? live.log : active?.log ?? []).slice(-40);
@@ -824,12 +830,13 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     runBtn = run;
     actRow.append(run);
   }
-  if (view.hasRun) {
-    // 「查看详情」不再摆在控制条上：它属于某一次记录，点了那张卡才到哪里去（见 renderFocusedRun）。
-  }
   form.append(actRow);
   // 按钮灰着就得说清为什么 —— 用户就是卡在这颗没解释的灰按钮上（「不能评审了」）。
-  if (!view.canRun && view.missingWhy) form.append(el("div", "rv-hint rv-why", view.missingWhy));
+  // 只解释「某一格没填」这一种灰：没装 ocr / 不是 git 仓库 / 正在读 / 正在跑，各有自己的块，
+  // 在这里再补一句会与它们打架（同一句话在两处出现，等于两处都没人看）。
+  if (view.missing && view.missingWhy && !view.running && !["no-ocr", "not-git", "loading"].includes(view.phase)) {
+    form.append(el("div", "rv-hint rv-why", view.missingWhy));
+  }
   // 模式下拉钉在最上面：PR / 分支那些行是后加的，不 reorder 就会把它挤到下面去。
   form.prepend(modeRow);
   root.append(form);
@@ -950,7 +957,6 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
       .join(" ");
     const btn = el("button", cls) as HTMLButtonElement;
     btn.type = "button";
-    btn.dataset.run = card.id;
     btn.onclick = () => actions.onOpenRun(card.id);
 
     const top = el("div", "rv-run-top");

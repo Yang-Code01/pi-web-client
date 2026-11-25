@@ -32,6 +32,9 @@ import {
   chunkFiles,
   expectRepoMismatch,
   startReview,
+  setPick,
+  trimRuns,
+  RUN_KEEP,
 } from "../src/review.ts";
 
 process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-"));
@@ -438,11 +441,28 @@ check("期望仓库：别仓的号在开跑之前就被拒（不 fetch、不起�
   assert.equal(fs.existsSync(reviewStateFile(repo, "")), false, "拒掉的那一次不该落状态");
 });
 
-check("历史全留：写第二十一次不裁掉前面的", () => {
+check("写盘本身不裁剪：标意见 / 改 pick 不许把正看着的那条挤掉", () => {
+  // 裁剪只在 startReview() 加完新记录后做（trimRuns）；写盘是所有改动的窄口，不能在那里截。
   const repo = "/Users/me/many";
   const runs = Array.from({ length: 21 }, (_, i) => ({ id: `r${i}`, status: "done", findings: [] }));
   writeReviewState(repo, { repo, runs, marks: {} });
   assert.equal(readReviewState(repo).runs.length, 21);
+});
+
+check("加新记录时的裁剪：留最后 20 次，更早的滚掉", () => {
+  const runs = Array.from({ length: 25 }, (_, i) => ({ id: `k${i}`, status: "done", findings: [] }));
+  const state = { repo: "/Users/me/trim", runs, marks: {} };
+  trimRuns(state);
+  assert.equal(state.runs.length, RUN_KEEP);
+  assert.equal(state.runs[0].id, "k5");
+  assert.equal(state.runs[state.runs.length - 1].id, "k24");
+});
+
+check("「评什么」存得下也读得回（空串照原样存，别被默认值顶掉）", () => {
+  const repo = "/Users/me/pickrepo";
+  const pick = { mode: "range", pr: 0, base: "main", target: "", commit: "" };
+  assert.deepEqual(setPick(repo, pick, "s1").pick, pick);
+  assert.deepEqual(readReviewState(repo, "s1").pick, pick);
 });
 
 if (failures) {

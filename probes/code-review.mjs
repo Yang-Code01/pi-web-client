@@ -99,10 +99,12 @@ const bridges = [];
 // 跟 probes/review-session-leak.mjs 与 bridge/src/paths.ts 的 `piChildEnv()` 一样剥掉这些标记。
 const cleanEnv = () => {
   const env = { ...process.env };
+  const drop = (key) => delete env[key];
+  drop("PI_HOST_LINK");
   for (const key of Object.keys(env)) {
-    if (key === "PI_HOST_LINK") delete env[key];
-    else if (key.startsWith("PI_WEB_")) delete env[key];
-    else if (/^PI_(CODING_AGENT|SESSION_ID$|SESSION_FILE$|MODEL$|PROVIDER$|REASONING_LEVEL$|SDK_)/.test(key)) delete env[key];
+    if (key.startsWith("PI_WEB_")) drop(key);
+    else if (key.startsWith("PI_SDK_")) drop(key);
+    else if (["PI_CODING_AGENT", "PI_SESSION_ID", "PI_SESSION_FILE", "PI_MODEL", "PI_PROVIDER", "PI_REASONING_LEVEL"].includes(key)) drop(key);
   }
   return env;
 };
@@ -167,7 +169,12 @@ async function pickModel(page) {
   } catch {
     // 模型目录还没到：空态那一行点一下重试（跟设置页同一个手势）。
     await page.locator(".model-sheet .pm-empty").first().click({ timeout: 5000 }).catch(() => {});
-    await rows.first().waitFor({ timeout: 20000 });
+    try {
+      await rows.first().waitFor({ timeout: 20000 });
+    } catch {
+      // 把「等超时」翻成一句能看的话：不然只能看到 Playwright 的 locator 名与毫秒数。
+      throw new Error("模型弹层里等不到模型目录（`.pm-row` 一直没有）");
+    }
   }
   const fresh = page.locator(".model-sheet .pm-row:not(.on)");
   const total = await rows.count();

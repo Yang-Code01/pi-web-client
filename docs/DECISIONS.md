@@ -8191,7 +8191,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 2. **历史就是面板主体**：`reviewView()` 多一个 `focus` 入参（空 = 停在列表）与 `runs: ReviewRunCard[]`（**新的在前**）。`active = focused ?? latest`，phase / 意见 / 时间线 / 统计 / 失败原因一律按 `active` 算；只有「active 就是最新那次且还在跑」时实时帧（`input.progress`）才算数 —— 拿别的 run 的进度去画旧记录是错误的来源。
 3. **版式选「列表即主体」（用户从三份样张里挑的 B）**：面板打开就是记录列表（两行卡片：`PR #683 / 标题 / 时间` + `完成 · 4 条意见 · 27 秒 · 1 个文件` + 模型 chip），点一条在**面板里**换成那一次的详情（`‹ 记录` 返回、`完整详情 ›` 开原来的 `ReviewSheet` 浮层）。左窄栏那种（C）在 420px 宽的面板里把意见挤窄了，一行式（A）又把每次的模型与耗时藏进 tooltip。
 4. **详情说的是「那一次」**：`ReviewSheet` 抬头按 `view.runs.find(r => r.id === view.focus)` 取标题 / 时间 / 条数 / 模型，不再用 `this.input.modelName`（当前选中项）。为此 `ReviewRun` 加 `provider` 字段（目录里的 id 是 `cn:glm-5.4` 这种带冒号的，光有 `model` 认不出是哪个 provider），显示用 `runModelId(run)` = `provider/model`；面板再用模型目录把它翻成 `hy4flash · x0.03 · 960K`，查不到就显示 id。
-5. **只留最近 20 次**（`RUN_KEEP = 20`，在 `writeReviewState()` 里 `slice(-RUN_KEEP)` —— 裁剪只放写盘这一处，读的人不用各自去截）。用户选的是「只留最近 20 次，更早自动滚掉」：一次 run 实测 5–8KB，不设上限的话评几百次会变成几 MB 的 json，而这东西是每次 `review.state` 都整份发到页面的。
+5. **只留最近 20 次**（`RUN_KEEP = 20`，在 `startReview()` 加完新记录后 `slice(-RUN_KEEP)` —— **不放 `writeReviewState()`**：写盘是所有改动的窄口，标一条意见、改一次 pick 都会走它，在那里截会把用户正点开看着的那一条也截掉，`reviewFocus` 一拍就跳回最新一条）。用户选的是「只留最近 20 次，更早自动滚掉」：一次 run 实测 5–8KB，不设上限的话评几百次会变成几 MB 的 json，而这东西是每次 `review.state` 都整份发到页面的。
 6. **「评什么」按会话记**（`ReviewPick { mode, pr, base, target, commit }`，落 `<state>/review/<repo>/<session>.json` 的 `pick` 字段，前端在 `mode / pr / base / target / commit` 变化时发 `review.pick`）。旧的做法连「刷新都丢」都不算 bug 被记过，但它是 (c) 的另一半：**记忆是让按钮变灰这件事少发生**，而灰按钮旁边必须写理由（`missingWhy`：PR 模式「先选一个 PR（或填个号）」、commit 模式「先填一个提交号」、range 模式「两边分支都选一下」）。
 7. **PR 号自动带上当前分支那条**（用户选的）：`review.prs` 到达时先找 `headRefName === git.branch` 的那条，找不到才退到第一项。拿不到（没 remote / 没有对应的 PR）就还是空 + 理由，不造一个假号。
 
@@ -8203,4 +8203,4 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - `pick` 是「这个人最后一次把面板摆成什么样」，不是权威：桥只把它当默认值回灌，用户改了就以页面为准（`applyReviewPick()` 每个会话只回灌一次，避免「用户改了又被桥按回去」）。
 - 详情里「这次用的模型」只对**新记录**准确；旧的 run 没有 `provider` 字段，退化成显示 `model`（`cn:glm-5.4` 这种），可能仍分不清 provider。
 
-**验证。** `node probes/code-review.mjs`（真桥 + 真 Chromium，30 项全绿）：面板里没有「清理历史」；跑完出现 `.rv-run-card`；点卡片进 `.rv-focus`、里面写着「这次用的模型」、`‹ 记录` 能回列表；`完整详情 ›` 开的浮层还是老样子（分组日志 + 意见 + 一键交给 agent）；PR 模式填号能评；刷新后范围与号自己接上（`pr / 7`）；字号 150% 下按钮仍在视口。`npm --prefix web run typecheck`（tsc + i18n 三语 4366 键 + viewport + layers + 三个 node --test）通过。`npm --prefix bridge run typecheck` 通过。
+**验证。** `node probes/code-review.mjs`（真桥 + 真 Chromium，30 项全绿）：面板里没有「清理历史」；跑完出现 `.rv-run-card`；点卡片进 `.rv-focus`、里面写着「这次用的模型」、`‹ 记录` 能回列表；`完整详情 ›` 开的浮层还是老样子（分组日志 + 意见 + 一键交给 agent）；PR 模式填号能评；刷新后范围与号自己接上（`pr / 7`）；字号 150% 下按钮仍在视口。`npm --prefix web run typecheck`（tsc + i18n 三语 4366 键 + viewport + layers + 三个 node --test）通过。`npm --prefix bridge run typecheck` 通过，`node --experimental-strip-types bridge/tests/review-unit.mjs` 全绿（新增两条：「写盘本身不裁剪」与「加新记录时留最后 20 次」、「评什么」存得下也读得回）。

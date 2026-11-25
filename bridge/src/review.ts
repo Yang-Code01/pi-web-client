@@ -479,12 +479,15 @@ export function readReviewState(repo: string, session = ""): ReviewState {
     return { repo, runs: [], marks: {} };
   }
   const value = read.value;
-  return {
+  const state: ReviewState = {
     repo: str(value?.repo) || repo,
     runs: Array.isArray(value?.runs) ? value.runs : [],
     marks: value?.marks && typeof value.marks === "object" ? value.marks : {},
-    pick: readPick(value?.pick),
   };
+  // 没记过就**不挂这个键**（挂个 `undefined` 会让 `deepEqual({repo, runs, marks})` 的调用方多出一个字段）。
+  const pick = readPick(value?.pick);
+  if (pick) state.pick = pick;
+  return state;
 }
 
 /** `pick` 是老文件里没有的字段：认不出就当成「没记过」，由页面自己用默认值。 */
@@ -518,11 +521,18 @@ export function setPick(repo: string, pick: ReviewPick, session = ""): ReviewSta
 /** 历史只留最近这么多次：一次评审的记录几 KB，全留会让状态文件长成几百 KB，而界面只画得下几条。 */
 export const RUN_KEEP = 20;
 
+/**
+ * 把历史截到 `RUN_KEEP` 条（新的留下）。只该在「加了一条新记录」后调（`startReview()`）。
+ * 不要接到 `writeReviewState()` 上：标一条意见、改一次 pick 也走写盘，在那里截会把用户
+ * 正点开看着的那一条截掉。
+ */
+export function trimRuns(state: ReviewState): void {
+  if (state.runs.length > RUN_KEEP) state.runs = state.runs.slice(-RUN_KEEP);
+}
+
 export function writeReviewState(repo: string, state: ReviewState, session = ""): void {
   const file = reviewStateFile(repo, session);
   ensureDir(path.dirname(file));
-  // 裁剪放在写盘这一处：跑一次、标一条、改一次 pick 都走这里，漏不掉。
-  if (state.runs.length > RUN_KEEP) state.runs = state.runs.slice(-RUN_KEEP);
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
   fs.renameSync(tmp, file);
@@ -796,6 +806,10 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     log: [],
   };
   state.runs.push(run);
+  // 历史只留最近 `RUN_KEEP` 次。裁剪放在「加一条新记录」这里，不放 `writeReviewState()`：
+  // 那是所有改动的窄口，标一条意见、改一次 pick 都会走它 —— 在那里截，会把用户正
+  // 点开看着的那一条也截掉（`reviewFocus` 指向的记录一拍就跳回最新一条）。
+  trimRuns(state);
   writeReviewState(root, state, session);
 
   const abort = new AbortController();

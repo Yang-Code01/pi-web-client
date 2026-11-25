@@ -238,8 +238,13 @@ export class ReviewSheet {
           ? tr("提交 {p1}", { p1: view.commit || "HEAD" })
           : tr("工作区改动");
     this.eyebrow.textContent = `${tr("代码评审")} · ${card ? view.activeTarget : current}`;
-    this.title.textContent = (card ? card.title : "") || (isPr && view.prTitle) || tr("评审详情");
-    const modelName = view.activeModel || card?.modelId || this.input.modelName || tr("默认模型");
+    // 有卡片时抬头跟着那条记录走；它没有标题（workspace / 提交这种）就写「评了什么」，
+    // 不能退到 `view.prTitle`——那是面板上现在选着的 PR，拿来当旧记录的标题就是张冠李戴。
+    this.title.textContent = card
+      ? card.title || view.activeTarget || tr("评审详情")
+      : (isPr && view.prTitle) || tr("评审详情");
+    // `activeModel` 已经是「目录名 ?? 那次的 id」，不用再拿 `card.modelId` 补一档（永远不会赢）。
+    const modelName = view.activeModel || this.input.modelName || tr("默认模型");
     const metaBits: string[] = [];
     if (card) {
       metaBits.push(modelName);

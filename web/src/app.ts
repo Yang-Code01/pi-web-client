@@ -483,6 +483,8 @@ export class App {
   private reviewFollowRun = false;
   /** 本会话的「评什么」已经从盘上恢复过没有（每个会话只恢复一次）。 */
   private reviewPickRestored = "";
+  /** 上一次真发出去的「评什么」（JSON）：一样的就不再发，敲字/重画不会把状态文件反复重写。 */
+  private reviewPickSent = "";
   private reviewToasted = new Set<string>();
   /** 最近一次发 `review.get` 的时刻：ocr 那一帧丢了要能自己补一次，别死等。 */
   private reviewOcrAskedAt = 0;
@@ -2708,7 +2710,16 @@ export class App {
         this.applyReviewPick();
         // 正在跑的那一次：跟过去（用户没在翻旧记录时）。
         const runningRun = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
-        if (runningRun && runningRun.status === "running" && this.reviewFollowRun) this.reviewFocus = runningRun.id;
+        // 护一下：桥重启后 sweep 跑完之前，列表末尾可能还挂着上一轮「running」的旧记录 ——
+        // 我们给刚开的那次记过 runId 时，只跟那一条（不然焦点会无故定到旧记录上）。
+        if (
+          runningRun &&
+          runningRun.status === "running" &&
+          this.reviewFollowRun &&
+          (!this.reviewStartedRunId || runningRun.id === this.reviewStartedRunId)
+        ) {
+          this.reviewFocus = runningRun.id;
+        }
         this.announceReviewDone();
         if (this.queueTab === "review") this.renderQueue();
         this.syncReviewSheet();
@@ -18791,6 +18802,8 @@ export class App {
     this.reviewFocus = "";
     this.reviewFollowRun = false;
     this.reviewPickRestored = "";
+    // 新会话的「评什么」要重新发一次（去重表里的那份是上一个会话的）。
+    this.reviewPickSent = "";
     // —— 「评什么」：一律回到默认值（默认值见字段声明处）。
     this.reviewMode = "pr";
     this.reviewBase = "main";
@@ -18842,6 +18855,11 @@ export class App {
     return this.models.find((m) => `${m.provider}/${m.id}` === want) ?? this.models.find((m) => m.id === want) ?? null;
   }
 
+  /** 这一轮真正会用的模型：面板上挑过的优先，没挑就用会话当前那个（两处都读它，别各拼一份）。 */
+  private reviewEffectiveModel(): ModelInfo | null {
+    return this.reviewModelInfo() ?? this.reviewDefaultModel();
+  }
+
   /**
    * 面板没单独挑模型时，评审真正会用的那个：跟着会话当前的模型走。
    *
@@ -18860,13 +18878,17 @@ export class App {
    * 模型名；查不到（模型下架了、老记录没记 provider）就不给，界面回退显示 id 本身。
    */
   private reviewModelLabels(): Record<string, string> {
+    // 先把目录建成两张表：`reviewPanelInput()` 是高频调用（`renderQueue()` / 重画浮层都走它），
+    // 每条记录再双遍 `find()` 太浪费了。
+    const byFull = new Map(this.models.map((m) => [`${m.provider}/${m.id}`, m.name]));
+    const byId = new Map(this.models.map((m) => [m.id, m.name]));
     const out: Record<string, string> = {};
     for (const run of this.reviewState?.runs ?? []) {
       const id = (run.model ?? "").trim();
       if (!id) continue;
       const full = (run.provider ?? "").trim() ? `${run.provider}/${id}` : id;
-      const hit = this.models.find((m) => `${m.provider}/${m.id}` === full) ?? this.models.find((m) => m.id === id);
-      if (hit) out[run.id] = hit.name;
+      const hit = byFull.get(full) ?? byId.get(id);
+      if (hit) out[run.id] = hit;
     }
     return out;
   }
@@ -18883,15 +18905,24 @@ export class App {
   private saveReviewPick(): void {
     const dir = this.reviewDir();
     if (!dir || !this.currentId) return;
-    this.socket.send({
-      type: "review.pick",
-      dir,
-      sessionId: this.currentId,
+    const pick = {
       mode: this.reviewMode,
       pr: Number(this.reviewPr) || 0,
       base: this.reviewBase,
       target: this.reviewTarget,
       commit: this.reviewCommit.trim(),
+    };
+    // 去重比防抖重要：`input` 事件里每敲一个字符都发一帧，桥那边要把整份状态文件读一遍写一遍（同步 IO）。
+    // 只发「真的变了」的那几次 —— 粘一条 PR 链接本来就是一个事件，手敲号也就几次小写。
+    // （用过防抖：停手 400ms 才发，结果「填完号立刻刷新」就丢了那一格，正是不该丢的那种。）
+    const payload = JSON.stringify(pick);
+    if (payload === this.reviewPickSent) return;
+    this.reviewPickSent = payload;
+    this.socket.send({
+      type: "review.pick",
+      dir,
+      sessionId: this.currentId,
+      ...pick,
     });
   }
 
@@ -18903,11 +18934,13 @@ export class App {
     this.reviewPickRestored = key;
     const pick = this.reviewState?.pick;
     if (!pick) return;
-    if (pick.mode) this.reviewMode = pick.mode;
-    if (pick.pr) this.reviewPr = String(pick.pr);
-    if (pick.base) this.reviewBase = pick.base;
-    if (pick.target) this.reviewTarget = pick.target;
-    if (pick.commit) this.reviewCommit = pick.commit;
+    // 一律照盘上那份填，不判空：用户把 target / commit 清空过，盘上就是空串，
+    // 恢复时再「空则跳过」就等于拿同步默认值偷偷改掉他离开时的界面。
+    this.reviewMode = pick.mode;
+    this.reviewPr = pick.pr ? String(pick.pr) : "";
+    this.reviewBase = pick.base;
+    this.reviewTarget = pick.target;
+    this.reviewCommit = pick.commit;
     // 恢复出来的 PR 号要能看到标题、也要能带出「评什么」，所以顺手把列表拉一次。
     if (this.reviewMode === "pr" && !this.reviewPrs.length && this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
   }
@@ -18999,13 +19032,11 @@ export class App {
       focus: this.reviewFocus,
       modelLabels: this.reviewModelLabels(),
     });
+    const effective = this.reviewEffectiveModel();
     return {
       view,
-      modelName: (this.reviewModelInfo() ?? this.reviewDefaultModel())?.name ?? "",
-      modelId: this.reviewModel || (() => {
-        const info = this.reviewDefaultModel();
-        return info ? `${info.provider}/${info.id}` : "";
-      })(),
+      modelName: effective?.name ?? "",
+      modelId: this.reviewModel || (effective ? `${effective.provider}/${effective.id}` : ""),
       refs: this.reviewRefs,
       installLog: this.reviewInstallLog,
       markLabels: { accept: tr("接受"), ignore: tr("忽略"), "false-positive": tr("误报") },
@@ -19044,6 +19075,7 @@ export class App {
       },
       onPrInput: (value) => {
         this.reviewPr = value;
+        // 落盘带「值没变就不发」的去重（见 `saveReviewPick`），所以每敲一下调它也不会反复写盘。
         this.saveReviewPick();
         this.clearReviewExpectRepo();
         const raw = this.reviewPrQuery;
@@ -19243,6 +19275,7 @@ export class App {
     this.reviewPrMenu = false;
     this.reviewPendingToast = true;
     this.reviewStartedRunId = "";
+    const modelInfo = this.reviewEffectiveModel();
     // 新开一次：面板立刻跟到这一条（runId 要等第一帧进度回来才知，先置空）。
     this.reviewFocus = "";
     this.reviewFollowRun = true;
@@ -19275,10 +19308,9 @@ export class App {
       expectRepo: mode === "pr" ? this.reviewExpectRepo : "",
       pr: Number(this.reviewPr) || 0,
       // 没单独挑模型就把会话当前那个说明白：评审子进程用它跑，记录卡上也记的是它。
-      model: this.reviewModel || (() => {
-        const info = this.reviewDefaultModel();
-        return info ? `${info.provider}/${info.id}` : "";
-      })(),
+      // provider 单独发（不再拼 ``provider/id`` 让桥去切：目录里的 id 本身可能带 `/`）。
+      model: modelInfo ? modelInfo.id : this.reviewModel,
+      provider: modelInfo?.provider ?? "",
       lang: getLang(),
     });
     this.renderQueue();
