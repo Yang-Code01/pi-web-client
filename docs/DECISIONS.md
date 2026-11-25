@@ -8144,3 +8144,19 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** `reviewModels` 里每个挑过模型的会话留一条字符串，会话删了没人来回收，所以留了上限 `REVIEW_MODEL_MEMORY = 200` 条（超了丢最早挑的那条，那一次会话回落到默认模型）。刷新后回默认模型 —— 以后真觉得烦，可以按会话落在设置里（别全局存一份，那就是回退这个决定）。
 
 **验证。** `probes/review-session-leak.mjs`（`npm run probe:review-session`）在原有「评什么」三段之后加了四段：A 挑模型 → chip 换成挑中的；切到 B → chip 是「默认模型」；B 挑另一个模型；回到 A → 还是 A 自己那个。修前第 5、6 段红（B 显示 A 的 `wb2api/cn:hy4flash`；回 A 显示 B 的 `wb2api/cn:kimi-k3-1`），修后八条全绿。`npm --prefix web run typecheck`（含 i18n、viewport、theme 三段）通过。
+
+## D410 PR 详情面板排成「一篇短报告」：描述全文摊开，数字收进署名行（#682；用户 2026-11-25「如图是 pr 展开面板。重新设计一下」）
+
+**问题。** 用户拿 #640 的详情截图说「重新设计一下」。560px 宽的面板里：hero 卡把标题、状态、作者、分支、checks 挤成五行，描述被塞进 `max-height:150px` 的滚动框，正好切在半行字上；紧接的四格数字（文件 / 增 / 删 / 评论）占掉四分之一屏高，说的却是署名行一行能说完的事；8 个文件每行都挂一遍「在 GitHub 看 ↗」；评论只露最后一条，后面跟一句死的「还有 1 条」；「示例数据」在 hero 与评论区各标一次，于是两处都没人当回事。
+
+**做法。** 改成文档流，自上而下：kicker（`#640 · 打开 · 2/4 checks 通过` + 唯一的「示例数据」pill）→ 标题（18px，可两行）→ 署名行（`Yang-Code01 · fix/ask-card-text → main · 5 分钟前更新 · 8 个文件 +226 −11`）→ 一条细线 → 描述走 `renderMarkdown(body, { doc: true })` 原样摊开 → 文件两列 → 讨论（左侧一条竖线串起每条评论）→ 底栏（合并 / 在 GitHub 看差异）。四格数字与 hero 卡整块删掉。
+
+- 描述不再设 `max-height` / `overflow`：详情本来就是来读的，一屏滚动交给面板自己（面板本身 `overflow:auto`）。
+- 文件清单两列、`@container (max-width: 470px)` 降一列。**这条 @container 必须写在 `.ghp-filegrid` 基础规则之后**：同权重、后定义的赢，写在前面会被基础规则盖掉（探针当场抓到：420px 时仍是两列）。
+- checks 有失败时用 warn 色、全绿才 ok 色 —— 一片绿会让 `2/4` 读起来像 `4/4`。
+
+**为什么不做成「判定条 + 逐条 checks」那种（样张 C）。** 首屏要知道的是「这个 PR 干了什么、能不能合」，不是每一路 check 的耗时；逐条状态在 GitHub 上看得更全，面板里复制一份只会把正文挤下去。代价：想知道是哪两路红，得点「看差异」去 GitHub（checks 名字不列出来）——可接受，因为合并本来就要走审批闸，人在那里会再看一眼。
+
+**代价。** 描述很长（几百行）时面板要滚很久，中途没有折叠。判断是：PR 描述一般几十行，折叠带来的「展开/收起」状态与滚动位置问题（D316 那类闪动）比它值钱；真遇到超长描述，用户也在滚一个面板，不是滚一个 150px 的洞。
+
+**验证。** `node probes/pr-detail-layout.mjs`（真桥 + 假 gh 卡片 + 真 Chromium，19 项）：hero/四格数字不在、「示例数据」只有一个、kicker 带 `2/4` 且非绿、描述 `overflow:visible` 且 `scrollHeight<=clientHeight`、markdown 的 h2 / code / li 成了真元素、8 个文件都在且 560px 两列 / 420px 一列、两条评论都在且没有「还有 N 条」、底栏两颗钮还在；截图 `.scratch/shots/pr-detail-560.png` / `pr-detail-400.png`。另跑 `node probes/github-card-review.mjs`（卡片与评审钮不回归）、`npm --prefix web run typecheck`（i18n 三语补键）。
