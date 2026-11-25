@@ -21,6 +21,8 @@ import { localRepoName, resolvePullRequest } from "./gitpr.ts";
 import type {
   ReviewCategory,
   ReviewFinding,
+  ReviewGroupPlan,
+  ReviewLogLine,
   ReviewMark,
   ReviewMode,
   ReviewOcrStatus,
@@ -297,6 +299,8 @@ export interface Finding {
   suggestionCode: string;
   /** `start_line: 0` = 定位不到行（模型说不出确切位置），面板要区别对待。 */
   anchored: boolean;
+  /** 第几组发现它的（合流后才填）。 */
+  group?: number;
 }
 
 export interface ParsedFindings {
@@ -787,9 +791,10 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     },
   });
   /** 往时间线里加一行并发出去（面板与详情 dialog 都吃它）。 */
-  const note = (text: string) => {
+  const note = (text: string, group?: number) => {
     const prev = progressMap.get(key);
-    const log = [...(prev?.log ?? []), { at: Date.now(), text }].slice(-40);
+    const line: ReviewLogLine = { at: Date.now(), text, ...(group ? { group } : {}) };
+    const log = [...(prev?.log ?? []), line].slice(-40);
     emit({ log });
   };
   emit({});
@@ -859,8 +864,8 @@ interface ExecuteCtx {
   opts: StartOptions;
   signal: AbortSignal;
   emit: (patch: Partial<Progress>) => void;
-  /** 往时间线里加一行。 */
-  note: (text: string) => void;
+  /** 往时间线里加一行（`group` = 这行属于第几组，详情窗按组折叠）。 */
+  note: (text: string, group?: number) => void;
 }
 
 async function execute(ctx: ExecuteCtx): Promise<void> {
@@ -880,6 +885,8 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     const prevProgress = progressMap.get(key);
     // 进度帧一消失日志就没了 —— 记录里留一份，面板/dialog 跑完还能看时间线。
     (patch as Partial<ReviewRun>).log = prevProgress?.log ?? [];
+    // 分组计划同理：完成态要看「哪组出了几条」，不能只剩一个总数。
+    (patch as Partial<ReviewRun>).plan = prevProgress?.plan ?? patch.plan ?? [];
     if (onDisk) Object.assign(onDisk, patch);
     else state.runs.push({ ...run, ...patch });
     writeReviewState(root, state, session);
@@ -1030,6 +1037,16 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     // 分组跑：每组一个子进程、一份小提示词，各自交 JSON，最后合起来。
     const rules = (await rulesFor(root, preview.files.map((f) => f.path), signal)).slice(0, 4000);
     const groups = chunkFiles(preview.files);
+    const plan: ReviewGroupPlan[] = groups.map((files, i) => ({
+      index: i + 1,
+      files: files.length,
+      findings: 0,
+      state: "pending",
+      startedAt: "",
+      finishedAt: "",
+    }));
+    const emitPlan = () => emit({ plan: plan.map((p) => ({ ...p })) });
+    emitPlan();
     note(`分 ${groups.length} 组跑，每组最多 ${GROUP_FILES} 个文件`);
     const collected: Finding[] = [];
     const lastSkipped: PreviewSkip[] = [];
@@ -1042,13 +1059,19 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     for (let i = 0; i < groups.length; i += 1) {
       if (signal.aborted) break;
       emit({ phase: "review", currentFile: groups[i][0]?.path ?? "", group: i + 1, groups: groups.length });
-      note(`第 ${i + 1}/${groups.length} 组开始：${groups[i].length} 个文件`);
+      plan[i].state = "running";
+      plan[i].startedAt = new Date().toISOString();
+      emitPlan();
+      note(`第 ${i + 1}/${groups.length} 组开始：${groups[i].length} 个文件`, i + 1);
       const sub: Preview = { ...preview, files: groups[i] };
       const prompt = buildPrompt(sub, opts.lang, rules, { index: i + 1, total: groups.length });
       let res = await runChild(prompt);
       if (res.aborted) break;
       if (res.code !== 0) {
         failed = { code: res.code, stderr: res.stderr, group: i + 1 };
+        plan[i].state = "failed";
+        plan[i].finishedAt = new Date().toISOString();
+        emitPlan();
         break;
       }
       if (!res.text.trim()) {
@@ -1057,26 +1080,43 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
           ? "90 秒没有任何输出"
           : firstLine(res.stderr) || `退出码 ${res.code}、输出 ${res.lines} 行`;
         lastChildWhy = why;
-        note(`第 ${i + 1} 组没给结论（${why}；已用 ${Math.round(res.tokens / 1000)}k token），重试一次`);
+        note(`第 ${i + 1} 组没给结论（${why}；已用 ${Math.round(res.tokens / 1000)}k token），重试一次`, i + 1);
         const nudge = `${prompt}\n\n## 立即收尾\n\n不要再调用任何工具。根据你已经看到的内容直接输出上面那个 JSON 对象；宁可少报，也要把 JSON 交回来。`;
         res = await runChild(nudge);
         if (res.aborted) break;
         if (res.code !== 0) {
           failed = { code: res.code, stderr: res.stderr, group: i + 1 };
+          // 重试也失败依旧是「这一组失败」：不标就会在计划里一直挂着 running（落盘后失败详情会显示成进行中）。
+          plan[i].state = "failed";
+          plan[i].finishedAt = new Date().toISOString();
+          emitPlan();
           break;
         }
       }
       const parsed = toFindings(res.text);
       if (res.text.trim()) answered = true;
+      for (const f of parsed.findings) f.group = i + 1;
       collected.push(...parsed.findings);
       for (const f of parsed.findings) accountedPaths.add(f.path);
       for (const sk of parsed.skipped) accountedPaths.add(sk.path);
       lastSkipped.push(...parsed.skipped);
-      note(`第 ${i + 1} 组完成：${parsed.findings.length} 条`);
-      emit({ reviewedFiles: accountedPaths.size });
+      plan[i].state = "done";
+      plan[i].findings = parsed.findings.length;
+      plan[i].finishedAt = new Date().toISOString();
+      note(`第 ${i + 1} 组完成：${parsed.findings.length} 条`, i + 1);
+      emitPlan();
+      // 跑的过程中也要能看到意见：只发「已定形」的字段，key/三态等收尾时统一算。
+      emit({
+        reviewedFiles: accountedPaths.size,
+        findings: collected.map((f) => ({ ...f, key: findingKey(f), state: "new" as const, mark: "" as const })),
+      });
     }
 
     const stopped = signal.aborted;
+    if (stopped) {
+      for (const p of plan) if (p.state === "running") p.state = "pending";
+      emitPlan();
+    }
     const state = readReviewState(root, session);
     const prevRun = prevDoneRun(state, { mode: opts.mode, from: run.from, to: run.to, mergeBase: preview.mergeBase, pr: run.pr });
     const merged = mergeFindings(prevRun?.findings ?? [], collected, state.marks);

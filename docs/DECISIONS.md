@@ -8021,3 +8021,30 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - `probes/review-session-leak.mjs`（`npm run probe:review-session`）：真桥 + 假 gh + 真 Chromium，两个不同仓库的会话来回切 —— A 里填成 `#661`；切到 B 后框是空的；`.rv-run` 是 disabled；`state/review` 里没有评审记录（桥没收到 `review.run`）。修前第 2 条红（`#661` 跟着过来），修后四条全绿。
 - `probes/github-card-review.mjs` 全绿（入口顺序那条决定没有把卡片路径弄坏）。
 - `npm --prefix web run typecheck` 通过（含 i18n、viewport、theme 三段）。
+
+## D405 评审详情窗改成「运行台」：进度、日志、意见同屏，且不再每帧重建（#675，2026-11-25）
+
+**问题。** 旧窗只有两列「进度 / 结果」，跑的时候右栏一句「评审还在跑，意见会陆续出现。」—— 用户很久都判断不了它到底在干什么、还剩多少、卡在哪。更糟的是 `refresh()` 每帧把左右两列 `replaceChildren()` 重画：用户展开一条意见、或者正看日志，大约 900 帧里滚动位置与展开态每隔几百毫秒被清一次。根因在桥侧：进度帧只带 `group/groups/currentFile/tokens`，既没有每组的文件数与条数，也没有「跑到一半已经定形的意见」，前端除了重画中文日志文本无路可走。
+
+**决定。**
+
+1. **桥给结构化进度，页面不解析日志**：`ReviewProgress` / `ReviewRun` 加可选 `plan?: ReviewGroupPlan[]`（`index / files / findings / state / startedAt / finishedAt`），`ReviewProgress.findings?: ReviewFinding[]`（跑到一半已收到的意见）、`ReviewFinding.group?: number`、`log[].group?: number`。全部可选 —— 老桥、老记录不带这些字段时页面退回「单段运行记录」，不画假数据。
+2. **窗分四层**：抬头（PR 标题 + 状态 chip + `head → base`）、仪表三格（进度分段条 / tokens 与模型 / 用时与剩余估算）、当前文件条、主体两列（左＝按组折叠的日志，右＝意见流 + 正在读的骨架）。失败态的整段报错留在意见栏顶上，当前文件条只写「停在第 N 组」，不重复长句。
+3. **不再每帧重画**：只改文本与属性；日志在「阶段签名」变了才重建，意见列表在「`key/mark/severity/filter/...` 签名」变了才重建，重建前后收集并还原展开项（`data-key`）与 `scrollTop`。
+4. **意见在窗里是卡**（一文件一卡、左侧严重度色条、`.rv-finding[data-sev]`）；面板里的行式排版不变 —— 300px 的栏里卡片只会更挤。
+5. **窗高按 `--vh1` 给死**（`min(calc(var(--vh1) * 84), 880px)`），日志与意见各自滚，底栏永远贴底。
+
+**为什么。** 运行中的透明感只能来自真实数据：有 `plan` 才能画「第 2/4 组 · 8 文件 · 2 条」与分段进度；有 `findings` 才能让意见随组落地。字段做成可选，是因为 `state/review.json` 里已经有老记录，不能为了新界面让旧记录显示成空。
+
+**代价 / 可改。**
+
+- **进度帧变重**：每组结束时把已收意见整批塞进 `ReviewProgress`，一份 30 条意见的评审大约多几 KB 帧流量。可改成一有就增量发，现在按组发已经够用。
+- **窗口高度定死**：内容少时底下留白（原型 A 也是这样）；想改成内容自适应就得让 `.rv-sheet-body` 不 `flex: 1`，那样运行中意见变多时窗会跳高。
+- **`reviewView()` 多了 `runFiles` / `prHead` / `prBase`**：失败记录没有 `meta`，没有这几个字段就画不出「16 / 29 个文件」。
+- **样式要压过 `.st-console`**：`settings-console.css` 晚于 `styles.css` 加载，它的 `display: grid; height: min(840px, 100%)` 同权重会赢，仪表被挤成 0 高 —— 所以选择器写成 `.st-console.rv-sheet`。探针加了一条「仪表条没被外层网格挤掉（高 > 40）」把这件事钉住。
+
+**验证。**
+
+- `probes/code-review.mjs`（真桥 + 真 `ocr` + 真模型，20 项）全过：新增「详情 dialog 有分组日志与结果」「仪表条没被外层网格挤掉」，旧的第 221 行起 `.rv-sheet .rv-tl` 改成 `.rv-stg`；顺手修了探针在 Windows 上 `execFileSync("ocr")` 找不到 `ocr.cmd`（跟桥一样过 `cmd.exe /c`）导致整段静默跳过的问题。
+- `npm --prefix web run typecheck`（tsc + i18n + viewport + layers + theme）与 `npm --prefix bridge run typecheck` 通过；新文案 30 条补进 `en.ts` / `ja.ts`，删掉 4 条失效键。
+- 本地样张台（真组件 + 假数据，未提交）按运行 / 完成 / 失败 × 1440 / 900 六张截图核对；设计蓝本留在 `.scratch/review-sheet-redesign/prototype/`（A 运行台为选定方向）。

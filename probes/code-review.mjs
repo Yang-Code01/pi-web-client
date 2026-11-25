@@ -75,9 +75,13 @@ const rows = [
 ];
 fs.writeFileSync(path.join(sessionDir, `${SID}.jsonl`), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
 
+// Windows 上 npm 装出来的是 `ocr.cmd`，Node 不带 shell 拒绝执行 `.cmd` —— 跟桥一样过一层 cmd.exe。
+const ocrCommand = () =>
+  process.platform === "win32" ? { cmd: "cmd.exe", args: ["/c", "ocr"] } : { cmd: "ocr", args: [] };
 const hasOcr = (() => {
   try {
-    return execFileSync("ocr", ["version"], { encoding: "utf8", windowsHide: true }).includes("open-code-review");
+    const { cmd, args } = ocrCommand();
+    return execFileSync(cmd, [...args, "version"], { encoding: "utf8", windowsHide: true }).includes("open-code-review");
   } catch {
     return false;
   }
@@ -218,9 +222,16 @@ try {
   // 「查看详情」：一扇宽窗，左边时间线、右边结果 —— 跑着的时候也能开。
   await page.locator(".rv-details").first().click();
   await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
-  const tl = await page.locator(".rv-sheet .rv-tl").count();
+  const stages = await page.locator(".rv-sheet .rv-stg").count();
   const sheetFindings = await page.locator(".rv-sheet .rv-finding").count();
-  check("详情 dialog 有时间线与结果", tl > 0 && sheetFindings > 0, `${tl} 行进度 · ${sheetFindings} 条意见`);
+  check("详情 dialog 有分组日志与结果", stages >= 1 && sheetFindings > 0, `${stages} 段日志 · ${sheetFindings} 条意见`);
+  // 仪表（进度/用量/用时）曾被 settings-console.css 的 `.st-console{display:grid}` 挤成 0 高，压一下。
+  const instBox = await page.locator(".rv-sheet .rv-inst").boundingBox();
+  check(
+    "仪表条没被外层网格挤掉",
+    Boolean(instBox) && instBox.height > 40,
+    instBox ? `仪表高 ${Math.round(instBox.height)}` : "no box",
+  );
   fs.mkdirSync(path.join(REPO, ".scratch", "shots"), { recursive: true });
   await page.waitForTimeout(500);
   await page.locator(".rv-sheet").screenshot({ path: path.join(REPO, ".scratch", "shots", "code-review-sheet.png") }).catch(() => {});
