@@ -1086,6 +1086,10 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         if (res.aborted) break;
         if (res.code !== 0) {
           failed = { code: res.code, stderr: res.stderr, group: i + 1 };
+          // 重试也失败依旧是「这一组失败」：不标就会在计划里一直挂着 running（落盘后失败详情会显示成进行中）。
+          plan[i].state = "failed";
+          plan[i].finishedAt = new Date().toISOString();
+          emitPlan();
           break;
         }
       }

@@ -459,9 +459,21 @@ export class ReviewSheet {
       view.error,
       this.filter,
       view.resolvedPaths.join(","),
-      view.skipped.length,
+      // 没评的原因也要算：条数不变、原因换了（另一批排除）同样得重画。
+      view.skipped.map((s) => `${s.path}:${s.reason}`).join(","),
       view.empty,
-      view.groups.map((g) => g.findings.map((f) => `${f.key}:${f.mark}:${f.severity}`).join(",")).join("|"),
+      // 签名必须含正文/位置/代码：另一批评审结果里 key 重合的可能性不能赌，
+      // 只要内容变了就重画，否则数量不变时会一直显示旧意见。
+      view.groups
+        .map((g) =>
+          `${g.path}@${g.findings
+            .map(
+              (f) =>
+                `${f.key}:${f.mark}:${f.severity}:${f.state}:${f.content.length}:${f.startLine}:${f.existingCode.length}:${f.suggestionCode.length}`,
+            )
+            .join(",")}`,
+        )
+        .join("|"),
     ].join("#");
     const fresh = sig !== this.findSig;
     this.findSig = sig;
@@ -552,7 +564,9 @@ export class ReviewSheet {
       ? tr("已接受 {p1} · 待处理 {p2}", { p1: accepted, p2: all.length - accepted })
       : "";
 
-    const sig = `${view.running}:${all.map((f) => f.severity).join(",")}`;
+    // 缓存签名要含意见身份：只比严重度序列时，换了一批「同分布」的意见不会重建按钮，
+    // 而 onclick 闭包捕获的是上一批数组 —— 点下去会把旧意见交给 agent。
+    const sig = `${view.running}:${all.map((f) => `${f.key}/${f.severity}/${f.mark}`).join(",")}`;
     if (sig === this.bulkSig) return;
     this.bulkSig = sig;
     if (!all.length) {
