@@ -197,14 +197,20 @@ function cardFor(link: GhLink, hosts: GithubCardHosts, exact: Set<string>): HTML
     } else run();
   };
 
-  const cached = rowCache.get(keyOf());
-  if (cached) {
-    fillIt(cached);
-    return node;
-  }
+  // 猜出来的卡要先过两道关，**再**看缓存：缓存命中会直接把卡画出来，两条判据一起被绕过。
   if (guess && !link.repo) {
     // 会话仓库还没问回来：先画一张只有号的卡，`refreshGithubCards()` 到了再补仓库、取标题。
     guessSlots.add({ node, link, number, hosts, exact, arm });
+    return node;
+  }
+  if (guess && exact.has(keyOf())) {
+    // 仓库已经知道，而同一段文本里已经有这条 PR 的 URL：那张已经画了，猜的这张不画。
+    node.remove();
+    return node;
+  }
+  const cached = rowCache.get(keyOf());
+  if (cached) {
+    fillIt(cached);
     return node;
   }
   arm();
