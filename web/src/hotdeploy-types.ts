@@ -19,6 +19,8 @@ export interface HotdeployRun {
   branch?: string;
   step?: number;
   phase?: HotdeployPhase;
+  /** 有壳时壳走到哪一步：`running|observing|switched|failed|needs-group-restart`（面板据此说人话）。 */
+  stage?: string;
   startedAt?: string;
   finishedAt?: string | null;
   updatedAt?: string;
@@ -50,6 +52,10 @@ export interface HotdeploySnapshot {
   busy: boolean;
   run: HotdeployRun | null;
   linkedWorktree: boolean;
+  /** 壳在前面挡着（#634）：换代只换脑，页面重连后接着看，会话不被切断。旧桥没有这个字段。 */
+  hosted?: boolean;
+  /** 磁盘上的壳代码已经变了：这次部署会连会话一起重启（面板在点击前就该红字预告）。 */
+  hostStale?: boolean;
   log: string;
   branches: HotdeployBranch[];
 }

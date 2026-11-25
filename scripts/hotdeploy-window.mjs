@@ -20,7 +20,7 @@ export function psQuote(value) {
  * 每次写窗口多一个 U+FEFF）。放在 `while` 外面一次就够。它只换 .NET 解原生输出这一条路径：
  * 实测设完 `chcp` 仍报 936（控制台代码页没动），所以不用再补 `chcp 65001` 之类的动作。
  */
-export function windowScript({ repo, port, node, live, relaunch }) {
+export function windowScript({ repo, port, node, live, relaunch, entry = "bridge\\dist\\index.js" }) {
   return [
     `\uFEFF$host.ui.RawUI.WindowTitle = 'pi bridge · ${port}'`,
     `Set-Location -LiteralPath ${psQuote(repo)}`,
@@ -31,7 +31,7 @@ export function windowScript({ repo, port, node, live, relaunch }) {
     "while ($true) {",
     "  $b = git rev-parse --abbrev-ref HEAD 2>$null",
     `  Write-Host "pi bridge · ${port} · $b —— 这扇窗口关了桥就停了" -ForegroundColor DarkGray`,
-    `  & ${psQuote(node)} 'bridge\\dist\\index.js' 2>&1 | Tee-Object -FilePath ${psQuote(live)} -Append`,
+    `  & ${psQuote(node)} ${psQuote(entry)} 2>&1 | Tee-Object -FilePath ${psQuote(live)} -Append`,
     "  if (-not (Test-Path -LiteralPath $relaunch)) { break }",
     "  Remove-Item -LiteralPath $relaunch -Force -ErrorAction SilentlyContinue",
     "  Write-Host ''",

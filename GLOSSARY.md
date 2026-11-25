@@ -106,6 +106,11 @@
 | **AI 权限** | 邮箱面板「AI 权限」页那组开关（`read` / `send` / `draft` / `attachments` / `confirmSend` + 收件人白名单 + 每日上限 + 「AI 能用哪些账号」）：**只约束 agent 工具**。页面口是人自己动手，不受它拦，只受「账号停用」与隧道访客限制（D265）。`mutate`（改邮箱状态）v1 没有对应动作，配置里有这个字段但对模型不报。 |
 | **邮件正文 / 内嵌图片** | 面板右栏读信区：HTML 正文放进 sandbox iframe（无 `allow-scripts`，白名单清理 + CSP），邮件自带样式保留；`Content-ID` 内嵌图（mailparser 的 `cid:` → data URI）直接显示，远程图片默认不加载、点「显示图片（N）」才放行。附件区只列 `Content-Disposition: attachment` 的真附件；AI 侧用 `mail_read` 的 `#index` + `mail_image` 单独看内嵌图（D273）。 |
 | **发送前确认 / 确认框** | AI 调 `mail_send` / `mail_reply` 时桥投给「正在看这个会话」的页签的 `mail.confirm` 帧，以及页面弹出来等人点头的那个框（`web/src/mailconfirm.ts`，排队与回执在 `MailConfirmQueue`）：只有点「发送」才回 `ok:true`；Esc / 点遮罩 = 不发；5 分钟不点回 `confirm-timeout`；页面没接住 / 没页面在看这个会话回 `no-ack` / `no-page`，一律当没发出去（D265）。 |
+| **壳（host）** | 常驻在公网端口前面的那一层（`bridge/dist/host.js`）：持有端口、内网通连接、隧道与所有 pi 子进程的管道，热部署时它不换。**不用它指代**「桥」整体。 |
+| **脑（brain）** | `bridge/dist/index.js`，会换代的那一半：解释 pi 协议、画页面、答 HTTP。跨代的实时状态靠壳里的未确认窗口重放，不靠序列化脑的内存。 |
+| **跨代** | 一次热部署前后算两代（老脑 → 新脑）。「跨代不断」指那一轮 pi 还在跑、页面重连后接着看到 —— 不要求连接一帧不掉。 |
+| **所有权（owner）** | 某个会话当前由哪一代脑解释、并由它写 stdin。同一时刻只允许一个 owner；非 owner 写进来的帧被壳退回 。 |
+| **账本（ledger）** | 壳里的 append-only 用量记录（`state/host/usage.jsonl`），跨换代与整组重启都在；只记「某会话最后一次上报的值」，重放时后写覆盖先写。 |
 | **帧（frame）** | 桥与页面之间在 WS 上传的一条消息（`{ type, … }`），两个方向各约 128 种：桥 → 页面是 `ServerFrameType`，页面 → 桥是 `ClientFrameType`。有 9 个名字两个方向都有、载荷不同（`manage`、`presence`、`term.list` …），所以**不合并成一张扁平表**。名字与 9 个最要命的帧的载荷/构造器住在 `bridge/src/frames.ts`（D388）。**不用它指代 HTTP 响应或 peer 的消息行**：那些不走这条 WS。 |
 | **帧词表（frame vocabulary）** | `bridge/src/frames.ts` 里的两个字面量联合 + 9 个载荷接口 + 构造器 + `FRAMES_CAP`。它是**叶子**：0 import、只有类型与字符串常量 —— 不能 import `bridge/src/index.ts`（末行 `main()` 会真的起服务），也不能 import `web/src/app.ts`（头两行 import CSS，桥侧编不过）。名字从两侧现有的 switch 标签生成，不是重新设计。 |
 | **重画清单（redraw list）** | `applyFrame()` 的返回值 `RedrawKey[]`：这一帧改完之后要重画哪几块（15 个键，一个键对应 App `redraw()` 里的一句绘制，`web/src/frames.ts` 定键、`web/src/app.ts` 实现）。判据是「哪些像素真的变了」：`stats` 在 exec 页签没开着时不给 `queue`，`pi.status` 改的是别的会话时只有 5 个无条件重画。**不用它指代 `renderAll()`** —— 那是全量重画，这张清单是它的反面（D388）。 |

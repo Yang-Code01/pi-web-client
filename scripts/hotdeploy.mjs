@@ -18,6 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { FETCH_ATTEMPTS, FETCH_DIRECT_TIMEOUT_MS, FETCH_PROXY_TIMEOUT_MS, FETCH_RETRY_DELAY_MS, FETCH_SSH_TIMEOUT_MS, FETCH_TOTAL_BUDGET_MS, resolveProxyCandidates, ssh443InsteadOf, stashPush, stashRestore } from "./hotdeploy-git.mjs";
+import { bridgeEntry, isShellEntry } from "./bridge-entry.mjs";
 import { psQuote, windowHostOf, windowScript } from "./hotdeploy-window.mjs";
 
 const WIN = process.platform === "win32";
@@ -32,6 +33,8 @@ const REPO = path.resolve(argOf("--dir", path.resolve(import.meta.dirname, "..")
 const BRANCH = argOf("--branch", "");
 const PORT = Number(argOf("--port", process.env.PI_WEB_PORT || 7864));
 const STASH = process.argv.includes("--stash");
+/** full = 老路子（自己杀桥、自己起进程）；brain = 只拉代码 + 编译，换脑交给壳（#634）。 */
+const MODE = argOf("--mode", "full");
 /** 与前端 STEPS 里的「恢复本地改动」一致。 */
 const RESTORE_STEP = 3;
 // 拉起来的子进程必须落在我们盯着的端口上，否则它去抢 7864，我们永远等不到自己那个端口。
@@ -243,7 +246,10 @@ async function relaunchTaken(ms) {
 /** 开一扇新的可见窗口跑循环脚本：人能看到输出，关窗即停（D154）。 */
 function startBridge() {
   truncateLive();
-  fs.writeFileSync(WINDOW_SCRIPT, windowScript({ repo: REPO, port: PORT, node: process.execPath, live: LIVE, relaunch: RELAUNCH }));
+  const entry = bridgeEntry(REPO);
+  // PowerShell 5.1 认反斜杠；非 Windows 直接跑 node，用原生路径即可。
+  const scriptEntry = WIN ? entry.split("/").join("\\") : entry;
+  fs.writeFileSync(WINDOW_SCRIPT, windowScript({ repo: REPO, port: PORT, node: process.execPath, live: LIVE, relaunch: RELAUNCH, entry: scriptEntry }));
   if (WIN) {
     const r = sh("powershell", [
       "-NoProfile",
@@ -254,7 +260,7 @@ function startBridge() {
     return;
   }
   const out = fs.openSync(LIVE, "a");
-  const child = spawn(process.execPath, [path.join(REPO, "bridge", "dist", "index.js")], {
+  const child = spawn(process.execPath, [entry], {
     cwd: REPO,
     detached: true,
     windowsHide: true,
@@ -574,6 +580,18 @@ async function main() {
   }
 
   // ---- 4. 换进程
+  // 有壳时到这里就结束：壳持有端口和会话管道，换脑由它做（它才活得过这次切换）。
+  if (MODE === "brain") {
+    if (isShellEntry(REPO)) {
+      writeState({ step: 4 });
+      log("构建完成，交给壳换脑");
+      finish("ok");
+      return;
+    }
+    // 退路入口（PI_HOST_DISABLE=1 或 dist/host.js 不存在）没有壳可换：再 finish("ok") 就是
+    // 谎报成功 —— 新构建根本没跑起来。继续走下面的完整重启，让新代码真的生效。
+    log(`这次没有壳（入口是 ${path.relative(REPO, bridgeEntry(REPO))}），按完整模式重启旧桥`);
+  }
   writeState({ step: 4 });
   oldPid = await portPid();
   // 旧桥跑在本端口的循环窗口里：杀之前放下标记，窗口自己在原地起新桥，不另开窗。

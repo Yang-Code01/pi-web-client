@@ -8079,3 +8079,30 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - `node probes/whatsnew-dialog.mjs` 全绿（弹窗改成结构化条目后，标题、日期、脚本重写等断言都按新选择器收紧；`.whatsnew-log` 的选择器必须收窄到 `.whatsnew-body >`，不然会摸到「还有 N 批更早的」里那一批）。
 - `node --experimental-strip-types --test bridge/tests/changelog-unit.mjs` 13 条（切批、分组、引用、引言、续行、续行不吞首行引用、无引用续行、月份、统计、空文件、CRLF+BOM、无标题日期、远程地址三种形状）+ `whatsnew-popup-unit.mjs` 10 条。
 - `npm --prefix web run typecheck`（tsc + i18n + viewport + layers + theme + `web/tests/changelog-inline-unit.mjs` 8 条：转义、行内代码与粗体、http/mailto、相对地址、`javascript:`/`data:`/`vbscript:` 只留文字、`safeHref` 判据含前导空格与夹 tab、地址里的 `&`、链接文字里的粗体）通过。
+
+## D407 壳 / 脑分层：热部署不再打断正在跑的会话（#634）
+
+**问题。** 热部署过去是「杀掉整个桥 → 起新桥」。pi 子进程是桥的孩子，匿名管道随父进程一起消失，于是正在跑的那一轮跟着断。用户的原话是「能不能让热部署不打断已经在跑的回话」——他要的不是「重启快一点」，而是那一轮**照跑完**。
+
+**决定。** 拆成两层：**壳**（`bridge/dist/host.js`）持有公网端口、内网通连接、隧道与所有 pi 子进程的管道；**脑**（`bridge/dist/index.js`，原来整个桥）只负责解释 pi 的协议、画页面、答 HTTP。热部署只换脑，壳与子进程不动。
+
+**为什么这样做。** 管道不是数据，是内核对象，只有持有它的进程还活着才传得下去 —— 所以必须有一个进程**比换代长寿**，而且它得自己持有 pipe 句柄，不能只「转发 HTTP」（把 pi 挂到别处再转发，等于把管道搬走，死法不变）。壳是那唯一一个。
+
+**机制要点。**
+- 控制通道：Windows 命名管道 / POSIX unix socket，NDJSON，`\n` 分帧（口子是字符串，不是字节流，按 `\n` 切不会切坏多字节字符）。
+- 每条 pi 输出行带壳发的 `seq`。脑处理完回 `ack{sessionId,seq}`；没 ack 的行留在壳里（单会话上限 8 MB），下一个 attach 的脑原样拿走。**seq 由壳发号**：壳是唯一写者，它的计数器就是真相，老脑排队帧不会因它退出而消失。
+- 写 stdin 只认「当前 owner 脑」，非 owner 的帧回 `stale-owner` 并丢弃 —— 防止两代脑同时往一个 pi 里写字。
+- 换脑：新脑 hello → `ready` → 壳**先观察 5 秒**（用户选了「切完老脑立刻退」，所以观察只能在切换之前）→ 设新 owner、发 `activate`、老脑 `retire` 后 3 秒关连接、5 秒强杀；切换失败保留老脑，页面上的失败看得见。
+- **换完要接管，不然页面会退回「只读预览」**（2026-11-22 用户实测打回）：新脑在 `activate` 时把壳 snapshot 里的会话逐个 `attach`（`adoptOnly`：壳里没有就失败，绝不顺手新开一个 pi，否则同一条会话会多出两个写者），`owned` 一直是 true，页面那一段正文不会重画、WS 重连后接着往下接。
+- **「这一轮还在跑」要跟着壳走**：壳按 pi 自己的 `agent_start` / `agent_end` 记每个会话在不在跑，snapshot 带 `turnActive`，新脑 adopt 时用它恢复 `running`。不然页面会以为这轮结束了 ——「思考中」消失、「重讲」亮起，用户再发一句，pi 回一句英文 `Agent is already processing`。真撞上这句时的兜底：纠正状态并按插话重发一次。
+- **被换下的脑绝不 `sessions.shutdown()`**：子进程这时归壳持有、正在跑，关会话就是 `rpc.kill()`，等于亲手把正在写的那一轮杀掉 —— 这就是最初报的那个 bug。retire 只做三件事：收隧道、把锁交出去（`releaseLocks`，新脑要能立刻 `takeLock`）、退出。
+- 来源标识：壳转发时**删掉客户端带来的 `x-pi-peer` 与所有 `x-forwarded-*`**，按真实 `remoteAddress` 重写 `x-pi-peer: loopback|remote`；脑的 5 处回环守卫改成读它。转发之后 `remoteAddress` 全是 127.0.0.1，这层要是不做，回环口就对公网开了。
+- 用量账本：壳里 append-only（`state/host/usage.jsonl`，超 1 MB 压缩成每会话一条），跨换代、跨整组重启都在；脑换代后拿 `usage-snapshot` 接上。
+- 关窗保留、后台接着跑；90 秒没有可用脑才整组自尽（不把孤儿 pi 留在机器上）。
+- pid 语义：pid 文件与 `/healthz` 的空闲 pid 现在指**壳**；会话 pid 由壳的状态快照给出（运行面板的采样不变）。
+- 启动链四处分派到 `scripts/start.mjs` / `bridgeEntry()`：热部署窗口、`npm start`（`start:nobuild`）、看门狗、`restart.mjs`。逃生口 `PI_HOST_DISABLE=1`：当它等于 1 时全部退回老的单进程 index.js。
+- 壳自己变了（`dist/host.js` 与 `dist/host/*.js` 指纹不同）：不换脑，提示整组重启 —— 用户选的就是「壳变了就整组重启」。
+
+**代价 / 可改。** 多一个常驻进程（约 40–50 MB）。壳里出现 bug 时，最坏情况下整个桥都起不来 —— 所以 `PI_HOST_DISABLE=1` 必须长期留着，它是这个设计的保险丝。单轮里还没被确认的行超过 8 MB（极少）时这一轮不跨代，界面会明说。
+
+**验证。** `node bridge/tests/host-broker-unit.mjs`（未确认窗口与按轮清理、8 MB 降级与按轮重置、owner 规则）、`node bridge/tests/host-ledger-unit.mjs`（账本重放与压缩）、`node bridge/tests/host-shell-e2e.mjs`（真壳 + **假脑** + 假 pi：peer 头改写、tick 回脑、写入往返、kill 通知、attach 交回窗口、账本落盘、停机干净退出）、`node bridge/tests/host-real-brain-e2e.mjs`（真壳 + **真脑** + 假 pi，走 WS：开一轮 → 答一次审批 → 换脑 → **pi 的 pid 不变、这一轮还在跑、答过的审批不重问** → kill -9 脑让壳重拉并接管 → `/api/host/stop` 整组收掉）。真浏览器的验收在 `.scratch/e2e/20261122-1050-hot-deploy-keeps-turn/`：`change` 模式下「换完之后页面没退回只读预览」「换脑没换掉子进程（还是同一个 pid）」「部署前后页面没被刷新」三条，改前全红、改后全绿。

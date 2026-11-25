@@ -652,6 +652,8 @@ export class App {
   private runtimeStats: RuntimeStats | null = null;
   /** D120 / #80：「全部休眠」的最后一次回执（null = 这次打开面板还没按过）。 */
   private sleepAllReceipt: SleepAllReceipt | null = null;
+  /** D407 / story 13：「全部停止」的回执。关了窗口之后，这是唯一说得出口的关机口。 */
+  private stopAllReceipt: string | null = null;
   /** #27 the 登录 tab: providers as pi sees them, a filter, and the login running right now. */
   private authProviders: AuthProvider[] | null = null;
   /** #30: is the terminal session-lock extension in pi's global extensions? */
@@ -14573,10 +14575,30 @@ export class App {
       this.socket.send({ type: "runtime.sleepAll" });
       this.paintSettings();
     };
+    // D407 story 13：用户选了「关窗保留」，就必须有一个说得出口的关机口 —— 壳、脑、会话一起停。
+    // 有壳时才存在这个接口（旧桥会 404）；那一行回执就把话说明白，别让人以为点完就好了。
+    const stopAll = el("button", "btn danger", tr("全部停止")) as HTMLButtonElement;
+    stopAll.title = tr("把壳、桥和所有会话一起停掉：页面会断，要重新启动才回来。");
+    stopAll.onclick = () => {
+      if (!window.confirm(tr("这会停掉壳、桥和所有会话（包括正在跑的一轮）。继续吗？"))) return;
+      this.stopAllReceipt = tr("正在停：壳会先收会话再退出。");
+      void api.hostStop().then(
+        () => {
+          this.stopAllReceipt = tr("已发出停止：壳会先收会话再退出，页面随后断开。");
+          this.paintSettings();
+        },
+        (err: unknown) => {
+          this.stopAllReceipt = tr("没停成：{msg}", { msg: String((err as Error)?.message ?? err) });
+          this.paintSettings();
+        },
+      );
+      this.paintSettings();
+    };
     const actions = el("div", "runtime-actions");
-    actions.append(sleepAll);
+    actions.append(sleepAll, stopAll);
     body.append(this.stSection(tr("进程"), actions));
     if (this.sleepAllReceipt) body.append(el("div", "runtime-sleep-all", sleepAllText(this.sleepAllReceipt)));
+    if (this.stopAllReceipt) body.append(el("div", "runtime-sleep-all", this.stopAllReceipt));
     body.append(
       el(
         "div",
