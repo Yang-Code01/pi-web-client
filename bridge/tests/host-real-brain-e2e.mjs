@@ -207,8 +207,11 @@ try {
   }
   const page2 = await connectWs(cookie);
   await page2.waitFor((m) => m.type === "hello", "重连后的 hello");
-  await sleep(1200);
-  const asked = page2.seen.filter((m) => m.type === "approval.add" && m.approval?.id === "u-confirm");
+  // 固定 sleep 是在赌重放帧的到达时间：慢机器上可能晚到（假阴性），快机器上白等。
+  // 订阅拿到的会话快照里就带着新一代脑当前挂着的审批，直接断言它没有这一张。
+  page2.ws.send(JSON.stringify({ type: "subscribe", sessionId }));
+  const reopened = await page2.waitFor((m) => m.type === "session" && m.sessionId === sessionId, "重连后订阅到会话");
+  const asked = (reopened.approvals ?? []).filter((a) => a.id === "u-confirm");
   assert.equal(asked.length, 0, "答过的审批不该在换脑后重放");
   assert.equal(answersSoFar().length, 1, "同一张审批不能被答两次");
 

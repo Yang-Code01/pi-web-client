@@ -175,7 +175,7 @@ try {
   assert.ok(Number.isInteger(attached.fromSeq) && Number.isInteger(attached.toSeq), "attach 要带确认窗口的序号");
   assert.equal(attached.lines.length, Math.max(0, attached.toSeq - attached.fromSeq + 1), "窗口里该有的行数要对得上");
   assert.ok(stats().attachPid > 0, "attach 要带子进程 pid");
-  assert.ok(attached.lines.length >= 0, "attach 的窗口就算空也得明说");
+  assert.equal(attached.fromSeq, attached.lines.length ? attached.lines[0].seq : attached.toSeq + 1, "空窗口也要用 fromSeq = toSeq + 1 明说");
 
   // 8. 换脑：老脑停掉 ack 先攒出未确认的窗口，壳拉新一代接替，新脑 attach 要拿回它。
   const oldPid = (await get("/api/host/status")).body.brain.pid;
@@ -208,6 +208,11 @@ try {
     return st?.attachedUi?.length ? st.attachedUi : null;
   }, "s4 的问卷交回新脑");
   assert.ok(String(uiCarried[0]).includes("u-ask"), "交回来的应该是原来那条 extension_ui_request");
+  assert.equal(
+    uiCarried.filter((line) => String(line).includes("u-ask")).length,
+    1,
+    "同一张问卷只能交一次（pending 与 pendingUi 不许重复投递）",
+  );
   // 新脑接回 s3：老脑没确认的行必须原样交给它。
   await brainGet("/attach?sessionId=s3", nextBrain.pid);
   const carried = await until(async () => readBrain(nextBrain.pid)?.attached, "新脑 attach 的回报");

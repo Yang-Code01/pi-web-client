@@ -173,8 +173,10 @@ export class BrainProxy {
       res.pipe(socket);
     });
     up.on("error", () => socket.destroy());
-    up.end();
+    // 浏览器和 upgrade 一起送来的首帧（head）必须先写：end() 之后再 write 会
+    // ERR_STREAM_WRITE_AFTER_END，'error' 处理器随即销毁 socket，连带丢掉这一帧。
     if (head?.length) up.write(head);
+    up.end();
   }
 
   private pipeBoth(a: Duplex, b: Duplex): void {

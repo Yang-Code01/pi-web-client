@@ -2245,9 +2245,18 @@ export class Session extends EventEmitter {
       // 把状态纠正过来，按「插话」再发一次 —— 用户看到的是消息照常发出去，而不是一句英文报错。
       if (/already processing/i.test(said) && !message.streamingBehavior) {
         this.setState({ running: true });
-        const retry = await this.rpc.request<any>("prompt", { ...message, streamingBehavior: "steer" }, 60000);
-        if (retry?.disposition === "handled" && retry?.error) throw new Error(String(retry.error));
-        return;
+        // 重发就是一条插话：先登记，steer 途中进程退出时才会走既有的排队失败路径。
+        this.queuedUser.push({ id: userId, text });
+        try {
+          const retry = await this.rpc.request<any>("prompt", { ...message, streamingBehavior: "steer" }, 60000);
+          if (retry?.disposition === "handled" && retry?.error) throw new Error(String(retry.error));
+          // 没进 pi 的队列（那条路已经结束，pi 单开了一轮）：撤回时别再把它算进去。
+          if (retry?.disposition !== "queued") this.unqueueUser(userId);
+          return;
+        } catch (err) {
+          this.unqueueUser(userId);
+          throw err;
+        }
       }
       throw new Error(said);
     }

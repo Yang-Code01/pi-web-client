@@ -8,11 +8,10 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { bridgeEntry } from "./bridge-entry.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
-const host = path.join(root, "bridge", "dist", "host.js");
-const plain = path.join(root, "bridge", "dist", "index.js");
-const entry = process.env.PI_HOST_DISABLE === "1" || !fs.existsSync(host) ? plain : host;
+const entry = bridgeEntry(root);
 
 if (!fs.existsSync(entry)) {
   console.error(`找不到 ${entry} —— 先在仓库根目录跑一次 npm run build`);

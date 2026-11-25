@@ -175,6 +175,16 @@ async function main(): Promise<void> {
   let deploy: DeployState = { phase: "idle", at: 0 };
   let shuttingDown = false;
 
+  /** 从一帧 extension_ui_request 里取 id：同一张表单可能同时躺在未确认窗口和 pendingUi 里。 */
+  function uiIdOf(line: string): string {
+    if (!line.includes('"extension_ui_request"')) return "";
+    try {
+      return String(JSON.parse(line)?.id ?? "");
+    } catch {
+      return "";
+    }
+  }
+
   /** 记下一条还没答的 extension_ui_request（按 id 去重；同一条被重放多少次都只有一份）。 */
   function rememberUi(sessionId: string, line: string): void {
     try {
@@ -459,6 +469,13 @@ async function main(): Promise<void> {
         b.sessions.add(sessionId);
         broker.setOwner(sessionId, b.id);
         const p = broker.pending(sessionId);
+        // 老脑死前没 ack 的问卷会同时留在 broker 的未确认窗口和 pendingUi 里；两处都交给新脑，
+        // 它就会把同一张卡片投两次（approvals 覆盖后重发，问卷直接多一张）。以 pending 里的行为准。
+        const replayedUi = new Set(p.lines.map((l) => uiIdOf(l.line)).filter(Boolean));
+        const carriedUi = [...(pendingUi.get(sessionId)?.values() ?? [])].filter((line) => {
+          const id = uiIdOf(line);
+          return !id || !replayedUi.has(id);
+        });
         b.conn.send({
           t: "attached",
           rid: msg.rid,
@@ -469,7 +486,7 @@ async function main(): Promise<void> {
           lastExit: children.lastExit(sessionId),
           lastStderr: children.lastStderr(sessionId),
           // 换脑前还挂着的问卷：新脑拿去重放，页面那张表单接着能答。
-          pendingUi: [...(pendingUi.get(sessionId)?.values() ?? [])],
+          pendingUi: carriedUi,
         });
         return;
       }
@@ -586,9 +603,22 @@ async function main(): Promise<void> {
     next.askedAdopt = true;
     // 老脑认识、新脑还不认识的会话：把所有权先放空，等新脑 attach 时再给。
     for (const id of broker.sessions()) broker.setOwner(id, next.sessions.has(id) ? next.id : null);
-    next.conn.send({ t: "activate", buildId: next.buildId });
     proxy.release();
     old.conn.send({ t: "retire" });
+    // 会话锁是在 retire 处理里才交出来的（releaseLocks）。activate 若抢在它前面发，新脑的
+    // takeLock 会撞上老脑还没删的锁，adopt 直接失败、页面上会话退回只读 —— 所以等老脑的
+    // 控制连接断开（它 releaseLocks 之后才 exit）再叫新脑接管；1 秒还没断就照发，不拖住换脑。
+    let activated = false;
+    const activate = (): void => {
+      if (activated) return;
+      activated = true;
+      next.conn.send({ t: "activate", buildId: next.buildId });
+    };
+    if (!old.conn.alive) activate();
+    else {
+      old.conn.onClose(activate);
+      setTimeout(activate, 1000).unref();
+    }
     setTimeout(() => old.conn.close(), 3000).unref();
     // 老脑 5 秒还没退：强杀（它已经不持有任何管道，杀掉不伤会话）。
     setTimeout(() => {
@@ -642,9 +672,26 @@ async function main(): Promise<void> {
     };
     child.stdout.on("data", relay);
     child.stderr.on("data", relay);
-    const code: number = await new Promise((resolve) => child.on("exit", (c, s) => resolve(c ?? (s ? 1 : 0))));
-    if (code !== 0) {
-      deploy = { phase: "failed", at: Date.now(), ok: false, reason: `构建失败（退出码 ${code}）` };
+    // spawn 失败（EAGAIN、入口被删）只发 'error'、不发 'exit'：不接住就是未捕获异常崩壳，
+    // await 也永远不结算，deploy 卡在 running，之后每一轮都被「已有一轮在跑」吞掉。
+    const spawnState = { error: null as Error | null };
+    const code: number = await new Promise<number>((resolve) => {
+      let settled = false;
+      const done = (n: number): void => {
+        if (settled) return;
+        settled = true;
+        resolve(n);
+      };
+      child.on("error", (err) => {
+        spawnState.error = err;
+        log(`部署子进程起不来：${err.message}`);
+        done(-1);
+      });
+      child.on("exit", (c, s) => done(c ?? (s ? 1 : 0)));
+    });
+    if (spawnState.error || code !== 0) {
+      const reason = spawnState.error ? `部署子进程起不来：${spawnState.error.message}` : `构建失败（退出码 ${code}）`;
+      deploy = { phase: "failed", at: Date.now(), ok: false, reason };
       brain?.conn.send({ t: "deploy-state", ...deploy });
       return;
     }
@@ -680,8 +727,29 @@ async function main(): Promise<void> {
     child.stderr.on("data", (c: Buffer) => process.stderr.write(c));
     const pid = child.pid;
     if (opts.swap && pid) swapPid = pid;
+    let errored = false;
+    // 和部署子进程同一条教训：spawn 失败只发 'error'。脑起不来不该把持有公网口和全部
+    // 会话管道的壳带走；还在等这一代脑的部署也必须当场收尾，不能永远停在 running。
+    child.on("error", (err) => {
+      errored = true;
+      const reason = `脑进程起不来：${err.message}`;
+      log(reason);
+      if (opts.swap) {
+        if (swapPid === pid || swapPid === null) swapPid = null;
+        expectingSwap = false;
+        if (deploy.phase === "running" || deploy.phase === "observing") {
+          deploy = { phase: "failed", at: Date.now(), ok: false, reason };
+          brain?.conn.send({ t: "deploy-state", ...deploy });
+        }
+      }
+      if (starting && starting.pid === pid) {
+        const cand = starting;
+        starting = null;
+        failDeploy(cand, reason);
+      }
+    });
     child.on("exit", (code, signal) => {
-      if (shuttingDown) return;
+      if (shuttingDown || errored) return;
       if (swapPid === pid) {
         swapPid = null;
         expectingSwap = false;
@@ -699,7 +767,7 @@ async function main(): Promise<void> {
     const t = setTimeout(() => {
       const pendingBrain = starting;
       if (pendingBrain && pendingBrain.pid === pid) failDeploy(pendingBrain, "新脑 30s 内没有握手");
-      else if (!brain) log(`首个脑 ${pid} 60s 内没有就绪`);
+      else if (!brain) log(`首个脑 ${pid ?? "?"} ${HELLO_MS / 1000}s 内没有就绪`);
     }, HELLO_MS);
     t.unref();
   }

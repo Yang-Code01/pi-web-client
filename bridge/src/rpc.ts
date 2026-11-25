@@ -50,6 +50,9 @@ export class RpcChild extends EventEmitter {
   /** 有壳时：pid 来自壳的 spawn/attach，进程不是这里生的。 */
   private viaPid: number | null = null;
   private detachLink: (() => void) | null = null;
+  /** 有壳时：attach/spawn 还没落地前收到的帧先排这里，认领之后按顺序交给壳。 */
+  private linkClaimed = false;
+  private linkPending: string[] = [];
   private readonly sessionId: string;
 
   private opts: RpcSpawnOptions;
@@ -127,6 +130,7 @@ export class RpcChild extends EventEmitter {
    */
   private startLinked(link: BrainLink, sessionId: string): void {
     this._alive = true;
+    this.linkClaimed = false;
     this.detachLink = link.watch(sessionId, {
       line: (line, seq) => {
         this.handleLine(line);
@@ -180,6 +184,12 @@ export class RpcChild extends EventEmitter {
         pid = got.pid;
       }
       this.viaPid = pid;
+      // 认领完成前写的是「attach 变 no-child、spawn 还没发出」这段窗口：直接发会被壳回
+      // stale-owner，BrainLink 没人为它重试，get_state / prompt 就这样静默丢了。现在按序补发。
+      this.linkClaimed = true;
+      for (const frame of this.linkPending.splice(0)) {
+        if (!this._alive || !link.stdin(sessionId, frame)) break;
+      }
     } catch (err) {
       this.finish(`link: ${(err as Error).message}`);
     }
@@ -188,6 +198,8 @@ export class RpcChild extends EventEmitter {
   private finish(reason: string): void {
     if (!this._alive) return;
     this._alive = false;
+    this.linkClaimed = false;
+    this.linkPending = [];
     this.detachLink?.();
     this.detachLink = null;
     this.failAll(new Error(`pi process ended (${reason})`));
@@ -249,7 +261,13 @@ export class RpcChild extends EventEmitter {
   private write(obj: unknown): boolean {
     if (this.opts.link && this.sessionId) {
       if (!this._alive) return false;
-      return this.opts.link.stdin(this.sessionId, JSON.stringify(obj) + "\n");
+      const frame = JSON.stringify(obj) + "\n";
+      // 认领之前先攒着：壳还没把这个会话的管道交给本脑，此时直接发只会收到 stale-owner。
+      if (!this.linkClaimed) {
+        this.linkPending.push(frame);
+        return true;
+      }
+      return this.opts.link.stdin(this.sessionId, frame);
     }
     const stdin = this.child?.stdin;
     if (!stdin || !this._alive) return false;

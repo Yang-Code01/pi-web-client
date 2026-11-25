@@ -4,8 +4,8 @@
  * 单独成文件是为了让测试能 import，不触发 worker 的 main()。
  */
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
+import { bridgeEntry as resolveBridgeEntry } from "./bridge-entry.mjs";
 
 export function psQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
@@ -16,8 +16,7 @@ export function psQuote(value) {
  * `PI_HOST_DISABLE=1` 是逃生口：壳出毛病时不让它再挡在前面。
  */
 export function bridgeEntry(repo) {
-  const host = path.join(repo, "bridge", "dist", "host.js");
-  return process.env.PI_HOST_DISABLE === "1" || !fs.existsSync(host) ? "bridge\\dist\\index.js" : "bridge\\dist\\host.js";
+  return path.relative(repo, resolveBridgeEntry(repo)).split(path.sep).join("\\");
 }
 
 /**

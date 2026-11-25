@@ -483,7 +483,11 @@ export async function handleHotdeploy(
         return true;
       }
       if (p === "/api/hotdeploy/log" && req.method === "GET") {
-        json(res, 200, { lines: [`deploy|${host.deployState.phase}${host.deployState.reason ? ` ${host.deployState.reason}` : ""}`] });
+        // 壳把 deploy 子进程的日志转到自己的控制台，脑拿不到；页面仍有 worker.log 可读。
+        // 只回一行阶段摘要会让有壳模式的日志区在构建失败时看不到任何编译错误。
+        const n = Math.max(20, Math.min(400, Number(url.searchParams.get("lines") ?? 160) || 160));
+        const summary = `deploy|${host.deployState.phase}${host.deployState.reason ? ` ${host.deployState.reason}` : ""}`;
+        json(res, 200, { lines: [summary, ...tailLines(LOG, n)] });
         return true;
       }
       if (p === "/api/hotdeploy/run" && req.method === "POST") {

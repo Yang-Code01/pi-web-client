@@ -52,11 +52,6 @@ export class LineSplitter {
   get pendingBytes(): number {
     return this.tail.length;
   }
-
-  reset(): void {
-    this.tail = Buffer.alloc(0);
-    this.n = 0;
-  }
 }
 
 export interface Pending {
@@ -204,10 +199,6 @@ export class Broker {
     return this.conns.get(sessionId)?.owner ?? null;
   }
 
-  isOwner(sessionId: string, brainId: string): boolean {
-    return this.conns.get(sessionId)?.owner === brainId;
-  }
-
   /**
    * 脑要求「往这个会话的 stdin 写一帧」。壳是唯一的写者：只有当前 owner 的请求会被收，
    * seq 也由壳发号 —— 换脑时老脑已经排队的帧不会因为它的进程消失而随之消失。
@@ -228,11 +219,5 @@ export class Broker {
 
   lastWritten(sessionId: string): number {
     return this.conns.get(sessionId)?.written ?? 0;
-  }
-
-  /** 老脑退场：留着未确认的行与写序号给下一任，只把「谁有权写」交出去。 */
-  retireOwner(sessionId: string): void {
-    const e = this.conns.get(sessionId);
-    if (e) e.owner = null;
   }
 }

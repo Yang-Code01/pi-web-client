@@ -136,11 +136,17 @@ function handle(msg) {
     case "stderr":
       stats.lastStderr = String(msg.text ?? "");
       break;
-    case "attached":
+    case "attached": {
       stats.attached = msg.pending;
-      stats.attachedUi = msg.pendingUi ?? [];
+      // 问卷有两条送达路径：未确认窗口里的原行、pendingUi 的重放。新脑两处都会处理，
+      // 所以这里按「交接出去的全部问卷」记录，重复就是壳的错。
+      const fromPending = (msg.pending?.lines ?? [])
+        .map((l) => l.line)
+        .filter((line) => String(line).includes('"extension_ui_request"'));
+      stats.attachedUi = [...fromPending, ...(msg.pendingUi ?? [])];
       stats.attachPid = msg.pid;
       break;
+    }
     case "spawned":
       stats.spawned = { pid: msg.pid, rid: msg.rid };
       break;
