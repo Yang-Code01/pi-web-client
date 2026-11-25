@@ -38,6 +38,16 @@ function mmss(ms: number | null | undefined): string {
 
 const num = (n: number | null | undefined) => Number(n || 0).toLocaleString("en-US");
 
+/** FNV-1a：签名里要判「这段字变没变」，只比长度会把等长改动漏掉。 */
+function hash(text: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+
 function phaseLabel(phase: ReviewPanelInput["view"]["phase"]): string {
   switch (phase) {
     case "running":
@@ -463,13 +473,13 @@ export class ReviewSheet {
       view.skipped.map((s) => `${s.path}:${s.reason}`).join(","),
       view.empty,
       // 签名必须含正文/位置/代码：另一批评审结果里 key 重合的可能性不能赌，
-      // 只要内容变了就重画，否则数量不变时会一直显示旧意见。
+      // 只要内容变了就重画，否则数量不变时会一直显示旧意见（等长改动也算变了，所以取哈希）。
       view.groups
         .map((g) =>
           `${g.path}@${g.findings
             .map(
               (f) =>
-                `${f.key}:${f.mark}:${f.severity}:${f.state}:${f.content.length}:${f.startLine}:${f.existingCode.length}:${f.suggestionCode.length}`,
+                `${f.key}:${f.mark}:${f.severity}:${f.state}:${f.startLine}:${hash(f.content)}:${hash(f.existingCode)}:${hash(f.suggestionCode)}`,
             )
             .join(",")}`,
         )

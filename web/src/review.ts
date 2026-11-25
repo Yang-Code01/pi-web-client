@@ -206,7 +206,11 @@ export function reviewView(input: ReviewInput): ReviewView {
   else if (latest.status === "stale") phase = "stale";
   else phase = "failed";
 
-  const findings = (input.progress?.findings?.length ? input.progress.findings : latest?.findings ?? []).map((f) => {
+  // 有实时帧且它**带了** findings 字段（哪怕是空数组）就以它为准 —— 那才是这次跑出来的；
+  // 字段缺省（老版桥）才回退到记录里那份。用「有没有这个字段」判，不拿长度判：
+  // 长度为零时回退到旧记录，会把上一次的意见当成这一次的显示。
+  const liveFindings = input.progress?.findings;
+  const findings = (liveFindings ?? latest?.findings ?? []).map((f) => {
     const key = f.key || "";
     return { ...f, key, severity: f.severity ?? "low", mark: (f.mark || marks[key] || "") as Mark | "" };
   });
