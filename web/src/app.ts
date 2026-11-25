@@ -473,7 +473,21 @@ export class App {
   private reviewSessionKey = "";
   /** 定时补问一次：页面重连后没人触发重画时，光靠 render 里的自愈等不到下一次重画。 */
   private reviewRetryTimer: number | null = null;
-  private reviewModel = "";
+  /**
+   * 评审用的模型，**按会话记**（`会话id → provider/id`）。它是「这个会话拿什么去评」，跟号、范围、
+   * 分支一样属于会话：A 里挑过的模型不许被 B 挑的顶掉，切回 A 还是 A 自己那个（D404 第 2 条据此改）。
+   * 只活在这一次页面里 —— 刷新后回「默认模型」，不落 localStorage（那是「这台机器」的偏好，不是会话的）。
+   */
+  private reviewModels = new Map<string, string>();
+  private get reviewModel(): string {
+    return this.reviewModels.get(this.currentId ?? "") ?? "";
+  }
+  private set reviewModel(model: string) {
+    const key = this.currentId;
+    if (!key) return; // 没会话就没有「这个会话的模型」，别落到空 key 上
+    if (model) this.reviewModels.set(key, model);
+    else this.reviewModels.delete(key);
+  }
   private reviewRefs: string[] = [];
   private reviewAsked = "";
   /** 桥算出来的仓库根（页面只给 cwd）；帧用它做过滤。 */
@@ -18692,7 +18706,9 @@ export class App {
    * 留着它们，换会话后点「开始评审」就会拿上一个会话的号去评这个目录的仓库：号碰巧存在，
    * 就会得到一份**看起来正常**的别人的结论（用户报的就是「新会话还挂着上一个会话的 PR 号」）。
    * 所以这里不是「顺便清一下」，而是这条面板的硬规矩：进新会话 = 从默认值开始。
-   * 用户自己的偏好（模型、ocr 装没装）不在此列，它们在下面继续活着。
+   * 模型也跟着会话走，但它不是清成默认值，而是**每个会话各记一份**（`reviewModels`）：
+   * 切回原来那个会话时还是它自己挑的那个；没挑过的会话从「默认模型」开始。
+   * 剩下的偏好（ocr 装没装）不在此列，它们在下面继续活着。
    */
   private syncReviewSession(): void {
     const key = `${this.currentId ?? ""}|${this.reviewDir()}`;

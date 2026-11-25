@@ -5,12 +5,19 @@
  * 打开右栏第四颗页签，那个格里还是 `#661` —— 点「开始评审」就会去评 B 目录里的 661 号，
  * 而这个号属于 A。号、范围、分支、提交都是**这一次会话要评的东西**，换会话就得从默认值开始。
  *
+ * 同一类毛病的第二处：**评审用的模型**。A 里挑过评审模型 X，切到 B 挑成 Y，再回 A ——
+ * 面板上是 Y。模型是「这个会话拿什么去评」，跟号、范围一样属于会话，切走再回来要记得自己那个，
+ * 别的会话挑什么不许带过来。
+ *
  * 验的全是外部行为（真桥 + 假 gh + 真 Chromium）：
  *   1. A 里填好号，框里是 `#661`（基线：这一段路本身是通的）；
  *   2. 切到 B 的会话，再打开评审页签 → 框是空的；
- *   3. 没号时「开始评审」是灰的（人点不下去），桥上也没收到 review.run。
+ *   3. 没号时「开始评审」是灰的（人点不下去），桥上也没收到 review.run；
+ *   4. A 里挑评审模型（走「模型与思考」弹层的 pick 模式）→ chip 换成挑中的那个；
+ *   5. 切到 B：chip 必须是「默认模型」；B 也挑一个（与 A 不同）；
+ *   6. 回到 A：chip 还是 A 自己挑的那个。
  *
- * Run: npm run build:web && npm run probe:review-session（没装 playwright 时给 PW_PATH）
+ * Run: npm run build:bridge && npm run build:web && npm run probe:review-session（没装 playwright 时给 PW_PATH）
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -88,10 +95,22 @@ const fakeGh = path.join(REPO, "bridge", "tests", "fixtures", "fake-gh.mjs");
 // ---------------------------------------------------------------- 桥
 
 const out = [];
+// 从 pi 里跑探针时，父进程的「我在某个会话里」标记会漏给桥：`PI_HOST_LINK` 让它一起来就去连那个
+// 生产壳的命名管道，握不上手就 exit 1（探针只能看到「timeout waiting for bridge healthz」）。
+// 探针的桥必须是独立的一份：跟 bridge/src/paths.ts 的 `piChildEnv()` 一样剥掉这些标记。
+const cleanEnv = () => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key === "PI_HOST_LINK") delete env[key];
+    else if (key.startsWith("PI_WEB_")) delete env[key];
+    else if (/^PI_(CODING_AGENT|SESSION_ID$|SESSION_FILE$|MODEL$|PROVIDER$|REASONING_LEVEL$|SDK_)/.test(key)) delete env[key];
+  }
+  return env;
+};
 const bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
   cwd: REPO,
   env: {
-    ...process.env,
+    ...cleanEnv(),
     PI_WEB_PORT: String(PORT),
     PI_WEB_STATE: STATE,
     PI_WEB_TUNNEL: "0",
@@ -119,6 +138,27 @@ async function login() {
   if (!res.ok) throw new Error(`登录失败 HTTP ${res.status}`);
   return (res.headers.get("set-cookie") ?? "").split(";")[0];
 }
+
+const chipTitle = async (page) => (await page.locator(".rv-model").first().getAttribute("title")) ?? "";
+
+/**
+ * 评审面板那颗模型 chip → 「模型与思考」弹层（pick 模式）→ 点一行 → 「用这个模型」。
+ * `avoidId` 给了就挑列表里第一个不是它的模型（要试「串没串」，两次挑的必须是两个模型）。
+ */
+const pickModelRow = async (page, avoidId = "") => {
+  await page.locator(".rv-model").first().click();
+  await page.locator(".model-sheet").waitFor({ timeout: 20000 });
+  const rows = page.locator(".model-sheet .pm-row");
+  await rows.first().waitFor({ timeout: 20000 }).catch(() => {});
+  const ids = await rows.evaluateAll((els) => els.map((e) => e.dataset.id ?? ""));
+  if (ids.length < 2) throw new Error(`模型列表只有 ${ids.length} 项（要两个以上才验得了「按会话记」）`);
+  const at = avoidId ? ids.findIndex((id) => id !== avoidId) : 0;
+  if (at < 0) throw new Error("模型列表里只有一个模型");
+  await rows.nth(at).click();
+  await page.locator(".model-sheet .st-foot .btn.primary").click();
+  await until(async () => (await page.locator(".model-sheet").count()) === 0, 10000, "model sheet closed");
+  return ids[at];
+};
 
 const openReviewTab = async (page) => {
   const tab = page.locator('.exec-tabs button[data-exec-tab="review"]');
@@ -181,6 +221,35 @@ try {
   const reviewDir = path.join(STATE, "review");
   const runs = fs.existsSync(reviewDir) ? fs.readdirSync(reviewDir) : [];
   check("桥上没收到 review.run（没拿 A 的号去评 B）", runs.length === 0, runs.join(","));
+
+  // ------------------------------------------------ 4) A 里挑评审模型
+  await openSession(page, SID_A);
+  await openReviewTab(page);
+  await page.locator(".rv-model").first().waitFor({ timeout: 20000 });
+  // 没挑过时 title 是「用设置里的默认模型」那句（不是空串）：拿它自己当基准，别写死译文。
+  const noPick = await chipTitle(page);
+  const idA = await pickModelRow(page, "");
+  const titleA = await chipTitle(page);
+  check("A 里挑完评审模型：chip 换成挑的那个", titleA !== noPick && titleA.length > 0, `${noPick} → ${titleA}`);
+
+  // ------------------------------------------------ 5) 切到 B：模型不许跟过来
+  await openSession(page, SID_B);
+  await openReviewTab(page);
+  await sleep(300);
+  const titleB = await chipTitle(page);
+  check("切到另一个会话：评审模型不该跟过来", titleB === noPick, `B 是 ${titleB}，没挑过应当是 ${noPick}`);
+
+  // B 挑成另一个模型 —— 这才是「别的会话切了模型」那一步。
+  const idB = await pickModelRow(page, idA);
+  const titleB2 = await chipTitle(page);
+  check("B 挑的是另一个模型（拿它去试串不串）", idB !== idA && titleB2 !== titleA, `${idA} vs ${idB}`);
+
+  // ------------------------------------------------ 6) 回到 A：还是 A 自己那个
+  await openSession(page, SID_A);
+  await openReviewTab(page);
+  await sleep(300);
+  const back = await chipTitle(page);
+  check("回到 A：评审模型还是 A 自己挑的那个", back === titleA, `现在是 ${back}，应当是 ${titleA}`);
 
   await page.screenshot({ path: path.join(ROOT, "review-session-leak.png") }).catch(() => {});
   await context.close();
