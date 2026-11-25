@@ -1438,6 +1438,15 @@ export class Session extends EventEmitter {
       });
       return false;
     }
+    // 换脑只把管道接回来，状态不跟过来：model / thinkingLevel 只在 pi 的 get_state 里。
+    // 不问这一次，输入框下的模型 chip 就一直是「模型 · –」，点开面板也认不出当前那个。
+    // touch:false —— 接管不是用户动作，别把一排会话的「最近活动」一起顶到左栏最前。
+    void rpc
+      .request<any>("get_state", {}, BOOT_STATE_MS)
+      .then((st) => {
+        if (this.rpc === rpc) this.absorbState(st, { touch: false });
+      })
+      .catch(() => void this.syncStateAfterBoot({ touch: false }));
     return true;
   }
 
@@ -1693,12 +1702,12 @@ export class Session extends EventEmitter {
    * 启动窗口里 get_state 超时后的补课：同一个 pi 还活着就接着问，直到它答为止。
    * pi 挂了 / 换了（request 不是因超时失败，或 this.rpc 已经不是它）就停，由新的启动流程接手。
    */
-  private async syncStateAfterBoot(): Promise<void> {
+  private async syncStateAfterBoot(opts: { touch?: boolean } = {}): Promise<void> {
     const rpc = this.rpc;
     for (let i = 0; i < 10 && rpc && this.rpc === rpc; i++) {
       try {
         const st = await rpc.request<any>("get_state", {}, Math.max(BOOT_STATE_MS, 60_000));
-        if (this.rpc === rpc) this.absorbState(st);
+        if (this.rpc === rpc) this.absorbState(st, opts);
         return;
       } catch (err: any) {
         if (!/^timeout after/.test(String(err?.message ?? ""))) return;
@@ -1706,18 +1715,21 @@ export class Session extends EventEmitter {
     }
   }
 
-  private absorbState(st: any): void {
+  private absorbState(st: any, opts: { touch?: boolean } = {}): void {
     if (!st || typeof st !== "object") return;
     const model = st.model?.id ?? st.modelId ?? st.model ?? undefined;
     if (typeof st.model?.name === "string") this.state.modelName = st.model.name;
     const thinking = st.thinkingLevel ?? st.thinking ?? undefined;
     const file = st.sessionFile ?? st.sessionPath ?? st.file ?? undefined;
-    this.setState({
-      model: typeof model === "string" ? model : this.state.model,
-      thinkingLevel: typeof thinking === "string" ? thinking : this.state.thinkingLevel,
-      file: typeof file === "string" ? file : this.state.file,
-      cwd: typeof st.cwd === "string" ? st.cwd : this.state.cwd,
-    });
+    this.setState(
+      {
+        model: typeof model === "string" ? model : this.state.model,
+        thinkingLevel: typeof thinking === "string" ? thinking : this.state.thinkingLevel,
+        file: typeof file === "string" ? file : this.state.file,
+        cwd: typeof st.cwd === "string" ? st.cwd : this.state.cwd,
+      },
+      opts,
+    );
   }
 
   private onPiEvent(ev: any): void {

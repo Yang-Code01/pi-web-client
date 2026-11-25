@@ -71,6 +71,21 @@ process.stdin.on("data", (chunk) => {
       if (msg.id) out({ type: "response", command: "abort", success: true, id: msg.id, data: {} });
       continue;
     }
+    // 模型 / 档位只在 get_state 里：真脑启动（startLive）和换脑接管（adopt）之后都靠它
+    // 填输入框下的模型 chip。答空对象会让这两条路径都拿不到值（测试也就断不出来）。
+    if (msg.type === "get_state") {
+      out({
+        type: "response",
+        command: "get_state",
+        success: true,
+        id: msg.id,
+        data: {
+          model: { provider: "fake", id: "fake-model", name: "Fake Model · x1 · 1M" },
+          thinkingLevel: "low",
+        },
+      });
+      continue;
+    }
     // 其余命令一律「成功、没有数据」：真脑的启动握手就靠这个。
     if (msg.id) out({ type: "response", command: String(msg.type ?? ""), success: true, id: msg.id, data: {} });
   }
