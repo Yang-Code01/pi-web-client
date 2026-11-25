@@ -45,11 +45,27 @@ test("空串切出空数组，纯代码也认", () => {
   assert.deepEqual(splitInlineCode("`x`"), [{ kind: "code", text: "x" }]);
 });
 
-test("cardPieces 先折行再切反引号", () => {
+test("cardPieces 先切反引号再折行（代码里的 `\\n` 是内容本身）", () => {
   assert.deepEqual(cardPieces("先看 `a.ts`\\n再看 `b.ts`"), [
     { kind: "text", text: "先看 " },
     { kind: "code", text: "a.ts" },
     { kind: "text", text: "\n再看 " },
     { kind: "code", text: "b.ts" },
+  ]);
+});
+
+test("反引号里的 \\n 不折：文本在谈论转义本身时不能被改写", () => {
+  assert.deepEqual(cardPieces("把字面的 `\\n\\n` 折成真换行"), [
+    { kind: "text", text: "把字面的 " },
+    { kind: "code", text: "\\n\\n" },
+    { kind: "text", text: " 折成真换行" },
+  ]);
+});
+
+test("真换行与字面 \\n 混在一段里：只折没分行的那几段", () => {
+  assert.deepEqual(cardPieces("第一行\n第二行 `a`\\n第三行"), [
+    { kind: "text", text: "第一行\n第二行 " },
+    { kind: "code", text: "a" },
+    { kind: "text", text: "\n第三行" },
   ]);
 });

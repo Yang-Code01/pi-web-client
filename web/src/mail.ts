@@ -13,8 +13,9 @@
  * 发不发、怎么问，由用户决定。
  */
 import { api } from "./api.ts";
+import { icon } from "./icons.ts";
 import { createEl as el } from "./chat.ts";
-import { mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
+import { markSurface, mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
 import "./mail-console.css";
 import { errText, tr } from "./i18n/index.ts";
 import type {
@@ -575,7 +576,7 @@ export class MailPanel {
   /** 建外壳：一次 open 只挂一次，之后的重画只换内容，入场动画不会重演。 */
   private mountShell(): void {
     if (this.root) return;
-    const back = el("div", "mc-back");
+    const back = markSurface(el("div", "mc-back"), "window");
     back.addEventListener("mousedown", (ev) => {
       if (ev.target === back) this.close();
     });
@@ -851,7 +852,11 @@ export class MailPanel {
         top.append(el("span", "mc-row__when", whenText(m.date)));
         row.append(top);
         const mid = el("div", "mc-row__subject");
-        if (m.hasAttachments) mid.append(el("span", "mc-row__clip", "📎"));
+        if (m.hasAttachments) {
+      const clip = el("span", "mc-row__clip");
+      clip.append(icon("clip", { size: 12 }));
+      mid.append(clip);
+    }
         mid.append(document.createTextNode(m.subject || tr("（无主题）")));
         row.append(mid);
         row.onclick = () => void this.openMessage(m.uid);

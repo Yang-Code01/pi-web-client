@@ -180,10 +180,10 @@ try {
   log("5 conflict → 另存副本 ok");
 
   // ---- 6. 引用按钮把路径塞进输入框
-  await page.locator(".viewer-head .viewer-btn", { hasText: "📎" }).click();
+  await page.locator('.viewer-head .viewer-btn[title^="把这个路径引用到输入框"]').click();
   const composer = await page.locator(".composer textarea").first().inputValue();
   assert(composer.includes("笔记.copy.md"), `composer got the path (got ${composer})`);
-  log("6 📎 reference ok");
+  log("6 clip reference ok");
 
   // ---- 7. 未保存就切走 → 拦住问一句
   await page.locator(".viewer-head .pane-seg button", { hasText: "编辑" }).click();

@@ -11,6 +11,7 @@ import { createEl as el } from "./chat.ts";
 import { causesOf, clock, entryState, entryTitle, failureMarkdown, ledgerMarkdown, stateLabel, type FailEntry, type FailLedger } from "./failures.ts";
 import { ruleFor, ruleLine, type RuleBook, type RuleRec } from "./rules.ts";
 import { tr, fmtDate, fmtTime } from "./i18n/index.ts";
+import { icon } from "./icons.ts";
 
 export interface FailHost {
   send(msg: unknown): void;
@@ -64,7 +65,7 @@ export class FailPanel {
     body.append(side, this.detailEl);
 
     const foot = el("div", "fail-foot");
-    foot.append(el("span", "fail-note", tr("只读 · 由「⚡ 总结本轮错误」写入；规矩由「发到会话复盘」写回")));
+    foot.append(el("span", "fail-note", tr("只读 · 由「总结本轮错误」写入；规矩由「发到会话复盘」写回")));
     const exp = el("button", "btn ghost", tr("导出这份账本"));
     exp.onclick = () => this.exportAll();
     foot.append(exp);
@@ -138,7 +139,7 @@ export class FailPanel {
         ? tr("没有匹配的错误。")
         : rules.length
           ? tr("账本里还没有记录。上面这些规矩是「发到会话复盘」带回来的。")
-          : tr("这份账本还是空的。会话里出过错，结束时点右下角的「⚡ 总结本轮错误」。");
+          : tr("这份账本还是空的。会话里出过错，结束时点右下角的「总结本轮错误」。");
       // 规矩可以只来自「发到会话复盘」（人没选入账），所以账本空不等于这一页没东西。
       const nodes: HTMLElement[] = [el("div", "fail-empty", empty)];
       if (rules.length) nodes.unshift(this.rulesFold(rules));
@@ -181,7 +182,8 @@ export class FailPanel {
   private rulesFold(list: RuleRec[]): HTMLElement {
     const d = el("details", "fail-fold rules") as HTMLDetailsElement;
     d.open = true;
-    const sum = el("summary", "", tr("⚡ 规矩"));
+    const sum = el("summary");
+    sum.append(icon("bolt", { size: 13 }), el("span", "", tr("规矩")));
     sum.append(el("span", "n", String(list.length)));
     d.append(sum);
     for (const r of list) {

@@ -63,7 +63,8 @@ export interface FrameView {
   approvals: ApprovalRequest[];
   asks: AskRequest[];
   askDrafts: Map<string, { active: number; drafts: Map<string, AskAnswer> }>;
-  askLost: { id: string; title: string; reason: string; lines: string[] } | null;
+  /** `sessionId` = 哪一问的问卷死了：这块残影只属于它（见 lostAskHere）。 */
+  askLost: { sessionId: string; id: string; title: string; reason: string; lines: string[] } | null;
   lastAnsweredAsk: string | null;
   askFolded: boolean;
   askAutoFolded: boolean;
@@ -213,7 +214,7 @@ export function applyFrame(view: FrameView, frame: TypedServerFrame, now: number
       if (mine) view.applyQueueTabEvent({ type: "asks", count: view.asks.length, arrived: false });
       // 答完 / 被取消都走这条：计数必须跟着回落（D156）。
       applyPending(view.sessions, String(frame.sessionId ?? ""), "asks", -1);
-      if (gone && mine && gone.id !== view.lastAnsweredAsk) keepLostAsk(view, gone, String(frame.reason ?? tr("问卷已关闭")));
+      if (gone && mine && gone.id !== view.lastAnsweredAsk) keepLostAsk(view, gone, String(frame.reason ?? tr("问卷已关闭")), String(frame.sessionId ?? ""));
       if (gone && mine) view.lastAnsweredAsk = null;
       return ["asks", "queue", "tabs", "sessions"];
     }
@@ -228,7 +229,7 @@ export function applyFrame(view: FrameView, frame: TypedServerFrame, now: number
  * Remember a questionnaire that disappeared while it still had answers in it, so the user can see
  * it happened and get the text back. Filled answers are also persisted (see saveAskDrafts).
  */
-function keepLostAsk(view: FrameView, ask: AskRequest, reason: string): void {
+function keepLostAsk(view: FrameView, ask: AskRequest, reason: string, sessionId: string): void {
   const st = view.askDrafts.get(ask.id);
   const lines = ask.questions
     .map((q) => {
@@ -238,5 +239,20 @@ function keepLostAsk(view: FrameView, ask: AskRequest, reason: string): void {
     .filter((x): x is string => x !== null);
   if (!lines.length) return; // nothing was filled in: losing it costs the user nothing
   const title = ask.questions.length === 1 ? ask.questions[0].prompt : tr("{p1} 题的问卷", { p1: ask.questions.length });
-  view.askLost = { id: ask.id, title: title.slice(0, 80), reason, lines };
+  view.askLost = { sessionId, id: ask.id, title: title.slice(0, 80), reason, lines };
+}
+
+/**
+ * 输入框上方那块「问卷没答完就关闭了」只属于把它弄丢的那个会话（Q-010b）。
+ *
+ * 它以前是整页一份的：在 A 里中断问卷、切到 B，B 的输入框上方照样挂着「问卷没答完就关闭了」，
+ * 点「把已填答案放进输入框」还会把 A 的答案倒进 B 的草稿 —— 两个会话就这样串了。判定放在这里
+ * 而不是 renderAsks 里，是为了能不开浏览器就断言它（`web/tests/frames-unit.mjs`）。
+ */
+export function lostAskHere(view: Pick<FrameView, "askLost" | "currentId" | "asks">): FrameView["askLost"] {
+  const lost = view.askLost;
+  if (!lost || !view.currentId || lost.sessionId !== view.currentId) return null;
+  // 同一会话里又有一份问卷在等：先把它答了，残影等这份问卷结束再说。
+  if (view.asks.length) return null;
+  return lost;
 }

@@ -29,7 +29,7 @@ git worktree add <仓库父目录>/<仓库名>-wt/<slug> <branch>   # slug = 分
 脚本在本技能目录的 `bin/env.mjs`，**直接 node 跑，不要包启动器**：
 
 ```bash
-node <skill>/bin/env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build] [--no-open]
+node <skill>/bin/env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build] [--no-open] [--hotdeploy]
 node <skill>/bin/env.mjs list
 node <skill>/bin/env.mjs stop --id t1 | --all
 node <skill>/bin/env.mjs ports [--peers 2]
@@ -42,6 +42,7 @@ node <skill>/bin/env.mjs ports [--peers 2]
 - 启动末尾会**真的 POST `/api/login` 试口令**，打印 `登录自检 HTTP 200（口令 test 生效）`——不是只看 pid。
 - **tab 标题是「测试 <实例名>」**：桥按 `PI_WEB_WINDOW_TITLE` 改写主页面标题（D360；`/peer` 页的例外与细节见下面「窗口」一节）。
 - **启动完自动开一个新窗口**（下面「窗口」一节）；不想开加 `--no-open`。
+- **要验热部署就加 `--hotdeploy`**：热部署默认在 linked worktree 里是禁的（`bridge/src/hotdeploy.ts` 的 `inLinkedWorktree`），测试环境本来就跑在 worktree 里，所以这个开关会给桥注入 `PI_HOTDEPLOY_ALLOW_WORKTREE=1`，面板里的「热部署」才可点；`list` 里开过的实例会带「热部署已放行」。
 
 ## 启动后自检
 

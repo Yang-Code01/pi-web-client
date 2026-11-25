@@ -1,0 +1,157 @@
+{
+ "runId": "c3afebdb-5fcb-4905-b5f7-40d3cc2af940",
+ "toolCallId": "call_00_vDHv0802eD2FlBRLVtM03958",
+ "sessionId": "<AGENT>/sessions/--private-tmp--/2026-11-23T14-23-47-134Z_01a208ca-a1bd-755d-bfe1-debc4a629186.jsonl",
+ "completionOwnerId": "6ed0d5d0-62ee-4b64-868e-ed234aa21d9b",
+ "mode": "workflow",
+ "state": "complete",
+ "startedAt": 1795443829864,
+ "lastUpdate": 1795443833503,
+ "cwd": "<CWD>",
+ "sessionRoot": "<AGENT>/sessions/--private-tmp--/2026-11-23T14-23-47-134Z_01a208ca-a1bd-755d-bfe1-debc4a629186",
+ "pid": 11998,
+ "bootId": "279F0B8E-25D3-45DA-8941-6A5F02ED2B7C",
+ "steps": [
+  {
+   "agent": "worker",
+   "sessionName": "worker: Reply with just the letter a. Do not use any tools.",
+   "label": "task-1",
+   "workflowKey": "task-1",
+   "parentWorkflowRunId": "c3afebdb-5fcb-4905-b5f7-40d3cc2af940",
+   "status": "completed",
+   "startedAt": 1795443829934,
+   "sessionFile": "<AGENT>/sessions/--private-tmp--/2026-11-23T14-23-47-134Z_01a208ca-a1bd-755d-bfe1-debc4a629186/033a55af-e815-4c77-9194-a53408e74559/run-0/session.jsonl",
+   "async": true,
+   "runId": "033a55af-e815-4c77-9194-a53408e74559",
+   "durationMs": 3559,
+   "tokens": {
+    "input": 1852,
+    "output": 2,
+    "total": 1854
+   },
+   "turnCount": 1
+  },
+  {
+   "agent": "worker",
+   "sessionName": "worker: Reply with just the letter b. Do not use any tools.",
+   "label": "task-2",
+   "workflowKey": "task-2",
+   "parentWorkflowRunId": "c3afebdb-5fcb-4905-b5f7-40d3cc2af940",
+   "status": "completed",
+   "startedAt": 1795443829963,
+   "sessionFile": "<AGENT>/sessions/--private-tmp--/2026-11-23T14-23-47-134Z_01a208ca-a1bd-755d-bfe1-debc4a629186/bc3b8c4c-5a56-4b39-9228-97a34c485477/run-0/session.jsonl",
+   "async": true,
+   "runId": "bc3b8c4c-5a56-4b39-9228-97a34c485477",
+   "durationMs": 3035,
+   "tokens": {
+    "input": 1852,
+    "output": 2,
+    "total": 1854
+   },
+   "turnCount": 1
+  }
+ ],
+ "workflow": {
+  "value": {
+   "ok": true,
+   "children": [
+    {
+     "key": "task-1",
+     "agent": "worker",
+     "ok": true,
+     "output": "a"
+    },
+    {
+     "key": "task-2",
+     "agent": "worker",
+     "ok": true,
+     "output": "b"
+    }
+   ]
+  },
+  "trace": [
+   {
+    "operation": "run",
+    "key": "task-1",
+    "state": "started",
+    "agent": "worker"
+   },
+   {
+    "operation": "run",
+    "key": "task-2",
+    "state": "started",
+    "agent": "worker"
+   },
+   {
+    "operation": "run",
+    "key": "task-2",
+    "state": "completed",
+    "durationMs": 3035,
+    "agent": "worker",
+    "runId": "bc3b8c4c-5a56-4b39-9228-97a34c485477"
+   },
+   {
+    "operation": "run",
+    "key": "task-1",
+    "state": "completed",
+    "durationMs": 3559,
+    "agent": "worker",
+    "runId": "033a55af-e815-4c77-9194-a53408e74559"
+   }
+  ],
+  "emits": [],
+  "console": [],
+  "scriptDigest": "ab229355abedf52e4afe5836e659b91194f0765cfd36a8320e8d4d1e7884e6bb",
+  "resource": {
+   "kind": "workflow",
+   "name": "parallel",
+   "version": 1,
+   "invocation": "named",
+   "expansion": "resolved",
+   "id": "46f67510-693f-47a6-99da-c67e80ba031e"
+  }
+ },
+ "workflowChildren": {
+  "version": 1,
+  "parentToolCallId": "call_00_vDHv0802eD2FlBRLVtM03958",
+  "workflowRunId": "c3afebdb-5fcb-4905-b5f7-40d3cc2af940",
+  "inventoryComplete": true,
+  "workflowState": "completed",
+  "children": [
+   {
+    "childId": "task-1",
+    "state": "completed",
+    "runId": "033a55af-e815-4c77-9194-a53408e74559",
+    "agent": "worker",
+    "sessionName": "worker: Reply with just the letter a. Do not use any tools.",
+    "sessionFile": "<AGENT>/sessions/--private-tmp--/2026-11-23T14-23-47-134Z_01a208ca-a1bd-755d-bfe1-debc4a629186/033a55af-e815-4c77-9194-a53408e74559/run-0/session.jsonl"
+   },
+   {
+    "childId": "task-2",
+    "state": "completed",
+    "runId": "bc3b8c4c-5a56-4b39-9228-97a34c485477",
+    "agent": "worker",
+    "sessionName": "worker: Reply with just the letter b. Do not use any tools.",
+    "sessionFile": "<AGENT>/sessions/--private-tmp--/2026-11-23T14-23-47-134Z_01a208ca-a1bd-755d-bfe1-debc4a629186/bc3b8c4c-5a56-4b39-9228-97a34c485477/run-0/session.jsonl"
+   }
+  ]
+ },
+ "runFanoutBudget": {
+  "used": 2,
+  "limit": 64,
+  "remaining": 62
+ },
+ "turnCount": 1,
+ "endedAt": 1795443833501,
+ "totalTokens": {
+  "input": 3704,
+  "output": 4,
+  "total": 3708
+ },
+ "totalCost": {
+  "inputTokens": 3704,
+  "outputTokens": 4,
+  "costUsd": 0
+ },
+ "workflowReceiptPath": "<TMP>/async-subagent-runs/c3afebdb-5fcb-4905-b5f7-40d3cc2af940/workflow-receipt.json"
+}

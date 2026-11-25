@@ -43,7 +43,12 @@ export function splitInlineCode(s: string): InlinePiece[] {
   return pieces;
 }
 
-/** 卡片上最终要显示的文字：先折换行，再切反引号。 */
+/**
+ * 卡片上最终要显示的文字：先切反引号，再只对普通文字折换行。
+ *
+ * 顺序反过来就会误伤：文本在**谈论** `\n` 本身（比如「把字面的 `\n` 折成换行」这种题干）时，
+ * 反引号还没切出来，整段被当自由文本折掉，引用就变形了。代码片段里的是内容，一个字都不动。
+ */
 export function cardPieces(s: string): InlinePiece[] {
-  return splitInlineCode(unfoldNewlines(s));
+  return splitInlineCode(s).map((p) => (p.kind === "text" ? { kind: "text" as const, text: unfoldNewlines(p.text) } : p));
 }

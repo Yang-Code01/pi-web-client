@@ -67,6 +67,10 @@ export type ServerFrameType =
   | "failures.saved"
   | "filesearch.result"
   | "filesearch.status"
+  // GitHub 通道：`github.pr` = 壳看见 `gh pr create` 成功（页面顺手把面板推开）；
+  // `github.seen` = 输出里有链接但不是新建（面板开着就刷新一下）。
+  | "github.pr"
+  | "github.seen"
   | "handoff.state"
   | "hello"
   | "history"
@@ -110,7 +114,16 @@ export type ServerFrameType =
   | "purge.result"
   | "queue"
   | "queue.restore"
+  | "reminder.toast"
+  | "reminders"
   | "restore.result"
+  | "review.install.done"
+  | "review.install.log"
+  | "review.ocr"
+  | "review.prinfo"
+  | "review.prs"
+  | "review.progress"
+  | "review.state"
   | "rules"
   | "rules.saved"
   | "runtime.sleepAll"
@@ -244,7 +257,18 @@ export type ClientFrameType =
   | "preview.open.done"
   | "prompt"
   | "reload"
+  | "reminder.mute"
+  | "reminder.read"
+  | "reminder.set"
   | "rename"
+  | "review.cancel"
+  | "review.clean"
+  | "review.get"
+  | "review.install"
+  | "review.mark"
+  | "review.prinfo.get"
+  | "review.prs.get"
+  | "review.run"
   | "rules.delete"
   | "rules.get"
   | "rules.reviewed"
@@ -288,6 +312,135 @@ export type ClientFrameType =
   | "trust.set"
   | "ui.set"
   | "unsubscribe";
+
+// ---------------------------------------------------------------------------
+// #651 代码评审：桥与页面共用的形状
+//
+// 两侧都要认它（桥落盘 / 页面画），所以住在这个叶子里 —— 和在各自文件里各抄一份相比，
+// 抄的那份已经在 `OcrStatus.error` 上漂过一次（一边必填、一边可选）。
+// ---------------------------------------------------------------------------
+
+export type ReviewMode = "workspace" | "range" | "commit" | "pr";
+export type ReviewSeverity = "critical" | "high" | "medium" | "low";
+export type ReviewCategory = "bug" | "security" | "performance" | "maintainability" | "test" | "style" | "documentation" | "other";
+export type ReviewMark = "accept" | "ignore" | "false-positive";
+export type ReviewRunStatus = "running" | "done" | "stopped" | "failed" | "stale";
+
+/** 没评的文件与原因（太大 / 规则排除 / 超预算 / 模型没说）。 */
+export interface ReviewSkip {
+  path: string;
+  reason: string;
+}
+
+export interface ReviewFinding {
+  /** `path + 类别 + 命中的代码片段` 的哈希：跨轮次认「还是那一条」。 */
+  key: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  category: ReviewCategory;
+  severity: ReviewSeverity;
+  content: string;
+  existingCode: string;
+  suggestionCode: string;
+  /** `start_line: 0` = 定位不到行。 */
+  anchored: boolean;
+  state: "new" | "persisting";
+  mark: ReviewMark | "";
+  /** 哪一组跑出来的（老记录没有这一项）。 */
+  group?: number;
+}
+
+/** 一次评审把文件分成几组、每组跑完没有 —— 详情窗的分段进度全靠它。 */
+export interface ReviewGroupPlan {
+  /** 从 1 开始。 */
+  index: number;
+  files: number;
+  /** 这一组出了几条意见。 */
+  findings: number;
+  state: "pending" | "running" | "done" | "failed";
+  startedAt: string;
+  finishedAt: string;
+}
+
+export interface ReviewRun {
+  id: string;
+  status: ReviewRunStatus;
+  startedAt: string;
+  finishedAt: string;
+  mode: ReviewMode;
+  /** 从哪评：`range` 的对照分支、`pr` 的 `origin/<base>`、`commit` 为空。 */
+  from: string;
+  /** 评到哪：`range` 的目标分支、`pr` 的 `refs/pi-web/pr-N`、`commit` 的 sha、`workspace` 的 HEAD。 */
+  to: string;
+  mergeBase: string;
+  /** `pr` 模式下是哪个 PR（0 = 不是 PR 模式）；三态只跟同一个 PR 比。 */
+  pr: number;
+  /** PR 的标题与两条分支（「交给 agent」那段话要带上它们）。老记录里没有，按空串处理。 */
+  prTitle: string;
+  prHead: string;
+  prBase: string;
+  model: string;
+  lang: string;
+  findings: ReviewFinding[];
+  /** 上一次有、这一次没有的那几条（key + path，面板要能说出是哪个文件）。 */
+  resolved: string[];
+  resolvedPaths: string[];
+  skipped: ReviewSkip[];
+  reviewedFiles: number;
+  totalFiles: number;
+  tokens: number;
+  error: string;
+  errorCode: string;
+  /** 这一次的时间线（进度帧走完就没了，所以完成时也落一份进记录）。 */
+  log: ReviewLogLine[];
+  /** 分组计划（老记录没有；没有就按「一条时间线」展示）。 */
+  plan?: ReviewGroupPlan[];
+}
+
+export interface ReviewLogLine {
+  at: number;
+  text: string;
+  /** 属于第几组（准备阶段的那些没有组号）。 */
+  group?: number;
+}
+
+export interface ReviewState {
+  repo: string;
+  runs: ReviewRun[];
+  marks: Record<string, ReviewMark>;
+}
+
+export interface ReviewProgress {
+  repo: string;
+  runId: string;
+  status: ReviewRunStatus;
+  phase: "preview" | "fetch" | "rules" | "review" | "done";
+  totalFiles: number;
+  reviewedFiles: number;
+  currentFile: string;
+  tokens: number;
+  startedAt: string;
+  error: string;
+  errorCode: string;
+  /** 现在是第几组 / 一共几组（PR 与分支范围会分组跑）。 */
+  group: number;
+  groups: number;
+  /** 每组跑了多少、跑没跑完。 */
+  plan?: ReviewGroupPlan[];
+  /** 跑的过程中已经出来的意见（拿不到就等结束那帧）。 */
+  findings?: ReviewFinding[];
+  /** 时间线：每件事一行，最多留 40 行（面板与详情 dialog 共用）。 */
+  log: ReviewLogLine[];
+}
+
+export interface ReviewOcrStatus {
+  installed: boolean;
+  version: string;
+  /** delegation 的 `--format json` 要 1.9.0 起。 */
+  tooOld: boolean;
+  error?: string;
+}
 
 // ---------------------------------------------------------------------------
 // 载荷：先给最要命的 9 个帧（审批 / 问卷 / 用量 / 上下文 / 运行状态）

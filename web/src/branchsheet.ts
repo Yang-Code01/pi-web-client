@@ -8,10 +8,11 @@
  * - 图解、红色确认卡、脏区三选一、冲突逐文件标记、交给 agent 两个出口，都在这一张卡里收口。
  */
 import { createEl as el } from "./chat.ts";
+import { icon, face, type IconName } from "./icons.ts";
 import { api } from "./api.ts";
 import { errText, fmtRelative, tr } from "./i18n/index.ts";
 import type { GitCommit, GitCommitDetail, GitDiff, GitDiffFile, GitExecResult, GitHistory, GitOpParams, GitRefs, GitWorktreeState } from "./types.ts";
-import { retireOverlay } from "./modal.ts";
+import { markSurface, retireOverlay } from "./modal.ts";
 import { GIT_OPS, MANUAL_FILTERS, OPS_BY_ID, OP_GROUPS, opFrames, buildHandoffPrompt, type GitOpDef } from "./git-ops.ts";
 import { sessionNameFromBranchRef } from "./session-name.ts";
 
@@ -30,8 +31,9 @@ function headTag(data: GitHistory): string {
 function baseTag(data: GitHistory): string {
   return data.branches.some((b) => b.name === data.base) ? tr("远程") : tr("本地");
 }
-function btn(text: string, cls = "btn ghost"): HTMLButtonElement {
-  const b = el("button", cls, text) as HTMLButtonElement;
+function btn(label: IconName | string, cls = "btn ghost"): HTMLButtonElement {
+  const b = el("button", cls) as HTMLButtonElement;
+  b.append(face(label, 14));
   b.type = "button";
   return b;
 }
@@ -96,6 +98,10 @@ export class BranchSheet {
   private diff: GitDiff | null = null;
   private diffFile = -1;
   private base = "";
+  /** #651：从「单条提交」那次评审跳过来时，差异看的是这一条提交 vs 父提交。 */
+  private diffCommit = "";
+  /** #651：从「工作区改动」那次评审跳过来时，差异看的是工作区 vs HEAD。 */
+  private diffWorktree = false;
   private limit = PAGE;
   private tab: "history" | "diff" | "manual" = "history";
   private side: "left" | "right" = "left";
@@ -108,6 +114,8 @@ export class BranchSheet {
   })();
   /** 只要最新那次请求的答案：换对照分支拉得快时，旧答案不许盖新的。 */
   private ticket = 0;
+  /** #651：正在跑的那次 `load()`。从评审跳过来时要等它，否则 loadDiff 会被它的 ticket 丢掉。 */
+  private loading: Promise<void> | null = null;
   /** D289: 提交详情按 `repo|sha` 缓存在会话里；写操作成功或换目录时整块丢掉。 */
   private commitCache = new Map<string, GitCommitDetail>();
   /** 详情卡是从哪一行打开的：关掉它把焦点还回去。 */
@@ -125,7 +133,7 @@ export class BranchSheet {
     this.handoff = opts.handoff ?? null;
     this.embedded = opts.embedded === true;
 
-    this.root = el("div", "sheet-back center branch-back");
+    this.root = markSurface(el("div", "sheet-back center branch-back"), "window");
     this.root.onclick = (ev) => { if (ev.target === this.root) this.close(); };
     this.sheet = el("div", "branch-sheet go-sheet");
     this.sheet.classList.toggle("go-embedded", this.embedded);
@@ -163,7 +171,8 @@ export class BranchSheet {
     const copyPath = btn(tr("复制路径"));
     copyPath.dataset.copyPath = "1";
     copyPath.onclick = () => void this.copyText(this.data?.repo || this.dir, copyPath, tr("复制路径"));
-    const close = el("button", "branch-x", "✕") as HTMLButtonElement;
+    const close = el("button", "branch-x") as HTMLButtonElement;
+    close.append(icon("close", { size: 14 }));
     close.type = "button";
     close.setAttribute("aria-label", tr("关闭"));
     close.title = tr("Esc 关闭");
@@ -283,6 +292,11 @@ export class BranchSheet {
 
   /** 一次把历史、仓库状态、分支表都拉齐；写成功后 fresh=true 让 chip 与 5s 缓存一起更新。 */
   private async load(fresh: boolean): Promise<void> {
+    this.loading = this.loadInner(fresh);
+    return this.loading;
+  }
+
+  private async loadInner(fresh: boolean): Promise<void> {
     const ticket = ++this.ticket;
     // D289: 拉取 / 写操作之后提交详情可能已经变了（新提交、改写、推送），缓存整块丢掉。
     if (fresh) this.commitCache.clear();
@@ -315,7 +329,7 @@ export class BranchSheet {
   private async loadDiff(): Promise<void> {
     const ticket = this.ticket;
     try {
-      const diff = await api.gitDiff(this.dir, this.base, "HEAD", "");
+      const diff = await api.gitDiff(this.dir, this.base, "HEAD", this.diffCommit, this.diffWorktree);
       if (ticket !== this.ticket || this.tab !== "diff") return;
       this.diff = diff;
       if (this.diffFile >= diff.files.length) this.diffFile = -1;
@@ -325,6 +339,40 @@ export class BranchSheet {
       this.diff = null;
       this.colsEl.replaceChildren(el("div", "branch-note", errText(err)));
     }
+  }
+
+  /**
+   * #651：从「代码评审」的一条意见跳过来 —— 切到「差异」、选中那个文件、把命中的那段代码标出来。
+   *
+   * 差异数据里没有行号（`lines` 只有左右两格文字），所以定位靠**那段代码**而不是行号：
+   * 先比改动侧、再比对照侧，都找不到就只切到那个文件。行号只进 tooltip。
+   */
+  async openDiffAt(o: { base?: string; commit?: string; worktree?: boolean; path: string; line?: number; code?: string }): Promise<void> {
+    const commit = o.commit ?? "";
+    const worktree = o.worktree === true;
+    if ((o.base !== undefined && o.base !== this.base) || commit !== this.diffCommit || worktree !== this.diffWorktree) {
+      if (o.base !== undefined) this.base = o.base;
+      this.diffCommit = commit;
+      this.diffWorktree = worktree;
+      this.diff = null;
+    }
+    this.tab = "diff";
+    this.paintTabs();
+    // 刚打开时那一次 `load()` 还在飞（它会把 ticket 加一，让这里发出的 loadDiff 作废）：先等它。
+    if (this.loading) await this.loading.catch(() => {});
+    if (!this.diff) await this.loadDiff();
+    const files = this.diff?.files ?? [];
+    const idx = files.findIndex((f) => f.path === o.path || f.old === o.path);
+    if (idx >= 0) this.diffFile = idx;
+    this.paintTabBody();
+    const needle = (o.code ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
+    if (!needle) return;
+    const rows = [...this.colsEl.querySelectorAll<HTMLElement>(".go-code")];
+    const row = rows.find((r) => r.textContent?.trim() === needle);
+    if (!row) return;
+    row.classList.add("rv-hit");
+    if (o.line) row.title = tr("第 {p1} 行", { p1: o.line });
+    row.scrollIntoView({ block: "center" });
   }
 
   private async copy(button: HTMLButtonElement): Promise<void> {
@@ -492,7 +540,7 @@ export class BranchSheet {
     input.setAttribute("aria-label", opts.ariaLabel);
     input.setAttribute(`data-${opts.key}-input`, "1");
 
-    const menu = el("div", "go-cmp-menu");
+    const menu = markSurface(el("div", "go-cmp-menu"), "menu");
     menu.hidden = true;
     menu.setAttribute(`data-${opts.key}-menu`, "1");
 
@@ -737,7 +785,8 @@ export class BranchSheet {
     ask.dataset.agent = "branch";
     ask.onclick = () => this.openHandoff(this.branchPrompt());
     side.append(ask);
-    const ai = btn(tr("✎ 选分支 + 写要求 → 交给 AI 操作"), "btn ghost go-side-cta go-side-ai");
+    const ai = btn("", "btn ghost go-side-cta go-side-ai");
+    ai.append(icon("pencil", { size: 13 }), el("span", "", tr("选分支 + 写要求 → 交给 AI 操作")));
     ai.dataset.ai = "1";
     ai.onclick = () => this.openAi();
     side.append(ai);
@@ -802,7 +851,13 @@ export class BranchSheet {
     }
     const wrap = el("div", "go-diff");
     const list = el("div", "go-diff-files");
-    list.append(el("div", "go-side-title", tr("变更文件 · 当前分支 vs {p1}", { p1: this.diff.base })));
+    list.append(
+      el(
+        "div",
+        "go-side-title",
+        this.diff.worktree ? tr("变更文件 · 工作区改动") : tr("变更文件 · 当前分支 vs {p1}", { p1: this.diff.base }),
+      ),
+    );
     this.diff.files.forEach((f, i) => {
       const b = btn(`${f.status} ${f.path}`, "go-diff-row");
       b.dataset.file = String(i);
@@ -1346,7 +1401,7 @@ export class BranchSheet {
     head.append(el("span", "go-card-glyph", glyph), el("div", "go-card-titles", ""));
     const titles = head.lastElementChild as HTMLElement;
     titles.append(el("div", "go-card-title", title), el("div", "go-card-sub", sub));
-    const x = btn("✕", "go-card-x");
+    const x = btn("close", "go-card-x");
     x.onclick = () => this.closeOp();
     head.append(x);
     return head;

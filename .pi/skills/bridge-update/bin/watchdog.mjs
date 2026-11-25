@@ -15,6 +15,11 @@ import { appendLog, argOf, lockFresh } from "./lib.mjs";
 const DEFAULT_REPO = path.resolve(import.meta.dirname, "../../../..");
 const REPO = path.resolve(argOf("--dir", DEFAULT_REPO));
 const PORT = Number(argOf("--port", process.env.PI_WEB_PORT || 7864));
+/** 有壳就走壳：热部署换的是脑，端口与管道由壳守着（#634）。 */
+const ENTRY =
+  process.env.PI_HOST_DISABLE === "1" || !fs.existsSync(path.join(REPO, "bridge", "dist", "host.js"))
+    ? "bridge/dist/index.js"
+    : "bridge/dist/host.js";
 // 拉起来的进程必须落在「我们盯着的那一个」端口上：--port 与 PI_WEB_PORT 不一致时，
 // 子进程会去抢默认的 7864（EADDRINUSE），然后我们永远等不到自己那个端口。
 process.env.PI_WEB_PORT = String(PORT);
@@ -66,14 +71,14 @@ async function main() {
     log("skip: 5 分钟内已拉过一次，还在冷静期");
     return;
   }
-  if (!fs.existsSync(path.join(REPO, "bridge", "dist", "index.js"))) {
-    log("skip: 没有 bridge/dist/index.js，先跑 npm run build");
+  if (!fs.existsSync(path.join(REPO, ENTRY))) {
+    log(`skip: 没有 ${ENTRY}，先跑 npm run build`);
     return;
   }
 
   fs.writeFileSync(STAMP, String(Date.now()));
   const out = fs.openSync(LOG, "a");
-  const child = spawn(process.execPath, ["bridge/dist/index.js"], {
+  const child = spawn(process.execPath, [ENTRY], {
     cwd: REPO,
     detached: true,
     windowsHide: true,

@@ -434,7 +434,7 @@ assert.equal(fgRuns.list()[0]?.error, undefined, "跑成功的不挂红字");
 
 // ---------------------------------------------------------------- 读痕迹
 
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -490,6 +490,96 @@ assert.equal(wire.readLog("del_evil").log, undefined, "ACP_DIR 之外的文件�
 rmSync(logFile, { force: true });
 rmSync(join(acpDir, "del_read.out"), { force: true });
 rmSync(outside, { force: true });
+
+// ---------------------------------------------------------------- 真样本回放：pi-subagents 0.90.0（D393）
+
+/**
+ * 上面那些 `status.json` / `events.jsonl` 都是这里现抄的；这一段用的是**真跑出来**的产物
+ * （`tests/fixtures/pi-subagents-0.90.0/`，抓取办法见那边的 README）。上游换了布局，这里会先红
+ * ——否则网页只会静默少一堆卡片。
+ */
+const FIXTURE_DIR = join(import.meta.dirname, "fixtures", "pi-subagents-0.90.0");
+const FIXTURE_META = JSON.parse(readFileSync(join(FIXTURE_DIR, "meta.json"), "utf8"));
+
+// 样本里的绝对路径是 `<TMP>` 占位：拷进一个真的 `%TEMP%\pi-subagents-*` 根之后换回这份拷贝。
+// （解析器只认这个前缀，见 `underSubagents` / `subagentRoots`。）
+const sampleRoot = mkdtempSync(join(tmpdir(), "pi-subagents-fixture-"));
+cpSync(join(FIXTURE_DIR, "async-subagent-runs"), join(sampleRoot, "async-subagent-runs"), { recursive: true });
+const rewritePaths = (dir) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      rewritePaths(full);
+      continue;
+    }
+    const text = readFileSync(full, "utf8");
+    if (text.includes("<TMP>")) writeFileSync(full, text.split("<TMP>").join(sampleRoot));
+  }
+};
+rewritePaths(join(sampleRoot, "async-subagent-runs"));
+
+const sampleRuns = new BgRuns(() => {});
+const sampleDir = (id) => join(sampleRoot, "async-subagent-runs", id);
+
+// 1. 单跑：`status.json` 还是那个形状 —— `state`、`outputFile`、`steps[].sessionName` 都在。
+const SINGLE_TASK = "Reply with the single word ok. Do not use any tools.";
+sampleRuns.noteToolEnd(
+  "subagent",
+  { mode: "single", runId: FIXTURE_META.runs.single, asyncDir: sampleDir(FIXTURE_META.runs.single) },
+  `Async: worker [${FIXTURE_META.runs.single}]`,
+  { agent: "worker", task: SINGLE_TASK },
+);
+const sampleSingle = sampleRuns.list().find((r) => r.id === FIXTURE_META.runs.single);
+assert.equal(sampleSingle?.agent, "worker");
+assert.equal(sampleSingle?.task, SINGLE_TASK);
+assert.equal(sampleSingle?.hasLog, true, "0.90.0 的 status.json 还在 outputFile 上给过程记录");
+sampleRuns.prune();
+assert.equal(sampleRuns.list().find((r) => r.id === FIXTURE_META.runs.single)?.state, "done", "state: complete 仍然是收工信号");
+assert.match(sampleRuns.readLog(FIXTURE_META.runs.single).log ?? "", /\bok\b/, "output-0.log 读得到");
+
+// 2. workflow：过程记录仍只写在 `events.jsonl`，最终答复仍在 `workflow.value.children[]`。
+const SAMPLE_WF_ID = FIXTURE_META.runs.workflow;
+const WF_TASKS = [
+  { agent: "worker", task: "Reply with just the letter a. Do not use any tools." },
+  { agent: "worker", task: "Reply with just the letter b. Do not use any tools." },
+];
+sampleRuns.noteToolEnd(
+  "subagent",
+  { mode: "workflow", runId: SAMPLE_WF_ID, asyncDir: sampleDir(SAMPLE_WF_ID), workflow: "parallel" },
+  `Async workflow [${SAMPLE_WF_ID}]`,
+  { workflow: "parallel", args: { tasks: WF_TASKS } },
+);
+const sampleWf = sampleRuns.list().find((r) => r.id === SAMPLE_WF_ID);
+assert.equal(sampleWf?.task, `1. ${WF_TASKS[0].task}\n2. ${WF_TASKS[1].task}`, "workflow 的任务原文逐条列出来");
+sampleRuns.prune();
+assert.equal(sampleRuns.list().find((r) => r.id === SAMPLE_WF_ID)?.state, "done");
+const wfRead = sampleRuns.readLog(SAMPLE_WF_ID);
+assert.match(wfRead.log ?? "", /workflow started/, "events.jsonl 还是 workflow 的过程记录");
+assert.match(wfRead.log ?? "", /task-1/, "孩子的事件在时间线里");
+assert.equal((wfRead.out ?? "").includes("## task-1 · worker\na"), true, "最终答复从 workflow.value.children[] 现拼（真样本里就是 a / b）");
+assert.equal((wfRead.out ?? "").includes("## task-2 · worker\nb"), true);
+
+// 3. 脚本式 workflow（派活时 args 里没有 tasks[]）：名字从 receipt 的 children[] 回填。
+const sampleScripted = new BgRuns(() => {});
+sampleScripted.noteToolEnd("subagent", { mode: "workflow", runId: SAMPLE_WF_ID, asyncDir: sampleDir(SAMPLE_WF_ID) }, `Async workflow [${SAMPLE_WF_ID}]`);
+assert.equal(
+  sampleScripted.list()[0]?.task,
+  `1. ${WF_TASKS[0].task}\n2. ${WF_TASKS[1].task}`,
+  "receipt 里的 sessionName 去掉 agent 前缀就是任务原文",
+);
+
+// 4. 前台 workflow（`async:false`）：孩子靠 `parentWorkflowRunId` 认，时间线从孩子的 status.json 现拼。
+//    真样本里孩子的 parentWorkflowRunId 就是那个 workflow 的 runId，拿它当派活调用的 id。
+const sampleFg = new BgRuns(() => {});
+sampleFg.noteToolStart("subagent", { workflow: "parallel", async: false, args: { tasks: WF_TASKS } }, SAMPLE_WF_ID);
+sampleFg.prune();
+assert.equal(sampleFg.list()[0]?.task, `1. ${WF_TASKS[0].task}\n2. ${WF_TASKS[1].task}`);
+const fgTimelineText = sampleFg.readLog(SAMPLE_WF_ID).log ?? "";
+assert.match(fgTimelineText, /task-1 worker started/, "两个孩子在真样本里都带着 parentWorkflowRunId");
+assert.match(fgTimelineText, /task-2 worker started/);
+assert.equal(sampleFg.list()[0]?.state, "running", "前台没有第二个完成信号，等工具结果");
+
+rmSync(sampleRoot, { recursive: true, force: true });
 
 console.log("bgruns-unit: ok");
 

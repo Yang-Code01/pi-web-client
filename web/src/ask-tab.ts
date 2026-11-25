@@ -1,5 +1,5 @@
-/** `browser` = 第三颗 tab「浏览器」(#503)：浏览器工具调用的时间线。 */
-export type QueueTab = "needs" | "exec" | "browser";
+/** `browser` = 第三颗 tab「浏览器」(#503)：浏览器工具调用的时间线；`review` = 第四颗「代码评审」(#651)。 */
+export type QueueTab = "needs" | "exec" | "browser" | "review";
 
 export function askQuestionCount(asks: readonly { questions: readonly unknown[] }[]): number {
   return asks.reduce((total, ask) => total + ask.questions.length, 0);

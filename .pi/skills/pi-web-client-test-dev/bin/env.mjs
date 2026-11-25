@@ -3,7 +3,7 @@
 //
 //   node env.mjs list
 //   node env.mjs ports [--peers 1]
-//   node env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build] [--no-open]
+//   node env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build] [--no-open] [--hotdeploy]
 //   node env.mjs stop --id t1 | --all
 //
 // 端口布局（base = 第一个空闲的 17864+）：bridge=base、peer=base+1、announce(UDP)=base+2、
@@ -35,7 +35,7 @@ function readRegistry() {
 
 function writeRegistry(data) {
   fs.mkdirSync(HOME, { recursive: true });
-  fs.writeFileSync(REGISTRY, JSON.stringify(data, null, 2) + "\n");
+  fs.writeFileSync(REGISTRY, `${JSON.stringify(data, null, 2)}\n`);
 }
 
 /** 有人在这个端口上监听吗：先真连一次，再试独占绑定（Windows 上 SO_REUSEADDR 会「绑得上但其实是抢别人端口」）。 */
@@ -116,6 +116,18 @@ function git(dir, ...args) {
 
 function hasPeer(dir) {
   return fs.existsSync(path.join(dir, "peer", "package.json"));
+}
+
+/**
+ * 壳（D407）存在就起壳：测试环境要验「热部署不切会话」，只有壳在的时候才成立。
+ * 和 scripts/start.mjs 同一条规则，PI_HOST_DISABLE=1 退回旧的 index.js。
+ */
+function bridgeEntry(dir) {
+  const host = path.join(dir, "bridge", "dist", "host.js");
+  if (process.env.PI_HOST_DISABLE === "1" || !fs.existsSync(host)) {
+    return path.join(dir, "bridge", "dist", "index.js");
+  }
+  return host;
 }
 
 function needsBuild(dir) {
@@ -216,6 +228,23 @@ function killTree(pid) {
 /** D360：交给桥、再由桥写进页面 <title> 的那段文字。实例数据，不跟界面语言走（见 D360 代价）。 */
 function windowTitleFor(id) {
   return `测试 ${id}`;
+}
+
+/** 桥的环境变量。`--hotdeploy` 时额外放行热部署（linked worktree 里默认是禁的）。 */
+function bridgeSpawnEnv({ id, state, ports, hotdeploy }) {
+  const env = {
+    ...process.env,
+    PI_WEB_PORT: String(ports.bridge),
+    PI_WEB_STATE: path.join(state, "bridge"),
+    PI_PEER_STATE: path.join(state, "peer-a"),
+    PI_PEER_PORT: String(ports.peer),
+    PI_PEER_ANNOUNCE_PORT: String(ports.announce),
+    PI_PEER_NICKNAME: `测试机 ${id}`,
+    // D360：桥把它写进页面 <title>，tab 上就是「测试 <实例名>」。
+    PI_WEB_WINDOW_TITLE: windowTitleFor(id),
+  };
+  if (hotdeploy) env.PI_HOTDEPLOY_ALLOW_WORKTREE = "1";
+  return env;
 }
 
 /**
@@ -354,18 +383,8 @@ async function cmdStart(opts) {
 
   const bridgePid = spawnHidden(
     process.execPath,
-    [path.join(dir, "bridge", "dist", "index.js")],
-    {
-      ...process.env,
-      PI_WEB_PORT: String(ports.bridge),
-      PI_WEB_STATE: path.join(state, "bridge"),
-      PI_PEER_STATE: path.join(state, "peer-a"),
-      PI_PEER_PORT: String(ports.peer),
-      PI_PEER_ANNOUNCE_PORT: String(ports.announce),
-      PI_PEER_NICKNAME: `测试机 ${id}`,
-      // D360：桥把它写进页面 <title>，tab 上就是「测试 <实例名>」。
-      PI_WEB_WINDOW_TITLE: windowTitleFor(id),
-    },
+    [bridgeEntry(dir)],
+    bridgeSpawnEnv({ id, state, ports, hotdeploy: Boolean(opts.hotdeploy) }),
     dir,
     path.join(state, "bridge.out.log"),
     path.join(state, "bridge.err.log"),
@@ -416,7 +435,7 @@ async function cmdStart(opts) {
     login = 0;
   }
 
-  const entry = { id, dir, branch, head, dirty, url, ports, state, pids: { bridge: bridgePid, extra: extraPids }, startedAt: new Date().toISOString() };
+  const entry = { id, dir, branch, head, dirty, url, ports, state, hotdeploy: Boolean(opts.hotdeploy), pids: { bridge: bridgePid, extra: extraPids }, startedAt: new Date().toISOString() };
   reg.instances = reg.instances.filter((i) => i.id !== id).concat(entry);
   writeRegistry(reg);
 
@@ -432,6 +451,7 @@ async function cmdStart(opts) {
   say(`  端口    ${portLine}`);
   say(`  状态    ${path.join(state, "bridge.out.log")}`);
   say(`  登录自检 HTTP ${login}${login === 200 || login === 204 ? "（口令 test 生效）" : "（口令没生效，看日志）"}`);
+  if (opts.hotdeploy) say("  热部署  已放行（--hotdeploy）：面板里可以直接点部署");
   if (dirty) say("  注意：工作区有别的未提交改动，构建用的是当前文件内容。");
   await openWindow(url, id, opts);
 }
@@ -443,7 +463,7 @@ function cmdList() {
     return;
   }
   for (const inst of reg.instances) {
-    say(`${inst.id}\t${inst.url}\t${inst.branch}@${inst.head}\tbridge=${inst.ports.bridge}\tpeer=${inst.ports.peer}\t${inst.startedAt}`);
+    say(`${inst.id}\t${inst.url}\t${inst.branch}@${inst.head}\tbridge=${inst.ports.bridge}\tpeer=${inst.ports.peer}\t${inst.startedAt}${inst.hotdeploy ? "\t热部署已放行" : ""}`);
   }
 }
 
@@ -487,7 +507,7 @@ try {
   else if (cmd === "list") cmdList();
   else if (cmd === "ports") await cmdPorts(opts);
   else {
-    say("用法：node env.mjs list | ports [--peers N] | start --dir <path> [--name t1] [--peers 1] [--build] [--no-open] | stop --id t1|--all");
+    say("用法：node env.mjs list | ports [--peers N] | start --dir <path> [--name t1] [--peers 1] [--build] [--no-open] [--hotdeploy] | stop --id t1|--all");
     process.exitCode = 2;
   }
 } catch (err) {

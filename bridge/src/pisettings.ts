@@ -70,6 +70,23 @@ export async function readSettings(cli: string, scope: SettingsScope, cwd: strin
   return { scope, cwd, path: file, exists, raw, json, error, writable, defaults: settingDefaults(cli) };
 }
 
+/**
+ * pi 全局设置里那对「默认模型」（`defaultProvider` + `defaultModel`），拼成 `provider/id`。
+ * 没设过 / 读不出来 / 只写了一半 → 空串，调用方自己决定退到哪（翻译那边就退成「让用户挑」）。
+ * 注意：**不 spawn pi**，只读文件 —— 每次 `/api/translate/start` 都要用它。
+ */
+export function defaultModelRef(): string {
+  try {
+    const raw = fs.readFileSync(settingsPath("global", null), "utf8");
+    const json = parseObject(raw, "settings.json ");
+    const provider = typeof json.defaultProvider === "string" ? json.defaultProvider.trim() : "";
+    const model = typeof json.defaultModel === "string" ? json.defaultModel.trim() : "";
+    return provider && model ? `${provider}/${model}` : "";
+  } catch {
+    return "";
+  }
+}
+
 /** `a.b` → nested; `null` deletes the key (and an emptied parent object). */
 export function applyPatch(base: Obj, patch: Obj): Obj {
   const out: Obj = structuredClone(base);

@@ -1,4 +1,5 @@
 import { tr } from "../i18n/index.ts";
+import { face as faceNode, type IconName } from "../icons.ts";
 
 /**
  * 图片查看器：点聊天里的图打开。同一会话里的所有图片能左右翻（← / →），
@@ -29,8 +30,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""):
   return node;
 }
 
-function btn(text: string, title: string, run: () => void): HTMLButtonElement {
-  const b = el("button", "iv-btn", text);
+function btn(face: IconName | string, title: string, run: () => void): HTMLButtonElement {
+  const b = el("button", "iv-btn");
+  b.append(faceNode(face));
   b.type = "button";
   b.title = title;
   b.setAttribute("aria-label", title);
@@ -59,7 +61,7 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
   const top = el("div", "iv-top");
   const title = el("span", "iv-name");
   const count = el("span", "iv-count");
-  top.append(title, count, btn("✕", tr("关掉（Esc）"), () => opts.onClose()));
+  top.append(title, count, btn("close", tr("关掉（Esc）"), () => opts.onClose()));
   const prev = btn("‹", tr("上一张（←）"), () => go(index - 1));
   prev.classList.add("iv-prev");
   const next = btn("›", tr("下一张（→）"), () => go(index + 1));
@@ -73,7 +75,7 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
     btn("+", tr("放大"), () => zoomTo(scale * 1.25)),
     btn(tr("适应"), tr("适应窗口"), () => reset()),
     btn("1:1", tr("原始大小"), () => zoomTo(1)),
-    btn("⟳", tr("旋转 90°"), () => {
+    btn("refresh", tr("旋转 90°"), () => {
       rot = (rot + 90) % 360;
       paint();
     }),

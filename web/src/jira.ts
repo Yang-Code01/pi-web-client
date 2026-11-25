@@ -14,7 +14,7 @@ import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
 import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, isUnread, issueMeta, keyMask, mergeSearchPage, recentSeenKey, recentSnippet, relativeTime, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
-import { retireOverlay } from "./modal.ts";
+import { markSurface, retireOverlay } from "./modal.ts";
 import { sessionNameFromIssueKey } from "./session-name.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraRecentItem, JiraSearchMeta, JiraUserOption, RecentKind, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
@@ -487,7 +487,7 @@ export class JiraPanel {
     this.fields = { relations: [] };
     if (this.state.kind === "ready") this.siteUrl = this.state.siteUrl;
 
-    const back = el("div", "jc-back");
+    const back = markSurface(el("div", "jc-back"), "window");
     back.addEventListener("mousedown", (ev) => {
       if (ev.target === back) this.close();
     });
@@ -1025,7 +1025,7 @@ export class JiraPanel {
     };
     this.personInput = input;
 
-    const pop = el("div", "jira-user-pop");
+    const pop = markSurface(el("div", "jira-user-pop"), "menu");
     pop.hidden = true;
     this.personPop = pop;
     box.append(input, pop);
@@ -2052,7 +2052,7 @@ export class JiraPanel {
   }): Promise<string | null> {
     return new Promise((resolve) => {
       const host = this.pane?.closest<HTMLElement>(".jc-console") ?? document.body;
-      const back = el("div", "jira-ask-back");
+      const back = markSurface(el("div", "jira-ask-back"), "window");
       const card = el("div", "jira-ask");
       card.setAttribute("role", "dialog");
       card.setAttribute("aria-modal", "true");
@@ -2112,7 +2112,7 @@ export class JiraPanel {
    */
   private openHandoffMenu(anchor: HTMLElement, issue: JiraIssue, siteUrl: string): void {
     this.closeHandoff();
-    const pop = el("div", "jira-handoff-pop");
+    const pop = markSurface(el("div", "jira-handoff-pop"), "menu");
     pop.style.position = "fixed";
     const r = anchor.getBoundingClientRect();
     // 左右夹进窗口；先贴在锚点下方，量过高度再决定要不要翻上去。
@@ -2290,7 +2290,7 @@ export class JiraPanel {
    */
   private openRootPicker(onSaved: (root: string) => void): void {
     this.closePicker();
-    const layer = el("div", "jira-picker");
+    const layer = markSurface(el("div", "jira-picker"), "window");
     layer.onclick = (ev) => {
       if (ev.target === layer) this.closePicker();
     };

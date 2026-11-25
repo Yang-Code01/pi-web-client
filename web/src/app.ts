@@ -2,21 +2,25 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./settings-console.css";
-import { api, type DepPackageId, type DepsReport } from "./api.ts";
+import { api, githubApi, type DepPackageId, type DepsReport } from "./api.ts";
+import { icon, face, isIconName, fileIcon, type IconName } from "./icons.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { atSpan, filterCommands, PANEL_COMMANDS, slashSpan, type CommandItem } from "./commands.ts";
 import { documentTitle } from "./window-title.ts";
-import { applyFrame, type FrameView, type RedrawKey, type ServerFrameType } from "./frames.ts";
+import { applyFrame, lostAskHere, type FrameView, type RedrawKey, type ServerFrameType } from "./frames.ts";
 import { copilotFromFrame, creditsToUsd, formatAge, formatCredits, formatReset, isMixed, usedPercent, type CopilotView } from "./copilot.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
+import { GithubPanel } from "./github-panel.ts";
+import { refreshGithubCards } from "./github-cards.ts";
+import { githubFeature } from "./github-settings.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
-import { cardPieces, unfoldNewlines } from "./ask-text.ts";
+import { cardPieces } from "./ask-text.ts";
 import { renderMarkdown } from "./md.ts";
-import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, type TrAct, type TrView } from "./translateview.ts";
+import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, trElapsed, trNote, trPendingHead, type TrAct, type TrView } from "./translateview.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
@@ -63,9 +67,13 @@ import { checkName, freeName, secretVarName, serverNameFor } from "./mcpstore.ts
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { queueWhatsnew } from "./whatsnew.ts";
+import { renderLogHead, renderLogPage, type SelfLog } from "./changelog.ts";
 import { openHotdeploy } from "./hotdeploy.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { ReposSheet } from "./repossheet.ts";
+import { ReviewSheet } from "./review-sheet.ts";
+import { PrSheet, type PrInfo } from "./pr-sheet.ts";
+import { HandoffSheet } from "./handoff-sheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
@@ -77,8 +85,26 @@ import { type CtxLine, type CtxPolicy } from "./context.ts";
 import { ContextPanel, type ContextPanelData } from "./context-panel.ts";
 import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
+import {
+  fixPrompt as reviewFixPrompt,
+  fixPromptMany as reviewFixManyPrompt,
+  repoFromUrl as reviewRepoFromUrl,
+  type FixContext as ReviewFixContext,
+  type PullRequest as ReviewPr,
+  renderReview,
+  reviewView,
+  type Mark as ReviewMark,
+  type OcrStatus as ReviewOcr,
+  type ReviewFinding,
+  type ReviewActions,
+  type ReviewMode,
+  type ReviewPanelInput,
+  type ReviewProgress,
+  type ReviewState,
+} from "./review.ts";
 import { execView, type ExecChildRunInput, type ExecMetricsView, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
+import { pickLanding, parseLast, pruneLast, recordLast, type WsLast } from "./wsmemory.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, birthReveal, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type BirthReveal, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
@@ -100,7 +126,8 @@ import {
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
-import { escapeTopLayer, LEAVE_MS, overlaysOpen, pushEscLayer, retireOverlay, startLeaving } from "./modal.ts";
+import { ReminderCenter, type Reminder } from "./reminders.ts";
+import { appZoom, escapeTopLayer, LEAVE_MS, markSurface, mountOverlay, overlaysOpen, pushEscLayer, retireOverlay, startLeaving, type SurfaceKind, type SurfaceOpts } from "./modal.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -114,7 +141,7 @@ import {
 } from "./settings-matrix.ts";
 import { paintSubagentsPage, type SubagentScan } from "./subagents.ts";
 import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
-import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
+import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, getLang, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
@@ -177,6 +204,20 @@ interface SessionBadge {
  */
 /** D170 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
 type BgRunDto = BgRunView;
+
+/// `/api/changelog?scope=self` 的回包：`log` / `repo` 是 D195 后来由桥端结构化解析出来的，
+/// 旧桥只给 `text`（markdown），没有前两项就退回 markdown 画法。
+interface selfChangelogOut {
+  version?: string;
+  branch?: string;
+  commit?: string;
+  root?: string;
+  text?: string;
+  log?: SelfLog;
+  repo?: { owner: string; name: string } | null;
+  whatsnewSeen?: string;
+  whatsnewEnabled?: boolean;
+}
 
 interface ExecChildState {
   items: Item[];
@@ -261,13 +302,20 @@ function bgTookText(ms: number): string {
 }
 
 /**
- * 「📂 产物」在第一个空格处拆成图标与名字。宽按钮（`setWideLabel`）与 Aa 里的预览胶囊共用
- * 这一份，不然同一套文案在两处各按各的规则拆，改一处忘另一处。
+ * 顶栏那几颗宽按钮的图标（D138 的「图标与文字分开包」不变，只是图标从文案里搬到了这张表）。
+ * 文案里不再带 emoji，所以窄屏「收成方块」那套拆法不必再在第一个空格处切字符串。
  */
-function splitWideLabel(label: string): [string, string] {
-  const cut = label.indexOf(" ");
-  return cut > 0 ? [label.slice(0, cut), label.slice(cut + 1)] : ["", label];
-}
+const TOPBAR_ICON = {
+  artifacts: "layers",
+  terminal: "terminal",
+  files: "folder",
+  notes: "bug",
+  peer: "users",
+  scratch: "bubble",
+  jira: "lozenge",
+  mail: "mail",
+  filesearch: "search",
+} satisfies Record<string, IconName>;
 
 export class App {
   private socket = new Socket();
@@ -305,7 +353,7 @@ export class App {
    * A questionnaire that died before it was answered (tool call aborted, turn interrupted, session
    * released…). The panel is gone, but whatever was filled in is kept — see askLostBlock().
    */
-  private askLost: { id: string; title: string; reason: string; lines: string[] } | null = null;
+  private askLost: { sessionId: string; id: string; title: string; reason: string; lines: string[] } | null = null;
   /** The ask id this page submitted itself: its ask.remove is not a loss. */
   private lastAnsweredAsk: string | null = null;
   private askFolded = false;
@@ -383,6 +431,53 @@ export class App {
   private mail: MailPanel | null = null;
   /** D264：AI 发信前的确认框。跟 MailPanel 分开：没开邮箱面板也得能弹。 */
   private mailConfirm: MailConfirmDialog | null = null;
+  // #651 代码评审：桥发来的状态 + 面板自己的那点选择（模式 / 对照分支 / 提交 / 模型）。
+  private reviewState: ReviewState | null = null;
+  private reviewProgress: ReviewProgress | null = null;
+  private reviewOcr: ReviewOcr | null = null;
+  private reviewInstalling = false;
+  private reviewInstallLog: string[] = [];
+  private reviewError = "";
+  private reviewNotGit = false;
+  /** 默认「GitHub PR」：从 PR 里挑一个来评是主要用法。 */
+  private reviewMode: ReviewMode = "pr";
+  private reviewBase = "main";
+  private reviewTarget = "HEAD";
+  private reviewCommit = "";
+  private reviewPr = "";
+  private reviewPrQuery = "";
+  private reviewPrMenu = false;
+  private reviewSheet: ReviewSheet | null = null;
+  private reviewPrSheet: PrSheet | null = null;
+  /** 「PR 信息」dialog 的数据（按号缓存一次；点开时才拉）。 */
+  private reviewPrInfo: { number: number; info: PrInfo | null; error: string } = { number: 0, info: null, error: "" };
+  private reviewPrs: ReviewPr[] = [];
+  private reviewPrsLoading = false;
+  private reviewPrError = "";
+  private reviewPrsAsked = "";
+  private reviewPrsAt = 0;
+  /** 本仓库在 GitHub 上的 `owner/name`（桥从 origin 认出来的），用来比对粘贴的链接。 */
+  private reviewRemoteRepo = "";
+  /**
+   * #666：这一次的 PR 号是从**哪张链接卡**来的（`owner/name`）。桥拿它拒掉别仓的号。
+   * 手输、从 PR 列表里选、切范围都算「人自己决定的号」，当场清掉（`clearReviewExpectRepo()`）。
+   */
+  private reviewExpectRepo = "";
+  /** 这一次是**我们**点的「开始评审」：只有它跑完才弹提示（别的页签发起的别来抢）。 */
+  private reviewPendingToast = false;
+  private reviewStartedRunId = "";
+  private reviewToasted = new Set<string>();
+  /** 最近一次发 `review.get` 的时刻：ocr 那一帧丢了要能自己补一次，别死等。 */
+  private reviewOcrAskedAt = 0;
+  /** `会话id|cwd`：变了就把面板状态清空（评审按会话分开）。 */
+  private reviewSessionKey = "";
+  /** 定时补问一次：页面重连后没人触发重画时，光靠 render 里的自愈等不到下一次重画。 */
+  private reviewRetryTimer: number | null = null;
+  private reviewModel = "";
+  private reviewRefs: string[] = [];
+  private reviewAsked = "";
+  /** 桥算出来的仓库根（页面只给 cwd）；帧用它做过滤。 */
+  private reviewRepo = "";
   private models: ModelInfo[] = [];
   /** D150：目录是两段式（快的先到、带扩展的补上），所以记住最近一次失败原因与「什么时候问过」。 */
   private modelsError = "";
@@ -508,9 +603,16 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /**
+   * 更新日志现在是「阅读态」：整页收起左栏，靠页头那个「‹ 设置」退回来。退回哪一格由
+   * 进来之前那一页决定（默认落到「全局设置」，深链直接打开时不会退回到自己）。
+   */
+  private settingsReturnTab: SettingsTab = "global";
   /** D245: 翻译用的默认模型（`provider/id`）与出厂默认，来自桥的偏好；还没读过时为空串。 */
   private trModelPref = "";
   private trDefaultModel = "";
+  /** D392: 同时翻几块（1–8），同样存桥的本机偏好。 */
+  private trConcurrency = 4;
   /** #285: the form's two scopes share one tab id; this is what the segment and the form follow. */
   private settingsScope: "global" | "project" = "global";
   /** #285: flattened drafts + the on-disk snapshot they diff against, kept per scope while the sheet is open. */
@@ -551,6 +653,8 @@ export class App {
   private runtimeStats: RuntimeStats | null = null;
   /** D120 / #80：「全部休眠」的最后一次回执（null = 这次打开面板还没按过）。 */
   private sleepAllReceipt: SleepAllReceipt | null = null;
+  /** D407 / story 13：「全部停止」的回执。关了窗口之后，这是唯一说得出口的关机口。 */
+  private stopAllReceipt: string | null = null;
   /** #27 the 登录 tab: providers as pi sees them, a filter, and the login running right now. */
   private authProviders: AuthProvider[] | null = null;
   /** #30: is the terminal session-lock extension in pi's global extensions? */
@@ -783,6 +887,10 @@ export class App {
   private stepCount = 0;
   /** #93: 横栏里那三样（胶囊 / 「＋N」 / 浮层）是共用组件，这里只留外壳 —— 它自己管焦点。 */
   private pillBar!: PillBar<SessionState>;
+  /** D389 提醒中心：★ 行右端那颗角标 + 清单 + 吐司。 */
+  private reminders: ReminderCenter | null = null;
+  /** `.app` 这个 grid 容器：清单与吐司挂它上面，跟着字号一起缩（D123）。 */
+  private shellEl: HTMLElement | null = null;
   /**
    * #189：上一次画出来的 ★ 行（从左到右的 id）。manage 回声到达时那颗会话已经不在行里了，
    * 「右邻」只能按归档前这一份算；窄屏与壳 B/C/D 不画这一行，顺序照样记。
@@ -842,6 +950,8 @@ export class App {
   private mgrRefresh: (() => void) | null = null;
   private mgrPainting = false;
   private viewer: Viewer | null = null;
+  /** GitHub 通道：右栏那块 dock（`web/src/github-panel.ts`）。懒建，关掉就丢。 */
+  private githubPanel: GithubPanel | null = null;
   /** 预览历史，按会话分开（D63）：关预览保留、刷新页面清空、切会话各自一份。 */
   private vhist = new Map<string, { steps: VStep[]; at: number }>();
   private cardDelArm: { id: string; at: number } | null = null;
@@ -888,22 +998,21 @@ export class App {
   }
 
   /**
-   * 顶栏那几颗「图标 + 文字」的按钮。窄屏上六个宽按钮写不下（「📁 文件管理器」一颗就 90px，
-   * 390px 的手机加上「产物」就溢出），所以图标与文字分开包：`@media (max-width: 620px)` 只把
-   * `.lb` 收掉，按钮回成 28px 方块，文字还在 title / aria-label 里。
-   * 切分用的是 `tr()` 之后的文案（形如「📂 产物」，第一个空格前是图标），所以不必再为窄屏添一套 key。
+   * 顶栏那几颗「图标 + 文字」的按钮。窄屏上六个宽按钮写不下（「文件管理器」一颗就 90px，
+   * 390px 的手机加上「产物」就溢出），所以图标与文字分开包：`@media (max-width: 560px)` 只把
+   * `.lb` 收掉，按钮回成 28px 方块，文字还在 title / aria-label 里。图标名走 `TOPBAR_ICON`。
    */
-  private wideBtn(label: string, extra = ""): HTMLButtonElement {
+  private wideBtn(iconName: IconName, label: string, extra = ""): HTMLButtonElement {
     const b = el("button", `icon-btn wide ${extra}`.trim()) as HTMLButtonElement;
-    this.setWideLabel(b, label);
+    this.setWideLabel(b, iconName, label);
     return b;
   }
 
-  /** 同一颗宽按钮的字会换（终端跑起来之后是「>_ 终端 2」），所以拆开这件事得能重做一遍。 */
-  private setWideLabel(btn: HTMLElement, label: string): void {
-    const [ic, name] = splitWideLabel(label);
-    btn.replaceChildren(el("span", "ic", ic || name));
-    if (ic) btn.append(el("span", "lb", name));
+  /** 同一颗宽按钮的字会换（终端跑起来之后是「终端 2」），所以拆开这件事得能重做一遍。 */
+  private setWideLabel(btn: HTMLElement, iconName: IconName, label: string): void {
+    const box = el("span", "ic");
+    box.append(icon(iconName, { size: 15 }));
+    btn.replaceChildren(box, el("span", "lb", label));
   }
 
   // ---------------------------------------------------------------- layout
@@ -926,9 +1035,10 @@ export class App {
     collapseRight.dataset.side = "right";
     collapseRight.dataset.act = "queue";
     collapseRight.onclick = () => this.togglePane("queue");
-    // 这颗以前是「Aa」：现在它是整个设置抽屉（外观 + 语言 + 通道 + 工具）的入口，所以画成齿轮。
-    // 16px 是量出来的：13px 的 ⚙ 在这个等宽字体里糊成一圈，看不出八颗齿；U+FE0E 要单色字形，不要彩色 emoji。
-    const look = el("button", "icon-btn set-btn", "\u2699\uFE0E");
+    // 这颗以前是「Aa」：现在它是整个设置抽屉（外观 + 语言 + 通道 + 工具）的入口。
+    // 图形用齿轮（用户定的）：八颗短齿 + 大轮毂，16px 下不会糊成一朵太阳花。
+    const look = el("button", "icon-btn set-btn") as HTMLButtonElement;
+    look.append(icon("gear", { size: 16 }));
     look.title = tr("设置：外观 / 连接与设置");
     look.setAttribute("aria-label", look.title);
     look.dataset.act = "look";
@@ -938,33 +1048,33 @@ export class App {
     this.hotChip.hidden = true;
     this.hotChip.dataset.act = "hotdeploy";
     this.hotChip.onclick = () => openHotdeploy();
-    const files = this.wideBtn(tr("📂 产物"));
+    const files = this.wideBtn(TOPBAR_ICON.artifacts, tr("产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
     files.onclick = () => void this.openArtifactsSheet();
     files.hidden = true;
     // D92: the shell sits next to 产物 now — it is a dialog over the page, and this button is both
     // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
-    const term = this.wideBtn(tr(">_ 终端"));
+    const term = this.wideBtn(TOPBAR_ICON.terminal, tr("终端"));
     term.dataset.act = "terminal";
     term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
     term.onclick = () => this.openTerminal();
     this.els.term = term;
-    const fs = this.wideBtn(tr("📁 文件管理器"));
+    const fs = this.wideBtn(TOPBAR_ICON.files, tr("文件管理器|顶栏按钮"));
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     fs.dataset.act = "files";
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
     // D108：记录不跟会话绑定，所以它跟终端一样常显；计数只在 title 里。
-    const notes = this.wideBtn("🐞 bug", "notes-btn");
+    const notes = this.wideBtn(TOPBAR_ICON.notes, "bug", "notes-btn");
     notes.title = tr("记录 bug / 变更 / 想法 / 杂事");
     notes.dataset.act = "notes";
     notes.onclick = () => this.openNotes();
     this.els.notes = notes;
     // #45: the peer is a dialog over the page, not a separate tab — same as 终端.
-    const peer = this.wideBtn(tr("🌐 内网通"));
+    const peer = this.wideBtn(TOPBAR_ICON.peer, tr("内网通"));
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     // 点它是一次用户手势：顺手把通知权限问一次（没问过才问，问过就不再打扰）。
@@ -980,26 +1090,26 @@ export class App {
     peer.append(this.peerBadge);
     this.startPeerWatch();
     // #86：随手问也不跟会话绑定（它不进列表），所以跟终端 / 记录一样常显。
-    const scratch = this.wideBtn(tr("💭 随手问"));
+    const scratch = this.wideBtn(TOPBAR_ICON.scratch, tr("随手问"));
     scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     scratch.dataset.act = "scratch";
     scratch.onclick = () => this.scratch.open();
     this.els.scratch = scratch;
     // #248：Jira 面板。跟「随手问」一样是顶栏常驻的 dialog 入口（窄屏只留 🔷）。
-    const jira = this.wideBtn(tr("🔷 Jira"));
+    const jira = this.wideBtn(TOPBAR_ICON.jira, "Jira");
     jira.title = tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP");
     jira.dataset.act = "jira";
     jira.onclick = () => this.openJira();
     this.els.jira = jira;
     // 邮箱：跟「随手问」一样是顶栏常驻的 dialog 入口（窄屏只留 📮）。
-    const mail = this.wideBtn(tr("📮 邮箱"));
+    const mail = this.wideBtn(TOPBAR_ICON.mail, tr("邮箱"));
     mail.title = tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管");
     mail.dataset.act = "mail";
     mail.onclick = () => this.openMail();
     this.els.mail = mail;
     // D321：整机文件搜索（名字就叫 Everything）。跟终端 / 记录一样常驻（不绑会话）；
     // 默认画在顶栏（D332，2026-11-19 用户要求与文件管理器对调），用户在「设置 → 外观」里可以关。
-    const fsearch = this.wideBtn(tr("🔎 Everything|顶栏按钮"));
+    const fsearch = this.wideBtn(TOPBAR_ICON.filesearch, tr("Everything|顶栏按钮"));
     fsearch.title = tr("在这台电脑上按名字 / 路径找文件（本机索引，毫秒级）");
     fsearch.dataset.act = "filesearch";
     fsearch.onclick = () => this.openFileSearch();
@@ -1142,6 +1252,20 @@ export class App {
     app.append(shell);
 
     Object.assign(this.els, { topbar, wsTabsRow, wsTabs, wsTabsAdd, wsTabsMore, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    this.shellEl = shell;
+    this.reminders = new ReminderCenter({
+      /* A 壳（且不窄）钉在 ★ 行右端；B/C/D 与窄屏退回顶栏 —— 那几套壳里这一行根本不画。 */
+      mount: (button) => {
+        const parts = shellParts(activeLayout(this.prefs));
+        const host = parts.sessionRow && !this.compact() && sessionRow ? sessionRow : topbar;
+        if (button.parentElement !== host) host.append(button);
+      },
+      stage: () => this.shellEl,
+      openSession: (sessionId, reminderId) => this.jumpToReminder(sessionId, reminderId),
+      currentSessionId: () => this.currentId,
+      hasSession: (sessionId) => this.sessions.some((x) => x.id === sessionId),
+      send: (frame) => this.socket.send(frame as any),
+    });
     // #315: the composer's cap is half of this pane, so any change to the pane's height (a window
     // drag, collapsing the right column, another tab on a narrow screen) has to re-measure it.
     // Observe the pane, not the composer: the composer grows inside the pane, so watching it would
@@ -1215,6 +1339,7 @@ export class App {
       return id ? `/api/session/image?id=${encodeURIComponent(id)}&item=${encodeURIComponent(itemId)}&n=${index}` : null;
     });
     this.chat.onBashStop = () => this.act(() => this.socket.send({ type: "abortBash", sessionId: this.currentId }));
+    this.syncGithubCards();
     this.chat.onFork = (item, index) => this.forkAt({ entryId: item.id, index, text: item.text });
     // 账本要的是「这次会话里所有失败」，聊天区只画本轮的红卡：两边各收各的，按 toolCallId 去重。
     this.chat.onFail = (f) => this.recordFail(f);
@@ -1339,6 +1464,7 @@ export class App {
       // 换壳跟窗口跨过 900px 是同一件事：那颗「当前在哪」和标签行都得挪位置（构造期还没搭 DOM）。
       this.placeNowChip();
       this.placeWsTabs();
+      this.reminders?.place();
     }
     const previousQueueTab = this.queueTab;
     if (changed) this.syncQueueTabMemory(true);
@@ -1618,6 +1744,7 @@ export class App {
       this.connected = s === "open";
       if (this.connected) this.reportPresence();
       if (this.connected) void this.refreshHotBranch();
+      if (this.connected) void this.reminders?.refresh();
       this.renderTop();
       this.renderSessions();
       // #291：断桥时开关墙整块置灰，连上再亮回来 —— 这块的重画点跟着连接状态走。
@@ -1775,6 +1902,8 @@ export class App {
     this.setSelectedWs(null);
     if (this.sessionReclaimId !== id && this.sessionReclaimEl) this.sessionReclaimEl.hidden = true;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
+    // D391：任何来源打开一颗会话（左栏 / ★ 行 / 搜索 / 深链 / 刷新 / 自动落点）都写成这一组的记忆。
+    this.noteLastSession();
     this.resetSessionView();
     // D386：打开的是一颗**已归档**的会话，就把它请回来（取消归档 + 置顶到最前）。
     // 别的会话照旧不动排列（D146）；不这么做的话 `starredRow()` 排掉归档会话、
@@ -1782,6 +1911,27 @@ export class App {
     if (this.manage.archived.includes(id)) this.reviveArchived(id);
     this.socket.send({ type: "subscribe", sessionId: id });
     this.renderAll();
+  }
+
+  /**
+   * D389：点清单里一条 = 切到那个会话**并滚到那张卡**。卡片要等 queue 快照回来才画出来，
+   * 所以这里轮询几次（约 1.6 秒），拿到就滚到视口中间并闪一下；拿不到就算了（会话那边已经切过去了）。
+   */
+  private jumpToReminder(sessionId: string, reminderId?: string): void {
+    this.openSession(sessionId);
+    if (!reminderId) return;
+    let tries = 0;
+    const seek = (): void => {
+      const card = this.els.scroll?.querySelector<HTMLElement>(`[data-reminder-id="${reminderId}"]`);
+      if (card) {
+        card.scrollIntoView({ block: "center" });
+        card.classList.add("remind-flash");
+        window.setTimeout(() => card.classList.remove("remind-flash"), 1800);
+        return;
+      }
+      if (tries++ < 20) window.setTimeout(seek, 80);
+    };
+    seek();
   }
 
   /**
@@ -2009,6 +2159,9 @@ export class App {
         this.tunnel = newerTunnel(this.tunnel, msg.tunnel);
         // D386：首屏/重连的 hello 才第一次带来 `manage` —— 深链 `#/s/<归档 id>` 就是在这一步补请回来的。
         this.maybeReviveCurrent();
+        // D391：深链 `#/s/<id>` 与刷新都是在快照到达之前跑 `routeFromHash()` 的 —— 那时还不知道
+        // 这颗会话属于哪个工作区。快照到了补记一次（同一组同一颗只写一次，便宜）。
+        this.noteLastSession();
         this.renderAll();
         // Q-021: 新会话 / 首屏恢复都可能带着另一个 cwd 进来。
         void this.refreshGit(true);
@@ -2044,6 +2197,8 @@ export class App {
         this.turnChars = { cjk: 0, other: 0 };
         if (msg.state) this.session = msg.state as SessionState;
         else if (msg.session) this.session = msg.session;
+        // D391：新建 / 还原的会话不走 `openSession()`，但「当前会话是哪颗」一样算一层记忆。
+        this.noteLastSession();
         this.policy = (msg.policy as CtxPolicy | null) ?? null;
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         if ("trust" in msg) this.trust = (msg.trust as TrustState | null) ?? null;
@@ -2418,6 +2573,14 @@ export class App {
       case "attendance.reminder":
         this.showAttendanceReminder(String(msg.title ?? tr("加班申请提醒")), String(msg.body ?? ""), String(msg.tag ?? ""));
         break;
+      case "reminders": {
+        this.reminders?.setView(msg as any);
+        break;
+      }
+      case "reminder.toast": {
+        if (msg.reminder) this.reminders?.toast(msg.reminder as Reminder);
+        break;
+      }
       case "notify":
         this.me = { ...this.me, notify: msg.on !== false };
         if (this.sheetKind === "settings" && this.settingsTab === "notify") this.paintSettings();
@@ -2468,6 +2631,93 @@ export class App {
         this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: tr("已分享到{p1}：{p2}{p3}", { p1: via, p2: msg.url, p3: msg.gistUrl ? `（gist：${msg.gistUrl}）` : "" }), level: "info" });
         void navigator.clipboard?.writeText(String(msg.url)).catch(() => {});
         window.open(String(msg.url), "_blank", "noopener");
+        break;
+      }
+      // ------------------------------------------------ 代码评审（#651）
+      case "review.state": {
+        const dir = this.reviewDir();
+        // 评审按会话分开存：别的会话的帧不许动这一个（以前只按仓库分，切会话还看得到上一份）。
+        const session = String(msg.sessionId ?? "");
+        if (session && this.currentId && session !== this.currentId) break;
+        if (msg.dir && dir && String(msg.dir) !== dir && String(msg.dir) !== this.reviewRepo) break;
+        if (msg.error) {
+          this.reviewError = errText(msg);
+          this.reviewState = null;
+          this.reviewProgress = null;
+          this.reviewNotGit = msg.code === "not_git";
+          if (this.queueTab === "review") this.renderQueue();
+          break;
+        }
+        this.reviewError = "";
+        this.reviewNotGit = false;
+        if (msg.dir) this.reviewRepo = String(msg.dir);
+        this.reviewState = (msg.state ?? null) as ReviewState | null;
+        this.reviewProgress = (msg.progress ?? null) as ReviewProgress | null;
+        this.announceReviewDone();
+        if (this.queueTab === "review") this.renderQueue();
+        this.syncReviewSheet();
+        break;
+      }
+      case "review.prs": {
+        // 不再按所在目录丢弃：`review.state` 与它谁先到没有保证，`reviewRepo` 空着时那张列表
+        // 会被整帧扔掉，面板就永远「点开没有数据」（用户实测）。
+        if (msg.dir) this.reviewRepo = String(msg.dir);
+        this.reviewPrs = Array.isArray(msg.prs) ? (msg.prs as ReviewPr[]) : [];
+        this.reviewRemoteRepo = String(msg.repo ?? "");
+        this.reviewPrsAt = Date.now();
+        this.reviewPrError = msg.ok ? "" : errText(msg) || String(msg.error ?? "");
+        this.reviewPrsLoading = false;
+        // 手输的号不在列表里时不要被第一项悄悄顶掉：只在没选过时挑第一个。
+        if (!this.reviewPr && this.reviewPrs.length) this.reviewPr = String(this.reviewPrs[0].number);
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      }
+      case "review.prinfo": {
+        const number = Number(msg.pr) || 0;
+        this.reviewPrInfo = { number, info: (msg.info ?? null) as PrInfo | null, error: msg.ok ? "" : errText(msg) || String(msg.error ?? "") };
+        this.reviewPrSheet?.set(number, this.reviewPrInfo.info, this.reviewPrInfo.error);
+        break;
+      }
+      case "review.ocr":
+        if (this.reviewRetryTimer !== null) {
+          window.clearTimeout(this.reviewRetryTimer);
+          this.reviewRetryTimer = null;
+        }
+        this.reviewOcr = (msg.ocr ?? null) as ReviewOcr | null;
+        if (this.queueTab === "review") this.renderQueue();
+        this.syncReviewSheet();
+        break;
+      case "review.progress":
+        if (String(msg.sessionId ?? "") && this.currentId && String(msg.sessionId) !== this.currentId) break;
+        if (msg.progress) {
+          this.reviewProgress = msg.progress as ReviewProgress;
+          const id = String((msg.progress as ReviewProgress).runId ?? "");
+          if (id && this.reviewPendingToast && !this.reviewStartedRunId) this.reviewStartedRunId = id;
+        } else this.reviewProgress = null;
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      case "review.install.log":
+        this.reviewInstallLog = [...this.reviewInstallLog, String(msg.line ?? "")].slice(-50);
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      case "review.install.done":
+        this.reviewInstalling = false;
+        this.reviewOcr = (msg.ocr ?? null) as ReviewOcr | null;
+        if (!msg.ok) this.reviewError = errText(msg) || tr("没有装上");
+        if (this.queueTab === "review") this.renderQueue();
+        break;
+      // GitHub 通道：壳看见 `gh pr create` 成功 → 把面板推开（你刚才让它建的那个 PR）。
+      // 只认当前会话：别的会话建的 PR 不该抢你现在的右栏。
+      case "github.pr": {
+        if (msg.sessionId && msg.sessionId !== this.currentId) break;
+        if (!githubFeature(this.prefs).autoPanel) break;
+        const number = Number(msg.number);
+        this.openGithubPanel(Number.isFinite(number) && number > 0 ? number : undefined, String(msg.repo ?? "") || undefined);
+        break;
+      }
+      // `gh pr list` / `gh pr view` 这类的收尾：不抢栏位，面板开着就顺手刷一下。
+      case "github.seen": {
+        if (this.githubPanel && msg.sessionId === this.currentId) void this.githubPanel.reload();
         break;
       }
       case "notes":
@@ -3594,8 +3844,15 @@ export class App {
     });
   }
 
-  /** Overlays live inside #app so they scale with the appearance zoom. */
-  private overlay(node: HTMLElement): void {
+  /**
+   * Overlays live inside #app so they scale with the appearance zoom.
+   *
+   * 顺带打上材质标记（#644）：`mac.css` 只认 `data-mac-surface`，不再维护一份类名名单。
+   * `enter` 给非「窗口从上方落下」的那几档：手机上的 sheet 是抽屉、随手问是右侧推进、
+   * 两三选项的小弹窗是 alert 形的缩放淡入。
+   */
+  private overlay(node: HTMLElement, kind: SurfaceKind = "window", opts: SurfaceOpts = {}): void {
+    markSurface(node, kind, opts);
     (document.getElementById("app") ?? document.body).append(node);
   }
 
@@ -3907,7 +4164,7 @@ export class App {
     // Hover detail: the whole activity string, not the truncated one in the line itself.
     let pop = box.querySelector<HTMLElement>(".act-pop");
     if (!pop) {
-      pop = el("div", "act-pop");
+      pop = markSurface(el("div", "act-pop"), "menu");
       box.append(pop);
       this.wirePeekTarget(pop);
     }
@@ -3978,6 +4235,7 @@ export class App {
     this.closeWsPop();
     this.placeNowChip();
     this.placeWsTabs();
+    this.reminders?.place();
     // 构造里 `applyPrefs()` 先跑一次（那时 DOM 还没搭）：只落 `<html data-layout>`，别去碰 els。
     if (!this.nowBtn) return;
     this.renderPanes();
@@ -4120,8 +4378,40 @@ export class App {
     chatPanel.append(
       this.stRow(
         tr("输入框上方的「重讲」"),
-        tr("默认开。关掉后输入框上面那一行不再出现；随时可以在这里打开"),
+        tr("先提供上下文，再用简体技术中文说明。默认开；关掉后输入框上面那一行不再出现"),
         this.stSwitch(hintBox),
+      ),
+    );
+
+    // #661：GitHub 通道的两个开关。主开关关掉时第二条跟着灰掉 —— 自动弹面板建立在「有卡」之上，
+    // 允许「弹了面板但聊天里一张卡都没有」只会让人以为坏了。
+    const cardsBox = document.createElement("input");
+    cardsBox.checked = this.prefs.githubCards;
+    cardsBox.onchange = () => {
+      this.prefs = { ...this.prefs, githubCards: cardsBox.checked };
+      savePrefs(this.prefs);
+      // 灰不灰只看**主开关**：用 autoPanel 判会把「自动打开」自己关掉的人永久锁在关（它算出来的就是 false）。
+      autoBox.disabled = !githubFeature(this.prefs).cards;
+      this.syncGithubCards();
+      this.renderChat();
+    };
+    const autoBox = document.createElement("input");
+    autoBox.checked = this.prefs.githubAutoPanel;
+    autoBox.disabled = !githubFeature(this.prefs).cards;
+    autoBox.onchange = () => {
+      this.prefs = { ...this.prefs, githubAutoPanel: autoBox.checked };
+      savePrefs(this.prefs);
+    };
+    chatPanel.append(
+      this.stRow(
+        tr("GitHub 链接变卡片"),
+        tr("默认开。关掉后聊天里的 PR / issue / commit 链接退回普通链接：不认、不挂卡、右栏也不会被推开"),
+        this.stSwitch(cardsBox),
+      ),
+      this.stRow(
+        tr("建完 PR 自动打开面板"),
+        tr("默认关。打开后建完 PR 右栏自己推开面板；关着就只挂一张卡，等你点它 —— 不抢栏位"),
+        this.stSwitch(autoBox),
       ),
     );
 
@@ -4736,25 +5026,25 @@ export class App {
     const pv = el("div", `chrome-pv${this.chromePreviewNarrow ? " narrow" : ""}`);
     const pvTop = el("div", "chrome-pv-top");
     pvTop.append(el("span", "chrome-pv-title", tr("会话名")));
-    const topItems: [ChromeId, string][] = [
-      ["artifacts", tr("📂 产物")],
-      ["terminal", tr(">_ 终端")],
-      ["files", tr("📁 文件管理器")],
-      ["notes", "🐞 bug"],
-      ["peer", tr("🌐 内网通")],
-      ["scratch", tr("💭 随手问")],
-      ["jira", tr("🔷 Jira")],
-      ["mail", tr("📮 邮箱")],
-      ["filesearch", tr("🔎 Everything|顶栏按钮")],
+    const topItems: [ChromeId, IconName, string][] = [
+      ["artifacts", "layers", tr("产物")],
+      ["terminal", "terminal", tr("终端")],
+      ["files", "folder", tr("文件管理器|顶栏按钮")],
+      ["notes", "bug", "bug"],
+      ["peer", "users", tr("内网通")],
+      ["scratch", "bubble", tr("随手问")],
+      ["jira", "lozenge", "Jira"],
+      ["mail", "mail", tr("邮箱")],
+      ["filesearch", "search", tr("Everything|顶栏按钮")],
     ];
-    for (const [id, label] of topItems) {
-      const [ic, name] = splitWideLabel(label);
+    for (const [id, iconName, name] of topItems) {
       const btn = el("button", "chrome-pv-btn") as HTMLButtonElement;
       btn.type = "button";
       btn.dataset.chrome = id;
       btn.dataset.act = `pv-${id}`;
-      if (ic) btn.append(el("span", "ic", ic));
-      btn.append(el("span", "pv-name", name));
+      const ic = el("span", "ic");
+      ic.append(icon(iconName, { size: 11 }));
+      btn.append(ic, el("span", "pv-name", name));
       btn.hidden = !lit(id);
       btn.disabled = offline;
       btn.title = tr("点一下隐藏「{p1}」", { p1: name });
@@ -4763,10 +5053,11 @@ export class App {
       pvTop.append(keep(btn));
     }
     // `Aa` 就在这颗位置上，但它不在 `CHROME_IDS` 里：这张表靠它进来，关掉就再也打不开了。
-    const gear = el("button", "chrome-pv-btn chrome-pv-gear", "\u2699\uFE0E") as HTMLButtonElement;
+    const gear = el("button", "chrome-pv-btn chrome-pv-gear") as HTMLButtonElement;
     gear.type = "button";
     gear.disabled = true;
-    gear.title = tr("⚙ 关不掉：这张表靠它进来");
+    gear.append(icon("gear", { size: 11 }));
+    gear.title = tr("关不掉：这张表靠它进来");
     pvTop.append(gear);
     pv.append(pvTop);
 
@@ -4817,7 +5108,7 @@ export class App {
     const wall = el("div", "chrome-wall");
     wall.append(el("div", "levels-label", tr("点一下就收起来，再点一下放回来")));
     const groups: [string, string, [ChromeId, string, string][]][] = [
-      ["top", tr("顶栏按钮"), topItems.map(([id, label]) => { const [ic, name] = splitWideLabel(label); return [id, ic, name]; })],
+      ["top", tr("顶栏按钮"), topItems.map(([id, iconName, name]) => [id, iconName, name] as [ChromeId, IconName, string])],
       ["bottom", tr("输入框下沿"), bottomItems.map(([id, name]) => [id, "·", name] as [ChromeId, string, string])],
     ];
     for (const [group, label, items] of groups) {
@@ -4848,8 +5139,11 @@ export class App {
         tile.dataset.act = `tile-${id}`;
         tile.disabled = offline;
         tile.setAttribute("aria-pressed", String(on));
+        const tileIc = el("span", "chrome-tile-ic");
+        if (isIconName(ic)) tileIc.append(icon(ic, { size: 12 }));
+        else tileIc.textContent = ic || "·";
         tile.append(
-          el("span", "chrome-tile-ic", ic || "·"),
+          tileIc,
           el("span", "chrome-tile-name", name),
           el("span", "chrome-tile-eye", on ? "●" : "○"),
         );
@@ -5013,12 +5307,12 @@ export class App {
     };
     look.title = tr("设置：外观 / 连接与设置");
     look.setAttribute("aria-label", look.title);
-    this.setWideLabel(files, tr("📂 产物"));
+    this.setWideLabel(files, TOPBAR_ICON.artifacts, tr("产物"));
     show("artifacts", files, tr("本会话写过的文件（md / html / 图片…点开预览）"), true);
-    this.setWideLabel(term, tr(">_ 终端"));
+    this.setWideLabel(term, TOPBAR_ICON.terminal, tr("终端"));
     term.setAttribute("aria-label", tr("终端"));
     show("terminal", term, tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）"));
-    this.setWideLabel(fs, tr("📁 文件管理器"));
+    this.setWideLabel(fs, TOPBAR_ICON.files, tr("文件管理器|顶栏按钮"));
     show("files", fs, tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件"), true);
     // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写；这里只按它的结果决定画不画。
     if (notes) {
@@ -5026,30 +5320,30 @@ export class App {
       show("notes", notes, notes.title);
     }
     if (peer) {
-      this.setWideLabel(peer, tr("🌐 内网通"));
+      this.setWideLabel(peer, TOPBAR_ICON.peer, tr("内网通"));
       show("peer", peer, tr("内网通：发现同一内网里的人，直接对话、传文件"));
       // setWideLabel() 把子节点全换掉了：徽标与提示要重新挂回去。
       if (this.peerBadge) peer.append(this.peerBadge);
       this.paintPeerBadge();
     }
     if (scratch) {
-      this.setWideLabel(scratch, tr("💭 随手问"));
+      this.setWideLabel(scratch, TOPBAR_ICON.scratch, tr("随手问"));
       show("scratch", scratch, tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog"));
     }
     if (jira) {
-      this.setWideLabel(jira, tr("🔷 Jira"));
+      this.setWideLabel(jira, TOPBAR_ICON.jira, "Jira");
       jira.setAttribute("aria-label", tr("Jira"));
       show("jira", jira, tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP"));
     }
     if (mail) {
-      this.setWideLabel(mail, tr("📮 邮箱"));
+      this.setWideLabel(mail, TOPBAR_ICON.mail, tr("邮箱"));
       mail.setAttribute("aria-label", tr("邮箱"));
       show("mail", mail, tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管"));
     }
     // 文件搜索也进 chrome 表（D321）：这颗是机器级的，没开会话也照样能用，所以不进 `SESSION_ONLY`；
     // D332 起它默认就画（与文件管理器对调）。
     if (fsearch) {
-      this.setWideLabel(fsearch, tr("🔎 Everything|顶栏按钮"));
+      this.setWideLabel(fsearch, TOPBAR_ICON.filesearch, tr("Everything|顶栏按钮"));
       show("filesearch", fsearch, tr("在这台电脑上按名字找文件：索引建在本机，不依赖 Everything"));
     }
     // #290：下沿四颗是在拼 composer 时一次建好的，重画 composer 时不经过这里 —— 它自己也会调
@@ -5281,6 +5575,8 @@ export class App {
   private sheetEscPop: (() => void) | null = null;
 
   private closeSheet(): void {
+    // 子层是压在面板上的，面板没了它也不该留着（程序性关面板时很容易漏下这一层）。
+    this.closeSubSheet();
     this.sheetEscPop?.();
     this.sheetEscPop = null;
     // 开新会话的面板被关掉（取消 / 点背景）= 放弃「交给 agent → 新开会话」那段待填的文字：
@@ -5333,7 +5629,7 @@ export class App {
    * 模型与思考：外壳同设置控制台（.st-console），左栏「当前使用 / 全部模型 / 本会话」，右栏一页内容。
    * 仍然是草稿 + 确认 —— 点一行只是把 draft 挪过去，chip 与真实会话都不动，直到点「确认」。
    */
-  private openModelSheet(expandSession = false): void {
+  private openModelSheet(expandSession = false, pick?: { start: string; level?: string; onPick: (model: ModelInfo, level: string) => void }): void {
     if (!this.currentId) return;
     // Re-renders (catalog arrived, takeover finished) keep what the user unfolded; a fresh open folds.
     const reopening = this.sheetKind === "model";
@@ -5342,16 +5638,21 @@ export class App {
     this.sheetKind = "model";
 
     // Everything below is a draft until 确认: browsing models must not switch the live session.
-    const startModel = this.session?.model;
-    const startLevel = this.session?.thinkingLevel ?? "";
+    // `pick` 模式下草稿的起点是**别处记着的那个模型**（代码评审面板挑评审用的模型），
+    // 确认时也不发 `setModel` —— 这个面板没有会话可切。
+    const startModel = pick ? pick.start : this.session?.model;
+    const startLevel = pick ? (pick.level ?? "") : (this.session?.thinkingLevel ?? "");
     // 当前模型属于哪个来源：它的组默认展开，否则新开场就只看得见一组折叠标题。
     const startProvider = this.models.find((m) => m.id === startModel)?.provider ?? "";
     // 默认展开是「第一眼」的事，不是「锁死」：用户把这一组折上后，下次 paint 不能再把它擑开。
-    const forceOpen = new Set<string>(startProvider ? [startProvider] : []);
+    // 挑模型那条路没有「当前模型那一组」可言：全部展开，否则开场就是一排折叠标题。
+    const forceOpen = new Set<string>(pick ? this.models.map((m) => m.provider) : startProvider ? [startProvider] : []);
     let draftModel = startModel;
     let draftLevel = startLevel;
     type ModelTab = "now" | "all" | "session";
-    let tab: ModelTab = expandSession ? "session" : "now";
+    // 挑模型那条路没有「当前使用」可言（面板还没选过），直接落在「全部模型」上，
+    // 否则打开是一屏空态，得自己再点一次左栏。
+    let tab: ModelTab = pick ? "all" : expandSession ? "session" : "now";
     let query = "";
 
     const back = el("div", "st-back");
@@ -5405,7 +5706,7 @@ export class App {
     const cancel = el("button", "btn", tr("取消")) as HTMLButtonElement;
     cancel.type = "button";
     cancel.onclick = () => this.closeSheet();
-    const confirm = el("button", "btn primary", tr("确认")) as HTMLButtonElement;
+    const confirm = el("button", "btn primary", pick ? tr("用这个模型") : tr("确认")) as HTMLButtonElement;
     confirm.type = "button";
     const footActions = el("span", "pm-foot-actions");
     footActions.hidden = true;
@@ -5433,6 +5734,12 @@ export class App {
     };
 
     const commit = (): void => {
+      if (pick) {
+        const chosen = this.models.find((m) => m.id === draftModel);
+        if (chosen) pick.onPick(chosen, draftLevel);
+        this.closeSheet();
+        return;
+      }
       const sessionId = this.currentId;
       // 没接管＝没写入权：行双击也会走到这里，别把 setModel 发给桥让它默默丢掉。
       if (this.session && !this.session.owned) return;
@@ -5603,7 +5910,7 @@ export class App {
         { label: tr("窗口"), value: m?.contextWindow ? compactSize(m.contextWindow) : "–", sub: [m ? modelMultiplier(m.name) : "", m?.provider].filter(Boolean).join(" · ") || "—" },
       ]);
       out.push(cards);
-      if (this.session && !this.session.owned) {
+      if (!pick && this.session && !this.session.owned) {
         const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
         notice.append(this.claimButton());
         out.push(notice);
@@ -5635,7 +5942,7 @@ export class App {
         return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
       }
       const out: HTMLElement[] = [];
-      if (this.session && !this.session.owned) {
+      if (!pick && this.session && !this.session.owned) {
         const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
         notice.append(this.claimButton());
         out.push(notice);
@@ -5724,11 +6031,16 @@ export class App {
 
       const ch = changes();
       // 没接管就没有写入权：草稿可以随便看，但别把「确认」摆在那儿让人白点（桥会直接丢掉）。
-      const owned = !this.session || this.session.owned;
+      // pick 模式不发 setModel：没有写入权也照样能挑（评审用的模型与这个会话无关）。
+      const owned = pick ? true : !this.session || this.session.owned;
       footActions.hidden = !ch.length || !owned;
-      footHint.textContent = !owned
-        ? tr("这个会话没有写入权，先接管会话再切模型")
-        : ch.length
+      footHint.textContent = pick
+        ? ch.length
+          ? tr("未保存：{p1}", { p1: ch.join(tr("，")) })
+          : tr("点一行挑一个评审用的模型")
+        : !owned
+          ? tr("这个会话没有写入权，先接管会话再切模型")
+          : ch.length
           ? tr("未保存：{p1}", { p1: ch.join(tr("，")) })
           : tr("点一行选模型，点档位换思考；改了才出现取消 / 确认");
       footHint.title = footHint.textContent;
@@ -5778,7 +6090,7 @@ export class App {
     if (Date.now() - this.skillsAt > 60_000) this.socket.send({ type: "skills", sessionId: this.currentId });
 
     const pop = el("div", "skill-pop");
-    const panel = el("div", "skill-panel");
+    const panel = markSurface(el("div", "skill-panel"), "menu");
     const search = el("input", "skill-search") as HTMLInputElement;
     search.placeholder = tr("搜索技能：名字或描述…");
     search.spellcheck = false;
@@ -6020,7 +6332,7 @@ export class App {
     body.append(host);
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     // The installed list is a local disk scan; the store waits for a query (its API needs 2 chars).
     this.loadSkillInventory();
@@ -6041,7 +6353,7 @@ export class App {
       document.querySelector(".update-bar")
     )
       return;
-    const bar = el("div", "update-bar");
+    const bar = markSurface(el("div", "update-bar"), "toast");
     const btn = el("button", "btn primary", tr("刷新"));
     btn.onclick = () => location.reload();
     const close = el("button", "update-bar-x", "×");
@@ -6086,7 +6398,7 @@ export class App {
     body.append(host);
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     const view = new ContextInsightsView(host, {
       currentId: this.currentId,
@@ -6136,7 +6448,7 @@ export class App {
     body.append(host);
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.contextPanel = new ContextPanel(host);
     this.contextPanel.update(this.contextPanelData());
@@ -6160,7 +6472,7 @@ export class App {
   // ---------------------------------------------------------------- #484 上下文阈值 / 交接
 
   private subSheet: HTMLElement | null = null;
-  private subSheetKind: "policy" | "handoff" | null = null;
+  private subSheetKind: "policy" | "handoff" | "diff" | null = null;
   private subSheetPaint: (() => void) | null = null;
   private subSheetEscPop: (() => void) | null = null;
 
@@ -6193,6 +6505,14 @@ export class App {
       if (ev.target === back) this.closeSubSheet();
     };
     this.overlay(back);
+    this.mountSubSheet(kind, back);
+  }
+
+  /**
+   * 把已经建好的 `back` 登记成当前子层：Esc 先退它，退掉之后底下那份面板还在。
+   * 登记只此一处 —— 上下文那两个子弹窗和差分（`openDiffSheet`）都走它，别各写一份。
+   */
+  private mountSubSheet(kind: "policy" | "handoff" | "diff", back: HTMLElement): void {
     this.subSheet = back;
     this.subSheetKind = kind;
     this.subSheetEscPop = pushEscLayer({ el: back, onEsc: () => this.closeSubSheet() });
@@ -7898,7 +8218,7 @@ export class App {
   }
 
   /**
-   * #277 横条标签双击改名：浮层是 body 上的 fixed 输入框，锚在标签的视口矩形上（`tabRenameBox()`），
+   * #277 横条标签双击改名：浮层是挂进 #app 的 fixed 输入框，锚在标签的视口矩形上（`tabRenameBox()`），
    * 不插进 `.ws-tabs`，所以不会把整行撑高或推走；窄窗口由几何函数夹回视口。
    *
    * 双击非当前组时第一下只切组（见 `tab.onclick` 的两下判断），第二下才进编辑 ——
@@ -7907,7 +8227,7 @@ export class App {
   private startWsTabRename(group: TreeGroup<SessionState>): void {
     this.cancelWsTabRename();
     const raw = this.workspaces.groups.find((g) => g.id === group.id)?.name ?? "";
-    const input = el("input", "rename-input ws-tab-rename-input") as HTMLInputElement;
+    const input = markSurface(el("input", "rename-input ws-tab-rename-input") as HTMLInputElement, "paper");
     input.value = raw;
     // 还没起名的组：输入框留空，占位显示目录名，和左栏改名的手感一致。
     input.placeholder = group.name;
@@ -7933,7 +8253,7 @@ export class App {
       this.commitWsTabRename();
     };
     this.wsTabRename = { id: group.id, input, away };
-    document.body.append(input);
+    mountOverlay(input);
     // 捕获阶段：点标签 / 左栏 / 空白都先提交，再让那一下自己的点击继续走。
     document.addEventListener("pointerdown", away, true);
     this.placeWsTabRename();
@@ -7972,9 +8292,11 @@ export class App {
       return;
     }
     const box = tabRenameBox(tab.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
-    st.input.style.left = `${box.left}px`;
-    st.input.style.top = `${box.top}px`;
-    st.input.style.width = `${box.width}px`;
+    // 挂进 #app 后要按 zoom 换算：`tabRenameBox()` 给的是视觉 px。
+    const z = appZoom();
+    st.input.style.left = `${box.left / z}px`;
+    st.input.style.top = `${box.top / z}px`;
+    st.input.style.width = `${box.width / z}px`;
   }
 
   private dropWs(id: string): void {
@@ -8051,6 +8373,8 @@ export class App {
     // 用未过滤的树找落点：过滤态下邻居可能整组被藏起来，那也不该停在半路。
     const tree = buildTree(this.sessions, this.manage, this.workspaces, "");
     for (const id of wsNeighborsAfterDrop(orderBefore, gone)) {
+      // D391 划定的范围到这里为止：这一步是**补救**（工作区被删了，得离开），不是用户在导航，
+      // 所以仍开邻居排最上面那颗，不走「记忆 → 最近活动」那套落点。改之前先读 D391 末段。
       const first = tree.groups.find((g) => g.id === id)?.sessions[0];
       if (first) {
         this.openFromList(first.id);
@@ -8361,7 +8685,8 @@ export class App {
           ev.stopPropagation();
           this.togglePin(s.id);
         };
-        const rename = el("button", "rename-btn", "✎");
+        const rename = el("button", "rename-btn") as HTMLButtonElement;
+        rename.append(icon("pencil", { size: 13 }));
         rename.title = tr("改个名字");
         rename.setAttribute("aria-label", tr("重命名会话"));
         rename.onclick = (ev) => {
@@ -8370,7 +8695,7 @@ export class App {
         };
         const archived = this.manage.archived.includes(s.id);
         const archive = el("button", "card-act");
-        archive.append(...iconNodes(archived ? ICON_UNARCHIVE : ICON_ARCHIVE));
+        archive.append(icon(archived ? "unarchive" : "archive", { size: 14 }));
         archive.title = archived ? tr("取消归档（放回列表）") : tr("归档（收进「已归档」，文件不动）");
         archive.setAttribute("aria-label", archive.title);
         archive.onclick = (ev) => {
@@ -8382,7 +8707,7 @@ export class App {
         const held = App.deleteBlocked(s);
         const del = el("button", `card-act del${armed ? " armed" : ""}`) as HTMLButtonElement;
         if (armed) del.textContent = tr("删除?");
-        else del.append(...iconNodes(ICON_TRASH));
+        else del.append(icon("trash", { size: 14 }));
         del.disabled = held;
         del.title = App.deleteWhy(s, armed, tr("删除（先进垃圾箱，可在会话管理里还原）"));
         del.setAttribute("aria-label", tr("删除会话"));
@@ -8723,7 +9048,7 @@ export class App {
     main.append(nav, pane);
 
     const foot = el("footer", "st-foot");
-    const defaultHint = tr("左栏按状态 / 来源筛选；点一行看它的改动，没有改动可比的直接在预览里打开");
+    const defaultHint = tr("左栏按状态 / 来源筛选；点一行看它的改动，右边的「预览」直接在查看器里打开");
     const hint = el("span", "st-foot__hint", defaultHint);
     foot.append(hint, el("span", "st-foot__meta", "pi-web-client"));
     sheet.append(head, main, foot);
@@ -8904,9 +9229,19 @@ export class App {
    * `writes` 是「这个会话写过它几次」，不是行数。
    */
   private artifactRow(sessionId: string, r: ArtifactRow, data: ArtifactList): HTMLElement {
-    const row = el("button", `settings-row art-row st-${r.status}`) as HTMLButtonElement;
-    row.type = "button";
+    // 行是 div 而不是 <button>：里面要并排放「看改动」和「预览」两颗按钮，button 不能套 button。
+    // 键盘可达性照抄分支工作台那条（D289）：role + tabIndex + Enter / 空格。
+    const row = el("div", `settings-row art-row st-${r.status}`);
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
     row.title = r.path;
+    row.onkeydown = (ev: KeyboardEvent) => {
+      if (ev.target !== row) return; // 里面那两颗按钮自己收键
+      if (ev.repeat) return; // 按住不放不连发（预览 / 差分都是「开一次」的动作）
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      row.click();
+    };
     const label = el("span", "settings-label");
     label.append(el("span", "settings-name art-name", fileNameOf(r.path)));
     const hint = el("span", "settings-hint");
@@ -8917,14 +9252,30 @@ export class App {
     ctl.append(el("span", "art-tools", r.tool === "mentioned" ? tr("回复提及") : `${r.tool}×${r.writes}`));
     if (r.estimate) ctl.append(el("span", "art-est", tr("按 git 估算")));
     if (r.diffable) {
-      ctl.append(el("span", "art-go", tr("看改动")));
-      row.onclick = () => void this.openDiffSheet(sessionId, r.path, data);
-    } else {
-      // 没有可对比的改动（二进制 / 未知 / 没变）：点开就是看文件本身，别给一个空弹窗。
-      // D308：不再 `closeSheet()` —— 预览会压在产物列表上（`.viewer.hi`），关掉它列表还在。
-      ctl.append(el("span", "art-open", tr("预览")));
-      row.onclick = () => void this.openPreview(r.path);
+      const go = el("button", "art-go") as HTMLButtonElement;
+      go.type = "button";
+      go.textContent = tr("看改动");
+      go.onclick = (ev) => {
+        ev.stopPropagation();
+        void this.openDiffSheet(sessionId, r.path, data);
+      };
+      ctl.append(go);
     }
+    // 预览对每一行都给：有可比改动的行也要能直接看文件本身（m00341），
+    // 不必先进差分、再把差分关掉。D308：预览会压在产物列表上（`.viewer.hi`），关掉它列表还在。
+    const open = el("button", "art-open") as HTMLButtonElement;
+    open.type = "button";
+    open.textContent = tr("预览");
+    open.onclick = (ev) => {
+      ev.stopPropagation();
+      void this.openPreview(r.path);
+    };
+    ctl.append(open);
+    // 点行本身还是「主操作」：有可比改动就看改动，没有就看文件（和以前一致）。
+    row.onclick = () => {
+      if (r.diffable) void this.openDiffSheet(sessionId, r.path, data);
+      else void this.openPreview(r.path);
+    };
     row.append(label, hint, ctl, el("span", `art-badge st-${r.status}`, this.artStatusLabel(r.status)));
     return row;
   }
@@ -8942,19 +9293,32 @@ export class App {
    * 和查看器分开是故意的：查看器负责「看文件」，这里负责「看这次改了什么」，各占一个全屏。
    */
   private async openDiffSheet(sessionId: string, path: string, known?: ArtifactList): Promise<void> {
-    this.closeSheet();
-    this.sheetKind = "display";
-    const back = el("div", "sheet-back");
+    // m00341：从产物列表点进来时不再关掉列表 —— 差分压成它的子层，关掉（关闭 / 点背景 / Esc）
+    // 回到原来那份列表，筛选和滚动位置都还在。今天唯一的调用方是产物列表，一定有父层；
+    // 没有父层时（比如以后改成从聊天直接开差分）走下面那条「自己就是一页面板」的老路，
+    // 两条路的关闭行为一样（都只退自己）：所以这里的 if / else 是两种落点，不是兜底。
+    const overSheet = Boolean(this.sheet);
+    if (overSheet) this.closeSubSheet();
+    else {
+      this.closeSheet();
+      this.sheetKind = "display";
+    }
+    const back = el("div", overSheet ? "sheet-sub-back" : "sheet-back");
     back.tabIndex = -1;
+    const alive = (): boolean => (overSheet ? this.subSheet === back : this.sheet === back);
+    const dismiss = (): void => {
+      if (overSheet) this.closeSubSheet();
+      else this.closeSheet();
+    };
     back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
+      if (ev.target === back) dismiss();
     };
     const sheet = el("div", "sheet diff-sheet");
     const head = el("div", "sheet-head");
     const title = el("div", "sheet-title diff-title");
     const hint = el("div", "diff-hint", tr("j / k 换文件 · ← / → 换 hunk · Esc 关闭"));
     const close = el("button", "btn ghost", tr("关闭"));
-    close.onclick = () => this.closeSheet();
+    close.onclick = () => dismiss();
     head.append(title, hint, close);
     const rail = el("div", "diff-rail");
     const main = el("div", "diff-main");
@@ -8962,8 +9326,9 @@ export class App {
     body.append(rail, main);
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
-    this.setSheet(back);
+    this.overlay(back, "window", { enter: "drawer" });
+    if (overSheet) this.mountSubSheet("diff", back);
+    else this.setSheet(back);
     back.focus();
 
     let data = known;
@@ -8973,7 +9338,7 @@ export class App {
       } catch {
         data = undefined;
       }
-      if (this.sheet !== back) return;
+      if (!alive()) return;
     }
     const files = (data?.items ?? []).filter((r) => r.diffable);
     if (!files.length) {
@@ -9007,7 +9372,9 @@ export class App {
       const row = files[current];
       if (!row) return;
       const nm = fileNameOf(row.path);
-      title.replaceChildren(el("span", "art-ico", previewIcon(row.path)), el("span", "diff-name", nm));
+      const artIc = el("span", "art-ico");
+      artIc.append(icon(fileIcon(row.path), { size: 14 }));
+      title.replaceChildren(artIc, el("span", "diff-name", nm));
       title.append(el("span", `art-badge st-${row.status}`, this.artStatusLabel(row.status)), el("span", "art-count", `+${row.added} −${row.removed}`));
       if (row.estimate) title.append(el("span", "art-est", tr("按 git 估算")));
       main.replaceChildren(el("div", "empty", tr("正在读改动…")));
@@ -9015,10 +9382,10 @@ export class App {
       try {
         d = await api.artifactDiff(sessionId, row.path);
       } catch (err: any) {
-        if (this.sheet === back) main.replaceChildren(el("div", "empty", String(err?.message ?? err)));
+        if (alive()) main.replaceChildren(el("div", "empty", String(err?.message ?? err)));
         return;
       }
-      if (this.sheet !== back) return;
+      if (!alive()) return;
       hunkEls = [];
       hunkIdx = 0;
       const bar = el("div", "diff-bar");
@@ -9046,10 +9413,10 @@ export class App {
     };
 
     back.addEventListener("keydown", (ev) => {
-      if (this.sheet !== back) return;
+      if (!alive()) return;
       if (ev.key === "Escape") {
         ev.preventDefault();
-        this.closeSheet();
+        dismiss();
         return;
       }
       if (ev.key === "j" || ev.key === "k") {
@@ -9229,7 +9596,7 @@ export class App {
       if (ev.target === back) shut();
     };
     back.append(img, close);
-    this.overlay(back);
+    this.overlay(back, "window", { dim: "dark" });
     close.focus();
   }
 
@@ -9448,7 +9815,7 @@ export class App {
     this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
-    this.overlay(dialog.root);
+    this.overlay(dialog.root, "paper");
     this.raiseWindow(dialog.root);
     dialog.open();
   }
@@ -9502,7 +9869,7 @@ export class App {
     this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
-    this.overlay(dialog.root);
+    this.overlay(dialog.root, "paper");
     this.raiseWindow(dialog.root);
     dialog.open();
   }
@@ -9532,7 +9899,7 @@ export class App {
     this.dockFiles.set(dialog, info);
     dialog.root.classList.toggle("hi", this.viewerOverParent());
     this.syncFloatLayers();
-    this.overlay(dialog.root);
+    this.overlay(dialog.root, "paper");
     this.raiseWindow(dialog.root);
     dialog.open();
   }
@@ -9612,8 +9979,135 @@ export class App {
     }
   }
 
+  /** 主开关关掉时连「挂卡」这一步都不做（不是画出来再藏起来）：重画一遍聊天即可。 */
+  private syncGithubCards(): void {
+    const on = githubFeature(this.prefs).cards;
+    this.chat.onGithubOpen = on ? (repo, number) => this.openGithubPanel(number, repo) : null;
+    // #666：卡片右缘那颗「代码评审」。主开关关掉时整张卡都不画，这颗钮自然也不在。
+    this.chat.onGithubReview = on ? (repo, number) => this.openReviewForPull(repo, number) : null;
+    this.chat.githubSessionRepo = on ? () => this.githubSessionRepo() : null;
+  }
+
+  // ---------------------------------------------------------------- #666 链接卡 → 代码评审
+
+  /** 会话仓库（`owner/repo`，按会话 + cwd 缓存）：链接卡上那颗钮灰不灰就看它。 */
+  private githubRepos = new Map<string, string>();
+  private githubRepoAsked = new Set<string>();
+
+  private githubRepoKey(): string {
+    const id = this.currentId ?? "";
+    const cwd = (this.session?.cwd ?? "").trim();
+    return id && cwd ? `${id}|${cwd}` : "";
+  }
+
+  /**
+   * 卡片问「本会话是哪个仓库」。判据没问回来时给空串 —— 那颗钮先亮着（由桥兜底），
+   * 而不是让人看着一屏灰钮再齐刷刷变亮。第一次问会顺手打一发 `/api/github/state`，
+   * 之后靠 `githubRepoAsked` 挡住；所以只有真的画出了 PR 卡才会付这个代价。
+   */
+  private githubSessionRepo(): string {
+    const key = this.githubRepoKey();
+    if (!key) return "";
+    const hit = this.githubRepos.get(key);
+    if (hit !== undefined) return hit;
+    this.learnGithubRepo(key);
+    return "";
+  }
+
+  /** 判据到了要把**已经画出来的**钮重刷一遍 —— 聊天不重画（历史里几十张卡重绘一次代价太大）。 */
+  private learnGithubRepo(key: string): void {
+    if (this.githubRepoAsked.has(key)) return;
+    const id = this.currentId ?? "";
+    const cwd = (this.session?.cwd ?? "").trim();
+    if (!id || !cwd) return;
+    this.githubRepoAsked.add(key);
+    void githubApi
+      .state(id, cwd)
+      .then((state) => {
+        const repo = String(state?.repo ?? "").trim();
+        // 认不出仓库（不是 git 仓 / 没远端）也记一笔空值：别每次画卡都再问一遍。
+        this.githubRepos.set(key, repo);
+        if (this.githubRepoKey() === key) refreshGithubCards();
+      })
+      .catch(() => {
+        // 问不到就让它一直空着：钮是亮的，真点下去由桥拒并说清楚。
+        this.githubRepoAsked.delete(key);
+      });
+  }
+
+  /**
+   * 链接卡右缘那颗「代码评审」（#666）。只做「把号交过去」：关掉挡着的 GitHub 面板、右栏收着就
+   * 展开、范围选 GitHub PR、号填好，然后切到评审页签 —— **不**自动开跑（一次几分钟、烧额度，
+   * 误点的代价是钱和时间；而且同一仓库同时只允许一次评审）。
+   */
+  private openReviewForPull(repo: string, number: number): void {
+    const n = Number(number) || 0;
+    if (n <= 0) return;
+    this.githubPanel?.close();
+    if (this.collapsed.queue) this.togglePane("queue");
+    // 先把「当前会话」结算掉：首次画评审面板时 `reviewSessionKey` 还是空的，`syncReviewSession()`
+    // 会把这一组状态当成上一个会话的残留清掉 —— 包括下面刚设的号（#674）。
+    this.syncReviewSession();
+    this.reviewMode = "pr";
+    this.reviewPr = String(n);
+    this.reviewPrQuery = "";
+    this.reviewPrMenu = false;
+    this.selectQueueTab("review");
+    // 一定要在切页签**之后**：首次画评审面板会走 `syncReviewSession()`，那里会把「期望仓库」清掉
+    // （它属于上一个会话）。先设再切 = 刚设完就被清，桥上就再也拒不了别仓的号。
+    this.reviewExpectRepo = repo.trim();
+  }
+
+  /** 人自己换了号 / 换了范围：那张卡的「期望仓库」不再适用。 */
+  private clearReviewExpectRepo(): void {
+    this.reviewExpectRepo = "";
+  }
+
+  /**
+   * GitHub 面板（右栏 dock）。三个入口：壳看见 `gh pr create` 成功（桥发 `github.pr`）、
+   * 聊天里的链接卡、以及用户自己贴的链接。
+   *
+   * 打开前先把预览收起：两扇都是右栏 dock，叠在一起分不清谁是谁（反方向在 `ensureViewer()` 里）。
+   */
+  private openGithubPanel(number?: number, repo?: string): void {
+    if (this.viewer) this.closeViewer();
+    if (!this.githubPanel) {
+      this.githubPanel = new GithubPanel({
+        sessionId: () => this.currentId ?? "",
+        cwd: () => this.session?.cwd ?? "",
+        openExternal: (url) => openExternal(url),
+        askAgent: (text) => this.askAgent(text),
+        onClose: () => {
+          this.githubPanel = null;
+        },
+      });
+    }
+    void this.githubPanel.open({ number, repo });
+  }
+
+  /**
+   * 把一句话当成下一条用户消息发出去（和「重讲」同一条路，不读输入框、不动用户的草稿）。
+   * GitHub 面板的「合并 PR」走这里：于是它过 `approval-gate.ts` 的 `gh pr merge` 那道闸，
+   * 不是面板自己造的第二条写路线。
+   */
+  private askAgent(text: string): void {
+    const sessionId = this.currentId;
+    if (!sessionId) return;
+    const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    const payload = { type: "prompt", sessionId, text, images: [], clientId, behavior: "steer" };
+    this.act(() => {
+      if (this.currentId !== sessionId) return;
+      this.chat.add({ id: clientId, kind: "user", text, images: [], ts: new Date().toISOString() });
+      this.renderChat();
+      this.chat.follow();
+      this.socket.send(payload);
+    });
+  }
+
   private ensureViewer(): Viewer {
     if (this.viewer) return this.viewer;
+    // 两扇都是右栏 dock：同时只留一扇，否则叠在一起谁也看不清。
+    this.githubPanel?.close();
     const root = el("aside", "viewer");
     const saved = Number(localStorage.getItem("pi.viewerW"));
     if (saved >= 320) root.style.setProperty("--viewer-w", `${saved}px`);
@@ -9668,7 +10162,7 @@ export class App {
     root.append(grip, head, body);
     root.tabIndex = -1;
     this.wireWindowRaise(root);
-    this.overlay(root);
+    this.overlay(root, "dock");
     this.raiseWindow(root);
     this.viewer = {
       root,
@@ -9796,7 +10290,8 @@ export class App {
    * 只对本机 / 局域网开放 —— 桥那边对公网连接直接 403。
    */
   private revealButton(abs: string): HTMLButtonElement {
-    const btn = el("button", "btn", tr("📂 在文件夹中显示")) as HTMLButtonElement;
+    const btn = el("button", "btn") as HTMLButtonElement;
+    btn.append(icon("folder", { size: 14 }), el("span", "", tr("在文件夹中显示")));
     btn.title = tr("在这台电脑的文件管理器里打开 {p1}，文件会被选中", { p1: abs });
     btn.onclick = () => {
       btn.disabled = true;
@@ -9996,7 +10491,9 @@ export class App {
     const title = el("div", "viewer-title");
     const browsing = v.pane === "browse";
     const name = info?.name ?? (v.ext ? v.ext.label : browsing ? tr("浏览本机文件") : (v.path.split(/[\\/]/).filter(Boolean).pop() ?? v.path));
-    title.append(el("span", "viewer-ico", browsing && !info ? "📁" : v.ext ? "🔗" : previewIcon(name)), el("span", "viewer-name", name));
+    const viewerFace = el("span", "viewer-ico");
+    viewerFace.append(icon(browsing && !info ? "folder" : v.ext ? "link" : fileIcon(name), { size: 14 }));
+    title.append(viewerFace, el("span", "viewer-name", name));
     const subText = info ? `${info.abs} · ${fmtSize(info.size)}` : v.ext ? v.ext.url : browsing ? v.lastDir || this.session?.cwd || tr("此电脑") : v.path;
     const sub = el("div", "viewer-path", subText);
     sub.title = info?.abs ?? subText;
@@ -10017,8 +10514,9 @@ export class App {
     if (!fwd.disabled) fwd.onclick = () => this.goStep(1);
     nav.append(back, fwd);
     const tools = el("div", "viewer-tools");
-    const tbtn = (text: string, tip: string, fn: () => void, on = false) => {
-      const b = el("button", `viewer-btn${on ? " on" : ""}`, text) as HTMLButtonElement;
+    const tbtn = (f: IconName | string, tip: string, fn: () => void, on = false) => {
+      const b = el("button", `viewer-btn${on ? " on" : ""}`) as HTMLButtonElement;
+      b.append(face(f));
       b.title = tip;
       b.onclick = fn;
       tools.append(b);
@@ -10080,20 +10578,20 @@ export class App {
       }
       tools.append(seg);
     }
-    tbtn("⟳", tr("刷新（重新读取文件）"), () => void this.openPreview(v.path, v.sessionId, true));
+    tbtn("refresh", tr("刷新（重新读取文件）"), () => void this.openPreview(v.path, v.sessionId, true));
     if (info) {
       // D209 的第一步出口在 binary 支线的提示框里；那里看不到的格式（现在的 pdf）在头部补一颗，
       // 否则「用本机程序打开」对它们是句空话（D50 修订：pdf 不再落 binary）。
       if (info.kind !== "binary" && DESKTOP_OPEN.test(info.name))
-        tbtn("🖥", tr("用默认程序打开"), () => void this.openInApp(info.token));
+        tbtn("monitor", tr("用默认程序打开"), () => void this.openInApp(info.token));
       const open = tbtn("↗", tr("在新标签页打开"), () => this.openRawTab(rawUrl(info)));
       open.classList.add("wide-only");
       const copy = tbtn("⧉", tr("复制路径"), () => void navigator.clipboard?.writeText(info.abs));
       copy.classList.add("wide-only");
-      tbtn("📎", tr("把这个路径引用到输入框"), () => this.insertPaths([info.abs]));
+      tbtn("clip", tr("把这个路径引用到输入框"), () => this.insertPaths([info.abs]));
     }
-    tbtn(v.full ? "🗗" : "⛶", v.full ? tr("退出全屏") : tr("全屏"), () => this.viewerFull(!v.full), v.full);
-    tbtn("✕", tr("关闭（Esc）"), () => this.closeViewer());
+    tbtn(v.full ? "collapse" : "expand", v.full ? tr("退出全屏") : tr("全屏"), () => this.viewerFull(!v.full), v.full);
+    tbtn("close", tr("关闭（Esc）"), () => this.closeViewer());
     head.append(nav, left, tools);
 
     // 浏览态：列表挂上就保持状态（滚动、筛选、当前位置），重绘时不要拆掉（D50）。
@@ -10414,19 +10912,23 @@ export class App {
       return;
     }
     if (this.failReviewPending) {
-      btn.replaceChildren(el("span", "fail-cta-glyph", "⚡"), el("span", "fail-cta-text", tr("复盘进行中…")), el("span", "fail-cta-n", String(n)));
+      const glyph = el("span", "fail-cta-glyph");
+      glyph.append(icon("bolt", { size: 14 }));
+      btn.replaceChildren(glyph, el("span", "fail-cta-text", tr("复盘进行中…")), el("span", "fail-cta-n", String(n)));
       btn.title = tr("正在把这一轮失败发给 pi 复盘");
       return;
     }
     const reviewed = this.failReviewed();
+    const ctaGlyph = el("span", "fail-cta-glyph");
+    ctaGlyph.append(icon("bolt", { size: 14 }));
     btn.replaceChildren(
-      el("span", "fail-cta-glyph", "⚡"),
+      ctaGlyph,
       el("span", "fail-cta-text", tr("总结本轮错误")),
       el("span", "fail-cta-n", String(n)),
       el("span", "fail-cta-caret", "▾"),
     );
     btn.classList.toggle("done", reviewed >= n);
-    btn.title = tr("把这次会话里的 {p1} 次失败归并进「⚡ AI 出错记录」：同类只加次数", { p1: n });
+    btn.title = tr("把这次会话里的 {p1} 次失败归并进「AI 出错记录」：同类只加次数", { p1: n });
     if (this.failMenu) this.paintFailMenu();
   }
 
@@ -10498,7 +11000,7 @@ export class App {
     const row = this.els.composerHost.querySelector(".row");
     if (!btn || !row) return;
     this.closeFailMenu();
-    const box = el("div", "fail-menu");
+    const box = markSurface(el("div", "fail-menu"), "menu");
     box.setAttribute("role", "menu");
     row.append(box);
     // ⚡ 按钮在哪，菜单就在它头顶 8px 之外：固定的 `calc(100% + 46px)` 只在它浮着时对。
@@ -10549,12 +11051,14 @@ export class App {
     head.append(el("span", "", tr("本轮 {p1} 次失败 · 归成 {p2} 类", { p1: n, p2: classes })));
     if (reviewed > 0) head.append(el("span", `fail-menu-state${reviewed >= n ? " done" : ""}`, tr("已复盘 {p1}", { p1: reviewed })));
 
-    const item = (glyph: string, title: string, desc: string, act: () => void): HTMLButtonElement => {
+    const item = (f: IconName | string, title: string, desc: string, act: () => void): HTMLButtonElement => {
       const b = el("button", "fail-menu-item") as HTMLButtonElement;
       b.type = "button";
       b.setAttribute("role", "menuitem");
       const t = el("div", "fail-menu-t");
-      t.append(el("span", "fail-menu-glyph", glyph), el("span", "", title));
+      const faceBox = el("span", "fail-menu-glyph");
+      faceBox.append(face(f));
+      t.append(faceBox, el("span", "", title));
       b.append(t, el("div", "fail-menu-d", desc));
       b.onclick = (ev) => {
         ev.stopPropagation();
@@ -10563,9 +11067,9 @@ export class App {
       return b;
     };
 
-    const commit = item("🗂", tr("记进账本"), tr("同类只加次数，不花 token"), () => this.commitFails());
+    const commit = item("box", tr("记进账本"), tr("同类只加次数，不花 token"), () => this.commitFails());
     const review = item(
-      "⚡",
+      "bolt",
       this.failReviewPending ? tr("正在复盘…") : tr("发到会话复盘"),
       reviewed >= n && !this.failReviewPending
         ? tr("这 {p1} 次已经复盘过；再发会再烧一轮 token", { p1: reviewed })
@@ -10721,7 +11225,7 @@ export class App {
   private flashToast(text: string, bad: boolean, ms: number, token = "", onUndo?: () => void): void {
     this.failToast?.remove();
     window.clearTimeout(this.failToastTimer);
-    const box = el("div", `fail-toast${bad ? " bad" : ""}`);
+    const box = markSurface(el("div", `fail-toast${bad ? " bad" : ""}`), "toast");
     box.append(el("span", "", text));
     if (token || onUndo) {
       const undo = el("button", "fail-toast-undo", tr("撤销"));
@@ -10802,7 +11306,9 @@ export class App {
     if (!btn) return;
     const count = this.notes.filter((n) => n.status === "pending").length;
     // 顶栏只要图标：小字「bug N」把这一行挤得没地方，计数放 title 里。
-    btn.replaceChildren(el("span", "notes-glyph", "🐞"));
+    const noteGlyph = el("span", "notes-glyph");
+    noteGlyph.append(icon("bug", { size: 15 }));
+    btn.replaceChildren(noteGlyph);
     btn.classList.toggle("has-pending", count > 0);
     btn.title = count ? tr("记录：{p1} 条待处理（Ctrl+Shift+B）", { p1: count }) : tr("记录 bug / 变更 / 想法 / 杂事（Ctrl+Shift+B）");
   }
@@ -10894,7 +11400,8 @@ export class App {
    * breadcrumb crawl. `getCwd` is re-read on click, so 切会话 while the pane is open still lands right.
    */
   private dirHome(getCwd: () => string): { node: HTMLButtonElement; bind: (picker: DirPicker) => void } {
-    const node = el("button", "btn ghost dir-home", tr("⌂ 工作目录")) as HTMLButtonElement;
+    const node = el("button", "btn ghost dir-home") as HTMLButtonElement;
+    node.append(icon("home", { size: 14 }), el("span", "", tr("工作目录")));
     node.dataset.act = "dir-home";
     const sync = (): void => {
       const cwd = (getCwd() || "").trim();
@@ -10956,18 +11463,22 @@ export class App {
    * 含空格才包引号：`C:\Program Files\x` 裸着会被读成两个路径；没空格的包上反而多两处要删。
    */
   private dirRef(getPath: () => string): { node: HTMLButtonElement; bind: () => void } {
-    const label = tr("📎 引用当前文件夹");
-    const node = el("button", "btn ghost dir-ref", label) as HTMLButtonElement;
+    const node = el("button", "btn ghost dir-ref") as HTMLButtonElement;
+    node.append(icon("clip", { size: 14 }), el("span", "", tr("引用当前文件夹")));
     node.dataset.act = "dir-ref";
     const sync = (): void => {
       const path = (getPath() || "").trim();
       node.disabled = !path;
       node.title = path ? tr("把目录 {p1} 引用到输入框", { p1: path }) : tr("盘符列表没有目录可引用，先点进一个文件夹");
     };
+    const paint = (text?: string): void => {
+      node.replaceChildren(icon("clip", { size: 14 }), el("span", "", text ?? tr("引用当前文件夹")));
+    };
+    paint();
     const flash = (text: string): void => {
-      node.textContent = text;
+      node.replaceChildren(el("span", "", text));
       setTimeout(() => {
-        if (node.isConnected) node.textContent = label;
+        if (node.isConnected) paint();
       }, 1200);
     };
     sync();
@@ -11220,7 +11731,7 @@ export class App {
 
   private showMenu(x: number, y: number, items: { label: string; run: () => void }[]): void {
     document.querySelector(".ctx-menu")?.remove();
-    const menu = el("div", "ctx-menu");
+    const menu = markSurface(el("div", "ctx-menu"), "menu");
     for (const item of items) {
       const button = el("button", "ctx-item", item.label);
       button.onclick = () => {
@@ -11578,6 +12089,7 @@ export class App {
       t.error = "";
       this.trModelPref = res.prefs?.model ?? this.trModelPref;
       this.trDefaultModel = res.defaultModel ?? this.trDefaultModel;
+      this.trConcurrency = res.prefs?.concurrency ?? this.trConcurrency;
       if (res.job?.status === "running") this.pollTr(v);
     } catch (err: any) {
       if (this.viewer !== v) return;
@@ -11589,7 +12101,7 @@ export class App {
   /** 语言 + 模型的选择器：模型目录是会话里那份（便宜的也在一起）。 */
   private trPicker(v: Viewer): void {
     const t = this.trOf(v);
-    // D245: 默认模型是桥那边记的偏好（copilot/gpt-6-luna），没有就退到当前会话的模型。
+    // D245 / D392: 默认模型是桥那边记的偏好，没有就跟随 pi 全局设置，再没有才退到当前会话的模型。
     const sessionModel = this.models.find((m) => m.id === this.session?.model);
     const pref = this.trModelPref || (t.doc ? `${t.doc.provider}/${t.doc.model}` : "") || this.trDefaultModel;
     const values = this.models.map((m) => `${m.provider}/${m.id}`);
@@ -11615,6 +12127,8 @@ export class App {
   private async startTr(v: Viewer, lang: string, provider: string, model: string, force: boolean): Promise<void> {
     const info = v.info;
     if (!info) return;
+    // 视口在整篇的哪个位置：要在切到对照面板**之前**量，切了之后滚动容器就换了。
+    const at = this.scrollRatio(v.body);
     const t = this.trOf(v);
     t.lang = lang;
     t.busy = true;
@@ -11625,7 +12139,7 @@ export class App {
     v.full = true;
     this.paintViewer();
     try {
-      const { job } = await api.trStart(v.sessionId, { path: info.abs, lang, provider, model, force });
+      const { job } = await api.trStart(v.sessionId, { path: info.abs, lang, provider, model, force, at });
       // 选过一次就记住，下次直接用它（设置页里能改回去）。
       this.rememberTrModel(`${provider}/${model}`);
       if (this.viewer !== v) return;
@@ -11638,6 +12152,17 @@ export class App {
       t.error = errText(err);
     }
     this.paintViewer();
+  }
+
+  /**
+   * 视口在整篇的 0–1 位置（D392 修订）：桥拿它决定先翻哪一节 —— 滚到中间点「译」，
+   * 就先翻你正在看的那节，而不是从头开始。量不出来（不能滚 / 太短）就返回 undefined。
+   */
+  private scrollRatio(box: HTMLElement | null): number | undefined {
+    if (!box) return undefined;
+    const span = box.scrollHeight - box.clientHeight;
+    if (span <= 4) return undefined;
+    return Math.min(1, Math.max(0, box.scrollTop / span));
   }
 
   /** 进度轮询：只刷条上的字；新的一节到了才重画（重画会重建 DOM，保住滚动位置）。 */
@@ -11689,9 +12214,22 @@ export class App {
       brief.textContent = job.status === "running" ? tr("翻译中 {done}/{total}", { done: job.done, total: job.total || "?" }) : job.note || brief.textContent;
     }
     const note = v.body.querySelector(".tr-note");
-    if (note && job.note) note.textContent = job.note;
+    const noteText = job.status === "running" ? trNote(job) : "";
+    if (note) {
+      note.textContent = noteText;
+      note.setAttribute("title", noteText);
+      (note as HTMLElement).hidden = !noteText;
+    }
     const fill = v.body.querySelector<HTMLElement>(".tr-prog-fill");
     if (fill && job.total) fill.style.width = `${Math.round((job.done / job.total) * 100)}%`;
+    const elapsed = v.body.querySelector(".tr-elapsed");
+    if (elapsed) elapsed.textContent = trElapsed(job);
+    // 队尾那句「还差几节 · 正在翻几块」也要跟着走，不然它停在起飞时那一刻的样子。
+    const pending = v.body.querySelector(".tr-pending-head");
+    if (pending && job.total) {
+      const left = Math.max(0, job.total - (t.doc?.sections.length ?? 0));
+      pending.textContent = trPendingHead(left, job.inflight ?? 0);
+    }
   }
 
   /** 重画时保住滚动位置：每翻完一节都会重画一遍。 */
@@ -11810,7 +12348,7 @@ export class App {
       pushEscLayer({ el: back, onEsc: () => done("cancel") });
       box.append(row);
       back.append(box);
-      this.overlay(back);
+    this.overlay(back, "window", { enter: "alert" });
     });
   }
 
@@ -12309,7 +12847,7 @@ export class App {
       const inTrash = this.mgrView === "trash";
       titleEl.textContent = inTrash ? tr("垃圾箱") : tr("会话管理");
       if (inTrash) bin.textContent = tr("← 会话列表");
-      else bin.textContent = this.trash.length ? tr("🗑 垃圾箱 ({p1})", { p1: this.trash.length }) : tr("🗑 垃圾箱");
+      else bin.replaceChildren(icon("trash", { size: 14 }), el("span", "", this.trash.length ? tr("垃圾箱 ({p1})", { p1: this.trash.length }) : tr("垃圾箱")));
       bin.classList.toggle("on", inTrash);
       bin.title = inTrash ? tr("回到会话列表") : tr("最近删除的会话都在这里，清空才真的销毁");
       // The toolbar itself stays (it carries the bin toggle); only the filters go away,
@@ -12472,9 +13010,9 @@ export class App {
     }
 
     const acts = el("div", "mgr-acts");
-    const act = (html: string, title: string, fn: () => void, cls = "card-act") => {
+    const act = (f: IconName | string, title: string, fn: () => void, cls = "card-act") => {
       const b = el("button", cls) as HTMLButtonElement;
-      b.append(glyph(html));
+      b.append(face(f));
       b.title = title;
       b.setAttribute("aria-label", title);
       b.onclick = (ev) => {
@@ -12492,16 +13030,16 @@ export class App {
     };
     acts.append(open);
     act(pinned ? "★" : "☆", pinned ? tr("取消置顶") : tr("置顶"), () => this.pinIds([s.id], !pinned), `card-act${pinned ? " pinned" : ""}`);
-    act("✎", tr("重命名"), () => {
+    act("pencil", tr("重命名"), () => {
       this.mgrRename = { id: s.id, draft: s.name || "" };
       repaint();
     });
-    act(archived ? ICON_UNARCHIVE : ICON_ARCHIVE, archived ? tr("恢复（取消归档）") : tr("归档（文件不动，只是收起来）"), () => this.archiveIds([s.id], !archived));
+    act(archived ? "unarchive" : "archive", archived ? tr("恢复（取消归档）") : tr("归档（文件不动，只是收起来）"), () => this.archiveIds([s.id], !archived));
     const key = `one:${s.id}`;
     const armed = this.mgrDelArm?.key === key;
     const held = App.deleteBlocked(s);
     const del = act(
-      armed ? tr("删除?") : ICON_TRASH,
+      armed ? tr("删除?") : "trash",
       App.deleteWhy(s, armed, tr("删除（先进垃圾箱，可还原）")),
       () => {
         if (this.mgrArm(key)) this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [s.id] }));
@@ -12966,6 +13504,8 @@ export class App {
     } else {
       this.settingsTab = tab;
     }
+    if (tab === "global" || tab === "project") this.settingsReturnTab = "global";
+    else if (tab !== "changelog" && tab !== "whatsnew") this.settingsReturnTab = tab;
     // Closing and reopening starts from what is on disk again; only scope switches keep drafts.
     this.settingsDrafts.clear();
     this.settingsSnapshots.clear();
@@ -13069,6 +13609,10 @@ export class App {
   /** #283：左栏点一格。照旧 chip 的 onclick（进 tab 该补的请求照发），落点是整页重画。 */
   private selectSettingsTab(tab: SettingsTab): void {
     const cwd = this.session?.cwd ?? "";
+    // 进更新日志前记下这一格：阅读态里没有左栏，回来全靠页头那个「‹ 设置」。
+    if ((tab === "changelog" || tab === "whatsnew") && this.settingsTab !== "changelog" && this.settingsTab !== "whatsnew") {
+      this.settingsReturnTab = this.settingsNavKey(this.settingsTab) as SettingsTab;
+    }
     this.settingsTab = tab;
     // #286: compare and its filter are modes of the settings page; leaving it drops them.
     this.settingsCompare = false;
@@ -13082,6 +13626,7 @@ export class App {
         .then((res) => {
           this.trModelPref = res.prefs.model;
           this.trDefaultModel = res.defaultModel;
+          this.trConcurrency = res.prefs.concurrency ?? this.trConcurrency;
           this.paintSettings();
         })
         .catch(() => {
@@ -13116,6 +13661,9 @@ export class App {
     if (!pane) return;
     // 子代理那一页整段样式挂在 `.subagents-sheet` 下（styles.css 3826 起），类还是照旧 toggle 在根上。
     consoleNode.classList.toggle("subagents-sheet", this.settingsTab === "subagents");
+    // 更新日志是阅读态：这一页自己排页头，左栏 / 头部 / 底栏都收起来（changelog.css 第一段）。
+    if (this.settingsTab === "changelog" || this.settingsTab === "whatsnew") consoleNode.dataset.reader = "true";
+    else delete consoleNode.dataset.reader;
     const cwd = this.session?.cwd ?? "";
     this.paintSettingsHead(consoleNode, cwd);
     this.paintSettingsNav(consoleNode, cwd);
@@ -13438,9 +13986,24 @@ export class App {
     return b;
   }
 
-  /** #283：两个更新日志合成一页 —— pi 那份与本项目那份用页内分段切，深链仍按 tab id 落到对应段。 */
+  /**
+   * #283：两个更新日志合成一页，pi 那份与本项目那份用页内分段切，深链仍按 tab id 落到对应段。
+   *
+   * 现在是「阅读态」：页头自己画（‹ 设置 / 分段 / 标题 / 一行说明 + 右侧筛选），设置页的左栏、
+   * 控制台头部与底栏都由 `changelog.css` 收起 —— 版面照 vibe-hub 那一页，正文得拿满宽度。
+   */
   private paintSettingsChangelog(pane: HTMLElement): void {
-    const current = this.settingsTab === "whatsnew" ? "whatsnew" : "changelog";
+    const current: "changelog" | "whatsnew" = this.settingsTab === "whatsnew" ? "whatsnew" : "changelog";
+
+    const back = el("button", "cl-back") as HTMLButtonElement;
+    back.type = "button";
+    back.title = tr("回到设置");
+    back.append(icon("chevron", { size: 11 }), el("span", undefined, tr("设置")));
+    back.onclick = () => {
+      const to = this.settingsReturnTab;
+      this.selectSettingsTab(to === "changelog" || to === "whatsnew" ? "global" : to);
+    };
+
     const seg = el("div", "st-seg");
     seg.setAttribute("role", "group");
     const make = (id: "changelog" | "whatsnew", label: string): HTMLButtonElement => {
@@ -13453,11 +14016,151 @@ export class App {
       return b;
     };
     seg.append(make("changelog", "pi"), make("whatsnew", tr("本项目")));
-    const page = el("div", "st-changelog");
-    pane.append(seg, page);
-    // 两个 painter 的「读回来时这个 tab 还在吗」守卫靠的就是 settingsTab，分段切换走的是整页重画。
-    if (current === "changelog") this.paintChangelog(page);
-    else this.paintWhatsnew(page);
+
+    // 阅读态没有头部那颗「关闭」，✕ 跟着页头右上角走（版面上就在筛选右边）。
+    const close = el("button", "cl-close") as HTMLButtonElement;
+    close.type = "button";
+    close.title = tr("关闭设置");
+    close.setAttribute("aria-label", tr("关闭设置"));
+    close.append(icon("close", { size: 13 }));
+    close.onclick = () => this.closeSheet();
+
+    const prefix: Node[] = [back, seg, close];
+    if (current === "changelog") {
+      const page = el("div", "cl-page");
+      const body = el("div", "cl-markdown");
+      body.append(el("div", "empty", tr("读取中…")));
+      page.append(
+        renderLogHead({
+          prefix,
+          title: tr("更新日志"),
+          subtitle: tr("这个 pi 包里带的改动记录，跟着发版走。"),
+        }),
+        body,
+      );
+      pane.append(page);
+      fetch("/api/changelog", { credentials: "same-origin" })
+        .then((r) => r.json())
+        .then((out: { version?: string; text?: string }) => {
+          if (this.settingsTab !== "changelog") return;
+          body.replaceChildren();
+          body.append(el("div", "settings-path", tr("当前 pi {p1}", { p1: out.version ?? "" })));
+          body.append(renderMarkdown(out.text || tr("（这个 pi 包里没有 CHANGELOG.md）")));
+        })
+        .catch((err: Error) => {
+          if (this.settingsTab !== "changelog") return;
+          body.replaceChildren(el("div", "empty", tr("读不到更新日志：{p1}", { p1: err.message })));
+        });
+      return;
+    }
+    // 本项目那一侧要等一次 HTTP（月份、统计都在解析结果里），所以正文由它自己画。
+    this.paintSelfChangelog(pane, prefix);
+  }
+
+  /**
+   * D195：本项目的 `CHANGELOG.md`，桥端已解析成 `log`（批次 / 组 / 引用）。
+   *
+   * #588：这个提示的开关与「上次看到」还在这页，但按用户要求放到**页面最下方** —— 页头让给
+   * 标题与筛选，设置项不抢眼。
+   */
+  private paintSelfChangelog(pane: HTMLElement, prefix: Node[]): void {
+    pane.append(el("div", "empty", tr("读取中…")));
+    fetch("/api/changelog?scope=self", { credentials: "same-origin" })
+      .then((r) => r.json())
+      .then((out: selfChangelogOut) => {
+        if (this.settingsTab !== "whatsnew") return;
+        pane.replaceChildren();
+        const root = out.root ?? "";
+        const log: SelfLog | undefined = out.log;
+        if (!log || !log.batches.length) {
+          // 桥不认（旧版）或检出里没有 CHANGELOG.md：退回 markdown，这一页不能空着。
+          const page = el("div", "cl-page");
+          const body = el("div", "cl-markdown");
+          body.append(
+            renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
+              // D308：正文里的 `docs/DECISIONS.md` 是可点的文件链接；链路相对**仓库根**写，
+              // 会话 cwd 可能不在这个仓库里（旧桥没有结构化日志时只剩这条路可走）。
+              openPath: (file) => {
+                window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(root, file) } }));
+              },
+            }),
+          );
+          page.append(
+            renderLogHead({
+              prefix,
+              title: tr("更新日志"),
+              subtitle: tr("本项目的每一批改动：新增了什么、修掉了什么、改过哪些设计决定。"),
+            }),
+            body,
+          );
+          pane.append(page, this.whatsnewPrefs(out));
+          return;
+        }
+        const page = renderLogPage(log, {
+          repo: out.repo ?? null,
+          seenTitle: out.whatsnewSeen || undefined,
+          scrollRoot: pane,
+          headPrefix: prefix,
+          title: tr("更新日志"),
+          subtitle: tr("本项目的每一批改动：新增了什么、修掉了什么、改过哪些设计决定。"),
+          footNote: tr("更早的记录与每条的出处都在 CHANGELOG.md · 共 {p1} 批", { p1: String(log.stats.batches) }),
+          // `D365` 只开文件：预览没有行锚点，跳不到那一行，标题里说清楚落在哪一份。
+          onOpenDecision: (n) => {
+            this.chat.add({
+              id: `n:${Date.now()}`,
+              kind: "notice",
+              text: tr("打开 docs/DECISIONS.md，搜 D{p1} 看这条决定的全文。", { p1: String(n) }),
+              level: "info",
+            });
+            window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(root, "docs/DECISIONS.md") } }));
+          },
+        });
+        page.append(this.whatsnewPrefs(out));
+        pane.append(page);
+      })
+      .catch((err: Error) => {
+        if (this.settingsTab !== "whatsnew") return;
+        pane.replaceChildren(el("div", "empty", tr("读不到本项目的更新日志：{p1}", { p1: err.message })));
+      });
+  }
+
+  /**
+   * 页底那一块：「启动时的提示」开关 + 「上次看到」。D367 的小节头 + `.settings-panel` 的写法照旧，
+   * 只是从页首挪到了时间线下面，外框换成 `.cl-settings`（跟着页面的左右内边距走）。
+   */
+  private whatsnewPrefs(out: selfChangelogOut): HTMLElement {
+    const wrap = el("div", "cl-settings");
+    wrap.append(this.stSection(tr("启动时的提示"), tr("桥启动后第一次有人连上时才判一次；两次弹出之间至少隔一天")));
+    const panel = el("div", "settings-panel");
+    const toggle = el("input", "") as HTMLInputElement;
+    toggle.type = "checkbox";
+    toggle.checked = out.whatsnewEnabled !== false;
+    toggle.onchange = () => {
+      void fetch("/api/changelog/popup", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: toggle.checked }),
+      }).catch(() => {
+        /* 桥不在就当没点过：下次打开这一页会照盘上的真值重画 */
+      });
+    };
+    panel.append(
+      this.stRow(
+        tr("启动时自动打开更新日志"),
+        tr("关掉之后不再自动弹；这一页照样能看，关着期间攒下的批次等你重新打开还会出现"),
+        this.stSwitch(toggle),
+      ),
+    );
+    // 「上次看到」是只读的值，不是可点的路径：长了就省略，全文进 title。
+    const seen = el("span", "settings-value", out.whatsnewSeen || tr("还没看过任何一批"));
+    if (out.whatsnewSeen) seen.title = out.whatsnewSeen;
+    panel.append(this.stRow(tr("上次看到"), tr("弹窗打开的那一刻就记下；自己在这一页翻完不算"), seen));
+    wrap.append(panel);
+    // 版本号原来在页首「当前版本 …」那一行，这里补一行，别把「现在跑的是哪一版」丢了。
+    const where = [out.version, [out.branch, out.commit].filter(Boolean).join("@")].filter(Boolean).join(" · ");
+    if (where) wrap.append(el("div", "cl-settings__meta", tr("当前版本 {p1}", { p1: where })));
+    return wrap;
   }
 
   /**
@@ -13689,8 +14392,8 @@ export class App {
   }
 
   /**
-   * D245: 预览里的翻译默认用哪个模型。出厂默认是 copilot/gpt-6-luna，这里选的会记住；
-   * 不写进 settings.json，免得跟「本机才有这份模型目录」的事实对不上。
+   * D245 / D392: 预览里的翻译默认用哪个模型。默认**跟随 pi 全局设置**里的 `defaultProvider` +
+   * `defaultModel`（不再写死 copilot）；这里选过的会记住，存桥的本机偏好，不写 settings.json。
    */
   private paintPreviewSettings(pane: HTMLElement): void {
     const want = this.trModelPref || this.trDefaultModel;
@@ -13698,11 +14401,11 @@ export class App {
       this.models.map((m) => `${m.provider}/${m.id}`),
       want,
     );
-    const fallback = this.trDefaultModel || "copilot/gpt-6-luna";
+    const fallback = this.trDefaultModel;
     pane.append(
       this.stCards([
-        { label: tr("翻译模型"), value: resolved || want || "—", sub: this.trModelPref ? tr("你选的") : tr("出厂默认"), cls: "wide" },
-        { label: tr("出厂默认"), value: fallback, sub: tr("恢复默认会回到它"), cls: "wide" },
+        { label: tr("翻译模型"), value: resolved || want || "—", sub: this.trModelPref ? tr("你选的") : tr("跟随 pi 默认"), cls: "wide" },
+        { label: tr("pi 默认模型"), value: fallback || "—", sub: fallback ? tr("恢复默认会回到它") : tr("pi 全局设置里没设"), cls: "wide" },
       ]),
     );
     if (want && !resolved) {
@@ -13716,11 +14419,34 @@ export class App {
       this.rememberTrModel(sel.value);
       this.flashSettings(tr("以后翻译默认用 {p1}", { p1: sel.options[sel.selectedIndex]?.textContent ?? sel.value }));
     };
-    const reset = el("button", "btn", tr("恢复默认（{p1}）", { p1: fallback })) as HTMLButtonElement;
+    const reset = el("button", "btn", tr("恢复默认（{p1}）", { p1: fallback || "—" })) as HTMLButtonElement;
+    reset.disabled = !fallback;
     reset.onclick = () => {
+      if (!fallback) return;
       this.rememberTrModel(fallback);
       this.flashSettings(tr("已恢复默认模型"));
       this.paintSettings();
+    };
+    // D392：同时翻几块。主进度仍按节，这个旋钮只影响「多久能看完全篇」。
+    const conc = el("select", "ns-input tr-conc") as HTMLSelectElement;
+    for (let n = 1; n <= 8; n++) {
+      const opt = el("option", "", String(n)) as HTMLOptionElement;
+      opt.value = String(n);
+      conc.append(opt);
+    }
+    conc.value = String(this.trConcurrency);
+    conc.onchange = () => {
+      const n = Number(conc.value);
+      this.trConcurrency = n;
+      void api
+        .trPrefs(undefined, n)
+        .then((res) => {
+          this.trConcurrency = res.prefs.concurrency ?? n;
+        })
+        .catch(() => {
+          /* 记不住不影响这一次设置 */
+        });
+      this.flashSettings(tr("以后同时翻 {n} 块", { n }));
     };
     pane.append(this.stSection(tr("翻译")));
     const panel = el("div", "settings-panel");
@@ -13731,9 +14457,38 @@ export class App {
         sel,
         "label",
       ),
+      this.stRow(
+        tr("同时翻几块"),
+        tr("每个往返的固定等待（起进程 + 等模型开口）跟正文长短无关，所以几块一起翻才快；撞到模型限流会自动降并发、退避重发。"),
+        conc,
+        "label",
+      ),
       this.stRow(tr("恢复默认"), tr("换模型不会重翻已有的译文：点「更新」时才按新模型整篇重来。"), reset),
     );
     pane.append(panel);
+  }
+
+  /** D389：设置 →「通知」里的「页面内提醒」一组（总开关 + 阻塞 / 其它两档）。 */
+  private remindSettingRows(): HTMLElement {
+    const settings = this.me.reminders ?? { enabled: true, blocking: true, others: false };
+    const panel = el("div", "settings-panel");
+    const row = (label: string, hint: string, key: "enabled" | "blocking" | "others") => {
+      const input = el("input") as HTMLInputElement;
+      input.type = "checkbox";
+      input.checked = settings[key] !== false;
+      input.onchange = () => {
+        this.socket.send({ type: "reminder.set", [key]: input.checked });
+        this.me.reminders = { ...settings, [key]: input.checked };
+        this.flashSettings(input.checked ? tr("已打开「{p1}」", { p1: label }) : tr("已关掉「{p1}」", { p1: label }));
+      };
+      const wrap = this.stRow(label, hint, this.stSwitch(input), "label");
+      panel.append(wrap);
+      return wrap;
+    };
+    row(tr("页面内提醒"), tr("关掉只是不弹：★ 行那颗角标照常计数，清单里也照旧留着。"), "enabled");
+    row(tr("阻塞类（审批 / 提问）"), tr("别的会话在等你点头或回答时，右上角弹一条、自己消失。"), "blocking");
+    row(tr("其它（脚本 / 构建 / 定时）"), tr("默认不弹，只让角标涨；打开了才跟着弹。"), "others");
+    return panel;
   }
 
   private paintNotify(body: HTMLElement): void {
@@ -13775,6 +14530,10 @@ export class App {
       this.stRow(tr("发一条试试"), tr("Web Push 已订阅 {p1} 台设备。测试通知不受开关影响，页面在前也会弹。", { p1: this.me.pushCount }), test),
     );
     body.append(panel2);
+
+    // D389：上面那组管「越过屏幕」，这一组管「就在屏幕里」—— 两件事，别混成一个开关。
+    body.append(this.stSection(tr("页面内提醒"), tr("别的会话在等你时，页面里叫到你")));
+    body.append(this.remindSettingRows());
   }
 
   /**
@@ -13817,10 +14576,30 @@ export class App {
       this.socket.send({ type: "runtime.sleepAll" });
       this.paintSettings();
     };
+    // D407 story 13：用户选了「关窗保留」，就必须有一个说得出口的关机口 —— 壳、脑、会话一起停。
+    // 有壳时才存在这个接口（旧桥会 404）；那一行回执就把话说明白，别让人以为点完就好了。
+    const stopAll = el("button", "btn danger", tr("全部停止")) as HTMLButtonElement;
+    stopAll.title = tr("把壳、桥和所有会话一起停掉：页面会断，要重新启动才回来。");
+    stopAll.onclick = () => {
+      if (!window.confirm(tr("这会停掉壳、桥和所有会话（包括正在跑的一轮）。继续吗？"))) return;
+      this.stopAllReceipt = tr("正在停：壳会先收会话再退出。");
+      void api.hostStop().then(
+        () => {
+          this.stopAllReceipt = tr("已发出停止：壳会先收会话再退出，页面随后断开。");
+          this.paintSettings();
+        },
+        (err: unknown) => {
+          this.stopAllReceipt = tr("没停成：{msg}", { msg: String((err as Error)?.message ?? err) });
+          this.paintSettings();
+        },
+      );
+      this.paintSettings();
+    };
     const actions = el("div", "runtime-actions");
-    actions.append(sleepAll);
+    actions.append(sleepAll, stopAll);
     body.append(this.stSection(tr("进程"), actions));
     if (this.sleepAllReceipt) body.append(el("div", "runtime-sleep-all", sleepAllText(this.sleepAllReceipt)));
+    if (this.stopAllReceipt) body.append(el("div", "runtime-sleep-all", this.stopAllReceipt));
     body.append(
       el(
         "div",
@@ -14441,7 +15220,7 @@ export class App {
     const body = el("div", "settings-body");
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note share-note"), body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     return { back, sheet, body };
   }
@@ -14963,7 +15742,13 @@ export class App {
     if (this.depsLoading) hint.textContent = tr("检查中…");
     else if (!report) hint.textContent = this.depsError ? tr("问不到：{p1}", { p1: this.depsError }) : "";
     else if (report.ready) hint.textContent = tr("都齐了");
+    else if (report.missing && report.pending > report.missing)
+      hint.textContent = tr("缺 {p1} 个，另有 {p2} 个要升级", {
+        p1: String(report.missing),
+        p2: String(report.pending - report.missing),
+      });
     else if (report.missing) hint.textContent = tr("缺 {p1} 个", { p1: String(report.missing) });
+    else if (report.pending) hint.textContent = tr("{p1} 个要在下次 npm install 时升级", { p1: String(report.pending) });
     else hint.textContent = tr("要 pi {p1} 或更新", { p1: report.pi.min });
     row.append(hint, el("span", "spacer"));
     const recheck = el("button", "btn ghost", tr("重新检查")) as HTMLButtonElement;
@@ -14991,7 +15776,8 @@ export class App {
       );
       for (const pkg of report.packages) {
         const ver = pkg.foundVersion ? ` ${pkg.foundVersion}` : "";
-        const behind = pkg.behind && pkg.version ? tr("（比 {p1} 旧，能用）", { p1: pkg.version }) : "";
+        // 低于下限不是「能用就行」：下次 npm install 会把它升上去（D393）。
+        const behind = pkg.behind && pkg.version ? tr("（比 {p1} 旧，下次 npm install 会升上去）", { p1: pkg.version }) : "";
         const what = this.depsFeature(pkg.id);
         line(pkg.installed, pkg.name, pkg.installed ? ver + behind : what, what);
       }
@@ -15134,7 +15920,7 @@ export class App {
     body.append(host);
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     // D113: keep the last inventory on screen (it is the fastest thing we have); the bridge pushes a
     // fresh one in stages, so 「联网检查」 never hides the rows again.
@@ -16164,85 +16950,6 @@ export class App {
     this.paintLoginIfOpen();
   }
 
-  private paintChangelog(body: HTMLElement): void {
-    body.append(el("div", "empty", tr("读取中…")));
-    fetch("/api/changelog", { credentials: "same-origin" })
-      .then((r) => r.json())
-      .then((out: { version?: string; text?: string }) => {
-        if (this.settingsTab !== "changelog") return;
-        body.replaceChildren();
-        body.append(el("div", "settings-path", tr("当前 pi {p1}", { p1: out.version ?? "" })));
-        const md = el("div", "settings-changelog");
-        md.append(renderMarkdown(out.text || tr("（这个 pi 包里没有 CHANGELOG.md）")));
-        body.append(md);
-      })
-      .catch((err: Error) => {
-        body.replaceChildren(el("div", "empty", tr("读不到更新日志：{p1}", { p1: err.message })));
-      });
-  }
-
-  /** D195：本项目的 CHANGELOG.md（设置页里和 pi 那个分开放，两个文档不同）。 */
-  private paintWhatsnew(body: HTMLElement): void {
-    body.append(el("div", "empty", tr("读取中…")));
-    fetch("/api/changelog?scope=self", { credentials: "same-origin" })
-      .then((r) => r.json())
-      .then((out: { version?: string; branch?: string; commit?: string; root?: string; text?: string; whatsnewSeen?: string; whatsnewEnabled?: boolean }) => {
-        if (this.settingsTab !== "whatsnew") return;
-        body.replaceChildren();
-        const head = [out.branch, out.commit].filter(Boolean).join("@");
-        const where = [out.version, head].filter(Boolean).join(" · ");
-        body.append(el("div", "settings-path", tr("当前版本 {p1}", { p1: where })));
-
-        // #588：这个提示的开关与「上次看到」都放在这一页 —— 想开想关、想知道自己读到哪，同一个地方。
-        // D367：小节头在外面、行装进 `.settings-panel`（全站同一套「小节头 + 面板 + 行」）。
-        // `.settings-group` 是那个横排的小节头，拿它当外框会把两行设置挤成一根竖条。
-        body.append(this.stSection(tr("启动时的提示"), tr("桥启动后第一次有人连上时才判一次；两次弹出之间至少隔一天")));
-        const panel = el("div", "settings-panel");
-        const toggle = el("input", "") as HTMLInputElement;
-        toggle.type = "checkbox";
-        toggle.checked = out.whatsnewEnabled !== false;
-        toggle.onchange = () => {
-          void fetch("/api/changelog/popup", {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ enabled: toggle.checked }),
-          }).catch(() => {
-            /* 桥不在就当没点过：下次打开这一页会照盘上的真值重画 */
-          });
-        };
-        panel.append(
-          this.stRow(
-            tr("启动时自动打开更新日志"),
-            tr("关掉之后不再自动弹；这一页照样能看，关着期间攒下的批次等你重新打开还会出现"),
-            this.stSwitch(toggle),
-          ),
-        );
-        // 「上次看到」是只读的值，不是可点的路径：长了就省略，全文进 title。
-        const seen = el("span", "settings-value", out.whatsnewSeen || tr("还没看过任何一批"));
-        if (out.whatsnewSeen) seen.title = out.whatsnewSeen;
-        panel.append(
-          this.stRow(tr("上次看到"), tr("弹窗打开的那一刻就记下；自己在这一页翻完不算"), seen),
-        );
-        body.append(panel);
-        const md = el("div", "settings-changelog");
-        md.append(
-          renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
-            // 正文里的 `docs/DECISIONS.md` 是可点的文件链接（D195）。D308：不再先收面板 ——
-            // 预览会压在面板上（`.viewer.hi`），关掉预览就回到这一页。链接相对**仓库根**写，
-            // 会话 cwd 可能不在这个仓库里。
-            openPath: (file) => {
-              window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(out.root ?? "", file) } }));
-            },
-          }),
-        );
-        body.append(md);
-      })
-      .catch((err: Error) => {
-        body.replaceChildren(el("div", "empty", tr("读不到本项目的更新日志：{p1}", { p1: err.message })));
-      });
-  }
-
   // ---------------------------------------------------------------- tree / fork / clone (#17)
   private forkAt(target: { entryId: string; index?: number; text?: string }): void {
     const sessionId = this.currentId;
@@ -16285,7 +16992,7 @@ export class App {
     const body = el("div", "tree-body", tr("读取中…"));
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.socket.send({ type: "tree", sessionId: this.currentId });
   }
@@ -16387,7 +17094,7 @@ export class App {
   private showComplete(mode: "cmd" | "file", start: number, end: number, query: string, items: CommandItem[]): void {
     let node = this.complete?.node;
     if (!node || !node.isConnected) {
-      node = el("div", "complete-pop");
+      node = markSurface(el("div", "complete-pop"), "menu");
       const row = this.els.composerHost.querySelector(".row");
       if (row) this.els.composerHost.insertBefore(node, row);
       else this.els.composerHost.append(node);
@@ -16600,11 +17307,7 @@ export class App {
     btn.type = "button";
     btn.append(el("span", "glyph", "↻"), el("span", "", tr("重讲")));
     btn.onclick = () => this.retellLastAnswer();
-    bar.append(
-      el("span", "retell-lead", tr("没看懂最后一条回答？")),
-      btn,
-      el("span", "retell-sub", tr("先提供上下文，再用简体技术中文说明")),
-    );
+    bar.append(el("span", "retell-lead", tr("没看懂最后一条回答？")), btn);
     this.retellBar = bar;
     this.retellBtn = btn;
     return bar;
@@ -16748,7 +17451,7 @@ export class App {
     const body = el("div", "bg-sheet-body");
     sheet.append(head, body);
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.bgSheet = { sessionId: sid, body, runs: new Map() };
     const tick = () => {
@@ -16891,7 +17594,9 @@ export class App {
     const mode = this.session?.permission ?? "ask";
     const meta = permMode(mode);
     const btn = el("button", `perm-btn perm-${mode}`) as HTMLButtonElement;
-    btn.append(el("span", "perm-ico", meta.icon), el("span", "perm-label", meta.label), el("span", "perm-caret", "▾"));
+    const permIc = el("span", "perm-ico");
+    permIc.append(icon(meta.icon, { size: 14 }));
+    btn.append(permIc, el("span", "perm-label", meta.label), el("span", "perm-caret", "▾"));
     btn.title = tr("权限模式：{p1}——{p2}", { p1: meta.label, p2: meta.desc });
     btn.onclick = (ev) => {
       ev.stopPropagation();
@@ -16909,7 +17614,7 @@ export class App {
     const sessionId = this.currentId;
     if (!sessionId) return;
     const current = this.session?.permission ?? "ask";
-    const menu = el("div", "perm-menu");
+    const menu = markSurface(el("div", "perm-menu"), "menu");
     menu.append(el("div", "perm-menu-title", tr("工具权限（只对这个会话）")));
     const close = (): void => {
       menu.remove();
@@ -16927,7 +17632,9 @@ export class App {
     };
     for (const m of PERM_MODES) {
       const row = el("button", `perm-opt perm-${m.id}${m.id === current ? " on" : ""}`);
-      row.append(el("span", "perm-ico", m.icon), el("span", "perm-name", m.label), el("span", "perm-check", m.id === current ? "✓" : ""), el("span", "perm-desc", m.desc));
+      const rowIc = el("span", "perm-ico");
+      rowIc.append(icon(m.icon, { size: 14 }));
+      row.append(rowIc, el("span", "perm-name", m.label), el("span", "perm-check", m.id === current ? "✓" : ""), el("span", "perm-desc", m.desc));
       row.onclick = () => {
         close();
         if (m.id === current) return;
@@ -17279,7 +17986,7 @@ export class App {
     pickerPath = () => handle.picker.path();
     home.bind(handle.picker);
     ref.bind();
-    this.overlay(handle.root);
+    this.overlay(handle.root, "window", { enter: "drawer" });
     this.setSheet(handle.root);
     handle.focus();
   }
@@ -17441,7 +18148,7 @@ export class App {
     this.imageSheetPaint = paint;
 
     back.append(sheet);
-    this.overlay(back);
+    this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     paint();
   }
@@ -17581,22 +18288,27 @@ export class App {
   }
 
   /**
+   * 卡片上的文字：反引号包住的片段走 `<code>`（不再露出反引号），字面 `\n` 折成真换行。
+   * 题干和选项说明都是模型给的自由文本，纯文本渲染会把这两种痕迹原样摊给用户（D408）。
+   * 会话里那张「需要你回答」卡（`askCard`）与题目 tab 走同一个入口，否则同一段文字两处长得不一样。
+   */
+  private askText(tag: keyof HTMLElementTagNameMap, cls: string, text: string): HTMLElement {
+    const node = el(tag, cls);
+    this.appendAskText(node, text);
+    return node;
+  }
+
+  private appendAskText(node: HTMLElement, text: string): void {
+    for (const p of cardPieces(text)) {
+      node.append(p.kind === "code" ? el("code", "", p.text) : document.createTextNode(p.text));
+    }
+  }
+
+  /**
    * 一块面板两个家（D189 / D190）：宽屏答在「需要你」右栏，会话保持原高度；窄屏与收起的右栏
    * 得到输入框上方的面板，收起时只剩一行（`askStrip`）。两种位置都能直接打字作答。用户去别的
    * 会话转一圈回来，桥会重发待答的题目；到货时右栏自己打开一次，除此之外不弹任何东西。
    */
-  /**
-   * 卡片上的文字：反引号包住的片段走 `<code>`（不再露出反引号），字面 `\n` 折成真换行。
-   * 题干和选项说明都是模型给的自由文本，纯文本渲染会把这两种痕迹原样摊给用户（D389）。
-   */
-  private askText(tag: keyof HTMLElementTagNameMap, cls: string, text: string): HTMLElement {
-    const node = el(tag, cls);
-    for (const p of cardPieces(text)) {
-      node.append(p.kind === "code" ? el("code", "", p.text) : document.createTextNode(p.text));
-    }
-    return node;
-  }
-
   private renderAsks(): void {
     const host = this.els.composerHost;
     host.querySelector(".ask-slot, .ask-strip")?.remove();
@@ -17606,11 +18318,14 @@ export class App {
     this.syncViewerBesideAsk();
     this.fillHintStatus();
     if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
-    if (this.askLost && !this.asks.length) {
-      const lost = this.askLostBlock();
+    // Q-010b: 残影只画给「问卷死在那个会话里」的那个会话 —— 整页一份的话，切到别的会话它还在，
+    // 点「放进输入框」就把上一个会话的答案倒进这个会话的草稿里。
+    const lost = lostAskHere(this.frameView());
+    if (lost) {
+      const box = this.askLostBlock(lost);
       const row = host.querySelector(".row");
-      if (row) host.insertBefore(lost, row);
-      else host.append(lost);
+      if (row) host.insertBefore(box, row);
+      else host.append(box);
     }
     const ask = this.asks[0];
     if (!ask || !this.currentId) return;
@@ -17654,7 +18369,7 @@ export class App {
     if (total > 1) {
       const tabs = el("div", "ask-tabs");
       ask.questions.forEach((x, i) => {
-        const tab = el("button", "ask-tab", `${x.label ?? `Q${i + 1}`}${st.drafts.has(x.id) ? " ✓" : ""}`);
+        const tab = this.askText("button", "ask-tab", `${x.label ?? `Q${i + 1}`}${st.drafts.has(x.id) ? " ✓" : ""}`) as HTMLButtonElement;
         if (i === st.active) tab.classList.add("on");
         if (st.drafts.has(x.id)) tab.classList.add("done");
         tab.onclick = () => {
@@ -17687,8 +18402,8 @@ export class App {
       slot.append(list);
     }
     if (q.multiSelect) slot.append(el("div", "ask-note", tr("可以多选；也可以在输入框里另外写几句。")));
-    if (chosen?.wasCustom) slot.append(el("div", "ask-draft", tr("已填：{p1}", { p1: chosen.label })));
-    if (chosen?.text) slot.append(el("div", "ask-draft", tr("另写：{p1}", { p1: chosen.text })));
+    if (chosen?.wasCustom) slot.append(this.askText("div", "ask-draft", tr("已填：{p1}", { p1: chosen.label })));
+    if (chosen?.text) slot.append(this.askText("div", "ask-draft", tr("另写：{p1}", { p1: chosen.text })));
     if (q.allowOther === false) slot.append(el("div", "ask-note", tr("这题只能从选项里选。")));
     if (total > 1 || q.multiSelect) {
       const missing = ask.questions.filter((x) => !st.drafts.has(x.id)).length;
@@ -17714,7 +18429,9 @@ export class App {
     const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
     const strip = el("div", "ask-strip");
     strip.append(el("span", "k", tr("提问")));
-    strip.append(el("span", "q", `${unfoldNewlines(q.prompt).split("\n")[0]}${more}`));
+    // 收起只剩一行：折行交给 `cardPieces` 分段做（代码片段里的 `\n` 不折），再取真实的第一行。
+    const oneLine = cardPieces(q.prompt).map((p) => p.text).join("").split("\n")[0];
+    strip.append(el("span", "q", `${oneLine}${more}`));
     strip.append(el("span", "grow"));
     const open = el("button", "btn primary", tr("回答"));
     open.onclick = () => {
@@ -17753,8 +18470,7 @@ export class App {
     this.renderAsks();
   }
 
-  private askLostBlock(): HTMLElement {
-    const lost = this.askLost!;
+  private askLostBlock(lost: NonNullable<FrameView["askLost"]>): HTMLElement {
     const box = el("div", "ask-slot ask-lost");
     box.append(el("div", "ask-lost-head", tr("问卷没答完就关闭了：{p1}", { p1: lost.reason })));
     box.append(el("div", "ask-lost-sub", tr("你已填的 {p1} 题还留着，可以接着用。", { p1: lost.lines.length })));
@@ -17911,11 +18627,20 @@ export class App {
 
   private askCard(ask: AskRequest): HTMLElement {
     const card = el("div", "approval");
+    /* D389：提醒中心点一条要滚到这张卡，靠这个 id 找它。 */
+    card.dataset.reminderId = ask.id;
     const t = el("div", "t", ask.questions.length > 1 ? tr("需要你回答 · {p1} 题", { p1: ask.questions.length }) : tr("需要你回答"));
     // Q-033: 提问不设上限；发问方若给了时长，只在 tooltip 里交代一句。
     if (ask.timeoutMs) t.title = tr("发问方要求 {p1} 秒内作答，已忽略（提问不设上限）", { p1: Math.round(ask.timeoutMs / 1000) });
     card.append(t);
-    card.append(el("div", "m", ask.questions.map((q, i) => tr("{p1}{p2}", { p1: ask.questions.length > 1 ? tr("{p1}：", { p1: q.label ?? `Q${i + 1}` }) : "", p2: q.prompt })).join("\n")));
+    // 会话里这张卡（D408）：标题 + 题干与面板同源渲染，否则同一段 `\n`/反引号在历史里又露一遍。
+    const body = el("div", "m");
+    ask.questions.forEach((q, i) => {
+      if (i) body.append(document.createTextNode("\n"));
+      if (ask.questions.length > 1) this.appendAskText(body, tr("{p1}：", { p1: q.label ?? `Q${i + 1}` }));
+      this.appendAskText(body, q.prompt);
+    });
+    card.append(body);
     const actions = el("div", "actions");
     const go = el("button", "btn primary", tr("去回答"));
     go.onclick = () => this.focusAsk();
@@ -17944,12 +18669,465 @@ export class App {
 
   private selectQueueTab(tab: QueueTab): void {
     this.applyQueueTabEvent({ type: "user-tab", tab });
+    if (tab === "review") this.loadReview();
     try {
       localStorage.setItem("pi.queueTab", tab);
     } catch {
       // Private browsing may disable storage; the current page still remembers the selection.
     }
     this.renderQueue();
+  }
+
+  // ---------------------------------------------------------------- 代码评审（#651）
+
+  /** 面板评的是**当前会话所在目录**；仓库根由桥自己找（返回的帧里 `dir` 就是根）。 */
+  private reviewDir(): string {
+    return (this.session?.cwd ?? "").trim();
+  }
+
+  /**
+   * 会话或目录变了：把面板状态清干净，否则会把上一个会话的评审画在这一次上面。
+   *
+   * 「评什么」——PR 号、范围、分支、提交、拉回来的 PR 列表 —— **都属于这一次会话**（#674）。
+   * 留着它们，换会话后点「开始评审」就会拿上一个会话的号去评这个目录的仓库：号碰巧存在，
+   * 就会得到一份**看起来正常**的别人的结论（用户报的就是「新会话还挂着上一个会话的 PR 号」）。
+   * 所以这里不是「顺便清一下」，而是这条面板的硬规矩：进新会话 = 从默认值开始。
+   * 用户自己的偏好（模型、ocr 装没装）不在此列，它们在下面继续活着。
+   */
+  private syncReviewSession(): void {
+    const key = `${this.currentId ?? ""}|${this.reviewDir()}`;
+    if (key === this.reviewSessionKey) return;
+    this.reviewSessionKey = key;
+    this.reviewState = null;
+    this.reviewProgress = null;
+    this.reviewError = "";
+    this.reviewNotGit = false;
+    this.reviewAsked = "";
+    this.reviewPrMenu = false;
+    this.reviewExpectRepo = "";
+    this.reviewPendingToast = false;
+    this.reviewStartedRunId = "";
+    // —— 「评什么」：一律回到默认值（默认值见字段声明处）。
+    this.reviewMode = "pr";
+    this.reviewBase = "main";
+    this.reviewTarget = "HEAD";
+    this.reviewCommit = "";
+    this.reviewPr = "";
+    this.reviewPrQuery = "";
+    this.reviewPrInfo = { number: 0, info: null, error: "" };
+    // —— 上一个目录拉回来的东西：列表、仓库名、分支名册，全部作废（页签一打开会重新拉）。
+    this.reviewPrs = [];
+    this.reviewPrsLoading = false;
+    this.reviewPrError = "";
+    this.reviewPrsAsked = "";
+    this.reviewPrsAt = 0;
+    this.reviewRepo = "";
+    this.reviewRemoteRepo = "";
+    this.reviewRefs = [];
+    this.reviewSheet?.close();
+    this.reviewPrSheet?.close();
+  }
+
+  private loadReview(): void {
+    const dir = this.reviewDir();
+    if (!dir) {
+      this.reviewError = tr("先打开一个会话：评审评的是它的目录。");
+      this.reviewState = null;
+      this.reviewProgress = null;
+      return;
+    }
+    this.reviewAsked = dir;
+    this.reviewOcrAskedAt = Date.now();
+    this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
+    if (this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
+    void api.gitRefs(dir).then((refs) => {
+      const all = refs.groups.flatMap((g) => g.refs.map((r) => r.name)).filter(Boolean);
+      this.reviewRefs = all.slice(0, 60);
+      if (!this.reviewBase || this.reviewBase === "main") {
+        const base = (refs.defaultBase || "").trim();
+        if (base) this.reviewBase = base;
+      }
+      if (this.queueTab === "review") this.renderQueue();
+    }).catch(() => {});
+  }
+
+  /** `reviewModel` 存的是 `provider/id`；弹层与目录用 `id`，这里来回换。 */
+  private reviewModelInfo(): ModelInfo | null {
+    const want = this.reviewModel.trim();
+    if (!want) return null;
+    return this.models.find((m) => `${m.provider}/${m.id}` === want) ?? this.models.find((m) => m.id === want) ?? null;
+  }
+
+  /**
+   * 跑完了说一句。以前评审结束只换一下面板内容：跑失败的、一条意见都没有的，看上去都像「没反应」。
+   * 只announce自己点的那一次，别人的页签发起的不要抢话。
+   */
+  private announceReviewDone(): void {
+    if (!this.reviewPendingToast) return;
+    const latest = this.reviewState?.runs?.[this.reviewState.runs.length - 1];
+    if (!latest || latest.status === "running") return;
+    // 进度帧可能比 state 帧晚到：认不出 runId 时也把第一条终态当成自己的。
+    if (this.reviewStartedRunId && latest.id !== this.reviewStartedRunId) return;
+    if (this.reviewToasted.has(latest.id)) return;
+    this.reviewToasted.add(latest.id);
+    this.reviewPendingToast = false;
+    this.reviewStartedRunId = "";
+    const count = latest.findings?.length ?? 0;
+    if (latest.status === "done") {
+      if (!count) {
+        this.flashToast(tr("评审完成：没有发现意见"), false, 6000);
+        return;
+      }
+      let critical = 0;
+      let high = 0;
+      for (const f of latest.findings) {
+        if (f.severity === "critical") critical += 1;
+        else if (f.severity === "high") high += 1;
+      }
+      const detail = [critical ? tr("严重 {p1}", { p1: critical }) : "", high ? tr("高 {p1}", { p1: high }) : ""].filter(Boolean).join(tr(" · "));
+      this.flashToast(tr("评审完成：{p1} 条意见（{p2}）", { p1: count, p2: detail || tr("都能点开看") }), false, 7000);
+    } else if (latest.status === "failed") {
+      this.flashToast(tr("评审失败：{p1}", { p1: latest.error || latest.errorCode || "" }), true, 9000);
+    } else if (latest.status === "stopped") {
+      this.flashToast(tr("评审已停止，已收到的意见还在"), false, 5000);
+    }
+  }
+
+  private loadPullRequests(dir: string): void {
+    this.reviewPrsAsked = dir;
+    this.reviewPrsAt = Date.now();
+    this.reviewPrsLoading = true;
+    this.reviewPrError = "";
+    this.socket.send({ type: "review.prs.get", dir });
+  }
+
+  private renderReviewPanel(): HTMLElement {
+    this.syncReviewSession();
+    const dir = this.reviewDir();
+    // 换过会话 / 第一次进这一页：问一次桥。放在这里是因为面板可能是「记住上次页签」直接打开的，
+    // 那一路不会走 selectQueueTab()。
+    if (dir && this.reviewAsked !== dir) {
+      this.reviewAsked = dir;
+      this.reviewOcrAskedAt = Date.now();
+      this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
+    } else if (dir && !this.reviewOcr && this.reviewRetryTimer === null) {
+      // ocr 那一帧丢了（桥重启、页面重连、连接刚建就被打断）：面板会永远停在「正在读评审状态」。
+      // 页面重连后不会有人再触发重画，所以这里挂一次定时补问，而不是等下一次 render。
+      this.reviewRetryTimer = window.setTimeout(() => {
+        this.reviewRetryTimer = null;
+        if (!this.reviewOcr) this.loadReview();
+      }, 2500);
+    }
+    return renderReview(this.reviewPanelInput());
+  }
+
+  /** 面板与「评审详情」dialog 共用同一份输入。 */
+  private reviewPanelInput(): ReviewPanelInput {
+    const dir = this.reviewDir();
+    const view = reviewView({
+      state: this.reviewState,
+      progress: this.reviewProgress,
+      ocr: this.reviewOcr,
+      installing: this.reviewInstalling,
+      error: dir ? this.reviewError : tr("先打开一个会话：评审评的是它的目录。"),
+      notGit: this.reviewNotGit,
+      mode: this.reviewMode,
+      base: this.reviewBase,
+      target: this.reviewTarget,
+      commit: this.reviewCommit,
+      pr: this.reviewPr,
+      prQuery: this.reviewPrQuery,
+      prMenuOpen: this.reviewPrMenu,
+      prs: this.reviewPrs,
+      prsLoading: this.reviewPrsLoading,
+      prError: this.reviewPrError,
+      model: this.reviewModel,
+    });
+    return {
+      view,
+      modelName: this.reviewModelInfo()?.name ?? "",
+      modelId: this.reviewModel,
+      refs: this.reviewRefs,
+      installLog: this.reviewInstallLog,
+      markLabels: { accept: tr("接受"), ignore: tr("忽略"), "false-positive": tr("误报") },
+      severityLabels: { critical: tr("严重"), high: tr("高"), medium: tr("中"), low: tr("低") },
+      actions: this.reviewActions(),
+    };
+  }
+
+  private reviewActions(): ReviewActions {
+    return {
+      onMode: (mode) => {
+        this.reviewMode = mode;
+        // #666：范围是人自己换的，那张链接卡带来的「期望仓库」不再适用。
+        this.clearReviewExpectRepo();
+        const dir = this.reviewDir();
+        if (mode === "pr" && dir && !this.reviewPrs.length && this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
+        this.renderQueue();
+      },
+      onBase: (value) => {
+        this.reviewBase = value;
+      },
+      onTarget: (value) => {
+        this.reviewTarget = value;
+      },
+      onPr: (value) => {
+        this.reviewPr = value;
+        this.clearReviewExpectRepo();
+        // 选完把检索词清掉：下次展开看到的是完整列表，而不是被「#658」筛成一条。
+        this.reviewPrQuery = "";
+        this.reviewPrMenu = false;
+        this.renderQueue();
+      },
+      onPrInput: (value) => {
+        this.reviewPr = value;
+        this.clearReviewExpectRepo();
+        const raw = this.reviewPrQuery;
+        const fromUrl = reviewRepoFromUrl(raw);
+        if (fromUrl && this.reviewRemoteRepo && fromUrl !== this.reviewRemoteRepo) {
+          // 粘了别的仓库的 PR 链接：号能认出来，但那是**另一个仓库**的同一个号，不能默默当成本仓库的。
+          this.flashToast(
+            tr("这个链接属于 {p1}，不是本仓库（{p2}）；要评请换本仓库的 PR 链接或直接填号", {
+              p1: fromUrl,
+              p2: this.reviewRemoteRepo,
+            }),
+            true,
+            9000,
+          );
+        }
+      },
+      onPrQuery: (value) => {
+        // 只记值、不重画：每敲一个字就重画会把输入框换成新节点、光标乱跳。
+        this.reviewPrQuery = value;
+      },
+      onPrMenu: (open) => {
+        // 只在开关那一刻重画（有焦点要留住，所以打开时把焦点还给输入框）。
+        if (this.reviewPrMenu === open) return;
+        this.reviewPrMenu = open;
+        const dir = this.reviewDir();
+        const stale = Date.now() - this.reviewPrsAt > 60_000;
+        if (open && dir && (!this.reviewPrs.length || stale || this.reviewPrError)) this.loadPullRequests(dir);
+        this.renderQueue();
+        if (open) {
+          requestAnimationFrame(() => this.els.queueInner?.querySelector<HTMLInputElement>(".rv-prq")?.focus());
+        }
+      },
+      onRefreshPrs: () => {
+        const dir = this.reviewDir();
+        if (dir) this.loadPullRequests(dir);
+      },
+      onCommit: (value) => {
+        this.reviewCommit = value;
+      },
+      onPickModel: () => {
+        // 复用输入框那颗 chip 背后的同一个弹层（模型与思考），只是「确认」把模型交回面板。
+        this.openModelSheet(false, {
+          start: this.reviewModelInfo()?.id ?? "",
+          onPick: (m) => {
+            this.reviewModel = `${m.provider}/${m.id}`;
+            this.renderQueue();
+            this.syncReviewSheet();
+          },
+        });
+      },
+      onRun: () => this.startReview(),
+      onStop: () => this.socket.send({ type: "review.cancel", dir: this.reviewDir(), sessionId: this.currentId }),
+      onMark: (key, mark: ReviewMark | "") => this.socket.send({ type: "review.mark", dir: this.reviewDir(), sessionId: this.currentId, key, mark }),
+      onOpen: (path, line) => this.openReviewFinding(path, line),
+      onFix: (f: ReviewFinding) => {
+        this.reviewHandoff(reviewFixPrompt(f, this.reviewFixContext()));
+      },
+      onFixMany: (list) => {
+        if (!list.length) return;
+        this.reviewHandoff(reviewFixManyPrompt(list, this.reviewFixContext()), list.length);
+      },
+      onPrInfo: () => this.openPrInfo(),
+      onInstall: () => {
+        this.reviewInstalling = true;
+        this.reviewInstallLog = [];
+        this.reviewError = "";
+        this.socket.send({ type: "review.install" });
+        this.renderQueue();
+      },
+      onClean: () => this.socket.send({ type: "review.clean", dir: this.reviewDir(), sessionId: this.currentId }),
+      onDetails: () => this.openReviewSheet(),
+    };
+  }
+
+  /** 「交给 agent」那段话的上下文：哪个仓库、哪个 PR / 分支。 */
+  private reviewFixContext(): ReviewFixContext {
+    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    return {
+      repo: this.reviewRemoteRepo || this.reviewRepo || this.reviewDir(),
+      pr: Number(this.reviewPr) || 0,
+      prTitle: run?.prTitle ?? "",
+      prHead: run?.prHead ?? "",
+      prBase: run?.prBase ?? "",
+      mode: this.reviewMode,
+      from: run?.from ?? this.reviewBase,
+      to: run?.to ?? this.reviewTarget,
+    };
+  }
+
+  /** 新开会话的默认名字：PR 就用 tag（`#636`），其余用分支名 / 「代码评审」。 */
+  private reviewHandoffName(): string {
+    if (this.reviewMode === "pr") return `#${Number(this.reviewPr) || 0}`;
+    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    const branch = (this.git?.branch ?? "").trim() || (run?.prHead ?? "").trim();
+    return branch ? tr("评审 {p1}", { p1: branch }) : tr("代码评审");
+  }
+
+  /**
+   * 「交给 agent」先问去处：当前会话 / 新开会话。
+   * 多个 PR 的评审全塞进同一个会话会把上下文搅在一起，所以新开会话是常用那条路。
+   */
+  private reviewHandoff(text: string, count = 1): void {
+    const name = this.reviewHandoffName();
+    const sheet = new HandoffSheet({
+      text,
+      name,
+      onPick: (target, body) => {
+        if (target === "new") {
+          this.newSessionWith(body, name);
+          return;
+        }
+        this.prefill(body);
+        this.flashToast(
+          count > 1 ? tr("已把 {p1} 条意见放进输入框（还没发）", { p1: count }) : tr("已放进输入框（还没发）"),
+          false,
+          count > 1 ? 3500 : 3000,
+        );
+      },
+    });
+    sheet.mount(document.getElementById("app") ?? document.body);
+  }
+
+  /** 「PR 信息」dialog：标题 / 描述 / 统计 / 文件清单 / 提交时间线（不显示 diff）。 */
+  private openPrInfo(): void {
+    const dir = this.reviewDir();
+    const number = Number(this.reviewPr) || 0;
+    if (!dir || !number) return;
+    if (this.reviewPrInfo.number !== number && this.reviewPrSheet) {
+      this.reviewPrSheet.close();
+      this.reviewPrSheet = null;
+    }
+    if (!this.reviewPrSheet) {
+      const sheet = new PrSheet(number);
+      sheet.onClose = () => {
+        if (this.reviewPrSheet === sheet) this.reviewPrSheet = null;
+      };
+      sheet.mount(document.getElementById("app") ?? document.body);
+      this.reviewPrSheet = sheet;
+    }
+    const cached = this.reviewPrInfo.number === number ? this.reviewPrInfo : null;
+    if (cached) this.reviewPrSheet.set(number, cached.info, cached.error);
+    else this.reviewPrSheet.setLoading();
+    this.socket.send({ type: "review.prinfo.get", dir, pr: number });
+  }
+
+  /** 「评审详情」dialog：跑着看时间线，跑完看结果；同一个会话只开一扇。 */
+  private openReviewSheet(): void {
+    if (this.reviewSheet) {
+      this.reviewSheet.update(this.reviewPanelInput());
+      return;
+    }
+    const sheet = new ReviewSheet(this.reviewPanelInput());
+    sheet.onClose = () => {
+      if (this.reviewSheet === sheet) this.reviewSheet = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.reviewSheet = sheet;
+  }
+
+  /** 帧到了就同步 dialog（没开着就什么都不做）。 */
+  private syncReviewSheet(): void {
+    this.reviewSheet?.update(this.reviewPanelInput());
+  }
+
+  private startReview(): void {
+    const dir = this.reviewDir();
+    if (!dir) return;
+    const mode = this.reviewMode;
+    if (mode === "commit" && !this.reviewCommit.trim()) {
+      this.flashToast(tr("先填一个提交号"), true, 4000);
+      return;
+    }
+    // `#636` 是 PR 号的手感：commitish() 会拒掉它（`--commit "#636" is not a valid commit ref`），
+    // 与其让 ocr 报一句看不懂的，不如当场说清该切哪个模式。
+    if (mode === "commit" && /^#\s*\d+$/.test(this.reviewCommit.trim())) {
+      this.flashToast(tr("提交号别带 #：要评 PR 请切到「GitHub PR」"), true, 5000);
+      return;
+    }
+    if (mode === "pr" && !this.reviewPr.trim()) {
+      this.flashToast(tr("先选一个 PR（或填个号）"), true, 4000);
+      return;
+    }
+    this.reviewError = "";
+    this.reviewPrMenu = false;
+    this.reviewPendingToast = true;
+    this.reviewStartedRunId = "";
+    this.reviewProgress = {
+      repo: dir,
+      runId: "",
+      status: "running",
+      phase: "preview",
+      totalFiles: 0,
+      reviewedFiles: 0,
+      currentFile: "",
+      tokens: 0,
+      startedAt: new Date().toISOString(),
+      error: "",
+      errorCode: "",
+      group: 0,
+      groups: 0,
+      log: [],
+    };
+    this.socket.send({
+      type: "review.run",
+      dir,
+      sessionId: this.currentId,
+      mode,
+      base: this.reviewBase,
+      target: this.reviewTarget,
+      commit: this.reviewCommit.trim(),
+      // #666：从链接卡点过来的那一次，带上「这张卡属于哪个仓库」；桥上拿它拒掉别仓的号。
+      expectRepo: mode === "pr" ? this.reviewExpectRepo : "",
+      pr: Number(this.reviewPr) || 0,
+      model: this.reviewModel,
+      lang: getLang(),
+    });
+    this.renderQueue();
+  }
+
+  /** 一条意见 → 分支工作台的「差异」页签，选中那个文件并把命中的那段代码标出来。 */
+  private openReviewFinding(path: string, line: number): void {
+    const dir = this.reviewDir();
+    if (!dir) return;
+    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    const finding = run?.findings?.find((f) => f.path === path && (line === 0 || f.startLine === line)) ?? null;
+    const code = finding?.existingCode ?? "";
+    // 工作区模式比的是「工作区 vs HEAD」，提交模式比的是「这条提交 vs 父提交」——
+    // 都别拿对照分支硬套，否则 diff 是空的、跳过去只剩一句「两边没有差异」。
+    const base = run?.mode === "commit" || run?.mode === "workspace" ? "" : run?.mergeBase || this.reviewBase;
+    const commit = run?.mode === "commit" ? run.to : "";
+    const worktree = run?.mode === "workspace";
+    const open = (sheet: BranchSheet) => void sheet.openDiffAt({ base, commit, worktree, path, line, code });
+    if (this.branchSheet) {
+      open(this.branchSheet);
+      return;
+    }
+    const sheet = new BranchSheet({
+      dir,
+      branch: this.git?.branch ?? "",
+      refreshChip: () => { void this.refreshGit(true); },
+      handoff: { prefill: (text, name) => this.prefill(text, name), newSessionWith: (text, name) => this.newSessionWith(text, name) },
+    });
+    sheet.onClose = () => {
+      if (this.branchSheet === sheet) this.branchSheet = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.branchSheet = sheet;
+    open(sheet);
   }
 
   private openExecPlanFromChat(): void {
@@ -18291,7 +19469,8 @@ export class App {
       const done = navigator.clipboard?.writeText(text);
       done?.then(() => this.flashToast(tr("已复制到剪贴板"), false, 1600), () => this.flashToast(tr("复制失败"), true, 1600));
     };
-    const close = el("button", "argdialog-btn argdialog-close", "✕") as HTMLButtonElement;
+    const close = el("button", "argdialog-btn argdialog-close") as HTMLButtonElement;
+    close.append(icon("close", { size: 13 }));
     close.type = "button";
     close.setAttribute("aria-label", tr("关闭"));
     head.append(copy, close);
@@ -18684,7 +19863,8 @@ export class App {
       const keyword = loaded?.kind === "tool" && !browserCalls.has(loaded.toolCallId) ? markKeyword(loaded) : null;
       if (keyword) {
         entry.classList.add("markable");
-        const mark = el("button", "exec-step-mark", "🌐") as HTMLButtonElement;
+        const mark = el("button", "exec-step-mark") as HTMLButtonElement;
+    mark.append(icon("window", { size: 13 }));
         mark.type = "button";
         mark.title = tr("这是浏览器操作：把「{p1}」加进命令关键词，以后的调用都算", { p1: keyword });
         mark.onclick = () => {
@@ -18776,7 +19956,7 @@ export class App {
     if (this.browserCfgOpen) panel.append(this.browserCfgEditor());
     if (!model.cards.length) {
       panel.append(el("div", "exec-empty", tr("这一轮没有浏览器操作")));
-      panel.append(el("div", "hint", tr("认得出的有：浏览器工具（MCP、agent_browser），以及运行时真的拉起或连上了浏览器的命令。还漏了的话：脚本里打印「::browser 步骤」行，或在「执行」页那一步右边点 🌐。")));
+      panel.append(el("div", "hint", tr("认得出的有：浏览器工具（MCP、agent_browser），以及运行时真的拉起或连上了浏览器的命令。还漏了的话：脚本里打印「::browser 步骤」行，或在「执行」页那一步右边点那颗浏览器图标。")));
       return panel;
     }
     const list = el("div", "browser-list");
@@ -18843,7 +20023,8 @@ export class App {
       for (const card of model.cards) this.browserFold.set(card.toolCallId, allFolded);
       this.renderQueue();
     };
-    const gear = el("button", "browser-gear", "⚙") as HTMLButtonElement;
+    const gear = el("button", "browser-gear") as HTMLButtonElement;
+    gear.append(icon("gear", { size: 13 }));
     gear.type = "button";
     gear.title = tr("阈值与工具名单");
     gear.setAttribute("aria-expanded", String(this.browserCfgOpen));
@@ -19161,6 +20342,7 @@ export class App {
    */
   private approvalCard(a: ApprovalRequest): HTMLElement {
     const card = el("div", "approval");
+    card.dataset.reminderId = a.id;
     const t = el("div", "t", a.title);
     const m = el("div", "m", a.message);
     const actions = el("div", "actions");
@@ -19227,7 +20409,19 @@ export class App {
       pip.setAttribute("aria-label", tr("正在操作浏览器"));
       browser.append(pip);
     }
-    tabs.append(needs, execution, browser);
+    const review = el("button", this.queueTab === "review" ? "on" : "", tr("代码评审")) as HTMLButtonElement;
+    review.type = "button";
+    review.dataset.execTab = "review";
+    review.setAttribute("aria-selected", String(this.queueTab === "review"));
+    review.onclick = () => this.selectQueueTab("review");
+    const reviewRunning = Boolean((this.reviewProgress ?? null) && this.reviewProgress?.status === "running");
+    if (this.queueTab !== "review" && reviewRunning) {
+      const pip = el("span", "exec-pip");
+      pip.title = tr("正在评审");
+      pip.setAttribute("aria-label", tr("正在评审"));
+      review.append(pip);
+    }
+    tabs.append(needs, execution, browser, review);
     host.append(tabs);
     if (this.queueTab === "exec") {
       host.append(this.renderExecPanel());
@@ -19236,6 +20430,11 @@ export class App {
     }
     if (this.queueTab === "browser") {
       host.append(this.renderBrowserPanel());
+      this.els.queuePane.scrollTop = kept;
+      return;
+    }
+    if (this.queueTab === "review") {
+      host.append(this.renderReviewPanel());
       this.els.queuePane.scrollTop = kept;
       return;
     }
@@ -19311,7 +20510,7 @@ export class App {
     const btn = this.els.term;
     if (!btn) return;
     const n = this.termTabs.size;
-    this.setWideLabel(btn, n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端"));
+    this.setWideLabel(btn, TOPBAR_ICON.terminal, n > 1 ? tr("终端 {p1}", { p1: n }) : tr("终端"));
     btn.classList.toggle("term-live", n > 0);
   }
 
@@ -19332,7 +20531,7 @@ export class App {
       this.requestTerminal();
       return;
     }
-    const menu = el("div", "term-menu");
+    const menu = markSurface(el("div", "term-menu"), "menu");
     for (const sh of this.termShells) {
       const item = el("button", "term-menu-item", sh.label) as HTMLButtonElement;
       item.type = "button";
@@ -19396,7 +20595,7 @@ export class App {
     this.wireWindowRaise(dock);
     // 浮在页面上（overlay 进 #app，跟着外观缩放）：终端不再占对话栏的宽度，也就没有 Q-026 里
     // 「先折叠右栏」那件事了。
-    this.overlay(dock);
+    this.overlay(dock, "dock");
     this.wireTermGrip(grip, dock);
     this.wireTermMove(head, dock);
     this.wireTermResize(resize, dock);
@@ -20304,6 +21503,47 @@ export class App {
   }
 
   /**
+   * D391：这一组该打开哪颗 —— 记忆里的那颗，其次最近写过文件的那颗（`pickLanding()`）。
+   *
+   * 用**未过滤**的树算落点，与 `emptyWs()` 同一条理由：左栏搜索时这一组可能被筛掉，但「切过去
+   * 打开哪颗」不该跟着搜索变。记忆里的那颗被删 / 被归档 / 被拖去别的工作区时落到 `updatedAt`
+   * 最大的那颗；那条死记忆顺手清掉，下次不必再猜一遍。
+   */
+  private wsLanding(wsId: string): string | null {
+    const group = buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === wsId);
+    if (!group) return null;
+    const last = readWsLast();
+    const prev = last[wsId];
+    const landing = pickLanding(group.sessions, prev?.id);
+    // 读时就顺手剪：组已经不在了、或这一组的记忆已经不是要落地的那颗（被删 / 被归档 / 被拖走），
+    // 都不留到下一次写。（`pruneLast()` 没东西可剪时返回同一份，不必白写一次 localStorage。）
+    const live = new Set((this.workspaces?.groups ?? []).map((g) => g.id));
+    const kept = pruneLast(last, (entry, id) => (live.size ? live.has(id) : true) && (id !== wsId || entry.id === landing));
+    if (kept !== last) writeWsLast(kept);
+    return landing;
+  }
+
+  /**
+   * D391：当前会话是哪颗，它所在工作区的记忆就是哪颗。任何来源成为当前会话都走这一处
+   * （打开 / 新建 / 深链 / 刷新 / 归档或删组后的自动落点）；同一组同一颗不重写。
+   *
+   * 前提是 `this.session` 已经是那颗（`currentWsId()` 从它反查工作区），所以调用点都守在
+   * 「`this.session` 刚被赋上」之后；反查不到（旧桥 / 桩桥没有分组）就什么也不记。
+   */
+  private noteLastSession(): void {
+    const id = this.currentId;
+    if (!id) return;
+    const wsId = this.currentWsId();
+    if (!wsId) return;
+    const last = readWsLast();
+    if (last[wsId]?.id === id) return;
+    // 组已经不在快照里（删了 / 被 prune）的条目别一直留着：写入时顺手剪一遍。
+    const live = new Set(this.workspaces.groups.map((g) => g.id));
+    const kept = pruneLast(last, (_entry, groupId) => live.has(groupId));
+    writeWsLast(recordLast(kept, wsId, id));
+  }
+
+  /**
    * D374：页面记住的组现在还在不在。存档里的 id 可能已经被删 / 被桥的 `prune()` 清掉，
    * 那种情况一律当成「没选」—— 一个不存在的组不该占着横杠。
    */
@@ -20350,14 +21590,14 @@ export class App {
   }
 
   /**
-   * 工作区点击：切到那一组 = 打开它排在最上面的那颗。**没有会话的组也切得过去**（D374）：
-   * 选中它、中栏进空态，再照旧把左栏展开并滚到它 —— 以前这里只把左栏亮出来，横杠还停在
-   * 上一个工作区上，看上去就是「点了没反应」。
+   * 工作区点击：切到那一组 = 打开这一组的**落点**（D391：记忆里那颗，其次最近写过文件的那颗）。
+   * **没有会话的组也切得过去**（D374）：选中它、中栏进空态，再照旧把左栏展开并滚到它 ——
+   * 以前这里只把左栏亮出来，横杠还停在上一个工作区上，看上去就是「点了没反应」。
    */
   private gotoGroup(group: TreeGroup<SessionState>): void {
-    const first = group.sessions[0];
-    if (first) {
-      this.openFromList(first.id);
+    const landing = this.wsLanding(group.id);
+    if (landing) {
+      this.openFromList(landing);
       return;
     }
     // 先定归属再清中栏：`renderAll()` 里的空态与横杠都读它。
@@ -20399,7 +21639,7 @@ export class App {
 
   private openWsPop(anchor: HTMLElement): void {
     this.closeWsPop();
-    const pop = el("div", "ws-pop");
+    const pop = markSurface(el("div", "ws-pop"), "menu");
     pop.setAttribute("role", "dialog");
     pop.setAttribute("aria-label", tr("工作区与会话"));
     const body = el("div", "ws-pop-body");
@@ -20939,12 +22179,13 @@ export class App {
     this.closePinMenu();
     if (this.calm()) {
       this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
-      this.pinNote(tr("已移入垃圾箱 · 在左栏🗑里可以还原"));
+      this.pinNote(tr("已移入垃圾箱 · 在左栏的垃圾箱里可以还原"));
       return;
     }
     const r = chip.getBoundingClientRect();
     const clone = chip.cloneNode(true) as HTMLElement;
     clone.classList.add("pin-flyer");
+    markSurface(clone, "paper");
     clone.removeAttribute("data-pin-key");
     Object.assign(clone.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
     document.body.append(clone);
@@ -20982,7 +22223,7 @@ export class App {
         this.pinAnim = null;
         this.pulseBin();
         this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
-        this.pinNote(tr("已移入垃圾箱 · 在左栏🗑里可以还原"));
+        this.pinNote(tr("已移入垃圾箱 · 在左栏的垃圾箱里可以还原"));
       };
     }, 220);
   }
@@ -21032,7 +22273,7 @@ export class App {
   /** 删除/归档之后一句话交代去向；不占状态行，2.6s 自己走。 */
   private pinNote(text: string): void {
     document.querySelector(".pin-note")?.remove();
-    const note = el("div", "pin-note", text);
+    const note = markSurface(el("div", "pin-note", text), "menu");
     document.body.append(note);
     note.animate([{ opacity: "0", transform: "translateY(6px)" }, { opacity: "1", transform: "none" }], { duration: 160, easing: "ease-out" });
     window.setTimeout(() => {
@@ -21063,9 +22304,9 @@ export class App {
 }
 
 function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
-  // Expanded: the chevron points at the edge it will retract to. Collapsed: it points back out.
-  const right = btn.dataset.side === "right";
-  btn.textContent = collapsed ? (right ? "«" : "»") : (right ? "»" : "«");
+  // 一颗「带侧栏的窗口」：右栏那颗由 CSS 镜像（`.side-toggle[data-side="right"] .ico`），
+  // 于是两边各指着自己要收的那一侧。折叠与否看 aria-pressed 与 title，不再靠箭头翻方向。
+  if (!btn.firstElementChild) btn.append(icon("sidebar", { size: 15 }));
   btn.title = collapsed ? tr("展开{p1}", { p1: label }) : tr("收起{p1}", { p1: label });
   btn.setAttribute("aria-pressed", String(collapsed));
 }
@@ -21128,7 +22369,7 @@ function writeBrowserCfg(cfg: BrowserCfg): void {
 function readQueueTab(): QueueTab {
   try {
     const saved = localStorage.getItem("pi.queueTab");
-    return saved === "exec" || saved === "browser" ? saved : "needs";
+    return saved === "exec" || saved === "browser" || saved === "review" ? saved : "needs";
   } catch {
     return "needs";
   }
@@ -21211,6 +22452,30 @@ function writeSelectedWs(id: string | null): void {
   }
 }
 
+/**
+ * D391：工作区的「上次的会话」（组 id → 会话 id）。与 `pi.ws.selected` 同一层，都是「我在哪」的
+ * 页面记忆：不进桥、不进地址栏、换设备不跟随。解析与剪枝在 `wsmemory.ts`（纯函数、可单测）。
+ */
+const WS_LAST_KEY = "pi.ws.last";
+
+function readWsLast(): WsLast {
+  try {
+    return parseLast(localStorage.getItem(WS_LAST_KEY));
+  } catch {
+    // private mode: 读不了就当没有记忆（落到最近活动那颗）。
+    return {};
+  }
+}
+
+function writeWsLast(last: WsLast): void {
+  try {
+    if (Object.keys(last).length) localStorage.setItem(WS_LAST_KEY, JSON.stringify(last));
+    else localStorage.removeItem(WS_LAST_KEY);
+  } catch {
+    // 配额 / private mode：这次不记住，页面照常工作。
+  }
+}
+
 type Prefs = {
   scale: number;
   /** 整套外观（theme.ts 的稳定 id）；只剩 Mac 浅色 / 深色 / 午夜蓝三套（D353），默认浅色。 */
@@ -21230,6 +22495,10 @@ type Prefs = {
   themeIntroSeen: boolean;
   /** D365：输入框上方那一行「重讲」开着没有。默认开；关掉后整个不画（设置 → 对话里改）。 */
   retellHint: boolean;
+  /** #661：聊天里的 GitHub 链接变卡片（主开关）。默认开；关掉后退回普通链接、右栏也不会被推开。 */
+  githubCards: boolean;
+  /** #666：AI 建完 PR 自动把右栏面板推开。默认关（只认显式 true）；主开关关掉时它跟着失效（`githubFeature()` 的连坐）。 */
+  githubAutoPanel: boolean;
 };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
@@ -21252,15 +22521,11 @@ const DEFAULT_PREFS: Prefs = {
   wsIntroSeen: false,
   themeIntroSeen: false,
   retellHint: true,
+  githubCards: true,
+  githubAutoPanel: false,
 };
 
 /** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
-
-const SVG = (body: string) =>
-  `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
-const ICON_ARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/>');
-const ICON_UNARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M12 17v-6"/><path d="m9.5 13.5 2.5-2.5 2.5 2.5"/>');
-const ICON_TRASH = SVG('<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/><path d="M9 7V4h6v3"/>');
 
 /** `/` menu entries the page runs itself (see runBuiltinCommand), with what they do. */
 const BUILTIN_COMMANDS: [string, string][] = [
@@ -21669,7 +22934,7 @@ const SHORTCUTS: { id: string; label: string }[] = [
   { id: "sessions", label: tr("收起 / 展开左栏") },
   { id: "queue", label: tr("收起 / 展开右栏") },
   { id: "artifacts", label: tr("产物列表") },
-  { id: "files", label: tr("文件管理器") },
+  { id: "files", label: tr("文件管理器|顶栏按钮") },
   { id: "filesearch", label: tr("Everything|搜索面板") },
   { id: "notes", label: tr("bug 记录") },
   { id: "look", label: tr("设置：外观 / 连接与设置") },
@@ -21790,27 +23055,6 @@ function saveKeys(keys: Record<string, string>): void {
   } catch {
     // storage blocked or full: the bindings still work until the next reload
   }
-}
-
-/**
- * ICON_* strings become real SVG nodes here. Building them through DOMParser keeps innerHTML out of
- * the picture entirely, so an icon string can never be an injection path (the constants are nested
- * in the bundle and a stray `<script>` would otherwise be parsed as markup).
- */
-function iconNodes(svg: string): Element[] {
-  // The HTML fragment parser is what puts `<svg>` into the SVG namespace. DOMParser with
-  // "image/svg+xml" handed back a null-namespace element here, and a null-namespace `svg` renders
-  // as an unknown inline element — invisible, only an empty button was left behind.
-  return [...document.createRange().createContextualFragment(svg).children];
-}
-
-/** A button's face: SVG markup becomes an icon, anything else (★ / ☆) stays text. */
-function glyph(src: string): Node {
-  if (src.trimStart().startsWith("<")) {
-    const first = iconNodes(src)[0];
-    if (first) return first;
-  }
-  return document.createTextNode(src);
 }
 
 /** Opens a link in a new tab, but only if it stays on this origin (previews are same-origin /raw/…). */
@@ -21964,6 +23208,10 @@ function readPrefs(): Prefs {
       themeIntroSeen: p?.themeIntroSeen !== false,
       // D365：只有明确写着 false 的才算关（老版本升上来没这个键＝开着）。
       retellHint: p?.retellHint !== false,
+      // #661：同上 —— 老版本升上来没有这个键，当作开着。
+      githubCards: p?.githubCards !== false,
+      // #666：这个反过来了 —— 老版本升上来没有这个键按**关**（默认值翻了，只有显式 true 才算开）。
+      githubAutoPanel: p?.githubAutoPanel === true,
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
     if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);
@@ -22091,11 +23339,11 @@ interface VStep {
   y?: number;
 }
 
-const PERM_MODES: { id: PermissionMode; icon: string; label: string; desc: string }[] = [
-  { id: "readonly", icon: "🔒", label: tr("只读"), desc: tr("只放行读文件 / 搜索 / 列目录这类只看的工具，写文件、执行命令、MCP 与扩展工具一律拦下（适合先出方案）") },
-  { id: "strict", icon: "✋", label: tr("逐个确认"), desc: tr("写文件、执行命令、调用 MCP / 扩展工具都要你批准；只看的工具不用") },
-  { id: "ask", icon: "🛡", label: tr("危险时确认"), desc: tr("只拦删除、push、装依赖、写项目外文件等危险操作（默认）") },
-  { id: "auto", icon: "⚡", label: tr("全自动"), desc: tr("不拦截任何操作，风险自负") },
+const PERM_MODES: { id: PermissionMode; icon: IconName; label: string; desc: string }[] = [
+  { id: "readonly", icon: "lock", label: tr("只读"), desc: tr("只放行读文件 / 搜索 / 列目录这类只看的工具，写文件、执行命令、MCP 与扩展工具一律拦下（适合先出方案）") },
+  { id: "strict", icon: "pointer", label: tr("逐个确认"), desc: tr("写文件、执行命令、调用 MCP / 扩展工具都要你批准；只看的工具不用") },
+  { id: "ask", icon: "shield", label: tr("危险时确认"), desc: tr("只拦删除、push、装依赖、写项目外文件等危险操作（默认）") },
+  { id: "auto", icon: "bolt", label: tr("全自动"), desc: tr("不拦截任何操作，风险自负") },
 ];
 
 type PermMode = (typeof PERM_MODES)[number];
@@ -22105,7 +23353,7 @@ function permMode(id: string): PermMode {
   for (const m of PERM_MODES) if (m.id === id) return m;
   for (const m of PERM_MODES) if (m.id === "ask") return m;
   // Unreachable: the literal above always contains `ask`.
-  return { id: "ask", icon: "🛡", label: tr("危险时确认"), desc: "" };
+  return { id: "ask", icon: "shield", label: tr("危险时确认"), desc: "" };
 }
 
 type PasteBlock = { text: string; open: boolean };
@@ -22215,14 +23463,6 @@ function absFromRel(root: string, rel: string): string {
     out += sep + seg;
   }
   return out;
-}
-
-function previewIcon(p: string): string {
-  const ext = p.split(".").pop()?.toLowerCase() ?? "";
-  if (/^(md|markdown|mdx)$/.test(ext)) return "📝";
-  if (/^html?$/.test(ext)) return "🌐";
-  if (/^(png|jpe?g|gif|svg|webp|bmp|ico|avif)$/.test(ext)) return "🖼";
-  return "📄";
 }
 
 /** Last segment of a path, for a tab label ("pwsh · pi-web-client"). */

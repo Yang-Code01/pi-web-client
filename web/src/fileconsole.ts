@@ -1,7 +1,9 @@
 import { createEl as el } from "./chat.ts";
 import { ATTACHABLE_IMAGE, fileNameOf, joinPath, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { tr } from "./i18n/index.ts";
+import { face, type IconName } from "./icons.ts";
 import "./fileconsole.css";
+import { markSurface } from "./modal.ts";
 
 /**
  * 目录入口的控制台：**一份实现、两种壳**。
@@ -78,7 +80,7 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
   let root: HTMLElement = shell;
 
   // ---- 壳
-  const back = el("div", "sys-back fc-back");
+  const back = markSurface(el("div", "sys-back fc-back"), "window");
   back.onclick = (ev) => {
     if (ev.target === back) opts.onClose?.();
   };
@@ -154,12 +156,14 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
     return group;
   };
 
-  const navItem = (o: { icon: string; label: string; title?: string; count?: number; on?: boolean; sub?: boolean }): HTMLButtonElement => {
+  const navItem = (o: { icon: IconName | string; label: string; title?: string; count?: number; on?: boolean; sub?: boolean }): HTMLButtonElement => {
     const button = el("button", `sys-nav__item${o.sub ? " fc-sub" : ""}`) as HTMLButtonElement;
     button.type = "button";
     button.classList.toggle("on", o.on === true);
     const row = el("span", "fc-nav-main");
-    row.append(el("span", "fc-nav-ico", o.icon), el("span", "sys-nav__label", o.label));
+    const icoBox = el("span", "fc-nav-ico");
+    icoBox.append(face(o.icon, 14));
+    row.append(icoBox, el("span", "sys-nav__label", o.label));
     button.append(row);
     if (o.count !== undefined) button.append(el("span", "sys-nav__count", String(o.count)));
     if (o.title) button.title = o.title;
@@ -170,19 +174,19 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
     nav.replaceChildren();
     nav.append(navGroup(tr("快速位置")));
 
-    const home = navItem({ icon: "⌂", label: tr("工作目录"), title: opts.cwd, on: current === opts.cwd });
+    const home = navItem({ icon: "home", label: tr("工作目录"), title: opts.cwd, on: current === opts.cwd });
     home.disabled = !opts.cwd;
     home.onclick = () => {
       if (opts.cwd) void picker?.go(opts.cwd);
     };
     nav.append(home);
 
-    const computer = navItem({ icon: "💻", label: tr("此电脑"), on: current === "" });
+    const computer = navItem({ icon: "laptop", label: tr("此电脑"), on: current === "" });
     computer.onclick = () => void picker?.go("");
     nav.append(computer);
 
     // 「最近」是这一栏的开关，不是目录：点它折起 / 展开下面那串目录。
-    const recentHead = navItem({ icon: "🕘", label: tr("最近"), count: recent.length });
+    const recentHead = navItem({ icon: "clock", label: tr("最近"), count: recent.length });
     recentHead.title = recentOpen ? tr("折起最近打开过的目录") : tr("展开最近打开过的目录");
     recentHead.onclick = () => {
       recentOpen = !recentOpen;
@@ -193,7 +197,7 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
     if (recentOpen) {
       const others = recent.filter((p) => p !== current).slice(0, 5);
       for (const path of others) {
-        const item = navItem({ icon: "📁", label: fileNameOf(path), title: path, sub: true });
+        const item = navItem({ icon: "folder", label: fileNameOf(path), title: path, sub: true });
         item.onclick = () => void picker?.go(path);
         nav.append(item);
       }
@@ -204,7 +208,7 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
       nav.append(navGroup(tr("当前目录"), state.total ?? state.dirs.length));
       for (const name of state.dirs.slice(0, NAV_SUB_MAX)) {
         const path = joinPath(current, name);
-        const item = navItem({ icon: "📁", label: name, title: path, sub: true });
+        const item = navItem({ icon: "folder", label: name, title: path, sub: true });
         item.onclick = () => void picker?.go(path);
         nav.append(item);
       }

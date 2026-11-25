@@ -14,6 +14,7 @@ import type * as http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readJsonChecked } from "./paths.ts";
+import { brainLink } from "./brainlink.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** `bridge/dist/hotdeploy.js` → 仓库根。桥在哪个检出里跑，热部署就管哪个检出。 */
@@ -330,6 +331,42 @@ export async function snapshot(ctx: HotdeployCtx): Promise<Record<string, unknow
   };
 }
 
+/** /run 的参数校验：有壳与无壳两条路必须问同一组问题，否则面板会把必然失败的请求显示成已启动。 */
+function runInputError(
+  snap: Record<string, unknown>,
+  branch: string,
+  stash: boolean,
+): { status: number; code: string; message: string } | null {
+  if (!branch) return { status: 400, code: "hotdeploy_branch", message: "没说要部署哪条分支" };
+  const branches = snap.branches as BranchRow[];
+  const row = branches.find((b) => b.name === branch);
+  if (!row) return { status: 400, code: "hotdeploy_branch", message: `本地没有这条分支：${branch}` };
+  if (row.occupiedBy) {
+    return {
+      status: 409,
+      code: "hotdeploy_occupied",
+      message: `${branch} 被另一个 worktree 检出：${row.occupiedBy}；先在那儿收掉它`,
+    };
+  }
+  if (stash) {
+    if (snap.detached || !snap.branch) {
+      return { status: 409, code: "hotdeploy_stash_branch", message: "当前是 detached HEAD，暂存只能用在一条本地分支上" };
+    }
+    if (branch !== snap.branch) {
+      return {
+        status: 409,
+        code: "hotdeploy_stash_branch",
+        message: `暂存只能部署当前分支 ${snap.branch}；先切到 ${branch} 再来`,
+      };
+    }
+  }
+  if (snap.dirty && !stash) {
+    const list = (snap.dirtyFiles as string[]).slice(0, 3).join("、");
+    return { status: 409, code: "hotdeploy_dirty", message: `主检出有未提交的改动（${list}…），先提交或还原再来` };
+  }
+  return null;
+}
+
 async function startRun(req: http.IncomingMessage, res: http.ServerResponse, ctx: HotdeployCtx): Promise<void> {
   if (ctx.publicReq) return fail(res, 403, "hotdeploy_public", "公网不能换本机进程；请回本机操作");
   const link = await inLinkedWorktree();
@@ -341,25 +378,9 @@ async function startRun(req: http.IncomingMessage, res: http.ServerResponse, ctx
   if (!fs.existsSync(WORKER)) return fail(res, 500, "hotdeploy_worker", `缺少 ${WORKER}`);
 
   const snap = await snapshot(ctx);
-  const branches = snap.branches as BranchRow[];
-  const row = branches.find((b) => b.name === branch);
-  if (!row) return fail(res, 400, "hotdeploy_branch", `本地没有这条分支：${branch}`);
-  if (row.occupiedBy) {
-    return fail(res, 409, "hotdeploy_occupied", `${branch} 被另一个 worktree 检出：${row.occupiedBy}；先在那儿收掉它`);
-  }
+  const bad = runInputError(snap, branch, stash);
+  if (bad) return fail(res, bad.status, bad.code, bad.message);
   if (snap.busy) return fail(res, 409, "hotdeploy_busy", "上一轮热部署还没结束");
-  if (stash) {
-    if (snap.detached || !snap.branch) {
-      return fail(res, 409, "hotdeploy_stash_branch", "当前是 detached HEAD，暂存只能用在一条本地分支上");
-    }
-    if (branch !== snap.branch) {
-      return fail(res, 409, "hotdeploy_stash_branch", `暂存只能部署当前分支 ${snap.branch}；先切到 ${branch} 再来`);
-    }
-  }
-  if (snap.dirty && !stash) {
-    const list = (snap.dirtyFiles as string[]).slice(0, 3).join("、");
-    return fail(res, 409, "hotdeploy_dirty", `主检出有未提交的改动（${list}…），先提交或还原再来`);
-  }
 
   const run: RunState = {
     pid: 0,
@@ -431,6 +452,36 @@ async function removeWorktree(req: http.IncomingMessage, res: http.ServerRespons
   });
 }
 
+/**
+ * 壳那边的部署阶段 → 页面认的 run 形状。页面的步骤表只认 `running|ok|fail`，而壳还会停在
+ * `observing`（观察期、还没切）与 `needs-group-restart`（壳自己也变了）。不给映射的话，
+ * 切成功与构建失败都会从面板上掉下去（D407 的 story 6 / 7）。
+ * `stage` 原样带上：面板用它说明「正在观察」「已切换」。
+ */
+function shellRun(
+  st: { phase: string; at?: number; ok?: boolean; reason?: string; buildId?: string },
+  hostBuildId: string,
+  port: number,
+): Record<string, unknown> {
+  const at = st.at ? new Date(st.at).toISOString() : new Date().toISOString();
+  const live = st.phase === "running" || st.phase === "observing";
+  return {
+    pid: 0,
+    branch: "",
+    // 步骤表里「换进程」那一行：有壳时编译、拉新脑、观察、切换都在这一步里。
+    step: 4,
+    phase: live ? "running" : st.phase === "needs-group-restart" ? "ok" : st.ok ? "ok" : "fail",
+    startedAt: at,
+    finishedAt: live ? null : at,
+    updatedAt: at,
+    buildId: st.buildId ?? hostBuildId,
+    // 整组重启不是「构建失败」：构建已经成功，只是要换壳本身；原因由 stage 文案说明。
+    error: live || st.phase === "needs-group-restart" ? null : (st.reason ?? null),
+    port,
+    stage: st.phase,
+  };
+}
+
 export async function handleHotdeploy(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -439,6 +490,67 @@ export async function handleHotdeploy(
 ): Promise<boolean> {
   const p = url.pathname;
   if (p !== "/api/hotdeploy" && !p.startsWith("/api/hotdeploy/")) return false;
+  // 有壳时真干活的是壳 —— 脑自己会被换掉，进程必须由活过这一次的东西来杀。
+  const host = brainLink();
+  if (host) {
+    if (ctx.publicReq) return fail(res, 403, "hotdeploy_public", "公网不能换本机进程；请回本机操作"), true;
+    try {
+      if (p === "/api/hotdeploy" && req.method === "GET") {
+        const snap = await snapshot(ctx);
+        json(res, 200, {
+          ...snap,
+          hosted: true,
+          port: host.publicPort || ctx.port,
+          hostBuildId: host.hostBuildId,
+          hostStale: host.hostStale,
+          busy: host.deployState.phase === "running" || host.deployState.phase === "observing",
+          run: host.deployState.phase === "idle" ? snap.run : shellRun(host.deployState, host.hostBuildId, host.publicPort || ctx.port),
+        });
+        return true;
+      }
+      if (p === "/api/hotdeploy/log" && req.method === "GET") {
+        // 壳把 deploy 子进程的日志转到自己的控制台，脑拿不到；页面仍有 worker.log 可读。
+        // 只回一行阶段摘要会让有壳模式的日志区在构建失败时看不到任何编译错误。
+        const n = Math.max(20, Math.min(400, Number(url.searchParams.get("lines") ?? 160) || 160));
+        const summary = `deploy|${host.deployState.phase}${host.deployState.reason ? ` ${host.deployState.reason}` : ""}`;
+        json(res, 200, { lines: [summary, ...tailLines(LOG, n)] });
+        return true;
+      }
+      if (p === "/api/hotdeploy/run" && req.method === "POST") {
+        const body = await readJsonBody(req).catch(() => null);
+        const branch = typeof body?.branch === "string" ? body.branch.trim() : "";
+        const stash = body?.stash === true;
+        if (!branch) return fail(res, 400, "hotdeploy_branch", "没说要部署哪条分支"), true;
+        if (!fs.existsSync(WORKER)) return fail(res, 500, "hotdeploy_worker", `缺少 ${WORKER}`), true;
+        // 有壳也必须走和无壳同一组分支/占用/dirty 校验，不能只查非空就交给壳。
+        const snap = await snapshot(ctx);
+        const bad = runInputError(snap, branch, stash);
+        if (bad) return fail(res, bad.status, bad.code, bad.message), true;
+        // 壳对重复请求是「已有一轮部署在跑，忽略这次」；这里若还回 202，面板会显示新一
+        // 轮已经开始，实际什么都没发生。先把壳的忙碌态翻译成同一个 409。
+        if (host.deployState.phase === "running" || host.deployState.phase === "observing") {
+          fail(res, 409, "hotdeploy_busy", "上一轮热部署还没结束");
+          return true;
+        }
+        host.deploy(branch, stash);
+        return json(res, 202, {
+          ok: true,
+          run: { pid: 0, branch, step: 0, phase: "running", startedAt: new Date().toISOString(), port: host.publicPort },
+        }), true;
+      }
+      // 删工作树不换进程，脑自己就能干；有壳时不能掉进下面的 405，否则这个功能会悄悄消失。
+      if (p === "/api/hotdeploy/remove-worktree" && req.method === "POST") {
+        await removeWorktree(req, res, ctx);
+        return true;
+      }
+      fail(res, 405, "hotdeploy_method", "这个接口不支持这个请求方法");
+      return true;
+    } catch (err) {
+      ctx.log?.(`hotdeploy: ${(err as Error)?.stack ?? err}`);
+      fail(res, 500, "hotdeploy_failed", `热部署接口挂了：${(err as Error).message}`);
+      return true;
+    }
+  }
   try {
     if (p === "/api/hotdeploy" && req.method === "GET") {
       // 快照里有仓库路径、分支表、会话数：跟 /run 一样只给本机看。
