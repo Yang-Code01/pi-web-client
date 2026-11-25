@@ -18,7 +18,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { FETCH_ATTEMPTS, FETCH_DIRECT_TIMEOUT_MS, FETCH_PROXY_TIMEOUT_MS, FETCH_RETRY_DELAY_MS, FETCH_SSH_TIMEOUT_MS, FETCH_TOTAL_BUDGET_MS, resolveProxyCandidates, ssh443InsteadOf, stashPush, stashRestore } from "./hotdeploy-git.mjs";
-import { bridgeEntry, psQuote, windowHostOf, windowScript } from "./hotdeploy-window.mjs";
+import { bridgeEntry, isShellEntry } from "./bridge-entry.mjs";
+import { psQuote, windowHostOf, windowScript } from "./hotdeploy-window.mjs";
 
 const WIN = process.platform === "win32";
 
@@ -246,7 +247,9 @@ async function relaunchTaken(ms) {
 function startBridge() {
   truncateLive();
   const entry = bridgeEntry(REPO);
-  fs.writeFileSync(WINDOW_SCRIPT, windowScript({ repo: REPO, port: PORT, node: process.execPath, live: LIVE, relaunch: RELAUNCH, entry }));
+  // PowerShell 5.1 认反斜杠；非 Windows 直接跑 node，用原生路径即可。
+  const scriptEntry = WIN ? entry.split("/").join("\\") : entry;
+  fs.writeFileSync(WINDOW_SCRIPT, windowScript({ repo: REPO, port: PORT, node: process.execPath, live: LIVE, relaunch: RELAUNCH, entry: scriptEntry }));
   if (WIN) {
     const r = sh("powershell", [
       "-NoProfile",
@@ -257,7 +260,7 @@ function startBridge() {
     return;
   }
   const out = fs.openSync(LIVE, "a");
-  const child = spawn(process.execPath, [path.join(REPO, entry.split("\\").join("/"))], {
+  const child = spawn(process.execPath, [entry], {
     cwd: REPO,
     detached: true,
     stdio: ["ignore", out, out],
@@ -323,7 +326,8 @@ function fail(step, result, code, message) {
 }
 
 /** 失败时若还留着本轮 stash，先尝试恢复；恢复失败要把 stash message 留在 error 里。 */
-function failAfterStash(step, result, code, message) {
+function failAfterStash(step, result, code, detail) {
+  let message = detail;
   if (state.stash && !state.stashRestored) {
     const restored = stashRestore(REPO, state.stash);
     if (restored.ok) {
@@ -577,10 +581,15 @@ async function main() {
   // ---- 4. 换进程
   // 有壳时到这里就结束：壳持有端口和会话管道，换脑由它做（它才活得过这次切换）。
   if (MODE === "brain") {
-    writeState({ step: 4 });
-    log("构建完成，交给壳换脑");
-    finish("ok");
-    return;
+    if (isShellEntry(REPO)) {
+      writeState({ step: 4 });
+      log("构建完成，交给壳换脑");
+      finish("ok");
+      return;
+    }
+    // 退路入口（PI_HOST_DISABLE=1 或 dist/host.js 不存在）没有壳可换：再 finish("ok") 就是
+    // 谎报成功 —— 新构建根本没跑起来。继续走下面的完整重启，让新代码真的生效。
+    log(`这次没有壳（入口是 ${path.relative(REPO, bridgeEntry(REPO))}），按完整模式重启旧桥`);
   }
   writeState({ step: 4 });
   oldPid = await portPid();

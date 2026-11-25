@@ -4,19 +4,9 @@
  * 单独成文件是为了让测试能 import，不触发 worker 的 main()。
  */
 import { spawnSync } from "node:child_process";
-import path from "node:path";
-import { bridgeEntry as resolveBridgeEntry } from "./bridge-entry.mjs";
 
 export function psQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
-}
-
-/**
- * 窗口里该起哪个入口：有壳（dist/host.js）就走壳，否则退回老的 index.js。
- * `PI_HOST_DISABLE=1` 是逃生口：壳出毛病时不让它再挡在前面。
- */
-export function bridgeEntry(repo) {
-  return path.relative(repo, resolveBridgeEntry(repo)).split(path.sep).join("\\");
 }
 
 /**

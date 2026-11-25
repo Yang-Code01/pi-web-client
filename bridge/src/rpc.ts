@@ -53,6 +53,9 @@ export class RpcChild extends EventEmitter {
   /** 有壳时：attach/spawn 还没落地前收到的帧先排这里，认领之后按顺序交给壳。 */
   private linkClaimed = false;
   private linkPending: string[] = [];
+  /** 认领的最终结果：adopt() 要等它落地才敢说「接管了」。成功/失败都 resolve，避免没人接的 rejection。 */
+  private linkResult: Promise<{ pid: number } | { error: Error }> | null = null;
+  private settleLink: ((v: { pid: number } | { error: Error }) => void) | null = null;
   private readonly sessionId: string;
 
   private opts: RpcSpawnOptions;
@@ -65,6 +68,14 @@ export class RpcChild extends EventEmitter {
 
   get alive(): boolean {
     return this._alive;
+  }
+
+  /**
+   * 等壳里的进程真正认领完（adopt 用）。成功给 pid，失败给原因；不 reject，
+   * 因为 startLive() 那条路没人等它，未处理的 rejection 会变成进程级告警。
+   */
+  whenLinked(): Promise<{ pid: number } | { error: Error }> {
+    return this.linkResult ?? Promise.resolve({ error: new Error("这个进程没有走壳") });
   }
 
   /**
@@ -131,6 +142,9 @@ export class RpcChild extends EventEmitter {
   private startLinked(link: BrainLink, sessionId: string): void {
     this._alive = true;
     this.linkClaimed = false;
+    this.linkResult = new Promise((resolve) => {
+      this.settleLink = resolve;
+    });
     this.detachLink = link.watch(sessionId, {
       line: (line, seq) => {
         this.handleLine(line);
@@ -187,9 +201,18 @@ export class RpcChild extends EventEmitter {
       // 认领完成前写的是「attach 变 no-child、spawn 还没发出」这段窗口：直接发会被壳回
       // stale-owner，BrainLink 没人为它重试，get_state / prompt 就这样静默丢了。现在按序补发。
       this.linkClaimed = true;
-      for (const frame of this.linkPending.splice(0)) {
-        if (!this._alive || !link.stdin(sessionId, frame)) break;
+      // 不要 splice 了再发：stdin 半路失败时，剩下的帧会被移出队列却没送出去，而 _alive 还是
+      // true，上层的请求只能干等超时。逐帧出队，发不出去就让 finish() 结算所有等待者。
+      while (this.linkPending.length) {
+        if (!this._alive) return;
+        if (!link.stdin(sessionId, this.linkPending[0])) {
+          this.finish("link: 认领后补发失败");
+          return;
+        }
+        this.linkPending.shift();
       }
+      this.settleLink?.({ pid });
+      this.settleLink = null;
     } catch (err) {
       this.finish(`link: ${(err as Error).message}`);
     }
@@ -200,6 +223,8 @@ export class RpcChild extends EventEmitter {
     this._alive = false;
     this.linkClaimed = false;
     this.linkPending = [];
+    this.settleLink?.({ error: new Error(reason) });
+    this.settleLink = null;
     this.detachLink?.();
     this.detachLink = null;
     this.failAll(new Error(`pi process ended (${reason})`));

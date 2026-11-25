@@ -13,7 +13,7 @@
     "start": "node scripts/bootstrap.mjs --start && npm run build && node scripts/start.mjs",
     "start:nobuild": "node scripts/start.mjs",
     "bridge:stop": "node scripts/stop.mjs",
-    "test:host": "node bridge/tests/host-broker-unit.mjs && node bridge/tests/host-ledger-unit.mjs && node bridge/tests/host-running-count-unit.mjs && npm run build:bridge && node bridge/tests/host-shell-e2e.mjs && node bridge/tests/host-real-brain-e2e.mjs",
+    "test:host": "node bridge/tests/host-broker-unit.mjs && node bridge/tests/host-ledger-unit.mjs && node bridge/tests/host-running-count-unit.mjs && npm run build:bridge && node bridge/tests/brainlink-unit.mjs && node bridge/tests/rpc-linked-unit.mjs && node bridge/tests/host-shell-e2e.mjs && node bridge/tests/host-real-brain-e2e.mjs",
     "build": "node scripts/build.mjs",
     "build:bridge": "node scripts/build.mjs --only bridge",
     "build:peer": "node scripts/build.mjs --only peer",

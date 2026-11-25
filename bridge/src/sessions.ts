@@ -1392,6 +1392,10 @@ export class Session extends EventEmitter {
     // **running 也要跟着壳走**：不然页面以为这一轮结束了 —— 「思考中」消失、「重讲」亮起来，
     // 再发一句 pi 会回「Agent is already processing」。
     this.setState({ starting: false, running: link.turnActive(id) });
+    // attach 是异步的：壳里没有这个会话、attach 超时、连接断了都要等认领落地才知道。
+    // 先别报「接管了」—— 等它真的拿到 pid，换脑日志才不会说一套、exit 日志说另一套。
+    const claimed = await rpc.whenLinked();
+    if ("error" in claimed) return false;
     return true;
   }
 
@@ -2254,6 +2258,11 @@ export class Session extends EventEmitter {
           if (retry?.disposition !== "queued") this.unqueueUser(userId);
           return;
         } catch (err) {
+          // 60 秒没等到应答不等于 pi 没收到：帧已经写进管道，steer 可能已经进了它的队列。
+          // 这时把人从 queuedUser 里删掉再报「失败」，右栏与撤回都会和 pi 的真实状态对不上。
+          if (/^timeout after /.test(String((err as Error)?.message ?? err))) {
+            throw new Error("消息已经发出，但 60 秒内没等到 pi 确认；它可能已经在队列里，先看右栏，别重复发送");
+          }
           this.unqueueUser(userId);
           throw err;
         }
@@ -3502,11 +3511,15 @@ export class SessionManager extends EventEmitter {
    */
   async adoptLinked(ids: string[]): Promise<void> {
     if (!brainLink() || !ids.length) return;
-    for (const id of ids) {
-      const s = this.ensure(id);
-      if (s.live) continue;
-      const ok = await s.adopt();
-      console.log(`[adopt] ${id} ${ok ? "接管了壳里的进程" : "没接管（锁在别处，或壳里已经没有这个子进程）"}`);
+    // 并行认领：attach 是异步的，串行时一条卡住的会话会把后面的都堵在 15 秒超时里。
+    const results = await Promise.all(
+      ids.map(async (id) => {
+        const s = this.ensure(id);
+        return { id, ok: s.live ? true : await s.adopt() };
+      }),
+    );
+    for (const { id, ok } of results) {
+      console.log(`[adopt] ${id} ${ok ? "接管了壳里的进程" : "没接管（锁在别处、壳里没有这个子进程，或认领失败）"}`);
     }
   }
 

@@ -15,3 +15,8 @@ export function bridgeEntry(repo) {
     ? path.join(repo, "bridge", "dist", "index.js")
     : host;
 }
+
+/** 这次起的是壳还是旧桥。热部署的 brain 模式只有壳在时才能「交给壳换脑」。 */
+export function isShellEntry(repo) {
+  return path.resolve(bridgeEntry(repo)) === path.resolve(repo, "bridge", "dist", "host.js");
+}

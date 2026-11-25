@@ -45,7 +45,10 @@ interface Watcher {
 export class BrainLink extends EventEmitter {
   private readonly conn: ControlConn;
   private readonly watchers = new Map<string, Watcher>();
-  private readonly asks = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private readonly asks = new Map<
+    string,
+    { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout; failType: string }
+  >();
   private rid = 0;
   /** 壳的构建指纹（面板用来提示「壳也变了」）。 */
   hostBuildId = "";
@@ -68,7 +71,10 @@ export class BrainLink extends EventEmitter {
     this.conn = conn;
     conn.onMessage((msg: any) => this.onMessage(msg));
     conn.onClose(() => {
-      // 壳没了：脑什么也做不了（管道在壳手里）。退出，让壳的看门狗/新壳重来。
+      // 壳没了：脑什么也做不了（管道在壳手里）。先把还挂着的 spawn/attach 立刻结算成
+      // 「连接断开」，别让调用方白等 10–15 秒超时（那时报的「超时」还会掩盖真正的原因）。
+      this.rejectPending(new Error("壳连接断开"));
+      // 退出由上层处理，让壳的看门狗/新壳重来。
       this.emit("closed");
     });
   }
@@ -87,29 +93,39 @@ export class BrainLink extends EventEmitter {
     return Boolean(this.turns.get(sessionId));
   }
 
-  /** 握手；等壳的 welcome。 */
+  /** 握手；等壳的 welcome。壳先断开也要立刻失败，而不是等满 10 秒。 */
   hello(info: { buildId: string; internalPort: number }): Promise<{ hostBuildId: string; publicPort: number }> {
-    const done = new Promise<{ hostBuildId: string; publicPort: number }>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("壳 10s 内没有 welcome")), 10_000);
-      this.once("welcome", (w: any) => {
+    return new Promise<{ hostBuildId: string; publicPort: number }>((resolve, reject) => {
+      const finish = (fn: () => void): void => {
         clearTimeout(timer);
+        this.off("welcome", onWelcome);
+        this.off("reject", onReject);
+        this.off("closed", onClosed);
+        fn();
+      };
+      const onWelcome = (w: any): void => {
         this.hostBuildId = String(w.hostBuildId ?? "");
         this.publicPort = Number(w.publicPort ?? 0);
-        resolve({ hostBuildId: this.hostBuildId, publicPort: this.publicPort });
-      });
-      this.once("reject", (reason: string) => {
-        clearTimeout(timer);
-        reject(new Error(`壳拒绝握手：${reason}`));
-      });
+        finish(() => resolve({ hostBuildId: this.hostBuildId, publicPort: this.publicPort }));
+      };
+      const onReject = (reason: string): void => finish(() => reject(new Error(`壳拒绝握手：${reason}`)));
+      const onClosed = (): void => finish(() => reject(new Error("壳在握手完成前断开")));
+      const timer = setTimeout(() => finish(() => reject(new Error("壳 10s 内没有 welcome"))), 10_000);
+      this.once("welcome", onWelcome);
+      this.once("reject", onReject);
+      this.once("closed", onClosed);
+      if (
+        !this.send({
+          t: "hello",
+          proto: 1,
+          buildId: info.buildId,
+          pid: process.pid,
+          internalPort: info.internalPort,
+        })
+      ) {
+        finish(() => reject(new Error("壳连接已断开，hello 没发出去")));
+      }
     });
-    this.send({
-      t: "hello",
-      proto: 1,
-      buildId: info.buildId,
-      pid: process.pid,
-      internalPort: info.internalPort,
-    });
-    return done;
   }
 
   send(msg: Record<string, unknown>): boolean {
@@ -177,14 +193,28 @@ export class BrainLink extends EventEmitter {
         this.asks.delete(rid);
         reject(new Error(`壳 ${okType} 超时`));
       }, 15_000);
-      this.asks.set(rid, { resolve, reject, timer });
-      this.send({ ...payload, rid });
-      // failType 的应答没有专属监听器，统一在 onMessage 里按 rid 结算。
-      void failType;
+      this.asks.set(rid, { resolve, reject, timer, failType });
+      if (!this.send({ ...payload, rid })) {
+        this.asks.delete(rid);
+        clearTimeout(timer);
+        reject(new Error("壳连接已断开"));
+      }
     });
   }
 
-  private settle(rid: string, fn: (entry: { resolve: (v: any) => void; reject: (e: Error) => void }) => void): void {
+  /** 壳断开时把还在等应答的请求一次结算掉（定时器也要清）。 */
+  private rejectPending(err: Error): void {
+    for (const [, entry] of this.asks) {
+      clearTimeout(entry.timer);
+      entry.reject(err);
+    }
+    this.asks.clear();
+  }
+
+  private settle(
+    rid: string,
+    fn: (entry: { resolve: (v: any) => void; reject: (e: Error) => void; failType: string }) => void,
+  ): void {
     const entry = this.asks.get(rid);
     if (!entry) return;
     this.asks.delete(rid);
@@ -254,7 +284,12 @@ export class BrainLink extends EventEmitter {
         return;
       case "spawn-failed":
       case "attach-failed":
-        this.settle(String(msg.rid), (e) => e.reject(new Error(String(msg.reason ?? "失败"))));
+        this.settle(String(msg.rid), (e) => {
+          const reason = String(msg.reason ?? "失败");
+          // failType 不是装饰：应答类型和调用方等的那一种对不上时要说出来，否则一个发错的
+          // 失败帧会被当成正常拒绝，调用方看到的理由是别人的。
+          e.reject(new Error(e.failType === msg.t ? reason : `壳回了 ${msg.t}，调用方等的是 ${e.failType}：${reason}`));
+        });
         return;
       case "stale-owner":
         this.emit("stale-owner", String(msg.sessionId));

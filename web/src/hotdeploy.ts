@@ -30,6 +30,14 @@ const STAGE_TEXT: Record<string, string> = {
   failed: "换脑失败，老脑继续服务",
   "needs-group-restart": "壳的代码也变了，这次要整组重启（会话会被切断）",
 };
+/** 步骤表右侧那一格很窄：同一个 stage 给一句短标签，详细说明留给横幅。 */
+const STAGE_SHORT: Record<string, string> = {
+  running: "编译 / 拉起新脑",
+  observing: "观察新脑",
+  switched: "已切换",
+  failed: "失败，老脑继续",
+  "needs-group-restart": "需整组重启",
+};
 const RESTORE_STEP = 3;
 /** worker 写回来的 error 是稳定代号（D110），界面上得说人话。 */
 const FAIL_WHY: Record<string, string> = {
@@ -417,14 +425,22 @@ class HotdeployPanel {
     // 有壳时整条链都在「换进程」那一步里（编译 → 拉新脑 → 观察 → 切换），别的行没真的走过。
     // 把它们画成绿的等于骗人：只点亮第 5 行，其余留空。
     if (run?.stage) {
+      const short = STAGE_SHORT[run.stage];
+      const stageInfo = short ? tr(short) : "";
       this.steps.forEach((row, i) => {
         let cls = "";
-        if (i === SWAP_STEP) cls = phase === "fail" ? "fail" : phase === "ok" ? "ok" : phase === "running" ? "run" : "";
+        if (i === SWAP_STEP) {
+          if (phase === "fail") cls = "fail";
+          else if (phase === "ok") cls = "ok";
+          else if (phase === "running") cls = "run";
+        }
         row.className = `hot-step${cls ? ` ${cls}` : ""}`;
         const [ico, , info] = Array.from(row.children) as HTMLElement[];
         ico.textContent = cls === "ok" ? "✓" : cls === "fail" ? "✕" : cls === "run" ? "◐" : "○";
         ico.classList.toggle("hot-spin", cls === "run");
-        info.textContent = "";
+        // 有壳时只有「换进程」这一行真的走过；把 stage 留在这一行，ok/fail 之后也能看见
+        // 是切成功了还是老脑继续服务，而不是只剩横幅一句话。
+        info.textContent = i === SWAP_STEP ? stageInfo : "";
       });
       return;
     }

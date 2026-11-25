@@ -494,6 +494,12 @@ export async function handleHotdeploy(
         const body = await readJsonBody(req).catch(() => null);
         const branch = typeof body?.branch === "string" ? body.branch.trim() : "";
         if (!branch) return fail(res, 400, "hotdeploy_branch", "没说要部署哪条分支"), true;
+        // 壳对重复请求是「已有一轮部署在跑，忽略这次」；这里若还回 202，面板会显示新一
+        // 轮已经开始，实际什么都没发生。先把壳的忙碌态翻译成同一个 409。
+        if (host.deployState.phase === "running" || host.deployState.phase === "observing") {
+          fail(res, 409, "hotdeploy_busy", "上一轮热部署还没结束");
+          return true;
+        }
         host.deploy(branch, body?.stash === true);
         return json(res, 202, {
           ok: true,

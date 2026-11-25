@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildBranchRows, parseRefLines, parseTrack, parseWorktrees, tailLines } from "../src/hotdeploy.ts";
 import { DEFAULT_HOTDEPLOY_PROXY, FETCH_ATTEMPTS, FETCH_DIRECT_TIMEOUT_MS, FETCH_PROXY_TIMEOUT_MS, FETCH_RETRY_DELAY_MS, FETCH_SSH_TIMEOUT_MS, FETCH_TOTAL_BUDGET_MS, parseScutilProxy, parseWindowsProxyServer, proxyCandidates, SSH_443_INSTEADOF, ssh443InsteadOf } from "../../scripts/hotdeploy-git.mjs";
+import { isShellEntry } from "../../scripts/bridge-entry.mjs";
 
 const TAB = String.fromCharCode(9);
 
@@ -192,6 +193,9 @@ assert.ok(
   "三个代理候选时总预算必须真的能截住两轮",
 );
 assert.ok(/resolveProxyCandidates\(\)/.test(workerSrc), "worker 要读 pi 设置与系统代理，不能只看 env（D376）");
+// brain 模式只有真的跑在壳上才能「交给壳换脑」；入口退到 index.js 时再 finish("ok") 就是谎报成功。
+assert.ok(/if \(isShellEntry\(REPO\)\)/.test(workerSrc), "brain 模式要先确认入口是壳");
+assert.ok(/这次没有壳/.test(workerSrc) && /按完整模式重启旧桥/.test(workerSrc), "退路入口要继续完整重启，不能谎报成功");
 assert.ok(/for \(let attempt = 1; attempt <= FETCH_ATTEMPTS/.test(workerSrc), "fetch 要有「再试一轮」的循环");
 assert.ok(/sleepSync\(FETCH_RETRY_DELAY_MS\)/.test(workerSrc), "重试间隔要用同步等待（worker 是同步流程）");
 
@@ -221,6 +225,23 @@ for (const name of ["hotdeploy.mjs", "hotdeploy-git.mjs", "hotdeploy-window.mjs"
     if (/^spawnSync\("npm", \["run", "build"\]/.test(stmt)) continue; // 非 Windows 分支
     assert.ok(stmt.includes("windowsHide"), `${name} 里的 spawnSync 没带 windowsHide：${stmt.slice(0, 80)}`);
   }
+}
+
+// ------------------------------------------------- brain 模式只有在壳的入口上才能「交给壳换脑」
+{
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "hd-entry-"));
+  const dist = path.join(repo, "bridge", "dist");
+  fs.mkdirSync(dist, { recursive: true });
+  const oldDisable = process.env.PI_HOST_DISABLE;
+  delete process.env.PI_HOST_DISABLE;
+  assert.equal(isShellEntry(repo), false, "没有 dist/host.js 时入口是旧桥，不能当成有壳");
+  fs.writeFileSync(path.join(dist, "host.js"), "");
+  assert.equal(isShellEntry(repo), true, "有 dist/host.js 才是壳");
+  process.env.PI_HOST_DISABLE = "1";
+  assert.equal(isShellEntry(repo), false, "PI_HOST_DISABLE=1 的逃生口优先");
+  if (oldDisable === undefined) delete process.env.PI_HOST_DISABLE;
+  else process.env.PI_HOST_DISABLE = oldDisable;
+  fs.rmSync(repo, { recursive: true, force: true });
 }
 
 console.log("hotdeploy-unit: ok");
