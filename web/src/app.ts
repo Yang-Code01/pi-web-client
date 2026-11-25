@@ -5552,6 +5552,8 @@ export class App {
   private sheetEscPop: (() => void) | null = null;
 
   private closeSheet(): void {
+    // 子层是压在面板上的，面板没了它也不该留着（程序性关面板时很容易漏下这一层）。
+    this.closeSubSheet();
     this.sheetEscPop?.();
     this.sheetEscPop = null;
     // 开新会话的面板被关掉（取消 / 点背景）= 放弃「交给 agent → 新开会话」那段待填的文字：
@@ -6447,7 +6449,7 @@ export class App {
   // ---------------------------------------------------------------- #484 上下文阈值 / 交接
 
   private subSheet: HTMLElement | null = null;
-  private subSheetKind: "policy" | "handoff" | null = null;
+  private subSheetKind: "policy" | "handoff" | "diff" | null = null;
   private subSheetPaint: (() => void) | null = null;
   private subSheetEscPop: (() => void) | null = null;
 
@@ -9015,7 +9017,7 @@ export class App {
     main.append(nav, pane);
 
     const foot = el("footer", "st-foot");
-    const defaultHint = tr("左栏按状态 / 来源筛选；点一行看它的改动，没有改动可比的直接在预览里打开");
+    const defaultHint = tr("左栏按状态 / 来源筛选；点一行看它的改动，右边的「预览」直接在查看器里打开");
     const hint = el("span", "st-foot__hint", defaultHint);
     foot.append(hint, el("span", "st-foot__meta", "pi-web-client"));
     sheet.append(head, main, foot);
@@ -9196,9 +9198,18 @@ export class App {
    * `writes` 是「这个会话写过它几次」，不是行数。
    */
   private artifactRow(sessionId: string, r: ArtifactRow, data: ArtifactList): HTMLElement {
-    const row = el("button", `settings-row art-row st-${r.status}`) as HTMLButtonElement;
-    row.type = "button";
+    // 行是 div 而不是 <button>：里面要并排放「看改动」和「预览」两颗按钮，button 不能套 button。
+    // 键盘可达性照抄分支工作台那条（D289）：role + tabIndex + Enter / 空格。
+    const row = el("div", `settings-row art-row st-${r.status}`);
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
     row.title = r.path;
+    row.onkeydown = (ev: KeyboardEvent) => {
+      if (ev.target !== row) return; // 里面那两颗按钮自己收键
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      row.click();
+    };
     const label = el("span", "settings-label");
     label.append(el("span", "settings-name art-name", fileNameOf(r.path)));
     const hint = el("span", "settings-hint");
@@ -9209,14 +9220,30 @@ export class App {
     ctl.append(el("span", "art-tools", r.tool === "mentioned" ? tr("回复提及") : `${r.tool}×${r.writes}`));
     if (r.estimate) ctl.append(el("span", "art-est", tr("按 git 估算")));
     if (r.diffable) {
-      ctl.append(el("span", "art-go", tr("看改动")));
-      row.onclick = () => void this.openDiffSheet(sessionId, r.path, data);
-    } else {
-      // 没有可对比的改动（二进制 / 未知 / 没变）：点开就是看文件本身，别给一个空弹窗。
-      // D308：不再 `closeSheet()` —— 预览会压在产物列表上（`.viewer.hi`），关掉它列表还在。
-      ctl.append(el("span", "art-open", tr("预览")));
-      row.onclick = () => void this.openPreview(r.path);
+      const go = el("button", "art-go") as HTMLButtonElement;
+      go.type = "button";
+      go.textContent = tr("看改动");
+      go.onclick = (ev) => {
+        ev.stopPropagation();
+        void this.openDiffSheet(sessionId, r.path, data);
+      };
+      ctl.append(go);
     }
+    // 预览对每一行都给：有可比改动的行也要能直接看文件本身（m00341），
+    // 不必先进差分、再把差分关掉。D308：预览会压在产物列表上（`.viewer.hi`），关掉它列表还在。
+    const open = el("button", "art-open") as HTMLButtonElement;
+    open.type = "button";
+    open.textContent = tr("预览");
+    open.onclick = (ev) => {
+      ev.stopPropagation();
+      void this.openPreview(r.path);
+    };
+    ctl.append(open);
+    // 点行本身还是「主操作」：有可比改动就看改动，没有就看文件（和以前一致）。
+    row.onclick = () => {
+      if (r.diffable) void this.openDiffSheet(sessionId, r.path, data);
+      else void this.openPreview(r.path);
+    };
     row.append(label, hint, ctl, el("span", `art-badge st-${r.status}`, this.artStatusLabel(r.status)));
     return row;
   }
@@ -9234,19 +9261,30 @@ export class App {
    * 和查看器分开是故意的：查看器负责「看文件」，这里负责「看这次改了什么」，各占一个全屏。
    */
   private async openDiffSheet(sessionId: string, path: string, known?: ArtifactList): Promise<void> {
-    this.closeSheet();
-    this.sheetKind = "display";
-    const back = el("div", "sheet-back");
+    // m00341：从产物列表点进来时不再关掉列表 —— 差分压成它的子层，关掉（关闭 / 点背景 / Esc）
+    // 回到原来那份列表，筛选和滚动位置都还在。没有父层可压时（理论上已经没有了）维持换一页全屏。
+    const overSheet = Boolean(this.sheet);
+    if (overSheet) this.closeSubSheet();
+    else {
+      this.closeSheet();
+      this.sheetKind = "display";
+    }
+    const back = el("div", overSheet ? "sheet-sub-back" : "sheet-back");
     back.tabIndex = -1;
+    const alive = (): boolean => (overSheet ? this.subSheet === back : this.sheet === back);
+    const dismiss = (): void => {
+      if (overSheet) this.closeSubSheet();
+      else this.closeSheet();
+    };
     back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
+      if (ev.target === back) dismiss();
     };
     const sheet = el("div", "sheet diff-sheet");
     const head = el("div", "sheet-head");
     const title = el("div", "sheet-title diff-title");
     const hint = el("div", "diff-hint", tr("j / k 换文件 · ← / → 换 hunk · Esc 关闭"));
     const close = el("button", "btn ghost", tr("关闭"));
-    close.onclick = () => this.closeSheet();
+    close.onclick = () => dismiss();
     head.append(title, hint, close);
     const rail = el("div", "diff-rail");
     const main = el("div", "diff-main");
@@ -9255,7 +9293,13 @@ export class App {
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back, "window", { enter: "drawer" });
-    this.setSheet(back);
+    if (overSheet) {
+      this.subSheet = back;
+      this.subSheetKind = "diff";
+      this.subSheetEscPop = pushEscLayer({ el: back, onEsc: () => this.closeSubSheet() });
+    } else {
+      this.setSheet(back);
+    }
     back.focus();
 
     let data = known;
@@ -9265,7 +9309,7 @@ export class App {
       } catch {
         data = undefined;
       }
-      if (this.sheet !== back) return;
+      if (!alive()) return;
     }
     const files = (data?.items ?? []).filter((r) => r.diffable);
     if (!files.length) {
@@ -9309,10 +9353,10 @@ export class App {
       try {
         d = await api.artifactDiff(sessionId, row.path);
       } catch (err: any) {
-        if (this.sheet === back) main.replaceChildren(el("div", "empty", String(err?.message ?? err)));
+        if (alive()) main.replaceChildren(el("div", "empty", String(err?.message ?? err)));
         return;
       }
-      if (this.sheet !== back) return;
+      if (!alive()) return;
       hunkEls = [];
       hunkIdx = 0;
       const bar = el("div", "diff-bar");
@@ -9340,10 +9384,10 @@ export class App {
     };
 
     back.addEventListener("keydown", (ev) => {
-      if (this.sheet !== back) return;
+      if (!alive()) return;
       if (ev.key === "Escape") {
         ev.preventDefault();
-        this.closeSheet();
+        dismiss();
         return;
       }
       if (ev.key === "j" || ev.key === "k") {
