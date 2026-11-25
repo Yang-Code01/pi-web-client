@@ -8144,3 +8144,22 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** `reviewModels` 里每个挑过模型的会话留一条字符串，会话删了没人来回收，所以留了上限 `REVIEW_MODEL_MEMORY = 200` 条（超了丢最早挑的那条，那一次会话回落到默认模型）。刷新后回默认模型 —— 以后真觉得烦，可以按会话落在设置里（别全局存一份，那就是回退这个决定）。
 
 **验证。** `probes/review-session-leak.mjs`（`npm run probe:review-session`）在原有「评什么」三段之后加了四段：A 挑模型 → chip 换成挑中的；切到 B → chip 是「默认模型」；B 挑另一个模型；回到 A → 还是 A 自己那个。修前第 5、6 段红（B 显示 A 的 `wb2api/cn:hy4flash`；回 A 显示 B 的 `wb2api/cn:kimi-k3-1`），修后八条全绿。`npm --prefix web run typecheck`（含 i18n、viewport、theme 三段）通过。
+
+## D410 随手问的输入框与对话栏同一个盒子：打字、折块、粘贴归属一套行为（2026-11-25）
+
+**问题。** 两个输入框长着同一张脸，动作却是两套。随手问的 textarea 是 `rows = 3` + `min-height: 84px` 的固定三行盒，打十行也只在自己内部滚；大段粘贴不折块，整屏代码糊在框里把上面的对话挤出去；右侧一颗「发送」按钮，而它发不出去的时候只会置灰 —— 唯一的状态信号是一个灰掉的按钮；粘贴只挂在它自己的 textarea 上，所以 dialog 开着、焦点不在框里时，截图会落进背后那个看不见的主会话。用户的原话：「随手问的输入框和 chat 输入框，动作统一」。
+
+**决定。**
+
+1. **发送只靠 Enter**：Enter 发送、Shift+Enter 换行，删掉「发送」按钮，底行只留 📎（左）与提示（右）。与对话栏同一条理由 —— 那颗按钮的位置聊天区留给了工具权限键，不为同一件事提供两种发送姿势。
+2. **1 行起自动增高**：`rows = 1`，`fitInput()` 先量 `height: auto` 下的内容高度再写 px；上限读 CSS 的 `max-height`（`38vh`，约 dialog 的一半），因此在 `#app { zoom: var(--ui-scale) }` 下只乘一次。到顶后框内滚动，滚动到中段时顶部 24px 渐隐（`has-hidden-top`，判据照抄 `.composer textarea` 的 #317）。
+3. **折块阈值抽成一份**：`web/src/paste.ts` 导出 `PASTE_LINES = 6`、`PASTE_CHARS = 400`、`shouldFoldPaste(text)`，对话栏与随手问共用。发送时 `body = [...折块原文, 手打的字].join("\n\n")`（#202 在对话栏已经这么拼），折块原文照发，不在 `trim()` 上丢缩进与末尾空行。
+4. **粘贴/拖拽归眼前那个框**：dialog 打开期间，页面级 `paste` / `drop` 一律转进随手问（`App.onPaste` 里先判 `this.scratch.isOpen`，且 `target.closest(".scratch-sheet")` 时不转发 —— 框里的粘贴由它自己的 handler 收，转发会收两次）。关掉 dialog 才回主输入框。
+5. **发不出去要说出原因**：跑着 / 已暂停 / 上一条没回话 / 当前模型看不了图，四种都写进 📎 那一行，2.6 秒后自己消失；输入框不再随状态 `disabled`（一个灰掉且不说话的框，比一句「跑着呢：这轮做完才能发下一条」难懂得多）。跑着时的占位文案也换成这句。
+6. **清空仍等回显**（D368 不变），但只清「还与发出时一致」的部分：`clearEchoed()` 比对文字、按原文移除已回显的折块，打字期间新加的折块不被一起抹掉。
+
+**没做（都是这次显式排除的）。** `/` 命令与 `@` 文件补全不搬 —— 随手问的 cwd 是空的临时目录（`bridge/src/paths.ts:140`），列出来的是空目录里的东西。跑着时仍是一问一答，不做 steer / followUp / 排队条（用户选的）；技能、文件选择器、模型 chip 也不进输入行（模型与思考档位仍在 header 下拉里）。
+
+**代价 / 可改。** 上限 `38vh` 与对话栏的「半个对话区」不是同一个意思，因为 dialog 比对话区小；折块展开时上限在框和展开的块之间平分（a 个折块切成 a+1 份），否则两块各自要一个上限就能把对话区挤没。发送后立即清空（对话栏的行为，`app.ts` 的 `sendPrompt()`）没有跟过来：随手问的一问一答里，等回显才清更不容易丢字。
+
+**验证。** `probes/scratch-input.mjs`（`npm run probe:scratch-input`，替身桥 + 真 Chromium）八段：空框一行高、8 行长高且不越过上限、12 行折成一块、Enter 发出的 body 是「折块原文 + 空行 + 手打的字」且回显后清干净、跑着时 Enter 被挡并闪原因且 3 秒内消失、dialog 开着时框外粘贴归随手问、关掉后折块回对话栏、字号 150% 时输入框上限只乘一次且底行仍在视口里。`web/tests/paste-unit.mjs` 4 项钉住阈值（5 行 / 399 字符不折，6 行 / 400 字符折，CRLF 与末尾换行不算多一行），已挂进 `npm --prefix web run typecheck`；`npm run build:web` 通过。
