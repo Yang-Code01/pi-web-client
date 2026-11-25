@@ -101,8 +101,9 @@ const TOTAL = batches.length;
 const ITEMS = batches.reduce((n, b) => n + b.items, 0);
 const PRS = new Set([...LOG_TEXT.matchAll(/(?:^|\s)#(\d+)(?=\s|$)/gm)].map((m) => m[1])).size;
 const withKind = (k) => batches.filter((b) => b.groups[k]).length;
-// 一条既含修复又含新增的批次：验「按批筛」就靠它。
-const MIXED = batches.find((b) => b.groups.fix && b.groups.new);
+// 一条既含修复又含新增的批次：验「按批筛」就靠它。优先要有标题的（`## 未发布` 那一批没标题，
+// 页面上也就不画 h3，拿它比对标题比不出来）。
+const MIXED = batches.find((b) => b.date && b.groups.fix && b.groups.new) ?? batches.find((b) => b.groups.fix && b.groups.new);
 const SEEN = batches[1]?.title ?? "";
 if (TOTAL < 3 || !MIXED) {
   console.error("CHANGELOG.md 里批次太少，或找不到同时含修复与新增的一批，这个探针验不了");
