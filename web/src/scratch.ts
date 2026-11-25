@@ -13,6 +13,7 @@
 import { createEl as el, openImage } from "./chat.ts";
 import { icon } from "./icons.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
+import { shouldFoldPaste } from "./paste.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { markSurface, pushEscLayer } from "./modal.ts";
@@ -156,7 +157,6 @@ export class ScratchChat {
   private escPop: (() => void) | null = null;
   private remindEl!: HTMLElement;
   private reclaimEl!: HTMLElement;
-  private sendBtn!: HTMLButtonElement;
   private clearBtn!: HTMLButtonElement;
   private pauseBtn!: HTMLButtonElement;
   private closeBtn!: HTMLButtonElement;
@@ -170,8 +170,14 @@ export class ScratchChat {
   private error = "";
   /** 贴上来还没发出去的图：发送那一刻清空，副本留在 pending 里等回声。 */
   private images: PendingImage[] = [];
+  /** 大段粘贴折成的块（与聊天区同一个阈值）：发送时按块拼回，回显时只清与发出时相同的那些。 */
+  private pastes: { text: string; open: boolean }[] = [];
+  private pasteHost!: HTMLElement;
   /** 已发出、还没等回声的那条。桥把 clientId 原样带回，纯图片（文字为空）也配得上。 */
-  private pending: { text: string; images: PendingImage[]; clientId: string } | null = null;
+  private pending: { text: string; body: string; pastes: string[]; images: PendingImage[]; clientId: string } | null = null;
+  /** 按 Enter 却没发出去的原因：闪一下就走，不占 `error`（那是要留着的失败）。 */
+  private blocked = "";
+  private blockedTimer = 0;
   private pendingSessionId: string | null = null;
   /** 一行临时说明：只收图片 / SVG 渲染失败。 */
   private note = "";
@@ -203,6 +209,8 @@ export class ScratchChat {
     }
     this.paintState();
     this.inputEl.focus();
+    // 高度只在可见时量得准（hidden 下 `scrollHeight` 是 0），所以放到显示之后。
+    this.fitInput();
   }
 
   close(): void {
@@ -272,7 +280,7 @@ export class ScratchChat {
           this.host.send({
             type: "prompt",
             sessionId: this.id,
-            text: this.pending.text,
+            text: this.pending.body,
             images: this.pending.images,
             clientId: this.pending.clientId,
           });
@@ -289,7 +297,7 @@ export class ScratchChat {
         this.upsert(msg.item as Item);
         // 桥把发送时带的 clientId 原样带回：纯图片那条 text 是空的，按文字比根本配不上。
         if (msg.item?.kind === "user" && this.pending && typeof msg.clientId === "string" && msg.clientId === this.pending.clientId) {
-          if (this.pending.text && this.inputEl.value.trim() === this.pending.text) this.inputEl.value = "";
+          this.clearEchoed(this.pending);
           this.pending = null;
           this.pendingSessionId = null;
           this.paintState();
@@ -390,7 +398,7 @@ export class ScratchChat {
       if (!dropping(ev)) return;
       ev.preventDefault();
       ev.stopPropagation();
-      void this.attach(Array.from(ev.dataTransfer?.files ?? []));
+      void this.attachFiles(Array.from(ev.dataTransfer?.files ?? []));
     };
     const sheet = el("div", "sheet scratch-sheet");
 
@@ -460,24 +468,27 @@ export class ScratchChat {
     this.noteEl.hidden = true;
     foot.append(this.attachEl, this.noteEl);
 
+    // 与聊天区同一种盒子：折块在上、文字在下面，圆角与聚焦框画在外层 —— 顶部渐隐要作用在
+    // **文字自己**身上，边框不能跟着淡（#317 同款做法）。
+    const box = el("div", "sc-input-wrap");
+    this.pasteHost = el("div", "paste-list");
+    this.pasteHost.hidden = true;
     this.inputEl = el("textarea", "sc-input") as HTMLTextAreaElement;
-    this.inputEl.rows = 3;
-    this.inputEl.placeholder = tr("想到什么就问什么（Enter 发送，Shift+Enter 换行）");
+    // 与聊天区一致（#315）：1 行起步，`fitInput()` 从内容高度往上长。
+    this.inputEl.rows = 1;
+    this.inputEl.placeholder = this.placeholderText();
+    this.inputEl.oninput = () => this.fitInput();
+    // 撞到上限后框里会藏住上半截：滚动时加减顶部渐隐。
+    this.inputEl.onscroll = () => this.syncInputFade();
     this.inputEl.onkeydown = (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
         ev.preventDefault();
         this.submit();
       }
     };
-    // 截图直接贴：挂在这个 textarea 上，就只在焦点落在这里时算随手问的
-    //（页面别处贴图仍归主输入框的 window 监听）。带文字时文字照常粘进去。
-    this.inputEl.onpaste = (ev) => {
-      const files = pastedFilesFrom(ev.clipboardData);
-      if (!files.length) return;
-      const text = ev.clipboardData?.getData("text/plain") ?? "";
-      if (!text.trim()) ev.preventDefault();
-      void this.attach(files);
-    };
+    // 截图 / 长文本：焦点在这个框里时归随手问；页面别处的粘贴由 App 的 window 监听转进来（`paste`）。
+    this.inputEl.onpaste = (ev) => this.paste(ev);
+    box.append(this.pasteHost, this.inputEl);
 
     const actions = el("div", "sc-actions");
     this.attachBtn = el("button", "btn ghost sc-attach") as HTMLButtonElement;
@@ -493,13 +504,12 @@ export class ScratchChat {
     this.fileEl.onchange = () => {
       const files = Array.from(this.fileEl.files ?? []);
       this.fileEl.value = "";
-      if (files.length) void this.attach(files);
+      if (files.length) void this.attachFiles(files);
     };
-    this.sendBtn = el("button", "btn primary", tr("发送")) as HTMLButtonElement;
-    this.sendBtn.onclick = () => this.submit();
     this.hintEl = el("div", "sc-hint", "");
-    actions.append(this.attachBtn, this.fileEl, this.hintEl, this.sendBtn);
-    foot.append(this.inputEl, actions);
+    // 发送只靠 Enter（与聊天区一致）：右侧不再留按钮，这一行只有 📎 与提示。
+    actions.append(this.attachBtn, this.fileEl, this.hintEl);
+    foot.append(box, actions);
     sheet.append(foot);
 
     back.append(sheet);
@@ -507,6 +517,8 @@ export class ScratchChat {
     // 挂在 body 上的弹层不跟它缩（D36 实测：抽屉还是 100%，与背景不同步）。
     (document.getElementById("app") ?? document.body).append(back);
     this.root = back;
+    // 输入框的上限是按 dialog 高度算的（38vh）：dialog 一变高矮就重算，窗口缩放、切语言都走这里。
+    new ResizeObserver(() => this.fitInput()).observe(sheet);
     this.refreshLang();
   }
 
@@ -533,8 +545,7 @@ export class ScratchChat {
     this.clearBtn.title = tr("在同一个进程里换一条新会话：上下文和 token 归零，不等重启");
     this.closeBtn.title = tr("关闭");
     this.modelEl.title = tr("切模型");
-    this.sendBtn.textContent = tr("发送");
-    this.inputEl.placeholder = tr("想到什么就问什么（Enter 发送，Shift+Enter 换行）");
+    this.inputEl.placeholder = this.placeholderText();
     this.attachBtn.title = tr("添加图片");
     this.attachBtn.setAttribute("aria-label", this.attachBtn.title);
     this.paintStrip();
@@ -613,17 +624,27 @@ export class ScratchChat {
   }
 
   private submit(): void {
-    const text = this.inputEl.value.trim();
+    const typed = this.inputEl.value.trim();
+    // 与聊天区同一个拼法（#202）：折块在上、手打的在下，空行隔开。`trim()` 只用来判空，
+    // 折块原文照发 —— 贴一段代码时首行缩进和末尾空行是内容，不是排版噪音。
+    const pastes = this.pastes.map((p) => (p.text.trim() ? p.text : "")).filter(Boolean);
+    const body = [...pastes, typed].filter(Boolean).join("\n\n");
     const images = this.images;
     // 光有图也算一条消息（主输入框同理）：pi 收得下 image-only 的 prompt。
-    if ((!text && !images.length) || this.pending || this.running || this.state?.paused) return;
-    // 看不了图的模型：发送口就挡住（按钮也置灰），别把图塞过去再让 pi 报错。
-    if (images.length && this.noVision()) {
-      this.paintState();
+    if (!body && !images.length) return;
+    // 发不出去要说出原因：发送键拿掉后，跑着 / 暂停 / 看不了图再没有可见的禁用信号。
+    const blocked =
+      this.pending ? tr("上一条还没回话，等它出来")
+      : this.state?.paused ? tr("已暂停：点上面的「开始」再发")
+      : this.running ? tr("跑着呢：这轮做完才能发下一条")
+      : images.length && this.noVision() ? tr("当前模型看不了图，换一个能看图的模型")
+      : "";
+    if (blocked) {
+      this.flash(blocked);
       return;
     }
     const clientId = `scratch:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-    this.pending = { text, images, clientId };
+    this.pending = { text: typed, body, pastes, images, clientId };
     this.pendingSessionId = null;
     this.images = [];
     this.note = "";
@@ -636,7 +657,7 @@ export class ScratchChat {
       return;
     }
     this.pendingSessionId = this.id;
-    this.host.send({ type: "prompt", sessionId: this.id, text, images, clientId });
+    this.host.send({ type: "prompt", sessionId: this.id, text: body, images, clientId });
     this.paintState();
   }
 
@@ -645,11 +666,26 @@ export class ScratchChat {
     const pending = this.pending;
     this.pending = null;
     this.pendingSessionId = null;
-    // 文字本来就没清（只在回声时清），图却已经在发送时从横条拿走了：放回去才算「还给我」。
+    // 文字与折块本来就没清（只在回声时清），图却已经在发送时从横条拿走了：放回去才算「还给我」。
     if (pending?.images.length) {
       this.images.push(...pending.images);
       this.paintStrip();
     }
+  }
+
+  /** 回显到了：只清「还跟发出时一样」的部分 —— 打字期间新加的折块不能被一起抹掉。 */
+  private clearEchoed(sent: { text: string; pastes: string[] }): void {
+    if (sent.text && this.inputEl.value.trim() === sent.text) this.inputEl.value = "";
+    let changed = false;
+    for (const text of sent.pastes) {
+      const at = this.pastes.findIndex((p) => p.text === text);
+      if (at >= 0) {
+        this.pastes.splice(at, 1);
+        changed = true;
+      }
+    }
+    if (changed) this.renderPastes();
+    this.fitInput();
   }
 
   /** 当前模型明确看不了图（目录里 `supportsImages === false`）。`undefined` = 未知，不拦。 */
@@ -669,7 +705,8 @@ export class ScratchChat {
   }
 
   /** 粘贴 / 拖拽 / 📎 交来的文件：图进待发条，别的一律拒收（这里拿不到绝对路径，塞文件名只会误导）。 */
-  private async attach(files: readonly File[]): Promise<void> {
+  /** 附件入口：dialog 里的 📎、拖进来的文件、App 的页面级 drop 都走这里（只收图片）。 */
+  async attachFiles(files: readonly File[]): Promise<void> {
     if (!files.length) return;
     const { images, others } = splitImages(Array.from(files));
     this.note = others.length ? tr("随手问只收图片") : "";
@@ -680,6 +717,133 @@ export class ScratchChat {
     }
     this.paintStrip();
     this.paintState();
+  }
+
+  /**
+   * 粘贴：长文本折成块、图进待发条，其余原样交给浏览器（与聊天区同一道阈值）。
+   *
+   * 也用于「dialog 开着、焦点不在输入框里」的页面级粘贴（App 的 window 监听转进来，见 D 记录）：
+   * 眼前只开着一个输入框，图却落在背后那个看不见的会话里，是说不通的。
+   */
+  paste(ev: ClipboardEvent): void {
+    if (!this.isOpen) return;
+    const files = pastedFilesFrom(ev.clipboardData);
+    const pasted = ev.clipboardData?.getData("text/plain") ?? "";
+    const fold = shouldFoldPaste(pasted);
+    if (!files.length && !fold) return;
+    if (fold) {
+      ev.preventDefault();
+      this.pastes.push({ text: pasted.replace(/\r\n/g, "\n"), open: false });
+      this.renderPastes();
+    } else if (!pasted.trim()) {
+      ev.preventDefault();
+    }
+    if (files.length) void this.attachFiles(files);
+  }
+
+  /** 折块的画法照搬聊天区（#202）：收起时只一行摘要，展开可改内容。 */
+  private renderPastes(): void {
+    if (!this.root) return;
+    this.pasteHost.hidden = !this.pastes.length;
+    this.pasteHost.replaceChildren();
+    this.pastes.forEach((p, index) => {
+      const block = el("div", `paste-block${p.open ? " open" : ""}`);
+      const head = el("div", "paste-head");
+      const toggle = el("button", "paste-toggle") as HTMLButtonElement;
+      toggle.type = "button";
+      toggle.append(
+        el("span", "chev", p.open ? "▾" : "▸"),
+        el("span", "paste-title", tr("粘贴的内容{p1}", { p1: this.pastes.length > 1 ? ` #${index + 1}` : "" })),
+        el("span", "paste-meta", tr("{p1} 行 · {p2} 字", { p1: p.text.split("\n").length, p2: p.text.length })),
+        el("span", "paste-peek", p.open ? "" : p.text.replace(/\s+/g, " ").trim().slice(0, 80)),
+      );
+      toggle.title = p.open ? tr("收起") : tr("展开查看 / 编辑");
+      toggle.onclick = () => {
+        p.open = !p.open;
+        this.renderPastes();
+      };
+      const drop = el("button", "paste-x", "×") as HTMLButtonElement;
+      drop.type = "button";
+      drop.title = tr("删掉这段粘贴的内容");
+      drop.onclick = () => {
+        this.pastes.splice(index, 1);
+        this.renderPastes();
+        this.inputEl.focus();
+      };
+      head.append(toggle, drop);
+      block.append(head);
+      if (p.open) {
+        const body = el("textarea", "paste-body") as HTMLTextAreaElement;
+        body.value = p.text;
+        body.spellcheck = false;
+        body.oninput = () => {
+          p.text = body.value;
+          const meta = head.querySelector(".paste-meta");
+          if (meta) meta.textContent = tr("{p1} 行 · {p2} 字", { p1: p.text.split("\n").length, p2: p.text.length });
+        };
+        block.append(body);
+      }
+      this.pasteHost.append(block);
+    });
+    this.fitInput();
+  }
+
+  /**
+   * 自动增高（与聊天区 #315 同一套）：先量 `height:auto` 下的内容高度，再写成 px。上限读 CSS 的
+   * `max-height`（38vh，约 dialog 一半）—— 读 computed 值，所以 `#app` 的 zoom 只乘一次。
+   * 展开的折块与输入框平分这个上限（a 个折块分成 a+1 份），否则两块各自要一个上限就能把对话区挤出去。
+   */
+  private fitInput(): void {
+    const input = this.inputEl;
+    if (!input || !this.root || this.root.hidden) return;
+    input.style.height = "auto";
+    const cap = parseFloat(getComputedStyle(input).maxHeight);
+    const border = input.offsetHeight - input.clientHeight;
+    const openFolds = this.pastes.filter((p) => p.open).length;
+    const limit = Number.isFinite(cap) && cap > 0 ? (openFolds ? cap / (openFolds + 1) : cap) : 0;
+    input.style.height = limit > 0 ? `${Math.min(limit, input.scrollHeight + border)}px` : "auto";
+    for (const body of Array.from(this.pasteHost.querySelectorAll<HTMLTextAreaElement>("textarea.paste-body"))) {
+      body.style.maxHeight = limit > 0 ? `${limit}px` : "";
+    }
+    this.syncInputFade();
+  }
+
+  /**
+   * #317 的同一套判据：撞到上限后顶部 24px 让文字自己淡出；回到第一行、或光标停在末行（量到底）
+   * 都不淡 —— 两头保持干净，只标出中间那段「上面还有东西」。
+   */
+  private syncInputFade(): void {
+    const input = this.inputEl;
+    if (!input) return;
+    const max = input.scrollHeight - input.clientHeight;
+    const inset = parseFloat(getComputedStyle(input).paddingBottom) + (input.offsetHeight - input.clientHeight);
+    const atBottom = max - input.scrollTop <= inset + 1;
+    input.classList.toggle("has-hidden-top", max > 0 && input.scrollTop > 0 && !atBottom);
+  }
+
+  /** 占位文案：跑着时说明「这轮做完才能发下一条」，空闲时与聊天区同一句快捷键说明。 */
+  private placeholderText(): string {
+    if (this.running) return tr("跑着呢：这轮做完才能发下一条（Shift+Enter 换行）");
+    return tr("Enter 发送 · Shift+Enter 换行");
+  }
+
+  /** 按 Enter 却没发出去：把原因在 📎 那一行闪一下（`error` 是留着的失败，不混用）。 */
+  private flash(text: string): void {
+    this.blocked = text;
+    this.paintHint();
+    window.clearTimeout(this.blockedTimer);
+    this.blockedTimer = window.setTimeout(() => {
+      this.blocked = "";
+      this.paintHint();
+    }, 2600);
+  }
+
+  private paintHint(): void {
+    if (!this.root) return;
+    const text = this.error || this.blocked;
+    this.hintEl.textContent = text;
+    this.hintEl.hidden = !text;
+    this.hintEl.classList.toggle("blocked", !this.error && Boolean(this.blocked));
   }
 
   private paintStrip(): void {
@@ -731,8 +895,11 @@ export class ScratchChat {
     // 「清空」连没发出去的图一起清：留着它们，下一条就问进新会话里了。
     this.pending = null;
     this.images = [];
+    this.pastes = [];
     this.note = "";
     this.paintStrip();
+    this.renderPastes();
+    this.fitInput();
     this.paintNote();
     this.host.send({ type: "scratch.clear" });
   }
@@ -852,21 +1019,20 @@ export class ScratchChat {
     if (!this.root) return;
     const busy = this.running || this.starting;
     const paused = Boolean(this.state?.paused);
-    this.sendBtn.disabled = busy || paused || !this.id || this.attachBlocked();
     this.clearBtn.disabled = !this.id || this.running;
     const pauseLabel = paused ? tr("开始") : tr("暂停");
     this.pauseBtn.textContent = pauseLabel;
     this.pauseBtn.disabled = busy || !this.id;
     this.pauseBtn.title = this.running ? tr("这一轮跑完才能暂停") : pauseLabel;
-    this.inputEl.disabled = this.starting || paused;
+    // 输入框不再随状态禁用：按 Enter 被挡时由 `flash()` 说原因，比一个灰掉的框更容易看懂。
+    this.inputEl.placeholder = this.placeholderText();
     this.stateEl.textContent = this.stateLabel();
     // 模板串里带中文会被 i18n 检查器当成「没走 tr()」：先算好名字再拼。
     const modelName = this.state?.modelName || this.state?.model || tr("模型");
     const level = this.state?.thinkingLevel;
     this.modelEl.textContent = level ? `${modelName} · ${level} ▾` : `${modelName} ▾`;
     this.modelEl.disabled = !this.id || paused;
-    this.hintEl.textContent = this.error;
-    this.hintEl.hidden = !this.error;
+    this.paintHint();
     this.paintNote();
     this.paintReminder();
   }

@@ -4263,15 +4263,35 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sc-notice .sc-twoline { color: var(--dim); }
 .sc-empty { color: var(--faint); font-size: 12px; line-height: 1.7; padding: 8px 2px; }
 .scratch-foot { border-top: 1px solid var(--line); padding: 8px 16px calc(12px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 8px; justify-items: end; align-items: start; }
+/* 输入盒：与聊天区同一种形状 —— 折块在上、文字在下，边框与圆角画在**外层**，所以顶部渐隐
+   作用在 textarea 自己身上时不会把边框一起淡掉（#317 同一个理由）。 */
+.sc-input-wrap {
+  width: 100%; display: flex; flex-direction: column; min-width: 0; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+}
+.sc-input-wrap:focus-within { border-color: var(--accent-dim); }
 .sc-input {
-  width: 100%; min-height: 84px; max-height: calc(var(--vh1) * 38); resize: none; background: var(--panel-2); color: var(--text);
-  border: 1px solid var(--line); border-radius: 8px; padding: 8px 8px;
+  width: 100%; min-height: 0; max-height: calc(var(--vh1) * 38); resize: none;
+  background: transparent; color: var(--text); border: 0; border-radius: 0; padding: 8px 8px;
   font: inherit; font-size: 13px; line-height: 1.55;
 }
 .sc-input::placeholder { color: var(--faint); }
-.sc-input:focus { outline: none; border-color: var(--accent-dim); }
+.sc-input:focus { outline: none; }
+/* 撞到上限后滚到中段：只让文字淡出，做法与 `.composer textarea.has-hidden-top` 一致。 */
+.sc-input.has-hidden-top {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 24px);
+  mask-image: linear-gradient(to bottom, transparent, #000 24px);
+}
+.sc-input-wrap textarea.paste-body {
+  display: block; width: 100%; min-height: 0; height: 160px; max-height: none; resize: vertical;
+  overflow: auto;
+  border: 0; border-top: 1px solid var(--line-soft); border-radius: 0; background: var(--bg);
+  font: 12px/1.5 var(--mono); padding: 8px 8px; color: var(--text);
+}
 .sc-hint { font-size: 11px; color: var(--danger); width: 100%; }
-/* #402：待发图横条 + 一行说明 + 底部那排（📎 / 错误 / 发送）。 */
+/* Enter 被挡时闪的那句：偏提醒，不是失败，所以用 warn 不上 danger。 */
+.sc-hint.blocked { color: var(--warn); }
+/* #402：待发图横条 + 一行说明 + 底部那排（📎 / 错误 / Enter 被挡时的提醒）。 */
 .scratch-attach { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
 .scratch-attach[hidden], .scratch-note[hidden] { display: none; }
 .sc-shot { position: relative; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: var(--panel-2); }
