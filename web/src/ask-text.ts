@@ -25,22 +25,38 @@ export function unfoldNewlines(s: string): string {
 }
 
 /**
- * 按反引号切段：反引号内的算 code，反引号本身不留在文字里。
+ * 按反引号切段：成对的算 code，反引号本身不留在文字里。
  *
- * 不配对的反引号（奇数个）按普通字符处理，不吞掉后半段 —— 卡片显示的内容永远比原文只多不少。
+ * 配对按**等长串**认（CommonMark 的规矩）：`x` 用一枚，`` `x` `` 这类要用两枚包围，
+ * 里面的单枚就是内容。找不到另一半的头/尾串（落单的一枚、三个连续的代码栅栏、没闭合的两枚）
+ * 全部原样当普通字符 —— 卡片显示的文字永远比原文只多不少。
  */
 export function splitInlineCode(s: string): InlinePiece[] {
   if (!s) return [];
+  const runs: { start: number; len: number }[] = [];
+  const re = /`+/g;
+  for (let m = re.exec(s); m; m = re.exec(s)) runs.push({ start: m.index, len: m[0].length });
   const pieces: InlinePiece[] = [];
-  const re = /`([^`]+)`/g;
   let at = 0;
-  for (let m = re.exec(s); m; m = re.exec(s)) {
-    if (m.index > at) pieces.push({ kind: "text", text: s.slice(at, m.index) });
-    pieces.push({ kind: "code", text: m[1] });
-    at = m.index + m[0].length;
+  for (let i = 0; i < runs.length; i++) {
+    const open = runs[i];
+    let j = i + 1;
+    while (j < runs.length && runs[j].len !== open.len) j++;
+    if (j === runs.length) continue; // 找不到等长的收尾：这串反引号按普通字符留着
+    const close = runs[j];
+    if (open.start > at) pieces.push({ kind: "text", text: s.slice(at, open.start) });
+    pieces.push({ kind: "code", text: codeBody(s.slice(open.start + open.len, close.start)) });
+    at = close.start + close.len;
+    i = j;
   }
   if (at < s.length) pieces.push({ kind: "text", text: s.slice(at) });
   return pieces;
+}
+
+/** CommonMark 的孤儿空格：两端都是空格（且不全是空格）时各去一个，`` ` `` 才能显示成一枚反引号。 */
+function codeBody(body: string): string {
+  if (body.trim() && body.startsWith(" ") && body.endsWith(" ")) return body.slice(1, -1);
+  return body;
 }
 
 /**

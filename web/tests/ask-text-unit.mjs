@@ -45,6 +45,23 @@ test("空串切出空数组，纯代码也认", () => {
   assert.deepEqual(splitInlineCode("`x`"), [{ kind: "code", text: "x" }]);
 });
 
+test("配对按等长串认：两枚包一枚才能把反引号当内容", () => {
+  assert.deepEqual(splitInlineCode("`` `bridge/src/rpc.ts` ``"), [{ kind: "code", text: "`bridge/src/rpc.ts`" }]);
+});
+
+test("三个连续的反引号（代码栅栏）不当 code，全留原文", () => {
+  assert.deepEqual(splitInlineCode("用 ``` 包代码块"), [{ kind: "text", text: "用 ``` 包代码块" }]);
+  assert.deepEqual(splitInlineCode("````"), [{ kind: "text", text: "````" }]);
+});
+
+test("落单的一枚留着，成对的照常切", () => {
+  assert.deepEqual(splitInlineCode("`a``b`"), [{ kind: "code", text: "a``b" }]);
+  assert.deepEqual(splitInlineCode("`a` 和 `b"), [
+    { kind: "code", text: "a" },
+    { kind: "text", text: " 和 `b" },
+  ]);
+});
+
 test("cardPieces 先切反引号再折行（代码里的 `\\n` 是内容本身）", () => {
   assert.deepEqual(cardPieces("先看 `a.ts`\\n再看 `b.ts`"), [
     { kind: "text", text: "先看 " },

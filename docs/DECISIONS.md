@@ -8114,7 +8114,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **修法。** 新增 `web/src/ask-text.ts` 三个纯函数，`App.askText()` / `appendAskText()` 用它们拼节点：
 
 - `unfoldNewlines(s)`：`\n` 折成真换行，但**只在整段没有真换行时**才折 —— 已经分行的文本里出现 `\n`，多半是代码或正则本身，折了才是错。
-- `splitInlineCode(s)`：按反引号切段，反引号本身不进文字，渲染成 `<code>`；不配对的反引号按普通字符留着，绝不吞掉后半段。
+- `splitInlineCode(s)`：按**等长反引号串**配对（CommonMark 的规矩），成对的进 `<code>`、反引号本身不进文字；找不到另一半的头/尾串（落单的一枚、三个连续的代码栅栏、没闭合的两枚）全留作普通字符。两枚包一枚（`` `x` ``）时里面的反引号是内容，不被当成开合。
 - `cardPieces(s)`：**先切反引号，再只对普通文字折行**。顺序反过来会误伤在**谈论** `\n` 本身的文本（「把字面的 `\n` 折成换行」这种题干），反引号还没切出来就整段被折了。代码片段里的是内容，一个字都不动。
 - CSS：`.ask-prompt` / `.ask-opt .l` / `.ask-opt .d` 一律 `pre-wrap` + `overflow-wrap: anywhere`（长路径顶出卡片的问题），行内代码用等宽小字 + `--panel-3` 底色。
 
@@ -8126,4 +8126,4 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **没做。** ①选项的 `preview` 字段卡片完全不显示（多选预览只在单选用）；如果用户看到的是「预览里的 ASCII 图被塞进说明」，那是另一件事。②`\t` 与字面 `\r` 没折。③没有改 `question` / `questionnaire` 两个旧工具名的载荷路径，它们与 `ask_user_question` 共用同一段渲染。
 
-**验证。** `node --experimental-strip-types --test web/tests/ask-text-unit.mjs` 9 项（折行 / 真换行不误伤 / 空串 / 切段 / 不配对反引号 / 纯代码 / 先切后折 / 反引号内不折 / 混合情形），`web/tests/ask-tab-unit.mjs` + `ask-card-unit.mjs` 共 24 项不回归，`npm --prefix web run typecheck`（含 i18n-check、视口单位与层叠守卫，以及新挂进链里的 `ask-text-unit`）与 `npm --prefix web run build` 通过。单测另有根脚本 `npm run test:ask-text`，与 `test:ask-tab` / `test:ask-card` 同一口径。
+**验证。** `node --experimental-strip-types --test web/tests/ask-text-unit.mjs` 12 项（折行 / 真换行不误伤 / 空串 / 切段 / 不配对反引号 / 纯代码 / 先切后折 / 反引号内不折 / 混合情形 / 等长串配对 / 连续三枚 / 落单的一枚），`web/tests/ask-tab-unit.mjs` + `ask-card-unit.mjs` 共 24 项不回归，`npm --prefix web run typecheck`（含 i18n-check、视口单位与层叠守卫，以及新挂进链里的 `ask-text-unit`）与 `npm --prefix web run build` 通过。单测另有根脚本 `npm run test:ask-text`，与 `test:ask-tab` / `test:ask-card` 同一口径。
