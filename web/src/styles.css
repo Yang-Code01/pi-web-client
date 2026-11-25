@@ -5897,6 +5897,49 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-prrow-title { grid-row: 1; grid-column: 2; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-scope .rv-prrow-meta { grid-row: 2; grid-column: 1 / -1; font-size: 10px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-scope .rv-details { flex: none; }
+/* ---- 记录列表（#690）：一条一张卡，新的在上。卡本身就是按钮，所以按钮的默认样式全要清掉。 */
+.rv-scope .rv-runs { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rv-scope .rv-runs-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-size: 11px; color: var(--faint); }
+.rv-scope .rv-runs-hint { flex: none; opacity: 0.8; }
+.rv-scope .rv-run-card {
+  display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
+  padding: 7px 8px; font-size: 12px; color: var(--text); cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+}
+.rv-scope .rv-run-card:hover { border-color: var(--accent); }
+.rv-scope .rv-run-card.is-live { border-color: var(--accent); }
+.rv-scope .rv-run-card.is-fail { border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); }
+.rv-scope .rv-run-top { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.rv-scope .rv-run-target { flex: none; font-size: 11.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.rv-scope .rv-run-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-run-at { flex: none; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.rv-scope .rv-run-meta { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: 11px; color: var(--faint); min-width: 0; }
+.rv-scope .rv-run-status { flex: none; }
+.rv-scope .rv-run-status.done { color: var(--ok); }
+.rv-scope .rv-run-status.running { color: var(--accent); }
+.rv-scope .rv-run-status.failed { color: var(--danger); }
+.rv-scope .rv-run-status.stale { color: var(--warn); }
+.rv-scope .rv-run-bit { flex: none; }
+.rv-scope .rv-run-model {
+  flex: none; max-width: 100%; padding: 0 5px; font-size: 10.5px; color: var(--dim);
+  border: 1px solid var(--line); border-radius: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rv-scope .rv-run-model.none { color: var(--faint); border-style: dashed; }
+.rv-scope .rv-run-current { font-size: 10.5px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.rv-scope .rv-run-err { font-size: 10.5px; color: var(--danger); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ---- 点开的那一次：\u2039 记录 / 评什么 / 完整详情，下面接那一次的统计与意见 */
+.rv-scope .rv-focus { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rv-scope .rv-focus-head { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.rv-scope .rv-back {
+  flex: none; padding: 2px 6px; font-size: 11px; color: var(--faint);
+  background: transparent; border: 1px solid var(--line); border-radius: 7px; cursor: pointer;
+}
+.rv-scope .rv-back:hover { color: var(--text); border-color: var(--accent); }
+.rv-scope .rv-focus-target { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.rv-scope .rv-focus-more { flex: none; padding: 0; font-size: 11px; color: var(--accent); background: none; border: 0; cursor: pointer; }
+.rv-scope .rv-focus-title { font-size: 11px; color: var(--dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-focus-model { font-size: 10.5px; color: var(--faint); word-break: break-all; }
 .rv-scope .rv-credit {
   display: flex; flex-direction: column; gap: 2px;
   margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line-soft);

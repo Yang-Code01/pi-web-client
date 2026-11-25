@@ -101,6 +101,7 @@ import {
   type ReviewPanelInput,
   type ReviewProgress,
   type ReviewState,
+  type ReviewRun,
 } from "./review.ts";
 import { execView, type ExecChildRunInput, type ExecMetricsView, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
@@ -472,6 +473,15 @@ export class App {
   /** 这一次是**我们**点的「开始评审」：只有它跑完才弹提示（别的页签发起的别来抢）。 */
   private reviewPendingToast = false;
   private reviewStartedRunId = "";
+  /**
+   * 面板现在展开的是哪一次评审（`ReviewRun.id`，空串 = 停在记录列表）。
+   * 记录列表是主体：点一张卡就换成那一次的意见，`‹ 记录` 回列表。
+   */
+  private reviewFocus = "";
+  /** 还在跟着「刚开的那一次」跑：收到进度帧就把焦点新移到它的 runId 上。 */
+  private reviewFollowRun = false;
+  /** 本会话的「评什么」已经从盘上恢复过没有（每个会话只恢复一次）。 */
+  private reviewPickRestored = "";
   private reviewToasted = new Set<string>();
   /** 最近一次发 `review.get` 的时刻：ocr 那一帧丢了要能自己补一次，别死等。 */
   private reviewOcrAskedAt = 0;
@@ -583,6 +593,11 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
+  /**
+   * 「挑模型」那条路的回调（代码评审面板的 chip 用它）：模型目录晚到会重开这一屏，
+   * 重开时没有新的回调，要把这份接着用，否则一开就是一屏空态。
+   */
+  private modelPick: { start: string; level?: string; onPick: (model: ModelInfo, level: string) => void } | null = null;
   private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "theme-intro" | "bg" | "wsnew" | "wsdelete" | "context" | "context-insights" | "filesearch" | null = null;
   /** 内网通未读：顶栏那颗按钮上的件数徽标（D300 起文件也算未读）。 */
   private peerUnread = 0;
@@ -2681,6 +2696,11 @@ export class App {
         if (msg.dir) this.reviewRepo = String(msg.dir);
         this.reviewState = (msg.state ?? null) as ReviewState | null;
         this.reviewProgress = (msg.progress ?? null) as ReviewProgress | null;
+        // 盘上记的「评什么」：只在本会话头一份状态到达时恢复（以后以界面为准）。
+        this.applyReviewPick();
+        // 正在跑的那一次：跟过去（用户没在翻旧记录时）。
+        const runningRun = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+        if (runningRun && runningRun.status === "running" && this.reviewFollowRun) this.reviewFocus = runningRun.id;
         this.announceReviewDone();
         if (this.queueTab === "review") this.renderQueue();
         this.syncReviewSheet();
@@ -2695,8 +2715,14 @@ export class App {
         this.reviewPrsAt = Date.now();
         this.reviewPrError = msg.ok ? "" : errText(msg) || String(msg.error ?? "");
         this.reviewPrsLoading = false;
-        // 手输的号不在列表里时不要被第一项悄悄顶掉：只在没选过时挑第一个。
-        if (!this.reviewPr && this.reviewPrs.length) this.reviewPr = String(this.reviewPrs[0].number);
+        // 手输的号不在列表里时不要被第一项悄悄顶掉：只在没选过时挑一个。
+        // 先认「当前分支对应的那个 PR」—— 用户选了「自动带上当前分支的 PR」；
+        // 拿不到再退到列表第一项（旧的保守行为）。
+        if (!this.reviewPr && this.reviewPrs.length) {
+          const branch = (this.git?.branch ?? "").trim();
+          const mine = branch ? this.reviewPrs.find((item) => item.headRefName === branch) : null;
+          this.reviewPr = String((mine ?? this.reviewPrs[0]).number);
+        }
         if (this.queueTab === "review") this.renderQueue();
         break;
       }
@@ -2721,6 +2747,8 @@ export class App {
           this.reviewProgress = msg.progress as ReviewProgress;
           const id = String((msg.progress as ReviewProgress).runId ?? "");
           if (id && this.reviewPendingToast && !this.reviewStartedRunId) this.reviewStartedRunId = id;
+          // 自己刚开的那一次：面板跟过去看它跑（翻旧记录时不抢走焦点）。
+          if (id && this.reviewFollowRun) this.reviewFocus = id;
         } else this.reviewProgress = null;
         if (this.queueTab === "review") this.renderQueue();
         break;
@@ -5657,10 +5685,18 @@ export class App {
    * 模型与思考：外壳同设置控制台（.st-console），左栏「当前使用 / 全部模型 / 本会话」，右栏一页内容。
    * 仍然是草稿 + 确认 —— 点一行只是把 draft 挪过去，chip 与真实会话都不动，直到点「确认」。
    */
-  private openModelSheet(expandSession = false, pick?: { start: string; level?: string; onPick: (model: ModelInfo, level: string) => void }): void {
+  private openModelSheet(
+    expandSession = false,
+    pickOpt?: { start: string; level?: string; onPick: (model: ModelInfo, level: string) => void },
+  ): void {
     if (!this.currentId) return;
     // Re-renders (catalog arrived, takeover finished) keep what the user unfolded; a fresh open folds.
     const reopening = this.sheetKind === "model";
+    // 目录晚到 / 接管完成都会**不带参数重开**这一屏（2083 / 2298 / 5870 那几处）。重开时没有新的
+    // 「挑模型」回调，原来那份得接着用 —— 丢了它，面板那颗 chip 打开的会变成「当前使用」那栏的空态。
+    if (pickOpt) this.modelPick = pickOpt;
+    else if (!reopening) this.modelPick = null;
+    const pick = pickOpt ?? this.modelPick ?? undefined;
     this.sessionInfoOpen = expandSession || (reopening && this.sessionInfoOpen);
     this.closeSheet();
     this.sheetKind = "model";
@@ -18737,6 +18773,10 @@ export class App {
     this.reviewExpectRepo = "";
     this.reviewPendingToast = false;
     this.reviewStartedRunId = "";
+    // —— 记录列表：回到列表页；「评什么」等 state 到了再从盘上恢复（只恢复一次）。
+    this.reviewFocus = "";
+    this.reviewFollowRun = false;
+    this.reviewPickRestored = "";
     // —— 「评什么」：一律回到默认值（默认值见字段声明处）。
     this.reviewMode = "pr";
     this.reviewBase = "main";
@@ -18786,6 +18826,76 @@ export class App {
     const want = this.reviewModel.trim();
     if (!want) return null;
     return this.models.find((m) => `${m.provider}/${m.id}` === want) ?? this.models.find((m) => m.id === want) ?? null;
+  }
+
+  /**
+   * 面板没单独挑模型时，评审真正会用的那个：跟着会话当前的模型走。
+   *
+   * 不显示 / 不记录它的话，记录卡上只能写「没记模型」—— 用户点开详情问的第一件事就是「用的什么模型」。
+   */
+  private reviewDefaultModel(): ModelInfo | null {
+    const id = (this.session?.model ?? "").trim();
+    if (!id) return null;
+    return this.models.find((m) => m.id === id) ?? null;
+  }
+
+  /**
+   * 记录卡上的模型名字（按 `run.id` 索引）。
+   *
+   * 视图不做目录查询（不然它的单测就得养一份假目录），所以在这里把 `provider/id` 换成目录里的
+   * 模型名；查不到（模型下架了、老记录没记 provider）就不给，界面回退显示 id 本身。
+   */
+  private reviewModelLabels(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const run of this.reviewState?.runs ?? []) {
+      const id = (run.model ?? "").trim();
+      if (!id) continue;
+      const full = (run.provider ?? "").trim() ? `${run.provider}/${id}` : id;
+      const hit = this.models.find((m) => `${m.provider}/${m.id}` === full) ?? this.models.find((m) => m.id === id);
+      if (hit) out[run.id] = hit.name;
+    }
+    return out;
+  }
+
+  /** 面板现在该看哪一次（空 = 列表，就取最新那一次；两者都没就 null）。 */
+  private reviewActiveRun(): ReviewRun | null {
+    const runs = this.reviewState?.runs ?? [];
+    if (!runs.length) return null;
+    if (this.reviewFocus) return runs.find((r) => r.id === this.reviewFocus) ?? runs[runs.length - 1];
+    return runs[runs.length - 1];
+  }
+
+  /** 「评什么」（mode / PR 号 / 分支 / 提交）落盘：切会话再回来、刷新页面都不该丢。 */
+  private saveReviewPick(): void {
+    const dir = this.reviewDir();
+    if (!dir || !this.currentId) return;
+    this.socket.send({
+      type: "review.pick",
+      dir,
+      sessionId: this.currentId,
+      mode: this.reviewMode,
+      pr: Number(this.reviewPr) || 0,
+      base: this.reviewBase,
+      target: this.reviewTarget,
+      commit: this.reviewCommit.trim(),
+    });
+  }
+
+  /** 从盘上恢复本会话的「评什么」——每个会话只恢复一次，之后以界面为准。 */
+  private applyReviewPick(): void {
+    const dir = this.reviewDir();
+    const key = `${this.currentId ?? ""}|${dir}`;
+    if (!dir || !this.currentId || this.reviewPickRestored === key) return;
+    this.reviewPickRestored = key;
+    const pick = this.reviewState?.pick;
+    if (!pick) return;
+    if (pick.mode) this.reviewMode = pick.mode;
+    if (pick.pr) this.reviewPr = String(pick.pr);
+    if (pick.base) this.reviewBase = pick.base;
+    if (pick.target) this.reviewTarget = pick.target;
+    if (pick.commit) this.reviewCommit = pick.commit;
+    // 恢复出来的 PR 号要能看到标题、也要能带出「评什么」，所以顺手把列表拉一次。
+    if (this.reviewMode === "pr" && !this.reviewPrs.length && this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
   }
 
   /**
@@ -18872,11 +18982,16 @@ export class App {
       prsLoading: this.reviewPrsLoading,
       prError: this.reviewPrError,
       model: this.reviewModel,
+      focus: this.reviewFocus,
+      modelLabels: this.reviewModelLabels(),
     });
     return {
       view,
-      modelName: this.reviewModelInfo()?.name ?? "",
-      modelId: this.reviewModel,
+      modelName: (this.reviewModelInfo() ?? this.reviewDefaultModel())?.name ?? "",
+      modelId: this.reviewModel || (() => {
+        const info = this.reviewDefaultModel();
+        return info ? `${info.provider}/${info.id}` : "";
+      })(),
       refs: this.reviewRefs,
       installLog: this.reviewInstallLog,
       markLabels: { accept: tr("接受"), ignore: tr("忽略"), "false-positive": tr("误报") },
@@ -18889,6 +19004,7 @@ export class App {
     return {
       onMode: (mode) => {
         this.reviewMode = mode;
+        this.saveReviewPick();
         // #666：范围是人自己换的，那张链接卡带来的「期望仓库」不再适用。
         this.clearReviewExpectRepo();
         const dir = this.reviewDir();
@@ -18897,12 +19013,15 @@ export class App {
       },
       onBase: (value) => {
         this.reviewBase = value;
+        this.saveReviewPick();
       },
       onTarget: (value) => {
         this.reviewTarget = value;
+        this.saveReviewPick();
       },
       onPr: (value) => {
         this.reviewPr = value;
+        this.saveReviewPick();
         this.clearReviewExpectRepo();
         // 选完把检索词清掉：下次展开看到的是完整列表，而不是被「#658」筛成一条。
         this.reviewPrQuery = "";
@@ -18911,6 +19030,7 @@ export class App {
       },
       onPrInput: (value) => {
         this.reviewPr = value;
+        this.saveReviewPick();
         this.clearReviewExpectRepo();
         const raw = this.reviewPrQuery;
         const fromUrl = reviewRepoFromUrl(raw);
@@ -18948,6 +19068,7 @@ export class App {
       },
       onCommit: (value) => {
         this.reviewCommit = value;
+        this.saveReviewPick();
       },
       onPickModel: () => {
         // 复用输入框那颗 chip 背后的同一个弹层（模型与思考），只是「确认」把模型交回面板。
@@ -18979,21 +19100,33 @@ export class App {
         this.socket.send({ type: "review.install" });
         this.renderQueue();
       },
-      onClean: () => this.socket.send({ type: "review.clean", dir: this.reviewDir(), sessionId: this.currentId }),
       onDetails: () => this.openReviewSheet(),
+      onOpenRun: (runId) => {
+        // 人自己点了某一条：看它，不再跟着新开的那一次跑。
+        this.reviewFocus = runId;
+        this.reviewFollowRun = false;
+        this.renderQueue();
+        this.syncReviewSheet();
+      },
+      onBack: () => {
+        this.reviewFocus = "";
+        this.reviewFollowRun = false;
+        this.renderQueue();
+        this.syncReviewSheet();
+      },
     };
   }
 
-  /** 「交给 agent」那段话的上下文：哪个仓库、哪个 PR / 分支。 */
+  /** 「交给 agent」那段话的上下文：哪个仓库、哪个 PR / 分支（认的是**展开的那一次**，不是面板现在选着的范围）。 */
   private reviewFixContext(): ReviewFixContext {
-    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    const run = this.reviewActiveRun();
     return {
       repo: this.reviewRemoteRepo || this.reviewRepo || this.reviewDir(),
-      pr: Number(this.reviewPr) || 0,
+      pr: run?.pr || Number(this.reviewPr) || 0,
       prTitle: run?.prTitle ?? "",
       prHead: run?.prHead ?? "",
       prBase: run?.prBase ?? "",
-      mode: this.reviewMode,
+      mode: run?.mode ?? this.reviewMode,
       from: run?.from ?? this.reviewBase,
       to: run?.to ?? this.reviewTarget,
     };
@@ -19002,7 +19135,7 @@ export class App {
   /** 新开会话的默认名字：PR 就用 tag（`#636`），其余用分支名 / 「代码评审」。 */
   private reviewHandoffName(): string {
     if (this.reviewMode === "pr") return `#${Number(this.reviewPr) || 0}`;
-    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    const run = this.reviewActiveRun();
     const branch = (this.git?.branch ?? "").trim() || (run?.prHead ?? "").trim();
     return branch ? tr("评审 {p1}", { p1: branch }) : tr("代码评审");
   }
@@ -19096,6 +19229,10 @@ export class App {
     this.reviewPrMenu = false;
     this.reviewPendingToast = true;
     this.reviewStartedRunId = "";
+    // 新开一次：面板立刻跟到这一条（runId 要等第一帧进度回来才知，先置空）。
+    this.reviewFocus = "";
+    this.reviewFollowRun = true;
+    this.saveReviewPick();
     this.reviewProgress = {
       repo: dir,
       runId: "",
@@ -19123,7 +19260,11 @@ export class App {
       // #666：从链接卡点过来的那一次，带上「这张卡属于哪个仓库」；桥上拿它拒掉别仓的号。
       expectRepo: mode === "pr" ? this.reviewExpectRepo : "",
       pr: Number(this.reviewPr) || 0,
-      model: this.reviewModel,
+      // 没单独挑模型就把会话当前那个说明白：评审子进程用它跑，记录卡上也记的是它。
+      model: this.reviewModel || (() => {
+        const info = this.reviewDefaultModel();
+        return info ? `${info.provider}/${info.id}` : "";
+      })(),
       lang: getLang(),
     });
     this.renderQueue();
@@ -19133,7 +19274,7 @@ export class App {
   private openReviewFinding(path: string, line: number): void {
     const dir = this.reviewDir();
     if (!dir) return;
-    const run = this.reviewState?.runs?.[this.reviewState.runs.length - 1] ?? null;
+    const run = this.reviewActiveRun();
     const finding = run?.findings?.find((f) => f.path === path && (line === 0 || f.startLine === line)) ?? null;
     const code = finding?.existingCode ?? "";
     // 工作区模式比的是「工作区 vs HEAD」，提交模式比的是「这条提交 vs 父提交」——

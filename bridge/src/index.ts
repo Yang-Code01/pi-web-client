@@ -65,6 +65,7 @@ import {
   ocrStatus,
   readReviewState,
   reviewProgress,
+  setPick,
   startReview,
   sweepStaleRuns,
   type ReviewLang,
@@ -4157,6 +4158,32 @@ async function main(): Promise<void> {
               broadcast({ type: "review.state", dir: repo, sessionId: session, state: cleanRuns(repo, session) });
             } catch (err: any) {
               send({ type: "review.state", dir, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "review.pick": {
+            // 面板上「评什么」这一格的选择：只是记住它（切会话 / 刷新后要能还原），
+            // 不触发评审、也不改历史。
+            const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
+            const mode = ["workspace", "range", "commit", "pr"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "pr";
+            try {
+              const repo = gitRoot(dir);
+              const state = setPick(
+                repo,
+                {
+                  mode,
+                  pr: Number(msg.pr) || 0,
+                  base: String(msg.base ?? ""),
+                  target: String(msg.target ?? ""),
+                  commit: String(msg.commit ?? ""),
+                },
+                session,
+              );
+              // 只在同一个会话里回一声（别的会话的页签不该被别人的选择带着重画）。
+              broadcast({ type: "review.state", dir: repo, sessionId: session, state });
+            } catch {
+              // 不是 git 仓库 / 目录没了：记不住就不记，不打扰用户。
             }
             return;
           }

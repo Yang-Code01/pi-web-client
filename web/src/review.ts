@@ -9,7 +9,7 @@
  * 修不修、怎么修仍由会话决定（与分支工作台的「交给 AI」同口径，D235）。
  */
 import { createEl as el } from "./chat.ts";
-import { fmtTime, tr } from "./i18n/index.ts";
+import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
 
 import type {
   ReviewFinding,
@@ -59,6 +59,41 @@ export interface ReviewInput {
   prsLoading?: boolean;
   prError?: string;
   model?: string;
+  /**
+   * 面板现在展开的是哪一次评审（`ReviewRun.id`，空串 = 停在记录列表）。
+   *
+   * 以前面板永远只画「最新那一次」，历史只能靠「清理历史」删除；现在历史是主体，
+   * 所以「看哪一次」变成一个显式的东西 —— 它也决定意见、时间线、统计、模型名都取自哪条记录。
+   */
+  focus?: string;
+  /** 每条记录那次用的模型怎么显示（app 查模型目录得到，按 run id 索引；查不到就不给）。 */
+  modelLabels?: Record<string, string>;
+}
+
+/** 记录列表里的一张卡：`reviewView()` 算好文案，`renderReview()` 只负责画。 */
+export interface ReviewRunCard {
+  id: string;
+  /** 「评什么」：`PR #683` / `工作区改动` / `HEAD ← main` / `提交 3fa9c21`。 */
+  target: string;
+  /** PR 标题或分支描述（没有就是空串）。 */
+  title: string;
+  status: string;
+  running: boolean;
+  /** ISO 时间（画的时候才转成本地时间）。 */
+  when: string;
+  durationMs: number | null;
+  count: number;
+  files: number;
+  totalFiles: number;
+  tokens: number;
+  /** 这次用的模型展示名（空 = 老记录没记，界面显示 id）。 */
+  model: string;
+  /** `provider/id`（tooltip 用）。 */
+  modelId: string;
+  /** 失败 / 中断的原因（`errorText()` 已翻好中文）。 */
+  error: string;
+  /** 跑着的时候的实时进度（只有最新那一次会有）。 */
+  live: { reviewed: number; total: number; current: string } | null;
 }
 
 export type ReviewPhase = "loading" | "no-ocr" | "not-git" | "empty" | "running" | "done" | "stopped" | "failed" | "stale";
@@ -111,6 +146,17 @@ export interface ReviewView {
   resolved: number;
   resolvedPaths: string[];
   history: number;
+  /** 现在展开的那一次（空串 = 记录列表）。 */
+  focus: string;
+  /** 记录列表，**新的在前**（面板从上往下画就是这个顺序）。 */
+  runs: ReviewRunCard[];
+  /** 展开的那一次用的模型（展示名 / `provider/id`）：详情里要写清「这次」是谁评的。 */
+  activeModel: string;
+  activeModelId: string;
+  /** 展开的那一次的「评什么」（自己那条记录的目标，不是面板上现在选的目标）。 */
+  activeTarget: string;
+  /** 按钮为什么点不着（有值就画在按钮旁边；空串 = 不是缺东西造成的）。 */
+  missingWhy: string;
   /** 这次评审碰到过多少文件（进度帧没了之后仍然要能画分段条与「N / M 个文件」）。 */
   runFiles: { reviewed: number; total: number; tokens: number };
 }
@@ -176,6 +222,21 @@ const durationOf = (run: ReviewRun): number | null => {
   return Number.isFinite(from) && Number.isFinite(to) && to >= from ? to - from : null;
 };
 
+/** 这次评审「评的是什么」——记录卡第一行与详情抬头都用它，而不是面板上现在还选着的目标。 */
+export function runTarget(run: ReviewRun): string {
+  if (run.mode === "pr") return run.pr > 0 ? `PR #${run.pr}` : tr("GitHub PR");
+  if (run.mode === "commit") return tr("提交 {p1}", { p1: (run.to || "?").slice(0, 7) });
+  if (run.mode === "range") return `${run.to || "HEAD"} ← ${run.from || "?"}`;
+  return tr("工作区改动");
+}
+
+/** 那次用的模型的完整标识（`provider/id`，老记录没有 provider 就只是 id）。 */
+export function runModelId(run: ReviewRun): string {
+  const model = (run.model || "").trim();
+  const provider = (run.provider || "").trim();
+  return model && provider ? `${provider}/${model}` : model;
+}
+
 /**
  * 桥的状态 → 面板要显示的东西。
  *
@@ -185,9 +246,18 @@ const durationOf = (run: ReviewRun): number | null => {
 export function reviewView(input: ReviewInput): ReviewView {
   const ocr = input.ocr;
   const state = input.state;
+  // 记录按时间正序落盘；面板从新到旧画，所以这里先翻过来，画的时候不用再想顺序。
+  const allRuns = Array.isArray(state?.runs) ? state.runs : [];
   const latest = asRun(state);
+  // 面板展开的那一次；认不出来（记录被裁掉了 / 换了会话 / 刷新后不记得了）就回落到最新那一次。
+  const focused = input.focus ? allRuns.find((r) => r.id === input.focus) ?? null : null;
+  const active = focused ?? latest;
+  const activeRunning = Boolean(active && active.status === "running");
+  // 实时帧只属于「最新且还在跑」的那一次：翻旧记录时不能拿它的意见冒充那一次的结果。
+  const live = activeRunning && active && latest && active.id === latest.id ? input.progress : null;
   const marks = state?.marks ?? {};
   const running = Boolean(latest && latest.status === "running");
+  const labels = input.modelLabels ?? {};
 
   const needsInstall = Boolean(ocr && !ocr.installed);
   const needsUpgrade = Boolean(ocr && ocr.installed && ocr.tooOld);
@@ -196,21 +266,21 @@ export function reviewView(input: ReviewInput): ReviewView {
   // 「读状态」只在**一点信息都还没有**时出现：桥回了错、或者已经有评审记录，就不该死等 ocr 那一帧
   // （用户报过「一直显示在读评审状态」——正是 ocr 帧丢了之后永远停在这一屏）。
   if (input.notGit) phase = "not-git";
-  else if (input.error && !latest) phase = "failed";
-  else if (!ocr && !latest) phase = "loading";
+  else if (input.error && !active) phase = "failed";
+  else if (!ocr && !active) phase = "loading";
   else if (needsInstall || needsUpgrade) phase = "no-ocr";
-  else if (running) phase = "running";
-  else if (!latest) phase = "empty";
-  else if (latest.status === "done") phase = "done";
-  else if (latest.status === "stopped") phase = "stopped";
-  else if (latest.status === "stale") phase = "stale";
+  else if (activeRunning) phase = "running";
+  else if (!active) phase = "empty";
+  else if (active.status === "done") phase = "done";
+  else if (active.status === "stopped") phase = "stopped";
+  else if (active.status === "stale") phase = "stale";
   else phase = "failed";
 
   // 有实时帧且它**带了** findings 字段（哪怕是空数组）就以它为准 —— 那才是这次跑出来的；
   // 字段缺省（老版桥）才回退到记录里那份。用「有没有这个字段」判，不拿长度判：
   // 长度为零时回退到旧记录，会把上一次的意见当成这一次的显示。
-  const liveFindings = input.progress?.findings;
-  const findings = (liveFindings ?? latest?.findings ?? []).map((f) => {
+  const liveFindings = live?.findings;
+  const findings = (liveFindings ?? active?.findings ?? []).map((f) => {
     const key = f.key || "";
     return { ...f, key, severity: f.severity ?? "low", mark: (f.mark || marks[key] || "") as Mark | "" };
   });
@@ -240,7 +310,7 @@ export function reviewView(input: ReviewInput): ReviewView {
   // 没评的文件：preview 与模型各说一批，同一个文件只说一次（先到的那个原因算数）。
   const skipped: ReviewSkip[] = [];
   const seenSkip = new Set<string>();
-  for (const item of latest?.skipped ?? []) {
+  for (const item of active?.skipped ?? []) {
     const p = (item?.path ?? "").trim();
     if (!p || seenSkip.has(p)) continue;
     seenSkip.add(p);
@@ -266,42 +336,72 @@ export function reviewView(input: ReviewInput): ReviewView {
     : allPrs;
   const missing =
     mode === "range" ? !target.trim() || !base.trim() : mode === "commit" ? !commit.trim() : mode === "pr" ? !pr : false;
+  // 按钮灰着的时候得说清为什么：用户就是卡在一颗没解释的灰按钮上（报告的原话「不能评审了」）。
+  const missingWhy = !missing
+    ? ""
+    : mode === "pr"
+      ? tr("先选一个 PR（或填个号）")
+      : mode === "commit"
+        ? tr("先填一个提交号")
+        : tr("两边分支都选一下");
   const canRun = phase !== "loading" && phase !== "not-git" && phase !== "no-ocr" && !running && !input.installing && !missing;
   // 跑着看进度帧的日志，跑完看记录里存的那份（进度帧已经没了）。
-  const log = (input.progress?.log?.length ? input.progress.log : latest?.log ?? []).slice(-40);
+  const log = (live?.log?.length ? live.log : active?.log ?? []).slice(-40);
   const group =
-    input.progress && input.progress.groups
-      ? { index: input.progress.group || 0, total: input.progress.groups }
-      : null;
-  const plan = [...(input.progress?.plan?.length ? input.progress.plan : latest?.plan ?? [])];
-  const startedAt = input.progress?.startedAt || latest?.startedAt || "";
-  const elapsedMs = running
+    live && live.groups ? { index: live.group || 0, total: live.groups } : null;
+  const plan = [...(live?.plan?.length ? live.plan : active?.plan ?? [])];
+  const startedAt = live?.startedAt || active?.startedAt || "";
+  const elapsedMs = activeRunning
     ? Math.max(0, Date.now() - (Date.parse(startedAt) || Date.now()))
-    : latest
-      ? durationOf(latest)
+    : active
+      ? durationOf(active)
       : null;
 
-  const progress = input.progress
+  const progress = live
     ? {
-        totalFiles: input.progress.totalFiles,
-        reviewedFiles: input.progress.reviewedFiles,
-        currentFile: input.progress.currentFile,
-        tokens: input.progress.tokens,
+        totalFiles: live.totalFiles,
+        reviewedFiles: live.reviewedFiles,
+        currentFile: live.currentFile,
+        tokens: live.tokens,
       }
     : null;
 
   const meta =
-    latest && !running && latest.status !== "failed"
+    active && !activeRunning && active.status !== "failed"
       ? {
-          files: latest.totalFiles ?? 0,
-          reviewed: latest.reviewedFiles ?? 0,
+          files: active.totalFiles ?? 0,
+          reviewed: active.reviewedFiles ?? 0,
           skipped: skipped.length,
           unresolved: findings.filter((f) => !f.mark).length,
-          tokens: latest.tokens ?? 0,
-          durationMs: durationOf(latest),
-          when: latest.startedAt ?? "",
+          tokens: active.tokens ?? 0,
+          durationMs: durationOf(active),
+          when: active.startedAt ?? "",
         }
       : null;
+
+  // 记录列表：新在前；「正在跑」那一张带实时进度。模型名由 app 查目录后传进来
+  // （视图不做目录查询，不然它的单测就得养一份假目录）。
+  const runs: ReviewRunCard[] = [...allRuns].reverse().map((run) => {
+    const isLive = Boolean(live && run.id === live.runId);
+    const modelId = runModelId(run);
+    return {
+      id: run.id,
+      target: runTarget(run),
+      title: (run.pr ? run.prTitle : "").trim(),
+      status: run.status,
+      running: run.status === "running",
+      when: run.startedAt ?? "",
+      durationMs: durationOf(run),
+      count: run.findings?.length ?? 0,
+      files: run.reviewedFiles ?? 0,
+      totalFiles: run.totalFiles ?? 0,
+      tokens: run.tokens ?? 0,
+      model: labels[run.id] ?? "",
+      modelId,
+      error: errorText(run, ""),
+      live: isLive && live ? { reviewed: live.reviewedFiles, total: live.totalFiles, current: live.currentFile } : null,
+    };
+  });
 
   return {
     phase,
@@ -310,7 +410,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     needsInstall,
     needsUpgrade,
     empty: phase === "done" && findings.length === 0,
-    error: errorText(latest, input.error),
+    error: errorText(active, input.error),
     serverVersion: ocr?.version ?? "",
     installing: input.installing,
     mode,
@@ -325,27 +425,33 @@ export function reviewView(input: ReviewInput): ReviewView {
     timeline: log,
     group,
     plan,
-    prTitle: latest?.prTitle ?? "",
-    prHead: latest?.prHead ?? "",
-    prBase: latest?.prBase ?? "",
+    prTitle: active?.prTitle ?? "",
+    prHead: active?.prHead ?? "",
+    prBase: active?.prBase ?? "",
     elapsedMs,
-    hasRun: Boolean(latest),
+    hasRun: Boolean(active),
     prsLoading: Boolean(input.prsLoading),
     prError: (input.prError ?? "").trim(),
     missing,
-    model: input.model ?? latest?.model ?? "",
+    missingWhy,
+    model: input.model ?? active?.model ?? "",
     progress,
     meta,
     groups,
     severity,
     skipped,
-    resolved: latest?.resolved?.length ?? 0,
-    resolvedPaths: latest?.resolvedPaths ?? [],
-    history: state?.runs?.length ?? 0,
+    resolved: active?.resolved?.length ?? 0,
+    resolvedPaths: active?.resolvedPaths ?? [],
+    history: allRuns.length,
+    focus: active && focused ? active.id : "",
+    runs,
+    activeModel: active ? labels[active.id] ?? active.model ?? "" : "",
+    activeModelId: active ? runModelId(active) : "",
+    activeTarget: active ? runTarget(active) : "",
     runFiles: {
-      reviewed: latest?.reviewedFiles ?? 0,
-      total: latest?.totalFiles ?? 0,
-      tokens: latest?.tokens ?? 0,
+      reviewed: active?.reviewedFiles ?? 0,
+      total: active?.totalFiles ?? 0,
+      tokens: active?.tokens ?? 0,
     },
   };
 }
@@ -384,7 +490,10 @@ export interface ReviewActions {
   /** 打开「PR 信息」dialog。 */
   onPrInfo: () => void;
   onInstall: () => void;
-  onClean: () => void;
+  /** 点开某一次记录（`ReviewRun.id`）。 */
+  onOpenRun: (runId: string) => void;
+  /** 从某一次记录回到列表。 */
+  onBack: () => void;
 }
 
 export interface ReviewPanelInput {
@@ -716,12 +825,11 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     actRow.append(run);
   }
   if (view.hasRun) {
-    const details = el("button", "btn ghost rv-details", tr("查看详情")) as HTMLButtonElement;
-    details.type = "button";
-    details.onclick = () => actions.onDetails();
-    actRow.append(details);
+    // 「查看详情」不再摆在控制条上：它属于某一次记录，点了那张卡才到哪里去（见 renderFocusedRun）。
   }
   form.append(actRow);
+  // 按钮灰着就得说清为什么 —— 用户就是卡在这颗没解释的灰按钮上（「不能评审了」）。
+  if (!view.canRun && view.missingWhy) form.append(el("div", "rv-hint rv-why", view.missingWhy));
   // 模式下拉钉在最上面：PR / 分支那些行是后加的，不 reorder 就会把它挤到下面去。
   form.prepend(modeRow);
   root.append(form);
@@ -761,38 +869,9 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     return root;
   }
 
-  // ---- 进度 / 统计
-  if (view.running && view.progress) {
-    const p = view.progress;
-    const line = el("div", "rv-progress");
-    line.append(el("span", "rv-meta", tr("评审中 · {p1}/{p2} 个文件", { p1: p.reviewedFiles, p2: p.totalFiles })));
-    if (p.currentFile) line.append(el("span", "rv-current", p.currentFile));
-    root.append(line);
-  } else if (view.meta) {
-    const parts = [
-      tr("{p1} 个文件", { p1: view.meta.files }),
-      view.meta.skipped ? tr("{p1} 个没评", { p1: view.meta.skipped }) : "",
-      duration(view.meta.durationMs),
-      view.meta.tokens ? tr("{p1} tokens", { p1: view.meta.tokens }) : "",
-      view.resolved ? tr("已解决 {p1} 条", { p1: view.resolved }) : "",
-      view.history > 1 ? tr("第 {p1} 次", { p1: view.history }) : "",
-    ].filter(Boolean);
-    root.append(el("div", "rv-meta", parts.join(" · ")));
-  }
-
-  // ---- 时间线（面板里只留最后几行，完整的那份在「评审详情」dialog 里）
-  if (view.timeline.length) root.append(renderTimeline(view, 4));
-
-  // ---- 失败 / 停止 / 失效
-  if (view.phase === "failed" && view.error) {
-    root.append(el("div", "rv-error", view.error));
-  } else if (view.phase === "stopped") {
-    root.append(el("div", "rv-hint", tr("这次没跑完就停了，已经收到的意见在下面。")));
-  } else if (view.phase === "stale") {
-    root.append(el("div", "rv-hint", tr("桥重启了，这次评审没跑完。重跑一次就行。")));
-  }
-
-  root.append(renderFindings(input));
+  // ---- 主体：要么是「这个会话评过哪些次」，要么是点开的那一次
+  if (view.focus) root.append(renderFocusedRun(input));
+  else root.append(renderRunList(input));
 
   // ---- 来源说明：评审内核不是本仓库自研，别让人以为是
   const credit = el("div", "rv-credit");
@@ -802,18 +881,154 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   );
   root.append(credit);
 
-  // ---- 清理
-  if (view.history > 0) {
-    const foot = el("div", "rv-foot");
-    const clean = el("button", "btn ghost rv-clean", tr("清理历史")) as HTMLButtonElement;
-    clean.type = "button";
-    clean.title = tr("清掉以前那些评审；已经标过的处理态保留");
-    clean.onclick = () => actions.onClean();
-    foot.append(clean);
-    root.append(foot);
+  return root;
+}
+
+/** 记录卡上的状态词（讲的是那一次自己的结局，与面板当前 phase 无关）。 */
+function runStatusText(card: ReviewRunCard): string {
+  if (card.running) return tr("运行中");
+  if (card.status === "done") return tr("完成");
+  if (card.status === "stopped") return tr("已停止");
+  if (card.status === "stale") return tr("没跑完");
+  return tr("失败");
+}
+
+/** 时间：今天的只给时:分，更早的把日期也带上（跨天的记录不能只给一个 09:58）。 */
+function whenText(iso: string): string {
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return "";
+  const at = new Date(ts);
+  const today = new Date();
+  const sameDay =
+    at.getFullYear() === today.getFullYear() && at.getMonth() === today.getMonth() && at.getDate() === today.getDate();
+  return sameDay ? fmtTime(at) : `${fmtDate(at)} ${fmtTime(at)}`;
+}
+
+/** 卡的第二行：状态 · 意见数 · 用时 · 文件数 · 模型（模型带 tooltip 写全 `provider/id`）。 */
+function runMetaRow(card: ReviewRunCard): HTMLElement {
+  const meta = el("div", "rv-run-meta");
+  meta.append(el("span", `rv-run-status ${card.running ? "running" : card.status}`, runStatusText(card)));
+  const bits: string[] = [];
+  if (card.running && card.live) {
+    bits.push(tr("{p1}/{p2} 个文件", { p1: card.live.reviewed, p2: card.live.total }));
+  } else {
+    bits.push(tr("{p1} 条意见", { p1: card.count }));
+    const took = duration(card.durationMs);
+    if (took) bits.push(took);
+    if (card.files) bits.push(tr("{p1} 个文件", { p1: card.files }));
+  }
+  for (const bit of bits) meta.append(el("span", "rv-run-bit", bit));
+  const model = card.model || card.modelId;
+  if (model) {
+    const chip = el("span", "rv-run-model", model);
+    chip.title = card.modelId || model;
+    meta.append(chip);
+  } else {
+    // 老记录没记模型：不要装作知道，写清楚「没记」。
+    meta.append(el("span", "rv-run-model none", tr("没记模型")));
+  }
+  return meta;
+}
+
+/** 记录列表：一条一张卡，新的在上（view.runs 已经是新在前）。 */
+function renderRunList(input: ReviewPanelInput): HTMLElement {
+  const { view, actions } = input;
+  const box = el("div", "rv-runs");
+  const head = el("div", "rv-runs-head");
+  head.append(
+    el("span", "", view.runs.length ? tr("这个会话评过 {p1} 次", { p1: view.runs.length }) : tr("还没有评审记录")),
+    el("span", "rv-runs-hint", view.runs.length ? tr("点一条展开") : ""),
+  );
+  box.append(head);
+  if (!view.runs.length) {
+    box.append(el("div", "rv-hint", tr("上面选好范围、点「开始评审」，结果会记在这里。")));
+    return box;
+  }
+  for (const card of view.runs) {
+    const cls = ["rv-run-card", card.running ? "is-live" : "", card.status === "failed" ? "is-fail" : ""]
+      .filter(Boolean)
+      .join(" ");
+    const btn = el("button", cls) as HTMLButtonElement;
+    btn.type = "button";
+    btn.dataset.run = card.id;
+    btn.onclick = () => actions.onOpenRun(card.id);
+
+    const top = el("div", "rv-run-top");
+    top.append(el("span", "rv-run-target", card.target));
+    if (card.title) top.append(el("span", "rv-run-title", card.title));
+    top.append(el("span", "rv-run-at", whenText(card.when)));
+    btn.append(top, runMetaRow(card));
+
+    if (card.running && card.live?.current) btn.append(el("div", "rv-run-current", card.live.current));
+    if (card.error && !card.running) btn.append(el("div", "rv-run-err", card.error));
+    box.append(btn);
+  }
+  return box;
+}
+
+/** 点开的那一次：抬头（返回 / 评什么 / 完整详情）+ 那一次的统计与意见。 */
+function renderFocusedRun(input: ReviewPanelInput): HTMLElement {
+  const { view, actions } = input;
+  const box = el("div", "rv-focus");
+  const card = view.runs.find((item) => item.id === view.focus) ?? null;
+
+  const head = el("div", "rv-focus-head");
+  const back = el("button", "rv-back", tr("‹ 记录")) as HTMLButtonElement;
+  back.type = "button";
+  back.title = tr("回到这个会话的评审记录");
+  back.onclick = () => actions.onBack();
+  const target = el("span", "rv-focus-target", card?.target || view.activeTarget);
+  const more = el("button", "rv-focus-more", tr("完整详情 ›")) as HTMLButtonElement;
+  more.type = "button";
+  more.onclick = () => actions.onDetails();
+  head.append(back, target, more);
+  box.append(head);
+
+  // 第二行写清这次是谁评的、什么时候、跑多久 —— 记录卡的价值就在这些「详细信息」。
+  if (card) {
+    box.append(runMetaRow(card));
+    if (card.title) box.append(el("div", "rv-focus-title", card.title));
+    const modelText = card.model || card.modelId;
+    if (modelText) {
+      // 先给目录里的名字（`hy4flash · x0.03 · 960K`），hover 能看到那个 id；老记录只有 id 就直接写 id。
+      const line = el("div", "rv-focus-model", tr("这次用的模型：{p1}", { p1: modelText }));
+      line.title = card.modelId || modelText;
+      box.append(line);
+    }
   }
 
-  return root;
+  // ---- 进度 / 统计
+  if (view.running && view.progress) {
+    const p = view.progress;
+    const line = el("div", "rv-progress");
+    line.append(el("span", "rv-meta", tr("评审中 · {p1}/{p2} 个文件", { p1: p.reviewedFiles, p2: p.totalFiles })));
+    if (p.currentFile) line.append(el("span", "rv-current", p.currentFile));
+    box.append(line);
+  } else if (view.meta) {
+    const parts = [
+      tr("{p1} 个文件", { p1: view.meta.files }),
+      view.meta.skipped ? tr("{p1} 个没评", { p1: view.meta.skipped }) : "",
+      duration(view.meta.durationMs),
+      view.meta.tokens ? tr("{p1} tokens", { p1: view.meta.tokens }) : "",
+      view.resolved ? tr("已解决 {p1} 条", { p1: view.resolved }) : "",
+    ].filter(Boolean);
+    box.append(el("div", "rv-meta", parts.join(" · ")));
+  }
+
+  // ---- 时间线（面板里只留最后几行，完整的那份在「评审详情」浮层里）
+  if (view.timeline.length) box.append(renderTimeline(view, 4));
+
+  // ---- 失败 / 停止 / 失效
+  if (view.phase === "failed" && view.error) {
+    box.append(el("div", "rv-error", view.error));
+  } else if (view.phase === "stopped") {
+    box.append(el("div", "rv-hint", tr("这次没跑完就停了，已经收到的意见在下面。")));
+  } else if (view.phase === "stale") {
+    box.append(el("div", "rv-hint", tr("桥重启了，这次评审没跑完。重跑一次就行。")));
+  }
+
+  box.append(renderFindings(input));
+  return box;
 }
 
 /** 把一条意见折成送进输入框的一段话（不自动发送）。 */

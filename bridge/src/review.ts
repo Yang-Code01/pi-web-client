@@ -26,6 +26,7 @@ import type {
   ReviewMark,
   ReviewMode,
   ReviewOcrStatus,
+  ReviewPick,
   ReviewProgress,
   ReviewRun,
   ReviewRunStatus,
@@ -482,12 +483,46 @@ export function readReviewState(repo: string, session = ""): ReviewState {
     repo: str(value?.repo) || repo,
     runs: Array.isArray(value?.runs) ? value.runs : [],
     marks: value?.marks && typeof value.marks === "object" ? value.marks : {},
+    pick: readPick(value?.pick),
   };
 }
+
+/** `pick` 是老文件里没有的字段：认不出就当成「没记过」，由页面自己用默认值。 */
+function readPick(raw: unknown): ReviewPick | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const v = raw as Record<string, unknown>;
+  const mode = str(v.mode);
+  if (mode !== "workspace" && mode !== "range" && mode !== "commit" && mode !== "pr") return undefined;
+  return {
+    mode,
+    pr: Number(v.pr) || 0,
+    base: str(v.base),
+    target: str(v.target),
+    commit: str(v.commit),
+  };
+}
+
+/**
+ * 面板上「评什么」这一格的选择，按会话落盘。
+ *
+ * 不这么做的话：切会话再切回来（`syncReviewSession()` 会把前端那几格清空）、或者刷新一次页面，
+ * PR 号就没了，于是「开始评审」永远灰着 —— 用户报的「不能评审了」就是这条路。
+ */
+export function setPick(repo: string, pick: ReviewPick, session = ""): ReviewState {
+  const state = readReviewState(repo, session);
+  state.pick = pick;
+  writeReviewState(repo, state, session);
+  return state;
+}
+
+/** 历史只留最近这么多次：一次评审的记录几 KB，全留会让状态文件长成几百 KB，而界面只画得下几条。 */
+export const RUN_KEEP = 20;
 
 export function writeReviewState(repo: string, state: ReviewState, session = ""): void {
   const file = reviewStateFile(repo, session);
   ensureDir(path.dirname(file));
+  // 裁剪放在写盘这一处：跑一次、标一条、改一次 pick 都走这里，漏不掉。
+  if (state.runs.length > RUN_KEEP) state.runs = state.runs.slice(-RUN_KEEP);
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
   fs.renameSync(tmp, file);
@@ -513,6 +548,8 @@ export function markFinding(repo: string, key: string, mark: Mark | "", session 
 
 /** 「清理」只清历史评审（留着 marks：那些是「这条我判过了」，不该因为清历史又复活）。 */
 export function cleanRuns(repo: string, session = ""): ReviewState {
+  // 面板上那颗按钮已经删了（历史改成一段可点的记录列表，留不留下不再是用户要点的决定）；
+  // 这个能力留给排障与测试用，别从别处直接调它去清用户的历史。
   const state = readReviewState(repo, session);
   state.runs = [];
   writeReviewState(repo, state, session);
@@ -745,6 +782,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     startedAt,
     finishedAt: "",
     model: o.model ?? "",
+    provider: o.provider ?? "",
     lang: o.lang,
     findings: [],
     resolved: [],

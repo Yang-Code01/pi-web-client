@@ -94,11 +94,23 @@ if (!hasOcr && !process.env.PI_REVIEW_PROBE_NO_OCR_ONLY) {
 // ---------------------------------------------------------------- 桥
 
 const bridges = [];
+// 从 pi 里跑探针时，父进程的「我在某个会话里」标记会漏给桥：`PI_HOST_LINK` 让它一起来就去连那个
+// 生产壳的命名管道，握不上手就 exit 1（探针只能看到「timeout waiting for bridge healthz」）。
+// 跟 probes/review-session-leak.mjs 与 bridge/src/paths.ts 的 `piChildEnv()` 一样剥掉这些标记。
+const cleanEnv = () => {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key === "PI_HOST_LINK") delete env[key];
+    else if (key.startsWith("PI_WEB_")) delete env[key];
+    else if (/^PI_(CODING_AGENT|SESSION_ID$|SESSION_FILE$|MODEL$|PROVIDER$|REASONING_LEVEL$|SDK_)/.test(key)) delete env[key];
+  }
+  return env;
+};
 function startBridge(stateDir, port, extraEnv = {}) {
   const proc = spawn(process.execPath, ["bridge/dist/index.js"], {
     cwd: REPO,
     env: {
-      ...process.env,
+      ...cleanEnv(),
       PI_WEB_PORT: String(port),
       PI_WEB_STATE: stateDir,
       PI_WEB_TUNNEL: "0",
@@ -145,6 +157,26 @@ const openReviewTab = async (page) => {
   await page.locator(".review").waitFor({ timeout: 10000 });
 };
 
+/** 面板那颗模型 chip → 「模型与思考」弹层 → 挑一个不是当前那个的模型 → 确认。 */
+async function pickModel(page) {
+  await page.locator(".rv-model").first().click();
+  await page.locator(".model-sheet").waitFor({ timeout: 15000 });
+  const rows = page.locator(".model-sheet .pm-row");
+  try {
+    await rows.first().waitFor({ timeout: 8000 });
+  } catch {
+    // 模型目录还没到：空态那一行点一下重试（跟设置页同一个手势）。
+    await page.locator(".model-sheet .pm-empty").first().click({ timeout: 5000 }).catch(() => {});
+    await rows.first().waitFor({ timeout: 20000 });
+  }
+  const fresh = page.locator(".model-sheet .pm-row:not(.on)");
+  const total = await rows.count();
+  const target = (await fresh.count()) ? fresh.first() : rows.nth(total > 1 ? total - 1 : 0);
+  await target.click();
+  await page.locator(".model-sheet .st-foot .btn.primary").click();
+  await until(async () => (await page.locator(".model-sheet").count()) === 0, 10000, "model sheet closed");
+}
+
 let browser = null;
 startBridge(STATE, PORT);
 startBridge(STATE2, PORT + 1, { OCR_BIN: "/nonexistent/ocr-binary" });
@@ -177,6 +209,9 @@ try {
   const credit = (await page.locator(".rv-credit").first().innerText().catch(() => "")).trim();
   check("写明评审内核来自 open code review", /open code review/.test(credit), credit.replace(/\n/g, " / ").slice(0, 60));
   check("默认范围是「GitHub PR」", (await page.locator(".rv-mode").inputValue()) === "pr", await page.locator(".rv-mode").inputValue());
+  // 先挑一个模型：记录卡上要写的是「这一次用的模型」，不挑的话只能记「没记模型」。
+  await pickModel(page);
+  check("挑完模型 chip 上有名字", !(await page.locator(".rv-model").first().innerText()).includes("默认模型"), (await page.locator(".rv-model").first().innerText()).trim());
   await page.locator(".rv-mode").selectOption("workspace");
   await page.locator(".rv-run:not([disabled])").first().waitFor({ timeout: 30000 });
   await page.locator(".rv-run").first().click();
@@ -219,8 +254,23 @@ try {
   const toast = (await page.locator(".fail-toast").first().innerText().catch(() => "")).trim();
   check("跑完弹一句结果", /评审/.test(toast), toast.slice(0, 60));
 
-  // 「查看详情」：一扇宽窗，左边时间线、右边结果 —— 跑着的时候也能开。
-  await page.locator(".rv-details").first().click();
+  // 记录列表：每次评审一张卡（「清理历史」那颗按钮已经不在了）。
+  if (await page.locator(".rv-back").count()) await page.locator(".rv-back").first().click();
+  await until(async () => (await page.locator(".rv-run-card").count()) >= 1, 15000, "run cards");
+  const cards = await page.locator(".rv-run-card").count();
+  check("每次都留一张记录卡", cards >= 1, `${cards} 张`);
+  check("面板里已经没有「清理历史」", (await page.locator(".rv-clean").count()) === 0, "");
+  await page.locator(".rv-run-card").first().click();
+  await page.locator(".rv-focus").waitFor({ timeout: 10000 });
+  const focusModel = (await page.locator(".rv-focus-model").first().innerText().catch(() => "")).trim();
+  check(
+    "点开的记录写着这次用的模型",
+    /这次用的模型/.test(focusModel) && focusModel.length > 8,
+    focusModel.replace(/\n/g, " ").slice(0, 60),
+  );
+
+  // 「完整详情 ›」：一扇宽窗，左边时间线、右边结果 —— 显示的是点开那一次的模型。
+  await page.locator(".rv-focus-more").first().click();
   await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
   const stages = await page.locator(".rv-sheet .rv-stg").count();
   const sheetFindings = await page.locator(".rv-sheet .rv-finding").count();
@@ -248,13 +298,7 @@ try {
 
   // 模型那颗 chip 走的是输入框背后同一个「模型与思考」弹层（不是面板自己的下拉）。
   const modelBefore = (await page.locator(".rv-model").innerText()).trim();
-  await page.locator(".rv-model").click();
-  await page.locator(".model-sheet").waitFor({ timeout: 15000 });
-  const pick = page.locator(".pm-row:not(.on)").first();
-  await pick.waitFor({ timeout: 10000 });
-  await pick.click();
-  await page.locator(".model-sheet .st-foot .btn.primary").click();
-  await until(async () => (await page.locator(".model-sheet").count()) === 0, 10000, "model sheet closed");
+  await pickModel(page);
   const modelAfter = (await page.locator(".rv-model").innerText()).trim();
   check("模型 chip 打开的是「模型与思考」弹层，挑完会换掉", modelAfter !== modelBefore && modelAfter.length > 0, `${modelBefore} → ${modelAfter}`);
 
@@ -294,6 +338,8 @@ try {
   await page.locator(".rv-run").first().click();
   await page.locator(".rv-stop").first().waitFor({ timeout: 60000 });
   await page.locator(".rv-stop").first().click();
+  // 停下来之后停在这一次上；万一回到了列表，点最新那张看明细。
+  if ((await page.locator(".rv-focus").count()) === 0) await page.locator(".rv-run-card").first().click();
   await until(async () => (await page.locator(".review").innerText()).includes("这次没跑完就停了"), 60000, "stopped hint");
   check("停止后标「没跑完」并留着已收到的", true, "");
 
@@ -331,6 +377,14 @@ try {
   const box = await page.locator(".rv-run, .rv-stop").first().boundingBox();
   const vh = await page.evaluate(() => window.innerHeight);
   check("字号 150% 下按钮仍落在视口里", Boolean(box) && box.y + box.height <= vh, box ? `y=${Math.round(box.y)} h=${Math.round(box.height)} vh=${vh}` : "no box");
+  // 刷新之后「评什么」要自己接上（存在桥那边，不再只活在内存里）。
+  await until(async () => (await page.locator(".rv-prq").count()) === 1, 15000, "pr combobox back");
+  const prAfterReload = String((await page.locator(".rv-prq").inputValue()) ?? "").replace(/^#/, "");
+  check(
+    "刷新后范围与号自己接上",
+    (await page.locator(".rv-mode").inputValue()) === "pr" && prAfterReload === "7",
+    `${await page.locator(".rv-mode").inputValue()} / ${prAfterReload}`,
+  );
 } catch (err) {
   failures += 1;
   console.error("探针异常：", err?.message ?? err);

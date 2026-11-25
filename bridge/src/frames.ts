@@ -266,6 +266,7 @@ export type ClientFrameType =
   | "review.get"
   | "review.install"
   | "review.mark"
+  | "review.pick"
   | "review.prinfo.get"
   | "review.prs.get"
   | "review.run"
@@ -380,7 +381,10 @@ export interface ReviewRun {
   prTitle: string;
   prHead: string;
   prBase: string;
+  /** 这次用的模型（目录里的 id，例如 `cn:glm-5.4`）。 */
   model: string;
+  /** 模型属于哪个 provider（老记录里没有这一项，按空串处理）。 */
+  provider: string;
   lang: string;
   findings: ReviewFinding[];
   /** 上一次有、这一次没有的那几条（key + path，面板要能说出是哪个文件）。 */
@@ -409,6 +413,26 @@ export interface ReviewState {
   repo: string;
   runs: ReviewRun[];
   marks: Record<string, ReviewMark>;
+  /**
+   * 面板上「评什么」那一格上次选的东西，按会话记住。
+   *
+   * 以前这五样只活在前端内存里：切到别的会话再切回来、刷新一次页面，PR 号就没了，
+   * 「开始评审」按钮跟着变灰，而界面上一个字都不解释（用户就是这么被卡住的）。
+   */
+  pick?: ReviewPick;
+}
+
+/** `ReviewState.pick`：面板上「评什么」的选择（不是某一次评审的输入，是这一格现在的值）。 */
+export interface ReviewPick {
+  mode: ReviewMode;
+  /** `pr` 模式的 PR 号（0 = 没选）。 */
+  pr: number;
+  /** `range` 的对照分支。 */
+  base: string;
+  /** `range` 的目标分支。 */
+  target: string;
+  /** `commit` 模式的提交号。 */
+  commit: string;
 }
 
 export interface ReviewProgress {

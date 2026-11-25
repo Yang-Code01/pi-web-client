@@ -226,21 +226,32 @@ export class ReviewSheet {
     this.stopBtn.hidden = !running;
 
     // ---- 抬头
+    // 浮层现在可以打开「任意一次」记录（面板列表点进去），所以抬头与模型都必须按**那一次**写：
+    // 以前一律用面板上现在选中的范围 / 模型，翻旧记录时会张冠李戴。
     const isPr = view.mode === "pr";
-    const who = isPr
+    const card = view.runs.find((item) => item.id === view.focus) ?? null;
+    const current = isPr
       ? tr("PR #{p1}", { p1: view.pr || "?" })
       : view.mode === "range"
         ? tr("{p1} vs {p2}", { p1: view.target || "HEAD", p2: view.base })
         : view.mode === "commit"
           ? tr("提交 {p1}", { p1: view.commit || "HEAD" })
           : tr("工作区改动");
-    this.eyebrow.textContent = isPr ? `${tr("代码评审")} · ${who}` : `${tr("代码评审")} · ${who}`;
-    this.title.textContent = (isPr && view.prTitle) || tr("评审详情");
+    this.eyebrow.textContent = `${tr("代码评审")} · ${card ? view.activeTarget : current}`;
+    this.title.textContent = (card ? card.title : "") || (isPr && view.prTitle) || tr("评审详情");
+    const modelName = view.activeModel || card?.modelId || this.input.modelName || tr("默认模型");
     const metaBits: string[] = [];
-    if (isPr && view.prHead) metaBits.push(`${view.prHead} → ${view.prBase || "main"}`);
-    else if (view.mode === "range" && view.base) metaBits.push(`${view.target || "HEAD"} → ${view.base}`);
-    if (!(view.hasRun || running)) metaBits.push(this.input.modelName || tr("默认模型"));
-    if (view.history > 1) metaBits.push(tr("第 {p1} 次评审", { p1: view.history }));
+    if (card) {
+      metaBits.push(modelName);
+      const at = clock(Date.parse(card.when));
+      if (at) metaBits.push(at);
+      metaBits.push(tr("{p1} 条意见", { p1: card.count }));
+    } else {
+      if (isPr && view.prHead) metaBits.push(`${view.prHead} → ${view.prBase || "main"}`);
+      else if (view.mode === "range" && view.base) metaBits.push(`${view.target || "HEAD"} → ${view.base}`);
+      if (!(view.hasRun || running)) metaBits.push(modelName);
+      if (view.history > 1) metaBits.push(tr("这个会话的第 {p1} 次评审", { p1: view.history }));
+    }
     this.meta.textContent = metaBits.join(" · ");
 
     // ---- 仪表
@@ -286,19 +297,19 @@ export class ReviewSheet {
           })
         : tr("第 {p1}/{p2} 组 · {p3} 个文件", { p1: groupIndex, p2: plan.length || view.group?.total || "?", p3: num(files) });
       this.subTime.textContent = this.estimateText(plan, view.elapsedMs);
-      this.subTokens.textContent = this.input.modelName || tr("默认模型");
+      this.subTokens.textContent = modelName;
     } else if (view.phase === "failed" || view.phase === "stopped") {
       this.subFiles.textContent = files ? tr("/ {p1} 个文件", { p1: num(files) }) : "";
       const avg = view.elapsedMs && doneGroups.length ? view.elapsedMs / doneGroups.length : null;
       this.subTime.textContent = avg ? tr("平均 {p1} 一组", { p1: mmss(avg) }) : "";
-      this.subTokens.textContent = this.input.modelName || tr("默认模型");
+      this.subTokens.textContent = modelName;
     } else if (view.meta) {
       this.subFiles.textContent = tr("{p1} 个文件", { p1: num(view.meta.files) });
       const avgN = plan.length || view.group?.total || 1;
       // 只有一组时「平均 09:14 一组」等于把用时再说一遍，不画
       const avg = avgN > 1 && view.meta.durationMs ? view.meta.durationMs / avgN : null;
       this.subTime.textContent = avg ? tr("平均 {p1} 一组", { p1: mmss(avg) }) : "";
-      this.subTokens.textContent = this.input.modelName || tr("默认模型");
+      this.subTokens.textContent = modelName;
     }
 
     // ---- 正在读 / 收尾
