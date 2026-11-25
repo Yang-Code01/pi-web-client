@@ -245,6 +245,17 @@
 .ghp-kicker-checks { color: var(--warn); font-weight: 600; }
 .ghp-kicker-checks.ok { color: var(--ok); }
 
+/* 行内评论的位置小标：比作者轻，用等宽字体，过长时中间省略。 */
+.ghp-post-where {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ghp-doc-title {
   margin: 0;
   font-size: 18px;
@@ -356,16 +367,6 @@
   color: var(--text);
 }
 
-.ghp-sample {
-  font-size: 10px;
-  padding: 0 5px;
-  border-radius: 999px;
-  border: 1px dashed var(--line-strong);
-  color: var(--faint);
-  font-family: var(--sans);
-  font-weight: 400;
-}
-
 /* 文件清单：两列。文件多时一屏还能放下十来个，而不是只放得下五六行。
    降到一列的 @container 必须写在这条**后面**：规则同权重，后定义的赢（写在前面会被这里盖掉）。
    断点 470px 的来历：面板内边距 12×2、列间距 14，470 时每列还剩 ~216px，路径能显 ~22 个字，
@@ -432,6 +433,17 @@
 }
 
 .ghp-post { position: relative; }
+
+/* 评论正文里的块级元素：间距收紧，别让一条两行的评论占掉半屏。 */
+.ghp-post-body > :first-child { margin-top: 0; }
+.ghp-post-body > :last-child { margin-bottom: 0; }
+.ghp-post-body p { margin: 0 0 6px; }
+.ghp-post-body pre {
+  font-size: 11px;
+  max-height: 260px;
+  overflow: auto;
+}
+.ghp-post-body img { max-width: 100%; }
 
 .ghp-post::before {
   content: "";

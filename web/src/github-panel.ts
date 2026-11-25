@@ -407,13 +407,16 @@ export class GithubPanel {
     const cells: HTMLElement[] = [];
 
     // kicker：号、状态、checks —— 用小字一行说完，不占一张卡。
-    const stateLabel = d.state === "open" ? tr("打开") : d.state === "merged" ? tr("已合并") : tr("已关闭");
+    // 判「已合并」看 `merged` 而不是 `state`：GitHub 上合并之后 state 仍是 closed，只看 state 会把
+    // 每一个合掉的 PR 都说成「已关闭」。
+    const stateLabel = d.merged ? tr("已合并") : d.state === "open" ? tr("打开") : tr("已关闭");
     const kicker = el("div", "ghp-kicker");
     kicker.append(el("span", "ghp-kicker-num", `#${d.pull.number}`), el("span", "ghp-kicker-sep", "·"));
-    kicker.append(el("span", `ghp-kicker-state ${d.state}`, stateLabel));
+    kicker.append(el("span", `ghp-kicker-state ${d.merged ? "merged" : d.state}`, stateLabel));
     // 分子是**通过**的条数：两边都填 length 永远渲染成 N/N，有失败也读起来像全绿。
-    const checks = d.sample?.checks ?? [];
-    const comments = d.sample?.comments ?? [];
+    // 一个检查都没有（没开 CI 的仓库）就不画这一段 —— 「0/0 checks 通过」是一句没有信息的话。
+    const checks = d.checks ?? [];
+    const comments = d.comments ?? [];
     const passing = checks.filter((c) => c.state === "success").length;
     if (checks.length) {
       kicker.append(el("span", "ghp-kicker-sep", "·"));
@@ -421,12 +424,6 @@ export class GithubPanel {
         el("span", passing === checks.length ? "ghp-kicker-checks ok" : "ghp-kicker-checks", tr("{p1}/{p2} checks 通过", { p1: passing, p2: checks.length })),
       );
     }
-    // checks 与评论这一版仍是样本（真 CI 要按 commit 拉 check-runs、真评论要拉 review comments）。
-    // 只在这里标一次：之前 hero 与评论区各挂一个「示例数据」，两处都标等于两处都没人看。
-    // title 说明它盖的是「检查与评论两块」：没有 checks 时这枚 pill 紧贴状态，不说清就像在标状态。
-    const samplePill = el("span", "ghp-sample", tr("示例数据"));
-    samplePill.title = tr("检查与评论是样本数据，不是这个 PR 的真实 CI");
-    kicker.append(samplePill);
     cells.push(kicker);
 
     cells.push(el("h2", "ghp-doc-title", d.pull.title));
@@ -485,8 +482,13 @@ export class GithubPanel {
         const post = el("div", "ghp-post");
         const head = el("div", "ghp-post-head");
         head.append(el("b", undefined, c.author || "—"));
+        // 行内评论带上「文件:行」，一眼知道它说的是哪一处；评审意见正文没有位置，不编一个。
+        if (c.path) head.append(el("span", "ghp-post-where", c.line ? `${c.path}:${c.line}` : c.path));
         if (when) head.append(el("span", undefined, ghAgeText(when)));
-        post.append(head, el("div", "ghp-post-body", c.body));
+        const body = el("div", "ghp-post-body");
+        // 评论也是 markdown（引用、代码块、列表），和描述走同一个渲染器。
+        body.append(renderMarkdown(c.body));
+        post.append(head, body);
         thread.append(post);
       }
       sec.append(thread);

@@ -399,28 +399,99 @@ export function pullRowOf(raw: any): PullRow {
   };
 }
 
-/**
- * PR 详情里 checks 与评论这一版是**示例样本**（D397 就要求带上，页面逐处标「示例数据」）。
- * 两条纪律：① 不要全绿 —— 一片绿太像真的 CI，样例里掺一条失败、一条在跑；
- * ② 评论人用 GitHub 的吉祥物，不用仓库里真实的人名 —— 假的评审意见挂在真人名下最容易被当真。
- * 真接上 GitHub 的 checks / review 之后，这两组东西应当整段删掉。
- */
-const SAMPLE_CHECKS = [
-  { name: "typecheck", state: "success" },
-  { name: "unit / bridge", state: "success" },
-  { name: "ui / chrome", state: "failure" },
-  { name: "e2e", state: "pending" },
-];
+/** 一条检查。来源有两处：check-runs（GitHub Actions 等）与老的 commit status；`state` 统一成 success / failure / pending，其余原样小写。 */
+export interface PullCheck {
+  name: string;
+  state: string;
+}
+
+/** 一条讨论。`kind` 说它从哪来：会话评论（issue）、行内回复与评审意见正文（review）。 */
+export interface PullComment {
+  kind: "issue" | "review";
+  author: string;
+  body: string;
+  at: string;
+  /** 行内评论才有：挂在哪个文件哪一行。 */
+  path?: string;
+  line?: number | null;
+}
 
 /**
- * 评论样本。`at` 是 **ISO 时间**（和真评论一样来自 GitHub），界面自己算「多久以前」——
- * 别在这儿塞「2 小时前」这种成品文案：那是界面的话，得由页面过 `tr()`。
- * 正文本身是**数据**（真评论也长这样），不是界面文案。
+ * check-run 的 status + conclusion → 页面认识的值。没跑完（queued / in_progress）是 pending；
+ * 跑完了看 conclusion：success 是 success，其余（failure / timed_out / cancelled / neutral / skipped…）
+ * **原样小写透传** —— 页面上「不是 success 就算没过」，多一种没见过的状态总比把它错归成通过好。
  */
-const SAMPLE_COMMENTS = [
-  { author: "octocat", body: "「已显示的内容不许变暗」那条守卫要不要顺手补进 probes？", at: "2026-11-24T03:10:00Z" },
-  { author: "hubot", body: "补了：第 10 段逐帧采样，任何一帧 opacity < 0.99 就红。", at: "2026-11-24T04:20:00Z" },
-];
+function checkRunState(status: unknown, conclusion: unknown): string {
+  if (String(status ?? "").toLowerCase() !== "completed") return "pending";
+  return String(conclusion ?? "").toLowerCase() || "pending";
+}
+
+/** 老 commit status 的 state：success / failure / error / pending，小写原样。 */
+function commitStatusState(state: unknown): string {
+  return String(state ?? "").toLowerCase() || "pending";
+}
+
+/**
+ * PR 详情的 checks：真去问 GitHub —— check-runs 与 commit status，都按 PR 的 **head sha** 取。
+ * 这是 GitHub 页面那一条 checks 栏的口径：它看的也是 head 提交，不看合并之后的 main。
+ *
+ * 两个端点各要一次请求。拿不到不拖整个详情（没开 Actions 的仓库回 404、细粒度令牌没权限读都是常事）：
+ * 那一路就当空的。两路都空就是「这个 PR 没有检查」，页面不画 checks 那一行。
+ */
+async function checksOf(ctx: GithubCtx, token: string | null, repo: string, headSha: string): Promise<PullCheck[]> {
+  if (!headSha) return [];
+  const [runs, status] = await Promise.all([
+    request(ctx, token, `/repos/${repo}/commits/${headSha}/check-runs`).catch(() => null),
+    request(ctx, token, `/repos/${repo}/commits/${headSha}/status`).catch(() => null),
+  ]);
+  const out: PullCheck[] = [];
+  for (const r of Array.isArray(runs?.check_runs) ? runs.check_runs : []) {
+    out.push({ name: String(r?.name ?? ""), state: checkRunState(r?.status, r?.conclusion) });
+  }
+  for (const s of Array.isArray(status?.statuses) ? status.statuses : []) {
+    out.push({ name: String(s?.context ?? ""), state: commitStatusState(s?.state) });
+  }
+  return out;
+}
+
+/**
+ * 详情里的讨论：issue 评论、行内 review 评论、评审意见正文，三种合成一条按时间排的流。
+ *
+ * **不在这里渲染 markdown**：评论正文原样给页面，由页面自己走 `renderMarkdown`。行内评论带上了
+ * `path` / `line`，页面画成「文件:行」的小标。
+ *
+ * 跟 checks 一样：拿不到不拖整个详情。没有 review 权限的令牌读 `pulls/N/reviews` 会 403 ——
+ * 那就只少一类评论，不能让整个 PR 详情打不开。
+ */
+async function commentsOf(ctx: GithubCtx, token: string | null, repo: string, number: number): Promise<PullComment[]> {
+  const [issue, inline, reviews] = await Promise.all([
+    request(ctx, token, `/repos/${repo}/issues/${number}/comments?per_page=100`).catch(() => null),
+    request(ctx, token, `/repos/${repo}/pulls/${number}/comments?per_page=100`).catch(() => null),
+    request(ctx, token, `/repos/${repo}/pulls/${number}/reviews?per_page=100`).catch(() => null),
+  ]);
+  const list: PullComment[] = [];
+  const rows = (v: unknown): any[] => (Array.isArray(v) ? (v as any[]) : []);
+  for (const c of rows(issue)) {
+    list.push({ kind: "issue", author: String(c?.user?.login ?? ""), body: String(c?.body ?? ""), at: String(c?.created_at ?? "") });
+  }
+  for (const c of rows(inline)) {
+    list.push({
+      kind: "review",
+      author: String(c?.user?.login ?? ""),
+      body: String(c?.body ?? ""),
+      at: String(c?.created_at ?? ""),
+      path: String(c?.path ?? "") || undefined,
+      line: c?.line ?? c?.original_line ?? null,
+    });
+  }
+  for (const r of rows(reviews)) {
+    // 空正文的评审（只点了批准、只留了 emoji）不占一格。
+    if (!String(r?.body ?? "").trim()) continue;
+    list.push({ kind: "review", author: String(r?.user?.login ?? ""), body: String(r?.body ?? ""), at: String(r?.submitted_at ?? "") });
+  }
+  list.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  return list;
+}
 
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
@@ -482,11 +553,19 @@ async function getPull(res: http.ServerResponse, url: URL, ctx: GithubCtx): Prom
     request(ctx, token, `/repos/${repo}/pulls/${number}`),
     request(ctx, token, `/repos/${repo}/pulls/${number}/files?per_page=100`),
   ]);
+  // checks 与评论按同一个 PR 并行去拿（checks 看 head sha）。它们各自容错，拿不到就是空，不拖详情。
+  const [checks, comments] = await Promise.all([
+    checksOf(ctx, token, repo, String(raw?.head?.sha ?? "")),
+    commentsOf(ctx, token, repo, number),
+  ]);
   json(res, 200, {
     ok: true,
     pull: pullRowOf(raw),
     body: String(raw?.body ?? ""),
     state: String(raw?.state ?? "open"),
+    // GitHub 上合并之后 `state` 仍是 closed，靠 `merged` 才分得开「已合并」与「关掉没合」。
+    merged: Boolean(raw?.merged),
+    mergedAt: raw?.merged_at ? String(raw.merged_at) : null,
     mergeable: raw?.mergeable ?? null,
     files: (Array.isArray(files) ? files : []).map((f: any) => ({
       path: String(f?.filename ?? ""),
@@ -498,7 +577,8 @@ async function getPull(res: http.ServerResponse, url: URL, ctx: GithubCtx): Prom
       // 万一 GitHub 换了算法，最坏结果也只是落到「Files changed」顶部，不是打开错页。
       anchor: `diff-${crypto.createHash("sha256").update(String(f?.filename ?? "")).digest("hex")}`,
     })),
-    sample: { checks: SAMPLE_CHECKS, comments: SAMPLE_COMMENTS },
+    checks,
+    comments,
   });
 }
 

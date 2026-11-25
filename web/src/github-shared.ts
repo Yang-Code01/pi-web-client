@@ -61,24 +61,35 @@ export interface PullFile {
 
 export interface PullCheck {
   name: string;
+  /** success / failure / pending，其余（neutral、skipped…）原样小写。不是 success 就算没过。 */
   state: string;
 }
 
 export interface PullComment {
+  /** 会话评论（issue）还是行内回复 / 评审意见正文（review）。 */
+  kind: "issue" | "review";
   author: string;
   body: string;
   at: string;
+  /** 行内评论才有：挂在哪个文件哪一行。 */
+  path?: string;
+  line?: number | null;
 }
 
 export interface PullDetailView {
   ok: boolean;
   pull: PullRow;
   body: string;
+  /** GitHub 的原值：open / closed。已合并的 PR 在这里也是 closed —— 判「已合并」看 `merged`。 */
   state: string;
+  merged: boolean;
+  mergedAt: string | null;
   mergeable: boolean | null;
   files: PullFile[];
-  /** 这一版里 checks 与 comments 是示例样本，页面上要如实标注。 */
-  sample: { checks: PullCheck[]; comments: PullComment[] };
+  /** 真去 GitHub 问来的：check-runs + commit status，按 head 提交。空数组 = 这个 PR 没有检查。 */
+  checks: PullCheck[];
+  /** 真去 GitHub 问来的：会话评论 + 行内 review 评论 + 评审意见正文，按时间排。 */
+  comments: PullComment[];
 }
 
 export interface PullsView {

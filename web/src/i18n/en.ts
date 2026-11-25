@@ -4310,8 +4310,6 @@ export const en: Dict = {
   "默认开。关掉后聊天里的 PR / issue / commit 链接退回普通链接：不认、不挂卡、右栏也不会被推开": "On by default. When off, PR / issue / commit links stay plain links: nothing is recognised, no cards, and the right pane never opens by itself.",
   "评论 · {p1}": "Comments · {p1}",
   "全局设置里定的": "set in the global settings",
-  "示例数据": "Sample data",
-  "检查与评论是样本数据，不是这个 PR 的真实 CI": "Checks and comments are sample data, not this PR's real CI",
   "我的 PR": "My PRs",
   "已关闭": "Closed",
   "已合并": "Merged",

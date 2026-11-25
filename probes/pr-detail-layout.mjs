@@ -3,10 +3,13 @@
  *
  * 验的是用户在 #640 截图里指出的几个毛病有没有真的消失，全是外部行为：
  *   1. 描述全文一屏摊开，**没有**内层滚动框（scrollHeight ≈ clientHeight）。
- *   2. 四格数字与 hero 卡不再存在；「示例数据」整块只出现一次。
+ *   2. 四格数字与 hero 卡不再存在；「示例数据」不再出现（checks 与评论都已是真数据）。
  *   3. 文件清单 8 个文件全在，560px 两列、420px 一列（@container 按面板自己宽度切）。
  *   4. 评论不再只露最后一条 + 死的「还有 1 条」：两条都在，`.ghp-post` 各一条。
  *   5. 描述走 renderMarkdown：h2 与行内 code 都成了真元素。
+ *   6. 状态看 `merged` 而不是 `state`：已合并的 PR 说「已合并」，不说「已关闭」。
+ *   7. 一个检查都没有（没开 CI 的仓库）就不画 checks 那一段，不出现「0/0」。
+ *   8. 行内评论带「文件:行」小标，评论正文走 markdown。
  *
  * Run: npm run build && node probes/pr-detail-layout.mjs
  */
@@ -114,6 +117,8 @@ const DETAIL = {
   },
   body: BODY,
   state: "open",
+  merged: false,
+  mergedAt: null,
   mergeable: true,
   files: FILES.map(([p, status, additions, deletions]) => ({
     path: p,
@@ -123,19 +128,23 @@ const DETAIL = {
     patch: "",
     anchor: `diff-${p.length}${p.charCodeAt(0)}`,
   })),
-  sample: {
-    checks: [
-      { name: "typecheck", state: "success" },
-      { name: "unit", state: "success" },
-      { name: "ui", state: "failure" },
-      { name: "e2e", state: "pending" },
-    ],
-    comments: [
-      { author: "octocat", body: "这类改动值得先写一条 unit。", at: new Date(Date.now() - 86400000).toISOString() },
-      { author: "hubot", body: "补了：第 10 段逐帧采样，任何一帧 opacity < 0.99 就红。", at: new Date(Date.now() - 3600000).toISOString() },
-    ],
-  },
+  // 桥从 GitHub 问来的真数据（这里由 route 模拟）：check-runs 在前、commit status 在后。
+  checks: [
+    { name: "typecheck", state: "success" },
+    { name: "unit", state: "success" },
+    { name: "ui", state: "failure" },
+    { name: "ci / deploy", state: "pending" },
+  ],
+  comments: [
+    { kind: "review", author: "octocat", body: "这类改动值得先写一条 unit。", at: new Date(Date.now() - 86400000).toISOString(), path: "web/src/ask-text.ts", line: 42 },
+    { kind: "issue", author: "hubot", body: "补了：第 10 段逐帧采样，任何一帧 opacity < 0.99 就红。", at: new Date(Date.now() - 3600000).toISOString() },
+  ],
 };
+
+/** 已合并的 PR：GitHub 上 `state` 是 closed，只有 `merged` 说得出它合过。 */
+const MERGED = { ...DETAIL, state: "closed", merged: true, mergedAt: new Date(Date.now() - 60_000).toISOString() };
+/** 没开 CI 的仓库：桥回空数组。 */
+const NO_CI = { ...DETAIL, checks: [], comments: [] };
 
 // ---------------------------------------------------------------- 桥
 
@@ -187,8 +196,10 @@ try {
   page.on("pageerror", (e) => console.log("pageerror", e.message));
 
   const json = (body) => ({ contentType: "application/json", body: JSON.stringify(body) });
-  await page.route("**/api/github/card*", (route) => route.fulfill(json({ ok: true, pull: DETAIL.pull })));
-  await page.route("**/api/github/pr*", (route) => route.fulfill(json(DETAIL)));
+  /** 当前 `/api/github/pr` 该回哪一份详情；探针中途换夹具来验「已合并」「没有 CI」两种形态。 */
+  let detailNow = DETAIL;
+  await page.route("**/api/github/card*", (route) => route.fulfill(json({ ok: true, pull: detailNow.pull })));
+  await page.route("**/api/github/pr*", (route) => route.fulfill(json(detailNow)));
   await page.route("**/api/github/pulls*", (route) => route.fulfill(json({ ok: true, repo: "acme/widgets", pulls: [DETAIL.pull] })));
 
   await page.goto(BASE, { waitUntil: "domcontentloaded" });
@@ -204,9 +215,10 @@ try {
   // ------------------------------------------------ 1) 版面骨架
   check("hero 卡没了", (await page.locator(".ghp-hero").count()) === 0);
   check("四格数字没了", (await page.locator(".ghp-stats").count()) === 0);
-  check("「示例数据」整块只出现一次", (await page.locator(".ghp .ghp-sample").count()) === 1);
+  check("「示例数据」不再出现（checks 与评论都是真数据）", (await page.locator(".ghp .ghp-sample").count()) === 0);
 
   const kicker = (await page.locator(".ghp-kicker").innerText()).replace(/\s+/g, " ");
+  check("打开的 PR：kicker 说「打开」", kicker.includes("打开") && !kicker.includes("已合并") && !kicker.includes("已关闭"), kicker);
   check("kicker 带号与 checks", kicker.includes(`#${NUM}`) && kicker.includes("2/4"), kicker);
   const warnClass = await page.locator(".ghp-kicker-checks").getAttribute("class");
   check("有失败时 checks 不是绿的（warn 色）", (warnClass ?? "").includes("ghp-kicker-checks") && !(warnClass ?? "").includes("ok"), warnClass ?? "");
@@ -255,6 +267,8 @@ try {
   check("「还有 N 条」那颗死链接没了", (await page.locator(".ghp .ghp-more").count()) === 0);
   const thread = await page.locator(".ghp-thread").innerText();
   check("两条评论的正文都在", thread.includes("先写一条 unit") && thread.includes("逐帧采样"), "");
+  const where = await page.locator(".ghp-post-where").allInnerTexts();
+  check("行内评论带「文件:行」小标，会话评论不带", where.length === 1 && where[0] === "web/src/ask-text.ts:42", JSON.stringify(where));
 
   // ------------------------------------------------ 5) 底栏照旧
   check("合并按钮还在", (await page.locator(".ghp-merge").count()) === 1);
@@ -264,6 +278,32 @@ try {
   await page.locator(".ghp").evaluate((n) => n.style.setProperty("--ghp-w", "400px"));
   await sleep(250);
   await page.locator(".ghp").screenshot({ path: path.join(SHOTS, "pr-detail-400.png") });
+  await page.locator(".ghp").evaluate((n) => n.style.setProperty("--ghp-w", "560px"));
+  await sleep(250);
+
+  // ------------------------------------------------ 6) 已合并：看 merged，不看 state
+  // 换夹具后让面板重取：点关闭钮关掉，再从卡片打开（卡片走的是 `/card`，也会跟着换成已合并那份）。
+  detailNow = MERGED;
+  await page.locator(".ghp .ghp-close").click();
+  await until(async () => (await page.locator(".ghp").count()) === 0, 5000, "面板关掉");
+  await card.locator(".ghlink").click();
+  await until(async () => (await page.locator(".ghp-kicker").innerText()).includes("已合并"), 8000, "已合并 kicker");
+  const mergedKicker = (await page.locator(".ghp-kicker").innerText()).replace(/\s+/g, " ");
+  check("已合并的 PR 说「已合并」，不说「已关闭」", mergedKicker.includes("已合并") && !mergedKicker.includes("已关闭"), mergedKicker);
+  check("已合并的 PR 没有「合并 PR」按钮", (await page.locator(".ghp-merge").count()) === 0);
+  await page.locator(".ghp").screenshot({ path: path.join(SHOTS, "pr-detail-merged.png") });
+
+  // ------------------------------------------------ 7) 没有 CI：不画 checks
+  detailNow = NO_CI;
+  await page.locator(".ghp .ghp-close").click();
+  await until(async () => (await page.locator(".ghp").count()) === 0, 5000, "面板关掉");
+  await card.locator(".ghlink").click();
+  await until(async () => (await page.locator(".ghp .ghp-doc").count()) === 1, 8000, "无 CI 详情");
+  await sleep(300);
+  const noCiKicker = (await page.locator(".ghp-kicker").innerText()).replace(/\s+/g, " ");
+  check("没有检查时不画 checks 那一段（不出现 0/0）", !noCiKicker.includes("checks") && (await page.locator(".ghp-kicker-checks").count()) === 0, noCiKicker);
+  check("没有评论时不画讨论区", (await page.locator(".ghp-commentsec").count()) === 0);
+  await page.locator(".ghp").screenshot({ path: path.join(SHOTS, "pr-detail-no-ci.png") });
   console.log("shots:", path.join(SHOTS, "pr-detail-560.png"), path.join(SHOTS, "pr-detail-400.png"));
 } catch (e) {
   failures++;

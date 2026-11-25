@@ -45,20 +45,39 @@ fs.mkdirSync(emptyDir, { recursive: true });
 
 // ---------------------------------------------------------------- 假 GitHub（上游）
 
-const up = { hits: { pulls: 0, pull: 0, files: 0, user: 0 }, mode: "ok", lastPullPath: "" };
+// 上游被打了几次：checkRuns / status 是 checks 的两个来源，三个 comments 是评论的三个来源。
+const up = { hits: { pulls: 0, pull: 0, files: 0, user: 0, checkRuns: 0, status: 0, issueComments: 0, reviewComments: 0, reviews: 0 }, mode: "ok", lastPullPath: "" };
+/** 这台假 GitHub 有没有 CI：默认有；用例可以关掉，模拟没有 workflow 的仓库。 */
+const ci = { enabled: true };
+/** 这个 PR 是不是已合并。GitHub 上合并后 `state` 仍是 `closed`，只有 `merged` 分得开。 */
+let merged = false;
+/** 各提交上的 check-runs 与 commit status。key 是 sha，没有就是「这个提交上什么都没有」。 */
+const COMMIT_REPORTS = {
+  "sha-head-12": {
+    checkRuns: [
+      { name: "typecheck", status: "completed", conclusion: "success" },
+      { name: "unit / bridge", status: "completed", conclusion: "success" },
+      { name: "ui / chrome", status: "in_progress" },
+    ],
+    status: { state: "pending", statuses: [{ context: "deploy / preview", state: "success" }] },
+  },
+};
 const PULLS = [
   {
     number: 12,
     title: "fix(ask): 问卷残影跟着会话走",
     draft: false,
     user: { login: "acme-bot" },
-    head: { ref: "fix/ask" },
+    head: { ref: "fix/ask", sha: "sha-head-12" },
     base: { ref: "main" },
     updated_at: "2026-11-24T03:00:00Z",
     html_url: "https://github.com/acme/widgets/pull/12",
     additions: 105,
     deletions: 21,
     changed_files: 5,
+    state: "open",
+    merged: false,
+    merged_at: null,
   },
 ];
 
@@ -81,7 +100,36 @@ const upstream = http.createServer((req, res) => {
   const pull = /^\/repos\/[\w.-]+\/[\w.-]+\/pulls\/(\d+)$/.exec(url.pathname);
   if (pull && url.pathname.startsWith("/repos/acme/widgets/")) {
     up.hits.pull += 1;
-    return send(200, PULLS[0]);
+    return send(200, { ...PULLS[0], state: merged ? "closed" : "open", merged, merged_at: merged ? "2026-11-24T06:00:00Z" : null });
+  }
+  // ---- checks 的两个来源（真 GitHub 也是这两个端点，都按提交 sha 取）。
+  const checkRuns = /^\/repos\/acme\/widgets\/commits\/([\w-]+)\/check-runs$/.exec(url.pathname);
+  if (checkRuns) {
+    up.hits.checkRuns += 1;
+    // 没有 CI 的仓库：这个提交上没有 check-run（上游回空列表，不是 404）。
+    const found = ci.enabled ? COMMIT_REPORTS[checkRuns[1]] : undefined;
+    return send(200, { total_count: found ? found.checkRuns.length : 0, check_runs: found ? found.checkRuns : [] });
+  }
+  if (/^\/repos\/acme\/widgets\/commits\/([\w-]+)\/status$/.test(url.pathname)) {
+    up.hits.status += 1;
+    const found = ci.enabled ? COMMIT_REPORTS[url.pathname.split("/").at(-2)] : undefined;
+    return send(200, found?.status ?? { state: "pending", total_count: 0, statuses: [] });
+  }
+  // ---- 评论的三个来源。
+  const issueComments = /^\/repos\/acme\/widgets\/issues\/(\d+)\/comments$/.exec(url.pathname);
+  if (issueComments) {
+    up.hits.issueComments += 1;
+    return send(200, merged ? [{ user: { login: "acme-bot" }, body: "已合并，谢谢。", created_at: "2026-11-24T05:00:00Z" }] : []);
+  }
+  const reviewComments = /^\/repos\/acme\/widgets\/pulls\/(\d+)\/comments$/.exec(url.pathname);
+  if (reviewComments) {
+    up.hits.reviewComments += 1;
+    return send(200, [{ user: { login: "reviewer-a" }, body: "这里建议抽成一个函数。", created_at: "2026-11-24T04:10:00Z" }]);
+  }
+  const reviews = /^\/repos\/acme\/widgets\/pulls\/(\d+)\/reviews$/.exec(url.pathname);
+  if (reviews) {
+    up.hits.reviews += 1;
+    return send(200, [{ user: { login: "reviewer-b" }, body: "LGTM", state: "APPROVED", submitted_at: "2026-11-24T04:50:00Z" }]);
   }
   const files = /^\/repos\/acme\/widgets\/pulls\/(\d+)\/files$/.exec(url.pathname);
   if (files) {
@@ -275,20 +323,61 @@ test("读接口：repo / cwd 先校验再拼进上游（隧道访客也能打这
   assert.equal(up.hits.pulls ?? 0, 0, "被拒的请求一条也不许打到上游");
 });
 
-test("pr：正文 + 文件差异 + checks/评论是示例样本", async () => {
+test("pr：正文 + 文件差异 + 真实的 checks 与评论", async () => {
   resetGithubCaches();
+  ci.enabled = true;
+  merged = false;
   const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
   assert.equal(r.status, 200);
   assert.equal(r.json.pull.number, 12);
   assert.equal(r.json.files.length, 1);
   assert.equal(r.json.files[0].path, "bridge/src/sessions.ts");
   assert.match(r.json.files[0].patch, /^-old$/m);
-  assert.ok(Array.isArray(r.json.sample.checks) && r.json.sample.checks.length > 0, "checks 是示例样本");
-  assert.ok(
-    r.json.sample.checks.some((c) => c.state !== "success"),
-    "样例不能全绿：一片绿太像真的 CI，而这是编的",
+  // 样本字段不许再出现：checks 与评论都从上游拿，页面上不该再有「示例数据」。
+  assert.equal(r.json.sample, undefined, "sample 字段已删除");
+  assert.equal(r.json.state, "open");
+  assert.equal(r.json.merged, false);
+  // check-runs 与 commit status 是两套东西，合起来才是 GitHub 页面上那一条 checks 栏。
+  assert.equal(up.hits.checkRuns, 1, "check-runs 读的是 PR 的 head sha");
+  assert.equal(up.hits.status, 1);
+  assert.deepEqual(
+    r.json.checks.map((c) => `${c.name}:${c.state}`),
+    ["typecheck:success", "unit / bridge:success", "ui / chrome:pending", "deploy / preview:success"],
+    "checks = check-runs + commit status，保持上游顺序",
   );
-  assert.ok(Array.isArray(r.json.sample.comments), "comments 是示例样本");
+  assert.equal(r.json.comments.length, 2, "行内 review 评论 + review 正文，按时间排；没有会话评论就不编");
+  assert.deepEqual(
+    r.json.comments.map((c) => `${c.author}@${c.at}`),
+    ["reviewer-a@2026-11-24T04:10:00Z", "reviewer-b@2026-11-24T04:50:00Z"],
+    "两种评论按时间排，作者与时间来自上游",
+  );
+  assert.equal(r.json.comments[0].kind, "review");
+  assert.equal(r.json.comments[1].kind, "review");
+  assert.equal(r.json.comments[1].path, undefined, "评审正文没有文件标");
+});
+
+test("pr：已合并的 PR 是 merged，不是 closed（GitHub 上两者 state 都是 closed）", async () => {
+  resetGithubCaches();
+  ci.enabled = true;
+  merged = true;
+  const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
+  assert.equal(r.status, 200);
+  assert.equal(r.json.state, "closed", "state 仍是 GitHub 的原值，给已经认得它的调用方");
+  assert.equal(r.json.merged, true);
+  assert.equal(r.json.mergedAt, "2026-11-24T06:00:00Z");
+  // 已合并的 PR：会话评论也一并读出来，一样按时间排在流里。
+  assert.equal(r.json.comments.at(-1)?.kind, "issue");
+  assert.equal(r.json.comments.at(-1)?.author, "acme-bot");
+});
+
+test("pr：没有 CI 的仓库 checks 是空数组（页面据此不画那一行）", async () => {
+  resetGithubCaches();
+  ci.enabled = false;
+  merged = false;
+  const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
+  assert.equal(r.status, 200);
+  assert.equal(r.json.merged, false);
+  assert.deepEqual(r.json.checks, []);
 });
 
 test("card：只回一行，并且 60 秒内不重复问上游", async () => {
