@@ -181,7 +181,7 @@ try {
 
   // ---------------------------------------------------------------- C. /whatsnew 直达
   log("C. 关掉面板，敲 /whatsnew");
-  // 阅读态没有设置头部了（D405），关闭用页面右上那颗 ✕。
+  // 阅读态没有设置头部了（D406），关闭用页面右上那颗 ✕。
   check((await page.locator(".st-head").isVisible().catch(() => false)) === false, "阅读态没有设置头部");
   await page.locator(".cl-close").click();
   await until(async () => (await page.locator(".settings-sheet").count()) === 0, 5000, "sheet closed");
@@ -194,7 +194,7 @@ try {
 
   // ---------------------------------------------------------------- D. 条目末尾的 D 引用能打开决策记录
   log("D. 点条目末尾的 D 引用，打开 docs/DECISIONS.md");
-  // 旧的正文链接（markdown 那套的 a.file-link）随结构化条目一起没了；现在路径在 chip 上（D405）。
+  // 旧的正文链接（markdown 那套的 a.file-link）随结构化条目一起没了；现在路径在 chip 上（D406）。
   await page.locator(".cl-timeline button.ref").first().click();
   const shown = await until(async () => {
     const n = page.locator(".viewer .viewer-path");

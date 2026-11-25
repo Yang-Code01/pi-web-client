@@ -347,6 +347,20 @@ export interface ReviewFinding {
   anchored: boolean;
   state: "new" | "persisting";
   mark: ReviewMark | "";
+  /** 哪一组跑出来的（老记录没有这一项）。 */
+  group?: number;
+}
+
+/** 一次评审把文件分成几组、每组跑完没有 —— 详情窗的分段进度全靠它。 */
+export interface ReviewGroupPlan {
+  /** 从 1 开始。 */
+  index: number;
+  files: number;
+  /** 这一组出了几条意见。 */
+  findings: number;
+  state: "pending" | "running" | "done" | "failed";
+  startedAt: string;
+  finishedAt: string;
 }
 
 export interface ReviewRun {
@@ -379,7 +393,16 @@ export interface ReviewRun {
   error: string;
   errorCode: string;
   /** 这一次的时间线（进度帧走完就没了，所以完成时也落一份进记录）。 */
-  log: { at: number; text: string }[];
+  log: ReviewLogLine[];
+  /** 分组计划（老记录没有；没有就按「一条时间线」展示）。 */
+  plan?: ReviewGroupPlan[];
+}
+
+export interface ReviewLogLine {
+  at: number;
+  text: string;
+  /** 属于第几组（准备阶段的那些没有组号）。 */
+  group?: number;
 }
 
 export interface ReviewState {
@@ -403,8 +426,12 @@ export interface ReviewProgress {
   /** 现在是第几组 / 一共几组（PR 与分支范围会分组跑）。 */
   group: number;
   groups: number;
+  /** 每组跑了多少、跑没跑完。 */
+  plan?: ReviewGroupPlan[];
+  /** 跑的过程中已经出来的意见（拿不到就等结束那帧）。 */
+  findings?: ReviewFinding[];
   /** 时间线：每件事一行，最多留 40 行（面板与详情 dialog 共用）。 */
-  log: { at: number; text: string }[];
+  log: ReviewLogLine[];
 }
 
 export interface ReviewOcrStatus {
