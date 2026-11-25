@@ -7933,3 +7933,37 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - `bridge/tests/review-unit.mjs`：`expectRepoMismatch()` 六种输入；`startReview()` 拿别仓的号**在 fetch 之前**就抛 `pr_foreign_repo`，且不落状态文件。
 - `probes/github-card-review.mjs`（真桥 + 假 gh + 真 Chromium）**22 项全过**：判据未到时两张卡都是亮的；判据到了同仓可点、跨仓灰掉且 title 里两个仓库都在、issue 卡不拆结构；点主区照旧开 GitHub 面板；折叠右栏后点那颗钮 → 展开 + 切页签 + 填好 `#661` + 没有「中断评审」+ 状态目录里没有评审记录；灰钮点了什么都不发生；设置里「建完 PR 自动打开面板」默认关、点一下能开、刷新后还在。
 - `npm run typecheck`（bridge / web，含 i18n-check 与 viewport / layers 守卫）与 `npm run build` 通过。
+
+## D402 评审要出网的那两步：直连 → 代理候选 → 现探本机 → 整轮重试，失败时把每条路都写出来（#668，2026-11-25）
+
+**问题。** 用户点「代码评审」，几秒后右栏「评审详情」是 `失败`，结果栏只有一句 `error: RPC failed; curl 56 Recv failure: Connection was reset`。根因不在评审的分片与模型那半边，而在**取 PR 提交**这一步：`gitpr.ts` 的 `run()` 把 `process.env` 原样交给 `git`/`gh`，也就是「只有直连一条路」—— 直连被中间设备重置/掐断时没有第二个候选、也没有重试，整次评审就死在这一步，界面看到的是 git stderr 的首行。热部署早就按 D376 做了「候选顺序 + 每路限时 + 整轮重试」，评审一直没跟上。
+
+**决定。**
+
+1. **新增 `bridge/src/netroute.ts`：候选发现 + 通用路由。** 第一段候选是「有人明确说过用哪个」：pi 设置 `httpProxy` → 系统代理（win 注册表 / macOS `scutil`）→ 进程 env 的 6 个代理变量（`HTTPS_PROXY`/`https_proxy`/`HTTP_PROXY`/`http_proxy`/`ALL_PROXY`/`all_proxy`，大小写各一份），同一代理只留一次。**这段里没有写死的端口**（D272）：热部署那份实现尾部挂着的 18791 是历史遗留，评审不再照抄。与 `scripts/hotdeploy-git.mjs` 的另一处有意差异是不认 `BILLION_CONTEXT_PROXY` —— 那是模型网关的占位主机名（`http://billion-context.inline`），本机实测它排到第二位、真去连只会白等满 90s。两份实现而不共用的原因：bridge 是 TS、单测直接 `--experimental-strip-types` 跑源码，`scripts/` 不在 `bridge/tsconfig.json` 的 rootDir 里；顺序与这条差异由 `bridge/tests/netroute-unit.mjs` 锁住，改一处必须改另一处。
+2. **第二段是现探：谁都没配、直连又挂了，就看本机在听什么。** `listListeners()` 拉一条 `netstat -ano -p tcp`（macOS `lsof -nP -iTCP -sTCP:LISTEN -F n`、Linux `ss -ltn`），只留环回与通配（通配归一到 `127.0.0.1`），按端口排、一次最多探 64 个；`probeHttpProxy()` 对每个端口发一个不依赖本机 DNS 的 `CONNECT example.com:443`，回 `200`（同意开隧道）或 `407`（要鉴权，但确实是代理）才算命中，400/404/405 这类普通 HTTP 服务一律不算。全部并行、每个 400ms 上限；结果在进程里缓存 60s。写死端口的替代品不是「猜更多端口」，而是**问机器现在在听什么**。
+3. **`viaRoutes()` 的顺序与时限**：直连（先摘掉进程里挂的代理变量，并置 `GIT_TERMINAL_PROMPT=0`）→ 第一段候选 → 还没有才调 `discover` → 全失败且有路可试时等 3s 整轮重来。每路限时（fetch：直连 20s / 代理 90s，两轮，总预算 240s；`gh` 小请求：20s / 40s，一轮，70s），总时长封顶用 deadline 夹住单次超时。一条代理都没有（配置空、现探也空）时不空转重试 —— 那只是把同一件事再做一遍。现探只在「前面全挂」时才跑：直连就通的机器不会为这件事花一次 `netstat` 加 50 次端口试探。
+4. **连 `gh pr list` / `gh pr view` / `gh pr view --json …` 一起走路由**：同一台机器上，fetch 要走代理就意味着 `gh` 也得出得去；否则面板列不出 PR，评审仍然开不了。候选函数是**惰性**求值的：直连就通的机器不会为了探代理去读注册表。
+5. **失败信息汇总每一次尝试**，格式 `直连：<原因>；代理 <url>：<原因>`，并前置「取不到 PR #N 的提交：」。用户不再只看到一句 Connection was reset，而能看出「直连被重置、代理没起来、本机也没探到代理」这种可操作的组合。取 PR 提交单独提成 `fetchPullRequestRef()`，成为测试与文案的落点。
+6. **`RouteOptions` 只给测试用**（钉死候选、现探结果与计划）：否则测试会去探本机系统代理和在听端口，结果跟着机器上装了什么跑。
+
+**为什么。**
+
+- **现探而不是写死端口**：写死一个端口等于把「哪台机器上能用」编进代码 —— 18791 在本机早就不在听，换台机器更是赌运气。端口该由机器自己回答：谁在听、听的那个是不是 HTTP 代理，一次 `CONNECT` 就问出来了。代价是这一小段代码只在本机跑（不在别人的 CI 里），所以把 `listeners` / `probe` 都做成可注入，测试用假数据锁协议。
+- **现探放在最后一步**：它能发现的东西是「用户没告诉我们的」，可信度天然低于显式设置；而且它有实打实的成本（一次进程调用 + 几十个端口并行试探）。等到前面全挂再花，是唯一不白花的位置。
+- **重复一份候选顺序而不是抽公共模块**：`scripts/` 不在 bridge 的 tsconfig `rootDir` 内，抽出来要么改构建拓扑、要么让 bridge 依赖 dist；两份各几十行、由测试对齐，比动构建便宜。这条与 D376 同源，早晚该合成一处，届时以 `netroute.ts` 为准把 hotdeploy 改过来。
+- **失败时汇总而不是取首行**：这次现场的首行恰好是最不具信息量的一句；「直连挂在哪、每个代理挂在哪」才是用户能据以行动的。代价是错误文案变长（右栏详情框能换行）。
+- **不做 SSH-443 换传输（D377）**：那条路要本机 SSH key 可用，评审的默认用户没有；这一轮先把「有代理就走代理」补齐。
+
+**代价 / 可改。**
+
+- **现探只在失败路径上花钱**：一次 `netstat`（本机实测约 30ms）+ 最多 64 个端口的并行 `CONNECT`（实测本机 50 个监听 696ms），结果缓存 60s。最坏情况仍是 4 分钟预算封顶（评审本来就要几分钟，可接受；`gh` 小请求 70s）。
+- **会向本机在听的服务发一个 `CONNECT`**：只发一行就断开，400ms 上限；但确实会碰到路径上无关的本地服务。想更保守就把 `limit` 调小，代价是排在后面的代理探不到。
+- **代理 URL 一律 `http://`**：探测只认 HTTP `CONNECT`，纯 SOCKS 端口探不出来（Clash 这类 mixed 端口两样都收，不受影响）。
+- **`pr_foreign_repo` 等既有错误码不变**：路由失败仍然归到 `pr_fetch_failed` / `gh_failed`，前端文案无需改。
+
+**验证。**
+
+- `bridge/tests/netroute-unit.mjs`（纯逻辑）：代理 URL 归一；Windows 的两种 `ProxyServer` 写法与 macOS `scutil` 解析；候选顺序与去重且**没有默认端口兜底**；`readPiHttpProxy()` 读临时 `PI_AGENT_DIR`；`directEnv()` 摘 6 个代理变量但不动 `NO_PROXY`；`proxyEnv()` 同写 6 个名字；`parseListeners()` 三家输出（netstat / lsof / ss）与通配归一；`probeHttpProxy()` 对真 TCP 服务验 200 / 407 / 404 / 哑端口；`discoverLocalProxies()` 的端口序、限额、探测抛异常；`viaRoutes()` 的直连短路（不探代理）、候选顺序、**现探只在候选全挂后调用一次**、现探与已配重复时不重试、`discover` 抛错不进错误汇总、整轮重试与原因汇总、无候选不重试、单次超时被预算夹住、attempt 抛异常算失败。
+- `bridge/tests/gitpr-fetch-route-e2e.mjs`（真 git，离线）：坏 origin（`info/refs` 正常、POST `git-upload-pack` 回 200 后重置 TCP）复现用户那句 stderr；配好 `httpProxy` 时 `fetchPullRequestRef()` 自己绕到正向代理上把 `refs/pull/636/head` 取回且与被评提交一致；没配代理时报错里带 `直连：error: RPC failed; curl 56 Recv failure: Connection was reset`；谁都没配时靠现探那一步把提交取回来。
+- 真机：`listListeners()` 在本机列出 50 个环回监听，`discoverLocalProxies()` 只用 696ms 就从中认出 `http://127.0.0.1:7899`（唯一命中）；`PI_AGENT_DIR=<临时目录，httpProxy=http://127.0.0.1:7899>` 下 `resolvePullRequest(<本仓>, 636)` 取回 `refs/pi-web/pr-636`（3.7s）；`npm --prefix bridge run typecheck` 通过。
