@@ -6873,8 +6873,8 @@ Esc 之后 dialog: 0
 - **只有真弹出去才推进** `lastShownAt`：被闸挡下、10 分钟排不上队、开关关着，三者都不推进已读，那几批留到下次。
 - 派发窗口在桥端（进程内 `claimed`，记标题与时刻），窗口内只发给第一个来领取的页面、窗口过了才有新的判定机会 —— 窗口就是那条 24 小时的闸，所以桥常驻不重启也等得到第二次；`GET /api/changelog?scope=self&unread=1` 是领取，`POST /api/changelog/seen` 才是落盘（弹窗打开那一刻调）。领走之后那个页面排不上队就放弃，这次启动不再转给别人 —— 换来的可预测性比「一定让人看到」值。
 - 页面侧只找时机：没有正在跑的回合、输入框空着、页面在前台、没有别的弹层开着，最多等 10 分钟。
-- 内容只装本项目的 CHANGELOG（pi 的变更继续归设置里那页），最近 1 批 + 「还有 N 批更早的」折叠；`未发布` 批次照常算；正文保持中文，框上的文案走 `tr()` 三语；条目里的 `#PR` / `D编号` 保持纯文本。
-- 开关「启动时自动打开更新日志」与「上次看到」放在 设置 → 更新日志 →「本项目」那一页的开头（日志本体之前，翻到底要滚几十屏，放底部等于没人看得见），不进那六个分组：想关掉它与想知道自己读到哪，是同一个地方的两件事。在设置页自己翻完**不算**已读。
+- 内容只装本项目的 CHANGELOG（pi 的变更继续归设置里那页），最近 1 批 + 「还有 N 批更早的」折叠；`未发布` 批次照常算；正文保持中文，框上的文案走 `tr()` 三语；~~条目里的 `#PR` / `D编号` 保持纯文本~~（**D405 改写**：条目与弹窗共用同一套结构化条目，`#PR` 是可点的 chip、`D编号` 打开 `docs/DECISIONS.md`）。
+- 开关「启动时自动打开更新日志」与「上次看到」~~放在 设置 → 更新日志 →「本项目」那一页的开头~~（**D405 按用户要求改到日志页最下方**；原来那句「翻到底要滚几十屏，放底部等于没人看得见」的理由仍然成立，代价与补救记在 D405），不进那六个分组：想关掉它与想知道自己读到哪，是同一个地方的两件事。在设置页自己翻完**不算**已读。
 
 **为什么。** 「第一次装不弹」这条不是省事，是定义：这里要告知的对象是**已经用过这个服务的人**，而不是「机器上多了一份新状态目录」。改这一个判据同时解决了两件事 —— 新装用户不再被七十批旧账迎接，仓库里上百个临时状态目录的 UI 测试也不会一开门就被一张模态弹窗盖住（剩下预写口令的那批用 `PI_WEB_WHATS_NEW=0` 关掉）。
 
@@ -8021,3 +8021,32 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - `probes/review-session-leak.mjs`（`npm run probe:review-session`）：真桥 + 假 gh + 真 Chromium，两个不同仓库的会话来回切 —— A 里填成 `#661`；切到 B 后框是空的；`.rv-run` 是 disabled；`state/review` 里没有评审记录（桥没收到 `review.run`）。修前第 2 条红（`#661` 跟着过来），修后四条全绿。
 - `probes/github-card-review.mjs` 全绿（入口顺序那条决定没有把卡片路径弄坏）。
 - `npm --prefix web run typecheck` 通过（含 i18n、viewport、theme 三段）。
+
+## D405 更新日志改「阅读态」：桥端解析成结构化条目，页面与弹窗共用一套渲染（用户要求照 vibe-hub 的 changelog 重排，2026-11-25）
+
+**问题。** 设置 → 更新日志 那两页一直是「一坨 markdown」：pi 那一侧把上游 CHANGELOG 整篇塞进 `renderMarkdown`，本项目那一侧同样，只是前面多了颗开关。七十多批堆在一栏里，没有月份定位、没有类型区分、条目末尾的 `#671` / `D365` 是死文本 —— 用户想找「哪一版改掉了什么」只能从头翻。启动弹窗也画的是同一坨 markdown，与设置页长得不一样，两处要改文案得改两遍。
+
+**决定。**
+
+1. **桥端解析、页面只渲染。** `takeWhatsnew` 的返回值加了 `log: SelfLog`（`bridge/src/changelog.ts` 的 `parseSelfLog()`）与 `repo: {owner,name}`（`repoFromRemote()` 读 `git remote get-url origin`，只认 github.com）。页面不再自己解析 markdown：`GET /api/changelog?scope=self` 一次拿到批次、条目、类型、引用、月份计数、统计数字。
+2. **一条批次 = 一个 `LogBatch`**：`date`（`null` 表示未发布）、`title`、`intro`（首组之前那几行，`> ` 引用单独标记）、`groups`（`新增 / 修复 / 设计决定` 三种 kind，未知小节归 `新增`）、`items`（每条带 `refs`）。
+3. **引用是结构不是文字**：条目结尾的 ` #671` / ` D365` 从正文里摘出来变成 `refs: [{kind:"pr",n}, {kind:"d",n}]`，排成一排 chip —— PR 有仓库地址时是 `<a target="_blank">` 直开 GitHub，`D365` 是 `<button>`：先往对话里写一句「打开 docs/DECISIONS.md，搜 D365」，再走 `pi-preview` 打开那个文件。**不做行锚点**：`md.ts` 的标题不生成 id，`pi-preview` 也只认 `{path}`。
+4. **阅读态：这一页把设置的外壳拆掉。** `settingsTab` 是 `changelog` / `whatsnew` 时给 `.st-console` 挂 `data-reader="true"`，CSS 里藏 `.st-head` / `.st-foot` / `.st-dirty` / `.st-nav`、`.st-main` 收成单列、`.st-pane` 去掉内边距，`grid-template-rows` 钉成 `minmax(0,1fr)`（藏了头尾还不钉行数，`main` 会掉进 `auto` 行、不再自己滚 —— 这个坑在 D320 上踩过一次）。页面自己画「‹ 设置」返回（`chevron` 图标 CSS 转 180°）与右上 ✕；返回落在**进来之前那一格**（`settingsReturnTab`），因为阅读态没有左栏可点。
+5. **筛选按批不按条**：点「修复」只留含修复的批次，批内其它条目照常显示，月份计数跟着筛后的批次走；页头右上那排 pills 不挂数字（数字在左栏月份上）。
+6. **弹窗复用同一套条目**：`openWhatsnew` 拿 `log` 里 `headerOf(b) === batch.title` 找对应批次（桥那边 `decision.batch.title` 是 `## ` 那一行的**原文**，`未发布` 与 `日期 · 主题` 两种形状都要拼得回去），命中就用 `renderBatch()`，对不上（旧桥、日志刚改过）才退回原来的 markdown。两套画法用不同外层类名（`.whatsnew-md` 与 `.whatsnew-log`），否则 markdown 那套 12.5px 灰字会把主题行压下去。
+
+**为什么。** 解析放桥端而不是页面：同一份解析要给「页面」「弹窗」「未读判定（`seenTitle`）」三处用，放页面就要么复制三份、要么为弹窗再引一次页面模块；桥端一次算完，页面只做 DOM。chip 用真链接/真按钮而不是「看起来像链接的 span」：用户在日志里看到 `#671` 的第一反应就是点它，点了没反应比不可点更糟。
+
+**代价 / 可改。**
+
+- 开关与「上次看到」按用户要求挪到了**日志页最下方**（原来在页首，D358 当年写的理由是「翻到底要滚几十屏」）。按现在的数据那一页有 89 批、三万多像素高，页底确实很难自己滚到 —— 用户看过样张后仍然选了页底，接受这个代价。要改回页首只是一处 `page.append(this.whatsnewPrefs(out))` 的位置。
+- `repo` 依赖 `git remote get-url origin`：没有 remote（压缩包、离线副本）时 chip 退化成不可点的 `<span>`，D chip 不受影响。
+- 未发布批次的标题可能为空（`## 未发布`），此时页面上只有日期标签、没有主题行；弹窗认得出来靠的是「标题原文 = `未发布`」。
+- 左栏月份统计的是**筛后**的批次，而统计卡（批 / 条 / PR）仍是全局 —— 和参考站一致，但如果有人把它当「筛后条数」会读错。
+
+**验证。**
+
+- `node probes/changelog-page.mjs`（真桥 + 真 Chromium，十段）：阅读态外壳（头尾导航都不在、`data-reader` 在）、统计卡与自解析的 CHANGELOG 对得上（89 批 / 549 条 / 271 PR）、月份栏、PR 是 `<a href="…/pull/671">`、D chip 是 `<button>`、点「修复」后只剩含修复的批次（63 批）、点月份滚到那一批且圆点跟着高亮、`上次看到这里` 落在 `seenTitle` 那批下面、页底开关行是横条、150% 字号下无横向溢出且 ✕ 与开关行都还在 pane 里、pi 那侧仍是 markdown 且页头与正文同一条中线、`‹ 设置` 返回后 `data-reader` 摘掉、左栏与头部都回来。
+- `node probes/whatsnew-dialog.mjs` 全绿（弹窗改成结构化条目后，标题、日期、脚本重写等断言都按新选择器收紧）。
+- `node --experimental-strip-types --test bridge/tests/changelog-unit.mjs` 11 条（切批、分组、引用、引言、续行、月份、统计、空文件、CRLF+BOM、无标题日期、远程地址三种形状）+ `whatsnew-popup-unit.mjs` 10 条。
+- `npm --prefix web run typecheck`（tsc + i18n + viewport + layers + theme）通过。

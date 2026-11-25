@@ -15,6 +15,7 @@
 import { createEl as el } from "./chat.ts";
 import { icon } from "./icons.ts";
 import { tr } from "./i18n/index.ts";
+import { renderBatch, type LogBatch, type SelfLog } from "./changelog.ts";
 import { renderMarkdown } from "./md.ts";
 import { markSurface, mountOverlay, retireOverlay, trapEscape } from "./modal.ts";
 import "./whatsnew.css";
@@ -31,6 +32,9 @@ export interface WhatsnewClaim {
   older?: WhatsnewBatch[];
   /** 检出根：正文里的相对链接（`docs/DECISIONS.md`）按它解析。 */
   root?: string;
+  /** 桥解析好的整份日志：能按 `batch.title` 找到就画成带 chip 的条目，找不到就退回 markdown。 */
+  log?: SelfLog;
+  repo?: { owner: string; name: string } | null;
 }
 
 /** 排不上队就放弃的时限（D358）。从桥派发起算，不是从页面打开算。 */
@@ -66,6 +70,8 @@ export function queueWhatsnew(opts: WhatsnewQueueOptions): void {
             batch: claim.batch!,
             older: claim.older ?? [],
             root: claim.root ?? "",
+            log: claim.log,
+            repo: claim.repo ?? null,
             onOpenAll: opts.onOpenAll,
             openPath: opts.openPath,
           });
@@ -87,6 +93,9 @@ export interface WhatsnewDialogOptions {
   batch: WhatsnewBatch;
   older: WhatsnewBatch[];
   root: string;
+  /** 桥解析好的日志与仓库：有这两样就画成时间线里那种条目（日期、图标、引用 chip）。 */
+  log?: SelfLog;
+  repo?: { owner: string; name: string } | null;
   onOpenAll: () => void;
   openPath: (file: string, root: string) => void;
 }
@@ -122,23 +131,49 @@ export function openWhatsnew(opts: WhatsnewDialogOptions): void {
 
   const body = el("div", "whatsnew-body");
   body.append(el("div", "whatsnew-eyebrow", tr("这个检出里的更新日志")));
-  body.append(el("div", "whatsnew-title", opts.batch.title));
-  const md = el("div", "whatsnew-md settings-changelog");
-  const paint = (host: HTMLElement, batch: WhatsnewBatch): void => {
+  /**
+   * 两套画法共用同一个位置：桥给了 `log` 且标题对得上，就用设置页那套条目（日期 + 图标 + 引用
+   * chip）—— 两处长得一样；对不上（旧桥、日志刚被改写）就退回原来的 markdown。
+   *
+   * 对不上的根：弹窗那边的标题是 `## ` 那一行的原文（`2026-11-24 · 主题`），而解析结果把日期拆进了
+   * `date`。这里把日期拼回去再比，两边都不用改成「显示用的标题」。
+   */
+  // i18n-ignore-start 这里是拿来和 markdown 原文比对的字，不是界面文案：桥端标题就是 `## ` 那行
+  // 的原文，中文、不随界面语言变。
+  const headerOf = (b: LogBatch): string =>
+    b.unpublished ? (b.title ? `未发布 · ${b.title}` : "未发布") : `${b.date} · ${b.title}`;
+  // i18n-ignore-end
+  const structured = (title: string): LogBatch | undefined =>
+    opts.log?.batches.find((b) => headerOf(b) === title);
+  const paint = (batch: WhatsnewBatch): HTMLElement => {
+    const hit = structured(batch.title);
+    if (hit) {
+      // 两种画法的外层类名不同：`.whatsnew-md` 那套 h3 / p 排字是给 markdown 的，套到
+      // 结构化条目上会把主题行压成小灰字。
+      const host = el("div", "whatsnew-log");
+      host.append(
+        renderBatch(hit, {
+          repo: opts.repo ?? null,
+          // `D365` 只开文件：预览没有行锚点，跳不到那一行。
+          onOpenDecision: () => opts.openPath("docs/DECISIONS.md", opts.root),
+        }),
+      );
+      return host;
+    }
+    const host = el("div", "whatsnew-md settings-changelog");
     host.append(renderMarkdown(batch.body || tr("（这一批没有正文）"), { openPath: (file) => opts.openPath(file, opts.root) }));
+    return host;
   };
-  paint(md, opts.batch);
-  body.append(md);
+  body.append(paint(opts.batch));
 
   if (opts.older.length) {
     const more = el("details", "whatsnew-older") as HTMLDetailsElement;
     more.append(el("summary", "", tr("还有 {p1} 批更早的", { p1: String(opts.older.length) })));
     for (const batch of opts.older) {
       const one = el("div", "whatsnew-older__one");
-      one.append(el("div", "whatsnew-title whatsnew-title--small", batch.title));
-      const host = el("div", "whatsnew-md settings-changelog");
-      paint(host, batch);
-      one.append(host);
+      // 结构化条目自带主题行；退回 markdown 时才需要另外补一行标题。
+      if (!structured(batch.title)) one.append(el("div", "whatsnew-title whatsnew-title--small", batch.title));
+      one.append(paint(batch));
       more.append(one);
     }
     body.append(more);

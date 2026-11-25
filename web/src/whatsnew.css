@@ -36,6 +36,11 @@
 }
 .whatsnew-md a { color: var(--accent); }
 
+/* 结构化那一批（changelog.ts 的 renderBatch）：只管给它留白，排字全在 changelog.css。 */
+.whatsnew-log { padding: 2px 0 0; }
+.whatsnew-log .cl-batch { padding-bottom: 6px; }
+.whatsnew-log .cl-intro { margin-bottom: 8px; }
+
 /* 窄屏：和其它 sheet 一样铺满整屏（桌面那套居中卡片不受影响）。 */
 @media (max-width: 720px) {
   /*
