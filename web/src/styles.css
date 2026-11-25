@@ -5902,49 +5902,137 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-tl-at { flex: none; font-variant-numeric: tabular-nums; }
 .rv-scope .rv-tl-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 详情：一扇宽窗（左时间线、右结果）。窄了按自己的宽度改成上下叠。 */
-.rv-sheet {
+/* 详情：运行台（#651 第二版）—— 抬头 + 仪表（进度/用量/用时/正在读）+ 左日志按组折叠 + 右意见边跑边出 + 底栏 */
+/* settings-console.css 晚于本文件加载，它的 `.st-console`（grid + height: min(840px, 100%)）同权重会赢，
+   所以这里带两个类压回去：窗体是 flex 列，高度按 --vh1 给死，日志与意见各自滚。 */
+.st-console.rv-sheet {
   container-type: inline-size;
-  width: min(980px, 94%);
-  max-height: calc(var(--vh1) * 78);
-  display: flex; flex-direction: column; overflow: hidden;
+  display: flex; flex-direction: column;
+  width: min(1060px, 94%);
+  height: min(calc(var(--vh1) * 84), 880px);
+  max-height: calc(var(--vh1) * 84);
+  overflow: hidden;
 }
-.rv-sheet-head {
-  display: flex; gap: 12px; align-items: flex-start; justify-content: space-between;
-  padding: 14px 16px; border-bottom: 1px solid var(--line-soft);
-}
-.rv-sheet-headmain { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.rv-sheet-title { margin: 0; font-size: 15px; }
-.rv-sheet-meta { font-size: 11px; color: var(--faint); }
-.rv-chip { align-self: flex-start; font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--faint); }
+.rv-sheet-head { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; padding: 14px 16px 11px; }
+.rv-sheet-headmain { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.rv-sheet-eyebrow { font-size: 10.5px; letter-spacing: 0.02em; color: var(--faint); }
+.rv-sheet-titlerow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rv-sheet-title { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-sheet-meta { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-chip { flex: none; align-self: flex-start; font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--faint); white-space: nowrap; }
 .rv-chip[data-phase="running"] { color: var(--accent); border-color: var(--accent); }
 .rv-chip[data-phase="done"] { color: var(--ok); border-color: var(--ok); }
 .rv-chip[data-phase="failed"] { color: var(--danger); border-color: var(--danger); }
-.rv-sheet-body {
-  display: grid; grid-template-columns: minmax(200px, 0.85fr) minmax(0, 1.6fr);
-  gap: 14px; padding: 12px 16px 16px; min-height: 0; overflow: hidden;
-}
-.rv-sheet-col { min-width: 0; overflow: auto; max-height: calc(var(--vh1) * 54); }
-.rv-sheet-caption { font-size: 11px; color: var(--faint); margin-bottom: 6px; }
-.rv-sheet .rv-timeline { gap: 6px; }
-.rv-sheet .rv-tl { font-size: 12px; }
-.rv-sheet .rv-tl-text { white-space: normal; overflow: visible; }
+
+/* 仪表：三个数 + 一条分组进度，跑的时候先让人看见「到哪了」 */
+.rv-inst { flex: none; border-top: 0.5px solid var(--line-soft); border-bottom: 0.5px solid var(--line-soft); background: var(--panel-2); }
+.rv-inst[hidden] { display: none; }
+.rv-inst-cells { display: grid; grid-template-columns: 1.25fr 0.8fr 0.8fr; }
+.rv-inst-cell { min-width: 0; padding: 9px 16px 11px; }
+.rv-inst-cell + .rv-inst-cell { border-left: 0.5px solid var(--line-soft); }
+.rv-inst-label { font-size: 10px; color: var(--faint); }
+.rv-inst-big { display: flex; align-items: baseline; gap: 5px; min-width: 0; margin-top: 1px; }
+.rv-inst-big b { font-size: 19px; font-weight: 600; line-height: 1.2; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.rv-inst-big span { min-width: 0; font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-meter { display: flex; gap: 3px; height: 4px; margin-top: 7px; border-radius: 999px; overflow: hidden; background: var(--line-soft); }
+.rv-meter i { flex: 1 1 0; min-width: 2px; border-radius: 999px; background: var(--accent); }
+.rv-meter i[data-state="pending"] { background: transparent; }
+.rv-meter i[data-state="running"] { animation: pulse 1.6s ease-in-out infinite; }
+.rv-meter i[data-state="failed"] { background: var(--danger); }
+.rv-meter[data-empty="1"] i { background: var(--line); }
+
+.rv-cur { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 16px 7px; border-top: 0.5px solid var(--line-soft); font-size: 11.5px; color: var(--faint); }
+.rv-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--line); }
+.rv-dot.live { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.rv-cur[data-phase="failed"] .rv-dot, .rv-cur[data-phase="stopped"] .rv-dot { background: var(--danger); }
+.rv-cur[data-phase="done"] .rv-dot { background: var(--ok); }
+.rv-cur-label { flex: none; }
+.rv-cur-file { flex: 1 1 auto; min-width: 0; font: 11px/1.5 var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-cur-hint { flex: none; font-variant-numeric: tabular-nums; }
+
+.rv-sheet-body { display: grid; grid-template-columns: 300px minmax(0, 1fr); flex: 1 1 auto; min-height: 0; overflow: hidden; }
+/* 左栏：按组折叠的运行日志 */
+.rv-runlog { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 0.5px solid var(--line-soft); }
+.rv-runlog-cap { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 14px 7px; font-size: 10.5px; color: var(--faint); }
+.rv-runlog-count { font-variant-numeric: tabular-nums; }
+.rv-runlog-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 10px 10px; }
+.rv-stages { display: flex; flex-direction: column; gap: 1px; }
+.rv-stg-head { display: grid; grid-template-columns: 14px minmax(0, auto) minmax(0, 1fr) 10px; align-items: center; gap: 7px; width: 100%; padding: 6px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font-size: 11.5px; text-align: left; cursor: pointer; }
+.rv-stg-head:hover { background: var(--panel-2); }
+.rv-stg-ico { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; font-size: 9px; color: var(--faint); }
+.rv-stg[data-state="done"] .rv-stg-ico::before { content: "✓"; color: var(--ok); }
+.rv-stg[data-state="running"] .rv-stg-ico::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.rv-stg[data-state="failed"] .rv-stg-ico::before { content: "!"; color: var(--danger); }
+.rv-stg[data-state="pending"] .rv-stg-ico::before { content: "·"; }
+.rv-stg-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-stg[data-state="pending"] .rv-stg-label { color: var(--faint); }
+.rv-stg-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.rv-chev { justify-self: end; width: 7px; height: 7px; border-right: 1.2px solid var(--faint); border-bottom: 1.2px solid var(--faint); transform: rotate(-45deg); transition: transform 150ms ease; }
+.rv-stg[data-open="1"] .rv-chev { transform: rotate(45deg); }
+.rv-stg[data-state="pending"] .rv-chev { opacity: 0; }
+.rv-stg-body { display: flex; flex-direction: column; gap: 3px; padding: 2px 6px 8px 21px; }
+.rv-rl { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 6px; font-size: 11px; line-height: 1.5; color: var(--faint); }
+.rv-rl-at { font-variant-numeric: tabular-nums; }
+.rv-rl-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-rl-now .rv-rl-tx { color: var(--accent); }
+.rv-rl-quiet { opacity: 0.7; }
+
+/* 右栏：意见 */
+.rv-find { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.rv-find-cap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 16px 7px; font-size: 10.5px; color: var(--faint); }
+.rv-find-count { padding: 0 5px; border-radius: 999px; background: var(--panel-2); color: var(--dim); font-size: 10px; font-variant-numeric: tabular-nums; }
+.rv-find-count[data-live="1"] { background: var(--accent-bg); color: var(--accent); }
+.rv-filters { margin-left: auto; min-width: 0; }
+.rv-filters-in { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.rv-filter { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border: 0.5px solid var(--line); border-radius: 999px; background: transparent; color: var(--faint); font-size: 10.5px; cursor: pointer; }
+.rv-filter[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
+.rv-filter-n { font-variant-numeric: tabular-nums; opacity: 0.8; }
+.rv-filter-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--line); }
+.rv-filter[data-sev="all"] .rv-filter-dot { display: none; }
+.rv-filter[data-sev="critical"] .rv-filter-dot { background: var(--danger); }
+.rv-filter[data-sev="high"] .rv-filter-dot { background: var(--warn); }
+.rv-filter[data-sev="medium"] .rv-filter-dot { background: var(--warn); opacity: 0.7; }
+.rv-find-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 16px 14px; }
+.rv-find-list { display: flex; flex-direction: column; gap: 10px; }
 .rv-sheet .rv-findings { display: flex; flex-direction: column; gap: 10px; }
 /* 宽窗里不用省略号：一条意见的正文就该整句读得完 */
 .rv-sheet .rv-line .rv-text { white-space: normal; overflow: visible; }
 .rv-sheet .rv-file-head { font-size: 12px; }
+/* 详情窗里的意见是「卡」：一文件一卡，左侧一条严重度色条，点开的正文不再飘 */
+.rv-sheet .rv-file { padding: 9px 11px 5px; border: 0.5px solid var(--line-soft); border-radius: 10px; background: var(--panel); }
+.rv-sheet .rv-file-head { padding: 0 2px 4px; }
+.rv-sheet .rv-finding { position: relative; border-left: 2px solid transparent; border-radius: 0 8px 8px 0; }
+.rv-sheet .rv-finding[data-sev="critical"] { border-left-color: var(--danger); }
+.rv-sheet .rv-finding[data-sev="high"] { border-left-color: var(--warn); }
+.rv-sheet .rv-finding[data-sev="medium"] { border-left-color: var(--warn); opacity: 0.9; }
+.rv-sheet .rv-finding[data-sev="low"] { border-left-color: var(--line); }
+.rv-sheet .rv-finding.open { background: var(--panel-2); }
 .rv-sheet .rv-code { max-height: 260px; }
-@container (max-width: 680px) {
-  .rv-sheet-body { grid-template-columns: minmax(0, 1fr); }
-  .rv-sheet-col { max-height: calc(var(--vh1) * 26); }
+.rv-pending { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; }
+.rv-pending-label { font-size: 11.5px; }
+.rv-pending-meta { font-size: 10.5px; color: var(--faint); }
+.rv-skel { flex: 1 0 100%; height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--panel-2), var(--line-soft), var(--panel-2)); background-size: 200% 100%; animation: rv-skel 1.6s linear infinite; }
+@keyframes rv-skel { to { background-position: -200% 0; } }
+
+/* 底栏：批量交给 agent 钉在底下，不用滚到一堆意见之后才找得到 */
+.rv-sheet-foot { flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: space-between; padding: 8px 16px; border-top: 0.5px solid var(--line-soft); background: var(--panel-2); }
+.rv-foot-stats { flex: none; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+@container (max-width: 700px) {
+  .rv-sheet-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .rv-runlog { order: 2; max-height: calc(var(--vh1) * 22); border-right: 0; border-top: 0.5px solid var(--line-soft); }
+  .rv-inst-cells { grid-template-columns: 1fr 1fr; }
+  .rv-inst-cell:nth-child(3) { display: none; }
+  .rv-find-cap { align-items: flex-start; }
 }
 
 /* ---------------------------------------------------------------- 评审：批量交给 agent / PR 信息 (#651) */
-.rv-sheet .rv-bulk { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 10px; }
-.rv-sheet .rv-bulk-btn { font-size: 12px; padding: 3px 8px; }
-.rv-sheet .rv-bulk-btn.all { color: var(--accent); border-color: var(--accent); }
-.rv-sheet .rv-bulk-btn.critical { color: var(--danger); }
-.rv-sheet .rv-bulk-btn.high { color: var(--warn); }
+.rv-bulk { min-width: 0; }
+.rv-bulk-in { display: flex; flex-wrap: wrap; gap: 6px; }
+.rv-bulk-btn { font-size: 11.5px; padding: 3px 8px; }
+.rv-bulk-btn.all { color: var(--accent); border-color: var(--accent); }
+.rv-bulk-btn.critical { color: var(--danger); }
+.rv-bulk-btn.high { color: var(--warn); }
 
 .pr-sheet { container-type: inline-size; width: min(1040px, 94%); }
 .pr-sheet-body {

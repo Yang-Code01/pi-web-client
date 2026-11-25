@@ -13,6 +13,7 @@ import { fmtTime, tr } from "./i18n/index.ts";
 
 import type {
   ReviewFinding,
+  ReviewGroupPlan,
   ReviewMark as Mark,
   ReviewMode,
   ReviewOcrStatus as OcrStatus,
@@ -84,9 +85,15 @@ export interface ReviewView {
   prAll: number;
   prQuery: string;
   prMenuOpen: boolean;
-  /** 时间线：桥每做一件事加一行。 */
-  timeline: { at: number; text: string }[];
+  /** 时间线：桥每做一件事加一行。`group` = 属于第几组（准备阶段的没有）。 */
+  timeline: { at: number; text: string; group?: number }[];
   group: { index: number; total: number } | null;
+  /** 分组计划：每组几个文件、出了几条、跑没跑完（老桥没有，就是空数组）。 */
+  plan: ReviewGroupPlan[];
+  /** PR 的标题（`pr` 模式才有）。 */
+  prTitle: string;
+  prHead: string;
+  prBase: string;
   /** 这一次跑了多久（跑着时按现在算）。 */
   elapsedMs: number | null;
   /** 有没有「这一次」可看：（正在跑也算）。 */
@@ -104,6 +111,8 @@ export interface ReviewView {
   resolved: number;
   resolvedPaths: string[];
   history: number;
+  /** 这次评审碰到过多少文件（进度帧没了之后仍然要能画分段条与「N / M 个文件」）。 */
+  runFiles: { reviewed: number; total: number; tokens: number };
 }
 
 const RANK: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -197,7 +206,7 @@ export function reviewView(input: ReviewInput): ReviewView {
   else if (latest.status === "stale") phase = "stale";
   else phase = "failed";
 
-  const findings = (latest?.findings ?? []).map((f) => {
+  const findings = (input.progress?.findings?.length ? input.progress.findings : latest?.findings ?? []).map((f) => {
     const key = f.key || "";
     return { ...f, key, severity: f.severity ?? "low", mark: (f.mark || marks[key] || "") as Mark | "" };
   });
@@ -260,6 +269,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     input.progress && input.progress.groups
       ? { index: input.progress.group || 0, total: input.progress.groups }
       : null;
+  const plan = [...(input.progress?.plan?.length ? input.progress.plan : latest?.plan ?? [])];
   const startedAt = input.progress?.startedAt || latest?.startedAt || "";
   const elapsedMs = running
     ? Math.max(0, Date.now() - (Date.parse(startedAt) || Date.now()))
@@ -310,6 +320,10 @@ export function reviewView(input: ReviewInput): ReviewView {
     prMenuOpen: Boolean(input.prMenuOpen),
     timeline: log,
     group,
+    plan,
+    prTitle: latest?.prTitle ?? "",
+    prHead: latest?.prHead ?? "",
+    prBase: latest?.prBase ?? "",
     elapsedMs,
     hasRun: Boolean(latest),
     prsLoading: Boolean(input.prsLoading),
@@ -324,6 +338,11 @@ export function reviewView(input: ReviewInput): ReviewView {
     resolved: latest?.resolved?.length ?? 0,
     resolvedPaths: latest?.resolvedPaths ?? [],
     history: state?.runs?.length ?? 0,
+    runFiles: {
+      reviewed: latest?.reviewedFiles ?? 0,
+      total: latest?.totalFiles ?? 0,
+      tokens: latest?.tokens ?? 0,
+    },
   };
 }
 
@@ -439,6 +458,7 @@ export function renderFindings(input: ReviewPanelInput): HTMLElement {
     for (const f of group.findings) {
       const row = el("div", "rv-finding");
       row.dataset.key = f.key;
+      row.dataset.sev = f.severity;
       const line = el("button", "rv-line") as HTMLButtonElement;
       line.type = "button";
       line.append(severityBadge(f.severity, input.severityLabels));
