@@ -7969,3 +7969,24 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - `bridge/tests/netroute-unit.mjs`（纯逻辑）：代理 URL 归一；Windows 的两种 `ProxyServer` 写法与 macOS `scutil` 解析；候选顺序与去重且**没有默认端口兜底**；`readPiHttpProxy()` 读临时 `PI_AGENT_DIR`；`directEnv()` 摘 6 个代理变量但不动 `NO_PROXY`；`proxyEnv()` 同写 6 个名字；`parseListeners()` 三家输出（netstat / lsof / ss）与通配归一；`probeHttpProxy()` 对真 TCP 服务验 200 / 407 / 404 / 哑端口；`discoverLocalProxies()` 的端口序、限额、探测抛异常；`viaRoutes()` 的直连短路（不探代理）、候选顺序、**现探只在候选全挂后调用一次**、现探与已配重复时不重试、`discover` 抛错不进错误汇总、整轮重试与原因汇总、无候选不重试、单次超时被预算夹住、attempt 抛异常算失败。
 - `bridge/tests/gitpr-fetch-route-e2e.mjs`（真 git，离线）：坏 origin（`info/refs` 正常、POST `git-upload-pack` 回 200 后重置 TCP）复现用户那句 stderr；配好 `httpProxy` 时 `fetchPullRequestRef()` 自己绕到正向代理上把 `refs/pull/636/head` 取回且与被评提交一致；没配代理时报错里带 `直连：error: RPC failed; curl 56 Recv failure: Connection was reset`；谁都没配时靠现探那一步把提交取回来。
 - 真机：`listListeners()` 在本机列出 50 个环回监听，`discoverLocalProxies()` 只用 696ms 就从中认出 `http://127.0.0.1:7899`（唯一命中）；`PI_AGENT_DIR=<临时目录，httpProxy=http://127.0.0.1:7899>` 下 `resolvePullRequest(<本仓>, 636)` 取回 `refs/pi-web/pr-636`（3.7s）；`npm --prefix bridge run typecheck` 通过。
+
+## D403 评审面板「评什么」属于会话：换会话就整组回默认值（#674，2026-11-25）
+
+**问题。** 用户报「评审信息串会话」：在会话 A 把 PR 号填成 `#661`，切到会话 B（另一个仓库）打开右栏第四颗页签，号还在。点「开始评审」，桥会拿 `#661` 去评 B 目录的仓库 —— 号碰巧存在就出事更糟：得到一份**看起来正常**的别人的结论，没有任何报错。根因是 `syncReviewSession()` 只清了「响应 / 进度」那一半（`reviewState`、`reviewProgress`、`reviewError`…），输入区那组字段（`reviewMode / reviewBase / reviewTarget / reviewCommit / reviewPr / reviewPrQuery / reviewPrInfo / reviewPrs* / reviewRepo / reviewRemoteRepo / reviewRefs`）是 App 级的，从没被清。
+
+**决定。**
+
+1. **「评什么」= 会话级**：切会话（或会话目录变了）时整组复位到默认值 —— PR 模式、base `main`、target `HEAD`、号为空、`prInfo` 空、PR 列表 / 仓库名 / 分支名册作废。复位点就是 `syncReviewSession()`，它已经是面板每次渲染的第一句；不新增第二处「记得清一下」的地方。
+2. **偏好不在此列**：`reviewModel`（模型选择）、`reviewOcr / reviewInstalling / reviewInstallLog`（这台机器装没装 ocr）跨会话保留 —— 它们是人的偏好和机器事实，不是「这一次评什么」。
+3. **列表与分支名册一起作废**：`reviewPrsAsked` 清空后，切过去打开页签会为新目录重新拉一遍（`loadPullRequests`）；否则会把上个仓库的 PR 列表画在新会话上。列表到达时「没选过就挑第一项」的顺手逻辑保留，它挑的是**新目录**的第一个 PR。
+4. **入口要先结算再赋值**：`openReviewForPull()`（链接卡那颗「代码评审」）在赋值前显式调一次 `syncReviewSession()`。首次画面板时 `reviewSessionKey` 还是空的，那里的复位会把刚设的号当成残留清掉 —— 于是「点卡片 → 号没了」。`reviewExpectRepo` 原本就有同类顺序约定（放在切页签之后设）。
+
+**为什么。** 不做「每个会话各自记住上次填的号」：那需要按 `sessionId|cwd` 存一份 map，还要决定什么时候过期，换来的是「切走再回来号还在」这点便利 —— 而这个 bug 的代价是**静默评错对象**，任何一点不确定性都不值得保留。默认值本身是安全的：没号时 `.rv-run` 是灰的，`startReview()` 也会拦一道。
+
+**代价 / 可改。** 切走再回来，刚填的号、刚选的范围都没了（要重新填一次，或从 PR 列表点一个）。列表与 refs 会多拉一次（每个会话一次，本来也是要拉的）。
+
+**验证。**
+
+- `probes/review-session-leak.mjs`（`npm run probe:review-session`）：真桥 + 假 gh + 真 Chromium，两个不同仓库的会话来回切 —— A 里填成 `#661`；切到 B 后框是空的；`.rv-run` 是 disabled；`state/review` 里没有评审记录（桥没收到 `review.run`）。修前第 2 条红（`#661` 跟着过来），修后四条全绿。
+- `probes/github-card-review.mjs` 全绿（入口顺序那条决定没有把卡片路径弄坏）。
+- `npm --prefix web run typecheck` 通过（含 i18n、viewport、theme 三段）。
