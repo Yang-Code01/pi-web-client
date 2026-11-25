@@ -8128,7 +8128,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **验证。** `node --experimental-strip-types --test web/tests/ask-text-unit.mjs` 12 项（折行 / 真换行不误伤 / 空串 / 切段 / 不配对反引号 / 纯代码 / 先切后折 / 反引号内不折 / 混合情形 / 等长串配对 / 连续三枚 / 落单的一枚），`web/tests/ask-tab-unit.mjs` + `ask-card-unit.mjs` 共 24 项不回归，`npm --prefix web run typecheck`（含 i18n-check、视口单位与层叠守卫，以及新挂进链里的 `ask-text-unit`）与 `npm --prefix web run build` 通过。单测另有根脚本 `npm run test:ask-text`，与 `test:ask-tab` / `test:ask-card` 同一口径。
 
-## D409 PR 详情面板排成「一篇短报告」：描述全文摊开，数字收进署名行（D409 之前的面板是「hero 卡 + 四格数字」）
+## D409 PR 详情面板排成「一篇短报告」：描述全文摊开，数字收进署名行（#682；用户 2026-11-25「如图是 pr 展开面板。重新设计一下」）
 
 **问题。** 用户拿 #640 的详情截图说「重新设计一下」。560px 宽的面板里：hero 卡把标题、状态、作者、分支、checks 挤成五行，描述被塞进 `max-height:150px` 的滚动框，正好切在半行字上；紧接的四格数字（文件 / 增 / 删 / 评论）占掉四分之一屏高，说的却是署名行一行能说完的事；8 个文件每行都挂一遍「在 GitHub 看 ↗」；评论只露最后一条，后面跟一句死的「还有 1 条」；「示例数据」在 hero 与评论区各标一次，于是两处都没人当回事。
 
