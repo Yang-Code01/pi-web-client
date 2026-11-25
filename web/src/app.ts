@@ -19,6 +19,7 @@ import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { cardPieces } from "./ask-text.ts";
+import { shouldFoldPaste } from "./paste.ts";
 import { renderMarkdown } from "./md.ts";
 import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, trElapsed, trNote, trPendingHead, type TrAct, type TrView } from "./translateview.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
@@ -1838,10 +1839,17 @@ export class App {
     window.addEventListener("paste", (ev) => this.onPaste(ev));
     // Drop files anywhere on the chat while a session is open.
     window.addEventListener("dragover", (ev) => {
-      if (this.currentId && ev.dataTransfer?.types.includes("Files")) ev.preventDefault();
+      if ((this.currentId || this.scratch.isOpen) && ev.dataTransfer?.types.includes("Files")) ev.preventDefault();
     });
     window.addEventListener("drop", (ev) => {
-      if (!this.currentId || !ev.dataTransfer?.files.length || document.querySelector(".modal")) return;
+      if (!ev.dataTransfer?.files.length || document.querySelector(".modal")) return;
+      // 随手问开着：拖进来的图归它（它只收图片，别的会在它那行说明）。
+      if (this.scratch.isOpen) {
+        ev.preventDefault();
+        void this.scratch.attachFiles(Array.from(ev.dataTransfer.files));
+        return;
+      }
+      if (!this.currentId) return;
       ev.preventDefault();
       const { images, others } = splitImages(Array.from(ev.dataTransfer.files));
       if (images.length) void this.addImages(images);
@@ -13268,7 +13276,7 @@ export class App {
     input.onpaste = (ev) => {
       // A big paste becomes its own folded block, so what you type next stays separate and visible.
       const pasted = ev.clipboardData?.getData("text/plain") ?? "";
-      if (pasted.split("\n").length < PASTE_LINES && pasted.length < PASTE_CHARS) return;
+      if (!shouldFoldPaste(pasted)) return;
       ev.preventDefault();
       ev.stopPropagation();
       this.pastes.push({ text: pasted.replace(/\r\n/g, "\n"), open: false });
@@ -18225,8 +18233,14 @@ export class App {
    * 焦点在别的输入框（重命名、口令框）或弹窗里时不抢。
    */
   private onPaste(ev: ClipboardEvent): void {
-    if (!this.currentId || document.querySelector(".modal")) return;
+    if (document.querySelector(".modal")) return;
     const target = ev.target as HTMLElement | null;
+    // 随手问开着：眼前只有它一个输入框，粘贴就该落到它身上（框里的粘贴由它自己的 handler 收，这里不重收）。
+    if (this.scratch.isOpen) {
+      if (!target?.closest(".scratch-sheet")) this.scratch.paste(ev);
+      return;
+    }
+    if (!this.currentId) return;
     const targetTag = target?.tagName ?? "";
     const editable = targetTag === "INPUT" || targetTag === "TEXTAREA" || Boolean(target?.isContentEditable);
     if (editable && target !== this.textarea) return;
@@ -23529,10 +23543,6 @@ function permMode(id: string): PermMode {
 
 type PasteBlock = { text: string; open: boolean };
 type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
-
-/** A paste this long (lines or characters) becomes its own foldable block. */
-const PASTE_LINES = 6;
-const PASTE_CHARS = 400;
 
 /** D163: 附件弹层按会话记目录，最多留这么多条（删掉的会话不该一直占着键）。 */
 const ATTACH_DIR_INDEX = "pi.attachDir.index";
