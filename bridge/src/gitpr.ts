@@ -53,11 +53,20 @@ function run(cmd: string, args: string[], cwd: string, timeout = 20_000, env: No
   });
 }
 
-function firstLine(text: string): string {
-  return `${text}`
+/**
+ * stderr 里真正说明失败的那一行。
+ *
+ * `git fetch` 的 stderr 开头常是 `remote: Enumerating objects…` / `Counting objects…` 这类
+ * 服务端进度 —— 拿首行当原因，用户就看不到后面那句 `error: RPC failed; curl 56 …`。先挑
+ * `fatal:` / `error:`（含 `remote: error: …`），一句都没有才退回第一行。
+ */
+const FAILURE_LINE = /(?:^|\s)(?:fatal|error):/i;
+function failureLine(text: string): string {
+  const lines = `${text}`
     .split(/\r?\n/)
     .map((l) => l.trim())
-    .find(Boolean) ?? "";
+    .filter(Boolean);
+  return lines.find((l) => FAILURE_LINE.test(l)) ?? lines[0] ?? "";
 }
 
 /**
@@ -90,7 +99,7 @@ async function routed(
     async (env, timeoutMs) => {
       const out = await run(cmd, args, cwd, timeoutMs, env);
       if (out.code === 0) return { ok: true, value: out };
-      return { ok: false, err: firstLine(out.stderr) || `${cmd} 退出码 ${out.code}` };
+      return { ok: false, err: failureLine(out.stderr) || `${cmd} 退出码 ${out.code}` };
     },
     {
       proxies: opts.proxies ?? resolveProxyCandidates,

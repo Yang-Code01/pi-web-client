@@ -135,9 +135,10 @@ export function proxyCandidates(env: NodeJS.ProcessEnv = process.env, extra: { h
   return out;
 }
 
-/** 真跑时用的那份：先把 pi 设置与系统代理读出来，再交给 `proxyCandidates()` 排序。 */
-export function resolveProxyCandidates(): string[] {
-  return proxyCandidates(process.env, { httpProxy: readPiHttpProxy(), system: systemProxyCandidates() });
+/** 真跑时用的那份：先把 pi 设置与系统代理读出来，再交给 `proxyCandidates()` 排序。
+ * `env` 可注入：单测传一个干净的环境，别让本机挂的 `ALL_PROXY` 之类混进断言。 */
+export function resolveProxyCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+  return proxyCandidates(env, { httpProxy: readPiHttpProxy(), system: systemProxyCandidates() });
 }
 
 // ---------------------------------------------------------------------------
@@ -157,9 +158,12 @@ const WILDCARD = /^(?:0\.0\.0\.0|::|\*)$/;
 function toListener(rawHost: string, rawPort: string): Listener | null {
   const port = Number(rawPort);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
-  if (WILDCARD.test(rawHost)) return { host: "127.0.0.1", port };
-  if (!LOOPBACK.test(rawHost)) return null;
-  return { host: rawHost, port };
+  // netstat / lsof / ss 的 IPv6 一律带方括号（`[::1]:7899`）：先摘掉再比，否则 `::1`
+  // 这条永远是死代码。`Listener.host` 保持裸地址，直接给 net.connect 用；拼 URL 时再补括号。
+  const host = rawHost.replace(/^\[(.+)\]$/, "$1");
+  if (WILDCARD.test(host)) return { host: "127.0.0.1", port };
+  if (!LOOPBACK.test(host)) return null;
+  return { host, port };
 }
 
 /**
@@ -260,7 +264,9 @@ export async function discoverLocalProxies(
   );
   const out: string[] = [];
   for (const { listener, ok } of verdicts) {
-    const proxy = ok ? normalizeProxy(`${listener.host}:${listener.port}`) : "";
+    // IPv6 拼 URL 必须带方括号（`http://[::1]:7899`），`net.connect` 那边则要裸地址。
+    const host = listener.host.includes(":") ? `[${listener.host}]` : listener.host;
+    const proxy = ok ? normalizeProxy(`${host}:${listener.port}`) : "";
     if (proxy && !out.includes(proxy)) out.push(proxy);
   }
   return out;
@@ -336,6 +342,11 @@ const seconds = (ms: number) => {
   return `${Number.isInteger(s) ? s : s.toFixed(1)}s`;
 };
 
+/** 异常 → 一句人话。用 `unknown` 接住，不必为了读 `.message` 把 catch 放宽成 any。 */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * 依次试：直连 → 每个代理候选 → 还没有就现探本机代理 → 全都失败时（且确实有代理可试）
  * 等一会儿再整轮来一次，总时长封顶 `budgetMs`。
@@ -368,8 +379,8 @@ export async function viaRoutes<T>(
     let res: { ok: true; value: T } | { ok: false; err: string };
     try {
       res = await attempt(env, slice);
-    } catch (err: any) {
-      res = { ok: false, err: String(err?.message ?? err) || "未知错误" };
+    } catch (err: unknown) {
+      res = { ok: false, err: errorText(err) || "未知错误" };
     }
     if (res.ok) return res.value;
     const reason = String(res.err ?? "").trim() || "失败（没有输出）";
@@ -406,9 +417,9 @@ export async function viaRoutes<T>(
       log("没有可用的代理配置，探一下本机在听什么");
       try {
         discovered = await opts.discover();
-      } catch (err: any) {
+      } catch (err: unknown) {
         discovered = [];
-        log(`探测本机代理失败：${String(err?.message ?? err) || "未知错误"}`);
+        log(`探测本机代理失败：${errorText(err) || "未知错误"}`);
       }
       log(discovered.length ? `本机探到 ${discovered.length} 个代理：${discovered.join("、")}` : "本机没探到在听的代理");
     }

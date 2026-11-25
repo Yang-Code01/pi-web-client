@@ -99,7 +99,7 @@ await check("readPiHttpProxy：读 PI_AGENT_DIR 下的 settings.json，缺文件
     assert.equal(readPiHttpProxy(), "http://127.0.0.1:7899");
     fs.writeFileSync(path.join(dir, "settings.json"), "{ 这不是 json");
     assert.equal(readPiHttpProxy(), "");
-    const list = resolveProxyCandidates();
+    const list = resolveProxyCandidates(env());
     assert.ok(list.every((p) => p.startsWith("http")), `候选都要是完整 URL：${list.join(",")}`);
     assert.equal(new Set(list).size, list.length, "候选不许重复");
   } finally {
@@ -238,8 +238,14 @@ await check("parseListeners：netstat / lsof / ss 三家都解，通配归一到
   const mac = ["p1234", "nTCP", "n127.0.0.1:7899", "n[::1]:8080", "n*:61000"].join("\n");
   assert.deepEqual(parseListeners(mac, "darwin"), [
     { host: "127.0.0.1", port: 7899 },
+    { host: "::1", port: 8080 },
     { host: "127.0.0.1", port: 61000 },
   ]);
+  // Windows netstat / Linux ss 的 IPv6 同样带方括号：方括号只是输出格式，不当成地址的一部分。
+  assert.deepEqual(parseListeners("  TCP    [::1]:7898            [::]:0                 LISTENING       1240", "win32"), [
+    { host: "::1", port: 7898 },
+  ]);
+  assert.deepEqual(parseListeners("LISTEN 0 4096 [::1]:7897 [::]:*", "linux"), [{ host: "::1", port: 7897 }]);
   const linux = ["State Recv-Q Send-Q Local Address:Port Peer Address:Port", "LISTEN 0 4096 0.0.0.0:7899 0.0.0.0:*", "LISTEN 0 128 10.1.2.3:5432 0.0.0.0:*"].join("\n");
   assert.deepEqual(parseListeners(linux, "linux"), [{ host: "127.0.0.1", port: 7899 }]);
 });
@@ -278,6 +284,11 @@ await check("discoverLocalProxies：只交回探测通过的，按端口序，�
     return port === 7899;
   };
   assert.deepEqual(await discoverLocalProxies({ listeners: () => listeners, probe }), ["http://127.0.0.1:7899"]);
+  assert.deepEqual(
+    await discoverLocalProxies({ listeners: () => [{ host: "::1", port: 7899 }], probe }),
+    ["http://[::1]:7899"],
+    "IPv6 代理 URL 要带方括号，否则不是合法 URL",
+  );
   assert.deepEqual(await discoverLocalProxies({ listeners: () => listeners, probe, limit: 2 }), ["http://127.0.0.1:7899"]);
   assert.deepEqual(await discoverLocalProxies({ listeners: () => [], probe }), []);
 });
