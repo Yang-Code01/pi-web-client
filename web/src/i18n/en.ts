@@ -783,7 +783,7 @@ export const en: Dict = {
   "{p1} 个 · {p2}": "{p1} items · {p2}",
   "{p1} 个文件": "{p1} files",
   "{p1} 个没有写入前原文": "{p1} without a copy from before the writes",
-  "左栏按状态 / 来源筛选；点一行看它的改动，没有改动可比的直接在预览里打开": "Filter by status or source on the left. Click a row to see its changes; if there's nothing to compare, it opens in preview.",
+  "左栏按状态 / 来源筛选；点一行看它的改动，右边的「预览」直接在查看器里打开": "Filter by status or source on the left. Click a row to see its changes; the “Preview” button on the right opens it in the viewer.",
   "j / k 换文件 · ← / → 换 hunk · Esc 关闭": "j / k switch file · ← / → next hunk · Esc to close",
   "二进制文件，只记了大小：{p1} → {p2}": "Binary file — only the size is recorded: {p1} → {p2}",
   "和写入前相比没有变化。": "No change since before the write.",

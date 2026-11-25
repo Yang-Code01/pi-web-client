@@ -2758,8 +2758,8 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .art-est { font-size: 10px; color: var(--warn); white-space: nowrap; }
 .st-console.art-sheet .art-go,
 .st-console.art-sheet .art-open {
-  flex: none; padding: 2px 8px; font-size: 11px; line-height: 1.5; white-space: nowrap;
-  border: 1px solid var(--line); border-radius: 6px; background: transparent;
+  flex: none; padding: 2px 8px; font-family: inherit; font-size: 11px; line-height: 1.5; white-space: nowrap;
+  border: 1px solid var(--line); border-radius: 6px; background: transparent; cursor: pointer;
 }
 .st-console.art-sheet .art-go { color: var(--accent); border-color: var(--accent-dim); }
 .st-console.art-sheet .art-open { color: var(--dim); }
@@ -2788,6 +2788,9 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 
 /* D208 C 方案：独立 diff 弹窗（左栏换文件 + 左右对照）。 */
 .diff-sheet { height: calc(var(--vh1) * 86); max-height: calc(var(--vh1) * 88); }
+/* 差分子层（m00341）：压在产物列表上开，关掉就回到列表。宽度自己给：
+   `.sheet-sub-back` 是居中不是贴底，不给宽度就按内容长。 */
+.sheet-sub-back > .diff-sheet { width: min(920px, calc(var(--vw1) * 96)); }
 @media (min-width: 760px) {
   /* 宽度要自己开：默认的 560px 扣掉 208px 左栏后一边只剩 ~130px，一行代码只能看到十来个字——
      左右对照在那个宽度下不成立。窄屏不给这个宽度：那里本来就回到全宽单列（见文件末尾的媒体查询）。 */
