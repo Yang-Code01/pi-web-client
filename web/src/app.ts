@@ -4355,7 +4355,7 @@ export class App {
     chatPanel.append(
       this.stRow(
         tr("输入框上方的「重讲」"),
-        tr("默认开。关掉后输入框上面那一行不再出现；随时可以在这里打开"),
+        tr("先提供上下文，再用简体技术中文说明。默认开；关掉后输入框上面那一行不再出现"),
         this.stSwitch(hintBox),
       ),
     );
@@ -17126,11 +17126,7 @@ export class App {
     btn.type = "button";
     btn.append(el("span", "glyph", "↻"), el("span", "", tr("重讲")));
     btn.onclick = () => this.retellLastAnswer();
-    bar.append(
-      el("span", "retell-lead", tr("没看懂最后一条回答？")),
-      btn,
-      el("span", "retell-sub", tr("先提供上下文，再用简体技术中文说明")),
-    );
+    bar.append(el("span", "retell-lead", tr("没看懂最后一条回答？")), btn);
     this.retellBar = bar;
     this.retellBtn = btn;
     return bar;
