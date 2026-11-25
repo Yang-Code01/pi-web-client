@@ -9,6 +9,8 @@
  *   5. 描述走 renderMarkdown：h2 与行内 code 都成了真元素。
  *   6. 状态看 `merged` 而不是 `state`：已合并的 PR 说「已合并」，不说「已关闭」。
  *   7. 一个检查都没有（没开 CI 的仓库）就不画 checks 那一段，不出现「0/0」。
+ *   8. 桥说没读全（`checksTruncated` / `commentsTruncated`）时，checks 后面跟一句「还有更多」、评论标题后面说列表不全；
+ *      读全了这两个补语都不出现。
  *   8. 行内评论带「文件:行」小标，评论正文走 markdown。
  *
  * Run: npm run build && node probes/pr-detail-layout.mjs
@@ -145,6 +147,8 @@ const DETAIL = {
 const MERGED = { ...DETAIL, state: "closed", merged: true, mergedAt: new Date(Date.now() - 60_000).toISOString() };
 /** 没开 CI 的仓库：桥回空数组。 */
 const NO_CI = { ...DETAIL, checks: [], comments: [] };
+/** 桥翻页没读全（中途出错、或翻到页数上限）：条数只是下限，面板要把话说出来。 */
+const TRUNCATED = { ...DETAIL, checksTruncated: true, commentsTruncated: true };
 
 // ---------------------------------------------------------------- 桥
 
@@ -216,6 +220,10 @@ try {
   check("hero 卡没了", (await page.locator(".ghp-hero").count()) === 0);
   check("四格数字没了", (await page.locator(".ghp-stats").count()) === 0);
   check("「示例数据」不再出现（checks 与评论都是真数据）", (await page.locator(".ghp .ghp-sample").count()) === 0);
+  check(
+    "读全了就不说「还有更多」/「列表不全」",
+    (await page.locator(".ghp-kicker-more").count()) === 0 && (await page.locator(".ghp-h-more").count()) === 0,
+  );
 
   const kicker = (await page.locator(".ghp-kicker").innerText()).replace(/\s+/g, " ");
   check("打开的 PR：kicker 说「打开」", kicker.includes("打开") && !kicker.includes("已合并") && !kicker.includes("已关闭"), kicker);
@@ -304,6 +312,19 @@ try {
   check("没有检查时不画 checks 那一段（不出现 0/0）", !noCiKicker.includes("checks") && (await page.locator(".ghp-kicker-checks").count()) === 0, noCiKicker);
   check("没有评论时不画讨论区", (await page.locator(".ghp-commentsec").count()) === 0);
   await page.locator(".ghp").screenshot({ path: path.join(SHOTS, "pr-detail-no-ci.png") });
+
+  // ------------------------------------------------ 8) 没读全：把话说出来，不让条数冒充全貌
+  detailNow = TRUNCATED;
+  await page.locator(".ghp .ghp-close").click();
+  await until(async () => (await page.locator(".ghp").count()) === 0, 5000, "面板关掉");
+  await card.locator(".ghlink").click();
+  await until(async () => (await page.locator(".ghp-kicker-more").count()) === 1, 8000, "没读全的补语");
+  await sleep(200);
+  const truncKicker = (await page.locator(".ghp-kicker").innerText()).replace(/\s+/g, " ");
+  check("checks 没读全：kicker 里有「还有更多」", truncKicker.includes("还有更多"), truncKicker);
+  const commentHead = (await page.locator(".ghp-commentsec .ghp-h").innerText()).replace(/\s+/g, " ");
+  check("评论没读全：标题里说列表不全", commentHead.includes("列表不全"), commentHead);
+  await page.locator(".ghp").screenshot({ path: path.join(SHOTS, "pr-detail-truncated.png") });
   console.log("shots:", path.join(SHOTS, "pr-detail-560.png"), path.join(SHOTS, "pr-detail-400.png"));
 } catch (e) {
   failures++;

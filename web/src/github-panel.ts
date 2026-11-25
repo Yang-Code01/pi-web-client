@@ -423,6 +423,8 @@ export class GithubPanel {
       kicker.append(
         el("span", passing === checks.length ? "ghp-kicker-checks ok" : "ghp-kicker-checks", tr("{p1}/{p2} checks 通过", { p1: passing, p2: checks.length })),
       );
+      // 没读全时分子分母都不是全貌：紧跟一句「还有更多」，别让「2/2 通过」冒充全绿。
+      if (d.checksTruncated) kicker.append(el("span", "ghp-kicker-more", tr("还有更多")));
     }
     cells.push(kicker);
 
@@ -475,6 +477,8 @@ export class GithubPanel {
       const sec = el("section", "ghp-commentsec");
       const ch = el("div", "ghp-h");
       ch.append(el("span", "ghp-h-t", tr("评论 · {p1}", { p1: comments.length })));
+      // 没读全时这个条数只是下限：在标题里就说出来，不等人翻到底才怀疑。
+      if (d.commentsTruncated) ch.append(el("span", "ghp-h-more", tr("后面的没取到，列表不全")));
       sec.append(ch);
       const thread = el("div", "ghp-thread");
       for (const c of comments) {

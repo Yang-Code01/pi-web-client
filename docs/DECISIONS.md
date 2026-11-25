@@ -7802,7 +7802,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - **壳只能影响桥起的 pi 子进程**：终端里的 pi、用户自己的 shell 还是机器上的 active 账号（刻意，不往用户的 PATH 里塞东西）。
 - **壳可以被绕过**：它坏了的时候模型会去找真 gh。所以壳失败必须大声失败，这是设计约束不是巧合。
 - **`gh auth status` 的文本是解析来的**（新版才有 `--json`）：解析不出来就当作「登录态读不到」，不猜 —— 猜错就是把 PR 建到别人名下。
-- ~~**checks 与评论是示例样本**：真 checks 要按 commit 拉 check-runs、真评论要拉 review comments，这一版没做，界面上标着「示例数据」。~~（**D411 改写**：checks 与评论都已接真，「示例数据」标签连同 `sample` 字段整段删除。）
+- ~~**checks 与评论是示例样本**：真 checks 要按 commit 拉 check-runs、真评论要拉 review comments，这一版没做，界面上标着「示例数据」。~~（**D412 改写**：checks 与评论都已接真，「示例数据」标签连同 `sample` 字段整段删除。）
 - **卡片的标题是异步补的**（滚进视口才请求）：一屏之外的那些卡，标题会晚一点出现。
 - **PAT 只在非 Windows 上是明文 + 0600**：Windows 走 DPAPI，换机器 / 换用户解不开，表现为「凭据读不到」，不会静默退回明文。
 
@@ -8149,7 +8149,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **问题。** 用户拿 #640 的详情截图说「重新设计一下」。560px 宽的面板里：hero 卡把标题、状态、作者、分支、checks 挤成五行，描述被塞进 `max-height:150px` 的滚动框，正好切在半行字上；紧接的四格数字（文件 / 增 / 删 / 评论）占掉四分之一屏高，说的却是署名行一行能说完的事；8 个文件每行都挂一遍「在 GitHub 看 ↗」；评论只露最后一条，后面跟一句死的「还有 1 条」；「示例数据」在 hero 与评论区各标一次，于是两处都没人当回事。
 
-**做法。** 改成文档流，自上而下：kicker（`#640 · 打开 · 2/4 checks 通过` + ~~唯一的「示例数据」pill~~（**D411 删除**））→ 标题（18px，可两行）→ 署名行（`Yang-Code01 · fix/ask-card-text → main · 5 分钟前更新 · 8 个文件 +226 −11`）→ 一条细线 → 描述走 `renderMarkdown(body, { doc: true })` 原样摊开 → 文件两列 → 讨论（左侧一条竖线串起每条评论）→ 底栏（合并 / 在 GitHub 看差异）。四格数字与 hero 卡整块删掉。
+**做法。** 改成文档流，自上而下：kicker（`#640 · 打开 · 2/4 checks 通过` + ~~唯一的「示例数据」pill~~（**D412 删除**））→ 标题（18px，可两行）→ 署名行（`Yang-Code01 · fix/ask-card-text → main · 5 分钟前更新 · 8 个文件 +226 −11`）→ 一条细线 → 描述走 `renderMarkdown(body, { doc: true })` 原样摊开 → 文件两列 → 讨论（左侧一条竖线串起每条评论）→ 底栏（合并 / 在 GitHub 看差异）。四格数字与 hero 卡整块删掉。
 
 - 描述不再设 `max-height` / `overflow`：详情本来就是来读的，一屏滚动交给面板自己（面板本身 `overflow:auto`）。
 - 文件清单两列、`@container (max-width: 470px)` 降一列。**这条 @container 必须写在 `.ghp-filegrid` 基础规则之后**：同权重、后定义的赢，写在前面会被基础规则盖掉（探针当场抓到：420px 时仍是两列）。
@@ -8161,7 +8161,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **验证。** `node probes/pr-detail-layout.mjs`（真桥 + 假 gh 卡片 + 真 Chromium，19 项）：hero/四格数字不在、「示例数据」只有一个、kicker 带 `2/4` 且非绿、描述 `overflow:visible` 且 `scrollHeight<=clientHeight`、markdown 的 h2 / code / li 成了真元素、8 个文件都在且 560px 两列 / 420px 一列、两条评论都在且没有「还有 N 条」、底栏两颗钮还在；截图 `.scratch/shots/pr-detail-560.png` / `pr-detail-400.png`。另跑 `node probes/github-card-review.mjs`（卡片与评审钮不回归）、`npm --prefix web run typecheck`（i18n 三语补键）。
 
-## D411 PR 详情的 checks 与评论接真数据；「已合并」看 `merged` 不看 `state`（#686；用户 2026-11-25「pr卡片上的 已关闭不对，应该是已经merge。而且check 也不对 示例数据是什么意思？」）
+## D412 PR 详情的 checks 与评论接真数据；「已合并」看 `merged` 不看 `state`（#686；用户 2026-11-25「pr卡片上的 已关闭不对，应该是已经merge。而且check 也不对 示例数据是什么意思？」）
 
 **问题。** 用户拿 #683 的详情截图报了三件事：
 
@@ -8176,11 +8176,16 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - **评论接真**：`issues/N/comments`（会话评论）+ `pulls/N/comments`（行内回复）+ `pulls/N/reviews`（评审意见正文，空正文的不占格），三种合成一条按时间排的流。行内评论带 `path` / `line`，页面画成「文件:行」小标；正文走 `renderMarkdown`。
 - **没有检查就不画**（用户：「根据仓库实际情况来区分。有 ci 就显示，没有就不显示」）：两路都空时 `checks` 是 `[]`，kicker 只剩「号 · 状态」，不出现「0/0 checks 通过」。
 - **「示例数据」pill、`.ghp-sample` 样式、两条 i18n 键、`sample` 字段整段删除。**
+- **列表读到底，不只拿第一页**（PR #686 的评审意见，两条都成立）。原来五个列表请求都只打一次、不看分页：check-runs 不带 `per_page` 时 GitHub 默认只给 30 条，评论只拿前 100 条，后面的静默丢掉 —— 面板上的「N/M checks 通过」「评论 · N」就成了错的。真机对照：microsoft/vscode 一个提交的 check-runs `total_count` 是 89，不带 `per_page` 只回 30 条；一个 issue 有 254 条评论，Link 头写着 last page = 3。
+  - 桥里加一个通用的 `fetchAll(ctx, token, apiPath, perPage = 100, pick)`：每页 `per_page=100`，**下一页优先听 `Link` 头的 `rel="next"`**（真 GitHub 把 `/repos/owner/name/…` 改写成 `/repositories/<id>/…`，也可能换主机，所以只从里面取 `page` 这一个数字、不跟着地址走，不给任何「请求调用方没指定的地址」留口子）；没有 `Link` 才按行数判断 —— 短页即末页，满页再问一页。
+  - 三道防线：读过的页码不再读第二次（Link 绕圈时停在第一页，不死循环）；一个列表最多 `MAX_PAGES = 20` 页（2000 行，再多的当异常上游）；翻到一半出错时**已拿到的行照样返回**。
+  - **没读全要说出来**：`fetchAll` 回 `{ rows, complete }`，只有「中途出错」与「翻到上限」算没读全；第 1 页就出错是「这一路读不到」（见下），不算读了一半。详情接口多回 `checksTruncated` / `commentsTruncated`，页面上 checks 后面跟一句「还有更多」、评论标题后面跟一句「后面的没取到，列表不全」—— 不让「2/2 通过」冒充全绿。
+  - 已知局限（有意不补）：上游既不带 `Link`、又把 `per_page` 压小时，「短页即末页」会判早。真 GitHub 这几个端点都带 `Link`，不值得为异常路径在每次正常请求后再多打一次空页（匿名额度只有 60 次/小时）。
 
 **为什么不挑一个来源、而是三路评论都要。** 只读 `issues/N/comments` 会漏掉所有代码行上的讨论 —— 那往往是评审意见的主要部分；只读行内评论又会漏掉「LGTM，可以合」这种总结性发言。它们在 GitHub 上也是同一条时间线。
 
 **容错。** checks 与评论的五个请求各自 `.catch(() => null)`：拿不到就当空，不拖整个详情。没开 Actions 的仓库、细粒度令牌没有 review 读权限，都是常事；这时宁可少一类评论，也不能让 PR 详情打不开。代价是「读不到」与「没有」在页面上分不开 —— 前者在这里极少见，且真发生时 GitHub 页面上也看不到更多东西。
 
-**代价。** 详情接口从 2 次上游请求变成最多 7 次（并行）。它们都在同一份 15 秒超时内并行，实际耗时取决于最慢的那一路；只读公开仓库时匿名额度（60 次/小时）会消耗得更快 —— 这是接真数据的固有成本。
+**代价。** 详情接口从 2 次上游请求变成至少 7 次（并行）。它们都在同一份 15 秒超时内并行，实际耗时取决于最慢的那一路；列表有多页时请求数按页数涨（每个列表每 100 行一页）。只读公开仓库时匿名额度（60 次/小时）会消耗得更快 —— 这是接真数据的固有成本。
 
-**验证。** `node --experimental-strip-types bridge/tests/github-e2e.mjs`（30 项）：已合并的 PR `merged === true`、checks = check-runs + commit status 且保持顺序、三种评论按时间排、没有 CI 的仓库 `checks` 为 `[]`、`sample` 字段不存在。`node probes/pr-detail-layout.mjs`（真桥 + 假 gh + 真 Chromium）：「示例数据」不出现、已合并说「已合并」且无合并钮、无检查时不出现 checks 段、行内评论带「文件:行」。真机对照：`gh api repos/Yang-Code01/pi-web-client/pulls/683` 回 `{state: closed, merged: true}`，head 提交上 check-runs 与 status 都是 0 条。
+**验证。** `node --experimental-strip-types bridge/tests/github-e2e.mjs`（36 项）：已合并的 PR `merged === true`、checks = check-runs + commit status 且保持顺序、三种评论按时间排、没有 CI 的仓库 `checks` 为 `[]`、`sample` 字段不存在；分页：上游切页时 check-runs 与三路评论都取全、Link 绕圈不死循环、没有 Link 头时满页再问 / 短页即末页、永远满页时停在 20 页并标 `commentsTruncated`、三路里有一路 500 另两路照常、翻到第 2 页才出错时第 1 页的行还在并标截断。`node probes/pr-detail-layout.mjs`（真桥 + 假 gh + 真 Chromium，32 项）：「示例数据」不出现、已合并说「已合并」且无合并钮、无检查时不出现 checks 段、行内评论带「文件:行」、读全时不出现「还有更多」/「列表不全」而桥标截断时两者都出现。`node probes/github-card-review.mjs` 全过。真机对照：`gh api repos/Yang-Code01/pi-web-client/pulls/683` 回 `{state: closed, merged: true}`，head 提交上 check-runs 与 status 都是 0 条。

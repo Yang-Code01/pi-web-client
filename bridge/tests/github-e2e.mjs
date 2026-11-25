@@ -62,6 +62,24 @@ const COMMIT_REPORTS = {
     status: { state: "pending", statuses: [{ context: "deploy / preview", state: "success" }] },
   },
 };
+/** 用例可改的开关：假上游要不要切页、每页几行、要不要带 Link 头、Link 是否绕圈、哪一路回 500。 */
+const paging = { enabled: false, size: 2, link: true, loop: false, fullPages: 0, fail: "", failPage: 0 };
+/** 切页用例的评论：行内 5 条、评审 3 条，页长 2 时行内要翻 3 页、评审翻 2 页。 */
+const PAGED_COMMENTS = {
+  inline: [1, 2, 3, 4, 5].map((i) => ({ user: { login: `inline-${i}` }, body: `行内 ${i}`, created_at: `2026-11-24T04:${String(i).padStart(2, "0")}:00Z` })),
+  reviews: [1, 2, 3].map((i) => ({ user: { login: `rev-${i}` }, body: `评审 ${i}`, state: "COMMENTED", submitted_at: `2026-11-24T05:${String(i).padStart(2, "0")}:00Z` })),
+};
+/**
+ * 把一份完整列表按上游的口径切成一页。
+ *
+ * GitHub 会尊重请求里的 `per_page`（上限 100），没带就是默认 30。这里再被 `paging.size` 封顶：
+ * 用例用小页长逼出翻页，被测方带不带 `per_page`、带多少都逃不掉。页码超过末页就回空数组（不是 404）。
+ */
+function pageOf(list, url) {
+  const page = Number(url.searchParams.get("page") ?? 1);
+  const size = Math.min(Number(url.searchParams.get("per_page") ?? 30), paging.size);
+  return { slice: list.slice((page - 1) * size, page * size), page, size };
+}
 const PULLS = [
   {
     number: 12,
@@ -87,7 +105,21 @@ const upstream = http.createServer((req, res) => {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
   };
+  /** 切页的一页：永远带 `rel="next"`（真 GitHub 在末页不带；这里让被测方自己靠「短页 / 空页」收手）。 */
+  const sendPage = (status, body) => {
+    const size = url.searchParams.get("per_page") ?? 30;
+    const page = Number(url.searchParams.get("page") ?? 1);
+    const headers = { "content-type": "application/json" };
+    // `loop`：Link 永远指回第 1 页（真上游不会；模拟被代理 / 中间件改写）。
+    if (paging.link) headers.link = `<http://${req.headers.host}${url.pathname}?per_page=${size}&page=${paging.loop ? 1 : page + 1}>; rel="next"`;
+    res.writeHead(status, headers);
+    res.end(JSON.stringify(body));
+  };
   if (up.mode === "401") return send(401, { message: "Bad credentials" });
+  // `fail`：路径以它结尾的那一路回 500；`failPage`：只在该页码回 500（第 1 页正常 → 翻到一半才出错）。
+  if (paging.fail && url.pathname.endsWith(`/${paging.fail}`) && (!paging.failPage || Number(url.searchParams.get("page") ?? 1) === paging.failPage)) {
+    return send(500, { message: "boom" });
+  }
   if (url.pathname === "/user") {
     up.hits.user += 1;
     return send(200, { login: "pat-user" });
@@ -108,7 +140,9 @@ const upstream = http.createServer((req, res) => {
     up.hits.checkRuns += 1;
     // 没有 CI 的仓库：这个提交上没有 check-run（上游回空列表，不是 404）。
     const found = ci.enabled ? COMMIT_REPORTS[checkRuns[1]] : undefined;
-    return send(200, { total_count: found ? found.checkRuns.length : 0, check_runs: found ? found.checkRuns : [] });
+    const all = found ? found.checkRuns : [];
+    if (paging.enabled) return sendPage(200, { total_count: all.length, check_runs: pageOf(all, url).slice });
+    return send(200, { total_count: all.length, check_runs: all });
   }
   if (/^\/repos\/acme\/widgets\/commits\/([\w-]+)\/status$/.test(url.pathname)) {
     up.hits.status += 1;
@@ -116,20 +150,37 @@ const upstream = http.createServer((req, res) => {
     return send(200, found?.status ?? { state: "pending", total_count: 0, statuses: [] });
   }
   // ---- 评论的三个来源。
+  // `fullPages`：行内评论这一路前 N 页都是满页（行是现造的，不是那 5 条真的），之后回空页。
+  // 真 GitHub 会给 Link；这里是「没有 Link、只能靠行数判断」时的夹具，也给页数上限用例用（N 给大）。
+  if (paging.enabled && paging.fullPages > 0 && /\/pulls\/\d+\/comments$/.test(url.pathname)) {
+    up.hits.reviewComments += 1;
+    const size = Number(url.searchParams.get("per_page") ?? 30);
+    const page = Number(url.searchParams.get("page") ?? 1);
+    const n = page <= paging.fullPages ? size : 0;
+    return send(200, Array.from({ length: n }, (_, i) => ({ user: { login: `row-${page}-${i}` }, body: "x", created_at: "2026-11-24T04:00:00Z" })));
+  }
+  /** 三路评论共用：不切页就整份给；切页就按 `per_page` / `page` 给一页。 */
+  const sendComments = (rows) => {
+    if (!paging.enabled) return send(200, rows);
+    return sendPage(200, pageOf(rows, url).slice);
+  };
   const issueComments = /^\/repos\/acme\/widgets\/issues\/(\d+)\/comments$/.exec(url.pathname);
   if (issueComments) {
     up.hits.issueComments += 1;
-    return send(200, merged ? [{ user: { login: "acme-bot" }, body: "已合并，谢谢。", created_at: "2026-11-24T05:00:00Z" }] : []);
+    const rows = merged ? [{ user: { login: "acme-bot" }, body: "已合并，谢谢。", created_at: "2026-11-24T05:00:00Z" }] : [];
+    return sendComments(rows);
   }
   const reviewComments = /^\/repos\/acme\/widgets\/pulls\/(\d+)\/comments$/.exec(url.pathname);
   if (reviewComments) {
     up.hits.reviewComments += 1;
-    return send(200, [{ user: { login: "reviewer-a" }, body: "这里建议抽成一个函数。", created_at: "2026-11-24T04:10:00Z" }]);
+    const rows = paging.enabled ? PAGED_COMMENTS.inline : [{ user: { login: "reviewer-a" }, body: "这里建议抽成一个函数。", created_at: "2026-11-24T04:10:00Z" }];
+    return sendComments(rows);
   }
   const reviews = /^\/repos\/acme\/widgets\/pulls\/(\d+)\/reviews$/.exec(url.pathname);
   if (reviews) {
     up.hits.reviews += 1;
-    return send(200, [{ user: { login: "reviewer-b" }, body: "LGTM", state: "APPROVED", submitted_at: "2026-11-24T04:50:00Z" }]);
+    const rows = paging.enabled ? PAGED_COMMENTS.reviews : [{ user: { login: "reviewer-b" }, body: "LGTM", state: "APPROVED", submitted_at: "2026-11-24T04:50:00Z" }];
+    return sendComments(rows);
   }
   const files = /^\/repos\/acme\/widgets\/pulls\/(\d+)\/files$/.exec(url.pathname);
   if (files) {
@@ -379,6 +430,145 @@ test("pr：没有 CI 的仓库 checks 是空数组（页面据此不画那一行
   assert.equal(r.json.merged, false);
   assert.deepEqual(r.json.checks, []);
 });
+
+/** 切页用例的公共收尾：不管断言过没过，都把假上游恢复成「不切页」。 */
+function pagingOff() {
+  paging.enabled = false;
+  paging.size = 2;
+  paging.link = true;
+  paging.loop = false;
+  paging.fullPages = 0;
+  paging.fail = "";
+  paging.failPage = 0;
+  merged = false;
+  ci.enabled = true;
+}
+
+test("pr：上游切页时跟着 Link 把 check-runs 与三路评论都取全（不是只拿第一页）", async () => {
+  resetGithubCaches();
+  paging.enabled = true;
+  paging.link = true;
+  ci.enabled = true;
+  merged = true; // 会话评论这一路也有内容：三路都要翻
+  try {
+    const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
+    assert.equal(r.status, 200);
+    // 页长 2：check-runs 3 条要翻两页才取全（旧代码只读第一页）
+    assert.deepEqual(
+      r.json.checks.map((c) => c.name),
+      ["typecheck", "unit / bridge", "ui / chrome", "deploy / preview"],
+      "checks 跟着 Link 翻页，不再是只有第一页",
+    );
+    // 按时间排成一条流：行内 04:01–04:05 → acme-bot 05:00 → 评审 05:01–05:03
+    assert.deepEqual(
+      r.json.comments.map((c) => `${c.kind}:${c.author}`),
+      ["review:inline-1", "review:inline-2", "review:inline-3", "review:inline-4", "review:inline-5", "issue:acme-bot", "review:rev-1", "review:rev-2", "review:rev-3"],
+      "三路评论各自翻页取全后再按时间排",
+    );
+    assert.equal(r.json.checksTruncated, false, "读全了就不标截断");
+    assert.equal(r.json.commentsTruncated, false, "读全了就不标截断");
+  } finally {
+    pagingOff();
+  }
+});
+
+test("pr：Link 头绕圈时不会死循环，已拿到的行照样返回", async () => {
+  resetGithubCaches();
+  paging.enabled = true;
+  paging.loop = true;
+  ci.enabled = true;
+  try {
+    const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
+    assert.equal(r.status, 200);
+    // 行内评论这一路：Link 永远指回第 1 页 → 读到第 1 页（2 条）就停，不重复、不死循环
+    assert.deepEqual(
+      r.json.comments.filter((c) => c.author.startsWith("inline-")).map((c) => c.author),
+      ["inline-1", "inline-2"],
+      "Link 指回读过的页就停：只有第 1 页，不重复、不死循环",
+    );
+  } finally {
+    pagingOff();
+  }
+});
+
+test("pr：上游不带 Link 头时按「满页就再问一页、短页即末页」取全", async () => {
+  resetGithubCaches();
+  paging.enabled = true;
+  paging.link = false;
+  paging.size = 100; // 评审 3 条 < 一页：短页就该停，不该再多问一页
+  paging.fullPages = 3; // 行内评论：3 页满页 + 第 4 页空（共 300 行现造）
+  ci.enabled = true;
+  try {
+    const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
+    assert.equal(r.status, 200);
+    // 行内：300 条现造的（满页 → 再问，直到空页）；评审 3 条（满页 2 + 短页 1）
+    const inline = r.json.comments.filter((c) => c.author.startsWith("row-")).length;
+    assert.equal(inline, 300, "没有 Link 头：满页就再问一页，直到空页才停");
+    assert.deepEqual(
+      r.json.comments.filter((c) => c.author.startsWith("rev-")).map((c) => c.author),
+      ["rev-1", "rev-2", "rev-3"],
+      "短页就是末页",
+    );
+  } finally {
+    pagingOff();
+  }
+});
+
+test("pr：永远满页的异常上游：最多翻 20 页就停，行数不会无限涨", async () => {
+  resetGithubCaches();
+  paging.enabled = true;
+  paging.link = false; // 没有 Link、每页都是满页：只剩页数上限这一道防线
+  paging.fullPages = 1000;
+  ci.enabled = true;
+  try {
+    const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
+    assert.equal(r.status, 200);
+    const rows = r.json.comments.filter((c) => c.author.startsWith("row-")).length;
+    assert.equal(rows, 20 * 100, "20 页 × 每页 100 = 2000 行就停");
+    assert.equal(r.json.commentsTruncated, true, "翻到上限停下：要告诉页面这份评论没读全");
+    assert.equal(r.json.checksTruncated, false, "checks 那两路是读全的");
+  } finally {
+    pagingOff();
+  }
+});
+
+test("pr：三路评论里有一路 500，另两路照常返回", async () => {
+  resetGithubCaches();
+  paging.fail = "reviews";
+  try {
+    const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
+    assert.equal(r.status, 200);
+    assert.deepEqual(
+      r.json.comments.map((c) => c.author),
+      ["reviewer-a"],
+      "挂掉的那一路当空的，不拖累另两路，也不拖垮整个详情",
+    );
+    assert.equal(r.json.commentsTruncated, false, "第 1 页就读不到 = 那一路没有，不算「读了一半」");
+  } finally {
+    pagingOff();
+  }
+});
+
+test("pr：翻到第 2 页才出错：已拿到的行照样给，并标上「没读全」", async () => {
+  resetGithubCaches();
+  paging.enabled = true;
+  paging.fail = "comments"; // 行内评论（`/pulls/12/comments`）这一路
+  paging.failPage = 2;
+  ci.enabled = true;
+  try {
+    const r = await call("GET", `/api/github/pr?sessionId=s1&cwd=${encodeURIComponent(work)}&number=12`);
+    assert.equal(r.status, 200);
+    assert.deepEqual(
+      r.json.comments.map((c) => c.author),
+      ["inline-1", "inline-2", "rev-1", "rev-2", "rev-3"],
+      "第 1 页的两条还在，不因为第 2 页出错就整路丢掉；评审那一路没受影响",
+    );
+    assert.equal(r.json.commentsTruncated, true, "后半没拿到，要告诉页面");
+  } finally {
+    pagingOff();
+  }
+});
+
 
 test("card：只回一行，并且 60 秒内不重复问上游", async () => {
   resetGithubCaches();

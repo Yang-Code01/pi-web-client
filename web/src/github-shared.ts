@@ -88,8 +88,12 @@ export interface PullDetailView {
   files: PullFile[];
   /** 真去 GitHub 问来的：check-runs + commit status，按 head 提交。空数组 = 这个 PR 没有检查。 */
   checks: PullCheck[];
+  /** 这份 checks 没读全（翻页中途出错、或检查多到翻页上限）：条数不是全貌，页面要说出来。 */
+  checksTruncated?: boolean;
   /** 真去 GitHub 问来的：会话评论 + 行内 review 评论 + 评审意见正文，按时间排。 */
   comments: PullComment[];
+  /** 这条评论流没读全（同上）。 */
+  commentsTruncated?: boolean;
 }
 
 export interface PullsView {

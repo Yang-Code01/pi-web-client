@@ -4293,6 +4293,8 @@ export const en: Dict = {
   "存一枚 PAT…": "Store a PAT…",
   "点开在右栏里看": "Click to view it in the right pane",
   "{p1}/{p2} checks 通过": "{p1}/{p2} checks passing",
+  "还有更多": "and more",
+  "后面的没取到，列表不全": "the rest failed to load — this list is incomplete",
   "{p1}更新": "updated {p1}",
   "改了哪 {p1} 个文件": "Files changed ({p1})",
   "工作区设置里定的": "set in the workspace settings",
