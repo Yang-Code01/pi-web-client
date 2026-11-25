@@ -110,8 +110,11 @@ const brainGet = async (p, pid) => {
 };
 
 let exitCode = null;
-host.on("exit", (code) => {
-  exitCode = code ?? 0;
+let exitSignal = null;
+host.on("exit", (code, signal) => {
+  // 信号终止时 code 是 null。记成 0 会把壳崩溃当成正常停机。
+  exitCode = code ?? -1;
+  exitSignal = signal;
 });
 
 try {
@@ -244,7 +247,7 @@ try {
   // 10. 停机：整组一起收，壳干净退出。
   await post("/api/host/stop");
   await until(async () => exitCode !== null, "壳退出", 8000);
-  assert.equal(exitCode, 0, "主动停机应该是 0");
+  assert.equal(exitCode, 0, exitSignal ? `主动停机被信号 ${exitSignal} 终止` : "主动停机应该是 0");
   console.log("host-shell-e2e: ok");
 } catch (err) {
   console.error(String(err?.stack ?? err));

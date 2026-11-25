@@ -591,7 +591,9 @@ async function main(): Promise<void> {
     brain = null;
     // 子进程还活着：它们的行留在 broker 里，新脑 ready 后再 attach 时补上。
     setTimeout(() => {
-      if (!shuttingDown && !brain && !starting) spawnBrain();
+      // 换脑期间别插一代普通脑：候选脑还没握手时 expectingSwap 已经为真，
+      // 这时再 spawn 只会多一个被拒的进程，干扰交换。
+      if (!shuttingDown && !brain && !starting && !expectingSwap && !swapChild) spawnBrain();
     }, RESPAWN_MS).unref();
   }
 

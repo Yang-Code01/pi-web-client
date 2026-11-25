@@ -445,12 +445,13 @@ function shellRun(
     branch: "",
     // 步骤表里「换进程」那一行：有壳时编译、拉新脑、观察、切换都在这一步里。
     step: 4,
-    phase: live ? "running" : st.ok ? "ok" : "fail",
+    phase: live ? "running" : st.phase === "needs-group-restart" ? "ok" : st.ok ? "ok" : "fail",
     startedAt: at,
     finishedAt: live ? null : at,
     updatedAt: at,
     buildId: st.buildId ?? hostBuildId,
-    error: live ? null : (st.reason ?? null),
+    // 整组重启不是「构建失败」：构建已经成功，只是要换壳本身；原因由 stage 文案说明。
+    error: live || st.phase === "needs-group-restart" ? null : (st.reason ?? null),
     port,
     stage: st.phase,
   };

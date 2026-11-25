@@ -37,15 +37,13 @@ export class Children {
 
   spawn(spec: SpawnSpec): number {
     if (this.procs.has(spec.sessionId)) throw new Error(`会话 ${spec.sessionId} 已经有进程在跑`);
-    this.broker.attach(spec.sessionId);
     const child = spawn(process.execPath, spec.argv, {
       cwd: spec.cwd,
       env: spec.env,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
-    if (!child.pid) throw new Error("pi 进程没起来");
-    this.procs.set(spec.sessionId, child);
+    // 先接事件再判 pid：spawn 失败只发 'error'，不接就是未捕获异常。
     child.stdout.on("data", (chunk: Buffer) => {
       for (const { seq, line } of this.broker.push(spec.sessionId, chunk)) {
         this.hooks.line(spec.sessionId, seq, line);
@@ -63,11 +61,19 @@ export class Children {
     child.stdin.on("error", () => {});
     child.on("error", (err) => this.hooks.stderr(spec.sessionId, `spawn: ${String(err)}\n`));
     child.on("exit", (code, signal) => {
+      // spawn 没起来时没有进程，也没有会话；别把一次失败当成会话退出广播出去。
+      if (this.procs.get(spec.sessionId) !== child) return;
       this.procs.delete(spec.sessionId);
       this.exits.set(spec.sessionId, { code, signal, at: Date.now() });
       // 还留着未确认的行：进程没了，这些行也回放不出更多东西了，但已经吐出来的不能丢。
       this.hooks.exit(spec.sessionId, code, signal);
     });
+    if (!child.pid) {
+      // 没有 pid 就没有进程；到这里才写 broker，失败路径不会留下一条空的「已有会话」。
+      throw new Error("pi 进程没起来");
+    }
+    this.broker.attach(spec.sessionId);
+    this.procs.set(spec.sessionId, child);
     return child.pid;
   }
 

@@ -15,6 +15,8 @@ export const en: Dict = {
   "已切换": "Switched",
   "失败，老脑继续": "Failed; old brain continues",
   "需整组重启": "Group restart needed",
+  "构建完成，需要整组重启": "Build finished; a group restart is required",
+  " —— 壳的代码也变了，重启后新代码才会生效，正在跑的会话会被切断。": " — the shell's code changed too; the new code only takes effect after a restart, and running sessions will be cut.",
   "（壳的代码也变了：这次部署会连会话一起重启）": "(the shell's code changed too: this deploy restarts sessions as well)",
   "已切换到新脑": "Switched to the new brain",
   " —— 正在跑的会话没有断，pid 不变，页面会自己接上。": " — running sessions were not cut, pids unchanged, the page reconnects on its own.",

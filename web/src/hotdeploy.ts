@@ -519,7 +519,13 @@ class HotdeployPanel {
       const box = this.banner("ok");
       const body = el("div", "hot-banner__body");
       const line = el("div", "");
-      if (run?.stage) {
+      if (run?.stage === "needs-group-restart") {
+        // 构建成功但壳自己也变了：不能说「已切换到新脑」，那是另一条路径的结论。
+        line.append(
+          el("b", "", tr("构建完成，需要整组重启")),
+          el("span", "", tr(" —— 壳的代码也变了，重启后新代码才会生效，正在跑的会话会被切断。")),
+        );
+      } else if (run?.stage) {
         line.append(
           el("b", "", tr("已切换到新脑")),
           el("span", "", tr(" —— 正在跑的会话没有断，pid 不变，页面会自己接上。")),
@@ -539,7 +545,7 @@ class HotdeployPanel {
       body.append(line, acts);
       box.append(body);
       banners.push(box);
-      if (this.mine() && this.countdown === null) this.startCountdown();
+      if (this.mine() && this.countdown === null && run?.stage !== "needs-group-restart") this.startCountdown();
     } else if (phase === "fail") {
       const box = this.banner("err");
       const body = el("div", "hot-banner__body");

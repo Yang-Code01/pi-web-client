@@ -82,7 +82,7 @@ const server = http.createServer((req, res) => {
     send({
       t: "stdin",
       sessionId,
-      data: JSON.stringify({ type: "ping", id: "p1", text: url.searchParams.get("text") ?? "hi" }) + "\n",
+      data: `${JSON.stringify({ type: "ping", id: "p1", text: url.searchParams.get("text") ?? "hi" })}\n`,
     });
     body = { ok: true };
   } else if (url.pathname === "/kill") {
@@ -117,7 +117,7 @@ stats.port = internalPort;
 const socket = net.connect(sock);
 let buf = "";
 const send = (obj) => {
-  if (!socket.destroyed) socket.write(JSON.stringify(obj) + "\n");
+  if (!socket.destroyed) socket.write(`${JSON.stringify(obj)}\n`);
 };
 
 function handle(msg) {
