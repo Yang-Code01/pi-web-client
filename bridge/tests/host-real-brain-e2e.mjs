@@ -10,8 +10,9 @@
  *   1. 真脑在壳后面起来（内部端口 + 控制通道），页面地址仍然只有壳那一个；
  *   2. 发一轮对话：会话在跑、pi 的 pid 由壳持有；
  *   3. 换脑（跳过构建）：脑的 pid 变了、**pi 的 pid 没变**、这一轮还在跑、会话被新脑接管；
+ *      接管（adopt）之后模型名 / 思考档位还在（输入框下的模型 chip 读的就是它们）；
  *   4. 换脑前答过的审批不会在换脑后重问一遍（不被答两次，也不凭空消失）；
- *   5. 脑被 kill -9 之后，壳重拉一代并叫它接管在跑的会话（而不是当成空壳）；
+ *   5. 脑被 kill -9 之后，壳重拉一代并叫它接管在跑的会话（而不是当成空壳），模型字段同样回来；
  *   6. `POST /api/host/stop` 收掉整组（story 13 的接口），壳退出码 0。
  *
  * 跑之前先 `npm run build:bridge`。
@@ -160,6 +161,22 @@ const answersSoFar = () => {
   }
 };
 
+/**
+ * 重订阅一次再读快照：`subscribe` 的回复（type: "session"）带的是当时的 SessionState，
+ * 里面就有 model / modelName / thinkingLevel。adopt 的 get_state 是异步的，第一次订阅可能
+ * 赶在它答完之前，所以这里每轮都重发一次 —— 也顺便模拟了“换脑之后才连上来的页面”。
+ */
+const snapshotWithModel = async (wsPage, sessionId) => {
+  wsPage.ws.send(JSON.stringify({ type: "subscribe", sessionId }));
+  await sleep(120);
+  const frames = wsPage.seen.filter((m) => m.type === "session" && m.sessionId === sessionId);
+  // subscribe / create 的回复把状态放在顶层 `state` 里（sessionFrameOf 展开的是 pagedSnapshot），
+  // 而 session.state 增量帧放在 `session` 里 —— 两种都认。
+  const last = frames.at(-1);
+  const st = last?.state ?? last?.session;
+  return st?.modelName === "Fake Model · x1 · 1M" ? st : null;
+};
+
 try {
   // 1. 壳先起，真脑接上
   await until(async () => {
@@ -188,6 +205,17 @@ try {
   const created = await page.waitFor((m) => m.type === "session" || m.type === "session.state", "会话建好");
   const sessionId = created.session?.id ?? created.sessionId;
   assert.ok(sessionId, "应该拿到会话 id");
+
+  // 2b. 启动时就要把模型名 / 档位从 pi 的 get_state 带回来 —— 输入框下的模型 chip 读的就是它们。
+  const booted = await page.waitFor(
+    (m) =>
+      m.type === "session.state" &&
+      m.session?.id === sessionId &&
+      m.session?.modelName === "Fake Model · x1 · 1M",
+    "启动时把模型名带回来",
+  );
+  assert.equal(booted.session.model, "fake-model", "model id 也要带回来");
+  assert.equal(booted.session.thinkingLevel, "low", "思考档位也要带回来");
 
   page.ws.send(JSON.stringify({ type: "prompt", sessionId, text: "跑一个长任务" }));
   const live = await until(async () => {
@@ -240,6 +268,15 @@ try {
   assert.equal(asked.length, 0, "答过的审批不该在换脑后重放");
   assert.equal(answersSoFar().length, 1, "同一张审批不能被答两次");
 
+  // 5b. 换脑接管（adopt）之后 chip 的字段不能丢：adopt 不补一次 get_state 的话，
+  // model / modelName / thinkingLevel 全是空的，chip 只剩「模型 · –」。
+  // 订阅回复里带的是当时的状态快照；adopt 的 get_state 可能还没答完，所以重订阅到它答完为止。
+  const adoptedModel = await until(
+    () => snapshotWithModel(page2, sessionId),
+    "换脑后模型名回填（adopt 要补一次 get_state）",
+  );
+  assert.equal(adoptedModel.thinkingLevel, "low", "换脑后思考档位不能丢");
+
   // 6. 脑被 kill -9：壳重拉一代，并叫它接管还在跑的会话（story 11）
   process.kill(brainAfter.pid, "SIGKILL");
   const respawned = await until(async () => {
@@ -253,6 +290,21 @@ try {
   }, "重拉的脑接管会话");
   assert.equal(adopted.pid, piPid, "重拉脑也不能换掉会话进程");
   assert.equal(adopted.turnActive, true, "重拉之后这一轮还要算在跑");
+
+  // 6b. 重拉的脑同样是 adopt 接管：模型字段得重新问回来，不是从上一代脑继承来的。
+  const page3 = await connectWs(cookie);
+  await page3.waitFor((m) => m.type === "hello", "换壳后重连的 hello");
+  page3.ws.send(JSON.stringify({ type: "subscribe", sessionId }));
+  const reAdopted = await until(
+    () => snapshotWithModel(page3, sessionId),
+    "重拉的脑 adopt 之后模型名回填",
+  );
+  assert.equal(reAdopted.thinkingLevel, "low", "重拉的脑 adopt 后思考档位也要回来");
+  try {
+    page3.ws.close();
+  } catch {
+    /* 已经断了 */
+  }
   process.kill(respawned.pid, "SIGKILL");
   await until(async () => {
     const b = (await getJson("/api/host/status")).brain;
