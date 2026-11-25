@@ -90,7 +90,34 @@ const rows = [
       ],
     },
   },
-  { type: "session_info", id: "n1", parentId: "m2", timestamp: at, name: "card review probe" },
+  {
+    type: "message",
+    id: "m3",
+    parentId: "m2",
+    timestamp: at,
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          // 真实会话里的写法：全角冒号 + 加粗的号，**没有链接**（热部署那次就是这种）。
+          text: "4 条都核实成立，已修完并开了 PR：**#669**（`fix/review-followup` → `main`）。",
+        },
+      ],
+    },
+  },
+  {
+    type: "message",
+    id: "m4",
+    parentId: "m3",
+    timestamp: at,
+    message: {
+      role: "assistant",
+      // 号写了但根本不是 PR：猜出来的那张卡必须自己撤掉（留着等于把 issue 报成 PR）。
+      content: [{ type: "text", text: "早先还提过 PR：#424242，后来关了。" }],
+    },
+  },
+  { type: "session_info", id: "n1", parentId: "m4", timestamp: at, name: "card review probe" },
 ];
 fs.writeFileSync(path.join(sessionDir, `${SID}.jsonl`), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
 
@@ -158,21 +185,25 @@ try {
     const number = Number(url.searchParams.get("number")) || 0;
     route.fulfill({
       contentType: "application/json",
+      // 桥对「这个号不是 PR」的回答就是 pull: null（不是 404），正文里猜出来的卡按它撤。
       body: JSON.stringify({
         ok: true,
-        pull: {
-          number,
-          title: number === 661 ? "链接卡上加一颗「代码评审」" : "别仓的一个 PR",
-          draft: false,
-          author: "acme",
-          head: "feat/x",
-          base: "main",
-          updatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
-          url: "",
-          additions: 105,
-          deletions: 21,
-          changedFiles: 5,
-        },
+        pull:
+          number === 424242
+            ? null
+            : {
+                number,
+                title: number === 661 ? "链接卡上加一颗「代码评审」" : number === 669 ? "只写号的转述也要出卡" : "别仓的一个 PR",
+                draft: false,
+                author: "acme",
+                head: "feat/x",
+                base: "main",
+                updatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+                url: "",
+                additions: 105,
+                deletions: 21,
+                changedFiles: 5,
+              },
       }),
     });
   });
@@ -206,6 +237,22 @@ try {
   const issueCard = anyCard(page, "#7");
   check("issue 卡不画这颗钮", (await issueCard.locator(".ghlink-review").count()) === 0, "");
   check("issue 卡也不是 .ghcard（没有被拆成两块）", (await issueCard.evaluate((el) => el.closest(".ghcard") === null)) === true, "");
+
+  // ------------------------------------------------ 2b) 正文里只写号的 PR 也出卡
+  const guessCard = page.locator(".ghlink", { hasText: "#669" }).first();
+  await guessCard.waitFor({ timeout: 20000 });
+  check("正文里只写了「PR：**#669**」也出卡", (await page.locator(".ghlink", { hasText: "#669" }).count()) === 1, "");
+  // 仓库与标题都是判据 / 桥的答复回来之后才补的，得等它们落地再断言（取到标题会把仓库名换掉）。
+  await until(
+    async () => ((await guessCard.locator(".ghlink-title").textContent()) ?? "").includes("只写号"),
+    15000,
+    "guess card title",
+  ).catch(() => {});
+  const guessTitle = (await guessCard.locator(".ghlink-title").textContent()) ?? "";
+  check("猜出来的卡补上了本会话仓库、真取到了标题", guessTitle.includes("只写号"), guessTitle);
+  check("猜出来的卡也是同仓，评审钮可点", (await page.locator(".ghcard", { hasText: "#669" }).locator(".ghlink-review").isDisabled()) === false, "");
+  await sleep(800);
+  check("号对不上真 PR 的那张自己撤掉了（不留「取不到标题」的破卡）", (await page.locator(".ghlink", { hasText: "#424242" }).count()) === 0, "");
 
   // ------------------------------------------------ 3) 主区照旧开 GitHub 面板
   await page.locator(".ghp").waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
