@@ -38,6 +38,8 @@ const STAGE_SHORT: Record<string, string> = {
   failed: "失败，老脑继续",
   "needs-group-restart": "需整组重启",
 };
+/** 步骤行左侧的图标：中文键值表不适合翻译，按状态查表即可。 */
+const STEP_ICONS: Record<string, string> = { ok: "✓", fail: "✕", run: "◐" };
 const RESTORE_STEP = 3;
 /** worker 写回来的 error 是稳定代号（D110），界面上得说人话。 */
 const FAIL_WHY: Record<string, string> = {
@@ -436,7 +438,7 @@ class HotdeployPanel {
         }
         row.className = `hot-step${cls ? ` ${cls}` : ""}`;
         const [ico, , info] = Array.from(row.children) as HTMLElement[];
-        ico.textContent = cls === "ok" ? "✓" : cls === "fail" ? "✕" : cls === "run" ? "◐" : "○";
+        ico.textContent = STEP_ICONS[cls] ?? "○";
         ico.classList.toggle("hot-spin", cls === "run");
         // 有壳时只有「换进程」这一行真的走过；把 stage 留在这一行，ok/fail 之后也能看见
         // 是切成功了还是老脑继续服务，而不是只剩横幅一句话。

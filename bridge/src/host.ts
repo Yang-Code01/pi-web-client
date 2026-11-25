@@ -566,6 +566,11 @@ async function main(): Promise<void> {
         return;
       }
       case "kill": {
+        // 换脑完成后老脑还会挂几秒；它这时发来的 kill 不能杀掉新脑已经接管的会话进程。
+        if (b !== brain) {
+          log(`忽略旧脑 ${b.pid} 发来的 kill（会话 ${String(msg.sessionId)}）`);
+          return;
+        }
         children.kill(String(msg.sessionId), msg.mode === "now");
         return;
       }
@@ -602,6 +607,11 @@ async function main(): Promise<void> {
         return;
       }
       case "shutdown": {
+        // 同一个窗口里，退休的老脑也不能把整组停掉；停机的决定只属于当前脑。
+        if (b !== brain) {
+          log(`忽略旧脑 ${b.pid} 发来的 shutdown`);
+          return;
+        }
         void stop(msg.scope === "group" ? "group" : "all");
         return;
       }

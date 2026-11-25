@@ -123,6 +123,55 @@ assert.ok("error" in claim2, "积压超限也要如实告诉 adopt()");
 assert.match(String(claim2.error.message), /积压/, "错误里要说清是认领前积压");
 void resolveAttach2;
 
+// 重放未确认行时，某一行同步把链路结算掉：后面的行不能再喂、也不能再 ack。
+// 否则壳会把这些本应留给下一次接管重放的数据删掉，还会在退出后继续发事件。
+const logPath4 = path.join(tmp, "rpc4.log");
+let resolveAttach4;
+const acks4 = [];
+const link4 = {
+  watch: () => () => {},
+  attachSession: () =>
+    new Promise((resolve) => {
+      resolveAttach4 = resolve;
+    }),
+  spawnSession: () => {
+    throw new Error("adopt 失败时不许新开进程");
+  },
+  stdin: () => true,
+  ack: (_sessionId, seq) => acks4.push(seq),
+  kill: () => {},
+};
+const rpc4 = new RpcChild({
+  cli: "fake-pi",
+  args: [],
+  cwd: tmp,
+  logPath: logPath4,
+  sessionId: "s4",
+  link: link4,
+  adoptOnly: true,
+});
+rpc4.on("event", (msg) => {
+  if (msg.type === "die") rpc4.finish("测试：重放中退出");
+});
+rpc4.start();
+const claim4Promise = rpc4.whenLinked();
+resolveAttach4({
+  pid: 44,
+  pending: {
+    fromSeq: 1,
+    toSeq: 2,
+    lines: [
+      { line: JSON.stringify({ type: "die" }), seq: 1 },
+      { line: JSON.stringify({ type: "ui_request", id: "u-after-die" }), seq: 2 },
+    ],
+    overflowed: false,
+  },
+  lastWritten: 2,
+});
+const claim4 = await claim4Promise;
+assert.ok("error" in claim4, "重放中退出也要如实告诉 adopt()");
+assert.deepEqual(acks4, [], "退出后的行不能再 ack，否则壳会删掉下一次接管该重放的数据");
+
 // 等写日志的流把手里的 fd 放掉再删临时目录（Windows 上删早了会触发 ENOENT error 事件）。
 await new Promise((r) => setTimeout(r, 150));
 fs.rmSync(tmp, { recursive: true, force: true });

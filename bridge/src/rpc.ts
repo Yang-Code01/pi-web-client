@@ -173,8 +173,12 @@ export class RpcChild extends EventEmitter {
         const got = await link.attachSession(sessionId);
         pid = got.pid;
         // 先喂旧行再算命：新脑看到的是「上一个人没承认过的那一段」，不多不少。
+        // 其中某一行可能同步把链路结算掉（比如重放的最后一行是退出事件）；
+        // 这时既不能再 ack，也不能继续喂后面的行，否则壳会把下一次接管该重放的数据删掉。
         for (const { line, seq } of got.pending.lines) {
+          if (!this._alive) return;
           this.handleLine(line);
+          if (!this._alive) return;
           if (seq > 0) link.ack(sessionId, seq);
         }
         if (got.pending.overflowed) {
@@ -192,7 +196,10 @@ export class RpcChild extends EventEmitter {
         if (got.lastStderr) this.emit("log", `attach: 最近的 stderr：\n${got.lastStderr.slice(-800)}`);
         // 换脑前还挂着的问卷 / 审批：当它刚发过来一样重放 —— 页面那张表单接着能答（D385）。
         // 不重放的话，用户眼前是一张永远交不出去的问卷，pi 那边还在等这个 id 的回答。
-        for (const line of got.pendingUi ?? []) this.handleLine(line);
+        for (const line of got.pendingUi ?? []) {
+          if (!this._alive) return;
+          this.handleLine(line);
+        }
       } catch (err) {
         // 只有「壳那边没有这个会话的子进程」才该新开；其余（超时、壳拒绝）保持原样失败。
         if ((err as Error).message !== "no-child") throw err;

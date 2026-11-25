@@ -244,6 +244,16 @@ try {
   // 切换后老脑还会挂几秒：它这时发来的 attach 不能重新拿到会话。
   await brainGet("/attach?sessionId=s4", oldPid);
   await until(() => readBrain(oldPid)?.spawnFailed === "stale-owner", "老脑的 attach 被拒");
+  // 同一个窗口里，老脑的 kill / shutdown 也不能生效：会话归新脑，停机只由当前脑决定。
+  await brainGet("/kill?sessionId=s3&mode=now", oldPid);
+  await brainGet("/shutdown?scope=all", oldPid);
+  await sleep(200);
+  const afterStale = await get("/api/host/status");
+  assert.equal(afterStale.status, 200, "老脑的 shutdown 不能停掉壳");
+  assert.ok(
+    (afterStale.body.sessions ?? []).some((s) => s.id === "s3" && s.pid > 0),
+    "老脑的 kill 不能杀掉新脑接管的会话进程",
+  );
   // 页面地址不变：公网口一直在壳手里。
   assert.equal((await get("/echo")).body.peer, "loopback", "换脑之后仍然由壳写对端头");
   // 还没答的问卷也一起交回来：页面那张表单换脑后照样能答。
