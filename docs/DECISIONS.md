@@ -8161,7 +8161,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **验证。** `node probes/pr-detail-layout.mjs`（真桥 + 假 gh 卡片 + 真 Chromium，19 项）：hero/四格数字不在、「示例数据」只有一个、kicker 带 `2/4` 且非绿、描述 `overflow:visible` 且 `scrollHeight<=clientHeight`、markdown 的 h2 / code / li 成了真元素、8 个文件都在且 560px 两列 / 420px 一列、两条评论都在且没有「还有 N 条」、底栏两颗钮还在；截图 `.scratch/shots/pr-detail-560.png` / `pr-detail-400.png`。另跑 `node probes/github-card-review.mjs`（卡片与评审钮不回归）、`npm --prefix web run typecheck`（i18n 三语补键）。
 
-## D411 PR 详情的 checks 与评论接真数据；「已合并」看 `merged` 不看 `state`（用户 2026-11-25「pr卡片上的 已关闭不对，应该是已经merge。而且check 也不对 示例数据是什么意思？」）
+## D411 PR 详情的 checks 与评论接真数据；「已合并」看 `merged` 不看 `state`（#686；用户 2026-11-25「pr卡片上的 已关闭不对，应该是已经merge。而且check 也不对 示例数据是什么意思？」）
 
 **问题。** 用户拿 #683 的详情截图报了三件事：
 
