@@ -8008,7 +8008,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **决定。**
 
 1. **「评什么」= 会话级**：切会话（或会话目录变了）时整组复位到默认值 —— PR 模式、base `main`、target `HEAD`、号为空、`prInfo` 空、PR 列表 / 仓库名 / 分支名册作废。复位点就是 `syncReviewSession()`，它已经是面板每次渲染的第一句；不新增第二处「记得清一下」的地方。
-2. **偏好不在此列**：`reviewModel`（模型选择）、`reviewOcr / reviewInstalling / reviewInstallLog`（这台机器装没装 ocr）跨会话保留 —— 它们是人的偏好和机器事实，不是「这一次评什么」。
+2. **偏好不在此列**：`reviewOcr / reviewInstalling / reviewInstallLog`（这台机器装没装 ocr）跨会话保留 —— 它们是人的偏好和机器事实，不是「这一次评什么」。（`reviewModel` 原先也在这里，D409 起改成**按会话各记一份**：A 挑过的评审模型不许被 B 顶掉。）
 3. **列表与分支名册一起作废**：`reviewPrsAsked` 清空后，切过去打开页签会为新目录重新拉一遍（`loadPullRequests`）；否则会把上个仓库的 PR 列表画在新会话上。列表到达时「没选过就挑第一项」的顺手逻辑保留，它挑的是**新目录**的第一个 PR。
 4. **入口要先结算再赋值**：`openReviewForPull()`（链接卡那颗「代码评审」）在赋值前显式调一次 `syncReviewSession()`。首次画面板时 `reviewSessionKey` 还是空的，那里的复位会把刚设的号当成残留清掉 —— 于是「点卡片 → 号没了」。`reviewExpectRepo` 原本就有同类顺序约定（放在切页签之后设）。
 
@@ -8127,3 +8127,20 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **没做。** ①选项的 `preview` 字段卡片完全不显示（多选预览只在单选用）；如果用户看到的是「预览里的 ASCII 图被塞进说明」，那是另一件事。②`\t` 与字面 `\r` 没折。③没有改 `question` / `questionnaire` 两个旧工具名的载荷路径，它们与 `ask_user_question` 共用同一段渲染。
 
 **验证。** `node --experimental-strip-types --test web/tests/ask-text-unit.mjs` 12 项（折行 / 真换行不误伤 / 空串 / 切段 / 不配对反引号 / 纯代码 / 先切后折 / 反引号内不折 / 混合情形 / 等长串配对 / 连续三枚 / 落单的一枚），`web/tests/ask-tab-unit.mjs` + `ask-card-unit.mjs` 共 24 项不回归，`npm --prefix web run typecheck`（含 i18n-check、视口单位与层叠守卫，以及新挂进链里的 `ask-text-unit`）与 `npm --prefix web run build` 通过。单测另有根脚本 `npm run test:ask-text`，与 `test:ask-tab` / `test:ask-card` 同一口径。
+
+## D409 评审用的模型按会话记：A 挑过的模型不许被 B 顶掉（#680，2026-11-25）
+
+**问题。** 用户报（原话）：「代码评审有bug。跨会话模型继承没有问题。但是已经执行过 codeReview 的会话已经设置过的模型，要记住，不能其他会话切换模型后，会同步已经执行过的 codeReview 的会话」。评审面板那颗模型 chip 只有一个存储点：`web/src/app.ts` 的 App 级字段 `private reviewModel = ""`。A 里挑成 X，切到 B 挑成 Y，回到 A 面板上是 Y —— 而 `startReview()` 发 `review.run` 读的就是它，A 下一次点「开始评审」会拿 Y 去跑，没有任何提示。D404 第 2 条当初把它当「人的偏好、跨会话保留」，正是这个 bug 的来历。
+
+**决定。**
+
+1. **模型 = 会话级状态**：存成 `private reviewModels = new Map<string, string>()`（`会话id → provider/id`），外面保留同名 getter / setter，读写都落到当前会话。`reviewPanelInput()`（chip 文字与 title）、`startReview()`（`review.run` 的 `model`）、模型弹层的 `start`（打勾的那一行）三处一个字都没改 —— 它们读到的自然就是「这个会话的模型」。
+2. **不落 localStorage / 不落盘**：只活在这一次页面里，刷新回「默认模型」。会话的模型属于会话；「这台机器默认拿什么评」是另一件事，不该被某一次会话里的临时选择改写。
+3. **没有会话时 set 直接丢弃**（欢迎页点 chip），别在空 key 上攒一份。
+4. **D404 第 2 条据此收窄**：跨会话保留的偏好只剩 ocr（`reviewOcr / reviewInstalling / reviewInstallLog`，机器事实），模型归入会话级状态。
+
+**为什么不照 D404 对 PR 号的做法「一律回默认值」。** 号是「评谁」的**身份**：串了会静默评错对象（D404 的代价分析），所以宁可让人重填。模型不是身份 —— 串了仍然评对的对象，只是拿错的模型静默跑一轮（更贵 / 更弱 / 更慢）。而「会话」在我们这儿就是一个任务上下文（同一个仓库、同一段事），评审模型是这条任务的属性；清成默认值等于逼用户每次切回来都重挑一次，是纯成本。按会话记也不引入新的不确定性：key 就是 `currentId`，与面板自己用的 `sessionId|cwd` 同源。
+
+**代价 / 可改。** `reviewModels` 里每个挑过模型的会话留一条字符串，会话删了没人来回收，所以留了上限 `REVIEW_MODEL_MEMORY = 200` 条（超了丢最早挑的那条，那一次会话回落到默认模型）。刷新后回默认模型 —— 以后真觉得烦，可以按会话落在设置里（别全局存一份，那就是回退这个决定）。
+
+**验证。** `probes/review-session-leak.mjs`（`npm run probe:review-session`）在原有「评什么」三段之后加了四段：A 挑模型 → chip 换成挑中的；切到 B → chip 是「默认模型」；B 挑另一个模型；回到 A → 还是 A 自己那个。修前第 5、6 段红（B 显示 A 的 `wb2api/cn:hy4flash`；回 A 显示 B 的 `wb2api/cn:kimi-k3-1`），修后八条全绿。`npm --prefix web run typecheck`（含 i18n、viewport、theme 三段）通过。
