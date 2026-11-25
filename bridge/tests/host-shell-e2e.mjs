@@ -13,7 +13,7 @@
  * `host-broker-unit.mjs` 直接对着 broker 断言。
  */
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -29,6 +29,24 @@ const BRAINS = path.join(TMP, "brains");
 fs.mkdirSync(BRAINS, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 失败时壳来不及收子进程，按进程树一起收，别让假脑/假 pi 留在下一轮里。 */
+function killTree(pid) {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    return;
+  }
+  const kids = spawnSync("pgrep", ["-P", String(pid)], { encoding: "utf8" });
+  for (const line of String(kids.stdout ?? "").split(/\s+/)) {
+    if (line) killTree(Number(line));
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* 已经没了 */
+  }
+}
 
 async function freePort() {
   const srv = net.createServer();
@@ -130,6 +148,9 @@ try {
   }, "壳的 /healthz 起来");
   const health = await get("/healthz");
   assert.equal(health.body.pid, host.pid, "healthz 报的 pid 应该是壳自己");
+  const tunnelHealth = await fetch(`${base}/healthz`, { headers: { "cf-ray": "test" } });
+  const tunnelBody = await tunnelHealth.json();
+  assert.equal(tunnelBody.pid, undefined, "隧道访客的 healthz 不能带 pid");
   // 本机别的端口也是别的页面：Origin 不是本服务自己的 host:port，就不能停壳。
   const cross = await post("/api/host/stop", { origin: "http://localhost:9999" });
   assert.equal(cross.status, 403, "其它 localhost 端口的页面不能跨源停壳");
@@ -220,6 +241,9 @@ try {
   );
   // 老脑应该被明确告知让位，而不是悄悄被断线。
   await until(async () => readBrain(oldPid)?.retired >= 1, "老脑收到 retire");
+  // 切换后老脑还会挂几秒：它这时发来的 attach 不能重新拿到会话。
+  await brainGet("/attach?sessionId=s4", oldPid);
+  await until(() => readBrain(oldPid)?.spawnFailed === "stale-owner", "老脑的 attach 被拒");
   // 页面地址不变：公网口一直在壳手里。
   assert.equal((await get("/echo")).body.peer, "loopback", "换脑之后仍然由壳写对端头");
   // 还没答的问卷也一起交回来：页面那张表单换脑后照样能答。
@@ -279,11 +303,8 @@ try {
   process.exitCode = 1;
 } finally {
   if (exitCode === null) {
-    try {
-      host.kill();
-    } catch {
-      /* ignore */
-    }
+    killTree(host.pid);
+    await Promise.race([new Promise((r) => host.once("exit", r)), sleep(5000)]);
   }
   try {
     fs.rmSync(TMP, { recursive: true, force: true });

@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Broker, LineSplitter } from "../src/host/broker.ts";
+import { Broker, LineSplitter, MAX_LINE_TAIL_BYTES } from "../src/host/broker.ts";
 
 const enc = (s) => Buffer.from(s, "utf8");
 
@@ -42,6 +42,20 @@ test("行尾的 CRLF 不当成内容", () => {
   const b = new Broker();
   b.attach("s1");
   assert.deepEqual(b.push("s1", enc('{"a":1}\r\n')).map((l) => l.line), ['{"a":1}']);
+});
+
+test("一直没有换行的超长单行不会无限留在 tail 里", () => {
+  const splitter = new LineSplitter();
+  const chunk = Buffer.alloc(1024 * 1024, 0x61);
+  let lines = [];
+  // 8 MiB 是上限；第 9 MiB 时 tail 必须被丢掉，并给出一行说明。
+  for (let i = 0; i < 9; i++) lines = splitter.push(chunk).lines;
+  assert.equal(lines.length, 1, "超限时要明说，而不是静默占内存");
+  assert.match(lines[0], /超过 8 MiB 没有换行/);
+  // 丢弃之后，后面正常的一行仍然能完整解出来，不带着前面 8 MiB 的残尾。
+  const after = splitter.push(enc("ok\n"));
+  assert.deepEqual(after.lines, ["ok"]);
+  assert.ok(MAX_LINE_TAIL_BYTES <= 8 * 1024 * 1024);
 });
 
 test("ack 之后 pending 只留未确认的", () => {

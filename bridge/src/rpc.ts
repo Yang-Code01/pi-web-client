@@ -183,6 +183,11 @@ export class RpcChild extends EventEmitter {
         // 换脑窗口里进程若已退出 / 吐过错误，新脑得看到，不能装作一切正常。
         if (got.lastExit) {
           this.emit("log", `attach: 这个会话的进程已经退出（${got.lastExit.code ?? got.lastExit.signal}）`);
+          if (got.lastStderr) this.emit("log", `attach: 最近的 stderr：\n${got.lastStderr.slice(-800)}`);
+          // 壳只通过 attach 快照报「已经退出」时，不能把它当活进程认领成功：
+          // 否则 adopt() 返回 true，后续请求只能等超时。
+          this.finish(`attach: 进程已经退出（${got.lastExit.code ?? got.lastExit.signal}）`);
+          return;
         }
         if (got.lastStderr) this.emit("log", `attach: 最近的 stderr：\n${got.lastStderr.slice(-800)}`);
         // 换脑前还挂着的问卷 / 审批：当它刚发过来一样重放 —— 页面那张表单接着能答（D385）。

@@ -17,7 +17,7 @@
  * 跑之前先 `npm run build:bridge`。
  */
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -35,6 +35,24 @@ const CWD = path.join(TMP, "work");
 fs.mkdirSync(CWD, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 失败时壳来不及收子进程，SIGKILL 壳会留下真脑/假 pi；按进程树一起收，别污染下一轮。 */
+function killTree(pid) {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    return;
+  }
+  const kids = spawnSync("pgrep", ["-P", String(pid)], { encoding: "utf8" });
+  for (const line of String(kids.stdout ?? "").split(/\s+/)) {
+    if (line) killTree(Number(line));
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* 已经没了 */
+  }
+}
 
 async function freePort() {
   const srv = net.createServer();
@@ -98,8 +116,12 @@ const getJson = async (p) => {
   const res = await fetch(base + p);
   return res.json();
 };
-const post = async (p, extraHeaders = {}) => {
-  const res = await fetch(base + p, { method: "POST", headers: { ...origins, ...extraHeaders }, body: "{}" });
+const post = async (p, extraHeaders = {}, body = {}) => {
+  const res = await fetch(base + p, {
+    method: "POST",
+    headers: { ...origins, ...extraHeaders },
+    body: JSON.stringify(body),
+  });
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 
@@ -248,6 +270,10 @@ try {
   });
   assert.equal(login2.status, 200, "重新登录应该还能进");
   const cookie2 = (login2.headers.get("set-cookie") ?? "").split(";")[0];
+  // 有壳时 /run 也不能只查非空：不存在的分支必须当场 400，而不是回 202 让面板显示已启动。
+  const badBranch = await post("/api/hotdeploy/run", { cookie: cookie2 }, { branch: "no-such-branch-review" });
+  assert.equal(badBranch.status, 400, "不存在的分支不能让壳直接开跑");
+  assert.equal(badBranch.body?.code, "hotdeploy_branch", "错误码要指回分支校验");
   const rm = await post("/api/hotdeploy/remove-worktree", { cookie: cookie2 });
   assert.equal(rm.status, 400, "有壳时删工作树接口不该退化成 405");
   assert.equal(rm.body?.code, "hotdeploy_path", "空路径应该走到参数校验");
@@ -269,11 +295,9 @@ try {
   process.exitCode = 1;
 } finally {
   if (exitCode === null) {
-    try {
-      host.kill("SIGKILL");
-    } catch {
-      /* ignore */
-    }
+    // 先收整棵树，再等壳退出：Windows 上壳没退就删临时目录，子进程占着文件会清不掉。
+    killTree(host.pid);
+    await Promise.race([new Promise((r) => host.once("exit", r)), sleep(5000)]);
   }
   try {
     fs.rmSync(TMP, { recursive: true, force: true });

@@ -62,6 +62,25 @@ test("压缩只省字节，不改答案", () => {
   assert.equal(again.size, 2);
 });
 
+test("压缩写盘失败时保留原账本", () => {
+  const file = tmp();
+  const ledger = new UsageLedger(file);
+  for (let i = 0; i < 20; i += 1) ledger.record("s1", { total: i, updatedAt: `t${i}` });
+  const before = fs.readFileSync(file, "utf8");
+  const original = fs.renameSync;
+  fs.renameSync = () => {
+    throw new Error("disk full");
+  };
+  try {
+    assert.equal(ledger.compact(), false, "压缩失败要如实返回 false");
+  } finally {
+    fs.renameSync = original;
+  }
+  assert.equal(fs.readFileSync(file, "utf8"), before, "失败时原账本一个字节都不能少");
+  assert.equal(new UsageLedger(file).get("s1")?.total, 19, "换一个实例仍然读得到最后一条");
+  assert.equal(fs.existsSync(`${file}.${process.pid}.tmp`), false, "临时文件不能留下");
+});
+
 test("很小的时候不压缩", () => {
   const ledger = new UsageLedger(tmp());
   ledger.record("s1", { total: 1, updatedAt: "x" });

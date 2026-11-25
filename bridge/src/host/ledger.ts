@@ -62,12 +62,35 @@ export class UsageLedger {
 
   compact(): boolean {
     const lines = [...this.map].map(([s, u]) => `${JSON.stringify({ s, u })}\n`);
+    const payload = lines.join("");
+    const tmp = `${this.file}.${process.pid}.tmp`;
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
-      fs.writeFileSync(this.file, lines.join(""));
-      this.bytes = Buffer.byteLength(lines.join(""));
+      // 追加式账本压缩时必须原子替换：直接覆盖原文件，写盘失败会留下空文件或半截 JSONL，
+      // 跨重启的用量就永久丢了。先写同目录临时文件，再 rename 顶上去。
+      fs.writeFileSync(tmp, payload);
+      // Windows 上覆盖已有文件偶尔会瞬时 EPERM（防病毒/索引抓了一下）；重试几次，
+      // 仍失败就保留原账本。别在这里退化成直接覆盖，那会把「压缩失败」变成「账本没了」。
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          fs.renameSync(tmp, this.file);
+          lastError = null;
+          break;
+        } catch (err) {
+          lastError = err;
+          if (attempt < 2) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+        }
+      }
+      if (lastError) throw lastError;
+      this.bytes = Buffer.byteLength(payload);
       return true;
     } catch {
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch {
+        /* 临时文件也没了 */
+      }
       return false;
     }
   }

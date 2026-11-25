@@ -25,6 +25,14 @@ try {
   const sockMode = fs.statSync(sock).mode & 0o777;
   assert.equal(dirMode, 0o700, "控制通道目录只给当前用户");
   assert.equal(sockMode, 0o600, "控制套接字只给当前用户读写");
+  // 第二个壳不许把同端口的 socket 当成上次的残留删掉：先探活，活着就拒绝启动。
+  const second = await serveControl(sock, () => {}).then(
+    () => null,
+    (err) => err,
+  );
+  assert.ok(second instanceof Error, "第二个壳应该拒绝接管");
+  assert.match(String(second.message), /已被另一个壳占用/);
+  assert.equal(server.listening, true, "拒绝第二个壳之后，旧壳的控制口还得活着");
   console.log("control-unit: ok");
 } finally {
   await new Promise((resolve) => server.close(resolve));

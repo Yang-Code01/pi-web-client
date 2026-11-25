@@ -42,6 +42,8 @@ interface Brain {
   /** 已经叫它去接管壳里活着的会话了（每个脑只叫一次，别重复 adopt）。 */
   askedAdopt: boolean;
   attachedAt: number;
+  /** 子进程 exit 已经落地。换脑后强杀老脑前先看它一眼，别对复用的 pid 下手。 */
+  exited: boolean;
 }
 
 interface DeployState {
@@ -129,6 +131,7 @@ function buildIdOnDisk(): string {
 }
 
 let seqId = 0;
+const brainsByPid = new Map<number, Brain>();
 function newBrainId(): string {
   return `b${++seqId}-${process.pid}`;
 }
@@ -308,7 +311,14 @@ async function main(): Promise<void> {
   };
 
   const publicServer = http.createServer((req, res) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    // 不用请求里的 Host 拼 base：畸形 Host（比如 `evil:bad`）会让 new URL 抛异常，
+    // 而这里在 http 请求回调里，未捕获就是壳整个退出。路径解析本来也不需要 Host。
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      return void json(res, 400, { ok: false, code: "bad-url" });
+    }
     if (url.pathname === "/healthz") {
       // 回环请求才给完整 state；远程访客只拿「活着 + 版本」，别把会话 id、子进程 pid、
       // 部署状态和缓冲窗口当成公开健康检查的一部分。
@@ -390,7 +400,9 @@ async function main(): Promise<void> {
       sessions: new Set(),
       askedAdopt: false,
       attachedAt: Date.now(),
+      exited: false,
     };
+    if (next.pid > 0) brainsByPid.set(next.pid, next);
     if (msg.proto !== CONTROL_PROTO) {
       log(`拒绝握手：proto ${msg.proto} ≠ ${CONTROL_PROTO}`);
       conn.send({ t: "reject", reason: `proto-mismatch:${CONTROL_PROTO}` });
@@ -475,6 +487,11 @@ async function main(): Promise<void> {
         return;
       }
       case "spawn": {
+        // 换脑已经完成：老脑还挂着的那几秒不许再开新会话、抢所有权。
+        if (b !== brain) {
+          b.conn.send({ t: "spawn-failed", rid: msg.rid, reason: "stale-owner" });
+          return;
+        }
         const spec: SpawnSpec = {
           sessionId: String(msg.sessionId),
           argv: Array.isArray(msg.argv) ? msg.argv.map(String) : [],
@@ -493,6 +510,12 @@ async function main(): Promise<void> {
         return;
       }
       case "attach": {
+        // 切换后老脑的控制连接还会留几秒；它这时发来的 attach 不能重新拿到会话，
+        // 否则 stale-owner 隔离失效，后续某些写会被旧脑错误地接受。
+        if (b !== brain) {
+          b.conn.send({ t: "attach-failed", rid: msg.rid, reason: "stale-owner" });
+          return;
+        }
         const sessionId = String(msg.sessionId);
         if (!children.has(sessionId)) {
           b.conn.send({ t: "attach-failed", rid: msg.rid, reason: "no-child" });
@@ -662,9 +685,11 @@ async function main(): Promise<void> {
     setTimeout(() => old.conn.close(), 3000).unref();
     // 老脑 5 秒还没退：强杀（它已经不持有任何管道，杀掉不伤会话）。
     setTimeout(() => {
-      if (!old.conn.alive) return;
+      // 连接断了不代表进程退了：旧脑可能关了控制口却卡住不退，这里必须照样强杀。
+      if (old.exited) return;
       try {
-        process.kill(old.pid);
+        if (process.platform === "win32") process.kill(old.pid);
+        else process.kill(old.pid, "SIGKILL");
       } catch {
         /* 已经没了 */
       }
@@ -793,6 +818,11 @@ async function main(): Promise<void> {
     });
     child.on("exit", (code, signal) => {
       if (shuttingDown || errored) return;
+      const dead = brainsByPid.get(pid ?? -1);
+      if (dead) {
+        dead.exited = true;
+        brainsByPid.delete(pid ?? -1);
+      }
       if (swapChild === child) {
         swapChild = null;
         swapPid = null;

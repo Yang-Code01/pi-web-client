@@ -112,15 +112,42 @@ export class ControlConn {
 }
 
 /** 壳这一侧：监听控制通道，每来一个脑给一根 ControlConn。 */
-export function serveControl(socketPath: string, onConn: (conn: ControlConn) => void): Promise<net.Server> {
+/** 探测现有控制口是不是还有壳在听。连得上就是活的；连不上才是上次留下的死文件。 */
+function controlInUse(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect(socketPath);
+    let done = false;
+    let timer: NodeJS.Timeout;
+    const finish = (inUse: boolean): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(inUse);
+    };
+    // 探测超时按「有人在听」处理：宁可拒绝启动，也不要删掉一个可能还活着的壳的控制口。
+    timer = setTimeout(() => finish(true), 500);
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
+}
+
+/** 壳这一侧：监听控制通道，每来一个脑给一根 ControlConn。 */
+export async function serveControl(socketPath: string, onConn: (conn: ControlConn) => void): Promise<net.Server> {
   const unix = process.platform !== "win32";
   if (unix) {
     ensurePrivateDir(path.dirname(socketPath));
     // 上一轮被 kill 时 unix socket 文件会留在盘上；不删就 EADDRINUSE。
-    try {
-      if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
-    } catch {
-      /* 删不掉就让 listen 报错，别在这里吞成「起不来但没原因」 */
+    // 但先确认它不是另一个正在运行的壳的：第二个壳删掉它，旧壳就再也接不到换脑/重连。
+    if (fs.existsSync(socketPath)) {
+      if (await controlInUse(socketPath)) {
+        throw new Error(`控制通道已被另一个壳占用：${socketPath}`);
+      }
+      try {
+        fs.unlinkSync(socketPath);
+      } catch {
+        /* 删不掉就让 listen 报错，别在这里吞成「起不来但没原因」 */
+      }
     }
   }
   const server = net.createServer((socket) => onConn(new ControlConn(socket)));

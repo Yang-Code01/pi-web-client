@@ -17,6 +17,9 @@ export interface Line {
 /** 单条会话的未确认缓冲上限（字节）。超过就放弃这一轮的跨代重放，界面明说。 */
 export const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 
+/** 一直没有换行的半行最多留这么多。超过就丢弃，否则超长单行能把壳的内存拖爆。 */
+export const MAX_LINE_TAIL_BYTES = 8 * 1024 * 1024;
+
 /**
  * 字节流 → 行。只在拿到完整的 `\n` 之后解码，所以任意切法都不会把多字节字符切开。
  * 行尾的 `\r` 不进入内容（pi 的输出是 LF，但日志/转发层可能带 CRLF）。
@@ -40,6 +43,13 @@ export class LineSplitter {
       start = nl + 1;
     }
     this.tail = start < buf.length ? Buffer.from(buf.subarray(start)) : Buffer.alloc(0);
+    if (this.tail.length > MAX_LINE_TAIL_BYTES) {
+      // 没有换行的单行输出不设上限的话，tail 会跟着子进程无限长，而且每次 push 都
+      // Buffer.concat 一遍 —— 内存与拷贝都是二次方级。这里丢掉残行并明说一嘴。
+      this.tail = Buffer.alloc(0);
+      lines.push(`[host] 单行超过 ${MAX_LINE_TAIL_BYTES / 1024 / 1024} MiB 没有换行，已丢弃这段尾部`);
+      seqs.push(++this.n);
+    }
     return { lines, seqs };
   }
 

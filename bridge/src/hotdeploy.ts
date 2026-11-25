@@ -327,6 +327,42 @@ export async function snapshot(ctx: HotdeployCtx): Promise<Record<string, unknow
   };
 }
 
+/** /run 的参数校验：有壳与无壳两条路必须问同一组问题，否则面板会把必然失败的请求显示成已启动。 */
+function runInputError(
+  snap: Record<string, unknown>,
+  branch: string,
+  stash: boolean,
+): { status: number; code: string; message: string } | null {
+  if (!branch) return { status: 400, code: "hotdeploy_branch", message: "没说要部署哪条分支" };
+  const branches = snap.branches as BranchRow[];
+  const row = branches.find((b) => b.name === branch);
+  if (!row) return { status: 400, code: "hotdeploy_branch", message: `本地没有这条分支：${branch}` };
+  if (row.occupiedBy) {
+    return {
+      status: 409,
+      code: "hotdeploy_occupied",
+      message: `${branch} 被另一个 worktree 检出：${row.occupiedBy}；先在那儿收掉它`,
+    };
+  }
+  if (stash) {
+    if (snap.detached || !snap.branch) {
+      return { status: 409, code: "hotdeploy_stash_branch", message: "当前是 detached HEAD，暂存只能用在一条本地分支上" };
+    }
+    if (branch !== snap.branch) {
+      return {
+        status: 409,
+        code: "hotdeploy_stash_branch",
+        message: `暂存只能部署当前分支 ${snap.branch}；先切到 ${branch} 再来`,
+      };
+    }
+  }
+  if (snap.dirty && !stash) {
+    const list = (snap.dirtyFiles as string[]).slice(0, 3).join("、");
+    return { status: 409, code: "hotdeploy_dirty", message: `主检出有未提交的改动（${list}…），先提交或还原再来` };
+  }
+  return null;
+}
+
 async function startRun(req: http.IncomingMessage, res: http.ServerResponse, ctx: HotdeployCtx): Promise<void> {
   if (ctx.publicReq) return fail(res, 403, "hotdeploy_public", "公网不能换本机进程；请回本机操作");
   const link = await inLinkedWorktree();
@@ -338,25 +374,9 @@ async function startRun(req: http.IncomingMessage, res: http.ServerResponse, ctx
   if (!fs.existsSync(WORKER)) return fail(res, 500, "hotdeploy_worker", `缺少 ${WORKER}`);
 
   const snap = await snapshot(ctx);
-  const branches = snap.branches as BranchRow[];
-  const row = branches.find((b) => b.name === branch);
-  if (!row) return fail(res, 400, "hotdeploy_branch", `本地没有这条分支：${branch}`);
-  if (row.occupiedBy) {
-    return fail(res, 409, "hotdeploy_occupied", `${branch} 被另一个 worktree 检出：${row.occupiedBy}；先在那儿收掉它`);
-  }
+  const bad = runInputError(snap, branch, stash);
+  if (bad) return fail(res, bad.status, bad.code, bad.message);
   if (snap.busy) return fail(res, 409, "hotdeploy_busy", "上一轮热部署还没结束");
-  if (stash) {
-    if (snap.detached || !snap.branch) {
-      return fail(res, 409, "hotdeploy_stash_branch", "当前是 detached HEAD，暂存只能用在一条本地分支上");
-    }
-    if (branch !== snap.branch) {
-      return fail(res, 409, "hotdeploy_stash_branch", `暂存只能部署当前分支 ${snap.branch}；先切到 ${branch} 再来`);
-    }
-  }
-  if (snap.dirty && !stash) {
-    const list = (snap.dirtyFiles as string[]).slice(0, 3).join("、");
-    return fail(res, 409, "hotdeploy_dirty", `主检出有未提交的改动（${list}…），先提交或还原再来`);
-  }
 
   const run: RunState = {
     pid: 0,
@@ -494,14 +514,20 @@ export async function handleHotdeploy(
       if (p === "/api/hotdeploy/run" && req.method === "POST") {
         const body = await readJsonBody(req).catch(() => null);
         const branch = typeof body?.branch === "string" ? body.branch.trim() : "";
+        const stash = body?.stash === true;
         if (!branch) return fail(res, 400, "hotdeploy_branch", "没说要部署哪条分支"), true;
+        if (!fs.existsSync(WORKER)) return fail(res, 500, "hotdeploy_worker", `缺少 ${WORKER}`), true;
+        // 有壳也必须走和无壳同一组分支/占用/dirty 校验，不能只查非空就交给壳。
+        const snap = await snapshot(ctx);
+        const bad = runInputError(snap, branch, stash);
+        if (bad) return fail(res, bad.status, bad.code, bad.message), true;
         // 壳对重复请求是「已有一轮部署在跑，忽略这次」；这里若还回 202，面板会显示新一
         // 轮已经开始，实际什么都没发生。先把壳的忙碌态翻译成同一个 409。
         if (host.deployState.phase === "running" || host.deployState.phase === "observing") {
           fail(res, 409, "hotdeploy_busy", "上一轮热部署还没结束");
           return true;
         }
-        host.deploy(branch, body?.stash === true);
+        host.deploy(branch, stash);
         return json(res, 202, {
           ok: true,
           run: { pid: 0, branch, step: 0, phase: "running", startedAt: new Date().toISOString(), port: host.publicPort },

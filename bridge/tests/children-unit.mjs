@@ -25,5 +25,14 @@ const pid = children.spawn({ ...spec, cwd: process.cwd(), argv: ["-e", "setTimeo
 assert.ok(pid > 0, "失败过的会话应该还能重新 spawn");
 assert.deepEqual(broker.sessions(), ["s"], "成功后才写 broker 条目");
 children.kill("s", true);
+while (children.has("s")) await new Promise((r) => setTimeout(r, 20));
+assert.ok(children.lastExit("s"), "旧进程退出后要留下 lastExit 给还没接管的脑");
+
+// 同一会话重新 spawn 之后，上一代的退出码不能跟着新 pid 一起交给 attach。
+const pid2 = children.spawn({ ...spec, cwd: process.cwd(), argv: ["-e", "setTimeout(() => {}, 200)"] });
+assert.ok(pid2 > 0, "同一会话应该能在旧进程退出后重新拉起");
+assert.equal(children.lastExit("s"), null, "新一代进程不该继承上一代的退出记录");
+children.kill("s", true);
+while (children.has("s")) await new Promise((r) => setTimeout(r, 20));
 
 console.log("children-unit: ok");

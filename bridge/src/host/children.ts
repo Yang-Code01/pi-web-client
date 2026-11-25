@@ -72,6 +72,10 @@ export class Children {
       // 没有 pid 就没有进程；到这里才写 broker，失败路径不会留下一条空的「已有会话」。
       throw new Error("pi 进程没起来");
     }
+    // 这是同一会话的新一代进程：上一次的退出码/旧 stderr 不能跟着新 pid 一起交给 attach，
+    // 否则调用方会把正在跑的新会话误判成「已经退出」。
+    this.exits.delete(spec.sessionId);
+    this.errs.delete(spec.sessionId);
     this.broker.attach(spec.sessionId);
     this.procs.set(spec.sessionId, child);
     return child.pid;

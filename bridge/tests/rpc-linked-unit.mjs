@@ -51,6 +51,44 @@ assert.ok("error" in claim, "认领失败要如实告诉 adopt()");
 assert.match(String(claim.error.message), /认领后补发失败/);
 assert.equal(rpc.alive, false, "补发失败等于这条链路已经死了");
 
+// attach 快照说进程已经退出：不能把它当活进程认领成功。
+const logPath3 = path.join(tmp, "rpc3.log");
+let resolveAttach3;
+const link3 = {
+  watch: () => () => {},
+  attachSession: () =>
+    new Promise((resolve) => {
+      resolveAttach3 = resolve;
+    }),
+  spawnSession: () => {
+    throw new Error("adopt 失败时不许新开进程");
+  },
+  stdin: () => true,
+  ack: () => {},
+  kill: () => {},
+};
+const rpc3 = new RpcChild({
+  cli: "fake-pi",
+  args: [],
+  cwd: tmp,
+  logPath: logPath3,
+  sessionId: "s3",
+  link: link3,
+  adoptOnly: true,
+});
+rpc3.start();
+const claim3Promise = rpc3.whenLinked();
+resolveAttach3({
+  pid: 43,
+  pending: { fromSeq: 0, toSeq: 0, lines: [], overflowed: false },
+  lastWritten: 0,
+  lastExit: { code: 1, signal: null },
+});
+const claim3 = await claim3Promise;
+assert.ok("error" in claim3, "attach 说进程已经退出时 adopt() 必须失败");
+assert.match(String(claim3.error.message), /已经退出/);
+assert.equal(rpc3.alive, false, "已经退出的进程不能保持可用");
+
 // 认领一直不落地时，队列必须有上限：超过就结算整条链路，而不是无限攒帧。
 const logPath2 = path.join(tmp, "rpc2.log");
 let resolveAttach2;
