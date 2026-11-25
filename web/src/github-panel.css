@@ -168,7 +168,6 @@
 }
 
 .ghp-empty { padding: 22px 6px; text-align: center; font-size: 12.5px; color: var(--faint); }
-.ghp-more { font-size: 11.5px; color: var(--faint); padding: 2px; }
 
 /* ---------------------------------------------------------------- 列表 */
 
@@ -209,75 +208,153 @@
 
 .ghp-row-meta { font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ---------------------------------------------------------------- 详情 */
+/* ---------------------------------------------------------------- 详情（文档式）
 
-.ghp-hero {
+   面板是一篇短报告：kicker → 大标题 → 署名行 → 描述全文 → 文件清单 → 讨论。
+   不再用「hero 卡 + 四格数字」：560px 里四格数字吃掉四分之一高度，只说了署名行一行能说完的
+   事，而真正要读的描述被塞进 150px 的滚动框、正好切在半行字上。 */
+
+.ghp-kicker {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  background: var(--panel);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
 }
 
-.ghp-hero-title { margin: 0; font-size: 15px; line-height: 1.35; color: var(--text); }
+.ghp-kicker-num { color: var(--accent); font-weight: 600; }
+.ghp-kicker-sep { color: var(--line-lit); }
 
-.ghp-hero-meta {
+.ghp-kicker-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ok);
+}
+
+.ghp-kicker-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.ghp-kicker-state.merged { color: var(--accent); }
+.ghp-kicker-state.closed { color: var(--danger); }
+
+/* 有失败时用警告色：一片绿会让 2/4 读起来像 4/4。 */
+.ghp-kicker-checks { color: var(--warn); font-weight: 600; }
+.ghp-kicker-checks.ok { color: var(--ok); }
+
+.ghp-doc-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.38;
+  font-weight: 700;
+  letter-spacing: -0.012em;
+  color: var(--text);
+}
+
+.ghp-doc-by {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  margin-top: -2px;
   font-size: 11.5px;
   color: var(--faint);
 }
 
-.ghp-pill {
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  padding: 0 7px;
-  font-size: 10.5px;
-}
+.ghp-doc-by code { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.ghp-doc-churn { font-family: var(--mono); }
 
-.ghp-pill.ok { border-color: var(--ok-dim, #bfe6c9); color: var(--ok); background: var(--ok-bg); }
+.ghp-rule { height: 1px; background: var(--line-soft); }
 
-.ghp-hero-body {
-  font-size: 12.5px;
-  line-height: 1.6;
+/* 描述全文：不设滚动框、不折叠。这是这一版的主菜。 */
+.ghp-doc {
+  font-size: 13px;
+  line-height: 1.7;
   color: var(--dim);
-  white-space: pre-wrap;
-  max-height: 150px;
-  overflow: auto;
+  overflow-wrap: anywhere;
 }
 
-/* 四格数字：这一版的主菜 —— 不展开差异，也要说清改了多少。 */
-.ghp-stats {
-  display: flex;
-  gap: 1px;
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--line-soft);
-}
+.ghp-doc > :first-child { margin-top: 0; }
 
-.ghp-stat { flex: 1; background: var(--panel); padding: 8px 10px; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.ghp-stat-k { font-size: 10.5px; color: var(--faint); letter-spacing: 0.04em; }
-.ghp-stat-v { font-family: var(--mono, ui-monospace, monospace); font-size: 17px; line-height: 1.25; font-weight: 600; }
-.ghp-stat-v.plus { color: var(--ok); }
-.ghp-stat-v.minus { color: var(--danger); }
-
-.ghp-sec { display: flex; flex-direction: column; gap: 4px; }
-
-.ghp-sec-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.ghp-doc h1,
+.ghp-doc h2,
+.ghp-doc h3,
+.ghp-doc h4,
+.ghp-doc h5,
+.ghp-doc h6 {
   font-size: 11.5px;
-  color: var(--faint);
-  padding: 2px 2px 4px;
+  font-weight: 650;
+  color: var(--text);
+  margin: 14px 0 5px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line-soft);
 }
 
-.ghp-sec-title { font-weight: 600; }
+.ghp-doc h1:first-child,
+.ghp-doc h2:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.ghp-doc h3,
+.ghp-doc h4,
+.ghp-doc h5,
+.ghp-doc h6 { border-top: 0; padding-top: 0; }
+
+.ghp-doc p { margin: 0 0 8px; }
+.ghp-doc ul,
+.ghp-doc ol { margin: 0 0 8px; padding-left: 18px; }
+.ghp-doc li { margin: 2px 0; }
+.ghp-doc li::marker { color: var(--line-lit); }
+
+.ghp-doc code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 0 4px;
+  color: var(--text);
+}
+
+.ghp-doc pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-x: auto;
+  font: 11.5px/1.55 var(--mono);
+}
+
+.ghp-doc pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+.ghp-doc a { color: var(--accent); }
+.ghp-doc img { max-width: 100%; border-radius: 8px; }
+
+.ghp-doc blockquote {
+  margin: 0 0 8px;
+  padding: 2px 10px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--faint);
+}
+
+.ghp-doc hr { border: 0; height: 1px; background: var(--line-soft); margin: 10px 0; }
+
+.ghp-doc table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin: 0 0 8px; }
+.ghp-doc th,
+.ghp-doc td { border: 1px solid var(--line-soft); padding: 3px 6px; text-align: left; }
+
+.ghp-filesec,
+.ghp-commentsec { display: flex; flex-direction: column; gap: 4px; }
+
+.ghp-h {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 2px 2px;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text);
+}
 
 .ghp-sample {
   font-size: 10px;
@@ -285,63 +362,99 @@
   border-radius: 999px;
   border: 1px dashed var(--line-strong);
   color: var(--faint);
+  font-family: var(--sans);
+  font-weight: 400;
 }
 
-/* 逐文件一行：只给「这个文件改了几行」，看代码去 GitHub。 */
-.ghp-filestat {
+/* 文件清单：两列。文件多时一屏还能放下十来个，而不是只放得下五六行。
+   降到一列的 @container 必须写在这条**后面**：规则同权重，后定义的赢（写在前面会被这里盖掉）。 */
+.ghp-filegrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 14px; }
+
+@container (max-width: 470px) {
+  .ghp-filegrid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ghp-frow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
   width: 100%;
   text-align: left;
   border: 0;
   border-bottom: 1px solid var(--line-soft);
   border-radius: 0;
   background: transparent;
-  padding: 6px 4px;
+  padding: 4px 2px;
   cursor: pointer;
-  font-size: 12px;
-  color: var(--text);
+  font-family: inherit;
+  color: var(--dim);
 }
 
-.ghp-filestat:last-of-type { border-bottom: 0; }
-.ghp-filestat:hover { background: var(--panel-2); }
-.ghp-filestat:hover .ghp-go { color: var(--accent); }
+.ghp-frow:hover { background: var(--panel); }
 
-.ghp-file-status {
-  font-family: var(--mono, ui-monospace, monospace);
-  font-size: 10.5px;
-  width: 14px;
-  text-align: center;
-  color: var(--faint);
+.ghp-f-label {
   flex: 0 0 auto;
+  width: 11px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--faint);
 }
 
-.ghp-file-status.added { color: var(--ok); }
-.ghp-file-status.removed { color: var(--danger); }
+.ghp-f-label.added { color: var(--ok); }
+.ghp-f-label.removed { color: var(--danger); }
 
-.ghp-file-path {
+.ghp-f-path {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--mono, ui-monospace, monospace);
-  font-size: 11.5px;
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
-.ghp-churn { font-family: var(--mono, ui-monospace, monospace); font-size: 11px; color: var(--faint); flex: 0 0 auto; }
-.ghp-go { font-size: 11px; color: var(--faint); flex: 0 0 auto; }
+.ghp-frow:hover .ghp-f-path { color: var(--text); }
 
-.ghp-comment {
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 7px 9px;
-  background: var(--panel);
+.ghp-f-churn { flex: 0 0 auto; font-family: var(--mono); font-size: 10px; color: var(--faint); }
+
+/* 讨论：整串列出来，一条竖线串起来 —— 谁说的比说了什么轻。 */
+.ghp-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-left: 2px;
+  padding-left: 11px;
+  border-left: 1px solid var(--line-soft);
 }
 
-.ghp-comment-head { font-size: 11px; color: var(--faint); margin-bottom: 3px; }
-.ghp-comment-body { font-size: 12.5px; line-height: 1.55; color: var(--text); }
+.ghp-post { position: relative; }
+
+.ghp-post::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--line-lit);
+}
+
+.ghp-post:first-child::before { background: var(--accent); }
+
+.ghp-post-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.ghp-post-head b { font-size: 11.5px; font-weight: 600; color: var(--text); }
+.ghp-post-body { font-size: 12.5px; line-height: 1.6; color: var(--dim); overflow-wrap: anywhere; }
 
 .ghp-foot { display: flex; align-items: center; gap: 8px; padding: 4px 2px 0; flex-wrap: wrap; }
 

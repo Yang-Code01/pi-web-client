@@ -13,6 +13,7 @@ import { githubApi } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { ghAge, ghAgeText, ghChurn, type GhSessionAccount, type GithubStateView, type PullDetailView, type PullRow, type PullsView } from "./github-shared.ts";
 import { errText, tr } from "./i18n/index.ts";
+import { renderMarkdown } from "./md.ts";
 import { appZoom, markSurface, mountOverlay, pushEscLayer } from "./modal.ts";
 import "./github-panel.css";
 
@@ -390,78 +391,99 @@ export class GithubPanel {
     return row;
   }
 
-  /** 详情：标题 + 一行事实 + 四格数字 + 逐文件一行 + 评论露一条 + 出口。 */
+  /**
+   * 详情：一篇短报告 —— kicker、大标题、署名行、描述全文、文件清单、讨论，最后是出口。
+   *
+   * 为什么不是「四格数字 + 卡片」：560px 里四格数字吃掉约四分之一高度，只说了「8 文件 +226 −11」
+   * 这种署名行一行能说完的事；而真正要读的描述被塞进 150px 的滚动框，正好切在半行字上。
+   * 现在描述按 markdown 全文排开，文件压成两列清单，注释与讨论同一条阅读流。
+   */
   private detailCells(): HTMLElement[] {
     if (!this.detail) return [el("div", "ghp-empty", tr("正在读 PR…"))];
     const d = this.detail;
     const cells: HTMLElement[] = [];
 
-    const hero = el("div", "ghp-hero");
-    hero.append(el("h2", "ghp-hero-title", d.pull.title));
-    const meta = el("div", "ghp-hero-meta");
-    const age = ghAge(d.pull.updatedAt);
+    // kicker：号、状态、checks —— 用小字一行说完，不占一张卡。
     const stateLabel = d.state === "open" ? tr("打开") : d.state === "merged" ? tr("已合并") : tr("已关闭");
+    const kicker = el("div", "ghp-kicker");
+    kicker.append(el("span", "ghp-kicker-num", `#${d.pull.number}`), el("span", "ghp-kicker-sep", "·"));
+    kicker.append(el("span", `ghp-kicker-state ${d.state}`, stateLabel));
     // 分子是**通过**的条数：两边都填 length 永远渲染成 N/N，有失败也读起来像全绿。
     const checks = d.sample?.checks ?? [];
     const passing = checks.filter((c) => c.state === "success").length;
-    const checkPill = checks.length
-      ? [el("span", passing === checks.length ? "ghp-pill ok" : "ghp-pill", tr("{p1}/{p2} checks", { p1: passing, p2: checks.length }))]
-      : [];
-    meta.append(
-      el("span", "ghp-pill ok", stateLabel),
-      el("span", undefined, d.pull.author),
-      el("span", undefined, `${d.pull.head} → ${d.pull.base}`),
-      age ? el("span", undefined, ghAgeText(age)) : el("span"),
-      ...checkPill,
-      el("span", "ghp-sample", tr("示例数据")),
-    );
-    hero.append(meta);
-    if (d.body) hero.append(el("div", "ghp-hero-body", d.body));
-    cells.push(hero);
-
-    // 四格数字：这一版的核心 —— 不展开差异，也要说清改了多少。
-    const stats = el("div", "ghp-stats");
-    stats.append(
-      statCell(tr("文件"), String(d.pull.changedFiles || d.files.length)),
-      statCell(tr("新增"), `+${d.pull.additions}`, "plus"),
-      statCell(tr("删除"), `−${d.pull.deletions}`, "minus"),
-      statCell(tr("评论"), String(d.sample.comments.length)),
-    );
-    cells.push(stats);
-
-    const files = el("section", "ghp-sec");
-    const fh = el("div", "ghp-sec-head");
-    fh.append(el("span", "ghp-sec-title", tr("改了哪 {p1} 个文件", { p1: d.files.length })));
-    files.append(fh);
-    for (const f of d.files) {
-      const row = el("button", "ghp-filestat") as HTMLButtonElement;
-      row.append(
-        el("span", `ghp-file-status ${f.status}`, f.status === "added" ? "A" : f.status === "removed" ? "D" : "M"),
-        el("span", "ghp-file-path", f.path),
-        el("span", "ghp-churn", ghChurn(f.additions, f.deletions)),
-        el("span", "ghp-go", tr("在 GitHub 看 ↗")),
+    if (checks.length) {
+      kicker.append(el("span", "ghp-kicker-sep", "·"));
+      kicker.append(
+        el("span", passing === checks.length ? "ghp-kicker-checks ok" : "ghp-kicker-checks", tr("{p1}/{p2} checks 通过", { p1: passing, p2: checks.length })),
       );
+    }
+    // checks 与评论这一版仍是样本（真 CI 要按 commit 拉 check-runs、真评论要拉 review comments）。
+    // 只在这里标一次：之前 hero 与评论区各挂一个「示例数据」，两处都标等于两处都没人看。
+    kicker.append(el("span", "ghp-sample", tr("示例数据")));
+    cells.push(kicker);
+
+    cells.push(el("h2", "ghp-doc-title", d.pull.title));
+
+    const age = ghAge(d.pull.updatedAt);
+    const by = el("div", "ghp-doc-by");
+    by.append(el("span", undefined, d.pull.author || "—"), el("span", "ghp-kicker-sep", "·"));
+    by.append(el("code", undefined, `${d.pull.head} → ${d.pull.base}`), el("span", "ghp-kicker-sep", "·"));
+    if (age) by.append(el("span", undefined, tr("{p1}更新", { p1: ghAgeText(age) })), el("span", "ghp-kicker-sep", "·"));
+    by.append(el("span", "ghp-doc-churn", [tr("{p1} 个文件", { p1: d.pull.changedFiles || d.files.length }), ghChurn(d.pull.additions, d.pull.deletions)].filter(Boolean).join(" ")));
+    cells.push(by, el("div", "ghp-rule"));
+
+    if (d.body.trim()) {
+      // PR 描述就是 Markdown（标题、列表、```代码）：按文档模式渲染，软换行合成段，和 GitHub 上读一样。
+      const doc = el("div", "ghp-doc");
+      doc.append(renderMarkdown(d.body, { doc: true }));
+      cells.push(doc);
+    } else {
+      cells.push(el("div", "ghp-hint", tr("这个 PR 没有写描述")));
+    }
+
+    const files = el("section", "ghp-filesec");
+    const fh = el("div", "ghp-h");
+    fh.append(el("span", "ghp-h-t", tr("改了哪 {p1} 个文件", { p1: d.files.length })));
+    files.append(fh);
+    // 两列清单：文件多时不再一屏只放得下五六行。路径截断，悬浮看全名。
+    const grid = el("div", "ghp-filegrid");
+    for (const f of d.files) {
+      const row = el("button", "ghp-frow") as HTMLButtonElement;
+      row.type = "button";
+      const letter = f.status === "added" ? "A" : f.status === "removed" ? "D" : f.status === "renamed" ? "R" : "M";
+      row.append(
+        el("span", `ghp-f-label ${f.status}`, letter),
+        el("span", "ghp-f-path", f.path),
+        el("span", "ghp-f-churn", ghChurn(f.additions, f.deletions)),
+      );
+      row.title = f.path;
+      row.setAttribute("aria-label", tr("在 GitHub 看 {p1} 的差异", { p1: f.path }));
       // 锚点由桥算好（`#diff-<sha256(路径)>`）：点一行就落到**这个文件**的差异，而不是整页顶部。
       row.onclick = () => this.host.openExternal(`${d.pull.url}/files${f.anchor ? `#${f.anchor}` : ""}`);
-      files.append(row);
+      grid.append(row);
     }
+    files.append(grid);
     cells.push(files);
 
-    const comments = el("section", "ghp-sec");
-    const ch = el("div", "ghp-sec-head");
-    ch.append(el("span", "ghp-sec-title", tr("评论 · {p1}", { p1: d.sample.comments.length })), el("span", "ghp-sample", tr("示例数据")));
-    comments.append(ch);
-    const last = d.sample.comments[d.sample.comments.length - 1];
-    if (last) {
-      const one = el("div", "ghp-comment");
-      const when = ghAge(last.at);
-      one.append(el("div", "ghp-comment-head", [last.author, when ? ghAgeText(when) : ""].filter(Boolean).join(" · ")), el("div", "ghp-comment-body", last.body));
-      comments.append(one);
+    // 讨论：整串列出来（之前只露最后一条，「还有 N 条」还是死的）。一条竖线串起来，谁说的比说了什么轻。
+    if (d.sample.comments.length) {
+      const comments = el("section", "ghp-commentsec");
+      const ch = el("div", "ghp-h");
+      ch.append(el("span", "ghp-h-t", tr("评论 · {p1}", { p1: d.sample.comments.length })));
+      comments.append(ch);
+      const thread = el("div", "ghp-thread");
+      for (const c of d.sample.comments) {
+        const when = ghAge(c.at);
+        const post = el("div", "ghp-post");
+        const head = el("div", "ghp-post-head");
+        head.append(el("b", undefined, c.author || "—"));
+        if (when) head.append(el("span", undefined, ghAgeText(when)));
+        post.append(head, el("div", "ghp-post-body", c.body));
+        thread.append(post);
+      }
+      comments.append(thread);
+      cells.push(comments);
     }
-    if (d.sample.comments.length > 1) {
-      comments.append(el("div", "ghp-more", tr("还有 {p1} 条", { p1: d.sample.comments.length - 1 })));
-    }
-    cells.push(comments);
 
     const foot = el("div", "ghp-foot");
     if (d.state === "open" && this.host.askAgent) {
@@ -477,12 +499,6 @@ export class GithubPanel {
     cells.push(foot);
     return cells;
   }
-}
-
-function statCell(label: string, value: string, cls = ""): HTMLElement {
-  const box = el("div", "ghp-stat");
-  box.append(el("div", "ghp-stat-k", label), el("div", `ghp-stat-v ${cls}`.trim(), value));
-  return box;
 }
 
 function sourceLabel(session: GhSessionAccount): string {
