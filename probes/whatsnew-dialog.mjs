@@ -344,6 +344,9 @@ try {
   const flipSwitch = async (want) => {
     const input = page.locator(".settings-row", { hasText: "启动时自动打开更新日志" }).locator('input[type="checkbox"]');
     for (let attempt = 1; attempt <= 2; attempt += 1) {
+      // 上一次点击可能只是 POST 落盘慢一点：真值已经是 `want` 就直接算成，别再点一次 ——
+      // 第二次点击会把刚存下的值又翻回去，越点越不像。
+      if (readState()?.enabled === want) return attempt;
       await input.scrollIntoViewIfNeeded();
       await sleep(200);
       await input.click();
@@ -355,7 +358,9 @@ try {
   const offTries = await flipSwitch(false);
   ok(offTries > 0, `关掉开关会写进状态目录（关着期间已读不前进${offTries > 1 ? `，第 ${offTries} 次点击才生效` : ""}）`);
   const onTries = await flipSwitch(true);
-  ok(readState()?.enabled === true, `再打开也一样落盘${onTries > 1 ? `（第 ${onTries} 次）` : ""}`);
+  // `flipSwitch` 两次都没落盘时返回 0 —— 那种情况下只看 `readState().enabled` 可能被上一次
+  // 就已是 true 的状态蒙过去，这一次点击根本没验到。
+  ok(onTries > 0 && readState()?.enabled === true, `再打开也一样落盘${onTries > 1 ? `（第 ${onTries} 次）` : ""}`);
   await page.screenshot({ path: path.join(OUT, "02-settings-page.png") });
   await page.close();
   await context.close();

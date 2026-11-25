@@ -99,6 +99,25 @@ test("条目换行续写时接到上一条", () => {
   assert.deepEqual(batch.groups[0].items[0].refs, [{ kind: "pr", n: 1 }]);
 });
 
+test("续行不吞掉首行已经解析出的引用", () => {
+  // 首行末尾的 `#1 D9` 已经从 md 里摸走，续行合并时不能再拿「首行 md + 续行」重新拆
+  // （那样拆出来只剩续行末尾那一个）。
+  const batch = parseSelfLog("## 2026-01-01 · 续行\n\n### 修复\n\n- 首行结尾带引用 #1 D9\n  续行末尾又带两个 #22 D10\n").batches[0];
+  assert.deepEqual(batch.groups[0].items[0].refs, [
+    { kind: "pr", n: 1 },
+    { kind: "d", n: 9 },
+    { kind: "pr", n: 22 },
+    { kind: "d", n: 10 },
+  ]);
+  assert.equal(batch.groups[0].items[0].md, "首行结尾带引用 续行末尾又带两个");
+});
+
+test("续行没有引用时，首行的引用照样在（统计也算上）", () => {
+  const log = parseSelfLog("## 2026-01-01 · 续行\n\n### 新增\n\n- 条目 #7\n  普通的一行说明，没有引用\n");
+  assert.deepEqual(log.batches[0].groups[0].items[0].refs, [{ kind: "pr", n: 7 }]);
+  assert.equal(log.stats.prs, 1);
+});
+
 test("月份与统计：未发布不计月份，PR 去重", () => {
   const log = parseSelfLog(LOG);
   assert.deepEqual(log.months, [

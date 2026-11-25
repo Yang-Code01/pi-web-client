@@ -414,6 +414,70 @@ try {
   ok(back.on.trim().length > 0, `落在某一格上（${back.on.trim()}）`);
 
   await page.waitForSelector(".cl-close", { timeout: 5000 }).catch(() => {});
+
+  // 10/11 验的是**旧桥 / 日志刚被改写**时的退路：bridges 只给 `text`、不给结构化 `log`。
+  // 这条路进的人少，但它是唯一会碰到 `renderMarkdown` 与 `openPath` 的地方，得单独跑一遍。
+  log("10) 旧桥（没有结构化日志）退回 markdown，正文里的文件链接仍能点开");
+  // 真实响应得在页面里取：桥的 `/api/changelog` 要会话 cookie，node 那边的 fetch 会被挡回 401。
+  const real = await page.evaluate(() => fetch("/api/changelog?scope=self", { credentials: "same-origin" }).then((r) => r.json()));
+  await page.route(/\/api\/changelog\?scope=self$/, (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...real, log: null }) }),
+  );
+  await page.locator(".st-nav__item", { hasText: "更新日志" }).click();
+  await page.waitForSelector('.st-console[data-reader="true"] .cl-page', { timeout: 20000 });
+  const selfTab = page.locator(".st-seg__btn", { hasText: "本项目" });
+  if (!((await selfTab.first().getAttribute("class")) ?? "").includes("on")) await selfTab.first().click();
+  await page.waitForSelector(".cl-markdown", { timeout: 20000 });
+  const fallback = await page.evaluate(() => ({
+    reader: Boolean(document.querySelector('.st-console[data-reader="true"]')),
+    md: document.querySelector(".cl-markdown")?.textContent?.trim().length ?? 0,
+    hasTimeline: Boolean(document.querySelector(".cl-timeline")),
+    links: [...document.querySelectorAll(".cl-markdown a.file-link")].map((a) => a.getAttribute("title") ?? ""),
+  }));
+  ok(fallback.reader && fallback.md > 200, `没有 log 时退回 markdown（${fallback.md} 字）`);
+  ok(!fallback.hasTimeline, "退回 markdown 时不画时间线");
+  const decisionLink = fallback.links.find((t) => t.includes("DECISIONS.md"));
+  ok(Boolean(decisionLink), `正文里的 DECISIONS.md 仍是链接（${decisionLink ?? fallback.links.slice(0, 3).join(" / ")}）`);
+  await page.locator('.cl-markdown a.file-link[title*="DECISIONS.md"]').first().click();
+  const shown = await until(async () => {
+    const n = page.locator(".viewer .viewer-path");
+    return (await n.count()) ? await n.first().innerText() : null;
+  }, 10000, "viewer opened");
+  ok(shown.includes("DECISIONS.md"), `点链接打开了预览（${shown}）`);
+  await page.keyboard.press("Escape");
+  await until(async () => (await page.locator(".viewer").count()) === 0, 5000, "viewer closed");
+
+  log("11) 旧桥时启动弹窗退回 markdown，但主题行还在");
+  fs.writeFileSync(STATE_FILE, JSON.stringify({ seenTitle: SEEN, lastShownAt: 0, enabled: true }, null, 2));
+  // 弹窗的闸门是**每个桥进程只判一次**（启动后第一次有人连上时判），所以得重启桥再连；
+  // 重启后 cookie 失效，照开头那样重新登录一次。
+  await stopBridge();
+  startBridge();
+  await until(async () => (await fetch(`${BASE}/healthz`)).ok, 15000, "bridge up#2");
+  const relogin = await fetch(`${BASE}/api/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ passphrase: PASS }),
+  });
+  const cookie2 = (relogin.headers.get("set-cookie") ?? "").split(";")[0];
+  await context.addCookies([{ name: cookie2.split("=")[0], value: cookie2.split("=").slice(1).join("="), url: BASE }]);
+  // 弹窗的「有没有新批次」走的是 `GET /api/changelog?scope=self&unread=1`（和设置页那个不一样）：
+  // 先把真响应抓下来，再把里面的 `log` 抹掉 —— 旧桥就是这个形状。
+  const claim = await page.evaluate(() => fetch("/api/changelog?scope=self&unread=1", { credentials: "same-origin" }).then((r) => r.json()));
+  ok(claim.status === "ok" && Boolean(claim.batch), `抓到了弹窗 claim（${claim.status}）`);
+  await page.route(/\/api\/changelog\?scope=self&unread=1/, (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...claim, log: null }) }),
+  );
+  // 同一个 hash 地址 goto 不会重载（同文档导航），得真 reload 才会重新走一遍启动流程。
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".whatsnew-sheet", { timeout: 25000 });
+  const dlg = await page.evaluate(() => ({
+    title: document.querySelector(".whatsnew-body .whatsnew-title")?.textContent?.trim() ?? "",
+    md: document.querySelector(".whatsnew-body .whatsnew-md") ? 1 : 0,
+    structured: document.querySelector(".whatsnew-body .whatsnew-log") ? 1 : 0,
+  }));
+  ok(dlg.structured === 0 && dlg.md === 1, `没有 log 时弹窗走 markdown（md=${dlg.md} log=${dlg.structured}）`);
+  ok(dlg.title.length > 0, `退回 markdown 时主题行仍在（${dlg.title}）`);
 } catch (err) {
   console.error(err);
   fails.push(String(err?.message ?? err));

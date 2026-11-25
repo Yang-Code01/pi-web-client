@@ -14073,7 +14073,15 @@ export class App {
           // 桥不认（旧版）或检出里没有 CHANGELOG.md：退回 markdown，这一页不能空着。
           const page = el("div", "cl-page");
           const body = el("div", "cl-markdown");
-          body.append(renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）")));
+          body.append(
+            renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
+              // D308：正文里的 `docs/DECISIONS.md` 是可点的文件链接；链路相对**仓库根**写，
+              // 会话 cwd 可能不在这个仓库里（旧桥没有结构化日志时只剩这条路可走）。
+              openPath: (file) => {
+                window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(root, file) } }));
+              },
+            }),
+          );
           page.append(
             renderLogHead({
               prefix,

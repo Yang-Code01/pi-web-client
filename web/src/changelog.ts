@@ -11,6 +11,7 @@
 import { createEl as el } from "./chat.ts";
 import { icon, type IconName } from "./icons.ts";
 import { tr } from "./i18n/index.ts";
+import { inlineHtml } from "./md-inline.ts";
 import "./changelog.css";
 
 export type LogGroupKind = "new" | "fix" | "design";
@@ -83,15 +84,6 @@ export interface LogRenderOptions {
   footNote?: string;
   /** 关掉页头右侧的筛选（弹窗与「pi」那一侧用不上）。 */
   filters?: boolean;
-}
-
-/** 只有行内 markdown：反引号、`**粗**`、`[文字](地址)`。整段走 renderMarkdown 会变成块级 `<p>`。 */
-export function inlineHtml(md: string): string {
-  const esc = md.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c);
-  return esc
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
 }
 
 function monthKeyOf(batch: LogBatch): string {

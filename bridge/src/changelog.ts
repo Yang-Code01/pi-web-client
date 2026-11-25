@@ -183,10 +183,12 @@ export function parseSelfLog(text: string): SelfLog {
       continue;
     }
     if (last) {
-      // 续行的末尾可能才带着引用（手写时容易这样），合并后再拆一次。
-      const merged = splitRefs(`${last.md} ${line.trim()}`);
-      last.md = merged.md;
-      last.refs = merged.refs;
+      // 续行自己也可能带着引用（手写时容易这样）——只拆续行，再把结果接到已有的后面。
+      // 拿「首行 md + 续行」重新拆一次会把首行末尾那些引用冲掉：它们在上一轮已经从 md 里
+      // 摘走了，合并的字符串里根本没有它们。
+      const cont = splitRefs(line.trim());
+      last.md = `${last.md} ${cont.md}`.trim();
+      last.refs.push(...cont.refs);
     }
   }
   flushBatch();

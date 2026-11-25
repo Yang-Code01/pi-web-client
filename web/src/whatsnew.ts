@@ -145,7 +145,7 @@ export function openWhatsnew(opts: WhatsnewDialogOptions): void {
   // i18n-ignore-end
   const structured = (title: string): LogBatch | undefined =>
     opts.log?.batches.find((b) => headerOf(b) === title);
-  const paint = (batch: WhatsnewBatch): HTMLElement => {
+  const paint = (batch: WhatsnewBatch, small = false): HTMLElement => {
     const hit = structured(batch.title);
     if (hit) {
       // 两种画法的外层类名不同：`.whatsnew-md` 那套 h3 / p 排字是给 markdown 的，套到
@@ -161,6 +161,9 @@ export function openWhatsnew(opts: WhatsnewDialogOptions): void {
       return host;
     }
     const host = el("div", "whatsnew-md settings-changelog");
+    // 退回 markdown 时主题行得自己补：结构化那套的 `h3` 是 `renderBatch` 画的，markdown 那套
+    // 只有正文（旧桥 / 标题对不上时，不补这行弹窗就只剩一坨没有标题的条目）。
+    if (batch.title) host.append(el("div", small ? "whatsnew-title whatsnew-title--small" : "whatsnew-title", batch.title));
     host.append(renderMarkdown(batch.body || tr("（这一批没有正文）"), { openPath: (file) => opts.openPath(file, opts.root) }));
     return host;
   };
@@ -171,9 +174,8 @@ export function openWhatsnew(opts: WhatsnewDialogOptions): void {
     more.append(el("summary", "", tr("还有 {p1} 批更早的", { p1: String(opts.older.length) })));
     for (const batch of opts.older) {
       const one = el("div", "whatsnew-older__one");
-      // 结构化条目自带主题行；退回 markdown 时才需要另外补一行标题。
-      if (!structured(batch.title)) one.append(el("div", "whatsnew-title whatsnew-title--small", batch.title));
-      one.append(paint(batch));
+      // 标题由 `paint` 自己补（结构化那批不需要：`renderBatch` 自带主题行）。
+      one.append(paint(batch, true));
       more.append(one);
     }
     body.append(more);

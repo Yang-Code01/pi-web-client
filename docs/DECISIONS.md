@@ -8033,7 +8033,9 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 3. **引用是结构不是文字**：条目结尾的 ` #671` / ` D365` 从正文里摘出来变成 `refs: [{kind:"pr",n}, {kind:"d",n}]`，排成一排 chip —— PR 有仓库地址时是 `<a target="_blank">` 直开 GitHub，`D365` 是 `<button>`：先往对话里写一句「打开 docs/DECISIONS.md，搜 D365」，再走 `pi-preview` 打开那个文件。**不做行锚点**：`md.ts` 的标题不生成 id，`pi-preview` 也只认 `{path}`。
 4. **阅读态：这一页把设置的外壳拆掉。** `settingsTab` 是 `changelog` / `whatsnew` 时给 `.st-console` 挂 `data-reader="true"`，CSS 里藏 `.st-head` / `.st-foot` / `.st-dirty` / `.st-nav`、`.st-main` 收成单列、`.st-pane` 去掉内边距，`grid-template-rows` 钉成 `minmax(0,1fr)`（藏了头尾还不钉行数，`main` 会掉进 `auto` 行、不再自己滚 —— 这个坑在 D320 上踩过一次）。页面自己画「‹ 设置」返回（`chevron` 图标 CSS 转 180°）与右上 ✕；返回落在**进来之前那一格**（`settingsReturnTab`），因为阅读态没有左栏可点。
 5. **筛选按批不按条**：点「修复」只留含修复的批次，批内其它条目照常显示，月份计数跟着筛后的批次走；页头右上那排 pills 不挂数字（数字在左栏月份上）。
-6. **弹窗复用同一套条目**：`openWhatsnew` 拿 `log` 里 `headerOf(b) === batch.title` 找对应批次（桥那边 `decision.batch.title` 是 `## ` 那一行的**原文**，`未发布` 与 `日期 · 主题` 两种形状都要拼得回去），命中就用 `renderBatch()`，对不上（旧桥、日志刚改过）才退回原来的 markdown。两套画法用不同外层类名（`.whatsnew-md` 与 `.whatsnew-log`），否则 markdown 那套 12.5px 灰字会把主题行压下去。
+6. **弹窗复用同一套条目**：`openWhatsnew` 拿 `log` 里 `headerOf(b) === batch.title` 找对应批次（桥那边 `decision.batch.title` 是 `## ` 那一行的**原文**，`未发布` 与 `日期 · 主题` 两种形状都要拼得回去），命中就用 `renderBatch()`，对不上（旧桥、日志刚改过）才退回原来的 markdown。两套画法用不同外层类名（`.whatsnew-md` 与 `.whatsnew-log`），否则 markdown 那套 12.5px 灰字会把主题行压下去。退回 markdown 的两处（设置页与弹窗）各自保留主题行与 `openPath`：少了前者只是没标题，少了后者 `docs/DECISIONS.md` 这类链接就点不动了。
+7. **条目里的链接只放行 http(s)、mailto 与相对地址**（`web/src/md-inline.ts` 的 `safeHref`，判定前先抹掉空白与控制字符，免得 ` java\tscript:` 这种写法绕过）。条目正文是 `innerHTML`，`href` 就是页面自己的执行上下文；放不过去的地址只留文字。这是一条长期规则，不是只挡今天这份日志。
+8. **续行不重拆整条**：只在续行上找引用、接到已有 `refs` 后面（`last.refs.push(...cont.refs)`）。原来的写法拿「首行 md + 续行」重新拆一次，而首行末尾那些引用上一轮已经从 `md` 里摘走了 —— 合并的字符串里根本没有它们，于是引用、统计与 chip 一起丢。
 
 **为什么。** 解析放桥端而不是页面：同一份解析要给「页面」「弹窗」「未读判定（`seenTitle`）」三处用，放页面就要么复制三份、要么为弹窗再引一次页面模块；桥端一次算完，页面只做 DOM。chip 用真链接/真按钮而不是「看起来像链接的 span」：用户在日志里看到 `#671` 的第一反应就是点它，点了没反应比不可点更糟。
 
@@ -8046,7 +8048,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 
 **验证。**
 
-- `node probes/changelog-page.mjs`（真桥 + 真 Chromium，十段）：阅读态外壳（头尾导航都不在、`data-reader` 在）、统计卡与自解析的 CHANGELOG 对得上（89 批 / 549 条 / 271 PR）、月份栏、PR 是 `<a href="…/pull/671">`、D chip 是 `<button>`、点「修复」后只剩含修复的批次（63 批）、点月份滚到那一批且圆点跟着高亮、`上次看到这里` 落在 `seenTitle` 那批下面、页底开关行是横条、150% 字号下无横向溢出且 ✕ 与开关行都还在 pane 里、pi 那侧仍是 markdown 且页头与正文同一条中线、`‹ 设置` 返回后 `data-reader` 摘掉、左栏与头部都回来。
-- `node probes/whatsnew-dialog.mjs` 全绿（弹窗改成结构化条目后，标题、日期、脚本重写等断言都按新选择器收紧）。
-- `node --experimental-strip-types --test bridge/tests/changelog-unit.mjs` 11 条（切批、分组、引用、引言、续行、月份、统计、空文件、CRLF+BOM、无标题日期、远程地址三种形状）+ `whatsnew-popup-unit.mjs` 10 条。
-- `npm --prefix web run typecheck`（tsc + i18n + viewport + layers + theme）通过。
+- `node probes/changelog-page.mjs`（真桥 + 真 Chromium，十二段）：阅读态外壳（头尾导航都不在、`data-reader` 在）、统计卡与自解析的 CHANGELOG 对得上（89 批 / 553 条 / 272 PR）、月份栏、PR 是 `<a href="…/pull/671">`、D chip 是 `<button>`、点「修复」后只剩含修复的批次（63 批）、点月份滚到那一批且圆点跟着高亮、`上次看到这里` 落在 `seenTitle` 那批下面、页底开关行是横条、150% 字号下无横向溢出且 ✕ 与开关行都还在 pane 里、pi 那侧仍是 markdown 且页头与正文同一条中线、`‹ 设置` 返回后 `data-reader` 摘掉、左栏与头部都回来；最后两段把 `/api/changelog?scope=self` 与 `?scope=self&unread=1` 的响应改成「没有 `log`」（旧桥的形状），验退回 markdown 时时间线不在、`docs/DECISIONS.md` 仍点得开预览、弹窗仍带主题行。两段都要重启一次桥（弹窗闸门每个进程只判一次），闸门判完再 `page.reload()`（同 hash 的 `goto` 不会重载）。
+- `node probes/whatsnew-dialog.mjs` 全绿（弹窗改成结构化条目后，标题、日期、脚本重写等断言都按新选择器收紧；`.whatsnew-log` 的选择器必须收窄到 `.whatsnew-body >`，不然会摸到「还有 N 批更早的」里那一批）。
+- `node --experimental-strip-types --test bridge/tests/changelog-unit.mjs` 13 条（切批、分组、引用、引言、续行、续行不吞首行引用、无引用续行、月份、统计、空文件、CRLF+BOM、无标题日期、远程地址三种形状）+ `whatsnew-popup-unit.mjs` 10 条。
+- `npm --prefix web run typecheck`（tsc + i18n + viewport + layers + theme + `web/tests/changelog-inline-unit.mjs` 8 条：转义、行内代码与粗体、http/mailto、相对地址、`javascript:`/`data:`/`vbscript:` 只留文字、`safeHref` 判据含前导空格与夹 tab、地址里的 `&`、链接文字里的粗体）通过。
