@@ -7967,3 +7967,35 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - `bridge/tests/netroute-unit.mjs`（纯逻辑）：代理 URL 归一；Windows 的两种 `ProxyServer` 写法与 macOS `scutil` 解析；候选顺序与去重且**没有默认端口兜底**；`readPiHttpProxy()` 读临时 `PI_AGENT_DIR`；`directEnv()` 摘 6 个代理变量但不动 `NO_PROXY`；`proxyEnv()` 同写 6 个名字；`parseListeners()` 三家输出（netstat / lsof / ss）与通配归一；`probeHttpProxy()` 对真 TCP 服务验 200 / 407 / 404 / 哑端口；`discoverLocalProxies()` 的端口序、限额、探测抛异常；`viaRoutes()` 的直连短路（不探代理）、候选顺序、**现探只在候选全挂后调用一次**、现探与已配重复时不重试、`discover` 抛错不进错误汇总、整轮重试与原因汇总、无候选不重试、单次超时被预算夹住、attempt 抛异常算失败。
 - `bridge/tests/gitpr-fetch-route-e2e.mjs`（真 git，离线）：坏 origin（`info/refs` 正常、POST `git-upload-pack` 回 200 后重置 TCP）复现用户那句 stderr；配好 `httpProxy` 时 `fetchPullRequestRef()` 自己绕到正向代理上把 `refs/pull/636/head` 取回且与被评提交一致；没配代理时报错里带 `直连：error: RPC failed; curl 56 Recv failure: Connection was reset`；谁都没配时靠现探那一步把提交取回来。
 - 真机：`listListeners()` 在本机列出 50 个环回监听，`discoverLocalProxies()` 只用 696ms 就从中认出 `http://127.0.0.1:7899`（唯一命中）；`PI_AGENT_DIR=<临时目录，httpProxy=http://127.0.0.1:7899>` 下 `resolvePullRequest(<本仓>, 636)` 取回 `refs/pi-web/pr-636`（3.7s）；`npm --prefix bridge run typecheck` 通过。
+
+## D403 正文里只写号的 PR（「PR：**#669**」）也出卡：猜出来的那张必须被桥证实，证不实就整张撤掉（#670，2026-11-25）
+
+**问题。** 一次 `/review-followup` 的会话收尾时 AI 写「已修完并开了 PR：**#669**」，回复里**没有卡片**。卡片一直只认完整 URL（`ghLinksIn()` 的 `LINK_RE` 要求 `https://github.com/<owner>/<repo>/pull/<n>`），而模型转述已经做完的动作时习惯只写号。同一会话的工具卡输出里确实有那条链接、也确实画了卡 —— 只是它已经被滚到上一屏，用户看到的最后一句什么都没有。
+
+**决定。**
+
+1. **「PR / pull」后面紧跟的号也出 PR 卡**：`PR #669`、`PR: #669`、`PR：#669`、`PR#669`、`PR：**#669**`（全角冒号、加粗的号都认）。正则 `REF_RE = /(?:\bPR\b|\bpull\b)\s*[:：]?\s*(?:\*\*|__|`)?\s*#(\d{1,7})(?![\w-])/gi`。
+2. **裸 `#669` 不认。** 本仓库 issue 与 PR 共用一套编号，`#669` 可能是任何一个；把 issue 号画成 PR 卡，就是 D399 记过的那种「看起来正常的错数据」。宁可少一张卡，不要一张可能错的卡。
+3. **仓库取本会话仓库**（`/api/github/state` 的 `repo`）。判据还没回来时**先画一张只有号的卡**，`refreshGithubCards()` 到货后补上 `link.repo` / `link.url` 再开始取标题 —— 不为等一个网络答复先把正文留空。
+4. **猜出来的卡必须由桥证实。** `/api/github/card` 回 `pull: null`（不是 PR / 不存在）就**把整张卡从 DOM 里摘掉**；URL 给的卡失败时照旧留一张「取不到标题，点开看」的残卡 —— 那是有依据的链接，删了等于吞掉用户自己贴的东西。
+5. **URL 优先、同号去重。** 同一段文本里既有该 PR 的链接又有转述时只画 URL 那张（有依据的先画）；去重按 `仓库#号`，**别仓同号不吞掉本仓的猜测卡**（跨仓同号是两件事）。
+6. **卡片上的评审钮与「点开」读 `link.repo` 的当时值**，不再在建卡时复制一份 `repo`：猜测卡的仓库是晚补的，复制出去就会永远灰着或点错仓库。
+
+**为什么。**
+
+- **符号（`PR`）而不是形状（`#n`）才是判据**：模型写「PR #669」时已经说出了类型，这是唯一能白拿的线索；只贴号时它没说，代码就不该替它猜。
+- **猜错要撤，不能留残卡**：留下的残卡会长期显示一个不存在的 PR，比没有卡更误导；而「先画后撤」比「等证实再画」快 —— 卡片出现的位置就在原位，撤掉时正文自然回流。
+- **不额外发一次探测**：`/api/github/card` 本来就要为卡片标题发一次，猜测卡复用它当判据，没有新增往返。
+
+**代价 / 可改。**
+
+- **`PRs #12` 这种复数写法不认**（`\bPR\b` 在 `PRs` 里没有词边界）。要么放宽成 `PRs?`，要么就这样 —— 现在选后者，等真的踩到再说。
+- **猜测卡有一段「先有号后有标题」的过渡**：判据到之前 `.ghlink-title` 是空的，只有号与「点开在右栏里看」；这段时间点它什么都不做（没有仓库可开）。
+- **撤卡依赖 `/api/github/card` 的答复**：桥那边网络挂掉时答的也是 `null`，于是猜测卡被撤。方向是故意的 —— 猜的东西，证实不了就当没有。
+- **没做**：`commit b8fe7e8e` 这种只写短 sha 的转述、`#669` 裸号。
+
+**验证。**
+
+- `web/tests/github-unit.mjs` 21 项：全角冒号 + 加粗的号、`PR #12` / `PR: #13` / `PR：#14` / `pull #15` / `PR#16` / 一行两个 / 同号去重；裸 `#669`、`issue #7`、`http://127.0.0.1:7864/#669` 一律不出卡；仓库未到时的空 repo 形态；`ghCardLinks()` 的三条去重规则与 `max` 截断。
+- `probes/github-card-review.mjs`（真桥 + 假 gh + 真 Chromium）26 项全过：新增的四项是「正文里只写 `PR：**#669**` 也出卡」「猜出来的卡补上本会话仓库、真取到标题」「猜出来的卡也是同仓，评审钮可点」「号对不上真 PR 的 `#424242` 自己撤掉」；原有 22 项（判据未到先亮、跨仓灰掉、issue 不拆结构、点主区开面板、折叠右栏后点钮、灰钮点不动、设置默认值与持久化）不变。
+- 真机：把用户那句原文（`4 条都核实成立，已修完并开了 PR：**#669**（…）`）喂给 `ghCardLinks()`，得到 `pull #669` 一张猜测卡。

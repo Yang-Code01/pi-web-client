@@ -21,7 +21,17 @@
  * 这个文件被 `chat.ts` import，所以**不能**反过来 import chat.ts（会成环）—— 元素自己建。
  */
 import { githubApi } from "./api.ts";
-import { ghAge, ghAgeText, ghChurn, ghLinksIn, reviewAffordance, type GhLink, type PullRow, type ReviewAffordance } from "./github-shared.ts";
+import {
+  ghAge,
+  ghAgeText,
+  ghCardLinks,
+  ghChurn,
+  ghLinksIn,
+  reviewAffordance,
+  type GhLink,
+  type PullRow,
+  type ReviewAffordance,
+} from "./github-shared.ts";
 import { tr } from "./i18n/index.ts";
 import "./github-panel.css";
 
@@ -97,14 +107,20 @@ const KIND_LABEL: Record<GhLink["kind"], string> = { pull: "PR", issue: tr("Issu
 /**
  * 把一段文本里的 GitHub 链接折成卡片。`hosts` 是宿主的两个入口。
  * 没有链接时返回空数组 —— 调用方可以直接展开它。
+ *
+ * 两种来源：完整 URL（有依据）+ 正文里只写了号的 `PR #669`（猜测，`weak`）。
+ * 猜测的那张：仓库用本会话补全；取不到真 PR 就整张拿掉，留着「取不到标题」等于把 issue 报成 PR。
  */
 export function githubCards(text: string, hosts: GithubCardHosts): HTMLElement[] {
-  const links = ghLinksIn(text);
+  const repo = (hosts.sessionRepo?.() ?? "").trim();
+  const links = ghCardLinks(text, repo, hosts.max ?? 3);
   if (links.length === 0) return [];
-  return links.slice(0, hosts.max ?? 3).map((link) => cardFor(link, hosts));
+  // URL 自带仓库，给出的 `仓库#号` 是准的：同一段里已经有这条 PR 的链接时，猜出来的那张不再画。
+  const exact = new Set(ghLinksIn(text).map((l) => `${l.repo.toLowerCase()}#${l.id}`));
+  return links.map((link) => cardFor(link, hosts, exact));
 }
 
-function cardFor(link: GhLink, hosts: GithubCardHosts): HTMLElement {
+function cardFor(link: GhLink, hosts: GithubCardHosts, exact: Set<string>): HTMLElement {
   const card = el("button", "ghlink") as HTMLButtonElement;
   card.type = "button";
   const top = el("div", "ghlink-top");
@@ -116,49 +132,102 @@ function cardFor(link: GhLink, hosts: GithubCardHosts): HTMLElement {
 
   const number = Number(link.id);
   const isPull = link.kind === "pull" && Number.isFinite(number) && number > 0;
+  /** 号是正文里猜的（`PR #669`）：仓库要会话补全，也得桥确认是真 PR 才留卡。 */
+  const guess = link.weak === true;
+  const keyOf = () => `${link.repo.toLowerCase()}#${number}`;
   card.onclick = () => {
-    if (isPull) hosts.open(link.repo, number);
-    else window.open(link.url, "_blank", "noopener");
+    // 猜测卡在会话仓库问回来之前只有号：这时点开只会把空仓库发给桥。
+    if (isPull) {
+      if (link.repo) hosts.open(link.repo, number);
+      return;
+    }
+    window.open(link.url, "_blank", "noopener");
   };
   if (!isPull) {
     card.title = link.url;
     return card;
   }
 
-  card.title = tr("在右栏打开 {p1}#{p2}", { p1: link.repo, p2: String(number) });
+  // 仓库可能还没问回来（猜测卡先只有号）：取标题、点开都读 `link.repo` 的当时值。
+  const paintTitle = () => {
+    card.title = tr("在右栏打开 {p1}#{p2}", { p1: link.repo, p2: String(number) });
+  };
+  paintTitle();
   // 「这张卡该不该有那颗钮」的 policy 住在纯函数里；这里只问一次，后面重刷时才重新问。
   const affordance = reviewAffordance({ kind: link.kind, cardRepo: link.repo, sessionRepo: hosts.sessionRepo?.() ?? "" });
-  const key = `${link.repo}#${number}`;
-  const cached = rowCache.get(key);
+  const node = withReview(card, link, number, hosts, affordance);
   const fillIt = (row: PullRow) => {
     if (row.title) title.textContent = row.title;
     const age = ghAge(row.updatedAt);
     meta.textContent = [row.author, ghChurn(row.additions, row.deletions), age ? ghAgeText(age) : ""].filter(Boolean).join(" · ");
   };
+
+  let armed = false;
+  const arm = () => {
+    if (armed) return;
+    armed = true;
+    // 判据到了才发现同一段文本里已经有这条 PR 的 URL：那张已经画了，猜的这张直接退场。
+    if (guess && exact.has(keyOf())) {
+      node.remove();
+      return;
+    }
+    paintTitle();
+    const run = () => {
+      void hydrate(keyOf(), link.repo, number).then((row) => {
+        if (!node.isConnected) return;
+        if (row) {
+          fillIt(row);
+          return;
+        }
+        // 猜错就别画：留着「取不到标题」的破卡，等于把 issue 号报成 PR。URL 知道的那张照旧留。
+        if (guess) {
+          node.remove();
+          return;
+        }
+        // 取不到就说取不到：吞成 null 的话卡片永远停在只有仓库名的骨架上，用户只能靠点开才发现。
+        // 不在这里自动重试 —— 重挂 IntersectionObserver 对已进视口的元素会立刻再发一次回调，变成热循环。
+        card.classList.add("ghlink-err");
+        meta.textContent = tr("取不到标题，点开看");
+      });
+    };
+    const io = ensureObserver();
+    if (io) {
+      waiting.set(card, run);
+      io.observe(card);
+    } else run();
+  };
+
+  const cached = rowCache.get(keyOf());
   if (cached) {
     fillIt(cached);
-    return withReview(card, link, number, hosts, affordance);
+    return node;
   }
-  const run = () => {
-    void hydrate(key, link.repo, number).then((row) => {
-      if (!card.isConnected) return;
-      if (row) {
-        fillIt(row);
-        return;
-      }
-      // 取不到就说取不到：吞成 null 的话卡片永远停在只有仓库名的骨架上，用户只能靠点开才发现。
-      // 不在这里自动重试 —— 重挂 IntersectionObserver 对已进视口的元素会立刻再发一次回调，变成热循环。
-      card.classList.add("ghlink-err");
-      meta.textContent = tr("取不到标题，点开看");
-    });
-  };
-  const io = ensureObserver();
-  if (io) {
-    waiting.set(card, run);
-    io.observe(card);
-  } else run();
-  return withReview(card, link, number, hosts, affordance);
+  if (guess && !link.repo) {
+    // 会话仓库还没问回来：先画一张只有号的卡，`refreshGithubCards()` 到了再补仓库、取标题。
+    guessSlots.add({ node, link, number, hosts, exact, arm });
+    return node;
+  }
+  arm();
+  return node;
 }
+
+// ---------------------------------------------------------------------------
+// 正文里猜出来的 PR 号（`PR #669` 只有号没有链接）
+// ---------------------------------------------------------------------------
+
+/** 仓库晚到、还没开始取标题的猜测卡。 */
+interface GuessSlot {
+  node: HTMLElement;
+  link: GhLink;
+  number: number;
+  hosts: GithubCardHosts;
+  /** 同一段文本里 URL 给出的 `仓库#号`，用来在判据到达后去重。 */
+  exact: Set<string>;
+  /** 补上仓库之后才跑：挂上 IntersectionObserver 去取标题。 */
+  arm: () => void;
+}
+
+const guessSlots = new Set<GuessSlot>();
 
 // ---------------------------------------------------------------------------
 // #666：右缘那颗「代码评审」
@@ -168,7 +237,8 @@ function cardFor(link: GhLink, hosts: GithubCardHosts): HTMLElement {
 interface ReviewSlot {
   card: HTMLElement;
   button: HTMLButtonElement;
-  repo: string;
+  /** 卡片自己的链接（不复制 `repo`：猜测卡建的时候仓库还空着，判据到了才补上）。 */
+  link: GhLink;
   number: number;
   hosts: GithubCardHosts;
 }
@@ -178,15 +248,16 @@ const reviewSlots = new Set<ReviewSlot>();
 function applyReview(slot: ReviewSlot, affordance: ReviewAffordance): void {
   const session = (slot.hosts.sessionRepo?.() ?? "").trim();
   slot.button.disabled = affordance.disabled;
+  slot.button.setAttribute("aria-label", tr("代码评审 {p1}#{p2}", { p1: slot.link.repo, p2: String(slot.number) }));
   slot.button.title =
     affordance.reason === "foreign"
-      ? tr("只能评本会话仓库的 PR：这张卡是 {p1}，本会话是 {p2}", { p1: slot.repo, p2: session })
+      ? tr("只能评本会话仓库的 PR：这张卡是 {p1}，本会话是 {p2}", { p1: slot.link.repo, p2: session })
       : tr("在右栏的「代码评审」里评这个 PR（不自动开跑）");
 }
 
 /** 判据变了（会话仓库问回来了）之后重算一次。 */
 function paintReview(slot: ReviewSlot): void {
-  applyReview(slot, reviewAffordance({ kind: "pull", cardRepo: slot.repo, sessionRepo: slot.hosts.sessionRepo?.() ?? "" }));
+  applyReview(slot, reviewAffordance({ kind: "pull", cardRepo: slot.link.repo, sessionRepo: slot.hosts.sessionRepo?.() ?? "" }));
 }
 
 /** 把一张只剩主区的 PR 卡包成「主区 + 右缘评审钮」。宿主没接评审入口时原样返回。 */
@@ -204,7 +275,7 @@ function withReview(
 
   const review = el("button", "ghlink-review", tr("代码评审")) as HTMLButtonElement;
   review.type = "button";
-  review.setAttribute("aria-label", tr("代码评审 {p1}#{p2}", { p1: link.repo, p2: String(number) }));
+  // 点开读 `link.repo` 的当时值：猜测卡的仓库要等会话判据到了才补上。
   review.onclick = () => {
     if (review.disabled) return;
     hosts.review?.(link.repo, number);
@@ -212,17 +283,30 @@ function withReview(
 
   const box = el("div", "ghcard");
   box.append(card, review);
-  const slot: ReviewSlot = { card: box, button: review, repo: link.repo, number, hosts };
+  const slot: ReviewSlot = { card: box, button: review, link, number, hosts };
   reviewSlots.add(slot);
   applyReview(slot, affordance);
   return box;
 }
 
 /**
- * 会话仓库问回来之后叫一次：把已经画出来的按钮重刷一遍（判据没到时它们是亮的）。
+ * 会话仓库问回来之后叫一次：猜测卡补上仓库、开始取标题，已经画出来的评审钮重刷一遍。
  * 顺手清掉已经从页面上拿掉的卡 —— 聊天重绘之后旧卡不会再回来。
  */
 export function refreshGithubCards(): void {
+  // 先补猜测卡的仓库：它们要有仓库才能去问桥「这个号是不是真 PR」。
+  for (const slot of guessSlots) {
+    if (!slot.node.isConnected) {
+      guessSlots.delete(slot);
+      continue;
+    }
+    const repo = (slot.hosts.sessionRepo?.() ?? "").trim();
+    if (!repo) continue;
+    guessSlots.delete(slot);
+    slot.link.repo = repo;
+    slot.link.url = `https://github.com/${repo}/pull/${slot.number}`;
+    slot.arm();
+  }
   for (const slot of reviewSlots) {
     if (!slot.card.isConnected) {
       reviewSlots.delete(slot);
@@ -237,4 +321,5 @@ export function resetGithubCards(): void {
   rowCache.clear();
   inFlight.clear();
   reviewSlots.clear();
+  guessSlots.clear();
 }
