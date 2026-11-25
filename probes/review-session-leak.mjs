@@ -143,21 +143,34 @@ const chipTitle = async (page) => (await page.locator(".rv-model").first().getAt
 
 /**
  * 评审面板那颗模型 chip → 「模型与思考」弹层（pick 模式）→ 点一行 → 「用这个模型」。
- * `avoidId` 给了就挑列表里第一个不是它的模型（要试「串没串」，两次挑的必须是两个模型）。
+ *
+ * 行的 `data-id` 只有模型 id、不含 provider，而这个弹层自己就是按 id 认「使用中」的 —— 所以
+ * 「这次挑的和上次不是同一个」只能拿 chip 的 `title`（`provider/id`）判断：`avoidTitle` 是上一次
+ * 挑出来的那个，命中就换下一行；全表都是它，就明说挑不出来（那台机器的列表里确实只有一个模型）。
  */
-const pickModelRow = async (page, avoidId = "") => {
-  await page.locator(".rv-model").first().click();
-  await page.locator(".model-sheet").waitFor({ timeout: 20000 });
+const pickModelRow = async (page, avoidTitle = "") => {
+  const openSheet = async () => {
+    await page.locator(".rv-model").first().click();
+    await page.locator(".model-sheet").waitFor({ timeout: 20000 });
+  };
+  await openSheet();
   const rows = page.locator(".model-sheet .pm-row");
-  await rows.first().waitFor({ timeout: 20000 }).catch(() => {});
-  const ids = await rows.evaluateAll((els) => els.map((e) => e.dataset.id ?? ""));
-  if (ids.length < 2) throw new Error(`模型列表只有 ${ids.length} 项（要两个以上才验得了「按会话记」）`);
-  const at = avoidId ? ids.findIndex((id) => id !== avoidId) : 0;
-  if (at < 0) throw new Error("模型列表里只有一个模型");
-  await rows.nth(at).click();
-  await page.locator(".model-sheet .st-foot .btn.primary").click();
-  await until(async () => (await page.locator(".model-sheet").count()) === 0, 10000, "model sheet closed");
-  return ids[at];
+  try {
+    await rows.first().waitFor({ timeout: 20000 });
+  } catch (err) {
+    // 不吞原始的等待失败：模型目录没到 / 弹层没起来，原因就写在这句话里。
+    throw new Error(`模型行没出来（${await rows.count()} 行）：${err?.message ?? err}`);
+  }
+  const n = await rows.count();
+  for (let i = 0; i < n; i += 1) {
+    if (i > 0) await openSheet();
+    await rows.nth(i).click();
+    await page.locator(".model-sheet .st-foot .btn.primary").click();
+    await until(async () => (await page.locator(".model-sheet").count()) === 0, 10000, "model sheet closed");
+    const title = await chipTitle(page);
+    if (title && title !== avoidTitle) return title;
+  }
+  throw new Error(`模型列表里挑不出第二个不同的模型（${n} 行都落在 ${avoidTitle || "空"}）`);
 };
 
 const openReviewTab = async (page) => {
@@ -228,8 +241,7 @@ try {
   await page.locator(".rv-model").first().waitFor({ timeout: 20000 });
   // 没挑过时 title 是「用设置里的默认模型」那句（不是空串）：拿它自己当基准，别写死译文。
   const noPick = await chipTitle(page);
-  const idA = await pickModelRow(page, "");
-  const titleA = await chipTitle(page);
+  const titleA = await pickModelRow(page, noPick);
   check("A 里挑完评审模型：chip 换成挑的那个", titleA !== noPick && titleA.length > 0, `${noPick} → ${titleA}`);
 
   // ------------------------------------------------ 5) 切到 B：模型不许跟过来
@@ -240,9 +252,8 @@ try {
   check("切到另一个会话：评审模型不该跟过来", titleB === noPick, `B 是 ${titleB}，没挑过应当是 ${noPick}`);
 
   // B 挑成另一个模型 —— 这才是「别的会话切了模型」那一步。
-  const idB = await pickModelRow(page, idA);
-  const titleB2 = await chipTitle(page);
-  check("B 挑的是另一个模型（拿它去试串不串）", idB !== idA && titleB2 !== titleA, `${idA} vs ${idB}`);
+  const titleB2 = await pickModelRow(page, titleA);
+  check("B 挑的是另一个模型（拿它去试串不串）", titleB2 !== titleA, `${titleA} vs ${titleB2}`);
 
   // ------------------------------------------------ 6) 回到 A：还是 A 自己那个
   await openSession(page, SID_A);

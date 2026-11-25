@@ -152,6 +152,12 @@ type Tab = "sessions" | "chat" | "queue";
 const MODEL_REASK_MS = 15_000;
 
 /**
+ * 评审模型按会话记的条数上限（D409）：切回某个会话还记得自己那个模型，一次页面见过的会话就那么多；
+ * 会话删了没人来回收这条 Map，所以留个上限，超了丢最早挑的那条（那一次会话回落到默认模型）。
+ */
+const REVIEW_MODEL_MEMORY = 200;
+
+/**
  * 点了「继续」之后多久内不再认第二次点击（D159）。`pi.status(running)` 回到页面之前按钮还亮着，
  * 这期间连点会排上两条一模一样的消息。按会话记，不是按页面：切到别的会话再点不该被这边吞掉。
  */
@@ -477,6 +483,7 @@ export class App {
    * 评审用的模型，**按会话记**（`会话id → provider/id`）。它是「这个会话拿什么去评」，跟号、范围、
    * 分支一样属于会话：A 里挑过的模型不许被 B 挑的顶掉，切回 A 还是 A 自己那个（D404 第 2 条据此改）。
    * 只活在这一次页面里 —— 刷新后回「默认模型」，不落 localStorage（那是「这台机器」的偏好，不是会话的）。
+   * 条数有上限，见 `REVIEW_MODEL_MEMORY`。
    */
   private reviewModels = new Map<string, string>();
   private get reviewModel(): string {
@@ -485,8 +492,15 @@ export class App {
   private set reviewModel(model: string) {
     const key = this.currentId;
     if (!key) return; // 没会话就没有「这个会话的模型」，别落到空 key 上
-    if (model) this.reviewModels.set(key, model);
-    else this.reviewModels.delete(key);
+    // 先删再塞：重新插入 = 记成最近用过的那条（Map 保留插入顺序，下面按它丢最早的）。
+    this.reviewModels.delete(key);
+    if (!model) return;
+    this.reviewModels.set(key, model);
+    while (this.reviewModels.size > REVIEW_MODEL_MEMORY) {
+      const oldest = this.reviewModels.keys().next().value;
+      if (oldest === undefined) break;
+      this.reviewModels.delete(oldest);
+    }
   }
   private reviewRefs: string[] = [];
   private reviewAsked = "";
