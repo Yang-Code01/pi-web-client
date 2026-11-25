@@ -99,6 +99,11 @@ export interface GhLink {
   /** pull / issue 的号；commit 是 sha。 */
   id: string;
   url: string;
+  /**
+   * 号是从正文里**猜**出来的（`PR #669` 这种只有号、没有链接的转述）：仓库靠本会话补全，
+   * 号是不是 PR 也要桥确认过才留卡。见 `ghBareRefs()`。
+   */
+  weak?: boolean;
 }
 
 const LINK_RE = /https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues|commit)\/([\w-]+)/g;
@@ -108,6 +113,12 @@ const LINK_RE = /https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues|comm
  * （`bridge/src/github.ts`）是同一张表，改一边就得改另一边。
  */
 const LINK_KIND: Record<string, GhLinkKind> = { pull: "pull", issues: "issue", commit: "commit" };
+
+/**
+ * 「PR #669」「PR：**#669**」「pull #669」里那个号。号后面只允许句尾标点 / 收尾加粗之类的
+ * 非字母数字字符，避开 `#669abc` 这种。`i` 是为了 `pr #12` 这种小写写法。
+ */
+const REF_RE = /(?:\bPR\b|\bpull\b)\s*[:：]?\s*(?:\*\*|__|`)?\s*#(\d{1,7})(?![\w-])/gi;
 
 /**
  * 从一段文本里认出 GitHub 链接（工具卡 `<pre>` 里的裸 URL、AI 正文、用户自己敲的话）。
@@ -124,6 +135,51 @@ export function ghLinksIn(text: string): GhLink[] {
     out.push({ kind: LINK_KIND[kind] ?? "commit", repo: `${owner}/${repo}`, id, url });
   }
   return out;
+}
+
+/**
+ * 正文里「只写了号」的 PR 转述：`PR #669`、`PR：**#669**`、`pull #669`、`PR#669`。
+ *
+ * 号前**必须**有 PR / pull 字样 —— 本仓库的 issue 与 PR 共用一套编号，裸 `#669` 画成 PR 卡
+ * 会把 issue 说成 PR（D399 记过同类错数据）。所以「已开 #669」这种写法故意不认。
+ *
+ * `repo` 是**本会话仓库**（卡片那边问 `githubSessionRepo()`）。还没问回来时传空串：
+ * 号照样给，卡片先只有号，判据到了再补仓库。
+ */
+export function ghBareRefs(text: string, repo: string): GhLink[] {
+  const out: GhLink[] = [];
+  const seen = new Set<string>();
+  for (const m of (text ?? "").matchAll(REF_RE)) {
+    const id = m[1];
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      kind: "pull",
+      repo,
+      id,
+      url: repo ? `https://github.com/${repo}/pull/${id}` : "",
+      weak: true,
+    });
+  }
+  return out;
+}
+
+/**
+ * 一段文本该挂哪几张卡：先 URL（有依据），再只有号的猜测（`weak`），同号去重、按 `max` 截断。
+ *
+ * 去重按 `仓库#号`：URL 自带仓库，所以同一段里出现同一条 PR 的 URL 时，猜出来的那张不再画。
+ * 不同仓库的同号不算重复（D399：跨仓的同号 PR 是两件事）。
+ * 猜测卡在仓库还没问回来（`repo` 空）时排不进去重，交给卡片层在判据到达后再比一次。
+ */
+export function ghCardLinks(text: string, repo: string, max: number): GhLink[] {
+  const links = ghLinksIn(text);
+  const seen = new Set(links.map((l) => `${l.repo.toLowerCase()}#${l.id}`));
+  const out: GhLink[] = [...links];
+  for (const ref of ghBareRefs(text, repo)) {
+    if (repo && seen.has(`${repo.toLowerCase()}#${ref.id}`)) continue;
+    out.push(ref);
+  }
+  return out.slice(0, max);
 }
 
 /**

@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { applyFrame } from "../src/frames.ts";
-import { ghAge, ghChurn, ghLinksIn, reviewAffordance } from "../src/github-shared.ts";
+import { ghAge, ghBareRefs, ghCardLinks, ghChurn, ghLinksIn, reviewAffordance } from "../src/github-shared.ts";
 import { githubFeature } from "../src/github-settings.ts";
 
 test("ghLinksIn：认出 pull / issue / commit，保留仓库与号", () => {
@@ -40,6 +40,55 @@ test("ghLinksIn：仓库名里有点、横线、下划线也认得出", () => {
   const links = ghLinksIn("https://github.com/my-org.name/repo_1.x/pull/99");
   assert.equal(links.length, 1);
   assert.equal(links[0].repo, "my-org.name/repo_1.x");
+});
+
+test("ghBareRefs：正文只写了「PR：**#669**」也认得出（全角冒号 + 加粗的号）", () => {
+  // 会话「热部署」那句的原文：#669 只出现在正文里，没有链接，所以以前一张卡都不画。
+  const text = "4 条都核实成立，已修完并开了 PR：**#669**（`fix/review-followup` → `main`，commit `b8fe7e8e`）。";
+  const refs = ghBareRefs(text, "yang-code01/pi-web-client");
+  assert.deepEqual(
+    refs.map((r) => [r.kind, r.repo, r.id, r.url, r.weak]),
+    [["pull", "yang-code01/pi-web-client", "669", "https://github.com/yang-code01/pi-web-client/pull/669", true]],
+  );
+});
+
+test("ghBareRefs：PR / pull 后面跟上号的几种写法都认", () => {
+  const ids = (t) => ghBareRefs(t, "a/b").map((r) => r.id);
+  assert.deepEqual(ids("PR #12"), ["12"]);
+  assert.deepEqual(ids("PR: #13"), ["13"]);
+  assert.deepEqual(ids("PR：#14"), ["14"]);
+  assert.deepEqual(ids("pull #15"), ["15"]);
+  assert.deepEqual(ids("PR#16"), ["16"], "号紧贴着也行");
+  assert.deepEqual(ids("PR #21 和 pull #22"), ["21", "22"], "一句里两个都认");
+  assert.deepEqual(ids("PR #21 又说了一次 PR #21"), ["21"], "同一个号只算一张卡");
+});
+
+test("ghBareRefs：裸 #669 和 issue 号不认（本仓库 issue / PR 共用一套编号，猜错就把 issue 说成 PR）", () => {
+  assert.deepEqual(ghBareRefs("看下 #669", "a/b"), []);
+  assert.deepEqual(ghBareRefs("这个 issue #7 还没修", "a/b"), []);
+  assert.deepEqual(ghBareRefs("http://127.0.0.1:7864/#669", "a/b"), [], "URL 片段里的号不是 PR");
+});
+
+test("ghBareRefs：会话仓库还没问回来时也给号（repo / url 空着，卡片等判据）", () => {
+  assert.deepEqual(ghBareRefs("PR #669", "").map((r) => [r.repo, r.url, r.id, r.weak]), [["", "", "669", true]]);
+});
+
+test("ghCardLinks：URL 那张优先（有依据的先画），同号不再猜一张", () => {
+  const links = ghCardLinks("PR #669 见 https://github.com/a/b/pull/669", "a/b", 5);
+  assert.equal(links.length, 1);
+  assert.equal(links[0].url, "https://github.com/a/b/pull/669");
+  assert.equal(links[0].weak, undefined, "留下的那张是 URL 来的，不是猜的");
+});
+
+test("ghCardLinks：别的仓库同号 URL 不吞掉本仓的猜测卡", () => {
+  const links = ghCardLinks("https://github.com/acme/other/pull/669 与 PR #669", "a/b", 5);
+  assert.deepEqual(links.map((l) => [l.repo, l.id]), [["acme/other", "669"], ["a/b", "669"]]);
+});
+
+test("ghCardLinks：一张卡最多 max 张，URL 排在猜测卡前面", () => {
+  const text = "https://github.com/a/b/pull/1 https://github.com/a/b/pull/2 PR #3";
+  assert.deepEqual(ghCardLinks(text, "a/b", 2).map((l) => l.id), ["1", "2"]);
+  assert.deepEqual(ghCardLinks(text, "a/b", 3).map((l) => l.id), ["1", "2", "3"]);
 });
 
 test("ghAge：刚刚 / 分钟 / 小时 / 天 四档", () => {
