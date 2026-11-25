@@ -106,6 +106,16 @@ const good = http.createServer(async (req, res) => {
   res.end(out.body);
 });
 
+/**
+ * 服务端在传包前会先发进度（sideband band 2）：`remote: Enumerating objects…`。
+ * 这里原样发两条，让直连失败时的 stderr **不是**以 `error: RPC failed` 开头。
+ */
+const sidebandProgress = (text) => {
+  const payload = Buffer.concat([Buffer.from([2]), Buffer.from(text)]);
+  const len = (payload.length + 4).toString(16).padStart(4, "0");
+  return Buffer.concat([Buffer.from(len), payload]);
+};
+
 const bad = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   if (req.method === "GET" && url.pathname.endsWith("/info/refs")) {
@@ -122,7 +132,13 @@ const bad = http.createServer(async (req, res) => {
   // 现场：200 已经回了、包刚开始传就被掐断 —— git 报 `RPC failed; curl 56 Recv failure`。
   stats.badPosts += 1;
   res.writeHead(200, { "content-type": "application/x-git-upload-pack-result", "content-length": 10_000_000 });
-  res.write("0008NAK\n");
+  res.write(
+    Buffer.concat([
+      Buffer.from("0008NAK\n"),
+      sidebandProgress("Enumerating objects: 5, done.\n"),
+      sidebandProgress("Counting objects: 100% (5/5), done.\n"),
+    ]),
+  );
   setTimeout(() => res.socket?.resetAndDestroy(), 30);
 });
 
