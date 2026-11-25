@@ -43,6 +43,7 @@
     "test:review": "node --experimental-strip-types bridge/tests/review-unit.mjs && node --experimental-strip-types bridge/tests/netroute-unit.mjs && node --experimental-strip-types bridge/tests/gitpr-fetch-route-e2e.mjs && node --experimental-strip-types web/tests/review-unit.mjs",
     "probe:review": "node probes/code-review.mjs",
     "probe:github-card": "node probes/github-card-review.mjs",
+    "probe:review-session": "node probes/review-session-leak.mjs",
     "test:translate:e2e": "npm run build:bridge && node bridge/tests/translate-e2e.mjs",
     "test:image": "node --experimental-strip-types bridge/tests/session-image-unit.mjs && node bridge/tests/session-image.mjs",
     "test:slides": "node --experimental-strip-types bridge/tests/slides-unit.mjs",

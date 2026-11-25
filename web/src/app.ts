@@ -10022,6 +10022,9 @@ export class App {
     if (n <= 0) return;
     this.githubPanel?.close();
     if (this.collapsed.queue) this.togglePane("queue");
+    // 先把「当前会话」结算掉：首次画评审面板时 `reviewSessionKey` 还是空的，`syncReviewSession()`
+    // 会把这一组状态当成上一个会话的残留清掉 —— 包括下面刚设的号（#674）。
+    this.syncReviewSession();
     this.reviewMode = "pr";
     this.reviewPr = String(n);
     this.reviewPrQuery = "";
@@ -18528,7 +18531,15 @@ export class App {
     return (this.session?.cwd ?? "").trim();
   }
 
-  /** 会话或目录变了：把面板状态清干净，否则会把上一个会话的评审画在这一次上面。 */
+  /**
+   * 会话或目录变了：把面板状态清干净，否则会把上一个会话的评审画在这一次上面。
+   *
+   * 「评什么」——PR 号、范围、分支、提交、拉回来的 PR 列表 —— **都属于这一次会话**（#674）。
+   * 留着它们，换会话后点「开始评审」就会拿上一个会话的号去评这个目录的仓库：号碰巧存在，
+   * 就会得到一份**看起来正常**的别人的结论（用户报的就是「新会话还挂着上一个会话的 PR 号」）。
+   * 所以这里不是「顺便清一下」，而是这条面板的硬规矩：进新会话 = 从默认值开始。
+   * 用户自己的偏好（模型、ocr 装没装）不在此列，它们在下面继续活着。
+   */
   private syncReviewSession(): void {
     const key = `${this.currentId ?? ""}|${this.reviewDir()}`;
     if (key === this.reviewSessionKey) return;
@@ -18540,6 +18551,25 @@ export class App {
     this.reviewAsked = "";
     this.reviewPrMenu = false;
     this.reviewExpectRepo = "";
+    this.reviewPendingToast = false;
+    this.reviewStartedRunId = "";
+    // —— 「评什么」：一律回到默认值（默认值见字段声明处）。
+    this.reviewMode = "pr";
+    this.reviewBase = "main";
+    this.reviewTarget = "HEAD";
+    this.reviewCommit = "";
+    this.reviewPr = "";
+    this.reviewPrQuery = "";
+    this.reviewPrInfo = { number: 0, info: null, error: "" };
+    // —— 上一个目录拉回来的东西：列表、仓库名、分支名册，全部作废（页签一打开会重新拉）。
+    this.reviewPrs = [];
+    this.reviewPrsLoading = false;
+    this.reviewPrError = "";
+    this.reviewPrsAsked = "";
+    this.reviewPrsAt = 0;
+    this.reviewRepo = "";
+    this.reviewRemoteRepo = "";
+    this.reviewRefs = [];
     this.reviewSheet?.close();
     this.reviewPrSheet?.close();
   }
