@@ -6,6 +6,7 @@
  * 取的时候只写 `refs/pi-web/pr-N` 与 `origin/<base>`，**不动工作区、不动当前分支**。
  */
 import { execFile, execFileSync } from "node:child_process";
+import { discoverLocalProxyCandidates, FETCH_PLAN, GH_PLAN, resolveProxyCandidates, viaRoutes, type RoutePlan } from "./netroute.ts";
 
 export interface PullRequest {
   number: number;
@@ -29,15 +30,77 @@ export interface PrListResult {
 const CACHE_MS = 60_000;
 const cache = new Map<string, { at: number; value: PrListResult }>();
 
-function run(cmd: string, args: string[], cwd: string, timeout = 20_000): Promise<{ stdout: string; stderr: string; code: number | null }> {
+interface CmdResult {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+}
+
+/** execFile 的 err.code 有时是字符串（`ENOENT`），统一成数字给 classify 看。 */
+function exitCode(err: any): number {
+  if (!err) return 0;
+  return typeof err.code === "number" ? err.code : 1;
+}
+
+function run(cmd: string, args: string[], cwd: string, timeout = 20_000, env: NodeJS.ProcessEnv = process.env): Promise<CmdResult> {
   return new Promise((resolve) => {
     execFile(
       cmd,
       args,
-      { cwd, timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: process.env },
-      (err: any, stdout, stderr) => resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), code: err ? (typeof err.code === "number" ? err.code : 1) : 0 }),
+      { cwd, timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env },
+      (err: any, stdout, stderr) => resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), code: exitCode(err) }),
     );
   });
+}
+
+function firstLine(text: string): string {
+  return `${text}`
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find(Boolean) ?? "";
+}
+
+/**
+ * 一次出网命令怎么选路。默认就是产品行为（设置 / 系统 / env 取候选，再不行就现探本机）；
+ * 测试用 `proxies` / `discover` 把两条都钉死，不去探本机的系统代理与在听端口 —— 否则测试
+ * 结果会跟着机器上装了什么代理跑。
+ */
+export interface RouteOptions {
+  proxies?: () => string[];
+  discover?: () => Promise<string[]>;
+  plan?: Partial<RoutePlan>;
+}
+
+/**
+ * 要出网的那几条命令（`gh` 问 GitHub、`git fetch` 取 refs）：直连 → 代理候选 → 现探 → 整轮重试。
+ *
+ * 全失败时把**每一次尝试**的原因拼成 stderr 交给 `classify()`：界面看到的就不再只是第一句
+ * `error: RPC failed; … Connection was reset`，而是「直连怎么挂的、每个代理又怎么挂的」，
+ * 用户才知道下一步该填代理还是该查网络。
+ */
+async function routed(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  plan: Partial<RoutePlan> = GH_PLAN,
+  onLog?: (line: string) => void,
+  opts: RouteOptions = {},
+): Promise<CmdResult> {
+  const res = await viaRoutes<CmdResult>(
+    async (env, timeoutMs) => {
+      const out = await run(cmd, args, cwd, timeoutMs, env);
+      if (out.code === 0) return { ok: true, value: out };
+      return { ok: false, err: firstLine(out.stderr) || `${cmd} 退出码 ${out.code}` };
+    },
+    {
+      proxies: opts.proxies ?? resolveProxyCandidates,
+      discover: opts.discover ?? discoverLocalProxyCandidates,
+      plan: { ...plan, ...(opts.plan ?? {}) },
+      onLog,
+    },
+  );
+  if (res.ok) return res.value;
+  return { stdout: "", stderr: res.reason, code: 1 };
 }
 
 /** `gh` 在 Windows 上是 `gh.exe`，POSIX 直接 PATH —— 两种平台都能直接 execFile。 */
@@ -94,10 +157,11 @@ export async function listPullRequests(dir: string, opts: { fresh?: boolean } = 
     return value;
   }
   const repoName = repoFromRemote(remote.stdout);
-  const out = await run(
+  const out = await routed(
     ghBin(),
     ["pr", "list", "--state", "open", "--limit", "30", "--json", "number,title,headRefName,baseRefName,isDraft,author"],
     dir,
+    GH_PLAN,
   );
   if (out.code !== 0) {
     const why = classify(out.stderr, "gh pr list", out.code);
@@ -142,13 +206,30 @@ export interface ResolvedPr {
 }
 
 /**
+ * 把 PR 的 head 取到 `refs/pi-web/pr-N` 上（评审最先倒下的那一步）。
+ *
+ * 先前这里只有一条直连：直连被重置就整次评审失败，界面只看到 git 的 stderr 首行。现在走
+ * `routed()`（直连 → 代理候选 → 整轮重试），失败时把每一条路的原因都带出来。
+ */
+export async function fetchPullRequestRef(dir: string, number: number, onLog?: (line: string) => void, opts: RouteOptions = {}): Promise<string> {
+  const to = `refs/pi-web/pr-${number}`;
+  onLog?.(`git fetch origin refs/pull/${number}/head → ${to}`);
+  const head = await routed("git", ["-C", dir, "fetch", "origin", `refs/pull/${number}/head:${to}`, "--no-tags", "--force"], dir, FETCH_PLAN, onLog, opts);
+  if (head.code !== 0) {
+    // 走到这里的 stderr 已经是「每一次尝试」的汇总（直连：…；代理 http://…：…），原样给人看。
+    throw Object.assign(new Error(`取不到 PR #${number} 的提交：${head.stderr}`), { code: "pr_fetch_failed" });
+  }
+  return to;
+}
+
+/**
  * 取一个 PR：先把 base 分支与 `refs/pull/N/head` 都 fetch 下来，再返回两侧 ref。
  *
  * `refs/pull/N/head` 对 fork 来的 PR 同样存在，所以不需要知道 fork 的仓库地址。
  */
 export async function resolvePullRequest(dir: string, number: number, onLog?: (line: string) => void): Promise<ResolvedPr> {
   if (!Number.isFinite(number) || number <= 0) throw Object.assign(new Error("PR 号不对"), { code: "pr_invalid" });
-  const view = await run(ghBin(), ["pr", "view", String(number), "--json", "number,title,baseRefName,headRefName"], dir, 25_000);
+  const view = await routed(ghBin(), ["pr", "view", String(number), "--json", "number,title,baseRefName,headRefName"], dir, GH_PLAN, onLog);
   if (view.code !== 0) {
     const why = classify(view.stderr, `gh pr view ${number}`, view.code);
     throw Object.assign(new Error(why.error || `读不到 PR #${number}`), { code: why.code || "gh_failed" });
@@ -161,15 +242,9 @@ export async function resolvePullRequest(dir: string, number: number, onLog?: (l
   }
   const base = String(meta?.baseRefName ?? "").trim();
   if (!base) throw Object.assign(new Error(`PR #${number} 没说对照分支`), { code: "gh_failed" });
-  const to = `refs/pi-web/pr-${number}`;
-  onLog?.(`git fetch origin refs/pull/${number}/head → ${to}`);
-  const head = await run("git", ["-C", dir, "fetch", "origin", `refs/pull/${number}/head:${to}`, "--no-tags", "--force"], dir, 120_000);
-  if (head.code !== 0) {
-    const why = classify(head.stderr, "git fetch", head.code);
-    throw Object.assign(new Error(why.error || `取不到 PR #${number}`), { code: "pr_fetch_failed" });
-  }
+  const to = await fetchPullRequestRef(dir, number, onLog);
   onLog?.(`git fetch origin ${base}`);
-  const baseFetch = await run("git", ["-C", dir, "fetch", "origin", base, "--no-tags"], dir, 120_000);
+  const baseFetch = await routed("git", ["-C", dir, "fetch", "origin", base, "--no-tags"], dir, { ...FETCH_PLAN, attempts: 1 }, onLog);
   // base 已经在本地的仓库（常见）不该因为一次 fetch 失败就整票挂掉。
   if (baseFetch.code !== 0) onLog?.(`对照分支 fetch 失败，用本地的一版：${classify(baseFetch.stderr, "git fetch", baseFetch.code).error}`);
   return {
@@ -245,7 +320,7 @@ export async function pullRequestInfo(dir: string, number: number, opts: { fresh
   if (!Number.isFinite(number) || number <= 0) {
     return { ok: false, info: null, error: "PR 号不对", code: "gh_failed" };
   }
-  const out = await run(
+  const out = await routed(
     ghBin(),
     [
       "pr",
@@ -255,7 +330,7 @@ export async function pullRequestInfo(dir: string, number: number, opts: { fresh
       "number,title,body,state,isDraft,url,author,createdAt,updatedAt,additions,deletions,changedFiles,baseRefName,headRefName,commits,files",
     ],
     dir,
-    30_000,
+    GH_PLAN,
   );
   if (out.code !== 0) {
     const why = classify(out.stderr, `gh pr view ${number}`, out.code);
