@@ -8106,3 +8106,24 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价 / 可改。** 多一个常驻进程（约 40–50 MB）。壳里出现 bug 时，最坏情况下整个桥都起不来 —— 所以 `PI_HOST_DISABLE=1` 必须长期留着，它是这个设计的保险丝。单轮里还没被确认的行超过 8 MB（极少）时这一轮不跨代，界面会明说。
 
 **验证。** `node bridge/tests/host-broker-unit.mjs`（未确认窗口与按轮清理、8 MB 降级与按轮重置、owner 规则）、`node bridge/tests/host-ledger-unit.mjs`（账本重放与压缩）、`node bridge/tests/host-shell-e2e.mjs`（真壳 + **假脑** + 假 pi：peer 头改写、tick 回脑、写入往返、kill 通知、attach 交回窗口、账本落盘、停机干净退出）、`node bridge/tests/host-real-brain-e2e.mjs`（真壳 + **真脑** + 假 pi，走 WS：开一轮 → 答一次审批 → 换脑 → **pi 的 pid 不变、这一轮还在跑、答过的审批不重问** → kill -9 脑让壳重拉并接管 → `/api/host/stop` 整组收掉）。真浏览器的验收在 `.scratch/e2e/20261122-1050-hot-deploy-keeps-turn/`：`change` 模式下「换完之后页面没退回只读预览」「换脑没换掉子进程（还是同一个 pid）」「部署前后页面没被刷新」三条，改前全红、改后全绿。
+
+## D408 提问卡片按「自由文本」显示：字面 `\n` 折行、反引号片段成行内代码（#640；用户「提问卡片有bug。竟然出现了奇怪的格式，并且还有代码」2026-11-22）
+
+**症状。** 用户报卡片出现奇怪格式，还夹带代码。查本机这几天的问卷载荷，两处真实形态：一张的题干里横着字面的 `\n\n`（模型把换行二次转义了一次），后面紧跟一条 `F:/…/architecture-review.html`；另一张的选项说明里写着 `` `bridge/src/rpc.ts` `` 与 Windows 路径。卡片是纯文本渲染，于是反斜杠、反引号和路径原样摊开来，看起来就像漏了代码进来。用户当时在另一台机器上测，没留截图，所以没有把「那张」钉到具体某一条。
+
+**修法。** 新增 `web/src/ask-text.ts` 三个纯函数，`App.askText()` / `appendAskText()` 用它们拼节点：
+
+- `unfoldNewlines(s)`：`\n` 折成真换行，但**只在整段没有真换行时**才折 —— 已经分行的文本里出现 `\n`，多半是代码或正则本身，折了才是错。
+- `splitInlineCode(s)`：按**等长反引号串**配对（CommonMark 的规矩），成对的进 `<code>`、反引号本身不进文字；找不到另一半的头/尾串（落单的一枚、三个连续的代码栅栏、没闭合的两枚）全留作普通字符。两枚包一枚（`` `x` ``）时里面的反引号是内容，不被当成开合。
+- `cardPieces(s)`：**先切反引号，再只对普通文字折行**。顺序反过来会误伤在**谈论** `\n` 本身的文本（「把字面的 `\n` 折成换行」这种题干），反引号还没切出来就整段被折了。代码片段里的是内容，一个字都不动。
+- CSS：`.ask-prompt` / `.ask-opt .l` / `.ask-opt .d` 一律 `pre-wrap` + `overflow-wrap: anywhere`（长路径顶出卡片的问题），行内代码用等宽小字 + `--panel-3` 底色。
+
+**覆盖到哪几处。** 同一段模型文字在五个地方出现，全走 `askText()`：题干（`.ask-prompt`）、选项标题（`.ask-opt .l`）、选项说明（`.ask-opt .d`）、多题 tab 标签（`.ask-tab`，`x.label`）、已填 / 另写那两行（`.ask-draft`；CSS 里那条 `.ask-draft code` 之前是空挂的，现在真有节点）。收起条（`.ask-strip`）只取一行：用 `cardPieces` 分段折行后再取第一行，代码片段里的 `\n` 不会被当成断行。会话历史里那张「需要你回答」卡（`askCard()` 的 `.m`）同样拼 `appendAskText` + `\n` 分隔，否则同一份题干在面板里正常、翻回历史又露一遍反斜杠。
+
+**误伤收窄。** 按段折行之后，「真换行 + 字面 `\n`」混在一段里的题干也能修好（老规则看整段，一有换行就整段放过）；反引号包住的 `\n` 现在一个字都不动。仍然保留的老规矩：一段没分行、也没有反引号的文本里出现 `\n`，一律当二次转义折掉 —— 正则 `/a\nb/` 这种裸写法还是会被折，代价写在 `unfoldNewlines()` 的注释里。
+
+**为什么不去猜那张卡的像素级形态。** 没有截图，凭猜改版式只会改错地方；这几条是无论哪张卡都会犯的毛病，且都能用纯函数钉住。真正的排版判断（要不要渲染 Markdown 粗体/列表）没做 —— 卡片只需要「读得懂」，不需要渲染引擎。
+
+**没做。** ①选项的 `preview` 字段卡片完全不显示（多选预览只在单选用）；如果用户看到的是「预览里的 ASCII 图被塞进说明」，那是另一件事。②`\t` 与字面 `\r` 没折。③没有改 `question` / `questionnaire` 两个旧工具名的载荷路径，它们与 `ask_user_question` 共用同一段渲染。
+
+**验证。** `node --experimental-strip-types --test web/tests/ask-text-unit.mjs` 12 项（折行 / 真换行不误伤 / 空串 / 切段 / 不配对反引号 / 纯代码 / 先切后折 / 反引号内不折 / 混合情形 / 等长串配对 / 连续三枚 / 落单的一枚），`web/tests/ask-tab-unit.mjs` + `ask-card-unit.mjs` 共 24 项不回归，`npm --prefix web run typecheck`（含 i18n-check、视口单位与层叠守卫，以及新挂进链里的 `ask-text-unit`）与 `npm --prefix web run build` 通过。单测另有根脚本 `npm run test:ask-text`，与 `test:ask-tab` / `test:ask-card` 同一口径。

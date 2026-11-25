@@ -2328,6 +2328,7 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .ask-tab.done { color: var(--ok); }
 .ask-prompt {
   font-size: 13px; line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word;
+  overflow-wrap: anywhere;
   max-height: calc(var(--vh1) * 22); overflow-y: auto;
 }
 .ask-opts { display: grid; gap: 4px; max-height: calc(var(--vh1) * 32); overflow-y: auto; }
@@ -2338,9 +2339,15 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 }
 .ask-opt:hover { border-color: var(--line-strong); background: var(--accent-bg); }
 .ask-opt.on { border-color: var(--accent-dim); background: var(--accent-bg); }
-.ask-opt .l { font-size: 13px; font-weight: 500; white-space: pre-wrap; word-break: break-word; }
+.ask-opt .l { font-size: 13px; font-weight: 500; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
 .ask-opt.on .l { color: var(--accent); }
-.ask-opt .d { font-size: 12px; line-height: 1.45; color: var(--faint); }
+/* D389: 说明里常有 Windows 路径与标识符，纯文本会把它们顶出卡片 —— 换行 + 任意处断行。 */
+.ask-opt .d { font-size: 12px; line-height: 1.45; color: var(--faint); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+/* 反引号片段：行内代码，不再把反引号本身当文字露出来。 */
+.ask-prompt code, .ask-opt .l code, .ask-opt .d code, .ask-draft code {
+  font: 12px/1.5 var(--mono); background: var(--panel-3); border-radius: 4px; padding: 0 3px;
+  word-break: break-all;
+}
 .ask-draft { font-size: 12px; color: var(--ok); white-space: pre-wrap; word-break: break-word; }
 .ask-note { font-size: 12px; color: var(--faint); }
 .ask-foot { display: flex; justify-content: flex-end; }

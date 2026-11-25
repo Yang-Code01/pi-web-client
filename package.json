@@ -32,6 +32,7 @@
     "test:ask:ui": "node bridge/tests/ask-ui.mjs",
     "test:ask-tab": "node --experimental-strip-types web/tests/ask-tab-unit.mjs",
     "test:ask-card": "node --experimental-strip-types web/tests/ask-card-unit.mjs",
+    "test:ask-text": "node --experimental-strip-types web/tests/ask-text-unit.mjs",
     "test:ask-preview": "node --experimental-strip-types web/tests/ask-preview-unit.mjs",
     "test:ask-tab:ui": "node bridge/tests/ask-tab-ui.mjs",
     "test:exec-panel:ui": "node bridge/tests/exec-panel-ui.mjs",

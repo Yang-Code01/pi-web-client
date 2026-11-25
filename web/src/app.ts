@@ -18,6 +18,7 @@ import { githubFeature } from "./github-settings.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
+import { cardPieces } from "./ask-text.ts";
 import { renderMarkdown } from "./md.ts";
 import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, trElapsed, trNote, trPendingHead, type TrAct, type TrView } from "./translateview.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
@@ -18287,6 +18288,23 @@ export class App {
   }
 
   /**
+   * 卡片上的文字：反引号包住的片段走 `<code>`（不再露出反引号），字面 `\n` 折成真换行。
+   * 题干和选项说明都是模型给的自由文本，纯文本渲染会把这两种痕迹原样摊给用户（D408）。
+   * 会话里那张「需要你回答」卡（`askCard`）与题目 tab 走同一个入口，否则同一段文字两处长得不一样。
+   */
+  private askText(tag: keyof HTMLElementTagNameMap, cls: string, text: string): HTMLElement {
+    const node = el(tag, cls);
+    this.appendAskText(node, text);
+    return node;
+  }
+
+  private appendAskText(node: HTMLElement, text: string): void {
+    for (const p of cardPieces(text)) {
+      node.append(p.kind === "code" ? el("code", "", p.text) : document.createTextNode(p.text));
+    }
+  }
+
+  /**
    * 一块面板两个家（D189 / D190）：宽屏答在「需要你」右栏，会话保持原高度；窄屏与收起的右栏
    * 得到输入框上方的面板，收起时只剩一行（`askStrip`）。两种位置都能直接打字作答。用户去别的
    * 会话转一圈回来，桥会重发待答的题目；到货时右栏自己打开一次，除此之外不弹任何东西。
@@ -18351,7 +18369,7 @@ export class App {
     if (total > 1) {
       const tabs = el("div", "ask-tabs");
       ask.questions.forEach((x, i) => {
-        const tab = el("button", "ask-tab", `${x.label ?? `Q${i + 1}`}${st.drafts.has(x.id) ? " ✓" : ""}`);
+        const tab = this.askText("button", "ask-tab", `${x.label ?? `Q${i + 1}`}${st.drafts.has(x.id) ? " ✓" : ""}`) as HTMLButtonElement;
         if (i === st.active) tab.classList.add("on");
         if (st.drafts.has(x.id)) tab.classList.add("done");
         tab.onclick = () => {
@@ -18362,7 +18380,7 @@ export class App {
       });
       slot.append(tabs);
     }
-    slot.append(el("div", "ask-prompt", q.prompt));
+    slot.append(this.askText("div", "ask-prompt", q.prompt));
     const chosen = st.drafts.get(q.id);
     if (q.options.length) {
       const list = el("div", "ask-opts");
@@ -18370,8 +18388,8 @@ export class App {
         const btn = el("button", "ask-opt");
         const on = q.multiSelect ? Boolean(chosen?.picks?.includes(i + 1)) : Boolean(chosen && !chosen.wasCustom && chosen.value === opt.value);
         if (on) btn.classList.add("on");
-        btn.append(el("div", "l", `${q.multiSelect ? (on ? "☑ " : "☐ ") : ""}${opt.label}`));
-        if (opt.description) btn.append(el("div", "d", opt.description));
+        btn.append(this.askText("div", "l", `${q.multiSelect ? (on ? "☑ " : "☐ ") : ""}${opt.label}`));
+        if (opt.description) btn.append(this.askText("div", "d", opt.description));
         btn.onclick = () => {
           // 「在预览里打开」当场打开：多题问卷要全答完模型才拿得到答案，不能让用户没看就答下一题（ask-preview.ts）。
           const target = q.multiSelect ? null : previewTargetOf(q.prompt, opt);
@@ -18384,8 +18402,8 @@ export class App {
       slot.append(list);
     }
     if (q.multiSelect) slot.append(el("div", "ask-note", tr("可以多选；也可以在输入框里另外写几句。")));
-    if (chosen?.wasCustom) slot.append(el("div", "ask-draft", tr("已填：{p1}", { p1: chosen.label })));
-    if (chosen?.text) slot.append(el("div", "ask-draft", tr("另写：{p1}", { p1: chosen.text })));
+    if (chosen?.wasCustom) slot.append(this.askText("div", "ask-draft", tr("已填：{p1}", { p1: chosen.label })));
+    if (chosen?.text) slot.append(this.askText("div", "ask-draft", tr("另写：{p1}", { p1: chosen.text })));
     if (q.allowOther === false) slot.append(el("div", "ask-note", tr("这题只能从选项里选。")));
     if (total > 1 || q.multiSelect) {
       const missing = ask.questions.filter((x) => !st.drafts.has(x.id)).length;
@@ -18411,7 +18429,9 @@ export class App {
     const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
     const strip = el("div", "ask-strip");
     strip.append(el("span", "k", tr("提问")));
-    strip.append(el("span", "q", `${q.prompt.split("\n")[0]}${more}`));
+    // 收起只剩一行：折行交给 `cardPieces` 分段做（代码片段里的 `\n` 不折），再取真实的第一行。
+    const oneLine = cardPieces(q.prompt).map((p) => p.text).join("").split("\n")[0];
+    strip.append(el("span", "q", `${oneLine}${more}`));
     strip.append(el("span", "grow"));
     const open = el("button", "btn primary", tr("回答"));
     open.onclick = () => {
@@ -18613,7 +18633,14 @@ export class App {
     // Q-033: 提问不设上限；发问方若给了时长，只在 tooltip 里交代一句。
     if (ask.timeoutMs) t.title = tr("发问方要求 {p1} 秒内作答，已忽略（提问不设上限）", { p1: Math.round(ask.timeoutMs / 1000) });
     card.append(t);
-    card.append(el("div", "m", ask.questions.map((q, i) => tr("{p1}{p2}", { p1: ask.questions.length > 1 ? tr("{p1}：", { p1: q.label ?? `Q${i + 1}` }) : "", p2: q.prompt })).join("\n")));
+    // 会话里这张卡（D408）：标题 + 题干与面板同源渲染，否则同一段 `\n`/反引号在历史里又露一遍。
+    const body = el("div", "m");
+    ask.questions.forEach((q, i) => {
+      if (i) body.append(document.createTextNode("\n"));
+      if (ask.questions.length > 1) this.appendAskText(body, tr("{p1}：", { p1: q.label ?? `Q${i + 1}` }));
+      this.appendAskText(body, q.prompt);
+    });
+    card.append(body);
     const actions = el("div", "actions");
     const go = el("button", "btn primary", tr("去回答"));
     go.onclick = () => this.focusAsk();
