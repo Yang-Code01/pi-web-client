@@ -334,6 +334,8 @@ export interface Me {
   pushCount: number;
   /** 「pi 设置 → 通知」总开关（D91）。 */
   notify?: boolean;
+  /** D389 提醒中心的三档开关（缺省：总开关开、阻塞类弹、其它不弹）。 */
+  reminders?: { enabled: boolean; blocking: boolean; others: boolean };
   sessionsRoot: string;
 }
 
@@ -576,6 +578,8 @@ export interface TrJob {
   done: number;
   total: number;
   note: string;
+  /** 正在翻的块数（D392）：主进度按节，这个只上副行。 */
+  inflight?: number;
   error?: string;
   startedAt: number;
   finishedAt?: number;
@@ -598,6 +602,8 @@ export interface TrDocResp {
 export interface TrPrefs {
   /** `provider/id`；空串 = 还没设过。 */
   model: string;
+  /** 同时翻几块（1–8）；旧桥不认这个字段，读不到就当默认值。 */
+  concurrency?: number;
 }
 
 export interface TrPrefsResp {
@@ -982,6 +988,8 @@ export interface GitDiff {
   target: string;
   files: GitDiffFile[];
   limit: { lines: number; bytes: number };
+  /** #651：这一份是「工作区改动 vs HEAD」，不是两个提交之间的对照。 */
+  worktree?: boolean;
 }
 /** D289: 历史里点一行弹出的提交详情（`/api/git/commit`）。不含 blob，文件内容单独拉。 */
 export interface GitCommitDetail {

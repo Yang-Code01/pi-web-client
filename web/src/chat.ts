@@ -3,12 +3,15 @@ import { artifactSources, noteArtifact, noteMentioned, toolPath, type ArtifactSo
 import { askQuestions, askTurnLabel, parseAskResult } from "./ask-result.ts";
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { reviewBody, reviewDisplay } from "./failures.ts";
+import { githubCards } from "./github-cards.ts";
 import { highlightFragment } from "./highlight.ts";
 import { extractMentionedPaths, renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { BashItem, Item, SessionHistory, SkillItem, ToolItem, UserItem } from "./types.ts";
 import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
+import { appZoom } from "./modal.ts";
+import { icon } from "./icons.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
 const BASH_SHOW = 20000;
@@ -269,6 +272,12 @@ export class ChatView {
   private collapsed = new Set<string>();
   /** Set by the app: the 停止 button on a running `!cmd` card. */
   onBashStop: ((id: string) => void) | null = null;
+  /** GitHub 链接卡 → 右栏面板。应用没接上就只画链接（卡片自己不做事）。 */
+  onGithubOpen: ((repo: string, number: number) => void) | null = null;
+  /** #666：链接卡右缘那颗「代码评审」→ 右栏评审页签（不自动开跑）。没接上就只画普通卡片。 */
+  onGithubReview: ((repo: string, number: number) => void) | null = null;
+  /** #666：本会话所在仓库（`owner/repo`）；判据还没问回来时给空串，卡片据此决定评审钮灰不灰。 */
+  githubSessionRepo: (() => string) | null = null;
   /** Set by the app: ⑂ on a user message (#17). `index` = its position among user messages. */
   onFork: ((item: { id: string; text: string }, index: number) => void) | null = null;
   /**
@@ -450,8 +459,7 @@ export class ChatView {
    * ——默认字号下会把首行滚过头（D123）。
    */
   private contentTopOf(node: HTMLElement): number {
-    const raw = Number.parseFloat(getComputedStyle(this.root).getPropertyValue("--ui-scale"));
-    const scale = Number.isFinite(raw) && raw > 0 ? raw : 1;
+    const scale = appZoom();
     return (node.getBoundingClientRect().top - this.root.getBoundingClientRect().top) / scale + this.root.scrollTop;
   }
 
@@ -1620,7 +1628,7 @@ export class ChatView {
     // 原样排开（保留换行），不画气泡，免得人以为自己打过这一大段。
     if (reviewed !== null) {
       const head = el("div", "who");
-      head.textContent = tr("⚡ 自动复盘 · {p1}", { p1: timeOf(item.ts) });
+      head.append(icon("bolt", { size: 12 }), document.createTextNode(tr("自动复盘 · {p1}", { p1: timeOf(item.ts) })));
       const body = el("div", "body");
       body.textContent = reviewDisplay(reviewed);
       wrap.append(head, body);
@@ -1643,6 +1651,8 @@ export class ChatView {
         who.append(fork);
       }
       wrap.append(who, this.foldable(this.buildUserBody(item), 240));
+      // 别人发我一条 PR 链接，我也要能直接在面板里看 —— 同一个解析器，不看是谁写的消息。
+      if (this.onGithubOpen) wrap.append(...this.githubCardsFor(item.text, 2));
     } else {
       who.textContent = headLine(item.model ?? "pi", item.ts, item.stopReason === "aborted" ? tr(" · 已中断") : "");
       if (item.text.trim()) who.append(copyButton(() => item.text));
@@ -1653,6 +1663,9 @@ export class ChatView {
       if ((item.text || "").trim()) {
         const body = el("div", "body");
         body.append(renderMarkdown(item.text));
+        // 正文里的 PR 链接本来就能点（`md.ts` 会给裸 URL 加锚点），但点完要切浏览器。
+        // 挂上卡片 = 当场看得见「这是哪个 PR」。每段最多两张。
+        if (this.onGithubOpen) body.append(...this.githubCardsFor(item.text, 2));
         const peek = el("button", "msg-peek", previewLine(item.text));
         peek.title = tr("展开回答");
         const fold = foldHead("msg-fold");
@@ -1883,6 +1896,18 @@ export class ChatView {
     // The node is measured before it is in the document, so re-check once layout is real.
     requestAnimationFrame(measure);
     return box;
+  }
+
+  /**
+   * 三处挂卡（工具卡输出 / AI 正文 / 用户消息）共用的宿主：主区开右栏面板，右缘那颗去评审。
+   * 应用没接上 `onGithubOpen` 时返回空数组 —— 那时根本不画卡。
+   */
+  private githubCardsFor(text: string, max: number): HTMLElement[] {
+    const open = this.onGithubOpen;
+    if (!open) return [];
+    const review = this.onGithubReview;
+    const sessionRepo = this.githubSessionRepo;
+    return githubCards(text, { open, review: review ?? undefined, sessionRepo: sessionRepo ?? undefined, max });
   }
 
   private buildUserBody(item: UserItem): HTMLElement {
@@ -2122,6 +2147,9 @@ export class ChatView {
         card.append(details);
       }
       card.append(out);
+      // 工具卡是 AI 自己跑 `gh …` 时输出的落脚处（`buildBash` 那个是用户的 `!cmd`）。
+      // `<pre>` 里的链接点不动，所以在这里挂卡 —— 这正是「AI 建完 PR 我看不到」那一条。
+      if (this.onGithubOpen && item.result) card.append(...this.githubCardsFor(String(item.result), 3));
     }
     return card;
   }
@@ -2141,7 +2169,9 @@ export class ChatView {
     main.type = "button";
     main.title = tr("点击查看执行面板计划");
     const label = el("span", "todo-summary");
-    main.append(el("span", "todo-icon", "📋"), label);
+    const todoIc = el("span", "todo-icon");
+    todoIc.append(icon("checklist", { size: 14 }));
+    main.append(todoIc, label);
     main.onclick = () => this.onTodoClick?.();
     const toggle = el("button", "todo-toggle") as HTMLButtonElement;
     toggle.type = "button";
@@ -2368,14 +2398,6 @@ function buildFailureItem(input: FailureInput, ms?: number): HTMLElement {
   foot.append(el("span", undefined, meta.join(" · ")), rawBox);
   item.append(foot);
   return item;
-}
-
-export function fileIcon(p: string): string {
-  const ext = p.split(".").pop()?.toLowerCase() ?? "";
-  if (/^(md|markdown|mdx)$/.test(ext)) return "📝";
-  if (/^html?$/.test(ext)) return "🌐";
-  if (/^(png|jpe?g|gif|svg|webp|bmp|ico|avif)$/.test(ext)) return "🖼";
-  return "📄";
 }
 
 function openPreview(path: string): void {

@@ -11,10 +11,11 @@
  *   （32k 窗口的模型上，固定 60% 已经晚了）。
  */
 import { createEl as el, openImage } from "./chat.ts";
+import { icon } from "./icons.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
-import { pushEscLayer } from "./modal.ts";
+import { markSurface, pushEscLayer } from "./modal.ts";
 import { tr } from "./i18n/index.ts";
 import { groupModels, modelGroupSection, rememberRecentModel } from "./modelgroups.ts";
 import type { Item, ModelInfo, SessionState } from "./types.ts";
@@ -115,14 +116,17 @@ function row(item: Item, src: (index: number) => string | null = () => null): HT
   }
   if (item.kind === "skill") {
     // 随手问里的隐式技能：一行就够（这里没有卡片的位置，也不该为它拆条），名字与“自动加载”跟聊天区同一套叫法。
-    const line = el("div", "sc-twoline", "🧩 ");
+    const line = el("div", "sc-twoline");
+    line.append(icon("sparkle", { size: 13 }), document.createTextNode(" "));
     line.append(tr("技能"), " · ", item.name);
     wrap.append(line);
     return wrap;
   }
   if (item.kind === "tool") {
     wrap.dataset.tool = item.name;
-    wrap.append(el("div", "sc-twoline", `🔧 ${item.name}`));
+    const toolLine = el("div", "sc-twoline");
+      toolLine.append(icon("tool", { size: 13 }), document.createTextNode(` ${item.name}`));
+      wrap.append(toolLine);
     return wrap;
   }
   if (item.kind === "notice") {
@@ -373,7 +377,7 @@ export class ScratchChat {
   // ---------------------------------------------------------------- internals
 
   private build(): void {
-    const back = el("div", "sheet-back scratch-back");
+    const back = markSurface(el("div", "sheet-back scratch-back"), "window", { enter: "side" });
     back.onclick = (ev) => {
       if (ev.target === back) this.close();
     };
@@ -476,7 +480,8 @@ export class ScratchChat {
     };
 
     const actions = el("div", "sc-actions");
-    this.attachBtn = el("button", "btn ghost sc-attach", "📎") as HTMLButtonElement;
+    this.attachBtn = el("button", "btn ghost sc-attach") as HTMLButtonElement;
+    this.attachBtn.append(icon("clip", { size: 14 }));
     this.attachBtn.title = tr("添加图片");
     this.attachBtn.setAttribute("aria-label", this.attachBtn.title);
     this.fileEl = el("input") as HTMLInputElement;
@@ -761,7 +766,9 @@ export class ScratchChat {
           j += 1;
         }
         const line = node.querySelector(".sc-twoline");
-        if (line) line.textContent = `🔧 ${summarizeTools(run)}`;
+        if (line) {
+      line.replaceChildren(icon("tool", { size: 13 }), document.createTextNode(` ${summarizeTools(run)}`));
+    }
         prev = "tool";
         i = j;
         continue;

@@ -22,6 +22,14 @@ const SHELL_PATTERNS: { re: RegExp; why: string }[] = [
   { re: /(^|[\s;&|(])(rm|rmdir|del|erase|unlink)\s+/i, why: "删除文件" },
   { re: /(^|[\s;&|(])(mv|move|ren|rename)\s+/i, why: "移动/重命名文件" },
   { re: /\bgit\s+push\b/i, why: "推送到远端" },
+  // GitHub 通道（#661）：建 PR 是 AI 的本职活，不拦；把代码合进 main 是人的决定。
+  // 只拦一条等于留个后门，所以三条路都拦：① `gh pr merge`，含 `gh -R a/b pr merge 1`
+  // 这类全局参数插在中间的写法（`gh` 与 `pr`、`pr` 与 `merge` 之间都是 `[^\n]*`）；
+  // ② REST 的 `…/pulls/N/merge` 与并分支的 `…/merges`；③ GraphQL 的 mergePullRequest /
+  // enqueuePullRequest（合并队列）/ enablePullRequestAutoMerge（自动合并 = 稍后合）。
+  // 按行匹配是对的：一条 shell 命令里的换行只可能是引号内或反斜杠续行，续行在 riskOf 里先接回去。
+  { re: /\bgh\b[^\n]*\bpr\b[^\n]*\bmerge\b/i, why: "合并 PR" },
+  { re: /\bgh\s+api\b[^\n]*(\/merges?\b|mergePullRequest|enqueuePullRequest|enablePullRequestAutoMerge)/i, why: "合并 PR（走 API）" },
   { re: /\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s)/i, why: "丢弃工作区改动" },
   { re: /(curl|wget)[^|;]*\|\s*(sudo\s+)?(ba|z|fi)?sh\b/i, why: "把网络内容直接喂给 shell" },
   { re: /\b(npm|pnpm|yarn|bun)\s+(i|install|add|remove|uninstall)\b/i, why: "安装/卸载依赖" },
@@ -112,7 +120,10 @@ function riskOf(toolName: string, input: Record<string, unknown>, cwd: string): 
   if (SHELL_TOOLS.has(name)) {
     const command = shellCommand(input).trim();
     if (!command) return null;
-    for (const rule of SHELL_PATTERNS) if (rule.re.test(command)) return { why: rule.why, detail: command };
+    // 反斜杠续行在 shell 里是同一条命令，先接回去再匹配，否则 `gh -R a/b \` + 换行 +
+    // `pr merge 12` 从换行处漏过去（规则里的 `[^\n]*` 就断在这儿）。报给用户的仍是原串。
+    const flat = command.replace(/\\\r?\n/g, " ");
+    for (const rule of SHELL_PATTERNS) if (rule.re.test(flat)) return { why: rule.why, detail: command };
     return null;
   }
   if (WRITE_TOOLS.has(name)) {

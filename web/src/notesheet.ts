@@ -11,18 +11,20 @@
  * 段落。净化与导出在 `notes/rich.ts`，编辑行为在 `notes/editor.ts`，这一层只管布局和状态。
  */
 import { createEl as el } from "./chat.ts";
+import { icon, face, type IconName } from "./icons.ts";
 import { FailPanel } from "./failpanel.ts";
 import { ripeEntries, type FailLedger } from "./failures.ts";
 import { RichEditor } from "./notes/editor.ts";
-import { isRichEmpty, noteTextForPeer, plainText, richToMarkdown, textToRich } from "./notes/rich.ts";
+import { notePeerGuard, type PeerNoteBlock } from "./notes/peer-guard.ts";
+import { isRichEmpty, plainText, richToMarkdown, textToRich } from "./notes/rich.ts";
 import type { RuleBook } from "./rules.ts";
 import type { Note, NoteKind, NoteStatus, NotesLayout } from "./types.ts";
 import "./notes.css";
 import { tr } from "./i18n/index.ts";
-import { pushEscLayer, retireOverlay } from "./modal.ts";
+import { appZoom, markSurface, mountOverlay, pushEscLayer, retireOverlay } from "./modal.ts";
 
-export const NOTE_KINDS: { id: NoteKind; label: string; glyph: string }[] = [
-  { id: "bug", label: "bug", glyph: "🐞" },
+export const NOTE_KINDS: { id: NoteKind; label: string; glyph: IconName | string }[] = [
+  { id: "bug", label: "bug", glyph: "bug" },
   { id: "change", label: tr("变更"), glyph: "◆" },
   { id: "idea", label: tr("想法"), glyph: "◇" },
   { id: "chore", label: tr("杂事"), glyph: "○" },
@@ -96,8 +98,13 @@ function writeMemory(memory: NotesMemory): void {
 
 /** 内网通连动（#509）：最后一位收件人只记 nodeId，换人或换机器就在列表里重选。 */
 const PEER_LAST_KEY = "notes.peerLast";
-/** 一条文字消息的硬上限（peer/src/messages.ts 的 MAX_TEXT_BYTES）。 */
-const PEER_TEXT_BYTES = 32 * 1024;
+
+/** 「提交给好友」超限时的提示（#663）：只说第一条超的，带数值。正文按 1000 进算 KB，跟服务端的「200 KB」对得上。 */
+function peerGuardHint(b: PeerNoteBlock): string {
+  if (b.blocked === "title") return tr("标题 {p1} 字，上限 {p2} 字", { p1: b.actual, p2: b.limit });
+  if (b.blocked === "shots") return tr("截图 {p1} 张，上限 {p2} 张", { p1: b.actual, p2: b.limit });
+  return tr("正文 {p1} KB，上限 {p2} KB", { p1: Math.ceil(b.actual / 1000), p2: b.limit / 1000 });
+}
 
 interface PeerOnline {
   nodeId: string;
@@ -283,7 +290,7 @@ export class NotesSheet {
   }
 
   private build(): void {
-    const back = el("div", "sheet-back notes-back");
+    const back = markSurface(el("div", "sheet-back notes-back"), "window", { enter: "none" });
     back.onclick = (ev) => {
       if (ev.target === back) this.close();
     };
@@ -321,7 +328,9 @@ export class NotesSheet {
   private head(): HTMLElement {
     const head = el("div", "sheet-head notes-head");
     const title = el("div", "notes-head-title");
-    title.append(el("span", "notes-head-glyph", "🐞"), el("span", "", tr("记录面板")));
+    const headGlyph = el("span", "notes-head-glyph");
+    headGlyph.append(icon("bug", { size: 15 }));
+    title.append(headGlyph, el("span", "", tr("记录面板")));
     this.headBadgeEl = el("span", "notes-head-badge", "");
     this.headBadgeEl.hidden = true;
     this.headCountEl = el("span", "notes-head-sub", "");
@@ -379,7 +388,8 @@ export class NotesSheet {
     collapseList.title = tr("收起列表");
     collapseList.setAttribute("aria-label", tr("收起列表"));
     collapseList.onclick = () => this.setList("closed");
-    this.gclearEl = el("button", "nc-gclear", "✕") as HTMLButtonElement;
+    this.gclearEl = el("button", "nc-gclear") as HTMLButtonElement;
+    this.gclearEl.append(icon("close", { size: 13 }));
     this.gclearEl.type = "button";
     this.gclearEl.title = tr("清除搜索");
     this.gclearEl.setAttribute("aria-label", tr("清除搜索"));
@@ -515,11 +525,13 @@ export class NotesSheet {
     head.append(el("span", "nc-nav-title", tr("分区")), fold);
     nav.append(head);
 
-    const item = (key: string, glyph: string, label: string, count: number, on: boolean, run: () => void): HTMLElement => {
+    const item = (key: string, glyph: IconName | string, label: string, count: number, on: boolean, run: () => void): HTMLElement => {
       const b = el("button", `nc-nav-item${on ? " on" : ""}`) as HTMLButtonElement;
       b.dataset.key = key;
       b.title = label;
-      b.append(el("span", "nc-nav-glyph", glyph), el("span", "nc-nav-label", label));
+      const navGlyph = el("span", "nc-nav-glyph");
+      navGlyph.append(face(glyph, 14));
+      b.append(navGlyph, el("span", "nc-nav-label", label));
       if (count) b.append(el("span", "nc-nav-n", String(count)));
       b.onclick = () => {
         run();
@@ -535,13 +547,13 @@ export class NotesSheet {
     }
     nav.append(el("div", "nc-nav-sep"));
     const ripe = ripeEntries(this.ledger).length;
-    nav.append(item("failures", "⚡", tr("AI 出错记录"), ripe, !searching && this.view === "failures", () => this.setView("failures")));
+    nav.append(item("failures", "bolt", tr("AI 出错记录"), ripe, !searching && this.view === "failures", () => this.setView("failures")));
 
-    const viewItem = (id: "archived" | "trash", glyph: string, label: string, count: number): HTMLElement =>
+    const viewItem = (id: "archived" | "trash", glyph: IconName | string, label: string, count: number): HTMLElement =>
       item(id, glyph, label, count, !searching && this.view === id, () => this.setView(id));
     nav.append(el("div", "nc-nav-sep"));
-    nav.append(viewItem("archived", "📦", tr("归档"), notes.filter((n) => n.archivedAt && !n.deletedAt).length));
-    nav.append(viewItem("trash", "🗑️", tr("垃圾箱"), notes.filter((n) => n.deletedAt).length));
+    nav.append(viewItem("archived", "archive", tr("归档"), notes.filter((n) => n.archivedAt && !n.deletedAt).length));
+    nav.append(viewItem("trash", "trash", tr("垃圾箱"), notes.filter((n) => n.deletedAt).length));
     this.navEl.replaceChildren(nav);
   }
 
@@ -864,7 +876,8 @@ export class NotesSheet {
     const text = days >= 1
       ? tr("这一类还有 {p1} 条待处理没动，最老的一条停在 {p2} 天前。", { p1: pending.length, p2: days })
       : tr("这一类还有 {p1} 条待处理没动。", { p1: pending.length });
-    const close = el("button", "nc-banner-x", "✕");
+    const close = el("button", "nc-banner-x");
+    close.append(icon("close", { size: 13 }));
     close.title = tr("今天先不看这条");
     close.setAttribute("aria-label", close.title);
     close.onclick = () => {
@@ -911,7 +924,9 @@ export class NotesSheet {
     if (summary) row.append(el("div", "nc-row-body", summary));
 
     const meta = el("div", "nc-row-meta");
-    meta.append(el("span", "nc-row-shot", `🖼 ${n.shots?.length ?? 0}`));
+    const shotBox = el("span", "nc-row-shot");
+    shotBox.append(icon("image", { size: 12 }), document.createTextNode(` ${n.shots?.length ?? 0}`));
+    meta.append(shotBox);
     meta.append(el("span", "nc-row-words", tr("{p1} 字", { p1: this.wordsOf(n) })));
     meta.append(el("span", "nc-row-time", shortTime(n.updatedAt)));
     // 结果行只负责「打开」：归档 / 删除两颗小按钮跟着当前这一堆的语义变，跨分区结果里容易误操作。
@@ -923,8 +938,9 @@ export class NotesSheet {
   /** 行右侧那两个小图标：按当前这堆是什么，给可用的动作。 */
   private rowActs(n: Note): HTMLElement {
     const acts = el("div", "nc-row-acts");
-    const mk = (glyph: string, title: string, run: () => void, danger = false): HTMLElement => {
-      const b = el("button", `nc-row-act${danger ? " danger" : ""}`, glyph);
+    const mk = (glyph: IconName | string, title: string, run: () => void, danger = false): HTMLElement => {
+      const b = el("button", `nc-row-act${danger ? " danger" : ""}`);
+      b.append(face(glyph, 13));
       b.title = title;
       b.setAttribute("aria-label", title);
       b.onclick = (ev) => {
@@ -935,18 +951,18 @@ export class NotesSheet {
     };
     if (this.view === "trash") {
       acts.append(
-        mk("↺", tr("复原：放回列表"), () => this.setLife(n.id, "active")),
-        mk("✕", tr("彻底删除（不能撤销）"), () => this.purgeOne(n.id), true),
+        mk("unarchive", tr("复原：放回列表"), () => this.setLife(n.id, "active")),
+        mk("close", tr("彻底删除（不能撤销）"), () => this.purgeOne(n.id), true),
       );
     } else if (this.view === "archived") {
       acts.append(
         mk("↺", tr("复原：放回列表"), () => this.setLife(n.id, "active")),
-        mk("🗑️", tr("删除（放垃圾箱，可复原）"), () => this.setLife(n.id, "trashed")),
+        mk("trash", tr("删除（放垃圾箱，可复原）"), () => this.setLife(n.id, "trashed")),
       );
     } else {
       acts.append(
-        mk("📦", tr("归档"), () => this.setLife(n.id, "archived")),
-        mk("🗑️", tr("删除（放垃圾箱，可复原）"), () => this.setLife(n.id, "trashed")),
+        mk("archive", tr("归档"), () => this.setLife(n.id, "archived")),
+        mk("trash", tr("删除（放垃圾箱，可复原）"), () => this.setLife(n.id, "trashed")),
       );
     }
     return acts;
@@ -1255,12 +1271,16 @@ export class NotesSheet {
   private statusMenu(anchor: HTMLElement): void {
     document.querySelector(".note-handoff")?.remove();
     const r = anchor.getBoundingClientRect();
-    const pop = el("div", "note-handoff");
-    pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - 274))}px`;
-    pop.style.top = `${r.bottom + 6}px`;
-    const add = (label: string, hint: string, run: () => void): void => {
+    const pop = markSurface(el("div", "note-handoff"), "menu");
+    // 挂进 #app 才跟「外观 → 字号」的 zoom 一起缩；量到的是视觉 px，写进 style 前先除一次缩放。
+    pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - 274)) / appZoom()}px`;
+    pop.style.top = `${(r.bottom + 6) / appZoom()}px`;
+    const add = (label: IconName | string, hint: string, run: () => void, text?: string): void => {
       const b = el("button");
-      b.append(el("span", "handoff-label", label), el("span", "handoff-hint", hint));
+      const labelBox = el("span", "handoff-label");
+      labelBox.append(face(label, 13));
+      if (text) labelBox.append(document.createTextNode(` ${text}`));
+      b.append(labelBox, el("span", "handoff-hint", hint));
       b.onclick = () => {
         pop.remove();
         run();
@@ -1271,10 +1291,10 @@ export class NotesSheet {
       add(`${STATUS_GLYPH[status]} ${STATUS_LABEL[status]}`, tr("点一下就落盘"), () => this.setStatus(status));
     }
     if (this.editing?.id) {
-      add(tr("📦 归档"), tr("不在列表里，复原才回来"), () => this.editing?.id && this.setLife(this.editing.id, "archived"));
-      add(tr("🗑️ 删除"), tr("放进垃圾箱，可复原"), () => this.editing?.id && this.setLife(this.editing.id, "trashed"));
+      add("archive", tr("不在列表里，复原才回来"), () => this.editing?.id && this.setLife(this.editing.id, "archived"), tr("归档"));
+      add("trash", tr("放进垃圾箱，可复原"), () => this.editing?.id && this.setLife(this.editing.id, "trashed"), tr("删除"));
     }
-    document.body.append(pop);
+    mountOverlay(pop);
     setTimeout(
       () =>
         document.addEventListener(
@@ -1291,10 +1311,10 @@ export class NotesSheet {
   handoffMenu(anchor: HTMLElement, text: string): void {
     document.querySelector(".note-handoff")?.remove();
     const r = anchor.getBoundingClientRect();
-    const pop = el("div", "note-handoff");
+    const pop = markSurface(el("div", "note-handoff"), "menu");
     pop.style.position = "fixed";
-    pop.style.left = `${Math.max(12, Math.min(r.right - 260, innerWidth - 274))}px`;
-    pop.style.top = `${r.bottom + 6}px`;
+    pop.style.left = `${Math.max(12, Math.min(r.right - 260, innerWidth - 274)) / appZoom()}px`;
+    pop.style.top = `${(r.bottom + 6) / appZoom()}px`;
     const add = (label: string, hint: string, run: () => void) => {
       const b = el("button");
       b.append(el("span", "handoff-label", label), el("span", "handoff-hint", hint));
@@ -1312,7 +1332,7 @@ export class NotesSheet {
       this.host.newSessionWith(text);
       this.close();
     });
-    document.body.append(pop);
+    mountOverlay(pop);
     setTimeout(
       () =>
         document.addEventListener(
@@ -1328,18 +1348,17 @@ export class NotesSheet {
 
   // ---------------------------------------------------------------- 内网通连动（#509）
 
-  /** 正文下的「内网通连动 ▾」：先问桥要内网通状态，再画两项。 */
+  /** 正文下的「内网通连动 ▾」：先问桥要内网通状态，再画「提交给好友」。 */
   private peerMenu(anchor: HTMLElement, note: Partial<Note>): void {
     const full = this.fullNote(note);
     if (!full) return;
-    const text = noteTextForPeer(full.title, full.body);
-    const bytes = new TextEncoder().encode(text).length;
     const blank = !String(note.title ?? "").trim() && !plainText(note.body ?? "").trim();
+    const tooBig = notePeerGuard(full.title, full.body, full.shots.length);
     document.querySelector(".note-handoff")?.remove();
     const r = anchor.getBoundingClientRect();
-    const pop = el("div", "note-handoff note-peer-menu");
-    pop.style.left = `${Math.max(12, Math.min(r.right - 300, innerWidth - 314))}px`;
-    pop.style.top = `${r.bottom + 6}px`;
+    const pop = markSurface(el("div", "note-handoff note-peer-menu"), "menu");
+    pop.style.left = `${Math.max(12, Math.min(r.right - 300, innerWidth - 314)) / appZoom()}px`;
+    pop.style.top = `${(r.bottom + 6) / appZoom()}px`;
     const add = (label: string, hint: string, disabled: boolean, run: () => void): void => {
       const b = el("button") as HTMLButtonElement;
       b.append(el("span", "handoff-label", label), el("span", "handoff-hint", hint));
@@ -1355,7 +1374,7 @@ export class NotesSheet {
     waiting.disabled = true;
     waiting.append(el("span", "handoff-label", tr("正在问内网通…")), el("span", "handoff-hint", tr("只看一眼它开没开")));
     pop.append(waiting);
-    document.body.append(pop);
+    mountOverlay(pop);
     setTimeout(
       () =>
         document.addEventListener(
@@ -1373,44 +1392,18 @@ export class NotesSheet {
         pop.replaceChildren();
         const why = view.enabled ? "" : (view.reason || (view.running ? tr("内网通正在重启，等它起来再试") : tr("内网通没启用")));
         const empty = blank ? tr("先写点东西") : "";
-        const tooLong = bytes > PEER_TEXT_BYTES;
-        add(
-          tr("发送给好友"),
-          why || empty || (tooLong ? tr("正文 {p1} KB，超过 32 KB，改用「提交给好友」", { p1: Math.ceil(bytes / 1024) }) : tr("标题 + Markdown 正文")),
-          Boolean(why) || tooLong || blank,
-          () => void this.sendTextToPeer(text),
-        );
         add(
           tr("提交给好友"),
-          why || empty || tr("打包标题、正文、分类、状态与 {p1} 张图", { p1: full.shots.length }),
-          Boolean(why) || blank,
+          why || empty || (tooBig ? peerGuardHint(tooBig) : tr("打包标题、正文、分类、状态与 {p1} 张图", { p1: full.shots.length })),
+          Boolean(why) || blank || Boolean(tooBig),
           () => void this.submitToPeer(),
         );
       })
       .catch((err: Error) => {
         if (!pop.isConnected) return;
         pop.replaceChildren();
-        add(tr("发送给好友"), tr("连不上内网通：{p1}", { p1: err.message }), true, () => {});
         add(tr("提交给好友"), tr("连不上内网通：{p1}", { p1: err.message }), true, () => {});
       });
-  }
-
-  /** 发送给好友：标题 + 空行 + Markdown 正文，作为一条普通文字消息。 */
-  private async sendTextToPeer(text: string): Promise<void> {
-    if (this.peerBusy) return;
-    const person = await this.pickPeer(tr("发送给好友"));
-    if (!person) return;
-    this.peerBusy = true;
-    this.say(tr("发送中…"));
-    try {
-      await peerJson("/api/peer/send", { method: "POST", body: JSON.stringify({ peer: person.nodeId, text }) });
-      writeLastPeer(person.nodeId);
-      this.say(tr("已发送给 {p1}", { p1: person.nickname }));
-    } catch (err) {
-      this.say(tr("没发出去：{p1}", { p1: (err as Error).message }), true);
-    } finally {
-      this.peerBusy = false;
-    }
   }
 
   /** 提交给好友：先落盘拿 id，再选人、确认、发 note 帧，最后逐张补截图。 */
@@ -1509,7 +1502,7 @@ export class NotesSheet {
   private pickPeer(title: string): Promise<PeerPerson | null> {
     return new Promise((resolve) => {
       const last = readLastPeer();
-      const wrap = el("div", "peer-pick");
+      const wrap = markSurface(el("div", "peer-pick"), "window");
       const panel = el("div", "peer-pick-panel");
       const head = el("div", "peer-pick-head");
       const cancel = el("button", "btn ghost", tr("取消"));
@@ -1529,7 +1522,7 @@ export class NotesSheet {
       wrap.onclick = (ev) => {
         if (ev.target === wrap) done(null);
       };
-      document.body.append(wrap);
+      mountOverlay(wrap);
       search.focus();
       list.append(el("div", "peer-pick-empty", tr("正在问内网通…")));
       void this.peerPeople()
@@ -1589,7 +1582,7 @@ export class NotesSheet {
   private confirmSubmit(note: Note, person: PeerPerson, shots: ShotMeta[], missing: number): Promise<boolean> {
     return new Promise((resolve) => {
       const total = shots.reduce((sum, s) => sum + s.size, 0);
-      const wrap = el("div", "peer-pick");
+      const wrap = markSurface(el("div", "peer-pick"), "window");
       const panel = el("div", "peer-pick-panel peer-confirm");
       const head = el("div", "peer-pick-head");
       head.append(el("span", "peer-pick-title", tr("提交给好友")));
@@ -1621,7 +1614,7 @@ export class NotesSheet {
       wrap.onclick = (ev) => {
         if (ev.target === wrap) done(false);
       };
-      document.body.append(wrap);
+      mountOverlay(wrap);
       ok.focus();
     });
   }

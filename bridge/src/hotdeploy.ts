@@ -106,7 +106,7 @@ function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown
 
 function git(args: string[], cwd = REPO): Promise<{ ok: boolean; out: string; err: string }> {
   return new Promise((resolve) => {
-    execFile("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }, (err, out, errOut) => {
+    execFile("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, out, errOut) => {
       resolve({ ok: !err, out: String(out ?? ""), err: String(errOut ?? "") });
     });
   });
@@ -214,7 +214,10 @@ export function buildBranchRows(refs: RefLine[], worktrees: WorktreeRow[], curre
       lastCommitAt: r.at,
     });
   }
-  const rank = (r: BranchRow) => (r.current ? 0 : r.name === "main" ? 1 : 2);
+  const rank = (r: BranchRow) => {
+    if (r.current) return 0;
+    return r.name === "main" ? 1 : 2;
+  };
   rows.sort((a, b) => rank(a) - rank(b) || (b.lastCommitAt ?? "").localeCompare(a.lastCommitAt ?? ""));
   return rows;
 }
@@ -241,7 +244,7 @@ export function tailLines(file: string, max = 160): string[] {
     const lines = text.split(/\r?\n/);
     if (lines.length && lines[lines.length - 1] === "") lines.pop();
     // vite 把 ✓/✗ 染成 ANSI 色再写进日志；<pre> 里会变成一堆 [32m。
-    return lines.slice(-max).map((line) => line.replace(/\u001b\[[0-9;]*m/g, ""));
+    return lines.slice(-max).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
   } catch {
     return [];
   }
@@ -269,7 +272,8 @@ async function inLinkedWorktree(): Promise<{ linked: boolean; dir: string | null
   const common = await git(["rev-parse", "--git-common-dir"]);
   const a = path.resolve(REPO, gitDir.out.trim()).toLowerCase();
   const b = path.resolve(REPO, common.out.trim()).toLowerCase();
-  return { linked: a !== b && !ALLOW_WORKTREE, dir: a !== b ? REPO : null };
+  if (a === b || ALLOW_WORKTREE) return { linked: false, dir: null };
+  return { linked: true, dir: REPO };
 }
 
 /** 刚起、state.json 还没落盘的那几秒：桥在内存里记一份，别让界面闪回上一轮的结果。 */
@@ -425,8 +429,9 @@ async function removeWorktree(req: http.IncomingMessage, res: http.ServerRespons
   if (!fs.existsSync(tool)) return fail(res, 500, "hotdeploy_tool", `缺少 ${tool}`);
   const args = [tool, known.path, ...(force ? ["--force"] : [])];
   const out = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-    execFile(process.execPath, args, { cwd: REPO, encoding: "utf8" }, (err, stdout, stderr) => {
-      const code = err && typeof (err as { code?: unknown }).code === "number" ? Number((err as { code?: number }).code) : err ? 1 : 0;
+    execFile(process.execPath, args, { cwd: REPO, encoding: "utf8", windowsHide: true }, (err, stdout, stderr) => {
+      const rawCode = err && typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : null;
+      const code = rawCode ?? (err ? 1 : 0);
       resolve({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
     });
   });
@@ -450,7 +455,7 @@ async function removeWorktree(req: http.IncomingMessage, res: http.ServerRespons
 /**
  * 壳那边的部署阶段 → 页面认的 run 形状。页面的步骤表只认 `running|ok|fail`，而壳还会停在
  * `observing`（观察期、还没切）与 `needs-group-restart`（壳自己也变了）。不给映射的话，
- * 切成功与构建失败都会从面板上掉下去（D385 的 story 6 / 7）。
+ * 切成功与构建失败都会从面板上掉下去（D407 的 story 6 / 7）。
  * `stage` 原样带上：面板用它说明「正在观察」「已切换」。
  */
 function shellRun(

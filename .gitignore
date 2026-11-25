@@ -12,6 +12,8 @@ probes/tmp/
 
 # 日志
 *.log
+# 例外：pi-subagents 的真样本里，`output-0.log` 就是网页要读的那份过程记录，得进版本库
+!bridge/tests/fixtures/pi-subagents-*/**/*.log
 
 # 系统垃圾
 .DS_Store

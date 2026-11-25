@@ -223,7 +223,7 @@ try {
   const oldPid = (await get("/api/host/status")).body.brain.pid;
   await brainGet("/pause-ack?on=1", oldPid);
   await brainGet("/spawn?sessionId=s3", oldPid);
-  // 换脑前挂着一张问卷：换完之后新脑必须还能把它交还出来（D385）。
+  // 换脑前挂着一张问卷：换完之后新脑必须还能把它交还出来（D407）。
   await brainGet("/spawn?sessionId=s4&ask=1", oldPid);
   await until(async () => (readBrain(oldPid)?.lines ?? 0) >= 4, "s4 的问卷行进了壳");
   await until(async () => readBrain(oldPid)?.lines >= 3, "s3 的 tick 攒起来");
@@ -288,7 +288,7 @@ try {
     return s?.echos?.some((line) => line.includes("after-swap")) ? s : null;
   }, "换脑后的写入往返");
 
-  // 9. 账本：用量落到 state 目录，换代之后还在（D385）。
+  // 9. 账本：用量落到 state 目录，换代之后还在（D407）。
   await brainGet("/usage?sessionId=s1&total=321", nextBrain.pid);
   const ledgerFile = path.join(TMP, "state", "host", "usage.jsonl");
   await until(async () => {

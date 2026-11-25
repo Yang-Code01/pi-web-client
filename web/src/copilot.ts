@@ -47,6 +47,35 @@ export interface CopilotReconcile {
   localDelta: number;
 }
 
+/**
+ * `copilot` 帧里页面真正认的那几个字段。宽进：字段可能缺（旧 bridge / 新字段），缺了就当没有。
+ * 比 `CopilotView` 松，是因为帧只是「可选地带上这些」的传输形状，不是一份完整视图。
+ */
+export interface CopilotFrameLike {
+  hasCopilot?: unknown;
+  credits?: unknown;
+  requests?: unknown;
+  lastAt?: unknown;
+  otherCost?: unknown;
+  account?: unknown;
+  reconcile?: unknown;
+}
+
+/** bridge 的 `copilot` 帧 → 前端类型；字段不全就当没有（旧 bridge 不发这个帧）。 */
+export function copilotFromFrame(msg: CopilotFrameLike): CopilotView | null {
+  if (msg.hasCopilot !== true) return null;
+  const account = msg.account && typeof msg.account === "object" ? (msg.account as CopilotView["account"]) : null;
+  return {
+    hasCopilot: true,
+    credits: typeof msg.credits === "number" ? msg.credits : null,
+    requests: typeof msg.requests === "number" ? msg.requests : 0,
+    lastAt: typeof msg.lastAt === "string" ? msg.lastAt : null,
+    otherCost: typeof msg.otherCost === "number" ? msg.otherCost : 0,
+    account,
+    reconcile: msg.reconcile && typeof msg.reconcile === "object" ? (msg.reconcile as CopilotView["reconcile"]) : null,
+  };
+}
+
 export const EMPTY_COPILOT: CopilotView = { hasCopilot: false, credits: null, requests: 0, lastAt: null, estimated: true, otherCost: 0, account: null, reconcile: null };
 
 /** 1 积分 = $0.01 —— 对账、副标题换算都用它。 */

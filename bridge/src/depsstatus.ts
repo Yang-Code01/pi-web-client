@@ -6,7 +6,7 @@
  * 负责把结果说清楚（并留一个“没跑过 / 跑失败了”的状态给横幅）。
  */
 import path from "node:path";
-import { bootstrapCommand, depStatus, foundPackages, missingCount, MIN_PI_VERSION, OPTIONAL_PACKAGES, piTooOld, type DepStatus, type ListedPackage } from "./deps.ts";
+import { bootstrapCommand, depStatus, foundPackages, missingCount, MIN_PI_VERSION, OPTIONAL_PACKAGES, pendingCount, piTooOld, type DepStatus, type ListedPackage } from "./deps.ts";
 import { readJson, statePath } from "./paths.ts";
 import { parsePackages, runPiCli } from "./picli.ts";
 
@@ -28,7 +28,9 @@ export interface DepsReport {
   /** 可选包：没装不拦人，界面自己决定要不要灰掉。 */
   optional: { name: string; id: string; installed: boolean }[];
   missing: number;
-  /** pi 够新且三个都在。 */
+  /** 下次整备要动的个数：缺的 + 低于下限的（D393）。 */
+  pending: number;
+  /** pi 够新，且没有缺的也没有低于下限的。 */
   ready: boolean;
   /** 上次 `npm install` 的结果；null = 这个仓库的 postinstall 还没在这台机器上跑过。 */
   bootstrap: BootstrapRun | null;
@@ -47,6 +49,7 @@ export async function depsReport(cliPath: string, piVersion: string): Promise<De
   const found = foundPackages(rows, readPackageJson);
   const packages = depStatus(found);
   const missing = missingCount(packages);
+  const pending = pendingCount(packages);
   const piOk = !piTooOld(piVersion);
   return {
     pi: { version: piVersion, min: MIN_PI_VERSION, ok: piOk },
@@ -56,7 +59,8 @@ export async function depsReport(cliPath: string, piVersion: string): Promise<De
       installed: found.some((f) => f.name.toLowerCase() === pkg.name.toLowerCase()),
     })),
     missing,
-    ready: piOk && missing === 0,
+    pending,
+    ready: piOk && pending === 0,
     bootstrap: readBootstrapRun(),
     command: bootstrapCommand(),
   };

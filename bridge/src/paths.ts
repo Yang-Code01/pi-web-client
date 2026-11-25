@@ -27,8 +27,14 @@ export function stateDir(): string {
  */
 export function piChildEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
+  // pi 自己塞给**工具子进程**的标记（`PI_CODING_AGENT` / `PI_SESSION_*` / `PI_MODEL` …）不能漏给
+  // 我们再 spawn 出去的 pi：那会让孩子以为自己还在父进程那次会话里（本机实测：从 pi 里起的
+  // bridge，评审子进程一句话都不输出、退 0）。桥的 PI_WEB_* 同理。
+  const NESTED = /^PI_(CODING_AGENT$|CODING_AGENT_|SESSION_ID$|SESSION_FILE$|MODEL$|PROVIDER$|REASONING_LEVEL$|SDK_)/;
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !key.startsWith("PI_WEB_")) env[key] = value;
+    if (value === undefined) continue;
+    if (key.startsWith("PI_WEB_") || NESTED.test(key)) continue;
+    env[key] = value;
   }
   // wb2api 网关跑在 127.0.0.1:7863。外部代理（HTTP_PROXY/HTTPS_PROXY）常把 loopback
   // 请求也一起截走：代理一挂，翻译子进程就报 "Connection error."，页面只看到日文原文。

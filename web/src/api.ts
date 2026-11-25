@@ -4,6 +4,7 @@ import type { MailAccountInput, MailAccountView, MailConfigView, MailDetailView,
 import type { AttendanceCancelResult, AttendanceLeave, AttendanceReminder, AttendanceReminderRule, AttendanceOvertime, AttendanceRecords, AttendanceState, AttendanceSubmitResult, DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 import type { HotdeployRemoveResult, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
 import type { CtxInsightData } from "./context-insight-types.ts";
+import type { GithubStateView, PullDetailView, PullRow, PullsView } from "./github-shared.ts";
 
 /** 上传暂存区落盘后回给页面的那份文件。 */
 export type UploadedFile = { path: string; name: string; size: number };
@@ -99,17 +100,17 @@ function legacyPage(raw: { path: string; parent: string | null; dirs: string[]; 
 /** 缺了少哪块功能的 id：和 `bridge/src/deps.ts` 的 `PackageId` 同一组值（前端不 import 桥的源码，所以抄一份）。 */
 export type DepPackageId = "subagents" | "questionnaire" | "todo" | "web-access";
 
-/** 一个“本项目需要”的 pi 包：来源、钉住的版本、缺了少哪块功能、现在装没装。 */
+/** 一个“本项目需要”的 pi 包：来源、下限版本、缺了少哪块功能、现在装没装。 */
 export interface DepPackageStatus {
   source: string;
   name: string;
-  /** 钉死的版本；null = 跟 latest。 */
+  /** 最低可接受版本；null = 不写下限。 */
   version: string | null;
   /** 缺了少哪块功能：id，文案在 app.ts 的 depsFeature() 里用 tr() 写。 */
   id: DepPackageId;
   installed: boolean;
   foundVersion: string | null;
-  /** 装了但比钉的旧：只提示，不自动升（已装就不动）。 */
+  /** 装了但低于下限：下次 npm install 会升上去（D393）。 */
   behind: boolean;
 }
 
@@ -123,13 +124,16 @@ export interface DepsBootstrap {
   pi: string | null;
 }
 
-/** `/api/deps`：pi 够不够新 + 三个扩展在不在（只读，只问本地 `pi list`）。 */
+/** `/api/deps`：pi 够不够新 + 四个扩展在不在、要不要升（只读，只问本地 `pi list`）。 */
 export interface DepsReport {
   pi: { version: string; min: string; ok: boolean };
   packages: DepPackageStatus[];
   /** 可选包（例如 billion-context）：没装不拦人，界面自己决定要不要灰掉。 */
   optional: { name: string; id: string; installed: boolean }[];
+  /** 缺的个数（只数「根本没有」的）。 */
   missing: number;
+  /** 下次 npm install 要动的个数：缺的 + 低于下限的（D393）。 */
+  pending: number;
   ready: boolean;
   bootstrap: DepsBootstrap | null;
   command: string;
@@ -137,6 +141,8 @@ export interface DepsReport {
 
 export const api = {
   me: () => req<Me>("/api/me"),
+  /** D389 提醒中心：整份清单（平时靠 WS 的 `reminders` 帧，刷新 / 重连时取一次）。 */
+  reminders: () => req<{ items: any[]; muted: string[]; settings: any; badge: number }>("/api/reminders"),
   /** 本项目需要什么（pi 版本 + 三个扩展）。只读；装是 `npm install` 的 postinstall 干的。 */
   deps: () => req<DepsReport>("/api/deps"),
   login: (passphrase: string) =>
@@ -226,8 +232,8 @@ export const api = {
   /** D235: 本地 + 远程分组的分支列表，给切换、合并和对照检索用。 */
   gitRefs: (dir: string) => postJson<GitRefs>("/api/git/refs", { dir }),
   /** D235: 当前分支 vs 对照 / 单条提交 vs 父提交的并排富视图。 */
-  gitDiff: (dir: string, base = "", target = "HEAD", commit = "") =>
-    postJson<GitDiff>("/api/git/diff", { dir, base, target, commit }),
+  gitDiff: (dir: string, base = "", target = "HEAD", commit = "", worktree = false) =>
+    postJson<GitDiff>("/api/git/diff", { dir, base, target, commit, worktree }),
   /**
    * D289: 历史里点一行 → 这条提交的详情。桥端只读元信息 + `--numstat` 文件名，
    * **不读 blob**，所以比 `gitDiff(commit)` 便宜得多；单个文件的并排差异再点着拉 `gitCommitFile`。
@@ -376,9 +382,14 @@ export const api = {
     }),
   /** 预览里的翻译对照：翻一份、缓存在桥的状态目录、可改译文、可把改动写回原文。 */
   trDoc: (sessionId: string, path: string, lang: string) => postJson<TrDocResp>("/api/translate/doc", { sessionId, path, lang }),
-  /** 本机偏好：不传 `model` 只读，传了就写。 */
-  trPrefs: (model?: string) => postJson<TrPrefsResp>("/api/translate/prefs", model === undefined ? {} : { model }),
-  trStart: (sessionId: string, body: { path: string; lang: string; provider: string; model: string; force?: boolean }) =>
+  /** 本机偏好：不传 `model` / `concurrency` 只读，传了就写。 */
+  trPrefs: (model?: string, concurrency?: number) =>
+    postJson<TrPrefsResp>("/api/translate/prefs", {
+      ...(model === undefined ? {} : { model }),
+      ...(concurrency === undefined ? {} : { concurrency }),
+    }),
+  /** `at`：页面视口在整篇的 0–1 位置，桥拿它决定先翻哪一节（D392 修订）。 */
+  trStart: (sessionId: string, body: { path: string; lang: string; provider: string; model: string; force?: boolean; at?: number }) =>
     postJson<{ job: TrJob }>("/api/translate/start", { sessionId, ...body }),
   trJob: (id: string) => req<{ job: TrJob }>(`/api/translate/job?id=${encodeURIComponent(id)}`),
   trCancel: (id: string) => postJson<{ ok: boolean }>("/api/translate/cancel", { id }),
@@ -579,4 +590,37 @@ export const api = {
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),
+};
+
+/**
+ * GitHub 通道（`bridge/src/github.ts`）。面板与链接卡共用这一组，不在两处各拼一串 URL。
+ * 账号与凭据只在桥那边：这里只能看到登录名与「PAT 存好了」。
+ */
+export const githubApi = {
+  state: (sessionId: string, cwd: string) =>
+    req<GithubStateView>(`/api/github/state?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}`),
+  pulls: (sessionId: string, cwd: string, repo?: string) =>
+    req<PullsView>(
+      `/api/github/pulls?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}` +
+        (repo ? `&repo=${encodeURIComponent(repo)}` : ""),
+    ),
+  /**
+   * PR 详情。`repo` 来自**链接卡**：卡片可能指向别的仓库，不传它就落到「当前会话 cwd 那个仓库」，
+   * 于是点别的仓库的卡会显示本仓同号的 PR（评审抓到的错数据）。
+   */
+  pull: (sessionId: string, cwd: string, number: number, repo?: string) =>
+    req<PullDetailView>(
+      `/api/github/pr?sessionId=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(cwd)}&number=${number}` +
+        (repo ? `&repo=${encodeURIComponent(repo)}` : ""),
+    ),
+  /** 聊天里的链接卡只要一行（一次 REST，不拉文件差异）。仓库直接拿链接里的那个，不按会话算。 */
+  card: (repo: string, number: number) =>
+    req<{ ok: boolean; pull: PullRow }>(`/api/github/card?repo=${encodeURIComponent(repo)}&number=${number}`),
+  /** 会话级临时换号；`login` 给空串就回到「继承工作区」。 */
+  setAccount: (sessionId: string, login: string) => postJson<{ ok: true }>("/api/github/account", { sessionId, login }),
+  /** 记成这个**工作区**的默认账号（写 `<cwd>/.pi/settings.json`，跟着仓库走）。 */
+  setProjectAccount: (cwd: string, login: string) => postJson<{ ok: true; file: string }>("/api/github/project-account", { cwd, login }),
+  /** 存一枚 fine-grained PAT：桥先拿它问一次 `/user`，认不出是谁就不存。 */
+  putPat: (token: string) => postJson<{ ok: true; login: string; encrypted: boolean }>("/api/github/pat", { token }),
+  deletePat: (login: string) => req<{ ok: true }>(`/api/github/pat?login=${encodeURIComponent(login)}`, { method: "DELETE" }),
 };

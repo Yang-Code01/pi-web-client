@@ -65,7 +65,7 @@ export class BrainLink extends EventEmitter {
   deployState: DeployState = { phase: "idle" };
   /** 壳给的用量底账（换代之后账还在，脑拿它接上）。 */
   usageTotals: Record<string, unknown> = {};
-  /** 壳的 snapshot 里列着的会话：换脑后要接管的就是这些（D385）。 */
+  /** 壳的 snapshot 里列着的会话：换脑后要接管的就是这些（D407）。 */
   private liveIds: string[] = [];
   /** 其中哪些这一轮还在跑 —— 接管时要据此把页面的「思考中」恢复出来。 */
   private turns = new Map<string, boolean>();

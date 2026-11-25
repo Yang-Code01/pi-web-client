@@ -18,7 +18,7 @@ if (!fs.existsSync(entry)) {
   process.exit(1);
 }
 
-const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], { cwd: root, stdio: "inherit" });
+const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], { cwd: root, stdio: "inherit", windowsHide: true });
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
     try {

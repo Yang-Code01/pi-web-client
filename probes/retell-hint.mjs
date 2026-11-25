@@ -146,6 +146,10 @@ try {
   assert(barAt >= 0, `composer 里找不到 .retell-bar：${JSON.stringify(order)}`);
   assert(order[barAt + 1] === "row", `.retell-bar 不在输入行上面：${JSON.stringify(order.slice(barAt))}`);
 
+  // 1b. 说明句已经搬进设置：输入框上方只剩引导语和药丸，没有那截 11px 灰字。
+  assert((await page.locator(".composer .retell-sub").count()) === 0, "输入框上方不该再有 .retell-sub");
+  assert((await page.locator(".composer .retell-bar > *").count()) === 2, "重讲那一行应该只剩引导语和药丸");
+
   // 2. 有回答 → 亮，标题说清楚点下去会发生什么。
   const bar = page.locator(".composer .retell-bar");
   const btn = page.locator(".composer .retell-btn");
@@ -191,6 +195,9 @@ try {
   await until(async () => await page.locator(".composer .retell-bar").isVisible(), 5000, "bar back on answered session");
   await page.locator(".icon-btn.set-btn").click();
   await page.locator(".st-nav__item", { hasText: "对话" }).first().click();
+  const chatHint = await page.locator('.set-sub[data-sec="chat"] .settings-hint').first().innerText();
+  assert(chatHint.includes("先提供上下文，再用简体技术中文说明"), `设置说明应以原句打头：${JSON.stringify(chatHint)}`);
+  assert(chatHint.includes("关掉后输入框上面那一行不再出现"), `设置说明该讲关掉后会怎样：${JSON.stringify(chatHint)}`);
   const hintBox = () => page.evaluate(() => document.querySelector('.set-sub[data-sec="chat"] input[type="checkbox"]')?.click());
   await hintBox();
   await until(async () => !(await page.locator(".composer .retell-bar").isVisible()), 3000, "switch hides bar");
@@ -225,7 +232,7 @@ try {
   assert(prompts[1].text.includes("Simplified Technical English"), `英文指令不对：${JSON.stringify(prompts[1].text)}`);
   await page.screenshot({ path: path.join(OUT, "4-en.png"), clip: await page.locator(".composer").boundingBox() });
 
-  log("ok — 位置 / 三态 / 空会话不出 / 开关生效 / 发送内容 / 草稿保留 / 双击只发一句 / 英文文案都对");
+  log("ok — 位置 / 上方无灰字 / 设置说明带原句 / 三态 / 空会话不出 / 开关生效 / 发送内容 / 草稿保留 / 双击只发一句 / 英文文案都对");
 } finally {
   await browser?.close();
   wss.close();

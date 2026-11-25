@@ -286,7 +286,7 @@ const out = await page.evaluate(async () => {
   q('.nc-row[data-id="n9"]').click();
   const linkBtn = qa(".nc-actions .btn").find((b) => b.textContent.startsWith("内网通连动"));
   linkBtn.click();
-  await waitFor(() => qa(".note-peer-menu button").length === 2 && qa(".note-peer-menu button")[0].textContent.includes("发送给好友"));
+  await waitFor(() => qa(".note-peer-menu button").length === 1 && qa(".note-peer-menu button")[0].textContent.includes("提交给好友"));
   result.peerMenu = qa(".note-peer-menu .handoff-label").map((s) => s.textContent);
 
   const pick = async (name) => {
@@ -297,15 +297,6 @@ const out = await page.evaluate(async () => {
   await waitFor(() => qa(".peer-pick-row").length);
   result.pickRows = qa(".peer-pick-row").map((r) => ({ name: r.querySelector(".pp-name")?.textContent, off: r.disabled }));
   result.pickHasMe = qa(".peer-pick-row .pp-name").some((s) => s.textContent === "我自己");
-  await pick("小李");
-  await waitFor(() => calls.some((c) => c.url === "/api/peer/send") && (q(".notes-hint")?.textContent ?? "").includes("已发送"));
-  const sendCall = calls.find((c) => c.url === "/api/peer/send");
-  result.peerSend = { text: sendCall?.body?.text, toast: q(".notes-hint")?.textContent };
-  result.peerLast = localStorage.getItem("notes.peerLast");
-
-  linkBtn.click();
-  await waitFor(() => qa(".note-peer-menu button").length === 2 && qa(".note-peer-menu button")[0].textContent.includes("发送给好友"));
-  qa(".note-peer-menu button")[1].click();
   await pick("小李");
   await waitFor(() => q(".peer-confirm"));
   result.confirm = qa(".peer-confirm .pc-row").map((r) => r.textContent);
@@ -319,11 +310,20 @@ const out = await page.evaluate(async () => {
     files: fileCalls.length,
     path: fileCalls[0]?.body?.path,
   };
+  result.peerLast = localStorage.getItem("notes.peerLast");
 
   q(".notes-head-new").click();
   qa(".nc-actions .btn").find((b) => b.textContent.startsWith("内网通连动")).click();
-  await waitFor(() => qa(".note-peer-menu button").length === 2 && qa(".note-peer-menu button")[0].textContent.includes("发送给好友"));
-  result.peerBlank = qa(".note-peer-menu button").map((b) => b.disabled);
+  await waitFor(() => qa(".note-peer-menu button").length === 1 && qa(".note-peer-menu button")[0].textContent.includes("提交给好友"));
+  result.peerBlank = { off: qa(".note-peer-menu button").map((b) => b.disabled), hint: q(".note-peer-menu .handoff-hint")?.textContent };
+
+  // #663 体积护栏：正文 70_000 个汉字 ≈ 210 KB，超过 note 帧的 200 KB 正文上限 → 置灰并写数值。
+  peerFeed.push(note({ id: "n10", title: "超长这条", body: `<p>${"字".repeat(70_000)}</p>` }));
+  sheet4.setNotes(peerFeed);
+  q('.nc-row[data-id="n10"]').click();
+  qa(".nc-actions .btn").find((b) => b.textContent.startsWith("内网通连动")).click();
+  await waitFor(() => qa(".note-peer-menu button").length === 1 && qa(".note-peer-menu button")[0].textContent.includes("提交给好友"));
+  result.peerBig = { off: qa(".note-peer-menu button").map((b) => b.disabled), hint: q(".note-peer-menu .handoff-hint")?.textContent };
   sheet4.close();
   return result;
 });
@@ -393,17 +393,16 @@ assert.equal(out.memoryReopen.archivedOn, true, "重开仍在归档分区");
 assert.equal(out.memoryReopen.hasSel, false, "归档里不会凭空选中一条");
 assert.equal(out.memoryReopen.emptyTitle, "归档里的记录不能直接改。", "归档空态照旧");
 assert.equal(out.closed, true, "close() 把面板从 DOM 摘掉");
-assert.deepEqual(out.peerMenu, ["发送给好友", "提交给好友"], "连动菜单两项");
+assert.deepEqual(out.peerMenu, ["提交给好友"], "连动菜单只剩提交这一项（发送已由 D399 撤掉）");
 assert.deepEqual(out.pickRows, [{ name: "小李", off: false }, { name: "老王", off: true }], "选人：在线在前、离线置灰");
 assert.equal(out.pickHasMe, false, "选人排除自己");
-assert.equal(out.peerSend?.text, "连动这条\n\n**粗** 与 `码`", "发送给好友发的是标题 + Markdown 正文");
-assert.equal(out.peerSend?.toast, "已发送给 小李", "发完给回执");
 assert.equal(out.peerLast, "f1", "记住上次发给谁");
 assert.ok(out.confirm?.some((row) => row.includes("连动这条")), `确认页有标题，实际 ${JSON.stringify(out.confirm)}`);
 assert.ok(out.confirm?.some((row) => row.includes("小李 · pc-li")), "确认页有收件人");
 assert.ok(out.confirm?.some((row) => row.includes("截图") && row.includes("1 张")), "确认页有截图张数");
 assert.deepEqual(out.noteSent, { title: "连动这条", shots: 1, files: 1, path: "/tmp/a.png" }, "提交：note 帧带清单，截图逐张走 sendfile");
-assert.deepEqual(out.peerBlank, [true, true], "空记录两项都禁用");
+assert.deepEqual(out.peerBlank, { off: [true], hint: "先写点东西" }, "空记录：唯一那项置灰并说先把东西写上");
+assert.deepEqual(out.peerBig, { off: [true], hint: "正文 211 KB，上限 200 KB" }, "正文超 200 KB：置灰并写出实际体积（#663）");
 assert.deepEqual(errors, [], `不该有控制台错误：${errors.join(" | ")}`);
 
 console.log("ok notes-sheet-browser: 三栏 / 列表 / 编辑器 / 保存 / 状态 / 折叠 / 搜索");

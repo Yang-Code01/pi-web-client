@@ -2,7 +2,7 @@
 
 The bridge is the process behind `http://127.0.0.1:7864` — it serves `web/dist`, speaks WS, and spawns one `pi --mode rpc` child per session. A human usually starts it by hand in a terminal, so the pid you find is **their** process, not yours.
 
-Since #634 (D385) it is **two** processes:
+Since #634 (D407) it is **two** processes:
 
 - **壳 (shell)** — `bridge/dist/host.js`. Owns the public port, owns every session's three pipes, keeps the unacked line buffer and the usage ledger. It does not interpret the protocol; it moves bytes and forwards HTTP/WS.
 - **脑 (brain)** — `bridge/dist/index.js`, the old bridge. Listens on an internal loopback port the shell assigned, talks to the shell over a control channel (named pipe / UDS), and exits when that channel closes.

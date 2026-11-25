@@ -8,14 +8,14 @@
  *
  * 这个文件是那份清单的唯一来源：`scripts/bootstrap.mjs` 照着它装，桥按它算状态
  * （`/api/deps`，见 depsstatus.ts）。README「这个项目需要什么」那张表与 `bridge/tests/deps-unit.mjs`
- * 里的版本号是**抄自这里**的：改钉的版本时三处一起改（单测会把 README 那张表对一遍）。
+ * 里的版本号是**抄自这里**的：改下限时三处一起改（单测会把 README 那张表对一遍）。
  *
  * 纯数据 + 纯函数，**不 import 任何东西**：脚本要在还没编译过的仓库里 import 它（Node ≥ 22.18
  * 默认就能直接 import `.ts`，只剥类型），编译产物也直接带着它。
  */
 
-/** pi 的最低版本：1.4 起 MCP 是内置扩展，但网页用到的部分按 1.5 验过。 */
-export const MIN_PI_VERSION = "1.5.0";
+/** pi 的最低版本：钉的 `pi-subagents` 是跟 1.6 同期的，1.5 那组组合没验过（D393）。 */
+export const MIN_PI_VERSION = "1.6.0";
 
 /**
  * 缺了会少哪块功能。**这里是 id，不是文案**：中文只在 `web/src` 里用 `tr()` 写，
@@ -28,17 +28,17 @@ export interface RequiredPackage {
   source: string;
   /** npm 包名，用来跟 `pi list` 的行配对（`@scope/name` 形式）。 */
   name: string;
-  /** 钉死的版本；`null` = 不写版本，跟着 latest。 */
+  /** 最低可接受版本；`null` = 不写下限，跟着 latest。低于它就升到它，高了不动（不降级）。 */
   version: string | null;
   /** 缺了少哪块功能（页面按 id 翻文案）。 */
   id: PackageId;
 }
 
 export const REQUIRED_PACKAGES: RequiredPackage[] = [
-  // 钉住：网页直接读它的会话目录（%TEMP%\pi-subagents-*）与 async JSON 事件，
-  // 目录布局变了就静默读不到。
-  { source: "npm:pi-subagents", name: "pi-subagents", version: "0.86.0", id: "subagents" },
-  // 钉住：网页按它的 rpc-fallback 逐题对话框回填答案（bridge/src/questionnaire.ts），
+  // 下限：网页直接读它的会话目录（%TEMP%\pi-subagents-*）与 async JSON 事件，
+  // 目录布局变了就静默读不到。换这个数时重取 tests/fixtures/pi-subagents-* 的真样本（D393）。
+  { source: "npm:pi-subagents", name: "pi-subagents", version: "0.90.0", id: "subagents" },
+  // 下限：网页按它的 rpc-fallback 逐题对话框回填答案（bridge/src/questionnaire.ts），
   // 对话框格式变了就对不上。
   {
     source: "npm:@juicesharp/rpiv-ask-user-question",
@@ -46,16 +46,16 @@ export const REQUIRED_PACKAGES: RequiredPackage[] = [
     version: "2.15.0",
     id: "questionnaire",
   },
-  // 钉住：执行面板读取它持久化的 `todo` 快照（D223）。
+  // 下限：执行面板读取它持久化的 `todo` 快照（D223）。
   { source: "npm:@juicesharp/rpiv-todo", name: "@juicesharp/rpiv-todo", version: "2.15.0", id: "todo" },
-  // 不钉：只用它的工具，不解析它的输出格式。
+  // 不写下限：只用它的工具，不解析它的输出格式。
   { source: "npm:pi-web-access", name: "pi-web-access", version: null, id: "web-access" },
 ];
 
 /** 可选、但少了就会缺一整块界面的包：不装、不拦人，只把界面灰掉并说原因。 */
 export const OPTIONAL_PACKAGES: { name: string; id: "acp" }[] = [{ name: "billion-context", id: "acp" }];
 
-/** `pi install` 的参数：钉了版本就是 `npm:foo@1.2.3`，否则原样。 */
+/** `pi install` 的参数：写了下限就是 `npm:foo@1.2.3`，否则原样。 */
 export function installSource(pkg: RequiredPackage): string {
   return pkg.version ? `${pkg.source}@${pkg.version}` : pkg.source;
 }
@@ -112,7 +112,7 @@ export interface DepStatus extends RequiredPackage {
   installed: boolean;
   /** 装着的版本（读它自己的 package.json）；装了但读不出就是 null。 */
   foundVersion: string | null;
-  /** 装了，但比钉住的旧 —— 只用于提示“格式可能对不上”，**不**触发升级（已装就不动）。 */
+  /** 装了，但**低于下限** —— 下次整备会把它升到下限那一版（D393）。 */
   behind: boolean;
 }
 
@@ -171,9 +171,27 @@ export function depStatus(found: { source: string; name: string; version: string
   });
 }
 
-/** 还差几个（页面徽标与“整备没整备好”都看这个）。 */
+/** 还差几个（页面徽标看这个：它只数「根本没有」的）。 */
 export function missingCount(statuses: DepStatus[]): number {
   return statuses.filter((s) => !s.installed).length;
+}
+
+/** 下次整备要动几个（缺的 + 低于下限的）——「备齐了没有」看这个。 */
+export function pendingCount(statuses: DepStatus[]): number {
+  return statuses.filter((s) => depAction(s) !== "keep").length;
+}
+
+/** 这一条现在该做什么：没装 → 装；低于下限 → 升；其余（含比下限新）→ 不动。 */
+export type DepAction = "install" | "upgrade" | "keep";
+
+/**
+ * 一个包该不该动 —— 脚本（`npm install` 与启动关卡）与页面共用的**唯一判据**。
+ * 比下限新的一律 `keep`：不降级，页面上也不提“你太新了”。读不出版本号的同样不动，
+ * 宁可让一个坏掉的 package.json 留在原地，也不要为它重装一次。
+ */
+export function depAction(status: DepStatus): DepAction {
+  if (!status.installed) return "install";
+  return status.behind ? "upgrade" : "keep";
 }
 
 /** 给用户复制的那条命令：在仓库根目录跑，它把清单里缺的都补上。 */

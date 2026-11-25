@@ -14,6 +14,7 @@
  */
 import { tr } from "./i18n/index.ts";
 import { createEl as el } from "./chat.ts";
+import { markSurface } from "./modal.ts";
 
 export type MarketTab = "discover" | "favorites" | "installed" | "blocked" | "advanced";
 export type MarketSort = "downloads" | "published" | "name";
@@ -411,7 +412,7 @@ function moreMenu(pkg: MarketPackage, state: MarketViewState, actions: MarketAct
   const details = el("details", "mk-more") as HTMLDetailsElement;
   const summary = el("summary", "", "···");
   summary.title = tr("更多");
-  const menu = el("div", "mk-menu");
+  const menu = markSurface(el("div", "mk-menu"), "menu");
   const blocked = state.blocked.has(pkg.name);
   const blockBtn = el("button", "", blocked ? tr("取消屏蔽") : tr("屏蔽")) as HTMLButtonElement;
   blockBtn.type = "button";

@@ -150,9 +150,12 @@ function walk(file, out) {
           out.keys.add(text);
         } else if (!inLogicCall(node)) out.bare.push({ file: path.relative(here, file), line: sf.getLineAndCharacterOfPosition(node.getStart()).line + 1, start: node.getStart(sf), end: node.getEnd(), text });
       }
-    } else if (ts.isTemplateExpression(node) && CJK.test(node.getText(sf))) {
+    } else if (ts.isTemplateExpression(node) && CJK.test(node.head.text + node.templateSpans.map((s) => s.literal.text).join(""))) {
       // 模板串：整段算一个键（占位符由 codemod 换成 {p1}…，位置对应 templateSpans 顺序）。
       // 没走 tr() 的模板串同样要报：只查普通字面量的话，`${count} 条待处理` 这种会漏掉。
+      //
+      // 只拿**字面量那几段**判中文：`${tr("还有 {n} 节")}${tail}` 这种整段里没有中文（中文都在
+      // 里面的 tr() 里），拿 node.getText() 去测会把它们当成漏翻 —— 原来就吃过两条这种误报。
       if (isTrKey(node)) {
         const key = node.head.text + node.templateSpans.map((s, i) => `{p${i + 1}}` + s.literal.text).join("");
         out.keys.add(key);

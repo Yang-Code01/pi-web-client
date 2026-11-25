@@ -1,4 +1,5 @@
 import { tr } from "./i18n/index.ts";
+import { appZoom } from "./modal.ts";
 
 /**
  * 轮次缩略图（turn rail）：对话右缘一条由短横组成的刻度带，一根短横 = 一轮用户输入。
@@ -220,15 +221,10 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
     };
   }
 
-  /**
-   * `#app` 上挂着 `zoom: var(--ui-scale)`（外观「字号」）：`getBoundingClientRect()` 量到的是**视觉**
-   * px，写进 style 的 px 却是**布局** px、渲染时还会再乘一次缩放（D123 的同一个坑，只不过这次在 TS 里）。
-   * 直角换一次，字号 125% 以上带子才不会往下漂几十像素。
-   */
-  const uiScale = (): number => {
-    const raw = Number.parseFloat(getComputedStyle(rail).getPropertyValue("--ui-scale"));
-    return Number.isFinite(raw) && raw > 0 ? raw : 1;
-  };
+  // `#app` 上挂着 `zoom: var(--ui-scale)`（外观「字号」）：`getBoundingClientRect()` 量到的是**视觉**
+  // px，写进 style 的 px 却是**布局** px、渲染时还会再乘一次缩放（D123 的同一个坑，只不过这次在 TS 里）。
+  // 换算只看 `appZoom()` 一处，字号 125% 以上带子才不会往下漂几十像素。
+  const uiScale = appZoom;
 
   /** 让带子垂直居中于正文视口（而不是连输入框一起算的整个对话栏）。 */
   const frame = (): void => {

@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { VERSION, readJsonChecked, statePath, writeJson } from "./paths.ts";
+import { parseSelfLog, repoFromRemote, type SelfLog } from "./changelog.ts";
 
 /**
  * D195：设置页「本项目更新日志」，和 pi 包里那个 CHANGELOG.md 不是一回事。
@@ -26,6 +27,10 @@ export interface SelfChangelog {
   root: string;
   /** `CHANGELOG.md` 原文；没有这个文件时是空串。 */
   text: string;
+  /** 同一份正文的结构化版本（设置页与启动弹窗都按它渲染）。 */
+  log: SelfLog;
+  /** PR 链接要的 owner/name；不是 GitHub 检出或读不到远程时是 null。 */
+  repo: { owner: string; name: string } | null;
 }
 
 const run = promisify(execFile);
@@ -81,7 +86,30 @@ function changelogText(maxBytes = 200_000): string {
 export async function selfChangelog(maxBytes = 200_000): Promise<SelfChangelog> {
   const text = changelogText(maxBytes);
   const { branch, commit } = await readHead();
-  return { version: productVersion(), branch, commit, root: ROOT, text };
+  return { version: productVersion(), branch, commit, root: ROOT, text, log: parseSelfLog(text), repo: await readRepo() };
+}
+
+/**
+ * 仓库的 owner/name：`#671` 那种 chip 要拿它拼 PR 地址。只读一次（远程地址不会在运行中变），
+ * 读不到就一直是 null —— 页面那边退化成纯文本，不影响别的功能。
+ */
+let repoCache: { at: number; value: { owner: string; name: string } | null } | null = null;
+
+async function readRepo(): Promise<{ owner: string; name: string } | null> {
+  if (repoCache && Date.now() - repoCache.at < 60_000) return repoCache.value;
+  let value: { owner: string; name: string } | null = null;
+  try {
+    const out = await run("git", ["-C", ROOT, "remote", "get-url", "origin"], {
+      timeout: 3000,
+      windowsHide: true,
+      encoding: "utf8",
+    });
+    value = repoFromRemote(String(out.stdout));
+  } catch {
+    value = null;
+  }
+  repoCache = { at: Date.now(), value };
+  return value;
 }
 
 // ---------------------------------------------------------------- 启动时的「本项目更新日志」弹窗（#588 D358）
@@ -204,21 +232,33 @@ export function whatsnewStatus(): { seenTitle: string; enabled: boolean } {
 }
 
 /**
+ * 派发出去的不只是判定：
+ * - `root`：正文里的相对链接（`docs/DECISIONS.md`）按它解析；
+ * - `log`：让弹窗用与设置页同一套条目渲染（引用 chip、引言块），`batch.title` 仍然是它认的那一个。
+ */
+export interface WhatsnewPayload {
+  root?: string;
+  log?: SelfLog;
+  repo?: { owner: string; name: string } | null;
+}
+
+/**
  * 页面来「领取」未读：同一个进程只发一次（多标签 / 多设备不重复弹），领到就记在内存里等
  * `markWhatsnewSeen` 落盘。**领走不等于看过** —— 只有页面真把 dialog 打开了才 POST `seen`；
  * 页面超时放弃、或这次进程重启，状态没动，下次还有机会。
  */
-export function takeWhatsnew(
+export async function takeWhatsnew(
   now = Date.now(),
   /** 这份状态目录在本次启动**之前**就存在吗？不在就是第一次装，不弹（见 index.ts 的调用处）。 */
   veteran = true,
-): (WhatsnewDecision & { root?: string }) | { status: "taken" } {
+): Promise<(WhatsnewDecision & WhatsnewPayload) | { status: "taken" }> {
   if (!veteran) return { status: "none" };
   if (!claimExpired(claimed?.at ?? null, now)) return { status: "taken" };
   const decision = whatsnewDecision({ text: changelogText(), state: readWhatsnewState(), now });
   if (decision.status === "ok") claimed = { title: decision.batch.title, at: now };
   // `root` 只为正文里的相对链接（`docs/DECISIONS.md`）能落到这份检出上，和设置页同一个用法（D195）。
-  return { ...decision, root: ROOT };
+  // `log` 让弹窗用与设置页同一套条目渲染（引用 chip、引言块），标题仍然是它认的那一个。
+  return { ...decision, root: ROOT, log: parseSelfLog(changelogText()), repo: await readRepo() };
 }
 
 /** 弹窗真的打开了：把「看到哪一批」与「上次弹出时刻」一起写盘。 */

@@ -1,7 +1,7 @@
 /**
  * 壳（host）：公网口的唯一持有者，也是所有 pi 子进程的父进程。
  *
- * 为什么要有这一层（D385）：热部署过去是「杀掉整个桥 → 起新桥」，于是 pi 子进程跟着死，
+ * 为什么要有这一层（D407）：热部署过去是「杀掉整个桥 → 起新桥」，于是 pi 子进程跟着死，
  * 正在跑的那一轮就断了。壳把「端口 + 管道」从会换代的代码里拿出来，换代只换脑（index.js），
  * 管道和 pid 不动，页面重连后接着看那一轮。
  *
@@ -148,7 +148,7 @@ async function main(): Promise<void> {
   }
 
   const broker = new Broker();
-  // 用量账本：跨换代、跨整组重启都活着（D385）。开壳时把上次的账读回来。
+  // 用量账本：跨换代、跨整组重启都活着（D407）。开壳时把上次的账读回来。
   const ledger = new UsageLedger(statePath("host", "usage.jsonl"));
   if (ledger.size) log(`账本里已有 ${ledger.size} 个会话的用量`);
   /** 每个会话还没被回答的 extension_ui_request（问卷 / 审批）：换脑时页面上的表单不能凭空消失。 */
@@ -165,7 +165,7 @@ async function main(): Promise<void> {
   let hostBuildId = selfFingerprint();
   /**
    * 磁盘上的壳代码已经和正在跑的这份不一样了？面板要在用户点下去之前就说「这一次会连会话
-   * 一起重启」（D385 story 23）—— 等到构建完才发现就晚了。指纹读文件，5 秒缓存。
+   * 一起重启」（D407 story 23）—— 等到构建完才发现就晚了。指纹读文件，5 秒缓存。
    */
   let staleAt = 0;
   let stale = false;
@@ -233,10 +233,10 @@ async function main(): Promise<void> {
       if (line.includes('"agent_start"')) turns.set(sessionId, true);
       else if (line.includes('"agent_end"')) {
         turns.set(sessionId, false);
-        // 一轮结束了：重放窗口留着只会把上一轮的行倒给下一代脑（D385「turn 结束即丢弃」）。
+        // 一轮结束了：重放窗口留着只会把上一轮的行倒给下一代脑（D407「turn 结束即丢弃」）。
         broker.endTurn(sessionId);
       }
-      // 还没答的问卷 / 审批留在壳里：换脑后由新脑重放，否则页面那张表单就哑了（D385）。
+      // 还没答的问卷 / 审批留在壳里：换脑后由新脑重放，否则页面那张表单就哑了（D407）。
       if (line.includes('"extension_ui_request"')) rememberUi(sessionId, line);
       const target = brain && brain.sessions.has(sessionId) ? brain : null;
       // 没有脑（或新脑还不认识这个会话）时，行留在 broker 的未确认窗口里：
@@ -478,7 +478,7 @@ async function main(): Promise<void> {
           log(`脑 ${b.pid} 就绪`);
           proxy.release();
           // 壳崩后重拉的那代脑是「首个」，但它接手的不是空壳：子进程还在跑、行还在窗口里。
-          // 必须叫它 adopt，否则页面退回只读、running 报 0，会话就成了没人解释的孤儿（D385）。
+          // 必须叫它 adopt，否则页面退回只读、running 报 0，会话就成了没人解释的孤儿（D407）。
           if (!b.askedAdopt && broker.sessions().length) {
             b.askedAdopt = true;
             log(`叫脑 ${b.pid} 接管 ${broker.sessions().length} 个还活着的会话`);
@@ -505,7 +505,7 @@ async function main(): Promise<void> {
           env: msg.env && typeof msg.env === "object" ? (msg.env as Record<string, string>) : {},
         };
         try {
-          const pid = children.spawn(spec);
+          const pid = children.start(spec);
           b.sessions.add(spec.sessionId);
           broker.setOwner(spec.sessionId, b.id);
           b.conn.send({ t: "spawned", rid: msg.rid, pid });
@@ -743,6 +743,7 @@ async function main(): Promise<void> {
       cwd: root,
       env: { ...process.env, PI_WEB_PORT: String(port), PI_HOST_LINK: sock },
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     const relay = (chunk: Buffer): void => {
       const text = chunk.toString("utf8");
@@ -798,6 +799,7 @@ async function main(): Promise<void> {
       cwd: process.cwd(),
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     child.stdout.on("data", (c: Buffer) => process.stdout.write(c));
     child.stderr.on("data", (c: Buffer) => process.stderr.write(c));
@@ -908,7 +910,7 @@ async function main(): Promise<void> {
   setInterval(() => {
     if (brain?.ready) lastBrainSeen = Date.now();
     if (shuttingDown) return;
-    // 壳自己的代码变了要尽快让面板知道（点击前红字预告，D385 story 23）。
+    // 壳自己的代码变了要尽快让面板知道（点击前红字预告，D407 story 23）。
     const stale = hostStale();
     if (stale !== lastStale) {
       lastStale = stale;

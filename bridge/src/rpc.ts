@@ -194,7 +194,7 @@ export class RpcChild extends EventEmitter {
           return;
         }
         if (got.lastStderr) this.emit("log", `attach: 最近的 stderr：\n${got.lastStderr.slice(-800)}`);
-        // 换脑前还挂着的问卷 / 审批：当它刚发过来一样重放 —— 页面那张表单接着能答（D385）。
+        // 换脑前还挂着的问卷 / 审批：当它刚发过来一样重放 —— 页面那张表单接着能答（D407）。
         // 不重放的话，用户眼前是一张永远交不出去的问卷，pi 那边还在等这个 id 的回答。
         for (const line of got.pendingUi ?? []) {
           if (!this._alive) return;

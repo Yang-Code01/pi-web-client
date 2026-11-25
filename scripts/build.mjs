@@ -39,8 +39,8 @@ function npm(args, env) {
   // 整条命令当一个字符串传，避免 DEP0190 的「args 不转义」。
   const win = process.platform === "win32";
   const r = win
-    ? spawnSync(`npm ${args.join(" ")}`, { cwd: root, stdio: "inherit", env, shell: true })
-    : spawnSync("npm", args, { cwd: root, stdio: "inherit", env });
+    ? spawnSync(`npm ${args.join(" ")}`, { cwd: root, stdio: "inherit", env, shell: true, windowsHide: true })
+    : spawnSync("npm", args, { cwd: root, stdio: "inherit", env, windowsHide: true });
   if (r.error) {
     console.error(r.error.message);
     return 1;
@@ -50,7 +50,7 @@ function npm(args, env) {
 
 function shortSha() {
   try {
-    return execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
+    return execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], { encoding: "utf8", windowsHide: true }).trim();
   } catch {
     return "nogit";
   }

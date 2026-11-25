@@ -30,6 +30,7 @@ import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
 import { SessionManager, contextLogDir, isPermissionMode, type AskAnswer, type AskQuestion, type RuntimeStats } from "./sessions.ts";
+import { FRAMES_CAP, type ClientFrameType } from "./frames.ts";
 import { collectContextInsight } from "./context-insight.ts";
 import { resolveChildSessionFile } from "./bgruns.ts";
 import { entriesToItems } from "./items.ts";
@@ -41,10 +42,11 @@ import { defaultPermission } from "./permissiondefault.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { describeStoreSkills, installSkill, installedSkills, previewSource, removeSkill, searchSkillStore } from "./skillstore.ts";
 import { Notifier } from "./notify.ts";
+import { diskReminders, type Reminder, type ReminderSettings } from "./reminders.ts";
 import { anyPresent, dropClient, reportPresence } from "./presence.ts";
 import { Tunnel, findCloudflared, type TunnelState } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
-import { APP_NAME, VERSION, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
+import { APP_NAME, VERSION, ensureStateDirs, readJson, resetScratchDir, stateDirIsDefault, statePath, sessionsRootInfo } from "./paths.ts";
 import { BUILD_ID } from "./build-id.ts";
 import { BrainLink, setBrainLink } from "./brainlink.ts";
 import { removePidFile, writePidFile } from "./pidfile.ts";
@@ -52,8 +54,25 @@ import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, st
 import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
+import { listPullRequests, pullRequestInfo } from "./gitpr.ts";
+import {
+  cancelReview,
+  cleanRuns,
+  gitRoot,
+  installOcr,
+  isMark,
+  markFinding,
+  ocrStatus,
+  readReviewState,
+  reviewProgress,
+  startReview,
+  sweepStaleRuns,
+  type ReviewLang,
+  type ReviewMode,
+} from "./review.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
-import { FileIndex } from "./fileindex.ts";
+import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
+import { RotatingLog, LogStorm, logMaxBytes, logMaxLinesPerSecond } from "./logfile.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
 import { markWhatsnewSeen, selfChangelog, setWhatsnewPopup, takeWhatsnew, whatsnewStatus } from "./whatsnew.ts";
 import { scanSubagents } from "./subagents.ts";
@@ -88,6 +107,7 @@ import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
+import { handleGithub, type GithubCtx } from "./github.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
@@ -108,7 +128,7 @@ function runningSessions(sessions: { liveRunning(): number }): number {
 }
 import { piLatest } from "./piupdate.ts";
 import { isSkillPreviewPath, isTrustedPreviewPath, kindOf, openPreview, openSkillPreview, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
-import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
+import { MAX_TRANSLATE_BYTES, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, trDefaultModel, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
 import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow, readMedia as readSheetMedia, registerFileGrant } from "./sheet/index.ts";
@@ -265,6 +285,25 @@ function serveStatic(res: http.ServerResponse, rel: string): void {
     return;
   }
   fs.createReadStream(file).pipe(res);
+}
+
+/**
+ * D389：`/api/notify` 的凭据。一个本机 token 文件（首次用到时生成、600），脚本可以
+ * `curl -H "X-Notify-Token: $(cat <state>/notify-token)"`。它只证明「你有本机文件系统权限」，
+ * 所以回环之外一律不认（路由那边还挡了隧道）。
+ */
+function notifyToken(): string {
+  const file = statePath("notify-token");
+  try {
+    const existing = fs.readFileSync(file, "utf8").trim();
+    if (existing) return existing;
+  } catch {
+    /* 还没有：生成一份 */
+  }
+  const token = randomUUID().replace(/-/g, "");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, token, { mode: 0o600 });
+  return token;
 }
 
 function readBody(req: http.IncomingMessage): Promise<any> {
@@ -543,6 +582,9 @@ async function main(): Promise<void> {
   // 随手问 (#86): nothing can be live at this point (it is created lazily), so wiping its dir is
   // unconditional — that is what makes 「桥重启 = 清空」 true, crashes included.
   resetScratchDir();
+  // #651 代码评审：盘上还写着 running 的那几次（上次桥被重启 / 被杀）永远不会再有人收尾，
+  // 开机时统一转成「已失效」，否则面板会一直转圈。
+  sweepStaleRuns();
   const cfg = loadConfig();
   const fresh = ensurePassphrase();
   const pi = resolvePi();
@@ -560,6 +602,16 @@ async function main(): Promise<void> {
   };
   const sessions = new SessionManager(pi.cli, `http://127.0.0.1:${cfg.port}`);
   const translateJobs = new TranslateJobs();
+  /**
+   * 「从哪一节先翻」（D392 修订）：页面只报一个 0–1 的滚动位置（`at`），切节是桥的事 ——
+   * 客户端不用跟着 `cutSections` 的规则走，免得两边漂移。没传/读不懂就是 undefined（按原文顺序）。
+   */
+  const startFrom = (body: any, text: string): number | undefined => {
+    const at = Number(body?.at);
+    const n = cutSections(text).length;
+    if (!Number.isFinite(at) || n <= 1) return undefined;
+    return Math.min(n - 1, Math.max(0, Math.round(at * (n - 1))));
+  };
   /** D113: one writer per shared resource (`npm` root, each settings scope, each mcp.json). */
   const writeLock = createWriteLock();
   /**
@@ -569,6 +621,14 @@ async function main(): Promise<void> {
    */
   const mcpFileLock = (local: boolean, cwd: string | null) => `mcp:${mcpFilePath(local, cwd)}`;
   const notifier = new Notifier();
+  /* D389：提醒中心。桥一重启，上一次还挂着的审批 / 问卷已经跟着 pi 子进程一起死了 —— 先把它们
+     全部转「已失效」，免得页面上一觉醒来还挂着几条永远点不动的「在等你」。 */
+  const reminders = diskReminders();
+  reminders.markStaleAll();
+  /* 提前把 `/api/notify` 的 token 落盘：脚本 / 定时任务不用等第一次调用才看见它。 */
+  notifyToken();
+  /** 清单里一条非阻塞提醒的来源标签（脚本没给就用这个）。 */
+  const reminderView = () => ({ type: "reminders", ...reminders.view() });
   const tunnelBin = findCloudflared();
   const tunnel = new Tunnel(cfg.port, tunnelBin ?? "");
 
@@ -576,15 +636,20 @@ async function main(): Promise<void> {
   // rpc.ts 起子进程时是 `{...process.env, ...opts.env}`，所以这里设一次就传下去了。
   process.env.PI_PEER_PORT = String(cfg.peerPort);
 
-  const log = (msg: string) => {
-    const line = `${new Date().toISOString()} ${msg}`;
+  /* D396：日志有上限（默认 8 MB，保留一代 `.1`），而且一秒超过 500 行就只记一条风暴摘要。
+     以前是纯 append，一份探针 / 测试桥能写到 GB 级 —— 关键是那条路是 **同步** 写，
+     1500 行/秒时桥自己先卡死。 */
+  const logFile = new RotatingLog(statePath("logs", "bridge.log"), logMaxBytes());
+  const logOut = (line: string) => {
     console.log(line);
     try {
-      fs.appendFileSync(statePath("logs", "bridge.log"), `${line}\n`);
+      logFile.write(line);
     } catch {
       /* ignore */
     }
   };
+  const logStorm = new LogStorm(logOut, logMaxLinesPerSecond());
+  const log = (msg: string) => logStorm.write(`${new Date().toISOString()} ${msg}`);
 
 
   log(`${APP_NAME} ${VERSION} — pi ${piVersion} @ ${pi.cli}`);
@@ -714,6 +779,31 @@ async function main(): Promise<void> {
       return json(res, 200, outcome);
     }
 
+    // ------------------------------------------------------------ 提醒中心的通用入口（D389）
+    // 脚本 / 定时任务 / 构建往这里塞一句「跑完了 / 失败了」。它站在 cookie 闸**前面**（cron 没有
+    // cookie），所以只认「本机回环 + state/notify-token」，公网隧道一律 403。
+    if (url.pathname === "/api/notify" && req.method === "POST") {
+      const remote = req.socket.remoteAddress ?? "";
+      const loopback = !publicReq && (remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1");
+      const token = String(req.headers["x-notify-token"] ?? "");
+      /* 两条路：登录过的页面（cookie）随便塞；脚本没有 cookie，就只认「本机回环 + token」。 */
+      const byCookie = ok && !publicReq;
+      const byToken = loopback && !!token && token === notifyToken();
+      if (!byCookie && !byToken) {
+        return fail(res, 403, "notify_denied", "要么用登录过的页面，要么从本机回环带上 X-Notify-Token（见状态目录的 notify-token）");
+      }
+      const body = (await readBody(req).catch(() => null)) as any;
+      const title = String(body?.title ?? "").trim();
+      if (!title) return fail(res, 400, "bad_title", "title 不能为空");
+      const text = String(body?.body ?? "").replace(/\s+/g, " ").slice(0, 140);
+      const source = String(body?.source ?? body?.sessionName ?? "脚本").slice(0, 40);
+      const url = typeof body?.url === "string" && body.url.startsWith("/") ? body.url.slice(0, 300) : "";
+      const id = `notice_${randomUUID().slice(0, 8)}`;
+      recordReminder("notice", id, undefined, source, text, title.slice(0, 80), url);
+      log(`notify ${source}: ${title}`);
+      return json(res, 200, { ok: true, id });
+    }
+
     // ------------------------------------------------------------ open_preview (loopback only, #224)
     // `open_preview` 工具跑在我们的子进程里，没有 cookie，所以和 /api/ask 一样站在 cookie 闸前面，
     // 只认回环对端 + 会话级 token。它的活只有一件：把「打开这个文件」交给正在看这个会话的页面。
@@ -774,6 +864,19 @@ async function main(): Promise<void> {
       }
       log(`preview.open ${sid.slice(0, 8)} → no ack (${ack.reason ?? "?"})`);
       return json(res, 200, { ok: false, reason: "no-ack", text: "页面没有回应这次打开（可能刚关掉会话或在处理别的操作）。" });
+    }
+
+    // ------------------------------------------------------------ GitHub 壳的工具口 (loopback only)
+    // `gh` 壳跑在子进程里，比页面更没有 cookie：和 /api/mail/tool、/api/preview/open 一样站在
+    // cookie 闸**前面**，只认回环对端 + 会话级令牌（`x-pi-loopback`）。这一条很关键：哪怕只是落到
+    // 闸门后面，壳的第一次调用就会拿到 `unauthorized`，于是 AI 转头去找 /usr/local/bin/gh 的真 gh ——
+    // 那整套「账号由会话决定」当场作废。
+    if (url.pathname.startsWith("/api/github/shim/") && req.method === "POST") {
+      const peer = req.socket.remoteAddress ?? "";
+      if (publicReq) return json(res, 403, { ok: false, code: "tunnel", error: "GitHub 壳的工具口只接受本机回环的请求（公网隧道进不来）。" });
+      if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, code: "non-loopback", error: "GitHub 壳的工具口只接受本机回环的请求。" });
+      const handled = await handleGithub(req, res, url, githubCtx(false));
+      if (handled) return;
     }
 
     // ------------------------------------------------------------ 邮箱工具口 (loopback only)
@@ -1370,6 +1473,11 @@ async function main(): Promise<void> {
     // #248 Jira 面板：单站点、只读、凭据不出桥。路由都在 jira.ts 里，这里只接线。
     if (await handleMail(req, res, url, { publicReq, confirm: (sid, mail) => askMailConfirm(sid, mail, wss) })) return;
     if (await handleJira(req, res, url, { publicReq })) return;
+    // GitHub 通道：账号与凭据在桥里，壳（pi 子进程的 `gh`）与页面都只跟这组路由说话。
+    if (
+      await handleGithub(req, res, url, githubCtx(publicReq))
+    )
+      return;
     // 考勤：隧道访客整页隐身（模块内 return false → 落到底部的 404）。
     if (
       await handleAttendance(req, res, url, {
@@ -1390,10 +1498,14 @@ async function main(): Promise<void> {
         pushKey: notifier.vapidPublicKey,
         pushCount: notifier.subscriptionCount(),
         notify: notifier.enabled,
+        reminders: reminders.settings(),
         sessionsRoot: sessionsRootInfo().dir,
         sessionsRootSource: sessionsRootInfo().source,
       });
     }
+
+    // D389 提醒中心：刷新 / 重连时整份取一次（平时靠 WS 的 `reminders` 帧）。
+    if (url.pathname === "/api/reminders" && req.method === "GET") return json(res, 200, reminders.view());
 
     // 设置 → 关于 → 开源许可：MIT / BSD-3 要求分发时随附的版权与许可声明。
     // 文件在仓库根（由 tools/notices.mjs 生成），不打包进 web/dist —— 以当前安装的依赖为准。
@@ -1463,6 +1575,34 @@ async function main(): Promise<void> {
       }
     }
 
+    // #651 代码评审：状态 / 标记 / 清理走 HTTP（跑本身走 WS，因为要流进度）。
+    // 与 D240 同一口径：登录后的本机 / 局域网 / 隧道访客都能用 —— 有意不设额外闸（见 D393）。
+    if (url.pathname.startsWith("/api/review/") && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const dir = String(body?.dir ?? "").trim();
+      if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空");
+      if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径");
+      try {
+        const repo = gitRoot(dir);
+        const session = String(body?.session ?? "");
+        if (url.pathname === "/api/review/state") {
+          return json(res, 200, { ok: true, state: readReviewState(repo, session), progress: reviewProgress(repo, session), ocr: await ocrStatus() });
+        }
+        if (url.pathname === "/api/review/mark") {
+          const key = String(body?.key ?? "").trim();
+          if (!key) return fail(res, 400, "key_empty", "key 不能为空");
+          const mark = String(body?.mark ?? "");
+          return json(res, 200, { ok: true, state: markFinding(repo, key, isMark(mark) ? mark : "", session) });
+        }
+        if (url.pathname === "/api/review/clean") {
+          return json(res, 200, { ok: true, state: cleanRuns(repo, session) });
+        }
+      } catch (err: any) {
+        return json(res, 200, { ok: false, code: String(err?.code ?? "failed"), error: String(err?.message ?? err).slice(0, 300) });
+      }
+      return fail(res, 404, "not_found", "没有这个接口");
+    }
+
     // 弹窗里那个「⧗ Fetch origin」。D240: 公网 / 局域网同样能发起；gitFetch 自己仍带
     // 45 秒超时与 GIT_TERMINAL_PROMPT=0 / GIT_ASKPASS=echo / credential.interactive=never 三件套。
     if (url.pathname === "/api/git/fetch" && req.method === "POST") {
@@ -1499,6 +1639,7 @@ async function main(): Promise<void> {
             String(body?.base ?? ""),
             String(body?.target ?? "HEAD"),
             String(body?.commit ?? ""),
+            body?.worktree === true,
           ));
         }
         // D289: 历史里点一行 → 提交详情小窗。两个都只读：一个给清单，一个给单文件并排内容。
@@ -1897,7 +2038,7 @@ async function main(): Promise<void> {
           size: st.size,
           job: translateJobs.active(abs, lang),
           prefs: readTrPrefs(),
-          defaultModel: TR_DEFAULT_MODEL,
+          defaultModel: trDefaultModel(),
         });
       } catch (err: any) {
         return trFail(res, err);
@@ -1908,10 +2049,16 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/translate/prefs" && (req.method === "GET" || req.method === "POST")) {
       if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
       try {
-        // GET 只读（设置页打开时看一眼）；POST 带 `model` 就写，不带就只回显。
+        // GET 只读（设置页打开时看一眼）；POST 带 `model` / `concurrency` 就写，都不带就只回显。
         const body = req.method === "POST" ? await readBody(req).catch(() => ({})) : {};
-        const prefs = typeof body.model === "string" ? writeTrPrefs({ model: body.model }) : readTrPrefs();
-        return json(res, 200, { prefs, defaultModel: TR_DEFAULT_MODEL });
+        const wants = typeof body.model === "string" || typeof body.concurrency === "number";
+        const prefs = wants
+          ? writeTrPrefs({
+              model: typeof body.model === "string" ? body.model : undefined,
+              concurrency: typeof body.concurrency === "number" ? body.concurrency : undefined,
+            })
+          : readTrPrefs();
+        return json(res, 200, { prefs, defaultModel: trDefaultModel() });
       } catch (err: any) {
         return trFail(res, err);
       }
@@ -1949,6 +2096,11 @@ async function main(): Promise<void> {
           run,
           runner: runPiTranslate,
           keep: reuse ? cached.sections : [],
+          // D392：同时翻几块。旋钮在设置 → 预览与翻译，存本机 prefs。
+          limit: readTrPrefs().concurrency,
+          // D392 修订：视口优先。页面传 `at`（0–1 的滚动位置），这里换成节号 ——
+          // 客户端不需要知道桥怎么切节，只要报「我大概看到哪儿了」。
+          from: startFrom(body, text),
         });
         translateJobs.stamp(job.id, st.mtimeMs, st.size);
         log(`translate ${path.basename(abs)} → ${lang} via ${provider}/${model}${reuse ? " (update)" : ""}`);
@@ -2206,7 +2358,7 @@ async function main(): Promise<void> {
     // 领走不等于看过 —— 页面真把 dialog 打开了才 POST `/api/changelog/seen` 落盘。
     if (url.pathname === "/api/changelog" && req.method === "GET") {
       if (url.searchParams.get("scope") === "self") {
-        if (url.searchParams.get("unread") === "1") return json(res, 200, takeWhatsnew(Date.now(), whatsnewVeteran));
+        if (url.searchParams.get("unread") === "1") return json(res, 200, await takeWhatsnew(Date.now(), whatsnewVeteran));
         // 设置页那一页要的两样（开关与「上次看到」）一起带上：同一个资源，不新开路由（D358）。
         const popup = whatsnewStatus();
         return json(res, 200, { ...(await selfChangelog()), whatsnewSeen: popup.seenTitle, whatsnewEnabled: popup.enabled });
@@ -2378,6 +2530,43 @@ async function main(): Promise<void> {
     }
   };
 
+  /**
+   * GitHub 路由的 ctx。两个入口（回环工具口 / 常规路由）必须是**同一份**映射：壳拿到的 id/cwd
+   * 与页面拿到的如果不是一个，就会出现「壳去问了 A 会话、面板读的却是 B」。
+   */
+  function githubCtx(forPublic: boolean): GithubCtx {
+    return {
+      publicReq: forPublic,
+      send: (frame) => broadcast(frame),
+      byLoopbackToken: (token) => {
+        const session = sessions.byLoopbackToken(token);
+        return session ? { id: session.state.id, cwd: session.state.cwd } : null;
+      },
+      sessionCwd: (id) => sessions.get(id)?.state.cwd ?? null,
+    };
+  }
+
+  /** 提醒中心变了就整份广播（列表 ≤ 500 条，整份比增量省心，也不会漂）。 */
+  const broadcastReminders = () => broadcast(reminderView());
+
+  /**
+   * 记一条提醒并按规则弹吐司。`title` 只给非阻塞类用（审批 / 问卷的标题由页面按界面语言拼，
+   * 桥这边给空串 —— 否则英文界面里会冒出中文标题）。
+   */
+  const recordReminder = (
+    kind: Reminder["kind"],
+    id: string,
+    sessionId: string | undefined,
+    sessionName: string,
+    body: string,
+    title = "",
+    url = "",
+  ): void => {
+    const { reminder, toast } = reminders.add({ id, kind, sessionId, sessionName, body, title, url });
+    broadcastReminders();
+    if (toast) broadcast({ type: "reminder.toast", reminder });
+  };
+
   // 加班提醒：自己的定时器，不跟着 HTTP 请求走 —— 面板关着、没人点也得能提醒。
   // D349：到点同时广播给开着的本机页面（隧道访客看不到考勤，跳过），页面自己再弹一遍系统通知。
   startReminderLoop({
@@ -2523,10 +2712,11 @@ async function main(): Promise<void> {
     void notifier.notify(`内网通 · ${thread.nickname}`, body, link);
   });
   sessions.on("approval", (approval) => {
-    if (!shouldNotify()) return;
     const session = sessions.get(approval.sessionId);
     const name = session?.state.name ?? approval.sessionId.slice(0, 8);
     const body = approval.message.replace(/\s+/g, " ").slice(0, 140);
+    recordReminder("approval", approval.id, approval.sessionId, name, body);
+    if (!shouldNotify() || reminders.muted(approval.sessionId)) return;
     const link = tunnel.state.url ? `${tunnel.state.url}/#/s/${approval.sessionId}` : `http://127.0.0.1:${cfg.port}/#/s/${approval.sessionId}`;
     void notifier.notify(notifyTitle("approval", name, 1), body, link);
   });
@@ -2535,13 +2725,24 @@ async function main(): Promise<void> {
     const name = session?.state.name ?? ask.sessionId.slice(0, 8);
     const first = ask.questions[0];
     const body = (first?.prompt ?? "").replace(/\s+/g, " ").slice(0, 140);
+    recordReminder("ask", ask.id, ask.sessionId, name, body);
     const link = tunnel.state.url ? `${tunnel.state.url}/#/s/${ask.sessionId}` : `http://127.0.0.1:${cfg.port}/#/s/${ask.sessionId}`;
-    if (!shouldNotify()) {
+    if (!shouldNotify() || reminders.muted(ask.sessionId)) {
       log(`ask-push skipped ${String(tool)} ${ask.id} (${notifier.enabled ? "page in front" : "notifications off"})`);
       return;
     }
     void notifier.notify(notifyTitle("ask", name, ask.questions.length), body, link);
     log(`ask-push ${String(tool)} ${ask.id} → ${name}`);
+  });
+  /* 归宿只认这两条流：批/拒/取消、答/取消。过期与整轮结束都会走到它们（sessions.ts 的三个调用点），
+     所以这里不需要另外去猜「那条卡还在不在」。 */
+  sessions.on("approval-resolved", (_sessionId, id, decision) => {
+    reminders.settle(id, decision);
+    broadcastReminders();
+  });
+  sessions.on("ask-resolved", (_sessionId, id, status) => {
+    reminders.settle(id, status);
+    broadcastReminders();
   });
   tunnel.on("state", (state) => {
     broadcast({ type: "tunnel", tunnel: state });
@@ -2644,7 +2845,7 @@ async function main(): Promise<void> {
       // #278：页面据此决定 ＋ 是「挑目录建组」还是退回「空壳组 + 就地改名」（旧桥没有这项）；
       // `ws.resolve.dir` = 对话框能问「这个目录折回到哪个组」（子目录 / worktree）。
       // #499：`dirs.page` = /api/dirs 认 page/q/sort/sub（旧桥只会给截断过的整目录）。
-      caps: ["ws.create.dir", "ws.resolve.dir", "exec.child.subscribe", "dirs.page"],
+      caps: ["ws.create.dir", "ws.resolve.dir", "exec.child.subscribe", "dirs.page", FRAMES_CAP],
     });
     // 先用 1–2 s 的快清单打招呼，带扩展的完整清单十几秒后自己补上（D150）。
     void pushCatalog(ws, { resend: true });
@@ -2689,7 +2890,9 @@ async function main(): Promise<void> {
         return;
       }
       try {
-        switch (msg.type) {
+        // `as ClientFrameType`：case 标签不在帧词表里（拼错、已删的帧）当场 TS2678，不用等收到那一帧
+        // 才发现。臂里的 `msg.foo` 仍是 any —— 见 frames.ts 文件头「怎么用它」。
+        switch (msg.type as ClientFrameType) {
           case "presence": {
             reportPresence(ws, msg.active === true);
             return;
@@ -2704,6 +2907,28 @@ async function main(): Promise<void> {
             notifier.setEnabled(msg.on === true);
             log(`notifications ${notifier.enabled ? "on" : "off"}`);
             broadcast({ type: "notify", on: notifier.enabled });
+            return;
+          }
+          case "reminder.mute": {
+            const sid = String(msg.sessionId ?? "");
+            if (sid) reminders.mute(sid, msg.on === true);
+            broadcastReminders();
+            return;
+          }
+          case "reminder.read": {
+            reminders.read(String(msg.id ?? ""));
+            broadcastReminders();
+            return;
+          }
+          case "reminder.set": {
+            /* 与 `notify.set` 同级：这是写进状态文件的总开关，静音 / 已读才是低风险那两档。 */
+            if (!(await requireStepUp())) return;
+            const patch: Partial<ReminderSettings> = {};
+            if (typeof msg.enabled === "boolean") patch.enabled = msg.enabled;
+            if (typeof msg.blocking === "boolean") patch.blocking = msg.blocking;
+            if (typeof msg.others === "boolean") patch.others = msg.others;
+            reminders.setSettings(patch);
+            broadcastReminders();
             return;
           }
           case "stepup": {
@@ -3825,6 +4050,122 @@ async function main(): Promise<void> {
             }
             return;
           }
+          // ------------------------------------------------ 代码评审（#651）
+          // 推理跑在一次性的 `pi -p --mode json` 子进程里（只读工具、不读 AGENTS.md），
+          // 这里只做三件事：开跑、停、以及把盘上的状态发回去。
+          case "review.get": {
+            const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
+            try {
+              const repo = gitRoot(dir);
+              send({ type: "review.state", dir: repo, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) });
+              void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
+            } catch (err: any) {
+              send({ type: "review.state", dir, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+            }
+            return;
+          }
+          case "review.prs.get": {
+            const dir = String(msg.dir ?? "");
+            void (async () => {
+              try {
+                const repo = gitRoot(dir);
+                const out = await listPullRequests(repo, { fresh: msg.fresh === true });
+                send({ type: "review.prs", dir: repo, ...out });
+              } catch (err: any) {
+                send({ type: "review.prs", dir, ok: false, prs: [], error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              }
+            })();
+            return;
+          }
+          case "review.prinfo.get": {
+            const dir = String(msg.dir ?? "");
+            const number = Number(msg.pr) || 0;
+            void (async () => {
+              try {
+                const repo = gitRoot(dir);
+                const out = await pullRequestInfo(repo, number, { fresh: msg.fresh === true });
+                send({ type: "review.prinfo", dir: repo, pr: number, ...out });
+              } catch (err: any) {
+                send({ type: "review.prinfo", dir, pr: number, ok: false, info: null, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              }
+            })();
+            return;
+          }
+          case "review.run": {
+            const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
+            const mode = ["workspace", "range", "commit", "pr"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "workspace";
+            const lang: ReviewLang = ["zh", "en", "ja"].includes(String(msg.lang)) ? (String(msg.lang) as ReviewLang) : "zh";
+            const full = String(msg.model ?? "");
+            const slash = full.indexOf("/");
+            const provider = slash > 0 ? full.slice(0, slash) : String(msg.provider ?? "");
+            const model = slash > 0 ? full.slice(slash + 1) : full;
+            try {
+              const repo = gitRoot(dir);
+              startReview({
+                dir: repo,
+                mode,
+                base: String(msg.base ?? ""),
+                target: String(msg.target ?? ""),
+                commit: String(msg.commit ?? ""),
+                pr: Number(msg.pr) || 0,
+                // #666：从链接卡点过来时带的「这张卡属于哪个仓库」，桥上拿它拒掉别仓的号。
+                expectRepo: String(msg.expectRepo ?? ""),
+                session,
+                model,
+                provider,
+                lang,
+                onProgress: (p) => broadcast({ type: "review.progress", dir: repo, progress: p }),
+                onState: () => broadcast({ type: "review.state", dir: repo, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) }),
+              });
+            } catch (err: any) {
+              // #666：`params` 是给英文 / 日文界面翻译用的（中文直接看上面的 `error`）。
+              send({ type: "review.state", dir, error: String(err?.message ?? err), code: String(err?.code ?? "failed"), params: err?.params });
+            }
+            return;
+          }
+          case "review.cancel": {
+            const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
+            try {
+              if (!cancelReview(dir, session)) send({ type: "review.progress", dir, progress: reviewProgress(dir, session) });
+            } catch {
+              /* 目录已经不是仓库了：没什么可停的 */
+            }
+            return;
+          }
+          case "review.mark": {
+            const dir = String(msg.dir ?? "");
+            const key = String(msg.key ?? "");
+            const mark = String(msg.mark ?? "");
+            const session = String(msg.sessionId ?? "");
+            try {
+              const repo = gitRoot(dir);
+              const state = markFinding(repo, key, isMark(mark) ? mark : "", session);
+              broadcast({ type: "review.state", dir: repo, sessionId: session, state });
+            } catch (err: any) {
+              send({ type: "review.state", dir, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "review.clean": {
+            const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
+            try {
+              const repo = gitRoot(dir);
+              broadcast({ type: "review.state", dir: repo, sessionId: session, state: cleanRuns(repo, session) });
+            } catch (err: any) {
+              send({ type: "review.state", dir, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "review.install": {
+            void installOcr((line) => broadcast({ type: "review.install.log", line })).then(async (out) => {
+              broadcast({ type: "review.install.done", ok: out.ok, error: out.error, ocr: await ocrStatus() });
+            });
+            return;
+          }
           // ------------------------------------------------ AI 出错记录（D164）
           // 账本按工作区走，条目只读：只认「已修复 / 忽略 / 删除」，正文由「总结本轮错误」写入。
           case "failures.get": {
@@ -4139,6 +4480,13 @@ async function main(): Promise<void> {
               broadcast({ type: "manage", ...manageSnapshot() });
               return;
             }
+            if (action === "revive") {
+              // D386：页面只在打开的是一颗**已归档**的会话时才发这条 —— 取消归档 + 置顶到最前，
+              // 否则顶栏那一行与 ★ 行里都没有它（`starredRow()` 排掉归档），左栏也放不回所属工作区。
+              sessions.revive(String(msg.id ?? ""));
+              broadcast({ type: "manage", ...manageSnapshot() });
+              return;
+            }
             if (action === "trash" || action === "delete") {
               const report = await sessions.trash(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
               if (report.removed.length) broadcast({ type: "session.gone", ids: report.removed });
@@ -4319,7 +4667,7 @@ async function main(): Promise<void> {
         link.on("retire", () => {
           log("host: 被换下，退出");
           tunnel.stop();
-          // **这里绝不能 sessions.shutdown()**（D385）：子进程的生死在壳手里，关一批会话就会把
+          // **这里绝不能 sessions.shutdown()**（D407）：子进程的生死在壳手里，关一批会话就会把
           // 正在跑的那一轮杀掉 —— 那正是「热部署打断回话」本身。把锁交出去就好。
           sessions.releaseLocks();
           process.exit(0);
@@ -4357,12 +4705,16 @@ async function main(): Promise<void> {
     if (shouldOpenPage()) openPage(pageUrl);
     if (cfg.tunnelAuto && tunnelBin) tunnel.start();
     // 文件搜索：开库几乎不耗时；已经有索引就直接能查，没有才起首次扫描（不堵住 listen 回调）。
+    // D395：**首次扫描只给用户自己的那份状态目录**。测试 / 探针 / 第二实例都用 `PI_WEB_STATE`
+    // 指到别处，它们并不会搜文件，却每一份都要扫一遍整盘（实测 313 份 1.2 GB 的索引、9 GB 磁盘、
+    // 满盘 IO 把 load 顶到 20）。那种实例等面板里真按「开始」再建；要它开机就扫就 `PI_WEB_FILEINDEX=1`。
+    const autoScan = autoScanOnBoot(stateDirIsDefault());
     void fileIndex
       .open()
       .then(() => {
         const st = fileIndex.status();
-        log(`filesearch: ${st.state} (${st.indexed} entries)`);
-        if (st.state === "off") fileIndex.start();
+        log(`filesearch: ${st.state} (${st.indexed} entries)${autoScan ? "" : "，临时状态目录不自动扫描"}`);
+        if (st.state === "off" && autoScan) fileIndex.start();
       })
       .catch((err) => log(`filesearch: open failed: ${String(err)}`));
     // D161: pin 「the default permission as of now」 onto sessions the bridge has never looked at.

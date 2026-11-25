@@ -145,22 +145,25 @@ html[data-ui="mac"] .msg.assistant .body {
 html[data-ui="mac"] .msg .body pre { border-radius: 10px; border-color: var(--mac-glass-line); }
 html[data-ui="mac"] .msg .who { letter-spacing: 0; font-weight: 500; }
 
-/* 输入框：浮在内容区底部的一块玻璃胶囊。 */
+/* 输入框：浮在内容区底部的一块玻璃胶囊。底色、描边、焦点环和圆角都长在 `.composer-input`
+   上 —— #317 之后这是面板的宿主，textarea 只是里面一张透明无框、带 mask 的薄片。两边各画
+   一套就会叠成三层描边（外边框 + 内边框 + 焦点光晕），两个圆角还会在四角互相错位。 */
 html[data-ui="mac"] .composer { background: transparent; border-top: 0; }
-html[data-ui="mac"] .composer textarea {
+html[data-ui="mac"] .composer .composer-input {
   background: var(--mac-glass-strong);
   -webkit-backdrop-filter: var(--mac-blur-strong);
   backdrop-filter: var(--mac-blur-strong);
-  border: 0.5px solid var(--mac-glass-line);
+  border-color: var(--mac-glass-line);
   border-radius: 18px;
-  padding: 12px 16px;
   box-shadow: var(--mac-shadow-panel);
   transition: box-shadow var(--dur-2) var(--mac-ease), border-color var(--dur-1) var(--mac-ease);
 }
-html[data-ui="mac"] .composer textarea:focus {
+html[data-ui="mac"] .composer .composer-input:focus-within {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   box-shadow: var(--mac-shadow-panel), 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
 }
+/* 只有主输入区那一片薄片吃胶囊的内边距；粘贴折叠块里的 textarea 是自己的 8px（#318）。 */
+html[data-ui="mac"] .composer .composer-input > textarea { padding: 12px 16px; }
 html[data-ui="mac"] .chat-jump {
   background: var(--mac-glass-strong);
   -webkit-backdrop-filter: var(--mac-blur);
@@ -283,11 +286,11 @@ html[data-ui="mac"] .theme-chip:hover { scale: 1.03; }
 html[data-ui="mac"] .theme-chip:active { scale: 0.97; }
 
 /* ---------------------------------------------------------------- 2e. 窗口：设置台 / 弹层 / 模态 */
-/* 外壳清单一处写全，别再按文件散着加：`st` 与 `sheet` 是 app 自己的两层，`sys` / `jc` / `mc` 是
-   系统管理 / Jira / 邮箱三个模块各抄一份的控制台（sysmanage.css / jira-console.css / mail-console.css
-   里那三段几乎逐行相同），外壳长得一样、类名不同；`jira-ask` / `peer-pick` 是零散确认层，
-   `image-view` 是灯箱。漏一个，那个弹层就退回「深黑遮罩 + 纯白面板 + 没有入场」。 */
-html[data-ui="mac"] :is(.st-back, .sheet-back, .modal, .sys-back, .jc-back, .mc-back, .jira-ask-back, .jira-picker, .sheet-sub-back, .choose-back, .peer-pick, .image-view) {
+/* 材质由标记挑（#644）：浮层在创建处 markSurface()，这里只认 data-mac-surface。
+   `window` 分两半 —— 根是遮罩，直接子元素是面板；`dock` 是贴边的窗，材质整个落在自己身上。
+   漏了标记的浮层不再「静默退回纯色」，而是被 probes/mac-dialogs.mjs 的全局扫描抓出来。 */
+/* `paper` 是登记在案、故意不套材质的那一档（表格 / 幻灯片浮窗永远是浅色纸）：这里一条规则都不写。 */
+html[data-ui="mac"] [data-mac-surface="window"] {
   background: var(--mac-scrim);
   -webkit-backdrop-filter: blur(6px) saturate(120%);
   backdrop-filter: blur(6px) saturate(120%);
@@ -295,48 +298,74 @@ html[data-ui="mac"] :is(.st-back, .sheet-back, .modal, .sys-back, .jc-back, .mc-
 }
 /* 看图是暗场：别的弹层压暗背景是为了看清前面那张纸，灯箱压暗是为了看清这张图，
    所以它比 --mac-scrim 暗得多 —— 但同样要毛玻璃与淡入，不再是那层死死的黑。 */
-html[data-ui="mac"] .image-view { background: rgba(6, 8, 12, 0.76); }
-html[data-ui="mac"] :is(.st-console, .sheet, .modal form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .mc-confirm, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box) {
+html[data-ui="mac"] [data-mac-surface="window"][data-mac-dim="dark"] { background: rgba(6, 8, 12, 0.76); }
+html[data-ui="mac"] [data-mac-surface="window"] > :first-child {
   background: var(--mac-glass-strong);
   -webkit-backdrop-filter: var(--mac-blur-strong);
   backdrop-filter: var(--mac-blur-strong);
   border: 0.5px solid var(--mac-glass-line);
+  border-radius: 14px;
   box-shadow: var(--mac-shadow-window);
   animation: mac-window-in 460ms var(--mac-spring) backwards;
   transform-origin: 50% 0;
 }
-html[data-ui="mac"] .st-console { border-radius: 14px; }
-html[data-ui="mac"] .sheet-back.center .sheet,
-html[data-ui="mac"] .modal form,
-html[data-ui="mac"] .argdialog-panel { border-radius: 14px; }
-/* 抄来的那几个控制台原来是 16px 圆角 + 直角表头，统一成 macOS 窗口的 14px。 */
-html[data-ui="mac"] :is(.sys-console, .jc-console, .mc-console, .mc-confirm, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box, .notes-sheet, .sub-sheet, .choose) { border-radius: 14px; }
+/* 入场换档：底部抽屉（手机上非居中的 sheet）/ 右侧抽屉（随手问）/ alert（两三选项的小弹窗：
+   缩放淡入才像「问一句」，但形体仍是 14px 的窗）。 */
+html[data-ui="mac"] [data-mac-surface="window"][data-mac-enter="drawer"] > :first-child {
+  animation-name: mac-drawer-in;
+  transform-origin: 50% 100%;
+  border-radius: 16px 16px 0 0;
+}
+html[data-ui="mac"] [data-mac-surface="window"][data-mac-enter="side"] > :first-child {
+  animation: mac-side-in 380ms var(--mac-spring) backwards;
+  transform-origin: 100% 50%;
+  border-radius: 14px 0 0 14px;
+}
+html[data-ui="mac"] [data-mac-surface="window"][data-mac-enter="alert"] > :first-child {
+  animation: mac-menu-in 300ms var(--mac-spring) backwards;
+  transform-origin: 50% 50%;
+}
+html[data-ui="mac"] [data-mac-surface="window"][data-mac-enter="none"] > :first-child { animation: none !important; }
+/* 贴边的窗：预览右栏 / 终端。材质在面板自己身上，没有遮罩、没有入场（跟着窗口一起出现的东西，
+   弹一下反而怪）；圆角与底由各面自己定 —— `.viewer` 是纸、`.term-dock` 是玻璃。 */
+html[data-ui="mac"] [data-mac-surface="dock"] {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border: 0.5px solid var(--mac-glass-line);
+  border-radius: 14px;
+  box-shadow: var(--mac-shadow-window);
+}
 /* 手机上仓库面板铺满整屏（styles.css 里那条 `@media (max-width: 720px)` 就是干这个的），
    14px 圆角 + 发丝线必须让位，否则整屏四周浮出一圈边。这里判的是视口而不是卡片宽度：
    铺满整屏时它已经没有「自己的宽度」可判了。 */
 @media (max-width: 720px) {
-  html[data-ui="mac"] .sheet-back .repos-sheet { border-radius: 0; border: 0; }
+  html[data-ui="mac"] [data-mac-surface="window"] > .repos-sheet { border-radius: 0; border: 0; }
 }
-/* 灯箱：图本身当一张纸，圆角 + 窗口阴影 + 同一道入场；背景在遮罩组把自己调暗了就够。 */
-html[data-ui="mac"] .image-view-img {
-  border-radius: 12px;
-  box-shadow: var(--mac-shadow-window);
-  animation: mac-window-in 460ms var(--mac-spring) backwards;
-}
-/* 底部抽屉（手机 / 非居中）：iOS 那样从下面弹上来。 */
-html[data-ui="mac"] .sheet-back:not(.center) .sheet { animation-name: mac-drawer-in; transform-origin: 50% 100%; border-radius: 16px 16px 0 0; }
-/* 笔记面板视觉上是居中的（notes.css 自己写了 align-items:center），却没挂 `.center` 类，
-   按 `:not(.center)` 会演成底部抽屉——从屏幕底下蹿上来。按类判不了就按名字判。 */
-html[data-ui="mac"] .sheet-back.notes-back .sheet {
-  animation: mac-window-in 460ms var(--mac-spring) backwards;
-  transform-origin: 50% 0;
-  border-radius: 14px;
-}
-/* 随手问是右侧抽屉（items 贴右、整高）：mac 下从右边推出来，圆角只留靠内那侧。 */
-html[data-ui="mac"] .sheet-back.scratch-back .sheet {
-  animation: mac-side-in 380ms var(--mac-spring) backwards;
-  transform-origin: 100% 50%;
+/* 预览右栏是「纸」：正文 / 代码 / PDF 要读，底保持不透明；圆角只留靠内那侧，头部换成玻璃。
+   它贴的是窗口右缘，不是浮在中间的一扇窗（D111 那两扇平等的窗里的预览那扇）。 */
+html[data-ui="mac"] .viewer {
+  background: var(--bg);
+  border-left: 0.5px solid var(--mac-glass-line);
   border-radius: 14px 0 0 14px;
+  box-shadow: var(--mac-shadow-window);
+}
+html[data-ui="mac"] .viewer.full { border-radius: 0; }
+html[data-ui="mac"] .viewer-head {
+  background: var(--mac-glass);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border-bottom: 0.5px solid var(--mac-glass-line);
+  box-shadow: inset 0 -0.5px 0 var(--mac-glass-hi);
+}
+/* 灯箱：图本身当一张纸，圆角比窗口小一档；背景在遮罩那一半已经调暗了。 */
+html[data-ui="mac"] [data-mac-surface="window"] > .image-view-img { border-radius: 12px; }
+/* 对话里的侧卡与分支卡不是浮层，材质级管不到它们：只借玻璃与窗影。 */
+html[data-ui="mac"] :is(.turn-surface, .go-card) {
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border-radius: 14px;
+  box-shadow: var(--mac-shadow-window);
 }
 
 html[data-ui="mac"] .st-head,
@@ -370,7 +399,8 @@ html[data-ui="mac"] .settings-panel {
 html[data-ui="mac"] .settings-row + .settings-row { border-top-color: var(--mac-glass-line); }
 
 /* ---------------------------------------------------------------- 2f. 菜单与浮层：毛玻璃 + 缩放淡入 */
-html[data-ui="mac"] :is(.ctx-menu, .pin-menu, .perm-menu, .term-menu, .fail-menu, .go-cmp-menu, .mk-task-menu, .mk-filter-menu, .mk-menu, .ws-pop, .act-pop, .complete-pop, .jira-user-pop, .jira-handoff-pop, .choose, .skill-panel, .turn-note, .pin-note) {
+/* 菜单 / 吐司按标记挑，各面只管自己的尺寸。以前这里是 18 + 5 个类名的两张名单（#644）。 */
+html[data-ui="mac"] [data-mac-surface="menu"] {
   background: var(--mac-glass-strong);
   -webkit-backdrop-filter: var(--mac-blur-strong);
   backdrop-filter: var(--mac-blur-strong);
@@ -380,32 +410,31 @@ html[data-ui="mac"] :is(.ctx-menu, .pin-menu, .perm-menu, .term-menu, .fail-menu
   animation: mac-menu-in 260ms var(--mac-spring) backwards;
   transform-origin: 50% 0;
 }
+html[data-ui="mac"] [data-mac-surface="toast"] {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur-strong);
+  backdrop-filter: var(--mac-blur-strong);
+  border: 0.5px solid var(--mac-glass-line);
+  border-radius: 14px;
+  box-shadow: var(--mac-shadow-window);
+  animation: mac-toast-in 520ms var(--mac-spring) backwards;
+}
 /* 菜单项：macOS 菜单那样，悬停整行涂成强调色、字变白。 */
-html[data-ui="mac"] :is(.ctx-menu, .pin-menu, .term-menu, .fail-menu, .mk-menu, .mk-task-menu, .mk-filter-menu, .go-cmp-menu) :is(button, [role="menuitem"]):not(:disabled):hover {
+html[data-ui="mac"] [data-mac-surface="menu"] :is(button, [role="menuitem"]):not(:disabled):hover {
   background: var(--accent);
   color: var(--accent-ink);
   border-radius: 6px;
 }
-html[data-ui="mac"] :is(.fail-toast, .update-bar, .turn-surface, .term-dock, .go-card) {
-  -webkit-backdrop-filter: var(--mac-blur-strong);
-  backdrop-filter: var(--mac-blur-strong);
-  border-radius: 14px;
-  box-shadow: var(--mac-shadow-window);
-}
-html[data-ui="mac"] :is(.fail-toast, .update-bar) { background: var(--mac-glass-strong); animation: mac-toast-in 520ms var(--mac-spring) backwards; }
 
 /* 右栏的卡片（需要你 / 执行）：发丝线 + 圆角，悬停微微浮起。 */
 html[data-ui="mac"] .queue > * { border-radius: 12px; }
-/* `.choose` 是两三选项的小弹窗（未保存离开 / 放弃改动）：动画像菜单（缩放淡入，alert 就是这个手感），
-   但形体要跟其它窗口一致 —— 它比菜单大一截，12px 的圆角在 420px 宽的小窗口上显得方。 */
-html[data-ui="mac"] .choose { border-radius: 14px; }
 
-
-/* 退场（app.ts 与 modal.ts 的 retireOverlay 挂 `.mac-leaving`，动画放完再真正移除）。 */
+/* 退场（app.ts 与 modal.ts 的 retireOverlay 挂 `.mac-leaving`，动画放完再真正移除）。
+   与入场共用同一套判据：window 的面板往下落，menu / toast 自己淡出，dock 不演。 */
 html[data-ui="mac"] .mac-leaving { pointer-events: none; animation: mac-fade-out 200ms var(--mac-ease) forwards !important; }
-html[data-ui="mac"] .mac-leaving > :is(.st-console, .sheet, form, .argdialog-panel, .sys-console, .jc-console, .mc-console, .mc-confirm, .jira-ask, .peer-pick-panel, .branch-sheet, .repos-sheet, .jira-picker-box, .choose) { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
+html[data-ui="mac"] [data-mac-surface="window"].mac-leaving > :first-child { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
 /* 灯箱的根自己就是 `.mac-leaving`（它不套在别的遮罩里），图跟着一起收。 */
-html[data-ui="mac"] .mac-leaving .image-view-img { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
+html[data-ui="mac"] [data-mac-surface="window"].mac-leaving > .image-view-img { animation: mac-window-out 200ms var(--mac-ease) forwards !important; }
 /* 同一个面板被重画（换页、恢复默认）：新的那份不再演一遍入场。 */
 html[data-ui="mac"] .mac-instant,
 html[data-ui="mac"] .mac-instant > * { animation: none !important; }

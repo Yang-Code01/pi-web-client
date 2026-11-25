@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { LineSplitter } from "./broker.ts";
 
-/** 协议版本。壳与脑对不上就拒绝握手（整组重启是唯一出路，见 D385）。 */
+/** 协议版本。壳与脑对不上就拒绝握手（整组重启是唯一出路，见 D407）。 */
 export const CONTROL_PROTO = 1;
 
 /**

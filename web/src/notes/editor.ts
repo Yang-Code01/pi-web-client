@@ -9,8 +9,10 @@
  * 因为 execCommand 那几条会产出 `font[color]`、`background-color` 内联到块上，净化白名单不收。
  */
 import { tr } from "../i18n/index.ts";
+import { face, type IconName } from "../icons.ts";
 import { matchBlock, matchInline, type BlockHit } from "../md-input.ts";
 import { fenceLanguage, hasAnyStructure, sanitizeRich, textToRich } from "./rich.ts";
+import { appZoom, markSurface, mountOverlay } from "../modal.ts";
 
 const SIZES: [string, string][] = [
   ["1em", "正常"],
@@ -493,13 +495,13 @@ export class RichEditor {
     bar.classList.add("tb");
     bar.replaceChildren();
     const keep = (id: string): boolean => !this.tools || this.tools.has(id);
-    const btn = (glyph: string, title: string, run: (el: HTMLElement) => void, cls = ""): HTMLElement => {
+    const btn = (faceValue: IconName | string, title: string, run: (el: HTMLElement) => void, cls = ""): HTMLElement => {
       const b = document.createElement("button");
       b.type = "button";
       b.className = `tb-btn${cls ? ` ${cls}` : ""}`;
       b.title = title;
       b.setAttribute("aria-label", title);
-      b.textContent = glyph;
+      b.append(face(faceValue, 13));
       // mousedown 会抢走正文的焦点（选区就没了）：改成按下不抢焦点，点的时候自己恢复。
       b.addEventListener("mousedown", (ev) => ev.preventDefault());
       b.onclick = () => run(b);
@@ -524,7 +526,7 @@ export class RichEditor {
     add("s", btn("S", tr("删除线"), () => this.exec("strikeThrough"), "tb-s"));
     gap();
     add("size", btn("A", tr("字号"), (el) => this.openSize(el)));
-    add("color", btn("🎨", tr("文字颜色 / 底色"), (el) => this.openColor(el)));
+    add("color", btn("palette", tr("文字颜色 / 底色"), (el) => this.openColor(el)));
     gap();
     add("ul", btn("•", tr("符号列表"), () => this.exec("insertUnorderedList"), "tb-wide"));
     add("ol", btn("1.", tr("编号列表"), () => this.exec("insertOrderedList"), "tb-wide"));
@@ -555,10 +557,13 @@ export class RichEditor {
     this.closePop();
     this.saveRange();
     node.className = "tb-pop";
+    markSurface(node, "menu");
     const box = anchor.getBoundingClientRect();
-    node.style.left = `${Math.max(8, Math.min(box.left, window.innerWidth - 260))}px`;
-    node.style.top = `${box.bottom + 6}px`;
-    document.body.append(node);
+    // 挂进 #app 才跟「外观 → 字号」的 zoom 一起缩；量到的是视觉 px，写进 style 前先除一次缩放。
+    const z = appZoom();
+    node.style.left = `${Math.max(8, Math.min(box.left, window.innerWidth - 260)) / z}px`;
+    node.style.top = `${(box.bottom + 6) / z}px`;
+    mountOverlay(node);
     this.pop = node;
   }
 

@@ -7,6 +7,17 @@ import { RpcChild } from "./rpc.ts";
 import { brainLink } from "./brainlink.ts";
 import { displayUserText, loadEntries, loadEntryImage, listSessionFiles, normalizeUserText, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
 import { CopilotTally, fetchCopilotAccount, type CopilotAccountView, type CopilotView } from "./copilot-credits.ts";
+import {
+  approvalAddFrame,
+  approvalRemoveFrame,
+  askAddFrame,
+  askRemoveFrame,
+  copilotFrame,
+  ctxlogFrame,
+  piStatusFrame,
+  statsFrame,
+  usageFrame,
+} from "./frames.ts";
 import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, skillItemFor, summarizeToolArgs, withSkillItems, type BashItem, type Item, type ToolItem, type UserItem } from "./items.ts";
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
@@ -14,6 +25,7 @@ import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions
 import { lessonFile } from "./lessons.ts";
 import { DELIVERY_HINT, PLAN_HINT } from "./delivery.ts";
 import { forgetSession } from "./artifacts.ts";
+import { ensureGithubBin } from "./github.ts";
 import { agentDir, ensureDir, quarantineStateFile, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, readJsonChecked, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
@@ -98,6 +110,26 @@ function ensureContextLogExt(): string {
 /** #384：context-log 落盘目录（bridge 状态目录），前端若要直读也会用它。 */
 export function contextLogDir(): string {
   return statePath("ctxlog");
+}
+
+/**
+ * GitHub 壳（#661）：把壳目录插到 pi 子进程 PATH 的最前面。两条兜底都是被评审点出来的：
+ *  ① 写壳是**同步写盘**。状态目录不可写 / 磁盘满时它一抱，本该只影响 gh 的故障会连带打挂所有会话
+ *     —— 所以写不出来就只 warn，不给 PATH，会话照起。
+ *  ② Windows 上 PATH 通常叫 `Path`。env 里再塞一个只有大小写不同的 `PATH`，系统取哪个由环境块
+ *     顺序决定 —— 壳目录可能静默不生效，「账号由会话决定」当场退化成机器上的 active 账号。
+ *     所以覆盖**已有的那个键名**，不新增一个。
+ */
+function githubPathEnv(): Record<string, string> {
+  let dir: string;
+  try {
+    dir = ensureGithubBin();
+  } catch (err) {
+    console.warn(`[github] 壳目录没写出来，这个会话的 gh 会落到机器上的真 gh：${(err as Error)?.message ?? err}`);
+    return {};
+  }
+  const key = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+  return { [key]: `${dir}${path.delimiter}${process.env[key] ?? ""}` };
 }
 
 export interface ApprovalRequest {
@@ -1363,7 +1395,7 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * 换脑后接管一个壳里还在跑的进程（D385）。不发消息、不开新进程：壳里没有这个会话的子进程就
+   * 换脑后接管一个壳里还在跑的进程（D407）。不发消息、不开新进程：壳里没有这个会话的子进程就
    * 什么都不做 —— 页面上宁可显示「只读预览」，也不能凭空多出第二个写者。
    */
   async adopt(): Promise<boolean> {
@@ -1489,6 +1521,10 @@ export class Session extends EventEmitter {
         PI_WEB_SETTINGS_FILE: path.join(agentDir(), "settings.json"),
         // The ask-user / preview extensions post here instead of opening a dialog (see PLAN-ask.md).
         ...(this.loopbackUrl ? { PI_WEB_LOOPBACK: this.loopbackUrl, PI_WEB_LOOPBACK_TOKEN: this.loopbackToken } : {}),
+        // GitHub 通道：PATH 前面插一个只装着 `gh` 壳的目录 —— 模型照旧敲 `gh pr create`，壳去问桥
+        // 「这个会话是谁」，于是账号由会话决定，而不是机器上的 active 账号。只影响桥起的 pi 子进程，
+        // 用户的登录 shell 里没有这一层。
+        ...githubPathEnv(),
       },
     });
 
@@ -1575,13 +1611,7 @@ export class Session extends EventEmitter {
     const base = this.ctxBaseline ?? 0;
     if (!full && lines.length <= base) return;
     this.ctxBaseline = lines.length;
-    this.emitWs({
-      type: "ctxlog",
-      sessionId: this.state.id,
-      full,
-      total: lines.length,
-      lines: full ? lines : lines.slice(base),
-    });
+    this.emitWs(ctxlogFrame(this.state.id, { full, total: lines.length, lines: full ? lines : lines.slice(base) }));
   }
 
   /** Token/context numbers for the composer HUD and new subscribers; best effort, never throws. */
@@ -1596,14 +1626,14 @@ export class Session extends EventEmitter {
       // #484: the policy read is cached in the manager (1.5 s) — this stays a cheap call.
       const policy = await (this.contextPolicyView?.() ?? Promise.resolve(null));
       if (policy) this.lastPolicy = policy;
-      this.emitWs({
-        type: "stats",
-        sessionId: this.state.id,
-        tokens: stats?.tokens ?? null,
-        cost: stats?.cost ?? null,
-        context: stats?.contextUsage ?? null,
-        policy,
-      });
+      this.emitWs(
+        statsFrame(this.state.id, {
+          tokens: stats?.tokens ?? null,
+          cost: stats?.cost ?? null,
+          context: stats?.contextUsage ?? null,
+          policy,
+        }),
+      );
       this.maybeContextAction(policy);
     } catch {
       /* stats are decoration; the chat still works without them */
@@ -1656,7 +1686,7 @@ export class Session extends EventEmitter {
     // 账号额度是另一次异步抓的，合在这里一次，顺带留一份给 `session` 帧（`snapshot()`）。
     const merged: CopilotView = { ...view, account: view.account ?? this.copilotAccount };
     this.copilotView = merged;
-    this.emitWs({ type: "copilot", sessionId: this.state.id, ...merged });
+    this.emitWs(copilotFrame(this.state.id, merged));
   }
 
   /**
@@ -1710,7 +1740,7 @@ export class Session extends EventEmitter {
         // A new run is a new verdict: a previous abort's grace clock must not carry over (#81).
         this.stuckAbortedAt = null;
         this.stuckNoticed = false;
-        this.emitWs({ type: "pi.status", sessionId: this.state.id, running: true });
+        this.emitWs(piStatusFrame(this.state.id, true));
         // #197 / #200: 这一轮真的开始了，启动期（或失败重试）剩下没交出去的消息现在可以按插话送。
         // #198: 泵可能正挂在等这个信号 —— 先叫醒它（它在等的时候占着 `flushingBoot`）。
         this.wakeRunStart();
@@ -1738,7 +1768,7 @@ export class Session extends EventEmitter {
         if (this.plan?.sinceUpdate) this.emitWs({ type: "plan", sessionId: this.state.id, plan: this.plan });
         // D162: 完成状态跟着会话走：桥重启、GC 回收、换设备都还能看到，直到下一次运行。
         writeFinishedAt(this.state.id, Date.now());
-        this.emitWs({ type: "pi.status", sessionId: this.state.id, running: false });
+        this.emitWs(piStatusFrame(this.state.id, false));
         // #200: 泵在「第一条开出的那一轮」里等过 agent_start；这一轮已经结束而队里还有东西（那条
         // 正好没赶上插话），就当下一轮的开头送出去 —— 别让它们等在一条再也不会出现的启动信号上。
         this.flushBootQueue();
@@ -1823,8 +1853,8 @@ export class Session extends EventEmitter {
         this.draftId = null;
         this.draftTs = null;
         if (msg.usage) {
-          this.emitWs({ type: "usage", sessionId: this.state.id, usage: msg.usage });
-          // 壳记账：换代之后这些数字还得在（D385）。
+          this.emitWs(usageFrame(this.state.id, msg.usage));
+          // 壳记账：换代之后这些数字还得在（D407）。
           brainLink()?.usage(this.state.id, msg.usage);
         }
         void this.refreshStats();
@@ -2015,7 +2045,7 @@ export class Session extends EventEmitter {
       };
       this.approvals.set(id, approval);
       this.state.approvals = this.approvals.size;
-      this.emitWs({ type: "approval.add", sessionId: this.state.id, approval });
+      this.emitWs(approvalAddFrame(this.state.id, approval));
       this.emit("approval", approval);
       return;
     }
@@ -2135,7 +2165,7 @@ export class Session extends EventEmitter {
     if (decision === "approve" || decision === "always") this.rpc?.uiRespond({ id, confirmed: true });
     else if (decision === "reject") this.rpc?.uiRespond({ id, confirmed: false });
     else this.rpc?.uiRespond({ id, cancelled: true });
-    this.emitWs({ type: "approval.remove", sessionId: this.state.id, id, decision });
+    this.emitWs(approvalRemoveFrame(this.state.id, id, decision));
     this.emit("approval-resolved", this.state.id, id, decision);
   }
 
@@ -2161,7 +2191,7 @@ export class Session extends EventEmitter {
     });
     this.asks.set(ask.id, ask);
     this.state.asks = this.asks.size;
-    this.emitWs({ type: "ask.add", sessionId: this.state.id, ask: publicAsk(ask), tool });
+    this.emitWs(askAddFrame(this.state.id, publicAsk(ask), tool));
     this.emit("ask", publicAsk(ask), tool);
     return { id: ask.id, outcome: pending };
   }
@@ -2193,7 +2223,7 @@ export class Session extends EventEmitter {
     }
     this.asks.delete(id);
     this.state.asks = this.asks.size;
-    this.emitWs({ type: "ask.remove", sessionId: this.state.id, id, status: "answered", answers: clean });
+    this.emitWs(askRemoveFrame(this.state.id, id, { status: "answered", answers: clean }));
     this.emit("ask-resolved", this.state.id, id, "answered");
     ask.resolve({ answers: clean, cancelled: false });
   }
@@ -2203,7 +2233,7 @@ export class Session extends EventEmitter {
     if (!ask) return;
     this.asks.delete(id);
     this.state.asks = this.asks.size;
-    this.emitWs({ type: "ask.remove", sessionId: this.state.id, id, status: "cancelled", reason });
+    this.emitWs(askRemoveFrame(this.state.id, id, { status: "cancelled", reason }));
     this.emit("ask-resolved", this.state.id, id, "cancelled");
     ask.resolve({ answers: null, cancelled: true });
   }
@@ -3516,7 +3546,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * 换脑后接管壳里还活着的会话（D385）。壳的 snapshot 是唯一真相：里面有子进程的才算数 ——
+   * 换脑后接管壳里还活着的会话（D407）。壳的 snapshot 是唯一真相：里面有子进程的才算数 ——
    * 宁可让页面显示「只读预览」，也不能凭空多出一个写者。
    */
   async adoptLinked(ids: string[]): Promise<void> {
@@ -3533,7 +3563,7 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  /** 换脑前把锁交出去（D385）：子进程还活着，新脑要能立刻接上。**不碰进程。** */
+  /** 换脑前把锁交出去（D407）：子进程还活着，新脑要能立刻接上。**不碰进程。** */
   releaseLocks(): void {
     for (const s of this.sessions.values()) {
       if (s.state.owned) releaseLock(s.state.id);
@@ -3590,6 +3620,9 @@ export class SessionManager extends EventEmitter {
     session.on("ask", (ask: AskRequest, tool: string) => this.emit("ask", ask, tool));
     session.on("ask-resolved", (sessionId: string, id: string, status: string) =>
       this.emit("ask-resolved", sessionId, id, status),
+    );
+    session.on("approval-resolved", (sessionId: string, id: string, decision: string) =>
+      this.emit("approval-resolved", sessionId, id, decision),
     );
   }
 
@@ -4573,6 +4606,11 @@ export class SessionManager extends EventEmitter {
 
   setArchived(ids: string[], on: boolean): void {
     this.manage.setArchived(ids, on);
+  }
+
+  /** D386：打开一条已归档的会话时把它请回来（取消归档 + 置顶到最前）。 */
+  revive(id: string): void {
+    this.manage.revive(id);
   }
 
   /**

@@ -75,6 +75,7 @@ export class Manage {
   // D146 废止了 D125「打开即置顶」：打开一个会话不再改任何排列（pin / order / archived 都不动）。
   // 置顶现在是组内排序，跨组自动重排会打乱用户手工拖出来的顺序，所以这里没有 opened() 这个方法 ——
   // 「打开」不是 manage 的动作，`bridge/src/index.ts` 收到旧页面发来的 opened 只回一份快照。
+  // D386 给它开了唯一的口子：打开一条**已归档**的会话时才动排列，见下面的 `revive()`。
 
   setArchived(idsIn: string[], on: boolean): void {
     this.state.update((d) => {
@@ -88,6 +89,21 @@ export class Manage {
       const hidden = new Set(d.archived);
       d.pin = d.pin.filter((id) => !hidden.has(id));
       d.order = d.order.filter((id) => !hidden.has(id));
+    });
+  }
+
+  /**
+   * D386：打开一条**已归档**的会话 = 请它回来 —— 取消归档 + 插到 ★ 行最前，一个 `update` 里做完。
+   * 两件事必须原子：分两步做的话页面会先看到「已取消归档、但还没置顶」的中间态（★ 行里没有它，
+   * 顶栏又刚好算不出归属）。非归档会话调用是空操作 —— D146 的「打开不改排列」照旧管它们。
+   */
+  revive(id: string): void {
+    if (!id) return;
+    this.state.update((d) => {
+      if (!d.archived.includes(id)) return;
+      d.archived = d.archived.filter((x) => x !== id);
+      d.pin = [id, ...d.pin.filter((x) => x !== id)];
+      d.order = d.order.filter((x) => x !== id);
     });
   }
 

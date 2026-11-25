@@ -9,7 +9,7 @@
  *   1. pi 本体：找不到、或低于清单里的最低版本，才 `npm i -g @earendil-works/pi-coding-agent@latest`。
  *      机器上已经有更新的版本就一动不动 —— 不降级、不替用户决定。
  *   2. 四个扩展：问 `pi list` 用户级装了哪些包，按包名对（npm / git / 本地路径装的都算），
- *      有就不动（哪怕版本旧），缺的才 `pi install`。和页面上「本项目需要」用的是同一个判据。
+ *      缺的装上，低于下限的升到下限，其余不动（不降级）。和页面上「本项目需要」用的是同一个判据（D393）。
  *   3. 子包依赖：bridge / peer / web 各跑一次 `npm --prefix … install`（node_modules 已在时也跑，
  *      它自己会判断要不要动）。
  *
@@ -46,12 +46,15 @@ async function loadModules() {
     };
   } catch (err) {
     if (!process.allowedNodeEnvironmentFlags.has(FLAG)) throw err;
-    const r = spawnSync(process.execPath, [FLAG, fileURLToPath(import.meta.url), ...process.argv.slice(2)], { stdio: "inherit" });
+    const r = spawnSync(process.execPath, [FLAG, fileURLToPath(import.meta.url), ...process.argv.slice(2)], {
+      stdio: "inherit",
+      windowsHide: true,
+    });
     process.exit(r.status ?? 1);
   }
 }
 
-const { MIN_PI_VERSION, REQUIRED_PACKAGES, agentDir, bootstrapCommand, foundPackages, installSource, parsePackages, piTooOld, piCandidates, readPackageJson, statePath } =
+const { MIN_PI_VERSION, REQUIRED_PACKAGES, agentDir, bootstrapCommand, depAction, depStatus, foundPackages, installSource, parsePackages, piTooOld, piCandidates, readPackageJson, statePath } =
   await loadModules();
 
 const args = new Set(process.argv.slice(2));
@@ -80,6 +83,19 @@ const FEATURE = {
   questionnaire: "网页问卷（ask_user_question）",
   "web-access": "web_search / fetch_content / source_check 等联网工具",
 };
+
+/**
+ * 一个包「差在哪」的一句话：`npm:pi-subagents 0.86.0 低于 0.90.0` / `缺 npm:foo@1.2.3`。
+ * 整备进度与启动关卡共用它，免得两处各写一套措辞（措辞一歪，用户看到的是两份说法）。
+ */
+function shortfallOf(pkg) {
+  return depAction(pkg) === "upgrade" ? `${pkg.foundVersion} 低于 ${pkg.version}` : `缺 ${installSource(pkg)}`;
+}
+
+/** 差在哪 + 缺了少哪块功能（启动关卡那几行用）。 */
+function needLine(pkg) {
+  return `${shortfallOf(pkg)}（${FEATURE[pkg.id] ?? pkg.id}）`;
+}
 
 const out = (line = "") => console.log(line);
 const step = (line) => {
@@ -155,6 +171,49 @@ function installPi() {
   return `pi 装不上：${why}`;
 }
 
+// ---------------------------------------------------------------- 1.5 ocr（代码评审）
+//
+// `ocr` 是阿里巴巴开源的代码评审 CLI（`@alibaba-group/open-code-review`），delegation 模式下
+// 只负责确定性分片与规则，真推理走网页那边起的 pi 子进程。它**不是**跑网页的硬依赖：没装时
+// 面板上有一颗「装 ocr」按钮，所以这里装失败只写进状态文件，不把整次 npm install 判成失败。
+
+function ocrArgv(args) {
+  return process.platform === "win32" ? ["cmd.exe", ["/c", "ocr", ...args]] : ["ocr", args];
+}
+
+function findOcr() {
+  const [cmd, args] = ocrArgv(["version"]);
+  const r = run(cmd, args, { timeout: 20_000 });
+  if (r.code !== 0) return null;
+  const m = /(\d+\.\d+\.\d+)/.exec(`${r.stdout}${r.stderr}`);
+  return { version: m ? m[1] : "" };
+}
+
+/** delegation 的 `--format json` 要 1.9.0 起；低了就等于没有（面板会把它当「太老」）。 */
+function ocrTooOld(version) {
+  const v = String(version ?? "")
+    .split(".")
+    .map((n) => Number(n) || 0);
+  if (!v.length) return false;
+  const floor = [1, 9, 0];
+  for (let i = 0; i < floor.length; i += 1) {
+    if ((v[i] ?? 0) < floor[i]) return true;
+    if ((v[i] ?? 0) > floor[i]) return false;
+  }
+  return false;
+}
+
+function installOcr() {
+  step("  没装 ocr（代码评审要用），装最新版…");
+  const npmArgs = ["install", "-g", "@alibaba-group/open-code-review@latest"];
+  let r = runNpm(npmArgs, { timeout: 30 * 60_000 });
+  if (r.code !== 0 && /EALLOWREMOTE/.test(`${r.stderr}${r.stdout}`)) {
+    r = runNpm([...npmArgs, "--allow-remote=all"], { timeout: 30 * 60_000 });
+  }
+  if (r.code === 0) return null;
+  return `ocr 装不上：${tail(r, 3, "\n")}`;
+}
+
 // ---------------------------------------------------------------- 2. 四个扩展
 
 /**
@@ -176,31 +235,36 @@ function installPackages(pi, record) {
     step(`  ✗ ${listed.error}（扩展这一轮不装，免得装出重复的）`);
     return;
   }
-  for (const pkg of REQUIRED_PACKAGES) {
-    const hit = findInstalled(listed.found, pkg);
-    if (hit) {
-      record.skipped.push(`${pkg.source}${pkg.version ? `（要 ${pkg.version}）` : ""} 已装${hit.version ? ` ${hit.version}` : ""}（${hit.source}），不动`);
-      step(`  ✓ ${pkg.source} 已装，跳过（${FEATURE[pkg.id] ?? pkg.id}）`);
+  // 三条路：没装 → 装；低于下限 → 升；其余（含比下限新）→ 不动（D393）。
+  for (const pkg of depStatus(listed.found)) {
+    const feature = FEATURE[pkg.id] ?? pkg.id;
+    const action = depAction(pkg);
+    if (action === "keep") {
+      const got = pkg.foundVersion ? ` ${pkg.foundVersion}` : "";
+      record.skipped.push(`${pkg.source}${pkg.version ? `（不低于 ${pkg.version}）` : ""} 已装${got}，不动`);
+      step(`  ✓ ${pkg.source}${got} 已装，跳过（${feature}）`);
       continue;
     }
     const want = installSource(pkg);
-    step(`  → 装 ${want} …`);
+    const upgrade = action === "upgrade";
+    const why = shortfallOf(pkg);
+    step(upgrade ? `  → 升 ${want}（${why}）…` : `  → 装 ${want} …`);
     if (CHECK) {
-      // --check 不装东西，但缺了要说清楚：退出码靠它。
-      record.installed.push(`${want}（缺）`);
+      // --check 不装东西，但缺了 / 旧了要说清楚：退出码靠它。
+      record.installed.push(`${want}（${upgrade ? `待升级，现在是 ${pkg.foundVersion}` : "缺"}）`);
       record.ok = false;
-      record.error ??= `缺 ${want}`;
-      step(`  ✗ 缺 ${want}（${FEATURE[pkg.id] ?? pkg.id}）`);
+      record.error ??= why;
+      step(`  ✗ ${why}（${feature}）`);
       continue;
     }
     const r = run(process.execPath, [pi.cli, "install", want], { timeout: 20 * 60_000 });
     if (r.code === 0) {
-      record.installed.push(want);
-      step(`  ✓ ${want}`);
+      record.installed.push(upgrade ? `${want}（从 ${pkg.foundVersion} 升上来）` : want);
+      step(`  ✓ ${want}${upgrade ? `（原来是 ${pkg.foundVersion}）` : ""}`);
     } else {
-      const why = tail(r, 3);
-      record.error ??= `${want} 装不上：${why}`;
-      step(`  ✗ ${want}：${why}`);
+      const reason = tail(r, 3);
+      record.error ??= `${want} 装不上：${reason}`;
+      step(`  ✗ ${want}：${reason}`);
     }
   }
 }
@@ -223,11 +287,6 @@ function installProjectDeps(record) {
 }
 
 // ---------------------------------------------------------------- npm start 前的关卡（D224）
-
-/** 按包名对（npm 包名不分大小写）；装和查共用这一个判据。 */
-function findInstalled(found, pkg) {
-  return found.find((h) => h.name.toLowerCase() === pkg.name.toLowerCase());
-}
 
 /**
  * 「齐了」的结论记在状态目录里，键是 pi 的位置与版本、清单、pi 的 settings.json（装 / 卸扩展都会
@@ -253,12 +312,10 @@ function startCheck() {
   const blocked = (lines, manual) => {
     out("✗ pi 的依赖没备齐，这次不启动：");
     for (const line of lines) out(`  - ${line}`);
-    if (NO_AUTO) {
-      out("PI_WEB_NO_AUTOINSTALL 开着，npm install 不会替你装；手动装：");
-      for (const cmd of manual) out(`  ${cmd}`);
-    } else {
-      out("先在仓库根目录跑一次 npm install（会自动装上），再 npm start。");
-    }
+    out("要跑的：");
+    for (const cmd of manual) out(`  ${cmd}`);
+    if (NO_AUTO) out("PI_WEB_NO_AUTOINSTALL 开着，npm install 不会替你装；手动跑上面几条。");
+    else out("或者更省事：在仓库根目录跑一次 npm install（它会替你跑上面几条），再 npm start。");
     return 1;
   };
   const piInstall = ["npm install -g @earendil-works/pi-coding-agent@latest"];
@@ -277,11 +334,13 @@ function startCheck() {
     out(`⚠ 没法确认 pi 扩展齐不齐（${listed.error}），照常启动。`);
     return 0;
   }
-  const missing = REQUIRED_PACKAGES.filter((pkg) => !findInstalled(listed.found, pkg));
-  if (missing.length)
+  const statuses = depStatus(listed.found);
+  // 没装和低于下限都是「没备齐」：前者少一整块功能，后者是网页可能读不动的旧格式（D393）。
+  const todo = statuses.filter((s) => depAction(s) !== "keep");
+  if (todo.length)
     return blocked(
-      missing.map((pkg) => `缺 ${installSource(pkg)}（${FEATURE[pkg.id] ?? pkg.id}）`),
-      missing.map((pkg) => `pi install ${installSource(pkg)}`),
+      todo.map(needLine),
+      todo.map((s) => `pi install ${installSource(s)}`),
     );
   try {
     fs.mkdirSync(path.dirname(cache), { recursive: true });
@@ -297,7 +356,7 @@ if (START) process.exit(startCheck());
 
 // ---------------------------------------------------------------- 主流程
 
-const record = { at: Date.now(), ok: true, error: null, installed: [], skipped: [], pi: null };
+const record = { at: Date.now(), ok: true, error: null, installed: [], skipped: [], pi: null, ocr: null, ocrError: null };
 const started = Date.now();
 step(`pi-web-client 依赖整备${CHECK ? "（--check：只看不动）" : ""}`);
 if (CI || NO_AUTO) step(CI ? "  （CI：只装子包依赖，不碰全局 pi 目录）" : "  （PI_WEB_NO_AUTOINSTALL=1：不碰全局 pi 目录，要装就 unset 后重跑）");
@@ -330,6 +389,29 @@ if (DEPS_ONLY && !CHECK) {
   }
 } else {
   step(`  ✓ pi ${pi.version}（≥ ${MIN_PI_VERSION}）`);
+}
+
+// ocr（代码评审）是可选件：装不上不把整次 install 判红，面板会给「装 ocr」按钮。
+let ocr = findOcr();
+record.ocr = ocr?.version ?? null;
+if (!ocr && !DEPS_ONLY && !CHECK) {
+  const err = installOcr();
+  ocr = findOcr();
+  record.ocr = ocr?.version ?? null;
+  if (err) {
+    record.ocrError = err;
+    step(`  ✗ ${err}`);
+  }
+}
+if (ocr) {
+  if (ocrTooOld(ocr.version)) {
+    record.ocrError = `ocr ${ocr.version} 太老（要 ≥ 1.9.0）`;
+    step(`  ✗ ${record.ocrError}`);
+  } else {
+    step(`  ✓ ocr ${ocr.version}`);
+  }
+} else if (!record.ocrError) {
+  step("  - ocr 没装（代码评审要用；面板上可以装）");
 }
 
 // --check 装不了东西，所以 DEPS_ONLY 也照查（不然「三个包全缺」会报 0）。

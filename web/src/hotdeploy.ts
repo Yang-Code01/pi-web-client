@@ -11,7 +11,7 @@ import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import type { HotdeployBranch, HotdeployPhase, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { retireOverlay } from "./modal.ts";
+import { markSurface, retireOverlay } from "./modal.ts";
 import "./hotdeploy.css";
 
 /** 步骤名与 worker 的 step 序号一一对应；中文原文就是 i18n 键。 */
@@ -20,7 +20,7 @@ const STEPS = ["检查更新", "拉取所选分支", "编译前端与桥", "恢�
 const SWAP_STEP = 4;
 
 /**
- * 有壳时 `run.stage` 的人话（D385）：壳把换脑拆成四步，步骤表只画得出「换进程」那一格，
+ * 有壳时 `run.stage` 的人话（D407）：壳把换脑拆成四步，步骤表只画得出「换进程」那一格，
  * 具体卡在哪一步得靠这句说清楚，否则用户只看到「部署中」。
  */
 const STAGE_TEXT: Record<string, string> = {
@@ -148,7 +148,7 @@ class HotdeployPanel {
   };
 
   mount(): void {
-    this.root = el("div", "sys-back hot-back");
+    this.root = markSurface(el("div", "sys-back hot-back"), "window");
     this.root.addEventListener("mousedown", (e) => {
       if (e.target === this.root) this.close();
     });

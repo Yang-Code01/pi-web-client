@@ -1,0 +1,14 @@
+{
+ "package": "pi-subagents",
+ "version": "0.90.0",
+ "capturedAt": "2026-11-23T14:24:43.049Z",
+ "how": "隔离的 agent 目录（PI_CODING_AGENT_DIR）里 copilot auth/models，pi install npm:pi-subagents@0.90.0，再 pi -p 让模型调 subagent 一次 async 单跑、一次 workflow:parallel（两个 task），完成后取 async-subagent-runs/<id>/。绝对路径换成 <TMP>/<RUNS>/<AGENT>/<CWD>，正文超过 400 字截断，其余原样。",
+ "runs": {
+  "single": "df5794d6-7527-432c-9d68-c3f687df9603",
+  "workflow": "c3afebdb-5fcb-4905-b5f7-40d3cc2af940",
+  "children": [
+   "033a55af-e815-4c77-9194-a53408e74559",
+   "bc3b8c4c-5a56-4b39-9228-97a34c485477"
+  ]
+ }
+}

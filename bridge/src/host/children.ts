@@ -2,7 +2,7 @@
  * 壳手里的会话进程：pi 的三根管道。
  *
  * 这里只做「把字节搬来搬去」，不认识 pi 的协议 —— 协议归脑解释（`rpc.ts`）。这样换脑
- * 时管道不用动，会话进程的 pid 也就不变；崩掉的脑只是暂时没人解释，进程还在跑（D385）。
+ * 时管道不用动，会话进程的 pid 也就不变；崩掉的脑只是暂时没人解释，进程还在跑（D407）。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Broker } from "./broker.ts";
@@ -35,7 +35,7 @@ export class Children {
     this.hooks = hooks;
   }
 
-  spawn(spec: SpawnSpec): number {
+  start(spec: SpawnSpec): number {
     if (this.procs.has(spec.sessionId)) throw new Error(`会话 ${spec.sessionId} 已经有进程在跑`);
     const child = spawn(process.execPath, spec.argv, {
       cwd: spec.cwd,

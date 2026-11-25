@@ -110,7 +110,7 @@ async function findSlot(peers) {
 }
 
 function git(dir, ...args) {
-  const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+  const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", windowsHide: true });
   return r.status === 0 ? r.stdout.trim() : "";
 }
 
@@ -119,7 +119,7 @@ function hasPeer(dir) {
 }
 
 /**
- * 壳（D385）存在就起壳：测试环境要验「热部署不切会话」，只有壳在的时候才成立。
+ * 壳（D407）存在就起壳：测试环境要验「热部署不切会话」，只有壳在的时候才成立。
  * 和 scripts/start.mjs 同一条规则，PI_HOST_DISABLE=1 退回旧的 index.js。
  */
 function bridgeEntry(dir) {
@@ -163,6 +163,7 @@ function ensureDeps(dir) {
     const r = spawnSync("npm", ["--prefix", path.join(dir, pkg), "install", "--no-audit", "--no-fund"], {
       stdio: "inherit",
       shell: process.platform === "win32",
+      windowsHide: true,
     });
     if (r.status !== 0) throw new Error(`npm --prefix ${pkg} install 失败`);
   }
@@ -170,7 +171,7 @@ function ensureDeps(dir) {
 
 function build(dir) {
   say("构建 bridge / peer / web …");
-  const r = spawnSync("npm", ["run", "build"], { cwd: dir, stdio: "inherit", shell: process.platform === "win32" });
+  const r = spawnSync("npm", ["run", "build"], { cwd: dir, stdio: "inherit", shell: process.platform === "win32", windowsHide: true });
   if (r.status !== 0) throw new Error("npm run build 失败（先看上面的报错）");
 }
 
@@ -210,7 +211,7 @@ function spawnHidden(file, args, env, cwd, outPath, errPath) {
 function killTree(pid) {
   if (!pid) return;
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
   } else {
     try {
       process.kill(-pid, "SIGTERM");
@@ -250,6 +251,9 @@ function bridgeSpawnEnv({ id, state, ports, hotdeploy }) {
  * D360：开一个新的浏览器窗口。标题由桥注入，这里只核「真的多了一条标题是它的窗口」—— 退出码什么都证明不了
  * （Edge 常驻时丢 URL 只会在后台开标签）。
  */
+/** 打开浏览器的三条命令（macOS 的两种、Linux 的 xdg-open）共用一份 options：忽略输出、20 秒上限，且不弹控制台窗口。 */
+const OPEN_OPTS = { stdio: "ignore", timeout: 20000, windowsHide: true };
+
 async function openWindow(url, id, opts) {
   const page = `${url}/`;
   const title = windowTitleFor(id);
@@ -305,6 +309,7 @@ Write-Output 'NONE'`;
     const launched = spawnSync("powershell", ["-NoProfile", "-Command", ps], {
       encoding: "utf8",
       timeout: 25000,
+      windowsHide: true,
       env: { ...process.env, PI_WIN_TITLE: title, PI_WIN_PAGE: page },
     });
     const out = String(launched.stdout ?? "");
@@ -320,12 +325,12 @@ Write-Output 'NONE'`;
     return;
   }
   if (process.platform === "darwin") {
-    const edge = spawnSync("open", ["-n", "-a", "Microsoft Edge", page], { stdio: "ignore", timeout: 20000 });
+    const edge = spawnSync("open", ["-n", "-a", "Microsoft Edge", page], OPEN_OPTS);
     if (edge.status === 0) {
       say(`  窗口    已请求打开（tab 会是「${title}」）`);
       return;
     }
-    const fallback = spawnSync("open", [page], { stdio: "ignore", timeout: 20000 });
+    const fallback = spawnSync("open", [page], OPEN_OPTS);
     say(
       fallback.status === 0
         ? `  窗口    没找到 Edge，交给默认浏览器了（tab 应是「${title}」）`
@@ -333,7 +338,7 @@ Write-Output 'NONE'`;
     );
     return;
   }
-  const opened = spawnSync("xdg-open", [page], { stdio: "ignore", timeout: 20000 });
+  const opened = spawnSync("xdg-open", [page], OPEN_OPTS);
   say(
     opened.status === 0
       ? `  窗口    已请求打开（tab 会是「${title}」）`
@@ -372,6 +377,7 @@ async function cmdStart(opts) {
     env: { ...process.env, PI_WEB_STATE: path.join(state, "bridge") },
     encoding: "utf8",
     timeout: 20000,
+    windowsHide: true,
   });
   if (preset.status !== 0) throw new Error(`设置口令失败：${preset.stderr || preset.stdout}`);
 
