@@ -6482,6 +6482,14 @@ export class App {
       if (ev.target === back) this.closeSubSheet();
     };
     this.overlay(back);
+    this.mountSubSheet(kind, back);
+  }
+
+  /**
+   * 把已经建好的 `back` 登记成当前子层：Esc 先退它，退掉之后底下那份面板还在。
+   * 登记只此一处 —— 上下文那两个子弹窗和差分（`openDiffSheet`）都走它，别各写一份。
+   */
+  private mountSubSheet(kind: "policy" | "handoff" | "diff", back: HTMLElement): void {
     this.subSheet = back;
     this.subSheetKind = kind;
     this.subSheetEscPop = pushEscLayer({ el: back, onEsc: () => this.closeSubSheet() });
@@ -9206,6 +9214,7 @@ export class App {
     row.title = r.path;
     row.onkeydown = (ev: KeyboardEvent) => {
       if (ev.target !== row) return; // 里面那两颗按钮自己收键
+      if (ev.repeat) return; // 按住不放不连发（预览 / 差分都是「开一次」的动作）
       if (ev.key !== "Enter" && ev.key !== " ") return;
       ev.preventDefault();
       row.click();
@@ -9262,7 +9271,9 @@ export class App {
    */
   private async openDiffSheet(sessionId: string, path: string, known?: ArtifactList): Promise<void> {
     // m00341：从产物列表点进来时不再关掉列表 —— 差分压成它的子层，关掉（关闭 / 点背景 / Esc）
-    // 回到原来那份列表，筛选和滚动位置都还在。没有父层可压时（理论上已经没有了）维持换一页全屏。
+    // 回到原来那份列表，筛选和滚动位置都还在。今天唯一的调用方是产物列表，一定有父层；
+    // 没有父层时（比如以后改成从聊天直接开差分）走下面那条「自己就是一页面板」的老路，
+    // 两条路的关闭行为一样（都只退自己）：所以这里的 if / else 是两种落点，不是兜底。
     const overSheet = Boolean(this.sheet);
     if (overSheet) this.closeSubSheet();
     else {
@@ -9293,13 +9304,8 @@ export class App {
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back, "window", { enter: "drawer" });
-    if (overSheet) {
-      this.subSheet = back;
-      this.subSheetKind = "diff";
-      this.subSheetEscPop = pushEscLayer({ el: back, onEsc: () => this.closeSubSheet() });
-    } else {
-      this.setSheet(back);
-    }
+    if (overSheet) this.mountSubSheet("diff", back);
+    else this.setSheet(back);
     back.focus();
 
     let data = known;
