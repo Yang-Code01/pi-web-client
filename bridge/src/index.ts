@@ -65,6 +65,7 @@ import {
   ocrStatus,
   readReviewState,
   reviewProgress,
+  setPick,
   startReview,
   sweepStaleRuns,
   type ReviewLang,
@@ -4098,8 +4099,11 @@ async function main(): Promise<void> {
             const mode = ["workspace", "range", "commit", "pr"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "workspace";
             const lang: ReviewLang = ["zh", "en", "ja"].includes(String(msg.lang)) ? (String(msg.lang) as ReviewLang) : "zh";
             const full = String(msg.model ?? "");
-            const slash = full.indexOf("/");
-            const provider = slash > 0 ? full.slice(0, slash) : String(msg.provider ?? "");
+            const given = String(msg.provider ?? "");
+            // 带 provider 就以它为准，不再从 model 里切：模型目录的 id 本身可能含 `/`
+            // （如 OpenRouter 的 `anthropic/claude-3.5`），按第一个 `/` 切会把 provider 认错。
+            const slash = given ? -1 : full.indexOf("/");
+            const provider = slash > 0 ? full.slice(0, slash) : given;
             const model = slash > 0 ? full.slice(slash + 1) : full;
             try {
               const repo = gitRoot(dir);
@@ -4157,6 +4161,33 @@ async function main(): Promise<void> {
               broadcast({ type: "review.state", dir: repo, sessionId: session, state: cleanRuns(repo, session) });
             } catch (err: any) {
               send({ type: "review.state", dir, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "review.pick": {
+            // 面板上「评什么」这一格的选择：只是记住它（切会话 / 刷新后要能还原），
+            // 不触发评审、也不改历史。
+            const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
+            const mode = ["workspace", "range", "commit", "pr"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "pr";
+            try {
+              const repo = gitRoot(dir);
+              const state = setPick(
+                repo,
+                {
+                  mode,
+                  pr: Number(msg.pr) || 0,
+                  base: String(msg.base ?? ""),
+                  target: String(msg.target ?? ""),
+                  commit: String(msg.commit ?? ""),
+                },
+                session,
+              );
+              // 发给所有页签，由页面自己按 sessionId 筛：这里刻意不用 send()——
+              // 同一个仓库的其它页签也要知道「盘上现在是什么」，只是不该拿它去重画别人的面板。
+              broadcast({ type: "review.state", dir: repo, sessionId: session, state });
+            } catch {
+              // 不是 git 仓库 / 目录没了：记不住就不记，不打扰用户。
             }
             return;
           }

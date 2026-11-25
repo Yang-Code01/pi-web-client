@@ -26,6 +26,7 @@ import type {
   ReviewMark,
   ReviewMode,
   ReviewOcrStatus,
+  ReviewPick,
   ReviewProgress,
   ReviewRun,
   ReviewRunStatus,
@@ -478,11 +479,55 @@ export function readReviewState(repo: string, session = ""): ReviewState {
     return { repo, runs: [], marks: {} };
   }
   const value = read.value;
-  return {
+  const state: ReviewState = {
     repo: str(value?.repo) || repo,
     runs: Array.isArray(value?.runs) ? value.runs : [],
     marks: value?.marks && typeof value.marks === "object" ? value.marks : {},
   };
+  // 没记过就**不挂这个键**（挂个 `undefined` 会让 `deepEqual({repo, runs, marks})` 的调用方多出一个字段）。
+  const pick = readPick(value?.pick);
+  if (pick) state.pick = pick;
+  return state;
+}
+
+/** `pick` 是老文件里没有的字段：认不出就当成「没记过」，由页面自己用默认值。 */
+function readPick(raw: unknown): ReviewPick | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const v = raw as Record<string, unknown>;
+  const mode = str(v.mode);
+  if (mode !== "workspace" && mode !== "range" && mode !== "commit" && mode !== "pr") return undefined;
+  return {
+    mode,
+    pr: Number(v.pr) || 0,
+    base: str(v.base),
+    target: str(v.target),
+    commit: str(v.commit),
+  };
+}
+
+/**
+ * 面板上「评什么」这一格的选择，按会话落盘。
+ *
+ * 不这么做的话：切会话再切回来（`syncReviewSession()` 会把前端那几格清空）、或者刷新一次页面，
+ * PR 号就没了，于是「开始评审」永远灰着 —— 用户报的「不能评审了」就是这条路。
+ */
+export function setPick(repo: string, pick: ReviewPick, session = ""): ReviewState {
+  const state = readReviewState(repo, session);
+  state.pick = pick;
+  writeReviewState(repo, state, session);
+  return state;
+}
+
+/** 历史只留最近这么多次：一次评审的记录几 KB，全留会让状态文件长成几百 KB，而界面只画得下几条。 */
+export const RUN_KEEP = 20;
+
+/**
+ * 把历史截到 `RUN_KEEP` 条（新的留下）。只该在「加了一条新记录」后调（`startReview()`）。
+ * 不要接到 `writeReviewState()` 上：标一条意见、改一次 pick 也走写盘，在那里截会把用户
+ * 正点开看着的那一条截掉。
+ */
+export function trimRuns(state: ReviewState): void {
+  if (state.runs.length > RUN_KEEP) state.runs = state.runs.slice(-RUN_KEEP);
 }
 
 export function writeReviewState(repo: string, state: ReviewState, session = ""): void {
@@ -513,6 +558,8 @@ export function markFinding(repo: string, key: string, mark: Mark | "", session 
 
 /** 「清理」只清历史评审（留着 marks：那些是「这条我判过了」，不该因为清历史又复活）。 */
 export function cleanRuns(repo: string, session = ""): ReviewState {
+  // 面板上那颗按钮已经删了（历史改成一段可点的记录列表，留不留下不再是用户要点的决定）；
+  // 这个能力留给排障与测试用，别从别处直接调它去清用户的历史。
   const state = readReviewState(repo, session);
   state.runs = [];
   writeReviewState(repo, state, session);
@@ -745,6 +792,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     startedAt,
     finishedAt: "",
     model: o.model ?? "",
+    provider: o.provider ?? "",
     lang: o.lang,
     findings: [],
     resolved: [],
@@ -758,6 +806,10 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     log: [],
   };
   state.runs.push(run);
+  // 历史只留最近 `RUN_KEEP` 次。裁剪放在「加一条新记录」这里，不放 `writeReviewState()`：
+  // 那是所有改动的窄口，标一条意见、改一次 pick 都会走它 —— 在那里截，会把用户正
+  // 点开看着的那一条也截掉（`reviewFocus` 指向的记录一拍就跳回最新一条）。
+  trimRuns(state);
   writeReviewState(root, state, session);
 
   const abort = new AbortController();

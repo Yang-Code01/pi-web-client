@@ -8208,3 +8208,29 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **代价。** 详情接口从 2 次上游请求变成至少 7 次（并行）。它们都在同一份 15 秒超时内并行，实际耗时取决于最慢的那一路；列表有多页时请求数按页数涨（每个列表每 100 行一页）。只读公开仓库时匿名额度（60 次/小时）会消耗得更快 —— 这是接真数据的固有成本。
 
 **验证。** `node --experimental-strip-types bridge/tests/github-e2e.mjs`（36 项）：已合并的 PR `merged === true`、checks = check-runs + commit status 且保持顺序、三种评论按时间排、没有 CI 的仓库 `checks` 为 `[]`、`sample` 字段不存在；分页：上游切页时 check-runs 与三路评论都取全、Link 绕圈不死循环、没有 Link 头时满页再问 / 短页即末页、永远满页时停在 20 页并标 `commentsTruncated`、三路里有一路 500 另两路照常、翻到第 2 页才出错时第 1 页的行还在并标截断。`node probes/pr-detail-layout.mjs`（真桥 + 假 gh + 真 Chromium，32 项）：「示例数据」不出现、已合并说「已合并」且无合并钮、无检查时不出现 checks 段、行内评论带「文件:行」、读全时不出现「还有更多」/「列表不全」而桥标截断时两者都出现。`node probes/github-card-review.mjs` 全过。真机对照：`gh api repos/Yang-Code01/pi-web-client/pulls/683` 回 `{state: closed, merged: true}`，head 提交上 check-runs 与 status 都是 0 条。
+
+## D413 评审记录收成卡片：删「清理历史」、点开看那一次、切模型能接着评（#687；用户 2026-11-25「删除清空按钮。之前的评审记录做成一个卡片」）
+
+**问题。** 用户原话（2026-11-25，配图）：看见 #683 那条评审的卡片后说「1、如图是已经 codeReview 后的。我清空后，切换模型，后，不能评审了。因此我希望。1、删除清空按钮。之前的评审记录做成一个卡片。点开后能看到详细信息。使用什么模型，等等。2、切换模型后，能够重新评审」。
+
+现场核下来是三个独立的毛病叠在一起：**（a）** 面板上那颗「清理历史」是唯一的「清空」入口，而它 `cleanRuns()` 只写 `runs: []`，不碰 PR 号、不碰处理态、也不碰正在跑的进程 —— 用户点完看到历史消失，很自然把后面所有不顺都归到它头上。**（b）** 唯一一次评审的面板上没有「记录」这个概念：`reviewView()` 里 `const asRun = s => s.runs[s.runs.length-1]`，以前评过几次只剩最后一份能看，模型 chip 显示的还是**现在选中的**模型而不是那一次用的。**（c）** 真正确認过的「点不动」是按钮灰：`canRun = mode !== "loading" && … && !missing`，`missing` 在 `pr` 模式下等于 PR 号为空，而灰按钮旁边**不写任何理由**。号为什么空：`syncReviewSession()` 在 `currentId|cwd` 一变就把 `reviewPr` 等「评什么」整组重置，切会话再切回来必然丢；页面刷新也会丢（只活在内存里）。
+
+**决定。**
+
+1. **删掉「清理历史」**（`web/src/review.ts` 控制条底部那颗 `rv-clean` 与 `ReviewActions.onClean` 全部移除）。用户要的是「别让我担心一点就毁了什么」，而不是「给我个更安全的清理」。桥上 `cleanRuns()` 留着（注释写明：留给排障与测试，别从别处调它清用户历史），`review.clean` 帧也留着兼容旧页面。
+2. **历史就是面板主体**：`reviewView()` 多一个 `focus` 入参（空 = 停在列表）与 `runs: ReviewRunCard[]`（**新的在前**）。`active = focused ?? latest`，phase / 意见 / 时间线 / 统计 / 失败原因一律按 `active` 算；只有「active 就是最新那次且还在跑」时实时帧（`input.progress`）才算数 —— 拿别的 run 的进度去画旧记录是错误的来源。
+3. **版式选「列表即主体」（用户从三份样张里挑的 B）**：面板打开就是记录列表（两行卡片：`PR #683 / 标题 / 时间` + `完成 · 4 条意见 · 27 秒 · 1 个文件` + 模型 chip），点一条在**面板里**换成那一次的详情（`‹ 记录` 返回、`完整详情 ›` 开原来的 `ReviewSheet` 浮层）。左窄栏那种（C）在 420px 宽的面板里把意见挤窄了，一行式（A）又把每次的模型与耗时藏进 tooltip。
+4. **详情说的是「那一次」**：`ReviewSheet` 抬头按 `view.runs.find(r => r.id === view.focus)` 取标题 / 时间 / 条数 / 模型，不再用 `this.input.modelName`（当前选中项）。为此 `ReviewRun` 加 `provider` 字段（目录里的 id 是 `cn:glm-5.4` 这种带冒号的，光有 `model` 认不出是哪个 provider），显示用 `runModelId(run)` = `provider/model`；面板再用模型目录把它翻成 `hy4flash · x0.03 · 960K`，查不到就显示 id。
+5. **只留最近 20 次**（`RUN_KEEP = 20`，在 `startReview()` 加完新记录后 `slice(-RUN_KEEP)` —— **不放 `writeReviewState()`**：写盘是所有改动的窄口，标一条意见、改一次 pick 都会走它，在那里截会把用户正点开看着的那一条也截掉，`reviewFocus` 一拍就跳回最新一条）。用户选的是「只留最近 20 次，更早自动滚掉」：一次 run 实测 5–8KB，不设上限的话评几百次会变成几 MB 的 json，而这东西是每次 `review.state` 都整份发到页面的。
+6. **「评什么」按会话记**（`ReviewPick { mode, pr, base, target, commit }`，落 `<state>/review/<repo>/<session>.json` 的 `pick` 字段，前端在 `mode / pr / base / target / commit` 变化时发 `review.pick`）。旧的做法连「刷新都丢」都不算 bug 被记过，但它是 (c) 的另一半：**记忆是让按钮变灰这件事少发生**，而灰按钮旁边必须写理由（`missingWhy`：PR 模式「先选一个 PR（或填个号）」、commit 模式「先填一个提交号」、range 模式「两边分支都选一下」）。
+7. **PR 号自动带上当前分支那条**（用户选的）：`review.prs` 到达时先找 `headRefName === git.branch` 的那条，找不到才退到第一项。拿不到（没 remote / 没有对应的 PR）就还是空 + 理由，不造一个假号。
+
+**为什么不干脆让「切模型」自动重跑一轮。** 重跑要花几分钟与一笔 token，而且在同一个 PR 上重复贴同一批意见；用户要的是「能评」而不是「替我评」。
+
+**代价 / 可改。**
+- 20 次是**按会话**滚，不是按仓库；同一个 PR 在不同会话里评过几次，各算各的（与 D404「历史全留」的存盘粒度一致）。想改就动 `RUN_KEEP` 一个数。
+- 记录卡的「模型」要靠页面还在会话里报过模型（`session.model`）；会话从没报过模型（比如从没跑过一轮）时卡片上是「没记模型」，这是诚实的，不是 bug。
+- `pick` 是「这个人最后一次把面板摆成什么样」，不是权威：桥只把它当默认值回灌，用户改了就以页面为准（`applyReviewPick()` 每个会话只回灌一次，避免「用户改了又被桥按回去」）。
+- 详情里「这次用的模型」只对**新记录**准确；旧的 run 没有 `provider` 字段，退化成显示 `model`（`cn:glm-5.4` 这种），可能仍分不清 provider。
+
+**验证。** `node probes/code-review.mjs`（真桥 + 真 Chromium，30 项全绿）：面板里没有「清理历史」；跑完出现 `.rv-run-card`；点卡片进 `.rv-focus`、里面写着「这次用的模型」、`‹ 记录` 能回列表；`完整详情 ›` 开的浮层还是老样子（分组日志 + 意见 + 一键交给 agent）；PR 模式填号能评；刷新后范围与号自己接上（`pr / 7`）；字号 150% 下按钮仍在视口。`npm --prefix web run typecheck`（tsc + i18n 三语 4366 键 + viewport + layers + 三个 node --test）通过。`npm --prefix bridge run typecheck` 通过，`node --experimental-strip-types bridge/tests/review-unit.mjs` 全绿（新增两条：「写盘本身不裁剪」与「加新记录时留最后 20 次」、「评什么」存得下也读得回）。
