@@ -19,7 +19,7 @@ import { removePidFile, writePidFile } from "./pidfile.ts";
 import { Broker } from "./host/broker.ts";
 import { Children, type SpawnSpec } from "./host/children.ts";
 import { BrainProxy } from "./host/proxy.ts";
-import { CONTROL_PROTO, ControlConn, controlPath, serveControl } from "./host/control.ts";
+import { CONTROL_PROTO, ControlConn, controlPath, serveControl, type ControlMessage } from "./host/control.ts";
 import { UsageLedger } from "./host/ledger.ts";
 
 const VERSION = "0.1.0";
@@ -151,7 +151,6 @@ async function main(): Promise<void> {
   // 用量账本：跨换代、跨整组重启都活着（D385）。开壳时把上次的账读回来。
   const ledger = new UsageLedger(statePath("host", "usage.jsonl"));
   if (ledger.size) log(`账本里已有 ${ledger.size} 个会话的用量`);
-  const sessions = new Map<string, SpawnSpec>();
   /** 每个会话还没被回答的 extension_ui_request（问卷 / 审批）：换脑时页面上的表单不能凭空消失。 */
   const pendingUi = new Map<string, Map<string, string>>();
   /** 每个会话这一轮还在不在跑（换脑后脑要靠它把 running 恢复出来）。 */
@@ -178,6 +177,12 @@ async function main(): Promise<void> {
     return stale;
   };
   let deploy: DeployState = { phase: "idle", at: 0 };
+  /** 所有部署状态变更都从这里走：壳自己记住，同时立刻告诉当前脑。
+   *  不发的话脑的 deployState 会停在 idle，面板的 busy 检查与 running 映射整段失效。 */
+  function publishDeploy(next: DeployState): void {
+    deploy = next;
+    brain?.conn.send({ t: "deploy-state", ...next });
+  }
   let shuttingDown = false;
 
   /** 从一帧 extension_ui_request 里取 id：同一张表单可能同时躺在未确认窗口和 pendingUi 里。 */
@@ -243,7 +248,6 @@ async function main(): Promise<void> {
     },
     exit(sessionId, code, signal) {
       log(`会话 ${sessionId} 的子进程退出（code=${code} signal=${signal}）`);
-      sessions.delete(sessionId);
       turns.delete(sessionId);
       pendingUi.delete(sessionId);
       // 进程没了，这一轮的窗口也就没人可交了：留着它只会让下一次 attach 拿到幽灵行。
@@ -348,7 +352,7 @@ async function main(): Promise<void> {
       // 跳过构建、直接拉一代新脑：e2e 和手工排障用（真部署只是多一步编译）。
       // 改不到壳自己：壳的指纹变了 runDeploy 才会要求整组重启，这里只是换脑。
       else if (action === "swap" && deploy.phase !== "running" && deploy.phase !== "observing" && !starting && !swapChild) {
-        deploy = { phase: "running", at: Date.now() };
+        publishDeploy({ phase: "running", at: Date.now() });
         spawnBrain({ swap: true });
       }
       return void json(res, 200, { ok: true, accepted: true, deploy });
@@ -378,7 +382,7 @@ async function main(): Promise<void> {
       }
       log(`控制通道断开（未完成握手的连接）`);
     });
-    conn.onMessage((msg: any) => {
+    conn.onMessage((msg: ControlMessage) => {
       if (!msg || typeof msg.t !== "string") return;
       if (msg.t === "hello") {
         candidate = onHello(conn, msg);
@@ -389,7 +393,7 @@ async function main(): Promise<void> {
     });
   }
 
-  function onHello(conn: ControlConn, msg: any): Brain | null {
+  function onHello(conn: ControlConn, msg: ControlMessage): Brain | null {
     const next: Brain = {
       id: newBrainId(),
       conn,
@@ -416,6 +420,7 @@ async function main(): Promise<void> {
       conn.send({ t: "welcome", proto: CONTROL_PROTO, peerHeader: "x-pi-peer", hostBuildId, publicPort: port });
       conn.send({ t: "snapshot", hostBuildId, hostStale: hostStale(), publicPort: port, buildId: next.buildId, sessions: snapshotSessions() });
       conn.send({ t: "usage-snapshot", sessions: ledger.snapshot() });
+      conn.send({ t: "deploy-state", ...deploy });
       log(`脑 ${next.pid} 连上（首个，buildId ${next.buildId || "?"}）`);
       return next;
     }
@@ -442,6 +447,7 @@ async function main(): Promise<void> {
       });
       conn.send({ t: "snapshot", hostBuildId, hostStale: hostStale(), publicPort: port, buildId: next.buildId, sessions: snapshotSessions() });
       conn.send({ t: "usage-snapshot", sessions: ledger.snapshot() });
+      conn.send({ t: "deploy-state", ...deploy });
       return next;
     }
     if (expectingSwap && (!swapChild || swapChild.exitCode !== null || swapChild.killed || swapPid === null)) {
@@ -464,7 +470,7 @@ async function main(): Promise<void> {
     return null;
   }
 
-  function onBrainMessage(b: Brain, msg: any): void {
+  function onBrainMessage(b: Brain, msg: ControlMessage): void {
     switch (msg.t) {
       case "ready": {
         b.ready = true;
@@ -500,7 +506,6 @@ async function main(): Promise<void> {
         };
         try {
           const pid = children.spawn(spec);
-          sessions.set(spec.sessionId, spec);
           b.sessions.add(spec.sessionId);
           broker.setOwner(spec.sessionId, b.id);
           b.conn.send({ t: "spawned", rid: msg.rid, pid });
@@ -601,7 +606,7 @@ async function main(): Promise<void> {
             return;
           }
           const { ok: _ok, reason: _reason, ...rest } = deploy;
-          deploy = { ...rest, phase: "running", at: Date.now() };
+          publishDeploy({ ...rest, phase: "running", at: Date.now() });
           spawnBrain({ swap: true });
         }
         return;
@@ -649,14 +654,13 @@ async function main(): Promise<void> {
     if (starting && starting.pid === pid) return failDeploy(starting, reason);
     log(`换脑失败：${reason}`);
     swapPid = null;
-    deploy = { phase: "failed", at: Date.now(), ok: false, reason };
-    brain?.conn.send({ t: "deploy-state", ...deploy });
+    publishDeploy({ phase: "failed", at: Date.now(), ok: false, reason });
   }
 
   function observeThenSwitch(next: Brain): void {
     const old = brain;
     if (!old) return;
-    deploy = { ...deploy, phase: "observing" };
+    publishDeploy({ ...deploy, phase: "observing" });
     log(`新脑 ${next.pid} 就绪，观察 ${OBSERVE_MS / 1000}s 再切`);
     const timer = setTimeout(() => {
       if (starting !== next) return;
@@ -704,7 +708,7 @@ async function main(): Promise<void> {
         /* 已经没了 */
       }
     }, 5000).unref();
-    deploy = { ...deploy, phase: "switched", at: Date.now(), ok: true, brainPid: next.pid };
+    publishDeploy({ ...deploy, phase: "switched", at: Date.now(), ok: true, brainPid: next.pid });
     hostBuildId = selfFingerprint();
   }
 
@@ -713,7 +717,7 @@ async function main(): Promise<void> {
     swapPid = null;
     swapChild = null;
     expectingSwap = false;
-    deploy = { ...deploy, phase: "failed", at: Date.now(), ok: false, reason };
+    publishDeploy({ ...deploy, phase: "failed", at: Date.now(), ok: false, reason });
     if (starting === b) starting = null;
     try {
       b.conn.send({ t: "reject", reason });
@@ -721,8 +725,6 @@ async function main(): Promise<void> {
     } catch {
       /* 已经没了 */
     }
-    const old = brain;
-    if (old?.ready) old.conn.send({ t: "deploy-state", ...deploy });
   }
 
   async function runDeploy(branch?: string, stash = false): Promise<void> {
@@ -730,7 +732,7 @@ async function main(): Promise<void> {
       log("已有一轮部署在跑，忽略这次");
       return;
     }
-    deploy = { phase: "running", at: Date.now() };
+    publishDeploy({ phase: "running", at: Date.now() });
     const before = hostBuildId;
     // 壳自己的参数一律用「开关 + 值」的写法：worker 是 indexOf 找开关、取下一个参数。
     const args = [path.join(root, "scripts", "hotdeploy.mjs"), "--mode", "brain", "--port", String(port)];
@@ -767,15 +769,13 @@ async function main(): Promise<void> {
     });
     if (spawnState.error || code !== 0) {
       const reason = spawnState.error ? `部署子进程起不来：${spawnState.error.message}` : `构建失败（退出码 ${code}）`;
-      deploy = { phase: "failed", at: Date.now(), ok: false, reason };
-      brain?.conn.send({ t: "deploy-state", ...deploy });
+      publishDeploy({ phase: "failed", at: Date.now(), ok: false, reason });
       return;
     }
     const after = selfFingerprint();
     if (after !== before) {
       // 壳自己变了：整组重启是唯一安全的出路（用户选定）。此刻不切，让面板红字预告。
-      deploy = { phase: "needs-group-restart", at: Date.now(), ok: false, reason: "壳的代码也变了，需要整组重启" };
-      brain?.conn.send({ t: "deploy-state", ...deploy });
+      publishDeploy({ phase: "needs-group-restart", at: Date.now(), ok: false, reason: "壳的代码也变了，需要整组重启" });
       return;
     }
     spawnBrain({ swap: true });
@@ -816,8 +816,7 @@ async function main(): Promise<void> {
         swapPid = null;
         expectingSwap = false;
         if (deploy.phase === "running" || deploy.phase === "observing") {
-          deploy = { phase: "failed", at: Date.now(), ok: false, reason };
-          brain?.conn.send({ t: "deploy-state", ...deploy });
+          publishDeploy({ phase: "failed", at: Date.now(), ok: false, reason });
         }
       }
       if (starting && starting.pid === pid) {

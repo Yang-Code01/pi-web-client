@@ -5,6 +5,7 @@
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { controlPath, serveControl } from "../dist/host/control.js";
 
@@ -17,7 +18,7 @@ if (process.platform === "win32") {
 const sock = controlPath(0);
 const dir = path.dirname(sock);
 assert.ok(sock.includes(`pi-web-${process.getuid()}`), "socket 要在按 uid 分开的目录里，不能躺在共享 tmpdir 根下");
-assert.equal(path.dirname(sock), dir);
+assert.notEqual(dir, os.tmpdir(), "socket 不能直接躺在共享 tmpdir 根下");
 
 const server = await serveControl(sock, () => {});
 try {

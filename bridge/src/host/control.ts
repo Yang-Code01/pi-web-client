@@ -17,6 +17,16 @@ import { LineSplitter } from "./broker.ts";
 export const CONTROL_PROTO = 1;
 
 /**
+ * 控制通道的一帧：`t` 是消息类型，其余字段随类型变化（hello / spawn / attach / line…）。
+ * 具体字段由两端的 handler 按 `t` 解释。这里至少把「必须是带 t 的对象」钉在边界上，
+ * 不让 JSON.parse 出来的任意值直接流进业务代码。
+ */
+export interface ControlMessage {
+  t: string;
+  [key: string]: unknown;
+}
+
+/**
  * Unix 上控制套接字所在目录必须是当前用户独占的：放在共享的 tmpdir 根下，别人可以先占住
  * 路径（拒绝服务），也能直接连上来冒充脑。Windows 的命名管道自带 ACL，不需要这一层。
  */
@@ -55,7 +65,7 @@ export function controlPath(port: number): string {
 export class ControlConn {
   readonly socket: net.Socket;
   private readonly splitter = new LineSplitter();
-  private readonly msgListeners: ((msg: any) => void)[] = [];
+  private readonly msgListeners: ((msg: ControlMessage) => void)[] = [];
   private readonly closeListeners: (() => void)[] = [];
   private closed = false;
 
@@ -75,12 +85,15 @@ export class ControlConn {
     const { lines } = this.splitter.push(chunk);
     for (const line of lines) {
       if (!line.trim()) continue;
-      let msg: any;
+      let parsed: unknown;
       try {
-        msg = JSON.parse(line);
+        parsed = JSON.parse(line);
       } catch {
         continue;
       }
+      if (!parsed || typeof parsed !== "object") continue;
+      if (typeof (parsed as { t?: unknown }).t !== "string") continue;
+      const msg = parsed as ControlMessage;
       for (const cb of this.msgListeners) cb(msg);
     }
   }
@@ -98,7 +111,7 @@ export class ControlConn {
     }
   }
 
-  onMessage(cb: (msg: any) => void): void {
+  onMessage(cb: (msg: ControlMessage) => void): void {
     this.msgListeners.push(cb);
   }
 
@@ -111,7 +124,6 @@ export class ControlConn {
   }
 }
 
-/** 壳这一侧：监听控制通道，每来一个脑给一根 ControlConn。 */
 /** 探测现有控制口是不是还有壳在听。连得上就是活的；连不上才是上次留下的死文件。 */
 function controlInUse(socketPath: string): Promise<boolean> {
   return new Promise((resolve) => {

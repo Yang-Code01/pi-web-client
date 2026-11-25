@@ -6,7 +6,7 @@
  * 不必知道管道握在谁手里。
  */
 import { EventEmitter } from "node:events";
-import { connectControl, type ControlConn } from "./host/control.ts";
+import { connectControl, type ControlConn, type ControlMessage } from "./host/control.ts";
 
 export interface SpawnRequest {
   sessionId: string;
@@ -36,6 +36,13 @@ export interface DeployState {
   brainPid?: number;
 }
 
+interface AskEntry {
+  resolve: (v: unknown) => void;
+  reject: (e: Error) => void;
+  timer: NodeJS.Timeout;
+  failType: string;
+}
+
 interface Watcher {
   line: (line: string, seq: number) => void;
   stderr: (text: string) => void;
@@ -45,10 +52,7 @@ interface Watcher {
 export class BrainLink extends EventEmitter {
   private readonly conn: ControlConn;
   private readonly watchers = new Map<string, Watcher>();
-  private readonly asks = new Map<
-    string,
-    { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout; failType: string }
-  >();
+  private readonly asks = new Map<string, AskEntry>();
   private rid = 0;
   /** 壳的构建指纹（面板用来提示「壳也变了」）。 */
   hostBuildId = "";
@@ -69,7 +73,7 @@ export class BrainLink extends EventEmitter {
   constructor(conn: ControlConn) {
     super();
     this.conn = conn;
-    conn.onMessage((msg: any) => this.onMessage(msg));
+    conn.onMessage((msg: ControlMessage) => this.onMessage(msg));
     conn.onClose(() => {
       // 壳没了：脑什么也做不了（管道在壳手里）。先把还挂着的 spawn/attach 立刻结算成
       // 「连接断开」，别让调用方白等 10–15 秒超时（那时报的「超时」还会掩盖真正的原因）。
@@ -103,7 +107,7 @@ export class BrainLink extends EventEmitter {
         this.off("closed", onClosed);
         fn();
       };
-      const onWelcome = (w: any): void => {
+      const onWelcome = (w: ControlMessage): void => {
         this.hostBuildId = String(w.hostBuildId ?? "");
         this.publicPort = Number(w.publicPort ?? 0);
         finish(() => resolve({ hostBuildId: this.hostBuildId, publicPort: this.publicPort }));
@@ -152,11 +156,15 @@ export class BrainLink extends EventEmitter {
   }
 
   spawnSession(req: SpawnRequest): Promise<{ pid: number }> {
-    return this.ask({ t: "spawn", sessionId: req.sessionId, argv: req.argv, cwd: req.cwd, env: req.env }, "spawned", "spawn-failed");
+    return this.ask<{ pid: number }>(
+      { t: "spawn", sessionId: req.sessionId, argv: req.argv, cwd: req.cwd, env: req.env },
+      "spawned",
+      "spawn-failed",
+    );
   }
 
   attachSession(sessionId: string): Promise<AttachResult> {
-    return this.ask({ t: "attach", sessionId }, "attached", "attach-failed");
+    return this.ask<AttachResult>({ t: "attach", sessionId }, "attached", "attach-failed");
   }
 
   /** 写一帧到 pi 的 stdin；壳是唯一的写者（换脑时老脑排队的帧不会跟着它消失）。 */
@@ -186,14 +194,14 @@ export class BrainLink extends EventEmitter {
     this.send({ t: "shutdown", scope });
   }
 
-  private ask(payload: Record<string, unknown>, okType: string, failType: string): Promise<any> {
+  private ask<T>(payload: Record<string, unknown>, okType: string, failType: string): Promise<T> {
     const rid = `q${++this.rid}`;
-    return new Promise((resolve, reject) => {
+    return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.asks.delete(rid);
         reject(new Error(`壳 ${okType} 超时`));
       }, 15_000);
-      this.asks.set(rid, { resolve, reject, timer, failType });
+      this.asks.set(rid, { resolve: (v) => resolve(v as T), reject, timer, failType });
       if (!this.send({ ...payload, rid })) {
         this.asks.delete(rid);
         clearTimeout(timer);
@@ -211,10 +219,7 @@ export class BrainLink extends EventEmitter {
     this.asks.clear();
   }
 
-  private settle(
-    rid: string,
-    fn: (entry: { resolve: (v: any) => void; reject: (e: Error) => void; failType: string }) => void,
-  ): void {
+  private settle(rid: string, fn: (entry: AskEntry) => void): void {
     const entry = this.asks.get(rid);
     if (!entry) return;
     this.asks.delete(rid);
@@ -222,7 +227,7 @@ export class BrainLink extends EventEmitter {
     fn(entry);
   }
 
-  private onMessage(msg: any): void {
+  private onMessage(msg: ControlMessage): void {
     switch (msg.t) {
       case "welcome":
         this.emit("welcome", msg);
@@ -257,8 +262,8 @@ export class BrainLink extends EventEmitter {
         this.emit("usage-snapshot", this.usageTotals);
         return;
       case "deploy-state":
-        this.deployState = msg as DeployState;
-        this.emit("deploy-state", msg as DeployState);
+        this.deployState = msg as unknown as DeployState;
+        this.emit("deploy-state", this.deployState);
         return;
       case "host-stale":
         this.hostStale = Boolean(msg.stale);

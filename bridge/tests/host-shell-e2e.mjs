@@ -229,11 +229,15 @@ try {
   await until(async () => readBrain(oldPid)?.lines >= 3, "s3 的 tick 攒起来");
   await sleep(400); // 让几行排进未确认窗口
   await brainGet("/deploy?action=swap", oldPid);
+  // 壳把 deploy 置成 running/observing 时必须同步告诉脑：否则脑的 deployState 停在 idle，
+  // 有壳模式下面板的 busy 检查和 running 映射整段失效。
+  await until(() => readBrain(oldPid)?.deploy?.phase === "running", "老脑收到 running");
   const nextBrain = await until(async () => {
     const b = (await get("/api/host/status")).body?.brain;
     return b?.ready && b.pid !== oldPid ? b : null;
   }, "新一代脑接管");
   await brainOf(nextBrain.pid);
+  await until(() => readBrain(nextBrain.pid)?.deploy?.phase === "switched", "新脑收到 switched");
   assert.equal(
     (await get("/api/host/status")).body.brain.buildId,
     "fake-brain-1",
