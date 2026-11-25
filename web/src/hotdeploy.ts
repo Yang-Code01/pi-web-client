@@ -243,7 +243,7 @@ class HotdeployPanel {
     this.stashBtn.onclick = () => {
       if (
         !confirm(
-          this.snap?.hosted
+          this.snap?.hosted && !this.snap.hostStale
             ? tr("将先暂存主检出的未提交改动，编译完成后自动恢复；本次构建不包含这些改动。继续？")
             : tr("将先暂存主检出的未提交改动，编译完成后自动恢复；本次构建不包含这些改动。部署会切断正在跑的会话，继续？"),
         )
@@ -591,7 +591,7 @@ class HotdeployPanel {
   private warnBanner(): HTMLElement {
     const box = this.banner("warn");
     const n = this.snap?.sessions ?? 0;
-    box.textContent = this.snap?.hosted
+    box.textContent = this.snap?.hosted && !this.snap.hostStale
       ? tr("{n} 个会话正在跑。换代只换桥本身，它们不会被切断，页面会自己接上。", { n })
       : tr("会切断 {n} 个正在跑的会话（含你现在这个），部署完这页要刷新一次。", { n });
     return box;

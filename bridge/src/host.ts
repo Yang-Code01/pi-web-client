@@ -158,6 +158,8 @@ async function main(): Promise<void> {
   let starting: Brain | null = null;
   /** 刚为换脑拉起了一代、还没握手：它的 hello 要当候选，而不是「多余的脑」。 */
   let expectingSwap = false;
+  /** 这次交换对应的子进程；握手前就退出时靠它认人，而不是只看 pid。 */
+  let swapChild: ReturnType<typeof spawn> | null = null;
   let hostBuildId = selfFingerprint();
   /**
    * 磁盘上的壳代码已经和正在跑的这份不一样了？面板要在用户点下去之前就说「这一次会连会话
@@ -327,7 +329,7 @@ async function main(): Promise<void> {
       if (action === "run") void runDeploy(url.searchParams.get("branch") ?? undefined, url.searchParams.get("stash") === "1");
       // 跳过构建、直接拉一代新脑：e2e 和手工排障用（真部署只是多一步编译）。
       // 改不到壳自己：壳的指纹变了 runDeploy 才会要求整组重启，这里只是换脑。
-      else if (action === "swap" && deploy.phase !== "running" && deploy.phase !== "observing") {
+      else if (action === "swap" && deploy.phase !== "running" && deploy.phase !== "observing" && !starting && !swapChild) {
         deploy = { phase: "running", at: Date.now() };
         spawnBrain({ swap: true });
       }
@@ -395,7 +397,14 @@ async function main(): Promise<void> {
       log(`脑 ${next.pid} 连上（首个，buildId ${next.buildId || "?"}）`);
       return next;
     }
-    if (expectingSwap && (!swapPid || swapPid === next.pid)) {
+    if (
+      expectingSwap &&
+      swapChild &&
+      swapChild.exitCode === null &&
+      !swapChild.killed &&
+      swapPid !== null &&
+      swapPid === next.pid
+    ) {
       // 上一次拉起的候选脑还没切就被这次顶掉了（重试 / 双开）：把旧连接关掉，别让它挂在壳上。
       if (starting && starting !== next && starting.conn.alive) starting.conn.close();
       starting = next;
@@ -411,6 +420,19 @@ async function main(): Promise<void> {
       });
       conn.send({ t: "snapshot", hostBuildId, hostStale: hostStale(), publicPort: port, buildId: next.buildId, sessions: snapshotSessions() });
       conn.send({ t: "usage-snapshot", sessions: ledger.snapshot() });
+      return next;
+    }
+    if (expectingSwap && (!swapChild || swapChild.exitCode !== null || swapChild.killed || swapPid === null)) {
+      // 等的那代脑已经不在了：不把 deploy 从 running 里放出来，后面每次部署都会被当成「已有
+      // 一轮在跑」吞掉；同时这枚刚连上的候选也不能当它用。
+      const gone = swapPid ?? -1;
+      log(`换脑候选 ${next.pid} 到达时，这次交换的子进程已经不在了（pid ${gone > 0 ? gone : "?"}），拒绝`);
+      swapChild = null;
+      swapPid = null;
+      expectingSwap = false;
+      failDeployPid(gone, "候选脑在握手前退出");
+      conn.send({ t: "reject", reason: "swap-child-gone" });
+      conn.close();
       return next;
     }
     // 既不是首个、也没有人在等它：多出来的脑，让它退。
@@ -535,6 +557,11 @@ async function main(): Promise<void> {
         if (msg.action === "run") void runDeploy(msg.branch ? String(msg.branch) : undefined, Boolean(msg.stash));
         // 跳过构建、直接换脑：e2e 用它考「老脑→新脑」那一整段，真部署只是多一步编译。
         else if (msg.action === "swap") {
+          if (deploy.phase === "running" || deploy.phase === "observing" || starting || swapChild) {
+            log("已有一轮部署/换脑在跑，忽略这次 swap");
+            b.conn.send({ t: "deploy-state", ...deploy });
+            return;
+          }
           const { ok: _ok, reason: _reason, ...rest } = deploy;
           deploy = { ...rest, phase: "running", at: Date.now() };
           spawnBrain({ swap: true });
@@ -599,6 +626,7 @@ async function main(): Promise<void> {
     brain = next;
     starting = null;
     swapPid = null;
+    swapChild = null;
     expectingSwap = false;
     next.askedAdopt = true;
     // 老脑认识、新脑还不认识的会话：把所有权先放空，等新脑 attach 时再给。
@@ -636,6 +664,7 @@ async function main(): Promise<void> {
   function failDeploy(b: Brain, reason: string): void {
     log(`换脑失败：${reason}`);
     swapPid = null;
+    swapChild = null;
     expectingSwap = false;
     deploy = { ...deploy, phase: "failed", at: Date.now(), ok: false, reason };
     if (starting === b) starting = null;
@@ -727,6 +756,7 @@ async function main(): Promise<void> {
     child.stderr.on("data", (c: Buffer) => process.stderr.write(c));
     const pid = child.pid;
     if (opts.swap && pid) swapPid = pid;
+    if (opts.swap) swapChild = child;
     let errored = false;
     // 和部署子进程同一条教训：spawn 失败只发 'error'。脑起不来不该把持有公网口和全部
     // 会话管道的壳带走；还在等这一代脑的部署也必须当场收尾，不能永远停在 running。
@@ -734,8 +764,9 @@ async function main(): Promise<void> {
       errored = true;
       const reason = `脑进程起不来：${err.message}`;
       log(reason);
-      if (opts.swap) {
-        if (swapPid === pid || swapPid === null) swapPid = null;
+      if (opts.swap && swapChild === child) {
+        swapChild = null;
+        swapPid = null;
         expectingSwap = false;
         if (deploy.phase === "running" || deploy.phase === "observing") {
           deploy = { phase: "failed", at: Date.now(), ok: false, reason };
@@ -750,11 +781,12 @@ async function main(): Promise<void> {
     });
     child.on("exit", (code, signal) => {
       if (shuttingDown || errored) return;
-      if (swapPid === pid) {
+      if (swapChild === child) {
+        swapChild = null;
         swapPid = null;
         expectingSwap = false;
         if (deploy.phase === "running" || deploy.phase === "observing") {
-          failDeployPid(pid, `新脑在切换前退出（${code ?? signal}）`);
+          failDeployPid(pid ?? -1, `新脑在切换前退出（${code ?? signal}）`);
         }
       }
       if (starting && starting.pid === pid) {

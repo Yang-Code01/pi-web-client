@@ -60,22 +60,33 @@ if (!health.brain) {
   process.exit(2);
 }
 
-const res = await fetch(`${base}/api/host/stop`, {
-  method: "POST",
-  headers: {
-    "content-type": "application/json",
-    // 与壳的 sameOrigin() 对齐：命令行没有浏览器，自己写这一行就是「这个页面发的」。
-    origin: base,
-    "sec-fetch-site": "same-origin",
-  },
-  body: "{}",
-});
-const body = await res.json().catch(() => ({}));
-if (!res.ok) {
-  console.error(`停机请求被拒（HTTP ${res.status}）：${body?.code ?? ""} ${body?.message ?? ""}`.trim());
-  process.exit(1);
+let res;
+try {
+  res = await fetch(`${base}/api/host/stop`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      // 与壳的 sameOrigin() 对齐：命令行没有浏览器，自己写这一行就是「这个页面发的」。
+      origin: base,
+      "sec-fetch-site": "same-origin",
+    },
+    body: "{}",
+    // 服务可能在收下请求后直接断开，也可能卡住不回；两种都不能让脚本挂死或抛未处理异常。
+    signal: AbortSignal.timeout(5000),
+  });
+} catch (err) {
+  const e = err instanceof Error ? err : new Error(String(err));
+  const why = e.name === "TimeoutError" ? "5 秒内没有响应" : e.message;
+  console.log(`停机请求没有回执（${why}），继续看 ${base} 是不是已经停了…`);
 }
-console.log(`已发出停机请求（壳 pid ${health.pid}，脑 pid ${health.brain.pid}）：先收会话，再退出…`);
+if (res) {
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.error(`停机请求被拒（HTTP ${res.status}）：${body?.code ?? ""} ${body?.message ?? ""}`.trim());
+    process.exit(1);
+  }
+  console.log(`已发出停机请求（壳 pid ${health.pid}，脑 pid ${health.brain.pid}）：先收会话，再退出…`);
+}
 
 const until = Date.now() + 20_000;
 while (Date.now() < until) {

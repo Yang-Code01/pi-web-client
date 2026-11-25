@@ -506,6 +506,11 @@ export async function handleHotdeploy(
           run: { pid: 0, branch, step: 0, phase: "running", startedAt: new Date().toISOString(), port: host.publicPort },
         }), true;
       }
+      // 删工作树不换进程，脑自己就能干；有壳时不能掉进下面的 405，否则这个功能会悄悄消失。
+      if (p === "/api/hotdeploy/remove-worktree" && req.method === "POST") {
+        await removeWorktree(req, res, ctx);
+        return true;
+      }
       fail(res, 405, "hotdeploy_method", "这个接口不支持这个请求方法");
       return true;
     } catch (err) {

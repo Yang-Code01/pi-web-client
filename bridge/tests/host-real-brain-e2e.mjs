@@ -87,16 +87,19 @@ const host = spawn(process.execPath, [HOST], {
 host.stdout.on("data", (c) => logs.push(String(c)));
 host.stderr.on("data", (c) => logs.push(String(c)));
 let exitCode = null;
-host.on("exit", (code) => {
-  exitCode = code ?? 0;
+let exitSignal = null;
+host.on("exit", (code, signal) => {
+  // 被信号终止时 code 是 null。记成 0 会把「壳崩了」当成「正常停机」通过断言。
+  exitCode = code ?? -1;
+  exitSignal = signal;
 });
 
 const getJson = async (p) => {
   const res = await fetch(base + p);
   return res.json();
 };
-const post = async (p) => {
-  const res = await fetch(base + p, { method: "POST", headers: origins, body: "{}" });
+const post = async (p, extraHeaders = {}) => {
+  const res = await fetch(base + p, { method: "POST", headers: { ...origins, ...extraHeaders }, body: "{}" });
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 
@@ -231,15 +234,29 @@ try {
   process.kill(respawned.pid, "SIGKILL");
   await until(async () => {
     const b = (await getJson("/api/host/status")).brain;
-    return b?.ready ? b : null;
+    // 不能只等 ready：刚 kill 的那代还在 status 里挂着 ready=true，要等 pid 真的换掉。
+    return b?.ready && b.pid !== respawned.pid ? b : null;
   }, "再拉一代脑");
   assert.equal(answersSoFar().length, 1, "整段流程里审批只被答过一次");
 
-  // 7. 停机入口：整组一起收
+  // 7. 有壳时删工作树接口也不能掉进 405：它不换进程，脑自己就能干。
+  // 换过两代脑之后登录 cookie 可能已经不算数，先重新登录，别让 401 把这条路由的断言遮住。
+  const login2 = await fetch(`${base}/api/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ passphrase: "test" }),
+  });
+  assert.equal(login2.status, 200, "重新登录应该还能进");
+  const cookie2 = (login2.headers.get("set-cookie") ?? "").split(";")[0];
+  const rm = await post("/api/hotdeploy/remove-worktree", { cookie: cookie2 });
+  assert.equal(rm.status, 400, "有壳时删工作树接口不该退化成 405");
+  assert.equal(rm.body?.code, "hotdeploy_path", "空路径应该走到参数校验");
+
+  // 8. 停机入口：整组一起收
   const stopped = await post("/api/host/stop");
   assert.equal(stopped.status, 200, "停机接口应该放行");
   await until(async () => exitCode !== null, "壳退出", 15000);
-  assert.equal(exitCode, 0, "主动停机应该是 0");
+  assert.equal(exitCode, 0, exitSignal ? `主动停机被信号 ${exitSignal} 终止` : "主动停机应该是 0");
   console.log("host-real-brain-e2e: ok");
 } catch (err) {
   console.error(String(err?.stack ?? err));

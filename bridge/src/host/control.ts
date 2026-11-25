@@ -16,10 +16,39 @@ import { LineSplitter } from "./broker.ts";
 /** 协议版本。壳与脑对不上就拒绝握手（整组重启是唯一出路，见 D385）。 */
 export const CONTROL_PROTO = 1;
 
+/**
+ * Unix 上控制套接字所在目录必须是当前用户独占的：放在共享的 tmpdir 根下，别人可以先占住
+ * 路径（拒绝服务），也能直接连上来冒充脑。Windows 的命名管道自带 ACL，不需要这一层。
+ */
+function privateDir(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : "user";
+  return path.join(os.tmpdir(), `pi-web-${uid}`);
+}
+
+function ensurePrivateDir(dir: string): void {
+  // 只整理我们自己的目录；调用方传了别的路径就原样交回给系统，不去改别人的权限。
+  if (path.resolve(dir) !== path.resolve(privateDir())) return;
+  let st: fs.Stats | null = null;
+  try {
+    st = fs.lstatSync(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (!st) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    st = fs.lstatSync(dir);
+  }
+  if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`控制通道目录不是普通目录：${dir}`);
+  if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
+    throw new Error(`控制通道目录不属于当前用户：${dir}`);
+  }
+  fs.chmodSync(dir, 0o700);
+}
+
 export function controlPath(port: number): string {
   return process.platform === "win32"
     ? `\\\\.\\pipe\\pi-web-brain-${port}`
-    : path.join(os.tmpdir(), `pi-web-brain-${port}.sock`);
+    : path.join(privateDir(), `brain-${port}.sock`);
 }
 
 /** 一根通道：发一帧，或收一帧。两边对称，壳和脑共用。 */
@@ -84,7 +113,9 @@ export class ControlConn {
 
 /** 壳这一侧：监听控制通道，每来一个脑给一根 ControlConn。 */
 export function serveControl(socketPath: string, onConn: (conn: ControlConn) => void): Promise<net.Server> {
-  if (process.platform !== "win32") {
+  const unix = process.platform !== "win32";
+  if (unix) {
+    ensurePrivateDir(path.dirname(socketPath));
     // 上一轮被 kill 时 unix socket 文件会留在盘上；不删就 EADDRINUSE。
     try {
       if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
@@ -95,7 +126,17 @@ export function serveControl(socketPath: string, onConn: (conn: ControlConn) => 
   const server = net.createServer((socket) => onConn(new ControlConn(socket)));
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(socketPath, () => resolve(server));
+    server.listen(socketPath, () => {
+      if (unix && path.resolve(path.dirname(socketPath)) === path.resolve(privateDir())) {
+        // 目录 0700 已经挡住别的用户；socket 再收紧到 0600，别依赖 umask。
+        try {
+          fs.chmodSync(socketPath, 0o600);
+        } catch {
+          /* 文件系统不支持 chmod 时目录权限仍然是边界 */
+        }
+      }
+      resolve(server);
+    });
   });
 }
 
