@@ -152,6 +152,12 @@ type Tab = "sessions" | "chat" | "queue";
 const MODEL_REASK_MS = 15_000;
 
 /**
+ * 评审模型按会话记的条数上限（D409）：切回某个会话还记得自己那个模型，一次页面见过的会话就那么多；
+ * 会话删了没人来回收这条 Map，所以留个上限，超了丢最早挑的那条（那一次会话回落到默认模型）。
+ */
+const REVIEW_MODEL_MEMORY = 200;
+
+/**
  * 点了「继续」之后多久内不再认第二次点击（D159）。`pi.status(running)` 回到页面之前按钮还亮着，
  * 这期间连点会排上两条一模一样的消息。按会话记，不是按页面：切到别的会话再点不该被这边吞掉。
  */
@@ -473,7 +479,29 @@ export class App {
   private reviewSessionKey = "";
   /** 定时补问一次：页面重连后没人触发重画时，光靠 render 里的自愈等不到下一次重画。 */
   private reviewRetryTimer: number | null = null;
-  private reviewModel = "";
+  /**
+   * 评审用的模型，**按会话记**（`会话id → provider/id`）。它是「这个会话拿什么去评」，跟号、范围、
+   * 分支一样属于会话：A 里挑过的模型不许被 B 挑的顶掉，切回 A 还是 A 自己那个（D404 第 2 条据此改）。
+   * 只活在这一次页面里 —— 刷新后回「默认模型」，不落 localStorage（那是「这台机器」的偏好，不是会话的）。
+   * 条数有上限，见 `REVIEW_MODEL_MEMORY`。
+   */
+  private reviewModels = new Map<string, string>();
+  private get reviewModel(): string {
+    return this.reviewModels.get(this.currentId ?? "") ?? "";
+  }
+  private set reviewModel(model: string) {
+    const key = this.currentId;
+    if (!key) return; // 没会话就没有「这个会话的模型」，别落到空 key 上
+    // 先删再塞：重新插入 = 记成最近用过的那条（Map 保留插入顺序，下面按它丢最早的）。
+    this.reviewModels.delete(key);
+    if (!model) return;
+    this.reviewModels.set(key, model);
+    while (this.reviewModels.size > REVIEW_MODEL_MEMORY) {
+      const oldest = this.reviewModels.keys().next().value;
+      if (oldest === undefined) break;
+      this.reviewModels.delete(oldest);
+    }
+  }
   private reviewRefs: string[] = [];
   private reviewAsked = "";
   /** 桥算出来的仓库根（页面只给 cwd）；帧用它做过滤。 */
@@ -18692,7 +18720,9 @@ export class App {
    * 留着它们，换会话后点「开始评审」就会拿上一个会话的号去评这个目录的仓库：号碰巧存在，
    * 就会得到一份**看起来正常**的别人的结论（用户报的就是「新会话还挂着上一个会话的 PR 号」）。
    * 所以这里不是「顺便清一下」，而是这条面板的硬规矩：进新会话 = 从默认值开始。
-   * 用户自己的偏好（模型、ocr 装没装）不在此列，它们在下面继续活着。
+   * 模型也跟着会话走，但它不是清成默认值，而是**每个会话各记一份**（`reviewModels`）：
+   * 切回原来那个会话时还是它自己挑的那个；没挑过的会话从「默认模型」开始。
+   * 剩下的偏好（ocr 装没装）不在此列，它们在下面继续活着。
    */
   private syncReviewSession(): void {
     const key = `${this.currentId ?? ""}|${this.reviewDir()}`;
