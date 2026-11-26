@@ -8334,6 +8334,7 @@ html[data-ui="mac"] .msg.user .body ::selection { background: var(--accent-ink);
 5. **展开状态按 `item.id` 存 `longOpen`**，和 `collapsed` 一样活过重建与切会话（工具输出是流式长出来的，`mergeTool` 会重画）。
 6. **设置里改了就就地重画**（`ChatView.redraw()` → `reset(loaded, history)`），不重开会话、不丢历史索引；**但模型在跑时不重画** —— `reset` 会拿 `loaded` 里那份没长完的正文重建，流式内容当场丢，所以记 `redrawPending`、等 `setRunning(false)` 收尾再画。
 7. **三档默认**：`longCardUser: true`（就是用户要的那一档）、`longCardAssistant: false`（助手有右上角折叠钮，先不换）、`longCardTool: false`（工具输出本来就有 260px 内滚）。关着的那几档**原样走老路**，撤掉这版就回到今天的样子。
+8. **带图的消息不收卡**（`item.images?.length` 时走老的 `foldable`）：卡里只露三行正文，图片是附件、不是「太长」，不能藏在卡后面。
 
 **为什么按高度、不按字数。** 同一段 931 字，1280px 宽的列里 22 行、窄栏里 40 行；按字数会在宽屏里也收卡，用户明明看得完。`foldable` 已经是按高度量的，再用第二个标准会自相矛盾。
 

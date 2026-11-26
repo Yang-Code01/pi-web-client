@@ -61,6 +61,8 @@ const longText = Array.from(
 const shortText = "短问题：这个不该出现卡片。";
 const longAnswer = Array.from({ length: 30 }, (_, i) => `第 ${i + 1} 行：助手的长回答，默认还是走右上角那颗折叠钮。`).join("\n");
 const toolOut = Array.from({ length: 40 }, (_, i) => `[out ${String(i + 1).padStart(2, "0")}] lorem ipsum dolor sit amet, consectetur adipiscing elit.`).join("\n");
+// 带图的消息照样可以很长（长文 + 一张图）：这一条用来确认「带图不收卡」—— 卡里只露三行正文，图会被藏到卡后面。
+const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
 
 const rows = [
   { type: "session", version: 3, id, timestamp: at, cwd: CWD },
@@ -81,7 +83,20 @@ const rows = [
     timestamp: at,
     message: { role: "toolResult", toolCallId: "t1", toolName: "bash", isError: false, content: [{ type: "text", text: toolOut }] },
   },
-  { type: "session_info", id: "n1", parentId: "m5", timestamp: at, name: "长卡片" },
+  {
+    type: "message",
+    id: "m6",
+    parentId: "m5",
+    timestamp: at,
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text: longText },
+        { type: "image", data: PIXEL.split(",")[1], mimeType: "image/png" },
+      ],
+    },
+  },
+  { type: "session_info", id: "n1", parentId: "m6", timestamp: at, name: "长卡片" },
 ];
 fs.writeFileSync(path.join(dir, `${id}.jsonl`), rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
 
@@ -92,7 +107,7 @@ fs.writeFileSync(path.join(dir, `${id}.jsonl`), rows.map((r) => JSON.stringify(r
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^PI_/i.test(k)));
 const bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
   cwd: REPO,
-  env: { ...cleanEnv, PI_WEB_PORT: String(PORT), PI_WEB_STATE: STATE, PI_WEB_TUNNEL: "0", PI_AGENT_DIR: AGENT },
+  env: { ...cleanEnv, PI_WEB_PORT: String(PORT), PI_PEER_PORT: String(PORT + 1), PI_WEB_STATE: STATE, PI_WEB_TUNNEL: "0", PI_AGENT_DIR: AGENT },
   stdio: ["ignore", "pipe", "pipe"],
 });
 bridge.stdout.on("data", (b) => process.stdout.write(`[bridge] ${b}`));
@@ -108,7 +123,8 @@ try {
         return false;
       }
     },
-    20000,
+    // 这台机器同时跑着正式实例、测试实例和几个 tsserver，起一个 bridge 到能应答 healthz 实测要 30s+。
+    90000,
     "bridge",
   );
   const pass = fs.readFileSync(path.join(STATE, "passphrase.txt"), "utf8").trim();
@@ -130,7 +146,7 @@ try {
     await sleep(300);
     await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "card");
     await page.locator(".session-card").first().click();
-    await until(async () => (await page.locator(".msg.user").count()) === 2, 10000, "2 user messages");
+    await until(async () => (await page.locator(".msg.user").count()) === 3, 10000, "3 user messages");
     // 这一轮的工具调用默认收在 `<details class="ops">` 里（关着时高度是 0，量不出卡片），先展开。
     const ops = page.locator("details.ops").first();
     if ((await ops.count()) === 1) {
@@ -153,6 +169,10 @@ try {
   const card = longUser.locator(".lm-card.lm-user");
   assert((await card.getAttribute("class"))?.includes("has-card"), "the 40-line message became a card");
   assert((await shortUser.locator(".lm-card.has-card").count()) === 0, "the one-line message has no card");
+  // 带图的消息再长也不收卡：卡里只露三行正文，图（附件）会被藏到卡后面。
+  const imageUser = page.locator(".msg.user").nth(2);
+  assert((await imageUser.locator(".lm-card.has-card").count()) === 0, "a message with an image is never carded");
+  assert((await imageUser.locator(".msg-images img").count()) === 1, "and its image stays visible");
   const badge = (await card.locator(".lm-head .lm-badge").innerText()).trim();
   assert(badge === "长消息", `the badge says 长消息 (got ${badge})`);
   const meta = (await card.locator(".lm-head .lm-meta").innerText()).trim();
@@ -246,7 +266,7 @@ try {
 
   // 关掉之后当场退回老折叠（同一个会话，没重开）
   await page.locator(".display-sheet .st-head__actions .btn.ghost", { hasText: "关闭" }).click();
-  await until(async () => (await page.locator(".msg.user").count()) === 2, 4000, "chat still there");
+  await until(async () => (await page.locator(".msg.user").count()) === 3, 4000, "chat still there");
   assert((await page.locator(".msg.user .lm-card.has-card").count()) === 0, "turning the switch off redraws without cards");
   assert((await page.locator(".msg.user .foldable.has-fold").count()) >= 1, "the old 240px fold is back on the long message");
   log("live redraw: cards gone, legacy fold back");

@@ -1687,7 +1687,9 @@ export class ChatView {
         who.append(fork);
       }
       const body = this.buildUserBody(item);
-      wrap.append(who, this.longCards.user ? this.longCard(body, "user", item.id) : this.foldable(body, 240));
+      // 带图的消息不收卡：卡里只露三行正文，图被藏到卡后面 —— 那不是「太长」，那是附件。
+      const carded = this.longCards.user && !item.images?.length;
+      wrap.append(who, carded ? this.longCard(body, "user", item.id) : this.foldable(body, 240));
       // 别人发我一条 PR 链接，我也要能直接在面板里看 —— 同一个解析器，不看是谁写的消息。
       if (this.onGithubOpen) wrap.append(...this.githubCardsFor(item.text, 2));
     } else {
