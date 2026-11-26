@@ -4,6 +4,7 @@
  *   node --experimental-strip-types bridge/tests/sheet-calc-unit.mjs
  */
 import { evaluate } from "../src/sheet/calc.ts";
+import { CACHED_RANGE } from "../src/sheet/value.ts";
 
 /** 一张小表：A1:D5（0 起算），空白格返回 null。 */
 const GRID = [
@@ -290,6 +291,96 @@ eq('DATEVALUE("2024-02-29")', 45351);
 eq('DATEVALUE("1900-02-29")', "#VALUE!"); // Excel 的假闰日，我们无法与 1900-03-01 区分
 eq('DATEVALUE("2024-01-05 24:30")', "#VALUE!");
 eq('TEXT("2024-02-31","yyyy-mm-dd")', "2024-02-31"); // 认不出就原样当文本
+
+// VLOOKUP 精确匹配：ctx 缓存过的区域走索引，结果必须与线性扫逐条一致。
+//
+// 两张小表：`PURE` 只有文本/数字/空格（会真的建索引），`BOOLY` 里掺了逻辑值（那种列不建
+// 索引、退回线性扫，两者的答案仍要一致）。
+const PURE = [
+  ["键", "值"],
+  ["Abc", "首行-Abc"],
+  ["abc", "次行-abc"],
+  [10, "数字 10"],
+  ["10", '文本 "10"'],
+  [null, "空格"],
+  ["null", '文本 "null"'],
+  [2.5, "数字 2.5"],
+];
+const BOOLY = [
+  ["键", "值"],
+  ["Abc", "首行-Abc"],
+  [1, "数字 1"],
+  [true, "布尔 TRUE"],
+  ["1", '文本 "1"'],
+  [null, "空格"],
+  ["null", '文本 "null"'],
+];
+const lookCtx = (grid, cached) => ({
+  at: { r: 0, c: 0 },
+  date1904: false,
+  cell(_sheet, r, c) {
+    const v = grid[r]?.[c];
+    return v === undefined ? null : v;
+  },
+  range(sheet, r0, c0, r1, c1) {
+    const m = [];
+    for (let r = r0; r <= r1; r++) {
+      const row = [];
+      for (let c = c0; c <= c1; c++) row.push(this.cell(sheet, r, c));
+      m.push(row);
+    }
+    const out = { k: "mx", m };
+    if (cached) out[CACHED_RANGE] = true;
+    return out;
+  },
+});
+const looked = (src, c) => {
+  const v = evaluate(src, "表1", c);
+  return typeof v === "object" && v !== null && v.k === "err" ? v.v : v;
+};
+const CASES = [
+  'VLOOKUP("ABC",A1:B8,2,FALSE)',
+  'VLOOKUP("abc",A1:B8,2,FALSE)',
+  'VLOOKUP("Abc",A1:B8,2,FALSE)',
+  'VLOOKUP("null",A1:B8,2,FALSE)',
+  'VLOOKUP(10,A1:B8,2,FALSE)',
+  'VLOOKUP("10",A1:B8,2,FALSE)',
+  "VLOOKUP(2.5,A1:B8,2,FALSE)",
+  'VLOOKUP("火星",A1:B8,2,FALSE)',
+  "VLOOKUP(3,A1:B8,2,FALSE)",
+];
+const eqIdx = (src, want, grid = PURE) => {
+  n++;
+  const got = looked(src, lookCtx(grid, true));
+  if (got !== want) {
+    failures++;
+    console.error(`FAIL ${src}\n     要 ${JSON.stringify(want)}\n     得 ${JSON.stringify(got)}`);
+  }
+};
+for (const [grid, label] of [[PURE, "纯文本/数字列"], [BOOLY, "带逻辑值的列"]]) {
+  for (const src of CASES.map((s) => s.replace("B8", `B${grid.length - 1}`))) {
+    n++;
+    const linear = looked(src, lookCtx(grid, false));
+    const indexed = looked(src, lookCtx(grid, true));
+    if (linear !== indexed) {
+      failures++;
+      console.error(`FAIL 索引与线性扫不一致（${label}）${src}\n     线性 ${JSON.stringify(linear)}\n     索引 ${JSON.stringify(indexed)}`);
+    }
+  }
+}
+// 索引路径的绝对预期（不能只跟自己一致）
+eqIdx('VLOOKUP("ABC",A1:B8,2,FALSE)', "首行-Abc"); // 重复键（大小写不同）取第一行
+eqIdx('VLOOKUP("abc",A1:B8,2,FALSE)', "首行-Abc");
+eqIdx('VLOOKUP("null",A1:B8,2,FALSE)', "空格"); // 空格与文本 "null" 等价，两行都在，取第一行
+eqIdx('VLOOKUP("10",A1:B8,2,FALSE)', '文本 "10"'); // 文本与数字永不相等
+eqIdx("VLOOKUP(10,A1:B8,2,FALSE)", "数字 10");
+eqIdx("VLOOKUP(2.5,A1:B8,2,FALSE)", "数字 2.5");
+eqIdx('VLOOKUP("火星",A1:B8,2,FALSE)', "#N/A");
+  // 逻辑值列：不建索引。TRUE 与数字 1 在 cmp() 里相等，但**不等于**文本 "1"（以前因为
+  // Number("x") 是 NaN、两个方向都 false，会被当成相等，整个逻辑值列都能被任何文本命中）
+eqIdx("VLOOKUP(TRUE,A1:B7,2,FALSE)", "数字 1", BOOLY);
+eqIdx('VLOOKUP("1",A1:B7,2,FALSE)', '文本 "1"', BOOLY);
+eqIdx('VLOOKUP("火星",A1:B7,2,FALSE)', "#N/A", BOOLY);
 
 if (failures) {
   console.error(`\n${failures}/${n} 条不符合预期`);

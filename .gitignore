@@ -24,3 +24,6 @@ desktop.ini
 .pi/*
 !.pi/skills/
 !.pi/prompts/
+
+# fast-anything 的扫描/录制产物（cpuprofile、state.json、ports 的 target 等）
+.fast/*
