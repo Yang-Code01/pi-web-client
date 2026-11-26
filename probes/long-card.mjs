@@ -4,7 +4,7 @@
  * 种一条会话：40 行用户消息 + 一句短消息 + 30 行助手回答 + 一张输出很长的工具卡。
  * 检查：
  *   1. 默认（只开「长用户消息」）：长的那条是 `.lm-card.has-card` 且卡在 96px，短的那条没有卡、
- *      气泡仍然一行宽、贴着右边（D423：没成卡时那层壳不许把气泡挤窄）；
+ *      气泡仍然一行宽、贴着右边（D424：没成卡时那层壳不许把气泡挤窄）；
  *   2. 点卡头展开到 `42vh` 内滚，点卡底「收起」回到 96px；
  *   3. 默认关着的那两档走老路：助手回答还是右上角的 `.msg-fold`，工具输出还是 `.tool .out` 260px；
  *   4. 偏好里把两档打开、刷新页面：助手与工具输出也都成卡；
@@ -206,7 +206,7 @@ if (process.env.LC_CONSOLE) page.on("console", (m) => { const t = m.text(); if (
   const card = longUser.locator(".lm-card.lm-user");
   assert((await card.getAttribute("class"))?.includes("has-card"), "the 40-line message became a card");
   assert((await shortUser.locator(".lm-card.has-card").count()) === 0, "the one-line message has no card");
-  // D423：没成卡的那层壳必须真的是「纯过路的」。`.lm-card` 是 `display: contents` 之后，若
+  // D424：没成卡的那层壳必须真的是「纯过路的」。`.lm-card` 是 `display: contents` 之后，若
   // `.lm-scroll` 还留成块盒子，它就顶替气泡当 flex 子项、按内容收缩，气泡自己的
   // `max-width: min(78%, 760px)` 于是量的是这个收缩盒 —— 短消息当场折成好几行、右边空一截
   // （`merge` → 「mer / ge」，D350 修过，D421 加壳之后复发）。量行数和右边缘，两条一起看。

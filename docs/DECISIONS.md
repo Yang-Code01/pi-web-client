@@ -8449,7 +8449,9 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 
 **补（PR #700 评审）。** 面板那个下拉最初把桥回的**解析结果**当成「人选的那个」写进 `reviewAccount` —— 跟随工作区时它也是具体账号，于是「跟随工作区」永远选不中、桥回空账号时又不清（留着上一次的号）。现在拆成两个字段：`reviewAccount` 只存会话里显式选的（`state.session.source === "session"`），`reviewAccountUsed` 存实际按谁在查，只用来写给人看（下拉首项写「跟随工作区（xyang-qingmin）」）。拆分逻辑是纯函数 `ghAccountPair()`，配 `web/tests/github-unit.mjs` 用例。
 
-## D423 没成卡时 `.lm-scroll` 也得是纯过路的，否则用户气泡又被挤成窄条（用户 2026-11-26「输入显示bug」＋截图：气泡里「ABC」「DF」折成两行）
+## D424 没成卡时 `.lm-scroll` 也得是纯过路的，否则用户气泡又被挤成窄条（用户 2026-11-26「输入显示bug」＋截图：气泡里「ABC」「DF」折成两行）
+
+**编号。** 本条原写 D423，与同期在开的 #703（「最近使用」收两份清单）撞了；那个 PR 先占的号，这边让出，改 D424。
 
 **问题。** 发一句「ABCDF」，气泡被折成「ABC / DF」，右边还空一截；「牛逼」被折成一个字一行。这是 D350 修过的那个坑复发，触发者是 D421。
 
