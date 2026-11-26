@@ -161,6 +161,14 @@ export function firstErr(args: EvalVal[]): ErrVal | null {
 /** 只给「ctx 保证同一区域返回同一对象」的矩阵用（`CACHED_RANGE`），否则值可能变。 */
 const firstErrCache = new WeakMap<Matrix, ErrVal | null>();
 
+/** 比较用的一侧取值：数字 / 布尔 / 空都折成数，文本给 null（文本比任何数都大）。 */
+function cmpNum(v: Val): number | null {
+  if (typeof v === "number") return v;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (v === null) return 0;
+  return null;
+}
+
 /** 比较：数字比数字、文本比文本（不区分大小写），不同类型按 Excel 的次序排。 */
 export function cmp(a: Val, b: Val): number {
   if (typeof a === "number" && typeof b === "number") {
@@ -170,15 +178,10 @@ export function cmp(a: Val, b: Val): number {
   if (typeof a === "boolean" || typeof b === "boolean") {
     // 逻辑值只跟「能当数字的东西」比大小（TRUE ≡ 1）；跟文本不比数值 ——
     // Excel 的次序是 数字 < 文本 < 逻辑值，所以 `TRUE = "1"` 是 FALSE，不是相等。
-    const num = (v: Val): number | null =>
-      typeof v === "number" ? v : typeof v === "boolean" ? (v ? 1 : 0) : v === null ? 0 : null;
-    const x = num(a);
-    const y = num(b);
-    if (x === null || y === null) {
-      // 只有一边会是文本（已经能当数字的不会进这里）：文本更小，两边都是文本时才相等
-      if (x === null && y === null) return 0;
-      return x === null ? -1 : 1;
-    }
+    const x = cmpNum(a);
+    const y = cmpNum(b);
+    // 逻辑值一定折成 0/1，所以这里至多一边是 null（另一边是文本）：文本排前面。
+    if (x === null || y === null) return x === null ? -1 : 1;
     if (x < y) return -1;
     return x > y ? 1 : 0;
   }

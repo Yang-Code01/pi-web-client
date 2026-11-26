@@ -785,7 +785,8 @@ function rawOf(cell: WireCell): EvalVal {
  * 只在真的遇到没缓存值的公式时才建；一张表最多 40 万格，再大就不算（宁可显示空，
  * 也不把几百兆的表解出来）。跨表引用会顺带把那张表也建起来。
  */
-class BookCalc implements CalcCtx {
+/** 求值器：`range()` 会把算完的区域矩阵留下来复用（见那里的注释）。导出给测试直接看缓存标记。 */
+export class BookCalc implements CalcCtx {
   private grids = new Map<string, Map<string, WireCell>>();
   private memo = new Map<string, EvalVal>();
   private busy = new Set<string>();

@@ -8457,9 +8457,9 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 
 - `bridge/src/sheet/xlsx.ts` 的 `BookCalc.range()` 按 `name!r0:c0:r1:c1` 缓存矩阵，上限 `RANGE_CACHE_CELLS = 1_000_000` 格 / `RANGE_CACHE_ENTRIES = 512` 条；**矩阵里出现 `#CIRC!` 就不缓存**（那是「还在算」的占位，冻住就永远错）。
 - `bridge/src/sheet/value.ts` 新增 `Symbol("sheet.cachedRange")`，缓存过的矩阵打 `[CACHED_RANGE] = true`。这个标记是给查找类函数看的许可证：只有「同一区域返回同一对象」才值得建索引。
-- VLOOKUP 精确匹配：`bucketOf()` 把键分到 `n:<数字>` / `s:<小写文本>` 两种桶，`exactRow()` 先从桶里取候选行号（升序）再用 `cmp()` 确认，取第一条命中的行 —— 与线性扫的 `break` 完全同序；**列里有逻辑值就不建索引**，退回 `scanRow()` 线性扫。桶只承诺「相等必定同桶」，宁可比 cmp 宽。
+- VLOOKUP 精确匹配：`bucketOf()` 把键分到 `n:<数字>` / `s:<小写文本>` 两种桶，`exactRow()` 先从桶里取候选行号（升序）再用 `cmp()` 确认，取第一条命中的行 —— 与线性扫的 `break` 完全同序；**列里有逻辑值就不建索引**，退回 `scanRow()` 线性扫。桶只承诺「相等必定同桶」，宁可比 cmp 宽。索引本身的桶数有上限 `EXACT_INDEX_MAX_KEYS = 50_000`：首列取值互不相同时桶数≈行数，不设限的大表会白抬几十 MB 常驻内存（矩阵随 Book 缓存最长 6 小时，D166 的口径），超了就直接线性扫。
 - `firstErr()` 不再 `flatten`：按参数顺序递归扫，矩阵走行优先短路；缓存过的矩阵记 `WeakMap<Matrix, ErrVal | null>`，扫描一次之后所有公式共用。语义（返回第一个错误）不变。
-- `cmp()` 修两处**判等**的真 bug：非数字文本 `Number()` 得 NaN 时两个方向都 false，原实现返回 0（相等）—— 实测 `VLOOKUP("火星", …)` 命中第一个 TRUE 格、`VLOOKUP(TRUE, …)` 命中文本表头；`TRUE = "1"` 也被判成相等。现在逻辑值只跟数字/布尔/空（算 0）比数值，遇文本按 Excel 的「数字 < 文本 < 逻辑值」定符号。
+- `cmp()` 修两处**判等**的真 bug：非数字文本 `Number()` 得 NaN 时两个方向都 false，原实现返回 0（相等）—— 实测 `VLOOKUP("火星", …)` 命中第一个 TRUE 格、`VLOOKUP(TRUE, …)` 命中文本表头；`TRUE = "1"` 也被判成相等。现在逻辑值只跟数字/布尔/空（算 0）比数值，遇文本按 Excel 的「数字 < 文本 < 逻辑值」定符号（取值折成数的部分抽成模块级 `cmpNum()`，不再用嵌套三元）。
 
 **为什么。** ① 这是「共享的不变式没人负责」：矩阵缓存该在 `BookCalc`（唯一知道区域只读的地方），索引该在查找函数，两者用 `CACHED_RANGE` 契约分开 —— 把索引写进 `range()` 会让所有区域都背上建表成本，临时矩阵建索引比线性扫更慢。② 索引不靠「键归一」而靠「桶 + cmp 确认」：`cmp()` 的等价关系不对称（`cmp(TRUE,"1")===0` 而 `cmp("1",1)!==0`），想把它抄进键函数里必然漏；桶放宽、确认交给 `cmp()` 就永远不会错，最多多比较几次。③ `firstErr` 摊平是纯粹的浪费：这个函数的全部用途就是找第一个错误，摊平一个几千格的矩阵只为看一眼，等于每次调用都付 O(区域)。④ 不硬造 Rust 移植：工具自己拒了这次移植（参数不是 plain data），而剩下的大头是 XML/zip 解析（改后 profile 顶部是 `attr` 15.9% / `inflateSync` 9.4% / `cellsOfRow` 8.9% / `unescapeXml` 8.2%），那是整层替换而不是单函数 —— 单个字符串函数跨 FFI 反而更慢。
 
@@ -8469,6 +8469,6 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 - `only-vlookup.xlsx`（3999 条）：求值 13 700ms → **398ms**（约 34×），单跑一次 1513ms → 739ms。
 - 其余单型基本不动（sum 255 / ifsum 358 / countif 516 / roundav 456 / text 324ms）—— 说明没有把成本挪到别处。
 
-**代价。** 区域缓存最坏占 `1e6` 格的内存（超了就不进缓存，行为回到改前）；首轮算完才有缓存，所以第二次起才快；索引挂在矩阵对象上，区域缓存被回收时一起回收。`#CIRC!` 的判据是「矩阵里出现该错误值」，循环引用场景下每次仍重建（正确性优先，那种表本来也不该指望缓存）。
+**代价。** 区域缓存最坏占 `1e6` 格的内存（超了就不进缓存，行为回到改前）；首轮算完才有缓存，所以第二次起才快；索引挂在矩阵对象上，区域缓存被回收时一起回收（桶数另有 5 万的上限）。`#CIRC!` 的判据是「矩阵里出现该错误值」，循环引用场景下每次仍重建（正确性优先，那种表本来也不该指望缓存）。
 
-**验证。** `bridge/tests/sheet-calc-unit.mjs` 加两张夹具（`PURE` 文本/数字/空混排，`BOOLY` 掺逻辑值）与 19 条断言：同一批 9 条 `VLOOKUP` 在两个 ctx（带 / 不带 `CACHED_RANGE`）上逐条一致，绝对预期覆盖重复键取第一行、`"10"` vs `10`、`null` vs `"null"`、`2.5`、`#N/A`、以及 BOOLY 的 `TRUE`/`"1"`。全部 226 条通过；`npm run test:sheet` 三段 `fail 0`；`npm --prefix bridge run typecheck` 通过。红验证：把 `firstErr` 换回 `flatten` 版 → 求值段回到 8s 级；把 `cmp()` 的判断还原 → `VLOOKUP("火星",…)=#N/A` 与 `VLOOKUP("1",A1:B7,2,FALSE)=文本 "1"` 两条红。
+**验证。** 分两层：`bridge/tests/sheet-calc-unit.mjs` 用伪造 ctx 钉求值语义，`bridge/tests/sheet-calc-xlsx.mjs` 用真 xlsx（`fixtures/calc-xlsx.mjs`）钉 `BookCalc` 的缓存本身 —— 公式值、缓存跨窗口复用后值不变、环所在区域不进缓存（两次 `range()` 不是同一个对象）、条目上限之后不再收新区域。前者加两张夹具（`PURE` 文本/数字/空混排，`BOOLY` 掺逻辑值）与 19 条断言：同一批 9 条 `VLOOKUP` 在两个 ctx（带 / 不带 `CACHED_RANGE`）上逐条一致，绝对预期覆盖重复键取第一行、`"10"` vs `10`、`null` vs `"null"`、`2.5`、`#N/A`、以及 BOOLY 的 `TRUE`/`"1"`。全部 226 + 25 条通过；`npm run test:sheet` 全绿（`fail 0`）；`npm --prefix bridge run typecheck` 通过。红验证：把 `firstErr` 换回 `flatten` 版 → 求值段回到 8s 级；把 `cmp()` 的判断还原 → `VLOOKUP("火星",…)=#N/A` 与 `VLOOKUP("1",A1:B7,2,FALSE)=文本 "1"` 两条红；把 `range()` 的 `looksFinal` 条件去掉 → 新测试的「环区域不进缓存」「环区域两次读都不是缓存对象」两条红。容量上限里 `RANGE_CACHE_CELLS` 那一支没有测试（要一百万格的真矩阵），靠同一条 `cacheable` 表达式与 entries 分支共同覆盖。

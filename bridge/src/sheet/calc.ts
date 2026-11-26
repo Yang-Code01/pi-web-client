@@ -403,6 +403,12 @@ interface ExactIndex {
 /** 精确查找的索引，跟着矩阵对象走（ctx 缓存过的矩阵才会被复用，见 `CACHED_RANGE`）。 */
 const exactIndex = new WeakMap<Matrix, ExactIndex>();
 
+/**
+ * 索引最多留多少个别键：桶键是字符串 + 一个下标数组，首列取值互不相同时桶数≈行数，
+ * 大表能白抬几十 MB 常驻内存（矩阵本身随 Book 缓存最长 6 小时，见 D166）。超过就退化成线性扫。
+ */
+const EXACT_INDEX_MAX_KEYS = 50_000;
+
 function buildIndex(m: Matrix): ExactIndex {
   const buckets = new Map<string, number[]>();
   for (let i = 0; i < m.m.length; i++) {
@@ -412,6 +418,7 @@ function buildIndex(m: Matrix): ExactIndex {
     const k = bucketOf(first as Val);
     const list = buckets.get(k);
     if (list) list.push(i);
+    else if (buckets.size >= EXACT_INDEX_MAX_KEYS) return { buckets: new Map(), usable: false };
     else buckets.set(k, [i]);
   }
   return { buckets, usable: true };
