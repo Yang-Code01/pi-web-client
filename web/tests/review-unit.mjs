@@ -35,7 +35,12 @@ const run = (over = {}) => ({
   from: "main",
   to: "HEAD",
   mergeBase: "abc",
+  pr: 0,
+  prTitle: "",
+  prHead: "",
+  prBase: "",
   model: "wb2_mac/cn:x",
+  provider: "wb2_mac",
   findings: [],
   resolved: [],
   skipped: [],
@@ -49,7 +54,7 @@ const run = (over = {}) => ({
 
 const ocrOk = { installed: true, version: "1.14.2", tooOld: false };
 
-const base = { ocr: ocrOk, installing: false, error: "", notGit: false, progress: null };
+const base = { ocr: ocrOk, installing: false, error: "", notGit: false, progresses: [], cap: 2 };
 
 test("还没问出 ocr 装没装：先「读状态」，不许先喊没装", () => {
   const view = reviewView({ ...base, state: null, ocr: null });
@@ -100,28 +105,91 @@ test("还没跑过：空态但可以开始", () => {
   assert.equal(view.meta, null);
 });
 
-test("跑着：给进度，并且不许再点开始", () => {
+const prog = (runId, over = {}) => ({
+  repo: "/r",
+  runId,
+  status: "running",
+  phase: "review",
+  totalFiles: 9,
+  reviewedFiles: 0,
+  currentFile: "",
+  tokens: 0,
+  startedAt: "2025-01-01T00:00:00Z",
+  error: "",
+  errorCode: "",
+  ...over,
+});
+
+test("跑着一条：给进度，但还剩一条额度，可以再开", () => {
   const view = reviewView({
     ...base,
     state: { runs: [run({ status: "running", finishedAt: "" })], marks: {} },
-    progress: {
-      repo: "/r",
-      runId: "r1",
-      status: "running",
-      phase: "review",
-      totalFiles: 9,
-      reviewedFiles: 4,
-      currentFile: "web/src/a.ts",
-      tokens: 800,
-      startedAt: "2025-01-01T00:00:00Z",
-      error: "",
-      errorCode: "",
-    },
+    progresses: [prog("r1", { reviewedFiles: 4, currentFile: "web/src/a.ts", tokens: 800 })],
+    mode: "workspace",
   });
   assert.equal(view.phase, "running");
   assert.equal(view.running, true);
-  assert.equal(view.canRun, false);
+  assert.equal(view.runningCount, 1);
+  assert.equal(view.atCap, false);
+  assert.equal(view.canRun, true, "同会话还能再开一条（D417）");
   assert.deepEqual(view.progress, { totalFiles: 9, reviewedFiles: 4, currentFile: "web/src/a.ts", tokens: 800 });
+});
+
+test("跑满两条：进度各归各的卡，第三条不许开，理由说清上限", () => {
+  const view = reviewView({
+    ...base,
+    state: {
+      runs: [
+        run({ id: "r1", status: "running", finishedAt: "", startedAt: "2025-01-01T00:00:00Z" }),
+        run({ id: "r2", status: "running", finishedAt: "", startedAt: "2025-01-01T00:02:00Z", mode: "pr", pr: 691 }),
+      ],
+      marks: {},
+    },
+    progresses: [prog("r1", { reviewedFiles: 3 }), prog("r2", { reviewedFiles: 1, totalFiles: 5 })],
+    mode: "workspace",
+  });
+  assert.equal(view.runningCount, 2);
+  assert.equal(view.atCap, true);
+  assert.equal(view.canRun, false);
+  assert.match(view.missingWhy, /2/);
+  assert.deepEqual(view.runs.map((c) => c.live && c.live.reviewed), [1, 3], "每条卡都拿到自己的进度");
+  assert.ok(view.runs.every((c) => c.running));
+});
+
+test("并发（D417）：在跑的置顶，其余按开跑时间倒序", () => {
+  const view = reviewView({
+    ...base,
+    state: {
+      runs: [
+        run({ id: "old", status: "done", startedAt: "2025-01-01T00:00:00Z" }),
+        run({ id: "live1", status: "running", finishedAt: "", startedAt: "2025-01-02T00:00:00Z" }),
+        run({ id: "mid", status: "done", startedAt: "2025-01-03T00:00:00Z" }),
+        run({ id: "live2", status: "running", finishedAt: "", startedAt: "2025-01-04T00:00:00Z", mode: "pr", pr: 700 }),
+      ],
+      marks: {},
+    },
+  });
+  assert.deepEqual(view.runs.map((c) => c.id), ["live2", "live1", "mid", "old"]);
+  assert.equal(view.history, 4);
+  assert.equal(view.runningCount, 2);
+});
+
+test("并发（D417）：停掉一条，额度立刻还回来", () => {
+  const view = reviewView({
+    ...base,
+    state: {
+      runs: [
+        run({ id: "r1", status: "stopped", finishedAt: "2025-01-01T00:01:00Z" }),
+        run({ id: "r2", status: "running", finishedAt: "" }),
+      ],
+      marks: {},
+    },
+    progresses: [prog("r2")],
+    mode: "workspace",
+  });
+  assert.equal(view.runningCount, 1);
+  assert.equal(view.canRun, true);
+  assert.equal(view.phase, "running", "展开的那条还在跑");
 });
 
 test("一次完成的评审：按严重度分组、文件按最坏的那条排", () => {

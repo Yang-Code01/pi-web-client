@@ -124,6 +124,7 @@ export type ServerFrameType =
   | "review.prinfo"
   | "review.prs"
   | "review.progress"
+  | "review.started"
   | "review.state"
   | "rules"
   | "rules.saved"

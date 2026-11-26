@@ -37,7 +37,10 @@ export interface PullRequest {
 
 export interface ReviewInput {
   state: ReviewState | null;
-  progress: ReviewProgress | null;
+  /** 现在在跑的那几条的进度（D417：一个会话可以同时跑两条，按 runId 分）。 */
+  progresses?: ReviewProgress[];
+  /** 一个会话最多同时在评几条（桥在帧里给的，跟 `MAX_RUNS_PER_SESSION` 对齐）。 */
+  cap?: number;
   ocr: OcrStatus | null;
   installing: boolean;
   error: string;
@@ -100,7 +103,7 @@ export interface ReviewRunCard {
   modelId: string;
   /** 失败 / 中断的原因（`errorText()` 已翻好中文）。 */
   error: string;
-  /** 跑着的时候的实时进度（只有最新那一次会有）。 */
+  /** 跑着的时候的实时进度（每条在跑的卡各有各的；D417 之前只有最新那条有）。 */
   live: { reviewed: number; total: number; current: string } | null;
 }
 
@@ -110,6 +113,11 @@ export interface ReviewView {
   phase: ReviewPhase;
   running: boolean;
   canRun: boolean;
+  /** 这个会话现在有几条在跑（D417 起可能是 2）。 */
+  runningCount: number;
+  /** 跑满了额度：按钮要灰，并说清上限。 */
+  atCap: boolean;
+  cap: number;
   /** 评的是哪个仓库根（空串 = 还没有）。 */
   repo: string;
   /** 那个仓库的显示名（路径最后一节）。 */
@@ -208,7 +216,8 @@ function errorText(run: ReviewRun | null, fallback: string): string {
   const known: Record<string, string> = {
     stopped: tr("已停止"),
     "bridge-restart": tr("桥重启了，这次评审没跑完。重跑一次就行。"),
-    busy: tr("这个仓库已经在评了"),
+    busy: tr("这个会话已经有两个在评了，先停一个再开"),
+    dup_pr: tr("这个会话已经在评这个 PR 了"),
     not_git: tr("这个目录不是 git 仓库，没有东西可评。"),
     ocr_missing: tr("没装 ocr（代码评审要用）"),
     ocr_too_old: tr("ocr 版本太老，需要 1.9.0 以上"),
@@ -294,10 +303,16 @@ export function reviewView(input: ReviewInput): ReviewView {
   const focused = input.focus ? allRuns.find((r) => r.id === input.focus) ?? null : null;
   const active = focused ?? latest;
   const activeRunning = Boolean(active && active.status === "running");
-  // 实时帧只属于「最新且还在跑」的那一次：翻旧记录时不能拿它的意见冒充那一次的结果。
-  const live = activeRunning && active && latest && active.id === latest.id ? input.progress : null;
+  // D417：一个会话可以同时跑两条，每条一帧进度 —— 按 runId 认，别再拿「最新那条」顶替。
+  const progresses = Array.isArray(input.progresses) ? input.progresses : [];
+  const progressById = new Map(progresses.map((item) => [item.runId, item]));
+  // 实时帧只属于「展开且还在跑」的那一次：翻旧记录时不能拿别人的意见冒充那一次的结果。
+  const live = activeRunning && active ? progressById.get(active.id) ?? null : null;
   const marks = state?.marks ?? {};
-  const running = Boolean(latest && latest.status === "running");
+  const running = activeRunning;
+  const cap = Math.max(1, Number(input.cap) || 2);
+  const runningCount = allRuns.filter((r) => r.status === "running").length;
+  const atCap = runningCount >= cap;
   const labels = input.modelLabels ?? {};
   // 「评审仓库」：可能就与会话目录重合（没钉），也可能是大文件夹底下选中的那个子仓库。
   const repo = (input.repo ?? "").trim();
@@ -380,8 +395,9 @@ export function reviewView(input: ReviewInput): ReviewView {
   const missing =
     mode === "range" ? !target.trim() || !base.trim() : mode === "commit" ? !commit.trim() : mode === "pr" ? !pr : false;
   // 按钮灰着的时候得说清为什么：用户就是卡在一颗没解释的灰按钮上（报告的原话「不能评审了」）。
-  const missingWhy = missing ? missingHint(mode) : "";
-  const canRun = phase !== "loading" && phase !== "not-git" && phase !== "no-ocr" && !running && !input.installing && !missing;
+  // 填漏了先说填漏（补上就能开）；填齐了还被挡，才是额度用完了（D417）。
+  const missingWhy = missing ? missingHint(mode) : atCap ? tr("已满 {p1} 个，先停一个再开", { p1: cap }) : "";
+  const canRun = phase !== "loading" && phase !== "not-git" && phase !== "no-ocr" && !atCap && !input.installing && !missing;
   // 跑着看进度帧的日志，跑完看记录里存的那份（进度帧已经没了）。
   const log = (live?.log?.length ? live.log : active?.log ?? []).slice(-40);
   const group =
@@ -416,10 +432,17 @@ export function reviewView(input: ReviewInput): ReviewView {
         }
       : null;
 
-  // 记录列表：新在前；「正在跑」那一张带实时进度。模型名由 app 查目录后传进来
-  // （视图不做目录查询，不然它的单测就得养一份假目录）。
-  const runs: ReviewRunCard[] = [...allRuns].reverse().map((run) => {
-    const isLive = Boolean(live && run.id === live.runId);
+  // 记录列表：正在跑的置顶（同时跑的按开跑时间倒序），其余也按时间倒序。
+  // 每张卡带上自己的实时进度。模型名由 app 查目录后传进来（视图不做目录查询，
+  // 不然它的单测就得养一份假目录）。
+  const ordered = [...allRuns].sort((a, b) => {
+    const la = a.status === "running" ? 1 : 0;
+    const lb = b.status === "running" ? 1 : 0;
+    if (la !== lb) return lb - la;
+    return (Date.parse(b.startedAt ?? "") || 0) - (Date.parse(a.startedAt ?? "") || 0);
+  });
+  const runs: ReviewRunCard[] = ordered.map((run) => {
+    const mine = run.status === "running" ? progressById.get(run.id) : undefined;
     const modelId = runModelId(run);
     return {
       id: run.id,
@@ -436,7 +459,7 @@ export function reviewView(input: ReviewInput): ReviewView {
       model: labels[run.id] ?? "",
       modelId,
       error: errorText(run, ""),
-      live: isLive && live ? { reviewed: live.reviewedFiles, total: live.totalFiles, current: live.currentFile } : null,
+      live: mine ? { reviewed: mine.reviewedFiles, total: mine.totalFiles, current: mine.currentFile } : null,
     };
   });
 
@@ -444,6 +467,9 @@ export function reviewView(input: ReviewInput): ReviewView {
     phase,
     running,
     canRun,
+    runningCount,
+    atCap,
+    cap,
     repo,
     repoName: repoNameOf(repo),
     repoPinned: Boolean(repo) && input.repoPinned === true,
@@ -519,7 +545,8 @@ export interface ReviewActions {
   /** 打开「模型与思考」那个弹层（复用输入框那颗 chip 的同一个），挑评审用的模型。 */
   onPickModel: () => void;
   onRun: () => void;
-  onStop: () => void;
+  /** 停掉指定的那一条（D417 起每条在跑的记录各有自己的停止）。 */
+  onStopRun: (runId: string) => void;
   onMark: (key: string, mark: Mark | "") => void;
   /** 开着分支工作台「差异」页签并定位到这一行。 */
   onOpen: (path: string, line: number) => void;
@@ -674,8 +701,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
 
   const modeRow = el("div", "rv-row");
   const mode = el("select", "rv-mode") as HTMLSelectElement;
-  // 评审中不许再换范围：换了也不会立刻生效，只会让人以为「换了就会重跑」。
-  mode.disabled = view.running;
+  // D417：跑着的时候这张表描述的是「下一条要评什么」，所以不再整张禁用。
   for (const [value, label] of [
     ["workspace", tr("工作区改动")],
     ["range", tr("分支 vs 主干")],
@@ -722,7 +748,6 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     const input = el("input", "rv-prq") as HTMLInputElement;
     // 选过就在框里显示 `#N`（用户要能看到「现在选的是哪个」），一聚焦就全选，接着打字即是搜索。
     input.value = view.prQuery || (view.pr ? `#${view.pr}` : "");
-    input.disabled = view.running;
     input.placeholder = tr("输号或搜：号 / 标题 / 分支");
     input.autocomplete = "off";
     input.spellcheck = false;
@@ -779,7 +804,6 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     };
     const toggle = el("button", "rv-prtoggle", "▾") as HTMLButtonElement;
     toggle.type = "button";
-    toggle.disabled = view.running;
     toggle.setAttribute("aria-label", tr("展开 PR 列表"));
     toggle.onclick = () => actions.onPrMenu(!view.prMenuOpen);
     box.append(input, toggle);
@@ -848,19 +872,14 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   const actRow = el("div", "rv-row");
   const model = el("button", "rv-model", input.modelName || tr("默认模型")) as HTMLButtonElement;
   model.type = "button";
+  // D417：换模型只影响**下一条**（每条记录自己存一份 model/provider），所以跑着时也能换。
   model.title = input.modelId || tr("用设置里的默认模型");
-  model.disabled = view.running;
-  model.title = view.running ? tr("评审中：等这次跑完再换模型") : input.modelId || tr("用设置里的默认模型");
   model.onclick = () => actions.onPickModel();
   actRow.append(model);
 
   let runBtn: HTMLButtonElement | null = null;
-  if (view.running) {
-    const stop = el("button", "btn ghost rv-stop", tr("中断评审")) as HTMLButtonElement;
-    stop.type = "button";
-    stop.onclick = () => actions.onStop();
-    actRow.append(stop);
-  } else {
+  // 一直是「开始评审」：跑着的时候它开的是**下一条**，停哪一条由记录卡上的「停止」决定（D417）。
+  {
     const run = el("button", "btn rv-run", tr("开始评审")) as HTMLButtonElement;
     run.type = "button";
     run.disabled = !view.canRun;
@@ -872,7 +891,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   // 按钮灰着就得说清为什么 —— 用户就是卡在这颗没解释的灰按钮上（「不能评审了」）。
   // 只解释「某一格没填」这一种灰：没装 ocr / 不是 git 仓库 / 正在读 / 正在跑，各有自己的块，
   // 在这里再补一句会与它们打架（同一句话在两处出现，等于两处都没人看）。
-  if (view.missing && view.missingWhy && !view.running && !["no-ocr", "not-git", "loading"].includes(view.phase)) {
+  if ((view.missing || view.atCap) && view.missingWhy && !["no-ocr", "not-git", "loading"].includes(view.phase)) {
     form.append(el("div", "rv-hint rv-why", view.missingWhy));
   }
   // 模式下拉钉在最上面：PR / 分支那些行是后加的，不 reorder 就会把它挤到下面去。
@@ -1011,7 +1030,15 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
   const box = el("div", "rv-runs");
   const head = el("div", "rv-runs-head");
   head.append(
-    el("span", "", view.runs.length ? tr("这个会话评过 {p1} 次", { p1: view.runs.length }) : tr("还没有评审记录")),
+    el(
+      "span",
+      "",
+      view.runs.length
+        ? view.runningCount > 0
+          ? tr("评过 {p1} 次 · {p2} 个在跑", { p1: view.runs.length, p2: view.runningCount })
+          : tr("这个会话评过 {p1} 次", { p1: view.runs.length })
+        : tr("还没有评审记录"),
+    ),
     el("span", "rv-runs-hint", view.runs.length ? tr("点一条展开") : ""),
   );
   box.append(head);
@@ -1023,19 +1050,36 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
     const cls = ["rv-run-card", card.running ? "is-live" : "", card.status === "failed" ? "is-fail" : ""]
       .filter(Boolean)
       .join(" ");
-    const btn = el("button", cls) as HTMLButtonElement;
-    btn.type = "button";
-    btn.onclick = () => actions.onOpenRun(card.id);
+    // 卡片里要放「停止」这颗按钮，所以不能再整个是 `<button>`（按钮里套按钮点起来会乱）。
+    const row = el("div", cls);
+    row.setAttribute("role", "button");
+    row.tabIndex = 0;
+    row.onclick = () => actions.onOpenRun(card.id);
+    row.onkeydown = (ev: KeyboardEvent) => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      actions.onOpenRun(card.id);
+    };
 
     const top = el("div", "rv-run-top");
     top.append(el("span", "rv-run-target", card.target));
     if (card.title) top.append(el("span", "rv-run-title", card.title));
     top.append(el("span", "rv-run-at", whenText(card.when)));
-    btn.append(top, runMetaRow(card));
+    row.append(top, runMetaRow(card));
 
-    if (card.running && card.live?.current) btn.append(el("div", "rv-run-current", card.live.current));
-    if (card.error && !card.running) btn.append(el("div", "rv-run-err", card.error));
-    box.append(btn);
+    if (card.running && card.live?.current) row.append(el("div", "rv-run-current", card.live.current));
+    if (card.error && !card.running) row.append(el("div", "rv-run-err", card.error));
+    if (card.running) {
+      const stop = el("button", "rv-run-stop", tr("停止")) as HTMLButtonElement;
+      stop.type = "button";
+      stop.title = tr("只停这一条");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        actions.onStopRun(card.id);
+      };
+      row.append(stop);
+    }
+    box.append(row);
   }
   return box;
 }
@@ -1056,6 +1100,13 @@ function renderFocusedRun(input: ReviewPanelInput): HTMLElement {
   more.type = "button";
   more.onclick = () => actions.onDetails();
   head.append(back, target, more);
+  if (card?.running) {
+    // 展开的那一条没在列表里露脸（列表被换成了这一页），停止得跟过来，不然点了展开就没法停。
+    const stop = el("button", "rv-focus-stop", tr("停止")) as HTMLButtonElement;
+    stop.type = "button";
+    stop.onclick = () => actions.onStopRun(card.id);
+    head.append(stop);
+  }
   box.append(head);
 
   // 第二行写清这次是谁评的、什么时候、跑多久 —— 记录卡的价值就在这些「详细信息」。

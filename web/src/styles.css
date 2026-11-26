@@ -5932,7 +5932,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-prrow-title { grid-row: 1; grid-column: 2; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-scope .rv-prrow-meta { grid-row: 2; grid-column: 1 / -1; font-size: 10px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-scope .rv-details { flex: none; }
-/* ---- 记录列表（#690）：一条一张卡，新的在上。卡本身就是按钮，所以按钮的默认样式全要清掉。 */
+/* ---- 记录列表（#690）：一条一张卡，在跑的置顶；卡里带「停止」，所以卡本身是 div（D417）。 */
 .rv-scope .rv-runs { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 /* 「还差什么」那条提示与记录卡是一组的（都在控制条下面），放在这里而不是夹在别的规则里。 */
 .rv-scope .rv-why { flex: none; opacity: 0.8; }
@@ -5940,9 +5940,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-runs-hint { flex: none; opacity: 0.8; }
 .rv-scope .rv-run-card {
   display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
+  position: relative;
   padding: 7px 8px; font-size: 12px; color: var(--text); cursor: pointer;
-  /* 卡本身是 <button>：不把这几项抹掉，Safari 会用系统字体/行高，与旁边的纯文本行对不齐。 */
-  font-family: inherit; line-height: inherit; appearance: none;
+  /* 卡是 role=button 的 div（里面要放「停止」）：字体与行高仍要跟旁边的行对齐。 */
+  font-family: inherit; line-height: inherit;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
 }
 .rv-scope .rv-run-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -5968,6 +5969,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-run-model.none { color: var(--faint); border-style: dashed; }
 .rv-scope .rv-run-current { font-size: 10.5px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .rv-scope .rv-run-err { font-size: 10.5px; color: var(--danger); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 「停止」只停这一条：压在卡片右上角，别把卡里的文字挤走。 */
+.rv-scope .rv-run-stop, .rv-scope .rv-focus-stop {
+  flex: none; padding: 1px 7px; font-size: 10.5px; color: var(--dim); cursor: pointer;
+  background: transparent; border: 1px solid var(--line); border-radius: 8px; font-family: inherit;
+}
+.rv-scope .rv-run-stop { position: absolute; top: 6px; right: 7px; }
+.rv-scope .rv-run-stop:hover, .rv-scope .rv-focus-stop:hover { color: var(--text); border-color: var(--accent); }
 /* ---- 点开的那一次：\u2039 记录 / 评什么 / 完整详情，下面接那一次的统计与意见 */
 .rv-scope .rv-focus { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .rv-scope .rv-focus-head { display: flex; gap: 6px; align-items: center; min-width: 0; }

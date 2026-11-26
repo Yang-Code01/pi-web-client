@@ -31,6 +31,9 @@ import {
   buildPrompt,
   chunkFiles,
   expectRepoMismatch,
+  cancelReview,
+  reviewProgresses,
+  sweepStaleRuns,
   startReview,
   setPick,
   trimRuns,
@@ -439,6 +442,104 @@ check("期望仓库：别仓的号在开跑之前就被拒（不 fetch、不起�
   }
   assert.equal(code, "pr_foreign_repo");
   assert.equal(fs.existsSync(reviewStateFile(repo, "")), false, "拒掉的那一次不该落状态");
+});
+
+// ---- 并发（D417）：一个会话同时评两条，额度只按会话算 -----------------------
+
+/** 一个没有 remote 的临时仓库：pr 模式会在 resolvePullRequest 里立刻失败，闸门逻辑跑得飞快。 */
+function bareRepo(name) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-web-review-${name}-`));
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  return dir;
+}
+
+function startThrows(o) {
+  try {
+    startReview(o);
+  } catch (err) {
+    return err;
+  }
+  return null;
+}
+
+check("并发（D417）：同一会话两条能一起跑，第三条在开跑前就被拒", () => {
+  const a = bareRepo("cap-a");
+  const b = bareRepo("cap-b");
+  const c = bareRepo("cap-c");
+  const session = "cap-session";
+  const first = startReview({ dir: a, mode: "pr", pr: 1, session, lang: "zh" });
+  const one = startReview({ dir: b, mode: "pr", pr: 2, session, lang: "zh" });
+  assert.ok(first.runId && one.runId && first.runId !== one.runId, "两条各是一个 runId");
+  const third = startThrows({ dir: c, mode: "pr", pr: 3, session, lang: "zh" });
+  assert.equal(third?.code, "busy", "第三条必须当场被拒");
+  assert.equal(String(third?.params?.p1), "2", "理由里要说清上限是 2");
+  // 额度按会话算、跨仓库共用；另一个会话不受影响。
+  const other = startReview({ dir: c, mode: "pr", pr: 3, session: "another", lang: "zh" });
+  assert.ok(other.runId);
+  cancelReview(a, session);
+  cancelReview(b, session);
+  cancelReview(c, "another");
+});
+
+check("并发（D417）：同一个 PR 在同一次会话里只许一条（dup_pr），别的号放行", () => {
+  const repo = bareRepo("dup");
+  const session = "dup-session";
+  startReview({ dir: repo, mode: "pr", pr: 691, session, lang: "zh" });
+  const again = startThrows({ dir: repo, mode: "pr", pr: 691, session, lang: "zh" });
+  assert.equal(again?.code, "dup_pr");
+  assert.equal(String(again?.params?.p1), "691", "提示里要带号");
+  // 同一个号在另一个会话里是另一回事
+  const otherSession = startReview({ dir: repo, mode: "pr", pr: 691, session: "dup-other", lang: "zh" });
+  assert.ok(otherSession.runId);
+  // 同一个会话里换一个号照开
+  const otherPr = startReview({ dir: repo, mode: "pr", pr: 692, session, lang: "zh" });
+  assert.ok(otherPr.runId);
+  cancelReview(repo, session);
+  cancelReview(repo, "dup-other");
+});
+
+check("并发（D417）：按 runId 停一条，另一条不受影响", () => {
+  const repo = bareRepo("cancel");
+  const session = "cancel-session";
+  const a = startReview({ dir: repo, mode: "pr", pr: 1, session, lang: "zh" });
+  const b = startReview({ dir: repo, mode: "pr", pr: 2, session, lang: "zh" });
+  assert.deepEqual(
+    reviewProgresses(repo, session).map((p) => p.runId).sort(),
+    [a.runId, b.runId].sort(),
+    "两条各有一份进度",
+  );
+  assert.equal(cancelReview(repo, "other-session", a.runId), false, "别的会话停不动这条");
+  assert.equal(cancelReview(repo, session, "no-such-run"), false);
+  assert.equal(cancelReview(repo, session, a.runId), true);
+  assert.deepEqual(reviewProgresses(repo, session).map((p) => p.runId), [b.runId], "a 被停掉之后只剩 b");
+  cancelReview(repo, session, b.runId);
+});
+
+check("并发（D417）：进度只按「仓库 + 会话」发给自己的会话", () => {
+  const repo = bareRepo("isolate");
+  const a = startReview({ dir: repo, mode: "pr", pr: 7, session: "s1", lang: "zh" });
+  startReview({ dir: repo, mode: "pr", pr: 8, session: "s2", lang: "zh" });
+  assert.deepEqual(reviewProgresses(repo, "s1").map((p) => p.runId), [a.runId]);
+  assert.equal(reviewProgresses(repo, "s3").length, 0);
+  cancelReview(repo, "s1");
+  cancelReview(repo, "s2");
+});
+
+check("并发（D417）：桥重启后 sweep 按「条」计数，不只是按文件", () => {
+  const prev = process.env.PI_WEB_STATE;
+  process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-sweep-"));
+  try {
+    const repo = "/Users/me/sweep";
+    const running = (id) => ({ id, status: "running", findings: [] });
+    writeReviewState(repo, { repo, runs: [running("a"), running("b")], marks: {} }, "s1");
+    writeReviewState(repo, { repo, runs: [running("c"), { id: "d", status: "done", findings: [] }], marks: {} }, "s2");
+    assert.equal(sweepStaleRuns(), 3, "两个会话共三条在跑");
+    const all = [...readReviewState(repo, "s1").runs, ...readReviewState(repo, "s2").runs];
+    assert.equal(all.filter((r) => r.status === "running").length, 0);
+    assert.equal(all.find((r) => r.id === "d").status, "done", "已经跑完的那条不许动");
+  } finally {
+    process.env.PI_WEB_STATE = prev;
+  }
 });
 
 check("写盘本身不裁剪：标意见 / 改 pick 不许把正看着的那条挤掉", () => {

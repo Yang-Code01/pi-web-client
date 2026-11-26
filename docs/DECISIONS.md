@@ -8320,3 +8320,41 @@ html[data-ui="mac"] .msg.user .body ::selection { background: var(--accent-ink);
 **代价。** 强调色实底的按钮（`.btn.primary`、`.chip.on` 等）里选字还是会看不见，那些不是可读文本区，没有单独反相。`.ed-code .ed-ta::selection` 保留自己的 `color: transparent`（特异性 0,2,1 高于 0,1,1），代码编辑器的高亮层不受影响。
 
 **验证。** `node probes/selection-visible.mjs`（桩桥 + 真 Chromium，真鼠标拖选，量**画出来的像素**而不是 CSS 声明）：改前用户气泡 1.00（三套主题都是）、助手气泡 1.55 / 1.56 / 1.60，7 项红；改后用户 4.02 / 3.65 / 3.65、助手 3.86 / 4.40 / 4.44，24 项全绿。探针只跑主界面；内网通那条用的是同一对 token（accent 实底 / accent-ink 字），对比度等于上表「用户气泡」一行，**但内网通页面本身没起实例实测**。坑记一笔：programmatic `getSelection().addRange()` 在没聚焦的文档里 Chrome 不上色，只看计算样式或那种选区截出来的图会误判成「已经改好」。
+
+## D418 代码评审支持同时评两个 PR：额度按会话、按条停止、一张列表（用户「代码评审支持 多个pr 评审。如果，现在是691 在评审……我可以新开评审其他的pr」2026-11-26）
+
+**问题。** 一个会话同时只能评一条：桥端 `active` / `progressMap` 按「仓库 + 会话」一个键一份（`activeKey`），撞上就抛 `busy`；页面 `reviewView()` 的 `running` 由**最新一条记录**决定、`live` 也只认最新那条；跑着时整张「评什么」（范围 / PR 号 / 模型）与主按钮一起锁死（按钮变成「中断评审」）。用户要的是「#691 继续跑，我另开一个 PR 来评」。另有一个早就存在的串话：`review.progress` 帧不带 sessionId，跨会话评同一仓库时，另一个会话的面板会把这条进度画在自己身上。
+
+**决定。**
+
+1. 额度按**会话**算、跨仓库共用：`MAX_RUNS_PER_SESSION = 2`（`bridge/src/review.ts`）。第三条同步抛 `busy`（`params.p1 = "2"`）；页面主按钮置灰并写「已满 2 个，先停一个再开」。
+2. 判重只认「同会话 + 同仓库 + 同 PR 号」，抛新码 `dup_pr`（`params.p1` = 号）。位置在 `startReview` 的 `pr_foreign_repo` 闸之后、`resolvePullRequest` 之前 —— 白跑的代价是 fetch + 一次 preview，不如当场拒。范围 / 工作区 / 提交模式不判重：那正是「同一份 diff 再跑一份对比」的用法。
+3. 运行时主键从「仓库 + 会话」换成 **runId**：`active`、`progressMap` 都按 runId 记；另加 `runningFor(session)`（数额度）与 `reviewProgresses(repo, session)`（给页面的清单）。`reviewProgress`（一条）换掉。
+4. 停止按条：`cancelReview(dir, session, runId)`，给 runId 时校验 repo + session、只 abort 那一条；不给则停掉该 repo + session 下全部（兼容旧调用）。停掉当场 `active.delete(runId)`，额度立刻回来。
+5. 帧补字段：`review.progress` 带 `sessionId` + `runId`；`review.state` 带 `progresses` 与 `cap`；新增 `review.started`（桥把这次换来的 runId 说一声，页面只认自己开过的那些来弹「跑完」提示）。
+6. 页面同一张列表：`ReviewInput.progress` → `progresses` + `cap`；`live` 按每张卡自己的 runId 找；`running` = 展开那条在跑、`runningCount` / `atCap` 决定能不能开。在跑的置顶（再按 `startedAt` 倒序），跑完 / 停下的不抢焦点。记录卡从 `<button>` 改成 `role="button"` 的 `div`，才能内嵌「停止」。
+7. 跑着时「评什么」与模型 chip 解锁：它们描述的是**下一条**，每条记录自己带 model / provider 快照。主按钮恒为「开始评审」，「停止」只留在展开的那条与每张在跑的卡上。
+8. 桥重启：`sweepStaleRuns()` 改成**按条**计数，页面第一份状态里的 `swept > 0` 弹一次「桥重启了，N 条评审被中断」。
+
+**为什么。**
+
+- 额度按会话而不是全机：额度是「一个人同时盯几个 PR」的注意力，跨仓库也占同一份。2 条刚好是「继续跑 + 再开一条」，再多 provider 限流与内存峰值一起翻倍（一次 31 文件的评审实测 136 秒，组内串行、每组一个 `pi -p` 子进程）。
+- 抓在开跑前而不是跑完再合并结果：两条同号同时跑，后一条白烧一次 fetch + preview；`pr_foreign_repo` 已经立了这个先例（#666）。
+- 进度帧必须带 runId：不带就只能「谁后到算谁的」，两条同时在跑必然互相覆盖；顺带把跨会话串话修掉（原来那个 `msg.sessionId === this.currentId` 守卫在桥上根本没发 sessionId，一直是空转）。
+- 停下即腾额度：额度是注意力，不是进程数；停掉的那条不会自己回来，占着位置只会让人以为还有一条在跑。
+- 卡片改 `div` 而不是「按钮里套按钮」：HTML 不许按钮嵌套，`stopPropagation` 也挡不住点击语义被外层 button 吃掉。
+
+**代价 / 可改。**
+
+- 两条同时跑 = 两份 token、两个子进程；上限是常量，没做成设置项。
+- `review.started` 之前就失败（`busy` / `dup_pr`）时页面不弹「跑完」，只显示错误条 —— 符合「没开跑就没有完成提示」。
+- 历史仍是 20 条上限（`RUN_KEEP`），两条并发只是更快用完；`trimRuns` 优先裁终态。
+- `swept` 只在 `review.get` 里取一次（`takeSweptCount()`），提示只出现一次 —— 有意为之，免得每次打开面板都弹。
+
+**验证。**
+
+- `bridge/tests/review-unit.mjs` 新增 5 条：两条并发 + 第三条 `busy`（`params.p1 === "2"`）、同会话同号 `dup_pr`（`params.p1 === "691"`）、按 runId 停一条后额度回来、进度按「仓库 + 会话」隔离、sweep 按条计数 —— 37 条 check 全绿。
+- `web/tests/review-unit.mjs` 新增 4 条：还有额度时 `canRun === true`、跑满两条时 `atCap` / 置灰理由 / 两卡各有 live、在跑置顶排序、停一条额度回来 —— 26 项全绿。
+- `npm run test:review`（桥端 5 个套件 + 页面 pin 单测）rc=0；`npm --prefix web run typecheck` 全过（含 i18n / 视口守卫）。
+- `node probes/code-review.mjs`（桩桥 + 真 Chromium）39 项全绿，新增一段并发检出：两条同时在跑、一条一张卡各有停止、开满两条后主按钮置灰且写明原因、停一条额度回来、终态不抢焦点。
+- 两处并发风险提前实测：同仓库 100 次并发 `git fetch`（含同 ref `--force` 与 base 拉取）零锁冲突、单次 3.1–6.6 秒；ocr v1.14.4 的 `delegate preview` / `delegate rule` 4 路并发输出与单跑逐字一致、仓库无新文件（脚本 `.scratch/fetch-lock-probe.mjs`、`.scratch/ocr-concurrency-probe.mjs`）。
