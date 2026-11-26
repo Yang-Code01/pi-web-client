@@ -15,7 +15,7 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 import { markSurface, pushEscLayer } from "./modal.ts";
-import { renderFindings, type ReviewPanelInput, type Severity } from "./review.ts";
+import { type Mark, type ReviewFinding, type ReviewPanelInput, type Severity } from "./review.ts";
 
 const SEV_ORDER: Severity[] = ["critical", "high", "medium", "low"];
 
@@ -620,4 +620,105 @@ export class ReviewSheet {
     }
     this.bulkBox.replaceChildren(box);
   }
+}
+
+// ---- 意见那一整块（从 review.ts 搬来：面板不再画意见，只有这扇窗用）
+/** 一条意见的位置：`path:line`，定位不到的只写路径。 */
+const placeOf = (f: ReviewFinding): string => (f.anchored && f.startLine ? `${f.path}:${f.startLine}` : f.path);
+
+function severityBadge(sev: Severity, labels: Record<Severity, string>): HTMLElement {
+  return el("span", `rv-sev ${sev}`, labels[sev] ?? sev);
+}
+
+/**
+ * 意见那一整块（已解决 / 空态 / 没评的文件 / 按文件分组的一行一条）。
+ * 只在「评审详情」里画：D429 之后面板本身只画记录卡，不再渲染任何一条意见。
+ */
+function renderFindings(input: ReviewPanelInput): HTMLElement {
+  const { view, actions } = input;
+  // `rv-scope` 是样式域（以前样式全挂在 `.review` 上，dialog 里的意见行就成没样式的一坨）。
+  const root = el("div", "rv-findings rv-scope");
+  // ---- 已解决：只给个数会让人问「哪几条」，把文件列出来
+  if (view.resolvedPaths.length) {
+    const box = el("details", "rv-skipped") as HTMLDetailsElement;
+    box.append(el("summary", "", tr("已解决 {p1} 条", { p1: view.resolved })));
+    for (const p of view.resolvedPaths) box.append(el("div", "rv-skip-row", p));
+    root.append(box);
+  }
+
+  // ---- 空态
+  if (view.empty) {
+    root.append(el("div", "empty", tr("评过了，一条意见都没有。"))) ;
+  }
+
+  // ---- 没评的文件（先摆出来：不许让人以为评全了）
+  if (view.skipped.length) {
+    const box = el("details", "rv-skipped") as HTMLDetailsElement;
+    box.append(el("summary", "", tr("{p1} 个文件没评", { p1: view.skipped.length })));
+    for (const item of view.skipped) {
+      const row = el("div", "rv-skip-row");
+      row.append(el("code", "", item.path), el("span", "rv-why", item.reason));
+      box.append(row);
+    }
+    root.append(box);
+  }
+
+  // ---- 意见：文件分组 + 一行一条
+  for (const group of view.groups) {
+    const box = el("div", "rv-file");
+    const head = el("div", "rv-file-head");
+    head.append(el("code", "", group.path), el("span", "rv-count", String(group.findings.length)));
+    box.append(head);
+
+    for (const f of group.findings) {
+      const row = el("div", "rv-finding");
+      row.dataset.key = f.key;
+      row.dataset.sev = f.severity;
+      const line = el("button", "rv-line") as HTMLButtonElement;
+      line.type = "button";
+      line.append(severityBadge(f.severity, input.severityLabels));
+      line.append(el("span", "rv-text", f.content));
+      if (f.mark) line.append(el("span", "rv-mark", input.markLabels[f.mark]));
+      if (f.state === "persisting") line.append(el("span", "rv-persist", tr("上次就有")));
+      line.onclick = () => {
+        const open = row.classList.toggle("open");
+        body.hidden = !open;
+      };
+      row.append(line);
+
+      const body = el("div", "rv-body");
+      body.hidden = true;
+      const place = el("button", "rv-place", placeOf(f)) as HTMLButtonElement;
+      place.type = "button";
+      place.onclick = () => actions.onOpen(f.path, f.anchored ? f.startLine : 0);
+      body.append(place);
+      if (f.existingCode) {
+        const pre = el("pre", "rv-code");
+        pre.textContent = f.existingCode;
+        body.append(pre);
+      }
+      if (f.suggestionCode) {
+        const pre = el("pre", "rv-code rv-sugg");
+        pre.textContent = f.suggestionCode;
+        body.append(pre);
+      }
+      const acts = el("div", "rv-acts");
+      for (const [mark, label] of Object.entries(input.markLabels) as [Mark, string][]) {
+        const btn = el("button", `btn ghost rv-mark-btn${f.mark === mark ? " on" : ""}`, label) as HTMLButtonElement;
+        btn.type = "button";
+        btn.onclick = () => actions.onMark(f.key, f.mark === mark ? "" : mark);
+        acts.append(btn);
+      }
+      const fix = el("button", "btn ghost rv-fix", tr("交给 AI 修")) as HTMLButtonElement;
+      fix.type = "button";
+      fix.onclick = () => actions.onFix(f);
+      acts.append(fix);
+      body.append(acts);
+      row.append(body);
+      box.append(row);
+    }
+    root.append(box);
+  }
+
+  return root;
 }

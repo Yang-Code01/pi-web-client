@@ -90,7 +90,7 @@ export interface ReviewInput {
   /**
    * 「完整详情」浮层现在看的是哪一次评审（`ReviewRun.id`，空串 = 没开浮层，按最新那一次算）。
    *
-   * 记录卡本身不再是入口（D426）：意见、时间线、统计、模型名只在浮层里出现，
+   * 记录卡本身不再是入口（D429）：意见、时间线、统计、模型名只在浮层里出现，
    * 但浮层抬头必须按**点开的那张卡**写，而不是「最新那一次」—— 所以这个焦点还留着。
    */
   focus?: string;
@@ -324,7 +324,7 @@ export function reviewView(input: ReviewInput): ReviewView {
   // 记录按时间正序落盘；面板从新到旧画，所以这里先翻过来，画的时候不用再想顺序。
   const allRuns = Array.isArray(state?.runs) ? state.runs : [];
   const latest = asRun(state);
-  // 「完整详情」浮层看的那一次（D426 之后面板本身不再展开任何一次）；认不出来（记录被裁掉了 /
+  // 「完整详情」浮层看的那一次（D429 之后面板本身不再展开任何一次）；认不出来（记录被裁掉了 /
   // 换了会话 / 刷新后不记得了）就回落到最新那一次。
   const focused = input.focus ? allRuns.find((r) => r.id === input.focus) ?? null : null;
   const active = focused ?? latest;
@@ -619,110 +619,10 @@ const duration = (ms: number | null): string => {
   return tr("{p1} 分 {p2} 秒", { p1: Math.floor(sec / 60), p2: sec % 60 });
 };
 
-/** 一条意见的位置：`path:line`，定位不到的只写路径。 */
-const placeOf = (f: ReviewFinding): string => (f.anchored && f.startLine ? `${f.path}:${f.startLine}` : f.path);
-
-function severityBadge(sev: Severity, labels: Record<Severity, string>): HTMLElement {
-  return el("span", `rv-sev ${sev}`, labels[sev] ?? sev);
-}
-
 /**
  * 面板主体。所有判断都在 `reviewView()` 里做完了，这里只是照着画 —— 所以它不需要单测，
  * 端到端由 `probes/code-review.mjs` 盯着。
  */
-/**
- * 意见那一整块（已解决 / 空态 / 没评的文件 / 按文件分组的一行一条）。
- * 面板与「评审详情」dialog 共用同一份，宽度不同只是 CSS 的事。
- */
-export function renderFindings(input: ReviewPanelInput): HTMLElement {
-  const { view, actions } = input;
-  // `rv-scope` 是面板与 dialog 共用的样式域：同一份意见在两处长得一样
-  // （以前样式全挂在 `.review` 上，dialog 里的意见行就成没样式的一坨）。
-  const root = el("div", "rv-findings rv-scope");
-  // ---- 已解决：只给个数会让人问「哪几条」，把文件列出来
-  if (view.resolvedPaths.length) {
-    const box = el("details", "rv-skipped") as HTMLDetailsElement;
-    box.append(el("summary", "", tr("已解决 {p1} 条", { p1: view.resolved })));
-    for (const p of view.resolvedPaths) box.append(el("div", "rv-skip-row", p));
-    root.append(box);
-  }
-
-  // ---- 空态
-  if (view.empty) {
-    root.append(el("div", "empty", tr("评过了，一条意见都没有。"))) ;
-  }
-
-  // ---- 没评的文件（先摆出来：不许让人以为评全了）
-  if (view.skipped.length) {
-    const box = el("details", "rv-skipped") as HTMLDetailsElement;
-    box.append(el("summary", "", tr("{p1} 个文件没评", { p1: view.skipped.length })));
-    for (const item of view.skipped) {
-      const row = el("div", "rv-skip-row");
-      row.append(el("code", "", item.path), el("span", "rv-why", item.reason));
-      box.append(row);
-    }
-    root.append(box);
-  }
-
-  // ---- 意见：文件分组 + 一行一条
-  for (const group of view.groups) {
-    const box = el("div", "rv-file");
-    const head = el("div", "rv-file-head");
-    head.append(el("code", "", group.path), el("span", "rv-count", String(group.findings.length)));
-    box.append(head);
-
-    for (const f of group.findings) {
-      const row = el("div", "rv-finding");
-      row.dataset.key = f.key;
-      row.dataset.sev = f.severity;
-      const line = el("button", "rv-line") as HTMLButtonElement;
-      line.type = "button";
-      line.append(severityBadge(f.severity, input.severityLabels));
-      line.append(el("span", "rv-text", f.content));
-      if (f.mark) line.append(el("span", "rv-mark", input.markLabels[f.mark]));
-      if (f.state === "persisting") line.append(el("span", "rv-persist", tr("上次就有")));
-      line.onclick = () => {
-        const open = row.classList.toggle("open");
-        body.hidden = !open;
-      };
-      row.append(line);
-
-      const body = el("div", "rv-body");
-      body.hidden = true;
-      const place = el("button", "rv-place", placeOf(f)) as HTMLButtonElement;
-      place.type = "button";
-      place.onclick = () => actions.onOpen(f.path, f.anchored ? f.startLine : 0);
-      body.append(place);
-      if (f.existingCode) {
-        const pre = el("pre", "rv-code");
-        pre.textContent = f.existingCode;
-        body.append(pre);
-      }
-      if (f.suggestionCode) {
-        const pre = el("pre", "rv-code rv-sugg");
-        pre.textContent = f.suggestionCode;
-        body.append(pre);
-      }
-      const acts = el("div", "rv-acts");
-      for (const [mark, label] of Object.entries(input.markLabels) as [Mark, string][]) {
-        const btn = el("button", `btn ghost rv-mark-btn${f.mark === mark ? " on" : ""}`, label) as HTMLButtonElement;
-        btn.type = "button";
-        btn.onclick = () => actions.onMark(f.key, f.mark === mark ? "" : mark);
-        acts.append(btn);
-      }
-      const fix = el("button", "btn ghost rv-fix", tr("交给 AI 修")) as HTMLButtonElement;
-      fix.type = "button";
-      fix.onclick = () => actions.onFix(f);
-      acts.append(fix);
-      body.append(acts);
-      row.append(body);
-      box.append(row);
-    }
-    root.append(box);
-  }
-
-  return root;
-}
 
 export function renderReview(input: ReviewPanelInput): HTMLElement {
   const { view, actions } = input;
@@ -1047,7 +947,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     return root;
   }
 
-  // ---- 主体：这个会话评过的每一次（记录卡）。意见与时间线在「完整详情」浮层里（D426）。
+  // ---- 主体：这个会话评过的每一次（记录卡）。意见与时间线在「完整详情」浮层里（D429）。
   root.append(renderRunList(input));
 
   // ---- 来源说明：评审内核不是本仓库自研，别让人以为是
@@ -1128,7 +1028,7 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
     const cls = ["rv-run-card", card.running ? "is-live" : "", card.status === "failed" ? "is-fail" : ""]
       .filter(Boolean)
       .join(" ");
-    // 卡片正文不是入口（D426）：不再整卡可点，拖选卡上的文字也不会误触浮层；
+    // 卡片正文不是入口（D429）：不再整卡可点，拖选卡上的文字也不会误触浮层；
     // 键鼠唯一的入口是底行那颗「完整详情」。
     const row = el("div", cls);
 
@@ -1141,7 +1041,7 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
     if (card.running && card.live?.current) row.append(el("div", "rv-run-current", card.live.current));
     if (card.error && !card.running) row.append(el("div", "rv-run-err", card.error));
 
-    // 底行右对齐：跑着的那条先「停止」，再「完整详情」（D426）。停止挪进这里之后，
+    // 底行右对齐：跑着的那条先「停止」，再「完整详情」（D429）。停止挪进这里之后，
     // 不再绝对定位压住同一行右端的时间。
     const foot = el("div", "rv-run-foot");
     if (card.running) {

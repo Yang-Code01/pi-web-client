@@ -223,7 +223,7 @@ try {
   await page.locator(".rv-run:not([disabled])").first().waitFor({ timeout: 30000 });
   await page.locator(".rv-run").first().click();
 
-  // D426：跑起来只是多一张记录卡，面板不再跟着跳进那一次；意见只在「完整详情」里。
+  // D429：跑起来只是多一张记录卡，面板不再跟着跳进那一次；意见只在「完整详情」里。
   await until(async () => (await page.locator(".rv-run-card").count()) >= 1, 60000, "run card");
   if (await page.locator(".rv-run-card.is-live .rv-run-stop").count()) {
     // D420：跑着的时候这张「评什么」描述的是**下一条**，所以不再整张禁用；停止是每条记录自己的事。
@@ -258,6 +258,14 @@ try {
     geom.width <= 420 && geom.bx >= geom.px && geom.bx + geom.bw <= geom.px + geom.width + 1,
     `panel ${Math.round(geom.width)} / 按钮右缘 ${Math.round(geom.bx + geom.bw - geom.px)}`,
   );
+  // toast 只在跑完那一刻挂几秒：先等它、当场读，别等开了浮层、读完意见再回头找（那时早没了）。
+  const toast = await page
+    .locator(".fail-toast")
+    .first()
+    .waitFor({ timeout: REVIEW_TIMEOUT_MS })
+    .then(() => page.locator(".fail-toast").first().innerText())
+    .catch(() => "");
+  check("跑完弹一句结果", /评审/.test(toast.trim()), toast.trim().slice(0, 60));
   // 「完整详情 ›」：记录卡右下角那个入口，打开的是**这张卡**那次；左边时间线、右边结果。
   // 跑着的时候面板按计时器整块重画：locator.click() 会卡在「等元素稳定」上（review-cards 里踩过）。
   // 先量坐标再用鼠标真点，点完没开就重来一次。
@@ -306,8 +314,6 @@ try {
   check("仪表写了耗时与 token", /tokens/.test(meta) && /\d/.test(meta), meta.replace(/\n/g, " ").slice(0, 60));
   const stages = await page.locator(".rv-sheet .rv-stg").count();
   const sheetFindings = await page.locator(".rv-sheet .rv-finding").count();
-  const toast = (await page.locator(".fail-toast").first().innerText().catch(() => "")).trim();
-  check("跑完弹一句结果", /评审/.test(toast), toast.slice(0, 60));
   check("详情 dialog 有分组日志与结果", stages >= 1 && sheetFindings > 0, `${stages} 段日志 · ${sheetFindings} 条意见`);
   // 仪表（进度/用量/用时）曾被 settings-console.css 的 `.st-console{display:grid}` 挤成 0 高，压一下。
   const instBox = await page.locator(".rv-sheet .rv-inst").boundingBox();
@@ -330,7 +336,7 @@ try {
   await page.locator(".rv-sheet-head .btn:not([hidden])").last().click();
   await until(async () => (await page.locator(".rv-sheet").count()) === 0, 8000, "review sheet closed");
 
-  // 记录卡（D426）：卡就是卡，正文点了没反应，唯一入口是右下角那颗。
+  // 记录卡（D429）：卡就是卡，正文点了没反应，唯一入口是右下角那颗。
   const cards = await page.locator(".rv-run-card").count();
   check("每次都留一张记录卡", cards >= 1, `${cards} 张`);
   check("面板里已经没有「清理历史」", (await page.locator(".rv-clean").count()) === 0, "");
@@ -373,6 +379,12 @@ try {
   await until(async () => (await page.locator(".branch-sheet").count()) === 0, 8000, "branch sheet closed");
 
   // ---------------------------------------------------------------- 4) 交给 AI 修
+  // 上一步点了 `path:line` 去分支工作台：回来时浮层可能已经被盖住或关掉（第 5 步就是这么兜的）。
+  // 不先兜，下面的 `.rv-body` 可见性判断会落在隐藏节点上，点击一路超时。
+  if (!(await page.locator(".rv-sheet").count())) {
+    await page.locator(".rv-run-card").first().locator(".rv-run-more").click();
+    await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
+  }
   // 上一步已经把它展开了；再点一次等于收起，所以先看状态。
   if (!(await page.locator(".rv-sheet .rv-body").first().isVisible())) await page.locator(".rv-sheet .rv-line").first().click();
   await page.locator(".rv-sheet .rv-fix").first().click();
