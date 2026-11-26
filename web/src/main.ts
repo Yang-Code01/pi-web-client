@@ -72,7 +72,10 @@ async function boot(): Promise<void> {
 }
 
 async function start(me: Me): Promise<void> {
-  new App(me);
+  const app = new App(me);
+  // 知识库深链：刷新、或别人分享 `/knowledge/<slug>` 过来时，直接把那一页打开
+  // （spa 回退由 bridge 的 serveStatic 兜住，见 bridge/src/index.ts）。
+  if (location.pathname.startsWith("/knowledge")) app.openKnowledgePage();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {
       /* push is optional */
