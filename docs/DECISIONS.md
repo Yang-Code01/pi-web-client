@@ -8448,3 +8448,20 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 **验证。** `bridge/tests/review-gh-account-e2e.mjs`（已挂进 `npm run test:review`）：用例 1 `sessionGhAccount` 按会话给出 `xyang-qingmin` 的令牌；用例 2 真 git 仓库 + 本地 bare 远端，断言 `gh pr view` 只跑一次且拿到的是 `gho_fake_xyang-qingmin`、`refs/pi-web/pr-17545` 与远端 `refs/pull/17545/head` 同一 sha；用例 3 让假 gh 回 GraphQL 那句，断言 `code === "repo_unseen"` 且**只问了一次**。红验证：把 `routed()` 的 `{ ...env, ...extra }` 改回 `env` → 用例 2 红（`评审的 gh 必须用会话账号的令牌`）；把 `stop` 改成 `false` → 用例 3 红（`对端已经答了的失败不该换代理重试`）。`npm run test:review` 全绿，`npm --prefix web run typecheck`（含 i18n-check 与 viewport 守卫）exit 0。
 
 **补（PR #700 评审）。** 面板那个下拉最初把桥回的**解析结果**当成「人选的那个」写进 `reviewAccount` —— 跟随工作区时它也是具体账号，于是「跟随工作区」永远选不中、桥回空账号时又不清（留着上一次的号）。现在拆成两个字段：`reviewAccount` 只存会话里显式选的（`state.session.source === "session"`），`reviewAccountUsed` 存实际按谁在查，只用来写给人看（下拉首项写「跟随工作区（xyang-qingmin）」）。拆分逻辑是纯函数 `ghAccountPair()`，配 `web/tests/github-unit.mjs` 用例。
+
+## D423 「最近使用」分两条清单：评审弹层显示「评审挑过的 + 对话用过的」并集（用户 2026-11-26「代码评审里面的模型切换里面的最近使用 应该记录的是使用过代码评审的记录+ chat 会话最近使用的。 现在只有chat 会话最近使用的」）
+
+**问题。** 模型弹层的「最近使用」只有一份 `localStorage["pi.models.recent"]`（`web/src/modelgroups.ts:9`，上限 5 条），写它的只有两处：对话弹层确认换模型（`web/src/app.ts:5958-5961`，换走的和换上的都记）、新会话弹层挑模型（`web/src/scratch.ts:632-633`）。评审面板那颗 `.rv-model` chip 走 `openModelSheet(false, { start, onPick })`（`web/src/app.ts:19401-19407`），确认分支只调 `pick.onPick(...)`（`web/src/app.ts:5938-5943`），**从不**调 `rememberRecentModel` —— 评审挑过的模型一条也进不了这份清单，于是评审弹层里只剩对话用过的。第二层问题：最近使用段只画在「当前使用」页（`web/src/app.ts:6134`），而 pick 模式默认落在「全部模型」页（`web/src/app.ts:5856`），且那页里的「当前使用」在没挑过模型时 pinned 是空的 —— 就算记了，打开评审弹层那一屏也看不见。
+
+**决定。**
+
+- **两条清单**：新增 `localStorage["pi.models.reviewRecent"]`（评审侧专用），条目形状 `{ provider, id, t }`；对话那条 `pi.models.recent` 也改成写 `t`，读到没有 `t` 的旧条目当 `t = 0`（排序落在后面，不做一次性迁移）。两条各自封顶 `RECENT_MAX = 5`，由 `rememberRecentModel` / 新增的 `rememberReviewModel` 分别写。
+- **合并只发生在显示层**：`recentModelsMerged()` 取两条的并集，按 `t` 降序、按 `provider/id` 去重，合并后**不裁**（最多 10 条，段头写「N 个」）；`groupModels` 多一个 `mergedRecent` 开关，只有评审弹层传它。
+- **什么算「评审用过」**：确认「用这个模型」时记一笔（`web/src/app.ts:5938-5943`，pick 分支）；`startReview()`（`web/src/app.ts:19559`）再用 `reviewEffectiveModel()` 记一笔，把它提到最前。后者覆盖「没单独挑、按默认模型跑了一次评审」的路径。
+- **版面**：pick 模式下 `allPane()` 顶部插一段「最近使用」（不折叠、不进来源组），「当前使用」页那段也改用合并口径；对话弹层与新会话弹层（`web/src/scratch.ts:621`）保持只看对话那条。
+
+**为什么。** ① 用户要的口径本来就不对称：评审弹层要「评审挑过的 + 对话用过的」，而对话侧不该被评审的选择污染 —— 一条共享清单做不到这种不对称，除非给每个条目记来源（那是第三条清单的复杂度，收益只是省一个键）。② 合并按 `t` 排而不是「评审的在前」：用户心智是「最近用过」，而刚在对话里换过的模型往往正是这次评审想选的；不做优先级猜测。③ 两条各 5、合并不裁：合并后再裁到 5，评审的选择会被对话常用的模型挤出去，正是这次要修的现象。④ 开跑时也记一笔：确认完就记能让人马上在最近里看到，但只有开跑那次才是「真的拿去评过」；两条都记，顺序自然把最近一次提到最前。⑤ 「最近使用」只在 pick 模式的「全部模型」页新增一段，不动对话弹层的版面 —— D409 定过「最近使用并进当前使用页、不单独占左栏入口」，这次不推翻它，只是给 pick 模式补一个开场就能看到的入口。
+
+**代价。** 多一个 localStorage 键要清（用户在隐私模式写不进时两份都可能空）；旧条目没有 `t` 会永远排在带 `t` 的后面，直到被用过一次；评审清单会含「挑过但还没真跑过」的模型（确认即记录的口径），这是为了刚挑完就能看见而接受的。
+
+**验证。** `web/tests/modelgroups-unit.mjs` 扩用例（现共 8 条全绿）：评审清单与对话清单互不污染、两条按 `t` 合并且同模型只出现一次、每条封顶 5、合并后条数超过 `RECENT_MAX` 时不裁、旧条目无 `t` 排后面、`groupModels({ mergedRecent: true })` 不重复 pinned。红验证：把 `rememberReviewModel` 改成写 `RECENT_KEY` → 合作用例红 3 条（含「写评审不动对话那条」），改回即绿。`probes/model-sheet-ui.mjs`（`npm --prefix web run build` 后跑，真 Chromium + 桩桥）回归对话弹层 9 段全绿：普通弹层不受这次改动影响（它根本不走 `pick` 分支，也就看不见合并清单）。pick 弹层这次的版面只由 typecheck 与手验看着，没加新探针（本轮选的是「扩单测 + 跑现有 probe」）。

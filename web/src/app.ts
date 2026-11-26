@@ -82,7 +82,7 @@ import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
 import { SelAsk } from "./selask.ts";
-import { appendModelOptions, groupByProvider, groupModels, isModelGroupOpen, rememberRecentModel, setModelGroupOpen } from "./modelgroups.ts";
+import { appendModelOptions, groupByProvider, groupModels, isModelGroupOpen, mergedRecentModels, rememberRecentModel, rememberReviewModel, setModelGroupOpen } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isDefaultHidden, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { type CtxLine, type CtxPolicy } from "./context.ts";
@@ -5937,7 +5937,11 @@ export class App {
     const commit = (): void => {
       if (pick) {
         const chosen = this.models.find((m) => m.id === draftModel);
-        if (chosen) pick.onPick(chosen, draftLevel);
+        if (chosen) {
+          // D423：评审挑的模型进评审侧那份「最近使用」（确认即记）；对话那份不受影响。
+          rememberReviewModel(chosen.provider, chosen.id);
+          pick.onPick(chosen, draftLevel);
+        }
         this.closeSheet();
         return;
       }
@@ -6122,7 +6126,7 @@ export class App {
         return out;
       }
 
-      const { pinned, recent } = groupModels(this.models, { id: startModel });
+      const { pinned, recent } = groupModels(this.models, { id: startModel }, { mergedRecent: !!pick });
       // 来源不止一个时，这几块是平铺的，得在行里标出它属于哪个来源。
       const multi = new Set(this.models.map((x) => x.provider)).size > 1;
       const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
@@ -6147,6 +6151,18 @@ export class App {
         const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
         notice.append(this.claimButton());
         out.push(notice);
+      }
+      // D423：评审挑模型时开场就落在这一页，「最近使用」得在这里看得到。
+      // 对话侧不插这一段：D409 定过它归「当前使用」页，不重复入口。
+      if (pick) {
+        const multiProviders = new Set(this.models.map((x) => x.provider)).size > 1;
+        const recent = mergedRecentModels(this.models).filter((x) => !q || `${x.name} ${x.id}`.toLowerCase().includes(q));
+        if (recent.length) {
+          out.push(
+            this.stSection(tr("最近使用"), tr("{p1} 个", { p1: String(recent.length) })),
+            panel(recent.map((x) => modelRow(x, { provider: multiProviders })), ""),
+          );
+        }
       }
       // 来源多了就得能分开看：按目录顺序一个来源一组，组头可折（状态记在 pi.modelGroups.open，跟目录选择器同一份）。
       const groups = groupByProvider(list);
@@ -19557,6 +19573,9 @@ export class App {
     this.reviewError = "";
     this.reviewPrMenu = false;
     const modelInfo = this.reviewEffectiveModel();
+    // D423：这次真要拿去跑的模型也算「评审用过的」——没单独挑时它跟着会话走，
+    // 记下来的作用是把「确认过但还没跑」和「刚跑过」的次序理顺，下次打开就在最近里。
+    if (modelInfo) rememberReviewModel(modelInfo.provider, modelInfo.id);
     // 新开一条：等桥的 `review.started` 把 runId 发回来再定焦点，这里先回列表页。
     // （以前这里会乐观塞一份 runId 空串的进度；并发以后那样会跟另一条的进度混在一起。）
     this.reviewFocus = "";
