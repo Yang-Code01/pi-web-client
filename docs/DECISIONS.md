@@ -8361,3 +8361,20 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 **代价。** 真装坏了的 ocr（二进制缺失但 launcher 还在）现在要等第一次评审才暴露；`/api/review/state` 在冷启动时会等最多 30 秒（页面走 WS，那一帧是异步补的，实测没人卡在这一屏）。
 
 **验证。** `bridge/tests/ocr-status-unit.mjs`（`npm run test:review` 里）用 PATH 里一个「睡 7 秒再回版本」的假 ocr 走生产同一条 `cmd.exe /c ocr` 解析路径：改前第一条红 —— `{"installed":false,...,"error":"5 秒没有回应"}（耗时 5057ms）`，并发那条红 —— 三路 spawn 3 次；改后 9 条全绿。真机复核（`ocrStatus({refresh:true})` 连探 6 次）：1.9s / 2.4s / 6.9s / 7.1s / 7.5s / 16.3s，6 次全 `installed=true`——按旧的 5 秒线，这 6 次里有 5 次会报「没装」。
+
+## D420 代码评审的 gh 按**会话选的账号**跑，面板上给一个账号下拉（用户 2026-11-26「PR 卡片 codeReview 直接失败：Could not resolve to a Repository」）
+
+**问题。** 工作区 `cas` 下 `C:\api\cas3-onecas-api` 评审 PR #17545，7 秒就失败：`直连：GraphQL: Could not resolve to a Repository with the name 'ISID/cas3-onecas-api'. (repository)；代理 http://127.0.0.1:18796：…`。三个事实叠在一起看：① 那个仓库确实改了名（`git ls-remote` 301 到新 id，`dentsusoken/cas3-onecas-api` 是这个令牌能看到的那个）；② GitHub 面板里这个会话选的账号 `xyang-qingmin` 看得到它，用手工 `gh pr view 17545` 一切正常；③ 桥自己 spawn 的评审 `gh` 用的是机器 active 账号 `Yang-Code01`，那个账号对 `ISID/*`、`dentsusoken/*` 全是 404。根因在 `bridge/src/gitpr.ts`：`run()` 直接 `execFile(ghBin())`，评审入口 `startReview()` 没把会话传下来，账号解析（`bridge/src/github.ts` 的 `pickAccount` / `tokenOf`）压根没参与。而那句提示只报「直连 / 代理各自失败」，把人往网络上引 —— 实际上 `repo_unseen` 这种「对端已经答了」的失败换代理只会再拿一遍同一句话。
+
+**决定。**
+
+- 新增 `sessionGhAccount(cwd, sessionId, ctx)`（`github.ts`）：`pickAccount` + `tokenOf` → `{ login, env: { GH_TOKEN } }`。`index.ts` 的 `review.run` / `review.prs` / `review.prinfo` 三处都先取它，把 `env` 一路传给 `gitpr.ts`（`RouteOptions.env`、`PrQueryOptions extends RouteOptions`），`gh pr view`、`listPullRequests`、`pullRequestInfo` 以及两处 `git fetch` 全部带同一个 `GH_TOKEN`（`git` 走 `gh auth git-credential`，天然同号）。
+- `gh` 怎么起统一到 `ghInvocation()`（`github.ts`），内部复用原有的 `ghCommand()`：测试缝 `PI_WEB_GH_JS` 与「PATH 上被别的 gh 抢先」都收在一处，评审不再另走一套解析。
+- 评审面板（`web/src/review.ts`）在 PR 行加「账号」下拉 `rv-acct-pick`：首项空串 =「跟随工作区」，其余是 `accounts.json` 里那台机器登录过的账号（存过 PAT 的标 ` · PAT`）；切换走 `githubApi.setAccount(sessionId, login)`，然后清掉 PR 缓存与 `reviewPrsAt` 用 `fresh: true` 重拉；桥回帧带上 `login`，失败时多一行「用的是账号：X」，下次不必再猜是谁在看。
+- `netroute.ts` 的 `viaRoutes` 新增 `stop`：一次尝试回 `{ ok:false, stop:true }` 就定死，不再换代理、不再整轮重试；`gitpr.ts` 用 `ANSWERED_FAILURE` 正则（`Could not resolve to a repository/pullRequest/issue`、`repository not found`、`HTTP 40[13]`、`Bad credentials`、`Resource not accessible`）判定，`classify()` 多一个 `repo_unseen`。
+
+**为什么。** ① 账号本来就该跟「谁在用」走：GitHub 面板、`gh` 壳、PR 卡片都在按会话判账号，只有评审漏了，修漏不修新机制。② 下拉框是把这个事实摆到台面上：PR 列表为空时，用户能当场换号重试，而不是去猜是不是网络。③ 不给评审单独存一份账号 —— 面板与 GitHub 页签共用 `accounts.json` 的 `session` 映射，用户已经点过一次，再存一份就有两处真相。④ 不靠 PATH 壳（#661）解决：壳只对 pi **子进程**生效，评审是桥自己 spawn 的，不在那条链上。⑤ `repo_unseen` 不重试代理，是因为答案已经拿到了（7 秒里大部分时间在等一条注定一样的回答），而重试还把错误文案拉长、指向错方向。
+
+**代价。** 一次账号解析多两次 `gh` 调用（`auth status` / `auth token`，都带 TTL 缓存）；老会话在 `accounts.json` 里没有映射时行为不变（跟随工作区 / gh active）。`GH_TOKEN` 进了子进程环境，理论上会被评审自己起的子进程继承 —— 和 pi 会话里 `gh` 壳的处置一致。
+
+**验证。** `bridge/tests/review-gh-account-e2e.mjs`（已挂进 `npm run test:review`）：用例 1 `sessionGhAccount` 按会话给出 `xyang-qingmin` 的令牌；用例 2 真 git 仓库 + 本地 bare 远端，断言 `gh pr view` 只跑一次且拿到的是 `gho_fake_xyang-qingmin`、`refs/pi-web/pr-17545` 与远端 `refs/pull/17545/head` 同一 sha；用例 3 让假 gh 回 GraphQL 那句，断言 `code === "repo_unseen"` 且**只问了一次**。红验证：把 `routed()` 的 `{ ...env, ...extra }` 改回 `env` → 用例 2 红（`评审的 gh 必须用会话账号的令牌`）；把 `stop` 改成 `false` → 用例 3 红（`对端已经答了的失败不该换代理重试`）。`npm run test:review` 全绿，`npm --prefix web run typecheck`（含 i18n-check 与 viewport 守卫）exit 0。

@@ -66,6 +66,15 @@ export interface ReviewInput {
   prs?: PullRequest[];
   prsLoading?: boolean;
   prError?: string;
+  /**
+   * 这次查 PR 按哪个 gh 账号（`githubApi.state()` 解析出来的那个；空串 = 还没读到）。
+   *
+   * 多账号机器上「机器 gh 登的是谁」和「这个会话该用谁」常常不是一个人：`ISID/cas3-onecas-api`
+   * 那种私有仓，换个人就是 `Could not resolve to a Repository`（#17545）。所以号摆出来，也能换。
+   */
+  account?: string;
+  /** 能切到的账号（没读到 / 只有一个时可以不画下拉）。 */
+  accounts?: { login: string; pat: boolean }[];
   model?: string;
   /**
    * 面板现在展开的是哪一次评审（`ReviewRun.id`，空串 = 停在记录列表）。
@@ -149,6 +158,10 @@ export interface ReviewView {
   hasRun: boolean;
   prsLoading: boolean;
   prError: string;
+  /** 现在按哪个账号查 PR（空串 = 不知道 / 还没读到）。 */
+  account: string;
+  /** 能切到的账号（第一个是当前用的那个）。 */
+  accounts: { login: string; pat: boolean }[];
   /** 这个模式下该填的那一格空着：按钮要点不着。 */
   missing: boolean;
   model: string;
@@ -472,6 +485,8 @@ export function reviewView(input: ReviewInput): ReviewView {
     hasRun: Boolean(active),
     prsLoading: Boolean(input.prsLoading),
     prError: (input.prError ?? "").trim(),
+    account: (input.account ?? "").trim(),
+    accounts: input.accounts ?? [],
     missing,
     missingWhy,
     model: input.model ?? active?.model ?? "",
@@ -509,6 +524,8 @@ export interface ReviewActions {
   onPrInput: (value: string) => void;
   /** 重拉一次 PR 列表（`gh` 挂了 / 刚在 GitHub 上开了新 PR）。 */
   onRefreshPrs: () => void;
+  /** 换一个 gh 账号查 PR（空串 = 回到「跟随工作区」）。 */
+  onAccount: (login: string) => void;
   /** PR 那一格里的文字（只记值，不重画，免得输入框换节点）。 */
   onPrQuery: (value: string) => void;
   /** 展开 / 收起 PR 列表。 */
@@ -787,8 +804,11 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
 
     if (view.prMenuOpen) {
       const menu = el("div", "rv-prmenu");
-      if (view.prError) menu.append(el("div", "rv-hint", view.prError));
-      else if (view.prsLoading) menu.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
+      if (view.prError) {
+        menu.append(el("div", "rv-hint", view.prError));
+        // 查不到仓库时，人第一件事就是怀疑「是不是用错号了」：把号直接写出来（#17545）。
+        if (view.account) menu.append(el("div", "rv-hint rv-acct-why", tr("用的是账号：{p1}", { p1: view.account })));
+      } else if (view.prsLoading) menu.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
       else if (!view.prs.length) menu.append(el("div", "rv-hint", view.prQuery ? tr("没有匹配的 PR") : tr("没有 open 的 PR")));
       else {
         menuEmpty = el("div", "rv-hint", tr("没有匹配的 PR"));
@@ -835,6 +855,46 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       } else if (view.prAll > 1) {
         form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
       }
+    }
+
+    /**
+     * 查 PR 用的 gh 账号。
+     *
+     * 多账号机器上「机器 gh 登的是谁」与「这个会话该用谁」往往不是一个人：私有仓/组织仓
+     * 换个账号就是 `Could not resolve to a Repository`（#17545 就是这么失败的，而且提示指向代理）。
+     * 所以号要写出来、也要能就地换；换了立刻按新号重拉列表（`onAccount` 里做）。
+     */
+    if (view.accounts.length || view.account) {
+      const row = el("div", "rv-row rv-acct");
+      row.append(el("span", "rv-lab", tr("账号")));
+      const pick = el("select", "rv-ref rv-acct-pick") as HTMLSelectElement;
+      pick.disabled = view.running;
+      pick.title = view.account ? tr("现在按 {p1} 查 PR", { p1: view.account }) : tr("按会话默认的账号查 PR");
+      const follow = el("option", "", tr("跟随工作区")) as HTMLOptionElement;
+      follow.value = "";
+      follow.selected = !view.account;
+      pick.append(follow);
+      let listed = false;
+      for (const account of view.accounts) {
+        const opt = el("option", "", `${account.login}${account.pat ? ` · ${tr("PAT")}` : ""}`) as HTMLOptionElement;
+        opt.value = account.login;
+        if (account.login === view.account) {
+          opt.selected = true;
+          listed = true;
+        }
+        pick.append(opt);
+      }
+      // 解析出来的号不在 gh 账号表里（PAT-only / active 那个被删了）：也得摆出来，
+      // 否则下拉停在「跟随工作区」上，人看不出现在到底按谁在查。
+      if (view.account && !listed) {
+        const opt = el("option", "", view.account) as HTMLOptionElement;
+        opt.value = view.account;
+        opt.selected = true;
+        pick.append(opt);
+      }
+      pick.onchange = () => actions.onAccount(pick.value);
+      row.append(pick);
+      form.append(row);
     }
   } else if (view.mode === "commit") {
     const sha = el("input", "rv-ref") as HTMLInputElement;

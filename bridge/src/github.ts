@@ -149,8 +149,18 @@ export function resolveGhBinary(ctx: Pick<GithubCtx, "ghPath"> = {}): string | n
   return findRealGh(githubBinDir());
 }
 
-function runGh(gh: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  const { cmd, prefix } = ghCommand(gh);
+/**
+ * 「跑 gh」到底该起什么进程。
+ *
+ * `resolveGhBinary()` 返回的可以是 `fake-gh` 这种假名字（测试缝 `PI_WEB_GH_JS`），拿它去
+ * `execFile` 只会 ENOENT —— 假 gh 得用 `node <脚本>` 跑。评审（`gitpr.ts`）现在也走这个函数，
+ * 与面板 / 壳用同一套解析，不用在两处各写一遍。
+ */
+export function ghInvocation(ctx: Pick<GithubCtx, "ghPath"> = {}): { cmd: string; prefix: string[] } {
+  return ghCommand(resolveGhBinary(ctx) ?? (process.platform === "win32" ? "gh.exe" : "gh"));
+}
+
+function runGh(gh: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {  const { cmd, prefix } = ghCommand(gh);
   return new Promise((resolve) => {
     execFile(cmd, [...prefix, ...args], { encoding: "utf8", timeout: GH_TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       const code = error && typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code as number) : error ? 1 : 0;
@@ -264,6 +274,30 @@ export async function tokenOf(pick: AccountPick, ctx: Pick<GithubCtx, "ghPath"> 
   }
   const gh = resolveGhBinary(ctx);
   return gh ? ghToken(gh, pick.login) : null;
+}
+
+export interface SessionGhAccount {
+  /** 这个会话该用的登录名（空串 = 一个账号都没有）。 */
+  login: string;
+  /** 交给子进程的环境（`GH_TOKEN`）；没令牌时不给，子进程就沿用桥自己的环境。 */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * 一个会话该用哪个 GitHub 账号的令牌 —— 给**不经页面**的那些调用方用。
+ *
+ * GitHub 面板与链接卡走 REST，请求里带着会话，`pickAccount()` 在那里天然拿得到。
+ * 评审不一样：它由桥自己 spawn `gh` / `git`（`review.ts` → `gitpr.ts`），子进程里没有会话，
+ * 以前就直接用了 gh 的**机器 active 账号**。多账号机器上那经常不是同一个（实测：面板里选的
+ * `xyang-qingmin` 能看 `ISID/cas3-onecas-api`，机器 active 的 `Yang-Code01` 看到的是 404，
+ * 评审报 `GraphQL: Could not resolve to a Repository…`）。所以把令牌算在这里、注入 `GH_TOKEN`。
+ *
+ * `GH_TOKEN` 一并给 `git` 用：`gh auth git-credential` 读的就是它，fetch 才会跟 `gh` 同账号。
+ */
+export async function sessionGhAccount(cwd: string, sessionId: string, ctx: Pick<GithubCtx, "ghPath"> = {}): Promise<SessionGhAccount> {
+  const pick = await pickAccount(cwd, sessionId, ctx);
+  const token = await tokenOf(pick, ctx);
+  return { login: pick.login, env: token ? { GH_TOKEN: token } : undefined };
 }
 
 // ---------------------------------------------------------------- 仓库
@@ -823,7 +857,7 @@ async function putPat(req: http.IncomingMessage, res: http.ServerResponse, ctx: 
   json(res, 200, { ok: true, login, encrypted: written.encrypted });
 }
 
-async function deletePat(req: http.IncomingMessage, res: http.ServerResponse, url: URL, ctx: GithubCtx): Promise<void> {
+async function deletePat(_req: http.IncomingMessage, res: http.ServerResponse, url: URL, ctx: GithubCtx): Promise<void> {
   if (ctx.publicReq) {
     fail(res, 403, "tunnel_readonly", "带凭据的操作只能在本机做");
     return;

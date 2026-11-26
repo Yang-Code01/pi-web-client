@@ -223,15 +223,24 @@ export function probeHttpProxy(host: string, port: number, timeoutMs = 400): Pro
   });
 }
 
-/** 系统里所有在听的本机地址（拉一条命令，失败就是空）。 */
+/**
+ * 系统里所有在听的本机地址（拉一条命令，失败就是空）。
+ *
+ * 代理探测（`probeProxy()`）靠它判断「某个端口上有没有人听」，所以这里只能给**在听**的
+ * 那些地址，连不通的/刚关掉的都不该出现。
+ */
 export function listListeners(platform: string = process.platform): Listener[] {
   try {
-    const [cmd, args]: [string, string[]] =
-      platform === "win32"
-        ? ["netstat", ["-ano", "-p", "tcp"]]
-        : platform === "darwin"
-          ? ["lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "n"]]
-          : ["ss", ["-ltn"]];
+    // 三个平台各一条：写成 if/else 而不是嵌套三元，读的人不用对着 `:` 数层级。
+    let cmd = "ss";
+    let args = ["-ltn"];
+    if (platform === "win32") {
+      cmd = "netstat";
+      args = ["-ano", "-p", "tcp"];
+    } else if (platform === "darwin") {
+      cmd = "lsof";
+      args = ["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "n"];
+    }
     return parseListeners(execFileSync(cmd, args, { encoding: "utf8", timeout: 5_000, windowsHide: true }), platform);
   } catch {
     return [];
@@ -313,8 +322,17 @@ export const FETCH_PLAN: RoutePlan = {
 /** `gh` 的小请求：面板等人看，别按 fetch 的预算拖。 */
 export const GH_PLAN: RoutePlan = { directMs: 20_000, proxyMs: 40_000, attempts: 1, retryMs: 0, budgetMs: 70_000 };
 
-/** 一次尝试能拿到的东西：成功给值，失败给一句人话（通常是 stderr 首行）。 */
-export type RouteAttempt<T> = (env: NodeJS.ProcessEnv, timeoutMs: number) => Promise<{ ok: true; value: T } | { ok: false; err: string }>;
+/**
+ * 一次尝试能拿到的东西：成功给值，失败给一句人话（通常是 stderr 首行）。
+ *
+ * `stop: true` 表示「换一条路也没用」—— 对端已经明确回答了（`GraphQL: Could not resolve to a
+ * Repository…`、401/403），失败跟走不走代理无关。这时不再换代理、不再整轮重试，直接把这一句
+ * 交给界面；否则用户看到的是「直连：…；代理 …：…」两条一模一样的答案，以为是网络问题。
+ */
+export type RouteAttempt<T> = (
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+) => Promise<{ ok: true; value: T } | { ok: false; err: string; stop?: boolean }>;
 
 export type RouteResult<T> = { ok: true; value: T; route: string } | { ok: false; reason: string; tried: string[] };
 
@@ -370,13 +388,17 @@ export async function viaRoutes<T>(
   const deadline = Date.now() + Math.max(1, plan.budgetMs);
   const tried: string[] = [];
   const remaining = () => deadline - Date.now();
+  /** 对端已经明确答过（仓库不可见 / 没权限）：一路定死，不再换代理、不再整轮重试。 */
+  let stopReason: string | null = null;
+  const stopped = (): { ok: false; reason: string; tried: string[] } | null =>
+    stopReason ? { ok: false, reason: stopReason, tried } : null;
 
   const runOne = async (route: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<T | undefined> => {
     const budgetLeft = remaining();
     if (budgetLeft <= 0) return undefined;
     const slice = Math.max(1, Math.min(timeoutMs, budgetLeft));
     log(`${route}（最多 ${seconds(slice)}）`);
-    let res: { ok: true; value: T } | { ok: false; err: string };
+    let res: { ok: true; value: T } | { ok: false; err: string; stop?: boolean };
     try {
       res = await attempt(env, slice);
     } catch (err: unknown) {
@@ -384,6 +406,13 @@ export async function viaRoutes<T>(
     }
     if (res.ok) return res.value;
     const reason = String(res.err ?? "").trim() || "失败（没有输出）";
+    // 对端已经答过了（仓库不可见 / 令牌没权限）：换路只是把同一句话再拿一次。
+    if (res.stop) {
+      log(`${route}失败（换路也没用，不再重试）：${reason}`);
+      stopReason = `${route}：${reason}`;
+      tried.push(`${route}：${reason}`);
+      return undefined;
+    }
     tried.push(`${route}：${reason}`);
     log(`${route}失败：${reason}`);
     return undefined;
@@ -396,6 +425,7 @@ export async function viaRoutes<T>(
     for (const proxy of list) {
       const value = await runOne(`代理 ${proxy}`, proxyEnv(proxy), plan.proxyMs);
       if (value !== undefined) return { value, route: `代理 ${proxy}` };
+      if (stopReason) return undefined;
     }
     return undefined;
   };
@@ -408,10 +438,14 @@ export async function viaRoutes<T>(
     }
     const direct = await runOne("直连", directEnv(), plan.directMs);
     if (direct !== undefined) return { ok: true, value: direct, route: "直连" };
+    const stoppedDirect = stopped();
+    if (stoppedDirect) return stoppedDirect;
 
     const known = typeof opts.proxies === "function" ? opts.proxies() : opts.proxies;
     const viaKnown = await tryProxies(known);
     if (viaKnown) return { ok: true, value: viaKnown.value, route: viaKnown.route };
+    const stoppedProxy = stopped();
+    if (stoppedProxy) return stoppedProxy;
 
     if (opts.discover && discovered === null && remaining() > 0) {
       log("没有可用的代理配置，探一下本机在听什么");
@@ -426,6 +460,8 @@ export async function viaRoutes<T>(
     if (discovered?.length) {
       const viaDiscovered = await tryProxies(discovered.filter((proxy) => !known.includes(proxy)));
       if (viaDiscovered) return { ok: true, value: viaDiscovered.value, route: `现探的${viaDiscovered.route}` };
+      const stoppedFound = stopped();
+      if (stoppedFound) return stoppedFound;
     }
 
     // 一条代理都没有（现有配置与现探都是空）：重试只是把同一件事再做一遍。
