@@ -84,12 +84,13 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 ### 选区的浮动动作：贴最后一截、坐标用布局 px、按下时别丢选区
 
-拖选后在选区旁边冒出来的东西（现在只有一个：`SelAsk` 的「问一下」胶囊，D416），照这三条写：
+拖选后在选区旁边冒出来的东西（现在只有一个：`SelAsk` 的「问一下」胶囊，D416），照这几条写：
 
 - **贴 `range.getClientRects()` 里有面积（`width/height > 1`）的最后一个矩形**，不用整段的包围盒：跨段落的包围盒能盖住半个屏幕，按钮会跑到离「选到哪儿」很远的地方。越界夹回窗口、下面放不下翻到上方。
 - **`#app` 上有 zoom，量到的和写进去的不是同一套单位**：`getBoundingClientRect()` 是视觉 px，`style.left/top` 是布局 px（除以 `uiScale()`），`offsetWidth` 是布局 px（乘回 `scale` 再夹窗口）。守卫 `probes/sel-ask-chip.mjs` 在 100% 与 150% 两档量胶囊高度（26px / 39px）。
 - **按钮的 `mousedown` 里 `preventDefault()`**，否则按下那一刻选区就没了，`onclick` 里再读 `getSelection()` 是空的；选中文字要在 `mouseup` 时就存下来。
 - 要在别处（左栏、输入框、别的面板）拖选时不弹，就把监听挂 `document` 的捕获阶段并在 `sync()` 里判断 range 是否落在自己的容器里 —— mouseup / mousedown 会被里面的组件 `stopPropagation`。
+- **材质跟主题走，别用 `--panel` 死色**（D418）：底色 `--mac-glass-strong`、模糊 `--mac-blur`、描边 `0.5px solid var(--mac-glass-line)`、投影 `var(--mac-shadow-menu)` —— 跟 `.chat-jump`、助手气泡同一套。写死的 `rgba(0,0,0,.22)` 投影在三套主题里长得一样，等于没跟主题。`probes/sel-ask-chip.mjs` 第 7 段按主题量像素（玻璃必须透、描边必须半透明、三套主题投影必须各不相同）。
 
 ### 列表刷新：已显示的内容不许变暗、不许先清空
 
