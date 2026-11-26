@@ -20,7 +20,7 @@ export interface Lifecycle {
   /** After the watchdog's abort, how long pi gets to settle before the process is ended (#81). */
   abortGraceMs: number;
   /**
-   * D420：归档之后多久释放会话（睡掉 pi，并把它从桥里拿掉）。0 = 关闭这条规则，归档只改列表。
+   * D421：归档之后多久释放会话（睡掉 pi，并把它从桥里拿掉）。0 = 关闭这条规则，归档只改列表。
    * 有意与 `idleMs` 不同：这是「归档 = 我不用了」的承诺，给 0 留一个出口，而空闲休眠的 0 会
    * 被 `positive()` 当成错误输入挡掉（那一个 0 会让每个会话立刻被收走）。
    */
@@ -38,7 +38,7 @@ export const DEFAULT_IDLE_MS = 120 * 60 * 1000;
 /** 随手问 (#86): 0 disables auto-sleep; users may opt back in with a positive threshold. */
 export const DEFAULT_SCRATCH_IDLE_MS = 0;
 export const DEFAULT_ABORT_GRACE_MS = 60 * 1000;
-/** D420: 归档后五分钟释放；用户可在「回收阈值」里改，0 关掉这条规则。 */
+/** D421: 归档后五分钟释放；用户可在「回收阈值」里改，0 关掉这条规则。 */
 export const DEFAULT_ARCHIVE_IDLE_MS = 5 * 60 * 1000;
 export const DEFAULT_WATERMARK_BYTES = 5 * 1024 ** 3;
 
@@ -51,7 +51,7 @@ export const DEFAULT_WATERMARK_BYTES = 5 * 1024 ** 3;
 export const CAP_PROTECT_MS = 60 * 1000;
 
 /**
- * What the panel may read and write: the 「可改」 thresholds of D120 §5 plus D420's archive release.
+ * What the panel may read and write: the 「可改」 thresholds of D120 §5 plus D421's archive release.
  * `abortGraceMs` is not in here on purpose — it is the watchdog's test seam, and the page has no
  * business with it.
  */
@@ -100,7 +100,7 @@ export function lifecycle(): Lifecycle {
   };
 }
 
-/** What the panel may change; every field is optional and every field is 「可改」 (D120 §5, D420). */
+/** What the panel may change; every field is optional and every field is 「可改」 (D120 §5, D421). */
 export interface LifecyclePatch {
   idleMs?: unknown;
   archiveIdleMs?: unknown;

@@ -131,9 +131,8 @@ export class ReviewSheet {
     close.type = "button";
     close.onclick = () => this.close();
     const headRight = el("div", "rv-sheet-headright");
-    this.stopBtn = el("button", "btn ghost rv-stop-btn", tr("中断评审")) as HTMLButtonElement;
+    this.stopBtn = el("button", "btn ghost rv-stop-btn", tr("停止")) as HTMLButtonElement;
     this.stopBtn.type = "button";
-    this.stopBtn.onclick = () => this.input.actions.onStop();
     headRight.append(this.stopBtn, close);
     head.append(headMain, headRight);
 
@@ -224,6 +223,11 @@ export class ReviewSheet {
     this.status.textContent = phaseLabel(view.phase);
     this.status.dataset.phase = view.phase;
     this.stopBtn.hidden = !running;
+    // 详情窗可能开的是「展开的那一条」，也可能是某条还在跑的记录：停的就该是它（D420）。
+    this.stopBtn.onclick = () => {
+      const id = view.focus || view.runs.find((item) => item.running)?.id || "";
+      this.input.actions.onStopRun(id);
+    };
 
     // ---- 抬头
     // 浮层现在可以打开「任意一次」记录（面板列表点进去），所以抬头与模型都必须按**那一次**写：

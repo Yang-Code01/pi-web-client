@@ -14,7 +14,7 @@ export interface ManageState {
   /** archived ids: out of the main list, still openable under 已归档 */
   archived: string[];
   /**
-   * D420: when each archived id was archived (epoch ms). The archive promise is "five minutes after
+   * D421: when each archived id was archived (epoch ms). The archive promise is "five minutes after
    * you archive it, the process goes", so the moment has to survive a bridge restart — a countdown
    * that starts over every boot would never fire on a bridge that gets restarted, and one that
    * counts from the last pi event would kill a session the user just archived.
@@ -70,13 +70,13 @@ export class Manage {
     return this.state.value().archived.includes(id);
   }
 
-  /** When this id was archived, or undefined if it is not archived with a stamp (D420). */
+  /** When this id was archived, or undefined if it is not archived with a stamp (D421). */
   archivedSince(id: string): number | undefined {
     return this.state.value().archivedAt[id];
   }
 
   /**
-   * D420：旧文件里的归档没有时间戳，启动时补一个（此刻 = 桥启动时刻，不早于归档本身）。
+   * D421：旧文件里的归档没有时间戳，启动时补一个（此刻 = 桥启动时刻，不早于归档本身）。
    * 只在真有缺口时写盘 —— StateFile 每次 update 都会落一次文件，没必要每次开机都写。
    * 返回补了几个。
    */
@@ -125,7 +125,7 @@ export class Manage {
         else keep.delete(id);
       }
       d.archived = [...keep];
-      // D420: 归档那一刻就是倒计时的起点；取消归档（含 D386 的复活）把钟一起清掉。
+      // D421: 归档那一刻就是倒计时的起点；取消归档（含 D386 的复活）把钟一起清掉。
       const now = Date.now();
       for (const id of idsIn) {
         if (on) d.archivedAt[id] = now;
@@ -158,7 +158,7 @@ export class Manage {
   }
 
   /**
-   * D420：归档会话被叫醒（又被用上）时重新计时。「归档后五分钟释放」说的是最后一次用它之后五分钟，
+   * D421：归档会话被叫醒（又被用上）时重新计时。「归档后五分钟释放」说的是最后一次用它之后五分钟，
    * 不是归档动作之后五分钟 —— 否则一条睡醒的归档会话会在下一个 tick 被再收一次，用户每发一句话它
    * 就只能活一秒。不归档的 id 空操作。
    */

@@ -360,7 +360,7 @@ export interface RuntimeStats {
   sessions: RuntimeSessionRow[];
   /**
    * D120 / #78：此刻生效的阈值；面板上也能改（`runtime.settings`）。桥只发这几项 ——
-   * `abortGraceMs` 是测试注入点，不对外暴露。D420：`archiveIdleMs` 是「归档后多久释放」，0 = 不释放。
+   * `abortGraceMs` 是测试注入点，不对外暴露。D421：`archiveIdleMs` 是「归档后多久释放」，0 = 不释放。
    */
   lifecycle: { idleMs: number; archiveIdleMs: number; watermarkBytes: number };
 }

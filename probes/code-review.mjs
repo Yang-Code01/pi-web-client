@@ -223,16 +223,15 @@ try {
   await page.locator(".rv-run:not([disabled])").first().waitFor({ timeout: 30000 });
   await page.locator(".rv-run").first().click();
 
-  // 跑起来就该有进度（或直接完成），并且「开始评审」变成「中断评审」；这几样都不许再动
-  await until(async () => (await page.locator(".rv-stop, .rv-file, .rv-error").count()) > 0, 60000, "review started");
-  const locked = await page.locator(".rv-stop").count();
-  if (locked) {
-    check(
-      "评审中锁住范围 / PR / 模型，只留中断",
-      await page.locator(".rv-mode").isDisabled(),
-      await page.locator(".rv-model").first().isDisabled().catch(() => true) ? "范围、模型都已锁" : "模型没锁",
-    );
-    check("评审中那颗按钮写着「中断评审」", (await page.locator(".rv-stop").first().innerText()).includes("中断"), "");
+  // 跑起来就该有进度（或直接完成）；面板跟到那一条，并把「停止」给它。
+  await until(async () => (await page.locator(".rv-focus-stop, .rv-file, .rv-error").count()) > 0, 60000, "review started");
+  const running = await page.locator(".rv-focus-stop").count();
+  if (running) {
+    // D420：跑着的时候这张「评什么」描述的是**下一条**，所以不再整张禁用；停止是每条记录自己的事。
+    check("评审中「评什么」不再整张锁住（它描述下一条）", !(await page.locator(".rv-mode").isDisabled()), "");
+    check("评审中模型 chip 也能换（只影响下一条）", !(await page.locator(".rv-model").first().isDisabled()), "");
+    check("主按钮仍是「开始评审」，不再变成中断", (await page.locator(".rv-run").first().innerText()).includes("开始"), "");
+    check("在跑的那一条自己有「停止」", (await page.locator(".rv-focus-stop").first().innerText()).includes("停止"), "");
   }
   const fileCount = await until(async () => {
     const n = await page.locator(".rv-file").count();
@@ -251,7 +250,7 @@ try {
   check("顶部写了耗时与 token", /tokens/.test(meta) && /\d/.test(meta), meta);
   // 300px 里下拉吃掉整行时，旁边的按钮会被挤出面板 —— 用坐标钉住它（2026-11-24 真踩过）。
   const panel = await page.locator(".review").boundingBox();
-  const btn = await page.locator(".rv-run, .rv-stop").first().boundingBox();
+  const btn = await page.locator(".rv-run").first().boundingBox();
   check(
     "面板没被长路径撑宽，按钮也没被下拉挤出面板",
     Boolean(panel && btn) && panel.width <= 420 && btn.x >= panel.x && btn.x + btn.width <= panel.x + panel.width + 1,
@@ -343,12 +342,49 @@ try {
 
   // ---------------------------------------------------------------- 5) 中途停止
   await page.locator(".rv-run").first().click();
-  await page.locator(".rv-stop").first().waitFor({ timeout: 60000 });
-  await page.locator(".rv-stop").first().click();
+  await page.locator(".rv-focus-stop").first().waitFor({ timeout: 60000 });
+  await page.locator(".rv-focus-stop").first().click();
   // 停下来之后停在这一次上；万一回到了列表，点最新那张看明细。
   if ((await page.locator(".rv-focus").count()) === 0) await page.locator(".rv-run-card").first().click();
   await until(async () => (await page.locator(".review").innerText()).includes("这次没跑完就停了"), 60000, "stopped hint");
   check("停止后标「没跑完」并留着已收到的", true, "");
+
+  // ---------------------------------------------------------------- 5.5) 同时评两条（D417）
+  // 一条在跑时「评什么」仍可用（描述下一条）；开满两条后按钮置灰并说明原因；停止按条算，停下就腾回额度。
+  {
+    const back = page.locator(".rv-back");
+    if (await back.count()) await back.first().click();
+    await until(async () => (await page.locator(".rv-run").count()) === 1, 15000, "form back on list");
+    const starts = async () => {
+      await page.locator(".rv-run").first().click();
+    };
+    const countRunning = async () => Number((await page.locator(".rv-runs-head").innerText().catch(() => "")).match(/(\d+) 个在跑/)?.[1] ?? 0);
+
+    await starts();
+    await until(async () => (await page.locator(".rv-focus-stop").count()) > 0, 60000, "first concurrent run");
+    if (await page.locator(".rv-back").count()) await page.locator(".rv-back").first().click();
+    await until(async () => (await countRunning()) === 1, 30000, "one running");
+    check("跑着一条时还能再开一条", await page.locator(".rv-run").first().isEnabled(), "");
+
+    await starts();
+    await until(async () => (await page.locator(".rv-focus-stop").count()) > 0, 60000, "second concurrent run");
+    if (await page.locator(".rv-back").count()) await page.locator(".rv-back").first().click();
+    await until(async () => (await countRunning()) === 2, 30000, "two running");
+    check("两条同时在跑：一条一张卡，各自有停止", (await page.locator(".rv-run-card.is-live .rv-run-stop").count()) === 2, "");
+    check("开满两条后主按钮置灰", await page.locator(".rv-run").first().isDisabled(), "");
+    const why = (await page.locator(".rv-hint.rv-why").first().innerText().catch(() => "")).trim();
+    check("置灰同时说明为什么（已满 2 个）", /2/.test(why) && /停/.test(why), why.slice(0, 40));
+
+    // 停一条：只停那一条，额度回来，焦点不被抢走（我们此刻停在列表上）。
+    await page.locator(".rv-run-card.is-live .rv-run-stop").first().click();
+    await until(async () => (await countRunning()) <= 1, 30000, "one stopped");
+    check("停一条、记录收尾后额度回来", await page.locator(".rv-run").first().isEnabled(), "");
+    check("跑完/停下的那一条不会把你从列表拽走", (await page.locator(".rv-focus").count()) === 0, "");
+    // 收尾：把剩下那条也停掉，别让后面的段落撞上「已满」。
+    const rest = page.locator(".rv-run-card.is-live .rv-run-stop");
+    if (await rest.count()) await rest.first().click();
+    await until(async () => (await page.locator(".rv-run-card.is-live").count()) === 0, 60000, "all stopped");
+  }
 
   // ---------------------------------------------------------------- 6) PR 模式：列表拉不到也要能用
   // fixture 仓库没有 remote：`gh pr list` 这一步会失败。验收的是「说清原因 + 号输入框照样在」，
@@ -381,7 +417,7 @@ try {
   await until(async () => (await page.locator(".session-card").count()) >= 1, 30000, "session card (150%)");
   await page.locator(".session-card").first().click();
   await openReviewTab(page);
-  const box = await page.locator(".rv-run, .rv-stop").first().boundingBox();
+  const box = await page.locator(".rv-run").first().boundingBox();
   const vh = await page.evaluate(() => window.innerHeight);
   check("字号 150% 下按钮仍落在视口里", Boolean(box) && box.y + box.height <= vh, box ? `y=${Math.round(box.y)} h=${Math.round(box.height)} vh=${vh}` : "no box");
   // 刷新之后「评什么」要自己接上（存在桥那边，不再只活在内存里）。

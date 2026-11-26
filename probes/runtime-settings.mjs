@@ -1,5 +1,5 @@
 /**
- * Probe: #78 / D120 / D420 —— 设置 → 运行时：三个阈值能改，而且改了不会丢。
+ * Probe: #78 / D120 / D421 —— 设置 → 运行时：三个阈值能改，而且改了不会丢。
  *
  * 桩桥 + 真 Chromium。断言六件事：
  *   1. 三个输入框带当前值与单位（桩桥发的是 30 分钟 / 5 分钟 / 2.5 GB，真默认值见 D372）；
@@ -48,7 +48,7 @@ const STUB_IDLE_MS = 30 * MIN;
 const STUB_ARCHIVE_MS = 5 * MIN;
 const STUB_WATERMARK_BYTES = 2.5 * GB;
 
-/** The frame the bridge would send: `runtime.stats` with the thresholds in force (#78 / D420). */
+/** The frame the bridge would send: `runtime.stats` with the thresholds in force (#78 / D421). */
 const statsFrame = ({ idleMs = STUB_IDLE_MS, archiveIdleMs = STUB_ARCHIVE_MS, watermarkBytes = STUB_WATERMARK_BYTES, saved } = {}) => ({
   type: "runtime.stats",
   running: 0,
@@ -136,7 +136,7 @@ wss.on("connection", (ws) => {
     if (msg.type === "runtime.settings") {
       world.writes.push(msg);
       if (typeof msg.idleMs === "number" && msg.idleMs > 0) world.idleMs = msg.idleMs;
-      // 归档那一行 0 合法（D420：0 = 不释放），所以门槛与另两个不同。
+      // 归档那一行 0 合法（D421：0 = 不释放），所以门槛与另两个不同。
       if (typeof msg.archiveIdleMs === "number" && msg.archiveIdleMs >= 0) world.archiveIdleMs = msg.archiveIdleMs;
       if (typeof msg.watermarkBytes === "number" && msg.watermarkBytes > 0) world.watermarkBytes = msg.watermarkBytes;
       send(statsFrame({ idleMs: world.idleMs, archiveIdleMs: world.archiveIdleMs, watermarkBytes: world.watermarkBytes, saved: true }));

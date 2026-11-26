@@ -3404,7 +3404,7 @@ export class Session extends EventEmitter {
 export class SessionManager extends EventEmitter {
   private sessions = new Map<string, Session>();
   private gcTimer: NodeJS.Timeout | null = null;
-  /** 有没有页面正在看某条会话（startGc 传进来的那条判断，D420 也用它）。 */
+  /** 有没有页面正在看某条会话（startGc 传进来的那条判断，D421 也用它）。 */
   private isWatched: (id: string) => boolean = () => false;
   private cache: { at: number; metas: SessionFileMeta[] } | null = null;
   private modelCache: { at: number; list: ModelInfo[] } | null = null;
@@ -4495,7 +4495,7 @@ export class SessionManager extends EventEmitter {
     }
     await session.pinPermission();
     await session.startLive({ resume: Boolean(session.state.file), ws: this.workspaces.groupFor(id, session.state.cwd ?? "", this.place()) });
-    // 用上了就重新计时（D420）：否则下一 tick 还会觉得它「归档已久」，刚起来的 pi 立刻又被收掉。
+    // 用上了就重新计时（D421）：否则下一 tick 还会觉得它「归档已久」，刚起来的 pi 立刻又被收掉。
     this.manage.touchArchived(id, Date.now());
     this.emitState(session.state);
     if (session.state.origin !== "web") {
@@ -5005,7 +5005,7 @@ export class SessionManager extends EventEmitter {
     const cfg = lifecycle();
     this.endStuckRuns(cfg);
     this.sleepIdleSessions(cfg);
-    // 归档后释放（D420）：插在空闲之后、采样之前 —— 归档比空闲更确定，但奔跑的一轮、
+    // 归档后释放（D421）：插在空闲之后、采样之前 —— 归档比空闲更确定，但奔跑的一轮、
     // 挂着的审批仍按各自的规则，采样那一套不该先花力气去量一条马上要走的会话。
     await this.releaseArchivedSessions(cfg);
     const stats = await this.runtimeStats();
@@ -5048,7 +5048,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * 归档后释放（D420）：归档过、安静超过 `cfg.archiveIdleMs` 的会话睡掉，并把桥内的会话对象
+   * 归档后释放（D421）：归档过、安静超过 `cfg.archiveIdleMs` 的会话睡掉，并把桥内的会话对象
    * 交还给内存 —— 归档就是用户说「收起来」的时候，比空闲更确定，还少一份转录 + 400ms 文件轮询。
    * 三件事不做：奔跑的一轮不收（`sleep()` 自己不收，醒来后再问一次）、挂着的审批/问卷不收
    * （交给人，120 分钟那条规则管）、有人正看着的只睡不丢对象（页面还能翻到它的转录）。
@@ -5071,7 +5071,7 @@ export class SessionManager extends EventEmitter {
     await Promise.all(due.map((s) => this.releaseArchived(s)));
   }
 
-  /** 睡掉一条到期的归档会话，然后把对象交还给内存（D420）。 */
+  /** 睡掉一条到期的归档会话，然后把对象交还给内存（D421）。 */
   private async releaseArchived(s: Session): Promise<void> {
     const id = s.state.id;
     await s.sleep();
