@@ -181,6 +181,88 @@ const chipPlaced = (g) => {
 };
 const hidden = (g) => !g || g.hidden === true || g.chip.w === 0;
 
+const lum = ([r, g, b]) => {
+  const ch = [r, g, b].map((v) => {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+};
+const ratio = (a, b) => {
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+};
+const hex = (c) => `#${c.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+const chanDiff = (a, b) => Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+
+/** 胶囊周围一圈（含上方选区末行与下方一点影子），用来截图看效果。 */
+const cropAround = (g) => ({
+  x: Math.max(0, Math.floor(g.chip.left) - 260),
+  y: Math.max(0, Math.floor(g.chip.top) - 46),
+  width: Math.ceil(g.chip.w) + 300,
+  height: Math.ceil(g.chip.h) + 76,
+});
+
+/**
+ * 截图量胶囊的材质：右侧留白处那圈底色、label 的字色、左边那条描边。
+ * 玻璃是半透明的，computed style 只能给到 rgba，真正叠出来什么色必须看像素。
+ */
+async function sampleChip(page, g) {
+  const clip = {
+    x: Math.floor(g.chip.left) - 2,
+    y: Math.floor(g.chip.top) - 2,
+    width: Math.ceil(g.chip.w) + 4,
+    height: Math.ceil(g.chip.h) + 4,
+  };
+  const png = await page.screenshot({ clip });
+  return page.evaluate(
+    async ({ b64, ox, oy, w, h }) => {
+      const img = new Image();
+      img.src = `data:image/png;base64,${b64}`;
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0);
+      const read = (r) => {
+        const x = Math.max(0, Math.floor(r.x));
+        const y = Math.max(0, Math.floor(r.y));
+        const rw = Math.max(1, Math.min(Math.ceil(r.w), c.width - x));
+        const rh = Math.max(1, Math.min(Math.ceil(r.h), c.height - y));
+        const d = ctx.getImageData(x, y, rw, rh).data;
+        const counts = new Map();
+        for (let i = 0; i < d.length; i += 4) {
+          const k = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+          counts.set(k, (counts.get(k) ?? 0) + 1);
+        }
+        let mode = 0;
+        let best = -1;
+        for (const [k, n] of counts) if (n > best) [mode, best] = [k, n];
+        const mc = [(mode >> 16) & 255, (mode >> 8) & 255, mode & 255];
+        let ink = null;
+        let inkBest = 0;
+        const inkCounts = new Map();
+        for (let i = 0; i < d.length; i += 4) {
+          const dist = Math.abs(d[i] - mc[0]) + Math.abs(d[i + 1] - mc[1]) + Math.abs(d[i + 2] - mc[2]);
+          if (dist < 90) continue;
+          const k = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+          inkCounts.set(k, (inkCounts.get(k) ?? 0) + 1);
+        }
+        for (const [k, n] of inkCounts) if (n > inkBest) [ink, inkBest] = [k, n];
+        return { bg: mc, ink: ink === null ? null : [(ink >> 16) & 255, (ink >> 8) & 255, ink & 255] };
+      };
+      return {
+        // 右侧内边距里没有字，只可能是玻璃叠出来的底色
+        fill: read({ x: ox + w - 9, y: oy + h / 2 - 3, w: 4, h: 6 }),
+        ink: read({ x: ox + 26, y: oy + 7, w: Math.max(4, w - 40), h: h - 14 }),
+        edge: read({ x: ox, y: oy + h / 2 - 3, w: 1, h: 6 }),
+      };
+    },
+    { b64: png.toString("base64"), ox: Math.floor(g.chip.left) - clip.x, oy: Math.floor(g.chip.top) - clip.y, w: g.chip.w, h: g.chip.h },
+  );
+}
+
 let browser;
 try {
   browser = await chromium.launch();
@@ -304,6 +386,83 @@ try {
   check("字号 150% 下仍贴着选区末行、不出窗口", chipPlaced(zgeo), JSON.stringify({ chip: zgeo?.chip, last: zgeo?.last, zoom: zgeo?.zoom }));
   await zoomPage.screenshot({ path: path.join(OUT, "zoom-150.png") });
   await zoomCtx.close();
+
+  // ---- 7. 胶囊的材质跟主题走：玻璃 + 主题描边 + 主题投影
+  //    叠在强调色实底的气泡上和叠在面板上必须不是一个色 —— 这条会红，如果胶囊是一块不透明的 --panel。
+  const skins = [];
+  for (const theme of ["mac-light", "mac-dark", "mac-midnight"]) {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 }, locale: "zh-CN" });
+    await ctx.addInitScript((t) => {
+      const p = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+      p.theme = t;
+      p.scale = 1;
+      localStorage.setItem("pi.prefs", JSON.stringify(p));
+    }, theme);
+    const tp = await ctx.newPage();
+    tp.on("pageerror", (e) => console.log("page error:", e.message));
+    await tp.goto(BASE, { waitUntil: "networkidle" });
+    await tp.waitForSelector(".session-card", { timeout: 8000 });
+    await tp.locator(".session-card", { hasText: "选区可见性" }).first().click();
+    await tp.waitForSelector(".chat-scroll .msg.assistant", { timeout: 8000 });
+    await sleep(500);
+    await tp.bringToFront();
+
+    // 叠在助手面板（玻璃面板）上
+    await dragOver(tp, ".chat-scroll .msg.assistant .body");
+    const gAsst = await chipGeo(tp);
+    check(`${theme} · 拖选后胶囊可见`, chipVisible(gAsst), JSON.stringify(gAsst?.chip));
+    const onPanel = await sampleChip(tp, gAsst);
+    const style = await tp.evaluate(() => {
+      const cs = getComputedStyle(document.querySelector(".sel-ask"));
+      return {
+        blur: cs.backdropFilter || cs.webkitBackdropFilter,
+        shadow: cs.boxShadow,
+        borderW: cs.borderTopWidth,
+        border: cs.borderTopColor,
+      };
+    });
+    await tp.screenshot({ path: path.join(OUT, `${theme}-chip.png`) });
+    await tp.screenshot({ path: path.join(OUT, `${theme}-chip-crop.png`), clip: cropAround(gAsst) });
+
+    // 叠在用户气泡（强调色实底）上
+    await dragOver(tp, ".chat-scroll .msg.user .body");
+    const gUser = await chipGeo(tp);
+    const onBubble = await sampleChip(tp, gUser);
+    // 旁边也存一张：胶囊压在蓝气泡上时玻璃会收进那点蓝，跟面板上的那张摆一起看
+    await tp.screenshot({ path: path.join(OUT, `${theme}-chip-on-bubble.png`), clip: cropAround(gUser) });
+
+    const panelVar = ratio(onPanel.ink.ink, onPanel.fill.bg);
+    const bubbleVar = ratio(onBubble.ink.ink, onBubble.fill.bg);
+    check(
+      `${theme} · 胶囊上的字读得出（字对胶囊底 ≥ 4.5）`,
+      panelVar >= 4.5 && bubbleVar >= 4.5,
+      `面板 ${panelVar.toFixed(2)}:1 ${hex(onPanel.ink.ink)}/${hex(onPanel.fill.bg)} · 气泡 ${bubbleVar.toFixed(2)}:1 ${hex(onBubble.ink.ink)}/${hex(onBubble.fill.bg)}`,
+    );
+    check(`${theme} · 胶囊是玻璃（backdrop-filter 带 blur）`, /blur/.test(style.blur), style.blur || "没有 backdrop-filter");
+    check(
+      `${theme} · 玻璃是透的：叠在蓝气泡上和叠在面板上不是一个色`,
+      chanDiff(onBubble.fill.bg, onPanel.fill.bg) >= 8,
+      `气泡上 ${hex(onBubble.fill.bg)} / 面板上 ${hex(onPanel.fill.bg)}`,
+    );
+    check(
+      `${theme} · 胶囊有一圈发丝描边（半透明、跟主题的 glass-line 同款）`,
+      // DPR 1 上 CSS 的 0.5px 会被浏览器向上取到 1 个设备像素，所以只能“不超过 1px”
+      parseFloat(style.borderW) <= 1 && /rgba?\([^)]*,[\s]*0?\.\d+\)/.test(style.border),
+      `${style.borderW} ${style.border}`,
+    );
+    check(
+      `${theme} · 描边真的画出来了（边缘像素与底色不同）`,
+      chanDiff(onPanel.edge.bg, onPanel.fill.bg) >= 3,
+      `描边 ${hex(onPanel.edge.bg)} / 底色 ${hex(onPanel.fill.bg)}`,
+    );
+    skins.push({ theme, shadow: style.shadow });
+    await ctx.close();
+  }
+  check(
+    "三套主题的胶囊投影各不相同（不是写死的黑）",
+    new Set(skins.map((s) => s.shadow)).size === 3,
+    skins.map((s) => `${s.theme}: ${s.shadow.slice(0, 40)}`).join(" | "),
+  );
 } finally {
   await browser?.close();
   server.close();

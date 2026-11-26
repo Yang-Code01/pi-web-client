@@ -8321,7 +8321,32 @@ html[data-ui="mac"] .msg.user .body ::selection { background: var(--accent-ink);
 
 **验证。** `node probes/selection-visible.mjs`（桩桥 + 真 Chromium，真鼠标拖选，量**画出来的像素**而不是 CSS 声明）：改前用户气泡 1.00（三套主题都是）、助手气泡 1.55 / 1.56 / 1.60，7 项红；改后用户 4.02 / 3.65 / 3.65、助手 3.86 / 4.40 / 4.44，24 项全绿。探针只跑主界面；内网通那条用的是同一对 token（accent 实底 / accent-ink 字），对比度等于上表「用户气泡」一行，**但内网通页面本身没起实例实测**。坑记一笔：programmatic `getSelection().addRange()` 在没聚焦的文档里 Chrome 不上色，只看计算样式或那种选区截出来的图会误判成「已经改好」。
 
-## D418 代码评审支持同时评两个 PR：额度按会话、按条停止、一张列表（用户「代码评审支持 多个pr 评审。如果，现在是691 在评审……我可以新开评审其他的pr」2026-11-26）
+## D418 「问一下」胶囊改用主题的玻璃材质（用户 2026-11-26「点一下拖动选中后的问一下这个按钮，这个颜色和现在的主题不搭，需要统一」）
+
+**问题。** 胶囊（D416）原来是一块不透明的 `--panel` + 写死的黑投影 `0 6px 18px rgba(0,0,0,.22)`。它飘在玻璃面板旁边：深色主题里 `--panel`（`#232325`）和助手气泡的 `--mac-glass-strong` 几乎同色，胶囊糊成面板的一部分；浅色主题里则是一张死白的纸，和周围所有「玻璃 + 发丝边 + 主题投影」的控件不是一套料。
+
+**决定。** 材质部分（底色 / 模糊 / 描边 / 投影）整块挪进 `mac.css`，跟 `.chat-jump`（回到底部）和助手气泡用同一套 token：
+
+```css
+html[data-ui="mac"] .sel-ask {
+  background: var(--mac-glass-strong);
+  backdrop-filter: var(--mac-blur);              /* 与 .chat-jump、.msg .body 同档 */
+  border: 0.5px solid var(--mac-glass-line);
+  box-shadow: var(--mac-shadow-menu);
+}
+html[data-ui="mac"] .sel-ask:hover { background: var(--mac-glass-solid); }
+html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
+```
+
+`styles.css` 里的 `.sel-ask` 只留形状、尺寸、`cursor` 与 `[hidden]`（那还是 D416 的内容），不再写死颜色。
+
+**为什么。** ① 用户要的是「跟主题统一」，而主题的浮动控件只有一种材质：玻璃 + 半透明发丝边 + `--mac-shadow-menu`。② 半透明还有个副作用是好事：胶囊经常压在强调色实底的用户气泡上，玻璃会把那点蓝收进来，落在蓝色气泡上比落在面板上更蓝一点 —— 它自己就说明了「我是浮在上面的」。③ 不选「实心强调色 + 反白字」（虽然最醒目）：D417 之后选区本身就是实心强调色，胶囊再用强调色，两个会连成一块蓝。④ 也不再给描边加强调色（对比过 A/B 两版截图），玻璃描边已经是主题自己的线，加蓝边反而把它和 `.chat-jump` 区分成两种东西。
+
+**代价。** 深色主题下胶囊与面板的底色差变小（`#222226` vs 面板 `#212125`），靠 0.5px 发丝边和投影分辨；探针的「叠气泡 vs 叠面板」一项就是防这个退化的：要求两处底色通道差 ≥ 8（实测 light 9 / dark 9 / midnight 9）。
+
+**验证。** `probes/sel-ask-chip.mjs` 第 7 段按主题分别量像素（真拖选 + 截图采样，不看 CSS 声明），每套主题 7 项、共 22 项：字对胶囊底 13.3–16.3:1；`backdrop-filter` 带 blur；叠在蓝气泡 `#f1f4fc` / 面板 `#fbfbfd`（light）不是同一个色；描边半透明且真的画出来（DPR 1 上 CSS 的 0.5px 落到 1 个设备像素）；三套主题的投影互不相同。改前这一组 7 项红（`气泡上 #ffffff / 面板上 #ffffff`、`没有 backdrop-filter`），改后 35 项全绿。
+
+## D419 代码评审支持同时评两个 PR：额度按会话、按条停止、一张列表（用户「代码评审支持 多个pr 评审。如果，现在是691 在评审……我可以新开评审其他的pr」2026-11-26）
 
 **问题。** 一个会话同时只能评一条：桥端 `active` / `progressMap` 按「仓库 + 会话」一个键一份（`activeKey`），撞上就抛 `busy`；页面 `reviewView()` 的 `running` 由**最新一条记录**决定、`live` 也只认最新那条；跑着时整张「评什么」（范围 / PR 号 / 模型）与主按钮一起锁死（按钮变成「中断评审」）。用户要的是「#691 继续跑，我另开一个 PR 来评」。另有一个早就存在的串话：`review.progress` 帧不带 sessionId，跨会话评同一仓库时，另一个会话的面板会把这条进度画在自己身上。
 

@@ -572,7 +572,7 @@ export function cleanRuns(repo: string, session = ""): ReviewState {
 
 const REVIEW_TIMEOUT_MS = 30 * 60_000;
 
-/** 一个会话最多同时在评几条（D418）。数的是**会话**，不是仓库：换个仓库也共用这份额度。 */
+/** 一个会话最多同时在评几条（D419）。数的是**会话**，不是仓库：换个仓库也共用这份额度。 */
 export const MAX_RUNS_PER_SESSION = 2;
 
 /** 面板轮询/广播的那个「现在到哪了」。 */
@@ -588,7 +588,7 @@ interface Active {
   pr: number;
 }
 
-/** 主键是 runId：同一个会话可以同时跑两条（D418），插入顺序就是开跑顺序。 */
+/** 主键是 runId：同一个会话可以同时跑两条（D419），插入顺序就是开跑顺序。 */
 const active = new Map<string, Active>();
 const progressMap = new Map<string, Progress>();
 
@@ -650,7 +650,7 @@ export function sweepStaleRuns(): number {
         run.errorCode = "bridge-restart";
         run.error = "桥重启了，这次评审没跑完";
         dirty = true;
-        hits += 1; // 按「条」数：一个文件里可能同时躺着两条（D418）
+        hits += 1; // 按「条」数：一个文件里可能同时躺着两条（D419）
       }
       if (!dirty) continue;
       fs.writeFileSync(file, JSON.stringify(raw, null, 2));
@@ -872,7 +872,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
   const running = runningFor(session);
   const prNumber = Number(o.pr) || 0;
 
-  // D418：同一个号在本会话里正在评，就别再开一条 —— 同一份 diff 白烧一遍 token。
+  // D419：同一个号在本会话里正在评，就别再开一条 —— 同一份 diff 白烧一遍 token。
   // 判在 fetch 之前，跟上面那道闸同一个理由。
   if (prNumber > 0) {
     const same = running.find(([, a]) => a.mode === "pr" && a.pr === prNumber && repoKey(a.repo) === repoKey(root));
@@ -990,7 +990,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
 }
 
 /**
- * 停一条（D418）。给了 `runId` 就只停那一条，并要求它确实属于这个仓库 + 会话；
+ * 停一条（D419）。给了 `runId` 就只停那一条，并要求它确实属于这个仓库 + 会话；
  * 不给则停这个仓库 + 会话下所有在跑的（老页面只发 dir+session，语义不变）。
  * 停完立刻腾出额度：用户点了「停止」就该能马上开下一条，不必等子进程收尾。
  */

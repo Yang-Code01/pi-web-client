@@ -675,7 +675,8 @@ html[data-ui="mac"] .peer-frame { background: transparent; }
 .chat-scroll > * { flex: 0 0 auto; min-width: 0; }
 /* D416：聊天记录里拖选一段文字、松手后冒出来的那颗「问一下」。挂 `#app` 里（跟着字号缩放），
    位置是 JS 按 `--ui-scale` 换算好写进来的，所以这里只固定 `position: fixed`，不写 left/top。
-   `[hidden]` 要自己写：下面的 `display: inline-flex` 会盖掉浏览器对 hidden 的默认处理。 */
+   `[hidden]` 要自己写：下面的 `display: inline-flex` 会盖掉浏览器对 hidden 的默认处理。
+   这里只有形状和尺寸；材质（玻璃 / 描边 / 投影）在 mac.css 按主题给（D418）——别在底座再写死颜色。 */
 .sel-ask {
   position: fixed; z-index: 30; display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 10px 0 8px; border-radius: 999px; cursor: pointer;
