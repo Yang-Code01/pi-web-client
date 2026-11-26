@@ -13,6 +13,7 @@ import { copilotFromFrame, creditsToUsd, formatAge, formatCredits, formatReset, 
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
 import { GithubPanel } from "./github-panel.ts";
+import { ghAccountPair } from "./github-shared.ts";
 import { refreshGithubCards } from "./github-cards.ts";
 import { githubFeature } from "./github-settings.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
@@ -472,6 +473,20 @@ export class App {
   private reviewPrError = "";
   private reviewPrsAsked = "";
   private reviewPrsAt = 0;
+  /**
+   * 评审按哪个 gh 账号查 PR：多账号机器上「机器 gh 登的是谁」与「这个会话该用谁」常常不是
+   * 一个人，私有仓换个号就是 `Could not resolve to a Repository`（#17545）。
+   *
+   * 存的是**人显式选的那个**（`accounts.json` 的会话映射，空 = 跟随工作区）。实际查询用的是哪个
+   * 号在 `reviewAccountUsed` 里 —— 两者混用的话，下拉会永远停在具体账号上，「跟随工作区」选不中。
+   */
+  private reviewAccount = "";
+  /** 按当前设置**实际**用的号（会话 → 工作区 → 全局 → gh active）：只用来把号写给人看。 */
+  private reviewAccountUsed = "";
+  /** 能切到的账号（`githubApi.state()` 那份，带「有没有存 PAT」）。 */
+  private reviewAccounts: { login: string; pat: boolean }[] = [];
+  /** 上面那份是按哪个会话/目录问的：面板重画很频繁，不能每次都打一遍桥。 */
+  private reviewAccountsFor = "";
   /** 本仓库在 GitHub 上的 `owner/name`（桥从 origin 认出来的），用来比对粘贴的链接。 */
   private reviewRemoteRepo = "";
   /**
@@ -2770,6 +2785,10 @@ export class App {
         this.reviewPrs = Array.isArray(msg.prs) ? (msg.prs as ReviewPr[]) : [];
         this.reviewRemoteRepo = String(msg.repo ?? "");
         this.reviewPrsAt = Date.now();
+        // 桥回的是「实际按谁查的」：解析结果可能来自工作区 / 全局设置，与面板本地猜的不一致。
+        // 只记进 `reviewAccountUsed`（写给人看）；`reviewAccount` 是**人选的那个**，被它盖掉下拉就永远
+        // 停在具体账号上、「跟随工作区」选不中。空号也得写回去，否则会留着上一个账号。
+        this.reviewAccountUsed = msg.login ? String(msg.login) : "";
         this.reviewPrError = msg.ok ? "" : errText(msg) || String(msg.error ?? "");
         this.reviewPrsLoading = false;
         // 手输的号不在列表里时不要被第一项悄悄顶掉：只在没选过时挑一个。
@@ -18959,6 +18978,10 @@ export class App {
     this.reviewPrError = "";
     this.reviewPrsAsked = "";
     this.reviewPrsAt = 0;
+    this.reviewAccounts = [];
+    this.reviewAccount = "";
+    this.reviewAccountUsed = "";
+    this.reviewAccountsFor = "";
     this.reviewRepo = "";
     this.reviewPin = "";
     this.reviewRemoteRepo = "";
@@ -19184,9 +19207,41 @@ export class App {
     this.socket.send({ type: "review.prs.get", dir, sessionId: this.currentId });
   }
 
+  /**
+   * 读一会话能用的 gh 账号（评审面板的「账号」下拉）。
+   *
+   * 只在会话 / 目录换了之后问一次：面板重画频繁，每次都发请求会打满桥；而且请求回来时
+   * 人可能已经换回上一个会话了，所以回来先核对 `reviewAccountsFor` 再落盘。
+   */
+  private loadReviewAccounts(): void {
+    const sessionId = this.currentId ?? "";
+    const cwd = this.reviewDir();
+    const key = `${sessionId}|${cwd}`;
+    if (!sessionId || !cwd || key === this.reviewAccountsFor) return;
+    this.reviewAccountsFor = key;
+    void githubApi
+      .state(sessionId, cwd)
+      .then((state) => {
+        if (this.reviewAccountsFor !== key) return;
+        const pats = state.pats ?? [];
+        this.reviewAccounts = (state.accounts ?? []).map((a) => ({ login: a.login, pat: pats.includes(a.login) }));
+        // `state.session` 是**解析结果**（会话 → 工作区 → 全局 → gh active）：拆成「人选的」与「实际用的」。
+        const pair = ghAccountPair(state.session ?? null);
+        this.reviewAccount = pair.account;
+        this.reviewAccountUsed = pair.accountUsed;
+        if (this.queueTab === "review") this.renderQueue();
+      })
+      .catch(() => {
+        // 问不到就当没问过：下拉不画，下次重画还能再试。
+        if (this.reviewAccountsFor === key) this.reviewAccountsFor = "";
+      });
+  }
+
   private renderReviewPanel(): HTMLElement {
     this.syncReviewSession();
     const dir = this.reviewDir();
+    // 账号下拉要用它：评审按会话账号查 PR，不把号摆出来又只能猜（#17545）。
+    this.loadReviewAccounts();
     // 换过会话 / 第一次进这一页：问一次桥。放在这里是因为面板可能是「记住上次页签」直接打开的，
     // 那一路不会走 selectQueueTab()。
     if (dir && this.reviewAsked !== dir) {
@@ -19225,6 +19280,9 @@ export class App {
       prs: this.reviewPrs,
       prsLoading: this.reviewPrsLoading,
       prError: this.reviewPrError,
+      account: this.reviewAccount,
+      accountUsed: this.reviewAccountUsed,
+      accounts: this.reviewAccounts,
       model: this.reviewModel,
       focus: this.reviewFocus,
       repo: this.reviewRepo || this.reviewPin,
@@ -19311,6 +19369,28 @@ export class App {
       onRefreshPrs: () => {
         const dir = this.reviewRepoDir();
         if (dir) this.loadPullRequests(dir);
+      },
+      onAccount: (login) => {
+        const sessionId = this.currentId ?? "";
+        if (!sessionId) return;
+        // 存的是**会话级**映射（与 GitHub 面板同一份）：评审那边按它取令牌（`sessionGhAccount`）。
+        void githubApi
+          .setAccount(sessionId, login)
+          .then(async () => {
+            this.reviewAccount = login;
+            // 换了号，旧列表与详情属于上一个账号：全部作废，按新号重拉一次。
+            this.reviewPrs = [];
+            this.reviewPrsAsked = "";
+            this.reviewPrsAt = 0;
+            this.reviewPrError = "";
+            this.reviewPrInfo = { number: 0, info: null, error: "" };
+            this.reviewAccountsFor = "";
+            this.loadReviewAccounts();
+            const dir = this.reviewRepoDir();
+            if (dir) this.loadPullRequests(dir);
+            this.renderQueue();
+          })
+          .catch((err) => this.flashToast(errText(err), true, 8000));
       },
       onCommit: (value) => {
         this.reviewCommit = value;

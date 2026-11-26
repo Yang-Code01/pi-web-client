@@ -113,7 +113,7 @@ import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
-import { handleGithub, type GithubCtx } from "./github.ts";
+import { handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
@@ -4102,8 +4102,11 @@ async function main(): Promise<void> {
             void (async () => {
               try {
                 const { repo } = effectiveReviewDir(dir, session);
-                const out = await listPullRequests(repo, { fresh: msg.fresh === true });
-                send({ type: "review.prs", dir: repo, ...out });
+                // PR 列表要跟「这个会话选的账号」走：多账号机器上，机器 active 那个常常没有权限。
+                const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
+                const out = await listPullRequests(repo, { fresh: msg.fresh === true, login: gh.login, env: gh.env });
+                // 带上实际用的账号：面板要能显示「这次是按谁去查的」，不然又只能猜（#17545）。
+                send({ type: "review.prs", dir: repo, ...out, login: gh.login });
               } catch (err: any) {
                 send({ type: "review.prs", dir, ok: false, prs: [], error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
               }
@@ -4117,8 +4120,9 @@ async function main(): Promise<void> {
             void (async () => {
               try {
                 const { repo } = effectiveReviewDir(dir, session);
-                const out = await pullRequestInfo(repo, number, { fresh: msg.fresh === true });
-                send({ type: "review.prinfo", dir: repo, pr: number, ...out });
+                const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
+                const out = await pullRequestInfo(repo, number, { fresh: msg.fresh === true, login: gh.login, env: gh.env });
+                send({ type: "review.prinfo", dir: repo, pr: number, ...out, login: gh.login });
               } catch (err: any) {
                 send({ type: "review.prinfo", dir, pr: number, ok: false, info: null, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
               }
@@ -4137,39 +4141,53 @@ async function main(): Promise<void> {
             const slash = given ? -1 : full.indexOf("/");
             const provider = slash > 0 ? full.slice(0, slash) : given;
             const model = slash > 0 ? full.slice(slash + 1) : full;
-            try {
-              const { repo, pinned } = effectiveReviewDir(dir, session);
-              const started = startReview({
-                dir: repo,
-                mode,
-                base: String(msg.base ?? ""),
-                target: String(msg.target ?? ""),
-                commit: String(msg.commit ?? ""),
-                pr: Number(msg.pr) || 0,
-                // #666：从链接卡点过来时带的「这张卡属于哪个仓库」，桥上拿它拒掉别仓的号。
-                expectRepo: String(msg.expectRepo ?? ""),
-                session,
-                model,
-                provider,
-                lang,
-                // D420：进度帧要带上是哪一条（runId）与哪位会话，页面才画得到各自的卡上。
-                onProgress: (p) => broadcast({ type: "review.progress", dir: repo, sessionId: session, runId: p.runId, progress: p }),
-                onState: () =>
-                  broadcast({
-                    type: "review.state",
-                    dir: repo,
-                    pinned,
-                    sessionId: session,
-                    state: readReviewState(repo, session),
-                    progresses: reviewProgresses(repo, session),
-                    cap: MAX_RUNS_PER_SESSION,
-                  }),
-              });
-              send({ type: "review.started", dir: repo, sessionId: session, runId: started.runId });
-            } catch (err: any) {
-              // #666：`params` 是给英文 / 日文界面翻译用的（中文直接看上面的 `error`）。
-              send({ type: "review.state", dir, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed"), params: err?.params });
-            }
+            // 账号要 async 算（`gh auth token`），而这条 case 是同步的：包一层，错误照旧回给页面。
+            void (async () => {
+              try {
+                const { repo, pinned } = effectiveReviewDir(dir, session);
+                // 评审自己 spawn `gh` / `git`，子进程里看不到会话：把账号的令牌在这里算好带下去。
+                // 不带的话走的就是 gh 的机器 active 账号 —— 多账号机器上经常看不到目标仓库（D422）。
+                const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
+                const started = startReview({
+                  dir: repo,
+                  mode,
+                  base: String(msg.base ?? ""),
+                  target: String(msg.target ?? ""),
+                  commit: String(msg.commit ?? ""),
+                  pr: Number(msg.pr) || 0,
+                  // #666：从链接卡点过来时带的「这张卡属于哪个仓库」，桥上拿它拒掉别仓的号。
+                  expectRepo: String(msg.expectRepo ?? ""),
+                  session,
+                  ghEnv: gh.env,
+                  model,
+                  provider,
+                  lang,
+                  // D420：进度帧要带上是哪一条（runId）与哪位会话，页面才画得到各自的卡上。
+                  onProgress: (p) => broadcast({ type: "review.progress", dir: repo, sessionId: session, runId: p.runId, progress: p }),
+                  onState: () =>
+                    broadcast({
+                      type: "review.state",
+                      dir: repo,
+                      pinned,
+                      sessionId: session,
+                      state: readReviewState(repo, session),
+                      progresses: reviewProgresses(repo, session),
+                      cap: MAX_RUNS_PER_SESSION,
+                    }),
+                });
+                send({ type: "review.started", dir: repo, sessionId: session, runId: started.runId });
+              } catch (err: any) {
+                // #666：`params` 是给英文 / 日文界面翻译用的（中文直接看上面的 `error`）。
+                send({
+                  type: "review.state",
+                  dir,
+                  pinned: readReviewPin(session),
+                  error: String(err?.message ?? err),
+                  code: String(err?.code ?? "failed"),
+                  params: err?.params,
+                });
+              }
+            })();
             return;
           }
           case "review.cancel": {

@@ -223,10 +223,26 @@ export function ghAgeText(age: { unit: "now" | "min" | "hour" | "day"; n: number
   return tr("{p1} 天前", { p1: age.n });
 }
 
-/** `+128 −42`；两个都是 0 时给空串（草稿 PR 常常还没有差异）。 */
-export function ghChurn(additions: number, deletions: number): string {
+/** `+128 −42`；两个都是 0 时给空串（草稿 PR 常常还没有差异）。 */export function ghChurn(additions: number, deletions: number): string {
   if (!additions && !deletions) return "";
   return `+${additions} −${deletions}`;
+}
+
+/**
+ * 把 `githubApi.state()` 的解析结果拆成「人选的号」与「实际用的号」（PR #700）。
+ *
+ * `state.session` 是**解析结果**（会话 → 工作区 → 全局 → gh active），不是「人在会话里选的那个」：
+ * 拿它当选项值，跟随工作区时下拉会永远停在具体账号上，选「跟随工作区」看起来没生效。
+ * 只有 `source === "session"` 才算显式选过。
+ */
+export function ghAccountPair(session: { login: string; source: GhSessionAccount["source"] } | null): {
+  /** 下拉该选哪项：空串 = 跟随工作区。 */
+  account: string;
+  /** 实际按谁在查：跟随工作区时也非空，只用来把号写给人看。 */
+  accountUsed: string;
+} {
+  const login = String(session?.login ?? "");
+  return { account: session?.source === "session" ? login : "", accountUsed: login };
 }
 
 /** 评审钮被禁用的理由码（界面负责翻译成人话，纯函数不带中文）。 */

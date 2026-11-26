@@ -2,6 +2,10 @@
 import fs from "node:fs";
 const args = process.argv.slice(2);
 const flag = process.env.FAKE_GH_STATE || "";
+/** 每次调用记一行（参数 + 带进来的 `GH_TOKEN`）：用例靠它断言「评审是按哪个账号跑的」。 */
+if (process.env.FAKE_GH_LOG) {
+  fs.appendFileSync(process.env.FAKE_GH_LOG, `${JSON.stringify({ args, token: process.env.GH_TOKEN || "" })}\n`);
+}
 /** `[{login, active}]`：给了就按真 gh 的多账号文本输出（GitHub 通道的用例靠它）。 */
 const accounts = (() => {
   try {
@@ -39,6 +43,23 @@ if (args[0] === "auth" && args[1] === "token") {
     process.exit(1);
   }
   process.stdout.write(`gho_fake_${login}\n`);
+  process.exit(0);
+}
+if (args[0] === "pr" && (args[1] === "list" || args[1] === "view")) {
+  // 一个失败口子：`FAKE_GH_PR_ERROR` 让两条命令都按 GraphQL 那句「仓库看不到」失败。
+  if (process.env.FAKE_GH_PR_ERROR) {
+    process.stderr.write(`${process.env.FAKE_GH_PR_ERROR}\n`);
+    process.exit(1);
+  }
+  if (args[1] === "list") {
+    process.stdout.write(`${process.env.FAKE_GH_PRS || "[]"}\n`);
+    process.exit(0);
+  }
+  const pr = args[2];
+  const raw =
+    process.env.FAKE_GH_PR ||
+    JSON.stringify({ number: Number(pr) || 1, title: "fake pr", baseRefName: "main", headRefName: "feat/fake" });
+  process.stdout.write(`${raw}\n`);
   process.exit(0);
 }
 if (args[0] === "gist" && args[1] === "create") {
