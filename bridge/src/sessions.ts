@@ -878,6 +878,31 @@ function usableSessionFile(file: string): boolean {
   }
 }
 
+/** uuidv4 / v7 那个形状（pi 与桥都用这个；终端里自定义的 id 也长这样或与文件头一致）。 */
+const SESSION_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * 会话文件**名字里**那个 id。pi 只会写成 `<时间戳>_<id>.jsonl`（`SessionManager` 里
+ * `${fileTimestamp}_${sessionId}.jsonl`，时间戳只把 `:` / `.` 换成 `-`），而 id 一律是
+ * `crypto.randomUUID()` / `uuidv7()` 形的东西 —— 所以「`_` 后面那段看起来像 id」时它没有歧义。
+ *
+ * 为什么需要它：`--session` 指到一个还不存在的路径时，pi 不报错，它保留那个文件名、自己另生成一个 id
+ * 写进去（见 `sessionOpenArgs`）。这种「分叉过的会话」里，**文件名里的 id 才是桥一直用的那个**（
+ * 侧栏的 ★ / 改名 / 归档 / 完成标记、产物目录全是按它存的），文件头的 id 只有 pi 知道。
+ *
+ * 形状不像 id 就不认（例如 `/import` 重名时补 `-1` 的那种文件名）：那种情况下退回文件头的 id，
+ * 跟这批改动之前的行为一样，不会把条目挂到一个从没人用过的 id 上。
+ */
+export function idFromSessionFile(file: string): string | null {
+  const base = path.basename(String(file ?? ""));
+  const tail = ".jsonl";
+  if (!base.endsWith(tail)) return null;
+  const cut = base.indexOf("_");
+  if (cut <= 0) return null;
+  const id = base.slice(cut + 1, -tail.length);
+  return SESSION_ID_SHAPE.test(id) ? id : null;
+}
+
 /** 随手问 (#86): what it is called, and the only tools it ever gets. Not user-settable — the point
  * of the fixed list is that a write tool cannot be talked into existing. */
 const SCRATCH_NAME = "随手问";
@@ -3506,29 +3531,38 @@ export class SessionManager extends EventEmitter {
 
   /** A newer `session_info` in the file (a terminal `/name`) beats a sidebar label this bridge owns. */
   private syncNames(metas: SessionFileMeta[]): void {
-    const byId = new Map(metas.map((m) => [m.id, m]));
+    const byId = new Map(metas.map((m) => [this.idOfFile(m), m]));
     for (const session of this.sessions.values()) {
       if (session.live) continue; // live sessions hear about it through pi's session_info_changed
       const meta = byId.get(session.state.id);
       if (!meta) continue;
-      const name = preferredName(meta.id, meta.name, meta.nameAt);
+      const name = preferredName(session.state.id, meta.name, meta.nameAt);
       if (name) session.adoptName(name);
     }
   }
 
   /**
-   * 按桥的 id 找它在磁盘上的那份文件。正常情况下文件头的 id 就是它；分叉过的会话（`sessionOpenArgs`
-   * 修之前留下的）文件头是 pi 自己生成的 id，只有文件名里还留着桥的 id —— pi 的文件名永远是
-   * `<开始时间>_<id>.jsonl`，所以按名字认人是可靠的退路。不认名字，换一次脑就等于「历史全没了」。
+   * 一份文件属于哪个会话。正常就是文件头的 id；分叉过的会话（见 `idFromSessionFile`）得用文件名里那个，
+   * 否则侧栏的 ★ / 改名 / 归档 / 完成标记 / 工作区归位全对不上，`known()` 还会拒掉改名。
+   */
+  private idOfFile(meta: SessionFileMeta): string {
+    return idFromSessionFile(meta.file) ?? meta.id;
+  }
+
+  /**
+   * 按桥的 id 找它在磁盘上的那份文件：先认文件头，认不到再认文件名里的 id（精确相等，不是子串 ——
+   * `locate("")` / `locate("1")` 这类没校验的 query 参数必须什么都拿不到，否则 404 守卫就失效了）。
+   * 不认文件名，换一次脑就等于「历史全没了」。
    */
   private metaFor(id: string): SessionFileMeta | null {
+    if (!id) return null;
     const metas = this.metas();
-    return metas.find((m) => m.id === id) ?? metas.find((m) => path.basename(m.file).includes(id)) ?? null;
+    return metas.find((m) => m.id === id) ?? metas.find((m) => this.idOfFile(m) === id) ?? null;
   }
 
   /** Disk sessions that no live process owns (read-only tail). */
   discover(): SessionFileMeta[] {
-    return this.metas().filter((m) => !readLock(m.id));
+    return this.metas().filter((m) => !readLock(this.idOfFile(m)));
   }
 
   list(): SessionState[] {
@@ -3551,6 +3585,15 @@ export class SessionManager extends EventEmitter {
       archived: manage.archived.includes(id),
       ws: this.workspaces.groupFor(id, cwd, { anchorDay: dayKey(updatedAt), dayOf }),
     });
+    /** 别人拿着这个会话吗：桥的 `.lock` 与终端的 `.tty.json` 都是按 id 存的（见下方调用处）。 */
+    const lockedElsewhere = (id: string, fileId: string): boolean => {
+      for (const key of new Set([id, fileId])) {
+        const lock = readLock(key);
+        if (lock && lock.pid !== process.pid) return true;
+        if (readTtyLock(key)) return true;
+      }
+      return false;
+    };
     for (const s of this.sessions.values()) {
       seen.add(s.state.id);
       if (s.state.file) files.add(s.state.file);
@@ -3567,11 +3610,12 @@ export class SessionManager extends EventEmitter {
       });
     }
     for (const meta of this.discover()) {
-      if (seen.has(meta.id) || files.has(meta.file)) continue;
-      const finished = readFinishedAt(meta.id);
+      const id = this.idOfFile(meta);
+      if (seen.has(id) || files.has(meta.file)) continue;
+      const finished = readFinishedAt(id);
       out.push({
-        id: meta.id,
-        name: preferredName(meta.id, meta.name, meta.nameAt) ?? meta.firstUserText?.slice(0, 40) ?? meta.id.slice(0, 8),
+        id,
+        name: preferredName(id, meta.name, meta.nameAt) ?? meta.firstUserText?.slice(0, 40) ?? id.slice(0, 8),
         cwd: meta.cwd,
         file: meta.file,
         owned: false,
@@ -3582,12 +3626,14 @@ export class SessionManager extends EventEmitter {
         startedAt: meta.startedAt,
         approvals: 0,
         asks: 0,
-        origin: originOf(meta.id),
-        permission: readPermission(meta.id),
+        origin: originOf(id),
+        permission: readPermission(id),
         ...(meta.firstUserText ? { preview: meta.firstUserText } : {}),
-        ...handoffOf(meta.id),
-        ...flag(meta.id, meta.cwd, Math.round(meta.mtime)),
-        ...(readTtyLock(meta.id) ? { locked: true } : {}),
+        ...handoffOf(id),
+        ...flag(id, meta.cwd, Math.round(meta.mtime)),
+        // 锁有两种键：桥自己的 `<id>.lock`（桥 id）与 session-lock 扩展的 `<id>.tty.json`（pi 的 id）。
+        // 分叉过的会话两者不同，两个都查 —— 漏了就变成“看着能写、其实终端还在写”。
+        ...(lockedElsewhere(id, meta.id) ? { locked: true } : {}),
       });
     }
     // Pinned first, then the hand-made order, then the new ones by creation time (D45 + D46).
@@ -3630,8 +3676,9 @@ export class SessionManager extends EventEmitter {
   lockedIds(): string[] {
     const out: string[] = [];
     for (const m of this.metas()) {
-      const lock = readLock(m.id);
-      if (lock && lock.pid !== process.pid) out.push(m.id);
+      const id = this.idOfFile(m);
+      const lock = readLock(id);
+      if (lock && lock.pid !== process.pid) out.push(id);
     }
     return out;
   }
@@ -3960,8 +4007,10 @@ export class SessionManager extends EventEmitter {
         this.cache = null;
         const meta = readMeta(file);
         this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
-        if (meta?.id) this.pinNew(meta.id);
-        return { sessionId: meta?.id ?? "", text };
+        // 分叉写出的新文件按 pi 的规矩命名（`<时间>_<新 id>.jsonl`），名字里的 id 就是列表认的那个。
+        const id = idFromSessionFile(file) ?? meta?.id ?? "";
+        if (id) this.pinNew(id);
+        return { sessionId: id, text };
       }
     }
     // Forking at the very first message leaves nothing to keep (pi writes no empty file either):
@@ -3991,7 +4040,9 @@ export class SessionManager extends EventEmitter {
     if (!src.endsWith(".jsonl") || !fs.existsSync(src) || !fs.statSync(src).isFile()) throw new Error(`不是一个存在的 .jsonl 文件：${src}`);
     const meta = readMeta(src);
     if (!meta) throw new Error("文件第一行不是 pi 的会话头（type: session），不能导入");
-    if (this.metas().some((m) => m.id === meta.id)) throw new Error(`会话 ${meta.id} 已经在列表里了`);
+    // 复制过来名字不变，列表认的就是这个名字里的 id（见 idFromSessionFile）；不是新发现一个 "-1" 会话。
+    const id = idFromSessionFile(src) ?? meta.id;
+    if (this.metaFor(id)) throw new Error(`会话 ${id} 已经在列表里了`);
     const root = sessionsRootInfo();
     // pi's layout: a custom session dir is flat; the default one has a folder per cwd.
     const dir = root.source === "default" || root.source === "PI_AGENT_DIR" ? path.join(root.dir, encodeCwd(meta.cwd)) : root.dir;
@@ -4002,13 +4053,13 @@ export class SessionManager extends EventEmitter {
     fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL);
     this.cache = null;
     this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
-    this.pinNew(meta.id);
-    return { sessionId: meta.id };
+    this.pinNew(id);
+    return { sessionId: id };
   }
 
   /** Only ids this bridge spawned or found on disk; anything else from a client is refused. */
   private known(id: string): boolean {
-    return Boolean(id) && (this.sessions.has(id) || this.metas().some((m) => m.id === id));
+    return Boolean(id) && (this.sessions.has(id) || Boolean(this.metaFor(id)));
   }
 
   /** Sidebar rename. Live sessions also write the name into the session file through pi. */
@@ -4079,7 +4130,7 @@ export class SessionManager extends EventEmitter {
   /** 会话 > 项目 > 全局，再乘上当前模型的窗口。窗口未知时两条线都是 null（不猜）。 */
   async contextPolicyFor(id: string): Promise<ContextPolicyView> {
     const session = this.sessions.get(id);
-    const cwd = session?.state.cwd ?? this.metas().find((m) => m.id === id)?.cwd ?? null;
+    const cwd = session?.state.cwd ?? this.metaFor(id)?.cwd ?? null;
     const layers = await this.readContextSettings(cwd);
     const usage = session?.contextUsage() ?? { used: null, window: null };
     return policyView({
@@ -4390,19 +4441,20 @@ export class SessionManager extends EventEmitter {
   async pinAll(): Promise<number> {
     let pinned = 0;
     for (const meta of this.metas()) {
+      const id = this.idOfFile(meta);
       // The file is the whole point of the pin, and it is also the early exit: `ensure()` here would
       // give every never-opened session on disk a Session object plus its 400 ms tail timer.
-      if (fs.existsSync(allowFile(meta.id))) continue;
+      if (fs.existsSync(allowFile(id))) continue;
       try {
         const mode = (await defaultPermission(this.cli, meta.cwd)).mode;
-        writePermission(meta.id, mode, "default");
+        writePermission(id, mode, "default");
         // A session that happens to be live keeps its in-memory state in step; disk-only ones need
         // nothing beyond the file — the gate reads it at spawn time.
-        this.sessions.get(meta.id)?.applyPermission(mode);
+        this.sessions.get(id)?.applyPermission(mode);
         pinned++;
       } catch (err) {
         // One unwritable file must not stop the sweep, but it should be visible in the log.
-        console.error(`[permission] 钉不住 ${meta.id}：`, err);
+        console.error(`[permission] 钉不住 ${id}：`, err);
       }
     }
     return pinned;
@@ -4421,7 +4473,7 @@ export class SessionManager extends EventEmitter {
     // Live sessions may not have a file on disk yet (a fake pi never writes one), so walk both.
     // 随手问 is not the user's session (#86) and its readonly mode is not a pinned default.
     const where = new Map<string, string>();
-    for (const meta of this.metas()) where.set(meta.id, meta.cwd ?? "");
+    for (const meta of this.metas()) where.set(this.idOfFile(meta), meta.cwd ?? "");
     for (const s of this.sessions.values()) {
       if (s.state.scratch) continue;
       if (!where.has(s.state.id)) where.set(s.state.id, s.state.cwd ?? "");
@@ -4600,7 +4652,7 @@ export class SessionManager extends EventEmitter {
       if (s.state.scratch) continue;
       note(s.state.id, s.state.cwd, s.state.updatedAt);
     }
-    for (const meta of this.discover()) note(meta.id, meta.cwd, meta.mtime);
+    for (const meta of this.discover()) note(this.idOfFile(meta), meta.cwd, meta.mtime);
     return days;
   }
 
@@ -4684,7 +4736,7 @@ export class SessionManager extends EventEmitter {
     const listed = new Map(this.list().map((session) => [session.id, session]));
     const workspaceSnapshot = this.workspaces.snapshot();
     const workspaceGroups = new Map(workspaceSnapshot.groups.map((group) => [group.id, group]));
-    const metas = new Map(this.metas().map((m) => [m.id, m]));
+    const metas = new Map(this.metas().map((m) => [this.idOfFile(m), m]));
     const targets: { id: string; name: string; file: string | null; cwd?: string; workspace?: TrashItem["workspace"] }[] = [];
     const skipped: RemoveReport["skipped"] = [];
     for (const id of ids) {
