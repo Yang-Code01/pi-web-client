@@ -18,7 +18,8 @@ import { errText, tr } from "./i18n/index.ts";
 import type { AttendanceState, AttendanceRecords, AttendanceOvertime, AttendanceLeave, AttendanceReminder } from "./sysmanage-types.ts";
 // 日期 → 「周五」这件事本机管理已经做过一遍（sysmanage-model.ts:207），别再写一张中文星期表。
 import { weekdayOf } from "./sysmanage-model.ts";
-import { dateKey, defaultRange, defaultWindow, hoursText, overtimeSplit, reasonText, round1, spanText, stepState } from "./attendance-shared.ts";
+import { dateKey, defaultRange, defaultWindow, hoursText, leaveKinds, leaveTotal, overtimeSplit, reasonText, round1, spanText, stepState } from "./attendance-shared.ts";
+import type { LeaveKind } from "./attendance-shared.ts";
 import "./attendance.css";
 
 type Tab = "records" | "overtime" | "leave" | "reminder" | "settings";
@@ -424,6 +425,7 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
         el("span", "at-chip", tr("记录 {p1} 天").replace("{p1}", String(s.days))),
         el("span", `at-chip${s.missing ? " warn" : ""}`, tr("缺卡 {p1} 天").replace("{p1}", String(s.missing))),
         ...overtimeChips(s),
+        ...leaveChips(records.rows, records.compensatory),
       );
       wrap.append(chips);
       if (records.rows.length === 0) wrap.append(el("div", "at-empty", tr("这段时间没有记录")));
@@ -513,8 +515,25 @@ export function paintAttendance(host: HTMLElement): AttendancePane {
     return td;
   }
 
+  // 请假只在备注列里写当日分项；区间合计与 OA 余额单独给 chips。
+  function leaveChips(rows: AttendanceRecords["rows"], balance: number | null): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    const used = leaveTotal(rows, "compensatory");
+    if (used > 0) out.push(el("span", "at-chip", tr("本区间调休 {p1} 小时").replace("{p1}", String(used))));
+    if (typeof balance === "number") out.push(el("span", "at-chip", tr("剩余调休 {p1} 小时").replace("{p1}", String(balance))));
+    return out;
+  }
+
   function noteOf(row: AttendanceRecords["rows"][number]): string {
     const parts: string[] = [];
+    const labels: Record<LeaveKind, string> = {
+      compensatory: tr("调休"),
+      personal: tr("事假"),
+      sick: tr("病假"),
+      other: tr("其他"),
+      trip: tr("出差"),
+    };
+    for (const item of leaveKinds(row.leaveHours)) parts.push(`${labels[item.kind]} ${item.hours}h`);
     if (row.overtimeEdited) parts.push(tr("加班时长被改过"));
     if (row.editedBy && row.editedBy !== "Batch") parts.push(row.editedBy);
     return parts.join(" · ");

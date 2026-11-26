@@ -251,6 +251,27 @@ export function numOf(raw: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * 当天各类请假 / 出差的小时数，按 OA 的字段分开留。
+ * 键名是页面显示用的语义名，不是 OA 字段名（对应关系见 `leaveHoursOf`）。
+ */
+export interface LeaveHours {
+  /** 调休（OA `c_hours`）。 */
+  compensatory: number;
+  /** 事假（`t_hours`）。 */
+  personal: number;
+  /** 病假（`s_hours`）。 */
+  sick: number;
+  /** 其他假期（`o_hours`）。 */
+  other: number;
+  /** 出差（`bt_hours`）。 */
+  trip: number;
+}
+
+export function emptyLeaveHours(): LeaveHours {
+  return { compensatory: 0, personal: 0, sick: 0, other: 0, trip: 0 };
+}
+
 export interface AttendanceRow {
   date: string;
   weekday: string;
@@ -261,7 +282,9 @@ export interface AttendanceRow {
   dayOff: boolean;
   clockIn: string | null;
   clockOut: string | null;
-  /** 当天已批准的请假 / 出差小时合计（c_hours + t_hours + s_hours + o_hours + bt_hours）。 */
+  /** 当天各类请假 / 出差的小时数（分项；页面按类型显示）。 */
+  leaveHours: LeaveHours;
+  /** 当天已批准的请假 / 出差小时合计（leaveHours 五项相加）。 */
   absenceHours: number;
   /** 这天整天都有申请顶着：请假/出差凑满 8 小时、居家办公、活动出勤。半天假不算。 */
   fullDayExcused: boolean;
@@ -270,7 +293,7 @@ export interface AttendanceRow {
   /** 加班时长被人工改过（OA 的 `overtime_rewrite_enable`），页面据此加「已修改」标记。 */
   overtimeEdited: boolean;
   editedBy: string;
-  /** OA 原样一行。语义没坐实的字段（c_hours / t_hours 等）只在这里出现，页面的「详情」展开它。 */
+  /** OA 原样一行。语义没坐实的字段（`l_hours` 等）只在这里出现，页面的「详情」展开它。 */
   raw: Record<string, unknown>;
 }
 
@@ -287,13 +310,15 @@ export interface RowMapOptions {
 
 export function mapRow(raw: Record<string, unknown>, opts: RowMapOptions = {}): AttendanceRow {
   const day = splitDay(raw[opts.day ?? "day"]);
-  const absenceHours = round1(absenceHoursOf(raw));
+  const leaveHours = leaveHoursOf(raw);
+  const absenceHours = sumLeaveHours(leaveHours);
   return {
     date: day.date,
     weekday: day.weekday,
     dayOff: dayOffOf(numOf(raw[opts.dayType ?? "day_type"])),
     clockIn: clockOf(raw[opts.clockIn ?? "start"]),
     clockOut: clockOf(raw[opts.clockOut ?? "end"]),
+    leaveHours,
     absenceHours,
     fullDayExcused: fullDayExcusedOf(raw, absenceHours),
     overtime: numOf(raw[opts.overtime ?? "ov"]),
@@ -319,13 +344,22 @@ function dayOffOf(dayType: number): boolean {
 }
 
 /**
- * 当天请假 / 出差的小时数。OA 分开放：调休 c_hours、事假 t_hours、病假 s_hours、
+ * 当天请假 / 出差的小时数，按类型分开。OA 分开放：调休 c_hours、事假 t_hours、病假 s_hours、
  * 其他假期 o_hours、出差 bt_hours；导入模板写明「请假总时长不可超过 8 小时」。
+ * `l_hours` 语义没坐实（本机 180 天数据里一直是 0），两边都不读。
  */
-function absenceHoursOf(raw: Record<string, unknown>): number {
-  let sum = 0;
-  for (const key of ["c_hours", "t_hours", "s_hours", "o_hours", "bt_hours"]) sum += numOf(raw[key]);
-  return sum;
+export function leaveHoursOf(raw: Record<string, unknown>): LeaveHours {
+  return {
+    compensatory: round1(numOf(raw.c_hours)),
+    personal: round1(numOf(raw.t_hours)),
+    sick: round1(numOf(raw.s_hours)),
+    other: round1(numOf(raw.o_hours)),
+    trip: round1(numOf(raw.bt_hours)),
+  };
+}
+
+function sumLeaveHours(h: LeaveHours): number {
+  return round1(h.compensatory + h.personal + h.sick + h.other + h.trip);
 }
 
 /** 一整天都有申请顶着，就不该再要求打卡。半天假（不足 8 小时）不算整天。 */

@@ -89,3 +89,30 @@ export function overtimeSplit(
   const weekend = round1(Math.max(0, Number(summary?.weekendOvertime) || 0));
   return { workday: round1(Math.max(0, total - weekend)), weekend };
 }
+
+/** 一天里的请假分项，顺序定死（`l_hours` 语义没坐实，不进这张表）。 */
+export type LeaveKind = "compensatory" | "personal" | "sick" | "other" | "trip";
+
+export interface LeaveHoursLike {
+  compensatory?: number;
+  personal?: number;
+  sick?: number;
+  other?: number;
+  trip?: number;
+}
+
+/** 当天有小时数的假别，按固定顺序列出来；0 的不列，老缓存缺字段也当 0。 */
+export function leaveKinds(hours: LeaveHoursLike | null | undefined): { kind: LeaveKind; hours: number }[] {
+  const order: LeaveKind[] = ["compensatory", "personal", "sick", "other", "trip"];
+  const out: { kind: LeaveKind; hours: number }[] = [];
+  for (const kind of order) {
+    const h = round1(Math.max(0, Number(hours?.[kind]) || 0));
+    if (h > 0) out.push({ kind, hours: h });
+  }
+  return out;
+}
+
+/** 某一类假在一段记录里的合计（页面从行里算，不另要一份可能对不上的汇总）。 */
+export function leaveTotal(rows: { leaveHours?: LeaveHoursLike | null }[], kind: LeaveKind): number {
+  return round1(rows.reduce((n, r) => n + (Number(r.leaveHours?.[kind]) || 0), 0));
+}

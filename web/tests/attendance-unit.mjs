@@ -10,7 +10,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { overtimeSplit, dateKey, defaultRange, defaultWindow, hoursText, reasonText, spanText, stepState } from "../src/attendance-shared.ts";
+import { leaveKinds, leaveTotal, overtimeSplit, dateKey, defaultRange, defaultWindow, hoursText, reasonText, spanText, stepState } from "../src/attendance-shared.ts";
 
 test("dateKey 用本地日期补零，不跟 UTC 走", () => {
   assert.equal(dateKey(new Date(2026, 10, 7)), "2026-11-07");
@@ -125,4 +125,33 @@ test("defaultWindow：工作日 18–22，周末 9–18", () => {
   assert.deepEqual(defaultWindow("2026-11-21T08:30"), { start: "09:00", end: "18:00" });
   // 坏日期按工作日，不抛
   assert.deepEqual(defaultWindow(""), { start: "18:00", end: "22:00" });
+});
+test("leaveKinds：只列有小时的假别，顺序固定、0 和脏数据不列", () => {
+  assert.deepEqual(leaveKinds({ compensatory: 4, personal: 4, sick: 0, other: 0, trip: 0 }), [
+    { kind: "compensatory", hours: 4 },
+    { kind: "personal", hours: 4 },
+  ]);
+  assert.deepEqual(leaveKinds({ trip: 2, other: 1, sick: 0.5 }), [
+    { kind: "sick", hours: 0.5 },
+    { kind: "other", hours: 1 },
+    { kind: "trip", hours: 2 },
+  ]);
+  // 老缓存没有 leaveHours、字段是脏字符串，都当 0，不抛也不显示 NaN。
+  assert.deepEqual(leaveKinds(undefined), []);
+  assert.deepEqual(leaveKinds({ compensatory: Number.NaN, personal: -2 }), []);
+  assert.deepEqual(leaveKinds({ compensatory: 0.30000000000000004 }), [{ kind: "compensatory", hours: 0.3 }]);
+});
+
+test("leaveTotal：区间合计按类相加，缺字段按 0，浮点尾巴削掉", () => {
+  const rows = [
+    { leaveHours: { compensatory: 4, personal: 4 } },
+    { leaveHours: { compensatory: 8 } },
+    { leaveHours: undefined },
+    {},
+  ];
+  assert.equal(leaveTotal(rows, "compensatory"), 12);
+  assert.equal(leaveTotal(rows, "personal"), 4);
+  assert.equal(leaveTotal(rows, "sick"), 0);
+  assert.equal(leaveTotal([], "compensatory"), 0);
+  assert.equal(leaveTotal([{ leaveHours: { trip: 0.1 } }, { leaveHours: { trip: 0.2 } }], "trip"), 0.3);
 });

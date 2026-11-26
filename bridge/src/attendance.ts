@@ -21,6 +21,7 @@ import {
   clampRange,
   checkDraft,
   checkLeaveDraft,
+  emptyLeaveHours,
   estimateLeave,
   leaveOaTimes,
   leaveTypeOf,
@@ -202,6 +203,13 @@ let loginFailures: number[] = [];
 let passwordRejected = false;
 /** 最近的回执，用于防重复提交。 */
 let receipts: ReceiptRecord[] = [];
+
+/**
+ * 调休余额的短缓存：记录页每次查询都会顺带取一次，按查询频率打 OA 太浪费。
+ * 只留内存：桥重启后重取一次，代价是一个探测请求。
+ */
+const BALANCE_TTL_MS = 5 * 60_000;
+let balanceMemo: { account: string; at: number; hours: number | null } | null = null;
 
 async function readCredentials(): Promise<Credentials | null> {
   if (credMemo) return credMemo;
@@ -497,11 +505,18 @@ function rowsInRange(cache: CacheFile, start: string, end: string): AttendanceRo
     // 缓存里可能是旧版写下的行（没有 dayOff / absenceHours）。raw 是整行存着的，
     // 重新映一遍就有新字段了，不用等下一次取数，也不用给缓存加版本号。
     .map((r) => {
-      if (r.dayOff !== undefined) return r;
+      // 缺任何一个新字段都按 raw 重映：加 leaveHours 时老缓存里已经有 dayOff 了，只判 dayOff 会漏。
+      if (r.dayOff !== undefined && r.absenceHours !== undefined && r.leaveHours !== undefined) return r;
       if (r.raw && typeof r.raw === "object") return mapRow(r.raw);
       // 连 raw 都没有的老行（只可能是手改过的缓存）：老字段 weekend 至少能救回休息日那一半。
       const legacy = r as AttendanceRow & { weekend?: unknown };
-      return { ...r, dayOff: Boolean(legacy.weekend), absenceHours: 0, fullDayExcused: false };
+      return {
+        ...r,
+        dayOff: Boolean(legacy.weekend),
+        leaveHours: emptyLeaveHours(),
+        absenceHours: 0,
+        fullDayExcused: false,
+      };
     })
     .sort((a, b) => a.date.localeCompare(b.date));
 }
@@ -733,9 +748,9 @@ function people(raw: unknown, idKey?: string, nameKey?: string): LeaderItem[] {
   return out;
 }
 
-async function fetchLeaveInit(cfg: AttendanceConfig, ctx: OaCtx, cred: Credentials): Promise<LeaveInit> {
-  // OA 自己的请假页也是这两发：一览 + `use_type: 0` 的 add/normal（只回信息，不落单）。
-  const probe = {
+/** 请假页 `use_type: 0` 那发探测请求的请求体：只回信息（含调休余额），不落单。 */
+function leaveProbeBody(cred: Credentials): Record<string, unknown> {
+  return {
     use_type: 0,
     user_id: cred.userId,
     agent_user_id: 0,
@@ -745,9 +760,23 @@ async function fetchLeaveInit(cfg: AttendanceConfig, ctx: OaCtx, cred: Credentia
     end_time: "",
     workflow_list: "",
   };
+}
+
+/**
+ * OA 的调休余额（小时）。`compensatory_time[0].compensatory_time` 就是 OA 请假页
+ * 显示的那个数（`.scratch/oa/app.js` 里 `compensatory_init` 也只读 [0]）；
+ * 数组后面几项没有日期，OA 自己也不用，别猜。
+ */
+function compensatoryOf(info: Record<string, unknown>): number | null {
+  const first = Array.isArray(info.compensatory_time) ? (info.compensatory_time[0] as Record<string, unknown> | undefined) : undefined;
+  return first && Number.isFinite(Number(first.compensatory_time)) ? Number(first.compensatory_time) : null;
+}
+
+async function fetchLeaveInit(cfg: AttendanceConfig, ctx: OaCtx, cred: Credentials): Promise<LeaveInit> {
+  // OA 自己的请假页也是这两发：一览 + `use_type: 0` 的 add/normal（只回信息，不落单）。
   const [listRaw, infoRaw] = await Promise.all([
     oaFetch(cfg, ctx, { method: "GET", endpoint: cfg.endpoints.leaveList, token: cred.token }),
-    oaFetch(cfg, ctx, { method: "POST", endpoint: cfg.endpoints.leaveAddNormal, token: cred.token, body: probe }),
+    oaFetch(cfg, ctx, { method: "POST", endpoint: cfg.endpoints.leaveAddNormal, token: cred.token, body: leaveProbeBody(cred) }),
   ]);
   if (!okStatus(listRaw)) throw new OaError("leave_ng", 502, ngReason(listRaw, "请假一览取不到"));
   const v = listRaw as Record<string, unknown>;
@@ -756,8 +785,9 @@ async function fetchLeaveInit(cfg: AttendanceConfig, ctx: OaCtx, cred: Credentia
     (x): x is Record<string, unknown> => !!x && typeof x === "object" && String((x as Record<string, unknown>).code ?? "") !== "",
   );
   const workflow = v.workflow_list && typeof v.workflow_list === "object" ? (v.workflow_list as Record<string, unknown>) : {};
-  const balance = Array.isArray(info.compensatory_time) ? (info.compensatory_time[0] as Record<string, unknown> | undefined) : undefined;
-  const compensatory = balance && Number.isFinite(Number(balance.compensatory_time)) ? Number(balance.compensatory_time) : null;
+  const balance = compensatoryOf(info);
+  // 请假页刚拿到的余额就是最新的，顺手把记录页那份缓存也刷新了。
+  if (cred.account) balanceMemo = { account: cred.account, at: Date.now(), hours: balance };
   const workdays = (Array.isArray(info.day_type) ? info.day_type : [])
     .map((x) => x as Record<string, unknown>)
     .filter((x) => ["0", "4"].includes(String(x.type)))
@@ -769,9 +799,26 @@ async function fetchLeaveInit(cfg: AttendanceConfig, ctx: OaCtx, cred: Credentia
     candidates: people(info.team_leader),
     defaultL1: people(info.recently_team_leader),
     fixedL2: people(info.user_depart_leader_inf, "user_depart_leader_user_id", "user_depart_leader_name"),
-    compensatory,
+    compensatory: balance,
     workdays,
   };
+}
+
+/** 取调休余额（带短缓存）；取不到就是 null，不能让记录本身跟着失败。 */
+async function compensatoryCached(cfg: AttendanceConfig, ctx: OaCtx, cred: Credentials): Promise<number | null> {
+  if (balanceMemo && balanceMemo.account === cred.account && Date.now() - balanceMemo.at < BALANCE_TTL_MS) {
+    return balanceMemo.hours;
+  }
+  const data = await oaFetch(cfg, ctx, {
+    method: "POST",
+    endpoint: cfg.endpoints.leaveAddNormal,
+    token: cred.token,
+    body: leaveProbeBody(cred),
+  });
+  const info = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  const hours = compensatoryOf(info);
+  balanceMemo = { account: cred.account, at: Date.now(), hours };
+  return hours;
 }
 
 function readLeaveDraft(body: Record<string, unknown>): LeaveDraft {
@@ -1042,11 +1089,18 @@ export async function handleAttendance(
       // 用盒子装：在回调里赋值的 let 会被 TS 收窄成 null（回调不算赋值路径）。
       const box: { cred: Credentials | null } = { cred: null };
       let live: { rows: AttendanceRow[]; maxDay: string } | null = null;
+      let balance: number | null = null;
       let failure: unknown = null;
       try {
-        live = await withSession(config, oaCtx, (cred) => {
+        live = await withSession(config, oaCtx, async (cred) => {
           box.cred = cred;
-          return fetchRecords(config, oaCtx, cred, range.start, range.end);
+          // 余额是顺带取的：失败就给 null，别让整页记录跟着报错。
+          const [rows, hours] = await Promise.all([
+            fetchRecords(config, oaCtx, cred, range.start, range.end),
+            compensatoryCached(config, oaCtx, cred).catch(() => null),
+          ]);
+          balance = hours;
+          return rows;
         });
       } catch (err) {
         if (!(err instanceof OaError) && !(err instanceof SecretError)) throw err;
@@ -1065,6 +1119,7 @@ export async function handleAttendance(
           fetchedAt: cache.fetchedAt,
           stale: false,
           problem: null,
+          compensatory: balance,
         });
         return true;
       }
@@ -1075,6 +1130,8 @@ export async function handleAttendance(
       const rows = rowsInRange(cache, range.start, range.end);
       if (used && rows.length === 0) throw failure;
       const today = todayKey(new Date());
+      // 缓存路径没有实时余额，用最近一次拿到的（同一个账号才算数）。
+      const cachedBalance = !used || (balanceMemo && balanceMemo.account === used.account) ? (balanceMemo?.hours ?? null) : null;
       json(res, 200, {
         rows: viewRows(rows, today),
         summary: summarize(rows, cache.maxDay, today),
@@ -1083,6 +1140,7 @@ export async function handleAttendance(
         fetchedAt: cache.fetchedAt,
         stale: true,
         problem: (failure as Error | null)?.message || "没登录",
+        compensatory: cachedBalance,
       });
       return true;
     }
