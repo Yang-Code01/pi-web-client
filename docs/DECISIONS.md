@@ -8355,7 +8355,7 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 1. 额度按**会话**算、跨仓库共用：`MAX_RUNS_PER_SESSION = 2`（`bridge/src/review.ts`）。第三条同步抛 `busy`（`params.p1 = "2"`）；页面主按钮置灰并写「已满 2 个，先停一个再开」。
 2. 判重只认「同会话 + 同仓库 + 同 PR 号」，抛新码 `dup_pr`（`params.p1` = 号）。位置在 `startReview` 的 `pr_foreign_repo` 闸之后、`resolvePullRequest` 之前 —— 白跑的代价是 fetch + 一次 preview，不如当场拒。范围 / 工作区 / 提交模式不判重：那正是「同一份 diff 再跑一份对比」的用法。
 3. 运行时主键从「仓库 + 会话」换成 **runId**：`active`、`progressMap` 都按 runId 记；另加 `runningFor(session)`（数额度）与 `reviewProgresses(repo, session)`（给页面的清单）。`reviewProgress`（一条）换掉。
-4. 停止按条：`cancelReview(dir, session, runId)`，给 runId 时校验 repo + session、只 abort 那一条；不给则停掉该 repo + session 下全部（兼容旧调用）。停掉当场 `active.delete(runId)`，额度立刻回来。
+4. 停止按条：`cancelReview(dir, session, runId)`，给 runId 时校验 repo + session、只 abort 那一条；不给则停掉该 repo + session 下全部（兼容旧调用）。停掉的这条**留在 `active` 里**等子进程真正收尾（`execute` 的 `finally` 再删）：额度与同号查重都不提前放开，否则同一份 diff 会有两个进程一起烧 token。页面本来也要等记录变成「已停止」才解锁，所以看不出一秒的差。
 5. 帧补字段：`review.progress` 带 `sessionId` + `runId`；`review.state` 带 `progresses` 与 `cap`；新增 `review.started`（桥把这次换来的 runId 说一声，页面只认自己开过的那些来弹「跑完」提示）。
 6. 页面同一张列表：`ReviewInput.progress` → `progresses` + `cap`；`live` 按每张卡自己的 runId 找；`running` = 展开那条在跑、`runningCount` / `atCap` 决定能不能开。在跑的置顶（再按 `startedAt` 倒序），跑完 / 停下的不抢焦点。记录卡从 `<button>` 改成 `role="button"` 的 `div`，才能内嵌「停止」。
 7. 跑着时「评什么」与模型 chip 解锁：它们描述的是**下一条**，每条记录自己带 model / provider 快照。主按钮恒为「开始评审」，「停止」只留在展开的那条与每张在跑的卡上。
@@ -8366,7 +8366,7 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 - 额度按会话而不是全机：额度是「一个人同时盯几个 PR」的注意力，跨仓库也占同一份。2 条刚好是「继续跑 + 再开一条」，再多 provider 限流与内存峰值一起翻倍（一次 31 文件的评审实测 136 秒，组内串行、每组一个 `pi -p` 子进程）。
 - 抓在开跑前而不是跑完再合并结果：两条同号同时跑，后一条白烧一次 fetch + preview；`pr_foreign_repo` 已经立了这个先例（#666）。
 - 进度帧必须带 runId：不带就只能「谁后到算谁的」，两条同时在跑必然互相覆盖；顺带把跨会话串话修掉（原来那个 `msg.sessionId === this.currentId` 守卫在桥上根本没发 sessionId，一直是空转）。
-- 停下即腾额度：额度是注意力，不是进程数；停掉的那条不会自己回来，占着位置只会让人以为还有一条在跑。
+- 停下不立刻腾额度：额度算的是「还在烧 token 的进程」。按已经收尾的记录放行，用户刚点停止就重开同一个号，会同时跑两份；页面反正要等记录变「已停止」才解锁，早放行也没有任何可见的好处。
 - 卡片改 `div` 而不是「按钮里套按钮」：HTML 不许按钮嵌套，`stopPropagation` 也挡不住点击语义被外层 button 吃掉。
 
 **代价 / 可改。**

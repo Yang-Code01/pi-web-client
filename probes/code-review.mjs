@@ -227,7 +227,7 @@ try {
   await until(async () => (await page.locator(".rv-focus-stop, .rv-file, .rv-error").count()) > 0, 60000, "review started");
   const running = await page.locator(".rv-focus-stop").count();
   if (running) {
-    // D417：跑着的时候这张「评什么」描述的是**下一条**，所以不再整张禁用；停止是每条记录自己的事。
+    // D419：跑着的时候这张「评什么」描述的是**下一条**，所以不再整张禁用；停止是每条记录自己的事。
     check("评审中「评什么」不再整张锁住（它描述下一条）", !(await page.locator(".rv-mode").isDisabled()), "");
     check("评审中模型 chip 也能换（只影响下一条）", !(await page.locator(".rv-model").first().isDisabled()), "");
     check("主按钮仍是「开始评审」，不再变成中断", (await page.locator(".rv-run").first().innerText()).includes("开始"), "");
@@ -378,7 +378,7 @@ try {
     // 停一条：只停那一条，额度回来，焦点不被抢走（我们此刻停在列表上）。
     await page.locator(".rv-run-card.is-live .rv-run-stop").first().click();
     await until(async () => (await countRunning()) <= 1, 30000, "one stopped");
-    check("停一条后额度立刻回来", await page.locator(".rv-run").first().isEnabled(), "");
+    check("停一条、记录收尾后额度回来", await page.locator(".rv-run").first().isEnabled(), "");
     check("跑完/停下的那一条不会把你从列表拽走", (await page.locator(".rv-focus").count()) === 0, "");
     // 收尾：把剩下那条也停掉，别让后面的段落撞上「已满」。
     const rest = page.locator(".rv-run-card.is-live .rv-run-stop");

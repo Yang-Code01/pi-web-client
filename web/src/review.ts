@@ -1031,16 +1031,14 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
   const { view, actions } = input;
   const box = el("div", "rv-runs");
   const head = el("div", "rv-runs-head");
+  let count = tr("还没有评审记录");
+  if (view.runs.length && view.runningCount > 0) {
+    count = tr("评过 {p1} 次 · {p2} 个在跑", { p1: view.runs.length, p2: view.runningCount });
+  } else if (view.runs.length) {
+    count = tr("这个会话评过 {p1} 次", { p1: view.runs.length });
+  }
   head.append(
-    el(
-      "span",
-      "",
-      view.runs.length
-        ? view.runningCount > 0
-          ? tr("评过 {p1} 次 · {p2} 个在跑", { p1: view.runs.length, p2: view.runningCount })
-          : tr("这个会话评过 {p1} 次", { p1: view.runs.length })
-        : tr("还没有评审记录"),
-    ),
+    el("span", "", count),
     el("span", "rv-runs-hint", view.runs.length ? tr("点一条展开") : ""),
   );
   box.append(head);

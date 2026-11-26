@@ -992,7 +992,9 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
 /**
  * 停一条（D419）。给了 `runId` 就只停那一条，并要求它确实属于这个仓库 + 会话；
  * 不给则停这个仓库 + 会话下所有在跑的（老页面只发 dir+session，语义不变）。
- * 停完立刻腾出额度：用户点了「停止」就该能马上开下一条，不必等子进程收尾。
+ * 这里**不**把记录移出 `active`：子进程还可能在退出的路上（fetch 甚至不认 abort），
+ * 额度与同号查重等它真正收尾（execute 的 finally）再放开 —— 否则同一份 diff
+ * 会有两个进程一起烧 token。页面那边本来也要等记录变成「已停止」才解锁。
  */
 export function cancelReview(dir: string, session = "", runId = ""): boolean {
   const wantRepo = repoKey(dir);
@@ -1001,14 +1003,12 @@ export function cancelReview(dir: string, session = "", runId = ""): boolean {
   if (runId) {
     const one = active.get(runId);
     if (!one || !owns(one)) return false;
-    active.delete(runId);
     one.cancel();
     return true;
   }
   let stopped = false;
-  for (const [id, a] of [...active]) {
+  for (const a of active.values()) {
     if (!owns(a)) continue;
-    active.delete(id);
     a.cancel();
     stopped = true;
   }
