@@ -4152,7 +4152,7 @@ async function main(): Promise<void> {
                 model,
                 provider,
                 lang,
-                // D417：进度帧要带上是哪一条（runId）与哪位会话，页面才画得到各自的卡上。
+                // D418：进度帧要带上是哪一条（runId）与哪位会话，页面才画得到各自的卡上。
                 onProgress: (p) => broadcast({ type: "review.progress", dir: repo, sessionId: session, runId: p.runId, progress: p }),
                 onState: () =>
                   broadcast({

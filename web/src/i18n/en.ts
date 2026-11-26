@@ -4390,7 +4390,7 @@ export const en: Dict = {
   "ocr 出错，没能说清这次要评哪些文件": "ocr failed and could not say which files to review",
   "评审进程挂了": "The review process died",
   "评审超时了": "The review timed out",
-  "这个会话已经有两个在评了，先停一个再开": "This session already has two reviews running — stop one first",
+  "这个会话的评审额度满了，先停一个再开": "This session's review slots are full — stop one before starting another",
   "这个会话已经在评这个 PR 了": "This session is already reviewing this PR",
   "已满 {p1} 个，先停一个再开": "Already {p1} running — stop one to start another",
   "只停这一条": "Stop just this one",

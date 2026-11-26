@@ -37,7 +37,7 @@ export interface PullRequest {
 
 export interface ReviewInput {
   state: ReviewState | null;
-  /** 现在在跑的那几条的进度（D417：一个会话可以同时跑两条，按 runId 分）。 */
+  /** 现在在跑的那几条的进度（D418：一个会话可以同时跑两条，按 runId 分）。 */
   progresses?: ReviewProgress[];
   /** 一个会话最多同时在评几条（桥在帧里给的，跟 `MAX_RUNS_PER_SESSION` 对齐）。 */
   cap?: number;
@@ -103,7 +103,7 @@ export interface ReviewRunCard {
   modelId: string;
   /** 失败 / 中断的原因（`errorText()` 已翻好中文）。 */
   error: string;
-  /** 跑着的时候的实时进度（每条在跑的卡各有各的；D417 之前只有最新那条有）。 */
+  /** 跑着的时候的实时进度（每条在跑的卡各有各的；D418 之前只有最新那条有）。 */
   live: { reviewed: number; total: number; current: string } | null;
 }
 
@@ -113,7 +113,7 @@ export interface ReviewView {
   phase: ReviewPhase;
   running: boolean;
   canRun: boolean;
-  /** 这个会话现在有几条在跑（D417 起可能是 2）。 */
+  /** 这个会话现在有几条在跑（D418 起可能是 2）。 */
   runningCount: number;
   /** 跑满了额度：按钮要灰，并说清上限。 */
   atCap: boolean;
@@ -216,7 +216,7 @@ function errorText(run: ReviewRun | null, fallback: string): string {
   const known: Record<string, string> = {
     stopped: tr("已停止"),
     "bridge-restart": tr("桥重启了，这次评审没跑完。重跑一次就行。"),
-    busy: tr("这个会话已经有两个在评了，先停一个再开"),
+    busy: tr("这个会话的评审额度满了，先停一个再开"),
     dup_pr: tr("这个会话已经在评这个 PR 了"),
     not_git: tr("这个目录不是 git 仓库，没有东西可评。"),
     ocr_missing: tr("没装 ocr（代码评审要用）"),
@@ -303,7 +303,7 @@ export function reviewView(input: ReviewInput): ReviewView {
   const focused = input.focus ? allRuns.find((r) => r.id === input.focus) ?? null : null;
   const active = focused ?? latest;
   const activeRunning = Boolean(active && active.status === "running");
-  // D417：一个会话可以同时跑两条，每条一帧进度 —— 按 runId 认，别再拿「最新那条」顶替。
+  // D418：一个会话可以同时跑两条，每条一帧进度 —— 按 runId 认，别再拿「最新那条」顶替。
   const progresses = Array.isArray(input.progresses) ? input.progresses : [];
   const progressById = new Map(progresses.map((item) => [item.runId, item]));
   // 实时帧只属于「展开且还在跑」的那一次：翻旧记录时不能拿别人的意见冒充那一次的结果。
@@ -395,8 +395,10 @@ export function reviewView(input: ReviewInput): ReviewView {
   const missing =
     mode === "range" ? !target.trim() || !base.trim() : mode === "commit" ? !commit.trim() : mode === "pr" ? !pr : false;
   // 按钮灰着的时候得说清为什么：用户就是卡在一颗没解释的灰按钮上（报告的原话「不能评审了」）。
-  // 填漏了先说填漏（补上就能开）；填齐了还被挡，才是额度用完了（D417）。
-  const missingWhy = missing ? missingHint(mode) : atCap ? tr("已满 {p1} 个，先停一个再开", { p1: cap }) : "";
+  // 填漏了先说填漏（补上就能开）；填齐了还被挡，才是额度用完了（D418）。
+  let missingWhy = "";
+  if (missing) missingWhy = missingHint(mode);
+  else if (atCap) missingWhy = tr("已满 {p1} 个，先停一个再开", { p1: cap });
   const canRun = phase !== "loading" && phase !== "not-git" && phase !== "no-ocr" && !atCap && !input.installing && !missing;
   // 跑着看进度帧的日志，跑完看记录里存的那份（进度帧已经没了）。
   const log = (live?.log?.length ? live.log : active?.log ?? []).slice(-40);
@@ -545,7 +547,7 @@ export interface ReviewActions {
   /** 打开「模型与思考」那个弹层（复用输入框那颗 chip 的同一个），挑评审用的模型。 */
   onPickModel: () => void;
   onRun: () => void;
-  /** 停掉指定的那一条（D417 起每条在跑的记录各有自己的停止）。 */
+  /** 停掉指定的那一条（D418 起每条在跑的记录各有自己的停止）。 */
   onStopRun: (runId: string) => void;
   onMark: (key: string, mark: Mark | "") => void;
   /** 开着分支工作台「差异」页签并定位到这一行。 */
@@ -701,7 +703,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
 
   const modeRow = el("div", "rv-row");
   const mode = el("select", "rv-mode") as HTMLSelectElement;
-  // D417：跑着的时候这张表描述的是「下一条要评什么」，所以不再整张禁用。
+  // D418：跑着的时候这张表描述的是「下一条要评什么」，所以不再整张禁用。
   for (const [value, label] of [
     ["workspace", tr("工作区改动")],
     ["range", tr("分支 vs 主干")],
@@ -872,13 +874,13 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   const actRow = el("div", "rv-row");
   const model = el("button", "rv-model", input.modelName || tr("默认模型")) as HTMLButtonElement;
   model.type = "button";
-  // D417：换模型只影响**下一条**（每条记录自己存一份 model/provider），所以跑着时也能换。
+  // D418：换模型只影响**下一条**（每条记录自己存一份 model/provider），所以跑着时也能换。
   model.title = input.modelId || tr("用设置里的默认模型");
   model.onclick = () => actions.onPickModel();
   actRow.append(model);
 
   let runBtn: HTMLButtonElement | null = null;
-  // 一直是「开始评审」：跑着的时候它开的是**下一条**，停哪一条由记录卡上的「停止」决定（D417）。
+  // 一直是「开始评审」：跑着的时候它开的是**下一条**，停哪一条由记录卡上的「停止」决定（D418）。
   {
     const run = el("button", "btn rv-run", tr("开始评审")) as HTMLButtonElement;
     run.type = "button";
