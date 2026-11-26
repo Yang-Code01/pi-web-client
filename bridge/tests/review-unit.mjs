@@ -444,7 +444,7 @@ check("期望仓库：别仓的号在开跑之前就被拒（不 fetch、不起�
   assert.equal(fs.existsSync(reviewStateFile(repo, "")), false, "拒掉的那一次不该落状态");
 });
 
-// ---- 并发（D419）：一个会话同时评两条，额度只按会话算 -----------------------
+// ---- 并发（D420）：一个会话同时评两条，额度只按会话算 -----------------------
 
 /** 一个没有 remote 的临时仓库：pr 模式会在 resolvePullRequest 里立刻失败，闸门逻辑跑得飞快。 */
 function bareRepo(name) {
@@ -462,7 +462,7 @@ function startThrows(o) {
   return null;
 }
 
-check("并发（D419）：同一会话两条能一起跑，第三条在开跑前就被拒", () => {
+check("并发（D420）：同一会话两条能一起跑，第三条在开跑前就被拒", () => {
   const a = bareRepo("cap-a");
   const b = bareRepo("cap-b");
   const c = bareRepo("cap-c");
@@ -481,7 +481,7 @@ check("并发（D419）：同一会话两条能一起跑，第三条在开跑前
   cancelReview(c, "another");
 });
 
-check("并发（D419）：同一个 PR 在同一次会话里只许一条（dup_pr），别的号放行", () => {
+check("并发（D420）：同一个 PR 在同一次会话里只许一条（dup_pr），别的号放行", () => {
   const repo = bareRepo("dup");
   const session = "dup-session";
   startReview({ dir: repo, mode: "pr", pr: 691, session, lang: "zh" });
@@ -498,7 +498,7 @@ check("并发（D419）：同一个 PR 在同一次会话里只许一条（dup_p
   cancelReview(repo, "dup-other");
 });
 
-check("并发（D419）：按 runId 停一条，另一条不受影响", () => {
+check("并发（D420）：按 runId 停一条，另一条不受影响", () => {
   const repo = bareRepo("cancel");
   const session = "cancel-session";
   const a = startReview({ dir: repo, mode: "pr", pr: 1, session, lang: "zh" });
@@ -518,7 +518,7 @@ check("并发（D419）：按 runId 停一条，另一条不受影响", () => {
   cancelReview(repo, session, b.runId);
 });
 
-check("并发（D419）：进度只按「仓库 + 会话」发给自己的会话", () => {
+check("并发（D420）：进度只按「仓库 + 会话」发给自己的会话", () => {
   const repo = bareRepo("isolate");
   const a = startReview({ dir: repo, mode: "pr", pr: 7, session: "s1", lang: "zh" });
   startReview({ dir: repo, mode: "pr", pr: 8, session: "s2", lang: "zh" });
@@ -528,7 +528,7 @@ check("并发（D419）：进度只按「仓库 + 会话」发给自己的会话
   cancelReview(repo, "s2");
 });
 
-check("并发（D419）：桥重启后 sweep 按「条」计数，不只是按文件", () => {
+check("并发（D420）：桥重启后 sweep 按「条」计数，不只是按文件", () => {
   const prev = process.env.PI_WEB_STATE;
   process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-sweep-"));
   try {

@@ -572,7 +572,7 @@ export function cleanRuns(repo: string, session = ""): ReviewState {
 
 const REVIEW_TIMEOUT_MS = 30 * 60_000;
 
-/** 一个会话最多同时在评几条（D419）。数的是**会话**，不是仓库：换个仓库也共用这份额度。 */
+/** 一个会话最多同时在评几条（D420）。数的是**会话**，不是仓库：换个仓库也共用这份额度。 */
 export const MAX_RUNS_PER_SESSION = 2;
 
 /** 面板轮询/广播的那个「现在到哪了」。 */
@@ -588,7 +588,7 @@ interface Active {
   pr: number;
 }
 
-/** 主键是 runId：同一个会话可以同时跑两条（D419），插入顺序就是开跑顺序。 */
+/** 主键是 runId：同一个会话可以同时跑两条（D420），插入顺序就是开跑顺序。 */
 const active = new Map<string, Active>();
 const progressMap = new Map<string, Progress>();
 
@@ -650,7 +650,7 @@ export function sweepStaleRuns(): number {
         run.errorCode = "bridge-restart";
         run.error = "桥重启了，这次评审没跑完";
         dirty = true;
-        hits += 1; // 按「条」数：一个文件里可能同时躺着两条（D419）
+        hits += 1; // 按「条」数：一个文件里可能同时躺着两条（D420）
       }
       if (!dirty) continue;
       fs.writeFileSync(file, JSON.stringify(raw, null, 2));
@@ -872,7 +872,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
   const running = runningFor(session);
   const prNumber = Number(o.pr) || 0;
 
-  // D419：同一个号在本会话里正在评，就别再开一条 —— 同一份 diff 白烧一遍 token。
+  // D420：同一个号在本会话里正在评，就别再开一条 —— 同一份 diff 白烧一遍 token。
   // 判在 fetch 之前，跟上面那道闸同一个理由。
   if (prNumber > 0) {
     const same = running.find(([, a]) => a.mode === "pr" && a.pr === prNumber && repoKey(a.repo) === repoKey(root));
@@ -990,7 +990,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
 }
 
 /**
- * 停一条（D419）。给了 `runId` 就只停那一条，并要求它确实属于这个仓库 + 会话；
+ * 停一条（D420）。给了 `runId` 就只停那一条，并要求它确实属于这个仓库 + 会话；
  * 不给则停这个仓库 + 会话下所有在跑的（老页面只发 dir+session，语义不变）。
  * 这里**不**把记录移出 `active`：子进程还可能在退出的路上（fetch 甚至不认 abort），
  * 额度与同号查重等它真正收尾（execute 的 finally）再放开 —— 否则同一份 diff
@@ -1426,17 +1426,59 @@ function olderThan(v: number[], floor: readonly number[]): boolean {
   return false;
 }
 
-/** 面板打开时问一句就够了；不要放到每次刷新里（一次 spawn 几十毫秒）。 */
-export async function ocrStatus(): Promise<OcrStatus> {
+/**
+ * 探活得给足时间。`ocr` 在 Windows 上不是一个二进制，而是 `node launcher → Go 二进制` 两层
+ * （launcher 每 18 分钟还会 detached 拉一次版本检查）。本机实测：裸 exe ~1.2s，走 launcher
+ * 冷时 0.4s、2.4s、5.2s、7.0s、**16.3s**——以前只给 5 秒，慢一发就被记成 installed:false，
+ * 面板上直接变成「还没装 ocr」（用户明明装着）。
+ */
+const OCR_PROBE_TIMEOUT_MS = 30_000;
+/** 探到了就记一会儿：面板一次打开会问好几遍（WS `review.get` 补帧、HTTP `/api/review/state`）。 */
+const OCR_MEMO_MS = 30 * 60_000;
+
+let ocrMemo: { status: OcrStatus; at: number } | null = null;
+let ocrInFlight: Promise<OcrStatus> | null = null;
+
+/**
+ * 探版本失败怎么记账。**只有「这个命令根本没有」才算没装**；超时、跑崩了都不冒充结论——
+ * 把错误原样带回去，让评审本身去报真正的毛病。否则装着 ocr 的人只会看到「装 ocr」。
+ */
+export function ocrStatusFromFailure(code: string, message: string): OcrStatus {
+  if (code === "ocr_missing") return { installed: false, version: "", tooOld: false, error: "missing" };
+  // 老到认不出 `--format` 的那种：面板要劝「升」，不是劝「装」。
+  if (code === "ocr_too_old") return { installed: true, version: "", tooOld: true, error: "too-old" };
+  return { installed: true, version: "", tooOld: false, error: code || message };
+}
+
+async function probeOcr(): Promise<OcrStatus> {
   try {
-    const { stdout, stderr } = await runOcr(["version"], process.cwd(), 5_000);
+    const { stdout, stderr } = await runOcr(["version"], process.cwd(), OCR_PROBE_TIMEOUT_MS);
     const parts = parseVersion(`${stdout}\n${stderr}`);
     const version = parts.length ? parts.join(".") : "";
     return { installed: true, version, tooOld: olderThan(parts, MIN_OCR_VERSION), error: "" };
   } catch (err: any) {
-    const code = String(err?.code ?? "failed");
-    return { installed: false, version: "", tooOld: false, error: code === "ocr_too_old" ? "too-old" : code === "ocr_missing" ? "missing" : String(err?.message ?? err) };
+    return ocrStatusFromFailure(String(err?.code ?? "failed"), String(err?.message ?? err));
   }
+}
+
+/**
+ * 面板打开时问一句就够了；不要放到每次刷新里（一次 spawn 几十毫秒到几秒）。
+ * `refresh` 用于「刚装完」这种必须重新看一眼的场合。
+ */
+export async function ocrStatus(opts: { refresh?: boolean } = {}): Promise<OcrStatus> {
+  if (!opts.refresh && ocrMemo && Date.now() - ocrMemo.at < OCR_MEMO_MS) return ocrMemo.status;
+  // 并发问（面板一次打开会同时走 WS 和 HTTP）只许 spawn 一个：多开一份冷启动，谁都更容易超时。
+  if (ocrInFlight) return ocrInFlight;
+  ocrInFlight = probeOcr()
+    .then((status) => {
+      // 只记正的：没装的人点完「装 ocr」要能立刻看到结果，别让缓存把「没装」焊死。
+      ocrMemo = status.installed ? { status, at: Date.now() } : null;
+      return status;
+    })
+    .finally(() => {
+      ocrInFlight = null;
+    });
+  return ocrInFlight;
 }
 
 /** 面板上那颗「装 ocr」：把 npm 的输出一行行流回去，装完由页面重拉状态。 */

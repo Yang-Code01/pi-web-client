@@ -227,7 +227,7 @@ try {
   await until(async () => (await page.locator(".rv-focus-stop, .rv-file, .rv-error").count()) > 0, 60000, "review started");
   const running = await page.locator(".rv-focus-stop").count();
   if (running) {
-    // D419：跑着的时候这张「评什么」描述的是**下一条**，所以不再整张禁用；停止是每条记录自己的事。
+    // D420：跑着的时候这张「评什么」描述的是**下一条**，所以不再整张禁用；停止是每条记录自己的事。
     check("评审中「评什么」不再整张锁住（它描述下一条）", !(await page.locator(".rv-mode").isDisabled()), "");
     check("评审中模型 chip 也能换（只影响下一条）", !(await page.locator(".rv-model").first().isDisabled()), "");
     check("主按钮仍是「开始评审」，不再变成中断", (await page.locator(".rv-run").first().innerText()).includes("开始"), "");

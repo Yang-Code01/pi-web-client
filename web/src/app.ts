@@ -446,7 +446,7 @@ export class App {
   private mailConfirm: MailConfirmDialog | null = null;
   // #651 代码评审：桥发来的状态 + 面板自己的那点选择（模式 / 对照分支 / 提交 / 模型）。
   private reviewState: ReviewState | null = null;
-  /** 在跑的那几条，一条一份（D419：按 runId 认，不再「一个会话只有一份进度」）。 */
+  /** 在跑的那几条，一条一份（D420：按 runId 认，不再「一个会话只有一份进度」）。 */
   private reviewProgresses: ReviewProgress[] = [];
   /** 一个会话同时最多几条（桥发来的上限）；缺省 2，跟桥上的 MAX_RUNS_PER_SESSION 对齐。 */
   private reviewCap = 2;
@@ -480,7 +480,7 @@ export class App {
    */
   private reviewExpectRepo = "";
   /**
-   * 这一次**我们**点的「开始评审」各自换来的 runId（D419：一次可能开两条，所以是一个集合）。
+   * 这一次**我们**点的「开始评审」各自换来的 runId（D420：一次可能开两条，所以是一个集合）。
    * 只有这里面的跑完才弹提示 —— 别的页签发起的别来抢话。
    */
   private reviewPendingRuns = new Set<string>();
@@ -2741,7 +2741,7 @@ export class App {
         if (Number(msg.cap) > 0) this.reviewCap = Number(msg.cap);
         // 盘上记的「评什么」：只在本会话头一份状态到达时恢复（以后以界面为准）。
         this.applyReviewPick();
-        // 跑完的那一条自己收尾，**不动焦点**：你正看着 A 的时候 B 跑完，别把你从 A 上拽走（D419）。
+        // 跑完的那一条自己收尾，**不动焦点**：你正看着 A 的时候 B 跑完，别把你从 A 上拽走（D420）。
         this.announceReviewDone();
         // 桥重启打断了几条：桥只在 boot 时扫一次，数着带过来（只报一次）。
         const swept = Number(msg.swept) || 0;
@@ -19099,7 +19099,7 @@ export class App {
       this.reviewPendingRuns.delete(id);
       if (this.reviewToasted.has(run.id)) continue;
       this.reviewToasted.add(run.id);
-      // 一次开两条时，两句都要能分清是哪一条（D419：带上 PR 号 / 范围）。
+      // 一次开两条时，两句都要能分清是哪一条（D420：带上 PR 号 / 范围）。
       const target = runTarget(run);
       const count = run.findings?.length ?? 0;
       if (run.status === "done") {

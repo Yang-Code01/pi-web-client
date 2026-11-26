@@ -131,7 +131,7 @@ test("跑着一条：给进度，但还剩一条额度，可以再开", () => {
   assert.equal(view.running, true);
   assert.equal(view.runningCount, 1);
   assert.equal(view.atCap, false);
-  assert.equal(view.canRun, true, "同会话还能再开一条（D419）");
+  assert.equal(view.canRun, true, "同会话还能再开一条（D420）");
   assert.deepEqual(view.progress, { totalFiles: 9, reviewedFiles: 4, currentFile: "web/src/a.ts", tokens: 800 });
 });
 
@@ -156,7 +156,7 @@ test("跑满两条：进度各归各的卡，第三条不许开，理由说清�
   assert.ok(view.runs.every((c) => c.running));
 });
 
-test("并发（D419）：在跑的置顶，其余按开跑时间倒序", () => {
+test("并发（D420）：在跑的置顶，其余按开跑时间倒序", () => {
   const view = reviewView({
     ...base,
     state: {
@@ -174,7 +174,7 @@ test("并发（D419）：在跑的置顶，其余按开跑时间倒序", () => {
   assert.equal(view.runningCount, 2);
 });
 
-test("并发（D419）：停掉一条（记录已收尾），额度还回来", () => {
+test("并发（D420）：停掉一条（记录已收尾），额度还回来", () => {
   const view = reviewView({
     ...base,
     state: {
