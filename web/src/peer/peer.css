@@ -580,7 +580,7 @@ body.embedded .brand .nm { display: none; }
 ::-webkit-scrollbar-thumb:hover { background: var(--line-lit); }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* 选中文字（D416）：实心强调色 + 反白字。两段半透明的强调色铺在强调色实底的气泡上
+/* 选中文字（D417）：实心强调色 + 反白字。两段半透明的强调色铺在强调色实底的气泡上
    就等于没铺（对比 1:1），所以强调色实底的气泡里反过来用。 */
 ::selection { background: var(--accent); color: var(--accent-ink); }
 .msg.mine .bub::selection,

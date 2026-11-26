@@ -76,11 +76,20 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 ### 选区：强调色实底上必须反相
 
-`::selection` 的对比对象是它自己下面那层，所以底色里已经有强调色的地方（对话里的用户气泡 `.msg.user .body`、内网通「我发的」`.msg.mine .bub`），半透明强调色铺上去就等于同一个颜色：`.msg.user` 那对组合实测底对比 **1.00**，整段选中和没选中一模一样（D416）。现在改成：
+`::selection` 的对比对象是它自己下面那层，所以底色里已经有强调色的地方（对话里的用户气泡 `.msg.user .body`、内网通「我发的」`.msg.mine .bub`），半透明强调色铺上去就等于同一个颜色：`.msg.user` 那对组合实测底对比 **1.00**，整段选中和没选中一模一样（D417）。现在改成：
 
 - 全局 `::selection` 是实心 `--accent` + `--accent-ink` 字，不带透明度；强调色实底的气泡里反过来（`--accent-ink` 实块 + 强调色字）。
 - 写在哪：主界面是 `mac-base.css`（只带 `.msg.user .body`），内网通页面只加载 `peer.css`，它自己带一份（`::selection` + `.msg.mine .bub`）。新加「强调色实底 + 可读文本」的区域时，看那个页面加载哪份表，把选择器加进对应的反相名单，否则那块地方的选区又是隐形的。
 - 守卫：`node probes/selection-visible.mjs`（真鼠标拖选、量截图像素，改前 1.00:1 / 1.55:1）。注意 programmatic `getSelection().addRange()` 在未聚焦文档里 Chrome 不上色，只看计算样式会误判成已修好。
+
+### 选区的浮动动作：贴最后一截、坐标用布局 px、按下时别丢选区
+
+拖选后在选区旁边冒出来的东西（现在只有一个：`SelAsk` 的「问一下」胶囊，D416），照这三条写：
+
+- **贴 `range.getClientRects()` 里有面积（`width/height > 1`）的最后一个矩形**，不用整段的包围盒：跨段落的包围盒能盖住半个屏幕，按钮会跑到离「选到哪儿」很远的地方。越界夹回窗口、下面放不下翻到上方。
+- **`#app` 上有 zoom，量到的和写进去的不是同一套单位**：`getBoundingClientRect()` 是视觉 px，`style.left/top` 是布局 px（除以 `uiScale()`），`offsetWidth` 是布局 px（乘回 `scale` 再夹窗口）。守卫 `probes/sel-ask-chip.mjs` 在 100% 与 150% 两档量胶囊高度（26px / 39px）。
+- **按钮的 `mousedown` 里 `preventDefault()`**，否则按下那一刻选区就没了，`onclick` 里再读 `getSelection()` 是空的；选中文字要在 `mouseup` 时就存下来。
+- 要在别处（左栏、输入框、别的面板）拖选时不弹，就把监听挂 `document` 的捕获阶段并在 `sync()` 里判断 range 是否落在自己的容器里 —— mouseup / mousedown 会被里面的组件 `stopPropagation`。
 
 ### 列表刷新：已显示的内容不许变暗、不许先清空
 

@@ -673,6 +673,22 @@ html[data-ui="mac"] .peer-frame { background: transparent; }
 /* 这个列容器有确定高度且 overflow-y:auto；子项若自带 overflow:hidden（如 .ops），
    min-height:auto 会退化成 0，于是长会话里被 flex 压缩成 2px 细线。统一禁止收缩。 */
 .chat-scroll > * { flex: 0 0 auto; min-width: 0; }
+/* D416：聊天记录里拖选一段文字、松手后冒出来的那颗「问一下」。挂 `#app` 里（跟着字号缩放），
+   位置是 JS 按 `--ui-scale` 换算好写进来的，所以这里只固定 `position: fixed`，不写 left/top。
+   `[hidden]` 要自己写：下面的 `display: inline-flex` 会盖掉浏览器对 hidden 的默认处理。 */
+.sel-ask {
+  position: fixed; z-index: 30; display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 10px 0 8px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  font: inherit; font-size: 12px; line-height: 1; white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .22), 0 1px 2px rgba(0, 0, 0, .14);
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.sel-ask[hidden] { display: none; }
+.sel-ask:hover { background: var(--panel-2); border-color: var(--line-strong); }
+.sel-ask:active { transform: translateY(0.5px); }
+.sel-ask:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sel-ask .ico { color: var(--accent); }
 /* 「回到底部」：滚动视口底部正中一颗圆钮，只有一枚向下箭头（Q-027：原来是一整条写着「回到底部 /
    有新内容 ↓」的胶囊，太占横面）。掉队期间收到新内容时，箭头旁才长出「new」小标。
    sticky 而不是 absolute —— absolute 会跟着内容一起滚走。margin-top 负值与自身高度相抵，不占版面。 */
