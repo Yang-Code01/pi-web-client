@@ -8271,3 +8271,27 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - `gitRoot()` 仍是同步 `execFileSync`；`effectiveReviewDir` 每次帧都调一次（含 `realpath` + 一次 git 调用），与会话目录时代的开销同量级。
 
 **验证。** `npm run test:review`：新增 `bridge/tests/review-pin-unit.mjs`（无钉 / 有钉归一成仓库根 / 会话隔离 / 清钉真删文件 / 钉失效回落并清钉 / 坏 JSON 当没钉 / 空 session 落 `_nosession`）与 `web/tests/review-pin-unit.mjs`（`reviewView` 的 `repo / repoName / repoPinned` 三态 + `repoNameOf` 盘根与尾斜杠）。`npm --prefix web run typecheck`、`npm --prefix bridge run typecheck` 通过。端到端见 `probes/review-repo-picker.mjs`。
+
+## D416 拖选文字后弹「问一下」小胶囊，顺手把选中的那段引到随手问（用户 2026-11-26「拖动复制后，需要弹出一个小按钮，提示联动随手问。点击后，自动打开随手问，然后引用了复制内容」）
+
+**问题。** 聊天记录里看到一段想追问的话，动作被拆成三跳：拖选复制 → 切到顶栏开随手问 → 回聊天区重新找那句话（选区早没了）。用户要的是「复制」这个动作本身就带下一步，「拖动复制后弹一个小按钮，点一下就打开随手问并引用」。
+
+**决定。**
+
+1. **选区就是信号，不等 Ctrl+C。** `web/src/selask.ts` 的 `SelAsk` 在**捕获阶段**听 `document` 的 `mouseup` / `mousedown` / `keydown`，加 `selectionchange` 与 `window` 的 `scroll` / `resize`（捕获阶段是必须的：聊天区自己也在 mouseup / mousedown 上做事，会 `stopPropagation`）。`mouseup` 之后**隔一拍**量一次 —— 拖选的最后一个 range 在 mouseup 之后才落定，同一拍量出来还是上一次的位置。判据全中才弹：选区非折叠、`quoteBlock()` 出得来东西、最后一个 range 落在 `scope()`（聊天区滚动容器）里、焦点不在 `textarea / input / contenteditable` 里。
+2. **贴在选区「最后一截」的下方。** 用 `range.getClientRects()` 里最后一个 `width/height > 1` 的矩形，胶囊水平右对齐它、往下 6 视觉 px；越界就夹回窗口内，下面放不下就翻到上方。不用整段的包围盒：跨段落的选区包围盒能盖住半个屏幕，胶囊会跑到离「选到哪儿」很远的地方。
+3. **胶囊挂在 `#app` 里，坐标写布局 px。** `#app { zoom: var(--ui-scale) }`：`getBoundingClientRect()` 给的是视觉 px（D123），写回 `style.left/top` 前要除以 `uiScale()`，宽度用 `offsetWidth * scale` 先换回视觉再夹窗口。
+4. **点击不丢选区。** 胶囊 `mousedown` 里 `preventDefault()`（不然按下去选区就没了），文字在 `mouseup` 时就存好，`onclick` 用存下的那份，先收胶囊再 `onAsk(text)`。
+5. **引用口径是 Markdown `>`。** `web/src/quoteblock.ts` 的 `quoteBlock(text, max = QUOTE_MAX)`：CRLF 归一、逐行去行尾空白（**保留缩进**，代码块靠它）、空行写成光秃秃的 `>`、首尾空行去掉、逐行加 `> `、`QUOTE_MAX = 4000` 个码点封顶（按 `Array.from` 数，超了末尾补 `…`）。`max <= 0` 表示不截断。
+6. **追加不覆盖。** `ScratchChat.quote(text)` 先 `open()`，再插到输入框当前光标处：前一行不是空行就补 `\n\n`，块尾补 `\n\n`，光标落到新行 —— 用户已经写了一半的草稿留在前面。
+
+**为什么不做「必须按 Ctrl+C 才弹」。** 「复制联动」里的复制，在聊天记录里就是拖选本身；再要求一次快捷键只是多一步。代价是每次拖选都冒一颗按钮，所以它不抢焦点、不挡字（贴末行下方）、点别处 / Esc / 滚动 / 选区折叠立刻收，并且**只认聊天区**：左栏会话卡、输入框、网页里的拖选都不弹。
+
+**为什么不跟着鼠标走、也不进右键菜单。** 跟随鼠标在长选区里会离选区很远；本客户端没有自建右键菜单，浏览器菜单也扩不了。
+
+**代价 / 可改。**
+- `> ` 是 Markdown 形状，模型只看见「引用块」，不知道那是用户从聊天记录里抠出来的原话。要更明确就得往输入框里加说明句子，那会污染用户看得见的草稿，暂时不做。
+- 超过 `QUOTE_MAX` 的选区被截断，只有末尾一个 `…`，用户看不出「中间还有」。
+- 胶囊位置是「量一次摆一次」：选区还在时拖动窗口 / 改字号会跟着重摆（`resize` 与 `scroll` 监听），但**不改字号**的那类布局变化（左栏折叠、面板开合）不会重摆，胶囊会停在旧位置，直到下一次 mouseup 或滚动。宁可这样也不做 `ResizeObserver` 常驻。
+
+**验证。** `npm --prefix web run typecheck` 全过（新增 `web/tests/quoteblock-unit.mjs` 8 项：单行 / 多行 / 空行 / 首尾空行 / 缩进与行尾空白 / CRLF / 超长截断 / `max=0` 不截）。`node probes/sel-ask-chip.mjs`（桩桥 + 真 Chromium，**真鼠标拖**，22 项全绿）：胶囊出现在末行下方且不出窗口、挂在 `#app` 里、点开后随手问逐行 `> ` 且首末行都在、块后留 `\n\n`、点完自己收起、已有草稿追加不覆盖、左栏与输入框里的选区不弹、点空白 / Esc / 滚轮都收；**100% 字号**下胶囊高 26px（CSS 原值，说明布局 px 没被多除一次），**150% 字号**下 39px = 26 × 1.5 且仍贴末行（`zoom` 换算对）。

@@ -17,6 +17,7 @@ import { shouldFoldPaste } from "./paste.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { markSurface, pushEscLayer } from "./modal.ts";
+import { quoteBlock } from "./quoteblock.ts";
 import { tr } from "./i18n/index.ts";
 import { groupModels, modelGroupSection, rememberRecentModel } from "./modelgroups.ts";
 import type { Item, ModelInfo, SessionState } from "./types.ts";
@@ -217,6 +218,28 @@ export class ScratchChat {
     if (this.root) this.root.hidden = true;
     this.escPop?.();
     this.escPop = null;
+  }
+
+  /**
+   * D416：聊天区拖选出那颗「问一下」之后，把选中的文字以 `> ` 引用插到输入框的光标处。
+   * 不覆盖已经写了一半的草稿（插在光标位置，块前后各留一个空行），插入后就等用户自己按 Enter。
+   */
+  quote(text: string): void {
+    const block = quoteBlock(text);
+    if (!block) return;
+    this.open();
+    const field = this.inputEl;
+    const base = field.value;
+    const start = field.selectionStart ?? base.length;
+    const end = field.selectionEnd ?? start;
+    // 引用块要自己成段：前面没在行首就空一行；块后也空一行，光标落在下面接着写。
+    const lead = start > 0 && !/\n$/.test(base.slice(0, start)) ? "\n\n" : "";
+    const body = `${lead}${block}\n\n`;
+    field.value = `${base.slice(0, start)}${body}${base.slice(end)}`;
+    const caret = start + body.length;
+    field.focus();
+    field.setSelectionRange(caret, caret);
+    this.fitInput();
   }
 
   /** Esc 到了随手问这一层：模型菜单开着先关菜单，否则关面板。 */
