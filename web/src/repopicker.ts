@@ -159,7 +159,8 @@ export class RepoPicker {
   // -------------------------------------------------------------------------
 
   private async load(dir: string): Promise<void> {
-    const token = (this.token += 1);
+    this.token += 1;
+    const token = this.token;
     this.at = dir;
     this.rows = [];
     this.parent = null;
@@ -180,10 +181,10 @@ export class RepoPicker {
       this.paint();
       void this.probe(dir, token);
       void this.probeSelf(dir, token);
-    } catch (err: any) {
+    } catch (err) {
       if (token !== this.token) return;
       this.loading = false;
-      this.error = String(err?.message ?? err);
+      this.error = err instanceof Error ? err.message : String(err);
       this.paint();
     }
   }
@@ -267,9 +268,17 @@ export class RepoPicker {
     // 这一层自己是仓库时，面包屑末尾直接标出来：省得用户再猜「它算不算」。
     if (this.self) {
       const tag = el("span", "repopick-selftag", tr("本层就是仓库"));
-      tag.title = this.self.branch ? `${this.self.branch}${this.self.dirty ? ` · ${tr("{p1} 处改动", { p1: this.self.dirty })}` : ""}` : "";
+      const bits = [this.self.branch, this.self.dirty ? tr("{p1} 处改动", { p1: this.self.dirty }) : ""].filter(Boolean);
+      tag.title = bits.join(" · ");
       this.crumbs.append(tag);
     }
+  }
+
+  /** 这一刻筛出来的行：画列表和键盘上下走都认这一份，两处不许各自算。 */
+  private matched(): Row[] {
+    const q = this.query.trim().toLowerCase();
+    if (!q) return this.rows;
+    return this.rows.filter((row) => row.name.toLowerCase().includes(q));
   }
 
   private paintRows(): void {
@@ -290,7 +299,7 @@ export class RepoPicker {
       up.onclick = () => void this.load(this.parent ?? "");
       this.list.append(up);
     }
-    const shown = this.rows.filter((row) => !q || row.name.toLowerCase().includes(q));
+    const shown = this.matched();
     if (!shown.length) {
       this.list.append(el("div", "repopick-empty", q ? tr("这一层没有匹配的目录") : tr("这一层没有子目录")));
       return;
@@ -360,10 +369,13 @@ export class RepoPicker {
 
   /** 键盘上下移：只在当前筛出来的行之间走，仓库行才停（不是仓库的点下去是「进入」，不是选）。 */
   private step(delta: number): void {
-    const paths = this.rows.filter((r) => r.info).map((r) => r.path);
+    // 只在这一刻**看得见**的仓库行之间走：拿未筛的行算会选中屏幕上根本不存在的那一条。
+    const paths = this.matched().filter((row) => row.info).map((row) => row.path);
     if (!paths.length) return;
     const at = paths.indexOf(this.selected);
-    const next = at < 0 ? (delta > 0 ? 0 : paths.length - 1) : (at + delta + paths.length) % paths.length;
+    let next = 0;
+    if (at < 0) next = delta > 0 ? 0 : paths.length - 1;
+    else next = (at + delta + paths.length) % paths.length;
     this.select(paths[next]);
   }
 

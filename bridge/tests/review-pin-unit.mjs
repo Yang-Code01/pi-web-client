@@ -141,12 +141,18 @@ const bigRepo = repo(path.join(workspace, "solid"));
   assert.ok(sameDir(out.repo, bigRepo));
 }
 
-// ---- 没会话（sessionId 空）：钉子落在 _nosession 上，跟别的会话不串
+// ---- 没会话（sessionId 空）：钉子落在 `_nosession` 上，且不许盖掉别的会话
 {
+  // 先给有会话的放一个**不同**的钉子：两边共用一个文件的话，下面那句会被它自己的写入盖掉。
+  setReviewPin(bigRepo, "s-a");
   setReviewPin(sub, "");
-  assert.ok(sameDir(readReviewPin(""), sub));
-  assert.ok(sameDir(readReviewPin("s-a") || sub, sub));
+  assert.equal(sessionKey(""), "_nosession");
+  assert.equal(reviewPinFile(""), path.join(reviewDir(), "pins", "_nosession.json"));
+  assert.notEqual(reviewPinFile(""), reviewPinFile("s-a"), "空会话要有自己的文件");
+  assert.ok(sameDir(readReviewPin(""), sub), `空会话记的是它自己的钉子：${readReviewPin("")}`);
+  assert.ok(sameDir(readReviewPin("s-a"), bigRepo), `写空会话的钉子不许盖掉别的会话：${readReviewPin("s-a")}`);
   setReviewPin("", "");
+  setReviewPin("", "s-a");
 }
 
 console.log("review-pin-unit: ok");

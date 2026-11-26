@@ -18919,6 +18919,8 @@ export class App {
     if (this.reviewRefsFor === repo) return;
     this.reviewRefsFor = repo;
     void api.gitRefs(repo).then((refs) => {
+      // 换仓库 / 换会话之后回来的旧响应不能再写：它会把新仓库的分支名册盖成上一个仓库的。
+      if (this.reviewRefsFor !== repo) return;
       const all = refs.groups.flatMap((g) => g.refs.map((r) => r.name)).filter(Boolean);
       this.reviewRefs = all.slice(0, 60);
       if (!this.reviewBase || this.reviewBase === "main") {
@@ -19169,7 +19171,8 @@ export class App {
         this.saveReviewPick();
         // #666：范围是人自己换的，那张链接卡带来的「期望仓库」不再适用。
         this.clearReviewExpectRepo();
-        const dir = this.reviewDir();
+        // 去重键和请求参数都用**评的那个仓库**：钉了子仓库时它才是桥真正会用的目录。
+        const dir = this.reviewRepoDir();
         if (mode === "pr" && dir && !this.reviewPrs.length && this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
         this.renderQueue();
       },
@@ -19217,7 +19220,7 @@ export class App {
         // 只在开关那一刻重画（有焦点要留住，所以打开时把焦点还给输入框）。
         if (this.reviewPrMenu === open) return;
         this.reviewPrMenu = open;
-        const dir = this.reviewDir();
+        const dir = this.reviewRepoDir();
         const stale = Date.now() - this.reviewPrsAt > 60_000;
         if (open && dir && (!this.reviewPrs.length || stale || this.reviewPrError)) this.loadPullRequests(dir);
         this.renderQueue();
@@ -19226,7 +19229,7 @@ export class App {
         }
       },
       onRefreshPrs: () => {
-        const dir = this.reviewDir();
+        const dir = this.reviewRepoDir();
         if (dir) this.loadPullRequests(dir);
       },
       onCommit: (value) => {
