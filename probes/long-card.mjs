@@ -212,11 +212,15 @@ if (process.env.LC_CONSOLE) page.on("console", (m) => { const t = m.text(); if (
   // （`merge` → 「mer / ge」，D350 修过，D421 加壳之后复发）。量行数和右边缘，两条一起看。
   const shortGeom = await shortUser.evaluate((u) => {
     const b = u.querySelector(".body");
+    if (!b) return null;
     const range = document.createRange();
     range.selectNodeContents(b);
     const lines = new Set([...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top))).size;
     return { lines, right: b.getBoundingClientRect().right, msgRight: u.getBoundingClientRect().right };
   });
+  // 结构一变（气泡不叫 `.body` 了）就说「没找到气泡」，别在 `selectNodeContents(null)` 上抛 TypeError ——
+  // 那句红只会说「页面里出错」，看不出是断言要守的东西没了（评审意见 probes/long-card.mjs:211）。
+  assert(shortGeom, "the short message still draws a .body bubble");
   assert(shortGeom.lines === 1, `the short bubble keeps one line (${JSON.stringify(shortGeom)})`);
   assert(
     Math.abs(shortGeom.right - shortGeom.msgRight) <= 8,
