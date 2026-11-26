@@ -371,9 +371,15 @@ try {
   check("停下后不会被拽进浮层", (await page.locator(".rv-sheet").count()) === 0, "");
   await page.locator(".rv-run-card").first().locator(".rv-run-more").click();
   await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
-  await until(async () => (await page.locator(".rv-sheet").innerText()).includes("已停止"), 60000, "stopped hint");
+  // 「标已停止」得自己断言：只用 until 等文案的话，超时是抛错中止整条探针、记不成一条 FAIL。
+  const stoppedHint = await until(
+    async () => (await page.locator(".rv-sheet").innerText()).includes("已停止"),
+    60000,
+    "stopped hint",
+  ).catch(() => false);
+  check("浮层里标着「已停止」", stoppedHint === true, "");
   const kept = await page.locator(".rv-sheet .rv-finding, .rv-sheet .rv-stg").count();
-  check("停止后标「已停止」并留着已收到的", kept >= 1, `${kept} 行日志/意见`);
+  check("停止后留着已收到的", kept >= 1, `${kept} 行日志/意见`);
   await page.locator(".rv-sheet-head .btn:not([hidden])").last().click();
   await until(async () => (await page.locator(".rv-sheet").count()) === 0, 8000, "sheet closed after stop");
 

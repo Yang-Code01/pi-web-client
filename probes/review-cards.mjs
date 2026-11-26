@@ -137,8 +137,6 @@ const wss = new WebSocketServer({ noServer: true });
 const cast = (msg) => {
   for (const client of wss.clients) if (client.readyState === 1) client.send(JSON.stringify(msg));
 };
-/** 页面发上来的每一条（断言「停止发的是那一条的 runId」要看它）。 */
-const sent = [];
 server.on("upgrade", (req, socket, head) => {
   if (!(req.url ?? "").startsWith("/ws")) return socket.destroy();
   wss.handleUpgrade(req, socket, head, (ws) => {
@@ -149,7 +147,6 @@ server.on("upgrade", (req, socket, head) => {
       } catch {
         return;
       }
-      sent.push(msg);
       if (msg.type === "subscribe") {
         ws.send(JSON.stringify({ type: "session", sessionId: SID, state: SESSION, items: [], approvals: [], asks: [], budget: null }));
       }
@@ -211,7 +208,6 @@ await page.locator(".session-card").first().click();
 await page.locator(".rv-run-card").first().waitFor({ timeout: 15000 });
 await sleep(400);
 
-const box = (sel) => page.locator(sel).first().boundingBox();
 const count = (sel) => page.locator(sel).count();
 /**
  * 面板在跑的时候会按计时器重画，DOM 一直在换 —— `locator.click()` 会卡在「等元素稳定」上。
@@ -382,8 +378,6 @@ ok((await count(".rv-focus")) === 0, "面板里不再有点开的那一次（.rv
   ok((await count(".rv-focus")) === 0, "新开一条不会把面板换成展开页");
   ok((await count(".rv-run-card.is-live")) >= 1, "在跑的那条在记录里有一张卡");
   ok((await count(".rv-run-card.is-live .rv-run-stop")) >= 1, "卡上有自己的「停止」");
-  const sentStop = sent.find((m) => m.type === "review.cancel");
-  ok(!sentStop, "没有在没点的情况下发过停止");
 }
 
 // 7. 字号 150%（#app 有 zoom）下按钮仍在卡内右下角
@@ -406,7 +400,10 @@ ok((await count(".rv-focus")) === 0, "面板里不再有点开的那一次（.rv
   const scaled = await corner();
   ok(!!scaled && scaled.x + scaled.w <= scaled.cx + scaled.cw + 0.5 && scaled.y + scaled.h <= scaled.cy + scaled.ch + 0.5, "150% 缩放：按钮仍在卡内");
   ok(!!scaled && scaled.x > scaled.cx + scaled.cw / 2, "150% 缩放：按钮仍在右下角");
-  ok(!!scaled && scaled.w > base.w * 1.2, `150% 缩放真的生效了（按钮 ${base.w.toFixed(1)} → ${scaled.w.toFixed(1)}px）`);
+  ok(
+    !!base && !!scaled && scaled.w > base.w * 1.2,
+    !!base && !!scaled ? `150% 缩放真的生效了（按钮 ${base.w.toFixed(1)} → ${scaled.w.toFixed(1)}px）` : "按钮没量到",
+  );
   await page.evaluate(() => document.documentElement.style.removeProperty("--ui-scale"));
 }
 

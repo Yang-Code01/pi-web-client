@@ -316,7 +316,8 @@ export function reviewView(input: ReviewInput): ReviewView {
   // 记录按时间正序落盘；面板从新到旧画，所以这里先翻过来，画的时候不用再想顺序。
   const allRuns = Array.isArray(state?.runs) ? state.runs : [];
   const latest = asRun(state);
-  // 面板展开的那一次；认不出来（记录被裁掉了 / 换了会话 / 刷新后不记得了）就回落到最新那一次。
+  // 「完整详情」浮层看的那一次（D426 之后面板本身不再展开任何一次）；认不出来（记录被裁掉了 /
+  // 换了会话 / 刷新后不记得了）就回落到最新那一次。
   const focused = input.focus ? allRuns.find((r) => r.id === input.focus) ?? null : null;
   const active = focused ?? latest;
   const activeRunning = Boolean(active && active.status === "running");
