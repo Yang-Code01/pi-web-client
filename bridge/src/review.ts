@@ -641,6 +641,66 @@ export function gitRoot(dir: string): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 「评审仓库」钉子：这个会话评哪个目录
+// ---------------------------------------------------------------------------
+
+/**
+ * 会话 → 钉住的目录；空着就是「跟着会话目录走」。
+ *
+ * 为什么落盘在桥上：用户选的是「大文件夹底下的那个子仓库」，刷新页面、换个页签、甚至重启桥
+ * 之后还得算数 —— 只存在前端的话，切一下会话回来就又变成「这个目录不是 git 仓库」了。
+ * 按会话分文件：同一台机器上的两个会话常常开在不同目录，不该互相牵连。
+ */
+export function reviewPinFile(session = ""): string {
+  return path.join(reviewDir(), "pins", `${sessionKey(session)}.json`);
+}
+
+export function readReviewPin(session = ""): string {
+  const read = readJsonChecked<{ dir?: unknown }>(reviewPinFile(session), {});
+  if (!read.ok) return "";
+  return str((read.value as Record<string, unknown> | null)?.dir);
+}
+
+/** 记一颗钉子；`dir` 为空 = 拔掉。返回真正存下的目录（调用方负责先归一成仓库根）。 */
+export function setReviewPin(dir: string, session = ""): string {
+  const file = reviewPinFile(session);
+  const raw = String(dir ?? "").trim();
+  if (!raw) {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      /* 本来就没有 */
+    }
+    return "";
+  }
+  const abs = path.resolve(raw);
+  ensureDir(path.dirname(file));
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ dir: abs }, null, 2));
+  fs.renameSync(tmp, file);
+  return abs;
+}
+
+/**
+ * 「这个会话到底评哪个目录」的单一真值：钉住的那个仓库优先，否则就是会话目录。
+ *
+ * 钉子失效（目录被删、或者那几个目录后来不再是仓库）时清掉它并回落 —— 否则面板永远停在
+ * 「这个目录不是 git 仓库」，用户也找不到能点的地方，等于把自己锁在门外。
+ */
+export function effectiveReviewDir(dir: string, session = ""): { repo: string; pinned: string } {
+  const pin = readReviewPin(session);
+  if (pin) {
+    try {
+      const repo = gitRoot(pin);
+      return { repo, pinned: repo };
+    } catch {
+      setReviewPin("", session);
+    }
+  }
+  return { repo: gitRoot(dir), pinned: "" };
+}
+
 /**
  * `ocr` 怎么起。POSIX 直接靠 PATH；Windows 上 npm 装出来的是 `ocr.cmd`，Node ≥ 18.20 拒绝
  * 不带 shell 去跑 `.cmd`，所以过一层 `cmd.exe /c`（参数逐条加引号，路径里有空格也不会拆坏）。
@@ -1103,7 +1163,6 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     const collected: Finding[] = [];
     const lastSkipped: PreviewSkip[] = [];
     const accountedPaths = new Set<string>();
-    const touched = new Set<string>();
     let answered = false;
     let lastChildWhy = "";
     let failed: { code: number | null; stderr: string; group: number } | null = null;

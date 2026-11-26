@@ -42,6 +42,14 @@ export interface ReviewInput {
   installing: boolean;
   error: string;
   notGit: boolean;
+  /**
+   * 这个会话实际评的仓库根（大文件夹底下的那个仓库）；空串 = 还不知道 / 没有。
+   *
+   * 会话目录本身不是仓库时，这里就是用户选的那个子仓库；`repoPinned` 说明它是不是钉住的。
+   */
+  repo?: string;
+  /** 上面那个目录是用户钉住的（而不是会话目录本身就是仓库）。 */
+  repoPinned?: boolean;
   /** 面板自己记住的那几样（不属于桥的状态）。 */
   mode?: ReviewMode;
   /** `range` 的对照分支。 */
@@ -102,6 +110,12 @@ export interface ReviewView {
   phase: ReviewPhase;
   running: boolean;
   canRun: boolean;
+  /** 评的是哪个仓库根（空串 = 还没有）。 */
+  repo: string;
+  /** 那个仓库的显示名（路径最后一节）。 */
+  repoName: string;
+  /** 是用户钉住的（可以拔），还是就是会话目录。 */
+  repoPinned: boolean;
   needsInstall: boolean;
   needsUpgrade: boolean;
   /** 完成但一条意见都没有：要明说「评过，没问题」，而不是空白。 */
@@ -234,6 +248,21 @@ export function runTarget(run: ReviewRun): string {
 /** `origin/main` → `main`（只用于显示）。 */
 const shortRef = (ref: string): string => (ref || "").trim().replace(/^origin\//, "");
 
+/**
+ * 目录的显示名：路径最后一节（`D:/work/erp/api` → `api`）。
+ *
+ * 盘根（`D:/`）这种没有最后一节的，整条路径就是名字 —— 否则 chip 会变成空白。
+ */
+export function repoNameOf(dir: string): string {
+  const raw = (dir || "").trim();
+  const text = raw.replace(/[\\/]+$/, "");
+  if (!text) return "";
+  // 盘根（`E:/`）去掉尾斜杠就只剩 `E:`，那一节不是目录名：原样交回去。
+  if (/^[a-zA-Z]:$/.test(text)) return raw || text;
+  const cut = text.split(/[\\/]/).pop() ?? "";
+  return cut || text;
+}
+
 /** 灰按钮旁边那句「还差什么」——没有就回空串。 */
 function missingHint(mode: ReviewMode): string {
   if (mode === "pr") return tr("先选一个 PR（或填个号）");
@@ -270,6 +299,8 @@ export function reviewView(input: ReviewInput): ReviewView {
   const marks = state?.marks ?? {};
   const running = Boolean(latest && latest.status === "running");
   const labels = input.modelLabels ?? {};
+  // 「评审仓库」：可能就与会话目录重合（没钉），也可能是大文件夹底下选中的那个子仓库。
+  const repo = (input.repo ?? "").trim();
 
   const needsInstall = Boolean(ocr && !ocr.installed);
   const needsUpgrade = Boolean(ocr && ocr.installed && ocr.tooOld);
@@ -413,6 +444,9 @@ export function reviewView(input: ReviewInput): ReviewView {
     phase,
     running,
     canRun,
+    repo,
+    repoName: repoNameOf(repo),
+    repoPinned: Boolean(repo) && input.repoPinned === true,
     needsInstall,
     needsUpgrade,
     empty: phase === "done" && findings.length === 0,
@@ -500,6 +534,10 @@ export interface ReviewActions {
   onOpenRun: (runId: string) => void;
   /** 从某一次记录回到列表。 */
   onBack: () => void;
+  /** 打开「评审仓库」选择器：换一个（子）仓库来评。 */
+  onPickRepo: () => void;
+  /** 拔掉钉子，回到跟着会话目录走。 */
+  onClearRepo: () => void;
 }
 
 export interface ReviewPanelInput {
@@ -839,6 +877,28 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   }
   // 模式下拉钉在最上面：PR / 分支那些行是后加的，不 reorder 就会把它挤到下面去。
   form.prepend(modeRow);
+  // ---- 评审仓库：评的是哪一个目录（大文件夹底下的子仓库就靠这一行换）
+  // 没仓库时这一行不画：not-git 那一块自己带「选一个仓库」的按钮，两处都摆只会更乱。
+  // 也要避开 not-git：那一屏的 `repo` 是桥回引的会话目录（解析失败也会带回来），
+  // 拿它当 chip 会把「这里不是仓库」和「评审仓库：文件夹名」同时写在脸上。
+  if (view.repo && view.phase !== "not-git") {
+    const repoRow = el("div", "rv-repo");
+    repoRow.append(el("span", "rv-repo-lab", tr("评审仓库")));
+    const chip = el("button", "rv-repo-chip", view.repoName) as HTMLButtonElement;
+    chip.type = "button";
+    chip.title = `${view.repo}\n${tr("点一下换一个仓库")}`;
+    chip.onclick = () => actions.onPickRepo();
+    repoRow.append(chip);
+    if (view.repoPinned) {
+      const clear = el("button", "rv-repo-x", "×") as HTMLButtonElement;
+      clear.type = "button";
+      clear.title = tr("回到会话目录");
+      clear.setAttribute("aria-label", tr("回到会话目录"));
+      clear.onclick = () => actions.onClearRepo();
+      repoRow.append(clear);
+    }
+    root.append(repoRow);
+  }
   root.append(form);
 
   if (view.phase === "loading") root.append(el("div", "rv-hint", tr("正在读评审状态…")));
@@ -872,7 +932,15 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
 
   // ---- 不是 git 仓库
   if (view.phase === "not-git") {
-    root.append(el("div", "empty", tr("这个目录不是 git 仓库，没有东西可评。")));
+    // 以前这里只有一句「没有东西可评」，人就卡死了：大文件夹底下的仓库当初根本没地方可选。
+    const box = el("div", "rv-notgit");
+    box.append(el("div", "empty", tr("这个目录不是 git 仓库，没有东西可评。")));
+    box.append(el("div", "rv-hint", tr("它的子目录里如果有仓库，选一个来评审。")));
+    const pick = el("button", "btn rv-pickrepo", tr("选一个仓库")) as HTMLButtonElement;
+    pick.type = "button";
+    pick.onclick = () => actions.onPickRepo();
+    box.append(pick);
+    root.append(box);
     return root;
   }
 

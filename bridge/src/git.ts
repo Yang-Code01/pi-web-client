@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -144,7 +145,14 @@ const PROBE_CONCURRENCY = 4;
 /** `git rev-parse --show-toplevel` 给的是真实路径；Windows 上盘符大小写可能与入参不同。 */
 function sameDir(a: string, b: string): boolean {
   const norm = (p: string) => {
-    const abs = path.resolve(p);
+    let abs = path.resolve(p);
+    // Windows 的 8.3 短名（`C:\Users\YANGQM~1.HYR\…`，`os.tmpdir()` 就给这种）与 git 回的长名
+    // 只差在这一层，`path.resolve` 比不出来：不解一下，「这一层里哪些是仓库」会整片是 null。
+    try {
+      abs = fs.realpathSync.native(abs);
+    } catch {
+      // 目录刚被删 / 权限不足就退回 resolve 的结果，别为比一个路径抛错。
+    }
     return process.platform === "win32" ? abs.toLowerCase() : abs;
   };
   return norm(a) === norm(b);

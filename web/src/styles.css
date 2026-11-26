@@ -5976,6 +5976,86 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-tl-at { flex: none; font-variant-numeric: tabular-nums; }
 .rv-scope .rv-tl-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 「评审仓库」（D415）：会话目录本身不是仓库时，从它的子目录里挑一个来评。 */
+.rv-scope .rv-repo { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.rv-scope .rv-repo-lab { flex: none; font-size: 11px; color: var(--faint); }
+.rv-scope .rv-repo-chip {
+  flex: 1 1 auto; min-width: 0; padding: 2px 7px; font-size: 11.5px; text-align: left;
+  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 7px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rv-scope .rv-repo-chip:hover { border-color: var(--accent); }
+.rv-scope .rv-repo-x {
+  flex: none; width: 20px; height: 20px; padding: 0; font-size: 13px; line-height: 1;
+  color: var(--faint); background: transparent; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+.rv-scope .rv-repo-x:hover { color: var(--danger); border-color: var(--danger); }
+.rv-scope .rv-notgit { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.rv-scope .rv-notgit .empty { padding: 10px 0 2px; text-align: left; word-break: break-word; }
+.rv-scope .rv-pickrepo { flex: none; }
+
+/* 仓库选择器：居中紧凑弹层（D415）。settings-console.css 晚于本文件加载，它的 `.st-console`（grid + height）
+   同权重会赢，所以带上 `.repopick` 两个类压回去：flex 列，列表自己滚，底栏钉在下面。 */
+.st-console.repopick {
+  container-type: inline-size;
+  display: flex; flex-direction: column;
+  width: min(680px, 94%);
+  height: min(calc(var(--vh1) * 74), 620px);
+  max-height: calc(var(--vh1) * 74);
+  overflow: hidden;
+}
+.repopick-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; padding: 0 16px; }
+.repopick-search { flex: none; }
+.repopick-q {
+  width: 100%; padding: 7px 9px; font-size: 12.5px; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+}
+.repopick-q:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+.repopick-crumbs { flex: none; display: flex; flex-wrap: wrap; gap: 2px; align-items: baseline; font-size: 11px; color: var(--faint); }
+.repopick-crumb {
+  padding: 1px 4px; font-size: 11px; color: var(--dim);
+  background: none; border: 0; border-radius: 5px; cursor: pointer;
+}
+.repopick-crumb:hover { color: var(--text); background: var(--panel-2); }
+.repopick-sep { color: var(--faint); }
+.repopick-selftag {
+  margin-left: 6px; padding: 0 5px; font-size: 10px; color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 5px;
+}
+.repopick-list {
+  flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; min-height: 0;
+  padding: 2px 0; overflow: auto;
+}
+.repopick-row {
+  display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0;
+  padding: 5px 7px; text-align: left; background: transparent;
+  border: 1px solid transparent; border-radius: 7px; cursor: pointer;
+}
+.repopick-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.repopick-row.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.repopick-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--line); }
+.repopick-dot.wait { background: transparent; border: 1px solid var(--line); }
+.repopick-dot.repo { background: var(--ok); }
+.repopick-name { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repopick-up .repopick-name { color: var(--faint); }
+.repopick-badge { flex: none; font-size: 10.5px; color: var(--accent); }
+.repopick-faint { flex: none; font-size: 10.5px; color: var(--faint); }
+.repopick-drill {
+  flex: none; width: 22px; height: 22px; padding: 0; font-size: 13px; line-height: 1;
+  color: var(--faint); background: transparent; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+.repopick-drill:hover { color: var(--text); border-color: var(--accent); }
+.repopick-empty { padding: 14px 6px; font-size: 12px; color: var(--faint); text-align: center; }
+.repopick-note { flex: none; min-height: 16px; padding: 0 0 4px; font-size: 11px; color: var(--faint); }
+.repopick-foot {
+  flex: none; display: flex; gap: 8px; align-items: center; justify-content: space-between;
+  padding: 10px 16px 14px; border-top: 1px solid var(--line-soft);
+}
+.repopick-footinfo { flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repopick-hint { margin-left: 8px; color: var(--accent); }
+.repopick-use { flex: none; }
+@container (max-width: 460px) { .repopick-badge, .repopick-faint { display: none; } }
+
 /* 详情：运行台（#651 第二版）—— 抬头 + 仪表（进度/用量/用时/正在读）+ 左日志按组折叠 + 右意见边跑边出 + 底栏 */
 /* settings-console.css 晚于本文件加载，它的 `.st-console`（grid + height: min(840px, 100%)）同权重会赢，
    所以这里带两个类压回去：窗体是 flex 列，高度按 --vh1 给死，日志与意见各自滚。 */
