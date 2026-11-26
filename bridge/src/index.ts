@@ -66,7 +66,9 @@ import {
   ocrStatus,
   readReviewPin,
   readReviewState,
-  reviewProgress,
+  reviewProgresses,
+  takeSweptCount,
+  MAX_RUNS_PER_SESSION,
   setPick,
   setReviewPin,
   startReview,
@@ -1590,7 +1592,7 @@ async function main(): Promise<void> {
         const repo = gitRoot(dir);
         const session = String(body?.session ?? "");
         if (url.pathname === "/api/review/state") {
-          return json(res, 200, { ok: true, state: readReviewState(repo, session), progress: reviewProgress(repo, session), ocr: await ocrStatus() });
+          return json(res, 200, { ok: true, state: readReviewState(repo, session), progresses: reviewProgresses(repo, session), ocr: await ocrStatus() });
         }
         if (url.pathname === "/api/review/mark") {
           const key = String(body?.key ?? "").trim();
@@ -4062,7 +4064,17 @@ async function main(): Promise<void> {
             const session = String(msg.sessionId ?? "");
             try {
               const { repo, pinned } = effectiveReviewDir(dir, session);
-              send({ type: "review.state", dir: repo, pinned, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) });
+              send({
+                type: "review.state",
+                dir: repo,
+                pinned,
+                sessionId: session,
+                state: readReviewState(repo, session),
+                progresses: reviewProgresses(repo, session),
+                cap: MAX_RUNS_PER_SESSION,
+                // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
+                swept: takeSweptCount(),
+              });
               void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
             } catch (err: any) {
               send({ type: "review.state", dir, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
@@ -4127,7 +4139,7 @@ async function main(): Promise<void> {
             const model = slash > 0 ? full.slice(slash + 1) : full;
             try {
               const { repo, pinned } = effectiveReviewDir(dir, session);
-              startReview({
+              const started = startReview({
                 dir: repo,
                 mode,
                 base: String(msg.base ?? ""),
@@ -4140,9 +4152,20 @@ async function main(): Promise<void> {
                 model,
                 provider,
                 lang,
-                onProgress: (p) => broadcast({ type: "review.progress", dir: repo, progress: p }),
-                onState: () => broadcast({ type: "review.state", dir: repo, pinned, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) }),
+                // D420：进度帧要带上是哪一条（runId）与哪位会话，页面才画得到各自的卡上。
+                onProgress: (p) => broadcast({ type: "review.progress", dir: repo, sessionId: session, runId: p.runId, progress: p }),
+                onState: () =>
+                  broadcast({
+                    type: "review.state",
+                    dir: repo,
+                    pinned,
+                    sessionId: session,
+                    state: readReviewState(repo, session),
+                    progresses: reviewProgresses(repo, session),
+                    cap: MAX_RUNS_PER_SESSION,
+                  }),
               });
+              send({ type: "review.started", dir: repo, sessionId: session, runId: started.runId });
             } catch (err: any) {
               // #666：`params` 是给英文 / 日文界面翻译用的（中文直接看上面的 `error`）。
               send({ type: "review.state", dir, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed"), params: err?.params });
@@ -4154,7 +4177,19 @@ async function main(): Promise<void> {
             const session = String(msg.sessionId ?? "");
             try {
               const { repo } = effectiveReviewDir(dir, session);
-              if (!cancelReview(repo, session)) send({ type: "review.progress", dir: repo, progress: reviewProgress(repo, session) });
+              // 给了 runId 就只停那一条；没停到（页面拿的是一份旧状态）就把真实进度发回去。
+              const stopped = cancelReview(repo, session, String(msg.runId ?? ""));
+              if (!stopped) {
+                send({
+                  type: "review.state",
+                  dir: repo,
+                  pinned: readReviewPin(session),
+                  sessionId: session,
+                  state: readReviewState(repo, session),
+                  progresses: reviewProgresses(repo, session),
+                  cap: MAX_RUNS_PER_SESSION,
+                });
+              }
             } catch {
               /* 目录已经不是仓库了：没什么可停的 */
             }
