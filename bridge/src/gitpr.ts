@@ -176,7 +176,11 @@ function classify(stderr: string, cmd: string, code: number | null): { code: PrL
 // REST 兜底：没装 gh 时评审仍能跑（D425）
 // ---------------------------------------------------------------------------
 
-/** REST 失败 → 面板认识的那几个 code（`gh_missing` 不会从这里出来）。 */
+/**
+ * REST 失败 → 面板认识的那几个 code（`gh_missing` 不会从这里出来）。
+ * 注意看的是 `GithubError.status`，不是 HTTP 状态：`requestRaw` 把 403 + rate-limit
+ * 改写成了 429，所以「403」在这里是权限不够（缺 scope / SAML 没授权），语义同 repo_unseen。
+ */
 function restFailure(err: any): { code: PrListResult["code"]; error: string } {
   const status = Number(err?.status) || 0;
   const message = String(err?.message ?? err ?? "").trim() || `GitHub 回了 ${status || "?"}`;
@@ -196,7 +200,7 @@ function sortPulls(prs: PullRequest[]): PullRequest[] {
 
 async function restList(repo: string, opts: PrQueryOptions): Promise<PrListResult> {
   try {
-    const rows = await restGet(opts, `/repos/${repo}/pulls?state=open&per_page=30&sort=updated&direction=desc`);
+    const rows = await restGet(opts, `/repos/${repo}/pulls?state=open&per_page=30&sort=created&direction=desc`);
     const prs = sortPulls(
       (Array.isArray(rows) ? rows : [])
         .map((r: any) => ({

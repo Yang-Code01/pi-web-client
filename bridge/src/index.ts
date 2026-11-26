@@ -113,8 +113,8 @@ import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
-import { handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
-import { cancelGhSetup, ghSetupStatus, installGh, loginGh } from "./gh-setup.ts";
+import { githubApiBase, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
+import { cancelGhSetup, ghSetupCached, ghSetupStatus, installGh, loginGh } from "./gh-setup.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
@@ -1482,10 +1482,12 @@ async function main(): Promise<void> {
     if (await handleJira(req, res, url, { publicReq })) return;
     // GitHub 通道：账号与凭据在桥里，壳（pi 子进程的 `gh`）与页面都只跟这组路由说话。
     // 「这台机器装没装 gh / 登录了谁 / 该跑哪条安装命令」是只读探测，面板打开时就要用（D425）。
+    // 隧道访客只给已有缓存：`gh --version` / `gh auth status` 是子进程，别让匿名请求反复打。
     if (url.pathname === "/api/github/setup" && req.method === "GET") {
       try {
-        const setup = await ghSetupStatus();
-        return json(res, 200, { ok: true, setup });
+        const setup = ghSetupCached();
+        if (publicReq) return json(res, 200, { ok: true, setup });
+        return json(res, 200, { ok: true, setup: await ghSetupStatus() });
       } catch (err: any) {
         return json(res, 200, { ok: false, error: String(err?.message ?? err) });
       }
@@ -2896,8 +2898,9 @@ async function main(): Promise<void> {
         if (entry.ws === ws) entry.settle({ ok: false, reason: "no-ack" });
       }
       for (const id of ((ws as any).logins ?? []) as string[]) cancelLogin(id);
-      // 页面关了就别让 gh 安装 / 登录在后台继续跑（一次性码也没人看了）。
-      if ((ws as any).ghSetup) cancelGhSetup();
+      // 页面关了就别让**自己发起的** gh 安装 / 登录在后台继续跑（一次性码也没人看了）；
+      // 另一个页签的登录不归这条连接管，不能顺手杀掉（cancelGhSetup 按 owner 认领）。
+      if ((ws as any).ghSetup) cancelGhSetup(ws);
     });
 
     ws.on("message", async (raw) => {
@@ -4120,8 +4123,8 @@ async function main(): Promise<void> {
                   fresh: msg.fresh === true,
                   login: gh.login,
                   env: gh.env,
-                  token: gh.token,
-                  apiBase: process.env.PI_WEB_GITHUB_API || undefined,
+                  token: gh.restToken,
+                  apiBase: githubApiBase(),
                 });
                 // 带上实际用的账号：面板要能显示「这次是按谁去查的」，不然又只能猜（#17545）。
                 send({ type: "review.prs", dir: repo, ...out, login: gh.login });
@@ -4143,8 +4146,8 @@ async function main(): Promise<void> {
                   fresh: msg.fresh === true,
                   login: gh.login,
                   env: gh.env,
-                  token: gh.token,
-                  apiBase: process.env.PI_WEB_GITHUB_API || undefined,
+                  token: gh.restToken,
+                  apiBase: githubApiBase(),
                 });
                 send({ type: "review.prinfo", dir: repo, pr: number, ...out, login: gh.login });
               } catch (err: any) {
@@ -4302,20 +4305,21 @@ async function main(): Promise<void> {
             void (async () => {
               try {
                 send({ type: "gh.setup.status", ok: true, setup: await ghSetupStatus() });
-              } catch (err: any) {
-                send({ type: "gh.setup.status", ok: false, error: String(err?.message ?? err) });
+              } catch (err) {
+                send({ type: "gh.setup.status", ok: false, error: err instanceof Error ? err.message : String(err) });
               }
             })();
             return;
           }
           case "gh.setup.install": {
+            // 装了 gh 是这台机器级的事：隧道访客 step-up 后也能装，属预期功能（与新建会话同类）。
             if (!(await requireStepUp())) return;
             (ws as any).ghSetup = true;
             void installGh({}, (event) => {
               // 安装输出给发起的那条连接；其它页签只收最后的 status（要一起变「已装好」）。
               send({ type: "gh.setup.event", ...event });
               if (event.status) broadcast({ type: "gh.setup.status", ok: true, setup: event.status });
-            }).finally(() => {
+            }, ws).finally(() => {
               (ws as any).ghSetup = false;
             });
             return;
@@ -4327,14 +4331,14 @@ async function main(): Promise<void> {
               // 设备码是凭据级的东西：只发发起登录的那条连接，**不 broadcast**。
               send({ type: "gh.setup.event", ...event });
               if (event.status) broadcast({ type: "gh.setup.status", ok: true, setup: event.status });
-            }).finally(() => {
+            }, ws).finally(() => {
               (ws as any).ghSetup = false;
             });
             return;
           }
           case "gh.setup.cancel": {
             if (!(await requireStepUp())) return;
-            cancelGhSetup();
+            cancelGhSetup(ws);
             return;
           }
           // ------------------------------------------------ AI 出错记录（D164）

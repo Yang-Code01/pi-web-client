@@ -59,6 +59,8 @@ export interface GhCardData {
   patOpen: boolean;
   patBusy: boolean;
   patError: string;
+  /** 已经粘进去、还没存的令牌：状态帧到了重画卡片不能把它弄丢。 */
+  patDraft: string;
 }
 
 export interface GhCardActions {
@@ -68,12 +70,24 @@ export interface GhCardActions {
   refresh(): void;
   dismiss(): void;
   openPat(): void;
+  closePat(): void;
+  /** 输入框里的字实时回存（重画不丢）。 */
+  onPatInput(token: string): void;
   savePat(token: string): void;
   openUrl(url: string): void;
 }
 
 const DISMISS_KEY = "pi.ghSetup.dismissed";
 const LOG_LINES = 12;
+// gh 自己的两个固定地址：桥会在事件里下发，这里只是「事件还没到」时的兜底。
+const DEVICE_URL = "https://github.com/login/device";
+const MANUAL_SITE = "https://cli.github.com/";
+
+/** 桥推来的两帧（`gh.setup.status` / `gh.setup.event`）的判别联合，别用 any 接。 */
+type GhSetupFrame =
+  | { type: "gh.setup.status"; ok?: boolean; error?: string; setup?: GhSetupStatus | null }
+  | ({ type: "gh.setup.event" } & GhSetupEvent)
+  | { type?: string };
 
 /** 记「这一档状态的卡被关掉了」；状态一变（装上 / 登录上）自动失效。 */
 function dismissKey(setup: GhSetupStatus): string {
@@ -91,6 +105,7 @@ export class GhSetupStore {
   patOpen = false;
   patBusy = false;
   patError = "";
+  patDraft = "";
 
   private send: (frame: unknown) => void;
   private onChange: () => void;
@@ -145,6 +160,10 @@ export class GhSetupStore {
 
   cancel(): void {
     this.send({ type: "gh.setup.cancel" });
+    // 桥那边可能压根没收到（断线 / 没监听）：本地先把「正在装」放掉，
+    // 否则按钮一直是「取消」，只能刷新页面（评审 #13）。
+    this.op = "";
+    this.onChange();
   }
 
   openPat(): void {
@@ -156,29 +175,35 @@ export class GhSetupStore {
   closePat(): void {
     this.patOpen = false;
     this.patError = "";
+    this.patDraft = "";
     this.onChange();
   }
 
-  savePat(token: string): void {
+  onPatInput(token: string): void {
+    this.patDraft = token;
+  }
+
+  async savePat(token: string): Promise<void> {
     const value = token.trim();
     if (!value || this.patBusy) return;
     this.patBusy = true;
     this.patError = "";
     this.onChange();
-    void githubApi
-      .putPat(value)
-      .then(() => {
-        this.patBusy = false;
-        this.patOpen = false;
-        this.onPatSaved();
-        this.refresh();
-      })
-      .catch((err: any) => {
-        this.patBusy = false;
-        // 令牌错了就是令牌错了：桥会给 401 的原文，别换成一句「保存失败」。
-        this.patError = String(err?.message ?? err);
-        this.onChange();
-      });
+    try {
+      await githubApi.putPat(value);
+      this.patBusy = false;
+      this.patOpen = false;
+      this.patDraft = "";
+      this.onPatSaved();
+      // 先重画（按钮马上恢复），再问一次状态；万一上一次还在路上，它的帧到了也会收尾。
+      this.onChange();
+      this.refresh();
+    } catch (err) {
+      this.patBusy = false;
+      // 令牌错了就是令牌错了：桥会给 401 的原文，别换成一句「保存失败」。
+      this.patError = err instanceof Error ? err.message : String(err ?? "");
+      this.onChange();
+    }
   }
 
   dismiss(): void {
@@ -192,12 +217,15 @@ export class GhSetupStore {
   }
 
   /** 桥推来的两帧。 */
-  handle(frame: any): boolean {
-    const type = String(frame?.type ?? "");
+  handle(raw: unknown): boolean {
+    if (!raw || typeof raw !== "object") return false;
+    const frame = raw as GhSetupFrame;
+    const type = String(frame.type ?? "");
     if (type === "gh.setup.status") {
+      const msg = frame as { ok?: boolean; error?: string; setup?: GhSetupStatus | null };
       this.loading = false;
-      if (frame.setup) this.setup = frame.setup as GhSetupStatus;
-      if (!frame.ok) this.error = String(frame.error ?? "");
+      if (msg.setup) this.setup = msg.setup;
+      if (!msg.ok) this.error = String(msg.error ?? "");
       this.noteReady();
       this.onChange();
       return true;
@@ -268,36 +296,39 @@ export class GhSetupStore {
       patOpen: this.patOpen,
       patBusy: this.patBusy,
       patError: this.patError,
+      patDraft: this.patDraft,
     };
   }
 }
 
 // ---------------------------------------------------------------- 画
 
-function button(label: string, cls: string, onclick: () => void): HTMLButtonElement {
+function button(label: string, cls: string, onclick?: () => void): HTMLButtonElement {
   const b = el("button", `ghs-btn ${cls}`.trim(), label) as HTMLButtonElement;
   b.type = "button";
-  b.onclick = onclick;
+  if (onclick) b.onclick = onclick;
   return b;
 }
 
 function copyText(text: string, btn: HTMLButtonElement): void {
-  const done = () => {
-    const before = btn.textContent;
-    btn.textContent = tr("已复制");
-    window.setTimeout(() => {
+  const before = btn.textContent ?? "";
+  let timer = 0;
+  // 成功与失败都说一声：一声不响地没写进剪贴板，用户会以为按钮坏了（评审 #17）。
+  const flash = (label: string) => {
+    btn.textContent = label;
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
       btn.textContent = before;
     }, 1200);
   };
-  if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).then(done, () => {});
+  if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).then(() => flash(tr("已复制")), () => flash(tr("复制失败")));
   else {
     const ta = document.createElement("textarea");
     ta.value = text;
     document.body.append(ta);
     ta.select();
     try {
-      document.execCommand("copy");
-      done();
+      flash(document.execCommand("copy") ? tr("已复制") : tr("复制失败"));
     } finally {
       ta.remove();
     }
@@ -347,7 +378,7 @@ export function renderGhCard(data: GhCardData, actions: GhCardActions): HTMLElem
     if (data.plan.text) {
       const cmd = el("div", "ghs-cmdrow");
       cmd.append(el("code", "ghs-cmd", data.plan.text));
-      const copy = button(tr("复制"), "ghs-quiet", () => {});
+      const copy = button(tr("复制"), "ghs-quiet");
       copy.onclick = () => copyText(data.plan.text, copy);
       cmd.append(copy);
       box.append(cmd);
@@ -361,7 +392,7 @@ export function renderGhCard(data: GhCardData, actions: GhCardActions): HTMLElem
   if (data.code) {
     const code = el("div", "ghs-codebox");
     code.append(el("div", "ghs-codetext", data.code));
-    const link = button(tr("打开授权页"), "ghs-main", () => actions.openUrl(data.url || "https://github.com/login/device"));
+    const link = button(tr("打开授权页"), "ghs-main", () => actions.openUrl(data.url || DEVICE_URL));
     code.append(link);
     box.append(code);
     box.append(el("div", "ghs-hint", tr("浏览器里输入一次性码，完成后这里会自动更新。")));
@@ -392,7 +423,7 @@ export function renderGhCard(data: GhCardData, actions: GhCardActions): HTMLElem
     acts.append(button(tr("取消"), "", actions.cancel));
   }
   if (!data.installed && !data.plan.text) {
-    const site = button(tr("打开 cli.github.com"), "", () => actions.openUrl(data.plan.url || "https://cli.github.com/"));
+    const site = button(tr("打开 cli.github.com"), "", () => actions.openUrl(data.plan.url || MANUAL_SITE));
     acts.append(site);
   }
   if (!data.patOpen) acts.append(button(tr("用 PAT"), "ghs-quiet", actions.openPat));
@@ -404,12 +435,17 @@ export function renderGhCard(data: GhCardData, actions: GhCardActions): HTMLElem
     const form = el("div", "ghs-patform");
     const input = el("input", "ghs-pat") as HTMLInputElement;
     input.type = "password";
+    input.value = data.patDraft;
     input.placeholder = tr("粘贴一枚有 repo 权限的 PAT");
-    input.autocomplete = "off";
-    const save = button(tr("存"), "ghs-main", () => actions.savePat(input.value)) as HTMLButtonElement;
+    // `new-password` 才是明确告诉浏览器 / 密码管理器「别当登录凭据存」的值。
+    input.autocomplete = "new-password";
+    input.oninput = () => actions.onPatInput(input.value);
+    const save = button(tr("存"), "ghs-main", () => {
+      if (!data.patBusy) actions.savePat(input.value);
+    }) as HTMLButtonElement;
     if (data.patBusy) save.disabled = true;
     input.onkeydown = (ev) => {
-      if (ev.key === "Enter") actions.savePat(input.value);
+      if (ev.key === "Enter" && !data.patBusy) actions.savePat(input.value);
     };
     if (data.patError) form.append(el("div", "ghs-error", data.patError));
     form.append(input, save);

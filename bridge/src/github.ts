@@ -126,8 +126,10 @@ export function knownGhPaths(platform: NodeJS.Platform = process.platform, env: 
     const pf86 = env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
     return [
       ...(local ? [path.join(local, "Microsoft", "WinGet", "Links", "gh.exe"), path.join(local, "GitHub CLI", "gh.exe")] : []),
-      path.join(pf, "GitHub CLI", "gh.exe"),
-      path.join(pf86, "GitHub CLI", "gh.exe"),
+      // 显式空串也当没有：否则 `path.join("", "GitHub CLI", "gh.exe")` 变成相对路径，
+      // `accessSync` 可能命中 cwd 下的同名文件。
+      ...(pf ? [path.join(pf, "GitHub CLI", "gh.exe")] : []),
+      ...(pf86 ? [path.join(pf86, "GitHub CLI", "gh.exe")] : []),
     ];
   }
   if (platform === "darwin") return ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/opt/local/bin/gh"];
@@ -328,8 +330,11 @@ export interface SessionGhAccount {
   login: string;
   /** 交给子进程的环境（`GH_TOKEN`）；没令牌时不给，子进程就沿用桥自己的环境。 */
   env?: NodeJS.ProcessEnv;
-  /** 令牌本体：REST 兜底（`gitpr.ts` 没装 gh 时）要用；照旧只在桥内流转。 */
-  token?: string | null;
+  /**
+   * 令牌本体：REST 兜底（`gitpr.ts` 没装 gh 时）要用。
+   * 只在桥内流转（壳一次、REST 一次），**禁止把 opts 整个序列化进日志**。
+   */
+  restToken?: string | null;
 }
 
 /**
@@ -346,7 +351,7 @@ export interface SessionGhAccount {
 export async function sessionGhAccount(cwd: string, sessionId: string, ctx: Pick<GithubCtx, "ghPath"> = {}): Promise<SessionGhAccount> {
   const pick = await pickAccount(cwd, sessionId, ctx);
   const token = await tokenOf(pick, ctx);
-  return { login: pick.login, env: token ? { GH_TOKEN: token } : undefined, token };
+  return { login: pick.login, env: token ? { GH_TOKEN: token } : undefined, restToken: token };
 }
 
 // ---------------------------------------------------------------- 仓库
@@ -459,7 +464,7 @@ async function requestRaw(ctx: Pick<GithubCtx, "upstreamApi">, token: string | n
 }
 
 async function request(ctx: GithubCtx, token: string | null, apiPath: string, init: RequestInit = {}): Promise<any> {
-  return (await requestRaw(ctx, token, apiPath, init)).body;
+  return githubRest(ctx, token, apiPath, init);
 }
 
 /**
@@ -473,6 +478,14 @@ export async function githubRest(
   init: RequestInit = {},
 ): Promise<any> {
   return (await requestRaw(ctx, token, apiPath, init)).body;
+}
+
+/**
+ * 测试缝：REST 打到本地假 GitHub（与 `PI_WEB_GH_JS` 同类）。
+ * 只给用例用；正式路径永远是 github.com。
+ */
+export function githubApiBase(): string | undefined {
+  return process.env.PI_WEB_GITHUB_API || undefined;
 }
 /** 一个列表读到底的结果：`rows` 是拿到的行；`complete` 为假就是没读全（翻页中途出错，或翻到 `MAX_PAGES` 上游还说有下一页）。 */
 interface FetchedList {

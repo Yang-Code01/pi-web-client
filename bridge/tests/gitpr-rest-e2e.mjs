@@ -12,7 +12,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
 const REPO = path.resolve(import.meta.dirname, "..", "..");
 const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "pi-gitpr-rest-")));
@@ -80,6 +80,8 @@ const server = http.createServer((req, res) => {
   return json(404, { message: "Not Found" });
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+// 任何一条先挂都要把这个监听关掉，不然 node --test 会等句柄、整条用例链卡住。
+after(() => new Promise((resolve) => server.close(resolve)));
 const apiBase = `http://127.0.0.1:${server.address().port}`;
 
 const { listPullRequests, pullRequestInfo, resetPrCache, resetPrInfoCache } = await import("../src/gitpr.ts");
@@ -93,7 +95,9 @@ test("gh 不在 → 列表改走 REST，草稿排后面", async () => {
   assert.equal(out.repo, "acme/demo");
   assert.deepEqual(out.prs.map((p) => p.number), [7, 9]);
   assert.equal(out.prs[1].draft, true);
-  assert.equal(seen.at(-1).auth, "Bearer tok-123", "REST 要带会话账号的令牌");
+  // 三条请求都要带：只看最后一条的话，以后多打一个请求就会漏判。
+  assert.ok(seen.length > 0, "至少打过一次 REST");
+  for (const hit of seen) assert.equal(hit.auth, "Bearer tok-123", `REST 要带会话账号的令牌：${hit.path}`);
 });
 
 test("gh 不在 → PR 信息也走 REST，files/commits 映射成面板要的形状", async () => {
@@ -125,6 +129,5 @@ test("仓库看不到（404）报 repo_unseen，而不是让人去查代理", as
     assert.equal(out.via, "rest");
   } finally {
     notFound = false;
-    server.close();
   }
 });

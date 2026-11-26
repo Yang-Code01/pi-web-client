@@ -137,15 +137,27 @@ export function installPlan(
 }
 
 /** 装没装、哪一版、登录了谁、这台机器怎么装。 */
-export async function ghSetupStatus(ctx: Pick<GithubCtx, "ghPath"> = {}): Promise<GhSetupStatus> {
+export async function ghSetupStatus(
+  ctx: Pick<GithubCtx, "ghPath"> = {},
+  opts: { fresh?: boolean } = {},
+): Promise<GhSetupStatus> {
+  const key = String(ctx.ghPath ?? "");
+  // 面板每次打开、每条 `gh.setup.status` 都会来问一次：5 秒内复用，别让匿名隧道
+  // 连点就把 `gh --version` / `gh auth status` 变成子进程风暴（也省掉一次翻倍）。
+  if (!opts.fresh && statusMemo && statusMemo.key === key && Date.now() - statusMemo.at < STATUS_MEMO_MS) {
+    return statusMemo.value;
+  }
   const plan = installPlan();
   const bin = resolveGhBinary(ctx);
   if (!bin) {
-    return { installed: false, path: "", version: "", loggedIn: false, accounts: [], error: "", platform: process.platform, plan };
+    const empty: GhSetupStatus = { installed: false, path: "", version: "", loggedIn: false, accounts: [], error: "", platform: process.platform, plan };
+    statusMemo = { key, at: Date.now(), value: empty };
+    return empty;
   }
-  const [version, auth] = await Promise.all([ghVersion(bin), ghAuthState(ctx)]);
+  const version = opts.fresh ? await ghVersion(bin) : await ghVersionCached(bin);
+  const auth = await ghAuthState(ctx);
   const accounts = auth.accounts;
-  return {
+  const value: GhSetupStatus = {
     installed: true,
     path: bin,
     version,
@@ -155,21 +167,48 @@ export async function ghSetupStatus(ctx: Pick<GithubCtx, "ghPath"> = {}): Promis
     platform: process.platform,
     plan,
   };
+  statusMemo = { key, at: Date.now(), value };
+  return value;
+}
+
+/** 隧道访客只拿得到已有的一份：不让匿名请求触发新的 `gh` 子进程（D425）。 */
+export function ghSetupCached(): GhSetupStatus | null {
+  return statusMemo?.value ?? null;
 }
 
 // ---------------------------------------------------------------- 子进程的公共部分
 
-let active: { op: GhSetupOp; child: ChildProcess; cancelled: boolean; timedOut: boolean } | null = null;
+type GhSetupOwner = object;
+
+let active: { op: GhSetupOp; child: ChildProcess; cancelled: boolean; timedOut: boolean; owner: GhSetupOwner | null } | null = null;
+
+/** `gh --version` 的 30 秒缓存：状态帧很密，版本号不会每秒钟变一次。 */
+let versionMemo: { bin: string; at: number; value: string } | null = null;
+async function ghVersionCached(bin: string): Promise<string> {
+  if (versionMemo && versionMemo.bin === bin && Date.now() - versionMemo.at < 30_000) return versionMemo.value;
+  const value = await ghVersion(bin);
+  versionMemo = { bin, at: Date.now(), value };
+  return value;
+}
+
+/** 同一个探测结果的缓存：见 `ghSetupStatus` 的理由。 */
+let statusMemo: { key: string; at: number; value: GhSetupStatus } | null = null;
+const STATUS_MEMO_MS = 5_000;
 
 /** 正在装 / 正在登录时是哪个操作（没有就是空串）。 */
 export function ghSetupBusy(): GhSetupOp | "" {
   return active?.op ?? "";
 }
 
-/** 杀掉正在跑的那一条；没在跑就返回 false。 */
-export function cancelGhSetup(): boolean {
+/**
+ * 杀掉正在跑的那一条；没在跑就返回 false。
+ *
+ * `owner` = 发起它的那条连接：一个页签关掉只能停自己那份，不能把另一个页签正在跑的登录也杀。
+ */
+export function cancelGhSetup(owner?: GhSetupOwner): boolean {
   const run = active;
   if (!run) return false;
+  if (owner && run.owner !== owner) return false;
   run.cancelled = true;
   try {
     run.child.kill();
@@ -177,6 +216,11 @@ export function cancelGhSetup(): boolean {
     /* 已经退了 */
   }
   return true;
+}
+
+/** 子进程错误统一成一句话（`unknown` 不要 `any`）。 */
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err ?? "");
 }
 
 const clean = (line: string): string =>
@@ -234,35 +278,50 @@ export interface GhSetupResult {
  * 代跑包管理器装 gh。返回时状态已经重新探过（装上的话 `installed` 立刻变 true，
  * 不用等页面刷新 —— 也不会因为「PATH 没刷新」而假装没装）。
  */
-export async function installGh(ctx: Pick<GithubCtx, "ghPath"> = {}, sink: GhSetupSink = () => {}): Promise<GhSetupResult> {
+export async function installGh(
+  ctx: Pick<GithubCtx, "ghPath"> = {},
+  sink: GhSetupSink = () => {},
+  owner: GhSetupOwner | null = null,
+): Promise<GhSetupResult> {
   const plan = installPlan();
   if (active) {
     const error = active.op === "install" ? "已经在装了，等它跑完。" : "正在登录 gh，先等它结束或点取消。";
-    sink({ op: "install", kind: "error", error, status: await ghSetupStatus(ctx) });
-    return { ok: false, error, status: await ghSetupStatus(ctx) };
+    const status = await ghSetupStatus(ctx, { fresh: true });
+    sink({ op: "install", kind: "error", error, status });
+    return { ok: false, error, status };
   }
   if (!plan.run) {
     const error = plan.text ? "这条命令需要管理员权限：请把它复制到终端里执行。" : "这台机器上没有可用的包管理器，请按官网手动安装。";
-    sink({ op: "install", kind: "error", error, status: await ghSetupStatus(ctx) });
-    return { ok: false, error, status: await ghSetupStatus(ctx) };
+    const status = await ghSetupStatus(ctx, { fresh: true });
+    sink({ op: "install", kind: "error", error, status });
+    return { ok: false, error, status };
   }
+  // 闭包里 TS 不再收窄 `plan.run`：先固定下来，下面不再用 `!`。
+  const runCmd = plan.run;
   sink({ op: "install", kind: "started", line: plan.text });
   const result = await new Promise<{ ok: boolean; error: string }>((resolve) => {
     let child: ChildProcess;
     try {
-      child = spawn(plan.run!.cmd, plan.run!.args, {
+      child = spawn(runCmd.cmd, runCmd.args, {
         env: piChildEnv(),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         // .cmd/.bat（npm 全局装的包装脚本）在 Node 的新版本里不加 shell 直接 EINVAL。
-        shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(plan.run!.cmd),
+        shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(runCmd.cmd),
       });
-    } catch (err: any) {
-      resolve({ ok: false, error: `起不来 ${plan.run!.cmd}：${String(err?.message ?? err)}` });
+    } catch (err) {
+      resolve({ ok: false, error: `起不来 ${runCmd.cmd}：${errMsg(err)}` });
       return;
     }
-    const run = { op: "install" as const, child, cancelled: false, timedOut: false };
+    const run = { op: "install" as const, child, cancelled: false, timedOut: false, owner };
     active = run;
+    // spawn 失败时 Node 先 `error` 再 `close`：`settled` 让后面那次不再重复收尾。
+    let settled = false;
+    const settle = (value: { ok: boolean; error: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     const tail: string[] = [];
     const out = lineReader((line) => {
       tail.push(line);
@@ -282,21 +341,21 @@ export async function installGh(ctx: Pick<GithubCtx, "ghPath"> = {}, sink: GhSet
     child.on("error", (err) => {
       clearTimeout(timer);
       if (active === run) active = null;
-      resolve({ ok: false, error: `起不来 ${plan.run!.cmd}：${String(err?.message ?? err)}` });
+      settle({ ok: false, error: `起不来 ${runCmd.cmd}：${errMsg(err)}` });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
       if (active === run) active = null;
       out.flush();
-      if (run.cancelled) resolve({ ok: false, error: "已取消。" });
-      else if (run.timedOut) resolve({ ok: false, error: "安装超时（10 分钟）。" });
-      else if (code === 0) resolve({ ok: true, error: "" });
-      else resolve({ ok: false, error: firstLine(tail.join("\n")) || `安装命令退出码 ${code ?? "?"}` });
+      if (run.cancelled) settle({ ok: false, error: "已取消。" });
+      else if (run.timedOut) settle({ ok: false, error: "安装超时（10 分钟）。" });
+      else if (code === 0) settle({ ok: true, error: "" });
+      else settle({ ok: false, error: firstLine(tail.join("\n")) || `安装命令退出码 ${code ?? "?"}` });
     });
   });
   // 装完 PATH 不会在桥进程里刷新：resetGithubCaches + 已知安装位置探测（github.ts）一起兜住。
   resetGithubCaches();
-  const status = await ghSetupStatus(ctx);
+  const status = await ghSetupStatus(ctx, { fresh: true });
   const ok = result.ok && status.installed;
   const error = ok ? "" : result.ok && !status.installed ? "命令跑完了，但还没找到 gh；试试「重新检测」，或重启一下桥。" : result.error;
   sink({ op: "install", kind: ok ? "done" : "error", ok, error, status });
@@ -320,17 +379,23 @@ export function parseLoginHint(text: string): { code: string; url: string } {
  * 都由 gh 负责，我们照抄只会多一套要维护的 OAuth 客户端；实测 stdin 关闭时它照样跑
  * （打印 code + URL 后轮询，授权完成退出 0）。
  */
-export async function loginGh(ctx: Pick<GithubCtx, "ghPath"> = {}, sink: GhSetupSink = () => {}): Promise<GhSetupResult> {
+export async function loginGh(
+  ctx: Pick<GithubCtx, "ghPath"> = {},
+  sink: GhSetupSink = () => {},
+  owner: GhSetupOwner | null = null,
+): Promise<GhSetupResult> {
   if (active) {
     const error = active.op === "login" ? "已经在登录了，等浏览器里确认完。" : "正在装 gh，等它跑完再登录。";
-    sink({ op: "login", kind: "error", error, status: await ghSetupStatus(ctx) });
-    return { ok: false, error, status: await ghSetupStatus(ctx) };
+    const status = await ghSetupStatus(ctx, { fresh: true });
+    sink({ op: "login", kind: "error", error, status });
+    return { ok: false, error, status };
   }
   const bin = resolveGhBinary(ctx);
   if (!bin) {
     const error = "这台机器还没装 gh。";
-    sink({ op: "login", kind: "error", error, status: await ghSetupStatus(ctx) });
-    return { ok: false, error, status: await ghSetupStatus(ctx) };
+    const status = await ghSetupStatus(ctx, { fresh: true });
+    sink({ op: "login", kind: "error", error, status });
+    return { ok: false, error, status };
   }
   const { cmd, prefix } = ghInvocation(ctx);
   // 壳会注入 GH_TOKEN，gh 见到它就拒绝把凭据写进 hosts.yml；这里必须摘干净。
@@ -344,12 +409,19 @@ export async function loginGh(ctx: Pick<GithubCtx, "ghPath"> = {}, sink: GhSetup
     let child: ChildProcess;
     try {
       child = spawn(cmd, args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    } catch (err: any) {
-      resolve({ ok: false, error: `起不来 gh：${String(err?.message ?? err)}` });
+    } catch (err) {
+      resolve({ ok: false, error: `起不来 gh：${errMsg(err)}` });
       return;
     }
-    const run = { op: "login" as const, child, cancelled: false, timedOut: false };
+    const run = { op: "login" as const, child, cancelled: false, timedOut: false, owner };
     active = run;
+    // 同 installGh：`error` 之后还会来一次 `close`，只收尾一次。
+    let settled = false;
+    const settle = (value: { ok: boolean; error: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     let code = "";
     let url = "";
     const tail: string[] = [];
@@ -380,20 +452,20 @@ export async function loginGh(ctx: Pick<GithubCtx, "ghPath"> = {}, sink: GhSetup
     child.on("error", (err) => {
       clearTimeout(timer);
       if (active === run) active = null;
-      resolve({ ok: false, error: `起不来 gh：${String(err?.message ?? err)}` });
+      settle({ ok: false, error: `起不来 gh：${errMsg(err)}` });
     });
     child.on("close", (exit) => {
       clearTimeout(timer);
       if (active === run) active = null;
       out.flush();
-      if (run.cancelled) resolve({ ok: false, error: "已取消。" });
-      else if (run.timedOut) resolve({ ok: false, error: "登录超时（10 分钟）：一次性码过期了，再点一次登录。" });
-      else if (exit === 0) resolve({ ok: true, error: "" });
-      else resolve({ ok: false, error: firstLine(tail.join("\n")) || `gh auth login 退出码 ${exit ?? "?"}` });
+      if (run.cancelled) settle({ ok: false, error: "已取消。" });
+      else if (run.timedOut) settle({ ok: false, error: "登录超时（10 分钟）：一次性码过期了，再点一次登录。" });
+      else if (exit === 0) settle({ ok: true, error: "" });
+      else settle({ ok: false, error: firstLine(tail.join("\n")) || `gh auth login 退出码 ${exit ?? "?"}` });
     });
   });
   resetGithubCaches();
-  const status = await ghSetupStatus(ctx);
+  const status = await ghSetupStatus(ctx, { fresh: true });
   const ok = result.ok && status.loggedIn;
   const error = ok ? "" : result.ok && !status.loggedIn ? "gh 退出了，但还没读到登录态；点「重新检测」再试。" : result.error;
   sink({ op: "login", kind: ok ? "done" : "error", ok, error, status });

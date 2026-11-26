@@ -1035,6 +1035,7 @@ export class App {
   /** GitHub 通道：右栏那块 dock（`web/src/github-panel.ts`）。懒建，关掉就丢。 */
   private githubPanel: GithubPanel | null = null;
   /** 装 gh / 登录 gh 的状态（D425）：评审与 GitHub 面板共用这一份，进度帧只在这份里。 */
+  private ghSetupReady = false;
   private ghSetup = new GhSetupStore(
     (frame) => this.socket.send(frame),
     () => this.onGhSetupChanged(),
@@ -10307,11 +10308,17 @@ export class App {
   /** gh 状态一变（探测回来 / 安装登录有进展）：重画面板，刚登录上就重读账号与 PR 列表。 */
   private onGhSetupChanged(): void {
     if (this.queueTab === "review") this.renderQueue();
-    if (this.ghSetup.setup?.installed && this.ghSetup.setup.loggedIn) {
+    // 只在「从不可用变成可用」那一次重读账号：`gh.setup.status` 每次探测都会来，
+    // 每帧都重拉就等于点一次「重新检测」白跑两轮 `github.state`（评审 #31）。
+    const ready = Boolean(this.ghSetup.setup?.installed && this.ghSetup.setup.loggedIn);
+    if (ready && !this.ghSetupReady) {
       this.reviewAccountsFor = "";
       this.loadReviewAccounts();
     }
+    this.ghSetupReady = ready;
     // 逐行日志也会走到这里：跑着的时候不重拉面板，等 done / status 那次再刷。
+    // （到达顺序是 done 先、带新状态的 status 后：done 那次 reload 拿到的是旧状态，
+    //  紧接着的 status 帧会再刷一次，`reload()` 自带 seq 保护，不会让旧响应盖新的。）
     if (!this.ghSetup.op) void this.githubPanel?.reload();
   }
 
@@ -10328,6 +10335,8 @@ export class App {
       },
       dismiss: () => this.ghSetup.dismiss(),
       openPat: () => this.ghSetup.openPat(),
+      closePat: () => this.ghSetup.closePat(),
+      onPatInput: (token) => this.ghSetup.onPatInput(token),
       savePat: (token) => this.ghSetup.savePat(token),
       openUrl: (url) => openExternal(url),
     };
@@ -19348,6 +19357,8 @@ export class App {
       installLog: this.reviewInstallLog,
       markLabels: { accept: tr("接受"), ignore: tr("忽略"), "false-positive": tr("误报") },
       severityLabels: { critical: tr("严重"), high: tr("高"), medium: tr("中"), low: tr("低") },
+      // 同一组动作直接给面板：不再在 ReviewActions 里再抄一份（评审 #33）。
+      ghActions: this.ghCardActions(),
       actions: this.reviewActions(),
     };
   }
@@ -19477,19 +19488,7 @@ export class App {
         this.socket.send({ type: "review.install" });
         this.renderQueue();
       },
-      // 装 gh / 登录 gh（D425）：动作全在 `ghCardActions()` 里，这里只把同一组转给面板。
-      onGhInstall: () => this.ghSetup.install(),
-      onGhLogin: () => this.ghSetup.login(),
-      onGhCancel: () => this.ghSetup.cancel(),
-      onGhRefresh: () => {
-        this.reviewAccountsFor = "";
-        this.loadReviewAccounts();
-        this.ghSetup.refresh();
-      },
-      onGhDismiss: () => this.ghSetup.dismiss(),
-      onGhPat: () => this.ghSetup.openPat(),
-      onGhSavePat: (token) => this.ghSetup.savePat(token),
-      onOpenExternal: (url) => openExternal(url),
+      // 装 gh / 登录 gh（D425）：卡片的动作由 `reviewPanelInput()` 直接传 `ghCardActions()`。
       onDetails: () => this.openReviewSheet(),
       onPickRepo: () => this.openRepoPicker(),
       onClearRepo: () => this.clearReviewRepo(),
