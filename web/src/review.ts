@@ -82,10 +82,10 @@ export interface ReviewInput {
   accounts?: { login: string; pat: boolean }[];
   model?: string;
   /**
-   * 面板现在展开的是哪一次评审（`ReviewRun.id`，空串 = 停在记录列表）。
+   * 「完整详情」浮层现在看的是哪一次评审（`ReviewRun.id`，空串 = 没开浮层，按最新那一次算）。
    *
-   * 以前面板永远只画「最新那一次」，历史只能靠「清理历史」删除；现在历史是主体，
-   * 所以「看哪一次」变成一个显式的东西 —— 它也决定意见、时间线、统计、模型名都取自哪条记录。
+   * 记录卡本身不再是入口（D426）：意见、时间线、统计、模型名只在浮层里出现，
+   * 但浮层抬头必须按**点开的那张卡**写，而不是「最新那一次」—— 所以这个焦点还留着。
    */
   focus?: string;
   /** 每条记录那次用的模型怎么显示（app 查模型目录得到，按 run id 索引；查不到就不给）。 */
@@ -185,14 +185,14 @@ export interface ReviewView {
   resolved: number;
   resolvedPaths: string[];
   history: number;
-  /** 现在展开的那一次（空串 = 记录列表）。 */
+  /** 「完整详情」浮层看的那一次（空串 = 按最新那一次算）。 */
   focus: string;
   /** 记录列表，**新的在前**（面板从上往下画就是这个顺序）。 */
   runs: ReviewRunCard[];
-  /** 展开的那一次用的模型（展示名 / `provider/id`）：详情里要写清「这次」是谁评的。 */
+  /** 浮层看的那一次用的模型（展示名 / `provider/id`）：详情里要写清「这次」是谁评的。 */
   activeModel: string;
   activeModelId: string;
-  /** 展开的那一次的「评什么」（自己那条记录的目标，不是面板上现在选的目标）。 */
+  /** 浮层看的那一次的「评什么」（自己那条记录的目标，不是面板上现在选的目标）。 */
   activeTarget: string;
   /** 按钮为什么点不着（有值就画在按钮旁边；空串 = 不是缺东西造成的）。 */
   missingWhy: string;
@@ -563,8 +563,8 @@ export interface ReviewActions {
   onPrQuery: (value: string) => void;
   /** 展开 / 收起 PR 列表。 */
   onPrMenu: (open: boolean) => void;
-  /** 打开「评审详情」dialog（跑着看时间线，跑完看结果）。 */
-  onDetails: () => void;
+  /** 打开「评审详情」dialog：看**这一条**（跑着看时间线，跑完看结果）。 */
+  onDetails: (runId: string) => void;
   onCommit: (value: string) => void;
   /** 打开「模型与思考」那个弹层（复用输入框那颗 chip 的同一个），挑评审用的模型。 */
   onPickModel: () => void;
@@ -581,10 +581,6 @@ export interface ReviewActions {
   /** 打开「PR 信息」dialog。 */
   onPrInfo: () => void;
   onInstall: () => void;
-  /** 点开某一次记录（`ReviewRun.id`）。 */
-  onOpenRun: (runId: string) => void;
-  /** 从某一次记录回到列表。 */
-  onBack: () => void;
   /** 打开「评审仓库」选择器：换一个（子）仓库来评。 */
   onPickRepo: () => void;
   /** 拔掉钉子，回到跟着会话目录走。 */
@@ -1034,9 +1030,8 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     return root;
   }
 
-  // ---- 主体：要么是「这个会话评过哪些次」，要么是点开的那一次
-  if (view.focus) root.append(renderFocusedRun(input));
-  else root.append(renderRunList(input));
+  // ---- 主体：这个会话评过的每一次（记录卡）。意见与时间线在「完整详情」浮层里（D426）。
+  root.append(renderRunList(input));
 
   // ---- 来源说明：评审内核不是本仓库自研，别让人以为是
   const credit = el("div", "rv-credit");
@@ -1106,10 +1101,7 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
   } else if (view.runs.length) {
     count = tr("这个会话评过 {p1} 次", { p1: view.runs.length });
   }
-  head.append(
-    el("span", "", count),
-    el("span", "rv-runs-hint", view.runs.length ? tr("点一条展开") : ""),
-  );
+  head.append(el("span", "", count));
   box.append(head);
   if (!view.runs.length) {
     box.append(el("div", "rv-hint", tr("上面选好范围、点「开始评审」，结果会记在这里。")));
@@ -1119,16 +1111,9 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
     const cls = ["rv-run-card", card.running ? "is-live" : "", card.status === "failed" ? "is-fail" : ""]
       .filter(Boolean)
       .join(" ");
-    // 卡片里要放「停止」这颗按钮，所以不能再整个是 `<button>`（按钮里套按钮点起来会乱）。
+    // 卡片正文不是入口（D426）：不再整卡可点，拖选卡上的文字也不会误触浮层；
+    // 键鼠唯一的入口是底行那颗「完整详情」。
     const row = el("div", cls);
-    row.setAttribute("role", "button");
-    row.tabIndex = 0;
-    row.onclick = () => actions.onOpenRun(card.id);
-    row.onkeydown = (ev: KeyboardEvent) => {
-      if (ev.key !== "Enter" && ev.key !== " ") return;
-      ev.preventDefault();
-      actions.onOpenRun(card.id);
-    };
 
     const top = el("div", "rv-run-top");
     top.append(el("span", "rv-run-target", card.target));
@@ -1138,105 +1123,22 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
 
     if (card.running && card.live?.current) row.append(el("div", "rv-run-current", card.live.current));
     if (card.error && !card.running) row.append(el("div", "rv-run-err", card.error));
+
+    // 底行右对齐：跑着的那条先「停止」，再「完整详情」（D426）。停止挪进这里之后，
+    // 不再绝对定位压住同一行右端的时间。
+    const foot = el("div", "rv-run-foot");
     if (card.running) {
       const stop = el("button", "rv-run-stop", tr("停止")) as HTMLButtonElement;
       stop.type = "button";
       stop.title = tr("只停这一条");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        actions.onStopRun(card.id);
-      };
-      row.append(stop);
+      stop.onclick = () => actions.onStopRun(card.id);
+      foot.append(stop);
     }
-    box.append(row);
-  }
-  return box;
-}
-
-/** 点开的那一次：抬头（返回 / 评什么 / 完整详情）+ 那一次的统计与意见。 */
-function renderFocusedRun(input: ReviewPanelInput): HTMLElement {
-  const { view, actions } = input;
-  const box = el("div", "rv-focus");
-  const card = view.runs.find((item) => item.id === view.focus) ?? null;
-
-  const head = el("div", "rv-focus-head");
-  const back = el("button", "rv-back", tr("‹ 记录")) as HTMLButtonElement;
-  back.type = "button";
-  back.title = tr("回到这个会话的评审记录");
-  back.onclick = () => actions.onBack();
-  const target = el("span", "rv-focus-target", card?.target || view.activeTarget);
-  const more = el("button", "rv-focus-more", tr("完整详情 ›")) as HTMLButtonElement;
-  more.type = "button";
-  more.onclick = () => actions.onDetails();
-  head.append(back, target, more);
-  if (card?.running) {
-    // 展开的那一条没在列表里露脸（列表被换成了这一页），停止得跟过来，不然点了展开就没法停。
-    const stop = el("button", "rv-focus-stop", tr("停止")) as HTMLButtonElement;
-    stop.type = "button";
-    stop.onclick = () => actions.onStopRun(card.id);
-    head.append(stop);
-  }
-  box.append(head);
-
-  // 第二行写清这次是谁评的、什么时候、跑多久 —— 记录卡的价值就在这些「详细信息」。
-  if (card) {
-    box.append(runMetaRow(card));
-    if (card.title) box.append(el("div", "rv-focus-title", card.title));
-    const modelText = card.model || card.modelId;
-    if (modelText) {
-      // 先给目录里的名字（`hy4flash · x0.03 · 960K`），hover 能看到那个 id；老记录只有 id 就直接写 id。
-      const line = el("div", "rv-focus-model", tr("这次用的模型：{p1}", { p1: modelText }));
-      line.title = card.modelId || modelText;
-      box.append(line);
-    }
-  }
-
-  // ---- 进度 / 统计
-  if (view.running && view.progress) {
-    const p = view.progress;
-    const line = el("div", "rv-progress");
-    line.append(el("span", "rv-meta", tr("评审中 · {p1}/{p2} 个文件", { p1: p.reviewedFiles, p2: p.totalFiles })));
-    if (p.currentFile) line.append(el("span", "rv-current", p.currentFile));
-    box.append(line);
-  } else if (view.meta) {
-    const parts = [
-      tr("{p1} 个文件", { p1: view.meta.files }),
-      view.meta.skipped ? tr("{p1} 个没评", { p1: view.meta.skipped }) : "",
-      duration(view.meta.durationMs),
-      view.meta.tokens ? tr("{p1} tokens", { p1: view.meta.tokens }) : "",
-      view.resolved ? tr("已解决 {p1} 条", { p1: view.resolved }) : "",
-    ].filter(Boolean);
-    box.append(el("div", "rv-meta", parts.join(" · ")));
-  }
-
-  // ---- 时间线（面板里只留最后几行，完整的那份在「评审详情」浮层里）
-  if (view.timeline.length) box.append(renderTimeline(view, 4));
-
-  // ---- 失败 / 停止 / 失效
-  if (view.phase === "failed" && view.error) {
-    box.append(el("div", "rv-error", view.error));
-  } else if (view.phase === "stopped") {
-    box.append(el("div", "rv-hint", tr("这次没跑完就停了，已经收到的意见在下面。")));
-  } else if (view.phase === "stale") {
-    box.append(el("div", "rv-hint", tr("桥重启了，这次评审没跑完。重跑一次就行。")));
-  }
-
-  box.append(renderFindings(input));
-  return box;
-}
-
-/** 把一条意见折成送进输入框的一段话（不自动发送）。 */
-/** 时间线：面板里截最后几行，详情 dialog 给全量。 */
-export function renderTimeline(view: ReviewView, limit = 0): HTMLElement {
-  const list = limit > 0 ? view.timeline.slice(-limit) : view.timeline;
-  const box = el("div", "rv-timeline");
-  if (!list.length) {
-    box.append(el("div", "rv-hint", tr("还没有进度")));
-    return box;
-  }
-  for (const item of list) {
-    const row = el("div", "rv-tl");
-    row.append(el("span", "rv-tl-dot"), el("span", "rv-tl-at", fmtTime(item.at)), el("span", "rv-tl-text", item.text));
+    const more = el("button", "rv-run-more", tr("完整详情 ›")) as HTMLButtonElement;
+    more.type = "button";
+    more.onclick = () => actions.onDetails(card.id);
+    foot.append(more);
+    row.append(foot);
     box.append(row);
   }
   return box;

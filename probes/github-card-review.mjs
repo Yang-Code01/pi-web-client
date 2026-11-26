@@ -284,7 +284,7 @@ try {
   const prInput = page.locator(".rv-prq").first();
   await prInput.waitFor({ timeout: 8000 });
   check("PR 号已经填好", (await prInput.inputValue()) === "#661", await prInput.inputValue());
-  check("没有自动开跑（面板上没有在跑的记录）", (await page.locator(".rv-run-card.is-live, .rv-focus-stop").count()) === 0, "");
+  check("没有自动开跑（面板上没有在跑的记录）", (await page.locator(".rv-run-card.is-live").count()) === 0, "");
   // 界面上「没开跑」还要有磁盘上的证据：真的开跑会先落一份 running 状态。
   const reviewDir = path.join(STATE, "review");
   const runs = fs.existsSync(reviewDir) ? fs.readdirSync(reviewDir) : [];

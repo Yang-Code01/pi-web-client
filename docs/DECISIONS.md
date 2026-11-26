@@ -8496,3 +8496,15 @@ D
 **验证。** `node probes/pin-menu-archive-repaint.mjs`（桩桥 + 真 Chromium）：悬停打开气泡 → 把指针挪进气泡 → 广播一帧别的会话的 `pi.status`（整条 ★ 行重建）→ 点归档/删除。改前拿旧 `web/dist` 跑（`PROBE_DIST=web/dist`）红 10 项、归档 0 帧；改后 15 项全绿（归档与删除各发一帧、只带这一颗、回声后 ★ 行收敛；没有重画的对照组仍走收拢动效并落帧）。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
 
 n
+
+## D426 代码评审的记录卡不再点开：删掉面板内的「那一次」页，「完整详情」挪到卡底右下角（用户 2026-11-27「修改 code Review 卡片，不需要图一的点击展开。把完整详情按钮做到图二卡片的右下角」＋两张截图）
+
+**问题。** 记录卡是一整块 `role="button"` 的 div，点一下就把面板整块换成「那一次」的内部页（‹ 记录 / PR 号 / 完整详情 › / 这次用的模型 / 文件数 / 4 行时间线），意见也只在那一页里渲染。于是：想看一眼某次的意见，得先点卡片、看完再点 ‹ 记录 回来，进出两层；卡上有正文（PR 号、标题），拖选卡上的文字会顺手把面板换页；开一次评审还会自动跳进新那一条（`reviewFollowRun`），想接着开第二条得先退回来。
+
+**决定。** 记录卡就是记录，正文不可点（去掉 `role` / `tabindex` / `onclick` / `onkeydown` 与 hover 手感）；每张卡底行 `[停止] [完整详情 ›]`，后者是唯一入口，打开的还是原来那扇宽窗（`.rv-sheet`，`openReviewSheet(runId)` 先 `reviewFocus = runId` 再开），窗里左边时间线、右边意见，与之前一致。面板内那页（`renderFocusedRun` / `renderTimeline` / `.rv-focus*` / `.rv-back`）整段删除，`ReviewActions` 的 `onOpenRun` / `onBack` 换成 `onDetails(runId)`。跑着那张卡的「停止」原本是 `position:absolute; top:6px; right:7px`，会压住同一行右端的时间 —— 改成底行里的一颗内联按钮，时间回到右端。开始评审不再跳走（`reviewFollowRun` 全删），面板始终停在列表上。
+
+**为什么。** ① 「点整张卡」与「卡上有可选的文字」本来就冲突，而右下角那颗按钮是两件事的分离：卡负责「看一眼状态」，按钮负责「看细节」。② 保持浮层而不是把意见挪进卡里：卡宽 300px，意见要塞文件分组、严重度、片段、一键交给 agent —— 那正是浮层存在的理由；这次只是把「入口」从整张卡收到角落。③ 不再自动跳：同时评两条（D420）时自动换页会把刚输入的下一条描述冲掉，也让「停止」与「看新那条进度」两件事互相争同一块面板。④ 停止放底行而不是继续绝对定位：绝对定位在卡宽变化（长 PR 标题换行、模型 chip 变长）时会撞上时间，底行是流式的，不会。
+
+**代价。** 记录卡多一行（约 20px），三张卡的列表比之前高一截；「点哪都能看」的便利没了，需要对准右下角那颗（字号 10.5px，`--accent` 色，`hover` 下划线提示）。8 个只服务于旧页面的 i18n 键（「点一条展开」「‹ 记录」「回到这个会话的评审记录」「这次用的模型：{p1}」「这次没跑完就停了，已经收到的意见在下面。」「还没有进度」「评审中 · {p1}/{p2} 个文件」「{p1} 个没评」）随代码一起删掉。
+
+**验证。** 新探针 `node probes/review-cards.mjs`（桩桥 + 真 Chromium，播 `review.state` / `review.progress`）全绿：三张卡、无 `.rv-focus`；每张卡「完整详情」在自己卡的右下角（距卡右边 11px、下边 12px = 1px 边框 + 8/7px 内边距 + 2px）；跑着那张的「停止」与「完整详情」同在 `.rv-run-foot`、停止在左、与右端时间 Rectangle 不相交；卡片无 `role` / `tabindex`；点正文不弹浮层；点第 3 张的按钮，浮层抬头是 `PR #700`（不是最新那条）且标题是那张卡的 PR 标题；关掉后没有 `.rv-focus`；`review.started` + 进度来到之后**仍停在列表**；`--ui-scale: 1.5` 下按钮仍在卡内右下角。截图 `.scratch/review-cards/cards.png`、`.scratch/review-cards/sheet-700.png`（已人眼看过）。`probes/code-review.mjs`（真 `ocr` + 真模型）跟着改成「跑着看卡上的停止 / 意见断言挪进 `.rv-sheet` / 点卡片不开、点按钮才开 / 停止后不被拽走」；`probes/github-card-review.mjs` 只把 `.rv-focus-stop` 换成 `.rv-run-card.is-live`。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
