@@ -21,6 +21,10 @@ const LONG_CARD_PX = 240;
 /** 超长条目分三类：用户消息、AI 回答、工具输出。谁收成卡由设置里的三个开关定。 */
 type LongCardKind = "user" | "assistant" | "tool";
 /**
+ * 卡头那枚小徽章：一种条目一行。中文原文留在表里、用的时候再 `tr()`（AGENTS.md：标签表不在模块级翻好）。
+ */
+const LONG_BADGE: Record<LongCardKind, string> = { user: "长消息", assistant: "长回答", tool: "长输出" };
+/**
  * 离底多少像素以内算「已经在底部」（D54）。同一道容差也用来判断「下面还有没有东西」
  * （`hasRoomBelow`，D168）——两处必须是同一个数，否则会出现「钮说下面有东西、但滚不动」的缝。
  */
@@ -1954,7 +1958,7 @@ export class ChatView {
     const box = el("div", `lm-card lm-${kind}`);
     const head = el("button", "lm-head") as HTMLButtonElement;
     head.type = "button";
-    const label = kind === "user" ? tr("长消息") : kind === "assistant" ? tr("长回答") : tr("长输出");
+    const label = tr(LONG_BADGE[kind]);
     head.append(el("span", "lm-badge", label), el("span", "lm-meta"), el("span", "lm-open", tr("展开")));
     const scroll = el("div", "lm-scroll");
     scroll.append(body);
