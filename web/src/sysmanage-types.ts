@@ -234,8 +234,10 @@ export interface AttendanceRowView {
   dayOff: boolean;
   clockIn: string | null;
   clockOut: string | null;
-  /** 当天已批准的请假 / 出差小时合计。 */
+  /** 当天已批准的请假 / 出差小时合计（= 下面五项相加）。 */
   absenceHours: number;
+  /** 当天请假分项（小时）。`l_hours` 语义没坐实，不在这里。 */
+  leaveHours: LeaveHours;
   /** 整天都有申请顶着（≥8 小时假、居家办公、活动出勤）。 */
   fullDayExcused: boolean;
   /** 这行算不算缺卡。口径在桥端（attendance-model.ts 的 isMissingRow），页面只照着标。 */
@@ -244,6 +246,19 @@ export interface AttendanceRowView {
   overtimeEdited: boolean;
   editedBy: string;
   raw: Record<string, unknown>;
+}
+
+export interface LeaveHours {
+  /** 调休（OA `c_hours`）。 */
+  compensatory: number;
+  /** 事假（`t_hours`）。 */
+  personal: number;
+  /** 病假（`s_hours`）。 */
+  sick: number;
+  /** 其他假（`o_hours`）。 */
+  other: number;
+  /** 出差（`bt_hours`）。 */
+  trip: number;
 }
 
 export interface AttendanceRange {
@@ -270,6 +285,8 @@ export interface AttendanceRecords {
   fetchedAt: number;
   stale: boolean;
   problem: string | null;
+  /** OA 当前剩余调休（小时）；取不到 / 没登录时是 null。 */
+  compensatory: number | null;
 }
 
 export interface AttendanceLeader {

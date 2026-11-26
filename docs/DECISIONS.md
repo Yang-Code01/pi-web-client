@@ -8345,3 +8345,20 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 **代价。** 深色主题下胶囊与面板的底色差变小（`#222226` vs 面板 `#212125`），靠 0.5px 发丝边和投影分辨；探针的「叠气泡 vs 叠面板」一项就是防这个退化的：要求两处底色通道差 ≥ 8（实测 light 9 / dark 9 / midnight 9）。
 
 **验证。** `probes/sel-ask-chip.mjs` 第 7 段按主题分别量像素（真拖选 + 截图采样，不看 CSS 声明），每套主题 7 项、共 22 项：字对胶囊底 13.3–16.3:1；`backdrop-filter` 带 blur；叠在蓝气泡 `#f1f4fc` / 面板 `#fbfbfd`（light）不是同一个色；描边半透明且真的画出来（DPR 1 上 CSS 的 0.5px 落到 1 个设备像素）；三套主题的投影互不相同。改前这一组 7 项红（`气泡上 #ffffff / 面板上 #ffffff`、`没有 backdrop-filter`），改后 35 项全绿。
+
+## D419 考勤记录页显示请假分项与剩余调休（用户 2026-11-26「看看能否追加调休时长信息插叙显示」）
+
+**问题。** 记录页原来只有一列合计：`absenceHours` 把当天的请假 / 出差加在一起，只在算缺卡时用，界面上一个字都不显示。要核对「那天请的是哪种假、扣了几小时」，得回头去 OA 里翻；要知道「还剩多少调休」，得切到请假页、选上「调休」才看得到。两件事都是看记录时最常问的，却在两个地方各藏一半。
+
+**决定。**
+
+- 桥端行模型把请假拆成 `leaveHours: { compensatory, personal, sick, other, trip }`（对应 OA 的 `c_hours / t_hours / s_hours / o_hours / bt_hours`），`absenceHours` 仍是五项相加 —— 缺卡口径一点没动。`l_hours` 不进模型：本机 180 天数据里它一直是 0，语义没坐实就不猜。
+- `GET /api/attendance/records` 多回一个 `compensatory: number | null`（OA 当前剩余调休，小时）。取数走请假页那发 `use_type: 0` 的探测（`POST /in/apply/leave/add/normal`，只回信息、不落单），余额读 `compensatory_time[0].compensatory_time` —— 和 OA 自己的请假页同一个字段（它也只看 `[0]`；数组其余项没有日期，是别的口径，不猜）。
+- 余额在桥里缓存 5 分钟（`BALANCE_TTL_MS`，内存、按账号）。记录页换区间会顺带取，但不会每点一次「查询」就打一次 OA；请假页取初始化时顺手把这份缓存刷成新值。余额取不到（没登录 / 探测失败）就是 `null`，记录本身照常返回。
+- 页面：「备注」列按 调休 → 事假 → 病假 → 其他 → 出差 的顺序，把当天有的分项写成 `调休 4h · 事假 4h`；顶部 chips 多「本区间调休 X 小时」（从 `rows` 里累加，不另要一份可能对不上的汇总）与「剩余调休 X 小时」（`null` 不显示）。
+
+**为什么。** ① 合计把「请的是哪种假」抹掉了，而 OA 的请假单、纸质审批单都是按类型写的，核对时对不上。② 余额只有「现在还剩多少」这一个数：OA 的 `compensatory_time` 没有日期，没有按日历史，所以只能放在 chips 里说现在，**不能**在每行写「那天还剩多少」—— 这是这次唯一放弃的东西。③ chips 从行里累加而不是桥端另算一份 summary：页面上看到的行和数字必然同源，删掉一行显示也不会对不上。④ 余额缓存放桥端不放页面：页面刷新、换标签页都不该重新打 OA，而桥端已经知道登录态与账号。
+
+**代价。** ① 记录页每次真实查询（缓存过期后）多打一发 OA 探测；被限流时只影响余额那一枚 chip，不拖累记录。② 缓存回落的记录页显示的是**最后一次**拿到的余额（同账号才算数），可能与当下差几小时，靠「这是本地缓存，可能不是最新的」横幅说明。③ 旧缓存里没有 `leaveHours`：`rowsInRange` 原来只按 `dayOff` 判断要不要用 `raw` 重映，这次改成三个新字段缺一就重映（老行里 `dayOff` 已经有了，只看它会漏）。
+
+**验证。** `bridge/tests/attendance-unit.mjs`（62 条）：分项拆开、合计不变、`l_hours` 不计入；`bridge/tests/attendance-e2e.mjs`（39 条）：整天调休那行 `leaveHours.compensatory = 8`、响应 `compensatory = 57`、旧缓存行重映后补出全 0 的分项；`web/tests/attendance-unit.mjs`（16 条）：`leaveKinds` 只列非 0、顺序固定、脏数据当 0，`leaveTotal` 浮点尾巴削掉；`npm --prefix web run typecheck`（含 i18n 4390 键 × 3 语言）。

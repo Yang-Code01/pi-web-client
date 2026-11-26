@@ -408,6 +408,12 @@ test("记录：只查自己，query_type 必须是 3", async () => {
   assert.equal(rows[2].overtime, 5);
   assert.equal(rows[3].missing, false, "整天调休没打卡不算缺卡");
   assert.equal(rows[3].fullDayExcused, true);
+  assert.deepEqual(
+    rows[3].leaveHours,
+    { compensatory: 8, personal: 0, sick: 0, other: 0, trip: 0 },
+    "整天调休要能说出是哪一类假",
+  );
+  assert.equal(rec.json.compensatory, 57, "剩余调休跟请假页那份探测一起下来");
   assert.equal(rows[4].dayOff, true, "假日");
   assert.equal(rows[4].missing, false);
 
@@ -465,6 +471,11 @@ test("记录：上游 NG 时用缓存顶上，并且明确说这是缓存", asyn
   assert.equal(rec.json.rows.length, 1);
   assert.equal(rec.json.rows[0].dayOff, true, "day_type 2 是假日，旧缓存也要认");
   assert.equal(rec.json.rows[0].missing, false);
+  assert.deepEqual(
+    rec.json.rows[0].leaveHours,
+    { compensatory: 0, personal: 0, sick: 0, other: 0, trip: 0 },
+    "旧缓存没有 leaveHours，重映时补全，页面不用自己兜底",
+  );
   assert.equal(rec.json.summary.missing, 0);
   recordsMode = "ok";
 });

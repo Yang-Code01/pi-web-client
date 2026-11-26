@@ -213,6 +213,7 @@ test("mapRow 挑认得的字段，其余原样留在 raw", () => {
   assert.equal(row.raw.c_hours, 8.5);
   assert.equal(row.raw.t_hours, 0);
   assert.equal(row.raw.code, "0");
+  assert.equal(row.leaveHours.compensatory, 8.5, "认得的假单独走 leaveHours");
 });
 
 test("mapRow：没打卡时时间是 null 而不是空串", () => {
@@ -259,6 +260,19 @@ test("mapRow：全天申请从小时字段认出来，半天不算", () => {
   assert.equal(M.mapRow({ ...base, home: 1 }).fullDayExcused, true, "居家办公");
   assert.equal(M.mapRow({ ...base, special_reason: "部门团建" }).fullDayExcused, true, "活动出勤");
   assert.equal(M.mapRow({ ...base }).fullDayExcused, false, "什么都没申请");
+});
+
+test("mapRow：请假分项拆开给（页面备注列用），合计不变", () => {
+  const base = { ...RAW, c_hours: 0, t_hours: 0, s_hours: 0, o_hours: 0, bt_hours: 0 };
+  const row = M.mapRow({ ...base, c_hours: 4, t_hours: 2, bt_hours: 2 });
+  assert.deepEqual(row.leaveHours, { compensatory: 4, personal: 2, sick: 0, other: 0, trip: 2 });
+  assert.equal(row.absenceHours, 8);
+  assert.equal(row.fullDayExcused, true, "拼满 8 小时照样算整天");
+  // l_hours 语义没坐实：不进分项，也不能偷偷计入缺卡判断。
+  assert.equal(M.mapRow({ ...base, l_hours: 8 }).absenceHours, 0);
+  assert.equal(M.mapRow({ ...base }).leaveHours.compensatory, 0);
+  assert.deepEqual(M.emptyLeaveHours(), { compensatory: 0, personal: 0, sick: 0, other: 0, trip: 0 });
+  assert.notEqual(M.emptyLeaveHours(), M.emptyLeaveHours(), "每次都是新对象，调用方改不坏别人的默认值");
 });
 
 test("splitDay 拆不出来就原样当日期", () => {
