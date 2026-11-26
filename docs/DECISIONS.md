@@ -8463,7 +8463,7 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 
 **代价。** 外层 `display: contents` + 内层 `display: contents` 连着两层（`.lm-card` 与 `.lm-scroll`），读 DOM 时要多看一层；`has-card` 切换时这一层会从「不生成盒子」变成块盒子，切换只发生在 `apply()`（量高后一次），不会引起抖动。
 
-**验证。** 红：main（`1b62adcc`）上 `node probes/mac-chat.mjs` 三套主题各 3 项红 —— `FAIL mac-dark：「merge」一行放得下 — {"text":"merge","lines":2,"right":962.84,"msgRight":982}`、两张气泡不贴右。绿：加上这条 CSS 后同一个探针 0 项失败（`merge` 一行、右边缘 982 = `.msg.user` 右边缘）。`probes/long-card.mjs` 第 1 节新增两条断言（短气泡一行、右边缘贴 `.msg.user` ≤ 8px），它守的是「没成卡那层壳不许挤窄气泡」这条，红验证：把这条 CSS 去掉 → 断言挂在 `the short bubble keeps one line ({"lines":2,"right":835.05,"msgRight":893.20})`。`node probes/long-card.mjs` 第 1–6 节全绿（第 7 节「现发一条等假 pi echo」在这台机器上超时 —— main 上同一份探针一样停在 `timeout waiting for the echo round`，假 pi 一 spawn 就被桥关掉 stdin；与本改动无关，桥侧另案）；`npm --prefix web run typecheck` exit 0。
+**验证。** 红：main（`1b62adcc`）上 `node probes/mac-chat.mjs` 三套主题各 3 项红 —— `FAIL mac-dark：「merge」一行放得下 — {"text":"merge","lines":2,"right":962.84,"msgRight":982}`、两张气泡不贴右。绿：加上这条 CSS 后同一个探针 0 项失败（`merge` 一行、右边缘 982 = `.msg.user` 右边缘）。`probes/long-card.mjs` 第 1 节新增三条断言（气泡还在、短气泡一行、右边缘贴 `.msg.user` ≤ 8px —— 第一条是评审意见：`.body` 找不到时说「没画气泡」，而不是在 `selectNodeContents(null)` 上抛一句看不出所以然的 TypeError），它守的是「没成卡那层壳不许挤窄气泡」这条，红验证：把这条 CSS 去掉 → 断言挂在 `the short bubble keeps one line ({"lines":2,"right":835.05,"msgRight":893.20})`。`node probes/long-card.mjs` 第 1–6 节全绿（第 7 节「现发一条等假 pi echo」在这台机器上超时 —— main 上同一份探针一样停在 `timeout waiting for the echo round`，假 pi 一 spawn 就被桥关掉 stdin；与本改动无关，桥侧另案）；`npm --prefix web run typecheck` exit 0。
 
 ## D425 气泡里的「归档 / 删除」认 id 不认节点：★ 行重画后点击不再被静默吞掉（用户 2026-11-26「第一个回话…无法归档」）
 
