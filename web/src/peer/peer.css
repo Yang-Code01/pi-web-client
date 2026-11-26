@@ -580,8 +580,11 @@ body.embedded .brand .nm { display: none; }
 ::-webkit-scrollbar-thumb:hover { background: var(--line-lit); }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* 选中文字 */
-::selection { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+/* 选中文字（D417）：实心强调色 + 反白字。两段半透明的强调色铺在强调色实底的气泡上
+   就等于没铺（对比 1:1），所以强调色实底的气泡里反过来用。 */
+::selection { background: var(--accent); color: var(--accent-ink); }
+.msg.mine .bub::selection,
+.msg.mine .bub ::selection { background: var(--accent-ink); color: var(--accent); }
 
 /* ------------------------------------------------------------------ 浮层：菜单 / 弹窗 / 文件选择器 / toast */
 

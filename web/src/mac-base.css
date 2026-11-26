@@ -105,7 +105,17 @@ html[data-ui="mac"] body {
   font-size: 14px;
   letter-spacing: -0.003em;
 }
-html[data-ui="mac"] ::selection { background: color-mix(in srgb, var(--accent) 34%, transparent); }
+/* 选区（D417）：半透明强调色铺在强调色实底的气泡上会完全消失（底对比 1:1），
+   在深色主题的玻璃面板上也只有 1.6:1 —— 长段落里看不出边界。改成实心强调色 + 反白字。 */
+html[data-ui="mac"] ::selection { background: var(--accent); color: var(--accent-ink); }
+/* 强调色实底的气泡（对话里的用户消息）里反过来用：底色块 + 强调色字，
+   否则选中区与气泡底色是同一个颜色。内网通「我发的」气泡在它自己的 peer.css 里
+   有同一条规则（那份文档不加载本文件）。 */
+html[data-ui="mac"] :is(.msg.user .body)::selection,
+html[data-ui="mac"] :is(.msg.user .body) ::selection {
+  background: var(--accent-ink);
+  color: var(--accent);
+}
 
 /* 叠加式滚动条：细、圆、只在 hover 时变深。 */
 html[data-ui="mac"] ::-webkit-scrollbar { width: 11px; height: 11px; background: transparent; }

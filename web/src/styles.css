@@ -2715,7 +2715,7 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
   border-left: 1px solid var(--line-soft);
 }
 .tr-sed:focus { background: var(--panel); box-shadow: inset 2px 0 0 var(--accent); }
-.tr-sed::selection { background: var(--accent-dim); }
+.tr-sed::selection { background: var(--accent); color: var(--accent-ink); }
 .tr-pick { width: min(460px, calc(var(--vw1) * 92)); }
 .tr-langs { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; }
 .tr-langbtn {
@@ -3154,7 +3154,7 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
   font: 12px/1.55 var(--mono); padding: 12px 16px; white-space: pre; overflow: auto; tab-size: 2;
   caret-color: var(--accent);
 }
-.ed-ta::selection { background: var(--accent-dim); }
+.ed-ta::selection { background: var(--accent); color: var(--accent-ink); }
 /* Q-034：编辑态高亮。文字由下层 <pre> 画，textarea 只留光标与选区（字透明），
    两者字体 / 行高 / padding / tab-size 必须完全一致，否则光标会跑偏。 */
 .ed-code { position: relative; min-width: 0; overflow: hidden; }
