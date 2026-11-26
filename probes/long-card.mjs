@@ -3,7 +3,8 @@
  *
  * 种一条会话：40 行用户消息 + 一句短消息 + 30 行助手回答 + 一张输出很长的工具卡。
  * 检查：
- *   1. 默认（只开「长用户消息」）：长的那条是 `.lm-card.has-card` 且卡在 96px，短的那条没有卡；
+ *   1. 默认（只开「长用户消息」）：长的那条是 `.lm-card.has-card` 且卡在 96px，短的那条没有卡、
+ *      气泡仍然一行宽、贴着右边（D424：没成卡时那层壳不许把气泡挤窄）；
  *   2. 点卡头展开到 `42vh` 内滚，点卡底「收起」回到 96px；
  *   3. 默认关着的那两档走老路：助手回答还是右上角的 `.msg-fold`，工具输出还是 `.tool .out` 260px；
  *   4. 偏好里把两档打开、刷新页面：助手与工具输出也都成卡；
@@ -205,6 +206,26 @@ if (process.env.LC_CONSOLE) page.on("console", (m) => { const t = m.text(); if (
   const card = longUser.locator(".lm-card.lm-user");
   assert((await card.getAttribute("class"))?.includes("has-card"), "the 40-line message became a card");
   assert((await shortUser.locator(".lm-card.has-card").count()) === 0, "the one-line message has no card");
+  // D424：没成卡的那层壳必须真的是「纯过路的」。`.lm-card` 是 `display: contents` 之后，若
+  // `.lm-scroll` 还留成块盒子，它就顶替气泡当 flex 子项、按内容收缩，气泡自己的
+  // `max-width: min(78%, 760px)` 于是量的是这个收缩盒 —— 短消息当场折成好几行、右边空一截
+  // （`merge` → 「mer / ge」，D350 修过，D421 加壳之后复发）。量行数和右边缘，两条一起看。
+  const shortGeom = await shortUser.evaluate((u) => {
+    const b = u.querySelector(".body");
+    if (!b) return null;
+    const range = document.createRange();
+    range.selectNodeContents(b);
+    const lines = new Set([...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top))).size;
+    return { lines, right: b.getBoundingClientRect().right, msgRight: u.getBoundingClientRect().right };
+  });
+  // 结构一变（气泡不叫 `.body` 了）就说「没找到气泡」，别在 `selectNodeContents(null)` 上抛 TypeError ——
+  // 那句红只会说「页面里出错」，看不出是断言要守的东西没了（评审意见 probes/long-card.mjs:211）。
+  assert(shortGeom, "the short message still draws a .body bubble");
+  assert(shortGeom.lines === 1, `the short bubble keeps one line (${JSON.stringify(shortGeom)})`);
+  assert(
+    Math.abs(shortGeom.right - shortGeom.msgRight) <= 8,
+    `the short bubble hugs the right edge (${shortGeom.right.toFixed(0)} / ${shortGeom.msgRight.toFixed(0)})`,
+  );
   // 带图的消息再长也不收卡：卡里只露三行正文，图（附件）会被藏到卡后面。
   const imageUser = page.locator(".msg.user").nth(2);
   assert((await imageUser.locator(".lm-card.has-card").count()) === 0, "a message with an image is never carded");

@@ -7,14 +7,20 @@ export interface ModelGroup {
 }
 
 const RECENT_KEY = "pi.models.recent";
-/** How many recently used models the pickers keep (newest first). */
+/**
+ * The review panel's own recents (D423). Chat and review keep separate lists so the review
+ * picker can show their union without leaking review-only picks into the chat pickers.
+ */
+const REVIEW_RECENT_KEY = "pi.models.reviewRecent";
+/** How many recently used models **each list** keeps (newest first). */
 export const RECENT_MAX = 5;
 
-type ModelRef = { provider: string; id: string };
+/** `t` = when it was last used (ms). Entries written before D423 have none and sort last. */
+type ModelRef = { provider: string; id: string; t?: number };
 
-function readRecent(): ModelRef[] {
+function readList(key: string): ModelRef[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
+    const raw = JSON.parse(localStorage.getItem(key) ?? "[]");
     if (!Array.isArray(raw)) return [];
     return raw.filter((x): x is ModelRef => !!x && typeof x.provider === "string" && typeof x.id === "string");
   } catch {
@@ -22,29 +28,58 @@ function readRecent(): ModelRef[] {
   }
 }
 
-/**
- * Remembers a model the user switched to (or away from) so pickers can offer it under
- * 「最近使用」. Newest first, de-duplicated by provider/id, capped at {@link RECENT_MAX};
- * kept per browser in localStorage.
- */
-export function rememberRecentModel(provider: string | undefined, id: string | undefined): void {
+function rememberInto(key: string, provider: string | undefined, id: string | undefined): void {
   if (!provider || !id) return;
-  const list = [{ provider, id }, ...readRecent().filter((r) => !(r.provider === provider && r.id === id))].slice(0, RECENT_MAX);
+  const list = [{ provider, id, t: Date.now() }, ...readList(key).filter((r) => !(r.provider === provider && r.id === id))].slice(0, RECENT_MAX);
   try {
-    localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+    localStorage.setItem(key, JSON.stringify(list));
   } catch {
     /* private mode: the recent group just stays empty */
   }
 }
 
-/** Recently used models that are still in the catalog, newest first; `exclude` (the pinned one) is left out. */
-export function recentModels(models: ModelInfo[], exclude?: ModelInfo | null): ModelInfo[] {
+/**
+ * Remembers a model the user switched to (or away from) so pickers can offer it under
+ * 「最近使用」. Newest first, de-duplicated by provider/id, capped at {@link RECENT_MAX};
+ * kept per browser in localStorage. Chat pickers read this list only.
+ */
+export function rememberRecentModel(provider: string | undefined, id: string | undefined): void {
+  rememberInto(RECENT_KEY, provider, id);
+}
+
+/** The review panel's 「最近使用」 writer: a model it picked (or actually ran a review with). */
+export function rememberReviewModel(provider: string | undefined, id: string | undefined): void {
+  rememberInto(REVIEW_RECENT_KEY, provider, id);
+}
+
+/** Maps refs onto the live catalog: drops models no longer offered and the `exclude` (pinned) one. */
+function toModels(refs: ModelRef[], models: ModelInfo[], exclude?: ModelInfo | null): ModelInfo[] {
   const out: ModelInfo[] = [];
-  for (const r of readRecent()) {
+  for (const r of refs) {
     const m = models.find((x) => x.provider === r.provider && x.id === r.id);
     if (m && m !== exclude && !out.includes(m)) out.push(m);
   }
   return out;
+}
+
+/** Recently used models that are still in the catalog, newest first; `exclude` (the pinned one) is left out. */
+export function recentModels(models: ModelInfo[], exclude?: ModelInfo | null): ModelInfo[] {
+  return toModels(readList(RECENT_KEY), models, exclude);
+}
+
+/**
+ * The chat list and the review list as one list (D423): newest `t` first, one entry per
+ * provider/id, **not** re-capped — each list already holds at most {@link RECENT_MAX}, so a
+ * chat-heavy history cannot push a model the user just picked for reviews out of the group.
+ */
+export function mergedRecentModels(models: ModelInfo[], exclude?: ModelInfo | null): ModelInfo[] {
+  const byKey = new Map<string, ModelRef>();
+  for (const r of [...readList(RECENT_KEY), ...readList(REVIEW_RECENT_KEY)]) {
+    const key = `${r.provider}/${r.id}`;
+    const prev = byKey.get(key);
+    if (!prev || (r.t ?? 0) > (prev.t ?? 0)) byKey.set(key, r);
+  }
+  return toModels([...byKey.values()].sort((a, b) => (b.t ?? 0) - (a.t ?? 0)), models, exclude);
 }
 
 /**
@@ -56,11 +91,14 @@ export function recentModels(models: ModelInfo[], exclude?: ModelInfo | null): M
 export function groupModels(
   models: ModelInfo[],
   current?: { id?: string; provider?: string },
+  /** `mergedRecent`: the review panel wants chat + review recents merged (D423); everyone else keeps chat only. */
+  opts?: { mergedRecent?: boolean },
 ): { pinned: ModelInfo | null; recent: ModelInfo[]; groups: ModelGroup[] } {
   const pinned =
     (current?.id && models.find((m) => m.id === current.id && (!current.provider || m.provider === current.provider))) || null;
   // 最近使用的也照样留在各自的来源组里：这一组是快捷入口，不是搬家。
-  return { pinned, recent: recentModels(models, pinned), groups: groupByProvider(models.filter((m) => m !== pinned)) };
+  const recent = opts?.mergedRecent ? mergedRecentModels(models, pinned) : recentModels(models, pinned);
+  return { pinned, recent, groups: groupByProvider(models.filter((m) => m !== pinned)) };
 }
 
 /**

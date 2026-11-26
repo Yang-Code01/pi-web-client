@@ -8449,7 +8449,65 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 
 **补（PR #700 评审）。** 面板那个下拉最初把桥回的**解析结果**当成「人选的那个」写进 `reviewAccount` —— 跟随工作区时它也是具体账号，于是「跟随工作区」永远选不中、桥回空账号时又不清（留着上一次的号）。现在拆成两个字段：`reviewAccount` 只存会话里显式选的（`state.session.source === "session"`），`reviewAccountUsed` 存实际按谁在查，只用来写给人看（下拉首项写「跟随工作区（xyang-qingmin）」）。拆分逻辑是纯函数 `ghAccountPair()`，配 `web/tests/github-unit.mjs` 用例。
 
-## D423 电子表格求值：缓存区域矩阵、给 VLOOKUP 精确匹配建索引、firstErr 不再摊平（用户 2026-11-27「fast-anything 优化一下本工程」）
+D
+## D423 「最近使用」分两条清单：评审弹层显示「评审挑过的 + 对话用过的」并集（用户 2026-11-26「代码评审里面的模型切换里面的最近使用 应该记录的是使用过代码评审的记录+ chat 会话最近使用的。 现在只有chat 会话最近使用的」）
+
+**问题。** 模型弹层的「最近使用」只有一份 `localStorage["pi.models.recent"]`（`web/src/modelgroups.ts:9`，上限 5 条），写它的只有两处：对话弹层确认换模型（`web/src/app.ts:5958-5961`，换走的和换上的都记）、新会话弹层挑模型（`web/src/scratch.ts:632-633`）。评审面板那颗 `.rv-model` chip 走 `openModelSheet(false, { start, onPick })`（`web/src/app.ts:19401-19407`），确认分支只调 `pick.onPick(...)`（`web/src/app.ts:5938-5943`），**从不**调 `rememberRecentModel` —— 评审挑过的模型一条也进不了这份清单，于是评审弹层里只剩对话用过的。第二层问题：最近使用段只画在「当前使用」页（`web/src/app.ts:6134`），而 pick 模式默认落在「全部模型」页（`web/src/app.ts:5856`），且那页里的「当前使用」在没挑过模型时 pinned 是空的 —— 就算记了，打开评审弹层那一屏也看不见。
+
+**决定。**
+
+- **两条清单**：新增 `localStorage["pi.models.reviewRecent"]`（评审侧专用），条目形状 `{ provider, id, t }`；对话那条 `pi.models.recent` 也改成写 `t`，读到没有 `t` 的旧条目当 `t = 0`（排序落在后面，不做一次性迁移）。两条各自封顶 `RECENT_MAX = 5`，由 `rememberRecentModel` / 新增的 `rememberReviewModel` 分别写。
+- **合并只发生在显示层**：`mergedRecentModels()` 取两条的并集，按 `t` 降序、按 `provider/id` 去重，合并后**不裁**（最多 10 条，段头写「N 个」）；`groupModels` 多一个 `mergedRecent` 开关，只有评审弹层传它。
+- **什么算「评审用过」**：确认「用这个模型」时记一笔（`web/src/app.ts:5938-5943`，pick 分支）；`startReview()`（`web/src/app.ts:19559`）再用 `reviewEffectiveModel()` 记一笔，把它提到最前。后者覆盖「没单独挑、按默认模型跑了一次评审」的路径。
+- **版面**：pick 模式下 `allPane()` 顶部插一段「最近使用」（不折叠、不进来源组），「当前使用」页那段也改用合并口径；对话弹层与新会话弹层（`web/src/scratch.ts:621`）保持只看对话那条。
+
+**为什么。** ① 用户要的口径本来就不对称：评审弹层要「评审挑过的 + 对话用过的」，而对话侧不该被评审的选择污染 —— 一条共享清单做不到这种不对称，除非给每个条目记来源（那是第三条清单的复杂度，收益只是省一个键）。② 合并按 `t` 排而不是「评审的在前」：用户心智是「最近用过」，而刚在对话里换过的模型往往正是这次评审想选的；不做优先级猜测。③ 两条各 5、合并不裁：合并后再裁到 5，评审的选择会被对话常用的模型挤出去，正是这次要修的现象。④ 开跑时也记一笔：确认完就记能让人马上在最近里看到，但只有开跑那次才是「真的拿去评过」；两条都记，顺序自然把最近一次提到最前。⑤ 「最近使用」只在 pick 模式的「全部模型」页新增一段，不动对话弹层的版面 —— D409 定过「最近使用并进当前使用页、不单独占左栏入口」，这次不推翻它，只是给 pick 模式补一个开场就能看到的入口。
+
+**代价。** 多一个 localStorage 键要清（用户在隐私模式写不进时两份都可能空）；旧条目没有 `t` 会永远排在带 `t` 的后面，直到被用过一次；评审清单会含「挑过但还没真跑过」的模型（确认即记录的口径），这是为了刚挑完就能看见而接受的。
+
+**验证。** `web/tests/modelgroups-unit.mjs` 扩用例（现共 8 条全绿）：评审清单与对话清单互不污染、两条按 `t` 合并且同模型只出现一次、每条封顶 5、合并后条数超过 `RECENT_MAX` 时不裁、旧条目无 `t` 排后面、`groupModels({ mergedRecent: true })` 不重复 pinned。红验证：把 `rememberReviewModel` 改成写 `RECENT_KEY` → 合作用例红 3 条（含「写评审不动对话那条」），改回即绿。`probes/model-sheet-ui.mjs`（`npm --prefix web run build` 后跑，真 Chromium + 桩桥）回归对话弹层 9 段全绿：普通弹层不受这次改动影响（它根本不走 `pick` 分支，也就看不见合并清单）。pick 弹层这次的版面只由 typecheck 与手验看着，没加新探针（本轮选的是「扩单测 + 跑现有 probe」）。
+
+## D424 没成卡时 `.lm-scroll` 也得是纯过路的，否则用户气泡又被挤成窄条（用户 2026-11-26「输入显示bug」＋截图：气泡里「ABC」「DF」折成两行）
+
+**编号。** 本条原写 D423，与同期在开的 #703（「最近使用」收两份清单）撞了；那个 PR 先占的号，这边让出，改 D424。
+
+**问题。** 发一句「ABCDF」，气泡被折成「ABC / DF」，右边还空一截；「牛逼」被折成一个字一行。这是 D350 修过的那个坑复发，触发者是 D421。
+
+机制：D421 把用户消息的正文包进 `.lm-card > .lm-scroll > .body`，没成卡时只让最外层 `.lm-card` 变 `display: contents`（`web/src/styles.css:6253`）。`display: contents` 只拆掉自己那层盒子，**里面那层 `.lm-scroll` 就成了 `.msg.user`（`display:flex; flex-direction: column; align-items: flex-end`）的 flex 子项**，也就是一个按内容收缩的块盒子；而气泡自己的 `max-width: min(78%, 760px)`（`web/src/mac.css:111`）量的是**包含块**的宽度 —— 包含块从 `.msg.user` 换成了 `.lm-scroll`，于是百分比对着「由正文撑出来、又反过来被这个百分比限制」的盒子算，落成一个只有自然宽度 78% 的小数（实测链：`msg.user` 602 → `.lm-scroll` 69.6 → `.body` 54.29px）。D350 当时的注释就写在 `.msg.user .foldable` 那段上（`web/src/mac.css:125-133`）：百分比得量在会撑满的那一层，不能量在收缩盒上。
+
+**决定。** `.lm-card:not(.has-card) > .lm-scroll { display: contents; }` —— 没成卡时这一层不生成盒子，`.body` 重新直接是 `.msg.user` 的 flex 子项（回到 D350 验证过的形状）；`has-card` 一亮它就变回真盒子，卡内滚动、`42vh` 展开那些照旧。一行 CSS，不动 JS：卡片要挂 `ResizeObserver` 的仍然是那块 `.body`，`display: contents` 不影响高度测量。
+
+**为什么不是别的改法。** ① 不动 `.body` 的 `max-width: min(78%, 760px)`：这是气泡宽度的语义（「最多占对话区 78%」），换 `max-width: 760px` 或 `width: fit-content` 会让长消息在窄窗口里溢出、并且要重做 D350 那套 `.foldable` 的两处分权。② 不在 JS 里「没成卡就不建壳」：卡片是量完高才决定要不要的，先建后拆会闪一帧，D421 第 1 条特意保证「不高的条目零改动」。③ 不给 `.lm-scroll` 加 `max-width: min(78%, 760px)` 再让 `.body` 100%：两处写同一个数，下次改一处就劈开（D350 就是被拆成两层的宽度限制坑掉的）。
+
+**代价。** 外层 `display: contents` + 内层 `display: contents` 连着两层（`.lm-card` 与 `.lm-scroll`），读 DOM 时要多看一层；`has-card` 切换时这一层会从「不生成盒子」变成块盒子，切换只发生在 `apply()`（量高后一次），不会引起抖动。
+
+**验证。** 红：main（`1b62adcc`）上 `node probes/mac-chat.mjs` 三套主题各 3 项红 —— `FAIL mac-dark：「merge」一行放得下 — {"text":"merge","lines":2,"right":962.84,"msgRight":982}`、两张气泡不贴右。绿：加上这条 CSS 后同一个探针 0 项失败（`merge` 一行、右边缘 982 = `.msg.user` 右边缘）。`probes/long-card.mjs` 第 1 节新增三条断言（气泡还在、短气泡一行、右边缘贴 `.msg.user` ≤ 8px —— 第一条是评审意见：`.body` 找不到时说「没画气泡」，而不是在 `selectNodeContents(null)` 上抛一句看不出所以然的 TypeError），它守的是「没成卡那层壳不许挤窄气泡」这条，红验证：把这条 CSS 去掉 → 断言挂在 `the short bubble keeps one line ({"lines":2,"right":835.05,"msgRight":893.20})`。`node probes/long-card.mjs` 第 1–6 节全绿（第 7 节「现发一条等假 pi echo」在这台机器上超时 —— main 上同一份探针一样停在 `timeout waiting for the echo round`，假 pi 一 spawn 就被桥关掉 stdin；与本改动无关，桥侧另案）；`npm --prefix web run typecheck` exit 0。
+
+## D425 气泡里的「归档 / 删除」认 id 不认节点：★ 行重画后点击不再被静默吞掉（用户 2026-11-26「第一个回话…无法归档」）
+
+**问题。** ★ 行里一颗「完成」的会话，悬停打开胶囊气泡、点「归档」—— 毫无反应，胶囊留在原地，桥一帧 `manage` 都没收到。气泡（`web/src/pinmenu.ts` 的 `openPinMenu`）把**打开那一刻的胶囊节点**闭包进 `onArchive` / `onDelete`；而 `web/src/frames.ts` 把 `pi.status` 一律映射到 `"sessions"`，`renderSessionRow()` → `pillBar.render()` → `host.replaceChildren()` 整条重建。旧节点脱离文档后 `archiveFromPin()` 里的 `if (!host.contains(chip)) return;` 恒为真，点击被丢掉。用户现场别的会话都在「运行中」，`pi.status` 一直在流，正好踩中；气泡开着、指针已经在气泡里时，新胶囊也不会再触发 pointerenter 把气泡重锚过去。
+
+**决定。** 新增 `livePinChip(id, chip)`：闭包里的节点还连着文档（`isConnected`）就演动效；被重建换掉就按 `data-pin-id` 在当前 ★ 行里找那颗活的；都找不到（比如已被别的路径收走）就不演、直接把动作发出去 —— 归档走 `archiveOne(id)`，删除走原来 `calm()` 那条「直接发 manage/delete + 一句话交代去向」。`archiveFromNowChip()` 对 `!chip.isConnected` 同样直接发。动作语义以 id 为准，节点只是动效的载体。
+
+**为什么。** ① 归档/删除是幂等的数据动作，不该因为一次重画就消失；「点了没反应」比「没有动效」糟得多，退化成无动画是正确降级。② 不选「重画时把气泡重新锚到新节点」：那要在 `renderSessionRow()` 里维护一张「谁的气泡开着」的迁移表，而气泡本来就挂在 body、位置固定，用户正在点的按钮不受影响；多这一层只会多一个失效点。③ 不选「气泡打开期间禁止重建 ★ 行」：`pi.status` 是状态同步的主干，为一个气泡停掉它会把「运行中」徽标冻住。④ 按 id 回查而不是整条重画后再重开气泡，保留了「同一颗会话」的语义 —— 用户看到的还是那个名字那条会话。
+
+**代价。** 无动效降级那条路上 `pinAnim` 不置位，理论上「重开气泡再点一次」能在回声前多发一帧；但第一次点击同步关掉气泡，重开要重新 hover 180ms，且桥端同一 id 的归档/删除幂等，不产生第二次效果。
+
+**验证。** `node probes/pin-menu-archive-repaint.mjs`（桩桥 + 真 Chromium）：悬停打开气泡 → 把指针挪进气泡 → 广播一帧别的会话的 `pi.status`（整条 ★ 行重建）→ 点归档/删除。改前拿旧 `web/dist` 跑（`PROBE_DIST=web/dist`）红 10 项、归档 0 帧；改后 15 项全绿（归档与删除各发一帧、只带这一颗、回声后 ★ 行收敛；没有重画的对照组仍走收拢动效并落帧）。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
+## D426 会话的身份认「文件名里那份 pi 文件」，不认 pi 手里的 id：换脑不再丢历史（用户 2026-11-27「新会话的会话，之前的 chat 记录信息丢失了。而且我记得之前的会话名字也不叫新会话」）
+
+**问题。** 网页里新建的会话 `f89e1eff…` 第一支 pi 在写盘前就退了（exit 0），桥的 `state.file` 却记着 pi 报过的路径；用户再发一句时 `startLive` 按「有 file 就续」发 `--session <那个还不存在的路径>`。pi 不报错：`SessionManager._setSessionFile` 保留给定路径、`newSession()` 另生成 id（`01a21885…`），于是**桥的 id 与文件头 id 分叉**，而文件名仍是 `<时间>_f89e1eff….jsonl`。00:14 热替换（换脑）后新脑 `adoptLinked([f89e1eff])` → `ensure()` 用 `metas().find(m => m.id === id)` 找不到 meta → 构造出「没有文件」的会话：items 空（页面上历史全没了）、名字回落成 `DEFAULT_NAME`「新会话」、startedAt 变成「现在」；后来 `get_state` 把 file 补回来，`list()` 又把同一份文件按两个 id 列了两次（一条 running、一条只读，只读那条的名字还是首句预览「查看一下github上的 fast-anything 这个项目」）。
+
+**决定。** 三处，都以「磁盘上那份文件」为准：① `sessionOpenArgs(resume, file, id)` —— 只有文件**存在且非空**才 `--session`，否则一律 `--session-id`（pi 对空文件也会 newSession + 换 id）。② `metaFor(id)` 先按文件头 id 找，找不到再按**文件名里含这个 id** 找（pi 的文件名永远是 `<开始时间>_<id>.jsonl`），`ensure()` / `locate()` 都走它。③ `list()` 记下 live 会话的 `state.file`，discover 那条同文件的只读条目跳过。另外 `absorbState` 把 `st.sessionId` 与自己的 id 不同时打一行日志，让这种分叉以后一眼可见。
+
+**为什么。** ① 分叉之后**文件里的历史是完好的**（337 条 message 一条没少），丢的只是「桥按 id 查不到它」这一步；修认领比修数据便宜，也不需要用户的会话重来一遍。② 不选「优先用 pi 报的 sessionId 当桥 id」：那等于把会话的 key 交给子进程，pi 每次换代都可能给你一个新 id，标签行、★ 行、归档、产物目录、`names.json` 全要跟着迁；而且换脑那一刻我们**还不知道**新 id。③ 不选「`--session` 照样发、让 pi 自己处理」：D20 的原文是「已有文件」，发不存在的路径只是把分叉静默地再造一次。④ 按文件名兜底而不是「扫所有文件比对内容」：文件名里的 id 是 pi 定的、稳定，扫内容要读全部会话文件的开头，代价高且没有额外信息。
+
+**代价。** `metaFor` 在 id 对不上时会多扫一遍 `metas()`（有 5 秒缓存，实际几乎为零）。分叉过的会话，pi 手里仍是文件头那个 id，所以 `[session] … 按文件名认领这份历史` 这行日志每轮启动会打一次 —— 这是有意的，它就是这个 bug 的指纹。
+
+**验证。** 红：`bridge/tests/session-file-id.mjs` 在未修的 `bridge/src/sessions.ts` 上两个用例都红（第二个挂在 `items=0`，第一个挂在「`--session` 照发给不存在的路径」）；绿：改动后 2/2 通过（约 300ms），`npx tsc -p bridge --noEmit` 无输出，`sessions-day-order` / `session-dirs` / `tail-read-error` / `state-read-guard` 全绿。线上复现口径：`f89e1eff` 的 `/api/session` items 只有换脑后的 `live:*`（最早 16:14:16Z），而文件里 337 条 message 完好。
+## D427 电子表格求值：缓存区域矩阵、给 VLOOKUP 精确匹配建索引、firstErr 不再摊平（用户 2026-11-27「fast-anything 优化一下本工程」）
+
+**编号。** 本条原写 D423，与同期在开的 #703 / #705 / #709 撞了号；那几条先合进 main、占着 D423–D426，这边让出，改 D427。
 
 **问题。** `fast-anything scan` 把 82.5% 的采样时间判给 `bridge/src/sheet/calc.ts:729 evaluate`，但 `port` 当场拒了：`recorded no usable calls to bridge.src.sheet.calc.evaluate out of 20594. Arguments and results must be plain data: numbers, strings, bytes, lists, tuples, dicts, sets (got: BookCalc)` —— 求值器的上下文是个带 Map 的实例，跨不过 FFI，这类热点只能靠改算法。用 `.scratch/sheet-perf/` 的分档工作簿（4000 行 × 30 列，每行 6 条公式，共 23994 条且**没有缓存值**，所以全走 `fillFormulaValues`）归因，问题不是「求值器普遍慢」而是**公式种类单一**：sum 136ms / ifsum 303 / countif 278 / roundav 362 / text 332，只有 **VLOOKUP 13 700ms**。三笔成本叠在一起：① 每行 VLOOKUP 都把同一个 `A2:B4000` 重新展开成 8000 格矩阵（`BookCalc.range()` 每次都新建）；② 精确匹配对 4000 行逐行 `cmp`，O(行×公式) = 1600 万次比较；③ `callFn` 里的错误预检用 `firstErr(args)`，而 `firstErr` 先 `flatten(args)` —— 每次调用都把 8000 格摊平成一个数组（4000 × 8000 = 3200 万次 push，profile 里占 29.8%）。
 

@@ -82,7 +82,7 @@ import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
 import { SelAsk } from "./selask.ts";
-import { appendModelOptions, groupByProvider, groupModels, isModelGroupOpen, rememberRecentModel, setModelGroupOpen } from "./modelgroups.ts";
+import { appendModelOptions, groupByProvider, groupModels, isModelGroupOpen, mergedRecentModels, rememberRecentModel, rememberReviewModel, setModelGroupOpen } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isDefaultHidden, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { type CtxLine, type CtxPolicy } from "./context.ts";
@@ -5937,7 +5937,11 @@ export class App {
     const commit = (): void => {
       if (pick) {
         const chosen = this.models.find((m) => m.id === draftModel);
-        if (chosen) pick.onPick(chosen, draftLevel);
+        if (chosen) {
+          // D423：评审挑的模型进评审侧那份「最近使用」（确认即记）；对话那份不受影响。
+          rememberReviewModel(chosen.provider, chosen.id);
+          pick.onPick(chosen, draftLevel);
+        }
         this.closeSheet();
         return;
       }
@@ -6096,6 +6100,13 @@ export class App {
       lvBar.replaceChildren(el("span", "pm-lvbar__label", tr("思考档位")), who, seg);
     };
 
+    // 两个页共用的一份：来源是否不止一个（平铺的行要标来源）、在用的模型（顺手当 exclude）、
+    // 搜索匹配规则（列表与「最近使用」共用，改规则只改这里）。
+    const multi = new Set(this.models.map((x) => x.provider)).size > 1;
+    const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
+    const currentModel = this.models.find((x) => x.id === startModel && (!startProvider || x.provider === startProvider)) ?? null;
+    const matches = (x: ModelInfo, q: string): boolean => !q || `${x.name} ${x.id}`.toLowerCase().includes(q);
+
     const nowPane = (): HTMLElement[] => {
       const out: HTMLElement[] = [];
       const m = draftInfo();
@@ -6122,10 +6133,7 @@ export class App {
         return out;
       }
 
-      const { pinned, recent } = groupModels(this.models, { id: startModel });
-      // 来源不止一个时，这几块是平铺的，得在行里标出它属于哪个来源。
-      const multi = new Set(this.models.map((x) => x.provider)).size > 1;
-      const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
+      const { pinned, recent } = groupModels(this.models, { id: startModel }, { mergedRecent: !!pick });
       // 只换档位时草稿就是当前模型：再插一块「待切换」＝同一行画两遍。
       if (dirty() && m && m.id !== startModel) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
       const current = [pinned ? flatRow(pinned) : null].filter((x): x is HTMLElement => !!x);
@@ -6138,7 +6146,7 @@ export class App {
     const allPane = (): HTMLElement[] => {
       const q = query.trim().toLowerCase();
       // 不按「草稿排第一」重排：点一行就把它提到最上面，看起来像「选择后自动跳到第一个」，鼠标底下的行都换了位。
-      const list = this.models.filter((m) => !q || `${m.name} ${m.id}`.toLowerCase().includes(q));
+      const list = this.models.filter((m) => matches(m, q));
       if (this.models.length === 0) {
         return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
       }
@@ -6147,6 +6155,18 @@ export class App {
         const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
         notice.append(this.claimButton());
         out.push(notice);
+      }
+      // D423：评审挑模型时开场就落在这一页，「最近使用」得在这里看得到。
+      // 对话侧不插这一段：D409 定过它归「当前使用」页，不重复入口。
+      if (pick) {
+        // 与「当前使用」页同口径：在用的那条已经画在最上面，最近里不再重复（点它也是原地不动）。
+        const recent = mergedRecentModels(this.models, currentModel).filter((x) => matches(x, q));
+        if (recent.length) {
+          out.push(
+            this.stSection(tr("最近使用"), tr("{p1} 个", { p1: String(recent.length) })),
+            panel(recent.map(flatRow), ""),
+          );
+        }
       }
       // 来源多了就得能分开看：按目录顺序一个来源一组，组头可折（状态记在 pi.modelGroups.open，跟目录选择器同一份）。
       const groups = groupByProvider(list);
@@ -19557,6 +19577,9 @@ export class App {
     this.reviewError = "";
     this.reviewPrMenu = false;
     const modelInfo = this.reviewEffectiveModel();
+    // D423：这次真要拿去跑的模型也算「评审用过的」——没单独挑时它跟着会话走，
+    // 记下来的作用是把「确认过但还没跑」和「刚跑过」的次序理顺，下次打开就在最近里。
+    if (modelInfo) rememberReviewModel(modelInfo.provider, modelInfo.id);
     // 新开一条：等桥的 `review.started` 把 runId 发回来再定焦点，这里先回列表页。
     // （以前这里会乐观塞一份 runId 空串的进度；并发以后那样会跟另一条的进度混在一起。）
     this.reviewFocus = "";
@@ -22605,6 +22628,20 @@ export class App {
   }
 
   /**
+   * 气泡闭包住的是「打开那一刻」的胶囊节点，而 ★ 行会因为任意一帧 pi.status / 会话回声整条重建
+   * （frames.ts 把 pi.status 一律映射到 "sessions"）。重建后旧节点从文档里摘掉、`isConnected` 为假
+   * —— 早先归档/删除在 `host.contains(chip)` 这里直接 return，点击被静默吞掉（「点了没反应」）。
+   * 所以动作认 id：节点还连着文档（★ 行胶囊，或不在 ★ 行里的 NowChip）就演动效，
+   * 被重建换掉就按 id 回查当前那颗，都找不到就不演、照样把动作发出去。
+   */
+  private livePinChip(id: string, chip?: HTMLElement | null): HTMLElement | null {
+    if (chip && chip.isConnected) return chip;
+    const host = this.els.pinStrip;
+    const byId = host.querySelector<HTMLElement>(`.pin-chip[data-pin-id="${CSS.escape(id)}"]`);
+    return byId && byId.isConnected ? byId : null;
+  }
+
+  /**
    * 归档动效：胶囊原地淡出 → 横向收拢让位（后面的胶囊平滑左移），然后才真的发归档。
    * 先演后发：归档是幂等的，而桥的回声会重建整条 ★ 行，收拢完的几何必须和重建后一模一样，
    * 否则回声那一帧会跳。早先版本在条尾插一个抽屉（把「＋」挤开 35px、回声时再弹回）、
@@ -22617,12 +22654,17 @@ export class App {
       this.archiveOne(id);
       return;
     }
+    // 节点被重建换掉时不能演收拢（没有可量的几何），但归档必须照发。
+    const live = this.livePinChip(id, chip);
+    if (!live) {
+      this.archiveOne(id);
+      return;
+    }
     const host = this.els.pinStrip;
-    if (!host.contains(chip)) return;
     this.pinAnim = id;
     // 量 CSS px 而不是 getBoundingClientRect：#app 上有 zoom（外观「字号」），rect 是缩放后的视觉尺寸，
     // 拿它写回 style.width / height 会被再缩一遍 —— 胶囊先变宽、整行变高，正是这里要治的抖。
-    const cs = getComputedStyle(chip);
+    const cs = getComputedStyle(live);
     const borders = parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
     const box = cs.boxSizing === "border-box" ? 0 : borders + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
     const vbox = cs.boxSizing === "border-box" ? 0 : parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
@@ -22631,16 +22673,16 @@ export class App {
     // 收拢只动这一颗胶囊（chip.parentElement 就是 .pin-strip，动它会把整条缩没）。
     // border-box 下宽度到不了 0（还剩左右边框），用负的右外边距把边框和 flex gap 一起吃掉：
     // 收完这颗的占位正好是 0，下一颗停在它原来的左边缘 —— 和回声重建后的位置一致。
-    Object.assign(chip.style, {
+    Object.assign(live.style, {
       boxSizing: "border-box",
       height: `${r.height}px`,
       overflow: "hidden",
       whiteSpace: "nowrap",
       pointerEvents: "none",
     });
-    const fade = chip.animate([{ opacity: "1" }, { opacity: "0" }], { duration: 220, easing: "ease-out", fill: "forwards" });
+    const fade = live.animate([{ opacity: "1" }, { opacity: "0" }], { duration: 220, easing: "ease-out", fill: "forwards" });
     fade.onfinish = () => {
-      const shut = chip.animate(
+      const shut = live.animate(
         [
           { width: `${r.width}px`, marginRight: "0px" },
           { width: "0px", marginRight: `${-(gap + borders)}px` },
@@ -22666,8 +22708,15 @@ export class App {
       this.pinNote(tr("已移入垃圾箱 · 在左栏的垃圾箱里可以还原"));
       return;
     }
-    const r = chip.getBoundingClientRect();
-    const clone = chip.cloneNode(true) as HTMLElement;
+    // 同 archiveFromPin：节点可能已被重建换掉，拿不到存活节点就直接删，不演飞行动效。
+    const live = this.livePinChip(id, chip);
+    if (!live) {
+      this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
+      this.pinNote(tr("已移入垃圾箱 · 在左栏的垃圾箱里可以还原"));
+      return;
+    }
+    const r = live.getBoundingClientRect();
+    const clone = live.cloneNode(true) as HTMLElement;
     clone.classList.add("pin-flyer");
     markSurface(clone, "paper");
     clone.removeAttribute("data-pin-key");
@@ -22720,7 +22769,7 @@ export class App {
     if (this.pinAnim) return;
     this.closePinMenu();
     const chip = this.nowChip?.el;
-    if (this.calm() || !chip) {
+    if (this.calm() || !chip || !chip.isConnected) {
       this.archiveOne(id);
       return;
     }

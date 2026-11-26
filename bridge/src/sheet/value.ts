@@ -14,7 +14,7 @@ export interface ErrVal {
  * 「这块矩阵是 ctx 的缓存对象」的标记（只有 `BookCalc.range()` 会打）。
  *
  * 查找类函数靠它决定要不要给矩阵建索引：同一块区域被几千个 VLOOKUP 问到时建一次索引是
- * 净赚，而每次新建的临时矩阵建索引比线性扫还慢，所以不能无条件建。见 D423。
+ * 净赚，而每次新建的临时矩阵建索引比线性扫还慢，所以不能无条件建。见 D427。
  */
 export const CACHED_RANGE = Symbol("sheet.cachedRange");
 
