@@ -80,6 +80,7 @@ import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
+import { SelAsk } from "./selask.ts";
 import { appendModelOptions, groupByProvider, groupModels, isModelGroupOpen, rememberRecentModel, setModelGroupOpen } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isDefaultHidden, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
@@ -435,6 +436,8 @@ export class App {
   private els: Record<string, HTMLElement> = {};
   /** #86：随手问。它的帧不走当前会话那条路，自己认领；模型目录也是现成的。 */
   private readonly scratch = new ScratchChat({ send: (msg) => this.socket.send(msg), models: () => this.models });
+  /** D416：聊天区拖选后那颗「问一下」。选区识别与落位在 `selask.ts` 里，这里只接「点了怎么办」。 */
+  private selAsk: SelAsk | null = null;
   /** #248：Jira 面板。第一次点才建；关闭后整块移除，下次打开重新问桥。 */
   private jira: JiraPanel | null = null;
   private mail: MailPanel | null = null;
@@ -1390,6 +1393,14 @@ export class App {
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
     this.chat = new ChatView(scroll);
+    // D416：拖选聊天记录里的文字，松手冒一颗「问一下」；点了把那一段以 `>` 引用插进随手问。
+    this.selAsk = new SelAsk({
+      scope: () => scroll,
+      scale: () => this.uiScale(),
+      host: () => document.getElementById("app"),
+      onAsk: (text) => this.scratch.quote(text),
+    });
+    this.selAsk.start();
     // 图片字节在会话文件里，只有 app 知道当前会话 id；刚发出、还没落盘的 `user:N` 气泡由桥内存兜底。
     this.chat.setImageSource((itemId, index) => {
       const id = this.currentId;

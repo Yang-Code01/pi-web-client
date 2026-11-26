@@ -1462,6 +1462,8 @@ export const en: Dict = {
   "已休眠 {p1} 个会话。": "Put {p1} session(s) to sleep.",
   "一个都没睡：{p1} 还在跑，没有动。": "Nothing went to sleep: {p1} is still running, left untouched.",
   "已休眠 {p1} 个会话；{p2} 还在跑，没有动。": "Put {p1} session(s) to sleep; {p2} is still running and was left untouched.",
+  "问一下": "Ask about it",
+  "把选中的这段拿到随手问里引用": "Quote the selected text into Quick ask",
   "随手问": "Quick ask",
   "随手问：不进会话列表、不带上下文、不改本机的一个 dialog": "Quick ask: a dialog that never joins the session list, carries no context, and never changes this machine",
   "不进会话列表 · 不带上下文 · 不改本机（能读文件、能联网查）": "Not in the session list · No context · Never touches this machine (reads files, searches the web)",
