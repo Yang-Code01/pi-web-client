@@ -6100,6 +6100,13 @@ export class App {
       lvBar.replaceChildren(el("span", "pm-lvbar__label", tr("思考档位")), who, seg);
     };
 
+    // 两个页共用的一份：来源是否不止一个（平铺的行要标来源）、在用的模型（顺手当 exclude）、
+    // 搜索匹配规则（列表与「最近使用」共用，改规则只改这里）。
+    const multi = new Set(this.models.map((x) => x.provider)).size > 1;
+    const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
+    const currentModel = this.models.find((x) => x.id === startModel && (!startProvider || x.provider === startProvider)) ?? null;
+    const matches = (x: ModelInfo, q: string): boolean => !q || `${x.name} ${x.id}`.toLowerCase().includes(q);
+
     const nowPane = (): HTMLElement[] => {
       const out: HTMLElement[] = [];
       const m = draftInfo();
@@ -6127,9 +6134,6 @@ export class App {
       }
 
       const { pinned, recent } = groupModels(this.models, { id: startModel }, { mergedRecent: !!pick });
-      // 来源不止一个时，这几块是平铺的，得在行里标出它属于哪个来源。
-      const multi = new Set(this.models.map((x) => x.provider)).size > 1;
-      const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
       // 只换档位时草稿就是当前模型：再插一块「待切换」＝同一行画两遍。
       if (dirty() && m && m.id !== startModel) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
       const current = [pinned ? flatRow(pinned) : null].filter((x): x is HTMLElement => !!x);
@@ -6142,7 +6146,7 @@ export class App {
     const allPane = (): HTMLElement[] => {
       const q = query.trim().toLowerCase();
       // 不按「草稿排第一」重排：点一行就把它提到最上面，看起来像「选择后自动跳到第一个」，鼠标底下的行都换了位。
-      const list = this.models.filter((m) => !q || `${m.name} ${m.id}`.toLowerCase().includes(q));
+      const list = this.models.filter((m) => matches(m, q));
       if (this.models.length === 0) {
         return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
       }
@@ -6155,12 +6159,12 @@ export class App {
       // D423：评审挑模型时开场就落在这一页，「最近使用」得在这里看得到。
       // 对话侧不插这一段：D409 定过它归「当前使用」页，不重复入口。
       if (pick) {
-        const multiProviders = new Set(this.models.map((x) => x.provider)).size > 1;
-        const recent = mergedRecentModels(this.models).filter((x) => !q || `${x.name} ${x.id}`.toLowerCase().includes(q));
+        // 与「当前使用」页同口径：在用的那条已经画在最上面，最近里不再重复（点它也是原地不动）。
+        const recent = mergedRecentModels(this.models, currentModel).filter((x) => matches(x, q));
         if (recent.length) {
           out.push(
             this.stSection(tr("最近使用"), tr("{p1} 个", { p1: String(recent.length) })),
-            panel(recent.map((x) => modelRow(x, { provider: multiProviders })), ""),
+            panel(recent.map(flatRow), ""),
           );
         }
       }

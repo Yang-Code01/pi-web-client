@@ -76,6 +76,8 @@ test("合并：按最近一次使用时间排，同一个模型跨两条清单�
   assert.deepEqual(mergedRecentModels(catalog).map((m) => m.id), ["a1", "b1", "c1"]);
   // 对话那条自己没变：a1 仍是 1000 那次的旧位置。
   assert.deepEqual(recentModels(catalog).map((m) => m.id), ["b1", "a1"]);
+  // 传进在用的那个就把它剔掉：「全部模型」页那段最近使用跟「当前使用」页同口径。
+  assert.deepEqual(mergedRecentModels(catalog, catalog.find((m) => m.id === "a1")).map((m) => m.id), ["b1", "c1"]);
 });
 
 test("合并后不按 RECENT_MAX 再裁：两条各满 5 条时给出 10 条", () => {
