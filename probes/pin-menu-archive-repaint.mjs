@@ -77,13 +77,21 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/api/git") return json(200, { repo: CWD, branch: "main", detached: false, empty: false, dirty: 0 });
   if (url.pathname === "/api/dirs") return json(200, { path: url.searchParams.get("path") ?? "", parent: "F:", dirs: [], files: [], error: "" });
   const rel = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//, "");
-  const file = path.join(DIST, rel);
-  if (!path.resolve(file).startsWith(path.resolve(DIST)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+  const file = path.resolve(DIST, rel);
+  const fromDist = path.relative(DIST, file);
+  const inside = fromDist !== "" && !fromDist.startsWith("..") && !path.isAbsolute(fromDist);
+  let servable = false;
+  try {
+    servable = inside && fs.statSync(file).isFile();
+  } catch {
+    servable = false;
+  }
+  if (!servable) {
     res.writeHead(404, { "content-type": "text/plain" }).end("nope");
     return;
   }
   res.writeHead(200, { "content-type": MIME[path.extname(file)] ?? "application/octet-stream" });
-  fs.createReadStream(file).pipe(res);
+  fs.createReadStream(file).on("error", () => res.destroy()).pipe(res);
 });
 
 const wss = new WebSocketServer({ noServer: true });
@@ -168,22 +176,22 @@ const markedChipAlive = () =>
     same: window.__probeChip === document.querySelector(".pin-chip"),
   }));
 
-try {
+async function run() {
   await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
   await page.evaluate(() => localStorage.setItem("pi.collapse.sessions", "1"));
   await page.reload({ waitUntil: "domcontentloaded" });
-  if (!(await until(async () => (await chips()) === 3, 6000, "three pinned chips"))) throw new Error("no chips");
+  if (!(await until(async () => (await chips()) === 3, 6000, "three pinned chips"))) throw new Error("没有 ★ 行胶囊");
   await sleep(500);
   ok(true, "初始：★ 行三颗置顶会话");
 
   // ── 1. 归档：气泡开着时来一帧别的会话的 pi.status，整条 ★ 行重建 ────────────────
   await markFirstChip();
-  await openMenu(A.name);
+  if (!(await openMenu(A.name))) throw new Error("归档场景：气泡没打开");
   broadcast({ type: "pi.status", sessionId: B.id, running: true });
-  await until(async () => {
-    const s = await markedChipAlive();
-    return !s.connected;
-  }, 2000, "chip repaint");
+  ok(
+    await until(async () => !(await markedChipAlive()).connected, 2000, "chip repaint"),
+    "归档场景：重画把气泡闭包住的那颗胶囊换掉了",
+  );
   const alive = await markedChipAlive();
   ok(!alive.connected && !alive.same, "重画把气泡闭包住的那颗胶囊换掉了");
   ok(await menuOpen(), "重画之后气泡还开着，用户接着点按钮");
@@ -197,16 +205,15 @@ try {
   ok((await until(async () => (await chips()) === 2, 3000, "archive echo")) === true, "回声之后 ★ 行剩两颗");
 
   // ── 2. 删除：同一个重建场景，按钮是「移入垃圾箱」 ─────────────────────────────
-  await page.locator(".pin-chip", { hasText: B.name }).first().hover();
-  if (!(await until(menuOpen, 1500, "pin menu (B)"))) throw new Error("no menu B");
-  const box = await page.locator(".pin-menu").boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await sleep(80);
+  if (!(await openMenu(B.name))) throw new Error("删除场景：气泡没打开");
   await page.evaluate(() => {
     window.__probeChip = [...document.querySelectorAll(".pin-chip[data-pin-id]")].find((n) => n.dataset.pinId === "probe-b");
   });
   broadcast({ type: "pi.status", sessionId: C.id, running: true });
-  await until(async () => !(await markedChipAlive()).connected, 2000, "chip repaint (delete)");
+  ok(
+    await until(async () => !(await markedChipAlive()).connected, 2000, "chip repaint (delete)"),
+    "删除场景：重画把气泡闭包住的那颗胶囊换掉了",
+  );
   ok(await menuOpen(), "删除场景：重画之后气泡还开着");
 
   const beforeDelete = actFrames("delete").length;
@@ -220,11 +227,18 @@ try {
   // ── 3. 对照组：没有重画时，归档仍走原来的收拢动效并落帧 ───────────────────────
   const last = await page.evaluate(() => document.querySelector(".pin-chip[data-pin-id]")?.dataset.pinId ?? "");
   const beforeControl = actFrames("archive").length;
-  await openMenu(C.name);
+  if (!(await openMenu(C.name))) throw new Error("对照组：气泡没打开");
   await page.click('.pm-item[data-act="archive"]', { timeout: 2000 });
   ok((await until(() => actFrames("archive").length > beforeControl, 3000, "control archive frame")) === true, "没有重画时归档照常发帧（动效路径没被改坏）");
   ok((await until(async () => (await chips()) === 0, 3000, "control echo")) === true, `没有重画时回声把最后一颗（${last}）收掉`);
   ok(actFrames("archive").length === beforeArchive + 2, `归档帧总数正好 2（${beforeArchive} → ${actFrames("archive").length}）`);
+}
+
+try {
+  await run();
+} catch (e) {
+  console.log(`FAIL 探针中断：${e?.message ?? e}`);
+  bad++;
 } finally {
   await browser.close();
   server.close();

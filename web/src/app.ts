@@ -22606,13 +22606,14 @@ export class App {
 
   /**
    * 气泡闭包住的是「打开那一刻」的胶囊节点，而 ★ 行会因为任意一帧 pi.status / 会话回声整条重建
-   * （frames.ts 把 pi.status 一律映射到 "sessions"）。重建后旧节点脱离文档，`host.contains(chip)`
-   * 永远为假 —— 早先归档/删除在这里直接 return，点击被静默吞掉（「点了没反应」）。
-   * 所以动作认 id：拿得到存活节点就演动效，拿不到就不演、照样把动作发出去。
+   * （frames.ts 把 pi.status 一律映射到 "sessions"）。重建后旧节点从文档里摘掉、`isConnected` 为假
+   * —— 早先归档/删除在 `host.contains(chip)` 这里直接 return，点击被静默吞掉（「点了没反应」）。
+   * 所以动作认 id：节点还连着文档（★ 行胶囊，或不在 ★ 行里的 NowChip）就演动效，
+   * 被重建换掉就按 id 回查当前那颗，都找不到就不演、照样把动作发出去。
    */
   private livePinChip(id: string, chip?: HTMLElement | null): HTMLElement | null {
+    if (chip && chip.isConnected) return chip;
     const host = this.els.pinStrip;
-    if (chip && chip.isConnected && host.contains(chip)) return chip;
     const byId = host.querySelector<HTMLElement>(`.pin-chip[data-pin-id="${CSS.escape(id)}"]`);
     return byId && byId.isConnected ? byId : null;
   }
@@ -22636,6 +22637,7 @@ export class App {
       this.archiveOne(id);
       return;
     }
+    const host = this.els.pinStrip;
     this.pinAnim = id;
     // 量 CSS px 而不是 getBoundingClientRect：#app 上有 zoom（外观「字号」），rect 是缩放后的视觉尺寸，
     // 拿它写回 style.width / height 会被再缩一遍 —— 胶囊先变宽、整行变高，正是这里要治的抖。
@@ -22644,7 +22646,7 @@ export class App {
     const box = cs.boxSizing === "border-box" ? 0 : borders + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
     const vbox = cs.boxSizing === "border-box" ? 0 : parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
     const r = { width: parseFloat(cs.width) + box, height: parseFloat(cs.height) + vbox };
-    const gap = parseFloat(getComputedStyle(this.els.pinStrip).columnGap) || 0;
+    const gap = parseFloat(getComputedStyle(host).columnGap) || 0;
     // 收拢只动这一颗胶囊（chip.parentElement 就是 .pin-strip，动它会把整条缩没）。
     // border-box 下宽度到不了 0（还剩左右边框），用负的右外边距把边框和 flex gap 一起吃掉：
     // 收完这颗的占位正好是 0，下一颗停在它原来的左边缘 —— 和回声重建后的位置一致。
