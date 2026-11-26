@@ -48,22 +48,29 @@ async function until(fn, ms, label) {
   throw new Error(`timeout: ${label}`);
 }
 
-/** A bridge on its own state dir, pointed at the stub pi. `lifecycle` is written before it boots. */
-async function startBridge({ name, port, env = {}, lifecycle }) {
+/**
+ * A bridge on its own state dir, pointed at the stub pi. `lifecycle` is written before it boots.
+ * `keep` reuses the same state dir (a restart), `seed` writes whatever a test needs there first.
+ */
+async function startBridge({ name, port, env = {}, lifecycle, keep = false, seed }) {
   const root = path.join(ROOT, name);
   const state = path.join(root, "state");
   const agent = path.join(root, "agent");
   const piLog = path.join(root, "fake-pi.jsonl");
-  fs.rmSync(root, { recursive: true, force: true });
+  if (!keep) fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(state, { recursive: true });
   fs.mkdirSync(path.join(agent, "sessions"), { recursive: true });
   if (lifecycle) fs.writeFileSync(path.join(state, "lifecycle.json"), JSON.stringify(lifecycle));
+  seed?.(state);
 
   const out = [];
   const child = spawn(process.execPath, ["bridge/dist/index.js"], {
     cwd: REPO,
     env: {
       ...process.env,
+      // 从 7864 那份壳起的会话里跑本文件时，环境里带着 `PI_HOST_LINK`：子桥会去连壳的命名管道、连不上就退（
+      // probes/ 里几个探针也是因为这个才删掉它）。这里自己开一个口子，不归壳管。
+      PI_HOST_LINK: "",
       PI_WEB_PORT: String(port),
       PI_WEB_STATE: state,
       PI_WEB_TUNNEL: "0",
@@ -147,7 +154,8 @@ async function client(bridge) {
 }
 
 /** The launch line of the pi that owns this session (`--session-id <id>`, or `--session <file>`). */
-const launches = (records, sid) => records.filter((e) => e.t === "argv" && e.argv.includes(sid));
+const launches = (records, sid) =>
+  records.filter((e) => e.t === "argv" && e.argv.some((arg) => typeof arg === "string" && arg.includes(sid)));
 const lastLaunch = (records, sid) => launches(records, sid).at(-1) ?? null;
 const exited = (records, pid) => records.some((e) => e.t === "exit" && e.pid === pid);
 
@@ -272,9 +280,299 @@ async function thresholdFile() {
   }
 }
 
+// ---------------------------------------------------------------- D. archiving is a promise to release (D420)
+/** What the tests inject for 「归档后多久释放」; the real default is five minutes (DEFAULT_ARCHIVE_IDLE_MS). */
+const ARCHIVE_MS = 1500;
+/** The sidebar's archive action, over the same socket the page uses. */
+const archive = (page, sid, on = true) => page.send({ type: "manage", action: "archive", ids: [sid], on });
+const sleptOn = (page, sid) => page.notices(sid).filter((n) => /休眠/.test(n.text));
+const assistantsIn = (frame) => (frame?.items ?? []).filter((i) => i.kind === "assistant").map((i) => String(i.text));
+
+async function archiveRelease() {
+  log("D. an archived session lets its pi go after the archive threshold — and its transcript with it");
+  const bridge = await startBridge({
+    name: "archive",
+    port: await freePort(),
+    env: { PI_WEB_ARCHIVE_IDLE_MS: String(ARCHIVE_MS), FAKE_PI_SESSION: "1" },
+  });
+  try {
+    const page = await client(bridge);
+    const sid = await newSession(page, "archived");
+    await runOneTurn(page, sid, "hello");
+    const firstPid = lastLaunch(bridge.records(), sid)?.pid;
+
+    archive(page, sid);
+    const manage = await page.waitFor((m) => m.type === "manage" && m.manage?.archived?.includes(sid), 5000, "archived");
+    const stamp = manage.manage.archivedAt?.[sid];
+    check(typeof stamp === "number" && stamp > 0, `archiving recorded when it happened (${stamp})`);
+
+    const slept = await page.waitFor((m) => m.type === "notice" && m.sessionId === sid && /休眠/.test(m.text), TICK_WAIT, "release after archive");
+    check(slept._at - stamp >= ARCHIVE_MS, `the release came after the threshold (${slept._at - stamp} ms)`);
+    check(exited(bridge.records(), firstPid), "the pi process really exited (stub recorded its exit)");
+    check(lastLaunch(bridge.records(), sid)?.pid === firstPid, "no relaunch: the release did not wake it back up");
+
+    // This stub's session file holds only its header, so a transcript that still says "echo: hello"
+    // would mean the bridge kept its own copy (what the idle rule does). Nobody was watching here.
+    const mark = page.seen.length;
+    page.send({ type: "subscribe", sessionId: sid });
+    const after = await page.waitFor(
+      (m) => m.type === "session" && m.sessionId === sid && page.seen.indexOf(m) > mark,
+      10000,
+      "snapshot after release",
+    );
+    const said = assistantsIn(after);
+    check(!said.some((t) => t.includes("echo: hello")), `the bridge dropped its transcript (${JSON.stringify(said)})`);
+
+    // Nothing was lost: the next message cold-starts the same session from its file.
+    page.send({ type: "prompt", sessionId: sid, text: "after release" });
+    await page.waitFor((m) => m.type === "item.replace" && m.item?.text === "echo: after release", 20000, "answer after release");
+    check(launches(bridge.records(), sid).length === 2, "the next message woke a new pi on the same session");
+  } finally {
+    bridge.stop();
+  }
+}
+
+async function archiveWhileWatched() {
+  log("D2. a page is looking at it: the pi still goes, the session is still served (no relaunch, same file)");
+  const bridge = await startBridge({
+    name: "archive-watched",
+    port: await freePort(),
+    env: { PI_WEB_ARCHIVE_IDLE_MS: String(ARCHIVE_MS), FAKE_PI_SESSION: "1" },
+  });
+  try {
+    const page = await client(bridge);
+    const sid = await newSession(page, "watched");
+    await runOneTurn(page, sid, "hello");
+    const pid = lastLaunch(bridge.records(), sid)?.pid;
+    page.send({ type: "subscribe", sessionId: sid });
+    await page.waitFor((m) => m.type === "session" && m.sessionId === sid, 10000, "snapshot");
+
+    archive(page, sid);
+    await page.waitFor((m) => m.type === "notice" && m.sessionId === sid && /休眠/.test(m.text), TICK_WAIT, "sleep while watched");
+    check(exited(bridge.records(), pid), "the pi process really exited even though a page is watching");
+
+    const mark = page.seen.length;
+    page.send({ type: "subscribe", sessionId: sid });
+    const after = await page.waitFor(
+      (m) => m.type === "session" && m.sessionId === sid && page.seen.indexOf(m) > mark,
+      10000,
+      "snapshot still watched",
+    );
+    // 桩的会话文件只有表头，所以「转录还在不在」区分不出「对象留着」和「从文件重建」—— 内存那半由
+    // D7（无文件的会话）证明。这里证明页面还看得见它：同一份文件、没有人重开 pi。
+    check(
+      after.state?.id === sid && typeof after.state?.file === "string" && after.state.file !== "",
+      `the page still gets the same session back (${JSON.stringify({ id: after.state?.id, file: after.state?.file })})`,
+    );
+    check(launches(bridge.records(), sid).length === 1, "watching it did not wake a pi at any point");
+  } finally {
+    bridge.stop();
+  }
+}
+
+async function archiveDisabled() {
+  log("D3. the threshold 0 turns the rule off (an archived session keeps its pi until another rule ends it)");
+  const bridge = await startBridge({
+    name: "archive-off",
+    port: await freePort(),
+    env: { PI_WEB_ARCHIVE_IDLE_MS: "0", FAKE_PI_SESSION: "1" },
+  });
+  try {
+    const page = await client(bridge);
+    const sid = await newSession(page, "kept");
+    await runOneTurn(page, sid, "hello");
+    const pid = lastLaunch(bridge.records(), sid)?.pid;
+    archive(page, sid);
+    await page.waitFor((m) => m.type === "manage" && m.manage?.archived?.includes(sid), 5000, "archived");
+    await sleep(TICK_WAIT);
+    check(sleptOn(page, sid).length === 0, "several ticks went by and nothing slept it");
+    check(!exited(bridge.records(), pid), "the pi process is still there");
+  } finally {
+    bridge.stop();
+  }
+}
+
+async function archiveCancelledByUnarchive() {
+  log("D4. unarchiving inside the window cancels the countdown (opening it again must not kill it)");
+  const bridge = await startBridge({
+    name: "archive-cancel",
+    port: await freePort(),
+    env: { PI_WEB_ARCHIVE_IDLE_MS: String(ARCHIVE_MS), FAKE_PI_SESSION: "1" },
+  });
+  try {
+    const page = await client(bridge);
+    const sid = await newSession(page, "cancelled");
+    await runOneTurn(page, sid, "hello");
+    const pid = lastLaunch(bridge.records(), sid)?.pid;
+    archive(page, sid);
+    await page.waitFor((m) => m.type === "manage" && m.manage?.archived?.includes(sid), 5000, "archived");
+
+    await sleep(ARCHIVE_MS / 2);
+    archive(page, sid, false);
+    const off = await page.waitFor((m) => m.type === "manage" && !m.manage?.archived?.includes(sid), 5000, "unarchived");
+    check(off.manage.archivedAt?.[sid] === undefined, "unarchiving cleared the clock");
+
+    await sleep(TICK_WAIT);
+    check(sleptOn(page, sid).length === 0, "the cancelled countdown never fired");
+    check(!exited(bridge.records(), pid), "the pi process is still there");
+  } finally {
+    bridge.stop();
+  }
+}
+
+async function archiveRunningNotInterrupted() {
+  log("D5. archived mid-run: the run is never interrupted, the release waits for it to settle");
+  const bridge = await startBridge({
+    name: "archive-running",
+    port: await freePort(),
+    env: { PI_WEB_ARCHIVE_IDLE_MS: String(ARCHIVE_MS), FAKE_PI_SESSION: "1" },
+  });
+  try {
+    const page = await client(bridge);
+    const sid = await newSession(page, "running");
+    page.send({ type: "prompt", sessionId: sid, text: "SLOW forever" });
+    await page.waitFor((m) => m.type === "pi.status" && m.sessionId === sid && m.running === true, 20000, "running");
+    const pid = lastLaunch(bridge.records(), sid)?.pid;
+
+    archive(page, sid);
+    await page.waitFor((m) => m.type === "manage" && m.manage?.archived?.includes(sid), 5000, "archived");
+    await sleep(TICK_WAIT);
+    check(sleptOn(page, sid).length === 0, "the tick did not reap a running session");
+    check(!exited(bridge.records(), pid), "its pi process is still there");
+    check(!bridge.records().some((e) => e.t === "abort"), "nothing aborted the run");
+
+    // Once the run settles the same archive clock is still older than the threshold: it goes now.
+    page.send({ type: "abort", sessionId: sid });
+    const slept = await page.waitFor((m) => m.type === "notice" && m.sessionId === sid && /休眠/.test(m.text), TICK_WAIT * 2, "release after the run");
+    check(Boolean(slept), "the settled run was released on the next tick");
+    check(exited(bridge.records(), pid), "the pi process really exited then");
+  } finally {
+    bridge.stop();
+  }
+}
+
+async function archiveApprovalHoldsIt() {
+  log("D6. a pending approval is a person's call: the archive rule leaves it to the 120-minute rule");
+  const bridge = await startBridge({
+    name: "archive-approval",
+    port: await freePort(),
+    env: { PI_WEB_ARCHIVE_IDLE_MS: String(ARCHIVE_MS), FAKE_PI_SESSION: "1" },
+  });
+  try {
+    const page = await client(bridge);
+    const sid = await newSession(page, "approval-archived");
+    page.send({ type: "prompt", sessionId: sid, text: "APPROVAL now" });
+    await page.waitFor((m) => m.type === "approval.add" && m.sessionId === sid, 20000, "approval card");
+    const pid = lastLaunch(bridge.records(), sid)?.pid;
+
+    archive(page, sid);
+    await page.waitFor((m) => m.type === "manage" && m.manage?.archived?.includes(sid), 5000, "archived");
+    await sleep(TICK_WAIT * 2);
+    check(sleptOn(page, sid).length === 0, "the process was not taken down under the card");
+    check(!exited(bridge.records(), pid), "its pi process is still there");
+    check(!page.seen.some((m) => m.type === "approval.remove" && m.sessionId === sid), "the card was not discarded either");
+  } finally {
+    bridge.stop();
+  }
+}
+
+async function archiveWithoutFileKeepsTranscript() {
+  log("D7. a web-born session with no file yet: the process goes, the transcript stays (there is nowhere to read it back from)");
+  const bridge = await startBridge({
+    name: "archive-nofile",
+    port: await freePort(),
+    env: { PI_WEB_ARCHIVE_IDLE_MS: String(ARCHIVE_MS) },
+  });
+  try {
+    const page = await client(bridge);
+    const sid = await newSession(page, "no-file");
+    await runOneTurn(page, sid, "hello");
+    const pid = lastLaunch(bridge.records(), sid)?.pid;
+    archive(page, sid);
+    await page.waitFor((m) => m.type === "notice" && m.sessionId === sid && /休眠/.test(m.text), TICK_WAIT, "release without a file");
+    check(exited(bridge.records(), pid), "the pi process really exited");
+
+    const mark = page.seen.length;
+    page.send({ type: "subscribe", sessionId: sid });
+    const after = await page.waitFor((m) => m.type === "session" && m.sessionId === sid && page.seen.indexOf(m) > mark, 10000, "snapshot kept");
+    check(assistantsIn(after).some((t) => t.includes("echo: hello")), "the transcript is still there");
+  } finally {
+    bridge.stop();
+  }
+}
+
+async function archiveSurvivesRestart() {
+  log("D8. the clock lives on disk: a bridge restart does not hand the archived session a fresh countdown");
+  const name = "archive-restart";
+  let sid = "";
+  let stamp;
+  const first = await startBridge({
+    name,
+    port: await freePort(),
+    env: { PI_WEB_ARCHIVE_IDLE_MS: "60000", FAKE_PI_SESSION: "1" },
+  });
+  try {
+    const page = await client(first);
+    sid = await newSession(page, "restart");
+    await runOneTurn(page, sid, "hello");
+    archive(page, sid);
+    const manage = await page.waitFor((m) => m.type === "manage" && m.manage?.archived?.includes(sid), 5000, "archived");
+    stamp = manage.manage.archivedAt?.[sid];
+    check(typeof stamp === "number" && stamp > 0, `stamped before the restart (${stamp})`);
+  } finally {
+    first.stop();
+  }
+  await sleep(600);
+  const second = await startBridge({
+    name,
+    port: await freePort(),
+    keep: true,
+    env: { PI_WEB_ARCHIVE_IDLE_MS: "60000", FAKE_PI_SESSION: "1" },
+  });
+  try {
+    const page = await client(second);
+    const hello = page.seen.find((m) => m.type === "hello");
+    check(hello?.manage?.archived?.includes(sid), "the session is still archived after the restart");
+    check(hello?.manage?.archivedAt?.[sid] === stamp, `the timestamp survived the restart (${hello?.manage?.archivedAt?.[sid]} vs ${stamp})`);
+  } finally {
+    second.stop();
+  }
+}
+
+async function archiveBackfilledAtBoot() {
+  log("D9. a manage.json written before timestamps existed gets one at boot, and it is written back");
+  const legacy = "legacy-archived";
+  const bridge = await startBridge({
+    name: "archive-legacy",
+    port: await freePort(),
+    env: { PI_WEB_ARCHIVE_IDLE_MS: "60000" },
+    seed: (state) => fs.writeFileSync(path.join(state, "manage.json"), JSON.stringify({ pin: [], order: [], archived: [legacy] })),
+  });
+  try {
+    const bootedAt = Date.now();
+    const page = await client(bridge);
+    const hello = page.seen.find((m) => m.type === "hello");
+    const at = hello?.manage?.archivedAt?.[legacy];
+    check(typeof at === "number" && Math.abs(at - bootedAt) < 20000, `the boot stamped the old archive (${at} vs ${bootedAt})`);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(ROOT, "archive-legacy", "state", "manage.json"), "utf8"));
+    check(onDisk.archivedAt?.[legacy] === at, `the stamp was written back (${JSON.stringify(onDisk.archivedAt)})`);
+  } finally {
+    bridge.stop();
+  }
+}
+
 try {
   await idleReaping();
   await thresholdFile();
+  await archiveRelease();
+  await archiveWhileWatched();
+  await archiveDisabled();
+  await archiveCancelledByUnarchive();
+  await archiveRunningNotInterrupted();
+  await archiveApprovalHoldsIt();
+  await archiveWithoutFileKeepsTranscript();
+  await archiveSurvivesRestart();
+  await archiveBackfilledAtBoot();
 } catch (err) {
   failed = true;
   console.error("ERROR", err.message);

@@ -3647,7 +3647,7 @@ async function main(): Promise<void> {
           // the old one).
           case "runtime.settings": {
             if (!(await requireStepUp())) return;
-            const saved = writeLifecycle({ idleMs: msg.idleMs, watermarkBytes: msg.watermarkBytes });
+            const saved = writeLifecycle({ idleMs: msg.idleMs, archiveIdleMs: msg.archiveIdleMs, watermarkBytes: msg.watermarkBytes });
             send({ type: "runtime.stats", ...(await sessions.runtimeStats()), saved: saved !== null });
             return;
           }
@@ -4686,6 +4686,11 @@ async function main(): Promise<void> {
       }
     });
   });
+
+  // D420：`archivedAt` 是后加的字段，旧 manage.json 里归档没有时间戳。开机补一个「此刻」并落盘
+  // 一次 —— 不然每次重启都从零开始算，一条常重启的桥永远收不掉已归档的会话。只在真有缺口时写。
+  const backfilled = sessions.manage.backfillArchived(Date.now());
+  if (backfilled) log(`manage: 给 ${backfilled} 条已归档会话补了归档时间（D420）`);
 
   sessions.startGc((id) => [...wss.clients].some((client) => (client as any).watching === id));
 
