@@ -1,5 +1,5 @@
 /**
- * 装 gh 的「计划」与设备码解析（D425）：这两块是纯函数，先把最容易写错的平台差异钉住。
+ * 装 gh 的「计划」与设备码解析（D427）：这两块是纯函数，先把最容易写错的平台差异钉住。
  *
  *   node --experimental-strip-types bridge/tests/gh-setup-unit.mjs
  */

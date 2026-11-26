@@ -1,5 +1,5 @@
 /**
- * 「这台机器没有 GitHub CLI / 没登录」时，在页面里把它装上、登录上（D425）。
+ * 「这台机器没有 GitHub CLI / 没登录」时，在页面里把它装上、登录上（D427）。
  *
  * 评审（`gitpr.ts`）与 GitHub 面板原先都只认真 `gh`：没装就是一句 `gh_missing`，
  * 没登录就去终端里手敲 `gh auth login`。这里补上缺的那一段，并且**让桥自己可被页面驱动**：
@@ -171,7 +171,7 @@ export async function ghSetupStatus(
   return value;
 }
 
-/** 隧道访客只拿得到已有的一份：不让匿名请求触发新的 `gh` 子进程（D425）。 */
+/** 隧道访客只拿得到已有的一份：不让匿名请求触发新的 `gh` 子进程（D427）。 */
 export function ghSetupCached(): GhSetupStatus | null {
   return statusMemo?.value ?? null;
 }

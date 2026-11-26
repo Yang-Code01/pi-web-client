@@ -1481,7 +1481,7 @@ async function main(): Promise<void> {
     if (await handleMail(req, res, url, { publicReq, confirm: (sid, mail) => askMailConfirm(sid, mail, wss) })) return;
     if (await handleJira(req, res, url, { publicReq })) return;
     // GitHub 通道：账号与凭据在桥里，壳（pi 子进程的 `gh`）与页面都只跟这组路由说话。
-    // 「这台机器装没装 gh / 登录了谁 / 该跑哪条安装命令」是只读探测，面板打开时就要用（D425）。
+    // 「这台机器装没装 gh / 登录了谁 / 该跑哪条安装命令」是只读探测，面板打开时就要用（D427）。
     // 隧道访客只给已有缓存：`gh --version` / `gh auth status` 是子进程，别让匿名请求反复打。
     if (url.pathname === "/api/github/setup" && req.method === "GET") {
       try {
@@ -4298,7 +4298,7 @@ async function main(): Promise<void> {
             });
             return;
           }
-          // ------------------------------------------------ 装 gh / 登录 gh（D425）
+          // ------------------------------------------------ 装 gh / 登录 gh（D427）
           // 为什么装在桥里而不是让页面给出命令：winget/brew 的输出要逐行看到（用户要知道
           // 是在下载还是卡在提权），一次性码也只能由桥从 gh 的 stdout 里读。
           case "gh.setup.status": {

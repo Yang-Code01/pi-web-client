@@ -82,7 +82,7 @@ export interface ReviewInput {
   /** 能切到的账号（没读到 / 只有一个时可以不画下拉）。 */
   accounts?: { login: string; pat: boolean }[];
   /**
-   * 「gh 没就绪」那张卡（D425）。`null` = 还没探测到 / 已经就绪且人不再想看。
+   * 「gh 没就绪」那张卡（D427）。`null` = 还没探测到 / 已经就绪且人不再想看。
    * 数据来自 `GhSetupStore.card()`，这里只当一份普通输入往下传。
    */
   gh?: GhCardData | null;
@@ -779,7 +779,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   } else if (view.mode === "pr") {
     const gh = view.gh;
     if (gh) form.append(renderGhCard(gh, input.ghActions));
-    // 没装 gh 又没 PAT：这一格没有任何东西可输，整块换成安装卡（D425）。
+    // 没装 gh 又没 PAT：这一格没有任何东西可输，整块换成安装卡（D427）。
     if (gh?.mode !== "full") {
       // 一个格子同时干三件事：输号、检索、从列表里点。分成「搜索框 + 下拉 + 号输入」三行
       // 在 300px 里又挤又丑（用户直接说了），所以合成一个 combobox。

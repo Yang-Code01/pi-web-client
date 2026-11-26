@@ -1,5 +1,5 @@
 /**
- * 没装 gh 时评审还能跑（D425）：`gh pr list` / `gh pr view` 失败成 `gh_missing` 之后，
+ * 没装 gh 时评审还能跑（D427）：`gh pr list` / `gh pr view` 失败成 `gh_missing` 之后，
  * 桥要改走 GitHub REST，而不是把「装 gh」当唯一出路。
  *
  * 这条用例用假 gh（固定退出 127）和一个本地 HTTP 服务模拟 GitHub —— 不碰网络、不碰真账号。
