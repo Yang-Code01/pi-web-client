@@ -8448,3 +8448,13 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 **验证。** `bridge/tests/review-gh-account-e2e.mjs`（已挂进 `npm run test:review`）：用例 1 `sessionGhAccount` 按会话给出 `xyang-qingmin` 的令牌；用例 2 真 git 仓库 + 本地 bare 远端，断言 `gh pr view` 只跑一次且拿到的是 `gho_fake_xyang-qingmin`、`refs/pi-web/pr-17545` 与远端 `refs/pull/17545/head` 同一 sha；用例 3 让假 gh 回 GraphQL 那句，断言 `code === "repo_unseen"` 且**只问了一次**。红验证：把 `routed()` 的 `{ ...env, ...extra }` 改回 `env` → 用例 2 红（`评审的 gh 必须用会话账号的令牌`）；把 `stop` 改成 `false` → 用例 3 红（`对端已经答了的失败不该换代理重试`）。`npm run test:review` 全绿，`npm --prefix web run typecheck`（含 i18n-check 与 viewport 守卫）exit 0。
 
 **补（PR #700 评审）。** 面板那个下拉最初把桥回的**解析结果**当成「人选的那个」写进 `reviewAccount` —— 跟随工作区时它也是具体账号，于是「跟随工作区」永远选不中、桥回空账号时又不清（留着上一次的号）。现在拆成两个字段：`reviewAccount` 只存会话里显式选的（`state.session.source === "session"`），`reviewAccountUsed` 存实际按谁在查，只用来写给人看（下拉首项写「跟随工作区（xyang-qingmin）」）。拆分逻辑是纯函数 `ghAccountPair()`，配 `web/tests/github-unit.mjs` 用例。
+
+## D423 气泡里的「归档 / 删除」认 id 不认节点：★ 行重画后点击不再被静默吞掉（用户 2026-11-26「第一个回话…无法归档」）
+
+**问题。** ★ 行里一颗「完成」的会话，悬停打开胶囊气泡、点「归档」—— 毫无反应，胶囊留在原地，桥一帧 `manage` 都没收到。气泡（`web/src/pinmenu.ts` 的 `openPinMenu`）把**打开那一刻的胶囊节点**闭包进 `onArchive` / `onDelete`；而 `web/src/frames.ts` 把 `pi.status` 一律映射到 `"sessions"`，`renderSessionRow()` → `pillBar.render()` → `host.replaceChildren()` 整条重建。旧节点脱离文档后 `archiveFromPin()` 里的 `if (!host.contains(chip)) return;` 永远为假，点击被丢掉。用户现场别的会话都在「运行中」，`pi.status` 一直在流，正好踩中；气泡开着、指针已经在气泡里时，新胶囊也不会再触发 pointerenter 把气泡重锚过去。
+
+**决定。** 新增 `livePinChip(id, chip)`：闭包里的节点还活着就用它演动效；被换掉了就按 `data-pin-id` 在当前 ★ 行里找那颗活的；都找不到（比如已被别的路径收走）就不演、直接把动作发出去 —— 归档走 `archiveOne(id)`，删除走原来 `calm()` 那条「直接发 manage/delete + 一句话交代去向」。`archiveFromNowChip()` 对 `!chip.isConnected` 同样直接发。动作语义以 id 为准，节点只是动效的载体。
+
+**为什么。** ① 归档/删除是幂等的数据动作，不该因为一次重画就消失；「点了没反应」比「没有动效」糟得多，退化成无动画是正确降级。② 不选「重画时把气泡重新锚到新节点」：那要在 `renderSessionRow()` 里维护一张「谁的气泡开着」的迁移表，而气泡本来就挂在 body、位置固定，用户正在点的按钮不受影响；多这一层只会多一个失效点。③ 不选「气泡打开期间禁止重建 ★ 行」：`pi.status` 是状态同步的主干，为一个气泡停掉它会把「运行中」徽标冻住。④ 按 id 回查而不是整条重画后再重开气泡，保留了「同一颗会话」的语义 —— 用户看到的还是那个名字那条会话。
+
+**验证。** `node probes/pin-menu-archive-repaint.mjs`（桩桥 + 真 Chromium）：悬停打开气泡 → 把指针挪进气泡 → 广播一帧别的会话的 `pi.status`（整条 ★ 行重建）→ 点归档/删除。改前拿旧 `web/dist` 跑（`PROBE_DIST=web/dist`）红 10 项、归档 0 帧；改后 13 项全绿（归档与删除各发一帧、只带这一颗、回声后 ★ 行收敛；没有重画的对照组仍走收拢动效并落帧）。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
