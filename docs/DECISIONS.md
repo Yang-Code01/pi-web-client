@@ -8345,3 +8345,20 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 **代价。** 深色主题下胶囊与面板的底色差变小（`#222226` vs 面板 `#212125`），靠 0.5px 发丝边和投影分辨；探针的「叠气泡 vs 叠面板」一项就是防这个退化的：要求两处底色通道差 ≥ 8（实测 light 9 / dark 9 / midnight 9）。
 
 **验证。** `probes/sel-ask-chip.mjs` 第 7 段按主题分别量像素（真拖选 + 截图采样，不看 CSS 声明），每套主题 7 项、共 22 项：字对胶囊底 13.3–16.3:1；`backdrop-filter` 带 blur；叠在蓝气泡 `#f1f4fc` / 面板 `#fbfbfd`（light）不是同一个色；描边半透明且真的画出来（DPR 1 上 CSS 的 0.5px 落到 1 个设备像素）；三套主题的投影互不相同。改前这一组 7 项红（`气泡上 #ffffff / 面板上 #ffffff`、`没有 backdrop-filter`），改后 35 项全绿。
+
+## D419 「知识库」做成本地整页，内容从 BuildHub 导出成静态 JSON（用户 2026-11-26「我想把刚才部署的内容，嵌入本工程」「只搬内容做原生页」「只读 + 与 agent 联动」）
+
+**问题。** 外面有一套 vibe-coding 术语图鉴（BuildHub，Next.js + sqlite + 存储的 API），本机已部署过一份。要把它搬进客户端：可以 iframe 嵌一个子站，也可以把内容当数据搬进来。iframe 那条要客户端永远跟着另一个进程（端口、鉴权、数据库），而且站内样式与客户端主题是两套调色板；子站一挂，功能就没了。
+
+**决定。** 只搬内容，做成客户端的一个原生整页：
+
+- 入口放左栏「开新会话」下面一格（`web/src/app.ts` 的 `kbBtn`）。不做顶栏按钮：顶栏的每一颗都要进 `chrome.ts` 的 `CHROME_IDS` 与桥端白名单（D332），关掉就再也开不回来；左栏入口与会话列表同层，没有这个问题。
+- 数据在构建前由 `tools/sync-knowledge.mjs` 从 `E:/yqm/vibe-hub-local`（BuildHub 源码）导出到 `web/public/knowledge/`：`terms.zh.json` / `terms.en.json` / `prompts.json` / `skills.json` / `site.css` / `assets/*.webp` / `fonts/*`，共 13 MB 一起入库——别的机器没有 BuildHub 源码，不入库就得每人手跑一次 sync。
+- 素材只搬正文真正引用到的（197 处引用 / 178 张图）：站内 CSS 里 187 MB 的展示墙图按「选择器里的类正文一个都没用到」整条摘掉；`<video>` 全部换成它的 `poster`（ffmpeg 抽帧），PNG 转 webp `1200px/q74`，4.7 MB。
+- 正文沿用站内 HTML（`.detail-body` 那套 DOM，`DOMParser` 进 `DocumentFragment`，不走 `innerHTML`——`md.ts` 的规矩），样式由 `site.css` 提供，并用 `tools/sync-knowledge.mjs` 把每条选择器缩进 `.kb-site`、`:root` 换成 `.kb-site`：站内的 `--bg/--text/--border` 与客户端同名不同义，不隔离会互相污染。深色靠 `.kb-site[data-kb-dark]`（客户端 `data-theme !== "mac-light"` 时打上），不改站内 CSS 的语义。
+- 一个整页浮层（`.kb-back`），**不打 `data-mac-surface`**：mac 主题会给 `window` 铺 `--mac-scrim` 并把第一个子元素当窗口卡片，整页会被压成一张半透明纸。
+- 只读。两个按钮都**只预填不发送**：`prefill()`（有会话）与 `newSessionWith()`（新开一个）；没会话时 `prefill` 自己会转成新建。第三个是复制。
+
+**代价。** 数据是快照：BuildHub 那边更新后要重跑 `npm --prefix web run knowledge:sync`（跟着 `web/public/knowledge/meta.json` 的 `syncedAt` 看新旧），不会自动同步。窄屏（< 760 px）仍是左右两栏、不折叠成单列，正文会被挤窄。
+
+**验证。** `web/tests` 的既有门禁（typecheck / i18n-check / viewport-units）全绿；`.scratch/kb-shot.mjs` 在测试实例（port 17876）里真点过：610 行列表、搜索 "state" 收窄到 5 条、技能 26、提示词 19、`/knowledge/<slug>` 深链能刷新直达、Esc 关闭后地址回 `/`、「插入当前回话」把内容填进输入框（不发送），三套主题下正文都没有串色。

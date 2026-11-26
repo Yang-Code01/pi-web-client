@@ -66,6 +66,7 @@ import {
 } from "./mcpmarket.ts";
 import { checkName, freeName, secretVarName, serverNameFor } from "./mcpstore.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
+import { openKnowledge } from "./knowledge.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { queueWhatsnew } from "./whatsnew.ts";
 import { renderLogHead, renderLogPage, type SelfLog } from "./changelog.ts";
@@ -1185,7 +1186,15 @@ export class App {
     const newBtn = el("button", "btn primary", tr("开新会话"));
     newBtn.dataset.act = "new";
     newBtn.onclick = () => this.openNewSessionSheet();
-    create.append(newBtn);
+    // 知识库：565 条概念 / 19 条提示词 / 26 个技能（数据由 tools/sync-knowledge.mjs 导出到
+    // web/public/knowledge/）。放左栏最上面一格：它是「参考资料」，不是会话，也不是设置项。
+    const kbBtn = el("button", "btn ghost kb-entry", tr("知识库"));
+    kbBtn.dataset.act = "knowledge";
+    kbBtn.title = tr("知识库：概念图鉴、提示词、技能；可以把内容插进当前回话");
+    kbBtn.prepend(icon("book", { size: 14 }));
+    kbBtn.onclick = () => this.openKnowledgePage();
+    this.els.kb = kbBtn;
+    create.append(newBtn, kbBtn);
     // The filter must not lose focus on every keystroke, so it lives outside the repainted list.
     const manageBar = el("div", "manage-bar");
     const sessFilter = el("input", "session-filter");
@@ -18120,6 +18129,17 @@ export class App {
    * D321：整机文件搜索面板。索引在 bridge 侧（node:sqlite），这里只发查询；还没有索引时
    * bridge 已经在后台扫，面板显示进度条与暂停键。
    */
+  /** 知识库（左栏「知识库」、以及 `/knowledge/<slug>` 深链都走这里）。关掉时人还留在原来的会话上。 */
+  openKnowledgePage(): void {
+    this.closeSheet();
+    openKnowledge({
+      handoff: {
+        prefill: (text, name) => this.prefill(text, name),
+        newSessionWith: (text, name) => this.newSessionWith(text, name),
+      },
+    });
+  }
+
   private openFileSearch(): void {
     this.closeSheet();
     /** 目录行：优先在文件管理器里进到那一层；保持搜索面板在底以便点「←」或 Esc 返回；没开会话时退回资源管理器。 */

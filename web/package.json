@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "knowledge:sync": "node ../tools/sync-knowledge.mjs",
     "typecheck": "tsc --noEmit && node i18n-check.mjs && node tests/viewport-units-unit.mjs && node tests/layers-unit.mjs && node --experimental-strip-types --test tests/theme-unit.mjs && node --experimental-strip-types --test tests/changelog-inline-unit.mjs && node --experimental-strip-types --test tests/ask-text-unit.mjs && node --experimental-strip-types --test tests/paste-unit.mjs && node --experimental-strip-types --test tests/quoteblock-unit.mjs",
     "preview": "vite preview"
   },
