@@ -1393,6 +1393,8 @@ export class App {
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
     this.chat = new ChatView(scroll);
+    // D418：超长条目收成摘要卡（设置 → 对话里三档开关）。ChatView 不认识 prefs，这里给它一份快照。
+    this.syncLongCards(false);
     // D416：拖选聊天记录里的文字，松手冒一颗「问一下」；点了把那一段以 `>` 引用插进随手问。
     this.selAsk = new SelAsk({
       scope: () => scroll,
@@ -4333,6 +4335,21 @@ export class App {
     }
     // D93: 终端 dialog 的几何按缩放换算，改了字号 / 缩放后得重新夹一次（不然 pinned 的那块会溢出）。
     if (this.termDock) this.applyTermGeom(this.termDock);
+    // D418：「恢复默认」会一次改掉三档卡片的开关，这里跟着同步并重画（改了没反应最难查）。
+    this.syncLongCards();
+  }
+
+  /**
+   * D418：把 prefs 里的三档「超长条目怎么画」交给 ChatView。启动、改开关、「恢复默认」都走这一个口 ——
+   * 三处各写一遍的话，迟早有一处忘了重画。没变就什么都不做（`applyPrefs` 调得很勤）。
+   */
+  private syncLongCards(redraw = true): void {
+    if (!this.chat) return;
+    const next = { user: this.prefs.longCardUser, assistant: this.prefs.longCardAssistant, tool: this.prefs.longCardTool };
+    const prev = this.chat.longCards;
+    if (prev.user === next.user && prev.assistant === next.assistant && prev.tool === next.tool) return;
+    this.chat.longCards = next;
+    if (redraw) this.chat.redraw();
   }
 
   /** 布局 id 落到 `<html data-layout>`：渲染 CSS 与探针都从这里读，不用去翻 prefs。 */
@@ -4496,6 +4513,35 @@ export class App {
         tr("输入框上方的「重讲」"),
         tr("先提供上下文，再用简体技术中文说明。默认开；关掉后输入框上面那一行不再出现"),
         this.stSwitch(hintBox),
+      ),
+    );
+
+    // D418：超长条目收成摘要卡。三档各自一个开关，动一下就把当前会话就地重画一遍（不重开会话）。
+    const longCardBox = (key: "longCardUser" | "longCardAssistant" | "longCardTool"): HTMLInputElement => {
+      const box = document.createElement("input");
+      box.checked = this.prefs[key];
+      box.onchange = () => {
+        this.prefs = { ...this.prefs, [key]: box.checked };
+        savePrefs(this.prefs);
+        this.syncLongCards();
+      };
+      return box;
+    };
+    chatPanel.append(
+      this.stRow(
+        tr("长用户消息收成卡片"),
+        tr("默认开。占满一屏的粘贴收成一张卡（长消息 · 多少行 · 多少字），点一下在卡里铺开；关掉退回原来露 240px 的折叠"),
+        this.stSwitch(longCardBox("longCardUser")),
+      ),
+      this.stRow(
+        tr("长回答收成卡片"),
+        tr("默认关。管的是 AI 的正文：同样先收成卡，点开在卡里读；关着用回答右上那颗折叠钮"),
+        this.stSwitch(longCardBox("longCardAssistant")),
+      ),
+      this.stRow(
+        tr("长的工具输出收成卡片"),
+        tr("默认关。管的是工具卡的输出：关着是 260px 的内滚窗口，开着收成一张卡"),
+        this.stSwitch(longCardBox("longCardTool")),
       ),
     );
 
@@ -4800,7 +4846,7 @@ export class App {
         label: tr("外观"),
         items: [
           { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
-          { sec: "chat", label: tr("对话"), sub: tr("输入框上方那一行「重讲」开不开") },
+          { sec: "chat", label: tr("对话"), sub: tr("「重讲」那一行、超长消息的卡片") },
           { sec: "theme", label: tr("主题与强调色"), sub: tr("三套 macOS 观感，加一组强调色") },
           { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
           { sec: "chrome", label: tr("界面元素"), sub: tr("顶栏与输入框下沿的按钮；点预览里的按钮就收起 / 放回") },
@@ -22850,6 +22896,13 @@ type Prefs = {
   githubCards: boolean;
   /** #666：AI 建完 PR 自动把右栏面板推开。默认关（只认显式 true）；主开关关掉时它跟着失效（`githubFeature()` 的连坐）。 */
   githubAutoPanel: boolean;
+  /**
+   * D418：哪几类超长条目收成摘要卡（收起占三行，点卡展开）。默认只开用户消息 ——
+   * 一条黏满整屏的粘贴是光标时代最实在的痛，AI 回答和工具输出留给想要的人自己去开。
+   */
+  longCardUser: boolean;
+  longCardAssistant: boolean;
+  longCardTool: boolean;
 };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
@@ -22874,6 +22927,9 @@ const DEFAULT_PREFS: Prefs = {
   retellHint: true,
   githubCards: true,
   githubAutoPanel: false,
+  longCardUser: true,
+  longCardAssistant: false,
+  longCardTool: false,
 };
 
 /** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
@@ -23563,6 +23619,10 @@ function readPrefs(): Prefs {
       githubCards: p?.githubCards !== false,
       // #666：这个反过来了 —— 老版本升上来没有这个键按**关**（默认值翻了，只有显式 true 才算开）。
       githubAutoPanel: p?.githubAutoPanel === true,
+      // D418：同样没有「旧版本没这个键」的问题 —— 三档都按默认值来（只有用户自己动过才有这个键）。
+      longCardUser: p?.longCardUser !== false,
+      longCardAssistant: p?.longCardAssistant === true,
+      longCardTool: p?.longCardTool === true,
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
     if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);

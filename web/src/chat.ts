@@ -7,6 +7,7 @@ import { githubCards } from "./github-cards.ts";
 import { highlightFragment } from "./highlight.ts";
 import { extractMentionedPaths, renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
+import { longCardCounts } from "./longcard.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { BashItem, Item, SessionHistory, SkillItem, ToolItem, UserItem } from "./types.ts";
 import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
@@ -15,6 +16,10 @@ import { icon } from "./icons.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
 const BASH_SHOW = 20000;
+/** D418：超长条目收成摘要卡的高度阈值，和 `foldable` 的 240 同一把尺子。 */
+const LONG_CARD_PX = 240;
+/** 超长条目分三类：用户消息、AI 回答、工具输出。谁收成卡由设置里的三个开关定。 */
+type LongCardKind = "user" | "assistant" | "tool";
 /**
  * 离底多少像素以内算「已经在底部」（D54）。同一道容差也用来判断「下面还有没有东西」
  * （`hasRoomBelow`，D168）——两处必须是同一个数，否则会出现「钮说下面有东西、但滚不动」的缝。
@@ -270,6 +275,32 @@ export class ChatView {
   private written = new Map<string, ArtifactSource>();
   /** Assistant replies the user folded; kept across rebuilds and session re-renders. */
   private collapsed = new Set<string>();
+  /** 展开着的（超长条目）摘要卡；和 `collapsed` 一样活过重建与切会话。 */
+  private longOpen = new Set<string>();
+  /**
+   * D418：哪几类超长条目收成摘要卡。应用没接上时全关 —— 也就是回到老样子
+   * （用户消息 240px 折叠 + assistive 折叠钮 + 工具输出内滚）。
+   */
+  longCards: { user: boolean; assistant: boolean; tool: boolean } = { user: false, assistant: false, tool: false };
+  /** 最后一次 `reset` 拿到的历史索引：就地重画时得把它带回去（ghost、「载入更早」都在里面）。 */
+  private history: SessionHistory | undefined;
+  /** 改「怎么画」时正赶上模型在跑：这一轮收尾后再重画（重建节点会把流式正文弄丢）。 */
+  private redrawPending = false;
+
+  /**
+   * D418：设置里改了「超长条目怎么画」，照手里这份记录就地重画一遍 ——
+   * 不重开会话、不丢历史索引；展开着的卡、折起来的回答也都还在（`longOpen` / `collapsed` 本来就活过重建）。
+   */
+  redraw(): void {
+    if (!this.loaded.length) return;
+    // 模型正在跑时不重画：`reset` 会用 `loaded` 里那份还没长完的正文重建，流式内容就没了 ——
+    // 记一笔，等这一轮收尾（`setRunning(false)`）再画。
+    if (this.running) {
+      this.redrawPending = true;
+      return;
+    }
+    this.reset([...this.loaded], this.history);
+  }
   /** Set by the app: the 停止 button on a running `!cmd` card. */
   onBashStop: ((id: string) => void) | null = null;
   /** GitHub 链接卡 → 右栏面板。应用没接上就只画链接（卡片自己不做事）。 */
@@ -833,6 +864,8 @@ export class ChatView {
   }
 
   reset(items: Item[], history?: SessionHistory): void {
+    // D418：改「怎么画」的就地重画会拿这份历史再走一遍 reset，ghost 与「载入更早」不能丢。
+    this.history = history;
     this.loaded = [];
     // 换会话 / 重连：上一轮排着的「收尾回开头」不能落到新会话上。运行态静默清零，
     // 让 app 随后的 `setRunning(新会话.running)` 成为一次真正的跃迁（不然旧 true 会把它吞掉）。
@@ -1317,6 +1350,12 @@ export class ChatView {
       this.settleFrame = 0;
       return;
     }
+    // 改「怎么画」时模型还在跑，重画推到这一轮真正收尾之后（`redraw()` 里记的那笔）。
+    if (this.redrawPending) {
+      this.redrawPending = false;
+      this.reset([...this.loaded], this.history);
+      return;
+    }
     // 同值守卫保证走到这里时上一态是 true（true → false），只需要等排版落定。
     if (this.settleFrame) cancelAnimationFrame(this.settleFrame);
     this.settleFrame = requestAnimationFrame(() => {
@@ -1502,10 +1541,7 @@ export class ChatView {
     if (status && item.status && item.status !== "unknown") status.textContent = item.status === "error" ? tr("失败") : tr("完成");
     if (item.result) {
       let out = card.querySelector<HTMLElement>(".out");
-      if (!out) {
-        out = el("div", "out");
-        card.append(out);
-      }
+      if (!out) out = this.toolOut(card);
       setOutput(out, item.result);
     }
     if (item.isError) card.classList.add("err");
@@ -1650,7 +1686,8 @@ export class ChatView {
         };
         who.append(fork);
       }
-      wrap.append(who, this.foldable(this.buildUserBody(item), 240));
+      const body = this.buildUserBody(item);
+      wrap.append(who, this.longCards.user ? this.longCard(body, "user", item.id) : this.foldable(body, 240));
       // 别人发我一条 PR 链接，我也要能直接在面板里看 —— 同一个解析器，不看是谁写的消息。
       if (this.onGithubOpen) wrap.append(...this.githubCardsFor(item.text, 2));
     } else {
@@ -1666,28 +1703,33 @@ export class ChatView {
         // 正文里的 PR 链接本来就能点（`md.ts` 会给裸 URL 加锚点），但点完要切浏览器。
         // 挂上卡片 = 当场看得见「这是哪个 PR」。每段最多两张。
         if (this.onGithubOpen) body.append(...this.githubCardsFor(item.text, 2));
-        const peek = el("button", "msg-peek", previewLine(item.text));
-        peek.title = tr("展开回答");
-        const fold = foldHead("msg-fold");
-        peek.type = "button";
-        const id = item.id;
-        const apply = (collapsed: boolean) => {
-          wrap.classList.toggle("collapsed", collapsed);
-          fold.setOpen(!collapsed);
-        };
-        const toggle = () => {
-          const next = !wrap.classList.contains("collapsed");
-          if (next) this.collapsed.add(id);
-          else this.collapsed.delete(id);
-          apply(next);
-          // 折起来会把内容缩掉一大截：下面可能就此空了，那颗钮不能还留在那儿（D168）。
-          this.renderJump();
-        };
-        fold.onclick = toggle;
-        peek.onclick = toggle;
-        apply(this.collapsed.has(id));
-        who.append(fold);
-        wrap.append(body, peek);
+        if (this.longCards.assistant) {
+          // D418：开了这一档就整条收成一张卡，老的 `msg-peek` 预览行与折叠钮让位（默认不开）。
+          wrap.append(this.longCard(body, "assistant", item.id, item.text));
+        } else {
+          const peek = el("button", "msg-peek", previewLine(item.text));
+          peek.title = tr("展开回答");
+          const fold = foldHead("msg-fold");
+          peek.type = "button";
+          const id = item.id;
+          const apply = (collapsed: boolean) => {
+            wrap.classList.toggle("collapsed", collapsed);
+            fold.setOpen(!collapsed);
+          };
+          const toggle = () => {
+            const next = !wrap.classList.contains("collapsed");
+            if (next) this.collapsed.add(id);
+            else this.collapsed.delete(id);
+            apply(next);
+            // 折起来会把内容缩掉一大截：下面可能就此空了，那颗钮不能还留在那儿（D168）。
+            this.renderJump();
+          };
+          fold.onclick = toggle;
+          peek.onclick = toggle;
+          apply(this.collapsed.has(id));
+          who.append(fold);
+          wrap.append(body, peek);
+        }
       } else if (item.stopReason !== "error") {
         wrap.classList.add("no-text");
       }
@@ -1894,6 +1936,72 @@ export class ChatView {
     box.append(clip, btn);
     apply();
     // The node is measured before it is in the document, so re-check once layout is real.
+    requestAnimationFrame(measure);
+    return box;
+  }
+
+  /**
+   * D418（用户 2026-11-26「当用户输入过多，会占用很大 chat 框内容…做成一个卡片，点击卡片后展开内容」）：
+   * 超长条目收成一张卡 —— 收起时只有标题行（长消息 · 27 行 · 931 字）+ 三行预览，整张卡可点；
+   * 展开后在卡里滚（`calc(var(--vh1) * 42)`），底边一颗整宽「▴ 收起」。
+   *
+   * 不高的条目**不画卡**：`has-card` 亮着才算卡，没亮的卡片 `display: contents`，正文和原来一模一样 ——
+   * 所以短消息不会多一层盒子、也不会闪一帧。尺子沿用 `foldable`：量 `scrollHeight`，不是数字数。
+   */
+  private longCard(body: HTMLElement, kind: LongCardKind, id: string, source?: string): HTMLElement {
+    const box = el("div", `lm-card lm-${kind}`);
+    const head = el("button", "lm-head") as HTMLButtonElement;
+    head.type = "button";
+    const label = kind === "user" ? tr("长消息") : kind === "assistant" ? tr("长回答") : tr("长输出");
+    head.append(el("span", "lm-badge", label), el("span", "lm-meta"), el("span", "lm-open", tr("展开")));
+    const scroll = el("div", "lm-scroll");
+    scroll.append(body);
+    const bar = el("button", "lm-bar") as HTMLButtonElement;
+    bar.type = "button";
+    bar.append(el("span", "lm-chev", "▴"), el("span", "", tr("收起")));
+    box.append(head, scroll, bar);
+
+    let tall = false;
+    const apply = () => {
+      const open = tall && this.longOpen.has(id);
+      box.classList.toggle("has-card", tall);
+      box.classList.toggle("is-open", open);
+      head.setAttribute("aria-expanded", String(open));
+    };
+    const measure = () => {
+      // scrollHeight 是内容高度：折着量、展开量、拉宽了再量，读到的都是同一件事。
+      // 开、关两道门槛差 40px（滞环）：卡片自己的边框会把正文挪动一两像素，卡在 240 上下时
+      // 一开一关会互相触发 ResizeObserver，翻来覆去没完；留出一条缝就稳定了。
+      tall = tall ? body.scrollHeight > LONG_CARD_PX - 40 : body.scrollHeight > LONG_CARD_PX + 8;
+      // 行数字数按**原文**算更可信：助手那条正文是 markdown 渲染出来的，`innerText` 里每个 `<p>`
+      // 之间多一个空行，30 行的回答会数成 59 行。用户消息是 `pre-wrap` 纯文本、工具输出是 `.out`
+      // 纯文本，`innerText` 就等于原文，所以只有助手这条传 `source`。
+      const { lines, chars } = longCardCounts(source ?? (body.innerText || ""));
+      const meta = head.querySelector(".lm-meta");
+      if (meta) meta.textContent = lines ? tr("{p1} 行 · {p2} 字", { p1: lines, p2: chars }) : "";
+      apply();
+    };
+    const setOpen = (open: boolean) => {
+      if (open) this.longOpen.add(id);
+      else this.longOpen.delete(id);
+      apply();
+      // 一展开/一收起就换了一屏高低：「下面还有东西」可能不再成立（D168）。
+      this.renderJump();
+    };
+    head.onclick = () => setOpen(true);
+    bar.onclick = () => setOpen(false);
+    box.onclick = (ev) => {
+      // 收起态整张卡都能点；展开态只剩底边那颗，正文里要能正常选字、开链接。
+      if (!tall || box.classList.contains("is-open")) return;
+      const target = ev.target as HTMLElement | null;
+      // 预览里本身能点的东西（链接、大图、复制钮）不吞掉它的点击。
+      if (target?.closest("a, button, img")) return;
+      setOpen(true);
+    };
+    // 观察正文自己：工具输出是流式长出来的，正文一变就得重新量（卡片边框不会动它）。
+    new ResizeObserver(measure).observe(body);
+    apply();
+    // 节点建好时还不在文档里，布局真了之后再量一次。
     requestAnimationFrame(measure);
     return box;
   }
@@ -2111,10 +2219,21 @@ export class ChatView {
     this.renderJump();
   }
 
+  /**
+   * D418：工具输出那一块。开了「工具输出」这一档、而且输出够长，就收成「长输出」卡，否则还是老样子 ——
+   * `.out` 自己在 260px 里滚。创建和「要不要包成卡」只在这里定，`mergeTool` 补输出时也走它。
+   */
+  private toolOut(card: HTMLElement): HTMLElement {
+    const out = el("div", "out");
+    card.append(this.longCards.tool ? this.longCard(out, "tool", card.dataset.itemId ?? "") : out);
+    return out;
+  }
+
   private buildTool(item: ToolItem): HTMLElement {
     if (this.isAskTool(item.name)) return this.buildAsk(item);
     if (this.isTodoTool(item.name)) return this.buildTodo(item);
     const card = el("div", "tool");
+    card.dataset.itemId = item.id;
     card.dataset.running = item.status === "running" ? "1" : "0";
     if (item.isError || item.status === "error") card.classList.add("err");
     const head = el("div", "head");
@@ -2139,14 +2258,13 @@ export class ChatView {
     card.append(head);
 
     if (item.result || item.partialResult) {
-      const out = el("div", "out");
-      setOutput(out, String(item.result ?? item.partialResult ?? ""));
       if (item.durationMs) {
         const details = el("details");
         details.append(el("summary", "", `${Math.round(item.durationMs / 100) / 10}s`));
         card.append(details);
       }
-      card.append(out);
+      const out = this.toolOut(card);
+      setOutput(out, String(item.result ?? item.partialResult ?? ""));
       // 工具卡是 AI 自己跑 `gh …` 时输出的落脚处（`buildBash` 那个是用户的 `!cmd`）。
       // `<pre>` 里的链接点不动，所以在这里挂卡 —— 这正是「AI 建完 PR 我看不到」那一条。
       if (this.onGithubOpen && item.result) card.append(...this.githubCardsFor(String(item.result), 3));

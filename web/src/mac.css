@@ -145,6 +145,39 @@ html[data-ui="mac"] .msg.assistant .body {
 html[data-ui="mac"] .msg .body pre { border-radius: 10px; border-color: var(--mac-glass-line); }
 html[data-ui="mac"] .msg .who { letter-spacing: 0; font-weight: 500; }
 
+/* D418：超长消息收成摘要卡时，卡本身接替气泡的样子 —— iMessage 的圆角、底色、阴影都长在卡上，
+   里面那层 `.body` 不再画第二个气泡（不然卡套气泡、两层底色两层圆角）。
+   卡比 `.body` 多一级选择器，所以这里压得住上面那条 `.msg.user .body`。 */
+html[data-ui="mac"] .msg.user .lm-card.has-card {
+  max-width: min(78%, 760px);
+  margin-left: auto;
+  background: var(--accent);
+  border: 0;
+  border-radius: 20px 20px 6px 20px;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--accent-ink);
+}
+html[data-ui="mac"] .msg.user .lm-card.has-card .body {
+  max-width: none; background: none; border: 0; border-radius: 0;
+  padding: 2px 15px 9px; box-shadow: none; animation: none; color: inherit;
+}
+html[data-ui="mac"] .msg.user .lm-card > .lm-head { color: color-mix(in srgb, var(--accent-ink) 78%, transparent); }
+html[data-ui="mac"] .msg.user .lm-card > .lm-head .lm-badge {
+  border-color: color-mix(in srgb, var(--accent-ink) 45%, transparent);
+  color: var(--accent-ink);
+}
+html[data-ui="mac"] .msg.user .lm-card > .lm-head .lm-meta { color: color-mix(in srgb, var(--accent-ink) 62%, transparent); }
+html[data-ui="mac"] .msg.user .lm-card > .lm-head .lm-open { color: var(--accent-ink); }
+html[data-ui="mac"] .msg.user .lm-card > .lm-bar {
+  border-top-color: color-mix(in srgb, var(--accent-ink) 22%, transparent);
+  color: color-mix(in srgb, var(--accent-ink) 80%, transparent);
+}
+html[data-ui="mac"] .msg.user .lm-card > .lm-bar:hover {
+  background: color-mix(in srgb, var(--accent-ink) 12%, transparent);
+  color: var(--accent-ink);
+}
+html[data-ui="mac"] .msg.user .lm-card > .lm-bar .lm-chev { color: color-mix(in srgb, var(--accent-ink) 55%, transparent); }
+
 /* 输入框：浮在内容区底部的一块玻璃胶囊。底色、描边、焦点环和圆角都长在 `.composer-input`
    上 —— #317 之后这是面板的宿主，textarea 只是里面一张透明无框、带 mask 的薄片。两边各画
    一套就会叠成三层描边（外边框 + 内边框 + 焦点光晕），两个圆角还会在四角互相错位。 */
