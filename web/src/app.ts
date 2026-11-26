@@ -22605,6 +22605,20 @@ export class App {
   }
 
   /**
+   * 气泡闭包住的是「打开那一刻」的胶囊节点，而 ★ 行会因为任意一帧 pi.status / 会话回声整条重建
+   * （frames.ts 把 pi.status 一律映射到 "sessions"）。重建后旧节点从文档里摘掉、`isConnected` 为假
+   * —— 早先归档/删除在 `host.contains(chip)` 这里直接 return，点击被静默吞掉（「点了没反应」）。
+   * 所以动作认 id：节点还连着文档（★ 行胶囊，或不在 ★ 行里的 NowChip）就演动效，
+   * 被重建换掉就按 id 回查当前那颗，都找不到就不演、照样把动作发出去。
+   */
+  private livePinChip(id: string, chip?: HTMLElement | null): HTMLElement | null {
+    if (chip && chip.isConnected) return chip;
+    const host = this.els.pinStrip;
+    const byId = host.querySelector<HTMLElement>(`.pin-chip[data-pin-id="${CSS.escape(id)}"]`);
+    return byId && byId.isConnected ? byId : null;
+  }
+
+  /**
    * 归档动效：胶囊原地淡出 → 横向收拢让位（后面的胶囊平滑左移），然后才真的发归档。
    * 先演后发：归档是幂等的，而桥的回声会重建整条 ★ 行，收拢完的几何必须和重建后一模一样，
    * 否则回声那一帧会跳。早先版本在条尾插一个抽屉（把「＋」挤开 35px、回声时再弹回）、
@@ -22617,12 +22631,17 @@ export class App {
       this.archiveOne(id);
       return;
     }
+    // 节点被重建换掉时不能演收拢（没有可量的几何），但归档必须照发。
+    const live = this.livePinChip(id, chip);
+    if (!live) {
+      this.archiveOne(id);
+      return;
+    }
     const host = this.els.pinStrip;
-    if (!host.contains(chip)) return;
     this.pinAnim = id;
     // 量 CSS px 而不是 getBoundingClientRect：#app 上有 zoom（外观「字号」），rect 是缩放后的视觉尺寸，
     // 拿它写回 style.width / height 会被再缩一遍 —— 胶囊先变宽、整行变高，正是这里要治的抖。
-    const cs = getComputedStyle(chip);
+    const cs = getComputedStyle(live);
     const borders = parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
     const box = cs.boxSizing === "border-box" ? 0 : borders + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
     const vbox = cs.boxSizing === "border-box" ? 0 : parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
@@ -22631,16 +22650,16 @@ export class App {
     // 收拢只动这一颗胶囊（chip.parentElement 就是 .pin-strip，动它会把整条缩没）。
     // border-box 下宽度到不了 0（还剩左右边框），用负的右外边距把边框和 flex gap 一起吃掉：
     // 收完这颗的占位正好是 0，下一颗停在它原来的左边缘 —— 和回声重建后的位置一致。
-    Object.assign(chip.style, {
+    Object.assign(live.style, {
       boxSizing: "border-box",
       height: `${r.height}px`,
       overflow: "hidden",
       whiteSpace: "nowrap",
       pointerEvents: "none",
     });
-    const fade = chip.animate([{ opacity: "1" }, { opacity: "0" }], { duration: 220, easing: "ease-out", fill: "forwards" });
+    const fade = live.animate([{ opacity: "1" }, { opacity: "0" }], { duration: 220, easing: "ease-out", fill: "forwards" });
     fade.onfinish = () => {
-      const shut = chip.animate(
+      const shut = live.animate(
         [
           { width: `${r.width}px`, marginRight: "0px" },
           { width: "0px", marginRight: `${-(gap + borders)}px` },
@@ -22666,8 +22685,15 @@ export class App {
       this.pinNote(tr("已移入垃圾箱 · 在左栏的垃圾箱里可以还原"));
       return;
     }
-    const r = chip.getBoundingClientRect();
-    const clone = chip.cloneNode(true) as HTMLElement;
+    // 同 archiveFromPin：节点可能已被重建换掉，拿不到存活节点就直接删，不演飞行动效。
+    const live = this.livePinChip(id, chip);
+    if (!live) {
+      this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
+      this.pinNote(tr("已移入垃圾箱 · 在左栏的垃圾箱里可以还原"));
+      return;
+    }
+    const r = live.getBoundingClientRect();
+    const clone = live.cloneNode(true) as HTMLElement;
     clone.classList.add("pin-flyer");
     markSurface(clone, "paper");
     clone.removeAttribute("data-pin-key");
@@ -22720,7 +22746,7 @@ export class App {
     if (this.pinAnim) return;
     this.closePinMenu();
     const chip = this.nowChip?.el;
-    if (this.calm() || !chip) {
+    if (this.calm() || !chip || !chip.isConnected) {
       this.archiveOne(id);
       return;
     }
