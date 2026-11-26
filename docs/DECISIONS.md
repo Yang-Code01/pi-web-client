@@ -8234,3 +8234,17 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 - 详情里「这次用的模型」只对**新记录**准确；旧的 run 没有 `provider` 字段，退化成显示 `model`（`cn:glm-5.4` 这种），可能仍分不清 provider。
 
 **验证。** `node probes/code-review.mjs`（真桥 + 真 Chromium，30 项全绿）：面板里没有「清理历史」；跑完出现 `.rv-run-card`；点卡片进 `.rv-focus`、里面写着「这次用的模型」、`‹ 记录` 能回列表；`完整详情 ›` 开的浮层还是老样子（分组日志 + 意见 + 一键交给 agent）；PR 模式填号能评；刷新后范围与号自己接上（`pr / 7`）；字号 150% 下按钮仍在视口。`npm --prefix web run typecheck`（tsc + i18n 三语 4366 键 + viewport + layers + 三个 node --test）通过。`npm --prefix bridge run typecheck` 通过，`node --experimental-strip-types bridge/tests/review-unit.mjs` 全绿（新增两条：「写盘本身不裁剪」与「加新记录时留最后 20 次」、「评什么」存得下也读得回）。
+
+## D414 Jira 面板的外壳只建一次，`render()` 只换内容（用户「打开jira dialog。 dialog会弹多次」2026-11-26）
+
+**问题。** 和 D384（邮箱）是同一个病，Jira 是那次漏改的那一个。`JiraPanel.render()` 每次都新建 `.jc-back` + `section.jc-console` 再 `this.root.replaceWith(back)`；而一次 `open()` 至少重画四次（`open()` 自己一次、`reload()` 拿到 config 后 `loadMe()` 一次、`loadLists()` 一次、`loadRecent()` 回来一次）。mac 材质给这两层挂的 `mac-fade-in 260ms` / `mac-window-in 460ms` 就跟着演四遍 —— 用户看到「打开 Jira dialog，dialog 会弹多次」。
+
+**决定。** 照 D384：外壳在 `open()` 里由新的 `mountShell()` 建一次并 `mountOverlay()`（`this.root` 与 `this.shell` 都在这里赋）；`render()` 改成 `if (!this.shell) return` + 重设 `aria-label` + `this.shell.replaceChildren(head, banners, body, foot)`；`close()` 把 `shell` 一起置空。`.jc-console` 的网格是 `grid-template-rows: auto auto minmax(0, 1fr) auto`，四个直接子元素原位替换，轨道不变。
+
+**为什么。** 不选「加重画的新节点 `mac-instant`」那一行方案，理由同 D384：节点仍每次重建，滚动与焦点照丢；而且关闭后迟到的请求回来会把面板重新挂出来，`if (!this.shell) return` 顺带堵掉。
+
+**代价 / 可改。** `aria-label` 不再随重建刷新，改在 `render()` 里重设（语言切换时标题跟着换）。
+
+**验证。** `node probes/jira-panel-single-mount.mjs`（真桥 + 真 Chromium，`/api/jira/**` 在浏览器层拦成假数据）：改前一次点击挂载 4 次、带 `mac-window-in` 4 次、切分区累计 5 次、点「刷新」累计 9 次；改后 1 / 1 / 1 / 1，Esc 后不复活，关了再开只再挂一次（11 项全绿，连跑三次稳定）。`npm run typecheck` 全仓通过；`node probes/mac-dialogs.mjs` 28 个弹层对齐（Jira 面板的材质标记没丢）。
+
+**顺带记一笔（未修）。** `probes/jira-handoff-name.mjs` 在 main 上就已经是红的，与本次改动无关：它的假路由表里没有 `/api/jira/recent`，兜底回 `{}`，`loadRecent()` 写入 `items: undefined`，`recentUnread()` 里的 `.filter` 抛 `Cannot read properties of undefined (reading 'filter')`，面板停在加载态。D341（最近消息）上线时漏补了桩。
