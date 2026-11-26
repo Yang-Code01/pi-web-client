@@ -259,8 +259,30 @@ try {
     `panel ${Math.round(geom.width)} / 按钮右缘 ${Math.round(geom.bx + geom.bw - geom.px)}`,
   );
   // 「完整详情 ›」：记录卡右下角那个入口，打开的是**这张卡**那次；左边时间线、右边结果。
-  await page.locator(".rv-run-card").first().locator(".rv-run-more").click();
-  await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
+  // 跑着的时候面板按计时器整块重画：locator.click() 会卡在「等元素稳定」上（review-cards 里踩过）。
+  // 先量坐标再用鼠标真点，点完没开就重来一次。
+  {
+    let opened = false;
+    for (let i = 0; i < 3 && !opened; i += 1) {
+      const at = await page.evaluate(() => {
+        const node = document.querySelector(".rv-run-card")?.querySelector(".rv-run-more");
+        if (!node) return null;
+        const b = node.getBoundingClientRect();
+        return b.width && b.height ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null;
+      });
+      if (!at) {
+        await sleep(150);
+        continue;
+      }
+      await page.mouse.click(at.x, at.y);
+      opened = await page
+        .locator(".rv-sheet")
+        .waitFor({ timeout: 3000 })
+        .then(() => true)
+        .catch(() => false);
+    }
+    check("「完整详情」打开浮层", opened, "");
+  }
   // 不能把「评审失败」写成 until 回调里的 throw：until 的 try/catch 会把它当「还没好」吞掉重试，
   // 最后只剩一句 timeout waiting for review findings，错误原文就查不到了。
   let fileCount = 0;
@@ -269,7 +291,7 @@ try {
     fileCount = await page.locator(".rv-sheet .rv-file").count();
     if (fileCount) break;
     if (await page.locator(".rv-sheet .rv-error, .review .rv-error").count()) {
-      const why = (await page.locator(".rv-error").first().innerText()).trim().replace(/s+/g, " ");
+      const why = (await page.locator(".rv-error").first().innerText()).trim().replace(/\s+/g, " ");
       throw new Error(`评审失败：${why}`);
     }
     await sleep(150);

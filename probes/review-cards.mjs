@@ -394,6 +394,7 @@ ok(!(await cssHas(".rv-focus")), "旧的内嵌展开页（.rv-focus）连样式�
 // 6. 开评不再把人拽走：新的一条只多一张卡
 {
   const before = await count(".rv-run-card");
+  const liveBefore = await count(".rv-run-card.is-live");
   cast({ type: "review.started", sessionId: SID, runId: "r-new" });
   // 桥是先落一条 running 记录、再广播 review.state / review.started；这里照同一顺序来。
   const fresh = run({ id: "r-new", status: "running", pr: 703, prTitle: "feat(review): 新开一条", model: "GLM-5.4" });
@@ -414,8 +415,14 @@ ok(!(await cssHas(".rv-focus")), "旧的内嵌展开页（.rv-focus）连样式�
     .catch(() => false);
   ok(grew, `新开一条多一张卡（${before} → ${before + 1}）`);
   ok((await count(".rv-sheet")) === 0, "新开一条不会把面板换成展开页（没开浮层）");
-  ok((await count(".rv-run-card.is-live")) >= 1, "在跑的那条在记录里有一张卡");
-  ok((await count(".rv-run-card.is-live .rv-run-stop")) >= 1, "卡上有自己的「停止」");
+  // 桩里开局就有一条 r-live，光数「>= 1」不管新那条画没画成都过：要的是在跑卡真的多一张、
+  // 多出来的那张就是排在最前的新记录（startedAt 最新），并且它带自己的「停止」。
+  ok((await count(".rv-run-card.is-live")) === liveBefore + 1, `新开的那条也画成在跑（在跑卡 ${liveBefore} → ${liveBefore + 1}）`);
+  const newestLive = await page.evaluate(() => {
+    const card = document.querySelector(".rv-run-card");
+    return { live: !!card?.classList.contains("is-live"), stop: !!card?.querySelector(".rv-run-stop") };
+  });
+  ok(newestLive.live && newestLive.stop, "最新那张卡是在跑、且带自己的「停止」");
 }
 
 // 7. 字号 150%（#app 有 zoom）下按钮仍在卡内右下角
