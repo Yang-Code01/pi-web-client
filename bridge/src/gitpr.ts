@@ -6,7 +6,7 @@
  * 取的时候只写 `refs/pi-web/pr-N` 与 `origin/<base>`，**不动工作区、不动当前分支**。
  */
 import { execFile, execFileSync } from "node:child_process";
-import { ghInvocation } from "./github.ts";
+import { ghInvocation, githubRest } from "./github.ts";
 import { discoverLocalProxyCandidates, FETCH_PLAN, GH_PLAN, resolveProxyCandidates, viaRoutes, type RoutePlan } from "./netroute.ts";
 
 export interface PullRequest {
@@ -30,6 +30,8 @@ export interface PrListResult {
    * （或仓库改过名）。界面要据此说「换账号」，而不是让用户去查代理。
    */
   code: "" | "gh_missing" | "gh_failed" | "no_remote" | "not_github" | "repo_unseen";
+  /** 这一份是谁给的：真 gh，还是没装 gh 时的 REST 兜底（界面据此说「走内置实现」）。 */
+  via: "gh" | "rest";
 }
 
 const CACHE_MS = 60_000;
@@ -98,6 +100,10 @@ export interface RouteOptions {
 export interface PrQueryOptions extends RouteOptions {
   fresh?: boolean;
   login?: string;
+  /** 令牌本体：`gh` 没装时 REST 兜底用它。与 `env.GH_TOKEN` 同源（`sessionGhAccount`）。 */
+  token?: string | null;
+  /** 测试缝：REST 打哪里（默认 api.github.com）。 */
+  apiBase?: string;
 }
 
 /**
@@ -166,6 +172,67 @@ function classify(stderr: string, cmd: string, code: number | null): { code: PrL
   return { code: "gh_failed", error: first || `${cmd} 退出码 ${code}` };
 }
 
+// ---------------------------------------------------------------------------
+// REST 兜底：没装 gh 时评审仍能跑（D428）
+// ---------------------------------------------------------------------------
+
+/**
+ * REST 失败 → 面板认识的那几个 code（`gh_missing` 不会从这里出来）。
+ * 注意看的是 `GithubError.status`，不是 HTTP 状态：`requestRaw` 把 403 + rate-limit
+ * 改写成了 429，所以「403」在这里是权限不够（缺 scope / SAML 没授权），语义同 repo_unseen。
+ */
+function restFailure(err: any): { code: PrListResult["code"]; error: string } {
+  const status = Number(err?.status) || 0;
+  const message = String(err?.message ?? err ?? "").trim() || `GitHub 回了 ${status || "?"}`;
+  // 401/403/404 都是「这个令牌看不到这个东西」：与 gh 那侧的 repo_unseen 同一个语义。
+  if (status === 401 || status === 403 || status === 404) return { code: "repo_unseen", error: message };
+  return { code: "gh_failed", error: message };
+}
+
+async function restGet(opts: PrQueryOptions, apiPath: string): Promise<any> {
+  return githubRest(opts.apiBase ? { upstreamApi: opts.apiBase } : {}, opts.token ?? null, apiPath);
+}
+
+/** 草稿杆后面：它们多数还没准备好，但也不是不能评。 */
+function sortPulls(prs: PullRequest[]): PullRequest[] {
+  return prs.sort((a, b) => Number(a.draft) - Number(b.draft) || b.number - a.number);
+}
+
+async function restList(repo: string, opts: PrQueryOptions): Promise<PrListResult> {
+  try {
+    const rows = await restGet(opts, `/repos/${repo}/pulls?state=open&per_page=30&sort=created&direction=desc`);
+    const prs = sortPulls(
+      (Array.isArray(rows) ? rows : [])
+        .map((r: any) => ({
+          number: Number(r?.number) || 0,
+          title: String(r?.title ?? ""),
+          headRefName: String(r?.head?.ref ?? ""),
+          baseRefName: String(r?.base?.ref ?? ""),
+          draft: Boolean(r?.draft),
+          author: String(r?.user?.login ?? ""),
+        }))
+        .filter((r) => r.number > 0),
+    );
+    return { ok: true, prs, repo, error: "", code: "", via: "rest" };
+  } catch (err: any) {
+    const why = restFailure(err);
+    return { ok: false, prs: [], repo, error: why.error, code: why.code, via: "rest" };
+  }
+}
+
+/** PR 的标题与两条 ref：`gh pr view --json …` 那一步的替身。 */
+async function restPullMeta(dir: string, number: number, opts: PrQueryOptions): Promise<{ title: string; baseRefName: string; headRefName: string }> {
+  const repo = localRepoName(dir);
+  if (!repo) throw Object.assign(new Error("这个仓库没有 GitHub 远端"), { code: "not_github" as const });
+  try {
+    const raw = await restGet(opts, `/repos/${repo}/pulls/${number}`);
+    return { title: String(raw?.title ?? ""), baseRefName: String(raw?.base?.ref ?? ""), headRefName: String(raw?.head?.ref ?? "") };
+  } catch (err: any) {
+    const why = restFailure(err);
+    throw Object.assign(new Error(why.error), { code: why.code });
+  }
+}
+
 /** `git@github.com:o/r.git` / `https://github.com/o/r(.git)` → `o/r`。 */
 export function repoFromRemote(url: string): string {
   const text = (url ?? "").trim();
@@ -202,7 +269,7 @@ export async function listPullRequests(dir: string, opts: PrQueryOptions = {}): 
   if (!opts.fresh && hit && Date.now() - hit.at < CACHE_MS) return hit.value;
   const remote = await run("git", ["-C", dir, "remote", "get-url", "origin"], dir, 8000);
   if (remote.code !== 0 || !remote.stdout.trim()) {
-    const value: PrListResult = { ok: false, prs: [], repo: "", error: "这个仓库没有 origin 远程", code: "no_remote" };
+    const value: PrListResult = { ok: false, prs: [], repo: "", error: "这个仓库没有 origin 远程", code: "no_remote", via: "gh" };
     cache.set(cacheKey, { at: Date.now(), value });
     return value;
   }
@@ -211,7 +278,13 @@ export async function listPullRequests(dir: string, opts: PrQueryOptions = {}): 
   const out = await routed(gh.cmd, gh.args, dir, GH_PLAN, undefined, opts);
   if (out.code !== 0) {
     const why = classify(out.stderr, "gh pr list", out.code);
-    const value: PrListResult = { ok: false, prs: [], repo: repoName, error: why.error, code: why.code };
+    // 没装 gh（或壳解析不到）→ 走 REST：评审不该因为「不想装一个 CLI」就整块用不了。
+    if (why.code === "gh_missing") {
+      const value = await restList(repoName, opts);
+      cache.set(cacheKey, { at: Date.now(), value });
+      return value;
+    }
+    const value: PrListResult = { ok: false, prs: [], repo: repoName, error: why.error, code: why.code, via: "gh" };
     cache.set(cacheKey, { at: Date.now(), value });
     return value;
   }
@@ -219,23 +292,23 @@ export async function listPullRequests(dir: string, opts: PrQueryOptions = {}): 
   try {
     rows = JSON.parse(out.stdout || "[]");
   } catch {
-    const value: PrListResult = { ok: false, prs: [], repo: repoName, error: "读不懂 gh 的输出", code: "gh_failed" };
+    const value: PrListResult = { ok: false, prs: [], repo: repoName, error: "读不懂 gh 的输出", code: "gh_failed", via: "gh" };
     cache.set(cacheKey, { at: Date.now(), value });
     return value;
   }
-  const prs: PullRequest[] = rows
-    .map((r) => ({
-      number: Number(r?.number) || 0,
-      title: String(r?.title ?? ""),
-      headRefName: String(r?.headRefName ?? ""),
-      baseRefName: String(r?.baseRefName ?? ""),
-      draft: Boolean(r?.isDraft),
-      author: String(r?.author?.login ?? ""),
-    }))
-    .filter((r) => r.number > 0)
-    // 草稿排后面：它们多数还没准备好，但也不是不能评。
-    .sort((a, b) => Number(a.draft) - Number(b.draft) || b.number - a.number);
-  const value: PrListResult = { ok: true, prs, repo: repoName, error: "", code: "" };
+  const prs: PullRequest[] = sortPulls(
+    rows
+      .map((r) => ({
+        number: Number(r?.number) || 0,
+        title: String(r?.title ?? ""),
+        headRefName: String(r?.headRefName ?? ""),
+        baseRefName: String(r?.baseRefName ?? ""),
+        draft: Boolean(r?.isDraft),
+        author: String(r?.author?.login ?? ""),
+      }))
+      .filter((r) => r.number > 0),
+  );
+  const value: PrListResult = { ok: true, prs, repo: repoName, error: "", code: "", via: "gh" };
   cache.set(cacheKey, { at: Date.now(), value });
   return value;
 }
@@ -277,23 +350,28 @@ export async function resolvePullRequest(
   dir: string,
   number: number,
   onLog?: (line: string) => void,
-  opts: RouteOptions = {},
+  opts: PrQueryOptions = {},
 ): Promise<ResolvedPr> {
   if (!Number.isFinite(number) || number <= 0) throw Object.assign(new Error("PR 号不对"), { code: "pr_invalid" });
   // `opts.env`（会话选的那个账号的 GH_TOKEN）要跟着每一条出网命令走：`gh pr view`、两处 `git fetch`。
   const gh = ghRun(["pr", "view", String(number), "--json", "number,title,baseRefName,headRefName"]);
   const view = await routed(gh.cmd, gh.args, dir, GH_PLAN, onLog, opts);
+  let meta: { title: string; baseRefName: string; headRefName: string } = { title: "", baseRefName: "", headRefName: "" };
   if (view.code !== 0) {
     const why = classify(view.stderr, `gh pr view ${number}`, view.code);
-    throw Object.assign(new Error(why.error || `读不到 PR #${number}`), { code: why.code || "gh_failed" });
+    // 没装 gh：标题与两条 ref 改从 REST 拿，后面的 `git fetch` 完全不变。
+    if (why.code === "gh_missing") meta = await restPullMeta(dir, number, opts);
+    else throw Object.assign(new Error(why.error || `读不到 PR #${number}`), { code: why.code || "gh_failed" });
+  } else {
+    let raw: any = {};
+    try {
+      raw = JSON.parse(view.stdout || "{}");
+    } catch {
+      throw Object.assign(new Error(`读不懂 PR #${number} 的信息`), { code: "gh_failed" });
+    }
+    meta = { title: String(raw?.title ?? ""), baseRefName: String(raw?.baseRefName ?? ""), headRefName: String(raw?.headRefName ?? "") };
   }
-  let meta: any = {};
-  try {
-    meta = JSON.parse(view.stdout || "{}");
-  } catch {
-    throw Object.assign(new Error(`读不懂 PR #${number} 的信息`), { code: "gh_failed" });
-  }
-  const base = String(meta?.baseRefName ?? "").trim();
+  const base = String(meta.baseRefName ?? "").trim();
   if (!base) throw Object.assign(new Error(`PR #${number} 没说对照分支`), { code: "gh_failed" });
   const to = await fetchPullRequestRef(dir, number, onLog, opts);
   onLog?.(`git fetch origin ${base}`);
@@ -360,18 +438,78 @@ export interface PrInfoResult {
   info: PrInfo | null;
   error: string;
   code: PrListResult["code"];
+  /** 同上：真 gh 还是 REST 兜底。 */
+  via: "gh" | "rest";
 }
 
 const infoCache = new Map<string, { at: number; value: PrInfoResult }>();
 const FILE_CAP = 100;
 const COMMIT_CAP = 50;
 
+/** REST 的 `status` 与 gh 的 `changeType` 对照：只有 removed/deleted 叫法不同。 */
+function restChangeType(status: string): string {
+  const s = status.toLowerCase();
+  return s === "removed" ? "deleted" : s;
+}
+
+/** `gh pr view --json …`（含 files / commits 三块）的替身。 */
+async function restInfo(dir: string, number: number, opts: PrQueryOptions): Promise<PrInfoResult> {
+  const repo = localRepoName(dir);
+  if (!repo) {
+    return { ok: false, info: null, error: "这个仓库没有 GitHub 远端", code: "not_github", via: "rest" };
+  }
+  try {
+    const [raw, filesRaw, commitsRaw] = await Promise.all([
+      restGet(opts, `/repos/${repo}/pulls/${number}`),
+      restGet(opts, `/repos/${repo}/pulls/${number}/files?per_page=${FILE_CAP}`),
+      restGet(opts, `/repos/${repo}/pulls/${number}/commits?per_page=${COMMIT_CAP}`),
+    ]);
+    const files = (Array.isArray(filesRaw) ? filesRaw : []).slice(0, FILE_CAP);
+    const commits = (Array.isArray(commitsRaw) ? commitsRaw : []).slice(0, COMMIT_CAP);
+    const changedFiles = Number(raw?.changed_files) || files.length;
+    const info: PrInfo = {
+      number: Number(raw?.number) || number,
+      title: String(raw?.title ?? ""),
+      body: String(raw?.body ?? "").slice(0, 20_000),
+      state: String(raw?.state ?? ""),
+      draft: Boolean(raw?.draft),
+      url: String(raw?.html_url ?? ""),
+      author: String(raw?.user?.login ?? ""),
+      createdAt: String(raw?.created_at ?? ""),
+      updatedAt: String(raw?.updated_at ?? ""),
+      additions: Number(raw?.additions) || 0,
+      deletions: Number(raw?.deletions) || 0,
+      changedFiles,
+      headRefName: String(raw?.head?.ref ?? ""),
+      baseRefName: String(raw?.base?.ref ?? ""),
+      files: files.map((f: any) => ({
+        path: String(f?.filename ?? ""),
+        additions: Number(f?.additions) || 0,
+        deletions: Number(f?.deletions) || 0,
+        changeType: restChangeType(String(f?.status ?? "")),
+      })),
+      filesMore: Math.max(0, changedFiles - files.length),
+      commits: commits.map((c: any) => ({
+        oid: String(c?.sha ?? ""),
+        headline: String(c?.commit?.message ?? "").split(/\r?\n/)[0] ?? "",
+        date: String(c?.commit?.author?.date ?? ""),
+        author: String(c?.author?.login ?? c?.commit?.author?.name ?? ""),
+      })),
+      commitsMore: Math.max(0, (Number(raw?.commits) || commits.length) - commits.length),
+    };
+    return { ok: true, info, error: "", code: "", via: "rest" };
+  } catch (err: any) {
+    const why = restFailure(err);
+    return { ok: false, info: null, error: why.error, code: why.code, via: "rest" };
+  }
+}
+
 export async function pullRequestInfo(dir: string, number: number, opts: PrQueryOptions = {}): Promise<PrInfoResult> {
   const key = `${dir}|${number}|${opts.login ?? ""}`;
   const hit = infoCache.get(key);
   if (!opts.fresh && hit && Date.now() - hit.at < CACHE_MS) return hit.value;
   if (!Number.isFinite(number) || number <= 0) {
-    return { ok: false, info: null, error: "PR 号不对", code: "gh_failed" };
+    return { ok: false, info: null, error: "PR 号不对", code: "gh_failed", via: "gh" };
   }
   const gh = ghRun([
     "pr",
@@ -383,7 +521,12 @@ export async function pullRequestInfo(dir: string, number: number, opts: PrQuery
   const out = await routed(gh.cmd, gh.args, dir, GH_PLAN, undefined, opts);
   if (out.code !== 0) {
     const why = classify(out.stderr, `gh pr view ${number}`, out.code);
-    const value: PrInfoResult = { ok: false, info: null, error: why.error || `读不到 PR #${number}`, code: why.code };
+    if (why.code === "gh_missing") {
+      const value = await restInfo(dir, number, opts);
+      infoCache.set(key, { at: Date.now(), value });
+      return value;
+    }
+    const value: PrInfoResult = { ok: false, info: null, error: why.error || `读不到 PR #${number}`, code: why.code, via: "gh" };
     infoCache.set(key, { at: Date.now(), value });
     return value;
   }
@@ -394,7 +537,7 @@ export async function pullRequestInfo(dir: string, number: number, opts: PrQuery
     raw = null;
   }
   if (!raw || typeof raw !== "object") {
-    const value: PrInfoResult = { ok: false, info: null, error: "读不懂 gh 的输出", code: "gh_failed" };
+    const value: PrInfoResult = { ok: false, info: null, error: "读不懂 gh 的输出", code: "gh_failed", via: "gh" };
     infoCache.set(key, { at: Date.now(), value });
     return value;
   }
@@ -430,7 +573,7 @@ export async function pullRequestInfo(dir: string, number: number, opts: PrQuery
     })),
     commitsMore: Math.max(0, commits.length - COMMIT_CAP),
   };
-  const value: PrInfoResult = { ok: true, info, error: "", code: "" };
+  const value: PrInfoResult = { ok: true, info, error: "", code: "", via: "gh" };
   infoCache.set(key, { at: Date.now(), value });
   return value;
 }

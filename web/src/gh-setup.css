@@ -1,0 +1,136 @@
+/* 「没有 gh / 没登录」卡（D428）。两处渲染：评审的 PR 格与 GitHub 面板顶部。
+   尺寸走 em/px 都行：它挂在 #app 里，跟着 --ui-scale 一起缩放。 */
+.ghs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  min-width: 0;
+}
+.ghs-line {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 6px 8px;
+}
+.ghs-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ghs-line .ghs-head {
+  flex: 1 1 140px;
+}
+.ghs-title {
+  font-size: 12px;
+  color: var(--text);
+}
+.ghs-sub,
+.ghs-hint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--faint);
+}
+.ghs-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.ghs-btn {
+  padding: 3px 9px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.ghs-btn:hover {
+  border-color: var(--accent);
+}
+.ghs-btn.ghs-main {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-bg);
+}
+.ghs-btn.ghs-quiet {
+  color: var(--faint);
+  border-color: transparent;
+}
+.ghs-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ghs-cmdrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ghs-cmd {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border-radius: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ghs-codebox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ghs-codetext {
+  padding: 4px 10px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+.ghs-log {
+  margin: 0;
+  max-height: 120px;
+  overflow: auto;
+  padding: 6px 8px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: var(--faint);
+  background: var(--bg);
+  border-radius: 8px;
+}
+.ghs-error {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--danger, #d33);
+  word-break: break-word;
+}
+.ghs-patform {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.ghs-pat {
+  flex: 1 1 160px;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}

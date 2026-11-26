@@ -45,7 +45,7 @@
     "test:whatsnew-popup": "node --experimental-strip-types --test bridge/tests/whatsnew-popup-unit.mjs",
     "test:preview": "node bridge/tests/preview-tool.mjs && node bridge/tests/media-raw.mjs && node --experimental-strip-types bridge/tests/media-grant-unit.mjs && node --experimental-strip-types bridge/tests/open-preview-unit.mjs",
     "test:translate": "node --experimental-strip-types bridge/tests/translate-unit.mjs && node --experimental-strip-types web/tests/translateview-unit.mjs",
-    "test:review": "node --experimental-strip-types bridge/tests/review-unit.mjs && node --experimental-strip-types bridge/tests/review-pin-unit.mjs && node --experimental-strip-types bridge/tests/ocr-status-unit.mjs && node --experimental-strip-types bridge/tests/netroute-unit.mjs && node --experimental-strip-types bridge/tests/gitpr-fetch-route-e2e.mjs && node --experimental-strip-types bridge/tests/review-gh-account-e2e.mjs && node --experimental-strip-types web/tests/review-pin-unit.mjs",
+    "test:review": "npm run test:gh-setup && node --experimental-strip-types bridge/tests/review-unit.mjs && node --experimental-strip-types bridge/tests/review-pin-unit.mjs && node --experimental-strip-types bridge/tests/ocr-status-unit.mjs && node --experimental-strip-types bridge/tests/netroute-unit.mjs && node --experimental-strip-types bridge/tests/gitpr-fetch-route-e2e.mjs && node --experimental-strip-types bridge/tests/review-gh-account-e2e.mjs && node --experimental-strip-types web/tests/review-pin-unit.mjs",
     "test:review:view": "node --experimental-strip-types web/tests/review-unit.mjs",
     "probe:review": "node probes/code-review.mjs",
     "probe:github-card": "node probes/github-card-review.mjs",
@@ -149,7 +149,7 @@
     "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs && node bridge/tests/subagents-advanced-ui.mjs",
     "test:start-check": "node bridge/tests/start-check.mjs",
     "test:openpage": "node --experimental-strip-types bridge/tests/openbrowser-unit.mjs",
-    "test:sheet": "node --experimental-strip-types bridge/tests/sheet-numfmt-unit.mjs && node --experimental-strip-types bridge/tests/sheet-calc-unit.mjs && node --experimental-strip-types bridge/tests/sheet-style-unit.mjs && node --experimental-strip-types bridge/tests/sheet-theme-unit.mjs && node --experimental-strip-types bridge/tests/sheet-refs-unit.mjs && node --experimental-strip-types web/tests/sheet-links-unit.mjs",
+    "test:sheet": "node --experimental-strip-types bridge/tests/sheet-numfmt-unit.mjs && node --experimental-strip-types bridge/tests/sheet-calc-unit.mjs && node --experimental-strip-types bridge/tests/sheet-calc-xlsx.mjs && node --experimental-strip-types bridge/tests/sheet-style-unit.mjs && node --experimental-strip-types bridge/tests/sheet-theme-unit.mjs && node --experimental-strip-types bridge/tests/sheet-refs-unit.mjs && node --experimental-strip-types web/tests/sheet-links-unit.mjs",
     "test:deps": "node --experimental-strip-types bridge/tests/deps-unit.mjs",
     "test:pi": "node --experimental-strip-types bridge/tests/pi-candidates-unit.mjs",
     "test:deps:ui": "node bridge/tests/deps-ui.mjs",
@@ -163,7 +163,8 @@
     "test:skill:ui": "node bridge/tests/skill-view-ui.mjs",
     "test:note": "node --experimental-strip-types --test bridge/tests/peer-note-unit.mjs && npm run build:peer && node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-ui.mjs",
     "test:audit-state": "npm run build:peer && npm run build:bridge && node bridge/tests/peer-state-corrupt.mjs && node bridge/tests/trash-corrupt.mjs && node bridge/tests/peer-tunnel-gate.mjs",
-    "test:reminders": "node --experimental-strip-types bridge/tests/reminders-unit.mjs && node probes/reminders.mjs"
+    "test:reminders": "node --experimental-strip-types bridge/tests/reminders-unit.mjs && node probes/reminders.mjs",
+    "test:gh-setup": "node --experimental-strip-types bridge/tests/gh-setup-unit.mjs && node --experimental-strip-types bridge/tests/gitpr-rest-e2e.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

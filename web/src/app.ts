@@ -13,6 +13,7 @@ import { copilotFromFrame, creditsToUsd, formatAge, formatCredits, formatReset, 
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
 import { GithubPanel } from "./github-panel.ts";
+import { GhSetupStore, type GhCardActions } from "./gh-setup.ts";
 import { ghAccountPair } from "./github-shared.ts";
 import { refreshGithubCards } from "./github-cards.ts";
 import { githubFeature } from "./github-settings.ts";
@@ -383,6 +384,9 @@ export class App {
   private connected = false;
   private tab: Tab = "sessions";
   private queueTab: QueueTab = readQueueTab();
+  /** 正在画右栏（重入闸，见 renderQueue）。 */
+  private queueDrawing = false;
+  private queueDirty = false;
   private tabMemory = createTabMemory(this.queueTab);
   private execSelectedRound: string | null = null;
   private execSelectedPlanTaskId: number | null = null;
@@ -501,7 +505,7 @@ export class App {
   private reviewPendingRuns = new Set<string>();
   /**
    * 「完整详情」浮层现在看的是哪一次评审（`ReviewRun.id`，空串 = 没开浮层，按最新那一次算）。
-   * 记录卡不再是入口（D426）：点卡底那颗「完整详情」把它设成那张卡的那一次，关掉浮层就清空。
+   * 记录卡不再是入口（D429）：点卡底那颗「完整详情」把它设成那张卡的那一次，关掉浮层就清空。
    */
   private reviewFocus = "";
   /** 本会话的「评什么」已经从盘上恢复过没有（每个会话只恢复一次）。 */
@@ -1031,6 +1035,16 @@ export class App {
   private viewer: Viewer | null = null;
   /** GitHub 通道：右栏那块 dock（`web/src/github-panel.ts`）。懒建，关掉就丢。 */
   private githubPanel: GithubPanel | null = null;
+  /** 装 gh / 登录 gh 的状态（D428）：评审与 GitHub 面板共用这一份，进度帧只在这份里。 */
+  private ghSetupReady = false;
+  private ghSetup = new GhSetupStore(
+    (frame) => this.socket.send(frame),
+    () => this.onGhSetupChanged(),
+    () => {
+      this.reviewAccountsFor = "";
+      this.loadReviewAccounts();
+    },
+  );
   /** 预览历史，按会话分开（D63）：关预览保留、刷新页面清空、切会话各自一份。 */
   private vhist = new Map<string, { steps: VStep[]; at: number }>();
   private cardDelArm: { id: string; at: number } | null = null;
@@ -2851,6 +2865,11 @@ export class App {
         this.reviewOcr = (msg.ocr ?? null) as ReviewOcr | null;
         if (!msg.ok) this.reviewError = errText(msg) || tr("没有装上");
         if (this.queueTab === "review") this.renderQueue();
+        break;
+      // 装 gh / 登录 gh（D428）：设备码只发给发起登录的那条连接，所以这里只交给 store。
+      case "gh.setup.status":
+      case "gh.setup.event":
+        this.ghSetup.handle(msg);
         break;
       // GitHub 通道：壳看见 `gh pr create` 成功 → 把面板推开（你刚才让它建的那个 PR）。
       // 只认当前会话：别的会话建的 PR 不该抢你现在的右栏。
@@ -10296,12 +10315,51 @@ export class App {
         cwd: () => this.session?.cwd ?? "",
         openExternal: (url) => openExternal(url),
         askAgent: (text) => this.askAgent(text),
+        ghCard: () => this.ghSetup.card(Boolean(this.reviewAccountUsed) || this.reviewAccounts.some((a) => a.pat)),
+        ghActions: this.ghCardActions(),
         onClose: () => {
           this.githubPanel = null;
         },
       });
     }
     void this.githubPanel.open({ number, repo });
+  }
+
+  /** gh 状态一变（探测回来 / 安装登录有进展）：重画面板，刚登录上就重读账号与 PR 列表。 */
+  private onGhSetupChanged(): void {
+    if (this.queueTab === "review") this.renderQueue();
+    // 只在「从不可用变成可用」那一次重读账号：`gh.setup.status` 每次探测都会来，
+    // 每帧都重拉就等于点一次「重新检测」白跑两轮 `github.state`（评审 #31）。
+    const ready = Boolean(this.ghSetup.setup?.installed && this.ghSetup.setup.loggedIn);
+    if (ready && !this.ghSetupReady) {
+      this.reviewAccountsFor = "";
+      this.loadReviewAccounts();
+    }
+    this.ghSetupReady = ready;
+    // 逐行日志也会走到这里：跑着的时候不重拉面板，等 done / status 那次再刷。
+    // （到达顺序是 done 先、带新状态的 status 后：done 那次 reload 拿到的是旧状态，
+    //  紧接着的 status 帧会再刷一次，`reload()` 自带 seq 保护，不会让旧响应盖新的。）
+    if (!this.ghSetup.op) void this.githubPanel?.reload();
+  }
+
+  /** 两张卡（评审 PR 格、GitHub 面板顶部）共用同一组动作（D428）。 */
+  private ghCardActions(): GhCardActions {
+    return {
+      install: () => this.ghSetup.install(),
+      login: () => this.ghSetup.login(),
+      cancel: () => this.ghSetup.cancel(),
+      refresh: () => {
+        this.reviewAccountsFor = "";
+        this.loadReviewAccounts();
+        this.ghSetup.refresh();
+      },
+      dismiss: () => this.ghSetup.dismiss(),
+      openPat: () => this.ghSetup.openPat(),
+      closePat: () => this.ghSetup.closePat(),
+      onPatInput: (token) => this.ghSetup.onPatInput(token),
+      savePat: (token) => this.ghSetup.savePat(token),
+      openUrl: (url) => openExternal(url),
+    };
   }
 
   /**
@@ -19254,6 +19312,8 @@ export class App {
 
   private renderReviewPanel(): HTMLElement {
     this.syncReviewSession();
+    // 装 gh / 登录 gh 的状态只问一次；之后靠 gh.setup.status 帧（桥在装完 / 登录完会广播）。
+    this.ghSetup.ensure();
     const dir = this.reviewDir();
     // 账号下拉要用它：评审按会话账号查 PR，不把号摆出来又只能猜（#17545）。
     this.loadReviewAccounts();
@@ -19298,6 +19358,8 @@ export class App {
       account: this.reviewAccount,
       accountUsed: this.reviewAccountUsed,
       accounts: this.reviewAccounts,
+      // 有令牌（gh 登录或存的 PAT）就能评：卡片降级成一行小字（D428）。
+      gh: this.ghSetup.card(Boolean(this.reviewAccountUsed) || this.reviewAccounts.some((a) => a.pat)),
       model: this.reviewModel,
       focus: this.reviewFocus,
       repo: this.reviewRepo || this.reviewPin,
@@ -19313,6 +19375,8 @@ export class App {
       installLog: this.reviewInstallLog,
       markLabels: { accept: tr("接受"), ignore: tr("忽略"), "false-positive": tr("误报") },
       severityLabels: { critical: tr("严重"), high: tr("高"), medium: tr("中"), low: tr("低") },
+      // 同一组动作直接给面板：不再在 ReviewActions 里再抄一份（评审 #33）。
+      ghActions: this.ghCardActions(),
       actions: this.reviewActions(),
     };
   }
@@ -19442,6 +19506,8 @@ export class App {
         this.socket.send({ type: "review.install" });
         this.renderQueue();
       },
+      // 装 gh / 登录 gh（D428）：卡片的动作由 `reviewPanelInput()` 直接传 `ghCardActions()`。
+      // 记录卡不再是入口（D429）：点卡底那颗「完整详情」打开那一次。
       onDetails: (runId) => this.openReviewSheet(runId),
       onPickRepo: () => this.openRepoPicker(),
       onClearRepo: () => this.clearReviewRepo(),
@@ -19521,7 +19587,7 @@ export class App {
 
   /** 「评审详情」dialog：看**点开的那一张卡**（跑着看时间线，跑完看结果）；同一个会话只开一扇。 */
   private openReviewSheet(runId: string): void {
-    // D426：浮层看的是这张卡对应的那一次，不是「最新那一次」；焦点只活到浮层关掉为止。
+    // D429：浮层看的是这张卡对应的那一次，不是「最新那一次」；焦点只活到浮层关掉为止。
     this.reviewFocus = runId;
     if (this.reviewSheet) {
       this.reviewSheet.update(this.reviewPanelInput());
@@ -19570,7 +19636,7 @@ export class App {
     // D423：这次真要拿去跑的模型也算「评审用过的」——没单独挑时它跟着会话走，
     // 记下来的作用是把「确认过但还没跑」和「刚跑过」的次序理顺，下次打开就在最近里。
     if (modelInfo) rememberReviewModel(modelInfo.provider, modelInfo.id);
-    // 新开一条：不再自动把人拽到某一次上（D426）—— 停在记录列表，在跑那张卡自己显示进度。
+    // 新开一条：不再自动把人拽到某一次上（D429）—— 停在记录列表，在跑那张卡自己显示进度。
     // 浮层开着时**不清** reviewFocus：那一位是「正在看的那一次」，与新开这条无关；
     // 没开浮层时它本来就是空串，清了也没有意义。
     // （以前这里会乐观塞一份 runId 空串的进度；并发以后那样会跟另一条的进度混在一起。）
@@ -20866,7 +20932,30 @@ export class App {
     return this.queueTab === "exec" || this.queueTab === "browser";
   }
 
+  /**
+   * 重入闸：`drawQueue()` 会在渲染途中同步回调（`ghSetup.ensure()` → `onChange` →
+   * `onGhSetupChanged()` → 再进这里，D428 那套「状态一问就重画」），那时 `host.replaceChildren()`
+   * 已经清空、内层那次已经把面板画好，外层回来再 append 一次就会画出两份面板。
+   * 所以画的过程中只记「还要再画一次」，画完补跑一轮。
+   */
   private renderQueue(): void {
+    if (this.queueDrawing) {
+      this.queueDirty = true;
+      return;
+    }
+    this.queueDrawing = true;
+    try {
+      this.drawQueue();
+    } finally {
+      this.queueDrawing = false;
+    }
+    if (this.queueDirty) {
+      this.queueDirty = false;
+      this.renderQueue();
+    }
+  }
+
+  private drawQueue(): void {
     const host = this.els.queueInner;
     // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。
     const kept = this.els.queuePane.scrollTop;

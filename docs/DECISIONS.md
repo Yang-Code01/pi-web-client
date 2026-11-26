@@ -8494,10 +8494,65 @@ D
 **代价。** 无动效降级那条路上 `pinAnim` 不置位，理论上「重开气泡再点一次」能在回声前多发一帧；但第一次点击同步关掉气泡，重开要重新 hover 180ms，且桥端同一 id 的归档/删除幂等，不产生第二次效果。
 
 **验证。** `node probes/pin-menu-archive-repaint.mjs`（桩桥 + 真 Chromium）：悬停打开气泡 → 把指针挪进气泡 → 广播一帧别的会话的 `pi.status`（整条 ★ 行重建）→ 点归档/删除。改前拿旧 `web/dist` 跑（`PROBE_DIST=web/dist`）红 10 项、归档 0 帧；改后 15 项全绿（归档与删除各发一帧、只带这一颗、回声后 ★ 行收敛；没有重画的对照组仍走收拢动效并落帧）。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
+## D426 会话的身份认「文件名里那份 pi 文件」，不认 pi 手里的 id：换脑不再丢历史（用户 2026-11-27「新会话的会话，之前的 chat 记录信息丢失了。而且我记得之前的会话名字也不叫新会话」）
 
-n
+**问题。** 网页里新建的会话 `f89e1eff…` 第一支 pi 在写盘前就退了（exit 0），桥的 `state.file` 却记着 pi 报过的路径；用户再发一句时 `startLive` 按「有 file 就续」发 `--session <那个还不存在的路径>`。pi 不报错：`SessionManager._setSessionFile` 保留给定路径、`newSession()` 另生成 id（`01a21885…`），于是**桥的 id 与文件头 id 分叉**，而文件名仍是 `<时间>_f89e1eff….jsonl`。00:14 热替换（换脑）后新脑 `adoptLinked([f89e1eff])` → `ensure()` 用 `metas().find(m => m.id === id)` 找不到 meta → 构造出「没有文件」的会话：items 空（页面上历史全没了）、名字回落成 `DEFAULT_NAME`「新会话」、startedAt 变成「现在」；后来 `get_state` 把 file 补回来，`list()` 又把同一份文件按两个 id 列了两次（一条 running、一条只读，只读那条的名字还是首句预览「查看一下github上的 fast-anything 这个项目」）。
 
-## D426 代码评审的记录卡不再点开：删掉面板内的「那一次」页，「完整详情」挪到卡底右下角（用户 2026-11-27「修改 code Review 卡片，不需要图一的点击展开。把完整详情按钮做到图二卡片的右下角」＋两张截图）
+**决定。** 三处，都以「磁盘上那份文件」为准：① `sessionOpenArgs(resume, file, id)` —— 只有文件**存在且非空**才 `--session`，否则一律 `--session-id`（pi 对空文件也会 newSession + 换 id）。② `metaFor(id)` 先按文件头 id 找，找不到再按**文件名里含这个 id** 找（pi 的文件名永远是 `<开始时间>_<id>.jsonl`），`ensure()` / `locate()` 都走它。③ `list()` 记下 live 会话的 `state.file`，discover 那条同文件的只读条目跳过。另外 `absorbState` 把 `st.sessionId` 与自己的 id 不同时打一行日志，让这种分叉以后一眼可见。
+
+**为什么。** ① 分叉之后**文件里的历史是完好的**（337 条 message 一条没少），丢的只是「桥按 id 查不到它」这一步；修认领比修数据便宜，也不需要用户的会话重来一遍。② 不选「优先用 pi 报的 sessionId 当桥 id」：那等于把会话的 key 交给子进程，pi 每次换代都可能给你一个新 id，标签行、★ 行、归档、产物目录、`names.json` 全要跟着迁；而且换脑那一刻我们**还不知道**新 id。③ 不选「`--session` 照样发、让 pi 自己处理」：D20 的原文是「已有文件」，发不存在的路径只是把分叉静默地再造一次。④ 按文件名兜底而不是「扫所有文件比对内容」：文件名里的 id 是 pi 定的、稳定，扫内容要读全部会话文件的开头，代价高且没有额外信息。
+
+**代价。** `metaFor` 在 id 对不上时会多扫一遍 `metas()`（有 5 秒缓存，实际几乎为零）。分叉过的会话，pi 手里仍是文件头那个 id，所以 `[session] … 按文件名认领这份历史` 这行日志每轮启动会打一次 —— 这是有意的，它就是这个 bug 的指纹。
+
+**验证。** 红：`bridge/tests/session-file-id.mjs` 在未修的 `bridge/src/sessions.ts` 上两个用例都红（第二个挂在 `items=0`，第一个挂在「`--session` 照发给不存在的路径」）；绿：改动后 2/2 通过（约 300ms），`npx tsc -p bridge --noEmit` 无输出，`sessions-day-order` / `session-dirs` / `tail-read-error` / `state-read-guard` 全绿。线上复现口径：`f89e1eff` 的 `/api/session` items 只有换脑后的 `live:*`（最早 16:14:16Z），而文件里 337 条 message 完好。
+## D427 电子表格求值：缓存区域矩阵、给 VLOOKUP 精确匹配建索引、firstErr 不再摊平（用户 2026-11-27「fast-anything 优化一下本工程」）
+
+**编号。** 本条原写 D423，与同期在开的 #703 / #705 / #709 撞了号；那几条先合进 main、占着 D423–D426，这边让出，改 D427。
+
+**问题。** `fast-anything scan` 把 82.5% 的采样时间判给 `bridge/src/sheet/calc.ts:729 evaluate`，但 `port` 当场拒了：`recorded no usable calls to bridge.src.sheet.calc.evaluate out of 20594. Arguments and results must be plain data: numbers, strings, bytes, lists, tuples, dicts, sets (got: BookCalc)` —— 求值器的上下文是个带 Map 的实例，跨不过 FFI，这类热点只能靠改算法。用 `.scratch/sheet-perf/` 的分档工作簿（4000 行 × 30 列，每行 6 条公式，共 23994 条且**没有缓存值**，所以全走 `fillFormulaValues`）归因，问题不是「求值器普遍慢」而是**公式种类单一**：sum 136ms / ifsum 303 / countif 278 / roundav 362 / text 332，只有 **VLOOKUP 13 700ms**。三笔成本叠在一起：① 每行 VLOOKUP 都把同一个 `A2:B4000` 重新展开成 8000 格矩阵（`BookCalc.range()` 每次都新建）；② 精确匹配对 4000 行逐行 `cmp`，O(行×公式) = 1600 万次比较；③ `callFn` 里的错误预检用 `firstErr(args)`，而 `firstErr` 先 `flatten(args)` —— 每次调用都把 8000 格摊平成一个数组（4000 × 8000 = 3200 万次 push，profile 里占 29.8%）。
+
+**决定。**
+
+- `bridge/src/sheet/xlsx.ts` 的 `BookCalc.range()` 按 `name!r0:c0:r1:c1` 缓存矩阵，上限 `RANGE_CACHE_CELLS = 1_000_000` 格 / `RANGE_CACHE_ENTRIES = 512` 条；**矩阵里出现 `#CIRC!` 就不缓存**（那是「还在算」的占位，冻住就永远错）。
+- `bridge/src/sheet/value.ts` 新增 `Symbol("sheet.cachedRange")`，缓存过的矩阵打 `[CACHED_RANGE] = true`。这个标记是给查找类函数看的许可证：只有「同一区域返回同一对象」才值得建索引。
+- VLOOKUP 精确匹配：`bucketOf()` 把键分到 `n:<数字>` / `s:<小写文本>` 两种桶，`exactRow()` 先从桶里取候选行号（升序）再用 `cmp()` 确认，取第一条命中的行 —— 与线性扫的 `break` 完全同序；**列里有逻辑值就不建索引**，退回 `scanRow()` 线性扫。桶只承诺「相等必定同桶」，宁可比 cmp 宽。索引本身的桶数有上限 `EXACT_INDEX_MAX_KEYS = 50_000`：首列取值互不相同时桶数≈行数，不设限的大表会白抬几十 MB 常驻内存（矩阵随 Book 缓存最长 6 小时，D166 的口径），超了就直接线性扫。
+- `firstErr()` 不再 `flatten`：按参数顺序递归扫，矩阵走行优先短路；缓存过的矩阵记 `WeakMap<Matrix, ErrVal | null>`，扫描一次之后所有公式共用。语义（返回第一个错误）不变。
+- `cmp()` 修两处**判等**的真 bug：非数字文本 `Number()` 得 NaN 时两个方向都 false，原实现返回 0（相等）—— 实测 `VLOOKUP("火星", …)` 命中第一个 TRUE 格、`VLOOKUP(TRUE, …)` 命中文本表头；`TRUE = "1"` 也被判成相等。现在逻辑值只跟数字/布尔/空（算 0）比数值，遇文本按 Excel 的「数字 < 文本 < 逻辑值」定符号（取值折成数的部分抽成模块级 `cmpNum()`，不再用嵌套三元）。
+
+**为什么。** ① 这是「共享的不变式没人负责」：矩阵缓存该在 `BookCalc`（唯一知道区域只读的地方），索引该在查找函数，两者用 `CACHED_RANGE` 契约分开 —— 把索引写进 `range()` 会让所有区域都背上建表成本，临时矩阵建索引比线性扫更慢。② 索引不靠「键归一」而靠「桶 + cmp 确认」：`cmp()` 的等价关系不对称（`cmp(TRUE,"1")===0` 而 `cmp("1",1)!==0`），想把它抄进键函数里必然漏；桶放宽、确认交给 `cmp()` 就永远不会错，最多多比较几次。③ `firstErr` 摊平是纯粹的浪费：这个函数的全部用途就是找第一个错误，摊平一个几千格的矩阵只为看一眼，等于每次调用都付 O(区域)。④ 不硬造 Rust 移植：工具自己拒了这次移植（参数不是 plain data），而剩下的大头是 XML/zip 解析（改后 profile 顶部是 `attr` 15.9% / `inflateSync` 9.4% / `cellsOfRow` 8.9% / `unescapeXml` 8.2%），那是整层替换而不是单函数 —— 单个字符串函数跨 FFI 反而更慢。
+
+**数字**（同机、同一批工作簿、每轮重新 `readBook`）。
+
+- `big.xlsx`（20k 公式混排）：`readWindow(calc=true)` 16.4–18.7s → **1.29–1.46s**（求值段 15.9–18.3s → 0.80–1.02s，约 13×）；解析段（`calc=false`）430–580ms 不变。
+- `only-vlookup.xlsx`（3999 条）：求值 13 700ms → **398ms**（约 34×），单跑一次 1513ms → 739ms。
+- 其余单型基本不动（sum 255 / ifsum 358 / countif 516 / roundav 456 / text 324ms）—— 说明没有把成本挪到别处。
+
+**代价。** 区域缓存最坏占 `1e6` 格的内存（超了就不进缓存，行为回到改前）；首轮算完才有缓存，所以第二次起才快；索引挂在矩阵对象上，区域缓存被回收时一起回收（桶数另有 5 万的上限）。`#CIRC!` 的判据是「矩阵里出现该错误值」，循环引用场景下每次仍重建（正确性优先，那种表本来也不该指望缓存）。
+
+**验证。** 分两层：`bridge/tests/sheet-calc-unit.mjs` 用伪造 ctx 钉求值语义，`bridge/tests/sheet-calc-xlsx.mjs` 用真 xlsx（`fixtures/calc-xlsx.mjs`）钉 `BookCalc` 的缓存本身 —— 公式值、缓存跨窗口复用后值不变、环所在区域不进缓存（两次 `range()` 不是同一个对象）、条目上限之后不再收新区域。前者加两张夹具（`PURE` 文本/数字/空混排，`BOOLY` 掺逻辑值）与 19 条断言：同一批 9 条 `VLOOKUP` 在两个 ctx（带 / 不带 `CACHED_RANGE`）上逐条一致，绝对预期覆盖重复键取第一行、`"10"` vs `10`、`null` vs `"null"`、`2.5`、`#N/A`、以及 BOOLY 的 `TRUE`/`"1"`。全部 226 + 25 条通过；`npm run test:sheet` 全绿（`fail 0`）；`npm --prefix bridge run typecheck` 通过。红验证：把 `firstErr` 换回 `flatten` 版 → 求值段回到 8s 级；把 `cmp()` 的判断还原 → `VLOOKUP("火星",…)=#N/A` 与 `VLOOKUP("1",A1:B7,2,FALSE)=文本 "1"` 两条红；把 `range()` 的 `looksFinal` 条件去掉 → 新测试的「环区域不进缓存」「环区域两次读都不是缓存对象」两条红。容量上限里 `RANGE_CACHE_CELLS` 那一支没有测试（要一百万格的真矩阵），靠同一条 `cacheable` 表达式与 entries 分支共同覆盖。
+
+## D428 没装 gh 时评审不该直接失败：一张能装、能登录、能存 PAT 的卡，加上 REST 兜底（用户 2026-11-26「评审依托 gh，没装 gh 应该会失败，我希望加入安装、配置的流程」）
+
+**编号。** 本条原写 D425，合并时 main 已占 D425–D427（#705 / #706 / #708 先后合入），让号改 D428。
+
+**问题。** 评审里真正需要真 `gh` 的只有三处（`bridge/src/gitpr.ts` 的 `listPullRequests` / `resolvePullRequest` / `pullRequestInfo`），但这一处失败会让整块评审不可用：`classify()` 把 `ENOENT` / `127` / `not found` 判成 `gh_missing`，然后这个原文被塞进 PR 下拉的一行小字里（`web/src/review.ts` 的 `rv-hint`）。用户能做的只有去终端装 gh —— 而「怎么装」在三个平台上各不相同，装完还要 `gh auth login`，登录是纯终端交互，桥里拿不到那一刻的进度。
+
+**决定。**
+
+- 桥侧新模块 `bridge/src/gh-setup.ts`：`ghSetupStatus(ctx)`（装没装、哪条路径、哪一版、登录了谁、这台机器怎么装）、`installGh()`、`loginGh()`、`cancelGhSetup()`，都按 op **单飞**，事件流式回给发起连接。安装命令按平台给（winget / brew / apt-get / dnf / pacman / snap），没有包管理器就只给 `cli.github.com` 与可复制的命令；Linux 的 `sudo` 只在 root 时才替用户跑，其余一律让人复制。登录用 `gh auth login --web --git-protocol https`，从 stdout 里抓一次性码与 `https://github.com/login/device` 转给页面，10 分钟超时、可取消。
+- 装完正在跑的桥 PATH 不会变：`github.ts` 的 `findRealGh()` 扫完 `PATH` 再探已知安装位置（`%ProgramFiles%\GitHub CLI\gh.exe`、`/opt/homebrew/bin/gh`、`/usr/local/bin/gh`…）；装完 / 登录完都 `resetGithubCaches()` 并回一份新 `status`。
+- 子进程环境用 `piChildEnv()` 后**删掉 `GH_TOKEN` / `GITHUB_TOKEN`**：壳会给 pi 子进程注入令牌，带着它跑 `gh auth login`，gh 会拒绝存凭据（「The value of the GH_TOKEN environment variable is being used for authentication.」）。
+- 评审的兜底：`gh_missing` 时 `listPullRequests` / `resolvePullRequest` / `pullRequestInfo` 改走 GitHub REST（复用 `github.ts` 的 `githubRest()` 与会话令牌），结果带 `via: "gh" | "rest"`。401/403/404 仍报 `repo_unseen` —— 那是「对端已经答了」，不是网络问题（D422）。
+- 页面：`web/src/gh-setup.ts` 的 `GhSetupStore` 一份状态、一张 `renderGhCard`，评审的 PR 格与 GitHub 面板顶部共用（D399 的三层不变：面板不认识桥，只认 store 给的 `GhCardData` 与动作）。评审**已经能用**（gh 登录或有存的 PAT）时卡降级成一行小字 + 安装按钮，可以「不再提示」；`localStorage` 里记的是 `装|登录` 快照，状态一变旧的勾选自动作废。
+- 帧：`GET /api/github/setup` + WS `gh.setup.status` / `gh.setup.install` / `gh.setup.login` / `gh.setup.cancel`；事件（`log` / `code` / `url` / `done` / `error`）**只单播给发起那条连接**，`status` 才广播。写操作一律 `requireStepUp()`：本机直连恒通过，隧道连接要先过审批闸。
+
+**为什么不是别的。** ① 不靠壳的内置 `pr list` 顶上：壳的内置实现不支持 `--json`（只打人读表格），`pr view --json` 也只给一半字段，用它兜底等于再造一份解析器。② 不让评审继续硬依赖真 gh：装不上（公司策略、没有包管理器、没管理员）时，明明 REST 已经能拿到同样三样东西，却把整块评审锁死，是把「可选工具」当成了「前置条件」。③ 不把安装/登录做成独立「本机依赖」页：这次只有 gh 一个人要这个流程，卡片贴在真正会碰壁的地方，用户看到提示的同时看到按钮。④ 设备码流程放桥里而不是只给命令：`gh auth login` 的交互（码、URL、进度、超时）全部在 stdout 里，桥能解析；只给命令等于把最容易出错的一步留给用户抄。
+
+**代价。** REST 兜底走的是桥自己的 `fetch`（没有 undici/ProxyAgent，也不认 `httpProxy` 环境变量），代理环境下不如 gh 稳；所以 gh 在的时候永远优先 gh。设备码登录会拉起浏览器，没浏览器（远端机）时只能退回 PAT。安装是系统级改动（winget/brew 动的是整台机器），按钮只在用户点的时候跑，日志原样流回页面。
+
+**验证。** `bridge/tests/gh-setup-unit.mjs` 7 项（三个平台的安装计划、root 与否、设备码解析、`ghSetupStatus({ghPath:null})`）；`bridge/tests/gitpr-rest-e2e.mjs` 3 项（假 gh 退出 127 → 列表/信息走 REST 且带 `Bearer` 会话令牌、`files`/`commits` 映射、404 → `repo_unseen`）；都挂在 `npm run test:review` 里（新增 `npm run test:gh-setup`）。红验证：把 `listPullRequests` 的 REST 分支去掉 → 第 1、3 项红；把 `loginGh` 的 `GH_TOKEN` 删除行去掉，真机上 `gh auth login` 会直接拒绝（本机实测原文见上）。`npm run typecheck`（含 i18n-check 4426 键 × 3 语言、viewport 守卫）exit 0。
+
+## D429 代码评审的记录卡不再点开：删掉面板内的「那一次」页，「完整详情」挪到卡底右下角（用户 2026-11-27「修改 code Review 卡片，不需要图一的点击展开。把完整详情按钮做到图二卡片的右下角」＋两张截图）
 
 **问题。** 记录卡是一整块 `role="button"` 的 div，点一下就把面板整块换成「那一次」的内部页（‹ 记录 / PR 号 / 完整详情 › / 这次用的模型 / 文件数 / 4 行时间线），意见也只在那一页里渲染。于是：想看一眼某次的意见，得先点卡片、看完再点 ‹ 记录 回来，进出两层；卡上有正文（PR 号、标题），拖选卡上的文字会顺手把面板换页；开一次评审还会自动跳进新那一条（`reviewFollowRun`），想接着开第二条得先退回来。
 
@@ -8506,6 +8561,8 @@ n
 **为什么。** ① 「点整张卡」与「卡上有可选的文字」本来就冲突，而右下角那颗按钮是两件事的分离：卡负责「看一眼状态」，按钮负责「看细节」。② 保持浮层而不是把意见挪进卡里：卡宽 300px，意见要塞文件分组、严重度、片段、一键交给 agent —— 那正是浮层存在的理由；这次只是把「入口」从整张卡收到角落。③ 不再自动跳：同时评两条（D420）时自动换页会把刚输入的下一条描述冲掉，也让「停止」与「看新那条进度」两件事互相争同一块面板。④ 停止放底行而不是继续绝对定位：绝对定位在卡宽变化（长 PR 标题换行、模型 chip 变长）时会撞上时间，底行是流式的，不会。
 
 **代价。** 记录卡多一行（约 20px），三张卡的列表比之前高一截；「点哪都能看」的便利没了，需要对准右下角那颗（字号 10.5px，`--accent` 色，`hover` 下划线提示）。8 个只服务于旧页面的 i18n 键（「点一条展开」「‹ 记录」「回到这个会话的评审记录」「这次用的模型：{p1}」「这次没跑完就停了，已经收到的意见在下面。」「还没有进度」「评审中 · {p1}/{p2} 个文件」「{p1} 个没评」）随代码一起删掉。
+
+**顺带修掉：右栏重入会画出两份面板（合并 main 后由探针抓到）。** `renderReviewPanel()` 里 `ghSetup.ensure()` → `GhSetupStore.refresh()` → 同步 `onChange()` → `onGhSetupChanged()` → `renderQueue()`：首次进评审页时外层已经 `host.replaceChildren()`、并走到 `append(this.renderReviewPanel())`，内层那次把 tabs 和面板画好，外层回来再 append 一次 —— `.queue` 里并排两份 `.review`（探针报 `strict mode violation: locator('.review') resolved to 2 elements`）。这不是 D428 故意的行为，是「渲染途中同步重画」的老坑；给 `renderQueue()` 加了重入闸（`queueDrawing` / `queueDirty`：画的途中再进来只记一笔「还要画」，画完补跑一轮），原函数体改名 `drawQueue()`。
 
 **验证。** 新探针 `node probes/review-cards.mjs`（桩桥 + 真 Chromium，播 `review.state` / `review.progress`）全绿：三张卡、无 `.rv-focus`；每张卡「完整详情」在自己卡的右下角（距卡右边 11px、下边 12px = 1px 边框 + 8/7px 内边距 + 2px）；跑着那张的「停止」与「完整详情」同在 `.rv-run-foot`、停止在左、与右端时间 Rectangle 不相交；卡片无 `role` / `tabindex`；点正文不弹浮层；点第 3 张的按钮，浮层抬头是 `PR #700`（不是最新那条）且标题是那张卡的 PR 标题；关掉后没有 `.rv-focus`；`review.started` + 进度来到之后**仍停在列表**；`--ui-scale: 1.5` 下按钮仍在卡内右下角。截图 `.scratch/review-cards/cards.png`、`.scratch/review-cards/sheet-700.png`（已人眼看过）。`probes/code-review.mjs`（真 `ocr` + 真模型）跟着改成「跑着看卡上的停止 / 意见断言挪进 `.rv-sheet` / 点卡片不开、点按钮才开 / 停止后不被拽走」；`probes/github-card-review.mjs` 只把 `.rv-focus-stop` 换成 `.rv-run-card.is-live`。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
 

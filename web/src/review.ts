@@ -10,6 +10,7 @@
  */
 import { createEl as el } from "./chat.ts";
 import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
+import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
 
 import type {
   ReviewFinding,
@@ -80,6 +81,11 @@ export interface ReviewInput {
   accountUsed?: string;
   /** 能切到的账号（没读到 / 只有一个时可以不画下拉）。 */
   accounts?: { login: string; pat: boolean }[];
+  /**
+   * 「gh 没就绪」那张卡（D428）。`null` = 还没探测到 / 已经就绪且人不再想看。
+   * 数据来自 `GhSetupStore.card()`，这里只当一份普通输入往下传。
+   */
+  gh?: GhCardData | null;
   model?: string;
   /**
    * 「完整详情」浮层现在看的是哪一次评审（`ReviewRun.id`，空串 = 没开浮层，按最新那一次算）。
@@ -174,6 +180,8 @@ export interface ReviewView {
   accountUsed: string;
   /** 能切到的账号（第一个是当前用的那个）。 */
   accounts: { login: string; pat: boolean }[];
+  /** 见 `ReviewInput.gh`。 */
+  gh: GhCardData | null;
   /** 这个模式下该填的那一格空着：按钮要点不着。 */
   missing: boolean;
   model: string;
@@ -518,6 +526,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     hasRun: Boolean(active),
     prsLoading: Boolean(input.prsLoading),
     prError: (input.prError ?? "").trim(),
+    gh: input.gh ?? null,
     account: (input.account ?? "").trim(),
     accountUsed: (input.accountUsed ?? "").trim(),
     accounts: input.accounts ?? [],
@@ -598,6 +607,8 @@ export interface ReviewPanelInput {
   installLog: string[];
   markLabels: Record<Mark, string>;
   severityLabels: Record<Severity, string>;
+  /** gh 卡的八颗动作：宿主直接给 `ghCardActions()`，面板不再自己映射一遍（评审 #33）。 */
+  ghActions: GhCardActions;
   actions: ReviewActions;
 }
 
@@ -763,170 +774,175 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   if (view.mode === "range") {
     form.append(refSelect(tr("目标分支"), view.target, actions.onTarget), refSelect(tr("对照分支"), view.base, actions.onBase));
   } else if (view.mode === "pr") {
-    // 一个格子同时干三件事：输号、检索、从列表里点。分成「搜索框 + 下拉 + 号输入」三行
-    // 在 300px 里又挤又丑（用户直接说了），所以合成一个 combobox。
-    const box = el("div", "rv-prbox");
-    const input = el("input", "rv-prq") as HTMLInputElement;
-    // 选过就在框里显示 `#N`（用户要能看到「现在选的是哪个」），一聚焦就全选，接着打字即是搜索。
-    input.value = view.prQuery || (view.pr ? `#${view.pr}` : "");
-    input.placeholder = tr("输号或搜：号 / 标题 / 分支");
-    input.autocomplete = "off";
-    input.spellcheck = false;
-    // 弹层里的行与「没匹配」那行，输入时只改可见性（重画会把焦点和滚动位置一起丢掉）。
-    let menuRows: HTMLElement[] = [];
-    let menuEmpty: HTMLElement | null = null;
-    const filterMenu = (raw: string) => {
-      if (!menuRows.length) return;
-      // 纯数字当「号」处理：按号的前缀收窄（输 646 只剩 #646），而不是全文匹配
-      // 也不是「什么都不筛」—— 后者会让「输号然后点第一条」点到别的 PR 上去。
-      const chosenText = view.pr ? `#${view.pr}` : "";
-      if (chosenText && raw.trim() === chosenText) {
-        for (const row of menuRows) row.hidden = false;
-        if (menuEmpty) menuEmpty.hidden = true;
-        return;
-      }
-      const digits = /^\s*#?\s*(\d+)\s*$/.exec(raw);
-      const q = (digits ? digits[1] : raw.replace(/^#/, "").trim()).toLowerCase();
-      let shown = 0;
-      for (const row of menuRows) {
-        const hit = !q
-          ? true
-          : digits
-            ? String(row.dataset.num ?? "").startsWith(q)
-            : (row.dataset.search ?? "").includes(q);
-        row.hidden = !hit;
-        if (hit) shown += 1;
-      }
-      if (menuEmpty) menuEmpty.hidden = shown > 0;
-    };
-    input.oninput = () => {
-      const raw = input.value;
-      actions.onPrQuery(raw);
-      // `#658` / `658` / GitHub 链接都能认出号来（链接里带账号名，不能只挑数字）。
-      const asNumber = parsePrNumber(raw);
-      actions.onPrInput(asNumber ? String(asNumber) : "");
-      if (runBtn) runBtn.disabled = !asNumber;
-      filterMenu(asNumber ? String(asNumber) : raw);
-      actions.onPrMenu(true);
-    };
-    input.onfocus = () => {
-      input.select();
-      actions.onPrMenu(true);
-    };
-    input.onkeydown = (ev) => {
-      if (ev.key === "Escape") actions.onPrMenu(false);
-      if (ev.key !== "Enter") return;
-      ev.preventDefault();
-      const first = view.prs[0];
-      const parsed = parsePrNumber(input.value);
-      if (parsed) actions.onPr(String(parsed));
-      else if (first) actions.onPr(String(first.number));
-      actions.onPrMenu(false);
-    };
-    const toggle = el("button", "rv-prtoggle", "▾") as HTMLButtonElement;
-    toggle.type = "button";
-    toggle.setAttribute("aria-label", tr("展开 PR 列表"));
-    toggle.onclick = () => actions.onPrMenu(!view.prMenuOpen);
-    box.append(input, toggle);
-    form.append(box);
-
-    if (view.prMenuOpen) {
-      const menu = el("div", "rv-prmenu");
-      if (view.prError) {
-        menu.append(el("div", "rv-hint", view.prError));
-        // 查不到仓库时，人第一件事就是怀疑「是不是用错号了」：把号直接写出来（#17545）。
-        // 写的是**实际用的**那个（跟随工作区时它也非空），不是下拉里选的那一项。
-        const used = view.accountUsed || view.account;
-        if (used) menu.append(el("div", "rv-hint rv-acct-why", tr("用的是账号：{p1}", { p1: used })));
-      } else if (view.prsLoading) menu.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
-      else if (!view.prs.length) menu.append(el("div", "rv-hint", view.prQuery ? tr("没有匹配的 PR") : tr("没有 open 的 PR")));
-      else {
-        menuEmpty = el("div", "rv-hint", tr("没有匹配的 PR"));
-        menuEmpty.hidden = true;
-        menu.append(menuEmpty);
-        for (const item of view.prs.slice(0, 40)) {
-          const row = el("button", `rv-prrow${String(item.number) === view.pr ? " on" : ""}`) as HTMLButtonElement;
-          row.type = "button";
-          row.dataset.num = String(item.number);
-          row.dataset.search = [`#${item.number}`, String(item.number), item.title, item.headRefName, item.baseRefName, item.author]
-            .join(" ")
-            .toLowerCase();
-          const head = el("span", "rv-prrow-head", `${item.draft ? tr("[草稿] ") : ""}#${item.number}`);
-          const title = el("span", "rv-prrow-title", item.title);
-          const meta = el("span", "rv-prrow-meta", `${item.headRefName} → ${item.baseRefName}`);
-          row.append(head, title, meta);
-          row.onclick = () => {
-            actions.onPr(String(item.number));
-            actions.onPrMenu(false);
-          };
-          menu.append(row);
-          menuRows.push(row);
+    const gh = view.gh;
+    if (gh) form.append(renderGhCard(gh, input.ghActions));
+    // 没装 gh 又没 PAT：这一格没有任何东西可输，整块换成安装卡（D428）。
+    if (gh?.mode !== "full") {
+      // 一个格子同时干三件事：输号、检索、从列表里点。分成「搜索框 + 下拉 + 号输入」三行
+      // 在 300px 里又挤又丑（用户直接说了），所以合成一个 combobox。
+      const box = el("div", "rv-prbox");
+      const input = el("input", "rv-prq") as HTMLInputElement;
+      // 选过就在框里显示 `#N`（用户要能看到「现在选的是哪个」），一聚焦就全选，接着打字即是搜索。
+      input.value = view.prQuery || (view.pr ? `#${view.pr}` : "");
+      input.placeholder = tr("输号或搜：号 / 标题 / 分支");
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      // 弹层里的行与「没匹配」那行，输入时只改可见性（重画会把焦点和滚动位置一起丢掉）。
+      let menuRows: HTMLElement[] = [];
+      let menuEmpty: HTMLElement | null = null;
+      const filterMenu = (raw: string) => {
+        if (!menuRows.length) return;
+        // 纯数字当「号」处理：按号的前缀收窄（输 646 只剩 #646），而不是全文匹配
+        // 也不是「什么都不筛」—— 后者会让「输号然后点第一条」点到别的 PR 上去。
+        const chosenText = view.pr ? `#${view.pr}` : "";
+        if (chosenText && raw.trim() === chosenText) {
+          for (const row of menuRows) row.hidden = false;
+          if (menuEmpty) menuEmpty.hidden = true;
+          return;
         }
-        // 打开时可能已经带着检索词（先打字再展开 ▾）：按当前文字收窄一次。
-        filterMenu(input.value);
-      }
-      form.append(menu);
-    }
-    if (!view.prMenuOpen) {
-      const chosen = view.prs.find((item) => String(item.number) === view.pr) ?? null;
-      if (chosen) {
-        // 以前这里是一行淡字，没人看出能点（用户原话：「用户不知道」）。改成一张有边框的卡片，
-        // 右边明写「详情 ›」，整张都能点。
-        const picked = el("button", "rv-picked") as HTMLButtonElement;
-        picked.type = "button";
-        picked.title = `#${chosen.number} ${chosen.title}`;
-        picked.onclick = () => actions.onPrInfo();
-        const top = el("span", "rv-picked-top");
-        top.append(el("span", "rv-picked-num", `#${chosen.number}`), el("span", "rv-picked-title", chosen.title));
-        const bottom = el("span", "rv-picked-meta");
-        bottom.append(el("span", "", `${chosen.headRefName} → ${chosen.baseRefName}`), el("span", "rv-picked-more", tr("详情 ›")));
-        picked.append(top, bottom);
-        form.append(picked);
-      } else if (view.prAll > 1) {
-        form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
-      }
-    }
+        const digits = /^\s*#?\s*(\d+)\s*$/.exec(raw);
+        const q = (digits ? digits[1] : raw.replace(/^#/, "").trim()).toLowerCase();
+        let shown = 0;
+        for (const row of menuRows) {
+          const hit = !q
+            ? true
+            : digits
+              ? String(row.dataset.num ?? "").startsWith(q)
+              : (row.dataset.search ?? "").includes(q);
+          row.hidden = !hit;
+          if (hit) shown += 1;
+        }
+        if (menuEmpty) menuEmpty.hidden = shown > 0;
+      };
+      input.oninput = () => {
+        const raw = input.value;
+        actions.onPrQuery(raw);
+        // `#658` / `658` / GitHub 链接都能认出号来（链接里带账号名，不能只挑数字）。
+        const asNumber = parsePrNumber(raw);
+        actions.onPrInput(asNumber ? String(asNumber) : "");
+        if (runBtn) runBtn.disabled = !asNumber;
+        filterMenu(asNumber ? String(asNumber) : raw);
+        actions.onPrMenu(true);
+      };
+      input.onfocus = () => {
+        input.select();
+        actions.onPrMenu(true);
+      };
+      input.onkeydown = (ev) => {
+        if (ev.key === "Escape") actions.onPrMenu(false);
+        if (ev.key !== "Enter") return;
+        ev.preventDefault();
+        const first = view.prs[0];
+        const parsed = parsePrNumber(input.value);
+        if (parsed) actions.onPr(String(parsed));
+        else if (first) actions.onPr(String(first.number));
+        actions.onPrMenu(false);
+      };
+      const toggle = el("button", "rv-prtoggle", "▾") as HTMLButtonElement;
+      toggle.type = "button";
+      toggle.setAttribute("aria-label", tr("展开 PR 列表"));
+      toggle.onclick = () => actions.onPrMenu(!view.prMenuOpen);
+      box.append(input, toggle);
+      form.append(box);
 
-    /**
-     * 查 PR 用的 gh 账号。
-     *
-     * 多账号机器上「机器 gh 登的是谁」与「这个会话该用谁」往往不是一个人：私有仓/组织仓
-     * 换个账号就是 `Could not resolve to a Repository`（#17545 就是这么失败的，而且提示指向代理）。
-     * 所以号要写出来、也要能就地换；换了立刻按新号重拉列表（`onAccount` 里做）。
-     */
-    if (view.accounts.length || view.account) {
-      const row = el("div", "rv-row rv-acct");
-      row.append(el("span", "rv-lab", tr("账号")));
-      const pick = el("select", "rv-ref rv-acct-pick") as HTMLSelectElement;
-      pick.disabled = view.running;
-      pick.title = view.account ? tr("现在按 {p1} 查 PR", { p1: view.account }) : tr("按会话默认的账号查 PR");
-      const follow = el("option", "", view.accountUsed && !view.account ? tr("跟随工作区（{p1}）", { p1: view.accountUsed }) : tr("跟随工作区")) as HTMLOptionElement;
-      follow.value = "";
-      // 选中判断只能看「人显式选的那个」：`view.account` 在跟随工作区时是空的，
-      // 实际用的号在 `accountUsed` —— 拿它判断的活，这一项永远不会被选中（评审 #700）。
-      follow.selected = !view.account;
-      pick.append(follow);
-      let listed = false;
-      for (const account of view.accounts) {
-        const opt = el("option", "", `${account.login}${account.pat ? ` · ${tr("PAT")}` : ""}`) as HTMLOptionElement;
-        opt.value = account.login;
-        if (account.login === view.account) {
+      if (view.prMenuOpen) {
+        const menu = el("div", "rv-prmenu");
+        if (view.prError) {
+          menu.append(el("div", "rv-hint", view.prError));
+          // 查不到仓库时，人第一件事就是怀疑「是不是用错号了」：把号直接写出来（#17545）。
+          // 写的是**实际用的**那个（跟随工作区时它也非空），不是下拉里选的那一项。
+          const used = view.accountUsed || view.account;
+          if (used) menu.append(el("div", "rv-hint rv-acct-why", tr("用的是账号：{p1}", { p1: used })));
+        } else if (view.prsLoading) menu.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
+        else if (!view.prs.length) menu.append(el("div", "rv-hint", view.prQuery ? tr("没有匹配的 PR") : tr("没有 open 的 PR")));
+        else {
+          menuEmpty = el("div", "rv-hint", tr("没有匹配的 PR"));
+          menuEmpty.hidden = true;
+          menu.append(menuEmpty);
+          for (const item of view.prs.slice(0, 40)) {
+            const row = el("button", `rv-prrow${String(item.number) === view.pr ? " on" : ""}`) as HTMLButtonElement;
+            row.type = "button";
+            row.dataset.num = String(item.number);
+            row.dataset.search = [`#${item.number}`, String(item.number), item.title, item.headRefName, item.baseRefName, item.author]
+              .join(" ")
+              .toLowerCase();
+            const head = el("span", "rv-prrow-head", `${item.draft ? tr("[草稿] ") : ""}#${item.number}`);
+            const title = el("span", "rv-prrow-title", item.title);
+            const meta = el("span", "rv-prrow-meta", `${item.headRefName} → ${item.baseRefName}`);
+            row.append(head, title, meta);
+            row.onclick = () => {
+              actions.onPr(String(item.number));
+              actions.onPrMenu(false);
+            };
+            menu.append(row);
+            menuRows.push(row);
+          }
+          // 打开时可能已经带着检索词（先打字再展开 ▾）：按当前文字收窄一次。
+          filterMenu(input.value);
+        }
+        form.append(menu);
+      }
+      if (!view.prMenuOpen) {
+        const chosen = view.prs.find((item) => String(item.number) === view.pr) ?? null;
+        if (chosen) {
+          // 以前这里是一行淡字，没人看出能点（用户原话：「用户不知道」）。改成一张有边框的卡片，
+          // 右边明写「详情 ›」，整张都能点。
+          const picked = el("button", "rv-picked") as HTMLButtonElement;
+          picked.type = "button";
+          picked.title = `#${chosen.number} ${chosen.title}`;
+          picked.onclick = () => actions.onPrInfo();
+          const top = el("span", "rv-picked-top");
+          top.append(el("span", "rv-picked-num", `#${chosen.number}`), el("span", "rv-picked-title", chosen.title));
+          const bottom = el("span", "rv-picked-meta");
+          bottom.append(el("span", "", `${chosen.headRefName} → ${chosen.baseRefName}`), el("span", "rv-picked-more", tr("详情 ›")));
+          picked.append(top, bottom);
+          form.append(picked);
+        } else if (view.prAll > 1) {
+          form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
+        }
+      }
+
+      /**
+       * 查 PR 用的 gh 账号。
+       *
+       * 多账号机器上「机器 gh 登的是谁」与「这个会话该用谁」往往不是一个人：私有仓/组织仓
+       * 换个账号就是 `Could not resolve to a Repository`（#17545 就是这么失败的，而且提示指向代理）。
+       * 所以号要写出来、也要能就地换；换了立刻按新号重拉列表（`onAccount` 里做）。
+       */
+      if (view.accounts.length || view.account) {
+        const row = el("div", "rv-row rv-acct");
+        row.append(el("span", "rv-lab", tr("账号")));
+        const pick = el("select", "rv-ref rv-acct-pick") as HTMLSelectElement;
+        pick.disabled = view.running;
+        pick.title = view.account ? tr("现在按 {p1} 查 PR", { p1: view.account }) : tr("按会话默认的账号查 PR");
+        const follow = el("option", "", view.accountUsed && !view.account ? tr("跟随工作区（{p1}）", { p1: view.accountUsed }) : tr("跟随工作区")) as HTMLOptionElement;
+        follow.value = "";
+        // 选中判断只能看「人显式选的那个」：`view.account` 在跟随工作区时是空的，
+        // 实际用的号在 `accountUsed` —— 拿它判断的活，这一项永远不会被选中（评审 #700）。
+        follow.selected = !view.account;
+        pick.append(follow);
+        let listed = false;
+        for (const account of view.accounts) {
+          const opt = el("option", "", `${account.login}${account.pat ? ` · ${tr("PAT")}` : ""}`) as HTMLOptionElement;
+          opt.value = account.login;
+          if (account.login === view.account) {
+            opt.selected = true;
+            listed = true;
+          }
+          pick.append(opt);
+        }
+        // 解析出来的号不在 gh 账号表里（PAT-only / active 那个被删了）：也得摆出来，
+        // 否则下拉停在「跟随工作区」上，人看不出现在到底按谁在查。
+        if (view.account && !listed) {
+          const opt = el("option", "", view.account) as HTMLOptionElement;
+          opt.value = view.account;
           opt.selected = true;
-          listed = true;
+          pick.append(opt);
         }
-        pick.append(opt);
+        pick.onchange = () => actions.onAccount(pick.value);
+        row.append(pick);
+        form.append(row);
       }
-      // 解析出来的号不在 gh 账号表里（PAT-only / active 那个被删了）：也得摆出来，
-      // 否则下拉停在「跟随工作区」上，人看不出现在到底按谁在查。
-      if (view.account && !listed) {
-        const opt = el("option", "", view.account) as HTMLOptionElement;
-        opt.value = view.account;
-        opt.selected = true;
-        pick.append(opt);
-      }
-      pick.onchange = () => actions.onAccount(pick.value);
-      row.append(pick);
-      form.append(row);
     }
   } else if (view.mode === "commit") {
     const sha = el("input", "rv-ref") as HTMLInputElement;
