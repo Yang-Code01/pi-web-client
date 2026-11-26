@@ -4985,12 +4985,17 @@ export class SessionManager extends EventEmitter {
         // A web-born session with no file yet only exists in memory; evicting it would lose it.
         if (!s.state.file) continue;
         if (isWatched(id) || s.idleFor() < idleEvictionAgeMs()) continue;
-        s.stopTail();
-        s.removeAllListeners();
-        this.sessions.delete(id);
+        this.dropFromMemory(id, s);
       }
     }, gcTickMs());
     this.gcTimer.unref?.();
+  }
+
+  /** 把一条会话从桥里拿掉：停文件轮询、断开监听、从表里删掉（旧式 10 分钟 GC 与 D421 共用）。 */
+  private dropFromMemory(id: string, s: Session): void {
+    s.stopTail();
+    s.removeAllListeners();
+    this.sessions.delete(id);
   }
 
   /**
@@ -5080,9 +5085,7 @@ export class SessionManager extends EventEmitter {
     if (s.live || s.state.running || s.approvals.size || s.asks.size) return;
     if (!s.state.file) return;
     if (this.isWatched(id)) return;
-    s.stopTail();
-    s.removeAllListeners();
-    this.sessions.delete(id);
+    this.dropFromMemory(id, s);
   }
 
   /**

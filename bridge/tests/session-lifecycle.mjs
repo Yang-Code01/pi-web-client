@@ -523,17 +523,23 @@ async function archiveSurvivesRestart() {
     first.stop();
   }
   await sleep(600);
+  // 重启后阈值压到 1.5 秒：戳还在，第一两个 tick 就该看到它睡 —— 只断言「戳还在」的话，
+  // 「重启把倒计时清零」这个 bug 照样能过。
   const second = await startBridge({
     name,
     port: await freePort(),
     keep: true,
-    env: { PI_WEB_ARCHIVE_IDLE_MS: "60000", FAKE_PI_SESSION: "1" },
+    env: { PI_WEB_ARCHIVE_IDLE_MS: "1500", FAKE_PI_SESSION: "1" },
   });
   try {
     const page = await client(second);
+    await page.waitFor((m) => m.type === "hello", 5000, "hello");
     const hello = page.seen.find((m) => m.type === "hello");
     check(hello?.manage?.archived?.includes(sid), "the session is still archived after the restart");
     check(hello?.manage?.archivedAt?.[sid] === stamp, `the timestamp survived the restart (${hello?.manage?.archivedAt?.[sid]} vs ${stamp})`);
+    // 订阅得赶在第一个 tick 之前：这样即便对象没被丢掉，休眠通知也会送到这里。
+    page.send({ type: "subscribe", sessionId: sid });
+    await page.waitFor((m) => m.type === "notice" && m.sessionId === sid && /休眠/.test(m.text ?? ""), TICK_WAIT * 2, "released after the restart");
   } finally {
     second.stop();
   }
