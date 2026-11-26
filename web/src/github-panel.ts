@@ -28,7 +28,7 @@ export interface GithubPanelHost {
   openExternal(url: string): void;
   /** 把一句话当成下一条用户消息发给当前会话（合并走这里，于是要过审批闸）。 */
   askAgent?(text: string): void;
-  /** 「gh 没就绪」那张卡（D427）：数据和动作都由 app 的 store 给，面板不认识桥。 */
+  /** 「gh 没就绪」那张卡（D428）：数据和动作都由 app 的 store 给，面板不认识桥。 */
   ghCard?(): GhCardData | null;
   ghActions?: GhCardActions;
   onClose?(): void;
@@ -367,7 +367,7 @@ export class GithubPanel {
   /** 降级要说清是哪一档：没装 gh / gh 没登录 / 匿名只读。三种的下一步完全不同。 */
   private hintCells(): HTMLElement[] {
     const cells: HTMLElement[] = [];
-    // 装 gh / 登录 gh 不再是两句静态提示（D427）：走同一张卡，安装、设备码、PAT 都在里面。
+    // 装 gh / 登录 gh 不再是两句静态提示（D428）：走同一张卡，安装、设备码、PAT 都在里面。
     const card = this.host.ghCard?.() ?? null;
     if (card && this.host.ghActions) cells.push(renderGhCard(card, this.host.ghActions));
     const state = this.state;

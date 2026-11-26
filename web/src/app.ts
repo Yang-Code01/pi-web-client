@@ -1034,7 +1034,7 @@ export class App {
   private viewer: Viewer | null = null;
   /** GitHub 通道：右栏那块 dock（`web/src/github-panel.ts`）。懒建，关掉就丢。 */
   private githubPanel: GithubPanel | null = null;
-  /** 装 gh / 登录 gh 的状态（D427）：评审与 GitHub 面板共用这一份，进度帧只在这份里。 */
+  /** 装 gh / 登录 gh 的状态（D428）：评审与 GitHub 面板共用这一份，进度帧只在这份里。 */
   private ghSetupReady = false;
   private ghSetup = new GhSetupStore(
     (frame) => this.socket.send(frame),
@@ -2866,7 +2866,7 @@ export class App {
         if (!msg.ok) this.reviewError = errText(msg) || tr("没有装上");
         if (this.queueTab === "review") this.renderQueue();
         break;
-      // 装 gh / 登录 gh（D427）：设备码只发给发起登录的那条连接，所以这里只交给 store。
+      // 装 gh / 登录 gh（D428）：设备码只发给发起登录的那条连接，所以这里只交给 store。
       case "gh.setup.status":
       case "gh.setup.event":
         this.ghSetup.handle(msg);
@@ -10342,7 +10342,7 @@ export class App {
     if (!this.ghSetup.op) void this.githubPanel?.reload();
   }
 
-  /** 两张卡（评审 PR 格、GitHub 面板顶部）共用同一组动作（D427）。 */
+  /** 两张卡（评审 PR 格、GitHub 面板顶部）共用同一组动作（D428）。 */
   private ghCardActions(): GhCardActions {
     return {
       install: () => this.ghSetup.install(),
@@ -19360,7 +19360,7 @@ export class App {
       account: this.reviewAccount,
       accountUsed: this.reviewAccountUsed,
       accounts: this.reviewAccounts,
-      // 有令牌（gh 登录或存的 PAT）就能评：卡片降级成一行小字（D427）。
+      // 有令牌（gh 登录或存的 PAT）就能评：卡片降级成一行小字（D428）。
       gh: this.ghSetup.card(Boolean(this.reviewAccountUsed) || this.reviewAccounts.some((a) => a.pat)),
       model: this.reviewModel,
       focus: this.reviewFocus,
@@ -19508,7 +19508,7 @@ export class App {
         this.socket.send({ type: "review.install" });
         this.renderQueue();
       },
-      // 装 gh / 登录 gh（D427）：卡片的动作由 `reviewPanelInput()` 直接传 `ghCardActions()`。
+      // 装 gh / 登录 gh（D428）：卡片的动作由 `reviewPanelInput()` 直接传 `ghCardActions()`。
       onDetails: () => this.openReviewSheet(),
       onPickRepo: () => this.openRepoPicker(),
       onClearRepo: () => this.clearReviewRepo(),

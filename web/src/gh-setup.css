@@ -1,4 +1,4 @@
-/* 「没有 gh / 没登录」卡（D427）。两处渲染：评审的 PR 格与 GitHub 面板顶部。
+/* 「没有 gh / 没登录」卡（D428）。两处渲染：评审的 PR 格与 GitHub 面板顶部。
    尺寸走 em/px 都行：它挂在 #app 里，跟着 --ui-scale 一起缩放。 */
 .ghs {
   display: flex;

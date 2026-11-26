@@ -469,7 +469,7 @@ async function request(ctx: GithubCtx, token: string | null, apiPath: string, in
 
 /**
  * 给桥内**不经过页面**的调用方（评审的 REST 兜底）一份最小 REST 入口。
- * 与面板同一条 fetch 通道：代理环境下的取舍见 D427。
+ * 与面板同一条 fetch 通道：代理环境下的取舍见 D428。
  */
 export async function githubRest(
   ctx: Pick<GithubCtx, "upstreamApi">,
