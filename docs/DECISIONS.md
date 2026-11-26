@@ -8494,5 +8494,14 @@ D
 **代价。** 无动效降级那条路上 `pinAnim` 不置位，理论上「重开气泡再点一次」能在回声前多发一帧；但第一次点击同步关掉气泡，重开要重新 hover 180ms，且桥端同一 id 的归档/删除幂等，不产生第二次效果。
 
 **验证。** `node probes/pin-menu-archive-repaint.mjs`（桩桥 + 真 Chromium）：悬停打开气泡 → 把指针挪进气泡 → 广播一帧别的会话的 `pi.status`（整条 ★ 行重建）→ 点归档/删除。改前拿旧 `web/dist` 跑（`PROBE_DIST=web/dist`）红 10 项、归档 0 帧；改后 15 项全绿（归档与删除各发一帧、只带这一颗、回声后 ★ 行收敛；没有重画的对照组仍走收拢动效并落帧）。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
+## D426 会话的身份认「文件名里那份 pi 文件」，不认 pi 手里的 id：换脑不再丢历史（用户 2026-11-27「新会话的会话，之前的 chat 记录信息丢失了。而且我记得之前的会话名字也不叫新会话」）
 
-n
+**问题。** 网页里新建的会话 `f89e1eff…` 第一支 pi 在写盘前就退了（exit 0），桥的 `state.file` 却记着 pi 报过的路径；用户再发一句时 `startLive` 按「有 file 就续」发 `--session <那个还不存在的路径>`。pi 不报错：`SessionManager._setSessionFile` 保留给定路径、`newSession()` 另生成 id（`01a21885…`），于是**桥的 id 与文件头 id 分叉**，而文件名仍是 `<时间>_f89e1eff….jsonl`。00:14 热替换（换脑）后新脑 `adoptLinked([f89e1eff])` → `ensure()` 用 `metas().find(m => m.id === id)` 找不到 meta → 构造出「没有文件」的会话：items 空（页面上历史全没了）、名字回落成 `DEFAULT_NAME`「新会话」、startedAt 变成「现在」；后来 `get_state` 把 file 补回来，`list()` 又把同一份文件按两个 id 列了两次（一条 running、一条只读，只读那条的名字还是首句预览「查看一下github上的 fast-anything 这个项目」）。
+
+**决定。** 三处，都以「磁盘上那份文件」为准：① `sessionOpenArgs(resume, file, id)` —— 只有文件**存在且非空**才 `--session`，否则一律 `--session-id`（pi 对空文件也会 newSession + 换 id）。② `metaFor(id)` 先按文件头 id 找，找不到再按**文件名里含这个 id** 找（pi 的文件名永远是 `<开始时间>_<id>.jsonl`），`ensure()` / `locate()` 都走它。③ `list()` 记下 live 会话的 `state.file`，discover 那条同文件的只读条目跳过。另外 `absorbState` 把 `st.sessionId` 与自己的 id 不同时打一行日志，让这种分叉以后一眼可见。
+
+**为什么。** ① 分叉之后**文件里的历史是完好的**（337 条 message 一条没少），丢的只是「桥按 id 查不到它」这一步；修认领比修数据便宜，也不需要用户的会话重来一遍。② 不选「优先用 pi 报的 sessionId 当桥 id」：那等于把会话的 key 交给子进程，pi 每次换代都可能给你一个新 id，标签行、★ 行、归档、产物目录、`names.json` 全要跟着迁；而且换脑那一刻我们**还不知道**新 id。③ 不选「`--session` 照样发、让 pi 自己处理」：D20 的原文是「已有文件」，发不存在的路径只是把分叉静默地再造一次。④ 按文件名兜底而不是「扫所有文件比对内容」：文件名里的 id 是 pi 定的、稳定，扫内容要读全部会话文件的开头，代价高且没有额外信息。
+
+**代价。** `metaFor` 在 id 对不上时会多扫一遍 `metas()`（有 5 秒缓存，实际几乎为零）。分叉过的会话，pi 手里仍是文件头那个 id，所以 `[session] … 按文件名认领这份历史` 这行日志每轮启动会打一次 —— 这是有意的，它就是这个 bug 的指纹。
+
+**验证。** 红：`bridge/tests/session-file-id.mjs` 在未修的 `bridge/src/sessions.ts` 上两个用例都红（第二个挂在 `items=0`，第一个挂在「`--session` 照发给不存在的路径」）；绿：改动后 2/2 通过（约 300ms），`npx tsc -p bridge --noEmit` 无输出，`sessions-day-order` / `session-dirs` / `tail-read-error` / `state-read-guard` 全绿。线上复现口径：`f89e1eff` 的 `/api/session` items 只有换脑后的 `live:*`（最早 16:14:16Z），而文件里 337 条 message 完好。
