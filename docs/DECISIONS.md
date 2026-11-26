@@ -8551,3 +8551,19 @@ D
 **代价。** REST 兜底走的是桥自己的 `fetch`（没有 undici/ProxyAgent，也不认 `httpProxy` 环境变量），代理环境下不如 gh 稳；所以 gh 在的时候永远优先 gh。设备码登录会拉起浏览器，没浏览器（远端机）时只能退回 PAT。安装是系统级改动（winget/brew 动的是整台机器），按钮只在用户点的时候跑，日志原样流回页面。
 
 **验证。** `bridge/tests/gh-setup-unit.mjs` 7 项（三个平台的安装计划、root 与否、设备码解析、`ghSetupStatus({ghPath:null})`）；`bridge/tests/gitpr-rest-e2e.mjs` 3 项（假 gh 退出 127 → 列表/信息走 REST 且带 `Bearer` 会话令牌、`files`/`commits` 映射、404 → `repo_unseen`）；都挂在 `npm run test:review` 里（新增 `npm run test:gh-setup`）。红验证：把 `listPullRequests` 的 REST 分支去掉 → 第 1、3 项红；把 `loginGh` 的 `GH_TOKEN` 删除行去掉，真机上 `gh auth login` 会直接拒绝（本机实测原文见上）。`npm run typecheck`（含 i18n-check 4426 键 × 3 语言、viewport 守卫）exit 0。
+
+## D429 代码评审的记录卡不再点开：删掉面板内的「那一次」页，「完整详情」挪到卡底右下角（用户 2026-11-27「修改 code Review 卡片，不需要图一的点击展开。把完整详情按钮做到图二卡片的右下角」＋两张截图）
+
+**问题。** 记录卡是一整块 `role="button"` 的 div，点一下就把面板整块换成「那一次」的内部页（‹ 记录 / PR 号 / 完整详情 › / 这次用的模型 / 文件数 / 4 行时间线），意见也只在那一页里渲染。于是：想看一眼某次的意见，得先点卡片、看完再点 ‹ 记录 回来，进出两层；卡上有正文（PR 号、标题），拖选卡上的文字会顺手把面板换页；开一次评审还会自动跳进新那一条（`reviewFollowRun`），想接着开第二条得先退回来。
+
+**决定。** 记录卡就是记录，正文不可点（去掉 `role` / `tabindex` / `onclick` / `onkeydown` 与 hover 手感）；每张卡底行 `[停止] [完整详情 ›]`，后者是唯一入口，打开的还是原来那扇宽窗（`.rv-sheet`，`openReviewSheet(runId)` 先 `reviewFocus = runId` 再开），窗里左边时间线、右边意见，与之前一致。面板内那页（`renderFocusedRun` / `renderTimeline` / `.rv-focus*` / `.rv-back`）整段删除，`ReviewActions` 的 `onOpenRun` / `onBack` 换成 `onDetails(runId)`。跑着那张卡的「停止」原本是 `position:absolute; top:6px; right:7px`，会压住同一行右端的时间 —— 改成底行里的一颗内联按钮，时间回到右端。开始评审不再跳走（`reviewFollowRun` 全删），面板始终停在列表上。
+
+**为什么。** ① 「点整张卡」与「卡上有可选的文字」本来就冲突，而右下角那颗按钮是两件事的分离：卡负责「看一眼状态」，按钮负责「看细节」。② 保持浮层而不是把意见挪进卡里：卡宽 300px，意见要塞文件分组、严重度、片段、一键交给 agent —— 那正是浮层存在的理由；这次只是把「入口」从整张卡收到角落。③ 不再自动跳：同时评两条（D420）时自动换页会把刚输入的下一条描述冲掉，也让「停止」与「看新那条进度」两件事互相争同一块面板。④ 停止放底行而不是继续绝对定位：绝对定位在卡宽变化（长 PR 标题换行、模型 chip 变长）时会撞上时间，底行是流式的，不会。
+
+**代价。** 记录卡多一行（约 20px），三张卡的列表比之前高一截；「点哪都能看」的便利没了，需要对准右下角那颗（字号 10.5px，`--accent` 色，`hover` 下划线提示）。8 个只服务于旧页面的 i18n 键（「点一条展开」「‹ 记录」「回到这个会话的评审记录」「这次用的模型：{p1}」「这次没跑完就停了，已经收到的意见在下面。」「还没有进度」「评审中 · {p1}/{p2} 个文件」「{p1} 个没评」）随代码一起删掉。
+
+**顺带修掉：右栏重入会画出两份面板（合并 main 后由探针抓到）。** `renderReviewPanel()` 里 `ghSetup.ensure()` → `GhSetupStore.refresh()` → 同步 `onChange()` → `onGhSetupChanged()` → `renderQueue()`：首次进评审页时外层已经 `host.replaceChildren()`、并走到 `append(this.renderReviewPanel())`，内层那次把 tabs 和面板画好，外层回来再 append 一次 —— `.queue` 里并排两份 `.review`（探针报 `strict mode violation: locator('.review') resolved to 2 elements`）。这不是 D428 故意的行为，是「渲染途中同步重画」的老坑；给 `renderQueue()` 加了重入闸（`queueDrawing` / `queueDirty`：画的途中再进来只记一笔「还要画」，画完补跑一轮），原函数体改名 `drawQueue()`。
+
+**验证。** 新探针 `node probes/review-cards.mjs`（桩桥 + 真 Chromium，播 `review.state` / `review.progress`）全绿：三张卡、无 `.rv-focus`；每张卡「完整详情」在自己卡的右下角（距卡右边 11px、下边 12px = 1px 边框 + 8/7px 内边距 + 2px）；跑着那张的「停止」与「完整详情」同在 `.rv-run-foot`、停止在左、与右端时间 Rectangle 不相交；卡片无 `role` / `tabindex`；点正文不弹浮层；点第 3 张的按钮，浮层抬头是 `PR #700`（不是最新那条）且标题是那张卡的 PR 标题；关掉后没有 `.rv-focus`；`review.started` + 进度来到之后**仍停在列表**；`--ui-scale: 1.5` 下按钮仍在卡内右下角。截图 `.scratch/review-cards/cards.png`、`.scratch/review-cards/sheet-700.png`（已人眼看过）。`probes/code-review.mjs`（真 `ocr` + 真模型）跟着改成「跑着看卡上的停止 / 意见断言挪进 `.rv-sheet` / 点卡片不开、点按钮才开 / 停止后不被拽走」；`probes/github-card-review.mjs` 只把 `.rv-focus-stop` 换成 `.rv-run-card.is-live`。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
+
+**`reviewFocus` 的生命周期（PR #710 评审后补，2026-11-27）。** 它只在浮层开着的期间存在：`openReviewSheet(runId)` 设它、那扇窗的 `onClose` 清它；**中途从这张卡换看另一张**（`reviewFocus` 换了 id、窗还是同一扇）关窗时也必须清 —— 原来 `onClose` 里留着 `if (this.reviewFocus !== runId) return;`，换看过之后这句恒成立，关窗后 `reviewFocus` 永远停在上次那一条，`reviewActiveRun()` / `activeModel` 一路按旧的算到换会话。反过来，`startReview()` 也不再清它（以前那里有一行 `reviewFocus = ""`）：浮层开着时那一位是「正在看的那一次」，被新开一条清掉会让窗里内容与「停止」的目标一起跳掉。

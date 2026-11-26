@@ -384,6 +384,9 @@ export class App {
   private connected = false;
   private tab: Tab = "sessions";
   private queueTab: QueueTab = readQueueTab();
+  /** 正在画右栏（重入闸，见 renderQueue）。 */
+  private queueDrawing = false;
+  private queueDirty = false;
   private tabMemory = createTabMemory(this.queueTab);
   private execSelectedRound: string | null = null;
   private execSelectedPlanTaskId: number | null = null;
@@ -501,12 +504,10 @@ export class App {
    */
   private reviewPendingRuns = new Set<string>();
   /**
-   * 面板现在展开的是哪一次评审（`ReviewRun.id`，空串 = 停在记录列表）。
-   * 记录列表是主体：点一张卡就换成那一次的意见，`‹ 记录` 回列表。
+   * 「完整详情」浮层现在看的是哪一次评审（`ReviewRun.id`，空串 = 没开浮层，按最新那一次算）。
+   * 记录卡不再是入口（D429）：点卡底那颗「完整详情」把它设成那张卡的那一次，关掉浮层就清空。
    */
   private reviewFocus = "";
-  /** 还在跟着「刚开的那一次」跑：收到进度帧就把焦点新移到它的 runId 上。 */
-  private reviewFollowRun = false;
   /** 本会话的「评什么」已经从盘上恢复过没有（每个会话只恢复一次）。 */
   private reviewPickRestored = "";
   /** 上一次真发出去的「评什么」（JSON）：一样的就不再发，敲字/重画不会把状态文件反复重写。 */
@@ -2784,7 +2785,6 @@ export class App {
         const id = String(msg.runId ?? "");
         if (!id) break;
         this.reviewPendingRuns.add(id);
-        if (this.reviewFollowRun) this.reviewFocus = id;
         if (this.queueTab === "review") this.renderQueue();
         this.syncReviewSheet();
         break;
@@ -18997,7 +18997,6 @@ export class App {
     this.reviewPrError = "";
     this.reviewPrInfo = { number: 0, info: null, error: "" };
     this.reviewFocus = "";
-    this.reviewFollowRun = false;
     this.reviewPickRestored = "";
     this.reviewPickSent = "";
     this.reviewPrMenu = false;
@@ -19035,7 +19034,6 @@ export class App {
     this.reviewExpectRepo = "";
     // —— 记录列表：回到列表页；「评什么」等 state 到了再从盘上恢复（只恢复一次）。
     this.reviewFocus = "";
-    this.reviewFollowRun = false;
     this.reviewPickRestored = "";
     // 新会话的「评什么」要重新发一次（去重表里的那份是上一个会话的）。
     this.reviewPickSent = "";
@@ -19175,7 +19173,7 @@ export class App {
     return out;
   }
 
-  /** 面板现在该看哪一次（空 = 列表，就取最新那一次；两者都没就 null）。 */
+  /** 面板现在该看哪一次（空 = 没开浮层，就取最新那一次；两者都没就 null）。 */
   private reviewActiveRun(): ReviewRun | null {
     const runs = this.reviewState?.runs ?? [];
     if (!runs.length) return null;
@@ -19509,22 +19507,10 @@ export class App {
         this.renderQueue();
       },
       // 装 gh / 登录 gh（D428）：卡片的动作由 `reviewPanelInput()` 直接传 `ghCardActions()`。
-      onDetails: () => this.openReviewSheet(),
+      // 记录卡不再是入口（D429）：点卡底那颗「完整详情」打开那一次。
+      onDetails: (runId) => this.openReviewSheet(runId),
       onPickRepo: () => this.openRepoPicker(),
       onClearRepo: () => this.clearReviewRepo(),
-      onOpenRun: (runId) => {
-        // 人自己点了某一条：看它，不再跟着新开的那一次跑。
-        this.reviewFocus = runId;
-        this.reviewFollowRun = false;
-        this.renderQueue();
-        this.syncReviewSheet();
-      },
-      onBack: () => {
-        this.reviewFocus = "";
-        this.reviewFollowRun = false;
-        this.renderQueue();
-        this.syncReviewSheet();
-      },
     };
   }
 
@@ -19599,15 +19585,23 @@ export class App {
     this.socket.send({ type: "review.prinfo.get", dir, sessionId: this.currentId, pr: number });
   }
 
-  /** 「评审详情」dialog：跑着看时间线，跑完看结果；同一个会话只开一扇。 */
-  private openReviewSheet(): void {
+  /** 「评审详情」dialog：看**点开的那一张卡**（跑着看时间线，跑完看结果）；同一个会话只开一扇。 */
+  private openReviewSheet(runId: string): void {
+    // D429：浮层看的是这张卡对应的那一次，不是「最新那一次」；焦点只活到浮层关掉为止。
+    this.reviewFocus = runId;
     if (this.reviewSheet) {
       this.reviewSheet.update(this.reviewPanelInput());
       return;
     }
     const sheet = new ReviewSheet(this.reviewPanelInput());
     sheet.onClose = () => {
-      if (this.reviewSheet === sheet) this.reviewSheet = null;
+      // 只收尾「现在这一扇」：窗被人关掉又重开过时，`reviewSheet` 已经不是它，状态归新那扇管。
+      if (this.reviewSheet !== sheet) return;
+      this.reviewSheet = null;
+      // 焦点只活到浮层关掉为止。中途从这张卡换看另一张（reviewFocus 换了 runId、窗还是这扇）
+      // 也要清掉 —— 否则关窗后 reviewActiveRun() 一直按旧那一次算，直到换会话。
+      this.reviewFocus = "";
+      if (this.queueTab === "review") this.renderQueue();
     };
     sheet.mount(document.getElementById("app") ?? document.body);
     this.reviewSheet = sheet;
@@ -19642,10 +19636,10 @@ export class App {
     // D423：这次真要拿去跑的模型也算「评审用过的」——没单独挑时它跟着会话走，
     // 记下来的作用是把「确认过但还没跑」和「刚跑过」的次序理顺，下次打开就在最近里。
     if (modelInfo) rememberReviewModel(modelInfo.provider, modelInfo.id);
-    // 新开一条：等桥的 `review.started` 把 runId 发回来再定焦点，这里先回列表页。
+    // 新开一条：不再自动把人拽到某一次上（D429）—— 停在记录列表，在跑那张卡自己显示进度。
+    // 浮层开着时**不清** reviewFocus：那一位是「正在看的那一次」，与新开这条无关；
+    // 没开浮层时它本来就是空串，清了也没有意义。
     // （以前这里会乐观塞一份 runId 空串的进度；并发以后那样会跟另一条的进度混在一起。）
-    this.reviewFocus = "";
-    this.reviewFollowRun = true;
     this.saveReviewPick();
     this.socket.send({
       type: "review.run",
@@ -20938,7 +20932,30 @@ export class App {
     return this.queueTab === "exec" || this.queueTab === "browser";
   }
 
+  /**
+   * 重入闸：`drawQueue()` 会在渲染途中同步回调（`ghSetup.ensure()` → `onChange` →
+   * `onGhSetupChanged()` → 再进这里，D428 那套「状态一问就重画」），那时 `host.replaceChildren()`
+   * 已经清空、内层那次已经把面板画好，外层回来再 append 一次就会画出两份面板。
+   * 所以画的过程中只记「还要再画一次」，画完补跑一轮。
+   */
   private renderQueue(): void {
+    if (this.queueDrawing) {
+      this.queueDirty = true;
+      return;
+    }
+    this.queueDrawing = true;
+    try {
+      this.drawQueue();
+    } finally {
+      this.queueDrawing = false;
+    }
+    if (this.queueDirty) {
+      this.queueDirty = false;
+      this.renderQueue();
+    }
+  }
+
+  private drawQueue(): void {
     const host = this.els.queueInner;
     // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。
     const kept = this.els.queuePane.scrollTop;

@@ -223,63 +223,91 @@ try {
   await page.locator(".rv-run:not([disabled])").first().waitFor({ timeout: 30000 });
   await page.locator(".rv-run").first().click();
 
-  // 跑起来就该有进度（或直接完成）；面板跟到那一条，并把「停止」给它。
-  await until(async () => (await page.locator(".rv-focus-stop, .rv-file, .rv-error").count()) > 0, 60000, "review started");
-  const running = await page.locator(".rv-focus-stop").count();
-  if (running) {
+  // D426：跑起来只是多一张记录卡，面板不再跟着跳进那一次；意见只在「完整详情」里。
+  await until(async () => (await page.locator(".rv-run-card").count()) >= 1, 60000, "run card");
+  if (await page.locator(".rv-run-card.is-live .rv-run-stop").count()) {
     // D420：跑着的时候这张「评什么」描述的是**下一条**，所以不再整张禁用；停止是每条记录自己的事。
     check("评审中「评什么」不再整张锁住（它描述下一条）", !(await page.locator(".rv-mode").isDisabled()), "");
     check("评审中模型 chip 也能换（只影响下一条）", !(await page.locator(".rv-model").first().isDisabled()), "");
     check("主按钮仍是「开始评审」，不再变成中断", (await page.locator(".rv-run").first().innerText()).includes("开始"), "");
-    check("在跑的那一条自己有「停止」", (await page.locator(".rv-focus-stop").first().innerText()).includes("停止"), "");
+    check(
+      "在跑的那一条自己有「停止」",
+      (await page.locator(".rv-run-card.is-live .rv-run-stop").first().innerText()).includes("停止"),
+      "",
+    );
   }
-  const fileCount = await until(async () => {
-    const n = await page.locator(".rv-file").count();
-    if (n) return n;
-    const err = await page.locator(".rv-error").count();
-    if (err) throw new Error(`评审失败：${await page.locator(".rv-error").first().innerText()}`);
-    return 0;
-  }, REVIEW_TIMEOUT_MS, "review findings");
-
-  check("意见按文件分组落进栏里", fileCount >= 1, `${fileCount} 个文件`);
-  const findings = await page.locator(".rv-finding").count();
-  check("一条意见一行", findings >= 1, `${findings} 条`);
-  const sev = await page.locator(".rv-sev").first().innerText();
-  check("带严重度徽标", ["严重", "高", "中", "低"].includes(sev.trim()), sev);
-  const meta = await page.locator(".rv-meta").first().innerText();
-  check("顶部写了耗时与 token", /tokens/.test(meta) && /\d/.test(meta), meta);
   // 300px 里下拉吃掉整行时，旁边的按钮会被挤出面板 —— 用坐标钉住它（2026-11-24 真踩过）。
-  const panel = await page.locator(".review").boundingBox();
-  const btn = await page.locator(".rv-run").first().boundingBox();
+  // 跑着的时候面板按计时器重画：`locator.boundingBox()` 会撞上元素被换掉那一下、返回 null（实测偶发
+  // 「no box」），所以两个框一起在页面里量，量不到就等下一次重画。
+  const geom = await until(
+    () =>
+      page.evaluate(() => {
+        const panel = document.querySelector(".review");
+        const btn = document.querySelector(".rv-run");
+        if (!panel || !btn) return null;
+        const a = panel.getBoundingClientRect();
+        const b = btn.getBoundingClientRect();
+        if (!a.width || !b.width) return null;
+        return { width: a.width, px: a.x, bx: b.x, bw: b.width };
+      }),
+    10000,
+    "panel geometry",
+  );
   check(
     "面板没被长路径撑宽，按钮也没被下拉挤出面板",
-    Boolean(panel && btn) && panel.width <= 420 && btn.x >= panel.x && btn.x + btn.width <= panel.x + panel.width + 1,
-    panel && btn ? `panel ${Math.round(panel.width)} / 按钮右缘 ${Math.round(btn.x + btn.width - panel.x)}` : "no box",
+    geom.width <= 420 && geom.bx >= geom.px && geom.bx + geom.bw <= geom.px + geom.width + 1,
+    `panel ${Math.round(geom.width)} / 按钮右缘 ${Math.round(geom.bx + geom.bw - geom.px)}`,
   );
-  // 跑完必须有一句提示（用户报过：「不确定有没有真正评审成功，没有信息提示」）。
-  const toast = (await page.locator(".fail-toast").first().innerText().catch(() => "")).trim();
-  check("跑完弹一句结果", /评审/.test(toast), toast.slice(0, 60));
-
-  // 记录列表：每次评审一张卡（「清理历史」那颗按钮已经不在了）。
-  if (await page.locator(".rv-back").count()) await page.locator(".rv-back").first().click();
-  await until(async () => (await page.locator(".rv-run-card").count()) >= 1, 15000, "run cards");
-  const cards = await page.locator(".rv-run-card").count();
-  check("每次都留一张记录卡", cards >= 1, `${cards} 张`);
-  check("面板里已经没有「清理历史」", (await page.locator(".rv-clean").count()) === 0, "");
-  await page.locator(".rv-run-card").first().click();
-  await page.locator(".rv-focus").waitFor({ timeout: 10000 });
-  const focusModel = (await page.locator(".rv-focus-model").first().innerText().catch(() => "")).trim();
-  check(
-    "点开的记录写着这次用的模型",
-    /这次用的模型/.test(focusModel) && focusModel.length > 8,
-    focusModel.replace(/\n/g, " ").slice(0, 60),
-  );
-
-  // 「完整详情 ›」：一扇宽窗，左边时间线、右边结果 —— 显示的是点开那一次的模型。
-  await page.locator(".rv-focus-more").first().click();
-  await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
+  // 「完整详情 ›」：记录卡右下角那个入口，打开的是**这张卡**那次；左边时间线、右边结果。
+  // 跑着的时候面板按计时器整块重画：locator.click() 会卡在「等元素稳定」上（review-cards 里踩过）。
+  // 先量坐标再用鼠标真点，点完没开就重来一次。
+  {
+    let opened = false;
+    for (let i = 0; i < 3 && !opened; i += 1) {
+      const at = await page.evaluate(() => {
+        const node = document.querySelector(".rv-run-card")?.querySelector(".rv-run-more");
+        if (!node) return null;
+        const b = node.getBoundingClientRect();
+        return b.width && b.height ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null;
+      });
+      if (!at) {
+        await sleep(150);
+        continue;
+      }
+      await page.mouse.click(at.x, at.y);
+      opened = await page
+        .locator(".rv-sheet")
+        .waitFor({ timeout: 3000 })
+        .then(() => true)
+        .catch(() => false);
+    }
+    check("「完整详情」打开浮层", opened, "");
+  }
+  // 不能把「评审失败」写成 until 回调里的 throw：until 的 try/catch 会把它当「还没好」吞掉重试，
+  // 最后只剩一句 timeout waiting for review findings，错误原文就查不到了。
+  let fileCount = 0;
+  const findingsDeadline = Date.now() + REVIEW_TIMEOUT_MS;
+  while (Date.now() < findingsDeadline) {
+    fileCount = await page.locator(".rv-sheet .rv-file").count();
+    if (fileCount) break;
+    if (await page.locator(".rv-sheet .rv-error, .review .rv-error").count()) {
+      const why = (await page.locator(".rv-error").first().innerText()).trim().replace(/\s+/g, " ");
+      throw new Error(`评审失败：${why}`);
+    }
+    await sleep(150);
+  }
+  check("意见按文件分组落进详情", fileCount >= 1, `${fileCount} 个文件`);
+  check("面板里不再有意见栏（只剩记录卡）", (await page.locator(".review .rv-findings").count()) === 0, "");
+  const findings = await page.locator(".rv-sheet .rv-finding").count();
+  check("一条意见一行", findings >= 1, `${findings} 条`);
+  const sev = await page.locator(".rv-sheet .rv-sev").first().innerText();
+  check("带严重度徽标", ["严重", "高", "中", "低"].includes(sev.trim()), sev);
+  const meta = await page.locator(".rv-sheet .rv-inst").first().innerText();
+  check("仪表写了耗时与 token", /tokens/.test(meta) && /\d/.test(meta), meta.replace(/\n/g, " ").slice(0, 60));
   const stages = await page.locator(".rv-sheet .rv-stg").count();
   const sheetFindings = await page.locator(".rv-sheet .rv-finding").count();
+  const toast = (await page.locator(".fail-toast").first().innerText().catch(() => "")).trim();
+  check("跑完弹一句结果", /评审/.test(toast), toast.slice(0, 60));
   check("详情 dialog 有分组日志与结果", stages >= 1 && sheetFindings > 0, `${stages} 段日志 · ${sheetFindings} 条意见`);
   // 仪表（进度/用量/用时）曾被 settings-console.css 的 `.st-console{display:grid}` 挤成 0 高，压一下。
   const instBox = await page.locator(".rv-sheet .rv-inst").boundingBox();
@@ -302,6 +330,21 @@ try {
   await page.locator(".rv-sheet-head .btn:not([hidden])").last().click();
   await until(async () => (await page.locator(".rv-sheet").count()) === 0, 8000, "review sheet closed");
 
+  // 记录卡（D426）：卡就是卡，正文点了没反应，唯一入口是右下角那颗。
+  const cards = await page.locator(".rv-run-card").count();
+  check("每次都留一张记录卡", cards >= 1, `${cards} 张`);
+  check("面板里已经没有「清理历史」", (await page.locator(".rv-clean").count()) === 0, "");
+  // 工作区那次没有 PR 标题（.rv-run-title 只在有标题时才有），点卡上的时间同样落在正文上。
+  await page.locator(".rv-run-at").first().click();
+  await page.waitForTimeout(300);
+  check("点卡片正文不打开详情", (await page.locator(".rv-sheet").count()) === 0, "");
+  await page.locator(".rv-run-card").first().locator(".rv-run-more").click();
+  await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
+  const eyebrow = (await page.locator(".rv-sheet-eyebrow").first().innerText()).trim();
+  check("详情抬头写着这是哪一次", /代码评审/.test(eyebrow), eyebrow.slice(0, 40));
+  await page.locator(".rv-sheet-head .btn:not([hidden])").last().click();
+  await until(async () => (await page.locator(".rv-sheet").count()) === 0, 8000, "review sheet closed again");
+
   // 模型那颗 chip 走的是输入框背后同一个「模型与思考」弹层（不是面板自己的下拉）。
   const modelBefore = (await page.locator(".rv-model").innerText()).trim();
   await pickModel(page);
@@ -312,13 +355,15 @@ try {
   fs.mkdirSync(shots, { recursive: true });
   await page.locator(".review").screenshot({ path: path.join(shots, "code-review-panel.png") }).catch(() => {});
 
-  // ---------------------------------------------------------------- 3) 点一条 → 分支工作台「差异」
-  await page.locator(".rv-line").first().click();
-  await page.locator(".rv-body").first().waitFor({ state: "visible", timeout: 5000 });
-  const fixText = await page.locator(".rv-fix").first().isVisible();
+  // ---------------------------------------------------------------- 3) 详情里点一条 → 分支工作台「差异」
+  await page.locator(".rv-run-card").first().locator(".rv-run-more").click();
+  await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
+  await page.locator(".rv-sheet .rv-line").first().click();
+  await page.locator(".rv-sheet .rv-body").first().waitFor({ state: "visible", timeout: 5000 });
+  const fixText = await page.locator(".rv-sheet .rv-fix").first().isVisible();
   check("展开后能看到「交给 AI 修」", fixText, "");
   // 一行点开是就地看片段；`path:line` 那颗才是「跳去分支工作台的差异页签」。
-  await page.locator(".rv-place").first().click();
+  await page.locator(".rv-sheet .rv-place").first().click();
   await page.locator(".go-diff-row.on").waitFor({ timeout: 30000 });
   const onRow = await page.locator(".go-diff-row.on").first().innerText();
   check("打开分支工作台并选中了那个文件", onRow.includes("user.ts"), onRow);
@@ -329,8 +374,8 @@ try {
 
   // ---------------------------------------------------------------- 4) 交给 AI 修
   // 上一步已经把它展开了；再点一次等于收起，所以先看状态。
-  if (!(await page.locator(".rv-body").first().isVisible())) await page.locator(".rv-line").first().click();
-  await page.locator(".rv-fix").first().click();
+  if (!(await page.locator(".rv-sheet .rv-body").first().isVisible())) await page.locator(".rv-sheet .rv-line").first().click();
+  await page.locator(".rv-sheet .rv-fix").first().click();
   await page.locator(".handoff-sheet").waitFor({ timeout: 10000 });
   const handoffName = await page.locator(".handoff-body .rv-hint").first().innerText().catch(() => "");
   check("交给 agent 先问去处（当前会话 / 新开会话）", /名字/.test(handoffName), handoffName.slice(0, 40));
@@ -341,34 +386,43 @@ try {
   check("选「插到当前会话」后把意见放进输入框", composer.includes("代码评审意见"), composer.slice(0, 40).replace(/\n/g, " "));
 
   // ---------------------------------------------------------------- 5) 中途停止
+  if (await page.locator(".rv-sheet").count()) {
+    await page.keyboard.press("Escape");
+    await until(async () => (await page.locator(".rv-sheet").count()) === 0, 8000, "sheet closed before stop test");
+  }
   await page.locator(".rv-run").first().click();
-  await page.locator(".rv-focus-stop").first().waitFor({ timeout: 60000 });
-  await page.locator(".rv-focus-stop").first().click();
-  // 停下来之后停在这一次上；万一回到了列表，点最新那张看明细。
-  if ((await page.locator(".rv-focus").count()) === 0) await page.locator(".rv-run-card").first().click();
-  await until(async () => (await page.locator(".review").innerText()).includes("这次没跑完就停了"), 60000, "stopped hint");
-  check("停止后标「没跑完」并留着已收到的", true, "");
+  await page.locator(".rv-run-card.is-live .rv-run-stop").first().waitFor({ timeout: 60000 });
+  await page.locator(".rv-run-card.is-live .rv-run-stop").first().click();
+  // 停下来之后不自动跳走：还是列表，那张卡自己标「没跑完」，明细在那张卡的「完整详情」里。
+  await until(async () => (await page.locator(".rv-run-card.is-live").count()) === 0, 60000, "stopped card");
+  check("停下后不会被拽进浮层", (await page.locator(".rv-sheet").count()) === 0, "");
+  await page.locator(".rv-run-card").first().locator(".rv-run-more").click();
+  await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
+  // 「标已停止」得自己断言：只用 until 等文案的话，超时是抛错中止整条探针、记不成一条 FAIL。
+  const stoppedHint = await until(
+    async () => (await page.locator(".rv-sheet").innerText()).includes("已停止"),
+    60000,
+    "stopped hint",
+  ).catch(() => false);
+  check("浮层里标着「已停止」", stoppedHint === true, "");
+  const kept = await page.locator(".rv-sheet .rv-finding, .rv-sheet .rv-stg").count();
+  check("停止后留着已收到的", kept >= 1, `${kept} 行日志/意见`);
+  await page.locator(".rv-sheet-head .btn:not([hidden])").last().click();
+  await until(async () => (await page.locator(".rv-sheet").count()) === 0, 8000, "sheet closed after stop");
 
   // ---------------------------------------------------------------- 5.5) 同时评两条（D417）
   // 一条在跑时「评什么」仍可用（描述下一条）；开满两条后按钮置灰并说明原因；停止按条算，停下就腾回额度。
   {
-    const back = page.locator(".rv-back");
-    if (await back.count()) await back.first().click();
-    await until(async () => (await page.locator(".rv-run").count()) === 1, 15000, "form back on list");
     const starts = async () => {
       await page.locator(".rv-run").first().click();
     };
     const countRunning = async () => Number((await page.locator(".rv-runs-head").innerText().catch(() => "")).match(/(\d+) 个在跑/)?.[1] ?? 0);
 
     await starts();
-    await until(async () => (await page.locator(".rv-focus-stop").count()) > 0, 60000, "first concurrent run");
-    if (await page.locator(".rv-back").count()) await page.locator(".rv-back").first().click();
     await until(async () => (await countRunning()) === 1, 30000, "one running");
     check("跑着一条时还能再开一条", await page.locator(".rv-run").first().isEnabled(), "");
 
     await starts();
-    await until(async () => (await page.locator(".rv-focus-stop").count()) > 0, 60000, "second concurrent run");
-    if (await page.locator(".rv-back").count()) await page.locator(".rv-back").first().click();
     await until(async () => (await countRunning()) === 2, 30000, "two running");
     check("两条同时在跑：一条一张卡，各自有停止", (await page.locator(".rv-run-card.is-live .rv-run-stop").count()) === 2, "");
     check("开满两条后主按钮置灰", await page.locator(".rv-run").first().isDisabled(), "");
@@ -379,7 +433,7 @@ try {
     await page.locator(".rv-run-card.is-live .rv-run-stop").first().click();
     await until(async () => (await countRunning()) <= 1, 30000, "one stopped");
     check("停一条、记录收尾后额度回来", await page.locator(".rv-run").first().isEnabled(), "");
-    check("跑完/停下的那一条不会把你从列表拽走", (await page.locator(".rv-focus").count()) === 0, "");
+    check("跑完/停下的那一条不会替你打开浮层", (await page.locator(".rv-sheet").count()) === 0, "");
     // 收尾：把剩下那条也停掉，别让后面的段落撞上「已满」。
     const rest = page.locator(".rv-run-card.is-live .rv-run-stop");
     if (await rest.count()) await rest.first().click();
