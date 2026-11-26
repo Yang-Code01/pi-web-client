@@ -8362,7 +8362,75 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 
 **验证。** `bridge/tests/ocr-status-unit.mjs`（`npm run test:review` 里）用 PATH 里一个「睡 7 秒再回版本」的假 ocr 走生产同一条 `cmd.exe /c ocr` 解析路径：改前第一条红 —— `{"installed":false,...,"error":"5 秒没有回应"}（耗时 5057ms）`，并发那条红 —— 三路 spawn 3 次；改后 9 条全绿。真机复核（`ocrStatus({refresh:true})` 连探 6 次）：1.9s / 2.4s / 6.9s / 7.1s / 7.5s / 16.3s，6 次全 `installed=true`——按旧的 5 秒线，这 6 次里有 5 次会报「没装」。
 
-## D420 代码评审的 gh 按**会话选的账号**跑，面板上给一个账号下拉（用户 2026-11-26「PR 卡片 codeReview 直接失败：Could not resolve to a Repository」）
+## D420 代码评审支持同时评两个 PR：额度按会话、按条停止、一张列表（用户「代码评审支持 多个pr 评审。如果，现在是691 在评审……我可以新开评审其他的pr」2026-11-26）
+
+**问题。** 一个会话同时只能评一条：桥端 `active` / `progressMap` 按「仓库 + 会话」一个键一份（`activeKey`），撞上就抛 `busy`；页面 `reviewView()` 的 `running` 由**最新一条记录**决定、`live` 也只认最新那条；跑着时整张「评什么」（范围 / PR 号 / 模型）与主按钮一起锁死（按钮变成「中断评审」）。用户要的是「#691 继续跑，我另开一个 PR 来评」。另有一个早就存在的串话：`review.progress` 帧不带 sessionId，跨会话评同一仓库时，另一个会话的面板会把这条进度画在自己身上。
+
+**决定。**
+
+1. 额度按**会话**算、跨仓库共用：`MAX_RUNS_PER_SESSION = 2`（`bridge/src/review.ts`）。第三条同步抛 `busy`（`params.p1 = "2"`）；页面主按钮置灰并写「已满 2 个，先停一个再开」。
+2. 判重只认「同会话 + 同仓库 + 同 PR 号」，抛新码 `dup_pr`（`params.p1` = 号）。位置在 `startReview` 的 `pr_foreign_repo` 闸之后、`resolvePullRequest` 之前 —— 白跑的代价是 fetch + 一次 preview，不如当场拒。范围 / 工作区 / 提交模式不判重：那正是「同一份 diff 再跑一份对比」的用法。
+3. 运行时主键从「仓库 + 会话」换成 **runId**：`active`、`progressMap` 都按 runId 记；另加 `runningFor(session)`（数额度）与 `reviewProgresses(repo, session)`（给页面的清单）。`reviewProgress`（一条）换掉。
+4. 停止按条：`cancelReview(dir, session, runId)`，给 runId 时校验 repo + session、只 abort 那一条；不给则停掉该 repo + session 下全部（兼容旧调用）。停掉的这条**留在 `active` 里**等子进程真正收尾（`execute` 的 `finally` 再删）：额度与同号查重都不提前放开，否则同一份 diff 会有两个进程一起烧 token。页面本来也要等记录变成「已停止」才解锁，所以看不出一秒的差。
+5. 帧补字段：`review.progress` 带 `sessionId` + `runId`；`review.state` 带 `progresses` 与 `cap`；新增 `review.started`（桥把这次换来的 runId 说一声，页面只认自己开过的那些来弹「跑完」提示）。
+6. 页面同一张列表：`ReviewInput.progress` → `progresses` + `cap`；`live` 按每张卡自己的 runId 找；`running` = 展开那条在跑、`runningCount` / `atCap` 决定能不能开。在跑的置顶（再按 `startedAt` 倒序），跑完 / 停下的不抢焦点。记录卡从 `<button>` 改成 `role="button"` 的 `div`，才能内嵌「停止」。
+7. 跑着时「评什么」与模型 chip 解锁：它们描述的是**下一条**，每条记录自己带 model / provider 快照。主按钮恒为「开始评审」，「停止」只留在展开的那条与每张在跑的卡上。
+8. 桥重启：`sweepStaleRuns()` 改成**按条**计数，页面第一份状态里的 `swept > 0` 弹一次「桥重启了，N 条评审被中断」。
+
+**为什么。**
+
+- 额度按会话而不是全机：额度是「一个人同时盯几个 PR」的注意力，跨仓库也占同一份。2 条刚好是「继续跑 + 再开一条」，再多 provider 限流与内存峰值一起翻倍（一次 31 文件的评审实测 136 秒，组内串行、每组一个 `pi -p` 子进程）。
+- 抓在开跑前而不是跑完再合并结果：两条同号同时跑，后一条白烧一次 fetch + preview；`pr_foreign_repo` 已经立了这个先例（#666）。
+- 进度帧必须带 runId：不带就只能「谁后到算谁的」，两条同时在跑必然互相覆盖；顺带把跨会话串话修掉（原来那个 `msg.sessionId === this.currentId` 守卫在桥上根本没发 sessionId，一直是空转）。
+- 停下不立刻腾额度：额度算的是「还在烧 token 的进程」。按已经收尾的记录放行，用户刚点停止就重开同一个号，会同时跑两份；页面反正要等记录变「已停止」才解锁，早放行也没有任何可见的好处。
+- 卡片改 `div` 而不是「按钮里套按钮」：HTML 不许按钮嵌套，`stopPropagation` 也挡不住点击语义被外层 button 吃掉。
+
+**代价 / 可改。**
+
+- 两条同时跑 = 两份 token、两个子进程；上限是常量，没做成设置项。
+- `review.started` 之前就失败（`busy` / `dup_pr`）时页面不弹「跑完」，只显示错误条 —— 符合「没开跑就没有完成提示」。
+- 历史仍是 20 条上限（`RUN_KEEP`），两条并发只是更快用完；`trimRuns` 优先裁终态。
+- `swept` 只在 `review.get` 里取一次（`takeSweptCount()`），提示只出现一次 —— 有意为之，免得每次打开面板都弹。
+
+**验证。**
+
+- `bridge/tests/review-unit.mjs` 新增 5 条：两条并发 + 第三条 `busy`（`params.p1 === "2"`）、同会话同号 `dup_pr`（`params.p1 === "691"`）、按 runId 停一条后额度回来、进度按「仓库 + 会话」隔离、sweep 按条计数 —— 37 条 check 全绿。
+- `web/tests/review-unit.mjs` 新增 4 条：还有额度时 `canRun === true`、跑满两条时 `atCap` / 置灰理由 / 两卡各有 live、在跑置顶排序、停一条额度回来 —— 26 项全绿。
+- `npm run test:review`（桥端 5 个套件 + 页面 pin 单测）rc=0；`npm --prefix web run typecheck` 全过（含 i18n / 视口守卫）。
+- `node probes/code-review.mjs`（桩桥 + 真 Chromium）39 项全绿，新增一段并发检出：两条同时在跑、一条一张卡各有停止、开满两条后主按钮置灰且写明原因、停一条额度回来、终态不抢焦点。
+- 两处并发风险提前实测：同仓库 100 次并发 `git fetch`（含同 ref `--force` 与 base 拉取）零锁冲突、单次 3.1–6.6 秒；ocr v1.14.4 的 `delegate preview` / `delegate rule` 4 路并发输出与单跑逐字一致、仓库无新文件（脚本 `.scratch/fetch-lock-probe.mjs`、`.scratch/ocr-concurrency-probe.mjs`）。
+
+## D421 超长的一轮条目收成摘要卡，点开在卡里铺开（用户「当用户输入过多，会占用很大 chat 框内容……做成一个卡片，点击卡片后展开内容」2026-11-26）
+
+**问题。** 粘一段评审意见进来（40 行 / 931 字），这一条就吃掉整屏：用户看不见上下文，也看不见自己后面写的句子。当时用户消息走的是 `foldable(body, 240)` —— 留 240px、底下渐隐、一颗小「展开」钮；那一版实测仍占聊天区 42%（`.scratch/long-user-msg/shot-A.png`）。助手回答有右上角折叠钮，工具输出自己有 260px 内滚窗口，三种长的东西各有一套规矩。
+
+**决定。** 一个组件（`ChatView.longCard`）覆盖三类，设置里三档开关各管一类，**默认只开用户消息**：
+
+1. **不高的条目零改动。** 卡片 `display: contents`，只有 `has-card` 亮了才 `display: block`：短消息不多一层盒子、重建时也不会闪一帧。
+2. **尺子以 240px 渲染高度为主**（`LONG_CARD_PX`，和 `foldable` 同一把），另加一道**宽栏兜底**：原文 `>= 400` 字或 `>= 16` 行也算长（`LONG_CARD_CHARS` / `LONG_CARD_LINES`）。纯按高度在很宽的窗口里会漏：761px 宽的气泡里 400 字才铺到 250px、289 字只铺 192px，用户那种 2K 屏横铺的几百字永远量不到 240。开、关两道门槛差 40px（滞环）：卡自己的边框会把正文挪一两像素，贴着 240 时一开一关会互相触发 `ResizeObserver`，留条缝才稳。
+3. **收起 = 96px**（约三行）+ 标题行 `长消息 · 27 行 · 931 字 · 展开 ▾`，整张卡可点（`a / button / img` 上的点击不吞），底下 `mask` 渐隐。实测从 42% 掉到 17%（`.scratch/long-user-msg/shot-F.png`）。
+4. **展开 = 卡里滚 `calc(var(--vh1) * 42)`**，标题行让位、底边换一颗整宽「▴ 收起」——两个入口不说两套话。不写 `42vh`：`#app` 上有 `zoom`，vw/vh 会被乘第二次（D123）。
+5. **展开状态按 `item.id` 存 `longOpen`**，和 `collapsed` 一样活过重建与切会话（工具输出是流式长出来的，`mergeTool` 会重画）。
+6. **设置里改了就就地重画**（`ChatView.redraw()` → `reset(loaded, history)`），不重开会话、不丢历史索引；**但模型在跑时不重画** —— `reset` 会拿 `loaded` 里那份没长完的正文重建，流式内容当场丢，所以记 `redrawPending`、等 `setRunning(false)` 收尾再画。
+7. **三档默认**：`longCardUser: true`（就是用户要的那一档）、`longCardAssistant: false`（助手有右上角折叠钮，先不换）、`longCardTool: false`（工具输出本来就有 260px 内滚）。关着的那几档**原样走老路**，撤掉这版就回到今天的样子。
+8. **带图的消息不收卡**（`item.images?.length` 时走老的 `foldable`）：卡里只露三行正文，图片是附件、不是「太长」，不能藏在卡后面。
+9. **回填必须填进同一个 `.body` 节点**（`ChatView.adopt`）：量高度的是挂在 `.body` 上的 `ResizeObserver`，`replaceWith` 换掉节点后观察者盯的是已经离线的旧元素（实测它还会回调一次 `0x0`，见 `.scratch/ro-removal.mjs`：`{"log":["0x0"],"h1":300,"afterOld":0,"afterNew":300}`），于是 `measure()` 读到 `scrollHeight 0`、摘掉 `has-card`，卡片与老的 240px 折叠**双双撒手**。现在是 `body.className = fresh.className; body.replaceChildren(...fresh.childNodes)` —— 不换节点，观察者继续盯同一块正文。
+
+**为什么以高度为主、字数只做兜底。** 同一段 931 字，1280px 宽的列里 22 行、窄栏里 40 行；纯按字数会在宽屏里也收卡，用户明明看得完。但纯按高度在宽栏里会漏（见第 2 条）：761px 的气泡里 `400 字 ≈ 250px`，门槛正好压在 240 上下，所以计数那条只在更宽的窗口里先触发 —— 它的意义是兜住宽栏，不是替代高度。`foldable` 仍然是纯高度，两处标准不矛盾（卡是「长」的更强判断）。
+
+**为什么是「卡」而不是「更高一点的折叠」（A）、不是「单行胶囊」（C）、不是「浮层」（E）。** 六版都在 `.scratch/long-user-msg/proto.html`，同一段 931 字的实测：A 292px / 42%（等于没解决）、B 117px / 17%、C 56px / 8%（太瘦，看不出是长什么内容）、D 167px / 24%（底边抽屉条占掉三行）、E 89px / 13%（点开遮住整个聊天区，读的时候看不到上下文）、F 117px / 17%（B 的收起 + D 的展开）。用户选了 F。
+
+**代价 / 可改。**
+- 工具那一档有个前提：这一轮的工具调用默认收在 `<details class="ops">` 里，关着时高度是 0，卡片量不到 —— **要等用户展开 ops 才轮到这张卡**（展开后先看到的是 96px 的卡，再点一次才铺开）。默认关着这一档，所以不影响现在。
+- 改开关会走一次 `reset()`：滚动位置回到最新一轮（`follow()`），「下面还有东西」那颗钮重算。历史索引（ghost、「载入更早」）跟着 `this.history` 一起带过去。
+- 卡里只有三行预览，长文里的标题、结论都得靠猜；真要定位还是点开。
+- 展开高度是视口的 42%，不是「内容多长就多高」：一屏能读完的东西，展开后仍然要在卡里滚。
+- 助手回答**流式中**不进卡：那时正文是靠 `delta()` 写进 `.stream` 长在消息节点上的，卡里是建卡那一刻的快照 —— 这一档默认关着，一轮收尾重建后才成卡。
+- 行数按原文算，而且是**现取**（`ChatView.longCardText`）：助手那一档建卡时传的 `item.text` 只是快照，回答还在流式长的时候就是半截，所以每次量高都去 `assistantTexts` 拿最新正文（`delta()` 一直在写它）；不这么做，卡头的行数字数与 400 字门槛会停在旧值（评审意见 `web/src/chat.ts:1726`）。用户消息 `pre-wrap`、工具输出 `.out` 本就等于原文，直接读 `innerText`。
+
+**验证。** `node probes/long-card.mjs`（桩桥 + 真 Chromium，种 40 行用户消息 + 30 行助手回答 + 短消息 + 带图长文 + 40 行 `bash` 输出 + 两段宽栏中长文（476 / 421 字），八节）全绿：长的那条 `has-card` 且卡在 96px×zoom、短的那条没卡、点卡头展开到 344px 且卡内可滚、点「收起」回到原高（120px = 96 × 1.25 字号）、默认下助手仍有 `.msg-fold`、工具输出仍是 260px 窗口、打开偏好后两者都成卡、设置「对话」一节三行开关都在且写进 `pi.prefs`、关掉开关当场重画并退回老折叠、带图那条永远不成卡且图还在、把窗口拉到 2560 宽后那两段「几百字」也成卡（`raw 250px` 已贴近门槛，靠计数那道先触发）；最后一节接 `bridge/tests/fixtures/fake-pi.mjs` 真发一条 12 行短句（高度过 240px、又碰不到 400 字 / 16 行），等它 echo 回来（回填走完）后断言**仍然是卡、卡里就是那块正文、行数按原文算**。`npm --prefix web run typecheck` 全过（新增 `web/tests/longcard-unit.mjs` 5 项：单行 / 多行 / 空行 / CRLF / 空白不算字）。截图：`.scratch/long-card/shots/{1-folded,2-open,3-all-cards,3b-tool-card,4-settings,5-live-send,6-wide}.png`。
+
+## D422 代码评审的 gh 按**会话选的账号**跑，面板上给一个账号下拉（用户 2026-11-26「PR 卡片 codeReview 直接失败：Could not resolve to a Repository」）
 
 **问题。** 工作区 `cas` 下 `C:\api\cas3-onecas-api` 评审 PR #17545，7 秒就失败：`直连：GraphQL: Could not resolve to a Repository with the name 'ISID/cas3-onecas-api'. (repository)；代理 http://127.0.0.1:18796：…`。三个事实叠在一起看：① 那个仓库确实改了名（`git ls-remote` 301 到新 id，`dentsusoken/cas3-onecas-api` 是这个令牌能看到的那个）；② GitHub 面板里这个会话选的账号 `xyang-qingmin` 看得到它，用手工 `gh pr view 17545` 一切正常；③ 桥自己 spawn 的评审 `gh` 用的是机器 active 账号 `Yang-Code01`，那个账号对 `ISID/*`、`dentsusoken/*` 全是 404。根因在 `bridge/src/gitpr.ts`：`run()` 直接 `execFile(ghBin())`，评审入口 `startReview()` 没把会话传下来，账号解析（`bridge/src/github.ts` 的 `pickAccount` / `tokenOf`）压根没参与。而那句提示只报「直连 / 代理各自失败」，把人往网络上引 —— 实际上 `repo_unseen` 这种「对端已经答了」的失败换代理只会再拿一遍同一句话。
 
@@ -8378,3 +8446,5 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 **代价。** 一次账号解析多两次 `gh` 调用（`auth status` / `auth token`，都带 TTL 缓存）；老会话在 `accounts.json` 里没有映射时行为不变（跟随工作区 / gh active）。`GH_TOKEN` 进了子进程环境，理论上会被评审自己起的子进程继承 —— 和 pi 会话里 `gh` 壳的处置一致。
 
 **验证。** `bridge/tests/review-gh-account-e2e.mjs`（已挂进 `npm run test:review`）：用例 1 `sessionGhAccount` 按会话给出 `xyang-qingmin` 的令牌；用例 2 真 git 仓库 + 本地 bare 远端，断言 `gh pr view` 只跑一次且拿到的是 `gho_fake_xyang-qingmin`、`refs/pi-web/pr-17545` 与远端 `refs/pull/17545/head` 同一 sha；用例 3 让假 gh 回 GraphQL 那句，断言 `code === "repo_unseen"` 且**只问了一次**。红验证：把 `routed()` 的 `{ ...env, ...extra }` 改回 `env` → 用例 2 红（`评审的 gh 必须用会话账号的令牌`）；把 `stop` 改成 `false` → 用例 3 红（`对端已经答了的失败不该换代理重试`）。`npm run test:review` 全绿，`npm --prefix web run typecheck`（含 i18n-check 与 viewport 守卫）exit 0。
+
+**补（PR #700 评审）。** 面板那个下拉最初把桥回的**解析结果**当成「人选的那个」写进 `reviewAccount` —— 跟随工作区时它也是具体账号，于是「跟随工作区」永远选不中、桥回空账号时又不清（留着上一次的号）。现在拆成两个字段：`reviewAccount` 只存会话里显式选的（`state.session.source === "session"`），`reviewAccountUsed` 存实际按谁在查，只用来写给人看（下拉首项写「跟随工作区（xyang-qingmin）」）。拆分逻辑是纯函数 `ghAccountPair()`，配 `web/tests/github-unit.mjs` 用例。
