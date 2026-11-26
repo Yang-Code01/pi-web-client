@@ -6252,6 +6252,11 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
    `has-card` 没亮时整张卡 `display: contents` —— 不高的条目就是原来那个气泡，一层盒子都不多。 */
 .lm-card { display: contents; }
 .lm-card > .lm-head, .lm-card > .lm-bar { display: none; }
+/* D423：没成卡时 `.lm-scroll` 这层也得是纯过路的。它一留成盒子，正文就成了一个「自己套自己
+   宽度」的收缩盒：气泡自己的 `max-width: min(78%, 760px)` 量的是 `lm-scroll` 的宽度（而那个宽度
+   又由正文撑出来），于是气泡只剩自然宽度的 78% —— 右边空一大截、长一点的句子被硬折行；短消息
+   更惨，`merge` 折成「mer / ge」。这就是 D350 修过的那个坑，D421 加了这层壳之后复发（D423 再修）。 */
+.lm-card:not(.has-card) > .lm-scroll { display: contents; }
 .lm-card.has-card { display: block; overflow: hidden; border-radius: 12px 12px 12px 4px; }
 .lm-card.lm-user.has-card { background: var(--accent-bg); border: 1px solid var(--accent-dim); }
 .lm-card.lm-assistant.has-card { background: var(--panel); border: 1px solid var(--line-soft); border-radius: 4px 12px 12px 12px; }

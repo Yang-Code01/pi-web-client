@@ -8448,3 +8448,17 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 **验证。** `bridge/tests/review-gh-account-e2e.mjs`（已挂进 `npm run test:review`）：用例 1 `sessionGhAccount` 按会话给出 `xyang-qingmin` 的令牌；用例 2 真 git 仓库 + 本地 bare 远端，断言 `gh pr view` 只跑一次且拿到的是 `gho_fake_xyang-qingmin`、`refs/pi-web/pr-17545` 与远端 `refs/pull/17545/head` 同一 sha；用例 3 让假 gh 回 GraphQL 那句，断言 `code === "repo_unseen"` 且**只问了一次**。红验证：把 `routed()` 的 `{ ...env, ...extra }` 改回 `env` → 用例 2 红（`评审的 gh 必须用会话账号的令牌`）；把 `stop` 改成 `false` → 用例 3 红（`对端已经答了的失败不该换代理重试`）。`npm run test:review` 全绿，`npm --prefix web run typecheck`（含 i18n-check 与 viewport 守卫）exit 0。
 
 **补（PR #700 评审）。** 面板那个下拉最初把桥回的**解析结果**当成「人选的那个」写进 `reviewAccount` —— 跟随工作区时它也是具体账号，于是「跟随工作区」永远选不中、桥回空账号时又不清（留着上一次的号）。现在拆成两个字段：`reviewAccount` 只存会话里显式选的（`state.session.source === "session"`），`reviewAccountUsed` 存实际按谁在查，只用来写给人看（下拉首项写「跟随工作区（xyang-qingmin）」）。拆分逻辑是纯函数 `ghAccountPair()`，配 `web/tests/github-unit.mjs` 用例。
+
+## D423 没成卡时 `.lm-scroll` 也得是纯过路的，否则用户气泡又被挤成窄条（用户 2026-11-26「输入显示bug」＋截图：气泡里「ABC」「DF」折成两行）
+
+**问题。** 发一句「ABCDF」，气泡被折成「ABC / DF」，右边还空一截；「牛逼」被折成一个字一行。这是 D350 修过的那个坑复发，触发者是 D421。
+
+机制：D421 把用户消息的正文包进 `.lm-card > .lm-scroll > .body`，没成卡时只让最外层 `.lm-card` 变 `display: contents`（`web/src/styles.css:6253`）。`display: contents` 只拆掉自己那层盒子，**里面那层 `.lm-scroll` 就成了 `.msg.user`（`display:flex; flex-direction: column; align-items: flex-end`）的 flex 子项**，也就是一个按内容收缩的块盒子；而气泡自己的 `max-width: min(78%, 760px)`（`web/src/mac.css:111`）量的是**包含块**的宽度 —— 包含块从 `.msg.user` 换成了 `.lm-scroll`，于是百分比对着「由正文撑出来、又反过来被这个百分比限制」的盒子算，落成一个只有自然宽度 78% 的小数（实测链：`msg.user` 602 → `.lm-scroll` 69.6 → `.body` 54.29px）。D350 当时的注释就写在 `.msg.user .foldable` 那段上（`web/src/mac.css:125-133`）：百分比得量在会撑满的那一层，不能量在收缩盒上。
+
+**决定。** `.lm-card:not(.has-card) > .lm-scroll { display: contents; }` —— 没成卡时这一层不生成盒子，`.body` 重新直接是 `.msg.user` 的 flex 子项（回到 D350 验证过的形状）；`has-card` 一亮它就变回真盒子，卡内滚动、`42vh` 展开那些照旧。一行 CSS，不动 JS：卡片要挂 `ResizeObserver` 的仍然是那块 `.body`，`display: contents` 不影响高度测量。
+
+**为什么不是别的改法。** ① 不动 `.body` 的 `max-width: min(78%, 760px)`：这是气泡宽度的语义（「最多占对话区 78%」），换 `max-width: 760px` 或 `width: fit-content` 会让长消息在窄窗口里溢出、并且要重做 D350 那套 `.foldable` 的两处分权。② 不在 JS 里「没成卡就不建壳」：卡片是量完高才决定要不要的，先建后拆会闪一帧，D421 第 1 条特意保证「不高的条目零改动」。③ 不给 `.lm-scroll` 加 `max-width: min(78%, 760px)` 再让 `.body` 100%：两处写同一个数，下次改一处就劈开（D350 就是被拆成两层的宽度限制坑掉的）。
+
+**代价。** 外层 `display: contents` + 内层 `display: contents` 连着两层（`.lm-card` 与 `.lm-scroll`），读 DOM 时要多看一层；`has-card` 切换时这一层会从「不生成盒子」变成块盒子，切换只发生在 `apply()`（量高后一次），不会引起抖动。
+
+**验证。** 红：main（`1b62adcc`）上 `node probes/mac-chat.mjs` 三套主题各 3 项红 —— `FAIL mac-dark：「merge」一行放得下 — {"text":"merge","lines":2,"right":962.84,"msgRight":982}`、两张气泡不贴右。绿：加上这条 CSS 后同一个探针 0 项失败（`merge` 一行、右边缘 982 = `.msg.user` 右边缘）。`probes/long-card.mjs` 第 1 节新增两条断言（短气泡一行、右边缘贴 `.msg.user` ≤ 8px），它守的是「没成卡那层壳不许挤窄气泡」这条，红验证：把这条 CSS 去掉 → 断言挂在 `the short bubble keeps one line ({"lines":2,"right":835.05,"msgRight":893.20})`。`node probes/long-card.mjs` 第 1–6 节全绿（第 7 节「现发一条等假 pi echo」在这台机器上超时 —— main 上同一份探针一样停在 `timeout waiting for the echo round`，假 pi 一 spawn 就被桥关掉 stdin；与本改动无关，桥侧另案）；`npm --prefix web run typecheck` exit 0。
