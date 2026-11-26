@@ -114,6 +114,7 @@ import { marketDelete, marketInstall, marketList, marketPublish, marketSources, 
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
+import { cancelGhSetup, ghSetupStatus, installGh, loginGh } from "./gh-setup.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
@@ -1480,6 +1481,15 @@ async function main(): Promise<void> {
     if (await handleMail(req, res, url, { publicReq, confirm: (sid, mail) => askMailConfirm(sid, mail, wss) })) return;
     if (await handleJira(req, res, url, { publicReq })) return;
     // GitHub 通道：账号与凭据在桥里，壳（pi 子进程的 `gh`）与页面都只跟这组路由说话。
+    // 「这台机器装没装 gh / 登录了谁 / 该跑哪条安装命令」是只读探测，面板打开时就要用（D425）。
+    if (url.pathname === "/api/github/setup" && req.method === "GET") {
+      try {
+        const setup = await ghSetupStatus();
+        return json(res, 200, { ok: true, setup });
+      } catch (err: any) {
+        return json(res, 200, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
     if (
       await handleGithub(req, res, url, githubCtx(publicReq))
     )
@@ -2886,6 +2896,8 @@ async function main(): Promise<void> {
         if (entry.ws === ws) entry.settle({ ok: false, reason: "no-ack" });
       }
       for (const id of ((ws as any).logins ?? []) as string[]) cancelLogin(id);
+      // 页面关了就别让 gh 安装 / 登录在后台继续跑（一次性码也没人看了）。
+      if ((ws as any).ghSetup) cancelGhSetup();
     });
 
     ws.on("message", async (raw) => {
@@ -4104,7 +4116,13 @@ async function main(): Promise<void> {
                 const { repo } = effectiveReviewDir(dir, session);
                 // PR 列表要跟「这个会话选的账号」走：多账号机器上，机器 active 那个常常没有权限。
                 const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
-                const out = await listPullRequests(repo, { fresh: msg.fresh === true, login: gh.login, env: gh.env });
+                const out = await listPullRequests(repo, {
+                  fresh: msg.fresh === true,
+                  login: gh.login,
+                  env: gh.env,
+                  token: gh.token,
+                  apiBase: process.env.PI_WEB_GITHUB_API || undefined,
+                });
                 // 带上实际用的账号：面板要能显示「这次是按谁去查的」，不然又只能猜（#17545）。
                 send({ type: "review.prs", dir: repo, ...out, login: gh.login });
               } catch (err: any) {
@@ -4121,7 +4139,13 @@ async function main(): Promise<void> {
               try {
                 const { repo } = effectiveReviewDir(dir, session);
                 const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
-                const out = await pullRequestInfo(repo, number, { fresh: msg.fresh === true, login: gh.login, env: gh.env });
+                const out = await pullRequestInfo(repo, number, {
+                  fresh: msg.fresh === true,
+                  login: gh.login,
+                  env: gh.env,
+                  token: gh.token,
+                  apiBase: process.env.PI_WEB_GITHUB_API || undefined,
+                });
                 send({ type: "review.prinfo", dir: repo, pr: number, ...out, login: gh.login });
               } catch (err: any) {
                 send({ type: "review.prinfo", dir, pr: number, ok: false, info: null, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
@@ -4269,6 +4293,48 @@ async function main(): Promise<void> {
             void installOcr((line) => broadcast({ type: "review.install.log", line })).then(async (out) => {
               broadcast({ type: "review.install.done", ok: out.ok, error: out.error, ocr: await ocrStatus({ refresh: true }) });
             });
+            return;
+          }
+          // ------------------------------------------------ 装 gh / 登录 gh（D425）
+          // 为什么装在桥里而不是让页面给出命令：winget/brew 的输出要逐行看到（用户要知道
+          // 是在下载还是卡在提权），一次性码也只能由桥从 gh 的 stdout 里读。
+          case "gh.setup.status": {
+            void (async () => {
+              try {
+                send({ type: "gh.setup.status", ok: true, setup: await ghSetupStatus() });
+              } catch (err: any) {
+                send({ type: "gh.setup.status", ok: false, error: String(err?.message ?? err) });
+              }
+            })();
+            return;
+          }
+          case "gh.setup.install": {
+            if (!(await requireStepUp())) return;
+            (ws as any).ghSetup = true;
+            void installGh({}, (event) => {
+              // 安装输出给发起的那条连接；其它页签只收最后的 status（要一起变「已装好」）。
+              send({ type: "gh.setup.event", ...event });
+              if (event.status) broadcast({ type: "gh.setup.status", ok: true, setup: event.status });
+            }).finally(() => {
+              (ws as any).ghSetup = false;
+            });
+            return;
+          }
+          case "gh.setup.login": {
+            if (!(await requireStepUp())) return;
+            (ws as any).ghSetup = true;
+            void loginGh({}, (event) => {
+              // 设备码是凭据级的东西：只发发起登录的那条连接，**不 broadcast**。
+              send({ type: "gh.setup.event", ...event });
+              if (event.status) broadcast({ type: "gh.setup.status", ok: true, setup: event.status });
+            }).finally(() => {
+              (ws as any).ghSetup = false;
+            });
+            return;
+          }
+          case "gh.setup.cancel": {
+            if (!(await requireStepUp())) return;
+            cancelGhSetup();
             return;
           }
           // ------------------------------------------------ AI 出错记录（D164）

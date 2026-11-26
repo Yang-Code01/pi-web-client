@@ -10,6 +10,7 @@
  */
 import { createEl as el } from "./chat.ts";
 import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
+import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
 
 import type {
   ReviewFinding,
@@ -80,6 +81,11 @@ export interface ReviewInput {
   accountUsed?: string;
   /** 能切到的账号（没读到 / 只有一个时可以不画下拉）。 */
   accounts?: { login: string; pat: boolean }[];
+  /**
+   * 「gh 没就绪」那张卡（D425）。`null` = 还没探测到 / 已经就绪且人不再想看。
+   * 数据来自 `GhSetupStore.card()`，这里只当一份普通输入往下传。
+   */
+  gh?: GhCardData | null;
   model?: string;
   /**
    * 面板现在展开的是哪一次评审（`ReviewRun.id`，空串 = 停在记录列表）。
@@ -174,6 +180,8 @@ export interface ReviewView {
   accountUsed: string;
   /** 能切到的账号（第一个是当前用的那个）。 */
   accounts: { login: string; pat: boolean }[];
+  /** 见 `ReviewInput.gh`。 */
+  gh: GhCardData | null;
   /** 这个模式下该填的那一格空着：按钮要点不着。 */
   missing: boolean;
   model: string;
@@ -517,6 +525,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     hasRun: Boolean(active),
     prsLoading: Boolean(input.prsLoading),
     prError: (input.prError ?? "").trim(),
+    gh: input.gh ?? null,
     account: (input.account ?? "").trim(),
     accountUsed: (input.accountUsed ?? "").trim(),
     accounts: input.accounts ?? [],
@@ -581,6 +590,16 @@ export interface ReviewActions {
   /** 打开「PR 信息」dialog。 */
   onPrInfo: () => void;
   onInstall: () => void;
+  /** gh 没就绪那张卡上的四颗（D425）；PAT 存好由 store 自己收尾。 */
+  onGhInstall: () => void;
+  onGhLogin: () => void;
+  onGhCancel: () => void;
+  onGhRefresh: () => void;
+  onGhDismiss: () => void;
+  onGhPat: () => void;
+  onGhSavePat: (token: string) => void;
+  /** 卡上的外链（cli.github.com / 设备码授权页）：所有 https 都要过宿主那一份 `safeExternalUrl`。 */
+  onOpenExternal: (url: string) => void;
   /** 点开某一次记录（`ReviewRun.id`）。 */
   onOpenRun: (runId: string) => void;
   /** 从某一次记录回到列表。 */
@@ -589,6 +608,19 @@ export interface ReviewActions {
   onPickRepo: () => void;
   /** 拔掉钉子，回到跟着会话目录走。 */
   onClearRepo: () => void;
+}
+
+function ghActions(actions: ReviewActions): GhCardActions {
+  return {
+    install: actions.onGhInstall,
+    login: actions.onGhLogin,
+    cancel: actions.onGhCancel,
+    refresh: actions.onGhRefresh,
+    dismiss: actions.onGhDismiss,
+    openPat: actions.onGhPat,
+    savePat: actions.onGhSavePat,
+    openUrl: actions.onOpenExternal,
+  };
 }
 
 export interface ReviewPanelInput {
@@ -766,6 +798,10 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   if (view.mode === "range") {
     form.append(refSelect(tr("目标分支"), view.target, actions.onTarget), refSelect(tr("对照分支"), view.base, actions.onBase));
   } else if (view.mode === "pr") {
+    const gh = view.gh;
+    if (gh) form.append(renderGhCard(gh, ghActions(actions)));
+    // 没装 gh 又没 PAT：这一格没有任何东西可输，整块换成安装卡（D425）。
+    if (gh?.mode !== "full") {
     // 一个格子同时干三件事：输号、检索、从列表里点。分成「搜索框 + 下拉 + 号输入」三行
     // 在 300px 里又挤又丑（用户直接说了），所以合成一个 combobox。
     const box = el("div", "rv-prbox");
@@ -930,6 +966,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       pick.onchange = () => actions.onAccount(pick.value);
       row.append(pick);
       form.append(row);
+    }
     }
   } else if (view.mode === "commit") {
     const sha = el("input", "rv-ref") as HTMLInputElement;

@@ -112,6 +112,28 @@ type StatusRead =
 let statusCache: { key: string; at: number; value: StatusRead } | null = null;
 const tokenCache = new Map<string, { at: number; token: string | null }>();
 
+/**
+ * PATH 之外，包管理器把 gh 装到这些地方。
+ *
+ * 为什么需要：页面里刚用 winget/brew 装完，**正在跑的桥进程 PATH 不会刷新**，只扫 PATH 会一直
+ * 说「没装」，用户只能重启桥。这些是各平台包管理器的落地位置（winget 那两条分别是 Links 里的
+ * 软链与 MSI 的安装目录）。
+ */
+export function knownGhPaths(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string[] {
+  if (platform === "win32") {
+    const local = env.LOCALAPPDATA ?? "";
+    const pf = env.ProgramFiles ?? "C:\\Program Files";
+    const pf86 = env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+    return [
+      ...(local ? [path.join(local, "Microsoft", "WinGet", "Links", "gh.exe"), path.join(local, "GitHub CLI", "gh.exe")] : []),
+      path.join(pf, "GitHub CLI", "gh.exe"),
+      path.join(pf86, "GitHub CLI", "gh.exe"),
+    ];
+  }
+  if (platform === "darwin") return ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/opt/local/bin/gh"];
+  return ["/usr/bin/gh", "/usr/local/bin/gh", "/snap/bin/gh", "/opt/gh/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"];
+}
+
 /** PATH 里找 `gh`，**跳过我们自己的 bin 目录**（否则解析出的是自己的壳，壳再去 exec 它）。 */
 function findRealGh(skipDir?: string): string | null {
   const exts = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
@@ -127,6 +149,14 @@ function findRealGh(skipDir?: string): string | null {
       } catch {
         /* 继续找 */
       }
+    }
+  }
+  for (const file of knownGhPaths()) {
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      if (fs.statSync(file).isFile()) return file;
+    } catch {
+      /* 继续找 */
     }
   }
   return null;
@@ -192,6 +222,23 @@ export function parseAuthStatus(text: string): { login: string; active: boolean 
     if (active && current) current.active = active[1].toLowerCase() === "true";
   }
   return out;
+}
+
+/** `gh --version` 里的版本号（读不出来就是空串，界面不编一个）。 */
+export async function ghVersion(gh: string): Promise<string> {
+  const r = await runGh(gh, ["--version"]);
+  return /gh version\s+(\S+)/i.exec(`${r.stdout}\n${r.stderr}`)?.[1] ?? "";
+}
+
+/** 登录态给页面看的那一份：把三种情况摊平成 `{state, accounts, error}`。 */
+export async function ghAuthState(
+  ctx: Pick<GithubCtx, "ghPath"> = {},
+): Promise<{ state: "no-gh" | "logged-out" | "ok"; accounts: { login: string; active: boolean }[]; error: string }> {
+  const gh = resolveGhBinary(ctx);
+  if (!gh) return { state: "no-gh", accounts: [], error: "" };
+  const read = await ghStatus(gh);
+  if (read.state === "ok") return { state: "ok", accounts: read.accounts, error: "" };
+  return { state: "logged-out", accounts: [], error: read.state === "logged-out" ? read.error : "" };
 }
 
 async function ghStatus(gh: string | null): Promise<StatusRead> {
@@ -281,6 +328,8 @@ export interface SessionGhAccount {
   login: string;
   /** 交给子进程的环境（`GH_TOKEN`）；没令牌时不给，子进程就沿用桥自己的环境。 */
   env?: NodeJS.ProcessEnv;
+  /** 令牌本体：REST 兜底（`gitpr.ts` 没装 gh 时）要用；照旧只在桥内流转。 */
+  token?: string | null;
 }
 
 /**
@@ -297,7 +346,7 @@ export interface SessionGhAccount {
 export async function sessionGhAccount(cwd: string, sessionId: string, ctx: Pick<GithubCtx, "ghPath"> = {}): Promise<SessionGhAccount> {
   const pick = await pickAccount(cwd, sessionId, ctx);
   const token = await tokenOf(pick, ctx);
-  return { login: pick.login, env: token ? { GH_TOKEN: token } : undefined };
+  return { login: pick.login, env: token ? { GH_TOKEN: token } : undefined, token };
 }
 
 // ---------------------------------------------------------------- 仓库
@@ -374,7 +423,7 @@ interface GithubPage {
   nextPage: number | null;
 }
 
-async function requestRaw(ctx: GithubCtx, token: string | null, apiPath: string, init: RequestInit = {}): Promise<GithubPage> {
+async function requestRaw(ctx: Pick<GithubCtx, "upstreamApi">, token: string | null, apiPath: string, init: RequestInit = {}): Promise<GithubPage> {
   const base = ctx.upstreamApi ?? API;
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",
@@ -410,6 +459,19 @@ async function requestRaw(ctx: GithubCtx, token: string | null, apiPath: string,
 }
 
 async function request(ctx: GithubCtx, token: string | null, apiPath: string, init: RequestInit = {}): Promise<any> {
+  return (await requestRaw(ctx, token, apiPath, init)).body;
+}
+
+/**
+ * 给桥内**不经过页面**的调用方（评审的 REST 兜底）一份最小 REST 入口。
+ * 与面板同一条 fetch 通道：代理环境下的取舍见 D425。
+ */
+export async function githubRest(
+  ctx: Pick<GithubCtx, "upstreamApi">,
+  token: string | null,
+  apiPath: string,
+  init: RequestInit = {},
+): Promise<any> {
   return (await requestRaw(ctx, token, apiPath, init)).body;
 }
 /** 一个列表读到底的结果：`rows` 是拿到的行；`complete` 为假就是没读全（翻页中途出错，或翻到 `MAX_PAGES` 上游还说有下一页）。 */

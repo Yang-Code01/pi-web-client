@@ -13,6 +13,7 @@ import { githubApi } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { ghAge, ghAgeText, ghChurn, type GhSessionAccount, type GithubStateView, type PullDetailView, type PullRow, type PullsView } from "./github-shared.ts";
 import { errText, tr } from "./i18n/index.ts";
+import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
 import { renderMarkdown } from "./md.ts";
 import { appZoom, markSurface, mountOverlay, pushEscLayer } from "./modal.ts";
 import "./github-panel.css";
@@ -27,6 +28,9 @@ export interface GithubPanelHost {
   openExternal(url: string): void;
   /** 把一句话当成下一条用户消息发给当前会话（合并走这里，于是要过审批闸）。 */
   askAgent?(text: string): void;
+  /** 「gh 没就绪」那张卡（D425）：数据和动作都由 app 的 store 给，面板不认识桥。 */
+  ghCard?(): GhCardData | null;
+  ghActions?: GhCardActions;
   onClose?(): void;
 }
 
@@ -362,12 +366,14 @@ export class GithubPanel {
 
   /** 降级要说清是哪一档：没装 gh / gh 没登录 / 匿名只读。三种的下一步完全不同。 */
   private hintCells(): HTMLElement[] {
+    const cells: HTMLElement[] = [];
+    // 装 gh / 登录 gh 不再是两句静态提示（D425）：走同一张卡，安装、设备码、PAT 都在里面。
+    const card = this.host.ghCard?.() ?? null;
+    if (card && this.host.ghActions) cells.push(renderGhCard(card, this.host.ghActions));
     const state = this.state;
-    if (!state) return [];
-    if (!state.gh) return [el("div", "ghp-hint", tr("这台机器没装 gh：写操作走壳的内置实现，所以需要一枚 PAT。"))];
-    if (state.ghState === "logged-out") return [el("div", "ghp-hint", tr("gh 还没登录：在终端跑 gh auth login，或者在下面存一枚 PAT。"))];
-    if (!state.session) return [el("div", "ghp-hint", tr("还没有可用的 GitHub 账号：存一枚 PAT 就能看私有仓库、也能建 PR。"))];
-    return [];
+    if (!state) return cells;
+    if (!state.session) cells.push(el("div", "ghp-hint", tr("还没有可用的 GitHub 账号：存一枚 PAT 就能看私有仓库、也能建 PR。")));
+    return cells;
   }
 
   private listCells(): HTMLElement[] {

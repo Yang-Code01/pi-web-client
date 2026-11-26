@@ -3,6 +3,7 @@ import "./sheet/sheet.css";
 import { api } from "./api.ts";
 import { App, bootScale } from "./app.ts";
 import "./mac.css";
+import "./gh-setup.css";
 import type { Me } from "./types.ts";
 import { bootTheme } from "./theme.ts";
 import { applyLang, bootLang, errText, tr } from "./i18n/index.ts";
