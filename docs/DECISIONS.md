@@ -8530,3 +8530,24 @@ D
 **代价。** 区域缓存最坏占 `1e6` 格的内存（超了就不进缓存，行为回到改前）；首轮算完才有缓存，所以第二次起才快；索引挂在矩阵对象上，区域缓存被回收时一起回收（桶数另有 5 万的上限）。`#CIRC!` 的判据是「矩阵里出现该错误值」，循环引用场景下每次仍重建（正确性优先，那种表本来也不该指望缓存）。
 
 **验证。** 分两层：`bridge/tests/sheet-calc-unit.mjs` 用伪造 ctx 钉求值语义，`bridge/tests/sheet-calc-xlsx.mjs` 用真 xlsx（`fixtures/calc-xlsx.mjs`）钉 `BookCalc` 的缓存本身 —— 公式值、缓存跨窗口复用后值不变、环所在区域不进缓存（两次 `range()` 不是同一个对象）、条目上限之后不再收新区域。前者加两张夹具（`PURE` 文本/数字/空混排，`BOOLY` 掺逻辑值）与 19 条断言：同一批 9 条 `VLOOKUP` 在两个 ctx（带 / 不带 `CACHED_RANGE`）上逐条一致，绝对预期覆盖重复键取第一行、`"10"` vs `10`、`null` vs `"null"`、`2.5`、`#N/A`、以及 BOOLY 的 `TRUE`/`"1"`。全部 226 + 25 条通过；`npm run test:sheet` 全绿（`fail 0`）；`npm --prefix bridge run typecheck` 通过。红验证：把 `firstErr` 换回 `flatten` 版 → 求值段回到 8s 级；把 `cmp()` 的判断还原 → `VLOOKUP("火星",…)=#N/A` 与 `VLOOKUP("1",A1:B7,2,FALSE)=文本 "1"` 两条红；把 `range()` 的 `looksFinal` 条件去掉 → 新测试的「环区域不进缓存」「环区域两次读都不是缓存对象」两条红。容量上限里 `RANGE_CACHE_CELLS` 那一支没有测试（要一百万格的真矩阵），靠同一条 `cacheable` 表达式与 entries 分支共同覆盖。
+
+## D428 没装 gh 时评审不该直接失败：一张能装、能登录、能存 PAT 的卡，加上 REST 兜底（用户 2026-11-26「评审依托 gh，没装 gh 应该会失败，我希望加入安装、配置的流程」）
+
+**编号。** 本条原写 D425，合并时 main 已占 D425–D427（#705 / #706 / #708 先后合入），让号改 D428。
+
+**问题。** 评审里真正需要真 `gh` 的只有三处（`bridge/src/gitpr.ts` 的 `listPullRequests` / `resolvePullRequest` / `pullRequestInfo`），但这一处失败会让整块评审不可用：`classify()` 把 `ENOENT` / `127` / `not found` 判成 `gh_missing`，然后这个原文被塞进 PR 下拉的一行小字里（`web/src/review.ts` 的 `rv-hint`）。用户能做的只有去终端装 gh —— 而「怎么装」在三个平台上各不相同，装完还要 `gh auth login`，登录是纯终端交互，桥里拿不到那一刻的进度。
+
+**决定。**
+
+- 桥侧新模块 `bridge/src/gh-setup.ts`：`ghSetupStatus(ctx)`（装没装、哪条路径、哪一版、登录了谁、这台机器怎么装）、`installGh()`、`loginGh()`、`cancelGhSetup()`，都按 op **单飞**，事件流式回给发起连接。安装命令按平台给（winget / brew / apt-get / dnf / pacman / snap），没有包管理器就只给 `cli.github.com` 与可复制的命令；Linux 的 `sudo` 只在 root 时才替用户跑，其余一律让人复制。登录用 `gh auth login --web --git-protocol https`，从 stdout 里抓一次性码与 `https://github.com/login/device` 转给页面，10 分钟超时、可取消。
+- 装完正在跑的桥 PATH 不会变：`github.ts` 的 `findRealGh()` 扫完 `PATH` 再探已知安装位置（`%ProgramFiles%\GitHub CLI\gh.exe`、`/opt/homebrew/bin/gh`、`/usr/local/bin/gh`…）；装完 / 登录完都 `resetGithubCaches()` 并回一份新 `status`。
+- 子进程环境用 `piChildEnv()` 后**删掉 `GH_TOKEN` / `GITHUB_TOKEN`**：壳会给 pi 子进程注入令牌，带着它跑 `gh auth login`，gh 会拒绝存凭据（「The value of the GH_TOKEN environment variable is being used for authentication.」）。
+- 评审的兜底：`gh_missing` 时 `listPullRequests` / `resolvePullRequest` / `pullRequestInfo` 改走 GitHub REST（复用 `github.ts` 的 `githubRest()` 与会话令牌），结果带 `via: "gh" | "rest"`。401/403/404 仍报 `repo_unseen` —— 那是「对端已经答了」，不是网络问题（D422）。
+- 页面：`web/src/gh-setup.ts` 的 `GhSetupStore` 一份状态、一张 `renderGhCard`，评审的 PR 格与 GitHub 面板顶部共用（D399 的三层不变：面板不认识桥，只认 store 给的 `GhCardData` 与动作）。评审**已经能用**（gh 登录或有存的 PAT）时卡降级成一行小字 + 安装按钮，可以「不再提示」；`localStorage` 里记的是 `装|登录` 快照，状态一变旧的勾选自动作废。
+- 帧：`GET /api/github/setup` + WS `gh.setup.status` / `gh.setup.install` / `gh.setup.login` / `gh.setup.cancel`；事件（`log` / `code` / `url` / `done` / `error`）**只单播给发起那条连接**，`status` 才广播。写操作一律 `requireStepUp()`：本机直连恒通过，隧道连接要先过审批闸。
+
+**为什么不是别的。** ① 不靠壳的内置 `pr list` 顶上：壳的内置实现不支持 `--json`（只打人读表格），`pr view --json` 也只给一半字段，用它兜底等于再造一份解析器。② 不让评审继续硬依赖真 gh：装不上（公司策略、没有包管理器、没管理员）时，明明 REST 已经能拿到同样三样东西，却把整块评审锁死，是把「可选工具」当成了「前置条件」。③ 不把安装/登录做成独立「本机依赖」页：这次只有 gh 一个人要这个流程，卡片贴在真正会碰壁的地方，用户看到提示的同时看到按钮。④ 设备码流程放桥里而不是只给命令：`gh auth login` 的交互（码、URL、进度、超时）全部在 stdout 里，桥能解析；只给命令等于把最容易出错的一步留给用户抄。
+
+**代价。** REST 兜底走的是桥自己的 `fetch`（没有 undici/ProxyAgent，也不认 `httpProxy` 环境变量），代理环境下不如 gh 稳；所以 gh 在的时候永远优先 gh。设备码登录会拉起浏览器，没浏览器（远端机）时只能退回 PAT。安装是系统级改动（winget/brew 动的是整台机器），按钮只在用户点的时候跑，日志原样流回页面。
+
+**验证。** `bridge/tests/gh-setup-unit.mjs` 7 项（三个平台的安装计划、root 与否、设备码解析、`ghSetupStatus({ghPath:null})`）；`bridge/tests/gitpr-rest-e2e.mjs` 3 项（假 gh 退出 127 → 列表/信息走 REST 且带 `Bearer` 会话令牌、`files`/`commits` 映射、404 → `repo_unseen`）；都挂在 `npm run test:review` 里（新增 `npm run test:gh-setup`）。红验证：把 `listPullRequests` 的 REST 分支去掉 → 第 1、3 项红；把 `loginGh` 的 `GH_TOKEN` 删除行去掉，真机上 `gh auth login` 会直接拒绝（本机实测原文见上）。`npm run typecheck`（含 i18n-check 4426 键 × 3 语言、viewport 守卫）exit 0。

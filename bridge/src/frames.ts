@@ -71,6 +71,10 @@ export type ServerFrameType =
   // `github.seen` = 输出里有链接但不是新建（面板开着就刷新一下）。
   | "github.pr"
   | "github.seen"
+  // 装 gh / 登录 gh（D428）：status 是只读探测，event 是安装/登录的逐行进度；
+  // 设备码只在发起那条连接上出现（由 index.ts 的 send 单播）。
+  | "gh.setup.event"
+  | "gh.setup.status"
   | "handoff.state"
   | "hello"
   | "history"
@@ -216,6 +220,10 @@ export type ClientFrameType =
   | "filesearch.status"
   | "filesearch.volumes"
   | "fork"
+  | "gh.setup.cancel"
+  | "gh.setup.install"
+  | "gh.setup.login"
+  | "gh.setup.status"
   | "handoff.start"
   | "history.before"
   | "import"
