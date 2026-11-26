@@ -10,9 +10,19 @@ export interface ErrVal {
   k: "err";
   v: string;
 }
+/**
+ * 「这块矩阵是 ctx 的缓存对象」的标记（只有 `BookCalc.range()` 会打）。
+ *
+ * 查找类函数靠它决定要不要给矩阵建索引：同一块区域被几千个 VLOOKUP 问到时建一次索引是
+ * 净赚，而每次新建的临时矩阵建索引比线性扫还慢，所以不能无条件建。见 D423。
+ */
+export const CACHED_RANGE = Symbol("sheet.cachedRange");
+
 export interface Matrix {
   k: "mx";
   m: EvalVal[][];
+  /** ctx 保证「同一区域返回同一对象」时打上的标记；一次性的临时矩阵没有它。 */
+  [CACHED_RANGE]?: true;
 }
 export type EvalVal = Val | ErrVal | Matrix;
 
@@ -117,10 +127,39 @@ export function numbersA(args: EvalVal[]): number[] {
   return out;
 }
 
+/**
+ * 第一个错误值（参数顺序、区域内行优先）。
+ *
+ * 不要用 `flatten(args)` 再扫：带区域参数的函数（VLOOKUP 的查找表）每次调用都要摊平
+ * 一个几千格的矩阵 —— 4000 个 VLOOKUP × 8000 格 = 3200 万次 push，实测 537ms。
+ * 区域在求值期间只读（见 `CACHED_RANGE`），所以缓存过的矩阵能把这一扫描降到一次。
+ */
 export function firstErr(args: EvalVal[]): ErrVal | null {
-  for (const v of flatten(args)) if (isErr(v)) return v;
+  for (const v of args) {
+    if (!isMx(v)) {
+      if (isErr(v)) return v;
+      continue;
+    }
+    const hit = firstErrCache.get(v);
+    if (hit !== undefined) {
+      if (hit) return hit;
+      continue;
+    }
+    let found: ErrVal | null = null;
+    for (const row of v.m) {
+      for (const cell of row) if (isErr(cell)) {
+        found = cell;
+        break;
+      }
+      if (found) break;
+    }
+    if (v[CACHED_RANGE]) firstErrCache.set(v, found);
+  }
   return null;
 }
+
+/** 只给「ctx 保证同一区域返回同一对象」的矩阵用（`CACHED_RANGE`），否则值可能变。 */
+const firstErrCache = new WeakMap<Matrix, ErrVal | null>();
 
 /** 比较：数字比数字、文本比文本（不区分大小写），不同类型按 Excel 的次序排。 */
 export function cmp(a: Val, b: Val): number {
@@ -129,8 +168,17 @@ export function cmp(a: Val, b: Val): number {
     return a > b ? 1 : 0;
   }
   if (typeof a === "boolean" || typeof b === "boolean") {
-    const x = typeof a === "boolean" ? (a ? 1 : 0) : Number(a);
-    const y = typeof b === "boolean" ? (b ? 1 : 0) : Number(b);
+    // 逻辑值只跟「能当数字的东西」比大小（TRUE ≡ 1）；跟文本不比数值 ——
+    // Excel 的次序是 数字 < 文本 < 逻辑值，所以 `TRUE = "1"` 是 FALSE，不是相等。
+    const num = (v: Val): number | null =>
+      typeof v === "number" ? v : typeof v === "boolean" ? (v ? 1 : 0) : v === null ? 0 : null;
+    const x = num(a);
+    const y = num(b);
+    if (x === null || y === null) {
+      // 只有一边会是文本（已经能当数字的不会进这里）：文本更小，两边都是文本时才相等
+      if (x === null && y === null) return 0;
+      return x === null ? -1 : 1;
+    }
     if (x < y) return -1;
     return x > y ? 1 : 0;
   }

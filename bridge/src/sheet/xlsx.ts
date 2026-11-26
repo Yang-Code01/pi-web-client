@@ -13,6 +13,7 @@ import { readRichRuns, type WireRun } from "./rich.ts";
 import { readValidations, valuesInXml, type WireValid } from "./valid.ts";
 import { readFilter, type WireFilter } from "./filter.ts";
 import { evaluate as evalFormula, err as calcErr, isErr, type CalcCtx, type EvalVal, type Matrix } from "./calc.ts";
+import { CACHED_RANGE } from "./value.ts";
 export type { WireFilter } from "./filter.ts";
 export type { WireValid } from "./valid.ts";
 export type { WireRun } from "./rich.ts";
@@ -153,6 +154,13 @@ export type SheetTier = "full" | "light" | "none";
  */
 export const FULL_MAX_CELLS = 100_000;
 export const LIGHT_MAX_CELLS = 1_000_000;
+
+/**
+ * 求值期间按区域缓存矩阵的上限（格数 / 条数）。8000 格 × 4000 次是典型情形，
+ * 留 100 万格给「几张不同的查找区域」就够；再大宁可重算也别把预览的内存抬上去（D166）。
+ */
+const RANGE_CACHE_CELLS = 1_000_000;
+const RANGE_CACHE_ENTRIES = 512;
 
 export function tierOf(cells: number): SheetTier {
   if (cells <= FULL_MAX_CELLS) return "full";
@@ -781,6 +789,9 @@ class BookCalc implements CalcCtx {
   private grids = new Map<string, Map<string, WireCell>>();
   private memo = new Map<string, EvalVal>();
   private busy = new Set<string>();
+  /** 区域矩阵缓存：「同一块区域被反复问」是表格求值里最贵的重复（见 range()）。 */
+  private ranges = new Map<string, Matrix>();
+  private rangeCells = 0;
   private buf: Uint8Array;
   private book: Book;
   /** 正在算哪一格：ROW() / COLUMN() 用它。 */
@@ -833,6 +844,10 @@ class BookCalc implements CalcCtx {
   }
 
   range(sheet: string | null, r0: number, c0: number, r1: number, c1: number): Matrix {
+    const name = sheet ?? this.book.meta.name;
+    const key = `${name}!${r0}:${c0}:${r1}:${c1}`;
+    const hit = this.ranges.get(key);
+    if (hit) return hit;
     const m: EvalVal[][] = [];
     const lastR = Math.min(r1, r0 + 4999);
     const lastC = Math.min(c1, c0 + 499);
@@ -841,7 +856,21 @@ class BookCalc implements CalcCtx {
       for (let c = c0; c <= lastC; c++) row.push(this.cell(sheet, r, c));
       m.push(row);
     }
-    return { k: "mx", m };
+    const out: Matrix = { k: "mx", m };
+    // 一轮求值里同一块区域会被问几千次：4000 行 VLOOKUP 每次都要 A2:B4000，
+    // 不缓存就是 4000 × 8000 次 cell()（13.7 s，实测见 `.scratch/sheet-perf`）。
+    // 矩阵在整轮求值里只读（sheet/ 下没有任何函数改自己的入参矩阵），所以按坐标留原对象。
+    // #CIRC! 的格子除外：那是「正在算」的占位，冻进缓存就再也拿不掉了。
+    const cells = m.length * (m[0]?.length ?? 0);
+    // 先看容量再扫 #CIRC!：不进缓存的矩阵没必要为它多扫一遍
+    const cacheable = cells > 0 && this.rangeCells + cells <= RANGE_CACHE_CELLS && this.ranges.size < RANGE_CACHE_ENTRIES;
+    const looksFinal = !cacheable || !m.some((row) => row.some((v) => isErr(v) && v.v === "#CIRC!"));
+    if (cacheable && looksFinal) {
+      out[CACHED_RANGE] = true;
+      this.ranges.set(key, out);
+      this.rangeCells += cells;
+    }
+    return out;
   }
 }
 

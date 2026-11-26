@@ -8448,3 +8448,27 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 **验证。** `bridge/tests/review-gh-account-e2e.mjs`（已挂进 `npm run test:review`）：用例 1 `sessionGhAccount` 按会话给出 `xyang-qingmin` 的令牌；用例 2 真 git 仓库 + 本地 bare 远端，断言 `gh pr view` 只跑一次且拿到的是 `gho_fake_xyang-qingmin`、`refs/pi-web/pr-17545` 与远端 `refs/pull/17545/head` 同一 sha；用例 3 让假 gh 回 GraphQL 那句，断言 `code === "repo_unseen"` 且**只问了一次**。红验证：把 `routed()` 的 `{ ...env, ...extra }` 改回 `env` → 用例 2 红（`评审的 gh 必须用会话账号的令牌`）；把 `stop` 改成 `false` → 用例 3 红（`对端已经答了的失败不该换代理重试`）。`npm run test:review` 全绿，`npm --prefix web run typecheck`（含 i18n-check 与 viewport 守卫）exit 0。
 
 **补（PR #700 评审）。** 面板那个下拉最初把桥回的**解析结果**当成「人选的那个」写进 `reviewAccount` —— 跟随工作区时它也是具体账号，于是「跟随工作区」永远选不中、桥回空账号时又不清（留着上一次的号）。现在拆成两个字段：`reviewAccount` 只存会话里显式选的（`state.session.source === "session"`），`reviewAccountUsed` 存实际按谁在查，只用来写给人看（下拉首项写「跟随工作区（xyang-qingmin）」）。拆分逻辑是纯函数 `ghAccountPair()`，配 `web/tests/github-unit.mjs` 用例。
+
+## D423 电子表格求值：缓存区域矩阵、给 VLOOKUP 精确匹配建索引、firstErr 不再摊平（用户 2026-11-27「fast-anything 优化一下本工程」）
+
+**问题。** `fast-anything scan` 把 82.5% 的采样时间判给 `bridge/src/sheet/calc.ts:729 evaluate`，但 `port` 当场拒了：`recorded no usable calls to bridge.src.sheet.calc.evaluate out of 20594. Arguments and results must be plain data: numbers, strings, bytes, lists, tuples, dicts, sets (got: BookCalc)` —— 求值器的上下文是个带 Map 的实例，跨不过 FFI，这类热点只能靠改算法。用 `.scratch/sheet-perf/` 的分档工作簿（4000 行 × 30 列，每行 6 条公式，共 23994 条且**没有缓存值**，所以全走 `fillFormulaValues`）归因，问题不是「求值器普遍慢」而是**公式种类单一**：sum 136ms / ifsum 303 / countif 278 / roundav 362 / text 332，只有 **VLOOKUP 13 700ms**。三笔成本叠在一起：① 每行 VLOOKUP 都把同一个 `A2:B4000` 重新展开成 8000 格矩阵（`BookCalc.range()` 每次都新建）；② 精确匹配对 4000 行逐行 `cmp`，O(行×公式) = 1600 万次比较；③ `callFn` 里的错误预检用 `firstErr(args)`，而 `firstErr` 先 `flatten(args)` —— 每次调用都把 8000 格摊平成一个数组（4000 × 8000 = 3200 万次 push，profile 里占 29.8%）。
+
+**决定。**
+
+- `bridge/src/sheet/xlsx.ts` 的 `BookCalc.range()` 按 `name!r0:c0:r1:c1` 缓存矩阵，上限 `RANGE_CACHE_CELLS = 1_000_000` 格 / `RANGE_CACHE_ENTRIES = 512` 条；**矩阵里出现 `#CIRC!` 就不缓存**（那是「还在算」的占位，冻住就永远错）。
+- `bridge/src/sheet/value.ts` 新增 `Symbol("sheet.cachedRange")`，缓存过的矩阵打 `[CACHED_RANGE] = true`。这个标记是给查找类函数看的许可证：只有「同一区域返回同一对象」才值得建索引。
+- VLOOKUP 精确匹配：`bucketOf()` 把键分到 `n:<数字>` / `s:<小写文本>` 两种桶，`exactRow()` 先从桶里取候选行号（升序）再用 `cmp()` 确认，取第一条命中的行 —— 与线性扫的 `break` 完全同序；**列里有逻辑值就不建索引**，退回 `scanRow()` 线性扫。桶只承诺「相等必定同桶」，宁可比 cmp 宽。
+- `firstErr()` 不再 `flatten`：按参数顺序递归扫，矩阵走行优先短路；缓存过的矩阵记 `WeakMap<Matrix, ErrVal | null>`，扫描一次之后所有公式共用。语义（返回第一个错误）不变。
+- `cmp()` 修两处**判等**的真 bug：非数字文本 `Number()` 得 NaN 时两个方向都 false，原实现返回 0（相等）—— 实测 `VLOOKUP("火星", …)` 命中第一个 TRUE 格、`VLOOKUP(TRUE, …)` 命中文本表头；`TRUE = "1"` 也被判成相等。现在逻辑值只跟数字/布尔/空（算 0）比数值，遇文本按 Excel 的「数字 < 文本 < 逻辑值」定符号。
+
+**为什么。** ① 这是「共享的不变式没人负责」：矩阵缓存该在 `BookCalc`（唯一知道区域只读的地方），索引该在查找函数，两者用 `CACHED_RANGE` 契约分开 —— 把索引写进 `range()` 会让所有区域都背上建表成本，临时矩阵建索引比线性扫更慢。② 索引不靠「键归一」而靠「桶 + cmp 确认」：`cmp()` 的等价关系不对称（`cmp(TRUE,"1")===0` 而 `cmp("1",1)!==0`），想把它抄进键函数里必然漏；桶放宽、确认交给 `cmp()` 就永远不会错，最多多比较几次。③ `firstErr` 摊平是纯粹的浪费：这个函数的全部用途就是找第一个错误，摊平一个几千格的矩阵只为看一眼，等于每次调用都付 O(区域)。④ 不硬造 Rust 移植：工具自己拒了这次移植（参数不是 plain data），而剩下的大头是 XML/zip 解析（改后 profile 顶部是 `attr` 15.9% / `inflateSync` 9.4% / `cellsOfRow` 8.9% / `unescapeXml` 8.2%），那是整层替换而不是单函数 —— 单个字符串函数跨 FFI 反而更慢。
+
+**数字**（同机、同一批工作簿、每轮重新 `readBook`）。
+
+- `big.xlsx`（20k 公式混排）：`readWindow(calc=true)` 16.4–18.7s → **1.29–1.46s**（求值段 15.9–18.3s → 0.80–1.02s，约 13×）；解析段（`calc=false`）430–580ms 不变。
+- `only-vlookup.xlsx`（3999 条）：求值 13 700ms → **398ms**（约 34×），单跑一次 1513ms → 739ms。
+- 其余单型基本不动（sum 255 / ifsum 358 / countif 516 / roundav 456 / text 324ms）—— 说明没有把成本挪到别处。
+
+**代价。** 区域缓存最坏占 `1e6` 格的内存（超了就不进缓存，行为回到改前）；首轮算完才有缓存，所以第二次起才快；索引挂在矩阵对象上，区域缓存被回收时一起回收。`#CIRC!` 的判据是「矩阵里出现该错误值」，循环引用场景下每次仍重建（正确性优先，那种表本来也不该指望缓存）。
+
+**验证。** `bridge/tests/sheet-calc-unit.mjs` 加两张夹具（`PURE` 文本/数字/空混排，`BOOLY` 掺逻辑值）与 19 条断言：同一批 9 条 `VLOOKUP` 在两个 ctx（带 / 不带 `CACHED_RANGE`）上逐条一致，绝对预期覆盖重复键取第一行、`"10"` vs `10`、`null` vs `"null"`、`2.5`、`#N/A`、以及 BOOLY 的 `TRUE`/`"1"`。全部 226 条通过；`npm run test:sheet` 三段 `fail 0`；`npm --prefix bridge run typecheck` 通过。红验证：把 `firstErr` 换回 `flatten` 版 → 求值段回到 8s 级；把 `cmp()` 的判断还原 → `VLOOKUP("火星",…)=#N/A` 与 `VLOOKUP("1",A1:B7,2,FALSE)=文本 "1"` 两条红。

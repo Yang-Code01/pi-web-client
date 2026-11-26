@@ -10,7 +10,7 @@
  * 宁可显示错误，也不显示一个看起来像对的错数。
  */
 
-import { criteria, cmp, err, firstErr, flatten, isErr, isMx, numbers, scalar, serialToday, serialToDate, toBool, toNum, toStr, type CalcCtx, type EvalVal, type Val } from "./value.ts";
+import { criteria, cmp, err, firstErr, flatten, isErr, isMx, numbers, scalar, serialToday, serialToDate, toBool, toNum, toStr, CACHED_RANGE, type CalcCtx, type EvalVal, type Matrix, type Val } from "./value.ts";
 import { EXTRA_FNS } from "./functions.ts";
 import { roundDecimal } from "./decimal.ts";
 
@@ -380,6 +380,65 @@ function evalNode(n: Node, ctx: CalcCtx, sheet: string | null): EvalVal {
   }
 }
 
+/* ---------------------------------------------------------------- 精确查找的索引 */
+
+/**
+ * 桶：同一桶里才**可能**相等，桶内再用 `cmp()` 确认。桶只需不比 cmp 严格（相等必定同桶），
+ * 所以宁可放宽 —— 多几个候选只是多几次 cmp。
+ *
+ * 数字与文本在 `cmp()` 里永不相等；空格子在 cmp 眼里等值于文本 "null"，所以它进 `s:` 桶。
+ * 逻辑值不走桶（逻辑值与数字在 `cmp()` 里相等，桶模型对不上）：那种列干脆不建索引。
+ */
+function bucketOf(v: Val): string {
+  if (typeof v === "number") return `n:${v}`;
+  return `s:${String(v).toLowerCase()}`;
+}
+
+interface ExactIndex {
+  buckets: Map<string, number[]>;
+  /** 列里有逻辑值就不建（见 `bucketOf` 的注释），改由 `scanRow` 线性扫。 */
+  usable: boolean;
+}
+
+/** 精确查找的索引，跟着矩阵对象走（ctx 缓存过的矩阵才会被复用，见 `CACHED_RANGE`）。 */
+const exactIndex = new WeakMap<Matrix, ExactIndex>();
+
+function buildIndex(m: Matrix): ExactIndex {
+  const buckets = new Map<string, number[]>();
+  for (let i = 0; i < m.m.length; i++) {
+    const first = m.m[i]?.[0] ?? null;
+    if (isMx(first) || isErr(first)) continue;
+    if (typeof first === "boolean") return { buckets, usable: false };
+    const k = bucketOf(first as Val);
+    const list = buckets.get(k);
+    if (list) list.push(i);
+    else buckets.set(k, [i]);
+  }
+  return { buckets, usable: true };
+}
+
+/** 没索引时的退化路径（逻辑值列 / 逻辑值键）。 */
+function scanRow(m: Matrix, key: Val): number {
+  for (let i = 0; i < m.m.length; i++) {
+    const first = m.m[i]?.[0] ?? null;
+    if (isMx(first) || isErr(first)) continue;
+    if (cmp(first as Val, key) === 0) return i;
+  }
+  return -1;
+}
+
+/** 与 key 精确相等的**第一行**（0 基）；-1 表示没有。顺序与线性扫的 `break` 一致。 */
+function exactRow(m: Matrix, key: Val): number {
+  let idx = exactIndex.get(m);
+  if (!idx) exactIndex.set(m, (idx = buildIndex(m)));
+  if (!idx.usable || typeof key === "boolean") return scanRow(m, key);
+  for (const i of idx.buckets.get(bucketOf(key)) ?? []) {
+    const first = m.m[i]?.[0] ?? null;
+    if (!isMx(first) && !isErr(first) && cmp(first as Val, key) === 0) return i;
+  }
+  return -1;
+}
+
 /* ---------------------------------------------------------------- 函数 */
 
 
@@ -645,6 +704,14 @@ const FNS: Record<string, Fn> = {
     if (typeof col !== "number") return col;
     // 第四个参数是「近似匹配」：FALSE 才是精确匹配（Excel 的定义，别弄反）。
     const approx = a.length > 3 ? toBool(a[3]!) !== false : true;
+    // 精确匹配 + ctx 缓存过的区域（同一块区域会被几千个公式问）：走索引，不再线性扫。
+    // 4000 行 × 4000 个 VLOOKUP = 1600 万次 cmp，实测 13.7 s（`.scratch/sheet-perf`）。
+    if (!approx && m[CACHED_RANGE] && !isErr(key) && !isMx(key)) {
+      const i = exactRow(m, key as Val);
+      if (i < 0) return err("#N/A");
+      const hitVal = m.m[i]?.[Math.trunc(col) - 1];
+      return hitVal === undefined || isMx(hitVal) ? err("#REF!") : hitVal;
+    }
     let found: EvalVal | undefined;
     for (const row of m.m) {
       const first = row[0] ?? null;
@@ -705,11 +772,12 @@ function callFn(n: Node & { k: "fn" }, ctx: CalcCtx, sheet: string | null): Eval
   if (!fn) return err("#NAME?");
   const args = n.args.map((a) => evalNode(a, ctx, sheet));
   const bad = firstErr(args);
-  // IF / IFERROR 要看得到错误值自己决定，不能在这里统一短路。
-  const selfHandled = new Set(["IF", "IFERROR", "IFNA", "ISERROR", "ISERR", "ISNA", "TYPE", "ERROR.TYPE", "AGGREGATE", "IFS", "SWITCH", "N", "T", "TEXT", "COUNTIF", "COUNTIFS", "SUMIF", "SUMIFS", "AVERAGEIF", "AVERAGEIFS", "MAXIFS", "MINIFS", "ISLOGICAL", "ISNUMBER", "ISTEXT", "ISNONTEXT", "ISBLANK", "ISEVEN", "ISODD"]);
-  if (bad && !selfHandled.has(n.name)) return bad;
+  if (bad && !SELF_HANDLED.has(n.name)) return bad;
   return fn(args, ctx, sheet, n as unknown as FnNode);
 }
+
+/** IF / IFERROR 这类要看得到错误值自己决定，不能在这里统一短路（每次调用重建一个 Set 太贵）。 */
+const SELF_HANDLED = new Set(["IF", "IFERROR", "IFNA", "ISERROR", "ISERR", "ISNA", "TYPE", "ERROR.TYPE", "AGGREGATE", "IFS", "SWITCH", "N", "T", "TEXT", "COUNTIF", "COUNTIFS", "SUMIF", "SUMIFS", "AVERAGEIF", "AVERAGEIFS", "MAXIFS", "MINIFS", "ISLOGICAL", "ISNUMBER", "ISTEXT", "ISNONTEXT", "ISBLANK", "ISEVEN", "ISODD"]);
 
 /* ---------------------------------------------------------------- 入口 */
 
