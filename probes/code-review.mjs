@@ -261,13 +261,19 @@ try {
   // 「完整详情 ›」：记录卡右下角那个入口，打开的是**这张卡**那次；左边时间线、右边结果。
   await page.locator(".rv-run-card").first().locator(".rv-run-more").click();
   await page.locator(".rv-sheet").waitFor({ timeout: 10000 });
-  const fileCount = await until(async () => {
-    const n = await page.locator(".rv-sheet .rv-file").count();
-    if (n) return n;
-    const err = await page.locator(".rv-sheet .rv-error, .review .rv-error").count();
-    if (err) throw new Error(`评审失败：${await page.locator(".rv-error").first().innerText()}`);
-    return 0;
-  }, REVIEW_TIMEOUT_MS, "review findings");
+  // 不能把「评审失败」写成 until 回调里的 throw：until 的 try/catch 会把它当「还没好」吞掉重试，
+  // 最后只剩一句 timeout waiting for review findings，错误原文就查不到了。
+  let fileCount = 0;
+  const findingsDeadline = Date.now() + REVIEW_TIMEOUT_MS;
+  while (Date.now() < findingsDeadline) {
+    fileCount = await page.locator(".rv-sheet .rv-file").count();
+    if (fileCount) break;
+    if (await page.locator(".rv-sheet .rv-error, .review .rv-error").count()) {
+      const why = (await page.locator(".rv-error").first().innerText()).trim().replace(/s+/g, " ");
+      throw new Error(`评审失败：${why}`);
+    }
+    await sleep(150);
+  }
   check("意见按文件分组落进详情", fileCount >= 1, `${fileCount} 个文件`);
   check("面板里不再有意见栏（只剩记录卡）", (await page.locator(".review .rv-findings").count()) === 0, "");
   const findings = await page.locator(".rv-sheet .rv-finding").count();
@@ -306,7 +312,6 @@ try {
   const cards = await page.locator(".rv-run-card").count();
   check("每次都留一张记录卡", cards >= 1, `${cards} 张`);
   check("面板里已经没有「清理历史」", (await page.locator(".rv-clean").count()) === 0, "");
-  check("面板里不再有「点开的那一次」", (await page.locator(".rv-focus").count()) === 0, "");
   // 工作区那次没有 PR 标题（.rv-run-title 只在有标题时才有），点卡上的时间同样落在正文上。
   await page.locator(".rv-run-at").first().click();
   await page.waitForTimeout(300);

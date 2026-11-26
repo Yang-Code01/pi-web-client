@@ -80,10 +80,34 @@ const run = (over = {}) => ({
   ...over,
 });
 
+// 面板按 startedAt 倒序画，而 run() 的默认值来自同一个 Date.now() 基准：三条挤在同一毫秒时靠
+// 稳定排序才恰好是新在前。写成明确的时刻，跨毫秒也不会把 r-700 顶到第一张。
 const RUNS = [
-  run({ id: "r-live", status: "running", pr: 702, prTitle: "fix(chat): 卡片在窄版下换成两行", finishedAt: "" }),
-  run({ id: "r-701", pr: 701, prTitle: "feat(review): 记录卡多选模型", model: "GLM-5.4", tokens: 900_000 }),
-  run({ id: "r-700", pr: 700, prTitle: "fix(chat): 没成卡时 .lm-scroll 也拆掉，用户气泡不再被挤成窄条…", model: "GLM-5.4" }),
+  run({
+    id: "r-live",
+    status: "running",
+    pr: 702,
+    prTitle: "fix(chat): 卡片在窄版下换成两行",
+    startedAt: new Date(Date.now() - 60_000).toISOString(),
+    finishedAt: "",
+  }),
+  run({
+    id: "r-701",
+    pr: 701,
+    prTitle: "feat(review): 记录卡多选模型",
+    model: "GLM-5.4",
+    tokens: 900_000,
+    startedAt: new Date(Date.now() - 120_000).toISOString(),
+    finishedAt: new Date(Date.now() - 116_000).toISOString(),
+  }),
+  run({
+    id: "r-700",
+    pr: 700,
+    prTitle: "fix(chat): 没成卡时 .lm-scroll 也拆掉，用户气泡不再被挤成窄条…",
+    model: "GLM-5.4",
+    startedAt: new Date(Date.now() - 180_000).toISOString(),
+    finishedAt: new Date(Date.now() - 176_000).toISOString(),
+  }),
 ];
 const STATE = { repo: CWD, runs: RUNS, marks: {} };
 const PROGRESS = {
@@ -209,6 +233,19 @@ await page.locator(".rv-run-card").first().waitFor({ timeout: 15000 });
 await sleep(400);
 
 const count = (sel) => page.locator(sel).count();
+/** 这条规则在**构建产物**里还在不在。已删掉的旧页签只能这样守：DOM 里查不到任何东西，断言恒真。 */
+const cssHas = (needle) =>
+  page.evaluate(
+    (needle) =>
+      [...document.styleSheets].some((sheet) => {
+        try {
+          return [...sheet.cssRules].some((rule) => String(rule.cssText).includes(needle));
+        } catch {
+          return false;
+        }
+      }),
+    needle,
+  );
 /**
  * 面板在跑的时候会按计时器重画，DOM 一直在换 —— `locator.click()` 会卡在「等元素稳定」上。
  * 这里先量坐标再用鼠标真点：走的是命中测试，不会绕过「点到的是不是这颗按钮」。
@@ -258,7 +295,7 @@ const clickSel = async (sel, idx = 0) => {
 
 // 1. 三条记录，面板里没有展开页
 ok((await count(".rv-run-card")) === 3, "三条记录画成三张卡");
-ok((await count(".rv-focus")) === 0, "面板里不再有点开的那一次（.rv-focus 为 0）");
+ok(!(await cssHas(".rv-focus")), "旧的内嵌展开页（.rv-focus）连样式一起删掉了");
 
 // 2. 「完整详情」在卡底右下角
 {
@@ -268,31 +305,32 @@ ok((await count(".rv-focus")) === 0, "面板里不再有点开的那一次（.rv
       const b = el.getBoundingClientRect();
       return { x: b.x, y: b.y, w: b.width, h: b.height };
     };
-    const ds = getComputedStyle(document.querySelector(".rv-run-card"));
     return {
-      pad: `${ds.paddingLeft}/${ds.paddingRight}/${ds.paddingTop}/${ds.paddingBottom}`,
       cards: [...document.querySelectorAll(".rv-run-card")].map((card) => ({
         card: r(card),
-        foot: card.querySelector(".rv-run-foot") ? r(card.querySelector(".rv-run-foot")) : null,
         more: card.querySelector(".rv-run-more") ? r(card.querySelector(".rv-run-more")) : null,
       })),
     };
   });
   const rects = debug.cards;
   ok(rects.length === 3 && rects.every((x) => x.more), "每张卡都有「完整详情」");
-  let worst = { dx: 0, dy: 0 };
+  // 距卡边：# > 0 = 在卡内，< 0 = 已经溢出卡外。这里看**最小**那个：只取绝对值最大的，
+  // 某张卡按钮往右溢出（负值）会被另一张更大的正值吞掉，恰恰漏掉「按钮出卡」这种回归。
+  const gaps = rects.map((it) => ({
+    dx: it.card.x + it.card.w - (it.more.x + it.more.w),
+    dy: it.card.y + it.card.h - (it.more.y + it.more.h),
+  }));
   rects.forEach((it, i) => {
     const { card, more } = it;
-    const dx = card.x + card.w - (more.x + more.w); // 右边距
-    const dy = card.y + card.h - (more.y + more.h); // 下边距
-    if (Math.abs(dx) > Math.abs(worst.dx)) worst = { ...worst, dx };
-    if (Math.abs(dy) > Math.abs(worst.dy)) worst = { ...worst, dy };
     ok(more.x > card.x + card.w / 2, `第 ${i + 1} 张卡的按钮在右半边（x=${Math.round(more.x - card.x)}/${Math.round(card.w)}）`);
     ok(more.y > card.y + card.h / 2, `第 ${i + 1} 张卡的按钮在下半边（y=${Math.round(more.y - card.y)}/${Math.round(card.h)}）`);
   });
+  const span = (k) => `${Math.min(...gaps.map((g) => g[k])).toFixed(1)}–${Math.max(...gaps.map((g) => g[k])).toFixed(1)}`;
+  const min = (k) => Math.min(...gaps.map((g) => g[k]));
+  const max = (k) => Math.max(...gaps.map((g) => g[k]));
   // 卡自己有 8px 内边距 + 1px 边框：按钮贴着内边角就是「右下角」，比这再多 2px 也算贴身。
-  ok(worst.dx >= 0 && worst.dx <= 12, `按钮贴右边（距卡边 ${worst.dx.toFixed(1)}px，内边距 8+1）`);
-  ok(worst.dy >= 0 && worst.dy <= 12, `按钮贴下边（距卡边 ${worst.dy.toFixed(1)}px，内边距 7+1）`);
+  ok(min("dx") >= -0.5 && max("dx") <= 12, `按钮都在卡内贴右边（距卡边 ${span("dx")}px，内边距 8+1）`);
+  ok(min("dy") >= -0.5 && max("dy") <= 12, `按钮都在卡内贴下边（距卡边 ${span("dy")}px，内边距 7+1）`);
 }
 
 // 3. 跑着的那张：停止也在底行，且不再压住时间
@@ -306,7 +344,7 @@ ok((await count(".rv-focus")) === 0, "面板里不再有点开的那一次（.rv
       const b = el.getBoundingClientRect();
       return { x: b.x, y: b.y, w: b.width, h: b.height };
     };
-    return { stop: r(".rv-run-stop"), more: r(".rv-run-more"), at: r(".rv-run-at"), foot: r(".rv-run-foot") };
+    return { stop: r(".rv-run-stop"), more: r(".rv-run-more"), at: r(".rv-run-at") };
   });
   ok(!!live?.stop && !!live?.more && !!live?.at, "在跑的那张卡有「停止」「完整详情」与时间");
   if (live?.stop && live?.more && live?.at) {
@@ -336,7 +374,7 @@ ok((await count(".rv-focus")) === 0, "面板里不再有点开的那一次（.rv
   await clickIn(".rv-run-card", 2, ".rv-run-title");
   await sleep(300);
   ok((await count(".rv-sheet")) === 0, "点卡片正文不打开「评审详情」");
-  ok((await count(".rv-focus")) === 0, "点卡片正文也不会在面板里展开");
+  ok((await count(".rv-run-card")) === 3, "点卡片正文后面板还是那三张卡");
 }
 
 // 5. 「完整详情」打开的是**这一张卡**那次，不是最新那次
@@ -350,7 +388,7 @@ ok((await count(".rv-focus")) === 0, "面板里不再有点开的那一次（.rv
   await clickSel(".rv-sheet-headright .btn.ghost:not(.rv-stop-btn)");
   await sleep(300);
   ok((await count(".rv-sheet")) === 0, "关闭浮层");
-  ok((await count(".rv-focus")) === 0, "关掉浮层后也没有面板内展开页");
+  ok((await count(".rv-run-card")) === 3, "关掉浮层后面板回到记录列表");
 }
 
 // 6. 开评不再把人拽走：新的一条只多一张卡
@@ -375,7 +413,7 @@ ok((await count(".rv-focus")) === 0, "面板里不再有点开的那一次（.rv
     .then(() => true)
     .catch(() => false);
   ok(grew, `新开一条多一张卡（${before} → ${before + 1}）`);
-  ok((await count(".rv-focus")) === 0, "新开一条不会把面板换成展开页");
+  ok((await count(".rv-sheet")) === 0, "新开一条不会把面板换成展开页（没开浮层）");
   ok((await count(".rv-run-card.is-live")) >= 1, "在跑的那条在记录里有一张卡");
   ok((await count(".rv-run-card.is-live .rv-run-stop")) >= 1, "卡上有自己的「停止」");
 }
