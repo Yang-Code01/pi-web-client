@@ -8345,3 +8345,19 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 **代价。** 深色主题下胶囊与面板的底色差变小（`#222226` vs 面板 `#212125`），靠 0.5px 发丝边和投影分辨；探针的「叠气泡 vs 叠面板」一项就是防这个退化的：要求两处底色通道差 ≥ 8（实测 light 9 / dark 9 / midnight 9）。
 
 **验证。** `probes/sel-ask-chip.mjs` 第 7 段按主题分别量像素（真拖选 + 截图采样，不看 CSS 声明），每套主题 7 项、共 22 项：字对胶囊底 13.3–16.3:1；`backdrop-filter` 带 blur；叠在蓝气泡 `#f1f4fc` / 面板 `#fbfbfd`（light）不是同一个色；描边半透明且真的画出来（DPR 1 上 CSS 的 0.5px 落到 1 个设备像素）；三套主题的投影互不相同。改前这一组 7 项红（`气泡上 #ffffff / 面板上 #ffffff`、`没有 backdrop-filter`），改后 35 项全绿。
+
+## D419 探 ocr 装没装：给足时间、只认「命令根本没有」、探到就记住（用户 2026-11-26「我已经安装过 ocr。有时候还是显示我没有安装」）
+
+**问题。** 面板把 `installed:false` 一律画成「还没装 ocr + 装 ocr 按钮」，而 `installed:false` 的来源是 `ocrStatus()` 里一次 `ocr version` 的 5 秒超时。这台机器上 `ocr` 不是一个二进制，是 `node launcher → Go 二进制` 两层（launcher 每 18 分钟还会 detached 起一次版本检查），实测同一句命令：冷启动 5.2s / 6.6s / 6.9s，最慢一次 **16.3s**，热了才 0.4s~2.4s；裸 exe 只要 ~1.2s，其余都是 launcher 的开销。所以「明明装着却让我装」是超时，不是路径或环境：同一台机器手动 `cmd /c ocr version` 一直是 0 退出。再加一层：面板一次打开会**同时**问两路（WS `review.get` 补帧 + HTTP `/api/review/state`），两路各 spawn 一次 `ocr version`，冷启动互相抢磁盘，更容易一起超时。
+
+**决定。** `bridge/src/review.ts` 探活改三件事：
+
+- 超时 5s → `OCR_PROBE_TIMEOUT_MS = 30_000`（按实测最慢 16.3s 留一倍余量）。
+- 新增 `ocrStatusFromFailure(code, message)`：只有 `ocr_missing`（spawn ENOENT / `is not recognized` / `executable file not found`）才是 `installed:false`；`ocr_too_old` 归成 `installed:true, tooOld:true`（面板劝「升」而不是「装」）；**超时和其它失败一律不冒充结论**——`installed:true` 带 `error:"timeout"|code` 回去，让评审本身去报真正的毛病。
+- 探到就记 30 分钟（`OCR_MEMO_MS`），并发只 spawn 一个（`ocrInFlight` 共享同一个 promise）；**负数不缓存**，所以点完「装 ocr」立刻能看到结果（`review.install.done` 另外显式 `{ refresh: true }` 重探）。启动时顺手探一次热缓存（与 D209 探 PowerPoint 同一处），面板第一次打开不必再等。
+
+**为什么。** ① 状态探活的结论只用来决定「摆不摆那颗装 ocr 的按钮」：拿不准的时候宁可按「装着」处理，因为按「没装」处理的代价是让一个已经装好的用户去装东西、并且挡住「开始评审」。② 30 分钟缓存是因为同一个数在面板生命周期里会被问好几遍，而它只在「装了 / 没装」这种分钟级稳定的事。③ 并发去重不是优化而是正确性：多 spawn 一份就多一次冷启动，本来就在超时边缘。
+
+**代价。** 真装坏了的 ocr（二进制缺失但 launcher 还在）现在要等第一次评审才暴露；`/api/review/state` 在冷启动时会等最多 30 秒（页面走 WS，那一帧是异步补的，实测没人卡在这一屏）。
+
+**验证。** `bridge/tests/ocr-status-unit.mjs`（`npm run test:review` 里）用 PATH 里一个「睡 7 秒再回版本」的假 ocr 走生产同一条 `cmd.exe /c ocr` 解析路径：改前第一条红 —— `{"installed":false,...,"error":"5 秒没有回应"}（耗时 5057ms）`，并发那条红 —— 三路 spawn 3 次；改后 9 条全绿。真机复核（`ocrStatus({refresh:true})` 连探 6 次）：1.9s / 2.4s / 6.9s / 7.1s / 7.5s / 16.3s，6 次全 `installed=true`——按旧的 5 秒线，这 6 次里有 5 次会报「没装」。

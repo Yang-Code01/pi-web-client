@@ -4214,7 +4214,7 @@ async function main(): Promise<void> {
           }
           case "review.install": {
             void installOcr((line) => broadcast({ type: "review.install.log", line })).then(async (out) => {
-              broadcast({ type: "review.install.done", ok: out.ok, error: out.error, ocr: await ocrStatus() });
+              broadcast({ type: "review.install.done", ok: out.ok, error: out.error, ocr: await ocrStatus({ refresh: true }) });
             });
             return;
           }
@@ -4749,6 +4749,11 @@ async function main(): Promise<void> {
       `slides: ${slidesProbed.available ? "PowerPoint" : "no PowerPoint"}` +
         `${slidesProbed.exe ? ` (${slidesProbed.exe})` : ""}`,
     );
+    // 评审面板一打开就要有答案：`ocr version` 冷的时候要好几秒到十几秒（node launcher + Go 二进制），
+    // 真等到用户点开面板再探，那一屏就白等（以前还会因为超时报成「没装」）。这里只热缓存。
+    void ocrStatus()
+      .then((ocr) => log(`review: ocr ${ocr.installed ? ocr.version || "已装（版本读不到）" : "没装"}`))
+      .catch(() => {});
     const pageUrl = `http://127.0.0.1:${pagePort}`;
     console.log(`\n  pi-web-client 已启动：${pageUrl}`);
     if (fresh) console.log(`  口令（首次生成，只显示这一次）：${fresh}\n`);
