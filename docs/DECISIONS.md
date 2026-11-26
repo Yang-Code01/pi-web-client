@@ -8399,3 +8399,33 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 - `npm run test:review`（桥端 5 个套件 + 页面 pin 单测）rc=0；`npm --prefix web run typecheck` 全过（含 i18n / 视口守卫）。
 - `node probes/code-review.mjs`（桩桥 + 真 Chromium）39 项全绿，新增一段并发检出：两条同时在跑、一条一张卡各有停止、开满两条后主按钮置灰且写明原因、停一条额度回来、终态不抢焦点。
 - 两处并发风险提前实测：同仓库 100 次并发 `git fetch`（含同 ref `--force` 与 base 拉取）零锁冲突、单次 3.1–6.6 秒；ocr v1.14.4 的 `delegate preview` / `delegate rule` 4 路并发输出与单跑逐字一致、仓库无新文件（脚本 `.scratch/fetch-lock-probe.mjs`、`.scratch/ocr-concurrency-probe.mjs`）。
+
+## D421 超长的一轮条目收成摘要卡，点开在卡里铺开（用户「当用户输入过多，会占用很大 chat 框内容……做成一个卡片，点击卡片后展开内容」2026-11-26）
+
+**问题。** 粘一段评审意见进来（40 行 / 931 字），这一条就吃掉整屏：用户看不见上下文，也看不见自己后面写的句子。当时用户消息走的是 `foldable(body, 240)` —— 留 240px、底下渐隐、一颗小「展开」钮；那一版实测仍占聊天区 42%（`.scratch/long-user-msg/shot-A.png`）。助手回答有右上角折叠钮，工具输出自己有 260px 内滚窗口，三种长的东西各有一套规矩。
+
+**决定。** 一个组件（`ChatView.longCard`）覆盖三类，设置里三档开关各管一类，**默认只开用户消息**：
+
+1. **不高的条目零改动。** 卡片 `display: contents`，只有 `has-card` 亮了才 `display: block`：短消息不多一层盒子、重建时也不会闪一帧。
+2. **尺子以 240px 渲染高度为主**（`LONG_CARD_PX`，和 `foldable` 同一把），另加一道**宽栏兜底**：原文 `>= 400` 字或 `>= 16` 行也算长（`LONG_CARD_CHARS` / `LONG_CARD_LINES`）。纯按高度在很宽的窗口里会漏：761px 宽的气泡里 400 字才铺到 250px、289 字只铺 192px，用户那种 2K 屏横铺的几百字永远量不到 240。开、关两道门槛差 40px（滞环）：卡自己的边框会把正文挪一两像素，贴着 240 时一开一关会互相触发 `ResizeObserver`，留条缝才稳。
+3. **收起 = 96px**（约三行）+ 标题行 `长消息 · 27 行 · 931 字 · 展开 ▾`，整张卡可点（`a / button / img` 上的点击不吞），底下 `mask` 渐隐。实测从 42% 掉到 17%（`.scratch/long-user-msg/shot-F.png`）。
+4. **展开 = 卡里滚 `calc(var(--vh1) * 42)`**，标题行让位、底边换一颗整宽「▴ 收起」——两个入口不说两套话。不写 `42vh`：`#app` 上有 `zoom`，vw/vh 会被乘第二次（D123）。
+5. **展开状态按 `item.id` 存 `longOpen`**，和 `collapsed` 一样活过重建与切会话（工具输出是流式长出来的，`mergeTool` 会重画）。
+6. **设置里改了就就地重画**（`ChatView.redraw()` → `reset(loaded, history)`），不重开会话、不丢历史索引；**但模型在跑时不重画** —— `reset` 会拿 `loaded` 里那份没长完的正文重建，流式内容当场丢，所以记 `redrawPending`、等 `setRunning(false)` 收尾再画。
+7. **三档默认**：`longCardUser: true`（就是用户要的那一档）、`longCardAssistant: false`（助手有右上角折叠钮，先不换）、`longCardTool: false`（工具输出本来就有 260px 内滚）。关着的那几档**原样走老路**，撤掉这版就回到今天的样子。
+8. **带图的消息不收卡**（`item.images?.length` 时走老的 `foldable`）：卡里只露三行正文，图片是附件、不是「太长」，不能藏在卡后面。
+9. **回填必须填进同一个 `.body` 节点**（`ChatView.adopt`）：量高度的是挂在 `.body` 上的 `ResizeObserver`，`replaceWith` 换掉节点后观察者盯的是已经离线的旧元素（实测它还会回调一次 `0x0`，见 `.scratch/ro-removal.mjs`：`{"log":["0x0"],"h1":300,"afterOld":0,"afterNew":300}`），于是 `measure()` 读到 `scrollHeight 0`、摘掉 `has-card`，卡片与老的 240px 折叠**双双撒手**。现在是 `body.className = fresh.className; body.replaceChildren(...fresh.childNodes)` —— 不换节点，观察者继续盯同一块正文。
+
+**为什么以高度为主、字数只做兜底。** 同一段 931 字，1280px 宽的列里 22 行、窄栏里 40 行；纯按字数会在宽屏里也收卡，用户明明看得完。但纯按高度在宽栏里会漏（见第 2 条）：761px 的气泡里 `400 字 ≈ 250px`，门槛正好压在 240 上下，所以计数那条只在更宽的窗口里先触发 —— 它的意义是兜住宽栏，不是替代高度。`foldable` 仍然是纯高度，两处标准不矛盾（卡是「长」的更强判断）。
+
+**为什么是「卡」而不是「更高一点的折叠」（A）、不是「单行胶囊」（C）、不是「浮层」（E）。** 六版都在 `.scratch/long-user-msg/proto.html`，同一段 931 字的实测：A 292px / 42%（等于没解决）、B 117px / 17%、C 56px / 8%（太瘦，看不出是长什么内容）、D 167px / 24%（底边抽屉条占掉三行）、E 89px / 13%（点开遮住整个聊天区，读的时候看不到上下文）、F 117px / 17%（B 的收起 + D 的展开）。用户选了 F。
+
+**代价 / 可改。**
+- 工具那一档有个前提：这一轮的工具调用默认收在 `<details class="ops">` 里，关着时高度是 0，卡片量不到 —— **要等用户展开 ops 才轮到这张卡**（展开后先看到的是 96px 的卡，再点一次才铺开）。默认关着这一档，所以不影响现在。
+- 改开关会走一次 `reset()`：滚动位置回到最新一轮（`follow()`），「下面还有东西」那颗钮重算。历史索引（ghost、「载入更早」）跟着 `this.history` 一起带过去。
+- 卡里只有三行预览，长文里的标题、结论都得靠猜；真要定位还是点开。
+- 展开高度是视口的 42%，不是「内容多长就多高」：一屏能读完的东西，展开后仍然要在卡里滚。
+- 助手回答**流式中**不进卡：那时正文是靠 `delta()` 写进 `.stream` 长在消息节点上的，卡里是建卡那一刻的快照 —— 这一档默认关着，一轮收尾重建后才成卡。
+- 行数按原文算，而且是**现取**（`ChatView.longCardText`）：助手那一档建卡时传的 `item.text` 只是快照，回答还在流式长的时候就是半截，所以每次量高都去 `assistantTexts` 拿最新正文（`delta()` 一直在写它）；不这么做，卡头的行数字数与 400 字门槛会停在旧值（评审意见 `web/src/chat.ts:1726`）。用户消息 `pre-wrap`、工具输出 `.out` 本就等于原文，直接读 `innerText`。
+
+**验证。** `node probes/long-card.mjs`（桩桥 + 真 Chromium，种 40 行用户消息 + 30 行助手回答 + 短消息 + 带图长文 + 40 行 `bash` 输出 + 两段宽栏中长文（476 / 421 字），八节）全绿：长的那条 `has-card` 且卡在 96px×zoom、短的那条没卡、点卡头展开到 344px 且卡内可滚、点「收起」回到原高（120px = 96 × 1.25 字号）、默认下助手仍有 `.msg-fold`、工具输出仍是 260px 窗口、打开偏好后两者都成卡、设置「对话」一节三行开关都在且写进 `pi.prefs`、关掉开关当场重画并退回老折叠、带图那条永远不成卡且图还在、把窗口拉到 2560 宽后那两段「几百字」也成卡（`raw 250px` 已贴近门槛，靠计数那道先触发）；最后一节接 `bridge/tests/fixtures/fake-pi.mjs` 真发一条 12 行短句（高度过 240px、又碰不到 400 字 / 16 行），等它 echo 回来（回填走完）后断言**仍然是卡、卡里就是那块正文、行数按原文算**。`npm --prefix web run typecheck` 全过（新增 `web/tests/longcard-unit.mjs` 5 项：单行 / 多行 / 空行 / CRLF / 空白不算字）。截图：`.scratch/long-card/shots/{1-folded,2-open,3-all-cards,3b-tool-card,4-settings,5-live-send,6-wide}.png`。

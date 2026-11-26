@@ -6244,3 +6244,58 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   background: var(--panel); border-radius: 10px;
 }
 .handoff-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* ---------------------------------------------------------------- D421 超长条目摘要卡
+   用户消息 / AI 回答 / 工具输出三类，设置里各一个开关（默认只开用户消息）。
+   收起 = 标题行（长消息 · 27 行 · 931 字 · 展开 ▾）+ 三行预览，整张卡可点；
+   展开 = 卡里滚 `calc(var(--vh1) * 42)`，底边一颗整宽「▴ 收起」。
+   `has-card` 没亮时整张卡 `display: contents` —— 不高的条目就是原来那个气泡，一层盒子都不多。 */
+.lm-card { display: contents; }
+.lm-card > .lm-head, .lm-card > .lm-bar { display: none; }
+.lm-card.has-card { display: block; overflow: hidden; border-radius: 12px 12px 12px 4px; }
+.lm-card.lm-user.has-card { background: var(--accent-bg); border: 1px solid var(--accent-dim); }
+.lm-card.lm-assistant.has-card { background: var(--panel); border: 1px solid var(--line-soft); border-radius: 4px 12px 12px 12px; }
+/* 工具卡外面已经有一层 `.tool` 的框了，这里只补一条虚线，不再套第二个框 */
+.lm-card.lm-tool.has-card { background: none; border: 0; border-radius: 0; }
+
+.lm-card > .lm-head {
+  width: 100%; align-items: center; gap: 8px; padding: 7px 12px 4px;
+  border: 0; background: none; cursor: pointer; text-align: left;
+  font: 12px/1.4 var(--sans); color: var(--dim);
+}
+.lm-card.has-card > .lm-head { display: flex; }
+.lm-card.lm-tool.has-card > .lm-head { padding: 2px 0 0; }
+.lm-badge { flex: none; padding: 0 7px; border-radius: 999px; border: 1px solid var(--accent-dim); color: var(--accent); font-size: 11px; line-height: 16px; }
+.lm-meta { flex: none; color: var(--faint); font-size: 11px; }
+.lm-open { margin-left: auto; flex: none; color: var(--accent); }
+.lm-open::after { content: " ▾"; }
+.lm-card > .lm-head:hover .lm-open { text-decoration: underline; }
+
+/* 收起：三行出头的预览，第四行开始被渐掉 */
+.lm-card.has-card > .lm-scroll {
+  max-height: 96px; overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, #000 58%, rgba(0, 0, 0, 0.12));
+  mask-image: linear-gradient(180deg, #000 58%, rgba(0, 0, 0, 0.12));
+  cursor: pointer;
+}
+/* 展开：正文在卡里自己滚，「收起」换到底边（标题行让位，免得两个入口各说一套） */
+.lm-card.has-card.is-open > .lm-head { display: none; }
+.lm-card.has-card.is-open > .lm-scroll {
+  max-height: calc(var(--vh1) * 42); overflow: auto; cursor: auto;
+  -webkit-mask-image: none; mask-image: none;
+}
+.lm-card.has-card.is-open > .lm-bar { display: flex; }
+.lm-card > .lm-bar {
+  width: 100%; justify-content: center; align-items: center; gap: 6px; padding: 6px 0;
+  border: 0; border-top: 1px solid var(--line); background: none;
+  font: 12px/1.4 var(--sans); color: var(--dim); cursor: pointer;
+}
+.lm-card.lm-user.has-card > .lm-bar { border-top-color: var(--accent-dim); }
+.lm-card.lm-tool.has-card > .lm-bar { border-top-style: dashed; }
+.lm-card > .lm-bar:hover { color: var(--text); background: var(--panel-2); }
+.lm-chev { font-size: 11px; color: var(--faint); }
+
+/* 卡里的正文不再自带气泡框：框、底色都归卡片，正文只留自己的内边距 */
+.msg .lm-card .body { background: none; border: 0; border-radius: 0; }
+/* 工具输出：卡里自己滚就够了，内层不必再滚一次（260px 那条只留给没开卡的老样子） */
+.lm-card.has-card > .lm-scroll > .out { max-height: none; overflow: visible; margin-top: 0; }
