@@ -1987,10 +1987,9 @@ export class ChatView {
       head.setAttribute("aria-expanded", String(open));
     };
     const measure = () => {
-      // 行数字数按**原文**算更可信：助手那条正文是 markdown 渲染出来的，`innerText` 里每个 `<p>`
-      // 之间多一个空行，30 行的回答会数成 59 行。用户消息是 `pre-wrap` 纯文本、工具输出是 `.out`
-      // 纯文本，`innerText` 就等于原文，所以只有助手这条传 `source`。
-      const { lines, chars } = longCardCounts(source ?? (body.innerText || ""));
+      // 行数字数按**原文**算：助手那条正文是 markdown 渲染出来的，`innerText` 里每个 `<p>` 之间多
+      // 一个空行，30 行的回答会数成 59 行；用户消息 `pre-wrap`、工具输出 `.out` 本来也是纯文本。
+      const { lines, chars } = longCardCounts(this.longCardText(kind, id, source, body));
       const meta = head.querySelector(".lm-meta");
       if (meta) meta.textContent = lines ? tr("{p1} 行 · {p2} 字", { p1: lines, p2: chars }) : "";
       // 两道尺子取或：渲染高度（窄欄、长代码），或原文长度（宽欄里那段中长文）。
@@ -2024,6 +2023,19 @@ export class ChatView {
     // 节点建好时还不在文档里，布局真了之后再量一次。
     requestAnimationFrame(measure);
     return box;
+  }
+
+  /**
+   * 卡头数行数用的原文。助手那条传进来的 `source` 只是建卡那一刻的快照（回答还在流式长时是半截），
+   * 所以每次量高都现去 `assistantTexts` 取最新正文（`delta()` 一直在写它）—— 否则行数字数与 400 字
+   * 门槛会一直停在旧值，要等这一轮收尾重建才纠正（评审意见 web/src/chat.ts:1726）。
+   */
+  private longCardText(kind: LongCardKind, id: string, source: string | undefined, body: HTMLElement): string {
+    if (kind === "assistant") {
+      const live = this.assistantTexts.get(id) ?? this.assistantTexts.get(id.split(":")[0]);
+      if (live) return live;
+    }
+    return source ?? (body.innerText || "");
   }
 
   /**

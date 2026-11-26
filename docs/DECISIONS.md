@@ -8347,6 +8347,6 @@ html[data-ui="mac"] .msg.user .body ::selection { background: var(--accent-ink);
 - 卡里只有三行预览，长文里的标题、结论都得靠猜；真要定位还是点开。
 - 展开高度是视口的 42%，不是「内容多长就多高」：一屏能读完的东西，展开后仍然要在卡里滚。
 - 助手回答**流式中**不进卡：那时正文是靠 `delta()` 写进 `.stream` 长在消息节点上的，卡里是建卡那一刻的快照 —— 这一档默认关着，一轮收尾重建后才成卡。
-- 行数按原文算（助手传 `item.text`）：按渲染后的 `innerText` 数，markdown 每个 `<p>` 之间的空行会让 30 行的回答数成 59 行。
+- 行数按原文算，而且是**现取**（`ChatView.longCardText`）：助手那一档建卡时传的 `item.text` 只是快照，回答还在流式长的时候就是半截，所以每次量高都去 `assistantTexts` 拿最新正文（`delta()` 一直在写它）；不这么做，卡头的行数字数与 400 字门槛会停在旧值（评审意见 `web/src/chat.ts:1726`）。用户消息 `pre-wrap`、工具输出 `.out` 本就等于原文，直接读 `innerText`。
 
 **验证。** `node probes/long-card.mjs`（桩桥 + 真 Chromium，种 40 行用户消息 + 30 行助手回答 + 短消息 + 带图长文 + 40 行 `bash` 输出 + 两段宽栏中长文（476 / 421 字），八节）全绿：长的那条 `has-card` 且卡在 96px×zoom、短的那条没卡、点卡头展开到 344px 且卡内可滚、点「收起」回到原高（120px = 96 × 1.25 字号）、默认下助手仍有 `.msg-fold`、工具输出仍是 260px 窗口、打开偏好后两者都成卡、设置「对话」一节三行开关都在且写进 `pi.prefs`、关掉开关当场重画并退回老折叠、带图那条永远不成卡且图还在、把窗口拉到 2560 宽后那两段「几百字」也成卡（`raw 250px` 已贴近门槛，靠计数那道先触发）；最后一节接 `bridge/tests/fixtures/fake-pi.mjs` 真发一条 12 行短句（高度过 240px、又碰不到 400 字 / 16 行），等它 echo 回来（回填走完）后断言**仍然是卡、卡里就是那块正文、行数按原文算**。`npm --prefix web run typecheck` 全过（新增 `web/tests/longcard-unit.mjs` 5 项：单行 / 多行 / 空行 / CRLF / 空白不算字）。截图：`.scratch/long-card/shots/{1-folded,2-open,3-all-cards,3b-tool-card,4-settings,5-live-send,6-wide}.png`。
