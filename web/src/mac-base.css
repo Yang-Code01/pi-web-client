@@ -105,7 +105,7 @@ html[data-ui="mac"] body {
   font-size: 14px;
   letter-spacing: -0.003em;
 }
-/* 选区（D415）：半透明强调色铺在强调色实底的气泡上会完全消失（底对比 1:1），
+/* 选区（D416）：半透明强调色铺在强调色实底的气泡上会完全消失（底对比 1:1），
    在深色主题的玻璃面板上也只有 1.6:1 —— 长段落里看不出边界。改成实心强调色 + 反白字。 */
 html[data-ui="mac"] ::selection { background: var(--accent); color: var(--accent-ink); }
 /* 强调色实底的气泡（对话里的用户消息）里反过来用：底色块 + 强调色字，

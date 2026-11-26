@@ -76,7 +76,7 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 ### 选区：强调色实底上必须反相
 
-`::selection` 的对比对象是它自己下面那层，所以底色里已经有强调色的地方（对话里的用户气泡 `.msg.user .body`、内网通「我发的」`.msg.mine .bub`），半透明强调色铺上去就等于同一个颜色：`.msg.user` 那对组合实测底对比 **1.00**，整段选中和没选中一模一样（D415）。现在改成：
+`::selection` 的对比对象是它自己下面那层，所以底色里已经有强调色的地方（对话里的用户气泡 `.msg.user .body`、内网通「我发的」`.msg.mine .bub`），半透明强调色铺上去就等于同一个颜色：`.msg.user` 那对组合实测底对比 **1.00**，整段选中和没选中一模一样（D416）。现在改成：
 
 - 全局 `::selection` 是实心 `--accent` + `--accent-ink` 字，不带透明度；强调色实底的气泡里反过来（`--accent-ink` 实块 + 强调色字）。
 - 写在哪：主界面是 `mac-base.css`（只带 `.msg.user .body`），内网通页面只加载 `peer.css`，它自己带一份（`::selection` + `.msg.mine .bub`）。新加「强调色实底 + 可读文本」的区域时，看那个页面加载哪份表，把选择器加进对应的反相名单，否则那块地方的选区又是隐形的。

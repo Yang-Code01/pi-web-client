@@ -58,14 +58,17 @@ import { listPullRequests, pullRequestInfo } from "./gitpr.ts";
 import {
   cancelReview,
   cleanRuns,
+  effectiveReviewDir,
   gitRoot,
   installOcr,
   isMark,
   markFinding,
   ocrStatus,
+  readReviewPin,
   readReviewState,
   reviewProgress,
   setPick,
+  setReviewPin,
   startReview,
   sweepStaleRuns,
   type ReviewLang,
@@ -4058,19 +4061,35 @@ async function main(): Promise<void> {
             const dir = String(msg.dir ?? "");
             const session = String(msg.sessionId ?? "");
             try {
-              const repo = gitRoot(dir);
-              send({ type: "review.state", dir: repo, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) });
+              const { repo, pinned } = effectiveReviewDir(dir, session);
+              send({ type: "review.state", dir: repo, pinned, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) });
               void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
             } catch (err: any) {
-              send({ type: "review.state", dir, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              send({ type: "review.state", dir, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+            }
+            return;
+          }
+          case "review.pin": {
+            // 「评审仓库」的钉子：把这个会话评的目录钉到 `dir`（空 = 拔掉，回到跟随会话目录）。
+            // 只认仓库根：用户可能选中子目录里的某一层，`gitRoot()` 会把它收回到仓库根。
+            const session = String(msg.sessionId ?? "");
+            const raw = String(msg.dir ?? "").trim();
+            try {
+              const dir = raw ? gitRoot(raw) : "";
+              setReviewPin(dir, session);
+              // 发给所有页签：同一个会话可能同时开着好几个页签，钉子只有一个。
+              broadcast({ type: "review.pinned", sessionId: session, dir });
+            } catch (err: any) {
+              send({ type: "review.pinned", sessionId: session, dir: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
             }
             return;
           }
           case "review.prs.get": {
             const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
             void (async () => {
               try {
-                const repo = gitRoot(dir);
+                const { repo } = effectiveReviewDir(dir, session);
                 const out = await listPullRequests(repo, { fresh: msg.fresh === true });
                 send({ type: "review.prs", dir: repo, ...out });
               } catch (err: any) {
@@ -4081,10 +4100,11 @@ async function main(): Promise<void> {
           }
           case "review.prinfo.get": {
             const dir = String(msg.dir ?? "");
+            const session = String(msg.sessionId ?? "");
             const number = Number(msg.pr) || 0;
             void (async () => {
               try {
-                const repo = gitRoot(dir);
+                const { repo } = effectiveReviewDir(dir, session);
                 const out = await pullRequestInfo(repo, number, { fresh: msg.fresh === true });
                 send({ type: "review.prinfo", dir: repo, pr: number, ...out });
               } catch (err: any) {
@@ -4106,7 +4126,7 @@ async function main(): Promise<void> {
             const provider = slash > 0 ? full.slice(0, slash) : given;
             const model = slash > 0 ? full.slice(slash + 1) : full;
             try {
-              const repo = gitRoot(dir);
+              const { repo, pinned } = effectiveReviewDir(dir, session);
               startReview({
                 dir: repo,
                 mode,
@@ -4121,11 +4141,11 @@ async function main(): Promise<void> {
                 provider,
                 lang,
                 onProgress: (p) => broadcast({ type: "review.progress", dir: repo, progress: p }),
-                onState: () => broadcast({ type: "review.state", dir: repo, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) }),
+                onState: () => broadcast({ type: "review.state", dir: repo, pinned, sessionId: session, state: readReviewState(repo, session), progress: reviewProgress(repo, session) }),
               });
             } catch (err: any) {
               // #666：`params` 是给英文 / 日文界面翻译用的（中文直接看上面的 `error`）。
-              send({ type: "review.state", dir, error: String(err?.message ?? err), code: String(err?.code ?? "failed"), params: err?.params });
+              send({ type: "review.state", dir, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed"), params: err?.params });
             }
             return;
           }
@@ -4133,7 +4153,8 @@ async function main(): Promise<void> {
             const dir = String(msg.dir ?? "");
             const session = String(msg.sessionId ?? "");
             try {
-              if (!cancelReview(dir, session)) send({ type: "review.progress", dir, progress: reviewProgress(dir, session) });
+              const { repo } = effectiveReviewDir(dir, session);
+              if (!cancelReview(repo, session)) send({ type: "review.progress", dir: repo, progress: reviewProgress(repo, session) });
             } catch {
               /* 目录已经不是仓库了：没什么可停的 */
             }
@@ -4145,9 +4166,9 @@ async function main(): Promise<void> {
             const mark = String(msg.mark ?? "");
             const session = String(msg.sessionId ?? "");
             try {
-              const repo = gitRoot(dir);
+              const { repo, pinned } = effectiveReviewDir(dir, session);
               const state = markFinding(repo, key, isMark(mark) ? mark : "", session);
-              broadcast({ type: "review.state", dir: repo, sessionId: session, state });
+              broadcast({ type: "review.state", dir: repo, pinned, sessionId: session, state });
             } catch (err: any) {
               send({ type: "review.state", dir, error: String(err?.message ?? err) });
             }
@@ -4157,8 +4178,8 @@ async function main(): Promise<void> {
             const dir = String(msg.dir ?? "");
             const session = String(msg.sessionId ?? "");
             try {
-              const repo = gitRoot(dir);
-              broadcast({ type: "review.state", dir: repo, sessionId: session, state: cleanRuns(repo, session) });
+              const { repo, pinned } = effectiveReviewDir(dir, session);
+              broadcast({ type: "review.state", dir: repo, pinned, sessionId: session, state: cleanRuns(repo, session) });
             } catch (err: any) {
               send({ type: "review.state", dir, error: String(err?.message ?? err) });
             }
@@ -4171,7 +4192,7 @@ async function main(): Promise<void> {
             const session = String(msg.sessionId ?? "");
             const mode = ["workspace", "range", "commit", "pr"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "pr";
             try {
-              const repo = gitRoot(dir);
+              const { repo, pinned } = effectiveReviewDir(dir, session);
               const state = setPick(
                 repo,
                 {
@@ -4185,7 +4206,7 @@ async function main(): Promise<void> {
               );
               // 发给所有页签，由页面自己按 sessionId 筛：这里刻意不用 send()——
               // 同一个仓库的其它页签也要知道「盘上现在是什么」，只是不该拿它去重画别人的面板。
-              broadcast({ type: "review.state", dir: repo, sessionId: session, state });
+              broadcast({ type: "review.state", dir: repo, pinned, sessionId: session, state });
             } catch {
               // 不是 git 仓库 / 目录没了：记不住就不记，不打扰用户。
             }
