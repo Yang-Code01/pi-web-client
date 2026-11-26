@@ -8449,12 +8449,30 @@ html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 
 **补（PR #700 评审）。** 面板那个下拉最初把桥回的**解析结果**当成「人选的那个」写进 `reviewAccount` —— 跟随工作区时它也是具体账号，于是「跟随工作区」永远选不中、桥回空账号时又不清（留着上一次的号）。现在拆成两个字段：`reviewAccount` 只存会话里显式选的（`state.session.source === "session"`），`reviewAccountUsed` 存实际按谁在查，只用来写给人看（下拉首项写「跟随工作区（xyang-qingmin）」）。拆分逻辑是纯函数 `ghAccountPair()`，配 `web/tests/github-unit.mjs` 用例。
 
-## D423 气泡里的「归档 / 删除」认 id 不认节点：★ 行重画后点击不再被静默吞掉（用户 2026-11-26「第一个回话…无法归档」）
+## D424 没成卡时 `.lm-scroll` 也得是纯过路的，否则用户气泡又被挤成窄条（用户 2026-11-26「输入显示bug」＋截图：气泡里「ABC」「DF」折成两行）
 
-**问题。** ★ 行里一颗「完成」的会话，悬停打开胶囊气泡、点「归档」—— 毫无反应，胶囊留在原地，桥一帧 `manage` 都没收到。气泡（`web/src/pinmenu.ts` 的 `openPinMenu`）把**打开那一刻的胶囊节点**闭包进 `onArchive` / `onDelete`；而 `web/src/frames.ts` 把 `pi.status` 一律映射到 `"sessions"`，`renderSessionRow()` → `pillBar.render()` → `host.replaceChildren()` 整条重建。旧节点脱离文档后 `archiveFromPin()` 里的 `if (!host.contains(chip)) return;` 永远为假，点击被丢掉。用户现场别的会话都在「运行中」，`pi.status` 一直在流，正好踩中；气泡开着、指针已经在气泡里时，新胶囊也不会再触发 pointerenter 把气泡重锚过去。
+**编号。** 本条原写 D423，与同期在开的 #703（「最近使用」收两份清单）撞了；那个 PR 先占的号，这边让出，改 D424。
 
-**决定。** 新增 `livePinChip(id, chip)`：闭包里的节点还活着就用它演动效；被换掉了就按 `data-pin-id` 在当前 ★ 行里找那颗活的；都找不到（比如已被别的路径收走）就不演、直接把动作发出去 —— 归档走 `archiveOne(id)`，删除走原来 `calm()` 那条「直接发 manage/delete + 一句话交代去向」。`archiveFromNowChip()` 对 `!chip.isConnected` 同样直接发。动作语义以 id 为准，节点只是动效的载体。
+**问题。** 发一句「ABCDF」，气泡被折成「ABC / DF」，右边还空一截；「牛逼」被折成一个字一行。这是 D350 修过的那个坑复发，触发者是 D421。
+
+机制：D421 把用户消息的正文包进 `.lm-card > .lm-scroll > .body`，没成卡时只让最外层 `.lm-card` 变 `display: contents`（`web/src/styles.css:6253`）。`display: contents` 只拆掉自己那层盒子，**里面那层 `.lm-scroll` 就成了 `.msg.user`（`display:flex; flex-direction: column; align-items: flex-end`）的 flex 子项**，也就是一个按内容收缩的块盒子；而气泡自己的 `max-width: min(78%, 760px)`（`web/src/mac.css:111`）量的是**包含块**的宽度 —— 包含块从 `.msg.user` 换成了 `.lm-scroll`，于是百分比对着「由正文撑出来、又反过来被这个百分比限制」的盒子算，落成一个只有自然宽度 78% 的小数（实测链：`msg.user` 602 → `.lm-scroll` 69.6 → `.body` 54.29px）。D350 当时的注释就写在 `.msg.user .foldable` 那段上（`web/src/mac.css:125-133`）：百分比得量在会撑满的那一层，不能量在收缩盒上。
+
+**决定。** `.lm-card:not(.has-card) > .lm-scroll { display: contents; }` —— 没成卡时这一层不生成盒子，`.body` 重新直接是 `.msg.user` 的 flex 子项（回到 D350 验证过的形状）；`has-card` 一亮它就变回真盒子，卡内滚动、`42vh` 展开那些照旧。一行 CSS，不动 JS：卡片要挂 `ResizeObserver` 的仍然是那块 `.body`，`display: contents` 不影响高度测量。
+
+**为什么不是别的改法。** ① 不动 `.body` 的 `max-width: min(78%, 760px)`：这是气泡宽度的语义（「最多占对话区 78%」），换 `max-width: 760px` 或 `width: fit-content` 会让长消息在窄窗口里溢出、并且要重做 D350 那套 `.foldable` 的两处分权。② 不在 JS 里「没成卡就不建壳」：卡片是量完高才决定要不要的，先建后拆会闪一帧，D421 第 1 条特意保证「不高的条目零改动」。③ 不给 `.lm-scroll` 加 `max-width: min(78%, 760px)` 再让 `.body` 100%：两处写同一个数，下次改一处就劈开（D350 就是被拆成两层的宽度限制坑掉的）。
+
+**代价。** 外层 `display: contents` + 内层 `display: contents` 连着两层（`.lm-card` 与 `.lm-scroll`），读 DOM 时要多看一层；`has-card` 切换时这一层会从「不生成盒子」变成块盒子，切换只发生在 `apply()`（量高后一次），不会引起抖动。
+
+**验证。** 红：main（`1b62adcc`）上 `node probes/mac-chat.mjs` 三套主题各 3 项红 —— `FAIL mac-dark：「merge」一行放得下 — {"text":"merge","lines":2,"right":962.84,"msgRight":982}`、两张气泡不贴右。绿：加上这条 CSS 后同一个探针 0 项失败（`merge` 一行、右边缘 982 = `.msg.user` 右边缘）。`probes/long-card.mjs` 第 1 节新增两条断言（短气泡一行、右边缘贴 `.msg.user` ≤ 8px），它守的是「没成卡那层壳不许挤窄气泡」这条，红验证：把这条 CSS 去掉 → 断言挂在 `the short bubble keeps one line ({"lines":2,"right":835.05,"msgRight":893.20})`。`node probes/long-card.mjs` 第 1–6 节全绿（第 7 节「现发一条等假 pi echo」在这台机器上超时 —— main 上同一份探针一样停在 `timeout waiting for the echo round`，假 pi 一 spawn 就被桥关掉 stdin；与本改动无关，桥侧另案）；`npm --prefix web run typecheck` exit 0。
+
+## D425 气泡里的「归档 / 删除」认 id 不认节点：★ 行重画后点击不再被静默吞掉（用户 2026-11-26「第一个回话…无法归档」）
+
+**问题。** ★ 行里一颗「完成」的会话，悬停打开胶囊气泡、点「归档」—— 毫无反应，胶囊留在原地，桥一帧 `manage` 都没收到。气泡（`web/src/pinmenu.ts` 的 `openPinMenu`）把**打开那一刻的胶囊节点**闭包进 `onArchive` / `onDelete`；而 `web/src/frames.ts` 把 `pi.status` 一律映射到 `"sessions"`，`renderSessionRow()` → `pillBar.render()` → `host.replaceChildren()` 整条重建。旧节点脱离文档后 `archiveFromPin()` 里的 `if (!host.contains(chip)) return;` 恒为真，点击被丢掉。用户现场别的会话都在「运行中」，`pi.status` 一直在流，正好踩中；气泡开着、指针已经在气泡里时，新胶囊也不会再触发 pointerenter 把气泡重锚过去。
+
+**决定。** 新增 `livePinChip(id, chip)`：闭包里的节点还连着文档（`isConnected`）就演动效；被重建换掉就按 `data-pin-id` 在当前 ★ 行里找那颗活的；都找不到（比如已被别的路径收走）就不演、直接把动作发出去 —— 归档走 `archiveOne(id)`，删除走原来 `calm()` 那条「直接发 manage/delete + 一句话交代去向」。`archiveFromNowChip()` 对 `!chip.isConnected` 同样直接发。动作语义以 id 为准，节点只是动效的载体。
 
 **为什么。** ① 归档/删除是幂等的数据动作，不该因为一次重画就消失；「点了没反应」比「没有动效」糟得多，退化成无动画是正确降级。② 不选「重画时把气泡重新锚到新节点」：那要在 `renderSessionRow()` 里维护一张「谁的气泡开着」的迁移表，而气泡本来就挂在 body、位置固定，用户正在点的按钮不受影响；多这一层只会多一个失效点。③ 不选「气泡打开期间禁止重建 ★ 行」：`pi.status` 是状态同步的主干，为一个气泡停掉它会把「运行中」徽标冻住。④ 按 id 回查而不是整条重画后再重开气泡，保留了「同一颗会话」的语义 —— 用户看到的还是那个名字那条会话。
 
-**验证。** `node probes/pin-menu-archive-repaint.mjs`（桩桥 + 真 Chromium）：悬停打开气泡 → 把指针挪进气泡 → 广播一帧别的会话的 `pi.status`（整条 ★ 行重建）→ 点归档/删除。改前拿旧 `web/dist` 跑（`PROBE_DIST=web/dist`）红 10 项、归档 0 帧；改后 13 项全绿（归档与删除各发一帧、只带这一颗、回声后 ★ 行收敛；没有重画的对照组仍走收拢动效并落帧）。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
+**代价。** 无动效降级那条路上 `pinAnim` 不置位，理论上「重开气泡再点一次」能在回声前多发一帧；但第一次点击同步关掉气泡，重开要重新 hover 180ms，且桥端同一 id 的归档/删除幂等，不产生第二次效果。
+
+**验证。** `node probes/pin-menu-archive-repaint.mjs`（桩桥 + 真 Chromium）：悬停打开气泡 → 把指针挪进气泡 → 广播一帧别的会话的 `pi.status`（整条 ★ 行重建）→ 点归档/删除。改前拿旧 `web/dist` 跑（`PROBE_DIST=web/dist`）红 10 项、归档 0 帧；改后 15 项全绿（归档与删除各发一帧、只带这一颗、回声后 ★ 行收敛；没有重画的对照组仍走收拢动效并落帧）。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
