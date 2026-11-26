@@ -572,21 +572,55 @@ export function cleanRuns(repo: string, session = ""): ReviewState {
 
 const REVIEW_TIMEOUT_MS = 30 * 60_000;
 
+/** 一个会话最多同时在评几条（D420）。数的是**会话**，不是仓库：换个仓库也共用这份额度。 */
+export const MAX_RUNS_PER_SESSION = 2;
+
 /** 面板轮询/广播的那个「现在到哪了」。 */
 export type Progress = ReviewProgress;
 
 interface Active {
   cancel: () => void;
+  /** 这条属于谁：判重与额度都按「会话」算，停止时还要核对是不是这一个仓库。 */
+  repo: string;
+  session: string;
+  mode: ReviewMode;
+  /** pr 模式下现在正在评的号（判重靠它）；其它模式是 0。 */
+  pr: number;
 }
 
-/** 一个仓库同时只跑一次；key 与落盘同一个 `repoKey`。 */
+/** 主键是 runId：同一个会话可以同时跑两条（D420），插入顺序就是开跑顺序。 */
 const active = new Map<string, Active>();
 const progressMap = new Map<string, Progress>();
 
-const activeKey = (repo: string, session: string) => `${repoKey(repo)}\u0000${sessionKey(session)}`;
+/** 这个会话现在在跑的几条（跨仓库共用额度）。 */
+function runningFor(session: string): Array<[string, Active]> {
+  const want = sessionKey(session);
+  return [...active].filter(([, a]) => sessionKey(a.session) === want);
+}
 
-export function reviewProgress(repo: string, session = ""): Progress | null {
-  return progressMap.get(activeKey(repo, session)) ?? null;
+/** 某个仓库 + 会话现在在跑的那几条的进度（页面按 runId 分别画）。 */
+export function reviewProgresses(repo: string, session = ""): Progress[] {
+  const wantRepo = repoKey(repo);
+  const wantSession = sessionKey(session);
+  const out: Progress[] = [];
+  for (const [id, a] of active) {
+    if (repoKey(a.repo) !== wantRepo || sessionKey(a.session) !== wantSession) continue;
+    const progress = progressMap.get(id);
+    if (progress) out.push(progress);
+  }
+  return out;
+}
+
+/**
+ * 开机扫出来的那条提示要随下一次 `review.get` 交给页面（boot 时还没有客户端连着）。
+ * 取一次就清零，别让第二条消息再提示一遍。
+ */
+let sweptCount = 0;
+
+export function takeSweptCount(): number {
+  const n = sweptCount;
+  sweptCount = 0;
+  return n;
 }
 
 /** 桥重启后，盘上还写着 running 的那几次永远不会再有人收尾 —— 开机时统一转成「已失效」。 */
@@ -609,16 +643,19 @@ export function sweepStaleRuns(): number {
     try {
       const raw = JSON.parse(fs.readFileSync(file, "utf8")) as ReviewState;
       let dirty = false;
+      let hits = 0;
       for (const run of raw.runs ?? []) {
         if (run.status !== "running") continue;
         run.status = "stale";
         run.errorCode = "bridge-restart";
         run.error = "桥重启了，这次评审没跑完";
         dirty = true;
+        hits += 1; // 按「条」数：一个文件里可能同时躺着两条（D420）
       }
       if (!dirty) continue;
       fs.writeFileSync(file, JSON.stringify(raw, null, 2));
-      changed += 1;
+      changed += hits;
+      sweptCount += hits;
     } catch {
       /* 坏文件留给读取那一侧去 quarantine */
     }
@@ -832,8 +869,21 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     }
   }
   const session = String(o.session ?? "");
-  const key = activeKey(root, session);
-  if (active.has(key)) throw new ReviewError("busy", "这个会话已经在评了");
+  const running = runningFor(session);
+  const prNumber = Number(o.pr) || 0;
+
+  // D420：同一个号在本会话里正在评，就别再开一条 —— 同一份 diff 白烧一遍 token。
+  // 判在 fetch 之前，跟上面那道闸同一个理由。
+  if (prNumber > 0) {
+    const same = running.find(([, a]) => a.mode === "pr" && a.pr === prNumber && repoKey(a.repo) === repoKey(root));
+    if (same) throw new ReviewError("dup_pr", `这个会话已经在评 #${prNumber} 了`, { p1: String(prNumber) });
+  }
+  // 额度按会话算：另一个会话、另一条 PR 都还能开，但同一个会话最多两条同时在跑。
+  if (running.length >= MAX_RUNS_PER_SESSION) {
+    throw new ReviewError("busy", `这个会话已经有 ${MAX_RUNS_PER_SESSION} 个在评了，先停一个再开`, {
+      p1: String(MAX_RUNS_PER_SESSION),
+    });
+  }
 
   const state = readReviewState(root, session);
   const runId = newRunId();
@@ -844,7 +894,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     from: o.base ?? "",
     to: o.mode === "commit" ? o.commit ?? "HEAD" : "HEAD",
     mergeBase: "",
-    pr: o.mode === "pr" ? Number(o.pr) || 0 : 0,
+    pr: o.mode === "pr" ? prNumber : 0,
     prTitle: "",
     prHead: "",
     prBase: "",
@@ -874,7 +924,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
 
   const abort = new AbortController();
   const emit = (patch: Partial<Progress>) => {
-    const prev = progressMap.get(key);
+    const prev = progressMap.get(runId);
     const next: Progress = {
       repo: root,
       runId,
@@ -893,18 +943,22 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
       ...prev,
       ...patch,
     };
-    progressMap.set(key, next);
+    progressMap.set(runId, next);
     o.onProgress?.(next);
   };
 
-  active.set(key, {
+  active.set(runId, {
     cancel: () => {
       abort.abort();
     },
+    repo: root,
+    session,
+    mode: o.mode,
+    pr: prNumber,
   });
   /** 往时间线里加一行并发出去（面板与详情 dialog 都吃它）。 */
   const note = (text: string, group?: number) => {
-    const prev = progressMap.get(key);
+    const prev = progressMap.get(runId);
     const line: ReviewLogLine = { at: Date.now(), text, ...(group ? { group } : {}) };
     const log = [...(prev?.log ?? []), line].slice(-40);
     emit({ log });
@@ -927,19 +981,38 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
       console.error("[review] 收尾失败", err?.message ?? err);
     })
     .finally(() => {
-      active.delete(key);
+      active.delete(runId);
+      progressMap.delete(runId); // 兜底：execute 若在 finish 之前抛了，进度别永远挂着
       o.onState?.();
     });
 
   return { runId, repo: root };
 }
 
-export function cancelReview(dir: string, session = ""): boolean {
-  const key = activeKey(dir, session);
-  const running = active.get(key);
-  if (!running) return false;
-  running.cancel();
-  return true;
+/**
+ * 停一条（D420）。给了 `runId` 就只停那一条，并要求它确实属于这个仓库 + 会话；
+ * 不给则停这个仓库 + 会话下所有在跑的（老页面只发 dir+session，语义不变）。
+ * 这里**不**把记录移出 `active`：子进程还可能在退出的路上（fetch 甚至不认 abort），
+ * 额度与同号查重等它真正收尾（execute 的 finally）再放开 —— 否则同一份 diff
+ * 会有两个进程一起烧 token。页面那边本来也要等记录变成「已停止」才解锁。
+ */
+export function cancelReview(dir: string, session = "", runId = ""): boolean {
+  const wantRepo = repoKey(dir);
+  const wantSession = sessionKey(session);
+  const owns = (a: Active) => repoKey(a.repo) === wantRepo && sessionKey(a.session) === wantSession;
+  if (runId) {
+    const one = active.get(runId);
+    if (!one || !owns(one)) return false;
+    one.cancel();
+    return true;
+  }
+  let stopped = false;
+  for (const a of active.values()) {
+    if (!owns(a)) continue;
+    a.cancel();
+    stopped = true;
+  }
+  return stopped;
 }
 
 /** 上一次**同一个范围**里完成的评审：三态只跟它比。 */
@@ -982,7 +1055,7 @@ interface ExecuteCtx {
 
 async function execute(ctx: ExecuteCtx): Promise<void> {
   const { root, session, run, opts, signal, emit, note } = ctx;
-  const key = activeKey(root, session);
+  const runId = run.id;
   let tokens = 0;
   let currentFile = "";
   let preview: Preview | null = null;
@@ -994,7 +1067,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     if (patch.status === "done") note(`完成：${patch.findings?.length ?? 0} 条意见`);
     else if (patch.status === "failed") note(`失败：${patch.error || patch.errorCode || ""}`);
     else if (patch.status === "stopped") note("已停止");
-    const prevProgress = progressMap.get(key);
+    const prevProgress = progressMap.get(runId);
     // 进度帧一消失日志就没了 —— 记录里留一份，面板/dialog 跑完还能看时间线。
     (patch as Partial<ReviewRun>).log = prevProgress?.log ?? [];
     // 分组计划同理：完成态要看「哪组出了几条」，不能只剩一个总数。
@@ -1012,7 +1085,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       error: patch.error ?? "",
       errorCode: patch.errorCode ?? "",
     });
-    progressMap.delete(key);
+    progressMap.delete(runId);
   };
 
   /** 起一个子进程评一组：边跑边发进度，结束时把它答的那段话交回来。 */
@@ -1353,17 +1426,59 @@ function olderThan(v: number[], floor: readonly number[]): boolean {
   return false;
 }
 
-/** 面板打开时问一句就够了；不要放到每次刷新里（一次 spawn 几十毫秒）。 */
-export async function ocrStatus(): Promise<OcrStatus> {
+/**
+ * 探活得给足时间。`ocr` 在 Windows 上不是一个二进制，而是 `node launcher → Go 二进制` 两层
+ * （launcher 每 18 分钟还会 detached 拉一次版本检查）。本机实测：裸 exe ~1.2s，走 launcher
+ * 冷时 0.4s、2.4s、5.2s、7.0s、**16.3s**——以前只给 5 秒，慢一发就被记成 installed:false，
+ * 面板上直接变成「还没装 ocr」（用户明明装着）。
+ */
+const OCR_PROBE_TIMEOUT_MS = 30_000;
+/** 探到了就记一会儿：面板一次打开会问好几遍（WS `review.get` 补帧、HTTP `/api/review/state`）。 */
+const OCR_MEMO_MS = 30 * 60_000;
+
+let ocrMemo: { status: OcrStatus; at: number } | null = null;
+let ocrInFlight: Promise<OcrStatus> | null = null;
+
+/**
+ * 探版本失败怎么记账。**只有「这个命令根本没有」才算没装**；超时、跑崩了都不冒充结论——
+ * 把错误原样带回去，让评审本身去报真正的毛病。否则装着 ocr 的人只会看到「装 ocr」。
+ */
+export function ocrStatusFromFailure(code: string, message: string): OcrStatus {
+  if (code === "ocr_missing") return { installed: false, version: "", tooOld: false, error: "missing" };
+  // 老到认不出 `--format` 的那种：面板要劝「升」，不是劝「装」。
+  if (code === "ocr_too_old") return { installed: true, version: "", tooOld: true, error: "too-old" };
+  return { installed: true, version: "", tooOld: false, error: code || message };
+}
+
+async function probeOcr(): Promise<OcrStatus> {
   try {
-    const { stdout, stderr } = await runOcr(["version"], process.cwd(), 5_000);
+    const { stdout, stderr } = await runOcr(["version"], process.cwd(), OCR_PROBE_TIMEOUT_MS);
     const parts = parseVersion(`${stdout}\n${stderr}`);
     const version = parts.length ? parts.join(".") : "";
     return { installed: true, version, tooOld: olderThan(parts, MIN_OCR_VERSION), error: "" };
   } catch (err: any) {
-    const code = String(err?.code ?? "failed");
-    return { installed: false, version: "", tooOld: false, error: code === "ocr_too_old" ? "too-old" : code === "ocr_missing" ? "missing" : String(err?.message ?? err) };
+    return ocrStatusFromFailure(String(err?.code ?? "failed"), String(err?.message ?? err));
   }
+}
+
+/**
+ * 面板打开时问一句就够了；不要放到每次刷新里（一次 spawn 几十毫秒到几秒）。
+ * `refresh` 用于「刚装完」这种必须重新看一眼的场合。
+ */
+export async function ocrStatus(opts: { refresh?: boolean } = {}): Promise<OcrStatus> {
+  if (!opts.refresh && ocrMemo && Date.now() - ocrMemo.at < OCR_MEMO_MS) return ocrMemo.status;
+  // 并发问（面板一次打开会同时走 WS 和 HTTP）只许 spawn 一个：多开一份冷启动，谁都更容易超时。
+  if (ocrInFlight) return ocrInFlight;
+  ocrInFlight = probeOcr()
+    .then((status) => {
+      // 只记正的：没装的人点完「装 ocr」要能立刻看到结果，别让缓存把「没装」焊死。
+      ocrMemo = status.installed ? { status, at: Date.now() } : null;
+      return status;
+    })
+    .finally(() => {
+      ocrInFlight = null;
+    });
+  return ocrInFlight;
 }
 
 /** 面板上那颗「装 ocr」：把 npm 的输出一行行流回去，装完由页面重拉状态。 */

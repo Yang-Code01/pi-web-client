@@ -16,7 +16,7 @@ import { icon } from "./icons.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
 const BASH_SHOW = 20000;
-/** D418：超长条目收成摘要卡的高度阈值，和 `foldable` 的 240 同一把尺子。 */
+/** D421：超长条目收成摘要卡的高度阈值，和 `foldable` 的 240 同一把尺子。 */
 const LONG_CARD_PX = 240;
 // 高度是主尺子，但只按高度会漏掉「很宽的一欄里那段几百字」：铺不到 240px，卡就不弹 ——
 // 用户明明觉得「输入过多」（2026-11-26 截图报的就是这个）。所以再加一道原文的尺子：
@@ -288,7 +288,7 @@ export class ChatView {
   /** 展开着的（超长条目）摘要卡；和 `collapsed` 一样活过重建与切会话。 */
   private longOpen = new Set<string>();
   /**
-   * D418：哪几类超长条目收成摘要卡。应用没接上时全关 —— 也就是回到老样子
+   * D421：哪几类超长条目收成摘要卡。应用没接上时全关 —— 也就是回到老样子
    * （用户消息 240px 折叠 + assistive 折叠钮 + 工具输出内滚）。
    */
   longCards: { user: boolean; assistant: boolean; tool: boolean } = { user: false, assistant: false, tool: false };
@@ -298,7 +298,7 @@ export class ChatView {
   private redrawPending = false;
 
   /**
-   * D418：设置里改了「超长条目怎么画」，照手里这份记录就地重画一遍 ——
+   * D421：设置里改了「超长条目怎么画」，照手里这份记录就地重画一遍 ——
    * 不重开会话、不丢历史索引；展开着的卡、折起来的回答也都还在（`longOpen` / `collapsed` 本来就活过重建）。
    */
   redraw(): void {
@@ -874,7 +874,7 @@ export class ChatView {
   }
 
   reset(items: Item[], history?: SessionHistory): void {
-    // D418：改「怎么画」的就地重画会拿这份历史再走一遍 reset，ghost 与「载入更早」不能丢。
+    // D421：改「怎么画」的就地重画会拿这份历史再走一遍 reset，ghost 与「载入更早」不能丢。
     this.history = history;
     this.loaded = [];
     // 换会话 / 重连：上一轮排着的「收尾回开头」不能落到新会话上。运行态静默清零，
@@ -1217,7 +1217,7 @@ export class ChatView {
     if (item.kind === "user") {
       this.clearTurnFails();
       // 桥那份才是准的：pi 可能把 `/skill:grilling` 记成别的名字，args 也可能被折得不一样。
-      // **就地把内容换掉、不换节点**：这块 `.body` 正被 240px 折叠 / D418 卡片那个 ResizeObserver
+      // **就地把内容换掉、不换节点**：这块 `.body` 正被 240px 折叠 / D421 卡片那个 ResizeObserver
       // 盯着的 —— `replaceWith()` 换掉节点后，观察者还挂在已经离线的旧节点上，下一量就是 0，
       // 卡片与折叠双双撒手（刚发出去的长消息就那样铺满屏，要等下一次重建才恢复）。
       const body = node.querySelector(".body");
@@ -1722,7 +1722,7 @@ export class ChatView {
         // 挂上卡片 = 当场看得见「这是哪个 PR」。每段最多两张。
         if (this.onGithubOpen) body.append(...this.githubCardsFor(item.text, 2));
         if (this.longCards.assistant) {
-          // D418：开了这一档就整条收成一张卡，老的 `msg-peek` 预览行与折叠钮让位（默认不开）。
+          // D421：开了这一档就整条收成一张卡，老的 `msg-peek` 预览行与折叠钮让位（默认不开）。
           wrap.append(this.longCard(body, "assistant", item.id, item.text));
         } else {
           const peek = el("button", "msg-peek", previewLine(item.text));
@@ -1959,7 +1959,7 @@ export class ChatView {
   }
 
   /**
-   * D418（用户 2026-11-26「当用户输入过多，会占用很大 chat 框内容…做成一个卡片，点击卡片后展开内容」）：
+   * D421（用户 2026-11-26「当用户输入过多，会占用很大 chat 框内容…做成一个卡片，点击卡片后展开内容」）：
    * 超长条目收成一张卡 —— 收起时只有标题行（长消息 · 27 行 · 931 字）+ 三行预览，整张卡可点；
    * 展开后在卡里滚（`calc(var(--vh1) * 42)`），底边一颗整宽「▴ 收起」。
    *
@@ -2252,7 +2252,7 @@ export class ChatView {
   }
 
   /**
-   * D418：工具输出那一块。开了「工具输出」这一档、而且输出够长，就收成「长输出」卡，否则还是老样子 ——
+   * D421：工具输出那一块。开了「工具输出」这一档、而且输出够长，就收成「长输出」卡，否则还是老样子 ——
    * `.out` 自己在 260px 里滚。创建和「要不要包成卡」只在这里定，`mergeTool` 补输出时也走它。
    */
   private toolOut(card: HTMLElement): HTMLElement {

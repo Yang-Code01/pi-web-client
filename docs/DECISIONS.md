@@ -8321,7 +8321,86 @@ html[data-ui="mac"] .msg.user .body ::selection { background: var(--accent-ink);
 
 **验证。** `node probes/selection-visible.mjs`（桩桥 + 真 Chromium，真鼠标拖选，量**画出来的像素**而不是 CSS 声明）：改前用户气泡 1.00（三套主题都是）、助手气泡 1.55 / 1.56 / 1.60，7 项红；改后用户 4.02 / 3.65 / 3.65、助手 3.86 / 4.40 / 4.44，24 项全绿。探针只跑主界面；内网通那条用的是同一对 token（accent 实底 / accent-ink 字），对比度等于上表「用户气泡」一行，**但内网通页面本身没起实例实测**。坑记一笔：programmatic `getSelection().addRange()` 在没聚焦的文档里 Chrome 不上色，只看计算样式或那种选区截出来的图会误判成「已经改好」。
 
-## D418 超长的一轮条目收成摘要卡，点开在卡里铺开（用户「当用户输入过多，会占用很大 chat 框内容……做成一个卡片，点击卡片后展开内容」2026-11-26）
+## D418 「问一下」胶囊改用主题的玻璃材质（用户 2026-11-26「点一下拖动选中后的问一下这个按钮，这个颜色和现在的主题不搭，需要统一」）
+
+**问题。** 胶囊（D416）原来是一块不透明的 `--panel` + 写死的黑投影 `0 6px 18px rgba(0,0,0,.22)`。它飘在玻璃面板旁边：深色主题里 `--panel`（`#232325`）和助手气泡的 `--mac-glass-strong` 几乎同色，胶囊糊成面板的一部分；浅色主题里则是一张死白的纸，和周围所有「玻璃 + 发丝边 + 主题投影」的控件不是一套料。
+
+**决定。** 材质部分（底色 / 模糊 / 描边 / 投影）整块挪进 `mac.css`，跟 `.chat-jump`（回到底部）和助手气泡用同一套 token：
+
+```css
+html[data-ui="mac"] .sel-ask {
+  background: var(--mac-glass-strong);
+  backdrop-filter: var(--mac-blur);              /* 与 .chat-jump、.msg .body 同档 */
+  border: 0.5px solid var(--mac-glass-line);
+  box-shadow: var(--mac-shadow-menu);
+}
+html[data-ui="mac"] .sel-ask:hover { background: var(--mac-glass-solid); }
+html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
+```
+
+`styles.css` 里的 `.sel-ask` 只留形状、尺寸、`cursor` 与 `[hidden]`（那还是 D416 的内容），不再写死颜色。
+
+**为什么。** ① 用户要的是「跟主题统一」，而主题的浮动控件只有一种材质：玻璃 + 半透明发丝边 + `--mac-shadow-menu`。② 半透明还有个副作用是好事：胶囊经常压在强调色实底的用户气泡上，玻璃会把那点蓝收进来，落在蓝色气泡上比落在面板上更蓝一点 —— 它自己就说明了「我是浮在上面的」。③ 不选「实心强调色 + 反白字」（虽然最醒目）：D417 之后选区本身就是实心强调色，胶囊再用强调色，两个会连成一块蓝。④ 也不再给描边加强调色（对比过 A/B 两版截图），玻璃描边已经是主题自己的线，加蓝边反而把它和 `.chat-jump` 区分成两种东西。
+
+**代价。** 深色主题下胶囊与面板的底色差变小（`#222226` vs 面板 `#212125`），靠 0.5px 发丝边和投影分辨；探针的「叠气泡 vs 叠面板」一项就是防这个退化的：要求两处底色通道差 ≥ 8（实测 light 9 / dark 9 / midnight 9）。
+
+**验证。** `probes/sel-ask-chip.mjs` 第 7 段按主题分别量像素（真拖选 + 截图采样，不看 CSS 声明），每套主题 7 项、共 22 项：字对胶囊底 13.3–16.3:1；`backdrop-filter` 带 blur；叠在蓝气泡 `#f1f4fc` / 面板 `#fbfbfd`（light）不是同一个色；描边半透明且真的画出来（DPR 1 上 CSS 的 0.5px 落到 1 个设备像素）；三套主题的投影互不相同。改前这一组 7 项红（`气泡上 #ffffff / 面板上 #ffffff`、`没有 backdrop-filter`），改后 35 项全绿。
+
+## D419 探 ocr 装没装：给足时间、只认「命令根本没有」、探到就记住（用户 2026-11-26「我已经安装过 ocr。有时候还是显示我没有安装」）
+
+**问题。** 面板把 `installed:false` 一律画成「还没装 ocr + 装 ocr 按钮」，而 `installed:false` 的来源是 `ocrStatus()` 里一次 `ocr version` 的 5 秒超时。这台机器上 `ocr` 不是一个二进制，是 `node launcher → Go 二进制` 两层（launcher 每 18 分钟还会 detached 起一次版本检查），实测同一句命令：冷启动 5.2s / 6.6s / 6.9s，最慢一次 **16.3s**，热了才 0.4s~2.4s；裸 exe 只要 ~1.2s，其余都是 launcher 的开销。所以「明明装着却让我装」是超时，不是路径或环境：同一台机器手动 `cmd /c ocr version` 一直是 0 退出。再加一层：面板一次打开会**同时**问两路（WS `review.get` 补帧 + HTTP `/api/review/state`），两路各 spawn 一次 `ocr version`，冷启动互相抢磁盘，更容易一起超时。
+
+**决定。** `bridge/src/review.ts` 探活改三件事：
+
+- 超时 5s → `OCR_PROBE_TIMEOUT_MS = 30_000`（按实测最慢 16.3s 留一倍余量）。
+- 新增 `ocrStatusFromFailure(code, message)`：只有 `ocr_missing`（spawn ENOENT / `is not recognized` / `executable file not found`）才是 `installed:false`；`ocr_too_old` 归成 `installed:true, tooOld:true`（面板劝「升」而不是「装」）；**超时和其它失败一律不冒充结论**——`installed:true` 带 `error:"timeout"|code` 回去，让评审本身去报真正的毛病。
+- 探到就记 30 分钟（`OCR_MEMO_MS`），并发只 spawn 一个（`ocrInFlight` 共享同一个 promise）；**负数不缓存**，所以点完「装 ocr」立刻能看到结果（`review.install.done` 另外显式 `{ refresh: true }` 重探）。启动时顺手探一次热缓存（与 D209 探 PowerPoint 同一处），面板第一次打开不必再等。
+
+**为什么。** ① 状态探活的结论只用来决定「摆不摆那颗装 ocr 的按钮」：拿不准的时候宁可按「装着」处理，因为按「没装」处理的代价是让一个已经装好的用户去装东西、并且挡住「开始评审」。② 30 分钟缓存是因为同一个数在面板生命周期里会被问好几遍，而它只在「装了 / 没装」这种分钟级稳定的事。③ 并发去重不是优化而是正确性：多 spawn 一份就多一次冷启动，本来就在超时边缘。
+
+**代价。** 真装坏了的 ocr（二进制缺失但 launcher 还在）现在要等第一次评审才暴露；`/api/review/state` 在冷启动时会等最多 30 秒（页面走 WS，那一帧是异步补的，实测没人卡在这一屏）。
+
+**验证。** `bridge/tests/ocr-status-unit.mjs`（`npm run test:review` 里）用 PATH 里一个「睡 7 秒再回版本」的假 ocr 走生产同一条 `cmd.exe /c ocr` 解析路径：改前第一条红 —— `{"installed":false,...,"error":"5 秒没有回应"}（耗时 5057ms）`，并发那条红 —— 三路 spawn 3 次；改后 9 条全绿。真机复核（`ocrStatus({refresh:true})` 连探 6 次）：1.9s / 2.4s / 6.9s / 7.1s / 7.5s / 16.3s，6 次全 `installed=true`——按旧的 5 秒线，这 6 次里有 5 次会报「没装」。
+
+## D420 代码评审支持同时评两个 PR：额度按会话、按条停止、一张列表（用户「代码评审支持 多个pr 评审。如果，现在是691 在评审……我可以新开评审其他的pr」2026-11-26）
+
+**问题。** 一个会话同时只能评一条：桥端 `active` / `progressMap` 按「仓库 + 会话」一个键一份（`activeKey`），撞上就抛 `busy`；页面 `reviewView()` 的 `running` 由**最新一条记录**决定、`live` 也只认最新那条；跑着时整张「评什么」（范围 / PR 号 / 模型）与主按钮一起锁死（按钮变成「中断评审」）。用户要的是「#691 继续跑，我另开一个 PR 来评」。另有一个早就存在的串话：`review.progress` 帧不带 sessionId，跨会话评同一仓库时，另一个会话的面板会把这条进度画在自己身上。
+
+**决定。**
+
+1. 额度按**会话**算、跨仓库共用：`MAX_RUNS_PER_SESSION = 2`（`bridge/src/review.ts`）。第三条同步抛 `busy`（`params.p1 = "2"`）；页面主按钮置灰并写「已满 2 个，先停一个再开」。
+2. 判重只认「同会话 + 同仓库 + 同 PR 号」，抛新码 `dup_pr`（`params.p1` = 号）。位置在 `startReview` 的 `pr_foreign_repo` 闸之后、`resolvePullRequest` 之前 —— 白跑的代价是 fetch + 一次 preview，不如当场拒。范围 / 工作区 / 提交模式不判重：那正是「同一份 diff 再跑一份对比」的用法。
+3. 运行时主键从「仓库 + 会话」换成 **runId**：`active`、`progressMap` 都按 runId 记；另加 `runningFor(session)`（数额度）与 `reviewProgresses(repo, session)`（给页面的清单）。`reviewProgress`（一条）换掉。
+4. 停止按条：`cancelReview(dir, session, runId)`，给 runId 时校验 repo + session、只 abort 那一条；不给则停掉该 repo + session 下全部（兼容旧调用）。停掉的这条**留在 `active` 里**等子进程真正收尾（`execute` 的 `finally` 再删）：额度与同号查重都不提前放开，否则同一份 diff 会有两个进程一起烧 token。页面本来也要等记录变成「已停止」才解锁，所以看不出一秒的差。
+5. 帧补字段：`review.progress` 带 `sessionId` + `runId`；`review.state` 带 `progresses` 与 `cap`；新增 `review.started`（桥把这次换来的 runId 说一声，页面只认自己开过的那些来弹「跑完」提示）。
+6. 页面同一张列表：`ReviewInput.progress` → `progresses` + `cap`；`live` 按每张卡自己的 runId 找；`running` = 展开那条在跑、`runningCount` / `atCap` 决定能不能开。在跑的置顶（再按 `startedAt` 倒序），跑完 / 停下的不抢焦点。记录卡从 `<button>` 改成 `role="button"` 的 `div`，才能内嵌「停止」。
+7. 跑着时「评什么」与模型 chip 解锁：它们描述的是**下一条**，每条记录自己带 model / provider 快照。主按钮恒为「开始评审」，「停止」只留在展开的那条与每张在跑的卡上。
+8. 桥重启：`sweepStaleRuns()` 改成**按条**计数，页面第一份状态里的 `swept > 0` 弹一次「桥重启了，N 条评审被中断」。
+
+**为什么。**
+
+- 额度按会话而不是全机：额度是「一个人同时盯几个 PR」的注意力，跨仓库也占同一份。2 条刚好是「继续跑 + 再开一条」，再多 provider 限流与内存峰值一起翻倍（一次 31 文件的评审实测 136 秒，组内串行、每组一个 `pi -p` 子进程）。
+- 抓在开跑前而不是跑完再合并结果：两条同号同时跑，后一条白烧一次 fetch + preview；`pr_foreign_repo` 已经立了这个先例（#666）。
+- 进度帧必须带 runId：不带就只能「谁后到算谁的」，两条同时在跑必然互相覆盖；顺带把跨会话串话修掉（原来那个 `msg.sessionId === this.currentId` 守卫在桥上根本没发 sessionId，一直是空转）。
+- 停下不立刻腾额度：额度算的是「还在烧 token 的进程」。按已经收尾的记录放行，用户刚点停止就重开同一个号，会同时跑两份；页面反正要等记录变「已停止」才解锁，早放行也没有任何可见的好处。
+- 卡片改 `div` 而不是「按钮里套按钮」：HTML 不许按钮嵌套，`stopPropagation` 也挡不住点击语义被外层 button 吃掉。
+
+**代价 / 可改。**
+
+- 两条同时跑 = 两份 token、两个子进程；上限是常量，没做成设置项。
+- `review.started` 之前就失败（`busy` / `dup_pr`）时页面不弹「跑完」，只显示错误条 —— 符合「没开跑就没有完成提示」。
+- 历史仍是 20 条上限（`RUN_KEEP`），两条并发只是更快用完；`trimRuns` 优先裁终态。
+- `swept` 只在 `review.get` 里取一次（`takeSweptCount()`），提示只出现一次 —— 有意为之，免得每次打开面板都弹。
+
+**验证。**
+
+- `bridge/tests/review-unit.mjs` 新增 5 条：两条并发 + 第三条 `busy`（`params.p1 === "2"`）、同会话同号 `dup_pr`（`params.p1 === "691"`）、按 runId 停一条后额度回来、进度按「仓库 + 会话」隔离、sweep 按条计数 —— 37 条 check 全绿。
+- `web/tests/review-unit.mjs` 新增 4 条：还有额度时 `canRun === true`、跑满两条时 `atCap` / 置灰理由 / 两卡各有 live、在跑置顶排序、停一条额度回来 —— 26 项全绿。
+- `npm run test:review`（桥端 5 个套件 + 页面 pin 单测）rc=0；`npm --prefix web run typecheck` 全过（含 i18n / 视口守卫）。
+- `node probes/code-review.mjs`（桩桥 + 真 Chromium）39 项全绿，新增一段并发检出：两条同时在跑、一条一张卡各有停止、开满两条后主按钮置灰且写明原因、停一条额度回来、终态不抢焦点。
+- 两处并发风险提前实测：同仓库 100 次并发 `git fetch`（含同 ref `--force` 与 base 拉取）零锁冲突、单次 3.1–6.6 秒；ocr v1.14.4 的 `delegate preview` / `delegate rule` 4 路并发输出与单跑逐字一致、仓库无新文件（脚本 `.scratch/fetch-lock-probe.mjs`、`.scratch/ocr-concurrency-probe.mjs`）。
+
+## D421 超长的一轮条目收成摘要卡，点开在卡里铺开（用户「当用户输入过多，会占用很大 chat 框内容……做成一个卡片，点击卡片后展开内容」2026-11-26）
 
 **问题。** 粘一段评审意见进来（40 行 / 931 字），这一条就吃掉整屏：用户看不见上下文，也看不见自己后面写的句子。当时用户消息走的是 `foldable(body, 240)` —— 留 240px、底下渐隐、一颗小「展开」钮；那一版实测仍占聊天区 42%（`.scratch/long-user-msg/shot-A.png`）。助手回答有右上角折叠钮，工具输出自己有 260px 内滚窗口，三种长的东西各有一套规矩。
 

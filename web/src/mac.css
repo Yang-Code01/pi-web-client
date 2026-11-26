@@ -145,7 +145,7 @@ html[data-ui="mac"] .msg.assistant .body {
 html[data-ui="mac"] .msg .body pre { border-radius: 10px; border-color: var(--mac-glass-line); }
 html[data-ui="mac"] .msg .who { letter-spacing: 0; font-weight: 500; }
 
-/* D418：超长消息收成摘要卡时，卡本身接替气泡的样子 —— iMessage 的圆角、底色、阴影都长在卡上，
+/* D421：超长消息收成摘要卡时，卡本身接替气泡的样子 —— iMessage 的圆角、底色、阴影都长在卡上，
    里面那层 `.body` 不再画第二个气泡（不然卡套气泡、两层底色两层圆角）。
    卡比 `.body` 多一级选择器，所以这里压得住上面那条 `.msg.user .body`。 */
 html[data-ui="mac"] .msg.user .lm-card.has-card {
@@ -203,6 +203,20 @@ html[data-ui="mac"] .chat-jump {
   backdrop-filter: var(--mac-blur);
   border: 0.5px solid var(--mac-glass-line);
 }
+/* D418：拖选后的「问一下」跟主题走 —— 和 `.chat-jump`、助手气泡同一套玻璃（同一档模糊、同样的
+   发丝描边、主题自己的投影）。原来是一块不透明的 `--panel` + 写死的黑投影：深色主题里它和玻璃面板
+   撞成一个色块，浅色主题里则是一张死白的纸，哪个主题都不像自己人。半透明还有个好处：它经常压在
+   强调色实底的用户气泡上，玻璃会把那点蓝收进来（探针 7 段按像素量「叠气泡 vs 叠面板不是一个色」）。 */
+html[data-ui="mac"] .sel-ask {
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border: 0.5px solid var(--mac-glass-line);
+  box-shadow: var(--mac-shadow-menu);
+  transition: background var(--dur-1) var(--mac-ease), border-color var(--dur-1) var(--mac-ease), scale 240ms var(--mac-spring);
+}
+html[data-ui="mac"] .sel-ask:hover { background: var(--mac-glass-solid); border-color: var(--mac-glass-line); }
+html[data-ui="mac"] .sel-ask:active { transform: none; scale: 0.96; }
 
 /* ---------------------------------------------------------------- 2d. 控件：按钮 / 胶囊 / 分段 / 开关 */
 html[data-ui="mac"] .btn {
