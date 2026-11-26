@@ -858,6 +858,26 @@ function originOf(id: string): "web" | "disk" {
 
 const DEFAULT_NAME = "新会话";
 
+/**
+ * 「新开 / 续接」这一对参数只看文件**真的存在**。pi 对不存在的 `--session <路径>` 不会报错，
+ * 它当场 `_setSessionFile` → `newSession()` 造一个新会话，用的是**自己生成的 id**，却仍然写在你
+ * 给的那个文件名里。桥的 id 与文件头的 id 从此分叉：换脑后 `ensure()` 按 id 找不到文件，
+ * 历史读不出来（items 空、「之前聊的都丢了」）、名字回落成「新会话」、同一份文件在列表里列两次。
+ * D20 说的本来就是「已有文件」。
+ */
+export function sessionOpenArgs(resume: boolean, file: string | null | undefined, id: string): string[] {
+  return resume && file && usableSessionFile(file) ? ["--session", file] : ["--session-id", id];
+}
+
+/** 这个路径上真的有一份能续的文件：存在且不是空的。空文件 pi 也会当成新会话（换 id、重写头）。 */
+function usableSessionFile(file: string): boolean {
+  try {
+    return fs.statSync(file).size > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** 随手问 (#86): what it is called, and the only tools it ever gets. Not user-settable — the point
  * of the fixed list is that a write tool cannot be talked into existing. */
 const SCRATCH_NAME = "随手问";
@@ -1510,8 +1530,7 @@ export class Session extends EventEmitter {
     // 第三个开关，同样不顶掉前两段：谁知道哪个模型听哪句话呢，关一个只关它自己那条。
     if (process.env.PI_WEB_PLAN_HINT !== "0") args.push("--append-system-prompt", PLAN_HINT);
     this.state.launch = describeLaunch(launch) || undefined;
-    if (opts.resume && this.state.file) args.push("--session", this.state.file);
-    else args.push("--session-id", id);
+    args.push(...sessionOpenArgs(opts.resume, this.state.file, id));
     // 随手问 (#86): pi writes into its own throwaway session dir, outside the root that every
     // listing scans — that is what makes "no record" a fact rather than a filtered display.
     if (this.state.scratch) args.push("--session-dir", scratchSessionsDir());
@@ -1721,6 +1740,12 @@ export class Session extends EventEmitter {
     if (typeof st.model?.name === "string") this.state.modelName = st.model.name;
     const thinking = st.thinkingLevel ?? st.thinking ?? undefined;
     const file = st.sessionFile ?? st.sessionPath ?? st.file ?? undefined;
+    // 分叉过的会话：pi 手里的 id 和我们不一样。至少留一行日志 —— 否则将来它表现为「换脑后
+    // 历史全没了」，还得从文件名倒推（#换脑丢失历史）。
+    const sid = typeof st.sessionId === "string" ? st.sessionId : "";
+    if (sid && this.state.id && sid !== this.state.id) {
+      console.log(`[session] ${this.state.id} 的 pi 会话 id 是 ${sid}，按文件名认领这份历史`);
+    }
     this.setState(
       {
         model: typeof model === "string" ? model : this.state.model,
@@ -3491,6 +3516,16 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  /**
+   * 按桥的 id 找它在磁盘上的那份文件。正常情况下文件头的 id 就是它；分叉过的会话（`sessionOpenArgs`
+   * 修之前留下的）文件头是 pi 自己生成的 id，只有文件名里还留着桥的 id —— pi 的文件名永远是
+   * `<开始时间>_<id>.jsonl`，所以按名字认人是可靠的退路。不认名字，换一次脑就等于「历史全没了」。
+   */
+  private metaFor(id: string): SessionFileMeta | null {
+    const metas = this.metas();
+    return metas.find((m) => m.id === id) ?? metas.find((m) => path.basename(m.file).includes(id)) ?? null;
+  }
+
   /** Disk sessions that no live process owns (read-only tail). */
   discover(): SessionFileMeta[] {
     return this.metas().filter((m) => !readLock(m.id));
@@ -3498,6 +3533,8 @@ export class SessionManager extends EventEmitter {
 
   list(): SessionState[] {
     const seen = new Set<string>();
+    // 同一份文件只出一条：id 分叉过的会话会以桥 id（live）和文件头 id（磁盘）各出现一次。
+    const files = new Set<string>();
     const out: SessionState[] = [];
     const manage = this.manage.snapshot();
     // 工作区：override 优先，否则跟 cwd 的工程根走（只查缓存，不跑 git）。
@@ -3516,6 +3553,7 @@ export class SessionManager extends EventEmitter {
     });
     for (const s of this.sessions.values()) {
       seen.add(s.state.id);
+      if (s.state.file) files.add(s.state.file);
       // 随手问 is not one of the user's sessions (#86): it has no place in any listing, not even
       // for a moment. Defence in depth — its files already sit outside the scanned root.
       if (s.state.scratch) continue;
@@ -3529,7 +3567,7 @@ export class SessionManager extends EventEmitter {
       });
     }
     for (const meta of this.discover()) {
-      if (seen.has(meta.id)) continue;
+      if (seen.has(meta.id) || files.has(meta.file)) continue;
       const finished = readFinishedAt(meta.id);
       out.push({
         id: meta.id,
@@ -3606,7 +3644,7 @@ export class SessionManager extends EventEmitter {
   locate(id: string): { cwd: string; file: string | null; startedAt?: string } | null {
     const s = this.sessions.get(id);
     if (s) return { cwd: s.state.cwd, file: s.state.file, startedAt: s.state.startedAt };
-    const meta = this.metas().find((m) => m.id === id);
+    const meta = this.metaFor(id);
     return meta ? { cwd: meta.cwd, file: meta.file, startedAt: meta.startedAt } : null;
   }
 
@@ -3641,7 +3679,7 @@ export class SessionManager extends EventEmitter {
   private ensure(id: string): Session {
     const existing = this.sessions.get(id);
     if (existing) return existing;
-    const meta = this.metas().find((m) => m.id === id) ?? null;
+    const meta = this.metaFor(id);
     const session = new Session(this.cli, meta, { id });
     this.wire(session);
     if (!session.live) session.startTail();
