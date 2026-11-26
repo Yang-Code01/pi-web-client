@@ -18,6 +18,12 @@ import { icon } from "./icons.ts";
 const BASH_SHOW = 20000;
 /** D418：超长条目收成摘要卡的高度阈值，和 `foldable` 的 240 同一把尺子。 */
 const LONG_CARD_PX = 240;
+// 高度是主尺子，但只按高度会漏掉「很宽的一欄里那段几百字」：铺不到 240px，卡就不弹 ——
+// 用户明明觉得「输入过多」（2026-11-26 截图报的就是这个）。所以再加一道原文的尺子：
+// 400 字在 760px 宽的欄里约 230px，正好在 240px 门槛下面一点点 —— 这一档就是给宽欄兜底的；
+// 16 行是「整段代码粘进来」那种。两道取或：窄欄靠高度，宽欄靠字数。
+const LONG_CARD_CHARS = 400;
+const LONG_CARD_LINES = 16;
 /** 超长条目分三类：用户消息、AI 回答、工具输出。谁收成卡由设置里的三个开关定。 */
 type LongCardKind = "user" | "assistant" | "tool";
 /**
@@ -1211,9 +1217,15 @@ export class ChatView {
     if (item.kind === "user") {
       this.clearTurnFails();
       // 桥那份才是准的：pi 可能把 `/skill:grilling` 记成别的名字，args 也可能被折得不一样。
-      // 只重建 body（节点留着 —— 刻度带指着它），按钮里的闭包拿的仍是乐观那条的文本。
+      // **就地把内容换掉、不换节点**：这块 `.body` 正被 240px 折叠 / D418 卡片那个 ResizeObserver
+      // 盯着的 —— `replaceWith()` 换掉节点后，观察者还挂在已经离线的旧节点上，下一量就是 0，
+      // 卡片与折叠双双撒手（刚发出去的长消息就那样铺满屏，要等下一次重建才恢复）。
       const body = node.querySelector(".body");
-      if (body) body.replaceWith(this.buildUserBody(item));
+      if (body) {
+        const fresh = this.buildUserBody(item);
+        body.className = fresh.className;
+        body.replaceChildren(...Array.from(fresh.childNodes));
+      }
       // #197: 桥那份还多一枚待发状态（乐观那条不知道自己在排队），徽标按它重画。
       this.users.delete(localId);
       this.users.set(item.id, { node, item });
@@ -1693,7 +1705,7 @@ export class ChatView {
       const body = this.buildUserBody(item);
       // 带图的消息不收卡：卡里只露三行正文，图被藏到卡后面 —— 那不是「太长」，那是附件。
       const carded = this.longCards.user && !item.images?.length;
-      wrap.append(who, carded ? this.longCard(body, "user", item.id) : this.foldable(body, 240));
+      wrap.append(who, carded ? this.longCard(body, "user", item.id, item.text) : this.foldable(body, 240));
       // 别人发我一条 PR 链接，我也要能直接在面板里看 —— 同一个解析器，不看是谁写的消息。
       if (this.onGithubOpen) wrap.append(...this.githubCardsFor(item.text, 2));
     } else {
@@ -1975,16 +1987,18 @@ export class ChatView {
       head.setAttribute("aria-expanded", String(open));
     };
     const measure = () => {
-      // scrollHeight 是内容高度：折着量、展开量、拉宽了再量，读到的都是同一件事。
-      // 开、关两道门槛差 40px（滞环）：卡片自己的边框会把正文挪动一两像素，卡在 240 上下时
-      // 一开一关会互相触发 ResizeObserver，翻来覆去没完；留出一条缝就稳定了。
-      tall = tall ? body.scrollHeight > LONG_CARD_PX - 40 : body.scrollHeight > LONG_CARD_PX + 8;
       // 行数字数按**原文**算更可信：助手那条正文是 markdown 渲染出来的，`innerText` 里每个 `<p>`
       // 之间多一个空行，30 行的回答会数成 59 行。用户消息是 `pre-wrap` 纯文本、工具输出是 `.out`
       // 纯文本，`innerText` 就等于原文，所以只有助手这条传 `source`。
       const { lines, chars } = longCardCounts(source ?? (body.innerText || ""));
       const meta = head.querySelector(".lm-meta");
       if (meta) meta.textContent = lines ? tr("{p1} 行 · {p2} 字", { p1: lines, p2: chars }) : "";
+      // 两道尺子取或：渲染高度（窄欄、长代码），或原文长度（宽欄里那段中长文）。
+      const longByCount = chars >= LONG_CARD_CHARS || lines >= LONG_CARD_LINES;
+      // scrollHeight 是内容高度：折着量、展开量、拉宽了再量，读到的都是同一件事。
+      // 开、关两道门槛差 40px（滞环）：卡片自己的边框会把正文挪动一两像素，卡在 240 上下时
+      // 一开一关会互相触发 ResizeObserver，翻来覆去没完；留出一条缝就稳定了。
+      tall = longByCount || (tall ? body.scrollHeight > LONG_CARD_PX - 40 : body.scrollHeight > LONG_CARD_PX + 8);
       apply();
     };
     const setOpen = (open: boolean) => {
