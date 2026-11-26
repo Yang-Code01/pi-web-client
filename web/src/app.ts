@@ -13,6 +13,7 @@ import { copilotFromFrame, creditsToUsd, formatAge, formatCredits, formatReset, 
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
 import { GithubPanel } from "./github-panel.ts";
+import { ghAccountPair } from "./github-shared.ts";
 import { refreshGithubCards } from "./github-cards.ts";
 import { githubFeature } from "./github-settings.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
@@ -471,8 +472,13 @@ export class App {
   /**
    * 评审按哪个 gh 账号查 PR：多账号机器上「机器 gh 登的是谁」与「这个会话该用谁」常常不是
    * 一个人，私有仓换个号就是 `Could not resolve to a Repository`（#17545）。
+   *
+   * 存的是**人显式选的那个**（`accounts.json` 的会话映射，空 = 跟随工作区）。实际查询用的是哪个
+   * 号在 `reviewAccountUsed` 里 —— 两者混用的话，下拉会永远停在具体账号上，「跟随工作区」选不中。
    */
   private reviewAccount = "";
+  /** 按当前设置**实际**用的号（会话 → 工作区 → 全局 → gh active）：只用来把号写给人看。 */
+  private reviewAccountUsed = "";
   /** 能切到的账号（`githubApi.state()` 那份，带「有没有存 PAT」）。 */
   private reviewAccounts: { login: string; pat: boolean }[] = [];
   /** 上面那份是按哪个会话/目录问的：面板重画很频繁，不能每次都打一遍桥。 */
@@ -2767,8 +2773,10 @@ export class App {
         this.reviewPrs = Array.isArray(msg.prs) ? (msg.prs as ReviewPr[]) : [];
         this.reviewRemoteRepo = String(msg.repo ?? "");
         this.reviewPrsAt = Date.now();
-        // 桥回的是「实际按谁查的」：解析结果可能来自工作区/全局设置，与面板本地猜的不一致。
-        if (msg.login) this.reviewAccount = String(msg.login);
+        // 桥回的是「实际按谁查的」：解析结果可能来自工作区 / 全局设置，与面板本地猜的不一致。
+        // 只记进 `reviewAccountUsed`（写给人看）；`reviewAccount` 是**人选的那个**，被它盖掉下拉就永远
+        // 停在具体账号上、「跟随工作区」选不中。空号也得写回去，否则会留着上一个账号。
+        this.reviewAccountUsed = msg.login ? String(msg.login) : "";
         this.reviewPrError = msg.ok ? "" : errText(msg) || String(msg.error ?? "");
         this.reviewPrsLoading = false;
         // 手输的号不在列表里时不要被第一项悄悄顶掉：只在没选过时挑一个。
@@ -18914,6 +18922,7 @@ export class App {
     this.reviewPrsAt = 0;
     this.reviewAccounts = [];
     this.reviewAccount = "";
+    this.reviewAccountUsed = "";
     this.reviewAccountsFor = "";
     this.reviewRepo = "";
     this.reviewPin = "";
@@ -19148,7 +19157,10 @@ export class App {
         if (this.reviewAccountsFor !== key) return;
         const pats = state.pats ?? [];
         this.reviewAccounts = (state.accounts ?? []).map((a) => ({ login: a.login, pat: pats.includes(a.login) }));
-        this.reviewAccount = String(state.session?.login ?? "");
+        // `state.session` 是**解析结果**（会话 → 工作区 → 全局 → gh active）：拆成「人选的」与「实际用的」。
+        const pair = ghAccountPair(state.session ?? null);
+        this.reviewAccount = pair.account;
+        this.reviewAccountUsed = pair.accountUsed;
         if (this.queueTab === "review") this.renderQueue();
       })
       .catch(() => {
@@ -19200,6 +19212,7 @@ export class App {
       prsLoading: this.reviewPrsLoading,
       prError: this.reviewPrError,
       account: this.reviewAccount,
+      accountUsed: this.reviewAccountUsed,
       accounts: this.reviewAccounts,
       model: this.reviewModel,
       focus: this.reviewFocus,

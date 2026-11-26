@@ -3081,6 +3081,7 @@ export const en: Dict = {
   "抄送": "Cc",
   "账号": "Account",
   "跟随工作区": "Follow workspace",
+  "跟随工作区（{p1}）": "Follow workspace ({p1})",
   "现在按 {p1} 查 PR": "PRs are queried as {p1}",
   "按会话默认的账号查 PR": "PRs are queried as the session's account",
   "用的是账号：{p1}": "Account in use: {p1}",

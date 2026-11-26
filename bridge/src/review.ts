@@ -798,7 +798,7 @@ export interface StartOptions {
   /** 哪个会话发起的：评审状态按「仓库 + 会话」分开存。 */
   session?: string;
   /**
-   * 这个会话选的 GitHub 账号（`{ GH_TOKEN }`，由 `github.ts` 的 `reviewGhEnv()` 算好）。
+   * 这个会话选的 GitHub 账号（`{ GH_TOKEN }`，由 `github.ts` 的 `sessionGhAccount()` 算好）。
    * 不传就沿用桥自己的环境 —— 也就是 gh 的机器 active 账号（多账号机器上经常不是同一个）。
    */
   ghEnv?: NodeJS.ProcessEnv;

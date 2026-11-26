@@ -7,7 +7,8 @@
  *
  * 这个用例盯三件事：
  *   1. `sessionGhAccount()` 认得出会话账号，并给出它的令牌；
- *   2. `resolvePullRequest()` 把令牌带进 `gh pr view` 与两处 `git fetch`（假 gh 把 `GH_TOKEN` 记下来）；
+ *   2. `resolvePullRequest()` 把令牌带进 `gh pr view`（假 gh 记下 `GH_TOKEN`）**与两处 `git fetch`**
+ *      （远端用 `ext::` 转给一个 node 小脚本，它把 git 子进程看到的 `GH_TOKEN` 写下来）；
  *   3. 仓库看不到这种「对端已经回答」的失败不再换代理重试，并且报 `repo_unseen`。
  *
  *   node --experimental-strip-types bridge/tests/review-gh-account-e2e.mjs
@@ -72,6 +73,33 @@ git(["commit", "-q", "-m", "pr head"], work);
 git(["push", "-q", "origin", "HEAD:refs/pull/17545/head"], work);
 git(["reset", "-q", "--hard", "HEAD~1"], work);
 
+/**
+ * git 那侧的令牌怎么验：让 `origin` 走 `ext::`，命令是一个 node 脚本 —— 它把看到的 `GH_TOKEN`
+ * 追加到 `GIT_LOG`，再把请求转给真的 `git upload-pack`。
+ *
+ * 为什么不用「PATH 里放一个假 git」：`gitpr.ts` 的 `run()` 是 `execFile`、不带 shell，Windows 上
+ * libuv 只认 `.exe` / `.com`，`.cmd` 根本起不来，那种写法在 CI 里永远是绿的假断言。
+ * `ext::` 的命令行**不做引号解析**（Windows 上会把 `"路径"` 整段当参数交给 node），
+ * 所以路径按 work 目录给相对值、用正斜杠。
+ */
+const GIT_LOG = path.join(tmp, "git-token.txt");
+process.env.SPY_OUT = GIT_LOG;
+fs.writeFileSync(
+  path.join(work, "upload-spy.mjs"),
+  [
+    'import { spawnSync } from "node:child_process";',
+    'import fs from "node:fs";',
+    "fs.appendFileSync(process.env.SPY_OUT, String(process.env.GH_TOKEN ?? \"\") + \"\\n\");",
+    'const r = spawnSync("git", ["upload-pack", process.argv[2] || "."], { stdio: "inherit" });',
+    "process.exit(r.status ?? 1);",
+  ].join("\n"),
+);
+git(["config", "protocol.ext.allow", "always"], work);
+const originUrl = `ext::node upload-spy.mjs ${path.relative(work, origin).split(path.sep).join("/")}`;
+git(["remote", "set-url", "origin", originUrl], work);
+const gitTokens = () =>
+  fs.existsSync(GIT_LOG) ? fs.readFileSync(GIT_LOG, "utf8").split("\n").filter(Boolean) : [];
+
 /** 假 gh 记下来的调用。 */
 const ghCalls = () =>
   fs.existsSync(LOG)
@@ -91,6 +119,7 @@ test("sessionGhAccount：按会话选的账号取令牌，而不是机器 active
 
 test("resolvePullRequest：gh 与 git 都带上会话账号的 GH_TOKEN", async () => {
   clearLog();
+  fs.rmSync(GIT_LOG, { force: true });
   resetPrCache();
   const gh = await sessionGhAccount(work, "sess-cas");
   const lines = [];
@@ -107,6 +136,9 @@ test("resolvePullRequest：gh 与 git 都带上会话账号的 GH_TOKEN", async 
   assert.equal(views[0].token, "gho_fake_xyang-qingmin", "评审的 gh 必须用会话账号的令牌");
   // git fetch 也走同一个令牌：`gh auth git-credential` 读的就是 GH_TOKEN。
   assert.ok(lines.some((l) => l.includes("refs/pull/17545/head")), "该真的去 fetch 了 PR ref");
+  // 两处 fetch（PR ref + base）都经过 `ext::` 那个转发脚本：它记下的就是 git 子进程拿到的环境。
+  // 只断言「fetch 跑过」的话，git 那侧以后丢了 env 这个用例也发现不了（PR #700 的评审意见）。
+  assert.deepEqual(gitTokens(), ["gho_fake_xyang-qingmin", "gho_fake_xyang-qingmin"], "两处 git fetch 都要带上会话账号的令牌");
 });
 
 test("仓库看不到：报 repo_unseen，且不再绕代理重试一遍", async () => {

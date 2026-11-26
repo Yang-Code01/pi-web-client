@@ -67,12 +67,14 @@ export interface ReviewInput {
   prsLoading?: boolean;
   prError?: string;
   /**
-   * 这次查 PR 按哪个 gh 账号（`githubApi.state()` 解析出来的那个；空串 = 还没读到）。
+   * 人在下拉里**显式选**的那个账号（`accounts.json` 的会话映射）；空串 = 跟随工作区。
    *
    * 多账号机器上「机器 gh 登的是谁」和「这个会话该用谁」常常不是一个人：`ISID/cas3-onecas-api`
    * 那种私有仓，换个人就是 `Could not resolve to a Repository`（#17545）。所以号摆出来，也能换。
    */
   account?: string;
+  /** 按当前设置**实际**用的号（会话 → 工作区 → 全局 → gh active）：跟随工作区时它通常非空。 */
+  accountUsed?: string;
   /** 能切到的账号（没读到 / 只有一个时可以不画下拉）。 */
   accounts?: { login: string; pat: boolean }[];
   model?: string;
@@ -158,8 +160,10 @@ export interface ReviewView {
   hasRun: boolean;
   prsLoading: boolean;
   prError: string;
-  /** 现在按哪个账号查 PR（空串 = 不知道 / 还没读到）。 */
+  /** 在下拉里显式选中的账号（空串 = 跟随工作区）。 */
   account: string;
+  /** 实际在用哪个号（跟随工作区时也非空，用来说人话）；空串 = 一个都没有。 */
+  accountUsed: string;
   /** 能切到的账号（第一个是当前用的那个）。 */
   accounts: { login: string; pat: boolean }[];
   /** 这个模式下该填的那一格空着：按钮要点不着。 */
@@ -486,6 +490,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     prsLoading: Boolean(input.prsLoading),
     prError: (input.prError ?? "").trim(),
     account: (input.account ?? "").trim(),
+    accountUsed: (input.accountUsed ?? "").trim(),
     accounts: input.accounts ?? [],
     missing,
     missingWhy,
@@ -807,7 +812,9 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       if (view.prError) {
         menu.append(el("div", "rv-hint", view.prError));
         // 查不到仓库时，人第一件事就是怀疑「是不是用错号了」：把号直接写出来（#17545）。
-        if (view.account) menu.append(el("div", "rv-hint rv-acct-why", tr("用的是账号：{p1}", { p1: view.account })));
+        // 写的是**实际用的**那个（跟随工作区时它也非空），不是下拉里选的那一项。
+        const used = view.accountUsed || view.account;
+        if (used) menu.append(el("div", "rv-hint rv-acct-why", tr("用的是账号：{p1}", { p1: used })));
       } else if (view.prsLoading) menu.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
       else if (!view.prs.length) menu.append(el("div", "rv-hint", view.prQuery ? tr("没有匹配的 PR") : tr("没有 open 的 PR")));
       else {
@@ -870,8 +877,10 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       const pick = el("select", "rv-ref rv-acct-pick") as HTMLSelectElement;
       pick.disabled = view.running;
       pick.title = view.account ? tr("现在按 {p1} 查 PR", { p1: view.account }) : tr("按会话默认的账号查 PR");
-      const follow = el("option", "", tr("跟随工作区")) as HTMLOptionElement;
+      const follow = el("option", "", view.accountUsed && !view.account ? tr("跟随工作区（{p1}）", { p1: view.accountUsed }) : tr("跟随工作区")) as HTMLOptionElement;
       follow.value = "";
+      // 选中判断只能看「人显式选的那个」：`view.account` 在跟随工作区时是空的，
+      // 实际用的号在 `accountUsed` —— 拿它判断的活，这一项永远不会被选中（评审 #700）。
       follow.selected = !view.account;
       pick.append(follow);
       let listed = false;
