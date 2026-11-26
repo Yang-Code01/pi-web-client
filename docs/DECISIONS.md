@@ -8248,3 +8248,26 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **验证。** `node probes/jira-panel-single-mount.mjs`（真桥 + 真 Chromium，`/api/jira/**` 在浏览器层拦成假数据）：改前一次点击挂载 4 次、带 `mac-window-in` 4 次、切分区累计 5 次、点「刷新」累计 9 次；改后 1 / 1 / 1 / 1，Esc 后不复活，关了再开只再挂一次（11 项全绿，连跑三次稳定）。`npm run typecheck` 全仓通过；`node probes/mac-dialogs.mjs` 28 个弹层对齐（Jira 面板的材质标记没丢）。
 
 **顺带记一笔（未修）。** `probes/jira-handoff-name.mjs` 在 main 上就已经是红的，与本次改动无关：它的假路由表里没有 `/api/jira/recent`，兜底回 `{}`，`loadRecent()` 写入 `items: undefined`，`recentUnread()` 里的 `.filter` 抛 `Cannot read properties of undefined (reading 'filter')`，面板停在加载态。D341（最近消息）上线时漏补了桩。
+
+## D415 评审对象从「会话目录」扩成「评审仓库」：桥端按会话钉住，页面只跟帧（用户 2026-11-26「现在代码评审只支持当前目录是否为 git 目录……支持大文件夹下的子目录如果是 git 目录，也可以支持，可以弹出 dialog 来让用户选」）
+
+**问题。** 代码评审的取样目录只有一个来源：`app.ts` 的 `reviewDir()` = `session.cwd`。于是「大文件夹里放着好几个仓库」这种最常见的布局完全用不了：桥端 `gitRoot(dir)` 抛 `not_git`，面板只剩一句「这个目录不是 git 仓库，没有东西可评」。用户要的是能往下走一层，而且**选一次就记住**，不要每次都选。顺带暴露一个真 bug：`review.pick`（范围 / PR 号 / 模型这些）也走 `gitRoot(dir)`，not-git 时 `catch {}` 静默失败，等于「这个目录下连面板摆成什么样都存不住」。
+
+**决定。**
+
+1. **状态放在桥上，按会话落盘。** 新文件 `<state>/review/pins/<sessionKey>.json` 存 `{ dir }`（`bridge/src/review.ts` 的 `readReviewPin / setReviewPin / reviewPinFile`）。页面**不**把这个值存 localStorage：多页签、换浏览器、重启桥都必须看到同一份，而 localStorage 是按浏览器、按页面各一份。
+2. **目录解析只有一个入口。** 所有 `review.*` 帧照旧带**会话目录**（页面不知道会话该评哪个仓库，也不该知道），桥上统一走 `effectiveReviewDir(dir, session) -> { repo, pinned }`：有钉子就 `gitRoot(pin)` 归一成仓库根，钉失效（目录没了 / 不再是仓库）时**清掉钉子**再回落 `gitRoot(dir)`。于是 `review.state / review.prs / review.prinfo / review.run / review.mark / review.clean / review.pick / review.cancel` 全都不用各写一遍「评哪个」。
+3. **选择器是「往下走 + 敲路径」，不是全树扫描。** 新 `web/src/repopicker.ts`（`RepoPicker`，`markSurface(..., "window")` 的居中紧凑窗，起手是会话目录）：`api.dirs()` 列一层、**展开一行才** `api.gitProbe()` 打「分支 · N 处改动」徽标，面包屑一路能上走到盘根；搜索只筛已露出的行（与 #392「目录与仓库」窗的策略一致），想跳远就直接把路径敲进搜索框回车 —— 底栏「使用 `<输入路径>`」交给桥的 `gitRoot` 解析，敲 `erp/api/src` 会落成 `erp/api`。**不做**递归整树扫描：`PROBE_LIMIT = 64` / 并发 4 的探针在大目录上会把打开弹层变成几秒钟的等待。
+4. **不自动弹窗。** 会话目录不是仓库时，not-git 那块死文案换成「说明 + 选一个仓库」按钮；已经是仓库时抬头常驻 `评审仓库：<名字>` chip（点开选择器），钉住过才有右侧 `×` 回会话目录。用户明确不要「进页签就跳窗」。
+5. **联动一律读「有效目录」**：点意见开差异工作台（`openReviewFinding`）、「交给 AI 修」的 `reviewFixContext()`（本来就取 `reviewRepo || reviewDir()`）、PR 列表、以及**链接卡灰钮的判据**（`githubRepoKey()` 改用 `reviewRepoDir()`，D401 那句「评审只在会话目录里跑」随之作废 —— 现在按评审仓库算）。
+6. **`review.prs.get` / `review.prinfo.get` 开始带 `sessionId`。** 以前它们只带 `dir`，桥也只用 `dir`；现在「评哪个」要看会话，必须带。
+
+**为什么不把钉子塞进 `review.pick`。** `pick` 是「这个人最后一次把面板摆成什么样」，语义是 UI 默认值，`applyReviewPick()` 每个会话只回灌一次；而钉子决定**评审的输入对象**，改了它就得把状态、PR 列表、refs、正在跑的一轮全换掉（`applyReviewPin()` 干的就是这件事）。混在一起会出现「用户改了范围顺手把仓库也改回去了」。
+
+**代价 / 可改。**
+- 钉子在**会话**上，不在页签上；同一会话开两个页签看到的是同一个评审仓库（这正是要的）。
+- 选择器只探「已展开的一层」，一屏 64 行封顶；再深的目录要继续点或敲路径，不做后台深扫。
+- 钉住的目录被删 / 变成普通目录时不会弹提示，桥静默清钉子回落会话目录 —— 用户会看到抬头 chip 变回会话目录名。
+- `gitRoot()` 仍是同步 `execFileSync`；`effectiveReviewDir` 每次帧都调一次（含 `realpath` + 一次 git 调用），与会话目录时代的开销同量级。
+
+**验证。** `npm run test:review`：新增 `bridge/tests/review-pin-unit.mjs`（无钉 / 有钉归一成仓库根 / 会话隔离 / 清钉真删文件 / 钉失效回落并清钉 / 坏 JSON 当没钉 / 空 session 落 `_nosession`）与 `web/tests/review-pin-unit.mjs`（`reviewView` 的 `repo / repoName / repoPinned` 三态 + `repoNameOf` 盘根与尾斜杠）。`npm --prefix web run typecheck`、`npm --prefix bridge run typecheck` 通过。端到端见 `probes/review-repo-picker.mjs`。

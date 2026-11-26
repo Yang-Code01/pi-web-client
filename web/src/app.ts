@@ -71,6 +71,7 @@ import { queueWhatsnew } from "./whatsnew.ts";
 import { renderLogHead, renderLogPage, type SelfLog } from "./changelog.ts";
 import { openHotdeploy } from "./hotdeploy.ts";
 import { BranchSheet } from "./branchsheet.ts";
+import { RepoPicker } from "./repopicker.ts";
 import { ReposSheet } from "./repossheet.ts";
 import { ReviewSheet } from "./review-sheet.ts";
 import { PrSheet, type PrInfo } from "./pr-sheet.ts";
@@ -519,6 +520,16 @@ export class App {
   private reviewAsked = "";
   /** 桥算出来的仓库根（页面只给 cwd）；帧用它做过滤。 */
   private reviewRepo = "";
+  /**
+   * 「评审仓库」：人从子目录里挑的那个仓库根（`review.pinned` 帧的 `dir`）。空串 = 跟着会话目录走。
+   * 它在**桥上**按会话落盘（`review/pins/<session>.json`），所以刷新、换页签、重启桥都还在；
+   * 页面这边只跟着帧走，别自己猜。
+   */
+  private reviewPin = "";
+  /** 仓库选择器：同时只开一扇。 */
+  private reviewPicker: RepoPicker | null = null;
+  /** `reviewRefs` 是按哪个目录拉回来的：换了仓库要重拉（不然那几格留着上一个仓库的分支）。 */
+  private reviewRefsFor = "";
   private models: ModelInfo[] = [];
   /** D150：目录是两段式（快的先到、带扩展的补上），所以记住最近一次失败原因与「什么时候问过」。 */
   private modelsError = "";
@@ -2692,7 +2703,11 @@ export class App {
         // 评审按会话分开存：别的会话的帧不许动这一个（以前只按仓库分，切会话还看得到上一份）。
         const session = String(msg.sessionId ?? "");
         if (session && this.currentId && session !== this.currentId) break;
-        if (msg.dir && dir && String(msg.dir) !== dir && String(msg.dir) !== this.reviewRepo) break;
+        // 「评审仓库」变了：先把这一份清零，下面这帧就是新仓库的（顺序反过来就会把旧的留在屏幕上）。
+        if (typeof msg.pinned === "string") this.applyReviewPin(msg.pinned);
+        // 帧可能来自「刚才那个目录」（换仓库那一下还在路上的）：只认当前这个。
+        const want = this.reviewRepo || this.reviewPin || dir;
+        if (msg.dir && want && String(msg.dir) !== want && String(msg.dir) !== dir) break;
         if (msg.error) {
           this.reviewError = errText(msg);
           this.reviewState = null;
@@ -2749,6 +2764,21 @@ export class App {
         const number = Number(msg.pr) || 0;
         this.reviewPrInfo = { number, info: (msg.info ?? null) as PrInfo | null, error: msg.ok ? "" : errText(msg) || String(msg.error ?? "") };
         this.reviewPrSheet?.set(number, this.reviewPrInfo.info, this.reviewPrInfo.error);
+        break;
+      }
+      case "review.pinned": {
+        // 钉住的仓库换了（本页签选的、别的页签选的、或者失效被桥清掉的都走这一帧）。
+        if (msg.sessionId && this.currentId && String(msg.sessionId) !== this.currentId) break;
+        const error = String(msg.error ?? "").trim();
+        if (error) {
+          // 认不出仓库（路径打错了 / 那儿不是仓库）：窗口留着让人改，别把上一份钉子画上去。
+          this.flashToast(errText(msg) || error, true, 7000);
+          break;
+        }
+        this.applyReviewPin(String(msg.dir ?? ""));
+        this.reviewPicker?.close();
+        void this.loadReview();
+        if (this.queueTab === "review") this.renderQueue();
         break;
       }
       case "review.ocr":
@@ -10079,8 +10109,9 @@ export class App {
 
   private githubRepoKey(): string {
     const id = this.currentId ?? "";
-    const cwd = (this.session?.cwd ?? "").trim();
-    return id && cwd ? `${id}|${cwd}` : "";
+    // 跟着「评的那个目录」走：钉了子仓库之后，卡片那颗钮该问的是子仓库有没有远端。
+    const dir = this.reviewRepoDir();
+    return id && dir ? `${id}|${dir}` : "";
   }
 
   /**
@@ -10101,11 +10132,11 @@ export class App {
   private learnGithubRepo(key: string): void {
     if (this.githubRepoAsked.has(key)) return;
     const id = this.currentId ?? "";
-    const cwd = (this.session?.cwd ?? "").trim();
-    if (!id || !cwd) return;
+    const dir = this.reviewRepoDir();
+    if (!id || !dir) return;
     this.githubRepoAsked.add(key);
     void githubApi
-      .state(id, cwd)
+      .state(id, dir)
       .then((state) => {
         const repo = String(state?.repo ?? "").trim();
         // 认不出仓库（不是 git 仓 / 没远端）也记一笔空值：别每次画卡都再问一遍。
@@ -18769,9 +18800,50 @@ export class App {
 
   // ---------------------------------------------------------------- 代码评审（#651）
 
-  /** 面板评的是**当前会话所在目录**；仓库根由桥自己找（返回的帧里 `dir` 就是根）。 */
+  /** 会话所在的目录（`review.get` 等帧一律带它；实际评哪个仓库由桥按钉子解析）。 */
   private reviewDir(): string {
     return (this.session?.cwd ?? "").trim();
+  }
+
+  /** 面板真正评的那**一个目录**：钉住的仓库优先，没有钉子才是会话目录。 */
+  private reviewRepoDir(): string {
+    return this.reviewPin || this.reviewDir();
+  }
+
+  /**
+   * 桥上钉住的仓库变了（人选的、或者失效被桥清掉的）：这一份状态全归零，重新问一次。
+   * 不清就等于把上一个仓库的记录 / PR 号画在新仓库上 —— 那是最像「结论正常、其实全是别人的」的错。
+   */
+  private applyReviewPin(pin: string): void {
+    const next = pin.trim();
+    if (next === this.reviewPin) return;
+    this.reviewPin = next;
+    this.reviewState = null;
+    this.reviewProgress = null;
+    this.reviewError = "";
+    this.reviewNotGit = false;
+    this.reviewAsked = "";
+    this.reviewRepo = "";
+    this.reviewRemoteRepo = "";
+    this.reviewRefs = [];
+    this.reviewRefsFor = "";
+    this.reviewPrs = [];
+    this.reviewPrsAsked = "";
+    this.reviewPrsLoading = false;
+    this.reviewPrError = "";
+    this.reviewPrInfo = { number: 0, info: null, error: "" };
+    this.reviewFocus = "";
+    this.reviewFollowRun = false;
+    this.reviewPickRestored = "";
+    this.reviewPickSent = "";
+    this.reviewPrMenu = false;
+    this.reviewSheet?.close();
+    this.reviewPrSheet?.close();
+    // #666 那颗钮的判据跟着评审目录走：换了仓库就得重新认一次（旧的期望仓库也作废）。
+    this.reviewExpectRepo = "";
+    this.githubRepos.clear();
+    this.githubRepoAsked.clear();
+    refreshGithubCards();
   }
 
   /**
@@ -18819,10 +18891,13 @@ export class App {
     this.reviewPrsAsked = "";
     this.reviewPrsAt = 0;
     this.reviewRepo = "";
+    this.reviewPin = "";
     this.reviewRemoteRepo = "";
     this.reviewRefs = [];
+    this.reviewRefsFor = "";
     this.reviewSheet?.close();
     this.reviewPrSheet?.close();
+    this.reviewPicker?.close();
   }
 
   private loadReview(): void {
@@ -18836,8 +18911,14 @@ export class App {
     this.reviewAsked = dir;
     this.reviewOcrAskedAt = Date.now();
     this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
-    if (this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
-    void api.gitRefs(dir).then((refs) => {
+    // PR 列表按**评的那个仓库**排队（钉了子仓库时它与会话目录不是一回事）。
+    const ask = this.reviewPin || dir;
+    if (this.reviewPrsAsked !== ask) this.loadPullRequests(ask);
+    // 分支名册按**评的那个仓库**拉（钉住的子仓库和会话目录不是一套分支）。
+    const repo = this.reviewRepo || this.reviewPin || dir;
+    if (this.reviewRefsFor === repo) return;
+    this.reviewRefsFor = repo;
+    void api.gitRefs(repo).then((refs) => {
       const all = refs.groups.flatMap((g) => g.refs.map((r) => r.name)).filter(Boolean);
       this.reviewRefs = all.slice(0, 60);
       if (!this.reviewBase || this.reviewBase === "main") {
@@ -18845,7 +18926,39 @@ export class App {
         if (base) this.reviewBase = base;
       }
       if (this.queueTab === "review") this.renderQueue();
-    }).catch(() => {});
+    }).catch(() => {
+      // 没拉到就当没问过：换仓库 / 换会话时还要能重试。
+      if (this.reviewRefsFor === repo) this.reviewRefsFor = "";
+    });
+  }
+
+  /** 「选一个仓库」：从会话目录往下挑（也可以直接交一个路径），选中的那个钉在桥上。 */
+  private openRepoPicker(): void {
+    if (this.reviewPicker) return;
+    // 从「现在评的那个仓库」起手（没钉过就是会话目录）：换仓库时人在原地，不用再一路点回来。
+    const start = this.reviewPin || this.reviewDir();
+    if (!start) {
+      this.flashToast(tr("先打开一个会话：评审评的是它的目录。"), true, 6000);
+      return;
+    }
+    const picker = new RepoPicker({
+      start,
+      current: this.reviewPin,
+      onPick: (dir) => {
+        // 交给桥去归一（`gitRoot`）与落盘：认不出仓库就退回来一句话，窗口留着让人改路径。
+        this.socket.send({ type: "review.pin", sessionId: this.currentId, dir });
+      },
+    });
+    picker.onClose = () => {
+      if (this.reviewPicker === picker) this.reviewPicker = null;
+    };
+    picker.mount(document.getElementById("app") ?? document.body);
+    this.reviewPicker = picker;
+  }
+
+  /** 回到「评会话目录」：桥那边把钉子删掉（删完会回一帧 `review.pinned`，`dir` 是空串）。 */
+  private clearReviewRepo(): void {
+    this.socket.send({ type: "review.pin", sessionId: this.currentId, dir: "" });
   }
 
   /** `reviewModel` 存的是 `provider/id`；弹层与目录用 `id`，这里来回换。 */
@@ -18942,7 +19055,8 @@ export class App {
     this.reviewTarget = pick.target;
     this.reviewCommit = pick.commit;
     // 恢复出来的 PR 号要能看到标题、也要能带出「评什么」，所以顺手把列表拉一次。
-    if (this.reviewMode === "pr" && !this.reviewPrs.length && this.reviewPrsAsked !== dir) this.loadPullRequests(dir);
+    const repo = this.reviewRepoDir();
+    if (this.reviewMode === "pr" && !this.reviewPrs.length && this.reviewPrsAsked !== repo) this.loadPullRequests(repo);
   }
 
   /**
@@ -18985,7 +19099,8 @@ export class App {
     this.reviewPrsAt = Date.now();
     this.reviewPrsLoading = true;
     this.reviewPrError = "";
-    this.socket.send({ type: "review.prs.get", dir });
+    // 带 sessionId：桥上按会话解析有效的评审目录（钉住的仓库可能有，也可能没有）。
+    this.socket.send({ type: "review.prs.get", dir, sessionId: this.currentId });
   }
 
   private renderReviewPanel(): HTMLElement {
@@ -19030,6 +19145,8 @@ export class App {
       prError: this.reviewPrError,
       model: this.reviewModel,
       focus: this.reviewFocus,
+      repo: this.reviewRepo || this.reviewPin,
+      repoPinned: Boolean(this.reviewPin),
       modelLabels: this.reviewModelLabels(),
     });
     const effective = this.reviewEffectiveModel();
@@ -19147,6 +19264,8 @@ export class App {
         this.renderQueue();
       },
       onDetails: () => this.openReviewSheet(),
+      onPickRepo: () => this.openRepoPicker(),
+      onClearRepo: () => this.clearReviewRepo(),
       onOpenRun: (runId) => {
         // 人自己点了某一条：看它，不再跟着新开的那一次跑。
         this.reviewFocus = runId;
@@ -19231,7 +19350,7 @@ export class App {
     const cached = this.reviewPrInfo.number === number ? this.reviewPrInfo : null;
     if (cached) this.reviewPrSheet.set(number, cached.info, cached.error);
     else this.reviewPrSheet.setLoading();
-    this.socket.send({ type: "review.prinfo.get", dir, pr: number });
+    this.socket.send({ type: "review.prinfo.get", dir, sessionId: this.currentId, pr: number });
   }
 
   /** 「评审详情」dialog：跑着看时间线，跑完看结果；同一个会话只开一扇。 */
@@ -19318,7 +19437,8 @@ export class App {
 
   /** 一条意见 → 分支工作台的「差异」页签，选中那个文件并把命中的那段代码标出来。 */
   private openReviewFinding(path: string, line: number): void {
-    const dir = this.reviewDir();
+    // 差异工作台要在**评的那个仓库**里开：钉住的子仓库和会话目录不是一套 diff。
+    const dir = this.reviewRepo || this.reviewRepoDir();
     if (!dir) return;
     const run = this.reviewActiveRun();
     const finding = run?.findings?.find((f) => f.path === path && (line === 0 || f.startLine === line)) ?? null;
