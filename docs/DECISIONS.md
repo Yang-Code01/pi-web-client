@@ -8248,3 +8248,28 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 **验证。** `node probes/jira-panel-single-mount.mjs`（真桥 + 真 Chromium，`/api/jira/**` 在浏览器层拦成假数据）：改前一次点击挂载 4 次、带 `mac-window-in` 4 次、切分区累计 5 次、点「刷新」累计 9 次；改后 1 / 1 / 1 / 1，Esc 后不复活，关了再开只再挂一次（11 项全绿，连跑三次稳定）。`npm run typecheck` 全仓通过；`node probes/mac-dialogs.mjs` 28 个弹层对齐（Jira 面板的材质标记没丢）。
 
 **顺带记一笔（未修）。** `probes/jira-handoff-name.mjs` 在 main 上就已经是红的，与本次改动无关：它的假路由表里没有 `/api/jira/recent`，兜底回 `{}`，`loadRecent()` 写入 `items: undefined`，`recentUnread()` 里的 `.filter` 抛 `Cannot read properties of undefined (reading 'filter')`，面板停在加载态。D341（最近消息）上线时漏补了桩。
+
+## D415 选区改成实心强调色，强调色实底的气泡里反相（用户「拖动选中的颜色……现在拖动选中不明显」2026-11-26）
+
+**问题。** `mac-base.css` 的全局选区是 `color-mix(in srgb, var(--accent) 34%, transparent)`，而 D353 之后用户消息气泡 `.msg.user .body` 本身就是 `background: var(--accent); color: var(--accent-ink)` 的实底：选区把强调色再叠一遍在强调色上，底对比正好 **1.00**，整段选中与没选中一模一样（`.scratch/selection-visible/mac-dark-user.png` 之前那一版就是全蓝一片）。助手气泡的玻璃面板上是 1.55–1.60:1，长段落里也看不出边界；内网通「我发的」气泡 `.msg.mine .bub` 同色同病。
+
+**决定。** 全局 `::selection` 改实心强调色 + `--accent-ink` 字；强调色实底的气泡里反相成 `--accent-ink` 实块 + 强调色字。主界面写 `mac-base.css`，内网通页面（`peer.html` 只加载 `peer.css`、不加载 `mac-base.css`）写 `peer.css`，两处形状一样：
+
+```css
+html[data-ui="mac"] ::selection { background: var(--accent); color: var(--accent-ink); }
+html[data-ui="mac"] .msg.user .body::selection,
+html[data-ui="mac"] .msg.user .body ::selection { background: var(--accent-ink); color: var(--accent); }
+
+/* peer.css */
+::selection { background: var(--accent); color: var(--accent-ink); }
+.msg.mine .bub::selection,
+.msg.mine .bub ::selection { background: var(--accent-ink); color: var(--accent); }
+```
+
+两处都不再带透明度。顺手还把三处「只设背景、不设字色」的清掉：`styles.css` 的 `.tr-sed::selection`、`.ed-ta::selection` 以前是 `--accent-dim` 半调底（浅色主题下是淡蓝，反白字根本读不出），现在同样用实心强调色 + 反白字。
+
+**为什么。** 选区的对比对象是它自己下面那层，只要底色里已经有强调色，同色叠同色就必然消失；调透明度只是把 1.00 往上挪一点（34% → 62% 也只到 2.3）。两面各取一极（实心强调色 / 反相实块）才能在任意底色上留下硬边界。顺带把 `color` 钉死：以前只设背景，选中蓝色链接、行内代码时字色与选区底撞成一片。不选「反相黑白实底」那版：对比更高（14–16），但浅色主题下是黑块，偏离 macOS 习惯、也丢了强调色标识。
+
+**代价。** 强调色实底的按钮（`.btn.primary`、`.chip.on` 等）里选字还是会看不见，那些不是可读文本区，没有单独反相。`.ed-code .ed-ta::selection` 保留自己的 `color: transparent`（特异性 0,2,1 高于 0,1,1），代码编辑器的高亮层不受影响。
+
+**验证。** `node probes/selection-visible.mjs`（桩桥 + 真 Chromium，真鼠标拖选，量**画出来的像素**而不是 CSS 声明）：改前用户气泡 1.00（三套主题都是）、助手气泡 1.55 / 1.56 / 1.60，7 项红；改后用户 4.02 / 3.65 / 3.65、助手 3.86 / 4.40 / 4.44，24 项全绿。探针只跑主界面；内网通那条用的是同一对 token（accent 实底 / accent-ink 字），对比度等于上表「用户气泡」一行，**但内网通页面本身没起实例实测**。坑记一笔：programmatic `getSelection().addRange()` 在没聚焦的文档里 Chrome 不上色，只看计算样式或那种选区截出来的图会误判成「已经改好」。
