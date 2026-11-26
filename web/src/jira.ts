@@ -14,7 +14,7 @@ import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
 import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, isUnread, issueMeta, keyMask, mergeSearchPage, recentSeenKey, recentSnippet, relativeTime, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
-import { markSurface, retireOverlay } from "./modal.ts";
+import { markSurface, mountOverlay, retireOverlay } from "./modal.ts";
 import { sessionNameFromIssueKey } from "./session-name.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraRecentItem, JiraSearchMeta, JiraUserOption, RecentKind, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
@@ -136,6 +136,10 @@ function codeOf(err: unknown): string {
 export class JiraPanel {
   private readonly host: JiraHost;
   private root: HTMLElement | null = null;
+  // 外壳（.jc-console）只在 open() 里建一次；render() 只换它的孩子，不重建它。
+  // 不然每次重画都是一棵新节点，Mac 材质给它的入场动画（mac-window-in）就跟着重演一遍：
+  // 一次 open() 至少重画四次（loading → config → me → 列表），看上去就是「弹了好几次」（D384，邮箱那边同病）。
+  private shell: HTMLElement | null = null;
   private state: PanelState = { kind: "loading" };
   private config: JiraConfigView | null = null;
   /** 表单的当前值：每次重画都从这里恢复，别让一次渲染把用户敲的字弄丢。 */
@@ -294,8 +298,25 @@ export class JiraPanel {
       this.close();
     };
     document.addEventListener("keydown", this.esc, true);
+    this.mountShell();
     this.render();
     void this.reload();
+  }
+
+  private mountShell(): void {
+    const back = markSurface(el("div", "jc-back"), "window");
+    back.addEventListener("mousedown", (ev) => {
+      if (ev.target === back) this.close();
+    });
+    const shell = el("section", "jc-console");
+    shell.setAttribute("role", "dialog");
+    shell.setAttribute("aria-modal", "true");
+    back.append(shell);
+    this.root = back;
+    this.shell = shell;
+    // 挂 `#app` 里，不挂 `document.body`：外观「字号」是 `#app { zoom: var(--ui-scale) }`，
+    // 挂 body 上的弹层不跟它缩（与 notesheet / scratch 同一条理由）。
+    mountOverlay(back);
   }
 
   close(): void {
@@ -309,6 +330,7 @@ export class JiraPanel {
     window.clearTimeout(this.userTimer);
     retireOverlay(this.root);
     this.root = null;
+    this.shell = null;
     this.pane = null;
     this.host.onClose?.();
     this.renderedSection = null;
@@ -487,14 +509,9 @@ export class JiraPanel {
     this.fields = { relations: [] };
     if (this.state.kind === "ready") this.siteUrl = this.state.siteUrl;
 
-    const back = markSurface(el("div", "jc-back"), "window");
-    back.addEventListener("mousedown", (ev) => {
-      if (ev.target === back) this.close();
-    });
-    const shell = el("section", "jc-console");
-    shell.setAttribute("role", "dialog");
-    shell.setAttribute("aria-modal", "true");
-    shell.setAttribute("aria-label", tr("Jira"));
+    const back = this.shell;
+    if (!back) return;
+    back.setAttribute("aria-label", tr("Jira"));
 
     const head = el("header", "jc-head");
     const main = el("div", "jc-head__main");
@@ -558,13 +575,7 @@ export class JiraPanel {
     pane.append(this.paneEl(this.state));
     body.append(nav, pane);
 
-    shell.append(head, banners, body, this.footEl());
-    back.append(shell);
-    // 挂 `#app` 里，不挂 `document.body`：外观「字号」是 `#app { zoom: var(--ui-scale) }`，
-    // 挂 body 上的弹层不跟它缩（与 notesheet / scratch 同一条理由）。
-    if (this.root) this.root.replaceWith(back);
-    else (document.getElementById("app") ?? document.body).append(back);
-    this.root = back;
+    back.replaceChildren(head, banners, body, this.footEl());
     this.pane = pane;
     this.renderedSection = active;
     pane.scrollTop = this.scrollBySection.get(active) ?? 0;
