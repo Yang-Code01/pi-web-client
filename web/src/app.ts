@@ -19529,9 +19529,11 @@ export class App {
     }
     const sheet = new ReviewSheet(this.reviewPanelInput());
     sheet.onClose = () => {
-      if (this.reviewSheet === sheet) this.reviewSheet = null;
-      if (this.reviewFocus !== runId) return;
-      // 浮层关了就没有「正在看哪一次」了：面板回到最新那一次的口径。
+      // 只收尾「现在这一扇」：窗被人关掉又重开过时，`reviewSheet` 已经不是它，状态归新那扇管。
+      if (this.reviewSheet !== sheet) return;
+      this.reviewSheet = null;
+      // 焦点只活到浮层关掉为止。中途从这张卡换看另一张（reviewFocus 换了 runId、窗还是这扇）
+      // 也要清掉 —— 否则关窗后 reviewActiveRun() 一直按旧那一次算，直到换会话。
       this.reviewFocus = "";
       if (this.queueTab === "review") this.renderQueue();
     };
@@ -19569,8 +19571,9 @@ export class App {
     // 记下来的作用是把「确认过但还没跑」和「刚跑过」的次序理顺，下次打开就在最近里。
     if (modelInfo) rememberReviewModel(modelInfo.provider, modelInfo.id);
     // 新开一条：不再自动把人拽到某一次上（D426）—— 停在记录列表，在跑那张卡自己显示进度。
+    // 浮层开着时**不清** reviewFocus：那一位是「正在看的那一次」，与新开这条无关；
+    // 没开浮层时它本来就是空串，清了也没有意义。
     // （以前这里会乐观塞一份 runId 空串的进度；并发以后那样会跟另一条的进度混在一起。）
-    this.reviewFocus = "";
     this.saveReviewPick();
     this.socket.send({
       type: "review.run",

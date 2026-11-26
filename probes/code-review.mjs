@@ -237,12 +237,26 @@ try {
     );
   }
   // 300px 里下拉吃掉整行时，旁边的按钮会被挤出面板 —— 用坐标钉住它（2026-11-24 真踩过）。
-  const panel = await page.locator(".review").boundingBox();
-  const btn = await page.locator(".rv-run").first().boundingBox();
+  // 跑着的时候面板按计时器重画：`locator.boundingBox()` 会撞上元素被换掉那一下、返回 null（实测偶发
+  // 「no box」），所以两个框一起在页面里量，量不到就等下一次重画。
+  const geom = await until(
+    () =>
+      page.evaluate(() => {
+        const panel = document.querySelector(".review");
+        const btn = document.querySelector(".rv-run");
+        if (!panel || !btn) return null;
+        const a = panel.getBoundingClientRect();
+        const b = btn.getBoundingClientRect();
+        if (!a.width || !b.width) return null;
+        return { width: a.width, px: a.x, bx: b.x, bw: b.width };
+      }),
+    10000,
+    "panel geometry",
+  );
   check(
     "面板没被长路径撑宽，按钮也没被下拉挤出面板",
-    Boolean(panel && btn) && panel.width <= 420 && btn.x >= panel.x && btn.x + btn.width <= panel.x + panel.width + 1,
-    panel && btn ? `panel ${Math.round(panel.width)} / 按钮右缘 ${Math.round(btn.x + btn.width - panel.x)}` : "no box",
+    geom.width <= 420 && geom.bx >= geom.px && geom.bx + geom.bw <= geom.px + geom.width + 1,
+    `panel ${Math.round(geom.width)} / 按钮右缘 ${Math.round(geom.bx + geom.bw - geom.px)}`,
   );
   // 「完整详情 ›」：记录卡右下角那个入口，打开的是**这张卡**那次；左边时间线、右边结果。
   await page.locator(".rv-run-card").first().locator(".rv-run-more").click();

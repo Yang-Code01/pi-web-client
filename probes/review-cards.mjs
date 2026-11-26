@@ -361,12 +361,24 @@ ok((await count(".rv-focus")) === 0, "面板里不再有点开的那一次（.rv
 {
   const before = await count(".rv-run-card");
   cast({ type: "review.started", sessionId: SID, runId: "r-new" });
+  // 桥是先落一条 running 记录、再广播 review.state / review.started；这里照同一顺序来。
+  const fresh = run({ id: "r-new", status: "running", pr: 703, prTitle: "feat(review): 新开一条", model: "GLM-5.4" });
+  RUNS.unshift(fresh);
   cast({
-    type: "review.progress",
+    type: "review.state",
+    dir: CWD,
     sessionId: SID,
-    progress: { ...PROGRESS, runId: "r-new", startedAt: new Date().toISOString(), totalFiles: 5, reviewedFiles: 0 },
+    state: STATE,
+    progresses: [PROGRESS, { ...PROGRESS, runId: "r-new", startedAt: new Date().toISOString(), totalFiles: 5, reviewedFiles: 0 }],
+    cap: 2,
+    pinned: "",
   });
-  await sleep(400);
+  // 等卡片数真的变成 before+1，不用固定的 sleep 赌渲染时序。
+  const grew = await page
+    .waitForFunction((n) => document.querySelectorAll(".rv-run-card").length === n, before + 1, { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+  ok(grew, `新开一条多一张卡（${before} → ${before + 1}）`);
   ok((await count(".rv-focus")) === 0, "新开一条不会把面板换成展开页");
   ok((await count(".rv-run-card.is-live")) >= 1, "在跑的那条在记录里有一张卡");
   ok((await count(".rv-run-card.is-live .rv-run-stop")) >= 1, "卡上有自己的「停止」");
@@ -376,23 +388,25 @@ ok((await count(".rv-focus")) === 0, "面板里不再有点开的那一次（.rv
 
 // 7. 字号 150%（#app 有 zoom）下按钮仍在卡内右下角
 {
+  // 同一把尺子先量 100%：缩放那一段红了才能分辨「缩放的问题」还是「本来就不在角落」。
+  const corner = () =>
+    page.evaluate(() => {
+      const card = document.querySelector(".rv-run-card");
+      const more = card?.querySelector(".rv-run-more");
+      if (!card || !more) return null;
+      const a = card.getBoundingClientRect();
+      const b = more.getBoundingClientRect();
+      return { cx: a.x, cw: a.width, cy: a.y, ch: a.height, x: b.x, y: b.y, w: b.width, h: b.height };
+    });
+  const inCorner = (m) => !!m && m.x + m.w <= m.cx + m.cw + 0.5 && m.y + m.h <= m.cy + m.ch + 0.5 && m.x > m.cx + m.cw / 2;
+  const base = await corner();
+  ok(inCorner(base), "100%：按钮在卡内右下角");
   await page.evaluate(() => document.documentElement.style.setProperty("--ui-scale", "1.5"));
   await sleep(400);
-  await page.evaluate(() => document.documentElement.style.setProperty("--ui-scale", "1.5"));
-  await sleep(400);
-  const scaled = await page.evaluate(() => {
-    const card = document.querySelector(".rv-run-card");
-    const more = card?.querySelector(".rv-run-more");
-    if (!card || !more) return null;
-    const a = card.getBoundingClientRect();
-    const b = more.getBoundingClientRect();
-    return { cx: a.x, cw: a.width, cy: a.y, ch: a.height, x: b.x, y: b.y, w: b.width, h: b.height };
-  });
-  ok(
-    !!scaled && scaled.x + scaled.w <= scaled.cx + scaled.cw + 0.5 && scaled.y + scaled.h <= scaled.cy + scaled.ch + 0.5,
-    "150% 缩放：按钮仍在卡内",
-  );
+  const scaled = await corner();
+  ok(!!scaled && scaled.x + scaled.w <= scaled.cx + scaled.cw + 0.5 && scaled.y + scaled.h <= scaled.cy + scaled.ch + 0.5, "150% 缩放：按钮仍在卡内");
   ok(!!scaled && scaled.x > scaled.cx + scaled.cw / 2, "150% 缩放：按钮仍在右下角");
+  ok(!!scaled && scaled.w > base.w * 1.2, `150% 缩放真的生效了（按钮 ${base.w.toFixed(1)} → ${scaled.w.toFixed(1)}px）`);
   await page.evaluate(() => document.documentElement.style.removeProperty("--ui-scale"));
 }
 
