@@ -278,18 +278,28 @@ try {
   await sleep(300);
   const afterCommit = await page.$$eval(".stream .msg", (els) => els.length);
   check("鼠标没收时补画先不跑", afterCommit === beforeCancel, `msg=${afterCommit} before=${beforeCancel}`);
+  check("pointerdown 到 cancel 之间页面确实在轮询", pollsDuring >= 1, `polls=${pollsDuring}`);
   await page.evaluate(() => document.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true })));
+  // 「不靠 1.5s 兜底」得掐着表量：以前这里给 2s 的宽限，比 whenPointerFree 的 1.5s 兜底还长，
+  // 把 pointercancel 的监听整条删掉也照样绿。现在只给 800ms —— 兜底到点之前必须已经画完。
+  const cancelAt = Date.now();
   let afterCancel = afterCommit;
-  for (let k = 0; k < 20 && afterCancel <= beforeCancel; k++) {
-    await sleep(100);
+  let cancelMs = -1;
+  for (let k = 0; k < 32; k++) {
     afterCancel = await page.$$eval(".stream .msg", (els) => els.length);
+    if (afterCancel > beforeCancel) {
+      cancelMs = Date.now() - cancelAt;
+      break;
+    }
+    await sleep(25);
   }
-  const cancelText = await page.$$eval(".stream .msg", (els) => els.map((e) => e.textContent ?? "").join("|"));
+  const cancelText = await page.$$eval(".stream .msg", (els) => (els.map((e) => e.textContent ?? "")).join("|"));
   check(
-    "pointercancel 之后补画照样补上（不靠 1.5s 兜底）",
-    afterCancel > beforeCancel && cancelText.includes("第三条待补画") && pollsDuring >= 1,
-    `msg=${afterCancel} before=${beforeCancel} polls=${pollsDuring}`,
+    "pointercancel 之后补画立刻来（<800ms，不是等到 1.5s 兜底）",
+    afterCancel > beforeCancel && cancelMs >= 0 && cancelMs < 800 && cancelText.includes("第三条待补画"),
+    `msg=${afterCancel} before=${beforeCancel} ${cancelMs >= 0 ? `${cancelMs}ms` : "没来"}`,
   );
+
   // ---- 4. 聊天记录搜索框：主区里第二个会组字的输入框，同样不许被重画掐断 ----
   // 两路重画都在这里：搜索防抖自己（打字 160ms 后 renderMain）与对方来信（轮询发现签名变了）。
   await page.keyboard.press("Control+F");
@@ -341,6 +351,37 @@ try {
   check("搜索框上屏后补画，来信出现在消息流里", sFlushed, `msg=${await page.$$eval(".stream .msg", (els) => els.length)} before=${sMsgBefore}`);
   await page.keyboard.press("Escape");
   await sleep(200);
+
+  // ---- 5. 组字悄悄没了，连 compositionend / blur 都不来：看门狗兜底，主区不许被永久冻住 ----
+  // 真实来源是「输入法 / 浏览器把组字悄悄结束了，事件一个都没派」。这里合成一次 compositionstart
+  // 之后什么都不发，组字标记就永远为真。看门狗 IME_STALL_MS = 20s，所以这一段真的等它 ——
+  // 探针因此比别处长 20 秒；把 main.ts 里那个 setTimeout 删掉，这段就红（消息再也上不了屏）。
+  await body.click();
+  await page.evaluate(() => {
+    document.querySelector(".peer-rich").dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  });
+  await sleep(120);
+  const stuckBefore = await page.$$eval(".stream .msg", (els) => els.length);
+  const pollsStuck = polls.messages;
+  inbox.push(msg("aaaaaaaa-0000-4000-8000-000000000005", "第五条：卡住的组字", ZHANG));
+  await sleep(3000);
+  check(
+    "卡住的组字确实把重画拦住了",
+    (await page.$$eval(".stream .msg", (els) => els.length)) === stuckBefore && polls.messages - pollsStuck >= 1,
+    `msg=${await page.$$eval(".stream .msg", (els) => els.length)} before=${stuckBefore} polls=${polls.messages - pollsStuck}`,
+  );
+  const recoverAt = Date.now();
+  let recovered = false;
+  for (let k = 0; k < 130 && !recovered; k++) {
+    await sleep(200);
+    recovered = (await page.$$eval(".stream .msg", (els) => els.length)) > stuckBefore;
+  }
+  const recoveredText = await page.$$eval(".stream .msg", (els) => (els.map((e) => e.textContent ?? "")).join("|"));
+  check(
+    "看门狗到点自己放行（20s 内不会永久冻住）",
+    recovered && Date.now() - recoverAt < 26_000 && recoveredText.includes("第五条：卡住的组字"),
+    `${Date.now() - recoverAt}ms ${recovered ? "" : "没恢复"}`,
+  );
 
   // 假 API 要盖住页面用到的每一个接口：新增接口没假造时，上面那些「没看错」的断言会静默变假。
   check("假 API 盖住了页面用到的所有接口", unknown.size === 0, [...unknown].join(", "));

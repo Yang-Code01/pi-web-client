@@ -375,6 +375,14 @@ let repaintAfterIme = false;
  */
 let imeCommit: (() => void) | null = null;
 /**
+ * 正在组字的那个元素。组字靠浏览器，`compositionend` / `blur` 不一定都会来（Chrome 会把组字悄悄结束），
+ * 所以还留了一个看门狗按它记账：{@link IME_STALL_MS}。
+ */
+let imeEl: HTMLElement | null = null;
+/** 看门狗：这么久没收到这个元素的任何组字 / 按键动静，就当这次组字已经没了（兜底，见 `guardIme` 里的 `arm`）。 */
+const IME_STALL_MS = 20_000;
+let imeStallTimer = 0;
+/**
  * 组字期间 `renderMain()` 被推迟（D440），紧跟它的那一步（`searchInput.focus()`、`topicArea.focus()`…）
  * 就会落在旧 DOM 上：要么还是 null，要么焦点给了一个马上就要被换掉的节点。这类收尾用 `afterMain()`
  * 排队，等那次补画真做完再跑。
@@ -396,20 +404,41 @@ function drainAfterMain(): void {
  * 另一个里打拼音照样会被来信（或搜索防抖自己的重画）敲断。
  */
 function guardIme(el: HTMLElement, onCommit?: () => void): void {
+  const arm = (): void => {
+    window.clearTimeout(imeStallTimer);
+    imeStallTimer = window.setTimeout(() => {
+      // 组字既不发 compositionend、也没失焦，还一点动静都没了：别把主区冻在那里。
+      if (imeComposing && imeEl === el) imeEnd();
+    }, IME_STALL_MS);
+  };
   el.addEventListener("compositionstart", () => {
     imeComposing = true;
     imeCommit = onCommit ?? null;
+    imeEl = el;
+    arm();
   });
+  // 还在组字 / 还在打字就把看门狗往后推：只有真没动静了才让它动手。
+  for (const type of ["compositionupdate", "keydown", "input"] as const) {
+    el.addEventListener(type, () => {
+      if (imeComposing && imeEl === el) arm();
+    });
+  }
   el.addEventListener("compositionend", imeEnd);
   // 拼到一半点别处：有的输入法不发 compositionend（失焦就把候选收回去了），别让主区从此不再重画。
   el.addEventListener("blur", imeEnd);
 }
 
+function clearImeState(): void {
+  imeComposing = false;
+  imeCommit = null;
+  imeEl = null;
+  window.clearTimeout(imeStallTimer);
+}
+
 function imeEnd(): void {
   if (!imeComposing) return;
-  imeComposing = false;
   const commit = imeCommit;
-  imeCommit = null;
+  clearImeState();
   commit?.();
   if (!repaintAfterIme && !commit) return;
   repaintAfterIme = false;
@@ -3420,9 +3449,8 @@ function composeBox(t: Thread): HTMLElement {
   composer?.destroy();
   composer = null;
   // 换会话本身已经结束了组字：别让旧编辑器留下的「组字中」把主区永久卡住。
-  imeComposing = false;
+  clearImeState();
   repaintAfterIme = false;
-  imeCommit = null;
   composeFor = t.nodeId;
   const wrap = h("div", "compose");
   replyHost = h("div", "replyhost");
