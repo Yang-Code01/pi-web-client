@@ -370,6 +370,11 @@ let imeComposing = false;
 /** 组字期间被挡下来的重画：等组字结束补跑一次。 */
 let repaintAfterIme = false;
 /**
+ * 组字上屏后、补画之前要跑的一步（现在只有聊天记录搜索框用：它组字期间不搜，上屏后的文字才是查询词）。
+ * 组字开始时按「谁在组字」登记一次，上屏 / 失焦时消费掉。
+ */
+let imeCommit: (() => void) | null = null;
+/**
  * 组字期间 `renderMain()` 被推迟（D439），紧跟它的那一步（`searchInput.focus()`、`topicArea.focus()`…）
  * 就会落在旧 DOM 上：要么还是 null，要么焦点给了一个马上就要被换掉的节点。这类收尾用 `afterMain()`
  * 排队，等那次补画真做完再跑。
@@ -382,6 +387,36 @@ function afterMain(fn: () => void): void {
 function drainAfterMain(): void {
   if (!afterMainQueue.length) return;
   for (const fn of afterMainQueue.splice(0)) fn();
+}
+
+/**
+ * 给主区里**会收输入法组字**的元素挂上「组字期间不重画」（D439）：
+ * `paintMain()` 会 `mainEl.replaceChildren()`，元素被摘下再挂回时 Chrome 会静默结束组字，
+ * 所以聊天输入框 `.peer-rich` 和聊天记录搜索框 `.searchbar input` 都得挂上 —— 只挂一个，
+ * 另一个里打拼音照样会被来信（或搜索防抖自己的重画）敲断。
+ */
+function guardIme(el: HTMLElement, onCommit?: () => void): void {
+  el.addEventListener("compositionstart", () => {
+    imeComposing = true;
+    imeCommit = onCommit ?? null;
+  });
+  el.addEventListener("compositionend", imeEnd);
+  // 拼到一半点别处：有的输入法不发 compositionend（失焦就把候选收回去了），别让主区从此不再重画。
+  el.addEventListener("blur", imeEnd);
+}
+
+function imeEnd(): void {
+  if (!imeComposing) return;
+  imeComposing = false;
+  const commit = imeCommit;
+  imeCommit = null;
+  commit?.();
+  if (!repaintAfterIme && !commit) return;
+  repaintAfterIme = false;
+  // 拼到一半直接去点按钮（比如「发送」）：这一下 mousedown 已经落在旧节点上，立刻重画会把
+  // mouseup 换到新节点、click 只落到公共祖先。等这一下点完再画（与 commitSearch 同一个理由）。
+  if (pointerHeld) whenPointerFree(renderMain);
+  else renderMain();
 }
 
 // ---------------------------------------------------------------- 小工具
@@ -1557,7 +1592,13 @@ function searchBar(t: Thread): HTMLElement {
   input.type = "search";
   input.placeholder = tr("搜索这段聊天记录");
   input.value = S.search?.q ?? "";
-  input.addEventListener("input", () => {
+  // 重画时把焦点与光标还回来（rerender 认 data-keep）：主区整块重画会把这个 input 摘下再挂回。
+  // 值不能和左栏搜索框重名，否则 querySelector 会挑中左栏那个。
+  input.dataset.keep = "find";
+  input.addEventListener("input", (ev) => {
+    // 组字期间框里是半截拼音：不搜（搜出来的全是错的），也不重画（重画会把组字掐断）。
+    // 上屏后的值由下面 guardIme 的 commit 回调补搜。
+    if (imeComposing || (ev as InputEvent).isComposing) return;
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(() => {
       if (!S.search) return;
@@ -1567,6 +1608,14 @@ function searchBar(t: Thread): HTMLElement {
       searchJump = true;
       renderMain();
     }, 160);
+  });
+  // 这个 input 也在 `mainEl.replaceChildren()` 的范围里：组字期间来信同样会把它摘下重挂，
+  // 组字被静默结束、拼音变死字。与聊天输入框同一套守卫（D439）。
+  guardIme(input, () => {
+    if (!S.search) return;
+    S.search.q = input.value;
+    S.search.at = Number.MAX_SAFE_INTEGER;
+    searchJump = true;
   });
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") {
@@ -3373,6 +3422,7 @@ function composeBox(t: Thread): HTMLElement {
   // 换会话本身已经结束了组字：别让旧编辑器留下的「组字中」把主区永久卡住。
   imeComposing = false;
   repaintAfterIme = false;
+  imeCommit = null;
   composeFor = t.nodeId;
   const wrap = h("div", "compose");
   replyHost = h("div", "replyhost");
@@ -3400,22 +3450,7 @@ function composeBox(t: Thread): HTMLElement {
   composer = ed;
   textInput = body;
   // 组字开始 / 结束：把「组字中攒下的重画」推迟到结束之后（D335 的过滤框、搜索列表是同一套做法）。
-  body.addEventListener("compositionstart", () => {
-    imeComposing = true;
-  });
-  const imeEnd = (): void => {
-    if (!imeComposing) return;
-    imeComposing = false;
-    if (!repaintAfterIme) return;
-    repaintAfterIme = false;
-    // 拼到一半直接去点按钮（比如「发送」）：这一下 mousedown 已经落在旧节点上，立刻重画会把
-    // mouseup 换到新节点、click 只落到公共祖先。等这一下点完再画（与 commitSearch 同一个理由）。
-    if (pointerHeld) whenPointerFree(renderMain);
-    else renderMain();
-  };
-  body.addEventListener("compositionend", imeEnd);
-  // 拼到一半点别处：有的输入法不发 compositionend（失焦就把候选收回去了），别让主区从此不再重画。
-  body.addEventListener("blur", imeEnd);
+  guardIme(body);
 
   const bar2 = h("div", "bar2");
   const attach = iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId));

@@ -144,12 +144,12 @@ try {
   /** 输入框里文字的文本 / 组字事件计数。 */
   const text = () => body.evaluate((el) => el.textContent);
   const ime = () => page.evaluate(() => window.__ime);
-  const watchIme = () =>
-    page.evaluate(() => {
+  const watchIme = (sel = ".peer-rich") =>
+    page.evaluate((sel) => {
       const w = window;
       w.__ime = { starts: 0, ends: 0 };
       const attach = () => {
-        const el = document.querySelector(".peer-rich");
+        const el = document.querySelector(sel);
         if (!el || el.dataset.imeWatched) return;
         el.dataset.imeWatched = "1";
         el.addEventListener("compositionstart", () => w.__ime.starts++);
@@ -157,7 +157,7 @@ try {
       };
       attach();
       new MutationObserver(attach).observe(document.getElementById("main"), { childList: true, subtree: true });
-    });
+    }, sel);
 
   // ---- 0. 对照：不来消息时连着两次组字，必须是同一次组字会话 ----
   await watchIme();
@@ -290,6 +290,58 @@ try {
     afterCancel > beforeCancel && cancelText.includes("第三条待补画") && pollsDuring >= 1,
     `msg=${afterCancel} before=${beforeCancel} polls=${pollsDuring}`,
   );
+  // ---- 4. 聊天记录搜索框：主区里第二个会组字的输入框，同样不许被重画掐断 ----
+  // 两路重画都在这里：搜索防抖自己（打字 160ms 后 renderMain）与对方来信（轮询发现签名变了）。
+  await page.keyboard.press("Control+F");
+  await page.waitForSelector(".searchbar input", { timeout: 5000 });
+  await watchIme(".searchbar input");
+  await page.locator(".searchbar input").click();
+  await cdp.send("Input.imeSetComposition", { text: "ni", selectionStart: 2, selectionEnd: 2 });
+  await sleep(120);
+  await cdp.send("Input.imeSetComposition", { text: "nihao", selectionStart: 5, selectionEnd: 5 });
+  // 越过 160ms 的搜索防抖：以前这一次重画就把组字掐掉了，连对方来信都不用。
+  await sleep(500);
+  const sMid = await ime();
+  const sVal = await page.locator(".searchbar input").inputValue();
+  const sFocused = await page.evaluate(() => !!document.activeElement?.closest(".searchbar"));
+  check("搜索框组字：防抖重画不掐断组字", sMid.starts === 1 && sMid.ends === 0, `starts=${sMid.starts} ends=${sMid.ends}`);
+  check("搜索框组字：焦点还在框里", sFocused, `focused=${sFocused}`);
+  check("搜索框组字：拼音还在框里", sVal === "nihao", JSON.stringify(sVal));
+
+  const sMsgBefore = await page.$$eval(".stream .msg", (els) => els.length);
+  const sPolls = polls.messages;
+  inbox.push(msg("aaaaaaaa-0000-4000-8000-000000000004", "搜索框里来一条", ZHANG));
+  await sleep(5600);
+  const sAfter = await ime();
+  const sValAfter = await page.locator(".searchbar input").inputValue();
+  const sBarStill = await page.$$eval(".searchbar input", (els) => els.length);
+  check("搜索框组字期间确实在轮询（>=2 次 /messages）", polls.messages - sPolls >= 2, `polls=${polls.messages - sPolls}`);
+  check(
+    "搜索框组字：来信不掐断组字",
+    sAfter.starts === 1 && sAfter.ends === 0 && sBarStill === 1,
+    `starts=${sAfter.starts} ends=${sAfter.ends} input=${sBarStill}`,
+  );
+  check("搜索框组字：来信后拼音还在框里", sValAfter === "nihao", JSON.stringify(sValAfter));
+  // 上屏：半截拼音不能变成死字留在搜索框里。上屏的「在」在消息流里正好出现一次（「小在吗」），
+  // 顺带证明「上屏后的值」真的被拿去搜了 —— 组字期间跳过的那种半截拼音查询不会命中它。
+  await cdp.send("Input.insertText", { text: "在" });
+  await sleep(400);
+  const sDone = await ime();
+  const sCommitted = await page.locator(".searchbar input").inputValue();
+  check("搜索框组字：上屏恰好一次、文字是「在」", sDone.ends === 1 && sCommitted === "在", `ends=${sDone.ends} val=${JSON.stringify(sCommitted)}`);
+  const sCnt = (await page.locator(".searchbar .cnt").textContent()) ?? "";
+  check("搜索框组字：上屏后用上屏的字搜了一次（1 / 1）", sCnt.trim() === "1 / 1", JSON.stringify(sCnt));
+  check("搜索框组字：上屏后搜索条还在、焦点还在", (await page.$$eval(".searchbar input", (els) => els.length)) === 1 && (await page.evaluate(() => !!document.activeElement?.closest(".searchbar"))), "");
+  // 攒下的那次来信重画要补上：消息条数超过组字开始前的数。
+  let sFlushed = false;
+  for (let k = 0; k < 40 && !sFlushed; k++) {
+    sFlushed = (await page.$$eval(".stream .msg", (els) => els.length)) > sMsgBefore;
+    if (!sFlushed) await sleep(100);
+  }
+  check("搜索框上屏后补画，来信出现在消息流里", sFlushed, `msg=${await page.$$eval(".stream .msg", (els) => els.length)} before=${sMsgBefore}`);
+  await page.keyboard.press("Escape");
+  await sleep(200);
+
   // 假 API 要盖住页面用到的每一个接口：新增接口没假造时，上面那些「没看错」的断言会静默变假。
   check("假 API 盖住了页面用到的所有接口", unknown.size === 0, [...unknown].join(", "));
   check("route.fulfill 没有意外报错", routeErrors.length === 0, routeErrors.slice(0, 3).join(" | "));
