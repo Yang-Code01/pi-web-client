@@ -8647,3 +8647,33 @@ tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里�
 写这个测试时踩了两个坑，后来者照做：① **先占端口再起壳**。反过来（壳起来、`/healthz` 通过、再 occupy）是彩票：peer 在脑启动的尾段才 fork，真撞上「端口还是空的」它就直接绑上了，测试变成时红时绿（第一次就 15 s 超时）。② 释放占位端口时不能只 `srv.close()`：桥每 300 ms `connect` 一次，`close()` 要等这些连接收尾，回调可能久久不来（实测卡到外层 300 s 超时被掐）。先 `srv.closeAllConnections()` 再 `close()` 就好；`taskkill` 也带上 `timeout: 15000`，免得 `spawnSync` 把整轮挂死。
 
 红验证：修复前同一路径用等价的 `.scratch` 脚本跑过 —— 释放端口 8 秒后仍 `running:false`、`POST /api/peer/refresh` 回 400 `fetch failed`、状态纹丝不动（两段都红）。`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck` 均 exit 0。
+
+## D434 已读水位取「这条会话里 `{at,id}` 的最大值」，徽标不再卡 1（用户 2026-11-27「如图，我已经读取过内网通信息了，但是头像上的消息记录还有1个」＋截图）
+
+**问题。** 「邓亚文」会话打开着、最下面两条消息都在屏幕上，左侧徽标却一直是红点 1，反复点开、贴底发消息都不消。
+
+**证据链（本机真实数据，不是猜的）。** `~/.pi-peer/history/90255371-….jsonl` 末尾两行：
+
+- `note`，`at=1795746728610`，`id=01a21ad8-8aa2-769c-8d15-7d2c9023e485`（「pi无法通知」，带一张截图卡片）
+- `file`，`at=1795746727599`，`id=01a21ad8-8ab0-7717-a548-4b4c9e8bd186`（`shot-1 (9).png`）—— 在文件里排在后面
+
+`~/.pi-peer/threads.json` 里这个会话的水位是 `{"readAt":1795746727599,"readId":"01a21ad8-8ab0-…b186"}`，也就是**后到的那条文件**。而 `History.threads()` 判未读只比 `at`（`afterWatermark`），`note` 的 `at` 比水位大 1011 ms，于是永远算 1 条未读。水位是单调的、再打也是同一个值，徽标就永远清不掉。
+
+倒置的根源：**落盘顺序是「到达」顺序，`at` 是「发送」时间**。文件消息走 `begin`/`chunk`/`end`，中间那几条记录包先落盘，`end` 才把文件这条追加进历史 —— 它带着自己的 `at`，可以比上一条更早。页面打水位时用的是 `t.last`（到达顺序上最后一条），于是水位落在「比它上面那条还早」的位置上。
+
+**决定。** `peer/src/http.ts` 的 `/threads/read` 在写水位之前，把送来的 `{at,id}` 钳到该会话历史里 `afterWatermark` 意义下的最大值：
+
+```ts
+let mark = { at, id };
+for (const entry of history.read(peerId, 2000)) {
+  if (afterWatermark(entry, mark.at, mark.id)) mark = { at: entry.at, id: entry.id };
+}
+```
+
+之后 `moved` 判断、`threads.setRead`、回执 `messages.sendRead` 全部用 `mark`。前端 `markRead()` 一行没改。
+
+**为什么。** ① `/threads/read` 是水位的**唯一**写入口，钳在这里，所有调用点（打开会话、右键「标记为已读」、贴底轮询）和以后别的客户端一起修好。② 用户既然打开/贴底看了这个会话，尾巴上每一条都在眼前（页面按到达顺序画，最后一条就是屏幕上最下面那条），把水位提到尾巴的最大 `at` 不会「替用户吞掉没看的新消息」；测试里专门加了「打水位之后新到的消息仍算未读」这一段来守这条边界。③ 不改 `t.last` 的语义（仍是到达顺序最后一条）：预览、排序、会话里定位都靠它，改它牵动面大、收益为零。④ 不用「打开会话就清零」的粗暴做法：水位还要回执给对方（`sendRead`），需要真实的 `at`/`id`。
+
+**代价。** 每次 `POST /threads/read` 多读一遍该会话的历史（上限 2000 行）。本机 jsonl、只在打开会话/贴底时打，毫秒级。
+
+**验证。** 新测 `bridge/tests/peer-read-watermark.mjs`（自起真 peer + 临时 state）：`threads.json` 预置「已按 `last` 打过水位」，断言 unread === 1（修前红：`失败：等不到「打完水位未读归零」`）→ POST `/threads/read` → 断言 unread 归零 → 追加一条更新的消息断言 unread === 1 → 再打水位归零。连跑三次全绿。真实数据副本上也量过：用 `~/.pi-peer` 的拷贝起修好的 peer，`POST /threads/read` 打页面送的那条水位，返回 `meta.readAt=1795746728610 / readId=…e485`（被钳成 note 那条），`unread` 从 1 变 0。回归：`peer-history`、`peer-e2e`（含「已读水位是 `{at,id}` 双键」那一段）、`peer-group-e2e` 全过，`npm --prefix peer run typecheck` exit 0。

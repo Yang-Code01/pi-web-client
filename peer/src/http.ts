@@ -337,13 +337,23 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const at = Number(body?.at);
         const id = String(body?.id ?? "");
         if (!Number.isFinite(at) || !id) return json(res, 400, { error: "缺 at / id" });
+        // 送来的水位是页面看到的「最后一条」，可落盘顺序是**到达**顺序：文件走 begin/chunk/end，
+        // 后到的图可能比它上面那条记录包更早发出（`at` 是发送方的时间）。只按送来的那条打水位，
+        // 那条「更早发出、更晚到达」的就永远落在水位之后 —— 未读徽标卡在 1 清不掉
+        // （2026-11-27 本机「邓亚文」会话：记录包 at=…728610 在前，文件 at=…727599 在后）。
+        // 兜底到这条会话里 `{at,id}` 的最大值：用户打开 / 贴底看了这个会话，尾巴上每一条
+        // 都在眼前（页面按到达顺序画，最后一条就是屏幕上最下面那条）。
+        let mark = { at, id };
+        for (const entry of history.read(peerId, 2000)) {
+          if (afterWatermark(entry, mark.at, mark.id)) mark = { at: entry.at, id: entry.id };
+        }
         // 水位往前走了才回「已读」：告诉这段里发过消息的人。
         const before = threads.get(peerId);
-        const moved = before.readAt === undefined || afterWatermark({ at, id }, before.readAt, before.readId ?? "");
-        const meta = threads.setRead(peerId, { at, id });
+        const moved = before.readAt === undefined || afterWatermark(mark, before.readAt, before.readId ?? "");
+        const meta = threads.setRead(peerId, mark);
         if (moved) {
           try {
-            messages.sendRead(peerId, { at: before.readAt, id: before.readId }, { at, id });
+            messages.sendRead(peerId, { at: before.readAt, id: before.readId }, mark);
           } catch (err) {
             console.warn(`[peer] 已读回执没发出去：${(err as Error).message}`);
           }
