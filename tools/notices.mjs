@@ -23,7 +23,7 @@ const OUT = path.join(ROOT, "THIRD-PARTY-NOTICES.md");
 const OUT_BANNER = path.join(ROOT, "web", "src", "legal", "bundle-notices.txt");
 const WORKSPACES = [".", "web", "bridge", "peer"];
 /** 进了浏览器包（web/dist）的运行时依赖。 */
-const BUNDLED = ["@xterm/addon-fit", "@xterm/xterm", "highlight.js"];
+const BUNDLED = ["@xterm/addon-fit", "@xterm/xterm", "highlight.js", "mermaid"];
 const LICENSE_FILES = ["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "LICENCE.md", "COPYING", "COPYING.md"];
 /** 包内没有 LICENSE 文件、只声明 MIT 时补的正文（与 SPDX 的 MIT 文本一致）。 */
 const MIT_TEXT = `Permission is hereby granted, free of charge, to any person obtaining a copy
