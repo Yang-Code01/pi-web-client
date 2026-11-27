@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { statePath } from "./config.ts";
+import { MAX_AVATAR_HISTORY, statePath } from "./config.ts";
 
 /**
  * 自定义头像的字节层：落盘、按内容 hash 取、从对端拉。
@@ -20,6 +20,8 @@ export const MAX_AVATAR_BYTES = 512 * 1024;
 
 /** 本地最多留多少张（自己那张 + 最近见过的对端）。多出来的按 mtime 从旧到新删。 */
 const MAX_CACHED = 64;
+
+const AVATAR_EXTS = ["webp", "png", "jpg", "gif"] as const;
 
 export interface StoredAvatar {
   hash: string;
@@ -91,6 +93,58 @@ export function findAvatarFile(hash: unknown): { buf: Buffer; mime: string } | n
 
 export function hasAvatarFile(hash: unknown): boolean {
   return Boolean(findAvatarFile(hash));
+}
+
+export interface AvatarUpload {
+  hash: string;
+  /** 广播 / 页面共用的 id：`custom:<hash>`。 */
+  id: string;
+  mime: string;
+  bytes: number;
+  /** 文件 mtime，给「上传过的」列表排序用。 */
+  at: number;
+}
+
+/**
+ * 「上传过的」列表：只认 `avatarHistory` 里的 hash，`avatars/` 里对端的缓存不算。
+ * 文件已经不在了（手删 / 被清理）的条目直接跳过，不返回死链。
+ */
+export function listAvatarUploads(history: string[]): AvatarUpload[] {
+  const out: AvatarUpload[] = [];
+  const seen = new Set<string>();
+  for (const hash of history) {
+    if (out.length >= MAX_AVATAR_HISTORY) break;
+    if (!validHash(hash) || seen.has(hash)) continue;
+    seen.add(hash);
+    const found = findAvatarFile(hash);
+    if (!found) continue;
+    let at = 0;
+    for (const ext of AVATAR_EXTS) {
+      try {
+        at = fs.statSync(path.join(dir(), `${hash}.${ext}`)).mtimeMs;
+        break;
+      } catch {
+        /* 换下一个扩展名 */
+      }
+    }
+    out.push({ hash, id: `custom:${hash}`, mime: found.mime, bytes: found.buf.length, at });
+  }
+  return out;
+}
+
+/** 删一张本地图（只用于用户自己的上传记录）。返回是否真的删到了文件。 */
+export function deleteAvatarFile(hash: unknown): boolean {
+  if (!validHash(hash)) return false;
+  let removed = false;
+  for (const ext of AVATAR_EXTS) {
+    try {
+      fs.unlinkSync(path.join(dir(), `${hash}.${ext}`));
+      removed = true;
+    } catch {
+      /* 没有这个扩展名就接着试 */
+    }
+  }
+  return removed;
 }
 
 /** 旧缓存按 mtime 清掉，`keep` 里的 hash 永远不删（自己当前那张）。 */

@@ -12,6 +12,8 @@ export const PROTO = 1;
 export const DEFAULT_GROUP = "239.255.42.99";
 export const DEFAULT_ANNOUNCE_PORT = 7866;
 export const DEFAULT_PORT = 7865;
+/** 「我 → 头像」里最多保留多少张自己上传过的图（hash，最近在前）。 */
+export const MAX_AVATAR_HISTORY = 24;
 
 export interface PeerConfig {
   /** 本机 HTTP 端口（对端往这里投递）。 */
@@ -27,6 +29,8 @@ export interface PeerConfig {
   dnd: boolean;
   /** 头像 id（见 `avatars.ts` 的 AVATAR_IDS）。空串 = 还没挑过，index.ts 会随机补一张。 */
   avatar: string;
+  /** 自己上传过的头像 hash（最近在前）。和 avatars/ 里别人的缓存分仗靠它。 */
+  avatarHistory: string[];
   group: { address: string; port: number };
   /** 手动地址兜底：`["192.168.1.5:7865"]`。组播不通时唯一的出路。 */
   manual: string[];
@@ -111,6 +115,10 @@ export function loadConfig(): PeerConfig {
     dnd: saved.dnd === true,
     // 名单外的 id（手改过 / 将来删掉的头像）当没设，别让页面拿到一张画不出来的图。
     avatar: knownAvatar(saved.avatar),
+    // 上传记录只存 hash；格式不对 / 重复的丢掉，顺序保持「最近在前」。
+    avatarHistory: Array.isArray(saved.avatarHistory)
+      ? [...new Set(saved.avatarHistory.filter((h): h is string => typeof h === "string" && /^[0-9a-f]{16}$/.test(h)))].slice(0, MAX_AVATAR_HISTORY)
+      : [],
     group: {
       address: process.env.PI_PEER_GROUP || group.address,
       port: Number(process.env.PI_PEER_ANNOUNCE_PORT || group.port),

@@ -1287,6 +1287,22 @@ async function main(): Promise<void> {
         return json(res, 502, { error: (err as Error).message });
       }
     }
+    // 设置页「上传过的」：列表只包含用户自己传的图（对端缓存不算），删除也走这里。
+    if (url.pathname === "/api/peer/custom-avatars" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.customAvatars());
+      } catch (err) {
+        return json(res, 502, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/custom-avatars/delete" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.deleteAvatar(String(body?.hash ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
     // 选择器里的预览（D304）：本机一份文件的字节，透传 peer 的 `/fs/raw`。
     if (url.pathname === "/api/peer/fs/raw" && req.method === "GET") {
       if (publicReq) return fail(res, 403, "fs_public", "通过公网访问时不能读本机文件");

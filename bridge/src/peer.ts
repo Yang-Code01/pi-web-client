@@ -337,6 +337,16 @@ export class PeerHost {
     });
   }
 
+  /** 自己上传过的头像（设置页「上传过的」一排）。只含上传记录，不含对端缓存。 */
+  customAvatars(): Promise<{ ok: boolean; uploads: unknown[]; current: string }> {
+    return this.request("GET", "/custom-avatars");
+  }
+
+  /** 删掉一张上传过的头像；删的要是当前这张，peer 会自动换到下一张。 */
+  deleteAvatar(hash: string): Promise<{ ok: boolean; avatar: string; removed: string }> {
+    return this.request("POST", "/custom-avatars/delete", { hash });
+  }
+
   /** 忽略名单是通讯录自己的读口；页面拿它挡住「在线表兜底」把人加回来。 */
   ignored(): Promise<{ ok: boolean; nodeIds: string[] }> {
     return this.request("GET", "/ignored");

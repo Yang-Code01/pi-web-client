@@ -64,6 +64,15 @@ interface PeerView {
   status: PeerStatus | null;
 }
 
+/** 设置页「上传过的」里的一张（peer 的 avatarHistory + 本地文件）。 */
+interface UploadRow {
+  hash: string;
+  id: string;
+  mime: string;
+  bytes: number;
+  at: number;
+}
+
 interface Entry {
   id: string;
   at: number;
@@ -298,6 +307,8 @@ const S = {
   picked: null as Set<string> | null,
   /** 「我」页当前分区（左侧子导航）。只活在本页会话里，不落盘。 */
   meSection: "profile" as "profile" | "avatar" | "alerts" | "store" | "net" | "ignored",
+  /** 自己上传过的头像（最早排在后），随 /api/peer/custom-avatars 刷新。 */
+  uploads: [] as UploadRow[],
   /** 点固定消息跳过去时，这个会话临时多拉一些历史（200 → 2000）。 */
   deepFor: "",
 };
@@ -527,6 +538,14 @@ function avatar(name: string, key: string, online?: boolean, pic?: string): HTML
       { once: true },
     );
     box.append(img);
+    // 点个头像看大图（不是头像选择格 / 侧栏按钮：那两处点击有各自的事要做）。
+    box.classList.add("av-open");
+    box.title = tr("点头像看大图");
+    box.addEventListener("click", (ev) => {
+      if (box.closest("button")) return;
+      ev.stopPropagation();
+      openAvatarViewer(img.getAttribute("src") ?? "", name);
+    });
   } else {
     box.style.setProperty("--h", String(hueOf(key)));
     box.textContent = (name.trim()[0] ?? "?").toUpperCase();
@@ -572,6 +591,12 @@ async function loadStatus(): Promise<void> {
     S.view = await getJson<PeerView>("/api/peer");
   } catch {
     S.view = { enabled: false, running: false, reason: tr("拿不到状态"), status: null };
+  }
+  // 上传记录只给设置页用；拿不到就当没有，不影响主界面。
+  try {
+    S.uploads = (await getJson<{ uploads: UploadRow[] }>("/api/peer/custom-avatars")).uploads ?? [];
+  } catch {
+    S.uploads = [];
   }
   renderBar();
   renderHint();
@@ -1891,6 +1916,45 @@ function openViewer(e: Entry): void {
   });
   viewerDestroy = v.destroy;
   layerEl.append(v.root);
+}
+
+/**
+ * 点任意头像看大图：单张、不翻页。头像本身只有 34–192px，所以允许放大到 3 倍。
+ * 不调 closeLayer()：头像可能出现在「转发 / 看图」这些已经开着的弹层里，只清掉旧的那张灯箱。
+ */
+function openAvatarViewer(url: string, name: string): void {
+  if (!url) return;
+  const old = layerEl.querySelector(".iv");
+  if (old) {
+    viewerDestroy?.();
+    viewerDestroy = null;
+    old.remove();
+  }
+  const v = imageViewer({
+    items: [{ url, name: name || tr("头像") }],
+    index: 0,
+    upscale: 3,
+    onClose: () => {
+      v.destroy();
+      v.root.remove();
+      viewerDestroy = null;
+    },
+  });
+  viewerDestroy = v.destroy;
+  layerEl.append(v.root);
+}
+
+/** 设置页删除一张上传记录；删的要是当前头像，peer 会自己换到下一张。 */
+async function removeUpload(up: UploadRow): Promise<void> {
+  try {
+    await postJson("/api/peer/custom-avatars/delete", { hash: up.hash });
+    await loadStatus();
+    await loadThreads();
+    renderAll();
+    toast(tr("这张头像删掉了"));
+  } catch (err) {
+    toast((err as Error).message);
+  }
 }
 
 function locate(id: string): void {
@@ -3910,8 +3974,18 @@ function renderMe(): void {
     avBtn.setAttribute("aria-label", tr("换头像"));
     const cam = h("span", "me-cam");
     cam.append(ic("image"));
+    cam.title = tr("换头像");
     avBtn.append(avatar(st.nickname, st.nodeId, undefined, st.avatar), cam);
+    // 头像本身看大图，小相机徽标才去换头像（照片本身不再是个「换」按钮）。
     avBtn.addEventListener("click", () => {
+      const pic = avBtn.querySelector("img.av-img");
+      if (pic) return openAvatarViewer(pic.getAttribute("src") ?? "", st.nickname);
+      S.meSection = "avatar";
+      draw();
+      detail.scrollTop = 0;
+    });
+    cam.addEventListener("click", (ev) => {
+      ev.stopPropagation();
       S.meSection = "avatar";
       draw();
       detail.scrollTop = 0;
@@ -4057,6 +4131,41 @@ function renderMe(): void {
     tile.addEventListener("click", pick);
     grid.append(tile);
     card.append(grid);
+
+    // 上传过的：给自己留一排可以反复切回来，不想要了就删（只删上传记录，不碰内置）。
+    if (S.uploads.length) {
+      const hist = h("div", "me-hist");
+      hist.append(h("h3", "", tr("上传过的")));
+      const histRow = h("div", "me-histgrid");
+      for (const up of S.uploads) {
+        const item = h("div", `me-histitem${custom === up.hash ? " on" : ""}`);
+        const thumb = h("button", "me-histpick") as HTMLButtonElement;
+        thumb.type = "button";
+        thumb.title = tr("用这张头像");
+        thumb.setAttribute("aria-label", tr("用这张头像"));
+        const thumbImg = document.createElement("img");
+        thumbImg.src = avatarUrl(up.id, st.nodeId) ?? "";
+        thumbImg.alt = "";
+        thumbImg.draggable = false;
+        thumb.append(thumbImg);
+        thumb.addEventListener("click", () => {
+          if (st.avatar !== up.id) void applyAvatar(up.id);
+        });
+        const del = h("button", "me-histdel") as HTMLButtonElement;
+        del.type = "button";
+        del.title = tr("删除这张");
+        del.setAttribute("aria-label", tr("删除这张"));
+        del.append(ic("trash"));
+        del.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          void removeUpload(up);
+        });
+        item.append(thumb, del);
+        histRow.append(item);
+      }
+      hist.append(histRow, h("div", "note", tr("只保留你自己上传的；对端头像的缓存不在这里。")));
+      card.append(hist);
+    }
     wrap.append(card, h("div", "note me-hint", tr("换完会立刻广播一次；对端按需拉图，取不到时先显示名字首字母。")));
     return wrap;
   };

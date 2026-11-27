@@ -8748,7 +8748,9 @@ if (stop >= 0) {
 - **广播只带 id，不带图**：`avatar` 字段照 D436 的路径走；自定义 id 对老客户端不可识别，老页面回退首字母。
 - **回环上传** `POST /avatar`（原始字节，非 JSON）：落盘 → `cfg.avatar = custom:...` → `saveConfig` → `discovery.announce()`，回 `{ ok, avatar }`。`POST /config` 收 `custom:` 时**必须**本机真有这张文件，否则 400 —— 广播一个永远拉不到的 id，等于让别人一直看首字母。
 - **局域网取图** `GET /avatar?h=<hash>`：只回已经落盘的那张，`cache-control: public, max-age=31536000, immutable`（内容寻址，同一个 hash 的字节永远一样）。
-- **对端代取** `GET /avatar/<nodeId>?h=<hash>` 只对回环开放（桥用）：自己 → 当前文件；对端 → 优先本地缓存，没有就用他 announce 里的 `addr:port` 去 `fetchRemoteAvatar()` 拉一次（2.5s 超时、校验回来的 hash、inflight 去重、落盘复用），并且**只认他当前广播的 hash**，旧 hash 一律 404 —— 否则这个口子就是一台能无限探测别人缓存的机器。
+- **对端代取** `GET /avatar/<nodeId>?h=<hash>` 只对回环开放（桥用）：自己 → 当前这张或**上传记录里的任一张**（设置页要按各自的 hash 显示一排缩略图）；对端 → 优先本地缓存，没有就用他 announce 里的 `addr:port` 去 `fetchRemoteAvatar()` 拉一次（2.5s 超时、校验回来的 hash、inflight 去重、落盘复用），并且**只认他当前广播的 hash**，旧 hash 一律 404 —— 否则这个口子就是一台能无限探测别人缓存的机器。
+- **上传记录与删除**（用户同日追加：「上传过的在设置里面需要保留记录，方便用户切换，当然也可以删除」）：`cfg.avatarHistory: string[]`（最近的在前、去重、上限 24）是「哪些图是自己传的」的唯一凭据 —— `avatars/` 里混着对端缓存，不能靠目录判断。`GET /custom-avatars` 回 `{ uploads, current }`；`POST /custom-avatars/delete {hash}` 只删记录里的，删的正是当前头像时换到记录里下一张还有文件的，都没有就退回随机内置；两者都只对回环开放，桥再包一层 `/api/peer/custom-avatars` 与 `/api/peer/custom-avatars/delete`。
+- **点头像看大图**：「我」页的 76px 预览、hero 头像、消息里的对方头像点开 `imageViewer`（`upscale: 3`，只缩不放的默认对小图没用）；`avatar()` 生成的头像在 `button` 里（侧栏、头像选择格）时让点击照旧，其余才 `stopPropagation` 开灯箱。
 - **页面**：源图上限 12 MB；`createImageBitmap(file)` 按短边居中裁方 → 192×192 canvas → `toBlob("image/webp", .9)`，失败改 PNG，GIF 只取第一帧；成功 toast「头像换好了」，失败按「不是图片 / 太大 / 读不出来 / 太小」分别说。`avatarUrl(id, key)` 对 custom 返回 `/api/peer/avatar/<nodeId>?v=<hash>`；`<img>` 的 `error` 一次性回退成「首字母 + 色相」，对端离线、图被 prune、老数据都能落地。
 - **桥两个口子**：`POST /api/peer/avatar`（原始字节 ≤512 KB，转给 peer）与 `GET /api/peer/avatar/<nodeId>?v=<hash>`（代理 peer `/avatar/<nodeId>`，`private, max-age=86400`，上游失败 502）。
 
@@ -8756,7 +8758,9 @@ if (stop >= 0) {
 
 **代价。** 换头像会在 `avatars/` 里多一张文件（上限 64 张，满了按 mtime 淘汰旧的）；对端第一次看到新头像时要等 2.5s 超时（离线）或一次 HTTP（在线），这期间显示首字母；旧版客户端看不到自定义图；`custom:` id 里带哈希，配置手写错一个字符就会静默回退首字母。
 
-**验证。** 两份测试实例实传 309558 字节 PNG → 配置变 `custom:fc647e652ccbd521`，B 的 online 列表 12s 内同步同一 id；B 的 peer 用该 hash 拉回 200 `image/png` 309558 字节并落盘，旧 hash 404；B 的 bridge 代理同样 200；页面上传后大预览与通讯录都用新图，刷新仍在，随机换一个能切回内置；mac-dark / mac-midnight 两套主题截图无不可读块。`probes/peer-avatars.mjs` 已适配新 DOM（12 张内置 + `.me-custom` 格分开数），跑之前在实例上用 `POST /api/peer/config` 把头像重置成内置。
+**验证。** 两份测试实例实传 309558 字节 PNG → 配置变 `custom:fc647e652ccbd521`，B 的 online 列表 12s 内同步同一 id；B 的 peer 用该 hash 拉回 200 `image/png` 309558 字节并落盘，旧 hash 404；B 的 bridge 代理同样 200；页面上传后大预览与通讯录都用新图，刷新仍在，随机换一个能切回内置；mac-dark / mac-midnight 两套主题截图无不可读块。`probes/peer-avatars.mjs` 已适配新 DOM（12 张内置 + `.me-custom` 格分开数；上传两张纯色 PNG 后断言历史两张、两张缩略图字节不同、点历史切回上一张、点大图开灯箱、删当前自动换下一张、删完退回内置并清空历史），跑之前在实例上用 `POST /api/peer/config` 把头像重置成内置。本轮 **32 项全过**。
+
+> 排错记一笔：`avatarFor(自己, hash)` 最初无视请求里的 hash、永远回当前那张，导致「上传过的」一排缩略图全显示当前头像；修法是把 hash 限定在 `当前 + cfg.avatarHistory` 内再 `findAvatarFile()`，probe 里加一项「两张历史缩略图 SHA-256 不同」防回归。
 
 ## D439 「我」页改成左侧子导航（系统设置风）：六个分区、一个 pane、窄容器退化两行 chips（用户 2026-11-27「重新设计一下内网通的用户设置页面」）
 
@@ -8766,7 +8770,7 @@ if (stop >= 0) {
 
 - **一个页面、左侧子导航、右侧一个 pane**：`renderMe()` 里 `nav.me-nav`（profile / avatar / alerts / store / net / ignored 六格，各带 `ic()` 图标与 `aria-current`）+ `pane.me-pane`；`draw()` 只重建当前分区。分区选择存 `S.meSection`（默认 `profile`），**只存在内存、不落盘** —— 每次从侧栏点进来都从「个人资料」开始，不会上次停在忽略名单、这次一进来就看见它。
 - **网格挂在 `.me-body` 上，不是 `.detail.me` 上**：`@container` 的容器不能给自己改 `display`；`detail` 只负责 `max-width: 880px` 与 `container-type: inline-size`，`me-body` 才是 `176px + minmax(0, 1fr)` 的 grid。窄容器（≤600px）改单列、`me-nav` 变 `flex-wrap: wrap` 的两行 chips —— 用 `@media` 看不到，因为被左栏挤压的是面板自己的宽度。
-- **分区内容**：个人资料 = 58px hero 头像（相机徽标点了跳头像分区、`scrollTop = 0`）+ 名字 + 在线/隐身、免打扰 chips + host:port + 改名行 + 「本机身份」卡（nodeId 可复制、主机名、端口）；头像 = 76px 大预览 + 上传图片 / 随机换一个 + 12 张内置 + 自定义格 + 说明；状态与通知 = 四个 toggle；存储 = 收件箱 / 剩余空间 / 打开收件箱；发现 = 重新广播 + 手动地址；忽略名单 = 人数 + 清空。
+- **分区内容**：个人资料 = 58px hero 头像（点了开大图，相机徽标点了跳头像分区、`scrollTop = 0`）+ 名字 + 在线/隐身、免打扰 chips + host:port + 改名行 + 「本机身份」卡（nodeId 可复制、主机名、端口）；头像 = 76px 大预览（点了开大图）+ 上传图片 / 随机换一个 + 12 张内置 + 自定义格 + 说明 + **「上传过的」历史条**（44px 圆缩略图点了切换、右上角垃圾桶删除，触屏窄容器里删除按钮常显）；状态与通知 = 四个 toggle；存储 = 收件箱 / 剩余空间 / 打开收件箱；发现 = 重新广播 + 手动地址；忽略名单 = 人数 + 清空。
 - **头像格固定 7 列**（`repeat(7, minmax(0, 1fr))`、`max-width: 470px`）：`auto-fill` 在 630px 卡片里排成 11 + 2、末尾两个孤零零，7 列正好 7 + 6。自定义格是虚线圆 + `plus`，当前用自定义头像时显示自己的图并用 `--accent` 圈出。
 - **状态点让位**：hero 头像上不再压在线小圆点（和相机徽标重叠），在线/隐身/免打扰全放名字下的 chip。
 - **文案全走 `tr()`**：新增 22 条键（「个人资料」「头像」「状态与通知」「存储」「发现」「忽略名单」「本机身份」「换头像」「上传自定义头像」「正在处理…」……），en/ja 同步；`npm --prefix web run typecheck` 的 i18n-check 4453 键 × 3 语通过。
@@ -8775,4 +8779,4 @@ if (stop >= 0) {
 
 **代价。** 旧测试与新页面不同构：`probes/peer-avatars.mjs` 改等 `.me-avgrid` 并过滤 `.me-custom`，`bridge/tests/peer-ui.mjs` 在点「我」之后要多点一格「忽略名单」；高频操作「改名」从「打开就是」变成「打开 + 默认就是个人资料」，实际没多一步。
 
-**验证。** Playwright 10 项页面自检（六分区、切分区高亮、上传入口、自定义头像生效并刷新保留、窄容器导航横向、随机切回内置、无 pageerror）；mac-dark / mac-midnight 两套主题截图下卡片、虚线格、选中环、输入框都可读。守卫：`npm --prefix web run typecheck`（i18n + 头像 id 对账 + viewport 规则），`node probes/peer-avatars.mjs` 与 `node bridge/tests/peer-ui.mjs` 适配后重跑。
+**验证。** Playwright 10 项页面自检（六分区、切分区高亮、上传入口、自定义头像生效并刷新保留、窄容器导航横向、随机切回内置、无 pageerror）；mac-dark / mac-midnight 两套主题截图下卡片、虚线格、选中环、输入框都可读；收尾的 32 项 probe 覆盖上传两张、历史切换/删除、灯箱、聊天头像点击。守卫：`npm --prefix web run typecheck`（i18n + 头像 id 对账 + viewport 规则），`node probes/peer-avatars.mjs` 与 `node bridge/tests/peer-ui.mjs` 适配后重跑。

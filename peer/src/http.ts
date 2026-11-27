@@ -5,9 +5,9 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
-import { PROTO, VERSION } from "./config.ts";
-import { customAvatarHash, knownAvatar } from "./avatars.ts";
-import { findAvatarFile, fetchRemoteAvatar, hasAvatarFile, MAX_AVATAR_BYTES, pruneAvatarFiles, saveAvatarFile } from "./avatar-files.ts";
+import { PROTO, VERSION, MAX_AVATAR_HISTORY } from "./config.ts";
+import { customAvatarHash, knownAvatar, randomAvatar } from "./avatars.ts";
+import { deleteAvatarFile, findAvatarFile, fetchRemoteAvatar, hasAvatarFile, listAvatarUploads, MAX_AVATAR_BYTES, pruneAvatarFiles, saveAvatarFile } from "./avatar-files.ts";
 import type { Discovery } from "./discovery.ts";
 import { CHUNK, SANDBOX_CSP, inlineType, isHtmlType, mimeOf, typeOf } from "./files.ts";
 import type { Files } from "./files.ts";
@@ -155,7 +155,11 @@ export function createPeerServer(ctx: PeerContext): http.Server {
   async function avatarFor(who: string, hash: string): Promise<{ buf: Buffer; mime: string } | null> {
     if (who === nodeId) {
       const own = customAvatarHash(cfg.avatar);
-      return own ? findAvatarFile(own) : null;
+      // 设置页的「上传过的」会按各自的 hash 来要图，不能都回当前那张（否则一排缩略图全一样）。
+      // 只放开当前这张和上传记录，对端头像的缓存不从这个口子出。
+      const wanted = /^[0-9a-f]{16}$/.test(hash) ? hash : own;
+      if (!wanted || (wanted !== own && !cfg.avatarHistory.includes(wanted))) return null;
+      return findAvatarFile(wanted);
     }
     const peer = discovery.byId(who);
     const current = customAvatarHash(peer?.avatar || relations.get(who)?.avatar || "");
@@ -275,9 +279,11 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         if (!saved) return json(res, 400, { error: "不是支持的图片（PNG / JPEG / WebP / GIF）" });
         const changed = cfg.avatar !== saved.id;
         cfg.avatar = saved.id;
+        // 上传过的才进历史（对端缓存不算）。同一张重传只把它提到最前。
+        cfg.avatarHistory = [saved.hash, ...cfg.avatarHistory.filter((h) => h !== saved.hash)].slice(0, MAX_AVATAR_HISTORY);
         saveConfig(cfg);
-        // 自己这张永远不剔；其余按 mtime 留最近 64 张。
-        pruneAvatarFiles([saved.hash]);
+        // 自己上传过的全不剔；其余按 mtime 留最近 64 张。
+        pruneAvatarFiles(cfg.avatarHistory);
         if (changed) discovery.announce();
         return json(res, 200, { ok: true, avatar: saved.id });
       }
@@ -295,6 +301,33 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const found = await avatarFor(who, url.searchParams.get("h") ?? "");
         if (!found) return json(res, 404, { error: "没有这张头像" });
         return sendImage(res, found, "private, max-age=86400");
+      }
+
+      // 上传过的自定义头像（只给设置页用）：带 mtime，页面按「最近在前」画缩略图。
+      if (url.pathname === "/custom-avatars" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const uploads = listAvatarUploads(cfg.avatarHistory);
+        return json(res, 200, { ok: true, uploads, current: customAvatarHash(cfg.avatar) });
+      }
+
+      // 删掉一张上传过的图：历史里没有的 hash 不接（对端缓存不归这个口子管）。
+      // 如果删的正是当前头像，就换到剩下的最新一张；一张不剩才随机回内置。
+      if (url.pathname === "/custom-avatars/delete" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = (await readBody(req).catch(() => null)) as { hash?: unknown } | null;
+        const hash = typeof body?.hash === "string" ? body.hash : "";
+        if (!/^[0-9a-f]{16}$/.test(hash)) return json(res, 400, { error: "hash 不对" });
+        if (!cfg.avatarHistory.includes(hash)) return json(res, 404, { error: "不在上传记录里" });
+        deleteAvatarFile(hash);
+        cfg.avatarHistory = cfg.avatarHistory.filter((h) => h !== hash);
+        const wasCurrent = customAvatarHash(cfg.avatar) === hash;
+        if (wasCurrent) {
+          const next = cfg.avatarHistory.map((h) => ({ h, found: hasAvatarFile(h) })).find((row) => row.found);
+          cfg.avatar = next ? `custom:${next.h}` : randomAvatar();
+        }
+        saveConfig(cfg);
+        if (wasCurrent) discovery.announce();
+        return json(res, 200, { ok: true, avatar: cfg.avatar, removed: hash, uploads: listAvatarUploads(cfg.avatarHistory) });
       }
 
       if (url.pathname === "/peer/hello" && req.method === "POST") {

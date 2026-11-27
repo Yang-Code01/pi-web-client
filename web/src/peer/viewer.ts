@@ -20,6 +20,11 @@ export interface ViewerOpts {
   index: number;
   /** 底栏额外的按钮（比如「添加到表情」「打开所在位置」）。 */
   actions?: (item: ViewerItem) => { label: string; run: () => void }[];
+  /**
+   * 小图最多放大到几倍（默认 1 = 只缩不放）。头像只有 64–192px，不放大看不清，
+   * 但也不该把一张 32px 的小图标糊满屏幕，所以由调用方给上限。
+   */
+  upscale?: number;
   onClose: () => void;
 }
 
@@ -92,7 +97,7 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
     const w = img.naturalWidth || 1;
     const hgt = img.naturalHeight || 1;
     const box = stage.getBoundingClientRect();
-    fit = Math.min(1, (box.width - 32) / w, (box.height - 32) / hgt);
+    fit = Math.min(opts.upscale ?? 1, (box.width - 32) / w, (box.height - 32) / hgt);
     if (!Number.isFinite(fit) || fit <= 0) fit = 1;
     scale = fit;
     tx = 0;

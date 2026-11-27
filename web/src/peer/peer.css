@@ -849,6 +849,50 @@ body.embedded .brand .nm { display: none; }
 }
 .me-custom:hover { border-color: var(--accent-dim); color: var(--accent); }
 .me-custom svg { width: 16px; height: 16px; }
+
+/* 上传过的：一排 44px 缩略图，点击切换，右上角小 × 删除。 */
+.me-hist { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+.me-hist h3 { margin: 0 0 9px; font-size: 11.5px; font-weight: 500; color: var(--dim); }
+.me-histgrid { display: flex; flex-wrap: wrap; gap: 9px; }
+.me-histitem { position: relative; width: 44px; height: 44px; }
+.me-histpick {
+  display: block;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+.me-histpick img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.me-histitem.on .me-histpick { box-shadow: 0 0 0 2px var(--accent), 0 0 0 4px var(--panel); }
+.me-histdel {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--panel);
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.me-histitem:hover .me-histdel,
+.me-histdel:focus-visible { opacity: 1; }
+.me-histdel:hover { color: var(--warn); background: var(--warn-bg, var(--panel-2)); }
+.me-histdel svg { width: 10px; height: 10px; }
+
+/* 点头像看大图（鼠标提示）；侧栏 / 选头像格里的头像自己包在按钮里，不生效。 */
+.av.av-open { cursor: zoom-in; }
+
 .me-hint { padding: 10px 2px 0; }
 
 @container (max-width: 600px) {
@@ -864,6 +908,8 @@ body.embedded .brand .nm { display: none; }
   .me-tab.on { border-color: var(--accent-dim); }
   .me-pane { margin-top: 6px; }
   .me-pane .card { margin-top: 10px; }
+  /* 触屏没有 hover：删除按钮常驻，否则根本发现不了。 */
+  .me-histdel { opacity: 1; }
 }
 
 /* ------------------------------------------------------------------ 窄容器：一栏钻取 */
