@@ -1410,6 +1410,10 @@ async function main(): Promise<void> {
         return json(res, 400, { error: (err as Error).message });
       }
     }
+    if (url.pathname === "/api/peer/restart" && req.method === "POST") {
+      // 退出码 2（端口被占）时子进程不会自己回来：这一下是真的重新 fork，不是再读一遍状态。
+      return json(res, 200, peer.restart());
+    }
     if (url.pathname === "/api/peer/refresh" && req.method === "POST") {
       try {
         return json(res, 200, await peer.refresh());
