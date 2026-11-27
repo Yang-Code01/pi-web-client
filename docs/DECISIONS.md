@@ -8588,3 +8588,15 @@ tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里�
 **代价。** 丢对象后重新点开要冷启（1–3 秒，与休眠同价），且如果 pi 当时没把最后几帧写进会话文件，桥里的那份增量会丢（与「休眠 + 丢对象」同一个风险，不是新增）。未被页面看的时候，归档会话的转录在桥里保留不到 5 分钟以上就要重新从文件读，文件的写法（D120 的 tail 逻辑）成了唯一真相。旧 `manage.json` 里的归档没有戳，第一次启动会按「此刻」补，于是升级瞬间不会有一次性的集体释放（但那批会话会在 5 分钟后一起释放）。
 
 **验证。** `bridge/tests/session-lifecycle.mjs` 新增 D1–D9 九段（`PI_WEB_ARCHIVE_IDLE_MS=1500`、`PI_WEB_GC_TICK_MS=1000`，全量 42 项 ok）：到点前不释放、到点后 stub 记录 exit 且桥里不再有这条会话；重新订阅看到的是从文件读的转录（该桩的会话文件只有表头，正好证明桥的那份没了）；有人在看只睡不丢（不重启 pi、还是同一份文件）；`0` 关掉；窗口内取消归档后不再释放；running 不打断、abort 后下一 tick 收；挂审批不睡不作废；无文件的会话只杀进程、对象留着；桥重启后 `archivedAt` 原值不变；手写一份没有字段的旧 `manage.json`（`archived: ["legacy-archived"]`），开机后 `archivedAt["legacy-archived"]` 就是启动时刻且已写回磁盘。页面侧 `probes/runtime-settings.mjs` 第三行 37 项全绿（含「归档写 0 照发、不报红」「归档写 -1 / abc 被拦下」「en / ja 都翻过」）。
+
+## D431 内网通的消息菜单按真实尺寸落位：与主界面共用 `menuplace.ts`（用户 2026-11-27「如图 内网通给回复点赞穿模」＋截图）
+
+**问题。** `web/src/peer/main.ts` 的 `openMenu(x, y, items)` 在菜单还没挂进 DOM、也还没塞进快捷回应那排 emoji（`.rstrip`，7 颗 30px 按钮）的时候，就按 `window.innerWidth - 180` / `window.innerHeight - (items.length * 34 + 20)` 硬夹位置。带 emoji 那排时菜单实际是 270px 宽、比估算高出约 40px：右键自己那条贴右边的消息，菜单整块从窗口右边戳出去 90px（emoji 被切掉）；贴底的消息再从底部戳出几像素。用户看到的就是「回复点赞穿模」。
+
+**决定。** `openMenu` 多一个可选参数 `top`（就是那排快捷回应），先把 `top` 与 items 都挂进 `.menu`、再把菜单挂进 `#layer`，然后量 `offsetWidth` / `offsetHeight`，交给主界面那份 `placeMenu()`（`web/src/menuplace.ts`；单测 `web/tests/menuplace-unit.mjs`）算落位：贴点（当作零高锚点，`gap: 0`）下方开 → 下面放不下且上面更宽敞就翻上去 → 左右按真实宽度夹进 `MENU_EDGE`（8px）；两侧都塞不下时 `max-height` 封顶 + `overflow-y: auto` 自己滚。两处「先 `openMenu` 再 `layerEl.querySelector(".menu")?.prepend(reactStrip(...))`」的调用（悬停微笑按钮、右键消息菜单）改成把 strip 当参数传进去。
+
+**为什么。** ① 菜单宽度不由 items 决定，`items.length * 34` 这个估算从加上 emoji 那排那天起就不成立，硬编码的 180 也只是当时量的那一种菜单。② 落位规矩主界面已经有一份（组头 ⋯、置顶气泡、工作区浮层都在用，单测覆盖了贴底 / 窗口比菜单还矮 / 窄到塞不下），peer 页的菜单挂在 `#layer` 里、同样是 `position: fixed`，没有不共用的理由；再抄一份手写夹边就是把同一个坑留在第二个地方。③ 不做「贴右边就翻到鼠标左侧」这类特判：要夹的是两个方向，翻上去与封顶这两件事 `placeMenu` 已经做对了。
+
+**代价。** `placeMenu` 现在是两张页面共用的：改它的语义会同时影响主界面与内网通（这是想要的，也意味着别在 `openMenu` 里另造一套封顶逻辑）。封顶要滚的时候，emoji 那排会跟着菜单项一起滚。
+
+**验证。** 新探针 `node probes/peer-menu-fit.mjs <A bridge> <B bridge> <B peer>`（两份测试实例 + 真 Chromium；测量前等 400ms —— mac 主题 `mac-menu-in` 有 260ms 入场缩放，动画期间 `getBoundingClientRect` 带 transform，早量会把「出界 90px」和「刚好在里」量混）。修前 / 修后：① 1280×860 右键贴右边，菜单右出界 90px → `left 1002`、`right 1272`（正好 8px 边距）；② 悬停微笑按钮只弹 emoji 排，右出界 12px → 在内；③ 720×420 贴底右键，右出界 90px + 底部出界 → 翻到上方 `top 8`、高 212 全在窗口里；④ 420px 窄窗右键，右出界 90px → 在内。截图 `.scratch/peer-menu-fit/right-edge-menu.png`、`.scratch/peer-menu-fit/short-window-menu.png`。`npm --prefix web run typecheck`（含 viewport / layers 守卫）、`npm run test:menuplace`、`npm run test:viewport` 均 exit 0。
