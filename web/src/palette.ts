@@ -33,3 +33,34 @@ export const MAC_ACCENTS_LIGHT: Record<string, { accent: string; dim: string }> 
   green: { accent: "#248a3d", dim: "#ddf0e1" },
   graphite: { accent: "#6e6e73", dim: "#e8e8ea" },
 };
+
+/**
+ * 柔和档（D438，`pi.prefs.accentTone = "muted"`）：色相不动，只把 chroma 压到 0.075
+ * （石墨本来就是中性，固定 0.004），L 按「强调色作正文时对面板 ≥4.55:1」反解 ——
+ * 浅底解出更深的一档、深底解出更亮的一档，所以和鲜艳档一样分两张表。
+ *
+ * 这里的值不要凭眼睛手改：`web/tests/theme-unit.mjs` 按 4.5 的地板逐颗量，改高了红；
+ * 想换观感就改上面的 chroma，再按同一规则重解（过程见 D438 与 .scratch 的定稿脚本）。
+ * dim 取柔和色 chroma 的 40%（浅）/ 45%（深），比鲜艳档那批 dim 更灰。
+ */
+export const MAC_ACCENTS_MUTED_LIGHT: Record<string, { accent: string; dim: string }> = {
+  blue: { accent: "#5a77a2", dim: "#dce9fc" },
+  purple: { accent: "#886b98", dim: "#efe2f7" },
+  pink: { accent: "#9e6673", dim: "#fae0e5" },
+  red: { accent: "#a06760", dim: "#fce1dd" },
+  orange: { accent: "#9f685a", dim: "#fbe1db" },
+  yellow: { accent: "#976d48", dim: "#f7e4d4" },
+  green: { accent: "#557f5a", dim: "#dceedd" },
+  graphite: { accent: "#757578", dim: "#e8e8e9" },
+};
+
+export const MAC_ACCENTS_MUTED: Record<string, { accent: string; dim: string }> = {
+  blue: { accent: "#6c8db8", dim: "#222f3f" },
+  purple: { accent: "#9c80ae", dim: "#33293a" },
+  pink: { accent: "#b67b7e", dim: "#3d2728" },
+  red: { accent: "#b67c73", dim: "#3d2724" },
+  orange: { accent: "#aa8359", dim: "#392b1b" },
+  yellow: { accent: "#988a54", dim: "#332e1a" },
+  green: { accent: "#69956d", dim: "#223324" },
+  graphite: { accent: "#8a8a8c", dim: "#2e2e2e" },
+};
