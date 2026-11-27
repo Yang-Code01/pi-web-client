@@ -1295,7 +1295,9 @@ body.embedded .brand .nm { display: none; }
 }
 .iv-stage { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; cursor: grab; touch-action: none; }
 .iv-stage:active { cursor: grabbing; }
-.iv-img { max-width: none; max-height: none; transform-origin: center; transition: opacity 0.15s; image-rendering: auto; }
+/* 图钉在舞台正中、再用 transform 缩放：别交给 grid 的 place-items 居中 —— 图比舞台大时
+   隐式轨道会被撑大、从左上角溢出，缩放后的图就整体偏到右下（看到的「图片不在正中央」）。 */
+.iv-img { position: absolute; left: 50%; top: 50%; max-width: none; max-height: none; transform-origin: center; transition: opacity 0.15s; image-rendering: auto; }
 .iv-top {
   position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; background: linear-gradient(rgb(0 0 0 / 55%), transparent); pointer-events: none;

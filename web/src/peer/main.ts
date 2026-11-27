@@ -11,6 +11,7 @@ import { bootTheme } from "../theme.ts";
 import { AVATAR_IDS, avatarUrl, randomAvatarId } from "./avatars.ts";
 import { emojiPanel, QUICK_REACTIONS, type Sticker } from "./emoji.ts";
 import { SANDBOX_TOKENS } from "./sandbox.ts";
+import { loadStash, saveStash } from "./stash.ts";
 import { imageViewer, type ViewerItem } from "./viewer.ts";
 
 /**
@@ -878,6 +879,13 @@ function renderMobnav(): void {
   }
 }
 
+/**
+ * 输入法拼字（composition）期间不许重画列表：重画会把这个 input 换成新的，
+ * 拼音候选当场被掐断，只剩已经敲进去的字母。拼完（compositionend）再按最终值重画；
+ * 拼字期间别处（轮询、未读变化）要求的重画也攒到那时一起做。
+ */
+let searchComposing = false;
+
 function searchBox(placeholder: string): HTMLElement {
   const box = h("div", "search");
   const input = h("input");
@@ -885,7 +893,23 @@ function searchBox(placeholder: string): HTMLElement {
   input.placeholder = placeholder;
   input.value = S.query;
   input.dataset.keep = "search";
-  input.addEventListener("input", () => {
+  input.addEventListener("compositionstart", () => {
+    searchComposing = true;
+  });
+  input.addEventListener("compositionend", () => {
+    searchComposing = false;
+    S.query = input.value;
+    renderList();
+  });
+  input.addEventListener("blur", () => {
+    // 拼到一半点走了：有的输入法不发 compositionend，别让列表永远停在「攒着」。
+    if (!searchComposing) return;
+    searchComposing = false;
+    S.query = input.value;
+    renderList();
+  });
+  input.addEventListener("input", (e) => {
+    if (searchComposing || (e as InputEvent).isComposing) return;
     S.query = input.value;
     renderList();
   });
@@ -940,6 +964,7 @@ function rerender(rebuild: () => void): void {
 }
 
 function renderList(): void {
+  if (searchComposing) return;
   rerender(paintList);
 }
 
@@ -3466,6 +3491,7 @@ function stageBlob(name: string, blob: Blob): void {
   if (blob.size > 64 * 1024 * 1024) return toast(tr("「{p1}」太大（上限 64 MB），用「+」从磁盘选", { p1: name }));
   const thumb = blob.type.startsWith("image/") ? URL.createObjectURL(blob) : undefined;
   stageList(S.thread).push({ key: `s${++stageSeq}`, name, size: blob.size, blob, thumb });
+  persistStaged(S.thread);
   paintTray();
   textInput?.focus();
 }
@@ -3474,7 +3500,7 @@ function stagePath(file: BrowseEntry): void {
   if (!S.thread) return;
   const list = stageList(S.thread);
   if (list.some((x) => x.path === file.path)) return;
-  const pic = /^image\//.test(file.mime ?? "") || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(file.name);
+  const pic = isPicName(file.name, file.mime ?? "");
   list.push({
     key: `s${++stageSeq}`,
     name: file.name,
@@ -3482,6 +3508,7 @@ function stagePath(file: BrowseEntry): void {
     path: file.path,
     thumb: pic ? `/api/peer/fs/raw?path=${encodeURIComponent(file.path)}` : undefined,
   });
+  persistStaged(S.thread);
   paintTray();
 }
 
@@ -3493,7 +3520,46 @@ function unstage(id: string, key: string): void {
   const [gone] = list.splice(i, 1);
   if (gone?.blob && gone.thumb) URL.revokeObjectURL(gone.thumb);
   if (!list.length) staged.delete(id);
+  persistStaged(id);
   paintTray();
+}
+
+/** 暂存附件落进 IndexedDB：关掉内网通再打开，托盘里的截图还在（文字草稿走服务端 threads.json）。 */
+function persistStaged(id: string): void {
+  const list = staged.get(id) ?? [];
+  void saveStash(
+    id,
+    list.map(({ name, size, blob, path }) => ({ name, size, blob, path })),
+  );
+}
+
+function isPicName(name: string, mime = ""): boolean {
+  return /^image\//.test(mime) || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name);
+}
+
+/** 启动时把上次没发出去的附件放回托盘；缩略图地址重新生成（上次的 object URL 已经失效）。 */
+async function restoreStaged(): Promise<void> {
+  const saved = await loadStash();
+  for (const [peer, items] of saved) {
+    if (staged.has(peer)) continue;
+    staged.set(
+      peer,
+      items.map((x) => ({
+        key: `s${++stageSeq}`,
+        name: x.name,
+        size: x.size,
+        blob: x.blob,
+        path: x.path,
+        thumb: x.blob
+          ? isPicName(x.name, x.blob.type)
+            ? URL.createObjectURL(x.blob)
+            : undefined
+          : x.path && isPicName(x.name)
+            ? `/api/peer/fs/raw?path=${encodeURIComponent(x.path)}`
+            : undefined,
+      })),
+    );
+  }
 }
 
 /** 输入框上方的附件托盘：图片是缩略图，其它是文件条；每件右上角一个 ✕。 */
@@ -4375,6 +4441,7 @@ async function boot(): Promise<void> {
     (node as HTMLInputElement).placeholder = tr(node.dataset.i18nPlaceholder ?? "");
   }
   (pickerClose as HTMLElement).append(ic("close"));
+  await restoreStaged();
   await loadStatus();
   await loadThreads();
   await loadContacts();
