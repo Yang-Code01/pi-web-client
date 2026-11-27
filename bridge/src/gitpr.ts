@@ -6,6 +6,7 @@
  * 取的时候只写 `refs/pi-web/pr-N` 与 `origin/<base>`，**不动工作区、不动当前分支**。
  */
 import { execFile, execFileSync } from "node:child_process";
+import { ghInvocation, githubRest } from "./github.ts";
 import { discoverLocalProxyCandidates, FETCH_PLAN, GH_PLAN, resolveProxyCandidates, viaRoutes, type RoutePlan } from "./netroute.ts";
 
 export interface PullRequest {
@@ -24,7 +25,13 @@ export interface PrListResult {
   repo: string;
   /** 认不出来的失败才给 message（`gh` 没装 / 没登录 / 没有 remote），面板按 code 说人话。 */
   error: string;
-  code: "" | "gh_missing" | "gh_failed" | "no_remote" | "not_github";
+  /**
+   * `repo_unseen`：GitHub 已经明确答「这个仓库 / PR 你看不到」—— 不是网络，是这个账号没权限
+   * （或仓库改过名）。界面要据此说「换账号」，而不是让用户去查代理。
+   */
+  code: "" | "gh_missing" | "gh_failed" | "no_remote" | "not_github" | "repo_unseen";
+  /** 这一份是谁给的：真 gh，还是没装 gh 时的 REST 兜底（界面据此说「走内置实现」）。 */
+  via: "gh" | "rest";
 }
 
 const CACHE_MS = 60_000;
@@ -78,7 +85,35 @@ export interface RouteOptions {
   proxies?: () => string[];
   discover?: () => Promise<string[]>;
   plan?: Partial<RoutePlan>;
+  /**
+   * 额外环境变量（会盖在每条路的 env 上）。评审靠它把**这个会话选的 GitHub 账号**传下去：
+   * `GH_TOKEN` 一进子进程，`gh` 与 `git`（`gh auth git-credential`）用的就是同一个账号。
+   * 不传就沿用进程自己的环境 —— 也就是 gh 的机器 active 账号。
+   */
+  env?: NodeJS.ProcessEnv;
 }
+
+/**
+ * 查 PR 的入参：`login` 只用来把缓存按账号分开（换了账号不能拿上一个账号的 PR 列表），
+ * `env` 才是真正决定子进程用哪个令牌的那一份。
+ */
+export interface PrQueryOptions extends RouteOptions {
+  fresh?: boolean;
+  login?: string;
+  /** 令牌本体：`gh` 没装时 REST 兜底用它。与 `env.GH_TOKEN` 同源（`sessionGhAccount`）。 */
+  token?: string | null;
+  /** 测试缝：REST 打哪里（默认 api.github.com）。 */
+  apiBase?: string;
+}
+
+/**
+ * 对端已经明确回答了的失败（仓库看不到 / 令牌没权限 / 号不存在）—— 跟走不走代理无关。
+ *
+ * 这类 stderr 换每条路都一模一样（实测「直连：GraphQL: …；代理 http://…：GraphQL: …」），
+ * 一律当成「网络问题」重试只会把 7 秒变成更久、还把用户往错方向推。
+ */
+const ANSWERED_FAILURE =
+  /could not resolve to a (repository|pullrequest|issue)|repository not found|not found \(HTTP 404\)|HTTP 40[13]|Bad credentials|Resource not accessible/i;
 
 /**
  * 要出网的那几条命令（`gh` 问 GitHub、`git fetch` 取 refs）：直连 → 代理候选 → 现探 → 整轮重试。
@@ -95,11 +130,14 @@ async function routed(
   onLog?: (line: string) => void,
   opts: RouteOptions = {},
 ): Promise<CmdResult> {
+  const extra = opts.env ?? {};
   const res = await viaRoutes<CmdResult>(
     async (env, timeoutMs) => {
-      const out = await run(cmd, args, cwd, timeoutMs, env);
+      const out = await run(cmd, args, cwd, timeoutMs, { ...env, ...extra });
       if (out.code === 0) return { ok: true, value: out };
-      return { ok: false, err: failureLine(out.stderr) || `${cmd} 退出码 ${out.code}` };
+      const reason = failureLine(out.stderr) || `${cmd} 退出码 ${out.code}`;
+      // 仓库看不到 / 没权限：答案已经拿到了，换代理只会再拿一次同一句话。
+      return { ok: false, err: reason, stop: ANSWERED_FAILURE.test(out.stderr) };
     },
     {
       proxies: opts.proxies ?? resolveProxyCandidates,
@@ -112,9 +150,14 @@ async function routed(
   return { stdout: "", stderr: res.reason, code: 1 };
 }
 
-/** `gh` 在 Windows 上是 `gh.exe`，POSIX 直接 PATH —— 两种平台都能直接 execFile。 */
-function ghBin(): string {
-  return process.platform === "win32" ? "gh.exe" : "gh";
+/**
+ * `gh` 该怎么起：先问 `github.ts` 的 `ghInvocation()` —— 测试缝 `PI_WEB_GH_JS`、以及 PATH
+ * 上被别的 gh 抢先的情况都收在那一处，评审不该另走一套解析。解析不出来时它退回裸命令，
+ * `classify()` 照旧报 `gh_missing`。
+ */
+function ghRun(args: string[]): { cmd: string; args: string[] } {
+  const { cmd, prefix } = ghInvocation();
+  return { cmd, args: [...prefix, ...args] };
 }
 
 function classify(stderr: string, cmd: string, code: number | null): { code: PrListResult["code"]; error: string } {
@@ -124,7 +167,70 @@ function classify(stderr: string, cmd: string, code: number | null): { code: PrL
   if (/not a git repository/i.test(text)) return { code: "no_remote", error: first };
   if (/no remotes?/i.test(text) || /does not have any remotes/i.test(text)) return { code: "no_remote", error: first };
   if (/not a github/i.test(text) || /No GitHub/i.test(text)) return { code: "not_github", error: first };
+  // 对端答「这个仓库/PR 我看不到」：不是网络，是这个账号没权限（或仓库改过名）。
+  if (ANSWERED_FAILURE.test(text)) return { code: "repo_unseen", error: first };
   return { code: "gh_failed", error: first || `${cmd} 退出码 ${code}` };
+}
+
+// ---------------------------------------------------------------------------
+// REST 兜底：没装 gh 时评审仍能跑（D428）
+// ---------------------------------------------------------------------------
+
+/**
+ * REST 失败 → 面板认识的那几个 code（`gh_missing` 不会从这里出来）。
+ * 注意看的是 `GithubError.status`，不是 HTTP 状态：`requestRaw` 把 403 + rate-limit
+ * 改写成了 429，所以「403」在这里是权限不够（缺 scope / SAML 没授权），语义同 repo_unseen。
+ */
+function restFailure(err: any): { code: PrListResult["code"]; error: string } {
+  const status = Number(err?.status) || 0;
+  const message = String(err?.message ?? err ?? "").trim() || `GitHub 回了 ${status || "?"}`;
+  // 401/403/404 都是「这个令牌看不到这个东西」：与 gh 那侧的 repo_unseen 同一个语义。
+  if (status === 401 || status === 403 || status === 404) return { code: "repo_unseen", error: message };
+  return { code: "gh_failed", error: message };
+}
+
+async function restGet(opts: PrQueryOptions, apiPath: string): Promise<any> {
+  return githubRest(opts.apiBase ? { upstreamApi: opts.apiBase } : {}, opts.token ?? null, apiPath);
+}
+
+/** 草稿杆后面：它们多数还没准备好，但也不是不能评。 */
+function sortPulls(prs: PullRequest[]): PullRequest[] {
+  return prs.sort((a, b) => Number(a.draft) - Number(b.draft) || b.number - a.number);
+}
+
+async function restList(repo: string, opts: PrQueryOptions): Promise<PrListResult> {
+  try {
+    const rows = await restGet(opts, `/repos/${repo}/pulls?state=open&per_page=30&sort=created&direction=desc`);
+    const prs = sortPulls(
+      (Array.isArray(rows) ? rows : [])
+        .map((r: any) => ({
+          number: Number(r?.number) || 0,
+          title: String(r?.title ?? ""),
+          headRefName: String(r?.head?.ref ?? ""),
+          baseRefName: String(r?.base?.ref ?? ""),
+          draft: Boolean(r?.draft),
+          author: String(r?.user?.login ?? ""),
+        }))
+        .filter((r) => r.number > 0),
+    );
+    return { ok: true, prs, repo, error: "", code: "", via: "rest" };
+  } catch (err: any) {
+    const why = restFailure(err);
+    return { ok: false, prs: [], repo, error: why.error, code: why.code, via: "rest" };
+  }
+}
+
+/** PR 的标题与两条 ref：`gh pr view --json …` 那一步的替身。 */
+async function restPullMeta(dir: string, number: number, opts: PrQueryOptions): Promise<{ title: string; baseRefName: string; headRefName: string }> {
+  const repo = localRepoName(dir);
+  if (!repo) throw Object.assign(new Error("这个仓库没有 GitHub 远端"), { code: "not_github" as const });
+  try {
+    const raw = await restGet(opts, `/repos/${repo}/pulls/${number}`);
+    return { title: String(raw?.title ?? ""), baseRefName: String(raw?.base?.ref ?? ""), headRefName: String(raw?.head?.ref ?? "") };
+  } catch (err: any) {
+    const why = restFailure(err);
+    throw Object.assign(new Error(why.error), { code: why.code });
+  }
 }
 
 /** `git@github.com:o/r.git` / `https://github.com/o/r(.git)` → `o/r`。 */
@@ -156,50 +262,54 @@ export function localRepoName(dir: string): string {
 }
 
 /** 打开过 PR 列表的仓库记住一分钟：切页签、重画面板都不该再打一次 `gh`。 */
-export async function listPullRequests(dir: string, opts: { fresh?: boolean } = {}): Promise<PrListResult> {
-  const hit = cache.get(dir);
+export async function listPullRequests(dir: string, opts: PrQueryOptions = {}): Promise<PrListResult> {
+  // 缓存按「仓库 + 账号」分：同一个工作区换了账号，看到的就是另一批 PR。
+  const cacheKey = `${dir}|${opts.login ?? ""}`;
+  const hit = cache.get(cacheKey);
   if (!opts.fresh && hit && Date.now() - hit.at < CACHE_MS) return hit.value;
   const remote = await run("git", ["-C", dir, "remote", "get-url", "origin"], dir, 8000);
   if (remote.code !== 0 || !remote.stdout.trim()) {
-    const value: PrListResult = { ok: false, prs: [], repo: "", error: "这个仓库没有 origin 远程", code: "no_remote" };
-    cache.set(dir, { at: Date.now(), value });
+    const value: PrListResult = { ok: false, prs: [], repo: "", error: "这个仓库没有 origin 远程", code: "no_remote", via: "gh" };
+    cache.set(cacheKey, { at: Date.now(), value });
     return value;
   }
   const repoName = repoFromRemote(remote.stdout);
-  const out = await routed(
-    ghBin(),
-    ["pr", "list", "--state", "open", "--limit", "30", "--json", "number,title,headRefName,baseRefName,isDraft,author"],
-    dir,
-    GH_PLAN,
-  );
+  const gh = ghRun(["pr", "list", "--state", "open", "--limit", "30", "--json", "number,title,headRefName,baseRefName,isDraft,author"]);
+  const out = await routed(gh.cmd, gh.args, dir, GH_PLAN, undefined, opts);
   if (out.code !== 0) {
     const why = classify(out.stderr, "gh pr list", out.code);
-    const value: PrListResult = { ok: false, prs: [], repo: repoName, error: why.error, code: why.code };
-    cache.set(dir, { at: Date.now(), value });
+    // 没装 gh（或壳解析不到）→ 走 REST：评审不该因为「不想装一个 CLI」就整块用不了。
+    if (why.code === "gh_missing") {
+      const value = await restList(repoName, opts);
+      cache.set(cacheKey, { at: Date.now(), value });
+      return value;
+    }
+    const value: PrListResult = { ok: false, prs: [], repo: repoName, error: why.error, code: why.code, via: "gh" };
+    cache.set(cacheKey, { at: Date.now(), value });
     return value;
   }
   let rows: any[] = [];
   try {
     rows = JSON.parse(out.stdout || "[]");
   } catch {
-    const value: PrListResult = { ok: false, prs: [], repo: repoName, error: "读不懂 gh 的输出", code: "gh_failed" };
-    cache.set(dir, { at: Date.now(), value });
+    const value: PrListResult = { ok: false, prs: [], repo: repoName, error: "读不懂 gh 的输出", code: "gh_failed", via: "gh" };
+    cache.set(cacheKey, { at: Date.now(), value });
     return value;
   }
-  const prs: PullRequest[] = rows
-    .map((r) => ({
-      number: Number(r?.number) || 0,
-      title: String(r?.title ?? ""),
-      headRefName: String(r?.headRefName ?? ""),
-      baseRefName: String(r?.baseRefName ?? ""),
-      draft: Boolean(r?.isDraft),
-      author: String(r?.author?.login ?? ""),
-    }))
-    .filter((r) => r.number > 0)
-    // 草稿排后面：它们多数还没准备好，但也不是不能评。
-    .sort((a, b) => Number(a.draft) - Number(b.draft) || b.number - a.number);
-  const value: PrListResult = { ok: true, prs, repo: repoName, error: "", code: "" };
-  cache.set(dir, { at: Date.now(), value });
+  const prs: PullRequest[] = sortPulls(
+    rows
+      .map((r) => ({
+        number: Number(r?.number) || 0,
+        title: String(r?.title ?? ""),
+        headRefName: String(r?.headRefName ?? ""),
+        baseRefName: String(r?.baseRefName ?? ""),
+        draft: Boolean(r?.isDraft),
+        author: String(r?.author?.login ?? ""),
+      }))
+      .filter((r) => r.number > 0),
+  );
+  const value: PrListResult = { ok: true, prs, repo: repoName, error: "", code: "", via: "gh" };
+  cache.set(cacheKey, { at: Date.now(), value });
   return value;
 }
 
@@ -236,24 +346,36 @@ export async function fetchPullRequestRef(dir: string, number: number, onLog?: (
  *
  * `refs/pull/N/head` 对 fork 来的 PR 同样存在，所以不需要知道 fork 的仓库地址。
  */
-export async function resolvePullRequest(dir: string, number: number, onLog?: (line: string) => void): Promise<ResolvedPr> {
+export async function resolvePullRequest(
+  dir: string,
+  number: number,
+  onLog?: (line: string) => void,
+  opts: PrQueryOptions = {},
+): Promise<ResolvedPr> {
   if (!Number.isFinite(number) || number <= 0) throw Object.assign(new Error("PR 号不对"), { code: "pr_invalid" });
-  const view = await routed(ghBin(), ["pr", "view", String(number), "--json", "number,title,baseRefName,headRefName"], dir, GH_PLAN, onLog);
+  // `opts.env`（会话选的那个账号的 GH_TOKEN）要跟着每一条出网命令走：`gh pr view`、两处 `git fetch`。
+  const gh = ghRun(["pr", "view", String(number), "--json", "number,title,baseRefName,headRefName"]);
+  const view = await routed(gh.cmd, gh.args, dir, GH_PLAN, onLog, opts);
+  let meta: { title: string; baseRefName: string; headRefName: string } = { title: "", baseRefName: "", headRefName: "" };
   if (view.code !== 0) {
     const why = classify(view.stderr, `gh pr view ${number}`, view.code);
-    throw Object.assign(new Error(why.error || `读不到 PR #${number}`), { code: why.code || "gh_failed" });
+    // 没装 gh：标题与两条 ref 改从 REST 拿，后面的 `git fetch` 完全不变。
+    if (why.code === "gh_missing") meta = await restPullMeta(dir, number, opts);
+    else throw Object.assign(new Error(why.error || `读不到 PR #${number}`), { code: why.code || "gh_failed" });
+  } else {
+    let raw: any = {};
+    try {
+      raw = JSON.parse(view.stdout || "{}");
+    } catch {
+      throw Object.assign(new Error(`读不懂 PR #${number} 的信息`), { code: "gh_failed" });
+    }
+    meta = { title: String(raw?.title ?? ""), baseRefName: String(raw?.baseRefName ?? ""), headRefName: String(raw?.headRefName ?? "") };
   }
-  let meta: any = {};
-  try {
-    meta = JSON.parse(view.stdout || "{}");
-  } catch {
-    throw Object.assign(new Error(`读不懂 PR #${number} 的信息`), { code: "gh_failed" });
-  }
-  const base = String(meta?.baseRefName ?? "").trim();
+  const base = String(meta.baseRefName ?? "").trim();
   if (!base) throw Object.assign(new Error(`PR #${number} 没说对照分支`), { code: "gh_failed" });
-  const to = await fetchPullRequestRef(dir, number, onLog);
+  const to = await fetchPullRequestRef(dir, number, onLog, opts);
   onLog?.(`git fetch origin ${base}`);
-  const baseFetch = await routed("git", ["-C", dir, "fetch", "origin", base, "--no-tags"], dir, { ...FETCH_PLAN, attempts: 1 }, onLog);
+  const baseFetch = await routed("git", ["-C", dir, "fetch", "origin", base, "--no-tags"], dir, { ...FETCH_PLAN, attempts: 1 }, onLog, opts);
   // base 已经在本地的仓库（常见）不该因为一次 fetch 失败就整票挂掉。
   if (baseFetch.code !== 0) onLog?.(`对照分支 fetch 失败，用本地的一版：${classify(baseFetch.stderr, "git fetch", baseFetch.code).error}`);
   return {
@@ -316,34 +438,95 @@ export interface PrInfoResult {
   info: PrInfo | null;
   error: string;
   code: PrListResult["code"];
+  /** 同上：真 gh 还是 REST 兜底。 */
+  via: "gh" | "rest";
 }
 
 const infoCache = new Map<string, { at: number; value: PrInfoResult }>();
 const FILE_CAP = 100;
 const COMMIT_CAP = 50;
 
-export async function pullRequestInfo(dir: string, number: number, opts: { fresh?: boolean } = {}): Promise<PrInfoResult> {
-  const key = `${dir}|${number}`;
+/** REST 的 `status` 与 gh 的 `changeType` 对照：只有 removed/deleted 叫法不同。 */
+function restChangeType(status: string): string {
+  const s = status.toLowerCase();
+  return s === "removed" ? "deleted" : s;
+}
+
+/** `gh pr view --json …`（含 files / commits 三块）的替身。 */
+async function restInfo(dir: string, number: number, opts: PrQueryOptions): Promise<PrInfoResult> {
+  const repo = localRepoName(dir);
+  if (!repo) {
+    return { ok: false, info: null, error: "这个仓库没有 GitHub 远端", code: "not_github", via: "rest" };
+  }
+  try {
+    const [raw, filesRaw, commitsRaw] = await Promise.all([
+      restGet(opts, `/repos/${repo}/pulls/${number}`),
+      restGet(opts, `/repos/${repo}/pulls/${number}/files?per_page=${FILE_CAP}`),
+      restGet(opts, `/repos/${repo}/pulls/${number}/commits?per_page=${COMMIT_CAP}`),
+    ]);
+    const files = (Array.isArray(filesRaw) ? filesRaw : []).slice(0, FILE_CAP);
+    const commits = (Array.isArray(commitsRaw) ? commitsRaw : []).slice(0, COMMIT_CAP);
+    const changedFiles = Number(raw?.changed_files) || files.length;
+    const info: PrInfo = {
+      number: Number(raw?.number) || number,
+      title: String(raw?.title ?? ""),
+      body: String(raw?.body ?? "").slice(0, 20_000),
+      state: String(raw?.state ?? ""),
+      draft: Boolean(raw?.draft),
+      url: String(raw?.html_url ?? ""),
+      author: String(raw?.user?.login ?? ""),
+      createdAt: String(raw?.created_at ?? ""),
+      updatedAt: String(raw?.updated_at ?? ""),
+      additions: Number(raw?.additions) || 0,
+      deletions: Number(raw?.deletions) || 0,
+      changedFiles,
+      headRefName: String(raw?.head?.ref ?? ""),
+      baseRefName: String(raw?.base?.ref ?? ""),
+      files: files.map((f: any) => ({
+        path: String(f?.filename ?? ""),
+        additions: Number(f?.additions) || 0,
+        deletions: Number(f?.deletions) || 0,
+        changeType: restChangeType(String(f?.status ?? "")),
+      })),
+      filesMore: Math.max(0, changedFiles - files.length),
+      commits: commits.map((c: any) => ({
+        oid: String(c?.sha ?? ""),
+        headline: String(c?.commit?.message ?? "").split(/\r?\n/)[0] ?? "",
+        date: String(c?.commit?.author?.date ?? ""),
+        author: String(c?.author?.login ?? c?.commit?.author?.name ?? ""),
+      })),
+      commitsMore: Math.max(0, (Number(raw?.commits) || commits.length) - commits.length),
+    };
+    return { ok: true, info, error: "", code: "", via: "rest" };
+  } catch (err: any) {
+    const why = restFailure(err);
+    return { ok: false, info: null, error: why.error, code: why.code, via: "rest" };
+  }
+}
+
+export async function pullRequestInfo(dir: string, number: number, opts: PrQueryOptions = {}): Promise<PrInfoResult> {
+  const key = `${dir}|${number}|${opts.login ?? ""}`;
   const hit = infoCache.get(key);
   if (!opts.fresh && hit && Date.now() - hit.at < CACHE_MS) return hit.value;
   if (!Number.isFinite(number) || number <= 0) {
-    return { ok: false, info: null, error: "PR 号不对", code: "gh_failed" };
+    return { ok: false, info: null, error: "PR 号不对", code: "gh_failed", via: "gh" };
   }
-  const out = await routed(
-    ghBin(),
-    [
-      "pr",
-      "view",
-      String(number),
-      "--json",
-      "number,title,body,state,isDraft,url,author,createdAt,updatedAt,additions,deletions,changedFiles,baseRefName,headRefName,commits,files",
-    ],
-    dir,
-    GH_PLAN,
-  );
+  const gh = ghRun([
+    "pr",
+    "view",
+    String(number),
+    "--json",
+    "number,title,body,state,isDraft,url,author,createdAt,updatedAt,additions,deletions,changedFiles,baseRefName,headRefName,commits,files",
+  ]);
+  const out = await routed(gh.cmd, gh.args, dir, GH_PLAN, undefined, opts);
   if (out.code !== 0) {
     const why = classify(out.stderr, `gh pr view ${number}`, out.code);
-    const value: PrInfoResult = { ok: false, info: null, error: why.error || `读不到 PR #${number}`, code: why.code };
+    if (why.code === "gh_missing") {
+      const value = await restInfo(dir, number, opts);
+      infoCache.set(key, { at: Date.now(), value });
+      return value;
+    }
+    const value: PrInfoResult = { ok: false, info: null, error: why.error || `读不到 PR #${number}`, code: why.code, via: "gh" };
     infoCache.set(key, { at: Date.now(), value });
     return value;
   }
@@ -354,7 +537,7 @@ export async function pullRequestInfo(dir: string, number: number, opts: { fresh
     raw = null;
   }
   if (!raw || typeof raw !== "object") {
-    const value: PrInfoResult = { ok: false, info: null, error: "读不懂 gh 的输出", code: "gh_failed" };
+    const value: PrInfoResult = { ok: false, info: null, error: "读不懂 gh 的输出", code: "gh_failed", via: "gh" };
     infoCache.set(key, { at: Date.now(), value });
     return value;
   }
@@ -390,7 +573,7 @@ export async function pullRequestInfo(dir: string, number: number, opts: { fresh
     })),
     commitsMore: Math.max(0, commits.length - COMMIT_CAP),
   };
-  const value: PrInfoResult = { ok: true, info, error: "", code: "" };
+  const value: PrInfoResult = { ok: true, info, error: "", code: "", via: "gh" };
   infoCache.set(key, { at: Date.now(), value });
   return value;
 }

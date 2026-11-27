@@ -112,6 +112,30 @@ type StatusRead =
 let statusCache: { key: string; at: number; value: StatusRead } | null = null;
 const tokenCache = new Map<string, { at: number; token: string | null }>();
 
+/**
+ * PATH 之外，包管理器把 gh 装到这些地方。
+ *
+ * 为什么需要：页面里刚用 winget/brew 装完，**正在跑的桥进程 PATH 不会刷新**，只扫 PATH 会一直
+ * 说「没装」，用户只能重启桥。这些是各平台包管理器的落地位置（winget 那两条分别是 Links 里的
+ * 软链与 MSI 的安装目录）。
+ */
+export function knownGhPaths(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string[] {
+  if (platform === "win32") {
+    const local = env.LOCALAPPDATA ?? "";
+    const pf = env.ProgramFiles ?? "C:\\Program Files";
+    const pf86 = env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+    return [
+      ...(local ? [path.join(local, "Microsoft", "WinGet", "Links", "gh.exe"), path.join(local, "GitHub CLI", "gh.exe")] : []),
+      // 显式空串也当没有：否则 `path.join("", "GitHub CLI", "gh.exe")` 变成相对路径，
+      // `accessSync` 可能命中 cwd 下的同名文件。
+      ...(pf ? [path.join(pf, "GitHub CLI", "gh.exe")] : []),
+      ...(pf86 ? [path.join(pf86, "GitHub CLI", "gh.exe")] : []),
+    ];
+  }
+  if (platform === "darwin") return ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/opt/local/bin/gh"];
+  return ["/usr/bin/gh", "/usr/local/bin/gh", "/snap/bin/gh", "/opt/gh/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"];
+}
+
 /** PATH 里找 `gh`，**跳过我们自己的 bin 目录**（否则解析出的是自己的壳，壳再去 exec 它）。 */
 function findRealGh(skipDir?: string): string | null {
   const exts = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
@@ -127,6 +151,14 @@ function findRealGh(skipDir?: string): string | null {
       } catch {
         /* 继续找 */
       }
+    }
+  }
+  for (const file of knownGhPaths()) {
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      if (fs.statSync(file).isFile()) return file;
+    } catch {
+      /* 继续找 */
     }
   }
   return null;
@@ -149,8 +181,18 @@ export function resolveGhBinary(ctx: Pick<GithubCtx, "ghPath"> = {}): string | n
   return findRealGh(githubBinDir());
 }
 
-function runGh(gh: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  const { cmd, prefix } = ghCommand(gh);
+/**
+ * 「跑 gh」到底该起什么进程。
+ *
+ * `resolveGhBinary()` 返回的可以是 `fake-gh` 这种假名字（测试缝 `PI_WEB_GH_JS`），拿它去
+ * `execFile` 只会 ENOENT —— 假 gh 得用 `node <脚本>` 跑。评审（`gitpr.ts`）现在也走这个函数，
+ * 与面板 / 壳用同一套解析，不用在两处各写一遍。
+ */
+export function ghInvocation(ctx: Pick<GithubCtx, "ghPath"> = {}): { cmd: string; prefix: string[] } {
+  return ghCommand(resolveGhBinary(ctx) ?? (process.platform === "win32" ? "gh.exe" : "gh"));
+}
+
+function runGh(gh: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {  const { cmd, prefix } = ghCommand(gh);
   return new Promise((resolve) => {
     execFile(cmd, [...prefix, ...args], { encoding: "utf8", timeout: GH_TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       const code = error && typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code as number) : error ? 1 : 0;
@@ -182,6 +224,23 @@ export function parseAuthStatus(text: string): { login: string; active: boolean 
     if (active && current) current.active = active[1].toLowerCase() === "true";
   }
   return out;
+}
+
+/** `gh --version` 里的版本号（读不出来就是空串，界面不编一个）。 */
+export async function ghVersion(gh: string): Promise<string> {
+  const r = await runGh(gh, ["--version"]);
+  return /gh version\s+(\S+)/i.exec(`${r.stdout}\n${r.stderr}`)?.[1] ?? "";
+}
+
+/** 登录态给页面看的那一份：把三种情况摊平成 `{state, accounts, error}`。 */
+export async function ghAuthState(
+  ctx: Pick<GithubCtx, "ghPath"> = {},
+): Promise<{ state: "no-gh" | "logged-out" | "ok"; accounts: { login: string; active: boolean }[]; error: string }> {
+  const gh = resolveGhBinary(ctx);
+  if (!gh) return { state: "no-gh", accounts: [], error: "" };
+  const read = await ghStatus(gh);
+  if (read.state === "ok") return { state: "ok", accounts: read.accounts, error: "" };
+  return { state: "logged-out", accounts: [], error: read.state === "logged-out" ? read.error : "" };
 }
 
 async function ghStatus(gh: string | null): Promise<StatusRead> {
@@ -266,6 +325,35 @@ export async function tokenOf(pick: AccountPick, ctx: Pick<GithubCtx, "ghPath"> 
   return gh ? ghToken(gh, pick.login) : null;
 }
 
+export interface SessionGhAccount {
+  /** 这个会话该用的登录名（空串 = 一个账号都没有）。 */
+  login: string;
+  /** 交给子进程的环境（`GH_TOKEN`）；没令牌时不给，子进程就沿用桥自己的环境。 */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * 令牌本体：REST 兜底（`gitpr.ts` 没装 gh 时）要用。
+   * 只在桥内流转（壳一次、REST 一次），**禁止把 opts 整个序列化进日志**。
+   */
+  restToken?: string | null;
+}
+
+/**
+ * 一个会话该用哪个 GitHub 账号的令牌 —— 给**不经页面**的那些调用方用。
+ *
+ * GitHub 面板与链接卡走 REST，请求里带着会话，`pickAccount()` 在那里天然拿得到。
+ * 评审不一样：它由桥自己 spawn `gh` / `git`（`review.ts` → `gitpr.ts`），子进程里没有会话，
+ * 以前就直接用了 gh 的**机器 active 账号**。多账号机器上那经常不是同一个（实测：面板里选的
+ * `xyang-qingmin` 能看 `ISID/cas3-onecas-api`，机器 active 的 `Yang-Code01` 看到的是 404，
+ * 评审报 `GraphQL: Could not resolve to a Repository…`）。所以把令牌算在这里、注入 `GH_TOKEN`。
+ *
+ * `GH_TOKEN` 一并给 `git` 用：`gh auth git-credential` 读的就是它，fetch 才会跟 `gh` 同账号。
+ */
+export async function sessionGhAccount(cwd: string, sessionId: string, ctx: Pick<GithubCtx, "ghPath"> = {}): Promise<SessionGhAccount> {
+  const pick = await pickAccount(cwd, sessionId, ctx);
+  const token = await tokenOf(pick, ctx);
+  return { login: pick.login, env: token ? { GH_TOKEN: token } : undefined, restToken: token };
+}
+
 // ---------------------------------------------------------------- 仓库
 
 /** `git@github.com:a/b.git` / `https://github.com/a/b` / `ssh://git@github.com/a/b.git` → `a/b`。 */
@@ -340,7 +428,7 @@ interface GithubPage {
   nextPage: number | null;
 }
 
-async function requestRaw(ctx: GithubCtx, token: string | null, apiPath: string, init: RequestInit = {}): Promise<GithubPage> {
+async function requestRaw(ctx: Pick<GithubCtx, "upstreamApi">, token: string | null, apiPath: string, init: RequestInit = {}): Promise<GithubPage> {
   const base = ctx.upstreamApi ?? API;
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",
@@ -376,7 +464,28 @@ async function requestRaw(ctx: GithubCtx, token: string | null, apiPath: string,
 }
 
 async function request(ctx: GithubCtx, token: string | null, apiPath: string, init: RequestInit = {}): Promise<any> {
+  return githubRest(ctx, token, apiPath, init);
+}
+
+/**
+ * 给桥内**不经过页面**的调用方（评审的 REST 兜底）一份最小 REST 入口。
+ * 与面板同一条 fetch 通道：代理环境下的取舍见 D428。
+ */
+export async function githubRest(
+  ctx: Pick<GithubCtx, "upstreamApi">,
+  token: string | null,
+  apiPath: string,
+  init: RequestInit = {},
+): Promise<any> {
   return (await requestRaw(ctx, token, apiPath, init)).body;
+}
+
+/**
+ * 测试缝：REST 打到本地假 GitHub（与 `PI_WEB_GH_JS` 同类）。
+ * 只给用例用；正式路径永远是 github.com。
+ */
+export function githubApiBase(): string | undefined {
+  return process.env.PI_WEB_GITHUB_API || undefined;
 }
 /** 一个列表读到底的结果：`rows` 是拿到的行；`complete` 为假就是没读全（翻页中途出错，或翻到 `MAX_PAGES` 上游还说有下一页）。 */
 interface FetchedList {
@@ -823,7 +932,7 @@ async function putPat(req: http.IncomingMessage, res: http.ServerResponse, ctx: 
   json(res, 200, { ok: true, login, encrypted: written.encrypted });
 }
 
-async function deletePat(req: http.IncomingMessage, res: http.ServerResponse, url: URL, ctx: GithubCtx): Promise<void> {
+async function deletePat(_req: http.IncomingMessage, res: http.ServerResponse, url: URL, ctx: GithubCtx): Promise<void> {
   if (ctx.publicReq) {
     fail(res, 403, "tunnel_readonly", "带凭据的操作只能在本机做");
     return;

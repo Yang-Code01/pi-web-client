@@ -5933,22 +5933,19 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-prrow-title { grid-row: 1; grid-column: 2; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-scope .rv-prrow-meta { grid-row: 2; grid-column: 1 / -1; font-size: 10px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-scope .rv-details { flex: none; }
-/* ---- 记录列表（#690）：一条一张卡，在跑的置顶；卡里带「停止」，所以卡本身是 div（D417）。 */
+/* ---- 记录列表（#690）：一条一张卡，在跑的置顶；卡里带「停止」，所以卡本身是 div（D417）。
+   卡片正文不是入口（D426）：唯一入口是卡底右下角的「完整详情」，停止也在同一行。 */
 .rv-scope .rv-runs { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 /* 「还差什么」那条提示与记录卡是一组的（都在控制条下面），放在这里而不是夹在别的规则里。 */
 .rv-scope .rv-why { flex: none; opacity: 0.8; }
 .rv-scope .rv-runs-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-size: 11px; color: var(--faint); }
-.rv-scope .rv-runs-hint { flex: none; opacity: 0.8; }
 .rv-scope .rv-run-card {
   display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
-  position: relative;
-  padding: 7px 8px; font-size: 12px; color: var(--text); cursor: pointer;
-  /* 卡是 role=button 的 div（里面要放「停止」）：字体与行高仍要跟旁边的行对齐。 */
+  padding: 7px 8px; font-size: 12px; color: var(--text);
+  /* 字体与行高仍要跟旁边的行对齐。 */
   font-family: inherit; line-height: inherit;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
 }
-.rv-scope .rv-run-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.rv-scope .rv-run-card:hover { border-color: var(--accent); }
 .rv-scope .rv-run-card.is-live { border-color: var(--accent); }
 .rv-scope .rv-run-card.is-fail { border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); }
 .rv-scope .rv-run-top { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
@@ -5970,25 +5967,20 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-run-model.none { color: var(--faint); border-style: dashed; }
 .rv-scope .rv-run-current { font-size: 10.5px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .rv-scope .rv-run-err { font-size: 10.5px; color: var(--danger); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 「停止」只停这一条：压在卡片右上角，别把卡里的文字挤走。 */
-.rv-scope .rv-run-stop, .rv-scope .rv-focus-stop {
+/* 卡底那一行：跑着时「停止」，然后「完整详情」（D426）。右对齐，不再绝对定位压住时间。 */
+.rv-scope .rv-run-foot { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.rv-scope .rv-run-more {
+  flex: none; padding: 0; font-size: 10.5px; color: var(--accent); font-family: inherit;
+  background: none; border: 0; border-radius: 6px; cursor: pointer;
+}
+.rv-scope .rv-run-more:hover { text-decoration: underline; }
+.rv-scope .rv-run-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 「停止」只停这一条。 */
+.rv-scope .rv-run-stop {
   flex: none; padding: 1px 7px; font-size: 10.5px; color: var(--dim); cursor: pointer;
   background: transparent; border: 1px solid var(--line); border-radius: 8px; font-family: inherit;
 }
-.rv-scope .rv-run-stop { position: absolute; top: 6px; right: 7px; }
-.rv-scope .rv-run-stop:hover, .rv-scope .rv-focus-stop:hover { color: var(--text); border-color: var(--accent); }
-/* ---- 点开的那一次：\u2039 记录 / 评什么 / 完整详情，下面接那一次的统计与意见 */
-.rv-scope .rv-focus { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.rv-scope .rv-focus-head { display: flex; gap: 6px; align-items: center; min-width: 0; }
-.rv-scope .rv-back {
-  flex: none; padding: 2px 6px; font-size: 11px; color: var(--faint);
-  background: transparent; border: 1px solid var(--line); border-radius: 7px; cursor: pointer;
-}
-.rv-scope .rv-back:hover { color: var(--text); border-color: var(--accent); }
-.rv-scope .rv-focus-target { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.rv-scope .rv-focus-more { flex: none; padding: 0; font-size: 11px; color: var(--accent); background: none; border: 0; cursor: pointer; }
-.rv-scope .rv-focus-title { font-size: 11px; color: var(--dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rv-scope .rv-focus-model { font-size: 10.5px; color: var(--faint); word-break: break-all; }
+.rv-scope .rv-run-stop:hover { color: var(--text); border-color: var(--accent); }
 .rv-scope .rv-credit {
   display: flex; flex-direction: column; gap: 2px;
   margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line-soft);
@@ -6244,3 +6236,63 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   background: var(--panel); border-radius: 10px;
 }
 .handoff-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* ---------------------------------------------------------------- D421 超长条目摘要卡
+   用户消息 / AI 回答 / 工具输出三类，设置里各一个开关（默认只开用户消息）。
+   收起 = 标题行（长消息 · 27 行 · 931 字 · 展开 ▾）+ 三行预览，整张卡可点；
+   展开 = 卡里滚 `calc(var(--vh1) * 42)`，底边一颗整宽「▴ 收起」。
+   `has-card` 没亮时整张卡 `display: contents` —— 不高的条目就是原来那个气泡，一层盒子都不多。 */
+.lm-card { display: contents; }
+.lm-card > .lm-head, .lm-card > .lm-bar { display: none; }
+/* D424：没成卡时 `.lm-scroll` 这层也得是纯过路的。它一留成盒子，正文就成了一个「自己套自己
+   宽度」的收缩盒：气泡自己的 `max-width: min(78%, 760px)` 量的是 `lm-scroll` 的宽度（而那个宽度
+   又由正文撑出来），于是气泡只剩自然宽度的 78% —— 右边空一大截、长一点的句子被硬折行；短消息
+   更惨，`merge` 折成「mer / ge」。这就是 D350 修过的那个坑，D421 加了这层壳之后复发（D424 再修）。 */
+.lm-card:not(.has-card) > .lm-scroll { display: contents; }
+.lm-card.has-card { display: block; overflow: hidden; border-radius: 12px 12px 12px 4px; }
+.lm-card.lm-user.has-card { background: var(--accent-bg); border: 1px solid var(--accent-dim); }
+.lm-card.lm-assistant.has-card { background: var(--panel); border: 1px solid var(--line-soft); border-radius: 4px 12px 12px 12px; }
+/* 工具卡外面已经有一层 `.tool` 的框了，这里只补一条虚线，不再套第二个框 */
+.lm-card.lm-tool.has-card { background: none; border: 0; border-radius: 0; }
+
+.lm-card > .lm-head {
+  width: 100%; align-items: center; gap: 8px; padding: 7px 12px 4px;
+  border: 0; background: none; cursor: pointer; text-align: left;
+  font: 12px/1.4 var(--sans); color: var(--dim);
+}
+.lm-card.has-card > .lm-head { display: flex; }
+.lm-card.lm-tool.has-card > .lm-head { padding: 2px 0 0; }
+.lm-badge { flex: none; padding: 0 7px; border-radius: 999px; border: 1px solid var(--accent-dim); color: var(--accent); font-size: 11px; line-height: 16px; }
+.lm-meta { flex: none; color: var(--faint); font-size: 11px; }
+.lm-open { margin-left: auto; flex: none; color: var(--accent); }
+.lm-open::after { content: " ▾"; }
+.lm-card > .lm-head:hover .lm-open { text-decoration: underline; }
+
+/* 收起：三行出头的预览，第四行开始被渐掉 */
+.lm-card.has-card > .lm-scroll {
+  max-height: 96px; overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, #000 58%, rgba(0, 0, 0, 0.12));
+  mask-image: linear-gradient(180deg, #000 58%, rgba(0, 0, 0, 0.12));
+  cursor: pointer;
+}
+/* 展开：正文在卡里自己滚，「收起」换到底边（标题行让位，免得两个入口各说一套） */
+.lm-card.has-card.is-open > .lm-head { display: none; }
+.lm-card.has-card.is-open > .lm-scroll {
+  max-height: calc(var(--vh1) * 42); overflow: auto; cursor: auto;
+  -webkit-mask-image: none; mask-image: none;
+}
+.lm-card.has-card.is-open > .lm-bar { display: flex; }
+.lm-card > .lm-bar {
+  width: 100%; justify-content: center; align-items: center; gap: 6px; padding: 6px 0;
+  border: 0; border-top: 1px solid var(--line); background: none;
+  font: 12px/1.4 var(--sans); color: var(--dim); cursor: pointer;
+}
+.lm-card.lm-user.has-card > .lm-bar { border-top-color: var(--accent-dim); }
+.lm-card.lm-tool.has-card > .lm-bar { border-top-style: dashed; }
+.lm-card > .lm-bar:hover { color: var(--text); background: var(--panel-2); }
+.lm-chev { font-size: 11px; color: var(--faint); }
+
+/* 卡里的正文不再自带气泡框：框、底色都归卡片，正文只留自己的内边距 */
+.msg .lm-card .body { background: none; border: 0; border-radius: 0; }
+/* 工具输出：卡里自己滚就够了，内层不必再滚一次（260px 那条只留给没开卡的老样子） */
+.lm-card.has-card > .lm-scroll > .out { max-height: none; overflow: visible; margin-top: 0; }

@@ -13,6 +13,8 @@ import { copilotFromFrame, creditsToUsd, formatAge, formatCredits, formatReset, 
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
 import { GithubPanel } from "./github-panel.ts";
+import { GhSetupStore, type GhCardActions } from "./gh-setup.ts";
+import { ghAccountPair } from "./github-shared.ts";
 import { refreshGithubCards } from "./github-cards.ts";
 import { githubFeature } from "./github-settings.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
@@ -81,7 +83,7 @@ import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
 import { SelAsk } from "./selask.ts";
-import { appendModelOptions, groupByProvider, groupModels, isModelGroupOpen, rememberRecentModel, setModelGroupOpen } from "./modelgroups.ts";
+import { appendModelOptions, groupByProvider, groupModels, isModelGroupOpen, mergedRecentModels, rememberRecentModel, rememberReviewModel, setModelGroupOpen } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isDefaultHidden, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { type CtxLine, type CtxPolicy } from "./context.ts";
@@ -382,6 +384,9 @@ export class App {
   private connected = false;
   private tab: Tab = "sessions";
   private queueTab: QueueTab = readQueueTab();
+  /** 正在画右栏（重入闸，见 renderQueue）。 */
+  private queueDrawing = false;
+  private queueDirty = false;
   private tabMemory = createTabMemory(this.queueTab);
   private execSelectedRound: string | null = null;
   private execSelectedPlanTaskId: number | null = null;
@@ -472,6 +477,20 @@ export class App {
   private reviewPrError = "";
   private reviewPrsAsked = "";
   private reviewPrsAt = 0;
+  /**
+   * 评审按哪个 gh 账号查 PR：多账号机器上「机器 gh 登的是谁」与「这个会话该用谁」常常不是
+   * 一个人，私有仓换个号就是 `Could not resolve to a Repository`（#17545）。
+   *
+   * 存的是**人显式选的那个**（`accounts.json` 的会话映射，空 = 跟随工作区）。实际查询用的是哪个
+   * 号在 `reviewAccountUsed` 里 —— 两者混用的话，下拉会永远停在具体账号上，「跟随工作区」选不中。
+   */
+  private reviewAccount = "";
+  /** 按当前设置**实际**用的号（会话 → 工作区 → 全局 → gh active）：只用来把号写给人看。 */
+  private reviewAccountUsed = "";
+  /** 能切到的账号（`githubApi.state()` 那份，带「有没有存 PAT」）。 */
+  private reviewAccounts: { login: string; pat: boolean }[] = [];
+  /** 上面那份是按哪个会话/目录问的：面板重画很频繁，不能每次都打一遍桥。 */
+  private reviewAccountsFor = "";
   /** 本仓库在 GitHub 上的 `owner/name`（桥从 origin 认出来的），用来比对粘贴的链接。 */
   private reviewRemoteRepo = "";
   /**
@@ -485,12 +504,10 @@ export class App {
    */
   private reviewPendingRuns = new Set<string>();
   /**
-   * 面板现在展开的是哪一次评审（`ReviewRun.id`，空串 = 停在记录列表）。
-   * 记录列表是主体：点一张卡就换成那一次的意见，`‹ 记录` 回列表。
+   * 「完整详情」浮层现在看的是哪一次评审（`ReviewRun.id`，空串 = 没开浮层，按最新那一次算）。
+   * 记录卡不再是入口（D429）：点卡底那颗「完整详情」把它设成那张卡的那一次，关掉浮层就清空。
    */
   private reviewFocus = "";
-  /** 还在跟着「刚开的那一次」跑：收到进度帧就把焦点新移到它的 runId 上。 */
-  private reviewFollowRun = false;
   /** 本会话的「评什么」已经从盘上恢复过没有（每个会话只恢复一次）。 */
   private reviewPickRestored = "";
   /** 上一次真发出去的「评什么」（JSON）：一样的就不再发，敲字/重画不会把状态文件反复重写。 */
@@ -1018,6 +1035,16 @@ export class App {
   private viewer: Viewer | null = null;
   /** GitHub 通道：右栏那块 dock（`web/src/github-panel.ts`）。懒建，关掉就丢。 */
   private githubPanel: GithubPanel | null = null;
+  /** 装 gh / 登录 gh 的状态（D428）：评审与 GitHub 面板共用这一份，进度帧只在这份里。 */
+  private ghSetupReady = false;
+  private ghSetup = new GhSetupStore(
+    (frame) => this.socket.send(frame),
+    () => this.onGhSetupChanged(),
+    () => {
+      this.reviewAccountsFor = "";
+      this.loadReviewAccounts();
+    },
+  );
   /** 预览历史，按会话分开（D63）：关预览保留、刷新页面清空、切会话各自一份。 */
   private vhist = new Map<string, { steps: VStep[]; at: number }>();
   private cardDelArm: { id: string; at: number } | null = null;
@@ -1399,6 +1426,8 @@ export class App {
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
     this.chat = new ChatView(scroll);
+    // D421：超长条目收成摘要卡（设置 → 对话里三档开关）。ChatView 不认识 prefs，这里给它一份快照。
+    this.syncLongCards(false);
     // D416：拖选聊天记录里的文字，松手冒一颗「问一下」；点了把那一段以 `>` 引用插进随手问。
     this.selAsk = new SelAsk({
       scope: () => scroll,
@@ -2757,7 +2786,6 @@ export class App {
         const id = String(msg.runId ?? "");
         if (!id) break;
         this.reviewPendingRuns.add(id);
-        if (this.reviewFollowRun) this.reviewFocus = id;
         if (this.queueTab === "review") this.renderQueue();
         this.syncReviewSheet();
         break;
@@ -2769,6 +2797,10 @@ export class App {
         this.reviewPrs = Array.isArray(msg.prs) ? (msg.prs as ReviewPr[]) : [];
         this.reviewRemoteRepo = String(msg.repo ?? "");
         this.reviewPrsAt = Date.now();
+        // 桥回的是「实际按谁查的」：解析结果可能来自工作区 / 全局设置，与面板本地猜的不一致。
+        // 只记进 `reviewAccountUsed`（写给人看）；`reviewAccount` 是**人选的那个**，被它盖掉下拉就永远
+        // 停在具体账号上、「跟随工作区」选不中。空号也得写回去，否则会留着上一个账号。
+        this.reviewAccountUsed = msg.login ? String(msg.login) : "";
         this.reviewPrError = msg.ok ? "" : errText(msg) || String(msg.error ?? "");
         this.reviewPrsLoading = false;
         // 手输的号不在列表里时不要被第一项悄悄顶掉：只在没选过时挑一个。
@@ -2834,6 +2866,11 @@ export class App {
         this.reviewOcr = (msg.ocr ?? null) as ReviewOcr | null;
         if (!msg.ok) this.reviewError = errText(msg) || tr("没有装上");
         if (this.queueTab === "review") this.renderQueue();
+        break;
+      // 装 gh / 登录 gh（D428）：设备码只发给发起登录的那条连接，所以这里只交给 store。
+      case "gh.setup.status":
+      case "gh.setup.event":
+        this.ghSetup.handle(msg);
         break;
       // GitHub 通道：壳看见 `gh pr create` 成功 → 把面板推开（你刚才让它建的那个 PR）。
       // 只认当前会话：别的会话建的 PR 不该抢你现在的右栏。
@@ -4346,6 +4383,21 @@ export class App {
     }
     // D93: 终端 dialog 的几何按缩放换算，改了字号 / 缩放后得重新夹一次（不然 pinned 的那块会溢出）。
     if (this.termDock) this.applyTermGeom(this.termDock);
+    // D421：「恢复默认」会一次改掉三档卡片的开关，这里跟着同步并重画（改了没反应最难查）。
+    this.syncLongCards();
+  }
+
+  /**
+   * D421：把 prefs 里的三档「超长条目怎么画」交给 ChatView。启动、改开关、「恢复默认」都走这一个口 ——
+   * 三处各写一遍的话，迟早有一处忘了重画。没变就什么都不做（`applyPrefs` 调得很勤）。
+   */
+  private syncLongCards(redraw = true): void {
+    if (!this.chat) return;
+    const next = { user: this.prefs.longCardUser, assistant: this.prefs.longCardAssistant, tool: this.prefs.longCardTool };
+    const prev = this.chat.longCards;
+    if (prev.user === next.user && prev.assistant === next.assistant && prev.tool === next.tool) return;
+    this.chat.longCards = next;
+    if (redraw) this.chat.redraw();
   }
 
   /** 布局 id 落到 `<html data-layout>`：渲染 CSS 与探针都从这里读，不用去翻 prefs。 */
@@ -4509,6 +4561,35 @@ export class App {
         tr("输入框上方的「重讲」"),
         tr("先提供上下文，再用简体技术中文说明。默认开；关掉后输入框上面那一行不再出现"),
         this.stSwitch(hintBox),
+      ),
+    );
+
+    // D421：超长条目收成摘要卡。三档各自一个开关，动一下就把当前会话就地重画一遍（不重开会话）。
+    const longCardBox = (key: "longCardUser" | "longCardAssistant" | "longCardTool"): HTMLInputElement => {
+      const box = document.createElement("input");
+      box.checked = this.prefs[key];
+      box.onchange = () => {
+        this.prefs = { ...this.prefs, [key]: box.checked };
+        savePrefs(this.prefs);
+        this.syncLongCards();
+      };
+      return box;
+    };
+    chatPanel.append(
+      this.stRow(
+        tr("长用户消息收成卡片"),
+        tr("默认开。占满一屏的粘贴收成一张卡（长消息 · 多少行 · 多少字），点一下在卡里铺开；关掉退回原来露 240px 的折叠"),
+        this.stSwitch(longCardBox("longCardUser")),
+      ),
+      this.stRow(
+        tr("长回答收成卡片"),
+        tr("默认关。管的是 AI 的正文：同样先收成卡，点开在卡里读；关着用回答右上那颗折叠钮"),
+        this.stSwitch(longCardBox("longCardAssistant")),
+      ),
+      this.stRow(
+        tr("长的工具输出收成卡片"),
+        tr("默认关。管的是工具卡的输出：关着是 260px 的内滚窗口，开着收成一张卡"),
+        this.stSwitch(longCardBox("longCardTool")),
       ),
     );
 
@@ -4813,7 +4894,7 @@ export class App {
         label: tr("外观"),
         items: [
           { sec: "lang", label: tr("语言与字号"), sub: tr("界面语言与整页缩放；改了立即生效") },
-          { sec: "chat", label: tr("对话"), sub: tr("输入框上方那一行「重讲」开不开") },
+          { sec: "chat", label: tr("对话"), sub: tr("「重讲」那一行、超长消息的卡片") },
           { sec: "theme", label: tr("主题与强调色"), sub: tr("三套 macOS 观感，加一组强调色") },
           { sec: "layout", label: tr("工作区"), sub: tr("工作区布局与标签行") },
           { sec: "chrome", label: tr("界面元素"), sub: tr("顶栏与输入框下沿的按钮；点预览里的按钮就收起 / 放回") },
@@ -5873,7 +5954,11 @@ export class App {
     const commit = (): void => {
       if (pick) {
         const chosen = this.models.find((m) => m.id === draftModel);
-        if (chosen) pick.onPick(chosen, draftLevel);
+        if (chosen) {
+          // D423：评审挑的模型进评审侧那份「最近使用」（确认即记）；对话那份不受影响。
+          rememberReviewModel(chosen.provider, chosen.id);
+          pick.onPick(chosen, draftLevel);
+        }
         this.closeSheet();
         return;
       }
@@ -6032,6 +6117,13 @@ export class App {
       lvBar.replaceChildren(el("span", "pm-lvbar__label", tr("思考档位")), who, seg);
     };
 
+    // 两个页共用的一份：来源是否不止一个（平铺的行要标来源）、在用的模型（顺手当 exclude）、
+    // 搜索匹配规则（列表与「最近使用」共用，改规则只改这里）。
+    const multi = new Set(this.models.map((x) => x.provider)).size > 1;
+    const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
+    const currentModel = this.models.find((x) => x.id === startModel && (!startProvider || x.provider === startProvider)) ?? null;
+    const matches = (x: ModelInfo, q: string): boolean => !q || `${x.name} ${x.id}`.toLowerCase().includes(q);
+
     const nowPane = (): HTMLElement[] => {
       const out: HTMLElement[] = [];
       const m = draftInfo();
@@ -6058,10 +6150,7 @@ export class App {
         return out;
       }
 
-      const { pinned, recent } = groupModels(this.models, { id: startModel });
-      // 来源不止一个时，这几块是平铺的，得在行里标出它属于哪个来源。
-      const multi = new Set(this.models.map((x) => x.provider)).size > 1;
-      const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
+      const { pinned, recent } = groupModels(this.models, { id: startModel }, { mergedRecent: !!pick });
       // 只换档位时草稿就是当前模型：再插一块「待切换」＝同一行画两遍。
       if (dirty() && m && m.id !== startModel) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
       const current = [pinned ? flatRow(pinned) : null].filter((x): x is HTMLElement => !!x);
@@ -6074,7 +6163,7 @@ export class App {
     const allPane = (): HTMLElement[] => {
       const q = query.trim().toLowerCase();
       // 不按「草稿排第一」重排：点一行就把它提到最上面，看起来像「选择后自动跳到第一个」，鼠标底下的行都换了位。
-      const list = this.models.filter((m) => !q || `${m.name} ${m.id}`.toLowerCase().includes(q));
+      const list = this.models.filter((m) => matches(m, q));
       if (this.models.length === 0) {
         return [emptyState(this.modelsError ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError }) : tr("正在读取模型列表…"), true)];
       }
@@ -6083,6 +6172,18 @@ export class App {
         const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
         notice.append(this.claimButton());
         out.push(notice);
+      }
+      // D423：评审挑模型时开场就落在这一页，「最近使用」得在这里看得到。
+      // 对话侧不插这一段：D409 定过它归「当前使用」页，不重复入口。
+      if (pick) {
+        // 与「当前使用」页同口径：在用的那条已经画在最上面，最近里不再重复（点它也是原地不动）。
+        const recent = mergedRecentModels(this.models, currentModel).filter((x) => matches(x, q));
+        if (recent.length) {
+          out.push(
+            this.stSection(tr("最近使用"), tr("{p1} 个", { p1: String(recent.length) })),
+            panel(recent.map(flatRow), ""),
+          );
+        }
       }
       // 来源多了就得能分开看：按目录顺序一个来源一组，组头可折（状态记在 pi.modelGroups.open，跟目录选择器同一份）。
       const groups = groupByProvider(list);
@@ -10215,12 +10316,51 @@ export class App {
         cwd: () => this.session?.cwd ?? "",
         openExternal: (url) => openExternal(url),
         askAgent: (text) => this.askAgent(text),
+        ghCard: () => this.ghSetup.card(Boolean(this.reviewAccountUsed) || this.reviewAccounts.some((a) => a.pat)),
+        ghActions: this.ghCardActions(),
         onClose: () => {
           this.githubPanel = null;
         },
       });
     }
     void this.githubPanel.open({ number, repo });
+  }
+
+  /** gh 状态一变（探测回来 / 安装登录有进展）：重画面板，刚登录上就重读账号与 PR 列表。 */
+  private onGhSetupChanged(): void {
+    if (this.queueTab === "review") this.renderQueue();
+    // 只在「从不可用变成可用」那一次重读账号：`gh.setup.status` 每次探测都会来，
+    // 每帧都重拉就等于点一次「重新检测」白跑两轮 `github.state`（评审 #31）。
+    const ready = Boolean(this.ghSetup.setup?.installed && this.ghSetup.setup.loggedIn);
+    if (ready && !this.ghSetupReady) {
+      this.reviewAccountsFor = "";
+      this.loadReviewAccounts();
+    }
+    this.ghSetupReady = ready;
+    // 逐行日志也会走到这里：跑着的时候不重拉面板，等 done / status 那次再刷。
+    // （到达顺序是 done 先、带新状态的 status 后：done 那次 reload 拿到的是旧状态，
+    //  紧接着的 status 帧会再刷一次，`reload()` 自带 seq 保护，不会让旧响应盖新的。）
+    if (!this.ghSetup.op) void this.githubPanel?.reload();
+  }
+
+  /** 两张卡（评审 PR 格、GitHub 面板顶部）共用同一组动作（D428）。 */
+  private ghCardActions(): GhCardActions {
+    return {
+      install: () => this.ghSetup.install(),
+      login: () => this.ghSetup.login(),
+      cancel: () => this.ghSetup.cancel(),
+      refresh: () => {
+        this.reviewAccountsFor = "";
+        this.loadReviewAccounts();
+        this.ghSetup.refresh();
+      },
+      dismiss: () => this.ghSetup.dismiss(),
+      openPat: () => this.ghSetup.openPat(),
+      closePat: () => this.ghSetup.closePat(),
+      onPatInput: (token) => this.ghSetup.onPatInput(token),
+      savePat: (token) => this.ghSetup.savePat(token),
+      openUrl: (url) => openExternal(url),
+    };
   }
 
   /**
@@ -14776,7 +14916,7 @@ export class App {
    * 那两个下一个 tick 就按新值判定，水位等下一次采样。输入框里的值只在非注焦时才被重写成桥报的值，
    * 否则一次 tick 广播就能把输入草稿抹掉。
    *
-   * D421的归档那一行特殊：`0` 是合法的，含义是「归档后不释放」。前两行仍然是大于 0 的数。
+   * D430 的归档那一行特殊：`0` 是合法的，含义是「归档后不释放」。前两行仍然是大于 0 的数。
    */
   private runtimeThresholds(stats: RuntimeStats): HTMLElement {
     const box = el("div", "runtime-thresholds");
@@ -18877,7 +19017,6 @@ export class App {
     this.reviewPrError = "";
     this.reviewPrInfo = { number: 0, info: null, error: "" };
     this.reviewFocus = "";
-    this.reviewFollowRun = false;
     this.reviewPickRestored = "";
     this.reviewPickSent = "";
     this.reviewPrMenu = false;
@@ -18915,7 +19054,6 @@ export class App {
     this.reviewExpectRepo = "";
     // —— 记录列表：回到列表页；「评什么」等 state 到了再从盘上恢复（只恢复一次）。
     this.reviewFocus = "";
-    this.reviewFollowRun = false;
     this.reviewPickRestored = "";
     // 新会话的「评什么」要重新发一次（去重表里的那份是上一个会话的）。
     this.reviewPickSent = "";
@@ -18933,6 +19071,10 @@ export class App {
     this.reviewPrError = "";
     this.reviewPrsAsked = "";
     this.reviewPrsAt = 0;
+    this.reviewAccounts = [];
+    this.reviewAccount = "";
+    this.reviewAccountUsed = "";
+    this.reviewAccountsFor = "";
     this.reviewRepo = "";
     this.reviewPin = "";
     this.reviewRemoteRepo = "";
@@ -19051,7 +19193,7 @@ export class App {
     return out;
   }
 
-  /** 面板现在该看哪一次（空 = 列表，就取最新那一次；两者都没就 null）。 */
+  /** 面板现在该看哪一次（空 = 没开浮层，就取最新那一次；两者都没就 null）。 */
   private reviewActiveRun(): ReviewRun | null {
     const runs = this.reviewState?.runs ?? [];
     if (!runs.length) return null;
@@ -19158,9 +19300,43 @@ export class App {
     this.socket.send({ type: "review.prs.get", dir, sessionId: this.currentId });
   }
 
+  /**
+   * 读一会话能用的 gh 账号（评审面板的「账号」下拉）。
+   *
+   * 只在会话 / 目录换了之后问一次：面板重画频繁，每次都发请求会打满桥；而且请求回来时
+   * 人可能已经换回上一个会话了，所以回来先核对 `reviewAccountsFor` 再落盘。
+   */
+  private loadReviewAccounts(): void {
+    const sessionId = this.currentId ?? "";
+    const cwd = this.reviewDir();
+    const key = `${sessionId}|${cwd}`;
+    if (!sessionId || !cwd || key === this.reviewAccountsFor) return;
+    this.reviewAccountsFor = key;
+    void githubApi
+      .state(sessionId, cwd)
+      .then((state) => {
+        if (this.reviewAccountsFor !== key) return;
+        const pats = state.pats ?? [];
+        this.reviewAccounts = (state.accounts ?? []).map((a) => ({ login: a.login, pat: pats.includes(a.login) }));
+        // `state.session` 是**解析结果**（会话 → 工作区 → 全局 → gh active）：拆成「人选的」与「实际用的」。
+        const pair = ghAccountPair(state.session ?? null);
+        this.reviewAccount = pair.account;
+        this.reviewAccountUsed = pair.accountUsed;
+        if (this.queueTab === "review") this.renderQueue();
+      })
+      .catch(() => {
+        // 问不到就当没问过：下拉不画，下次重画还能再试。
+        if (this.reviewAccountsFor === key) this.reviewAccountsFor = "";
+      });
+  }
+
   private renderReviewPanel(): HTMLElement {
     this.syncReviewSession();
+    // 装 gh / 登录 gh 的状态只问一次；之后靠 gh.setup.status 帧（桥在装完 / 登录完会广播）。
+    this.ghSetup.ensure();
     const dir = this.reviewDir();
+    // 账号下拉要用它：评审按会话账号查 PR，不把号摆出来又只能猜（#17545）。
+    this.loadReviewAccounts();
     // 换过会话 / 第一次进这一页：问一次桥。放在这里是因为面板可能是「记住上次页签」直接打开的，
     // 那一路不会走 selectQueueTab()。
     if (dir && this.reviewAsked !== dir) {
@@ -19199,6 +19375,11 @@ export class App {
       prs: this.reviewPrs,
       prsLoading: this.reviewPrsLoading,
       prError: this.reviewPrError,
+      account: this.reviewAccount,
+      accountUsed: this.reviewAccountUsed,
+      accounts: this.reviewAccounts,
+      // 有令牌（gh 登录或存的 PAT）就能评：卡片降级成一行小字（D428）。
+      gh: this.ghSetup.card(Boolean(this.reviewAccountUsed) || this.reviewAccounts.some((a) => a.pat)),
       model: this.reviewModel,
       focus: this.reviewFocus,
       repo: this.reviewRepo || this.reviewPin,
@@ -19214,6 +19395,8 @@ export class App {
       installLog: this.reviewInstallLog,
       markLabels: { accept: tr("接受"), ignore: tr("忽略"), "false-positive": tr("误报") },
       severityLabels: { critical: tr("严重"), high: tr("高"), medium: tr("中"), low: tr("低") },
+      // 同一组动作直接给面板：不再在 ReviewActions 里再抄一份（评审 #33）。
+      ghActions: this.ghCardActions(),
       actions: this.reviewActions(),
     };
   }
@@ -19286,6 +19469,28 @@ export class App {
         const dir = this.reviewRepoDir();
         if (dir) this.loadPullRequests(dir);
       },
+      onAccount: (login) => {
+        const sessionId = this.currentId ?? "";
+        if (!sessionId) return;
+        // 存的是**会话级**映射（与 GitHub 面板同一份）：评审那边按它取令牌（`sessionGhAccount`）。
+        void githubApi
+          .setAccount(sessionId, login)
+          .then(async () => {
+            this.reviewAccount = login;
+            // 换了号，旧列表与详情属于上一个账号：全部作废，按新号重拉一次。
+            this.reviewPrs = [];
+            this.reviewPrsAsked = "";
+            this.reviewPrsAt = 0;
+            this.reviewPrError = "";
+            this.reviewPrInfo = { number: 0, info: null, error: "" };
+            this.reviewAccountsFor = "";
+            this.loadReviewAccounts();
+            const dir = this.reviewRepoDir();
+            if (dir) this.loadPullRequests(dir);
+            this.renderQueue();
+          })
+          .catch((err) => this.flashToast(errText(err), true, 8000));
+      },
       onCommit: (value) => {
         this.reviewCommit = value;
         this.saveReviewPick();
@@ -19321,22 +19526,11 @@ export class App {
         this.socket.send({ type: "review.install" });
         this.renderQueue();
       },
-      onDetails: () => this.openReviewSheet(),
+      // 装 gh / 登录 gh（D428）：卡片的动作由 `reviewPanelInput()` 直接传 `ghCardActions()`。
+      // 记录卡不再是入口（D429）：点卡底那颗「完整详情」打开那一次。
+      onDetails: (runId) => this.openReviewSheet(runId),
       onPickRepo: () => this.openRepoPicker(),
       onClearRepo: () => this.clearReviewRepo(),
-      onOpenRun: (runId) => {
-        // 人自己点了某一条：看它，不再跟着新开的那一次跑。
-        this.reviewFocus = runId;
-        this.reviewFollowRun = false;
-        this.renderQueue();
-        this.syncReviewSheet();
-      },
-      onBack: () => {
-        this.reviewFocus = "";
-        this.reviewFollowRun = false;
-        this.renderQueue();
-        this.syncReviewSheet();
-      },
     };
   }
 
@@ -19411,15 +19605,23 @@ export class App {
     this.socket.send({ type: "review.prinfo.get", dir, sessionId: this.currentId, pr: number });
   }
 
-  /** 「评审详情」dialog：跑着看时间线，跑完看结果；同一个会话只开一扇。 */
-  private openReviewSheet(): void {
+  /** 「评审详情」dialog：看**点开的那一张卡**（跑着看时间线，跑完看结果）；同一个会话只开一扇。 */
+  private openReviewSheet(runId: string): void {
+    // D429：浮层看的是这张卡对应的那一次，不是「最新那一次」；焦点只活到浮层关掉为止。
+    this.reviewFocus = runId;
     if (this.reviewSheet) {
       this.reviewSheet.update(this.reviewPanelInput());
       return;
     }
     const sheet = new ReviewSheet(this.reviewPanelInput());
     sheet.onClose = () => {
-      if (this.reviewSheet === sheet) this.reviewSheet = null;
+      // 只收尾「现在这一扇」：窗被人关掉又重开过时，`reviewSheet` 已经不是它，状态归新那扇管。
+      if (this.reviewSheet !== sheet) return;
+      this.reviewSheet = null;
+      // 焦点只活到浮层关掉为止。中途从这张卡换看另一张（reviewFocus 换了 runId、窗还是这扇）
+      // 也要清掉 —— 否则关窗后 reviewActiveRun() 一直按旧那一次算，直到换会话。
+      this.reviewFocus = "";
+      if (this.queueTab === "review") this.renderQueue();
     };
     sheet.mount(document.getElementById("app") ?? document.body);
     this.reviewSheet = sheet;
@@ -19451,10 +19653,13 @@ export class App {
     this.reviewError = "";
     this.reviewPrMenu = false;
     const modelInfo = this.reviewEffectiveModel();
-    // 新开一条：等桥的 `review.started` 把 runId 发回来再定焦点，这里先回列表页。
+    // D423：这次真要拿去跑的模型也算「评审用过的」——没单独挑时它跟着会话走，
+    // 记下来的作用是把「确认过但还没跑」和「刚跑过」的次序理顺，下次打开就在最近里。
+    if (modelInfo) rememberReviewModel(modelInfo.provider, modelInfo.id);
+    // 新开一条：不再自动把人拽到某一次上（D429）—— 停在记录列表，在跑那张卡自己显示进度。
+    // 浮层开着时**不清** reviewFocus：那一位是「正在看的那一次」，与新开这条无关；
+    // 没开浮层时它本来就是空串，清了也没有意义。
     // （以前这里会乐观塞一份 runId 空串的进度；并发以后那样会跟另一条的进度混在一起。）
-    this.reviewFocus = "";
-    this.reviewFollowRun = true;
     this.saveReviewPick();
     this.socket.send({
       type: "review.run",
@@ -20747,7 +20952,30 @@ export class App {
     return this.queueTab === "exec" || this.queueTab === "browser";
   }
 
+  /**
+   * 重入闸：`drawQueue()` 会在渲染途中同步回调（`ghSetup.ensure()` → `onChange` →
+   * `onGhSetupChanged()` → 再进这里，D428 那套「状态一问就重画」），那时 `host.replaceChildren()`
+   * 已经清空、内层那次已经把面板画好，外层回来再 append 一次就会画出两份面板。
+   * 所以画的过程中只记「还要再画一次」，画完补跑一轮。
+   */
   private renderQueue(): void {
+    if (this.queueDrawing) {
+      this.queueDirty = true;
+      return;
+    }
+    this.queueDrawing = true;
+    try {
+      this.drawQueue();
+    } finally {
+      this.queueDrawing = false;
+    }
+    if (this.queueDirty) {
+      this.queueDirty = false;
+      this.renderQueue();
+    }
+  }
+
+  private drawQueue(): void {
     const host = this.els.queueInner;
     // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。
     const kept = this.els.queuePane.scrollTop;
@@ -22499,6 +22727,20 @@ export class App {
   }
 
   /**
+   * 气泡闭包住的是「打开那一刻」的胶囊节点，而 ★ 行会因为任意一帧 pi.status / 会话回声整条重建
+   * （frames.ts 把 pi.status 一律映射到 "sessions"）。重建后旧节点从文档里摘掉、`isConnected` 为假
+   * —— 早先归档/删除在 `host.contains(chip)` 这里直接 return，点击被静默吞掉（「点了没反应」）。
+   * 所以动作认 id：节点还连着文档（★ 行胶囊，或不在 ★ 行里的 NowChip）就演动效，
+   * 被重建换掉就按 id 回查当前那颗，都找不到就不演、照样把动作发出去。
+   */
+  private livePinChip(id: string, chip?: HTMLElement | null): HTMLElement | null {
+    if (chip && chip.isConnected) return chip;
+    const host = this.els.pinStrip;
+    const byId = host.querySelector<HTMLElement>(`.pin-chip[data-pin-id="${CSS.escape(id)}"]`);
+    return byId && byId.isConnected ? byId : null;
+  }
+
+  /**
    * 归档动效：胶囊原地淡出 → 横向收拢让位（后面的胶囊平滑左移），然后才真的发归档。
    * 先演后发：归档是幂等的，而桥的回声会重建整条 ★ 行，收拢完的几何必须和重建后一模一样，
    * 否则回声那一帧会跳。早先版本在条尾插一个抽屉（把「＋」挤开 35px、回声时再弹回）、
@@ -22511,12 +22753,17 @@ export class App {
       this.archiveOne(id);
       return;
     }
+    // 节点被重建换掉时不能演收拢（没有可量的几何），但归档必须照发。
+    const live = this.livePinChip(id, chip);
+    if (!live) {
+      this.archiveOne(id);
+      return;
+    }
     const host = this.els.pinStrip;
-    if (!host.contains(chip)) return;
     this.pinAnim = id;
     // 量 CSS px 而不是 getBoundingClientRect：#app 上有 zoom（外观「字号」），rect 是缩放后的视觉尺寸，
     // 拿它写回 style.width / height 会被再缩一遍 —— 胶囊先变宽、整行变高，正是这里要治的抖。
-    const cs = getComputedStyle(chip);
+    const cs = getComputedStyle(live);
     const borders = parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
     const box = cs.boxSizing === "border-box" ? 0 : borders + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
     const vbox = cs.boxSizing === "border-box" ? 0 : parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
@@ -22525,16 +22772,16 @@ export class App {
     // 收拢只动这一颗胶囊（chip.parentElement 就是 .pin-strip，动它会把整条缩没）。
     // border-box 下宽度到不了 0（还剩左右边框），用负的右外边距把边框和 flex gap 一起吃掉：
     // 收完这颗的占位正好是 0，下一颗停在它原来的左边缘 —— 和回声重建后的位置一致。
-    Object.assign(chip.style, {
+    Object.assign(live.style, {
       boxSizing: "border-box",
       height: `${r.height}px`,
       overflow: "hidden",
       whiteSpace: "nowrap",
       pointerEvents: "none",
     });
-    const fade = chip.animate([{ opacity: "1" }, { opacity: "0" }], { duration: 220, easing: "ease-out", fill: "forwards" });
+    const fade = live.animate([{ opacity: "1" }, { opacity: "0" }], { duration: 220, easing: "ease-out", fill: "forwards" });
     fade.onfinish = () => {
-      const shut = chip.animate(
+      const shut = live.animate(
         [
           { width: `${r.width}px`, marginRight: "0px" },
           { width: "0px", marginRight: `${-(gap + borders)}px` },
@@ -22560,8 +22807,15 @@ export class App {
       this.pinNote(tr("已移入垃圾箱 · 在左栏的垃圾箱里可以还原"));
       return;
     }
-    const r = chip.getBoundingClientRect();
-    const clone = chip.cloneNode(true) as HTMLElement;
+    // 同 archiveFromPin：节点可能已被重建换掉，拿不到存活节点就直接删，不演飞行动效。
+    const live = this.livePinChip(id, chip);
+    if (!live) {
+      this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
+      this.pinNote(tr("已移入垃圾箱 · 在左栏的垃圾箱里可以还原"));
+      return;
+    }
+    const r = live.getBoundingClientRect();
+    const clone = live.cloneNode(true) as HTMLElement;
     clone.classList.add("pin-flyer");
     markSurface(clone, "paper");
     clone.removeAttribute("data-pin-key");
@@ -22614,7 +22868,7 @@ export class App {
     if (this.pinAnim) return;
     this.closePinMenu();
     const chip = this.nowChip?.el;
-    if (this.calm() || !chip) {
+    if (this.calm() || !chip || !chip.isConnected) {
       this.archiveOne(id);
       return;
     }
@@ -22877,6 +23131,13 @@ type Prefs = {
   githubCards: boolean;
   /** #666：AI 建完 PR 自动把右栏面板推开。默认关（只认显式 true）；主开关关掉时它跟着失效（`githubFeature()` 的连坐）。 */
   githubAutoPanel: boolean;
+  /**
+   * D421：哪几类超长条目收成摘要卡（收起占三行，点卡展开）。默认只开用户消息 ——
+   * 一条黏满整屏的粘贴是光标时代最实在的痛，AI 回答和工具输出留给想要的人自己去开。
+   */
+  longCardUser: boolean;
+  longCardAssistant: boolean;
+  longCardTool: boolean;
 };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
@@ -22901,6 +23162,9 @@ const DEFAULT_PREFS: Prefs = {
   retellHint: true,
   githubCards: true,
   githubAutoPanel: false,
+  longCardUser: true,
+  longCardAssistant: false,
+  longCardTool: false,
 };
 
 /** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
@@ -23590,6 +23854,10 @@ function readPrefs(): Prefs {
       githubCards: p?.githubCards !== false,
       // #666：这个反过来了 —— 老版本升上来没有这个键按**关**（默认值翻了，只有显式 true 才算开）。
       githubAutoPanel: p?.githubAutoPanel === true,
+      // D421：同样没有「旧版本没这个键」的问题 —— 三档都按默认值来（只有用户自己动过才有这个键）。
+      longCardUser: p?.longCardUser !== false,
+      longCardAssistant: p?.longCardAssistant === true,
+      longCardTool: p?.longCardTool === true,
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
     if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);

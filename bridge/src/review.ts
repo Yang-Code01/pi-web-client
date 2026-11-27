@@ -834,6 +834,11 @@ export interface StartOptions {
   expectRepo?: string;
   /** 哪个会话发起的：评审状态按「仓库 + 会话」分开存。 */
   session?: string;
+  /**
+   * 这个会话选的 GitHub 账号（`{ GH_TOKEN }`，由 `github.ts` 的 `sessionGhAccount()` 算好）。
+   * 不传就沿用桥自己的环境 —— 也就是 gh 的机器 active 账号（多账号机器上经常不是同一个）。
+   */
+  ghEnv?: NodeJS.ProcessEnv;
   model?: string;
   provider?: string;
   lang: ReviewLang;
@@ -1192,7 +1197,9 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       // PR 的代码不在本地：先把 `refs/pull/N/head` 与 base 分支 fetch 下来（不动工作区），
       // 再按普通的「范围」走 —— 分片、规则、三态全复用。
       emit({ phase: "fetch" } as Partial<Progress>);
-      const resolved = await resolvePullRequest(root, Number(opts.pr) || 0, (line) => emit({ currentFile: line } as Partial<Progress>));
+      const resolved = await resolvePullRequest(root, Number(opts.pr) || 0, (line) => emit({ currentFile: line } as Partial<Progress>), {
+        env: opts.ghEnv,
+      });
       base = resolved.from;
       target = resolved.to;
       run.pr = resolved.pr;

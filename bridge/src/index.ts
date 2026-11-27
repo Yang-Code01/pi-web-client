@@ -113,7 +113,8 @@ import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
-import { handleGithub, type GithubCtx } from "./github.ts";
+import { githubApiBase, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
+import { cancelGhSetup, ghSetupCached, ghSetupStatus, installGh, loginGh } from "./gh-setup.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
@@ -1480,6 +1481,17 @@ async function main(): Promise<void> {
     if (await handleMail(req, res, url, { publicReq, confirm: (sid, mail) => askMailConfirm(sid, mail, wss) })) return;
     if (await handleJira(req, res, url, { publicReq })) return;
     // GitHub 通道：账号与凭据在桥里，壳（pi 子进程的 `gh`）与页面都只跟这组路由说话。
+    // 「这台机器装没装 gh / 登录了谁 / 该跑哪条安装命令」是只读探测，面板打开时就要用（D428）。
+    // 隧道访客只给已有缓存：`gh --version` / `gh auth status` 是子进程，别让匿名请求反复打。
+    if (url.pathname === "/api/github/setup" && req.method === "GET") {
+      try {
+        const setup = ghSetupCached();
+        if (publicReq) return json(res, 200, { ok: true, setup });
+        return json(res, 200, { ok: true, setup: await ghSetupStatus() });
+      } catch (err: any) {
+        return json(res, 200, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
     if (
       await handleGithub(req, res, url, githubCtx(publicReq))
     )
@@ -2886,6 +2898,9 @@ async function main(): Promise<void> {
         if (entry.ws === ws) entry.settle({ ok: false, reason: "no-ack" });
       }
       for (const id of ((ws as any).logins ?? []) as string[]) cancelLogin(id);
+      // 页面关了就别让**自己发起的** gh 安装 / 登录在后台继续跑（一次性码也没人看了）；
+      // 另一个页签的登录不归这条连接管，不能顺手杀掉（cancelGhSetup 按 owner 认领）。
+      if ((ws as any).ghSetup) cancelGhSetup(ws);
     });
 
     ws.on("message", async (raw) => {
@@ -4102,8 +4117,17 @@ async function main(): Promise<void> {
             void (async () => {
               try {
                 const { repo } = effectiveReviewDir(dir, session);
-                const out = await listPullRequests(repo, { fresh: msg.fresh === true });
-                send({ type: "review.prs", dir: repo, ...out });
+                // PR 列表要跟「这个会话选的账号」走：多账号机器上，机器 active 那个常常没有权限。
+                const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
+                const out = await listPullRequests(repo, {
+                  fresh: msg.fresh === true,
+                  login: gh.login,
+                  env: gh.env,
+                  token: gh.restToken,
+                  apiBase: githubApiBase(),
+                });
+                // 带上实际用的账号：面板要能显示「这次是按谁去查的」，不然又只能猜（#17545）。
+                send({ type: "review.prs", dir: repo, ...out, login: gh.login });
               } catch (err: any) {
                 send({ type: "review.prs", dir, ok: false, prs: [], error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
               }
@@ -4117,8 +4141,15 @@ async function main(): Promise<void> {
             void (async () => {
               try {
                 const { repo } = effectiveReviewDir(dir, session);
-                const out = await pullRequestInfo(repo, number, { fresh: msg.fresh === true });
-                send({ type: "review.prinfo", dir: repo, pr: number, ...out });
+                const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
+                const out = await pullRequestInfo(repo, number, {
+                  fresh: msg.fresh === true,
+                  login: gh.login,
+                  env: gh.env,
+                  token: gh.restToken,
+                  apiBase: githubApiBase(),
+                });
+                send({ type: "review.prinfo", dir: repo, pr: number, ...out, login: gh.login });
               } catch (err: any) {
                 send({ type: "review.prinfo", dir, pr: number, ok: false, info: null, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
               }
@@ -4137,39 +4168,53 @@ async function main(): Promise<void> {
             const slash = given ? -1 : full.indexOf("/");
             const provider = slash > 0 ? full.slice(0, slash) : given;
             const model = slash > 0 ? full.slice(slash + 1) : full;
-            try {
-              const { repo, pinned } = effectiveReviewDir(dir, session);
-              const started = startReview({
-                dir: repo,
-                mode,
-                base: String(msg.base ?? ""),
-                target: String(msg.target ?? ""),
-                commit: String(msg.commit ?? ""),
-                pr: Number(msg.pr) || 0,
-                // #666：从链接卡点过来时带的「这张卡属于哪个仓库」，桥上拿它拒掉别仓的号。
-                expectRepo: String(msg.expectRepo ?? ""),
-                session,
-                model,
-                provider,
-                lang,
-                // D420：进度帧要带上是哪一条（runId）与哪位会话，页面才画得到各自的卡上。
-                onProgress: (p) => broadcast({ type: "review.progress", dir: repo, sessionId: session, runId: p.runId, progress: p }),
-                onState: () =>
-                  broadcast({
-                    type: "review.state",
-                    dir: repo,
-                    pinned,
-                    sessionId: session,
-                    state: readReviewState(repo, session),
-                    progresses: reviewProgresses(repo, session),
-                    cap: MAX_RUNS_PER_SESSION,
-                  }),
-              });
-              send({ type: "review.started", dir: repo, sessionId: session, runId: started.runId });
-            } catch (err: any) {
-              // #666：`params` 是给英文 / 日文界面翻译用的（中文直接看上面的 `error`）。
-              send({ type: "review.state", dir, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed"), params: err?.params });
-            }
+            // 账号要 async 算（`gh auth token`），而这条 case 是同步的：包一层，错误照旧回给页面。
+            void (async () => {
+              try {
+                const { repo, pinned } = effectiveReviewDir(dir, session);
+                // 评审自己 spawn `gh` / `git`，子进程里看不到会话：把账号的令牌在这里算好带下去。
+                // 不带的话走的就是 gh 的机器 active 账号 —— 多账号机器上经常看不到目标仓库（D422）。
+                const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
+                const started = startReview({
+                  dir: repo,
+                  mode,
+                  base: String(msg.base ?? ""),
+                  target: String(msg.target ?? ""),
+                  commit: String(msg.commit ?? ""),
+                  pr: Number(msg.pr) || 0,
+                  // #666：从链接卡点过来时带的「这张卡属于哪个仓库」，桥上拿它拒掉别仓的号。
+                  expectRepo: String(msg.expectRepo ?? ""),
+                  session,
+                  ghEnv: gh.env,
+                  model,
+                  provider,
+                  lang,
+                  // D420：进度帧要带上是哪一条（runId）与哪位会话，页面才画得到各自的卡上。
+                  onProgress: (p) => broadcast({ type: "review.progress", dir: repo, sessionId: session, runId: p.runId, progress: p }),
+                  onState: () =>
+                    broadcast({
+                      type: "review.state",
+                      dir: repo,
+                      pinned,
+                      sessionId: session,
+                      state: readReviewState(repo, session),
+                      progresses: reviewProgresses(repo, session),
+                      cap: MAX_RUNS_PER_SESSION,
+                    }),
+                });
+                send({ type: "review.started", dir: repo, sessionId: session, runId: started.runId });
+              } catch (err: any) {
+                // #666：`params` 是给英文 / 日文界面翻译用的（中文直接看上面的 `error`）。
+                send({
+                  type: "review.state",
+                  dir,
+                  pinned: readReviewPin(session),
+                  error: String(err?.message ?? err),
+                  code: String(err?.code ?? "failed"),
+                  params: err?.params,
+                });
+              }
+            })();
             return;
           }
           case "review.cancel": {
@@ -4251,6 +4296,49 @@ async function main(): Promise<void> {
             void installOcr((line) => broadcast({ type: "review.install.log", line })).then(async (out) => {
               broadcast({ type: "review.install.done", ok: out.ok, error: out.error, ocr: await ocrStatus({ refresh: true }) });
             });
+            return;
+          }
+          // ------------------------------------------------ 装 gh / 登录 gh（D428）
+          // 为什么装在桥里而不是让页面给出命令：winget/brew 的输出要逐行看到（用户要知道
+          // 是在下载还是卡在提权），一次性码也只能由桥从 gh 的 stdout 里读。
+          case "gh.setup.status": {
+            void (async () => {
+              try {
+                send({ type: "gh.setup.status", ok: true, setup: await ghSetupStatus() });
+              } catch (err) {
+                send({ type: "gh.setup.status", ok: false, error: err instanceof Error ? err.message : String(err) });
+              }
+            })();
+            return;
+          }
+          case "gh.setup.install": {
+            // 装了 gh 是这台机器级的事：隧道访客 step-up 后也能装，属预期功能（与新建会话同类）。
+            if (!(await requireStepUp())) return;
+            (ws as any).ghSetup = true;
+            void installGh({}, (event) => {
+              // 安装输出给发起的那条连接；其它页签只收最后的 status（要一起变「已装好」）。
+              send({ type: "gh.setup.event", ...event });
+              if (event.status) broadcast({ type: "gh.setup.status", ok: true, setup: event.status });
+            }, ws).finally(() => {
+              (ws as any).ghSetup = false;
+            });
+            return;
+          }
+          case "gh.setup.login": {
+            if (!(await requireStepUp())) return;
+            (ws as any).ghSetup = true;
+            void loginGh({}, (event) => {
+              // 设备码是凭据级的东西：只发发起登录的那条连接，**不 broadcast**。
+              send({ type: "gh.setup.event", ...event });
+              if (event.status) broadcast({ type: "gh.setup.status", ok: true, setup: event.status });
+            }, ws).finally(() => {
+              (ws as any).ghSetup = false;
+            });
+            return;
+          }
+          case "gh.setup.cancel": {
+            if (!(await requireStepUp())) return;
+            cancelGhSetup(ws);
             return;
           }
           // ------------------------------------------------ AI 出错记录（D164）
@@ -4722,10 +4810,10 @@ async function main(): Promise<void> {
     });
   });
 
-  // D421：`archivedAt` 是后加的字段，旧 manage.json 里归档没有时间戳。开机补一个「此刻」并落盘
+  // D430：`archivedAt` 是后加的字段，旧 manage.json 里归档没有时间戳。开机补一个「此刻」并落盘
   // 一次 —— 不然每次重启都从零开始算，一条常重启的桥永远收不掉已归档的会话。只在真有缺口时写。
   const backfilled = sessions.manage.backfillArchived(Date.now());
-  if (backfilled) log(`manage: 给 ${backfilled} 条已归档会话补了归档时间（D421）`);
+  if (backfilled) log(`manage: 给 ${backfilled} 条已归档会话补了归档时间（D430）`);
 
   sessions.startGc((id) => [...wss.clients].some((client) => (client as any).watching === id));
 

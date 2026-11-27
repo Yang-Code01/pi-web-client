@@ -10,6 +10,7 @@
  */
 import { createEl as el } from "./chat.ts";
 import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
+import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
 
 import type {
   ReviewFinding,
@@ -69,12 +70,28 @@ export interface ReviewInput {
   prs?: PullRequest[];
   prsLoading?: boolean;
   prError?: string;
+  /**
+   * 人在下拉里**显式选**的那个账号（`accounts.json` 的会话映射）；空串 = 跟随工作区。
+   *
+   * 多账号机器上「机器 gh 登的是谁」和「这个会话该用谁」常常不是一个人：`ISID/cas3-onecas-api`
+   * 那种私有仓，换个人就是 `Could not resolve to a Repository`（#17545）。所以号摆出来，也能换。
+   */
+  account?: string;
+  /** 按当前设置**实际**用的号（会话 → 工作区 → 全局 → gh active）：跟随工作区时它通常非空。 */
+  accountUsed?: string;
+  /** 能切到的账号（没读到 / 只有一个时可以不画下拉）。 */
+  accounts?: { login: string; pat: boolean }[];
+  /**
+   * 「gh 没就绪」那张卡（D428）。`null` = 还没探测到 / 已经就绪且人不再想看。
+   * 数据来自 `GhSetupStore.card()`，这里只当一份普通输入往下传。
+   */
+  gh?: GhCardData | null;
   model?: string;
   /**
-   * 面板现在展开的是哪一次评审（`ReviewRun.id`，空串 = 停在记录列表）。
+   * 「完整详情」浮层现在看的是哪一次评审（`ReviewRun.id`，空串 = 没开浮层，按最新那一次算）。
    *
-   * 以前面板永远只画「最新那一次」，历史只能靠「清理历史」删除；现在历史是主体，
-   * 所以「看哪一次」变成一个显式的东西 —— 它也决定意见、时间线、统计、模型名都取自哪条记录。
+   * 记录卡本身不再是入口（D429）：意见、时间线、统计、模型名只在浮层里出现，
+   * 但浮层抬头必须按**点开的那张卡**写，而不是「最新那一次」—— 所以这个焦点还留着。
    */
   focus?: string;
   /** 每条记录那次用的模型怎么显示（app 查模型目录得到，按 run id 索引；查不到就不给）。 */
@@ -157,6 +174,14 @@ export interface ReviewView {
   hasRun: boolean;
   prsLoading: boolean;
   prError: string;
+  /** 在下拉里显式选中的账号（空串 = 跟随工作区）。 */
+  account: string;
+  /** 实际在用哪个号（跟随工作区时也非空，用来说人话）；空串 = 一个都没有。 */
+  accountUsed: string;
+  /** 能切到的账号（第一个是当前用的那个）。 */
+  accounts: { login: string; pat: boolean }[];
+  /** 见 `ReviewInput.gh`。 */
+  gh: GhCardData | null;
   /** 这个模式下该填的那一格空着：按钮要点不着。 */
   missing: boolean;
   model: string;
@@ -168,14 +193,14 @@ export interface ReviewView {
   resolved: number;
   resolvedPaths: string[];
   history: number;
-  /** 现在展开的那一次（空串 = 记录列表）。 */
+  /** 「完整详情」浮层看的那一次（空串 = 按最新那一次算）。 */
   focus: string;
   /** 记录列表，**新的在前**（面板从上往下画就是这个顺序）。 */
   runs: ReviewRunCard[];
-  /** 展开的那一次用的模型（展示名 / `provider/id`）：详情里要写清「这次」是谁评的。 */
+  /** 浮层看的那一次用的模型（展示名 / `provider/id`）：详情里要写清「这次」是谁评的。 */
   activeModel: string;
   activeModelId: string;
-  /** 展开的那一次的「评什么」（自己那条记录的目标，不是面板上现在选的目标）。 */
+  /** 浮层看的那一次的「评什么」（自己那条记录的目标，不是面板上现在选的目标）。 */
   activeTarget: string;
   /** 按钮为什么点不着（有值就画在按钮旁边；空串 = 不是缺东西造成的）。 */
   missingWhy: string;
@@ -299,7 +324,8 @@ export function reviewView(input: ReviewInput): ReviewView {
   // 记录按时间正序落盘；面板从新到旧画，所以这里先翻过来，画的时候不用再想顺序。
   const allRuns = Array.isArray(state?.runs) ? state.runs : [];
   const latest = asRun(state);
-  // 面板展开的那一次；认不出来（记录被裁掉了 / 换了会话 / 刷新后不记得了）就回落到最新那一次。
+  // 「完整详情」浮层看的那一次（D429 之后面板本身不再展开任何一次）；认不出来（记录被裁掉了 /
+  // 换了会话 / 刷新后不记得了）就回落到最新那一次。
   const focused = input.focus ? allRuns.find((r) => r.id === input.focus) ?? null : null;
   const active = focused ?? latest;
   const activeRunning = Boolean(active && active.status === "running");
@@ -500,6 +526,10 @@ export function reviewView(input: ReviewInput): ReviewView {
     hasRun: Boolean(active),
     prsLoading: Boolean(input.prsLoading),
     prError: (input.prError ?? "").trim(),
+    gh: input.gh ?? null,
+    account: (input.account ?? "").trim(),
+    accountUsed: (input.accountUsed ?? "").trim(),
+    accounts: input.accounts ?? [],
     missing,
     missingWhy,
     model: input.model ?? active?.model ?? "",
@@ -537,12 +567,14 @@ export interface ReviewActions {
   onPrInput: (value: string) => void;
   /** 重拉一次 PR 列表（`gh` 挂了 / 刚在 GitHub 上开了新 PR）。 */
   onRefreshPrs: () => void;
+  /** 换一个 gh 账号查 PR（空串 = 回到「跟随工作区」）。 */
+  onAccount: (login: string) => void;
   /** PR 那一格里的文字（只记值，不重画，免得输入框换节点）。 */
   onPrQuery: (value: string) => void;
   /** 展开 / 收起 PR 列表。 */
   onPrMenu: (open: boolean) => void;
-  /** 打开「评审详情」dialog（跑着看时间线，跑完看结果）。 */
-  onDetails: () => void;
+  /** 打开「评审详情」dialog：看**这一条**（跑着看时间线，跑完看结果）。 */
+  onDetails: (runId: string) => void;
   onCommit: (value: string) => void;
   /** 打开「模型与思考」那个弹层（复用输入框那颗 chip 的同一个），挑评审用的模型。 */
   onPickModel: () => void;
@@ -559,10 +591,6 @@ export interface ReviewActions {
   /** 打开「PR 信息」dialog。 */
   onPrInfo: () => void;
   onInstall: () => void;
-  /** 点开某一次记录（`ReviewRun.id`）。 */
-  onOpenRun: (runId: string) => void;
-  /** 从某一次记录回到列表。 */
-  onBack: () => void;
   /** 打开「评审仓库」选择器：换一个（子）仓库来评。 */
   onPickRepo: () => void;
   /** 拔掉钉子，回到跟着会话目录走。 */
@@ -579,6 +607,8 @@ export interface ReviewPanelInput {
   installLog: string[];
   markLabels: Record<Mark, string>;
   severityLabels: Record<Severity, string>;
+  /** gh 卡的八颗动作：宿主直接给 `ghCardActions()`，面板不再自己映射一遍（评审 #33）。 */
+  ghActions: GhCardActions;
   actions: ReviewActions;
 }
 
@@ -589,110 +619,10 @@ const duration = (ms: number | null): string => {
   return tr("{p1} 分 {p2} 秒", { p1: Math.floor(sec / 60), p2: sec % 60 });
 };
 
-/** 一条意见的位置：`path:line`，定位不到的只写路径。 */
-const placeOf = (f: ReviewFinding): string => (f.anchored && f.startLine ? `${f.path}:${f.startLine}` : f.path);
-
-function severityBadge(sev: Severity, labels: Record<Severity, string>): HTMLElement {
-  return el("span", `rv-sev ${sev}`, labels[sev] ?? sev);
-}
-
 /**
  * 面板主体。所有判断都在 `reviewView()` 里做完了，这里只是照着画 —— 所以它不需要单测，
  * 端到端由 `probes/code-review.mjs` 盯着。
  */
-/**
- * 意见那一整块（已解决 / 空态 / 没评的文件 / 按文件分组的一行一条）。
- * 面板与「评审详情」dialog 共用同一份，宽度不同只是 CSS 的事。
- */
-export function renderFindings(input: ReviewPanelInput): HTMLElement {
-  const { view, actions } = input;
-  // `rv-scope` 是面板与 dialog 共用的样式域：同一份意见在两处长得一样
-  // （以前样式全挂在 `.review` 上，dialog 里的意见行就成没样式的一坨）。
-  const root = el("div", "rv-findings rv-scope");
-  // ---- 已解决：只给个数会让人问「哪几条」，把文件列出来
-  if (view.resolvedPaths.length) {
-    const box = el("details", "rv-skipped") as HTMLDetailsElement;
-    box.append(el("summary", "", tr("已解决 {p1} 条", { p1: view.resolved })));
-    for (const p of view.resolvedPaths) box.append(el("div", "rv-skip-row", p));
-    root.append(box);
-  }
-
-  // ---- 空态
-  if (view.empty) {
-    root.append(el("div", "empty", tr("评过了，一条意见都没有。"))) ;
-  }
-
-  // ---- 没评的文件（先摆出来：不许让人以为评全了）
-  if (view.skipped.length) {
-    const box = el("details", "rv-skipped") as HTMLDetailsElement;
-    box.append(el("summary", "", tr("{p1} 个文件没评", { p1: view.skipped.length })));
-    for (const item of view.skipped) {
-      const row = el("div", "rv-skip-row");
-      row.append(el("code", "", item.path), el("span", "rv-why", item.reason));
-      box.append(row);
-    }
-    root.append(box);
-  }
-
-  // ---- 意见：文件分组 + 一行一条
-  for (const group of view.groups) {
-    const box = el("div", "rv-file");
-    const head = el("div", "rv-file-head");
-    head.append(el("code", "", group.path), el("span", "rv-count", String(group.findings.length)));
-    box.append(head);
-
-    for (const f of group.findings) {
-      const row = el("div", "rv-finding");
-      row.dataset.key = f.key;
-      row.dataset.sev = f.severity;
-      const line = el("button", "rv-line") as HTMLButtonElement;
-      line.type = "button";
-      line.append(severityBadge(f.severity, input.severityLabels));
-      line.append(el("span", "rv-text", f.content));
-      if (f.mark) line.append(el("span", "rv-mark", input.markLabels[f.mark]));
-      if (f.state === "persisting") line.append(el("span", "rv-persist", tr("上次就有")));
-      line.onclick = () => {
-        const open = row.classList.toggle("open");
-        body.hidden = !open;
-      };
-      row.append(line);
-
-      const body = el("div", "rv-body");
-      body.hidden = true;
-      const place = el("button", "rv-place", placeOf(f)) as HTMLButtonElement;
-      place.type = "button";
-      place.onclick = () => actions.onOpen(f.path, f.anchored ? f.startLine : 0);
-      body.append(place);
-      if (f.existingCode) {
-        const pre = el("pre", "rv-code");
-        pre.textContent = f.existingCode;
-        body.append(pre);
-      }
-      if (f.suggestionCode) {
-        const pre = el("pre", "rv-code rv-sugg");
-        pre.textContent = f.suggestionCode;
-        body.append(pre);
-      }
-      const acts = el("div", "rv-acts");
-      for (const [mark, label] of Object.entries(input.markLabels) as [Mark, string][]) {
-        const btn = el("button", `btn ghost rv-mark-btn${f.mark === mark ? " on" : ""}`, label) as HTMLButtonElement;
-        btn.type = "button";
-        btn.onclick = () => actions.onMark(f.key, f.mark === mark ? "" : mark);
-        acts.append(btn);
-      }
-      const fix = el("button", "btn ghost rv-fix", tr("交给 AI 修")) as HTMLButtonElement;
-      fix.type = "button";
-      fix.onclick = () => actions.onFix(f);
-      acts.append(fix);
-      body.append(acts);
-      row.append(body);
-      box.append(row);
-    }
-    root.append(box);
-  }
-
-  return root;
-}
 
 export function renderReview(input: ReviewPanelInput): HTMLElement {
   const { view, actions } = input;
@@ -744,122 +674,174 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   if (view.mode === "range") {
     form.append(refSelect(tr("目标分支"), view.target, actions.onTarget), refSelect(tr("对照分支"), view.base, actions.onBase));
   } else if (view.mode === "pr") {
-    // 一个格子同时干三件事：输号、检索、从列表里点。分成「搜索框 + 下拉 + 号输入」三行
-    // 在 300px 里又挤又丑（用户直接说了），所以合成一个 combobox。
-    const box = el("div", "rv-prbox");
-    const input = el("input", "rv-prq") as HTMLInputElement;
-    // 选过就在框里显示 `#N`（用户要能看到「现在选的是哪个」），一聚焦就全选，接着打字即是搜索。
-    input.value = view.prQuery || (view.pr ? `#${view.pr}` : "");
-    input.placeholder = tr("输号或搜：号 / 标题 / 分支");
-    input.autocomplete = "off";
-    input.spellcheck = false;
-    // 弹层里的行与「没匹配」那行，输入时只改可见性（重画会把焦点和滚动位置一起丢掉）。
-    let menuRows: HTMLElement[] = [];
-    let menuEmpty: HTMLElement | null = null;
-    const filterMenu = (raw: string) => {
-      if (!menuRows.length) return;
-      // 纯数字当「号」处理：按号的前缀收窄（输 646 只剩 #646），而不是全文匹配
-      // 也不是「什么都不筛」—— 后者会让「输号然后点第一条」点到别的 PR 上去。
-      const chosenText = view.pr ? `#${view.pr}` : "";
-      if (chosenText && raw.trim() === chosenText) {
-        for (const row of menuRows) row.hidden = false;
-        if (menuEmpty) menuEmpty.hidden = true;
-        return;
-      }
-      const digits = /^\s*#?\s*(\d+)\s*$/.exec(raw);
-      const q = (digits ? digits[1] : raw.replace(/^#/, "").trim()).toLowerCase();
-      let shown = 0;
-      for (const row of menuRows) {
-        const hit = !q
-          ? true
-          : digits
-            ? String(row.dataset.num ?? "").startsWith(q)
-            : (row.dataset.search ?? "").includes(q);
-        row.hidden = !hit;
-        if (hit) shown += 1;
-      }
-      if (menuEmpty) menuEmpty.hidden = shown > 0;
-    };
-    input.oninput = () => {
-      const raw = input.value;
-      actions.onPrQuery(raw);
-      // `#658` / `658` / GitHub 链接都能认出号来（链接里带账号名，不能只挑数字）。
-      const asNumber = parsePrNumber(raw);
-      actions.onPrInput(asNumber ? String(asNumber) : "");
-      if (runBtn) runBtn.disabled = !asNumber;
-      filterMenu(asNumber ? String(asNumber) : raw);
-      actions.onPrMenu(true);
-    };
-    input.onfocus = () => {
-      input.select();
-      actions.onPrMenu(true);
-    };
-    input.onkeydown = (ev) => {
-      if (ev.key === "Escape") actions.onPrMenu(false);
-      if (ev.key !== "Enter") return;
-      ev.preventDefault();
-      const first = view.prs[0];
-      const parsed = parsePrNumber(input.value);
-      if (parsed) actions.onPr(String(parsed));
-      else if (first) actions.onPr(String(first.number));
-      actions.onPrMenu(false);
-    };
-    const toggle = el("button", "rv-prtoggle", "▾") as HTMLButtonElement;
-    toggle.type = "button";
-    toggle.setAttribute("aria-label", tr("展开 PR 列表"));
-    toggle.onclick = () => actions.onPrMenu(!view.prMenuOpen);
-    box.append(input, toggle);
-    form.append(box);
-
-    if (view.prMenuOpen) {
-      const menu = el("div", "rv-prmenu");
-      if (view.prError) menu.append(el("div", "rv-hint", view.prError));
-      else if (view.prsLoading) menu.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
-      else if (!view.prs.length) menu.append(el("div", "rv-hint", view.prQuery ? tr("没有匹配的 PR") : tr("没有 open 的 PR")));
-      else {
-        menuEmpty = el("div", "rv-hint", tr("没有匹配的 PR"));
-        menuEmpty.hidden = true;
-        menu.append(menuEmpty);
-        for (const item of view.prs.slice(0, 40)) {
-          const row = el("button", `rv-prrow${String(item.number) === view.pr ? " on" : ""}`) as HTMLButtonElement;
-          row.type = "button";
-          row.dataset.num = String(item.number);
-          row.dataset.search = [`#${item.number}`, String(item.number), item.title, item.headRefName, item.baseRefName, item.author]
-            .join(" ")
-            .toLowerCase();
-          const head = el("span", "rv-prrow-head", `${item.draft ? tr("[草稿] ") : ""}#${item.number}`);
-          const title = el("span", "rv-prrow-title", item.title);
-          const meta = el("span", "rv-prrow-meta", `${item.headRefName} → ${item.baseRefName}`);
-          row.append(head, title, meta);
-          row.onclick = () => {
-            actions.onPr(String(item.number));
-            actions.onPrMenu(false);
-          };
-          menu.append(row);
-          menuRows.push(row);
+    const gh = view.gh;
+    if (gh) form.append(renderGhCard(gh, input.ghActions));
+    // 没装 gh 又没 PAT：这一格没有任何东西可输，整块换成安装卡（D428）。
+    if (gh?.mode !== "full") {
+      // 一个格子同时干三件事：输号、检索、从列表里点。分成「搜索框 + 下拉 + 号输入」三行
+      // 在 300px 里又挤又丑（用户直接说了），所以合成一个 combobox。
+      const box = el("div", "rv-prbox");
+      const input = el("input", "rv-prq") as HTMLInputElement;
+      // 选过就在框里显示 `#N`（用户要能看到「现在选的是哪个」），一聚焦就全选，接着打字即是搜索。
+      input.value = view.prQuery || (view.pr ? `#${view.pr}` : "");
+      input.placeholder = tr("输号或搜：号 / 标题 / 分支");
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      // 弹层里的行与「没匹配」那行，输入时只改可见性（重画会把焦点和滚动位置一起丢掉）。
+      let menuRows: HTMLElement[] = [];
+      let menuEmpty: HTMLElement | null = null;
+      const filterMenu = (raw: string) => {
+        if (!menuRows.length) return;
+        // 纯数字当「号」处理：按号的前缀收窄（输 646 只剩 #646），而不是全文匹配
+        // 也不是「什么都不筛」—— 后者会让「输号然后点第一条」点到别的 PR 上去。
+        const chosenText = view.pr ? `#${view.pr}` : "";
+        if (chosenText && raw.trim() === chosenText) {
+          for (const row of menuRows) row.hidden = false;
+          if (menuEmpty) menuEmpty.hidden = true;
+          return;
         }
-        // 打开时可能已经带着检索词（先打字再展开 ▾）：按当前文字收窄一次。
-        filterMenu(input.value);
+        const digits = /^\s*#?\s*(\d+)\s*$/.exec(raw);
+        const q = (digits ? digits[1] : raw.replace(/^#/, "").trim()).toLowerCase();
+        let shown = 0;
+        for (const row of menuRows) {
+          const hit = !q
+            ? true
+            : digits
+              ? String(row.dataset.num ?? "").startsWith(q)
+              : (row.dataset.search ?? "").includes(q);
+          row.hidden = !hit;
+          if (hit) shown += 1;
+        }
+        if (menuEmpty) menuEmpty.hidden = shown > 0;
+      };
+      input.oninput = () => {
+        const raw = input.value;
+        actions.onPrQuery(raw);
+        // `#658` / `658` / GitHub 链接都能认出号来（链接里带账号名，不能只挑数字）。
+        const asNumber = parsePrNumber(raw);
+        actions.onPrInput(asNumber ? String(asNumber) : "");
+        if (runBtn) runBtn.disabled = !asNumber;
+        filterMenu(asNumber ? String(asNumber) : raw);
+        actions.onPrMenu(true);
+      };
+      input.onfocus = () => {
+        input.select();
+        actions.onPrMenu(true);
+      };
+      input.onkeydown = (ev) => {
+        if (ev.key === "Escape") actions.onPrMenu(false);
+        if (ev.key !== "Enter") return;
+        ev.preventDefault();
+        const first = view.prs[0];
+        const parsed = parsePrNumber(input.value);
+        if (parsed) actions.onPr(String(parsed));
+        else if (first) actions.onPr(String(first.number));
+        actions.onPrMenu(false);
+      };
+      const toggle = el("button", "rv-prtoggle", "▾") as HTMLButtonElement;
+      toggle.type = "button";
+      toggle.setAttribute("aria-label", tr("展开 PR 列表"));
+      toggle.onclick = () => actions.onPrMenu(!view.prMenuOpen);
+      box.append(input, toggle);
+      form.append(box);
+
+      if (view.prMenuOpen) {
+        const menu = el("div", "rv-prmenu");
+        if (view.prError) {
+          menu.append(el("div", "rv-hint", view.prError));
+          // 查不到仓库时，人第一件事就是怀疑「是不是用错号了」：把号直接写出来（#17545）。
+          // 写的是**实际用的**那个（跟随工作区时它也非空），不是下拉里选的那一项。
+          const used = view.accountUsed || view.account;
+          if (used) menu.append(el("div", "rv-hint rv-acct-why", tr("用的是账号：{p1}", { p1: used })));
+        } else if (view.prsLoading) menu.append(el("div", "rv-hint", tr("正在拉 PR 列表…")));
+        else if (!view.prs.length) menu.append(el("div", "rv-hint", view.prQuery ? tr("没有匹配的 PR") : tr("没有 open 的 PR")));
+        else {
+          menuEmpty = el("div", "rv-hint", tr("没有匹配的 PR"));
+          menuEmpty.hidden = true;
+          menu.append(menuEmpty);
+          for (const item of view.prs.slice(0, 40)) {
+            const row = el("button", `rv-prrow${String(item.number) === view.pr ? " on" : ""}`) as HTMLButtonElement;
+            row.type = "button";
+            row.dataset.num = String(item.number);
+            row.dataset.search = [`#${item.number}`, String(item.number), item.title, item.headRefName, item.baseRefName, item.author]
+              .join(" ")
+              .toLowerCase();
+            const head = el("span", "rv-prrow-head", `${item.draft ? tr("[草稿] ") : ""}#${item.number}`);
+            const title = el("span", "rv-prrow-title", item.title);
+            const meta = el("span", "rv-prrow-meta", `${item.headRefName} → ${item.baseRefName}`);
+            row.append(head, title, meta);
+            row.onclick = () => {
+              actions.onPr(String(item.number));
+              actions.onPrMenu(false);
+            };
+            menu.append(row);
+            menuRows.push(row);
+          }
+          // 打开时可能已经带着检索词（先打字再展开 ▾）：按当前文字收窄一次。
+          filterMenu(input.value);
+        }
+        form.append(menu);
       }
-      form.append(menu);
-    }
-    if (!view.prMenuOpen) {
-      const chosen = view.prs.find((item) => String(item.number) === view.pr) ?? null;
-      if (chosen) {
-        // 以前这里是一行淡字，没人看出能点（用户原话：「用户不知道」）。改成一张有边框的卡片，
-        // 右边明写「详情 ›」，整张都能点。
-        const picked = el("button", "rv-picked") as HTMLButtonElement;
-        picked.type = "button";
-        picked.title = `#${chosen.number} ${chosen.title}`;
-        picked.onclick = () => actions.onPrInfo();
-        const top = el("span", "rv-picked-top");
-        top.append(el("span", "rv-picked-num", `#${chosen.number}`), el("span", "rv-picked-title", chosen.title));
-        const bottom = el("span", "rv-picked-meta");
-        bottom.append(el("span", "", `${chosen.headRefName} → ${chosen.baseRefName}`), el("span", "rv-picked-more", tr("详情 ›")));
-        picked.append(top, bottom);
-        form.append(picked);
-      } else if (view.prAll > 1) {
-        form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
+      if (!view.prMenuOpen) {
+        const chosen = view.prs.find((item) => String(item.number) === view.pr) ?? null;
+        if (chosen) {
+          // 以前这里是一行淡字，没人看出能点（用户原话：「用户不知道」）。改成一张有边框的卡片，
+          // 右边明写「详情 ›」，整张都能点。
+          const picked = el("button", "rv-picked") as HTMLButtonElement;
+          picked.type = "button";
+          picked.title = `#${chosen.number} ${chosen.title}`;
+          picked.onclick = () => actions.onPrInfo();
+          const top = el("span", "rv-picked-top");
+          top.append(el("span", "rv-picked-num", `#${chosen.number}`), el("span", "rv-picked-title", chosen.title));
+          const bottom = el("span", "rv-picked-meta");
+          bottom.append(el("span", "", `${chosen.headRefName} → ${chosen.baseRefName}`), el("span", "rv-picked-more", tr("详情 ›")));
+          picked.append(top, bottom);
+          form.append(picked);
+        } else if (view.prAll > 1) {
+          form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
+        }
+      }
+
+      /**
+       * 查 PR 用的 gh 账号。
+       *
+       * 多账号机器上「机器 gh 登的是谁」与「这个会话该用谁」往往不是一个人：私有仓/组织仓
+       * 换个账号就是 `Could not resolve to a Repository`（#17545 就是这么失败的，而且提示指向代理）。
+       * 所以号要写出来、也要能就地换；换了立刻按新号重拉列表（`onAccount` 里做）。
+       */
+      if (view.accounts.length || view.account) {
+        const row = el("div", "rv-row rv-acct");
+        row.append(el("span", "rv-lab", tr("账号")));
+        const pick = el("select", "rv-ref rv-acct-pick") as HTMLSelectElement;
+        pick.disabled = view.running;
+        pick.title = view.account ? tr("现在按 {p1} 查 PR", { p1: view.account }) : tr("按会话默认的账号查 PR");
+        const follow = el("option", "", view.accountUsed && !view.account ? tr("跟随工作区（{p1}）", { p1: view.accountUsed }) : tr("跟随工作区")) as HTMLOptionElement;
+        follow.value = "";
+        // 选中判断只能看「人显式选的那个」：`view.account` 在跟随工作区时是空的，
+        // 实际用的号在 `accountUsed` —— 拿它判断的活，这一项永远不会被选中（评审 #700）。
+        follow.selected = !view.account;
+        pick.append(follow);
+        let listed = false;
+        for (const account of view.accounts) {
+          const opt = el("option", "", `${account.login}${account.pat ? ` · ${tr("PAT")}` : ""}`) as HTMLOptionElement;
+          opt.value = account.login;
+          if (account.login === view.account) {
+            opt.selected = true;
+            listed = true;
+          }
+          pick.append(opt);
+        }
+        // 解析出来的号不在 gh 账号表里（PAT-only / active 那个被删了）：也得摆出来，
+        // 否则下拉停在「跟随工作区」上，人看不出现在到底按谁在查。
+        if (view.account && !listed) {
+          const opt = el("option", "", view.account) as HTMLOptionElement;
+          opt.value = view.account;
+          opt.selected = true;
+          pick.append(opt);
+        }
+        pick.onchange = () => actions.onAccount(pick.value);
+        row.append(pick);
+        form.append(row);
       }
     }
   } else if (view.mode === "commit") {
@@ -965,9 +947,8 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     return root;
   }
 
-  // ---- 主体：要么是「这个会话评过哪些次」，要么是点开的那一次
-  if (view.focus) root.append(renderFocusedRun(input));
-  else root.append(renderRunList(input));
+  // ---- 主体：这个会话评过的每一次（记录卡）。意见与时间线在「完整详情」浮层里（D429）。
+  root.append(renderRunList(input));
 
   // ---- 来源说明：评审内核不是本仓库自研，别让人以为是
   const credit = el("div", "rv-credit");
@@ -1037,10 +1018,7 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
   } else if (view.runs.length) {
     count = tr("这个会话评过 {p1} 次", { p1: view.runs.length });
   }
-  head.append(
-    el("span", "", count),
-    el("span", "rv-runs-hint", view.runs.length ? tr("点一条展开") : ""),
-  );
+  head.append(el("span", "", count));
   box.append(head);
   if (!view.runs.length) {
     box.append(el("div", "rv-hint", tr("上面选好范围、点「开始评审」，结果会记在这里。")));
@@ -1050,16 +1028,9 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
     const cls = ["rv-run-card", card.running ? "is-live" : "", card.status === "failed" ? "is-fail" : ""]
       .filter(Boolean)
       .join(" ");
-    // 卡片里要放「停止」这颗按钮，所以不能再整个是 `<button>`（按钮里套按钮点起来会乱）。
+    // 卡片正文不是入口（D429）：不再整卡可点，拖选卡上的文字也不会误触浮层；
+    // 键鼠唯一的入口是底行那颗「完整详情」。
     const row = el("div", cls);
-    row.setAttribute("role", "button");
-    row.tabIndex = 0;
-    row.onclick = () => actions.onOpenRun(card.id);
-    row.onkeydown = (ev: KeyboardEvent) => {
-      if (ev.key !== "Enter" && ev.key !== " ") return;
-      ev.preventDefault();
-      actions.onOpenRun(card.id);
-    };
 
     const top = el("div", "rv-run-top");
     top.append(el("span", "rv-run-target", card.target));
@@ -1069,105 +1040,22 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
 
     if (card.running && card.live?.current) row.append(el("div", "rv-run-current", card.live.current));
     if (card.error && !card.running) row.append(el("div", "rv-run-err", card.error));
+
+    // 底行右对齐：跑着的那条先「停止」，再「完整详情」（D429）。停止挪进这里之后，
+    // 不再绝对定位压住同一行右端的时间。
+    const foot = el("div", "rv-run-foot");
     if (card.running) {
       const stop = el("button", "rv-run-stop", tr("停止")) as HTMLButtonElement;
       stop.type = "button";
       stop.title = tr("只停这一条");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        actions.onStopRun(card.id);
-      };
-      row.append(stop);
+      stop.onclick = () => actions.onStopRun(card.id);
+      foot.append(stop);
     }
-    box.append(row);
-  }
-  return box;
-}
-
-/** 点开的那一次：抬头（返回 / 评什么 / 完整详情）+ 那一次的统计与意见。 */
-function renderFocusedRun(input: ReviewPanelInput): HTMLElement {
-  const { view, actions } = input;
-  const box = el("div", "rv-focus");
-  const card = view.runs.find((item) => item.id === view.focus) ?? null;
-
-  const head = el("div", "rv-focus-head");
-  const back = el("button", "rv-back", tr("‹ 记录")) as HTMLButtonElement;
-  back.type = "button";
-  back.title = tr("回到这个会话的评审记录");
-  back.onclick = () => actions.onBack();
-  const target = el("span", "rv-focus-target", card?.target || view.activeTarget);
-  const more = el("button", "rv-focus-more", tr("完整详情 ›")) as HTMLButtonElement;
-  more.type = "button";
-  more.onclick = () => actions.onDetails();
-  head.append(back, target, more);
-  if (card?.running) {
-    // 展开的那一条没在列表里露脸（列表被换成了这一页），停止得跟过来，不然点了展开就没法停。
-    const stop = el("button", "rv-focus-stop", tr("停止")) as HTMLButtonElement;
-    stop.type = "button";
-    stop.onclick = () => actions.onStopRun(card.id);
-    head.append(stop);
-  }
-  box.append(head);
-
-  // 第二行写清这次是谁评的、什么时候、跑多久 —— 记录卡的价值就在这些「详细信息」。
-  if (card) {
-    box.append(runMetaRow(card));
-    if (card.title) box.append(el("div", "rv-focus-title", card.title));
-    const modelText = card.model || card.modelId;
-    if (modelText) {
-      // 先给目录里的名字（`hy4flash · x0.03 · 960K`），hover 能看到那个 id；老记录只有 id 就直接写 id。
-      const line = el("div", "rv-focus-model", tr("这次用的模型：{p1}", { p1: modelText }));
-      line.title = card.modelId || modelText;
-      box.append(line);
-    }
-  }
-
-  // ---- 进度 / 统计
-  if (view.running && view.progress) {
-    const p = view.progress;
-    const line = el("div", "rv-progress");
-    line.append(el("span", "rv-meta", tr("评审中 · {p1}/{p2} 个文件", { p1: p.reviewedFiles, p2: p.totalFiles })));
-    if (p.currentFile) line.append(el("span", "rv-current", p.currentFile));
-    box.append(line);
-  } else if (view.meta) {
-    const parts = [
-      tr("{p1} 个文件", { p1: view.meta.files }),
-      view.meta.skipped ? tr("{p1} 个没评", { p1: view.meta.skipped }) : "",
-      duration(view.meta.durationMs),
-      view.meta.tokens ? tr("{p1} tokens", { p1: view.meta.tokens }) : "",
-      view.resolved ? tr("已解决 {p1} 条", { p1: view.resolved }) : "",
-    ].filter(Boolean);
-    box.append(el("div", "rv-meta", parts.join(" · ")));
-  }
-
-  // ---- 时间线（面板里只留最后几行，完整的那份在「评审详情」浮层里）
-  if (view.timeline.length) box.append(renderTimeline(view, 4));
-
-  // ---- 失败 / 停止 / 失效
-  if (view.phase === "failed" && view.error) {
-    box.append(el("div", "rv-error", view.error));
-  } else if (view.phase === "stopped") {
-    box.append(el("div", "rv-hint", tr("这次没跑完就停了，已经收到的意见在下面。")));
-  } else if (view.phase === "stale") {
-    box.append(el("div", "rv-hint", tr("桥重启了，这次评审没跑完。重跑一次就行。")));
-  }
-
-  box.append(renderFindings(input));
-  return box;
-}
-
-/** 把一条意见折成送进输入框的一段话（不自动发送）。 */
-/** 时间线：面板里截最后几行，详情 dialog 给全量。 */
-export function renderTimeline(view: ReviewView, limit = 0): HTMLElement {
-  const list = limit > 0 ? view.timeline.slice(-limit) : view.timeline;
-  const box = el("div", "rv-timeline");
-  if (!list.length) {
-    box.append(el("div", "rv-hint", tr("还没有进度")));
-    return box;
-  }
-  for (const item of list) {
-    const row = el("div", "rv-tl");
-    row.append(el("span", "rv-tl-dot"), el("span", "rv-tl-at", fmtTime(item.at)), el("span", "rv-tl-text", item.text));
+    const more = el("button", "rv-run-more", tr("完整详情 ›")) as HTMLButtonElement;
+    more.type = "button";
+    more.onclick = () => actions.onDetails(card.id);
+    foot.append(more);
+    row.append(foot);
     box.append(row);
   }
   return box;

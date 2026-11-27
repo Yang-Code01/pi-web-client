@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { applyFrame } from "../src/frames.ts";
-import { ghAge, ghBareRefs, ghCardLinks, ghChurn, ghLinksIn, reviewAffordance } from "../src/github-shared.ts";
+import { ghAccountPair, ghAge, ghBareRefs, ghCardLinks, ghChurn, ghLinksIn, reviewAffordance } from "../src/github-shared.ts";
 import { githubFeature } from "../src/github-settings.ts";
 
 test("ghLinksIn：认出 pull / issue / commit，保留仓库与号", () => {
@@ -146,4 +146,24 @@ test("帧：github.pr / github.seen 只驱动面板，不改纯视图状态", ()
   // 改这张表的返回值 = 每次 `gh` 调用都重画左栏/状态行，是实打实的性能回退，所以钉住它。
   assert.deepEqual(applyFrame({ currentId: "s1" }, { type: "github.pr", sessionId: "s1", repo: "a/b", number: 3 }, 0), []);
   assert.deepEqual(applyFrame({ currentId: "s1" }, { type: "github.seen", sessionId: "s1", links: [] }, 0), []);
+});
+
+test("ghAccountPair：解析出来的号不是「人选的那个」（PR #700）", () => {
+  // 跟随工作区：会话里没选过，`session` 来自工作区 / 全局 / gh active —— 下拉该停在「跟随工作区」，
+  // 但号还得写出来（否则界面看不出现在按谁在查）。
+  assert.deepEqual(ghAccountPair({ login: "xyang-qingmin", source: "active" }), {
+    account: "",
+    accountUsed: "xyang-qingmin",
+  });
+  assert.deepEqual(ghAccountPair({ login: "xyang-qingmin", source: "project" }), {
+    account: "",
+    accountUsed: "xyang-qingmin",
+  });
+  // 会话里显式选过：两个都指向它（下拉选中这一项）。
+  assert.deepEqual(ghAccountPair({ login: "xyang-qingmin", source: "session" }), {
+    account: "xyang-qingmin",
+    accountUsed: "xyang-qingmin",
+  });
+  // 一个号都没有：都空，不能留着上一次的号。
+  assert.deepEqual(ghAccountPair(null), { account: "", accountUsed: "" });
 });

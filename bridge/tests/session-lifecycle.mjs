@@ -280,7 +280,7 @@ async function thresholdFile() {
   }
 }
 
-// ---------------------------------------------------------------- D. archiving is a promise to release (D421)
+// ---------------------------------------------------------------- D. archiving is a promise to release (D430)
 /** What the tests inject for 「归档后多久释放」; the real default is five minutes (DEFAULT_ARCHIVE_IDLE_MS). */
 const ARCHIVE_MS = 1500;
 /** The sidebar's archive action, over the same socket the page uses. */
