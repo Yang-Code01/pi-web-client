@@ -8766,14 +8766,15 @@ if (stop >= 0) {
 
 - **`renderMain()` 开头加守卫**：`imeComposing` 为真就只置 `repaintAfterIme = true` 后 `return`，一个像素都不画。来信、发送回执、已读回执都走这条路，一律延后。
 - **补画时机**：`body` 的 `compositionend`（正常上屏）与 `blur`（有的输入法不发 compositionend —— 候选随失焦收回去了，别让主区从此永久不画）共用 `imeEnd()`：清 `imeComposing`，有攒下的重画就跑一次 `renderMain()`。`blur` 那条在组字中先到也没事，`imeEnd()` 幂等。
-- **组字中直接去点按钮**（比如「发送」）：`pointerHeld` 为真时把补画推到 `pointerup` 之后（`{ once: true, capture: true }` + `setTimeout(…, 0)`）—— 与搜索列表 `commitSearch()`（main.ts:880 一带，D335 同族）一个理由：这一刻 mousedown 已经落在旧节点上，立刻重画会把 mouseup 换到新节点，`click` 只落到公共祖先。
+- **组字中直接去点按钮**（比如「发送」）：`pointerHeld` 为真时走 `whenPointerFree(renderMain)` 把补画推到这下降完 —— 与搜索列表 `commitSearch()`（main.ts:914 一带，D335 同族）一个理由：这一刻 mousedown 已经落在旧节点上，立刻重画会把 mouseup 换到新节点，`click` 只落到公共祖先。`whenPointerFree()` 同时等 `pointerup` 与 `pointercancel`，1.5 秒兜底：只等 `pointerup` 时，拖拽被中断 / 触摸被系统取消（飞过来的是 `pointercancel`）会让这件待做的事永远悬着，消息要等到下一次签名变化才出现。
+- **推迟的重画要带着它的收尾走**：`openSearch()` / `openTopic()` / `startReply()` / 优先级那三颗按钮都是 `renderMain()` 紧跟一句 `focus()` / `select()`。重画被推迟时那些节点还没建出来（`searchInput` 还是 `null`），焦点会静默丢掉、或者落在马上被换掉的旧节点上。所以这类收尾过 `afterMain(fn)` 排队，由 `renderMain()` 末尾的 `drainAfterMain()` 在补画之后跑。
 - **换会话时重置** `imeComposing` / `repaintAfterIme`：旧编辑器不一定会发 `compositionend`（它被 `destroy()` 摘掉了），标记留在真会让聊天区永久不画。
 - **范围**：只挡 `renderMain()`。`renderList()`（会话列表、未读徽标）与状态条照常刷新 —— 它们不碰输入框。
 
 **为什么。** ① 组字期间不重画是唯一可靠做法：试过「重画后把组字状态还原」，浏览器没给接口，`compositionend` 都不发就没法重放 composition。② 攒一次而不是干脆把轮询按下去：来信的**显示**晚一点没关系，晚到「上屏之后就出现」正好；按下轮询还会让已读、输入中跟着卡住。③ 与仓库既有做法一致：D335 的上下文面板过滤框就是这个毛病、这套改法（半截拼音被提交成「wenwenj文件」），搜索列表输入框（main.ts:880 一带）和笔记的 `RichEditor`（`compositionend → afterInput()`）也是「组字中不动 DOM」。
 
-**守卫。** `probes/peer-compose-ime.mjs`（假 API + 真 Chromium + CDP `Input.imeSetComposition` / `Input.insertText`，只 `npm run build:web` 就能跑，约 10 秒）：第 1 段是对照组（不来消息，连着两次组字仍是同一次会话、上屏只剩「你好」），第 2 段在组字中塞一条来信。修好前第 2 段红 5 项（`msg=2 before=1` 重画了、`starts=2`、`textContent` 变 `"nihaonihao7"`、上屏变 `"nihao你好"`），修好后 14 项全绿，其中「组字期间不重画（新消息先没出来）」断言消息条数不变、「上屏后补画，新消息出现了」断言攒下的那次重画真的补上了。跑法：`node scripts/build.mjs --only web && node probes/peer-compose-ime.mjs`。
+**守卫。** `probes/peer-compose-ime.mjs`（假 API + 真 Chromium + CDP `Input.imeSetComposition` / `Input.insertText`，只 `npm run build:web` 就能跑，约 10 秒）：第 1 段是对照组（不来消息，连着两次组字仍是同一次会话、上屏只剩「你好」），第 2 段在组字中塞一条来信。修好前第 2 段红 5 项（`msg=2 before=1` 重画了、`starts=2`、`textContent` 变 `"nihaonihao7"`、上屏变 `"nihao你好"`），修好后共 19 项全绿。其中「组字期间页面确实在轮询（>=2 次 /messages）」先证明来信真的被轮询到了（否则「没重画」可能只是没取数）、「组字期间不重画」断言消息条数不变、「上屏后补画，新消息出现了」断言攒下的那次重画真的补上了。第 3 段组字中按 Ctrl+F：组字不许断、搜索条等上屏才出现且真的拿到焦点（把 `openSearch` 的 `afterMain` 换回立刻 `focus` 就红）。第 4 段合成一个 `pointerdown`（真鼠标会把组字提交掉）再在组字中上屏：补画必须等 `pointercancel` 到了才跑（换回只等 `pointerup` 的写法就红，且等到 1.5s 兜底前一直是旧的）。最后两条断言假 API 盖住了页面用到的每个接口、`route.fulfill` 没有意外报错 —— 页面新增接口时探针不会静默变假。跑法：`node scripts/build.mjs --only web && node probes/peer-compose-ime.mjs`。
 
 **可改。** 想改成「组字期间仍然重画、只重画消息流」也能成立（`renderChat()` 把 `stream` 单独换掉、绕开 `compose`），代价是 `paintMain` 的结构要拆；现在的写法改一个守卫就够。`blur` 那条若确认输入法都发 `compositionend`，可以删。
 
-**代价。** 组字期间对方来信不会立刻出现在消息流里（最长到上屏为止）；贴底的「新消息」提示也不会闪。
+**代价。** 组字期间对方来信不会立刻出现在消息流里（最长到上屏为止）；贴底的「新消息」提示也不会闪。同一段时间里由快捷键 / 菜单触发的面板（搜索、话题、引用）也要等到上屏才出现（键盘触发时没有 pointerup 可等，只能等组字结束）。

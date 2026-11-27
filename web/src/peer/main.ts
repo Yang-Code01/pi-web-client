@@ -369,6 +369,20 @@ let draftTimer = 0;
 let imeComposing = false;
 /** 组字期间被挡下来的重画：等组字结束补跑一次。 */
 let repaintAfterIme = false;
+/**
+ * 组字期间 `renderMain()` 被推迟（D439），紧跟它的那一步（`searchInput.focus()`、`topicArea.focus()`…）
+ * 就会落在旧 DOM 上：要么还是 null，要么焦点给了一个马上就要被换掉的节点。这类收尾用 `afterMain()`
+ * 排队，等那次补画真做完再跑。
+ */
+const afterMainQueue: (() => void)[] = [];
+function afterMain(fn: () => void): void {
+  if (repaintAfterIme) afterMainQueue.push(fn);
+  else fn();
+}
+function drainAfterMain(): void {
+  if (!afterMainQueue.length) return;
+  for (const fn of afterMainQueue.splice(0)) fn();
+}
 
 // ---------------------------------------------------------------- 小工具
 
@@ -901,6 +915,27 @@ document.addEventListener("pointerup", () => (pointerHeld = false), true);
 document.addEventListener("pointercancel", () => (pointerHeld = false), true);
 
 /**
+ * 鼠标还按着的时候把一件事推到这一下点完再做（见 commitSearch）：点了哪儿就等那次 click
+ * 真的派发完，否则新画出来的节点收不到 click。
+ * 只等 `pointerup` 会漏：拖拽被中断 / 触摸被系统取消时飞过来的是 `pointercancel`，
+ * 再不行（窗口丢了焦点、两者都没来）1.5 秒后兜底跑 —— 不能把一件待做的事悬在那里。
+ */
+function whenPointerFree(run: () => void): void {
+  let done = false;
+  const fire = (): void => {
+    if (done) return;
+    done = true;
+    document.removeEventListener("pointerup", fire, true);
+    document.removeEventListener("pointercancel", fire, true);
+    window.clearTimeout(timer);
+    window.setTimeout(run, 0);
+  };
+  const timer = window.setTimeout(fire, 1500);
+  document.addEventListener("pointerup", fire, true);
+  document.addEventListener("pointercancel", fire, true);
+}
+
+/**
  * 拼字结束后按最终值重画列表。拼到一半去点会话行时，compositionend / blur 是在 mousedown 里触发的：
  * 这时同步重画，mouseup 落在新节点上，click 只派发到公共祖先，行上的点击收不到、得点第二下。
  * 所以鼠标还按着就等它松开、click 派发完（pointerup 后的下一个宏任务）再画。
@@ -909,7 +944,7 @@ function commitSearch(input: HTMLInputElement): void {
   searchComposing = false;
   S.query = input.value;
   if (!pointerHeld) return renderList();
-  document.addEventListener("pointerup", () => window.setTimeout(renderList, 0), { once: true, capture: true });
+  whenPointerFree(renderList);
 }
 
 function searchBox(placeholder: string): HTMLElement {
@@ -1302,6 +1337,8 @@ function renderMain(): void {
     stickBottom = true;
   }
   rerender(paintMain);
+  // 刚才因为组字被推迟的收尾（focus / 选中）现在才有个新 DOM 可以落地。
+  drainAfterMain();
 }
 
 function paintMain(): void {
@@ -1495,8 +1532,11 @@ function openSearch(): void {
     });
     renderMain();
   }
-  searchInput?.focus();
-  searchInput?.select();
+  // 组字中 renderMain 被推迟（D439）：搜索条是那一刻才建出来的，等补画之后再聚焦 / 全选。
+  afterMain(() => {
+    searchInput?.focus();
+    searchInput?.select();
+  });
 }
 
 function closeSearch(): void {
@@ -2406,7 +2446,8 @@ function openTopic(id: string): void {
   S.topic = id;
   topicScroll = -1;
   renderMain();
-  topicArea?.focus();
+  // 组字中 renderMain 被推迟了：等补画之后新面板才存在，那时再 focus。
+  afterMain(() => topicArea?.focus());
 }
 
 function closeTopic(): void {
@@ -2791,7 +2832,7 @@ async function leaveGroup(t: Thread): Promise<void> {
 function startReply(e: Entry): void {
   S.replyTo = e;
   renderMain();
-  textInput?.focus({ preventScroll: true });
+  afterMain(() => textInput?.focus({ preventScroll: true }));
 }
 
 /** 引用 / 撤回都要重拉：撤回了之后原文要从消息流里消失，只留灰条。 */
@@ -3302,7 +3343,7 @@ function prioButton(id: string): HTMLElement {
       if (p) composePrio.set(id, p);
       else composePrio.delete(id);
       renderMain();
-      textInput?.focus();
+      afterMain(() => textInput?.focus());
     };
     openMenu(r.left, r.top - 4, [
       { label: tr("普通"), run: set(null) },
@@ -3369,7 +3410,7 @@ function composeBox(t: Thread): HTMLElement {
     repaintAfterIme = false;
     // 拼到一半直接去点按钮（比如「发送」）：这一下 mousedown 已经落在旧节点上，立刻重画会把
     // mouseup 换到新节点、click 只落到公共祖先。等这一下点完再画（与 commitSearch 同一个理由）。
-    if (pointerHeld) document.addEventListener("pointerup", () => window.setTimeout(renderMain, 0), { once: true, capture: true });
+    if (pointerHeld) whenPointerFree(renderMain);
     else renderMain();
   };
   body.addEventListener("compositionend", imeEnd);

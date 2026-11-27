@@ -103,8 +103,13 @@ const browser = await chromium.launch();
 try {
   const ctx = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
   const page = await ctx.newPage();
+  // 轮询计数与「没假造的接口」：第 1 段红不红靠前者证明，后者防页面新增接口后探针静默变假。
+  const polls = { messages: 0 };
+  const unknown = new Set();
+  const routeErrors = [];
   await page.route("**/api/**", async (route) => {
     const p = new URL(route.request().url()).pathname;
+    if (p === "/api/peer/messages") polls.messages++;
     let body = {};
     if (p === "/api/peer") body = { enabled: true, running: true, reason: "", status };
     else if (p === "/api/peer/threads") body = { threads: [{ ...thread, last: inbox[inbox.length - 1] }] };
@@ -117,7 +122,14 @@ try {
     else if (p === "/api/peer/typing") body = { ok: true };
     else if (p === "/api/peer/presence") body = { ok: true };
     else if (p === "/api/peer/send") body = { ok: true, id: "sent-by-probe" };
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+    else unknown.add(p);
+    // 页面已经关掉时 fulfill 会抛「Target page, context or browser has been closed」，那是收尾不是失败；
+    // 其余错误必须说出来，否则探针只能靠 waitForSelector 超时才发现不对。
+    await route
+      .fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
+      .catch((err) => {
+        if (!/closed|Target page/i.test(String(err))) routeErrors.push(`${p}: ${err}`);
+      });
   });
 
   await page.goto(`${BASE}/peer.html`);
@@ -178,12 +190,16 @@ try {
   check("组字中：拼音在输入框里", composingText === "nihao", JSON.stringify(composingText));
 
   const before = await page.$$eval(".stream .msg", (els) => els.length);
+  const pollsBefore = polls.messages;
   inbox.push(msg("aaaaaaaa-0000-4000-8000-000000000002", "来一条消息打断你", ZHANG));
-  // 轮询周期 2.5s，多等几轮：组字期间**故意不重画**，消息要等上屏后才出现。
+  // 轮询周期 2.5s，多等两轮：组字期间**故意不重画**，消息要等上屏后才出现。
   await sleep(5600);
   const midCount = await page.$$eval(".stream .msg", (els) => els.length);
+  const midPolls = polls.messages - pollsBefore;
   const mid = await ime();
   const midText = await text();
+  // 先证「消息确实被轮询到了」：否则下面那条「没重画」也可能只是页面根本没取数，绿得没意义。
+  check("组字期间页面确实在轮询（>=2 次 /messages）", midPolls >= 2, `polls=${midPolls}`);
   check("组字期间不重画（新消息先没出来）", midCount === before, `msg=${midCount} before=${before}`);
   check("重画没有结束组字会话", mid.ends === 0, `ends=${mid.ends}`);
   check("重画后组字还是原来那一次", mid.starts === 1, `starts=${mid.starts}`);
@@ -214,6 +230,69 @@ try {
   const streamText = await page.$$eval(".stream .msg", (els) => els.map((e) => e.textContent ?? "").join("|"));
   check("上屏后补画，新消息出现了", flushed && streamText.includes("来一条消息打断你"), streamText.slice(-60));
   check("上屏后输入框文字没被重画弄丢", (await text()) === "你好", JSON.stringify(await text()));
+
+  // ---- 2. 组字中按 Ctrl+F：搜索条不能把组字掐掉，而补画之后它还得真的拿到焦点 ----
+  // 以前 openSearch() 是 renderMain() 后立刻 searchInput.focus()；重画被推迟时 searchInput 还是 null，
+  // 焦点就静默丢了。现在这两步排队到补画之后（afterMain）。
+  await body.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await sleep(100);
+  await watchIme();
+  await body.click();
+  await cdp.send("Input.imeSetComposition", { text: "nihao", selectionStart: 5, selectionEnd: 5 });
+  await sleep(150);
+  await page.keyboard.press("Control+F");
+  await sleep(300);
+  const barMid = await page.$$eval(".searchbar", (els) => els.length);
+  const imeMid = await ime();
+  check("组字中按 Ctrl+F 不掐断组字", imeMid.starts === 1 && imeMid.ends === 0, `starts=${imeMid.starts} ends=${imeMid.ends}`);
+  check("组字中按 Ctrl+F：搜索条先不出现（等上屏）", barMid === 0, `bar=${barMid}`);
+  await cdp.send("Input.insertText", { text: "你好" });
+  await sleep(500);
+  const barAfter = await page.$$eval(".searchbar", (els) => els.length);
+  const focused = await page.evaluate(() => {
+    const el = document.activeElement;
+    return el && el.tagName === "INPUT" && el.closest(".searchbar") ? el.value : `active=<${el ? el.tagName + "." + el.className : "null"}>`;
+  });
+  check("上屏后搜索条出现且拿到焦点（不是旧 DOM 上的空 focus）", barAfter === 1 && focused === "", `bar=${barAfter} focus=${focused}`);
+  await page.keyboard.press("Escape");
+  await sleep(200);
+
+  // ---- 3. 组字中按着鼠标、却来的是 pointercancel：待做的重画不能就这么丢了 ----
+  // imeEnd 以前只等 pointerup，拖拽被中断 / 触摸被取消时那一下永远不会来，攒着的重画就悬在那里了。
+  await body.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await sleep(100);
+  await body.click();
+  await cdp.send("Input.imeSetComposition", { text: "ni", selectionStart: 2, selectionEnd: 2 });
+  const beforeCancel = await page.$$eval(".stream .msg", (els) => els.length);
+  const pollsBase3 = polls.messages;
+  inbox.push(msg("aaaaaaaa-0000-4000-8000-000000000003", "第三条待补画", ZHANG));
+  await sleep(2900);
+  const pollsDuring = polls.messages - pollsBase3;
+  // 假装鼠标按着（合成事件，不碰真鼠标，否则 mousedown 会把组字提交掉）。
+  await page.evaluate(() => document.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+  await cdp.send("Input.insertText", { text: "你" });
+  await sleep(300);
+  const afterCommit = await page.$$eval(".stream .msg", (els) => els.length);
+  check("鼠标没收时补画先不跑", afterCommit === beforeCancel, `msg=${afterCommit} before=${beforeCancel}`);
+  await page.evaluate(() => document.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true })));
+  let afterCancel = afterCommit;
+  for (let k = 0; k < 20 && afterCancel <= beforeCancel; k++) {
+    await sleep(100);
+    afterCancel = await page.$$eval(".stream .msg", (els) => els.length);
+  }
+  const cancelText = await page.$$eval(".stream .msg", (els) => els.map((e) => e.textContent ?? "").join("|"));
+  check(
+    "pointercancel 之后补画照样补上（不靠 1.5s 兜底）",
+    afterCancel > beforeCancel && cancelText.includes("第三条待补画") && pollsDuring >= 1,
+    `msg=${afterCancel} before=${beforeCancel} polls=${pollsDuring}`,
+  );
+  // 假 API 要盖住页面用到的每一个接口：新增接口没假造时，上面那些「没看错」的断言会静默变假。
+  check("假 API 盖住了页面用到的所有接口", unknown.size === 0, [...unknown].join(", "));
+  check("route.fulfill 没有意外报错", routeErrors.length === 0, routeErrors.slice(0, 3).join(" | "));
 } finally {
   await browser.close();
   server.close();
