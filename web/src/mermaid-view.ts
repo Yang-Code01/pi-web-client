@@ -9,25 +9,40 @@
  */
 
 import { tr } from "./i18n/index.ts";
+import { isTheme, themeInfo } from "./theme.ts";
 
-type MermaidApi = {
-  initialize(cfg: Record<string, unknown>): void;
-  render(id: string, text: string): Promise<{ svg: string }>;
-};
+/** mermaid 自己的类型（不从包里抄一份，改了不会对不上）。 */
+type MermaidApi = typeof import("mermaid")["default"];
 
 let loader: Promise<MermaidApi> | null = null;
+/** mermaid 上一次 initialize 用的主题；同一主题不必重复配置全局状态。 */
+let initedTheme: "default" | "dark" | null = null;
 let seq = 0;
 /** 串行渲染：mermaid 的 render 共用一份全局配置与临时节点，并发会互相踩。 */
 let queue: Promise<unknown> = Promise.resolve();
 
 function loadMermaid(): Promise<MermaidApi> {
-  loader ??= import("mermaid").then((m) => m.default as unknown as MermaidApi);
+  loader ??= import("mermaid")
+    .then((m) => m.default)
+    .catch((err: unknown) => {
+      // 加载失败（断网、chunk 404）不留在缓存里：下一次围栏重试，而不是刷新前一直报错。
+      loader = null;
+      throw err;
+    });
   return loader;
 }
 
-/** 当前主题是不是深色：`data-theme` 不是 `*-light` 就当深色。 */
+/** 当前主题用哪套 mermaid 配色：查 `theme.ts` 的主题表，不按 id 里有没有 `light` 猜。 */
 export function mermaidTheme(theme: string | undefined): "default" | "dark" {
-  return theme && /light/.test(theme) ? "default" : "dark";
+  return isTheme(theme) && themeInfo(theme).light ? "default" : "dark";
+}
+
+/** 主题变了才 initialize：mermaid 的配置是全局的，每个围栏重复配一遍纯属浪费。 */
+function ensureInit(mermaid: MermaidApi): void {
+  const theme = mermaidTheme(document.documentElement.dataset.theme);
+  if (initedTheme === theme) return;
+  mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme });
+  initedTheme = theme;
 }
 
 /** 把 mermaid 给的 SVG 文本解析成节点；解析不了返回 null。 */
@@ -35,7 +50,17 @@ export function svgNode(svg: string): SVGSVGElement | null {
   const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
   const root = parsed.documentElement;
   if (!root || root.nodeName.toLowerCase() !== "svg" || parsed.getElementsByTagName("parsererror").length) return null;
-  return document.importNode(root, true) as unknown as SVGSVGElement;
+  const node = document.importNode(root, true);
+  return node instanceof SVGSVGElement ? node : null;
+}
+
+/**
+ * mermaid 默认给 SVG 写 `width="100%"` + `max-width`，宽图会被压进容器宽度（实测 3808px 的图缩成 600×11）。
+ * 改成 viewBox 的原始像素宽，配 `.md-mermaid-fig` 的 `overflow-x: auto` 才是「太宽就滚动、不缩」。
+ */
+function naturalWidth(node: SVGSVGElement): void {
+  const vb = node.viewBox?.baseVal;
+  if (vb?.width) node.setAttribute("width", String(Math.ceil(vb.width)));
 }
 
 /**
@@ -51,10 +76,11 @@ export function mermaidBlock(text: string, pre: HTMLElement): HTMLElement {
   const job = async () => {
     try {
       const mermaid = await loadMermaid();
-      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: mermaidTheme(document.documentElement.dataset.theme) });
+      ensureInit(mermaid);
       const { svg } = await mermaid.render(id, text);
       const node = svgNode(svg);
       if (!node) throw new Error(tr("图的输出无法解析"));
+      naturalWidth(node);
       const fig = document.createElement("div");
       fig.className = "md-mermaid-fig";
       fig.appendChild(node);
@@ -65,8 +91,10 @@ export function mermaidBlock(text: string, pre: HTMLElement): HTMLElement {
       document.getElementById(`d${id}`)?.remove();
       const msg = document.createElement("div");
       msg.className = "md-mermaid-err";
-      const reason = err instanceof Error ? err.message : String(err);
-      msg.textContent = tr("Mermaid 图渲染失败：{p1}", { p1: reason.split("\n")[0] });
+      // 保留整段原因（parse 错误的行号、片段、Expecting 都在换行后面，只留首行等于没说），
+      // 折叠成一行并截断，免得一行错误把版面撑开。
+      const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim();
+      msg.textContent = tr("Mermaid 图渲染失败：{p1}", { p1: reason.length > 300 ? `${reason.slice(0, 300)}…` : reason });
       box.appendChild(msg);
       box.dataset.state = "error";
     }

@@ -2662,7 +2662,7 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .md-mermaid { margin: 12px 0; }
 .md-mermaid-fig { overflow-x: auto; padding: 12px; background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; text-align: center; }
 .md-mermaid-fig > svg { max-width: none; height: auto; }
-.md-mermaid-err { margin-top: 4px; color: var(--danger); font-size: 12px; }
+.md-mermaid-err { margin-top: 4px; color: var(--danger); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .md-doc a { color: var(--accent); }
 
 /* ------------------------------------------------------------------ 翻译对照
