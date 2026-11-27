@@ -6,6 +6,24 @@
 <!-- 写到 a659e29 · 2026-11-27 -->
 <!-- 下一批从这里往后读：git log --first-parent a659e29..origin/main；只读已合进 main 的，没合的不写。 -->
 
+## 未发布 · 内网通里收到的文件按类型看（PR #718、D434）
+
+### 新增
+
+- 收到的网页直接按网页看：弹窗里是排版好的页面（沙箱 iframe，不让它读本站的 cookie / localStorage），不再是一屏源码 #718 D434
+- Markdown 排成文档（标题、列表、引用、表格、代码块），CSV / TSV 画成只读表格（超 2 MB 或超过 2000 行就转本机） #718 D434
+- 视频 / 音频用浏览器自带播放器看；Word / PPT 这类给一颗「用本机程序打开」，收件那边还有「下载」 #718 D434
+- 标题栏不再写 `application/octet-stream`：网页 / Markdown 文档 / 表格 / 视频 / 音频 / Office 文档这么写 #718 D434
+
+### 修复
+
+- 内网通发 `.html` 进来，预览弹窗里显示的是源码：peer 的 MIME 表里没有 `.html`，发出去就记成 `application/octet-stream`，`/files` 又只信这个记下的值、回 `attachment` 且不带任何安全头；现在按文件名补算，html 带上 CSP 沙箱与 `nosniff`，**旧的这类消息也一起修好** #718 D434
+
+### 设计决定
+
+- 网页只渲染、不提供源码切换（用户定的）；沙箱不带 `allow-same-origin`，与主界面预览面板同一套令牌 #718 D434
+- 沙箱令牌只留一份（`peer/src/sandbox.ts`）：peer 的 CSP 与 iframe 的 `sandbox` 属性同源，改一处就都改 #718 D434
+
 ## 未发布 · 内网通的消息菜单不再从窗口右边戳出去（PR #716、D432）
 
 ### 修复

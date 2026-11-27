@@ -22,30 +22,108 @@ const KEEP_RATIO = 0.1;
 const TOKEN_MS = 60_000;
 
 const MIME: Record<string, string> = {
+  // 图片
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
   ".bmp": "image/bmp",
+  ".avif": "image/avif",
   ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  // 文档
   ".pdf": "application/pdf",
   ".txt": "text/plain;charset=utf-8",
+  ".log": "text/plain;charset=utf-8",
   ".md": "text/markdown;charset=utf-8",
+  ".markdown": "text/markdown;charset=utf-8",
   ".json": "application/json",
+  ".csv": "text/csv;charset=utf-8",
+  ".tsv": "text/tab-separated-values;charset=utf-8",
+  ".xml": "application/xml",
+  ".yaml": "text/yaml;charset=utf-8",
+  ".yml": "text/yaml;charset=utf-8",
+  // 网页 / 前端：以前只有这一行没有 —— 收到的 report.html 变成 octet-stream，预览里就成源码了（D302）。
+  ".html": "text/html;charset=utf-8",
+  ".htm": "text/html;charset=utf-8",
+  ".xhtml": "application/xhtml+xml",
+  ".css": "text/css;charset=utf-8",
+  ".js": "text/javascript;charset=utf-8",
+  ".mjs": "text/javascript;charset=utf-8",
+  // 压缩包
   ".zip": "application/zip",
+  ".gz": "application/gzip",
+  // Office（页面上都只能交给本机程序，但类型得对，才知道「这是 Office」）
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
   ".xls": "application/vnd.ms-excel",
-  ".csv": "text/csv;charset=utf-8",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".doc": "application/msword",
   ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".pptm": "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+  ".ppsx": "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".odt": "application/vnd.oasis.opendocument.text",
+  ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+  ".odp": "application/vnd.oasis.opendocument.presentation",
+  // 影音
   ".mp4": "video/mp4",
+  ".m4v": "video/x-m4v",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo",
   ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".opus": "audio/ogg",
+  ".flac": "audio/flac",
+  ".aac": "audio/aac",
 };
 
 export function mimeOf(name: string): string {
   return MIME[path.extname(name).toLowerCase()] ?? "application/octet-stream";
+}
+
+/** 泛型值：老版本对认不出来的后缀（含 .html）写的都是它。 */
+const GENERIC_MIME = /^application\/(octet-stream|x-zip-compressed)$/i;
+
+/**
+ * 该按什么类型回这份文件。历史里的 mime 是发的时候写的，可能来自还没有 `.html` 那张表的旧版本，
+ * 所以「泛型 + 名字认得出」时按名字重算一遍；名字也认不出才当真用泛型。
+ */
+export function typeOf(name: string, stored?: string): string {
+  if (stored && !GENERIC_MIME.test(stored.trim())) return stored;
+  return mimeOf(name);
+}
+
+/** 能在页面里直接看（`Content-Disposition: inline`）的类型。 */
+export function inlineType(type: string): boolean {
+  const t = type.split(";")[0].trim().toLowerCase();
+  return (
+    t.startsWith("image/") ||
+    t.startsWith("text/") ||
+    t.startsWith("video/") ||
+    t.startsWith("audio/") ||
+    t === "application/pdf" ||
+    t === "application/json" ||
+    t === "application/xml" ||
+    t === "application/xhtml+xml"
+  );
+}
+
+/**
+ * HTML 一律在沙箱里渲染：字节是别人发来的，给个 `sandbox`（不带 `allow-same-origin`）
+ * 它就跑不进本站的 localStorage / cookie / 同源接口。令牌词表与页面那侧共用一份，见 `./sandbox.ts`。
+ */
+export { SANDBOX_CSP, SANDBOX_TOKENS } from "./sandbox.ts";
+
+export function isHtmlType(type: string): boolean {
+  const t = type.split(";")[0].trim().toLowerCase();
+  return t === "text/html" || t === "application/xhtml+xml";
 }
 
 export interface Transfer {
