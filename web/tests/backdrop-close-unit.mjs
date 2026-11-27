@@ -67,9 +67,12 @@ function surfaceNames(code) {
 }
 
 const COMPARE = [
-  /\.target\s*[!=]==\s*((?:this\.)?[\w.]+)/g,
-  /((?:this\.)?[\w.]+)\s*[!=]==\s*\w+\.target\b/g,
+  /\.target\s*[!=]==?\s*((?:this\.)?[\w.]+)/g,
+  /((?:this\.)?[\w.]+)\s*[!=]==?\s*\w+\??\.target\b/g,
 ];
+
+/** `(ev.target as HTMLElement) === back` → `ev.target === back`：TS 强转不能让比较漏网。 */
+const unCast = (line) => line.replace(/\(\s*([\w.?]+\.target)\s+as\s+[\w.<>|\s]+?\)/g, "$1");
 
 /** 返回违规行：`[{ line, text }]`。 */
 export function findBackdropClose(source) {
@@ -82,7 +85,7 @@ export function findBackdropClose(source) {
     if (EXEMPT.test(rawLines[i] ?? "")) continue;
     for (const re of COMPARE) {
       re.lastIndex = 0;
-      for (const m of lines[i].matchAll(re)) {
+      for (const m of unCast(lines[i]).matchAll(re)) {
         const name = m[1].split(".").pop();
         if (name === "target" || name === "currentTarget") continue;
         if (BACKDROP_NAMES.has(name) || local.has(name)) {
@@ -103,6 +106,8 @@ const POSITIVE = [
   `modal.onclick = (ev) => {\n  if (ev.target !== modal) return;\n  this.closeModal();\n};`,
   `const box = markSurface(el("div", "x"), "window");\nbox.onclick = (e) => { if (e.target === box) done(null); };`,
   `if (ev.target === this.opLayer) this.closeOp();`,
+  `back.onmousedown = (ev) => { if ((ev.target as HTMLElement) === back) close(); };`,
+  `if (ev?.target == modal) close();`,
 ];
 const NEGATIVE = [
   `if (ev.target === input) return;`,
