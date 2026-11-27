@@ -6227,11 +6227,14 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .pr-col { max-height: calc(var(--vh1) * 26); }
 }
 
-/* 交给 agent：去处选择 */
-.handoff-sheet { width: min(560px, 94%); }
-.handoff-body { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 16px; }
+/* 交给 agent：去处选择。
+   单类 `.handoff-sheet` 压不过 settings-console.css 里后加载的 `.st-console { height: min(840px, 100%) }`
+   （同权重、后者在后），于是这个只有几行字的弹层被撑成 840px、正文底下空一大截；这里用两个类钉回
+   「贴内容 + 至多 92vh」。长文不靠裁字，靠 `.handoff-preview` 自己滚。 */
+.st-console.handoff-sheet { width: min(560px, 94%); height: auto; max-height: calc(var(--vh1) * 92); }
+.handoff-body { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: auto; padding: 12px 16px 16px; }
 .handoff-preview {
-  margin: 0; max-height: calc(var(--vh1) * 38); overflow: auto;
+  margin: 0; max-height: calc(var(--vh1) * 56); overflow: auto;
   padding: 8px 10px; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
   background: var(--panel); border-radius: 10px;
 }
