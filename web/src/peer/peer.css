@@ -745,6 +745,9 @@ body.embedded .brand .nm { display: none; }
    分区后一屏只看见一组。窄容器退化成横向 chips，见下面的 @container。 */
 .detail.me {
   max-width: 880px;
+  /* 不靠 .detail.wide 的 margin: 0 auto：这里是设置页自己的宽度约束，少一个类名就失效。 */
+  width: 100%;
+  margin: 0 auto;
   container-type: inline-size;
 }
 /* 网格挂在 me-body 上：detail 自己是查询容器，容器自己的宽度改不了自己的样式。 */

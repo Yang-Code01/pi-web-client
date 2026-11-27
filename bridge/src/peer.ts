@@ -322,7 +322,10 @@ export class PeerHost {
     });
     const parsed = (await res.json().catch(() => ({}))) as { avatar?: string; error?: string };
     if (!res.ok) throw new Error(parsed.error ?? `peer 回 ${res.status}`);
-    await this.poll();
+    // 不等这一轮 poll：peer 的 announce 是异步的，立刻 poll 也拿不到新状态，只会把上传 RT 拉长。
+    // 先把返回值写进缓存（页面紧接着 GET /api/peer 要看到新头像），其余状态让后台 poll 慢慢刷。
+    if (parsed.avatar && this.status) this.status.avatar = parsed.avatar;
+    void this.poll();
     return { ok: true, avatar: parsed.avatar ?? "" };
   }
 

@@ -275,6 +275,9 @@ function ic(name: string, cls = ""): SVGSVGElement {
   return svg;
 }
 
+/** 「我」页的分区 id（S.meSection 与 ME_SECTIONS 共用）。 */
+type MeSection = "profile" | "avatar" | "alerts" | "store" | "net" | "ignored";
+
 // ---------------------------------------------------------------- 状态
 
 const S = {
@@ -306,7 +309,7 @@ const S = {
   /** 多选：null = 没在多选；否则是勾上的消息 id。 */
   picked: null as Set<string> | null,
   /** 「我」页当前分区（左侧子导航）。只活在本页会话里，不落盘。 */
-  meSection: "profile" as "profile" | "avatar" | "alerts" | "store" | "net" | "ignored",
+  meSection: "profile" as MeSection,
   /** 自己上传过的头像（最早排在后），随 /api/peer/custom-avatars 刷新。 */
   uploads: [] as UploadRow[],
   /** 点固定消息跳过去时，这个会话临时多拉一些历史（200 → 2000）。 */
@@ -533,7 +536,8 @@ function avatar(name: string, key: string, online?: boolean, pic?: string): HTML
         box.classList.remove("pic");
         img.remove();
         box.style.setProperty("--h", String(hueOf(key)));
-        box.textContent = (name.trim()[0] ?? "?").toUpperCase();
+        // 用 span 塞首字母而不是 textContent：后者会把 `online` 追加的 .st 圆点一起抹掉。
+        box.prepend(h("span", "av-letter", (name.trim()[0] ?? "?").toUpperCase()));
       },
       { once: true },
     );
@@ -543,6 +547,8 @@ function avatar(name: string, key: string, online?: boolean, pic?: string): HTML
     box.title = tr("点头像看大图");
     box.addEventListener("click", (ev) => {
       if (box.closest("button")) return;
+      // 图已经加载失败、退回字母了：这时候再点不该弹一个空灯箱。
+      if (!img.isConnected) return;
       ev.stopPropagation();
       openAvatarViewer(img.getAttribute("src") ?? "", name);
     });
@@ -3858,8 +3864,6 @@ async function reveal(target: string): Promise<void> {
  * 设置项一多，纵向滚到底找开关很费劲；分组后一屏只看见一组，切组也不丢滚动位置。
  * 分区顺序按「先看自己 → 再看通知 / 存储 → 最后是网络与隐私」排。
  */
-type MeSection = "profile" | "avatar" | "alerts" | "store" | "net" | "ignored";
-
 const ME_SECTIONS: { id: MeSection; label: string; icon: string }[] = [
   { id: "profile", label: "个人资料", icon: "me" },
   { id: "avatar", label: "头像", icon: "image" },
@@ -4255,6 +4259,16 @@ function renderMe(): void {
     return wrap;
   };
 
+  // 分区 id → 渲染函数。加分区只改这里和 ME_SECTIONS 的标签，别再往嵌套三元里挂一层。
+  const SECTION_BODY: Record<MeSection, () => HTMLElement> = {
+    profile: sectionProfile,
+    avatar: sectionAvatar,
+    alerts: sectionAlerts,
+    store: sectionStore,
+    net: sectionNet,
+    ignored: sectionIgnored,
+  };
+
   const nav = h("nav", "me-nav");
   const pane = h("div", "me-pane");
   const draw = (): void => {
@@ -4273,19 +4287,7 @@ function renderMe(): void {
       });
       nav.append(tab);
     }
-    pane.replaceChildren(
-      S.meSection === "profile"
-        ? sectionProfile()
-        : S.meSection === "avatar"
-          ? sectionAvatar()
-          : S.meSection === "alerts"
-            ? sectionAlerts()
-            : S.meSection === "store"
-              ? sectionStore()
-              : S.meSection === "net"
-                ? sectionNet()
-                : sectionIgnored(),
-    );
+    pane.replaceChildren(SECTION_BODY[S.meSection]());
   };
 
   // 网格摆在 me-body 上而不是 detail 自己：detail 是容器查询的对象，

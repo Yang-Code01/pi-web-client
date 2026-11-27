@@ -20,7 +20,9 @@ const nodeId = ensureNodeId();
 // 第一次启动（配置里还没头像）就随机挑一张并落盘。**只挑这一次**：头像每重启一次就换一个的话，
 // 别人那边看着莫名其妙，自己也无从认起。之后换头像只走页面上的「我 → 头像」。
 // 自定义头像另查一次文件：状态目录被删 / 图被手动清掉时，别让广播里挂一个永远取不到的 hash。
-if (!cfg.avatar || (customAvatarHash(cfg.avatar) && !hasAvatarFile(customAvatarHash(cfg.avatar)))) {
+const ownAvatar = customAvatarHash(cfg.avatar);
+if (!cfg.avatar || (ownAvatar && !hasAvatarFile(ownAvatar))) {
+  if (ownAvatar) console.log(`自定义头像 ${ownAvatar} 的文件不见了，先换回一张内置的（可从「我 → 头像」重传）`);
   cfg.avatar = randomAvatar();
   saveConfig(cfg);
 }

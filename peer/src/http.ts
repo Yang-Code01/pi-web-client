@@ -6,8 +6,9 @@ import { randomUUID } from "node:crypto";
 import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION, MAX_AVATAR_HISTORY } from "./config.ts";
-import { customAvatarHash, knownAvatar, randomAvatar } from "./avatars.ts";
+import { avatarHash, customAvatarHash, knownAvatar, randomAvatar } from "./avatars.ts";
 import { deleteAvatarFile, findAvatarFile, fetchRemoteAvatar, hasAvatarFile, listAvatarUploads, MAX_AVATAR_BYTES, pruneAvatarFiles, saveAvatarFile } from "./avatar-files.ts";
+import type { AvatarImage } from "./avatar-files.ts";
 import type { Discovery } from "./discovery.ts";
 import { CHUNK, SANDBOX_CSP, inlineType, isHtmlType, mimeOf, typeOf } from "./files.ts";
 import type { Files } from "./files.ts";
@@ -89,9 +90,9 @@ function isLoopback(req: http.IncomingMessage): boolean {
   return /^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(addr);
 }
 
-function json(res: http.ServerResponse, status: number, body: unknown): void {
+function json(res: http.ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}): void {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...extra });
   res.end(payload);
 }
 
@@ -99,11 +100,16 @@ function readBody(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
+    let tooLarge = false;
     req.on("data", (c: Buffer) => {
+      // 超限只拒一次，剩下的字节继续收下再丢掉：直接 destroy 会把 socket 一起带走，
+      // 外面那句 `json(res, 413)` 就再也写不出去了（调用方看到的是连接被重置）。
+      if (tooLarge) return;
       size += c.length;
       if (size > MAX_BODY) {
+        tooLarge = true;
+        chunks.length = 0;
         reject(new Error("body too large"));
-        req.destroy();
         return;
       }
       chunks.push(c);
@@ -130,11 +136,15 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
+    let tooLarge = false;
     req.on("data", (c: Buffer) => {
+      // 同上：不 destroy，让处理器还能回 413。
+      if (tooLarge) return;
       size += c.length;
       if (size > limit) {
+        tooLarge = true;
+        chunks.length = 0;
         reject(new Error("body too large"));
-        req.destroy();
         return;
       }
       chunks.push(c);
@@ -152,26 +162,34 @@ export function createPeerServer(ctx: PeerContext): http.Server {
    * 没有就按他当前广播的 hash 去他的 `/avatar` 拉一次（结果落盘，离线也能再用）。
    * 只认他**当前**这张：旧 hash 不给，免得这个口子变成一张能无限探别人缓存的清单。
    */
-  async function avatarFor(who: string, hash: string): Promise<{ buf: Buffer; mime: string } | null> {
+  async function avatarFor(who: string, hash: string): Promise<AvatarImage | null> {
     if (who === nodeId) {
       const own = customAvatarHash(cfg.avatar);
       // 设置页的「上传过的」会按各自的 hash 来要图，不能都回当前那张（否则一排缩略图全一样）。
       // 只放开当前这张和上传记录，对端头像的缓存不从这个口子出。
-      const wanted = /^[0-9a-f]{16}$/.test(hash) ? hash : own;
+      // 按请求的 hash 回对应字节：桥那边对同一 URL 长缓存，回错图会被浏览器记住。
+      const wanted = hash === "" ? own : avatarHash(hash);
       if (!wanted || (wanted !== own && !cfg.avatarHistory.includes(wanted))) return null;
       return findAvatarFile(wanted);
     }
     const peer = discovery.byId(who);
     const current = customAvatarHash(peer?.avatar || relations.get(who)?.avatar || "");
     if (!current || (hash && hash !== current)) return null;
-    return findAvatarFile(current) ?? (peer ? await fetchRemoteAvatar(peer.addr, peer.port, current) : null);
+    const local = findAvatarFile(current);
+    if (local) return local;
+    const fetched = peer ? await fetchRemoteAvatar(peer.addr, peer.port, current) : null;
+    // 对端拉回来的图也走同一份 mtime 清理，否则 avatars/ 只进不出（D438 说的「留 64 张」不成立）。
+    if (fetched) pruneAvatarFiles([customAvatarHash(cfg.avatar), ...cfg.avatarHistory]);
+    return fetched;
   }
 
-  const sendImage = (res: http.ServerResponse, image: { buf: Buffer; mime: string }, cache: string): void => {
+  const sendImage = (res: http.ServerResponse, image: AvatarImage, cache: string): void => {
     res.writeHead(200, {
       "content-type": image.mime,
       "content-length": image.buf.length,
       "cache-control": cache,
+      // 内容寻址：ETag 就是 hash，桥转发后浏览器能做 304。
+      etag: `"${image.hash}"`,
       "x-content-type-options": "nosniff",
     });
     res.end(image.buf);
@@ -274,7 +292,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       if (url.pathname === "/avatar" && req.method === "POST") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const raw = await readRaw(req, MAX_AVATAR_BYTES).catch(() => null);
-        if (!raw) return json(res, 413, { error: "图片太大了（上限 512 KB）" });
+        if (!raw) return json(res, 413, { error: "图片太大了（上限 512 KB）" }, { connection: "close" });
         const saved = saveAvatarFile(raw);
         if (!saved) return json(res, 400, { error: "不是支持的图片（PNG / JPEG / WebP / GIF）" });
         const changed = cfg.avatar !== saved.id;
@@ -297,7 +315,12 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       // 桥只从回环来取；对端头像由 peer 自己按 hash 拉，页面不直接连别人的 7865。
       if (url.pathname.startsWith("/avatar/") && req.method === "GET") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
-        const who = decodeURIComponent(url.pathname.slice("/avatar/".length));
+        let who: string;
+        try {
+          who = decodeURIComponent(url.pathname.slice("/avatar/".length));
+        } catch {
+          return json(res, 400, { error: "地址不对" });
+        }
         const found = await avatarFor(who, url.searchParams.get("h") ?? "");
         if (!found) return json(res, 404, { error: "没有这张头像" });
         return sendImage(res, found, "private, max-age=86400");
@@ -315,8 +338,8 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       if (url.pathname === "/custom-avatars/delete" && req.method === "POST") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const body = (await readBody(req).catch(() => null)) as { hash?: unknown } | null;
-        const hash = typeof body?.hash === "string" ? body.hash : "";
-        if (!/^[0-9a-f]{16}$/.test(hash)) return json(res, 400, { error: "hash 不对" });
+        const hash = avatarHash(body?.hash);
+        if (!hash) return json(res, 400, { error: "hash 不对" });
         if (!cfg.avatarHistory.includes(hash)) return json(res, 404, { error: "不在上传记录里" });
         deleteAvatarFile(hash);
         cfg.avatarHistory = cfg.avatarHistory.filter((h) => h !== hash);

@@ -160,8 +160,12 @@ const STEP_UP_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 30 * 1024 * 1024;
 /** #455 与 MAX_UPLOAD_BYTES 同一个数：readRaw 被挡和 saveUpload 自查，回的是同一句话。 */
 const UPLOAD_TOO_LARGE = "文件太大了（上限 64 MB）";
-/** 自定义头像的体上限：与 peer 的 MAX_AVATAR_BYTES 对齐（页面裁完通常只有几 KB）。 */
-const MAX_AVATAR_UPLOAD = 512 * 1024;
+/**
+ * 自定义头像的**传输**上限：2 MB，只用来兜住 readRaw 的内存。
+ * 真正的业务上限（512 KB）在 peer 的 MAX_AVATAR_BYTES，超了由 peer 回 413、文案从那边透传；
+ * 桥这边再写一份 512 KB 只会多出一个和 peer 不同步的数字（评审 #2 / #6）。
+ */
+const MAX_AVATAR_UPLOAD = 2 * 1024 * 1024;
 
 interface ChildWatch {
   sessionId: string;
@@ -344,11 +348,16 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
+    let tooLarge = false;
     req.on("data", (c: Buffer) => {
+      // 超限只拒一次，其余字节继续收下再丢掉：req.destroy() 会连 socket 一起销毁，
+      // 调用方那句 413 就写不出去了（评审 #6）。
+      if (tooLarge) return;
       size += c.length;
       if (size > limit) {
+        tooLarge = true;
+        chunks.length = 0;
         reject(new Error("body too large"));
-        req.destroy();
         return;
       }
       chunks.push(c);
@@ -1262,7 +1271,7 @@ async function main(): Promise<void> {
     // GET 走桥而不是直连 peer 的 7865：那条口子只对回环开，页面在别的机器 / 隧道里时够不着。
     if (url.pathname === "/api/peer/avatar" && req.method === "POST") {
       const raw = await readRaw(req, MAX_AVATAR_UPLOAD).catch(() => null);
-      if (!raw) return json(res, 413, { error: "太大了（上限 512 KB）" });
+      if (!raw) return json(res, 413, { error: "图片太大了（上限 2 MB）" }, { connection: "close" });
       try {
         return json(res, 200, await peer.uploadAvatar(raw));
       } catch (err) {
@@ -1270,19 +1279,39 @@ async function main(): Promise<void> {
       }
     }
     if (url.pathname.startsWith("/api/peer/avatar/") && req.method === "GET") {
-      const who = decodeURIComponent(url.pathname.slice("/api/peer/avatar/".length));
+      // 非法百分号编码（/api/peer/avatar/%E0%A4%A）会让 decodeURIComponent 抛 URIError；
+      // 这段必须在 try 里，否则异常冒到 createServer 回调外面，请求会悬到超时（评审 #1）。
+      let who: string;
+      try {
+        who = decodeURIComponent(url.pathname.slice("/api/peer/avatar/".length));
+      } catch {
+        return json(res, 400, { error: "地址不对" });
+      }
       try {
         const upstream = await peer.avatarStream(who, url.searchParams.get("v") ?? "");
         if (!upstream.ok) return json(res, upstream.status, { error: "取不到这张头像" });
-        const buf = Buffer.from(await upstream.arrayBuffer());
+        const etag = upstream.headers.get("etag");
+        const cache = "private, max-age=86400";
+        // 内容寻址：同一个 etag 就是同一张图。浏览器带 If-None-Match 回来时直接 304，
+        // 不用把 peer 的字节再搬一遍（评审 #12）。
+        if (etag && req.headers["if-none-match"] === etag) {
+          res.writeHead(304, { etag, "cache-control": cache, "x-content-type-options": "nosniff" });
+          return void res.end();
+        }
+        if (!upstream.body) return json(res, 502, { error: "取不到这张头像" });
+        const length = upstream.headers.get("content-length");
         res.writeHead(200, {
           "content-type": upstream.headers.get("content-type") ?? "image/webp",
-          "content-length": buf.length,
-          // 内容寻址（URL 里带 hash）：同一个地址的字节不会变，浏览器可以放心缓存一天。
-          "cache-control": "private, max-age=86400",
+          ...(length ? { "content-length": length } : {}),
+          ...(etag ? { etag } : {}),
+          "cache-control": cache,
           "x-content-type-options": "nosniff",
         });
-        return void res.end(buf);
+        // 头像最大 512 KB，但没必要先进 Buffer 再吐一遍：直接接上上游的流。
+        Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream<Uint8Array>)
+          .on("error", () => res.destroy())
+          .pipe(res);
+        return;
       } catch (err) {
         return json(res, 502, { error: (err as Error).message });
       }

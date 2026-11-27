@@ -162,7 +162,13 @@ const oldSrc = await page.evaluate((bId) => {
 }, bSt.nodeId);
 const freshB = IDS.find((id) => id !== bSt.avatar) ?? IDS[0];
 await b.post("/api/peer/config", { avatar: freshB });
-await sleep(1500);
+// 桥的 poll 是 5 秒一轮：固定 sleep 会跟它赛跑（偶尔 1.5 秒时缓存还是旧脸）。
+// 等到 A 的桥真的看见新头像再刷新，断言才有意义。
+for (let i = 0; i < 40; i++) {
+  const st = await a.get("/api/peer");
+  if (st.status?.online?.find((p) => p.nodeId === bSt.nodeId)?.avatar === freshB) break;
+  await sleep(250);
+}
 await page.reload();
 await page.waitForSelector("#list .row", { timeout: 15000 });
 await sleep(1200);

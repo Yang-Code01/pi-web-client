@@ -36,8 +36,13 @@ export type AvatarId = (typeof AVATAR_IDS)[number];
  * 图至少也有几 KB；把图塞进广播要拆包、重传、去重，代价远大于收益。所以广播里只有
  * 一个内容地址，真要图的时候按 hash 去对方的 `/avatar` 拿（对端再缓存到本机）。
  * 只认小写 hex：拼出来的路径 / 文件名必须是确定的，不能靠调用方自己清洗。
+ *
+ * 长度只在这里写一次：`avatarHash()` / `CUSTOM_AVATAR_RE` 共用 `HASH_HEX`，
+ * 改长度不用满仓库找正则（`peer/src/avatar-files.ts` 与 `http.ts` 都走 `avatarHash()`）。
  */
-export const CUSTOM_AVATAR_RE = /^custom:([0-9a-f]{16})$/;
+const HASH_HEX = "[0-9a-f]{16}";
+const HASH_RE = new RegExp(`^${HASH_HEX}$`);
+export const CUSTOM_AVATAR_RE = new RegExp(`^custom:(${HASH_HEX})$`);
 
 /** 是自定义头像 id 就返回 hash，否则空串。 */
 export function customAvatarHash(id: unknown): string {
@@ -45,9 +50,15 @@ export function customAvatarHash(id: unknown): string {
   return CUSTOM_AVATAR_RE.exec(id)?.[1] ?? "";
 }
 
+/** 只判 hash 形状（不带 `custom:` 前缀）：文件路径、请求参数、配置里的历史都用它。 */
+export function avatarHash(value: unknown): string {
+  return typeof value === "string" && HASH_RE.test(value) ? value : "";
+}
+
 /** hash → 自定义头像 id；hash 不合法就返回空串。 */
 export function customAvatarId(hash: unknown): string {
-  return typeof hash === "string" && /^[0-9a-f]{16}$/.test(hash) ? `custom:${hash}` : "";
+  const h = avatarHash(hash);
+  return h ? `custom:${h}` : "";
 }
 
 const KNOWN = new Set<string>(AVATAR_IDS);
