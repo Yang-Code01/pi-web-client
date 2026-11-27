@@ -4,10 +4,13 @@ import { renderMarkdown } from "../md.ts";
 import { markSurface } from "../modal.ts";
 import { RichEditor } from "../notes/editor.ts";
 import { hasRichMarkup, isRichEmpty, plainText, sanitizeRich } from "../notes/rich.ts";
+import { CSV_MAX_BYTES, readCsv } from "../sheet/csv.ts";
 import { SheetDialog } from "../sheet/dialog.ts";
 import "../sheet/sheet.css";
 import { bootTheme } from "../theme.ts";
+import { AVATAR_IDS, avatarUrl, randomAvatarId } from "./avatars.ts";
 import { emojiPanel, QUICK_REACTIONS, type Sticker } from "./emoji.ts";
+import { SANDBOX_TOKENS } from "./sandbox.ts";
 import { imageViewer, type ViewerItem } from "./viewer.ts";
 
 /**
@@ -38,6 +41,8 @@ interface OnlinePeer {
   port: number;
   lastSeen: number;
   status?: string;
+  /** 他自报的头像 id（没报 / 老对端就是没这个字段）。 */
+  avatar?: string;
   ips: string[];
 }
 
@@ -46,6 +51,8 @@ interface PeerStatus {
   nickname: string;
   hostname: string;
   port: number;
+  /** 我自己的头像 id。 */
+  avatar?: string;
   online: OnlinePeer[];
   config: { hidden: boolean; pauseFiles: boolean; dnd: boolean; inbox: string; manual: string[] };
 }
@@ -60,7 +67,7 @@ interface PeerView {
 interface Entry {
   id: string;
   at: number;
-  from: { nodeId: string; nickname?: string; hostname?: string; port?: number };
+  from: { nodeId: string; nickname?: string; hostname?: string; port?: number; avatar?: string };
   to: { kind: "node" | "group"; id: string };
   kind: "text" | "receipt" | "file" | "recall" | "note" | "react" | "pin" | "sys";
   /** 群灰条（建群 / 改名 / 拉人 / 退群）。 */
@@ -136,11 +143,13 @@ interface Thread {
   lastMine: boolean;
   sending: boolean;
   typing: boolean;
+  /** 头像 id：在线就直接用他报的，离线用通讯录里存的。 */
+  avatar?: string;
   /** 未读里有紧急消息 / 有人 @ 我（peer 算好的，免打扰也提醒）。 */
   urgent?: boolean;
   mention?: boolean;
   /** 群会话才有：成员名单（含自己）、群主、本机是否已退出。 */
-  group?: { members: { nodeId: string; nickname?: string; hostname?: string }[]; owner: string; left: boolean };
+  group?: { members: { nodeId: string; nickname?: string; hostname?: string; avatar?: string }[]; owner: string; left: boolean };
 }
 
 interface Contact {
@@ -158,6 +167,8 @@ interface Contact {
   online: boolean;
   addr: string;
   livePort: number;
+  /** 他的头像 id（在线表里的最新值，离线时是通讯录里存下的）。 */
+  avatar?: string;
 }
 
 interface Transfer {
@@ -298,7 +309,7 @@ const mainEl = document.querySelector("#main") as HTMLElement;
 const mobEl = document.querySelector("#mobnav") as HTMLElement;
 const layerEl = document.querySelector("#layer") as HTMLElement;
 const toastEl = document.querySelector("#toast") as HTMLElement;
-// 点遮罩不关、只轻弹（D434）：遮罩上的点击由 modal.ts 统一处理，关闭只走 ✕ / Esc。
+// 点遮罩不关、只轻弹（D437）：遮罩上的点击由 modal.ts 统一处理，关闭只走 ✕ / Esc。
 const picker = markSurface(document.querySelector("#picker") as HTMLElement, "window");
 const crumbsEl = document.querySelector("#crumbs") as HTMLElement;
 const placesEl = document.querySelector("#places") as HTMLUListElement;
@@ -457,10 +468,56 @@ function hueOf(key: string): number {
   return (x * 137) % 360;
 }
 
-function avatar(name: string, key: string, online?: boolean): HTMLElement {
+/**
+ * nodeId → 头像 id。每次数据刷新时重建（`rememberAvatars`），列表 / 气泡 / 成员面板
+ * 都只认得 nodeId，靠它换成图。没有条目的人退回「首字母 + 色相」。
+ * 每次重建前先清空：不然对方换成了一个我们不认识的 id（或者那是台老版本对端、
+ * 我们刚把他从名单里删了），表里还留着上一次那张，永远不会退回首字母。
+ */
+const AVS = new Map<string, string>();
+
+function rememberAvatar(nodeId: string, avatar?: string): void {
+  if (!nodeId || !avatar) return;
+  AVS.set(nodeId, avatar);
+}
+
+/**
+ * 把手上所有带身份的数据过一遍（在线表 / 会话 / 通讯录 / 消息 / 群成员）。
+ *
+ * **顺序就是新鲜度**：后写覆盖先写，所以从最旧的开始。历史消息里 `from.avatar` 是
+ * 「他发那条消息时」的脸 —— 对方换过头像之后它就是旧的，哪怕当前会话里还留着他换之前
+ * 的消息；在线表 / 通讯录 / 会话摘要才是「他现在长什么样」。
+ */
+function rememberAvatars(): void {
+  AVS.clear();
+  for (const e of S.msgs) rememberAvatar(e.from?.nodeId, e.from?.avatar);
+  for (const t of S.threads) {
+    for (const m of t.group?.members ?? []) rememberAvatar(m.nodeId, m.avatar);
+    rememberAvatar(t.nodeId, t.avatar);
+  }
+  for (const c of S.contacts) rememberAvatar(c.nodeId, c.avatar);
+  const st = S.view?.status;
+  for (const p of st?.online ?? []) rememberAvatar(p.nodeId, p.avatar);
+  if (st) rememberAvatar(st.nodeId, st.avatar);
+}
+
+function avatar(name: string, key: string, online?: boolean, pic?: string): HTMLElement {
   const box = h("span", "av");
-  box.style.setProperty("--h", String(hueOf(key)));
-  box.textContent = (name.trim()[0] ?? "?").toUpperCase();
+  // 第四参是「这一处确切知道他是哪张」的地方（「我」页 / 别人的头像就是他自己报的）；
+  // 其余位置只用 nodeId 查表。
+  const url = avatarUrl(pic ?? AVS.get(key));
+  if (url) {
+    box.classList.add("pic");
+    const img = document.createElement("img");
+    img.className = "av-img";
+    img.src = url;
+    img.alt = "";
+    img.draggable = false;
+    box.append(img);
+  } else {
+    box.style.setProperty("--h", String(hueOf(key)));
+    box.textContent = (name.trim()[0] ?? "?").toUpperCase();
+  }
   if (online !== undefined) {
     const dot = h("i", `st${online ? " on" : ""}`);
     box.append(dot);
@@ -719,6 +776,7 @@ function openThread(id: string): void {
 }
 
 function renderAll(): void {
+  rememberAvatars();
   renderBar();
   renderHint();
   renderRail();
@@ -835,9 +893,20 @@ function searchBox(placeholder: string): HTMLElement {
   return box;
 }
 
+/** contenteditable 里光标 / 选区的静态快照；选区不在 el 里就是 null。用 anchor / focus 而不是 start / end：反向拖选（Shift+←）的方向也保住。 */
+function caretOf(el: HTMLElement): { anchor: Node; anchorAt: number; focus: Node; focusAt: number } | null {
+  const s = document.getSelection();
+  if (!s?.rangeCount || !s.anchorNode || !s.focusNode) return null;
+  if (!el.contains(s.anchorNode) || !el.contains(s.focusNode)) return null;
+  return { anchor: s.anchorNode, anchorAt: s.anchorOffset, focus: s.focusNode, focusAt: s.focusOffset };
+}
+
 /**
  * 整块重画会把正在输入的输入框一起换掉（焦点、光标、选区全没）。
  * 重画前记住「哪个带 data-keep 的元素拿着焦点」，重画后把焦点与选区还回去。
+ * 输入框是 contenteditable（`.peer-rich`）：它跨重画复用同一批节点，但被摘下再挂回时选区会丢，
+ * 光是 focus() 会把光标放到最前面 —— 所以把选区两端的（节点, 偏移）存下来原样放回。
+ * 不能存 Range 对象：Range 是活的，节点被摘下那一刻它会被浏览器挤到父节点上。
  */
 function rerender(rebuild: () => void): void {
   const active = document.activeElement;
@@ -846,11 +915,19 @@ function rerender(rebuild: () => void): void {
     active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
       ? ([active.selectionStart, active.selectionEnd] as const)
       : null;
+  const caret = keep && !sel && active instanceof HTMLElement ? caretOf(active) : null;
   rebuild();
   if (!keep) return;
   const next = document.querySelector<HTMLElement>(`[data-keep="${keep}"]`);
   if (!next) return;
   next.focus({ preventScroll: true });
+  if (caret && next.contains(caret.anchor) && next.contains(caret.focus)) {
+    try {
+      document.getSelection()?.setBaseAndExtent(caret.anchor, caret.anchorAt, caret.focus, caret.focusAt);
+    } catch {
+      /* 节点在重画里被改短了：焦点回来就够 */
+    }
+  }
   if (sel && (next instanceof HTMLInputElement || next instanceof HTMLTextAreaElement)) {
     const end = next.value.length;
     const at = (n: number | null): number => Math.min(n ?? end, end);
@@ -2912,9 +2989,61 @@ async function openSheetWindow(src: PreviewSrc): Promise<void> {
 }
 
 /**
+ * 预览按「哪一类」画。类型既看 mime，也看后缀：历史里的 mime 可能是旧版本写的
+ * `application/octet-stream`（那时候 MIME 表里还没有 `.html`），只看 mime 会把网页当二进制。
+ */
+type PreviewKind = "html" | "image" | "pdf" | "video" | "audio" | "markdown" | "csv" | "office" | "text" | "other";
+
+/** Office 家族：浏览器里一律不给内容，交回本机程序（Excel 例外，走上面那扇表格浮窗）。 */
+const OFFICE_EXT = /\.(docx?|pptx?|pptm|ppsx|potx|xlsx|xlsm|xls|odt|ods|odp|rtf|pages|numbers|key)$/i;
+
+/** 预览里最多喂多少文本给 `<pre>` / Markdown / 表格（再大就点「下载」）。 */
+const MAX_PREVIEW_TEXT = 2 * 1024 * 1024;
+
+function kindOf(src: PreviewSrc): PreviewKind {
+  const n = src.name.toLowerCase();
+  const m = (src.mime || "").toLowerCase();
+  if (n.endsWith(".html") || n.endsWith(".htm") || n.endsWith(".xhtml") || m.startsWith("text/html") || m === "application/xhtml+xml") {
+    return "html";
+  }
+  if (m.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i.test(n)) return "image";
+  if (m === "application/pdf" || n.endsWith(".pdf")) return "pdf";
+  if (m.startsWith("video/") || /\.(mp4|m4v|webm|mov|mkv|avi|wmv|flv)$/i.test(n)) return "video";
+  if (m.startsWith("audio/") || /\.(mp3|m4a|wav|ogg|oga|opus|flac|aac)$/i.test(n)) return "audio";
+  if (/\.(md|markdown|mdown)$/i.test(n) || m.startsWith("text/markdown")) return "markdown";
+  if (/\.(csv|tsv)$/i.test(n) || /^text\/(csv|tab-separated-values)/.test(m)) return "csv";
+  if (OFFICE_EXT.test(n)) return "office";
+  if (m.startsWith("text/") || TEXT_EXT.test(n)) return "text";
+  return "other";
+}
+
+/** meta 行那一截类型名：认得出来的就别写 `application/octet-stream`。 */
+function typeLabel(src: PreviewSrc, kind: PreviewKind): string {
+  const m = (src.mime || "").trim();
+  if (m && !/^application\/(octet-stream|x-zip-compressed)$/i.test(m)) return m;
+  switch (kind) {
+    case "html":
+      return tr("网页");
+    case "markdown":
+      return tr("Markdown 文档");
+    case "csv":
+      return tr("表格");
+    case "video":
+      return tr("视频");
+    case "audio":
+      return tr("音频");
+    case "office":
+      return tr("Office 文档");
+    default:
+      return m || tr("未知类型");
+  }
+}
+
+/**
  * 预览弹窗（D302）。**不借主界面的预览面板**：那个要一个打开的会话、还会把内网通弹层
- * 关掉，看一张截图不值当。这里按类型自己画：图片 `<img>`、PDF `<iframe>`、文本 `<pre>`，
- * Excel 交给上面那扇表格浮窗，其余说清楚「点下载」。
+ * 关掉，看一张截图不值当。这里按类型自己画：网页在沙箱 iframe 里跑（只渲染，不给源码）、
+ * 图片 `<img>`、PDF `<iframe>`、影音用浏览器自带播放器、Markdown 排成文档、CSV 画成表格，
+ * Excel 交给上面那扇表格浮窗，其余（Office 之类）一键「用本机程序打开」。
  */
 function showPreview(src: PreviewSrc): void {
   if (/\.(xlsx|xlsm)$/i.test(src.name)) {
@@ -2928,7 +3057,7 @@ function showPreview(src: PreviewSrc): void {
   const head = h("header");
   head.append(h("strong", "nm", src.name), iconBtn("close", tr("关掉预览"), closeLayer));
   const meta = h("div", "meta");
-  meta.append(h("span", "", `${sizeOf(src.size)} · `), h("span", "", src.mime || tr("未知类型")));
+  meta.append(h("span", "", `${sizeOf(src.size)} · `), h("span", "", typeLabel(src, kindOf(src))));
   const body = h("div", "body");
   modal.append(head, meta, body);
   layerEl.append(scrim, modal);
@@ -2944,38 +3073,152 @@ function showPreview(src: PreviewSrc): void {
   void fillPreview(body, src);
 }
 
+/** 「这里看不了」的那张卡：说清楚原因，给出口（本机程序 / 下载）。 */
+function fallbackCard(src: PreviewSrc, msg: string): HTMLElement {
+  const box = h("div", "none");
+  box.append(h("div", "", msg));
+  const acts = h("div", "acts");
+  const open = h("button", "btn", tr("用本机程序打开"));
+  open.type = "button";
+  open.addEventListener("click", async () => {
+    open.disabled = true;
+    try {
+      await postJson("/api/peer/open", src.entryId ? { id: src.entryId } : { path: src.path });
+    } catch (err) {
+      toast((err as Error).message);
+    } finally {
+      open.disabled = false;
+    }
+  });
+  acts.append(open);
+  // 选择器里的那份本来就在本机，不需要下载；历史里的那条才给。
+  if (src.entryId) {
+    const dl = h("a", "btn", tr("下载"));
+    dl.href = src.url;
+    dl.download = src.name;
+    dl.rel = "noopener";
+    acts.append(dl);
+  }
+  box.append(acts);
+  return box;
+}
+
+/** 取文本，超过上限就只给一句话（不把几十 MB 塞进 DOM）。 */
+async function previewText(body: HTMLElement, src: PreviewSrc): Promise<string | null> {
+  if (src.size > MAX_PREVIEW_TEXT) {
+    body.append(h("div", "none", tr("太大了（{p1}），点「下载」再看", { p1: sizeOf(src.size) })));
+    return null;
+  }
+  try {
+    const res = await fetch(src.url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  } catch (err) {
+    body.append(h("div", "none", tr("读不出来：{p1}", { p1: (err as Error).message })));
+    return null;
+  }
+}
+
 async function fillPreview(body: HTMLElement, src: PreviewSrc): Promise<void> {
-  const name = src.name.toLowerCase();
-  if (/^image\//.test(src.mime) || /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(name)) {
+  const kind = kindOf(src);
+  if (kind === "html") {
+    // 只渲染，不给源码（用户的决定）。沙箱里没有同源身份：脚本跑得了，
+    // 但读不到本站的 cookie / localStorage / 同源接口。和主界面预览面板同一套口径。
+    const frame = h("iframe", "frame-html");
+    frame.setAttribute("sandbox", SANDBOX_TOKENS);
+    frame.referrerPolicy = "no-referrer";
+    frame.title = src.name;
+    frame.src = src.url;
+    body.append(frame);
+    return;
+  }
+  if (kind === "image") {
     const img = h("img");
     img.src = src.url;
     img.alt = src.name;
     body.append(img);
     return;
   }
-  if (src.mime === "application/pdf" || name.endsWith(".pdf")) {
+  if (kind === "pdf") {
     const frame = h("iframe");
     frame.src = src.url;
     frame.title = src.name;
     body.append(frame);
     return;
   }
-  const isText = src.mime.startsWith("text/") || TEXT_EXT.test(name);
-  if (!isText) {
-    body.append(h("div", "none", tr("这个类型在这儿看不了，点「下载」用别的程序打开")));
+  if (kind === "video" || kind === "audio") {
+    // 浏览器自带的播放器：不自动播、只拉元数据。解不了码（avi / 冷门编码）就换成出口卡。
+    const media = h(kind, `media ${kind}`);
+    media.controls = true;
+    media.preload = "metadata";
+    media.src = src.url;
+    media.addEventListener("error", () => {
+      const msg =
+        kind === "audio"
+          ? tr("这个音频浏览器放不了（格式或编码不支持），用本机程序打开")
+          : tr("这个视频浏览器放不了（格式或编码不支持），用本机程序打开");
+      body.replaceChildren(fallbackCard(src, msg));
+    });
+    body.append(media);
     return;
   }
-  if (src.size > 2 * 1024 * 1024) {
-    body.append(h("div", "none", tr("太大了（{p1}），点「下载」再看", { p1: sizeOf(src.size) })));
+  if (kind === "markdown") {
+    const text = await previewText(body, src);
+    if (text === null) return;
+    const doc = h("div", "md-doc");
+    // 相对路径的图和链接指向发送方机器，这里一概不取；点路径仍旧复制走。
+    doc.append(renderMarkdown(text, { doc: true, tables: true, imageSrc: () => null, openPath: (path) => void copyPath(path) }));
+    body.append(doc);
     return;
   }
-  try {
-    const res = await fetch(src.url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    body.append(h("pre", "", await res.text()));
-  } catch (err) {
-    body.append(h("div", "none", tr("读不出来：{p1}", { p1: (err as Error).message })));
+  if (kind === "csv") {
+    // 整个文件得先进内存才解析得动（readCsv 吃的是完整字节），几十上百 MB 的表格会把标签页拖死。
+    // 上限用解析器自己的那个（CSV_MAX_BYTES），不是另外拍一个数。
+    if (src.size > CSV_MAX_BYTES) {
+      body.append(fallbackCard(src, tr("太大了（{p1}），用本机程序打开", { p1: sizeOf(src.size) })));
+      return;
+    }
+    try {
+      const res = await fetch(src.url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const data = readCsv(bytes, 2000);
+      const table = h("table", "csv-grid");
+      const head = data.rows[0] ?? [];
+      if (head.length) {
+        const thead = h("thead");
+        const headRow = h("tr");
+        for (const c of head) headRow.append(h("th", "", c));
+        thead.append(headRow);
+        table.append(thead);
+        const tbody = h("tbody");
+        for (const row of data.rows.slice(1)) {
+          const trEl = h("tr");
+          for (let i = 0; i < head.length; i++) trEl.append(h("td", "", row[i] ?? ""));
+          tbody.append(trEl);
+        }
+        table.append(tbody);
+      }
+      const wrap = h("div", "csvwrap");
+      wrap.append(table);
+      body.append(wrap);
+      if (data.truncated) body.append(h("div", "none", tr("只显示前 {p1} 行", { p1: fmtNum(data.rows.length) })));
+    } catch (err) {
+      body.append(h("div", "none", tr("读不出来：{p1}", { p1: (err as Error).message })));
+    }
+    return;
   }
+  if (kind === "office") {
+    body.append(fallbackCard(src, tr("这个格式这里不支持，用本机程序打开")));
+    return;
+  }
+  if (kind === "text") {
+    const text = await previewText(body, src);
+    if (text === null) return;
+    body.append(h("pre", "", text));
+    return;
+  }
+  body.append(fallbackCard(src, tr("这个类型在这儿看不了，点「下载」用别的程序打开")));
 }
 
 /** 引用条（P3）：换会话会重建，引用 / 取消引用只重画这一条。 */
@@ -3547,7 +3790,7 @@ function renderMe(): void {
   }
 
   const hero = h("div", "hero");
-  hero.append(avatar(st.nickname, st.nodeId));
+  hero.append(avatar(st.nickname, st.nodeId, undefined, st.avatar));
   const t = h("div", "t");
   t.append(h("div", "n", st.nickname), h("div", "sub", `${st.hostname} · :${st.port}`));
   hero.append(t);
@@ -3582,6 +3825,37 @@ function renderMe(): void {
   nameRow.append(nameInput, saveName);
   nameCard.append(nameRow, h("div", "note", tr("别人看到的就是这个名字；改完会立刻广播一次。")));
   detail.append(nameCard);
+
+  // 头像：12 张里挑一张。第一次启动时 peer 已经自己随机挑了一张并写进 `~/.pi-peer/config.json`，
+  // 这里既能改成指定的一张，也能再抽一次（抽的时候排除当前这张，别点了没反应）。
+  const avCard = h("div", "card");
+  avCard.append(h("h3", "", tr("头像")));
+  const setAvatar = async (id: string): Promise<void> => {
+    if (await setConfig({ avatar: id })) toast(tr("头像换好了"));
+  };
+  const avGrid = h("div", "avgrid");
+  for (const id of AVATAR_IDS) {
+    const pick = h("button", `avpick${id === st.avatar ? " on" : ""}`) as HTMLButtonElement;
+    pick.type = "button";
+    pick.title = tr("用这张头像");
+    pick.setAttribute("aria-label", tr("用这张头像"));
+    const img = document.createElement("img");
+    img.src = avatarUrl(id) ?? "";
+    img.alt = "";
+    img.draggable = false;
+    pick.append(img);
+    pick.addEventListener("click", () => {
+      if (id !== st.avatar) void setAvatar(id);
+    });
+    avGrid.append(pick);
+  }
+  const avActs = h("div", "acts avacts");
+  const luck = h("button", "btn", tr("随机换一个"));
+  luck.type = "button";
+  luck.addEventListener("click", () => void setAvatar(randomAvatarId(st.avatar)));
+  avActs.append(luck);
+  avCard.append(avGrid, avActs, h("div", "note", tr("这张头像会跟着名字一起广播，别人那边看到的就是它。")));
+  detail.append(avCard);
 
   const profile = h("div", "card");
   profile.append(h("h3", "", tr("资料")));
@@ -3673,15 +3947,17 @@ function toggle(name: string, sub: string, on: boolean, run: (on: boolean) => vo
   return row;
 }
 
-async function setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean }): Promise<void> {
+async function setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; avatar?: string }): Promise<boolean> {
   try {
     await postJson("/api/peer/config", patch);
     await loadStatus();
     renderAll();
+    return true;
   } catch (err) {
     toast((err as Error).message);
     await loadStatus();
     renderAll();
+    return false;
   }
 }
 

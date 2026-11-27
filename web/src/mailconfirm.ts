@@ -7,7 +7,7 @@
  * 5 分钟回 `no-ack`，AI 表现成「发不出去」且不知道原因（D264）。
  *
  * 两条规矩：
- *   1. 只有「点了发送」才回 `ok:true`。Esc / 关闭 / 超时 都回（点遮罩不关，D434） `ok:false` + 一句给人看的 `text`。
+ *   1. 只有「点了发送」才回 `ok:true`。Esc / 关闭 / 超时 都回（点遮罩不关，D437） `ok:false` + 一句给人看的 `text`。
  *   2. 排队与回执在 `MailConfirmQueue`（`mail-shared.ts`，无 DOM、可单测）；这里只管画和听键盘。
  */
 import { createEl as el } from "./chat.ts";

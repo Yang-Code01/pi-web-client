@@ -1,7 +1,13 @@
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
 import os from "node:os";
+import { knownAvatar } from "./avatars.ts";
 import { PROTO, VERSION, type PeerConfig } from "./config.ts";
+
+/** `::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台机器，比较前先归一（同 `messages.ts` 的 normAddr）。 */
+function normAddr(addr: string): string {
+  return addr.replace(/^::ffff:/, "").replace(/^::1$/, "127.0.0.1");
+}
 
 /** announce 里带的东西：对端据此渲染在线列表、据此把 `from` 反查成身份（决定 7/10）。 */
 export interface Announce {
@@ -14,6 +20,8 @@ export interface Announce {
   version: string;
   /** `online` / `away`（空闲推导）。旧对端没有这个字段，按 online 算（D299 / P4）。 */
   status?: string;
+  /** 头像 id（见 `avatars.ts`）。旧对端没有这个字段，页面退回首字母头像。 */
+  avatar?: string;
 }
 
 export interface SeenPeer {
@@ -28,6 +36,8 @@ export interface SeenPeer {
   status: string;
   /** 5 分钟内的来源地址集合（决定 7：换网卡 / DHCP 换 IP 不算伪造）。 */
   ips: string[];
+  /** 对端自报的头像 id，没报就是空。 */
+  avatar?: string;
 }
 
 /** 30 秒没 announce 就当离线（announce 间隔 10 秒，允许丢两包）。 */
@@ -131,6 +141,7 @@ export class Discovery extends EventEmitter {
       port: this.cfg.port,
       version: VERSION,
       status: this.localStatus(),
+      avatar: this.cfg.avatar || undefined,
     };
   }
 
@@ -174,6 +185,11 @@ export class Discovery extends EventEmitter {
       lastSeen: Date.now(),
       status: typeof msg.status === "string" && msg.status ? msg.status : "online",
       ips: [...ips],
+      // 头像只有一个来源（对端自己报）：没报就沿用上次知道的，别把已知的头像摸掉。
+      // 报上来的 id 也过一遍名单：UDP / `/peer/hello` 的包是局域网里谁都能发的，
+      // 跟 `loadConfig()` / `noteSeen()` 一个口径——名单外的当没设，否则它会盖掉
+      // 通讯录里已经校验过的头像，还一路透传到页面。
+      avatar: knownAvatar(msg.avatar) || known?.avatar,
     };
     this.seen.set(msg.nodeId, peer);
   }
@@ -182,7 +198,7 @@ export class Discovery extends EventEmitter {
    * 对端把 announce 单播到 http 端口（`/peer/hello`）时也走这里：组播被交换机挡住时，
    * 手动地址那条路就靠它把对端拉进在线表。
    */
-  recordHello(msg: Pick<Announce, "nodeId" | "nickname" | "hostname" | "port"> & { status?: string }, addr: string): void {
+  recordHello(msg: Pick<Announce, "nodeId" | "nickname" | "hostname" | "port"> & { status?: string; avatar?: string }, addr: string): void {
     if (!msg.nodeId || msg.nodeId === this.nodeId) return;
     this.remember(
       {
@@ -194,6 +210,7 @@ export class Discovery extends EventEmitter {
         port: Number(msg.port) || this.cfg.port,
         version: VERSION,
         status: msg.status,
+        avatar: msg.avatar,
       },
       addr,
     );
@@ -221,6 +238,7 @@ export class Discovery extends EventEmitter {
             hostname: String(body.hostname ?? ""),
             port: Number(body.port) || port,
             status: typeof body.status === "string" ? body.status : undefined,
+            avatar: typeof body.avatar === "string" ? body.avatar : undefined,
           },
           addr,
         );
@@ -259,6 +277,18 @@ export class Discovery extends EventEmitter {
 
   byId(nodeId: string): SeenPeer | null {
     return this.seen.get(nodeId) ?? null;
+  }
+
+  /**
+   * 这个地址是不是我们之前从这个 nodeId 收到过包的地址之一？
+   * 比较前归一（`::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台，见 `messages.ts` 的 normAddr）。
+   * 用在「要不要把对端自报的东西落盘」上：在线表是内存里的、30 秒就自愈，落盘的那份不是。
+   */
+  hasAddr(nodeId: string, addr: string): boolean {
+    const peer = this.seen.get(nodeId);
+    if (!peer) return false;
+    const target = normAddr(addr);
+    return peer.ips.some((ip) => normAddr(ip) === target);
   }
 
   /** 手动添加（`ip:port`）：记进配置后立刻单播问候一次，不用等 10 秒。 */

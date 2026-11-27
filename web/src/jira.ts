@@ -2051,7 +2051,7 @@ export class JiraPanel {
     this.repaintDownloads(key, siteUrl);
   }
 
-  /** 面板里的一层小确认（下载冲突、交接前问要不要先下附件）。Esc / 取消按钮 = 取消；点遮罩不关（D434）。 */
+  /** 面板里的一层小确认（下载冲突、交接前问要不要先下附件）。Esc / 取消按钮 = 取消；点遮罩不关（D437）。 */
   private ask(opts: {
     title: string;
     text?: string;

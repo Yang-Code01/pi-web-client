@@ -6,8 +6,9 @@ import { randomUUID } from "node:crypto";
 import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
+import { knownAvatar } from "./avatars.ts";
 import type { Discovery } from "./discovery.ts";
-import { CHUNK, mimeOf } from "./files.ts";
+import { CHUNK, SANDBOX_CSP, inlineType, isHtmlType, mimeOf, typeOf } from "./files.ts";
 import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
 import { MAX_STICKER_BYTES, addSticker, listStickers, removeSticker, stickerCopy, stickerPath } from "./stickers.ts";
@@ -151,6 +152,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
     port: cfg.port,
     version: VERSION,
     status: activity.status(),
+    avatar: cfg.avatar,
   });
 
   return http.createServer(async (req, res) => {
@@ -168,6 +170,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           nickname: cfg.nickname,
           hostname: os.hostname(),
           port: cfg.port,
+          avatar: cfg.avatar,
           status: activity.status(),
           idleMs: activity.idleMs(),
           online: discovery.online(),
@@ -186,23 +189,33 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           if (typeof body[key] === "boolean") cfg[key] = body[key] as boolean;
         }
         // D303：自己的名字也能改。上限 40（公告里塞得下），改完立刻重播一次，别等下一轮。
-        let renamed = false;
+        let changed = false;
         if (typeof body.nickname === "string") {
           const name = body.nickname.trim().replace(/\s+/g, " ").slice(0, 40);
           if (!name) return json(res, 400, { error: "名字不能是空的" });
           if (name !== cfg.nickname) {
             cfg.nickname = name;
-            renamed = true;
+            changed = true;
+          }
+        }
+        // 头像：只认名单里的 id（页面上的 12 张）。名单外的直接拒，别存一个画不出来的值。
+        if (body.avatar !== undefined) {
+          const avatar = knownAvatar(body.avatar);
+          if (!avatar) return json(res, 400, { error: "没有这张头像" });
+          if (avatar !== cfg.avatar) {
+            cfg.avatar = avatar;
+            changed = true;
           }
         }
         saveConfig(cfg);
-        if (renamed) discovery.announce();
+        if (changed) discovery.announce();
         // 隐身→可见：立刻丢一份 announce，别等下一轮定时（10 秒里对方还看不见）。
         // 可见→隐身不发：`announce()` 自己就查 hidden（D99），这里再额外补一刀只会绕开那个守卫。
         if (wasHidden && !cfg.hidden) discovery.announce();
         return json(res, 200, {
           ok: true,
           nickname: cfg.nickname,
+          avatar: cfg.avatar,
           config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
         });
       }
@@ -224,7 +237,26 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       if (url.pathname === "/peer/hello" && req.method === "POST") {
         const body = await readBody(req).catch(() => null);
         if (!body || body.proto !== PROTO || typeof body.nodeId !== "string") return json(res, 400, { error: "bad hello" });
-        if (body.nodeId !== nodeId) discovery.recordHello(body, from);
+        if (body.nodeId !== nodeId) {
+          // 这个地址之前就收到过他的包吗？**必须在 recordHello 之前问**：它会把 `from` 也
+          // 记进 ips，之后再问就永远为真。
+          const knownFrom = discovery.hasAddr(body.nodeId, from);
+          discovery.recordHello(body, from);
+          // 通讯录里已经有的人：顺手把他的头像对齐（announce 每 10 秒来一次，这里几乎不落盘）。
+          // 只对「来源地址对得上」的做：在线表是内存里的、30 秒就自愈，而这里写的是
+          // `peers.json`，落盘之后对方离线也还留着 —— 不核对来源的话，局域网里谁都能
+          // 拿别人的 nodeId 把头像永久改掉。（局域网本身是信任模型，消息 / 文件都不核对
+          // 来源，这里只保证「落盘的那份」不比 announce 更轻信。）
+          if (knownFrom) {
+            relations.noteSeen({
+              nodeId: body.nodeId,
+              nickname: typeof body.nickname === "string" ? body.nickname : undefined,
+              hostname: typeof body.hostname === "string" ? body.hostname : undefined,
+              port: Number(body.port) || undefined,
+              avatar: typeof body.avatar === "string" ? body.avatar : undefined,
+            });
+          }
+        }
         if (cfg.hidden) return json(res, 200, { proto: PROTO, hidden: true });
         return json(res, 200, identity());
       }
@@ -337,13 +369,30 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const at = Number(body?.at);
         const id = String(body?.id ?? "");
         if (!Number.isFinite(at) || !id) return json(res, 400, { error: "缺 at / id" });
+        // 送来的水位是页面看到的「最后一条」，可落盘顺序是**到达**顺序：文件走 begin/chunk/end，
+        // 后到的图可能比它上面那条记录包更早发出（`at` 是发送方的时间）。只按送来的那条打水位，
+        // 那条「更早发出、更晚到达」的就永远落在水位之后 —— 未读徽标卡在 1 清不掉
+        // （2026-11-27 本机「邓亚文」会话：记录包 at=…728610 在前，文件 at=…727599 在后）。
+        // 兜底到这条会话里 `{at,id}` 的最大值：用户打开 / 贴底看了这个会话，尾巴上每一条
+        // 都在眼前（页面按到达顺序画，最后一条就是屏幕上最下面那条）。
+        // 但只能扫到「送来那条」为止：页面算出 last 之后、POST 到达之前可能又落盘了几条，
+        // 那几条用户根本没看到，跟着标已读还会给对方发出错的回执。找不到送来那条
+        // （不在尾部窗口里）就原样采信，不乱推。
+        let mark = { at, id };
+        const tail = history.read(peerId, 2000);
+        const stop = tail.findIndex((entry) => entry.id === id);
+        if (stop >= 0) {
+          for (const entry of tail.slice(0, stop + 1)) {
+            if (afterWatermark(entry, mark.at, mark.id)) mark = { at: entry.at, id: entry.id };
+          }
+        }
         // 水位往前走了才回「已读」：告诉这段里发过消息的人。
         const before = threads.get(peerId);
-        const moved = before.readAt === undefined || afterWatermark({ at, id }, before.readAt, before.readId ?? "");
-        const meta = threads.setRead(peerId, { at, id });
+        const moved = before.readAt === undefined || afterWatermark(mark, before.readAt, before.readId ?? "");
+        const meta = threads.setRead(peerId, mark);
         if (moved) {
           try {
-            messages.sendRead(peerId, { at: before.readAt, id: before.readId }, { at, id });
+            messages.sendRead(peerId, { at: before.readAt, id: before.readId }, mark);
           } catch (err) {
             console.warn(`[peer] 已读回执没发出去：${(err as Error).message}`);
           }
@@ -499,7 +548,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const contacts = relations.list().map((contact) => {
           known.add(contact.nodeId);
           const peer = online.get(contact.nodeId);
-          return { ...contact, quick: contact.quick ?? false, ignored: ignored.has(contact.nodeId), online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0 };
+          return { ...contact, quick: contact.quick ?? false, ignored: ignored.has(contact.nodeId), online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0, avatar: peer?.avatar || contact.avatar || "" };
         });
         for (const peer of onlinePeers) {
           // 忽略名单只过滤由在线表合并出来的无关系行：已有关系的人照样列出来。
@@ -519,6 +568,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             online: true,
             addr: peer.addr,
             livePort: peer.port,
+            avatar: peer.avatar || "",
           });
         }
         return json(res, 200, { ok: true, contacts });
@@ -672,14 +722,17 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         } catch {
           return json(res, 404, { error: "文件已经被挪走或删掉了" });
         }
-        const type = stored.mime || "application/octet-stream";
-        const inline = /^image\//.test(type) || type.startsWith("text/") || type === "application/pdf";
-        res.writeHead(200, {
+        const type = typeOf(stored.name, stored.mime);
+        const head: Record<string, string | number> = {
           "content-type": type,
           "content-length": stat.size,
-          "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(stored.name)}`,
+          "content-disposition": `${inlineType(type) ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(stored.name)}`,
           "cache-control": "private, max-age=60",
-        });
+          "x-content-type-options": "nosniff",
+        };
+        // 别人发来的网页：沙箱里渲染（D302）。没有这一条，页面里点开就是下载或源码。
+        if (isHtmlType(type)) head["content-security-policy"] = SANDBOX_CSP;
+        res.writeHead(200, head);
         return void fs.createReadStream(stored.path).pipe(res);
       }
 
@@ -706,12 +759,16 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         }
         if (!stat.isFile()) return json(res, 400, { error: "这不是一个文件" });
         if (stat.size > 64 * 1024 * 1024) return json(res, 413, { error: "太大了（上限 64 MB）" });
-        res.writeHead(200, {
-          "content-type": mimeOf(file),
+        const raw = mimeOf(file);
+        const rawHead: Record<string, string | number> = {
+          "content-type": raw,
           "content-length": stat.size,
           "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(path.basename(file))}`,
           "cache-control": "no-store",
-        });
+          "x-content-type-options": "nosniff",
+        };
+        if (isHtmlType(raw)) rawHead["content-security-policy"] = SANDBOX_CSP;
+        res.writeHead(200, rawHead);
         return void fs.createReadStream(file).pipe(res);
       }
 

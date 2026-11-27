@@ -438,7 +438,7 @@ try {
   await page.waitForSelector(".scratch-sheet", { state: "hidden", timeout: 10000 });
   await page.locator('[data-act="look"]').click();
   await page.locator('.chip[lang="ja"]').click();
-  await page.keyboard.press("Escape"); // 收起「外观与语言」（点遮罩不再关，D434）
+  await page.keyboard.press("Escape"); // 收起「外观与语言」（点遮罩不再关，D437）
   await page.waitForSelector(".sheet-back", { state: "hidden", timeout: 10000 }).catch(() => {});
   await btn.click();
   await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });

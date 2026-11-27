@@ -35,7 +35,7 @@ export interface SurfaceOpts {
   dim?: "dark";
   /**
    * 只对 `window` 有意义：点遮罩时调它（一般就是关掉这层）。**不写就是点遮罩不关、面板轻弹一下**
-   * （D434）。现在只有图片灯箱写它：看图时点黑底退出最自然，误触也不丢东西。别的窗口别开这个口子。
+   * （D437）。现在只有图片灯箱写它：看图时点黑底退出最自然，误触也不丢东西。别的窗口别开这个口子。
    */
   dismiss?: () => void;
 }
@@ -64,7 +64,7 @@ export function nudgeWindow(root: HTMLElement): void {
   });
 }
 
-/** 遮罩上的点击全局只在这一处处理（D434）：声明了 `dismiss` 的关，其余只轻弹。不拦传播 ——
+/** 遮罩上的点击全局只在这一处处理（D437）：声明了 `dismiss` 的关，其余只轻弹。不拦传播 ——
  *  窗口里开着的下拉 / 菜单靠 document 上的监听「点外面就关」，点遮罩也得让它们收起。 */
 function installBackdrop(): void {
   if (backdropInstalled || typeof document === "undefined") return;

@@ -1,5 +1,6 @@
 import fs from "node:fs";
-import { loadConfig, ensureNodeId, stateDir, statePath, PROTO, VERSION } from "./config.ts";
+import { loadConfig, ensureNodeId, stateDir, statePath, saveConfig, PROTO, VERSION } from "./config.ts";
+import { randomAvatar } from "./avatars.ts";
 import { Discovery } from "./discovery.ts";
 import { createPeerServer, Ignored } from "./http.ts";
 import { History } from "./history.ts";
@@ -14,6 +15,13 @@ import { Groups } from "./groups.ts";
 
 const cfg = loadConfig();
 const nodeId = ensureNodeId();
+
+// 第一次启动（配置里还没头像）就随机挑一张并落盘。**只挑这一次**：头像每重启一次就换一个的话，
+// 别人那边看着莫名其妙，自己也无从认起。之后换头像只走页面上的「我 → 头像」。
+if (!cfg.avatar) {
+  cfg.avatar = randomAvatar();
+  saveConfig(cfg);
+}
 
 const log = (msg: string): void => {
   const line = `${new Date().toISOString()} ${msg}`;

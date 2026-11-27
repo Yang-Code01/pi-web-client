@@ -13,6 +13,8 @@ export interface PeerView {
   port: number;
   lastSeen: number;
   ips: string[];
+  /** 对端自报的头像 id（见 peer/src/avatars.ts），没报就是空。 */
+  avatar?: string;
 }
 
 export interface PeerStatus {
@@ -24,6 +26,8 @@ export interface PeerStatus {
   hostname: string;
   port: number;
   status?: string;
+  /** 我自己的头像 id。 */
+  avatar?: string;
   idleMs?: number;
   online: PeerView[];
   config: { hidden: boolean; pauseFiles: boolean; dnd: boolean; inbox: string; manual: string[] };
@@ -298,9 +302,11 @@ export class PeerHost {
     return this.request("GET", "/threads");
   }
 
-  /** 隐身 / 免打扰 / 暂停收文件：改 peer 的 cfg 并落盘到 `~/.pi-peer/config.json`。 */  setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; nickname?: string }): Promise<{
+  /** 隐身 / 免打扰 / 暂停收文件 / 名字 / 头像：改 peer 的 cfg 并落盘到 `~/.pi-peer/config.json`。 */
+  setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; nickname?: string; avatar?: string }): Promise<{
     ok: boolean;
     nickname?: string;
+    avatar?: string;
     config: { hidden: boolean; dnd: boolean; pauseFiles: boolean; inbox: string; manual: string[] };
   }> {
     return this.request("POST", "/config", patch);

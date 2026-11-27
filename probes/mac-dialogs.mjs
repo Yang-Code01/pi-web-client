@@ -194,7 +194,7 @@ const SKELETONS = [
 ];
 
 /**
- * 点遮罩（D434 / #721）：带遮罩的窗口点遮罩**不关**、面板轻弹一下；只有灯箱照旧关。
+ * 点遮罩（D437 / #721）：带遮罩的窗口点遮罩**不关**、面板轻弹一下；只有灯箱照旧关。
  * 在遮罩上找一个「elementFromPoint 就是遮罩本身」的点，用真鼠标点下去，再看：
  *  - 窗口还在（没被摘掉、也没进 `.mac-leaving` 退场）；
  *  - 面板演了 id 为 `backdrop-nudge` 的 WAAPI 动画（录 Element.prototype.animate 的调用）；
@@ -335,7 +335,7 @@ try {
     }
   }
 
-  // ---- 2b. 点遮罩：灯箱是唯一例外，点黑底就关（D434）。
+  // ---- 2b. 点遮罩：灯箱是唯一例外，点黑底就关（D437）。
   await page.evaluate(() => {
     const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='30'><rect width='40' height='30' fill='red'/></svg>";
     window.dispatchEvent(new CustomEvent("pi-image", { detail: { src: `data:image/svg+xml,${encodeURIComponent(svg)}`, alt: "probe" } }));
@@ -597,7 +597,7 @@ try {
     if (want.shadow === true && r.panel.shadow === "none") fails.push(`${r.label}: 面板没阴影`);
     if (!r.inApp) fails.push(`${r.label}: 没挂在 #app 里 —— 字号缩放时它会跟别人两套尺寸`);
   }
-  // ---- 断言：点遮罩（D434）。
+  // ---- 断言：点遮罩（D437）。
   if (!backdropChecks.length) fails.push("点遮罩一条都没量到 —— 探针自己坏了");
   for (const c of backdropChecks) {
     if (c.err) {
@@ -608,7 +608,7 @@ try {
       if (c.open) fails.push(`点遮罩 ${c.label}: 灯箱应该点外面就关，结果还开着`);
       continue;
     }
-    if (!c.open) fails.push(`点遮罩 ${c.label}: 窗口被关掉了（D434：点遮罩不关）`);
+    if (!c.open) fails.push(`点遮罩 ${c.label}: 窗口被关掉了（D437：点遮罩不关）`);
     if (!c.nudged) fails.push(`点遮罩 ${c.label}: 面板没有轻弹（backdrop-nudge）`);
     if (!c.closeBtn) fails.push(`点遮罩 ${c.label}: 窗口里找不到看得见的 ✕ / 关闭 / 取消`);
   }

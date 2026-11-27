@@ -3712,7 +3712,7 @@ export class App {
     const err = el("div", "err");
     const submit = el("button", "btn primary", tr("继续"));
     submit.type = "submit";
-    // 点遮罩不关（D434）：放弃只走「取消」/ Esc。手机上没有 Esc，所以得有一颗看得见的按钮。
+    // 点遮罩不关（D437）：放弃只走「取消」/ Esc。手机上没有 Esc，所以得有一颗看得见的按钮。
     const cancel = el("button", "btn ghost", tr("取消"));
     cancel.type = "button";
     cancel.onclick = () => {
@@ -9797,7 +9797,7 @@ export class App {
     };
     close.onclick = shut;
     back.append(img, close);
-    // 灯箱是「点遮罩不关」的唯一例外（D434）：看图点黑底退出最自然，误触也不丢东西。
+    // 灯箱是「点遮罩不关」的唯一例外（D437）：看图点黑底退出最自然，误触也不丢东西。
     this.overlay(back, "window", { dim: "dark", dismiss: shut });
     close.focus();
   }
@@ -19970,7 +19970,7 @@ export class App {
 
   /**
    * D232: 长参数 / 子代理步骤详情走一次模态对话框，读完就关。跟口令框同一层（`.modal`，z-index 50），
-   * Esc、右上角 ✕ 都关（点遮罩不关，D434）；正文可滚动，顶部给「复制」。
+   * Esc、右上角 ✕ 都关（点遮罩不关，D437）；正文可滚动，顶部给「复制」。
    */
   private openArgsDialog(opts: { title: string; meta?: string; blocks: { label?: string; text: string }[] }): void {
     this.argsDialogClose?.();

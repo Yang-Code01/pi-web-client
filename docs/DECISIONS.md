@@ -8647,9 +8647,76 @@ tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里�
 写这个测试时踩了两个坑，后来者照做：① **先占端口再起壳**。反过来（壳起来、`/healthz` 通过、再 occupy）是彩票：peer 在脑启动的尾段才 fork，真撞上「端口还是空的」它就直接绑上了，测试变成时红时绿（第一次就 15 s 超时）。② 释放占位端口时不能只 `srv.close()`：桥每 300 ms `connect` 一次，`close()` 要等这些连接收尾，回调可能久久不来（实测卡到外层 300 s 超时被掐）。先 `srv.closeAllConnections()` 再 `close()` 就好；`taskkill` 也带上 `timeout: 15000`，免得 `spawnSync` 把整轮挂死。
 
 红验证：修复前同一路径用等价的 `.scratch` 脚本跑过 —— 释放端口 8 秒后仍 `running:false`、`POST /api/peer/refresh` 回 400 `fetch failed`、状态纹丝不动（两段都红）。`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck` 均 exit 0。
+## D434 内网通预览按类型渲染：网页进沙箱 iframe、md 排成文档、csv 画成表格、影音用浏览器播放器、Office 一键本机打开（用户 2026-11-27「当发送的文件为 html 时候，显示了源代码，没有正常显示。展开一下其他的文件类型」＋截图）
 
+**问题。** 收到的 `report.html` 在预览弹窗里是一屏带高亮的源码，标题栏还写着 `8.0 KB · application/octet-stream`。三个原因叠加：① `peer/src/files.ts` 的 `MIME` 表里根本没有 `.html`（也没有 `.css/.js/.xml/.yaml/.tsv/.webm/.mov/.mkv/.avi/.wav/.doc/.odt/...`），发送时 `mimeOf(name)` 就把它记成了 `application/octet-stream`；② `peer/src/http.ts` 的 `/files` 只信历史里存的那个 mime、不回退按文件名推断，`inline` 判据里也没有 html，于是回成 `attachment` + `octet-stream`，且没有任何 CSP；③ `web/src/peer/main.ts` 的 `fillPreview` 把 `TEXT_EXT`（含 `html?`）一律塞进 `<pre>`，所以就算头对了也还是源码。此外 `bridge/src/index.ts` 的 `/api/peer/file` 只转发 `content-type / content-length / content-disposition`，上游就算给了 CSP 也会被丢掉。
 
-## D434 带遮罩的窗口点遮罩不关，改为面板轻弹一下（用户 2026-11-27「本项目有很多dialog，但是现在点击dialog外部会自动关闭，有时候可能误触。 现在想要去掉这个」，#721）
+**决定。**
+- **MIME 表补全**（`peer/src/files.ts`）：图片 / 文档 / 网页（`html` `htm` `xhtml` `css` `js` `mjs`）/ 压缩包 / Office（docx doc pptx pptm ppsx ppt odt ods odp）/ 影音（mp4 m4v webm mov mkv avi / mp3 m4a wav ogg oga opus flac aac）。新增 `typeOf(name, stored)`：历史里那个值是 `application/octet-stream`（或 `x-zip-compressed`）时按名字重算 —— 老消息因此也一起修好；新增 `inlineType()` 与 `isHtmlType()`。
+- **`/files` 与 `/fs/raw` 的头**：类型走 `typeOf`，`inline` 判据扩到 图片 / 文本 / 影音 / PDF / JSON / XML；html 额外加 `content-security-policy: sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads` 与 `x-content-type-options: nosniff`（和 `bridge/src/preview.ts` 的 `/raw` 同一串）。桥的 `/api/peer/file`、`/api/peer/fs/raw` 把这两个头一起转发。
+- **弹窗按类型画**（`web/src/peer/main.ts` 的 `kindOf`）：`html` → 带 `sandbox`（**不含** `allow-same-origin`）的 `<iframe>`，**只渲染、不给源码切换**（用户当场否掉了「渲染 + 可切源码」那一项）；`image` / `pdf` 不变；`video` / `audio` → `<video|audio controls preload="metadata">`，`error` 时换成出口卡；`markdown` → `renderMarkdown({doc:true, tables:true})` 装进 `.md-doc`；`csv|tsv` → `readCsv` 后画只读 `table.csv-grid`（前 2000 行，截断时给一行提示）；`office` → 出口卡；其余文本仍 `<pre>`。出口卡 = 一句原因 + 「用本机程序打开」（`POST /api/peer/open`，`{id}` 或 `{path}`）+ 收件侧多一个「下载」。
+- meta 行的类型名：mime 是泛型时改写在认出来的类别名（网页 / Markdown 文档 / 表格 / 视频 / 音频 / Office 文档），不再显示 `application/octet-stream`。
+
+**为什么。** ① 网页在内网通里「看」和「读源码」是两种需求，用户要的是前者；给源码切换等于把「别人发来的网页」当成本机文件看，还会让人误以为能改。② 沙箱不带 `allow-same-origin`：这些字节来自别的机器，不能让它读到本站的 cookie / localStorage / 同源接口；脚本仍要能跑，否则统计图、内嵌样式那些页面就废了 —— 和主界面预览面板（D302 那套 iframe）完全一致。③ md / csv 用现成解析器（`web/src/md.ts`、`web/src/sheet/csv.ts`）而不是另写一套轻量渲染：主界面已经在这两个模块上养着表格、代码块、BOM/GBK 嗅探这些细节，内网通再写一份必然会分叉。④ Office 不在这里解析：浏览器里没有 docx/pptx 渲染器，硬做只能出个半成品，而「本机程序打开」用的是收件目录里那份真文件（D209 已有的 `/api/peer/open`）。
+
+**代价。** 桥与 peer 各多一类透传头，`/files` 的类型现在「不完全等于历史里写的」——排查时要以响应头为准。html 在 sandbox 里没有同源身份，页面里那些依赖 `document.cookie` / 相对路径资源的脚本会失效（这是有意的取舍）。影音仍不支持 Range：`/api/peer/file` 没转发 `Range`，看长视频只能整段拉完再拖，跳播体验不如主界面的 `/raw`（后续要补的是这一条）。csv 预览只画前 2000 行（`readCsv(bytes, 2000)`），更大的表请点「用本机程序打开」。
+
+**验证。** 新探针 `node probes/peer-file-preview.mjs <A bridge> <B bridge> <B peer>`（两份测试实例，口令 test）23 项全绿，红验证在改前那一版上跑过：`html 回 text/html` / `带 CSP sandbox` / `is inline` / `带 nosniff` / `预览里有 iframe` 五条红，`application/octet-stream` + `attachment` 原文见上。探针覆盖：后端四个头（html）；A 自己发的五个文件逐个点开 —— html 的 iframe 里 h1 变成「脚本也跑了」（证明沙箱里脚本确实执行）、且弹窗里没有 `pre`、`sandbox` 属性含 `allow-scripts` 不含 `allow-same-origin`；md 出 `.md-doc h1` = 周报 + 表格 + 无 `pre`；csv 出 `table.csv-grid` 且含「苹果 / 3」；docx 出「用本机程序打开」；mp4 出 `video[controls]` 且 `src` 指到 `/api/peer/file`；收件方（B 的页面）html 同样渲染、docx 卡两个按钮是「用本机程序打开 | 下载」。老消息验证：历史里那条 `mime: application/octet-stream` 的 `report.html` 现在回 `text/html;charset=utf-8` + `inline` + CSP 沙箱。人眼看过的截图 `.scratch/visual-html.png` / `visual-md.png` / `visual-csv.png` / `visual-video.png`（网页真的排版了、md 有标题/列表/引用/表格/代码块、csv 有表头、mp4 播放器时长 00:01）。`npm --prefix web run typecheck`（含 i18n-check 4426+5 键 × 3 语言、viewport / layers 守卫、theme/ask-text/paste/quoteblock/longcard 单测）与 `npm --prefix peer run typecheck` 均 exit 0。
+
+**评审后补的两处（PR #718 意见）。** ① CSV 分支原来不查上限就 `arrayBuffer()` 整份读进来再解析，几百 MB 的表格能把标签页拖死 —— 现在先比 `src.size > CSV_MAX_BYTES`（解析器自己的 2 MB，不另拍一个数），超了就换出口卡，文案「太大了（{p1}），用本机程序打开」。② 预览 iframe 的 `sandbox` 属性原来是手写字符串，和 peer 那边的 CSP 各一份 —— 词表搬进叶子文件 `peer/src/sandbox.ts`（`SANDBOX_TOKENS` 与 `SANDBOX_CSP = "sandbox " + tokens`），peer 的 `/files`、`/fs/raw` 与页面的 iframe 都从它引（页面走 `web/src/peer/sandbox.ts` 的转发，跟 `web/src/frames.ts` 引 `bridge/src/frames.ts` 同一个套路）。`bridge/src/preview.ts` 与主界面的 `web/src/app.ts` 里那两份未动 —— 不在这次的范围里，改它们要连带跑主界面预览的探针。探针同步加了「大 csv 换成出口卡而不是表格」「大 csv 的卡上说清楚是太大了」两项（3.2 MB 的真文件），现在 27 项全绿。
+
+## D435 已读水位取「送到那条为止的 `{at,id}` 最大值」，徽标不再卡 1（用户 2026-11-27「如图，我已经读取过内网通信息了，但是头像上的消息记录还有1个」＋截图）
+
+**问题。** 「邓亚文」会话打开着、最下面两条消息都在屏幕上，左侧徽标却一直是红点 1，反复点开、贴底发消息都不消。
+
+**证据链（本机真实数据，不是猜的）。** `~/.pi-peer/history/90255371-….jsonl` 末尾两行：
+
+- `note`，`at=1795746728610`，`id=01a21ad8-8aa2-769c-8d15-7d2c9023e485`（「pi无法通知」，带一张截图卡片）
+- `file`，`at=1795746727599`，`id=01a21ad8-8ab0-7717-a548-4b4c9e8bd186`（`shot-1 (9).png`）—— 在文件里排在后面
+
+`~/.pi-peer/threads.json` 里这个会话的水位是 `{"readAt":1795746727599,"readId":"01a21ad8-8ab0-…b186"}`，也就是**后到的那条文件**。而 `History.threads()` 判未读只比 `at`（`afterWatermark`），`note` 的 `at` 比水位大 1011 ms，于是永远算 1 条未读。水位是单调的、再打也是同一个值，徽标就永远清不掉。
+
+倒置的根源：**落盘顺序是「到达」顺序，`at` 是「发送」时间**。文件消息走 `begin`/`chunk`/`end`，中间那几条记录包先落盘，`end` 才把文件这条追加进历史 —— 它带着自己的 `at`，可以比上一条更早。页面打水位时用的是 `t.last`（到达顺序上最后一条），于是水位落在「比它上面那条还早」的位置上。
+
+**决定。** `peer/src/http.ts` 的 `/threads/read` 在写水位之前，把送来的 `{at,id}` 钳到该会话历史里 `afterWatermark` 意义下的最大值 —— 但**只扫到送来那条为止**：
+
+```ts
+let mark = { at, id };
+const tail = history.read(peerId, 2000);
+const stop = tail.findIndex((entry) => entry.id === id);
+if (stop >= 0) {
+  for (const entry of tail.slice(0, stop + 1)) {
+    if (afterWatermark(entry, mark.at, mark.id)) mark = { at: entry.at, id: entry.id };
+  }
+}
+```
+
+之后 `moved` 判断、`threads.setRead`、回执 `messages.sendRead` 全部用 `mark`。前端 `markRead()` 一行没改。找不到送来那条（不在尾部 2000 行里）就原样采信，不乱推。
+
+**为什么。** ① `/threads/read` 是水位的**唯一**写入口，钳在这里，所有调用点（打开会话、右键「标记为已读」、贴底轮询）和以后别的客户端一起修好。② 用户既然打开/贴底看了这个会话，尾巴上每一条都在眼前（页面按到达顺序画，最后一条就是屏幕上最下面那条），把水位提到「送到那条为止的最大 `at`」不会「替用户吞掉没看的新消息」。③ **边界必须在 `id` 上，不能只管 `at` 大小**：页面算出 `t.last` 之后、POST 到达之前可能又落盘几条，那几条用户根本没看到，钳到全局最大 `at` 会把它们一起标已读，还会由 `sendRead` 给对方发出错的已读回执（代码评审指出、测试已复现）。④ 不改 `t.last` 的语义（仍是到达顺序最后一条）：预览、排序、会话里定位都靠它，改它牵动面大、收益为零。⑤ 不用「打开会话就清零」的粗暴做法：水位还要回执给对方（`sendRead`），需要真实的 `at`/`id`。
+
+**代价。** 每次 `POST /threads/read` 多读一遍该会话的历史（上限 2000 行）。本机 jsonl、只在打开会话/贴底时打，毫秒级。
+
+**验证。** 新测 `bridge/tests/peer-read-watermark.mjs`（自起真 peer + 临时 state）：`threads.json` 预置「已按 `last` 打过水位」，断言 unread === 1（修前红：`失败：等不到「打完水位未读归零」`）→ POST `/threads/read` → 断言 unread 归零 → 追加一条更新的消息断言 unread === 1 → **拿过时的 `{at,id}` 再打一次，断言 unread 仍是 1**（不收紧边界时红：`过时的水位不该吞掉它之后落盘的消息，实际 unread=0`）→ 再打当前水位归零。真实数据副本上也量过：用 `~/.pi-peer` 的拷贝起修好的 peer，`POST /threads/read` 打页面送的那条水位，返回 `meta.readAt=1795746728610 / readId=…e485`（被钳成 note 那条），`unread` 从 1 变 0。回归：`peer-history`、`peer-e2e`（含「已读水位是 `{at,id}` 双键」那一段）、`peer-group-e2e` 全过，`npm --prefix peer run typecheck` exit 0。
+## D436 内网通头像：12 张手绘方块脸，首次随机挑一张后固定，id 随广播同步（用户 2026-11-27「帮我设计内网通，用户头像。然后给内网通加上头像选择功能。然后用户默认自动随机选择一个头像」）
+
+**问题。** 内网通原来没有头像：`web/src/peer/main.ts` 的 `avatar(name, key, online)` 拿 `hueOf(key)`（FNV-1a 哈希）调一个色相、再取昵称首字，画一个圆。于是同一个人在不同的机器上颜色不同（哈希输入是 nodeId，倒是稳定，但换台机器看同一段截图仍要靠昵称认人），也完全谈不上「挑一个」。
+
+**决定。**
+- **素材是手绘 SVG，不是图像模型**：`web/src/peer/avatars.ts` 里 12 个 64×64 的 `<svg>`（`cat bear rabbit penguin dog frog chick whale owl octopus pig dino`），每张按 ip-as-logo 的形体规则来（2 个角色色 + 1 个背景色、4–7 个大形状、左下探头、圆内裁剪、32×32 仍可辨）。ip-as-logo 技能明确禁止 SVG 兜底、要求一流图像模型 —— 这台机器没有任何图像模型（`~/.pi/agent/auth.json` 只有 `github-copilot`，`models.json` 六个 provider 全是 chat），**用户明确同意偏离那条规则**改用 SVG。
+- **id 清单存两份**：`peer/src/avatars.ts` 的 `AVATAR_IDS`（校验用）与 `web/src/peer/avatars.ts` 的 `ART`（渲染用）；`web/peer-avatars-check.mjs` 对账两份 id，挂在 `web` 的 `typecheck` 里。peer 不依赖 web 的构建产物，所以宁可重复这 12 个字符串。
+- **随机只挑一次**：`peer/src/index.ts` 启动时 `if (!cfg.avatar) { cfg.avatar = randomAvatar(); saveConfig(cfg); }`。之后只在「我 → 头像」里手动换（点一张 / 「随机换一个」）。
+- **头像随协议走**：`Announce` / `SeenPeer` 加 `avatar?`，`packet()` 带上；`remember()` 用 `knownAvatar(msg.avatar) || known?.avatar`（名单外的当没报、对端没报就沿用旧的，别把已知的摸掉）；`POST /peer/hello` 在 `recordHello` 之后调新增的 `Relations.noteSeen()` —— **只刷新已有关系记录**的头像，不新建记录、不碰备注名（D303），没变化不落盘（announce 每 10 秒一次）；调它之前先用 `Discovery.hasAddr(nodeId, from)` 确认「这个地址之前就收到过他的包」，否则局域网里谁都能拿别人的 nodeId 把落盘的头像永久改掉（在线表是内存里的、30 秒自愈，落盘那份不是；比较前做 `::ffff:` / `::1` 归一，和 `messages.ts` 的 `normAddr` 同口径，且必须在 `recordHello()` 之前问 —— 它会把 `from` 也记进 ips）。
+- **配置入口**：`PeerConfig.avatar`（`loadConfig()` 用 `knownAvatar()` 过滤，手改出来的野 id 当没设）；`POST /config` 接受 `avatar`，名单外的回 400「没有这张头像」，改名或换头像都会 `discovery.announce()`。桥的 `/api/peer/config` 透传，`PeerView` / `PeerStatus` 多一个 `avatar`。
+- **页面**：`avatar(name, key, online, pic?)` 命中 `avatarUrl()` 就渲染 `<img class="av-img">` 并加 `.pic`，否则维持原来的首字母 + 色相；`renderAll()` 先 `rememberAvatars()` 把 `status.avatar` / `online[]` / `contacts[]` / `threads[]` / 群成员的 id 收进一个 `Map`（气泡、会话行、群成员那几处只拿得到名字和 key，拿不到 nodeId 之外的 id，所以统一在渲染前喂进去）；这个 `Map` 每次重建前先清空，否则对方的 id 变成未知值（老版本客户端 / 我们从名单里删了某个 id）时表里还留着上一张，永远退不回「首字母 + 色相」。「我」页名字卡下面新增「头像」卡：12 个 `.avpick` + 「随机换一个」，`.on` 用 `--accent` 圈出当前那张。
+
+**为什么。** ① 头像必须**全网一致**：同一个人在 A 的会话行、B 的好友列表、群名片里应当是同一张脸，所以 id 跟着 announce 走，而不是每台机器按名字哈希各画各的。② 随机**只挑一次**：每次重启换一张脸，别人认不出、自己也无从认起。③ `noteSeen` 不 `touch()`：`touch()` 会建记录，广播一次就把路过的人塞进通讯录，和「移除」之后又被合并回来的老毛病同源（D234）。④ 头像不写进消息历史：那是「人对我说过什么」，头像属于「他是谁」，跟 noteId/昵称一个层级。
+
+**代价。** 12 个 id 硬编码在两端，加头像要同时改两处（守卫只对账 id，不校验画法）；旧关系记录在对方下次 hello 之前没有头像，页面回退首字母——announce 10 秒一次，最多一轮就补上；12 张 data URL 内联进页面（源码约 7.7 KB，gzip 前）。
+
+**验证。** `web/peer-avatars-check.mjs` 进 typecheck；`probes/peer-avatars.mjs` 18 项端到端（两份测试实例：A 默认随机且落盘、通讯录/会话行/气泡都带对方头像、页面里 `.av-img` 真的解码且仍是 34×34、 「我」页 12 张全解码且恰好一张 `.on`、点一张就换且 B 刷新后看到、无 pageerror），全过。peer 侧另有 8 项冒烟（首启随机、名单外 400、改完重启不变），以及 `hasAddr` 的 5 项单测（见过的地址放行 / 别的地址挡 / 归一后同一个放行 / 没握过手的 nodeId 挡）；「从另一个源地址冒用」在这台机器上没法端到端复现（绑 127.0.0.2 发包 ETIMEDOUT），挡的那一半由单测覆盖。三份 typecheck 均 exit 0。
+
+## D437 带遮罩的窗口点遮罩不关，改为面板轻弹一下（用户 2026-11-27「本项目有很多dialog，但是现在点击dialog外部会自动关闭，有时候可能误触。 现在想要去掉这个」，#721）
 
 **症状。** 几乎每扇带遮罩的窗口（设置、产物、Everything、文件管理、笔记、新会话、分支、Jira、邮件确认……约 50 处）都写着 `back.onclick = (e) => { if (e.target === back) close(); }` 或 `onmousedown` 版本。手一滑点到窗口外面，填了一半的表单、选了一半的列表就没了；邮件确认框更是把「点外面」当成「不发」。
 
