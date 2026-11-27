@@ -273,10 +273,10 @@ async function sampling() {
       "runtime.stats 广播",
     );
     check(pushed.running === 2 && pushed.totalBytes === stats.totalBytes, "GC tick 上广播的也是同一份数字");
-    // 测试缝不上界面：`abortGraceMs` 是 watchdog 的注入点，`runtime.stats` 只发两个可改的阈值。
+    // 测试缝不上界面：`abortGraceMs` 是 watchdog 的注入点，`runtime.stats` 只发三个可改的阈值（D430）。
     check(
-      pushed.lifecycle && Object.keys(pushed.lifecycle).sort().join(",") === "idleMs,watermarkBytes",
-      `lifecycle 只带 idleMs / watermarkBytes（${JSON.stringify(pushed.lifecycle)}）`,
+      pushed.lifecycle && Object.keys(pushed.lifecycle).sort().join(",") === "archiveIdleMs,idleMs,watermarkBytes",
+      `lifecycle 只带 idleMs / archiveIdleMs / watermarkBytes（${JSON.stringify(pushed.lifecycle)}）`,
     );
     check("abortGraceMs" in (pushed.lifecycle ?? {}) === false, "abortGraceMs 没有跟着发到界面上");
     const samples = bridge.samples();

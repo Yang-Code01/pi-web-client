@@ -2704,12 +2704,13 @@ export class App {
           sessions: Array.isArray(msg.sessions) ? (msg.sessions as RuntimeStats["sessions"]) : [],
           lifecycle: {
             idleMs: Number(msg.lifecycle?.idleMs ?? 0),
+            archiveIdleMs: Number(msg.lifecycle?.archiveIdleMs ?? 0),
             watermarkBytes: Number(msg.lifecycle?.watermarkBytes ?? 0),
           },
         };
         // D120 / #78：`saved` 只在回答一次阈值写入时出现。
         if (msg.saved === true) this.flashSettings(tr("已保存：空闲阈值下一个 tick 就生效，不用重启桥。"));
-        if (msg.saved === false) this.flashSettings(tr("没有保存：阈值必须是大于 0 的数。"), true);
+        if (msg.saved === false) this.flashSettings(tr("没有保存：空闲与水位必须是大于 0 的数；归档后释放可以是 0（不释放）。"), true);
         // 回答自己的写入一定要重画；每分钟一次的广播则不能把正在输入的阈值抢掉（换 DOM 就是丢光标、丢草稿）。
         if (this.sheetKind === "settings" && this.settingsTab === "runtime" && (msg.saved !== undefined || !runtimeThresholdFocused())) this.paintSettings();
         break;
@@ -14834,6 +14835,14 @@ export class App {
         { label: tr("运行中 pi"), value: String(stats.running), sub: tr("{p1} 个在跑一轮", { p1: busy }) },
         { label: tr("占用内存"), value: cost || "—", sub: tr("桥拉起的子进程合计"), cls: stats.unavailable ? "warn" : "" },
         { label: tr("空闲休眠"), value: tr("{p1} 分钟", { p1: plainNumber(stats.lifecycle.idleMs / MINUTE_MS) }), sub: tr("闲够了就收") },
+        {
+          label: tr("归档后释放"),
+          value:
+            stats.lifecycle.archiveIdleMs > 0
+              ? tr("{p1} 分钟", { p1: plainNumber(stats.lifecycle.archiveIdleMs / MINUTE_MS) })
+              : tr("不释放"),
+          sub: tr("归档够久就放手"),
+        },
         { label: tr("内存水位"), value: `${plainNumber(stats.lifecycle.watermarkBytes / GB)} GB`, sub: tr("超了先收最久没用的") },
       ]),
     );
@@ -14903,9 +14912,11 @@ export class App {
   }
 
   /**
-   * D120 / #78：两个阈值就地可改。写了就落 `<state>/lifecycle.json`（重启桥也还在），空闲那个
-   * 下一个 tick 就按新值判定，水位等下一次采样。输入框里的值只在非注焦时才被重写成桥报的值，
+   * D120 / #78：三个阈值就地可改。写了就落 `<state>/lifecycle.json`（重启桥也还在），空闲与归档
+   * 那两个下一个 tick 就按新值判定，水位等下一次采样。输入框里的值只在非注焦时才被重写成桥报的值，
    * 否则一次 tick 广播就能把输入草稿抹掉。
+   *
+   * D430 的归档那一行特殊：`0` 是合法的，含义是「归档后不释放」。前两行仍然是大于 0 的数。
    */
   private runtimeThresholds(stats: RuntimeStats): HTMLElement {
     const box = el("div", "runtime-thresholds");
@@ -14922,21 +14933,30 @@ export class App {
       return input;
     };
     const idle = row("idle", tr("空闲多久休眠"), tr("分钟"), stats.lifecycle.idleMs / MINUTE_MS);
+    const archive = row("archive", tr("归档后多久释放"), tr("分钟"), stats.lifecycle.archiveIdleMs / MINUTE_MS);
     const limit = row("watermark", tr("内存水位"), "GB", stats.lifecycle.watermarkBytes / GB);
     const foot = el("div", "runtime-thresholds-foot");
-    foot.append(el("div", "hint", tr("空闲阈值下一个 tick 就生效；内存水位等下一次采样（60 秒一次）。两个值都写进桥的状态目录，重启桥也还在。")));
+    foot.append(
+      el(
+        "div",
+        "hint",
+        tr("空闲与归档的阈值下一个 tick 就生效；内存水位等下一次采样（60 秒一次）。三个值都写进桥的状态目录，重启桥也还在。归档后释放写 0 就是不释放。"),
+      ),
+    );
     const save = el("button", "btn primary", tr("保存阈值")) as HTMLButtonElement;
     save.onclick = () => {
       const idleMs = thresholdOf(idle.value, MINUTE_MS);
+      const archiveIdleMs = thresholdOf(archive.value, MINUTE_MS, { allowZero: true });
       const watermarkBytes = thresholdOf(limit.value, GB);
-      if (idleMs === null || watermarkBytes === null) {
+      if (idleMs === null || archiveIdleMs === null || watermarkBytes === null) {
         // 旧值就是桥报的那个：拒绝之后屏幕上也不能留一个假的「已生效」。
-        this.flashSettings(tr("没有保存：阈值必须是大于 0 的数。"), true);
+        this.flashSettings(tr("没有保存：空闲与水位必须是大于 0 的数；归档后释放可以是 0（不释放）。"), true);
         idle.value = plainNumber(stats.lifecycle.idleMs / MINUTE_MS);
+        archive.value = plainNumber(stats.lifecycle.archiveIdleMs / MINUTE_MS);
         limit.value = plainNumber(stats.lifecycle.watermarkBytes / GB);
         return;
       }
-      this.act(() => this.socket.send({ type: "runtime.settings", idleMs, watermarkBytes }));
+      this.act(() => this.socket.send({ type: "runtime.settings", idleMs, archiveIdleMs, watermarkBytes }));
     };
     foot.append(save);
     box.append(foot);
@@ -24112,10 +24132,12 @@ const GB = 1024 ** 3;
  * 面板上的一个阈值输入（单位 → 毫秒 / 字节）。空、非数字、0、负数都不算数：它们会把阈值变成
  * 「立刻回收」，比旧值糟糕得多。
  */
-function thresholdOf(text: string, unit: number): number | null {
+function thresholdOf(text: string, unit: number, opts: { allowZero?: boolean } = {}): number | null {
   const raw = text.trim();
   const value = Number(raw);
-  return raw !== "" && Number.isFinite(value) && value > 0 ? Math.round(value * unit) : null;
+  if (raw === "" || !Number.isFinite(value)) return null;
+  if (opts.allowZero ? value < 0 : value <= 0) return null;
+  return Math.round(value * unit);
 }
 
 /** 输入框里显示的当前值：没有必要的小数就不写（30 / 2.5，而不是 30.00）。 */

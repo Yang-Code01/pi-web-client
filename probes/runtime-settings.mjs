@@ -1,12 +1,14 @@
 /**
- * Probe: #78 / D120 —— 设置 → 运行时：两个阈值能改，而且改了不会丢。
+ * Probe: #78 / D120 / D430 —— 设置 → 运行时：三个阈值能改，而且改了不会丢。
  *
- * 桩桥 + 真 Chromium。断言五件事：
- *   1. 两个输入框带当前值与单位（桩桥发的是 30 分钟 / 2.5 GB，真默认值见 D372）；
- *   2. 改值 → 点保存 → 页面真的发出 `runtime.settings`，没改的那个原样带回去（可只传其一）；
+ * 桩桥 + 真 Chromium。断言六件事：
+ *   1. 三个输入框带当前值与单位（桩桥发的是 30 分钟 / 5 分钟 / 2.5 GB，真默认值见 D372）；
+ *   2. 改值 → 点保存 → 页面真的发出 `runtime.settings`，没改的那两个原样带回去（可只传其一）；
  *   3. 桥回 `runtime.stats` + `saved: true` → 输入框跟着变成新值，并有一条「已保存」提示；
  *   4. 非法值（0 / 负数 / 非数字 / 空）被界面拦下：一条消息都不发，写红提示，输入框回到旧值；
- *   5. 三语：en / ja 下新文案都翻过，控制台没有 `[i18n] missing` 警告。
+ *      归档那一行不同：0 合法（= 不释放），负数与非数字才拦；
+ *   5. 归档那一行写 0 → 帧里就是 0，面板照收，不报红；
+ *   6. 三语：en / ja 下新文案都翻过，控制台没有 `[i18n] missing` 警告。
  *
  * Run: npm --prefix web run build && node probes/runtime-settings.mjs
  */
@@ -43,16 +45,17 @@ const MIN = 60_000;
 const GB = 1024 * 1024 * 1024;
 /** 桩桥自己发的阈值，**不是**代码默认值（真默认见 D372）：探针验的是换算与保存，不是默认值。 */
 const STUB_IDLE_MS = 30 * MIN;
+const STUB_ARCHIVE_MS = 5 * MIN;
 const STUB_WATERMARK_BYTES = 2.5 * GB;
 
-/** The frame the bridge would send: `runtime.stats` with the thresholds in force (#78). */
-const statsFrame = ({ idleMs = STUB_IDLE_MS, watermarkBytes = STUB_WATERMARK_BYTES, saved } = {}) => ({
+/** The frame the bridge would send: `runtime.stats` with the thresholds in force (#78 / D430). */
+const statsFrame = ({ idleMs = STUB_IDLE_MS, archiveIdleMs = STUB_ARCHIVE_MS, watermarkBytes = STUB_WATERMARK_BYTES, saved } = {}) => ({
   type: "runtime.stats",
   running: 0,
   totalBytes: null,
   unavailable: false,
   sessions: [],
-  lifecycle: { idleMs, watermarkBytes },
+  lifecycle: { idleMs, archiveIdleMs, watermarkBytes },
   ...(saved === undefined ? {} : { saved }),
 });
 
@@ -107,7 +110,7 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 /** What the stub bridge holds, and every `runtime.settings` the page sent it. */
-const world = { idleMs: STUB_IDLE_MS, watermarkBytes: STUB_WATERMARK_BYTES, writes: [] };
+const world = { idleMs: STUB_IDLE_MS, archiveIdleMs: STUB_ARCHIVE_MS, watermarkBytes: STUB_WATERMARK_BYTES, writes: [] };
 wss.on("connection", (ws) => {
   const send = (msg) => ws.send(JSON.stringify(msg));
   ws.on("message", (raw) => {
@@ -127,14 +130,16 @@ wss.on("connection", (ws) => {
       return;
     }
     if (msg.type === "runtime.stats") {
-      send(statsFrame({ idleMs: world.idleMs, watermarkBytes: world.watermarkBytes }));
+      send(statsFrame({ idleMs: world.idleMs, archiveIdleMs: world.archiveIdleMs, watermarkBytes: world.watermarkBytes }));
       return;
     }
     if (msg.type === "runtime.settings") {
       world.writes.push(msg);
       if (typeof msg.idleMs === "number" && msg.idleMs > 0) world.idleMs = msg.idleMs;
+      // 归档那一行 0 合法（D430：0 = 不释放），所以门槛与另两个不同。
+      if (typeof msg.archiveIdleMs === "number" && msg.archiveIdleMs >= 0) world.archiveIdleMs = msg.archiveIdleMs;
       if (typeof msg.watermarkBytes === "number" && msg.watermarkBytes > 0) world.watermarkBytes = msg.watermarkBytes;
-      send(statsFrame({ idleMs: world.idleMs, watermarkBytes: world.watermarkBytes, saved: true }));
+      send(statsFrame({ idleMs: world.idleMs, archiveIdleMs: world.archiveIdleMs, watermarkBytes: world.watermarkBytes, saved: true }));
     }
   });
   send({ type: "hello", me: ME, sessions: SESSIONS, manage: MANAGE, trash: [], tunnel: TUNNEL });
@@ -175,6 +180,7 @@ async function openRuntime(locale, tabName) {
 }
 
 const idleInput = (page) => page.locator(".runtime-threshold.idle input");
+const archiveInput = (page) => page.locator(".runtime-threshold.archive input");
 const watermarkInput = (page) => page.locator(".runtime-threshold.watermark input");
 const saveButton = (page) => page.locator(".runtime-thresholds button", { hasText: /保存阈值|Save thresholds|しきい値を保存/ });
 const rowText = (page, cls) => page.locator(`.runtime-threshold.${cls}`).innerText();
@@ -191,10 +197,13 @@ try {
 
   // 1) 当前值 + 单位 --------------------------------------------------------
   ok((await idleInput(zh.page).inputValue()) === "30", `空闲阈值输入框带当前值（${await idleInput(zh.page).inputValue()}）`);
+  ok((await archiveInput(zh.page).inputValue()) === "5", `归档阈值输入框带当前值（${await archiveInput(zh.page).inputValue()}）`);
   ok((await watermarkInput(zh.page).inputValue()) === "2.5", `水位输入框带当前值（${await watermarkInput(zh.page).inputValue()}）`);
   const idleRow = await rowText(zh.page, "idle");
+  const archiveRow = await rowText(zh.page, "archive");
   const watermarkRow = await rowText(zh.page, "watermark");
   ok(/分钟/.test(idleRow), `空闲那一行带单位「分钟」（${idleRow.replace(/\n/g, " ")}）`);
+  ok(/归档/.test(archiveRow) && /分钟/.test(archiveRow), `归档那一行带单位「分钟」（${archiveRow.replace(/\n/g, " ")}）`);
   ok(/GB/.test(watermarkRow), `水位那一行带单位「GB」（${watermarkRow.replace(/\n/g, " ")}）`);
   await zh.page.screenshot({ path: path.join(SHOTS, "runtime-settings-zh.png") });
 
@@ -204,6 +213,7 @@ try {
   ok(world.writes.length === 1, `点保存发了一条 runtime.settings（${world.writes.length}）`);
   const sent = world.writes[0] ?? {};
   ok(sent.type === "runtime.settings" && sent.idleMs === 5 * MIN, `空闲阈值按分钟换成毫秒（${sent.idleMs}）`);
+  ok(sent.archiveIdleMs === STUB_ARCHIVE_MS, `没改的归档阈值原样带回去（${sent.archiveIdleMs}）`);
   ok(sent.watermarkBytes === STUB_WATERMARK_BYTES, `没改的水位原样带回去（${sent.watermarkBytes}）`);
 
   // 3) 桥回 saved: true → 面板跟着变成新值 + 提示 --------------------------
@@ -217,12 +227,23 @@ try {
   ok(world.writes[0]?.watermarkBytes === 1.5 * GB, `水位按 GB 换成字节（${world.writes[0]?.watermarkBytes}）`);
   ok(world.writes[0]?.idleMs === 5 * MIN, `只改了水位，空闲阈值照旧带回去（${world.writes[0]?.idleMs}）`);
 
-  // 4) 非法值被界面拦下：一条消息都不发，写红提示，回到旧值 -----------------
+  // 4) 归档那一行：0 合法（= 不释放），帧里就该是 0 -----------------------
+  world.writes.length = 0;
+  await write(zh.page, "archive", "0");
+  ok(world.writes.length === 1, `归档阈值写 0 也照发（${world.writes.length}）`);
+  ok(world.writes[0]?.archiveIdleMs === 0, `归档阈值 0 原样发出去（${world.writes[0]?.archiveIdleMs}）`);
+  ok((await archiveInput(zh.page).inputValue()) === "0", `桥回了新值之后归档框就是 0（${await archiveInput(zh.page).inputValue()}）`);
+  const zeroNote = await zh.page.locator(".settings-note.bad").count();
+  ok(zeroNote === 0, "归档阈值写 0 不会被拦下来报红");
+
+  // 5) 非法值被界面拦下：一条消息都不发，写红提示，回到旧值 -----------------
   for (const [what, cls, value, expect] of [
-    ["0", "idle", "0", "5"],
-    ["负数", "idle", "-3", "5"],
-    ["非数字", "watermark", "abc", "1.5"],
-    ["空", "watermark", "", "1.5"],
+    ["空闲的 0", "idle", "0", "5"],
+    ["空闲的负数", "idle", "-3", "5"],
+    ["水位的非数字", "watermark", "abc", "1.5"],
+    ["水位的空", "watermark", "", "1.5"],
+    ["归档的负数", "archive", "-1", "0"],
+    ["归档的非数字", "archive", "abc", "0"],
   ]) {
     world.writes.length = 0;
     await write(zh.page, cls, value);
@@ -230,12 +251,12 @@ try {
     const shown = await zh.page.locator(`.runtime-threshold.${cls} input`).inputValue();
     ok(shown === expect, `${what} 被拒后输入框回到旧值（${shown}）`);
     const badNote = await zh.page.locator(".settings-note.bad").innerText().catch(() => "");
-    ok(/大于 0|正数/.test(badNote), `${what} 被拒时有红提示（${badNote}）`);
+    ok(/大于 0|0（不释放）/.test(badNote), `${what} 被拒时有红提示（${badNote}）`);
   }
   await zh.page.screenshot({ path: path.join(SHOTS, "runtime-settings-bad.png") });
   ok(zh.missing.length === 0, `zh 没有缺键警告（${JSON.stringify(zh.missing)}）`);
 
-  // 5) 三语 ---------------------------------------------------------------
+  // 6) 三语 ---------------------------------------------------------------
   for (const [locale, tab, label] of [
     ["en-US", "Runtime", /Sleep after idling/],
     ["ja-JP", "ランタイム", /アイドルで休止するまで/],
@@ -243,6 +264,7 @@ try {
     const view = await openRuntime(locale, tab);
     const text = await view.page.locator(".runtime-thresholds").innerText();
     ok(label.test(text), `${locale} 的标签翻过（${text.replace(/\n/g, " ").slice(0, 60)}）`);
+    ok((await view.page.locator(".runtime-threshold.archive").count()) === 1, `${locale} 也有归档那一行`);
     ok(view.missing.length === 0, `${locale} 没有缺键警告（${JSON.stringify(view.missing)}）`);
     await view.page.screenshot({ path: path.join(SHOTS, `runtime-settings-${locale.split("-")[0]}.png`) });
     await view.page.context().close();

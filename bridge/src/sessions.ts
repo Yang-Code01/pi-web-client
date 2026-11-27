@@ -3454,6 +3454,8 @@ export class Session extends EventEmitter {
 export class SessionManager extends EventEmitter {
   private sessions = new Map<string, Session>();
   private gcTimer: NodeJS.Timeout | null = null;
+  /** 有没有页面正在看某条会话（startGc 传进来的那条判断，D430 也用它）。 */
+  private isWatched: (id: string) => boolean = () => false;
   private cache: { at: number; metas: SessionFileMeta[] } | null = null;
   private modelCache: { at: number; list: ModelInfo[] } | null = null;
   /** D150：`-ne` 的快速清单与带扩展的完整清单各自缓存、各自去重。 */
@@ -4583,6 +4585,8 @@ export class SessionManager extends EventEmitter {
     }
     await session.pinPermission();
     await session.startLive({ resume: Boolean(session.state.file), ws: this.workspaces.groupFor(id, session.state.cwd ?? "", this.place()) });
+    // 用上了就重新计时（D430）：否则下一 tick 还会觉得它「归档已久」，刚起来的 pi 立刻又被收掉。
+    this.manage.touchArchived(id, Date.now());
     this.emitState(session.state);
     if (session.state.origin !== "web") {
       // pi's TUI reads the session file once at startup: an open terminal will not see what the web adds.
@@ -5024,7 +5028,7 @@ export class SessionManager extends EventEmitter {
       sessions,
       // Only what the panel shows and may edit. The full `Lifecycle` also carries `abortGraceMs`,
       // which is a test seam (D120 §3): it is not sent to the page.
-      lifecycle: { idleMs: cfg.idleMs, watermarkBytes: cfg.watermarkBytes },
+      lifecycle: { idleMs: cfg.idleMs, archiveIdleMs: cfg.archiveIdleMs, watermarkBytes: cfg.watermarkBytes },
     };
   }
 
@@ -5056,6 +5060,7 @@ export class SessionManager extends EventEmitter {
    * nobody watches are dropped after a while: each one holds its transcript and a 400ms file poll.
    */
   startGc(isWatched: (id: string) => boolean = () => false): void {
+    this.isWatched = isWatched;
     if (this.gcTimer) return;
     this.sweepLocks();
     this.gcTimer = setInterval(() => {
@@ -5070,12 +5075,17 @@ export class SessionManager extends EventEmitter {
         // A web-born session with no file yet only exists in memory; evicting it would lose it.
         if (!s.state.file) continue;
         if (isWatched(id) || s.idleFor() < idleEvictionAgeMs()) continue;
-        s.stopTail();
-        s.removeAllListeners();
-        this.sessions.delete(id);
+        this.dropFromMemory(id, s);
       }
     }, gcTickMs());
     this.gcTimer.unref?.();
+  }
+
+  /** 把一条会话从桥里拿掉：停文件轮询、断开监听、从表里删掉（旧式 10 分钟 GC 与 D430 共用）。 */
+  private dropFromMemory(id: string, s: Session): void {
+    s.stopTail();
+    s.removeAllListeners();
+    this.sessions.delete(id);
   }
 
   /**
@@ -5090,6 +5100,9 @@ export class SessionManager extends EventEmitter {
     const cfg = lifecycle();
     this.endStuckRuns(cfg);
     this.sleepIdleSessions(cfg);
+    // 归档后释放（D430）：插在空闲之后、采样之前 —— 归档比空闲更确定，但奔跑的一轮、
+    // 挂着的审批仍按各自的规则，采样那一套不该先花力气去量一条马上要走的会话。
+    await this.releaseArchivedSessions(cfg);
     const stats = await this.runtimeStats();
     this.sleepOverCap(cfg, stats);
     this.emit("runtime", stats);
@@ -5127,6 +5140,42 @@ export class SessionManager extends EventEmitter {
       const idleMs = s.state.scratch ? cfg.scratchIdleMs : cfg.idleMs;
       if (idleMs > 0 && s.idleFor() > idleMs) void s.sleep();
     }
+  }
+
+  /**
+   * 归档后释放（D430）：归档过、安静超过 `cfg.archiveIdleMs` 的会话睡掉，并把桥内的会话对象
+   * 交还给内存 —— 归档就是用户说「收起来」的时候，比空闲更确定，还少一份转录 + 400ms 文件轮询。
+   * 三件事不做：奔跑的一轮不收（`sleep()` 自己不收，醒来后再问一次）、挂着的审批/问卷不收
+   * （交给人，120 分钟那条规则管）、有人正看着的只睡不丢对象（页面还能翻到它的转录）。
+   * 没有会话文件的（页面里新建、还没落盘）进程收掉、对象留着：丢了就真的什么都没有了。
+   */
+  private async releaseArchivedSessions(cfg: Lifecycle): Promise<void> {
+    if (cfg.archiveIdleMs <= 0) return;
+    const now = Date.now();
+    const due: Session[] = [];
+    for (const [id, s] of this.sessions) {
+      if (s.state.scratch || !this.manage.isArchived(id)) continue;
+      const since = this.manage.archivedSince(id);
+      // 启动补写之前不会走到这里；没有戳就等于没有倒计时，别拿随便一个时间当起点。
+      if (since === undefined) continue;
+      if (now - since < cfg.archiveIdleMs) continue;
+      if (s.approvals.size || s.asks.size) continue;
+      if (s.state.running) continue;
+      due.push(s);
+    }
+    await Promise.all(due.map((s) => this.releaseArchived(s)));
+  }
+
+  /** 睡掉一条到期的归档会话，然后把对象交还给内存（D430）。 */
+  private async releaseArchived(s: Session): Promise<void> {
+    const id = s.state.id;
+    await s.sleep();
+    // 睡的这几百毫秒里页面可能刚把它叫醒，或者又订阅了：那就留着，别把正在用的对象从手里抽走。
+    if (this.sessions.get(id) !== s) return;
+    if (s.live || s.state.running || s.approvals.size || s.asks.size) return;
+    if (!s.state.file) return;
+    if (this.isWatched(id)) return;
+    this.dropFromMemory(id, s);
   }
 
   /**
