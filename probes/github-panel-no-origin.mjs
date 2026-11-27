@@ -129,7 +129,10 @@ try {
 
   const stateRepos = [];
   page.on("response", async (r) => {
-    if (r.url().includes("/api/github/state")) stateRepos.push((await r.json().catch(() => ({})))?.repo ?? null);
+    // 只认 200 + ok:true 的回答：错误响应（401/500、非 JSON）记成「坏」，不能被当成「repo 是空的」而假绿。
+    if (!r.url().includes("/api/github/state")) return;
+    const data = await r.json().catch(() => null);
+    stateRepos.push(r.ok && data?.ok === true ? { repo: data.repo ?? null } : { bad: r.status });
   });
   const pullAsks = [];
   await page.route("**/api/github/card*", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, pull: row }) }));
@@ -161,7 +164,7 @@ try {
   await page.locator(".ghp").waitFor({ timeout: 15000 });
   await until(async () => (await page.locator(".ghp-title").textContent())?.includes("#18131"), 15000, "detail loaded");
 
-  check("前提：会话目录没有 origin（state.repo 是空的）", stateRepos.length > 0 && stateRepos.every((r) => !r), JSON.stringify(stateRepos));
+  check("前提：会话目录没有 origin（state.repo 是空的）", stateRepos.length > 0 && stateRepos.every((s) => !("bad" in s) && !s.repo), JSON.stringify(stateRepos));
   check("详情按卡上的仓库去取", pullAsks.includes("acme/widgets"), JSON.stringify(pullAsks));
   const bodyText = (await page.locator(".ghp").textContent()) ?? "";
   check("不再说「这个会话的目录没有 GitHub 远端」", !bodyText.includes("没有 GitHub 远端"), "");
@@ -174,7 +177,8 @@ try {
   );
   await page.locator(".ghp .ghp-back").click();
   await until(async () => (await page.locator(".ghp-title").textContent())?.includes("我的 PR"), 10000, "list view");
-  await sleep(300);
+  // 「我的 PR」在 pulls 请求回来前就画了，得等那一行真的落地再断言（等不到就让下面的 check 报红）。
+  await until(async () => ((await page.locator(".ghp").textContent()) ?? "").includes("期間一括変更時"), 10000, "list row").catch(() => {});
   const listText = (await page.locator(".ghp").textContent()) ?? "";
   check("列表页也不说「没有远端」", !listText.includes("没有 GitHub 远端"), "");
   check("列表页有那条 PR", listText.includes("期間一括変更時"), "");
