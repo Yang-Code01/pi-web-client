@@ -8589,7 +8589,19 @@ tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里�
 
 **验证。** `bridge/tests/session-lifecycle.mjs` 新增 D1–D9 九段（`PI_WEB_ARCHIVE_IDLE_MS=1500`、`PI_WEB_GC_TICK_MS=1000`，全量 42 项 ok）：到点前不释放、到点后 stub 记录 exit 且桥里不再有这条会话；重新订阅看到的是从文件读的转录（该桩的会话文件只有表头，正好证明桥的那份没了）；有人在看只睡不丢（不重启 pi、还是同一份文件）；`0` 关掉；窗口内取消归档后不再释放；running 不打断、abort 后下一 tick 收；挂审批不睡不作废；无文件的会话只杀进程、对象留着；桥重启后 `archivedAt` 原值不变；手写一份没有字段的旧 `manage.json`（`archived: ["legacy-archived"]`），开机后 `archivedAt["legacy-archived"]` 就是启动时刻且已写回磁盘。页面侧 `probes/runtime-settings.mjs` 第三行 37 项全绿（含「归档写 0 照发、不报红」「归档写 -1 / abc 被拦下」「en / ja 都翻过」）。
 
-## D431 内网通的消息菜单按真实尺寸落位：与主界面共用 `menuplace.ts`（用户 2026-11-27「如图 内网通给回复点赞穿模」＋截图）
+## D431 「交给 agent」的预览给整段：不截断，弹层贴内容（2026-11-27）
+
+**问题。** `HandoffSheet` 的预览写的是 `opts.text.slice(0, 600) + "…"`：一份两条意见的评审交给 agent 时，第二条只剩半句 —— 用户看到的就是「内容显示不全」，而且被切掉的那截正好是他要读的正文。同一次还量到弹层被撑成 1080×840：`.handoff-sheet` 只写了 `width`，宽高都落到了 `settings-console.css` 里后加载的 `.st-console { width: min(1080px, 100%); height: min(840px, 100%) }` 上（同权重、后者在后），几行字的弹层底下空一大块，反倒让「到底还有没有」更难看懂。
+
+**决定。** 预览放整段正文（`el("pre", "handoff-preview", opts.text)`），宽高全交给 CSS：预览框自己封顶 `calc(var(--vh1) * 56)` + `overflow: auto`；弹层 `.st-console.handoff-sheet { width: min(560px, 94%); height: auto; max-height: calc(var(--vh1) * 92) }`，`.handoff-body` 带 `min-height: 0; overflow: auto` 兜住小窗口 / 大字号。
+
+**为什么。** ① 那段文字就是点「插入」之前要判断的东西，只给前 600 个字等于让人对着看不到的内容做决定。② 弹层贴内容而不是钉 840px：它只装一段文字和两颗按钮，空白没有信息，还会把「下面还有」和「到此为止」变得分不清。③ 预览从 38vh 抬到 56vh：38vh 在手机上只有十来行，两条评审就看不满；56vh 加头尾仍在 92vh 以内。
+
+**坑。** 单类 `.handoff-sheet` 改不动宽高 —— `.st-console` 同权重，而且 settings-console.css 在 styles.css 之后加载，必须写成 `.st-console.handoff-sheet`。这一条由测试量几何来守（宽 ≤ 600、高 ≤ 92vh），别只靠读 CSS。
+
+**验证。** 新 `web/tests/handoff-sheet-browser.mjs`（esbuild 打 `styles.css` + `settings-console.css`，真 Chromium，`npm run test:handoff-sheet`）：2207 字正文预览一字不差、滚到底最后一行在框内、弹层不出视口且宽 560、提示行下面最多空 40px、短文不被撑开、字号 150% 同样在窗口里、两颗按钮各走各的出口。改前红：「预览被截断了：预览 601 字 / 正文 2207 字」；只回滚 CSS 时红：「弹层正文下面空了一大块：提示行往下还空 238px」。`npm --prefix web run typecheck` exit 0。
+
+## D432 内网通的消息菜单按真实尺寸落位：与主界面共用 `menuplace.ts`（用户 2026-11-27「如图 内网通给回复点赞穿模」＋截图）
 
 **问题。** `web/src/peer/main.ts` 的 `openMenu(x, y, items)` 在菜单还没挂进 DOM、也还没塞进快捷回应那排 emoji（`.rstrip`，7 颗 30px 按钮）的时候，就按 `window.innerWidth - 180` / `window.innerHeight - (items.length * 34 + 20)` 硬夹位置。带 emoji 那排时菜单实际是 270px 宽、比估算高出约 40px：右键自己那条贴右边的消息，菜单整块从窗口右边戳出去 90px（emoji 被切掉）；贴底的消息再从底部戳出几像素。用户看到的就是「回复点赞穿模」。
 

@@ -48,7 +48,9 @@ export class HandoffSheet {
     head.append(headMain, close);
 
     const body = el("div", "handoff-body");
-    const preview = el("pre", "handoff-preview", opts.text.length > 600 ? `${opts.text.slice(0, 600)}…` : opts.text);
+    // 整段给出去，不截断：这里要是只放前 N 个字，长一份评审里「第二条之后」就全看不见了
+    // （2026-11-27 用户就是这么收到半句的）。高度由 `.handoff-preview` 自己封顶并滚动。
+    const preview = el("pre", "handoff-preview", opts.text);
 
     const actions = el("div", "handoff-actions");
     const current = el("button", "btn primary", tr("插到当前会话")) as HTMLButtonElement;
