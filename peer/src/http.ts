@@ -7,7 +7,7 @@ import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
-import { CHUNK, mimeOf } from "./files.ts";
+import { CHUNK, SANDBOX_CSP, inlineType, isHtmlType, mimeOf, typeOf } from "./files.ts";
 import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
 import { MAX_STICKER_BYTES, addSticker, listStickers, removeSticker, stickerCopy, stickerPath } from "./stickers.ts";
@@ -672,14 +672,17 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         } catch {
           return json(res, 404, { error: "文件已经被挪走或删掉了" });
         }
-        const type = stored.mime || "application/octet-stream";
-        const inline = /^image\//.test(type) || type.startsWith("text/") || type === "application/pdf";
-        res.writeHead(200, {
+        const type = typeOf(stored.name, stored.mime);
+        const head: Record<string, string | number> = {
           "content-type": type,
           "content-length": stat.size,
-          "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(stored.name)}`,
+          "content-disposition": `${inlineType(type) ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(stored.name)}`,
           "cache-control": "private, max-age=60",
-        });
+          "x-content-type-options": "nosniff",
+        };
+        // 别人发来的网页：沙箱里渲染（D302）。没有这一条，页面里点开就是下载或源码。
+        if (isHtmlType(type)) head["content-security-policy"] = SANDBOX_CSP;
+        res.writeHead(200, head);
         return void fs.createReadStream(stored.path).pipe(res);
       }
 
@@ -706,12 +709,16 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         }
         if (!stat.isFile()) return json(res, 400, { error: "这不是一个文件" });
         if (stat.size > 64 * 1024 * 1024) return json(res, 413, { error: "太大了（上限 64 MB）" });
-        res.writeHead(200, {
-          "content-type": mimeOf(file),
+        const raw = mimeOf(file);
+        const rawHead: Record<string, string | number> = {
+          "content-type": raw,
           "content-length": stat.size,
           "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(path.basename(file))}`,
           "cache-control": "no-store",
-        });
+          "x-content-type-options": "nosniff",
+        };
+        if (isHtmlType(raw)) rawHead["content-security-policy"] = SANDBOX_CSP;
+        res.writeHead(200, rawHead);
         return void fs.createReadStream(file).pipe(res);
       }
 

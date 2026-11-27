@@ -1273,7 +1273,9 @@ async function main(): Promise<void> {
           return json(res, upstream.status, { error: text || "取不到这个文件" });
         }
         const headers: Record<string, string> = { "cache-control": "no-store" };
-        for (const key of ["content-type", "content-length", "content-disposition"]) {
+        // CSP / nosniff 也要带过来：内网通的文件里网页要在沙箱里渲染（D302），
+        // 少了这些头上游给了也白给。
+        for (const key of ["content-type", "content-length", "content-disposition", "content-security-policy", "x-content-type-options"]) {
           const value = upstream.headers.get(key);
           if (value) headers[key] = value;
         }
@@ -1313,7 +1315,9 @@ async function main(): Promise<void> {
         const upstream = await peer.fileStream(url.searchParams.get("id") ?? "", ctrl.signal);
         if (!upstream.ok || !upstream.body) return json(res, upstream.status, { error: "取不到这个文件" });
         const headers: Record<string, string> = { "cache-control": "private, max-age=60" };
-        for (const key of ["content-type", "content-length", "content-disposition"]) {
+        // CSP / nosniff 也要带过来：内网通的文件里网页要在沙箱里渲染（D302），
+        // 少了这些头上游给了也白给。
+        for (const key of ["content-type", "content-length", "content-disposition", "content-security-policy", "x-content-type-options"]) {
           const value = upstream.headers.get(key);
           if (value) headers[key] = value;
         }
