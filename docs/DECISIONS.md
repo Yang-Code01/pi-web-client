@@ -8664,3 +8664,21 @@ tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里�
 **验证。** 新探针 `node probes/peer-file-preview.mjs <A bridge> <B bridge> <B peer>`（两份测试实例，口令 test）23 项全绿，红验证在改前那一版上跑过：`html 回 text/html` / `带 CSP sandbox` / `is inline` / `带 nosniff` / `预览里有 iframe` 五条红，`application/octet-stream` + `attachment` 原文见上。探针覆盖：后端四个头（html）；A 自己发的五个文件逐个点开 —— html 的 iframe 里 h1 变成「脚本也跑了」（证明沙箱里脚本确实执行）、且弹窗里没有 `pre`、`sandbox` 属性含 `allow-scripts` 不含 `allow-same-origin`；md 出 `.md-doc h1` = 周报 + 表格 + 无 `pre`；csv 出 `table.csv-grid` 且含「苹果 / 3」；docx 出「用本机程序打开」；mp4 出 `video[controls]` 且 `src` 指到 `/api/peer/file`；收件方（B 的页面）html 同样渲染、docx 卡两个按钮是「用本机程序打开 | 下载」。老消息验证：历史里那条 `mime: application/octet-stream` 的 `report.html` 现在回 `text/html;charset=utf-8` + `inline` + CSP 沙箱。人眼看过的截图 `.scratch/visual-html.png` / `visual-md.png` / `visual-csv.png` / `visual-video.png`（网页真的排版了、md 有标题/列表/引用/表格/代码块、csv 有表头、mp4 播放器时长 00:01）。`npm --prefix web run typecheck`（含 i18n-check 4426+5 键 × 3 语言、viewport / layers 守卫、theme/ask-text/paste/quoteblock/longcard 单测）与 `npm --prefix peer run typecheck` 均 exit 0。
 
 **评审后补的两处（PR #718 意见）。** ① CSV 分支原来不查上限就 `arrayBuffer()` 整份读进来再解析，几百 MB 的表格能把标签页拖死 —— 现在先比 `src.size > CSV_MAX_BYTES`（解析器自己的 2 MB，不另拍一个数），超了就换出口卡，文案「太大了（{p1}），用本机程序打开」。② 预览 iframe 的 `sandbox` 属性原来是手写字符串，和 peer 那边的 CSP 各一份 —— 词表搬进叶子文件 `peer/src/sandbox.ts`（`SANDBOX_TOKENS` 与 `SANDBOX_CSP = "sandbox " + tokens`），peer 的 `/files`、`/fs/raw` 与页面的 iframe 都从它引（页面走 `web/src/peer/sandbox.ts` 的转发，跟 `web/src/frames.ts` 引 `bridge/src/frames.ts` 同一个套路）。`bridge/src/preview.ts` 与主界面的 `web/src/app.ts` 里那两份未动 —— 不在这次的范围里，改它们要连带跑主界面预览的探针。探针同步加了「大 csv 换成出口卡而不是表格」「大 csv 的卡上说清楚是太大了」两项（3.2 MB 的真文件），现在 27 项全绿。
+
+## D435 内网通头像：12 张手绘方块脸，首次随机挑一张后固定，id 随广播同步（用户 2026-11-27「帮我设计内网通，用户头像。然后给内网通加上头像选择功能。然后用户默认自动随机选择一个头像」）
+
+**问题。** 内网通原来没有头像：`web/src/peer/main.ts` 的 `avatar(name, key, online)` 拿 `hueOf(key)`（FNV-1a 哈希）调一个色相、再取昵称首字，画一个圆。于是同一个人在不同的机器上颜色不同（哈希输入是 nodeId，倒是稳定，但换台机器看同一段截图仍要靠昵称认人），也完全谈不上「挑一个」。
+
+**决定。**
+- **素材是手绘 SVG，不是图像模型**：`web/src/peer/avatars.ts` 里 12 个 64×64 的 `<svg>`（`cat bear rabbit penguin dog frog chick whale owl octopus pig dino`），每张按 ip-as-logo 的形体规则来（2 个角色色 + 1 个背景色、4–7 个大形状、左下探头、圆内裁剪、32×32 仍可辨）。ip-as-logo 技能明确禁止 SVG 兜底、要求一流图像模型 —— 这台机器没有任何图像模型（`~/.pi/agent/auth.json` 只有 `github-copilot`，`models.json` 六个 provider 全是 chat），**用户明确同意偏离那条规则**改用 SVG。
+- **id 清单存两份**：`peer/src/avatars.ts` 的 `AVATAR_IDS`（校验用）与 `web/src/peer/avatars.ts` 的 `ART`（渲染用）；`web/peer-avatars-check.mjs` 对账两份 id，挂在 `web` 的 `typecheck` 里。peer 不依赖 web 的构建产物，所以宁可重复这 12 个字符串。
+- **随机只挑一次**：`peer/src/index.ts` 启动时 `if (!cfg.avatar) { cfg.avatar = randomAvatar(); saveConfig(cfg); }`。之后只在「我 → 头像」里手动换（点一张 / 「随机换一个」）。
+- **头像随协议走**：`Announce` / `SeenPeer` 加 `avatar?`，`packet()` 带上；`remember()` 用 `msg.avatar || known?.avatar`（对端没报就沿用旧的，别摸掉）；`POST /peer/hello` 在 `recordHello` 之后调新增的 `Relations.noteSeen()` —— **只刷新已有关系记录**的头像，不新建记录、不碰备注名（D303），没变化不落盘（announce 每 10 秒一次）。
+- **配置入口**：`PeerConfig.avatar`（`loadConfig()` 用 `knownAvatar()` 过滤，手改出来的野 id 当没设）；`POST /config` 接受 `avatar`，名单外的回 400「没有这张头像」，改名或换头像都会 `discovery.announce()`。桥的 `/api/peer/config` 透传，`PeerView` / `PeerStatus` 多一个 `avatar`。
+- **页面**：`avatar(name, key, online, pic?)` 命中 `avatarUrl()` 就渲染 `<img class="av-img">` 并加 `.pic`，否则维持原来的首字母 + 色相；`renderAll()` 先 `rememberAvatars()` 把 `status.avatar` / `online[]` / `contacts[]` / `threads[]` / 群成员的 id 收进一个 `Map`（气泡、会话行、群成员那几处只拿得到名字和 key，拿不到 nodeId 之外的 id，所以统一在渲染前喂进去）。「我」页名字卡下面新增「头像」卡：12 个 `.avpick` + 「随机换一个」，`.on` 用 `--accent` 圈出当前那张。
+
+**为什么。** ① 头像必须**全网一致**：同一个人在 A 的会话行、B 的好友列表、群名片里应当是同一张脸，所以 id 跟着 announce 走，而不是每台机器按名字哈希各画各的。② 随机**只挑一次**：每次重启换一张脸，别人认不出、自己也无从认起。③ `noteSeen` 不 `touch()`：`touch()` 会建记录，广播一次就把路过的人塞进通讯录，和「移除」之后又被合并回来的老毛病同源（D234）。④ 头像不写进消息历史：那是「人对我说过什么」，头像属于「他是谁」，跟 noteId/昵称一个层级。
+
+**代价。** 12 个 id 硬编码在两端，加头像要同时改两处（守卫只对账 id，不校验画法）；旧关系记录在对方下次 hello 之前没有头像，页面回退首字母——announce 10 秒一次，最多一轮就补上；12 张 data URL 内联进页面（源码约 7.7 KB，gzip 前）。
+
+**验证。** `web/peer-avatars-check.mjs` 进 typecheck；`probes/peer-avatars.mjs` 16 项端到端（两份测试实例：A 默认随机且落盘、通讯录/会话行/气泡都带对方头像、页面里 `.av-img` 真的解码且仍是 34×34、 「我」页 12 张全解码且恰好一张 `.on`、点一张就换且 B 刷新后看到、无 pageerror），全过。peer 侧另有 8 项冒烟（首启随机、名单外 400、改完重启不变）。三份 typecheck 均 exit 0。
