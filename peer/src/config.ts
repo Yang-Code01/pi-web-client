@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { knownAvatar } from "./avatars.ts";
+
 export const VERSION = "0.2.0";
 /** 协议版本：announce / inbox 都带着它，将来换协议靠它挡掉旧对端。 */
 export const PROTO = 1;
@@ -23,6 +25,8 @@ export interface PeerConfig {
   hidden: boolean;
   pauseFiles: boolean;
   dnd: boolean;
+  /** 头像 id（见 `avatars.ts` 的 AVATAR_IDS）。空串 = 还没挑过，index.ts 会随机补一张。 */
+  avatar: string;
   group: { address: string; port: number };
   /** 手动地址兜底：`["192.168.1.5:7865"]`。组播不通时唯一的出路。 */
   manual: string[];
@@ -105,6 +109,8 @@ export function loadConfig(): PeerConfig {
     hidden: saved.hidden === true,
     pauseFiles: saved.pauseFiles === true,
     dnd: saved.dnd === true,
+    // 名单外的 id（手改过 / 将来删掉的头像）当没设，别让页面拿到一张画不出来的图。
+    avatar: knownAvatar(saved.avatar),
     group: {
       address: process.env.PI_PEER_GROUP || group.address,
       port: Number(process.env.PI_PEER_ANNOUNCE_PORT || group.port),

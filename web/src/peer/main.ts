@@ -7,6 +7,7 @@ import { CSV_MAX_BYTES, readCsv } from "../sheet/csv.ts";
 import { SheetDialog } from "../sheet/dialog.ts";
 import "../sheet/sheet.css";
 import { bootTheme } from "../theme.ts";
+import { AVATAR_IDS, avatarUrl, randomAvatarId } from "./avatars.ts";
 import { emojiPanel, QUICK_REACTIONS, type Sticker } from "./emoji.ts";
 import { SANDBOX_TOKENS } from "./sandbox.ts";
 import { imageViewer, type ViewerItem } from "./viewer.ts";
@@ -39,6 +40,8 @@ interface OnlinePeer {
   port: number;
   lastSeen: number;
   status?: string;
+  /** 他自报的头像 id（没报 / 老对端就是没这个字段）。 */
+  avatar?: string;
   ips: string[];
 }
 
@@ -47,6 +50,8 @@ interface PeerStatus {
   nickname: string;
   hostname: string;
   port: number;
+  /** 我自己的头像 id。 */
+  avatar?: string;
   online: OnlinePeer[];
   config: { hidden: boolean; pauseFiles: boolean; dnd: boolean; inbox: string; manual: string[] };
 }
@@ -61,7 +66,7 @@ interface PeerView {
 interface Entry {
   id: string;
   at: number;
-  from: { nodeId: string; nickname?: string; hostname?: string; port?: number };
+  from: { nodeId: string; nickname?: string; hostname?: string; port?: number; avatar?: string };
   to: { kind: "node" | "group"; id: string };
   kind: "text" | "receipt" | "file" | "recall" | "note" | "react" | "pin" | "sys";
   /** 群灰条（建群 / 改名 / 拉人 / 退群）。 */
@@ -137,11 +142,13 @@ interface Thread {
   lastMine: boolean;
   sending: boolean;
   typing: boolean;
+  /** 头像 id：在线就直接用他报的，离线用通讯录里存的。 */
+  avatar?: string;
   /** 未读里有紧急消息 / 有人 @ 我（peer 算好的，免打扰也提醒）。 */
   urgent?: boolean;
   mention?: boolean;
   /** 群会话才有：成员名单（含自己）、群主、本机是否已退出。 */
-  group?: { members: { nodeId: string; nickname?: string; hostname?: string }[]; owner: string; left: boolean };
+  group?: { members: { nodeId: string; nickname?: string; hostname?: string; avatar?: string }[]; owner: string; left: boolean };
 }
 
 interface Contact {
@@ -159,6 +166,8 @@ interface Contact {
   online: boolean;
   addr: string;
   livePort: number;
+  /** 他的头像 id（在线表里的最新值，离线时是通讯录里存下的）。 */
+  avatar?: string;
 }
 
 interface Transfer {
@@ -457,10 +466,56 @@ function hueOf(key: string): number {
   return (x * 137) % 360;
 }
 
-function avatar(name: string, key: string, online?: boolean): HTMLElement {
+/**
+ * nodeId → 头像 id。每次数据刷新时重建（`rememberAvatars`），列表 / 气泡 / 成员面板
+ * 都只认得 nodeId，靠它换成图。没有条目的人退回「首字母 + 色相」。
+ * 每次重建前先清空：不然对方换成了一个我们不认识的 id（或者那是台老版本对端、
+ * 我们刚把他从名单里删了），表里还留着上一次那张，永远不会退回首字母。
+ */
+const AVS = new Map<string, string>();
+
+function rememberAvatar(nodeId: string, avatar?: string): void {
+  if (!nodeId || !avatar) return;
+  AVS.set(nodeId, avatar);
+}
+
+/**
+ * 把手上所有带身份的数据过一遍（在线表 / 会话 / 通讯录 / 消息 / 群成员）。
+ *
+ * **顺序就是新鲜度**：后写覆盖先写，所以从最旧的开始。历史消息里 `from.avatar` 是
+ * 「他发那条消息时」的脸 —— 对方换过头像之后它就是旧的，哪怕当前会话里还留着他换之前
+ * 的消息；在线表 / 通讯录 / 会话摘要才是「他现在长什么样」。
+ */
+function rememberAvatars(): void {
+  AVS.clear();
+  for (const e of S.msgs) rememberAvatar(e.from?.nodeId, e.from?.avatar);
+  for (const t of S.threads) {
+    for (const m of t.group?.members ?? []) rememberAvatar(m.nodeId, m.avatar);
+    rememberAvatar(t.nodeId, t.avatar);
+  }
+  for (const c of S.contacts) rememberAvatar(c.nodeId, c.avatar);
+  const st = S.view?.status;
+  for (const p of st?.online ?? []) rememberAvatar(p.nodeId, p.avatar);
+  if (st) rememberAvatar(st.nodeId, st.avatar);
+}
+
+function avatar(name: string, key: string, online?: boolean, pic?: string): HTMLElement {
   const box = h("span", "av");
-  box.style.setProperty("--h", String(hueOf(key)));
-  box.textContent = (name.trim()[0] ?? "?").toUpperCase();
+  // 第四参是「这一处确切知道他是哪张」的地方（「我」页 / 别人的头像就是他自己报的）；
+  // 其余位置只用 nodeId 查表。
+  const url = avatarUrl(pic ?? AVS.get(key));
+  if (url) {
+    box.classList.add("pic");
+    const img = document.createElement("img");
+    img.className = "av-img";
+    img.src = url;
+    img.alt = "";
+    img.draggable = false;
+    box.append(img);
+  } else {
+    box.style.setProperty("--h", String(hueOf(key)));
+    box.textContent = (name.trim()[0] ?? "?").toUpperCase();
+  }
   if (online !== undefined) {
     const dot = h("i", `st${online ? " on" : ""}`);
     box.append(dot);
@@ -719,6 +774,7 @@ function openThread(id: string): void {
 }
 
 function renderAll(): void {
+  rememberAvatars();
   renderBar();
   renderHint();
   renderRail();
@@ -3732,7 +3788,7 @@ function renderMe(): void {
   }
 
   const hero = h("div", "hero");
-  hero.append(avatar(st.nickname, st.nodeId));
+  hero.append(avatar(st.nickname, st.nodeId, undefined, st.avatar));
   const t = h("div", "t");
   t.append(h("div", "n", st.nickname), h("div", "sub", `${st.hostname} · :${st.port}`));
   hero.append(t);
@@ -3767,6 +3823,37 @@ function renderMe(): void {
   nameRow.append(nameInput, saveName);
   nameCard.append(nameRow, h("div", "note", tr("别人看到的就是这个名字；改完会立刻广播一次。")));
   detail.append(nameCard);
+
+  // 头像：12 张里挑一张。第一次启动时 peer 已经自己随机挑了一张并写进 `~/.pi-peer/config.json`，
+  // 这里既能改成指定的一张，也能再抽一次（抽的时候排除当前这张，别点了没反应）。
+  const avCard = h("div", "card");
+  avCard.append(h("h3", "", tr("头像")));
+  const setAvatar = async (id: string): Promise<void> => {
+    if (await setConfig({ avatar: id })) toast(tr("头像换好了"));
+  };
+  const avGrid = h("div", "avgrid");
+  for (const id of AVATAR_IDS) {
+    const pick = h("button", `avpick${id === st.avatar ? " on" : ""}`) as HTMLButtonElement;
+    pick.type = "button";
+    pick.title = tr("用这张头像");
+    pick.setAttribute("aria-label", tr("用这张头像"));
+    const img = document.createElement("img");
+    img.src = avatarUrl(id) ?? "";
+    img.alt = "";
+    img.draggable = false;
+    pick.append(img);
+    pick.addEventListener("click", () => {
+      if (id !== st.avatar) void setAvatar(id);
+    });
+    avGrid.append(pick);
+  }
+  const avActs = h("div", "acts avacts");
+  const luck = h("button", "btn", tr("随机换一个"));
+  luck.type = "button";
+  luck.addEventListener("click", () => void setAvatar(randomAvatarId(st.avatar)));
+  avActs.append(luck);
+  avCard.append(avGrid, avActs, h("div", "note", tr("这张头像会跟着名字一起广播，别人那边看到的就是它。")));
+  detail.append(avCard);
 
   const profile = h("div", "card");
   profile.append(h("h3", "", tr("资料")));
@@ -3858,15 +3945,17 @@ function toggle(name: string, sub: string, on: boolean, run: (on: boolean) => vo
   return row;
 }
 
-async function setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean }): Promise<void> {
+async function setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; avatar?: string }): Promise<boolean> {
   try {
     await postJson("/api/peer/config", patch);
     await loadStatus();
     renderAll();
+    return true;
   } catch (err) {
     toast((err as Error).message);
     await loadStatus();
     renderAll();
+    return false;
   }
 }
 

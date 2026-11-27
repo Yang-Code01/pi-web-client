@@ -8698,3 +8698,20 @@ if (stop >= 0) {
 **代价。** 每次 `POST /threads/read` 多读一遍该会话的历史（上限 2000 行）。本机 jsonl、只在打开会话/贴底时打，毫秒级。
 
 **验证。** 新测 `bridge/tests/peer-read-watermark.mjs`（自起真 peer + 临时 state）：`threads.json` 预置「已按 `last` 打过水位」，断言 unread === 1（修前红：`失败：等不到「打完水位未读归零」`）→ POST `/threads/read` → 断言 unread 归零 → 追加一条更新的消息断言 unread === 1 → **拿过时的 `{at,id}` 再打一次，断言 unread 仍是 1**（不收紧边界时红：`过时的水位不该吞掉它之后落盘的消息，实际 unread=0`）→ 再打当前水位归零。真实数据副本上也量过：用 `~/.pi-peer` 的拷贝起修好的 peer，`POST /threads/read` 打页面送的那条水位，返回 `meta.readAt=1795746728610 / readId=…e485`（被钳成 note 那条），`unread` 从 1 变 0。回归：`peer-history`、`peer-e2e`（含「已读水位是 `{at,id}` 双键」那一段）、`peer-group-e2e` 全过，`npm --prefix peer run typecheck` exit 0。
+## D436 内网通头像：12 张手绘方块脸，首次随机挑一张后固定，id 随广播同步（用户 2026-11-27「帮我设计内网通，用户头像。然后给内网通加上头像选择功能。然后用户默认自动随机选择一个头像」）
+
+**问题。** 内网通原来没有头像：`web/src/peer/main.ts` 的 `avatar(name, key, online)` 拿 `hueOf(key)`（FNV-1a 哈希）调一个色相、再取昵称首字，画一个圆。于是同一个人在不同的机器上颜色不同（哈希输入是 nodeId，倒是稳定，但换台机器看同一段截图仍要靠昵称认人），也完全谈不上「挑一个」。
+
+**决定。**
+- **素材是手绘 SVG，不是图像模型**：`web/src/peer/avatars.ts` 里 12 个 64×64 的 `<svg>`（`cat bear rabbit penguin dog frog chick whale owl octopus pig dino`），每张按 ip-as-logo 的形体规则来（2 个角色色 + 1 个背景色、4–7 个大形状、左下探头、圆内裁剪、32×32 仍可辨）。ip-as-logo 技能明确禁止 SVG 兜底、要求一流图像模型 —— 这台机器没有任何图像模型（`~/.pi/agent/auth.json` 只有 `github-copilot`，`models.json` 六个 provider 全是 chat），**用户明确同意偏离那条规则**改用 SVG。
+- **id 清单存两份**：`peer/src/avatars.ts` 的 `AVATAR_IDS`（校验用）与 `web/src/peer/avatars.ts` 的 `ART`（渲染用）；`web/peer-avatars-check.mjs` 对账两份 id，挂在 `web` 的 `typecheck` 里。peer 不依赖 web 的构建产物，所以宁可重复这 12 个字符串。
+- **随机只挑一次**：`peer/src/index.ts` 启动时 `if (!cfg.avatar) { cfg.avatar = randomAvatar(); saveConfig(cfg); }`。之后只在「我 → 头像」里手动换（点一张 / 「随机换一个」）。
+- **头像随协议走**：`Announce` / `SeenPeer` 加 `avatar?`，`packet()` 带上；`remember()` 用 `knownAvatar(msg.avatar) || known?.avatar`（名单外的当没报、对端没报就沿用旧的，别把已知的摸掉）；`POST /peer/hello` 在 `recordHello` 之后调新增的 `Relations.noteSeen()` —— **只刷新已有关系记录**的头像，不新建记录、不碰备注名（D303），没变化不落盘（announce 每 10 秒一次）；调它之前先用 `Discovery.hasAddr(nodeId, from)` 确认「这个地址之前就收到过他的包」，否则局域网里谁都能拿别人的 nodeId 把落盘的头像永久改掉（在线表是内存里的、30 秒自愈，落盘那份不是；比较前做 `::ffff:` / `::1` 归一，和 `messages.ts` 的 `normAddr` 同口径，且必须在 `recordHello()` 之前问 —— 它会把 `from` 也记进 ips）。
+- **配置入口**：`PeerConfig.avatar`（`loadConfig()` 用 `knownAvatar()` 过滤，手改出来的野 id 当没设）；`POST /config` 接受 `avatar`，名单外的回 400「没有这张头像」，改名或换头像都会 `discovery.announce()`。桥的 `/api/peer/config` 透传，`PeerView` / `PeerStatus` 多一个 `avatar`。
+- **页面**：`avatar(name, key, online, pic?)` 命中 `avatarUrl()` 就渲染 `<img class="av-img">` 并加 `.pic`，否则维持原来的首字母 + 色相；`renderAll()` 先 `rememberAvatars()` 把 `status.avatar` / `online[]` / `contacts[]` / `threads[]` / 群成员的 id 收进一个 `Map`（气泡、会话行、群成员那几处只拿得到名字和 key，拿不到 nodeId 之外的 id，所以统一在渲染前喂进去）；这个 `Map` 每次重建前先清空，否则对方的 id 变成未知值（老版本客户端 / 我们从名单里删了某个 id）时表里还留着上一张，永远退不回「首字母 + 色相」。「我」页名字卡下面新增「头像」卡：12 个 `.avpick` + 「随机换一个」，`.on` 用 `--accent` 圈出当前那张。
+
+**为什么。** ① 头像必须**全网一致**：同一个人在 A 的会话行、B 的好友列表、群名片里应当是同一张脸，所以 id 跟着 announce 走，而不是每台机器按名字哈希各画各的。② 随机**只挑一次**：每次重启换一张脸，别人认不出、自己也无从认起。③ `noteSeen` 不 `touch()`：`touch()` 会建记录，广播一次就把路过的人塞进通讯录，和「移除」之后又被合并回来的老毛病同源（D234）。④ 头像不写进消息历史：那是「人对我说过什么」，头像属于「他是谁」，跟 noteId/昵称一个层级。
+
+**代价。** 12 个 id 硬编码在两端，加头像要同时改两处（守卫只对账 id，不校验画法）；旧关系记录在对方下次 hello 之前没有头像，页面回退首字母——announce 10 秒一次，最多一轮就补上；12 张 data URL 内联进页面（源码约 7.7 KB，gzip 前）。
+
+**验证。** `web/peer-avatars-check.mjs` 进 typecheck；`probes/peer-avatars.mjs` 18 项端到端（两份测试实例：A 默认随机且落盘、通讯录/会话行/气泡都带对方头像、页面里 `.av-img` 真的解码且仍是 34×34、 「我」页 12 张全解码且恰好一张 `.on`、点一张就换且 B 刷新后看到、无 pageerror），全过。peer 侧另有 8 项冒烟（首启随机、名单外 400、改完重启不变），以及 `hasAddr` 的 5 项单测（见过的地址放行 / 别的地址挡 / 归一后同一个放行 / 没握过手的 nodeId 挡）；「从另一个源地址冒用」在这台机器上没法端到端复现（绑 127.0.0.2 发包 ETIMEDOUT），挡的那一半由单测覆盖。三份 typecheck 均 exit 0。
