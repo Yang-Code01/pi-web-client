@@ -13,6 +13,13 @@ export interface ManageState {
   order: string[];
   /** archived ids: out of the main list, still openable under 已归档 */
   archived: string[];
+  /**
+   * D430: when each archived id was archived (epoch ms). The archive promise is "five minutes after
+   * you archive it, the process goes", so the moment has to survive a bridge restart — a countdown
+   * that starts over every boot would never fire on a bridge that gets restarted, and one that
+   * counts from the last pi event would kill a session the user just archived.
+   */
+  archivedAt: Record<string, number>;
 }
 
 function ids(value: unknown): string[] {
@@ -24,9 +31,22 @@ function ids(value: unknown): string[] {
   return out;
 }
 
+function stamps(raw: unknown, archived: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const id of archived) {
+    const at = (raw as Record<string, unknown>)[id];
+    // 没戳的（旧文件、或归档那一刻之前写下的）留给启动补写，别在这里编一个时间。
+    if (typeof at === "number" && Number.isFinite(at) && at > 0) out[id] = at;
+  }
+  return out;
+}
+
 function normalize(raw: unknown): ManageState {
   const r = (raw && typeof raw === "object" ? raw : {}) as Partial<ManageState>;
-  return { pin: ids(r.pin), order: ids(r.order), archived: ids(r.archived) };
+  const archived = ids(r.archived);
+  // 只留还在归档里的戳：手动改文件留下孤儿戳的话，取消归档再归档会拿到旧时间。
+  return { pin: ids(r.pin), order: ids(r.order), archived, archivedAt: stamps(r.archivedAt, archived) };
 }
 
 function time(s: { startedAt?: string; updatedAt: number }): number {
@@ -37,17 +57,37 @@ export class Manage {
   /** 读状态文件失败时叫人：由 `index.ts` 接到聊天区的通知（同一句错只报一次，见 StateFile）。 */
   onUnreadable?: (failure: StateFailure) => void;
 
-  private readonly state = new StateFile<ManageState>(statePath("manage.json"), { pin: [], order: [], archived: [] }, normalize, (failure) =>
+  private readonly state = new StateFile<ManageState>(statePath("manage.json"), { pin: [], order: [], archived: [], archivedAt: {} }, normalize, (failure) =>
     this.onUnreadable?.(failure),
   );
 
   snapshot(): ManageState {
     const d = this.state.value();
-    return { pin: [...d.pin], order: [...d.order], archived: [...d.archived] };
+    return { pin: [...d.pin], order: [...d.order], archived: [...d.archived], archivedAt: { ...d.archivedAt } };
   }
 
   isArchived(id: string): boolean {
     return this.state.value().archived.includes(id);
+  }
+
+  /** When this id was archived, or undefined if it is not archived with a stamp (D430). */
+  archivedSince(id: string): number | undefined {
+    return this.state.value().archivedAt[id];
+  }
+
+  /**
+   * D430：旧文件里的归档没有时间戳，启动时补一个（此刻 = 桥启动时刻，不早于归档本身）。
+   * 只在真有缺口时写盘 —— StateFile 每次 update 都会落一次文件，没必要每次开机都写。
+   * 返回补了几个。
+   */
+  backfillArchived(at: number): number {
+    const d = this.state.value();
+    const missing = d.archived.filter((id) => d.archivedAt[id] === undefined);
+    if (!missing.length) return 0;
+    this.state.update((s) => {
+      for (const id of missing) s.archivedAt[id] = at;
+    });
+    return missing.length;
   }
 
   /** The whole arrangement at once: every drag and every ☆ ends up here. */
@@ -85,6 +125,15 @@ export class Manage {
         else keep.delete(id);
       }
       d.archived = [...keep];
+      // D430: 归档那一刻就是倒计时的起点；取消归档（含 D386 的复活）把钟一起清掉。
+      const now = Date.now();
+      for (const id of idsIn) {
+        if (on) d.archivedAt[id] = now;
+        else delete d.archivedAt[id];
+      }
+      for (const id of Object.keys(d.archivedAt)) {
+        if (!d.archived.includes(id)) delete d.archivedAt[id];
+      }
       // Archiving wins over pin/order: a hidden card must not hold a slot in the visible list.
       const hidden = new Set(d.archived);
       d.pin = d.pin.filter((id) => !hidden.has(id));
@@ -102,8 +151,22 @@ export class Manage {
     this.state.update((d) => {
       if (!d.archived.includes(id)) return;
       d.archived = d.archived.filter((x) => x !== id);
+      delete d.archivedAt[id];
       d.pin = [id, ...d.pin.filter((x) => x !== id)];
       d.order = d.order.filter((x) => x !== id);
+    });
+  }
+
+  /**
+   * D430：归档会话被叫醒（又被用上）时重新计时。「归档后五分钟释放」说的是最后一次用它之后五分钟，
+   * 不是归档动作之后五分钟 —— 否则一条睡醒的归档会话会在下一个 tick 被再收一次，用户每发一句话它
+   * 就只能活一秒。不归档的 id 空操作。
+   */
+  touchArchived(id: string, at: number): void {
+    const d = this.state.value();
+    if (!d.archived.includes(id) || d.archivedAt[id] === at) return;
+    this.state.update((s) => {
+      if (s.archived.includes(id)) s.archivedAt[id] = at;
     });
   }
 
@@ -112,6 +175,7 @@ export class Manage {
       d.pin = d.pin.filter((x) => x !== id);
       d.order = d.order.filter((x) => x !== id);
       d.archived = d.archived.filter((x) => x !== id);
+      delete d.archivedAt[id];
     });
   }
 

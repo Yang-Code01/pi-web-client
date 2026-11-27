@@ -1,6 +1,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,6 +44,11 @@ export interface PeerThread {
 
 /** 子进程跑满这么久再退出，重启计数清零。 */
 const STABLE_MS = 60_000;
+/**
+ * 端口被占（退出码 2）之后隔多久探一次。另一份 peer 在跑时不该反复抢端口，但也不能永远放弃：
+ * 占用者走了就自己重新 fork。30 秒一次，日志里不会刷屏。
+ */
+const PORT_PROBE_MS = Number(process.env.PI_PEER_PORT_PROBE_MS ?? 30_000) || 30_000;
 
 /**
  * peer 子进程的托管：fork + 退避重启 + 5 秒轮询 `/status`。
@@ -60,6 +66,8 @@ export class PeerHost {
   private reason = "";
   private timer: NodeJS.Timeout | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
+  /** 端口被占之后的下一次探测。有它就不重复排。 */
+  private probeTimer: NodeJS.Timeout | null = null;
   /** 已经通知过（或看过）的消息 id，只留最近 500 条：重启后从「当前这一批」重新记账。 */
   private seen = new Set<string>();
   /** 首次轮询只记账不推送：否则装上 D299 之后第一次打开会把全部历史推一遍。 */
@@ -88,13 +96,43 @@ export class PeerHost {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     if (this.restartTimer) clearTimeout(this.restartTimer);
+    if (this.probeTimer) clearTimeout(this.probeTimer);
     this.child?.kill();
     this.child = null;
+  }
+
+  /**
+   * 页面上的「重试」：子进程已经退出时重新 fork 一次。
+   *
+   * 不抢正在服务的那一份：`/status` 有人答（可能是另一份 peer）就只回状态；子进程还在起的路上也不
+   * 重复 fork。端口被占时用户可以立刻点这一下，不用等 30 秒的自动探测。
+   */
+  restart(): { ok: boolean; running: boolean; reason: string } {
+    if (this.status) return { ok: true, running: true, reason: "" };
+    if (this.child) return { ok: true, running: false, reason: "peer 正在启动" };
+    if (this.stopped || !this.opts.entry) return { ok: false, running: false, reason: this.reason };
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    if (this.probeTimer) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+    }
+    this.restarts = 0;
+    this.spawn();
+    return { ok: true, running: false, reason: this.reason || "peer 正在启动" };
   }
 
   private spawn(): void {
     const entry = this.opts.entry;
     if (!entry) return;
+    if (this.probeTimer) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+    }
+    // 进了这个函数就是「没有可用的子进程」：旧的失败原因（退出 / 端口被占）不该继续挂在页面上。
+    this.reason = "";
     const child = fork(entry, [], {
       env: { ...process.env, PI_PEER_PORT: String(this.opts.port) },
       stdio: ["ignore", "pipe", "pipe", "ipc"],
@@ -113,9 +151,12 @@ export class PeerHost {
       this.child = null;
       this.status = null;
       if (this.stopped) return;
-      // 退出码 2 = peer 自己说的「端口被占」。这时候重启只会反复失败，所以只报不试。
+      // 退出码 2 = peer 自己说的「端口被占」。这时候重启只会反复失败，所以先只报不试；
+      // 但占用者可能是另一份 bridge / 探针，它迟早会走，所以每 PORT_PROBE_MS 探一次端口，
+      // 一空出来就自己重新 fork（见 schedulePortProbe）。
       if (code === 2) {
         this.reason = `peer 端口 ${this.opts.port} 被占用：另一份 peer 在跑（或者别的程序占了）`;
+        this.schedulePortProbe();
         return;
       }
       // 「连续退出」要真的连续：以前计数从不清零，隔几天崩一次、累计第 4 次就再也不重启，
@@ -136,6 +177,34 @@ export class PeerHost {
     if (next) this.reason = "";
     this.status = next;
     void this.pollThreads();
+  }
+
+  /** 退出码 2 之后排一次端口探测；已经在排就不重复排。 */
+  private schedulePortProbe(): void {
+    if (this.probeTimer || this.stopped) return;
+    this.probeTimer = setTimeout(() => this.probePort(), PORT_PROBE_MS);
+    this.probeTimer.unref?.();
+  }
+
+  /**
+   * 端口还热着吗？连得上（哪怕不答 HTTP）就算有人占着，继续等；只有 ECONNREFUSED 才说明
+   * 监听者走了，这时候重新 fork。别的错误（EACCES、超时之外的异常）按「仍被占」处理，宁可多等一轮。
+   */
+  private probePort(): void {
+    this.probeTimer = null;
+    if (this.stopped || this.child || this.status) return;
+    const sock = net.connect({ host: "127.0.0.1", port: this.opts.port });
+    let settled = false;
+    const settle = (busy: boolean) => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      if (busy) this.schedulePortProbe();
+      else this.restart();
+    };
+    sock.setTimeout(1000, () => settle(true));
+    sock.once("connect", () => settle(true));
+    sock.once("error", (err: NodeJS.ErrnoException) => settle(err.code !== "ECONNREFUSED"));
   }
 
   /**

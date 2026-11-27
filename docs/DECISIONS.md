@@ -8567,7 +8567,87 @@ D
 **验证。** 新探针 `node probes/review-cards.mjs`（桩桥 + 真 Chromium，播 `review.state` / `review.progress`）全绿：三张卡、无 `.rv-focus`；每张卡「完整详情」在自己卡的右下角（距卡右边 11px、下边 12px = 1px 边框 + 8/7px 内边距 + 2px）；跑着那张的「停止」与「完整详情」同在 `.rv-run-foot`、停止在左、与右端时间 Rectangle 不相交；卡片无 `role` / `tabindex`；点正文不弹浮层；点第 3 张的按钮，浮层抬头是 `PR #700`（不是最新那条）且标题是那张卡的 PR 标题；关掉后没有 `.rv-focus`；`review.started` + 进度来到之后**仍停在列表**；`--ui-scale: 1.5` 下按钮仍在卡内右下角。截图 `.scratch/review-cards/cards.png`、`.scratch/review-cards/sheet-700.png`（已人眼看过）。`probes/code-review.mjs`（真 `ocr` + 真模型）跟着改成「跑着看卡上的停止 / 意见断言挪进 `.rv-sheet` / 点卡片不开、点按钮才开 / 停止后不被拽走」；`probes/github-card-review.mjs` 只把 `.rv-focus-stop` 换成 `.rv-run-card.is-live`。`npm --prefix web run typecheck`（含 i18n-check、viewport / layers 守卫）exit 0。
 
 **`reviewFocus` 的生命周期（PR #710 评审后补，2026-11-27）。** 它只在浮层开着的期间存在：`openReviewSheet(runId)` 设它、那扇窗的 `onClose` 清它；**中途从这张卡换看另一张**（`reviewFocus` 换了 id、窗还是同一扇）关窗时也必须清 —— 原来 `onClose` 里留着 `if (this.reviewFocus !== runId) return;`，换看过之后这句恒成立，关窗后 `reviewFocus` 永远停在上次那一条，`reviewActiveRun()` / `activeModel` 一路按旧的算到换会话。反过来，`startReview()` 也不再清它（以前那里有一行 `reviewFocus = ""`）：浮层开着时那一位是「正在看的那一次」，被新开一条清掉会让窗里内容与「停止」的目标一起跳掉。
-## D430 内网通预览按类型渲染：网页进沙箱 iframe、md 排成文档、csv 画成表格、影音用浏览器播放器、Office 一键本机打开（用户 2026-11-27「当发送的文件为 html 时候，显示了源代码，没有正常显示。展开一下其他的文件类型」＋截图）
+
+## D430 归档够久就释放：默认 5 分钟，运行时可调，0 = 不释放（用户 2026-11-26「归档后自动释放会话（默认5分钟内容释放），停止进程，释放内存。时间在运行时里面做成设置，默认5分钟」）
+
+**问题。** 归档（D146 的收起来）只改了 `manage.json` 里的位置，pi 进程照跑、桥里的会话对象照留：一条归档会话的空闲阈值仍然是 120 分钟（D372），而桥内对象要等 10 分钟的闲置回收（`IDLE_EVICT_MS`）—— 可那个回收只碰**非 live** 的，归档的 `pi` 恰好还 live，于是「归档 = 收起来」在内存上等于什么都没做。用户的心智是「归档了就不该再占内存」：他要的是归档够久就**停止进程、丢掉桥里的那份**，而且这个「够久」得能在设置里改，默认 5 分钟。
+
+**决定。** 归档的会话在**归档时刻**起算 `archiveIdleMs`（默认 `5 * 60 * 1000`，`lifecycle.json` 的新字段，env `PI_WEB_ARCHIVE_IDLE_MS` 可覆盖测试），到点做两件事：先 `Session.sleep()`（同一条 notice、同一个唤醒，D120），再**立刻把桥里的会话对象丢掉**（`stopTail()` + `removeAllListeners()` + `sessions.delete()`），不等 10 分钟回收。四条例外，全部沿用已有规则：
+
+- 正在跑的一轮不收（`sleep()` 自己的守卫，绝不 abort）：跑完的下一个 tick 才收。
+- 挂着审批 / 问卷的不收（沿用「无人看 120 分钟后才作废」那条，D372）—— 归档 5 分钟就把它作废太粗暴。
+- 有人正在看（页面 `watching` 着这条会话）只睡、不丢对象，交回原来的 10 分钟回收。
+- 没有 `session.file` 的（纯桥内、从没写盘过）只杀进程、不丢对象：丢了就真没了。
+
+计时戳落在 `manage.json` 的 `archivedAt`（`{ id: epochMs }`）：归档写 `Date.now()`，取消归档 / `revive`（D386）/ `forget` 清掉；唤醒时（`openLiveNow`）重新写一次，否则刚起来的 pi 会在下一个 tick 被再收一遍（实测：第二次启动只活 16 ms）。启动时给所有**缺戳**的归档会话补上「此刻」并落盘一次 —— 旧 `manage.json` 里没有这个字段，没戳的按「刚归档」算，比立刻释放安全。
+
+tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里插在 `sleepIdleSessions` 之后、采样之前），不新开定时器（D120「不要第二个计时器」），所以实际时延是 5–6 分钟。界面：设置 → 运行时 → 回收阈值第三行「归档后多久释放（分钟）」，写 `0` 就是不释放（这一行**接受 0**，与空闲 / 水位那两行不同）；「运行中 pi」卡片加一行「归档后释放」。不变量：`0` 关掉、随手问永不释放（本来就是 scratch 且不进会话列表）、「永远留一个 pi」只属于水位（D120 #79），归档释放可以一条不剩。
+
+**为什么。** ① 归档是「我不看它了」的强信号，比空闲计时器更确定，所以阈值该短得多，而且该由用户调 —— 5 分钟对一个冷启 1–3 秒的产品是划算的默认。② 释放 = 睡眠 + 丢对象：只丢对象会把进程留成孤儿（`tail` 还挂着一份内存），只睡眠不动对象则桥里那几十 MB 转录与事件监听还在，省不到用户说的「内存」。③ 计时戳必须持久化（放 `manage.json` 而不是另开文件）：桥重启是常态（热部署、崩溃），全内存计时会让每次重启都重置成「刚归档」。④ 唤醒重新计时而不加「刚启动 60 秒保护」（`CAP_PROTECT_MS` 只属于水位）：醒来正是要用，不该被水位逻辑顺手收掉，但也不该因此多出一套时间规则。⑤ 不选「归档即停」：归档常发生在「稍后再看」的瞬间，D386 还规定了点开即复活 —— 秒停会让每次点开都付一次冷启。
+
+**代价。** 丢对象后重新点开要冷启（1–3 秒，与休眠同价），且如果 pi 当时没把最后几帧写进会话文件，桥里的那份增量会丢（与「休眠 + 丢对象」同一个风险，不是新增）。未被页面看的时候，归档会话的转录在桥里保留不到 5 分钟以上就要重新从文件读，文件的写法（D120 的 tail 逻辑）成了唯一真相。旧 `manage.json` 里的归档没有戳，第一次启动会按「此刻」补，于是升级瞬间不会有一次性的集体释放（但那批会话会在 5 分钟后一起释放）。
+
+**验证。** `bridge/tests/session-lifecycle.mjs` 新增 D1–D9 九段（`PI_WEB_ARCHIVE_IDLE_MS=1500`、`PI_WEB_GC_TICK_MS=1000`，全量 42 项 ok）：到点前不释放、到点后 stub 记录 exit 且桥里不再有这条会话；重新订阅看到的是从文件读的转录（该桩的会话文件只有表头，正好证明桥的那份没了）；有人在看只睡不丢（不重启 pi、还是同一份文件）；`0` 关掉；窗口内取消归档后不再释放；running 不打断、abort 后下一 tick 收；挂审批不睡不作废；无文件的会话只杀进程、对象留着；桥重启后 `archivedAt` 原值不变；手写一份没有字段的旧 `manage.json`（`archived: ["legacy-archived"]`），开机后 `archivedAt["legacy-archived"]` 就是启动时刻且已写回磁盘。页面侧 `probes/runtime-settings.mjs` 第三行 37 项全绿（含「归档写 0 照发、不报红」「归档写 -1 / abc 被拦下」「en / ja 都翻过」）。
+
+## D431 「交给 agent」的预览给整段：不截断，弹层贴内容（2026-11-27）
+
+**问题。** `HandoffSheet` 的预览写的是 `opts.text.slice(0, 600) + "…"`：一份两条意见的评审交给 agent 时，第二条只剩半句 —— 用户看到的就是「内容显示不全」，而且被切掉的那截正好是他要读的正文。同一次还量到弹层被撑成 1080×840：`.handoff-sheet` 只写了 `width`，宽高都落到了 `settings-console.css` 里后加载的 `.st-console { width: min(1080px, 100%); height: min(840px, 100%) }` 上（同权重、后者在后），几行字的弹层底下空一大块，反倒让「到底还有没有」更难看懂。
+
+**决定。** 预览放整段正文（`el("pre", "handoff-preview", opts.text)`），宽高全交给 CSS：预览框自己封顶 `calc(var(--vh1) * 56)` + `overflow: auto`；弹层 `.st-console.handoff-sheet { width: min(560px, 94%); height: auto; max-height: calc(var(--vh1) * 92) }`，`.handoff-body` 带 `min-height: 0; overflow: auto` 兜住小窗口 / 大字号。
+
+**为什么。** ① 那段文字就是点「插入」之前要判断的东西，只给前 600 个字等于让人对着看不到的内容做决定。② 弹层贴内容而不是钉 840px：它只装一段文字和两颗按钮，空白没有信息，还会把「下面还有」和「到此为止」变得分不清。③ 预览从 38vh 抬到 56vh：38vh 在手机上只有十来行，两条评审就看不满；56vh 加头尾仍在 92vh 以内。
+
+**坑。** 单类 `.handoff-sheet` 改不动宽高 —— `.st-console` 同权重，而且 settings-console.css 在 styles.css 之后加载，必须写成 `.st-console.handoff-sheet`。这一条由测试量几何来守（宽 ≤ 600、高 ≤ 92vh），别只靠读 CSS。
+
+**验证。** 新 `web/tests/handoff-sheet-browser.mjs`（esbuild 打 `styles.css` + `settings-console.css`，真 Chromium，`npm run test:handoff-sheet`）：2207 字正文预览一字不差、滚到底最后一行在框内、弹层不出视口且宽 560、提示行下面最多空 40px、短文不被撑开、字号 150% 同样在窗口里、两颗按钮各走各的出口。改前红：「预览被截断了：预览 601 字 / 正文 2207 字」；只回滚 CSS 时红：「弹层正文下面空了一大块：提示行往下还空 238px」。`npm --prefix web run typecheck` exit 0。
+
+## D432 内网通的消息菜单按真实尺寸落位：与主界面共用 `menuplace.ts`（用户 2026-11-27「如图 内网通给回复点赞穿模」＋截图）
+
+**问题。** `web/src/peer/main.ts` 的 `openMenu(x, y, items)` 在菜单还没挂进 DOM、也还没塞进快捷回应那排 emoji（`.rstrip`，7 颗 30px 按钮）的时候，就按 `window.innerWidth - 180` / `window.innerHeight - (items.length * 34 + 20)` 硬夹位置。带 emoji 那排时菜单实际是 270px 宽、比估算高出约 40px：右键自己那条贴右边的消息，菜单整块从窗口右边戳出去 90px（emoji 被切掉）；贴底的消息再从底部戳出几像素。用户看到的就是「回复点赞穿模」。
+
+**决定。** `openMenu` 多一个可选参数 `top`（就是那排快捷回应），先把 `top` 与 items 都挂进 `.menu`、再把菜单挂进 `#layer`，然后量 `offsetWidth` / `offsetHeight`，交给主界面那份 `placeMenu()`（`web/src/menuplace.ts`；单测 `web/tests/menuplace-unit.mjs`）算落位：贴点（当作零高锚点，`gap: 0`）下方开 → 下面放不下且上面更宽敞就翻上去 → 左右按真实宽度夹进 `MENU_EDGE`（8px）；两侧都塞不下时 `max-height` 封顶 + `overflow-y: auto` 自己滚。两处「先 `openMenu` 再 `layerEl.querySelector(".menu")?.prepend(reactStrip(...))`」的调用（悬停微笑按钮、右键消息菜单）改成把 strip 当参数传进去。
+
+**为什么。** ① 菜单宽度不由 items 决定，`items.length * 34` 这个估算从加上 emoji 那排那天起就不成立，硬编码的 180 也只是当时量的那一种菜单。② 落位规矩主界面已经有一份（组头 ⋯、置顶气泡、工作区浮层都在用，单测覆盖了贴底 / 窗口比菜单还矮 / 窄到塞不下），peer 页的菜单挂在 `#layer` 里、同样是 `position: fixed`，没有不共用的理由；再抄一份手写夹边就是把同一个坑留在第二个地方。③ 不做「贴右边就翻到鼠标左侧」这类特判：要夹的是两个方向，翻上去与封顶这两件事 `placeMenu` 已经做对了。
+
+**代价。** `placeMenu` 现在是两张页面共用的：改它的语义会同时影响主界面与内网通（这是想要的，也意味着别在 `openMenu` 里另造一套封顶逻辑）。封顶要滚的时候，emoji 那排会跟着菜单项一起滚。
+
+**验证。** 新探针 `node probes/peer-menu-fit.mjs <A bridge> <B bridge> <B peer>`（两份测试实例 + 真 Chromium；测量前等 400ms —— mac 主题 `mac-menu-in` 有 260ms 入场缩放，动画期间 `getBoundingClientRect` 带 transform，早量会把「出界 90px」和「刚好在里」量混）。修前 / 修后：① 1280×860 右键贴右边，菜单右出界 90px → `left 1002`、`right 1272`（正好 8px 边距）；② 悬停微笑按钮只弹 emoji 排，右出界 12px → 在内；③ 720×420 贴底右键，右出界 90px + 底部出界 → 翻到上方 `top 8`、高 212 全在窗口里；④ 420px 窄窗右键，右出界 90px → 在内。截图 `.scratch/peer-menu-fit/right-edge-menu.png`、`.scratch/peer-menu-fit/short-window-menu.png`。`npm --prefix web run typecheck`（含 viewport / layers 守卫）、`npm run test:menuplace`、`npm run test:viewport` 均 exit 0。
+
+## D433 端口被占之后内网通要能自己回来：30 秒探一次端口，页面「重试」真的重新 fork（用户 2026-11-27 截图「出现了内网通被占用的情况」）
+
+**问题。** 状态条一直挂着「peer 端口 7865 被占用：另一份 peer 在跑（或者别的程序占了）」，可 `netstat` 里 7865 已经空着 —— 占用者早就走了。两条恢复路径同时断掉：
+
+- `PeerHost.spawn()` 的 exit handler 在 `code === 2` 时只写 `reason` 就 `return`，既不重启也不观察端口。设计初衷是「别和另一份 peer 抢」，但占用者是临时的（另一份 bridge / 探针 / 上一个还没退干净的 peer），它走了以后 bridge 永远不会再试。
+- 页面状态条的「重试」走 `refreshAll()` → `POST /api/peer/refresh` → 转发到 **peer 进程自己**的 `/peer/refresh`（那是「重新发现」）。peer 根本没在跑，这条请求必然 `{}` 400 `{"error":"fetch failed"}`，按钮形同虚设。
+
+证据链：`~/.pi-peer/logs/peer.log` 里 2026-11-26T11:42:52Z（本地 19:42）有一次 `0.0.0.0:7865` 成功启动（bridge 13408 也是 19:42:39 起的），另一份测试实例 11:52:47Z 起在 7897；之后 2026-11-27T01:26:22Z（本地 09:26）有一条 `监听 0.0.0.0:7865 失败：listen EADDRINUSE`，再往后 7865 就一直是空的。占用者是谁已无从追（进程已退），但「端口空着、页面仍说被占、重试无效」是稳定的。
+
+**触发源：热部署换脑。** 这次不是巧合，是稳定可复现的耦合 —— 每次热部署换脑都是一次赌博：
+
+- 换脑时新旧两代脑并存 5 秒（壳日志：`[host 01:26:24] 新脑 38884 就绪，观察 5s 再切` → `2026-11-27T01:26:29.825Z host: 被换下，退出`）。两代 `PeerHost` 都去 bind 同一个端口，新一代必然撞 `EADDRINUSE`：`peer.log` 里 `2026-11-27T01:26:22.982Z 监听 0.0.0.0:7865 失败：listen EADDRINUSE`，比 `新脑 38884 连上` 早 2 秒。
+- 撞上的那一代按本决策之前的代码永久放弃；5 秒后旧脑退出，peer 作为它的 `fork()` 子进程一起消失（实测 peer 81796 的父进程就是脑 52680），端口空出来却没人再试。这次红条从 01:26 挂到 01:55:48 换上 `f8bb83e` 那一代才恢复，整整 9 小时。
+- 所以「端口被占」不是罕见事故：`peer.log` 里 `监听 0.0.0.0:7865 失败` 共 1279 次，最近三次是 `2026-11-26T13:45:40` / `13:46:09` / `13:46:22`（约每 5 秒一次，又一次换脑窗口）。
+
+这条耦合也限定了修复的边界：30 秒探测在换脑场景下最多让内网通多挂半分钟，可以接受。想更快就得让壳在换脑时把旧 peer 一并收掉，而不是让两代去抢端口 —— 那是另一件事，记在这里备查。
+
+**决定。**
+
+- `bridge/src/peer.ts`：退出码 2 的分支不再一走了之 —— 记下 `reason` 后调 `schedulePortProbe()`，每 `PI_PEER_PORT_PROBE_MS`（默认 30 s，测试收紧到 300 ms）用 `net.connect(127.0.0.1:<port>)` 探一次。**只有 `ECONNREFUSED`**（确认没有监听者）才重新 `spawn()`；连得上、超时、其它错误都按「仍被占」再等一轮 —— 占用者可能只是个不做 HTTP 的 TCP server（探针），所以不能用 `/status` 探活。
+- 新增 `PeerHost.restart()`：`status` 有值（已经有一份在答 `/status`，可能是别的 peer）或子进程还在起的时候只回状态、不重复 fork；否则清掉退避 / 探测定时器、把 `restarts` 归零、立刻 `spawn()`。
+- `bridge/src/index.ts` 新增 `POST /api/peer/restart`（和别的 `/api/peer*` 共用同一层鉴权），把 `restart()` 的结果原样回给页面。
+- 页面 `web/src/peer/main.ts` 的状态条「重试」改为新的 `retryPeer()`：先 `POST /api/peer/restart`，再 `refreshAll()` 把状态读回来。`refreshAll()` 本身（另两个调用点是「立即重试」与「添加并刷新」）保持原语义不动。
+- `spawn()` 里清空 `reason`：进了这个函数就说明「没有可用子进程」，旧的失败原因（退出 / 端口被占）不该继续挂在页面。
+
+**为什么。** ① 不改成「退出码 2 立刻按 1s/2s/4s 退避重启」：另一份 peer 真的在跑时，那等于每隔一两秒 fork 一个注定失败、只会写一行日志的进程。30 秒一次的被动探测既安静，又能在占用者离开后一个周期内自愈。② 探「还能不能连上」而不是「HTTP 答不答」，是因为判据要和 `bind` 失败对齐：占端口的可能根本不是 peer。③ 「重试」必须真的 fork：用户点它的时候要的是「把内网通弄起来」，不是「再读一遍状态」。④ 不自动杀掉占端口的进程：那可能是用户自己另开的实例或别的服务，bridge 只负责不添乱。
+
+**代价。** 端口被占期间，桥每 30 秒多一个 `connect` 尝试（可以忽略）；页面最多晚 5 秒（`poll()` 周期）才看到恢复。手动重试在端口仍被占时会再失败一次，页面上的 `reason` 保持原样（用户看得到仍被占）。
+
+**验证。** 新测 `bridge/tests/peer-port-recovery.mjs`（自起真壳 + 真 peer，`PI_WEB_STATE` / `PI_AGENT_DIR` / `PI_PEER_STATE` / 组播端口全部隔离），两段：A 自动（`PI_PEER_PORT_PROBE_MS=300`，占端口 → 等「被占用」→ 释放 → ≤8 s 内 `running:true`）；B 手动（`PI_PEER_PORT_PROBE_MS=600000`，释放 1.5 s 后仍 `running:false`，`POST /api/peer/restart` 回 `{ok:true}` 并在 ≤8 s 内 `running:true`）。连跑三次全绿，单轮 41～51 s（两段各起一份真桥，`/healthz` 约 20 s）。
+
+写这个测试时踩了两个坑，后来者照做：① **先占端口再起壳**。反过来（壳起来、`/healthz` 通过、再 occupy）是彩票：peer 在脑启动的尾段才 fork，真撞上「端口还是空的」它就直接绑上了，测试变成时红时绿（第一次就 15 s 超时）。② 释放占位端口时不能只 `srv.close()`：桥每 300 ms `connect` 一次，`close()` 要等这些连接收尾，回调可能久久不来（实测卡到外层 300 s 超时被掐）。先 `srv.closeAllConnections()` 再 `close()` 就好；`taskkill` 也带上 `timeout: 15000`，免得 `spawnSync` 把整轮挂死。
+
+红验证：修复前同一路径用等价的 `.scratch` 脚本跑过 —— 释放端口 8 秒后仍 `running:false`、`POST /api/peer/refresh` 回 400 `fetch failed`、状态纹丝不动（两段都红）。`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck` 均 exit 0。
+## D434 内网通预览按类型渲染：网页进沙箱 iframe、md 排成文档、csv 画成表格、影音用浏览器播放器、Office 一键本机打开（用户 2026-11-27「当发送的文件为 html 时候，显示了源代码，没有正常显示。展开一下其他的文件类型」＋截图）
 
 **问题。** 收到的 `report.html` 在预览弹窗里是一屏带高亮的源码，标题栏还写着 `8.0 KB · application/octet-stream`。三个原因叠加：① `peer/src/files.ts` 的 `MIME` 表里根本没有 `.html`（也没有 `.css/.js/.xml/.yaml/.tsv/.webm/.mov/.mkv/.avi/.wav/.doc/.odt/...`），发送时 `mimeOf(name)` 就把它记成了 `application/octet-stream`；② `peer/src/http.ts` 的 `/files` 只信历史里存的那个 mime、不回退按文件名推断，`inline` 判据里也没有 html，于是回成 `attachment` + `octet-stream`，且没有任何 CSP；③ `web/src/peer/main.ts` 的 `fillPreview` 把 `TEXT_EXT`（含 `html?`）一律塞进 `<pre>`，所以就算头对了也还是源码。此外 `bridge/src/index.ts` 的 `/api/peer/file` 只转发 `content-type / content-length / content-disposition`，上游就算给了 CSP 也会被丢掉。
 

@@ -11,7 +11,7 @@
  */
 import { githubApi } from "./api.ts";
 import { createEl as el } from "./chat.ts";
-import { ghAge, ghAgeText, ghChurn, type GhSessionAccount, type GithubStateView, type PullDetailView, type PullRow, type PullsView } from "./github-shared.ts";
+import { ghAge, ghAgeText, ghChurn, type GhSessionAccount, type GithubStateView, type PullDetailView, type PullRow } from "./github-shared.ts";
 import { errText, tr } from "./i18n/index.ts";
 import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
 import { renderMarkdown } from "./md.ts";
@@ -210,8 +210,8 @@ export class GithubPanel {
     const url =
       this.view === "pull" && this.detail
         ? this.detail.pull.url
-        : this.state?.repo
-          ? `https://github.com/${this.state.repo}/pulls`
+        : repo
+          ? `https://github.com/${repo}/pulls`
           : "";
     if (url) {
       const open = el("button", "ghp-open", tr("在 GitHub 打开")) as HTMLButtonElement;
@@ -355,7 +355,9 @@ export class GithubPanel {
     const cells: HTMLElement[] = [];
     if (this.error) cells.push(el("div", "ghp-error", this.error));
     cells.push(...this.hintCells());
-    if (!this.state?.repo) {
+    // 认面板自己的仓库（`this.repo`）：从 PR 卡进来时它就是卡上的仓库。会话目录不是 git 仓库
+    // （多仓工作区的根，比如 C:\api）时 `state.repo` 是空的，但卡上的 PR 照样拿得到。
+    if (!this.repo && !this.state?.repo) {
       cells.push(el("div", "ghp-empty", tr("这个会话的目录没有 GitHub 远端（git remote get-url origin 是空的）。")));
       return cells;
     }

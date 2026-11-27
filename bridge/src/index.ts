@@ -1414,6 +1414,10 @@ async function main(): Promise<void> {
         return json(res, 400, { error: (err as Error).message });
       }
     }
+    if (url.pathname === "/api/peer/restart" && req.method === "POST") {
+      // 退出码 2（端口被占）时子进程不会自己回来：这一下是真的重新 fork，不是再读一遍状态。
+      return json(res, 200, peer.restart());
+    }
     if (url.pathname === "/api/peer/refresh" && req.method === "POST") {
       try {
         return json(res, 200, await peer.refresh());
@@ -3668,7 +3672,7 @@ async function main(): Promise<void> {
           // the old one).
           case "runtime.settings": {
             if (!(await requireStepUp())) return;
-            const saved = writeLifecycle({ idleMs: msg.idleMs, watermarkBytes: msg.watermarkBytes });
+            const saved = writeLifecycle({ idleMs: msg.idleMs, archiveIdleMs: msg.archiveIdleMs, watermarkBytes: msg.watermarkBytes });
             send({ type: "runtime.stats", ...(await sessions.runtimeStats()), saved: saved !== null });
             return;
           }
@@ -4096,7 +4100,7 @@ async function main(): Promise<void> {
               });
               void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
             } catch (err: any) {
-              send({ type: "review.state", dir, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              send({ type: "review.state", dir, sessionId: session, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
             }
             return;
           }
@@ -4131,9 +4135,9 @@ async function main(): Promise<void> {
                   apiBase: githubApiBase(),
                 });
                 // 带上实际用的账号：面板要能显示「这次是按谁去查的」，不然又只能猜（#17545）。
-                send({ type: "review.prs", dir: repo, ...out, login: gh.login });
+                send({ type: "review.prs", dir: repo, sessionId: session, asked: dir, ...out, login: gh.login });
               } catch (err: any) {
-                send({ type: "review.prs", dir, ok: false, prs: [], error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+                send({ type: "review.prs", dir, sessionId: session, asked: dir, ok: false, prs: [], error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
               }
             })();
             return;
@@ -4153,9 +4157,9 @@ async function main(): Promise<void> {
                   token: gh.restToken,
                   apiBase: githubApiBase(),
                 });
-                send({ type: "review.prinfo", dir: repo, pr: number, ...out, login: gh.login });
+                send({ type: "review.prinfo", dir: repo, sessionId: session, pr: number, ...out, login: gh.login });
               } catch (err: any) {
-                send({ type: "review.prinfo", dir, pr: number, ok: false, info: null, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+                send({ type: "review.prinfo", dir, sessionId: session, pr: number, ok: false, info: null, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
               }
             })();
             return;
@@ -4212,6 +4216,7 @@ async function main(): Promise<void> {
                 send({
                   type: "review.state",
                   dir,
+                  sessionId: session,
                   pinned: readReviewPin(session),
                   error: String(err?.message ?? err),
                   code: String(err?.code ?? "failed"),
@@ -4254,7 +4259,7 @@ async function main(): Promise<void> {
               const state = markFinding(repo, key, isMark(mark) ? mark : "", session);
               broadcast({ type: "review.state", dir: repo, pinned, sessionId: session, state });
             } catch (err: any) {
-              send({ type: "review.state", dir, error: String(err?.message ?? err) });
+              send({ type: "review.state", dir, sessionId: session, error: String(err?.message ?? err) });
             }
             return;
           }
@@ -4265,7 +4270,7 @@ async function main(): Promise<void> {
               const { repo, pinned } = effectiveReviewDir(dir, session);
               broadcast({ type: "review.state", dir: repo, pinned, sessionId: session, state: cleanRuns(repo, session) });
             } catch (err: any) {
-              send({ type: "review.state", dir, error: String(err?.message ?? err) });
+              send({ type: "review.state", dir, sessionId: session, error: String(err?.message ?? err) });
             }
             return;
           }
@@ -4813,6 +4818,11 @@ async function main(): Promise<void> {
       }
     });
   });
+
+  // D430：`archivedAt` 是后加的字段，旧 manage.json 里归档没有时间戳。开机补一个「此刻」并落盘
+  // 一次 —— 不然每次重启都从零开始算，一条常重启的桥永远收不掉已归档的会话。只在真有缺口时写。
+  const backfilled = sessions.manage.backfillArchived(Date.now());
+  if (backfilled) log(`manage: 给 ${backfilled} 条已归档会话补了归档时间（D430）`);
 
   sessions.startGc((id) => [...wss.clients].some((client) => (client as any).watching === id));
 
