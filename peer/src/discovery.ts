@@ -1,13 +1,9 @@
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
 import os from "node:os";
+import { normAddr } from "./addr.ts";
 import { knownAvatar } from "./avatars.ts";
 import { PROTO, VERSION, type PeerConfig } from "./config.ts";
-
-/** `::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台机器，比较前先归一（同 `messages.ts` 的 normAddr）。 */
-function normAddr(addr: string): string {
-  return addr.replace(/^::ffff:/, "").replace(/^::1$/, "127.0.0.1");
-}
 
 /** announce 里带的东西：对端据此渲染在线列表、据此把 `from` 反查成身份（决定 7/10）。 */
 export interface Announce {

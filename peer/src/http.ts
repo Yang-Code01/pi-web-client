@@ -96,6 +96,12 @@ function json(res: http.ServerResponse, status: number, body: unknown, extra: Re
   res.end(payload);
 }
 
+/**
+ * 请求体超过上限。和「传到一半断开」（ECONNRESET / req 的 error）区分开：
+ * 只有这一种才该回 413，别的失败得让页面提示「重试」而不是「图太大」。
+ */
+export class BodyTooLargeError extends Error {}
+
 function readBody(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -109,7 +115,7 @@ function readBody(req: http.IncomingMessage): Promise<any> {
       if (size > MAX_BODY) {
         tooLarge = true;
         chunks.length = 0;
-        reject(new Error("body too large"));
+        reject(new BodyTooLargeError("body too large"));
         // 拒绝后暂停读：既让处理器能把 413 / 400 写回去，又不会陪着攻击者把
         // 一个无限 body 全收下（请求没读完就结束响应，Node 自己会关连接）。
         req.pause();
@@ -125,6 +131,11 @@ function readBody(req: http.IncomingMessage): Promise<any> {
       }
     });
     req.on("error", reject);
+    // 客户端没传完就断开时 `error` 不一定触发，但 `close` 会：没收到完整请求就关，
+    // 按「上传中断」拒掉，别让 Promise 悬着（评审 4-5）。
+    req.on("close", () => {
+      if (!req.complete) reject(new Error("request aborted"));
+    });
   });
 }
 
@@ -147,7 +158,7 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
       if (size > limit) {
         tooLarge = true;
         chunks.length = 0;
-        reject(new Error("body too large"));
+        reject(new BodyTooLargeError("body too large"));
         // 同上：不再继续吞字节，响应写完由 Node 收尾。
         req.pause();
         return;
@@ -156,6 +167,10 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
     });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
+    // 同上：传一半断开也走失败回调。
+    req.on("close", () => {
+      if (!req.complete) reject(new Error("request aborted"));
+    });
   });
 }
 
@@ -296,8 +311,14 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       // 对端按 hash 来取图。图是内容寻址的：同一个 hash 的字节永远一样，可以放心长缓存。
       if (url.pathname === "/avatar" && req.method === "POST") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
-        const raw = await readRaw(req, MAX_AVATAR_BYTES).catch(() => null);
-        if (!raw) return json(res, 413, { error: "图片太大了（上限 512 KB）" }, { connection: "close" });
+        const raw = await readRaw(req, MAX_AVATAR_BYTES).catch((err: unknown) => err);
+        if (raw instanceof BodyTooLargeError) {
+          return json(res, 413, { error: "图片太大了（上限 512 KB）" }, { connection: "close" });
+        }
+        if (!Buffer.isBuffer(raw)) {
+          // 传一半断开（断网 / 关页面）也走失败分支，但原因不是「太大」。
+          return json(res, 400, { error: "上传中断了，再试一次" });
+        }
         const saved = saveAvatarFile(raw);
         if (!saved) return json(res, 400, { error: "不是支持的图片（PNG / JPEG / WebP / GIF）" });
         const changed = cfg.avatar !== saved.id;
@@ -312,7 +333,12 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       }
 
       if (url.pathname === "/avatar" && req.method === "GET") {
-        const found = findAvatarFile(url.searchParams.get("h") ?? "");
+        // 对局域网只回「本机当前广播的那一张」：这是给对端拉我们现在这张脸用的。
+        // 其它 hash（我换下来的旧图、对端缓存在我这里的图）只能走回环的 `/avatar/<nodeId>`，
+        // 否则局域网里拿着旧 hash 就能把 avatars/ 当图库翻（评审 4-6）。
+        const own = customAvatarHash(cfg.avatar);
+        const asked = url.searchParams.get("h") ?? "";
+        const found = own && asked === own ? findAvatarFile(own) : null;
         if (!found) return json(res, 404, { error: "没有这张图片" });
         return sendImage(res, found, "public, max-age=31536000, immutable");
       }

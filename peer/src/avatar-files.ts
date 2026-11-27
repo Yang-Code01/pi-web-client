@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { avatarHash, customAvatarId } from "./avatars.ts";
+import { hostForUrl } from "./addr.ts";
 import { MAX_AVATAR_HISTORY, statePath } from "./config.ts";
 
 /**
@@ -121,8 +122,19 @@ export function saveAvatarFile(buf: Buffer): StoredAvatar | null {
   } else {
     fs.mkdirSync(dir(), { recursive: true });
     const tmp = tmpPath(file);
-    fs.writeFileSync(tmp, buf);
-    fs.renameSync(tmp, file);
+    try {
+      fs.writeFileSync(tmp, buf);
+      fs.renameSync(tmp, file);
+    } catch (err) {
+      // 写一半失败（磁盘满 / 权限）时把临时文件收掉：prune 只认正式文件名，
+      // 这些 `.tmp-*` 留在 avatars/ 里没人会再碰（评审 4-3）。
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch {
+        /* 连删都删不掉就交给下一次 prune */
+      }
+      throw err;
+    }
   }
   cachePut({ buf, mime: kind.mime, hash });
   return { hash, id: customAvatarId(hash), mime: kind.mime, ext: kind.ext, bytes: buf.length };
@@ -245,13 +257,6 @@ export function pruneAvatarFiles(keep: string[] = [], max = MAX_CACHED): void {
   }
 }
 
-/** 把对端自报的地址收拾成能拼进 URL 的 host（IPv4-mapped / IPv6 / 回环）。 */
-function hostOf(addr: string): string {
-  let host = addr.replace(/^::ffff:/, "");
-  if (host === "::1") host = "127.0.0.1";
-  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-}
-
 /** 正在拉取的 hash：同一张图被好几个 `<img>` 同时要，别向对端发一串并发请求。 */
 const inflight = new Map<string, Promise<AvatarImage | null>>();
 
@@ -268,7 +273,7 @@ export function fetchRemoteAvatar(addr: string, port: number, hash: string): Pro
   if (running) return running;
   const task = (async (): Promise<AvatarImage | null> => {
     try {
-      const url = `http://${hostOf(addr)}:${Math.trunc(port)}/avatar?h=${h}`;
+      const url = `http://${hostForUrl(addr)}:${Math.trunc(port)}/avatar?h=${h}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
       if (!res.ok) return null;
       // 对端是**不可信输入**：不能先 arrayBuffer() 再判大小，几百 MB 的 body 会在

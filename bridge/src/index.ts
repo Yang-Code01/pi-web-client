@@ -343,6 +343,9 @@ function readBody(req: http.IncomingMessage): Promise<any> {
   });
 }
 
+/** 请求体超过上限（readRaw 的拒绝原因之一；另一种是传到一半断开）。 */
+class BodyTooLargeError extends Error {}
+
 /** 读原始字节（上传剪贴板图片）。和 readBody 的区别只有「不 JSON.parse」。 */
 function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -357,13 +360,16 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
       if (size > limit) {
         tooLarge = true;
         chunks.length = 0;
-        reject(new Error("body too large"));
+        reject(new BodyTooLargeError("body too large"));
         return;
       }
       chunks.push(c);
     });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
+    req.on("close", () => {
+      if (!req.complete) reject(new Error("request aborted"));
+    });
   });
 }
 
@@ -1270,8 +1276,16 @@ async function main(): Promise<void> {
     // 自定义头像：POST 是上传（页面已裁好 192×192 WebP），GET 是给 `<img>` 取图。
     // GET 走桥而不是直连 peer 的 7865：那条口子只对回环开，页面在别的机器 / 隧道里时够不着。
     if (url.pathname === "/api/peer/avatar" && req.method === "POST") {
-      const raw = await readRaw(req, MAX_AVATAR_UPLOAD).catch(() => null);
-      if (!raw) return json(res, 413, { error: "图片太大了（上限 2 MB）" }, { connection: "close" });
+      let raw: Buffer;
+      try {
+        raw = await readRaw(req, MAX_AVATAR_UPLOAD);
+      } catch (err) {
+        if (err instanceof BodyTooLargeError) {
+          return json(res, 413, { error: "图片太大了（上限 2 MB）" }, { connection: "close" });
+        }
+        // 传一半断开（断网 / 关页面）不是「太大」，别让用户照着改大小。
+        return json(res, 400, { error: "上传中断了，再试一次" });
+      }
       try {
         return json(res, 200, await peer.uploadAvatar(raw));
       } catch (err) {
@@ -1315,8 +1329,9 @@ async function main(): Promise<void> {
           .on("error", () => res.destroy())
           .pipe(res);
         return;
-      } catch (err) {
-        return json(res, 502, { error: (err as Error).message });
+      } catch {
+        // 和 POST 分支一致：上游异常（fetch failed / aborted）不是给用户看的文案。
+        return json(res, 502, { error: "内网通暂时连不上，稍后再试" });
       }
     }
     // 设置页「上传过的」：列表只包含用户自己传的图（对端缓存不算），删除也走这里。

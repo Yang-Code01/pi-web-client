@@ -1524,7 +1524,7 @@ export const en: Dict = {
   "PNG / JPEG / WebP / GIF，会居中裁成方形，动图只取第一帧。": "PNG / JPEG / WebP / GIF. Cropped to a square; animated images use the first frame.",
   "换完会立刻广播一次；对端按需拉图，取不到时先显示名字首字母。": "Announced right away; peers fetch the image on demand and fall back to your initials.",
   "这好像不是图片": "That doesn't look like an image",
-  "图片太大了（上限 12 MB）": "Image too large (12 MB max)",
+  "图片太大了（上限 {p1} MB）": "Image too large ({p1} MB max)",
   "这张图片读不出来": "Couldn't read that image",
   "这张图片太小了": "That image is too small",
   "上传过的": "Uploaded before",

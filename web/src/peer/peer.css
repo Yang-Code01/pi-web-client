@@ -831,7 +831,7 @@ body.embedded .brand .nm { display: none; }
 .me-pane .kv { gap: 10px; }
 .me-pane .kv > :last-child { min-width: 0; overflow-wrap: anywhere; }
 .me-copy { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.me-copy > :first-child { overflow: hidden; text-overflow: ellipsis; }
+.me-copy .me-id { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .me-copy .me-cp { width: 22px; height: 22px; flex: none; }
 .me-copy .me-cp svg { width: 12px; height: 12px; }
 

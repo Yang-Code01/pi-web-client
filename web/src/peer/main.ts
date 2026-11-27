@@ -522,28 +522,30 @@ function avatar(name: string, key: string, online?: boolean, pic?: string, zoom 
   // 第四参是「这一处确切知道他是哪张」的地方（「我」页 / 别人的头像就是他自己报的）；
   // 其余位置只用 nodeId 查表。
   const url = avatarUrl(pic ?? AVS.get(key), key);
+  let img: HTMLImageElement | null = null;
+  /** 没图 / 图裂都长这样：色相 + 首字母。两处共用，免得以后只改一处（评审 4-7）。 */
+  const showLetter = () => {
+    box.classList.remove("pic");
+    // 图没了就别再假装能看大图：光标、悬停提示一并收回。
+    box.classList.remove("av-open");
+    box.removeAttribute("title");
+    img?.remove();
+    img = null;
+    box.style.setProperty("--h", String(hueOf(key)));
+    // 用 span 塞首字母而不是 textContent：后者会把 `online` 追加的 .st 圆点一起抹掉。
+    if (!box.querySelector(".av-letter")) {
+      box.prepend(h("span", "av-letter", (name.trim()[0] ?? "?").toUpperCase()));
+    }
+  };
   if (url) {
     box.classList.add("pic");
-    const img = document.createElement("img");
+    img = document.createElement("img");
     img.className = "av-img";
     img.src = url;
     img.alt = "";
     img.draggable = false;
     // 自定义头像取不到（对端离线、缓存被清、老版本没这口子）时退回字母，别留个白框。
-    img.addEventListener(
-      "error",
-      () => {
-        box.classList.remove("pic");
-        // 图没了就别再假装能看大图：光标、悬停提示一并收回。
-        box.classList.remove("av-open");
-        box.removeAttribute("title");
-        img.remove();
-        box.style.setProperty("--h", String(hueOf(key)));
-        // 用 span 塞首字母而不是 textContent：后者会把 `online` 追加的 .st 圆点一起抹掉。
-        box.prepend(h("span", "av-letter", (name.trim()[0] ?? "?").toUpperCase()));
-      },
-      { once: true },
-    );
+    img.addEventListener("error", showLetter, { once: true });
     box.append(img);
     // 点个头像看大图。列表 / 通讯录 / 群成员那些「整行可点」的地方传 zoom=false：
     // 那里的头像属于行，点它应该照旧打开会话 / 选中 / 勾选，不能抢走行的点击。
@@ -553,14 +555,14 @@ function avatar(name: string, key: string, online?: boolean, pic?: string, zoom 
       box.addEventListener("click", (ev) => {
         if (box.closest("button")) return;
         // 图已经加载失败、退回字母了：这时候再点不该弹一个空灯箱。
-        if (!img.isConnected) return;
+        const shown = img;
+        if (!shown?.isConnected) return;
         ev.stopPropagation();
-        openAvatarViewer(img.getAttribute("src") ?? "", name);
+        openAvatarViewer(shown.getAttribute("src") ?? "", name);
       });
     }
   } else {
-    box.style.setProperty("--h", String(hueOf(key)));
-    box.textContent = (name.trim()[0] ?? "?").toUpperCase();
+    showLetter();
   }
   if (online !== undefined) {
     const dot = h("i", `st${online ? " on" : ""}`);
@@ -3899,7 +3901,10 @@ const AVATAR_SOURCE_MAX = 12 * 1024 * 1024;
  */
 async function avatarBlob(file: File): Promise<Blob> {
   if (!file.type.startsWith("image/")) throw new Error(tr("这好像不是图片"));
-  if (file.size > AVATAR_SOURCE_MAX) throw new Error(tr("图片太大了（上限 12 MB）"));
+  if (file.size > AVATAR_SOURCE_MAX) {
+    // 上限只写在常量里：文案里的数字跟着它走，改上限时不会漏改提示（评审 4-8）。
+    throw new Error(tr("图片太大了（上限 {p1} MB）", { p1: AVATAR_SOURCE_MAX / 1024 / 1024 }));
+  }
   let bmp: ImageBitmap;
   try {
     // 手机竖拍的照片带 EXIF 方向；`from-image` 让浏览器先摆正，不然裁出来是躺着的。
@@ -4054,7 +4059,9 @@ function renderMe(): void {
     info.append(h("h3", "", tr("本机身份")));
     const kv = h("div", "kv me-kv");
     const nodeV = h("span", "v me-copy");
-    nodeV.append(document.createTextNode(st.nodeId));
+    // nodeId 得包一层元素才能吃 text-overflow:ellipsis：文本节点不是元素，
+    // 原来的 `> :first-child` 实际命中的是后面的复制按钮（评审 4-9）。
+    nodeV.append(h("span", "me-id", st.nodeId));
     const cp = h("button", "icon-btn me-cp") as HTMLButtonElement;
     cp.type = "button";
     cp.title = tr("复制 nodeId");
