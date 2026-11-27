@@ -238,15 +238,24 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const body = await readBody(req).catch(() => null);
         if (!body || body.proto !== PROTO || typeof body.nodeId !== "string") return json(res, 400, { error: "bad hello" });
         if (body.nodeId !== nodeId) {
+          // 这个地址之前就收到过他的包吗？**必须在 recordHello 之前问**：它会把 `from` 也
+          // 记进 ips，之后再问就永远为真。
+          const knownFrom = discovery.hasAddr(body.nodeId, from);
           discovery.recordHello(body, from);
           // 通讯录里已经有的人：顺手把他的头像对齐（announce 每 10 秒来一次，这里几乎不落盘）。
-          relations.noteSeen({
-            nodeId: body.nodeId,
-            nickname: typeof body.nickname === "string" ? body.nickname : undefined,
-            hostname: typeof body.hostname === "string" ? body.hostname : undefined,
-            port: Number(body.port) || undefined,
-            avatar: typeof body.avatar === "string" ? body.avatar : undefined,
-          });
+          // 只对「来源地址对得上」的做：在线表是内存里的、30 秒就自愈，而这里写的是
+          // `peers.json`，落盘之后对方离线也还留着 —— 不核对来源的话，局域网里谁都能
+          // 拿别人的 nodeId 把头像永久改掉。（局域网本身是信任模型，消息 / 文件都不核对
+          // 来源，这里只保证「落盘的那份」不比 announce 更轻信。）
+          if (knownFrom) {
+            relations.noteSeen({
+              nodeId: body.nodeId,
+              nickname: typeof body.nickname === "string" ? body.nickname : undefined,
+              hostname: typeof body.hostname === "string" ? body.hostname : undefined,
+              port: Number(body.port) || undefined,
+              avatar: typeof body.avatar === "string" ? body.avatar : undefined,
+            });
+          }
         }
         if (cfg.hidden) return json(res, 200, { proto: PROTO, hidden: true });
         return json(res, 200, identity());

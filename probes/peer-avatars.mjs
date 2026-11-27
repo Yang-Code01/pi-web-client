@@ -110,6 +110,24 @@ const msgPics = await page.evaluate(() => [...document.querySelectorAll(".msg .a
 check("气泡里的头像也画出来了", msgPics > 0, String(msgPics));
 if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "chat.png") });
 
+// ---- 3b. 对方换脸之后，列表里不能还显示「他换之前发消息时那张」：历史消息里的
+//          `from.avatar` 是最旧的来源，不许覆盖在线表 / 通讯录。
+const oldSrc = await page.evaluate((bId) => {
+  const row = document.querySelector(`#list [data-id="${bId}"]`) ?? document.querySelector("#list .row");
+  return row?.querySelector(".av-img")?.getAttribute("src") ?? "";
+}, bSt.nodeId);
+const freshB = IDS.find((id) => id !== bSt.avatar) ?? IDS[0];
+await b.post("/api/peer/config", { avatar: freshB });
+await sleep(1500);
+await page.reload();
+await page.waitForSelector("#list .row", { timeout: 15000 });
+await sleep(1200);
+const newSrc = await page.evaluate((bId) => {
+  const row = document.querySelector(`#list [data-id="${bId}"]`) ?? document.querySelector("#list .row");
+  return row?.querySelector(".av-img")?.getAttribute("src") ?? "";
+}, bSt.nodeId);
+check("B 换脸后 A 的列表跟着换（历史消息不反盖）", Boolean(newSrc) && newSrc !== oldSrc && Boolean(oldSrc));
+
 // ---- 4. 「我」页：12 张、当前那张被选中、点一张就换
 await page.click('#rail button[title="我"]');
 await page.waitForSelector(".avgrid .avpick", { timeout: 10000 });

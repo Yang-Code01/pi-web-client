@@ -469,6 +469,8 @@ function hueOf(key: string): number {
 /**
  * nodeId → 头像 id。每次数据刷新时重建（`rememberAvatars`），列表 / 气泡 / 成员面板
  * 都只认得 nodeId，靠它换成图。没有条目的人退回「首字母 + 色相」。
+ * 每次重建前先清空：不然对方换成了一个我们不认识的 id（或者那是台老版本对端、
+ * 我们刚把他从名单里删了），表里还留着上一次那张，永远不会退回首字母。
  */
 const AVS = new Map<string, string>();
 
@@ -477,17 +479,24 @@ function rememberAvatar(nodeId: string, avatar?: string): void {
   AVS.set(nodeId, avatar);
 }
 
-/** 把手上所有带身份的数据过一遍（在线表 / 会话 / 通讯录 / 消息 / 群成员）。 */
+/**
+ * 把手上所有带身份的数据过一遍（在线表 / 会话 / 通讯录 / 消息 / 群成员）。
+ *
+ * **顺序就是新鲜度**：后写覆盖先写，所以从最旧的开始。历史消息里 `from.avatar` 是
+ * 「他发那条消息时」的脸 —— 对方换过头像之后它就是旧的，哪怕当前会话里还留着他换之前
+ * 的消息；在线表 / 通讯录 / 会话摘要才是「他现在长什么样」。
+ */
 function rememberAvatars(): void {
-  const st = S.view?.status;
-  if (st) rememberAvatar(st.nodeId, st.avatar);
-  for (const p of st?.online ?? []) rememberAvatar(p.nodeId, p.avatar);
+  AVS.clear();
+  for (const e of S.msgs) rememberAvatar(e.from?.nodeId, e.from?.avatar);
   for (const t of S.threads) {
-    rememberAvatar(t.nodeId, t.avatar);
     for (const m of t.group?.members ?? []) rememberAvatar(m.nodeId, m.avatar);
+    rememberAvatar(t.nodeId, t.avatar);
   }
   for (const c of S.contacts) rememberAvatar(c.nodeId, c.avatar);
-  for (const e of S.msgs) rememberAvatar(e.from?.nodeId, e.from?.avatar);
+  const st = S.view?.status;
+  for (const p of st?.online ?? []) rememberAvatar(p.nodeId, p.avatar);
+  if (st) rememberAvatar(st.nodeId, st.avatar);
 }
 
 function avatar(name: string, key: string, online?: boolean, pic?: string): HTMLElement {
