@@ -836,6 +836,9 @@ function searchBox(placeholder: string): HTMLElement {
 /**
  * 整块重画会把正在输入的输入框一起换掉（焦点、光标、选区全没）。
  * 重画前记住「哪个带 data-keep 的元素拿着焦点」，重画后把焦点与选区还回去。
+ * 输入框是 contenteditable（`.peer-rich`）：它跨重画复用同一批节点，但被摘下再挂回时选区会丢，
+ * 光是 focus() 会把光标放到最前面 —— 所以把选区两端的（节点, 偏移）存下来原样放回。
+ * 不能存 Range 对象：Range 是活的，节点被摘下那一刻它会被浏览器挤到父节点上。
  */
 function rerender(rebuild: () => void): void {
   const active = document.activeElement;
@@ -844,11 +847,25 @@ function rerender(rebuild: () => void): void {
     active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
       ? ([active.selectionStart, active.selectionEnd] as const)
       : null;
+  const docSel = document.getSelection();
+  // 用 anchor / focus 而不是 start / end：反向拖选（Shift+←）的方向也一起保住。
+  const a0 = keep && !sel && active instanceof HTMLElement && docSel?.rangeCount ? docSel : null;
+  const range =
+    a0?.anchorNode && a0.focusNode && active instanceof HTMLElement && active.contains(a0.anchorNode) && active.contains(a0.focusNode)
+      ? { sc: a0.anchorNode, so: a0.anchorOffset, ec: a0.focusNode, eo: a0.focusOffset }
+      : null;
   rebuild();
   if (!keep) return;
   const next = document.querySelector<HTMLElement>(`[data-keep="${keep}"]`);
   if (!next) return;
   next.focus({ preventScroll: true });
+  if (range && docSel && next.contains(range.sc) && next.contains(range.ec)) {
+    try {
+      docSel.setBaseAndExtent(range.sc, range.so, range.ec, range.eo);
+    } catch {
+      /* 节点在重画里被改短了：焦点回来就够 */
+    }
+  }
   if (sel && (next instanceof HTMLInputElement || next instanceof HTMLTextAreaElement)) {
     const end = next.value.length;
     const at = (n: number | null): number => Math.min(n ?? end, end);
