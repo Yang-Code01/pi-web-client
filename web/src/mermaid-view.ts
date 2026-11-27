@@ -74,6 +74,9 @@ export function mermaidBlock(text: string, pre: HTMLElement): HTMLElement {
   box.appendChild(pre);
   const id = `md-mermaid-${++seq}`;
   const job = async () => {
+    // 预览切走 / 被重新渲染后，box 已经不在文档里：调用方都是同步 append 的，
+    // 到这里还不连接就是被丢弃了，跳过 render，不占串行队列也不白做布局。
+    if (!box.isConnected) return;
     try {
       const mermaid = await loadMermaid();
       ensureInit(mermaid);

@@ -69,6 +69,7 @@ try {
     const boxes = [...doc.querySelectorAll(".md-mermaid")];
     return {
       states: boxes.map((b) => b.dataset.state),
+    pending: boxes.filter((b) => b.dataset.state === "pending").length,
       svgs: boxes.map((b) => b.querySelectorAll("svg").length),
       classText: boxes[0]?.textContent ?? "",
       svgWidth: boxes[0]?.querySelector("svg")?.getAttribute("width") ?? null,
@@ -89,6 +90,7 @@ try {
   await browser.close();
 }
 
+assert.equal(out.pending, 0, "20 秒内没有图还停在 pending（渲染卡住时先看这条）");
 assert.deepEqual(out.states, ["ok", "ok", "error"], "两张合法图渲染成功、坏图标成 error");
 assert.deepEqual(out.svgs, [1, 1, 0], "成功的块里是一张 svg，失败的块里没有");
 assert.ok(out.classText.includes("Foo") && out.classText.includes("bar()"), "类图里有类名和方法名");
