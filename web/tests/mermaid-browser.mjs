@@ -7,13 +7,14 @@
  *   node web/tests/mermaid-browser.mjs
  */
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { loadPlaywright } from "../../tools/playwright.mjs";
 
 const bundled = await build({
   stdin: {
     contents: `export { renderMarkdown } from "./src/md.ts"; export { mermaidTheme } from "./src/mermaid-view.ts";`,
-    resolveDir: new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"),
+    resolveDir: fileURLToPath(new URL("..", import.meta.url)),
     loader: "ts",
   },
   bundle: true,
@@ -67,6 +68,8 @@ const out = await page.evaluate(async (src) => {
     states: boxes.map((b) => b.dataset.state),
     svgs: boxes.map((b) => b.querySelectorAll("svg").length),
     classText: boxes[0]?.textContent ?? "",
+    svgWidth: boxes[0]?.querySelector("svg")?.getAttribute("width") ?? null,
+    svgViewBox: boxes[0]?.querySelector("svg")?.viewBox?.baseVal?.width ?? null,
     seqHasImg: boxes[1]?.querySelectorAll("img").length ?? -1,
     seqHasOnerror: boxes[1]?.querySelectorAll("[onerror]").length ?? -1,
     seqText: boxes[1]?.textContent ?? "",
@@ -85,6 +88,7 @@ await browser.close();
 assert.deepEqual(out.states, ["ok", "ok", "error"], "两张合法图渲染成功、坏图标成 error");
 assert.deepEqual(out.svgs, [1, 1, 0], "成功的块里是一张 svg，失败的块里没有");
 assert.ok(out.classText.includes("Foo") && out.classText.includes("bar()"), "类图里有类名和方法名");
+assert.ok(out.svgViewBox > 0 && Number(out.svgWidth) === Math.ceil(out.svgViewBox), "svg 按 viewBox 原始宽铺开（不是 width=100%，宽图靠横向滚动）");
 assert.equal(out.seqHasImg, 0, "strict 模式下标签里的 <img> 被清掉");
 assert.equal(out.seqHasOnerror, 0, "没有带 onerror 属性的元素进入页面");
 assert.ok(out.seqText.includes("hi"), "清掉标签后正文还在");
