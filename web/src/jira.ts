@@ -305,9 +305,6 @@ export class JiraPanel {
 
   private mountShell(): void {
     const back = markSurface(el("div", "jc-back"), "window");
-    back.addEventListener("mousedown", (ev) => {
-      if (ev.target === back) this.close();
-    });
     const shell = el("section", "jc-console");
     shell.setAttribute("role", "dialog");
     shell.setAttribute("aria-modal", "true");
@@ -2054,7 +2051,7 @@ export class JiraPanel {
     this.repaintDownloads(key, siteUrl);
   }
 
-  /** 面板里的一层小确认（下载冲突、交接前问要不要先下附件）。Esc / 点空白 = 取消。 */
+  /** 面板里的一层小确认（下载冲突、交接前问要不要先下附件）。Esc / 取消按钮 = 取消；点遮罩不关（D437）。 */
   private ask(opts: {
     title: string;
     text?: string;
@@ -2096,9 +2093,6 @@ export class JiraPanel {
       }
       card.append(row);
       back.append(card);
-      back.onmousedown = (ev) => {
-        if (ev.target === back) finish(null);
-      };
       document.addEventListener("keydown", onKey, true);
       host.append(back);
       card.querySelector<HTMLElement>("button")?.focus();
@@ -2302,9 +2296,6 @@ export class JiraPanel {
   private openRootPicker(onSaved: (root: string) => void): void {
     this.closePicker();
     const layer = markSurface(el("div", "jira-picker"), "window");
-    layer.onclick = (ev) => {
-      if (ev.target === layer) this.closePicker();
-    };
     const box = el("div", "jira-picker-box");
     const head = el("div", "jira-picker-head");
     head.append(el("div", "sheet-title", this.attachRoot ? tr("换一个附件根目录") : tr("选一个附件根目录")));

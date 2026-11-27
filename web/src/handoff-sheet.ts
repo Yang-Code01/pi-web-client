@@ -28,9 +28,6 @@ export class HandoffSheet {
   constructor(opts: HandoffOptions) {
     this.opts = opts;
     this.back = markSurface(el("div", "sheet-back center rv-back"), "window");
-    this.back.onclick = (ev) => {
-      if (ev.target === this.back) this.close();
-    };
 
     const sheet = el("section", "st-console handoff-sheet");
     sheet.setAttribute("role", "dialog");

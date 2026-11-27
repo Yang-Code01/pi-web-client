@@ -3260,7 +3260,6 @@ export const en: Dict = {
   "不发": "Don't send",
   "你选了不发，这封信没有发出去。": "You chose not to send, so this email was not sent.",
   "你按了 Esc，这封信没有发出去。": "You pressed Esc, so this email was not sent.",
-  "你在确认框外面点了，这封信没有发。": "You clicked outside the dialog, so this email was not sent.",
   "放了 5 分钟没点确认，这封信没有发出去。": "No answer for 5 minutes, so this email was not sent.",
   "后面还有 {n} 封在排队。": "{n} more email(s) waiting in line.",
   "{label}：{value}": "{label}: {value}",

@@ -58,9 +58,6 @@ export class PrSheet {
   constructor(number: number) {
     this.number = number;
     this.back = markSurface(el("div", "sheet-back center rv-back"), "window");
-    this.back.onclick = (ev) => {
-      if (ev.target === this.back) this.close();
-    };
     const sheet = el("section", "st-console rv-sheet pr-sheet");
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-modal", "true");

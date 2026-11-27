@@ -33,6 +33,54 @@ export interface SurfaceOpts {
   enter?: "drawer" | "side" | "alert" | "none";
   /** 灯箱那种更暗的遮罩（`mac.css` 里 `--mac-scrim` 之外的一档）。 */
   dim?: "dark";
+  /**
+   * 只对 `window` 有意义：点遮罩时调它（一般就是关掉这层）。**不写就是点遮罩不关、面板轻弹一下**
+   * （D437）。现在只有图片灯箱写它：看图时点黑底退出最自然，误触也不丢东西。别的窗口别开这个口子。
+   */
+  dismiss?: () => void;
+}
+
+/** 显式声明了「点遮罩就关」的窗口根 → 关闭函数。 */
+const backdropDismiss = new WeakMap<HTMLElement, () => void>();
+/** 这一下点击是不是从遮罩上按下的：在面板里拖选 / 拖滚动条、在遮罩上松手，不算点遮罩。 */
+let downTarget: EventTarget | null = null;
+let backdropInstalled = false;
+
+function isWindowRoot(node: EventTarget | null): node is HTMLElement {
+  return node instanceof HTMLElement && node.dataset.macSurface === "window";
+}
+
+/** 点遮罩不关的反馈：面板轻轻放大再回来，约 150ms。用 WAAPI 的 `scale`，不碰 CSS 的 `animation` / `transform`，
+ *  入场还没演完时点了也不会把入场打断。系统开了「减少动态效果」就不演。 */
+export function nudgeWindow(root: HTMLElement): void {
+  const panel = [...root.children].find((c): c is HTMLElement => c instanceof HTMLElement && !c.hidden) ?? null;
+  if (!panel || typeof panel.animate !== "function") return;
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  for (const a of panel.getAnimations()) if (a.id === "backdrop-nudge") a.cancel();
+  panel.animate([{ scale: "1" }, { scale: "1.015" }, { scale: "1" }], {
+    duration: 160,
+    easing: "ease-out",
+    id: "backdrop-nudge",
+  });
+}
+
+/** 遮罩上的点击全局只在这一处处理（D437）：声明了 `dismiss` 的关，其余只轻弹。不拦传播 ——
+ *  窗口里开着的下拉 / 菜单靠 document 上的监听「点外面就关」，点遮罩也得让它们收起。 */
+function installBackdrop(): void {
+  if (backdropInstalled || typeof document === "undefined") return;
+  backdropInstalled = true;
+  document.addEventListener("pointerdown", (ev) => (downTarget = ev.target), true);
+  document.addEventListener("click", (ev) => {
+    const target = ev.target;
+    const pressed = downTarget;
+    downTarget = null;
+    if (!isWindowRoot(target)) return;
+    // 键盘触发的 click（detail 0）不会落在遮罩上；鼠标从面板里按下、拖到遮罩上松手也不算。
+    if (pressed !== null && pressed !== target) return;
+    const dismiss = backdropDismiss.get(target);
+    if (dismiss) dismiss();
+    else nudgeWindow(target);
+  });
 }
 
 /**
@@ -44,6 +92,10 @@ export function markSurface<T extends HTMLElement>(node: T, kind: SurfaceKind, o
   node.dataset.macSurface = kind;
   if (opts.enter) node.dataset.macEnter = opts.enter;
   if (opts.dim) node.dataset.macDim = opts.dim;
+  if (kind === "window") {
+    if (opts.dismiss) backdropDismiss.set(node, opts.dismiss);
+    installBackdrop();
+  }
   return node;
 }
 

@@ -191,9 +191,6 @@ class SysPanel {
 
   private build(): void {
     const root = markSurface(el("div", "sys-back"), "window");
-    root.addEventListener("mousedown", (ev) => {
-      if (ev.target === root) this.close();
-    });
     const consoleNode = el("section", "sys-console");
     consoleNode.setAttribute("role", "dialog");
     consoleNode.setAttribute("aria-modal", "true");

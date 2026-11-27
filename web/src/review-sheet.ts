@@ -107,9 +107,6 @@ export class ReviewSheet {
   constructor(input: ReviewPanelInput) {
     this.input = input;
     this.back = markSurface(el("div", "sheet-back center rv-back"), "window");
-    this.back.onclick = (ev) => {
-      if (ev.target === this.back) this.close();
-    };
 
     this.sheet = el("section", "st-console rv-sheet");
     this.sheet.setAttribute("role", "dialog");

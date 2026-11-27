@@ -84,9 +84,6 @@ function saveQuery(q: string): void {
 
 export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
   const back = markSurface(el("div", "sys-back fse-back"), "window");
-  back.onclick = (ev) => {
-    if (ev.target === back) opts.onClose();
-  };
 
   const shell = el("section", "sys-console fse-console");
   shell.setAttribute("role", "dialog");

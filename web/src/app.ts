@@ -593,7 +593,7 @@ export class App {
   private failToastTimer = 0;
   private notes: Note[] = [];
   /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。
-   *  它只属于「我自己刚建的那个会话」：面板一关（取消 / 点背景）或建会话失败就丢掉，
+   *  它只属于「我自己刚建的那个会话」：面板一关（取消 / ✕ / Esc）或建会话失败就丢掉，
    *  否则下一次打开的任何会话都会莫名其妙带上上一个会话的笔记。 */
   private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
@@ -3712,14 +3712,16 @@ export class App {
     const err = el("div", "err");
     const submit = el("button", "btn primary", tr("继续"));
     submit.type = "submit";
-    form.append(h, p, input, err, submit);
-    modal.append(form);
-    modal.onclick = (ev) => {
-      if (ev.target !== modal) return;
+    // 点遮罩不关（D437）：放弃只走「取消」/ Esc。手机上没有 Esc，所以得有一颗看得见的按钮。
+    const cancel = el("button", "btn ghost", tr("取消"));
+    cancel.type = "button";
+    cancel.onclick = () => {
       // Dismissed: whatever was waiting for the passphrase is abandoned, not sent later.
       this.pending = [];
       this.closeModal();
     };
+    form.append(h, p, input, err, submit, cancel);
+    modal.append(form);
     form.onsubmit = (ev) => {
       ev.preventDefault();
       const value = input.value.trim();
@@ -4465,9 +4467,6 @@ export class App {
     // 外壳同 pi 设置 / 本机管理（.st-console）：左栏分组目录，右边一页「统计卡 + 小节 + 面板」。
     // 两大类（外观 / 连接与设置）是标题旁的页签；左栏只列当前大类的子类，每个子类单独一页（只切显隐，不重建）。
     const back = el("div", "st-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
 
     const sheet = el("section", "st-console settings-sheet display-sheet");
     sheet.setAttribute("role", "dialog");
@@ -4722,7 +4721,7 @@ export class App {
       if (sizeFrame) return;
       sizeFrame = requestAnimationFrame(() => {
         sizeFrame = 0;
-        // 抽屉中途被关掉（Esc / 点背景）时这一帧还没跑：直接丢掉，别对着已摘掉的控件改 prefs。
+        // 抽屉中途被关掉（Esc / ✕）时这一帧还没跑：直接丢掉，别对着已摘掉的控件改 prefs。
         if (!range.isConnected) return;
         setScale(sizeNext, false);
       });
@@ -5696,9 +5695,6 @@ export class App {
     this.closeSheet();
     this.sheetKind = "peer";
     const back = el("div", "sheet-back center");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
 
     const sheet = el("div", "sheet peer-sheet");
     const head = el("div", "sheet-head");
@@ -5795,7 +5791,7 @@ export class App {
     this.closeSubSheet();
     this.sheetEscPop?.();
     this.sheetEscPop = null;
-    // 开新会话的面板被关掉（取消 / 点背景）= 放弃「交给 agent → 新开会话」那段待填的文字：
+    // 开新会话的面板被关掉（取消 / Esc）= 放弃「交给 agent → 新开会话」那段待填的文字：
     // 留着它，下一次开的会话会莫名其妙带着别的会话的笔记（见 prefillNext）。
     if (this.sheetKind === "new") this.prefillNext = null;
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
@@ -5880,9 +5876,6 @@ export class App {
     let query = "";
 
     const back = el("div", "st-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
 
     const sheet = el("section", "st-console settings-sheet model-sheet");
     sheet.setAttribute("role", "dialog");
@@ -6562,9 +6555,6 @@ export class App {
     this.skillTab = tab;
     this.skillNote = null;
     const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet settings-sheet ext-sheet skill-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", tr("技能商店")));
@@ -6628,9 +6618,6 @@ export class App {
     this.closeSheet();
     this.sheetKind = "context-insights";
     const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet settings-sheet context-insight-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", tr("上下文洞察")));
@@ -6664,9 +6651,6 @@ export class App {
     this.closeSheet();
     this.sheetKind = "context";
     const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet settings-sheet context-sheet");
     const head = el("div", "sheet-head");
     // #484：头栏右侧三个入口 —— 阈值设置 / 立即压缩 / 交接。
@@ -6745,9 +6729,6 @@ export class App {
     build(body);
     sheet.append(head, body);
     back.append(sheet);
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSubSheet();
-    };
     this.overlay(back);
     this.mountSubSheet(kind, back);
   }
@@ -7434,9 +7415,6 @@ export class App {
     this.closeSheet();
     this.sheetKind = "new";
     const back = el("div", "sheet-back center");
-    back.onclick = (ev) => {
-      if (ev.target === back && !this.creating) this.closeSheet();
-    };
     const sheet = el("div", "sheet ws-new-sheet new-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", tr("开新会话")));
@@ -8075,9 +8053,6 @@ export class App {
     savePrefs(this.prefs);
 
     const back = el("div", "sheet-back center");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet theme-intro-sheet");
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-label", tr("选一套主题"));
@@ -8126,9 +8101,6 @@ export class App {
     this.wsIntroShown = true;
 
     const back = el("div", "sheet-back center");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet ws-intro-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", tr("工作区")));
@@ -8553,9 +8525,6 @@ export class App {
     sheet.setAttribute("aria-modal", "true");
     sheet.setAttribute("aria-labelledby", "ws-delete-title");
     sheet.onclick = (event) => event.stopPropagation();
-    back.onclick = (event) => {
-      if (event.target === back) this.closeSheet();
-    };
 
     const head = el("div", "sheet-head");
     const title = el("div", "sheet-title", tr("删除工作区"));
@@ -8687,9 +8656,6 @@ export class App {
     this.closeSheet();
     this.sheetKind = "wsnew";
     const back = el("div", "sheet-back center");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet ws-new-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", tr("新建工作区 · 选一个目录")));
@@ -9262,9 +9228,6 @@ export class App {
     this.closeSheet();
     this.sheetKind = "display";
     const back = el("div", "st-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("section", "st-console settings-sheet art-sheet");
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-modal", "true");
@@ -9537,7 +9500,7 @@ export class App {
    * 和查看器分开是故意的：查看器负责「看文件」，这里负责「看这次改了什么」，各占一个全屏。
    */
   private async openDiffSheet(sessionId: string, path: string, known?: ArtifactList): Promise<void> {
-    // m00341：从产物列表点进来时不再关掉列表 —— 差分压成它的子层，关掉（关闭 / 点背景 / Esc）
+    // m00341：从产物列表点进来时不再关掉列表 —— 差分压成它的子层，关掉（关闭 / Esc）
     // 回到原来那份列表，筛选和滚动位置都还在。今天唯一的调用方是产物列表，一定有父层；
     // 没有父层时（比如以后改成从聊天直接开差分）走下面那条「自己就是一页面板」的老路，
     // 两条路的关闭行为一样（都只退自己）：所以这里的 if / else 是两种落点，不是兜底。
@@ -9553,9 +9516,6 @@ export class App {
     const dismiss = (): void => {
       if (overSheet) this.closeSubSheet();
       else this.closeSheet();
-    };
-    back.onclick = (ev) => {
-      if (ev.target === back) dismiss();
     };
     const sheet = el("div", "sheet diff-sheet");
     const head = el("div", "sheet-head");
@@ -9836,11 +9796,9 @@ export class App {
       retireOverlay(back);
     };
     close.onclick = shut;
-    back.onclick = (ev) => {
-      if (ev.target === back) shut();
-    };
     back.append(img, close);
-    this.overlay(back, "window", { dim: "dark" });
+    // 灯箱是「点遮罩不关」的唯一例外（D437）：看图点黑底退出最自然，误触也不丢东西。
+    this.overlay(back, "window", { dim: "dark", dismiss: shut });
     close.focus();
   }
 
@@ -12626,9 +12584,6 @@ export class App {
         btn.onclick = () => done(b.id);
         row.append(btn);
       }
-      back.onclick = (ev) => {
-        if (ev.target === back) done("cancel");
-      };
       pushEscLayer({ el: back, onEsc: () => done("cancel") });
       box.append(row);
       back.append(box);
@@ -12843,9 +12798,6 @@ export class App {
     // Q-035: the left column's 🗑 opens straight into the bin, so ask for the list right away.
     if (view === "trash") this.socket.send({ type: "manage", action: "trash.list" });
     const back = el("div", "sheet-back center");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     back.onkeydown = (ev) => {
       if (ev.key === "Escape") this.closeSheet();
     };
@@ -13803,9 +13755,6 @@ export class App {
     }
     if (tab === "passphrase") this.askPassphrase();
     const back = el("div", "st-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     // 根节点留着 .settings-sheet：styles.css 里 `.settings-sheet .settings-*` 那一段是各页 painter
     // 的样式，换壳只换容器。不加 .sheet —— `.sheet.settings-sheet` 会把宽度钉回 720px。
     const consoleNode = el("section", "st-console settings-sheet");
@@ -15511,9 +15460,6 @@ export class App {
     this.closeSheet();
     this.sheetKind = "share";
     const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet settings-sheet share-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", title));
@@ -16188,9 +16134,6 @@ export class App {
     btns.append(cancel, ok);
     form.append(h, p, btns);
     modal.append(form);
-    modal.onclick = (ev) => {
-      if (ev.target === modal) this.closeModal();
-    };
     form.onsubmit = (ev) => {
       ev.preventDefault();
       this.closeModal();
@@ -16209,9 +16152,6 @@ export class App {
     this.extDirty = false;
     this.extVars = [];
     const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet settings-sheet ext-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", tr("插件与 MCP")));
@@ -17280,9 +17220,6 @@ export class App {
     this.closeSheet();
     this.sheetKind = "tree";
     const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet tree-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", tr("会话树")));
@@ -17742,9 +17679,6 @@ export class App {
     this.closeSheet();
     this.sheetKind = "bg";
     const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet bg-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", tr("子代理")));
@@ -18391,9 +18325,6 @@ export class App {
     if (!this.images.length) return;
     this.closeSheet();
     const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
 
     const sheet = el("div", "sheet image-sheet");
     const head = el("div", "sheet-head");
@@ -20039,7 +19970,7 @@ export class App {
 
   /**
    * D232: 长参数 / 子代理步骤详情走一次模态对话框，读完就关。跟口令框同一层（`.modal`，z-index 50），
-   * Esc、点遮罩、右上角 ✕ 都关；正文可滚动，顶部给「复制」。
+   * Esc、右上角 ✕ 都关（点遮罩不关，D437）；正文可滚动，顶部给「复制」。
    */
   private openArgsDialog(opts: { title: string; meta?: string; blocks: { label?: string; text: string }[] }): void {
     this.argsDialogClose?.();
@@ -20095,9 +20026,6 @@ export class App {
       // 捕获阶段截住：底下的 Esc 归 sheet / 面板管，别关完对话框又顺手关掉一层。
       ev.stopImmediatePropagation();
       shut();
-    };
-    scrim.onclick = (ev) => {
-      if (ev.target === scrim) shut();
     };
     close.onclick = shut;
     this.overlay(scrim);
@@ -21459,9 +21387,6 @@ export class App {
     this.closeSheet();
     this.sheetKind = "keys";
     const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
     const sheet = el("div", "sheet keys-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", tr("快捷键")));

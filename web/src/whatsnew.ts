@@ -195,9 +195,6 @@ export function openWhatsnew(opts: WhatsnewDialogOptions): void {
 
   sheet.append(head, body, foot);
   back.append(sheet);
-  back.addEventListener("mousedown", (ev) => {
-    if (ev.target === back) close();
-  });
 
   untrap = trapEscape(close);
   mountOverlay(back);

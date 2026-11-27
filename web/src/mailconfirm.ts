@@ -7,7 +7,7 @@
  * 5 分钟回 `no-ack`，AI 表现成「发不出去」且不知道原因（D264）。
  *
  * 两条规矩：
- *   1. 只有「点了发送」才回 `ok:true`。Esc / 关闭 / 点遮罩 / 超时 都回 `ok:false` + 一句给人看的 `text`。
+ *   1. 只有「点了发送」才回 `ok:true`。Esc / 关闭 / 超时 都回（点遮罩不关，D437） `ok:false` + 一句给人看的 `text`。
  *   2. 排队与回执在 `MailConfirmQueue`（`mail-shared.ts`，无 DOM、可单测）；这里只管画和听键盘。
  */
 import { createEl as el } from "./chat.ts";
@@ -75,10 +75,6 @@ export class MailConfirmDialog {
     if (!this.root) this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
     const back = markSurface(el("div", "mc-back mc-back--confirm"), "window");
-    back.addEventListener("mousedown", (ev) => {
-      // 点遮罩 = 不发。别让它在键盘外悄悄消失，人得知道自己拒了这封。
-      if (ev.target === back) this.answer(false, "declined", tr("你在确认框外面点了，这封信没有发。"));
-    });
     const box = el("section", "mc-confirm");
     box.setAttribute("role", "dialog");
     box.setAttribute("aria-modal", "true");

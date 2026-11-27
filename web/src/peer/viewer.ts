@@ -164,7 +164,7 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
     const d = drag;
     drag = null;
     // 点在图外面的空白处（没拖动）= 关掉，和大多数看图器一样。
-    if (d && !d.moved && ev.target === stage) opts.onClose();
+    if (d && !d.moved && ev.target === stage) opts.onClose(); // backdrop-ok: 看图器是灯箱，点空白退出（D437 唯一例外）
   });
   stage.addEventListener("dblclick", (ev) => {
     if (Math.abs(scale - fit) < 0.01) zoomTo(1, ev.clientX, ev.clientY);

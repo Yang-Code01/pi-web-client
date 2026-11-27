@@ -409,9 +409,6 @@ export class ScratchChat {
 
   private build(): void {
     const back = markSurface(el("div", "sheet-back scratch-back"), "window", { enter: "side" });
-    back.onclick = (ev) => {
-      if (ev.target === back) this.close();
-    };
     // 拖到 dialog 上：只认文件。stopPropagation 挡掉 window 上主输入框那个 drop（不然两边都收）。
     const dropping = (ev: DragEvent) => Boolean(ev.dataTransfer?.types.includes("Files"));
     back.ondragover = (ev) => {

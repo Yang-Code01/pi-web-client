@@ -438,7 +438,7 @@ try {
   await page.waitForSelector(".scratch-sheet", { state: "hidden", timeout: 10000 });
   await page.locator('[data-act="look"]').click();
   await page.locator('.chip[lang="ja"]').click();
-  await page.mouse.click(5, 5); // 点 backdrop 收起「外观与语言」
+  await page.keyboard.press("Escape"); // 收起「外观与语言」（点遮罩不再关，D437）
   await page.waitForSelector(".sheet-back", { state: "hidden", timeout: 10000 }).catch(() => {});
   await btn.click();
   await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
@@ -546,7 +546,7 @@ try {
   await page.locator(".scratch-close").click();
   await page.locator('[data-act="look"]').click();
   await page.locator('.chip[lang="en"]').click();
-  await page.mouse.click(5, 5);
+  await page.keyboard.press("Escape");
   await page.waitForSelector(".sheet-back", { state: "hidden", timeout: 10000 }).catch(() => {});
   await btn.click();
   await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
