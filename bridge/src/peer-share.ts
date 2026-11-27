@@ -347,7 +347,9 @@ export async function sendShare(host: ShareHost, req: ShareRequest): Promise<{ o
   for (const attachment of prepared.attachments) {
     try {
       const sent = await host.sendFile(peer, attachment.path, attachment.name);
-      if (sent?.id) files.push(sent.id);
+      // 桥的 request() 只在 HTTP 状态不是 2xx 时抛；返回体里 ok:false / 缺 id 也是没传成。
+      if (!sent?.ok || !sent.id) throw new Error("对方没有收下（返回里没有 id）");
+      files.push(sent.id);
     } catch (err) {
       // 卡片已经发出去了：本体没跟上时说清楚是哪一份，别让用户以为整个共享失败了。
       throw new Error(`卡片已发出，但「${attachment.name}」没传过去：${(err as Error).message}（对方可以点重试，或你再发一次）`);
@@ -370,6 +372,8 @@ export interface AcceptedShare {
   type: ShareType;
   paths: string[];
   noteId?: string;
+  /** 落地目录（文件 / 会话）；用来判断「这次点的是不是同一个地方」。 */
+  target?: string;
 }
 
 export function shareAcceptedFile(): string {
@@ -447,7 +451,10 @@ export interface AcceptRequest {
  * - skill：把 zip 解到技能目录，校验路径不越界、不覆盖已有同名技能。
  * - session：md 写进 target / cwd。
  */
-export async function acceptShare(host: ShareHost, req: AcceptRequest): Promise<{ ok: boolean; type: ShareType; paths: string[]; noteId?: string }> {
+export async function acceptShare(
+  host: ShareHost,
+  req: AcceptRequest,
+): Promise<{ ok: boolean; type: ShareType; paths: string[]; noteId?: string; already?: boolean }> {
   const peer = String(req.peer ?? "").trim();
   const id = String(req.id ?? "").trim();
   if (!peer || !id) throw new Error("缺 peer 或 id");
@@ -469,9 +476,27 @@ export async function acceptShare(host: ShareHost, req: AcceptRequest): Promise<
     at: Number(card.at) || Date.now(),
   };
 
+  const key = `${origin.nodeId}:${id}`;
+  const done = readShareAccepted()[key];
+  /**
+   * 这张卡「落在哪」——幂等键的一部分。文件只有另存为才有落点（不另存就一直在收件箱里），
+   * 会话落在 target 或 cwd，技能落在技能目录。换了地方就算新的一次。
+   */
+  const landing = (): string => {
+    if (share.type === "file") return req.target ? path.resolve(cwd, String(req.target)) : "";
+    if (share.type === "session") return path.resolve(cwd, String(req.target ?? ""));
+    if (share.type === "skill") return path.join(skillDir(path.basename(wanted.find((f) => f.name.toLowerCase().endsWith(".zip"))?.name ?? "", ".zip"), req.scope === "project" ? "project" : "global", cwd), "");
+    return "";
+  };
+  const spot = landing();
+  // 同一张卡、同一个落点，第二次点不该再做一遍（重试 / 连点会重复导入记录、重复落盘）。
+  if (done && done.type === share.type && (done.target ?? "") === spot) {
+    return { ok: true, type: done.type, paths: done.paths, ...(done.noteId ? { noteId: done.noteId } : {}), already: true };
+  }
+
   if (share.type === "snippet") {
     const note = importNote({ title: share.title, body: share.body ?? "", kind: "shared", origin });
-    markShareAccepted(`${origin.nodeId}:${id}`, { at: Date.now(), type: "snippet", paths: [], noteId: note.id });
+    markShareAccepted(key, { at: Date.now(), type: "snippet", paths: [], noteId: note.id });
     return { ok: true, type: "snippet", paths: [], noteId: note.id };
   }
 
@@ -546,7 +571,9 @@ export async function acceptShare(host: ShareHost, req: AcceptRequest): Promise<
     paths.push(dir);
   }
 
-  markShareAccepted(`${origin.nodeId}:${id}`, { at: Date.now(), type: share.type, paths });
+  // 记下落点，第二次点同一张卡时好判断「是不是同一个地方」：
+  // 文件只有另存为才有落点（不收就一直在收件箱里），会话与技能总有。
+  markShareAccepted(key, { at: Date.now(), type: share.type, paths, ...(spot ? { target: spot } : {}) });
   return { ok: true, type: share.type, paths };
 }
 

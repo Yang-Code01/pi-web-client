@@ -45,6 +45,18 @@ async function api(pathname, init) {
 const get = (pathname) => api(pathname);
 const post = (pathname, body) => api(pathname, { method: "POST", body: JSON.stringify(body ?? {}) });
 
+/**
+ * 我是谁：`/api/peer/messages` 的响应里没有 status 字段，拿不到自己的 nodeId。
+ * 单独取一次 `/api/peer` 并缓存 —— 一个会话里 nodeId 不会变。
+ */
+let myNodeId = "";
+async function me() {
+  if (myNodeId) return myNodeId;
+  const data = await get("/api/peer");
+  myNodeId = String(data?.status?.nodeId ?? "");
+  return myNodeId;
+}
+
 /** 一屏之内说完：长正文折成一行，别把 8KB 预览整段塞进工具结果。 */
 function oneLine(text, max = 120) {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -189,9 +201,10 @@ async function history(args) {
   const data = await get(`/api/peer/messages?peer=${encodeURIComponent(peer)}&limit=${limit}`);
   const entries = (data.entries ?? []).filter((e) => e.kind !== "sys");
   if (!entries.length) return ok("这段会话还没有消息。");
+  const mine = await me();
   const lines = entries.map((e) => {
     const at = clock(e.at);
-    const from = e.from?.nodeId === (data.status?.nodeId ?? e.from?.nodeId) ? "我" : who(e.from);
+    const from = mine && e.from?.nodeId === mine ? "我" : who(e.from);
     if (e.recalled) return `[${at}] ${from}：（撤回了一条消息）`;
     if (e.kind === "note") return `[${at}] ${from}：【记录】${e.note?.title ?? ""} — ${oneLine(e.note?.body ?? "", 80)}`;
     if (e.kind === "share") {
@@ -205,13 +218,31 @@ async function history(args) {
   return ok(lines.join("\n"), { count: entries.length });
 }
 
+/**
+ * 桥的 replyTo 只接受 `{ id, from, excerpt }` 对象，给字符串会被静默忽略（引用就悄悄没了）。
+ * 这里拿 id 去历史里把引用补全；找不到就不引用，并把这件事说清楚。
+ */
+async function replyRef(peer, id) {
+  const data = await get(`/api/peer/messages?peer=${encodeURIComponent(peer)}&limit=200`);
+  const hit = (data.entries ?? []).find((e) => e.id === id);
+  if (!hit) return null;
+  const excerpt = oneLine(hit.text ?? hit.note?.title ?? hit.share?.title ?? hit.file?.name ?? "", 60);
+  return { id, from: String(hit.from?.nodeId ?? ""), excerpt };
+}
+
 async function sendText(args) {
   const peer = String(args.peer ?? "").trim();
   const text = String(args.text ?? "");
   if (!peer) throw new Error("要 peer（nodeId 或群 id）");
   if (!text.trim()) throw new Error("text 不能为空");
-  const res = await post("/api/peer/send", { peer, text, via: "pi", ...(args.replyTo ? { replyTo: String(args.replyTo) } : {}) });
-  return ok(`已交给内网通投递（消息 id \`${res.id ?? "?"}\`，${res.seq !== undefined ? `seq ${res.seq}` : "排队中"}）。`);
+  let replyTo;
+  let note = "";
+  if (args.replyTo) {
+    replyTo = (await replyRef(peer, String(args.replyTo))) ?? undefined;
+    if (!replyTo) note = "（要找的那条消息没在这段会话的最后 200 条里，这条没有带引用）";
+  }
+  const res = await post("/api/peer/send", { peer, text, via: "pi", ...(replyTo ? { replyTo } : {}) });
+  return ok(`已交给内网通投递（消息 id \`${res.id ?? "?"}\`，${res.seq !== undefined ? `seq ${res.seq}` : "排队中"}）。${note}`);
 }
 
 async function share(args) {

@@ -173,6 +173,18 @@ try {
   await until("A 的群卡有回执", async () => (await msgs(PA, gid)).find((e) => e.id === groupCard.id)?.acceptedBy?.includes(b));
   check(true, "群回执也回到发送方");
 
+  // ---- 伪造回执要拒（#8）：干脆绕过 B 自己的 /share/ack 校验，直接往 A 的收件口灌一帧 ----
+  const forged = await fetch(`http://127.0.0.1:${PA}/peer/inbox`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      proto: 1,
+      kind: "share-ack",
+      control: { id: "forged-1", at: Date.now(), from: { nodeId: b, nickname: "B", hostname: "x", port: PB }, ref: "no-such-card", thread: b },
+    }),
+  });
+  check(forged.status === 404, `对不存在的卡打回执被拒（实际 ${forged.status}）`);
+
   // ---- 记录包也能发群了（这条以前是 throw） ----
   const noteToGroup = await post(PA, "/note", {
     peer: gid,

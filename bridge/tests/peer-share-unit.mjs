@@ -201,7 +201,12 @@ test("acceptShare(skill) 解到项目技能目录，并拦住越界路径与同�
   const dir = path.join(cwd, ".pi", "skills", "s1");
   assert.deepEqual(res.paths, [dir]);
   assert.equal(fs.readFileSync(path.join(dir, "a", "b.txt"), "utf8"), "x");
-  await assert.rejects(acceptShare(fakeHost(entries, { f1: zip }), { peer: "p", id: "c", scope: "project", cwd }), /同名技能/);
+  // 同一张卡（同一 id）第二次是幂等；这里要验的是**另一张卡**装了同名技能 —— 另一张卡 = 另一个 id。
+  const again = [
+    { id: "c-again", at: 12, kind: "share", from: { nodeId: "p" }, share: entries[0].share },
+    entries[1],
+  ];
+  await assert.rejects(acceptShare(fakeHost(again, { f1: zip }), { peer: "p", id: "c-again", scope: "project", cwd }), /同名技能/);
 
   const evil = Buffer.from(zipSync({ "../escape.txt": new TextEncoder().encode("bad"), "SKILL.md": new TextEncoder().encode("# x") }));
   const evilSha = realSha(evil);
@@ -232,4 +237,27 @@ test("ackShare 回执失败只给 warning，不影响已经落地的东西", asy
   const res = await ackShare(host, "p", "c", "p");
   assert.equal(res.ok, false);
   assert.match(res.warning, /回执没发出去/);
+});
+
+test("sendShare 认「没拿到 id」为没传成（桥只在非 2xx 抛）", async () => {
+  const file = path.join(cwd, "soft.txt");
+  fs.writeFileSync(file, "abc");
+  const soft = fakeHost();
+  // 桥的 request() 只在 HTTP 状态不是 2xx 时抛；返回体里 ok:false / 缺 id 也是没传成。
+  soft.sendFile = async () => ({ ok: false, id: "" });
+  await assert.rejects(sendShare(soft, { peer: "p1", type: "file", paths: [file] }), /卡片已发出.*soft\.txt.*没传过去/);
+});
+
+test("acceptShare 幂等：同一张卡、同一个落点，第二次只回 already", async () => {
+  const entries = [
+    { id: "idem", at: 10, kind: "share", from: { nodeId: "p-idem", nickname: "小王" }, share: { type: "snippet", title: "一段", body: "内容", files: [] } },
+  ];
+  const before = listNotes().length;
+  const first = await acceptShare(fakeHost(entries), { peer: "p-idem", id: "idem", cwd });
+  assert.equal(first.already, undefined);
+  assert.equal(listNotes().length, before + 1);
+  const second = await acceptShare(fakeHost(entries), { peer: "p-idem", id: "idem", cwd });
+  assert.equal(second.already, true);
+  assert.equal(second.noteId, first.noteId);
+  assert.equal(listNotes().length, before + 1, "第二次不该再导入一条记录");
 });

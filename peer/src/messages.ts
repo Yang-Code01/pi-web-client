@@ -226,15 +226,17 @@ export class Messages {
     if (!card || card.kind !== "share") throw new Error("找不到这张共享卡");
     if (card.from.nodeId === this.ctx.nodeId) throw new Error("自己发的卡不用接收");
     if (this.ackedByMe(thread, ref)) return { ok: true, at: Date.now() };
-    const at = Date.now();
-    this.ctx.history.append(thread, this.entry(uuidv7(at), at, this.me(), thread, "share-ack", { ref, ackBy: this.ctx.nodeId }));
+    // outbox 得在落本地记录**之前**就位：反过来的话，先记上「我收了」、再抛错，
+    // 重试时被 ackedByMe 幂等拦下 —— 发送方永远收不到这帧回执。
     const outbox = this.ctx.outbox;
     if (!outbox) throw new Error("outbox 还没准备好");
+    const at = Date.now();
     const sender = this.identity(toPeerId);
     const control = { id: uuidv7(at), at, from: this.me(), ref, thread };
     for (const t of this.memberTargets([sender])) {
       outbox.add({ id: control.id, peerId: t.peerId, addr: t.addr, port: t.port, kind: "share-ack", payload: control, at, tries: 0, nextAt: 0 });
     }
+    this.ctx.history.append(thread, this.entry(uuidv7(at), at, this.me(), thread, "share-ack", { ref, ackBy: this.ctx.nodeId }));
     return { ok: true, at };
   }
 
@@ -770,6 +772,16 @@ export class Messages {
     // 回执里的 thread 是**对方**那边的会话 id（1:1 时等于我的 nodeId）。落到本机要换成本机的：
     // 群用群 id（两边一样），1:1 用回执发送人的 nodeId —— 否则会记进「我自己」那一栏。
     const thread = isGroupId(parsed.thread) ? parsed.thread : claimed.nodeId;
+    // 回执只能是为**我发的**那张卡打的：ref 得在本机会话里存在、kind 是 share、from 是我，
+    // 而且这个人确实在收件人里。否则任何过了来源校验的节点都能凭空给别人的卡盖「已接收」。
+    const card = this.ctx.history.find(thread, parsed.ref);
+    const iSentIt = card?.kind === "share" && card.from.nodeId === this.ctx.nodeId;
+    const addressed =
+      card &&
+      (isGroupId(thread)
+        ? this.ctx.groups.get(thread)?.members.some((m) => m.nodeId === claimed.nodeId) === true
+        : card.to.id === claimed.nodeId);
+    if (!iSentIt || !addressed) return { status: 404, body: { error: "没有这条回执对应的共享卡", retryable: false } };
     const seen = this.ctx.history.read(thread, 2000).some((entry) => entry.kind === "share-ack" && entry.ref === parsed.ref && entry.ackBy === claimed.nodeId);
     if (seen) return { status: 200, body: { ok: true, dup: true } };
     this.ctx.history.append(thread, this.entry(uuidv7(parsed.at), parsed.at, claimed, thread, "share-ack", { ref: parsed.ref, ackBy: claimed.nodeId }));

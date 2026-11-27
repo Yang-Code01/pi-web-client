@@ -132,9 +132,11 @@ function removeEntry(file: string): boolean {
  */
 export function setPeerMcpEnabled(enabled: boolean): PeerMcpState {
   const file = peerMcpFile();
-  writeJson(toggleFile(), { enabled });
+  // 先动 mcp.json，成了才记「用户要开着」：反过来的话 addEntry 抛错（比如同名条目是别人的）
+  // 会留下 enabled:true —— 页面显示开着，实际一条都没注册，重启也不会补。
   if (enabled) addEntry(file);
   else removeEntry(file);
+  writeJson(toggleFile(), { enabled });
   return peerMcpState();
 }
 
