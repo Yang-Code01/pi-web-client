@@ -187,10 +187,22 @@ for (const a of ART) URLS.set(a.id, `data:image/svg+xml,${encodeURIComponent(svg
 /**
  * 头像 id → 可以直接塞进 `<img src>` 的地址。未知 id（老配置、手改过、将来删掉的头像）
  * 返回 null，调用方退回「首字母 + 色相」的老样子。
+ *
+ * 自定义头像（`custom:<hash>`）的字节在对方的 peer 上，URL 需要知道是谁的：`key` 就是
+ * nodeId，桥会转给 peer 按 hash 取（本机有缓存就发缓存）。`key` 缺省时只给内置头像地址。
  */
-export function avatarUrl(id: string | null | undefined): string | null {
+export function avatarUrl(id: string | null | undefined, key?: string | null): string | null {
   if (!id) return null;
-  return URLS.get(id) ?? null;
+  const builtin = URLS.get(id);
+  if (builtin) return builtin;
+  const hash = customAvatarHash(id);
+  if (!hash || !key) return null;
+  return `/api/peer/avatar/${encodeURIComponent(key)}?v=${hash}`;
+}
+
+/** `custom:<hash>` → hash，其余（内置 id / 空）返回空串。两侧共用同一个形状，见 peer/src/avatars.ts。 */
+export function customAvatarHash(id: string | null | undefined): string {
+  return /^custom:([0-9a-f]{16})$/.exec(id ?? "")?.[1] ?? "";
 }
 
 /** 随机挑一张（可以排除当前这张，页面上「随机换一个」就不会抽到自己）。 */

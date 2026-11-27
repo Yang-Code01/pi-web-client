@@ -6,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
-import { knownAvatar } from "./avatars.ts";
+import { customAvatarHash, knownAvatar } from "./avatars.ts";
+import { findAvatarFile, fetchRemoteAvatar, hasAvatarFile, MAX_AVATAR_BYTES, pruneAvatarFiles, saveAvatarFile } from "./avatar-files.ts";
 import type { Discovery } from "./discovery.ts";
 import { CHUNK, SANDBOX_CSP, inlineType, isHtmlType, mimeOf, typeOf } from "./files.ts";
 import type { Files } from "./files.ts";
@@ -145,6 +146,33 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
 
 export function createPeerServer(ctx: PeerContext): http.Server {
   const { cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity, groups } = ctx;
+
+  /**
+   * 按 nodeId 取头像字节：「我」直接读自己 `cfg.avatar` 对应的文件；对端先看本地缓存，
+   * 没有就按他当前广播的 hash 去他的 `/avatar` 拉一次（结果落盘，离线也能再用）。
+   * 只认他**当前**这张：旧 hash 不给，免得这个口子变成一张能无限探别人缓存的清单。
+   */
+  async function avatarFor(who: string, hash: string): Promise<{ buf: Buffer; mime: string } | null> {
+    if (who === nodeId) {
+      const own = customAvatarHash(cfg.avatar);
+      return own ? findAvatarFile(own) : null;
+    }
+    const peer = discovery.byId(who);
+    const current = customAvatarHash(peer?.avatar || relations.get(who)?.avatar || "");
+    if (!current || (hash && hash !== current)) return null;
+    return findAvatarFile(current) ?? (peer ? await fetchRemoteAvatar(peer.addr, peer.port, current) : null);
+  }
+
+  const sendImage = (res: http.ServerResponse, image: { buf: Buffer; mime: string }, cache: string): void => {
+    res.writeHead(200, {
+      "content-type": image.mime,
+      "content-length": image.buf.length,
+      "cache-control": cache,
+      "x-content-type-options": "nosniff",
+    });
+    res.end(image.buf);
+  };
+
   const identity = () => ({
     nodeId,
     nickname: cfg.nickname,
@@ -198,10 +226,13 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             changed = true;
           }
         }
-        // 头像：只认名单里的 id（页面上的 12 张）。名单外的直接拒，别存一个画不出来的值。
+        // 头像：名单里的 id 或合法的 `custom:<hash>`。自定义的必须本机真有这张图，
+        // 否则广播出去的是一个永远拉不到的地址，别人只能一直看首字母。
         if (body.avatar !== undefined) {
           const avatar = knownAvatar(body.avatar);
           if (!avatar) return json(res, 400, { error: "没有这张头像" });
+          const custom = customAvatarHash(avatar);
+          if (custom && !hasAvatarFile(custom)) return json(res, 400, { error: "这张头像不存在" });
           if (avatar !== cfg.avatar) {
             cfg.avatar = avatar;
             changed = true;
@@ -232,6 +263,38 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const cleared = ignored.size();
         ignored.clear();
         return json(res, 200, { ok: true, cleared });
+      }
+
+      // 自定义头像：POST 只回环（页面 → 桥 → 这里），GET `/avatar?h=` 对局域网开放，
+      // 对端按 hash 来取图。图是内容寻址的：同一个 hash 的字节永远一样，可以放心长缓存。
+      if (url.pathname === "/avatar" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const raw = await readRaw(req, MAX_AVATAR_BYTES).catch(() => null);
+        if (!raw) return json(res, 413, { error: "图片太大了（上限 512 KB）" });
+        const saved = saveAvatarFile(raw);
+        if (!saved) return json(res, 400, { error: "不是支持的图片（PNG / JPEG / WebP / GIF）" });
+        const changed = cfg.avatar !== saved.id;
+        cfg.avatar = saved.id;
+        saveConfig(cfg);
+        // 自己这张永远不剔；其余按 mtime 留最近 64 张。
+        pruneAvatarFiles([saved.hash]);
+        if (changed) discovery.announce();
+        return json(res, 200, { ok: true, avatar: saved.id });
+      }
+
+      if (url.pathname === "/avatar" && req.method === "GET") {
+        const found = findAvatarFile(url.searchParams.get("h") ?? "");
+        if (!found) return json(res, 404, { error: "没有这张图片" });
+        return sendImage(res, found, "public, max-age=31536000, immutable");
+      }
+
+      // 桥只从回环来取；对端头像由 peer 自己按 hash 拉，页面不直接连别人的 7865。
+      if (url.pathname.startsWith("/avatar/") && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const who = decodeURIComponent(url.pathname.slice("/avatar/".length));
+        const found = await avatarFor(who, url.searchParams.get("h") ?? "");
+        if (!found) return json(res, 404, { error: "没有这张头像" });
+        return sendImage(res, found, "private, max-age=86400");
       }
 
       if (url.pathname === "/peer/hello" && req.method === "POST") {

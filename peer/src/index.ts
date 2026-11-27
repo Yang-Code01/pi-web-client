@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { loadConfig, ensureNodeId, stateDir, statePath, saveConfig, PROTO, VERSION } from "./config.ts";
-import { randomAvatar } from "./avatars.ts";
+import { randomAvatar, customAvatarHash } from "./avatars.ts";
+import { hasAvatarFile } from "./avatar-files.ts";
 import { Discovery } from "./discovery.ts";
 import { createPeerServer, Ignored } from "./http.ts";
 import { History } from "./history.ts";
@@ -18,7 +19,8 @@ const nodeId = ensureNodeId();
 
 // 第一次启动（配置里还没头像）就随机挑一张并落盘。**只挑这一次**：头像每重启一次就换一个的话，
 // 别人那边看着莫名其妙，自己也无从认起。之后换头像只走页面上的「我 → 头像」。
-if (!cfg.avatar) {
+// 自定义头像另查一次文件：状态目录被删 / 图被手动清掉时，别让广播里挂一个永远取不到的 hash。
+if (!cfg.avatar || (customAvatarHash(cfg.avatar) && !hasAvatarFile(customAvatarHash(cfg.avatar)))) {
   cfg.avatar = randomAvatar();
   saveConfig(cfg);
 }

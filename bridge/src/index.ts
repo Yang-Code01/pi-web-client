@@ -160,6 +160,8 @@ const STEP_UP_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 30 * 1024 * 1024;
 /** #455 与 MAX_UPLOAD_BYTES 同一个数：readRaw 被挡和 saveUpload 自查，回的是同一句话。 */
 const UPLOAD_TOO_LARGE = "文件太大了（上限 64 MB）";
+/** 自定义头像的体上限：与 peer 的 MAX_AVATAR_BYTES 对齐（页面裁完通常只有几 KB）。 */
+const MAX_AVATAR_UPLOAD = 512 * 1024;
 
 interface ChildWatch {
   sessionId: string;
@@ -1254,6 +1256,35 @@ async function main(): Promise<void> {
         return json(res, 200, await peer.upload(url.searchParams.get("peer") ?? "", url.searchParams.get("name") || "粘贴的图片.png", raw));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // 自定义头像：POST 是上传（页面已裁好 192×192 WebP），GET 是给 `<img>` 取图。
+    // GET 走桥而不是直连 peer 的 7865：那条口子只对回环开，页面在别的机器 / 隧道里时够不着。
+    if (url.pathname === "/api/peer/avatar" && req.method === "POST") {
+      const raw = await readRaw(req, MAX_AVATAR_UPLOAD).catch(() => null);
+      if (!raw) return json(res, 413, { error: "太大了（上限 512 KB）" });
+      try {
+        return json(res, 200, await peer.uploadAvatar(raw));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname.startsWith("/api/peer/avatar/") && req.method === "GET") {
+      const who = decodeURIComponent(url.pathname.slice("/api/peer/avatar/".length));
+      try {
+        const upstream = await peer.avatarStream(who, url.searchParams.get("v") ?? "");
+        if (!upstream.ok) return json(res, upstream.status, { error: "取不到这张头像" });
+        const buf = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(200, {
+          "content-type": upstream.headers.get("content-type") ?? "image/webp",
+          "content-length": buf.length,
+          // 内容寻址（URL 里带 hash）：同一个地址的字节不会变，浏览器可以放心缓存一天。
+          "cache-control": "private, max-age=86400",
+          "x-content-type-options": "nosniff",
+        });
+        return void res.end(buf);
+      } catch (err) {
+        return json(res, 502, { error: (err as Error).message });
       }
     }
     // 选择器里的预览（D304）：本机一份文件的字节，透传 peer 的 `/fs/raw`。

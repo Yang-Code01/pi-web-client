@@ -312,6 +312,31 @@ export class PeerHost {
     return this.request("POST", "/config", patch);
   }
 
+  /** 换自定义头像：页面已经把图裁成 192×192、转成 WebP，这里只负责把原始字节递给 peer。 */
+  async uploadAvatar(raw: Buffer, signal?: AbortSignal): Promise<{ ok: boolean; avatar: string }> {
+    const res = await fetch(`http://127.0.0.1:${this.opts.port}/avatar`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: raw,
+      signal: signal ?? AbortSignal.timeout(20_000),
+    });
+    const parsed = (await res.json().catch(() => ({}))) as { avatar?: string; error?: string };
+    if (!res.ok) throw new Error(parsed.error ?? `peer 回 ${res.status}`);
+    await this.poll();
+    return { ok: true, avatar: parsed.avatar ?? "" };
+  }
+
+  /**
+   * 某人的自定义头像字节。自己 → peer 读本地文件；对端 → peer 按 hash 去拉（带缓存）。
+   * 返回原始响应，由桥转给浏览器；`<img>` 每次渲染都会要一次，不重新 poll。
+   */
+  avatarStream(nodeId: string, hash: string, signal?: AbortSignal): Promise<Response> {
+    const query = hash ? `?h=${encodeURIComponent(hash)}` : "";
+    return fetch(`http://127.0.0.1:${this.opts.port}/avatar/${encodeURIComponent(nodeId)}${query}`, {
+      signal: signal ?? AbortSignal.timeout(10_000),
+    });
+  }
+
   /** 忽略名单是通讯录自己的读口；页面拿它挡住「在线表兜底」把人加回来。 */
   ignored(): Promise<{ ok: boolean; nodeIds: string[] }> {
     return this.request("GET", "/ignored");

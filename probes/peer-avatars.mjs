@@ -128,25 +128,28 @@ const newSrc = await page.evaluate((bId) => {
 }, bSt.nodeId);
 check("B 换脸后 A 的列表跟着换（历史消息不反盖）", Boolean(newSrc) && newSrc !== oldSrc && Boolean(oldSrc));
 
-// ---- 4. 「我」页：12 张、当前那张被选中、点一张就换
+// ---- 4. 「我」页：默认落在个人资料（hero 是图）；头像分区 12 张、当前那张被选中、点一张就换
 await page.click('#rail button[title="我"]');
-await page.waitForSelector(".avgrid .avpick", { timeout: 10000 });
+await page.waitForSelector(".me-nav", { timeout: 10000 });
+await sleep(300);
+const heroOnLoad = await page.evaluate(() => Boolean(document.querySelector(".me-hero .me-ava .av.pic .av-img")));
+check("「我」页 hero 上是我自己的头像图", heroOnLoad);
+await page.click('.me-nav .me-tab:has-text("头像")');
+await page.waitForSelector(".me-avgrid .avpick", { timeout: 10000 });
 await sleep(500);
 const grid = await page.evaluate(() => ({
-  count: document.querySelectorAll(".avgrid .avpick").length,
-  loaded: [...document.querySelectorAll(".avgrid .avpick img")].filter((i) => i.complete && i.naturalWidth > 0).length,
-  on: document.querySelectorAll(".avgrid .avpick.on").length,
-  hero: Boolean(document.querySelector(".hero .av.pic .av-img")),
+  count: document.querySelectorAll(".me-avgrid .avpick:not(.me-custom)").length,
+  loaded: [...document.querySelectorAll(".me-avgrid .avpick:not(.me-custom) img")].filter((i) => i.complete && i.naturalWidth > 0).length,
+  on: document.querySelectorAll(".me-avgrid .avpick.on").length,
 }));
-check("「我」页有 12 张可选", grid.count === IDS.length, String(grid.count));
+check("「头像」分区有 12 张内置可选", grid.count === IDS.length, String(grid.count));
 check("12 张图都解码成功", grid.loaded === IDS.length, String(grid.loaded));
 check("当前那张被标出来（恰好一处）", grid.on === 1, String(grid.on));
-check("hero 上是我自己的头像图", grid.hero);
 if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "me.png") });
 
 // 点一张不是当前那张的
 await page.evaluate(() => {
-  const tiles = [...document.querySelectorAll(".avgrid .avpick")];
+  const tiles = [...document.querySelectorAll(".me-avgrid .avpick:not(.me-custom)")];
   tiles[tiles.findIndex((t) => !t.classList.contains("on"))].click();
 });
 await sleep(1200);
@@ -155,7 +158,10 @@ check("点了就换（配置里也换了）", afterA.avatar !== aSt.avatar && ID
 // 成功提示：它靠 setConfig() 的返回值判定，改成无条件弹的话失败了也说「换好了」。
 const toasted = await page.evaluate(() => [...document.querySelectorAll(".toast, .toasts > *")].some((n) => /头像换好了/.test(n.textContent ?? "")));
 check("换完弹了「头像换好了」", toasted);
-const heroAfter = await page.evaluate(() => Boolean(document.querySelector(".hero .av.pic .av-img")));
+// 换完停在头像分区；回个人资料看 hero 是不是也换了。
+await page.click('.me-nav .me-tab:has-text("个人资料")');
+await page.waitForSelector(".me-hero .me-ava .av-img", { timeout: 5000 });
+const heroAfter = await page.evaluate(() => Boolean(document.querySelector(".me-hero .me-ava .av.pic .av-img")));
 check("换完 hero 还是图", heroAfter);
 if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "me-after.png") });
 
