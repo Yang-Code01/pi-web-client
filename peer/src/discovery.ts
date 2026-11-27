@@ -14,6 +14,8 @@ export interface Announce {
   version: string;
   /** `online` / `away`（空闲推导）。旧对端没有这个字段，按 online 算（D299 / P4）。 */
   status?: string;
+  /** 头像 id（见 `avatars.ts`）。旧对端没有这个字段，页面退回首字母头像。 */
+  avatar?: string;
 }
 
 export interface SeenPeer {
@@ -28,6 +30,8 @@ export interface SeenPeer {
   status: string;
   /** 5 分钟内的来源地址集合（决定 7：换网卡 / DHCP 换 IP 不算伪造）。 */
   ips: string[];
+  /** 对端自报的头像 id，没报就是空。 */
+  avatar?: string;
 }
 
 /** 30 秒没 announce 就当离线（announce 间隔 10 秒，允许丢两包）。 */
@@ -131,6 +135,7 @@ export class Discovery extends EventEmitter {
       port: this.cfg.port,
       version: VERSION,
       status: this.localStatus(),
+      avatar: this.cfg.avatar || undefined,
     };
   }
 
@@ -174,6 +179,8 @@ export class Discovery extends EventEmitter {
       lastSeen: Date.now(),
       status: typeof msg.status === "string" && msg.status ? msg.status : "online",
       ips: [...ips],
+      // 头像只有一个来源（对端自己报）：没报就沿用上次知道的，别把已知的头像摸掉。
+      avatar: msg.avatar || known?.avatar,
     };
     this.seen.set(msg.nodeId, peer);
   }
@@ -182,7 +189,7 @@ export class Discovery extends EventEmitter {
    * 对端把 announce 单播到 http 端口（`/peer/hello`）时也走这里：组播被交换机挡住时，
    * 手动地址那条路就靠它把对端拉进在线表。
    */
-  recordHello(msg: Pick<Announce, "nodeId" | "nickname" | "hostname" | "port"> & { status?: string }, addr: string): void {
+  recordHello(msg: Pick<Announce, "nodeId" | "nickname" | "hostname" | "port"> & { status?: string; avatar?: string }, addr: string): void {
     if (!msg.nodeId || msg.nodeId === this.nodeId) return;
     this.remember(
       {
@@ -194,6 +201,7 @@ export class Discovery extends EventEmitter {
         port: Number(msg.port) || this.cfg.port,
         version: VERSION,
         status: msg.status,
+        avatar: msg.avatar,
       },
       addr,
     );
@@ -221,6 +229,7 @@ export class Discovery extends EventEmitter {
             hostname: String(body.hostname ?? ""),
             port: Number(body.port) || port,
             status: typeof body.status === "string" ? body.status : undefined,
+            avatar: typeof body.avatar === "string" ? body.avatar : undefined,
           },
           addr,
         );

@@ -243,6 +243,20 @@ body.embedded .brand .nm { display: none; }
   background: var(--faint);
 }
 .av .st.on { background: var(--ok); }
+
+/* ---------------------------------------------------- 头像图（自带的 12 张 SVG） */
+/* 槽位一直是圆的，圆槽里塞方图会在四角露出背景边，所以图本身也是圆的、铺满整个槽。 */
+.av.pic { background: transparent; }
+.av.pic::before { display: none; }
+.av-img { display: block; width: 100%; height: 100%; border-radius: 50%; }
+
+/* 「我 → 头像」的选择格：窄的时候自动少几列，不写死列数。 */
+.avgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 8px; padding: 12px 13px 4px; }
+.avpick { position: relative; padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; line-height: 0; }
+.avpick img { display: block; width: 100%; height: auto; aspect-ratio: 1; border-radius: 50%; }
+.avpick:hover img { filter: brightness(1.07); }
+.avpick.on { cursor: default; }
+.avpick.on::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; box-shadow: 0 0 0 2px var(--accent); }
 .list .row.on .av .st, .main .av .st { border-color: var(--panel); }
 
 /* ------------------------------------------------------------------ 主区 */

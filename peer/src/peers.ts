@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { knownAvatar } from "./avatars.ts";
 import { quarantineStateFile, readJsonChecked, statePath } from "./config.ts";
 import type { PeerIdentity } from "./history.ts";
 
@@ -14,6 +15,8 @@ export interface Contact {
   nickname: string;
   hostname: string;
   port: number;
+  /** 他自报的头像 id（最后一次收到的 hello 里的）。备注名是本机起的，头像只能听他的。 */
+  avatar?: string;
   /** 老关系记录没有这个字段：读的时候按 false 处理，写入时才补上。 */
   quick?: boolean;
   friend: boolean;
@@ -79,9 +82,27 @@ export class Relations {
       outgoing: false,
       at: Date.now(),
     };
-    this.map[who.nodeId] = { ...prev, ...patch, at: Date.now() };
+    // 头像跟他本人走：只要这次拿到的是名单里的 id，就顺手更新（不传就不动）。
+    const avatar = knownAvatar(who.avatar) || prev.avatar;
+    this.map[who.nodeId] = { ...prev, ...patch, ...(avatar ? { avatar } : {}), at: Date.now() };
     this.save();
     return { nodeId: who.nodeId, ...this.map[who.nodeId] };
+  }
+
+  /**
+   * 又收到他一条 hello（announce / 回播）：只刷新**已有关系记录**里的头像。
+   *
+   * 不新建记录（没加过好友的人不该因为广播一次就住进通讯录），也不动备注名（D303）——
+   * 只把「他自己说了算」的那个字段对齐。没什么变化就不落盘：announce 每 10 秒来一次，
+   * 每次都写一遍 peers.json 划不来。
+   */
+  noteSeen(who: PeerIdentity): void {
+    const prev = this.map[who.nodeId];
+    if (!prev) return;
+    const avatar = knownAvatar(who.avatar) || prev.avatar;
+    if (avatar === prev.avatar) return;
+    this.map[who.nodeId] = { ...prev, ...(avatar ? { avatar } : {}) };
+    this.save();
   }
 
   list(): Contact[] {

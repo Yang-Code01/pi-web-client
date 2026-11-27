@@ -27,6 +27,8 @@ export interface PeerIdentity {
   nickname?: string;
   hostname?: string;
   port?: number;
+  /** 头像 id（见 `avatars.ts`）。没设就是空，页面退回首字母。 */
+  avatar?: string;
 }
 
 /** 记录包的截图清单：截图本体逐张走文件通道，卡片只带 sha 对齐（#507）。 */
@@ -133,6 +135,8 @@ export interface ThreadSummary {
   online: boolean;
   /** 对端报的状态：online / away / busy（旧对端没有这个字段，按 online 算）。 */
   status: string;
+  /** 头像 id：在线表里的最新值优先，离线时用通讯录里存下的。 */
+  avatar: string;
   lastSeen: number;
   unread: number;
   pinned: boolean;
@@ -323,8 +327,8 @@ export class History {
 
   /** 会话列表。名字优先用查得到的人：在线表 → 通讯录 → 最后一条的 from。 */
   threads(input: {
-    online: { nodeId: string; nickname: string; hostname: string; port: number; status?: string; lastSeen: number }[];
-    contacts: { nodeId: string; nickname: string; hostname: string; port: number }[];
+    online: { nodeId: string; nickname: string; hostname: string; port: number; status?: string; lastSeen: number; avatar?: string }[];
+    contacts: { nodeId: string; nickname: string; hostname: string; port: number; avatar?: string }[];
     me: string;
     /** 我的昵称：未读里有没有人 @ 我。 */
     meName?: string;
@@ -388,6 +392,8 @@ export class History {
         count: texts,
         online: group ? anyOnline : byId.has(nodeId),
         status: group ? (anyOnline ? "online" : "offline") : (live?.status ?? (live ? "online" : "offline")),
+        // 头像永远拿最新的：在线表里是他刚报的，离线就显通讯录里存下的（上一次说 hello 时的）。
+        avatar: group ? "" : live?.avatar || contact?.avatar || "",
         lastSeen: live?.lastSeen ?? 0,
         unread,
         pinned: meta.pinned === true,

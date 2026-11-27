@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
+import { knownAvatar } from "./avatars.ts";
 import type { Discovery } from "./discovery.ts";
 import { CHUNK, mimeOf } from "./files.ts";
 import type { Files } from "./files.ts";
@@ -151,6 +152,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
     port: cfg.port,
     version: VERSION,
     status: activity.status(),
+    avatar: cfg.avatar,
   });
 
   return http.createServer(async (req, res) => {
@@ -168,6 +170,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           nickname: cfg.nickname,
           hostname: os.hostname(),
           port: cfg.port,
+          avatar: cfg.avatar,
           status: activity.status(),
           idleMs: activity.idleMs(),
           online: discovery.online(),
@@ -186,23 +189,33 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           if (typeof body[key] === "boolean") cfg[key] = body[key] as boolean;
         }
         // D303：自己的名字也能改。上限 40（公告里塞得下），改完立刻重播一次，别等下一轮。
-        let renamed = false;
+        let changed = false;
         if (typeof body.nickname === "string") {
           const name = body.nickname.trim().replace(/\s+/g, " ").slice(0, 40);
           if (!name) return json(res, 400, { error: "名字不能是空的" });
           if (name !== cfg.nickname) {
             cfg.nickname = name;
-            renamed = true;
+            changed = true;
+          }
+        }
+        // 头像：只认名单里的 id（页面上的 12 张）。名单外的直接拒，别存一个画不出来的值。
+        if (body.avatar !== undefined) {
+          const avatar = knownAvatar(body.avatar);
+          if (!avatar) return json(res, 400, { error: "没有这张头像" });
+          if (avatar !== cfg.avatar) {
+            cfg.avatar = avatar;
+            changed = true;
           }
         }
         saveConfig(cfg);
-        if (renamed) discovery.announce();
+        if (changed) discovery.announce();
         // 隐身→可见：立刻丢一份 announce，别等下一轮定时（10 秒里对方还看不见）。
         // 可见→隐身不发：`announce()` 自己就查 hidden（D99），这里再额外补一刀只会绕开那个守卫。
         if (wasHidden && !cfg.hidden) discovery.announce();
         return json(res, 200, {
           ok: true,
           nickname: cfg.nickname,
+          avatar: cfg.avatar,
           config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
         });
       }
@@ -224,7 +237,17 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       if (url.pathname === "/peer/hello" && req.method === "POST") {
         const body = await readBody(req).catch(() => null);
         if (!body || body.proto !== PROTO || typeof body.nodeId !== "string") return json(res, 400, { error: "bad hello" });
-        if (body.nodeId !== nodeId) discovery.recordHello(body, from);
+        if (body.nodeId !== nodeId) {
+          discovery.recordHello(body, from);
+          // 通讯录里已经有的人：顺手把他的头像对齐（announce 每 10 秒来一次，这里几乎不落盘）。
+          relations.noteSeen({
+            nodeId: body.nodeId,
+            nickname: typeof body.nickname === "string" ? body.nickname : undefined,
+            hostname: typeof body.hostname === "string" ? body.hostname : undefined,
+            port: Number(body.port) || undefined,
+            avatar: typeof body.avatar === "string" ? body.avatar : undefined,
+          });
+        }
         if (cfg.hidden) return json(res, 200, { proto: PROTO, hidden: true });
         return json(res, 200, identity());
       }
@@ -499,7 +522,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const contacts = relations.list().map((contact) => {
           known.add(contact.nodeId);
           const peer = online.get(contact.nodeId);
-          return { ...contact, quick: contact.quick ?? false, ignored: ignored.has(contact.nodeId), online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0 };
+          return { ...contact, quick: contact.quick ?? false, ignored: ignored.has(contact.nodeId), online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0, avatar: peer?.avatar || contact.avatar || "" };
         });
         for (const peer of onlinePeers) {
           // 忽略名单只过滤由在线表合并出来的无关系行：已有关系的人照样列出来。
@@ -519,6 +542,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             online: true,
             addr: peer.addr,
             livePort: peer.port,
+            avatar: peer.avatar || "",
           });
         }
         return json(res, 200, { ok: true, contacts });
