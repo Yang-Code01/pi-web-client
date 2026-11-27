@@ -1,4 +1,5 @@
 import { applyLang, bootLang, fmtDate, fmtNum, fmtRelative, fmtTime, tr } from "../i18n/index.ts";
+import { placeMenu } from "../menuplace.ts";
 import { renderMarkdown } from "../md.ts";
 import { RichEditor } from "../notes/editor.ts";
 import { hasRichMarkup, isRichEmpty, plainText, sanitizeRich } from "../notes/rich.ts";
@@ -2079,8 +2080,7 @@ function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
     // 悬停出来的小笑脸：不用右键也能回应。
     const quick = iconBtn("smile", tr("回应"), (ev) => {
       const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
-      openMenu(r.left, r.bottom + 4, []);
-      layerEl.querySelector(".menu")?.prepend(reactStrip(e, t));
+      openMenu(r.left, r.bottom + 4, [], reactStrip(e, t));
     });
     quick.classList.add("msg-quick");
     msg.append(quick);
@@ -2185,9 +2185,8 @@ function messageMenu(x: number, y: number, e: Entry, t: Thread, mine: boolean): 
   if (mine && Date.now() - e.at <= 120_000) {
     items.push({ label: tr("撤回"), icon: "trash", danger: true, run: () => void recall(e, t) });
   }
-  openMenu(x, y, items);
-  // 快捷回应放在菜单最上面（和微信 / Slack 一样）。
-  layerEl.querySelector(".menu")?.prepend(reactStrip(e, t));
+  // 快捷回应放在菜单最上面（和微信 / Slack 一样），一起交给 openMenu 量尺寸。
+  openMenu(x, y, items, reactStrip(e, t));
 }
 
 // ---------------------------------------------------------------- 已读
@@ -3705,11 +3704,25 @@ function closeLayer(): void {
   layerEl.replaceChildren();
 }
 
-function openMenu(x: number, y: number, items: { label: string; icon?: string; danger?: boolean; run: () => void }[]): void {
+/**
+ * 贴着 (x, y) 弹一张菜单。`top` 是塞在最上面的自定义行（现在只有右键菜单那排快捷回应 `rstrip`）。
+ *
+ * 位置**挂上去之后**按真实尺寸算：菜单宽度不由 items 决定 —— 那排 emoji 一塞进来就从 158 涨到 248px。
+ * 以前按「窗口宽 - 180」硬夹，贴右边的消息右键时整块从右边戳出窗口（emoji 被切掉一半）；竖向同理，
+ * 只数了 `items.length * 34`，没数那排 emoji。落位规矩与主界面共用 `menuplace.ts`，窗口再矮/再窄
+ * 也是「翻上去 / 封顶自己滚」，不是裁掉半行。
+ */
+function openMenu(
+  x: number,
+  y: number,
+  items: { label: string; icon?: string; danger?: boolean; run: () => void }[],
+  top?: HTMLElement,
+): void {
   closeLayer();
   const scrim = h("div", "scrim");
   scrim.addEventListener("click", closeLayer);
   const menu = h("div", "menu");
+  if (top) menu.append(top);
   for (const item of items) {
     const b = h("button", item.danger ? "dng" : "");
     b.type = "button";
@@ -3721,11 +3734,16 @@ function openMenu(x: number, y: number, items: { label: string; icon?: string; d
     });
     menu.append(b);
   }
-  const maxX = window.innerWidth - 180;
-  const maxY = window.innerHeight - (items.length * 34 + 20);
-  menu.style.left = `${Math.max(8, Math.min(x, maxX))}px`;
-  menu.style.top = `${Math.max(8, Math.min(y, maxY))}px`;
   layerEl.append(scrim, menu);
+  // 点在 (x, y) 上 = 一根零高的锚点，贴它下面开（gap 0），下面放不下才翻上去。
+  const size = { w: menu.offsetWidth, h: menu.offsetHeight };
+  const at = placeMenu({ left: x, top: y, bottom: y }, size, { w: window.innerWidth, h: window.innerHeight }, { gap: 0 });
+  menu.style.left = `${at.left}px`;
+  menu.style.top = `${at.top}px`;
+  if (at.maxHeight < size.h) {
+    menu.style.maxHeight = `${at.maxHeight}px`;
+    menu.style.overflowY = "auto";
+  }
 }
 
 /** P1：改置顶 / 静音 / 草稿。改完立刻重拉会话列表，行上的标记不会慢一拍。 */
