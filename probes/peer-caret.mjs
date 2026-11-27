@@ -28,7 +28,10 @@ async function login(base) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ passphrase: "test" }),
   });
-  return (res.headers.get("set-cookie") ?? "").split(";")[0];
+  if (!res.ok) throw new Error(`登录 ${base} 失败：HTTP ${res.status}（实例起了吗？口令是 test 吗？）`);
+  const cookie = (res.headers.get("set-cookie") ?? "").split(";")[0];
+  if (!cookie) throw new Error(`登录 ${base} 没拿到 cookie`);
+  return cookie;
 }
 const api = (base, cookie) => ({
   get: async (p) => (await fetch(base + p, { headers: { cookie } })).json(),
@@ -64,6 +67,7 @@ await a.post("/api/peer/send", { peer: bId, text: "探针：光标" });
 
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
+try {
 const ctx = await browser.newContext({ locale: "zh-CN", viewport: { width: 1280, height: 860 } });
 await ctx.addCookies([{ name: ca.split("=")[0], value: ca.split("=").slice(1).join("="), url: A }]);
 const page = await ctx.newPage();
@@ -85,15 +89,19 @@ const caret = () =>
     return r.toString().length;
   });
 const msgCount = () => page.$$eval(".stream .msg", (els) => els.length);
+/** 让 B 发一条给 A，等 A 的轮询拿到并重画；返回重画是否真的发生。 */
+async function redrawByIncoming(text) {
+  const before = await msgCount();
+  await b.post("/api/peer/send", { peer: aId, text });
+  for (let k = 0; k < 40 && (await msgCount()) <= before; k++) await sleep(100);
+  return (await msgCount()) > before;
+}
 
 await page.click(".peer-rich");
 await page.keyboard.type("abc");
 for (let i = 1; i <= 3; i++) {
-  const before = await msgCount();
   // 对方来一条消息：A 的轮询拿到后整块重画聊天区。
-  await b.post("/api/peer/send", { peer: aId, text: `来信 ${i}` });
-  for (let k = 0; k < 40 && (await msgCount()) <= before; k++) await sleep(100);
-  check(`第 ${i} 次重画确实发生`, (await msgCount()) > before);
+  check(`第 ${i} 次重画确实发生`, await redrawByIncoming(`来信 ${i}`));
   const text = await page.$eval(".peer-rich", (el) => el.textContent);
   const at = await caret();
   check(`第 ${i} 次重画后光标仍在末尾`, at === text.length, `caret=${at} len=${text.length}`);
@@ -105,13 +113,13 @@ check("接着打的字都接在后面", final === "abc123", JSON.stringify(final
 // 中间位置也要保住（不是「一律放到末尾」）。
 await page.keyboard.press("ArrowLeft");
 await page.keyboard.press("ArrowLeft");
-const before = await msgCount();
-await b.post("/api/peer/send", { peer: aId, text: "来信 mid" });
-for (let k = 0; k < 40 && (await msgCount()) <= before; k++) await sleep(100);
+// 没重画的话光标本来就在原处，下面那条会假通过：先确认重画真的发生了。
+check("中间位置：重画确实发生", await redrawByIncoming("来信 mid"));
 await page.keyboard.type("Z");
 const mid = await page.$eval(".peer-rich", (el) => el.textContent);
 check("光标停在中间时重画后还在原处", mid === "abc1Z23", JSON.stringify(mid));
-
-await browser.close();
+} finally {
+  await browser.close();
+}
 console.log(bad ? `\n${bad} 项失败` : "\n全过");
 process.exit(bad ? 1 : 0);

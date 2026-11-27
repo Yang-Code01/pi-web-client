@@ -833,6 +833,14 @@ function searchBox(placeholder: string): HTMLElement {
   return box;
 }
 
+/** contenteditable 里光标 / 选区的静态快照；选区不在 el 里就是 null。用 anchor / focus 而不是 start / end：反向拖选（Shift+←）的方向也保住。 */
+function caretOf(el: HTMLElement): { anchor: Node; anchorAt: number; focus: Node; focusAt: number } | null {
+  const s = document.getSelection();
+  if (!s?.rangeCount || !s.anchorNode || !s.focusNode) return null;
+  if (!el.contains(s.anchorNode) || !el.contains(s.focusNode)) return null;
+  return { anchor: s.anchorNode, anchorAt: s.anchorOffset, focus: s.focusNode, focusAt: s.focusOffset };
+}
+
 /**
  * 整块重画会把正在输入的输入框一起换掉（焦点、光标、选区全没）。
  * 重画前记住「哪个带 data-keep 的元素拿着焦点」，重画后把焦点与选区还回去。
@@ -847,21 +855,15 @@ function rerender(rebuild: () => void): void {
     active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
       ? ([active.selectionStart, active.selectionEnd] as const)
       : null;
-  const docSel = document.getSelection();
-  // 用 anchor / focus 而不是 start / end：反向拖选（Shift+←）的方向也一起保住。
-  const a0 = keep && !sel && active instanceof HTMLElement && docSel?.rangeCount ? docSel : null;
-  const range =
-    a0?.anchorNode && a0.focusNode && active instanceof HTMLElement && active.contains(a0.anchorNode) && active.contains(a0.focusNode)
-      ? { sc: a0.anchorNode, so: a0.anchorOffset, ec: a0.focusNode, eo: a0.focusOffset }
-      : null;
+  const caret = keep && !sel && active instanceof HTMLElement ? caretOf(active) : null;
   rebuild();
   if (!keep) return;
   const next = document.querySelector<HTMLElement>(`[data-keep="${keep}"]`);
   if (!next) return;
   next.focus({ preventScroll: true });
-  if (range && docSel && next.contains(range.sc) && next.contains(range.ec)) {
+  if (caret && next.contains(caret.anchor) && next.contains(caret.focus)) {
     try {
-      docSel.setBaseAndExtent(range.sc, range.so, range.ec, range.eo);
+      document.getSelection()?.setBaseAndExtent(caret.anchor, caret.anchorAt, caret.focus, caret.focusAt);
     } catch {
       /* 节点在重画里被改短了：焦点回来就够 */
     }
