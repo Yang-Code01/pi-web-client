@@ -3661,6 +3661,7 @@ export const en: Dict = {
   "Markdown 文档": "Markdown document",
   "Office 文档": "Office document",
   "只显示前 {p1} 行": "Showing the first {p1} rows",
+  "太大了（{p1}），用本机程序打开": "Too large ({p1}) — open it with a desktop app",
   "视频": "Video",
   "音频": "Audio",
   "备注名": "Display name",

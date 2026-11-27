@@ -117,9 +117,9 @@ export function inlineType(type: string): boolean {
 
 /**
  * HTML 一律在沙箱里渲染：字节是别人发来的，给个 `sandbox`（不带 `allow-same-origin`）
- * 它就跑不进本站的 localStorage / cookie / 同源接口。和 `bridge/src/preview.ts` 的 /raw 同一套。
+ * 它就跑不进本站的 localStorage / cookie / 同源接口。令牌词表与页面那侧共用一份，见 `./sandbox.ts`。
  */
-export const SANDBOX_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads";
+export { SANDBOX_CSP, SANDBOX_TOKENS } from "./sandbox.ts";
 
 export function isHtmlType(type: string): boolean {
   const t = type.split(";")[0].trim().toLowerCase();

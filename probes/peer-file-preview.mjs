@@ -214,6 +214,24 @@ const videoSrc = await page.$eval(".modal.preview video", (el) => el.getAttribut
 check("video 的 src 指到 /api/peer/file", videoSrc.includes("/api/peer/file"), videoSrc.slice(0, 80));
 await closePreview();
 
+// 大 csv：超过解析器的字节上限就换出口卡 —— 不把整份读进内存再解析（评审意见第 1 条）
+const bigName = `big-${TS}.csv`;
+const BIG_ROWS = Array.from({ length: 200_000 }, (_, i) => `行${i},${i}`).join("\n");
+const BIG = Buffer.from(`名称,数量\n${BIG_ROWS}\n`, "utf8");
+check("大 csv 确实超过 2 MB", BIG.length > 2 * 1024 * 1024, `${BIG.length} 字节`);
+const upBig = await upload(bigName, BIG);
+check("大 csv 发出去了", upBig.ok);
+await openFile(bigName);
+await page.waitForSelector(".modal.preview .none .btn", { timeout: 8000 }).catch(() => {});
+const bigActs = await page.$$eval(".modal.preview button", (ns) => ns.map((n) => n.textContent ?? ""));
+check(
+  "大 csv 换成出口卡而不是表格",
+  bigActs.some((t) => t.includes("用本机程序打开")) && !(await page.$(".modal.preview table.csv-grid")),
+  bigActs.join(" | ") || "(没有按钮)",
+);
+check("大 csv 的卡上说清楚是太大了", ((await page.$eval(".modal.preview .none", (el) => el.textContent ?? "").catch(() => "")) ?? "").includes("太大"), "");
+await closePreview();
+
 check("页面没有脚本错误", errors.length === 0, errors.join(" / ").slice(0, 300));
 
 // ---- 收件那一侧：B 的页面（卡片是「对方发来」，多一个下载链接）

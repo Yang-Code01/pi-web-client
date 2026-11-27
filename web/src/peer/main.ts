@@ -2,11 +2,12 @@ import { applyLang, bootLang, fmtDate, fmtNum, fmtRelative, fmtTime, tr } from "
 import { renderMarkdown } from "../md.ts";
 import { RichEditor } from "../notes/editor.ts";
 import { hasRichMarkup, isRichEmpty, plainText, sanitizeRich } from "../notes/rich.ts";
-import { readCsv } from "../sheet/csv.ts";
+import { CSV_MAX_BYTES, readCsv } from "../sheet/csv.ts";
 import { SheetDialog } from "../sheet/dialog.ts";
 import "../sheet/sheet.css";
 import { bootTheme } from "../theme.ts";
 import { emojiPanel, QUICK_REACTIONS, type Sticker } from "./emoji.ts";
+import { SANDBOX_TOKENS } from "./sandbox.ts";
 import { imageViewer, type ViewerItem } from "./viewer.ts";
 
 /**
@@ -3048,7 +3049,7 @@ async function fillPreview(body: HTMLElement, src: PreviewSrc): Promise<void> {
     // 只渲染，不给源码（用户的决定）。沙箱里没有同源身份：脚本跑得了，
     // 但读不到本站的 cookie / localStorage / 同源接口。和主界面预览面板同一套口径。
     const frame = h("iframe", "frame-html");
-    frame.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
+    frame.setAttribute("sandbox", SANDBOX_TOKENS);
     frame.referrerPolicy = "no-referrer";
     frame.title = src.name;
     frame.src = src.url;
@@ -3095,6 +3096,12 @@ async function fillPreview(body: HTMLElement, src: PreviewSrc): Promise<void> {
     return;
   }
   if (kind === "csv") {
+    // 整个文件得先进内存才解析得动（readCsv 吃的是完整字节），几十上百 MB 的表格会把标签页拖死。
+    // 上限用解析器自己的那个（CSV_MAX_BYTES），不是另外拍一个数。
+    if (src.size > CSV_MAX_BYTES) {
+      body.append(fallbackCard(src, tr("太大了（{p1}），用本机程序打开", { p1: sizeOf(src.size) })));
+      return;
+    }
     try {
       const res = await fetch(src.url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
