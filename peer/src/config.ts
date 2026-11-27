@@ -29,7 +29,7 @@ export interface PeerConfig {
   dnd: boolean;
   /** 头像 id（见 `avatars.ts` 的 AVATAR_IDS）。空串 = 还没挑过，index.ts 会随机补一张。 */
   avatar: string;
-  /** 自己上传过的头像 hash（最近在前）。和 avatars/ 里别人的缓存分仗靠它。 */
+  /** 自己上传过的头像 hash（最近在前）。靠它把「我传的」和 avatars/ 里别人的缓存区分开。 */
   avatarHistory: string[];
   group: { address: string; port: number };
   /** 手动地址兜底：`["192.168.1.5:7865"]`。组播不通时唯一的出路。 */

@@ -110,6 +110,9 @@ function readBody(req: http.IncomingMessage): Promise<any> {
         tooLarge = true;
         chunks.length = 0;
         reject(new Error("body too large"));
+        // 拒绝后暂停读：既让处理器能把 413 / 400 写回去，又不会陪着攻击者把
+        // 一个无限 body 全收下（请求没读完就结束响应，Node 自己会关连接）。
+        req.pause();
         return;
       }
       chunks.push(c);
@@ -145,6 +148,8 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
         tooLarge = true;
         chunks.length = 0;
         reject(new Error("body too large"));
+        // 同上：不再继续吞字节，响应写完由 Node 收尾。
+        req.pause();
         return;
       }
       chunks.push(c);

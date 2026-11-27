@@ -1275,9 +1275,10 @@ async function main(): Promise<void> {
       try {
         return json(res, 200, await peer.uploadAvatar(raw));
       } catch (err) {
-        // 上游状态码原样透传：peer 的 413（超过 512 KB）不能被压成 400（评审 8-3）。
-        const status = err instanceof PeerRequestError && err.status >= 400 && err.status <= 599 ? err.status : 400;
-        return json(res, status, { error: (err as Error).message });
+        // peer 自己给的 4xx/5xx 原样透传；连不上 peer（没起、超时、连接被拒）是上游挂了，
+        // 不是「请求不对」——回 502 + 一句人能看懂的，别把 "fetch failed" 甩给页面。
+        if (err instanceof PeerRequestError) return json(res, err.status, { error: err.message });
+        return json(res, 502, { error: "内网通暂时连不上，稍后再试" });
       }
     }
     if (url.pathname.startsWith("/api/peer/avatar/") && req.method === "GET") {

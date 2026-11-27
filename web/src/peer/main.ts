@@ -517,7 +517,7 @@ function rememberAvatars(): void {
   if (st) rememberAvatar(st.nodeId, st.avatar);
 }
 
-function avatar(name: string, key: string, online?: boolean, pic?: string): HTMLElement {
+function avatar(name: string, key: string, online?: boolean, pic?: string, zoom = true): HTMLElement {
   const box = h("span", "av");
   // 第四参是「这一处确切知道他是哪张」的地方（「我」页 / 别人的头像就是他自己报的）；
   // 其余位置只用 nodeId 查表。
@@ -534,6 +534,9 @@ function avatar(name: string, key: string, online?: boolean, pic?: string): HTML
       "error",
       () => {
         box.classList.remove("pic");
+        // 图没了就别再假装能看大图：光标、悬停提示一并收回。
+        box.classList.remove("av-open");
+        box.removeAttribute("title");
         img.remove();
         box.style.setProperty("--h", String(hueOf(key)));
         // 用 span 塞首字母而不是 textContent：后者会把 `online` 追加的 .st 圆点一起抹掉。
@@ -542,16 +545,19 @@ function avatar(name: string, key: string, online?: boolean, pic?: string): HTML
       { once: true },
     );
     box.append(img);
-    // 点个头像看大图（不是头像选择格 / 侧栏按钮：那两处点击有各自的事要做）。
-    box.classList.add("av-open");
-    box.title = tr("点头像看大图");
-    box.addEventListener("click", (ev) => {
-      if (box.closest("button")) return;
-      // 图已经加载失败、退回字母了：这时候再点不该弹一个空灯箱。
-      if (!img.isConnected) return;
-      ev.stopPropagation();
-      openAvatarViewer(img.getAttribute("src") ?? "", name);
-    });
+    // 点个头像看大图。列表 / 通讯录 / 群成员那些「整行可点」的地方传 zoom=false：
+    // 那里的头像属于行，点它应该照旧打开会话 / 选中 / 勾选，不能抢走行的点击。
+    if (zoom) {
+      box.classList.add("av-open");
+      box.title = tr("点头像看大图");
+      box.addEventListener("click", (ev) => {
+        if (box.closest("button")) return;
+        // 图已经加载失败、退回字母了：这时候再点不该弹一个空灯箱。
+        if (!img.isConnected) return;
+        ev.stopPropagation();
+        openAvatarViewer(img.getAttribute("src") ?? "", name);
+      });
+    }
   } else {
     box.style.setProperty("--h", String(hueOf(key)));
     box.textContent = (name.trim()[0] ?? "?").toUpperCase();
@@ -1091,7 +1097,7 @@ function renderThreadList(): void {
 function threadRow(t: Thread): HTMLElement {
   const row = h("div", `row${S.thread === t.nodeId ? " on" : ""}${t.pinned ? " pinned" : ""}`);
   const wrap = h("span", "avwrap");
-  wrap.append(avatar(t.nickname, t.nodeId, t.online));
+  wrap.append(avatar(t.nickname, t.nodeId, t.online, undefined, false));
   if (t.unread > 0) wrap.append(h("i", `unread${t.muted ? " quiet" : ""}`, t.muted ? "" : badgeText(t.unread)));
   row.append(wrap);
   const tbox = h("div", "t");
@@ -1201,7 +1207,7 @@ function renderContactList(): void {
     box.append(title);
     for (const c of g.items) {
       const row = h("div", `row${S.contact === c.nodeId ? " on" : ""}`);
-      row.append(avatar(c.nickname, c.nodeId, c.online));
+      row.append(avatar(c.nickname, c.nodeId, c.online, undefined, false));
       const t = h("div", "t");
       const name = h("div", "n");
       name.append(h("span", "nm", c.nickname));
@@ -1850,7 +1856,7 @@ function forwardModal(entries: Entry[]): void {
       if (q && !p.nickname.toLowerCase().includes(q) && !p.nodeId.startsWith(q)) continue;
       const row = h("button", `fwd-row${chosen.has(p.nodeId) ? " on" : ""}`) as HTMLButtonElement;
       row.type = "button";
-      row.append(avatar(p.nickname, p.nodeId, p.online), h("span", "nm", p.nickname), h("span", "ck"));
+      row.append(avatar(p.nickname, p.nodeId, p.online, undefined, false), h("span", "nm", p.nickname), h("span", "ck"));
       row.addEventListener("click", () => {
         if (chosen.has(p.nodeId)) chosen.delete(p.nodeId);
         else chosen.add(p.nodeId);
@@ -2718,7 +2724,7 @@ function groupModal(opts: { preset?: string[]; groupId?: string }): void {
         else chosen.delete(c.nodeId);
         paintGo();
       });
-      row.append(box, avatar(c.nickname, c.nodeId, c.online), h("span", "nm", c.nickname), h("span", "sub", c.online ? tr("在线") : tr("离线")));
+      row.append(box, avatar(c.nickname, c.nodeId, c.online, undefined, false), h("span", "nm", c.nickname), h("span", "sub", c.online ? tr("在线") : tr("离线")));
       list.append(row);
     }
   };
@@ -2764,7 +2770,7 @@ function membersModal(t: Thread): void {
     const live = me || online.has(m.nodeId);
     const row = h("div", "group-row");
     const name = nameOf(m.nodeId, m.nickname);
-    row.append(avatar(name, m.nodeId, live), h("span", "nm", me ? tr("{p1}（我）", { p1: name }) : name));
+    row.append(avatar(name, m.nodeId, live, undefined, !me), h("span", "nm", me ? tr("{p1}（我）", { p1: name }) : name));
     if (m.nodeId === g.owner) row.append(h("span", "pill", tr("群主")));
     row.append(h("span", "sub", live ? tr("在线") : tr("离线")));
     if (!me) {
