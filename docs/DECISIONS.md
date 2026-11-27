@@ -8612,3 +8612,38 @@ tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里�
 **代价。** `placeMenu` 现在是两张页面共用的：改它的语义会同时影响主界面与内网通（这是想要的，也意味着别在 `openMenu` 里另造一套封顶逻辑）。封顶要滚的时候，emoji 那排会跟着菜单项一起滚。
 
 **验证。** 新探针 `node probes/peer-menu-fit.mjs <A bridge> <B bridge> <B peer>`（两份测试实例 + 真 Chromium；测量前等 400ms —— mac 主题 `mac-menu-in` 有 260ms 入场缩放，动画期间 `getBoundingClientRect` 带 transform，早量会把「出界 90px」和「刚好在里」量混）。修前 / 修后：① 1280×860 右键贴右边，菜单右出界 90px → `left 1002`、`right 1272`（正好 8px 边距）；② 悬停微笑按钮只弹 emoji 排，右出界 12px → 在内；③ 720×420 贴底右键，右出界 90px + 底部出界 → 翻到上方 `top 8`、高 212 全在窗口里；④ 420px 窄窗右键，右出界 90px → 在内。截图 `.scratch/peer-menu-fit/right-edge-menu.png`、`.scratch/peer-menu-fit/short-window-menu.png`。`npm --prefix web run typecheck`（含 viewport / layers 守卫）、`npm run test:menuplace`、`npm run test:viewport` 均 exit 0。
+
+## D433 端口被占之后内网通要能自己回来：30 秒探一次端口，页面「重试」真的重新 fork（用户 2026-11-27 截图「出现了内网通被占用的情况」）
+
+**问题。** 状态条一直挂着「peer 端口 7865 被占用：另一份 peer 在跑（或者别的程序占了）」，可 `netstat` 里 7865 已经空着 —— 占用者早就走了。两条恢复路径同时断掉：
+
+- `PeerHost.spawn()` 的 exit handler 在 `code === 2` 时只写 `reason` 就 `return`，既不重启也不观察端口。设计初衷是「别和另一份 peer 抢」，但占用者是临时的（另一份 bridge / 探针 / 上一个还没退干净的 peer），它走了以后 bridge 永远不会再试。
+- 页面状态条的「重试」走 `refreshAll()` → `POST /api/peer/refresh` → 转发到 **peer 进程自己**的 `/peer/refresh`（那是「重新发现」）。peer 根本没在跑，这条请求必然 `{}` 400 `{"error":"fetch failed"}`，按钮形同虚设。
+
+证据链：`~/.pi-peer/logs/peer.log` 里 2026-11-26T11:42:52Z（本地 19:42）有一次 `0.0.0.0:7865` 成功启动（bridge 13408 也是 19:42:39 起的），另一份测试实例 11:52:47Z 起在 7897；之后 2026-11-27T01:26:22Z（本地 09:26）有一条 `监听 0.0.0.0:7865 失败：listen EADDRINUSE`，再往后 7865 就一直是空的。占用者是谁已无从追（进程已退），但「端口空着、页面仍说被占、重试无效」是稳定的。
+
+**触发源：热部署换脑。** 这次不是巧合，是稳定可复现的耦合 —— 每次热部署换脑都是一次赌博：
+
+- 换脑时新旧两代脑并存 5 秒（壳日志：`[host 01:26:24] 新脑 38884 就绪，观察 5s 再切` → `2026-11-27T01:26:29.825Z host: 被换下，退出`）。两代 `PeerHost` 都去 bind 同一个端口，新一代必然撞 `EADDRINUSE`：`peer.log` 里 `2026-11-27T01:26:22.982Z 监听 0.0.0.0:7865 失败：listen EADDRINUSE`，比 `新脑 38884 连上` 早 2 秒。
+- 撞上的那一代按本决策之前的代码永久放弃；5 秒后旧脑退出，peer 作为它的 `fork()` 子进程一起消失（实测 peer 81796 的父进程就是脑 52680），端口空出来却没人再试。这次红条从 01:26 挂到 01:55:48 换上 `f8bb83e` 那一代才恢复，整整 9 小时。
+- 所以「端口被占」不是罕见事故：`peer.log` 里 `监听 0.0.0.0:7865 失败` 共 1279 次，最近三次是 `2026-11-26T13:45:40` / `13:46:09` / `13:46:22`（约每 5 秒一次，又一次换脑窗口）。
+
+这条耦合也限定了修复的边界：30 秒探测在换脑场景下最多让内网通多挂半分钟，可以接受。想更快就得让壳在换脑时把旧 peer 一并收掉，而不是让两代去抢端口 —— 那是另一件事，记在这里备查。
+
+**决定。**
+
+- `bridge/src/peer.ts`：退出码 2 的分支不再一走了之 —— 记下 `reason` 后调 `schedulePortProbe()`，每 `PI_PEER_PORT_PROBE_MS`（默认 30 s，测试收紧到 300 ms）用 `net.connect(127.0.0.1:<port>)` 探一次。**只有 `ECONNREFUSED`**（确认没有监听者）才重新 `spawn()`；连得上、超时、其它错误都按「仍被占」再等一轮 —— 占用者可能只是个不做 HTTP 的 TCP server（探针），所以不能用 `/status` 探活。
+- 新增 `PeerHost.restart()`：`status` 有值（已经有一份在答 `/status`，可能是别的 peer）或子进程还在起的时候只回状态、不重复 fork；否则清掉退避 / 探测定时器、把 `restarts` 归零、立刻 `spawn()`。
+- `bridge/src/index.ts` 新增 `POST /api/peer/restart`（和别的 `/api/peer*` 共用同一层鉴权），把 `restart()` 的结果原样回给页面。
+- 页面 `web/src/peer/main.ts` 的状态条「重试」改为新的 `retryPeer()`：先 `POST /api/peer/restart`，再 `refreshAll()` 把状态读回来。`refreshAll()` 本身（另两个调用点是「立即重试」与「添加并刷新」）保持原语义不动。
+- `spawn()` 里清空 `reason`：进了这个函数就说明「没有可用子进程」，旧的失败原因（退出 / 端口被占）不该继续挂在页面。
+
+**为什么。** ① 不改成「退出码 2 立刻按 1s/2s/4s 退避重启」：另一份 peer 真的在跑时，那等于每隔一两秒 fork 一个注定失败、只会写一行日志的进程。30 秒一次的被动探测既安静，又能在占用者离开后一个周期内自愈。② 探「还能不能连上」而不是「HTTP 答不答」，是因为判据要和 `bind` 失败对齐：占端口的可能根本不是 peer。③ 「重试」必须真的 fork：用户点它的时候要的是「把内网通弄起来」，不是「再读一遍状态」。④ 不自动杀掉占端口的进程：那可能是用户自己另开的实例或别的服务，bridge 只负责不添乱。
+
+**代价。** 端口被占期间，桥每 30 秒多一个 `connect` 尝试（可以忽略）；页面最多晚 5 秒（`poll()` 周期）才看到恢复。手动重试在端口仍被占时会再失败一次，页面上的 `reason` 保持原样（用户看得到仍被占）。
+
+**验证。** 新测 `bridge/tests/peer-port-recovery.mjs`（自起真壳 + 真 peer，`PI_WEB_STATE` / `PI_AGENT_DIR` / `PI_PEER_STATE` / 组播端口全部隔离），两段：A 自动（`PI_PEER_PORT_PROBE_MS=300`，占端口 → 等「被占用」→ 释放 → ≤8 s 内 `running:true`）；B 手动（`PI_PEER_PORT_PROBE_MS=600000`，释放 1.5 s 后仍 `running:false`，`POST /api/peer/restart` 回 `{ok:true}` 并在 ≤8 s 内 `running:true`）。连跑三次全绿，单轮 41～51 s（两段各起一份真桥，`/healthz` 约 20 s）。
+
+写这个测试时踩了两个坑，后来者照做：① **先占端口再起壳**。反过来（壳起来、`/healthz` 通过、再 occupy）是彩票：peer 在脑启动的尾段才 fork，真撞上「端口还是空的」它就直接绑上了，测试变成时红时绿（第一次就 15 s 超时）。② 释放占位端口时不能只 `srv.close()`：桥每 300 ms `connect` 一次，`close()` 要等这些连接收尾，回调可能久久不来（实测卡到外层 300 s 超时被掐）。先 `srv.closeAllConnections()` 再 `close()` 就好；`taskkill` 也带上 `timeout: 15000`，免得 `spawnSync` 把整轮挂死。
+
+红验证：修复前同一路径用等价的 `.scratch` 脚本跑过 —— 释放端口 8 秒后仍 `running:false`、`POST /api/peer/refresh` 回 400 `fetch failed`、状态纹丝不动（两段都红）。`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck` 均 exit 0。

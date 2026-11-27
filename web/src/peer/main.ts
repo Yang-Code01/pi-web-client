@@ -778,7 +778,7 @@ function renderHint(): void {
     hintEl.append(ic("alert"), h("span", "grow", S.view?.enabled ? S.view.reason || tr("内网通正在启动") : tr("内网通没在运行（PI_PEER=0 或者还没构建）")));
     const retry = h("button", "btn", tr("重试"));
     retry.type = "button";
-    retry.addEventListener("click", () => void refreshAll());
+    retry.addEventListener("click", () => void retryPeer());
     hintEl.append(retry);
     return;
   }
@@ -3681,6 +3681,20 @@ async function setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: 
     await loadStatus();
     renderAll();
   }
+}
+
+/**
+ * 状态条的「重试」：peer 子进程已经退出（最常见的是端口被占）时，**真的**把它拉起来。
+ * 以前这里只调 refreshAll()，而 refreshAll 走的是 peer 进程自己的 `/peer/refresh` ——
+ * 进程根本没在跑，那条请求必然 fetch failed，按钮形同虚设。
+ */
+async function retryPeer(): Promise<void> {
+  try {
+    await postJson("/api/peer/restart");
+  } catch {
+    /* 桥自己不可达时，下面的 refreshAll 会把状态读回来，状态条已经说了 */
+  }
+  await refreshAll();
 }
 
 async function refreshAll(): Promise<void> {
