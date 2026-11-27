@@ -24,7 +24,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "pi-host-ui-"));
 const BRAINS = path.join(TMP, "brains");
 fs.mkdirSync(BRAINS, { recursive: true });
 // 600 × ~16 KB ≈ 9.8 MB：只要壳把它们留着，attached 那一帧必然越过 8 MiB。
-const FIRE = Number(process.env.FIRE || 600);
+const FIRE = 600;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -133,8 +133,12 @@ try {
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const conn = new ControlConn(net.connect(srv.address().port, "127.0.0.1"));
   const bigT = await new Promise((r) => {
-    conn.onMessage((m) => r(m.t));
-    setTimeout(() => r("timeout"), 5000);
+    // 收到就清掉兜底定时器，否则进程要白等 5 秒才退。
+    const timer = setTimeout(() => r("timeout"), 5000);
+    conn.onMessage((m) => {
+      clearTimeout(timer);
+      r(m.t);
+    });
   });
   conn.socket.destroy();
   srv.close();
