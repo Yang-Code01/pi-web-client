@@ -120,9 +120,6 @@ export class ReposSheet {
     this.handoff = opts.handoff ?? null;
 
     this.root = markSurface(el("div", "sheet-back center repos-back"), "window");
-    this.root.onclick = (ev) => {
-      if (ev.target === this.root) this.close();
-    };
     this.sheet = el("div", "repos-sheet");
     this.sheet.setAttribute("role", "dialog");
     this.sheet.setAttribute("aria-modal", "true");

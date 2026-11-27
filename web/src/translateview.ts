@@ -453,9 +453,6 @@ export function openTrPicker(o: PickerOpts, mount: (node: HTMLElement) => void):
     }
   };
   document.addEventListener("keydown", onKey, true);
-  back.onclick = (ev) => {
-    if (ev.target === back) close();
-  };
   back.append(box);
   paintAll();
   mount(back);
@@ -510,9 +507,6 @@ export function openSyncReview(
     }
   };
   document.addEventListener("keydown", onKey, true);
-  back.onclick = (ev) => {
-    if (ev.target === back) close();
-  };
   back.append(box);
   mount(back);
 }

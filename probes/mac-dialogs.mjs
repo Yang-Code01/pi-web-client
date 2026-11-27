@@ -193,6 +193,63 @@ const SKELETONS = [
   ["表格浮窗（纸）", `<section class="sd" data-mac-surface="paper"></section>`],
 ];
 
+/**
+ * 点遮罩（D434 / #721）：带遮罩的窗口点遮罩**不关**、面板轻弹一下；只有灯箱照旧关。
+ * 在遮罩上找一个「elementFromPoint 就是遮罩本身」的点，用真鼠标点下去，再看：
+ *  - 窗口还在（没被摘掉、也没进 `.mac-leaving` 退场）；
+ *  - 面板演了 id 为 `backdrop-nudge` 的 WAAPI 动画（录 Element.prototype.animate 的调用）；
+ *  - 窗口里有一颗看得见的 ✕ / 关闭 / 取消（手机上没有 Esc，不能把人困在里面）。
+ */
+const backdropChecks = [];
+const backdropCheck = async (page, label, backSel, expectClose = false) => {
+  const pt = await page.evaluate((sel) => {
+    if (!window.__nudges) {
+      window.__nudges = [];
+      const orig = Element.prototype.animate;
+      Element.prototype.animate = function (k, o) {
+        if (o && typeof o === "object" && o.id) window.__nudges.push(o.id);
+        return orig.call(this, k, o);
+      };
+    }
+    window.__nudges.length = 0;
+    const all = [...document.querySelectorAll(sel)].filter((n) => !n.classList.contains("mac-leaving"));
+    const root = all[all.length - 1];
+    if (!root) return null;
+    root.dataset.backdropProbe = "1";
+    const r = root.getBoundingClientRect();
+    // 先试贴边的几个点（面板一般居中、四周留白），再退到网格。
+    const pts = [
+      [r.left + 4, r.top + r.height / 2],
+      [r.right - 4, r.top + r.height / 2],
+      [r.left + r.width / 2, r.bottom - 4],
+      [r.left + 4, r.top + 4],
+    ];
+    for (let i = 1; i < 12; i += 1) for (let j = 1; j < 12; j += 1) pts.push([r.left + (r.width * i) / 12, r.top + (r.height * j) / 12]);
+    for (const [x, y] of pts) if (document.elementFromPoint(x, y) === root) return { x, y };
+    const hit = document.elementFromPoint(r.left + 4, r.top + r.height / 2);
+    return { none: true, n: all.length, same: hit === root, hit: hit ? `${hit.tagName}.${hit.className}` : null };
+  }, backSel);
+  if (!pt) return backdropChecks.push({ label, err: `没找到 ${backSel}` });
+  if (pt.none) return backdropChecks.push({ label, err: `遮罩上找不到能点的空白（面板铺满了？）n=${pt.n} same=${pt.same} hit=${pt.hit}` });
+  await page.mouse.click(pt.x, pt.y);
+  await sleep(250);
+  const r = await page.evaluate(() => {
+    const root = document.querySelector('[data-backdrop-probe="1"]');
+    const open = Boolean(root && root.isConnected && !root.classList.contains("mac-leaving"));
+    const closeBtn = root
+      ? [...root.querySelectorAll("button")].some((b) => {
+          const t = `${b.textContent ?? ""} ${b.getAttribute("aria-label") ?? ""} ${b.title ?? ""}`;
+          const box = b.getBoundingClientRect();
+          return box.width > 0 && box.height > 0 && /[✕×]|关闭|取消|不发/.test(t);
+        })
+      : false;
+    root?.removeAttribute("data-backdrop-probe");
+    return { open, nudged: window.__nudges.includes("backdrop-nudge"), closeBtn };
+  });
+  backdropChecks.push({ label, expectClose, ...r });
+  log(`点遮罩 ${label}:`, JSON.stringify(r));
+};
+
 let browser = null;
 try {
   await until(() => fs.existsSync(path.join(STATE, "passphrase.txt")), 20000, "passphrase");
@@ -233,6 +290,7 @@ try {
   await sleep(700);
   await measure(page, "Everything（真开）", ".fse-back");
   await page.screenshot({ path: path.join(OUT, "01-everything.png") });
+  await backdropCheck(page, "Everything（真开）", ".fse-back");
 
   await page.keyboard.press("Escape");
   await sleep(60);
@@ -269,11 +327,45 @@ try {
       const hits = await page.evaluate(SCAN, SCAN_EXEMPT.map((x) => x.sel));
       for (const h of hits) scanHits.push({ where: label, ...h });
       await page.screenshot({ path: path.join(OUT, shot) });
+      await backdropCheck(page, label, backSel);
       await page.keyboard.press("Escape");
       await sleep(400);
     } catch (e) {
       log(`${label} 没打开:`, e.message.slice(0, 80));
     }
+  }
+
+  // ---- 2b. 点遮罩：灯箱是唯一例外，点黑底就关（D434）。
+  await page.evaluate(() => {
+    const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='30'><rect width='40' height='30' fill='red'/></svg>";
+    window.dispatchEvent(new CustomEvent("pi-image", { detail: { src: `data:image/svg+xml,${encodeURIComponent(svg)}`, alt: "probe" } }));
+  });
+  try {
+    await page.locator(".image-view").first().waitFor({ timeout: 5000 });
+    await sleep(300);
+    await backdropCheck(page, "图片灯箱（真开）", ".image-view", true);
+  } catch (e) {
+    backdropChecks.push({ label: "图片灯箱（真开）", err: `没打开: ${e.message.slice(0, 60)}` });
+  }
+  await sleep(400);
+
+  // ---- 2c. 浮层菜单不受影响（D115）：技能面板点外面照旧收起。
+  const skillBtn = page.locator('.composer button:has-text("技能")').first();
+  if (await skillBtn.count()) {
+    await skillBtn.click();
+    try {
+      await page.locator(".skill-pop").first().waitFor({ timeout: 4000 });
+      const vp = page.viewportSize();
+      await page.mouse.click((vp?.width ?? 1280) / 2, 140);
+      await sleep(250);
+      const still = await page.locator(".skill-pop").count();
+      log("技能面板点外面后还剩:", still);
+      if (still) fails.push("技能面板（浮层菜单）点外面没收起 —— D115 被误伤");
+    } catch (e) {
+      log("技能面板没打开，跳过 D115 那条:", e.message.slice(0, 60));
+    }
+  } else {
+    log("没有「技能」按钮，跳过 D115 那条");
   }
 
   // ---- 3. 注入骨架量其余家族
@@ -504,6 +596,21 @@ try {
     if (radius && r.panel.radius !== radius) fails.push(`${r.label}: 圆角 ${r.panel.radius} ≠ ${radius}`);
     if (want.shadow === true && r.panel.shadow === "none") fails.push(`${r.label}: 面板没阴影`);
     if (!r.inApp) fails.push(`${r.label}: 没挂在 #app 里 —— 字号缩放时它会跟别人两套尺寸`);
+  }
+  // ---- 断言：点遮罩（D434）。
+  if (!backdropChecks.length) fails.push("点遮罩一条都没量到 —— 探针自己坏了");
+  for (const c of backdropChecks) {
+    if (c.err) {
+      fails.push(`点遮罩 ${c.label}: ${c.err}`);
+      continue;
+    }
+    if (c.expectClose) {
+      if (c.open) fails.push(`点遮罩 ${c.label}: 灯箱应该点外面就关，结果还开着`);
+      continue;
+    }
+    if (!c.open) fails.push(`点遮罩 ${c.label}: 窗口被关掉了（D434：点遮罩不关）`);
+    if (!c.nudged) fails.push(`点遮罩 ${c.label}: 面板没有轻弹（backdrop-nudge）`);
+    if (!c.closeBtn) fails.push(`点遮罩 ${c.label}: 窗口里找不到看得见的 ✕ / 关闭 / 取消`);
   }
   if (fails.length) {
     console.log(`\nFAIL — ${fails.length} 处没跟上 Mac 风格:`);

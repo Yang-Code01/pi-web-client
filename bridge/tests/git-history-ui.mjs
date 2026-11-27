@@ -369,12 +369,16 @@ try {
   await cmpTo("origin/main");
   await page.waitForSelector('.bc-col[data-side="right"] .bc-row', { timeout: 20000 });
 
-  // 点遮罩同样关掉（遮罩就是 opLayer 自己）。换回 origin/main 之后右栏全是「两边都有」的
-  // 提交（.onlyR 为 0），所以这一步随便点左栏第一行 —— 关窗跟从哪一行进来无关。
+  // 点遮罩不关（D434：防误触，遮罩就是 opLayer 自己），Esc 才关。换回 origin/main 之后右栏全是
+  // 「两边都有」的提交（.onlyR 为 0），所以这一步随便点左栏第一行 —— 关窗跟从哪一行进来无关。
   await page.click('.bc-col[data-side="left"] .bc-row:first-child');
   await page.waitForSelector(".go-card.go-commit", { timeout: 20000 });
   await page.click(".go-op-layer", { position: { x: 8, y: 8 } });
-  check("点遮罩关掉详情", await page.locator(".go-card.go-commit").count() === 0);
+  await page.waitForTimeout(250);
+  check("点遮罩不关详情（D434）", await page.locator(".go-card.go-commit").count() === 1);
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".go-card.go-commit", { state: "detached", timeout: 10000 });
+  check("Esc 关掉详情", await page.locator(".go-card.go-commit").count() === 0);
 
   // 差异 tab：文件列表 + 并排文本行。
   await page.click('.go-tabs [data-tab="diff"]');

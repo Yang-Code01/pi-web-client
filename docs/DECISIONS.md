@@ -8647,3 +8647,25 @@ tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里�
 写这个测试时踩了两个坑，后来者照做：① **先占端口再起壳**。反过来（壳起来、`/healthz` 通过、再 occupy）是彩票：peer 在脑启动的尾段才 fork，真撞上「端口还是空的」它就直接绑上了，测试变成时红时绿（第一次就 15 s 超时）。② 释放占位端口时不能只 `srv.close()`：桥每 300 ms `connect` 一次，`close()` 要等这些连接收尾，回调可能久久不来（实测卡到外层 300 s 超时被掐）。先 `srv.closeAllConnections()` 再 `close()` 就好；`taskkill` 也带上 `timeout: 15000`，免得 `spawnSync` 把整轮挂死。
 
 红验证：修复前同一路径用等价的 `.scratch` 脚本跑过 —— 释放端口 8 秒后仍 `running:false`、`POST /api/peer/refresh` 回 400 `fetch failed`、状态纹丝不动（两段都红）。`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck` 均 exit 0。
+
+
+## D434 带遮罩的窗口点遮罩不关，改为面板轻弹一下（用户 2026-11-27「本项目有很多dialog，但是现在点击dialog外部会自动关闭，有时候可能误触。 现在想要去掉这个」，#721）
+
+**症状。** 几乎每扇带遮罩的窗口（设置、产物、Everything、文件管理、笔记、新会话、分支、Jira、邮件确认……约 50 处）都写着 `back.onclick = (e) => { if (e.target === back) close(); }` 或 `onmousedown` 版本。手一滑点到窗口外面，填了一半的表单、选了一半的列表就没了；邮件确认框更是把「点外面」当成「不发」。
+
+**决定。**
+
+- **范围：只管带遮罩的窗口**（`data-mac-surface="window"`，GLOSSARY「模态窗」）。浮层菜单 —— 技能面板、右键菜单、下拉、提醒浮层 —— 照旧「点外面就关、那一下点击照常生效」（D115 不动）：它们没有遮罩，点外面本来就是在点别的东西。
+- **唯一例外：图片灯箱**（`openImage`、内网通看图器）。黑底上只有一张图，没有可丢的输入，点黑底关是看图器的通用手势。
+- **点遮罩 = 面板轻弹一下**：`web/src/modal.ts` 的 `nudgeWindow()`（面板 `scale 1 → 1.015 → 1`，160 ms，WAAPI `id: "backdrop-nudge"`，`prefers-reduced-motion` 时不动），告诉人「点到外面了，窗口还在」。全局一处：`markSurface(root, "window")` 时就挂上，按下和抬起都落在遮罩本身才算（从面板里拖选文字拖出界不算）。要关的窗口传 `markSurface(…, { dismiss })`（目前只有灯箱）。
+- **手机抽屉同样不关**：抽屉也是 `window` 档，没有理由另立规矩。
+- **每扇窗口必须有看得见的关法**（✕ / 取消 / 关闭）：手机上没有 Esc。原来只靠点遮罩退出的口令框补了「取消」。
+- **邮件确认框**：点遮罩不再等于「不发」，只有「发送 / 不发」两颗按钮、Esc、超时能结束它；去掉了「你在确认框外面点了，这封信没有发。」这句回执。
+
+**推翻 / 修订的旧条目。** 以前写着「点遮罩关」「✕ / Esc / 点遮罩都关」的决定，点遮罩那半句作废，其余照旧。决定日志只追加、不改旧原文，以本条为准：D193（分支弹窗 `branchsheet.ts`）、D232（工具参数对话框）、D264（邮件确认框 `mailconfirm.ts`）、D289（git 提交详情）、D373（模型弹窗），以及其它写过「点遮罩关」的窗口。
+
+**为什么。** ① 不做「点外面先问一句要不要丢弃」：多一个确认框比误触本身还烦，而且绝大多数窗口没有「脏」状态可判断。② 不只对「有输入」的窗口禁用：哪些算有输入会随功能慢慢漂移，一条规则全覆盖才守得住。③ 轻弹而不是什么都不做：完全没反应会让人以为页面卡了。④ 实现放在 `markSurface` 而不是每处自己写：50 处手抄的 `e.target === back` 就是这次的病根。
+
+**守卫。** `web/tests/backdrop-close-unit.mjs`（挂在 `npm --prefix web run typecheck`）扫 `web/src/**/*.ts`：凡是 `x.target === 遮罩变量`（变量名以 back / root / modal / wrap / layer / picker / scrim / overlay / mask… 结尾，或本文件里被 `markSurface(…, "window")` / `this.overlay(…)` 标过的）就红；确属例外的在行尾写 `// backdrop-ok: <理由>`。行为由 `node probes/mac-dialogs.mjs` 验：真开 Everything / 产物 / bug 反馈 / 设置，用真鼠标点遮罩空白，断言窗口还在、面板演了 `backdrop-nudge`、里面有看得见的 ✕ / 关闭 / 取消；灯箱点黑底要关；技能面板点外面要收起（D115）。
+
+**代价。** 习惯「点外面关」的人要多按一下 ✕ 或 Esc。

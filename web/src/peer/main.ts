@@ -1,6 +1,7 @@
 import { applyLang, bootLang, fmtDate, fmtNum, fmtRelative, fmtTime, tr } from "../i18n/index.ts";
 import { placeMenu } from "../menuplace.ts";
 import { renderMarkdown } from "../md.ts";
+import { markSurface } from "../modal.ts";
 import { RichEditor } from "../notes/editor.ts";
 import { hasRichMarkup, isRichEmpty, plainText, sanitizeRich } from "../notes/rich.ts";
 import { SheetDialog } from "../sheet/dialog.ts";
@@ -297,7 +298,8 @@ const mainEl = document.querySelector("#main") as HTMLElement;
 const mobEl = document.querySelector("#mobnav") as HTMLElement;
 const layerEl = document.querySelector("#layer") as HTMLElement;
 const toastEl = document.querySelector("#toast") as HTMLElement;
-const picker = document.querySelector("#picker") as HTMLElement;
+// 点遮罩不关、只轻弹（D434）：遮罩上的点击由 modal.ts 统一处理，关闭只走 ✕ / Esc。
+const picker = markSurface(document.querySelector("#picker") as HTMLElement, "window");
 const crumbsEl = document.querySelector("#crumbs") as HTMLElement;
 const placesEl = document.querySelector("#places") as HTMLUListElement;
 const rootsEl = document.querySelector("#roots") as HTMLUListElement;
@@ -4074,9 +4076,6 @@ pickerSendBtn.addEventListener("click", () => {
   closePicker();
   renderMain();
   textInput?.focus();
-});
-picker.addEventListener("click", (ev) => {
-  if (ev.target === picker) closePicker();
 });
 document.addEventListener("keydown", (ev) => {
   // 已经有人吃掉这一下（搜索框、表情面板…）就不再往下：否则会误关外面的弹层。

@@ -81,9 +81,6 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
 
   // ---- 壳
   const back = markSurface(el("div", "sys-back fc-back"), "window");
-  back.onclick = (ev) => {
-    if (ev.target === back) opts.onClose?.();
-  };
   // Sheet 的 Esc 走冒泡：焦点在按钮 / 表格行上时也能关；跳转框有字时它自己会先吞掉。
   back.onkeydown = (ev) => {
     if (ev.key === "Escape") {

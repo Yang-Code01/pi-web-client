@@ -134,7 +134,6 @@ export class BranchSheet {
     this.embedded = opts.embedded === true;
 
     this.root = markSurface(el("div", "sheet-back center branch-back"), "window");
-    this.root.onclick = (ev) => { if (ev.target === this.root) this.close(); };
     this.sheet = el("div", "branch-sheet go-sheet");
     this.sheet.classList.toggle("go-embedded", this.embedded);
     this.sheet.setAttribute("role", this.embedded ? "region" : "dialog");
@@ -209,7 +208,6 @@ export class BranchSheet {
 
     this.opLayer = el("div", "go-op-layer");
     this.opLayer.hidden = true;
-    this.opLayer.onclick = (ev) => { if (ev.target === this.opLayer) this.closeOp(); };
     this.sidePop = el("div", "go-side-pop");
     this.sidePop.hidden = true;
     this.sheet.append(head, this.cmpEl, this.tabsEl, this.colsEl, foot, this.sidePop, this.opLayer);
@@ -938,7 +936,7 @@ export class BranchSheet {
    *
    * 卡先按行里已有的数据画出来（短哈希、标题、作者、相对时间），元信息 / 文件清单 / 说明等
    * `/api/git/commit` 回来再补；**点开哪个文件才拉哪一份差异** —— 桥端那个接口不读 blob，
-   * 一次全量 diff 才是真的贵。关掉它（Esc / ✕ / 点遮罩）都回到工作台，焦点还给这一行。
+   * 一次全量 diff 才是真的贵。关掉它（Esc / ✕）都回到工作台，焦点还给这一行。
    */
   private openCommit(commit: GitCommit, rowEl: HTMLElement): void {
     const repo = this.data?.repo ?? this.dir;
@@ -1118,7 +1116,7 @@ export class BranchSheet {
     };
 
     const paintFoot = (): void => {
-      // 底栏不放「Esc / ✕ / 点遮罩都关掉它」那句提示：说明展开全文时会压到内容上，
+      // 底栏不放「Esc / ✕ 都关掉它」那句提示：说明展开全文时会压到内容上，
       // 而且三种关法本来就套在 ✕ 与遮罩上，写在按钮旁边是废话。
       foot.replaceChildren();
       const acts = el("div", "go-acts");

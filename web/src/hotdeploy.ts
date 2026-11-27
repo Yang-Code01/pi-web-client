@@ -149,9 +149,6 @@ class HotdeployPanel {
 
   mount(): void {
     this.root = markSurface(el("div", "sys-back hot-back"), "window");
-    this.root.addEventListener("mousedown", (e) => {
-      if (e.target === this.root) this.close();
-    });
     this.console = el("section", "sys-console hot");
     this.console.setAttribute("role", "dialog");
     this.console.setAttribute("aria-modal", "true");

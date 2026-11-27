@@ -79,9 +79,6 @@ export class RepoPicker {
     this.opts = opts;
     this.at = (opts.start || "").trim();
     this.back = markSurface(el("div", "sheet-back center rv-back"), "window");
-    this.back.onclick = (ev) => {
-      if (ev.target === this.back) this.close();
-    };
 
     const sheet = el("section", "st-console repopick");
     sheet.setAttribute("role", "dialog");

@@ -291,9 +291,6 @@ export class NotesSheet {
 
   private build(): void {
     const back = markSurface(el("div", "sheet-back notes-back"), "window", { enter: "none" });
-    back.onclick = (ev) => {
-      if (ev.target === back) this.close();
-    };
     const sheet = el("div", "sheet notes-sheet");
 
     this.bodyEl = el("div", "notes-body");
@@ -1519,9 +1516,6 @@ export class NotesSheet {
       };
       pushEscLayer({ el: wrap, onEsc: () => done(null) });
       cancel.onclick = () => done(null);
-      wrap.onclick = (ev) => {
-        if (ev.target === wrap) done(null);
-      };
       mountOverlay(wrap);
       search.focus();
       list.append(el("div", "peer-pick-empty", tr("正在问内网通…")));
@@ -1611,9 +1605,6 @@ export class NotesSheet {
       pushEscLayer({ el: wrap, onEsc: () => done(false) });
       back.onclick = () => done(false);
       ok.onclick = () => done(true);
-      wrap.onclick = (ev) => {
-        if (ev.target === wrap) done(false);
-      };
       mountOverlay(wrap);
       ok.focus();
     });

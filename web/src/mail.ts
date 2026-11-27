@@ -577,9 +577,6 @@ export class MailPanel {
   private mountShell(): void {
     if (this.root) return;
     const back = markSurface(el("div", "mc-back"), "window");
-    back.addEventListener("mousedown", (ev) => {
-      if (ev.target === back) this.close();
-    });
     const shell = el("section", "mc-console");
     shell.setAttribute("role", "dialog");
     shell.setAttribute("aria-modal", "true");

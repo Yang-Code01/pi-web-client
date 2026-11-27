@@ -253,7 +253,7 @@ test("每个浮层创建点都打了标记，且打的是这一面该有的材�
   for (const kind of ["dock", "paper"]) {
     assert.match(app, new RegExp(`overlay\\([^;]{0,80}?"${kind}"`), `app.ts 里没有 overlay(…, "${kind}")`);
   }
-  assert.match(app, /overlay\([^;]{0,80}"window", \{ dim: "dark" \}/, "灯箱没有走 window + dim=dark");
+  assert.match(app, /overlay\([^;]{0,80}"window", \{ dim: "dark"[^}]*\}/, "灯箱没有走 window + dim=dark");
 });
 
 test("浮层一律挂进 #app：笔记的两个浮层不再往 body 上塞", () => {
