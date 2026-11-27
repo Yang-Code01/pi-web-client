@@ -42,6 +42,7 @@ const SERIAL = new Map([
   ["peer-e2e", "同上"],
   ["peer-history", "同上"],
   ["peer-outbox", "同上"],
+  ["peer-read-watermark", "同上"],
 ]);
 
 /** 默认不跑：这些不是「自起一份桥」的测试，并发跑它们没有意义/会打架。 */

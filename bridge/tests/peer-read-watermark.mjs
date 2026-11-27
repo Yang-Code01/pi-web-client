@@ -28,8 +28,6 @@ if (!fs.existsSync(ENTRY)) {
 
 const ME = "11111111-1111-4111-8111-111111111111";
 const PEER = "aaaaaaaa-1111-4111-8111-111111111111";
-const PORT = await freePort();
-const ANNOUNCE = await freePort();
 const state = path.join(ROOT, "state");
 fs.mkdirSync(path.join(state, "history"), { recursive: true });
 
@@ -60,19 +58,60 @@ fs.writeFileSync(
   path.join(state, "peers.json"),
   JSON.stringify({ [PEER]: { nickname: "小王", hostname: "xiaowang-pc", port: 7865, friend: true, favorite: false, incoming: false, outgoing: false, at: T } }),
 );
+const until = async (what, fn, ms = 6000) => {
+  const end = Date.now() + ms;
+  for (;;) {
+    const got = await fn().catch(() => false);
+    if (got) return got;
+    if (Date.now() > end) throw new Error(`等不到「${what}」`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+};
 
-const child = spawn(process.execPath, [ENTRY], {
-  env: {
-    ...process.env,
-    PI_PEER_STATE: state,
-    PI_PEER_PORT: String(PORT),
-    PI_PEER_ANNOUNCE_PORT: String(ANNOUNCE),
-    PI_PEER_NICKNAME: "probe",
-  },
-  stdio: ["ignore", "pipe", "pipe"],
-});
-child.stdout.on("data", (b) => process.env.PEER_E2E_VERBOSE && process.stdout.write(`[peer] ${b}`));
-child.stderr.on("data", (b) => process.stdout.write(`[peer!] ${b}`));
+// 自己起 peer。端口可能被别人（并行的另一份测试 / 真的 peer）抢先，那就换一组再来 ——
+// `tools/run-tests.mjs` 默认并发跑，这里不能一碰端口就报「起不来」。
+// **不采信继承来的 `PI_PEER_PORT`**：桥上跑的本会话就带着 `PI_PEER_PORT=7865`，
+// 拿它起 peer 会碰真 peer，`/status` 答「ok」但那是别人的进程（自己那一仍子进程已经 EADDRINUSE 退出）——
+// 测试就跑到用户的真数据上去了。所以端口一律自己挑，并且认「是不是自己那份」看昵称。
+let PORT = 0;
+let child = null;
+let peerOut = "";
+const NICK = "probe";
+const startPeer = async (attempt) => {
+  PORT = await freePort();
+  const announce = await freePort();
+  const env = { ...process.env, PI_PEER_STATE: state, PI_PEER_PORT: String(PORT), PI_PEER_ANNOUNCE_PORT: String(announce), PI_PEER_NICKNAME: NICK };
+  const c = spawn(process.execPath, [ENTRY], { env, stdio: ["ignore", "pipe", "pipe"] });
+  c.stdout.on("data", (b) => {
+    peerOut += b;
+    if (process.env.PEER_E2E_VERBOSE) process.stdout.write(`[peer] ${b}`);
+  });
+  c.stderr.on("data", (b) => {
+    peerOut += b;
+    process.stdout.write(`[peer!] ${b}`);
+  });
+  try {
+    await until(
+      `peer 起来（第 ${attempt} 次，端口 ${PORT}）`,
+      async () => {
+        const st = await (await fetch(`http://127.0.0.1:${PORT}/status`, { signal: AbortSignal.timeout(800) })).json();
+        // 只认自己 fork 的那份：别的 peer（包括用户正跑的）也会答 /status。
+        if (st?.nickname !== NICK) throw new Error(`端口 ${PORT} 上是别人：${st?.nickname}`);
+        return true;
+      },
+      15000,
+    );
+    return c;
+  } catch (err) {
+    c.kill();
+    await new Promise((r) => setTimeout(r, 300));
+    if (attempt >= 2) throw err;
+    log(`换一组端口重试：${err?.message ?? err}`);
+    peerOut = "";
+    return startPeer(attempt + 1);
+  }
+};
+child = await startPeer(1);
 
 const api = (p) => `http://127.0.0.1:${PORT}${p}`;
 const thread = async () => (await (await fetch(api("/threads"))).json()).threads?.[0];
@@ -84,23 +123,8 @@ const markRead = (last) =>
     body: JSON.stringify({ peer: PEER, at: last.at, id: last.id }),
   });
 
-const until = async (what, fn, ms = 6000) => {
-  const end = Date.now() + ms;
-  for (;;) {
-    const got = await fn().catch(() => false);
-    if (got) return got;
-    if (Date.now() > end) throw new Error(`等不到「${what}」`);
-    await new Promise((r) => setTimeout(r, 100));
-  }
-};
-
 let failed = null;
 try {
-  await until(
-    "peer 起来",
-    async () => (await fetch(api("/status"), { signal: AbortSignal.timeout(800) })).ok,
-  );
-
   const before = await thread();
   if (!before) throw new Error("/threads 里没有这个会话");
   // 卡住的正是那条「更早发出、更晚到达」的记录包：水位已经打在最后一条文件上，它仍然是未读。
@@ -122,12 +146,23 @@ try {
   await until("新来的那条算 1 条未读", async () => (await thread())?.unread === 1);
   log("ok 水位之后新来的消息仍然算未读");
 
+  // 竞态：页面算出 last 之后、POST 到达之前又落盘了一条 —— 用户没看到，不能跟着被标已读。
+  // 页面重画 / 轮询都会重发同一个过时的 last，所以这一步就是「再拿旧水位打一次」。
+  // 兜底只准吸收「到达顺序不晚于送来那条」的条目，不能把尾巴上更新的那条也卷进来。
+  await markRead({ at: file.at, id: file.id });
+  await new Promise((r) => setTimeout(r, 300));
+  const raced = await thread();
+  if (raced?.unread !== 1) throw new Error(`过时的水位不该吞掉它之后落盘的消息，实际 unread=${raced?.unread}`);
+  log("ok 过时的水位不会吞掉它之后落盘的消息");
+
   await markRead((await thread()).last);
   await until("再打一次水位又归零", async () => (await thread())?.unread === 0);
   log("ok 再打一次水位归零");
 } catch (err) {
   failed = err;
   console.error(`失败：${err?.message ?? err}`);
+  // 起不来的原因（端口被占 / 崩溃）都在子进程的输出里，别只报一句超时。
+  if (peerOut.trim()) console.error(peerOut.trim().split(/\r?\n/).slice(-8).join("\n"));
 } finally {
   child.kill();
   await new Promise((r) => setTimeout(r, 200));

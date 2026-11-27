@@ -343,9 +343,16 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         // （2026-11-27 本机「邓亚文」会话：记录包 at=…728610 在前，文件 at=…727599 在后）。
         // 兜底到这条会话里 `{at,id}` 的最大值：用户打开 / 贴底看了这个会话，尾巴上每一条
         // 都在眼前（页面按到达顺序画，最后一条就是屏幕上最下面那条）。
+        // 但只能扫到「送来那条」为止：页面算出 last 之后、POST 到达之前可能又落盘了几条，
+        // 那几条用户根本没看到，跟着标已读还会给对方发出错的回执。找不到送来那条
+        // （不在尾部窗口里）就原样采信，不乱推。
         let mark = { at, id };
-        for (const entry of history.read(peerId, 2000)) {
-          if (afterWatermark(entry, mark.at, mark.id)) mark = { at: entry.at, id: entry.id };
+        const tail = history.read(peerId, 2000);
+        const stop = tail.findIndex((entry) => entry.id === id);
+        if (stop >= 0) {
+          for (const entry of tail.slice(0, stop + 1)) {
+            if (afterWatermark(entry, mark.at, mark.id)) mark = { at: entry.at, id: entry.id };
+          }
         }
         // 水位往前走了才回「已读」：告诉这段里发过消息的人。
         const before = threads.get(peerId);
