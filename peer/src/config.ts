@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { knownAvatar } from "./avatars.ts";
+import { avatarHash, knownAvatar } from "./avatars.ts";
 
 export const VERSION = "0.2.0";
 /** 协议版本：announce / inbox 都带着它，将来换协议靠它挡掉旧对端。 */
@@ -115,9 +115,9 @@ export function loadConfig(): PeerConfig {
     dnd: saved.dnd === true,
     // 名单外的 id（手改过 / 将来删掉的头像）当没设，别让页面拿到一张画不出来的图。
     avatar: knownAvatar(saved.avatar),
-    // 上传记录只存 hash；格式不对 / 重复的丢掉，顺序保持「最近在前」。
+    // 上传记录只存 hash；格式不对 / 重复的丢掉，顺序保持「最近在前」。hash 形状只在 avatars.ts 写一次。
     avatarHistory: Array.isArray(saved.avatarHistory)
-      ? [...new Set(saved.avatarHistory.filter((h): h is string => typeof h === "string" && /^[0-9a-f]{16}$/.test(h)))].slice(0, MAX_AVATAR_HISTORY)
+      ? [...new Set(saved.avatarHistory.map((h) => avatarHash(h)).filter((h) => h !== ""))].slice(0, MAX_AVATAR_HISTORY)
       : [],
     group: {
       address: process.env.PI_PEER_GROUP || group.address,

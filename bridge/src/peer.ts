@@ -55,6 +55,20 @@ const STABLE_MS = 60_000;
 const PORT_PROBE_MS = Number(process.env.PI_PEER_PORT_PROBE_MS ?? 30_000) || 30_000;
 
 /**
+ * peer 的 HTTP 错误：带上游状态码，桥原样回给页面。
+ * 上传头像那层最在意 413（太大）和 400（不是图）的区别，不能都压成 400。
+ */
+export class PeerRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "PeerRequestError";
+    this.status = status;
+  }
+}
+
+/**
  * peer 子进程的托管：fork + 退避重启 + 5 秒轮询 `/status`。
  *
  * 为什么是 fork 而不是把 peer 编进 bridge：peer 要绑 7865、要被局域网访问，而 bridge 默认只
@@ -321,7 +335,7 @@ export class PeerHost {
       signal: signal ?? AbortSignal.timeout(20_000),
     });
     const parsed = (await res.json().catch(() => ({}))) as { avatar?: string; error?: string };
-    if (!res.ok) throw new Error(parsed.error ?? `peer 回 ${res.status}`);
+    if (!res.ok) throw new PeerRequestError(parsed.error ?? `peer 回 ${res.status}`, res.status);
     // 不等这一轮 poll：peer 的 announce 是异步的，立刻 poll 也拿不到新状态，只会把上传 RT 拉长。
     // 先把返回值写进缓存（页面紧接着 GET /api/peer 要看到新头像），其余状态让后台 poll 慢慢刷。
     if (parsed.avatar && this.status) this.status.avatar = parsed.avatar;

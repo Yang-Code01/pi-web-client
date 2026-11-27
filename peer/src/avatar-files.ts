@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { avatarHash } from "./avatars.ts";
+import { avatarHash, customAvatarId } from "./avatars.ts";
 import { MAX_AVATAR_HISTORY, statePath } from "./config.ts";
 
 /**
@@ -26,6 +26,12 @@ const MAX_CACHED = 64;
 const MAX_CACHE = 16;
 
 const AVATAR_EXTS = ["webp", "png", "jpg", "gif"] as const;
+const MIME_BY_EXT: Record<string, string> = {
+  webp: "image/webp",
+  png: "image/png",
+  jpg: "image/jpeg",
+  gif: "image/gif",
+};
 
 export interface StoredAvatar {
   hash: string;
@@ -119,7 +125,7 @@ export function saveAvatarFile(buf: Buffer): StoredAvatar | null {
     fs.renameSync(tmp, file);
   }
   cachePut({ buf, mime: kind.mime, hash });
-  return { hash, id: `custom:${hash}`, mime: kind.mime, ext: kind.ext, bytes: buf.length };
+  return { hash, id: customAvatarId(hash), mime: kind.mime, ext: kind.ext, bytes: buf.length };
 }
 
 /** 按 hash 找本地文件；扩展名是一次上传时按文件头定的，这里逐个试。命中后进内存缓存。 */
@@ -169,18 +175,22 @@ export function listAvatarUploads(history: string[]): AvatarUpload[] {
     if (out.length >= MAX_AVATAR_HISTORY) break;
     if (seen.has(hash)) continue;
     seen.add(hash);
-    const found = findAvatarFile(hash);
-    if (!found) continue;
+    // 只 stat 不读图：这个列表要的是 hash / mime / 字节数 / mtime，
+    // 读整张图会阻塞事件循环、还会把缩略图缓存挤掉（评审 8-2）。
+    const file = avatarPath(hash);
+    if (!file) continue;
+    const mime = MIME_BY_EXT[path.extname(file).slice(1).toLowerCase()];
+    if (!mime) continue;
     let at = 0;
-    const file = avatarPath(found.hash);
-    if (file) {
-      try {
-        at = fs.statSync(file).mtimeMs;
-      } catch {
-        /* mtime 读不到就当 0，只是排序会靠后 */
-      }
+    let bytes = 0;
+    try {
+      const info = fs.statSync(file);
+      at = info.mtimeMs;
+      bytes = info.size;
+    } catch {
+      continue;
     }
-    out.push({ hash: found.hash, id: `custom:${found.hash}`, mime: found.mime, bytes: found.buf.length, at });
+    out.push({ hash, id: customAvatarId(hash), mime, bytes, at });
   }
   return out;
 }
@@ -261,8 +271,31 @@ export function fetchRemoteAvatar(addr: string, port: number, hash: string): Pro
       const url = `http://${hostOf(addr)}:${Math.trunc(port)}/avatar?h=${h}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
       if (!res.ok) return null;
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > MAX_AVATAR_BYTES || hashOf(buf) !== h) return null;
+      // 对端是**不可信输入**：不能先 arrayBuffer() 再判大小，几百 MB 的 body 会在
+      // 2.5 秒超时前就把内存吃满。先看 content-length，再边读边数，超了立刻 cancel（评审 8-1）。
+      const announced = Number(res.headers.get("content-length") ?? "");
+      if (Number.isFinite(announced) && announced > MAX_AVATAR_BYTES) return null;
+      if (!res.body) return null;
+      const reader = res.body.getReader();
+      const chunks: Buffer[] = [];
+      let size = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value || value.byteLength === 0) continue;
+          size += value.byteLength;
+          if (size > MAX_AVATAR_BYTES) {
+            await reader.cancel().catch(() => {});
+            return null;
+          }
+          chunks.push(Buffer.from(value));
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      const buf = Buffer.concat(chunks, size);
+      if (hashOf(buf) !== h) return null;
       const kind = sniffImage(buf);
       if (!kind) return null;
       fs.mkdirSync(dir(), { recursive: true });

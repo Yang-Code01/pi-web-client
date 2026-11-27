@@ -294,7 +294,11 @@ await page.evaluate((bId) => document.querySelector(`#list [data-id="${bId}"]`)?
 await page.waitForSelector(".msg .av.pic", { timeout: 10000 });
 await page.click(".msg .av.pic");
 await page.waitForSelector(".iv .iv-img", { timeout: 5000 });
-check("聊天里的头像也能点开", true);
+const chatViewer = await page.evaluate(() => {
+  const img = document.querySelector(".iv .iv-img");
+  return { open: Boolean(document.querySelector(".iv")), loaded: Boolean(img && img.complete && img.naturalWidth > 0) };
+});
+check("聊天里的头像也能点开", chatViewer.open && chatViewer.loaded, JSON.stringify(chatViewer));
 await page.keyboard.press("Escape");
 await sleep(200);
 

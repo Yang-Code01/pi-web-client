@@ -143,7 +143,7 @@ import { saveBook as saveSheetBook, type EditOp } from "./sheet/write.ts";
 import { saveStruct as saveSheetStruct, type StructOp } from "./sheet/struct.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { countSlides, slidesAvailable, slidesPdfFile, slidesPdfKey, slidesPdfStatus, slidesProbe } from "./slides/index.ts";
-import { PeerHost, peerEntry } from "./peer.ts";
+import { PeerHost, PeerRequestError, peerEntry } from "./peer.ts";
 import { openPage, shouldOpenPage } from "./openbrowser.ts";
 import { injectWindowTitle, windowTitleFromEnv } from "./window-title.ts";
 
@@ -1275,7 +1275,9 @@ async function main(): Promise<void> {
       try {
         return json(res, 200, await peer.uploadAvatar(raw));
       } catch (err) {
-        return json(res, 400, { error: (err as Error).message });
+        // 上游状态码原样透传：peer 的 413（超过 512 KB）不能被压成 400（评审 8-3）。
+        const status = err instanceof PeerRequestError && err.status >= 400 && err.status <= 599 ? err.status : 400;
+        return json(res, status, { error: (err as Error).message });
       }
     }
     if (url.pathname.startsWith("/api/peer/avatar/") && req.method === "GET") {

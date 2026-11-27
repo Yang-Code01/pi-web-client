@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION, MAX_AVATAR_HISTORY } from "./config.ts";
-import { avatarHash, customAvatarHash, knownAvatar, randomAvatar } from "./avatars.ts";
+import { avatarHash, customAvatarHash, customAvatarId, knownAvatar, randomAvatar } from "./avatars.ts";
 import { deleteAvatarFile, findAvatarFile, fetchRemoteAvatar, hasAvatarFile, listAvatarUploads, MAX_AVATAR_BYTES, pruneAvatarFiles, saveAvatarFile } from "./avatar-files.ts";
 import type { AvatarImage } from "./avatar-files.ts";
 import type { Discovery } from "./discovery.ts";
@@ -346,7 +346,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const wasCurrent = customAvatarHash(cfg.avatar) === hash;
         if (wasCurrent) {
           const next = cfg.avatarHistory.map((h) => ({ h, found: hasAvatarFile(h) })).find((row) => row.found);
-          cfg.avatar = next ? `custom:${next.h}` : randomAvatar();
+          cfg.avatar = next ? customAvatarId(next.h) : randomAvatar();
         }
         saveConfig(cfg);
         if (wasCurrent) discovery.announce();

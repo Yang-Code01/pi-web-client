@@ -598,14 +598,20 @@ async function loadStatus(): Promise<void> {
   } catch {
     S.view = { enabled: false, running: false, reason: tr("拿不到状态"), status: null };
   }
-  // 上传记录只给设置页用；拿不到就当没有，不影响主界面。
+  renderBar();
+  renderHint();
+}
+
+/**
+ * 自己上传过的头像。只给「我 → 头像」用，所以不跟着 loadStatus 的 5 秒轮询跑；
+ * 进分区时以及上传 / 删除后各拉一次就够（评审 8-7）。
+ */
+async function loadUploads(): Promise<void> {
   try {
     S.uploads = (await getJson<{ uploads: UploadRow[] }>("/api/peer/custom-avatars")).uploads ?? [];
   } catch {
     S.uploads = [];
   }
-  renderBar();
-  renderHint();
 }
 
 async function loadThreads(): Promise<void> {
@@ -1956,6 +1962,7 @@ async function removeUpload(up: UploadRow): Promise<void> {
     await postJson("/api/peer/custom-avatars/delete", { hash: up.hash });
     await loadStatus();
     await loadThreads();
+    await loadUploads();
     renderAll();
     toast(tr("这张头像删掉了"));
   } catch (err) {
@@ -3929,6 +3936,7 @@ async function uploadAvatar(file: File, busy?: (on: boolean) => void): Promise<b
     if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
     await loadStatus();
     await loadThreads();
+    await loadUploads();
     renderAll();
     toast(tr("头像换好了"));
     return true;
@@ -3974,8 +3982,8 @@ function renderMe(): void {
     const hero = h("div", "me-hero");
     const avBtn = h("button", "me-ava") as HTMLButtonElement;
     avBtn.type = "button";
-    avBtn.title = tr("换头像");
-    avBtn.setAttribute("aria-label", tr("换头像"));
+    avBtn.title = tr("点头像看大图");
+    avBtn.setAttribute("aria-label", tr("点头像看大图"));
     const cam = h("span", "me-cam");
     cam.append(ic("image"));
     cam.title = tr("换头像");
@@ -3984,15 +3992,11 @@ function renderMe(): void {
     avBtn.addEventListener("click", () => {
       const pic = avBtn.querySelector("img.av-img");
       if (pic) return openAvatarViewer(pic.getAttribute("src") ?? "", st.nickname);
-      S.meSection = "avatar";
-      draw();
-      detail.scrollTop = 0;
+      goSection("avatar");
     });
     cam.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      S.meSection = "avatar";
-      draw();
-      detail.scrollTop = 0;
+      goSection("avatar");
     });
 
     const who = h("div", "me-who");
@@ -4269,6 +4273,19 @@ function renderMe(): void {
     ignored: sectionIgnored,
   };
 
+  // 进「头像」分区时才拉上传记录，不跟着 5 秒状态轮询（评审 8-7）。
+  const refreshUploads = async (): Promise<void> => {
+    await loadUploads();
+    if (S.meSection === "avatar") draw();
+  };
+  const goSection = (id: MeSection): void => {
+    if (S.meSection === id) return;
+    S.meSection = id;
+    draw();
+    detail.scrollTop = 0;
+    if (id === "avatar") void refreshUploads();
+  };
+
   const nav = h("nav", "me-nav");
   const pane = h("div", "me-pane");
   const draw = (): void => {
@@ -4279,12 +4296,7 @@ function renderMe(): void {
       tab.type = "button";
       tab.append(ic(item.icon), h("span", "me-tab-t", tr(item.label)));
       if (on) tab.setAttribute("aria-current", "page");
-      tab.addEventListener("click", () => {
-        if (S.meSection === item.id) return;
-        S.meSection = item.id;
-        draw();
-        detail.scrollTop = 0;
-      });
+      tab.addEventListener("click", () => goSection(item.id));
       nav.append(tab);
     }
     pane.replaceChildren(SECTION_BODY[S.meSection]());
