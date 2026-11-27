@@ -8773,3 +8773,28 @@ if (stop >= 0) {
 **代价。** 首次画图要下载 mermaid（几百 KB gzip）；文档里写死的浅色实底（`rect rgb(...)`）在深色主题下会吃掉浅色文字 —— 写图的一方应改用半透明色或给 `classDef` 加 `color:`（to-doc 技能模板已这样写）。
 
 **守卫。** `npm run test:mermaid`（`web/tests/mermaid-browser.mjs`，Chromium 里跑 md.ts）：类图 / 时序图出 SVG、strict 下 `<img onerror>` 被清、坏图保留源码并报错、普通代码块与聊天模式不变、mermaid 临时节点不残留、主题映射。
+
+## D440 内网通组字期间不重画，攒到上屏之后再画（用户 2026-11-27「内网通bug： 聊天框输入过程中，此时对方发送信息过来，正在输入的会被打断」）
+
+**症状。** 用输入法在聊天框打字（拼音候选还没上屏）时，对方发来一条消息，正在打的字当场断掉：已经敲的拼音变成普通文字留在框里，候选条消失，下一次按键又重新开一次组字；接着打就成了「nihaonihao7」这种半截拼音加新拼音，上屏后变成「nihao你好」。
+
+**根因。** 来信 → 2.5 秒轮询发现 `msgSig()` 变化 → `renderMain()` → `paintMain()` 一句 `mainEl.replaceChildren()` 把整个聊天区（含输入框 `.peer-rich`）从 DOM 摘下再挂回。Chrome 会**静默**终止这次 IME 组字：**不发 `compositionend`**，只把当前 composition 里的字符当普通文本留在节点里，下一次按键 `compositionstart` 重来。所以「光标跳走」（PR #720 那条 `rerender()` 的锚点还原）跟这条不是一回事 —— 那条修的是普通打字的光标位置，这条是组字会话被整段掐死，锚点还原也救不回来（组字状态在浏览器手里，不在 DOM 里）。
+
+**决定。**
+
+- **`renderMain()` 开头加守卫**：`imeComposing` 为真就只置 `repaintAfterIme = true` 后 `return`，一个像素都不画。来信、发送回执、已读回执都走这条路，一律延后。
+- **主区里有两个会组字的元素，两个都要挂**：聊天输入框 `.peer-rich` 与聊天记录搜索框 `.searchbar input` —— 后者也在 `mainEl.replaceChildren()` 的范围里，而且它自己还有一条重画路径（`input` 事件防抖 160ms 后 `renderMain()`），组字时停顿一下就够把它掐断，连对方来信都不用。所以监听抽成 `guardIme(el, onCommit?)`，两处共用同一套 `imeComposing` / `repaintAfterIme` / `imeEnd()`。以后主区里再添会收输入法的框，照这个挂上。搜索框那条 `input` 事件在组字期间直接 `return`（框里是半截拼音，搜出来全是错的），上屏后的值由 `guardIme` 的 `onCommit` 回调补搜一次，并靠它触发那次补画 —— 组字开始时就按「谁在组字」登记，别人不会误用。搜索框还带 `data-keep="find"`（不能和左栏搜索框的 `search` 重名），补画把节点摘下再挂回时 `rerender()` 才有焦点和光标放回去。
+- **补画时机**：`body` 的 `compositionend`（正常上屏）与 `blur`（有的输入法不发 compositionend —— 候选随失焦收回去了，别让主区从此永久不画）共用 `imeEnd()`：清 `imeComposing`，有攒下的重画就跑一次 `renderMain()`。`blur` 那条在组字中先到也没事，`imeEnd()` 幂等。
+- **组字中直接去点按钮**（比如「发送」）：`pointerHeld` 为真时走 `whenPointerFree(renderMain)` 把补画推到这下降完 —— 与搜索列表 `commitSearch()`（main.ts:914 一带，D335 同族）一个理由：这一刻 mousedown 已经落在旧节点上，立刻重画会把 mouseup 换到新节点，`click` 只落到公共祖先。`whenPointerFree()` 同时等 `pointerup` 与 `pointercancel`，1.5 秒兜底：只等 `pointerup` 时，拖拽被中断 / 触摸被系统取消（飞过来的是 `pointercancel`）会让这件待做的事永远悬着，消息要等到下一次签名变化才出现。
+- **推迟的重画要带着它的收尾走**：`openSearch()` / `openTopic()` / `startReply()` / 优先级那三颗按钮都是 `renderMain()` 紧跟一句 `focus()` / `select()`。重画被推迟时那些节点还没建出来（`searchInput` 还是 `null`），焦点会静默丢掉、或者落在马上被换掉的旧节点上。所以这类收尾过 `afterMain(fn)` 排队，由 `renderMain()` 末尾的 `drainAfterMain()` 在补画之后跑。
+- **看门狗兜底**：`imeComposing` 只有两个出口（`compositionend` / `blur`），而这条 bug 的整条前提就是「Chrome 会静默结束组字、连 `compositionend` 都不发」。万一两个出口都不来，标记就永远为真，此后 `renderMain()` 全被拦成 `repaintAfterIme`，来信、发送回执都不再重画，`afterMain()` 排队的 focus 也永远不跑。所以组字开始就挂一个 `IME_STALL_MS = 20` 秒的定时器，到点若这次组字「一点动静都没有」就 `imeEnd()` 放行；`compositionupdate` / `keydown` / `input` 都把定时器往后推 —— 只有真没动静才动手。（元素被摘掉 / 焦点被拿走这两条路不用它：Chrome 那一刻会派 `blur` + `focusout`，`blur` 监听已经兜住了，探针第 5 段验过。）
+- **换会话时重置** `imeComposing` / `repaintAfterIme`：旧编辑器不一定会发 `compositionend`（它被 `destroy()` 摘掉了），标记留在真会让聊天区永久不画。
+- **范围**：只挡 `renderMain()`。`renderList()`（会话列表、未读徽标）与状态条照常刷新 —— 它们不碰输入框。
+
+**为什么。** ① 组字期间不重画是唯一可靠做法：试过「重画后把组字状态还原」，浏览器没给接口，`compositionend` 都不发就没法重放 composition。② 攒一次而不是干脆把轮询按下去：来信的**显示**晚一点没关系，晚到「上屏之后就出现」正好；按下轮询还会让已读、输入中跟着卡住。③ 与仓库既有做法一致：D335 的上下文面板过滤框就是这个毛病、这套改法（半截拼音被提交成「wenwenj文件」），搜索列表输入框（main.ts:880 一带）和笔记的 `RichEditor`（`compositionend → afterInput()`）也是「组字中不动 DOM」。
+
+**守卫。** `probes/peer-compose-ime.mjs`（假 API + 真 Chromium + CDP `Input.imeSetComposition` / `Input.insertText`，只 `npm run build:web` 就能跑，约 10 秒）：第 1 段是对照组（不来消息，连着两次组字仍是同一次会话、上屏只剩「你好」），第 2 段在组字中塞一条来信。修好前第 2 段红 5 项（`msg=2 before=1` 重画了、`starts=2`、`textContent` 变 `"nihaonihao7"`、上屏变 `"nihao你好"`），修好后共 35 项全绿。其中「组字期间页面确实在轮询（>=2 次 /messages）」先证明来信真的被轮询到了（否则「没重画」可能只是没取数）、「组字期间不重画」断言消息条数不变、「上屏后补画，新消息出现了」断言攒下的那次重画真的补上了。第 3 段组字中按 Ctrl+F：组字不许断、搜索条等上屏才出现且真的拿到焦点（把 `openSearch` 的 `afterMain` 换回立刻 `focus` 就红）。第 4 段合成一个 `pointerdown`（真鼠标会把组字提交掉）再在组字中上屏：补画必须等 `pointercancel` 到了才跑，而且**掐着表**量 —— `pointercancel` 到手 800ms 内必须已经补上（`whenPointerFree` 的兜底是 1.5s，所以「只等 `pointerup`」那种回归会红；以前这段给 2s 宽限，比兜底还长，把监听删掉也照样绿）。第 5 段在聊天记录搜索框里组字（越过 160ms 防抖 + 塞一条来信）：修好前红 3 项（`focused=false` —— 防抖那次重画把 input 换了、焦点掉到 body；`ends=0` —— 组字被静默结束；上屏后框里还是 `"nihao"`），修好后组字不断、焦点还在、上屏是「在」并用它搜出 `1 / 1`（上屏的「在」正好命中消息流里的「小在吗」；把 `onCommit` 换成空回调就红成 `""`，证明上屏后的值真的被拿去搜了，不是靠组字期间的半截拼音蒙对）。第 6 段是看门狗的：合成一次 `compositionstart` 之后什么都不发（模拟「组字悄悄没了、事件一个都不来」），先断言它确实把重画拦住了，然后真等 20 秒 —— 到点必须自己放行、那条消息上屏（把 `main.ts` 里那颗 `setTimeout` 删掉就红，等满 26 秒也不恢复）。最后两条断言假 API 盖住了页面用到的每个接口、`route.fulfill` 没有意外报错 —— 页面新增接口时探针不会静默变假。跑法：`node scripts/build.mjs --only web && node probes/peer-compose-ime.mjs`（35 项，约 50 秒 —— 其中 20 秒是等看门狗）。
+
+**可改。** 想改成「组字期间仍然重画、只重画消息流」也能成立（`renderChat()` 把 `stream` 单独换掉、绕开 `compose`），代价是 `paintMain` 的结构要拆；现在的写法改一个守卫就够。`blur` 那条若确认输入法都发 `compositionend`，可以删。
+
+**代价。** 组字期间对方来信不会立刻出现在消息流里（最长到上屏为止）；组字一直停着不动超过 20 秒也会被看门狗放行一次（那一下会打断这次组字），换来的是「主区不会被一次静默结束的组字永久冻住」；贴底的「新消息」提示也不会闪。同一段时间里由快捷键 / 菜单触发的面板（搜索、话题、引用）也要等到上屏才出现（键盘触发时没有 pointerup 可等，只能等组字结束）。
