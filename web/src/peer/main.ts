@@ -375,7 +375,7 @@ let repaintAfterIme = false;
  */
 let imeCommit: (() => void) | null = null;
 /**
- * 组字期间 `renderMain()` 被推迟（D439），紧跟它的那一步（`searchInput.focus()`、`topicArea.focus()`…）
+ * 组字期间 `renderMain()` 被推迟（D440），紧跟它的那一步（`searchInput.focus()`、`topicArea.focus()`…）
  * 就会落在旧 DOM 上：要么还是 null，要么焦点给了一个马上就要被换掉的节点。这类收尾用 `afterMain()`
  * 排队，等那次补画真做完再跑。
  */
@@ -390,7 +390,7 @@ function drainAfterMain(): void {
 }
 
 /**
- * 给主区里**会收输入法组字**的元素挂上「组字期间不重画」（D439）：
+ * 给主区里**会收输入法组字**的元素挂上「组字期间不重画」（D440）：
  * `paintMain()` 会 `mainEl.replaceChildren()`，元素被摘下再挂回时 Chrome 会静默结束组字，
  * 所以聊天输入框 `.peer-rich` 和聊天记录搜索框 `.searchbar input` 都得挂上 —— 只挂一个，
  * 另一个里打拼音照样会被来信（或搜索防抖自己的重画）敲断。
@@ -1567,7 +1567,7 @@ function openSearch(): void {
     });
     renderMain();
   }
-  // 组字中 renderMain 被推迟（D439）：搜索条是那一刻才建出来的，等补画之后再聚焦 / 全选。
+  // 组字中 renderMain 被推迟（D440）：搜索条是那一刻才建出来的，等补画之后再聚焦 / 全选。
   afterMain(() => {
     searchInput?.focus();
     searchInput?.select();
@@ -1610,7 +1610,7 @@ function searchBar(t: Thread): HTMLElement {
     }, 160);
   });
   // 这个 input 也在 `mainEl.replaceChildren()` 的范围里：组字期间来信同样会把它摘下重挂，
-  // 组字被静默结束、拼音变死字。与聊天输入框同一套守卫（D439）。
+  // 组字被静默结束、拼音变死字。与聊天输入框同一套守卫（D440）。
   guardIme(input, () => {
     if (!S.search) return;
     S.search.q = input.value;

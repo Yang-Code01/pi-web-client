@@ -8756,7 +8756,25 @@ if (stop >= 0) {
 
 **守卫。** `web/tests/theme-unit.mjs`：两张柔和表 id 齐全、每个颜色作正文对各自面板 ≥4.5、`accentInk` 深色柔和档全白字、默认 `vivid`、迁移缺键 / 错值落 `vivid` 且幂等。`probes/theme-switcher.mjs`：主题页四行、点「柔和」后 `--accent` / `--accent-dim` 与八颗色块换表、切主题与刷新后仍在。工作区色点与终端 ANSI 十六色在代码里不读 tone（`tree.ts` 的 `WS_COLORS`、`TERM_THEMES` 原样），没有可点的探针。
 
-## D439 内网通组字期间不重画，攒到上屏之后再画（用户 2026-11-27「内网通bug： 聊天框输入过程中，此时对方发送信息过来，正在输入的会被打断」）
+## D439 预览里的 Markdown 画 Mermaid 图：文档模式才画，按需加载，strict + DOMParser（用户 2026-11-27「我想让pi-web-client 的预览：支持 Mermaid」）
+
+**问题。** to-doc 等技能产出的设计文档靠 `classDiagram` / `sequenceDiagram` 讲结构，预览里只看到 Mermaid 源码，人读不了图。
+
+**决定。**
+
+- `web/src/md.ts` 在**文档模式**（`doc: true`：文件预览、上下文面板、GitHub 正文、翻译视图、内网通文档）遇到 ```` ```mermaid ```` 围栏，交给 `web/src/mermaid-view.ts` 的 `mermaidBlock()`；聊天气泡（非文档模式）照旧是代码块。
+- 依赖 `mermaid@^11`，`import("mermaid")` **按需加载**：没有 mermaid 围栏的页面不下载它（`main` chunk 只多约 1 KB，mermaid 拆成独立 chunk）。
+- 先放源码 `<pre>` 占位（`data-state="pending"`），成功换成 SVG（`ok`），失败保留源码、下面一行写原因（`error`）。多张图串行渲染。
+- 安全：`securityLevel: "strict"`（标签里的 HTML 被 mermaid 自带 DOMPurify 清掉、点击回调关闭）；SVG 字符串用 `DOMParser` 解析成节点再接入，不走 `innerHTML`，守住 md.ts「agent 输出永远是文本」的规矩。
+- 主题：`<html data-theme>` 含 `light` 用 mermaid `default`，否则 `dark`；只在渲染时取一次，切主题后重开预览生效。图太宽就横向滚动，不缩小。
+
+**为什么。** ① 只在文档模式画：聊天栏窄，图挤成一团反而不如源码；预览才是看设计文档的地方。② 按需加载：mermaid 连同依赖上 MB，绝大多数页面用不到。③ 失败留源码：坏图吞掉内容比不画更糟。
+
+**代价。** 首次画图要下载 mermaid（几百 KB gzip）；文档里写死的浅色实底（`rect rgb(...)`）在深色主题下会吃掉浅色文字 —— 写图的一方应改用半透明色或给 `classDef` 加 `color:`（to-doc 技能模板已这样写）。
+
+**守卫。** `npm run test:mermaid`（`web/tests/mermaid-browser.mjs`，Chromium 里跑 md.ts）：类图 / 时序图出 SVG、strict 下 `<img onerror>` 被清、坏图保留源码并报错、普通代码块与聊天模式不变、mermaid 临时节点不残留、主题映射。
+
+## D440 内网通组字期间不重画，攒到上屏之后再画（用户 2026-11-27「内网通bug： 聊天框输入过程中，此时对方发送信息过来，正在输入的会被打断」）
 
 **症状。** 用输入法在聊天框打字（拼音候选还没上屏）时，对方发来一条消息，正在打的字当场断掉：已经敲的拼音变成普通文字留在框里，候选条消失，下一次按键又重新开一次组字；接着打就成了「nihaonihao7」这种半截拼音加新拼音，上屏后变成「nihao你好」。
 
