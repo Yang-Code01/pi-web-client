@@ -39,7 +39,7 @@ import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts"
 import { bgBusy, continueState } from "./continue-state.ts";
 import { retellState } from "./retell-state.ts";
 import { DEFAULT_MAC_ACCENT } from "./palette.ts";
-import { accentFor, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, themeInfo, type ThemeId, type ThemeInfo } from "./theme.ts";
+import { accentFor, DEFAULT_ACCENT_TONE, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, themeInfo, type AccentTone, type ThemeId, type ThemeInfo } from "./theme.ts";
 import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
 import { MailConfirmDialog } from "./mailconfirm.ts";
@@ -4377,8 +4377,8 @@ export class App {
     const root = document.documentElement.style;
     root.setProperty("--ui-scale", String(this.prefs.scale));
     this.syncCompact();
-    // 主题与强调色一起落：浅底主题用亮色模式那一档的强调色表（theme.ts）。
-    paintTheme(this.prefs.theme, this.prefs.macAccent);
+    // 主题、强调色与饱和度一起落：浅底主题用亮色模式那一档的强调色表（theme.ts）。
+    paintTheme(this.prefs.theme, this.prefs.macAccent, this.prefs.accentTone);
     // 终端也要跟着换底：浅底主题里终端还是黑的话，切过去就像贴了块黑纸。
     this.paintTermThemes();
     // #97：布局也是外观偏好，但「哪一种壳」影响的是行与列的摆法，#98 还要在自己的 CSS 里挑壳。
@@ -4493,7 +4493,7 @@ export class App {
     const reset = el("button", "btn ghost", tr("恢复默认")) as HTMLButtonElement;
     reset.type = "button";
     reset.dataset.role = "dreset";
-    reset.title = tr("字号、主题与强调色、布局回到默认；语言与界面元素不动");
+    reset.title = tr("字号、主题、强调色与饱和度、布局回到默认；语言与界面元素不动");
     reset.onclick = () => {
       // 恢复默认只恢复字号/主题/颜色/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
       // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
@@ -4831,6 +4831,28 @@ export class App {
     accentRow.dataset.role = "accent-row";
     themePanel.append(accentRow);
 
+    // D438：八色再分两档饱和度 —— 「鲜艳」是 macOS 原色，「柔和」是同一颗色相压过 chroma 的表。
+    // 只多这一行，色块仍是八颗；tone 只决定它们取哪张表，点一下换变量与高亮，不重建面板。
+    const toneChips = el("div", "chips tone-chips");
+    for (const [id, label] of ACCENT_TONE_LABELS) {
+      const chip = el("button", `chip tone-chip${this.prefs.accentTone === id ? " on" : ""}`) as HTMLButtonElement;
+      chip.type = "button";
+      chip.dataset.accentTone = id;
+      chip.title = id === "vivid" ? tr("macOS 原色") : tr("色相不变，只压低饱和度");
+      chip.append(el("span", "", tr(label)));
+      chip.onclick = () => {
+        if (this.prefs.accentTone === id) return;
+        this.prefs = { ...this.prefs, accentTone: id };
+        savePrefs(this.prefs);
+        this.applyPrefs();
+        for (const other of toneChips.querySelectorAll(".tone-chip")) other.classList.toggle("on", other === chip);
+      };
+      toneChips.append(chip);
+    }
+    const toneRow = this.stRow(tr("饱和度"), tr("同一颗色相，只把饱和度压低一档；色相不变"), toneChips);
+    toneRow.dataset.role = "tone-row";
+    themePanel.append(toneRow);
+
     const keysRow = this.stRow(tr("Mac 快捷键"), tr("系统式快捷键，⌘ 与 Ctrl 都认；你在「快捷键」里绑过的组合优先"), keys);
     keysRow.classList.add("wide");
     themePanel.append(keysRow);
@@ -4918,13 +4940,14 @@ export class App {
   }
 
   /**
-   * 强调色块换表：浅底主题用亮色模式那一档（深饱和）、深底用深色模式那一档（亮粉彩）。
-   * 只改色块自己的 `--sw`，不动选中的那颗、也不重建这一行 —— 重建会把焦点和 hover 丢掉。
+   * 强调色块换表：浅底主题用亮色模式那一档（深饱和）、深底用深色模式那一档（亮粉彩）；
+   * 饱和度（D438）再选一张表。只改色块自己的 `--sw`，不动选中的那颗、也不重建这一行 ——
+   * 重建会把焦点和 hover 丢掉。
    */
   private paintSwatches(): void {
     for (const sw of this.sheet?.querySelectorAll<HTMLElement>(".swatch[data-mac-accent]") ?? []) {
       const id = sw.dataset.macAccent;
-      if (id) sw.style.setProperty("--sw", accentFor(this.prefs.theme, id).accent);
+      if (id) sw.style.setProperty("--sw", accentFor(this.prefs.theme, id, this.prefs.accentTone).accent);
     }
   }
 
@@ -4935,6 +4958,7 @@ export class App {
     const sec = this.displaySec.look ?? "lang";
     const lang = LANGS.find(([code]) => code === this.prefs.lang)?.[1] ?? this.prefs.lang;
     const accent = MAC_ACCENT_LABELS.find(([id]) => id === this.prefs.macAccent)?.[1] ?? this.prefs.macAccent;
+    const tone = ACCENT_TONE_LABELS.find(([id]) => id === this.prefs.accentTone)?.[1] ?? this.prefs.accentTone;
     const layoutId = activeLayout(this.prefs);
     const layout = LAYOUTS.find((l) => l.id === layoutId)?.label ?? layoutId;
     const scale = Math.round(this.prefs.scale * 100);
@@ -4951,7 +4975,7 @@ export class App {
                 value: tr(themeInfo(this.prefs.theme).label),
                 sub: this.prefs.theme === DEFAULT_PREFS.theme ? tr("默认") : tr("已调整"),
               },
-              { label: tr("强调色"), value: tr(accent), sub: tr("按钮与选中项") },
+              { label: tr("强调色"), value: `${tr(accent)} · ${tr(tone)}`, sub: tr("按钮与选中项") },
             ]
           : sec === "layout"
             ? [{ label: tr("工作区布局"), value: tr(layout), sub: tr("会话与侧栏的摆法") }]
@@ -21151,14 +21175,14 @@ export class App {
   }
 
   /** One tab = one shell: its own xterm, its own body, its own socket id. */
-  /** 终端配色：主题那套 16 色 + 当前强调色当光标（浅底主题下已经是亮色模式那一档）。 */
+  /** 终端配色：主题那套 16 色 + 当前强调色当光标（浅底主题下已经是亮色模式那一档，饱和度跟设置走）。 */
   private termPalette(): { [key: string]: string } {
-    return { ...TERM_THEMES[this.prefs.theme], cursor: accentFor(this.prefs.theme, this.prefs.macAccent).accent };
+    return { ...TERM_THEMES[this.prefs.theme], cursor: accentFor(this.prefs.theme, this.prefs.macAccent, this.prefs.accentTone).accent };
   }
 
-  /** 主题/强调色变了就把配色写给所有已开的终端；同一组（`theme/accent`）只写一次。 */
+  /** 主题/强调色/饱和度变了就把配色写给所有已开的终端；同一组（`theme/accent/tone`）只写一次。 */
   private paintTermThemes(): void {
-    const key = `${this.prefs.theme}/${this.prefs.macAccent}`;
+    const key = `${this.prefs.theme}/${this.prefs.macAccent}/${this.prefs.accentTone}`;
     if (key === this.termThemeKey) return;
     this.termThemeKey = key;
     const palette = this.termPalette();
@@ -23045,6 +23069,8 @@ type Prefs = {
   theme: ThemeId;
   /** 强调色（palette.ts 的 MAC_ACCENT_IDS，macOS 八色）；默认系统蓝。 */
   macAccent: string;
+  /** 强调色饱和度（D438）：vivid = macOS 原色，muted = 同色相压过 chroma；默认鲜艳。 */
+  accentTone: AccentTone;
   lang: Lang;
   /** 收起的工作区（#95）：组 id 列表，跟 macAccent 一起存在 `pi.prefs` 里，不另开 storage key。 */
   wsCollapsed: string[];
@@ -23084,6 +23110,7 @@ const DEFAULT_PREFS: Prefs = {
   scale: DEFAULT_SCALE,
   theme: DEFAULT_THEME,
   macAccent: DEFAULT_MAC_ACCENT,
+  accentTone: DEFAULT_ACCENT_TONE,
   lang: "zh-Hans",
   wsCollapsed: [],
   layout: "a",
@@ -23731,6 +23758,12 @@ const MAC_ACCENT_LABELS: [string, string][] = [
   ["graphite", tr("石墨色")],
 ];
 
+/** D438：强调色的两档饱和度。id 存在 `pi.prefs.accentTone`，不能翻译；显示名走 `tr()`。 */
+const ACCENT_TONE_LABELS: [AccentTone, string][] = [
+  ["vivid", tr("鲜艳")],
+  ["muted", tr("柔和")],
+];
+
 /** D110 之前 `pi.prefs.accent` 存的是中文色名（六色那套），读到就换成旧 id（再由迁移表落成 macOS 八色）。 */
 const LEGACY_ACCENTS: Record<string, string> = {
   冰蓝: "ice",
@@ -23791,7 +23824,7 @@ function readPrefs(): Prefs {
       longCardTool: p?.longCardTool === true,
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
-    if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);
+    if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accentTone !== next.accentTone || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);
     return next;
   } catch {
     return { ...DEFAULT_PREFS, lang: detectLang() };

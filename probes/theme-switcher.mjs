@@ -5,9 +5,11 @@
  * 文字亮度三档退场，老偏好按明暗 + 最近色落进三套。
  *
  * 这里量的是「换完以后整页真的换了」——不是某个变量改了：
- *  - 开箱是 Mac 浅色且 `data-ui=mac` 恒挂；设置 → 外观只剩四页，第二页叫「主题与强调色」；
- *  - 主题与强调色同住一页（#591）：三颗 chip、macOS 八色、Mac 快捷键按这个顺序，顶上两张卡；
+ *  - 开箱是 Mac 浅色且 `data-ui=mac` 恒挂；设置 → 外观只剩五页，第三页叫「主题与强调色」；
+ *  - 主题与强调色同住一页（#591）：三颗 chip、macOS 八色、两档饱和度、Mac 快捷键按这个顺序，顶上两张卡；
  *    原先独立的「Mac 风格」「颜色」两页都不在了，点色块立即换 `--accent`、点 chip 不重建色块行；
+ *  - 同一排八色再分两档饱和度（D438）：点「柔和」后 `--accent` / `--accent-dim` 与八颗色块一起换表，
+ *    摘要卡写「蓝色 · 柔和」；切主题、刷新后仍留在柔和档，恢复默认回鲜艳；
  *  - 三套主题逐套：'<html data-theme>'、`--bg`、color-scheme、三档文字对比度，以及浅底下
  *    设置面板 / 顶栏 / 输入框 / 会话卡都真的是浅的（漏网的写死深色会红）；
  *  - 「恢复默认」把主题拉回 Mac 浅色；刷新后主题还在（bootTheme 在登录页之前就落过）；
@@ -191,6 +193,7 @@ const snap = () =>
       colorFaint: tok("--faint"),
       accent: tok("--accent"),
       accentDim: tok("--accent-dim"),
+      accentTone: root.dataset.accentTone ?? "",
       meta: document.querySelector('meta[name="theme-color"]')?.getAttribute("content") ?? "",
       scheme: cs.colorScheme ?? "",
       sheetBg: bgOf(".display-sheet"),
@@ -204,10 +207,12 @@ const snap = () =>
       title: sheet?.querySelector('[data-role="dtitle"]')?.textContent ?? "",
       activeSec: sheet?.querySelector(".st-nav__item.on")?.textContent?.replace(/\s+/g, " ").trim() ?? "",
       navSecs: [...(sheet?.querySelectorAll(".st-nav__item") ?? [])].map((n) => n.textContent?.replace(/\s+/g, " ").trim() ?? ""),
-      // 主题页现在身兼两职：chip 行、强调色行、快捷键行都在 data-sec="theme" 里。
+      // 主题页现在身兼数职：chip 行、强调色行、饱和度行、快捷键行都在 data-sec="theme" 里。
       themeRows: [...(sheet?.querySelectorAll('.set-sub[data-sec="theme"] .settings-row') ?? [])].map((n) => n.querySelector(".settings-name")?.textContent?.trim() ?? ""),
       themeSwatches: sheet?.querySelectorAll('.set-sub[data-sec="theme"] .swatch[data-mac-accent]').length ?? 0,
       accentSec: sheet?.querySelector('[data-role="accent-row"]')?.closest(".set-sub")?.dataset.sec ?? "",
+      toneChips: [...(sheet?.querySelectorAll('[data-role="tone-row"] .tone-chip') ?? [])].map((n) => n.dataset.accentTone ?? ""),
+      onTone: sheet?.querySelector('[data-role="tone-row"] .tone-chip.on')?.dataset.accentTone ?? "",
       cards: [...(sheet?.querySelectorAll('[data-role="look-cards"] .st-card') ?? [])].map((n) => (n.textContent ?? "").replace(/\s+/g, " ").trim()),
       chips: [...(sheet?.querySelectorAll(".theme-chip") ?? [])].map((n) => n.textContent?.trim() ?? ""),
       onChips: [...(sheet?.querySelectorAll(".theme-chip.on") ?? [])].map((n) => n.dataset.theme ?? ""),
@@ -254,12 +259,12 @@ ok(s.meta === "#f5f5f7", `meta theme-color 跟着底色（${s.meta}）`);
 ok(s.scheme === "light", `默认 color-scheme 是 light（${s.scheme}）`);
 ok(!(await page.locator(".theme-intro-sheet").count()), "自动化下不弹主题选择");
 
-// 2) 设置 → 外观：五项收成四项，强调色并进「主题与强调色」一页；「Mac 风格」「颜色」两页都没了
+// 2) 设置 → 外观：左栏五项，强调色并进「主题与强调色」一页；「Mac 风格」「颜色」两页都没了
 await openSheet();
 s = await snap();
-const WANT_NAV = ["语言与字号", "主题与强调色", "工作区", "界面元素"];
-ok(s.navSecs.length === WANT_NAV.length, `外观左栏四项（${s.navSecs.length}：${s.navSecs.join(" | ")}）`);
-ok(WANT_NAV.every((t, i) => (s.navSecs[i] ?? "").startsWith(t)), `四项依次是语言 / 主题与强调色 / 工作区 / 界面元素（${s.navSecs.join(" | ")}）`);
+const WANT_NAV = ["语言与字号", "对话", "主题与强调色", "工作区", "界面元素"];
+ok(s.navSecs.length === WANT_NAV.length, `外观左栏五项（${s.navSecs.length}：${s.navSecs.join(" | ")}）`);
+ok(WANT_NAV.every((t, i) => (s.navSecs[i] ?? "").startsWith(t)), `五项依次是语言 / 对话 / 主题与强调色 / 工作区 / 界面元素（${s.navSecs.join(" | ")}）`);
 ok(!s.navSecs.some((t) => t.startsWith("Mac 风格") || t.startsWith("颜色")), `「Mac 风格」与「颜色」都不在左栏了（${s.navSecs.join(" | ")}）`);
 ok(!s.navSecs.some((t) => t.includes("配色主题")), `左栏不再有「配色主题」（${s.navSecs.join(" | ")}）`);
 ok(s.activeSec.includes("主题与强调色"), `打开设置落在主题与强调色（${s.activeSec}）`);
@@ -272,8 +277,8 @@ ok(JSON.stringify(s.demoBgs) === JSON.stringify(WANT_DEMO_BG), `三个小样各�
 const lights = await page.locator('.display-sheet .set-sub[data-sec="theme"] .theme-demo.mac .td-lights').count();
 ok(lights === 3, `每颗小样都画了红绿灯（${lights}）`);
 ok(
-  JSON.stringify(s.themeRows) === JSON.stringify(["外观主题", "强调色", "Mac 快捷键"]),
-  `主题页三行按 chip → 强调色 → 快捷键排（${s.themeRows.join(" / ")}）`,
+  JSON.stringify(s.themeRows) === JSON.stringify(["外观主题", "强调色", "饱和度", "Mac 快捷键"]),
+  `主题页四行按 chip → 强调色 → 饱和度 → 快捷键排（${s.themeRows.join(" / ")}）`,
 );
 ok(s.themeSwatches === 8 && s.accentSec === "theme", `八色块就在这一页里（${s.themeSwatches} 颗 / ${s.accentSec}）`);
 const sameScreen = await page.evaluate(() => {
@@ -352,13 +357,37 @@ for (const [id, want, scheme, accent] of THEMES) {
   }
 }
 
-// 4) 「恢复默认」把主题拉回 Mac 浅色，强调色也回系统蓝
+// 3b) 饱和度（D438）：同色相换表，色块、正文变量、摘要卡一起变；换主题仍留在柔和档
+await pick("mac-light");
+await page.locator('.display-sheet .swatch[data-mac-accent="purple"]').click();
+await sleep(150);
+s = await snap();
+ok(JSON.stringify(s.toneChips) === JSON.stringify(["vivid", "muted"]), `饱和度两颗 chip（${s.toneChips.join(" / ")}）`);
+await page.locator('.display-sheet [data-role="tone-row"] .tone-chip[data-accent-tone="muted"]').click();
+await sleep(250);
+s = await snap();
+ok(s.accentTone === "muted" && s.onTone === "muted", `点「柔和」后 data-accent-tone 与高亮都跟上了（${s.accentTone} / ${s.onTone}）`);
+ok(s.accent === "#886b98", `紫色柔和档浅底 #886b98（${s.accent}）`);
+ok(s.accentDim === "#efe2f7", `柔和档的 --accent-dim 也换表（${s.accentDim}）`);
+const mutedSw = await page.evaluate(() =>
+  getComputedStyle(document.querySelector('.display-sheet .swatch[data-mac-accent="blue"]')).getPropertyValue("--sw").trim().toLowerCase(),
+);
+ok(mutedSw === "#5a77a2", `八色块跟着换柔和表（蓝 → #5a77a2，实际 ${mutedSw}）`);
+ok(s.cards[1]?.includes("柔和"), `摘要卡写上了饱和度（${s.cards[1] ?? ""}）`);
+await page.screenshot({ path: path.join(REPO, ".scratch", "theme-muted-light.png") });
+await pick("mac-dark");
+s = await snap();
+ok(s.accent === "#9c80ae", `换深色后仍是柔和紫 #9c80ae（${s.accent}）`);
+ok(s.accentTone === "muted" && s.onTone === "muted", `换主题不丢饱和度（${s.accentTone}/${s.onTone}）`);
+
+// 4) 「恢复默认」把主题拉回 Mac 浅色，强调色也回系统蓝、饱和度回鲜艳
 await page.locator('.display-sheet [data-role="dreset"]').click();
 await sleep(350);
 s = await snap();
 ok(s.theme === "mac-light", `恢复默认后主题回 Mac 浅色（${s.theme}）`);
 ok(s.bg === "#f5f5f7", `恢复默认后底色回 #f5f5f7（${s.bg}）`);
 ok(JSON.stringify(s.onChips) === JSON.stringify(["mac-light"]), `恢复默认后 Mac 浅色那颗亮着（${s.onChips.join(",")}）`);
+ok(s.accentTone === "vivid" && s.onTone === "vivid", `恢复默认后饱和度回鲜艳（${s.accentTone} / ${s.onTone}）`);
 
 // 5) 选深色后刷新：主题与强调色都还在（bootTheme 在登录页之前就落了）
 await pick("mac-midnight");
@@ -424,6 +453,21 @@ const withPrefs = async (prefs, fn) => {
   ok(m.theme === "mac-dark", `已是 Mac 深色的用户主题不动（${m.theme}）`);
   ok(m.accent === "#ff375f", `强调色仍是自己选的粉（${m.accent}）`);
   ok(!m.keptOld, "已经是 Mac 主题的人，旧键也被顺手清掉");
+}
+
+// 6c) 饱和度跟着偏好走：存了 muted 就用柔和表，data-accent-tone 一起落
+{
+  const m = await withPrefs({ theme: "mac-dark", macAccent: "blue", accentTone: "muted" }, (p5) =>
+    p5.evaluate(() => ({
+      theme: document.documentElement.dataset.theme ?? "",
+      tone: document.documentElement.dataset.accentTone ?? "",
+      accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim().toLowerCase(),
+      stored: JSON.parse(localStorage.getItem("pi.prefs") ?? "{}").accentTone,
+    })),
+  );
+  ok(m.theme === "mac-dark" && m.tone === "muted", `启动就按 muted 落（${m.theme} / ${m.tone}）`);
+  ok(m.accent === "#6c8db8", `深色柔和蓝 #6c8db8（${m.accent}）`);
+  ok(m.stored === "muted", `pi.prefs.accentTone 原样保留（${m.stored}）`);
 }
 
 // 7) 第一次打开：主题选择弹窗只有一排三颗；点了立即换，刷新不再弹

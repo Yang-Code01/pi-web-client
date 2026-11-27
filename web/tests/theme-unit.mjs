@@ -5,7 +5,8 @@
  * 老偏好的迁移纯函数，以及「主题令牌文件里到底有哪几块」。配色本身的观感靠 probes/theme-switcher.mjs。
  *
  * 外观只有 Mac 风格三套（浅色 / 深色 / 午夜蓝，D353）：七套配色主题已删，六色强调色表与文字亮度
- * 三档一起退役。删掉的东西在这里反过来断言「不许回来」—— 表里多一套、CSS 里多一块都会红。
+ * 三档一起退役；强调色自 D438 起多一维饱和度（鲜艳 / 柔和），两张柔和表也在这里守。
+ * 删掉的东西在这里反过来断言「不许回来」—— 表里多一套、CSS 里多一块都会红。
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -15,12 +16,16 @@ import { fileURLToPath } from "node:url";
 
 import { MAC_ACCENTS, MAC_ACCENTS_LIGHT } from "../src/palette.ts";
 import {
+  ACCENT_TONES,
+  DEFAULT_ACCENT_TONE,
   DEFAULT_THEME,
   TERM_THEMES,
   THEMES,
   THEME_IDS,
   accentFor,
   accentInk,
+  accentTable,
+  isAccentTone,
   isTheme,
   migrateThemePrefs,
   themeInfo,
@@ -29,6 +34,19 @@ import {
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 // 主题 token 从 styles.css 拆到了 theme-tokens.css（主界面与内网通页面共用，D350）。
 const CSS = fs.readFileSync(path.join(REPO, "web/src/theme-tokens.css"), "utf8");
+// 三套主题真正的 `--panel`（theme-tokens.css）：小样卡里的 demo.panel 是设置页样张的底，不是正文底。
+// 从 CSS 里读，不手抄：主题改底色时这里的对比度守卫要跟着量新值，否则会在不知情的情况下量错。
+function panelOf(themeId) {
+  const selector = themeId === "mac-light" ? ":root" : `:root[data-theme="${themeId}"]`;
+  const start = CSS.indexOf(`${selector} {`);
+  assert.ok(start >= 0, `theme-tokens.css 里找不到 ${themeId} 的块`);
+  const open = CSS.indexOf("{", start);
+  const close = CSS.indexOf("}", open);
+  const panel = CSS.slice(open + 1, close).match(/--panel:\s*(#[0-9a-f]{3,8})/i)?.[1];
+  assert.ok(panel, `theme-tokens.css 里找不到 ${themeId} 的 --panel`);
+  return panel;
+}
+const PANEL = Object.fromEntries(THEME_IDS.map((id) => [id, panelOf(id)]));
 
 /** 粗略的相对亮度：只用来分「浅底 / 深底」，不是精确对比度。 */
 function luma(hex) {
@@ -36,6 +54,12 @@ function luma(hex) {
   const [r, g, b] = [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16) / 255);
   const lin = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
   return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+/** WCAG 相对对比度：只给柔和档的守卫用。 */
+function contrast(a, b) {
+  const [hi, lo] = [luma(a), luma(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
 }
 
 test("只剩三套 Mac 主题：id 表、信息表、显示名一一对应，不重名", () => {
@@ -74,23 +98,53 @@ test("light 标记跟配色一致：说浅底的，底比字亮", () => {
 });
 
 test("强调色统一走 macOS 八色表：浅底用亮色表，深底用深色表，不认识的回系统蓝", () => {
-  for (const t of THEMES) {
-    const table = t.light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
-    for (const id of Object.keys(MAC_ACCENTS)) assert.deepEqual(accentFor(t.id, id), table[id], `${t.id} / ${id} 取错了表`);
-    assert.deepEqual(accentFor(t.id, "chartreuse"), table.blue, `${t.id} 不认识的颜色应回系统蓝`);
-    assert.deepEqual(accentFor(t.id, "ice"), table.blue, `${t.id} 删掉的六色 id 应回系统蓝`);
+  for (const tone of ACCENT_TONES) {
+    for (const t of THEMES) {
+      const table = accentTable(t.id, tone);
+      for (const id of Object.keys(MAC_ACCENTS)) assert.deepEqual(accentFor(t.id, id, tone), table[id], `${t.id} / ${tone} / ${id} 取错了表`);
+      assert.deepEqual(accentFor(t.id, "chartreuse", tone), table.blue, `${t.id} / ${tone} 不认识的颜色应回系统蓝`);
+      assert.deepEqual(accentFor(t.id, "ice", tone), table.blue, `${t.id} / ${tone} 删掉的六色 id 应回系统蓝`);
+    }
   }
-  assert.deepEqual(accentFor("nope", "purple"), MAC_ACCENTS_LIGHT.purple, "不认识的主题按默认那套（Mac 浅色）算");
+  assert.deepEqual(accentFor("nope", "purple", "vivid"), MAC_ACCENTS_LIGHT.purple, "不认识的主题按默认那套（Mac 浅色）算");
 });
 
 test("强调色底上的字：亮的换深字、深的留白字，不认识的颜色按系统蓝算", () => {
   // 深底那张表：黄 / 橙 / 绿够亮，要深字；蓝 / 紫 / 粉 / 红 / 石墨留白字。
-  for (const bright of ["yellow", "orange", "green"]) assert.equal(accentInk("mac-dark", bright), "#1d1d1f", `mac-dark / ${bright}`);
-  for (const deep of ["blue", "purple", "pink", "red", "graphite"]) assert.equal(accentInk("mac-dark", deep), "#ffffff", `mac-dark / ${deep}`);
+  for (const bright of ["yellow", "orange", "green"]) assert.equal(accentInk("mac-dark", bright, "vivid"), "#1d1d1f", `mac-dark / ${bright}`);
+  for (const deep of ["blue", "purple", "pink", "red", "graphite"]) assert.equal(accentInk("mac-dark", deep, "vivid"), "#ffffff", `mac-dark / ${deep}`);
   // 浅底那张表的黄已经压深（#a05a00），白字才读得清。
-  assert.equal(accentInk("mac-light", "yellow"), "#ffffff");
-  assert.equal(accentInk("mac-light", "graphite"), "#ffffff");
-  assert.equal(accentInk("mac-dark", "constructor"), accentInk("mac-dark", "blue"), "不认识的颜色按系统蓝算");
+  assert.equal(accentInk("mac-light", "yellow", "vivid"), "#ffffff");
+  assert.equal(accentInk("mac-light", "graphite", "vivid"), "#ffffff");
+  // 柔和档两套表都压得够暗：没有一颗该换深字（D438）。
+  for (const id of Object.keys(MAC_ACCENTS)) {
+    assert.equal(accentInk("mac-dark", id, "muted"), "#ffffff", `mac-dark / muted / ${id} 该留白字`);
+    assert.equal(accentInk("mac-light", id, "muted"), "#ffffff", `mac-light / muted / ${id} 该留白字`);
+  }
+  assert.equal(accentInk("mac-dark", "constructor", "vivid"), accentInk("mac-dark", "blue", "vivid"), "不认识的颜色按系统蓝算");
+});
+
+test("柔和档（D438）：正文对面板 ≥4.5，按钮字按明暗各守各的线", () => {
+  for (const t of THEMES) {
+    for (const id of Object.keys(MAC_ACCENTS)) {
+      const c = accentFor(t.id, id, "muted");
+      assert.ok(contrast(c.accent, PANEL[t.id]) >= 4.5, `${t.id} / ${id} 柔和色作正文对面板不够（${c.accent}）`);
+      const ink = accentInk(t.id, id, "muted");
+      // 浅色实底守 4.5；深色实底沿用现状的白字（约 3.4），这是 D438 里明说的取舍。
+      const floor = ink === "#ffffff" && !t.light ? 3.4 : 4.5;
+      assert.ok(contrast(c.accent, ink) >= floor, `${t.id} / ${id} 实底上的字对比不够（${c.accent} on ${ink}）`);
+    }
+  }
+});
+
+test("饱和度只认 vivid / muted，没存过或错值落鲜艳，迁移幂等", () => {
+  assert.deepEqual([...ACCENT_TONES], ["vivid", "muted"]);
+  assert.equal(DEFAULT_ACCENT_TONE, "vivid");
+  assert.equal(migrateThemePrefs({}).accentTone, "vivid");
+  assert.equal(migrateThemePrefs({ accentTone: "muted" }).accentTone, "muted");
+  for (const bad of ["Muted", "soft", "", null, 42, {}]) assert.equal(migrateThemePrefs({ accentTone: bad }).accentTone, "vivid", `不该认：${bad}`);
+  for (const ok of ["vivid", "muted"]) assert.ok(isAccentTone(ok));
+  for (const bad of ["Muted", "soft", "", null, 42, {}]) assert.ok(!isAccentTone(bad), `不该认：${bad}`);
 });
 
 test("终端配色：三套都齐 16 色 + 底/字/选区，浅底主题的底确实比字亮", () => {
@@ -162,25 +216,25 @@ test("老偏好迁移：主题按明暗与色相落进三套，强调色按最�
 
 test("迁移不碰已选 Mac 主题的人：主题原样、强调色原样", () => {
   for (const id of THEME_IDS) {
-    assert.deepEqual(migrateThemePrefs({ theme: id, accent: "teal", macAccent: "pink" }), { theme: id, macAccent: "pink" }, `${id} 被改了`);
+    assert.deepEqual(migrateThemePrefs({ theme: id, accent: "teal", macAccent: "pink" }), { theme: id, macAccent: "pink", accentTone: "vivid" }, `${id} 被改了`);
   }
 });
 
 test("D337 之前的偏好没有 theme 键：那时生效的 accent 照样要搬过去", () => {
-  assert.deepEqual(migrateThemePrefs({ accent: "teal" }), { theme: DEFAULT_THEME, macAccent: "green" });
-  assert.deepEqual(migrateThemePrefs({ scale: 1.25 }), { theme: DEFAULT_THEME, macAccent: "blue" });
+  assert.deepEqual(migrateThemePrefs({ accent: "teal" }), { theme: DEFAULT_THEME, macAccent: "green", accentTone: "vivid" });
+  assert.deepEqual(migrateThemePrefs({ scale: 1.25 }), { theme: DEFAULT_THEME, macAccent: "blue", accentTone: "vivid" });
 });
 
 test("迁移不认原型链上的名字：constructor / toString 这类值一律落默认", () => {
-  assert.deepEqual(migrateThemePrefs({ theme: "constructor" }), { theme: DEFAULT_THEME, macAccent: "blue" });
-  assert.deepEqual(migrateThemePrefs({ theme: "mac-dark", macAccent: "toString" }), { theme: "mac-dark", macAccent: "blue" });
-  assert.deepEqual(migrateThemePrefs({ theme: "fjord", accent: "hasOwnProperty" }), { theme: "mac-dark", macAccent: "blue" });
-  assert.deepEqual(accentFor("mac-dark", "constructor"), MAC_ACCENTS.blue);
+  assert.deepEqual(migrateThemePrefs({ theme: "constructor" }), { theme: DEFAULT_THEME, macAccent: "blue", accentTone: "vivid" });
+  assert.deepEqual(migrateThemePrefs({ theme: "mac-dark", macAccent: "toString" }), { theme: "mac-dark", macAccent: "blue", accentTone: "vivid" });
+  assert.deepEqual(migrateThemePrefs({ theme: "fjord", accent: "hasOwnProperty" }), { theme: "mac-dark", macAccent: "blue", accentTone: "vivid" });
+  assert.deepEqual(accentFor("mac-dark", "constructor", "vivid"), MAC_ACCENTS.blue);
 });
 
 test("迁移对错值落默认，且幂等（迁过一次再迁不会再变）", () => {
-  assert.deepEqual(migrateThemePrefs({}), { theme: DEFAULT_THEME, macAccent: "blue" });
-  assert.deepEqual(migrateThemePrefs({ theme: "nope", accent: "chartreuse", macAccent: "nope" }), { theme: DEFAULT_THEME, macAccent: "blue" });
+  assert.deepEqual(migrateThemePrefs({}), { theme: DEFAULT_THEME, macAccent: "blue", accentTone: "vivid" });
+  assert.deepEqual(migrateThemePrefs({ theme: "nope", accent: "chartreuse", macAccent: "nope" }), { theme: DEFAULT_THEME, macAccent: "blue", accentTone: "vivid" });
   const once = migrateThemePrefs({ theme: "dusk", accent: "teal" });
   assert.deepEqual(migrateThemePrefs(once), once, "已经是新值了，第二次迁移不该再动");
 });
