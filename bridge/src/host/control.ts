@@ -11,7 +11,14 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { LineSplitter } from "./broker.ts";
+import { LineSplitter, MAX_BUFFER_BYTES } from "./broker.ts";
+
+/**
+ * 控制通道的单帧上限。`attached` 一帧里装着未确认窗口（原始最多 `MAX_BUFFER_BYTES`，嵌在 JSON
+ * 字符串里还要再转义一遍）和没答的问卷；跟子进程输出共用 8 MiB 的话，窗口快满时这一帧会被
+ * 当残行整段丢掉，脑等满 15 秒报「壳 attached 超时」。给它留足余量。
+ */
+export const MAX_CONTROL_FRAME_BYTES = 8 * MAX_BUFFER_BYTES;
 
 /** 协议版本。壳与脑对不上就拒绝握手（整组重启是唯一出路，见 D407）。 */
 export const CONTROL_PROTO = 1;
@@ -64,7 +71,7 @@ export function controlPath(port: number): string {
 /** 一根通道：发一帧，或收一帧。两边对称，壳和脑共用。 */
 export class ControlConn {
   readonly socket: net.Socket;
-  private readonly splitter = new LineSplitter();
+  private readonly splitter = new LineSplitter(MAX_CONTROL_FRAME_BYTES);
   private readonly msgListeners: ((msg: ControlMessage) => void)[] = [];
   private readonly closeListeners: (() => void)[] = [];
   private closed = false;

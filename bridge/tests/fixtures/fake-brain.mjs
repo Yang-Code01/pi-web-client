@@ -65,7 +65,11 @@ const server = http.createServer((req, res) => {
       sessionId,
       argv: [fakePi],
       cwd: process.cwd(),
-      env: url.searchParams.get("ask") === "1" ? { TINY_PI_ASK: "1" } : {},
+      env: {
+        ...(url.searchParams.get("ask") === "1" ? { TINY_PI_ASK: "1" } : {}),
+        ...(url.searchParams.get("status") ? { TINY_PI_STATUS: String(url.searchParams.get("status")) } : {}),
+        ...(url.searchParams.get("bytes") ? { TINY_PI_STATUS_BYTES: String(url.searchParams.get("bytes")) } : {}),
+      },
     });
     body = { ok: true };
   } else if (url.pathname === "/usage") {

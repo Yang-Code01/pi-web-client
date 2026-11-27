@@ -22,6 +22,9 @@ import { BrainProxy } from "./host/proxy.ts";
 import { CONTROL_PROTO, ControlConn, controlPath, serveControl, type ControlMessage } from "./host/control.ts";
 import { UsageLedger } from "./host/ledger.ts";
 
+/** pi 会等回答的扩展 UI 方法（docs/rpc-extension-ui.md 的 dialog methods）。其余都是只播报的。 */
+const AWAITED_UI_METHODS = new Set(["select", "confirm", "input", "editor"]);
+
 const VERSION = "0.1.0";
 /** 新脑 ready 之后先观察这么久再切（用户选了「切完老脑立刻退」，所以观察必须在切换之前）。 */
 const OBSERVE_MS = Number(process.env.PI_HOST_OBSERVE_MS ?? 5000) || 5000;
@@ -195,12 +198,18 @@ async function main(): Promise<void> {
     }
   }
 
-  /** 记下一条还没答的 extension_ui_request（按 id 去重；同一条被重放多少次都只有一份）。 */
+  /**
+   * 记下一条还没答的 extension_ui_request（按 id 去重；同一条被重放多少次都只有一份）。
+   * 只记等回答的对话类（select / confirm / input / editor）：notify / setStatus / setWidget /
+   * setTitle / set_editor_text 永远不会有 extension_ui_response 来消掉它，记下来只会越攒越多：
+   * 长会话里上万条播报帧把 attach 的回帧撑到控制通道吞不下，接管一律「壳 attached 超时」。
+   */
   function rememberUi(sessionId: string, line: string): void {
     try {
       const msg = JSON.parse(line);
       const id = String(msg?.id ?? "");
       if (!id) return;
+      if (!AWAITED_UI_METHODS.has(String(msg?.method ?? ""))) return;
       let box = pendingUi.get(sessionId);
       if (!box) {
         box = new Map();
