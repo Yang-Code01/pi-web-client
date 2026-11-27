@@ -43,6 +43,7 @@ const SERIAL = new Map([
   ["peer-history", "同上"],
   ["peer-outbox", "同上"],
   ["peer-read-watermark", "同上"],
+  ["peer-share-e2e", "同上：两份真 peer 节点互发共享卡，同机节点会互相发现"],
 ]);
 
 /** 默认不跑：这些不是「自起一份桥」的测试，并发跑它们没有意义/会打架。 */

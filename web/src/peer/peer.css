@@ -1079,6 +1079,39 @@ body.embedded .brand .nm { display: none; }
 }
 .nthumb.missing { border-style: dashed; }
 .nmiss { margin-top: 6px; color: var(--danger); font-size: 11px; }
+/* 共享卡（D439）：文件清单一行一份，本体到了才可点开。 */
+.scard { width: 320px; }
+.sfiles { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+.sfile {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-3);
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.sfile.open { cursor: zoom-in; }
+.sfile.open:hover { border-color: var(--accent); color: var(--text); }
+.sfile.more { justify-content: center; border-style: dashed; color: var(--faint); }
+.sname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ssize { flex-shrink: 0; color: var(--faint); font: 10px var(--mono); }
+.sfiles.peek { padding: 0 15px; }
+.smiss { margin-top: 6px; color: var(--faint); font-size: 11px; }
+.notepeek .note-pre {
+  margin: 0;
+  max-height: calc(var(--vh1) * 46);
+  overflow: auto;
+  padding: 8px 15px;
+  color: var(--text);
+  font: 12px/1.6 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .nfoot { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .nfrom { color: var(--faint); font: 10px var(--mono); }
 .nacts { display: flex; align-items: center; gap: 8px; }

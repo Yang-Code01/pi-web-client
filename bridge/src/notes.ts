@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, readJsonChecked, statePath, writeJson } from "./paths.ts";
 
-export const NOTE_KINDS = ["bug", "change", "idea", "chore"] as const;
+export const NOTE_KINDS = ["bug", "change", "idea", "chore", "shared"] as const;
 export type NoteKind = (typeof NOTE_KINDS)[number];
 export const NOTE_STATUSES = ["pending", "done", "dropped"] as const;
 export type NoteStatus = (typeof NOTE_STATUSES)[number];

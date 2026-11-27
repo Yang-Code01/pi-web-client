@@ -331,6 +331,16 @@ export class PeerHost {
     return this.request("POST", "/note", { peer, note });
   }
 
+  /** 共享卡（D439）：一帧清单 + 8KB 预览；本体随后逐份 sendFile。 */
+  sendShare(peer: string, share: unknown, via?: "pi"): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
+    return this.request("POST", "/share", via ? { peer, share, via } : { peer, share });
+  }
+
+  /** 共享回执：告诉对方「我已经收下了」（peer 侧按 itemId 幂等）。 */
+  shareAck(peer: string, ref: string, thread: string): Promise<{ ok: boolean }> {
+    return this.request("POST", "/share/ack", { peer, ref, thread });
+  }
+
   sendText(
     peer: string,
     text: string,

@@ -104,6 +104,7 @@ import {
   type NoteStatus,
 } from "./notes.ts";
 import { decorateNotes, markAccepted, readAccepted, resolveNoteShots } from "./peer-notes.ts";
+import { acceptShare, ackShare, decorateShares, sendShare } from "./peer-share.ts";
 import { actOnFailure, emptyLedger, mergeFailures, readLedger, undoFailures, type CommitItem, type FailAction } from "./failures.ts";
 import { allowRemind, reminderText, reviewPrompt } from "./lessons.ts";
 import { deleteRule, markReviewed, readRules, setRule } from "./rules.ts";
@@ -144,6 +145,7 @@ import { saveStruct as saveSheetStruct, type StructOp } from "./sheet/struct.ts"
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { countSlides, slidesAvailable, slidesPdfFile, slidesPdfKey, slidesPdfStatus, slidesProbe } from "./slides/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
+import { ensurePeerMcp, peerMcpState, setPeerMcpEnabled } from "./peer-mcp.ts";
 import { openPage, shouldOpenPage } from "./openbrowser.ts";
 import { injectWindowTitle, windowTitleFromEnv } from "./window-title.ts";
 
@@ -642,6 +644,10 @@ async function main(): Promise<void> {
   // 第 5 片：pi 子进程里的 peer_* 工具直连 peer 的回环端口（决定 33）。
   // rpc.ts 起子进程时是 `{...process.env, ...opts.env}`，所以这里设一次就传下去了。
   process.env.PI_PEER_PORT = String(cfg.peerPort);
+  // D439：内网通 MCP 服务（peer/mcp/peer-mcp.mjs）靠 PI_WEB_PORT 找桥。pi 子进程继承
+  // `{...process.env, ...opts.env}`，MCP 又是 pi 拉起的，所以这里设一次就一路传下去。
+  // 只在没设时补：测试实例 / 热部署会自己传端口，别把它盖掉。
+  process.env.PI_WEB_PORT ??= String(cfg.port);
 
   /* D396：日志有上限（默认 8 MB，保留一代 `.1`），而且一秒超过 500 行就只记一条风暴摘要。
      以前是纯 append，一份探针 / 测试桥能写到 GB 级 —— 关键是那条路是 **同步** 写，
@@ -688,6 +694,13 @@ async function main(): Promise<void> {
   const peer = new PeerHost({ port: cfg.peerPort, entry: peerOn ? peerEntry() : null, log });
   if (peerOn) peer.start();
   else log("peer 已禁用（PI_PEER=0）");
+
+  // D439：内网通的 MCP 条目写进全局 mcp.json（用户关过就不再写回）。失败只记日志，不影响启动。
+  if (peerOn) {
+    const mcp = ensurePeerMcp();
+    if (!mcp.ok) log(`内网通 MCP 未注册：${mcp.error}`);
+    else if (mcp.changed) log(`内网通 MCP 已注册到 ${peerMcpState().file}`);
+  }
 
   /**
    * Q-032: 被拒的提问必须说出理由。
@@ -953,7 +966,19 @@ async function main(): Promise<void> {
     }
     if (url.pathname === "/api/peer") {
       const view = peer.view();
-      return json(res, 200, { ...view, enabled: peerOn && view.enabled });
+      return json(res, 200, { ...view, enabled: peerOn && view.enabled, mcp: peerMcpState() });
+    }
+    // D439：内网通 MCP 的开关。状态就是「mcp.json 里有没有我们那条」，不另存一份。
+    if (url.pathname === "/api/peer/mcp" && req.method === "GET") {
+      return json(res, 200, peerMcpState());
+    }
+    if (url.pathname === "/api/peer/mcp" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, setPeerMcpEnabled(body?.enabled !== false));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
     }
     if (url.pathname === "/api/peer/threads" && req.method === "GET") {
       try {
@@ -967,7 +992,7 @@ async function main(): Promise<void> {
       if (!who) return json(res, 400, { error: "缺 peer" });
       try {
         const data = (await peer.history(who, Number(url.searchParams.get("limit")) || 200)) as { entries?: unknown[] };
-        return json(res, 200, { ...data, entries: decorateNotes(data.entries ?? []) });
+        return json(res, 200, { ...data, entries: decorateShares(decorateNotes(data.entries ?? [])) });
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
@@ -1031,6 +1056,28 @@ async function main(): Promise<void> {
       const body = await readBody(req).catch(() => ({}));
       try {
         return json(res, 200, await peer.sendNote(String(body?.peer ?? ""), body?.note));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // D439：共享卡。先落卡片（清单 + 8KB 预览），本体再逐份走文件通道。
+    if (url.pathname === "/api/peer/share" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await sendShare(peer, { ...body, cwd: String(body?.cwd ?? process.cwd()) }));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // D439：接收共享卡。四类各有落点（文件另存 / 内容进记录 / skill 解压 / 会话写 md），
+    // 收完回一帧回执；回执失败不算接收失败。
+    if (url.pathname === "/api/peer/share/accept" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const done = await acceptShare(peer, { ...body, cwd: String(body?.cwd ?? process.cwd()) });
+        if (done.noteId) broadcast({ type: "notes", notes: listNotes() });
+        const ack = await ackShare(peer, String(body?.peer ?? ""), String(body?.id ?? ""), String(body?.thread ?? ""));
+        return json(res, 200, { ...done, ...(ack.warning ? { warning: ack.warning } : {}) });
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }

@@ -101,6 +101,22 @@ expect(await call("bash", { command: "rm -rf x" }), { blocked: true, asked: true
 setMode("auto");
 expect(await call("bash", { command: "rm -rf x" }), { blocked: false, asked: false }, "auto: nothing asks");
 
+console.log("内网通 MCP（D439）：查的放行，发消息 / 共享要问");
+setMode("ask");
+expect(await call("mcp__peer__peer_contacts", {}), { blocked: false, asked: false }, "ask: 查联系人不问");
+expect(await call("mcp__peer__peer_history", { peer: "p" }), { blocked: false, asked: false }, "ask: 读记录不问");
+expect(await call("mcp__peer__peer_send_text", { peer: "p", text: "hi" }), { blocked: true, asked: true }, "ask: 发消息要问");
+expect(await call("mcp__peer__peer_share", { peer: "p", type: "snippet" }), { blocked: true, asked: true }, "ask: 共享要问");
+setMode("strict");
+expect(await call("mcp__peer__peer_inbox", {}), { blocked: false, asked: false }, "strict: 看未读不问");
+expect(await call("mcp__peer__peer_send_text", { peer: "p", text: "hi" }), { blocked: true, asked: true }, "strict: 发消息要问");
+setMode("readonly");
+expect(await call("mcp__peer__peer_status", {}), { blocked: false, asked: false }, "readonly: 看状态放行");
+expect(await call("mcp__peer__peer_send_text", { peer: "p", text: "hi" }), { blocked: true, asked: false }, "readonly: 发消息直接拦下，连问都不问");
+expect(await call("mcp__peer__peer_share", { peer: "p", type: "file" }), { blocked: true, asked: false }, "readonly: 共享也直接拦");
+setMode("auto");
+expect(await call("mcp__peer__peer_share", { peer: "p", type: "file" }), { blocked: false, asked: false }, "auto: 不问");
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(failed ? "FAILED" : "PASS");
 process.exit(failed ? 1 : 0);

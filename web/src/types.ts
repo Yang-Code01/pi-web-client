@@ -1046,7 +1046,7 @@ export interface GitHistory {
 }
 
 /** 记录（D95）：bridge/src/notes.ts 的 Note 镜像，落在状态目录，不属于任何会话。 */
-export type NoteKind = "bug" | "change" | "idea" | "chore";
+export type NoteKind = "bug" | "change" | "idea" | "chore" | "shared";
 export type NoteStatus = "pending" | "done" | "dropped";
 /** 已废弃：新旧面板都用「标题 + 长文」。字段留着只为读老数据不报错，读路径忽略它。 */
 export type NoteMode = "quick" | "form" | "long";

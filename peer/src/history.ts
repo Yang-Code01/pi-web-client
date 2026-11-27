@@ -12,7 +12,7 @@ import type { ThreadMeta } from "./threads.ts";
  *
  * D299 之后这是**加性**扩展：新字段全部可选，旧版本读新文件只是看不见它们。
  */
-export type EntryKind = "text" | "receipt" | "file" | "recall" | "note" | "react" | "pin" | "sys";
+export type EntryKind = "text" | "receipt" | "file" | "recall" | "note" | "react" | "pin" | "sys" | "share" | "share-ack";
 
 /** 群里的系统灰条：谁建了群 / 改了名 / 拉了谁 / 退了群。页面按 `op` 翻译，不落中文原句。 */
 export interface SysInfo {
@@ -47,6 +47,31 @@ export interface NotePayload {
   shots: NoteShot[];
   noteCreatedAt?: number;
   noteUpdatedAt?: number;
+}
+
+/**
+ * 共享卡的文件清单：名字 / 大小 / sha256，`role` 说明它是什么（技能压缩包、会话导出的 md
+ * 各自标出来）。本体逐份走文件通道，卡片只带清单（D439）。
+ */
+export interface ShareFile {
+  name: string;
+  size: number;
+  sha256: string;
+  role: "file" | "skill" | "session";
+}
+
+/** 共享卡载荷（D439）：四类共用一套字段，`body` 只是截断预览，全文由接收端按需取。 */
+export interface SharePayload {
+  type: "file" | "snippet" | "skill" | "session";
+  title: string;
+  summary?: string;
+  /** 正文预览（≤8 KB）。文件 / 技能类通常是说明文字，内容 / 会话类是开头一段。 */
+  body?: string;
+  /** 原文总字节数：卡片据此说「还有更多」。 */
+  bodyBytes?: number;
+  files: ShareFile[];
+  /** 源数据的生成时间（文件的 mtime、会话的更新时间）。 */
+  sourceAt?: number;
 }
 
 /** 引用：`excerpt` 截过，不把整段原文塞进信封（D299）。 */
@@ -84,6 +109,10 @@ export interface Entry {
   ref?: string;
   /** `kind:"note"` 的记录包（#507）。 */
   note?: NotePayload;
+  /** `kind:"share"` 的共享卡（D439）。 */
+  share?: SharePayload;
+  /** `kind:"share-ack"`：哪个人收了 `ref` 那张卡。 */
+  ackBy?: string;
   /** `kind:"react"`：对 `ref` 那条消息点的表情；`on:false` 是取消（同一个人同一个表情最后一条说了算）。 */
   emoji?: string;
   on?: boolean;
@@ -117,6 +146,8 @@ export interface ViewEntry extends Entry {
   outside?: boolean;
   /** 我发的消息：哪些人已读（nodeId）。 */
   readBy?: string[];
+  /** 我发的共享卡：谁点了接收（nodeId，按先后；由 `share-ack` 折叠出来）。 */
+  acceptedBy?: string[];
 }
 
 /** 排队中的那条现在什么情况：重试过几次、上一次说了什么。 */
@@ -171,7 +202,7 @@ function safeName(nodeId: string): string {
 
 /** 视图里要显示的三种「一条消息」：回执不占位，撤回也不单独占位（它把原气泡换掉）。 */
 function isMessage(entry: Entry): boolean {
-  return entry.kind === "text" || entry.kind === "file" || entry.kind === "note";
+  return entry.kind === "text" || entry.kind === "file" || entry.kind === "note" || entry.kind === "share";
 }
 
 /**
@@ -189,7 +220,7 @@ export function foldEntries(entries: Entry[], me: string, pending: Set<string>, 
   const byId = new Map<string, ViewEntry>();
   const out: ViewEntry[] = [];
   for (const entry of entries) {
-    if (entry.kind === "text" || entry.kind === "file" || entry.kind === "note" || entry.kind === "sys") {
+    if (entry.kind === "text" || entry.kind === "file" || entry.kind === "note" || entry.kind === "share" || entry.kind === "sys") {
       const view: ViewEntry = { ...entry };
       byId.set(entry.id, view);
       out.push(view);
@@ -199,6 +230,13 @@ export function foldEntries(entries: Entry[], me: string, pending: Set<string>, 
       const target = byId.get(entry.ack.id);
       if (target) {
         target.ack = { id: entry.ack.id, status: entry.ack.status, ...(entry.ack.error ? { error: entry.ack.error } : {}) };
+      }
+    }
+    if (entry.kind === "share-ack" && entry.ref && entry.ackBy) {
+      const target = byId.get(entry.ref);
+      if (target) {
+        const list = target.acceptedBy ?? [];
+        if (!list.includes(entry.ackBy)) target.acceptedBy = [...list, entry.ackBy];
       }
     }
     if (entry.kind === "recall" && entry.ref) {
@@ -383,6 +421,10 @@ export class History {
       }
       const texts = tail.filter((entry) => entry.kind === "text").length;
       const anyOnline = group ? group.members.some((m) => m.nodeId !== input.me && byId.has(m.nodeId)) : false;
+      // 群没有「对端状态」这回事：有个成员在线就算在线，全都离线就是离线。
+      let status: string;
+      if (group) status = anyOnline ? "online" : "offline";
+      else status = live ? (live.status ?? "online") : "offline";
       out.push({
         nodeId,
         nickname: group ? group.name : known?.nickname || from?.nickname || nodeId.slice(0, 8),
@@ -391,7 +433,7 @@ export class History {
         last,
         count: texts,
         online: group ? anyOnline : byId.has(nodeId),
-        status: group ? (anyOnline ? "online" : "offline") : (live?.status ?? (live ? "online" : "offline")),
+        status,
         // 头像永远拿最新的：在线表里是他刚报的，离线就显通讯录里存下的（上一次说 hello 时的）。
         avatar: group ? "" : live?.avatar || contact?.avatar || "",
         lastSeen: live?.lastSeen ?? 0,

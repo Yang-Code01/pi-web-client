@@ -28,6 +28,8 @@ export const NOTE_KINDS: { id: NoteKind; label: string; glyph: IconName | string
   { id: "change", label: tr("变更"), glyph: "◆" },
   { id: "idea", label: tr("想法"), glyph: "◇" },
   { id: "chore", label: tr("杂事"), glyph: "○" },
+  // 内网通共享进来的内容（D439）：不给手动新建用，但筛选 / 显示要认它。
+  { id: "shared", label: tr("共享"), glyph: "⇩" },
 ];
 
 const STATUS_LABEL: Record<NoteStatus, string> = { pending: tr("待处理"), done: tr("已处理"), dropped: tr("已忽略") };

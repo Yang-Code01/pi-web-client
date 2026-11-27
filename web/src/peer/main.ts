@@ -63,6 +63,8 @@ interface PeerView {
   running: boolean;
   reason: string;
   status: PeerStatus | null;
+  /** D439：内网通 MCP 服务在全局 mcp.json 里的状态（桥算好的）。 */
+  mcp?: { enabled: boolean; present: boolean; ours: boolean; file: string; path: string };
 }
 
 interface Entry {
@@ -70,7 +72,7 @@ interface Entry {
   at: number;
   from: { nodeId: string; nickname?: string; hostname?: string; port?: number; avatar?: string };
   to: { kind: "node" | "group"; id: string };
-  kind: "text" | "receipt" | "file" | "recall" | "note" | "react" | "pin" | "sys";
+  kind: "text" | "receipt" | "file" | "recall" | "note" | "share" | "react" | "pin" | "sys";
   /** 群灰条（建群 / 改名 / 拉人 / 退群）。 */
   sys?: { op: "create" | "rename" | "invite" | "leave"; actor: string; names?: string[]; name?: string };
   /** 视图字段：被固定在会话顶上（谁、何时）。 */
@@ -95,6 +97,8 @@ interface Entry {
   ref?: string;
   /** `kind:"note"` 的记录包（#507）。 */
   note?: NoteInfo;
+  /** `kind:"share"` 的共享卡（D439）。 */
+  share?: ShareInfo;
   /** 视图字段（peer 折叠出来，不落盘）：这条已经被撤回。 */
   recalled?: boolean;
   /** 视图字段：我自己发的这条现在在哪个态。 */
@@ -118,13 +122,36 @@ interface NoteShotInfo {
 interface NoteInfo {
   title: string;
   body: string;
-  kind: "bug" | "change" | "idea" | "chore";
+  kind: "bug" | "change" | "idea" | "chore" | "shared";
   status: "pending" | "done" | "dropped";
   shots?: NoteShotInfo[];
   noteCreatedAt?: number;
   noteUpdatedAt?: number;
   /** 本地接受状态（sidecar，不从对端回传）。 */
   accepted?: { noteId: string; at: number } | null;
+}
+
+/** 共享卡里的文件清单项：`entryId` 由桥按 sha256 对齐出来，null = 本体还没到。 */
+interface ShareFileInfo {
+  name: string;
+  size: number;
+  sha256: string;
+  role: "file" | "skill" | "session";
+  entryId?: string | null;
+}
+
+/** `kind:"share"`：文件 / 内容 / 技能 / 会话四类，好友与群同一套（D439）。 */
+interface ShareInfo {
+  type: "file" | "snippet" | "skill" | "session";
+  title: string;
+  summary?: string;
+  /** 8KB 预览（内容类超过即截断）。 */
+  body?: string;
+  bodyBytes?: number;
+  files: ShareFileInfo[];
+  sourceAt?: number;
+  /** 本机接受状态（sidecar，不从对端回传）。 */
+  accepted?: { at: number; type: string; paths: string[]; noteId?: string } | null;
 }
 
 interface Thread {
@@ -1001,6 +1028,7 @@ function preview(t: Thread): string {
   if (!e) return tr("还没有消息");
   if (e.recalled) return tr("撤回了一条消息");
   if (e.kind === "sys") return sysTip(e).textContent ?? "";
+  if (e.kind === "share") return tr("[共享] {p1}", { p1: e.share?.title ?? "" });
   const body =
     e.kind === "note"
       ? tr("[记录] {p1}", { p1: e.note?.title ?? "" })
@@ -1466,6 +1494,7 @@ let searchTimer = 0;
 /** 一条消息里能被搜到的字：正文（富文本先转纯文本）、文件名、记录标题。 */
 function searchText(e: Entry): string {
   if (e.kind === "note") return `${e.note?.title ?? ""} ${plainText(e.note?.body ?? "")}`;
+  if (e.kind === "share") return `${e.share?.title ?? ""} ${e.share?.summary ?? ""} ${plainText(e.share?.body ?? "")}`;
   if (e.kind === "file") return e.file?.name ?? "";
   const text = e.text ?? "";
   return hasRichMarkup(text) ? plainText(text) : text;
@@ -1935,8 +1964,10 @@ function locate(id: string): void {
   window.setTimeout(() => node.classList.remove("flash"), 1400);
 }
 
-const NOTE_KIND_TEXT: Record<string, string> = { bug: "bug", change: tr("变更"), idea: tr("想法"), chore: tr("杂事") };
+const NOTE_KIND_TEXT: Record<string, string> = { bug: "bug", change: tr("变更"), idea: tr("想法"), chore: tr("杂事"), shared: tr("共享") };
 const NOTE_STATUS_TEXT: Record<string, string> = { pending: tr("待处理"), done: tr("已处理"), dropped: tr("已忽略") };
+/** 共享卡的四类（D439）。 */
+const SHARE_TYPE_TEXT: Record<string, string> = { file: tr("文件"), snippet: tr("内容"), skill: tr("技能"), session: tr("会话") };
 
 /** 记录卡片（#508）：标题 / 两行摘要 / 分类状态 / 最多 4 张图 / 来源 / 预览与接受。 */
 function noteCard(e: Entry, t: Thread, mine: boolean): HTMLElement {
@@ -2018,6 +2049,157 @@ async function acceptNote(e: Entry, t: Thread, btn: HTMLButtonElement): Promise<
     btn.textContent = label;
     toast((err as Error).message);
   }
+}
+
+/** 共享卡（D439）：标题 / 分类 / 摘要或前几行 / 文件清单 / 预览与接收。 */
+function shareCard(e: Entry, t: Thread, mine: boolean): HTMLElement {
+  const share = e.share as ShareInfo;
+  const files = share.files ?? [];
+  const missing = files.filter((f) => !f.entryId).length;
+  const card = h("div", `ncard scard${e.state === "failed" ? " failed" : ""}${share.accepted ? " accepted" : ""}`);
+  const top = h("div", "ntop");
+  const chips = h("div", "nchips");
+  chips.append(h("span", "nchip", SHARE_TYPE_TEXT[share.type] ?? share.type));
+  top.append(h("div", "ntitle", share.title || tr("未命名")), chips);
+  card.append(top);
+  const brief = (share.summary ?? "").trim() || plainText(share.body ?? "").trim().slice(0, 140);
+  if (brief) card.append(h("div", "nbrief", brief));
+  if (files.length) {
+    const list = h("div", "sfiles");
+    for (const file of files.slice(0, 3)) {
+      const row = h("div", "sfile");
+      row.append(h("span", "sname", file.name), h("span", "ssize", sizeOf(file.size)));
+      if (file.entryId) {
+        row.classList.add("open");
+        row.title = tr("点开预览");
+        row.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          showPreview({ name: file.name, mime: mimeOf(file.name), size: file.size, url: `/api/peer/file?id=${encodeURIComponent(file.entryId as string)}` });
+        });
+      }
+      list.append(row);
+    }
+    if (files.length > 3) list.append(h("div", "sfile more", tr("还有 {p1} 份", { p1: String(files.length - 3) })));
+    card.append(list);
+  }
+  if (missing) card.append(h("div", "nmiss", tr("还差 {p1} 份文件", { p1: String(missing) })));
+  const foot = h("div", "nfoot");
+  const who = nameOf(e.from.nodeId, e.from.nickname);
+  foot.append(h("span", "nfrom", [who, e.from.hostname || t.hostname, clock(e.at)].join(" · ")));
+  const acts = h("div", "nacts");
+  const previewBtn = h("button", "link", tr("预览")) as HTMLButtonElement;
+  previewBtn.addEventListener("click", () => showSharePeek(e, t));
+  acts.append(previewBtn);
+  if (!mine) {
+    if (share.accepted) {
+      acts.append(h("span", "nok", tr("已接收")));
+      if (share.accepted.noteId) {
+        const open = h("button", "link", tr("打开记录")) as HTMLButtonElement;
+        open.addEventListener("click", () => {
+          window.parent?.postMessage({ t: "pi-note-open", id: share.accepted?.noteId }, window.location.origin);
+        });
+        acts.append(open);
+      }
+    } else {
+      const take = h("button", "btn pri", tr("接收")) as HTMLButtonElement;
+      take.disabled = missing > 0 || e.state === "sending" || e.state === "failed";
+      if (missing) take.title = tr("还差 {p1} 份文件", { p1: String(missing) });
+      take.addEventListener("click", () => void acceptShare(e, t, take));
+      acts.append(take);
+    }
+  }
+  foot.append(acts);
+  card.append(foot);
+  return card;
+}
+
+/** 接收：桥端按四类各自落地（文件另存 / 内容进记录 / skill 解压 / 会话写 md），收完寄回执。 */
+async function acceptShare(e: Entry, t: Thread, btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = tr("接收中…");
+  try {
+    const res = await postJson<{ ok: boolean; type: ShareInfo["type"]; paths: string[]; noteId?: string; warning?: string }>(
+      "/api/peer/share/accept",
+      { peer: t.nodeId, id: e.id, thread: t.nodeId },
+    );
+    const done = { at: Date.now(), type: res.type, paths: res.paths, ...(res.noteId ? { noteId: res.noteId } : {}) };
+    if (e.share) e.share.accepted = done;
+    const cur = S.msgs.find((x) => x.id === e.id);
+    if (cur?.share) cur.share.accepted = done;
+    toast(res.warning || shareToast(res.type, res.paths));
+    renderMain();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = label;
+    toast((err as Error).message);
+  }
+}
+
+/** 收下之后说清楚落到哪儿了：不同类的「成功」长得不一样。 */
+function shareToast(type: ShareInfo["type"], paths: string[]): string {
+  const first = paths[0] ?? "";
+  if (type === "snippet") return tr("已存进记录");
+  if (type === "skill") return first ? tr("技能已装到 {p1}", { p1: first }) : tr("技能已安装");
+  if (type === "session") return first ? tr("会话已导出到 {p1}", { p1: first }) : tr("会话已导出");
+  if (!first) return tr("文件已在收件箱");
+  return paths.length > 1 ? tr("已存到 {p1} 等 {p2} 个文件", { p1: first, p2: String(paths.length) }) : tr("已存到 {p1}", { p1: first });
+}
+
+/** 共享卡预览：正文是纯文本（内容类会标截断），文件清单可点开，底部是来源。 */
+function showSharePeek(e: Entry, t: Thread): void {
+  const share = e.share;
+  if (!share) return;
+  closeLayer();
+  const scrim = h("div", "scrim");
+  const modal = h("div", "modal notepeek sharepeek");
+  const close = (): void => {
+    document.removeEventListener("keydown", onKey, true);
+    closeLayer();
+  };
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key !== "Escape") return;
+    ev.stopPropagation();
+    close();
+  };
+  const head = h("header");
+  head.append(h("strong", "nm", share.title || tr("未命名")), iconBtn("close", tr("关闭"), close));
+  const meta = h("div", "meta");
+  meta.append(h("span", "nchip", SHARE_TYPE_TEXT[share.type] ?? share.type));
+  const bytes = share.bodyBytes ?? 0;
+  const truncated = bytes > utf8Bytes(share.body ?? "");
+  if (truncated) meta.append(h("span", "nchip st", tr("已截断")));
+  const body = h("div", "body note-body");
+  body.append(h("pre", "note-pre", share.body ?? ""));
+  modal.append(head, meta, body);
+  const files = (share.files ?? []).filter((f) => f.entryId);
+  if (files.length) {
+    const list = h("div", "sfiles peek");
+    for (const file of files) {
+      const row = h("div", "sfile open");
+      row.append(h("span", "sname", file.name), h("span", "ssize", sizeOf(file.size)));
+      row.title = tr("点开预览");
+      row.addEventListener("click", () => {
+        showPreview({ name: file.name, mime: mimeOf(file.name), size: file.size, url: `/api/peer/file?id=${encodeURIComponent(file.entryId as string)}` });
+      });
+      list.append(row);
+    }
+    modal.append(list);
+  }
+  const from = h("div", "note-from", tr("来自 {p1} · {p2} · {p3}", {
+    p1: nameOf(e.from.nodeId, e.from.nickname),
+    p2: e.from.hostname || t.hostname,
+    p3: `${fmtDate(e.at)} ${clock(e.at)}`,
+  }));
+  modal.append(from);
+  layerEl.append(scrim, modal);
+  scrim.addEventListener("click", close);
+  document.addEventListener("keydown", onKey, true);
+}
+
+/** 预览正文的 UTF-8 字节数：卡片只带 8KB，超了要标「已截断」。 */
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).length;
 }
 
 /** 预览正文：净化过的 HTML 直接挂节点（选择复制照常用，编辑不了）。 */
@@ -2150,6 +2332,8 @@ function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
   if (e.replyTo) box.append(quoteBlock(e.replyTo));
   if (e.kind === "note" && e.note) {
     box.append(noteCard(e, t, mine));
+  } else if (e.kind === "share" && e.share) {
+    box.append(shareCard(e, t, mine));
   } else if (e.kind === "file" && e.file && picKind(e)) {
     box.append(picBubble(e, mine));
   } else if (e.kind === "file" && e.file) {
@@ -2261,7 +2445,7 @@ function addFold(bub: HTMLElement, body: HTMLElement, text: string): void {
 
 /** 引用条摘要：富文本要先转纯文本，不能把标签写进引用里。 */
 function excerptOf(e: Entry): string {
-  const raw = e.kind === "note" ? (e.note?.title ?? "") : (e.text ?? e.file?.name ?? "");
+  const raw = e.kind === "note" || e.kind === "share" ? (e.note?.title ?? e.share?.title ?? "") : (e.text ?? e.file?.name ?? "");
   return (hasRichMarkup(raw) ? plainText(raw) : raw).slice(0, 120);
 }
 function quoteBlock(ref: { id: string; from: string; excerpt: string }): HTMLElement {
@@ -2281,6 +2465,13 @@ function quoteBlock(ref: { id: string; from: string; excerpt: string }): HTMLEle
 
 function messageMenu(x: number, y: number, e: Entry, t: Thread, mine: boolean): void {
   const items: { label: string; icon?: string; danger?: boolean; run: () => void }[] = [];
+  if (e.kind === "share" && e.share) {
+    // 共享卡和记录包一样不进「复制 / 引用」那套：只给预览与失败重发。
+    items.push({ label: tr("预览"), run: () => showSharePeek(e, t) });
+    if (mine && e.state === "failed") items.push({ label: tr("重发"), icon: "retry", run: () => void resend(e) });
+    openMenu(x, y, items);
+    return;
+  }
   if (e.kind === "note" && e.note) {
     // 记录包不支持撤回 / 引用；只给预览与失败重发。
     items.push({ label: tr("预览"), run: () => showNotePeek(e, t) });
@@ -3481,7 +3672,7 @@ async function resend(e: Entry): Promise<void> {
   try {
     // P2：同一个 id 重投，**不造新消息** —— 旧版这里是再 `POST /send` 一次，历史会多一条。
     // 文字和记录包都走 outbox；还在排队的那条只把下一次尝试提前（peer 侧 nudge）。
-    if (e.kind === "text" || e.kind === "note") await postJson("/api/peer/retry", { peer: S.thread, id: e.id });
+    if (e.kind === "text" || e.kind === "note" || e.kind === "share") await postJson("/api/peer/retry", { peer: S.thread, id: e.id });
     else toast(tr("文件重发请从磁盘再选一次"));
     await loadMessages();
     renderMain();
@@ -3968,6 +4159,21 @@ function renderMe(): void {
   );
   detail.append(sw);
 
+  // D439：把内网通注册成 pi 的 MCP 服务（deferred，按需加载）。开关状态就是 mcp.json 里那条。
+  const mcpCard = h("div", "card");
+  mcpCard.append(h("h3", "", tr("给 pi 用（MCP）")));
+  const mcp = S.view?.mcp;
+  mcpCard.append(
+    toggle(
+      tr("让 pi 能用内网通"),
+      tr("在会话里搜到 peer 工具就能查人、读记录、发消息、共享文件 / 内容 / 技能 / 会话；按需加载，不占上下文"),
+      mcp?.enabled !== false,
+      (on) => void setMcp(on),
+    ),
+  );
+  if (mcp) mcpCard.append(h("div", "note", tr("写在 {p1}；改动对新开的会话生效。", { p1: mcp.file })));
+  detail.append(mcpCard);
+
   const store = h("div", "card");
   store.append(h("h3", "", tr("存储")));
   const skv = h("div", "kv");
@@ -4033,6 +4239,20 @@ function toggle(name: string, sub: string, on: boolean, run: (on: boolean) => vo
     run(!on);
   });
   return row;
+}
+
+/** D439：开 / 关内网通 MCP。mcp.json 由桥维护，页面只报意愿。 */
+async function setMcp(on: boolean): Promise<void> {
+  try {
+    await postJson("/api/peer/mcp", { enabled: on });
+    await loadStatus();
+    renderAll();
+    toast(on ? tr("内网通工具已打开（新会话生效）") : tr("内网通工具已关掉"));
+  } catch (err) {
+    toast((err as Error).message);
+    await loadStatus();
+    renderAll();
+  }
 }
 
 async function setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; avatar?: string }): Promise<boolean> {

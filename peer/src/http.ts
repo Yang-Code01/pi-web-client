@@ -520,6 +520,31 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         }
       }
 
+      // 共享卡（D439）：清单 + 截断预览一帧；本体（文件 / 技能包 / 会话导出）随后逐份走 /files/send。
+      if (url.pathname === "/share" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          activity.touch();
+          const via = body?.via === "pi" ? ("pi" as const) : undefined;
+          return json(res, 200, messages.sendShare(String(body?.peer ?? ""), body?.share, via));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      // 收下共享卡之后的回执：本机先落一条 share-ack，再 1:1 通知发送者（D439）。
+      if (url.pathname === "/share/ack" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          activity.touch();
+          return json(res, 200, messages.sendShareAck(String(body?.peer ?? ""), String(body?.ref ?? ""), String(body?.thread ?? body?.peer ?? "")));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
       // pi 的三个工具里「找人」这一步（第 5 片，决定 33）：昵称可以重名，
       // 所以必须把 nodeId 一起给模型，让它下次直接用 id。
       if (url.pathname === "/tools/find" && req.method === "GET") {

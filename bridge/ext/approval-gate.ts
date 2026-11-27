@@ -52,7 +52,9 @@ type Mode = "readonly" | "strict" | "ask" | "auto";
  */
 const READ_ONLY_TOOLS = new Set([
   "read", "grep", "find", "ls", "tool_search", "codemode",
-  "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "peer_find", "peer_history",
+  "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource",
+  // 内网通 MCP（D439）里只查不写的那几个：查人、读记录、看未读、看状态。发送与共享不在这里。
+  "mcp__peer__peer_contacts", "mcp__peer__peer_history", "mcp__peer__peer_inbox", "mcp__peer__peer_status",
   // #86：随手问要能查天气/查文档。这几个只往网上看，不碰本地磁盘；代价是它们会把参数
   // （可能是从本机文件里读到的内容）发给外部服务 —— 这是「联网」本身的含义，不是漏洞。
   "web_search", "fetch_content", "source_check", "get_search_content",
@@ -61,10 +63,10 @@ const READ_ONLY_TOOLS = new Set([
   "mail_accounts", "mail_list", "mail_read", "mail_image",
 ]);
 /**
- * 给内网通里的人发文字（#45 第 5 片，决定 33）：它不写本地磁盘，所以严格模式下放行，
- * 但只读模式下仍然拦——「只读」的意思是别往外说话，不只是别改文件。
+ * 内网通 MCP（D439）：工具名是 `mcp__peer__<tool>`。查询类在上面那张白名单里；发送与共享
+ * 是「往外说话」，严格模式下要逐次确认 —— 和原来 peer_send 的分寸一样。
  */
-const PEER_SEND = new Set(["peer_send"]);
+const PEER_MCP_WRITE = new Set(["mcp__peer__peer_send_text", "mcp__peer__peer_share"]);
 const ASK_TOOLS = new Set(["question", "questionnaire", "ask_user_question", "ask_user"]);
 
 function readOnlyHint(pi: any, toolName: string): boolean {
@@ -137,126 +139,7 @@ function riskOf(toolName: string, input: Record<string, unknown>, cwd: string): 
   return null;
 }
 
-// ---------------------------------------------------------------- peer 工具（第 5 片）
-
-/**
- * 三个工具都走 peer 的回环端口，不经过 bridge：pi 子进程本来就是本机进程，
- * 而 peer 的 `/tools/find`、`/messages`、`/send` 都只认回环（决定 2）。
- * 端口由 bridge 在 spawn 时写进 PI_PEER_PORT（index.ts 里那行 process.env.PI_PEER_PORT）。
- */
-const PEER_PORT = Number(process.env.PI_PEER_PORT || 7865);
-
-async function peerCall(pathname: string, init?: RequestInit): Promise<any> {
-  let res: Response;
-  try {
-    res = await fetch(`http://127.0.0.1:${PEER_PORT}${pathname}`, {
-      signal: AbortSignal.timeout(5000),
-      ...init,
-    });
-  } catch (err) {
-    // 只在这一层加「连不上」：走到下面说明 peer 是活的，报的是业务错误。
-    throw new Error(`连不上 peer（${PEER_PORT}）：${(err as Error).message}。内网通没开时这些工具用不了，别重试。`);
-  }
-  const text = await res.text();
-  let body: any = {};
-  try {
-    body = text ? JSON.parse(text) : {};
-  } catch {
-    body = { error: text.slice(0, 200) };
-  }
-  if (!res.ok) throw new Error(String(body?.error ?? `HTTP ${res.status}`));
-  return body;
-}
-
-const textResult = (text: string, details: Record<string, unknown> = {}) => ({
-  content: [{ type: "text" as const, text }],
-  details,
-});
-
-const describe = (peer: any): string =>
-  `- ${peer.nickname || peer.nodeId.slice(0, 8)}${peer.hostname ? `（${peer.hostname}）` : ""} · ${peer.nodeId} · ${peer.online ? "在线" : "离线"}${peer.friend ? " · 好友" : " · 非好友"}`;
-
-const peerTools = [
-  {
-    name: "peer_find",
-    label: "找内网通里的人",
-    description: "在内网通里找人和自己所在的 pi 节点：返回昵称、主机名、nodeId、是否在线、是不是好友。昵称会重名，所以后面调 peer_history / peer_send 时用 nodeId。",
-    promptSnippet: "peer_find(query?) → 内网通里的人（昵称 / nodeId / 在线 / 好友）",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "按昵称或主机名过滤，留空列出全部" },
-      },
-      required: [],
-      additionalProperties: false,
-    },
-    async execute(_id: string, params: any) {
-      const body = await peerCall(`/tools/find?q=${encodeURIComponent(String(params?.query ?? ""))}`);
-      const peers: any[] = body.peers ?? [];
-      if (!peers.length) return textResult("没找到人。内网通里目前没有别人在线，也没加过好友。", { count: 0 });
-      const lines = peers.map(describe);
-      const head = "找到 " + peers.length + " 个人：";
-      const tail = "发消息用 peer_send(nodeId, text)，看历史用 peer_history(nodeId)。";
-      return textResult([head, ...lines, "", tail].join("\n"), { peers });
-    },
-  },
-  {
-    name: "peer_history",
-    label: "看内网通的对话",
-    description: "读某个人和本机的内网通对话（只读，历史存在本机）。返回每条消息的时间、谁发的、内容；文件消息显示文件名和大小。",
-    parameters: {
-      type: "object",
-      properties: {
-        peer: { type: "string", description: "对方的 nodeId（先用 peer_find 拿）" },
-        limit: { type: "number", description: "最多几条，默认 30，上限 200" },
-      },
-      required: ["peer"],
-      additionalProperties: false,
-    },
-    async execute(_id: string, params: any) {
-      const limit = Math.min(200, Math.max(1, Number(params?.limit) || 30));
-      const body = await peerCall(`/messages?peer=${encodeURIComponent(String(params?.peer ?? ""))}&limit=${limit}`);
-      const entries: any[] = body.entries ?? [];
-      if (!entries.length) return textResult("这段对话是空的。", { count: 0 });
-      const lines = entries
-        .filter((entry) => entry.kind !== "receipt")
-        .map((entry) => {
-          const at = new Date(entry.at).toLocaleString("zh-CN", { hour12: false });
-          const who = entry.from?.nickname || String(entry.from?.nodeId ?? "").slice(0, 8);
-          if (entry.kind === "file") return `[${at}] ${who} 发来文件「${entry.file?.name}」（${Math.round((entry.file?.size ?? 0) / 1024)} KB）`;
-          return `[${at}] ${who}${entry.via === "pi" ? "（agent）" : ""}: ${entry.text}`;
-        });
-      return textResult(lines.join("\n"), { count: lines.length });
-    },
-  },
-  {
-    name: "peer_send",
-    label: "给内网通里的人发文字",
-    description: "给内网通里的某个人发一条文字消息（不是邮件、不是通知：对方在 pi 的「局域网」页里看到）。只能发文字，不能发文件。发之前先用 peer_find 确认 nodeId。",
-    promptSnippet: "peer_send(peer, text) → 给本机内网通里的某个人发文字（消息上会标「🤖 agent 代发」）",
-    parameters: {
-      type: "object",
-      properties: {
-        peer: { type: "string", description: "对方的 nodeId" },
-        text: { type: "string", description: "要发的话，最长 32 KB（用 UTF-8 字节算）" },
-      },
-      required: ["peer", "text"],
-      additionalProperties: false,
-    },
-    async execute(_id: string, params: any) {
-      const body = await peerCall("/send", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ peer: String(params?.peer ?? ""), text: String(params?.text ?? ""), via: "pi" }),
-      });
-      return textResult(`发出去了（消息 id ${String(body.id ?? "").slice(0, 8)}…）。对方在线时会立刻收到；不在线就排队 24 小时。`, { id: body.id });
-    },
-  },
-];
-
 export default function approvalGate(pi: any): void {
-  for (const tool of peerTools) pi.registerTool(tool);
-
   pi.on("session_start", async () => {
     console.error("[approval-gate] active");
   });
@@ -294,7 +177,14 @@ export default function approvalGate(pi: any): void {
     // Strict: every write and every command stops, not only the risky ones.
     // Strict: every call that is not known to only look stops — writes, commands, and tools the
     // gate knows nothing about (MCP, extensions) alike.
-    if (!risk && mode === "strict" && !looksOnly && !PEER_SEND.has(lower)) {
+    // D439：内网通的发送 / 共享不写本机，但会对别人说话 —— ask / strict 下都要确认。
+    if (!risk && PEER_MCP_WRITE.has(lower)) {
+      risk = {
+        why: lower.endsWith("peer_share") ? "把东西共享给内网通里的人" : "给内网通里的人发消息",
+        detail: JSON.stringify(input).slice(0, 300),
+      };
+    }
+    if (!risk && mode === "strict" && !looksOnly && !PEER_MCP_WRITE.has(lower)) {
       const detail = SHELL_TOOLS.has(lower) ? shellCommand(input).trim() : WRITE_TOOLS.has(lower) ? targetPath(input).trim() : "";
       const why = SHELL_TOOLS.has(lower) ? "执行命令" : WRITE_TOOLS.has(lower) ? "写文件" : `调用工具 ${toolName}`;
       risk = { why, detail: detail || JSON.stringify(input).slice(0, 300) };

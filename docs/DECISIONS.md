@@ -8755,3 +8755,25 @@ if (stop >= 0) {
 **代价。** 浅色柔和档在 sunken 底（`#ececef`）上的正文约 3.87–3.90，低于 4.5（但仍高于现状鲜艳蓝的 3.5）；深色实底白字 3.42 未达 AA。柔和黄必然偏土、石墨几乎不变（chroma 0.004）。柔和档是否好看仍靠肉眼：探针只量对比度与换表，不判美丑。
 
 **守卫。** `web/tests/theme-unit.mjs`：两张柔和表 id 齐全、每个颜色作正文对各自面板 ≥4.5、`accentInk` 深色柔和档全白字、默认 `vivid`、迁移缺键 / 错值落 `vivid` 且幂等。`probes/theme-switcher.mjs`：主题页四行、点「柔和」后 `--accent` / `--accent-dim` 与八颗色块换表、切主题与刷新后仍在。工作区色点与终端 ANSI 十六色在代码里不读 tone（`tree.ts` 的 `WS_COLORS`、`TERM_THEMES` 原样），没有可点的探针。
+
+## D439 内网通加 MCP 服务，共享卡分四类、接收落点各归各位（用户 2026-11-27「给内网通加上mcp 服务。按需加载…共享某个文件、内容、skill…好友或群聊中，能预览和接收」）
+
+**问题。** 内网通（peer）已有的能力只通过 approval-gate 扩展注册的三个原生工具暴露：`peer_find` / `peer_history` / `peer_send`（`bridge/ext/approval-gate.ts` 的 `peerTools`）。它们①只能发 1:1 文字，②不是 MCP，任何别的 MCP 客户端（终端里的 pi、Claude Desktop）都看不到，③参数一多就挤在系统提示里。用户要的是「给内网通加上 MCP 服务、按需加载、在 chat 框里就能操作」，并追加三件事：发消息、把本机文件 / 内容 / skill / 会话做成卡片共享给好友或群（能预览、能接收，照现有 bug 记录卡的样子）、共享会话记录。
+
+**决定。**
+
+- **一个零依赖的 stdio MCP 服务。** `peer/mcp/peer-mcp.mjs`：手写 JSON-RPC 2.0（initialize / tools/list / tools/call / ping，newline-delimited），不引 SDK —— peer 包一直零运行时依赖（`peer/package.json`），为一个 6 工具的服务链进 `@modelcontextprotocol/sdk` 不值当。它只调桥的 `/api/peer/*`（回环免 cookie，`bridge/src/index.ts:951`），不直连 peer：接收落点里「记录」「技能目录」「会话导出」都只有桥知道。
+- **桥自动注册这一条，写在全局 `~/.pi/agent/mcp.json`。** 内网通启用时写 `peer` 条目（`command: node`、`args: [<仓库>/peer/mcp/peer-mcp.mjs]`、`exposure: "deferred"`、`description` 写清「内网通：找人、看历史、发消息、共享文件/内容/skill/会话」），关掉内网通就摘掉；内网通设置页多一个开关（默认开）。桥启动时补 `process.env.PI_WEB_PORT`，MCP 从它（回退 7864）找桥，测试实例因此各找各的。
+- **工具面收成 6 个**：`peer_contacts` / `peer_history` / `peer_send_text` / `peer_share`（`type` + `path` / `text` / `skill` / `session`）/ `peer_inbox` / `peer_accept`。**删掉** approval-gate 里的三个原生工具，不再两套并存；只读 / 写闸门改成认 `mcp__peer__` 前缀（`peer_contacts`、`peer_history`、`peer_inbox` 只读，其余按写操作走确认）。MCP 调桥时带 `x-pi-agent: 1`，桥据此给消息打 `via:"pi"`（🤖 徽章照旧）。
+- **协议加两个 kind：`share` 与 `share-ack`**（`peer/src/history.ts` 的 `EntryKind` + `Entry.share` / `shareAck`；校验在新增的 `peer/src/share.ts`）。载荷 `SharePayload`：`type: "file" | "snippet" | "skill" | "session"`、`itemId`（= 消息 id，回执与去重都按它）、`title`、`summary`、`body`（**截断预览**，上限 8 KB）、`bodyBytes`（原长，用来在卡上说「还有更多」）、`files: {name,size,sha256,role}[]`、`sourceAt`。卡片一帧一张，好友与群同一条路径；**群**用现有的 `targets()` + `enqueue()` 逐人 fan-out（顺手删掉 `messages.sendNote()` 的「群里暂不支持发记录」限制，note 卡一起受益）。
+- **文件字节不走卡片帧**：仍逐个走 `/files/send`（上限 64 MB，`peer/src/http.ts`），卡片只带清单（名字 / 大小 / sha256）；接收端按 sha 对齐。卡片本身可离线补投（outbox 24 小时），字节等对方上线再传 —— 就是现有投递语义，不新做「按需回连拉取」。
+- **四类内容的「接收」各归各位**：文件 → 收件箱收下（D209）+ 卡片上的「另存为」把收件箱那份复制到用户选的目录；内容 → `bridge/src/notes.ts` 的 `NOTE_KINDS` 新增 `shared` 一类，正文转净化 HTML 存成一条记录；skill → 卡片上选「全局 / 当前项目」，确认后解 zip 到 `~/.pi/agent/skills/<name>` 或 `<cwd>/.pi/skills/<name>`（解之前校验条目路径不越界、条目数 ≤ 500、解压总量 ≤ 32 MB，同名目录已存在就拒绝并提示）；会话 → 导出 Markdown 到当前工作目录（提问、结论、工具调用一行摘要，工具输出截断、家目录写成 `~`、密钥样式串打码）。
+- **回执**：接收端点「接收」后回一条 `share-ack`（1:1 发给发送者，带 `itemId` / `thread`），发送方把回执折进那张卡：1:1 显示「已接收」，群里列出已接收的成员。发送方卡片再点一次不会重复回执（按 itemId 幂等）。
+- **与记录卡共存**：`note` 协议一个字不改（旧消息照旧渲染），新 `share` 卡与它**共用**卡片外壳与预览弹层；前端把 note 卡现有的渲染抽成一层（`web/src/peer/main.ts` 的 `noteCard()` / `previewNote()`），两类卡只是内容块与按钮不同。
+- **卡片帧的上限**沿用记录包的 256 KB；预览截断到 8 KB。**不做 `/api/peer/share/preview`**：卡片只带清单与这 8 KB，全文没有留存在发送方可寻址的地方 —— 内容类的 8 KB 就是全文（超出即截断并标「已截断」），会话导出与文件/技能本体随文件通道到达，落盘之后点开的就是全的。想做「点预览再取全文」得先把全文存在发送方（多一份副本 + 一个过期策略），这一步留到有人真的需要时再说。
+
+**为什么。** ① stdio 而不是 peer 内的 HTTP 端点：peer 已经绑在局域网可达的 7865 上，再开一条 MCP 面等于把「谁能操作这台机器的内网通」摊到局域网上；stdio 由 pi 每会话起一份、天生只有本机。② deferred 而不是 direct：6 个工具直连声明每轮都占提示，而用户真正要的是「说到共享才想起来」；deferred 下 `tool_search` 命中才进上下文，正是他说的按需加载。③ 6 个粗粒度工具而不是按类型拆：deferred 下模型先搜名字，名字好记比参数整齐更要紧。④ 卡片帧只带元数据与截断预览：完整正文可能几百 KB，进了消息历史就跟着 JSONL 永久膨胀，也和「按需」相反。⑤ 附件仍走文件通道：那条路已经有 sha、分块、收件箱配额与离线重试，卡片另开一条等于把可靠性再做一遍。⑥ 共享卡与记录卡共用外壳：两者视觉是同一件事（一张卡 + 预览 + 一个接收动作），分开写必然分叉。⑦ skill 走 zip + 清单：目录结构、脚本、模板都得带上，单发 SKILL.md 收下来是残的。
+
+**代价。** ① 老版本对端收到 `share` 帧回 400 `unknown kind`（不可重试）：发送方卡片只能标「对方版本太旧」，没有降级成文字。② 群卡片的回执要逐人回一条帧，人多的群会多出一串控制帧（不落成聊天气泡，但历史里有一行 `share-ack`）。③ 手写 JSON-RPC 没有 SDK 的 schema 校验与进度通知，协议以后加 sampling / resources 得自己补。④ 删掉原生工具后，只跑终端里 `pi`（没开内网通、桥没起）的人就用不上这几个工具了 —— MCP 条目在内网通关掉时会被摘掉，这是有意的。⑤ 会话导出对工具输出做截断与打码，可能漏掉自定义密钥格式。
+
+**守卫。** `bridge/tests/peer-share.mjs`：本机起两个 peer + 桥，覆盖四类卡片的发送 / 群 fan-out / 离线补投 / 回执幂等 / 四类接收落点（另存为、记录类 `shared`、zip 装进临时技能目录、md 导到临时目录），以及路径越界与超限被拒。`bridge/tests/peer-mcp.mjs`：拿 stdio 起 `peer/mcp/peer-mcp.mjs`，跑 initialize / tools/list / tools/call（发消息、共享、收件箱）并断言 `via:"pi"`。`probes/peer-share-card.mjs`：卡片在好友与群里都画得出来、预览弹层能开、点接收后按钮变「已接收」、群卡片显示已接收成员。前端 typecheck 里的 i18n 检查覆盖新文案。

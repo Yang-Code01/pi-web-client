@@ -6,6 +6,7 @@ import type { Discovery } from "./discovery.ts";
 import { foldEntries, type Entry, type History, type NotePayload, type PeerIdentity, type SysInfo, type ViewEntry } from "./history.ts";
 import { GROUP_PREFIX, MAX_GROUP_MEMBERS, isGroupId, normalizeGroup, snapshot, type Group, type Groups } from "./groups.ts";
 import { normalizeNote } from "./note.ts";
+import { normalizeShare, normalizeShareAck } from "./share.ts";
 import type { Outbox, Queued, Verdict } from "./outbox.ts";
 import type { Relations } from "./peers.ts";
 import { afterWatermark } from "./history.ts";
@@ -157,6 +158,14 @@ export class Messages {
       });
   }
 
+  /**
+   * 非文本帧的载荷：收件方靠 `control.group` 判断「这张卡应该落在群会话还是 1:1」。
+   * 1:1 不带这个字段 —— `controlThread` 用「没有 group 就记在发送者的会话里」兜底。
+   */
+  private wire(threadId: string, entry: Entry): Entry & { group?: string } {
+    return isGroupId(threadId) ? { ...entry, group: threadId } : entry;
+  }
+
   /** 入队：1:1 一条；群按成员拆成多条（id = `<原 id>@<成员>`），各自补投。 */
   private enqueue(threadId: string, id: string, kind: Queued["kind"], payload: unknown, at: number, targets: { peerId: string; addr: string; port: number }[]): void {
     const outbox = this.ctx.outbox;
@@ -182,18 +191,58 @@ export class Messages {
   /** 发一条记录包：正文 + 截图清单走 inbox，截图本体随后逐张走文件通道（#507）。 */
   sendNote(peerId: string, raw: unknown): { ok: true; id: string; at: number; seq: number } {
     const note = normalizeNote(raw);
-    if (isGroupId(peerId)) throw new Error("群里暂不支持发记录");
-    const peer = this.ctx.discovery.byId(peerId);
-    if (!peer) throw new Error("这个人已经不在线了：刷新在线列表再试");
+    const targets = this.targets(peerId);
     const at = Date.now();
     const id = uuidv7(at);
     const seq = this.ctx.history.nextSeq(peerId);
     const entry = this.entry(id, at, this.me(), peerId, "note", { note, seq });
     this.ctx.history.append(peerId, entry);
+    this.enqueue(peerId, id, "note", this.wire(peerId, entry), at, targets);
+    return { ok: true, id, at, seq };
+  }
+
+  /**
+   * 发一张共享卡（D439）：卡片只带清单与截断预览，本体（文件 / 技能包 / 会话导出）
+   * 随后逐份走文件通道。好友与群同一条路径：群按成员拆条补投。
+   */
+  sendShare(peerId: string, raw: unknown, via?: "pi"): { ok: true; id: string; at: number; seq: number } {
+    const share = normalizeShare(raw);
+    const targets = this.targets(peerId);
+    const at = Date.now();
+    const id = uuidv7(at);
+    const seq = this.ctx.history.nextSeq(peerId);
+    const entry = this.entry(id, at, this.me(), peerId, "share", { share, seq, ...(via ? { via } : {}) });
+    this.ctx.history.append(peerId, entry);
+    this.enqueue(peerId, id, "share", this.wire(peerId, entry), at, targets);
+    return { ok: true, id, at, seq };
+  }
+
+  /**
+   * 收下共享卡之后回一条回执（D439）：本机先落 `kind:"share-ack"`（把卡标成「已接收」），
+   * 再 1:1 通知发送者。发送者离线也排队，上线补到 —— 回执不是关键路径，丢了下次也会重投。
+   */
+  sendShareAck(toPeerId: string, ref: string, thread: string): { ok: true; at: number } {
+    const card = this.ctx.history.find(thread, ref);
+    if (!card || card.kind !== "share") throw new Error("找不到这张共享卡");
+    if (card.from.nodeId === this.ctx.nodeId) throw new Error("自己发的卡不用接收");
+    if (this.ackedByMe(thread, ref)) return { ok: true, at: Date.now() };
+    const at = Date.now();
+    this.ctx.history.append(thread, this.entry(uuidv7(at), at, this.me(), thread, "share-ack", { ref, ackBy: this.ctx.nodeId }));
     const outbox = this.ctx.outbox;
     if (!outbox) throw new Error("outbox 还没准备好");
-    outbox.add({ id, peerId, addr: peer.addr, port: peer.port, kind: "note", payload: entry, at, tries: 0, nextAt: 0 });
-    return { ok: true, id, at, seq };
+    const sender = this.identity(toPeerId);
+    const control = { id: uuidv7(at), at, from: this.me(), ref, thread };
+    for (const t of this.memberTargets([sender])) {
+      outbox.add({ id: control.id, peerId: t.peerId, addr: t.addr, port: t.port, kind: "share-ack", payload: control, at, tries: 0, nextAt: 0 });
+    }
+    return { ok: true, at };
+  }
+
+  /** 我是不是已经收过这张卡：重复点「接收」不再回一帧（按 itemId 幂等）。 */
+  private ackedByMe(threadId: string, ref: string): boolean {
+    return this.ctx.history
+      .read(threadId, 2000)
+      .some((entry) => entry.kind === "share-ack" && entry.ref === ref && entry.ackBy === this.ctx.nodeId);
   }
 
   send(
@@ -239,7 +288,7 @@ export class Messages {
     const entry = this.ctx.history.find(peerId, id);
     if (!entry) throw new Error("找不到这条消息");
     if (entry.from.nodeId !== this.ctx.nodeId) throw new Error("不是自己发的，重发不了");
-    if (entry.kind !== "text" && entry.kind !== "note") throw new Error("文件重发请从磁盘再选一次");
+    if (entry.kind !== "text" && entry.kind !== "note" && entry.kind !== "share") throw new Error("文件重发请从磁盘再选一次");
     const outbox = this.ctx.outbox;
     if (!outbox) throw new Error("outbox 还没准备好");
     // 还在排队的那条（页面上的「立即重试」）：只把下一次尝试提前。
@@ -247,7 +296,7 @@ export class Messages {
     if (outbox.nudge(entry.id)) return { ok: true };
     const targets = isGroupId(peerId) ? this.targets(peerId) : this.targets(peerId, false);
     if (!targets.length) throw new Error("这个人已经不在线了：等他上线再重发");
-    const kind = entry.kind === "note" ? "note" : "text";
+    const kind = entry.kind === "note" ? "note" : entry.kind === "share" ? "share" : "text";
     this.enqueue(peerId, entry.id, kind, entry, Date.now(), targets);
     return { ok: true };
   }
@@ -289,7 +338,7 @@ export class Messages {
     if (!e) throw new Error("表情不对");
     const entry = this.ctx.history.find(peerId, id);
     if (!entry) throw new Error("找不到这条消息");
-    if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") throw new Error("这条不能回应");
+    if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note" && entry.kind !== "share") throw new Error("这条不能回应");
     const at = Date.now();
     this.ctx.history.append(peerId, this.entry(uuidv7(at), at, this.me(), peerId, "react", { ref: id, emoji: e, on }));
     // 对方不在线时只在本机生效（和撤回一样）：outbox 需要地址，离线的人没有。群里照样排队。
@@ -308,7 +357,7 @@ export class Messages {
   pin(peerId: string, id: string, on: boolean): { ok: true; at: number } {
     const entry = this.ctx.history.find(peerId, id);
     if (!entry) throw new Error("找不到这条消息");
-    if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") throw new Error("这条不能固定");
+    if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note" && entry.kind !== "share") throw new Error("这条不能固定");
     if (on && this.isRecalled(peerId, id)) throw new Error("撤回了的消息不能固定");
     const at = Date.now();
     this.ctx.history.append(peerId, this.entry(uuidv7(at), at, this.me(), peerId, "pin", { ref: id, on }));
@@ -351,7 +400,7 @@ export class Messages {
 
   /** 这个会话里还有没送到的消息（页面拿它画「发送中」）。 */
   pending(peerId: string): boolean {
-    return (this.ctx.outbox?.pendingFor(peerId) ?? []).some((item) => item.kind === "text" || item.kind === "note");
+    return (this.ctx.outbox?.pendingFor(peerId) ?? []).some((item) => item.kind === "text" || item.kind === "note" || item.kind === "share");
   }
 
   /** outbox 的投递器：一次 HTTP POST，4xx 里带 `retryable` 决定「等 24 小时」还是「立刻红」。 */
@@ -392,7 +441,10 @@ export class Messages {
     if (kind === "friend-quick") return this.acceptFriendQuick(fromAddr, body.control);
     // 第 3 片：撤回 / 输入中。同样是加性的 kind，旧对端回 `unknown kind` 直接丢掉。
     if (kind === "recall") return this.acceptRecall(fromAddr, body.control, body.group);
-    if (kind === "note") return this.acceptNote(fromAddr, body.control);
+    if (kind === "note") return this.acceptNote(fromAddr, body.control, body.group);
+    // 共享卡与回执（D439）：旧对端回 `unknown kind`，只丢这一帧。
+    if (kind === "share") return this.acceptShare(fromAddr, body.control, body.group);
+    if (kind === "share-ack") return this.acceptShareAck(fromAddr, body.control);
     if (kind === "react") return this.acceptReact(fromAddr, body.control, body.group);
     if (kind === "pin") return this.acceptPin(fromAddr, body.control, body.group);
     if (kind === "read") return this.acceptRead(fromAddr, body.control, body.group);
@@ -562,7 +614,7 @@ export class Messages {
     if (group?.left) return 0;
     const authors = new Map<string, PeerIdentity>();
     for (const entry of this.ctx.history.read(threadId, 200)) {
-      if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") continue;
+      if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note" && entry.kind !== "share") continue;
       if (entry.from.nodeId === this.ctx.nodeId) continue;
       if (prev.at !== undefined && !afterWatermark(entry, prev.at, prev.id ?? "")) continue;
       if (!covered(entry, next)) continue;
@@ -651,7 +703,7 @@ export class Messages {
   }
 
   /** 收到记录包：只存正文与截图清单，图本体等文件通道一张张到（#507）。 */
-  private async acceptNote(fromAddr: string, control: any): Promise<InboxResult> {
+  private async acceptNote(fromAddr: string, control: any, snap?: unknown): Promise<InboxResult> {
     const id = String(control?.id ?? "");
     const claimed = control?.from as PeerIdentity | undefined;
     if (!id || !claimed?.nodeId) return { status: 400, body: { error: "bad note", retryable: false } };
@@ -663,15 +715,66 @@ export class Messages {
     }
     const check = await this.verifySource(fromAddr, claimed);
     if (check) return check;
-    if (this.ctx.history.recentIds(claimed.nodeId, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
+    // 群里也能发记录包了（D439 顺手放开的）：群消息要落进群会话，不能只记在发送者那一栏。
+    const where = this.controlThread(control, claimed, snap);
+    if (!("thread" in where)) return where;
+    if (this.ctx.history.recentIds(where.thread, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
+    const at = Number(control?.at) || Date.now();
+    const seq = Number(control?.seq);
+    this.ctx.history.append(where.thread, this.entry(id, at, claimed, where.thread, "note", { note, ...(Number.isFinite(seq) ? { seq } : {}) }));
+    this.ctx.log(`收到 ${claimed.nickname || claimed.nodeId.slice(0, 8)} 的一条记录（${note.shots.length} 张图）`);
+    return { status: 200, body: { ok: true, id } };
+  }
+
+  /**
+   * 收到共享卡（D439）：只存元数据与截断预览，本体随后走文件通道。
+   * 群卡先过门（admitGroup），再落进群会话；1:1 就落在和发送方的会话。
+   */
+  private async acceptShare(fromAddr: string, control: any, snap?: unknown): Promise<InboxResult> {
+    const id = String(control?.id ?? "");
+    const claimed = control?.from as PeerIdentity | undefined;
+    if (!id || !claimed?.nodeId) return { status: 400, body: { error: "bad share", retryable: false } };
+    let share;
+    try {
+      share = normalizeShare(control?.share);
+    } catch (err) {
+      return { status: 400, body: { error: (err as Error).message, retryable: false } };
+    }
+    const check = await this.verifySource(fromAddr, claimed);
+    if (check) return check;
+    const where = this.controlThread(control, claimed, snap);
+    if (!("thread" in where)) return where;
+    if (this.ctx.history.recentIds(where.thread, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
     const at = Number(control?.at) || Date.now();
     const seq = Number(control?.seq);
     this.ctx.history.append(
-      claimed.nodeId,
-      this.entry(id, at, claimed, this.ctx.nodeId, "note", { note, ...(Number.isFinite(seq) ? { seq } : {}) }),
+      where.thread,
+      this.entry(id, at, claimed, where.thread, "share", {
+        share,
+        ...(control?.via === "pi" ? { via: "pi" as const } : {}),
+        ...(Number.isFinite(seq) ? { seq } : {}),
+      }),
     );
-    this.ctx.log(`收到 ${claimed.nickname || claimed.nodeId.slice(0, 8)} 的一条记录（${note.shots.length} 张图）`);
+    this.ctx.log(`收到 ${claimed.nickname || claimed.nodeId.slice(0, 8)} 的共享卡「${share.title}」（${share.type}）`);
     return { status: 200, body: { ok: true, id } };
+  }
+
+  /** 收到共享回执：折成一条 `share-ack` 落进原卡片所在的会话，重复的只记一次。 */
+  private async acceptShareAck(fromAddr: string, control: any): Promise<InboxResult> {
+    const claimed = control?.from as PeerIdentity | undefined;
+    const id = String(control?.id ?? "");
+    if (!claimed?.nodeId || !id) return { status: 400, body: { error: "bad share-ack", retryable: false } };
+    const parsed = normalizeShareAck(control);
+    const check = await this.verifySource(fromAddr, claimed);
+    if (check) return check;
+    // 回执里的 thread 是**对方**那边的会话 id（1:1 时等于我的 nodeId）。落到本机要换成本机的：
+    // 群用群 id（两边一样），1:1 用回执发送人的 nodeId —— 否则会记进「我自己」那一栏。
+    const thread = isGroupId(parsed.thread) ? parsed.thread : claimed.nodeId;
+    const seen = this.ctx.history.read(thread, 2000).some((entry) => entry.kind === "share-ack" && entry.ref === parsed.ref && entry.ackBy === claimed.nodeId);
+    if (seen) return { status: 200, body: { ok: true, dup: true } };
+    this.ctx.history.append(thread, this.entry(uuidv7(parsed.at), parsed.at, claimed, thread, "share-ack", { ref: parsed.ref, ackBy: claimed.nodeId }));
+    this.ctx.log(`${claimed.nickname || claimed.nodeId.slice(0, 8)} 收下了一张共享卡`);
+    return { status: 200, body: { ok: true } };
   }
 
   private acceptReceipt(receipt: any): InboxResult {

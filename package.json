@@ -117,7 +117,7 @@
     "test:hint": "node bridge/tests/hint-spawn.mjs",
     "test:rules": "node --experimental-strip-types web/tests/rules-unit.mjs && node --experimental-strip-types bridge/tests/rules-unit.mjs",
     "test:probes": "node web/tests/probes-unit.mjs",
-    "test:peer": "node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-history.mjs && node bridge/tests/peer-read-watermark.mjs && node bridge/tests/peer-group-e2e.mjs && node bridge/tests/peer-port-recovery.mjs",
+    "test:peer": "node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-history.mjs && node bridge/tests/peer-read-watermark.mjs && node bridge/tests/peer-group-e2e.mjs && node bridge/tests/peer-port-recovery.mjs && node bridge/tests/peer-share-e2e.mjs",
     "test:peer:ui": "node bridge/tests/peer-ui.mjs",
     "probe:bg-runs": "node probes/bg-runs.mjs",
     "probe:sheet": "node probes/sheet-hit.mjs",
@@ -165,7 +165,8 @@
     "test:note": "node --experimental-strip-types --test bridge/tests/peer-note-unit.mjs && npm run build:peer && node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-ui.mjs",
     "test:audit-state": "npm run build:peer && npm run build:bridge && node bridge/tests/peer-state-corrupt.mjs && node bridge/tests/trash-corrupt.mjs && node bridge/tests/peer-tunnel-gate.mjs",
     "test:reminders": "node --experimental-strip-types bridge/tests/reminders-unit.mjs && node probes/reminders.mjs",
-    "test:gh-setup": "node --experimental-strip-types bridge/tests/gh-setup-unit.mjs && node --experimental-strip-types bridge/tests/gitpr-rest-e2e.mjs"
+    "test:gh-setup": "node --experimental-strip-types bridge/tests/gh-setup-unit.mjs && node --experimental-strip-types bridge/tests/gitpr-rest-e2e.mjs",
+    "test:peer:share": "node --experimental-strip-types --test bridge/tests/peer-share-unit.mjs bridge/tests/peer-mcp-unit.mjs && npm run build:peer && node bridge/tests/peer-share-e2e.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
