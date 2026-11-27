@@ -2658,6 +2658,11 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .md-doc pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; overflow-x: auto; font: 12px/1.55 var(--mono); }
 .md-doc pre code { background: none; padding: 0; font-size: inherit; }
 .md-doc pre.md-front { color: var(--faint); border-style: dashed; }
+/* Mermaid 图（mermaid-view.ts）：图太宽就横向滚动，不缩到看不清；失败时源码留着，下面一行红字说原因。 */
+.md-mermaid { margin: 12px 0; }
+.md-mermaid-fig { overflow-x: auto; padding: 12px; background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; text-align: center; }
+.md-mermaid-fig > svg { max-width: none; height: auto; }
+.md-mermaid-err { margin-top: 4px; color: var(--danger); font-size: 12px; }
 .md-doc a { color: var(--accent); }
 
 /* ------------------------------------------------------------------ 翻译对照

@@ -4561,4 +4561,6 @@ export const en: Dict = {
   "设计决定": "Design decisions",
   "这一栏还没有内容。": "Nothing here yet.",
   "这个 pi 包里带的改动记录，跟着发版走。": "The changelog shipped inside this pi package, written per release.",
+  "图的输出无法解析": "The diagram output could not be parsed",
+  "Mermaid 图渲染失败：{p1}": "Mermaid diagram failed to render: {p1}",
 };
