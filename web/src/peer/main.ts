@@ -360,6 +360,15 @@ let trayHost: HTMLElement | null = null;
 let stageSeq = 0;
 /** 草稿防抖：敲一下存一下会把 threads.json 打成筛子。 */
 let draftTimer = 0;
+/**
+ * 输入法正在组字（拼音候选还没上屏）：这期间不许重画聊天区。
+ * 整块重画会把 `.peer-rich` 摘下再挂回，Chrome 会**静默**结束这次组字（连 compositionend 都不发）：
+ * 已经敲的拼音当场变成普通文字，下一次按键又重新开一次组字 —— 用户看到的就是「正在打的字被打断了」。
+ * 组字期间到来的重画攒着，compositionend（或失焦）之后补一次。
+ */
+let imeComposing = false;
+/** 组字期间被挡下来的重画：等组字结束补跑一次。 */
+let repaintAfterIme = false;
 
 // ---------------------------------------------------------------- 小工具
 
@@ -1276,6 +1285,11 @@ function emptyState(icon: string, title: string, sub: string): HTMLElement {
 // ---------------------------------------------------------------- 主区
 
 function renderMain(): void {
+  // 组字期间不画（对方来消息、发送回执都会走到这里）：见 imeComposing 的注释，攒到组字结束后补一次。
+  if (imeComposing) {
+    repaintAfterIme = true;
+    return;
+  }
   // 重新画聊天会把消息列清空重排，滚到哪儿要自己记住：翻历史的时侯别把人拽回底。
   const prev = mainEl.querySelector<HTMLElement>(".stream");
   let forced = forceBottom;
@@ -3315,6 +3329,9 @@ function composeBox(t: Thread): HTMLElement {
   // 换会话：旧编辑器在 document 上挂着 mousedown / keydown，不拆会跟着整页活着。
   composer?.destroy();
   composer = null;
+  // 换会话本身已经结束了组字：别让旧编辑器留下的「组字中」把主区永久卡住。
+  imeComposing = false;
+  repaintAfterIme = false;
   composeFor = t.nodeId;
   const wrap = h("div", "compose");
   replyHost = h("div", "replyhost");
@@ -3341,6 +3358,23 @@ function composeBox(t: Thread): HTMLElement {
   body.dataset.empty = isRichEmpty(ed.html()) ? "1" : "0";
   composer = ed;
   textInput = body;
+  // 组字开始 / 结束：把「组字中攒下的重画」推迟到结束之后（D335 的过滤框、搜索列表是同一套做法）。
+  body.addEventListener("compositionstart", () => {
+    imeComposing = true;
+  });
+  const imeEnd = (): void => {
+    if (!imeComposing) return;
+    imeComposing = false;
+    if (!repaintAfterIme) return;
+    repaintAfterIme = false;
+    // 拼到一半直接去点按钮（比如「发送」）：这一下 mousedown 已经落在旧节点上，立刻重画会把
+    // mouseup 换到新节点、click 只落到公共祖先。等这一下点完再画（与 commitSearch 同一个理由）。
+    if (pointerHeld) document.addEventListener("pointerup", () => window.setTimeout(renderMain, 0), { once: true, capture: true });
+    else renderMain();
+  };
+  body.addEventListener("compositionend", imeEnd);
+  // 拼到一半点别处：有的输入法不发 compositionend（失焦就把候选收回去了），别让主区从此不再重画。
+  body.addEventListener("blur", imeEnd);
 
   const bar2 = h("div", "bar2");
   const attach = iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId));

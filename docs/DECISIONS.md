@@ -8755,3 +8755,25 @@ if (stop >= 0) {
 **代价。** 浅色柔和档在 sunken 底（`#ececef`）上的正文约 3.87–3.90，低于 4.5（但仍高于现状鲜艳蓝的 3.5）；深色实底白字 3.42 未达 AA。柔和黄必然偏土、石墨几乎不变（chroma 0.004）。柔和档是否好看仍靠肉眼：探针只量对比度与换表，不判美丑。
 
 **守卫。** `web/tests/theme-unit.mjs`：两张柔和表 id 齐全、每个颜色作正文对各自面板 ≥4.5、`accentInk` 深色柔和档全白字、默认 `vivid`、迁移缺键 / 错值落 `vivid` 且幂等。`probes/theme-switcher.mjs`：主题页四行、点「柔和」后 `--accent` / `--accent-dim` 与八颗色块换表、切主题与刷新后仍在。工作区色点与终端 ANSI 十六色在代码里不读 tone（`tree.ts` 的 `WS_COLORS`、`TERM_THEMES` 原样），没有可点的探针。
+
+## D439 内网通组字期间不重画，攒到上屏之后再画（用户 2026-11-27「内网通bug： 聊天框输入过程中，此时对方发送信息过来，正在输入的会被打断」）
+
+**症状。** 用输入法在聊天框打字（拼音候选还没上屏）时，对方发来一条消息，正在打的字当场断掉：已经敲的拼音变成普通文字留在框里，候选条消失，下一次按键又重新开一次组字；接着打就成了「nihaonihao7」这种半截拼音加新拼音，上屏后变成「nihao你好」。
+
+**根因。** 来信 → 2.5 秒轮询发现 `msgSig()` 变化 → `renderMain()` → `paintMain()` 一句 `mainEl.replaceChildren()` 把整个聊天区（含输入框 `.peer-rich`）从 DOM 摘下再挂回。Chrome 会**静默**终止这次 IME 组字：**不发 `compositionend`**，只把当前 composition 里的字符当普通文本留在节点里，下一次按键 `compositionstart` 重来。所以「光标跳走」（PR #720 那条 `rerender()` 的锚点还原）跟这条不是一回事 —— 那条修的是普通打字的光标位置，这条是组字会话被整段掐死，锚点还原也救不回来（组字状态在浏览器手里，不在 DOM 里）。
+
+**决定。**
+
+- **`renderMain()` 开头加守卫**：`imeComposing` 为真就只置 `repaintAfterIme = true` 后 `return`，一个像素都不画。来信、发送回执、已读回执都走这条路，一律延后。
+- **补画时机**：`body` 的 `compositionend`（正常上屏）与 `blur`（有的输入法不发 compositionend —— 候选随失焦收回去了，别让主区从此永久不画）共用 `imeEnd()`：清 `imeComposing`，有攒下的重画就跑一次 `renderMain()`。`blur` 那条在组字中先到也没事，`imeEnd()` 幂等。
+- **组字中直接去点按钮**（比如「发送」）：`pointerHeld` 为真时把补画推到 `pointerup` 之后（`{ once: true, capture: true }` + `setTimeout(…, 0)`）—— 与搜索列表 `commitSearch()`（main.ts:880 一带，D335 同族）一个理由：这一刻 mousedown 已经落在旧节点上，立刻重画会把 mouseup 换到新节点，`click` 只落到公共祖先。
+- **换会话时重置** `imeComposing` / `repaintAfterIme`：旧编辑器不一定会发 `compositionend`（它被 `destroy()` 摘掉了），标记留在真会让聊天区永久不画。
+- **范围**：只挡 `renderMain()`。`renderList()`（会话列表、未读徽标）与状态条照常刷新 —— 它们不碰输入框。
+
+**为什么。** ① 组字期间不重画是唯一可靠做法：试过「重画后把组字状态还原」，浏览器没给接口，`compositionend` 都不发就没法重放 composition。② 攒一次而不是干脆把轮询按下去：来信的**显示**晚一点没关系，晚到「上屏之后就出现」正好；按下轮询还会让已读、输入中跟着卡住。③ 与仓库既有做法一致：D335 的上下文面板过滤框就是这个毛病、这套改法（半截拼音被提交成「wenwenj文件」），搜索列表输入框（main.ts:880 一带）和笔记的 `RichEditor`（`compositionend → afterInput()`）也是「组字中不动 DOM」。
+
+**守卫。** `probes/peer-compose-ime.mjs`（假 API + 真 Chromium + CDP `Input.imeSetComposition` / `Input.insertText`，只 `npm run build:web` 就能跑，约 10 秒）：第 1 段是对照组（不来消息，连着两次组字仍是同一次会话、上屏只剩「你好」），第 2 段在组字中塞一条来信。修好前第 2 段红 5 项（`msg=2 before=1` 重画了、`starts=2`、`textContent` 变 `"nihaonihao7"`、上屏变 `"nihao你好"`），修好后 14 项全绿，其中「组字期间不重画（新消息先没出来）」断言消息条数不变、「上屏后补画，新消息出现了」断言攒下的那次重画真的补上了。跑法：`node scripts/build.mjs --only web && node probes/peer-compose-ime.mjs`。
+
+**可改。** 想改成「组字期间仍然重画、只重画消息流」也能成立（`renderChat()` 把 `stream` 单独换掉、绕开 `compose`），代价是 `paintMain` 的结构要拆；现在的写法改一个守卫就够。`blur` 那条若确认输入法都发 `compositionend`，可以删。
+
+**代价。** 组字期间对方来信不会立刻出现在消息流里（最长到上屏为止）；贴底的「新消息」提示也不会闪。

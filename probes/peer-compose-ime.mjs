@@ -1,0 +1,222 @@
+/**
+ * 内网通输入框：中文输入法组字（composition）期间对方来消息，组字不许被打断。
+ *
+ * 用假 API + 真构建产物（web/dist）跑，快且确定：把一条「来信」塞进假的 /messages，
+ * 等页面自己轮询到并整块重画聊天区（renderMain），看组字会话还在不在。
+ *
+ * 第一段是**对照**：不来消息、连着两次 imeSetComposition，组字必须是同一次会话 ——
+ * 用来证明第二段的红是重画造成的，不是 CDP 模拟的错觉。
+ *
+ *   node probes/peer-compose-ime.mjs     （先 npm run build:web）
+ * 全过退出 0；任何一项红退出 1。
+ */
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { REPO } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
+
+const DIST = path.join(REPO, "web", "dist");
+if (!fs.existsSync(path.join(DIST, "peer.html"))) {
+  console.error(`没找到 ${path.join(DIST, "peer.html")}：先 npm run build:web`);
+  process.exit(1);
+}
+
+const { chromium } = await loadPlaywright();
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".woff2": "font/woff2",
+};
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, "http://127.0.0.1");
+  const rel = url.pathname === "/" || url.pathname === "/peer" ? "peer.html" : url.pathname.slice(1);
+  const file = path.join(DIST, rel);
+  if (!file.startsWith(DIST) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end("not found");
+  res.writeHead(200, { "content-type": MIME[path.extname(file)] ?? "application/octet-stream", "cache-control": "no-store" });
+  fs.createReadStream(file).pipe(res);
+});
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const BASE = `http://127.0.0.1:${server.address().port}`;
+
+let bad = 0;
+const check = (name, ok, extra = "") => {
+  if (!ok) bad++;
+  console.log(`${ok ? "ok  " : "FAIL"} ${name}${extra ? `  — ${extra}` : ""}`);
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const ME = "99999999-8888-4777-8666-555555555555";
+const ZHANG = "aaaaaaaa-1111-4111-8111-111111111111";
+const at = Date.now() - 30_000;
+const msg = (id, text, from) => ({
+  id,
+  at,
+  from: { nodeId: from, nickname: from === ME ? "我" : "小张", hostname: "probe", port: 7865 },
+  to: { kind: "node", id: from === ME ? ZHANG : ME },
+  kind: "text",
+  text,
+  ack: { id, status: "delivered" },
+});
+const status = {
+  ok: true,
+  proto: 1,
+  version: "0.1.0",
+  nodeId: ME,
+  nickname: "我",
+  hostname: "probe",
+  port: 17965,
+  online: [{ nodeId: ZHANG, nickname: "小张", hostname: "小张-pc", addr: "127.0.0.1", port: 7865, lastSeen: at, ips: ["127.0.0.1"] }],
+  config: { hidden: false, pauseFiles: false, dnd: false, inbox: "C:/inbox", manual: [] },
+};
+const thread = {
+  nodeId: ZHANG,
+  nickname: "小张",
+  hostname: "小张-pc",
+  port: 7865,
+  last: null,
+  count: 1,
+  online: true,
+  unread: 0,
+};
+const contact = {
+  nodeId: ZHANG,
+  nickname: "小张",
+  hostname: "小张-pc",
+  port: 7865,
+  friend: true,
+  favorite: false,
+  incoming: false,
+  outgoing: false,
+  online: true,
+  addr: "127.0.0.1",
+  livePort: 7865,
+  at,
+};
+
+/** 假的收件箱：探针往里塞一条，页面下一轮 /messages 就能看见「对方发来的消息」。 */
+const inbox = [msg("aaaaaaaa-0000-4000-8000-000000000001", "在吗", ZHANG)];
+
+const browser = await chromium.launch();
+try {
+  const ctx = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+  const page = await ctx.newPage();
+  await page.route("**/api/**", async (route) => {
+    const p = new URL(route.request().url()).pathname;
+    let body = {};
+    if (p === "/api/peer") body = { enabled: true, running: true, reason: "", status };
+    else if (p === "/api/peer/threads") body = { threads: [{ ...thread, last: inbox[inbox.length - 1] }] };
+    else if (p === "/api/peer/contacts") body = { contacts: [contact] };
+    else if (p === "/api/peer/messages") body = { entries: [...inbox] };
+    else if (p === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+    else if (p === "/api/peer/ignored") body = { ignored: [] };
+    else if (p === "/api/peer/thread") body = { ok: true };
+    else if (p === "/api/peer/read") body = { ok: true };
+    else if (p === "/api/peer/typing") body = { ok: true };
+    else if (p === "/api/peer/presence") body = { ok: true };
+    else if (p === "/api/peer/send") body = { ok: true, id: "sent-by-probe" };
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+  });
+
+  await page.goto(`${BASE}/peer.html`);
+  await page.waitForSelector("#list .row, #list [data-id]", { timeout: 15000 });
+  const row = (await page.$(`#list [data-id="${ZHANG}"]`)) ?? (await page.$("#list .row"));
+  await row.click();
+  await page.waitForSelector(".stream .msg", { timeout: 10000 });
+  await page.waitForSelector(".peer-rich[contenteditable=true]", { timeout: 10000 });
+
+  const body = page.locator(".peer-rich");
+  const cdp = await ctx.newCDPSession(page);
+  /** 输入框里文字的文本 / 组字事件计数。 */
+  const text = () => body.evaluate((el) => el.textContent);
+  const ime = () => page.evaluate(() => window.__ime);
+  const watchIme = () =>
+    page.evaluate(() => {
+      const w = window;
+      w.__ime = { starts: 0, ends: 0 };
+      const attach = () => {
+        const el = document.querySelector(".peer-rich");
+        if (!el || el.dataset.imeWatched) return;
+        el.dataset.imeWatched = "1";
+        el.addEventListener("compositionstart", () => w.__ime.starts++);
+        el.addEventListener("compositionend", () => w.__ime.ends++);
+      };
+      attach();
+      new MutationObserver(attach).observe(document.getElementById("main"), { childList: true, subtree: true });
+    });
+
+  // ---- 0. 对照：不来消息时连着两次组字，必须是同一次组字会话 ----
+  await watchIme();
+  await body.click();
+  await cdp.send("Input.imeSetComposition", { text: "ni", selectionStart: 2, selectionEnd: 2 });
+  await sleep(100);
+  await cdp.send("Input.imeSetComposition", { text: "nihao", selectionStart: 5, selectionEnd: 5 });
+  await sleep(100);
+  const ctl = await ime();
+  const ctlText = await text();
+  check("对照：连着两次组字仍是同一次会话", ctl.starts === 1, `starts=${ctl.starts}`);
+  check("对照：组字文字连着写", ctlText === "nihao", JSON.stringify(ctlText));
+  await cdp.send("Input.insertText", { text: "你好" });
+  await sleep(150);
+  const ctlCommitted = await text();
+  check("对照：上屏后只剩「你好」", ctlCommitted === "你好", JSON.stringify(ctlCommitted));
+
+  // 清空输入框，重新记一次组字事件。
+  await body.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await sleep(100);
+  await watchIme();
+
+  // ---- 1. 组字中对方来消息：轮询发现新消息 → 整块重画聊天区 ----
+  await body.click();
+  await cdp.send("Input.imeSetComposition", { text: "nihao", selectionStart: 5, selectionEnd: 5 });
+  await sleep(150);
+  const composingText = await text();
+  check("组字中：拼音在输入框里", composingText === "nihao", JSON.stringify(composingText));
+
+  const before = await page.$$eval(".stream .msg", (els) => els.length);
+  inbox.push(msg("aaaaaaaa-0000-4000-8000-000000000002", "来一条消息打断你", ZHANG));
+  // 轮询周期 2.5s，多等几轮：组字期间**故意不重画**，消息要等上屏后才出现。
+  await sleep(5600);
+  const midCount = await page.$$eval(".stream .msg", (els) => els.length);
+  const mid = await ime();
+  const midText = await text();
+  check("组字期间不重画（新消息先没出来）", midCount === before, `msg=${midCount} before=${before}`);
+  check("重画没有结束组字会话", mid.ends === 0, `ends=${mid.ends}`);
+  check("重画后组字还是原来那一次", mid.starts === 1, `starts=${mid.starts}`);
+  check("重画后拼音还在输入框里", midText === "nihao", JSON.stringify(midText));
+
+  // 接着组：如果上一次组字被掐断，这一下会开一次新的 compositionstart，拼音也会上屏成死字。
+  await cdp.send("Input.imeSetComposition", { text: "nihao7", selectionStart: 6, selectionEnd: 6 });
+  await sleep(120);
+  const cont = await ime();
+  const contText = await text();
+  check("组字中接着打字还是同一次会话", cont.starts === 1, `starts=${cont.starts}`);
+  check("接着组的拼音替换掉旧的、不是拼在后面", contText === "nihao7", JSON.stringify(contText));
+
+  // 上屏：把组字提交成汉字，字不能丢、也不能和半截拼音叠在一起。
+  await cdp.send("Input.insertText", { text: "你好" });
+  await sleep(150);
+  const finalText = await text();
+  const done = await ime();
+  check("上屏后文字是「你好」", finalText === "你好", JSON.stringify(finalText));
+  check("组字会话正常结束一次", done.ends === 1, `ends=${done.ends}`);
+
+  // 攒下来的那次重画要在上屏后补上：来消息不能因为「刚才在组字」就永远不画。
+  let flushed = false;
+  for (let k = 0; k < 40 && !flushed; k++) {
+    flushed = (await page.$$eval(".stream .msg", (els) => els.length)) > before;
+    if (!flushed) await sleep(100);
+  }
+  const streamText = await page.$$eval(".stream .msg", (els) => els.map((e) => e.textContent ?? "").join("|"));
+  check("上屏后补画，新消息出现了", flushed && streamText.includes("来一条消息打断你"), streamText.slice(-60));
+  check("上屏后输入框文字没被重画弄丢", (await text()) === "你好", JSON.stringify(await text()));
+} finally {
+  await browser.close();
+  server.close();
+}
+console.log(bad ? `\n${bad} 项失败` : "\n全过");
+process.exit(bad ? 1 : 0);
