@@ -8664,3 +8664,37 @@ tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里�
 **验证。** 新探针 `node probes/peer-file-preview.mjs <A bridge> <B bridge> <B peer>`（两份测试实例，口令 test）23 项全绿，红验证在改前那一版上跑过：`html 回 text/html` / `带 CSP sandbox` / `is inline` / `带 nosniff` / `预览里有 iframe` 五条红，`application/octet-stream` + `attachment` 原文见上。探针覆盖：后端四个头（html）；A 自己发的五个文件逐个点开 —— html 的 iframe 里 h1 变成「脚本也跑了」（证明沙箱里脚本确实执行）、且弹窗里没有 `pre`、`sandbox` 属性含 `allow-scripts` 不含 `allow-same-origin`；md 出 `.md-doc h1` = 周报 + 表格 + 无 `pre`；csv 出 `table.csv-grid` 且含「苹果 / 3」；docx 出「用本机程序打开」；mp4 出 `video[controls]` 且 `src` 指到 `/api/peer/file`；收件方（B 的页面）html 同样渲染、docx 卡两个按钮是「用本机程序打开 | 下载」。老消息验证：历史里那条 `mime: application/octet-stream` 的 `report.html` 现在回 `text/html;charset=utf-8` + `inline` + CSP 沙箱。人眼看过的截图 `.scratch/visual-html.png` / `visual-md.png` / `visual-csv.png` / `visual-video.png`（网页真的排版了、md 有标题/列表/引用/表格/代码块、csv 有表头、mp4 播放器时长 00:01）。`npm --prefix web run typecheck`（含 i18n-check 4426+5 键 × 3 语言、viewport / layers 守卫、theme/ask-text/paste/quoteblock/longcard 单测）与 `npm --prefix peer run typecheck` 均 exit 0。
 
 **评审后补的两处（PR #718 意见）。** ① CSV 分支原来不查上限就 `arrayBuffer()` 整份读进来再解析，几百 MB 的表格能把标签页拖死 —— 现在先比 `src.size > CSV_MAX_BYTES`（解析器自己的 2 MB，不另拍一个数），超了就换出口卡，文案「太大了（{p1}），用本机程序打开」。② 预览 iframe 的 `sandbox` 属性原来是手写字符串，和 peer 那边的 CSP 各一份 —— 词表搬进叶子文件 `peer/src/sandbox.ts`（`SANDBOX_TOKENS` 与 `SANDBOX_CSP = "sandbox " + tokens`），peer 的 `/files`、`/fs/raw` 与页面的 iframe 都从它引（页面走 `web/src/peer/sandbox.ts` 的转发，跟 `web/src/frames.ts` 引 `bridge/src/frames.ts` 同一个套路）。`bridge/src/preview.ts` 与主界面的 `web/src/app.ts` 里那两份未动 —— 不在这次的范围里，改它们要连带跑主界面预览的探针。探针同步加了「大 csv 换成出口卡而不是表格」「大 csv 的卡上说清楚是太大了」两项（3.2 MB 的真文件），现在 27 项全绿。
+
+## D435 已读水位取「送到那条为止的 `{at,id}` 最大值」，徽标不再卡 1（用户 2026-11-27「如图，我已经读取过内网通信息了，但是头像上的消息记录还有1个」＋截图）
+
+**问题。** 「邓亚文」会话打开着、最下面两条消息都在屏幕上，左侧徽标却一直是红点 1，反复点开、贴底发消息都不消。
+
+**证据链（本机真实数据，不是猜的）。** `~/.pi-peer/history/90255371-….jsonl` 末尾两行：
+
+- `note`，`at=1795746728610`，`id=01a21ad8-8aa2-769c-8d15-7d2c9023e485`（「pi无法通知」，带一张截图卡片）
+- `file`，`at=1795746727599`，`id=01a21ad8-8ab0-7717-a548-4b4c9e8bd186`（`shot-1 (9).png`）—— 在文件里排在后面
+
+`~/.pi-peer/threads.json` 里这个会话的水位是 `{"readAt":1795746727599,"readId":"01a21ad8-8ab0-…b186"}`，也就是**后到的那条文件**。而 `History.threads()` 判未读只比 `at`（`afterWatermark`），`note` 的 `at` 比水位大 1011 ms，于是永远算 1 条未读。水位是单调的、再打也是同一个值，徽标就永远清不掉。
+
+倒置的根源：**落盘顺序是「到达」顺序，`at` 是「发送」时间**。文件消息走 `begin`/`chunk`/`end`，中间那几条记录包先落盘，`end` 才把文件这条追加进历史 —— 它带着自己的 `at`，可以比上一条更早。页面打水位时用的是 `t.last`（到达顺序上最后一条），于是水位落在「比它上面那条还早」的位置上。
+
+**决定。** `peer/src/http.ts` 的 `/threads/read` 在写水位之前，把送来的 `{at,id}` 钳到该会话历史里 `afterWatermark` 意义下的最大值 —— 但**只扫到送来那条为止**：
+
+```ts
+let mark = { at, id };
+const tail = history.read(peerId, 2000);
+const stop = tail.findIndex((entry) => entry.id === id);
+if (stop >= 0) {
+  for (const entry of tail.slice(0, stop + 1)) {
+    if (afterWatermark(entry, mark.at, mark.id)) mark = { at: entry.at, id: entry.id };
+  }
+}
+```
+
+之后 `moved` 判断、`threads.setRead`、回执 `messages.sendRead` 全部用 `mark`。前端 `markRead()` 一行没改。找不到送来那条（不在尾部 2000 行里）就原样采信，不乱推。
+
+**为什么。** ① `/threads/read` 是水位的**唯一**写入口，钳在这里，所有调用点（打开会话、右键「标记为已读」、贴底轮询）和以后别的客户端一起修好。② 用户既然打开/贴底看了这个会话，尾巴上每一条都在眼前（页面按到达顺序画，最后一条就是屏幕上最下面那条），把水位提到「送到那条为止的最大 `at`」不会「替用户吞掉没看的新消息」。③ **边界必须在 `id` 上，不能只管 `at` 大小**：页面算出 `t.last` 之后、POST 到达之前可能又落盘几条，那几条用户根本没看到，钳到全局最大 `at` 会把它们一起标已读，还会由 `sendRead` 给对方发出错的已读回执（代码评审指出、测试已复现）。④ 不改 `t.last` 的语义（仍是到达顺序最后一条）：预览、排序、会话里定位都靠它，改它牵动面大、收益为零。⑤ 不用「打开会话就清零」的粗暴做法：水位还要回执给对方（`sendRead`），需要真实的 `at`/`id`。
+
+**代价。** 每次 `POST /threads/read` 多读一遍该会话的历史（上限 2000 行）。本机 jsonl、只在打开会话/贴底时打，毫秒级。
+
+**验证。** 新测 `bridge/tests/peer-read-watermark.mjs`（自起真 peer + 临时 state）：`threads.json` 预置「已按 `last` 打过水位」，断言 unread === 1（修前红：`失败：等不到「打完水位未读归零」`）→ POST `/threads/read` → 断言 unread 归零 → 追加一条更新的消息断言 unread === 1 → **拿过时的 `{at,id}` 再打一次，断言 unread 仍是 1**（不收紧边界时红：`过时的水位不该吞掉它之后落盘的消息，实际 unread=0`）→ 再打当前水位归零。真实数据副本上也量过：用 `~/.pi-peer` 的拷贝起修好的 peer，`POST /threads/read` 打页面送的那条水位，返回 `meta.readAt=1795746728610 / readId=…e485`（被钳成 note 那条），`unread` 从 1 变 0。回归：`peer-history`、`peer-e2e`（含「已读水位是 `{at,id}` 双键」那一段）、`peer-group-e2e` 全过，`npm --prefix peer run typecheck` exit 0。
