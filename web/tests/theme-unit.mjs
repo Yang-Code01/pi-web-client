@@ -14,7 +14,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { MAC_ACCENTS, MAC_ACCENTS_LIGHT, MAC_ACCENTS_MUTED, MAC_ACCENTS_MUTED_LIGHT } from "../src/palette.ts";
+import { MAC_ACCENTS, MAC_ACCENTS_LIGHT } from "../src/palette.ts";
 import {
   ACCENT_TONES,
   DEFAULT_ACCENT_TONE,
@@ -24,6 +24,7 @@ import {
   THEME_IDS,
   accentFor,
   accentInk,
+  accentTable,
   isAccentTone,
   isTheme,
   migrateThemePrefs,
@@ -34,7 +35,18 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 // 主题 token 从 styles.css 拆到了 theme-tokens.css（主界面与内网通页面共用，D350）。
 const CSS = fs.readFileSync(path.join(REPO, "web/src/theme-tokens.css"), "utf8");
 // 三套主题真正的 `--panel`（theme-tokens.css）：小样卡里的 demo.panel 是设置页样张的底，不是正文底。
-const PANEL = { "mac-light": "#ffffff", "mac-dark": "#232325", "mac-midnight": "#1d2330" };
+// 从 CSS 里读，不手抄：主题改底色时这里的对比度守卫要跟着量新值，否则会在不知情的情况下量错。
+function panelOf(themeId) {
+  const selector = themeId === "mac-light" ? ":root" : `:root[data-theme="${themeId}"]`;
+  const start = CSS.indexOf(`${selector} {`);
+  assert.ok(start >= 0, `theme-tokens.css 里找不到 ${themeId} 的块`);
+  const open = CSS.indexOf("{", start);
+  const close = CSS.indexOf("}", open);
+  const panel = CSS.slice(open + 1, close).match(/--panel:\s*(#[0-9a-f]{3,8})/i)?.[1];
+  assert.ok(panel, `theme-tokens.css 里找不到 ${themeId} 的 --panel`);
+  return panel;
+}
+const PANEL = Object.fromEntries(THEME_IDS.map((id) => [id, panelOf(id)]));
 
 /** 粗略的相对亮度：只用来分「浅底 / 深底」，不是精确对比度。 */
 function luma(hex) {
@@ -88,7 +100,7 @@ test("light 标记跟配色一致：说浅底的，底比字亮", () => {
 test("强调色统一走 macOS 八色表：浅底用亮色表，深底用深色表，不认识的回系统蓝", () => {
   for (const tone of ACCENT_TONES) {
     for (const t of THEMES) {
-      const table = tone === "muted" ? (t.light ? MAC_ACCENTS_MUTED_LIGHT : MAC_ACCENTS_MUTED) : t.light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
+      const table = accentTable(t.id, tone);
       for (const id of Object.keys(MAC_ACCENTS)) assert.deepEqual(accentFor(t.id, id, tone), table[id], `${t.id} / ${tone} / ${id} 取错了表`);
       assert.deepEqual(accentFor(t.id, "chartreuse", tone), table.blue, `${t.id} / ${tone} 不认识的颜色应回系统蓝`);
       assert.deepEqual(accentFor(t.id, "ice", tone), table.blue, `${t.id} / ${tone} 删掉的六色 id 应回系统蓝`);
@@ -114,8 +126,8 @@ test("强调色底上的字：亮的换深字、深的留白字，不认识的�
 
 test("柔和档（D438）：正文对面板 ≥4.5，按钮字按明暗各守各的线", () => {
   for (const t of THEMES) {
-    const table = t.light ? MAC_ACCENTS_MUTED_LIGHT : MAC_ACCENTS_MUTED;
-    for (const [id, c] of Object.entries(table)) {
+    for (const id of Object.keys(MAC_ACCENTS)) {
+      const c = accentFor(t.id, id, "muted");
       assert.ok(contrast(c.accent, PANEL[t.id]) >= 4.5, `${t.id} / ${id} 柔和色作正文对面板不够（${c.accent}）`);
       const ink = accentInk(t.id, id, "muted");
       // 浅色实底守 4.5；深色实底沿用现状的白字（约 3.4），这是 D438 里明说的取舍。

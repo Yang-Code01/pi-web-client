@@ -98,19 +98,22 @@ export function migrateThemePrefs(raw: unknown): { theme: ThemeId; macAccent: st
 }
 
 /**
+ * 某套主题、某一档饱和度用的八色表。
+ * 选表规则只写在这里：`accentFor()` 与单测都走它，避免同一串三元抄两遍。
+ */
+export function accentTable(theme: ThemeId, tone: AccentTone): Record<string, { accent: string; dim: string }> {
+  const light = themeInfo(theme).light;
+  const vivid = light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
+  const muted = light ? MAC_ACCENTS_MUTED_LIGHT : MAC_ACCENTS_MUTED;
+  return tone === "muted" ? muted : vivid;
+}
+
+/**
  * 某套主题、某一档饱和度下某个强调色的实际色值。
  * 浅底用亮色模式那一档、深底用深色模式那一档；柔和档（D438）另有两张压过 chroma 的表。
  */
 export function accentFor(theme: ThemeId, accent: string, tone: AccentTone): { accent: string; dim: string } {
-  const info = themeInfo(theme);
-  const mac =
-    tone === "muted"
-      ? info.light
-        ? MAC_ACCENTS_MUTED_LIGHT
-        : MAC_ACCENTS_MUTED
-      : info.light
-        ? MAC_ACCENTS_LIGHT
-        : MAC_ACCENTS;
+  const mac = accentTable(theme, tone);
   // hasOwn：认的是「表里有的 id」，不是原型链上的名字（"constructor" 之类会返回函数）。
   return Object.hasOwn(mac, accent) ? mac[accent] : mac[DEFAULT_MAC_ACCENT];
 }
