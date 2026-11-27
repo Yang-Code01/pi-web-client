@@ -4092,7 +4092,7 @@ async function main(): Promise<void> {
               });
               void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
             } catch (err: any) {
-              send({ type: "review.state", dir, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              send({ type: "review.state", dir, sessionId: session, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
             }
             return;
           }
@@ -4127,9 +4127,9 @@ async function main(): Promise<void> {
                   apiBase: githubApiBase(),
                 });
                 // 带上实际用的账号：面板要能显示「这次是按谁去查的」，不然又只能猜（#17545）。
-                send({ type: "review.prs", dir: repo, ...out, login: gh.login });
+                send({ type: "review.prs", dir: repo, sessionId: session, asked: dir, ...out, login: gh.login });
               } catch (err: any) {
-                send({ type: "review.prs", dir, ok: false, prs: [], error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+                send({ type: "review.prs", dir, sessionId: session, asked: dir, ok: false, prs: [], error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
               }
             })();
             return;
@@ -4149,9 +4149,9 @@ async function main(): Promise<void> {
                   token: gh.restToken,
                   apiBase: githubApiBase(),
                 });
-                send({ type: "review.prinfo", dir: repo, pr: number, ...out, login: gh.login });
+                send({ type: "review.prinfo", dir: repo, sessionId: session, pr: number, ...out, login: gh.login });
               } catch (err: any) {
-                send({ type: "review.prinfo", dir, pr: number, ok: false, info: null, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+                send({ type: "review.prinfo", dir, sessionId: session, pr: number, ok: false, info: null, error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
               }
             })();
             return;
@@ -4208,6 +4208,7 @@ async function main(): Promise<void> {
                 send({
                   type: "review.state",
                   dir,
+                  sessionId: session,
                   pinned: readReviewPin(session),
                   error: String(err?.message ?? err),
                   code: String(err?.code ?? "failed"),
@@ -4250,7 +4251,7 @@ async function main(): Promise<void> {
               const state = markFinding(repo, key, isMark(mark) ? mark : "", session);
               broadcast({ type: "review.state", dir: repo, pinned, sessionId: session, state });
             } catch (err: any) {
-              send({ type: "review.state", dir, error: String(err?.message ?? err) });
+              send({ type: "review.state", dir, sessionId: session, error: String(err?.message ?? err) });
             }
             return;
           }
@@ -4261,7 +4262,7 @@ async function main(): Promise<void> {
               const { repo, pinned } = effectiveReviewDir(dir, session);
               broadcast({ type: "review.state", dir: repo, pinned, sessionId: session, state: cleanRuns(repo, session) });
             } catch (err: any) {
-              send({ type: "review.state", dir, error: String(err?.message ?? err) });
+              send({ type: "review.state", dir, sessionId: session, error: String(err?.message ?? err) });
             }
             return;
           }

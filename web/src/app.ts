@@ -2791,8 +2791,12 @@ export class App {
         break;
       }
       case "review.prs": {
-        // 不再按所在目录丢弃：`review.state` 与它谁先到没有保证，`reviewRepo` 空着时那张列表
-        // 会被整帧扔掉，面板就永远「点开没有数据」（用户实测）。
+        // 不按 `reviewRepo` 丢（它空着时整帧会被扔掉，面板「点开没有数据」），而是按**这次问的是什么**认：
+        // 回帧带着请求时的会话与目录，只收「当前会话、最近一次问的那个目录」的。
+        // 不认就会出现会话 17556 那种：切会话前没回来的 PR 列表迟到，把「评审仓库」「PR 列表」「账号」
+        // 全换成上一个会话的仓库，而历史记录还是这一个的。
+        if (String(msg.sessionId ?? "") !== (this.currentId ?? "")) break;
+        if (String(msg.asked ?? "") !== this.reviewPrsAsked) break;
         if (msg.dir) this.reviewRepo = String(msg.dir);
         this.reviewPrs = Array.isArray(msg.prs) ? (msg.prs as ReviewPr[]) : [];
         this.reviewRemoteRepo = String(msg.repo ?? "");
@@ -2815,6 +2819,8 @@ export class App {
         break;
       }
       case "review.prinfo": {
+        // 同上：上一个会话迟到的 PR 信息不能画到这一个的 dialog 里。
+        if (String(msg.sessionId ?? "") !== (this.currentId ?? "")) break;
         const number = Number(msg.pr) || 0;
         this.reviewPrInfo = { number, info: (msg.info ?? null) as PrInfo | null, error: msg.ok ? "" : errText(msg) || String(msg.error ?? "") };
         this.reviewPrSheet?.set(number, this.reviewPrInfo.info, this.reviewPrInfo.error);

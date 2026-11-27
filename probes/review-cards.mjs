@@ -200,7 +200,7 @@ server.on("upgrade", (req, socket, head) => {
         );
         ws.send(JSON.stringify({ type: "review.ocr", ocr: OCR }));
         ws.send(JSON.stringify({ type: "review.pinned", pinned: "" }));
-        ws.send(JSON.stringify({ type: "review.prs", dir: CWD, prs: [], open: 0, error: "" }));
+        ws.send(JSON.stringify({ type: "review.prs", dir: CWD, sessionId: SID, asked: CWD, prs: [], open: 0, error: "" }));
         ws.send(
           JSON.stringify({
             type: "review.state",
