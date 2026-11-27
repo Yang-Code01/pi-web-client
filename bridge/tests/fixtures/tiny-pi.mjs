@@ -49,6 +49,22 @@ if (process.env.TINY_PI_ASK === "1") {
   );
 }
 
+// 只管播报、不等回答的 UI 帧（setStatus / setWidget / notify）：TINY_PI_STATUS=N 开场连发 N 条。
+// pi 的扩展在一个长会话里会发上万条这种帧；壳要是把它们也当「没答的问卷」留着，attach 的
+// 回帧会大到控制通道吞不下（> 8 MiB 被整行丢掉），新脑永远等不到 attached。
+const statusCount = Number(process.env.TINY_PI_STATUS || 0);
+if (statusCount > 0) {
+  const pad = "x".repeat(Number(process.env.TINY_PI_STATUS_BYTES || 2048));
+  let chunk = "";
+  for (let i = 0; i < statusCount; i += 1) {
+    const method = i % 3 === 0 ? "setStatus" : i % 3 === 1 ? "setWidget" : "notify";
+    chunk +=
+      JSON.stringify({ type: "extension_ui_request", id: `u-fire-${i}`, method, statusKey: "k", statusText: pad }) +
+      String.fromCharCode(10);
+  }
+  process.stdout.write(chunk);
+}
+
 let n = 0;
 setInterval(() => {
   process.stdout.write(JSON.stringify({ type: "event", name: "tick", n: ++n }) + "\n");

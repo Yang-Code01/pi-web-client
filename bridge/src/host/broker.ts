@@ -28,6 +28,12 @@ export class LineSplitter {
   private tail: Buffer = Buffer.alloc(0);
   private n = 0;
 
+  /** `maxTail`：半行最多攒多少字节。控制通道要比子进程输出放得宽，见 control.ts。 */
+  private readonly maxTail: number;
+  constructor(maxTail: number = MAX_LINE_TAIL_BYTES) {
+    this.maxTail = maxTail;
+  }
+
   push(chunk: Buffer): { lines: string[]; seqs: number[] } {
     const buf = this.tail.length ? Buffer.concat([this.tail, chunk]) : chunk;
     const lines: string[] = [];
@@ -43,11 +49,11 @@ export class LineSplitter {
       start = nl + 1;
     }
     this.tail = start < buf.length ? Buffer.from(buf.subarray(start)) : Buffer.alloc(0);
-    if (this.tail.length > MAX_LINE_TAIL_BYTES) {
+    if (this.tail.length > this.maxTail) {
       // 没有换行的单行输出不设上限的话，tail 会跟着子进程无限长，而且每次 push 都
       // Buffer.concat 一遍 —— 内存与拷贝都是二次方级。这里丢掉残行并明说一嘴。
       this.tail = Buffer.alloc(0);
-      lines.push(`[host] 单行超过 ${MAX_LINE_TAIL_BYTES / 1024 / 1024} MiB 没有换行，已丢弃这段尾部`);
+      lines.push(`[host] 单行超过 ${this.maxTail / 1024 / 1024} MiB 没有换行，已丢弃这段尾部`);
       seqs.push(++this.n);
     }
     return { lines, seqs };
