@@ -53,6 +53,9 @@ export async function loadStash(): Promise<Map<string, StashItem[]>> {
         cur.continue();
       };
       req.onerror = () => resolve(out);
+      // 事务被中止（配额、别的标签页升级 / 删库、连接被关）时游标不会再回调：不兜住，启动就卡在这里。
+      tx.onabort = () => resolve(out);
+      tx.onerror = () => resolve(out);
     } catch {
       resolve(out);
     }

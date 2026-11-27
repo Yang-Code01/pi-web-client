@@ -201,6 +201,47 @@ try {
     return { value: i?.value, rows: document.querySelectorAll("#list .row").length, focused: document.activeElement === i };
   });
   check("上屏后值是中文、列表按中文过滤", end.value === "测试" && end.rows >= 1 && end.focused, JSON.stringify(end));
+
+  // ---- 3b. 拼字中直接点会话行：一下就要点中（拼字结束触发的重画不许把行在 mousedown/mouseup 之间换掉）
+  await search.fill("");
+  await sleep(300);
+  await search.click();
+  await cdp.send("Input.imeSetComposition", { text: "ce", selectionStart: 2, selectionEnd: 2 });
+  await sleep(150);
+  await page.evaluate(() => {
+    window.__rowClick = "none";
+    // 捕获阶段记：行自己的点击处理会同步重画列表，冒泡到 document 时目标已经摘下来了。
+    document.addEventListener("click", (e) => (window.__rowClick = e.target.closest?.("#list .row") ? "row" : e.target.id || e.target.className || e.target.tagName), { once: true, capture: true });
+  });
+  const box2 = await page.locator("#list .row").first().boundingBox();
+  await page.mouse.move(box2.x + 40, box2.y + box2.height / 2);
+  await page.mouse.down();
+  await sleep(120);
+  await page.mouse.up();
+  await sleep(300);
+  check("拼字中点会话行，click 落在行上", (await page.evaluate(() => window.__rowClick)) === "row", await page.evaluate(() => window.__rowClick));
+
+  // ---- 4. IndexedDB 里有坏记录 / 事务异常也不许把页面拖死
+  await page.evaluate(
+    (peer) =>
+      new Promise((res) => {
+        const r = indexedDB.open("pi-peer", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("staged");
+        r.onsuccess = () => {
+          const tx = r.result.transaction("staged", "readwrite");
+          tx.objectStore("staged").put([{ name: "坏.png", blob: "不是 Blob" }, { size: 3 }, null, { name: "好.png", path: "C:/x/好.png", size: 9 }], peer);
+          tx.oncomplete = () => (r.result.close(), res());
+        };
+      }),
+    bId,
+  );
+  await page.reload();
+  const up2 = await page.waitForSelector("#list .row", { timeout: 15000 }).then(() => true, () => false);
+  check("坏记录在库里，页面照样起得来", up2);
+  await ((await page.$(`#list [data-id="${bId}"]`)) ?? (await page.$("#list .row"))).click();
+  await sleep(500);
+  check("坏记录被丢掉、好的那件还在", (await page.$$(".stage-item")).length === 1, String((await page.$$(".stage-item")).length));
+  for (const x of await page.$$(".stage-item .stage-x")) await x.click();
 } catch (err) {
   console.log("FAIL 异常", err);
   code = 1;

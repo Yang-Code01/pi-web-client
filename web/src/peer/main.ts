@@ -11,7 +11,7 @@ import { bootTheme } from "../theme.ts";
 import { AVATAR_IDS, avatarUrl, randomAvatarId } from "./avatars.ts";
 import { emojiPanel, QUICK_REACTIONS, type Sticker } from "./emoji.ts";
 import { SANDBOX_TOKENS } from "./sandbox.ts";
-import { loadStash, saveStash } from "./stash.ts";
+import { loadStash, saveStash, type StashItem } from "./stash.ts";
 import { imageViewer, type ViewerItem } from "./viewer.ts";
 
 /**
@@ -885,6 +885,23 @@ function renderMobnav(): void {
  * 拼字期间别处（轮询、未读变化）要求的重画也攒到那时一起做。
  */
 let searchComposing = false;
+/** 鼠标按着没松（document 捕获阶段记的）：拼字被「点别处」打断时要等这一下点完再重画。 */
+let pointerHeld = false;
+document.addEventListener("pointerdown", () => (pointerHeld = true), true);
+document.addEventListener("pointerup", () => (pointerHeld = false), true);
+document.addEventListener("pointercancel", () => (pointerHeld = false), true);
+
+/**
+ * 拼字结束后按最终值重画列表。拼到一半去点会话行时，compositionend / blur 是在 mousedown 里触发的：
+ * 这时同步重画，mouseup 落在新节点上，click 只派发到公共祖先，行上的点击收不到、得点第二下。
+ * 所以鼠标还按着就等它松开、click 派发完（pointerup 后的下一个宏任务）再画。
+ */
+function commitSearch(input: HTMLInputElement): void {
+  searchComposing = false;
+  S.query = input.value;
+  if (!pointerHeld) return renderList();
+  document.addEventListener("pointerup", () => window.setTimeout(renderList, 0), { once: true, capture: true });
+}
 
 function searchBox(placeholder: string): HTMLElement {
   const box = h("div", "search");
@@ -896,17 +913,10 @@ function searchBox(placeholder: string): HTMLElement {
   input.addEventListener("compositionstart", () => {
     searchComposing = true;
   });
-  input.addEventListener("compositionend", () => {
-    searchComposing = false;
-    S.query = input.value;
-    renderList();
-  });
+  input.addEventListener("compositionend", () => commitSearch(input));
   input.addEventListener("blur", () => {
     // 拼到一半点走了：有的输入法不发 compositionend，别让列表永远停在「攒着」。
-    if (!searchComposing) return;
-    searchComposing = false;
-    S.query = input.value;
-    renderList();
+    if (searchComposing) commitSearch(input);
   });
   input.addEventListener("input", (e) => {
     if (searchComposing || (e as InputEvent).isComposing) return;
@@ -3489,7 +3499,7 @@ function stageList(id: string): Staged[] {
 function stageBlob(name: string, blob: Blob): void {
   if (!S.thread) return;
   if (blob.size > 64 * 1024 * 1024) return toast(tr("「{p1}」太大（上限 64 MB），用「+」从磁盘选", { p1: name }));
-  const thumb = blob.type.startsWith("image/") ? URL.createObjectURL(blob) : undefined;
+  const thumb = isPicName(name, blob.type) ? URL.createObjectURL(blob) : undefined;
   stageList(S.thread).push({ key: `s${++stageSeq}`, name, size: blob.size, blob, thumb });
   persistStaged(S.thread);
   paintTray();
@@ -3539,27 +3549,39 @@ function isPicName(name: string, mime = ""): boolean {
 
 /** 启动时把上次没发出去的附件放回托盘；缩略图地址重新生成（上次的 object URL 已经失效）。 */
 async function restoreStaged(): Promise<void> {
-  const saved = await loadStash();
-  for (const [peer, items] of saved) {
-    if (staged.has(peer)) continue;
-    staged.set(
-      peer,
-      items.map((x) => ({
-        key: `s${++stageSeq}`,
-        name: x.name,
-        size: x.size,
-        blob: x.blob,
-        path: x.path,
-        thumb: x.blob
-          ? isPicName(x.name, x.blob.type)
-            ? URL.createObjectURL(x.blob)
-            : undefined
-          : x.path && isPicName(x.name)
-            ? `/api/peer/fs/raw?path=${encodeURIComponent(x.path)}`
-            : undefined,
-      })),
-    );
+  // 在启动关键路径上：这里出任何错都只能丢掉附件，不许拖垮整个页面。
+  try {
+    const saved = await loadStash();
+    for (const [peer, items] of saved) {
+      if (staged.has(peer)) continue;
+      const list: Staged[] = [];
+      for (const x of items) {
+        const item = restoredItem(x);
+        if (item) list.push(item);
+      }
+      if (list.length) staged.set(peer, list);
+    }
+  } catch {
+    /* 读坏了就当没有暂存附件 */
   }
+}
+
+/** 一条落盘记录还原成托盘项；形状不对（老版本 / 被别处写坏）就丢掉。 */
+function restoredItem(x: unknown): Staged | null {
+  if (!x || typeof x !== "object") return null;
+  const r = x as Partial<StashItem>;
+  if (typeof r.name !== "string") return null;
+  const blob = r.blob instanceof Blob ? r.blob : undefined;
+  const path = typeof r.path === "string" && r.path ? r.path : undefined;
+  if (!blob && !path) return null;
+  let thumb: string | undefined;
+  if (blob) {
+    if (isPicName(r.name, blob.type)) thumb = URL.createObjectURL(blob);
+  } else if (path && isPicName(r.name)) {
+    thumb = `/api/peer/fs/raw?path=${encodeURIComponent(path)}`;
+  }
+  const size = typeof r.size === "number" ? r.size : (blob?.size ?? 0);
+  return { key: `s${++stageSeq}`, name: r.name, size, blob, path, thumb };
 }
 
 /** 输入框上方的附件托盘：图片是缩略图，其它是文件条；每件右上角一个 ✕。 */
