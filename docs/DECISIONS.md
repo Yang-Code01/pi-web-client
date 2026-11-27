@@ -8665,7 +8665,40 @@ tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里�
 
 **评审后补的两处（PR #718 意见）。** ① CSV 分支原来不查上限就 `arrayBuffer()` 整份读进来再解析，几百 MB 的表格能把标签页拖死 —— 现在先比 `src.size > CSV_MAX_BYTES`（解析器自己的 2 MB，不另拍一个数），超了就换出口卡，文案「太大了（{p1}），用本机程序打开」。② 预览 iframe 的 `sandbox` 属性原来是手写字符串，和 peer 那边的 CSP 各一份 —— 词表搬进叶子文件 `peer/src/sandbox.ts`（`SANDBOX_TOKENS` 与 `SANDBOX_CSP = "sandbox " + tokens`），peer 的 `/files`、`/fs/raw` 与页面的 iframe 都从它引（页面走 `web/src/peer/sandbox.ts` 的转发，跟 `web/src/frames.ts` 引 `bridge/src/frames.ts` 同一个套路）。`bridge/src/preview.ts` 与主界面的 `web/src/app.ts` 里那两份未动 —— 不在这次的范围里，改它们要连带跑主界面预览的探针。探针同步加了「大 csv 换成出口卡而不是表格」「大 csv 的卡上说清楚是太大了」两项（3.2 MB 的真文件），现在 27 项全绿。
 
-## D435 内网通头像：12 张手绘方块脸，首次随机挑一张后固定，id 随广播同步（用户 2026-11-27「帮我设计内网通，用户头像。然后给内网通加上头像选择功能。然后用户默认自动随机选择一个头像」）
+## D435 已读水位取「送到那条为止的 `{at,id}` 最大值」，徽标不再卡 1（用户 2026-11-27「如图，我已经读取过内网通信息了，但是头像上的消息记录还有1个」＋截图）
+
+**问题。** 「邓亚文」会话打开着、最下面两条消息都在屏幕上，左侧徽标却一直是红点 1，反复点开、贴底发消息都不消。
+
+**证据链（本机真实数据，不是猜的）。** `~/.pi-peer/history/90255371-….jsonl` 末尾两行：
+
+- `note`，`at=1795746728610`，`id=01a21ad8-8aa2-769c-8d15-7d2c9023e485`（「pi无法通知」，带一张截图卡片）
+- `file`，`at=1795746727599`，`id=01a21ad8-8ab0-7717-a548-4b4c9e8bd186`（`shot-1 (9).png`）—— 在文件里排在后面
+
+`~/.pi-peer/threads.json` 里这个会话的水位是 `{"readAt":1795746727599,"readId":"01a21ad8-8ab0-…b186"}`，也就是**后到的那条文件**。而 `History.threads()` 判未读只比 `at`（`afterWatermark`），`note` 的 `at` 比水位大 1011 ms，于是永远算 1 条未读。水位是单调的、再打也是同一个值，徽标就永远清不掉。
+
+倒置的根源：**落盘顺序是「到达」顺序，`at` 是「发送」时间**。文件消息走 `begin`/`chunk`/`end`，中间那几条记录包先落盘，`end` 才把文件这条追加进历史 —— 它带着自己的 `at`，可以比上一条更早。页面打水位时用的是 `t.last`（到达顺序上最后一条），于是水位落在「比它上面那条还早」的位置上。
+
+**决定。** `peer/src/http.ts` 的 `/threads/read` 在写水位之前，把送来的 `{at,id}` 钳到该会话历史里 `afterWatermark` 意义下的最大值 —— 但**只扫到送来那条为止**：
+
+```ts
+let mark = { at, id };
+const tail = history.read(peerId, 2000);
+const stop = tail.findIndex((entry) => entry.id === id);
+if (stop >= 0) {
+  for (const entry of tail.slice(0, stop + 1)) {
+    if (afterWatermark(entry, mark.at, mark.id)) mark = { at: entry.at, id: entry.id };
+  }
+}
+```
+
+之后 `moved` 判断、`threads.setRead`、回执 `messages.sendRead` 全部用 `mark`。前端 `markRead()` 一行没改。找不到送来那条（不在尾部 2000 行里）就原样采信，不乱推。
+
+**为什么。** ① `/threads/read` 是水位的**唯一**写入口，钳在这里，所有调用点（打开会话、右键「标记为已读」、贴底轮询）和以后别的客户端一起修好。② 用户既然打开/贴底看了这个会话，尾巴上每一条都在眼前（页面按到达顺序画，最后一条就是屏幕上最下面那条），把水位提到「送到那条为止的最大 `at`」不会「替用户吞掉没看的新消息」。③ **边界必须在 `id` 上，不能只管 `at` 大小**：页面算出 `t.last` 之后、POST 到达之前可能又落盘几条，那几条用户根本没看到，钳到全局最大 `at` 会把它们一起标已读，还会由 `sendRead` 给对方发出错的已读回执（代码评审指出、测试已复现）。④ 不改 `t.last` 的语义（仍是到达顺序最后一条）：预览、排序、会话里定位都靠它，改它牵动面大、收益为零。⑤ 不用「打开会话就清零」的粗暴做法：水位还要回执给对方（`sendRead`），需要真实的 `at`/`id`。
+
+**代价。** 每次 `POST /threads/read` 多读一遍该会话的历史（上限 2000 行）。本机 jsonl、只在打开会话/贴底时打，毫秒级。
+
+**验证。** 新测 `bridge/tests/peer-read-watermark.mjs`（自起真 peer + 临时 state）：`threads.json` 预置「已按 `last` 打过水位」，断言 unread === 1（修前红：`失败：等不到「打完水位未读归零」`）→ POST `/threads/read` → 断言 unread 归零 → 追加一条更新的消息断言 unread === 1 → **拿过时的 `{at,id}` 再打一次，断言 unread 仍是 1**（不收紧边界时红：`过时的水位不该吞掉它之后落盘的消息，实际 unread=0`）→ 再打当前水位归零。真实数据副本上也量过：用 `~/.pi-peer` 的拷贝起修好的 peer，`POST /threads/read` 打页面送的那条水位，返回 `meta.readAt=1795746728610 / readId=…e485`（被钳成 note 那条），`unread` 从 1 变 0。回归：`peer-history`、`peer-e2e`（含「已读水位是 `{at,id}` 双键」那一段）、`peer-group-e2e` 全过，`npm --prefix peer run typecheck` exit 0。
+## D436 内网通头像：12 张手绘方块脸，首次随机挑一张后固定，id 随广播同步（用户 2026-11-27「帮我设计内网通，用户头像。然后给内网通加上头像选择功能。然后用户默认自动随机选择一个头像」）
 
 **问题。** 内网通原来没有头像：`web/src/peer/main.ts` 的 `avatar(name, key, online)` 拿 `hueOf(key)`（FNV-1a 哈希）调一个色相、再取昵称首字，画一个圆。于是同一个人在不同的机器上颜色不同（哈希输入是 nodeId，倒是稳定，但换台机器看同一段截图仍要靠昵称认人），也完全谈不上「挑一个」。
 
@@ -8673,12 +8706,12 @@ tick 顺序：卡死 → 空闲 → **归档** → 水位（`lifecycleTick` 里�
 - **素材是手绘 SVG，不是图像模型**：`web/src/peer/avatars.ts` 里 12 个 64×64 的 `<svg>`（`cat bear rabbit penguin dog frog chick whale owl octopus pig dino`），每张按 ip-as-logo 的形体规则来（2 个角色色 + 1 个背景色、4–7 个大形状、左下探头、圆内裁剪、32×32 仍可辨）。ip-as-logo 技能明确禁止 SVG 兜底、要求一流图像模型 —— 这台机器没有任何图像模型（`~/.pi/agent/auth.json` 只有 `github-copilot`，`models.json` 六个 provider 全是 chat），**用户明确同意偏离那条规则**改用 SVG。
 - **id 清单存两份**：`peer/src/avatars.ts` 的 `AVATAR_IDS`（校验用）与 `web/src/peer/avatars.ts` 的 `ART`（渲染用）；`web/peer-avatars-check.mjs` 对账两份 id，挂在 `web` 的 `typecheck` 里。peer 不依赖 web 的构建产物，所以宁可重复这 12 个字符串。
 - **随机只挑一次**：`peer/src/index.ts` 启动时 `if (!cfg.avatar) { cfg.avatar = randomAvatar(); saveConfig(cfg); }`。之后只在「我 → 头像」里手动换（点一张 / 「随机换一个」）。
-- **头像随协议走**：`Announce` / `SeenPeer` 加 `avatar?`，`packet()` 带上；`remember()` 用 `msg.avatar || known?.avatar`（对端没报就沿用旧的，别摸掉）；`POST /peer/hello` 在 `recordHello` 之后调新增的 `Relations.noteSeen()` —— **只刷新已有关系记录**的头像，不新建记录、不碰备注名（D303），没变化不落盘（announce 每 10 秒一次）。
+- **头像随协议走**：`Announce` / `SeenPeer` 加 `avatar?`，`packet()` 带上；`remember()` 用 `knownAvatar(msg.avatar) || known?.avatar`（名单外的当没报、对端没报就沿用旧的，别把已知的摸掉）；`POST /peer/hello` 在 `recordHello` 之后调新增的 `Relations.noteSeen()` —— **只刷新已有关系记录**的头像，不新建记录、不碰备注名（D303），没变化不落盘（announce 每 10 秒一次）；调它之前先用 `Discovery.hasAddr(nodeId, from)` 确认「这个地址之前就收到过他的包」，否则局域网里谁都能拿别人的 nodeId 把落盘的头像永久改掉（在线表是内存里的、30 秒自愈，落盘那份不是；比较前做 `::ffff:` / `::1` 归一，和 `messages.ts` 的 `normAddr` 同口径，且必须在 `recordHello()` 之前问 —— 它会把 `from` 也记进 ips）。
 - **配置入口**：`PeerConfig.avatar`（`loadConfig()` 用 `knownAvatar()` 过滤，手改出来的野 id 当没设）；`POST /config` 接受 `avatar`，名单外的回 400「没有这张头像」，改名或换头像都会 `discovery.announce()`。桥的 `/api/peer/config` 透传，`PeerView` / `PeerStatus` 多一个 `avatar`。
-- **页面**：`avatar(name, key, online, pic?)` 命中 `avatarUrl()` 就渲染 `<img class="av-img">` 并加 `.pic`，否则维持原来的首字母 + 色相；`renderAll()` 先 `rememberAvatars()` 把 `status.avatar` / `online[]` / `contacts[]` / `threads[]` / 群成员的 id 收进一个 `Map`（气泡、会话行、群成员那几处只拿得到名字和 key，拿不到 nodeId 之外的 id，所以统一在渲染前喂进去）。「我」页名字卡下面新增「头像」卡：12 个 `.avpick` + 「随机换一个」，`.on` 用 `--accent` 圈出当前那张。
+- **页面**：`avatar(name, key, online, pic?)` 命中 `avatarUrl()` 就渲染 `<img class="av-img">` 并加 `.pic`，否则维持原来的首字母 + 色相；`renderAll()` 先 `rememberAvatars()` 把 `status.avatar` / `online[]` / `contacts[]` / `threads[]` / 群成员的 id 收进一个 `Map`（气泡、会话行、群成员那几处只拿得到名字和 key，拿不到 nodeId 之外的 id，所以统一在渲染前喂进去）；这个 `Map` 每次重建前先清空，否则对方的 id 变成未知值（老版本客户端 / 我们从名单里删了某个 id）时表里还留着上一张，永远退不回「首字母 + 色相」。「我」页名字卡下面新增「头像」卡：12 个 `.avpick` + 「随机换一个」，`.on` 用 `--accent` 圈出当前那张。
 
 **为什么。** ① 头像必须**全网一致**：同一个人在 A 的会话行、B 的好友列表、群名片里应当是同一张脸，所以 id 跟着 announce 走，而不是每台机器按名字哈希各画各的。② 随机**只挑一次**：每次重启换一张脸，别人认不出、自己也无从认起。③ `noteSeen` 不 `touch()`：`touch()` 会建记录，广播一次就把路过的人塞进通讯录，和「移除」之后又被合并回来的老毛病同源（D234）。④ 头像不写进消息历史：那是「人对我说过什么」，头像属于「他是谁」，跟 noteId/昵称一个层级。
 
 **代价。** 12 个 id 硬编码在两端，加头像要同时改两处（守卫只对账 id，不校验画法）；旧关系记录在对方下次 hello 之前没有头像，页面回退首字母——announce 10 秒一次，最多一轮就补上；12 张 data URL 内联进页面（源码约 7.7 KB，gzip 前）。
 
-**验证。** `web/peer-avatars-check.mjs` 进 typecheck；`probes/peer-avatars.mjs` 16 项端到端（两份测试实例：A 默认随机且落盘、通讯录/会话行/气泡都带对方头像、页面里 `.av-img` 真的解码且仍是 34×34、 「我」页 12 张全解码且恰好一张 `.on`、点一张就换且 B 刷新后看到、无 pageerror），全过。peer 侧另有 8 项冒烟（首启随机、名单外 400、改完重启不变）。三份 typecheck 均 exit 0。
+**验证。** `web/peer-avatars-check.mjs` 进 typecheck；`probes/peer-avatars.mjs` 18 项端到端（两份测试实例：A 默认随机且落盘、通讯录/会话行/气泡都带对方头像、页面里 `.av-img` 真的解码且仍是 34×34、 「我」页 12 张全解码且恰好一张 `.on`、点一张就换且 B 刷新后看到、无 pageerror），全过。peer 侧另有 8 项冒烟（首启随机、名单外 400、改完重启不变），以及 `hasAddr` 的 5 项单测（见过的地址放行 / 别的地址挡 / 归一后同一个放行 / 没握过手的 nodeId 挡）；「从另一个源地址冒用」在这台机器上没法端到端复现（绑 127.0.0.2 发包 ETIMEDOUT），挡的那一半由单测覆盖。三份 typecheck 均 exit 0。
