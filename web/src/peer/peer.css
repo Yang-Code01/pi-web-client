@@ -252,6 +252,9 @@ body.embedded .brand .nm { display: none; }
 
 /* 「我 → 头像」的选择格：窄的时候自动少几列，不写死列数。 */
 .avgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 8px; padding: 12px 13px 4px; }
+/* 「我」页头像卡里那颗按钮：`.acts` 的 16px 上距在这里太宽（格子里已经有 padding），
+   而卡片的 13px 内边距得自己补回来——`.card` 不像 `.kv` / `.avgrid` 那样给子元素加内边距。 */
+.acts.avacts { margin-top: 0; padding: 0 13px 13px; }
 .avpick { position: relative; padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; line-height: 0; }
 .avpick img { display: block; width: 100%; height: auto; aspect-ratio: 1; border-radius: 50%; }
 .avpick:hover img { filter: brightness(1.07); }

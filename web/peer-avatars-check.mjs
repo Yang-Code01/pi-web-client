@@ -14,8 +14,11 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+// 用 fileURLToPath 而不是手撕 `new URL().pathname`：后者在 Windows 上要自己剥盘符前的 `/`，
+// 而且不解 `%20` 之类的转义——仓库路径里有空格或中文时这里就找不到文件，门禁静默跳过。
+const here = path.dirname(fileURLToPath(import.meta.url));
 const PEER = path.join(here, "..", "peer", "src", "avatars.ts");
 const WEB = path.join(here, "src", "peer", "avatars.ts");
 
@@ -47,8 +50,9 @@ if (!peerBlock) {
 }
 const peerIds = ids([...peerBlock[1].matchAll(/"([a-z0-9-]+)"/g)].map((m) => m[1]));
 
-// web：每一张都有一行 `id: "cat",`
-const webIds = ids([...webSrc.matchAll(/^\s*id: "([a-z0-9-]+)",$/gm)].map((m) => m[1]));
+// web：每一张都有一行 `id: "cat",`（`\r` 容错：本仓库 .gitattributes 强制 LF，但别让
+// 本地工具改成 CRLF 之后门禁误报「peer 有、web 没画」）
+const webIds = ids([...webSrc.matchAll(/^\s*id: "([a-z0-9-]+)",\r?$/gm)].map((m) => m[1]));
 
 const missingInWeb = peerIds.filter((id) => !webIds.includes(id));
 const extraInWeb = webIds.filter((id) => !peerIds.includes(id));

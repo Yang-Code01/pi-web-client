@@ -1,6 +1,7 @@
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
 import os from "node:os";
+import { knownAvatar } from "./avatars.ts";
 import { PROTO, VERSION, type PeerConfig } from "./config.ts";
 
 /** announce 里带的东西：对端据此渲染在线列表、据此把 `from` 反查成身份（决定 7/10）。 */
@@ -180,7 +181,10 @@ export class Discovery extends EventEmitter {
       status: typeof msg.status === "string" && msg.status ? msg.status : "online",
       ips: [...ips],
       // 头像只有一个来源（对端自己报）：没报就沿用上次知道的，别把已知的头像摸掉。
-      avatar: msg.avatar || known?.avatar,
+      // 报上来的 id 也过一遍名单：UDP / `/peer/hello` 的包是局域网里谁都能发的，
+      // 跟 `loadConfig()` / `noteSeen()` 一个口径——名单外的当没设，否则它会盖掉
+      // 通讯录里已经校验过的头像，还一路透传到页面。
+      avatar: knownAvatar(msg.avatar) || known?.avatar,
     };
     this.seen.set(msg.nodeId, peer);
   }

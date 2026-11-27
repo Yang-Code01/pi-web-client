@@ -3820,14 +3820,7 @@ function renderMe(): void {
   const avCard = h("div", "card");
   avCard.append(h("h3", "", tr("头像")));
   const setAvatar = async (id: string): Promise<void> => {
-    try {
-      await postJson("/api/peer/config", { avatar: id });
-      await loadStatus();
-      renderAll();
-      toast(tr("头像换好了"));
-    } catch (err) {
-      toast((err as Error).message);
-    }
+    if (await setConfig({ avatar: id })) toast(tr("头像换好了"));
   };
   const avGrid = h("div", "avgrid");
   for (const id of AVATAR_IDS) {
@@ -3845,8 +3838,7 @@ function renderMe(): void {
     });
     avGrid.append(pick);
   }
-  const avActs = h("div", "acts");
-  avActs.style.padding = "0 13px 13px";
+  const avActs = h("div", "acts avacts");
   const luck = h("button", "btn", tr("随机换一个"));
   luck.type = "button";
   luck.addEventListener("click", () => void setAvatar(randomAvatarId(st.avatar)));
@@ -3944,15 +3936,17 @@ function toggle(name: string, sub: string, on: boolean, run: (on: boolean) => vo
   return row;
 }
 
-async function setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; avatar?: string }): Promise<void> {
+async function setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; avatar?: string }): Promise<boolean> {
   try {
     await postJson("/api/peer/config", patch);
     await loadStatus();
     renderAll();
+    return true;
   } catch (err) {
     toast((err as Error).message);
     await loadStatus();
     renderAll();
+    return false;
   }
 }
 

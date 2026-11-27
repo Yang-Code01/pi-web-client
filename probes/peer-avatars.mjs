@@ -47,7 +47,7 @@ const cb = await login(B);
 const a = api(A, ca);
 const b = api(B, cb);
 
-// ---- 1. 两边各有一张名单内的默认头像，而且互不相同（12 张里随机挑的）
+// ---- 1. 两边各有一张名单内的默认头像（12 张里随机挑的；可能撞车，所以不断言两边不同）
 const aSt = (await a.get("/api/peer")).status;
 const bSt = (await b.get("/api/peer")).status;
 check("A 有默认头像", IDS.includes(aSt?.avatar), String(aSt?.avatar));
@@ -126,16 +126,17 @@ check("当前那张被标出来（恰好一处）", grid.on === 1, String(grid.o
 check("hero 上是我自己的头像图", grid.hero);
 if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "me.png") });
 
-// 点第二张（不是当前那张）
-const picked = await page.evaluate((cur) => {
+// 点一张不是当前那张的
+await page.evaluate(() => {
   const tiles = [...document.querySelectorAll(".avgrid .avpick")];
-  const idx = tiles.findIndex((t) => !t.classList.contains("on"));
-  tiles[idx].click();
-  return idx;
-}, aSt.avatar);
+  tiles[tiles.findIndex((t) => !t.classList.contains("on"))].click();
+});
 await sleep(1200);
 const afterA = (await a.get("/api/peer")).status;
 check("点了就换（配置里也换了）", afterA.avatar !== aSt.avatar && IDS.includes(afterA.avatar), `${aSt.avatar} → ${afterA.avatar}`);
+// 成功提示：它靠 setConfig() 的返回值判定，改成无条件弹的话失败了也说「换好了」。
+const toasted = await page.evaluate(() => [...document.querySelectorAll(".toast, .toasts > *")].some((n) => /头像换好了/.test(n.textContent ?? "")));
+check("换完弹了「头像换好了」", toasted);
 const heroAfter = await page.evaluate(() => Boolean(document.querySelector(".hero .av.pic .av-img")));
 check("换完 hero 还是图", heroAfter);
 if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "me-after.png") });
