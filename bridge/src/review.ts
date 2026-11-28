@@ -676,6 +676,7 @@ function readReviewJob(file: string): ReviewJob | null {
     if (!isRecord(raw)) return null;
     const runId = str(raw.runId);
     const repo = str(raw.repo);
+    // session 允许空串（未选会话的本地评审），repo/runId 则必须有内容；两种判法不同是故意的。
     const session = typeof raw.session === "string" ? raw.session : null;
     const opts = readJobOpts(raw.opts);
     const startedAt = str(raw.startedAt);
@@ -729,10 +730,9 @@ function readBeatFile(runId: string): { at: number; pid: number; startedAt: stri
   try {
     const raw = JSON.parse(fs.readFileSync(reviewBeatFile(runId), "utf8")) as unknown;
     if (!isRecord(raw)) return null;
-    const obj = raw;
-    const at = Number(obj.at);
-    const pid = Number(obj.pid);
-    const startedAt = str(obj.startedAt);
+    const at = Number(raw.at);
+    const pid = Number(raw.pid);
+    const startedAt = str(raw.startedAt);
     if (!Number.isFinite(at) || !Number.isInteger(pid) || pid <= 0 || !startedAt) return null;
     return { at, pid, startedAt };
   } catch {
@@ -807,7 +807,7 @@ export function setReviewNotify(next: ReviewNotify): void {
 
 /**
  * 测试用的统一注入点：`review-unit` 只考额度 / 判重 / 停止这些登记逻辑，
- * 每条都传 `launch` 太吵；生产不调它，默认仍然起独立进程。
+ * 生产不调它，默认仍然起独立进程。
  */
 let launcher: ((job: ReviewJob) => void) | null = null;
 
@@ -1087,11 +1087,6 @@ export interface StartOptions {
   model?: string;
   provider?: string;
   lang: ReviewLang;
-  /**
-   * 怎么把 job 交给执行者。默认起 detached 的 `review-worker` 进程；
-   * 单元测试传空函数，只考额度 / 判重 / 停止这些登记逻辑，不真起进程。
-   */
-  launch?: (job: ReviewJob) => void;
 }
 
 /**
@@ -1206,15 +1201,14 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
   notify.onState?.(job);
 
   try {
-    if (o.launch) o.launch(job);
-    else if (launcher) launcher(job);
+    if (launcher) launcher(job);
     else spawnReviewWorker(job, o.ghEnv);
   } catch (err) {
     // 进程没起来（node 不可执行 / spawn 失败）：当场收尾，别让面板一直转圈等一个不存在的 worker。
     markWorkerSpawnFailed(job, err);
   }
   // 注入 launcher 的测试没有真正的 worker，起 ticker 只会在宽限结束后把测试记录改成 stale。
-  if (!o.launch && !launcher) ensureReviewTicker();
+  if (!launcher) ensureReviewTicker();
 
   return { runId, repo: root };
 }
@@ -1866,15 +1860,15 @@ function tickOneReview(runId: string, a: Active): void {
   }
   // worker 可能刚写完最后一帧就删了心跳；再读一次进度文件，终态的 log / findings / plan
   // 要以 worker 的末帧为准，不能退回 ticker 上一轮读到的 running 帧。
-  const last = readProgressFile(job) ?? progressMap.get(runId) ?? progress ?? freshProgress(job);
+  const last = readProgressFile(job) ?? progressMap.get(runId) ?? progress;
   const final: Progress = {
-    ...last,
+    ...(last ?? freshProgress(job)),
     status: run.status,
     phase: "done",
     currentFile: "",
-    tokens: last.tokens || run.tokens,
-    reviewedFiles: last.reviewedFiles || run.reviewedFiles,
-    totalFiles: last.totalFiles || run.totalFiles,
+    tokens: last?.tokens || run.tokens,
+    reviewedFiles: last?.reviewedFiles || run.reviewedFiles,
+    totalFiles: last?.totalFiles || run.totalFiles,
     error: run.errorCode === "stopped" ? "" : run.error ?? "",
     errorCode: run.errorCode ?? "",
   };
@@ -2148,7 +2142,10 @@ export async function stopAllReviews(waitMs = 3000): Promise<number> {
  */
 export async function runReviewJob(jobFile: string): Promise<void> {
   const job = readReviewJob(jobFile);
-  if (!job) return;
+  if (!job) {
+    console.error(`[review-worker] 读不出 job 文件：${jobFile}`);
+    return;
+  }
   // 自己把 pid 补进 job 文件：脑可能在 spawn 之后、写 pid 之前就崩了，
   // 这一行是「换脑后还认不认得出这条评审」的最后一道保险。
   job.pid = process.pid;

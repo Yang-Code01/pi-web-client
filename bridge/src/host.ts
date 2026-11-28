@@ -877,14 +877,8 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log(`停机（${scope}${tellBrain ? "" : "，保留评审"}）`);
-    if (tellBrain) {
-      // 先挂 close 监听再发 shutdown：脑可能反应很快，send 之后才注册会漏掉断开。
-      // 不等的话壳会在 300ms 后退出，脑的 link.on("closed") 立刻 process.exit，
-      // stopAllReviews() 的 3 秒收尾和状态写回都被截断，用户主动关桥也可能留下 worker。
-      // 这里的 8 秒比 stopAllReviews 的 3 秒上限长；requestCancel 里的 10 秒只是兜底
-      // 定时器，不参与等待，别把它算进停机路径。
-      const conn = brain?.conn;
-      const closed = new Promise<void>((resolve) => {
+    const waitBrainClose = (conn: ControlConn | null | undefined): Promise<void> =>
+      new Promise((resolve) => {
         if (!conn?.alive) {
           resolve();
           return;
@@ -896,6 +890,14 @@ async function main(): Promise<void> {
           resolve();
         });
       });
+    if (tellBrain) {
+      // 先挂 close 监听再发 shutdown：脑可能反应很快，send 之后才注册会漏掉断开。
+      // 不等的话壳会在 300ms 后退出，脑的 link.on("closed") 立刻 process.exit，
+      // stopAllReviews() 的 3 秒收尾和状态写回都被截断，用户主动关桥也可能留下 worker。
+      // 这里的 8 秒比 stopAllReviews 的 3 秒上限长；requestCancel 里的 10 秒只是兜底
+      // 定时器，不参与等待，别把它算进停机路径。
+      const conn = brain?.conn;
+      const closed = waitBrainClose(conn);
       try {
         conn?.send({ t: "shutdown", scope });
       } catch {
@@ -910,18 +912,7 @@ async function main(): Promise<void> {
       // 超过 2 秒，等太短会让随后的 SIGTERM 变成 shutdown()，把刚保住的 worker 收掉。
       // 所以和普通停机用同一段 STOP_GRACE_MS；正常情况脑会立刻退出。
       const conn = brain?.conn;
-      const closed = new Promise<void>((resolve) => {
-        if (!conn?.alive) {
-          resolve();
-          return;
-        }
-        const timer = setTimeout(resolve, STOP_GRACE_MS);
-        timer.unref();
-        conn.onClose(() => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+      const closed = waitBrainClose(conn);
       try {
         conn?.send({ t: "retire" });
       } catch {

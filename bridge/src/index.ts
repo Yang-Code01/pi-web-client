@@ -4954,17 +4954,24 @@ async function main(): Promise<void> {
       process.exit(1);
     }, 10_000);
     forceExit.unref();
-    fileIndex.close();
-    terminals.closeAll();
-    tunnel.stop();
-    // 整组停机才停评审：换脑（retire）不走这里；更新器会先显式请求 keepReviews=1，
-    // 只有「真正停桥」（页面停止 / SIGTERM / SIGINT）才把 detached worker 收掉（D441）。
-    if (stopReviews) await stopAllReviews();
-    await sessions.shutdown();
-    // Closing the bridge is closing 随手问: a clean exit leaves nothing to resume.
-    resetScratchDir();
-    server.close();
-    process.exit(0);
+    try {
+      fileIndex.close();
+      terminals.closeAll();
+      tunnel.stop();
+      // 整组停机才停评审：换脑（retire）不走这里；更新器会先显式请求 keepReviews=1，
+      // 只有「真正停桥」（页面停止 / SIGTERM / SIGINT）才把 detached worker 收掉（D441）。
+      if (stopReviews) await stopAllReviews();
+      await sessions.shutdown();
+      // Closing the bridge is closing 随手问: a clean exit leaves nothing to resume.
+      resetScratchDir();
+      server.close();
+      clearTimeout(forceExit);
+      process.exit(0);
+    } catch (err) {
+      // sessions.shutdown / server.close 抛错时不能把 async shutdown 变成未处理 rejection。
+      log(`shutting down: 收尾失败：${String(err)}`);
+      process.exit(1);
+    }
   };
   process.on("SIGINT", () => void shutdown());
   // 真正停桥（systemd stop / 手工 kill -TERM）：评审要收掉。

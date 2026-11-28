@@ -513,8 +513,6 @@ export class App {
   /** 上一次真发出去的「评什么」（JSON）：一样的就不再发，敲字/重画不会把状态文件反复重写。 */
   private reviewPickSent = "";
   private reviewToasted = new Set<string>();
-  /** 最近一次发 `review.get` 的时刻：ocr 那一帧丢了要能自己补一次，别死等。 */
-  private reviewOcrAskedAt = 0;
   /** `会话id|cwd`：变了就把面板状态清空（评审按会话分开）。 */
   private reviewSessionKey = "";
   /** 定时补问一次：页面重连后没人触发重画时，光靠 render 里的自愈等不到下一次重画。 */
@@ -19061,13 +19059,12 @@ export class App {
 
   /**
    * 问一次桥的评审状态。默认按目录去重；`force` 用于重连 / 插件变更 / 重新进页签 ——
-   * 那些路径面对的是新连接或新状态，同一目录也必须重发。只在这里维护 `reviewAsked`
-   * 与 `reviewOcrAskedAt`，别让调用方各自拼这份状态。
+   * 那些路径面对的是新连接或新状态，同一目录也必须重发。只在这里维护 `reviewAsked`，
+   * 别让调用方各自拼这份状态。
    */
   private askReview(dir: string, force = false): boolean {
     if (!force && this.reviewAsked === dir) return false;
     this.reviewAsked = dir;
-    this.reviewOcrAskedAt = Date.now();
     this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
     return true;
   }

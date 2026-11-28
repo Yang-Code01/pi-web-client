@@ -569,6 +569,11 @@ check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标�
         JSON.stringify({ runId, repo, session, startedAt: at, opts: { mode: "workspace", lang: "zh" }, pid }),
       );
     writeJob("live", startedAt, process.pid);
+    // 心跳证明这个 pid 确实是这次评审的 worker；只写 job 会在 15 秒 pid 宽限过后偶发被判死。
+    fs.writeFileSync(
+      path.join(reviewJobsDir(), "live.beat"),
+      JSON.stringify({ pid: process.pid, startedAt, at: Date.now() }),
+    );
     assert.equal(sweepStaleRuns(), 0, "worker 还活着，不许标成桥重启");
     assert.equal(readReviewState(repo, session).runs[0].status, "running");
 
