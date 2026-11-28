@@ -63,7 +63,7 @@ export class HandoffSheet {
     this.back.append(sheet);
   }
 
-  /** 宿主默认交给 `overlayHost()`：控制台是量尺，1:1 挂 body（D449）；测试里仍可显式指定。 */
+  /** 宿主默认交给 `overlayHost()`：控制台是量尺，1:1 挂 body（D450）；测试里仍可显式指定。 */
   mount(parent: HTMLElement = overlayHost(this.back)): void {
     parent.append(this.back);
     this.popEsc = pushEscLayer({ el: this.back, onEsc: () => this.close() });
