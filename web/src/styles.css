@@ -1809,20 +1809,44 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .modal form { width: min(360px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 12px; }
 .modal input { padding: 12px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font-family: var(--mono); }
 
-/* D232: 长参数 / 子代理步骤详情的对话框。遮罩用 .modal（与口令框同一层，z-index 50），
-   面板自己排：标题栏一行（名字 + 耗时 + 复制 + ✕），正文等宽字体、内部滚动。 */
-.argdialog-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(760px, 100%); max-height: min(calc(var(--vh1) * 80), 720px); overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-.argdialog-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 12px; border-bottom: 1px solid var(--line); }
-.argdialog-title { overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.argdialog-meta { flex: none; color: var(--faint); font: 11px/1 var(--mono); font-variant-numeric: tabular-nums; }
-.argdialog-btn { flex: none; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--faint); font: inherit; font-size: 11px; cursor: pointer; }
-.argdialog-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+/* D232 / D458: 长参数 / 子代理步骤详情的对话框。遮罩与窗体材质由 mac.css 的
+   `[data-mac-surface="window"]` 负责（openArgsDialog 走 overlay() 打的 window 标记），这里只管窗口
+   里面怎么排：一条工具栏（工具徽章 + 标题 / 耗时 + 复制 / ✕）、一行事实胶囊、剩下都是代码纸面。
+   正文按真文本铺开（不再是一段 JSON），所以等宽字体给到 12.5px / 1.7 —— 11px 的旧尺寸读长命令太挤。 */
+.argdialog-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(720px, 100%); max-height: min(calc(var(--vh1) * 84), 760px); overflow: hidden; border-radius: 14px; }
+.argdialog-head { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 12px; border-bottom: 0.5px solid var(--mac-glass-line); }
+/* 工具徽章：一块圆角小方块，图标用强调色 —— 工具栏里的「这张纸是哪个工具摊开的」那一眼。 */
+.argdialog-glyph { flex: none; display: grid; place-items: center; width: 27px; height: 27px; border-radius: 8px; color: var(--accent); background: var(--mac-fill-2); box-shadow: inset 0 0.5px 0 var(--mac-glass-hi); }
+.argdialog-headtext { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.argdialog-title { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 600; letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; }
+.argdialog-sub { color: var(--faint); font: 11px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+.argdialog-actions { flex: none; display: flex; align-items: center; gap: 7px; }
+.argdialog-btn {
+  flex: none; height: 24px; padding: 0 10px; border: 0.5px solid var(--mac-control-line); border-radius: 7px;
+  background: var(--mac-control); color: var(--text); font: 500 11.5px/1 var(--sans); cursor: pointer;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.1);
+  transition: filter var(--dur-1) var(--mac-ease), scale 220ms var(--mac-spring);
+}
+.argdialog-btn:hover { filter: brightness(1.06); }
+.argdialog-btn:active { scale: 0.96; }
 .argdialog-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.argdialog-copy { margin-left: auto; }
-.argdialog-body { overflow: auto; padding: 12px; }
-.argdialog-label { margin-bottom: 4px; color: var(--faint); font-size: 11px; }
-.argdialog-text { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); color: var(--text); font: 11px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.argdialog-text:last-child { margin-bottom: 0; }
+.argdialog-close { width: 24px; padding: 0; display: grid; place-items: center; border-radius: 50%; color: var(--dim); }
+.argdialog-body { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: auto; padding: 12px; }
+/* 事实胶囊：path / offset / timeout 这类短字段。值再长就省略，长正文已经在下面的块里了。 */
+.argdialog-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.argdialog-fact { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; padding: 3px 8px; border-radius: 7px; border: 0.5px solid var(--mac-glass-line); background: var(--mac-fill); font: 11px/1.45 var(--mono); }
+.argdialog-fact b { flex: none; color: var(--faint); font-weight: 400; }
+.argdialog-fact span { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.argdialog-block { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.argdialog-blockhead { display: flex; align-items: baseline; gap: 8px; padding: 0 2px; }
+.argdialog-label { color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: 0.01em; }
+.argdialog-blockmeta { margin-left: auto; color: var(--faint); font: 10.5px/1.3 var(--mono); font-variant-numeric: tabular-nums; }
+/* 代码纸面：沉下去一块（--sunken）、发丝边、内阴影，跟 Markdown 的代码块是同一档底色。 */
+.argdialog-text {
+  margin: 0; padding: 10px 12px; border-radius: 10px; border: 0.5px solid var(--mac-glass-line);
+  background: var(--sunken); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: var(--text); font: 12.5px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: break-word; tab-size: 2;
+}
 
 /* ---------------------------------------------------------------- desktop */
 /* 桌面三栏。判据不是视口宽度，而是「有效宽度」= 视口 / 字号缩放：`#app` 上挂着 zoom，
