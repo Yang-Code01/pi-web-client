@@ -133,6 +133,15 @@ await page.addInitScript(() => {
     const cs = getComputedStyle(host);
     return host.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
   };
+  // 宿主的**真实** content box 宽（视觉 px，按 computed padding 算）。
+  // `__probeConsoleAvail()` 量的是 app 的估算口径（`.st-back` 写死 20×2），窄档留白只有 10px 时两者差 20；
+  // 探针要拿它当预期值的上限，那面得用真值，不然 2.0 档会差出 10 css px（容差 2 就假红）。
+  window.__probeHostContent = (con) => {
+    const host = hostOf(con);
+    if (!host || host.clientWidth <= 0) return -1;
+    const cs = getComputedStyle(host);
+    return Math.round((host.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)) * 10) / 10;
+  };
   // 面板真实内容宽（css px，与 `clientWidth` / `offsetWidth` 同单位）—— 与 `paintConsoleFolds()` 同一口径：
   // 有面板就量它自己的 `clientWidth`（zoom 子树里它就是布局 px，不用再除）。
   window.__probeConsoleWidth = (con) => {
@@ -227,6 +236,8 @@ async function geo() {
       textVisual: Math.round(fs * zoom * 100) / 100,
       // 遮罩层能给的宽度 —— 共用页面里注入的 `__probeConsoleAvail()`（与 app.ts 同一口径）。
       avail: window.__probeConsoleAvail(con),
+      // 遮罩真实 content box 宽（视觉 px）：预期值的上限用这一份（见 `__probeHostContent`）。
+      hostContent: window.__probeHostContent(con),
       // 面板自己的内容宽（css px）：有面板时是量出来的，不是估的。
       contentW: Math.round(window.__probeConsoleWidth(con).w * 10) / 10,
       contentMeasured: window.__probeConsoleWidth(con).measured,
@@ -258,12 +269,13 @@ await openLook();
 const at200 = await geo();
 await page.screenshot({ path: path.join(OUT, "1-scale-200.png") });
 
-// 外框该多大：min(1080 × frame, 遮罩可用宽)，再除以 zoom 就是 css 宽（与 `w` / `offsetWidth` 同单位）。
-const wantW = (g) => Math.min(1080 * (Number(g.stFrame) || 1), g.avail) / (Number(g.zoom) || 1);
+// 外框该多大：min(基数 × frame, 遮罩真实 content box)，再除以 zoom 就是 css 宽（与 `w` / `offsetWidth` 同单位）。
+// 基数按层给：设置页 1080×840、模型层 1000×760（后者以前被写死成 1080 判过，必然红）。
+const wantW = (g, base = 1080) => Math.min(base * (Number(g.stFrame) || 1), g.hostContent) / (Number(g.zoom) || 1);
 check("1. 控制台挂在 body 上、不在 #app 的 zoom 子树里", !at200.inApp && at200.inBody, JSON.stringify(at200));
 check(
   "1a. 1.0 是原位不动：zoom 1、外框 1080、字没被二次缩放",
-  at100.zoom === 1 && Math.abs(at100.w - Math.min(1080, at100.avail)) <= 1 && Math.abs(at100.textVisual - 12.5) < 0.6,
+  at100.zoom === 1 && Math.abs(at100.w - wantW(at100)) <= 1 && Math.abs(at100.textVisual - 12.5) < 0.6,
   `${at100.w}×${at100.h} · zoom ${at100.zoom} · 字 ${at100.textVisual}px · frame ${at100.stFrame}`,
 );
 check(
@@ -338,6 +350,7 @@ const modelGeo = async () => {
       zoom: Number(getComputedStyle(sheet).zoom) || 1,
       // 宿主 content box（`.st-back` 两侧各 20px）：与 paintConsoleFolds 同一个口径。
       avail: window.__probeConsoleAvail(sheet),
+      hostContent: window.__probeHostContent(sheet),
       contentW: Math.round(window.__probeConsoleWidth(sheet).w * 10) / 10,
       stFrame: getComputedStyle(sheet).getPropertyValue("--st-frame").trim(),
       narrow: document.documentElement.dataset.stNarrow,
@@ -354,17 +367,26 @@ await boot({ scale: 1 });
 const model100 = await modelGeo();
 await boot({ scale: 2 });
 const model200 = await modelGeo();
+await boot({ scale: 0.8 });
+const model80 = await modelGeo();
 check(
-  "1d. 模型层也吃同一套规则：1.0 是 1080、2.0 长到吃满窗口并判窄版",
+  "1d. 模型层也吃同一套规则：基数是 1000×760（不是设置页的 1080）、1.0 原位、2.0 吃满窗口并判窄版",
   model100.onBody &&
     model200.onBody &&
+    model80.onBody &&
     !model200.inApp &&
     Math.abs(model100.zoom - 1) < 0.01 &&
     Math.abs(model200.zoom - 2) < 0.01 &&
-    Math.abs(model100.w - Math.min(1080, model100.avail)) <= 1 &&
-    Math.abs(model200.w - wantW(model200)) <= 2 &&
+    Math.abs(model100.w - wantW(model100, 1000)) <= 2 &&
+    Math.abs(model100.h - 760) <= 2 &&
+    Math.abs(model200.w - wantW(model200, 1000)) <= 2 &&
     model200.narrow === "true",
-  `${model100.w}×${model100.h} zoom ${model100.zoom} → ${model200.w}×${model200.h} zoom ${model200.zoom} / narrow ${model200.narrow}`,
+  `${model100.w}×${model100.h}（应 ${wantW(model100, 1000)}×760）→ ${model200.w}×${model200.h}（应 ${wantW(model200, 1000)}）· zoom ${model200.zoom} / narrow ${model200.narrow}`,
+);
+check(
+  "1d2. 模型层 0.8 字号下仍是 1000 视觉 px（`--st-frame` 真生效，不是被 100% 上限夹出来的巧合）",
+  Math.abs(model80.zoom - 0.8) < 0.01 && Math.abs(model80.w * model80.zoom - 1000) <= 3,
+  `css ${model80.w} × zoom ${model80.zoom} = ${Math.round(model80.w * model80.zoom)} 视觉 px`,
 );
 await page.keyboard.press("Escape");
 await sleep(200);

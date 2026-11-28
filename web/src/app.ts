@@ -573,6 +573,12 @@ export class App {
   private sheet: HTMLElement | null = null;
   /** `.sheet-back` 宿主留白的缓存（同一扇宿主 + 同一视口宽度有效）：拖滑杆时每帧都过这条路径。 */
   private sheetPadCache: { host: HTMLElement; w: number; pad: number } | null = null;
+  /** 正拖着一根轨道滑杆：这期间冻结控制台的折叠档位（`data-st-*`）。
+   *  拖字号 / 设置与控制台时面板自己就在缩放，跨过 900/720/640 就翻一次版（导航栏从一列折成
+   *  一行 chips），轨道跟着一块儿跳几百 px —— 而指针到值的换算是按下那一刻冻结的盒子，于是
+   *  滑块离手、读数跟手指下的位置对不上（2026-11-29 实测：字号拖到 150% 时轨道左边缘从 379
+   *  跳到 66，同一指针位置的读数从 52% 变 58%）。档位等松手落盘时再算一次就够了。 */
+  private foldsFrozen = false;
   /** D321：文件搜索面板（打开时才有，关掉就置 null；`filesearch.*` 帧路由到它）。 */
   private fileSearch: FileSearchHandle | null = null;
   private modelChip: HTMLButtonElement | null = null;
@@ -1578,6 +1584,10 @@ export class App {
    * 那里每帧跑一遍 placeNowChip / renderQueue 是白花钱（D455 的评审意见）。
    */
   private paintConsoleFolds(con?: HTMLElement | null): void {
+    // 拖动中冻结（见 `foldsFrozen`）：这一帧算出来的新档位会立刻改宿主的留白与面板宽度，
+    // 轨道于是在指针下跳位；而值是按冻住的盒子算的 —— 两边越离越远。松手后 `commit()` / `onLive()`
+    // 还会再跑一遍这里，档位那时才真的落下来。
+    if (this.foldsFrozen) return;
     const root = document.documentElement;
     const { zoom, frame } = this.consoleVars();
     const z = zoom || 1;
@@ -4645,7 +4655,7 @@ export class App {
     row.classList.add("wide");
     row.querySelector(".settings-label")?.append(read);
 
-    /** 拖的时候不能交给浏览器算值：按冻住那一刻的轨道盒子换算，松手才写盘。 */
+    /** 拖的时候不交给浏览器算值，松手才写盘。 */
     let dragBox: { x: number; w: number } | null = null;
     /**
      * 按下那一刻的指针位置与值：前者判「真的拖起来了没有」，后者给 Esc 取消用。
@@ -4654,6 +4664,15 @@ export class App {
      */
     let dragFrom: { x: number; y: number } | null = null;
     let dragValue = o.value;
+    /**
+     * 指针 → 值：用**按下那一刻**量到的轨道盒子换算。
+     *
+     * 为什么不每帧重量一次：拖「字号」「设置与控制台」时面板自己就在缩放，轨道宽度随 zoom 变小
+     * （1400 窗口、字号 125%→195% 实测 954 → 740px），而值又反过来决定 zoom —— 每帧拿新宽度换算
+     * 就成了一条正反馈回路：同样的 55px 一步，读数从 40% 一路冲到 200%（2026-11-29 实测）。
+     * 冻结盒子换来的是约 3% 的不对称（指针在轨道 55.3% 处时读数是 58.3%），比回路稳定得多。
+     * 跨 900/720/640 那一次轨道整个跳位则由 `foldsFrozen` 挡住了。
+     */
     const valueAt = (clientX: number): number => {
       if (!dragBox || dragBox.w <= 0) return Number(range.value);
       const p = Math.min(1, Math.max(0, (clientX - dragBox.x) / dragBox.w));
@@ -4677,6 +4696,7 @@ export class App {
       dragBox = { x: r.left, w: r.width };
       dragFrom = { x: ev.clientX, y: ev.clientY };
       dragValue = applied;
+      this.foldsFrozen = true;
       hidePeek();
       rail.classList.add("dragging");
       read.classList.add("dragging");
@@ -4702,6 +4722,7 @@ export class App {
       }
       dragBox = null;
       dragFrom = null;
+      this.foldsFrozen = false;
       rail.classList.remove("dragging");
       read.classList.remove("dragging");
       window.removeEventListener("keydown", onDragKey, true);

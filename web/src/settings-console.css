@@ -34,8 +34,8 @@ body > :is(.st-back, .sheet-back) > .st-console {
    测试里那张假 `#app`（`web/tests/handoff-sheet-browser.mjs` 第 3 段就是拿它当反证的：字号 150%
    下弹层当场顶出窗口）。宿主不在 body 下的（例如测试里显式 `mount(app)`）走不到这条，那时
    `--vh1` 本来就该是除过缩放的那一份。
-   **反过来说：把 `.st-console` 塞进 `#app` 是不受支持的挂法** —— 它按自己的宽度读 `data-st-*`
-   折叠档位，而在 `#app` 里可用宽度又被字号除了一遍，两套判据会打架。要挂控制台就走
+   **反过来说：把 `.st-console` 塞进 `#app` 是不受支持的挂法** —— 它按**面板自己的宽度**读
+   `data-st-*` 折叠档位（D454），而在 `#app` 里可用宽度又被字号除了一遍，两套判据会打架。要挂控制台就走
    `overlayHost()` / `overlay()`（`modal.ts`），别自己 `append`。 */
 body > :is(.st-back, .sheet-back):has(> .st-console) {
   --vh1: 1vh;
@@ -60,9 +60,13 @@ body > :is(.st-back, .sheet-back):has(> .st-console) {
      D454：尺寸**只在这里算一次** —— `--st-frame` 跟着倍率长大、除一道 `--st-zoom` 抵消 zoom。
      变量没写（首帧、单测里的假 DOM）时两道 var() 都回退成 1，就是原来的 1080×840。
      别再往上面那条 `body > ... > .st-console` 里写 width/height：两条规则对同一元素设尺寸、
-     靠选择器特异性决胜，谁动手调一下顺序就静默回到 1:1。*/
-  width: min(calc(1080px * var(--st-frame, 1) / var(--st-zoom, 1)), 100%);
-  height: min(calc(840px * var(--st-frame, 1) / var(--st-zoom, 1)), 100%);
+     靠选择器特异性决胜，谁动手调一下顺序就静默回到 1:1。
+     别的控制台（`.model-sheet` 这种）**只覆盖两个基数**，算式仍由这里算：连算式抄一份的话，
+     以后改 `--st-frame` 的语义或上限，那一扇不会跟着变（评审 2026-11-29）。*/
+  --st-w-base: 1080px;
+  --st-h-base: 840px;
+  width: min(calc(var(--st-w-base) * var(--st-frame, 1) / var(--st-zoom, 1)), 100%);
+  height: min(calc(var(--st-h-base) * var(--st-frame, 1) / var(--st-zoom, 1)), 100%);
   overflow: hidden;
   color: var(--text);
   font-family: var(--sans);

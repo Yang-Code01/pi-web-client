@@ -2986,10 +2986,11 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 
 /* ---------------------------------------------------------------- model sheet: 设置控制台外壳 + 草稿确认 */
 /* D373：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。
-   D454：尺寸要自己重写（模型层比设置页窄、矮一档），就**必须**跟上同一套 `--st-frame` / `--st-zoom`：
-   只写 `min(1000px, 100%)` 的话特异性 (0,2,0) 会赢掉 `.st-console` 的基础规则 —— 字号 200% 时
-   面板只有 1000 css px（视觉 2000）被遮罩一夹就看不出来，80% 时又莫名其妙缩成 800。 */
-.st-console.model-sheet { width: min(calc(1000px * var(--st-frame, 1) / var(--st-zoom, 1)), 100%); height: min(calc(760px * var(--st-frame, 1) / var(--st-zoom, 1)), 100%); }
+   D454：模型层比设置页窄、矮一档 —— 但**只覆盖基数**，尺寸算式仍由 `.st-console` 那一份算：
+   以前这里自己抄了一遍 `min(calc(1000px * …), 100%)`，`--st-frame` 的语义一改它就静默掉队。
+   也别写死 `min(1000px, 100%)`：特异性 (0,2,0) 会赢过基础规则，2.0 下被遮罩夹住看着像对的，
+   80% 时露馅（视觉 800 而不是 1000）。 */
+.st-console.model-sheet { --st-w-base: 1000px; --st-h-base: 760px; }
 /* 列表自己滚，档位条钉在滚动区外：模型一大堆时，选完不用滚回顶部才能换档。 */
 .st-console.model-sheet .st-pane { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .model-sheet .pm-body { flex: 1 1 auto; min-height: 0; padding: 18px 22px 22px; overflow-y: auto; scrollbar-gutter: stable; }
