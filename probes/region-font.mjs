@@ -265,6 +265,13 @@ const openLook = async () => {
   await sleep(150);
 };
 await openLook();
+
+/**
+ * 按「这一行的 label」找设置行。只在 `.settings-label` 子树里匹配 —— 整行 `hasText` 会被 hint 里的
+ * 同名文字带跑（顶栏那行的 hint 就写着「顶栏按钮」），命中两行时 strict 直接报错、看不出是撞了名字。
+ */
+const settingsRow = (label) =>
+  page.locator(".display-sheet .settings-row").filter({ has: page.locator(".settings-label", { hasText: label }) });
 {
   const rows = await page.evaluate(() => {
     const sheet = document.querySelector(".display-sheet");
@@ -291,7 +298,7 @@ await openLook();
   check("5b. 五块都从 100% 起步，分组头写明乘法关系", rows.rows.slice(1).every((r) => r.read === "100%") && rows.head.includes("各自叠在"), JSON.stringify({ head: rows.head, reads: rows.rows.map((r) => r.read) }));
 
   const before = await snap(page);
-  const chatRow = page.locator('.display-sheet .settings-row').filter({ hasText: "对话正文" });
+  const chatRow = settingsRow("对话正文");
   const range = chatRow.locator('input[type="range"]');
   // 键盘按 10 下 = +10%（步长 1%，键盘不吃磁吸）
   await range.focus();
@@ -343,7 +350,7 @@ await openLook();
 // ---------------------------------------------------------------- 7. 刻度值必须夹成两位小数（不是 1.2000000000000002）
 {
   // 面板在上一步还开着。字号那根点「120」档：SIZE_MARKS 是 0.8 + i*0.2 算出来的浮点。
-  const sizeRow = page.locator(".display-sheet .settings-row").filter({ hasText: "字号" }).first();
+  const sizeRow = settingsRow("字号");
   await sizeRow.locator(".mark", { hasText: /^120$/ }).click();
   await sleep(200);
   const sizeMarked = await page.evaluate(() => ({
@@ -353,7 +360,7 @@ await openLook();
   }));
   check("7. 点 120 档存成 1.2（不是 1.2000000000000002）", sizeMarked.prefs === 1.2 && sizeMarked.uiVar === "1.2" && sizeMarked.range === "1.2", JSON.stringify(sizeMarked));
 
-  const chatRow2 = page.locator(".display-sheet .settings-row").filter({ hasText: "对话正文" });
+  const chatRow2 = settingsRow("对话正文");
   // 刻度是 80…200 每 0.2：点 120 档同样会碰到 1.2000000000000002 的浮点尾巴
   await chatRow2.locator(".mark", { hasText: /^120$/ }).click();
   await sleep(200);
@@ -463,9 +470,7 @@ for (const rs of [1, 1.3]) {
     ["queue", "右栏面板"],
   ];
   for (const [id, label] of PAIRS) {
-    // 只在 `.settings-label` 子树里找：整行 `hasText` 会被 hint 里的区域名带跑
-    // （顶栏那行的 hint 就写着「顶栏按钮」），一旦别行的 hint 提到这个名字就会命中多行。
-    const row = page.locator(".display-sheet .settings-row").filter({ has: page.locator(".settings-label", { hasText: label }) });
+    const row = settingsRow(label);
     const before = await snap(page);
     await row.locator('input[type="range"]').focus();
     for (let i = 0; i < 10; i++) await page.keyboard.press("ArrowRight");
@@ -473,8 +478,11 @@ for (const rs of [1, 1.3]) {
     await sleep(200);
     const after = await snap(page);
     if (!regionsPresent(before, `5g ${label} 前`) || !regionsPresent(after, `5g ${label} 后`)) continue;
-    // 起点是上面种下的 SEED 那五档、不是 1.0。所以断言的是「自己的倍率 +0.1、局域宽度按新倍率缩小」，
-    // 不是写死的 ×1.1 —— 否则这条只有在从 100% 起步时才成立。
+    // 起点：**这一块自己**的倍率还是 SEED 那一档（每轮末尾的 dblclick 只把自己复位成 100%，
+    // 也不影响下一轮 —— 下一轮比的是它自己的 before/after 快照）。所以断言写成「自己的倍率 +0.1、
+    // 局域宽度按新倍率缩小」，不是写死的 ×1.1 —— 否则这条只有在从 100% 起步时才成立。
+    // 其余四块在后续几轮里早已不是 SEED 了（被前面几轮的 dblclick 复位过），`still` 比的是同一轮的
+    // 前后快照，所以照样成立。
     const from = before.regions[id].own;
     const wantOwn = Math.round((from + 0.1) * 100) / 100;
     const ratio = before.regions[id].local / after.regions[id].local;

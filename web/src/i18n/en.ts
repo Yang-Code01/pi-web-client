@@ -55,7 +55,7 @@ export const en: Dict = {
   "顶部三行：顶栏按钮、工作区标签行、置顶会话行": "All three top rows: toolbar, workspace tabs, pinned sessions",
   "左栏那列会话卡片": "The session cards in the left column",
   "聊天记录这一块": "The chat transcript",
-  "底部输入区（含提示行与工具行）": "The composer at the bottom, hints and tool row included",
+  "底部输入区（含提示行与工具行）": "The input area at the bottom (hints and tool row included)",
   "输入框": "Composer",
   "右栏面板": "Right panel",
   "右栏的执行 / 计划等面板": "Exec / plan and the other right-hand panels",
