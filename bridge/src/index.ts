@@ -70,6 +70,7 @@ import {
   ocrStatus,
   readReviewPin,
   readReviewState,
+  remoteTipTargets,
   remoteTips,
   reviewProgresses,
   takeSweptCount,
@@ -4256,10 +4257,14 @@ async function main(): Promise<void> {
               // #741 先画后补：第一帧就有记录本身，tips 只带**缓存里已知**的那份（读缓存、不 spawn、
               // 不发请求）；真正的核对在下面那段异步里，算完补一帧。
               const targets = tipTargets(state.runs);
-              const known = cachedPrHeads(repo, targets.filter((item) => item.pr > 0).map((item) => item.pr));
+              // 远端那批必须跟补帧问的**同一批号**（`remoteTipTargets` 的去重 + 上限 3）：
+              // 缓存 key 是「仓库 + 这一批号」，拿全量号去查永远命中不了 —— PR 记录一多，
+              // 首帧就白白退化成空的，「已亮着的标先灭一下」这个毛病恰好出现在最长的那份列表上。
+              const remoteTargets = remoteTipTargets(targets);
+              const known = cachedPrHeads(repo, remoteTargets.map((item) => item.pr));
               const remoteKnown: Record<string, string> = {};
-              for (const item of targets) {
-                const sha = item.pr > 0 ? known.heads[item.pr] : "";
+              for (const item of remoteTargets) {
+                const sha = known.heads[item.pr];
                 if (sha) remoteKnown[item.ref] = sha;
               }
               send({
