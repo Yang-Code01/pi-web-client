@@ -6486,6 +6486,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-run + .rv-auto-scope { margin-top: -2px; }
 
 .rv-auto {
+  /* 「正在跑」的进度条不反映真实进度，只是别画空条：两处（明细行 / 阶段条）共用这一格。 */
+  --auto-progress: 36%;
   display: flex; flex-direction: column;
   border-radius: 12px; overflow: hidden;
   background: var(--panel);
@@ -6533,7 +6535,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-auto-stage.skip .rv-auto-stage-bar { background: var(--line-lit); }
 .rv-auto-stage.now { background: var(--accent-bg); }
 .rv-auto-stage.now b, .rv-auto-stage.now .rv-auto-stage-st { color: var(--accent); }
-.rv-auto-stage.now .rv-auto-stage-bar > i { width: 40%; }
+.rv-auto-stage.now .rv-auto-stage-bar > i { width: var(--auto-progress, 36%); }
 /* 跑完的一轮（有意见、已经修过）：阶段条填满 —— 空条看起来像「还没开始」。 */
 .rv-auto-stage.done .rv-auto-stage-bar > i { width: 100%; }
 .rv-auto-sev { position: absolute; top: 5px; right: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }
@@ -6562,7 +6564,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-auto-diff .del { color: var(--danger); }
 .rv-auto-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-auto-bar { margin-top: 3px; height: 3px; border-radius: 99px; background: var(--panel-3); overflow: hidden; }
-.rv-auto-bar > i { display: block; height: 100%; width: 35%; border-radius: 99px; background: var(--accent); }
+.rv-auto-bar > i { display: block; height: 100%; width: var(--auto-progress, 36%); border-radius: 99px; background: var(--accent); }
 
 /* 接管确认框（「你在发消息 = 接管」）：静态样式放类里，别在 app.ts 里写内联 style */
 .rv-auto-takeover h2 { margin: 0; font-size: 16px; }
@@ -6594,6 +6596,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-auto-chiprow { display: flex; align-items: center; gap: 7px; }
 .rv-auto-who { flex: none; width: 54px; display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 650; color: var(--dim); }
 .rv-auto-who .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+/* 两路的点刻意两种颜色（A = 强调色，B = 警示色）：排班表上一眼分得开谁是谁。 */
+.rv-auto-who.a .dot { background: var(--accent); }
 .rv-auto-who.b .dot { background: var(--warn); }
 .rv-auto-mchip {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;

@@ -9,9 +9,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// 断言的是 `tr()` 吐出来的**中文**。模块默认语言是 zh-Hans，但那是隐式的 —— 哪天有别的用例 /
+// 环境先切过语言，这里的断言会一起失败。node 下没有 `document`、`setLang()` 用不了，
+// 所以钉住前提：不是 zh-Hans 就当场说明为什么，而不是让几十条断言莫名其妙一起红。
+const { getLang } = await import("../src/i18n/index.ts");
+assert.equal(getLang(), "zh-Hans", "这些用例断言的是中文文案：运行前语言必须是 zh-Hans");
 const { fmtTok, roundLine, roundResult, roundStatusLabel, stageChips, stageClass, statePill, verdictOf, verdictLabel, waitText, worstSeverity, footerText, noteText } =
   await import("../src/reviewauto.ts");
 
+/**
+ * 一轮的夹具。`fix` 这类嵌套对象**故意只给用到的字段**（纯 JS，不按 `AutoFixView` 逐格补齐）：
+ * 某条用例要读别的字段时自己补，别指望这里的默认值。
+ */
 const round = (n, over = {}) => ({
   n,
   slot: n % 2 === 1 ? "A" : "B",

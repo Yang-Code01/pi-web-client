@@ -10,7 +10,7 @@
  */
 import { tr } from "./i18n/index.ts";
 import { markSurface, mountOverlay, pushEscLayer } from "./modal.ts";
-import type { ReviewFinding, ReviewPanelInput, ReviewRun, Severity } from "./review.ts";
+import type { ReviewFinding, ReviewRun, Severity } from "./review.ts";
 
 /**
  * 与 `chat.ts` 的 `createEl` 同一个东西，就地写一份：那个模块会顺着 `github-cards` 把
@@ -132,11 +132,15 @@ export function roundStatusLabel(r: Pick<AutoRoundView, "status">): string {
   return tr(STATUS_LABEL[r.status] ?? r.status);
 }
 
+/** 单位也走 `tr()`：`i18n-check` 只扫中文字面量，`tok` 这种写死的英文漏翻它抓不到。 */
+const TOK_UNIT = "tok";
+
 export function fmtTok(tokens: number): string {
   const n = Number(tokens) || 0;
-  if (n < 1000) return `${n} tok`;
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k tok`;
-  return `${(n / 1_000_000).toFixed(1)}M tok`;
+  const unit = tr(TOK_UNIT);
+  if (n < 1000) return `${n} ${unit}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k ${unit}`;
+  return `${(n / 1_000_000).toFixed(1)}M ${unit}`;
 }
 
 const WORST: Severity[] = ["critical", "high", "medium", "low"];
@@ -174,7 +178,7 @@ export function stageChips(state: Pick<AutoStateView, "rounds">): AutoRoundView[
 
 /** 卡片上「现在在干什么」那一句。 */
 export function waitText(state: Pick<AutoStateView, "wait" | "status" | "cur" | "merge">): string {
-  if (state.status === "running" && state.wait === "merge") return tr("正在合并 PR #{p1}", { p1: String(state.merge?.pr ?? "") });
+  if (state.status === "running" && state.wait === "merge") return tr("正在合并 PR #{p1}", { p1: String(state.merge.pr ?? "") });
   if (state.status === "running" && state.wait === "fix") return tr("等会话把这一轮的意见修完");
   if (state.status === "running") return tr("第 {p1} 轮正在评", { p1: String(state.cur || 1) });
   return "";
@@ -182,7 +186,7 @@ export function waitText(state: Pick<AutoStateView, "wait" | "status" | "cur" | 
 
 /** 卡片抬头上那枚状态。 */
 export function statePill(state: Pick<AutoStateView, "status" | "cur" | "config">): { text: string; tone: "run" | "ok" | "warn" | "stop" } {
-  const max = state.config?.maxRounds || ROUNDS_DEFAULT;
+  const max = state.config.maxRounds || ROUNDS_DEFAULT;
   if (state.status === "signed") return { text: tr("两家已签收"), tone: "ok" };
   if (state.status === "merged") return { text: tr("已合并"), tone: "ok" };
   if (state.status === "stopped") return { text: tr("已停止"), tone: "stop" };
@@ -409,11 +413,15 @@ function stageSub(r: AutoRoundView): string {
   return (STAGE_SUB[r.status] ?? STAGE_SUB.failed)(r);
 }
 
-/** 轮次窗里「这一轮推没推」那一行。 */
-function pushHint(pushed: boolean, status: AutoRoundView["status"]): string {
+/**
+ * 轮次窗里「这一轮推没推」那一行。
+ *
+ * 只要这一轮有提交（`fix.shaAfter`）就要给一句话：以前只在 `findings` 时写「只在本地」，
+ * `skipped` / `failed` 的轮次带着提交却什么都不说，人看到 sha 不知道推没推。
+ */
+function pushHint(pushed: boolean): string {
   if (pushed) return tr("已推到远端");
-  if (status === "findings") return tr("只在本地（这个范围不需要推送）");
-  return "";
+  return tr("只在本地（这个范围不需要推送）");
 }
 
 /** 阶段条那一格的样式类（`now` / `ok` / `done` / `skip` / `bad`）：`done` 是「跑完、有意见」的那一轮。 */
@@ -509,6 +517,7 @@ export class AutoSettingsSheet {
     this.render();
   }
 
+  /** `_parent` 只为与别的 sheet 的 `mount(parent)` 签名兼容（`ReviewSheet` 那一套）；实际挂载点由 `mountOverlay` 决定。 */
   mount(_parent: HTMLElement): void {
     mountOverlay(this.back);
     this.popEsc = pushEscLayer({ el: this.back, onEsc: () => this.close() });
@@ -645,6 +654,7 @@ export class AutoRoundSheet {
     this.render();
   }
 
+  /** `_parent` 只为与别的 sheet 的 `mount(parent)` 签名兼容；实际挂载点由 `mountOverlay` 决定。 */
   mount(_parent: HTMLElement): void {
     mountOverlay(this.back);
     this.popEsc = pushEscLayer({ el: this.back, onEsc: () => this.close() });
@@ -670,7 +680,7 @@ export class AutoRoundSheet {
     const box = el("div", "");
     box.append(
       el("div", "rv-auto-kicker", r ? tr("自动评审 · 第 {p1} 轮", { p1: String(r.n) }) : tr("自动评审")),
-      el("h2", "", r ? tr("{p1} 评 {p2}", { p1: r.label || `${r.provider}/${r.model}`, p2: (r.sha || "").slice(0, 7) || tr("…") }) : tr("还没有轮次")),
+      el("h2", "", r ? tr("{p1} 评 {p2}", { p1: r.label || `${r.provider}/${r.model}`, p2: (r.sha || "").slice(0, 7) || "…" }) : tr("还没有轮次")),
     );
     const right = el("div", "rv-auto-head-right");
     // 轮号不保证连续（跳过 / 旧记录被裁）：边界按**存在的那几个号**算，别拿 `rounds.length` 当上界。
@@ -757,7 +767,7 @@ export class AutoRoundSheet {
       const top = el("div", "rv-auto-fixrow");
       top.append(el("span", "rv-auto-sha", fx.shaAfter.slice(0, 7)), el("span", "add", `+${fx.added}`), el("span", "del", `−${fx.removed}`), el("span", "dim", tr("{p1} 个文件", { p1: String(fx.files) })));
       cbody.append(top);
-      cbody.append(el("div", "rv-auto-hint", pushHint(fx.pushed, r.status)));
+      cbody.append(el("div", "rv-auto-hint", pushHint(fx.pushed)));
       const commit = el("div", "rv-auto-json");
       // 桥给了真实提交标题就显示它；老记录没有这一格时退回「约定的格式」，不要伪装成真提交。
       commit.textContent = fx.subject || tr("约定：fix(review): 按第 {p1} 轮评审意见修复", { p1: String(r.n) });
@@ -787,6 +797,3 @@ export class AutoRoundSheet {
 
 const SEV_NAME: Record<Severity, string> = { critical: "严重", high: "高", medium: "中", low: "低" };
 const sevName = (s: Severity): string => tr(SEV_NAME[s] ?? s);
-
-/** 面板要用的那份输入里的自动评审一半（App 里拼好交给 `renderReview`）。 */
-export type { ReviewPanelInput };

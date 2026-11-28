@@ -308,9 +308,17 @@ export function modeBoardItems(): { value: ReviewMode; label: string; hint: stri
   ];
 }
 
-/** 某种范围的人话名字（自动评审卡抬头用）。 */
+/**
+ * 某种范围的人话名字（自动评审卡抬头用）。
+ *
+ * 四个键、四个值，写成一张表直接查：以前每次调用都把四格磁贴整张重建（4 次 `tr()`）再 `find`。
+ * 值仍然每次走 `tr()`，切语言即时生效。
+ */
+const MODE_LABEL: Record<ReviewMode, string> = { workspace: "工作区改动", range: "分支 vs 主干", commit: "单个提交", pr: "GitHub PR" };
+
 export function modeLabel(mode: string): string {
-  return modeBoardItems().find((m) => m.value === mode)?.label ?? tr("工作区改动");
+  const key = MODE_LABEL[mode as ReviewMode];
+  return key ? tr(key) : tr("工作区改动");
 }
 
 const durationOf = (run: ReviewRun): number | null => {
@@ -711,8 +719,11 @@ export interface ReviewPanelInput {
   severityLabels: Record<Severity, string>;
   /** gh 卡的八颗动作：宿主直接给 `ghCardActions()`，面板不再自己映射一遍（评审 #33）。 */
   ghActions: GhCardActions;
-  /** 自动评审那一段（D457）：入口按钮 + 卡片，动作自带（与手动评审的动作分开）。 */
-  auto: { panel: AutoPanelInput; actions: AutoActions };
+  /**
+   * 自动评审那一段（D457）：入口按钮 + 卡片，动作自带（与手动评审的动作分开）。
+   * 可选：宿主没拼这一块（只画手动评审的调用方 / 测试）就不画那一段，面板照常出来。
+   */
+  auto?: { panel: AutoPanelInput; actions: AutoActions };
   actions: ReviewActions;
 }
 
@@ -1018,7 +1029,8 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   root.append(form);
 
   // ---- 自动评审（D457）：入口按钮就在「开始评审」正下方，跑起来之后这一段变成时间线卡片
-  root.append(renderAutoPanel(input.auto.panel, input.auto.actions));
+  // 入口是新加的：没拼这一块的调用方不该因此整块面板都渲染不出来。
+  if (input.auto) root.append(renderAutoPanel(input.auto.panel, input.auto.actions));
 
   if (view.phase === "loading") root.append(el("div", "rv-hint", tr("正在读评审状态…")));
 
