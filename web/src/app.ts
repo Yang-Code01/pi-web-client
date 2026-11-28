@@ -628,8 +628,7 @@ export class App {
     body: HTMLElement;
     /** 左栏 + 右栏那整个两栏壳（没 run 的时候整块 hidden，让位给空态）。 */
     wrap: HTMLElement;
-    /** 左栏 run 列表与它上面那行「运行 · N」。 */
-    nav: HTMLElement;
+    /** 左栏那行「运行 · N」与它下面的 tablist。 */
     navHead: HTMLElement;
     /** `role=tablist` 本体：按 ARIA，它的子元素只能是 tab，所以「运行 · N」那行在它外面。 */
     navList: HTMLElement;
@@ -18119,10 +18118,12 @@ export class App {
       let next: string | undefined;
       if (e.key === "Home") next = ids[0];
       else if (e.key === "End") next = ids[ids.length - 1];
-      else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      else if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
         const at = ids.indexOf(this.bgSheet?.sel ?? "");
-        // 当前选中的不在列表里（刚失效）时 ↑↓ 不猜位置，交给 Home/End。
-        if (at >= 0) next = ids[at + (e.key === "ArrowDown" ? 1 : -1)];
+        // 当前选中的不在列表里（刚失效）时方向键不猜位置，交给 Home/End。
+        // 窄窗左栏是横向条，←→ 也要能换页（ARIA 对横向 tablist 的推荐键位）。
+        const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : -1;
+        if (at >= 0) next = ids[at + step];
       } else return;
       if (!next) return;
       e.preventDefault();
@@ -18136,7 +18137,7 @@ export class App {
     back.append(sheet);
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
-    this.bgSheet = { sessionId: sid, body, wrap, nav, navHead, navList, panes, chip, meta, sel: null, runs: new Map() };
+    this.bgSheet = { sessionId: sid, body, wrap, navHead, navList, panes, chip, meta, sel: null, runs: new Map() };
     const tick = () => {
       if (!this.bgSheet || this.bgSheet.sessionId !== sid) return;
       this.socket.send({ type: "bg.list", sessionId: sid });
@@ -18313,7 +18314,8 @@ export class App {
       const taskShown = taskText || (taskPending ? tr("（没有任务原文）") : "");
       if (node.task.textContent !== taskShown) {
         node.task.textContent = taskShown;
-        window.requestAnimationFrame(() => this.syncBgTaskMore(node));
+        // 隐藏页量不到行高：等它被选中时 selectBgRun 自己会量，这里不排无效 rAF。
+        if (!node.root.hidden) window.requestAnimationFrame(() => this.syncBgTaskMore(node));
       }
       // `hasLog` 也一样：派活那一刻文件还没写出来，`bg.log` 回来时会用它决定占位文案。
       node.hasLog = Boolean(r.hasLog);

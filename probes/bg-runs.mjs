@@ -192,6 +192,11 @@ try {
   check("End 跳到末条", Boolean(lastId) && lastId !== firstId, `${firstId} → ${lastId}`);
   await page.keyboard.press("Home");
   check("Home 回第一条", (await selId()) === firstId);
+  await page.keyboard.press("ArrowRight");
+  const rightId = await selId();
+  check("→ 也能换页（窄窗横向条的键位）", Boolean(rightId) && rightId !== firstId, `${firstId} → ${rightId}`);
+  await page.keyboard.press("ArrowLeft");
+  check("← 换回来", (await selId()) === firstId);
   await page.keyboard.press("Tab");
   check(
     "Tab 从 tab 走进右栏（tabpanel 可聚焦）",
