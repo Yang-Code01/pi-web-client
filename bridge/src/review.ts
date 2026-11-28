@@ -1267,6 +1267,131 @@ function firstLine(text: string): string {
   return (text ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
 }
 
+export interface ChildEvent {
+  /** 助手这轮答的话（非助手消息没有）。 */
+  text?: string;
+  /** 这条消息的用量（有 `usage.totalTokens` 才有；0 与「没有」对调用方是一回事：加 0）。 */
+  tokens?: number;
+  /** pi 替 provider 转达的原话：`stopReason: "error"` 时才有（连不上 / 401 / 限流…）。 */
+  error?: string;
+}
+
+/** `--mode json` 里我们读的那一小块。其余字段不声明 —— 别让这个类型跟着 pi 的 JSON 走。 */
+export interface ChildEventLine {
+  type?: string;
+  message?: {
+    role?: string;
+    content?: unknown;
+    usage?: { totalTokens?: unknown };
+    stopReason?: string;
+    errorMessage?: unknown;
+  };
+}
+
+/** 一条消息的正文：只拼 `{ type: "text" }` 块（thinking / tool 块不算「回答」）。 */
+function textOf(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as { type?: unknown; text?: unknown };
+    if (b.type === "text") parts.push(String(b.text ?? ""));
+  }
+  return parts.join("");
+}
+
+/**
+ * 一行 `--mode json` 事件里外层关心的三样东西。
+ *
+ * 关键是 `error`：真机那次网关掉线，子进程退出码 0、37 行事件、0 token，外面只剩「输出 37 行」——
+ * 而真正的原因（`connect EHOSTDOWN 192.168.31.36:7863`）就在 assistant 那条 `message_end` 的
+ * `errorMessage` 里，以前谁也没读它（D454）。
+ */
+export function readChildEvent(ev: ChildEventLine | null | undefined): ChildEvent {
+  if (ev?.type !== "message_end") return {};
+  const msg = ev.message;
+  const out: ChildEvent = {};
+  const total = msg?.usage?.totalTokens;
+  if (typeof total === "number") out.tokens = total;
+  if (msg?.role !== "assistant") return out;
+  if (msg.stopReason === "error") {
+    const why = String(msg.errorMessage ?? "").trim();
+    if (why) out.error = why;
+  }
+  const text = textOf(msg.content);
+  if (text.trim()) out.text = text;
+  return out;
+}
+
+/** 一次评审子进程跑下来的结果（`runChild` 交回来的就是它）。 */
+export interface ChildResult {
+  code: number | null;
+  text: string;
+  stderr: string;
+  aborted: boolean;
+  touched: Set<string>;
+  tokens: number;
+  lines: number;
+  silent: boolean;
+  /** pi 替 provider 转达的原话（`stopReason: "error"` 的 errorMessage），没有就是空串。 */
+  error: string;
+}
+
+/**
+ * 「子进程一句话没答」的原因：它自己报的错最有用（`stopReason: "error"` 的 errorMessage，
+ * 比如 `connect EHOSTDOWN 192.168.31.36:7863`），其次沉默超时，最后才是「退出码 0、输出 N 行」。
+ * 最后那条对定位几乎没用：正常的子进程也是三四十行、也是退出码 0（D454）。
+ */
+export function childWhy(res: Partial<ChildResult>): string {
+  const own = String(res.error ?? "").trim();
+  if (own) return own;
+  if (res.silent) return "90 秒没有任何输出";
+  return firstLine(String(res.stderr ?? "")) || `退出码 ${res.code ?? "-"}、输出 ${res.lines ?? 0} 行`;
+}
+
+/**
+ * 原话可能是一整段上游响应（含内网地址、请求 id、甚至回显的头部）：用户要的是线索，不是搬运。
+ * 截断放在「拼进给人看的文案」这一步，子进程交上来的原话本身不丢。
+ */
+export function clip(text: string, max = 300): string {
+  const s = String(text ?? "").replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * 「来源整个连不上」的原话 —— 只收**建立连接那一步**的失败：解析不到、路由不到、连接被拒、
+ * 连接超时。这几种跟评什么文件无关，下一组只会撞同一堵墙。
+ *
+ * **不收**只属于单次请求的瞬时故障：`ECONNRESET`（流被重置）、`EPIPE`（对端先关）、裸的
+ * `ETIMEDOUT`（一次读超时）、`connection reset by peer`、`Headers Timeout` —— 这些重试一次
+ * 往往就过去了，跟 429 同一类，走重试那条路（D454 三轮评审意见 1）。
+ *
+ * 也不用 `network` / `socket` / `proxy` 这类宽泛词：会命中 `Invalid connection header`
+ * 这种与网络无关的 provider 报错。
+ */
+const UNREACHABLE =
+  /\b(EHOSTDOWN|EHOSTUNREACH|ECONNREFUSED|ENOTFOUND|ENETUNREACH|EAI_AGAIN)\b|\bconnect (ETIMEDOUT|ECONNRESET|EPIPE)\b|Connect Timeout|getaddrinfo/i;
+
+/** 这条原话是不是「来源整个连不上」。既决定文案，也决定要不要继续跑剩下的组。 */
+export function unreachable(why: string): boolean {
+  return UNREACHABLE.test(String(why ?? ""));
+}
+
+/** 「一次都没给出结论」的失败文案（有子进程原话时以它为准）。 */
+export function noOutputMessage(why: string, tokens: number): string {
+  const own = String(why ?? "").trim();
+  // 这个数是**整轮**（含答出来的组）的累计用量：写清楚是「本次共用」，别让人当成这一组烧掉的（D454 意见 3）。
+  const used = `本次共用 ${Math.round(tokens / 1000)}k token`;
+  if (own && unreachable(own)) {
+    return (
+      `模型那边没连上：${clip(own)}。` +
+      "这跟评审范围和模型贵不贵都无关 —— 先确认这个来源通不通（网关 / 网络 / 凭据），换个来源也能先跑起来。"
+    );
+  }
+  if (own) return `重试后仍然没有给出结论（${used}）。子进程原话：${clip(own)}。可以换个模型或来源，或把范围缩小（少选几个文件 / 换一次提交）再跑。`;
+  return `重试后仍然没有给出结论（${used}）。可以换个模型或来源，或把范围缩小（少选几个文件 / 换一次提交）再跑。`;
+}
+
 async function rulesFor(repo: string, files: string[], signal?: AbortSignal): Promise<string> {
   const paths = files.slice(0, 200);
   if (!paths.length) return "";
@@ -1551,7 +1676,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
 
   /** 起一个子进程评一组：边跑边发进度，结束时把它答的那段话交回来。 */
   const runChild = (prompt: string) =>
-    new Promise<{ code: number | null; text: string; stderr: string; aborted: boolean; touched: Set<string>; tokens: number; lines: number; silent: boolean }>((resolve) => {
+    new Promise<ChildResult>((resolve) => {
       const pi = resolvePi();
       const proc = spawn(process.execPath, [pi.cli, ...reviewArgs({ model: opts.model, provider: opts.provider })], {
         cwd: root,
@@ -1561,6 +1686,9 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       });
       let stderr = "";
       let text = "";
+      // 子进程自己报的错（`stopReason: "error"` 的 `errorMessage`）：网关连不上 / 401 / 限流…
+      // 以前这里丢掉了它，于是面板只能说「退出码 0、输出 37 行」——把网络故障说成了模型问题（D454）。
+      let childError = "";
       let localTokens = 0;
       let outLines = 0;
       let silent = false;
@@ -1578,7 +1706,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         } catch {
           /* 已经关了 */
         }
-        resolve({ code, text, stderr, aborted: signal.aborted, touched, tokens: localTokens, lines: outLines, silent });
+        resolve({ code, text, stderr, aborted: signal.aborted, touched, tokens: localTokens, lines: outLines, silent, error: childError });
       };
       const guard = setTimeout(() => {
         try {
@@ -1627,15 +1755,13 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
           return;
         }
         if (ev?.type === "message_end") {
-          const usage = ev.message?.usage;
-          if (usage && typeof usage.totalTokens === "number") {
-            tokens += usage.totalTokens;
-            localTokens += usage.totalTokens;
+          const got = readChildEvent(ev);
+          if (typeof got.tokens === "number") {
+            tokens += got.tokens;
+            localTokens += got.tokens;
           }
-          if (ev.message?.role === "assistant" && Array.isArray(ev.message.content)) {
-            const answered = ev.message.content.filter((b: any) => b?.type === "text").map((b: any) => String(b.text ?? "")).join("");
-            if (answered.trim()) text = answered;
-          }
+          if (got.text) text = got.text;
+          if (got.error) childError = got.error;
           emit({ tokens });
         }
       });
@@ -1699,8 +1825,9 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     const collected: Finding[] = [];
     const lastSkipped: PreviewSkip[] = [];
     const accountedPaths = new Set<string>();
-    let answered = false;
     let lastChildWhy = "";
+    /** 有哪几组一个字都没交回来：有它就说明覆盖不全，这次不能记成 done（哪怕别的组给了意见）。 */
+    const unresolvedGroups: { group: number; why: string }[] = [];
     let failed: { code: number | null; stderr: string; group: number } | null = null;
 
     for (let i = 0; i < groups.length; i += 1) {
@@ -1715,33 +1842,54 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       let res = await runChild(prompt);
       if (res.aborted) break;
       if (res.code !== 0) {
-        failed = { code: res.code, stderr: res.stderr, group: i + 1 };
+        // 子进程崩了（或守卫把它杀了）也照样以它自己报的原话为先：网关掉线时它可能先吐了
+        // `EHOSTDOWN` 再非 0 退出，只报「退出码 N、stderr 首行」等于把原因丢了（D454 二轮评审意见 6）。
+        failed = { code: res.code, stderr: res.error || res.stderr, group: i + 1 };
         plan[i].state = "failed";
         plan[i].finishedAt = new Date().toISOString();
         emitPlan();
         break;
       }
+      // 这一组没交回话：计划里标 failed（不是「完成 0 条」），并记下来让收尾时把整轮算失败。
+      // 只在**真的结束**时调：重试之后答上了就不该再留这一笔（否则全组答完也判失败）。
+      const markGroupFailed = (index: number, why: string) => {
+        plan[index].state = "failed";
+        plan[index].finishedAt = new Date().toISOString();
+        unresolvedGroups.push({ group: index + 1, why });
+        emitPlan();
+      };
       if (!res.text.trim()) {
-        // 退出码 0、一句话没有：多半是工具调用把轮次/上下文吃掉了。重试一次，明确让它「别再调工具」。
-        const why = res.silent
-          ? "90 秒没有任何输出"
-          : firstLine(res.stderr) || `退出码 ${res.code}、输出 ${res.lines} 行`;
+        const why = childWhy(res);
         lastChildWhy = why;
-        note(`第 ${i + 1} 组没给结论（${why}；已用 ${Math.round(res.tokens / 1000)}k token），重试一次`, i + 1);
+        // 来源整个连不上（EHOSTDOWN 这类）：pi 已经在子进程里自己重试过 3 次，同一份提示词再发一遍
+        // 只会再撞一次同一堵墙、还每组白发 ~25 秒。这组判失败，后面的组也别再跑了（D454）。
+        if (res.error && unreachable(why)) {
+          markGroupFailed(i, why);
+          note(`第 ${i + 1} 组失败（${clip(why, 160)}）`, i + 1);
+          break;
+        }
+        // 其余（没答也没报错，或 429 / ECONNRESET / 超上下文这种只影响一组的错）：照老规矩再问一次，
+        // 明确让它「别再调工具」—— 单次限流就靠这一次翻盘（D454 评审意见 1）。
+        note(`第 ${i + 1} 组没给结论（${clip(why, 160)}；已用 ${Math.round(res.tokens / 1000)}k token），重试一次`, i + 1);
         const nudge = `${prompt}\n\n## 立即收尾\n\n不要再调用任何工具。根据你已经看到的内容直接输出上面那个 JSON 对象；宁可少报，也要把 JSON 交回来。`;
         res = await runChild(nudge);
         if (res.aborted) break;
         if (res.code !== 0) {
           failed = { code: res.code, stderr: res.stderr, group: i + 1 };
-          // 重试也失败依旧是「这一组失败」：不标就会在计划里一直挂着 running（落盘后失败详情会显示成进行中）。
-          plan[i].state = "failed";
-          plan[i].finishedAt = new Date().toISOString();
-          emitPlan();
+          // 重试也挂掉依旧是「这一组失败」：不标就会在计划里一直挂着 running（落盘后失败详情会显示成进行中）。
+          markGroupFailed(i, childWhy(res));
           break;
+        }
+        if (!res.text.trim()) {
+          lastChildWhy = childWhy(res);
+          markGroupFailed(i, lastChildWhy);
+          note(`第 ${i + 1} 组没给出结论（${clip(lastChildWhy, 160)}）`, i + 1);
+          // 重试这一轮可能换了一种错（刚才限流、这回网关掉了）：照样按**新的**原因决定要不要收工。
+          if (res.error && unreachable(lastChildWhy)) break;
+          continue;
         }
       }
       const parsed = toFindings(res.text);
-      if (res.text.trim()) answered = true;
       for (const f of parsed.findings) f.group = i + 1;
       collected.push(...parsed.findings);
       for (const f of parsed.findings) accountedPaths.add(f.path);
@@ -1793,13 +1941,18 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       });
       return;
     }
-    if (!stopped && !answered) {
-      // 退出码 0、一个字都没答：这不是「没问题」，是这次没评成。别把空结果写成 done。
-      // 重试已经在组里做过一次了，这里把「哪一组、花了多少」说清楚，并给两条能自己动手的路。
+    if (!stopped && unresolvedGroups.length) {
+      // 有组一个字都没交回来（网关连不上 / 模型逛到没话说）：这不是「没问题」，是这次没评全。
+      // 别的组给了意见也照样算失败 —— 把已有意见带回去，但状态不能写成 done。
+      // 文案交给 `noOutputMessage()`：子进程自己报了错就照它说，别再一律建议「换个更便宜的模型」
+      // （真机上那句话把「网关掉线」指成了「模型不划算」，D454）。
+      const why = unresolvedGroups[unresolvedGroups.length - 1].why || lastChildWhy;
       await finish({
         status: "failed",
         finishedAt: new Date().toISOString(),
-        findings: [],
+        findings: merged.findings,
+        resolved: merged.resolved,
+        resolvedPaths: merged.resolvedPaths,
         skipped,
         totalFiles: total,
         reviewedFiles: accountedPaths.size,
@@ -1811,10 +1964,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         prTitle: run.prTitle,
         prHead: run.prHead,
         prBase: run.prBase,
-        error:
-          `重试后仍然没有给出结论（已用 ${Math.round(tokens / 1000)}k token）。` +
-          (lastChildWhy ? `子进程原话：${lastChildWhy}。` : "") +
-          "可以换个更便宜的模型，或把范围缩小（少选几个文件 / 换一次提交）再跑。",
+        error: noOutputMessage(why, tokens),
         errorCode: "child_no_output",
       });
       return;

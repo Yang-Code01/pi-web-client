@@ -9114,3 +9114,32 @@ if (stop >= 0) {
 **与 D53 的关系。** D53 把「徽标只有一份实现」钉在了 `web/src/app.ts`；本单把它原样搬进 `web/src/session-badge.ts`（判定）＋ `app.ts` 的 `badgeChip()` / `openBadge()`（画与点），D53 那条规则不变，位置改以本单为准。
 
 **发现的既有问题（不在本单范围）**：`web/tests/pillbar-unit.mjs` 与 `web/tests/review-unit.mjs` 在 Node 26 上因 `import "*.css"` 直接 `ERR_UNKNOWN_FILE_EXTENSION`，main 上一样红（`npm run test:pillbar` / `test:review:view` 两个脚本都跑不起来）。
+
+## D454 模型的身份是 `provider/id`，不是 id（用户 2026-11-28「会话 codeReview 多次失败」→ 查出来是评审被派到了另一个来源）
+
+**问题。** 本机 `models.json` 里两个 provider 卖同一批模型 id：`wb2api`（远端网关 `192.168.31.36:7863`）与 `wb2_mac`（`127.0.0.1:7863`），20 个 id 一模一样，`wb2api` 在目录里排在前面。代码评审这条路上所有解析都只按 id `find()`：
+
+- `reviewDefaultModel()`（面板没单独挑模型时）：`this.models.find((m) => m.id === id)` —— 会话自己明明是 `wb2_mac`，还原出来的却是 `wb2api`；
+- 模型弹层的确认 `commit()`：`find((m) => m.id === draftModel)` —— 用户在弹层里点的是 `wb2_mac` 那一行，记下来的仍是 `wb2api`；
+- 行高亮 `on = m.id === draftModel` —— 两行同时标「使用中」，人看不出选的是哪个；
+- 桥那边也不留 provider：`SessionState.model` 只有 id，`absorbState()` 读 `get_state.model.id` 却把 `.provider` 丢了。
+
+远端那台机器一掉线（20:13 之后），评审每次都是「子进程退出码 0、37 行事件、0 token」，面板只能说「重试后仍然没有给出结论（已用 0k token）……可以换个更便宜的模型」—— 把网络故障说成了模型不划算。
+
+**决定。**
+
+- **会话记着自己的来源。** `SessionState` 加 `provider`（取自 pi 的 `get_state.model.provider`），`absorbState()` 与 `setModel()` 都写它。只给 id 的话页面只能按目录顺序猜，而目录顺序是「谁先被写进 models.json」。
+- **凡是「这个 id 对应目录里哪一行」都要带 provider。** 新增 `sameModel(a, b)`（id 相同 **且** 有一边不知道 provider 或两边相同），`draftProvider` / `startProvider` 与 `draftModel` 一起走；模型弹层的行、`draftInfo()`、`dirty()`、`commit()`、`.on` 高亮、会话页的「来源」、评审默认模型、评审 chip 的起始选中、对话 chip 的倍率与窗口、翻译选择器的预选，全部改成按它认。**「换来源」也算换模型**：`wb2api/glm-5.4` → `wb2_mac/glm-5.4` 是一次真切换，`dirty()` 要认。
+- **弹层里的「起点身份」先落成目录里的一行，再严格比。** `startRow = 同 provider+id 的行 ?? 同 id 的行`，`startId` / `startProviderId` 从它取；`isDraft` / `isStart` / `moved()` 用严格的 `provider + id`（不再借 `sameModel()` 的向后兼容）。那段「按 id 认」的回退是必须的：会话报的 provider 可能已经不在目录里（改名、下架、老 pi 的写法），只严格比会一行都匹配不上 —— 弹层里没有「使用中」、`draftInfo()` 是 undefined、连思考档位都换不了（二轮评审意见 1，探针最后两条守着）。
+- **弹层行上带 `data-provider`**，两个同名 id 的行从此可区分（探针与以后的选择器都靠它）。
+- **子进程自己报的错要带出来。** `readChildEvent()` 从 `message_end` 里取三样：`text` / `tokens` / `error`（`stopReason === "error"` 的 `errorMessage`）。`childWhy()` 按「原话 > 90 秒沉默 > 退出码/行数」挑原因；`noOutputMessage()` 在原因看着像网络故障（`connect` / `EHOST*` / `ECONN*` / `timed out` …）时改说「模型那边没连上…先确认这个来源通不通」，不再建议换更便宜的模型。
+- **报错之后只有「来源整个连不上」才提前收工。** `unreachable()` 只收**建立连接那一步**的失败：`EHOSTDOWN` / `EHOSTUNREACH` / `ECONNREFUSED` / `ENOTFOUND` / `ENETUNREACH` / `EAI_AGAIN` / `getaddrinfo` / `Connect Timeout` / `connect ETIMEDOUT`。这几种跟评什么文件无关，pi 在子进程里已经自己重试过 3 次也没用，再发一遍同一份提示词只会再撞一次同一堵墙、每组白发 ~25 秒 —— 这组判失败，后面的组也不再跑。**只属于单次请求的瞬时故障不算**：`read ECONNRESET`、`write EPIPE`、裸的 `ETIMEDOUT`、`connection reset by peer`、`Headers Timeout`，以及 429 限流、超上下文、401，一律照老规矩再问一次（`## 立即收尾` nudge），重试还不行才标这一组 failed、接着跑下一组。重试那一轮可能换了一种错，所以收工与否看**新的**原因。
+- **没给出结论的组不再标 done。** 以前落盘后是「第 1 组完成：0 条」+ 整轮 failed，看不出哪组没跑成；现在计划里就是 failed，而且只要有一组没交回来，整轮就算失败（别的组的意见照旧带回去）。
+
+**为什么。** ① 用户点的行和程序记的行必须是同一个 —— 一屏里两行同名同 id，唯一的区别就是 provider。② 远端 / 本机两个来源卖同一批模型是真实部署形态（一台网关在局域网、一台在本机），不是测试构造。③ 「退出码 0、输出 N 行」对定位毫无用处：正常子进程也是三四十行、也是退出码 0；真正的原因（`connect EHOSTDOWN 192.168.31.36:7863`）早就在事件流里了，只是没人读。④ pi 自己在网络失败时也会重试 3 次并且**仍以 0 退出**，所以外层不能拿退出码当唯一判据。
+
+**守卫。** `probes/review-model-provider.mjs`（桩桥 + 真 Chromium，目录里同名 id 两行、`wb2api` 在前）：评审 chip 的 title 是 `wb2_mac/…`；弹层里只有一行标「使用中」且是 `wb2_mac`；挑 `wb2_mac` 的 GLM-5.4 并确认后 title 仍是 `wb2_mac/cn:glm-5.4`；点「开始评审」，发给桥的 `review.run` 是 `provider: wb2_mac` + 挑中的模型；对话 chip 同一行切过去，`setModel.provider` 也是 `wb2_mac`；会话没报 provider 时按目录第一行起手、同 id 换来源仍然切得过去；会话报一个目录里没有的 provider（`wb2-legacy`）时按 id 认出那一行，「使用中」与档位条都还在。反证：把 `web/src` 退回改动前重建，前四条全红（`chip title = wb2api/…`、`review.run` 发的是 `wb2api`）。桥侧 `bridge/tests/review-unit.mjs` 新增 13 条：`readChildEvent` 从真机那帧 `message_end` 里取到 `EHOSTDOWN 192.168.31.36:7863`、没有 usage 时不凭空造 0、thinking / tool 块不冒充「答了一句」；`childWhy` 三级回退；`unreachable()` 只认网络错误码（`Invalid connection header`、`tool timed out` 都不算）；`clip()` 截断；`noOutputMessage` 遇网关故障不许出现「更便宜」。`bridge/tests/review-connect-error-e2e.mjs`（真 worker + 假 ocr + 假 pi，13 条）：网关报错 → failed + 原话 + 只起一次；沉默无答 → 重试一次仍 failed；**单次限流 → 重试一次就恢复，整轮 done**；**单组的非网络错误（超上下文）→ 重试仍不行 → 第 1 组 failed、第 2 组照跑、整轮 failed**；正常作答 → done。反证：把 `bridge/src` 退回改动前，`plan[0]` 是 done、原话丢失、重试两次。
+
+**可改。** ①`UNREACHABLE` 那个正则同时决定文案（说不说「没连上」）与要不要收工；只认「建立连接那一步」是刻意的 —— 宽泛的 `connect` / `network` 会把「Invalid connection header」这种与网络无关的 provider 报错也认成断网、把工具超时（`timed out`）说成网关挂了；而把 `ECONNRESET` / `EPIPE` / 裸 `ETIMEDOUT` 算进来，则会让一次流重置就把后面所有组一起判死（它们重试一次往往就过，与 429 同类）。②「其他报错也重试一次」在超上下文那种注定失败的错上会白花 ~25 秒；要省掉就再加一条「按错误类型决定重试」的分类，目前故意不区分（多一条正则就多一处会猜错的地方）。
+
+**代价。** ① `SessionState` 多一个字段：老桥不给 `provider` 时 `sameModel` 退回按 id 认（与以前行为一致，不会把用户挡在外面）。②「换来源」现在算一次改动，所以在弹层里点同名同 id、只换 provider 的那一行会冒出「未保存」—— 这正是要的，但第一次遇到会以为点错了。③ 两个 provider 卖同一批模型时，用户仍然只能在弹层里靠组头分辨来源（行里不印 provider）；这次没改行的排版。
