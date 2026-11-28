@@ -8903,3 +8903,28 @@ if (stop >= 0) {
 **代价 / 可改。** ①日常更新多了一步人工：agent 只能提示「点一下热部署」，不能替用户完成——那颗按钮会换构建，属于用户决定。想让它能代办，得先给 `POST /api/hotdeploy/run` 一个 agent 能用的入口，那是另一条决定。②`SKILL.md` 第三节（`Start-Process`）与第五节（Windows 计划任务）在这台 macOS 上照抄跑不起来；本条只把看门狗的 Windows 限制写明，没补 launchd / detached 写法，要在这台机器上走完整流程得先补那两节。③文档仍留两条路，读者要自己判断「桥是不是死了」，判据是 `/healthz` 有没有回应（写在 `running-the-bridge.md` 开头）。
 
 **验证。** 只动文字：AGENTS.md / `docs/agents/running-the-bridge.md` / `GLOSSARY.md` / `.pi/skills/bridge-update/SKILL.md`（含 frontmatter description）。`rg` 复查全仓再没有把 skill 写成唯一更新路径的地方；没有代码改动，所以不跑构建与测试。
+
+
+## D446 代码评审交给 detached worker：换脑、脑崩溃、更新重启都不打断（用户 2026-11-28「热部署会导致正在执行的 code Review 被中断」＋截图）
+
+**问题。** 热部署换脑时，正在跑的评审会当场消失，记录被标成「桥重启了，这次评审没跑完」。用户看到的是：PR #728 的一条评审跑到一半，部署完成后变成没跑完；同一条 PR 只能重跑，前面的 token 与时间全白费。
+
+**证据链。** D407 已经把桥拆成壳（`bridge/dist/host.js`）与脑（`bridge/dist/index.js`），但评审的编排一直在脑里：`startReview()` 把 run 记到盘上之后，`execute()`、`active` / `progressMap`、以及每组 `runChild()` 起的 `pi` 子进程都只活在脑进程里。换脑时老脑收到 `retire`，只做 `tunnel.stop(); sessions.releaseLocks(); process.exit(0)`（`bridge/src/index.ts:4858` 附近），5 秒后壳再把老脑强杀；评审的子进程跟着一起没。新脑开机时 `sweepStaleRuns()`（`bridge/src/review.ts:635` 附近）把所有 `status === "running"` 的 run 改成 `status:"stale"`、`errorCode:"bridge-restart"`，于是页面显示「桥重启了，这次评审没跑完」。现场：2026-11-28 13:39 开始评审，13:44:48–13:45:19 热部署 `--mode brain`，`.scratch/hot-deploy/state.json` 的 step 4「构建完成，交给壳换脑」与评审中断同一分钟。
+
+**决定。**
+
+- 新增执行进程 `bridge/src/review-worker.ts`（入口 `runReviewJob()`）：一次评审从「脑里的异步函数」变成独立 detached 进程；脑只负责校验、落 run、起 worker、转发进度。worker 的入口从 `review-worker.js` 找，开发态回退 `.ts` + `--experimental-strip-types`。
+- 盘上四份文件（都在 `<state>/review/jobs/`）：`<runId>.json` 是 job（repo/session/startedAt/opts/pid），`<runId>.progress.json` 是进度（200 ms 防抖、tmp+rename 原子写），`<runId>.cancel` 是取消信号，`<runId>.beat` 是 worker 每 5 秒写一次的心跳。worker 启动时自己把 `pid` 写回 job —— 脑可能刚 spawn 就崩，这一行是「换脑后还认不认得出这条评审」的保险。
+- 会话选的 GitHub 令牌（`ghEnv`）**只走 spawn 的环境变量**，不写 job：令牌不落盘，worker 里的 `gh` / `git` 子进程从 `process.env` 拿。
+- 脑侧 500 ms ticker 读进度文件并广播；worker 不在时读 state：run 已收尾就发终态进度 + `review.state`，仍 `running` 就标 `stale` / `errorCode:"worker-lost"`（「评审进程意外退出，这次评审没跑完」），并清掉四份文件。
+- 开机顺序：`sweepStaleRuns()` 先跑，但用 `liveJobForRun()` 跳过「job 文件在、pid 还活、startedAt 对得上」的 run；job 文件读不出来时，`<runId>.beat` 只要新鲜且 pid 还活着，也照样算活（杀软占用 / 半截写入不该把评审收尸）。`broadcast` 定义之后 `setReviewNotify()` + `resumeReviewJobs()` 把上一代留下的活任务接回 `active` / `progressMap`，页面一打开就能看到进度。`review.get` 的 `progresses` 因此也是重连后的真实状态，不用等 worker 再写一帧。
+- **换脑（retire）不停评审**（这正是本决策的目的）；只有真正停桥（`/api/host/stop` 默认、SIGINT、SIGTERM）才 `await stopAllReviews()`：写 cancel、最多等 3 秒、超时用 `reviewJobRunning()`（心跳校验，防 pid 复用）杀进程树，并把仍 `running` 的记录收成 `stopped`。更新器（`hotdeploy.mjs` / bridge-update 的 `restart.mjs`）必须先 `POST /api/host/stop?keepReviews=1` 再杀旧壳 —— 这条显式路径给脑发 `retire`（不跑 `sessions.shutdown()`），和普通停机共用同一段 `STOP_GRACE_MS`（8 秒）等它自己退出，detached worker 留着让新脑靠 job 文件接回来；只有端点返回 `keepReviews:true` 时更新器才等旧壳退出（最多 15 秒）再杀它的子进程，旧壳 404 时直接杀（它不会 retire）；新壳若不等，还在 retire 里的脑会先收到 SIGTERM 而走 `shutdown()`，把刚保住的 worker 又收掉。壳这边等满 8 秒连接还在就 SIGKILL 那个脑，避免它在 `releaseLocks` 里挂住成为孤儿。
+- worker 每 5 秒写 `<runId>.beat`；`reviewJobRunning()` 用「pid 活着 + 心跳 pid/startedAt 对得上 + 30 秒内」判断它还是不是这次评审的执行进程。还没有心跳时按有没有 pid 分开：有 pid 只给 15 秒（worker 一起来就该写第一份心跳；给太久会让 SIGKILL 后的死任务在换脑时被接回），还没写回 pid 才给 60 秒启动宽限（覆盖 30 秒 HELLO + 新脑启动）。sweep、resume、取消强杀都走这个判据，不只 `process.kill(pid, 0)`。
+- **直接给脑进程发 SIGTERM 不在支持路径里**：脑把它当成真正停桥（`shutdown()`，会收掉评审）；换脑 / 更新由壳走 `keepReviews=1` 的 `retire` 交接。真正停桥要发信号给壳，或者走 `/api/host/stop`；壳的 SIGTERM/SIGINT 也是 `stop("all")`，会通知脑并等它收完评审。
+- `startReview()` 保留原校验 / quota / 同 PR 去重 / 立即返回 `runId` 的语义；新增 `launch` 注入缝（`setReviewLauncher()`），单测用它替换掉真 spawn，避免把「立刻失败的 PR fetch」跑成后台进程。
+
+**为什么。** ① 这是 D407 同类问题的漏网：会话已经交给壳持有的管道，评审这种最长可能跑 25 分钟的长任务却还挂在脑上。② 不做「换脑等评审跑完」：一次部署会被评审拖到半小时，而且脑崩溃 / 更新重启根本等不了。③ 不做「新脑自动续跑」：模型调用不是幂等的，重跑要再花一遍 token，还会把已经跑完的组重做。④ 进度 / 取消用文件而不是 IPC：worker 与新一代脑之间没有现成通道，文件是唯一跨进程代、跨平台都成立的载体；轮询而不是 `fs.watch`，因为 Windows / 网络盘会漏事件。⑤ worker 必须 detached：它是脑的子进程就还会被 `childrenOf()` / 进程树清理带走。
+
+**代价。** 换脑期间进度最多晚 500 ms；每次评审多一个常驻的 node 进程与一个 `<runId>.log`（只在排查时看）；如果用户把 host 也硬杀（不是换脑），worker 仍会跑完，但没人收尾，下次开机才会把结果接回来。取消是协作式的：worker 被系统挂住时 3 秒 / 10 秒后才会被强杀。
+
+**验证。** 新增 `bridge/tests/review-worker-e2e.mjs`（`npm run test:review-swap`）：真壳 + 真脑 + 假 `PI_BIN`（30 秒慢回答）+ 假 `ocr`，在临时仓库开一条 workspace 评审，断言 worker pid 与脑 pid 不同；`POST /api/host/deploy?action=swap` 换脑之后断言 worker 仍活、新脑 `review.get` 的 `progresses` 里有这条、最终 `status:"done"` 且 `totalFiles:1`，worker 退出后 job 文件被回收；再开第二条慢评审并 `/api/host/stop`，断言壳正常退出且 worker 被收掉；最后另起一个壳开第三条评审，`POST /api/host/stop?keepReviews=1` 后断言壳退出、脑走了换代路径、worker 仍活着（防「150ms 后 SIGTERM 把评审收掉」回归）。单测在 `bridge/tests/review-unit.mjs` 增加「live job 的 running run 不被 sweep，dead pid 的才被标 stale」「job 读不出来但心跳新鲜仍算活」「opts 形状不对不算活」「接回的进度逐字段归一化」。`npm --prefix bridge run typecheck`、`npm run build:bridge`、`npm run test:review-swap`、`npm run test:host`、`npm run test:review` 均通过。

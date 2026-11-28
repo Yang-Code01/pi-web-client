@@ -513,8 +513,6 @@ export class App {
   /** 上一次真发出去的「评什么」（JSON）：一样的就不再发，敲字/重画不会把状态文件反复重写。 */
   private reviewPickSent = "";
   private reviewToasted = new Set<string>();
-  /** 最近一次发 `review.get` 的时刻：ocr 那一帧丢了要能自己补一次，别死等。 */
-  private reviewOcrAskedAt = 0;
   /** `会话id|cwd`：变了就把面板状态清空（评审按会话分开）。 */
   private reviewSessionKey = "";
   /** 定时补问一次：页面重连后没人触发重画时，光靠 render 里的自愈等不到下一次重画。 */
@@ -2281,6 +2279,19 @@ export class App {
         // D391：深链 `#/s/<id>` 与刷新都是在快照到达之前跑 `routeFromHash()` 的 —— 那时还不知道
         // 这颗会话属于哪个工作区。快照到了补记一次（同一组同一颗只写一次，便宜）。
         this.noteLastSession();
+        // 换脑 / 重连（D446）：评审可能已经在新一代脑上继续跑，进度只在桥的盘上。
+        // 重连后没有别的地方会再发 review.get —— 不补这一下，面板会停在换脑前的最后一帧。
+        //
+        // 放在 renderAll() 之前：renderReviewPanel() 会检查 `!reviewOcr` 并挂一次 2.5 秒重试，
+        // 这样新脑的 ocr 帧丢了也有人补问。旧脑的 ocr 不能留：它会让上面的检查误以为已经收到。
+        if (this.currentId && this.reviewAsked) {
+          const reviewDir = this.reviewDir();
+          if (reviewDir) {
+            this.reviewOcr = null;
+            // force：这是新连接 / 新脑，同一目录也得再问一遍，不能沿用上一代的去重状态。
+            this.askReview(reviewDir, true);
+          }
+        }
         this.renderAll();
         // Q-021: 新会话 / 首屏恢复都可能带着另一个 cwd 进来。
         void this.refreshGit(true);
@@ -19145,6 +19156,18 @@ export class App {
     this.reviewPicker?.close();
   }
 
+  /**
+   * 问一次桥的评审状态。默认按目录去重；`force` 用于重连 / 插件变更 / 重新进页签 ——
+   * 那些路径面对的是新连接或新状态，同一目录也必须重发。只在这里维护 `reviewAsked`，
+   * 别让调用方各自拼这份状态。
+   */
+  private askReview(dir: string, force = false): boolean {
+    if (!force && this.reviewAsked === dir) return false;
+    this.reviewAsked = dir;
+    this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
+    return true;
+  }
+
   private loadReview(): void {
     const dir = this.reviewDir();
     if (!dir) {
@@ -19153,9 +19176,7 @@ export class App {
       this.reviewProgresses = [];
       return;
     }
-    this.reviewAsked = dir;
-    this.reviewOcrAskedAt = Date.now();
-    this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
+    this.askReview(dir, true);
     // PR 列表按**评的那个仓库**排队（钉了子仓库时它与会话目录不是一回事）。
     const ask = this.reviewPin || dir;
     if (this.reviewPrsAsked !== ask) this.loadPullRequests(ask);
@@ -19399,11 +19420,7 @@ export class App {
     this.loadReviewAccounts();
     // 换过会话 / 第一次进这一页：问一次桥。放在这里是因为面板可能是「记住上次页签」直接打开的，
     // 那一路不会走 selectQueueTab()。
-    if (dir && this.reviewAsked !== dir) {
-      this.reviewAsked = dir;
-      this.reviewOcrAskedAt = Date.now();
-      this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
-    } else if (dir && !this.reviewOcr && this.reviewRetryTimer === null) {
+    if (dir && !this.askReview(dir) && !this.reviewOcr && this.reviewRetryTimer === null) {
       // ocr 那一帧丢了（桥重启、页面重连、连接刚建就被打断）：面板会永远停在「正在读评审状态」。
       // 页面重连后不会有人再触发重画，所以这里挂一次定时补问，而不是等下一次 render。
       this.reviewRetryTimer = window.setTimeout(() => {

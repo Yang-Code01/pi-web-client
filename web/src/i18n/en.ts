@@ -4470,6 +4470,8 @@ export const en: Dict = {
   "提交 {p1}": "Commit {p1}",
   "评过了，一条意见都没有。": "Reviewed — no findings.",
   "桥重启了，这次评审没跑完。重跑一次就行。": "The bridge restarted, so this review did not finish. Just run it again.",
+  "评审进程意外退出，这次评审没跑完": "The review process exited unexpectedly, so this review did not finish.",
+  "评审进程没起来": "The review process did not start.",
   "这个目录不是 git 仓库，没有东西可评。": "This directory is not a git repository — nothing to review.",
   "先打开一个会话：评审评的是它的目录。": "Open a session first — a review scans that session's directory.",
   "先填一个提交号": "Enter a commit first",
