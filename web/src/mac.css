@@ -37,6 +37,14 @@ html[data-ui="mac"] .topbar .icon-btn {
 }
 html[data-ui="mac"] .topbar .icon-btn:hover { background: var(--mac-fill-2); color: var(--text); }
 html[data-ui="mac"] .topbar .icon-btn:active { scale: 0.94; background: var(--mac-fill-2); }
+/* 上面那条（0,3,1）比写在按钮上的状态色（`.icon-btn.term-live` / `.icon-btn.alert`，0,2,0）更具体，
+   会把它们整片盖掉：终端收起之后「点亮」、右栏那颗的告警色在这个表皮里从来没露过面（#756）。
+   状态色只在这个组合下补回来，不把工具栏改回硬边。hover 是把强调色**叠进**不透明的底色里，
+   而不是换成半透明的强调色 —— 玻璃顶栏上后者会让底色发淡发透，跟「更亮一点」正好相反。 */
+html[data-ui="mac"] .topbar .icon-btn.term-live { color: var(--accent); background: var(--accent-bg); }
+html[data-ui="mac"] .topbar .icon-btn.term-live:hover { background: color-mix(in srgb, var(--accent) 10%, var(--accent-bg)); }
+html[data-ui="mac"] .topbar .icon-btn.alert { color: var(--warn); background: var(--warn-bg); }
+html[data-ui="mac"] .topbar .icon-btn.alert:hover { background: color-mix(in srgb, var(--warn) 8%, var(--warn-bg)); }
 
 html[data-ui="mac"] .ws-session-row { border-bottom: 0; background: transparent; }
 html[data-ui="mac"] .pin-chip {

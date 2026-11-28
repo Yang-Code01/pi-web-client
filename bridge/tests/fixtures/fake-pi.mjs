@@ -285,6 +285,33 @@ async function turn(text) {
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  if (text.startsWith("BASHARGS")) {
+    // D458: 一条带 heredoc 的长命令（真实会话里 bash 的 command 就是这个形状）。
+    // 「参数」对话框要把它按真换行铺开；老实现会把这十几个换行显示成字面的 \\n。
+    const command = [
+      "cd /Users/yangcode-/pi-web-client-wt/feat/review-auto && python3 - <<'PY'",
+      "import pathlib",
+      "en = pathlib.Path(\"web/src/i18n/en.ts\")",
+      "ja = pathlib.Path(\"web/src/i18n/ja.ts\")",
+      "a_en = '  \"自动评审 · 合并 PR #{p1}\": \"Auto review · merging PR #{p1}\",'",
+      "a_ja = '  \"自动评审 · 合并 PR #{p1}\": \"自動レビュー · PR #{p1} をマージ\",'",
+      "for p, a, n in ((en, a_en, 'x'), (ja, a_ja, 'y')):",
+      "    t = p.read_text()",
+      "    assert a in t, p",
+      "    p.write_text(t.replace(a, a + n, 1))",
+      "print(\"ok\")",
+      "PY",
+      "cd /Users/yangcode-/pi-web-client-wt/feat/review-auto && npm --prefix web run typecheck 2>&1 | grep -viE '^npm warn|^$' | tail -20",
+    ].join("\n");
+    const args = { command, cwd: "/Users/yangcode-/pi-web-client-wt/feat/review-auto", timeout: 60000, description: "把新文案补进 en/ja 并跑类型检查" };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: "call-bash-args", name: "bash", arguments: args }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: "call-bash-args", toolName: "bash", args });
+    while (!abortRequested) await sleep(100);
+    out({ type: "tool_execution_end", toolCallId: "call-bash-args", toolName: "bash", isError: false, result: "ok" });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   if (text.startsWith("BGCHILD")) {
     const runId = process.env.FAKE_PI_CHILD_RUN_ID || `del_fake_${process.pid}`;
     const root = path.join(os.tmpdir(), "acp-delegate");
@@ -485,16 +512,18 @@ async function turn(text) {
     const activity = path.join(os.tmpdir(), "acp-delegate", "del_fake.activity");
     fs.mkdirSync(path.dirname(activity), { recursive: true });
     fs.writeFileSync(activity, "[tool] bash rg -n continueState web/src\n[tool] read bridge/src/sessions.ts\n");
+    // 任务原文默认极短；截图验「长任务折四行 + 展开」时用这个 env 塞一段长的（默认行为不变）。
+    const bgTask = process.env.FAKE_PI_BGSTART_TASK || "look at the files";
     out({ type: "message_start", message: assistant("") });
-    out({ type: "tool_execution_start", toolCallId: "call-bg", toolName: "acp_delegate", args: { agent: "researcher", task: "look at the files" } });
+    out({ type: "tool_execution_start", toolCallId: "call-bg", toolName: "acp_delegate", args: { agent: "researcher", task: bgTask } });
     out({
       type: "tool_execution_end",
       toolCallId: "call-bg",
       toolName: "acp_delegate",
       isError: false,
       result: {
-        content: [{ type: "text", text: "Delegated to **researcher** (runId `del_fake`).\nTask: look at the files\nRunning in the background at `" + path.join(os.tmpdir(), "acp-delegate") + "`.\n  Live activity is streaming to `" + activity + "`." }],
-        details: { kind: "delegate", runId: "del_fake", agent: "researcher", task: "look at the files" },
+        content: [{ type: "text", text: "Delegated to **researcher** (runId `del_fake`).\nTask: " + bgTask + "\nRunning in the background at `" + path.join(os.tmpdir(), "acp-delegate") + "`.\n  Live activity is streaming to `" + activity + "`." }],
+        details: { kind: "delegate", runId: "del_fake", agent: "researcher", task: bgTask },
       },
     });
     out({ type: "message_end", message: assistant("子代理已启动，我先合入别的分支。", { stopReason: "stop" }) });

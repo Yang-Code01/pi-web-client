@@ -220,6 +220,19 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .icon-btn[aria-pressed="true"] { color: var(--faint); }
 /* D92: 顶栏那颗「终端」—— 有 shell 在跑（含收起状态）就点亮，点一下回到同一个进程。 */
 .icon-btn.term-live { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
+/* #756: 收起（「－」）≠ 关掉。收起态在字后面挂三根音柱（「正在播放」那个记号）：
+   柱子在动 = shell 还在后台跑，再点一下回到原样；关掉之后它们消失、按钮回灰。
+   不挂在图标角上 —— 圆点要贴住图标才看得出属于它，一贴就成了贴纸。 */
+.term-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 10px; margin-left: 1px; flex: none; }
+.term-bars i {
+  display: block; width: 2px; height: 10px; border-radius: 1px; background: var(--accent);
+  transform-origin: bottom; animation: term-bars-rise 1.05s ease-in-out infinite;
+}
+.term-bars i:nth-child(2) { animation-delay: 0.16s; }
+.term-bars i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes term-bars-rise { 0%, 100% { transform: scaleY(0.34); opacity: 0.55; } 50% { transform: scaleY(1); opacity: 1; } }
+/* 少动的人也要看得出「在动」，但别快得像报警器 —— 同一段起伏，放慢到 2.6s。 */
+@media (prefers-reduced-motion: reduce) { .term-bars i { animation-duration: 2.6s; } }
 .icon-btn.alert { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
 /* 记录那颗：平时灰的，有未处理条目才整颗（图标 + 悬停底）转危险色 —— 红等于「有活没干」。 */
 .icon-btn.notes-btn.has-pending { color: var(--danger); --ico-tint: var(--danger); }
@@ -1809,20 +1822,44 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .modal form { width: min(360px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 12px; }
 .modal input { padding: 12px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font-family: var(--mono); }
 
-/* D232: 长参数 / 子代理步骤详情的对话框。遮罩用 .modal（与口令框同一层，z-index 50），
-   面板自己排：标题栏一行（名字 + 耗时 + 复制 + ✕），正文等宽字体、内部滚动。 */
-.argdialog-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(760px, 100%); max-height: min(calc(var(--vh1) * 80), 720px); overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-.argdialog-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 12px; border-bottom: 1px solid var(--line); }
-.argdialog-title { overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.argdialog-meta { flex: none; color: var(--faint); font: 11px/1 var(--mono); font-variant-numeric: tabular-nums; }
-.argdialog-btn { flex: none; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--faint); font: inherit; font-size: 11px; cursor: pointer; }
-.argdialog-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+/* D232 / D460: 长参数 / 子代理步骤详情的对话框。遮罩与窗体材质由 mac.css 的
+   `[data-mac-surface="window"]` 负责（openArgsDialog 走 overlay() 打的 window 标记），这里只管窗口
+   里面怎么排：一条工具栏（工具徽章 + 标题 / 耗时 + 复制 / ✕）、一行事实胶囊、剩下都是代码纸面。
+   正文按真文本铺开（不再是一段 JSON），所以等宽字体给到 12.5px / 1.7 —— 11px 的旧尺寸读长命令太挤。 */
+.argdialog-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(720px, 100%); max-height: min(calc(var(--vh1) * 84), 760px); overflow: hidden; border-radius: 14px; }
+.argdialog-head { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 12px; border-bottom: 0.5px solid var(--mac-glass-line); }
+/* 工具徽章：一块圆角小方块，图标用强调色 —— 工具栏里的「这张纸是哪个工具摊开的」那一眼。 */
+.argdialog-glyph { flex: none; display: grid; place-items: center; width: 27px; height: 27px; border-radius: 8px; color: var(--accent); background: var(--mac-fill-2); box-shadow: inset 0 0.5px 0 var(--mac-glass-hi); }
+.argdialog-headtext { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.argdialog-title { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 600; letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; }
+.argdialog-sub { color: var(--faint); font: 11px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+.argdialog-actions { flex: none; display: flex; align-items: center; gap: 7px; }
+.argdialog-btn {
+  flex: none; height: 24px; padding: 0 10px; border: 0.5px solid var(--mac-control-line); border-radius: 7px;
+  background: var(--mac-control); color: var(--text); font: 500 11.5px/1 var(--sans); cursor: pointer;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.1);
+  transition: filter var(--dur-1) var(--mac-ease), scale 220ms var(--mac-spring);
+}
+.argdialog-btn:hover { filter: brightness(1.06); }
+.argdialog-btn:active { scale: 0.96; }
 .argdialog-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.argdialog-copy { margin-left: auto; }
-.argdialog-body { overflow: auto; padding: 12px; }
-.argdialog-label { margin-bottom: 4px; color: var(--faint); font-size: 11px; }
-.argdialog-text { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); color: var(--text); font: 11px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.argdialog-text:last-child { margin-bottom: 0; }
+.argdialog-close { width: 24px; padding: 0; display: grid; place-items: center; border-radius: 50%; color: var(--dim); }
+.argdialog-body { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: auto; padding: 12px; }
+/* 事实胶囊：path / offset / timeout 这类短字段。值再长就省略，长正文已经在下面的块里了。 */
+.argdialog-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.argdialog-fact { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; padding: 3px 8px; border-radius: 7px; border: 0.5px solid var(--mac-glass-line); background: var(--mac-fill); font: 11px/1.45 var(--mono); }
+.argdialog-fact b { flex: none; color: var(--faint); font-weight: 400; }
+.argdialog-fact span { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.argdialog-block { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.argdialog-blockhead { display: flex; align-items: baseline; gap: 8px; padding: 0 2px; }
+.argdialog-label { color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: 0.01em; }
+.argdialog-blockmeta { margin-left: auto; color: var(--faint); font: 10.5px/1.3 var(--mono); font-variant-numeric: tabular-nums; }
+/* 代码纸面：沉下去一块（--sunken）、发丝边、内阴影，跟 Markdown 的代码块是同一档底色。 */
+.argdialog-text {
+  margin: 0; padding: 10px 12px; border-radius: 10px; border: 0.5px solid var(--mac-glass-line);
+  background: var(--sunken); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: var(--text); font: 12.5px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: break-word; tab-size: 2;
+}
 
 /* ---------------------------------------------------------------- desktop */
 /* 桌面三栏。判据不是视口宽度，而是「有效宽度」= 视口 / 字号缩放：`#app` 上挂着 zoom，
@@ -2533,6 +2570,9 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 @media (max-width: 560px) {
   .icon-btn.wide { width: 28px; padding: 0; gap: 0; }
   .icon-btn.wide .lb { display: none; }
+  /* 窄成 28px 方块时字收掉了，音柱还在图标后面：15 + 8 放得下，别再给它们 2px 的缝。 */
+  .topbar .term-bars { gap: 1px; height: 7px; }
+  .topbar .term-bars i { height: 7px; }
   /* 打开会话之后这一排是九样东西（chips + 六颗按钮 + 字号），390px 差 10px 就要横向滚。
      缝收到 6、两侧 padding 收到 12，再把 chip 里的工作区名收掉（它 70px，而这一排真正要读的
      是会话名，标题那一格本来就只剩几十像素）。 */
@@ -2989,8 +3029,12 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .dir-mkrow .dir-mkerr { padding-top: 4px; min-height: 0; }
 
 /* ---------------------------------------------------------------- model sheet: 设置控制台外壳 + 草稿确认 */
-/* D373：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。 */
-.st-console.model-sheet { width: min(1000px, 100%); height: min(760px, 100%); }
+/* D373：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。
+   D457：模型层比设置页窄、矮一档 —— 但**只覆盖基数**，尺寸算式仍由 `.st-console` 那一份算：
+   以前这里自己抄了一遍 `min(calc(1000px * …), 100%)`，`--st-frame` 的语义一改它就静默掉队。
+   也别写死 `min(1000px, 100%)`：特异性 (0,2,0) 会赢过基础规则，2.0 下被遮罩夹住看着像对的，
+   80% 时露馅（视觉 800 而不是 1000）。 */
+.st-console.model-sheet { --st-w-base: 1000px; --st-h-base: 760px; }
 /* 列表自己滚，档位条钉在滚动区外：模型一大堆时，选完不用滚回顶部才能换档。 */
 .st-console.model-sheet .st-pane { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .model-sheet .pm-body { flex: 1 1 auto; min-height: 0; padding: 18px 22px 22px; overflow-y: auto; scrollbar-gutter: stable; }
@@ -3823,6 +3867,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 @media (prefers-reduced-motion: reduce) {
   .pin-menu { animation: none; }
   .bg-bar .bg-dot { animation: none; }
+  .bg-run-dot { animation: none; }
   .turn-rail.busy .turn-tick.ghost { animation: none; }
   /* #478：新建组的两处「刚出来」提示动效也关掉（静态高亮保留）。 */
   .ws-tabs-more.fresh { animation: none; }
@@ -3913,8 +3958,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .session-info .info-compact input:focus { outline: none; border-color: var(--accent); }
 
 /* #23 shell picker under the terminal ＋ */
-.term-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 140px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
-.term-menu-item { text-align: left; padding: 8px 8px; border: 0; background: none; color: var(--text); border-radius: 6px; font-size: 13px; cursor: pointer; }
+.term-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 140px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); overflow-y: auto; /* #756：封顶后滚到底不许把页面一起滚走（滚链） */ overscroll-behavior: contain; }
+.term-menu-item { flex: 0 0 auto; text-align: left; padding: 8px 8px; border: 0; background: none; color: var(--text); border-radius: 6px; font-size: 13px; cursor: pointer; }
 .term-menu-item:hover { background: var(--accent-bg); }
 
 /* #31 compaction / branch summary / extension message */
@@ -4481,25 +4526,166 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .update-bar-x:hover { color: var(--text); }
 
 
-/* D170 详情：点开「后台」那条提示，看 runner 在干什么。一屏一张卡片，过程贴着底长。 */
-.sheet.bg-sheet { grid-template-rows: auto minmax(0, 1fr); width: min(760px, calc(var(--vw1) * 94)); max-height: min(760px, calc(var(--vh1) * 84)); }
-.bg-sheet-body { overflow: auto; padding: 12px 16px 16px; display: grid; gap: 14px; align-content: start; }
-.bg-empty { color: var(--faint); font-size: 13px; padding: 6px 0; }
-.bg-run { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
-.bg-run-head { display: flex; align-items: baseline; gap: 10px; }
-.bg-run-agent { font-size: 13px; font-weight: 600; color: var(--text); }
-.bg-run-state { font: 11px/1 var(--mono); color: var(--accent); }
-.bg-run-task { font-size: 13px; line-height: 1.5; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
-/* 失败原因：runner 的报错原文（前台派活挂掉时它是唯一的线索）。 */
-.bg-run-err { font-size: 12.5px; line-height: 1.5; color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; }
-.bg-run-id { font: 11px/1 var(--mono); color: var(--faint); }
-.bg-run-lab { font-size: 11px; color: var(--faint); letter-spacing: 0.02em; }
+/* D170 详情：点开「后台」那条提示，看 runner 在干什么。
+   mac 检查器式排版（样张 B）：左边 run 列表始终在原地，右边只看选中的那一条 —— 内容再长
+   （任务十几行、过程几十行）也只滚右半边，不再把后面几条挤到屏幕外。
+   一条 run = 左栏一行（状态灯 + 名字 + 用时 + 任务首行）+ 右栏一页（抬头吸顶，任务/过程/输出三块）。
+   窄到 620px 以下两栏并一栏：列表变成顶部横向条，详情照旧。 */
+.sheet.bg-sheet {
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(900px, calc(var(--vw1) * 96));
+  max-height: min(760px, calc(var(--vh1) * 84));
+}
+.bg-head { align-items: flex-start; padding: 12px 16px 11px; }
+.bg-head-main { display: grid; gap: 2px; min-width: 0; }
+.bg-head-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bg-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.bg-head-chip {
+  flex: none; padding: 1px 7px; border-radius: 999px;
+  font-size: 10.5px; line-height: 15px; white-space: nowrap;
+  background: var(--panel-2); color: var(--faint);
+}
+.bg-head-chip[hidden] { display: none; }
+.bg-head-chip[data-state="running"] { background: var(--accent-bg); color: var(--accent); }
+.bg-head-chip[data-state="done"] { background: var(--ok-bg); color: var(--ok); }
+.bg-head-chip[data-state="failed"] { background: var(--danger-bg); color: var(--danger); }
+.bg-head-meta { font-size: 10.5px; color: var(--faint); }
+.bg-head-meta[hidden] { display: none; }
+.bg-head-close { flex: none; }
+
+/* 两栏壳：容器查询量的是这层（窄了才把左栏折成顶部条），滚动交给左右各自。 */
+.bg-sheet-body { display: grid; min-height: 0; overflow: hidden; container-type: inline-size; }
+.bg-body { display: grid; grid-template-columns: clamp(184px, 24%, 216px) minmax(0, 1fr); min-height: 0; }
+.bg-body[hidden] { display: none; }
+
+.bg-nav {
+  display: grid; align-content: start; gap: 1px; min-height: 0;
+  padding: 6px; overflow: auto;
+  border-right: 0.5px solid var(--line-soft);
+  background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
+}
+.bg-nav-head { padding: 5px 9px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--faint); }
+.bg-nav-head[hidden] { display: none; }
+/* tablist 本体：tab 只放这一层里，「运行 · N」那行在它外面（ARIA 只许 tab 做 tablist 的孩子）。 */
+.bg-nav-list { display: grid; align-content: start; gap: 1px; min-width: 0; min-height: 0; }
+.bg-nav-item {
+  display: grid; gap: 3px; width: 100%; padding: 7px 9px;
+  border: 0; border-radius: 7px; background: none; color: inherit; text-align: left; cursor: pointer;
+  /* 键盘换页 scrollIntoView 时给圆角留点气口，别贴着滚动区边被裁掉。 */
+  scroll-margin: 0 4px;
+}
+.bg-nav-item:hover { background: var(--panel-2); }
+.bg-nav-item[aria-selected="true"] {
+  background: var(--accent-bg);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+.bg-nav-item:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: -2px; }
+.bg-nav-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.bg-nav-agent {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 600; color: var(--text);
+}
+.bg-nav-time { flex: none; font: 10.5px/1 var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.bg-nav-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--faint); }
+
+.bg-panes { display: grid; min-width: 0; min-height: 0; }
+.bg-panes[hidden] { display: none; }
+
+/* 右栏一页：抬头吸顶（读到过程第 40 行也知道自己看的是谁），下面整段自己滚。 */
+/* 右栏整页铺 --panel：弹层本身是玻璃材质，吸顶抬头要是半透明的就会跟正文分层。 */
+.bg-run { min-height: 0; overflow: auto; background: var(--panel); isolation: isolate; }
+.bg-run[hidden] { display: none; }
+.bg-run-top {
+  position: sticky; top: 0; z-index: 1;
+  display: grid; gap: 4px; padding: 13px 20px 11px;
+  background: var(--panel); border-bottom: 0.5px solid var(--line-soft);
+}
+.bg-run-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bg-run-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.bg-run-dot[data-state="running"] { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.bg-run-dot[data-state="done"] { background: var(--ok); }
+.bg-run-dot[data-state="failed"] { background: var(--danger); }
+.bg-run-agent {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14px; font-weight: 600; letter-spacing: -0.01em; color: var(--text);
+}
+.bg-run-state { flex: none; font-size: 11px; font-weight: 500; color: var(--dim); }
+.bg-run-state[data-state="running"] { color: var(--accent); }
+.bg-run-state[data-state="done"] { color: var(--ok); }
+.bg-run-state[data-state="failed"] { color: var(--danger); }
+.bg-run-time { flex: none; margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+/* 运行 id 是排障用的，不是正文：小号等宽、放不下就截断（全 id 在 title 里）。 */
+.bg-run-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bg-run-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10.5px/1.4 var(--mono); color: var(--faint); }
+.bg-run-body { display: grid; gap: 14px; padding: 13px 20px 20px; }
+
+/* 失败原因：一条内嵌的红条，别再让用户去日志里找。 */
+.bg-run-errbox {
+  display: flex; align-items: flex-start; gap: 7px; padding: 8px 10px;
+  border-radius: 8px; background: var(--danger-bg); color: var(--danger);
+}
+.bg-run-errbox[hidden] { display: none; }
+.bg-run-errbox .ico { flex: none; margin-top: 1px; }
+.bg-run-err { flex: 1; min-width: 0; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 空态自己也滚：窗体高度封顶 84vh，极矮视口下上下两层 padding 会把提示挤出去。 */
+.bg-empty { display: grid; justify-items: center; align-content: safe center; gap: 7px; padding: 56px 24px 64px; overflow: auto; text-align: center; }
+.bg-empty-ic {
+  display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 3px;
+  border-radius: 12px; background: var(--panel-2); color: var(--faint);
+}
+.bg-empty-title { max-width: 46ch; font-size: 12.5px; color: var(--dim); }
+.bg-empty-hint { max-width: 46ch; font-size: 11.5px; line-height: 1.6; color: var(--faint); }
+
+.bg-sec { display: grid; gap: 5px; }
+.bg-sec[hidden] { display: none; }
+.bg-sec-head { display: flex; align-items: center; gap: 8px; min-height: 16px; }
+.bg-sec-title { font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--faint); }
+.bg-more {
+  margin-left: auto; padding: 0; border: 0; background: none;
+  color: var(--accent); font-size: 11px; line-height: 1; cursor: pointer;
+}
+.bg-more[hidden] { display: none; }
+.bg-more:hover { text-decoration: underline; }
+
+/* 任务正文四行封顶：长任务不再把过程和输出推到屏幕外面，要读全文按「展开」。 */
+.bg-run-task {
+  font-size: 13px; line-height: 20px; color: var(--dim);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+}
+.bg-task.open .bg-run-task { display: block; overflow: visible; -webkit-line-clamp: unset; }
+
 .bg-run-log,
 .bg-run-out {
-  margin: 0; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg);
-  font: 11.5px/1.55 var(--mono); color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere;
-  max-height: min(320px, calc(var(--vh1) * 38)); overflow: auto;
+  margin: 0; padding: 9px 11px; border: 0; border-radius: 8px; background: var(--sunken);
+  box-shadow: inset 0 0 0 0.5px var(--line-soft);
+  font: 11.5px/1.6 var(--mono); color: var(--dim);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: min(300px, calc(var(--vh1) * 34)); overflow: auto;
 }
+.bg-run-out { color: var(--text); max-height: min(360px, calc(var(--vh1) * 40)); }
+/* 占位不是日志：用正文字体与更淡的颜色，别让「桥还没接上」看起来像一条条目。 */
+.bg-run-log[data-empty] { font-family: var(--sans); font-size: 12px; color: var(--faint); }
+
+/* 窄窗（手机 / 分屏）：两栏并一栏，左栏变成顶部横向条 —— 184px 的列表在 360px 屏上没法读。
+   断点 620px 而不是 560：再窄一点左栏固定宽会把右栏抬头的名字 / 状态 / 用时挤成三条。 */
+@container (max-width: 620px) {
+  .bg-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .bg-nav {
+    overflow: hidden;
+    padding: 6px 8px;
+    border-right: 0; border-bottom: 0.5px solid var(--line-soft);
+  }
+  .bg-nav-head { display: none; }
+  .bg-nav-list { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; }
+  .bg-nav-item { flex: none; max-width: 190px; }
+  .bg-nav-task { display: none; }
+  .bg-run-top { padding: 11px 14px 10px; }
+  .bg-run-body { padding: 11px 14px 16px; }
+  .bg-run-id { display: none; }
+}
+
 .badge.clickable { cursor: pointer; }
 .badge.clickable:hover { border-color: var(--accent); }
 .badge.clickable:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
