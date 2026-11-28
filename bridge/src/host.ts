@@ -877,6 +877,8 @@ async function main(): Promise<void> {
       // 先挂 close 监听再发 shutdown：脑可能反应很快，send 之后才注册会漏掉断开。
       // 不等的话壳会在 300ms 后退出，脑的 link.on("closed") 立刻 process.exit，
       // stopAllReviews() 的 3 秒收尾和状态写回都被截断，用户主动关桥也可能留下 worker。
+      // 这里的 8 秒比 stopAllReviews 的 3 秒上限长；requestCancel 里的 10 秒只是兜底
+      // 定时器，不参与等待，别把它算进停机路径。
       const conn = brain?.conn;
       const closed = new Promise<void>((resolve) => {
         if (!conn?.alive) {

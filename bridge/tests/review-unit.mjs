@@ -37,6 +37,8 @@ import {
   reviewJobsDir,
   reviewJobAlive,
   sweepStaleRuns,
+  resumeReviewJobs,
+  setReviewNotify,
   startReview,
   setReviewLauncher,
   setPick,
@@ -596,6 +598,36 @@ check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标�
     assert.equal(sweepStaleRuns(), 1, "pid 还活着但心跳过期，不能当成评审还在跑");
     assert.equal(readReviewState(repo, session).runs.find((r) => r.id === "reused").status, "stale");
   } finally {
+    process.env.PI_WEB_STATE = prev;
+  }
+});
+
+check("换脑（D441）：一条 job 接不回来不许把整个脑启动拖垮", () => {
+  const prev = process.env.PI_WEB_STATE;
+  process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-resume-boom-"));
+  try {
+    const repo = "/Users/me/resume-boom";
+    const session = "rs";
+    const startedAt = new Date().toISOString();
+    writeReviewState(
+      repo,
+      { repo, runs: [{ id: "boom", status: "running", findings: [], startedAt }], marks: {} },
+      session,
+    );
+    fs.mkdirSync(reviewJobsDir(), { recursive: true });
+    fs.writeFileSync(
+      reviewJobFile("boom"),
+      JSON.stringify({ runId: "boom", repo, session, startedAt, opts: { mode: "workspace", lang: "zh" }, pid: process.pid }),
+    );
+    setReviewNotify({
+      onProgress: () => {
+        throw new Error("broadcast boom");
+      },
+    });
+    assert.equal(resumeReviewJobs(), 0, "接不回来就跳过，不能把异常抛出去");
+    assert.ok(fs.existsSync(reviewJobFile("boom")), "job 文件留着下次开机再试");
+  } finally {
+    setReviewNotify({});
     process.env.PI_WEB_STATE = prev;
   }
 });

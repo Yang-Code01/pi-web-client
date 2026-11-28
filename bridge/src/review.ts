@@ -1836,48 +1836,63 @@ export function resumeReviewJobs(): number {
   let resumed = 0;
   for (const name of names) {
     if (!name.endsWith(".json") || name.endsWith(".progress.json")) continue;
-    const job = readReviewJob(path.join(reviewJobsDir(), name));
-    if (!job) {
-      try {
-        fs.rmSync(path.join(reviewJobsDir(), name), { force: true });
-      } catch {
-        /* ignore */
+    let job: ReviewJob | null = null;
+    let liveId = "";
+    try {
+      job = readReviewJob(path.join(reviewJobsDir(), name));
+      if (!job) {
+        try {
+          fs.rmSync(path.join(reviewJobsDir(), name), { force: true });
+        } catch {
+          /* ignore */
+        }
+        continue;
       }
-      continue;
+      const j = job;
+      const state = readReviewState(j.repo, j.session);
+      const run = state.runs.find((r) => r.id === j.runId);
+      if (
+        !run ||
+        run.status !== "running" ||
+        (!reviewJobRunning(j) && !workerStarting(j)) ||
+        (run.startedAt && j.startedAt && run.startedAt !== j.startedAt)
+      ) {
+        // 已经收尾、进程没了、或 pid 已经被别的进程复用：这份 job 文件只是碎屑。
+        reapReviewJob(j);
+        continue;
+      }
+      liveId = j.runId;
+      active.set(j.runId, {
+        cancel: () => requestCancel(j),
+        repo: j.repo,
+        session: j.session,
+        mode: j.opts.mode ?? run.mode,
+        // run.pr 是 execute 解析后的真实号（opts.pr 可能是 0 或链接里的旧号），判重以它为准。
+        pr: run.pr || Number(j.opts.pr) || 0,
+        job: j,
+      });
+      const progress =
+        readProgressFile(j) ?? {
+          ...freshProgress(j),
+          totalFiles: run.totalFiles,
+          reviewedFiles: run.reviewedFiles,
+          tokens: run.tokens,
+        };
+      progressMap.set(j.runId, progress);
+      notify.onProgress?.(j, progress);
+      notify.onState?.(j);
+      live.add(liveId);
+      resumed += 1;
+    } catch (err) {
+      // 一条 job 接不回来（状态文件读不了 / 广播炸了）只该少了这一条，不能让整个脑启动失败。
+      if (liveId) live.delete(liveId);
+      if (job) {
+        active.delete(job.runId);
+        progressMap.delete(job.runId);
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[review] 接回评审 ${job?.runId ?? name} 失败：${message}`);
     }
-    const state = readReviewState(job.repo, job.session);
-    const run = state.runs.find((r) => r.id === job.runId);
-    if (
-      !run ||
-      run.status !== "running" ||
-      (!reviewJobRunning(job) && !workerStarting(job)) ||
-      (run.startedAt && job.startedAt && run.startedAt !== job.startedAt)
-    ) {
-      // 已经收尾、进程没了、或 pid 已经被别的进程复用：这份 job 文件只是碎屑。
-      reapReviewJob(job);
-      continue;
-    }
-    live.add(job.runId);
-    active.set(job.runId, {
-      cancel: () => requestCancel(job),
-      repo: job.repo,
-      session: job.session,
-      mode: job.opts.mode ?? run.mode,
-      // run.pr 是 execute 解析后的真实号（opts.pr 可能是 0 或链接里的旧号），判重以它为准。
-      pr: run.pr || Number(job.opts.pr) || 0,
-      job,
-    });
-    const progress =
-      readProgressFile(job) ?? {
-        ...freshProgress(job),
-        totalFiles: run.totalFiles,
-        reviewedFiles: run.reviewedFiles,
-        tokens: run.tokens,
-      };
-    progressMap.set(job.runId, progress);
-    notify.onProgress?.(job, progress);
-    notify.onState?.(job);
-    resumed += 1;
   }
   // 没有 job 文件的进度 / 取消 / 心跳 / 日志是上一代留下的碎屑，清掉；别让下一次开机又当成活任务。
   for (const name of names) {
