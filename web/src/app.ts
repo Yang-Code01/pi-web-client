@@ -932,6 +932,8 @@ export class App {
   private termActive: string | null = null;
   /** D92: the dialog is on screen (not minimized). The shells themselves live in the bridge. */
   private termOpen = false;
+  /** 没有终端时顶栏按钮的 title（build() 里那句能力说明），收起/打开态改标题之后就靠它退回。 */
+  private termIdleTitle = "";
   /** D111: 两扇浮窗里最后被点 / 聚焦的那扇（`.front`）；同一时间只有一扇。 */
   private winFront: HTMLElement | null = null;
   /** D93: dialog 的位置 / 大小（布局 px），null = 还没读过 localStorage。 */
@@ -1126,8 +1128,12 @@ export class App {
     // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
     const term = this.wideBtn(TOPBAR_ICON.terminal, tr("终端"));
     term.dataset.act = "terminal";
-    term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
+    // 收起/打开两态会改写 title（说明怎么回来），关掉之后要能退回这句能力说明而不是一句光秀秀的「终端」。
+    this.termIdleTitle = term.title;
+    // aria-label 永远跟 title 一致（paintTermButton 也是这么写的）：以前这里先写了个短名「终端」，
+    // 在 `term.list` 回来之前读屏器听到的和悬停看到的不一样。
+    term.setAttribute("aria-label", term.title);
     term.onclick = () => this.openTerminal();
     this.els.term = term;
     const fs = this.wideBtn(TOPBAR_ICON.files, tr("文件管理器|顶栏按钮"));
@@ -21482,13 +21488,39 @@ export class App {
     this.paintTermButton();
   }
 
-  /** 顶栏那颗按钮的字：几个 shell 在跑就写几个，收起状态也看得到。 */
+  /**
+   * 顶栏那颗按钮的字：几个 shell 在跑就写几个，收起状态也看得到。
+   *
+   * 三种状态要一眼分得清（#756）：「没有终端」「开着」「收起来了」以前只有明暗一档差别，收起来与
+   * 关掉看着一样。现在收起态在字后面挂三根小音柱（音乐 / 播客那个「正在播放」的记号）—— 柱子在动就
+   * 说明 shell 还在跑，点一下就回来；关掉之后音柱消失，按钮回灰色。状态同时写进 `data-term-state`，
+   * CSS 与探针都按它取。
+   */
   private paintTermButton(): void {
     const btn = this.els.term;
     if (!btn) return;
     const n = this.termTabs.size;
+    const state = n === 0 ? "off" : this.termOpen ? "open" : "min";
     this.setWideLabel(btn, TOPBAR_ICON.terminal, n > 1 ? tr("终端 {p1}", { p1: n }) : tr("终端"));
     btn.classList.toggle("term-live", n > 0);
+    btn.dataset.termState = state;
+    // 不嵌套三元：三个状态三条句子，日后加状态往上加一行就行。
+    if (state === "min") {
+      btn.title = n > 1 ? tr("{p1} 个终端还在后台跑，点一下收回来", { p1: n }) : tr("终端还在后台跑，点一下收回来");
+    } else if (state === "open") {
+      btn.title = tr("终端已打开，点一下回到当前标签");
+    } else {
+      btn.title = this.termIdleTitle || tr("终端");
+    }
+    btn.setAttribute("aria-label", btn.title);
+    if (state === "min") {
+      // 三根音柱而不是一枚贴在图标角上的圆点：圆点要贴住图标才能看出属于它，一贴就成了贴纸；
+      // 音柱排在字后面、跟着基线走，深浅两套主题都干净，动静也够看得见。
+      const bars = el("span", "term-bars");
+      bars.setAttribute("aria-hidden", "true");
+      for (let i = 0; i < 3; i += 1) bars.append(el("i"));
+      btn.append(bars);
+    }
   }
 
   /** Ask the bridge for one more shell, starting in the session's cwd. */
@@ -21518,10 +21550,11 @@ export class App {
       };
       menu.append(item);
     }
-    const r = anchor.getBoundingClientRect();
-    menu.style.left = `${Math.round(r.left)}px`;
-    menu.style.bottom = `${Math.round(window.innerHeight - r.top + 4)}px`;
     document.body.append(menu);
+    // 挂上 body 之后才量得准；落位交给全站那一份规矩（#756）：下方放得下就往下开，放不下才翻上去，
+    // 两头都只剩一条缝就封顶自己滚。以前这里写死「贴着锚点往上弹」，dock 拉高一点菜单就顶出窗口，
+    // 压住顶栏、上沿还被屏幕切掉。
+    stickMenu(menu, anchor.getBoundingClientRect(), { gap: 6 });
     pushEscLayer({ el: menu, onEsc: () => menu.remove() });
     const away = (ev: MouseEvent) => {
       if (menu.contains(ev.target as Node) || ev.target === anchor) return;
