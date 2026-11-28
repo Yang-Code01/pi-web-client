@@ -9060,3 +9060,31 @@ if (stop >= 0) {
 
 **代价。** 发布者离线 = 没有公告（没有服务器兜底）；成员离线超过 outbox 的 24 小时窗口会漏一条，补最近 3 条只覆盖新加入的人；发布者的 30 分钟 fetch 会在这台机器上周期打网络（失败静默重试，不打扰）；公告正文上限 16 KB：发布端发送前按同一上限裁批次，接收端 `normalizeAnnounce` 再兜一次，不会整条被拒。
 
+
+## D452 模型的身份是 `provider/id`，不是 id（用户 2026-11-28「会话 codeReview 多次失败」→ 查出来是评审被派到了另一个来源）
+
+**问题。** 本机 `models.json` 里两个 provider 卖同一批模型 id：`wb2api`（远端网关 `192.168.31.36:7863`）与 `wb2_mac`（`127.0.0.1:7863`），20 个 id 一模一样，`wb2api` 在目录里排在前面。代码评审这条路上所有解析都只按 id `find()`：
+
+- `reviewDefaultModel()`（面板没单独挑模型时）：`this.models.find((m) => m.id === id)` —— 会话自己明明是 `wb2_mac`，还原出来的却是 `wb2api`；
+- 模型弹层的确认 `commit()`：`find((m) => m.id === draftModel)` —— 用户在弹层里点的是 `wb2_mac` 那一行，记下来的仍是 `wb2api`；
+- 行高亮 `on = m.id === draftModel` —— 两行同时标「使用中」，人看不出选的是哪个；
+- 桥那边也不留 provider：`SessionState.model` 只有 id，`absorbState()` 读 `get_state.model.id` 却把 `.provider` 丢了。
+
+远端那台机器一掉线（20:13 之后），评审每次都是「子进程退出码 0、37 行事件、0 token」，面板只能说「重试后仍然没有给出结论（已用 0k token）……可以换个更便宜的模型」—— 把网络故障说成了模型不划算。
+
+**决定。**
+
+- **会话记着自己的来源。** `SessionState` 加 `provider`（取自 pi 的 `get_state.model.provider`），`absorbState()` 与 `setModel()` 都写它。只给 id 的话页面只能按目录顺序猜，而目录顺序是「谁先被写进 models.json」。
+- **凡是「这个 id 对应目录里哪一行」都要带 provider。** 新增 `sameModel(a, b)`（id 相同 **且** 有一边不知道 provider 或两边相同），`draftProvider` / `startProvider` 与 `draftModel` 一起走；模型弹层的行、`draftInfo()`、`dirty()`、`commit()`、`.on` 高亮、会话页的「来源」、评审默认模型、评审 chip 的起始选中、对话 chip 的倍率与窗口、翻译选择器的预选，全部改成按它认。**「换来源」也算换模型**：`wb2api/glm-5.4` → `wb2_mac/glm-5.4` 是一次真切换，`dirty()` 要认。
+- **弹层行上带 `data-provider`**，两个同名 id 的行从此可区分（探针与以后的选择器都靠它）。
+- **子进程自己报的错要带出来。** `readChildEvent()` 从 `message_end` 里取三样：`text` / `tokens` / `error`（`stopReason === "error"` 的 `errorMessage`）。`childWhy()` 按「原话 > 90 秒沉默 > 退出码/行数」挑原因；`noOutputMessage()` 在原因看着像网络故障（`connect` / `EHOST*` / `ECONN*` / `timed out` …）时改说「模型那边没连上…先确认这个来源通不通」，不再建议换更便宜的模型。
+- **子进程自己报了错就不再重试那一组。** 原来会拿同一份提示词再问一遍（每次 ~25 秒，四组全红），现在直接把这组标 failed、收工，把原话带给面板；「没答但也没报错」（模型逛仓库逛到没话说）那条老路仍然重试一次。
+- **没给出结论的组不再标 done。** 以前落盘后是「第 1 组完成：0 条」+ 整轮 failed，看不出哪组没跑成；现在计划里就是 failed，而且只要有一组没交回来，整轮就算失败（别的组的意见照旧带回去）。
+
+**为什么。** ① 用户点的行和程序记的行必须是同一个 —— 一屏里两行同名同 id，唯一的区别就是 provider。② 远端 / 本机两个来源卖同一批模型是真实部署形态（一台网关在局域网、一台在本机），不是测试构造。③ 「退出码 0、输出 N 行」对定位毫无用处：正常子进程也是三四十行、也是退出码 0；真正的原因（`connect EHOSTDOWN 192.168.31.36:7863`）早就在事件流里了，只是没人读。④ pi 自己在网络失败时也会重试 3 次并且**仍以 0 退出**，所以外层不能拿退出码当唯一判据。
+
+**守卫。** `probes/review-model-provider.mjs`（桩桥 + 真 Chromium，目录里同名 id 两行、`wb2api` 在前）：评审 chip 的 title 是 `wb2_mac/…`；弹层里只有一行标「使用中」且是 `wb2_mac`；挑 `wb2_mac` 的 GLM-5.4 并确认后 title 仍是 `wb2_mac/cn:glm-5.4`；点「开始评审」，发给桥的 `review.run` 是 `provider: wb2_mac` + 挑中的模型；对话 chip 同一行切过去，`setModel.provider` 也是 `wb2_mac`。反证：把 `web/src` 退回改动前重建，前四条全红（`chip title = wb2api/…`、`review.run` 发的是 `wb2api`）。桥侧 `bridge/tests/review-unit.mjs` 新增 8 条：`readChildEvent` 从真机那帧 `message_end` 里取到 `EHOSTDOWN 192.168.31.36:7863`、0 token 不被当成没用量、空 content 不冒充「答了一句」；`childWhy` 三级回退；`noOutputMessage` 遇网关故障不许出现「更便宜」。
+
+**可改。** ① `GATEWAYISH` 那个正则只影响文案（是否说「没连上」），要放宽/收紧都不动手 PATH 逻辑。② 一旦有一组报了错就收工，是为了省掉「四组各 25 秒」；若要「别的组照跑」，把那个 `break` 换成 `continue` 即可（状态仍是 failed）。
+
+**代价。** ① `SessionState` 多一个字段：老桥不给 `provider` 时 `sameModel` 退回按 id 认（与以前行为一致，不会把用户挡在外面）。②「换来源」现在算一次改动，所以在弹层里点同名同 id、只换 provider 的那一行会冒出「未保存」—— 这正是要的，但第一次遇到会以为点错了。③ 两个 provider 卖同一批模型时，用户仍然只能在弹层里靠组头分辨来源（行里不印 provider）；这次没改行的排版。

@@ -644,7 +644,7 @@ export class App {
    * 「挑模型」那条路的回调（代码评审面板的 chip 用它）：模型目录晚到会重开这一屏，
    * 重开时没有新的回调，要把这份接着用，否则一开就是一屏空态。
    */
-  private modelPick: { start: string; level?: string; onPick: (model: ModelInfo, level: string) => void } | null = null;
+  private modelPick: { start: string; provider?: string; level?: string; onPick: (model: ModelInfo, level: string) => void } | null = null;
   private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "theme-intro" | "bg" | "wsnew" | "wsdelete" | "context" | "context-insights" | "filesearch" | null = null;
   /** 内网通未读：顶栏那颗按钮上的件数徽标（D300 起文件也算未读）。 */
   private peerUnread = 0;
@@ -6091,7 +6091,7 @@ export class App {
    */
   private openModelSheet(
     expandSession = false,
-    pickOpt?: { start: string; level?: string; onPick: (model: ModelInfo, level: string) => void },
+    pickOpt?: { start: string; provider?: string; level?: string; onPick: (model: ModelInfo, level: string) => void },
   ): void {
     if (!this.currentId) return;
     // Re-renders (catalog arrived, takeover finished) keep what the user unfolded; a fresh open folds.
@@ -6111,11 +6111,16 @@ export class App {
     const startModel = pick ? pick.start : this.session?.model;
     const startLevel = pick ? (pick.level ?? "") : (this.session?.thinkingLevel ?? "");
     // 当前模型属于哪个来源：它的组默认展开，否则新开场就只看得见一组折叠标题。
-    const startProvider = this.models.find((m) => m.id === startModel)?.provider ?? "";
+    // 会话自己报着 provider 时**以它为准**：目录里可能有另一个 provider 卖同一个 id，
+    // 按 id 找回来的那个会指错来源（本机 wb2api / wb2_mac 都卖 cn:glm-5.4，D452）。
+    const startProvider =
+      (pick ? pick.provider : this.session?.provider) || this.models.find((m) => m.id === startModel)?.provider || "";
     // 默认展开是「第一眼」的事，不是「锁死」：用户把这一组折上后，下次 paint 不能再把它擑开。
     // 挑模型那条路没有「当前模型那一组」可言：全部展开，否则开场就是一排折叠标题。
     const forceOpen = new Set<string>(pick ? this.models.map((m) => m.provider) : startProvider ? [startProvider] : []);
     let draftModel = startModel;
+    /** 草稿的来源：与 `draftModel` 一起才是「挑的是哪一个模型」，点行时两份一起改。 */
+    let draftProvider = startProvider;
     let draftLevel = startLevel;
     type ModelTab = "now" | "all" | "session";
     // 挑模型那条路没有「当前使用」可言（面板还没选过），直接落在「全部模型」上，
@@ -6188,19 +6193,21 @@ export class App {
       commit();
     });
 
-    const draftInfo = (): ModelInfo | undefined => this.models.find((m) => m.id === draftModel);
+    const draftInfo = (): ModelInfo | undefined => this.models.find((m) => sameModel(m, { provider: draftProvider, id: draftModel }));
     const draftLevels = (): string[] => draftInfo()?.levels ?? [];
-    const dirty = (): boolean => draftModel !== startModel || draftLevel !== startLevel;
+    /** 换了模型（含只换了来源）或换了档位：两个 provider 卖同一个 id 时，「换来源」也是一次真切换。 */
+    const moved = (): boolean => !sameModel({ provider: draftProvider, id: draftModel }, { provider: startProvider, id: startModel });
+    const dirty = (): boolean => moved() || draftLevel !== startLevel;
     const changes = (): string[] => {
       const out: string[] = [];
-      if (draftModel !== startModel) out.push(tr("模型 → {p1}", { p1: shortModelName(draftInfo()?.name ?? draftModel ?? "") }));
+      if (moved()) out.push(tr("模型 → {p1}", { p1: shortModelName(draftInfo()?.name ?? draftModel ?? "") }));
       if (draftLevel !== startLevel) out.push(tr("思考 → {p1}", { p1: draftLevel }));
       return out;
     };
 
     const commit = (): void => {
       if (pick) {
-        const chosen = this.models.find((m) => m.id === draftModel);
+        const chosen = this.models.find((m) => sameModel(m, { provider: draftProvider, id: draftModel }));
         if (chosen) {
           // D423：评审挑的模型进评审侧那份「最近使用」（确认即记）；对话那份不受影响。
           rememberReviewModel(chosen.provider, chosen.id);
@@ -6212,8 +6219,8 @@ export class App {
       const sessionId = this.currentId;
       // 没接管＝没写入权：行双击也会走到这里，别把 setModel 发给桥让它默默丢掉。
       if (this.session && !this.session.owned) return;
-      const model = this.models.find((m) => m.id === draftModel);
-      const modelChanged = draftModel !== startModel && !!model;
+      const model = this.models.find((m) => sameModel(m, { provider: draftProvider, id: draftModel }));
+      const modelChanged = moved() && !!model;
       const levelChanged = draftLevel !== startLevel && !!draftLevel;
       if (!sessionId || (!modelChanged && !levelChanged)) {
         this.closeSheet();
@@ -6224,15 +6231,15 @@ export class App {
         // The level rides along with the model switch so the bridge applies it after pi's clamp.
         if (modelChanged && model) {
           // 换走的和换上的都记进「最近使用」：下次打开时，刚离开的那个就在顶上。
-          const prev = this.models.find((m) => m.id === startModel);
-          rememberRecentModel(prev?.provider, prev?.id);
+          const prev = this.models.find((m) => sameModel(m, { provider: startProvider, id: startModel }));
+          rememberRecentModel(prev?.provider ?? startProvider, prev?.id ?? startModel);
           rememberRecentModel(model.provider, model.id);
           this.socket.send({ type: "setModel", sessionId, provider: model.provider, modelId: model.id, level: level || undefined });
         } else if (levelChanged) this.socket.send({ type: "setThinking", sessionId, level });
         if (this.session && this.session.id === sessionId && (modelChanged || levelChanged)) {
           this.session = {
             ...this.session,
-            ...(modelChanged && model ? { model: model.id, modelName: model.name } : {}),
+            ...(modelChanged && model ? { model: model.id, modelName: model.name, provider: model.provider } : {}),
             thinkingLevel: level || this.session.thinkingLevel,
           };
         }
@@ -6245,18 +6252,20 @@ export class App {
 
     /** 一行模型：名字 + 「使用中 / 待切换」+ id，右侧窗口大小。 */
     const modelRow = (m: ModelInfo, opts: { provider?: boolean } = {}): HTMLElement => {
-      const on = m.id === draftModel;
+      const on = sameModel(m, { provider: draftProvider, id: draftModel });
+      const isStart = sameModel(m, { provider: startProvider, id: startModel });
       const row = el("button", `settings-row pm-row${on ? " on" : ""}`) as HTMLButtonElement;
       row.type = "button";
       row.dataset.id = m.id;
+      row.dataset.provider = m.provider;
       const label = el("span", "settings-label");
       const nameEl = el("span", "settings-name", shortModelName(m.name));
       let who = "";
-      if (m.id === draftModel) who = m.id === startModel ? tr("使用中") : tr("待切换");
-      else if (m.id === startModel) who = tr("使用中");
+      if (on) who = isStart ? tr("使用中") : tr("待切换");
+      else if (isStart) who = tr("使用中");
       if (who) {
         const tag = el("span", "pm-who", who);
-        if (m.id === draftModel && m.id !== startModel) tag.classList.add("draft");
+        if (on && !isStart) tag.classList.add("draft");
         nameEl.append(tag);
       }
       label.append(nameEl, el("code", "settings-key", m.id));
@@ -6265,6 +6274,7 @@ export class App {
       row.append(el("span", "pm-win", m.contextWindow ? compactSize(m.contextWindow) : "–"));
       row.onclick = () => {
         draftModel = m.id;
+        draftProvider = m.provider;
         const levels = draftLevels();
         // 当前档位在这张模型上没有时落到它的最高档（弹窗里那句话就是这么写的）：
         // 落到最低档（off）等于默默把思考关掉，用户根本看不出发生了什么。
@@ -6353,9 +6363,9 @@ export class App {
         return;
       }
       const who = el("span", "pm-lvbar__model", shortModelName(m.name));
-      const moved = m.id !== startModel;
-      if (moved) who.classList.add("draft");
-      const fell = moved && !!startLevel && !!m.levels?.length && !m.levels.includes(startLevel);
+      const switched = moved();
+      if (switched) who.classList.add("draft");
+      const fell = switched && !!startLevel && !!m.levels?.length && !m.levels.includes(startLevel);
       who.title = [m.levels?.length ? m.levels.join(" / ") : tr("该模型固定档位"), fell ? tr("换模型时若当前档位不支持，会落到该模型的最高档") : ""]
         .filter(Boolean)
         .join(" · ");
@@ -6368,7 +6378,7 @@ export class App {
     // 搜索匹配规则（列表与「最近使用」共用，改规则只改这里）。
     const multi = new Set(this.models.map((x) => x.provider)).size > 1;
     const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
-    const currentModel = this.models.find((x) => x.id === startModel && (!startProvider || x.provider === startProvider)) ?? null;
+    const currentModel = this.models.find((x) => sameModel(x, { provider: startProvider, id: startModel })) ?? null;
     const matches = (x: ModelInfo, q: string): boolean => !q || `${x.name} ${x.id}`.toLowerCase().includes(q);
 
     const nowPane = (): HTMLElement[] => {
@@ -6397,12 +6407,12 @@ export class App {
         return out;
       }
 
-      const { pinned, recent } = groupModels(this.models, { id: startModel }, { mergedRecent: !!pick });
+      const { pinned, recent } = groupModels(this.models, { id: startModel, provider: startProvider }, { mergedRecent: !!pick });
       // 只换档位时草稿就是当前模型：再插一块「待切换」＝同一行画两遍。
-      if (dirty() && m && m.id !== startModel) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
+      if (dirty() && m && moved()) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
       const current = [pinned ? flatRow(pinned) : null].filter((x): x is HTMLElement => !!x);
       out.push(this.stSection(tr("当前使用"), tr("1 个")), panel(current, tr("会话还没报出模型")));
-      const rest = recent.filter((x) => x.id !== startModel && x.id !== draftModel);
+      const rest = recent.filter((x) => !sameModel(x, { provider: startProvider, id: startModel }) && !sameModel(x, { provider: draftProvider, id: draftModel }));
       if (rest.length) out.push(this.stSection(tr("最近使用"), tr("{p1} 个", { p1: String(rest.length) })), panel(rest.map(flatRow), ""));
       return out;
     };
@@ -6467,11 +6477,11 @@ export class App {
     };
 
     const sessionPane = (): HTMLElement[] => {
-      const m = this.models.find((x) => x.id === startModel);
+      const m = this.models.find((x) => sameModel(x, { provider: startProvider, id: startModel }));
       const { used: u, win } = used();
       const rows = [
         kvRow(tr("模型"), "model", startModel ?? "–"),
-        kvRow(tr("来源"), "provider", m?.provider ?? "–"),
+        kvRow(tr("来源"), "provider", m?.provider ?? startProvider ?? "–"),
         kvRow(tr("上下文窗口"), "contextWindow", win ? `${compactSize(win)} tokens` : "–"),
         kvRow(tr("已用上下文"), "used", u != null ? `${compactSize(u)}${win ? ` · ${Math.round((u / win) * 100)}%` : ""}` : "–"),
         kvRow(tr("思考档位"), "thinking", startLevel ? `${startLevel}${m?.levels?.length ? ` · ${m.levels.join(" / ")}` : ""}` : "–"),
@@ -8130,7 +8140,9 @@ export class App {
     model.textContent = name || tr("模型");
 
     // 倍率是目录塞在名字里的（`Kimi-K3 · x1.62 · 1M`）：有就露，没有（自定义 provider）就整格隐。
-    const mult = modelMultiplier(this.models.find((m) => m.id === this.session?.model)?.name ?? "");
+    // 按 provider/id 找：目录里可能有另一个来源卖同一个 id，按 id 取会拿错一行（D452）。
+    const here = this.models.find((m) => sameModel(m, { provider: this.session?.provider, id: this.session?.model }));
+    const mult = modelMultiplier(here?.name ?? "");
     multEl.textContent = mult;
     multEl.hidden = !mult;
     multEl.title = mult ? tr("计费倍率 {p1}", { p1: mult }) : "";
@@ -8139,7 +8151,7 @@ export class App {
     levelEl.textContent = thinking || "–";
     levelEl.classList.toggle("off", !thinking || thinking === "off");
 
-    const win = this.usage.contextWindow ?? this.models.find((m) => m.id === this.session?.model)?.contextWindow ?? null;
+    const win = this.usage.contextWindow ?? here?.contextWindow ?? null;
     const used = this.usage.contextTokens;
     if (used != null && win) {
       ctxText.textContent = `${compactSize(used)}/${compactSize(win)}`;
@@ -12592,7 +12604,7 @@ export class App {
   private trPicker(v: Viewer): void {
     const t = this.trOf(v);
     // D245 / D392: 默认模型是桥那边记的偏好，没有就跟随 pi 全局设置，再没有才退到当前会话的模型。
-    const sessionModel = this.models.find((m) => m.id === this.session?.model);
+    const sessionModel = this.models.find((m) => sameModel(m, { provider: this.session?.provider, id: this.session?.model }));
     const pref = this.trModelPref || (t.doc ? `${t.doc.provider}/${t.doc.model}` : "") || this.trDefaultModel;
     const values = this.models.map((m) => `${m.provider}/${m.id}`);
     openTrPicker(
@@ -19431,11 +19443,14 @@ export class App {
    * 面板没单独挑模型时，评审真正会用的那个：跟着会话当前的模型走。
    *
    * 不显示 / 不记录它的话，记录卡上只能写「没记模型」—— 用户点开详情问的第一件事就是「用的什么模型」。
+   * **按 provider/id 认，不只按 id**：两个 provider 可以卖同一个 id（本机 wb2api 与 wb2_mac 都卖
+   * `cn:glm-5.4`），只按 id `find()` 会把评审派到另一个来源上——那次就是掉线的远端网关（D452）。
    */
   private reviewDefaultModel(): ModelInfo | null {
     const id = (this.session?.model ?? "").trim();
     if (!id) return null;
-    return this.models.find((m) => m.id === id) ?? null;
+    const provider = (this.session?.provider ?? "").trim();
+    return this.models.find((m) => sameModel(m, { provider, id })) ?? null;
   }
 
   /**
@@ -19760,8 +19775,11 @@ export class App {
       },
       onPickModel: () => {
         // 复用输入框那颗 chip 背后的同一个弹层（模型与思考），只是「确认」把模型交回面板。
+        const cur = this.reviewModelInfo() ?? this.reviewDefaultModel();
         this.openModelSheet(false, {
-          start: this.reviewModelInfo()?.id ?? "",
+          start: cur?.id ?? "",
+          // provider 一并交进去：目录里另一个来源可能卖同一个 id，只给 id 的话开场就预选错那一行。
+          provider: cur?.provider ?? "",
           onPick: (m) => {
             this.reviewModel = `${m.provider}/${m.id}`;
             this.renderQueue();
@@ -24627,6 +24645,18 @@ function stopMedia(root: ParentNode): void {
 /** "Deepseek-V4.1-Flash · x0.11 · 1M" -> "Deepseek-V4.1-Flash": the chip has no room for pricing. */
 function shortModelName(name: string): string {
   return name.split(" · ")[0] ?? name;
+}
+
+/**
+ * 模型的身份是 `provider/id`，不是 id。两个 provider 可以卖同一个 id —— 本机 `wb2api`（远端网关）
+ * 与 `wb2_mac`（本机网关）就各有一份 `cn:glm-5.4`。只按 id `find()` 会稳定命中目录里的第一个，
+ * 于是「挑的是本机那份」在确认时被换成另一个来源：评审就这么被派到掉线的网关上（D452）。
+ */
+function sameModel(a: { provider?: string; id?: string }, b: { provider?: string; id?: string }): boolean {
+  if (!a.id || !b.id) return false;
+  if (a.id !== b.id) return false;
+  // 有一边不知道 provider（老桥 / 老记录）时按「同一个」算：没有更细的信息，别把用户挡在外面。
+  return !a.provider || !b.provider || a.provider === b.provider;
 }
 
 /**

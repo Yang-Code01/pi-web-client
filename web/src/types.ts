@@ -192,6 +192,9 @@ export interface SessionState {
   done: boolean;
   model?: string;
   modelName?: string;
+  /** Which provider serves `model` (pi's `get_state.model.provider`). 两个 provider 可以卖同一个 id，
+   *  只给 id 的话页面按目录里的第一个同 id 还原，可能挑中另一个来源（D452）。 */
+  provider?: string;
   thinkingLevel?: string;
   updatedAt: number;
   startedAt?: string;

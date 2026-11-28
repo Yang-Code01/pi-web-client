@@ -276,6 +276,12 @@ export interface SessionState {
   done: boolean;
   model?: string; // provider-scoped model id, e.g. "cn:deepseek-v4.1-flash"
   modelName?: string; // human name from pi, e.g. "Deepseek-V4.1-Flash · x0.11 · 1M"
+  /**
+   * Which provider serves `model`. 两个 provider 可以卖同一个 id（本机 wb2api 与 wb2_mac 都有一份
+   * `cn:glm-5.4`），所以「这个会话用的是谁」离不开它：只给 id 的话，页面按目录里的第一个同 id
+   * 还原出来的可能是另一个来源（评审被派到掉线网关上，D452）。取自 pi 的 `get_state.model.provider`。
+   */
+  provider?: string;
   thinkingLevel?: string;
   updatedAt: number;
   startedAt?: string;
@@ -1763,6 +1769,7 @@ export class Session extends EventEmitter {
     if (!st || typeof st !== "object") return;
     const model = st.model?.id ?? st.modelId ?? st.model ?? undefined;
     if (typeof st.model?.name === "string") this.state.modelName = st.model.name;
+    const provider = typeof st.model?.provider === "string" ? st.model.provider : undefined;
     const thinking = st.thinkingLevel ?? st.thinking ?? undefined;
     const file = st.sessionFile ?? st.sessionPath ?? st.file ?? undefined;
     // 分叉过的会话：pi 手里的 id 和我们不一样。至少留一行日志 —— 否则将来它表现为「换脑后
@@ -1774,6 +1781,7 @@ export class Session extends EventEmitter {
     this.setState(
       {
         model: typeof model === "string" ? model : this.state.model,
+        provider: provider ?? this.state.provider,
         thinkingLevel: typeof thinking === "string" ? thinking : this.state.thinkingLevel,
         file: typeof file === "string" ? file : this.state.file,
         cwd: typeof st.cwd === "string" ? st.cwd : this.state.cwd,
@@ -3096,7 +3104,7 @@ export class Session extends EventEmitter {
   async setModel(provider: string, modelId: string): Promise<void> {
     const data = await this.rpc?.request<any>("set_model", { provider, modelId });
     const name = typeof data?.name === "string" ? data.name : undefined;
-    this.setState({ model: modelId, modelName: name ?? this.state.modelName });
+    this.setState({ model: modelId, provider, modelName: name ?? this.state.modelName });
     // pi may clamp the thinking level to what the new model supports.
     try {
       this.absorbState(await this.rpc?.request<any>("get_state", {}, 15000));

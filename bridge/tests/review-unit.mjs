@@ -32,6 +32,9 @@ import {
   chunkFiles,
   expectRepoMismatch,
   cancelReview,
+  childWhy,
+  noOutputMessage,
+  readChildEvent,
   reviewProgresses,
   reviewJobFile,
   reviewJobsDir,
@@ -813,6 +816,86 @@ check("换脑（D446）：job 还没写回 pid 时，用新鲜心跳接回评审
   } finally {
     process.env.PI_WEB_STATE = prev;
   }
+});
+
+// ---- 子进程「一句话没答」的原因与文案（D452）------------------------------------
+//
+// 真机那次：网关 192.168.31.36:7863 掉线，子进程 37 行事件、退出码 0、0 token，
+// 面板只能说「退出码 0、输出 37 行」并建议换个更便宜的模型。这里把它变成能指路的错。
+
+check("readChildEvent：error 收尾的单子拿得到 provider 原话", () => {
+  // 抓自真机那次（wb2api 网关 192.168.31.36 掉线）的那个 message_end。
+  const ev = {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      provider: "wb2api",
+      model: "cn:glm-5.4",
+      usage: { input: 0, output: 0, totalTokens: 0 },
+      stopReason: "error",
+      errorMessage: "Connection error.: connect EHOSTDOWN 192.168.31.36:7863 - Local (192.168.31.72:56888)",
+    },
+  };
+  const got = readChildEvent(ev);
+  assert.match(got.error ?? "", /EHOSTDOWN 192\.168\.31\.36:7863/);
+  assert.equal(got.tokens, 0, "0 token 也要落下来，不能被当成没用量");
+  assert.equal(got.text, undefined, "空 content 不许被当成「答了一句话」");
+});
+
+check("readChildEvent：正常回答只给 text + tokens", () => {
+  const got = readChildEvent({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: '{"findings":[]}' }], stopReason: "stop", usage: { totalTokens: 1443 } },
+  });
+  assert.equal(got.text, '{"findings":[]}');
+  assert.equal(got.tokens, 1443);
+  assert.equal(got.error, undefined);
+});
+
+check("readChildEvent：别的类型 / 用户消息不响", () => {
+  assert.deepEqual(readChildEvent({ type: "turn_start" }), {});
+  assert.equal(readChildEvent({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } }).text, undefined);
+});
+
+check("childWhy：子进程自己报的错最优先", () => {
+  const why = childWhy({
+    error: "Connection error.: connect EHOSTDOWN 192.168.31.36:7863",
+    silent: false,
+    stderr: "",
+    code: 0,
+    lines: 37,
+  });
+  assert.match(why, /EHOSTDOWN/);
+  assert.doesNotMatch(why, /37 行/, "有原话时不该只剩下行数");
+});
+
+check("childWhy：没原话才退到沉默/退出码", () => {
+  assert.equal(childWhy({ error: "", silent: true, stderr: "", code: null, lines: 0 }), "90 秒没有任何输出");
+  assert.equal(childWhy({ error: "", silent: false, stderr: "boom\nmore", code: 1, lines: 3 }), "boom");
+  assert.equal(childWhy({ error: "", silent: false, stderr: "", code: 0, lines: 37 }), "退出码 0、输出 37 行");
+});
+
+check("noOutputMessage：网关类故障不许说成「换个更便宜的模型」", () => {
+  const text = noOutputMessage("Connection error.: connect EHOSTDOWN 192.168.31.36:7863 - Local (192.168.31.72)", 0);
+  assert.match(text, /没连上/);
+  assert.match(text, /192\.168\.31\.36:7863/, "地址要原样带出来，否则人看不出是哪台机器");
+  assert.doesNotMatch(text, /更便宜/);
+  assert.match(text, /来源/);
+});
+
+check("noOutputMessage：别的原话照实说，并保留缩小范围那条路", () => {
+  const text = noOutputMessage("maximum context length exceeded", 115_271);
+  assert.match(text, /115k token/);
+  assert.match(text, /maximum context length exceeded/);
+  assert.match(text, /缩小/);
+  assert.doesNotMatch(text, /没连上/);
+});
+
+check("noOutputMessage：没原话时仍然是一句可行动的失败", () => {
+  const text = noOutputMessage("", 0);
+  assert.match(text, /没有给出结论/);
+  assert.match(text, /缩小/);
 });
 
 if (failures) {
