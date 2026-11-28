@@ -135,14 +135,33 @@ test("三种判定各有说法", () => {
   assert.equal(verdictLabel(""), "");
 });
 
-test("阶段条那一格：跑完 / 跑着 / 跳过 / 失败各一种样式", () => {
-  const st = { cur: 2 };
+test("阶段条那一格：跑完 / 跑着 / 等修 / 跳过 / 失败各一种样式", () => {
+  const st = { cur: 2, status: "running" };
   assert.equal(stageClass(round(1, { status: "findings" }), st), "done", "跑完且有意见的那一轮已经填满");
   assert.equal(stageClass(round(2, { status: "running" }), st), "now");
-  assert.equal(stageClass(round(3, { status: "findings" }), { cur: 2 }), "done");
+  // 当前轮「有意见、等会话修」：不是「正在评」，单独一格 wait
+  assert.equal(stageClass(round(2, { status: "findings" }), st), "wait");
+  // 暂停在同一轮（等人处理）：不画成「等修」—— 整条都停着
+  assert.equal(stageClass(round(2, { status: "findings" }), { cur: 2, status: "paused" }), "done");
+  assert.equal(stageClass(round(3, { status: "findings" }), st), "done");
   assert.equal(stageClass(round(4, { status: "clean" }), st), "ok");
   assert.equal(stageClass(round(5, { status: "skipped" }), st), "skip");
   assert.equal(stageClass(round(6, { status: "failed" }), st), "bad");
+});
+
+test("回执对得上意见：「只写路径」的判定只认领一条，不给同文件每条意见背书", () => {
+  const r = round(1, { status: "findings", verdicts: [{ path: "a.ts", line: 0, verdict: "fixed", why: "" }] });
+  const f1 = { path: "a.ts", startLine: 3 };
+  const f2 = { path: "a.ts", startLine: 9 };
+  // `used` 由同一个 render 持有（与 renderAutoPanel / AutoRoundSheet 里的用法一致）
+  const used = new Set();
+  assert.equal(verdictOf(r, f1, used)?.verdict, "fixed");
+  assert.equal(verdictOf(r, f2, used), null, "同一条判定不能给第二条意见用");
+  // 不传 used（单独查一条）：照常能查到 —— 默认参数每次是新集合
+  assert.equal(verdictOf(r, f2)?.verdict, "fixed");
+  // `-1` = 整份文件：与桥端同一个口径
+  const whole = round(1, { verdicts: [{ path: "a.ts", line: -1, verdict: "false-positive", why: "" }] });
+  assert.equal(verdictOf(whole, f2)?.verdict, "false-positive");
 });
 
 test("一轮的结论不含抬头：明细行与 title 各拼一次", () => {

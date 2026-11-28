@@ -568,6 +568,8 @@ export class App {
   }
   private reviewRefs: string[] = [];
   private reviewAsked = "";
+  /** 上一次向桥要过自动评审状态的会话（按会话判重，见 `askAuto`）。 */
+  private autoAsked = "";
   /** 桥算出来的仓库根（页面只给 cwd）；帧用它做过滤。 */
   private reviewRepo = "";
   /**
@@ -2926,7 +2928,10 @@ export class App {
         if (sessionId === this.currentId) {
           const before = this.reviewAuto?.status ?? "";
           this.reviewAuto = state;
-          if (before !== state?.status) this.autoTakeover = false;
+          // 「刚接管过」这个标记只在**新起一条**（变回 running）时清：以前任何 status 变化都清，
+          // 接管那一句刚发出去、帧把 running → paused 写回来，之后再变一次就把标记静默抹掉，
+          // 下一条消息又会被拦下来问一遍 —— 拦不拦取决于帧到达的时序。
+          if (state?.status === "running" && before !== "running") this.autoTakeover = false;
           this.syncAutoRoundSheet();
           // 全屏评审浮层里画的也是这张自动评审卡：别的评审帧都刷它，这一帧不刷就会停在上一次的状态。
           this.syncReviewSheet();
@@ -19938,10 +19943,23 @@ export class App {
    * 撞缓存等于白点。
    */
   private askReview(dir: string, force = false, fresh = false): boolean {
+    // 自动评审的「问过了」按**会话**判：评审记录按目录去重，同一个仓库下从 A 切到 B 时
+    // 它不会再问 —— 而 B 的自动评审是另一条（`syncReviewSession` 把 `reviewAuto` 换成了
+    // B 的缓存，多半是 null），不补问一句，B 的卡片就缺、接管拦截也按 null 放行。
+    this.askAuto(force);
     if (!force && this.reviewAsked === dir) return false;
     this.reviewAsked = dir;
     this.socket.send({ type: "review.get", dir, sessionId: this.currentId, fresh });
-    this.socket.send({ type: "review.auto.get", sessionId: this.currentId });
+    return true;
+  }
+
+  /** 向桥要这个会话的自动评审状态；同一个会话只问一次（`force` 给重连 / 换脑）。 */
+  private askAuto(force = false): boolean {
+    const session = this.currentId ?? "";
+    if (!session) return false;
+    if (!force && this.autoAsked === session) return false;
+    this.autoAsked = session;
+    this.socket.send({ type: "review.auto.get", sessionId: session });
     return true;
   }
 
@@ -20236,16 +20254,35 @@ export class App {
     return view.missingWhy || "";
   }
 
-  /** 面板与「评审详情」dialog 共用同一份输入。 */
-  private reviewPanelInput(): ReviewPanelInput {
-    const dir = this.reviewDir();
-    const view = reviewView({
+  /**
+   * 「自动评审现在能不能开跑、不能是为什么」：面板上那颗按钮与设置 dialog 的「开始」**同一份**。
+   *
+   * dialog 开着的时候状态帧 / PR info 还会回来：分支对不上、或者已经有一条在跑了，按钮那头
+   * 灰了，dialog 这头却还能把请求发出去 —— 桥会拒，但那是把判定留给了报错。
+   */
+  private autoGate(): { canStart: boolean; why: string } {
+    const view = this.reviewViewNow();
+    // D462 第 16 条：PR 模式要求「本地当前分支 = PR head」—— 按钮灰着并说清是哪两条对不上。
+    const prInfo = this.reviewPrInfo.number === Number(this.reviewPr) ? this.reviewPrInfo.info : null;
+    const local = (this.git?.branch ?? "").trim();
+    const head = String(prInfo?.headRefName ?? "").trim();
+    const mismatch = this.reviewMode === "pr" && Boolean(head) && Boolean(local) && head !== local;
+    const running = this.reviewAuto?.status === "running";
+    return {
+      canStart: view.canRun && !mismatch && !running,
+      why: this.autoWhy({ mismatch, local, head, missingWhy: view.missingWhy }),
+    };
+  }
+
+  /** 只算评审面板那份「现在能不能开跑」的视图（`reviewView` 的其余字段这里用不上）。 */
+  private reviewViewNow(): ReturnType<typeof reviewView> {
+    return reviewView({
       state: this.reviewState,
       progresses: this.reviewProgresses,
       cap: this.reviewCap,
       ocr: this.reviewOcr,
       installing: this.reviewInstalling,
-      error: dir ? this.reviewError : tr("先打开一个会话：评审评的是它的目录。"),
+      error: this.reviewDir() ? this.reviewError : tr("先打开一个会话：评审评的是它的目录。"),
       notGit: this.reviewNotGit,
       mode: this.reviewMode,
       base: this.reviewBase,
@@ -20260,7 +20297,6 @@ export class App {
       account: this.reviewAccount,
       accountUsed: this.reviewAccountUsed,
       accounts: this.reviewAccounts,
-      // 有令牌（gh 登录或存的 PAT）就能评：卡片降级成一行小字（D428）。
       gh: this.ghSetup.card(Boolean(this.reviewAccountUsed) || this.reviewAccounts.some((a) => a.pat)),
       model: this.reviewModel,
       focus: this.reviewFocus,
@@ -20272,6 +20308,12 @@ export class App {
       tipsBusy: this.reviewTipsBusy,
       tipsBranch: this.reviewTipsBranch,
     });
+  }
+
+  /** 面板与「评审详情」dialog 共用同一份输入。 */
+  private reviewPanelInput(): ReviewPanelInput {
+    const dir = this.reviewDir();
+    const view = this.reviewViewNow();
     const effective = this.reviewEffectiveModel();
     return {
       view,
@@ -20284,20 +20326,11 @@ export class App {
       // 同一组动作直接给面板：不再在 ReviewActions 里再抄一份（评审 #33）。
       ghActions: this.ghCardActions(),
       auto: {
-        panel: (() => {
-          // D462 第 16 条：PR 模式要求「本地当前分支 = PR head」—— 按钮灰着并说清是哪两条对不上。
-          const prInfo = this.reviewPrInfo.number === Number(this.reviewPr) ? this.reviewPrInfo.info : null;
-          const local = (this.git?.branch ?? "").trim();
-          const head = String(prInfo?.headRefName ?? "").trim();
-          const mismatch = this.reviewMode === "pr" && Boolean(head) && Boolean(local) && head !== local;
-          const running = this.reviewAuto?.status === "running";
-          return {
-            state: this.reviewAuto,
-            canStart: view.canRun && !mismatch && !running,
-            why: this.autoWhy({ mismatch, local, head, missingWhy: view.missingWhy }),
-            modeName: modeLabel(this.reviewAuto?.config.mode || this.reviewMode),
-          };
-        })(),
+        panel: {
+          state: this.reviewAuto,
+          ...this.autoGate(),
+          modeName: modeLabel(this.reviewAuto?.config.mode || this.reviewMode),
+        },
         actions: {
           onSettings: () => this.openAutoSettings(),
           onStop: () => this.socket.send({ type: "review.auto.stop", sessionId: this.currentId }),
@@ -20589,6 +20622,12 @@ export class App {
         });
       },
       onStart: (values) => {
+        // 与面板那颗按钮同一份判定（dialog 开着的时候状态帧还会回来）
+        const gate = this.autoGate();
+        if (!gate.canStart) {
+          this.flashToast(gate.why || tr("现在不能开自动评审"), true, 6000);
+          return;
+        }
         sheet.close();
         this.startAutoReview(values);
       },
@@ -20701,21 +20740,27 @@ export class App {
     btns.append(el("span", "spacer"));
     const cancel = el("button", "btn ghost", tr("取消"));
     cancel.type = "button";
-    cancel.onclick = () => this.closeModal();
     const ok = el("button", "btn primary", tr("接管并发送"));
     ok.type = "submit";
     btns.append(cancel, ok);
     form.append(h, p, btns);
     modal.append(form);
+    // 关窗必须把 Esc 层一起摘掉：只删 DOM 的话栈里留着一条 `el` 已断连的残骸，下一次按 Esc
+    // 先被它吃掉一次（`escapeTopLayer` 顺手 splice 掉然后 continue），真正在顶的那层要按两次才关。
+    const pop = pushEscLayer({ el: modal, onEsc: () => this.closeModal() });
+    const close = (): void => {
+      pop();
+      this.closeModal();
+    };
+    cancel.onclick = close;
     form.onsubmit = (ev) => {
       ev.preventDefault();
-      this.closeModal();
+      close();
       this.socket.send({ type: "review.auto.handover", sessionId: this.currentId });
       this.autoTakeover = true;
       after();
     };
     this.overlay(modal);
-    pushEscLayer({ el: modal, onEsc: () => modal.remove() });
   }
 
   /**

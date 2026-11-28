@@ -900,6 +900,9 @@
   document.querySelectorAll('#variants button').forEach((b) => (b.onclick = () => { variant = b.dataset.variant; apply(); }));
 
   addEventListener("keydown", (e) => {
+    // 焦点在输入框 / 文本域里时不抢按键：在原型里打字不该切屏、切主题。
+    const tag = (e.target && e.target.tagName) || "";
+    if (tag === "INPUT" || tag === "TEXTAREA" || (e.target && e.target.isContentEditable)) return;
     if (e.key === "1" || e.key === "2" || e.key === "3") { screen = Number(e.key); apply(); }
     else if (e.key === "ArrowLeft") { variant = variant === "A" ? "B" : "A"; apply(); }
     else if (e.key === "ArrowRight") { variant = variant === "A" ? "B" : "A"; apply(); }

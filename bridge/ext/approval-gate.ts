@@ -337,7 +337,11 @@ export default function approvalGate(pi: any): void {
     // `; rm -rf`（评审 #1）—— 那一下就成了「前半段合法、后半段随行」。
     // `auto &&` 不能省：没有授权时先短路，别为了一次注定失败的判定在每次 shell 调用里
     // 多读两次文件（`currentBranch` = stat + read `.git/HEAD`）。
-    if (auto && grantAllows(auto, risk.detail, { head: SHELL_TOOLS.has(lower) ? currentBranch(cwd) : "", cwd })) {
+    // 反斜杠续行先接回去：`PUSH` / `PR_MERGE` 都是 `^` 锚定，`gh -R a/b \` + 换行 + `pr merge 12`
+    // 这种合法写法不接回去就命不中，白白的回到审批卡（方向安全，但自动合并会卡住）。
+    // 判定仍然用**完整**命令，这里只是把一行里的物理换行抹平，不截断、不改写。
+    const flat = risk.detail.replace(/\\\r?\n/g, " ");
+    if (auto && grantAllows(auto, flat, { head: SHELL_TOOLS.has(lower) ? currentBranch(cwd) : "", cwd })) {
       // 别原样回显命令：`git push https://x-access-token:ghp_…@github.com/…` 这种会把凭据
       // 抄进 pi 子进程的 stderr（日志跟着会话落盘）。
       console.error(`[approval-gate] auto-review grant allowed: ${redactForLog(risk.detail)}`);

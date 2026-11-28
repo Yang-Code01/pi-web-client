@@ -120,9 +120,14 @@ const VALUE_FLAGS = new Set(["-R", "--repo", "-b", "--body", "-F", "--body-file"
  * 以前逐字比必然失败 → 显式写了**正确**仓库的合法命令被拒（fail-closed，但自动合并会卡在那）。
  */
 function normalizeRepo(raw: string): string {
-  let s = String(raw ?? "").trim().replace(/\/+$/, "");
-  s = s.replace(/^https?:\/\/[^/]+\//, "").replace(/\.git$/, "");
-  return /^[\w.-]+\/[\w.-]+$/.test(s) ? s : s;
+  const s = String(raw ?? "")
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/^https?:\/\/[^/]+\//, "")
+    .replace(/\.git$/, "");
+  // 归一后不像 `owner/name` 的（`../x`、空串）原样交回去：后面与 slug 逐字比必然对不上 → 拒。
+  // 别在这里「认不出就当没点名」：那会退回「按 cwd 算」，正是要防的那条路。
+  return s;
 }
 
 /**

@@ -295,9 +295,6 @@ function errorText(run: ReviewRun | null, fallback: string): string {
   return (run?.error || fallback || "").trim();
 }
 
-/** 面板看的那批记录：自动评审的轮次带 `auto`，只出现在自动卡时间线上（D462 第 7 条）。 */
-const manualRuns = (s: ReviewState | null): ReviewRun[] => (Array.isArray(s?.runs) ? s.runs.filter((r) => !r.auto) : []);
-
 /** 四块「评什么」的标签与说明：面板磁贴与自动评审卡共用一份（抄两份会漂）。 */
 export function modeBoardItems(): { value: ReviewMode; label: string; hint: string; icon: IconName }[] {
   return [
@@ -382,12 +379,25 @@ export function reviewView(input: ReviewInput): ReviewView {
   const ocr = input.ocr;
   const state = input.state;
   // 记录按时间正序落盘；面板从新到旧画，所以这里先翻过来，画的时候不用再想顺序。
-  const allRuns = manualRuns(state);
+  // 自动评审的轮次（`auto`）只上它自己的时间线，不进这份列表。一次遍历分两筐：
+  // 额度按**全部** run 算（自动轮在桥上也占名额），列表只画手动那批。
+  const allRuns: ReviewRun[] = [];
+  let runningCount = 0;
+  if (Array.isArray(state?.runs)) {
+    for (const r of state.runs) {
+      if (r.status === "running") runningCount++;
+      if (!r.auto) allRuns.push(r);
+    }
+  }
   // 同一批记录只过滤一次：`asRun()` 里再 filter 一遍等于把「哪些算手动评审」写两支。
   const latest = allRuns.length ? allRuns[allRuns.length - 1] : null;
   // 「完整详情」浮层看的那一次（D429 之后面板本身不再展开任何一次）；认不出来（记录被裁掉了 /
-  // 换了会话 / 刷新后不记得了）就回落到最新那一次。
+  // 换了会话 / 刷新后不记得了）就回落到最新那一次。焦点指向自动轮时也一样回落 —— 但要说出来，
+  // 别让人以为浮层里画的就是他点的那条。
   const focused = input.focus ? allRuns.find((r) => r.id === input.focus) ?? null : null;
+  if (input.focus && !focused && state?.runs?.some((r) => r.id === input.focus && r.auto)) {
+    console.warn(`[review] 焦点指向一条自动评审轮次（${input.focus}）：它有自己的轮次窗，这里回落到最新一次手动评审`);
+  }
   const active = focused ?? latest;
   const activeRunning = Boolean(active && active.status === "running");
   // D420：一个会话可以同时跑两条，每条一帧进度 —— 按 runId 认，别再拿「最新那条」顶替。
@@ -400,8 +410,6 @@ export function reviewView(input: ReviewInput): ReviewView {
   const cap = Math.max(1, Number(input.cap) || 2);
   // 额度按**全部** run 算（自动轮在桥上也占名额，只是不画进列表）：只按手动那批算会给出
   // 假的「还能开一条」，点下去才发现桥上 busy。
-  const everyRun = Array.isArray(state?.runs) ? state.runs : [];
-  const runningCount = everyRun.filter((r) => r.status === "running").length;
   const atCap = runningCount >= cap;
   const labels = input.modelLabels ?? {};
   // 「评审仓库」：可能就与会话目录重合（没钉），也可能是大文件夹底下选中的那个子仓库。
