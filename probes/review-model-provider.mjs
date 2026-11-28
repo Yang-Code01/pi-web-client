@@ -233,7 +233,8 @@ try {
 
   await page.evaluate(() => document.querySelector(".rv-model").click());
   await page.locator(".model-sheet").waitFor({ timeout: 10000 });
-  const row2 = page.locator('.model-sheet .pm-row[data-provider="wb2_mac"][data-id="cn:glm-5.4"]').first();
+  // 同一个 id、另一个来源：这才是「换来源」那条路（换 id 的话 `moved()` 光凭 id 就为真了）
+  const row2 = page.locator('.model-sheet .pm-row[data-provider="wb2_mac"][data-id="cn:deepseek-v4.1-flash"]').first();
   await row2.waitFor({ timeout: 10000 });
   await row2.evaluate((el) => el.click());
   await sleep(150);
@@ -246,7 +247,7 @@ try {
   await page.locator(".pm-foot-actions .btn.primary").first().evaluate((el) => el.click());
   await sleep(500);
   const after = await chip2.getAttribute("title");
-  check("不知道来源时，换来源仍然切得过去", after === "wb2_mac/cn:glm-5.4", `chip title = ${after}`);
+  check("不知道来源时，换来源仍然切得过去", after === "wb2_mac/cn:deepseek-v4.1-flash", `chip title = ${after}`);
 
   check("没有页面异常", errors.length === 0, errors.join(" | "));
 } finally {
