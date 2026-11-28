@@ -189,7 +189,9 @@ try {
   check("挑 wb2_mac 的 GLM-5.4 并确认后，面板记的仍是 wb2_mac", t1 === "wb2_mac/cn:glm-5.4", `chip title = ${t1}`);
 
   // 真的点一次「开始评审」：发给桥的那一帧必须带对 provider（桥按它起子进程）。
+  // 这条是整份探针的核心，**不许 skip**：按钮灰了就说明桩没配好，探针自己该红（D452 评审意见 7）。
   const runBtn = page.locator(".rv-run");
+  check("「开始评审」可点（桩里的范围配得上）", await runBtn.isEnabled());
   if (await runBtn.isEnabled()) {
     await runBtn.evaluate((el) => el.click());
     await sleep(600);
@@ -199,8 +201,6 @@ try {
       !!sent && sent.provider === "wb2_mac" && sent.model === "cn:glm-5.4",
       `实际 ${JSON.stringify(sent)}`,
     );
-  } else {
-    console.log("skip  开始评审按不了（桩里范围没配对），跳过 review.run 那一条");
   }
 
   // 同一个 commit() 也管对话切模型：点在 wb2_mac 那一组里的另一行，setModel 必须是 wb2_mac。
@@ -217,6 +217,36 @@ try {
   await sleep(500);
   const sent1 = seen.setModel.at(-1);
   check("对话切模型也按 provider/id 走（wb2_mac）", !!sent1 && sent1.provider === "wb2_mac", `setModel = ${JSON.stringify(sent1)}`);
+
+  // ---- 会话没报 provider（老桥 / 从没报过）时：换来源仍然必须算一次切换 ----------
+  // 那时弹层的起点按目录里同 id 的第一行（wb2api）认 —— 点 wb2_mac 那一行要真的能切过去，
+  // 不能被 sameModel 的向后兼容吞成「没动过」（D452 评审意见 4）。
+  SESSION.provider = "";
+  // 别等 networkidle：页面开着一条常驻 WS，永远不会 idle。
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(".session-card").first().click();
+  const chip2 = page.locator(".rv-model");
+  await chip2.waitFor({ timeout: 20000 });
+  await sleep(400);
+  const before = await chip2.getAttribute("title");
+  check("不知道来源时，面板按目录第一行（wb2api）起手", before === "wb2api/cn:deepseek-v4.1-flash", `chip title = ${before}`);
+
+  await page.evaluate(() => document.querySelector(".rv-model").click());
+  await page.locator(".model-sheet").waitFor({ timeout: 10000 });
+  const row2 = page.locator('.model-sheet .pm-row[data-provider="wb2_mac"][data-id="cn:glm-5.4"]').first();
+  await row2.waitFor({ timeout: 10000 });
+  await row2.evaluate((el) => el.click());
+  await sleep(150);
+  const dirtyTag = await page
+    .locator(".model-sheet .pm-row.on .pm-who")
+    .first()
+    .innerText()
+    .catch(() => "");
+  check("点另一来源的同名模型会显示「待切换」", /待切换/.test(dirtyTag), `实际「${dirtyTag}」`);
+  await page.locator(".pm-foot-actions .btn.primary").first().evaluate((el) => el.click());
+  await sleep(500);
+  const after = await chip2.getAttribute("title");
+  check("不知道来源时，换来源仍然切得过去", after === "wb2_mac/cn:glm-5.4", `chip title = ${after}`);
 
   check("没有页面异常", errors.length === 0, errors.join(" | "));
 } finally {

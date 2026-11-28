@@ -101,7 +101,12 @@ fs.writeFileSync(
     "} else if (mode === 'silent') {",
     "  out({ type: 'turn_start' });",
     "} else if (mode === 'split') {",
-    "  if (list.length === 1) out({ type: 'message_end', message: { role: 'assistant', content: [], usage: { totalTokens: 0 }, stopReason: 'error', errorMessage: 'maximum context length exceeded' } });",
+    "  // 第 1 组两次都超上下文（不重试也没用），第 2 组正常 —— 验「单组的错不许拖死后面的组」",
+    "  if (list.length <= 2) out({ type: 'message_end', message: { role: 'assistant', content: [], usage: { totalTokens: 0 }, stopReason: 'error', errorMessage: 'maximum context length exceeded' } });",
+    "  else out({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify({ findings: [], skipped: [] }) }], usage: { totalTokens: 7 }, stopReason: 'stop' } });",
+    "} else if (mode === 'flaky') {",
+    "  // 单次限流：第一次报 429，重试就恢复了 —— 验「非网络错照旧再问一次」",
+    "  if (list.length === 1) out({ type: 'message_end', message: { role: 'assistant', content: [], usage: { totalTokens: 0 }, stopReason: 'error', errorMessage: '429 Too Many Requests: rate limit exceeded' } });",
     "  else out({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify({ findings: [], skipped: [] }) }], usage: { totalTokens: 7 }, stopReason: 'stop' } });",
     "} else {",
     "  out({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify({ findings: [], skipped: [] }) }], usage: { totalTokens: 7 }, stopReason: 'stop' } });",
@@ -204,7 +209,7 @@ try {
     check("分组计划里第 1 组是 failed", () => {
       assert.equal(run.plan?.[0]?.state, "failed", `实际：${JSON.stringify(run.plan)}`);
     });
-    check("报了错就不再重试：假 pi 只被起了一次", () => {
+    check("来源连不上就不再重试：假 pi 只被起了一次", () => {
       assert.equal(calls.length, 1, `实际起了 ${calls.length} 次`);
     });
   });
@@ -239,14 +244,32 @@ try {
       assert.equal(run.plan?.[0]?.state, "failed", `实际：${JSON.stringify(run.plan)}`);
       assert.equal(run.plan?.[1]?.state, "done", `实际：${JSON.stringify(run.plan)}`);
     });
-    check("单组复错：假 pi 每组各起一次（没有重试）", () => {
-      assert.equal(calls.length, 2, `实际起了 ${calls.length} 次`);
+    check("单组复错：第 1 组重试过一次（共 2 次），第 2 组 1 次", () => {
+      assert.equal(calls.length, 3, `实际起了 ${calls.length} 次`);
     });
     check("单组复错：整轮仍算 failed（覆盖不全），但文案不说断网", () => {
       assert.equal(run.status, "failed");
       assert.equal(run.errorCode, "child_no_output");
       assert.match(run.error, /没有给出结论/);
       assert.doesNotMatch(run.error, /没连上/, "超上下文不是网络故障");
+    });
+  });
+
+  // ---- 2c. 单次限流（429）：照老规矩再问一次，这一次就答上了 → 整轮 done -----------------
+  await scenario("限流后恢复", async () => {
+    const session = "s-flaky";
+    const runId = start(session);
+    await runWorker(runId, "flaky", "flaky");
+    const run = await waitRun(session, runId);
+    const calls = callsOf("flaky");
+
+    check("限流后重试成功：一共起两次，第 1 组 done", () => {
+      assert.equal(calls.length, 2, `实际起了 ${calls.length} 次`);
+      assert.equal(run.plan?.[0]?.state, "done", `实际：${JSON.stringify(run.plan)}`);
+    });
+    check("限流后重试成功：整轮是 done，不是 failed", () => {
+      assert.equal(run.status, "done");
+      assert.equal(run.error, "");
     });
   });
 

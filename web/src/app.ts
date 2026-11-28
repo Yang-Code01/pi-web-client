@@ -6115,12 +6115,19 @@ export class App {
     // 按 id 找回来的那个会指错来源（本机 wb2api / wb2_mac 都卖 cn:glm-5.4，D452）。
     const startProvider =
       (pick ? pick.provider : this.session?.provider) || this.models.find((m) => m.id === startModel)?.provider || "";
+    // 起点的「身份」：会话报了 provider 就是它；没报（老桥 / 从没报过）就取目录里同 id 的那一行 ——
+    // 与「使用中」高亮、`draftInfo()` 共用同一份判据。不先把这一步做出来的话：`draftProvider` 会从
+    // 空串起步，「点同名同 id 的另一个来源」就被 `sameModel` 的向后兼容当成没动过，弹层不显示
+    // 「待切换」、确认直接关窗（D452 评审意见 4）。
+    const startRow = this.models.find((m) => sameModel(m, { provider: startProvider, id: startModel }));
+    const startId = startRow?.id ?? startModel;
+    const startProviderId = startRow?.provider ?? startProvider;
     // 默认展开是「第一眼」的事，不是「锁死」：用户把这一组折上后，下次 paint 不能再把它擑开。
     // 挑模型那条路没有「当前模型那一组」可言：全部展开，否则开场就是一排折叠标题。
-    const forceOpen = new Set<string>(pick ? this.models.map((m) => m.provider) : startProvider ? [startProvider] : []);
+    const forceOpen = new Set<string>(pick ? this.models.map((m) => m.provider) : startProviderId ? [startProviderId] : []);
     let draftModel = startModel;
     /** 草稿的来源：与 `draftModel` 一起才是「挑的是哪一个模型」，点行时两份一起改。 */
-    let draftProvider = startProvider;
+    let draftProvider = startProviderId;
     let draftLevel = startLevel;
     type ModelTab = "now" | "all" | "session";
     // 挑模型那条路没有「当前使用」可言（面板还没选过），直接落在「全部模型」上，
@@ -6193,10 +6200,14 @@ export class App {
       commit();
     });
 
-    const draftInfo = (): ModelInfo | undefined => this.models.find((m) => sameModel(m, { provider: draftProvider, id: draftModel }));
+    // 草稿/起点都用**严格**的 `provider + id` 比：`sameModel()` 在 provider 未知时按「同一个」算，
+    // 那是给「从目录里找会话那一行」用的；拿它判断「有没有换」会把换来源吞掉（D452 评审意见 4）。
+    const isDraft = (m: ModelInfo): boolean => m.id === draftModel && m.provider === draftProvider;
+    const isStart = (m: ModelInfo): boolean => m.id === startId && m.provider === startProviderId;
+    const draftInfo = (): ModelInfo | undefined => this.models.find(isDraft);
     const draftLevels = (): string[] => draftInfo()?.levels ?? [];
     /** 换了模型（含只换了来源）或换了档位：两个 provider 卖同一个 id 时，「换来源」也是一次真切换。 */
-    const moved = (): boolean => !sameModel({ provider: draftProvider, id: draftModel }, { provider: startProvider, id: startModel });
+    const moved = (): boolean => draftModel !== startId || draftProvider !== startProviderId;
     const dirty = (): boolean => moved() || draftLevel !== startLevel;
     const changes = (): string[] => {
       const out: string[] = [];
@@ -6207,7 +6218,7 @@ export class App {
 
     const commit = (): void => {
       if (pick) {
-        const chosen = this.models.find((m) => sameModel(m, { provider: draftProvider, id: draftModel }));
+        const chosen = this.models.find(isDraft);
         if (chosen) {
           // D423：评审挑的模型进评审侧那份「最近使用」（确认即记）；对话那份不受影响。
           rememberReviewModel(chosen.provider, chosen.id);
@@ -6219,7 +6230,7 @@ export class App {
       const sessionId = this.currentId;
       // 没接管＝没写入权：行双击也会走到这里，别把 setModel 发给桥让它默默丢掉。
       if (this.session && !this.session.owned) return;
-      const model = this.models.find((m) => sameModel(m, { provider: draftProvider, id: draftModel }));
+      const model = this.models.find(isDraft);
       const modelChanged = moved() && !!model;
       const levelChanged = draftLevel !== startLevel && !!draftLevel;
       if (!sessionId || (!modelChanged && !levelChanged)) {
@@ -6231,8 +6242,8 @@ export class App {
         // The level rides along with the model switch so the bridge applies it after pi's clamp.
         if (modelChanged && model) {
           // 换走的和换上的都记进「最近使用」：下次打开时，刚离开的那个就在顶上。
-          const prev = this.models.find((m) => sameModel(m, { provider: startProvider, id: startModel }));
-          rememberRecentModel(prev?.provider ?? startProvider, prev?.id ?? startModel);
+          const prev = this.models.find(isStart);
+          rememberRecentModel(prev?.provider ?? startProviderId, prev?.id ?? startId);
           rememberRecentModel(model.provider, model.id);
           this.socket.send({ type: "setModel", sessionId, provider: model.provider, modelId: model.id, level: level || undefined });
         } else if (levelChanged) this.socket.send({ type: "setThinking", sessionId, level });
@@ -6252,8 +6263,8 @@ export class App {
 
     /** 一行模型：名字 + 「使用中 / 待切换」+ id，右侧窗口大小。 */
     const modelRow = (m: ModelInfo, opts: { provider?: boolean } = {}): HTMLElement => {
-      const on = sameModel(m, { provider: draftProvider, id: draftModel });
-      const isStart = sameModel(m, { provider: startProvider, id: startModel });
+      const on = isDraft(m);
+      const current = isStart(m);
       const row = el("button", `settings-row pm-row${on ? " on" : ""}`) as HTMLButtonElement;
       row.type = "button";
       row.dataset.id = m.id;
@@ -6261,11 +6272,11 @@ export class App {
       const label = el("span", "settings-label");
       const nameEl = el("span", "settings-name", shortModelName(m.name));
       let who = "";
-      if (on) who = isStart ? tr("使用中") : tr("待切换");
-      else if (isStart) who = tr("使用中");
+      if (on) who = current ? tr("使用中") : tr("待切换");
+      else if (current) who = tr("使用中");
       if (who) {
         const tag = el("span", "pm-who", who);
-        if (on && !isStart) tag.classList.add("draft");
+        if (on && !current) tag.classList.add("draft");
         nameEl.append(tag);
       }
       label.append(nameEl, el("code", "settings-key", m.id));
@@ -6378,7 +6389,7 @@ export class App {
     // 搜索匹配规则（列表与「最近使用」共用，改规则只改这里）。
     const multi = new Set(this.models.map((x) => x.provider)).size > 1;
     const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
-    const currentModel = this.models.find((x) => sameModel(x, { provider: startProvider, id: startModel })) ?? null;
+    const currentModel = this.models.find(isStart) ?? null;
     const matches = (x: ModelInfo, q: string): boolean => !q || `${x.name} ${x.id}`.toLowerCase().includes(q);
 
     const nowPane = (): HTMLElement[] => {
@@ -6407,12 +6418,12 @@ export class App {
         return out;
       }
 
-      const { pinned, recent } = groupModels(this.models, { id: startModel, provider: startProvider }, { mergedRecent: !!pick });
+      const { pinned, recent } = groupModels(this.models, { id: startId, provider: startProviderId }, { mergedRecent: !!pick });
       // 只换档位时草稿就是当前模型：再插一块「待切换」＝同一行画两遍。
       if (dirty() && m && moved()) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
       const current = [pinned ? flatRow(pinned) : null].filter((x): x is HTMLElement => !!x);
       out.push(this.stSection(tr("当前使用"), tr("1 个")), panel(current, tr("会话还没报出模型")));
-      const rest = recent.filter((x) => !sameModel(x, { provider: startProvider, id: startModel }) && !sameModel(x, { provider: draftProvider, id: draftModel }));
+      const rest = recent.filter((x) => !isStart(x) && !isDraft(x));
       if (rest.length) out.push(this.stSection(tr("最近使用"), tr("{p1} 个", { p1: String(rest.length) })), panel(rest.map(flatRow), ""));
       return out;
     };
@@ -6477,11 +6488,12 @@ export class App {
     };
 
     const sessionPane = (): HTMLElement[] => {
-      const m = this.models.find((x) => sameModel(x, { provider: startProvider, id: startModel }));
+      const m = this.models.find(isStart);
       const { used: u, win } = used();
       const rows = [
         kvRow(tr("模型"), "model", startModel ?? "–"),
-        kvRow(tr("来源"), "provider", m?.provider ?? startProvider ?? "–"),
+        // 空串不是来源：老桥 / 目录里没有这一行时显示「–」，别留一格空白（D452 评审意见 5）。
+        kvRow(tr("来源"), "provider", m?.provider || startProviderId || "–"),
         kvRow(tr("上下文窗口"), "contextWindow", win ? `${compactSize(win)} tokens` : "–"),
         kvRow(tr("已用上下文"), "used", u != null ? `${compactSize(u)}${win ? ` · ${Math.round((u / win) * 100)}%` : ""}` : "–"),
         kvRow(tr("思考档位"), "thinking", startLevel ? `${startLevel}${m?.levels?.length ? ` · ${m.levels.join(" / ")}` : ""}` : "–"),

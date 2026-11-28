@@ -1138,7 +1138,8 @@ export function unreachable(why: string): boolean {
 /** 「一次都没给出结论」的失败文案（有子进程原话时以它为准）。 */
 export function noOutputMessage(why: string, tokens: number): string {
   const own = String(why ?? "").trim();
-  const used = `已用 ${Math.round(tokens / 1000)}k token`;
+  // 这个数是**整轮**（含答出来的组）的累计用量：写清楚是「本次共用」，别让人当成这一组烧掉的（D452 意见 3）。
+  const used = `本次共用 ${Math.round(tokens / 1000)}k token`;
   if (own && unreachable(own)) {
     return (
       `模型那边没连上：${clip(own)}。` +
@@ -1609,17 +1610,15 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       if (!res.text.trim()) {
         const why = childWhy(res);
         lastChildWhy = why;
-        if (res.error) {
-          // 子进程自己报了错（网关连不上 / 401 / 限流 / 超上下文…）。分两种走（D452 评审意见 1）：
-          // ・来源整个连不上（EHOSTDOWN 这类）→ 后面的组只会撞同一堵墙，收工，别每组白赊 ~25 秒；
-          // ・只影响这一组的错（超额、单次限流、这堆文件太大）→ 别的文件还评得出来，照跑。
+        // 来源整个连不上（EHOSTDOWN 这类）：pi 已经在子进程里自己重试过 3 次，同一份提示词再发一遍
+        // 只会再撞一次同一堵墙、还每组白发 ~25 秒。这组判失败，后面的组也别再跑了（D452）。
+        if (res.error && unreachable(why)) {
           markGroupFailed(i, why);
           note(`第 ${i + 1} 组失败（${clip(why, 160)}）`, i + 1);
-          if (unreachable(why)) break;
-          continue;
+          break;
         }
-        // 退出码 0、一句话没有、也没报错：多半是工具调用把轮次/上下文吃掉了。
-        // 再问一次、明确让它「别再调工具」，剩下的组照跑（别的文件可能还答得出来）。
+        // 其余（没答也没报错，或 429 / ECONNRESET / 超上下文这种只影响一组的错）：照老规矩再问一次，
+        // 明确让它「别再调工具」—— 单次限流就靠这一次翻盘（D452 评审意见 1）。
         note(`第 ${i + 1} 组没给结论（${clip(why, 160)}；已用 ${Math.round(res.tokens / 1000)}k token），重试一次`, i + 1);
         const nudge = `${prompt}\n\n## 立即收尾\n\n不要再调用任何工具。根据你已经看到的内容直接输出上面那个 JSON 对象；宁可少报，也要把 JSON 交回来。`;
         res = await runChild(nudge);
@@ -1634,6 +1633,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
           lastChildWhy = childWhy(res);
           markGroupFailed(i, lastChildWhy);
           note(`第 ${i + 1} 组没给出结论（${clip(lastChildWhy, 160)}）`, i + 1);
+          // 重试这一轮可能换了一种错（刚才限流、这回网关掉了）：照样按**新的**原因决定要不要收工。
           if (res.error && unreachable(lastChildWhy)) break;
           continue;
         }
