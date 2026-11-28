@@ -345,6 +345,8 @@ const S = {
   deepFor: "",
   /** D441：更新组状态（发布者开关 / 组 / 上次播报）。null = 还没读到。 */
   updates: null as UpdatesView | null,
+  /** 上一次读 /api/updates 是 404（桥太旧）而不是网络错误：设置页据此给不同提示（评审 #12）。 */
+  updatesStale: false,
   /** 读 /api/updates 失败的原因：设置页要能说清是旧桥 404 还是网络断了（评审 #26）。 */
   updatesError: null as string | null,
 };
@@ -701,21 +703,33 @@ async function loadStatus(): Promise<void> {
 }
 
 /** D441：更新组状态。发布者开关在 peer 的 config 里，组与播报进度在 bridge 里。 */
+/** 旧桥 / 被裁剪的响应可能少字段：统一兜底，别让设置页 split(undefined) 崩掉（评审 #32/#36）。 */
+function normalizeUpdates(view: Partial<UpdatesView>): UpdatesView {
+  return {
+    ...view,
+    ok: true,
+    lastCommit: view.lastCommit ?? "",
+    lastBatchTitle: view.lastBatchTitle ?? "",
+    lastAnnouncedAt: view.lastAnnouncedAt ?? 0,
+    lastCheckAt: view.lastCheckAt ?? 0,
+    lastError: view.lastError ?? "",
+  } as UpdatesView;
+}
+
+/** getJson/postJson 抛的是 Error（消息里带 `HTTP 404`），没有 status 字段；从文案里取状态码。 */
+function httpStatus(err: unknown): number {
+  const m = /HTTP (\d{3})/.exec((err as Error).message ?? "");
+  return m ? Number(m[1]) : 0;
+}
+
 async function loadUpdates(): Promise<void> {
   try {
-    const view = await getJson<UpdatesView>("/api/updates");
-    // 旧桥可能少字段：兜底成空值，别让设置页 split(undefined) 崩掉（评审 #32/#36）。
-    S.updates = {
-      ...view,
-      lastCommit: view.lastCommit ?? "",
-      lastBatchTitle: view.lastBatchTitle ?? "",
-      lastAnnouncedAt: view.lastAnnouncedAt ?? 0,
-      lastCheckAt: view.lastCheckAt ?? 0,
-      lastError: view.lastError ?? "",
-    };
+    S.updates = normalizeUpdates(await getJson<Partial<UpdatesView>>("/api/updates"));
+    S.updatesStale = false;
   } catch (err) {
     S.updates = null;
     S.updatesError = (err as Error).message;
+    S.updatesStale = httpStatus(err) === 404;
   }
 }
 
@@ -2352,7 +2366,11 @@ function entryNode(e: Entry, t: Thread, inPane = false, ro = readonlyGroup(t)): 
     box.append(tag);
   }
   if (e.replyTo) box.append(quoteBlock(e.replyTo));
-  if (e.announce) {
+  // 公告卡只认发布者：成员（或冒用 nodeId 的人）发的 announce 字段必须按普通文本画（评审 #9）。
+  const fromPublisher = Boolean(
+    t.group?.announceOnly && e.from.nodeId === (t.group.publisher || t.group.owner),
+  );
+  if (e.announce && fromPublisher) {
     // D441：公告卡片自己画正文，不再走气泡那条路（否则同一段正文会画两遍）。
     box.append(announceCard(e, e.announce));
   } else if (e.kind === "note" && e.note) {
@@ -2839,14 +2857,20 @@ function announceBar(t: Thread): HTMLElement {
 function announceCard(e: Entry, a: NonNullable<Entry["announce"]>): HTMLElement {
   const card = h("div", "an-card");
   const head = h("div", "an-head");
-  head.append(h("span", "an-repo", a.repo), h("span", "an-sha", a.commit.slice(0, 7)), h("span", "an-day", fmtDate(e.at)));
+  head.append(
+    h("span", "an-repo", a.repo),
+    h("span", "an-sha", (a.commit ?? "").slice(0, 7)),
+    h("span", "an-day", fmtDate(e.at)),
+  );
   card.append(head);
-  if (!a.batches.length && e.text) {
+  // 旧桥 / 被裁剪的公告可能没有 batches（不是数组）：按纯文本退化，别让整个消息流白屏（评审 #10）。
+  const batches = Array.isArray(a.batches) ? a.batches : [];
+  if (!batches.length && e.text) {
     const body = h("div", "an-body md");
     body.append(renderMarkdown(e.text, ANNOUNCE_MD));
     card.append(body);
   }
-  for (const b of a.batches) {
+  for (const b of batches) {
     const batch = h("div", "an-batch");
     batch.append(h("div", "an-title", b.title));
     const body = h("div", "an-body md");
@@ -2874,10 +2898,11 @@ async function rejoinUpdates(t?: Thread): Promise<void> {
   const id = t?.nodeId ?? S.updates?.groupId;
   if (!id) return;
   try {
-    await postJson("/api/peer/groups", { action: "rejoin", id });
-    if (t) await loadThreads();
-    await loadUpdates();
+    const res = await postJson<{ ok: boolean; pending?: boolean }>("/api/peer/groups", { action: "rejoin", id });
+    // 两个请求互不依赖，别串行等（评审 #14）。
+    await Promise.all([t ? loadThreads() : Promise.resolve(), loadUpdates()]);
     renderAll();
+    if (res.pending) toast(tr("本机还不在这个组的名单里，等发布者把你拉回去"));
     toast(tr("已重新订阅，等发布者把你拉回更新组"));
   } catch (err) {
     toast((err as Error).message);
@@ -4327,7 +4352,7 @@ function updatesCard(): HTMLElement {
   const u = S.updates;
   if (!u) {
     // 404 是「桥太旧、根本没这条路由」，和网络断了不是一回事（评审 #22）。
-    const stale = /HTTP 404/.test(S.updatesError ?? "");
+    const stale = S.updatesStale;
     card.append(
       h(
         "div",
@@ -4388,7 +4413,7 @@ function updatesCard(): HTMLElement {
 
 async function setPublisher(on: boolean): Promise<void> {
   try {
-    S.updates = (await postJson("/api/updates/publisher", { on })) as UpdatesView;
+    S.updates = normalizeUpdates(await postJson<Partial<UpdatesView>>("/api/updates/publisher", { on }));
     await loadStatus();
     renderAll();
     toast(on ? tr("这台机器现在会往更新组里推公告") : tr("已停止发布更新公告"));
@@ -4401,9 +4426,9 @@ async function setPublisher(on: boolean): Promise<void> {
 
 async function checkUpdates(): Promise<void> {
   try {
-    S.updates = (await postJson("/api/updates/check", {})) as UpdatesView;
+    S.updates = normalizeUpdates(await postJson<Partial<UpdatesView>>("/api/updates/check", {}));
     renderAll();
-    const first = (S.updates.lastError ?? "").split("\n").find((line) => line.trim())?.slice(0, 120);
+    const first = S.updates.lastError.split("\n").find((line) => line.trim())?.slice(0, 120);
     toast(first ? tr("检查失败：{p1}", { p1: first }) : tr("检查完了"));
   } catch (err) {
     toast((err as Error).message);
@@ -4458,7 +4483,9 @@ async function refreshAll(): Promise<void> {
     /* 没跑起来的时候刷新也会失败，状态条已经说了 */
   }
   await loadStatus();
-  await Promise.all([loadUpdates(), loadThreads(), loadContacts(), loadTransfers()]);
+  // 先拿更新状态：聊天首屏的公告卡要根据 hotdeploy 决定文案，晚到会卡在错误的一版（评审 #13）。
+  await loadUpdates();
+  await Promise.all([loadThreads(), loadContacts(), loadTransfers()]);
   renderAll();
 }
 
@@ -4851,7 +4878,8 @@ async function boot(): Promise<void> {
   (pickerClose as HTMLElement).append(ic("close"));
   await restoreStaged();
   await loadStatus();
-  await Promise.all([loadUpdates(), loadThreads(), loadContacts(), loadTransfers()]);
+  await loadUpdates();
+  await Promise.all([loadThreads(), loadContacts(), loadTransfers()]);
   if (S.threads.length && !S.thread) S.thread = S.threads[0].nodeId;
   app.dataset.page = S.page;
   app.dataset.mview = S.mview;

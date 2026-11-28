@@ -64,7 +64,10 @@ async function shutdown() {
       (p) =>
         new Promise((resolve) => {
           if (p.exitCode !== null) return resolve();
-          const timer = setTimeout(resolve, 2_000);
+          const timer = setTimeout(() => {
+            console.warn("[peer] 5 秒内没退出，仍继续清理");
+            resolve();
+          }, 5_000);
           p.once("exit", () => {
             clearTimeout(timer);
             resolve();
@@ -324,6 +327,10 @@ async function main() {
   }).catch(() => undefined);
   // `/threads` 不暴露 v，直接看成员的状态文件：换人必须把版本抬到「旧 v + 1」。
   const memberState = JSON.parse(fs.readFileSync(path.join(ROOT, "mem", "groups.json"), "utf8"));
+  if (!Array.isArray(memberState)) {
+    bad("成员本机的 groups.json 不是数组", typeof memberState);
+    return;
+  }
   const memberGroup = memberState.find((g) => g.id === GROUP);
   if (memberGroup?.v > 1 && taken?.publisher === cMe.nodeId) ok(`换发布者后版本抬到 ${memberGroup.v}（旧成员 v 更大也收）`);
   else bad("换发布者后版本没抬", memberGroup?.v);

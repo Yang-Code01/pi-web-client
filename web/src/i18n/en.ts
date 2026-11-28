@@ -4569,6 +4569,7 @@ export const en: Dict = {
   "打开热部署": "Open hot deploy",
   "怎么更新：设置 → 工具 → 热部署": "How to update: Settings → Tools → Hot deploy",
   "怎么更新：{p1}": "How to update: {p1}",
+  "本机还不在这个组的名单里，等发布者把你拉回去": "This machine is not on the roster yet; the publisher will add it back",
   "已重新订阅，等发布者把你拉回更新组": "Resubscribed; the publisher will add you back shortly",
   "{p1} 成了新的发布者，之后的更新公告由它发": "{p1} is now the publisher; future update posts come from it",
   "更新公告": "Update posts",

@@ -221,19 +221,23 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         // `publisher` = 这台机器负责查 origin/main。两者都改了要重播，别等下一轮 10 秒。
         if (body.updates !== undefined) {
           const u = (body.updates ?? {}) as Record<string, unknown>;
+          // 先在局部算完、校验通过再写 cfg：否则「repo 已清空、publisher 校验失败返回 400」时
+          // 内存里改了、磁盘上没 save，重启后配置又变回原样（评审 #8）。
+          let nextRepo = cfg.updates.repo;
           if (typeof u.repo === "string") {
             const repo = u.repo.trim();
             if (repo && !isRepo(repo)) return json(res, 400, { error: "仓库标识要写成 owner/name（或 group/subgroup/name）" });
-            if (repo !== cfg.updates.repo) {
-              cfg.updates.repo = repo;
-              if (!repo) cfg.updates.publisher = false;
-              changed = true;
-            }
+            nextRepo = repo;
           }
+          const nextPublisher = typeof u.publisher === "boolean" ? u.publisher : cfg.updates.publisher;
           // 发布者身份要靠 announce 带出去，repo 为空时 buildUpdates 会整块丢掉：配对校验（评审 #23）。
-          if (u.publisher === true && !cfg.updates.repo) return json(res, 400, { error: "先填仓库标识（owner/name）再打开发布" });
-          if (typeof u.publisher === "boolean" && u.publisher !== cfg.updates.publisher) {
-            cfg.updates.publisher = u.publisher;
+          if (nextPublisher && !nextRepo) return json(res, 400, { error: "先填仓库标识（owner/name）再打开发布" });
+          if (nextRepo !== cfg.updates.repo) {
+            cfg.updates.repo = nextRepo;
+            changed = true;
+          }
+          if (nextPublisher !== cfg.updates.publisher) {
+            cfg.updates.publisher = nextPublisher;
             changed = true;
           }
         }

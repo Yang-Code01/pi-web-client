@@ -1496,8 +1496,9 @@ async function main(): Promise<void> {
       let body: { on?: unknown };
       try {
         body = (await readBody(req)) as { on?: unknown };
-      } catch {
-        return json(res, 400, { error: "请求体不是合法的 JSON" });
+      } catch (err) {
+        // readBody 还会抛「请求体过大」等错误，别一律说成 JSON 不合法（评审 #15）。
+        return json(res, 400, { error: err instanceof SyntaxError ? "请求体不是合法的 JSON" : (err as Error).message });
       }
       try {
         return json(res, 200, await updates.setPublisher(body?.on === true));

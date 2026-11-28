@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { readJsonChecked, statePath, writeJson } from "./paths.ts";
 import { whatsnewBatches, type WhatsnewBatch } from "./whatsnew.ts";
 import type { PeerAnnounce, PeerGroup, PeerHost, PeerStatus } from "./peer.ts";
@@ -123,12 +124,20 @@ export function repoSlugFromRemote(url: string): string | null {
 
 /** 组 id 只允许字母、数字、下划线与短横线（peer 侧会校验），所以 slug 也要归一。 */
 export function groupIdFor(repo: string): string {
-  const slug = repo
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
-  return `grp-updates-${slug || "repo"}`;
+  const canonical = repo.trim().replace(/\/+$/, "").toLowerCase();
+  const flat = canonical.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  // 只把 `/` 换成 `-` 的结果与全压平不同，说明 `_` / `.` 等信息被抹掉了：
+  // 这种 slug 会撞车（A_B/C.D 与 a-b/c-d），加 6 位哈希把它们分开（评审 #2）。
+  const slashOnly = canonical.replace(/\/+/g, "-").replace(/^-+|-+$/g, "");
+  const ambiguous = flat !== slashOnly;
+  const slug = (flat || "repo").slice(0, ambiguous ? 50 : 60);
+  const suffix = ambiguous ? "-" + createHash("sha1").update(canonical).digest("hex").slice(0, 6) : "";
+  return `grp-updates-${slug}${suffix}`;
+}
+
+/** 两个 announce 里的仓库标识算不算同一份：大小写不敏感（Git 托管侧本来就按小写归一）。 */
+function sameRepo(a: string | undefined, b: string): boolean {
+  return Boolean(a) && a!.toLowerCase() === b.toLowerCase();
 }
 
 export class UpdatesLan {
@@ -141,7 +150,8 @@ export class UpdatesLan {
   /** `setPublisher(true)` 的两次延迟触发：stop() 时要一起清掉，否则 peer 停了还会去 fetch。 */
   private kicks: NodeJS.Timeout[] = [];
   private reconciling = false;
-  private checking = false;
+  /** 正在跑的那一轮 tick：并发调用共享它，不再用布尔量假装跑过（评审 #1）。 */
+  private ticking: Promise<void> | null = null;
   private repoCache: { at: number; info: RepoInfo | null } | null = null;
   private readonly peer: PeerHost;
   private readonly log: (msg: string) => void;
@@ -268,7 +278,7 @@ export class UpdatesLan {
       joined: publisher || Boolean(group && me && group.members.some((m) => m.nodeId === me) && !group.left),
       memberCount: group?.members.length ?? 0,
       // 没有 origin 时 info 为 null：不能让 undefined === undefined 把所有对端都算进来（评审 #3）。
-      onlineCount: info ? (status?.online ?? []).filter((p) => p.updates?.repo === info.repo).length : 0,
+      onlineCount: info ? (status?.online ?? []).filter((p) => sameRepo(p.updates?.repo, info.repo)).length : 0,
       lastCommit: this.state.lastCommit,
       lastBatchTitle: this.state.lastBatchTitle,
       lastAnnouncedAt: this.state.lastAnnouncedAt,
@@ -308,7 +318,8 @@ export class UpdatesLan {
     return this.view();
   }
 
-  /** 「立即检查」：手动触发一次，跳过「commit 没变」的短路。 */
+  /** 「立即检查」：手动触发一次；正在跑就等它跑完，不会静默什么都不做（评审 #1）。
+   *  同一个 commit 仍然不重播（避免连点重复公告），但 `lastCheckAt` 会刷新。 */
   async checkNow(): Promise<UpdatesView> {
     await this.tick();
     return this.view();
@@ -320,7 +331,7 @@ export class UpdatesLan {
     if (!status) return [];
     const have = new Set((group?.members ?? []).map((m) => m.nodeId));
     return status.online
-      .filter((p) => p.nodeId !== me && p.updates?.repo === info.repo && !p.updates?.optOut?.includes(info.groupId) && !have.has(p.nodeId))
+      .filter((p) => p.nodeId !== me && sameRepo(p.updates?.repo, info.repo) && !p.updates?.optOut?.includes(info.groupId) && !have.has(p.nodeId))
       .map((p) => p.nodeId);
   }
 
@@ -386,24 +397,7 @@ export class UpdatesLan {
     return batches.slice(0, idx);
   }
 
-  /** 发出去之前按对端的上限裁一遍，别让内容被接收端静默裁掉、两端卡片不一致（评审 #6）。 */
-  private fitBatches(batches: WhatsnewBatch[], repo: string, commit: string): WhatsnewBatch[] {
-    const out = batches.slice(0, MAX_ANNOUNCE_BATCHES).map((b) => ({
-      title: cutUtf8(b.title, 160),
-      body: cutUtf8(b.body, MAX_ANNOUNCE_BATCH_BYTES),
-    }));
-    const size = (list: WhatsnewBatch[]): number =>
-      Buffer.byteLength(JSON.stringify({ repo, commit, batches: list, howTo: "auto" }), "utf8");
-    while (out.length > 1 && size(out) > MAX_ANNOUNCE_BYTES) out.pop();
-    const first = out[0];
-    if (first && size(out) > MAX_ANNOUNCE_BYTES) {
-      const room = MAX_ANNOUNCE_BYTES - size([{ ...first, body: "" }]);
-      out[0] = { ...first, body: cutUtf8(first.body, Math.max(0, room)) };
-    }
-    return out;
-  }
-
-  /** 公告正文（给旧版本 / 通知预览看的退化文本）：卡片认识 `announce` 就画卡片。 */
+    /** 公告正文（给旧版本 / 通知预览看的退化文本）：卡片认识 `announce` 就画卡片。 */
   private composeText(info: RepoInfo, commit: string, batches: WhatsnewBatch[], subjects: string[]): string {
     const day = new Date().toISOString().slice(0, 10);
     const lines = [`${info.repo} 更新到 ${commit}（${day}）`];
@@ -418,9 +412,14 @@ export class UpdatesLan {
     return cutUtf8(lines.join("\n"), MAX_ANNOUNCE_BYTES);
   }
 
-  private async tick(): Promise<void> {
-    if (this.checking) return;
-    this.checking = true;
+  private tick(): Promise<void> {
+    this.ticking ??= this.runTick().finally(() => {
+      this.ticking = null;
+    });
+    return this.ticking;
+  }
+
+  private async runTick(): Promise<void> {
     try {
       await this.syncRepo();
       const status = this.peer.view().status;
@@ -454,10 +453,11 @@ export class UpdatesLan {
         return;
       }
 
-      const batches = this.fitBatches(await this.freshBatches(), info.repo, commit);
+      // 只在这里截批次数，单批/整包上限由 peer 的 normalizeAnnounce 统一裁（评审 #4）。
+      const batches = (await this.freshBatches()).slice(0, 6);
       const subjects = batches.length
         ? []
-        : (await this.git(["log", `--format=%s`, `${this.state.lastCommit || "HEAD"}..origin/main`]).catch(() => ""))
+        : (await this.git(["log", `--format=%s`, `${this.state.lastCommit}..origin/main`]).catch(() => ""))
             .split("\n")
             .filter(Boolean)
             .slice(0, MAX_COMMIT_SUBJECTS);
@@ -504,8 +504,6 @@ export class UpdatesLan {
       this.log(`更新组：播报 ${info.repo} ${commit}（${batches.length} 批）`);
     } catch (err) {
       this.setError((err as Error).message);
-    } finally {
-      this.checking = false;
     }
   }
 }

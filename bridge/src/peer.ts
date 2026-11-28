@@ -345,7 +345,8 @@ export class PeerHost {
     ok: boolean;
     nickname?: string;
     avatar?: string;
-    config: { hidden: boolean; dnd: boolean; pauseFiles: boolean; inbox: string; manual: string[]; updates: { repo: string; publisher: boolean } };
+    // 旧 peer 可能不返回 updates，按可选处理（评审 #17）。
+    config: { hidden: boolean; dnd: boolean; pauseFiles: boolean; inbox: string; manual: string[]; updates?: { repo: string; publisher: boolean } };
   }> {
     return this.request("POST", "/config", patch);
   }

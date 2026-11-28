@@ -45,7 +45,13 @@ const MIME = {
 };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
-  const rel = url.pathname === "/" || url.pathname === "/peer" ? "peer.html" : url.pathname.slice(1);
+  // 先解码再拼路径：%2e%2e 这种编码过的穿越串也能被 startsWith 拦住（评审 #24）。
+  let rel;
+  try {
+    rel = url.pathname === "/" || url.pathname === "/peer" ? "peer.html" : decodeURIComponent(url.pathname.slice(1));
+  } catch {
+    return res.writeHead(400).end("bad path");
+  }
   const file = path.resolve(DIST, rel);
   if (!file.startsWith(DIST + path.sep)) return res.writeHead(404).end("not found");
   // 一次 statSync 就把「存在 / 是目录」都判了，别在 existsSync 和 statSync 之间留 TOCTOU（评审 #21）。

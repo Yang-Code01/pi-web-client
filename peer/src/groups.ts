@@ -81,6 +81,8 @@ let optOutStamp = "";
 /** 上一次 stat 的时间：optOutIds 挂在 merge / announce 的热路径上，别每 10 秒都同步摸盘。 */
 let optOutCheckedAt = 0;
 const OPT_OUT_TTL_MS = 1000;
+/** 读失败后的退避：EBUSY / 权限问题不该让 merge 热路径每秒同步读一次盘（评审 #7）。 */
+let optOutRetryAt = 0;
 
 function optOutFile(): string {
   return statePath("updates-optout.json");
@@ -97,6 +99,7 @@ function optOutFileStamp(): string {
 
 export function optOutIds(): Set<string> {
   const now = Date.now();
+  if (optOutCache && now < optOutRetryAt) return optOutCache;
   if (optOutCache && now - optOutCheckedAt < OPT_OUT_TTL_MS) return optOutCache;
   optOutCheckedAt = now;
   const stamp = optOutFileStamp();
@@ -110,7 +113,8 @@ export function optOutIds(): Set<string> {
       optOutCache = new Set();
       optOutStamp = stamp;
     }
-    // 其它错误不推进 stamp：下次（1 秒 TTL 后）还会重试，不会拿半截结果当定论（评审 #13）。
+    // 其它错误不推进 stamp：下次还会重试，但先退避 10 秒，别每秒 stat + read（评审 #7/#13）。
+    optOutRetryAt = now + 10_000;
     return optOutCache;
   }
   optOutStamp = stamp;
@@ -236,8 +240,8 @@ export class Groups {
         ? [pubIdentity, ...next.members]
         : next.members;
     const seen = new Set<string>();
-    // 两条分支都过一遍去重 + 上限：普通快照也不能超员（评审 #8）。
-    const members = [...(takeover && before ? [...incoming, ...before.members] : incoming)]
+    // takeover 也只信新快照：把 before.members 拼回来会让新快照里被移出的人复活（评审 #6）。
+    const members = [...incoming]
       .filter((m) => {
         if (seen.has(m.nodeId)) return false;
         seen.add(m.nodeId);

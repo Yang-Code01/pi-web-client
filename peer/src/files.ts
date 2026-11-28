@@ -274,9 +274,8 @@ export class Files {
         if (!members) return { status: 404, body: { error: "不认识这个群（或已退出）", retryable: false } };
         if (!members.includes(from.nodeId)) return { status: 403, body: { error: "不是群成员", retryable: false } };
         const gate = this.ctx.groupAnnounceOnly?.(thread);
-        // 和 messages / groups 共用一条规则：publisher 定没定、要不要回退 owner 都在里面（评审 #2）。
-        const senderOk = !gate || canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, from.nodeId);
-        if (gate?.announceOnly && !senderOk) {
+        // 成员校验已经在上一步 404 掉；这里只判写权限，规则与 messages / groups 共用（评审 #2/#21）。
+        if (gate && !canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, from.nodeId)) {
           return { status: 403, body: { error: "只读群：只有发布者能发消息", retryable: false } };
         }
       }
@@ -449,8 +448,9 @@ export class Files {
     const group = isGroupId(threadId);
     if (group) {
       const gate = this.ctx.groupAnnounceOnly?.(threadId);
-      const senderOk = !gate || canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, this.ctx.nodeId);
-      if (gate?.announceOnly && !senderOk) throw new Error("这是只读的更新组：只有发布者能发文件");
+      if (gate && !canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, this.ctx.nodeId)) {
+        throw new Error("这是只读的更新组：只有发布者能发文件");
+      }
     }
     const targets = group ? (this.ctx.groupMembers?.(threadId) ?? null) : [threadId];
     if (!targets) throw new Error("不在这个群里了");

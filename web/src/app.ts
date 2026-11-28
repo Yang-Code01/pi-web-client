@@ -354,6 +354,7 @@ export class App {
   /** 第一次 hello 到了没有：`?settings=` 深链要等首屏数据再开，不再拿固定 400ms 赌（D441、评审 #25）。 */
   private sawHello = false;
   private helloWait: Promise<void> | null = null;
+  private helloTimer: ReturnType<typeof setTimeout> | null = null;
   private helloDone: (() => void) | null = null;
   private approvals: ApprovalRequest[] = [];
   /** Questions from the model waiting for an answer (PLAN-ask.md). */
@@ -2240,6 +2241,10 @@ export class App {
         this.helloDone?.();
         this.helloDone = null;
         this.helloWait = null;
+        if (this.helloTimer) {
+          clearTimeout(this.helloTimer);
+          this.helloTimer = null;
+        }
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         // #278：旧桥不带 caps —— 缺这一项就当它不会按目录建组。
         this.bridgeCaps = Array.isArray(msg.caps) ? (msg.caps as unknown[]).filter((c): c is string => typeof c === "string") : [];
@@ -13785,6 +13790,8 @@ export class App {
         if (this.helloWait === wait) this.helloWait = null;
         done();
       }, 5_000);
+      // hello 到达时 hello 分支也要能清掉这个定时器，不然它会挂满 5 秒（评审 #25）。
+      this.helloTimer = timer;
       void wait.then(done);
     });
   }

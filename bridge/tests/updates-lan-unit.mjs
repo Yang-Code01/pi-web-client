@@ -36,7 +36,9 @@ for (const [input, want] of cases) {
 
 // 组 id：只留 [a-z0-9-]，跨机器必须算出同一个（大小写、斜杠、下划线都归一）。
 assert.equal(groupIdFor("Yang-Code01/pi-web-client"), "grp-updates-yang-code01-pi-web-client");
-assert.equal(groupIdFor("A_B/C.D"), "grp-updates-a-b-c-d");
+// `_` / `.` 被压平后与只把 `/` 换掉不同：加短哈希，避免 A_B/C.D 与 a-b/c-d 撞同一个组（评审 #2）。
+assert.ok(groupIdFor("A_B/C.D").startsWith("grp-updates-a-b-c-d-"));
+assert.notEqual(groupIdFor("A_B/C.D"), groupIdFor("a-b/c-d"));
 assert.equal(groupIdFor("////"), "grp-updates-repo");
 assert.ok(groupIdFor("x/".padEnd(200, "y")).length <= 80, "组 id 不超过 peer 的 80 字符上限");
 

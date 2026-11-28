@@ -532,16 +532,19 @@ export class Messages {
   }
 
   /** 重新加入更新组（D441）：清掉 opt-out，等发布者下一轮邀请把新快照送过来。 */
-  rejoinGroup(groupId: string): { ok: true } {
+  rejoinGroup(groupId: string): { ok: true; pending?: boolean } {
     if (!isGroupId(groupId)) throw new Error("不是合法的群 id");
     const group = this.ctx.groups.get(groupId);
     // 只允许本机确实认识、而且确实是只读更新组的群；否则任意 id 都会写进 opt-out 文件（评审 #4）。
     if (!group) throw new Error("这个更新组还没同步到本机");
     if (group.announceOnly !== true) throw new Error("这不是只读的更新组");
     setOptOut(groupId, false);
-    // 本机先不显示「已退出」；发布者的下一份快照（invite 会 v+1）到了再补名册（评审 #21）。
-    this.ctx.groups.put({ ...group, left: false });
-    return { ok: true };
+    // 只有在名册里才清 left：被发布者移出的人不能靠这个 API 假装自己还在组里（评审 #22）。
+    if (group.members.some((m) => m.nodeId === this.ctx.nodeId)) {
+      this.ctx.groups.put({ ...group, left: false });
+      return { ok: true };
+    }
+    return { ok: true, pending: true };
   }
 
   /**
@@ -563,6 +566,10 @@ export class Messages {
       const kept = members.filter((m) => m.nodeId === keepId);
       const others = members.filter((m) => m.nodeId !== keepId).slice(0, MAX_GROUP_MEMBERS - kept.length - 1);
       members = [...kept, ...others, this.me()].slice(0, MAX_GROUP_MEMBERS);
+    }
+    // publisher 空着时写权限回退 owner：owner 若不在名册里，回退会让一个非成员继续能写（评审 #23）。
+    if (!group.publisher && !members.some((m) => m.nodeId === group.owner)) {
+      members = [this.identity(group.owner), ...members].slice(0, MAX_GROUP_MEMBERS);
     }
     const next: Group = { ...group, members, publisher: this.ctx.nodeId, v: group.v + 1, at: Date.now() };
     this.ctx.groups.put(next);
@@ -632,6 +639,8 @@ export class Messages {
     if (!isGroupId(threadId)) return;
     const group = this.ctx.groups.get(threadId);
     if (!group?.announceOnly) return;
+    // 不在名册里就没有写权限，哪怕 owner 回退也不行（评审 #23）。
+    if (!group.members.some((m) => m.nodeId === this.ctx.nodeId)) throw new Error("你不在这个群的名册里");
     if (canWriteGroup(group, this.ctx.nodeId)) return;
     throw new Error("这是只读的更新组：只有发布者能发消息");
   }
