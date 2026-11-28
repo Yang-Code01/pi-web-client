@@ -18116,9 +18116,14 @@ export class App {
     navList.onkeydown = (e: KeyboardEvent) => {
       const ids = [...(this.bgSheet?.runs.keys() ?? [])];
       if (!ids.length) return;
-      const at = ids.indexOf(this.bgSheet?.sel ?? "");
-      const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
-      const next = e.key === "Home" ? ids[0] : e.key === "End" ? ids[ids.length - 1] : step ? ids[at + step] : undefined;
+      let next: string | undefined;
+      if (e.key === "Home") next = ids[0];
+      else if (e.key === "End") next = ids[ids.length - 1];
+      else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        const at = ids.indexOf(this.bgSheet?.sel ?? "");
+        // 当前选中的不在列表里（刚失效）时 ↑↓ 不猜位置，交给 Home/End。
+        if (at >= 0) next = ids[at + (e.key === "ArrowDown" ? 1 : -1)];
+      } else return;
       if (!next) return;
       e.preventDefault();
       this.selectBgRun(next, true);
@@ -18295,6 +18300,7 @@ export class App {
         }
         // 先登记再往下用：后面的回填与 rAF、selectBgRun 都按 id 找 node，不靠「同步代码已经跑完」。
         sheet.runs.set(r.id, node);
+        this.bindLogStick(node);
       }
       const agentText = r.agent || tr("子代理");
       if (node.agent.textContent !== agentText) node.agent.textContent = agentText;
@@ -18372,6 +18378,20 @@ export class App {
       if (node.stick) node.log.scrollTop = node.log.scrollHeight;
       if (node.stickOut) node.out.scrollTop = node.out.scrollHeight;
     });
+  }
+
+  /**
+   * 手动往上翻也算数：贴底状态跟着滚动走。否则「滚上去 → 切到别的 run → 切回来」
+   * 会按上一次的贴底值把阅读位置一下子拽回底部。
+   */
+  private bindLogStick(node: BgRunNode): void {
+    const atBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    node.log.onscroll = () => {
+      if (!node.root.hidden) node.stick = atBottom(node.log);
+    };
+    node.out.onscroll = () => {
+      if (!node.root.hidden && !node.outSec.hidden) node.stickOut = atBottom(node.out);
+    };
   }
 
   /** 任务原文超过四行才露「展开」；折起来时量的是完整 `scrollHeight`，展开后这个判断依然成立。 */

@@ -198,7 +198,7 @@ try {
     await page.evaluate(() => document.activeElement?.getAttribute("role") === "tabpanel"),
   );
 
-  // ---- 5. 窄窗（380×760）：左栏折成顶部横条，横条自己横滚、不被父级裁掉（#762 评审）
+  // ---- 4. 窄窗（380×760）：左栏折成顶部横条，横条自己横滚、不被父级裁掉（#762 评审）
   await page.setViewportSize({ width: 380, height: 760 });
   await page.waitForTimeout(150);
   check(
@@ -224,8 +224,10 @@ try {
   // 上一段把横条往右滚了 200px：截图前拉回起点，不然拍到的是一半被裁掉的那颗。
   await strip.evaluate((n) => (n.scrollLeft = 0));
   await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "3-narrow.png"), animations: "disabled" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(120);
 
-  // ---- 6. 老占位文案不再出现在界面上（它把责任推给了桥）
+  // ---- 5. 回到宽窗：老占位文案不再出现在界面上（它把责任推给了桥）
   const body = await page.locator(".bg-sheet").innerText();
   check("不再断言「任务原文没传到桥」", !body.includes("任务原文没传到桥"), body.replace(/\n+/g, " | ").slice(0, 200));
   check("没有页面报错", pageErrors.length === 0, pageErrors.join(" | "));

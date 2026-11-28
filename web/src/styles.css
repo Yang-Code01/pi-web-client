@@ -4486,7 +4486,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
    mac 检查器式排版（样张 B）：左边 run 列表始终在原地，右边只看选中的那一条 —— 内容再长
    （任务十几行、过程几十行）也只滚右半边，不再把后面几条挤到屏幕外。
    一条 run = 左栏一行（状态灯 + 名字 + 用时 + 任务首行）+ 右栏一页（抬头吸顶，任务/过程/输出三块）。
-   窄到 560px 以下两栏并一栏：列表变成顶部横向条，详情照旧。 */
+   窄到 620px 以下两栏并一栏：列表变成顶部横向条，详情照旧。 */
 .sheet.bg-sheet {
   grid-template-rows: auto minmax(0, 1fr);
   width: min(900px, calc(var(--vw1) * 96));
@@ -4547,7 +4547,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 
 /* 右栏一页：抬头吸顶（读到过程第 40 行也知道自己看的是谁），下面整段自己滚。 */
 /* 右栏整页铺 --panel：弹层本身是玻璃材质，吸顶抬头要是半透明的就会跟正文分层。 */
-.bg-run { min-height: 0; overflow: auto; background: var(--panel); }
+.bg-run { min-height: 0; overflow: auto; background: var(--panel); isolation: isolate; }
 .bg-run[hidden] { display: none; }
 .bg-run-top {
   position: sticky; top: 0; z-index: 1;
