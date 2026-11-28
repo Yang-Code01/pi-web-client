@@ -703,7 +703,16 @@ async function loadStatus(): Promise<void> {
 /** D441：更新组状态。发布者开关在 peer 的 config 里，组与播报进度在 bridge 里。 */
 async function loadUpdates(): Promise<void> {
   try {
-    S.updates = await getJson<UpdatesView>("/api/updates");
+    const view = await getJson<UpdatesView>("/api/updates");
+    // 旧桥可能少字段：兜底成空值，别让设置页 split(undefined) 崩掉（评审 #32/#36）。
+    S.updates = {
+      ...view,
+      lastCommit: view.lastCommit ?? "",
+      lastBatchTitle: view.lastBatchTitle ?? "",
+      lastAnnouncedAt: view.lastAnnouncedAt ?? 0,
+      lastCheckAt: view.lastCheckAt ?? 0,
+      lastError: view.lastError ?? "",
+    };
   } catch (err) {
     S.updates = null;
     S.updatesError = (err as Error).message;
@@ -1589,7 +1598,7 @@ function renderChat(): void {
       stream.append(h("div", "day", day));
       lastDay = day;
     }
-    const node = entryNode(e, t);
+    const node = entryNode(e, t, false, readonly);
     if (!firstPaint && !shownIds.has(e.id)) node.classList.add("fresh");
     shownIds.add(e.id);
     if (q && !e.recalled && searchText(e).toLowerCase().includes(q)) {
@@ -2320,9 +2329,8 @@ function sendStateMeta(e: Entry): (HTMLElement | SVGSVGElement)[] {
 let shownThread = "";
 const shownIds = new Set<string>();
 
-function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
+function entryNode(e: Entry, t: Thread, inPane = false, ro = readonlyGroup(t)): HTMLElement {
   const mine = e.from.nodeId === S.view?.status?.nodeId;
-  const ro = readonlyGroup(t);
   // 撤回（P3）：原气泡换成一整行灰条，原文不再显示（文件里还在，见 D299）。
   if (e.kind === "sys") return sysTip(e);
   if (e.recalled) {
@@ -4331,6 +4339,10 @@ function updatesCard(): HTMLElement {
     );
     return card;
   }
+  if (!u.peerRunning) {
+    card.append(h("div", "note", tr("内网通没在运行：先在左下角把「局域网」打开，更新组才会工作。")));
+    return card;
+  }
   if (!u.available) {
     card.append(h("div", "note", tr("这个检出没有 git remote origin，认不出是哪份仓库，所以不参与更新组。")));
     return card;
@@ -4391,7 +4403,7 @@ async function checkUpdates(): Promise<void> {
   try {
     S.updates = (await postJson("/api/updates/check", {})) as UpdatesView;
     renderAll();
-    const first = S.updates.lastError.split("\n").find((line) => line.trim())?.slice(0, 120);
+    const first = (S.updates.lastError ?? "").split("\n").find((line) => line.trim())?.slice(0, 120);
     toast(first ? tr("检查失败：{p1}", { p1: first }) : tr("检查完了"));
   } catch (err) {
     toast((err as Error).message);

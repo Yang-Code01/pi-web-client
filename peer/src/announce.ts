@@ -1,3 +1,5 @@
+import { isRepo } from "./repo.ts";
+
 /**
  * 更新公告（D441）：更新组里由发布者推的一条消息，形状固定、字段可校验。
  *
@@ -25,13 +27,6 @@ export interface AnnouncePayload {
 export const MAX_ANNOUNCE_BATCHES = 6;
 export const MAX_ANNOUNCE_BATCH_BYTES = 4096;
 export const MAX_ANNOUNCE_BYTES = 16 * 1024;
-
-/** 仓库标识：至少 owner/name，允许 GitLab 那种 group/subgroup/name（评审 #2）。 */
-export const REPO_RE = /^[\w.-]+(?:\/[\w.-]+)+$/;
-
-export function isRepo(raw: unknown): boolean {
-  return typeof raw === "string" && raw.length <= 160 && REPO_RE.test(raw);
-}
 
 /** 按 UTF-8 字节截断（中文一个字 3 字节，不能按字符数算）。 */
 export function truncBytes(s: string, max: number): string {

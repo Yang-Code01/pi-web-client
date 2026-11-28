@@ -473,7 +473,8 @@ export class Messages {
       v: 1,
       at,
       ...(opts.announceOnly ? { announceOnly: true } : {}),
-      ...(opts.publisher ? { publisher: opts.publisher } : {}),
+      // publisher 会进快照、对端 normalizeGroup 会截到 64：本机也先按同一形状收口，别让两边值不同（评审 #15）。
+    ...(opts.publisher && /^[\w-]{1,64}$/.test(opts.publisher) ? { publisher: opts.publisher } : {}),
     };
     this.ctx.groups.put(group);
     this.appendSys(group.id, this.me(), { op: "create", actor: this.nameOf(this.me()), name: title, names: members.slice(1).map((m) => this.nameOf(m)) }, at);
@@ -557,8 +558,10 @@ export class Messages {
     // 否则被挤掉的旧发布者收不到新快照、也不会知道自己已经不在名册里（评审 #3）。
     let members = group.members;
     if (!members.some((m) => m.nodeId === this.ctx.nodeId)) {
-      const kept = members.filter((m) => m.nodeId === group.publisher);
-      const others = members.filter((m) => m.nodeId !== group.publisher).slice(0, MAX_GROUP_MEMBERS - kept.length - 1);
+      // publisher 为空时写权限回退 owner：满员先保 owner，否则他会被自己挤出去（评审 #14）。
+      const keepId = group.publisher || group.owner;
+      const kept = members.filter((m) => m.nodeId === keepId);
+      const others = members.filter((m) => m.nodeId !== keepId).slice(0, MAX_GROUP_MEMBERS - kept.length - 1);
       members = [...kept, ...others, this.me()].slice(0, MAX_GROUP_MEMBERS);
     }
     const next: Group = { ...group, members, publisher: this.ctx.nodeId, v: group.v + 1, at: Date.now() };

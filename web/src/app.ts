@@ -13796,7 +13796,6 @@ export class App {
   async openSettingsFromUrl(): Promise<void> {
     const tab = new URLSearchParams(location.search).get("settings");
     if (!tab) return;
-    await this.whenHello();
     const wipe = (): void => {
       try {
         // 只删 settings 这一个键：`?settings=whatsnew&thread=...` 还得留着别的参数（评审 #23）。
@@ -13807,6 +13806,12 @@ export class App {
         /* 背后是个不让改 URL 的壳：那就留着参数，不为这种事报错 */
       }
     };
+    await this.whenHello();
+    // 5 秒还没等到首屏：别拿空数据开面板；坏参数也不能一直挂在地址栏（评审 #37/#31）。
+    if (!this.sawHello) {
+      wipe();
+      return;
+    }
     // 热部署不在「设置」页签里，它是外观面板的「连接与设置 → 工具」；D441 的公告卡就落在这里。
     if (tab === "tools") {
       this.openDisplaySheet();
@@ -13814,7 +13819,10 @@ export class App {
       wipe();
       return;
     }
-    if (!(SETTINGS_TABS as readonly string[]).includes(tab)) return;
+    if (!(SETTINGS_TABS as readonly string[]).includes(tab)) {
+      wipe();
+      return;
+    }
     this.openSettingsSheet(tab as SettingsTab);
     wipe();
   }

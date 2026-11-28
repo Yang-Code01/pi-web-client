@@ -106,7 +106,12 @@ export function optOutIds(): Set<string> {
     optOutCache = new Set((Array.isArray(raw) ? raw : []).filter((x) => typeof x === "string"));
   } catch (err) {
     // 读失败（EBUSY / 权限）不是「没人退出」：别把有效缓存清空；文件真不在才置空（评审 #20）。
-    if (!optOutCache || (err as NodeJS.ErrnoException).code === "ENOENT") optOutCache = new Set();
+    if (!optOutCache || (err as NodeJS.ErrnoException).code === "ENOENT") {
+      optOutCache = new Set();
+      optOutStamp = stamp;
+    }
+    // 其它错误不推进 stamp：下次（1 秒 TTL 后）还会重试，不会拿半截结果当定论（评审 #13）。
+    return optOutCache;
   }
   optOutStamp = stamp;
   return optOutCache;
@@ -225,7 +230,9 @@ export class Groups {
         before?.members.find((m) => m.nodeId === pub) ?? { nodeId: pub })
       : null;
     const incoming: PeerIdentity[] =
-      pubIdentity && !next.members.some((m) => m.nodeId === pubIdentity.nodeId)
+      pubIdentity &&
+      next.members.length < MAX_GROUP_MEMBERS &&
+      !next.members.some((m) => m.nodeId === pubIdentity.nodeId)
         ? [pubIdentity, ...next.members]
         : next.members;
     const seen = new Set<string>();

@@ -4,6 +4,7 @@ import os from "node:os";
 import { knownAvatar } from "./avatars.ts";
 import { PROTO, VERSION, type PeerConfig } from "./config.ts";
 import { optOutIds } from "./groups.ts";
+import { isRepo } from "./repo.ts";
 
 /** `::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台机器，比较前先归一（同 `messages.ts` 的 normAddr）。 */
 function normAddr(addr: string): string {
@@ -31,7 +32,7 @@ function buildUpdates(repo: string, publisher: boolean, optOut: string[]): Annou
 function normUpdates(raw: unknown): AnnounceUpdates | null {
   const r = raw as AnnounceUpdates | null | undefined;
   const repo = typeof r?.repo === "string" ? r.repo.trim() : "";
-  if (!repo || repo.length > 120 || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return null;
+  if (!repo || !isRepo(repo)) return null;
   // 名单是别人塞进来的：只留像组 id 的短串（评审 #36）。
   const optOut = (Array.isArray(r?.optOut) ? r.optOut : [])
     .filter((x): x is string => typeof x === "string" && x.length <= 80 && /^[a-zA-Z0-9_-]+$/.test(x))
@@ -229,9 +230,9 @@ export class Discovery extends EventEmitter {
       // 跟 `loadConfig()` / `noteSeen()` 一个口径——名单外的当没设，否则它会盖掉
       // 通讯录里已经校验过的头像，还一路透传到页面。
       avatar: knownAvatar(msg.avatar) || known?.avatar,
-      // 对端主动清空仓库（退出更新组）时要跟着清，不能一直沿用旧值；只有完全没带这个字段
-      // 的旧端才沿用上次知道的（评审 #19）。
-      updates: msg.updates === undefined ? known?.updates : (normUpdates(msg.updates) ?? undefined),
+      // 没有 updates 字段 = 对端退出了更新组，或者是更老的版本：两种都该清掉旧值，
+      // 否则对方降级后本机还一直把它算进更新组（评审 #2）。
+      updates: normUpdates(msg.updates) ?? undefined,
     };
     this.seen.set(msg.nodeId, peer);
   }

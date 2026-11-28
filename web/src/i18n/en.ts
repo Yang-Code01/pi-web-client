@@ -4572,6 +4572,7 @@ export const en: Dict = {
   "已重新订阅，等发布者把你拉回更新组": "Resubscribed; the publisher will add you back shortly",
   "{p1} 成了新的发布者，之后的更新公告由它发": "{p1} is now the publisher; future update posts come from it",
   "更新公告": "Update posts",
+  "内网通没在运行：先在左下角把「局域网」打开，更新组才会工作。": "The LAN chat is not running: turn on “LAN” at the bottom left for the update group to work.",
   "读不到更新组状态（bridge 没回 /api/updates）。{p1}": "Could not read update-group status (the bridge did not answer /api/updates). {p1}",
   "这个检出没有 git remote origin，认不出是哪份仓库，所以不参与更新组。": "This checkout has no git remote origin, so it cannot tell which repo it is and stays out of the update group.",
   "更新组": "Update group",

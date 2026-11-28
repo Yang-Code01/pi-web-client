@@ -57,21 +57,33 @@ function start(name, port, announce, extra = {}) {
   procs.push(child);
   return child;
 }
-process.on("exit", () => {
-  for (const p of procs) {
-    try {
-      p.kill();
-    } catch {
-      /* 已经退了 */
-    }
-  }
-  // 三个 peer 的 state 目录 + 临时根目录：跑完就删，别在系统临时目录里堆垃圾（评审 #14）。
+async function shutdown() {
+  // 先等子进程真的退出，再删临时目录：Windows 上进程没退时文件锁着，force 也删不掉（评审 #21）。
+  await Promise.all(
+    procs.map(
+      (p) =>
+        new Promise((resolve) => {
+          if (p.exitCode !== null) return resolve();
+          const timer = setTimeout(resolve, 2_000);
+          p.once("exit", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          try {
+            p.kill();
+          } catch {
+            clearTimeout(timer);
+            resolve();
+          }
+        }),
+    ),
+  );
   try {
     fs.rmSync(ROOT, { recursive: true, force: true });
   } catch {
-    /* Windows 上子进程刚 kill 可能还锁着文件，下次系统自己清 */
+    /* 仍被其它进程锁着就留给系统 */
   }
-});
+}
 
 const get = async (port, p) => (await fetch(`http://127.0.0.1:${port}${p}`, { signal: AbortSignal.timeout(3000) })).json();
 async function post(port, p, body, expect = 200) {
@@ -230,10 +242,11 @@ async function main() {
     const list = await messages(A, GROUP);
     return list.find((e) => e.announce?.commit === "b16a001");
   });
-  if (big.announce.batches.length >= 1 && big.announce.batches.length < 6) {
-    ok(`超大批次被裁到 ${big.announce.batches.length} 批，卡片还在`);
+  const kept = big?.announce?.batches?.length ?? 0;
+  if (kept >= 1 && kept < 6) {
+    ok(`超大批次被裁到 ${kept} 批，卡片还在`);
   } else {
-    bad("超大批次没有被裁", big.announce.batches.length);
+    bad("超大批次没有被裁", kept);
   }
 
   // 4c. 补发只能是发布者动作：成员调 /announce/replay 要被拒（评审 #11）。
@@ -333,7 +346,8 @@ main()
     failed++;
     console.error("✘", err.message);
   })
-  .finally(() => {
+  .finally(async () => {
+    await shutdown();
     log(failed ? `失败 ${failed} 项` : "全部通过");
     process.exit(failed ? 1 : 0);
   });

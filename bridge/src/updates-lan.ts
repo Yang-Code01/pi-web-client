@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { readJsonChecked, statePath, writeJson } from "./paths.ts";
 import { whatsnewBatches, type WhatsnewBatch } from "./whatsnew.ts";
-import type { PeerAnnounce, PeerGroup, PeerHost } from "./peer.ts";
+import type { PeerAnnounce, PeerGroup, PeerHost, PeerStatus } from "./peer.ts";
 
 /**
  * D441：局域网更新组。发布者定时看自己检出里的 `origin/main`，有新提交就往「固定 id 的只读群」
@@ -29,13 +29,18 @@ const INVITE_MS = 10_000;
 /** git 命令超时：fetch 卡住时别把整个进程拖住。 */
 const GIT_TIMEOUT_MS = 20_000;
 const MAX_COMMIT_SUBJECTS = 20;
-/** 与 peer 侧 normalizeAnnounce 的整包上限对齐（评审 #5/#6）：发出去的 payload 不该被对端静默裁掉。 */
-const MAX_ANNOUNCE_BYTES = 16 * 1024;
-const MAX_ANNOUNCE_BATCH_BYTES = 4096;
-const MAX_ANNOUNCE_BATCHES = 6;
+/**
+ * 与 peer 侧 normalizeAnnounce 的整包上限对齐（评审 #5/#6）：发出去的 payload 不该被对端静默裁掉。
+ * 不能直接 import peer/src/announce.ts —— bridge 的 tsconfig rootDir 是 src，跨包 import 会让构建报 TS6059；
+ * 所以由 updates-lan-unit.mjs 断言两边的数字与截断结果一致，改一侧不改另一侧会红（评审 #3）。
+ */
+export const ANNOUNCE_LIMITS = { batches: 6, batchBytes: 4096, bytes: 16 * 1024 } as const;
+const MAX_ANNOUNCE_BYTES = ANNOUNCE_LIMITS.bytes;
+const MAX_ANNOUNCE_BATCH_BYTES = ANNOUNCE_LIMITS.batchBytes;
+const MAX_ANNOUNCE_BATCHES = ANNOUNCE_LIMITS.batches;
 
 /** 按 UTF-8 字节截断（中文一个字 3 字节，不能按 UTF-16 长度算）。 */
-function cutUtf8(s: string, max: number): string {
+export function cutUtf8(s: string, max: number): string {
   if (Buffer.byteLength(s, "utf8") <= max) return s;
   let out = "";
   let used = 0;
@@ -157,6 +162,8 @@ export class UpdatesLan {
   }
 
   start(): void {
+    // 重复 start（热部署后重新 main）会留下旧的 ghost timer：已经有定时器就直接返回（评审 #5）。
+    if (this.timer) return;
     this.firstTimer = setTimeout(() => void this.tick(), FIRST_CHECK_MS);
     // 定时只做「变了才播」：commit 没变就短路，「立即检查」也不重播同一个 commit（评审 #4）。
     this.timer = setInterval(() => void this.tick(), INTERVAL_MS);
@@ -191,7 +198,9 @@ export class UpdatesLan {
   }
 
   stop(): void {
-    for (const t of [this.firstTimer, this.timer, this.inviteTimer, this.bootTimer]) if (t) clearTimeout(t);
+    for (const t of [this.firstTimer, this.bootTimer]) if (t) clearTimeout(t);
+    if (this.timer) clearInterval(this.timer);
+    if (this.inviteTimer) clearInterval(this.inviteTimer);
     for (const t of this.kicks) clearTimeout(t);
     this.firstTimer = this.timer = this.inviteTimer = this.bootTimer = null;
     this.kicks = [];
@@ -236,13 +245,18 @@ export class UpdatesLan {
     this.save();
   }
 
+  /** 发布者 = 开关打开 **且** 仓库标识非空；两处判断用同一个口径（评审 #10）。 */
+  private publisherOn(status: PeerStatus | null | undefined): boolean {
+    return Boolean(status?.config.updates?.publisher === true && status.config.updates.repo);
+  }
+
   /** 设置页要的那一份：发布者开关以 peer config 为准，组信息以本机名册为准。 */
   async view(): Promise<UpdatesView> {
     const info = await this.repoInfo();
     const status = this.peer.view().status;
     const group = info ? await this.group(info.groupId).catch(() => null) : null;
     const me = status?.nodeId ?? "";
-    const publisher = status?.config.updates?.publisher === true && Boolean(status?.config.updates?.repo);
+    const publisher = this.publisherOn(status);
     return {
       ok: true,
       available: Boolean(info),
@@ -317,7 +331,7 @@ export class UpdatesLan {
     this.reconciling = true;
     try {
       const status = this.peer.view().status;
-      if (!status || status.config.updates?.publisher !== true) return;
+      if (!status || !this.publisherOn(status)) return;
       const info = await this.repoInfo();
       if (!info) return;
       const group = await this.group(info.groupId);
@@ -358,11 +372,9 @@ export class UpdatesLan {
       // 工作区的 CHANGELOG 里根本没有新批次（评审 #2）。
       text = await this.git(["show", "origin/main:CHANGELOG.md"]);
     } catch {
-      try {
-        text = fs.readFileSync(path.join(ROOT, "CHANGELOG.md"), "utf8");
-      } catch {
-        return [];
-      }
+      // 读不到 origin/main 的 CHANGELOG 就不要退回工作区旧文件：那份可能还没有这次的新批次，
+      // 按 lastBatchTitle 切出来是空的，下次能读到 origin 时又会重播一遍（评审 #8）。
+      return [];
     }
     const batches = whatsnewBatches(text);
     if (!batches.length) return [];
@@ -412,7 +424,7 @@ export class UpdatesLan {
     try {
       await this.syncRepo();
       const status = this.peer.view().status;
-      if (!status || status.config.updates?.publisher !== true) return;
+      if (!status || !this.publisherOn(status)) return;
       const info = await this.repoInfo();
       if (!info) return;
 
@@ -427,6 +439,14 @@ export class UpdatesLan {
       }
       const commit = await this.git(["rev-parse", "--short=7", "origin/main"]);
       this.state.lastCheckAt = Date.now();
+      // 第一次运行只记基线，不播报：否则刚打开开关就会把「早已上线」的版本当成新更新（评审 #4）。
+      if (!this.state.lastCommit) {
+        this.state.lastCommit = commit;
+        this.state.lastError = "";
+        this.save();
+        this.log("更新组：记下基线 " + commit + "，之后有新的 origin/main 提交才播报");
+        return;
+      }
       // 同一个 commit 无论定时还是「立即检查」都不重播：否则连点按钮会往组里重复发公告（评审 #4）。
       if (commit === this.state.lastCommit) {
         this.state.lastError = "";
@@ -464,6 +484,11 @@ export class UpdatesLan {
         // 换机器（D441）：新机器接管发布权，v+1 广播出去，组里会插一条「X 成为新的发布者」。
         const claimed = await this.peer.group({ action: "publisher", id: info.groupId });
         group = claimed.group ?? group;
+      }
+      // 同 id 的普通群（被人为建过）不能当成更新组往里发公告 / 拉人（评审 #11）。
+      if (group && group.announceOnly !== true) {
+        this.setError("更新组 id " + info.groupId + " 已被一个普通群占用：换一个仓库标识，或删掉那个群");
+        return;
       }
       const want = this.wanted(group, info, status.nodeId);
       if (want.length && group) await this.inviteAndReplay(info, want);

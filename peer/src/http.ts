@@ -7,7 +7,7 @@ import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import { knownAvatar } from "./avatars.ts";
-import { isRepo } from "./announce.ts";
+import { isRepo } from "./repo.ts";
 import type { Discovery } from "./discovery.ts";
 import { CHUNK, SANDBOX_CSP, inlineType, isHtmlType, mimeOf, typeOf } from "./files.ts";
 import type { Files } from "./files.ts";
@@ -162,7 +162,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
     dnd: cfg.dnd,
     inbox: cfg.inbox,
     manual: cfg.manual,
-    updates: { ...cfg.updates },
+    updates: { repo: cfg.updates.repo, publisher: cfg.updates.publisher },
   });
 
   return http.createServer(async (req, res) => {
@@ -558,7 +558,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const body = await readBody(req).catch(() => ({}));
         try {
           activity.touch();
-          const raw = body?.limit == null ? REPLAY_DEFAULT : Number(body.limit);
+          const raw = body?.limit === null || body?.limit === undefined ? REPLAY_DEFAULT : Number(body.limit);
           const limit = Number.isFinite(raw) ? Math.max(0, Math.min(REPLAY_MAX, raw)) : REPLAY_DEFAULT;
           return json(res, 200, messages.replayAnnouncements(String(body?.group ?? ""), String(body?.peer ?? ""), limit));
         } catch (err) {

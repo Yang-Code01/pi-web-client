@@ -38,11 +38,11 @@ export interface PeerStatus {
     dnd: boolean;
     inbox: string;
     manual: string[];
-    updates: { repo: string; publisher: boolean };
+    /** 旧 peer 可能不返回这一块：调用方都按可选处理（评审 #6）。 */
+    updates?: { repo: string; publisher: boolean };
   };
 }
 
-/** 群里的一份快照（`/groups` 回来的那份，只声明 bridge 用得着的字段）。 */
 /** 更新公告（与 peer/src/announce.ts 的 AnnouncePayload 同形）：桥只透传，不解释（评审 #11）。 */
 export interface PeerAnnounce {
   repo: string;
@@ -51,6 +51,7 @@ export interface PeerAnnounce {
   howTo: "auto";
 }
 
+/** 群里的一份快照（`/groups` 回来的那份，只声明 bridge 用得着的字段）。 */
 export interface PeerGroup {
   id: string;
   name: string;

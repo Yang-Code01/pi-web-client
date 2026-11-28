@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { knownAvatar } from "./avatars.ts";
-import { isRepo } from "./announce.ts";
+import { isRepo } from "./repo.ts";
 
 export const VERSION = "0.2.0";
 /** 协议版本：announce / inbox 都带着它，将来换协议靠它挡掉旧对端。 */
