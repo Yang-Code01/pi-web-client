@@ -8,7 +8,7 @@ import { CSV_MAX_BYTES, readCsv } from "../sheet/csv.ts";
 import { SheetDialog } from "../sheet/dialog.ts";
 import "../sheet/sheet.css";
 import { bootTheme } from "../theme.ts";
-import { AVATAR_IDS, avatarUrl, randomAvatarId } from "./avatars.ts";
+import { AVATAR_IDS, avatarUrl, customAvatarHash, randomAvatarId } from "./avatars.ts";
 import { emojiPanel, QUICK_REACTIONS, type Sticker } from "./emoji.ts";
 import { SANDBOX_TOKENS } from "./sandbox.ts";
 import { loadStash, saveStash, type StashItem } from "./stash.ts";
@@ -63,6 +63,15 @@ interface PeerView {
   running: boolean;
   reason: string;
   status: PeerStatus | null;
+}
+
+/** 设置页「上传过的」里的一张（peer 的 avatarHistory + 本地文件）。 */
+interface UploadRow {
+  hash: string;
+  id: string;
+  mime: string;
+  bytes: number;
+  at: number;
 }
 
 interface Entry {
@@ -267,6 +276,9 @@ function ic(name: string, cls = ""): SVGSVGElement {
   return svg;
 }
 
+/** 「我」页的分区 id（S.meSection 与 ME_SECTIONS 共用）。 */
+type MeSection = "profile" | "avatar" | "alerts" | "store" | "net" | "ignored";
+
 // ---------------------------------------------------------------- 状态
 
 const S = {
@@ -297,6 +309,10 @@ const S = {
   search: null as { q: string; at: number } | null,
   /** 多选：null = 没在多选；否则是勾上的消息 id。 */
   picked: null as Set<string> | null,
+  /** 「我」页当前分区（左侧子导航）。只活在本页会话里，不落盘。 */
+  meSection: "profile" as MeSection,
+  /** 自己上传过的头像（最早排在后），随 /api/peer/custom-avatars 刷新。 */
+  uploads: [] as UploadRow[],
   /** 点固定消息跳过去时，这个会话临时多拉一些历史（200 → 2000）。 */
   deepFor: "",
 };
@@ -589,22 +605,52 @@ function rememberAvatars(): void {
   if (st) rememberAvatar(st.nodeId, st.avatar);
 }
 
-function avatar(name: string, key: string, online?: boolean, pic?: string): HTMLElement {
+function avatar(name: string, key: string, online?: boolean, pic?: string, zoom = true): HTMLElement {
   const box = h("span", "av");
   // 第四参是「这一处确切知道他是哪张」的地方（「我」页 / 别人的头像就是他自己报的）；
   // 其余位置只用 nodeId 查表。
-  const url = avatarUrl(pic ?? AVS.get(key));
+  const url = avatarUrl(pic ?? AVS.get(key), key);
+  let img: HTMLImageElement | null = null;
+  /** 没图 / 图裂都长这样：色相 + 首字母。两处共用，免得以后只改一处（评审 4-7）。 */
+  const showLetter = () => {
+    box.classList.remove("pic");
+    // 图没了就别再假装能看大图：光标、悬停提示一并收回。
+    box.classList.remove("av-open");
+    box.removeAttribute("title");
+    img?.remove();
+    img = null;
+    box.style.setProperty("--h", String(hueOf(key)));
+    // 用 span 塞首字母而不是 textContent：后者会把 `online` 追加的 .st 圆点一起抹掉。
+    if (!box.querySelector(".av-letter")) {
+      box.prepend(h("span", "av-letter", (name.trim()[0] ?? "?").toUpperCase()));
+    }
+  };
   if (url) {
     box.classList.add("pic");
-    const img = document.createElement("img");
+    img = document.createElement("img");
     img.className = "av-img";
     img.src = url;
     img.alt = "";
     img.draggable = false;
+    // 自定义头像取不到（对端离线、缓存被清、老版本没这口子）时退回字母，别留个白框。
+    img.addEventListener("error", showLetter, { once: true });
     box.append(img);
+    // 点个头像看大图。列表 / 通讯录 / 群成员那些「整行可点」的地方传 zoom=false：
+    // 那里的头像属于行，点它应该照旧打开会话 / 选中 / 勾选，不能抢走行的点击。
+    if (zoom) {
+      box.classList.add("av-open");
+      box.title = tr("点头像看大图");
+      box.addEventListener("click", (ev) => {
+        if (box.closest("button")) return;
+        // 图已经加载失败、退回字母了：这时候再点不该弹一个空灯箱。
+        const shown = img;
+        if (!shown?.isConnected) return;
+        ev.stopPropagation();
+        openAvatarViewer(shown.getAttribute("src") ?? "", name);
+      });
+    }
   } else {
-    box.style.setProperty("--h", String(hueOf(key)));
-    box.textContent = (name.trim()[0] ?? "?").toUpperCase();
+    showLetter();
   }
   if (online !== undefined) {
     const dot = h("i", `st${online ? " on" : ""}`);
@@ -650,6 +696,18 @@ async function loadStatus(): Promise<void> {
   }
   renderBar();
   renderHint();
+}
+
+/**
+ * 自己上传过的头像。只给「我 → 头像」用，所以不跟着 loadStatus 的 5 秒轮询跑；
+ * 进分区时以及上传 / 删除后各拉一次就够（评审 8-7）。
+ */
+async function loadUploads(): Promise<void> {
+  try {
+    S.uploads = (await getJson<{ uploads: UploadRow[] }>("/api/peer/custom-avatars")).uploads ?? [];
+  } catch {
+    S.uploads = [];
+  }
 }
 
 async function loadThreads(): Promise<void> {
@@ -833,8 +891,12 @@ function go(page: Page): void {
   if (S.page !== page) {
     S.page = page;
     S.query = "";
-    if (page === "me") S.mview = "chat";
-    else S.mview = "list";
+    // D443：每次从侧栏进「我」页都从「个人资料」开始。只在这里复位 ——
+    // 放进 renderMe() 的话，5 秒一次的状态轮询重画会把用户正在看的分区打回去（评审 5-11）。
+    if (page === "me") {
+      S.meSection = "profile";
+      S.mview = "chat";
+    } else S.mview = "list";
   }
   app.dataset.page = page;
   app.dataset.mview = S.mview;
@@ -1183,8 +1245,9 @@ function renderThreadList(): void {
 /** 会话列表的一行。 */
 function threadRow(t: Thread): HTMLElement {
   const row = h("div", `row${S.thread === t.nodeId ? " on" : ""}${t.pinned ? " pinned" : ""}`);
+  row.dataset.id = t.nodeId;
   const wrap = h("span", "avwrap");
-  wrap.append(avatar(t.nickname, t.nodeId, t.online));
+  wrap.append(avatar(t.nickname, t.nodeId, t.online, undefined, false));
   if (t.unread > 0) wrap.append(h("i", `unread${t.muted ? " quiet" : ""}`, t.muted ? "" : badgeText(t.unread)));
   row.append(wrap);
   const tbox = h("div", "t");
@@ -1294,7 +1357,7 @@ function renderContactList(): void {
     box.append(title);
     for (const c of g.items) {
       const row = h("div", `row${S.contact === c.nodeId ? " on" : ""}`);
-      row.append(avatar(c.nickname, c.nodeId, c.online));
+      row.append(avatar(c.nickname, c.nodeId, c.online, undefined, false));
       const t = h("div", "t");
       const name = h("div", "n");
       name.append(h("span", "nm", c.nickname));
@@ -1967,7 +2030,7 @@ function forwardModal(entries: Entry[]): void {
       if (q && !p.nickname.toLowerCase().includes(q) && !p.nodeId.startsWith(q)) continue;
       const row = h("button", `fwd-row${chosen.has(p.nodeId) ? " on" : ""}`) as HTMLButtonElement;
       row.type = "button";
-      row.append(avatar(p.nickname, p.nodeId, p.online), h("span", "nm", p.nickname), h("span", "ck"));
+      row.append(avatar(p.nickname, p.nodeId, p.online, undefined, false), h("span", "nm", p.nickname), h("span", "ck"));
       row.addEventListener("click", () => {
         if (chosen.has(p.nodeId)) chosen.delete(p.nodeId);
         else chosen.add(p.nodeId);
@@ -2045,6 +2108,46 @@ function openViewer(e: Entry): void {
   });
   viewerDestroy = v.destroy;
   layerEl.append(v.root);
+}
+
+/**
+ * 点任意头像看大图：单张、不翻页。头像本身只有 34–192px，所以允许放大到 3 倍。
+ * 不调 closeLayer()：头像可能出现在「转发 / 看图」这些已经开着的弹层里，只清掉旧的那张灯箱。
+ */
+function openAvatarViewer(url: string, name: string): void {
+  if (!url) return;
+  const old = layerEl.querySelector(".iv");
+  if (old) {
+    viewerDestroy?.();
+    viewerDestroy = null;
+    old.remove();
+  }
+  const v = imageViewer({
+    items: [{ url, name: name || tr("头像") }],
+    index: 0,
+    upscale: 3,
+    onClose: () => {
+      v.destroy();
+      v.root.remove();
+      viewerDestroy = null;
+    },
+  });
+  viewerDestroy = v.destroy;
+  layerEl.append(v.root);
+}
+
+/** 设置页删除一张上传记录；删的要是当前头像，peer 会自己换到下一张。 */
+async function removeUpload(up: UploadRow): Promise<void> {
+  try {
+    await postJson("/api/peer/custom-avatars/delete", { hash: up.hash });
+    await loadStatus();
+    await loadThreads();
+    await loadUploads();
+    renderAll();
+    toast(tr("这张头像删掉了"));
+  } catch (err) {
+    toast((err as Error).message);
+  }
 }
 
 function locate(id: string): void {
@@ -2796,7 +2899,7 @@ function groupModal(opts: { preset?: string[]; groupId?: string }): void {
         else chosen.delete(c.nodeId);
         paintGo();
       });
-      row.append(box, avatar(c.nickname, c.nodeId, c.online), h("span", "nm", c.nickname), h("span", "sub", c.online ? tr("在线") : tr("离线")));
+      row.append(box, avatar(c.nickname, c.nodeId, c.online, undefined, false), h("span", "nm", c.nickname), h("span", "sub", c.online ? tr("在线") : tr("离线")));
       list.append(row);
     }
   };
@@ -2842,7 +2945,7 @@ function membersModal(t: Thread): void {
     const live = me || online.has(m.nodeId);
     const row = h("div", "group-row");
     const name = nameOf(m.nodeId, m.nickname);
-    row.append(avatar(name, m.nodeId, live), h("span", "nm", me ? tr("{p1}（我）", { p1: name }) : name));
+    row.append(avatar(name, m.nodeId, live, undefined, !me), h("span", "nm", me ? tr("{p1}（我）", { p1: name }) : name));
     if (m.nodeId === g.owner) row.append(h("span", "pill", tr("群主")));
     row.append(h("span", "sub", live ? tr("在线") : tr("离线")));
     if (!me) {
@@ -4000,154 +4103,499 @@ async function reveal(target: string): Promise<void> {
   }
 }
 
-// ---------------------------------------------------------------- 我
+/* ---------------------------------------------------------------- 我（设置） */
+
+/**
+ * 「我」页从「几张卡片一路往下滚」改成「左侧子导航 + 右侧内容」：
+ * 设置项一多，纵向滚到底找开关很费劲；分组后一屏只看见一组，切组也不丢滚动位置。
+ * 分区顺序按「先看自己 → 再看通知 / 存储 → 最后是网络与隐私」排。
+ */
+const ME_SECTIONS: { id: MeSection; label: string; icon: string }[] = [
+  { id: "profile", label: "个人资料", icon: "me" },
+  { id: "avatar", label: "头像", icon: "image" },
+  { id: "alerts", label: "状态与通知", icon: "bellOff" },
+  { id: "store", label: "存储", icon: "disk" },
+  { id: "net", label: "发现", icon: "refresh" },
+  { id: "ignored", label: "忽略名单", icon: "select" },
+];
+
+/** 头像图的边长：页面上最大 76px，192 够 2 倍屏；WebP 后通常 5–15 KB。 */
+const AVATAR_SIDE = 192;
+/** 上传原图的上限：只为挡住误选的相机原图，真正发出去的是裁好的 192×192。 */
+const AVATAR_SOURCE_MAX = 12 * 1024 * 1024;
+
+/**
+ * 把用户选的图裁成正方形小图：按短边居中裁，再画到 192×192 画布上转 WebP。
+ *
+ * 为什么不直接把原图发给 peer：手机照片动辄 5–10 MB，而广播里只带 hash、对端按需来拉；
+ * 存一张十几 MB 的图既占地方又慢，页面上显示的最大也就 76px。
+ */
+async function avatarBlob(file: File): Promise<Blob> {
+  if (!file.type.startsWith("image/")) throw new Error(tr("这好像不是图片"));
+  if (file.size > AVATAR_SOURCE_MAX) {
+    // 上限只写在常量里：文案里的数字跟着它走，改上限时不会漏改提示（评审 4-8）。
+    throw new Error(tr("图片太大了（上限 {p1} MB）", { p1: AVATAR_SOURCE_MAX / 1024 / 1024 }));
+  }
+  let bmp: ImageBitmap;
+  try {
+    // 手机竖拍的照片带 EXIF 方向；`from-image` 让浏览器先摆正，不然裁出来是躺着的。
+    bmp = await createImageBitmap(file, { imageOrientation: "from-image" }).catch(() => createImageBitmap(file));
+  } catch {
+    throw new Error(tr("这张图片读不出来"));
+  }
+  try {
+    const side = Math.min(bmp.width, bmp.height);
+    if (side < 8) throw new Error(tr("这张图片太小了"));
+    const canvas = document.createElement("canvas");
+    canvas.width = AVATAR_SIDE;
+    canvas.height = AVATAR_SIDE;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error(tr("浏览器处理不了这张图片"));
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, AVATAR_SIDE, AVATAR_SIDE);
+    const webp = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.9));
+    if (webp && webp.type === "image/webp") return webp;
+    // Safari 的 canvas 不支持 WebP 时会悄悄给回 PNG。
+    const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (png) return png;
+    throw new Error(tr("浏览器处理不了这张图片"));
+  } finally {
+    bmp.close();
+  }
+}
+
+/** 上传自定义头像：成功会广播并整页重画；失败只在 toast 里说一句。 */
+async function uploadAvatar(file: File, busy?: (on: boolean) => void): Promise<boolean> {
+  busy?.(true);
+  try {
+    const blob = await avatarBlob(file);
+    const res = await fetch("/api/peer/avatar", {
+      method: "POST",
+      headers: { "content-type": blob.type },
+      body: blob,
+    });
+    const data = (await res.json().catch(() => ({}))) as { avatar?: string; error?: string };
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    await loadStatus();
+    await loadThreads();
+    await loadUploads();
+    toast(tr("头像换好了"));
+    return true;
+  } catch (err) {
+    toast((err as Error).message);
+    return false;
+  } finally {
+    // 先清标志再重画：否则 renderAll 建出来的按钮会照着 `avatarUploading = true` 显示成
+    // 「正在处理…」并禁用，而 busy(false) 只摸得到已经被换掉的旧按钮（评审 8-4）。
+    busy?.(false);
+    renderAll();
+  }
+}
+
+function meHead(title: string, sub: string): HTMLElement {
+  const box = h("div", "me-head");
+  box.append(h("div", "me-title", title), h("div", "me-sub", sub));
+  return box;
+}
+
+/**
+ * 头像上传在飞。放在模块级而不是 renderMe 里：5 秒一次的状态轮询会 renderAll 重画「我」页，
+ * 局部变量会被重置成 false，用户就能在同一个上传还没回来时再开一个文件框（评审 8-4）。
+ */
+let avatarUploading = false;
 
 function renderMe(): void {
   const st = S.view?.status;
   const head = h("div", "head");
-  head.append(h("div", "t", tr("我")));
+  const ht = h("div", "t");
+  ht.append(h("div", "n", tr("我")), h("div", "s", tr("设置")));
+  head.append(ht);
   mainEl.append(head);
 
-  const detail = h("div", "detail wide");
+  const detail = h("div", "detail wide me");
   if (!st) {
-    detail.append(emptyState("me", tr("内网通没在运行"), tr("启动 bridge 之后这里会有你自己的资料和开关")));
+    detail.append(emptyState("me", tr("内网通没在运行"), tr("启动 bridge 之后这里会有你自己的资料和头像")));
     mainEl.append(detail);
     return;
   }
 
-  const hero = h("div", "hero");
-  hero.append(avatar(st.nickname, st.nodeId, undefined, st.avatar));
-  const t = h("div", "t");
-  t.append(h("div", "n", st.nickname), h("div", "sub", `${st.hostname} · :${st.port}`));
-  hero.append(t);
-  detail.append(hero);
-
-  // D303：自己的名字。改完立刻重播一次 announce，别人下一次刷新就看到新名字。
-  const nameCard = h("div", "card");
-  nameCard.append(h("h3", "", tr("名字")));
-  const nameRow = h("div", "namerow");
-  const nameInput = inputEl(tr("你的名字"));
-  nameInput.value = st.nickname;
-  nameInput.maxLength = 40;
-  const saveName = h("button", "btn pri", tr("保存"));
-  saveName.type = "button";
-  const applyName = async (): Promise<void> => {
-    const value = nameInput.value.trim();
-    if (!value || value === st.nickname) return;
-    try {
-      await postJson("/api/peer/config", { nickname: value });
-      await loadStatus();
-      await loadThreads();
-      renderAll();
-      toast(tr("名字已改成「{p1}」", { p1: value }));
-    } catch (err) {
-      toast((err as Error).message);
-    }
-  };
-  saveName.addEventListener("click", () => void applyName());
-  nameInput.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") void applyName();
-  });
-  nameRow.append(nameInput, saveName);
-  nameCard.append(nameRow, h("div", "note", tr("别人看到的就是这个名字；改完会立刻广播一次。")));
-  detail.append(nameCard);
-
-  // 头像：12 张里挑一张。第一次启动时 peer 已经自己随机挑了一张并写进 `~/.pi-peer/config.json`，
-  // 这里既能改成指定的一张，也能再抽一次（抽的时候排除当前这张，别点了没反应）。
-  const avCard = h("div", "card");
-  avCard.append(h("h3", "", tr("头像")));
-  const setAvatar = async (id: string): Promise<void> => {
+  // 上传在飞时，内置格 / 历史缩略图 / 随机换一个 也都不能改（评审 7-25）：
+  // 否则两个 POST /avatar 并发，最后生效的取决于谁后返回，而不是用户最后一次选择。
+  // `avatarUploading` 是模块级的：轮询重画不会把它清成 false（评审 8-4）。
+  const uploadsSig = (): string => S.uploads.map((u) => `${u.id}:${u.at}`).join("|");
+  // 上次画进 pane 的那份「上传过的」签名，refresh 后没变就不重画（见 refreshUploads）。
+  let drawnUploads = "";
+  const applyAvatar = async (id: string): Promise<void> => {
+    if (avatarUploading) return;
     if (await setConfig({ avatar: id })) toast(tr("头像换好了"));
   };
-  const avGrid = h("div", "avgrid");
-  for (const id of AVATAR_IDS) {
-    const pick = h("button", `avpick${id === st.avatar ? " on" : ""}`) as HTMLButtonElement;
-    pick.type = "button";
-    pick.title = tr("用这张头像");
-    pick.setAttribute("aria-label", tr("用这张头像"));
-    const img = document.createElement("img");
-    img.src = avatarUrl(id) ?? "";
-    img.alt = "";
-    img.draggable = false;
-    pick.append(img);
-    pick.addEventListener("click", () => {
-      if (id !== st.avatar) void setAvatar(id);
+
+  // —— 个人资料：hero（点头像直接跳「头像」）+ 名字 + 本机身份
+  const sectionProfile = (): HTMLElement => {
+    const wrap = h("div", "me-sec");
+    wrap.append(meHead(tr("个人资料"), tr("别人在通讯录里看到的样子")));
+
+    const card = h("div", "card");
+    const hero = h("div", "me-hero");
+    const avBtn = h("button", "me-ava") as HTMLButtonElement;
+    avBtn.type = "button";
+    avBtn.title = tr("点头像看大图");
+    avBtn.setAttribute("aria-label", tr("点头像看大图"));
+    const cam = h("span", "me-cam");
+    cam.append(ic("image"));
+    cam.title = tr("换头像");
+    avBtn.append(avatar(st.nickname, st.nodeId, undefined, st.avatar), cam);
+    // 头像本身看大图，小相机徽标才去换头像（照片本身不再是个「换」按钮）。
+    avBtn.addEventListener("click", () => {
+      const pic = avBtn.querySelector("img.av-img");
+      if (pic) return openAvatarViewer(pic.getAttribute("src") ?? "", st.nickname);
+      goSection("avatar");
     });
-    avGrid.append(pick);
-  }
-  const avActs = h("div", "acts avacts");
-  const luck = h("button", "btn", tr("随机换一个"));
-  luck.type = "button";
-  luck.addEventListener("click", () => void setAvatar(randomAvatarId(st.avatar)));
-  avActs.append(luck);
-  avCard.append(avGrid, avActs, h("div", "note", tr("这张头像会跟着名字一起广播，别人那边看到的就是它。")));
-  detail.append(avCard);
+    cam.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      goSection("avatar");
+    });
 
-  const profile = h("div", "card");
-  profile.append(h("h3", "", tr("资料")));
-  const kv = h("div", "kv");
-  for (const [k, v] of [
-    [tr("nodeId"), st.nodeId],
-    [tr("主机名"), st.hostname],
-    [tr("端口"), String(st.port)],
-  ] as [string, string][]) {
-    kv.append(h("span", "k", k), h("span", "v", v));
-  }
-  profile.append(kv, h("div", "note", tr("nodeId 是这台机器的身份，换机器或删掉 ~/.pi-peer 就会变。")));
-  detail.append(profile);
+    const who = h("div", "me-who");
+    who.append(h("div", "me-name", st.nickname));
+    const chips = h("div", "me-chips");
+    chips.append(
+      h(
+        "span",
+        `me-chip${st.config.hidden ? "" : " on"}`,
+        st.config.hidden ? tr("隐身") : tr("在线"),
+      ),
+    );
+    if (st.config.dnd) chips.append(h("span", "me-chip warn", tr("免打扰")));
+    who.append(chips, h("div", "me-host", `${st.hostname} · :${st.port}`));
+    hero.append(avBtn, who);
 
-  const sw = h("div", "card");
-  sw.append(h("h3", "", tr("开关")));
-  sw.append(
-    toggle(tr("隐身"), tr("别人看不到你，但消息照收"), st.config.hidden, (on) => void setConfig({ hidden: on })),
-    toggle(tr("免打扰"), tr("新消息不弹提醒，消息照收"), st.config.dnd, (on) => void setConfig({ dnd: on })),
-    toggle(tr("暂停收文件"), tr("别人发来的文件会被拒收，消息不受影响"), st.config.pauseFiles, (on) => void setConfig({ pauseFiles: on })),
-    toggle(tr("桌面通知"), tr("页面不在前面时弹系统通知（需要浏览器授权）"), notifyEnabled(), (on) => void setNotify(on)),
-  );
-  detail.append(sw);
+    // D303：自己的名字。改完立刻重播一次 announce，别人下一次刷新就看到新名字。
+    const row = h("div", "me-row");
+    const label = h("label", "me-k", tr("名字"));
+    label.htmlFor = "me-name";
+    const nameInput = inputEl(tr("你的名字"));
+    nameInput.id = "me-name";
+    nameInput.value = st.nickname;
+    nameInput.maxLength = 40;
+    const saveName = h("button", "btn pri", tr("保存"));
+    saveName.type = "button";
+    const applyName = async (): Promise<void> => {
+      const value = nameInput.value.trim();
+      if (!value || value === st.nickname) return;
+      try {
+        await postJson("/api/peer/config", { nickname: value });
+        await loadStatus();
+        await loadThreads();
+        renderAll();
+        toast(tr("名字已改成「{p1}」", { p1: value }));
+      } catch (err) {
+        toast((err as Error).message);
+      }
+    };
+    saveName.addEventListener("click", () => void applyName());
+    nameInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") void applyName();
+    });
+    row.append(label, nameInput, saveName);
+    card.append(hero, row, h("div", "note", tr("别人看到的就是这个名字；改完会立刻广播一次。")));
+    wrap.append(card);
 
-  const store = h("div", "card");
-  store.append(h("h3", "", tr("存储")));
-  const skv = h("div", "kv");
-  skv.append(h("span", "k", tr("收件箱")), h("span", "v", st.config.inbox));
-  skv.append(h("span", "k", tr("剩余空间")), h("span", "v", sizeOf(S.free)));
-  store.append(skv);
-  const sacts = h("div", "acts");
-  sacts.style.padding = "0 13px 13px";
-  const open = h("button", "btn", tr("打开收件箱"));
-  open.type = "button";
-  open.addEventListener("click", () => void reveal(st.config.inbox));
-  sacts.append(open);
-  store.append(sacts);
-  detail.append(store);
+    const info = h("div", "card");
+    info.append(h("h3", "", tr("本机身份")));
+    const kv = h("div", "kv me-kv");
+    const nodeV = h("span", "v me-copy");
+    // nodeId 得包一层元素才能吃 text-overflow:ellipsis：文本节点不是元素，
+    // 原来的 `> :first-child` 实际命中的是后面的复制按钮（评审 4-9）。
+    nodeV.append(h("span", "me-id", st.nodeId));
+    const cp = h("button", "icon-btn me-cp") as HTMLButtonElement;
+    cp.type = "button";
+    cp.title = tr("复制 nodeId");
+    cp.setAttribute("aria-label", tr("复制 nodeId"));
+    cp.append(ic("copy"));
+    cp.addEventListener("click", () => void copyText(st.nodeId));
+    nodeV.append(cp);
+    kv.append(h("span", "k", tr("nodeId")), nodeV);
+    kv.append(h("span", "k", tr("主机名")), h("span", "v", st.hostname));
+    kv.append(h("span", "k", tr("端口")), h("span", "v", String(st.port)));
+    info.append(kv, h("div", "note", tr("nodeId 是这台机器的身份，换机器或删掉 ~/.pi-peer 就会变。")));
+    wrap.append(info);
+    return wrap;
+  };
 
-  const net = h("div", "card");
-  net.append(h("h3", "", tr("发现")));
-  const nacts = h("div", "acts");
-  nacts.style.padding = "12px 13px";
-  const again = h("button", "btn", tr("重新广播"));
-  again.type = "button";
-  again.addEventListener("click", () => void refreshAll());
-  nacts.append(again);
-  net.append(nacts, h("div", "note", st.config.manual.length ? tr("手动地址：{p1}", { p1: st.config.manual.join(", ") }) : tr("同一内网的人打开 pi 就会互相出现；组播被挡时用「+」手动加地址。")));
-  detail.append(net);
+  // —— 头像：一颗大预览 + 内置 12 张 + 「自定义」格
+  const sectionAvatar = (): HTMLElement => {
+    drawnUploads = uploadsSig();
+    const wrap = h("div", "me-sec");
+    wrap.append(meHead(tr("头像"), tr("内置 12 张，也可以上传自己的")));
 
-  const ig = h("div", "card");
-  ig.append(h("h3", "", tr("忽略名单")));
-  const iacts = h("div", "acts");
-  iacts.style.padding = "12px 13px";
-  const clear = h("button", "btn", tr("清空忽略名单"));
-  clear.type = "button";
-  clear.disabled = S.ignored.length === 0;
-  clear.addEventListener("click", () => void clearIgnored());
-  iacts.append(clear);
-  ig.append(
-    h("div", "note", tr("已忽略 {p1} 人。清空后，仍在线的人会重新出现在「附近的人」里。", { p1: fmtNum(S.ignored.length) })),
-    iacts,
-  );
-  detail.append(ig);
+    const card = h("div", "card");
+    const row = h("div", "me-avrow");
+    const big = avatar(st.nickname, st.nodeId, undefined, st.avatar);
+    big.classList.add("me-big");
+    const acts = h("div", "me-avacts");
+    const uploadBtn = h("button", "btn pri", tr("上传图片"));
+    uploadBtn.type = "button";
+    const luck = h("button", "btn", tr("随机换一个"));
+    luck.type = "button";
+    const file = document.createElement("input");
+    file.type = "file";
+    file.accept = "image/png,image/jpeg,image/webp,image/gif";
+    file.hidden = true;
+    const busy = (on: boolean): void => {
+      avatarUploading = on;
+      uploadBtn.disabled = on;
+      luck.disabled = on;
+      uploadBtn.textContent = on ? tr("正在处理…") : tr("上传图片");
+    };
+    // 重画可能发生在上传还没回来时（5 秒轮询）：新按钮得照着模块级标志恢复禁用态，
+    // 不能因为「刚建出来」就显示成可用。
+    uploadBtn.disabled = avatarUploading;
+    luck.disabled = avatarUploading;
+    if (avatarUploading) uploadBtn.textContent = tr("正在处理…");
+    // 「自定义」格也复用这个 input：上传在飞时再点它不能开第二个选择框，
+    // 否则两个 POST /avatar 并发，最后生效的是谁先返回而不是用户最后一次选（评审 5-10）。
+    const pick = (): void => {
+      if (avatarUploading) return;
+      file.click();
+    };
+    uploadBtn.addEventListener("click", pick);
+    file.addEventListener("change", () => {
+      const chosen = file.files?.[0];
+      file.value = "";
+      if (chosen) void uploadAvatar(chosen, busy);
+    });
+    luck.addEventListener("click", () => void applyAvatar(randomAvatarId(st.avatar)));
+    acts.append(
+      uploadBtn,
+      luck,
+      file,
+      h("div", "me-note", tr("PNG / JPEG / WebP / GIF，会居中裁成方形，动图只取第一帧。")),
+    );
+    row.append(big, acts);
+    card.append(row);
 
+    const grid = h("div", "avgrid me-avgrid");
+    for (const id of AVATAR_IDS) {
+      const pickBtn = h("button", `avpick${id === st.avatar ? " on" : ""}`) as HTMLButtonElement;
+      pickBtn.type = "button";
+      pickBtn.title = tr("用这张头像");
+      pickBtn.setAttribute("aria-label", tr("用这张头像"));
+      const img = document.createElement("img");
+      img.src = avatarUrl(id) ?? "";
+      img.alt = "";
+      img.draggable = false;
+      pickBtn.append(img);
+      pickBtn.addEventListener("click", () => {
+        if (id !== st.avatar) void applyAvatar(id);
+      });
+      grid.append(pickBtn);
+    }
+    // 最后一格是「自定义」：当前用的就是自定义头像时显示那张图，否则是虚线的加号。
+    const custom = customAvatarHash(st.avatar);
+    const tile = h("button", `avpick me-custom${custom ? " on" : ""}`) as HTMLButtonElement;
+    tile.type = "button";
+    tile.title = tr("上传自定义头像");
+    tile.setAttribute("aria-label", tr("上传自定义头像"));
+    const ownUrl = custom ? avatarUrl(st.avatar, st.nodeId) : null;
+    if (ownUrl) {
+      const img = document.createElement("img");
+      img.src = ownUrl;
+      img.alt = "";
+      img.draggable = false;
+      tile.append(img);
+    } else {
+      tile.append(ic("plus"));
+    }
+    tile.addEventListener("click", pick);
+    grid.append(tile);
+    card.append(grid);
+
+    // 上传过的：给自己留一排可以反复切回来，不想要了就删（只删上传记录，不碰内置）。
+    if (S.uploads.length) {
+      const hist = h("div", "me-hist");
+      hist.append(h("h3", "", tr("上传过的")));
+      const histRow = h("div", "me-histgrid");
+      for (const up of S.uploads) {
+        const item = h("div", `me-histitem${custom === up.hash ? " on" : ""}`);
+        const thumb = h("button", "me-histpick") as HTMLButtonElement;
+        thumb.type = "button";
+        thumb.title = tr("用这张头像");
+        thumb.setAttribute("aria-label", tr("用这张头像"));
+        const thumbImg = document.createElement("img");
+        thumbImg.src = avatarUrl(up.id, st.nodeId) ?? "";
+        thumbImg.alt = "";
+        thumbImg.draggable = false;
+        // 记录还在、文件被手动删了 / prune 收走了：别留一个破图，退回名字首字母并禁用这一格。
+        thumbImg.addEventListener(
+          "error",
+          () => {
+            thumbImg.remove();
+            thumb.append(h("span", "me-histletter", (st.nickname.trim()[0] ?? "?").toUpperCase()));
+            thumb.disabled = true;
+            thumb.title = tr("图片不在了，删掉这条记录吧");
+            thumb.setAttribute("aria-label", tr("图片不在了，删掉这条记录吧"));
+          },
+          { once: true },
+        );
+        thumb.append(thumbImg);
+        thumb.addEventListener("click", () => {
+          if (st.avatar !== up.id) void applyAvatar(up.id);
+        });
+        const del = h("button", "me-histdel") as HTMLButtonElement;
+        del.type = "button";
+        del.title = tr("删除这张");
+        del.setAttribute("aria-label", tr("删除这张"));
+        del.append(ic("trash"));
+        del.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          void removeUpload(up);
+        });
+        item.append(thumb, del);
+        histRow.append(item);
+      }
+      hist.append(histRow, h("div", "note", tr("只保留你自己上传的；对端头像的缓存不在这里。")));
+      card.append(hist);
+    }
+    wrap.append(card, h("div", "note me-hint", tr("换完会立刻广播一次；对端按需拉图，取不到时先显示名字首字母。")));
+    return wrap;
+  };
+
+  // —— 状态与通知
+  const sectionAlerts = (): HTMLElement => {
+    const wrap = h("div", "me-sec");
+    wrap.append(meHead(tr("状态与通知"), tr("隐身、免打扰与收文件")));
+    const card = h("div", "card");
+    card.append(
+      toggle(tr("隐身"), tr("别人看不到你，但消息照收"), st.config.hidden, (on) => void setConfig({ hidden: on })),
+      toggle(tr("免打扰"), tr("新消息不弹提醒，消息照收"), st.config.dnd, (on) => void setConfig({ dnd: on })),
+      toggle(tr("暂停收文件"), tr("别人发来的文件会被拒收，消息不受影响"), st.config.pauseFiles, (on) => void setConfig({ pauseFiles: on })),
+      toggle(tr("桌面通知"), tr("页面不在前面时弹系统通知（需要浏览器授权）"), notifyEnabled(), (on) => void setNotify(on)),
+    );
+    wrap.append(card, h("div", "note me-hint", tr("桌面通知要浏览器授权；页面在前台时不会弹系统通知。")));
+    return wrap;
+  };
+
+  // —— 存储
+  const sectionStore = (): HTMLElement => {
+    const wrap = h("div", "me-sec");
+    wrap.append(meHead(tr("存储"), tr("收到的东西放在哪、还剩多少空间")));
+    const card = h("div", "card");
+    const kv = h("div", "kv");
+    kv.append(h("span", "k", tr("收件箱")), h("span", "v", st.config.inbox));
+    kv.append(h("span", "k", tr("剩余空间")), h("span", "v", sizeOf(S.free)));
+    const acts = h("div", "acts me-acts me-acts-flush");
+    const open = h("button", "btn", tr("打开收件箱"));
+    open.type = "button";
+    open.addEventListener("click", () => void reveal(st.config.inbox));
+    acts.append(open);
+    card.append(kv, acts);
+    wrap.append(card);
+    return wrap;
+  };
+
+  // —— 发现
+  const sectionNet = (): HTMLElement => {
+    const wrap = h("div", "me-sec");
+    wrap.append(meHead(tr("发现"), tr("同一内网里怎么互相看到")));
+    const card = h("div", "card");
+    const acts = h("div", "acts me-acts");
+    const again = h("button", "btn", tr("重新广播"));
+    again.type = "button";
+    again.addEventListener("click", () => void refreshAll());
+    acts.append(again);
+    card.append(
+      acts,
+      h(
+        "div",
+        "note",
+        st.config.manual.length
+          ? tr("手动地址：{p1}", { p1: st.config.manual.join(", ") })
+          : tr("同一内网的人打开 pi 就会互相出现；组播被挡时用「+」手动加地址。"),
+      ),
+    );
+    wrap.append(card);
+    return wrap;
+  };
+
+  // —— 忽略名单
+  const sectionIgnored = (): HTMLElement => {
+    const wrap = h("div", "me-sec");
+    wrap.append(meHead(tr("忽略名单"), tr("不想再看到的人")));
+    const card = h("div", "card");
+    const acts = h("div", "acts me-acts");
+    const clear = h("button", "btn", tr("清空忽略名单"));
+    clear.type = "button";
+    clear.disabled = S.ignored.length === 0;
+    clear.addEventListener("click", () => void clearIgnored());
+    acts.append(clear);
+    card.append(
+      h(
+        "div",
+        "note",
+        S.ignored.length
+          ? tr("已忽略 {p1} 人。清空后，仍在线的人会重新出现在「附近的人」里。", { p1: fmtNum(S.ignored.length) })
+          : tr("还没有忽略任何人。"),
+      ),
+      acts,
+    );
+    wrap.append(card);
+    return wrap;
+  };
+
+  // 分区 id → 渲染函数。加分区只改这里和 ME_SECTIONS 的标签，别再往嵌套三元里挂一层。
+  const SECTION_BODY: Record<MeSection, () => HTMLElement> = {
+    profile: sectionProfile,
+    avatar: sectionAvatar,
+    alerts: sectionAlerts,
+    store: sectionStore,
+    net: sectionNet,
+    ignored: sectionIgnored,
+  };
+
+  // 进「头像」分区时才拉上传记录，不跟着 5 秒状态轮询（评审 8-7）。
+  const refreshUploads = async (): Promise<void> => {
+    await loadUploads();
+    if (S.meSection !== "avatar") return;
+    // 数据没变就不重画：draw() 会整块换掉 pane，正在看的滚动位置和焦点都会丢（评审 7-27）。
+    if (uploadsSig() === drawnUploads) return;
+    draw();
+  };
+  const goSection = (id: MeSection): void => {
+    const same = S.meSection === id;
+    S.meSection = id;
+    if (!same) {
+      draw();
+      detail.scrollTop = 0;
+    }
+    // 点已选中的「头像」也要重拉：原来这里直接 return，刷新「上传过的」那一行就被跳过了，
+    // 历史列表可能一直停在旧数据（评审 5-11）。
+    if (id === "avatar") void refreshUploads();
+  };
+
+  const nav = h("nav", "me-nav");
+  const pane = h("div", "me-pane");
+  const draw = (): void => {
+    nav.replaceChildren();
+    for (const item of ME_SECTIONS) {
+      const on = item.id === S.meSection;
+      const tab = h("button", `me-tab${on ? " on" : ""}`) as HTMLButtonElement;
+      tab.type = "button";
+      tab.append(ic(item.icon), h("span", "me-tab-t", tr(item.label)));
+      if (on) tab.setAttribute("aria-current", "page");
+      tab.addEventListener("click", () => goSection(item.id));
+      nav.append(tab);
+    }
+    pane.replaceChildren(SECTION_BODY[S.meSection]());
+  };
+
+  // 网格摆在 me-body 上而不是 detail 自己：detail 是容器查询的对象，
+  // 容器自己的样式不受自己的 @container 影响，窄版降级会被吃掉。
+  const body = h("div", "me-body");
+  body.append(nav, pane);
+  detail.append(body);
   mainEl.append(detail);
+  draw();
 }
 
 async function clearIgnored(): Promise<void> {

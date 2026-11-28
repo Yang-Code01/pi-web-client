@@ -22,6 +22,32 @@ button, input, textarea { font: inherit; color: inherit; }
 a { color: var(--accent); text-decoration: none; }
 #app { height: 100%; zoom: var(--ui-scale, 1); }
 
+/* ---------------------------------------------------------------- 分区字号（区域倍率，D441）
+   五块各自缩放：顶栏（三行）/ 会话列表 / 对话正文 / 输入框 / 右栏面板。每块在 `#app` 的全局
+   zoom 之上再叠一层 `zoom: var(--rs)`，两层相乘；JS 只往 `:root` 写那五个 `--rs-*`，不碰元素。
+
+   四条坑，新加区域照抄这里：
+   1. **zoom 不撑盒子**：根节点的占位尺寸不变，只是内部坐标空间变成 1/倍率，内容按倍率画。
+      所以栏宽（--sessions-w / --queue-w）、col-grip 换算、900px 窄版判定都不跟区域倍率走 ——
+      它们只认 `--ui-scale`/`uiScale()`。
+   2. **区域里的 `--vh1` / `--vw1` 会算小**：视口单位不认 zoom，必须在这个根节点上按倍率除一次，
+      否则区域内 `calc(var(--vh1) * N)` 会随倍率越来越小（D123 的同一族坑）。
+   3. **`position: fixed` 的后代连 left/top 与尺寸都被乘一遍**（实测 `left:100` 在 1.6×1.25 下
+      出现在视觉 200）。浮层一律不挂进区域，继续挂 `#app`（`app.ts` 的 `overlay()` 就是那么写的）。
+   4. 壳 A 把标签行挂进了顶栏里（`.topbar > .ws-tabs-row`）：父子各乘一次就是双倍，所以有一条归 1 的规则。 */
+[data-region="topbar"] { --rs: var(--rs-topbar, 1); }
+[data-region="sessions"] { --rs: var(--rs-sessions, 1); }
+[data-region="chat"] { --rs: var(--rs-chat, 1); }
+[data-region="composer"] { --rs: var(--rs-composer, 1); }
+[data-region="queue"] { --rs: var(--rs-queue, 1); }
+[data-region] {
+  zoom: var(--rs, 1);
+  --vh1: calc(1vh / var(--ui-scale, 1) / var(--rs, 1));
+  --vw1: calc(1vw / var(--ui-scale, 1) / var(--rs, 1));
+}
+/* 壳 A：标签行已经在放大的顶栏里。只归 1，`--rs` 留着 —— 上面那两行视口变量还要靠它算。 */
+.topbar > [data-region="topbar"] { zoom: 1; }
+
 /* ---------------------------------------------------------------- scrollbars
    一根细竖线：轨道透明，滑块 4px 圆头、低对比度，指上去变亮、按住变强调色。
    只用 ::-webkit-scrollbar 这套（不用 scrollbar-width/color）：标准属性一旦设置，
@@ -1542,6 +1568,27 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line-soft); margin: 0 0 12px; }
 .exec-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--faint); padding: 7px 10px; font: inherit; font-size: 13px; cursor: pointer; }
 .exec-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+/* 右栏页签改成 macOS 分段控件（灰槽 + 白滑块）：右栏最窄 220，下划线页签在那一档会折成三行
+   （`white-space` 默认可换行，四个标签一起缩）。分段控件让每个标签等宽、一行，窄栏也只是字小。
+   只作用于右栏这四颗（`.queue .exec-tabs`），别处的 `.tabs` 不动。 */
+.queue .exec-tabs {
+  display: flex; gap: 2px; margin: 0 0 10px; padding: 2px;
+  border-bottom: 0; border-radius: 9px; background: var(--mac-fill-2);
+}
+.queue .exec-tabs button {
+  flex: 1 1 0; min-width: 0; padding: 4px 2px; font-size: 12px; font-weight: 500;
+  color: var(--text); white-space: nowrap; border: 0; border-radius: 7px; background: transparent;
+  transition: background var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+.queue .exec-tabs button.on {
+  color: var(--text); border-bottom: 0; background: var(--mac-knob);
+  box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.04), 0 1px 4px rgba(0, 0, 0, 0.16);
+}
+.queue .exec-tabs .pip {
+  min-width: 14px; height: 14px; margin-left: 3px; border-radius: 7px;
+  font-size: 10px; line-height: 14px; vertical-align: 0;
+}
+.queue .exec-tabs .exec-pip { width: 6px; height: 6px; margin-left: 3px; vertical-align: 0; }
 .exec-tabs .pip { display: inline-block; min-width: 16px; height: 16px; margin-left: 6px; border-radius: 8px; background: var(--warn); color: var(--warn-ink); font-size: 11px; line-height: 16px; font-weight: 700; text-align: center; vertical-align: 1px; }
 .exec-pip { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--warn); vertical-align: 1px; }
 .exec-panel { display: grid; gap: 10px; min-width: 0; }
@@ -2197,6 +2244,19 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 }
 .image-badge:hover { border-color: var(--accent); background: var(--accent-bg); }
 .image-badge:active { transform: scale(0.97); }
+/* 贴图那一下的「落地」：徽标短暂变实底。`pastefly.ts` 挂 260ms 后摘掉 —— 半透明强调色叠在
+   浅底上几乎看不出变化，只有实底才读得出「数字又加了一张」（D447）。 */
+.image-badge.flash { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+/* 刚贴上的图先浮出来、再缩进徽标（D447）。这一层挂在 `#app` 里，所以里面的 px 都是布局 px；
+   宽高按 `--ui-scale` 一起缩放，字号调大时幽灵也跟着大。 */
+.paste-fly { position: fixed; inset: 0; z-index: 45; pointer-events: none; }
+.paste-fly .ghost {
+  position: absolute; left: 0; top: 0; border-radius: 14px; overflow: hidden;
+  border: 0.5px solid var(--mac-glass-line); box-shadow: var(--mac-shadow-menu);
+  will-change: transform, opacity;
+  /* 宽高由 pastefly.ts 写（落点按它的一半居中，尺寸只能有 TS 一份）。 */
+}
+.paste-fly .ghost img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .sheet.image-sheet { grid-template-rows: auto 1fr auto; }
 .image-grid {
   overflow-y: auto; padding: 16px; display: grid; align-content: start;
@@ -5827,36 +5887,77 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .exec-step-mark:hover { opacity: 1; background: var(--panel-2); }
 @media (hover: none) { .exec-step-mark { opacity: .6; } }
 
-/* ---------------------------------------------------------------- 代码评审 (#651) */
-/* 右栏只有 190–300px：一律 flex 列、一行一条，不在栏里画 diff（点一条跳分支工作台的差异页签）。 */
-.review { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; min-width: 0; max-width: 100%; }
-.rv-scope .rv-form { display: flex; flex-direction: column; gap: 6px; }
-.rv-scope .rv-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
-.rv-scope .rv-mode,
+/* ---------------------------------------------------------------- 代码评审 (#651)
+   控制区 =「评什么」四块磁贴 + 目标 + 模型/账号 + 全宽主按钮；记录 = 时间线（D 方案，2026-11）。
+   右栏只有 220–600px：一律 flex 列、一行一条，不在栏里画 diff（点一条跳分支工作台的差异页签）。
+   材质用 `--mac-*`：D353 之后外观只有 Mac 三套主题，mac-base.css 一定已经加载。 */
+.review { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; min-width: 0; max-width: 100%; container-type: inline-size; }
+.rv-scope .rv-form { display: flex; flex-direction: column; gap: 7px; }
+.rv-scope .rv-lead { font-size: 11px; font-weight: 600; letter-spacing: 0.02em; color: var(--faint); }
+/* 四块磁贴：2×2，图标在上、标题 + 一句说明在下。选中的那块用强调色描边 + 淡底，
+   不用「只换文字颜色」——右栏窄，文字色差看不出选中。 */
+.rv-scope .rv-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.rv-scope .rv-tile {
+  display: flex; flex-direction: column; gap: 0; align-items: flex-start;
+  padding: 6px 8px; font: inherit; color: var(--text); line-height: 1.25; text-align: left; cursor: pointer;
+  background: var(--mac-glass-strong); border: 0.5px solid var(--mac-glass-line); border-radius: 11px;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), scale 260ms var(--ease);
+}
+.rv-scope .rv-tile:hover { background: var(--mac-glass-solid); }
+.rv-scope .rv-tile:active { scale: 0.98; }
+.rv-scope .rv-tile.on {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: var(--accent-bg);
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.rv-scope .rv-tile .ico { flex: none; display: block; color: var(--accent); margin-bottom: 2px; }
+.rv-scope .rv-tile-t { max-width: 100%; font-size: 12px; font-weight: 600; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-tile-s { max-width: 100%; font-size: 10px; line-height: 1.3; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 窄栏（真实最窄 220）先放弃副标题：四块磁贴 + 副标题会把记录挤到第一屏之外。 */
+@container (max-width: 330px) {
+  .rv-scope .rv-tile-s { display: none; }
+  .rv-scope .rv-tile { padding: 5px 7px; }
+}
+
+.rv-scope .rv-target { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rv-scope .rv-field { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.rv-scope .rv-field > .rv-lab { flex: 0 0 auto; min-width: 40px; font-size: 11px; color: var(--faint); }
 .rv-scope .rv-ref {
-  /* 别写 max-width: 100%：它让下拉吃掉整行，把旁边的按钮挤出 300px 之外（截图上就只剩下拉）。 */
-  flex: 1 1 0; min-width: 0; width: 0;
-  padding: 4px 6px; font-size: 12px; color: var(--text);
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  flex: 1 1 auto; min-width: 0; width: 100%; padding: 4px 8px; font: inherit; font-size: 12px; color: var(--text);
+  background: var(--mac-glass-solid); border: 0.5px solid var(--mac-control-line); border-radius: 8px;
+}
+.rv-scope .rv-sha { font-family: var(--mono); }
+.rv-scope .rv-ws-hint { padding: 2px 0 0; }
+
+/* 模型 chip + 账号下拉：窄栏上下排，宽一点并排（模型那一列更宽，账号名太长就省略）。 */
+.rv-scope .rv-opts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-items: center; }
+/* 只有一个子项（单账号机器上没有账号下拉）时铺满整行，别让宽栏的两列模板留半格空。 */
+.rv-scope .rv-opts > :only-child { grid-column: 1 / -1; }
+@container (min-width: 400px) {
+  .rv-scope .rv-opts { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
 }
 /* 模型那颗是按钮：点开输入框那颗 chip 背后的同一个「模型与思考」弹层。 */
 .rv-scope .rv-model {
-  flex: 1 1 auto; min-width: 0; max-width: 100%;
-  padding: 4px 6px; font-size: 12px; line-height: 1.4; text-align: left;
-  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+  min-width: 0; padding: 4px 9px; font: inherit; font-size: 11.5px; line-height: 1.5; text-align: left;
+  color: var(--text); background: var(--mac-control); border: 0.5px solid var(--mac-control-line); border-radius: 8px;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.1); cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .rv-scope .rv-model::after { content: " ▾"; color: var(--faint); }
-.rv-scope .rv-run { flex: none; }
-.rv-scope .rv-run:disabled { opacity: 0.45; cursor: default; }
+.rv-scope .rv-model:hover { filter: brightness(1.04); }
+.rv-scope .rv-acct-pick { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-run {
+  width: 100%; padding: 7px 12px; font-size: 12.5px; border-radius: 9px;
+}
+/* 「还差什么」那条提示（全宽主按钮下面的一行脚注）：比别的 hint 再淡一档，
+   它解释的是「按钮为什么灰着」，不该跟「正在读评审状态…」这类状态提示抢同一档；
+   `.rv-hint.rv-why` 同时是 `probes/code-review.mjs` 找这句话的钩子。 */
+.rv-scope .rv-why { flex: none; opacity: 0.8; }
+.rv-scope .rv-run:disabled { cursor: default; }
 .rv-scope .rv-install { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed var(--line); border-radius: 10px; }
 .rv-scope .rv-hint { font-size: 12px; color: var(--faint); line-height: 1.5; }
 .rv-scope .rv-log { max-height: 120px; overflow: auto; margin: 0; font-size: 11px; white-space: pre-wrap; color: var(--faint); }
 .rv-scope .rv-cmd { font-size: 11px; color: var(--accent); word-break: break-all; }
-/* 进度里那行「当前文件」是 nowrap 的：不给 min-width: 0，长路径会把整栏撑到 1500px 宽（2026-11-24 实测）。 */
-.rv-scope .rv-progress { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.rv-scope .rv-current { font-size: 11px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-.rv-scope .rv-meta { font-size: 11px; color: var(--faint); min-width: 0; }
 .rv-scope .rv-error { font-size: 12px; color: var(--danger); line-height: 1.5; }
 .rv-scope .rv-skipped { font-size: 12px; color: var(--faint); }
 .rv-scope .rv-skipped > summary { cursor: pointer; }
@@ -5891,14 +5992,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-foot { display: flex; justify-content: flex-end; padding-top: 4px; }
 .go-code.rv-hit { background: color-mix(in srgb, var(--accent) 22%, transparent); outline: 1px solid var(--accent); }
 
-/* ---------------------------------------------------------------- 评审：检索 / 时间线 / 详情 (#651) */
 /* PR 那一格：输入框 + 展开按钮 + 弹层列表（一个 combobox，不是「搜索框 + 下拉 + 号输入」三行）。 */
 .rv-scope .rv-prbox { display: flex; align-items: center; gap: 4px; min-width: 0; }
 /* 「已选」是**一张卡**：两行 + 右边「详情 ›」。以前是一行淡字，没人看出能点。 */
 .rv-scope .rv-picked {
   display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
   padding: 6px 8px; font-size: 11px; color: var(--text); cursor: pointer;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  background: var(--mac-glass-solid); border: 0.5px solid var(--mac-control-line); border-radius: 9px;
 }
 .rv-scope .rv-picked:hover { border-color: var(--accent); }
 .rv-scope .rv-picked-top { display: flex; gap: 5px; align-items: baseline; min-width: 0; }
@@ -5914,18 +6014,17 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-prq {
   flex: 1 1 0; min-width: 0; width: 0;
   padding: 4px 6px; font-size: 12px; color: var(--text);
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  background: var(--mac-glass-solid); border: 0.5px solid var(--mac-control-line); border-radius: 8px;
 }
 .rv-scope .rv-prtoggle {
   flex: none; padding: 2px 7px; font-size: 11px; line-height: 1.5;
-  color: var(--faint); background: var(--panel);
-  border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+  color: var(--faint); background: var(--mac-control); border: 0.5px solid var(--mac-control-line); border-radius: 8px; cursor: pointer;
 }
 .rv-scope .rv-prtoggle:hover { color: var(--text); border-color: var(--accent); }
 .rv-scope .rv-prmenu {
   display: flex; flex-direction: column; gap: 2px;
-  margin-top: 4px; padding: 4px; max-height: 220px; overflow: auto;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  margin-top: 2px; padding: 4px; max-height: 220px; overflow: auto;
+  background: var(--mac-glass-solid); border: 0.5px solid var(--mac-glass-line); border-radius: 10px;
 }
 .rv-scope .rv-prrow {
   display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto;
@@ -5938,26 +6037,41 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-prrow-title { grid-row: 1; grid-column: 2; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-scope .rv-prrow-meta { grid-row: 2; grid-column: 1 / -1; font-size: 10px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-scope .rv-details { flex: none; }
-/* ---- 记录列表（#690）：一条一张卡，在跑的置顶；卡里带「停止」，所以卡本身是 div（D417）。
+
+/* ---- 记录（#690）：一条一个时间线节点，新的在上；卡里带「停止」，所以卡本身是 div（D417）。
    卡片正文不是入口（D426）：唯一入口是卡底右下角的「完整详情」，停止也在同一行。 */
-.rv-scope .rv-runs { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-/* 「还差什么」那条提示与记录卡是一组的（都在控制条下面），放在这里而不是夹在别的规则里。 */
-.rv-scope .rv-why { flex: none; opacity: 0.8; }
+.rv-scope .rv-runs { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin-top: 2px; }
 .rv-scope .rv-runs-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-size: 11px; color: var(--faint); }
-.rv-scope .rv-run-card {
-  display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
-  padding: 7px 8px; font-size: 12px; color: var(--text);
-  /* 字体与行高仍要跟旁边的行对齐。 */
-  font-family: inherit; line-height: inherit;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+.rv-scope .rv-runs-lab { flex: none; font-weight: 600; color: var(--dim); }
+.rv-scope .rv-runs-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-runs-empty { padding-left: 12px; }
+.rv-scope .rv-tl { position: relative; display: flex; flex-direction: column; gap: 3px; padding-left: 12px; }
+.rv-scope .rv-tl::before {
+  content: ""; position: absolute; left: 3px; top: 12px; bottom: 14px; width: 1px;
+  background: var(--line); opacity: 0.9;
 }
-.rv-scope .rv-run-card.is-live { border-color: var(--accent); }
-.rv-scope .rv-run-card.is-fail { border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); }
+.rv-scope .rv-run-card {
+  position: relative; display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding: 4px 6px 5px; border-radius: 8px; color: var(--text);
+}
+.rv-scope .rv-run-card:hover { background: var(--mac-fill); }
+/* 失败那一条在卡片层也留一个记号（红点之外）：只靠 7px 的点，扫一眼看不出哪次挂了。 */
+.rv-scope .rv-run-card.is-fail .rv-run-target { color: var(--danger); }
+.rv-scope .rv-run-dot {
+  position: absolute; left: -12px; top: 10px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--line-lit);
+}
+.rv-scope .rv-run-dot.done { background: var(--ok); }
+.rv-scope .rv-run-dot.running { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+.rv-scope .rv-run-dot.failed { background: var(--danger); }
+.rv-scope .rv-run-dot.stale { background: var(--warn); }
+.rv-scope .rv-run-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .rv-scope .rv-run-top { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
-.rv-scope .rv-run-target { flex: none; font-size: 11.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
-.rv-scope .rv-run-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rv-scope .rv-run-at { flex: none; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
-.rv-scope .rv-run-meta { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: 11px; color: var(--faint); min-width: 0; }
+.rv-scope .rv-run-target { flex: none; font-size: 11.5px; font-weight: 600; color: var(--dim); font-variant-numeric: tabular-nums; }
+.rv-scope .rv-run-card.is-live .rv-run-target { color: var(--accent); }
+.rv-scope .rv-run-at { flex: none; margin-left: auto; font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.rv-scope .rv-run-title { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-run-meta { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: 10.5px; color: var(--faint); min-width: 0; }
 .rv-scope .rv-run-status { flex: none; }
 .rv-scope .rv-run-status.done { color: var(--ok); }
 .rv-scope .rv-run-status.running { color: var(--accent); }
@@ -5970,10 +6084,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .rv-scope .rv-run-model.none { color: var(--faint); border-style: dashed; }
-.rv-scope .rv-run-current { font-size: 10.5px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.rv-scope .rv-run-bar { height: 3px; border-radius: 2px; background: var(--mac-track); overflow: hidden; margin-top: 3px; }
+.rv-scope .rv-run-bar > i { display: block; height: 100%; border-radius: 2px; background: var(--accent); transition: width 240ms var(--ease); }
+.rv-scope .rv-run-current { font-size: 10px; color: var(--faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .rv-scope .rv-run-err { font-size: 10.5px; color: var(--danger); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 卡底那一行：跑着时「停止」，然后「完整详情」（D426）。右对齐，不再绝对定位压住时间。 */
-.rv-scope .rv-run-foot { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.rv-scope .rv-run-foot { display: flex; gap: 6px; align-items: center; justify-content: flex-end; padding-top: 1px; }
 .rv-scope .rv-run-more {
   flex: none; padding: 0; font-size: 10.5px; color: var(--accent); font-family: inherit;
   background: none; border: 0; border-radius: 6px; cursor: pointer;
@@ -5988,15 +6104,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-run-stop:hover { color: var(--text); border-color: var(--accent); }
 .rv-scope .rv-credit {
   display: flex; flex-direction: column; gap: 2px;
-  margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line-soft);
+  margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--line-soft);
   font-size: 10px; line-height: 1.5; color: var(--faint);
 }
-.rv-scope .rv-timeline { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 4px; }
-.rv-scope .rv-tl { display: flex; gap: 6px; align-items: baseline; font-size: 11px; color: var(--faint); }
-.rv-scope .rv-tl-dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--line); }
-.rv-scope .rv-tl:last-child .rv-tl-dot { background: var(--accent); }
-.rv-scope .rv-tl-at { flex: none; font-variant-numeric: tabular-nums; }
-.rv-scope .rv-tl-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 「评审仓库」（D415）：会话目录本身不是仓库时，从它的子目录里挑一个来评。 */
 .rv-scope .rv-repo { display: flex; gap: 6px; align-items: center; min-width: 0; }

@@ -8799,7 +8799,163 @@ if (stop >= 0) {
 
 **代价。** 组字期间对方来信不会立刻出现在消息流里（最长到上屏为止）；组字一直停着不动超过 20 秒也会被看门狗放行一次（那一下会打断这次组字），换来的是「主区不会被一次静默结束的组字永久冻住」；贴底的「新消息」提示也不会闪。同一段时间里由快捷键 / 菜单触发的面板（搜索、话题、引用）也要等到上屏才出现（键盘触发时没有 pointerup 可等，只能等组字结束）。
 
-## D441 起服务前先认出端口占用者、问一句、优雅停掉再起（用户 2026-11-28「npm start 端口被占时直接报 start 失败，想先提示、问一句要不要关掉之前的服务」）
+## D441 字号可以按区域分开调：五块各叠一层 zoom，叠在全局字号之上相乘（用户 2026-11-28「先要实现每个区域的字体大小分别控制」）
+
+**决定。**
+
+- **区域倍率就是 `zoom`，落在区域根节点上**。全局 `#app { zoom: var(--ui-scale) }` 不动，五块在它之上各叠 `zoom: var(--rs-x)`（两层相乘）。文字、行距、图标、控件尺寸一起变，比例不变 —— 语义是「这块整体大小」，不是纯字号。选它是因为改 CSS 的字面量代价不成比例：全仓 ~1000 条 `font-size: NNpx`、零 rem，纯字号方案要把每一条改成 `calc(... * var(...))`，而正文放大时固定高度的条 / 卡 / 胶囊会当场撑破。
+- **五块**：顶栏（`.topbar` + `.ws-tabs-row` + `.ws-session-row` 三行共用一个倍率）、会话列表（`sessionsPane`）、对话正文（`.chat-scroll`）、输入框（`.composer`）、右栏面板（`queuePane`）。变量**不能**挂 `.chat-pane` —— 正文与输入框都在里面，一挂就绑死。节点靠 `data-region` 认，CSS 只认这一个标记（`[data-region="chat"] { --rs: var(--rs-chat, 1) }` + 一条 `[data-region] { zoom: var(--rs); --vh1/--vw1 重算 }`），JS 只往 `:root` 写五个变量。
+- **栏宽不变**：`--sessions-w` / `--queue-w`、`col-grip` 拖拽换算、`uiScale()`、900px 窄版判定全都只认全局倍率。zoom 不撑盒子（内部坐标空间变成 1/倍率），所以区域放大是「内容变大、换行变早」，不是「这一栏变宽」。
+- **`--vh1` / `--vw1` 必须在每个区域根节点重算**（`calc(1vh / var(--ui-scale) / var(--rs))`）：视口单位不认 zoom，不除回去的话区域里的 `calc(var(--vh1) * N)` 会随倍率越来越小（D123 同一族坑）。
+- **浮层不进区域**：`position: fixed` 后代的 `left/top` 与尺寸会被倍率乘一遍（实测 `left:100` 在 1.6×1.25 下出现在视觉 200），菜单 / 抽屉 / 终端继续挂 `#app`（`overlay()` 本来就这么写）。在区域里塞 fixed 的那一刻就会飘。
+- **壳 A 有一处双乘**：`.ws-tabs-row` 在壳 A 里挂在 `.topbar` 里，父子各乘一次就是 1.69 倍。所以 `.topbar > [data-region="topbar"] { zoom: 1 }` —— 只归 1，`--rs` 留着给那两行视口变量用。
+- **区域里的「视觉 px → 布局 px」不只要除 `--ui-scale`**：`chat.ts` 的 `layoutScale()` = 全局字号 × 正文自己的倍率，用在 `contentTopOf()` / `pinTop()` / `pin()` 三处（`scrollTop` 是布局 px，`getBoundingClientRect()` 是视觉 px）。漏掉区域那一层，正文 130% 时点缩略图跳轮次会滚过头（反证：把除数换回 `appZoom()` 后目标偏 676px），`startTop >= maxScroll - 1` 还可能把「跳得到的位置」误判成最后一屏而直接回到底部；往回翻页的锚定同样会跳。缩略图那条带子（`turns.ts`）挂在 `.chat-pane` 上、不在缩放的区域里：它自己的 px 只乘 `--ui-scale`，所以量正文视口要用「视觉高 ÷ `appZoom()`」（`measure()` 与 `frame()` 同一套），直接拿 `.chat-scroll` 的 `clientHeight`（那是它局域里的 px，两层 zoom 都除过）会让带子的高度上限按 1/倍率缩一圈。
+- **滑杆落值一律 `clampScale()`**：刻度是 `0.8 + i * 0.2` 算出来的浮点（`1.2000000000000002`），拖动是连续值。原样写进 `prefs` / `--ui-scale` 的话，读回时又会被夹成两位小数 —— 同一个档存前存后不是一个数，`range.value`（step 0.01）也会与 `--ui-scale` 差一档，方向键再按就跳。
+- **范围与默认值**：五块各自 0.8–2.0、步长 1%，与全局同款；默认全 1.0（升级上来行为零变化）；乘积不另设上限（极端 4.0 双击轨道就回去）。prefs 是 `regionScale: { topbar, sessions, chat, composer, queue }`，`readPrefs()` 逐块归一化，缺字段回 1.0。
+- **五根滑杆排成一组**（#734 先只放了「对话正文」一根验证机制，#739 补齐其余四根）：分组头「分区字号」+ 一行说明「各自叠在「字号」上相乘；双击轨道回 100%」，五行的顺序照界面上到下 / 左到右 —— **顶栏 / 会话列表 / 对话正文 / 输入框 / 右栏面板**；每行同一套控件与刻度、磁吸四档 90/100/115/130、双击轨道回 100%。multiplier 的乘法关系只在分组头说一次，每行的 hint 只讲「这一块是哪一块」。
+
+**为什么。** ① 区域 zoom 让「正文大、左栏紧凑」这种日常诉求第一次能表达，而实现只碰 CSS 一行、prefs 一个字段。② 乘法叠在全局之上，全局那根「整页」语义与既有的视口修正 / 窄版 / 终端几何全都不用重算，回退也简单（五项全 1.0 就是今天）。③ 用 `zoom` 而不是 `transform: scale`：后者不改布局，占位不变会溢出、滚动高度还要自己补，滚动条也不跟着缩。
+
+**守卫。** `probes/region-font.mjs`（桩桥 + 真 Chromium，25 项）：默认五块 zoom 全 1 且区域内 `--vh1` 就是 10% 视口；种子偏好把五块各设一档后**盒子不变**（误差只来自局域 px 的像素吸附，实测 ≤1.5px）、局域宽度按倍率缩小、`--vh1` 仍等于 10% 视口；壳 A 的标签行 computed zoom 必须是 1、壳 B 里是 1.3；设置面板里正好两行滑杆、按 10 下方向键后只有正文变窄而其余三块一像素不动、prefs 只写 `chat`、双击回 100%；390px 窄屏下多出来的那行不撑出横向滚动；点「120」档存成 `1.2`（不是 `1.2000000000000002`）；正文 100% 与 130% 两档都点缩略图第 2 轮，目标首行落在视口顶部 6px 呼吸处、没有弹回底部（反证：把 `contentTopOf()` 的除数改回 `appZoom()`，130% 那档偏 676px 就红）；正文 130% 时缩略图带子的面板高度 / 行高与 100% 逐字相同（反证：把 `measure()` 换回 `clientHeight`，面板上限 196px → 160px 就红）。量尺寸时三套坐标别混：`getBoundingClientRect()` 是视觉 px，computed / offset 是元素自己的局域 px，父级坐标里的盒子 = 局域 × 自己的倍率。
+
+**可改。** 想让「放大左栏 = 真的占更宽」也能做，但 `--sessions-w` 同时是拖拽记忆、grip 定位与列宽唯一来源，乘上去之后三处换算都要改成「带倍率的布局 px」，窄版阈值也得重新定义 —— 这一步先不做。
+
+**代价。** 极端值（全局 200% × 正文 200%）正文一行放不下几个字，可用但要自己往回拖；区域放大后内容空间变窄，长表格 / 宽代码块会更早出现横向滚动；`data-region` 成了新的隐式约定 —— 往这五块内部加 `position: fixed` 或依赖 `--vh1` 的新样式，得先看一眼上面那两条。
+## D442 自定义头像：`custom:<sha256 前 16 位>` 内容寻址，广播只带 id，图从对端按需拉（用户 2026-11-27「给用户头像追加，自定义头像功能」）
+
+**问题。** D436 的 12 张手绘头像只能是「挑一张」，用户想用自己的照片。但头像 id 是跟着 UDP announce 走的（每 10 秒一次），组播包里塞不下图；写进 `~/.pi-peer/peers.json` 也不行 —— 那是「别人是谁」的记录，不能替对方存一张他不认识的图。
+
+**决定。**
+
+- **自定义头像的 id 是内容的哈希**：`custom:` + 图片字节 sha256 的前 16 位小写 hex（`peer/src/avatars.ts` 的 `customAvatarHash()` / `customAvatarId()`）。`knownAvatar()` 接受内置名单或这个形状；`loadConfig()` 照旧过滤野值。
+- **图存 `~/.pi-peer/avatars/<hash>.<png|jpg|webp|gif>`**（`peer/src/avatar-files.ts`）：上传时按 magic 判真实类型（不信扩展名 / content-type），先写 `.part` 再 rename；`MAX_AVATAR_BYTES = 512 KB`；`pruneAvatarFiles()` 留最近 64 张（自己正在用的那张永远在 keep 里）。
+- **广播只带 id，不带图**：`avatar` 字段照 D436 的路径走；自定义 id 对老客户端不可识别，老页面回退首字母。
+- **回环上传** `POST /avatar`（原始字节，非 JSON）：落盘 → `cfg.avatar = custom:...` → `saveConfig` → `discovery.announce()`，回 `{ ok, avatar }`。`POST /config` 收 `custom:` 时**必须**本机真有这张文件，否则 400 —— 广播一个永远拉不到的 id，等于让别人一直看首字母。
+- **局域网取图** `GET /avatar?h=<hash>`：只回已经落盘的那张，`cache-control: public, max-age=31536000, immutable`（内容寻址，同一个 hash 的字节永远一样）。
+- **对端代取** `GET /avatar/<nodeId>?h=<hash>` 只对回环开放（桥用）：自己 → 当前这张或**上传记录里的任一张**（设置页要按各自的 hash 显示一排缩略图）；对端 → 优先本地缓存，没有就用他 announce 里的 `addr:port` 去 `fetchRemoteAvatar()` 拉一次（2.5s 超时、校验回来的 hash、inflight 去重、落盘复用），并且**只认他当前广播的 hash**，旧 hash 一律 404 —— 否则这个口子就是一台能无限探测别人缓存的机器。
+- **上传记录与删除**（用户同日追加：「上传过的在设置里面需要保留记录，方便用户切换，当然也可以删除」）：`cfg.avatarHistory: string[]`（最近的在前、去重、上限 24）是「哪些图是自己传的」的唯一凭据 —— `avatars/` 里混着对端缓存，不能靠目录判断。`GET /custom-avatars` 回 `{ uploads, current }`；`POST /custom-avatars/delete {hash}` 只删记录里的，删的正是当前头像时换到记录里下一张还有文件的，都没有就退回随机内置；两者都只对回环开放，桥再包一层 `/api/peer/custom-avatars` 与 `/api/peer/custom-avatars/delete`。
+- **点头像看大图**：「我」页的 76px 预览、hero 头像、消息里的对方头像点开 `imageViewer`（`upscale: 3`，只缩不放的默认对小图没用）；`avatar()` 生成的头像在 `button` 里（侧栏、头像选择格）时让点击照旧，其余才 `stopPropagation` 开灯箱。
+- **页面**：源图上限 12 MB；`createImageBitmap(file)` 按短边居中裁方 → 192×192 canvas → `toBlob("image/webp", .9)`，失败改 PNG，GIF 只取第一帧；成功 toast「头像换好了」，失败按「不是图片 / 太大 / 读不出来 / 太小」分别说。`avatarUrl(id, key)` 对 custom 返回 `/api/peer/avatar/<nodeId>?v=<hash>`；`<img>` 的 `error` 一次性回退成「首字母 + 色相」，对端离线、图被 prune、老数据都能落地。
+- **桥两个口子**：`POST /api/peer/avatar`（原始字节 ≤512 KB，转给 peer）与 `GET /api/peer/avatar/<nodeId>?v=<hash>`（代理 peer `/avatar/<nodeId>`，`private, max-age=86400`，上游失败 502）。
+
+**为什么。** ① **内容寻址**：同一张图在广播、缓存、代理里只用一个短 id 指代；对端重复拉到的字节一致，浏览器与 peer 都敢长缓存；也天然去重（换回同一张图不产生新 id）。② 图**只在有人要的时候**才走 HTTP：12 人的局域网不会因为每人上传一张就互相推 12 张图。③ 192×192 是「头像在页面里最大 76px」的两倍多，视网膜屏够用，文件通常 < 20 KB（实测 309 KB 的 PNG 压成 6 KB WebP）。④ 内置 12 张不删：没有照片的人仍然有得挑，老客户端也有得看。
+
+**代价。** 换头像会在 `avatars/` 里多一张文件（上限 64 张，满了按 mtime 淘汰旧的）；对端第一次看到新头像时要等 2.5s 超时（离线）或一次 HTTP（在线），这期间显示首字母；旧版客户端看不到自定义图；`custom:` id 里带哈希，配置手写错一个字符就会静默回退首字母。
+
+**验证。** 两份测试实例实传 309558 字节 PNG → 配置变 `custom:fc647e652ccbd521`，B 的 online 列表 12s 内同步同一 id；B 的 peer 用该 hash 拉回 200 `image/png` 309558 字节并落盘，旧 hash 404；B 的 bridge 代理同样 200；页面上传后大预览与通讯录都用新图，刷新仍在，随机换一个能切回内置；mac-dark / mac-midnight 两套主题截图无不可读块。`probes/peer-avatars.mjs` 已适配新 DOM（12 张内置 + `.me-custom` 格分开数；上传两张纯色 PNG 后断言历史两张、两张缩略图字节不同、点历史切回上一张、点大图开灯箱、删当前自动换下一张、删完退回内置并清空历史），跑之前在实例上用 `POST /api/peer/config` 把头像重置成内置。本轮 **32 项全过**。
+
+> 排错记一笔：`avatarFor(自己, hash)` 最初无视请求里的 hash、永远回当前那张，导致「上传过的」一排缩略图全显示当前头像；修法是把 hash 限定在 `当前 + cfg.avatarHistory` 内再 `findAvatarFile()`，probe 里加一项「两张历史缩略图 SHA-256 不同」防回归。
+
+## D443 「我」页改成左侧子导航（系统设置风）：六个分区、一个 pane、窄容器退化两行 chips（用户 2026-11-27「重新设计一下内网通的用户设置页面」）
+
+**问题。** 旧「我」页是一列卡片从头排到底：hero、名字、头像、资料、四个开关、存储、发现、忽略名单。改个名字要滚到第二屏，看一眼还剩多少空间要滚到第四屏；宽屏下 `.detail.wide` 只有 660px，右侧一大片空白，信息密度和层级都不像「设置」。
+
+**决定。**
+
+- **一个页面、左侧子导航、右侧一个 pane**：`renderMe()` 里 `nav.me-nav`（profile / avatar / alerts / store / net / ignored 六格，各带 `ic()` 图标与 `aria-current`）+ `pane.me-pane`；`draw()` 只重建当前分区。分区选择存 `S.meSection`（默认 `profile`），**只存在内存、不落盘** —— 每次从侧栏点进来都从「个人资料」开始，不会上次停在忽略名单、这次一进来就看见它。
+- **网格挂在 `.me-body` 上，不是 `.detail.me` 上**：`@container` 的容器不能给自己改 `display`；`detail` 只负责 `max-width: 880px` 与 `container-type: inline-size`，`me-body` 才是 `176px + minmax(0, 1fr)` 的 grid。窄容器（≤600px）改单列、`me-nav` 变 `flex-wrap: wrap` 的两行 chips —— 用 `@media` 看不到，因为被左栏挤压的是面板自己的宽度。
+- **分区内容**：个人资料 = 58px hero 头像（点了开大图，相机徽标点了跳头像分区、`scrollTop = 0`）+ 名字 + 在线/隐身、免打扰 chips + host:port + 改名行 + 「本机身份」卡（nodeId 可复制、主机名、端口）；头像 = 76px 大预览（点了开大图）+ 上传图片 / 随机换一个 + 12 张内置 + 自定义格 + 说明 + **「上传过的」历史条**（44px 圆缩略图点了切换、右上角垃圾桶删除，触屏窄容器里删除按钮常显）；状态与通知 = 四个 toggle；存储 = 收件箱 / 剩余空间 / 打开收件箱；发现 = 重新广播 + 手动地址；忽略名单 = 人数 + 清空。
+- **头像格固定 7 列**（`repeat(7, minmax(0, 1fr))`、`max-width: 470px`）：`auto-fill` 在 630px 卡片里排成 11 + 2、末尾两个孤零零，7 列正好 7 + 6。自定义格是虚线圆 + `plus`，当前用自定义头像时显示自己的图并用 `--accent` 圈出。
+- **状态点让位**：hero 头像上不再压在线小圆点（和相机徽标重叠），在线/隐身/免打扰全放名字下的 chip。
+- **文案全走 `tr()`**：新增 22 条键（「个人资料」「头像」「状态与通知」「存储」「发现」「忽略名单」「本机身份」「换头像」「上传自定义头像」「正在处理…」……），en/ja 同步；`npm --prefix web run typecheck` 的 i18n-check 4453 键 × 3 语通过。
+
+**为什么。** ① 设置类页面用子导航是通用心智模型：左边告诉人「有哪些东西可改」，右边一次只处理一件，比一列卡片好扫。② 不拆成多个路由：内网通前端没有路由，六个分区共用一个 `S.meSection` 最省事，也保住了「页面不刷新、状态不丢」。③ 窄容器退化 chips 而不是抽屉：面板可能被拖动得只剩 400px，抽屉在 400px 里一开就盖满，chips 还留得下内容。④ `me-body` 承载 grid 是 CSS 容器查询的硬约束，顺手把「谁是容器、谁是布局」写清楚。
+
+**代价。** 旧测试与新页面不同构：`probes/peer-avatars.mjs` 改等 `.me-avgrid` 并过滤 `.me-custom`，`bridge/tests/peer-ui.mjs` 在点「我」之后要多点一格「忽略名单」；高频操作「改名」从「打开就是」变成「打开 + 默认就是个人资料」，实际没多一步。
+
+**验证。** Playwright 10 项页面自检（六分区、切分区高亮、上传入口、自定义头像生效并刷新保留、窄容器导航横向、随机切回内置、无 pageerror）；mac-dark / mac-midnight 两套主题截图下卡片、虚线格、选中环、输入框都可读；收尾的 32 项 probe 覆盖上传两张、历史切换/删除、灯箱、聊天头像点击。守卫：`npm --prefix web run typecheck`（i18n + 头像 id 对账 + viewport 规则），`node probes/peer-avatars.mjs` 与 `node bridge/tests/peer-ui.mjs` 适配后重跑。
+
+
+## D444 代码评审面板换成「评什么」四块磁贴 + 记录时间线（用户 2026-11-28「如图 codeReview 页面很丑，用 mac 风格重新设计几个原型，我来选择」）
+
+**症状。** 右栏这一页是整块 `review` 最短的那一块：从上到下四行控件（范围下拉 / PR / 账号 / 模型 + 按钮）都是同一档权重，没有分组、没有主次；「开始评审」只是灰着的一颗小按钮挤在模型 chip 右边；记录是一行行淡字，在跑 / 完成 / 失败只靠一行文字区分。范围用 `<select>`，右栏 600px 时下拉被拉成一整行，页面像一张没排版的表单。
+
+**决定（四选一，原型见 `proto/code-review-mac` 分支的 `.scratch/review-mac-proto/index.html`）。**
+
+- **范围改成四块磁贴（2×2）**：工作区改动 / 分支 vs 主干 / 单个提交 / GitHub PR，图标 + 标题 + 一句副标题；选中的那块用强调色描边 + 淡底 + 2.5px 光环。`<select>` 整个拿掉，DOM 是四个 `<button data-mode>` + `aria-pressed`（探针从这里读选中态）。窄栏（<330px）隐藏副标题，否则四块磁贴会把记录挤到第一屏之外。
+- **目标区在磁贴下面**：PR 仍是那一个 combobox（输号 / 检索 / 从列表点），选过之后是那张两行的「已选」卡；分支模式是两条 `[标签][下拉]`；提交模式是一个等宽输入框。
+- **模型 chip 与账号下拉并成一组**（`.rv-opts`）：窄栏上下排，宽栏（≥400）左右排；账号仍是原生 `<select>`（行为不变：换号立刻按新号重拉 PR 列表）。
+- **主按钮改成全宽 `.btn.primary`**：在 `.rv-opts` 下面独占一行，仍是「开始评审」（跑着时点它开下一条，D420 不变）。灰着的时候下面那行 `rv-why` 说清缺什么。
+- **记录改成时间线**：每个节点一个状态点（在跑 / 完成 / 失败 / 没跑完）+ 目标 + 时间 + 标题 + 元信息；在跑的那条多一条按文件数走的进度条与当前文件。连线是 `.rv-tl::before` 一根 1px 线，点压在线上。
+- **卡片正文仍然不是入口（D426 / D429 不动）**：唯一入口是卡底右下角的「完整详情 ›」，「停止」也在同一行 —— 只是从「一张带边框的卡」换成了「时间线节点」，`.rv-run-card` / `.rv-run-more` / `.rv-run-stop` / `.rv-run-at` 这些钩子全部保留，`probes/review-cards.mjs` 量的还是同一批东西。
+- **右栏四颗页签换成 macOS 分段控件**（灰槽 + 白滑块）：只在 `.queue .exec-tabs` 这一处生效。下划线页签在 300px 里会把「需要你」折成三行（四个标签一起缩，`white-space` 默认可换行），分段控件让标签等宽、一行。
+- **磁贴的图标**进 `icons.ts`（`branch` / `commit` / `pr` 三颗，16×16、1.5 描边，跟全站一套）；工作区改动复用 `pencil`。
+
+**为什么。** ① 这一页只有一件要紧事：先决定「评什么」。四个范围是并列的四个选项，摆成四块比藏在下拉里少一次点击，也少一次「下拉里还有什么」的猜测。② 记录是评完之后最常看的东西，时间线比卡片列表更省纵向空间（没有边框和 8px 内边距），还能把「越来越早」这件事画出来。③ 主按钮全宽是为了让灰着的状态也看得出「这是这一页的主操作」，而不是把它缩在角落。④ 页签用分段控件是同一个窄栏问题的副产物：右栏最窄 220，四个下划线标签放不下。
+
+**代价。** 控制区比旧版高约 120px（四块磁贴 vs 一个下拉），900px 高的窗口里第三条记录会落到第一屏之外 —— 记录区本来就要滚，`probes/review-cards.mjs` 的点击辅助改成「不在视口里先滚进来」。磁贴占的位置是永久的：范围以后要加第五种（比如「两个提交之间」），2×2 就不够用，得改成一行滚动或换布局。
+
+**守卫。** `probes/review-cards.mjs`（假桥 + 真 Chromium，不碰 ocr / 真模型）：三条记录画成三个节点、每张卡的「完整详情」在卡内右下角、「停止」与它同一行且不压住时间、点正文不弹浮层、开评只多一个节点、150% 字号下按钮仍在卡内。`web/tests/review-unit.mjs` 只管 `reviewView()`（这一版没动它的任何输出）。`probes/code-review.mjs`（真桥）把「默认范围」「刷新后范围自己接上」「评审中范围不再锁住」三条从 `<select>` 改读磁贴的 `aria-pressed`。
+
+## D445 文档把「热部署」定成更新 bridge 的主路径，`bridge-update` skill 降为兜底（用户问「有了热部署，skill 是不是不再需要了」2026-11-28）
+
+**问题。** 两条路都在做「把 7864 换成目标分支的构建」：设置 → 工具 →「热部署」（`bridge/src/hotdeploy.ts` + `scripts/hotdeploy.mjs`）与 `.pi/skills/bridge-update/bin/restart.mjs`。AGENTS.md 与 `docs/agents/running-the-bridge.md` 却都写「更新 bridge 用 skill」，于是日常更新默认走更粗的那条：`restart.mjs` 从 `/healthz` 拿到的是**壳**的 pid（`host.ts` 里 `pid: process.pid`），杀掉即整组重启、会话全断；热部署在 D407 之后只换脑，正在跑的那一轮照跑。现场也印证了偏差：`.scratch/bridge-update/last-run.json` 停在 2026-11-28 的 `merge-failed`（三个 lockfile 有改动），同一天 `.scratch/hot-deploy/` 还跑成了。
+
+**决定。**
+
+- **主路径 = 热部署。** AGENTS.md 的「更新 / 重启 bridge」与 `running-the-bridge.md` 的 *Restarting it* 改成：日常换构建让用户点设置 → 工具 →「热部署」（脏树走「暂存后热部署」，D268）。agent 点不了那颗按钮，所以「需要更新」= 先 `--check` 判断、再告诉用户点一下。
+- **skill 只剩四件它独占的事**，写进 `SKILL.md` 开头新增的「零、先确认这次该不该用它」：① 桥已经死了 / 端口没回应（热部署是桥上的 HTTP 端点，桥没起来没人给点）；② 壳自己的代码变了（`host.ts` 的 `needs-group-restart`，热部署只报不做，真换壳要整组重启）；③ `--check` 只读探针（不 build、不杀进程、不写 `last-run.json`）；④ 看门狗（壳崩之后唯一会把它拉回来的一层）。
+- **`pending.md` / `pendingUnread` 的交接协议不变**，但它只服务 `restart.mjs` 这条会切断会话的路；热部署的进度在 `.scratch/hot-deploy/state.json`，两边不混。
+- GLOSSARY 里「不用热部署指代 bridge-update 那个 skill」的注脚改成「那个 skill 是兜底用的」，免得它读起来还像主路径。
+
+**为什么。** ①两条路重叠的正是最常发生的那件事，而文档把更危险的一条写成默认——读者只会照文档走。②热部署的能力面是 `restart.mjs` 的超集：分支可选、进度与失败原因可见、fetch 有代理候选与限时（D375 / D376 / D377）、脏树可以显式暂存（D268）；`restart.mjs` 多出来的只有「不需要桥活着」「只读判断」「装看门狗」与整组重启。③不删 skill：删了就没有任何外部入口能把死掉的壳拉起来，看门狗也没地方装。
+
+**代价 / 可改。** ①日常更新多了一步人工：agent 只能提示「点一下热部署」，不能替用户完成——那颗按钮会换构建，属于用户决定。想让它能代办，得先给 `POST /api/hotdeploy/run` 一个 agent 能用的入口，那是另一条决定。②`SKILL.md` 第三节（`Start-Process`）与第五节（Windows 计划任务）在这台 macOS 上照抄跑不起来；本条只把看门狗的 Windows 限制写明，没补 launchd / detached 写法，要在这台机器上走完整流程得先补那两节。③文档仍留两条路，读者要自己判断「桥是不是死了」，判据是 `/healthz` 有没有回应（写在 `running-the-bridge.md` 开头）。
+
+**验证。** 只动文字：AGENTS.md / `docs/agents/running-the-bridge.md` / `GLOSSARY.md` / `.pi/skills/bridge-update/SKILL.md`（含 frontmatter description）。`rg` 复查全仓再没有把 skill 写成唯一更新路径的地方；没有代码改动，所以不跑构建与测试。
+
+
+## D446 代码评审交给 detached worker：换脑、脑崩溃、更新重启都不打断（用户 2026-11-28「热部署会导致正在执行的 code Review 被中断」＋截图）
+
+**问题。** 热部署换脑时，正在跑的评审会当场消失，记录被标成「桥重启了，这次评审没跑完」。用户看到的是：PR #728 的一条评审跑到一半，部署完成后变成没跑完；同一条 PR 只能重跑，前面的 token 与时间全白费。
+
+**证据链。** D407 已经把桥拆成壳（`bridge/dist/host.js`）与脑（`bridge/dist/index.js`），但评审的编排一直在脑里：`startReview()` 把 run 记到盘上之后，`execute()`、`active` / `progressMap`、以及每组 `runChild()` 起的 `pi` 子进程都只活在脑进程里。换脑时老脑收到 `retire`，只做 `tunnel.stop(); sessions.releaseLocks(); process.exit(0)`（`bridge/src/index.ts:4858` 附近），5 秒后壳再把老脑强杀；评审的子进程跟着一起没。新脑开机时 `sweepStaleRuns()`（`bridge/src/review.ts:635` 附近）把所有 `status === "running"` 的 run 改成 `status:"stale"`、`errorCode:"bridge-restart"`，于是页面显示「桥重启了，这次评审没跑完」。现场：2026-11-28 13:39 开始评审，13:44:48–13:45:19 热部署 `--mode brain`，`.scratch/hot-deploy/state.json` 的 step 4「构建完成，交给壳换脑」与评审中断同一分钟。
+
+**决定。**
+
+- 新增执行进程 `bridge/src/review-worker.ts`（入口 `runReviewJob()`）：一次评审从「脑里的异步函数」变成独立 detached 进程；脑只负责校验、落 run、起 worker、转发进度。worker 的入口从 `review-worker.js` 找，开发态回退 `.ts` + `--experimental-strip-types`。
+- 盘上四份文件（都在 `<state>/review/jobs/`）：`<runId>.json` 是 job（repo/session/startedAt/opts/pid），`<runId>.progress.json` 是进度（200 ms 防抖、tmp+rename 原子写），`<runId>.cancel` 是取消信号，`<runId>.beat` 是 worker 每 5 秒写一次的心跳。worker 启动时自己把 `pid` 写回 job —— 脑可能刚 spawn 就崩，这一行是「换脑后还认不认得出这条评审」的保险。
+- 会话选的 GitHub 令牌（`ghEnv`）**只走 spawn 的环境变量**，不写 job：令牌不落盘，worker 里的 `gh` / `git` 子进程从 `process.env` 拿。
+- 脑侧 500 ms ticker 读进度文件并广播；worker 不在时读 state：run 已收尾就发终态进度 + `review.state`，仍 `running` 就标 `stale` / `errorCode:"worker-lost"`（「评审进程意外退出，这次评审没跑完」），并清掉四份文件。
+- 开机顺序：`sweepStaleRuns()` 先跑，但用 `liveJobForRun()` 跳过「job 文件在、pid 还活、startedAt 对得上」的 run；job 文件读不出来时，`<runId>.beat` 只要新鲜且 pid 还活着，也照样算活（杀软占用 / 半截写入不该把评审收尸）。`broadcast` 定义之后 `setReviewNotify()` + `resumeReviewJobs()` 把上一代留下的活任务接回 `active` / `progressMap`，页面一打开就能看到进度。`review.get` 的 `progresses` 因此也是重连后的真实状态，不用等 worker 再写一帧。
+- **换脑（retire）不停评审**（这正是本决策的目的）；只有真正停桥（`/api/host/stop` 默认、SIGINT、SIGTERM）才 `await stopAllReviews()`：写 cancel、最多等 3 秒、超时用 `reviewJobRunning()`（心跳校验，防 pid 复用）杀进程树，并把仍 `running` 的记录收成 `stopped`。更新器（`hotdeploy.mjs` / bridge-update 的 `restart.mjs`）必须先 `POST /api/host/stop?keepReviews=1` 再杀旧壳 —— 这条显式路径给脑发 `retire`（不跑 `sessions.shutdown()`），和普通停机共用同一段 `STOP_GRACE_MS`（8 秒）等它自己退出，detached worker 留着让新脑靠 job 文件接回来；只有端点返回 `keepReviews:true` 时更新器才等旧壳退出（最多 15 秒）再杀它的子进程，旧壳 404 时直接杀（它不会 retire）；新壳若不等，还在 retire 里的脑会先收到 SIGTERM 而走 `shutdown()`，把刚保住的 worker 又收掉。壳这边等满 8 秒连接还在就 SIGKILL 那个脑，避免它在 `releaseLocks` 里挂住成为孤儿。
+- worker 每 5 秒写 `<runId>.beat`；`reviewJobRunning()` 用「pid 活着 + 心跳 pid/startedAt 对得上 + 30 秒内」判断它还是不是这次评审的执行进程。还没有心跳时按有没有 pid 分开：有 pid 只给 15 秒（worker 一起来就该写第一份心跳；给太久会让 SIGKILL 后的死任务在换脑时被接回），还没写回 pid 才给 60 秒启动宽限（覆盖 30 秒 HELLO + 新脑启动）。sweep、resume、取消强杀都走这个判据，不只 `process.kill(pid, 0)`。
+- **直接给脑进程发 SIGTERM 不在支持路径里**：脑把它当成真正停桥（`shutdown()`，会收掉评审）；换脑 / 更新由壳走 `keepReviews=1` 的 `retire` 交接。真正停桥要发信号给壳，或者走 `/api/host/stop`；壳的 SIGTERM/SIGINT 也是 `stop("all")`，会通知脑并等它收完评审。
+- `startReview()` 保留原校验 / quota / 同 PR 去重 / 立即返回 `runId` 的语义；新增 `launch` 注入缝（`setReviewLauncher()`），单测用它替换掉真 spawn，避免把「立刻失败的 PR fetch」跑成后台进程。
+
+**为什么。** ① 这是 D407 同类问题的漏网：会话已经交给壳持有的管道，评审这种最长可能跑 25 分钟的长任务却还挂在脑上。② 不做「换脑等评审跑完」：一次部署会被评审拖到半小时，而且脑崩溃 / 更新重启根本等不了。③ 不做「新脑自动续跑」：模型调用不是幂等的，重跑要再花一遍 token，还会把已经跑完的组重做。④ 进度 / 取消用文件而不是 IPC：worker 与新一代脑之间没有现成通道，文件是唯一跨进程代、跨平台都成立的载体；轮询而不是 `fs.watch`，因为 Windows / 网络盘会漏事件。⑤ worker 必须 detached：它是脑的子进程就还会被 `childrenOf()` / 进程树清理带走。
+
+**代价。** 换脑期间进度最多晚 500 ms；每次评审多一个常驻的 node 进程与一个 `<runId>.log`（只在排查时看）；如果用户把 host 也硬杀（不是换脑），worker 仍会跑完，但没人收尾，下次开机才会把结果接回来。取消是协作式的：worker 被系统挂住时 3 秒 / 10 秒后才会被强杀。
+
+**验证。** 新增 `bridge/tests/review-worker-e2e.mjs`（`npm run test:review-swap`）：真壳 + 真脑 + 假 `PI_BIN`（30 秒慢回答）+ 假 `ocr`，在临时仓库开一条 workspace 评审，断言 worker pid 与脑 pid 不同；`POST /api/host/deploy?action=swap` 换脑之后断言 worker 仍活、新脑 `review.get` 的 `progresses` 里有这条、最终 `status:"done"` 且 `totalFiles:1`，worker 退出后 job 文件被回收；再开第二条慢评审并 `/api/host/stop`，断言壳正常退出且 worker 被收掉；最后另起一个壳开第三条评审，`POST /api/host/stop?keepReviews=1` 后断言壳退出、脑走了换代路径、worker 仍活着（防「150ms 后 SIGTERM 把评审收掉」回归）。单测在 `bridge/tests/review-unit.mjs` 增加「live job 的 running run 不被 sweep，dead pid 的才被标 stale」「job 读不出来但心跳新鲜仍算活」「opts 形状不对不算活」「接回的进度逐字段归一化」。`npm --prefix bridge run typecheck`、`npm run build:bridge`、`npm run test:review-swap`、`npm run test:host`、`npm run test:review` 均通过。
+
+## D447 贴图之后那一下：图从输入框浮出来飞进徽标（用户 2026-11-28「粘贴的时候没有动画效果，用户不知道有没有粘成功。增加 mac 风格的动画效果。做一个原型让我选择」→ 选了 B）
+
+**症状。** ⌘V 贴一张截图，输入框右下角那颗「+N 图」徽标只是把文字从「+1 图」改成「+2 图」。没有位移、没有出现/消失、没有任何一帧变化落在视野里：视线在输入框中间打字的人完全不知道贴上了没有，只能低头去找那颗小胶囊。这条路径上原本一行动效都没有（`addImages()` 只调 `updateImageBadge()` 换文字）。
+
+**决定（四个变体里选 B，原型见 `feat/paste-flash-prototype` 分支的 `web/prototypes/paste-image-flash.html`）。**
+
+- **贴上的图先浮出来，再缩进徽标。** 76×76 的幽灵缩略图从输入框中间偏上出现，错开 90ms 叠着停一下（约 150ms），再沿一条向上的弧线缩进徽标，落地时徽标弹一下（`--mac-spring`）并**实底**闪 260ms。多张依次起飞，落地只弹一次。
+- **一次最多飞四片**（`MAX_GHOSTS`）。贴十张不该飞出十片，剩下的靠徽标上的数字 —— 这条动效回答的是「贴上没」，不是「贴了几张」。
+- **徽标的「落地」提示与飞入解耦。** `badgeLanded()` 自己就能用（弹 + 实底闪）：最后一帧落地时调它。粘贴 / 拖拽 / 选文件 / 相册四条路都经过 `addImages()`，所以四条路都既有飞行也有弹跳；`badgeLanded()` 单独可用是给「有图进来但不经过输入框」的将来留的口子。
+- **实底闪那一下交给 CSS**（`.image-badge.flash`），不用 WAAPI 插值颜色：半透明强调色叠在浅底上（`--accent-bg` 是 9% 强调色）几乎看不出变化，只有实底 + 反相字才读得出「数字又加了一张」。
+- **缓动曲线在 `pastefly.ts` 里再抄一遍字面量**：WAAPI 的 `easing` 不认 `var(--mac-spring)`，写成变量会当场抛 `TypeError: not a valid value for easing`（原型里踩过）。
+- **`prefers-reduced-motion: reduce` 整段跳过**：不飞、不弹、不闪，张数照常更新。
+- **幽灵层挂在 `#app` 里**（跟着字号缩放），坐标一律「先按视觉 px 算、再除一次 `--ui-scale`」——`getBoundingClientRect()` 是视觉 px，写进 style 的是布局 px（D123 的老坑，与 `selask.ts` 同一套写法）。落定后整层从 DOM 摘掉，`#app` 里不留常驻浮层。
+
+**为什么。** ①四个变体里只有 B 同时做到「看得见」和「看得出是哪张」：徽标弹跳（A）改的是那颗 11px 高的小胶囊，视线在输入框中间时仍然可能漏；缩略图轨（C）要把输入框撑高 46px，多图时长期占地方；玻璃浮标（D）是另一套通知样式的浮层，要额外管超时与叠放。②飞行有方向：从「贴的地方」到「记账的地方」，用户不用学就知道那颗徽标在数什么。③落地才弹，而不是起飞就弹：弹跳落在计数已经更新之后，视线被带过去时数字是对的。
+
+**代价。** ①一次贴图多一层全屏 `position: fixed` 浮层（`pointer-events: none`），飞行期间覆盖在会话区上 —— 它挡不住点击，但会短暂遮住人正在读的内容，所以限四片、700ms 内收工。②动效依赖 `getBoundingClientRect()` 量徽标：徽标被别的东西挡住 / 宽度量不到 2px 时直接不飞（宁可不飞，也不要从错误的位置飞出来）。③幽灵缩略图是 base64 data URL 再塞进 `<img>`，大截图（压完仍有几百 KB）会让这一帧多一次解码 —— 跟待发图片弹窗里那些缩略图同一份开销，没有新增内存形态。
+
+**复审（2026-11-28，PR #740 的代码评审）改掉的三处。** ①收尾从 `onfinish` 换成 `anim.finished`（`then(settle, settle)`）：动画被 cancel（飞行中 `#app` 被重建、标签页被冻结后清理）时 `onfinish` 不触发，幽灵与这一层会永远留在 DOM 里、`Promise` 也不 resolve。②徽标上重复触发时先 `cancel()` 上一条动画、清掉上一个 `.flash` 定时器 —— 连贴两次时前一个定时器会把刚挂上的 `.flash` 提前摘掉。③`EASE` 常量没人用（删掉），`SPRING` 与 `mac-base.css` 的一致性交给 `web/tests/pastefly-unit.mjs` 对账 —— 光在注释里宣称「必须一致」是不会有人发现它漂了的。
+
+**第二轮复审（同日）补的三处。** ④`flyImagesToBadge` 改吃 `PendingImage[]`、在 `reducedMotion()` 与 `MAX_GHOSTS` 裁片之后才拼 data URL —— 以前 `images.map(imageSrc)` 会替十几张 2048px 的图各拼一条几 MB 的字符串，实际只飞四片。⑤拼法收进 `images.ts` 的 `imageSrc()`：以前待发图片弹窗、随手问、贴图动效三处各手写一遍 `data:${mimeType};base64,${data}`。⑥这个 Promise 现在保证不抛也不 reject（`try/catch` 包住整个函数、`Element.animate` 缺失或拒绝关键帧时返回 null），否则 `app.ts` 那句 `void` 就等于每次贴图都留一条 unhandled rejection；顺带把「徽标上一条动画要 cancel / 上一个 `.flash` 定时器要清」这两条也在 `web/tests/pastefly-unit.mjs` 里用假 DOM 钉住了，不必等浏览器探针才发现回归。
+
+**第三轮复审（同日）补的两处。** ⑦幽灵的边长从 CSS 挪进 `pastefly.ts`（脚本写 `style.width/height`）：落点是按它的一半居中的，尺寸写两处就会在改 CSS 时让终点偏半个边长，而探针的「±8px」未必抓得住。⑧`badgeLanded` 的弹跳强度参数改名 `pop`（跟 `opts.scale` 那个字号缩放不是一回事），默认值就是唯一调用处用的 1.2 —— 原来那个 1.14 是死值。另外那个「永不 reject」的兜底从 `runFly` 的链尾挪到 `flyImagesToBadge` 一处，并且改成一行 `console.warn`：不静默吞掉，查得到来源。
+
+**验证。** `probes/paste-fly-in.mjs`（真 Chromium + 真 paste 事件 + 真几何，隔离桥）：贴两张冒两层幽灵；把动画暂停把 `currentTime` 推到首尾帧上量 —— 起点在输入框上方、终点落在徽标中心 ±8px（不靠等时钟，700ms 的飞行才不会让断言随机翻车）；落地后整层从 DOM 摘掉、徽标有弹跳动画、`.flash` 挂上且 260ms 后自己摘掉；六张只飞四片但徽标写「+6 图」；`prefers-reduced-motion` 下一片不飞也不弹；字号 125% 时幽灵布局尺寸仍是 76px、渲染成 ≈95px、终点仍在徽标中心（缩放只乘一次）。回归：`probes/image-sheet-check.mjs` 20 项（点徽标、删图、清空）全过，飞行层没挡住徽标的点击。守卫：`npm --prefix web run typecheck`。
+
+## D448 起服务前先认出端口占用者、问一句、优雅停掉再起（用户 2026-11-28「npm start 端口被占时直接报 start 失败，想先提示、问一句要不要关掉之前的服务」）
 
 **问题。** `npm start` 直接起壳，7864 被占时 `publicServer.listen()` 的 `EADDRINUSE` 是**未捕获异常**，用户看到的是一整坨堆栈加 `npm error`，完全不知道端口上是谁、该不该停它。而最常见的那类「占用者」其实就是**自己上一次起的那份**（另开的终端、选了「关窗保留」之后留在后台的那份）——用户要的只是「换成这一份」。
 

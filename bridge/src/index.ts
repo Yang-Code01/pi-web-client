@@ -66,7 +66,10 @@ import {
   ocrStatus,
   readReviewPin,
   readReviewState,
+  resumeReviewJobs,
   reviewProgresses,
+  setReviewNotify,
+  stopAllReviews,
   takeSweptCount,
   MAX_RUNS_PER_SESSION,
   setPick,
@@ -143,7 +146,7 @@ import { saveBook as saveSheetBook, type EditOp } from "./sheet/write.ts";
 import { saveStruct as saveSheetStruct, type StructOp } from "./sheet/struct.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { countSlides, slidesAvailable, slidesPdfFile, slidesPdfKey, slidesPdfStatus, slidesProbe } from "./slides/index.ts";
-import { PeerHost, peerEntry } from "./peer.ts";
+import { PeerHost, PeerRequestError, peerEntry } from "./peer.ts";
 import { openPage, shouldOpenPage } from "./openbrowser.ts";
 import { injectWindowTitle, windowTitleFromEnv } from "./window-title.ts";
 
@@ -160,6 +163,12 @@ const STEP_UP_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 30 * 1024 * 1024;
 /** #455 与 MAX_UPLOAD_BYTES 同一个数：readRaw 被挡和 saveUpload 自查，回的是同一句话。 */
 const UPLOAD_TOO_LARGE = "文件太大了（上限 64 MB）";
+/**
+ * 自定义头像的**传输**上限：2 MB，只用来兜住 readRaw 的内存。
+ * 真正的业务上限（512 KB）在 peer 的 MAX_AVATAR_BYTES，超了由 peer 回 413、文案从那边透传；
+ * 桥这边再写一份 512 KB 只会多出一个和 peer 不同步的数字（评审 #2 / #6）。
+ */
+const MAX_AVATAR_UPLOAD = 2 * 1024 * 1024;
 
 interface ChildWatch {
   sessionId: string;
@@ -337,23 +346,67 @@ function readBody(req: http.IncomingMessage): Promise<any> {
   });
 }
 
+/** 请求体超过上限（readRaw 的拒绝原因之一；另一种是传到一半断开）。 */
+class BodyTooLargeError extends Error {}
+
 /** 读原始字节（上传剪贴板图片）。和 readBody 的区别只有「不 JSON.parse」。 */
 function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
+    let tooLarge = false;
     req.on("data", (c: Buffer) => {
+      // 超限只拒一次，其余字节继续收下再丢掉：req.destroy() 会连 socket 一起销毁，
+      // 调用方那句 413 就写不出去了（评审 #6）。
+      if (tooLarge) return;
       size += c.length;
       if (size > limit) {
-        reject(new Error("body too large"));
-        req.destroy();
+        tooLarge = true;
+        chunks.length = 0;
+        reject(new BodyTooLargeError("body too large"));
         return;
       }
       chunks.push(c);
     });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
+    req.on("close", () => {
+      if (!req.complete) reject(new Error("request aborted"));
+    });
   });
+}
+
+/**
+ * readRaw 的请求体错误自己回响应：超限 413、传到一半断开 400。
+ * 返回 null 表示已经回过响应，调用方直接 return。
+ * 以前调用方统一 `.catch(() => null)` 再回 413「太大了」，断网 / 关页面也会被说成文件太大，
+ * 用户会照着去改文件大小（评审 7-1）。
+ */
+async function readRawOr(
+  res: http.ServerResponse,
+  req: http.IncomingMessage,
+  limit: number,
+  tooLarge: string,
+): Promise<Buffer | null> {
+  try {
+    return await readRaw(req, limit);
+  } catch (err) {
+    // 客户端已经断开（传一半关页面 / 断网）时 res 也已经关了：再写响应没有意义，
+    // 对已销毁的流写还会触发 ERR_STREAM_DESTROYED / 未处理的 error（评审 9-3）。
+    if (res.destroyed || res.headersSent) return null;
+    if (err instanceof BodyTooLargeError) json(res, 413, { error: tooLarge }, { connection: "close" });
+    else json(res, 400, { error: "上传中断了，再试一次" });
+    return null;
+  }
+}
+
+/** 页面断开（关页面 / 取消请求）就 abort 上游，别让到 peer 的请求自己跑完。 */
+function abortOnClose(res: http.ServerResponse): AbortSignal {
+  const ctrl = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) ctrl.abort();
+  });
+  return ctrl.signal;
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown, extra: Record<string, string | string[]> = {}): void {
@@ -1173,8 +1226,8 @@ async function main(): Promise<void> {
     }
     // 手工上传 zip：和 /api/peer/upload 一样走原始字节，不把 64 MB 塞进 base64 的 WS 帧。
     if (url.pathname === "/api/market/publish-zip" && req.method === "POST") {
-      const raw = await readRaw(req, MAX_UPLOAD_BYTES).catch(() => null);
-      if (!raw) return json(res, 413, { error: "太大了（上限 64 MB）" });
+      const raw = await readRawOr(res, req, MAX_UPLOAD_BYTES, "太大了（上限 64 MB）");
+      if (!raw) return;
       if (!authorized(req.headers.cookie)) return json(res, 401, { error: "要登录" });
       if (isTunnelRequest(req.headers)) return json(res, 403, { error: "通过公网访问时局域网市场只能查看" });
       try {
@@ -1208,8 +1261,8 @@ async function main(): Promise<void> {
       }
     }
     if (url.pathname === "/api/peer/stickers/add" && req.method === "POST") {
-      const raw = await readRaw(req, 5 * 1024 * 1024).catch(() => null);
-      if (!raw) return json(res, 413, { error: "表情太大了（上限 5 MB）" });
+      const raw = await readRawOr(res, req, 5 * 1024 * 1024, "表情太大了（上限 5 MB）");
+      if (!raw) return;
       try {
         return json(res, 200, await peer.addSticker(url.searchParams.get("name") || "表情.png", raw));
       } catch (err) {
@@ -1248,12 +1301,113 @@ async function main(): Promise<void> {
       }
     }
     if (url.pathname === "/api/peer/upload" && req.method === "POST") {
-      const raw = await readRaw(req, MAX_UPLOAD_BYTES).catch(() => null);
-      if (!raw) return json(res, 413, { error: "太大了（上限 64 MB）" });
+      const raw = await readRawOr(res, req, MAX_UPLOAD_BYTES, "太大了（上限 64 MB）");
+      if (!raw) return;
       try {
         return json(res, 200, await peer.upload(url.searchParams.get("peer") ?? "", url.searchParams.get("name") || "粘贴的图片.png", raw));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // 自定义头像：POST 是上传（页面已裁好 192×192 WebP），GET 是给 `<img>` 取图。
+    // GET 走桥而不是直连 peer 的 7865：那条口子只对回环开，页面在别的机器 / 隧道里时够不着。
+    if (url.pathname === "/api/peer/avatar" && req.method === "POST") {
+      // 超限 / 中断的响应交给 readRawOr 统一回（评审 8-9）；上限文案从常量算，别再写死「2 MB」（评审 8-10）。
+      const raw = await readRawOr(res, req, MAX_AVATAR_UPLOAD, `图片太大了（上限 ${MAX_AVATAR_UPLOAD / (1024 * 1024)} MB）`);
+      if (!raw) return;
+      // 页面关掉 / 用户取消时别让这条到 peer 的请求自己跑完（和 /api/peer/file 一样接 res 的 close）。
+      const signal = abortOnClose(res);
+      try {
+        return json(res, 200, await peer.uploadAvatar(raw, signal));
+      } catch (err) {
+        // peer 自己给的 4xx/5xx 原样透传；连不上 peer（没起、超时、连接被拒）是上游挂了，
+        // 不是「请求不对」——回 502 + 一句人能看懂的，别把 "fetch failed" 甩给页面。
+        if (err instanceof PeerRequestError) return json(res, err.status, { error: err.message });
+        return json(res, 502, { error: "内网通暂时连不上，稍后再试" });
+      }
+    }
+    if (url.pathname.startsWith("/api/peer/avatar/") && req.method === "GET") {
+      // 非法百分号编码（/api/peer/avatar/%E0%A4%A）会让 decodeURIComponent 抛 URIError；
+      // 这段必须在 try 里，否则异常冒到 createServer 回调外面，请求会悬到超时（评审 #1）。
+      let who: string;
+      try {
+        who = decodeURIComponent(url.pathname.slice("/api/peer/avatar/".length));
+      } catch {
+        return json(res, 400, { error: "地址不对" });
+      }
+      try {
+        // `<img>` 被取消（切会话、关灯箱、关页面）时立刻 abort 上游，不等 10 秒超时。
+        const signal = abortOnClose(res);
+        // 参数名跟 peer 的 `/avatar?h=` 一致；`v` 是旧页面的写法，留着兼容。
+        const hash = url.searchParams.get("h") ?? url.searchParams.get("v") ?? "";
+        const upstream = await peer.avatarStream(who, hash, signal);
+        // peer 说 4xx（没这张图）照原样；5xx 是 peer 自己坏了，按「连不上」统一 502（评审 7-2）。
+        if (!upstream.ok) {
+          // peer 的 4xx 文案（「没有这张图片」）对页面有用，别丢了；body 不读就 cancel，
+          // 否则这条连接要等 GC / 超时才释放（评审 8-12）。
+          let detail: { error?: string } | null = null;
+          try {
+            detail = (await upstream.json()) as { error?: string };
+          } catch {
+            await upstream.body?.cancel().catch(() => {});
+          }
+          const status = upstream.status >= 500 ? 502 : upstream.status;
+          return json(res, status, { error: status === 502 ? "内网通暂时连不上，稍后再试" : detail?.error || "取不到这张头像" });
+        }
+        const etag = upstream.headers.get("etag");
+        const cache = "private, max-age=86400";
+        // 内容寻址：同一个 etag 就是同一张图。浏览器带 If-None-Match 回来时直接 304，
+        // 不用把 peer 的字节再搬一遍（评审 #12）。
+        if (etag && req.headers["if-none-match"] === etag) {
+          res.writeHead(304, { etag, "cache-control": cache, "x-content-type-options": "nosniff" });
+          return void res.end();
+        }
+        if (!upstream.body) return json(res, 502, { error: "取不到这张头像" });
+        const length = upstream.headers.get("content-length");
+        res.writeHead(200, {
+          "content-type": upstream.headers.get("content-type") ?? "image/webp",
+          ...(length ? { "content-length": length } : {}),
+          ...(etag ? { etag } : {}),
+          "cache-control": cache,
+          "x-content-type-options": "nosniff",
+        });
+        // 头像最大 512 KB，但没必要先进 Buffer 再吐一遍：直接接上上游的流。
+        // undici 的 `body` 与 `node:stream/web` 的 `ReadableStream` 是同一个东西，只是两套声明打架，
+        // `Readable.fromWeb` 只要求后者；这里断言一次，不把它当成运行时转换。
+        Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream<Uint8Array>)
+          .on("error", () => res.destroy())
+          .pipe(res);
+        return;
+      } catch {
+        // 头已经发出去（200 写完、pipe 中途上游断）就别再 json()：writeHead 会抛
+        // ERR_HTTP_HEADERS_SENT，异常逃出 async 处理器变成 unhandledRejection（评审 5-5）。
+        if (res.headersSent || res.destroyed) {
+          res.destroy();
+          return;
+        }
+        // 和 POST 分支一致：上游异常（fetch failed / aborted）不是给用户看的文案。
+        return json(res, 502, { error: "内网通暂时连不上，稍后再试" });
+      }
+    }
+    // 设置页「上传过的」：列表只包含用户自己传的图（对端缓存不算），删除也走这里。
+    if (url.pathname === "/api/peer/custom-avatars" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.customAvatars());
+      } catch (err) {
+        // 和头像的上传 / 删除同一个口径：peer 的 4xx 原样回去，其余是「连不上」，别把 fetch failed 抛给页面。
+        if (err instanceof PeerRequestError) return json(res, err.status, { error: err.message });
+        return json(res, 502, { error: "内网通暂时连不上，稍后再试" });
+      }
+    }
+    if (url.pathname === "/api/peer/custom-avatars/delete" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.deleteAvatar(String(body?.hash ?? "")));
+      } catch (err) {
+        // 和 POST 头像分支同一个口径：peer 自己给的 4xx/5xx 原样透传（比如「不在上传记录里」），
+        // 连不上 peer 才是 502 + 人话；别把 "fetch failed" 这种英文底层文案丢给设置页（评审 6-1）。
+        if (err instanceof PeerRequestError) return json(res, err.status, { error: err.message });
+        return json(res, 502, { error: "内网通暂时连不上，稍后再试" });
       }
     }
     // 选择器里的预览（D304）：本机一份文件的字节，透传 peer 的 `/fs/raw`。
@@ -1436,8 +1590,14 @@ async function main(): Promise<void> {
       if (!sessions.locate(sid)) return fail(res, 404, "session", "找不到这个会话");
       const rawName = url.searchParams.get("name") ?? "";
       if (!rawName.trim()) return fail(res, 400, "bad_name", "文件名不能为空");
-      const raw = await readRaw(req, MAX_UPLOAD_BYTES).catch(() => null);
-      if (!raw) {
+      let raw: Buffer;
+      try {
+        raw = await readRaw(req, MAX_UPLOAD_BYTES);
+      } catch (err) {
+        if (!(err instanceof BodyTooLargeError)) {
+          log(`upload aborted ${sid.slice(0, 8)}`);
+          return json(res, 400, { error: "上传中断了，再试一次" });
+        }
         log(`upload too_large ${sid.slice(0, 8)}`);
         return fail(res, 413, "too_large", UPLOAD_TOO_LARGE);
       }
@@ -2557,6 +2717,35 @@ async function main(): Promise<void> {
       client.send(data);
     }
   };
+
+  // 评审状态帧只在这里拼：review.get、换脑接回后的 onState 都发同一份，字段不会漏一个。
+  const reviewStateFrame = (repo: string, session: string, pinned: string) => ({
+    type: "review.state",
+    dir: repo,
+    pinned,
+    sessionId: session,
+    state: readReviewState(repo, session),
+    progresses: reviewProgresses(repo, session),
+    cap: MAX_RUNS_PER_SESSION,
+  });
+
+  // 评审的执行进程是独立的 detached worker（D446）：进度与收尾都从盘上读，脑只负责转发。
+  // 换脑时新脑开机在这里接回上一代留下的 job —— 正在跑的评审不中断。
+  setReviewNotify({
+    onProgress: (job, progress) =>
+      broadcast({ type: "review.progress", dir: job.repo, sessionId: job.session, runId: progress.runId, progress }),
+    onState: (job) => {
+      // 仓库可能在评审期间被删 / 被移走：转发状态不该因此把脑带崩。
+      let pinned = "";
+      try {
+        pinned = effectiveReviewDir(job.repo, job.session).pinned;
+      } catch {
+        /* 目录没了就当没钉 */
+      }
+      broadcast(reviewStateFrame(job.repo, job.session, pinned));
+    },
+  });
+  resumeReviewJobs();
 
   /**
    * GitHub 路由的 ctx。两个入口（回环工具口 / 常规路由）必须是**同一份**映射：壳拿到的 id/cwd
@@ -4089,17 +4278,8 @@ async function main(): Promise<void> {
             const session = String(msg.sessionId ?? "");
             try {
               const { repo, pinned } = effectiveReviewDir(dir, session);
-              send({
-                type: "review.state",
-                dir: repo,
-                pinned,
-                sessionId: session,
-                state: readReviewState(repo, session),
-                progresses: reviewProgresses(repo, session),
-                cap: MAX_RUNS_PER_SESSION,
-                // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
-                swept: takeSweptCount(),
-              });
+              // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
+              send({ ...reviewStateFrame(repo, session, pinned), swept: takeSweptCount() });
               void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
             } catch (err: any) {
               send({ type: "review.state", dir, sessionId: session, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
@@ -4181,7 +4361,7 @@ async function main(): Promise<void> {
             // 账号要 async 算（`gh auth token`），而这条 case 是同步的：包一层，错误照旧回给页面。
             void (async () => {
               try {
-                const { repo, pinned } = effectiveReviewDir(dir, session);
+                const { repo } = effectiveReviewDir(dir, session);
                 // 评审自己 spawn `gh` / `git`，子进程里看不到会话：把账号的令牌在这里算好带下去。
                 // 不带的话走的就是 gh 的机器 active 账号 —— 多账号机器上经常看不到目标仓库（D422）。
                 const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
@@ -4199,18 +4379,6 @@ async function main(): Promise<void> {
                   model,
                   provider,
                   lang,
-                  // D420：进度帧要带上是哪一条（runId）与哪位会话，页面才画得到各自的卡上。
-                  onProgress: (p) => broadcast({ type: "review.progress", dir: repo, sessionId: session, runId: p.runId, progress: p }),
-                  onState: () =>
-                    broadcast({
-                      type: "review.state",
-                      dir: repo,
-                      pinned,
-                      sessionId: session,
-                      state: readReviewState(repo, session),
-                      progresses: reviewProgresses(repo, session),
-                      cap: MAX_RUNS_PER_SESSION,
-                    }),
                 });
                 send({ type: "review.started", dir: repo, sessionId: session, runId: started.runId });
               } catch (err: any) {
@@ -4837,6 +5005,10 @@ async function main(): Promise<void> {
     if (!linkedPath) removePidFile(cfg.port);
   });
 
+  // 主动停桥时壳可能比脑先走：shutdown() 一旦开始，link 断开就不能再把进程直接带走。
+  // 否则 stopAllReviews() 的收尾和状态写回会被截断（用户关桥后仍可能留下 worker）。
+  let shuttingDown = false;
+
   // 有壳时脑只接受壳的转发，所以只绑回环；公网面那个口子由壳来听。
   server.listen(linkedPath ? 0 : cfg.port, linkedPath ? "127.0.0.1" : cfg.host, async () => {
     let pagePort = cfg.port;
@@ -4852,16 +5024,26 @@ async function main(): Promise<void> {
         link.on("shutdown", () => void shutdown());
         link.on("closed", () => {
           log("host: 壳断开了，脑退出");
-          process.exit(0);
+          // 主动停桥时壳先发 shutdown、再等脑断开；这时候 shutdown() 已经在收尾了，
+          // 让它把 stopAllReviews() 写完，别在这里抢着 process.exit。
+          if (!shuttingDown) process.exit(0);
         });
         // 被换下的那一代：先把隧道收回来再走，不然 cloudflared 会成孤儿。
         link.on("retire", () => {
+          // 换代期间收到的 SIGTERM 不能再走 shutdown()：那会把刚交接过来的评审 worker 收掉。
+          // 如果 shutdown() 已经在跑，更不能抢它的 process.exit（会截断 stopAllReviews）。
+          if (shuttingDown) return;
+          shuttingDown = true;
           log("host: 被换下，退出");
-          tunnel.stop();
-          // **这里绝不能 sessions.shutdown()**（D407）：子进程的生死在壳手里，关一批会话就会把
-          // 正在跑的那一轮杀掉 —— 那正是「热部署打断回话」本身。把锁交出去就好。
-          sessions.releaseLocks();
-          process.exit(0);
+          try {
+            tunnel.stop();
+            // **这里绝不能 sessions.shutdown()**（D407）：子进程的生死在壳手里，关一批会话就会把
+            // 正在跑的那一轮杀掉 —— 那正是「热部署打断回话」本身。把锁交出去就好。
+            sessions.releaseLocks();
+          } finally {
+            // 收尾失败也必须退出：壳在等这条连接关掉，挂住只会把换代拖成整组重启。
+            process.exit(0);
+          }
         });
         // 新脑上来之后接管壳里还活着的会话：页面不必重新点，否则它会退回「只读预览」。
         link.on("activate", () => {
@@ -4918,19 +5100,40 @@ async function main(): Promise<void> {
     void sessions.pinAll().then((n) => n && log(`pinned default permission on ${n} session(s)`)).catch(() => {});
   });
 
-  const shutdown = async () => {
+  const shutdown = async (stopReviews = true) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log("shutting down");
-    fileIndex.close();
-    terminals.closeAll();
-    tunnel.stop();
-    await sessions.shutdown();
-    // Closing the bridge is closing 随手问: a clean exit leaves nothing to resume.
-    resetScratchDir();
-    server.close();
-    process.exit(0);
+    // 收尾期间壳可能已经走了：给一个上限，别让残留的脑永远挂着。
+    const forceExit = setTimeout(() => {
+      log("shutting down: 超时，强制退出");
+      // 非零退出：更新器 / 外部监控能区分「干净停机」与「收尾超时被踢」。
+      process.exit(1);
+    }, 10_000);
+    forceExit.unref();
+    try {
+      fileIndex.close();
+      terminals.closeAll();
+      tunnel.stop();
+      // 整组停机才停评审：换脑（retire）不走这里；更新器会先显式请求 keepReviews=1，
+      // 只有「真正停桥」（页面停止 / SIGTERM / SIGINT）才把 detached worker 收掉（D446）。
+      if (stopReviews) await stopAllReviews();
+      await sessions.shutdown();
+      // Closing the bridge is closing 随手问: a clean exit leaves nothing to resume.
+      resetScratchDir();
+      server.close();
+      clearTimeout(forceExit);
+      process.exit(0);
+    } catch (err) {
+      // sessions.shutdown / server.close 抛错时不能把 async shutdown 变成未处理 rejection。
+      log(`shutting down: 收尾失败：${String(err)}`);
+      process.exit(1);
+    }
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown());
+  // 真正停桥（systemd stop / 手工 kill -TERM）：评审要收掉。
+  // 更新器要保留评审时，先显式请求 `/api/host/stop?keepReviews=1`，由壳走换代交接。
+  process.on("SIGTERM", () => void shutdown());
 }
 
 main().catch((err) => {

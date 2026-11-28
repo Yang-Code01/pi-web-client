@@ -119,7 +119,7 @@ npm start     # tsc 编译 bridge + 打包 peer 与 web/dist，再跑 dist/index
 命令行印出来，绝不动手。非交互场景（CI、`npm start | tee`）默认不杀，要它照做就设
 `PI_START_FORCE=1 npm start`（或直接跑 `node scripts/preflight.mjs --force`）。`npm start --force`
 **不算授权**：那个 `--force` 是 npm 自己的旗标（「别拦我」），只绕过 npm 的检查，不代表同意把正在跑的
-桥硬杀掉（会让底下的 pi 会话变孤儿，D441）。`npm start -- --force` 也不管用 —— `--` 后面的参数被追加到
+桥硬杀掉（会让底下的 pi 会话变孤儿，D448）。`npm start -- --force` 也不管用 —— `--` 后面的参数被追加到
 整条链的末尾，链首那一步读不到。
 pull 进来的改动如果动了子包的依赖（`bridge/` `peer/` `web/` 的 `package-lock.json`），`npm start` 会在编译前拦下来，
 列出对不上的包并让你先跑 `npm install`。「本项目需要」的 pi 扩展也一样：`npm start` 先确认下表里的扩展都装了，

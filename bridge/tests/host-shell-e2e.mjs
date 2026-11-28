@@ -310,7 +310,7 @@ try {
   await until(async () => exitCode !== null, "壳退出", 8000);
   assert.equal(exitCode, 0, exitSignal ? `主动停机被信号 ${exitSignal} 终止` : "主动停机应该是 0");
 
-  // 11. 端口被占：壳不吐堆栈，给一句人话并以 2 退出（D441）。
+  // 11. 端口被占：壳不吐堆栈，给一句人话并以 2 退出（D448）。
   {
     const squatter = net.createServer();
     await new Promise((r) => squatter.listen(port, "127.0.0.1", r));

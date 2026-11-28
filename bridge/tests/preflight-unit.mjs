@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 启动前的端口检查（`scripts/preflight.mjs`）的纯函数部分：认人与提问（D441）。
+ * 启动前的端口检查（`scripts/preflight.mjs`）的纯函数部分：认人与提问（D448）。
  *
  * 进程边界上的行为（真起一份桩、真停掉它）在 `bridge/tests/start-preflight.mjs`；
  * 这里考两件不需要真进程的事：
