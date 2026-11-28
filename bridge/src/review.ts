@@ -532,7 +532,7 @@ export const AUTO_RUN_KEEP = 40;
  * 正点开看着的那一条截掉。
  */
 export function trimRuns(state: ReviewState): void {
-  // D457：自动评审的轮次与手动开的那几条各算一份预算 —— 一次自动评审 4–12 轮，
+  // D462：自动评审的轮次与手动开的那几条各算一份预算 —— 一次自动评审 4–12 轮，
   // 挤同一个 RUN_KEEP 会把用户手动评过的历史刷掉一半。
   // 按位置数着裁，不按对象引用：`Set` + `has(r)` 在某处对 runs 做过一次 `map`（新对象）之后会
   // 全部落空、把整份记录清掉 —— 那种隐式依赖太脆，同一数组里顺序就是身份。
@@ -758,7 +758,7 @@ export interface ReviewJobOpts {
   model?: string;
   provider?: string;
   lang: ReviewLang;
-  /** D457：这是自动评审的一轮（不画进记录列表、单独算留存预算）。 */
+  /** D462：这是自动评审的一轮（不画进记录列表、单独算留存预算）。 */
   auto?: boolean;
 }
 
@@ -1446,7 +1446,7 @@ export interface StartOptions {
   model?: string;
   provider?: string;
   lang: ReviewLang;
-  /** D457：这是自动评审的一轮（不画进记录列表，留存另算一份预算）。 */
+  /** D462：这是自动评审的一轮（不画进记录列表，留存另算一份预算）。 */
   auto?: boolean;
 }
 

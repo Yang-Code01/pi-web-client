@@ -295,7 +295,7 @@ function errorText(run: ReviewRun | null, fallback: string): string {
   return (run?.error || fallback || "").trim();
 }
 
-/** 面板看的那批记录：自动评审的轮次带 `auto`，只出现在自动卡时间线上（D457 第 7 条）。 */
+/** 面板看的那批记录：自动评审的轮次带 `auto`，只出现在自动卡时间线上（D462 第 7 条）。 */
 const manualRuns = (s: ReviewState | null): ReviewRun[] => (Array.isArray(s?.runs) ? s.runs.filter((r) => !r.auto) : []);
 
 /** 四块「评什么」的标签与说明：面板磁贴与自动评审卡共用一份（抄两份会漂）。 */
@@ -720,7 +720,7 @@ export interface ReviewPanelInput {
   /** gh 卡的八颗动作：宿主直接给 `ghCardActions()`，面板不再自己映射一遍（评审 #33）。 */
   ghActions: GhCardActions;
   /**
-   * 自动评审那一段（D457）：入口按钮 + 卡片，动作自带（与手动评审的动作分开）。
+   * 自动评审那一段（D462）：入口按钮 + 卡片，动作自带（与手动评审的动作分开）。
    * 可选：宿主没拼这一块（只画手动评审的调用方 / 测试）就不画那一段，面板照常出来。
    */
   auto?: { panel: AutoPanelInput; actions: AutoActions };
@@ -1028,7 +1028,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
 
   root.append(form);
 
-  // ---- 自动评审（D457）：入口按钮就在「开始评审」正下方，跑起来之后这一段变成时间线卡片
+  // ---- 自动评审（D462）：入口按钮就在「开始评审」正下方，跑起来之后这一段变成时间线卡片
   // 入口是新加的：没拼这一块的调用方不该因此整块面板都渲染不出来。
   if (input.auto) root.append(renderAutoPanel(input.auto.panel, input.auto.actions));
 

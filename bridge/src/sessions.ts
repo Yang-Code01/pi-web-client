@@ -3726,7 +3726,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * 自动评审用：这个会话归不归这个桥管（D457）。
+   * 自动评审用：这个会话归不归这个桥管（D462）。
    *
    * 不建会话对象、只认名册：换脑开机时 `AutoRunner.resume()` 比 `activate` 早，那一刻壳里活着的
    * 会话还没被认领进来（`get()` 拿不到）。以前它只能 `get()`，拿不到就把每条 running 的自动评审

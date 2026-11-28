@@ -84,7 +84,7 @@ function readAllow(): { patterns: string[]; mode: Mode; handoffPath: string | nu
   try {
     const data = JSON.parse(fs.readFileSync(file, "utf8"));
     const mode: Mode = ["readonly", "strict", "ask", "auto"].includes(data.mode) ? data.mode : "ask";
-    // D457：自动评审运行期间的限时授权。形状与判定都在 ./grant-match.ts（零依赖、可单测）。
+    // D462：自动评审运行期间的限时授权。形状与判定都在 ./grant-match.ts（零依赖、可单测）。
     const raw = data?.auto;
     const auto: AutoGrant | null =
       raw && typeof raw === "object"
@@ -331,7 +331,7 @@ export default function approvalGate(pi: any): void {
 
     const detail = risk.detail.slice(0, 900);
 
-    // D457：自动评审跑着的时候，「推这条分支」「合这个 PR」由它自己在做 —— 人已经在设置
+    // D462：自动评审跑着的时候，「推这条分支」「合这个 PR」由它自己在做 —— 人已经在设置
     // 对话框里点过那一次了。授权收得极窄（一条分支 / 一个 PR），运行一结束脑就把它删掉。
     // 判授权必须用**完整**命令：`detail` 是给审批卡看的 900 字截断，截断点之后可以藏一条
     // `; rm -rf`（评审 #1）—— 那一下就成了「前半段合法、后半段随行」。

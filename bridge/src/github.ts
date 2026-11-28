@@ -628,7 +628,7 @@ function commitStatusState(state: unknown): string {
  * 两个端点各要一次请求。拿不到不拖整个详情（没开 Actions 的仓库回 404、细粒度令牌没权限读都是常事）：
  * 那一路就当空的。两路都空就是「这个 PR 没有检查」，页面不画 checks 那一行。
  *
- * 导出给脑侧的自动评审（D457）：合并前要问「checks 绿没绿」，已经有一份现成的口径就别再写一遍 ——
+ * 导出给脑侧的自动评审（D462）：合并前要问「checks 绿没绿」，已经有一份现成的口径就别再写一遍 ——
  * 那边要是自己读一份别处的 PR 结构（`gitpr.ts` 的列表卡形状里根本没有 `checks`），就会恒判「全绿」。
  */
 export async function checksOf(
