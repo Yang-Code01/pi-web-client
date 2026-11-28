@@ -198,7 +198,11 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
   /** 版面：全部按正文视口算，视口矮的时候面板跟着矮，绝不长到输入框上去。 */
   function measure(count: number): Geometry {
     const view = opts.viewport ?? host;
-    const viewH = view.clientHeight || 560;
+    // 单位：`view` 是 `.chat-scroll`，它自己挂着区域倍率（D441），`clientHeight` 是**它局域里**的 px
+    // （已经被 `--ui-scale` 与区域倍率各除过一次）；而这条带子挂在 `.chat-pane` 上，写进 style 的 px
+    // 只乘 `--ui-scale`。所以先取视觉高再除 `appZoom()` —— 与下面 `frame()` 同一套换算，
+    // 否则正文设了 130%，带子的高度上限会按 1/1.3 缩一圈，两个函数还互相打架。
+    const viewH = view.getBoundingClientRect().height / appZoom() || 560;
     // 量化到一整行的整数倍：正文视口抖动两三个像素（滚动条进场、输入框长高一点）不该让面板高度
     // 跟着跳 14px —— 那会让「翻一页前后带子总高不变」这条不变量偶发地红。
     const cap = Math.min(MAX_PANEL_H, Math.round(viewH * PANEL_VIEWPORT_SHARE));

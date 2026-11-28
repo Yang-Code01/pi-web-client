@@ -553,7 +553,7 @@ check("并发（D420）：桥重启后 sweep 按「条」计数，不只是按�
   }
 });
 
-check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标成桥重启", () => {
+check("换脑（D446）：执行进程还活着的 running 不许被 sweep 标成桥重启", () => {
   const prev = process.env.PI_WEB_STATE;
   process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-live-sweep-"));
   try {
@@ -644,7 +644,7 @@ check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标�
   }
 });
 
-check("换脑（D441）：接回的进度逐字段归一化，别把盘上的字符串当数字广播", () => {
+check("换脑（D446）：接回的进度逐字段归一化，别把盘上的字符串当数字广播", () => {
   const prev = process.env.PI_WEB_STATE;
   process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-resume-progress-"));
   try {
@@ -714,7 +714,7 @@ check("换脑（D441）：接回的进度逐字段归一化，别把盘上的字
   }
 });
 
-check("换脑（D441）：一条 job 接不回来不许把整个脑启动拖垮", () => {
+check("换脑（D446）：一条 job 接不回来不许把整个脑启动拖垮", () => {
   const prev = process.env.PI_WEB_STATE;
   process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-resume-boom-"));
   try {
@@ -789,7 +789,7 @@ check("「评什么」存得下也读得回（空串照原样存，别被默认�
   assert.deepEqual(readReviewState(repo, "s1").pick, pick);
 });
 
-check("换脑（D441）：job 还没写回 pid 时，用新鲜心跳接回评审", () => {
+check("换脑（D446）：job 还没写回 pid 时，用新鲜心跳接回评审", () => {
   const prev = process.env.PI_WEB_STATE;
   process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-beat-resume-"));
   try {

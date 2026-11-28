@@ -102,11 +102,20 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 ### Running the bridge
 
-The bridge (`http://127.0.0.1:7864`) is normally started by hand in a terminal; its `pi --mode rpc` children die with it. A restart goes through the skill below (stop + `npm start` by hand still works, it just skips the build check). To tell whether you are a descendant of some pid, ask the human or print your own ancestor chain with `pwsh` (`Get-Process(...).Parent`). See `docs/agents/running-the-bridge.md`.
+The bridge (`http://127.0.0.1:7864`) is normally started by hand in a terminal; its `pi --mode rpc` children die with it. A restart is either a brain-only swap (设置 → 工具 →「热部署」) or a group restart through the skill below; stop + `npm start` by hand still works, it just skips the build check. To tell whether you are a descendant of some pid, ask the human or print your own ancestor chain with `pwsh` (`Get-Process(...).Parent`). See `docs/agents/running-the-bridge.md`.
 
 ### 更新 / 重启 bridge
 
-用 `.pi/skills/bridge-update/`（流程见 `SKILL.md`）：先 `node .pi/skills/bridge-update/bin/restart.mjs --check --dir <仓库根>` 判断是否落后（前台、安全，只 fetch 不杀进程）。落后了才把没做完的事写进 `.scratch/bridge-update/pending.md`，detached 起完整流程，然后**立刻结束回复**。不要在前台跑完整流程——杀 bridge 会切断自己的 turn。
+**日常换构建让用户点热部署**（设置 → 工具 →「热部署」）：它只换脑，正在跑的会话不断（D407），进度与失败原因都在面板上；主检出有 `package-lock.json` 这类未提交改动时用同一面板的「暂存后热部署」（D268）。agent 点不了那颗按钮——需要更新时先 `--check` 判断，把「落后了，点一下热部署」告诉用户。
+
+`.pi/skills/bridge-update/` 现在只负责它独占的四件事（流程见 `SKILL.md`）：
+
+- **桥已经死了 / 端口没回应**：热部署是桥上的端点，桥没起来没人给点；`restart.mjs` 从外面找 pid、拉壳起来。
+- **只想知道落后没有**：`node .pi/skills/bridge-update/bin/restart.mjs --check --dir <仓库根>`，前台、安全：只 fetch，不 build、不杀进程，也不写 `last-run.json`。
+- **壳自己的代码变了**（面板说「需整组重启」）：热部署只报不做，真整组重启走 `restart.mjs`——它杀的是壳，会话会断。
+- **看门狗**：壳崩之后唯一会把它拉回来的一层（安装脚本目前只有 Windows 计划任务）。
+
+走 `restart.mjs` 完整流程时：先把没做完的事写进 `.scratch/bridge-update/pending.md`，detached 起，然后**立刻结束回复**。不要在前台跑完整流程——杀 bridge 会切断自己的 turn。
 
 **每次会话开场**：读 `.scratch/bridge-update/last-run.json`；若 `pendingUnread: true`，先按 `pending.md` 把上次没做完的事做完，再把该字段改成 `false`。这是上一轮被重启切断后的续做入口。
 

@@ -20,6 +20,11 @@ export interface ViewerOpts {
   index: number;
   /** 底栏额外的按钮（比如「添加到表情」「打开所在位置」）。 */
   actions?: (item: ViewerItem) => { label: string; run: () => void }[];
+  /**
+   * 小图最多放大到几倍（默认 1 = 只缩不放）。头像只有 64–192px，不放大看不清，
+   * 但也不该把一张 32px 的小图标糊满屏幕，所以由调用方给上限。
+   */
+  upscale?: number;
   onClose: () => void;
 }
 
@@ -29,6 +34,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""):
   if (text) node.textContent = text;
   return node;
 }
+
+/** 缩放上限：滚轮 / `+` / 双击都走 `zoomTo`，统一在这里封顶（头像 3 倍只是初始 fit，还能再放大）。 */
+const MAX_SCALE = 16;
 
 function btn(face: IconName | string, title: string, run: () => void): HTMLButtonElement {
   const b = el("button", "iv-btn");
@@ -92,7 +100,7 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
     const w = img.naturalWidth || 1;
     const hgt = img.naturalHeight || 1;
     const box = stage.getBoundingClientRect();
-    fit = Math.min(1, (box.width - 32) / w, (box.height - 32) / hgt);
+    fit = Math.min(opts.upscale ?? 1, (box.width - 32) / w, (box.height - 32) / hgt);
     if (!Number.isFinite(fit) || fit <= 0) fit = 1;
     scale = fit;
     tx = 0;
@@ -100,7 +108,7 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
     paint();
   };
   const zoomTo = (s: number, cx?: number, cy?: number): void => {
-    const next = Math.max(0.05, Math.min(16, s));
+    const next = Math.max(0.05, Math.min(MAX_SCALE, s));
     // 以指针为中心缩放：指针下面那一点缩放前后不动。
     if (cx !== undefined && cy !== undefined) {
       const box = stage.getBoundingClientRect();
@@ -145,10 +153,13 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
     },
     { passive: false },
   );
-  let drag: { x: number; y: number; tx: number; ty: number; moved: boolean } | null = null;
+  let drag: { x: number; y: number; tx: number; ty: number; moved: boolean; backdrop: boolean } | null = null;
   stage.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0) return;
-    drag = { x: ev.clientX, y: ev.clientY, tx, ty, moved: false };
+    // 按下时先记住「是不是点在图外面的空白上」：setPointerCapture 会把随后的 pointerup 重定向到 stage，
+    // 到时候 ev.target 恒为 stage，点图片也被当成点空白 —— 一单击就把看图器关掉，dblclick 永远到不了。
+    const onStage = ev.target === stage; // backdrop-ok: 看图器舞台就是灯箱，点空白退出（D437 唯一例外）
+    drag = { x: ev.clientX, y: ev.clientY, tx, ty, moved: false, backdrop: onStage };
     stage.setPointerCapture(ev.pointerId);
   });
   stage.addEventListener("pointermove", (ev) => {
@@ -160,14 +171,17 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
     ty = drag.ty + dy;
     paint();
   });
-  stage.addEventListener("pointerup", (ev) => {
+  stage.addEventListener("pointerup", () => {
     const d = drag;
     drag = null;
     // 点在图外面的空白处（没拖动）= 关掉，和大多数看图器一样。
-    if (d && !d.moved && ev.target === stage) opts.onClose(); // backdrop-ok: 看图器是灯箱，点空白退出（D437 唯一例外）
+    if (d && !d.moved && d.backdrop) opts.onClose(); // backdrop-ok: 看图器是灯箱，点空白退出（D437 唯一例外）
   });
   stage.addEventListener("dblclick", (ev) => {
-    if (Math.abs(scale - fit) < 0.01) zoomTo(1, ev.clientX, ev.clientY);
+    // `fit` 可能 >1（小图带 `upscale`，头像就是 3 倍）：这时候双击去 1 倍比「适应窗口」还小，
+    // 和「双击放大」的直觉相反。只有 fit ≤ 1 时双去 1:1，否则再放大一档（评审 5-12）。
+    const zoomed = fit > 1 ? Math.min(MAX_SCALE, fit * 2) : 1;
+    if (Math.abs(scale - fit) < 0.01) zoomTo(zoomed, ev.clientX, ev.clientY);
     else reset();
   });
   const onKey = (ev: KeyboardEvent): void => {

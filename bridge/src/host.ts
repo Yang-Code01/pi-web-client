@@ -959,7 +959,7 @@ async function main(): Promise<void> {
   log(`壳在 http://${listenHost}:${port}（buildId ${hostBuildId}），控制通道 ${sock}`);
   spawnBrain();
 
-  // D441：更新器（bridge-update / hotdeploy）先 POST /api/host/stop?keepReviews=1，再杀旧壳；
+  // D446：更新器（bridge-update / hotdeploy）先 POST /api/host/stop?keepReviews=1，再杀旧壳；
   // 那条路径保留 detached 评审 worker。普通 SIGTERM / SIGINT 是真正停桥，必须把评审收掉。
   process.on("SIGTERM", () => void stop("all"));
   process.on("SIGINT", () => void stop("all"));

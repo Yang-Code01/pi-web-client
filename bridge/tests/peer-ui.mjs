@@ -525,6 +525,8 @@ try {
 
   // 设置页：忽略名单卡显示数量，点「清空忽略名单」后仍在线的人重新出现。
   await ig.p.click('#rail button[title="我"]');
+  // 「我」页现在是左侧子导航，忽略名单在单独一格。
+  await ig.p.click('#main .me-nav .me-tab:has-text("忽略名单")');
   await ig.p.waitForSelector('#main button:has-text("清空忽略名单")');
   const countNote = await ig.p.locator('#main .note:has-text("已忽略 1 人")').count();
   const clearDisabled = await ig.p.locator('#main button:has-text("清空忽略名单")').isDisabled();
