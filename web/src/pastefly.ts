@@ -8,30 +8,40 @@
  * 三个必须自己算的地方：
  *
  * 1. **坐标是两套**。`#app` 上挂着 `zoom: var(--ui-scale)`，幽灵层也挂在里面，所以写进 style
- *    的 px 是布局 px，而 `getBoundingClientRect()` 给的是视觉 px —— 一律先按视觉 px 算、再除一次
- *    缩放（D123 的老坑，跟 `selask.ts` 同一套写法）。
+ *    的 px 是布局 px，而 `getBoundingClientRect()` 给的是视觉 px —— 位置一律先按视觉 px 算、
+ *    再除一次缩放（D123 的老坑，跟 `selask.ts` 同一套写法）。但**弧顶、扇形错位、离输入框多高**
+ *    这些「相对幽灵自己」的量是布局 px，跟 `.ghost` 的 76px 一样：字号放大时幽灵变大，弧线也按
+ *    同样比例变大，不然 125% 字号下缩略图会比它飞的那条弧还高。下面 `START_LIFT` 等几个常量
+ *    就是这个意思，别再把它们除一次。
  * 2. **缓动不能写变量**。WAAPI 的 `easing` 不认 `var(--mac-spring)`，会当场抛
- *    `TypeError: not a valid value for easing` —— 所以这里把两条曲线再抄一遍，值必须跟
- *    `mac-base.css` 里的 `--mac-ease` / `--mac-spring` 一致。
+ *    `TypeError: not a valid value for easing` —— 所以这里把曲线抄成字面量；抄对没抄对由
+ *    `web/tests/pastefly-unit.mjs` 拿 `mac-base.css` 对一遍。
  * 3. **少动一点**。一次贴十张不该飞出十片：最多四片，剩下的靠徽标上的数字。
  *    `prefers-reduced-motion: reduce` 时整段跳过，连弹跳都不做。
  */
 import type { PendingImage } from "./images.ts";
 
-/** `--mac-ease`（iOS 弹层那条「快出慢收」）。 */
-export const EASE = "cubic-bezier(0.32, 0.72, 0, 1)";
-/** `--mac-spring`（带一点回弹）。 */
+/** `--mac-spring`（带一点回弹）。必须跟 `mac-base.css` 里那条一模一样（单测对账）。 */
 export const SPRING = "cubic-bezier(0.34, 1.42, 0.64, 1)";
 
 /** 幽灵缩略图的边长（布局 px）。 */
 const GHOST = 76;
+/** 起点在输入框顶边上方多高（布局 px）。 */
+const START_LIFT = 54;
+/** 悬停帧再多抬一点，像被捏起来（布局 px）。 */
+const HOLD_RISE = 8;
+/** 弧顶比起点与终点之间的直线再高多少（布局 px）。 */
+const ARC_LIFT = 18;
+/** 多张之间的错位（布局 px），免得叠成一片完全看不清。 */
+const FAN_X = 14;
+const FAN_Y = 12;
 /** 一张图从浮出到落进徽标要多久；跟原型里调过的一致，再快就只剩残影。 */
 const FLY_MS = 700;
 /** 多张之间错开的时间：看得出是「好几张」。 */
 const STAGGER_MS = 90;
 /** 再多也不飞更多片。 */
 const MAX_GHOSTS = 4;
-/** 徽标实底闪一下的时长（跟 styles.css 的动画时长目的一致，只是这里用定时器收）。 */
+/** 徽标实底闪一下的时长。 */
 const FLASH_MS = 260;
 
 export interface PasteFlyOpts {
@@ -49,6 +59,13 @@ function reducedMotion(): boolean {
   return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+/**
+ * 徽标身上正在跑的那条落地动画、和那个要摘 `.flash` 的定时器。
+ * 连贴两次时先收掉上一次：不 cancel 的话动画对象会一直堆到 400ms，前一个定时器还会把刚挂上的
+ * `.flash` 提前摘掉（第二次落地看起来就没闪）。
+ */
+const landing = new WeakMap<HTMLElement, { anim?: Animation; flash?: number }>();
+
 /** 待发图片 → 能塞进 `<img src>` 的 data URL（跟待发图片弹窗里缩略图用的是同一个）。 */
 export function imageSrc(image: PendingImage): string {
   return `data:${image.mimeType};base64,${image.data}`;
@@ -56,11 +73,15 @@ export function imageSrc(image: PendingImage): string {
 
 /**
  * 徽标「落地」提示：弹一下 + 实底闪一下。
- * 弹跳是唯一一个不依赖幽灵缩略图的信号（最后一张落地、以及目录里选图附加时都用它）。
+ * 弹跳是唯一一个不依赖幽灵缩略图也能成立的信号 —— 每一批附加（粘贴 / 拖拽 / 选文件 / 相册）
+ * 最后都会调它一次。
  */
 export function badgeLanded(badge: HTMLElement, scale = 1.14): void {
   if (reducedMotion()) return;
-  badge.animate(
+  const prev = landing.get(badge) ?? {};
+  prev.anim?.cancel();
+  if (prev.flash !== undefined) window.clearTimeout(prev.flash);
+  const anim = badge.animate(
     [
       { transform: "scale(.62)", opacity: 0.35 },
       { transform: `scale(${scale})`, opacity: 1, offset: 0.52 },
@@ -71,7 +92,8 @@ export function badgeLanded(badge: HTMLElement, scale = 1.14): void {
   );
   // 实底那一下交给 CSS：半透明强调色叠在浅底上几乎看不出变化（`.image-badge.flash`）。
   badge.classList.add("flash");
-  window.setTimeout(() => badge.classList.remove("flash"), FLASH_MS);
+  const flash = window.setTimeout(() => badge.classList.remove("flash"), FLASH_MS);
+  landing.set(badge, { anim, flash });
 }
 
 /** 幽灵层的单例：没有幽灵在飞时整个摘掉，别在 `#app` 里留一层常驻的全屏浮层。 */
@@ -87,12 +109,14 @@ function layer(host: HTMLElement): HTMLElement {
 
 /**
  * 把刚贴上的图从输入框飞进徽标。返回落地（最后一张停下）的 Promise，方便测试等它结束；
- * 不关心的话直接 `void` 掉。
+ * 不关心的话直接 `void` 掉。动画被取消时也算这一张「停下」，Promise 不会悬着。
  */
 export function flyImagesToBadge(srcs: readonly string[], opts: PasteFlyOpts): Promise<void> {
+  // 先做便宜的判断，最后才读 rect：`addImages()` 刚改过 DOM，多读一次就是多一次强制同步布局。
+  if (!srcs.length || reducedMotion()) return Promise.resolve();
   const host = opts.host();
   const target = opts.badge.getBoundingClientRect();
-  if (!host || !srcs.length || reducedMotion() || target.width < 2) return Promise.resolve();
+  if (!host || target.width < 2) return Promise.resolve();
 
   const s = opts.scale() || 1;
   const from = opts.origin ?? target;
@@ -100,15 +124,14 @@ export function flyImagesToBadge(srcs: readonly string[], opts: PasteFlyOpts): P
   const shown = srcs.slice(0, MAX_GHOSTS);
   const flights: Promise<void>[] = [];
 
-  // 先在视觉 px 里算清楚（幽灵的视觉边长是 GHOST × 缩放），再整体除一次换成布局 px：
-  // 起点 = 输入框中间偏上（图「从输入框里浮出来」），终点 = 徽标正中。
+  // 两个中心点（视觉 px → 布局 px），弧顶与扇形错位直接加布局 px（见文件头第 1 条）。
   const half = (GHOST * s) / 2;
   const startX = (from.left + from.width / 2 - half) / s;
-  const startY = (from.top - 54 * s) / s;
+  const startY = from.top / s - START_LIFT;
   const endX = (target.left + target.width / 2 - half) / s;
   const endY = (target.top + target.height / 2 - half) / s;
   const midX = startX + (endX - startX) * 0.4;
-  const midY = startY + (endY - startY) * 0.4 - 18;
+  const midY = startY + (endY - startY) * 0.4 - ARC_LIFT;
 
   shown.forEach((src, i) => {
     const ghost = document.createElement("div");
@@ -118,13 +141,12 @@ export function flyImagesToBadge(srcs: readonly string[], opts: PasteFlyOpts): P
     img.alt = "";
     ghost.append(img);
     layerEl.append(ghost);
-    // 多张时错开一点，免得叠成一片完全看不清。
-    const dx = i * 14;
-    const dy = i * 12;
+    const dx = i * FAN_X;
+    const dy = i * FAN_Y;
     const anim = ghost.animate(
       [
         { transform: `translate(${startX + dx}px, ${startY + dy}px) scale(.7) rotate(-4deg)`, opacity: 0, offset: 0, easing: "cubic-bezier(.2,.9,.3,1)" },
-        { transform: `translate(${startX + dx}px, ${startY + dy - 8}px) scale(1) rotate(-2deg)`, opacity: 1, offset: 0.22, easing: "ease-out" },
+        { transform: `translate(${startX + dx}px, ${startY + dy - HOLD_RISE}px) scale(1) rotate(-2deg)`, opacity: 1, offset: 0.22, easing: "ease-out" },
         { transform: `translate(${midX + dx}px, ${midY + dy}px) scale(.94) rotate(-1deg)`, opacity: 1, offset: 0.52, easing: "cubic-bezier(.45,0,.15,1)" },
         { transform: `translate(${endX}px, ${endY}px) scale(.2)`, opacity: 0.85, offset: 0.9, easing: "ease-out" },
         { transform: `translate(${endX}px, ${endY}px) scale(.12)`, opacity: 0, offset: 1 },
@@ -133,12 +155,16 @@ export function flyImagesToBadge(srcs: readonly string[], opts: PasteFlyOpts): P
     );
     flights.push(
       new Promise<void>((resolve) => {
-        anim.onfinish = () => {
+        // `finished` 在正常结束与**被取消**两种情况下都会落定（取消时 reject 一个 AbortError）。
+        // 只接 `onfinish` 的话，动画一被取消（元素被摘掉、`#app` 重建、标签页被冻结后台清理）
+        // 幽灵和这一层就永远留在 DOM 里，徽标也不弹，这个 Promise 也不 resolve。
+        const settle = () => {
           ghost.remove();
           // 飞完一张就收一层：最后一张落地时整层拆掉，`#app` 里不留空浮层。
           if (!layerEl.childElementCount) layerEl.remove();
           resolve();
         };
+        anim.finished.then(settle, settle);
       }),
     );
   });

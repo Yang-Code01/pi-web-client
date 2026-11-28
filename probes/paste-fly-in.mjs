@@ -41,9 +41,25 @@ const login = await fetch(`${BASE}/api/login`, {
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ passphrase: pass }),
+}).catch((ex) => {
+  console.error(`${BASE} 连不上（桥起了吗？见 .pi/skills/pi-web-client-test-dev）：${ex.message}`);
+  process.exit(1);
 });
 const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
-const { sessions } = await (await fetch(`${BASE}/api/sessions`, { headers: { cookie } })).json();
+if (!login.ok || !cookie) {
+  // 口令不对 / 桥没起时 /api/sessions 回的是 HTML，直接 .json() 只会报「Unexpected token <」。
+  console.error(`登录 ${BASE} 失败：HTTP ${login.status}（口令取自 ${STATE}/passphrase.txt，隔离桥的口令是 test）`);
+  process.exit(1);
+}
+const list = await fetch(`${BASE}/api/sessions`, { headers: { cookie } });
+const { sessions } = await list.json().catch(() => {
+  console.error(`/api/sessions 没回 JSON：HTTP ${list.status}`);
+  process.exit(1);
+});
+if (!sessions?.length) {
+  console.error("这个实例里一个会话都没有，先手动开一个再跑探针");
+  process.exit(1);
+}
 const sessionId = sessions[0].id;
 
 const browser = await chromium.launch();
@@ -99,8 +115,13 @@ const flyGeometry = (page) =>
     const anims = ghosts.map((g) => g.getAnimations()[0]).filter(Boolean);
     const box = document.querySelector(".composer-input")?.getBoundingClientRect();
     const badge = document.querySelector(".row .image-badge")?.getBoundingClientRect();
+    // 时长与「悬停帧」的 offset 都从动画自己身上读：源码改了时长/关键帧，这里跟着走，
+    // 不会因为写死的 700ms 让「末帧」变成中段。
+    const timing = anims[0]?.effect.getTiming();
+    const duration = Number(timing?.duration) || 0;
+    const holdOffset = anims[0]?.effect.getKeyframes()[1]?.offset ?? 0;
     const rectAt = (time) => {
-      const at = { start: 0, hold: 700 * 0.22, end: 690 }[time] ?? 0;
+      const at = { start: 0, hold: duration * holdOffset, end: duration }[time] ?? 0;
       anims.forEach((a) => {
         a.pause();
         a.currentTime = (a.effect.getTiming().delay || 0) + at;
@@ -119,12 +140,30 @@ const flyGeometry = (page) =>
       start,
       hold,
       end,
-      box: box ? { x: box.x + box.width / 2, y: box.y + box.height / 2 } : null,
+      box: box ? { x: box.x + box.width / 2, y: box.y + box.height / 2, top: box.top } : null,
       badge: badge ? { x: badge.x + badge.width / 2, y: badge.y + badge.height / 2 } : null,
     };
   });
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+/**
+ * 记「曾经发生过」：`.flash` 只挂 260ms、弹跳 400ms，靠轮询去撞这两个窗口是会翻车的；
+ * 「弹过又结束」与「从来没弹」在事后看是同一个样子。
+ */
+const recordLanding = (page) =>
+  page.evaluate(() => {
+    window.__landed = { flash: 0, pops: 0 };
+    const badge = () => document.querySelector(".row .image-badge");
+    new MutationObserver(() => {
+      if (badge()?.classList.contains("flash")) window.__landed.flash++;
+    }).observe(document.getElementById("app"), { subtree: true, attributes: true, attributeFilter: ["class"] });
+    const real = Element.prototype.animate;
+    Element.prototype.animate = function (...args) {
+      if (this.classList?.contains("image-badge")) window.__landed.pops++;
+      return real.apply(this, args);
+    };
+  });
 
 // ---------------------------------------------------------------- 1) 贴两张：两片幽灵
 {
@@ -152,28 +191,29 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 // ---------------------------------------------------------------- 2) 落地之后：层拆掉、徽标弹并闪
 {
   const page = await open({ width: 900 });
+  await recordLanding(page);
   await pasteColors(page, ["#27ae60"]);
   await page.waitForSelector("#app .paste-fly .ghost", { timeout: 4000 });
+  // 等这一层真的被拆掉（既证明收尾发生了，也说明 Promise 不会悬着）。
   await page.waitForFunction(() => !document.getElementById("app")?.querySelector(":scope > .paste-fly"), null, { timeout: 4000 });
+  await page.waitForTimeout(500); // 让 260ms 的 `.flash` 定时器跑完
   const after = await page.evaluate(() => {
     const badge = document.querySelector(".row .image-badge");
     return {
       layer: Boolean(document.getElementById("app")?.querySelector(":scope > .paste-fly")),
       layerCount: document.querySelectorAll(".paste-fly").length,
-      pops: badge?.getAnimations().length ?? 0,
-      flash: badge?.classList.contains("flash") ?? false,
-      text: badge?.textContent ?? "",
       ghosts: document.querySelectorAll(".paste-fly .ghost").length,
+      seen: window.__landed,
+      flashNow: badge?.classList.contains("flash") ?? false,
+      text: badge?.textContent ?? "",
     };
   });
   check("落地后整层从 DOM 里拆掉（不留常驻浮层）", !after.layer && after.layerCount === 0);
   check("落地后没有残留幽灵", after.ghosts === 0, String(after.ghosts));
-  check("徽标弹了一下（落地动画在跑）", after.pops > 0, String(after.pops));
-  check("徽标实底闪了一下（.flash）", after.flash);
+  check("徽标弹了一下", after.seen?.pops > 0, String(after.seen?.pops));
+  check("徽标实底闪了一下（.flash 曾挂上）", after.seen?.flash > 0, String(after.seen?.flash));
   check("徽标写的是 +1 图", after.text === "+1 图", after.text);
-  await page.waitForTimeout(400);
-  const settled = await page.evaluate(() => document.querySelector(".row .image-badge")?.classList.contains("flash"));
-  check("260ms 后 .flash 自己摘掉", settled === false);
+  check("260ms 后 .flash 自己摘掉", after.flashNow === false);
   check("输入框文字/焦点没被动过（动效不碰输入框）", (await page.locator("textarea").inputValue()) === "");
   await page.close();
 }
@@ -190,14 +230,51 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   await page.close();
 }
 
+// ---------------------------------------------------------------- 3bis) 动画被取消：也要收干净
+{
+  const page = await open({ width: 900 });
+  await recordLanding(page);
+  await pasteColors(page, ["#2980b9"]);
+  await page.waitForSelector("#app .paste-fly .ghost", { timeout: 4000 });
+  // 等价于「飞到一半 #app 被重建 / 标签页被冻结后动画被 cancel」：收尾不能只挂在 onfinish 上。
+  await page.evaluate(() => document.getAnimations().forEach((a) => a.cancel()));
+  const cleaned = await page
+    .waitForFunction(() => document.querySelectorAll(".paste-fly .ghost").length === 0, null, { timeout: 4000 })
+    .then(() => true, () => false);
+  const after = await page.evaluate(() => ({
+    layers: document.querySelectorAll(".paste-fly").length,
+    ghosts: document.querySelectorAll(".paste-fly .ghost").length,
+    seen: window.__landed,
+  }));
+  check("动画被取消：幽灵被收掉", cleaned && after.ghosts === 0, JSON.stringify(after));
+  check("动画被取消：这一层也拆掉（不留常驻浮层）", after.layers === 0, String(after.layers));
+  check("动画被取消：徽标照样落地（Promise 没悬着）", after.seen?.pops > 0, String(after.seen?.pops));
+  await page.close();
+}
+
 // ---------------------------------------------------------------- 4) reduced motion：什么都不飞
 {
   const page = await open({ width: 900, reducedMotion: "reduce" });
+  // 记「曾经发生过」而不是「现在还在」：真飞了、真弹过又结束的话，等 120ms 再看会被漏掉。
+  await page.evaluate(() => {
+    window.__seen = { layers: 0, anims: 0 };
+    const app = document.getElementById("app");
+    new MutationObserver((records) => {
+      for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1 && n.classList?.contains("paste-fly")) window.__seen.layers++;
+    }).observe(app, { childList: true, subtree: true });
+    const real = Element.prototype.animate;
+    Element.prototype.animate = function (...args) {
+      window.__seen.anims++;
+      return real.apply(this, args);
+    };
+  });
   await pasteColors(page, ["#8e44ad"]);
-  await page.waitForTimeout(120);
+  // 等张数真的更新（说明贴图这条路走完了），再回头读观察结果。
+  await page.waitForFunction(() => document.querySelector(".row .image-badge")?.textContent === "+1 图", null, { timeout: 4000 });
+  await page.waitForTimeout(200); // 留一点时间给「本来会同帧发生」的动画
   const state = await page.evaluate(() => ({
-    layers: document.querySelectorAll(".paste-fly").length,
-    pops: document.querySelector(".row .image-badge")?.getAnimations().length ?? 0,
+    layers: window.__seen.layers,
+    pops: window.__seen.anims,
     text: document.querySelector(".row .image-badge")?.textContent ?? "",
   }));
   check("reduced motion：一片都不飞", state.layers === 0, String(state.layers));
@@ -220,6 +297,15 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
     "125% 字号：终点仍在徽标中心（±8px）",
     Boolean(geo?.badge) && geo.end.every((g) => dist(g, geo.badge) < 8),
     JSON.stringify({ end: geo?.end, badge: geo?.badge }),
+  );
+  // 起点高度是「相对幽灵自己」的布局 px（54），所以 125% 下视觉距离也是 54 × 1.25 ≈ 67.5：
+  // 幽灵变大、弧线跟着变大，不是屏幕 px 常量。这条钉住这个选择，别被顺手改成视觉常量。
+  const startTop = geo?.start[0] ? geo.start[0].y - (76 * 1.25) / 2 : 0;
+  const lift = geo?.box ? startTop - geo.box.top : 0;
+  check(
+    "125% 字号：起点离输入框仍是 54 布局 px ⇒ 视觉 ≈67.5（弧线跟着缩放，不是屏幕 px 常量）",
+    Math.abs(lift + 67.5) < 8,
+    `${lift.toFixed(1)}px`,
   );
   await page.close();
 }
