@@ -192,6 +192,9 @@ export interface SessionState {
   done: boolean;
   model?: string;
   modelName?: string;
+  /** Which provider serves `model` (pi's `get_state.model.provider`). 两个 provider 可以卖同一个 id，
+   *  只给 id 的话页面按目录里的第一个同 id 还原，可能挑中另一个来源（D454）。 */
+  provider?: string;
   thinkingLevel?: string;
   updatedAt: number;
   startedAt?: string;
@@ -214,6 +217,12 @@ export interface SessionState {
    * 并在输入框上方给一条「子代理运行中」的提示 —— pi 会在 runner 回来时自己唤醒继续。
    */
   bg?: BgView | null;
+  /**
+   * D453: 这个会话此刻在跑几条**评审记录**（0–2，跨仓库共用额度；`null` = 0）。
+   * 评审是 detached worker（D446），会话自己早就 settle 了，所以徽标不能只看 `running` / `done`。
+   * 旧桥不发这一格 = 0（与今天逐字一致）。
+   */
+  review?: number | null;
   /** Launch options chosen at creation (#28), one line. */
   launch?: string;
   /** #484：这个会话已经交接给哪个新会话（旧会话只读；有它的卡上挂「已交接」徽标，点一下跳过去）。 */

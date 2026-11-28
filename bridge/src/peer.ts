@@ -15,6 +15,8 @@ export interface PeerView {
   ips: string[];
   /** 对端自报的头像 id（见 peer/src/avatars.ts），没报就是空。 */
   avatar?: string;
+  /** 对端自报的更新组身份（D451）：认哪份仓库 / 退出过哪些组。 */
+  updates?: { repo?: string; publisher?: boolean; optOut?: string[] };
 }
 
 export interface PeerStatus {
@@ -30,7 +32,36 @@ export interface PeerStatus {
   avatar?: string;
   idleMs?: number;
   online: PeerView[];
-  config: { hidden: boolean; pauseFiles: boolean; dnd: boolean; inbox: string; manual: string[] };
+  config: {
+    hidden: boolean;
+    pauseFiles: boolean;
+    dnd: boolean;
+    inbox: string;
+    manual: string[];
+    /** 旧 peer 可能不返回这一块：调用方都按可选处理（评审 #6）。 */
+    updates?: { repo: string; publisher: boolean };
+  };
+}
+
+/** 更新公告（与 peer/src/announce.ts 的 AnnouncePayload 同形）：桥只透传，不解释（评审 #11）。 */
+export interface PeerAnnounce {
+  repo: string;
+  commit: string;
+  batches: { title: string; body: string }[];
+  howTo: "auto";
+}
+
+/** 群里的一份快照（`/groups` 回来的那份，只声明 bridge 用得着的字段）。 */
+export interface PeerGroup {
+  id: string;
+  name: string;
+  members: { nodeId: string; nickname?: string; hostname?: string; port?: number }[];
+  owner: string;
+  v: number;
+  at: number;
+  left?: boolean;
+  announceOnly?: boolean;
+  publisher?: string;
 }
 
 /** `/threads` 里一条会话（只声明 bridge 用得着的字段，其余原样透传给页面）。 */
@@ -318,12 +349,20 @@ export class PeerHost {
     return this.request("GET", "/threads");
   }
 
-  /** 隐身 / 免打扰 / 暂停收文件 / 名字 / 头像：改 peer 的 cfg 并落盘到 `~/.pi-peer/config.json`。 */
-  setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean; nickname?: string; avatar?: string }): Promise<{
+  /** 隐身 / 免打扰 / 暂停收文件 / 名字 / 头像 / 更新组：改 peer 的 cfg 并落盘到 `~/.pi-peer/config.json`。 */
+  setConfig(patch: {
+    hidden?: boolean;
+    dnd?: boolean;
+    pauseFiles?: boolean;
+    nickname?: string;
+    avatar?: string;
+    updates?: { repo?: string; publisher?: boolean };
+  }): Promise<{
     ok: boolean;
     nickname?: string;
     avatar?: string;
-    config: { hidden: boolean; dnd: boolean; pauseFiles: boolean; inbox: string; manual: string[] };
+    // 旧 peer 可能不返回 updates，按可选处理（评审 #17）。
+    config: { hidden: boolean; dnd: boolean; pauseFiles: boolean; inbox: string; manual: string[]; updates?: { repo: string; publisher: boolean } };
   }> {
     return this.request("POST", "/config", patch);
   }
@@ -396,11 +435,12 @@ export class PeerHost {
     text: string,
     via?: "pi",
     replyTo?: { id: string; from: string; excerpt: string },
-    extra: { priority?: string; topic?: string } = {},
+    extra: { priority?: string; topic?: string; announce?: PeerAnnounce } = {},
   ): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
     const body: Record<string, unknown> = { peer, text };
     if (extra.priority) body.priority = extra.priority;
     if (extra.topic) body.topic = extra.topic;
+    if (extra.announce) body.announce = extra.announce;
     if (via) body.via = via;
     if (replyTo) body.replyTo = replyTo;
     return this.request("POST", "/send", body);
@@ -427,13 +467,18 @@ export class PeerHost {
   }
 
   /** 群聊：列表。 */
-  groups(): Promise<{ ok: boolean; groups: unknown[] }> {
+  groups(): Promise<{ ok: boolean; groups: PeerGroup[] }> {
     return this.request("GET", "/groups");
   }
 
-  /** 群聊：create / rename / invite / leave（D-群聊，见 peer/src/groups.ts）。 */
-  group(body: Record<string, unknown>): Promise<{ ok: boolean; group?: unknown }> {
+  /** 群聊：create / rename / invite / leave / rejoin（D-群聊，见 peer/src/groups.ts）。 */
+  group(body: Record<string, unknown>): Promise<{ ok: boolean; group?: PeerGroup }> {
     return this.request("POST", "/groups", body);
+  }
+
+  /** 给刚进更新组的人补最近几条公告（D451）。 */
+  replayAnnouncements(group: string, peer: string, limit = 3): Promise<{ ok: boolean; sent: number }> {
+    return this.request("POST", "/announce/replay", { group, peer, limit });
   }
 
   /** P3：输入中。刻意不 await 结果也不报错：心跳丢了就丢了。 */

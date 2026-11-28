@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { avatarHash, knownAvatar } from "./avatars.ts";
+import { isRepo } from "./repo.ts";
 
 export const VERSION = "0.2.0";
 /** 协议版本：announce / inbox 都带着它，将来换协议靠它挡掉旧对端。 */
@@ -34,6 +35,12 @@ export interface PeerConfig {
   group: { address: string; port: number };
   /** 手动地址兜底：`["192.168.1.5:7865"]`。组播不通时唯一的出路。 */
   manual: string[];
+  /**
+   * 更新组（D451）：`repo` 非空 = 这台机器认这份仓库，会把自己的仓库标识放进 announce，
+   * 让同仓库的发布者把自己拉进更新组；`publisher` = 这台机器负责查 `origin/main` 并播报。
+   * 同一份仓库在局域网里只应该有一台 `publisher`（换机器 = 新的打开、旧的关掉）。
+   */
+  updates: { repo: string; publisher: boolean };
 }
 
 /** `~/.pi-peer`，`PI_PEER_STATE` 可改（e2e 用它隔离两份实例）。 */
@@ -105,6 +112,8 @@ function defaultNickname(): string {
 export function loadConfig(): PeerConfig {
   const saved = readJson<Partial<PeerConfig>>(statePath("config.json"), {});
   const group = saved.group ?? { address: DEFAULT_GROUP, port: DEFAULT_ANNOUNCE_PORT };
+  // 手改 config.json 写进带空格 / 冒号的 repo，会 announce 出去一个谁也匹配不上的标识（评审 #17）。
+  const savedRepo = typeof saved.updates?.repo === "string" ? saved.updates.repo.trim() : "";
   return {
     port: Number(process.env.PI_PEER_PORT || saved.port || DEFAULT_PORT),
     bind: process.env.PI_PEER_BIND || saved.bind || "0.0.0.0",
@@ -124,6 +133,11 @@ export function loadConfig(): PeerConfig {
       port: Number(process.env.PI_PEER_ANNOUNCE_PORT || group.port),
     },
     manual: Array.isArray(saved.manual) ? saved.manual.filter((s) => typeof s === "string") : [],
+    updates: {
+      repo: isRepo(savedRepo) ? savedRepo : "",
+        // repo 不合法时 publisher 也跟着关：否则 announce 会带出「发布者开着、仓库为空」的矛盾状态（评审 #7）。
+        publisher: isRepo(savedRepo) && saved.updates?.publisher === true,
+    },
   };
 }
 

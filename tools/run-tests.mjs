@@ -43,6 +43,7 @@ const SERIAL = new Map([
   ["peer-history", "同上"],
   ["peer-outbox", "同上"],
   ["peer-read-watermark", "同上"],
+  ["peer-updates-e2e", "同上：还占用 7981 组播端口和 7881-7883 三个固定端口"],
 ]);
 
 /** 默认不跑：这些不是「自起一份桥」的测试，并发跑它们没有意义/会打架。 */

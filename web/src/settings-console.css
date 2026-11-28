@@ -9,6 +9,23 @@
   display: none !important;
 }
 
+/* #742：控制台是**量尺**，不跟着外观「字号」缩放 —— 它挂在 body 上（D450，`overlayHost()` 那条分叉）。
+   `:root` 的 `--vh1` / `--vw1` 是「除过缩放」的长度，在控制台这一层要回到 1:1，否则它里面任何
+   `calc(var(--vh1) * N)` 都会缩一圈（D123 那一族坑：视口单位不认 zoom）。
+
+   判据必须**窄到宿主本身**（`.st-back` / `.sheet-back` 这类外壳，且控制台是它的直接子级）：
+   写成 `body > :has(.st-console)` 时，任何「肚子里装着控制台」的 body 子节点都会被重置 —— 包括
+   测试里那张假 `#app`（`web/tests/handoff-sheet-browser.mjs` 第 3 段就是拿它当反证的：字号 150%
+   下弹层当场顶出窗口）。宿主不在 body 下的（例如测试里显式 `mount(app)`）走不到这条，那时
+   `--vh1` 本来就该是除过缩放的那一份。
+   **反过来说：把 `.st-console` 塞进 `#app` 是不受支持的挂法** —— 它按视口宽读 `data-st-*`
+   折叠档位，而在 `#app` 里可用宽度只有「视口 ÷ 字号」，两套判据会打架。要挂控制台就走
+   `overlayHost()` / `overlay()`（`modal.ts`），别自己 `append`。 */
+body > :is(.st-back, .sheet-back):has(> .st-console) {
+  --vh1: 1vh;
+  --vw1: 1vw;
+}
+
 .st-back {
   position: fixed;
   inset: 0;
@@ -348,23 +365,96 @@
   opacity: 0.7;
 }
 
+/* #742：拖动字号滑杆时「让开」—— 连遮罩一起全透，让真页面自己演示（视觉就这两条：
+   控制台淡到 3%，宿主的底色与模糊去掉）。
+   着色与模糊有两处来源：settings-console.css 的 `.st-back`（0,1,0）与 mac.css 的
+   `html[data-ui="mac"] [data-mac-surface="window"]`（0,2,1）。这里靠 `body` + `[data-mac-surface]`
+   把特异性抬到 (0,3,2) 一次压过两处，**不挂 `data-ui`**（挂上就白多一个依赖：哪天 `data-ui`
+   不写 "mac" 或干脆不写，让开就没效果了）。
+   这一条是**跟 mac.css 比权重**：那边再抬一级（比如加 `[data-mac-dim]`）这里会静默失效，
+   届时把这条搬进 mac.css 跟材质规则放一起。
+   宿主认 `.st-back` 与 `.sheet-back` 两种 —— 和上面那条 `--vh1` 复位同一个判据（`overlayHost()`
+   认的控制台外壳就是这两种），别只在一种上写。今天只有 `.st-back` 那扇有字号滑杆，但让这两条
+   散开，改宿主类名时就会漏一处。 */
+body > :is(.st-back, .sheet-back)[data-mac-surface].peeking {
+  background: transparent;
+  /* 两样都清：mac.css 那层模糊写了 `-webkit-backdrop-filter`，只清标准属性时 Safari 还糊着。 */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.st-back.peeking .st-console {
+  opacity: 0.03;
+}
+/* 读数胶囊：驻在宿主里（不进 .st-console —— 那个壳 overflow:hidden 会把它裁掉），
+   只读不接指针。细轨道按 (v-0.8)/1.2 填充，和真轨道同一套刻度。 */
+.console-peek {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 168px;
+  padding: 9px 14px 10px;
+  /* 材质跟主题走（D418）：和 `.chat-jump` / `.sel-ask` / 助手气泡同一套玻璃 ——
+     写死的 `--panel` 与黑投影在三套主题里长得一样，等于没跟主题。 */
+  background: var(--mac-glass-strong, var(--panel-3));
+  -webkit-backdrop-filter: var(--mac-blur, none);
+  backdrop-filter: var(--mac-blur, none);
+  border: 0.5px solid var(--mac-glass-line, var(--line-strong));
+  border-radius: 14px;
+  box-shadow: var(--mac-shadow-menu, 0 12px 34px rgba(0, 0, 0, 0.38));
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.st-back.peeking .console-peek {
+  opacity: 1;
+}
+.console-peek__label {
+  font: 11.5px/1 var(--sans);
+  color: var(--dim);
+}
+.console-peek__value {
+  justify-self: end;
+  font: 600 13px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.console-peek__rail {
+  grid-column: 1 / -1;
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+.console-peek__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
 /* ---------------------------------------------------------------- 窄屏：左栏横过去 */
 /* D158：控制台按有效宽度折叠，#app 放大字号时原生 @media 不会跟着翻（见 app.ts syncCompact）。 */
-:where(html[data-console-narrow="true"]) .st-back {
+:where(html[data-st-narrow="true"]) .st-back {
   padding: 10px;
 }
 
-:where(html[data-console-narrow="true"]) .st-console {
+:where(html[data-st-narrow="true"]) .st-console {
   width: 100%;
   height: 100%;
 }
 
-:where(html[data-console-narrow="true"]) .st-main {
+:where(html[data-st-narrow="true"]) .st-main {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-:where(html[data-console-narrow="true"]) .st-nav {
+:where(html[data-st-narrow="true"]) .st-nav {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
@@ -373,44 +463,44 @@
   border-bottom: 1px solid var(--line-soft);
 }
 
-:where(html[data-console-narrow="true"]) .st-nav__group,
-:where(html[data-console-narrow="true"]) .st-nav__count {
+:where(html[data-st-narrow="true"]) .st-nav__group,
+:where(html[data-st-narrow="true"]) .st-nav__count {
   display: none;
 }
 
-:where(html[data-console-narrow="true"]) .st-nav__item {
+:where(html[data-st-narrow="true"]) .st-nav__item {
   width: auto;
   padding: 7px 11px;
 }
 
-:where(html[data-console-narrow="true"]) .st-nav__item.on {
+:where(html[data-st-narrow="true"]) .st-nav__item.on {
   box-shadow: none;
 }
 
-:where(html[data-console-tight="true"]) .st-back {
+:where(html[data-st-tight="true"]) .st-back {
   padding: 0;
 }
 
-:where(html[data-console-tight="true"]) .st-console {
+:where(html[data-st-tight="true"]) .st-console {
   width: 100%;
   height: 100%;
   border: 0;
   border-radius: 0;
 }
 
-:where(html[data-console-tight="true"]) .st-head {
+:where(html[data-st-tight="true"]) .st-head {
   padding: 14px;
 }
 
-:where(html[data-console-tight="true"]) .st-title {
+:where(html[data-st-tight="true"]) .st-title {
   font-size: 20px;
 }
 
-:where(html[data-console-tight="true"]) .st-badges {
+:where(html[data-st-tight="true"]) .st-badges {
   display: none;
 }
 
-:where(html[data-console-tight="true"]) .st-pane {
+:where(html[data-st-tight="true"]) .st-pane {
   padding: 14px;
 }
 
@@ -557,14 +647,14 @@
   }
 }
 
-:where(html[data-console-mid="true"]) .st-cmp-head,
-:where(html[data-console-mid="true"]) .st-cmp-row {
+:where(html[data-st-mid="true"]) .st-cmp-head,
+:where(html[data-st-mid="true"]) .st-cmp-row {
   grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr) minmax(0, 1.2fr);
   gap: 6px;
   padding: 6px 8px;
 }
 
-:where(html[data-console-mid="true"]) .st-cmp-note {
+:where(html[data-st-mid="true"]) .st-cmp-note {
   font-size: 10px;
 }
 
@@ -731,7 +821,7 @@
   white-space: nowrap;
 }
 
-:where(html[data-console-narrow="true"]) .st-cards {
+:where(html[data-st-narrow="true"]) .st-cards {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -879,16 +969,16 @@
   border-color: var(--warn-dim);
 }
 
-:where(html[data-console-tight="true"]) .st-console.settings-sheet .settings-row {
+:where(html[data-st-tight="true"]) .st-console.settings-sheet .settings-row {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
-:where(html[data-console-tight="true"]) .st-console.settings-sheet .settings-row > .ns-input {
+:where(html[data-st-tight="true"]) .st-console.settings-sheet .settings-row > .ns-input {
   grid-column: 1 / -1;
   grid-row: 3;
 }
 
-:where(html[data-console-tight="true"]) .st-console.settings-sheet .settings-row > .settings-src {
+:where(html[data-st-tight="true"]) .st-console.settings-sheet .settings-row > .settings-src {
   grid-column: 2;
   grid-row: 1;
 }
@@ -1200,11 +1290,11 @@
 }
 
 /* 窄：页签挪到标题下面一行，按钮留在右上。 */
-:where(html[data-console-narrow="true"]) .st-console.display-sheet .st-head {
+:where(html[data-st-narrow="true"]) .st-console.display-sheet .st-head {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
-:where(html[data-console-narrow="true"]) .st-console.display-sheet .st-tabs {
+:where(html[data-st-narrow="true"]) .st-console.display-sheet .st-tabs {
   grid-row: 2;
   grid-column: 1 / -1;
   justify-self: start;
@@ -1291,13 +1381,13 @@
   padding: 6px;
 }
 
-:where(html[data-console-tight="true"]) .st-console.display-sheet .settings-row > .settings-ctl {
+:where(html[data-st-tight="true"]) .st-console.display-sheet .settings-row > .settings-ctl {
   grid-column: 1;
   grid-row: 3;
   justify-content: flex-start;
   margin-top: 8px;
 }
 
-:where(html[data-console-narrow="true"]) .st-console.display-sheet .st-cards {
+:where(html[data-st-narrow="true"]) .st-console.display-sheet .st-cards {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

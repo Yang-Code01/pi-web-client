@@ -45,6 +45,28 @@ interface OnlinePeer {
   /** 他自报的头像 id（没报 / 老对端就是没这个字段）。 */
   avatar?: string;
   ips: string[];
+  /** D451：他装的这份检出对应哪个仓库（只读更新组靠它认人）。 */
+  updates?: { repo?: string; publisher?: boolean; optOut?: string[] };
+}
+
+/** D451：`GET /api/updates` 返回的那一份（发布者开关、组、上次播报）。 */
+interface UpdatesView {
+  ok: true;
+  available: boolean;
+  repo: string;
+  groupId: string;
+  groupName: string;
+  publisher: boolean;
+  joined: boolean;
+  memberCount: number;
+  onlineCount: number;
+  lastCommit: string;
+  lastBatchTitle: string;
+  lastAnnouncedAt: number;
+  lastCheckAt: number;
+  lastError: string;
+  hotdeploy: boolean;
+  peerRunning: boolean;
 }
 
 interface PeerStatus {
@@ -55,7 +77,15 @@ interface PeerStatus {
   /** 我自己的头像 id。 */
   avatar?: string;
   online: OnlinePeer[];
-  config: { hidden: boolean; pauseFiles: boolean; dnd: boolean; inbox: string; manual: string[] };
+  config: {
+    hidden: boolean;
+    pauseFiles: boolean;
+    dnd: boolean;
+    inbox: string;
+    manual: string[];
+    /** D451：本机的发布者设置（repo 为空 = 不参与更新组）。 */
+    updates: { repo: string; publisher: boolean };
+  };
 }
 
 interface PeerView {
@@ -80,8 +110,15 @@ interface Entry {
   from: { nodeId: string; nickname?: string; hostname?: string; port?: number; avatar?: string };
   to: { kind: "node" | "group"; id: string };
   kind: "text" | "receipt" | "file" | "recall" | "note" | "react" | "pin" | "sys";
-  /** 群灰条（建群 / 改名 / 拉人 / 退群）。 */
-  sys?: { op: "create" | "rename" | "invite" | "leave"; actor: string; names?: string[]; name?: string };
+  /** 群灰条（建群 / 改名 / 拉人 / 退群 / 换发布者）。 */
+  sys?: {
+    op: "create" | "rename" | "invite" | "leave" | "publisher";
+    actor: string;
+    names?: string[];
+    name?: string;
+  };
+  /** D451：更新公告自带的机器可读那份（批次正文没被截断时卡片用它画）。 */
+  announce?: { repo: string; commit: string; batches: { title: string; body: string }[]; howTo: "auto" };
   /** 视图字段：被固定在会话顶上（谁、何时）。 */
   pinned?: { by: string; at: number };
   /** 视图字段：比最近一页更早、只因为被固定才带回来的那条；消息流里不画。 */
@@ -159,7 +196,14 @@ interface Thread {
   urgent?: boolean;
   mention?: boolean;
   /** 群会话才有：成员名单（含自己）、群主、本机是否已退出。 */
-  group?: { members: { nodeId: string; nickname?: string; hostname?: string; avatar?: string }[]; owner: string; left: boolean };
+  group?: {
+    members: { nodeId: string; nickname?: string; hostname?: string; avatar?: string }[];
+    owner: string;
+    left: boolean;
+    /** D451：只读更新组（公告只能来自发布者）。 */
+    announceOnly?: boolean;
+    publisher?: string;
+  };
 }
 
 interface Contact {
@@ -277,7 +321,7 @@ function ic(name: string, cls = ""): SVGSVGElement {
 }
 
 /** 「我」页的分区 id（S.meSection 与 ME_SECTIONS 共用）。 */
-type MeSection = "profile" | "avatar" | "alerts" | "store" | "net" | "ignored";
+type MeSection = "profile" | "avatar" | "alerts" | "updates" | "store" | "net" | "ignored";
 
 // ---------------------------------------------------------------- 状态
 
@@ -315,6 +359,12 @@ const S = {
   uploads: [] as UploadRow[],
   /** 点固定消息跳过去时，这个会话临时多拉一些历史（200 → 2000）。 */
   deepFor: "",
+  /** D451：更新组状态（发布者开关 / 组 / 上次播报）。null = 还没读到。 */
+  updates: null as UpdatesView | null,
+  /** 上一次读 /api/updates 是 404（桥太旧）而不是网络错误：设置页据此给不同提示（评审 #12）。 */
+  updatesStale: false,
+  /** 读 /api/updates 失败的原因：设置页要能说清是旧桥 404 还是网络断了（评审 #26）。 */
+  updatesError: null as string | null,
 };
 
 const app = document.querySelector("#app") as HTMLElement;
@@ -673,7 +723,12 @@ function toast(text: string): void {
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: { accept: "application/json" } });
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    // 服务端会优先回 { error }，只留文案就丢了状态码：挂在 error 上，调用方还能判 404（评审 #6）。
+    const err = new Error(data.error ?? `HTTP ${res.status}`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -684,18 +739,75 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
     body: JSON.stringify(body ?? {}),
   });
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error ?? `HTTP ${res.status}`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
 async function loadStatus(): Promise<void> {
   try {
     S.view = await getJson<PeerView>("/api/peer");
+    if (S.view?.status?.nodeId) knownNodeId = S.view.status.nodeId;
   } catch {
     S.view = { enabled: false, running: false, reason: tr("拿不到状态"), status: null };
   }
   renderBar();
   renderHint();
+}
+
+const asText = (v: unknown): string => (typeof v === "string" ? v : "");
+/** 非有限数（NaN / Infinity / 字符串）一律当 0：0 在卡片上就是「还没播报过」。 */
+const asTime = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+/** 旧桥 / 被裁剪的响应可能少字段：统一兜底，别让设置页 split(undefined) 崩掉（评审 #32/#36）。 */
+function normalizeUpdates(view: Partial<UpdatesView> | null | undefined): UpdatesView {
+  // 旧桥 / 出错页可能回 null，直接展开再读字段会抛 TypeError（评审 #5）。
+  const src = view && typeof view === "object" ? view : {};
+  return {
+    ...src,
+    ok: true,
+    lastCommit: asText(src.lastCommit),
+    lastBatchTitle: asText(src.lastBatchTitle),
+    // 时间戳可能是字符串：直接透传下去，fmtDate / clock 会得到 Invalid Date（评审 #12）。
+    lastAnnouncedAt: asTime(src.lastAnnouncedAt),
+    lastCheckAt: asTime(src.lastCheckAt),
+    lastError: asText(src.lastError),
+    hotdeploy: src.hotdeploy === true,
+    peerRunning: src.peerRunning === true,
+    available: src.available === true,
+    joined: src.joined === true,
+    publisher: src.publisher === true,
+    memberCount: typeof src.memberCount === "number" ? src.memberCount : 0,
+    onlineCount: typeof src.onlineCount === "number" ? src.onlineCount : 0,
+    repo: asText(src.repo),
+    groupId: asText(src.groupId),
+    groupName: asText(src.groupName),
+  } as UpdatesView;
+}
+
+/** getJson/postJson 会把响应状态挂在 error.status 上；旧错误仅有文案，退回从文案取。 */
+function httpStatus(err: unknown): number {
+  const status = (err as { status?: number }).status;
+  if (typeof status === "number") return status;
+  const m = /HTTP (\d{3})/.exec((err as Error).message ?? "");
+  return m ? Number(m[1]) : 0;
+}
+
+/** D451：更新组状态。发布者开关在 peer 的 config 里，组与播报进度在 bridge 里。 */
+async function loadUpdates(): Promise<void> {
+  try {
+    S.updates = normalizeUpdates(await getJson<Partial<UpdatesView>>("/api/updates"));
+    S.updatesStale = false;
+    // 成功就把上次的失败文案清掉：留着它，状态里一直挂着一句和当前不对应的错误（评审 #12）。
+    S.updatesError = "";
+  } catch (err) {
+    S.updates = null;
+    S.updatesError = (err as Error).message;
+    S.updatesStale = httpStatus(err) === 404;
+  }
 }
 
 /**
@@ -1558,10 +1670,11 @@ function renderChat(): void {
   title.append(name, sub);
   head.append(title, h("div", "grow"));
   const tools = h("div", "tools");
+  const readonly = readonlyGroup(t);
   tools.append(
     iconBtn("search", tr("搜索聊天记录（Ctrl+F）"), () => openSearch()),
     ...(t.group ? [iconBtn("group", tr("群成员"), () => membersModal(t))] : []),
-    iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId)),
+    ...(readonly ? [] : [iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId))]),
     iconBtn("more", tr("更多"), (ev) => {
       const box = (ev.currentTarget as HTMLElement).getBoundingClientRect();
       threadMenu(box.left, box.bottom + 6, t);
@@ -1593,7 +1706,7 @@ function renderChat(): void {
       stream.append(h("div", "day", day));
       lastDay = day;
     }
-    const node = entryNode(e, t);
+    const node = entryNode(e, t, false, readonly);
     if (!firstPaint && !shownIds.has(e.id)) node.classList.add("fresh");
     shownIds.add(e.id);
     if (q && !e.recalled && searchText(e).toLowerCase().includes(q)) {
@@ -1607,7 +1720,11 @@ function renderChat(): void {
   }
   if (S.picked) stream.classList.add("picking");
   mainEl.append(stream);
-  const compose = S.picked ? pickBar() : t.group?.left ? leftBar() : composeBox(t);
+  let compose: HTMLElement;
+  if (S.picked) compose = pickBar();
+  else if (t.group?.left) compose = leftBar(t);
+  else if (readonly) compose = announceBar(t);
+  else compose = composeBox(t);
   mainEl.append(compose);
   const topic = S.topic && t.group ? topicPane(t) : null;
   if (topic) mainEl.append(topic);
@@ -1882,8 +1999,11 @@ function toggleEmoji(wrap: HTMLElement, peer: string): void {
 
 // ---------------------------------------------------------------- 表情回应
 
+let knownNodeId = "";
+
 function myId(): string {
-  return S.view?.status?.nodeId ?? "";
+  // 状态请求偶发失败时别把发布者当成「不知道我是谁」：记住上次拿到的 nodeId（评审 #10）。
+  return S.view?.status?.nodeId ?? knownNodeId;
 }
 
 /**
@@ -2360,14 +2480,14 @@ function sendStateMeta(e: Entry): (HTMLElement | SVGSVGElement)[] {
 let shownThread = "";
 const shownIds = new Set<string>();
 
-function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
-  const mine = e.from.nodeId === S.view?.status?.nodeId;
+function entryNode(e: Entry, t: Thread, inPane = false, ro = readonlyGroup(t)): HTMLElement {
+  const mine = e.from.nodeId === myId();
   // 撤回（P3）：原气泡换成一整行灰条，原文不再显示（文件里还在，见 D299）。
   if (e.kind === "sys") return sysTip(e);
   if (e.recalled) {
     return h("div", "graytip", mine ? tr("你撤回了一条消息") : tr("{p1} 撤回了一条消息", { p1: nameOf(e.from.nodeId, e.from.nickname) }));
   }
-  const msg = h("div", `msg${mine ? " mine" : ""}`);
+  const msg = h("div", `msg${mine ? " mine" : ""}${e.announce ? " announce" : ""}`);
   msg.dataset.id = e.id;
   const who = nameOf(e.from.nodeId, e.from.nickname);
   msg.append(avatar(who, e.from.nodeId));
@@ -2383,7 +2503,14 @@ function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
     box.append(tag);
   }
   if (e.replyTo) box.append(quoteBlock(e.replyTo));
-  if (e.kind === "note" && e.note) {
+  // 公告卡只认发布者：成员（或冒用 nodeId 的人）发的 announce 字段必须按普通文本画（评审 #9）。
+  const fromPublisher = Boolean(
+    t.group?.announceOnly && e.from.nodeId === (t.group.publisher || t.group.owner),
+  );
+  if (e.announce && fromPublisher) {
+    // D451：公告卡片自己画正文，不再走气泡那条路（否则同一段正文会画两遍）。
+    box.append(announceCard(e, e.announce));
+  } else if (e.kind === "note" && e.note) {
     box.append(noteCard(e, t, mine));
   } else if (e.kind === "file" && e.file && picKind(e)) {
     box.append(picBubble(e, mine));
@@ -2403,7 +2530,7 @@ function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
     } else {
       // 旧纯文本与记录转发过来的 Markdown：表格与图片不进气泡（#512）。
       body.classList.add("md");
-      body.append(renderMarkdown(text, { tables: false, imageSrc: () => null, openPath: (path) => void copyPath(path) }));
+      body.append(renderMarkdown(text, MD_OPTS));
     }
     bub.append(body);
     bub.addEventListener("click", (ev) => {
@@ -2419,13 +2546,13 @@ function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
   if (e.via === "pi") meta.append(h("span", "pill pi", tr("pi 代发")));
   meta.append(h("span", "", clock(e.at)));
   if (mine) meta.append(...readStateMeta(e, t));
-  const rx = reactionRow(e, t);
+  const rx = ro ? null : reactionRow(e, t);
   if (rx) box.append(rx);
   box.append(meta);
   const thread = inPane ? null : topicSummary(e, t);
   if (thread) box.append(thread);
   msg.append(box);
-  if (e.kind !== "note") {
+  if (!ro && e.kind !== "note") {
     // 悬停出来的小笑脸：不用右键也能回应。
     const quick = iconBtn("smile", tr("回应"), (ev) => {
       const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
@@ -2453,7 +2580,7 @@ function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
   msg.addEventListener("contextmenu", (ev) => {
     ev.preventDefault();
     if (S.picked) return;
-    messageMenu(ev.clientX, ev.clientY, e, t, mine);
+    messageMenu(ev.clientX, ev.clientY, e, t, mine, ro);
   });
   return msg;
 }
@@ -2514,7 +2641,12 @@ function quoteBlock(ref: { id: string; from: string; excerpt: string }): HTMLEle
   return box;
 }
 
-function messageMenu(x: number, y: number, e: Entry, t: Thread, mine: boolean): void {
+function messageMenu(x: number, y: number, e: Entry, t: Thread, mine: boolean, readonly = false): void {
+  // D451 只读群：除了「复制文字」什么都不给。协议侧也会拒，这里只是不要摆一堆点了会报错的项。
+  if (readonly) {
+    if (e.text) openMenu(x, y, [{ label: tr("复制文字"), icon: "copy", run: () => void copyText(e.text ?? "") }]);
+    return;
+  }
   const items: { label: string; icon?: string; danger?: boolean; run: () => void }[] = [];
   if (e.kind === "note" && e.note) {
     // 记录包不支持撤回 / 引用；只给预览与失败重发。
@@ -2675,7 +2807,7 @@ function topicPane(t: Thread): HTMLElement | null {
     topicScroll = atBottom ? -1 : list.scrollTop;
   });
   pane.append(head, list);
-  if (!t.group?.left) {
+  if (!t.group?.left && !readonlyGroup(t)) {
     const foot = h("div", "topic-compose");
     const send = h("button", "send", tr("回复")) as HTMLButtonElement;
     send.type = "button";
@@ -2822,13 +2954,96 @@ function sysTip(e: Entry): HTMLElement {
   else if (info?.op === "rename") text = tr("{p1} 把群名改成「{p2}」", { p1: actor, p2: info.name ?? "" });
   else if (info?.op === "invite") text = tr("{p1} 邀请 {p2} 加入了群聊", { p1: actor, p2: names });
   else if (info?.op === "leave") text = tr("{p1} 退出了群聊", { p1: names || actor });
+  else if (info?.op === "publisher") text = tr("{p1} 成了新的发布者，之后的更新公告由它发", { p1: names || actor });
   return h("div", "graytip", text || e.text || "");
 }
 
-function leftBar(): HTMLElement {
+function leftBar(t: Thread): HTMLElement {
   const bar = h("div", "compose leftbar");
   bar.append(h("span", "", tr("你已退出这个群，收不到也发不了新消息")));
+  // D451：退出更新组只是本机的 opt-out，点一下就能让发布者下一轮重新拉进来。
+  if (t.group?.announceOnly) bar.append(btnEl(tr("重新加入"), "btn", () => void rejoinUpdates(t)));
   return bar;
+}
+
+/** D451：公告卡 / 设置卡共用的一套入口与命令行（评审 #29/#30）。 */
+const MD_OPTS = { tables: false, imageSrc: () => null, openPath: (p: string) => void copyPath(p) };
+const UPDATE_LOG_URL = "/?settings=whatsnew";
+const UPDATE_TOOLS_URL = "/?settings=tools";
+const MANUAL_UPDATE = "git pull && npm install && npm start";
+
+/** D451：只读更新组 —— 公告只认发布者，所以本机不是发布者就没有输入框。 */
+function readonlyGroup(t: Thread): boolean {
+  const me = myId();
+  // 首屏还没拿到 nodeId、或旧快照没写 publisher 时，宁可当只读：别让成员看到输入框再被协议侧拒（评审 #28）。
+  return Boolean(t.group?.announceOnly && (!me || t.group.publisher !== me));
+}
+
+/** 只读更新组底部那条：说明为什么不能发，顺带告诉本机它已经订阅上了。 */
+function announceBar(t: Thread): HTMLElement {
+  const bar = h("div", "compose readonlybar");
+  const who = t.group?.publisher ? nameOf(t.group.publisher, "") : tr("发布者");
+  bar.append(h("span", "", tr("这是只读的更新组：只有 {p1} 能发公告", { p1: who })));
+  return bar;
+}
+
+/**
+ * D451 更新公告卡片：仓库 + 短提交 + 批次标题，正文按公日志里的分组（`###`）重画，
+ * 底下两颗链接分别落到主界面的「日志」与「工具」页；不再内置「立即更新」按钮。
+ */
+function announceCard(e: Entry, a: NonNullable<Entry["announce"]>): HTMLElement {
+  const card = h("div", "an-card");
+  const head = h("div", "an-head");
+  head.append(
+    h("span", "an-repo", a.repo),
+    h("span", "an-sha", (a.commit ?? "").slice(0, 7)),
+    h("span", "an-day", fmtDate(e.at)),
+  );
+  card.append(head);
+  // 旧桥 / 被裁剪的公告可能没有 batches（不是数组）：按纯文本退化，别让整个消息流白屏（评审 #10）。
+  const batches = Array.isArray(a.batches) ? a.batches : [];
+  if (!batches.length && e.text) {
+    const body = h("div", "an-body md");
+    body.append(renderMarkdown(typeof e.text === "string" ? e.text : "", MD_OPTS));
+    card.append(body);
+  }
+  for (const b of batches) {
+    const batch = h("div", "an-batch");
+    batch.append(h("div", "an-title", b.title));
+    const body = h("div", "an-body md");
+    body.append(renderMarkdown(typeof b.body === "string" ? b.body : "", MD_OPTS));
+    batch.append(body);
+    card.append(batch);
+  }
+  // 本机有热部署入口就写那条路，没有就只好给命令行（D451）。
+  const canHot = a.howTo === "auto" && S.updates?.hotdeploy === true;
+  card.append(
+    h("div", "an-how", canHot ? tr("怎么更新：设置 → 工具 → 热部署") : tr("怎么更新：{p1}", { p1: MANUAL_UPDATE })),
+  );
+  const acts = h("div", "an-acts");
+  acts.append(btnEl(tr("打开更新日志"), "btn", () => window.open(UPDATE_LOG_URL, "_blank", "noopener")));
+  // 热部署能在这台机器上用，才给那颗入口；文案里已经提醒过它会切断正在跑的会话（D451）。
+  if (canHot) {
+    acts.append(btnEl(tr("打开热部署"), "btn", () => window.open(UPDATE_TOOLS_URL, "_blank", "noopener")));
+  }
+  card.append(acts);
+  return card;
+}
+
+/** 重新加入更新组（D451）：清掉本机 opt-out，发布者 10 秒内会把快照重新送过来。 */
+async function rejoinUpdates(t?: Thread): Promise<void> {
+  const id = t?.nodeId ?? S.updates?.groupId;
+  if (!id) return;
+  try {
+    const res = await postJson<{ ok: boolean; pending?: boolean }>("/api/peer/groups", { action: "rejoin", id });
+    // 两个请求互不依赖，别串行等（评审 #14）。
+    await Promise.all([t ? loadThreads() : Promise.resolve(), loadUpdates()]);
+    renderAll();
+    if (res?.pending) toast(tr("本机还不在这个组的名单里，等发布者把你拉回去"));
+    else toast(tr("已重新订阅，等发布者把你拉回更新组"));
+  } catch (err) {
+    toast((err as Error).message);
+  }
 }
 
 async function postGroup(body: Record<string, unknown>): Promise<{ group?: { id: string; name: string } }> {
@@ -4114,6 +4329,7 @@ const ME_SECTIONS: { id: MeSection; label: string; icon: string }[] = [
   { id: "profile", label: "个人资料", icon: "me" },
   { id: "avatar", label: "头像", icon: "image" },
   { id: "alerts", label: "状态与通知", icon: "bellOff" },
+  { id: "updates", label: "更新公告", icon: "retry" },
   { id: "store", label: "存储", icon: "disk" },
   { id: "net", label: "发现", icon: "refresh" },
   { id: "ignored", label: "忽略名单", icon: "select" },
@@ -4476,6 +4692,14 @@ function renderMe(): void {
     return wrap;
   };
 
+  // —— 更新公告（D451）：局域网里同一份仓库的机器会进这个只读群
+  const sectionUpdates = (): HTMLElement => {
+    const wrap = h("div", "me-sec");
+    wrap.append(meHead(tr("更新公告"), tr("局域网里同一个仓库的机器会进这个只读群")));
+    wrap.append(updatesCard());
+    return wrap;
+  };
+
   // —— 存储
   const sectionStore = (): HTMLElement => {
     const wrap = h("div", "me-sec");
@@ -4548,6 +4772,7 @@ function renderMe(): void {
     profile: sectionProfile,
     avatar: sectionAvatar,
     alerts: sectionAlerts,
+    updates: sectionUpdates,
     store: sectionStore,
     net: sectionNet,
     ignored: sectionIgnored,
@@ -4608,6 +4833,129 @@ async function clearIgnored(): Promise<void> {
   }
 }
 
+/** 卡片上「状态」那一格：发布者 / 已加入（只读）/ 没加入。别写成嵌套三元（评审 #13）。 */
+function updatesStateText(u: UpdatesView): string {
+  if (u.publisher) return tr("本机是发布者");
+  if (u.joined) return tr("已加入（只读）· {p1} 人", { p1: String(u.memberCount) });
+  return tr("没加入");
+}
+
+/** 卡片上会变的就这么几项：值没变就别重画（整块换 DOM 会拽掉选区、焦点和滚动）（评审 #15）。 */
+function updatesSig(u: UpdatesView | null): string {
+  if (!u) return "none";
+  return [
+    u.available,
+    u.publisher,
+    u.joined,
+    u.memberCount,
+    u.onlineCount,
+    u.lastCommit,
+    u.lastAnnouncedAt,
+    u.lastCheckAt,
+    u.lastError,
+    u.hotdeploy,
+    u.peerRunning,
+    u.repo,
+    u.groupName,
+  ].join("|");
+}
+
+/**
+ * D451「更新公告」设置卡：发布者开关（写 peer config）、这个检出认得的仓库与组、上次播报的提交、
+ * 「立即检查」与「重新加入」（退过才显）。开关在 peer 里，所以"立即检查"要等它下一轮 `/api/updates`。
+ */
+function updatesCard(): HTMLElement {
+  const card = h("div", "card");
+  const u = S.updates;
+  if (!u) {
+    // 404 是「桥太旧、根本没这条路由」，和网络断了不是一回事（评审 #22）。
+    const stale = S.updatesStale;
+    card.append(
+      h(
+        "div",
+        "note",
+        stale
+          ? tr("bridge 太旧了：没有 /api/updates，重启一下 bridge")
+          : tr("读不到更新组状态（bridge 没回 /api/updates）。{p1}", { p1: S.updatesError ?? "" }),
+      ),
+    );
+    return card;
+  }
+  if (!u.peerRunning) {
+    card.append(h("div", "note", tr("内网通没在运行：先在左下角把「局域网」打开，更新组才会工作。")));
+    return card;
+  }
+  if (!u.available) {
+    card.append(h("div", "note", tr("这个检出没有 git remote origin，认不出是哪份仓库，所以不参与更新组。")));
+    return card;
+  }
+  const kv = h("div", "kv");
+  kv.append(
+    h("span", "k", tr("仓库")),
+    h("span", "v", u.repo),
+    h("span", "k", tr("更新组")),
+    h("span", "v", u.groupName),
+    h("span", "k", tr("状态")),
+    h("span", "v", updatesStateText(u)),
+    h("span", "k", tr("上次播报")),
+    h("span", "v", u.lastCommit ? `${u.lastCommit.slice(0, 7)} · ${fmtDate(u.lastAnnouncedAt)} ${clock(u.lastAnnouncedAt)}` : tr("还没播报过")),
+  );
+  card.append(kv);
+  card.append(
+    toggle(
+      tr("发布更新公告"),
+      tr("每 30 分钟看一次 origin/main，有新提交就往「{p1}」里推一条公告", { p1: u.groupName }),
+      u.publisher,
+      (on) => void setPublisher(on),
+    ),
+  );
+  const acts = h("div", "acts updates-acts");
+  const check = btnEl(u.publisher ? tr("立即检查") : tr("发布者才能检查"), "btn", () => void checkUpdates());
+  check.disabled = !u.publisher;
+  check.title = u.publisher ? tr("现在就 fetch 一次 origin/main") : tr("先打开上面的开关");
+  acts.append(check);
+  if (!u.joined) {
+    const join = btnEl(tr("重新加入更新组"), "btn", () => void rejoinUpdates());
+    acts.append(join);
+  }
+  const logs = btnEl(tr("打开更新日志"), "btn", () => window.open(UPDATE_LOG_URL, "_blank", "noopener"));
+  acts.append(logs);
+  card.append(acts);
+  if (u.lastError) card.append(h("div", "note bad", u.lastError));
+  card.append(
+    h("div", "note", u.hotdeploy ? tr("本机有热部署入口，公告卡片会优先引导走那条路。") : tr("本机没有热部署入口，公告卡片会给 git pull && npm install && npm start。")),
+  );
+  return card;
+}
+
+async function setPublisher(on: boolean): Promise<void> {
+  try {
+    S.updates = normalizeUpdates(await postJson<Partial<UpdatesView>>("/api/updates/publisher", { on }));
+    await loadStatus();
+    renderAll();
+    toast(on ? tr("这台机器现在会往更新组里推公告") : tr("已停止发布更新公告"));
+  } catch (err) {
+    toast((err as Error).message);
+    await loadStatus();
+    renderAll();
+  }
+}
+
+async function checkUpdates(): Promise<void> {
+  try {
+    S.updates = normalizeUpdates(await postJson<Partial<UpdatesView>>("/api/updates/check", {}));
+    // 先算好文案再 renderAll：渲染万一抛错，用户至少还能看到「检查失败」的原因（评审 #16）。
+    const first = S.updates.lastError.split("\n").find((line) => line.trim())?.slice(0, 120);
+    renderAll();
+    toast(first ? tr("检查失败：{p1}", { p1: first }) : tr("检查完了"));
+  } catch (err) {
+    toast((err as Error).message);
+    // 请求失败也要拉一次状态：否则「上次播报 / 检查时间」会一直停在旧值（评审 #5）。
+    await loadUpdates();
+    renderAll();
+  }
+}
+
 function toggle(name: string, sub: string, on: boolean, run: (on: boolean) => void): HTMLElement {
   const row = h("div", "toggle");
   const t = h("div", "t");
@@ -4656,9 +5004,9 @@ async function refreshAll(): Promise<void> {
     /* 没跑起来的时候刷新也会失败，状态条已经说了 */
   }
   await loadStatus();
-  await loadThreads();
-  await loadContacts();
-  await loadTransfers();
+  // 先拿更新状态：聊天首屏的公告卡要根据 hotdeploy 决定文案，晚到会卡在错误的一版（评审 #13）。
+  await loadUpdates();
+  await Promise.all([loadThreads(), loadContacts(), loadTransfers()]);
   renderAll();
 }
 
@@ -4724,10 +5072,12 @@ async function patchThread(peer: string, patch: { pinned?: boolean; muted?: bool
 }
 
 function threadMenu(x: number, y: number, t: Thread): void {
+  // 只读更新组：成员不能发文件，菜单也别给「传文件」——否则挑完文件才被协议侧拒（评审 #8）。
+  const readonly = readonlyGroup(t);
   openMenu(x, y, [
     { label: tr("打开对话"), icon: "msg", run: () => openThread(t.nodeId) },
     // D300：传文件只要求对方在线，不再要求是好友。
-    ...(t.online ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(t.nodeId, true) }] : []),
+    ...(t.online && !readonly ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(t.nodeId, true) }] : []),
     { label: t.pinned ? tr("取消固定") : tr("固定"), icon: "pin", run: () => void patchThread(t.nodeId, { pinned: !t.pinned }) },
     { label: t.muted ? tr("取消免打扰") : tr("消息免打扰"), icon: "bellOff", run: () => void patchThread(t.nodeId, { muted: !t.muted }) },
     ...(t.unread ? [] : [{ label: tr("标为未读"), icon: "msg", run: () => void markUnread(t) }]),
@@ -5051,9 +5401,8 @@ async function boot(): Promise<void> {
   (pickerClose as HTMLElement).append(ic("close"));
   await restoreStaged();
   await loadStatus();
-  await loadThreads();
-  await loadContacts();
-  await loadTransfers();
+  await loadUpdates();
+  await Promise.all([loadThreads(), loadContacts(), loadTransfers()]);
   if (S.threads.length && !S.thread) S.thread = S.threads[0].nodeId;
   app.dataset.page = S.page;
   app.dataset.mview = S.mview;
@@ -5107,6 +5456,21 @@ const heartbeat = (): void => {
   void postJson("/api/peer/presence").catch(() => {});
 };
 window.setInterval(heartbeat, 60_000);
+// 更新组的播报进度在 bridge 上，别等用户手动刷新才看到（评审 #13）。
+window.setInterval(() => {
+  // 页面在后台就别拉也别画：这个定时器每分钟一次，整块换 DOM 会拽掉焦点，
+  // 而且后台失败一次会把卡片换成错误提示、等用户切回来才看见（评审 #14）。
+  if (document.hidden) return;
+  // 值没变就不重画：整块换 DOM 会拽掉选区、滚动和焦点（评审 #15）。
+  const before = updatesSig(S.updates);
+  void loadUpdates().then(() => {
+    if (updatesSig(S.updates) === before) return;
+    // 正在输入时不重画，免得抢走焦点/草稿；其它时候让卡片跟上播报进度（评审 #4）。
+    const el = document.activeElement as HTMLElement | null;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+    renderAll();
+  });
+}, 60_000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) heartbeat();
 });

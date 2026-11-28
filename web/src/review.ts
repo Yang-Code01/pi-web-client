@@ -14,6 +14,7 @@ import { icon, type IconName } from "./icons.ts";
 import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
 import { renderAutoPanel, type AutoActions, type AutoPanelInput } from "./reviewauto.ts";
 
+import { isRunOutdated, tipForRun } from "./frames.ts";
 import type {
   ReviewFinding,
   ReviewGroupPlan,
@@ -98,6 +99,25 @@ export interface ReviewInput {
   focus?: string;
   /** 每条记录那次用的模型怎么显示（app 查模型目录得到，按 run id 索引；查不到就不给）。 */
   modelLabels?: Record<string, string>;
+  /**
+   * 这些 ref 现在各指向哪个提交（#741，`review.state` 帧的兄弟字段）：key 是记录里的 `to`。
+   *
+   * 缺 key = 核对不了（未登未联网 / 离线 / `ls-remote` 超时 / 老桥不发这个字段），
+   * 与「没变」必须分开 —— 少见到一个 key 就当不知道，不标。
+   */
+  tips?: Record<string, string>;
+  /** 那张快照是什么时候拍的（`Date.now()`，0 = 桥没给）：比这条记录还旧的快照不拿来判。 */
+  tipsAt?: number;
+  /** 「重新核对」正等着结果：那颗钮先灰着，别让人连点（每一下都是一次 `ls-remote`）。 */
+  tipsBusy?: boolean;
+  /**
+   * 拍那张快照时 HEAD 在哪条分支上（桥的 `tipsBranch`，空 = 不知道）。
+   *
+   * `to` 是 `HEAD` 的记录只跟**同一条分支**的 tip 比：换分支之后 HEAD 指向别处，
+   * 那不是「有新提交」。判在每条记录上（见 `tipForRun`）—— 同一个 `HEAD` 底下可能
+   * 躺着好几条别的分支留下来的记录。
+   */
+  tipsBranch?: string;
 }
 
 /** 记录列表里的一张卡：`reviewView()` 算好文案，`renderReview()` 只负责画。 */
@@ -124,6 +144,16 @@ export interface ReviewRunCard {
   error: string;
   /** 跑着的时候的实时进度（每条在跑的卡各有各的；D420 之前只有最新那条有）。 */
   live: { reviewed: number; total: number; current: string } | null;
+  /** 这一次评到的那个提交（空串 = 没记 / 老记录）。 */
+  headSha: string;
+  /** 现在这个 ref 指向的提交（空串 = 没核对到）。 */
+  tipSha: string;
+  /** 评审之后又新提交了（#741）：卡片上多一颗标，底行多一颗「重新评审」。 */
+  outdated: boolean;
+  /** 那颗标的 hover：评的时候基于哪个提交、现在到哪个。 */
+  outdatedNote: string;
+  /** 底行那颗「重新评审」出现了但点不着时的那句人话（空 = 能点；它只在过时时出现）。 */
+  rerunWhy: string;
 }
 
 export type ReviewPhase = "loading" | "no-ocr" | "not-git" | "empty" | "running" | "done" | "stopped" | "failed" | "stale";
@@ -194,6 +224,8 @@ export interface ReviewView {
   skipped: ReviewSkip[];
   resolved: number;
   resolvedPaths: string[];
+  /** 见 `ReviewInput.tipsBusy`。 */
+  tipsBusy: boolean;
   history: number;
   /** 「完整详情」浮层看的那一次（空串 = 按最新那一次算）。 */
   focus: string;
@@ -303,6 +335,9 @@ export function runTarget(run: ReviewRun): string {
 
 /** `origin/main` → `main`（只用于显示）。 */
 const shortRef = (ref: string): string => (ref || "").trim().replace(/^origin\//, "");
+
+/** 提交号只露 7 位：整条 sha 在 hover 里也装不下，比大小也不需要（浮层也用它）。 */
+export const shortSha = (sha: string): string => (sha || "").trim().slice(0, 7);
 
 /**
  * 目录的显示名：路径最后一节（`D:/work/erp/api` → `api`）。
@@ -494,9 +529,39 @@ export function reviewView(input: ReviewInput): ReviewView {
     if (la !== lb) return lb - la;
     return (Date.parse(b.startedAt ?? "") || 0) - (Date.parse(a.startedAt ?? "") || 0);
   });
+  /**
+   * 「重新评审」现在点了会不会被拒（提前拦：点了才报错最难堪）。
+   *
+   * 与主按钮同一套闸里**页面判得了**的那几条：同一 PR 在跑、额度满、ocr 没就绪
+   * （那时主按钮是灰的，重评按钮没道理还能点 —— 点下去只会多一条失败的记录）。
+   * 剩下的由桥裁决（`dup_pr` / `busy` / 缺范围）；真被拒了，`rerunReview()` 会把「评什么」恢复原样。
+   */
+  const rerunBlocked = (run: ReviewRun): string => {
+    if (run.mode === "pr" && run.pr > 0) {
+      const same = allRuns.some((r) => r.status === "running" && r.mode === "pr" && r.pr === run.pr);
+      if (same) return tr("这个会话已经在评这个 PR 了");
+    }
+    if (atCap) return tr("已满 {p1} 个，先停一个再开", { p1: cap });
+    if (input.installing) return tr("正在装 ocr，装好再重评");
+    if (needsInstall) return tr("没装 ocr（代码评审要用）");
+    if (needsUpgrade) return tr("ocr 版本太老，需要 1.9.0 以上");
+    return "";
+  };
+
   const runs: ReviewRunCard[] = ordered.map((run) => {
     const mine = run.status === "running" ? progressById.get(run.id) : undefined;
     const modelId = runModelId(run);
+    // #741：「过时」= 完成的那一次评的提交 ≠ 这个 ref 现在指向的提交。
+    // 判据与桥共用一份（`frames.ts` 的 `tipForRun` / `isRunOutdated`）：没记 sha 的老记录、
+    // 没核对到 tip 的（离线 / 超时）、以及**比这条记录还旧的快照**都在那里归成「不知道」= 不标。
+    // 卡片上的 `tipSha`（hover / 详情那一行）也走同一个函数 —— 判据不许散成两份。
+    const headSha = (run.headSha ?? "").trim();
+    const tipsBranch = (input.tipsBranch ?? "").trim();
+    const tipSha = tipForRun(run, input.tips, input.tipsAt, tipsBranch);
+    // hover 里那条 ref 的名字：`pr` 模式下 `to` 是 `refs/pi-web/pr-7` 这种内部名字，
+    // 人认的是分支名（`prHead`），没记就退回 ref 本身。
+    const refLabel = run.mode === "pr" && run.prHead ? run.prHead : shortRef(run.to);
+    const outdated = isRunOutdated(run, input.tips, input.tipsAt, tipsBranch);
     return {
       id: run.id,
       target: runTarget(run),
@@ -513,6 +578,17 @@ export function reviewView(input: ReviewInput): ReviewView {
       modelId,
       error: errorText(run, ""),
       live: mine ? { reviewed: mine.reviewedFiles, total: mine.totalFiles, current: mine.currentFile } : null,
+      headSha,
+      tipSha,
+      outdated,
+      // hover 要说清「评的是哪个提交、哪条分支，现在到哪个」：`pr` 模式下 `to` 是
+      // `refs/pi-web/pr-7` 这种内部 ref 名，人认的是分支名（`prHead`），没记才退回 ref 名。
+      outdatedNote: outdated
+        ? tr("评审基于 {p1} · {p2}，现在是 {p3}", { p1: shortSha(headSha), p2: refLabel, p3: shortSha(tipSha) })
+        : "",
+      // 灰着就说清为什么：同一个 PR 已在跑（`dup_pr`）、或会话额度满了（`busy`）——
+      // 那是点了也只会吃一条报错的情形，不如提前拦下来。
+      rerunWhy: outdated ? rerunBlocked(run) : "",
     };
   });
 
@@ -565,6 +641,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     skipped,
     resolved: active?.resolved?.length ?? 0,
     resolvedPaths: active?.resolvedPaths ?? [],
+    tipsBusy: Boolean(input.tipsBusy),
     history: allRuns.length,
     focus: active && focused ? active.id : "",
     runs,
@@ -615,6 +692,10 @@ export interface ReviewActions {
   onFixMany: (findings: ReviewFinding[]) => void;
   /** 打开「PR 信息」dialog。 */
   onPrInfo: () => void;
+  /** 按那条记录自己的范围再评一次（#741：只在它过时的时候出现）。 */
+  onRerun: (runId: string) => void;
+  /** 重新核对一批记录有没有新提交（打开面板时本来就会核一次，这是兜底那颗）。 */
+  onRefreshTips: () => void;
   onInstall: () => void;
   /** 打开「评审仓库」选择器：换一个（子）仓库来评。 */
   onPickRepo: () => void;
@@ -1032,6 +1113,14 @@ function whenText(iso: string): string {
 function runMetaRow(card: ReviewRunCard): HTMLElement {
   const meta = el("div", "rv-run-meta");
   meta.append(el("span", `rv-run-status ${card.running ? "running" : card.status}`, runStatusText(card)));
+  // #741：状态词说的是「那一次跑成了没」，过时是另一回事 —— 所以立在旁边一颗标，
+  // 不抢状态词的语义（跑完并带 35 条意见的结果不该被叫成「没跑完」）。
+  // 不可点、不可聚焦：D426 之后卡片正文不是入口，真正的入口在底行。
+  if (card.outdated) {
+    const stale = el("span", "rv-run-stale", tr("有新提交"));
+    stale.title = card.outdatedNote;
+    meta.append(stale);
+  }
   const bits: string[] = [];
   if (card.running && card.live) {
     bits.push(tr("{p1}/{p2} 个文件", { p1: card.live.reviewed, p2: card.live.total }));
@@ -1071,6 +1160,19 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
     count = tr("这个会话评过 {p1} 次", { p1: view.runs.length });
   }
   head.append(el("span", "rv-runs-lab", tr("评审记录")), el("span", "rv-runs-count", count));
+  // 兜底：打开面板 / 切到这一页时已经核过一次，人想再确认一下就点这颗（只重核，不动 pick）。
+  // 没有记录时不画：那一格没有任何东西可核对，点下去只会白发一帧。
+  if (view.runs.length) {
+    const reload = el("button", "rv-runs-reload") as HTMLButtonElement;
+    reload.type = "button";
+    reload.title = tr("重新核对有没有新提交");
+    reload.setAttribute("aria-label", tr("重新核对有没有新提交"));
+    reload.append(icon("refresh", { size: 13 }));
+    // 等结果的时候灰着：每点一下都是一次绕开缓存的 `ls-remote`（#743 复审）。
+    reload.disabled = view.tipsBusy;
+    reload.onclick = () => actions.onRefreshTips();
+    head.append(reload);
+  }
   box.append(head);
   if (!view.runs.length) {
     box.append(el("div", "rv-hint rv-runs-empty", tr("上面选好范围、点「开始评审」，结果会记在这里。")));
@@ -1106,7 +1208,7 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
     }
     if (card.error && !card.running) body.append(el("div", "rv-run-err", card.error));
 
-    // 底行右对齐：跑着的那条先「停止」，再「完整详情」（D429）。
+    // 底行右对齐：跑着的那条先「停止」，再「重新评审」（只在过时时有），最后「完整详情」。
     const foot = el("div", "rv-run-foot");
     if (card.running) {
       const stop = el("button", "rv-run-stop", tr("停止")) as HTMLButtonElement;
@@ -1114,6 +1216,15 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
       stop.title = tr("只停这一条");
       stop.onclick = () => actions.onStopRun(card.id);
       foot.append(stop);
+    }
+    if (card.outdated) {
+      // #741：按**那条记录自己的范围**再评一次（不是面板上现在选着的那一格）。
+      const again = el("button", "rv-run-again", tr("重新评审")) as HTMLButtonElement;
+      again.type = "button";
+      again.disabled = Boolean(card.rerunWhy);
+      again.title = card.rerunWhy || card.outdatedNote;
+      again.onclick = () => actions.onRerun(card.id);
+      foot.append(again);
     }
     const more = el("button", "rv-run-more", tr("完整详情 ›")) as HTMLButtonElement;
     more.type = "button";

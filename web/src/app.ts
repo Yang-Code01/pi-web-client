@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./settings-console.css";
+import { type ConsolePeek, PEEK_MIN_PX, peekFor } from "./console-peek.ts";
 import { api, githubApi, type DepPackageId, type DepsReport } from "./api.ts";
 import { icon, face, isIconName, fileIcon, type IconName } from "./icons.ts";
 import { ChatView, createEl as el } from "./chat.ts";
@@ -38,6 +39,7 @@ import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
+import { sessionBadge, type SessionBadge } from "./session-badge.ts";
 import { retellState } from "./retell-state.ts";
 import { DEFAULT_MAC_ACCENT } from "./palette.ts";
 import { accentFor, DEFAULT_ACCENT_TONE, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, themeInfo, type AccentTone, type ThemeId, type ThemeInfo } from "./theme.ts";
@@ -198,26 +200,6 @@ const WS_CREATE_DIR_CAP = "ws.create.dir";
 const WS_RESOLVE_DIR_CAP = "ws.resolve.dir";
 const WS_EXEC_CHILD_CAP = "exec.child.subscribe";
 
-/** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
-type BadgeKind = "ask" | "approve" | "locked" | "run" | "bg" | "done";
-
-interface SessionBadge {
-  kind: BadgeKind;
-  text: string;
-  cls: "wait" | "lock" | "run" | "done";
-  title: string;
-  /** Blocked on the user — worth calling out in the pin strip header. */
-  pending: boolean;
-}
-
-/**
- * `running` only means "the pi process is alive": it stays true while an approval or a question is
- * waiting for the user. Anything that says "正在跑" has to look at asks/approvals first, or it will
- * report a session stuck on the user as busy.
- *
- * D162: 「完成」也显示在**当前打开的会话**上 —— 打开只是看，不再把完成抹掉。否则用户点开确认
- * 一眼，卡片就从「完成」退回时间，再也没法从列表判断这一轮到底结束了没有。
- */
 /** D170 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
 type BgRunDto = BgRunView;
 
@@ -260,43 +242,6 @@ interface BgRunNode {
   labOut: HTMLElement;
   /** 这个 run 有没有过程记录（桥还没接上的才 false；卡片上直说，不装成「还没有」。） */
   hasLog: boolean;
-}
-
-function sessionBadge(s: SessionState): SessionBadge | null {
-  if (s.asks && s.asks > 0) {
-    return {
-      kind: "ask",
-      text: s.asks > 1 ? tr("待回答 {p1}", { p1: s.asks }) : tr("待回答"),
-      cls: "wait",
-      title: tr("在等你回答问卷，这个会话停在这儿了"),
-      pending: true,
-    };
-  }
-  if (s.approvals > 0) {
-    return {
-      kind: "approve",
-      text: s.approvals > 1 ? tr("待确认 {p1}", { p1: s.approvals }) : tr("待确认"),
-      cls: "wait",
-      title: tr("在等你确认这条命令"),
-      pending: true,
-    };
-  }
-  if (s.locked) {
-    return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
-  }
-  if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
-  // D170: 会话自己 settle 了，派出去的 runner 还在跑 —— 「完成」是假的，得先把这枚亮出来。
-  if (bgBusy(s)) {
-    return {
-      kind: "bg",
-      text: s.bg?.n && s.bg.n > 1 ? tr("后台 {p1}", { p1: s.bg.n }) : tr("后台"),
-      cls: "run",
-      title: s.bg?.agent ? tr("子代理 {p1} 还在后台跑，pi 会在它回来时接着做", { p1: s.bg.agent }) : tr("子代理还在后台跑，pi 会在它回来时接着做"),
-      pending: false,
-    };
-  }
-  if (s.done) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
-  return null;
 }
 
 function bgElapsedText(since: number, until = Date.now()): string {
@@ -354,6 +299,11 @@ export class App {
   private sessionReclaimTextEl: HTMLElement | null = null;
   private sessionReclaimId: string | null = null;
   private dismissedReclaimIds = new Set<string>();
+  /** 第一次 hello 到了没有：`?settings=` 深链要等首屏数据再开，不再拿固定 400ms 赌（D451、评审 #25）。 */
+  private sawHello = false;
+  private helloWait: Promise<void> | null = null;
+  private helloTimer: ReturnType<typeof setTimeout> | null = null;
+  private helloDone: (() => void) | null = null;
   private approvals: ApprovalRequest[] = [];
   /** Questions from the model waiting for an answer (PLAN-ask.md). */
   private asks: AskRequest[] = [];
@@ -458,6 +408,29 @@ export class App {
   private reviewState: ReviewState | null = null;
   /** 在跑的那几条，一条一份（D420：按 runId 认，不再「一个会话只有一份进度」）。 */
   private reviewProgresses: ReviewProgress[] = [];
+  /**
+   * 这些 ref 现在各指向哪个提交（#741）：key 是记录里的 `to`。
+   *
+   * 桥在 `review.state` 帧里当**兄弟字段**发（不在 `state` 里 —— 那是盘上的形状）。
+   * 帧不带它的时候（标一条意见、清理历史这些）**保留上一次的**：那些帧只改 records，
+   * 不该把标弄消失。
+   */
+  private reviewTips: Record<string, string> = {};
+  /** 上面那张快照是什么时候拍的（桥的 `tipsAt`）：比某条记录还旧的快照不能拿来判过时。 */
+  private reviewTipsAt = 0;
+  /**
+   * 点「重新评审」之前「评什么」是什么样（#741）。
+   *
+   * 那个动作会先把这一格换成记录自己的范围再开跑；桥**异步**拒掉（`dup_pr` / `busy` 竞态、
+   * 断线）时，要把它恢复回来 —— 不然面板上那一格被一条旧记录静默改掉并落了盘。
+   * 开跑被接受（`review.started`）或已经恢复过就清掉。
+   */
+  private reviewRerunRestore: { mode: ReviewMode; pr: string; base: string; target: string } | null = null;
+  /** 那张快照拍摄时 HEAD 在哪条分支（桥的 `tipsBranch`）：`HEAD` 记录只跟同一条分支的 tip 比。 */
+  private reviewTipsBranch = "";
+  /** 「重新核对」等着结果：那颗钮先灰着（每点一下都是一次绕开缓存的 `ls-remote`）。 */
+  private reviewTipsBusy = false;
+  private reviewTipsTimer: number | null = null;
   /** 一个会话同时最多几条（桥发来的上限）；缺省 2，跟桥上的 MAX_RUNS_PER_SESSION 对齐。 */
   private reviewCap = 2;
   private reviewOcr: ReviewOcr | null = null;
@@ -651,7 +624,7 @@ export class App {
    * 「挑模型」那条路的回调（代码评审面板的 chip 用它）：模型目录晚到会重开这一屏，
    * 重开时没有新的回调，要把这份接着用，否则一开就是一屏空态。
    */
-  private modelPick: { start: string; level?: string; onPick: (model: ModelInfo, level: string) => void } | null = null;
+  private modelPick: { start: string; provider?: string; level?: string; onPick: (model: ModelInfo, level: string) => void } | null = null;
   private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "theme-intro" | "bg" | "wsnew" | "wsdelete" | "context" | "context-insights" | "filesearch" | null = null;
   /** 内网通未读：顶栏那颗按钮上的件数徽标（D300 起文件也算未读）。 */
   private peerUnread = 0;
@@ -1391,12 +1364,16 @@ export class App {
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
     this.pillBar = new PillBar<SessionState>(pinStrip, {
-      // D170：钉条胶囊里那行小字就是徽标本身；「后台」那枚也让它点得开（胶囊其余部分仍是打开会话）。
+      // D170：钉条胶囊里那行小字就是徽标本身；「后台」与「评审中」都点得开（胶囊其余部分仍是打开会话）。
       badge: (s) => {
         const b = this.badgeOf(s);
-        return b ? { ...b, detail: b.kind === "bg" } : null;
+        return b ? { ...b, detail: b.clickable } : null;
       },
-      onBadge: (id) => this.openBgSheet(id),
+      // 可点徽标（后台 / 评审中）与左栏卡片走同一个口：`openBadge()`。
+      onBadge: (id) => {
+        const s = this.sessions.find((x) => x.id === id) ?? (this.session?.id === id ? this.session : null);
+        if (s) this.openBadge(s);
+      },
       time: relativeTime,
       // #97：第二行不再是「置顶区」，条头那颗字也就没有意义了 —— 最左边那颗就是当前会话。
       // 空字符串仍然会留一个空 span，CSS 里 `.pin-strip-label:empty` 把它收掉。
@@ -1570,18 +1547,29 @@ export class App {
 
   /**
    * 把上面的判据落到 `<html data-compact>`：CSS 的 899 / 900 断点都改读这个属性。
-   * 三套控制台的 900 / 720 / 640 折叠规则也按有效宽度落 `data-console-*`（D158），
-   * 否则放大字号时原生 @media 不触发，面板内容会横向穿出。
+   * 控制台的 900 / 720 / 640 折叠规则落两组属性，**别合并**：
+   * - `data-console-*` 按有效宽度（视口 ÷ 字号）：`.sys-` / `.jc-` / 附件那几套控制台还在 `#app`
+   *   里，跟着字号缩放（D158），否则放大字号时原生 @media 不触发、面板内容会横向穿出；
+   * - `data-st-*` 按视口宽度：`.st-console` 那批已经 1:1 挂在 body 上（D450）。
    * 返回「这次真的翻了」—— 调用方拿它决定要不要重排（拖动中跨过 900 时）。
    */
   private syncCompact(): boolean {
-    const width = this.layoutWidth();
-    const compact = width < 900;
+    // 壳的宽窄仍看**有效宽度**（视口 ÷ 字号，`compact()` 那一份判据，D158）。
+    // 别顺手把这里换成 `window.innerWidth`：控制台改成 1:1 之后，两套判据正是从这里开始分家的。
+    const compact = this.compact();
+    const width = window.innerWidth;
     const root = document.documentElement;
     // 控制台原本是 @media (max-width: 900/720/640px)，保留 <= 的边界；compact 仍是 < 900。
-    root.dataset.consoleNarrow = String(width <= 900);
-    root.dataset.consoleMid = String(width <= 720);
-    root.dataset.consoleTight = String(width <= 640);
+    const layout = this.layoutWidth();
+    root.dataset.consoleNarrow = String(layout <= 900);
+    root.dataset.consoleMid = String(layout <= 720);
+    root.dataset.consoleTight = String(layout <= 640);
+    // #742：`.st-console` 那批控制台已经挂在 body 上、不再跟字号缩放，所以它的折叠档位要按**视口**宽度算。
+    // 还按有效宽度（视口 / 字号）算的话，2.0 字号下一块 1080px 宽的面板会被判成「窄」，整套布局白翻一次。
+    // 分开两组属性：`.sys-` / `.jc-` / 附件那几套控制台仍留在 `#app` 里，继续读 `data-console-*`。
+    root.dataset.stNarrow = String(width <= 900);
+    root.dataset.stMid = String(width <= 720);
+    root.dataset.stTight = String(width <= 640);
     // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
     // 否则属性一直是 undefined，CSS 那边是在碰运气。
     const changed = root.dataset.compact !== String(compact);
@@ -2255,6 +2243,14 @@ export class App {
         break;
       }
       case "hello":
+        this.sawHello = true;
+        this.helloDone?.();
+        this.helloDone = null;
+        this.helloWait = null;
+        if (this.helloTimer) {
+          clearTimeout(this.helloTimer);
+          this.helloTimer = null;
+        }
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         // #278：旧桥不带 caps —— 缺这一项就当它不会按目录建组。
         this.bridgeCaps = Array.isArray(msg.caps) ? (msg.caps as unknown[]).filter((c): c is string => typeof c === "string") : [];
@@ -2809,8 +2805,13 @@ export class App {
         if (msg.dir && want && String(msg.dir) !== want && String(msg.dir) !== dir) break;
         if (msg.error) {
           this.reviewError = errText(msg);
+          // 「重新评审」被桥拒了（`dup_pr` / `busy` / 别的）：把「评什么」还给点之前的样子。
+          this.restoreRerunPick();
           this.reviewState = null;
           this.reviewProgresses = [];
+          this.reviewTips = {};
+          this.reviewTipsAt = 0;
+          this.reviewTipsBranch = "";
           this.reviewNotGit = msg.code === "not_git";
           if (this.queueTab === "review") this.renderQueue();
           break;
@@ -2820,6 +2821,15 @@ export class App {
         if (msg.dir) this.reviewRepo = String(msg.dir);
         this.reviewState = (msg.state ?? null) as ReviewState | null;
         this.reviewProgresses = Array.isArray(msg.progresses) ? (msg.progresses as ReviewProgress[]) : [];
+        // #741：tips 是帧的兄弟字段（不在 `state` 里）。规则就两条：
+        // 带了就**整份替换**（桥每次给的都是那一刻的完整快照，`{}` 也算一份）；
+        // 不带（标意见 / 清理历史 / 停一条这些只改记录的帧）就保留上一次的 ——
+        // 那些帧不该把「有新提交」那颗标弄消失。
+        if (msg.tips && typeof msg.tips === "object") {
+          this.reviewTips = msg.tips as Record<string, string>;
+          this.reviewTipsAt = Number(msg.tipsAt) || 0;
+          this.reviewTipsBranch = String(msg.tipsBranch ?? "");
+        }
         if (Number(msg.cap) > 0) this.reviewCap = Number(msg.cap);
         // 盘上记的「评什么」：只在本会话头一份状态到达时恢复（以后以界面为准）。
         this.applyReviewPick();
@@ -2837,6 +2847,8 @@ export class App {
         if (String(msg.sessionId ?? "") && this.currentId && String(msg.sessionId) !== this.currentId) break;
         const id = String(msg.runId ?? "");
         if (!id) break;
+        // 这一次重评真的开出去了：不再需要恢复「评什么」。
+        this.reviewRerunRestore = null;
         this.reviewPendingRuns.add(id);
         if (this.queueTab === "review") this.renderQueue();
         this.syncReviewSheet();
@@ -3708,22 +3720,21 @@ export class App {
   }
 
   /**
-   * 徽标唯一的一颗元素。D170：「后台」那枚能点开详情（其它徽标还是纯提示），
-   * 点它不能顺带把卡片/胶囊自己的「打开这个会话」也触发，所以一律 stopPropagation。
+   * 徽标唯一的一颗元素。能点的有两枚（D170 「后台」、D453 「评审中」），其它只是读数：
+   * 点它们不能顺带把卡片 / 胶囊自己的「打开这个会话」也触发，所以一律 stopPropagation。
    */
   private badgeChip(s: SessionState): HTMLElement | null {
     const badge = this.badgeOf(s);
     if (!badge) return null;
     const chip = el("span", `badge ${badge.cls}`, badge.text);
     if (badge.title) chip.title = badge.title;
-    if (badge.kind !== "bg") return chip;
+    if (!badge.clickable) return chip;
     chip.classList.add("clickable");
     chip.setAttribute("role", "button");
     chip.tabIndex = 0;
     const open = (ev: Event) => {
       ev.stopPropagation();
-      this.closeWsPop();
-      this.openBgSheet(s.id);
+      this.openBadge(s);
     };
     chip.onclick = open;
     chip.onkeydown = (ev) => {
@@ -3735,10 +3746,23 @@ export class App {
   }
 
   /**
+   * 可点徽标去哪（D453）：目前两枚 —— 「后台」看后台任务详情、「评审中」切到那个会话 + 右栏代码评审。
+   * 左栏卡片、★ 行胶囊、管理面板、工作区浮层四处共用这一个口，别再各写一遍 kind 判断。
+   */
+  private openBadge(s: SessionState): void {
+    this.closeWsPop();
+    if (this.badgeOf(s)?.kind === "bg") this.openBgSheet(s.id);
+    else this.openReviewForSession(s.id);
+  }
+
+  /**
    * 徽标唯一入口（D156）：当前会话的待处理数以本地队列为准（`badgeSession`），别的会话读列表里
    * 那份事件累加值。左栏卡片、钉条胶囊、管理面板、顶栏那颗都走这里，省得哪一处又读到旧账。
    * 刚 `openSession`、快照还没回来时本地队列是空的（`pendingFresh` 为 false），此时退回列表里
    * 那份 —— 否则切到一个「正等着你」的会话，徽标会先闪没一拍。
+   *
+   * 判定本身（哪一档、说什么、能不能点）在 `session-badge.ts` 的纯函数里（D453，单测
+   * `web/tests/session-badge-unit.mjs`）；这里只合出那份输入。
    */
   private badgeOf(s: SessionState): SessionBadge | null {
     const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
@@ -4084,7 +4108,9 @@ export class App {
    */
   private overlay(node: HTMLElement, kind: SurfaceKind = "window", opts: SurfaceOpts = {}): void {
     markSurface(node, kind, opts);
-    (document.getElementById("app") ?? document.body).append(node);
+    // 挂哪儿由 `overlayHost()` 一个判据决定：控制台（`.st-console`）是量尺，1:1 挂 body（D450），
+    // 其余浮层照旧进 `#app`、跟着字号缩放（D123 / D441）。
+    mountOverlay(node);
   }
 
   /**
@@ -4465,6 +4491,32 @@ export class App {
     }
     rail.append(range, ticks);
 
+    // #742：拖动时把控制台让开（视觉在 console-peek.ts + settings-console.css）。
+    // 胶囊是**指示器**，不接指针 —— 拖动继续用冻住的轨道盒子换算，视觉变化不回读几何。
+    // 宿主与 `overlayHost()` / CSS 那条复位认的是同两种外壳：只写 `.st-back` 的话，
+    // 滑杆哪天落进 `.sheet-back` 那扇控制台，拖动就永远不让开、也不露胶囊。
+    const peekHost = (): HTMLElement | null => rail.closest<HTMLElement>(".st-back, .sheet-back");
+    let peeking: ConsolePeek | null = null;
+    const readout = (v: number): { text: string; fill: number } => ({ text: `${Math.round(v * 100)}%`, fill: sizePct(v) });
+    /**
+     * 收起让开。按**宿主**收，不是按这一根滑杆：胶囊与 `peeking` 类是六根共用的，
+     * 按自己那一份收会漏掉「A 的键盘读数还挂着、B 已经在拖」这种情况。
+     */
+    const hidePeek = (): void => {
+      const host = peekHost();
+      if (host) peekFor(host).hide();
+      peeking = null;
+    };
+    /** 露出来。`key` = 键盘调值那一下（自带 400ms 自动收起，计时器在 ConsolePeek 里按宿主一份）。 */
+    const showPeek = (v: number, key = false): void => {
+      const host = peekHost();
+      if (!host) return;
+      const pk = peekFor(host);
+      if (key) pk.keyPeek(o.label, readout(v));
+      else pk.show(o.label, readout(v));
+      peeking = pk;
+    };
+
     /** 把值抹到控件上（轨道填充 / 读数 / 刻度的「已过」状态 / 刻度字的高亮）。 */
     const paint = (v: number): void => {
       range.value = String(v);
@@ -4478,6 +4530,7 @@ export class App {
       for (const m of marks.children) {
         m.classList.toggle("on", Math.abs(Number((m as HTMLElement).dataset.v) - v) < 0.001);
       }
+      peeking?.set(readout(v));
     };
 
     // 一帧只抹一次：值一变就是整块 zoom 重排，input 事件比帧还密。
@@ -4485,6 +4538,8 @@ export class App {
     let next = o.value;
     // 「有没有还没落盘的值」只能另记一笔：`land` 自己就把 prefs 改掉了，拿值比永远相等。
     let dirty = false;
+    /** 上一次**真的抹到界面上**的值。`next` 可能还差一帧没落，Esc 要回的是这个。 */
+    let applied = o.value;
 
     /** 落实一个值：写 prefs（调用方的事）+ 抹控件。 */
     const land = (raw: number): void => {
@@ -4493,6 +4548,7 @@ export class App {
       // 同一个档存前存后不是一个数；`range.value`（step 0.01）也会与 `--ui-scale` 差一档，方向键再按就跳。
       const v = clampScale(raw);
       next = v;
+      applied = v;
       dirty = true;
       o.onLive(v);
       paint(v);
@@ -4546,6 +4602,13 @@ export class App {
 
     /** 拖的时候不能交给浏览器算值：按冻住那一刻的轨道盒子换算，松手才写盘。 */
     let dragBox: { x: number; w: number } | null = null;
+    /**
+     * 按下那一刻的指针位置与值：前者判「真的拖起来了没有」，后者给 Esc 取消用。
+     * 取 `applied` 而不是 `next` —— 上次 `queue()` 那帧可能还没落，`next` 已经是新值了，
+     * 拿它还原等于把「用户还没看到的一步」当成起点（那一帧再被 commit 落盘就串了）。
+     */
+    let dragFrom: { x: number; y: number } | null = null;
+    let dragValue = o.value;
     const valueAt = (clientX: number): number => {
       if (!dragBox || dragBox.w <= 0) return Number(range.value);
       const p = Math.min(1, Math.max(0, (clientX - dragBox.x) / dragBox.w));
@@ -4562,24 +4625,67 @@ export class App {
       // 键盘要能接着用：preventDefault 会把焦点拦下来，鼠标拖完再按方向键就没反应了。
       // 先自己把焦点给 range，再拦浏览器那套（它算的是放大后的坐标）。
       range.focus({ preventScroll: true });
+      // 上一次要是还有没落盘的值（最典型：方向键还按着就去抓轨道，`keyup` 的 commit 还没发生），
+      // 先把它落干净再定起点 —— 否则 Esc 的「回到起点」会回到一个**界面上看着在、却从没存过**的值。
+      if (dirty) commit();
       const r = range.getBoundingClientRect();
       dragBox = { x: r.left, w: r.width };
+      dragFrom = { x: ev.clientX, y: ev.clientY };
+      dragValue = applied;
+      hidePeek();
       rail.classList.add("dragging");
       read.classList.add("dragging");
       rail.setPointerCapture(ev.pointerId);
       ev.preventDefault();
+      window.addEventListener("keydown", onDragKey, true);
+      window.addEventListener("blur", endDrag);
       queue(snapTo(valueAt(ev.clientX)));
     });
     rail.addEventListener("pointermove", (ev) => {
       if (!dragBox) return;
       queue(snapTo(valueAt(ev.clientX)));
+      // 阈值：#742 —— 单击轨道跳档 / 点刻度数字不该闪一下，只有真的拖起来了才让开。
+      if (!peeking && dragFrom && Math.hypot(ev.clientX - dragFrom.x, ev.clientY - dragFrom.y) >= PEEK_MIN_PX) {
+        showPeek(next);
+      }
     });
-    const endDrag = (): void => {
-      if (!dragBox) return;
+    /** 收尾的共同那一半：拖动状态、两个监听、让开，一次收干净（落不落盘由调用方决定）。 */
+    const stopDrag = (): void => {
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
       dragBox = null;
+      dragFrom = null;
       rail.classList.remove("dragging");
       read.classList.remove("dragging");
+      window.removeEventListener("keydown", onDragKey, true);
+      window.removeEventListener("blur", endDrag);
+      hidePeek();
+    };
+    /** 收尾（松手 / 被打断）：收干净之后值照旧落盘。 */
+    const endDrag = (): void => {
+      if (!dragBox) return;
+      stopDrag();
       commit();
+    };
+    /**
+     * 拖动中按 Esc = 撤掉这一次拖动（#742）：值回拖动起点、不落盘、面板不关。
+     * 捕获阶段先于 `modal.ts` 的 Esc 层（那是 document 上的冒泡监听），拦下来才不会把面板关掉。
+     */
+    const cancelDrag = (): void => {
+      if (!dragBox) return;
+      stopDrag();
+      dirty = false;
+      next = dragValue;
+      o.onLive(dragValue);
+      paint(dragValue);
+    };
+    const onDragKey = (ev: KeyboardEvent): void => {
+      if (ev.key !== "Escape" || !dragBox) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      cancelDrag();
     };
     rail.addEventListener("pointerup", endDrag);
     rail.addEventListener("pointercancel", endDrag);
@@ -4588,6 +4694,8 @@ export class App {
     range.oninput = () => {
       if (dragBox) return;
       queue(Number(range.value));
+      // 纯键盘也得看得见：调值就露一下，400ms 没再动就自己回来（连按合并计时，计时器在胶囊里）。
+      showPeek(next, true);
     };
     range.addEventListener("keyup", () => { if (!dragBox) commit(); });
     range.addEventListener("blur", () => { if (!dragBox) commit(); });
@@ -4878,7 +4986,7 @@ export class App {
     langPanel.append(
       this.fontSliderRow({
         label: tr("字号"),
-        hint: tr("整页一起缩放；拖动或点刻度，双击轨道回 100%"),
+        hint: tr("整页一起缩放；拖动时设置面板自动让开，松手回来；点刻度跳档，双击轨道回 100%"),
         value: this.prefs.scale,
         reset: DEFAULT_PREFS.scale,
         snaps: SIZE_STOPS,
@@ -4902,7 +5010,7 @@ export class App {
 
     // 五块的分组头：叠乘关系说一次，五行各自的 hint 只讲「这一块是哪一块」，不重复念乘法。
     // 用 stSection 而不是手拼三层 —— 小节头只有一处样式的真源。
-    langPanel.append(this.stSection(tr("分区字号"), tr("各自叠在「字号」上相乘；双击轨道回 100%")));
+    langPanel.append(this.stSection(tr("分区字号"), tr("各自叠在「字号」上相乘；拖动轨道时让开看真页面；双击轨道回 100%")));
 
     const regionLabels: Record<RegionId, string> = {
       topbar: tr("顶栏"),
@@ -5135,10 +5243,11 @@ export class App {
 
   /**
    * 换大类 / 子类：只切显隐，不重建（重建会丢掉滑块拖到一半的手感）。停在哪个大类记进 `pi.prefs`，
-   * 每个大类上次停在哪个子类只记在这次打开的页面里。
+   * 每个大类上次停在哪个子类只记在这次打开的页面里；`persist=false` 只用于 URL 深链，
+   * 看一眼工具页、不改用户上次停留的外观页签（评审 #10）。
    */
-  private setDisplayTab(tab: Prefs["settingsTab"], sec?: string): void {
-    if (this.prefs.settingsTab !== tab) {
+  private setDisplayTab(tab: Prefs["settingsTab"], sec?: string, persist = true): void {
+    if (persist && this.prefs.settingsTab !== tab) {
       this.prefs = { ...this.prefs, settingsTab: tab };
       savePrefs(this.prefs);
     }
@@ -5146,7 +5255,8 @@ export class App {
     if (!sheet) return;
     const group = this.displayGroups().find((g) => g.tab === tab) ?? this.displayGroups()[0];
     const item = group.items.find((i) => i.sec === (sec ?? this.displaySec[tab])) ?? group.items[0];
-    this.displaySec[tab] = item.sec;
+    // 深链（persist=false）不写用户上次停留的子页签（评审 #13）。
+    if (persist) this.displaySec[tab] = item.sec;
     for (const page of sheet.querySelectorAll<HTMLElement>(".set-page")) page.hidden = page.dataset.page !== tab;
     if (tab === "conn") this.paintConnPage();
     for (const sub of sheet.querySelectorAll<HTMLElement>(`.set-page[data-page="${tab}"] .set-sub`)) sub.hidden = sub.dataset.sec !== item.sec;
@@ -6014,7 +6124,7 @@ export class App {
    */
   private openModelSheet(
     expandSession = false,
-    pickOpt?: { start: string; level?: string; onPick: (model: ModelInfo, level: string) => void },
+    pickOpt?: { start: string; provider?: string; level?: string; onPick: (model: ModelInfo, level: string) => void },
   ): void {
     if (!this.currentId) return;
     // Re-renders (catalog arrived, takeover finished) keep what the user unfolded; a fresh open folds.
@@ -6034,11 +6144,29 @@ export class App {
     const startModel = pick ? pick.start : this.session?.model;
     const startLevel = pick ? (pick.level ?? "") : (this.session?.thinkingLevel ?? "");
     // 当前模型属于哪个来源：它的组默认展开，否则新开场就只看得见一组折叠标题。
-    const startProvider = this.models.find((m) => m.id === startModel)?.provider ?? "";
+    // 会话自己报着 provider 时**以它为准**：目录里可能有另一个 provider 卖同一个 id，
+    // 按 id 找回来的那个会指错来源（本机 wb2api / wb2_mac 都卖 cn:glm-5.4，D454）。
+    const startProvider =
+      (pick ? pick.provider : this.session?.provider) || this.models.find((m) => m.id === startModel)?.provider || "";
+    // 起点的「身份」：会话报了 provider 就是它；没报（老桥 / 从没报过）就取目录里同 id 的那一行 ——
+    // 与「使用中」高亮、`draftInfo()` 共用同一份判据。不先把这一步做出来的话：`draftProvider` 会从
+    // 空串起步，「点同名同 id 的另一个来源」就被 `sameModel` 的向后兼容当成没动过，弹层不显示
+    // 「待切换」、确认直接关窗（D454 评审意见 4）。
+    //
+    // 最后那一段回退是**必须**的：会话报的 provider 可能已经不在目录里（改过名、下架、老 pi 的写法），
+    // 这时还拿它去严格比，`isStart` 会一行都匹配不上 —— 没有「使用中」、`draftInfo()` 是 undefined、
+    // 连切档位都没得切（D454 二轮评审意见 1）。退回按 id 认，与改动前同档。
+    const startRow =
+      this.models.find((m) => sameModel(m, { provider: startProvider, id: startModel })) ??
+      this.models.find((m) => m.id === startModel);
+    const startId = startRow?.id ?? startModel;
+    const startProviderId = startRow?.provider ?? startProvider;
     // 默认展开是「第一眼」的事，不是「锁死」：用户把这一组折上后，下次 paint 不能再把它擑开。
     // 挑模型那条路没有「当前模型那一组」可言：全部展开，否则开场就是一排折叠标题。
-    const forceOpen = new Set<string>(pick ? this.models.map((m) => m.provider) : startProvider ? [startProvider] : []);
+    const forceOpen = new Set<string>(pick ? this.models.map((m) => m.provider) : startProviderId ? [startProviderId] : []);
     let draftModel = startModel;
+    /** 草稿的来源：与 `draftModel` 一起才是「挑的是哪一个模型」，点行时两份一起改。 */
+    let draftProvider = startProviderId;
     let draftLevel = startLevel;
     type ModelTab = "now" | "all" | "session";
     // 挑模型那条路没有「当前使用」可言（面板还没选过），直接落在「全部模型」上，
@@ -6111,19 +6239,25 @@ export class App {
       commit();
     });
 
-    const draftInfo = (): ModelInfo | undefined => this.models.find((m) => m.id === draftModel);
+    // 草稿/起点都用**严格**的 `provider + id` 比：`sameModel()` 在 provider 未知时按「同一个」算，
+    // 那是给「从目录里找会话那一行」用的；拿它判断「有没有换」会把换来源吞掉（D454 评审意见 4）。
+    const isDraft = (m: ModelInfo): boolean => m.id === draftModel && m.provider === draftProvider;
+    const isStart = (m: ModelInfo): boolean => m.id === startId && m.provider === startProviderId;
+    const draftInfo = (): ModelInfo | undefined => this.models.find(isDraft);
     const draftLevels = (): string[] => draftInfo()?.levels ?? [];
-    const dirty = (): boolean => draftModel !== startModel || draftLevel !== startLevel;
+    /** 换了模型（含只换了来源）或换了档位：两个 provider 卖同一个 id 时，「换来源」也是一次真切换。 */
+    const moved = (): boolean => draftModel !== startId || draftProvider !== startProviderId;
+    const dirty = (): boolean => moved() || draftLevel !== startLevel;
     const changes = (): string[] => {
       const out: string[] = [];
-      if (draftModel !== startModel) out.push(tr("模型 → {p1}", { p1: shortModelName(draftInfo()?.name ?? draftModel ?? "") }));
+      if (moved()) out.push(tr("模型 → {p1}", { p1: shortModelName(draftInfo()?.name ?? draftModel ?? "") }));
       if (draftLevel !== startLevel) out.push(tr("思考 → {p1}", { p1: draftLevel }));
       return out;
     };
 
     const commit = (): void => {
       if (pick) {
-        const chosen = this.models.find((m) => m.id === draftModel);
+        const chosen = this.models.find(isDraft);
         if (chosen) {
           // D423：评审挑的模型进评审侧那份「最近使用」（确认即记）；对话那份不受影响。
           rememberReviewModel(chosen.provider, chosen.id);
@@ -6135,8 +6269,8 @@ export class App {
       const sessionId = this.currentId;
       // 没接管＝没写入权：行双击也会走到这里，别把 setModel 发给桥让它默默丢掉。
       if (this.session && !this.session.owned) return;
-      const model = this.models.find((m) => m.id === draftModel);
-      const modelChanged = draftModel !== startModel && !!model;
+      const model = this.models.find(isDraft);
+      const modelChanged = moved() && !!model;
       const levelChanged = draftLevel !== startLevel && !!draftLevel;
       if (!sessionId || (!modelChanged && !levelChanged)) {
         this.closeSheet();
@@ -6147,15 +6281,16 @@ export class App {
         // The level rides along with the model switch so the bridge applies it after pi's clamp.
         if (modelChanged && model) {
           // 换走的和换上的都记进「最近使用」：下次打开时，刚离开的那个就在顶上。
-          const prev = this.models.find((m) => m.id === startModel);
-          rememberRecentModel(prev?.provider, prev?.id);
+          // 目录里没有这一行（会话的模型不在目录里）就别记：记进去也读不出来，白占一个名次。
+          const prev = this.models.find(isStart);
+          if (prev) rememberRecentModel(prev.provider, prev.id);
           rememberRecentModel(model.provider, model.id);
           this.socket.send({ type: "setModel", sessionId, provider: model.provider, modelId: model.id, level: level || undefined });
         } else if (levelChanged) this.socket.send({ type: "setThinking", sessionId, level });
         if (this.session && this.session.id === sessionId && (modelChanged || levelChanged)) {
           this.session = {
             ...this.session,
-            ...(modelChanged && model ? { model: model.id, modelName: model.name } : {}),
+            ...(modelChanged && model ? { model: model.id, modelName: model.name, provider: model.provider } : {}),
             thinkingLevel: level || this.session.thinkingLevel,
           };
         }
@@ -6168,18 +6303,20 @@ export class App {
 
     /** 一行模型：名字 + 「使用中 / 待切换」+ id，右侧窗口大小。 */
     const modelRow = (m: ModelInfo, opts: { provider?: boolean } = {}): HTMLElement => {
-      const on = m.id === draftModel;
+      const on = isDraft(m);
+      const current = isStart(m);
       const row = el("button", `settings-row pm-row${on ? " on" : ""}`) as HTMLButtonElement;
       row.type = "button";
       row.dataset.id = m.id;
+      row.dataset.provider = m.provider;
       const label = el("span", "settings-label");
       const nameEl = el("span", "settings-name", shortModelName(m.name));
       let who = "";
-      if (m.id === draftModel) who = m.id === startModel ? tr("使用中") : tr("待切换");
-      else if (m.id === startModel) who = tr("使用中");
+      if (on) who = current ? tr("使用中") : tr("待切换");
+      else if (current) who = tr("使用中");
       if (who) {
         const tag = el("span", "pm-who", who);
-        if (m.id === draftModel && m.id !== startModel) tag.classList.add("draft");
+        if (on && !current) tag.classList.add("draft");
         nameEl.append(tag);
       }
       label.append(nameEl, el("code", "settings-key", m.id));
@@ -6188,6 +6325,7 @@ export class App {
       row.append(el("span", "pm-win", m.contextWindow ? compactSize(m.contextWindow) : "–"));
       row.onclick = () => {
         draftModel = m.id;
+        draftProvider = m.provider;
         const levels = draftLevels();
         // 当前档位在这张模型上没有时落到它的最高档（弹窗里那句话就是这么写的）：
         // 落到最低档（off）等于默默把思考关掉，用户根本看不出发生了什么。
@@ -6276,9 +6414,9 @@ export class App {
         return;
       }
       const who = el("span", "pm-lvbar__model", shortModelName(m.name));
-      const moved = m.id !== startModel;
-      if (moved) who.classList.add("draft");
-      const fell = moved && !!startLevel && !!m.levels?.length && !m.levels.includes(startLevel);
+      const switched = moved();
+      if (switched) who.classList.add("draft");
+      const fell = switched && !!startLevel && !!m.levels?.length && !m.levels.includes(startLevel);
       who.title = [m.levels?.length ? m.levels.join(" / ") : tr("该模型固定档位"), fell ? tr("换模型时若当前档位不支持，会落到该模型的最高档") : ""]
         .filter(Boolean)
         .join(" · ");
@@ -6291,7 +6429,7 @@ export class App {
     // 搜索匹配规则（列表与「最近使用」共用，改规则只改这里）。
     const multi = new Set(this.models.map((x) => x.provider)).size > 1;
     const flatRow = (x: ModelInfo): HTMLElement => modelRow(x, { provider: multi });
-    const currentModel = this.models.find((x) => x.id === startModel && (!startProvider || x.provider === startProvider)) ?? null;
+    const currentModel = this.models.find(isStart) ?? null;
     const matches = (x: ModelInfo, q: string): boolean => !q || `${x.name} ${x.id}`.toLowerCase().includes(q);
 
     const nowPane = (): HTMLElement[] => {
@@ -6320,12 +6458,12 @@ export class App {
         return out;
       }
 
-      const { pinned, recent } = groupModels(this.models, { id: startModel }, { mergedRecent: !!pick });
+      const { pinned, recent } = groupModels(this.models, { id: startId, provider: startProviderId }, { mergedRecent: !!pick });
       // 只换档位时草稿就是当前模型：再插一块「待切换」＝同一行画两遍。
-      if (dirty() && m && m.id !== startModel) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
+      if (dirty() && m && moved()) out.push(this.stSection(tr("待切换"), tr("确认后生效")), panel([flatRow(m)], ""));
       const current = [pinned ? flatRow(pinned) : null].filter((x): x is HTMLElement => !!x);
       out.push(this.stSection(tr("当前使用"), tr("1 个")), panel(current, tr("会话还没报出模型")));
-      const rest = recent.filter((x) => x.id !== startModel && x.id !== draftModel);
+      const rest = recent.filter((x) => !isStart(x) && !isDraft(x));
       if (rest.length) out.push(this.stSection(tr("最近使用"), tr("{p1} 个", { p1: String(rest.length) })), panel(rest.map(flatRow), ""));
       return out;
     };
@@ -6390,11 +6528,12 @@ export class App {
     };
 
     const sessionPane = (): HTMLElement[] => {
-      const m = this.models.find((x) => x.id === startModel);
+      const m = this.models.find(isStart);
       const { used: u, win } = used();
       const rows = [
         kvRow(tr("模型"), "model", startModel ?? "–"),
-        kvRow(tr("来源"), "provider", m?.provider ?? "–"),
+        // 空串不是来源：老桥 / 目录里没有这一行时显示「–」，别留一格空白（D454 评审意见 5）。
+        kvRow(tr("来源"), "provider", m?.provider || startProviderId || "–"),
         kvRow(tr("上下文窗口"), "contextWindow", win ? `${compactSize(win)} tokens` : "–"),
         kvRow(tr("已用上下文"), "used", u != null ? `${compactSize(u)}${win ? ` · ${Math.round((u / win) * 100)}%` : ""}` : "–"),
         kvRow(tr("思考档位"), "thinking", startLevel ? `${startLevel}${m?.levels?.length ? ` · ${m.levels.join(" / ")}` : ""}` : "–"),
@@ -8053,7 +8192,9 @@ export class App {
     model.textContent = name || tr("模型");
 
     // 倍率是目录塞在名字里的（`Kimi-K3 · x1.62 · 1M`）：有就露，没有（自定义 provider）就整格隐。
-    const mult = modelMultiplier(this.models.find((m) => m.id === this.session?.model)?.name ?? "");
+    // 按 provider/id 找：目录里可能有另一个来源卖同一个 id，按 id 取会拿错一行（D454）。
+    const here = this.models.find((m) => sameModel(m, { provider: this.session?.provider, id: this.session?.model }));
+    const mult = modelMultiplier(here?.name ?? "");
     multEl.textContent = mult;
     multEl.hidden = !mult;
     multEl.title = mult ? tr("计费倍率 {p1}", { p1: mult }) : "";
@@ -8062,7 +8203,7 @@ export class App {
     levelEl.textContent = thinking || "–";
     levelEl.classList.toggle("off", !thinking || thinking === "off");
 
-    const win = this.usage.contextWindow ?? this.models.find((m) => m.id === this.session?.model)?.contextWindow ?? null;
+    const win = this.usage.contextWindow ?? here?.contextWindow ?? null;
     const used = this.usage.contextTokens;
     if (used != null && win) {
       ctxText.textContent = `${compactSize(used)}/${compactSize(win)}`;
@@ -10410,6 +10551,20 @@ export class App {
   }
 
   /**
+   * D453：「评审中」那枚徽标点开 —— 切到那个会话 + 右栏切到代码评审页签。
+   *
+   * 顺序不能反：`selectQueueTab("review")` 会 `loadReview()`，它拿的是**当前会话**的目录，
+   * 先换页签再换会话就等于去上一个会话的仓库里找进度。先 `openSession`（已经是当前会话就是空转），
+   * 再结算一次会话键，最后才换页签。
+   */
+  private openReviewForSession(id: string): void {
+    if (this.currentId !== id) this.openFromList(id);
+    if (this.collapsed.queue) this.togglePane("queue");
+    this.syncReviewSession();
+    this.selectQueueTab("review");
+  }
+
+  /**
    * 链接卡右缘那颗「代码评审」（#666）。只做「把号交过去」：关掉挡着的 GitHub 面板、右栏收着就
    * 展开、范围选 GitHub PR、号填好，然后切到评审页签 —— **不**自动开跑（一次几分钟、烧额度，
    * 误点的代价是钱和时间；而且同一仓库同时只允许一次评审）。
@@ -12515,7 +12670,7 @@ export class App {
   private trPicker(v: Viewer): void {
     const t = this.trOf(v);
     // D245 / D392: 默认模型是桥那边记的偏好，没有就跟随 pi 全局设置，再没有才退到当前会话的模型。
-    const sessionModel = this.models.find((m) => m.id === this.session?.model);
+    const sessionModel = this.models.find((m) => sameModel(m, { provider: this.session?.provider, id: this.session?.model }));
     const pref = this.trModelPref || (t.doc ? `${t.doc.provider}/${t.doc.model}` : "") || this.trDefaultModel;
     const values = this.models.map((m) => `${m.provider}/${m.id}`);
     openTrPicker(
@@ -13387,8 +13542,9 @@ export class App {
     if (archived) tag("arch", tr("已归档"));
     tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? tr("网页") : "CLI", s.origin === "web" ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话"));
     const badge = this.badgeOf(s);
-    // D170：「后台」那一枚在管理面板里也要点得开，不然同一枚徽标在左栏能点、到这里突然不能。
-    if (badge?.kind === "bg") {
+    // D170 / D453：两枚可点的徽标（后台、评审中）在管理面板里也要点得开，
+    // 不然同一枚徽标在左栏能点、到这里突然不能。
+    if (badge?.clickable) {
       const chip = this.badgeChip(s);
       if (chip) line.append(chip);
     } else if (badge) tag(badge.cls, badge.text, badge.title);
@@ -13899,6 +14055,69 @@ export class App {
     if (tab === "global" || tab === "project") return "global";
     if (tab === "changelog" || tab === "whatsnew") return "changelog";
     return tab;
+  }
+
+  /** 首屏数据回来之前开设置面板会画到空数据：等到第一个 hello，最多等 5 秒（评审 #25）。 */
+  private whenHello(): Promise<void> {
+    if (this.sawHello) return Promise.resolve();
+    // 一个共享 Promise + 一个定时器；超时也 resolve 自己，后来的人重新等一份新的（评审 #25 再收口）。
+    this.helloWait ??= new Promise<void>((resolve) => {
+      this.helloDone = resolve;
+    });
+    if (!this.helloTimer) {
+      this.helloTimer = setTimeout(() => {
+        const done = this.helloDone;
+        this.helloWait = null;
+        this.helloDone = null;
+        this.helloTimer = null;
+        done?.();
+      }, 5_000);
+    }
+    const wait = this.helloWait;
+    return wait.then(() => {
+      if (this.helloTimer) {
+        clearTimeout(this.helloTimer);
+        this.helloTimer = null;
+      }
+    });
+  }
+
+  /**
+   * D451：`/?settings=tools` / `?settings=whatsnew` 这类 URL 深链 —— 内网通更新公告卡片点过来，
+   * 直接落到主界面的那一页。认不出的 tab 当没写；打开后把参数抹掉，刷新时不会又弹一次。
+   */
+  async openSettingsFromUrl(): Promise<void> {
+    const tab = new URLSearchParams(location.search).get("settings");
+    if (!tab) return;
+    const wipe = (): void => {
+      try {
+        // 只删 settings 这一个键：`?settings=whatsnew&thread=...` 还得留着别的参数（评审 #23）。
+        const url = new URL(location.href);
+        url.searchParams.delete("settings");
+        history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      } catch {
+        /* 背后是个不让改 URL 的壳：那就留着参数，不为这种事报错 */
+      }
+    };
+    await this.whenHello();
+    // 5 秒还没等到首屏：别拿空数据开面板；坏参数也不能一直挂在地址栏（评审 #37/#31）。
+    if (!this.sawHello) {
+      wipe();
+      return;
+    }
+    // 热部署不在「设置」页签里，它是外观面板的「连接与设置 → 工具」；D451 的公告卡就落在这里。
+    if (tab === "tools") {
+      this.openDisplaySheet();
+      this.setDisplayTab("conn", "tools", false);
+      wipe();
+      return;
+    }
+    if (!(SETTINGS_TABS as readonly string[]).includes(tab)) {
+      wipe();
+      return;
+    }
+    this.openSettingsSheet(tab as SettingsTab);
+    wipe();
   }
 
   private openSettingsSheet(tab: SettingsTab): void {
@@ -19120,6 +19339,9 @@ export class App {
     this.reviewPin = next;
     this.reviewState = null;
     this.reviewProgresses = [];
+    this.reviewTips = {};
+    this.reviewTipsAt = 0;
+    this.reviewTipsBranch = "";
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19168,6 +19390,9 @@ export class App {
     this.autoRoundSheet?.close();
     this.autoRoundSheet = null;
     this.reviewProgresses = [];
+    this.reviewTips = {};
+    this.reviewTipsAt = 0;
+    this.reviewTipsBranch = "";
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19207,28 +19432,59 @@ export class App {
     this.reviewPicker?.close();
   }
 
+  /** 把「评什么」还给「重新评审」点之前的样子（没真开出去时必须做，别静默改掉人选的格）。 */
+  private restoreRerunPick(): void {
+    const before = this.reviewRerunRestore;
+    if (!before) return;
+    this.reviewRerunRestore = null;
+    this.reviewMode = before.mode;
+    this.reviewPr = before.pr;
+    this.reviewBase = before.base;
+    this.reviewTarget = before.target;
+    this.saveReviewPick();
+    if (this.queueTab === "review") this.renderQueue();
+  }
+
+  /** 「重新核对」的冷却时间到了：那颗刷新钮恢复可点。 */
+  private clearReviewTipsBusy(): void {
+    if (this.reviewTipsTimer !== null) {
+      window.clearTimeout(this.reviewTipsTimer);
+      this.reviewTipsTimer = null;
+    }
+    if (!this.reviewTipsBusy) return;
+    this.reviewTipsBusy = false;
+    if (this.queueTab === "review") this.renderQueue();
+  }
+
   /**
    * 问一次桥的评审状态。默认按目录去重；`force` 用于重连 / 插件变更 / 重新进页签 ——
    * 那些路径面对的是新连接或新状态，同一目录也必须重发。只在这里维护 `reviewAsked`，
    * 别让调用方各自拼这份状态。
+   *
+   * `fresh` 交给桥（#741）：绕开「有没有新提交」那次核对的 60 秒缓存 —— 人都点了「再看一眼」，
+   * 撞缓存等于白点。
    */
-  private askReview(dir: string, force = false): boolean {
+  private askReview(dir: string, force = false, fresh = false): boolean {
     if (!force && this.reviewAsked === dir) return false;
     this.reviewAsked = dir;
-    this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
+    this.socket.send({ type: "review.get", dir, sessionId: this.currentId, fresh });
     this.socket.send({ type: "review.auto.get", sessionId: this.currentId });
     return true;
   }
 
-  private loadReview(): void {
+  private loadReview(fresh = false): void {
     const dir = this.reviewDir();
     if (!dir) {
       this.reviewError = tr("先打开一个会话：评审评的是它的目录。");
       this.reviewState = null;
       this.reviewProgresses = [];
+      this.reviewTips = {};
+      this.reviewTipsAt = 0;
+      this.reviewTipsBranch = "";
       return;
     }
-    this.askReview(dir, true);
+    // `fresh` 只影响「有没有新提交」那一次核对（绕开桥里的 60 秒缓存）。
+    this.askReview(dir, true, fresh);
     // PR 列表按**评的那个仓库**排队（钉了子仓库时它与会话目录不是一回事）。
     const ask = this.reviewPin || dir;
     if (this.reviewPrsAsked !== ask) this.loadPullRequests(ask);
@@ -19272,7 +19528,7 @@ export class App {
     picker.onClose = () => {
       if (this.reviewPicker === picker) this.reviewPicker = null;
     };
-    picker.mount(document.getElementById("app") ?? document.body);
+    picker.mount();
     this.reviewPicker = picker;
   }
 
@@ -19281,11 +19537,19 @@ export class App {
     this.socket.send({ type: "review.pin", sessionId: this.currentId, dir: "" });
   }
 
-  /** `reviewModel` 存的是 `provider/id`；弹层与目录用 `id`，这里来回换。 */
+  /**
+   * `reviewModel` 存的是 `provider/id`；弹层与目录用 `id`，这里来回换。
+   *
+   * 老记录 / 老版本只存了 id（没有 `/`）：这时候不能直接 `find((m) => m.id === want)` ——
+   * 它稳定命中目录里第一个同 id 的来源（本机是 wb2api），等于把 D454 的问题从另一条路绕回来。
+   * 先按会话自己的 provider 认，再退回目录第一个。
+   */
   private reviewModelInfo(): ModelInfo | null {
     const want = this.reviewModel.trim();
     if (!want) return null;
-    return this.models.find((m) => `${m.provider}/${m.id}` === want) ?? this.models.find((m) => m.id === want) ?? null;
+    const byKey = this.models.find((m) => `${m.provider}/${m.id}` === want);
+    if (byKey) return byKey;
+    return this.models.find((m) => sameModel(m, { provider: this.session?.provider, id: want })) ?? null;
   }
 
   /** 这一轮真正会用的模型：面板上挑过的优先，没挑就用会话当前那个（两处都读它，别各拼一份）。 */
@@ -19297,11 +19561,14 @@ export class App {
    * 面板没单独挑模型时，评审真正会用的那个：跟着会话当前的模型走。
    *
    * 不显示 / 不记录它的话，记录卡上只能写「没记模型」—— 用户点开详情问的第一件事就是「用的什么模型」。
+   * **按 provider/id 认，不只按 id**：两个 provider 可以卖同一个 id（本机 wb2api 与 wb2_mac 都卖
+   * `cn:glm-5.4`），只按 id `find()` 会把评审派到另一个来源上——那次就是掉线的远端网关（D454）。
    */
   private reviewDefaultModel(): ModelInfo | null {
     const id = (this.session?.model ?? "").trim();
     if (!id) return null;
-    return this.models.find((m) => m.id === id) ?? null;
+    const provider = (this.session?.provider ?? "").trim();
+    return this.models.find((m) => sameModel(m, { provider, id })) ?? null;
   }
 
   /**
@@ -19514,6 +19781,10 @@ export class App {
       repo: this.reviewRepo || this.reviewPin,
       repoPinned: Boolean(this.reviewPin),
       modelLabels: this.reviewModelLabels(),
+      tips: this.reviewTips,
+      tipsAt: this.reviewTipsAt,
+      tipsBusy: this.reviewTipsBusy,
+      tipsBranch: this.reviewTipsBranch,
     });
     const effective = this.reviewEffectiveModel();
     return {
@@ -19653,8 +19924,11 @@ export class App {
       },
       onPickModel: () => {
         // 复用输入框那颗 chip 背后的同一个弹层（模型与思考），只是「确认」把模型交回面板。
+        const cur = this.reviewModelInfo() ?? this.reviewDefaultModel();
         this.openModelSheet(false, {
-          start: this.reviewModelInfo()?.id ?? "",
+          start: cur?.id ?? "",
+          // provider 一并交进去：目录里另一个来源可能卖同一个 id，只给 id 的话开场就预选错那一行。
+          provider: cur?.provider ?? "",
           onPick: (m) => {
             this.reviewModel = `${m.provider}/${m.id}`;
             this.renderQueue();
@@ -19685,6 +19959,17 @@ export class App {
       // 装 gh / 登录 gh（D428）：卡片的动作由 `reviewPanelInput()` 直接传 `ghCardActions()`。
       // 记录卡不再是入口（D429）：点卡底那颗「完整详情」打开那一次。
       onDetails: (runId) => this.openReviewSheet(runId),
+      onRerun: (runId) => this.rerunReview(runId),
+      onRefreshTips: () => {
+        // 连点几下就是几次 `ls-remote`（`fresh` 绕开 60 秒缓存）：点下去先灰一小会儿。
+        // 用固定时长而不是「等某一帧」——面板平常就一直在收 `review.state`（标意见、跑完、
+        // 别的页签），拿帧当解除信号的话这颗钮几乎立刻就会恢复，等于没拦。
+        this.reviewTipsBusy = true;
+        if (this.reviewTipsTimer !== null) window.clearTimeout(this.reviewTipsTimer);
+        this.reviewTipsTimer = window.setTimeout(() => this.clearReviewTipsBusy(), 1500);
+        this.renderQueue();
+        this.loadReview(true);
+      },
       onPickRepo: () => this.openRepoPicker(),
       onClearRepo: () => this.clearReviewRepo(),
     };
@@ -19735,7 +20020,7 @@ export class App {
         );
       },
     });
-    sheet.mount(document.getElementById("app") ?? document.body);
+    sheet.mount();
   }
 
   /** 「PR 信息」dialog：标题 / 描述 / 统计 / 文件清单 / 提交时间线（不显示 diff）。 */
@@ -19752,7 +20037,7 @@ export class App {
       sheet.onClose = () => {
         if (this.reviewPrSheet === sheet) this.reviewPrSheet = null;
       };
-      sheet.mount(document.getElementById("app") ?? document.body);
+      sheet.mount();
       this.reviewPrSheet = sheet;
     }
     const cached = this.reviewPrInfo.number === number ? this.reviewPrInfo : null;
@@ -19779,7 +20064,7 @@ export class App {
       this.reviewFocus = "";
       if (this.queueTab === "review") this.renderQueue();
     };
-    sheet.mount(document.getElementById("app") ?? document.body);
+    sheet.mount();
     this.reviewSheet = sheet;
   }
 
@@ -19928,23 +20213,55 @@ export class App {
     pushEscLayer({ el: modal, onEsc: () => modal.remove() });
   }
 
-  private startReview(): void {
+  /**
+   * 「重新评审」：按**那条记录自己的范围**再跑一次（#741）。
+   *
+   * 不复用面板上现在选着的那一格 —— 那张卡可能是一条旧记录，人现在在看的是别的范围。
+   * 真正开跑走 `startReview()` 同一条路：闸门、模型、错误提示全复用，不做第二个入口。
+   */
+  private rerunReview(runId: string): void {
+    const run = (this.reviewState?.runs ?? []).find((item) => item.id === runId);
+    if (!run) return;
+    const before = { mode: this.reviewMode, pr: this.reviewPr, base: this.reviewBase, target: this.reviewTarget };
+    // 桥那边是异步裁决的（`dup_pr` / `busy` 都可能在这里才拒），所以那份要恢复的选择得先记住。
+    this.reviewRerunRestore = { ...before };
+    this.reviewMode = run.mode;
+    if (run.mode === "pr") {
+      // 记录里没有 PR 号（老记录 / 坏数据）就别猜：沿用手上这个号等于拿**另一条** PR 去评，
+      // 而且结果会安静地写进列表里 —— 正是 #666 那道闸要防的那类错。
+      if (run.pr <= 0) return;
+      this.reviewPr = String(run.pr);
+    } else if (run.mode === "range") {
+      this.reviewBase = run.from;
+      this.reviewTarget = run.to || "HEAD";
+    }
+    // 这一下是「人自己决定的范围」：链接卡带来的「期望仓库」不再适用（与换范围同一个口径）。
+    this.clearReviewExpectRepo();
+    this.saveReviewPick();
+    this.renderQueue();
+    if (this.startReview()) return;
+    // 页面这一侧就没开出去（缺东西 / 没目录）：当场恢复，不必等桥回话。
+    this.restoreRerunPick();
+    this.renderQueue();
+  }
+
+  private startReview(): boolean {
     const dir = this.reviewDir();
-    if (!dir) return;
+    if (!dir) return false;
     const mode = this.reviewMode;
     if (mode === "commit" && !this.reviewCommit.trim()) {
       this.flashToast(tr("先填一个提交号"), true, 4000);
-      return;
+      return false;
     }
     // `#636` 是 PR 号的手感：commitish() 会拒掉它（`--commit "#636" is not a valid commit ref`），
     // 与其让 ocr 报一句看不懂的，不如当场说清该切哪个模式。
     if (mode === "commit" && /^#\s*\d+$/.test(this.reviewCommit.trim())) {
       this.flashToast(tr("提交号别带 #：要评 PR 请切到「GitHub PR」"), true, 5000);
-      return;
+      return false;
     }
     if (mode === "pr" && !this.reviewPr.trim()) {
       this.flashToast(tr("先选一个 PR（或填个号）"), true, 4000);
-      return;
+      return false;
     }
     this.reviewError = "";
     this.reviewPrMenu = false;
@@ -19975,6 +20292,7 @@ export class App {
       lang: getLang(),
     });
     this.renderQueue();
+    return true;
   }
 
   /** 一条意见 → 分支工作台的「差异」页签，选中那个文件并把命中的那段代码标出来。 */
@@ -23535,7 +23853,8 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ...PANEL_COMMANDS.map((c): [string, string] => [c.id, tr(c.desc)]),
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "preview" | "runtime" | "changelog" | "whatsnew";
+const SETTINGS_TABS = ["global", "project", "trust", "login", "passphrase", "ext", "subagents", "notify", "preview", "runtime", "changelog", "whatsnew"] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 interface ExtPackage {
   scope: "user" | "project";
@@ -24659,6 +24978,25 @@ function stopMedia(root: ParentNode): void {
 /** "Deepseek-V4.1-Flash · x0.11 · 1M" -> "Deepseek-V4.1-Flash": the chip has no room for pricing. */
 function shortModelName(name: string): string {
   return name.split(" · ")[0] ?? name;
+}
+
+/**
+ * 模型的身份是 `provider/id`，不是 id。两个 provider 可以卖同一个 id —— 本机 `wb2api`（远端网关）
+ * 与 `wb2_mac`（本机网关）就各有一份 `cn:glm-5.4`。只按 id `find()` 会稳定命中目录里的第一个，
+ * 于是「挑的是本机那份」在确认时被换成另一个来源：评审就这么被派到掉线的网关上（D454）。
+ *
+ * 任一边 provider 为空时按「同一个」算 —— 这是**向后兼容**（老桥的 `SessionState` 没有 provider、
+ * 老记录只存了 id），不是「通配任意来源」：空串只是「这边不知道」，而不是「哪边都行」。
+ *
+ * 它只回答「目录里这一行可能就是那个模型吗」（解决 id→行）；**不回答**「两个选择是不是同一个」——
+ * 后者（换没换、该发 setModel 吗）必须严格比 provider+id，见 `openModelSheet()` 里的
+ * `isDraft` / `isStart` / `moved()`。两边 provider 都知道时这里也是严格比：``a.provider === b.provider``。
+ */
+function sameModel(a: { provider?: string; id?: string }, b: { provider?: string; id?: string }): boolean {
+  if (!a.id || !b.id) return false;
+  if (a.id !== b.id) return false;
+  // 有一边不知道 provider（老桥 / 老记录）时按「同一个」算：没有更细的信息，别把用户挡在外面。
+  return !a.provider || !b.provider || a.provider === b.provider;
 }
 
 /**

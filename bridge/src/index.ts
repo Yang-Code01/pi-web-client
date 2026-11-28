@@ -54,20 +54,27 @@ import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, st
 import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
-import { listPullRequests, pullRequestInfo } from "./gitpr.ts";
+import { cachedPrHeads, listPullRequests, pullRequestInfo, remotePrHeads } from "./gitpr.ts";
 import {
   cancelReview,
   cleanRuns,
   effectiveReviewDir,
+  gitBranchOf,
   gitRoot,
+  gitShaOf,
   installOcr,
+  isHeadName,
   isMark,
+  localTips,
   markFinding,
   ocrStatus,
   readReviewPin,
   readReviewState,
+  remoteTipTargets,
+  remoteTips,
   resumeReviewJobs,
   reviewProgresses,
+  reviewRunningCount,
   setReviewNotify,
   stopAllReviews,
   takeSweptCount,
@@ -76,6 +83,7 @@ import {
   setReviewPin,
   startReview,
   sweepStaleRuns,
+  tipTargets,
   type ReviewLang,
   type ReviewMode,
 } from "./review.ts";
@@ -127,6 +135,7 @@ import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
 import { handleAttendance } from "./attendance.ts";
 import { handleSysmanage } from "./sysmanage.ts";
 import { handleHotdeploy } from "./hotdeploy.ts";
+import { UpdatesLan } from "./updates-lan.ts";
 
 /**
  * 热部署对话框上的「会话 N 个在跑」：只数有活进程、且这一轮没结束的（`liveRunning`）。
@@ -744,6 +753,11 @@ async function main(): Promise<void> {
   const peer = new PeerHost({ port: cfg.peerPort, entry: peerOn ? peerEntry() : null, log });
   if (peerOn) peer.start();
   else log("peer 已禁用（PI_PEER=0）");
+
+  // D451：局域网更新组。发布者每 30 分钟看一次自己检出的 `origin/main`，有新提交就往固定 id 的
+  // 只读群里推一条公告；非发布者什么也不做（只是 announce 里带个仓库标识，等被拉进组）。
+  const updates = new UpdatesLan(peer, log);
+  if (peerOn) updates.start();
 
   /**
    * Q-032: 被拒的提问必须说出理由。
@@ -1638,6 +1652,43 @@ async function main(): Promise<void> {
 
     // #266 本机管理：读本机信息；DNS 改动只有本机/局域网能发起，公网在模块里 403。
     if (await handleSysmanage(req, res, url, { publicReq, port: cfg.port, version: VERSION, log })) return;
+
+    // D451：局域网更新组。发布者开关会写 peer 的 `config.json`，所以公网一律 403。
+    if (url.pathname === "/api/updates" && req.method === "GET") {
+      if (publicReq) return json(res, 403, { error: "公网不能查看本机的更新组状态" });
+      try {
+        return json(res, 200, await updates.view());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/updates/publisher" && req.method === "POST") {
+      if (publicReq) return json(res, 403, { error: "公网不能改本机的更新组设置" });
+      // 局域网关着的时候写开关只会让前端等一个注定失败的请求（评审 #19）。
+      if (!peerOn) return json(res, 409, { error: "局域网已禁用：先在设置里打开内网通" });
+      let body: { on?: unknown };
+      try {
+        body = (await readBody(req)) as { on?: unknown };
+      } catch (err) {
+        // readBody 还会抛「请求体过大」等错误，别一律说成 JSON 不合法（评审 #15）。
+        return json(res, 400, { error: err instanceof SyntaxError ? "请求体不是合法的 JSON" : (err as Error).message });
+      }
+      try {
+        if (typeof body?.on !== "boolean") return json(res, 400, { error: "on 要是 true 或 false" });
+        return json(res, 200, await updates.setPublisher(body.on));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/updates/check" && req.method === "POST") {
+      if (publicReq) return json(res, 403, { error: "公网不能手动触发更新检查" });
+      if (!peerOn) return json(res, 409, { error: "局域网已禁用：先在设置里打开内网通" });
+      try {
+        return json(res, 200, await updates.checkNow());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
 
     // 热部署：换分支 → 编译 → 换进程；写接口公网 403（模块里判）。
     if (
@@ -2737,6 +2788,9 @@ async function main(): Promise<void> {
   setReviewNotify({
     onProgress: (job, progress) =>
       broadcast({ type: "review.progress", dir: job.repo, sessionId: job.session, runId: progress.runId, progress }),
+    // D453：「这个会话在跑几条评审」变了就改写会话状态那一格（`touch:false`，不刷左栏时间）。
+    // 只有接手过的会话有可写的状态对象；盘上发现、没接手的靠 `sessions.list()` 带上这一格。
+    onActive: (session) => sessions.get(session)?.setReviewCount(reviewRunningCount(session)),
     onState: (job) => {
       // 仓库可能在评审期间被删 / 被移走：转发状态不该因此把脑带崩。
       let pinned = "";
@@ -4445,8 +4499,74 @@ async function main(): Promise<void> {
             const session = String(msg.sessionId ?? "");
             try {
               const { repo, pinned } = effectiveReviewDir(dir, session);
+              // 面板要的那一份状态只从 `reviewStateFrame()` 来（D446 的接回路径也发同一份）。
+              const frame = reviewStateFrame(repo, session, pinned);
+              // #741 先画后补：第一帧就有记录本身，tips 只带**缓存里已知**的那份（读缓存、
+              // 不 spawn、不发请求）；真正的核对在下面那段异步里，算完补一帧。
+              const targets = tipTargets(frame.state.runs);
+              // 远端那批必须跟补帧问的**同一批号**（`remoteTipTargets` 的去重 + 上限 3）：
+              // 缓存 key 是「仓库 + 这一批号」，拿全量号去查永远命中不了 —— PR 记录一多，
+              // 首帧就白白退化成空的，「已亮着的标先灭一下」这个毛病恰好出现在最长的那份列表上。
+              const remoteTargets = remoteTipTargets(targets);
+              const known = cachedPrHeads(repo, remoteTargets.map((item) => item.pr));
+              const remoteKnown: Record<string, string> = {};
+              for (const item of remoteTargets) {
+                const sha = known.heads[item.pr];
+                if (sha) remoteKnown[item.ref] = sha;
+              }
               // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
-              send({ ...reviewStateFrame(repo, session, pinned), swept: takeSweptCount() });
+              // `tipsAt` 用**缓存那一刻**，不是现在：拿「现在」去标注一份 60 秒前的值，
+              // 页面的「旧快照不判」那道闸就等于没有（刚跑完的那轮会被陈旧的远端 sha 误标）。
+              send({
+                ...frame,
+                tips: remoteKnown,
+                tipsAt: known.at,
+                // 首帧是同步的（拿不到分支名，`gitBranchOf` 是异步）。这里只可能带 PR 的缓存
+                // tip，没有 `HEAD` 的 key，空着不会让谁误标；补帧会带上真正的分支名。
+                tipsBranch: "",
+                swept: takeSweptCount(),
+              });
+              // 真正的核对：本地 `rev-parse`（每个 ref 一次，异步）+ PR 那半一次 `ls-remote`
+              // （只读、不挪本地 ref）。离线 / 超时 / 没登录就是「没标」，也不报错。
+              if (targets.length) {
+                const fresh = msg.fresh === true;
+                // 整段包在 try 里：这是个不 await 的后台任务，抛出去会变成未处理的 rejection
+                // （读状态文件 / 算账号 / 发帧都可能失败），而它失败的正确表现就是「没有标」。
+                void (async () => {
+                  try {
+                    // tips 与 state 必须是**同一眼**：这期间可能有人标了一条意见、也可能刚跑完新一轮。
+                    const liveFrame = reviewStateFrame(repo, session, pinned);
+                    const liveTargets = tipTargets(liveFrame.state.runs);
+                    if (!liveTargets.length) return;
+                    // `gitBranchOf` 只在真有 `to: HEAD` 的记录时才跑：多一次 git 子进程就是白花。
+                    const branch = liveTargets.some((item) => isHeadName(item.ref)) ? await gitBranchOf(repo) : "";
+                    const local = await localTips(liveFrame.state.runs, (ref) => gitShaOf(repo, ref));
+                    let remote: { tips: Record<string, string>; at: number } = { tips: {}, at: 0 };
+                    if (liveTargets.some((item) => item.pr > 0)) {
+                      let env: NodeJS.ProcessEnv | undefined;
+                      try {
+                        env = (await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session)).env;
+                      } catch {
+                        /* 没账号也要能问公开仓库：不强求 */
+                      }
+                      remote = await remoteTips(liveFrame.state.runs, (prs) => remotePrHeads(repo, prs, { fresh, env }));
+                    }
+                    // 两个来源各带自己的时刻，快照取**最旧**那个：宁可少判（不知道），
+                    // 不能拿一份旧值说成新的。
+                    const at = remote.at ? Math.min(local.at, remote.at) : local.at;
+                    broadcast({
+                      ...liveFrame,
+                      tips: { ...local.tips, ...remote.tips },
+                      tipsAt: at,
+                      // `HEAD` 那几条的 tip 要不要采信，由页面按**每条记录自己的**分支判
+                      // （同一个 `HEAD` 底下可能躺着别的分支留下来的记录，桥这边分不出来）。
+                      tipsBranch: branch,
+                    });
+                  } catch {
+                    /* 补帧失败 = 这条没标出来，不值得惊动用户（下次打开面板再核） */
+                  }
+                })();
+              }
               void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
             } catch (err: any) {
               send({ type: "review.state", dir, sessionId: session, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
@@ -5246,6 +5366,7 @@ async function main(): Promise<void> {
 
   process.on("exit", () => {
     peer.stop();
+    updates.stop();
     // 有壳时 pid 文件写的是壳的 pid，脑不许动它。
     if (!linkedPath) removePidFile(cfg.port);
   });

@@ -32,7 +32,13 @@ import {
   chunkFiles,
   expectRepoMismatch,
   cancelReview,
+  childWhy,
+  clip,
+  noOutputMessage,
+  readChildEvent,
+  unreachable,
   reviewProgresses,
+  reviewRunningCount,
   reviewJobFile,
   reviewJobsDir,
   reviewJobAlive,
@@ -44,7 +50,17 @@ import {
   setPick,
   trimRuns,
   RUN_KEEP,
+  TIP_PR_LIMIT,
+  tipTargets,
+  remoteTipTargets,
+  headStamp,
+  safeHeadStamp,
+  localTips,
+  remoteTips,
 } from "../src/review.ts";
+import { Session } from "../src/sessions.ts";
+// 判据住在 frames.ts（两侧共用，叶子模块、不 import 任何东西）。
+import { isRunOutdated, tipForRun } from "../src/frames.ts";
 
 process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-"));
 // 这里只考登记逻辑：真起 worker 会把「立刻失败的 PR fetch」跑成后台进程，测试看不到、也不该看。
@@ -536,6 +552,95 @@ check("并发（D420）：进度只按「仓库 + 会话」发给自己的会话
   cancelReview(repo, "s2");
 });
 
+// ---- 徽标（D453）：这个会话现在有几条评审在跑（页面靠它说「评审中」） ----------
+
+check("会话在跑的评审条数：起一条是 1，并跑第二条是 2，别的会话不串", () => {
+  const a = bareRepo("count-a");
+  const b = bareRepo("count-b");
+  const session = "count-session";
+  assert.equal(reviewRunningCount(session), 0, "没开跑就是 0");
+  startReview({ dir: a, mode: "pr", pr: 1, session, lang: "zh" });
+  assert.equal(reviewRunningCount(session), 1);
+  startReview({ dir: b, mode: "pr", pr: 2, session, lang: "zh" });
+  assert.equal(reviewRunningCount(session), 2, "并跑两条报 2（页面上是「评审中 2」）");
+  // 额度按会话算、跨仓库共用：另一个会话自己那几条不算到这个会话头上。
+  assert.equal(reviewRunningCount("count-other"), 0);
+  // 没有会话 id 的老入口（HTTP / 手输）不与任何会话混算。
+  assert.equal(reviewRunningCount(""), 0);
+  cancelReview(a, session);
+  cancelReview(b, session);
+  // 停止只是「请求取消」：子进程还在退出的路上，额度不放开 —— 徽标也就不该先掉一格。
+  assert.equal(reviewRunningCount(session), 2);
+});
+
+check("会话在跑的评审条数：起不来的那条当场收尾，不算在跑", () => {
+  const repo = bareRepo("count-spawn");
+  const session = "count-spawn";
+  startReview({ dir: repo, mode: "workspace", session, lang: "zh" });
+  assert.equal(reviewRunningCount(session), 1);
+  setReviewLauncher(() => {
+    throw new Error("spawn boom");
+  });
+  try {
+    startReview({ dir: repo, mode: "workspace", session, lang: "zh" });
+  } finally {
+    setReviewLauncher(() => {});
+  }
+  assert.equal(reviewRunningCount(session), 1, "起不来那条收尾了，只剩前面那条");
+  cancelReview(repo, session);
+});
+
+check("会话在跑的评审条数：桥重启后接回的评审也算在跑", () => {
+  const prev = process.env.PI_WEB_STATE;
+  process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-count-resume-"));
+  try {
+    const repo = "/Users/me/count-resume";
+    const session = "cr";
+    const startedAt = new Date().toISOString();
+    writeReviewState(repo, { repo, runs: [{ id: "cr", status: "running", findings: [], startedAt }], marks: {} }, session);
+    fs.mkdirSync(reviewJobsDir(), { recursive: true });
+    fs.writeFileSync(
+      reviewJobFile("cr"),
+      JSON.stringify({ runId: "cr", repo, session, startedAt, opts: { mode: "workspace", lang: "zh" }, pid: process.pid }),
+    );
+    assert.equal(reviewRunningCount(session), 0, "接回之前内存里没有它");
+    assert.equal(resumeReviewJobs(), 1);
+    assert.equal(reviewRunningCount(session), 1, "换脑 / 桥重启之后徽标要接回「评审中」");
+  } finally {
+    process.env.PI_WEB_STATE = prev;
+  }
+});
+
+check("会话在跑的评审条数：变一次就通知一次（页面靠这一帧改徽标）", () => {
+  const seen = [];
+  setReviewNotify({ onActive: (session) => seen.push(`${session}:${reviewRunningCount(session)}`) });
+  try {
+    const repo = bareRepo("count-notify");
+    const session = "count-notify";
+    startReview({ dir: repo, mode: "workspace", session, lang: "zh" });
+    assert.deepEqual(seen, [`${session}:1`], "起跑那一刻就要带上新条数推一帧");
+    cancelReview(repo, session);
+  } finally {
+    setReviewNotify({});
+  }
+});
+
+check("会话状态那一格：0 写显式 null（不是 undefined），同样的条数不重复广播", () => {
+  // 徽标读的是桥内存里那一格（`SessionState.review`）：这一格坏了，页面要么永远清不掉「评审中」，
+  // 要么每 500ms 的 ticker 都白推一帧同样的状态。
+  const s = new Session("pi", null, { id: "review-badge-state" });
+  const seen = [];
+  s.on("state", (st) => seen.push(st.review ?? "absent"));
+  s.setReviewCount(0);
+  assert.deepEqual(seen, [], "本来就没有评审 → 从无到 0 不必广播");
+  s.setReviewCount(2);
+  s.setReviewCount(2);
+  assert.deepEqual(seen, [2], "同样的条数只发一帧");
+  s.setReviewCount(0);
+  assert.deepEqual(seen, [2, "absent"], "0 要发出来：undefined 过 JSON 会被整条丢掉，页面就永远清不掉「评审中」");
+  assert.equal(s.state.review, null, "显式 null 才是「没有评审在跑」");
+});
+
 check("并发（D420）：桥重启后 sweep 按「条」计数，不只是按文件", () => {
   const prev = process.env.PI_WEB_STATE;
   process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-sweep-"));
@@ -789,6 +894,193 @@ check("「评什么」存得下也读得回（空串照原样存，别被默认�
   assert.deepEqual(readReviewState(repo, "s1").pick, pick);
 });
 
+// ---- 过时（#741）：完成态记录核对「现在的 tip 是多少」 ----------------------
+
+/** 异步的那几条（`remoteTips` 要发一次 ls-remote）：`check()` 只认同步函数。 */
+const checkAsync = async (name, fn) => {
+  try {
+    await fn();
+    console.log(`ok   ${name}`);
+  } catch (err) {
+    failures += 1;
+    console.error(`FAIL ${name}\n     ${err?.message ?? err}`);
+  }
+};
+
+/** 一条已经收尾的记录：只填核对 tip 会读到的那几项，其余留空。 */
+const doneRun = (over = {}) => ({
+  id: "r1",
+  status: "done",
+  mode: "range",
+  from: "main",
+  to: "HEAD",
+  mergeBase: "abc",
+  pr: 0,
+  prTitle: "",
+  prHead: "",
+  prBase: "",
+  startedAt: "2026-01-01T00:00:00.000Z",
+  finishedAt: "2026-01-01T00:01:00.000Z",
+  headSha: "aaaa1111",
+  findings: [],
+  ...over,
+});
+
+check("tipTargets 只核对「完成的、分支或 PR 的、记了被评 sha 的」记录", () => {
+  const runs = [
+    doneRun({ id: "range", to: "HEAD" }),
+    doneRun({ id: "pr", mode: "pr", pr: 7, to: "refs/pi-web/pr-7" }),
+    doneRun({ id: "ws", mode: "workspace", to: "HEAD", from: "" }),
+    doneRun({ id: "commit", mode: "commit", to: "abc1234", from: "" }),
+    doneRun({ id: "failed", status: "failed" }),
+    doneRun({ id: "stopped", status: "stopped" }),
+    doneRun({ id: "running", status: "running" }),
+    doneRun({ id: "old", headSha: undefined }),
+    doneRun({ id: "no-from", from: "" }),
+  ];
+  assert.deepEqual(
+    tipTargets(runs).map((t) => t.ref),
+    ["HEAD", "refs/pi-web/pr-7"],
+    "工作区、单提交、没跑成的、老记录都不核对",
+  );
+});
+
+check("tipTargets 新的在前，按 ref 去重（同一个分支评过两次只核对一次）", () => {
+  const runs = [
+    doneRun({ id: "a", to: "HEAD", startedAt: "2026-01-01T00:00:00.000Z" }),
+    doneRun({ id: "b", to: "feat/x", startedAt: "2026-01-02T00:00:00.000Z" }),
+    doneRun({ id: "c", to: "HEAD", startedAt: "2026-01-03T00:00:00.000Z" }),
+  ];
+  assert.deepEqual(tipTargets(runs).map((t) => t.ref), ["HEAD", "feat/x"]);
+});
+
+check("remoteTipTargets 按 PR 号去重、最多 3 个（留着最新的那一份 ref）", () => {
+  const runs = [];
+  for (let i = 1; i <= 5; i += 1) {
+    runs.push(doneRun({ id: `p${i}`, mode: "pr", pr: i, to: `refs/pi-web/pr-${i}`, startedAt: `2026-01-0${i}T00:00:00.000Z` }));
+  }
+  // 同一个号评了第二次：只该查一次
+  runs.push(doneRun({ id: "p5again", mode: "pr", pr: 5, to: "refs/pi-web/pr-5", startedAt: "2026-01-09T00:00:00.000Z" }));
+  const picked = remoteTipTargets(tipTargets(runs));
+  assert.deepEqual(picked.map((t) => t.pr), [5, 4, 3], `上限是 ${TIP_PR_LIMIT} 个，新的优先`);
+  assert.equal(picked.filter((t) => t.pr === 5).length, 1, "同一个 PR 只留一条");
+});
+
+await checkAsync("localTips 拿本地 rev-parse 的结果当 tip；认不出这个 ref 就不给 key", async () => {
+  const runs = [doneRun({ id: "a", to: "HEAD" }), doneRun({ id: "b", to: "feat/gone" })];
+  const out = await localTips(runs, async (ref) => (ref === "HEAD" ? "b".repeat(40) : ""));
+  assert.deepEqual(out.tips, { HEAD: "b".repeat(40) }, "认不出的 ref 是「不知道」，不是空串");
+  assert.ok(out.at > 0, "这份值带着它的时刻");
+  // 形状不对的东西（注入的实现 / git 吐出多行）不许当成 sha 用
+  const junky = await localTips(runs, async () => `deadbeef\n${"c".repeat(40)}`);
+  assert.deepEqual(junky.tips, {});
+});
+
+check("比记录还旧的快照不拿来判：刚跑完的那一轮不该被说成「有新提交」", () => {
+  const done = doneRun({ id: "a", finishedAt: "2026-01-02T00:00:00.000Z", headSha: "aaaa1111" });
+  const tips = { HEAD: "aaaa1111" };
+  const snapAt = Date.parse("2026-01-01T00:00:00.000Z"); // 快照比记录旧
+  assert.equal(tipForRun(done, tips, snapAt), "", "旧快照 -> 不知道");
+  assert.equal(isRunOutdated(done, tips, snapAt), false);
+  // 快照比记录新：照常判
+  const freshAt = Date.parse("2026-01-03T00:00:00.000Z");
+  assert.equal(tipForRun(done, tips, freshAt), "aaaa1111");
+  assert.equal(isRunOutdated(done, tips, freshAt), false, "一样就不算过时");
+  assert.equal(isRunOutdated(done, { HEAD: "bbbb2222" }, freshAt), true);
+  // 桥没给时刻（0 = 老桥）时照旧比，不因此把所有标都关掉
+  assert.equal(tipForRun(done, tips, 0), "aaaa1111");
+});
+
+check("`pr` 模式却没有号的那几条：判不了，也不该长出「重新评审」", () => {
+  const bad = doneRun({ id: "bad", mode: "pr", pr: 0, to: "refs/pi-web/pr-0" });
+  assert.deepEqual(tipTargets([bad]), []);
+});
+
+await checkAsync("headStamp：收尾时记被评的 sha，`HEAD` 再记当时那条分支", async () => {
+  const deps = { shaOf: async () => "a".repeat(40), branch: async () => "feat/a" };
+  assert.deepEqual(await headStamp({ to: "HEAD" }, deps), { headSha: "a".repeat(40), headRef: "feat/a" });
+  assert.deepEqual(await headStamp({ to: "feat/x" }, deps), { headSha: "a".repeat(40) }, "分支名本身就是 ref，不用记当时在哪");
+  // 分离头指针 / 认不出这个 ref：宁可少记一项，也不编一个值
+  assert.deepEqual(await headStamp({ to: "HEAD" }, { shaOf: async () => "a".repeat(40), branch: async () => "" }), { headSha: "a".repeat(40) });
+  assert.deepEqual(await headStamp({ to: "feat/gone" }, { shaOf: async () => "", branch: async () => "feat/a" }), {});
+});
+
+await checkAsync("`to: HEAD` 只在**同一条分支**上比：换分支不是「有新提交」", async () => {
+  const sha = "b".repeat(40);
+  const runs = [doneRun({ id: "a", to: "HEAD", headRef: "feat/a" })];
+  // 桥这一层只负责回答「HEAD 现在指向哪个提交」；「这条记录该不该采信」按**每条记录**判。
+  assert.deepEqual((await localTips(runs, async () => sha)).tips, { HEAD: sha }, "HEAD 照常回答 sha");
+  const at = Date.parse("2026-01-05T00:00:00.000Z");
+  const head = { HEAD: sha };
+  assert.equal(tipForRun(runs[0], head, at, "feat/a"), sha, "同一条分支：照旧比");
+  assert.equal(tipForRun(runs[0], head, at, "feat/b"), "", "换到别的分支：核对不了，不标");
+  // 分离头指针（现在没有分支名）与老记录（当时没记分支）都退回「照旧比」。
+  assert.equal(tipForRun(runs[0], head, at, ""), sha);
+  assert.equal(tipForRun(doneRun({ id: "b", to: "HEAD" }), head, at, "feat/b"), sha);
+});
+
+await checkAsync("补印章失败不许把已完成的评审带下水（safeHeadStamp 吞掉异常）", async () => {
+  const boom = { shaOf: async () => { throw new Error("git 挂了"); }, branch: async () => "feat/a" };
+  assert.deepEqual(await safeHeadStamp({ to: "HEAD" }, boom), {}, "记不上就不记");
+  // 正常情况照旧给值
+  assert.deepEqual(
+    await safeHeadStamp({ to: "HEAD" }, { shaOf: async () => "a".repeat(40), branch: async () => "feat/a" }),
+    { headSha: "a".repeat(40), headRef: "feat/a" },
+  );
+});
+
+check("同一个 `HEAD` 下别的分支留下的记录，不许借当前分支的 tip 说它过时", () => {
+  // 场景：先在 feat/a 评过一次（headSha=aaaa），后来在 feat/b 又评一次（headSha=bbbb）。
+  // 现在人在 feat/b 上，HEAD=bbbb。`tips` 按 ref 共享（只有一条 HEAD），
+  // 但 feat/a 那条**不能**拿 bbbb 跟自己的 aaaa 比 —— 那不是「有新提交」，是换了分支。
+  const a = "a".repeat(40);
+  const b = "b".repeat(40);
+  const at = Date.parse("2026-01-05T00:00:00.000Z");
+  const onA = doneRun({ id: "a", to: "HEAD", headRef: "feat/a", headSha: a, finishedAt: "2026-01-01T00:00:00.000Z" });
+  const onB = doneRun({ id: "b", to: "HEAD", headRef: "feat/b", headSha: b, finishedAt: "2026-01-02T00:00:00.000Z" });
+  const tips = { HEAD: b };
+  assert.equal(isRunOutdated(onA, tips, at, "feat/b"), false, "feat/a 那条不该被标");
+  assert.equal(isRunOutdated(onB, tips, at, "feat/b"), false, "当前分支那条与 tip 相等，也不标");
+  // 同一分支上真的又提交了：照标
+  assert.equal(isRunOutdated(onB, { HEAD: "c".repeat(40) }, at, "feat/b"), true);
+});
+
+await checkAsync("localTips 不碰网络：PR 那几条留给远端那半", async () => {
+  let asked = 0;
+  const runs = [doneRun({ id: "pr", mode: "pr", pr: 7, to: "refs/pi-web/pr-7" })];
+  await localTips(runs, async () => {
+    asked += 1;
+    return "c".repeat(40);
+  });
+  assert.equal(asked, 0);
+});
+
+await checkAsync("remoteTips 一次 ls-remote 拿一批；失败或抛错的那个号不出现（不是空串）", async () => {
+  const runs = [
+    doneRun({ id: "a", mode: "pr", pr: 1, to: "refs/pi-web/pr-1" }),
+    doneRun({ id: "b", mode: "pr", pr: 2, to: "refs/pi-web/pr-2" }),
+    doneRun({ id: "c", mode: "pr", pr: 3, to: "refs/pi-web/pr-3", startedAt: "2026-01-05T00:00:00.000Z" }),
+  ];
+  const calls = [];
+  const out = await remoteTips(runs, async (prs) => {
+    calls.push([...prs]);
+    // 2 号远端没答（PR 没了 / 超时）：不该冒充「没变」。
+    return { heads: { 1: "d".repeat(40) }, at: 1000 };
+  });
+  assert.deepEqual(out.tips, { "refs/pi-web/pr-1": "d".repeat(40) });
+  assert.equal(out.at, 1000, "缓存那一刻要跟着走（页面的旧快照闸靠它）");
+  assert.equal(calls.length, 1, "一批只发一次 ls-remote");
+  assert.deepEqual([...calls[0]].sort(), [1, 2, 3], "三个号在同一次里问");
+});
+
+await checkAsync("远端整个坏掉时一条 key 都不给（超时 = 不知道，不是「没变」）", async () => {
+  const runs = [doneRun({ id: "a", mode: "pr", pr: 1, to: "refs/pi-web/pr-1" })];
+  const out = await remoteTips(runs, async () => {
+    throw new Error("ls-remote 超时");
+  });
+  assert.deepEqual(out, { tips: {}, at: 0 });
+});
+
 check("换脑（D446）：job 还没写回 pid 时，用新鲜心跳接回评审", () => {
   const prev = process.env.PI_WEB_STATE;
   process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-beat-resume-"));
@@ -813,6 +1105,132 @@ check("换脑（D446）：job 还没写回 pid 时，用新鲜心跳接回评审
   } finally {
     process.env.PI_WEB_STATE = prev;
   }
+});
+
+// ---- 子进程「一句话没答」的原因与文案（D454）------------------------------------
+//
+// 真机那次：网关 192.168.31.36:7863 掉线，子进程 37 行事件、退出码 0、0 token，
+// 面板只能说「退出码 0、输出 37 行」并建议换个更便宜的模型。这里把它变成能指路的错。
+
+check("readChildEvent：error 收尾的单子拿得到 provider 原话", () => {
+  // 抓自真机那次（wb2api 网关 192.168.31.36 掉线）的那个 message_end。
+  const ev = {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      provider: "wb2api",
+      model: "cn:glm-5.4",
+      usage: { input: 0, output: 0, totalTokens: 0 },
+      stopReason: "error",
+      errorMessage: "Connection error.: connect EHOSTDOWN 192.168.31.36:7863 - Local (192.168.31.72:56888)",
+    },
+  };
+  const got = readChildEvent(ev);
+  assert.match(got.error ?? "", /EHOSTDOWN 192\.168\.31\.36:7863/);
+  assert.equal(got.tokens, 0, "0 token 也要落下来，不能被当成没用量");
+  assert.equal(got.text, undefined, "空 content 不许被当成「答了一句话」");
+});
+
+check("readChildEvent：正常回答只给 text + tokens", () => {
+  const got = readChildEvent({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: '{"findings":[]}' }], stopReason: "stop", usage: { totalTokens: 1443 } },
+  });
+  assert.equal(got.text, '{"findings":[]}');
+  assert.equal(got.tokens, 1443);
+  assert.equal(got.error, undefined);
+});
+
+check("readChildEvent：别的类型 / 用户消息不响", () => {
+  assert.deepEqual(readChildEvent({ type: "turn_start" }), {});
+  assert.equal(readChildEvent({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } }).text, undefined);
+});
+
+check("readChildEvent：没有 usage 时不凭空造一个 0", () => {
+  const got = readChildEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ok" }] } });
+  assert.equal(got.tokens, undefined, "没有 usage 与「用了 0 token」对调用方是两回事");
+  assert.equal(got.text, "ok");
+});
+
+check("readChildEvent：thinking / tool 块不算「答了一句话」", () => {
+  const got = readChildEvent({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "thinking", thinking: "想一想" }, { type: "toolCall", name: "read" }], usage: { totalTokens: 9 } },
+  });
+  assert.equal(got.text, undefined);
+  assert.equal(got.tokens, 9);
+});
+
+check("childWhy：子进程自己报的错最优先", () => {
+  const why = childWhy({
+    error: "Connection error.: connect EHOSTDOWN 192.168.31.36:7863",
+    silent: false,
+    stderr: "",
+    code: 0,
+    lines: 37,
+  });
+  assert.match(why, /EHOSTDOWN/);
+  assert.doesNotMatch(why, /37 行/, "有原话时不该只剩下行数");
+});
+
+check("childWhy：没原话才退到沉默/退出码", () => {
+  assert.equal(childWhy({ error: "", silent: true, stderr: "", code: null, lines: 0 }), "90 秒没有任何输出");
+  assert.equal(childWhy({ error: "", silent: false, stderr: "boom\nmore", code: 1, lines: 3 }), "boom");
+  assert.equal(childWhy({ error: "", silent: false, stderr: "", code: 0, lines: 37 }), "退出码 0、输出 37 行");
+});
+
+check("unreachable：只认「连不上」，单次请求的瞬时毛病留给重试", () => {
+  // 建立连接那一步失败：跟评哪个文件无关，后面的组只会撞同一堵墙 → 收工
+  assert.equal(unreachable("Connection error.: connect EHOSTDOWN 192.168.31.36:7863"), true);
+  assert.equal(unreachable("Request timed out.: Connect Timeout Error (attempted address: 10.0.0.2:7863)"), true);
+  assert.equal(unreachable("connect ECONNREFUSED 127.0.0.1:7863"), true);
+  assert.equal(unreachable("connect ETIMEDOUT 10.0.0.2:7863"), true, "连接超时算连不上");
+  assert.equal(unreachable("getaddrinfo ENOTFOUND wb2.invalid"), true);
+  // 单次请求的瞬时故障：重试一次常常就过去了，与 429 同一类，不该让它把后面的组一起拖死
+  assert.equal(unreachable("socket hang up: connection reset by peer"), false);
+  assert.equal(unreachable("read ECONNRESET"), false);
+  assert.equal(unreachable("write EPIPE"), false);
+  assert.equal(unreachable("Headers Timeout Error (10000ms)"), false);
+  // 宽泛词 / 无网络语义的文本也不算
+  assert.equal(unreachable("Invalid connection header"), false);
+  assert.equal(unreachable("tool timed out after 30s"), false);
+  assert.equal(unreachable("maximum context length exceeded"), false);
+});
+
+check("clip：原话不搬家，超过上限就截", () => {
+  assert.equal(clip("  短  的 "), "短 的");
+  const long = "x".repeat(500);
+  assert.equal(clip(long).length, 300);
+  assert.ok(clip(long).endsWith("…"));
+});
+
+check("noOutputMessage：上游整段 body 不会原样落进失败文案", () => {
+  const text = noOutputMessage(`Connection error.: connect EHOSTDOWN 10.0.0.2:7863 ${"body ".repeat(200)}`, 0);
+  assert.ok(text.length < 500, `实际 ${text.length} 字`);
+  assert.match(text, /没连上/);
+});
+
+check("noOutputMessage：网关类故障不许说成「换个更便宜的模型」", () => {
+  const text = noOutputMessage("Connection error.: connect EHOSTDOWN 192.168.31.36:7863 - Local (192.168.31.72)", 0);
+  assert.match(text, /没连上/);
+  assert.match(text, /192\.168\.31\.36:7863/, "地址要原样带出来，否则人看不出是哪台机器");
+  assert.doesNotMatch(text, /更便宜/);
+  assert.match(text, /来源/);
+});
+
+check("noOutputMessage：别的原话照实说，并保留缩小范围那条路", () => {
+  const text = noOutputMessage("maximum context length exceeded", 115_271);
+  assert.match(text, /115k token/);
+  assert.match(text, /maximum context length exceeded/);
+  assert.match(text, /缩小/);
+  assert.doesNotMatch(text, /没连上/);
+});
+
+check("noOutputMessage：没原话时仍然是一句可行动的失败", () => {
+  const text = noOutputMessage("", 0);
+  assert.match(text, /没有给出结论/);
+  assert.match(text, /缩小/);
 });
 
 if (failures) {

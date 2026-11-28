@@ -4,6 +4,37 @@ import os from "node:os";
 import { normAddr } from "./addr.ts";
 import { knownAvatar } from "./avatars.ts";
 import { PROTO, VERSION, type PeerConfig } from "./config.ts";
+import { optOutIds } from "./groups.ts";
+import { isRepo } from "./repo.ts";
+
+/** announce 里的更新组身份（D451）：两个接口共用同一形状，免得分头漂移（评审 #37）。 */
+export interface AnnounceUpdates {
+  repo?: string;
+  publisher?: boolean;
+  optOut?: string[];
+}
+
+/** announce 里 updates 的形状只在这里拼：packet / normUpdates / hello 应答别各写一份（评审 #14/#6）。 */
+export function buildUpdates(repo: string, publisher: boolean, optOut: string[]): AnnounceUpdates | null {
+  if (!repo) return null;
+  return {
+    repo,
+    ...(publisher ? { publisher: true } : {}),
+    ...(optOut.length ? { optOut: optOut.slice(0, 20) } : {}),
+  };
+}
+
+/** announce 里的更新组身份：只收形状对的，opt-out 名单截短（D451）。 */
+function normUpdates(raw: unknown): AnnounceUpdates | null {
+  const r = raw as AnnounceUpdates | null | undefined;
+  const repo = typeof r?.repo === "string" ? r.repo.trim() : "";
+  if (!repo || !isRepo(repo)) return null;
+  // 名单是别人塞进来的：只留像组 id 的短串（评审 #36）。
+  const optOut = (Array.isArray(r?.optOut) ? r.optOut : [])
+    .filter((x): x is string => typeof x === "string" && x.length <= 80 && /^[a-zA-Z0-9_-]+$/.test(x))
+    .slice(0, 20);
+  return buildUpdates(repo, r?.publisher === true, optOut);
+}
 
 /** announce 里带的东西：对端据此渲染在线列表、据此把 `from` 反查成身份（决定 7/10）。 */
 export interface Announce {
@@ -18,6 +49,13 @@ export interface Announce {
   status?: string;
   /** 头像 id（见 `avatars.ts`）。旧对端没有这个字段，页面退回首字母头像。 */
   avatar?: string;
+  /**
+   * 更新组（D451）：`repo` = 这台机器认的仓库标识（`<host>/<owner>/<name>`，主机参与比较 ——
+   * 不同托管站上的同名 owner/name 是两份仓库），发布者据此邀请；
+   * `publisher` 只对发布者自己有意义；`optOut` 是我退出过的更新组（发布者跳过）。
+   * 旧对端没有这个字段，按「不参与更新组」处理。
+   */
+  updates?: AnnounceUpdates;
 }
 
 export interface SeenPeer {
@@ -34,6 +72,8 @@ export interface SeenPeer {
   ips: string[];
   /** 对端自报的头像 id，没报就是空。 */
   avatar?: string;
+  /** 对端自报的更新组身份（D451），没报就是空。 */
+  updates?: AnnounceUpdates;
 }
 
 /** 30 秒没 announce 就当离线（announce 间隔 10 秒，允许丢两包）。 */
@@ -138,6 +178,7 @@ export class Discovery extends EventEmitter {
       version: VERSION,
       status: this.localStatus(),
       avatar: this.cfg.avatar || undefined,
+      updates: buildUpdates(this.cfg.updates.repo, this.cfg.updates.publisher, this.cfg.updates.repo ? [...optOutIds()] : []) ?? undefined,
     };
   }
 
@@ -167,7 +208,7 @@ export class Discovery extends EventEmitter {
     this.emit("change", this.online());
   }
 
-  private remember(msg: Announce, addr: string): void {
+  private remember(msg: Omit<Announce, "updates"> & { updates?: unknown }, addr: string): void {
     const known = this.seen.get(msg.nodeId);
     const ips = new Set(known?.ips ?? []);
     ips.add(addr);
@@ -186,6 +227,9 @@ export class Discovery extends EventEmitter {
       // 跟 `loadConfig()` / `noteSeen()` 一个口径——名单外的当没设，否则它会盖掉
       // 通讯录里已经校验过的头像，还一路透传到页面。
       avatar: knownAvatar(msg.avatar) || known?.avatar,
+      // 没有 updates 字段 = 对端退出了更新组，或者是更老的版本：两种都该清掉旧值，
+      // 否则对方降级后本机还一直把它算进更新组（评审 #2）。
+      updates: normUpdates(msg.updates) ?? undefined,
     };
     this.seen.set(msg.nodeId, peer);
   }
@@ -194,7 +238,7 @@ export class Discovery extends EventEmitter {
    * 对端把 announce 单播到 http 端口（`/peer/hello`）时也走这里：组播被交换机挡住时，
    * 手动地址那条路就靠它把对端拉进在线表。
    */
-  recordHello(msg: Pick<Announce, "nodeId" | "nickname" | "hostname" | "port"> & { status?: string; avatar?: string }, addr: string): void {
+  recordHello(msg: Pick<Announce, "nodeId" | "nickname" | "hostname" | "port"> & { status?: string; avatar?: string; updates?: unknown }, addr: string): void {
     if (!msg.nodeId || msg.nodeId === this.nodeId) return;
     this.remember(
       {
@@ -207,6 +251,7 @@ export class Discovery extends EventEmitter {
         version: VERSION,
         status: msg.status,
         avatar: msg.avatar,
+        updates: msg.updates,
       },
       addr,
     );
@@ -235,6 +280,7 @@ export class Discovery extends EventEmitter {
             port: Number(body.port) || port,
             status: typeof body.status === "string" ? body.status : undefined,
             avatar: typeof body.avatar === "string" ? body.avatar : undefined,
+            updates: body.updates,
           },
           addr,
         );

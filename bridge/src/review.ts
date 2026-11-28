@@ -15,10 +15,11 @@ import path from "node:path";
 import crypto from "node:crypto";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { ensureDir, piChildEnv, quarantineStateFile, readJsonChecked, stateDir, statePath } from "./paths.ts";
 import { resolvePi } from "./pi.ts";
 import { localRepoName, resolvePullRequest } from "./gitpr.ts";
+import { isCommitSha, tipTargetOf } from "./frames.ts";
 import type {
   ReviewCategory,
   ReviewFinding,
@@ -541,6 +542,158 @@ export function trimRuns(state: ReviewState): void {
   state.runs = state.runs.filter((r) => keep.has(r));
 }
 
+// ---------------------------------------------------------------------------
+// 过时（#741）：完成态的评审记录对着「现在的 tip」核一遍
+// ---------------------------------------------------------------------------
+
+/** 一次面板打开最多核对几个 PR：每个 PR 一次 `ls-remote` 网络往返，历史再多也不该拖住面板。 */
+export const TIP_PR_LIMIT = 3;
+
+/** 一条要核对的记录：核对谁（`ref`）、走哪条路（`pr > 0` 才要网络）、以及 `HEAD` 当时在哪条分支。 */
+export interface TipTarget {
+  /** `ReviewState.tips` 的键，也是记录里的 `to`：`HEAD` / `feat/x` / `refs/pi-web/pr-N`。 */
+  ref: string;
+  /** PR 号（0 = 本地分支：`git rev-parse` 就够，不碰网络）。 */
+  pr: number;
+  /** 记录里的 `headRef`（只有 `to` 是 `HEAD` 的记录才有）：评的时候 HEAD 在哪条分支上。 */
+  headRef?: string;
+}
+
+/**
+ * 该核对 tip 的记录，新的在前、按 ref 去重（同一个分支评过两次，核对一次就够）。
+ *
+ * 「哪条记录该核」的判据在 `frames.ts` 的 `tipTargetOf()`：页面也 import 同一份，
+ * 两边不许各写一遍（判据一旦漂成两份，表现就是「桥核了、页面不标」这种静默的错）。
+ */
+export function tipTargets(runs: readonly ReviewRun[]): TipTarget[] {
+  const picked: { target: TipTarget; at: number }[] = [];
+  for (const run of runs ?? []) {
+    const target = tipTargetOf(run);
+    if (target) picked.push({ target: { ...target, headRef: str(run.headRef) }, at: Date.parse(run.startedAt ?? "") || 0 });
+  }
+  picked.sort((a, b) => b.at - a.at);
+  const seen = new Set<string>();
+  const out: TipTarget[] = [];
+  for (const item of picked) {
+    if (seen.has(item.target.ref)) continue;
+    seen.add(item.target.ref);
+    out.push(item.target);
+  }
+  return out;
+}
+
+/** 从要核对的那批里挑出远端那批：按 PR 号去重（留最新那条的 ref），最多 `TIP_PR_LIMIT` 个。 */
+export function remoteTipTargets(targets: readonly TipTarget[]): TipTarget[] {
+  const seen = new Set<number>();
+  const out: TipTarget[] = [];
+  for (const item of targets ?? []) {
+    if (item.pr <= 0 || seen.has(item.pr)) continue;
+    seen.add(item.pr);
+    out.push(item);
+    if (out.length >= TIP_PR_LIMIT) break;
+  }
+  return out;
+}
+
+/** 一份 tips 快照：`tips` 是 key→sha，`at` 是**这份值**是什么时候问到的（0 = 不知道）。 */
+export interface TipSet {
+  tips: Record<string, string>;
+  at: number;
+}
+
+/**
+ * 本地那半：`git rev-parse` 一下就有，离线可用。
+ *
+ * 判的是**本地** ref（不是远端）：`range` 重评读的就是本地 target，所以「本地没变」= 再评一次
+ * 结果一样，不该点亮那颗标（Q10）。`revParse` 认不出这个 ref（分支被删了）就不给 key。
+ *
+ * `HEAD` 那条要不要采信「得看是哪条分支」—— 但这是**每条记录**的事（同一个 `HEAD` 底下可能
+ * 躺着好几条别的分支留下来的记录），所以判断在 `frames.ts` 的 `tipForRun()` 里按记录做，
+ * 这里只管回答「`HEAD` 现在指向哪个提交」。分支名随帧发下去（`tipsBranch`）。
+ */
+export async function localTips(
+  runs: readonly ReviewRun[],
+  revParse: (ref: string) => Promise<string>,
+): Promise<TipSet> {
+  const wanted = tipTargets(runs).filter((item) => item.pr <= 0);
+  // 各 ref 互不相干：并行问，别让 N 个 ref 串成一串（每个上限 5 秒）。
+  const answers = await Promise.all(wanted.map((item) => revParse(item.ref).catch(() => "")));
+  const out: Record<string, string> = {};
+  wanted.forEach((item, i) => {
+    // 校验形状再写：注入进来的东西（测试 / 换个实现）也一样不许把带换行的一坨当成 sha。
+    const sha = str(answers[i]);
+    if (isCommitSha(sha)) out[item.ref] = sha;
+  });
+  return { tips: out, at: Date.now() };
+}
+
+/**
+ * 收尾时给这条记录补的「评到了哪里」（#741）：被评的提交；`to` 是 `HEAD` 时再加「当时那条分支」。
+ *
+ * 取不到（ref 被删 / 不是仓库 / 分离头指针）就不写那一项 —— 面板宁可不说，也不编一个值。
+ * 依赖是注入的：这是本票最容易悄悄错的一处（记错了就天天误报），得能单测。
+ */
+export async function headStamp(
+  run: Pick<ReviewRun, "to">,
+  deps: { shaOf: (ref: string) => Promise<string>; branch: () => Promise<string> },
+): Promise<Partial<Pick<ReviewRun, "headSha" | "headRef">>> {
+  const ref = str(run.to);
+  const out: Partial<Pick<ReviewRun, "headSha" | "headRef">> = {};
+  const sha = ref ? str(await deps.shaOf(ref)) : "";
+  if (sha) out.headSha = sha;
+  if (isHeadName(ref)) {
+    const branch = str(await deps.branch());
+    if (branch) out.headRef = branch;
+  }
+  return out;
+}
+
+/**
+ * `headStamp()` 的兜底版本：**记不上就不记**。
+ *
+ * 这条跑在评审收尾那一刻，而收尾外面套着一个 `catch`（它会把状态改写成 `failed`）：
+ * 补一条元数据时抛异常，一次**已经完成**的评审就会被重写成失败、真实结果一起丢掉。
+ * 少记一项的代价只是面板上少一颗标。
+ */
+export async function safeHeadStamp(
+  run: Pick<ReviewRun, "to">,
+  deps: { shaOf: (ref: string) => Promise<string>; branch: () => Promise<string> },
+): Promise<Partial<Pick<ReviewRun, "headSha" | "headRef">>> {
+  try {
+    return await headStamp(run, deps);
+  } catch {
+    return {};
+  }
+}
+
+/** `ref` 是不是那个会随风漂的 `HEAD`（`HEAD` / `head` 都算，写进来的是 ocr 回显的原文）。 */
+export const isHeadName = (ref: string): boolean => str(ref).toUpperCase() === "HEAD";
+
+/**
+ * 远端那半（`pr` 模式）：一次 `ls-remote` 拿一批。「远端没答」与「远端答了但失败」都**不给 key** ——
+ * 缺 key 是「不知道」，空串会变成「没变」。
+ */
+export async function remoteTips(
+  runs: readonly ReviewRun[],
+  lsRemote: (prs: number[]) => Promise<{ heads: Record<number, string>; at: number }>,
+): Promise<TipSet> {
+  const picked = remoteTipTargets(tipTargets(runs));
+  if (!picked.length) return { tips: {}, at: 0 };
+  let answer: { heads: Record<number, string>; at: number } = { heads: {}, at: 0 };
+  try {
+    answer = (await lsRemote(picked.map((item) => item.pr))) ?? { heads: {}, at: 0 };
+  } catch {
+    // 超时 / 没网 / 没登录：一条 key 都不给，界面就不标（宁可不说，不能说错）。
+    return { tips: {}, at: 0 };
+  }
+  const out: Record<string, string> = {};
+  for (const item of picked) {
+    const sha = str(answer.heads[item.pr]);
+    if (isCommitSha(sha)) out[item.ref] = sha;
+  }
+  return { tips: out, at: Object.keys(out).length ? Number(answer.at) || 0 : 0 };
+}
+
 export function writeReviewState(repo: string, state: ReviewState, session = ""): void {
   const file = reviewStateFile(repo, session);
   ensureDir(path.dirname(file));
@@ -808,6 +961,11 @@ function liveJobForRun(runId: string, startedAt = ""): ReviewJob | null {
 export interface ReviewNotify {
   onProgress?: (job: ReviewJob, progress: Progress) => void;
   onState?: (job: ReviewJob) => void;
+  /**
+   * D453：「这个会话在跑几条评审」变了（起跑、收尾、取消收尾、接回、整组停机）。
+   * 页面拿它改会话徽标（`评审中` / `评审中 2`），所以要在**每一处**增删在跑集合之后喊一次。
+   */
+  onActive?: (session: string) => void;
 }
 
 let notify: ReviewNotify = {};
@@ -844,10 +1002,34 @@ interface Active {
 const active = new Map<string, Active>();
 const progressMap = new Map<string, Progress>();
 
+/**
+ * 在跑集合的唯一两个入口（D453）：额度、进度、徽标都以这份集合为准，
+ * 所以「变了几条」只在这里喊一次 `notify.onActive` —— 别在调用处各写一份判断。
+ */
+function trackActive(runId: string, item: Active): void {
+  active.set(runId, item);
+  notify.onActive?.(item.session);
+}
+
+function untrackActive(runId: string): void {
+  const removed = active.get(runId);
+  if (!removed) return;
+  active.delete(runId);
+  notify.onActive?.(removed.session);
+}
+
 /** 这个会话现在在跑的几条（跨仓库共用额度）。 */
 function runningFor(session: string): Array<[string, Active]> {
   const want = sessionKey(session);
   return [...active].filter(([, a]) => sessionKey(a.session) === want);
+}
+
+/**
+ * D453：这个会话此刻在跑几条**评审记录**（0–2）。会话徽标「评审中」读它，
+ * 快照与单会话状态帧都从这一个函数取，页面不自己从进度帧攒一份。
+ */
+export function reviewRunningCount(session: string): number {
+  return runningFor(session).length;
 }
 
 /** 某个仓库 + 会话现在在跑的那几条的进度（页面按 runId 分别画）。 */
@@ -932,6 +1114,46 @@ export function gitRoot(dir: string): string {
   } catch {
     throw new ReviewError("not_git", "这个目录不是 git 仓库，没有东西可评");
   }
+}
+
+/** 这几个 git 查询一次最多等多久（面板在等人看，卡住比答不出更难受）。 */
+const TIP_GIT_TIMEOUT_MS = 5_000;
+
+/** 跑一条 git，拿到 stdout 的第一行（失败 / 超时 → 空串）。**异步**：不许卡住消息主循环。 */
+function gitOut(dir: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(
+      "git",
+      ["-C", dir, ...args],
+      { encoding: "utf8", timeout: TIP_GIT_TIMEOUT_MS, windowsHide: true },
+      (err: any, stdout: any) => resolve(err ? "" : String(stdout ?? "").trim()),
+    );
+  });
+}
+
+/**
+ * 某个 ref 此刻指向哪个提交（认不出 / 不是仓库 → 空串）。
+ *
+ * 只读、不 fetch、不动任何 ref：过时判定只能基于本地看得见的东西（#741）。
+ * 走异步 `execFile`：`review.get` 在 WebSocket 的消息主循环上，这里同步一次就是把所有
+ * 会话的帧一起卡住（历史里不同分支多的话还会串成 N 次）。
+ */
+export async function gitShaOf(dir: string, ref: string): Promise<string> {
+  const name = str(ref);
+  if (!name) return "";
+  const out = await gitOut(dir, ["rev-parse", "--verify", "--quiet", `${name}^{commit}`]);
+  return isCommitSha(out) ? out : "";
+}
+
+/**
+ * 现在 HEAD 在哪条分支上（分离头指针时给空串）。
+ *
+ * 只给「`to` 是 `HEAD` 的记录」记一份：见 `ReviewRun.headRef` 与 `localTips()`。
+ * 分离头指针时给空串是**故意**的 —— 那时没有分支名可比，退回「照旧比 sha」比编一个名字好。
+ */
+export async function gitBranchOf(dir: string): Promise<string> {
+  const out = await gitOut(dir, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  return out && out !== "HEAD" ? out : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,6 +1276,131 @@ function quoteForCmd(args: string[]): string[] {
 
 function firstLine(text: string): string {
   return (text ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
+}
+
+export interface ChildEvent {
+  /** 助手这轮答的话（非助手消息没有）。 */
+  text?: string;
+  /** 这条消息的用量（有 `usage.totalTokens` 才有；0 与「没有」对调用方是一回事：加 0）。 */
+  tokens?: number;
+  /** pi 替 provider 转达的原话：`stopReason: "error"` 时才有（连不上 / 401 / 限流…）。 */
+  error?: string;
+}
+
+/** `--mode json` 里我们读的那一小块。其余字段不声明 —— 别让这个类型跟着 pi 的 JSON 走。 */
+export interface ChildEventLine {
+  type?: string;
+  message?: {
+    role?: string;
+    content?: unknown;
+    usage?: { totalTokens?: unknown };
+    stopReason?: string;
+    errorMessage?: unknown;
+  };
+}
+
+/** 一条消息的正文：只拼 `{ type: "text" }` 块（thinking / tool 块不算「回答」）。 */
+function textOf(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as { type?: unknown; text?: unknown };
+    if (b.type === "text") parts.push(String(b.text ?? ""));
+  }
+  return parts.join("");
+}
+
+/**
+ * 一行 `--mode json` 事件里外层关心的三样东西。
+ *
+ * 关键是 `error`：真机那次网关掉线，子进程退出码 0、37 行事件、0 token，外面只剩「输出 37 行」——
+ * 而真正的原因（`connect EHOSTDOWN 192.168.31.36:7863`）就在 assistant 那条 `message_end` 的
+ * `errorMessage` 里，以前谁也没读它（D454）。
+ */
+export function readChildEvent(ev: ChildEventLine | null | undefined): ChildEvent {
+  if (ev?.type !== "message_end") return {};
+  const msg = ev.message;
+  const out: ChildEvent = {};
+  const total = msg?.usage?.totalTokens;
+  if (typeof total === "number") out.tokens = total;
+  if (msg?.role !== "assistant") return out;
+  if (msg.stopReason === "error") {
+    const why = String(msg.errorMessage ?? "").trim();
+    if (why) out.error = why;
+  }
+  const text = textOf(msg.content);
+  if (text.trim()) out.text = text;
+  return out;
+}
+
+/** 一次评审子进程跑下来的结果（`runChild` 交回来的就是它）。 */
+export interface ChildResult {
+  code: number | null;
+  text: string;
+  stderr: string;
+  aborted: boolean;
+  touched: Set<string>;
+  tokens: number;
+  lines: number;
+  silent: boolean;
+  /** pi 替 provider 转达的原话（`stopReason: "error"` 的 errorMessage），没有就是空串。 */
+  error: string;
+}
+
+/**
+ * 「子进程一句话没答」的原因：它自己报的错最有用（`stopReason: "error"` 的 errorMessage，
+ * 比如 `connect EHOSTDOWN 192.168.31.36:7863`），其次沉默超时，最后才是「退出码 0、输出 N 行」。
+ * 最后那条对定位几乎没用：正常的子进程也是三四十行、也是退出码 0（D454）。
+ */
+export function childWhy(res: Partial<ChildResult>): string {
+  const own = String(res.error ?? "").trim();
+  if (own) return own;
+  if (res.silent) return "90 秒没有任何输出";
+  return firstLine(String(res.stderr ?? "")) || `退出码 ${res.code ?? "-"}、输出 ${res.lines ?? 0} 行`;
+}
+
+/**
+ * 原话可能是一整段上游响应（含内网地址、请求 id、甚至回显的头部）：用户要的是线索，不是搬运。
+ * 截断放在「拼进给人看的文案」这一步，子进程交上来的原话本身不丢。
+ */
+export function clip(text: string, max = 300): string {
+  const s = String(text ?? "").replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * 「来源整个连不上」的原话 —— 只收**建立连接那一步**的失败：解析不到、路由不到、连接被拒、
+ * 连接超时。这几种跟评什么文件无关，下一组只会撞同一堵墙。
+ *
+ * **不收**只属于单次请求的瞬时故障：`ECONNRESET`（流被重置）、`EPIPE`（对端先关）、裸的
+ * `ETIMEDOUT`（一次读超时）、`connection reset by peer`、`Headers Timeout` —— 这些重试一次
+ * 往往就过去了，跟 429 同一类，走重试那条路（D454 三轮评审意见 1）。
+ *
+ * 也不用 `network` / `socket` / `proxy` 这类宽泛词：会命中 `Invalid connection header`
+ * 这种与网络无关的 provider 报错。
+ */
+const UNREACHABLE =
+  /\b(EHOSTDOWN|EHOSTUNREACH|ECONNREFUSED|ENOTFOUND|ENETUNREACH|EAI_AGAIN)\b|\bconnect (ETIMEDOUT|ECONNRESET|EPIPE)\b|Connect Timeout|getaddrinfo/i;
+
+/** 这条原话是不是「来源整个连不上」。既决定文案，也决定要不要继续跑剩下的组。 */
+export function unreachable(why: string): boolean {
+  return UNREACHABLE.test(String(why ?? ""));
+}
+
+/** 「一次都没给出结论」的失败文案（有子进程原话时以它为准）。 */
+export function noOutputMessage(why: string, tokens: number): string {
+  const own = String(why ?? "").trim();
+  // 这个数是**整轮**（含答出来的组）的累计用量：写清楚是「本次共用」，别让人当成这一组烧掉的（D454 意见 3）。
+  const used = `本次共用 ${Math.round(tokens / 1000)}k token`;
+  if (own && unreachable(own)) {
+    return (
+      `模型那边没连上：${clip(own)}。` +
+      "这跟评审范围和模型贵不贵都无关 —— 先确认这个来源通不通（网关 / 网络 / 凭据），换个来源也能先跑起来。"
+    );
+  }
+  if (own) return `重试后仍然没有给出结论（${used}）。子进程原话：${clip(own)}。可以换个模型或来源，或把范围缩小（少选几个文件 / 换一次提交）再跑。`;
+  return `重试后仍然没有给出结论（${used}）。可以换个模型或来源，或把范围缩小（少选几个文件 / 换一次提交）再跑。`;
 }
 
 async function rulesFor(repo: string, files: string[], signal?: AbortSignal): Promise<string> {
@@ -1203,7 +1550,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
   writeJsonAtomic(reviewJobFile(runId), job);
   writeJsonAtomic(reviewProgressFile(runId), seeded);
 
-  active.set(runId, {
+  trackActive(runId, {
     cancel: () => requestCancel(job),
     repo: root,
     session,
@@ -1300,7 +1647,13 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
   let currentFile = "";
   let preview: Preview | null = null;
 
-  const finish = (patch: Pick<ReviewRun, "status"> & Partial<ReviewRun>) => {
+  const finish = async (patch: Pick<ReviewRun, "status"> & Partial<ReviewRun>) => {
+    // #741：记下「这一次评到了哪里」（被评的提交，`HEAD` 时还有当时那条分支）。
+    // 只给 done 记：`tipTargetOf()` 对失败 / 停止的那几条本来就返回 null。
+    // **读盘之前**先算完：这个 await 之后才读→写，中间不留窗口，别把别人刚标的一条盖回去。
+    if (patch.status === "done") {
+      Object.assign(patch, await safeHeadStamp(run, { shaOf: (ref) => gitShaOf(root, ref), branch: () => gitBranchOf(root) }));
+    }
     const state = readReviewState(root, session);
     const onDisk = state.runs.find((r) => r.id === run.id);
     // 先把最后一行写进时间线，再连同日志一起落盘（顺序反了，日志就永远追不上这次写盘）。
@@ -1317,6 +1670,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     (patch as Partial<ReviewRun>).log = prevProgress?.log ?? [];
     // 分组计划同理：完成态要看「哪组出了几条」，不能只剩一个总数。
     (patch as Partial<ReviewRun>).plan = prevProgress?.plan ?? patch.plan ?? [];
+
     if (onDisk) Object.assign(onDisk, patch);
     else state.runs.push({ ...run, ...patch });
     writeReviewState(root, state, session);
@@ -1336,7 +1690,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
 
   /** 起一个子进程评一组：边跑边发进度，结束时把它答的那段话交回来。 */
   const runChild = (prompt: string) =>
-    new Promise<{ code: number | null; text: string; stderr: string; aborted: boolean; touched: Set<string>; tokens: number; lines: number; silent: boolean }>((resolve) => {
+    new Promise<ChildResult>((resolve) => {
       const pi = resolvePi();
       const proc = spawn(process.execPath, [pi.cli, ...reviewArgs({ model: opts.model, provider: opts.provider })], {
         cwd: root,
@@ -1346,6 +1700,9 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       });
       let stderr = "";
       let text = "";
+      // 子进程自己报的错（`stopReason: "error"` 的 `errorMessage`）：网关连不上 / 401 / 限流…
+      // 以前这里丢掉了它，于是面板只能说「退出码 0、输出 37 行」——把网络故障说成了模型问题（D454）。
+      let childError = "";
       let localTokens = 0;
       let outLines = 0;
       let silent = false;
@@ -1363,7 +1720,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         } catch {
           /* 已经关了 */
         }
-        resolve({ code, text, stderr, aborted: signal.aborted, touched, tokens: localTokens, lines: outLines, silent });
+        resolve({ code, text, stderr, aborted: signal.aborted, touched, tokens: localTokens, lines: outLines, silent, error: childError });
       };
       const guard = setTimeout(() => {
         try {
@@ -1412,15 +1769,13 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
           return;
         }
         if (ev?.type === "message_end") {
-          const usage = ev.message?.usage;
-          if (usage && typeof usage.totalTokens === "number") {
-            tokens += usage.totalTokens;
-            localTokens += usage.totalTokens;
+          const got = readChildEvent(ev);
+          if (typeof got.tokens === "number") {
+            tokens += got.tokens;
+            localTokens += got.tokens;
           }
-          if (ev.message?.role === "assistant" && Array.isArray(ev.message.content)) {
-            const answered = ev.message.content.filter((b: any) => b?.type === "text").map((b: any) => String(b.text ?? "")).join("");
-            if (answered.trim()) text = answered;
-          }
+          if (got.text) text = got.text;
+          if (got.error) childError = got.error;
           emit({ tokens });
         }
       });
@@ -1462,7 +1817,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     emit({ phase: "rules", totalFiles: preview.files.length });
 
     if (!preview.files.length) {
-      finish({ status: "done", finishedAt: new Date().toISOString(), skipped: preview.skipped });
+      await finish({ status: "done", finishedAt: new Date().toISOString(), skipped: preview.skipped });
       return;
     }
 
@@ -1484,8 +1839,9 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     const collected: Finding[] = [];
     const lastSkipped: PreviewSkip[] = [];
     const accountedPaths = new Set<string>();
-    let answered = false;
     let lastChildWhy = "";
+    /** 有哪几组一个字都没交回来：有它就说明覆盖不全，这次不能记成 done（哪怕别的组给了意见）。 */
+    const unresolvedGroups: { group: number; why: string }[] = [];
     let failed: { code: number | null; stderr: string; group: number } | null = null;
 
     for (let i = 0; i < groups.length; i += 1) {
@@ -1500,33 +1856,54 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       let res = await runChild(prompt);
       if (res.aborted) break;
       if (res.code !== 0) {
-        failed = { code: res.code, stderr: res.stderr, group: i + 1 };
+        // 子进程崩了（或守卫把它杀了）也照样以它自己报的原话为先：网关掉线时它可能先吐了
+        // `EHOSTDOWN` 再非 0 退出，只报「退出码 N、stderr 首行」等于把原因丢了（D454 二轮评审意见 6）。
+        failed = { code: res.code, stderr: res.error || res.stderr, group: i + 1 };
         plan[i].state = "failed";
         plan[i].finishedAt = new Date().toISOString();
         emitPlan();
         break;
       }
+      // 这一组没交回话：计划里标 failed（不是「完成 0 条」），并记下来让收尾时把整轮算失败。
+      // 只在**真的结束**时调：重试之后答上了就不该再留这一笔（否则全组答完也判失败）。
+      const markGroupFailed = (index: number, why: string) => {
+        plan[index].state = "failed";
+        plan[index].finishedAt = new Date().toISOString();
+        unresolvedGroups.push({ group: index + 1, why });
+        emitPlan();
+      };
       if (!res.text.trim()) {
-        // 退出码 0、一句话没有：多半是工具调用把轮次/上下文吃掉了。重试一次，明确让它「别再调工具」。
-        const why = res.silent
-          ? "90 秒没有任何输出"
-          : firstLine(res.stderr) || `退出码 ${res.code}、输出 ${res.lines} 行`;
+        const why = childWhy(res);
         lastChildWhy = why;
-        note(`第 ${i + 1} 组没给结论（${why}；已用 ${Math.round(res.tokens / 1000)}k token），重试一次`, i + 1);
+        // 来源整个连不上（EHOSTDOWN 这类）：pi 已经在子进程里自己重试过 3 次，同一份提示词再发一遍
+        // 只会再撞一次同一堵墙、还每组白发 ~25 秒。这组判失败，后面的组也别再跑了（D454）。
+        if (res.error && unreachable(why)) {
+          markGroupFailed(i, why);
+          note(`第 ${i + 1} 组失败（${clip(why, 160)}）`, i + 1);
+          break;
+        }
+        // 其余（没答也没报错，或 429 / ECONNRESET / 超上下文这种只影响一组的错）：照老规矩再问一次，
+        // 明确让它「别再调工具」—— 单次限流就靠这一次翻盘（D454 评审意见 1）。
+        note(`第 ${i + 1} 组没给结论（${clip(why, 160)}；已用 ${Math.round(res.tokens / 1000)}k token），重试一次`, i + 1);
         const nudge = `${prompt}\n\n## 立即收尾\n\n不要再调用任何工具。根据你已经看到的内容直接输出上面那个 JSON 对象；宁可少报，也要把 JSON 交回来。`;
         res = await runChild(nudge);
         if (res.aborted) break;
         if (res.code !== 0) {
           failed = { code: res.code, stderr: res.stderr, group: i + 1 };
-          // 重试也失败依旧是「这一组失败」：不标就会在计划里一直挂着 running（落盘后失败详情会显示成进行中）。
-          plan[i].state = "failed";
-          plan[i].finishedAt = new Date().toISOString();
-          emitPlan();
+          // 重试也挂掉依旧是「这一组失败」：不标就会在计划里一直挂着 running（落盘后失败详情会显示成进行中）。
+          markGroupFailed(i, childWhy(res));
           break;
+        }
+        if (!res.text.trim()) {
+          lastChildWhy = childWhy(res);
+          markGroupFailed(i, lastChildWhy);
+          note(`第 ${i + 1} 组没给出结论（${clip(lastChildWhy, 160)}）`, i + 1);
+          // 重试这一轮可能换了一种错（刚才限流、这回网关掉了）：照样按**新的**原因决定要不要收工。
+          if (res.error && unreachable(lastChildWhy)) break;
+          continue;
         }
       }
       const parsed = toFindings(res.text);
-      if (res.text.trim()) answered = true;
       for (const f of parsed.findings) f.group = i + 1;
       collected.push(...parsed.findings);
       for (const f of parsed.findings) accountedPaths.add(f.path);
@@ -1556,7 +1933,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     const total = preview.files.length;
 
     if (!stopped && failed) {
-      finish({
+      await finish({
         status: "failed",
         finishedAt: new Date().toISOString(),
         findings: merged.findings,
@@ -1578,13 +1955,18 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       });
       return;
     }
-    if (!stopped && !answered) {
-      // 退出码 0、一个字都没答：这不是「没问题」，是这次没评成。别把空结果写成 done。
-      // 重试已经在组里做过一次了，这里把「哪一组、花了多少」说清楚，并给两条能自己动手的路。
-      finish({
+    if (!stopped && unresolvedGroups.length) {
+      // 有组一个字都没交回来（网关连不上 / 模型逛到没话说）：这不是「没问题」，是这次没评全。
+      // 别的组给了意见也照样算失败 —— 把已有意见带回去，但状态不能写成 done。
+      // 文案交给 `noOutputMessage()`：子进程自己报了错就照它说，别再一律建议「换个更便宜的模型」
+      // （真机上那句话把「网关掉线」指成了「模型不划算」，D454）。
+      const why = unresolvedGroups[unresolvedGroups.length - 1].why || lastChildWhy;
+      await finish({
         status: "failed",
         finishedAt: new Date().toISOString(),
-        findings: [],
+        findings: merged.findings,
+        resolved: merged.resolved,
+        resolvedPaths: merged.resolvedPaths,
         skipped,
         totalFiles: total,
         reviewedFiles: accountedPaths.size,
@@ -1596,15 +1978,12 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         prTitle: run.prTitle,
         prHead: run.prHead,
         prBase: run.prBase,
-        error:
-          `重试后仍然没有给出结论（已用 ${Math.round(tokens / 1000)}k token）。` +
-          (lastChildWhy ? `子进程原话：${lastChildWhy}。` : "") +
-          "可以换个更便宜的模型，或把范围缩小（少选几个文件 / 换一次提交）再跑。",
+        error: noOutputMessage(why, tokens),
         errorCode: "child_no_output",
       });
       return;
     }
-    finish({
+    await finish({
       status: stopped ? "stopped" : "done",
       finishedAt: new Date().toISOString(),
       findings: merged.findings,
@@ -1626,7 +2005,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
   } catch (err: any) {
     const code = String(err?.code ?? "failed");
     const cancelled = signal.aborted || code === "cancelled";
-    finish({
+    await finish({
       status: cancelled ? "stopped" : "failed",
       finishedAt: new Date().toISOString(),
       totalFiles: preview?.files.length ?? 0,
@@ -1860,7 +2239,7 @@ function tickOneReview(runId: string, a: Active): void {
   const state = readReviewState(job.repo, job.session);
   const run = state.runs.find((r) => r.id === runId);
   if (!run) {
-    active.delete(runId);
+    untrackActive(runId);
     progressMap.delete(runId);
     reapReviewJob(job);
     return;
@@ -1894,7 +2273,7 @@ function tickOneReview(runId: string, a: Active): void {
   notify.onProgress?.(job, final);
   notify.onState?.(job);
   progressMap.delete(runId);
-  active.delete(runId);
+  untrackActive(runId);
   reapReviewJob(job);
 }
 
@@ -1943,7 +2322,7 @@ function markWorkerSpawnFailed(job: ReviewJob, err: unknown): void {
     onDisk.errorCode = "worker_spawn";
     writeReviewState(job.repo, state, job.session);
   }
-  active.delete(job.runId);
+  untrackActive(job.runId);
   progressMap.delete(job.runId);
   reapReviewJob(job);
   notify.onState?.(job);
@@ -2060,7 +2439,7 @@ export function resumeReviewJobs(): number {
         continue;
       }
       tracked = j;
-      active.set(j.runId, {
+      trackActive(j.runId, {
         cancel: () => requestCancel(j),
         repo: j.repo,
         session: j.session,
@@ -2086,7 +2465,7 @@ export function resumeReviewJobs(): number {
       // 一条 job 接不回来（状态文件读不了 / 广播炸了）只该少了这一条，不能让整个脑启动失败。
       if (tracked) {
         live.delete(tracked.runId);
-        active.delete(tracked.runId);
+        untrackActive(tracked.runId);
         progressMap.delete(tracked.runId);
       }
       const message = err instanceof Error ? err.message : String(err);
@@ -2124,7 +2503,7 @@ export async function stopAllReviews(waitMs = 3000): Promise<number> {
   }
   for (const job of jobs) {
     if (active.get(job.runId)?.job === job && reviewJobRunning(job)) killReviewPid(Number(job.pid));
-    active.delete(job.runId);
+    untrackActive(job.runId);
     progressMap.delete(job.runId);
     reapReviewJob(job);
   }
