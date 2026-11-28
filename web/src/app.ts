@@ -24681,7 +24681,10 @@ function shortModelName(name: string): string {
  *
  * 任一边 provider 为空时按「同一个」算 —— 这是**向后兼容**（老桥的 `SessionState` 没有 provider、
  * 老记录只存了 id），不是「通配任意来源」：空串只是「这边不知道」，而不是「哪边都行」。
- * 要严格匹配时别靠它：调用方自己先把 provider 补齐。
+ *
+ * 它只回答「目录里这一行可能就是那个模型吗」（解决 id→行）；**不回答**「两个选择是不是同一个」——
+ * 后者（换没换、该发 setModel 吗）必须严格比 provider+id，见 `openModelSheet()` 里的
+ * `isDraft` / `isStart` / `moved()`。两边 provider 都知道时这里也是严格比：``a.provider === b.provider``。
  */
 function sameModel(a: { provider?: string; id?: string }, b: { provider?: string; id?: string }): boolean {
   if (!a.id || !b.id) return false;
