@@ -10,7 +10,7 @@
   "scripts": {
     "postinstall": "node scripts/bootstrap.mjs",
     "setup": "node scripts/bootstrap.mjs",
-    "start": "node scripts/bootstrap.mjs --start && npm run build && node scripts/start.mjs",
+    "start": "node scripts/preflight.mjs && node scripts/bootstrap.mjs --start && npm run build && node scripts/start.mjs",
     "start:nobuild": "node scripts/start.mjs",
     "bridge:stop": "node scripts/stop.mjs",
     "test:host": "node bridge/tests/host-broker-unit.mjs && node bridge/tests/host-ledger-unit.mjs && node bridge/tests/host-running-count-unit.mjs && npm run build:bridge && node bridge/tests/control-unit.mjs && node bridge/tests/children-unit.mjs && node bridge/tests/brainlink-unit.mjs && node bridge/tests/rpc-linked-unit.mjs && node bridge/tests/host-shell-e2e.mjs && node bridge/tests/host-ui-replay-e2e.mjs && node bridge/tests/host-real-brain-e2e.mjs",
@@ -151,6 +151,7 @@
     "test:subagents": "node --experimental-strip-types bridge/tests/subagents-unit.mjs && node --experimental-strip-types bridge/tests/subagents-basics-unit.mjs && node --experimental-strip-types bridge/tests/subagents-overrides-unit.mjs && node --experimental-strip-types bridge/tests/subagents-advanced-unit.mjs && node --experimental-strip-types bridge/tests/acpdelegate-unit.mjs",
     "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs && node bridge/tests/subagents-advanced-ui.mjs",
     "test:start-check": "node bridge/tests/start-check.mjs",
+    "test:preflight": "node bridge/tests/preflight-unit.mjs && node bridge/tests/start-preflight.mjs",
     "test:openpage": "node --experimental-strip-types bridge/tests/openbrowser-unit.mjs",
     "test:sheet": "node --experimental-strip-types bridge/tests/sheet-numfmt-unit.mjs && node --experimental-strip-types bridge/tests/sheet-calc-unit.mjs && node --experimental-strip-types bridge/tests/sheet-calc-xlsx.mjs && node --experimental-strip-types bridge/tests/sheet-style-unit.mjs && node --experimental-strip-types bridge/tests/sheet-theme-unit.mjs && node --experimental-strip-types bridge/tests/sheet-refs-unit.mjs && node --experimental-strip-types web/tests/sheet-links-unit.mjs",
     "test:deps": "node --experimental-strip-types bridge/tests/deps-unit.mjs",

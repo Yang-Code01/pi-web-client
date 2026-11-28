@@ -15,7 +15,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { statePath } from "./paths.ts";
-import { removePidFile, writePidFile } from "./pidfile.ts";
+import { readPidFile, removePidFile, writePidFile } from "./pidfile.ts";
 import { Broker } from "./host/broker.ts";
 import { Children, type SpawnSpec } from "./host/children.ts";
 import { BrainProxy } from "./host/proxy.ts";
@@ -63,6 +63,34 @@ interface DeployState {
 
 function log(line: string): void {
   console.log(`[host ${new Date().toISOString().slice(11, 19)}] ${line}`);
+}
+
+/** 同步写到 fd 2：`npm start | tee` / CI 这类管道里，`console.error` 的异步写在 `process.exit`
+ * 之前往往还没落盘，那几句人话会被截断，用户只看到半截。 */
+function fail(line: string): void {
+  try {
+    fs.writeSync(2, `[host] ${line}\n`);
+  } catch {
+    console.error(`[host] ${line}`);
+  }
+}
+
+/**
+ * 端口被占时给一句人话（D448）：以前这里是未捕获的 EADDRINUSE，用户只看到一坨堆栈。
+ *
+ * 认出占用者的活主要在 `scripts/preflight.mjs`（命令行、pid 文件、枚举三条线索都在它那儿），
+ * 壳在 listen 这一刻只有 pid 文件可看 —— 够指路了：正常情况下 preflight 已经问过并停掉了旧的那份，
+ * 走到这里说明是「检查完到 listen 之间被抢」或者绕过 preflight 直起了桥。
+ */
+function explainPortTaken(port: number): void {
+  const pid = readPidFile(port);
+  const who = pid ? `pid 文件里记着 ${pid}` : "认不出占用者";
+  fail(
+    `端口 ${port} 已被占用（${who}），壳没有起来。\n` +
+      `  先看看是谁、要不要停掉它：node scripts/preflight.mjs\n` +
+      `  自己停掉：npm run bridge:stop\n` +
+      `  换个端口：PI_WEB_PORT=<别的口> npm start`,
+  );
 }
 
 function readPort(): number {
@@ -949,8 +977,59 @@ async function main(): Promise<void> {
     setTimeout(() => process.exit(0), 300).unref();
   }
 
+  /**
+   * 起飞失败时自己收摊再退。
+   *
+   * 控制通道是先起的（`serveControl` 在起飞之前），直接 `process.exit` 会把 unix socket 文件
+   * 留在盘上（`net.Server.close()` 不删文件），下一轮只能靠 `control.ts` 里的 EADDRINUSE
+   * 探测兜底去清；Windows 的命名管道虽无残留文件，也没必要让一个注定要死的壳继续接受连接。
+   * 这时还没有脑、没有子进程（`spawnBrain` 在起飞之后），不用管它们。
+   */
+  function bail(code: number): never {
+    try {
+      control.close();
+    } catch {
+      /* 已经关了 */
+    }
+    try {
+      proxy.release();
+    } catch {
+      /* 没有隧道 */
+    }
+    if (process.platform !== "win32") {
+      try {
+        fs.unlinkSync(sock);
+      } catch {
+        /* 删不掉就留着，下一轮的 controlInUse 探测会兜底 */
+      }
+    }
+    process.exit(code);
+  }
+
   // ---------------------------------------------------------------- 起飞
-  await new Promise<void>((resolve) => publicServer.listen(port, listenHost, () => resolve()));
+  // listen 的 error 必须接住：EADDRINUSE 以前是一条未捕获异常，用户看到的是整个堆栈（D448）。
+  const listenError = await new Promise<Error | null>((resolve) => {
+    const onError = (err: Error): void => {
+      publicServer.off("error", onError);
+      resolve(err);
+    };
+    publicServer.once("error", onError);
+    publicServer.listen(port, listenHost, () => {
+      publicServer.off("error", onError);
+      resolve(null);
+    });
+  });
+  if (listenError) {
+    const code = (listenError as NodeJS.ErrnoException).code;
+    if (code !== "EADDRINUSE") {
+      // 其它 listen 错误（EACCES 绑特权口、EADDRNOTAVAIL 绑不存在的地址）同样不该甩堆栈。
+      fail(`壳没能监听 ${listenHost}:${port}（${code ?? "未知错误"}）：${listenError.message}`);
+      fail(`  换一个地址/端口试试：PI_WEB_HOST=127.0.0.1 PI_WEB_PORT=<别的口> npm start`);
+      bail(1);
+    }
+    explainPortTaken(port);
+    bail(2);
+  }
   try {
     writePidFile(port);
   } catch {
