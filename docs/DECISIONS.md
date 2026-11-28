@@ -8811,7 +8811,7 @@ if (stop >= 0) {
 - **别人的服务：只看不动。** 印 pid、版本/buildId、跑了多久、工作目录（Windows 上进程 API 不暴露，那就只印命令行里的入口路径）、命令行，然后退出 2，并给出换端口的出口。**`--force` 也不越过这条线**——`--force` 只授权「停掉本项目自己的桥」。
 - **提问：TTY 才问，默认 Y**（回车=替换、`n/no`=不替换、看不懂重问、EOF 算「没回答」=不动手）。**非 TTY（CI、`npm start | tee`）不猜不杀**：印出证据、提示 `npm run bridge:stop` 或 `--force` / `PI_START_FORCE=1`，退出 2。`--force` 只从 `start.mjs` 自己的 argv 读，并且**不转发给桥**（桥不认识这个参数）。
 - **没有壳的旧桥**（`PI_HOST_DISABLE=1`）在 /healthz 里没有 `brain` 键、也没有停机接口：提示里先写明「只能硬杀、底下的 pi 会话可能变孤儿（界面会卡在『终端正在使用』）」，用户答 y 之后才硬杀。
-- **没法确认是谁时不硬杀。** 读不到命令行（PowerShell 超时、权限不够，`commandLine()` 返回 `null` 而不是空串）或者 `/healthz` 答了却读不懂（回包被截断、端口上是别的服务）时，既不当自己人也不当外人：印出已有证据，**只试一次** `POST /api/host/stop`（不是桥就没人理它，不会误杀），退不掉就退出 2 让人来看。`--force` 也不越过这条线——它授权的是「停掉确认过的自己那份」。
+- **没法确认是谁时不硬杀。** 读不到命令行（PowerShell 超时、权限不够，`commandLine()` 返回 `null` 而不是空串）或者 `/healthz` 答了却读不懂（回包被截断、端口上是别的服务）时，既不当自己人也不当外人：印出已有证据，**只试一次** `POST /api/host/stop`（不是桥就没人理它，不会误杀），退不掉就退出 2 让人来看。即便命令行认出来是本项目的桥、但 `/healthz` 读不懂，也走这条「只优雅停、不硬杀」的路（读不懂就不知道它有没有壳）。`--force` 也不越过这条线——它授权的是「停掉确认过的自己那份」。
 - **探活/停机打的地址跟着监听地址走**：`localBase(host, port)` 对 `0.0.0.0` 用 `127.0.0.1`、对 `::` 用 `[::1]`（Linux 上 `bindv6only=1` 时 `::` 不收 v4 回环连接，拿 `127.0.0.1` 探会把自家的壳当成外人）。
 - **壳侧兜底**（`bridge/src/host.ts`）：`listen` 的 `error` 接住，`EADDRINUSE` 打一句人话（端口、pid 文件里记着的 pid、`node scripts/preflight.mjs` / `npm run bridge:stop` / `PI_WEB_PORT=<别的口>` 三个出口）并以 **退出码 2** 结束，不再吐堆栈。走这条路说明「检查完到 listen 之间被抢」或者绕过了 preflight 直起桥。
 - **端口与监听地址的解析收成一份**：`scripts/preflight.mjs` 导出 `stateDir()` / `readPort()` / `readHost()`（`PI_WEB_PORT` → `config.json` 的 `port` → 7864；`PI_WEB_HOST` → `host` → 回环），`scripts/stop.mjs` 改为从它取——原先那边另有一份同样的规则。
