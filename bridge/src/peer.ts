@@ -342,7 +342,8 @@ export class PeerHost {
     // 200 但没给头像 id：上游形状不对。别把 `{ ok: true, avatar: "" }` 当成功回给页面，
     // 页面会拿空串去拼 URL / 写配置（评审 7-7）。
     if (!parsed.avatar) throw new PeerRequestError("peer 没回头像，稍后再试", 502);
-    // 不等这一轮 poll：peer 的 announce 是异步的，立刻 poll 也拿不到新状态，只会把上传 RT 拉长。
+    // 不 await 这一轮 poll：peer 的 announce 是异步的，立刻 poll 也拿不到新状态，只会把上传 RT 拉长。
+    // 后台照常刷新，错误在 poll 内部吞掉（fetchStatus 永远 resolve、pollThreads 自带 catch）。
     // 先把返回值写进缓存（页面紧接着 GET /api/peer 要看到新头像），其余状态让后台 poll 慢慢刷。
     // 整体换对象而不是就地改字段：`poll()` 每次都是换对象，别让外部缓存的 status 引用看到半新半旧的状态。
     if (this.status) this.status = { ...this.status, avatar: parsed.avatar };

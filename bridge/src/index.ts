@@ -388,6 +388,9 @@ async function readRawOr(
   try {
     return await readRaw(req, limit);
   } catch (err) {
+    // 客户端已经断开（传一半关页面 / 断网）时 res 也已经关了：再写响应没有意义，
+    // 对已销毁的流写还会触发 ERR_STREAM_DESTROYED / 未处理的 error（评审 9-3）。
+    if (res.destroyed || res.headersSent) return null;
     if (err instanceof BodyTooLargeError) json(res, 413, { error: tooLarge }, { connection: "close" });
     else json(res, 400, { error: "上传中断了，再试一次" });
     return null;
