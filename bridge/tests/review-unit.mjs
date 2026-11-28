@@ -44,7 +44,16 @@ import {
   setPick,
   trimRuns,
   RUN_KEEP,
+  TIP_PR_LIMIT,
+  tipTargets,
+  remoteTipTargets,
+  headStamp,
+  safeHeadStamp,
+  localTips,
+  remoteTips,
 } from "../src/review.ts";
+// 判据住在 frames.ts（两侧共用，叶子模块、不 import 任何东西）。
+import { isRunOutdated, tipForRun } from "../src/frames.ts";
 
 process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-"));
 // 这里只考登记逻辑：真起 worker 会把「立刻失败的 PR fetch」跑成后台进程，测试看不到、也不该看。
@@ -787,6 +796,193 @@ check("「评什么」存得下也读得回（空串照原样存，别被默认�
   const pick = { mode: "range", pr: 0, base: "main", target: "", commit: "" };
   assert.deepEqual(setPick(repo, pick, "s1").pick, pick);
   assert.deepEqual(readReviewState(repo, "s1").pick, pick);
+});
+
+// ---- 过时（#741）：完成态记录核对「现在的 tip 是多少」 ----------------------
+
+/** 异步的那几条（`remoteTips` 要发一次 ls-remote）：`check()` 只认同步函数。 */
+const checkAsync = async (name, fn) => {
+  try {
+    await fn();
+    console.log(`ok   ${name}`);
+  } catch (err) {
+    failures += 1;
+    console.error(`FAIL ${name}\n     ${err?.message ?? err}`);
+  }
+};
+
+/** 一条已经收尾的记录：只填核对 tip 会读到的那几项，其余留空。 */
+const doneRun = (over = {}) => ({
+  id: "r1",
+  status: "done",
+  mode: "range",
+  from: "main",
+  to: "HEAD",
+  mergeBase: "abc",
+  pr: 0,
+  prTitle: "",
+  prHead: "",
+  prBase: "",
+  startedAt: "2026-01-01T00:00:00.000Z",
+  finishedAt: "2026-01-01T00:01:00.000Z",
+  headSha: "aaaa1111",
+  findings: [],
+  ...over,
+});
+
+check("tipTargets 只核对「完成的、分支或 PR 的、记了被评 sha 的」记录", () => {
+  const runs = [
+    doneRun({ id: "range", to: "HEAD" }),
+    doneRun({ id: "pr", mode: "pr", pr: 7, to: "refs/pi-web/pr-7" }),
+    doneRun({ id: "ws", mode: "workspace", to: "HEAD", from: "" }),
+    doneRun({ id: "commit", mode: "commit", to: "abc1234", from: "" }),
+    doneRun({ id: "failed", status: "failed" }),
+    doneRun({ id: "stopped", status: "stopped" }),
+    doneRun({ id: "running", status: "running" }),
+    doneRun({ id: "old", headSha: undefined }),
+    doneRun({ id: "no-from", from: "" }),
+  ];
+  assert.deepEqual(
+    tipTargets(runs).map((t) => t.ref),
+    ["HEAD", "refs/pi-web/pr-7"],
+    "工作区、单提交、没跑成的、老记录都不核对",
+  );
+});
+
+check("tipTargets 新的在前，按 ref 去重（同一个分支评过两次只核对一次）", () => {
+  const runs = [
+    doneRun({ id: "a", to: "HEAD", startedAt: "2026-01-01T00:00:00.000Z" }),
+    doneRun({ id: "b", to: "feat/x", startedAt: "2026-01-02T00:00:00.000Z" }),
+    doneRun({ id: "c", to: "HEAD", startedAt: "2026-01-03T00:00:00.000Z" }),
+  ];
+  assert.deepEqual(tipTargets(runs).map((t) => t.ref), ["HEAD", "feat/x"]);
+});
+
+check("remoteTipTargets 按 PR 号去重、最多 3 个（留着最新的那一份 ref）", () => {
+  const runs = [];
+  for (let i = 1; i <= 5; i += 1) {
+    runs.push(doneRun({ id: `p${i}`, mode: "pr", pr: i, to: `refs/pi-web/pr-${i}`, startedAt: `2026-01-0${i}T00:00:00.000Z` }));
+  }
+  // 同一个号评了第二次：只该查一次
+  runs.push(doneRun({ id: "p5again", mode: "pr", pr: 5, to: "refs/pi-web/pr-5", startedAt: "2026-01-09T00:00:00.000Z" }));
+  const picked = remoteTipTargets(tipTargets(runs));
+  assert.deepEqual(picked.map((t) => t.pr), [5, 4, 3], `上限是 ${TIP_PR_LIMIT} 个，新的优先`);
+  assert.equal(picked.filter((t) => t.pr === 5).length, 1, "同一个 PR 只留一条");
+});
+
+await checkAsync("localTips 拿本地 rev-parse 的结果当 tip；认不出这个 ref 就不给 key", async () => {
+  const runs = [doneRun({ id: "a", to: "HEAD" }), doneRun({ id: "b", to: "feat/gone" })];
+  const out = await localTips(runs, async (ref) => (ref === "HEAD" ? "b".repeat(40) : ""));
+  assert.deepEqual(out.tips, { HEAD: "b".repeat(40) }, "认不出的 ref 是「不知道」，不是空串");
+  assert.ok(out.at > 0, "这份值带着它的时刻");
+  // 形状不对的东西（注入的实现 / git 吐出多行）不许当成 sha 用
+  const junky = await localTips(runs, async () => `deadbeef\n${"c".repeat(40)}`);
+  assert.deepEqual(junky.tips, {});
+});
+
+check("比记录还旧的快照不拿来判：刚跑完的那一轮不该被说成「有新提交」", () => {
+  const done = doneRun({ id: "a", finishedAt: "2026-01-02T00:00:00.000Z", headSha: "aaaa1111" });
+  const tips = { HEAD: "aaaa1111" };
+  const snapAt = Date.parse("2026-01-01T00:00:00.000Z"); // 快照比记录旧
+  assert.equal(tipForRun(done, tips, snapAt), "", "旧快照 -> 不知道");
+  assert.equal(isRunOutdated(done, tips, snapAt), false);
+  // 快照比记录新：照常判
+  const freshAt = Date.parse("2026-01-03T00:00:00.000Z");
+  assert.equal(tipForRun(done, tips, freshAt), "aaaa1111");
+  assert.equal(isRunOutdated(done, tips, freshAt), false, "一样就不算过时");
+  assert.equal(isRunOutdated(done, { HEAD: "bbbb2222" }, freshAt), true);
+  // 桥没给时刻（0 = 老桥）时照旧比，不因此把所有标都关掉
+  assert.equal(tipForRun(done, tips, 0), "aaaa1111");
+});
+
+check("`pr` 模式却没有号的那几条：判不了，也不该长出「重新评审」", () => {
+  const bad = doneRun({ id: "bad", mode: "pr", pr: 0, to: "refs/pi-web/pr-0" });
+  assert.deepEqual(tipTargets([bad]), []);
+});
+
+await checkAsync("headStamp：收尾时记被评的 sha，`HEAD` 再记当时那条分支", async () => {
+  const deps = { shaOf: async () => "a".repeat(40), branch: async () => "feat/a" };
+  assert.deepEqual(await headStamp({ to: "HEAD" }, deps), { headSha: "a".repeat(40), headRef: "feat/a" });
+  assert.deepEqual(await headStamp({ to: "feat/x" }, deps), { headSha: "a".repeat(40) }, "分支名本身就是 ref，不用记当时在哪");
+  // 分离头指针 / 认不出这个 ref：宁可少记一项，也不编一个值
+  assert.deepEqual(await headStamp({ to: "HEAD" }, { shaOf: async () => "a".repeat(40), branch: async () => "" }), { headSha: "a".repeat(40) });
+  assert.deepEqual(await headStamp({ to: "feat/gone" }, { shaOf: async () => "", branch: async () => "feat/a" }), {});
+});
+
+await checkAsync("`to: HEAD` 只在**同一条分支**上比：换分支不是「有新提交」", async () => {
+  const sha = "b".repeat(40);
+  const runs = [doneRun({ id: "a", to: "HEAD", headRef: "feat/a" })];
+  // 桥这一层只负责回答「HEAD 现在指向哪个提交」；「这条记录该不该采信」按**每条记录**判。
+  assert.deepEqual((await localTips(runs, async () => sha)).tips, { HEAD: sha }, "HEAD 照常回答 sha");
+  const at = Date.parse("2026-01-05T00:00:00.000Z");
+  const head = { HEAD: sha };
+  assert.equal(tipForRun(runs[0], head, at, "feat/a"), sha, "同一条分支：照旧比");
+  assert.equal(tipForRun(runs[0], head, at, "feat/b"), "", "换到别的分支：核对不了，不标");
+  // 分离头指针（现在没有分支名）与老记录（当时没记分支）都退回「照旧比」。
+  assert.equal(tipForRun(runs[0], head, at, ""), sha);
+  assert.equal(tipForRun(doneRun({ id: "b", to: "HEAD" }), head, at, "feat/b"), sha);
+});
+
+await checkAsync("补印章失败不许把已完成的评审带下水（safeHeadStamp 吞掉异常）", async () => {
+  const boom = { shaOf: async () => { throw new Error("git 挂了"); }, branch: async () => "feat/a" };
+  assert.deepEqual(await safeHeadStamp({ to: "HEAD" }, boom), {}, "记不上就不记");
+  // 正常情况照旧给值
+  assert.deepEqual(
+    await safeHeadStamp({ to: "HEAD" }, { shaOf: async () => "a".repeat(40), branch: async () => "feat/a" }),
+    { headSha: "a".repeat(40), headRef: "feat/a" },
+  );
+});
+
+check("同一个 `HEAD` 下别的分支留下的记录，不许借当前分支的 tip 说它过时", () => {
+  // 场景：先在 feat/a 评过一次（headSha=aaaa），后来在 feat/b 又评一次（headSha=bbbb）。
+  // 现在人在 feat/b 上，HEAD=bbbb。`tips` 按 ref 共享（只有一条 HEAD），
+  // 但 feat/a 那条**不能**拿 bbbb 跟自己的 aaaa 比 —— 那不是「有新提交」，是换了分支。
+  const a = "a".repeat(40);
+  const b = "b".repeat(40);
+  const at = Date.parse("2026-01-05T00:00:00.000Z");
+  const onA = doneRun({ id: "a", to: "HEAD", headRef: "feat/a", headSha: a, finishedAt: "2026-01-01T00:00:00.000Z" });
+  const onB = doneRun({ id: "b", to: "HEAD", headRef: "feat/b", headSha: b, finishedAt: "2026-01-02T00:00:00.000Z" });
+  const tips = { HEAD: b };
+  assert.equal(isRunOutdated(onA, tips, at, "feat/b"), false, "feat/a 那条不该被标");
+  assert.equal(isRunOutdated(onB, tips, at, "feat/b"), false, "当前分支那条与 tip 相等，也不标");
+  // 同一分支上真的又提交了：照标
+  assert.equal(isRunOutdated(onB, { HEAD: "c".repeat(40) }, at, "feat/b"), true);
+});
+
+await checkAsync("localTips 不碰网络：PR 那几条留给远端那半", async () => {
+  let asked = 0;
+  const runs = [doneRun({ id: "pr", mode: "pr", pr: 7, to: "refs/pi-web/pr-7" })];
+  await localTips(runs, async () => {
+    asked += 1;
+    return "c".repeat(40);
+  });
+  assert.equal(asked, 0);
+});
+
+await checkAsync("remoteTips 一次 ls-remote 拿一批；失败或抛错的那个号不出现（不是空串）", async () => {
+  const runs = [
+    doneRun({ id: "a", mode: "pr", pr: 1, to: "refs/pi-web/pr-1" }),
+    doneRun({ id: "b", mode: "pr", pr: 2, to: "refs/pi-web/pr-2" }),
+    doneRun({ id: "c", mode: "pr", pr: 3, to: "refs/pi-web/pr-3", startedAt: "2026-01-05T00:00:00.000Z" }),
+  ];
+  const calls = [];
+  const out = await remoteTips(runs, async (prs) => {
+    calls.push([...prs]);
+    // 2 号远端没答（PR 没了 / 超时）：不该冒充「没变」。
+    return { heads: { 1: "d".repeat(40) }, at: 1000 };
+  });
+  assert.deepEqual(out.tips, { "refs/pi-web/pr-1": "d".repeat(40) });
+  assert.equal(out.at, 1000, "缓存那一刻要跟着走（页面的旧快照闸靠它）");
+  assert.equal(calls.length, 1, "一批只发一次 ls-remote");
+  assert.deepEqual([...calls[0]].sort(), [1, 2, 3], "三个号在同一次里问");
+});
+
+await checkAsync("远端整个坏掉时一条 key 都不给（超时 = 不知道，不是「没变」）", async () => {
+  const runs = [doneRun({ id: "a", mode: "pr", pr: 1, to: "refs/pi-web/pr-1" })];
+  const out = await remoteTips(runs, async () => {
+    throw new Error("ls-remote 超时");
+  });
+  assert.deepEqual(out, { tips: {}, at: 0 });
 });
 
 check("换脑（D446）：job 还没写回 pid 时，用新鲜心跳接回评审", () => {

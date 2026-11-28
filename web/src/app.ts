@@ -462,6 +462,29 @@ export class App {
   private reviewState: ReviewState | null = null;
   /** 在跑的那几条，一条一份（D420：按 runId 认，不再「一个会话只有一份进度」）。 */
   private reviewProgresses: ReviewProgress[] = [];
+  /**
+   * 这些 ref 现在各指向哪个提交（#741）：key 是记录里的 `to`。
+   *
+   * 桥在 `review.state` 帧里当**兄弟字段**发（不在 `state` 里 —— 那是盘上的形状）。
+   * 帧不带它的时候（标一条意见、清理历史这些）**保留上一次的**：那些帧只改 records，
+   * 不该把标弄消失。
+   */
+  private reviewTips: Record<string, string> = {};
+  /** 上面那张快照是什么时候拍的（桥的 `tipsAt`）：比某条记录还旧的快照不能拿来判过时。 */
+  private reviewTipsAt = 0;
+  /**
+   * 点「重新评审」之前「评什么」是什么样（#741）。
+   *
+   * 那个动作会先把这一格换成记录自己的范围再开跑；桥**异步**拒掉（`dup_pr` / `busy` 竞态、
+   * 断线）时，要把它恢复回来 —— 不然面板上那一格被一条旧记录静默改掉并落了盘。
+   * 开跑被接受（`review.started`）或已经恢复过就清掉。
+   */
+  private reviewRerunRestore: { mode: ReviewMode; pr: string; base: string; target: string } | null = null;
+  /** 那张快照拍摄时 HEAD 在哪条分支（桥的 `tipsBranch`）：`HEAD` 记录只跟同一条分支的 tip 比。 */
+  private reviewTipsBranch = "";
+  /** 「重新核对」等着结果：那颗钮先灰着（每点一下都是一次绕开缓存的 `ls-remote`）。 */
+  private reviewTipsBusy = false;
+  private reviewTipsTimer: number | null = null;
   /** 一个会话同时最多几条（桥发来的上限）；缺省 2，跟桥上的 MAX_RUNS_PER_SESSION 对齐。 */
   private reviewCap = 2;
   private reviewOcr: ReviewOcr | null = null;
@@ -2805,8 +2828,13 @@ export class App {
         if (msg.dir && want && String(msg.dir) !== want && String(msg.dir) !== dir) break;
         if (msg.error) {
           this.reviewError = errText(msg);
+          // 「重新评审」被桥拒了（`dup_pr` / `busy` / 别的）：把「评什么」还给点之前的样子。
+          this.restoreRerunPick();
           this.reviewState = null;
           this.reviewProgresses = [];
+          this.reviewTips = {};
+          this.reviewTipsAt = 0;
+          this.reviewTipsBranch = "";
           this.reviewNotGit = msg.code === "not_git";
           if (this.queueTab === "review") this.renderQueue();
           break;
@@ -2816,6 +2844,15 @@ export class App {
         if (msg.dir) this.reviewRepo = String(msg.dir);
         this.reviewState = (msg.state ?? null) as ReviewState | null;
         this.reviewProgresses = Array.isArray(msg.progresses) ? (msg.progresses as ReviewProgress[]) : [];
+        // #741：tips 是帧的兄弟字段（不在 `state` 里）。规则就两条：
+        // 带了就**整份替换**（桥每次给的都是那一刻的完整快照，`{}` 也算一份）；
+        // 不带（标意见 / 清理历史 / 停一条这些只改记录的帧）就保留上一次的 ——
+        // 那些帧不该把「有新提交」那颗标弄消失。
+        if (msg.tips && typeof msg.tips === "object") {
+          this.reviewTips = msg.tips as Record<string, string>;
+          this.reviewTipsAt = Number(msg.tipsAt) || 0;
+          this.reviewTipsBranch = String(msg.tipsBranch ?? "");
+        }
         if (Number(msg.cap) > 0) this.reviewCap = Number(msg.cap);
         // 盘上记的「评什么」：只在本会话头一份状态到达时恢复（以后以界面为准）。
         this.applyReviewPick();
@@ -2833,6 +2870,8 @@ export class App {
         if (String(msg.sessionId ?? "") && this.currentId && String(msg.sessionId) !== this.currentId) break;
         const id = String(msg.runId ?? "");
         if (!id) break;
+        // 这一次重评真的开出去了：不再需要恢复「评什么」。
+        this.reviewRerunRestore = null;
         this.reviewPendingRuns.add(id);
         if (this.queueTab === "review") this.renderQueue();
         this.syncReviewSheet();
@@ -19260,6 +19299,9 @@ export class App {
     this.reviewPin = next;
     this.reviewState = null;
     this.reviewProgresses = [];
+    this.reviewTips = {};
+    this.reviewTipsAt = 0;
+    this.reviewTipsBranch = "";
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19303,6 +19345,9 @@ export class App {
     this.reviewSessionKey = key;
     this.reviewState = null;
     this.reviewProgresses = [];
+    this.reviewTips = {};
+    this.reviewTipsAt = 0;
+    this.reviewTipsBranch = "";
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19342,27 +19387,58 @@ export class App {
     this.reviewPicker?.close();
   }
 
+  /** 把「评什么」还给「重新评审」点之前的样子（没真开出去时必须做，别静默改掉人选的格）。 */
+  private restoreRerunPick(): void {
+    const before = this.reviewRerunRestore;
+    if (!before) return;
+    this.reviewRerunRestore = null;
+    this.reviewMode = before.mode;
+    this.reviewPr = before.pr;
+    this.reviewBase = before.base;
+    this.reviewTarget = before.target;
+    this.saveReviewPick();
+    if (this.queueTab === "review") this.renderQueue();
+  }
+
+  /** 「重新核对」的冷却时间到了：那颗刷新钮恢复可点。 */
+  private clearReviewTipsBusy(): void {
+    if (this.reviewTipsTimer !== null) {
+      window.clearTimeout(this.reviewTipsTimer);
+      this.reviewTipsTimer = null;
+    }
+    if (!this.reviewTipsBusy) return;
+    this.reviewTipsBusy = false;
+    if (this.queueTab === "review") this.renderQueue();
+  }
+
   /**
    * 问一次桥的评审状态。默认按目录去重；`force` 用于重连 / 插件变更 / 重新进页签 ——
    * 那些路径面对的是新连接或新状态，同一目录也必须重发。只在这里维护 `reviewAsked`，
    * 别让调用方各自拼这份状态。
+   *
+   * `fresh` 交给桥（#741）：绕开「有没有新提交」那次核对的 60 秒缓存 —— 人都点了「再看一眼」，
+   * 撞缓存等于白点。
    */
-  private askReview(dir: string, force = false): boolean {
+  private askReview(dir: string, force = false, fresh = false): boolean {
     if (!force && this.reviewAsked === dir) return false;
     this.reviewAsked = dir;
-    this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
+    this.socket.send({ type: "review.get", dir, sessionId: this.currentId, fresh });
     return true;
   }
 
-  private loadReview(): void {
+  private loadReview(fresh = false): void {
     const dir = this.reviewDir();
     if (!dir) {
       this.reviewError = tr("先打开一个会话：评审评的是它的目录。");
       this.reviewState = null;
       this.reviewProgresses = [];
+      this.reviewTips = {};
+      this.reviewTipsAt = 0;
+      this.reviewTipsBranch = "";
       return;
     }
-    this.askReview(dir, true);
+    // `fresh` 只影响「有没有新提交」那一次核对（绕开桥里的 60 秒缓存）。
+    this.askReview(dir, true, fresh);
     // PR 列表按**评的那个仓库**排队（钉了子仓库时它与会话目录不是一回事）。
     const ask = this.reviewPin || dir;
     if (this.reviewPrsAsked !== ask) this.loadPullRequests(ask);
@@ -19648,6 +19724,10 @@ export class App {
       repo: this.reviewRepo || this.reviewPin,
       repoPinned: Boolean(this.reviewPin),
       modelLabels: this.reviewModelLabels(),
+      tips: this.reviewTips,
+      tipsAt: this.reviewTipsAt,
+      tipsBusy: this.reviewTipsBusy,
+      tipsBranch: this.reviewTipsBranch,
     });
     const effective = this.reviewEffectiveModel();
     return {
@@ -19792,6 +19872,17 @@ export class App {
       // 装 gh / 登录 gh（D428）：卡片的动作由 `reviewPanelInput()` 直接传 `ghCardActions()`。
       // 记录卡不再是入口（D429）：点卡底那颗「完整详情」打开那一次。
       onDetails: (runId) => this.openReviewSheet(runId),
+      onRerun: (runId) => this.rerunReview(runId),
+      onRefreshTips: () => {
+        // 连点几下就是几次 `ls-remote`（`fresh` 绕开 60 秒缓存）：点下去先灰一小会儿。
+        // 用固定时长而不是「等某一帧」——面板平常就一直在收 `review.state`（标意见、跑完、
+        // 别的页签），拿帧当解除信号的话这颗钮几乎立刻就会恢复，等于没拦。
+        this.reviewTipsBusy = true;
+        if (this.reviewTipsTimer !== null) window.clearTimeout(this.reviewTipsTimer);
+        this.reviewTipsTimer = window.setTimeout(() => this.clearReviewTipsBusy(), 1500);
+        this.renderQueue();
+        this.loadReview(true);
+      },
       onPickRepo: () => this.openRepoPicker(),
       onClearRepo: () => this.clearReviewRepo(),
     };
@@ -19895,23 +19986,55 @@ export class App {
     this.reviewSheet?.update(this.reviewPanelInput());
   }
 
-  private startReview(): void {
+  /**
+   * 「重新评审」：按**那条记录自己的范围**再跑一次（#741）。
+   *
+   * 不复用面板上现在选着的那一格 —— 那张卡可能是一条旧记录，人现在在看的是别的范围。
+   * 真正开跑走 `startReview()` 同一条路：闸门、模型、错误提示全复用，不做第二个入口。
+   */
+  private rerunReview(runId: string): void {
+    const run = (this.reviewState?.runs ?? []).find((item) => item.id === runId);
+    if (!run) return;
+    const before = { mode: this.reviewMode, pr: this.reviewPr, base: this.reviewBase, target: this.reviewTarget };
+    // 桥那边是异步裁决的（`dup_pr` / `busy` 都可能在这里才拒），所以那份要恢复的选择得先记住。
+    this.reviewRerunRestore = { ...before };
+    this.reviewMode = run.mode;
+    if (run.mode === "pr") {
+      // 记录里没有 PR 号（老记录 / 坏数据）就别猜：沿用手上这个号等于拿**另一条** PR 去评，
+      // 而且结果会安静地写进列表里 —— 正是 #666 那道闸要防的那类错。
+      if (run.pr <= 0) return;
+      this.reviewPr = String(run.pr);
+    } else if (run.mode === "range") {
+      this.reviewBase = run.from;
+      this.reviewTarget = run.to || "HEAD";
+    }
+    // 这一下是「人自己决定的范围」：链接卡带来的「期望仓库」不再适用（与换范围同一个口径）。
+    this.clearReviewExpectRepo();
+    this.saveReviewPick();
+    this.renderQueue();
+    if (this.startReview()) return;
+    // 页面这一侧就没开出去（缺东西 / 没目录）：当场恢复，不必等桥回话。
+    this.restoreRerunPick();
+    this.renderQueue();
+  }
+
+  private startReview(): boolean {
     const dir = this.reviewDir();
-    if (!dir) return;
+    if (!dir) return false;
     const mode = this.reviewMode;
     if (mode === "commit" && !this.reviewCommit.trim()) {
       this.flashToast(tr("先填一个提交号"), true, 4000);
-      return;
+      return false;
     }
     // `#636` 是 PR 号的手感：commitish() 会拒掉它（`--commit "#636" is not a valid commit ref`），
     // 与其让 ocr 报一句看不懂的，不如当场说清该切哪个模式。
     if (mode === "commit" && /^#\s*\d+$/.test(this.reviewCommit.trim())) {
       this.flashToast(tr("提交号别带 #：要评 PR 请切到「GitHub PR」"), true, 5000);
-      return;
+      return false;
     }
     if (mode === "pr" && !this.reviewPr.trim()) {
       this.flashToast(tr("先选一个 PR（或填个号）"), true, 4000);
-      return;
+      return false;
     }
     this.reviewError = "";
     this.reviewPrMenu = false;
@@ -19942,6 +20065,7 @@ export class App {
       lang: getLang(),
     });
     this.renderQueue();
+    return true;
   }
 
   /** 一条意见 → 分支工作台的「差异」页签，选中那个文件并把命中的那段代码标出来。 */
