@@ -201,9 +201,17 @@ export function avatarUrl(id: string | null | undefined, key?: string | null): s
   return `/api/peer/avatar/${encodeURIComponent(key)}?h=${hash}`;
 }
 
-/** `custom:<hash>` → hash，其余（内置 id / 空）返回空串。两侧共用同一个形状，见 peer/src/avatars.ts。 */
+/**
+ * `custom:<hash>` 的 hash 长度。这是**线上格式**（announce / URL / 配置三处都按它走），
+ * 源头在 `peer/src/avatars.ts` 的 `AVATAR_HASH_LEN`；两个包不互相 import，所以这里再写一份。
+ * `web/peer-avatars-check.mjs` 会比对两边的数字，改一处没改另一处时 typecheck 直接红。
+ */
+export const AVATAR_HASH_LEN = 16;
+const CUSTOM_AVATAR_RE = new RegExp(`^custom:([0-9a-f]{${AVATAR_HASH_LEN}})$`);
+
+/** `custom:<hash>` → hash，其余（内置 id / 空）返回空串。 */
 export function customAvatarHash(id: string | null | undefined): string {
-  return /^custom:([0-9a-f]{16})$/.exec(id ?? "")?.[1] ?? "";
+  return CUSTOM_AVATAR_RE.exec(id ?? "")?.[1] ?? "";
 }
 
 /** 随机挑一张（可以排除当前这张，页面上「随机换一个」就不会抽到自己）。 */

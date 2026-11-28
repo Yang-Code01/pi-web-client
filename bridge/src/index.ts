@@ -394,6 +394,15 @@ async function readRawOr(
   }
 }
 
+/** 页面断开（关页面 / 取消请求）就 abort 上游，别让到 peer 的请求自己跑完。 */
+function abortOnClose(res: http.ServerResponse): AbortSignal {
+  const ctrl = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) ctrl.abort();
+  });
+  return ctrl.signal;
+}
+
 function json(res: http.ServerResponse, status: number, body: unknown, extra: Record<string, string | string[]> = {}): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...extra });
@@ -1297,23 +1306,13 @@ async function main(): Promise<void> {
     // 自定义头像：POST 是上传（页面已裁好 192×192 WebP），GET 是给 `<img>` 取图。
     // GET 走桥而不是直连 peer 的 7865：那条口子只对回环开，页面在别的机器 / 隧道里时够不着。
     if (url.pathname === "/api/peer/avatar" && req.method === "POST") {
-      let raw: Buffer;
-      try {
-        raw = await readRaw(req, MAX_AVATAR_UPLOAD);
-      } catch (err) {
-        if (err instanceof BodyTooLargeError) {
-          return json(res, 413, { error: "图片太大了（上限 2 MB）" }, { connection: "close" });
-        }
-        // 传一半断开（断网 / 关页面）不是「太大」，别让用户照着改大小。
-        return json(res, 400, { error: "上传中断了，再试一次" });
-      }
+      // 超限 / 中断的响应交给 readRawOr 统一回（评审 8-9）；上限文案从常量算，别再写死「2 MB」（评审 8-10）。
+      const raw = await readRawOr(res, req, MAX_AVATAR_UPLOAD, `图片太大了（上限 ${MAX_AVATAR_UPLOAD / (1024 * 1024)} MB）`);
+      if (!raw) return;
       // 页面关掉 / 用户取消时别让这条到 peer 的请求自己跑完（和 /api/peer/file 一样接 res 的 close）。
-      const ctrl = new AbortController();
-      res.on("close", () => {
-        if (!res.writableEnded) ctrl.abort();
-      });
+      const signal = abortOnClose(res);
       try {
-        return json(res, 200, await peer.uploadAvatar(raw, ctrl.signal));
+        return json(res, 200, await peer.uploadAvatar(raw, signal));
       } catch (err) {
         // peer 自己给的 4xx/5xx 原样透传；连不上 peer（没起、超时、连接被拒）是上游挂了，
         // 不是「请求不对」——回 502 + 一句人能看懂的，别把 "fetch failed" 甩给页面。
@@ -1332,16 +1331,22 @@ async function main(): Promise<void> {
       }
       try {
         // `<img>` 被取消（切会话、关灯箱、关页面）时立刻 abort 上游，不等 10 秒超时。
-        const ctrl = new AbortController();
-        res.on("close", () => {
-          if (!res.writableEnded) ctrl.abort();
-        });
+        const signal = abortOnClose(res);
         // 参数名跟 peer 的 `/avatar?h=` 一致；`v` 是旧页面的写法，留着兼容。
         const hash = url.searchParams.get("h") ?? url.searchParams.get("v") ?? "";
-        const upstream = await peer.avatarStream(who, hash, ctrl.signal);
+        const upstream = await peer.avatarStream(who, hash, signal);
         // peer 说 4xx（没这张图）照原样；5xx 是 peer 自己坏了，按「连不上」统一 502（评审 7-2）。
         if (!upstream.ok) {
-          return json(res, upstream.status >= 500 ? 502 : upstream.status, { error: "取不到这张头像" });
+          // peer 的 4xx 文案（「没有这张图片」）对页面有用，别丢了；body 不读就 cancel，
+          // 否则这条连接要等 GC / 超时才释放（评审 8-12）。
+          let detail: { error?: string } | null = null;
+          try {
+            detail = (await upstream.json()) as { error?: string };
+          } catch {
+            await upstream.body?.cancel().catch(() => {});
+          }
+          const status = upstream.status >= 500 ? 502 : upstream.status;
+          return json(res, status, { error: status === 502 ? "内网通暂时连不上，稍后再试" : detail?.error || "取不到这张头像" });
         }
         const etag = upstream.headers.get("etag");
         const cache = "private, max-age=86400";

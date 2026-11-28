@@ -281,11 +281,16 @@ export function pruneAvatarFiles(keep: string[] = [], max = MAX_CACHED): void {
   }
   if (rows.length <= max) return;
   rows.sort((a, b) => a.at - b.at);
-  for (const row of rows.slice(0, rows.length - max)) {
+  // 从最旧的开始删，受保护的行（当前 + 上传历史）跳过并继续向后补：
+  // 只 skip 不补删的话，最旧的几条恰好都被保护时这一轮实际删不到 need 条，目录会长期超过 max（评审 8-13）。
+  let need = rows.length - max;
+  for (const row of rows) {
+    if (need <= 0) break;
     if (protect.has(row.hash)) continue;
     try {
       fs.unlinkSync(row.file);
       forgetAvatarFile(row.hash);
+      need -= 1;
     } catch {
       /* 删不掉就下次再说 */
     }

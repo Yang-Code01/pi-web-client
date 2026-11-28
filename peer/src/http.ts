@@ -378,10 +378,13 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         try {
           body = (await readBody(req)) as { hash?: unknown } | null;
         } catch (err) {
-          // 只有「超过 1 MB」要单独说；不是 JSON / 传了一半仍和以前一样按「hash 不对」回 400（评审 7-7）。
+          // 只有「超过 1 MB」要单独说；不是 JSON / 传了一半，分别给「hash 不对」和「请求中断」。
           if (err instanceof BodyTooLargeError) {
             return json(res, 413, { error: "请求太大了" }, { connection: "close" });
           }
+          // readBody 在 JSON 解析失败时抛 SyntaxError，在请求没传完就断开时抛普通 Error。
+          // 后者不是用户填错了 hash，别让页面提示「hash 不对」（评审 8-18）。
+          if (!(err instanceof SyntaxError)) return json(res, 400, { error: "请求中断了，再试一次" });
         }
         const hash = avatarHash(body?.hash);
         if (!hash) return json(res, 400, { error: "hash 不对" });

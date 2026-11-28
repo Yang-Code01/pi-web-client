@@ -35,6 +35,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""):
   return node;
 }
 
+/** 缩放上限：滚轮 / `+` / 双击都走 `zoomTo`，统一在这里封顶（头像 3 倍只是初始 fit，还能再放大）。 */
+const MAX_SCALE = 16;
+
 function btn(face: IconName | string, title: string, run: () => void): HTMLButtonElement {
   const b = el("button", "iv-btn");
   b.append(faceNode(face));
@@ -105,7 +108,7 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
     paint();
   };
   const zoomTo = (s: number, cx?: number, cy?: number): void => {
-    const next = Math.max(0.05, Math.min(16, s));
+    const next = Math.max(0.05, Math.min(MAX_SCALE, s));
     // 以指针为中心缩放：指针下面那一点缩放前后不动。
     if (cx !== undefined && cy !== undefined) {
       const box = stage.getBoundingClientRect();
@@ -177,7 +180,7 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
   stage.addEventListener("dblclick", (ev) => {
     // `fit` 可能 >1（小图带 `upscale`，头像就是 3 倍）：这时候双击去 1 倍比「适应窗口」还小，
     // 和「双击放大」的直觉相反。只有 fit ≤ 1 时双去 1:1，否则再放大一档（评审 5-12）。
-    const zoomed = fit > 1 ? Math.min(16, fit * 2) : 1;
+    const zoomed = fit > 1 ? Math.min(MAX_SCALE, fit * 2) : 1;
     if (Math.abs(scale - fit) < 0.01) zoomTo(zoomed, ev.clientX, ev.clientY);
     else reset();
   });

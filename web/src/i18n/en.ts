@@ -1530,6 +1530,7 @@ export const en: Dict = {
   "上传过的": "Uploaded before",
   "删除这张": "Delete this one",
   "这张头像删掉了": "Avatar deleted",
+  "图片不在了，删掉这条记录吧": "That image is gone — delete this entry",
   "只保留你自己上传的；对端头像的缓存不在这里。": "Only images you uploaded yourself; images cached from others stay out of this list.",
   "点头像看大图": "Click an avatar to view it larger",
   "浏览器处理不了这张图片": "The browser can't handle that image",

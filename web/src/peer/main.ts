@@ -3953,14 +3953,16 @@ async function uploadAvatar(file: File, busy?: (on: boolean) => void): Promise<b
     await loadStatus();
     await loadThreads();
     await loadUploads();
-    renderAll();
     toast(tr("头像换好了"));
     return true;
   } catch (err) {
     toast((err as Error).message);
     return false;
   } finally {
+    // 先清标志再重画：否则 renderAll 建出来的按钮会照着 `avatarUploading = true` 显示成
+    // 「正在处理…」并禁用，而 busy(false) 只摸得到已经被换掉的旧按钮（评审 8-4）。
     busy?.(false);
+    renderAll();
   }
 }
 
@@ -3969,6 +3971,12 @@ function meHead(title: string, sub: string): HTMLElement {
   box.append(h("div", "me-title", title), h("div", "me-sub", sub));
   return box;
 }
+
+/**
+ * 头像上传在飞。放在模块级而不是 renderMe 里：5 秒一次的状态轮询会 renderAll 重画「我」页，
+ * 局部变量会被重置成 false，用户就能在同一个上传还没回来时再开一个文件框（评审 8-4）。
+ */
+let avatarUploading = false;
 
 function renderMe(): void {
   const st = S.view?.status;
@@ -3987,7 +3995,7 @@ function renderMe(): void {
 
   // 上传在飞时，内置格 / 历史缩略图 / 随机换一个 也都不能改（评审 7-25）：
   // 否则两个 POST /avatar 并发，最后生效的取决于谁后返回，而不是用户最后一次选择。
-  let avatarUploading = false;
+  // `avatarUploading` 是模块级的：轮询重画不会把它清成 false（评审 8-4）。
   const uploadsSig = (): string => S.uploads.map((u) => `${u.id}:${u.at}`).join("|");
   // 上次画进 pane 的那份「上传过的」签名，refresh 后没变就不重画（见 refreshUploads）。
   let drawnUploads = "";
@@ -4114,6 +4122,11 @@ function renderMe(): void {
       luck.disabled = on;
       uploadBtn.textContent = on ? tr("正在处理…") : tr("上传图片");
     };
+    // 重画可能发生在上传还没回来时（5 秒轮询）：新按钮得照着模块级标志恢复禁用态，
+    // 不能因为「刚建出来」就显示成可用。
+    uploadBtn.disabled = avatarUploading;
+    luck.disabled = avatarUploading;
+    if (avatarUploading) uploadBtn.textContent = tr("正在处理…");
     // 「自定义」格也复用这个 input：上传在飞时再点它不能开第二个选择框，
     // 否则两个 POST /avatar 并发，最后生效的是谁先返回而不是用户最后一次选（评审 5-10）。
     const pick = (): void => {
@@ -4187,6 +4200,18 @@ function renderMe(): void {
         thumbImg.src = avatarUrl(up.id, st.nodeId) ?? "";
         thumbImg.alt = "";
         thumbImg.draggable = false;
+        // 记录还在、文件被手动删了 / prune 收走了：别留一个破图，退回名字首字母并禁用这一格。
+        thumbImg.addEventListener(
+          "error",
+          () => {
+            thumbImg.remove();
+            thumb.append(h("span", "me-histletter", (st.nickname.trim()[0] ?? "?").toUpperCase()));
+            thumb.disabled = true;
+            thumb.title = tr("图片不在了，删掉这条记录吧");
+            thumb.setAttribute("aria-label", tr("图片不在了，删掉这条记录吧"));
+          },
+          { once: true },
+        );
         thumb.append(thumbImg);
         thumb.addEventListener("click", () => {
           if (st.avatar !== up.id) void applyAvatar(up.id);
@@ -4233,8 +4258,7 @@ function renderMe(): void {
     const kv = h("div", "kv");
     kv.append(h("span", "k", tr("收件箱")), h("span", "v", st.config.inbox));
     kv.append(h("span", "k", tr("剩余空间")), h("span", "v", sizeOf(S.free)));
-    const acts = h("div", "acts");
-    acts.style.padding = "0 13px 13px";
+    const acts = h("div", "acts me-acts me-acts-flush");
     const open = h("button", "btn", tr("打开收件箱"));
     open.type = "button";
     open.addEventListener("click", () => void reveal(st.config.inbox));

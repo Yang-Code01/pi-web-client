@@ -845,6 +845,8 @@ body.embedded .brand .nm { display: none; }
 .me-avgrid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; max-width: 470px; padding-top: 14px; }
 /* 分区底部的按钮行：.acts 默认的上距在卡片里偏宽，按卡片内边距对齐（评审 7-26）。 */
 .me-acts { padding: 12px 13px; }
+/* 存储页那一行上面已经紧着 .kv，再补 12px 上距就空了（评审 8-7）。 */
+.me-acts-flush { padding-top: 0; }
 .me-custom {
   display: grid;
   place-items: center;
@@ -875,6 +877,8 @@ body.embedded .brand .nm { display: none; }
   cursor: pointer;
 }
 .me-histpick img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 文件不在了：用名字首字母占位，和 .me-histpick 的圆形凹槽同尺寸（评审 8-8）。 */
+.me-histletter { display: grid; place-items: center; width: 100%; height: 100%; font-size: 14px; font-weight: 600; color: var(--dim); background: var(--panel-2); }
 .me-histitem.on .me-histpick { box-shadow: 0 0 0 2px var(--accent), 0 0 0 4px var(--panel); }
 .me-histdel {
   position: absolute;

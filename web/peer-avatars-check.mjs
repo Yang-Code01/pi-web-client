@@ -58,7 +58,19 @@ const missingInWeb = peerIds.filter((id) => !webIds.includes(id));
 const extraInWeb = webIds.filter((id) => !peerIds.includes(id));
 const dupes = (list) => list.filter((id, i) => list.indexOf(id) !== i);
 
-if (missingInWeb.length || extraInWeb.length || dupes(peerIds).length || dupes(webIds).length || !peerIds.length) {
+// 自定义头像的 hash 长度是线上格式：announce / URL / 配置都按它走。
+// 两边各写一份常量（跨包 import 会把构建设置搅在一起），这里对账，别让它们静默分叉。
+const peerLen = Number(peerSrc.match(/export const AVATAR_HASH_LEN = (\d+);/)?.[1] ?? NaN);
+const webLen = Number(webSrc.match(/export const AVATAR_HASH_LEN = (\d+);/)?.[1] ?? NaN);
+const lenMismatch = !Number.isFinite(peerLen) || !Number.isFinite(webLen) || peerLen !== webLen;
+
+if (lenMismatch) {
+  console.error(
+    `peer-avatars-check: 自定义头像 hash 长度不一致（peer=${Number.isFinite(peerLen) ? peerLen : "?"}，web=${Number.isFinite(webLen) ? webLen : "?"}）`,
+  );
+}
+
+if (lenMismatch || missingInWeb.length || extraInWeb.length || dupes(peerIds).length || dupes(webIds).length || !peerIds.length) {
   if (!peerIds.length) console.error("peer-avatars-check: peer 侧清单是空的");
   if (missingInWeb.length) console.error(`peer 有、web 没画：${missingInWeb.join(", ")}`);
   if (extraInWeb.length) console.error(`web 画了、peer 不认：${extraInWeb.join(", ")}`);
