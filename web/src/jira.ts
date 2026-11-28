@@ -7,6 +7,7 @@
  * - 每次 `open()` 都重新问一次桥，不拿内存里的旧状态当已连接（换机器、隧道退连接都能立刻反映）；
  *   列表本身不缓存，60 秒的复用是桥那边的责任（D203）。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import "./jira-console.css";
@@ -309,6 +310,7 @@ export class JiraPanel {
     shell.setAttribute("role", "dialog");
     shell.setAttribute("aria-modal", "true");
     back.append(shell);
+    attachWindowGeom("jira", { back, panel: shell, min: [560, 420] });
     this.root = back;
     this.shell = shell;
     // 挂 `#app` 里，不挂 `document.body`：外观「字号」是 `#app { zoom: var(--ui-scale) }`，
@@ -2093,6 +2095,7 @@ export class JiraPanel {
       }
       card.append(row);
       back.append(card);
+      attachWindowGeom("jira-ask", { back, panel: card, min: [420, 320] });
       document.addEventListener("keydown", onKey, true);
       host.append(back);
       card.querySelector<HTMLElement>("button")?.focus();
@@ -2352,6 +2355,7 @@ export class JiraPanel {
 
     box.append(head, hint, body, foot);
     layer.append(box);
+    attachWindowGeom("jira-picker", { back: layer, panel: box, min: [420, 320] });
     this.root?.append(layer);
     this.pickerLayer = layer;
   }

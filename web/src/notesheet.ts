@@ -10,6 +10,7 @@
  * 正文从「纯文本 textarea」换成了富文本（#486）：存的是净化过的 HTML，老数据在读路径上回填成
  * 段落。净化与导出在 `notes/rich.ts`，编辑行为在 `notes/editor.ts`，这一层只管布局和状态。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { createEl as el } from "./chat.ts";
 import { icon, face, type IconName } from "./icons.ts";
 import { FailPanel } from "./failpanel.ts";
@@ -314,6 +315,7 @@ export class NotesSheet {
     main.append(this.bodyEl);
     sheet.append(this.head(), main, this.foot());
     back.append(sheet);
+    attachWindowGeom("notes", { back, panel: sheet, min: [560, 420] });
     this.root = back;
     this.paintHead();
     this.paintNav();
@@ -1510,6 +1512,7 @@ export class NotesSheet {
       const list = el("div", "peer-pick-list");
       panel.append(head, search, list);
       wrap.append(panel);
+      attachWindowGeom("notes-pick", { back: wrap, panel, min: [420, 320] });
       const done = (person: PeerPerson | null): void => {
         retireOverlay(wrap);
         resolve(person);
@@ -1598,6 +1601,7 @@ export class NotesSheet {
       foot.append(back, el("div", "grow"), ok);
       panel.append(head, body, foot);
       wrap.append(panel);
+      attachWindowGeom("notes-submit", { back: wrap, panel, min: [420, 320] });
       const done = (yes: boolean): void => {
         retireOverlay(wrap);
         resolve(yes);

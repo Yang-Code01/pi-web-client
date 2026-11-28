@@ -7,6 +7,7 @@
  * - 成功后 fresh 重拉 history / 仓库信息 / state / refs；失败给退出码、原始 stderr、argv 与交给 agent。
  * - 图解、红色确认卡、脏区三选一、冲突逐文件标记、交给 agent 两个出口，都在这一张卡里收口。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { createEl as el } from "./chat.ts";
 import { icon, face, type IconName } from "./icons.ts";
 import { api } from "./api.ts";
@@ -212,6 +213,8 @@ export class BranchSheet {
     this.sidePop.hidden = true;
     this.sheet.append(head, this.cmpEl, this.tabsEl, this.colsEl, foot, this.sidePop, this.opLayer);
     this.root.append(this.sheet);
+    // 嵌在别处（`embedded`）时它不是一扇独立的窗，谈不上拉大小。
+    if (!this.embedded) attachWindowGeom("branch", { back: this.root, panel: this.sheet, min: [520, 380] });
     this.paintLoading();
   }
 

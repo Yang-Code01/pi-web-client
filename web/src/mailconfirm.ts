@@ -74,6 +74,7 @@ export class MailConfirmDialog {
     const m = cur.mail;
     if (!this.root) this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
+    // dialog-geom: 不装抓手 —— 写信那一下的确认，几行字
     const back = markSurface(el("div", "mc-back mc-back--confirm"), "window");
     const box = el("section", "mc-confirm");
     box.setAttribute("role", "dialog");

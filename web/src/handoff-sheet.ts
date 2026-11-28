@@ -5,6 +5,7 @@
  * （用户原话：「存在用户评审过多个 pr 的情况，每次交给同一个会话会出现上下文干扰」）。
  * 新开会话时名字默认就是 PR 的 tag（`#636`），省得自己想。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 import { markSurface, pushEscLayer, overlayHost } from "./modal.ts";
@@ -61,6 +62,7 @@ export class HandoffSheet {
 
     sheet.append(head, body);
     this.back.append(sheet);
+    attachWindowGeom("handoff", { back: this.back, panel: sheet, min: [520, 380] });
   }
 
   /** 宿主默认交给 `overlayHost()`：控制台自带 `--st-zoom`（D457），挂 body 而不进 `#app`（D450）；测试里仍可显式指定。 */

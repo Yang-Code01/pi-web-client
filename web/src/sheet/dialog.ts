@@ -1,19 +1,19 @@
 /**
  * 表格浮窗（D166）：不是 viewer 面板、没有遮罩、不抢焦点，层级与终端并列。
  *
- * 几何按界面缩放归一（布局 px）后记在 localStorage 的 `pi.sheetGeom`；
+ * 几何按界面缩放归一（布局 px）后记在 `pi.dialogGeom.sheet`（#755 并键；旧键只作为迁移来源保留）；
  * 拖标题栏移动、拖右下角改宽高、拖顶边只改高、双击复原、打开时 clamp 回可视区。
  */
 import { tr, errText, fmtTime, fmtNum } from "../i18n/index.ts";
 import { icon } from "../icons.ts";
 import type { SheetEditOp, SheetStructOp, SheetInfo, SheetMatches, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
+import { clearGeom, loadGeom, saveDockGeom } from "../dialoggeom.ts";
 import { SheetGrid, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP, type SheetGridState } from "./grid.ts";
 import { Ribbon } from "./ribbon.ts";
 import { SheetPage } from "./page.ts";
 import { isExternalLink, matchSheetName, parseSheetLink } from "./links.ts";
 
-const KEY = "pi.sheetGeom";
 const SPLIT_KEY = "pi.sheetSplit";
 const MIN_W = 420;
 const MIN_H = 260;
@@ -1180,16 +1180,9 @@ export class SheetDialog {
     return { l: Math.max(0, (vw - w) / 2), t: Math.max(0, (vh - h) / 2), w, h };
   }
 
+  /** 几何与其它浮窗同一个键（`pi.dialogGeom`）：表格浮窗是 dock，位置和大小都记。 */
   private readGeom(): Partial<FloatBox> | null {
-    try {
-      const raw = localStorage.getItem(KEY);
-      if (!raw) return null;
-      const value = JSON.parse(raw) as Partial<FloatBox>;
-      if (!value || typeof value !== "object") return null;
-      return value;
-    } catch {
-      return null;
-    }
+    return loadGeom("sheet");
   }
 
   private currentBox(): FloatBox {
@@ -1210,23 +1203,11 @@ export class SheetDialog {
   }
 
   private saveGeom(): void {
-    const box = this.currentBox();
-    try {
-      localStorage.setItem(
-        KEY,
-        JSON.stringify({ l: Math.round(box.l), t: Math.round(box.t), w: Math.round(box.w), h: Math.round(box.h) }),
-      );
-    } catch {
-      /* 存不下也还能用这一次 */
-    }
+    saveDockGeom("sheet", this.currentBox());
   }
 
   private resetGeom(): void {
-    try {
-      localStorage.removeItem(KEY);
-    } catch {
-      /* 忘不掉也还能用这一次 */
-    }
+    clearGeom("sheet");
     this.root.classList.remove("pinned");
     for (const prop of ["left", "top", "bottom", "transform", "width", "height"]) this.root.style.removeProperty(prop);
     this.applyGeom();

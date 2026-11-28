@@ -248,7 +248,15 @@ try {
       const r = el.getBoundingClientRect();
       return { l: Math.round(r.left), t: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), r: Math.round(r.right), b: Math.round(r.bottom) };
     });
-  const geom = () => page.evaluate(() => JSON.parse(localStorage.getItem("pi.sheetGeom") ?? "null"));
+  // #755：表格浮窗的几何并进了 `pi.dialogGeom.sheet`（含位置）。
+  const geom = () => page.evaluate(() => JSON.parse(localStorage.getItem("pi.dialogGeom") ?? "null")?.sheet ?? null);
+  /** 忘掉表格浮窗的几何（#755：并进了 `pi.dialogGeom.sheet`）。 */
+  const clearSheetGeom = () =>
+    page.evaluate(() => {
+      const all = JSON.parse(localStorage.getItem("pi.dialogGeom") ?? "null") ?? {};
+      delete all.sheet;
+      localStorage.setItem("pi.dialogGeom", JSON.stringify(all));
+    });
   const cellText = (r, c) =>
     page.evaluate(
       ([rr, cc]) => document.querySelector(`.sd-cell[data-r="${rr}"][data-c="${cc}"]`)?.textContent ?? null,
@@ -1626,7 +1634,7 @@ try {
   // 先把 xlsx 那扇关掉：文件管理器是在 viewer 里，浮窗留着会与下面的断言撞车。
   await closeSheet();
   // 浮窗几何已被上面改过，先清掉记忆回到默认尺寸。
-  await page.evaluate(() => localStorage.removeItem("pi.sheetGeom"));
+  await clearSheetGeom();
   // ---------------------------------------------------------------- 页面视图（#112）
 if (SKIP_PDF) {
   // 没有 LibreOffice：转换必然失败，但「失败只影响页面视图」仍然可验。
@@ -1851,7 +1859,7 @@ if (SKIP_PDF) {
   // ------------------------------------------------ 交互（#107）：选区 / 复制 / 查找 / 缩放 / 引用
   // 前面几段把浮窗几何、scroll 都改过，这里清掉记忆从默认尺寸重开。
   await closeSheet();
-  await page.evaluate(() => localStorage.removeItem("pi.sheetGeom"));
+  await clearSheetGeom();
   await openSheet("plain.xlsx");
 
   const selState = () =>

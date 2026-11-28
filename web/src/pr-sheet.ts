@@ -4,6 +4,7 @@
  * 只回答「这个 PR 是什么」，不显示文件 diff：标题、描述、改动统计、文件清单、提交时间线。
  * 详细评审结果在「评审详情」那扇窗里，两者分工不同。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { createEl as el } from "./chat.ts";
 import { fmtDate, fmtRelative, tr } from "./i18n/index.ts";
 import { renderMarkdown } from "./md.ts";
@@ -67,6 +68,7 @@ export class PrSheet {
     this.body = el("div", "pr-sheet-body");
     sheet.append(this.head, this.body);
     this.back.append(sheet);
+    attachWindowGeom("pr", { back: this.back, panel: sheet, min: [560, 420] });
     this.paint();
   }
 

@@ -1,4 +1,5 @@
 @import "./theme-tokens.css";
+@import "./wingrip.css";
 
 /*
  * D110: 日文要自己的字体栈。Windows 上 "Segoe UI" 根本没有 CJK 字形，日文会一路落到 Microsoft YaHei，
@@ -540,7 +541,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ws-delete-path { margin-top: 4px; color: var(--faint); font-size: 11px; overflow-wrap: anywhere; }
 .ws-delete-badge { color: var(--faint); font-size: 11px; }
 .ws-delete-empty { padding: 18px; color: var(--faint); font-size: 12px; text-align: center; }
-.sheet.ws-delete-sheet .sheet-foot { padding: 12px 16px 16px; }
+.sheet.ws-delete-sheet .sheet-foot { padding: 12px var(--win-grip-foot-pad) 16px 16px; }
 
 /* ---------------------------------------------------------------- session manager */
 .sheet-back.center { align-items: center; justify-items: center; padding: 16px; }
@@ -3390,16 +3391,22 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .term-dock.front { z-index: 47; }
 /* D93: 标题栏空白处是「拖走」，右下角那只角是「拖大拖小」。 */
 body.win-dragging, body.win-dragging .term-head { cursor: grabbing; user-select: none; }
-body.win-resizing, body.win-resizing .term-grip, body.win-resizing .term-resize { cursor: nwse-resize; user-select: none; }
-.term-resize {
-  position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
-  cursor: nwse-resize; touch-action: none;
+body.win-resizing, body.win-resizing .term-grip, body.win-resizing .win-grip { cursor: nwse-resize; user-select: none; }
+/* 挂了抓手的窗口：底栏右下角给抓手让位，别压住「确定 / 保存」那颗按钮。
+   `--win-grip-foot-pad` = 抓手边长 + 8px（见 wingrip.css，是唯一来源）。
+
+   **这条规则只在这里有、`wingrip.css` 里没有**（2026-11-29 评审：两份逐字相同会漂移）。理由是层叠顺序：
+   这张表里 `.mgr-foot` / `.skill-foot` / `.scratch-foot` / `.branch-foot` / `.repos-foot` /
+   `.jira-picker-foot` / `.repopick-foot` 都用 `padding` **简写**写在后面，`@import` 进来的那份排在
+   最前会被它们盖掉；而这里列的是主界面专有的 footer 类，内网通那页（只加载 `peer.css`）一个都用不上。
+   **唯一例外**是内网通选文件浮层的 `.pfoot`，那一条在 wingrip.css 里（那一页没有这张表）。
+   加新的 footer 类：主界面的加在这里；内网通那页的加在 wingrip.css。
+
+   只用**直接子元素**（`>`）：仓库与分支面板会嵌套（嵌入的 BranchSheet 自己没有抓手），
+   后代选择器会把里面那层 `.branch-foot` 也一起挤窄。 */
+.win-grip-panel > :is(.sheet-foot, .st-foot, .sys-foot, .mc-foot, .jc-foot, .hot-foot, .notes-foot, .scratch-foot, .branch-foot, .repos-foot, .rv-foot, .rv-sheet-foot, .mgr-foot, .skill-foot, .whatsnew-foot, .repopick-foot, .jira-picker-foot, .peer-confirm-foot) {
+  padding-right: var(--win-grip-foot-pad);
 }
-.term-resize::after {
-  content: ""; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;
-  border-right: 2px solid var(--faint); border-bottom: 2px solid var(--faint); border-radius: 0 0 4px 0;
-}
-.term-resize:hover::after, .term-resize.dragging::after { border-color: var(--accent); }
 /* Q-026 · D93: 终端高度可拖 —— 顶边一条 7px 的抓取带（只改高），右下角那只角同时改宽高。 */
 .term-grip {
   flex: none; height: 7px; margin-bottom: -1px;

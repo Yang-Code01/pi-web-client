@@ -1,3 +1,4 @@
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 import "./filesearch.css";
@@ -167,6 +168,7 @@ export function openFileSearch(opts: FileSearchOpts): FileSearchHandle {
 
   shell.append(head, searchRow, main, foot);
   back.append(shell);
+  attachWindowGeom("filesearch", { back, panel: shell, min: [560, 420] });
 
   // ---------------------------------------------------------------- state
   let status: StatusView | null = null;

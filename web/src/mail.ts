@@ -12,6 +12,7 @@
  * 「让 AI 分析 / 起草」不直接调模型，只把一段 prompt 交给会话输入框（`host.handoff`）——
  * 发不发、怎么问，由用户决定。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { api } from "./api.ts";
 import { icon } from "./icons.ts";
 import { createEl as el } from "./chat.ts";
@@ -581,6 +582,7 @@ export class MailPanel {
     shell.setAttribute("role", "dialog");
     shell.setAttribute("aria-modal", "true");
     back.append(shell);
+    attachWindowGeom("mail", { back, panel: shell, min: [560, 420] });
     this.root = back;
     this.shell = shell;
     mountOverlay(back);

@@ -9,6 +9,7 @@
  *
  * 写操作与仓库数据只在本机回环可用（桥端同 D235 的闸）；隧道里树没有标记、面板会报错，这是有意的。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { createEl as el } from "./chat.ts";
 import { api } from "./api.ts";
 import { errText, tr } from "./i18n/index.ts";
@@ -203,6 +204,7 @@ export class ReposSheet {
 
     this.sheet.append(head, this.body, foot);
     this.root.append(this.sheet);
+    attachWindowGeom("repos", { back: this.root, panel: this.sheet, min: [520, 380] });
     this.paintBody();
   }
 

@@ -141,6 +141,8 @@ import { tr } from "./i18n/index.ts";
 import { toolArgsView, type ArgBlock, type ArgFact } from "./argview.ts";
 import { ReminderCenter, type Reminder } from "./reminders.ts";
 import { appZoom, escapeTopLayer, LEAVE_MS, markSurface, mountOverlay, overlaysOpen, pushEscLayer, retireOverlay, startLeaving, type SurfaceKind, type SurfaceOpts } from "./modal.ts";
+import { attachWindowGeom, clearGeom, loadGeom, resetAllWindowGeom, saveDockGeom, saveGeom, type Geom, type WindowGeomHandle } from "./dialoggeom.ts";
+import { dragFloat, pinFloat } from "./floatwin.ts";
 import {
   buildMatrix,
   diffPatch,
@@ -629,6 +631,8 @@ export class App {
    *  滑块离手、读数跟手指下的位置对不上（2026-11-29 实测：字号拖到 150% 时轨道左边缘从 379
    *  跳到 66，同一指针位置的读数从 52% 变 58%）。档位等松手落盘时再算一次就够了。 */
   private foldsFrozen = false;
+  /** 内网通那扇的几何句柄：它自带「最大化」，最大化期间要把抓手与 inline 尺寸让开。 */
+  private peerGeom: WindowGeomHandle | null = null;
   /** D321：文件搜索面板（打开时才有，关掉就置 null；`filesearch.*` 帧路由到它）。 */
   private fileSearch: FileSearchHandle | null = null;
   private modelChip: HTMLButtonElement | null = null;
@@ -1751,37 +1755,18 @@ export class App {
     return this.compact() ? 56 : 14;
   }
 
-  private loadTermGeom(): TermGeom {
+  /** 终端几何存在 `pi.dialogGeom.term`（D93 的那套；旧键由 `migrateOldGeom()` 读一次搬过来）。 */
+  private loadTermGeom(): Geom {
     if (this.termGeom) return this.termGeom;
-    const geom: TermGeom = {};
-    try {
-      const raw = JSON.parse(localStorage.getItem("pi.termGeom") ?? "null") as Record<string, unknown> | null;
-      if (raw && typeof raw === "object") {
-        for (const k of ["l", "t", "w", "h"] as const) if (Number.isFinite(Number(raw[k]))) geom[k] = Number(raw[k]);
-      }
-    } catch {
-      // 存坏了就当没存过，下次拖动再写
-    }
-    // Q-026 的老键：只记了高度，没有位置。
-    if (geom.w === undefined && geom.h === undefined) {
-      const h = Number(localStorage.getItem("pi.termH"));
-      if (Number.isFinite(h) && h >= 140) geom.h = h;
-    }
-    this.termGeom = geom;
-    return geom;
+    this.termGeom = loadGeom("term") ?? {};
+    return this.termGeom;
   }
 
   private saveTermGeom(dock: HTMLElement): void {
     const s = this.uiScale();
     const r = dock.getBoundingClientRect();
-    const geom: TermGeom = { l: Math.round(r.left / s), t: Math.round(r.top / s), w: Math.round(r.width / s), h: Math.round(r.height / s) };
-    this.termGeom = geom;
-    try {
-      localStorage.setItem("pi.termGeom", JSON.stringify(geom));
-      localStorage.removeItem("pi.termH");
-    } catch {
-      // 存不下也不影响这次访问
-    }
+    saveDockGeom("term", { l: r.left / s, t: r.top / s, w: r.width / s, h: r.height / s });
+    this.termGeom = loadGeom("term") ?? {};
   }
 
   /**
@@ -1799,37 +1784,13 @@ export class App {
     dock.style.width = `${w}px`;
     dock.style.height = `${h}px`;
     if (geom.l === undefined || geom.t === undefined) return;
-    this.pinTerm(dock, { l: geom.l, t: geom.t, w, h });
-  }
-
-  /** 把 dialog 从「CSS 居中」改成 left/top 钉住：传了 box 就用它，否则量当前位置。 */
-  private pinTerm(dock: HTMLElement, box?: TermBox): TermBox {
-    const s = this.uiScale();
-    const at = box ?? (() => {
-      const r = dock.getBoundingClientRect();
-      return { l: r.left / s, t: r.top / s, w: r.width / s, h: r.height / s };
-    })();
-    const vw = window.innerWidth / s;
-    const vh = window.innerHeight / s - this.termInset();
-    const l = clampNum(at.l, 0, Math.max(0, vw - at.w));
-    const t = clampNum(at.t, 0, Math.max(0, vh - at.h));
-    dock.classList.add("pinned");
-    dock.style.left = `${l}px`;
-    dock.style.top = `${t}px`;
-    dock.style.bottom = "auto";
-    dock.style.transform = "none";
-    return { l, t, w: at.w, h: at.h };
+    pinFloat(dock, { l: geom.l, t: geom.t, w, h }, s, this.termInset());
   }
 
   private resetTermGeom(): void {
     const dock = this.termDock;
     this.termGeom = {};
-    try {
-      localStorage.removeItem("pi.termGeom");
-      localStorage.removeItem("pi.termH");
-    } catch {
-      // 忘不掉也还能用这一次
-    }
+    clearGeom("term");
     if (!dock) return;
     dock.classList.remove("pinned");
     for (const prop of ["left", "top", "bottom", "transform", "width", "height"]) dock.style.removeProperty(prop);
@@ -1837,52 +1798,27 @@ export class App {
     this.fitActiveTerm();
   }
 
-  /**
-   * 三处拖拽共用的骨架：按住 → 捕获指针 → 每帧按指针位移算新几何 → 松手存盘。
-   * `step` 收到的是「布局 px」的位移（已经除过缩放），所以要怎么写都跟得上指针。
-   */
-  private dragTerm(
-    handle: HTMLElement,
-    dock: HTMLElement,
-    kind: "move" | "size" | "grip",
-    step: (box: TermBox, dx: number, dy: number, view: { vw: number; vh: number }) => void,
-  ): void {
-    handle.onpointerdown = (ev) => {
-      if (ev.button !== 0) return;
-      // 标题栏里的标签 / ＋ / 按钮要能点，只有空白处才是「拖走」。
-      if (kind === "move" && (ev.target as HTMLElement).closest("button")) return;
-      ev.preventDefault();
-      const s = this.uiScale();
-      const box = this.pinTerm(dock);
-      const x0 = ev.clientX;
-      const y0 = ev.clientY;
-      // vh 已经是「能用到多低」（扣掉了底部 tab 那条）。
-      const view = { vw: window.innerWidth / s, vh: window.innerHeight / s - this.termInset() };
-      handle.setPointerCapture(ev.pointerId);
-      handle.classList.add("dragging");
-      const cls = kind === "move" ? "win-dragging" : "win-resizing";
-      document.body.classList.add(cls);
-      const move = (e: PointerEvent) => step(box, (e.clientX - x0) / s, (e.clientY - y0) / s, view);
-      const done = () => {
-        handle.removeEventListener("pointermove", move);
-        handle.removeEventListener("pointerup", done);
-        handle.removeEventListener("pointercancel", done);
-        handle.classList.remove("dragging");
-        document.body.classList.remove(cls);
-        this.saveTermGeom(dock);
-      };
-      handle.addEventListener("pointermove", move);
-      handle.addEventListener("pointerup", done);
-      handle.addEventListener("pointercancel", done);
+  /** 三处拖拽共用 `floatwin.ts` 的那套骨架（和表格 / 幻灯片浮窗、每一扇窗口同一份代码）。 */
+  private termDragOpts() {
+    return {
+      scale: () => this.uiScale(),
+      inset: () => this.termInset(),
+      save: (dock: HTMLElement) => this.saveTermGeom(dock),
     };
   }
 
   /** 标题栏空白处：拖走。双击复原（位置 + 大小一起忘掉）。 */
   private wireTermMove(head: HTMLElement, dock: HTMLElement): void {
-    this.dragTerm(head, dock, "move", (box, dx, dy, view) => {
-      dock.style.left = `${clampNum(box.l + dx, 0, Math.max(0, view.vw - box.w))}px`;
-      dock.style.top = `${clampNum(box.t + dy, 0, Math.max(0, view.vh - box.h))}px`;
-    });
+    dragFloat(
+      head,
+      dock,
+      "move",
+      (box, dx, dy, view) => {
+        dock.style.left = `${clampNum(box.l + dx, 0, Math.max(0, view.vw - box.w))}px`;
+        dock.style.top = `${clampNum(box.t + dy, 0, Math.max(0, view.vh - box.h))}px`;
+      },
+      this.termDragOpts(),
+    );
     head.ondblclick = (ev) => {
       if ((ev.target as HTMLElement).closest("button")) return;
       this.resetTermGeom();
@@ -1891,10 +1827,16 @@ export class App {
 
   /** 右下角：宽 + 高一起拖。 */
   private wireTermResize(handle: HTMLElement, dock: HTMLElement): void {
-    this.dragTerm(handle, dock, "size", (box, dx, dy, view) => {
-      dock.style.width = `${clampNum(box.w + dx, 320, Math.max(320, view.vw - box.l))}px`;
-      dock.style.height = `${clampNum(box.h + dy, 140, Math.max(140, view.vh - box.t))}px`;
-    });
+    dragFloat(
+      handle,
+      dock,
+      "size",
+      (box, dx, dy, view) => {
+        dock.style.width = `${clampNum(box.w + dx, 320, Math.max(320, view.vw - box.l))}px`;
+        dock.style.height = `${clampNum(box.h + dy, 140, Math.max(140, view.vh - box.t))}px`;
+      },
+      this.termDragOpts(),
+    );
     handle.ondblclick = () => this.resetTermGeom();
   }
 
@@ -1902,12 +1844,18 @@ export class App {
    * Q-026 的老手势：顶边那条抓取带只改高度（宽不动）。底边钉住 —— 拖动改的是上边缘，双击复原。
    */
   private wireTermGrip(grip: HTMLElement, dock: HTMLElement): void {
-    this.dragTerm(grip, dock, "grip", (box, _dx, dy) => {
-      const bottom = box.t + box.h;
-      const h = clampNum(box.h - dy, 140, bottom);
-      dock.style.top = `${clampNum(bottom - h, 0, bottom)}px`;
-      dock.style.height = `${h}px`;
-    });
+    dragFloat(
+      grip,
+      dock,
+      "grip",
+      (box, _dx, dy) => {
+        const bottom = box.t + box.h;
+        const h = clampNum(box.h - dy, 140, bottom);
+        dock.style.top = `${clampNum(bottom - h, 0, bottom)}px`;
+        dock.style.height = `${h}px`;
+      },
+      this.termDragOpts(),
+    );
     grip.ondblclick = () => this.resetTermGeom();
   }
 
@@ -3945,6 +3893,7 @@ export class App {
       if (!value) return;
       this.socket.send({ type: "stepup", passphrase: value });
     };
+    // dialog-geom: 不装抓手 —— alert 形确认：`.modal` 里那张表单写死 `min(360px, 100%)`，拉大只是把表单留在中间
     this.overlay(modal);
     pushEscLayer({ el: modal, onEsc: () => {
       this.pending = [];
@@ -5254,6 +5203,25 @@ export class App {
       }),
     );
 
+    // #755：几十扇窗各自的宽高都记在这台浏览器里，这里给一颗「都回到默认」——
+    // 一扇一扇双击抓手太累，而且有些窗要开到那一步才点得到。
+    const winReset = el("button", "btn ghost", tr("还原所有窗口尺寸")) as HTMLButtonElement;
+    winReset.type = "button";
+    winReset.title = tr("把所有窗口拉过的大小都忘掉（终端与表格浮窗的位置也算），下次打开各自回到默认");
+    winReset.onclick = () => {
+      resetAllWindowGeom();
+      // 终端几何在 App 上还缓存着一份（`loadTermGeom()`），不清的话重开终端还是老位置。
+      this.termGeom = null;
+      this.flashSettings(tr("窗口尺寸已全部还原：已经开着的窗保持现在的样子，重新打开就是默认大小"));
+    };
+    langPanel.append(
+      this.stRow(
+        tr("窗口尺寸"),
+        tr("每扇窗右下角那只抓手拖过的大小都记在这台浏览器里；双击那只抓手只复原这一扇"),
+        winReset,
+      ),
+    );
+
     // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
     // 外观只剩 Mac 风格三套（D353）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
     // #591：主题与强调色同住一页 —— 用户要换的是「样子」，这两项是一件事的两半。
@@ -5368,6 +5336,11 @@ export class App {
     this.paintChromePane();
 
     back.append(sheet);
+    attachWindowGeom("display", {
+      back,
+      panel: sheet,
+      min: [560, 420],
+    });
     this.overlay(back);
     this.setSheet(back);
     this.paintSwatches();
@@ -6193,6 +6166,8 @@ export class App {
     const paintMax = (on: boolean): void => {
       back.classList.toggle("peer-max-on", on);
       sheet.classList.toggle("max", on);
+      // 最大化靠 CSS 的 `width/height: 100%`，抓手伸出的 inline 尺寸会盖住它 —— 让几何先退场。
+      this.peerGeom?.suspend(on);
       maxBtn.textContent = on ? tr("还原") : tr("最大化");
       maxBtn.title = on ? tr("还原成弹框") : tr("铺满整个窗口（双击标题栏也行）");
     };
@@ -6249,6 +6224,9 @@ export class App {
     };
     window.addEventListener("message", onPeerEsc);
     back.append(sheet);
+    this.peerGeom = attachWindowGeom("peer", { back, panel: sheet, min: [560, 420] });
+    // `paintMax(saved)` 在上面、比接线早：这里补一次，让「上次是最大化」的那一开就退场。
+    this.peerGeom?.suspend(sheet.classList.contains("max"));
     this.overlay(back);
     this.setSheet(back);
   }
@@ -6817,6 +6795,11 @@ export class App {
     if (this.models.length === 0 && Date.now() - this.modelsAsked > MODEL_REASK_MS) this.requestModels();
     paint();
     back.append(sheet);
+    attachWindowGeom("model", {
+      back,
+      panel: sheet,
+      min: [560, 420],
+    });
     this.overlay(back);
     this.setSheet(back);
   }
@@ -7085,6 +7068,11 @@ export class App {
     body.append(host);
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
     back.append(sheet);
+    attachWindowGeom("skillstore", {
+      back,
+      panel: sheet,
+      min: [520, 380],
+    });
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     // The installed list is a local disk scan; the store waits for a query (its API needs 2 chars).
@@ -7148,6 +7136,11 @@ export class App {
     body.append(host);
     sheet.append(head, body);
     back.append(sheet);
+    attachWindowGeom("insight", {
+      back,
+      panel: sheet,
+      min: [560, 420],
+    });
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     const view = new ContextInsightsView(host, {
@@ -7195,6 +7188,11 @@ export class App {
     body.append(host);
     sheet.append(head, body);
     back.append(sheet);
+    attachWindowGeom("context", {
+      back,
+      panel: sheet,
+      min: [560, 420],
+    });
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.contextPanel = new ContextPanel(host);
@@ -7248,6 +7246,8 @@ export class App {
     build(body);
     sheet.append(head, body);
     back.append(sheet);
+    // dialog-geom-ids: sub-policy sub-handoff
+    attachWindowGeom(kind === "policy" ? "sub-policy" : "sub-handoff", { back, panel: sheet });
     this.overlay(back);
     this.mountSubSheet(kind, back);
   }
@@ -8129,6 +8129,10 @@ export class App {
       foot,
     );
     back.append(sheet);
+    attachWindowGeom("new-session", {
+      back,
+      panel: sheet,
+    });
     this.overlay(back);
     this.setSheet(back);
     paintSide();
@@ -8599,6 +8603,10 @@ export class App {
     sheet.append(body, foot);
 
     back.append(sheet);
+    attachWindowGeom("theme-intro", {
+      back,
+      panel: sheet,
+    });
     this.overlay(back);
     this.setSheet(back);
     this.sheetKind = "theme-intro";
@@ -8667,6 +8675,10 @@ export class App {
     sheet.append(body, foot);
 
     back.append(sheet);
+    attachWindowGeom("ws-intro", {
+      back,
+      panel: sheet,
+    });
     this.overlay(back);
     this.setSheet(back);
     this.sheetKind = "intro";
@@ -9089,6 +9101,10 @@ export class App {
     sheet.append(foot);
     back.append(sheet);
     this.sheetKind = "wsdelete";
+    attachWindowGeom("ws-delete", {
+      back,
+      panel: sheet,
+    });
     this.overlay(back);
     this.setSheet(back);
     cancel.focus();
@@ -9263,6 +9279,10 @@ export class App {
 
     sheet.append(head, body, foot);
     back.append(sheet);
+    attachWindowGeom("ws-new", {
+      back,
+      panel: sheet,
+    });
     this.overlay(back);
     this.setSheet(back);
     picker = mountDirPicker(dirHost, {
@@ -9781,6 +9801,11 @@ export class App {
     foot.append(hint, el("span", "st-foot__meta", "pi-web-client"));
     sheet.append(head, main, foot);
     back.append(sheet);
+    attachWindowGeom("artifacts", {
+      back,
+      panel: sheet,
+      min: [560, 420],
+    });
     this.overlay(back);
     this.setSheet(back);
 
@@ -10051,6 +10076,11 @@ export class App {
     body.append(rail, main);
     sheet.append(head, body);
     back.append(sheet);
+    attachWindowGeom("diff", {
+      back,
+      panel: sheet,
+      min: [520, 360],
+    });
     this.overlay(back, "window", { enter: "drawer" });
     if (overSheet) this.mountSubSheet("diff", back);
     else this.setSheet(back);
@@ -10319,6 +10349,7 @@ export class App {
     close.onclick = shut;
     back.append(img, close);
     // 灯箱是「点遮罩不关」的唯一例外（D437）：看图点黑底退出最自然，误触也不丢东西。
+    // dialog-geom: 不装抓手 —— 图片灯箱：图是等比缩放（`max-height: 86vh`），拉窗只是多黑边
     this.overlay(back, "window", { dim: "dark", dismiss: shut });
     close.focus();
   }
@@ -10886,7 +10917,7 @@ export class App {
     // 两扇都是右栏 dock：同时只留一扇，否则叠在一起谁也看不清。
     this.githubPanel?.close();
     const root = el("aside", "viewer");
-    const saved = Number(localStorage.getItem("pi.viewerW"));
+    const saved = loadGeom("preview")?.w ?? 0;
     if (saved >= 320) root.style.setProperty("--viewer-w", `${saved}px`);
     const grip = el("div", "viewer-grip");
     grip.title = tr("拖动调整宽度");
@@ -10928,7 +10959,8 @@ export class App {
         finish();
         if (autoFull) return;
         const w = parseInt(root.style.getPropertyValue("--viewer-w"), 10);
-        if (w) localStorage.setItem("pi.viewerW", String(w));
+        // 预览只记宽度：高度由样式与视口决定，`l` / `t` 也没有（它贴右栏，位置不是记忆的一部分）。
+        if (w) saveGeom("preview", { w });
       };
       grip.addEventListener("pointermove", move);
       grip.addEventListener("pointerup", up, { once: true });
@@ -11055,7 +11087,7 @@ export class App {
     if (persist) localStorage.setItem("pi.viewerFull", on ? "1" : "0");
     if (!on) {
       // 回到默认宽度：去掉拖拽写上的内联值，也清掉记忆（下次从默认值开始）。
-      localStorage.removeItem("pi.viewerW");
+      clearGeom("preview");
       v.root.style.removeProperty("--viewer-w");
     }
     this.paintViewer();
@@ -12897,6 +12929,7 @@ export class App {
         },
         onStart: (lang, provider, model) => void this.startTr(v, lang, provider, model, false),
       },
+    // dialog-geom: 不装抓手 —— 窗由 translateview 自己的 `.choose-back` 接（见那边的 attach）
       (node) => this.overlay(node),
     );
   }
@@ -13074,6 +13107,7 @@ export class App {
       t.busy = false;
       t.msg = "";
       this.paintViewer();
+    // dialog-geom: 不装抓手 —— 窗由 review-sheet 自己接（这里只是把它挂上去）
       openSyncReview(res, info.abs, () => void this.applyTr(v, res.id), (node) => this.overlay(node));
     } catch (err: any) {
       if (this.viewer !== v || v.tr !== t) return;
@@ -13122,6 +13156,7 @@ export class App {
       pushEscLayer({ el: back, onEsc: () => done("cancel") });
       box.append(row);
       back.append(box);
+    // dialog-geom: 不装抓手 —— alert 形的「选一个」小框，几行字
     this.overlay(back, "window", { enter: "alert" });
     });
   }
@@ -13683,6 +13718,11 @@ export class App {
     };
 
     this.mgrRefresh = paint;
+    attachWindowGeom("manager", {
+      back,
+      panel: sheet,
+      min: [520, 380],
+    });
     this.overlay(back);
     this.setSheet(back);
     paint();
@@ -14410,6 +14450,11 @@ export class App {
     );
     consoleNode.append(head, dirty, main, foot);
     back.append(consoleNode);
+    attachWindowGeom("settings", {
+      back,
+      panel: consoleNode,
+      min: [560, 420],
+    });
     this.overlay(back);
     this.setSheet(back);
     this.socket.send({ type: "settings.get", scope: "global" });
@@ -16055,7 +16100,7 @@ export class App {
     } else if (text) this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text, level: bad ? "error" : "info" });
   }
 
-  private shareSheet(title: string): { back: HTMLElement; sheet: HTMLElement; body: HTMLElement } {
+  private shareSheet(id: "share" | "bug", title: string): { back: HTMLElement; sheet: HTMLElement; body: HTMLElement } {
     this.closeSheet();
     this.sheetKind = "share";
     const back = el("div", "sheet-back");
@@ -16068,6 +16113,8 @@ export class App {
     const body = el("div", "settings-body");
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note share-note"), body);
     back.append(sheet);
+    // dialog-geom-ids: share bug
+    attachWindowGeom(id, { back, panel: sheet, min: [520, 380] });
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     return { back, sheet, body };
@@ -16077,7 +16124,7 @@ export class App {
   private openShareSheet(): void {
     const sessionId = this.currentId;
     if (!sessionId) return;
-    const { body } = this.shareSheet(tr("分享会话（/share）"));
+    const { body } = this.shareSheet("share", tr("分享会话（/share）"));
     body.append(
       el("div", "settings-hint", tr("会把这个会话（当前分支）上传出这台电脑，然后给你一个查看链接。会话里可能有你的提示词、工具参数、命令输出、读过的文件内容，以及对话里出现过的凭据——先确认里面没有不该给别人看的东西。")),
       el("div", "settings-hint", tr("去向和终端的 /share 一样：登录了 Radius 就传到 Radius（组织内可见），否则用 GitHub CLI 建一个私有 gist（要先 gh auth login）。设置里的 sessionShareDestination 可以强制其中一种。")),
@@ -16097,7 +16144,7 @@ export class App {
   private openBugSheet(hint: string): void {
     const sessionId = this.currentId;
     if (!sessionId) return;
-    const { body } = this.shareSheet(tr("给 pi 开发者报告 bug（/bug）"));
+    const { body } = this.shareSheet("bug", tr("给 pi 开发者报告 bug（/bug）"));
     body.append(el("div", "settings-hint", tr("报告会发给 pi 的开发者（Earendil），不公开。里面有 pi 版本、操作系统、这个会话用的模型和 provider 配置（不含 API key）、设置（敏感字段已去掉），以及这个会话里 provider 报过的错。")));
     const desc = el("textarea", "settings-json") as HTMLTextAreaElement;
     desc.style.minHeight = "110px";
@@ -16337,6 +16384,7 @@ export class App {
     foot.append(err, el("span", "spacer"), cancel, goBtn);
     form.append(foot);
     modal.append(form);
+    // dialog-geom: 不装抓手 —— alert 形确认：同上（安装变量的表单）
     this.overlay(modal);
     pushEscLayer({ el: modal, onEsc: () => modal.remove() });
   }
@@ -16739,6 +16787,7 @@ export class App {
       this.piUpdRun = "running";
       this.piCli({ op: "pkg.update", target: "self", ...(force ? { force: true } : {}) }, "pi");
     };
+    // dialog-geom: 不装抓手 —— alert 形确认：同上（更新 pi 的确认）
     this.overlay(modal);
     pushEscLayer({ el: modal, onEsc: () => modal.remove() });
   }
@@ -16762,6 +16811,11 @@ export class App {
     body.append(host);
     sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
     back.append(sheet);
+    attachWindowGeom("ext", {
+      back,
+      panel: sheet,
+      min: [560, 420],
+    });
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     // D113: keep the last inventory on screen (it is the fastest thing we have); the bridge pushes a
@@ -17831,6 +17885,10 @@ export class App {
     const body = el("div", "tree-body", tr("读取中…"));
     sheet.append(head, body);
     back.append(sheet);
+    attachWindowGeom("tree", {
+      back,
+      panel: sheet,
+    });
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.socket.send({ type: "tree", sessionId: this.currentId });
@@ -18343,6 +18401,10 @@ export class App {
     body.append(wrap);
     sheet.append(head, body);
     back.append(sheet);
+    attachWindowGeom("bg", {
+      back,
+      panel: sheet,
+    });
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     this.bgSheet = { sessionId: sid, body, wrap, navHead, navList, panes, chip, meta, sel: null, runs: new Map() };
@@ -19095,6 +19157,7 @@ export class App {
     pickerPath = () => handle.picker.path();
     home.bind(handle.picker);
     ref.bind();
+    // dialog-geom: 不装抓手 —— 窗由 fileconsole.ts 自己接（它自己建 `sys-back`）
     this.overlay(handle.root, "window", { enter: "drawer" });
     this.setSheet(handle.root);
     handle.focus();
@@ -19134,6 +19197,7 @@ export class App {
     });
     this.fileSearch = handle;
     this.sheetKind = "filesearch";
+    // dialog-geom: 不装抓手 —— 窗由 filesearch.ts 自己接
     this.overlay(handle.root);
     this.setSheet(handle.root);
     handle.focus();
@@ -19254,6 +19318,10 @@ export class App {
     this.imageSheetPaint = paint;
 
     back.append(sheet);
+    attachWindowGeom("image", {
+      back,
+      panel: sheet,
+    });
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
     paint();
@@ -21269,6 +21337,8 @@ export class App {
       shut();
     };
     close.onclick = shut;
+    // 这扇窗的面板是 `.argdialog-panel`，遮罩就是 `scrim`（不是别处那个 `back`，那是「关掉之后焦点还给谁」）。
+    attachWindowGeom("args", { back: scrim, panel, min: [420, 300] });
     this.overlay(scrim);
     for (const node of [...(scrim.parentElement?.children ?? [])]) {
       if (node === scrim) continue;
@@ -22415,7 +22485,7 @@ export class App {
     head.append(strip, more, el("div", "spacer"), admin, min, close);
     const bodies = el("div", "term-bodies");
     // D93: 右下角那颗抓取带拖宽 + 拖高；标题栏空白处拖走整个 dialog。
-    const resize = el("div", "term-resize");
+    const resize = el("div", "win-grip");
     resize.title = tr("拖动调整终端大小（双击复原）");
     dock.append(grip, head, bodies, resize);
     this.wireWindowRaise(dock);
@@ -22734,6 +22804,9 @@ export class App {
     foot.append(clearAll, done);
     sheet.append(foot);
     back.append(sheet);
+    // 这扇一直是直接挂 body 的（不进 `#app`，也就不跟字号缩放）—— 几何模块实测量出来是 1:1，
+    // 不用交代缩放；哪天把它改挂进 `#app`，这里什么都不用动。
+    attachWindowGeom("keys", { back, panel: sheet });
     this.setSheet(back);
     document.body.append(back);
   }
@@ -25208,21 +25281,8 @@ interface TermTab {
   tab: HTMLButtonElement;
 }
 
-/** D93: 终端 dialog 的几何，一律用「布局 px」（`#app` 的 zoom 之前的值），存在 `pi.termGeom`。 */
-interface TermGeom {
-  l?: number;
-  t?: number;
-  w?: number;
-  h?: number;
-}
-
-/** 一次拖拽开始时的快照（同上，布局 px）。 */
-interface TermBox {
-  l: number;
-  t: number;
-  w: number;
-  h: number;
-}
+/** D93: 终端 dialog 的几何（布局 px），现在和每一扇窗口一起存在 `pi.dialogGeom.term`。 */
+type TermGeom = Geom;
 
 /** 浏览器里能改的上限；桥端 `preview.ts` 的 MAX_EDIT_BYTES 必须与它一致。 */
 const MAX_EDIT_BYTES = 2 * 1024 * 1024;

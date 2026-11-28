@@ -12,6 +12,7 @@
  *   `data-key` 恢复展开项与滚动位置，否则用户刚点开的那条会被下一帧清掉。
  * - 计划里没有 `plan` 的老桥、老记录，退回「一条运行记录」的平铺日志。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 import { markSurface, pushEscLayer, overlayHost } from "./modal.ts";
@@ -182,6 +183,9 @@ export class ReviewSheet {
 
     this.sheet.append(head, this.inst, body, foot);
     this.back.append(this.sheet);
+    // `.st-console` 1:1 挂 body，但自己吃 `zoom: var(--st-zoom)`（D457）—— 几何模块实测那一层，
+    // 不用在这里交代缩放。
+    attachWindowGeom("review", { back: this.back, panel: this.sheet, min: [560, 420] });
     this.refresh();
   }
 

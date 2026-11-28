@@ -8,6 +8,9 @@
  */
 
 @import "../theme-tokens.css";
+/* 抓手（#755）：这一页只加载 peer.css，主界面那套 styles.css 它没有 —— 不 import 的话
+   选文件浮层上挂出来的是个 0 尺寸、无定位的空 div。 */
+@import "../wingrip.css";
 @import "./peer-mac.css";
 
 /* 这页自己的几个变量（导航四页各自的颜色）。底 / 线 / 字 / 信号色都在 theme-tokens.css。 */

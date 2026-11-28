@@ -113,6 +113,9 @@ const MEASURE = (sel) => {
     kind,
     enter: back.dataset.macEnter ?? null,
     inApp: Boolean(back.closest("#app")),
+    // D450：`.st-console`（设置 / 模型 / 产物 / 本机管理…）是**量尺**，故意 1:1 挂在 body 上、
+    // 不跟字号缩放。「必须挂在 #app 里」这条对它们不成立 —— 别把 D450 判成回归。
+    measuring: Boolean(back.querySelector(":scope > .st-console")),
     back: {
       bg: cs(back, "backgroundColor"),
       blur: cs(back, "backdropFilter"),
@@ -275,6 +278,9 @@ try {
     localStorage.setItem("pi.prefs", JSON.stringify(prefs));
   });
   await page.goto(BASE, { waitUntil: "networkidle" });
+  // 这一轮 dist 是刚建出来的，`checkBuild()` 会冒一条「服务已更新，刷新后生效」的 toast 压住顶栏按钮。
+  // 它跟弹层的壳无关（`data-mac-surface="toast"`，本探针也不量它），藏掉免得点击被它截走。
+  await page.addStyleTag({ content: ".update-bar { display: none !important; }" });
   log("theme:", await page.evaluate(() => `${document.documentElement.dataset.theme} / ui=${document.documentElement.dataset.ui}`));
 
   await until(async () => (await page.locator(".session-card").count()) >= 1, 15000, "session card");
@@ -595,7 +601,7 @@ try {
     const radius = ov.radius ?? enter?.radius ?? want.radius;
     if (radius && r.panel.radius !== radius) fails.push(`${r.label}: 圆角 ${r.panel.radius} ≠ ${radius}`);
     if (want.shadow === true && r.panel.shadow === "none") fails.push(`${r.label}: 面板没阴影`);
-    if (!r.inApp) fails.push(`${r.label}: 没挂在 #app 里 —— 字号缩放时它会跟别人两套尺寸`);
+    if (!r.inApp && !r.measuring) fails.push(`${r.label}: 没挂在 #app 里 —— 字号缩放时它会跟别人两套尺寸`);
   }
   // ---- 断言：点遮罩（D437）。
   if (!backdropChecks.length) fails.push("点遮罩一条都没量到 —— 探针自己坏了");

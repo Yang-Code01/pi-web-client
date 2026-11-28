@@ -1,0 +1,41 @@
+/*
+ * 抓手（#755 / D463）：终端 / 表格 / 幻灯片与每一扇 `window` 浮层共用的那一只右下角。
+ *
+ * 为什么单独一份、还要被两个页面各 import 一次：内网通页面（`peer.html`）只加载 `peer.css`，
+ * 主界面那套 `styles.css` 它根本没有 —— 抓手写在那里的话，选文件浮层上挂出来的就是一个
+ * 0 尺寸、无定位的空 div（拖不到、也看不见）。放进这份小表，两边各 `@import` 一行。
+ *
+ * 尺寸只有一个来源：`--win-grip-size`。底栏给抓手让位的距离按它算（`calc(... + 8px)`），
+ * JS 侧摆位置时量 `grip.offsetWidth`，所以把这里改大改小，两边一起跟着变。
+ *
+ * 颜色带兜底（`var(--faint, …)`）：这份表设计上就是给两个页面**各自独立**加载的，内网通那页的
+ * 导入链（`peer.css → theme-tokens + peer-mac`）哪天少一个 token，抓手也不该整只消失。
+ */
+:root {
+  --win-grip-size: 18px;
+  /* 底栏右下角要给抓手让出的距离：抓手正好压住「确定 / 保存」那颗按钮的角，多留 8px 呼吸。 */
+  --win-grip-foot-pad: calc(var(--win-grip-size) + 8px);
+}
+
+.win-grip {
+  position: absolute; z-index: 5;
+  width: var(--win-grip-size); height: var(--win-grip-size);
+  cursor: nwse-resize; touch-action: none;
+}
+.win-grip::after {
+  content: ""; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;
+  border-right: 2px solid var(--faint, #8a8a8e); border-bottom: 2px solid var(--faint, #8a8a8e); border-radius: 0 0 4px 0;
+}
+.win-grip:hover::after, .win-grip.dragging::after, .win-grip:focus-visible::after { border-color: var(--accent, #007aff); }
+.win-grip[hidden] { display: none; }
+/* 键盘用户：Tab 到那 18px 的角上得看见焦点在哪。描边往里收，别把爪子推到面板外面。 */
+.win-grip:focus-visible { outline: 2px solid var(--accent-dim, rgba(0, 122, 255, 0.45)); outline-offset: -2px; border-radius: 4px; }
+/* 终端那扇的抓手贴在它自己的角上：窗口那一支由 JS 按面板 rect 摆位，dock 不需要也不该走那套。 */
+.term-dock > .win-grip { right: 0; bottom: 0; }
+
+/* 底栏给抓手让位（`--win-grip-foot-pad` = 边长 + 8px）：那 18px 的角正好压住右下角那颗按钮。
+   **这一页只有 `.pfoot`**（选文件浮层的底栏，`peer.css` 里定义）。主界面那一长串 footer 类
+   在 `styles.css` 里、且**只在那里有一份** —— 它们用 `padding` 简写写在后面，`@import` 进来的规则
+   排在最前会被盖掉，所以不能搬到这里；两边逐字各抄一份则会漂移（评审打出来的）。
+   只用**直接子元素**（`>`）：嵌进来的子面板（自己没有抓手）不该被挤。 */
+.win-grip-panel > .pfoot { padding-right: var(--win-grip-foot-pad); }

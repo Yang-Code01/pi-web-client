@@ -152,7 +152,8 @@ try {
         chatLeft: chat ? Math.round(chat.getBoundingClientRect().left) : null,
         grip: grip ? { x: Math.round(grip.getBoundingClientRect().x + grip.getBoundingClientRect().width / 2), y: 300 } : null,
         vw: window.innerWidth,
-        saved: localStorage.getItem("pi.viewerW"),
+        // #755：宽度记忆并进了 `pi.dialogGeom.preview`（只有宽度，没有位置）。
+        saved: JSON.parse(localStorage.getItem("pi.dialogGeom") ?? "null")?.preview?.w ?? null,
       };
     });
 
@@ -240,7 +241,7 @@ try {
   log("   回到", g.w, "px（期望", expected, "）/ localStorage =", String(g.saved));
   check(g.full === false, "退出了全屏");
   check(Math.abs(g.w - expected) <= 2, `回到默认宽度 min(760px, 55vw) = ${expected}px（拿到 ${g.w}）`);
-  check(g.saved === null, `拖拽记忆被清掉（localStorage pi.viewerW = ${String(g.saved)}）`);
+  check(g.saved === null, `拖拽记忆被清掉（pi.dialogGeom.preview = ${String(g.saved)}）`);
   await page.screenshot({ path: path.join(OUT, "3-back-to-default.png") });
 
   // 收尾：默认宽度下头部按钮当然也得都在

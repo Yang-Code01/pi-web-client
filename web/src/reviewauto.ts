@@ -10,6 +10,7 @@
  */
 import { tr } from "./i18n/index.ts";
 import { markSurface, mountOverlay, pushEscLayer } from "./modal.ts";
+import { attachWindowGeom } from "./dialoggeom.ts";
 import type { ReviewFinding, ReviewRun, Severity } from "./review.ts";
 
 /**
@@ -514,6 +515,7 @@ export class AutoSettingsSheet {
 
     sheet.append(head, this.body, foot);
     this.back.append(sheet);
+    attachWindowGeom("auto-review", { back: this.back, panel: sheet, min: [560, 420] });
     this.render();
   }
 
@@ -651,6 +653,7 @@ export class AutoRoundSheet {
     this.sheet.setAttribute("aria-modal", "true");
     this.sheet.setAttribute("aria-label", tr("自动评审 · 这一轮"));
     this.back.append(this.sheet);
+    attachWindowGeom("auto-round", { back: this.back, panel: this.sheet, min: [520, 380] });
     this.render();
   }
 
