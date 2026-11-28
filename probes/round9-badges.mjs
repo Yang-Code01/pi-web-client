@@ -1,5 +1,5 @@
 /**
- * Probe: 会话徽标这一格该说什么 —— Q-015（在等你的不许说成运行中）＋ D450（评审在跑说评审中）。
+ * Probe: 会话徽标这一格该说什么 —— Q-015（在等你的不许说成运行中）＋ D453（评审在跑说评审中）。
  *
  * A fake bridge serves `web/dist` and speaks just enough of the ws protocol to show sessions;
  * nothing here needs pi to be running.
@@ -7,7 +7,7 @@
  * 十个会话，左栏收起时看 ★ 行胶囊：待回答 / 待确认 / 终端占用 / 运行中 / 完成 / 时间，
  * 外加三种「评审在跑」的组合（完成+评审 → 评审中、运行中+评审 → 运行中、后台+评审 → 后台）
  * 与并跑两条的「评审中 2」；两个在等你的会话要各自带 warn 色（#97 之后条头那颗字已经没有了）。
- * D450 之后「评审中」可点：点它 / 按 Enter 都要切到那个会话并停在「代码评审」页签；
+ * D453 之后「评审中」可点：点它 / 按 Enter 都要切到那个会话并停在「代码评审」页签；
  * 左栏卡片上那枚走的是同一个口（`openBadge()`），左栏展开后再点一次。
  *
  * Run: node probes/round9-badges.mjs   (needs `npm run build:web` first)
@@ -56,7 +56,7 @@ const SESSIONS = [
   { ...base, id: "s-run", name: "真在跑", running: true, done: false, approvals: 0, asks: 0, locked: false },
   { ...base, id: "s-done", name: "已完成", running: false, done: true, approvals: 0, asks: 0, locked: false },
   { ...base, id: "s-idle", name: "空闲", running: false, done: false, approvals: 0, asks: 0, locked: false },
-  // D450：评审在跑的三组组合 —— 它只压过「完成」与空位，压不过会话自己 / 后台子代理。
+  // D453：评审在跑的三组组合 —— 它只压过「完成」与空位，压不过会话自己 / 后台子代理。
   { ...base, id: "s-review", name: "评审在跑", running: false, done: true, approvals: 0, asks: 0, locked: false, review: 1 },
   { ...base, id: "s-review2", name: "两条评审", running: false, done: true, approvals: 0, asks: 0, locked: false, review: 2 },
   { ...base, id: "s-run-review", name: "跑中带评审", running: true, done: false, approvals: 0, asks: 0, locked: false, review: 1 },
@@ -121,7 +121,7 @@ wss.on("connection", (ws) => {
     }
     log("client →", msg.type);
     if (msg.type === "subscribe") {
-      // D450：按点开的那个会话回帧 —— 全都回 s-ask 的话，切到别的会话会「又到了一份问卷」，
+      // D453：按点开的那个会话回帧 —— 全都回 s-ask 的话，切到别的会话会「又到了一份问卷」，
       // 右栏被 ask-tab 的逻辑拽回「需要你」，就量不到「评审中」把右栏切到代码评审页签。
       const s = SESSIONS.find((x) => x.id === msg.sessionId) ?? SESSION;
       ws.send(
@@ -194,7 +194,7 @@ try {
   assert(byName["真在跑"].small === "运行中", `running chip (got ${JSON.stringify(byName["真在跑"])})`);
   assert(byName["已完成"].small === "完成", `done chip (got ${JSON.stringify(byName["已完成"])})`);
   assert(!/运行中|待回答|待确认|完成|终端占用|评审中/.test(byName["空闲"].small), `idle chip shows a time, not a state (got ${byName["空闲"].small})`);
-  // D450：评审自己跑的时候不能还说「完成」。
+  // D453：评审自己跑的时候不能还说「完成」。
   assert(byName["评审在跑"].small === "评审中", `review chip (got ${JSON.stringify(byName["评审在跑"])})`);
   assert(byName["评审在跑"].cls.includes("reviewing"), `review chip has its own colour (got ${byName["评审在跑"].cls})`);
   assert(byName["两条评审"].small === "评审中 2", `two runs say how many (got ${JSON.stringify(byName["两条评审"])})`);
@@ -203,7 +203,7 @@ try {
   log("chips:", rows.map((r) => `${r.name}=${r.small}`).join(" | "));
   await page.screenshot({ path: path.join(OUT, "1-strip.png") });
 
-  // D450：「评审中」可点 —— 切到那个会话 + 右栏切到「代码评审」页签，且只切一次。
+  // D453：「评审中」可点 —— 切到那个会话 + 右栏切到「代码评审」页签，且只切一次。
   const reviewSub = strip.locator(".pin-chip", { hasText: "评审在跑" }).locator("small");
   assert(await reviewSub.getAttribute("role") === "button", "review badge is a click target");
   assert(await reviewSub.getAttribute("tabindex") === "0", "review badge is keyboard reachable");

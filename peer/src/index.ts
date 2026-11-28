@@ -110,6 +110,16 @@ const files = new Files({
     if (!group || group.left) return null;
     return group.members.map((m) => m.nodeId).filter((m) => m !== nodeId);
   },
+  groupAnnounceOnly: (id) => {
+    const group = groups.get(id);
+    if (!group || group.left) return null;
+    return {
+      announceOnly: group.announceOnly === true,
+      publisher: group.publisher,
+      owner: group.owner,
+      members: group.members.map((m) => m.nodeId),
+    };
+  },
 });
 
 const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity, groups });

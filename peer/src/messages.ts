@@ -5,7 +5,8 @@ import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import { foldEntries, type Entry, type History, type NotePayload, type PeerIdentity, type SysInfo, type ViewEntry } from "./history.ts";
-import { GROUP_PREFIX, MAX_GROUP_MEMBERS, isGroupId, normalizeGroup, snapshot, type Group, type Groups } from "./groups.ts";
+import { GROUP_PREFIX, MAX_GROUP_MEMBERS, canWriteGroup, isGroupId, normalizeGroup, optOutIds, setOptOut, snapshot, type Group, type Groups } from "./groups.ts";
+import { normalizeAnnounce, type AnnouncePayload } from "./announce.ts";
 import { normalizeNote } from "./note.ts";
 import type { Outbox, Queued, Verdict } from "./outbox.ts";
 import type { Relations } from "./peers.ts";
@@ -14,6 +15,9 @@ import { covered, type Reads } from "./reads.ts";
 
 /** 单条文本上限（决定 25）：再长就让用户改发文件，协议这边硬拒 32 KB。 */
 export const MAX_TEXT_BYTES = 32 * 1024;
+/** 补发公告的默认条数与单次上限：默认值与钳制只在这里定义，http 与调用方共用。 */
+export const REPLAY_DEFAULT = 3;
+export const REPLAY_MAX = 10;
 
 /**
  * 撤回窗口 2 分钟（D299 / P3，与 QQ 单聊一致）。
@@ -97,6 +101,8 @@ export class Messages {
   /** 对方正在输入：只放内存，进程重启就清空（一条心跳本来也只活 3 秒）。 */
   private readonly typingUntil = new Map<string, number>();
   private readonly typingSentAt = new Map<string, number>();
+  /** 补发过的公告 id：outbox 投递成功后就删了，光靠它挡不住第二次补发（评审 #11）。 */
+  private readonly replayed = new Map<string, Set<string>>();
 
   constructor(
     private readonly ctx: {
@@ -197,7 +203,7 @@ export class Messages {
     text: string,
     via?: "pi",
     replyTo?: Entry["replyTo"],
-    opts: { priority?: unknown; topic?: unknown } = {},
+    opts: { priority?: unknown; topic?: unknown; announce?: unknown } = {},
   ): { ok: true; id: string; at: number; seq: number } {
     const trimmed = text.replace(/\s+$/, "");
     if (!trimmed.trim()) throw new Error("空消息");
@@ -205,6 +211,13 @@ export class Messages {
     if (bytes > MAX_TEXT_BYTES) {
       throw new Error(`太长（${Math.round(bytes / 1024)} KB，上限 32 KB）：改用文件发`);
     }
+    // 先判只读（成员得到的应该是「只有发布者能发」，而不是 announce 校验的报错），
+    // 公告也只允许出现在更新组里 —— 普通会话不该冒出更新卡片（评审 #13）。
+    this.assertWritable(peerId);
+    const announce = opts.announce ? normalizeAnnounce(opts.announce) : null;
+    // 调用方明确要发公告却传了非法形状：不能静默退化成普通文本，否则发布者以为推了（评审 #9）。
+    if (opts.announce && !announce) throw new Error("公告格式不对，没发出去");
+    if (announce && this.ctx.groups.get(peerId)?.announceOnly !== true) throw new Error("只有更新组能发公告");
     const targets = this.targets(peerId);
     const at = Date.now();
     const id = uuidv7(at);
@@ -219,6 +232,7 @@ export class Messages {
       ...(replyTo ? { replyTo } : {}),
       ...(priority ? { priority } : {}),
       ...(topic ? { topic } : {}),
+      ...(announce ? { announce } : {}),
     });
     this.ctx.history.append(peerId, entry);
     this.enqueue(peerId, id, "text", entry, at, targets);
@@ -254,6 +268,8 @@ export class Messages {
    * 对端离线时只在本机生效 —— 不做「等他上线再告诉他撤回」：那条消息他可能早就看过了。
    */
   recall(peerId: string, id: string): { ok: true; at: number } {
+    // 先判能不能写，再判这条消息在不在：只读群里成员连「找不到」都不该问得出来。
+    this.assertWritable(peerId);
     const entry = this.ctx.history.find(peerId, id);
     if (!entry) throw new Error("找不到这条消息");
     if (entry.from.nodeId !== this.ctx.nodeId) throw new Error("只能撤回自己发的");
@@ -283,6 +299,7 @@ export class Messages {
   react(peerId: string, id: string, emoji: string, on: boolean): { ok: true; at: number } {
     const e = normEmoji(emoji);
     if (!e) throw new Error("表情不对");
+    this.assertWritable(peerId);
     const entry = this.ctx.history.find(peerId, id);
     if (!entry) throw new Error("找不到这条消息");
     if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") throw new Error("这条不能回应");
@@ -302,6 +319,7 @@ export class Messages {
    * 大家会话顶上都多一条。同一条消息最后一次 pin / unpin 说了算。
    */
   pin(peerId: string, id: string, on: boolean): { ok: true; at: number } {
+    this.assertWritable(peerId);
     const entry = this.ctx.history.find(peerId, id);
     if (!entry) throw new Error("找不到这条消息");
     if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") throw new Error("这条不能固定");
@@ -429,14 +447,40 @@ export class Messages {
     return m.nickname || m.nodeId.slice(0, 8);
   }
 
-  createGroup(name: string, memberIds: string[]): Group {
+  createGroup(name: string, memberIds: string[], opts: { id?: string; announceOnly?: boolean; publisher?: string } = {}): Group {
     const others = [...new Set(memberIds)].filter((id) => id && id !== this.ctx.nodeId && !isGroupId(id));
-    if (!others.length) throw new Error("至少拉一个人");
+    // 更新组（D451）：发布者可能第一个上线，还没人可拉 —— announceOnly 允许只有自己。
+    if (!others.length && !opts.announceOnly) throw new Error("至少拉一个人");
     if (others.length + 1 > MAX_GROUP_MEMBERS) throw new Error(`一个群最多 ${MAX_GROUP_MEMBERS} 人`);
     const at = Date.now();
     const members = [this.me(), ...others.map((id) => this.identity(id))];
+    // publisher 必须真的在名册里：否则这个只读群建出来没人能发（评审 #10/#19）。
+    if (opts.publisher && !members.some((m) => m.nodeId === opts.publisher)) throw new Error("发布者必须是群成员");
+    // publisher 只对只读群有意义：普通群带上它会把一个早已被遗忘的 nodeId 写进每个成员的
+    // groups.json，日后有人把组改成只读，写权限就落到它头上而不是 owner（评审 #8）。
+    if (opts.publisher && !opts.announceOnly) throw new Error("publisher 只对只读群（announceOnly）有意义");
+    // 形状不对不能静默丢掉：只读群的 publisher 会退到 owner，建群的脚本却以为远端是发布者（评审 #7）。
+    if (opts.publisher && !/^[\w-]{1,64}$/.test(opts.publisher)) throw new Error("发布者 nodeId 不合法");
     const title = name.trim().slice(0, 64) || members.map((m) => this.nameOf(m)).slice(0, 3).join("、");
-    const group: Group = { id: `${GROUP_PREFIX}${uuidv7(at)}`, name: title, members, owner: this.ctx.nodeId, createdAt: at, v: 1, at };
+    const wanted = typeof opts.id === "string" ? opts.id.trim() : "";
+    if (wanted && (!isGroupId(wanted) || wanted.length > 80 || !/^[a-zA-Z0-9_-]+$/.test(wanted))) {
+      throw new Error("群 id 只能是字母、数字、下划线与短横线");
+    }
+    const id = wanted || `${GROUP_PREFIX}${uuidv7(at)}`;
+    const existing = this.ctx.groups.get(id);
+    if (existing) throw new Error("这个群已经存在了");
+    const group: Group = {
+      id,
+      name: title,
+      members,
+      owner: this.ctx.nodeId,
+      createdAt: at,
+      v: 1,
+      at,
+      ...(opts.announceOnly ? { announceOnly: true } : {}),
+      // publisher 会进快照、对端 normalizeGroup 会截到 64：本机也先按同一形状收口，别让两边值不同（评审 #15）。
+    ...(opts.publisher ? { publisher: opts.publisher } : {}),
+    };
     this.ctx.groups.put(group);
     this.appendSys(group.id, this.me(), { op: "create", actor: this.nameOf(this.me()), name: title, names: members.slice(1).map((m) => this.nameOf(m)) }, at);
     this.broadcastGroup(group);
@@ -480,6 +524,8 @@ export class Messages {
   /** 退群：名单里去掉自己、版本 +1，通知剩下的人；本机会话留着（能看历史），不能再发。 */
   leaveGroup(groupId: string): Group {
     const group = this.mine(groupId);
+    // 先写 opt-out：写不进去（磁盘满 / 权限）就抛错，本机还留在组里，不会出现「退了但没记住」（评审 #11）。
+    if (group.announceOnly) setOptOut(groupId, true);
     const members = group.members.filter((m) => m.nodeId !== this.ctx.nodeId);
     const next: Group = { ...group, members, v: group.v + 1, at: Date.now() };
     this.broadcastGroup(next);
@@ -489,9 +535,61 @@ export class Messages {
     return left;
   }
 
+  /** 重新加入更新组（D451）：清掉 opt-out，等发布者下一轮邀请把新快照送过来。 */
+  rejoinGroup(groupId: string): { ok: true; pending?: boolean } {
+    if (!isGroupId(groupId)) throw new Error("不是合法的群 id");
+    const group = this.ctx.groups.get(groupId);
+    // 只允许本机确实认识、而且确实是只读更新组的群；否则任意 id 都会写进 opt-out 文件（评审 #4）。
+    if (!group) throw new Error("这个更新组还没同步到本机");
+    if (group.announceOnly !== true) throw new Error("这不是只读的更新组");
+    setOptOut(groupId, false);
+    // 只有在名册里才清 left：被发布者移出的人不能靠这个 API 假装自己还在组里（评审 #22）。
+    if (group.members.some((m) => m.nodeId === this.ctx.nodeId)) {
+      this.ctx.groups.put({ ...group, left: false });
+      return { ok: true };
+    }
+    return { ok: true, pending: true };
+  }
+
+  /**
+   * 换机器（D451）：新发布者接管这个更新组。
+   *
+   * 新机器要先被拉进组（拿到旧成员那份名册），再走这里 v+1 广播；旧成员按版本接受。
+   * `Groups.merge` 的 takeover 只给「publisher 还空着、owner 认领」这一种恢复路径用（见那里），
+   * 普通成员换发布者不靠它 —— 只靠 v 更大。
+   */
+  claimPublisher(groupId: string): Group {
+    const group = this.mine(groupId);
+    if (!group.announceOnly) throw new Error("这不是只读的更新组");
+    if (group.publisher === this.ctx.nodeId) return group;
+    // 发布者必须在名册里：不在就补进来。满员时先保住**旧发布者**，再腾最后一席，
+    // 否则被挤掉的旧发布者收不到新快照、也不会知道自己已经不在名册里（评审 #3）。
+    let members = group.members;
+    if (!members.some((m) => m.nodeId === this.ctx.nodeId)) {
+      // publisher 为空时写权限回退 owner：满员先保 owner，否则他会被自己挤出去（评审 #14）。
+      const keepId = group.publisher || group.owner;
+      const kept = members.filter((m) => m.nodeId === keepId);
+      const others = members.filter((m) => m.nodeId !== keepId).slice(0, MAX_GROUP_MEMBERS - kept.length - 1);
+      members = [...kept, ...others, this.me()].slice(0, MAX_GROUP_MEMBERS);
+    }
+    // publisher 空着时写权限回退 owner：owner 若不在名册里，回退会让一个非成员继续能写（评审 #23）。
+    // owner 是空串 / 形状不对（收到过坏快照）时不能往名册里补一个 nodeId:"" 的幽灵：
+    // 那种成员投不出去、也过不了 admitGroup 的成员检查（评审 #9）。
+    if (!group.publisher && group.owner && !members.some((m) => m.nodeId === group.owner)) {
+      // 满员时截断不能把刚补进来的自己挤掉（评审 #8）：owner 放最前、自己放最后。
+      const rest = members.filter((m) => m.nodeId !== this.ctx.nodeId).slice(0, MAX_GROUP_MEMBERS - 2);
+      members = [this.identity(group.owner), ...rest, this.me()].slice(0, MAX_GROUP_MEMBERS);
+    }
+    const next: Group = { ...group, members, publisher: this.ctx.nodeId, v: group.v + 1, at: Date.now() };
+    this.ctx.groups.put(next);
+    this.appendSys(groupId, this.me(), { op: "publisher", actor: this.nameOf(this.me()), name: this.nameOf(this.me()) });
+    this.broadcastGroup(next);
+    return next;
+  }
+
   /** 收到新的名单：新于本机才收，差异写成灰条。 */
   private mergeGroup(raw: unknown, actor: PeerIdentity): void {
-    const changed = this.ctx.groups.merge(raw, this.ctx.nodeId);
+    const changed = this.ctx.groups.merge(raw, this.ctx.nodeId, actor.nodeId);
     if (!changed) return;
     const { before, after } = changed;
     const who = this.nameOf(actor);
@@ -502,6 +600,10 @@ export class Messages {
       return;
     }
     if (before.name !== after.name) this.appendSys(after.id, actor, { op: "rename", actor: who, name: after.name });
+    // 发布者换了机器（D451）：接受，但要让组里的人看见，不能悄悄换掉。
+    if (before.publisher !== after.publisher && after.publisher) {
+      this.appendSys(after.id, actor, { op: "publisher", actor: who, name: this.nameOf(this.identity(after.publisher)) });
+    }
     const had = new Set(before.members.map((m) => m.nodeId));
     const has = new Set(after.members.map((m) => m.nodeId));
     const added = after.members.filter((m) => !had.has(m.nodeId)).map((m) => this.nameOf(m));
@@ -521,9 +623,77 @@ export class Messages {
     if (s && s.id === groupId && s.members.some((m) => m.nodeId === claimed.nodeId)) this.mergeGroup(s, claimed);
     const group = this.ctx.groups.get(groupId);
     if (!group) return { status: 404, body: { error: "不认识这个群", retryable: false } };
+    // D451：退更新组 = 本机 opt-out。发布者那边会跳过（announce 里带着 optOut），这里再拦一道：
+    // 已经退掉的人不该因为别人还按旧名册发消息而继续收到。
+    if (optOutIds().has(groupId)) return { status: 200, body: { ok: true, ignored: true } };
     if (group.left) return { status: 200, body: { ok: true, ignored: true } };
     if (!group.members.some((m) => m.nodeId === claimed.nodeId)) return { status: 403, body: { error: "不是群成员", retryable: false } };
     return null;
+  }
+
+  /**
+   * 只读群的写门（D451）：除了发布者，文字 / 回应 / 固定 / 撤回都不收。
+   * 已读回执（`read`）与名单快照不受影响 —— 成员还是要能标记已读、接收邀请。
+   */
+  private writeGate(thread: string, claimed: PeerIdentity): InboxResult | null {
+    if (!isGroupId(thread)) return null;
+    const group = this.ctx.groups.get(thread);
+    if (!group?.announceOnly) return null;
+    if (canWriteGroup(group, claimed.nodeId)) return null;
+    return { status: 403, body: { error: "只读群：只有发布者能发消息", retryable: false } };
+  }
+
+  /** 本机自己的写入口也要拦：只读群里成员点到的每个动作都在本地先被拒，不靠对端回 403。 */
+  private assertWritable(threadId: string): void {
+    if (!isGroupId(threadId)) return;
+    const group = this.ctx.groups.get(threadId);
+    if (!group?.announceOnly) return;
+    // 不在名册里就没有写权限，哪怕 owner 回退也不行（评审 #23）。
+    if (!group.members.some((m) => m.nodeId === this.ctx.nodeId)) throw new Error("你不在这个群的名册里");
+    if (canWriteGroup(group, this.ctx.nodeId)) return;
+    throw new Error("这是只读的更新组：只有发布者能发消息");
+  }
+
+  /**
+   * 给刚进组的人补最近几条公告（D451）：原 id / 原时间单播。
+   * 对方 `recentIds` 会把重复的丢掉，所以已经收到过的人不会多出气泡。
+   */
+  replayAnnouncements(groupId: string, peerNodeId: string, limit = REPLAY_DEFAULT): { ok: true; sent: number } {
+    const group = this.ctx.groups.get(groupId);
+    if (!group?.announceOnly) throw new Error("不是更新组");
+    // 补发是发布者动作，目标必须是组员：回环 API 也不能拿它往任意节点塞历史（评审 #11）。
+    this.assertWritable(groupId);
+    if (!group.members.some((m) => m.nodeId === peerNodeId)) throw new Error("这个人不是更新组成员");
+    const want = Math.max(0, Math.floor(limit));
+    if (!want) return { ok: true, sent: 0 };
+    const peer = this.ctx.discovery.byId(peerNodeId);
+    if (!peer) throw new Error("这个人不在线");
+    // 500 条只够热闹的群；公告稀疏时最近 3 条可能落在更早的位置（评审 #8）。
+    // 注意 `history.read()` 读的是会话文件最后 512 KB：5000 只在这个尾巴里数，
+    // 比 512 KB 更早公告补不到（没有服务器、没有完整历史），这里也不会报错（评审 #9）。
+    const entries = this.ctx.history
+      .read(groupId, 5000)
+      .filter((entry) => entry.kind === "text" && entry.announce)
+      .slice(-want);
+    const replayKey = `${groupId}@${peerNodeId}`;
+    const sentBefore = this.replayed.get(replayKey) ?? new Set<string>();
+    let sent = 0;
+    for (const entry of entries) {
+      if (sentBefore.has(entry.id)) continue;
+      // outbox 按 id 去重：已经在重试队列里的那条不会再排一次，sent 也只数真正排进去的（评审 #5）。
+      if (this.ctx.outbox?.has(`${entry.id}@${peerNodeId}`)) continue;
+      // 入队时间必须用「现在」：outbox 按 item.at 判 24 小时过期，拿原公告时间会被立刻丢掉（评审 #3）。
+      // 气泡时间仍取 payload 里的 entry.at，新成员看到的是原公告的日期。
+      this.enqueue(groupId, entry.id, "text", entry, Date.now(), [{ peerId: peerNodeId, addr: peer.addr, port: peer.port }]);
+      sentBefore.add(entry.id);
+      sent++;
+    }
+    this.replayed.set(replayKey, sentBefore);
+    // 只留还在名册里的人：成员来来回回会让这个 Map 只增不减（评审 #8）。
+    // 删的是同一 groupId 下已不在名册里的 key，别的集群一条不动。
+    const live = new Set(group.members.map((m) => `${groupId}@${m.nodeId}`));
+    for (const key of this.replayed.keys()) if (key.startsWith(`${groupId}@`) && !live.has(key)) this.replayed.delete(key);
+    return { ok: true, sent };
   }
 
   /** 收到名单变化（建群 / 改名 / 拉人 / 退群）。退群的人不在新名单里，所以看「旧名单里有没有他」。 */
@@ -599,6 +769,8 @@ export class Messages {
     if (check) return check;
     const where = this.controlThread(control, claimed, snap);
     if (!("thread" in where)) return where;
+    const blocked = this.writeGate(where.thread, claimed);
+    if (blocked) return blocked;
     if (this.ctx.history.recentIds(where.thread, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
     const at = Number(control?.at) || Date.now();
     const to = isGroupId(where.thread) ? where.thread : this.ctx.nodeId;
@@ -623,6 +795,8 @@ export class Messages {
       if (gate) return gate;
     }
     const thread = groupId || claimed.nodeId;
+    const blocked = this.writeGate(thread, claimed);
+    if (blocked) return blocked;
 
     const seen = this.ctx.history.recentIds(thread, 2000);
     if (seen.has(id)) return { status: 200, body: { ok: true, dup: true } };
@@ -630,6 +804,9 @@ export class Messages {
     const at = Number(message?.at) || Date.now();
     const seq = Number(message?.seq);
     const replyTo = message?.replyTo && typeof message.replyTo === "object" ? message.replyTo : undefined;
+    const announce: AnnouncePayload | null = message?.announce ? normalizeAnnounce(message.announce) : null;
+    // 对端说这是公告但形状不对：降级成普通文本是兼容老/坏客户端，但别一声不吭（评审 #12）。
+    if (message?.announce && !announce) this.ctx.log("收到的公告格式不对，已按普通文本落库");
     // `via` 跟着消息走：对端也要能看见「这条是 agent 代发的」，不能只在自己这边挂徽章。
     this.ctx.history.append(
       thread,
@@ -640,6 +817,7 @@ export class Messages {
         ...(replyTo ? { replyTo } : {}),
         ...(normPriority(message?.priority) ? { priority: normPriority(message?.priority) } : {}),
         ...(normTopic(message?.topic) ? { topic: normTopic(message?.topic) } : {}),
+        ...(announce ? { announce } : {}),
       }),
     );
     this.ctx.log(`收到 ${claimed.nickname || claimed.nodeId.slice(0, 8)} 的消息（${Buffer.byteLength(text, "utf8")} 字节）`);
@@ -691,6 +869,8 @@ export class Messages {
     if (check) return check;
     const where = this.controlThread(control, claimed, snap);
     if (!("thread" in where)) return where;
+    const blocked = this.writeGate(where.thread, claimed);
+    if (blocked) return blocked;
     if (this.isRecalled(where.thread, target)) return { status: 200, body: { ok: true, dup: true } };
     // 群里只认发送者本人撤回自己的消息。
     const original = this.ctx.history.find(where.thread, target);
@@ -713,6 +893,8 @@ export class Messages {
     if (check) return check;
     const where = this.controlThread(control, claimed, snap);
     if (!("thread" in where)) return where;
+    const blocked = this.writeGate(where.thread, claimed);
+    if (blocked) return blocked;
     if (this.ctx.history.recentIds(where.thread, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
     const at = Number(control?.at) || Date.now();
     const to = isGroupId(where.thread) ? where.thread : this.ctx.nodeId;

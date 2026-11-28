@@ -25,7 +25,7 @@ export interface PillBadge {
   title: string;
   /** 卡在用户身上（待回答 / 待确认）—— 条头的「N 个待处理」数它。 */
   pending: boolean;
-  /** 这枚徽标能点开（D170 后台 / D450 评审）：外壳给了 `onBadge` 时，小字会多一个热区。 */
+  /** 这枚徽标能点开（D170 后台 / D453 评审）：外壳给了 `onBadge` 时，小字会多一个热区。 */
   detail?: boolean;
 }
 

@@ -305,7 +305,7 @@ export interface SessionState {
    */
   bg?: BgView | null;
   /**
-   * D450: 这个会话此刻在跑几条**评审记录**（0–2，跨仓库共用额度）。评审是 detached worker（D446），
+   * D453: 这个会话此刻在跑几条**评审记录**（0–2，跨仓库共用额度）。评审是 detached worker（D446），
    * 会话自己早就 settle 了，所以徽标不能只靠 `running` / `done` —— 有这一格才能说「评审中」。
    * 0 写 `null`（不是 `undefined`）：`undefined` 过 JSON 会被整条丢掉，页面就永远清不掉徽标。
    * 桥重启后由 `resumeReviewJobs()` 接回，所以它和「完成」一样跨重启可见。
@@ -1057,7 +1057,7 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * D450: 评审条数变了（起跑、收尾、取消收尾、换脑接回）—— 折成会话状态的一小格再广播。
+   * D453: 评审条数变了（起跑、收尾、取消收尾、换脑接回）—— 折成会话状态的一小格再广播。
    * 与 `publishBg` 同一个口径：`touch:false`（评审在跑不算「这个会话有新动静」），
    * 0 写显式 `null`（`undefined` 过 JSON 会被丢掉，页面的「评审中」就永远清不掉）。
    * 没变就不发帧：ticker 每 500ms 一轮，别让它每秒推两份同样的状态。
@@ -3608,7 +3608,7 @@ export class SessionManager extends EventEmitter {
       ws: this.workspaces.groupFor(id, cwd, { anchorDay: dayKey(updatedAt), dayOf }),
     });
     /**
-     * D450：徽标那一格「评审中」。两种会话都要填 —— 桥内存里的（接手过的）与盘上发现的。
+     * D453：徽标那一格「评审中」。两种会话都要填 —— 桥内存里的（接手过的）与盘上发现的。
      * 用计算值盖掉 `state.review`：会话休眠 / 重开之后那份内存态可能停在旧值，
      * 而 `active` 才是唯一真相。`null` 是「没有评审在跑」（不是 0，也不是不写）。
      */

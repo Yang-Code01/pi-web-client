@@ -1,5 +1,5 @@
 /**
- * 会话徽标（左栏卡片右下 / ★ 行胶囊 / 会话管理 / 工作区浮层）的**唯一**判定（D450）。
+ * 会话徽标（左栏卡片右下 / ★ 行胶囊 / 会话管理 / 工作区浮层）的**唯一**判定（D453）。
  *
  * 这一格只有一个：所以顺序就是全部的价值 —— 说错一格，用户就会把「评审还在跑」当成
  * 「已经收工」，或者被一枚不阻塞的「评审中」盖住正在等他的问卷。
@@ -8,7 +8,7 @@
  * - 「在等你」永远先说：那两档要人动手。
  * - `running` 只说「pi 进程在忙」：审批 / 问卷在等时它也常常是 true，所以更要排在后面。
  * - 后台子代理（D170）：会话自己 settle 了、派出去的 runner 还在跑，pi 回来会接着做 —— 排评审前面。
- * - 评审（D450）：detached worker（D446），会话早就完成也可能还在评 —— 只压过「完成」与空位。
+ * - 评审（D453）：detached worker（D446），会话早就完成也可能还在评 —— 只压过「完成」与空位。
  *
  * 纯函数：DOM 由 `app.ts` 的 `badgeChip()` 抹上去，点开去哪也由它决定（`kind`）。
  * 单测 `web/tests/session-badge-unit.mjs` 只测这一层；画与点在 `probes/round9-badges.mjs` 里把关。
@@ -45,7 +45,7 @@ export interface BadgeSession {
   done: boolean;
   /** D170：后台子代理（`n` 缺省按 0）。 */
   bg?: { n?: number; agent?: string } | null;
-  /** D450：这个会话在跑几条评审（旧桥不发 = 0）。 */
+  /** D453：这个会话在跑几条评审（旧桥不发 = 0）。 */
   review?: number | null;
 }
 
@@ -99,7 +99,7 @@ export function sessionBadge(s: BadgeSession): SessionBadge | null {
       clickable: true,
     };
   }
-  // D450: 评审是 detached worker（D446），会话早就完成也可能还在评 —— 不露这一格就等于说「没事了」。
+  // D453: 评审是 detached worker（D446），会话早就完成也可能还在评 —— 不露这一格就等于说「没事了」。
   const reviews = Number(s.review) || 0;
   if (reviews > 0) {
     return {

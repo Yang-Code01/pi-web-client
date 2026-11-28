@@ -9,18 +9,20 @@ import { PROTO, VERSION, MAX_AVATAR_HISTORY } from "./config.ts";
 import { avatarHash, customAvatarHash, customAvatarId, knownAvatar, randomAvatar } from "./avatars.ts";
 import { deleteAvatarFile, findAvatarFile, fetchRemoteAvatar, hasAvatarFile, listAvatarUploads, MAX_AVATAR_BYTES, pruneAvatarFiles, saveAvatarFile } from "./avatar-files.ts";
 import type { AvatarImage } from "./avatar-files.ts";
-import type { Discovery } from "./discovery.ts";
+import { buildUpdates, type Discovery } from "./discovery.ts";
+import { isRepo } from "./repo.ts";
 import { CHUNK, SANDBOX_CSP, inlineType, isHtmlType, mimeOf, typeOf } from "./files.ts";
 import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
 import { MAX_STICKER_BYTES, addSticker, listStickers, removeSticker, stickerCopy, stickerPath } from "./stickers.ts";
 import { afterWatermark, type History } from "./history.ts";
-import type { Messages } from "./messages.ts";
+import { REPLAY_DEFAULT, REPLAY_MAX, type Messages } from "./messages.ts";
 import type { Relations } from "./peers.ts";
 import { MAX_MARKET_FRAME, ingest, manifestResponse, parseFrame, touchBlob } from "./market.ts";
 import type { LocalActivity } from "./presence.ts";
 import type { Threads } from "./threads.ts";
 import type { Groups } from "./groups.ts";
+import { optOutIds } from "./groups.ts";
 
 export interface PeerContext {
   cfg: PeerConfig;
@@ -215,14 +217,30 @@ export function createPeerServer(ctx: PeerContext): http.Server {
     res.end(image.buf);
   };
 
-  const identity = () => ({
-    nodeId,
-    nickname: cfg.nickname,
-    hostname: os.hostname(),
-    port: cfg.port,
-    version: VERSION,
-    status: activity.status(),
-    avatar: cfg.avatar,
+
+  const identity = () => {
+    // 与 announce 包用同一个拼装函数（评审 #6）：publisher=false 不能以显式字段发出，
+    // opt-out 名单也要按 20 条截断——否则同一条机器在两条路上会带着不一样形状的 updates。
+    const updates = buildUpdates(cfg.updates.repo, cfg.updates.publisher, cfg.updates.repo ? [...optOutIds()] : []);
+    return {
+      nodeId,
+      nickname: cfg.nickname,
+      hostname: os.hostname(),
+      port: cfg.port,
+      version: VERSION,
+      status: activity.status(),
+      avatar: cfg.avatar,
+      // hello 应答也要带 opt-out 名单：只靠手动地址单向认识的机器，看不到我们退过哪些组（评审 #9）。
+      ...(updates ? { updates } : {}),
+    };
+  };
+  const configView = () => ({
+    hidden: cfg.hidden,
+    pauseFiles: cfg.pauseFiles,
+    dnd: cfg.dnd,
+    inbox: cfg.inbox,
+    manual: cfg.manual,
+    updates: { repo: cfg.updates.repo, publisher: cfg.updates.publisher },
   });
 
   return http.createServer(async (req, res) => {
@@ -244,7 +262,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           status: activity.status(),
           idleMs: activity.idleMs(),
           online: discovery.online(),
-          config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
+          config: configView(),
         });
       }
 
@@ -255,30 +273,57 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const body = (await readBody(req).catch(() => null)) as Record<string, unknown> | null;
         if (!body || typeof body !== "object") return json(res, 400, { error: "bad body" });
         const wasHidden = cfg.hidden;
-        for (const key of ["hidden", "dnd", "pauseFiles"] as const) {
-          if (typeof body[key] === "boolean") cfg[key] = body[key] as boolean;
-        }
+        // 先把每一项都校验、算成 next*，最后一次性写 cfg：任何一步 400 都不能留下
+        // 「内存改了、磁盘没存」的半截状态（评审 #9）。
         // D303：自己的名字也能改。上限 40（公告里塞得下），改完立刻重播一次，别等下一轮。
-        let changed = false;
-        if (typeof body.nickname === "string") {
-          const name = body.nickname.trim().replace(/\s+/g, " ").slice(0, 40);
-          if (!name) return json(res, 400, { error: "名字不能是空的" });
-          if (name !== cfg.nickname) {
-            cfg.nickname = name;
-            changed = true;
-          }
-        }
+        const nextNickname =
+          typeof body.nickname === "string" ? body.nickname.trim().replace(/[\s\u3000]+/g, " ").slice(0, 40) : undefined;
+        if (nextNickname !== undefined && !nextNickname) return json(res, 400, { error: "名字不能是空的" });
         // 头像：名单里的 id 或合法的 `custom:<hash>`。自定义的必须本机真有这张图，
         // 否则广播出去的是一个永远拉不到的地址，别人只能一直看首字母。
-        if (body.avatar !== undefined) {
-          const avatar = knownAvatar(body.avatar);
-          if (!avatar) return json(res, 400, { error: "没有这张头像" });
-          const custom = customAvatarHash(avatar);
+        const nextAvatar = body.avatar !== undefined ? knownAvatar(body.avatar) : undefined;
+        if (body.avatar !== undefined && !nextAvatar) return json(res, 400, { error: "没有这张头像" });
+        if (nextAvatar) {
+          const custom = customAvatarHash(nextAvatar);
           if (custom && !hasAvatarFile(custom)) return json(res, 400, { error: "这张头像不存在" });
-          if (avatar !== cfg.avatar) {
-            cfg.avatar = avatar;
-            changed = true;
+        }
+        // 更新组（D451）：`repo` = 这台机器认的仓库（announce 带出去，发布者据此邀请）；
+        // `publisher` = 这台机器负责查 origin/main。两者都改了要重播，别等下一轮 10 秒。
+        let nextUpdates: { repo: string; publisher: boolean } | null = null;
+        if (body.updates !== undefined) {
+          // 形状不对就别装作改成功了（评审 #2）。
+          if (!body.updates || typeof body.updates !== "object" || Array.isArray(body.updates)) {
+            return json(res, 400, { error: "updates 要是一个对象，可以只带 repo 或 publisher" });
           }
+          const u = body.updates as Record<string, unknown>;
+          let repo = cfg.updates.repo;
+          if (typeof u.repo === "string") {
+            repo = u.repo.trim();
+            if (repo && !isRepo(repo)) return json(res, 400, { error: "仓库标识要写成 host/owner/name（GitLab 是 host/group/subgroup/name）" });
+          }
+          const publisher = typeof u.publisher === "boolean" ? u.publisher : cfg.updates.publisher;
+          if (publisher && !repo) return json(res, 400, { error: "先填仓库标识（host/owner/name）再打开发布" });
+          nextUpdates = { repo, publisher };
+        }
+        // 校验全过：现在才动 cfg 与落盘。
+        let changed = false;
+        for (const key of ["hidden", "dnd", "pauseFiles"] as const) {
+          if (typeof body[key] !== "boolean") continue;
+          if (cfg[key] !== body[key]) changed = true;
+          cfg[key] = body[key] as boolean;
+        }
+        if (nextNickname !== undefined && nextNickname !== cfg.nickname) {
+          cfg.nickname = nextNickname;
+          changed = true;
+        }
+        if (nextAvatar && nextAvatar !== cfg.avatar) {
+          cfg.avatar = nextAvatar;
+          changed = true;
+        }
+        if (nextUpdates) {
+          if (nextUpdates.repo !== cfg.updates.repo) changed = true;
+          if (nextUpdates.publisher !== cfg.updates.publisher) changed = true;
+          cfg.updates = nextUpdates;
         }
         saveConfig(cfg);
         if (changed) discovery.announce();
@@ -289,7 +334,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           ok: true,
           nickname: cfg.nickname,
           avatar: cfg.avatar,
-          config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
+          config: configView(),
         });
       }
 
@@ -494,7 +539,10 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             meta: (id) => threads.get(id),
             typing: (id) => messages.typing(id),
             pending: (id) => messages.pending(id),
-            group: (id) => groups.get(id),
+            group: (id) => {
+              const g = groups.get(id);
+              return g ? { ...g, left: g.left === true } : null;
+            },
           }),
         });
       }
@@ -512,11 +560,22 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         try {
           activity.touch();
           const action = String(body?.action ?? "");
-          if (action === "create") return json(res, 200, { ok: true, group: messages.createGroup(String(body?.name ?? ""), ids) });
+          if (action === "create")
+            return json(res, 200, {
+              ok: true,
+              group: messages.createGroup(String(body?.name ?? ""), ids, {
+                ...(id ? { id } : {}),
+                ...(body?.announceOnly === true ? { announceOnly: true } : {}),
+                // nodeId 的格式不在这里收紧（内网通其它地方也没要求 UUID）；是不是成员由 createGroup 校验（评审 #24）。
+                ...(typeof body?.publisher === "string" && body.publisher ? { publisher: body.publisher } : {}),
+              }),
+            });
           if (action === "rename") return json(res, 200, { ok: true, group: messages.renameGroup(id, String(body?.name ?? "")) });
           if (action === "invite") return json(res, 200, { ok: true, group: messages.inviteGroup(id, ids) });
           if (action === "leave") return json(res, 200, { ok: true, group: messages.leaveGroup(id) });
-          return json(res, 400, { error: "action 只能是 create / rename / invite / leave" });
+          if (action === "rejoin") return json(res, 200, messages.rejoinGroup(id));
+          if (action === "publisher") return json(res, 200, { ok: true, group: messages.claimPublisher(id) });
+          return json(res, 400, { error: "action 只能是 create / rename / invite / leave / rejoin / publisher" });
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });
         }
@@ -673,8 +732,24 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo, {
             priority: body?.priority,
             topic: body?.topic,
+            ...(body?.announce ? { announce: body.announce } : {}),
           });
           return json(res, 200, result);
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      // 补发公告（D451）：发布者刚拉起一个成员时，把这个组里最近几条公告单播给他。
+      if (url.pathname === "/announce/replay" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          activity.touch();
+          // 只认 number：字符串 "5" 这种「看着能用」的输入一律走默认值（评审 #10）。
+          const raw = typeof body?.limit === "number" ? body.limit : REPLAY_DEFAULT;
+          const limit = Number.isFinite(raw) ? Math.max(0, Math.min(REPLAY_MAX, raw)) : REPLAY_DEFAULT;
+          return json(res, 200, messages.replayAnnouncements(String(body?.group ?? ""), String(body?.peer ?? ""), limit));
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });
         }

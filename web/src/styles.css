@@ -327,7 +327,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .badge.wait { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
 .badge.run { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
 .badge.done { color: var(--ok); border-color: var(--ok-dim); background: var(--ok-bg); }
-/* D450：评审是 detached worker，会话早 settle 了它还在跑 —— 自己一档青，不是「运行中」的蓝。 */
+/* D453：评审是 detached worker，会话早 settle 了它还在跑 —— 自己一档青，不是「运行中」的蓝。 */
 .badge.reviewing { color: var(--review); border-color: var(--review-dim); background: var(--review-bg); }
 .new-session { display: grid; gap: 8px; padding: 8px; grid-template-columns: minmax(0, 1fr); }
 .new-session .btn { width: 100%; white-space: normal; }
@@ -2893,16 +2893,16 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .art-badge.st-unknown { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-dim); }
 .art-badge.st-same { color: var(--faint); }
 /* 窄屏：状态挪到第二行，工具名隐掉 */
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr) auto; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 2; grid-row: 1; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 2; grid-row: 2; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-tools { display: none; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-bar { flex-wrap: wrap; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-bar .ns-input { flex-basis: 100%; order: 3; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr) auto; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 2; grid-row: 1; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 2; grid-row: 2; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-tools { display: none; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-bar { flex-wrap: wrap; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-bar .ns-input { flex-basis: 100%; order: 3; }
 /* 最窄：单列，控件与状态各占一行 */
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr); }
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 1; grid-row: 3; justify-content: flex-start; }
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 1; grid-row: 4; justify-self: start; }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr); }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 1; grid-row: 3; justify-content: flex-start; }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 1; grid-row: 4; justify-self: start; }
 
 /* D208 C 方案：独立 diff 弹窗（左栏换文件 + 左右对照）。 */
 .diff-sheet { height: calc(var(--vh1) * 86); max-height: calc(var(--vh1) * 88); }
@@ -3469,7 +3469,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .pin-chip.run small { color: var(--accent); }
 .pin-chip.lock small { color: var(--dim); }
 .pin-chip.done small { color: var(--ok); }
-/* D450：评审在跑的胶囊 —— 自己一档青（与 run 的强调蓝、done 的绿分开）。 */
+/* D453：评审在跑的胶囊 —— 自己一档青（与 run 的强调蓝、done 的绿分开）。 */
 .pin-chip.reviewing { border-color: var(--review-dim); }
 .pin-chip.reviewing small { color: var(--review); }
 
@@ -6075,7 +6075,15 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-runs { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin-top: 2px; }
 .rv-scope .rv-runs-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-size: 11px; color: var(--faint); }
 .rv-scope .rv-runs-lab { flex: none; font-weight: 600; color: var(--dim); }
-.rv-scope .rv-runs-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-scope .rv-runs-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
+/* 兜底那颗「重新核对有没有新提交」（#741）：图标钮，只重核 tips，不动「评什么」。 */
+.rv-scope .rv-runs-reload {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 18px; padding: 0; color: var(--faint); font-family: inherit;
+  background: none; border: 0; border-radius: 5px; cursor: pointer;
+}
+.rv-scope .rv-runs-reload:hover { color: var(--accent); background: var(--mac-fill); }
+.rv-scope .rv-runs-reload:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .rv-scope .rv-runs-empty { padding-left: 12px; }
 .rv-scope .rv-tl { position: relative; display: flex; flex-direction: column; gap: 3px; padding-left: 12px; }
 .rv-scope .rv-tl::before {
@@ -6109,6 +6117,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-run-status.running { color: var(--accent); }
 .rv-scope .rv-run-status.failed { color: var(--danger); }
 .rv-scope .rv-run-status.stale { color: var(--warn); }
+/* #741「有新提交」：状态词旁边那颗标。**不可点**（D426：卡片正文不是入口），细节在 title 里。 */
+.rv-scope .rv-run-stale {
+  flex: none; padding: 0 5px; font-size: 10.5px; color: var(--warn); white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: 6px;
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
 .rv-scope .rv-run-bit { flex: none; }
 .rv-scope .rv-run-model {
   flex: none; max-width: 100%; padding: 0 5px; font-size: 10.5px; color: var(--dim);
@@ -6134,6 +6148,15 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   background: transparent; border: 1px solid var(--line); border-radius: 8px; font-family: inherit;
 }
 .rv-scope .rv-run-stop:hover { color: var(--text); border-color: var(--accent); }
+/* 「重新评审」（#741）：只在过时时出现；被挡（同一个 PR 在跑 / 额度满）时灰着并带 title。 */
+.rv-scope .rv-run-again {
+  flex: none; padding: 1px 7px; font-size: 10.5px; color: var(--accent); white-space: nowrap; font-family: inherit;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 8px; cursor: pointer;
+}
+.rv-scope .rv-run-again:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.rv-scope .rv-run-again:disabled { color: var(--faint); background: transparent; border-color: var(--line); cursor: not-allowed; }
+.rv-scope .rv-run-again:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .rv-scope .rv-credit {
   display: flex; flex-direction: column; gap: 2px;
   margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--line-soft);
