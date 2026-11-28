@@ -1048,10 +1048,34 @@ function firstLine(text: string): string {
 export interface ChildEvent {
   /** 助手这轮答的话（非助手消息没有）。 */
   text?: string;
-  /** 这条消息的用量（有就读）。 */
+  /** 这条消息的用量（有 `usage.totalTokens` 才有；0 与「没有」对调用方是一回事：加 0）。 */
   tokens?: number;
   /** pi 替 provider 转达的原话：`stopReason: "error"` 时才有（连不上 / 401 / 限流…）。 */
   error?: string;
+}
+
+/** `--mode json` 里我们读的那一小块。其余字段不声明 —— 别让这个类型跟着 pi 的 JSON 走。 */
+export interface ChildEventLine {
+  type?: string;
+  message?: {
+    role?: string;
+    content?: unknown;
+    usage?: { totalTokens?: unknown };
+    stopReason?: string;
+    errorMessage?: unknown;
+  };
+}
+
+/** 一条消息的正文：只拼 `{ type: "text" }` 块（thinking / tool 块不算「回答」）。 */
+function textOf(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as { type?: unknown; text?: unknown };
+    if (b.type === "text") parts.push(String(b.text ?? ""));
+  }
+  return parts.join("");
 }
 
 /**
@@ -1061,23 +1085,19 @@ export interface ChildEvent {
  * 而真正的原因（`connect EHOSTDOWN 192.168.31.36:7863`）就在 assistant 那条 `message_end` 的
  * `errorMessage` 里，以前谁也没读它（D452）。
  */
-export function readChildEvent(ev: any): ChildEvent {
+export function readChildEvent(ev: ChildEventLine | null | undefined): ChildEvent {
   if (ev?.type !== "message_end") return {};
   const msg = ev.message;
   const out: ChildEvent = {};
-  if (msg?.usage && typeof msg.usage.totalTokens === "number") out.tokens = msg.usage.totalTokens;
+  const total = msg?.usage?.totalTokens;
+  if (typeof total === "number") out.tokens = total;
   if (msg?.role !== "assistant") return out;
   if (msg.stopReason === "error") {
     const why = String(msg.errorMessage ?? "").trim();
     if (why) out.error = why;
   }
-  if (Array.isArray(msg.content)) {
-    const text = msg.content
-      .filter((b: any) => b?.type === "text")
-      .map((b: any) => String(b.text ?? ""))
-      .join("");
-    if (text.trim()) out.text = text;
-  }
+  const text = textOf(msg.content);
+  if (text.trim()) out.text = text;
   return out;
 }
 
@@ -1093,20 +1113,39 @@ export function childWhy(res: { error?: string; silent?: boolean; stderr?: strin
   return firstLine(String(res.stderr ?? "")) || `退出码 ${res.code ?? "-"}、输出 ${res.lines ?? 0} 行`;
 }
 
-/** 这类原话意味着「根本没连上模型」，不是「模型不肯答」：给的下一步就不该是「换个更便宜的」。 */
-const GATEWAYISH = /connect|ehost|econn|etimedout|enotfound|timed out|fetch failed|network|socket|proxy/i;
+/**
+ * 原话可能是一整段上游响应（含内网地址、请求 id、甚至回显的头部）：用户要的是线索，不是搬运。
+ * 截断放在「拼进给人看的文案」这一步，子进程交上来的原话本身不丢。
+ */
+export function clip(text: string, max = 300): string {
+  const s = String(text ?? "").replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * 「根本没连上模型」的原话。只认网络层的错误码 / 措辞 —— **不用 network / connect / socket
+ * / proxy 这类宽泛词**：它们会命中 `Invalid connection header` 这种与网络无关的 provider 报错，
+ * 也会把工具超时（`timed out`）说成断网（D452 评审意见 3）。
+ */
+const UNREACHABLE =
+  /\b(EHOSTDOWN|EHOSTUNREACH|ECONNREFUSED|ECONNRESET|ENOTFOUND|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|EPIPE)\b|Connect Timeout|connection reset|getaddrinfo/i;
+
+/** 这条原话是不是「来源整个连不上」。既决定文案，也决定要不要继续跑剩下的组。 */
+export function unreachable(why: string): boolean {
+  return UNREACHABLE.test(String(why ?? ""));
+}
 
 /** 「一次都没给出结论」的失败文案（有子进程原话时以它为准）。 */
 export function noOutputMessage(why: string, tokens: number): string {
   const own = String(why ?? "").trim();
   const used = `已用 ${Math.round(tokens / 1000)}k token`;
-  if (own && GATEWAYISH.test(own)) {
+  if (own && unreachable(own)) {
     return (
-      `模型那边没连上：${own}。` +
+      `模型那边没连上：${clip(own)}。` +
       "这跟评审范围和模型贵不贵都无关 —— 先确认这个来源通不通（网关 / 网络 / 凭据），换个来源也能先跑起来。"
     );
   }
-  if (own) return `重试后仍然没有给出结论（${used}）。子进程原话：${own}。可以换个模型或来源，或把范围缩小（少选几个文件 / 换一次提交）再跑。`;
+  if (own) return `重试后仍然没有给出结论（${used}）。子进程原话：${clip(own)}。可以换个模型或来源，或把范围缩小（少选几个文件 / 换一次提交）再跑。`;
   return `重试后仍然没有给出结论（${used}）。可以换个模型或来源，或把范围缩小（少选几个文件 / 换一次提交）再跑。`;
 }
 
@@ -1571,15 +1610,17 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         const why = childWhy(res);
         lastChildWhy = why;
         if (res.error) {
-          // 子进程自己报了错（网关连不上 / 401 / 限流…）：这不是「懒得答」，下一组只会撞同一堆墙。
-          // 真机实测：每次 ~25 秒、四组全红；直接收工，把 provider 的原话带给面板（D452）。
+          // 子进程自己报了错（网关连不上 / 401 / 限流 / 超上下文…）。分两种走（D452 评审意见 1）：
+          // ・来源整个连不上（EHOSTDOWN 这类）→ 后面的组只会撞同一堵墙，收工，别每组白赊 ~25 秒；
+          // ・只影响这一组的错（超额、单次限流、这堆文件太大）→ 别的文件还评得出来，照跑。
           markGroupFailed(i, why);
-          note(`第 ${i + 1} 组失败（${why}）`, i + 1);
-          break;
+          note(`第 ${i + 1} 组失败（${clip(why, 160)}）`, i + 1);
+          if (unreachable(why)) break;
+          continue;
         }
         // 退出码 0、一句话没有、也没报错：多半是工具调用把轮次/上下文吃掉了。
         // 再问一次、明确让它「别再调工具」，剩下的组照跑（别的文件可能还答得出来）。
-        note(`第 ${i + 1} 组没给结论（${why}；已用 ${Math.round(res.tokens / 1000)}k token），重试一次`, i + 1);
+        note(`第 ${i + 1} 组没给结论（${clip(why, 160)}；已用 ${Math.round(res.tokens / 1000)}k token），重试一次`, i + 1);
         const nudge = `${prompt}\n\n## 立即收尾\n\n不要再调用任何工具。根据你已经看到的内容直接输出上面那个 JSON 对象；宁可少报，也要把 JSON 交回来。`;
         res = await runChild(nudge);
         if (res.aborted) break;
@@ -1592,8 +1633,8 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
         if (!res.text.trim()) {
           lastChildWhy = childWhy(res);
           markGroupFailed(i, lastChildWhy);
-          note(`第 ${i + 1} 组没给出结论（${lastChildWhy}）`, i + 1);
-          if (res.error) break;
+          note(`第 ${i + 1} 组没给出结论（${clip(lastChildWhy, 160)}）`, i + 1);
+          if (res.error && unreachable(lastChildWhy)) break;
           continue;
         }
       }

@@ -33,8 +33,10 @@ import {
   expectRepoMismatch,
   cancelReview,
   childWhy,
+  clip,
   noOutputMessage,
   readChildEvent,
+  unreachable,
   reviewProgresses,
   reviewJobFile,
   reviewJobsDir,
@@ -858,6 +860,21 @@ check("readChildEvent：别的类型 / 用户消息不响", () => {
   assert.equal(readChildEvent({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } }).text, undefined);
 });
 
+check("readChildEvent：没有 usage 时不凭空造一个 0", () => {
+  const got = readChildEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ok" }] } });
+  assert.equal(got.tokens, undefined, "没有 usage 与「用了 0 token」对调用方是两回事");
+  assert.equal(got.text, "ok");
+});
+
+check("readChildEvent：thinking / tool 块不算「答了一句话」", () => {
+  const got = readChildEvent({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "thinking", thinking: "想一想" }, { type: "toolCall", name: "read" }], usage: { totalTokens: 9 } },
+  });
+  assert.equal(got.text, undefined);
+  assert.equal(got.tokens, 9);
+});
+
 check("childWhy：子进程自己报的错最优先", () => {
   const why = childWhy({
     error: "Connection error.: connect EHOSTDOWN 192.168.31.36:7863",
@@ -874,6 +891,30 @@ check("childWhy：没原话才退到沉默/退出码", () => {
   assert.equal(childWhy({ error: "", silent: true, stderr: "", code: null, lines: 0 }), "90 秒没有任何输出");
   assert.equal(childWhy({ error: "", silent: false, stderr: "boom\nmore", code: 1, lines: 3 }), "boom");
   assert.equal(childWhy({ error: "", silent: false, stderr: "", code: 0, lines: 37 }), "退出码 0、输出 37 行");
+});
+
+check("unreachable：只认网络层的错误码 / 措辞", () => {
+  assert.equal(unreachable("Connection error.: connect EHOSTDOWN 192.168.31.36:7863"), true);
+  assert.equal(unreachable("Request timed out.: Connect Timeout Error (attempted address: 10.0.0.2:7863)"), true);
+  assert.equal(unreachable("connect ECONNREFUSED 127.0.0.1:7863"), true);
+  assert.equal(unreachable("socket hang up: connection reset by peer"), true);
+  // 宽泛词不算：这两种都不是「来源连不上」，不该因此收工
+  assert.equal(unreachable("Invalid connection header"), false);
+  assert.equal(unreachable("tool timed out after 30s"), false);
+  assert.equal(unreachable("maximum context length exceeded"), false);
+});
+
+check("clip：原话不搬家，超过上限就截", () => {
+  assert.equal(clip("  短  的 "), "短 的");
+  const long = "x".repeat(500);
+  assert.equal(clip(long).length, 300);
+  assert.ok(clip(long).endsWith("…"));
+});
+
+check("noOutputMessage：上游整段 body 不会原样落进失败文案", () => {
+  const text = noOutputMessage(`Connection error.: connect EHOSTDOWN 10.0.0.2:7863 ${"body ".repeat(200)}`, 0);
+  assert.ok(text.length < 500, `实际 ${text.length} 字`);
+  assert.match(text, /没连上/);
 });
 
 check("noOutputMessage：网关类故障不许说成「换个更便宜的模型」", () => {

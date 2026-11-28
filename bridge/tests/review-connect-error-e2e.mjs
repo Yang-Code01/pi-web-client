@@ -64,7 +64,9 @@ fs.writeFileSync(
   [
     "const args = process.argv.slice(2);",
     'if (args.includes("preview")) {',
-    '  process.stdout.write(JSON.stringify({ mode: "workspace", files: [{ path: "demo.txt", status: "modified", insertions: 1, deletions: 0 }], excluded_files: [] }));',
+    '  const n = Number(process.env.FAKE_OCR_FILE_COUNT || 1);',
+    '  const files = Array.from({ length: n }, (_, i) => ({ path: `f${i}.txt`, status: "modified", insertions: 1, deletions: 0 }));',
+    '  process.stdout.write(JSON.stringify({ mode: "workspace", files, excluded_files: [] }));',
     '} else if (args.includes("rule")) {',
     '  process.stdout.write("");',
     "} else {",
@@ -80,26 +82,27 @@ if (process.platform === "win32") {
   fs.chmodSync(shim, 0o755);
 }
 
-// ---- 假 pi：按 FAKE_PI_MODE 演三种结局，并把自己起了几次记在 calls.json -----------
+// ---- 假 pi：按 FAKE_PI_MODE 演三种结局，每次调用记一行到 FAKE_PI_CALLS ------------
+// 每个场景用自己的 calls 文件：三组并发/残留的 worker 不会算进别人头上。
 const fakePi = path.join(TMP, "fake-pi.mjs");
-const callsFile = path.join(TMP, "calls.json");
 fs.writeFileSync(
   fakePi,
   [
     'import fs from "node:fs";',
     "process.stdin.resume();",
-    `const calls = ${JSON.stringify(callsFile)};`,
-    "let n = 0;",
-    "try { n = JSON.parse(fs.readFileSync(calls, 'utf8')).length; } catch {}",
+    'const calls = process.env.FAKE_PI_CALLS || "";',
     "const list = (() => { try { return JSON.parse(fs.readFileSync(calls, 'utf8')); } catch { return []; } })();",
     "list.push(Date.now());",
-    "fs.writeFileSync(calls, JSON.stringify(list));",
+    "if (calls) fs.writeFileSync(calls, JSON.stringify(list));",
     "const mode = process.env.FAKE_PI_MODE || 'error';",
     "const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');",
     "if (mode === 'error') {",
     "  out({ type: 'message_end', message: { role: 'assistant', content: [], usage: { totalTokens: 0 }, stopReason: 'error', errorMessage: 'Connection error.: connect EHOSTDOWN 192.168.31.36:7863 - Local (192.168.31.72:56888)' } });",
     "} else if (mode === 'silent') {",
     "  out({ type: 'turn_start' });",
+    "} else if (mode === 'split') {",
+    "  if (list.length === 1) out({ type: 'message_end', message: { role: 'assistant', content: [], usage: { totalTokens: 0 }, stopReason: 'error', errorMessage: 'maximum context length exceeded' } });",
+    "  else out({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify({ findings: [], skipped: [] }) }], usage: { totalTokens: 7 }, stopReason: 'stop' } });",
     "} else {",
     "  out({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify({ findings: [], skipped: [] }) }], usage: { totalTokens: 7 }, stopReason: 'stop' } });",
     "}",
@@ -107,19 +110,30 @@ fs.writeFileSync(
   ].join("\n"),
 );
 
-const childEnv = (mode) => ({
+const childEnv = (mode, scenario) => ({
   ...process.env,
   PI_WEB_STATE: STATE,
   PI_BIN: fakePi,
   FAKE_PI_MODE: mode,
+  FAKE_PI_CALLS: path.join(TMP, `calls-${scenario}.json`),
+  FAKE_OCR_FILE_COUNT: scenario === "split" ? "9" : "1",
   PATH: `${BIN}${path.delimiter}${process.env.PATH ?? ""}`,
 });
 
+/** 某个场景里假 pi 被起过几次（文件不存在 = 0 次）。 */
+const callsOf = (scenario) => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(TMP, `calls-${scenario}.json`), "utf8"));
+  } catch {
+    return [];
+  }
+};
+
 /** 起一份真 worker 跑完这一次评审（job 已由 startReview 写好）。 */
-async function runWorker(runId, mode) {
+async function runWorker(runId, mode, scenario) {
   const job = review.reviewJobFile(runId);
   const child = spawn(process.execPath, ["--experimental-strip-types", WORKER, job], {
-    env: childEnv(mode),
+    env: childEnv(mode, scenario),
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -155,65 +169,103 @@ const start = (session, model = "cn:glm-5.4") => {
   return runId;
 };
 
-// ---- 1. 子进程报了错：不重试、带原话、说「没连上」 -----------------------------
-{
-  const session = "s-connect-error";
-  const runId = start(session);
-  const { code } = await runWorker(runId, "error");
-  assert.equal(code, 0, "假 pi 退了 0，worker 也该退 0");
-  const run = await waitRun(session, runId);
-  const calls = JSON.parse(fs.readFileSync(callsFile, "utf8"));
-
-  check("网关报错：整轮记成 failed（不是 done，也不是「完成 0 条」）", () => {
-    assert.equal(run.status, "failed");
-    assert.equal(run.errorCode, "child_no_output");
-  });
-  check("错误原文带出地址，并说清是没连上", () => {
-    assert.match(run.error, /192\.168\.31\.36:7863/, `实际：${run.error}`);
-    assert.match(run.error, /没连上/);
-    assert.doesNotMatch(run.error, /更便宜/, "网络故障不该被说成「模型不划算」");
-  });
-  check("分组计划里第 1 组是 failed", () => {
-    assert.equal(run.plan?.[0]?.state, "failed", `实际：${JSON.stringify(run.plan)}`);
-  });
-  check("报了错就不再重试：假 pi 只被起了一次", () => {
-    assert.equal(calls.length, 1, `实际起了 ${calls.length} 次`);
-  });
+/**
+ * 一个场景：起 worker、等落盘再断言。断言抛错只算这一条失败，接着跑下一个场景 ——
+ * 否则一次 waitRun 超时就把后面的用例和最后的汇总一起带走。
+ */
+async function scenario(name, fn) {
+  try {
+    await fn();
+  } catch (err) {
+    failures += 1;
+    console.error(`FAIL ${name}\n     ${err?.message ?? err}`);
+  }
 }
 
-// ---- 2. 没答但也没报错：照旧重试一次，重试还不行才算失败 ------------------------
-{
-  const session = "s-silent";
-  const before = JSON.parse(fs.readFileSync(callsFile, "utf8")).length;
-  const runId = start(session);
-  await runWorker(runId, "silent");
-  const run = await waitRun(session, runId);
-  const calls = JSON.parse(fs.readFileSync(callsFile, "utf8"));
+try {
+  // ---- 1. 子进程报了错：不重试、带原话、说「没连上」 -----------------------------
+  await scenario("网关报错", async () => {
+    const session = "s-connect-error";
+    const runId = start(session);
+    const { code, logs } = await runWorker(runId, "error", "error");
+    check("假 pi 退了 0，worker 也退 0", () => assert.equal(code, 0, logs.slice(-500)));
+    const run = await waitRun(session, runId);
+    const calls = callsOf("error");
 
-  check("沉默无答：重试一次（两回子进程）", () => {
-    assert.equal(calls.length - before, 2, `实际起了 ${calls.length - before} 次`);
+    check("网关报错：整轮记成 failed（不是 done，也不是「完成 0 条」）", () => {
+      assert.equal(run.status, "failed");
+      assert.equal(run.errorCode, "child_no_output");
+    });
+    check("错误原文带出地址，并说清是没连上", () => {
+      assert.match(run.error, /192\.168\.31\.36:7863/, `实际：${run.error}`);
+      assert.match(run.error, /没连上/);
+      assert.doesNotMatch(run.error, /更便宜/, "网络故障不该被说成「模型不划算」");
+    });
+    check("分组计划里第 1 组是 failed", () => {
+      assert.equal(run.plan?.[0]?.state, "failed", `实际：${JSON.stringify(run.plan)}`);
+    });
+    check("报了错就不再重试：假 pi 只被起了一次", () => {
+      assert.equal(calls.length, 1, `实际起了 ${calls.length} 次`);
+    });
   });
-  check("沉默无答：仍然算失败，文案不留「输出 N 行」当结论", () => {
-    assert.equal(run.status, "failed");
-    assert.equal(run.errorCode, "child_no_output");
-    assert.match(run.error, /没有给出结论/);
+
+  // ---- 2. 没答但也没报错：照旧重试一次，重试还不行才算失败 ------------------------
+  await scenario("沉默无答", async () => {
+    const session = "s-silent";
+    const runId = start(session);
+    await runWorker(runId, "silent", "silent");
+    const run = await waitRun(session, runId);
+    const calls = callsOf("silent");
+
+    check("沉默无答：重试一次（两回子进程）", () => {
+      assert.equal(calls.length, 2, `实际起了 ${calls.length} 次`);
+    });
+    check("沉默无答：仍然算失败，文案不留「输出 N 行」当结论", () => {
+      assert.equal(run.status, "failed");
+      assert.equal(run.errorCode, "child_no_output");
+      assert.match(run.error, /没有给出结论/);
+    });
   });
+
+  // ---- 2b. 只影响一组的错（超上下文 / 单次限流）：别把后面的组一起拖死 ---------------
+  await scenario("单组错", async () => {
+    const session = "s-split";
+    const runId = start(session);
+    await runWorker(runId, "split", "split");
+    const run = await waitRun(session, runId);
+    const calls = callsOf("split");
+
+    check("单组复错：第 1 组 failed，第 2 组照跑（plan 里 done）", () => {
+      assert.equal(run.plan?.[0]?.state, "failed", `实际：${JSON.stringify(run.plan)}`);
+      assert.equal(run.plan?.[1]?.state, "done", `实际：${JSON.stringify(run.plan)}`);
+    });
+    check("单组复错：假 pi 每组各起一次（没有重试）", () => {
+      assert.equal(calls.length, 2, `实际起了 ${calls.length} 次`);
+    });
+    check("单组复错：整轮仍算 failed（覆盖不全），但文案不说断网", () => {
+      assert.equal(run.status, "failed");
+      assert.equal(run.errorCode, "child_no_output");
+      assert.match(run.error, /没有给出结论/);
+      assert.doesNotMatch(run.error, /没连上/, "超上下文不是网络故障");
+    });
+  });
+
+  // ---- 3. 正常作答：仍然 done（别把好路改坏） -----------------------------------
+  await scenario("正常作答", async () => {
+    const session = "s-ok";
+    const runId = start(session);
+    await runWorker(runId, "ok", "ok");
+    const run = await waitRun(session, runId);
+    check("正常作答：done，没有错误", () => {
+      assert.equal(run.status, "done");
+      assert.equal(run.error, "");
+      assert.ok(run.tokens > 0, "用量要记下来");
+    });
+  });
+} finally {
+  fs.rmSync(TMP, { recursive: true, force: true });
 }
 
-// ---- 3. 正常作答：仍然 done（别把好路改坏） -----------------------------------
-{
-  const session = "s-ok";
-  const runId = start(session);
-  await runWorker(runId, "ok");
-  const run = await waitRun(session, runId);
-  check("正常作答：done，没有错误", () => {
-    assert.equal(run.status, "done");
-    assert.equal(run.error, "");
-    assert.ok(run.tokens > 0, "用量要记下来");
-  });
-}
-
-fs.rmSync(TMP, { recursive: true, force: true });
 if (failures) {
   console.error(`\n${failures} 项失败`);
   process.exit(1);

@@ -19427,11 +19427,19 @@ export class App {
     this.socket.send({ type: "review.pin", sessionId: this.currentId, dir: "" });
   }
 
-  /** `reviewModel` 存的是 `provider/id`；弹层与目录用 `id`，这里来回换。 */
+  /**
+   * `reviewModel` 存的是 `provider/id`；弹层与目录用 `id`，这里来回换。
+   *
+   * 老记录 / 老版本只存了 id（没有 `/`）：这时候不能直接 `find((m) => m.id === want)` ——
+   * 它稳定命中目录里第一个同 id 的来源（本机是 wb2api），等于把 D452 的问题从另一条路绕回来。
+   * 先按会话自己的 provider 认，再退回目录第一个。
+   */
   private reviewModelInfo(): ModelInfo | null {
     const want = this.reviewModel.trim();
     if (!want) return null;
-    return this.models.find((m) => `${m.provider}/${m.id}` === want) ?? this.models.find((m) => m.id === want) ?? null;
+    const byKey = this.models.find((m) => `${m.provider}/${m.id}` === want);
+    if (byKey) return byKey;
+    return this.models.find((m) => sameModel(m, { provider: this.session?.provider, id: want })) ?? null;
   }
 
   /** 这一轮真正会用的模型：面板上挑过的优先，没挑就用会话当前那个（两处都读它，别各拼一份）。 */
@@ -24651,6 +24659,10 @@ function shortModelName(name: string): string {
  * 模型的身份是 `provider/id`，不是 id。两个 provider 可以卖同一个 id —— 本机 `wb2api`（远端网关）
  * 与 `wb2_mac`（本机网关）就各有一份 `cn:glm-5.4`。只按 id `find()` 会稳定命中目录里的第一个，
  * 于是「挑的是本机那份」在确认时被换成另一个来源：评审就这么被派到掉线的网关上（D452）。
+ *
+ * 任一边 provider 为空时按「同一个」算 —— 这是**向后兼容**（老桥的 `SessionState` 没有 provider、
+ * 老记录只存了 id），不是「通配任意来源」：空串只是「这边不知道」，而不是「哪边都行」。
+ * 要严格匹配时别靠它：调用方自己先把 provider 补齐。
  */
 function sameModel(a: { provider?: string; id?: string }, b: { provider?: string; id?: string }): boolean {
   if (!a.id || !b.id) return false;
