@@ -111,6 +111,9 @@ export function setOptOut(id: string, on: boolean): void {
     fs.writeFileSync(optOutFile(), JSON.stringify([...set], null, 2));
   } catch {
     /* 落盘失败时内存里仍然是新的，下次启动会丢，但不影响这一次 */
+  } finally {
+    // 我们就是刚写这份文件的人：stamp 跟着更新，别让下一次读盘用旧 stamp 去撞缓存（评审 #7）。
+    optOutStamp = optOutFileStamp();
   }
 }
 
@@ -192,24 +195,28 @@ export class Groups {
     );
     if (!takeover && before && (next.v < before.v || (next.v === before.v && next.at <= before.at))) return null;
     // 发布者必须在新名册里：旧名单满员时不能把他挤掉（评审 #2）。
-    const incoming = next.publisher && !next.members.some((m) => m.nodeId === next.publisher)
-      ? [{ nodeId: next.publisher }, ...next.members]
-      : next.members;
+    // 补进去的是「完整身份」而不是裸 nodeId：before 里已经有昵称/头像就沿用（评审 #9）。
+    const pub = next.publisher;
+    const pubIdentity = pub
+      ? (next.members.find((m) => m.nodeId === pub) ??
+        before?.members.find((m) => m.nodeId === pub) ?? { nodeId: pub })
+      : null;
+    const incoming: PeerIdentity[] =
+      pubIdentity && !next.members.some((m) => m.nodeId === pubIdentity.nodeId)
+        ? [pubIdentity, ...next.members]
+        : next.members;
     const seen = new Set<string>();
+    // 两条分支都过一遍去重 + 上限：普通快照也不能超员（评审 #8）。
+    const members = [...(takeover && before ? [...incoming, ...before.members] : incoming)]
+      .filter((m) => {
+        if (seen.has(m.nodeId)) return false;
+        seen.add(m.nodeId);
+        return true;
+      })
+      .slice(0, MAX_GROUP_MEMBERS);
     const merged: Group = takeover && before
-      ? {
-          ...next,
-          v: before.v + 1,
-          at: Math.max(next.at, Date.now()),
-          members: [...incoming, ...before.members]
-            .filter((m) => {
-              if (seen.has(m.nodeId)) return false;
-              seen.add(m.nodeId);
-              return true;
-            })
-            .slice(0, MAX_GROUP_MEMBERS),
-        }
-      : next;
+      ? { ...next, v: before.v + 1, at: Math.max(next.at, Date.now()), members }
+      : { ...next, members };
     const after: Group = { ...merged, ...(merged.members.some((m) => m.nodeId === me) ? {} : { left: true }) };
     this.put(after);
     return { before, after };

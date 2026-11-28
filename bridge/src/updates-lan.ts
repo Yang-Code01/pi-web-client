@@ -215,7 +215,8 @@ export class UpdatesLan {
       publisher: status?.config.updates?.publisher === true && Boolean(status?.config.updates?.repo),
       joined: Boolean(group && me && group.members.some((m) => m.nodeId === me) && !group.left),
       memberCount: group?.members.length ?? 0,
-      onlineCount: (status?.online ?? []).filter((p) => p.updates?.repo === info?.repo).length,
+      // 没有 origin 时 info 为 null：不能让 undefined === undefined 把所有对端都算进来（评审 #3）。
+      onlineCount: info ? (status?.online ?? []).filter((p) => p.updates?.repo === info.repo).length : 0,
       lastCommit: this.state.lastCommit,
       lastBatchTitle: this.state.lastBatchTitle,
       lastAnnouncedAt: this.state.lastAnnouncedAt,
@@ -237,10 +238,16 @@ export class UpdatesLan {
     if (on && !info) throw new Error("这个检出没有 git remote origin，认不出是哪份仓库");
     await this.peer.setConfig({ updates: { repo: info?.repo ?? "", publisher: on } });
     if (on) {
-      this.kicks.push(
-        setTimeout(() => void this.checkNow(), 500),
-        setTimeout(() => void this.reconcile(), 500),
-      );
+      // 每个 timer 触发后从 kicks 里摘掉：反复开关不会无限增长（评审 #4）。
+      const kick = (fn: () => Promise<unknown>): void => {
+        const timer = setTimeout(() => {
+          this.kicks = this.kicks.filter((t) => t !== timer);
+          void fn();
+        }, 500);
+        this.kicks.push(timer);
+      };
+      kick(() => this.checkNow());
+      kick(() => this.reconcile());
     }
     return this.view();
   }
@@ -302,12 +309,18 @@ export class UpdatesLan {
   }
 
   /** 新批次：`lastBatchTitle` 之前的那几条（CHANGELOG 是新的在前）。 */
-  private freshBatches(): WhatsnewBatch[] {
+  private async freshBatches(): Promise<WhatsnewBatch[]> {
     let text = "";
     try {
-      text = fs.readFileSync(path.join(ROOT, "CHANGELOG.md"), "utf8");
+      // 读的是刚 fetch 下来的 origin/main，不是本机工作区：发布者还没 pull 时，
+      // 工作区的 CHANGELOG 里根本没有新批次（评审 #2）。
+      text = await this.git(["show", "origin/main:CHANGELOG.md"]);
     } catch {
-      return [];
+      try {
+        text = fs.readFileSync(path.join(ROOT, "CHANGELOG.md"), "utf8");
+      } catch {
+        return [];
+      }
     }
     const batches = whatsnewBatches(text);
     if (!batches.length) return [];
@@ -361,7 +374,7 @@ export class UpdatesLan {
         return;
       }
 
-      const batches = this.freshBatches();
+      const batches = await this.freshBatches();
       const subjects = batches.length
         ? []
         : (await this.git(["log", `--format=%s`, `${this.state.lastCommit || "HEAD"}..origin/main`]).catch(() => ""))

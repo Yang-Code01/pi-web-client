@@ -65,6 +65,12 @@ process.on("exit", () => {
       /* 已经退了 */
     }
   }
+  // 三个 peer 的 state 目录 + 临时根目录：跑完就删，别在系统临时目录里堆垃圾（评审 #14）。
+  try {
+    fs.rmSync(ROOT, { recursive: true, force: true });
+  } catch {
+    /* Windows 上子进程刚 kill 可能还锁着文件，下次系统自己清 */
+  }
 });
 
 const get = async (port, p) => (await fetch(`http://127.0.0.1:${port}${p}`, { signal: AbortSignal.timeout(3000) })).json();
@@ -216,6 +222,36 @@ async function main() {
   if (got.kind === "text" && got.announce?.batches?.[0]?.title === batch.title) ok("公告 payload 原样到达，kind 仍是 text");
   else bad("公告 payload 不对", got.announce);
 
+  // 4b. 超大批次：6 批 × 4 KB 会超过 16 KB 总上限，必须丢最旧的、保住一张卡片（评审 #1）。
+  const bigBatch = { title: "超大公告", body: "长".repeat(4200) };
+  await post(P, "/send", {
+    peer: GROUP,
+    text: `${REPO} 更新到 b16a001`,
+    announce: { repo: REPO, commit: "b16a001", batches: Array.from({ length: 6 }, () => bigBatch), howTo: "auto" },
+  });
+  const big = await waitFor("成员收到超大公告", async () => {
+    const list = await messages(A, GROUP);
+    return list.find((e) => e.announce?.commit === "b16a001");
+  });
+  if (big.announce.batches.length >= 1 && big.announce.batches.length < 6) {
+    ok(`超大批次被裁到 ${big.announce.batches.length} 批，卡片还在`);
+  } else {
+    bad("超大批次没有被裁", big.announce.batches.length);
+  }
+
+  // 4c. 补发只能是发布者动作：成员调 /announce/replay 要被拒（评审 #11）。
+  {
+    const r = await fetch(`http://127.0.0.1:${A}/announce/replay`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ group: GROUP, peer: pMe.nodeId, limit: 1 }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = await r.json().catch(() => ({}));
+    if ((r.status === 403 || r.status === 400) && String(data.error ?? "").includes("只读")) ok("成员调补发被拒");
+    else bad("成员调补发没被拒", { status: r.status, data });
+  }
+
   // 5. 退群 = opt-out：发布者再发也不进来。
   await post(A, "/groups", { action: "leave", id: GROUP });
   const left = await waitFor("本机标成已退出", async () => {
@@ -247,7 +283,7 @@ async function main() {
   const back = await waitFor("重新进组", async () => {
     const data = await get(A, "/threads");
     return (data.threads ?? []).find((t) => t.nodeId === GROUP)?.group?.left === false;
-  });
+  }).catch(() => undefined);
   if (back) ok("rejoin + 邀请后重新进组");
   else bad("重新加入没生效");
 
@@ -263,7 +299,7 @@ async function main() {
   const joined = await waitFor("新机器拿到组快照", async () => {
     const data = await get(C, "/threads");
     return (data.threads ?? []).find((t) => t.nodeId === GROUP)?.group;
-  });
+  }).catch(() => undefined);
   if (joined.announceOnly === true) ok("新机器被拉进组、拿到只读快照");
   else bad("新机器没拿到快照", joined);
 
@@ -275,7 +311,7 @@ async function main() {
     const data = await get(A, "/threads");
     const t = (data.threads ?? []).find((x) => x.nodeId === GROUP);
     return t?.group?.publisher === cMe.nodeId ? t.group : null;
-  });
+  }).catch(() => undefined);
   // `/threads` 不暴露 v，直接看成员的状态文件：换人必须把版本抬到「旧 v + 1」。
   const memberState = JSON.parse(fs.readFileSync(path.join(ROOT, "mem", "groups.json"), "utf8"));
   const memberGroup = memberState.find((g) => g.id === GROUP);

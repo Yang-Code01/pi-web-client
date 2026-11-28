@@ -41,7 +41,15 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   const rel = url.pathname === "/" || url.pathname === "/peer" ? "peer.html" : url.pathname.slice(1);
   const file = path.resolve(DIST, rel);
-  if (!file.startsWith(DIST + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end("not found");
+  if (!file.startsWith(DIST + path.sep)) return res.writeHead(404).end("not found");
+  // 一次 statSync 就把「存在 / 是目录」都判了，别在 existsSync 和 statSync 之间留 TOCTOU（评审 #21）。
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    return res.writeHead(404).end("not found");
+  }
+  if (stat.isDirectory()) return res.writeHead(404).end("not found");
   res.writeHead(200, { "content-type": MIME[path.extname(file)] ?? "application/octet-stream", "cache-control": "no-store" });
   fs.createReadStream(file).pipe(res);
 });

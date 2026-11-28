@@ -59,7 +59,16 @@ export function normalizeAnnounce(raw: unknown): AnnouncePayload | null {
     batches.push({ title, body });
   }
   if (!batches.length) return null;
-  const payload: AnnouncePayload = { repo, commit, batches, howTo: "auto" };
-  if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_ANNOUNCE_BYTES) return null;
-  return payload;
+  const bytes = (list: AnnounceBatch[]): number =>
+    Buffer.byteLength(JSON.stringify({ repo, commit, batches: list, howTo: "auto" }), "utf8");
+  // 6 批 × 4 KB 的 body 一定超过 16 KB：丢最旧的批次（新 → 旧，保住最新那批），
+  // 只剩一批还超就截断它的正文 —— 卡片少几条也比整条变成纯文本好（评审 #1）。
+  while (batches.length > 1 && bytes(batches) > MAX_ANNOUNCE_BYTES) batches.pop();
+  if (bytes(batches) > MAX_ANNOUNCE_BYTES) {
+    const only = batches[0];
+    let body = only.body;
+    while (body && bytes([{ ...only, body }]) > MAX_ANNOUNCE_BYTES) body = truncBytes(body, Math.max(0, Buffer.byteLength(body, "utf8") - 512));
+    only.body = body;
+  }
+  return { repo, commit, batches, howTo: "auto" };
 }

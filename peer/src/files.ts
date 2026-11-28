@@ -188,7 +188,7 @@ export class Files {
       /** 群：成员（不含我）；不认识这个群 / 我已退出时是 `null`。 */
       groupMembers?: (groupId: string) => string[] | null;
       /** 群是不是只读更新组、发布者是谁（D441）：收文件时也要拦非发布者。 */
-      groupAnnounceOnly?: (groupId: string) => { announceOnly?: boolean; publisher?: string } | null;
+      groupAnnounceOnly?: (groupId: string) => { announceOnly?: boolean; publisher?: string; owner?: string } | null;
     },
   ) {
     for (const dir of [this.inbox(), statePath("out")]) fs.mkdirSync(dir, { recursive: true });
@@ -274,7 +274,9 @@ export class Files {
         if (!members) return { status: 404, body: { error: "不认识这个群（或已退出）", retryable: false } };
         if (!members.includes(from.nodeId)) return { status: 403, body: { error: "不是群成员", retryable: false } };
         const gate = this.ctx.groupAnnounceOnly?.(thread);
-        if (gate?.announceOnly && gate.publisher !== from.nodeId) {
+        // publisher 没定（旧快照）时 owner 也能发：和 messages.assertWritable 同一条恢复路径（评审 #5/#6）。
+        const senderOk = gate?.publisher ? gate.publisher === from.nodeId : gate?.owner === from.nodeId;
+        if (gate?.announceOnly && !senderOk) {
           return { status: 403, body: { error: "只读群：只有发布者能发消息", retryable: false } };
         }
       }
@@ -447,7 +449,8 @@ export class Files {
     const group = isGroupId(threadId);
     if (group) {
       const gate = this.ctx.groupAnnounceOnly?.(threadId);
-      if (gate?.announceOnly && gate.publisher !== this.ctx.nodeId) throw new Error("这是只读的更新组：只有发布者能发文件");
+      const senderOk = gate?.publisher ? gate.publisher === this.ctx.nodeId : gate?.owner === this.ctx.nodeId;
+      if (gate?.announceOnly && !senderOk) throw new Error("这是只读的更新组：只有发布者能发文件");
     }
     const targets = group ? (this.ctx.groupMembers?.(threadId) ?? null) : [threadId];
     if (!targets) throw new Error("不在这个群里了");

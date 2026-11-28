@@ -13761,19 +13761,26 @@ export class App {
     return tab;
   }
 
-  /**
-   * D441：`/?settings=tools` / `?settings=whatsnew` 这类 URL 深链 —— 内网通更新公告卡片点过来，
-   * 直接落到主界面的那一页。认不出的 tab 当没写；打开后把参数抹掉，刷新时不会又弹一次。
-   */
   /** 首屏数据回来之前开设置面板会画到空数据：等到第一个 hello，最多等 5 秒（评审 #25）。 */
   private whenHello(): Promise<void> {
     if (this.sawHello) return Promise.resolve();
     this.helloWait ??= new Promise<void>((resolve) => {
       this.helloDone = resolve;
     });
-    return Promise.race([this.helloWait, new Promise<void>((resolve) => setTimeout(resolve, 5_000))]);
+    // 超时要收回自己的定时器；helloWait 只建一次，并发调用共享它（评审 #23）。
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 5_000);
+      void this.helloWait!.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
+  /**
+   * D441：`/?settings=tools` / `?settings=whatsnew` 这类 URL 深链 —— 内网通更新公告卡片点过来，
+   * 直接落到主界面的那一页。认不出的 tab 当没写；打开后把参数抹掉，刷新时不会又弹一次。
+   */
   async openSettingsFromUrl(): Promise<void> {
     const tab = new URLSearchParams(location.search).get("settings");
     if (!tab) return;

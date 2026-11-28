@@ -210,8 +210,11 @@ export class Messages {
     if (bytes > MAX_TEXT_BYTES) {
       throw new Error(`太长（${Math.round(bytes / 1024)} KB，上限 32 KB）：改用文件发`);
     }
-    const announce = opts.announce ? normalizeAnnounce(opts.announce) : null;
+    // 先判只读（成员得到的应该是「只有发布者能发」，而不是 announce 校验的报错），
+    // 公告也只允许出现在更新组里 —— 普通会话不该冒出更新卡片（评审 #13）。
     this.assertWritable(peerId);
+    const announce = opts.announce ? normalizeAnnounce(opts.announce) : null;
+    if (announce && this.ctx.groups.get(peerId)?.announceOnly !== true) throw new Error("只有更新组能发公告");
     const targets = this.targets(peerId);
     const at = Date.now();
     const id = uuidv7(at);
@@ -448,6 +451,8 @@ export class Messages {
     if (others.length + 1 > MAX_GROUP_MEMBERS) throw new Error(`一个群最多 ${MAX_GROUP_MEMBERS} 人`);
     const at = Date.now();
     const members = [this.me(), ...others.map((id) => this.identity(id))];
+    // publisher 必须真的在名册里：否则这个只读群建出来没人能发（评审 #10/#19）。
+    if (opts.publisher && !members.some((m) => m.nodeId === opts.publisher)) throw new Error("发布者必须是群成员");
     const title = name.trim().slice(0, 64) || members.map((m) => this.nameOf(m)).slice(0, 3).join("、");
     const wanted = typeof opts.id === "string" ? opts.id.trim() : "";
     if (wanted && (!isGroupId(wanted) || wanted.length > 80 || !/^[a-zA-Z0-9_-]+$/.test(wanted))) {
@@ -622,6 +627,9 @@ export class Messages {
   replayAnnouncements(groupId: string, peerNodeId: string, limit = 3): { ok: true; sent: number } {
     const group = this.ctx.groups.get(groupId);
     if (!group?.announceOnly) throw new Error("不是更新组");
+    // 补发是发布者动作，目标必须是组员：回环 API 也不能拿它往任意节点塞历史（评审 #11）。
+    this.assertWritable(groupId);
+    if (!group.members.some((m) => m.nodeId === peerNodeId)) throw new Error("这个人不是更新组成员");
     const want = Math.max(0, Math.floor(limit));
     if (!want) return { ok: true, sent: 0 };
     const peer = this.ctx.discovery.byId(peerNodeId);

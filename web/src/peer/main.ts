@@ -345,6 +345,8 @@ const S = {
   deepFor: "",
   /** D441：更新组状态（发布者开关 / 组 / 上次播报）。null = 还没读到。 */
   updates: null as UpdatesView | null,
+  /** 读 /api/updates 失败的原因：设置页要能说清是旧桥 404 还是网络断了（评审 #26）。 */
+  updatesError: null as string | null,
 };
 
 const app = document.querySelector("#app") as HTMLElement;
@@ -4311,7 +4313,7 @@ function updatesCard(): HTMLElement {
   card.append(h("h3", "", tr("更新公告")));
   const u = S.updates;
   if (!u) {
-    card.append(h("div", "note", tr("读不到更新组状态（bridge 没回 /api/updates）。")));
+    card.append(h("div", "note", tr("读不到更新组状态（bridge 没回 /api/updates）。{p1}", { p1: S.updatesError ?? "" })));
     return card;
   }
   if (!u.available) {
@@ -4344,10 +4346,10 @@ function updatesCard(): HTMLElement {
   check.title = u.publisher ? tr("现在就 fetch 一次 origin/main") : tr("先打开上面的开关");
   acts.append(check);
   if (!u.joined && !u.publisher) {
-    const join = btnEl(tr("重新加入更新组"), "btn", () => void rejoinUpdatesGroup());
+    const join = btnEl(tr("重新加入更新组"), "btn", () => void rejoinUpdates());
     acts.append(join);
   }
-  const logs = btnEl(tr("打开更新日志"), "btn", () => window.open("/?settings=whatsnew", "_blank", "noopener"));
+  const logs = btnEl(tr("打开更新日志"), "btn", () => window.open(UPDATE_LOG_URL, "_blank", "noopener"));
   acts.append(logs);
   card.append(acts);
   if (u.lastError) card.append(h("div", "note bad", u.lastError));
