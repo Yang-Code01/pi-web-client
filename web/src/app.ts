@@ -6271,6 +6271,8 @@ export class App {
     this.contextInsights = null;
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
+    // 内网通那扇的几何句柄：面板都摘了就别留着 —— 最大化偏好变更还会去调它（对已摘掉的面板 clearBox/place）。
+    this.peerGeom = null;
     this.wsPane = null;
     this.chromePane = null;
     // #278：按目录新建的对话框关掉 = 这一次不建了；还挂着的「请求在飞」与重画钩子一起摘掉。
@@ -20664,7 +20666,10 @@ export class App {
     sheet.onClose = () => {
       if (this.autoSettings === sheet) this.autoSettings = null;
     };
-    sheet.mount(document.getElementById("app") ?? document.body);
+    // #755：窗口几何在这里接（`reviewauto.ts` 要能在 node 下加载，顶层不 import DOM 模块）。
+    sheet.mount(document.getElementById("app") ?? document.body, (back, panel) =>
+      attachWindowGeom("auto-review", { back, panel, min: [560, 420] }),
+    );
     this.autoSettings = sheet;
   }
 
@@ -20729,7 +20734,9 @@ export class App {
         const go = at < 0 ? undefined : nos[at + delta];
         if (go !== undefined) this.openAutoRound(go);
       };
-      sheet.mount(document.getElementById("app") ?? document.body);
+      sheet.mount(document.getElementById("app") ?? document.body, (back, panel) =>
+        attachWindowGeom("auto-round", { back, panel, min: [520, 380] }),
+      );
       this.autoRoundSheet = sheet;
     } else {
       this.autoRoundSheet.update({ state, round, run });
@@ -20782,6 +20789,7 @@ export class App {
       this.autoTakeover = true;
       after();
     };
+    // dialog-geom: 不装抓手 —— `.modal` 里那张表单写死 `min(360px, 100%)`（接管自动评审的确认框，同口令 / 安装那三个）
     this.overlay(modal);
     pushEscLayer({ el: modal, onEsc: () => modal.remove() });
   }

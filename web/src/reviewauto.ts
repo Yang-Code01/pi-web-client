@@ -10,7 +10,6 @@
  */
 import { tr } from "./i18n/index.ts";
 import { markSurface, mountOverlay, pushEscLayer } from "./modal.ts";
-import { attachWindowGeom } from "./dialoggeom.ts";
 import type { ReviewFinding, ReviewRun, Severity } from "./review.ts";
 
 /**
@@ -463,6 +462,7 @@ const slotLabel = (slot: "A" | "B"): string => (slot === "A" ? tr("模型 A") : 
 /** 设置 dialog：上半设置、下半预演；`render()` 可重复调（挑完模型重画那两行 chip）。 */
 export class AutoSettingsSheet {
   private readonly back: HTMLElement;
+  private readonly panel: HTMLElement;
   private readonly body: HTMLElement;
   private readonly start: HTMLButtonElement;
   private readonly values: AutoSettingsValues;
@@ -485,8 +485,10 @@ export class AutoSettingsSheet {
       autoMerge: Boolean(opts.last?.autoMerge),
     };
 
+    // dialog-geom: 抓手由挂它的人接（app.ts 的 `openAutoSettings()`）—— 这个文件要能在 node 下加载，顶层不 import DOM 模块
     this.back = markSurface(el("div", "sheet-back center rv-auto-back"), "window");
     const sheet = el("section", "st-console rv-auto-sheet");
+    this.panel = sheet;
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-modal", "true");
     sheet.setAttribute("aria-label", tr("自动评审"));
@@ -515,12 +517,16 @@ export class AutoSettingsSheet {
 
     sheet.append(head, this.body, foot);
     this.back.append(sheet);
-    attachWindowGeom("auto-review", { back: this.back, panel: sheet, min: [560, 420] });
     this.render();
   }
 
-  /** `_parent` 只为与别的 sheet 的 `mount(parent)` 签名兼容（`ReviewSheet` 那一套）；实际挂载点由 `mountOverlay` 决定。 */
-  mount(_parent: HTMLElement): void {
+  /**
+   * `_parent` 只为与别的 sheet 的 `mount(parent)` 签名兼容（`ReviewSheet` 那一套）；实际挂载点由 `mountOverlay` 决定。
+   * `attachGeom`（#755）：这个文件要能在 node 下加载（`reviewauto-unit.mjs` 直接 import 它取纯函数），
+   * 所以**不**在顶层 import `dialoggeom.ts`；窗口几何由挂它的人（app.ts，一定在浏览器里）传进来。
+   */
+  mount(_parent: HTMLElement, attachGeom?: (back: HTMLElement, panel: HTMLElement) => void): void {
+    attachGeom?.(this.back, this.panel);
     mountOverlay(this.back);
     this.popEsc = pushEscLayer({ el: this.back, onEsc: () => this.close() });
   }
@@ -647,18 +653,19 @@ export class AutoRoundSheet {
 
   constructor(input: AutoRoundSheetInput) {
     this.input = input;
+    // dialog-geom: 同上，由 app.ts 的 `openAutoRound()` 接
     this.back = markSurface(el("div", "sheet-back center rv-auto-round-back"), "window");
     this.sheet = el("section", "st-console rv-auto-round");
     this.sheet.setAttribute("role", "dialog");
     this.sheet.setAttribute("aria-modal", "true");
     this.sheet.setAttribute("aria-label", tr("自动评审 · 这一轮"));
     this.back.append(this.sheet);
-    attachWindowGeom("auto-round", { back: this.back, panel: this.sheet, min: [520, 380] });
     this.render();
   }
 
-  /** `_parent` 只为与别的 sheet 的 `mount(parent)` 签名兼容；实际挂载点由 `mountOverlay` 决定。 */
-  mount(_parent: HTMLElement): void {
+  /** 同 `AutoSettingsSheet.mount`：`attachGeom` 由 app.ts 传（这个文件不在顶层碰 DOM 模块）。 */
+  mount(_parent: HTMLElement, attachGeom?: (back: HTMLElement, panel: HTMLElement) => void): void {
+    attachGeom?.(this.back, this.sheet);
     mountOverlay(this.back);
     this.popEsc = pushEscLayer({ el: this.back, onEsc: () => this.close() });
   }

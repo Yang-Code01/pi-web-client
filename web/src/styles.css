@@ -3395,11 +3395,15 @@ body.win-resizing, body.win-resizing .term-grip, body.win-resizing .win-grip { c
 /* 挂了抓手的窗口：底栏右下角给抓手让位，别压住「确定 / 保存」那颗按钮。
    `--win-grip-foot-pad` = 抓手边长 + 8px（见 wingrip.css，是唯一来源）。
 
-   **这条规则只在这里有、`wingrip.css` 里没有**（2026-11-29 评审：两份逐字相同会漂移）。理由是层叠顺序：
-   这张表里 `.mgr-foot` / `.skill-foot` / `.scratch-foot` / `.branch-foot` / `.repos-foot` /
-   `.jira-picker-foot` / `.repopick-foot` 都用 `padding` **简写**写在后面，`@import` 进来的那份排在
-   最前会被它们盖掉；而这里列的是主界面专有的 footer 类，内网通那页（只加载 `peer.css`）一个都用不上。
-   **唯一例外**是内网通选文件浮层的 `.pfoot`，那一条在 wingrip.css 里（那一页没有这张表）。
+   **为什么这条不怕层叠顺序**：它的特定性是 (0,2,0)（`.win-grip-panel` + `:is()` 里最高的那个类），
+   而各功能表里 footer 的 `padding` 简写都是单个类名 (0,1,0) —— 不管 `.sys-foot{padding:8px 20px}`
+   排在这条之前还是之后（它们经各自的 TS `import "./x.css"` 进来，**大多排在本文件之后**），
+   这条都赢。别在注释里论证「要压在它们后面」：那是上一轮写错的，靠位置赢不了、也不需要靠位置。
+   验证在 `web/tests/dialog-geom-browser.mjs` 里拿真 dist 的 CSS 逐个 footer 类量（那条测试以前只打
+   styles.css，恰好绕开了这里会出的问题）。
+
+   列的是主界面专有的 footer 类；内网通那页（只加载 `peer.css`）的 `.pfoot` 在 wingrip.css。
+   没有底栏、按钮 / 列表直接顶到角上的窗（Jira 确认框、选人浮层）由它们自己的表让位。
    加新的 footer 类：主界面的加在这里；内网通那页的加在 wingrip.css。
 
    只用**直接子元素**（`>`）：仓库与分支面板会嵌套（嵌入的 BranchSheet 自己没有抓手），

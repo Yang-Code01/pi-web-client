@@ -422,3 +422,6 @@
   justify-content: flex-end;
   margin-top: 2px;
 }
+/* #755：这扇窗能拉大小，右下角那只 18px 的抓手（`.win-grip`）就压在这排按钮的最后一颗上。
+   没有底栏可以挂让位规则，所以按钮行自己让 —— 右侧加一段、下面再加 4px，折行时也不会撞到爪子。 */
+.win-grip-panel > .jira-ask-actions { padding-right: var(--win-grip-foot-pad, 26px); padding-bottom: 4px; }

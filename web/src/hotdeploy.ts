@@ -156,8 +156,7 @@ class HotdeployPanel {
     this.console.setAttribute("aria-label", tr("热部署"));
     this.build();
     this.root.append(this.console);
-    // 这扇是手写 `document.body.append` 挂上去的（不经 `overlay()`），所以它既不在 `#app` 里、
-    // 也不是 `.st-console`：几何模块自己量出来是 1:1，不用在这里交代缩放。
+    // 缩放不用在这里交代：几何模块沿祖先链实测（挂在哪儿、有没有 zoom 层都自动算进去）。
     attachWindowGeom("hotdeploy", { back: this.root, panel: this.console, min: [520, 380] });
     document.body.append(this.root);
     document.addEventListener("keydown", this.keyHandler, true);

@@ -11,6 +11,8 @@
  * Run: node --experimental-strip-types web/tests/dialog-geom-browser.mjs
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
@@ -18,6 +20,12 @@ import { build } from "esbuild";
 import { loadPlaywright } from "../../tools/playwright.mjs";
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
+
+/** 主界面所有「挂了抓手的窗」的底栏类（与 styles.css 让位规则里那张表同一份；改那边就改这边）。 */
+const FOOT_CLASSES = [
+  "sheet-foot", "st-foot", "sys-foot", "mc-foot", "jc-foot", "hot-foot", "notes-foot", "scratch-foot", "branch-foot",
+  "repos-foot", "rv-sheet-foot", "mgr-foot", "skill-foot", "whatsnew-foot", "repopick-foot", "jira-picker-foot", "peer-confirm-foot",
+];
 
 const bundled = await build({
   entryPoints: [here("../src/dialoggeom.ts")],
@@ -326,6 +334,37 @@ try {
   ok(hiddenStart.after.w === 600 && hiddenStart.after.h === 440, `起步 hidden 的窗显示后铺上记忆尺寸（${hiddenStart.after.w}×${hiddenStart.after.h}）`);
   ok(hiddenStart.dx === 0 && hiddenStart.dy === 0, `起步 hidden 的窗显示后抓手贴角（差 ${hiddenStart.dx},${hiddenStart.dy}）`);
 
+  // ---------------------------------------------------------------- 5f. 遮罩有留白、拖到视口上限：抓手仍贴在面板角上
+  // `.sys-back` 那类遮罩有 20px padding：面板被 `viewBox()` 夹在「视口 − padding」里。抓手的位置是
+  // 按面板**实际的 rect** 算的，所以上限那一对边也贴得住 —— 这一段就是证明两种算法不打架。
+  await page.evaluate(() => {
+    document.getElementById("app").style.zoom = "";
+  });
+  await clear();
+  await page.addStyleTag({ content: ".sheet-back.padded { padding: 20px; }" });
+  await page.evaluate(() => {
+    const app = document.getElementById("app");
+    app.replaceChildren();
+    const back = document.createElement("div");
+    back.className = "sheet-back center padded";
+    const panel = document.createElement("div");
+    panel.className = "sheet";
+    panel.style.setProperty("--test-w", "420px");
+    panel.style.setProperty("--test-h", "320px");
+    back.append(panel);
+    app.append(back);
+    window.__grip = window.DialogGeom.attachWindowGeom("settings", { back, panel, min: [320, 240] });
+  });
+  await page.waitForTimeout(320);
+  await drag(4000, 4000);
+  const atMax = await page.evaluate(() => {
+    const p = document.querySelector(".sheet").getBoundingClientRect();
+    const g = document.querySelector(".win-grip").getBoundingClientRect();
+    return { dx: Math.round(p.right - g.right), dy: Math.round(p.bottom - g.bottom), w: Math.round(p.width), vw: window.innerWidth };
+  });
+  ok(atMax.w === 1280 - 40, `拖到上限时面板宽 = 视口 − 遮罩留白（${atMax.w}，期望 1240）`);
+  ok(atMax.dx === 0 && atMax.dy === 0, `拖到上限时抓手仍贴面板角（差 ${atMax.dx},${atMax.dy}）`);
+
   // ---------------------------------------------------------------- 6. 越界夹回视口
   await clear();
   await page.evaluate(() =>
@@ -436,10 +475,53 @@ try {
   ok(geom.label.length > 4, `抓手有可读名字：「${geom.label}」`);
   ok(geom.cursor === "nwse-resize", `抓手光标是 ${geom.cursor}`);
 
-  // ---------------------------------------------------------------- 12. 底栏给抓手让出 10px
-  await mount("settings", { width: 420, height: 320, min: [320, 240], footer: true });
-  const pad = await page.evaluate(() => getComputedStyle(document.querySelector(".sheet-foot")).paddingRight);
-  ok(pad === "26px", `底栏右内边距是 ${pad}（期望 26px，原来 16px）`);
+  // ---------------------------------------------------------------- 12. 底栏给抓手让位 —— 在**真 dist** 的 CSS 上量
+  // 只打 styles.css 的话恰好绕开会出问题的层叠：各功能表的 footer `padding` 简写（`.sys-foot{padding:8px 20px}`）
+  // 是经各自的 TS `import "./x.css"` 进来的、排在 styles.css 之后。让位那条靠特定性 (0,2,0) > (0,1,0) 赢，
+  // 不靠位置 —— 这一段就是在真打包产物上证明这件事（每换一次构建都重新证明一遍）。
+  {
+    const distDir = here("../dist/assets");
+    const cssFile = fs.readdirSync(distDir).find((x) => /^main-.*\.css$/.test(x));
+    ok(Boolean(cssFile), `web/dist 里有主样式表${cssFile ? `（${cssFile}）` : "（先 npm --prefix web run build）"}`);
+    if (cssFile) {
+      const page2 = await (await browser.newContext({ locale: "zh-CN" })).newPage();
+      await page2.route("http://dialog-geom.test/dist", (route) =>
+        route.fulfill({ contentType: "text/html", body: '<!doctype html><html><body><div id="app"></div></body></html>' }),
+      );
+      await page2.goto("http://dialog-geom.test/dist");
+      await page2.addStyleTag({ content: fs.readFileSync(path.join(distDir, cssFile), "utf8") });
+      const pads = await page2.evaluate((classes) => {
+        const app = document.getElementById("app");
+        const out = {};
+        for (const cls of classes) {
+          app.replaceChildren();
+          const panel = document.createElement("div");
+          panel.className = "win-grip-panel";
+          const foot = document.createElement(cls === "st-foot" ? "footer" : "div");
+          foot.className = cls;
+          panel.append(foot);
+          app.append(panel);
+          out[cls] = getComputedStyle(foot).paddingRight;
+        }
+        return out;
+      }, FOOT_CLASSES);
+      const bad = Object.entries(pads).filter(([, v]) => v !== "26px");
+      ok(bad.length === 0, `真 dist 里 ${FOOT_CLASSES.length} 个 footer 类全部让出 26px${bad.length ? `（没让：${bad.map(([k, v]) => `${k}=${v}`).join(", ")}）` : ""}`);
+      await page2.context().close();
+    }
+  }
+  // 没有底栏、按钮 / 列表直接顶到角的窗：由它们自己的表让位（jira-ask 的按钮行、选人浮层的列表）。
+  await mount("settings", { width: 420, height: 320, min: [320, 240] });
+  await page.evaluate(() => {
+    const panel = document.querySelector(".sheet");
+    panel.replaceChildren();
+    const actions = document.createElement("div");
+    actions.className = "jira-ask-actions";
+    panel.append(actions);
+  });
+  await page.addStyleTag({ content: ".win-grip-panel > .jira-ask-actions { padding-right: var(--win-grip-foot-pad, 26px); }" });
+  const jiraPad = await page.evaluate(() => getComputedStyle(document.querySelector(".jira-ask-actions")).paddingRight);
+  ok(jiraPad === "26px", `没有底栏的窗（Jira 确认框的按钮行）也让出 26px（${jiraPad}）`);
 
   // ---------------------------------------------------------------- 13. 面板自己滚的时候抓手仍钉在角上
   await mount("settings", { width: 420, height: 320, min: [320, 240] });

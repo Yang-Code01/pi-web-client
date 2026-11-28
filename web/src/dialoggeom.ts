@@ -97,15 +97,33 @@ function sanitize(raw: unknown): Geom | null {
   const src = raw as Record<string, unknown>;
   const geom: Geom = {};
   for (const k of ["w", "h", "l", "t"] as const) {
-    const n = Number(src[k]);
-    if (Number.isFinite(n)) geom[k] = k === "w" || k === "h" ? Math.max(1, n) : n;
+    // 先看 `typeof`：`Number(null)` 是 0、`Number("")` 也是 0 —— 手改坏的 `"w": null` 不该被当成 1px 的窗。
+    const raw = src[k];
+    if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
+    geom[k] = k === "w" || k === "h" ? Math.max(1, raw) : raw;
   }
   if (geom.w === undefined && geom.h === undefined && geom.l === undefined && geom.t === undefined) return null;
   return geom;
 }
 
+/**
+ * `loadGeom()` 的缓存只在 **resize 那一帧** 里有效（那一帧每扇开着的窗都会问一遍，没必要每次都
+ * `JSON.parse` 整张表）。帧外一律现读：`localStorage` 别处也会写（开发者工具、同源的另一个标签页、
+ * 桥端某天要同步），一个常驻缓存会把旧尺寸当真 —— 这个坑是测试当场踩出来的。
+ */
+const geomCache = new Map<DialogId, Geom | null>();
+/** 正在跑 resize 那一帧（`loadGeom()` 只在这期间走帧内缓存；别处常驻缓存会把旧尺寸当真）。 */
+let resizeFrame = false;
+
 export function loadGeom(id: DialogId): Geom | null {
-  return readAll()[id] ?? null;
+  if (!resizeFrame) {
+    // 不在 resize 帧里：现读，不缓存。
+    return readAll()[id] ?? null;
+  }
+  if (geomCache.has(id)) return geomCache.get(id) ?? null;
+  const geom = readAll()[id] ?? null;
+  geomCache.set(id, geom);
+  return geom;
 }
 
 export function saveGeom(id: DialogId, geom: Geom): void {
@@ -114,6 +132,7 @@ export function saveGeom(id: DialogId, geom: Geom): void {
   const all = readAll();
   all[id] = clean;
   writeAll(all);
+  geomCache.delete(id);
 }
 
 export function clearGeom(id: DialogId): void {
@@ -121,6 +140,7 @@ export function clearGeom(id: DialogId): void {
   if (!(id in all)) return;
   delete all[id];
   writeAll(all);
+  geomCache.delete(id);
 }
 
 /**
@@ -177,7 +197,10 @@ export function migrateOldGeom(): void {
   put("sheet", parse("pi.sheetGeom"));
   put("slides", parse("pi.slidesGeom"));
 
-  if (dirty) writeAll(all);
+  if (dirty) {
+    writeAll(all);
+    geomCache.clear();
+  }
   try {
     localStorage.setItem(MIGRATED, "1");
   } catch {
@@ -193,6 +216,7 @@ export function migrateOldGeom(): void {
  */
 export function resetAllWindowGeom(): void {
   writeAll({});
+  geomCache.clear();
   for (const key of ["pi.termGeom", LEGACY_TERM_H, "pi.viewerW", "pi.sheetGeom", "pi.slidesGeom"]) {
     try {
       localStorage.removeItem(key);
@@ -237,17 +261,29 @@ interface Spaces {
  * 挂载那一刻跑一次，错的尺寸要等到下一次窗口 resize 才被纠正。按祖先链上的 `zoom` 算与动画无关：
  * `zoom` 是布局属性，不受 transform 影响，隐藏时（`display: none`）也照样读得到。
  *
- * 读 computed style 要走整条祖先链，所以结果**只跟三样东西有关**时才缓存：倍率只在
- * 「字号 / 控制台倍率变了」时变 —— 那两件事都会触发窗口 resize 之外的 `apply()`（见 `onWindowResize`
- * 与调用处的 `--st-zoom` 变更），这里每次现算、不缓存，反正一扇窗一次挂载只算两回。
+ * 读 computed style 要走整条祖先链。一个 resize 帧里 `apply()` 会调它好几次（`narrow()` 两次、
+ * `viewBox()` 一次、`place()` 一次），所以结果**按帧缓存**：同一个元素、同一帧只读一遍。
+ * 缓存只在帧内有效，字号 / 控制台倍率变了下一帧自然重算，不用谁去失效它。
  */
+const zoomCache = new Map<Element, { frame: number; zoom: number }>();
+let frameNo = 0;
+
 function zoomOf(el: HTMLElement): number {
+  const hit = zoomCache.get(el);
+  if (hit && hit.frame === frameNo) return hit.zoom;
   let zoom = 1;
+  let seen = false;
   for (let node: Element | null = el; node; node = node.parentElement) {
     const raw = Number.parseFloat(getComputedStyle(node).zoom);
-    if (Number.isFinite(raw) && raw > 0) zoom *= raw;
+    if (Number.isFinite(raw) && raw > 0) {
+      zoom *= raw;
+      seen = true;
+    }
   }
-  return zoom > 0 ? zoom : appZoom();
+  // 元素不在文档里（祖先链断在半路）时别拿半截乘积当真：退回 `--ui-scale`，那是它挂上去之后的倍率。
+  const value = seen && el.isConnected ? zoom : appZoom();
+  zoomCache.set(el, { frame: frameNo, zoom: value });
+  return value;
 }
 
 function spacesOf(back: HTMLElement, panel: HTMLElement): Spaces {
@@ -315,15 +351,34 @@ function pruneDeadWindows(): void {
   }
 }
 
+/**
+ * resize 事件在拖浏览器窗口时一帧来好几次；每扇开着的窗都要 `apply + place`，而那里面要读祖先链的
+ * computed style 与整张 `pi.dialogGeom`。所以**一帧只做一次**（rAF 合并），并把帧号 +1：
+ * 帧内 `zoomOf()` / `loadGeom()` 的缓存到这一刻统一失效 —— 每扇窗、每帧，两样各只读一遍。
+ */
+let resizeQueued = false;
 function onWindowResize(): void {
-  pruneDeadWindows();
-  for (const [panel, win] of live) {
-    if (!panel.isConnected) continue;
-    // 缩放之后把尺寸夹回视口、窄屏收起 / 宽屏装回来 —— 这两件事都在 `apply()` 里，
-    // 别在外面再补一句 `grip.hidden = false`（会跟窄屏那一支打架）。
-    win.apply();
-    win.place();
-  }
+  if (resizeQueued) return;
+  resizeQueued = true;
+  requestAnimationFrame(() => {
+    resizeQueued = false;
+    frameNo += 1;
+    geomCache.clear();
+    resizeFrame = true;
+    try {
+      pruneDeadWindows();
+      for (const [panel, win] of live) {
+        if (!panel.isConnected) continue;
+        // 缩放之后把尺寸夹回视口、窄屏收起 / 宽屏装回来 —— 这两件事都在 `apply()` 里，
+        // 别在外面再补一句 `grip.hidden = false`（会跟窄屏那一支打架）。
+        win.apply();
+        win.place();
+      }
+    } finally {
+      resizeFrame = false;
+      geomCache.clear();
+    }
+  });
 }
 
 export function attachWindowGeom(id: DialogId, opts: AttachOpts): WindowGeomHandle | null {
