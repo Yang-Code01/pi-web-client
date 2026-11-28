@@ -4848,6 +4848,10 @@ async function main(): Promise<void> {
     if (!linkedPath) removePidFile(cfg.port);
   });
 
+  // 主动停桥时壳可能比脑先走：shutdown() 一旦开始，link 断开就不能再把进程直接带走。
+  // 否则 stopAllReviews() 的收尾和状态写回会被截断（用户关桥后仍可能留下 worker）。
+  let shuttingDown = false;
+
   // 有壳时脑只接受壳的转发，所以只绑回环；公网面那个口子由壳来听。
   server.listen(linkedPath ? 0 : cfg.port, linkedPath ? "127.0.0.1" : cfg.host, async () => {
     let pagePort = cfg.port;
@@ -4863,7 +4867,9 @@ async function main(): Promise<void> {
         link.on("shutdown", () => void shutdown());
         link.on("closed", () => {
           log("host: 壳断开了，脑退出");
-          process.exit(0);
+          // 主动停桥时壳先发 shutdown、再等脑断开；这时候 shutdown() 已经在收尾了，
+          // 让它把 stopAllReviews() 写完，别在这里抢着 process.exit。
+          if (!shuttingDown) process.exit(0);
         });
         // 被换下的那一代：先把隧道收回来再走，不然 cloudflared 会成孤儿。
         link.on("retire", () => {
@@ -4929,11 +4935,16 @@ async function main(): Promise<void> {
     void sessions.pinAll().then((n) => n && log(`pinned default permission on ${n} session(s)`)).catch(() => {});
   });
 
-  let shuttingDown = false;
   const shutdown = async (stopReviews = true) => {
     if (shuttingDown) return;
     shuttingDown = true;
     log("shutting down");
+    // 收尾期间壳可能已经走了：给一个上限，别让残留的脑永远挂着。
+    const forceExit = setTimeout(() => {
+      log("shutting down: 超时，强制退出");
+      process.exit(0);
+    }, 10_000);
+    forceExit.unref();
     fileIndex.close();
     terminals.closeAll();
     tunnel.stop();

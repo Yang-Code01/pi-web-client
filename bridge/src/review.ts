@@ -629,6 +629,11 @@ export function reviewCancelFile(runId: string): string {
   return path.join(reviewJobsDir(), `${runId}.cancel`);
 }
 
+/** worker 每 5 秒写一次的心跳：pid 会被系统复用，只有这份文件能证明它还是那个 worker。 */
+function reviewBeatFile(runId: string): string {
+  return path.join(reviewJobsDir(), `${runId}.beat`);
+}
+
 function reviewLogFile(runId: string): string {
   return path.join(reviewJobsDir(), `${runId}.log`);
 }
@@ -663,6 +668,9 @@ function readReviewJob(file: string): ReviewJob | null {
 
 /** worker 启动到写回 pid 之间的窗口：这段时间没有 pid 不能当成「已经死了」。 */
 const WORKER_START_GRACE_MS = 20_000;
+/** 心跳间隔与过期阈值。30 秒足够跨过一次脑崩溃 / 换脑，又不会让复用的 pid 一直冒充 worker。 */
+const WORKER_BEAT_MS = 5_000;
+const WORKER_BEAT_STALE_MS = 30_000;
 
 /** 这个 pid 还活着吗。Windows 上 `taskkill` / `process.kill(pid, 0)` 都认这一条。 */
 export function reviewJobAlive(job: ReviewJob | null | undefined): boolean {
@@ -678,6 +686,38 @@ export function reviewJobAlive(job: ReviewJob | null | undefined): boolean {
 }
 
 /**
+ * worker 每 5 秒写一次心跳。`startedAt` 用来对同一次评审，避免 pid 被复用时把无关进程
+ * （或者上一轮的 worker）当成这条评审的执行进程。
+ */
+function readReviewBeat(job: ReviewJob): { at: number; pid: number; startedAt: string } | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(reviewBeatFile(job.runId), "utf8")) as any;
+    const at = Number(raw?.at);
+    const pid = Number(raw?.pid);
+    const startedAt = str(raw?.startedAt);
+    if (!Number.isFinite(at) || !Number.isInteger(pid) || pid <= 0 || !startedAt) return null;
+    return { at, pid, startedAt };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 这个 pid 现在还是不是**这次评审**的 worker？只靠 `process.kill(pid, 0)` 不够：
+ * worker 在脑不在时退出后，pid 会被系统复用，sweep / resume 会把无关进程当成评审还活着。
+ * 有心跳就以心跳为准；引擎刚起、还没来得及写第一份心跳时，才给启动宽限。
+ */
+function reviewJobRunning(job: ReviewJob | null | undefined): boolean {
+  if (!job || !reviewJobAlive(job)) return false;
+  const beat = readReviewBeat(job);
+  if (beat) {
+    return beat.pid === Number(job.pid) && beat.startedAt === job.startedAt && Date.now() - beat.at < WORKER_BEAT_STALE_MS;
+  }
+  const started = Date.parse(job.startedAt);
+  return Number.isFinite(started) && Date.now() - started < WORKER_START_GRACE_MS;
+}
+
+/**
  * 刚 spawn、pid 还没写回文件。换脑如果正好卡在这一瞬，不能把仍在启动的 worker 判死：
  * 新脑开机 sweep 会把 run 标成「桥重启」，worker 随后读到非 running 就直接退了。
  */
@@ -687,12 +727,12 @@ function workerStarting(job: ReviewJob | null | undefined): boolean {
   return Number.isFinite(started) && Date.now() - started < WORKER_START_GRACE_MS;
 }
 
-/** 盘上那次评审的执行进程还活着吗（按 runId + startedAt 对，防 pid 复用）。 */
+/** 盘上那次评审的执行进程还活着吗（按 runId + startedAt + 心跳对，防 pid 复用）。 */
 function liveJobForRun(runId: string, startedAt = ""): ReviewJob | null {
   const job = readReviewJob(reviewJobFile(runId));
   if (!job) return null;
   if (startedAt && job.startedAt && job.startedAt !== startedAt) return null;
-  if (reviewJobAlive(job) || workerStarting(job)) return job;
+  if (reviewJobRunning(job) || workerStarting(job)) return job;
   return null;
 }
 
@@ -1561,17 +1601,26 @@ function freshProgress(job: ReviewJob): Progress {
 }
 
 function startText(opts: ReviewJobOpts): string {
-  return opts.mode === "pr"
-    ? `开始评审：PR #${Number(opts.pr) || 0}`
-    : opts.mode === "range"
-      ? `开始评审：${opts.target || "HEAD"} vs ${opts.base || "主干"}`
-      : opts.mode === "commit"
-        ? `开始评审：提交 ${opts.commit || "HEAD"}`
-        : "开始评审：工作区改动";
+  switch (opts.mode) {
+    case "pr":
+      return `开始评审：PR #${Number(opts.pr) || 0}`;
+    case "range":
+      return `开始评审：${opts.target || "HEAD"} vs ${opts.base || "主干"}`;
+    case "commit":
+      return `开始评审：提交 ${opts.commit || "HEAD"}`;
+    default:
+      return "开始评审：工作区改动";
+  }
 }
 
 function reapReviewJob(job: ReviewJob): void {
-  for (const file of [reviewJobFile(job.runId), reviewProgressFile(job.runId), reviewCancelFile(job.runId), reviewLogFile(job.runId)]) {
+  for (const file of [
+    reviewJobFile(job.runId),
+    reviewProgressFile(job.runId),
+    reviewCancelFile(job.runId),
+    reviewBeatFile(job.runId),
+    reviewLogFile(job.runId),
+  ]) {
     try {
       fs.rmSync(file, { force: true });
     } catch {
@@ -1614,11 +1663,70 @@ function requestCancel(job: ReviewJob): void {
 }
 
 let tickTimer: NodeJS.Timeout | null = null;
+/** 同一条评审的同一个错误只记一次，避免盘满 / 广播炸时每 500ms 刷一行日志。 */
+const tickErrors = new Map<string, string>();
 
 function ensureReviewTicker(): void {
   if (tickTimer) return;
   tickTimer = setInterval(tickReviewJobs, 500);
   tickTimer.unref?.();
+}
+
+/** 一条评审的一轮转发。抛错由 `tickReviewJobs()` 隔离，不能让一条拖垮整个脑。 */
+function tickOneReview(runId: string, a: Active): void {
+  const job = a.job;
+  if (!job) return;
+
+  // 换脑可能赶在 worker 写回 pid 之前：每一轮都从盘上补一次，补到之后 cancel 超时才有 pid 可杀。
+  if (!job.pid) {
+    const fresh = readReviewJob(reviewJobFile(runId));
+    if (fresh?.pid) job.pid = fresh.pid;
+  }
+
+  const progress = readProgressFile(job);
+  if (progress && JSON.stringify(progress) !== JSON.stringify(progressMap.get(runId))) {
+    // 先广播再记账：广播抛错时下一轮还会重试这一帧，不会永远停在上一格。
+    notify.onProgress?.(job, progress);
+    progressMap.set(runId, progress);
+  }
+  if (reviewJobRunning(job)) return;
+  // 刚 spawn 的 worker 还没把 pid 写回来：再等一会儿，别把「正在起」判成「已经死」。
+  if (workerStarting(job)) return;
+
+  const state = readReviewState(job.repo, job.session);
+  const run = state.runs.find((r) => r.id === runId);
+  if (!run) {
+    active.delete(runId);
+    progressMap.delete(runId);
+    reapReviewJob(job);
+    return;
+  }
+  if (run.status === "running") {
+    // worker 写状态之前就死了（崩了 / 被系统杀了）：这条不能永远转圈。错误文案由 errorCode
+    // 在前端按语言渲染，桥里不再写一份中文，否则外语界面会把它当 detail 重复拼在后面。
+    run.status = "stale";
+    run.errorCode = "worker-lost";
+    run.error = "";
+    run.finishedAt = new Date().toISOString();
+    writeReviewState(job.repo, state, job.session);
+  }
+  const last = progressMap.get(runId) ?? progress ?? freshProgress(job);
+  const final: Progress = {
+    ...last,
+    status: run.status,
+    phase: "done",
+    currentFile: "",
+    tokens: run.tokens || last.tokens,
+    reviewedFiles: run.reviewedFiles ?? last.reviewedFiles,
+    totalFiles: run.totalFiles ?? last.totalFiles,
+    error: run.error ?? "",
+    errorCode: run.errorCode ?? "",
+  };
+  notify.onProgress?.(job, final);
+  notify.onState?.(job);
+  progressMap.delete(runId);
+  active.delete(runId);
+  reapReviewJob(job);
 }
 
 /**
@@ -1629,57 +1737,18 @@ function ensureReviewTicker(): void {
  */
 function tickReviewJobs(): void {
   for (const [runId, a] of [...active]) {
-    const job = a.job;
-    if (!job) continue;
-
-    // 换脑可能赶在 worker 写回 pid 之前：每一轮都从盘上补一次，补到之后 cancel 超时才有 pid 可杀。
-    if (!job.pid) {
-      const fresh = readReviewJob(reviewJobFile(runId));
-      if (fresh?.pid) job.pid = fresh.pid;
+    try {
+      tickOneReview(runId, a);
+      tickErrors.delete(runId);
+    } catch (err) {
+      // readReviewState / writeReviewState 碰到 ENOSPC、EACCES、网络盘瞬断，或 broadcast 写
+      // socket 抛错，都只能影响这一条；不能让 setInterval 的未捕获异常把整个脑带走。
+      const message = err instanceof Error ? err.message : String(err);
+      if (tickErrors.get(runId) !== message) {
+        tickErrors.set(runId, message);
+        console.error(`[review] 转发评审 ${runId} 失败：${message}`);
+      }
     }
-
-    const progress = readProgressFile(job);
-    if (progress && JSON.stringify(progress) !== JSON.stringify(progressMap.get(runId))) {
-      progressMap.set(runId, progress);
-      notify.onProgress?.(job, progress);
-    }
-    if (reviewJobAlive(job)) continue;
-    // 刚 spawn 的 worker 还没把 pid 写回来：再等一会儿，别把「正在起」判成「已经死」。
-    if (workerStarting(job)) continue;
-
-    const state = readReviewState(job.repo, job.session);
-    const run = state.runs.find((r) => r.id === runId);
-    if (!run) {
-      active.delete(runId);
-      progressMap.delete(runId);
-      reapReviewJob(job);
-      continue;
-    }
-    if (run.status === "running") {
-      // worker 写状态之前就死了（崩了 / 被系统杀了）：这条不能永远转圈。
-      run.status = "stale";
-      run.errorCode = "worker-lost";
-      run.error = "评审进程意外退出，这次评审没跑完";
-      run.finishedAt = new Date().toISOString();
-      writeReviewState(job.repo, state, job.session);
-    }
-    const last = progressMap.get(runId) ?? progress ?? freshProgress(job);
-    const final: Progress = {
-      ...last,
-      status: run.status,
-      phase: "done",
-      currentFile: "",
-      tokens: run.tokens || last.tokens,
-      reviewedFiles: run.reviewedFiles ?? last.reviewedFiles,
-      totalFiles: run.totalFiles ?? last.totalFiles,
-      error: run.error ?? "",
-      errorCode: run.errorCode ?? "",
-    };
-    notify.onProgress?.(job, final);
-    notify.onState?.(job);
-    progressMap.delete(runId);
-    active.delete(runId);
-    reapReviewJob(job);
   }
   if (!active.size && tickTimer) {
     clearInterval(tickTimer);
@@ -1778,7 +1847,12 @@ export function resumeReviewJobs(): number {
     }
     const state = readReviewState(job.repo, job.session);
     const run = state.runs.find((r) => r.id === job.runId);
-    if (!run || run.status !== "running" || (!reviewJobAlive(job) && !workerStarting(job)) || (run.startedAt && job.startedAt && run.startedAt !== job.startedAt)) {
+    if (
+      !run ||
+      run.status !== "running" ||
+      (!reviewJobRunning(job) && !workerStarting(job)) ||
+      (run.startedAt && job.startedAt && run.startedAt !== job.startedAt)
+    ) {
       // 已经收尾、进程没了、或 pid 已经被别的进程复用：这份 job 文件只是碎屑。
       reapReviewJob(job);
       continue;
@@ -1805,10 +1879,10 @@ export function resumeReviewJobs(): number {
     notify.onState?.(job);
     resumed += 1;
   }
-  // 没有 job 文件的进度 / 取消 / 日志是上一代留下的碎屑，清掉；别让下一次开机又当成活任务。
+  // 没有 job 文件的进度 / 取消 / 心跳 / 日志是上一代留下的碎屑，清掉；别让下一次开机又当成活任务。
   for (const name of names) {
     if (name.endsWith(".json") && !name.endsWith(".progress.json")) continue;
-    const runId = name.replace(/\.(progress\.json|cancel|log)$/, "");
+    const runId = name.replace(/\.(progress\.json|cancel|beat|log)$/, "");
     if (live.has(runId)) continue;
     try {
       fs.rmSync(path.join(reviewJobsDir(), name), { force: true });
@@ -1831,11 +1905,11 @@ export async function stopAllReviews(waitMs = 3000): Promise<number> {
   if (!jobs.length) return 0;
   for (const job of jobs) requestCancel(job);
   const until = Date.now() + waitMs;
-  while (Date.now() < until && jobs.some((job) => reviewJobAlive(job))) {
+  while (Date.now() < until && jobs.some((job) => active.get(job.runId)?.job === job && reviewJobAlive(job))) {
     await new Promise((r) => setTimeout(r, 100));
   }
   for (const job of jobs) {
-    if (reviewJobAlive(job)) killReviewPid(Number(job.pid));
+    if (active.get(job.runId)?.job === job && reviewJobAlive(job)) killReviewPid(Number(job.pid));
     // worker 可能刚写到一半就被杀：把它那条收成「已停止」，别等下次开机再标成「桥重启」。
     const state = readReviewState(job.repo, job.session);
     const run = state.runs.find((r) => r.id === job.runId);
@@ -1876,11 +1950,25 @@ export async function runReviewJob(jobFile: string): Promise<void> {
       fs.rmSync(reviewJobFile(job.runId), { force: true });
       fs.rmSync(reviewProgressFile(job.runId), { force: true });
       fs.rmSync(reviewCancelFile(job.runId), { force: true });
+      fs.rmSync(reviewBeatFile(job.runId), { force: true });
     } catch {
       /* 清不掉就留给下次开机 */
     }
     return;
   }
+
+  // 心跳只证明「这个 pid 还是这个 worker」：换脑期间脑不在，pid 可能被系统复用；
+  // 没有它，sweep / resume 会把无关进程当成评审还在跑。
+  const beat = () => {
+    try {
+      writeJsonAtomic(reviewBeatFile(job.runId), { pid: process.pid, startedAt: job.startedAt, at: Date.now() });
+    } catch {
+      /* 心跳写不下不影响评审本身 */
+    }
+  };
+  beat();
+  const beatTimer = setInterval(beat, WORKER_BEAT_MS);
+  beatTimer.unref?.();
 
   let progress: Progress = readProgressFile(job) ?? freshProgress(job);
   let flushTimer: NodeJS.Timeout | null = null;
@@ -1946,6 +2034,7 @@ export async function runReviewJob(jobFile: string): Promise<void> {
     });
   } finally {
     clearInterval(cancelPoll);
+    clearInterval(beatTimer);
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushTimer = null;

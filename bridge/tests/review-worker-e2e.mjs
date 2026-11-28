@@ -208,6 +208,27 @@ const jobPid = (runId) => {
   }
 };
 const runOf = (state, runId) => state?.runs?.find((r) => r.id === runId) ?? null;
+// 壳已经退出，WS 读不到了；直接看脑落盘的那份状态，证明停机把「已停止」写回去了。
+const runOnDisk = (runId) => {
+  const root = path.join(STATE, "review");
+  const files = [];
+  for (const name of fs.readdirSync(root)) {
+    const p = path.join(root, name);
+    if (name.endsWith(".json")) files.push(p);
+    else if (fs.statSync(p).isDirectory()) {
+      for (const inner of fs.readdirSync(p)) if (inner.endsWith(".json")) files.push(path.join(p, inner));
+    }
+  }
+  for (const file of files) {
+    try {
+      const run = runOf(JSON.parse(fs.readFileSync(file, "utf8")), runId);
+      if (run) return run;
+    } catch {
+      /* 别的状态文件坏了不影响这条 */
+    }
+  }
+  return null;
+};
 
 let workerPid = 0;
 let secondWorkerPid = 0;
@@ -291,6 +312,11 @@ try {
   await until(async () => exitCode !== null, "壳退出", 15000);
   assert.equal(exitCode, 0, exitSignal ? `主动停机被信号 ${exitSignal} 终止` : "主动停机应该是 0");
   await until(() => !alive(pid2), "停机时评审 worker 被收掉", 10000);
+  const stoppedRun = await until(() => {
+    const run = runOnDisk(started2.runId);
+    return run?.status === "stopped" ? run : null;
+  }, "停机把状态写回 stopped", 5000);
+  assert.equal(stoppedRun.errorCode, "stopped", "主动停机要落成 stopped，不能留给下次开机 sweep");
   console.log("review-worker-e2e: ok");
 } catch (err) {
   console.error(String(err?.stack ?? err));

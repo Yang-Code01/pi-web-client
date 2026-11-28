@@ -30,6 +30,8 @@ const VERSION = "0.1.0";
 const OBSERVE_MS = Number(process.env.PI_HOST_OBSERVE_MS ?? 5000) || 5000;
 /** 脑崩了到重拉之间的间隔。 */
 const RESPAWN_MS = 1000;
+/** 主动停桥时给脑留的收尾时间：它要停评审、关会话，再把 link 关掉。 */
+const STOP_GRACE_MS = 8000;
 /** 脑连接不上 / 不 hello 的超时。 */
 const HELLO_MS = 30_000;
 
@@ -872,13 +874,32 @@ async function main(): Promise<void> {
     shuttingDown = true;
     log(`停机（${scope}${tellBrain ? "" : "，保留评审"}）`);
     if (tellBrain) {
+      // 先挂 close 监听再发 shutdown：脑可能反应很快，send 之后才注册会漏掉断开。
+      // 不等的话壳会在 300ms 后退出，脑的 link.on("closed") 立刻 process.exit，
+      // stopAllReviews() 的 3 秒收尾和状态写回都被截断，用户主动关桥也可能留下 worker。
+      const conn = brain?.conn;
+      const closed = new Promise<void>((resolve) => {
+        if (!conn?.alive) {
+          resolve();
+          return;
+        }
+        const timer = setTimeout(resolve, STOP_GRACE_MS);
+        timer.unref();
+        conn.onClose(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
       try {
-        brain?.conn.send({ t: "shutdown", scope });
+        conn?.send({ t: "shutdown", scope });
       } catch {
         /* 脑已经不在 */
       }
+      await closed;
+    } else {
+      // 更新器发来的 SIGTERM：这是换代，不是用户停桥；只给脑 150ms 交接，worker 留着。
+      await new Promise((r) => setTimeout(r, 150));
     }
-    await new Promise((r) => setTimeout(r, 150));
     children.killAll();
     try {
       publicServer.close();

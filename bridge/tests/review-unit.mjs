@@ -584,6 +584,17 @@ check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标�
     const runs = readReviewState(repo, session).runs;
     assert.equal(runs.find((r) => r.id === "live").status, "running");
     assert.equal(runs.find((r) => r.id === "dead").status, "stale");
+
+    // pid 活着不代表还是这个 worker：过期的 job 没有心跳，可能只是系统复用了这个 pid。
+    const reusedStartedAt = new Date(Date.now() - 60_000).toISOString();
+    writeReviewState(
+      repo,
+      { repo, runs: [run("live", startedAt), run("reused", reusedStartedAt)], marks: {} },
+      session,
+    );
+    writeJob("reused", reusedStartedAt, process.pid);
+    assert.equal(sweepStaleRuns(), 1, "pid 还活着但心跳过期，不能当成评审还在跑");
+    assert.equal(readReviewState(repo, session).runs.find((r) => r.id === "reused").status, "stale");
   } finally {
     process.env.PI_WEB_STATE = prev;
   }
