@@ -388,6 +388,8 @@ export class App {
   /** 正在画右栏（重入闸，见 renderQueue）。 */
   private queueDrawing = false;
   private queueDirty = false;
+  /** 现在这堆内容是哪颗页签画的：换页签就把它归零，同一页签内的重画才留阅读位置（#744）。 */
+  private queueDrawnTab: QueueTab | null = null;
   private tabMemory = createTabMemory(this.queueTab);
   private execSelectedRound: string | null = null;
   private execSelectedPlanTaskId: number | null = null;
@@ -21050,6 +21052,9 @@ export class App {
     this.queueDrawing = true;
     try {
       this.drawQueue();
+      // 画完了才算「这页已经画过」：面板渲染途中抛异常时不该记账，否则下次同一页签重画会把半截
+      // 内容的滚动位置当成阅读位置留着（归零的判据是 `queueDrawnTab`，见 `drawQueue()`）。
+      this.queueDrawnTab = this.queueTab;
     } finally {
       this.queueDrawing = false;
     }
@@ -21061,9 +21066,17 @@ export class App {
 
   private drawQueue(): void {
     const host = this.els.queueInner;
-    // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。
-    const kept = this.els.queuePane.scrollTop;
+    // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。换页签是另一回事：
+    // 页签条贴顶之后它一直看得见（#744），切过去就该从头看 —— 接着上一页的中段只会让人接在原地。
+    // 手点页签与链接卡那种程序式切换都走 renderQueue()，所以判据放在这里而不是 selectQueueTab()。
+    // `drawQueue()` 不会被重入：面板里的同步回调再叫 `renderQueue()` 只是置 `queueDirty`（见那个
+    // 重入闸），回头由外层再画一遍，所以 `queueDrawnTab` 不会在画到一半时被改成别的页签。
+    // 这一页画完才由 `renderQueue()` 记进 `queueDrawnTab`（抛异常就不算画过），这里只读。
+    const kept = this.queueDrawnTab === this.queueTab ? this.els.queuePane.scrollTop : 0;
     host.replaceChildren();
+    // 页签条外面套一层：贴顶、铺满整栏宽度、带主题玻璃底的都是这层，分段控件（`.exec-tabs`）
+    // 仍是里面那条灰槽 —— 探针与样式都按 `.exec-tabs button` 找按钮，别把这一层合并掉。
+    const tabsBar = el("div", "exec-tabs-bar");
     const tabs = el("div", "exec-tabs");
     const needs = el("button", this.queueTab === "needs" ? "on" : "", tr("需要你")) as HTMLButtonElement;
     needs.type = "button";
@@ -21112,7 +21125,8 @@ export class App {
       review.append(pip);
     }
     tabs.append(needs, execution, browser, review);
-    host.append(tabs);
+    tabsBar.append(tabs);
+    host.append(tabsBar);
     if (this.queueTab === "exec") {
       host.append(this.renderExecPanel());
       this.els.queuePane.scrollTop = kept;
