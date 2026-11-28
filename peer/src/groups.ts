@@ -109,12 +109,15 @@ export function optOutIds(): Set<string> {
     optOutCache = new Set((Array.isArray(raw) ? raw : []).filter((x) => typeof x === "string"));
   } catch (err) {
     // 读失败（EBUSY / 权限）不是「没人退出」：别把有效缓存清空；文件真不在才置空（评审 #20）。
-    if (!optOutCache || (err as NodeJS.ErrnoException).code === "ENOENT") {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       optOutCache = new Set();
       optOutStamp = stamp;
+    } else {
+      // 非 ENOENT：别把空集记成「已读过」再推进 stamp，否则退避命中 stamp 后永远返回空集，
+      // 权限恢复也不会重读，用户的退群名单被静默丢掉（评审 #4）。
+      optOutRetryAt = now + 10_000;
+      return optOutCache ?? new Set();
     }
-    // 其它错误不推进 stamp：下次还会重试，但先退避 10 秒，别每秒 stat + read（评审 #7/#13）。
-    optOutRetryAt = now + 10_000;
     return optOutCache;
   }
   optOutStamp = stamp;

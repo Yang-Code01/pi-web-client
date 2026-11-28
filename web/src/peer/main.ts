@@ -677,7 +677,12 @@ function toast(text: string): void {
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: { accept: "application/json" } });
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    // 服务端会优先回 { error }，只留文案就丢了状态码：挂在 error 上，调用方还能判 404（评审 #6）。
+    const err = new Error(data.error ?? `HTTP ${res.status}`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -688,7 +693,11 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
     body: JSON.stringify(body ?? {}),
   });
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error ?? `HTTP ${res.status}`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -702,7 +711,6 @@ async function loadStatus(): Promise<void> {
   renderHint();
 }
 
-/** D441：更新组状态。发布者开关在 peer 的 config 里，组与播报进度在 bridge 里。 */
 /** 旧桥 / 被裁剪的响应可能少字段：统一兜底，别让设置页 split(undefined) 崩掉（评审 #32/#36）。 */
 function normalizeUpdates(view: Partial<UpdatesView> | null | undefined): UpdatesView {
   // 旧桥 / 出错页可能回 null，直接展开再读字段会抛 TypeError（评审 #5）。
@@ -718,12 +726,15 @@ function normalizeUpdates(view: Partial<UpdatesView> | null | undefined): Update
   } as UpdatesView;
 }
 
-/** getJson/postJson 抛的是 Error（消息里带 `HTTP 404`），没有 status 字段；从文案里取状态码。 */
+/** getJson/postJson 会把响应状态挂在 error.status 上；旧错误仅有文案，退回从文案取。 */
 function httpStatus(err: unknown): number {
+  const status = (err as { status?: number }).status;
+  if (typeof status === "number") return status;
   const m = /HTTP (\d{3})/.exec((err as Error).message ?? "");
   return m ? Number(m[1]) : 0;
 }
 
+/** D441：更新组状态。发布者开关在 peer 的 config 里，组与播报进度在 bridge 里。 */
 async function loadUpdates(): Promise<void> {
   try {
     S.updates = normalizeUpdates(await getJson<Partial<UpdatesView>>("/api/updates"));
@@ -2848,7 +2859,7 @@ function readonlyGroup(t: Thread): boolean {
 function announceBar(t: Thread): HTMLElement {
   const bar = h("div", "compose readonlybar");
   const who = t.group?.publisher ? nameOf(t.group.publisher, "") : tr("发布者");
-  bar.append(h("span", "", tr("这是只读的更新组：只有发布者 {p1} 能发公告", { p1: who })));
+  bar.append(h("span", "", tr("这是只读的更新组：只有 {p1} 能发公告", { p1: who })));
   return bar;
 }
 
@@ -4553,10 +4564,12 @@ async function patchThread(peer: string, patch: { pinned?: boolean; muted?: bool
 }
 
 function threadMenu(x: number, y: number, t: Thread): void {
+  // 只读更新组：成员不能发文件，菜单也别给「传文件」——否则挑完文件才被协议侧拒（评审 #8）。
+  const readonly = readonlyGroup(t);
   openMenu(x, y, [
     { label: tr("打开对话"), icon: "msg", run: () => openThread(t.nodeId) },
     // D300：传文件只要求对方在线，不再要求是好友。
-    ...(t.online ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(t.nodeId, true) }] : []),
+    ...(t.online && !readonly ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(t.nodeId, true) }] : []),
     { label: t.pinned ? tr("取消固定") : tr("固定"), icon: "pin", run: () => void patchThread(t.nodeId, { pinned: !t.pinned }) },
     { label: t.muted ? tr("取消免打扰") : tr("消息免打扰"), icon: "bellOff", run: () => void patchThread(t.nodeId, { muted: !t.muted }) },
     ...(t.unread ? [] : [{ label: tr("标为未读"), icon: "msg", run: () => void markUnread(t) }]),

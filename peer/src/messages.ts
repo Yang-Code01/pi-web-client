@@ -671,7 +671,9 @@ export class Messages {
     for (const entry of entries) {
       // outbox 按 id 去重：已经在重试队列里的那条不会再排一次，sent 也只数真正排进去的（评审 #5）。
       if (this.ctx.outbox?.has(`${entry.id}@${peerNodeId}`)) continue;
-      this.enqueue(groupId, entry.id, "text", entry, entry.at, [{ peerId: peerNodeId, addr: peer.addr, port: peer.port }]);
+      // 入队时间必须用「现在」：outbox 按 item.at 判 24 小时过期，拿原公告时间会被立刻丢掉（评审 #3）。
+      // 气泡时间仍取 payload 里的 entry.at，新成员看到的是原公告的日期。
+      this.enqueue(groupId, entry.id, "text", entry, Date.now(), [{ peerId: peerNodeId, addr: peer.addr, port: peer.port }]);
       sent++;
     }
     return { ok: true, sent };

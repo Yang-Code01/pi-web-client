@@ -5001,9 +5001,9 @@ export class App {
 
   /**
    * 换大类 / 子类：只切显隐，不重建（重建会丢掉滑块拖到一半的手感）。停在哪个大类记进 `pi.prefs`，
-   * 每个大类上次停在哪个子类只记在这次打开的页面里。
+   * 每个大类上次停在哪个子类只记在这次打开的页面里；`persist=false` 只用于 URL 深链，
+   * 看一眼工具页、不改用户上次停留的外观页签（评审 #10）。
    */
-  /** `persist=false` 只用于 URL 深链：看一眼工具页，不改用户上次停留的外观页签（评审 #18）。 */
   private setDisplayTab(tab: Prefs["settingsTab"], sec?: string, persist = true): void {
     if (persist && this.prefs.settingsTab !== tab) {
       this.prefs = { ...this.prefs, settingsTab: tab };

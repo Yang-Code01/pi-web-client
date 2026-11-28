@@ -37,7 +37,6 @@ const MAX_COMMIT_SUBJECTS = 20;
  */
 export const ANNOUNCE_LIMITS = { batches: 6, batchBytes: 4096, bytes: 16 * 1024 } as const;
 const MAX_ANNOUNCE_BYTES = ANNOUNCE_LIMITS.bytes;
-const MAX_ANNOUNCE_BATCH_BYTES = ANNOUNCE_LIMITS.batchBytes;
 const MAX_ANNOUNCE_BATCHES = ANNOUNCE_LIMITS.batches;
 
 /** 按 UTF-8 字节截断（中文一个字 3 字节，不能按 UTF-16 长度算）。 */
@@ -454,7 +453,7 @@ export class UpdatesLan {
       }
 
       // 只在这里截批次数，单批/整包上限由 peer 的 normalizeAnnounce 统一裁（评审 #4）。
-      const batches = (await this.freshBatches()).slice(0, 6);
+      const batches = (await this.freshBatches()).slice(0, MAX_ANNOUNCE_BATCHES);
       const subjects = batches.length
         ? []
         : (await this.git(["log", `--format=%s`, `${this.state.lastCommit}..origin/main`]).catch(() => ""))
@@ -494,8 +493,12 @@ export class UpdatesLan {
       if (want.length && group) await this.inviteAndReplay(info, want);
 
       const text = this.composeText(info, commit, batches, subjects);
-      const announce: PeerAnnounce = { repo: info.repo, commit, batches, howTo: "auto" };
-      await this.peer.sendText(info.groupId, text, undefined, undefined, { announce });
+      // 没有新 CHANGELOG 批次、只走 subjects 回退时 batches 是空的：peer 的 normalizeAnnounce
+      // 会拒掉空公告，整次播报就失败、lastCommit 也永远不推进（评审 #1）。这种情况发普通文本。
+      const announce: PeerAnnounce | null = batches.length
+        ? { repo: info.repo, commit, batches, howTo: "auto" }
+        : null;
+      await this.peer.sendText(info.groupId, text, undefined, undefined, announce ? { announce } : {});
       this.state.lastCommit = commit;
       if (batches.length) this.state.lastBatchTitle = batches[0].title;
       this.state.lastAnnouncedAt = Date.now();

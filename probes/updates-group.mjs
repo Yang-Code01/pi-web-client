@@ -229,6 +229,16 @@ check((await page.locator(".msg-quick").count()) === 0, "成员看不到回应�
 check((await page.locator(".reacts").count()) === 0, "成员消息上没有回应行（发布者的回应也不画操作）");
 await page.screenshot({ path: path.join(OUT, "member.png"), fullPage: false });
 
+// 字号 150%：卡片不横向溢出。必须在还停在聊天页时量：切到设置页后 `.an-card` 已被替换掉，
+// querySelector 拿到 null 会让断言永远通过（评审 #5）。
+await page.evaluate(() => document.documentElement.style.setProperty("--ui-scale", "1.5"));
+const overflow = await page.evaluate(() => {
+  const el = document.querySelector(".an-card");
+  return el ? el.scrollWidth - el.clientWidth : -1;
+});
+check(overflow >= 0 && overflow <= 1, "字号 150% 卡片不横向溢出", overflow);
+await page.evaluate(() => document.documentElement.style.removeProperty("--ui-scale"));
+
 // 设置页：成员 → 没加入 + 重新加入。
 await page.getByRole("button", { name: "我" }).click();
 await page.waitForSelector(".card", { timeout: 5000 });
@@ -238,13 +248,6 @@ check(meText.includes("重新加入更新组"), "成员设置页给「重新加�
 await page.locator("h3", { hasText: "更新公告" }).scrollIntoViewIfNeeded();
 await page.screenshot({ path: path.join(OUT, "member-settings.png") });
 
-// 字号 150%：卡片不横向溢出。
-await page.evaluate(() => document.documentElement.style.setProperty("--ui-scale", "1.5"));
-const overflow = await page.evaluate(() => {
-  const el = document.querySelector(".an-card");
-  return el ? el.scrollWidth - el.clientWidth : 0;
-});
-check(overflow <= 1, "字号 150% 卡片不横向溢出", overflow);
 
 // ---------------------------------------------------------------- 发布者视角
 const ctx2 = await browser.newContext({ locale: "zh-CN", viewport: { width: 1180, height: 820 } });

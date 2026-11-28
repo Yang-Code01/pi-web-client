@@ -4563,7 +4563,7 @@ export const en: Dict = {
   "这个 pi 包里带的改动记录，跟着发版走。": "The changelog shipped inside this pi package, written per release.",
   "图的输出无法解析": "The diagram output could not be parsed",
   "Mermaid 图渲染失败：{p1}": "Mermaid diagram failed to render: {p1}",
-  "这是只读的更新组：只有发布者 {p1} 能发公告": "This update group is read-only: only {p1} (the publisher) can post",
+  "这是只读的更新组：只有 {p1} 能发公告": "This update group is read-only: only {p1} can post",
   "重新加入": "Rejoin",
   "打开更新日志": "Open changelog",
   "打开热部署": "Open hot deploy",
