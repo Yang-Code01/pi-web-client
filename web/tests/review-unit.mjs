@@ -487,6 +487,31 @@ test("pr 记录里没有号（老记录 / 坏数据）：不标，也不给重�
   assert.equal(view.runs[0].outdated, false);
 });
 
+test("同一个 HEAD 下别的分支留下的记录：不借当前分支的 tip 说它过时", () => {
+  // 先在 feat/a 评过（aaaa），后来在 feat/b 又评一次（bbbb）；现在人在 feat/b 上，HEAD=bbbb。
+  // tips 按 ref 共享（只有一条 HEAD），feat/a 那条不能拿 bbbb 跟自己的 aaaa 比 —— 那是换分支。
+  const onA = run({ id: "a", to: "HEAD", headRef: "feat/a", headSha: "a".repeat(40), finishedAt: "2025-01-01T00:00:00Z" });
+  const onB = run({ id: "b", to: "HEAD", headRef: "feat/b", headSha: "b".repeat(40), finishedAt: "2025-01-02T00:00:00Z" });
+  const view = reviewView({
+    ...base,
+    state: { runs: [onA, onB], marks: {} },
+    tips: { HEAD: "b".repeat(40) },
+    tipsAt: Date.parse("2025-01-03T00:00:00Z"),
+    tipsBranch: "feat/b",
+  });
+  assert.equal(view.runs.find((c) => c.id === "a").outdated, false, "feat/a 那条不该被标");
+  assert.equal(view.runs.find((c) => c.id === "b").outdated, false);
+  // 同一条分支上真的又提交了：照标
+  const moved = reviewView({
+    ...base,
+    state: { runs: [onA, onB], marks: {} },
+    tips: { HEAD: "c".repeat(40) },
+    tipsAt: Date.parse("2025-01-03T00:00:00Z"),
+    tipsBranch: "feat/b",
+  });
+  assert.equal(moved.runs.find((c) => c.id === "b").outdated, true);
+});
+
 test("卡片上摆得出「基于哪个提交 / 现在哪个」（详情浮层要用）", () => {
   const view = reviewView({
     ...base,

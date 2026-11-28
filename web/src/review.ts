@@ -109,6 +109,14 @@ export interface ReviewInput {
   tipsAt?: number;
   /** 「重新核对」正等着结果：那颗钮先灰着，别让人连点（每一下都是一次 `ls-remote`）。 */
   tipsBusy?: boolean;
+  /**
+   * 拍那张快照时 HEAD 在哪条分支上（桥的 `tipsBranch`，空 = 不知道）。
+   *
+   * `to` 是 `HEAD` 的记录只跟**同一条分支**的 tip 比：换分支之后 HEAD 指向别处，
+   * 那不是「有新提交」。判在每条记录上（见 `tipForRun`）—— 同一个 `HEAD` 底下可能
+   * 躺着好几条别的分支留下来的记录。
+   */
+  tipsBranch?: string;
 }
 
 /** 记录列表里的一张卡：`reviewView()` 算好文案，`renderReview()` 只负责画。 */
@@ -524,11 +532,12 @@ export function reviewView(input: ReviewInput): ReviewView {
     // 没核对到 tip 的（离线 / 超时）、以及**比这条记录还旧的快照**都在那里归成「不知道」= 不标。
     // 卡片上的 `tipSha`（hover / 详情那一行）也走同一个函数 —— 判据不许散成两份。
     const headSha = (run.headSha ?? "").trim();
-    const tipSha = tipForRun(run, input.tips, input.tipsAt);
+    const tipsBranch = (input.tipsBranch ?? "").trim();
+    const tipSha = tipForRun(run, input.tips, input.tipsAt, tipsBranch);
     // hover 里那条 ref 的名字：`pr` 模式下 `to` 是 `refs/pi-web/pr-7` 这种内部名字，
     // 人认的是分支名（`prHead`），没记就退回 ref 本身。
     const refLabel = run.mode === "pr" && run.prHead ? run.prHead : shortRef(run.to);
-    const outdated = isRunOutdated(run, input.tips, input.tipsAt);
+    const outdated = isRunOutdated(run, input.tips, input.tipsAt, tipsBranch);
     return {
       id: run.id,
       target: runTarget(run),

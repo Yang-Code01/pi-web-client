@@ -4277,6 +4277,9 @@ async function main(): Promise<void> {
                 // 页面的「旧快照不判」那道闸就等于没有（刚跑完的那轮会被陈旧的远端 sha 误标）。
                 tips: remoteKnown,
                 tipsAt: known.at,
+                // 首帧是同步的（拿不到分支名，`gitBranchOf` 现在是异步）。这里只可能带 PR 的
+                // 缓存 tip，没有 `HEAD` 的 key，空着不会让谁误标；补帧会带上真正的分支名。
+                tipsBranch: "",
                 progresses: reviewProgresses(repo, session),
                 cap: MAX_RUNS_PER_SESSION,
                 // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
@@ -4296,7 +4299,7 @@ async function main(): Promise<void> {
                     // `gitBranchOf` 只在真有 `to: HEAD` 的记录时才跑：多一次 git 子进程就是白花。
                     const branch = liveTargets.some((item) => isHeadName(item.ref)) ? await gitBranchOf(repo) : "";
                     // tips 与 state 必须是**同一眼**：这期间可能有人标了一条意见、也可能刚跑完新一轮。
-                    const local = await localTips(live.runs, (ref) => gitShaOf(repo, ref), branch);
+                    const local = await localTips(live.runs, (ref) => gitShaOf(repo, ref));
                     let remote: { tips: Record<string, string>; at: number } = { tips: {}, at: 0 };
                     if (liveTargets.some((item) => item.pr > 0)) {
                       let env: NodeJS.ProcessEnv | undefined;
@@ -4318,6 +4321,9 @@ async function main(): Promise<void> {
                       state: live,
                       tips: { ...local.tips, ...remote.tips },
                       tipsAt: at,
+                      // `HEAD` 那几条的 tip 要不要采信，由页面按**每条记录自己的**分支判
+                      // （同一个 `HEAD` 底下可能躺着别的分支留下来的记录，桥这边分不出来）。
+                      tipsBranch: branch,
                       progresses: reviewProgresses(repo, session),
                       cap: MAX_RUNS_PER_SESSION,
                     });

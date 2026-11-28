@@ -688,15 +688,34 @@ await checkAsync("headStamp：收尾时记被评的 sha，`HEAD` 再记当时那
   assert.deepEqual(await headStamp({ to: "feat/gone" }, { shaOf: async () => "", branch: async () => "feat/a" }), {});
 });
 
-await checkAsync("`to: HEAD` 的记录只在**同一条分支**上比：换分支不是「有新提交」", async () => {
+await checkAsync("`to: HEAD` 只在**同一条分支**上比：换分支不是「有新提交」", async () => {
   const sha = "b".repeat(40);
   const runs = [doneRun({ id: "a", to: "HEAD", headRef: "feat/a" })];
-  const same = await localTips(runs, async () => sha, "feat/a");
-  assert.deepEqual(same.tips, { HEAD: sha }, "同一条分支：照旧比");
-  assert.deepEqual((await localTips(runs, async () => sha, "feat/b")).tips, {}, "换到别的分支：核对不了，不标");
+  // 桥这一层只负责回答「HEAD 现在指向哪个提交」；「这条记录该不该采信」按**每条记录**判。
+  assert.deepEqual((await localTips(runs, async () => sha)).tips, { HEAD: sha }, "HEAD 照常回答 sha");
+  const at = Date.parse("2026-01-05T00:00:00.000Z");
+  const head = { HEAD: sha };
+  assert.equal(tipForRun(runs[0], head, at, "feat/a"), sha, "同一条分支：照旧比");
+  assert.equal(tipForRun(runs[0], head, at, "feat/b"), "", "换到别的分支：核对不了，不标");
   // 分离头指针（现在没有分支名）与老记录（当时没记分支）都退回「照旧比」。
-  assert.deepEqual((await localTips(runs, async () => sha, "")).tips, { HEAD: sha });
-  assert.deepEqual((await localTips([doneRun({ id: "b", to: "HEAD" })], async () => sha, "feat/b")).tips, { HEAD: sha });
+  assert.equal(tipForRun(runs[0], head, at, ""), sha);
+  assert.equal(tipForRun(doneRun({ id: "b", to: "HEAD" }), head, at, "feat/b"), sha);
+});
+
+check("同一个 `HEAD` 下别的分支留下的记录，不许借当前分支的 tip 说它过时", () => {
+  // 场景：先在 feat/a 评过一次（headSha=aaaa），后来在 feat/b 又评一次（headSha=bbbb）。
+  // 现在人在 feat/b 上，HEAD=bbbb。`tips` 按 ref 共享（只有一条 HEAD），
+  // 但 feat/a 那条**不能**拿 bbbb 跟自己的 aaaa 比 —— 那不是「有新提交」，是换了分支。
+  const a = "a".repeat(40);
+  const b = "b".repeat(40);
+  const at = Date.parse("2026-01-05T00:00:00.000Z");
+  const onA = doneRun({ id: "a", to: "HEAD", headRef: "feat/a", headSha: a, finishedAt: "2026-01-01T00:00:00.000Z" });
+  const onB = doneRun({ id: "b", to: "HEAD", headRef: "feat/b", headSha: b, finishedAt: "2026-01-02T00:00:00.000Z" });
+  const tips = { HEAD: b };
+  assert.equal(isRunOutdated(onA, tips, at, "feat/b"), false, "feat/a 那条不该被标");
+  assert.equal(isRunOutdated(onB, tips, at, "feat/b"), false, "当前分支那条与 tip 相等，也不标");
+  // 同一分支上真的又提交了：照标
+  assert.equal(isRunOutdated(onB, { HEAD: "c".repeat(40) }, at, "feat/b"), true);
 });
 
 await checkAsync("localTips 不碰网络：PR 那几条留给远端那半", async () => {

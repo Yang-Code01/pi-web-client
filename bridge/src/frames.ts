@@ -486,12 +486,22 @@ export function tipTargetOf(run: ReviewRun): { ref: string; pr: number } | null 
  * 「刚跑完就说它过时」，点一下重评等于把同一份代码再评一遍（#743 复审）。
  * 反过来（快照之后才有人推提交）只会漏报，那是安全的那一边。
  */
-export function tipForRun(run: ReviewRun, tips: ReviewTips | undefined, tipsAt = 0): string {
+export function tipForRun(run: ReviewRun, tips: ReviewTips | undefined, tipsAt = 0, tipsBranch = ""): string {
   const target = tipTargetOf(run);
   if (!target) return "";
   const finished = Date.parse(run.finishedAt ?? "") || 0;
   if (tipsAt > 0 && finished > tipsAt) return "";
+  // `to` 是 `HEAD` 的记录只能跟**同一条分支**比：`HEAD` 的意思是「现在这条分支的头」，
+  // 换到别的分支之后它当然指向别处，那不是「有新提交」，重评读的也是另一份代码。
+  // 这条判据必须在**每条记录**上做：tips 按 ref 共享，同一个 `HEAD` 底下可能躺着好几条
+  // 别的分支留下来的记录，拿「最新那条当时在哪条分支」去代表它们，就会把那些记录误标。
+  if (isHeadTarget(run) && String(run.headRef ?? "").trim() && tipsBranch && String(run.headRef).trim() !== tipsBranch) return "";
   return String((tips ?? {})[target.ref] ?? "").trim();
+}
+
+/** `to` 是不是那个会随风漂的 `HEAD`（`HEAD` / `head` 都算，盘上是 ocr 回显的原文）。 */
+function isHeadTarget(run: ReviewRun): boolean {
+  return String(run.to ?? "").trim().toUpperCase() === "HEAD";
 }
 
 /**
@@ -500,8 +510,8 @@ export function tipForRun(run: ReviewRun, tips: ReviewTips | undefined, tipsAt =
  * 没记 sha、或者 `tips` 里没有这个 ref 的（离线 / 超时 / 没登录 / 老桥 / 快照太旧）=
  * 不知道 = false，不要拿它当「没变」用。
  */
-export function isRunOutdated(run: ReviewRun, tips: ReviewTips | undefined, tipsAt = 0): boolean {
-  const tip = tipForRun(run, tips, tipsAt);
+export function isRunOutdated(run: ReviewRun, tips: ReviewTips | undefined, tipsAt = 0, tipsBranch = ""): boolean {
+  const tip = tipForRun(run, tips, tipsAt, tipsBranch);
   return Boolean(tip) && tip !== String(run.headSha ?? "").trim();
 }
 

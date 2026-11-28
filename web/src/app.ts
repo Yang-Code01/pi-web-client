@@ -463,6 +463,16 @@ export class App {
   private reviewTips: Record<string, string> = {};
   /** 上面那张快照是什么时候拍的（桥的 `tipsAt`）：比某条记录还旧的快照不能拿来判过时。 */
   private reviewTipsAt = 0;
+  /**
+   * 点「重新评审」之前「评什么」是什么样（#741）。
+   *
+   * 那个动作会先把这一格换成记录自己的范围再开跑；桥**异步**拒掉（`dup_pr` / `busy` 竞态、
+   * 断线）时，要把它恢复回来 —— 不然面板上那一格被一条旧记录静默改掉并落了盘。
+   * 开跑被接受（`review.started`）或已经恢复过就清掉。
+   */
+  private reviewRerunRestore: { mode: ReviewMode; pr: string; base: string; target: string } | null = null;
+  /** 那张快照拍摄时 HEAD 在哪条分支（桥的 `tipsBranch`）：`HEAD` 记录只跟同一条分支的 tip 比。 */
+  private reviewTipsBranch = "";
   /** 「重新核对」等着结果：那颗钮先灰着（每点一下都是一次绕开缓存的 `ls-remote`）。 */
   private reviewTipsBusy = false;
   private reviewTipsTimer: number | null = null;
@@ -2779,10 +2789,13 @@ export class App {
         if (msg.dir && want && String(msg.dir) !== want && String(msg.dir) !== dir) break;
         if (msg.error) {
           this.reviewError = errText(msg);
+          // 「重新评审」被桥拒了（`dup_pr` / `busy` / 别的）：把「评什么」还给点之前的样子。
+          this.restoreRerunPick();
           this.reviewState = null;
           this.reviewProgresses = [];
           this.reviewTips = {};
           this.reviewTipsAt = 0;
+          this.reviewTipsBranch = "";
           this.reviewNotGit = msg.code === "not_git";
           if (this.queueTab === "review") this.renderQueue();
           break;
@@ -2799,6 +2812,7 @@ export class App {
         if (msg.tips && typeof msg.tips === "object") {
           this.reviewTips = msg.tips as Record<string, string>;
           this.reviewTipsAt = Number(msg.tipsAt) || 0;
+          this.reviewTipsBranch = String(msg.tipsBranch ?? "");
         }
         if (Number(msg.cap) > 0) this.reviewCap = Number(msg.cap);
         // 盘上记的「评什么」：只在本会话头一份状态到达时恢复（以后以界面为准）。
@@ -2817,6 +2831,8 @@ export class App {
         if (String(msg.sessionId ?? "") && this.currentId && String(msg.sessionId) !== this.currentId) break;
         const id = String(msg.runId ?? "");
         if (!id) break;
+        // 这一次重评真的开出去了：不再需要恢复「评什么」。
+        this.reviewRerunRestore = null;
         this.reviewPendingRuns.add(id);
         if (this.queueTab === "review") this.renderQueue();
         this.syncReviewSheet();
@@ -19063,6 +19079,7 @@ export class App {
     this.reviewProgresses = [];
     this.reviewTips = {};
     this.reviewTipsAt = 0;
+    this.reviewTipsBranch = "";
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19108,6 +19125,7 @@ export class App {
     this.reviewProgresses = [];
     this.reviewTips = {};
     this.reviewTipsAt = 0;
+    this.reviewTipsBranch = "";
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19147,6 +19165,19 @@ export class App {
     this.reviewPicker?.close();
   }
 
+  /** 把「评什么」还给「重新评审」点之前的样子（没真开出去时必须做，别静默改掉人选的格）。 */
+  private restoreRerunPick(): void {
+    const before = this.reviewRerunRestore;
+    if (!before) return;
+    this.reviewRerunRestore = null;
+    this.reviewMode = before.mode;
+    this.reviewPr = before.pr;
+    this.reviewBase = before.base;
+    this.reviewTarget = before.target;
+    this.saveReviewPick();
+    if (this.queueTab === "review") this.renderQueue();
+  }
+
   /** 「重新核对」的冷却时间到了：那颗刷新钮恢复可点。 */
   private clearReviewTipsBusy(): void {
     if (this.reviewTipsTimer !== null) {
@@ -19166,6 +19197,7 @@ export class App {
       this.reviewProgresses = [];
       this.reviewTips = {};
       this.reviewTipsAt = 0;
+      this.reviewTipsBranch = "";
       return;
     }
     this.reviewAsked = dir;
@@ -19465,6 +19497,7 @@ export class App {
       tips: this.reviewTips,
       tipsAt: this.reviewTipsAt,
       tipsBusy: this.reviewTipsBusy,
+      tipsBranch: this.reviewTipsBranch,
     });
     const effective = this.reviewEffectiveModel();
     return {
@@ -19733,6 +19766,8 @@ export class App {
     const run = (this.reviewState?.runs ?? []).find((item) => item.id === runId);
     if (!run) return;
     const before = { mode: this.reviewMode, pr: this.reviewPr, base: this.reviewBase, target: this.reviewTarget };
+    // 桥那边是异步裁决的（`dup_pr` / `busy` 都可能在这里才拒），所以那份要恢复的选择得先记住。
+    this.reviewRerunRestore = { ...before };
     this.reviewMode = run.mode;
     if (run.mode === "pr") {
       // 记录里没有 PR 号（老记录 / 坏数据）就别猜：沿用手上这个号等于拿**另一条** PR 去评，
@@ -19748,13 +19783,8 @@ export class App {
     this.saveReviewPick();
     this.renderQueue();
     if (this.startReview()) return;
-    // 没开出去（桥会拒：同一 PR 在跑 / 额度满）：把「评什么」恢复成点之前的样子 ——
-    // 不然面板上那一格被这条记录静默改掉并落了盘，人下次打开会以为是自己选的。
-    this.reviewMode = before.mode;
-    this.reviewPr = before.pr;
-    this.reviewBase = before.base;
-    this.reviewTarget = before.target;
-    this.saveReviewPick();
+    // 页面这一侧就没开出去（缺东西 / 没目录）：当场恢复，不必等桥回话。
+    this.restoreRerunPick();
     this.renderQueue();
   }
 

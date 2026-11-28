@@ -596,24 +596,23 @@ export interface TipSet {
  * 判的是**本地** ref（不是远端）：`range` 重评读的就是本地 target，所以「本地没变」= 再评一次
  * 结果一样，不该点亮那颗标（Q10）。`revParse` 认不出这个 ref（分支被删了）就不给 key。
  *
- * `to` 是 `HEAD` 的那几条要额外看 `currentBranch`：`HEAD` 的意思是「现在这条分支的头」，
- * 换到别的分支之后它当然指向别处 —— 那不是「有新提交」，重评读的也是另一份代码。
- * 所以只在**同一条分支**上比，否则当成核对不了（不给 key → 不标）。老记录没记 `headRef` 的
- * 照旧比（它们本来也没有 `headSha`，根本走不到这里）。
+ * `HEAD` 那条要不要采信「得看是哪条分支」—— 但这是**每条记录**的事（同一个 `HEAD` 底下可能
+ * 躺着好几条别的分支留下来的记录），所以判断在 `frames.ts` 的 `tipForRun()` 里按记录做，
+ * 这里只管回答「`HEAD` 现在指向哪个提交」。分支名随帧发下去（`tipsBranch`）。
  */
 export async function localTips(
   runs: readonly ReviewRun[],
   revParse: (ref: string) => Promise<string>,
-  currentBranch = "",
 ): Promise<TipSet> {
+  const wanted = tipTargets(runs).filter((item) => item.pr <= 0);
+  // 各 ref 互不相干：并行问，别让 N 个 ref 串成一串（每个上限 5 秒）。
+  const answers = await Promise.all(wanted.map((item) => revParse(item.ref).catch(() => "")));
   const out: Record<string, string> = {};
-  for (const item of tipTargets(runs)) {
-    if (item.pr > 0) continue;
-    if (isHeadName(item.ref) && item.headRef && currentBranch && item.headRef !== currentBranch) continue;
+  wanted.forEach((item, i) => {
     // 校验形状再写：注入进来的东西（测试 / 换个实现）也一样不许把带换行的一坨当成 sha。
-    const sha = str(await revParse(item.ref));
+    const sha = str(answers[i]);
     if (isCommitSha(sha)) out[item.ref] = sha;
-  }
+  });
   return { tips: out, at: Date.now() };
 }
 
