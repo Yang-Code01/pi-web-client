@@ -262,6 +262,8 @@ interface BgRunNode {
    * 所以藏着的这段时间不动 `scrollTop`，等页显出来按这个状态把日志补到底。
    */
   stick: boolean;
+  /** 「最终输出」自己的贴底线：用户在日志里跟到底、却在输出里往上翻，两块别互相拽。 */
+  stickOut: boolean;
 }
 
 function bgElapsedText(since: number, until = Date.now()): string {
@@ -18108,15 +18110,15 @@ export class App {
     navHead.hidden = true;
     const navList = el("div", "bg-nav-list");
     navList.setAttribute("role", "tablist");
-    navList.setAttribute("aria-label", tr("子代理"));
+    navList.setAttribute("aria-label", tr("运行列表"));
     nav.append(navHead, navList);
-    // ↑↓ 在左栏里换页（tablist 的惯用键位）；点也行。
+    // ↑↓ 换页、Home/End 跳首尾（tablist 的惯用键位）；点也行。
     navList.onkeydown = (e: KeyboardEvent) => {
-      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
       const ids = [...(this.bgSheet?.runs.keys() ?? [])];
+      if (!ids.length) return;
       const at = ids.indexOf(this.bgSheet?.sel ?? "");
-      if (at < 0) return;
-      const next = ids[at + (e.key === "ArrowDown" ? 1 : -1)];
+      const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+      const next = e.key === "Home" ? ids[0] : e.key === "End" ? ids[ids.length - 1] : step ? ids[at + step] : undefined;
       if (!next) return;
       e.preventDefault();
       this.selectBgRun(next, true);
@@ -18192,6 +18194,7 @@ export class App {
         item.id = `bgtab-${r.id}`;
         item.setAttribute("role", "tab");
         item.setAttribute("aria-controls", `bgpane-${r.id}`);
+        item.setAttribute("aria-selected", "false");
         item.tabIndex = -1;
         const itemTop = el("span", "bg-nav-top");
         const itemDot = el("span", "bg-run-dot");
@@ -18209,6 +18212,8 @@ export class App {
         root.dataset.id = r.id;
         root.setAttribute("role", "tabpanel");
         root.setAttribute("aria-labelledby", item.id);
+        // 面板自己可聚焦：从 tab 按 Tab 能走进右栏（长日志要用键盘滚），否则一下跳出弹层。
+        root.tabIndex = 0;
         root.hidden = true;
         const top = el("div", "bg-run-top");
         const line = el("div", "bg-run-head");
@@ -18282,11 +18287,13 @@ export class App {
           out: outEl,
           hasLog: Boolean(r.hasLog),
           stick: true,
+          stickOut: true,
         };
         if (!r.hasLog) {
           logEl.dataset.empty = "1";
           logEl.textContent = tr("桥还没接上这个 runner 的过程记录。");
         }
+        // 先登记再往下用：后面的回填与 rAF、selectBgRun 都按 id 找 node，不靠「同步代码已经跑完」。
         sheet.runs.set(r.id, node);
       }
       const agentText = r.agent || tr("子代理");
@@ -18331,6 +18338,7 @@ export class App {
       this.socket.send({ type: "bg.log", sessionId: sheet.sessionId, runId: r.id });
     }
     // 选中的那条没了、或者还没选过：挑一条在跑的，没有就第一条。用户手动点的选择不动。
+    // 走完上面「没有 run」的 return，这里 runs 一定非空。
     const want =
       sheet.sel && sheet.runs.has(sheet.sel)
         ? sheet.sel
@@ -18350,15 +18358,19 @@ export class App {
       n.item.tabIndex = on ? 0 : -1;
       n.root.hidden = !on;
     }
-    if (focus) node.item.focus();
+    if (focus) {
+      node.item.focus();
+      // 键盘换到屏幕外那条时把它带进视野（窄窗里左栏是横向滚的）。
+      node.item.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
     // 页刚显出来才量得到 scrollHeight：折行判断要等它可见之后再做。
     window.requestAnimationFrame(() => {
+      // 弹层可能已经关了（closeSheet 把 bgSheet 置空）：闭包里别再碰已移除的节点。
+      if (this.bgSheet !== sheet || !node.root.isConnected) return;
       this.syncBgTaskMore(node);
       // 藏着的时候攒下的日志要补到底：隐藏页量出来是 0，那时候算的「贴底」不算数。
-      if (node.stick) {
-        node.log.scrollTop = node.log.scrollHeight;
-        node.out.scrollTop = node.out.scrollHeight;
-      }
+      if (node.stick) node.log.scrollTop = node.log.scrollHeight;
+      if (node.stickOut) node.out.scrollTop = node.out.scrollHeight;
     });
   }
 
@@ -18396,7 +18408,14 @@ export class App {
     }
     const done = typeof out === "string" && out.length > 0;
     node.outSec.hidden = !done;
-    if (done && node.out.textContent !== out) node.out.textContent = out;
+    if (done && node.out.textContent !== out) {
+      node.out.textContent = out;
+      // 输出区自己一条贴底线：跟日志分开算，别让「日志读到底」把输出拽到底。
+      if (!node.root.hidden && !node.outSec.hidden) {
+        node.stickOut = node.out.scrollHeight - node.out.scrollTop - node.out.clientHeight < 24;
+        if (node.stickOut) node.out.scrollTop = node.out.scrollHeight;
+      }
+    }
   }
 
   /**

@@ -138,7 +138,8 @@ try {
   // 失败那条在左栏（灯变红）：点它，右栏换页；再对着可见页断言。
   const failItem = page.locator('.bg-nav-item[data-state="failed"]').first();
   await failItem.waitFor({ timeout: 20000 });
-  check("左栏现在有两条 run", (await page.locator(".bg-nav-item").count()) === 2);
+  check("失败那条进了左栏（且只一条）", (await page.locator('.bg-nav-item[data-state="failed"]').count()) === 1);
+  check("左栏至少两条 run", (await page.locator(".bg-nav-item").count()) >= 2);
   await failItem.click();
   const failCard = page.locator(".bg-run:not([hidden])").first();
   check("点左栏就换到失败那一页", ((await failCard.locator(".bg-run-id").textContent()) ?? "").includes("call_00_79ZGyKVyGhxhy8l7XsKw7723"));
@@ -176,7 +177,55 @@ try {
   const afterKey = await selId();
   check("↑↓ 在左栏里换页", Boolean(afterKey) && afterKey !== beforeKey, `${beforeKey} → ${afterKey}`);
 
-  // ---- 4. 老占位文案不再出现在界面上（它把责任推给了桥）
+  // 键盘边界：第一条上按 ↑ 不动且焦点不丢、Home/End 跳首尾、Tab 能走进右栏（长日志要能用键盘滚）。
+  await page.keyboard.press("Home");
+  const firstId = await selId();
+  await page.locator('.bg-nav-item[aria-selected="true"]').focus();
+  await page.keyboard.press("ArrowUp");
+  check("第一条上按 ↑ 不动", (await selId()) === firstId);
+  check(
+    "↑ 到头时焦点还在 tab 上",
+    await page.evaluate(() => document.activeElement?.getAttribute("role") === "tab"),
+  );
+  await page.keyboard.press("End");
+  const lastId = await selId();
+  check("End 跳到末条", Boolean(lastId) && lastId !== firstId, `${firstId} → ${lastId}`);
+  await page.keyboard.press("Home");
+  check("Home 回第一条", (await selId()) === firstId);
+  await page.keyboard.press("Tab");
+  check(
+    "Tab 从 tab 走进右栏（tabpanel 可聚焦）",
+    await page.evaluate(() => document.activeElement?.getAttribute("role") === "tabpanel"),
+  );
+
+  // ---- 5. 窄窗（380×760）：左栏折成顶部横条，横条自己横滚、不被父级裁掉（#762 评审）
+  await page.setViewportSize({ width: 380, height: 760 });
+  await page.waitForTimeout(150);
+  check(
+    "窄窗折成单栏",
+    await page
+      .locator(".bg-body")
+      .evaluate((n) => getComputedStyle(n).gridTemplateColumns.trim().split(/\s+/).length === 1),
+  );
+  const strip = page.locator(".bg-nav-list");
+  const metrics = await strip.evaluate((n) => ({ scrollWidth: n.scrollWidth, clientWidth: n.clientWidth }));
+  check("横条内容超出时能横滚", metrics.scrollWidth > metrics.clientWidth, JSON.stringify(metrics));
+  check(
+    "横条滚得动（scrollLeft 真变）",
+    await strip.evaluate((n) => {
+      n.scrollLeft = 200;
+      return n.scrollLeft > 0;
+    }),
+  );
+  check(
+    "右栏抬头没被挤成三条",
+    await page.locator(".bg-run:not([hidden]) .bg-run-head").evaluate((n) => n.getBoundingClientRect().height < 40),
+  );
+  // 上一段把横条往右滚了 200px：截图前拉回起点，不然拍到的是一半被裁掉的那颗。
+  await strip.evaluate((n) => (n.scrollLeft = 0));
+  await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "3-narrow.png"), animations: "disabled" });
+
+  // ---- 6. 老占位文案不再出现在界面上（它把责任推给了桥）
   const body = await page.locator(".bg-sheet").innerText();
   check("不再断言「任务原文没传到桥」", !body.includes("任务原文没传到桥"), body.replace(/\n+/g, " | ").slice(0, 200));
   check("没有页面报错", pageErrors.length === 0, pageErrors.join(" | "));

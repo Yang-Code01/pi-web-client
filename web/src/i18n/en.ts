@@ -1176,6 +1176,7 @@ export const en: Dict = {
   "后台": "Background",
   "后台 {p1}": "Background {p1}",
   "子代理": "Subagent",
+  "运行列表": "Runs",
   "{p1} 个运行中": "{p1} running",
   "全部结束": "All finished",
   "共 {p1} 个运行": "{p1} runs",

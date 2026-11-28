@@ -4511,7 +4511,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 
 /* 两栏壳：容器查询量的是这层（窄了才把左栏折成顶部条），滚动交给左右各自。 */
 .bg-sheet-body { display: grid; min-height: 0; overflow: hidden; container-type: inline-size; }
-.bg-body { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: 0; }
+.bg-body { display: grid; grid-template-columns: clamp(184px, 24%, 216px) minmax(0, 1fr); min-height: 0; }
 .bg-body[hidden] { display: none; }
 
 .bg-nav {
@@ -4582,7 +4582,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .bg-run-errbox .ico { flex: none; margin-top: 1px; }
 .bg-run-err { flex: 1; min-width: 0; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.bg-empty { display: grid; justify-items: center; gap: 7px; padding: 56px 24px 64px; text-align: center; }
+/* 空态自己也滚：窗体高度封顶 84vh，极矮视口下上下两层 padding 会把提示挤出去。 */
+.bg-empty { display: grid; justify-items: center; align-content: safe center; gap: 7px; padding: 56px 24px 64px; overflow: auto; text-align: center; }
 .bg-empty-ic {
   display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 3px;
   border-radius: 12px; background: var(--panel-2); color: var(--faint);
@@ -4621,8 +4622,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* 占位不是日志：用正文字体与更淡的颜色，别让「桥还没接上」看起来像一条条目。 */
 .bg-run-log[data-empty] { font-family: var(--sans); font-size: 12px; color: var(--faint); }
 
-/* 窄窗（手机 / 分屏）：两栏并一栏，左栏变成顶部横向条 —— 216px 的列表在 360px 屏上没法读。 */
-@container (max-width: 560px) {
+/* 窄窗（手机 / 分屏）：两栏并一栏，左栏变成顶部横向条 —— 184px 的列表在 360px 屏上没法读。
+   断点 620px 而不是 560：再窄一点左栏固定宽会把右栏抬头的名字 / 状态 / 用时挤成三条。 */
+@container (max-width: 620px) {
   .bg-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .bg-nav {
     overflow: hidden;
