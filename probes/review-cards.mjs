@@ -267,26 +267,48 @@ try {
    * 面板在跑的时候会按计时器重画，DOM 一直在换 —— `locator.click()` 会卡在「等元素稳定」上。
    * 这里先量坐标再用鼠标真点：走的是命中测试，不会绕过「点到的是不是这颗按钮」。
    */
+  /**
+   * 取一个元素的中心点（视口坐标）。不在视口里就先滚进来：控制区（四块磁贴 + 目标 + 模型 + 按钮）
+   * 之后记录会排到第一屏之外，用户点它也是先滚下去 —— 别让「点击坐标在视口外」判成按钮坏了。
+   *
+   * 跑着的时候面板按计时器重画，节点会被换掉：滚动前后都按选择器**重新查一次**，别拿旧句柄量。
+   */
   const centerOf = (sel, idx = 0) =>
     page.evaluate(
-      ({ sel, idx }) => {
-        const el = document.querySelectorAll(sel)[idx];
-        if (!el) return null;
-        const b = el.getBoundingClientRect();
-        if (!b.width || !b.height) return null;
-        return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+      async ({ sel, idx }) => {
+        const pick = () => document.querySelectorAll(sel)[idx];
+        const center = (el) => {
+          const b = el?.getBoundingClientRect();
+          if (!b || !b.width || !b.height) return null;
+          return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+        };
+        let at = center(pick());
+        if (at && (at.y < 8 || at.y > innerHeight - 8)) {
+          pick()?.scrollIntoView({ block: "center" });
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          at = center(pick());
+        }
+        return at;
       },
       { sel, idx },
     );
   /** 第 idx 张卡里的某个子元素（卡片之间还夹着表头，不能用 :nth-of-type）。 */
   const centerIn = (parentSel, idx, childSel) =>
     page.evaluate(
-      ({ parentSel, idx, childSel }) => {
-        const el = document.querySelectorAll(parentSel)[idx]?.querySelector(childSel);
-        if (!el) return null;
-        const b = el.getBoundingClientRect();
-        if (!b.width || !b.height) return null;
-        return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+      async ({ parentSel, idx, childSel }) => {
+        const pick = () => document.querySelectorAll(parentSel)[idx]?.querySelector(childSel);
+        const center = (el) => {
+          const b = el?.getBoundingClientRect();
+          if (!b || !b.width || !b.height) return null;
+          return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+        };
+        let at = center(pick());
+        if (at && (at.y < 8 || at.y > innerHeight - 8)) {
+          pick()?.scrollIntoView({ block: "center" });
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          at = center(pick());
+        }
+        return at;
       },
       { parentSel, idx, childSel },
     );

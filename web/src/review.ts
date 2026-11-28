@@ -10,6 +10,7 @@
  */
 import { createEl as el } from "./chat.ts";
 import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
+import { icon, type IconName } from "./icons.ts";
 import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
 
 import type {
@@ -628,28 +629,61 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   const { view, actions } = input;
   const root = el("div", "review rv-scope");
 
-  // ---- 控制条
-  const form = el("div", "rv-form");
-
-  const modeRow = el("div", "rv-row");
-  const mode = el("select", "rv-mode") as HTMLSelectElement;
-  // D420：跑着的时候这张表描述的是「下一条要评什么」，所以不再整张禁用。
-  for (const [value, label] of [
-    ["workspace", tr("工作区改动")],
-    ["range", tr("分支 vs 主干")],
-    ["commit", tr("单个提交")],
-    ["pr", tr("GitHub PR")],
-  ] as [ReviewMode, string][]) {
-    const opt = el("option", "", label) as HTMLOptionElement;
-    opt.value = value;
-    if (value === view.mode) opt.selected = true;
-    mode.append(opt);
+  // ---- 评审仓库：评的是哪一个目录（大文件夹底下的子仓库就靠这一行换）
+  // 没仓库时这一行不画：not-git 那一块自己带「选一个仓库」的按钮，两处都摆只会更乱。
+  // 也要避开 not-git：那一屏的 `repo` 是桥回引的会话目录（解析失败也会带回来），
+  // 拿它当 chip 会把「这里不是仓库」和「评审仓库：文件夹名」同时写在脸上。
+  if (view.repo && view.phase !== "not-git") {
+    const repoRow = el("div", "rv-repo");
+    repoRow.append(el("span", "rv-repo-lab", tr("评审仓库")));
+    const chip = el("button", "rv-repo-chip", view.repoName) as HTMLButtonElement;
+    chip.type = "button";
+    chip.title = `${view.repo}\n${tr("点一下换一个仓库")}`;
+    chip.onclick = () => actions.onPickRepo();
+    repoRow.append(chip);
+    if (view.repoPinned) {
+      const clear = el("button", "rv-repo-x", "×") as HTMLButtonElement;
+      clear.type = "button";
+      clear.title = tr("回到会话目录");
+      clear.setAttribute("aria-label", tr("回到会话目录"));
+      clear.onclick = () => actions.onClearRepo();
+      repoRow.append(clear);
+    }
+    root.append(repoRow);
   }
-  mode.onchange = () => actions.onMode(mode.value as ReviewMode);
-  modeRow.append(mode);
+
+  // ---- 评什么：四块磁贴（范围）+ 目标 + 模型/账号 + 全宽主按钮（D 方案）
+  // 磁贴取代了原来的 `<select>`：四个范围是这一页唯一的“第一步”，摆成四块能一眼扫完；
+  // 跑着的时候它们描述的是**下一条**，所以不整张禁用（D420）。
+  const form = el("div", "rv-form");
+  form.append(el("div", "rv-lead", tr("评什么")));
+
+  const tiles = el("div", "rv-tiles");
+  const modeBoard: { value: ReviewMode; label: string; hint: string; icon: IconName }[] = [
+    { value: "workspace", label: tr("工作区改动"), hint: tr("HEAD 之前的改动"), icon: "pencil" },
+    { value: "range", label: tr("分支 vs 主干"), hint: tr("两条分支之间"), icon: "branch" },
+    { value: "commit", label: tr("单个提交"), hint: tr("一个提交"), icon: "commit" },
+    { value: "pr", label: tr("GitHub PR"), hint: tr("GitHub 上 open 的 PR"), icon: "pr" },
+  ];
+  for (const item of modeBoard) {
+    const on = view.mode === item.value;
+    const tile = el("button", `rv-tile rv-mode${on ? " on" : ""}`) as HTMLButtonElement;
+    tile.type = "button";
+    tile.dataset.mode = item.value;
+    tile.title = item.label;
+    // `aria-pressed` 是这组磁贴的唯一状态来源：`selectOption()` 那种玩法换成页面里读属性即可。
+    tile.setAttribute("aria-pressed", String(on));
+    tile.append(icon(item.icon, { size: 15 }), el("span", "rv-tile-t", item.label), el("span", "rv-tile-s", on ? tileValue(view) || item.hint : item.hint));
+    tile.onclick = () => actions.onMode(item.value);
+    tiles.append(tile);
+  }
+  form.append(tiles);
+
+  const target = el("div", "rv-target");
+  const opts = el("div", "rv-opts");
 
   const refSelect = (label: string, value: string, onPick: (v: string) => void): HTMLElement => {
-    const row = el("div", "rv-row");
+    const row = el("div", "rv-field");
     row.append(el("span", "rv-lab", label));
     const pick = el("select", "rv-ref") as HTMLSelectElement;
     // HEAD 永远在第一项：评「当前」是最常见的用法，而它不在 refs 里。
@@ -671,11 +705,19 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     return row;
   };
 
+  let runBtn: HTMLButtonElement | null = null;
+
   if (view.mode === "range") {
-    form.append(refSelect(tr("目标分支"), view.target, actions.onTarget), refSelect(tr("对照分支"), view.base, actions.onBase));
+    target.append(refSelect(tr("目标分支"), view.target, actions.onTarget), refSelect(tr("对照分支"), view.base, actions.onBase));
+  } else if (view.mode === "commit") {
+    const sha = el("input", "rv-ref rv-sha") as HTMLInputElement;
+    sha.value = view.commit;
+    sha.placeholder = tr("提交号");
+    sha.onchange = () => actions.onCommit(sha.value.trim());
+    target.append(sha);
   } else if (view.mode === "pr") {
     const gh = view.gh;
-    if (gh) form.append(renderGhCard(gh, input.ghActions));
+    if (gh) target.append(renderGhCard(gh, input.ghActions));
     // 没装 gh 又没 PAT：这一格没有任何东西可输，整块换成安装卡（D428）。
     if (gh?.mode !== "full") {
       // 一个格子同时干三件事：输号、检索、从列表里点。分成「搜索框 + 下拉 + 号输入」三行
@@ -743,7 +785,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       toggle.setAttribute("aria-label", tr("展开 PR 列表"));
       toggle.onclick = () => actions.onPrMenu(!view.prMenuOpen);
       box.append(input, toggle);
-      form.append(box);
+      target.append(box);
 
       if (view.prMenuOpen) {
         const menu = el("div", "rv-prmenu");
@@ -780,7 +822,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
           // 打开时可能已经带着检索词（先打字再展开 ▾）：按当前文字收窄一次。
           filterMenu(input.value);
         }
-        form.append(menu);
+        target.append(menu);
       }
       if (!view.prMenuOpen) {
         const chosen = view.prs.find((item) => String(item.number) === view.pr) ?? null;
@@ -796,9 +838,9 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
           const bottom = el("span", "rv-picked-meta");
           bottom.append(el("span", "", `${chosen.headRefName} → ${chosen.baseRefName}`), el("span", "rv-picked-more", tr("详情 ›")));
           picked.append(top, bottom);
-          form.append(picked);
+          target.append(picked);
         } else if (view.prAll > 1) {
-          form.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
+          target.append(el("div", "rv-hint", tr("{p1} 个 open PR，可搜号 / 标题 / 分支", { p1: view.prs.length })));
         }
       }
 
@@ -810,9 +852,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
        * 所以号要写出来、也要能就地换；换了立刻按新号重拉列表（`onAccount` 里做）。
        */
       if (view.accounts.length || view.account) {
-        const row = el("div", "rv-row rv-acct");
-        row.append(el("span", "rv-lab", tr("账号")));
-        const pick = el("select", "rv-ref rv-acct-pick") as HTMLSelectElement;
+        const pick = el("select", "rv-acct-pick rv-ref") as HTMLSelectElement;
         pick.disabled = view.running;
         pick.title = view.account ? tr("现在按 {p1} 查 PR", { p1: view.account }) : tr("按会话默认的账号查 PR");
         const follow = el("option", "", view.accountUsed && !view.account ? tr("跟随工作区（{p1}）", { p1: view.accountUsed }) : tr("跟随工作区")) as HTMLOptionElement;
@@ -840,68 +880,40 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
           pick.append(opt);
         }
         pick.onchange = () => actions.onAccount(pick.value);
-        row.append(pick);
-        form.append(row);
+        opts.append(pick);
       }
     }
-  } else if (view.mode === "commit") {
-    const sha = el("input", "rv-ref") as HTMLInputElement;
-    sha.value = view.commit;
-    sha.placeholder = tr("提交号");
-    sha.onchange = () => actions.onCommit(sha.value.trim());
-    modeRow.append(sha);
+  } else {
+    // 工作区改动没有要填的东西：一句话说清评的是什么，别留一块空白。
+    target.append(el("p", "rv-hint rv-ws-hint", tr("评 HEAD 之前未提交的改动。")));
   }
-  form.append(modeRow);
 
-  const actRow = el("div", "rv-row");
+  form.append(target);
+
+  // ---- 模型（chip）：点开输入框那颗 chip 背后的同一个「模型与思考」弹层。
   const model = el("button", "rv-model", input.modelName || tr("默认模型")) as HTMLButtonElement;
   model.type = "button";
   // D420：换模型只影响**下一条**（每条记录自己存一份 model/provider），所以跑着时也能换。
   model.title = input.modelId || tr("用设置里的默认模型");
   model.onclick = () => actions.onPickModel();
-  actRow.append(model);
+  opts.prepend(model);
+  form.append(opts);
 
-  let runBtn: HTMLButtonElement | null = null;
-  // 一直是「开始评审」：跑着的时候它开的是**下一条**，停哪一条由记录卡上的「停止」决定（D420）。
-  {
-    const run = el("button", "btn rv-run", tr("开始评审")) as HTMLButtonElement;
-    run.type = "button";
-    run.disabled = !view.canRun;
-    run.onclick = () => actions.onRun();
-    runBtn = run;
-    actRow.append(run);
-  }
-  form.append(actRow);
+  // ---- 主按钮：一直是「开始评审」，跑着的时候它开的是**下一条**（D420）
+  const run = el("button", "btn primary rv-run", tr("开始评审")) as HTMLButtonElement;
+  run.type = "button";
+  run.disabled = !view.canRun;
+  run.onclick = () => actions.onRun();
+  runBtn = run;
+  form.append(run);
+
   // 按钮灰着就得说清为什么 —— 用户就是卡在这颗没解释的灰按钮上（「不能评审了」）。
   // 只解释「某一格没填」这一种灰：没装 ocr / 不是 git 仓库 / 正在读 / 正在跑，各有自己的块，
   // 在这里再补一句会与它们打架（同一句话在两处出现，等于两处都没人看）。
   if ((view.missing || view.atCap) && view.missingWhy && !["no-ocr", "not-git", "loading"].includes(view.phase)) {
     form.append(el("div", "rv-hint rv-why", view.missingWhy));
   }
-  // 模式下拉钉在最上面：PR / 分支那些行是后加的，不 reorder 就会把它挤到下面去。
-  form.prepend(modeRow);
-  // ---- 评审仓库：评的是哪一个目录（大文件夹底下的子仓库就靠这一行换）
-  // 没仓库时这一行不画：not-git 那一块自己带「选一个仓库」的按钮，两处都摆只会更乱。
-  // 也要避开 not-git：那一屏的 `repo` 是桥回引的会话目录（解析失败也会带回来），
-  // 拿它当 chip 会把「这里不是仓库」和「评审仓库：文件夹名」同时写在脸上。
-  if (view.repo && view.phase !== "not-git") {
-    const repoRow = el("div", "rv-repo");
-    repoRow.append(el("span", "rv-repo-lab", tr("评审仓库")));
-    const chip = el("button", "rv-repo-chip", view.repoName) as HTMLButtonElement;
-    chip.type = "button";
-    chip.title = `${view.repo}\n${tr("点一下换一个仓库")}`;
-    chip.onclick = () => actions.onPickRepo();
-    repoRow.append(chip);
-    if (view.repoPinned) {
-      const clear = el("button", "rv-repo-x", "×") as HTMLButtonElement;
-      clear.type = "button";
-      clear.title = tr("回到会话目录");
-      clear.setAttribute("aria-label", tr("回到会话目录"));
-      clear.onclick = () => actions.onClearRepo();
-      repoRow.append(clear);
-    }
-    root.append(repoRow);
-  }
+
   root.append(form);
 
   if (view.phase === "loading") root.append(el("div", "rv-hint", tr("正在读评审状态…")));
@@ -947,7 +959,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
     return root;
   }
 
-  // ---- 主体：这个会话评过的每一次（记录卡）。意见与时间线在「完整详情」浮层里（D429）。
+  // ---- 记录：这个会话评过的每一次（时间线）。意见与时间线在「完整详情」浮层里（D429）。
   root.append(renderRunList(input));
 
   // ---- 来源说明：评审内核不是本仓库自研，别让人以为是
@@ -959,6 +971,14 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   root.append(credit);
 
   return root;
+}
+
+/** 磁贴副标题：选中的那块写「现在评的是什么」，没选中的写这块是干什么的。 */
+function tileValue(view: ReviewView): string {
+  if (view.mode === "range") return `${shortRef(view.target) || "HEAD"} ← ${shortRef(view.base) || "main"}`;
+  if (view.mode === "commit") return (view.commit || "").slice(0, 7);
+  if (view.mode === "pr") return view.pr ? `#${view.pr}` : "";
+  return "";
 }
 
 /** 记录卡上的状态词（讲的是那一次自己的结局，与面板当前 phase 无关）。 */
@@ -1007,7 +1027,12 @@ function runMetaRow(card: ReviewRunCard): HTMLElement {
   return meta;
 }
 
-/** 记录列表：一条一张卡，新的在上（view.runs 已经是新在前）。 */
+/**
+ * 记录列表：一条一个时间线节点，新的在上（view.runs 已经是新在前）。
+ *
+ * 卡片正文不是入口（D426）：拖选卡上的文字不该误触浮层，键鼠唯一的入口是底行那颗
+ * 「完整详情」。在跑的那条多一颗「停止」，以及一条按文件数走的进度条。
+ */
 function renderRunList(input: ReviewPanelInput): HTMLElement {
   const { view, actions } = input;
   const box = el("div", "rv-runs");
@@ -1018,31 +1043,43 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
   } else if (view.runs.length) {
     count = tr("这个会话评过 {p1} 次", { p1: view.runs.length });
   }
-  head.append(el("span", "", count));
+  head.append(el("span", "rv-runs-lab", tr("评审记录")), el("span", "rv-runs-count", count));
   box.append(head);
   if (!view.runs.length) {
-    box.append(el("div", "rv-hint", tr("上面选好范围、点「开始评审」，结果会记在这里。")));
+    box.append(el("div", "rv-hint rv-runs-empty", tr("上面选好范围、点「开始评审」，结果会记在这里。")));
     return box;
   }
+
+  const tl = el("div", "rv-tl");
   for (const card of view.runs) {
     const cls = ["rv-run-card", card.running ? "is-live" : "", card.status === "failed" ? "is-fail" : ""]
       .filter(Boolean)
       .join(" ");
-    // 卡片正文不是入口（D429）：不再整卡可点，拖选卡上的文字也不会误触浮层；
-    // 键鼠唯一的入口是底行那颗「完整详情」。
     const row = el("div", cls);
+    row.append(el("span", `rv-run-dot ${card.running ? "running" : card.status}`));
 
+    const body = el("div", "rv-run-body");
     const top = el("div", "rv-run-top");
     top.append(el("span", "rv-run-target", card.target));
-    if (card.title) top.append(el("span", "rv-run-title", card.title));
     top.append(el("span", "rv-run-at", whenText(card.when)));
-    row.append(top, runMetaRow(card));
+    body.append(top);
+    if (card.title) body.append(el("div", "rv-run-title", card.title));
+    body.append(runMetaRow(card));
 
-    if (card.running && card.live?.current) row.append(el("div", "rv-run-current", card.live.current));
-    if (card.error && !card.running) row.append(el("div", "rv-run-err", card.error));
+    if (card.running && card.live) {
+      // 进度条：`reviewed / total` 个文件。total 为 0（老桥）时不画，只留文字。
+      if (card.live.total > 0) {
+        const bar = el("div", "rv-run-bar");
+        const fill = el("i");
+        fill.style.width = `${Math.max(4, Math.round((card.live.reviewed / card.live.total) * 100))}%`;
+        bar.append(fill);
+        body.append(bar);
+      }
+      if (card.live.current) body.append(el("div", "rv-run-current", card.live.current));
+    }
+    if (card.error && !card.running) body.append(el("div", "rv-run-err", card.error));
 
-    // 底行右对齐：跑着的那条先「停止」，再「完整详情」（D429）。停止挪进这里之后，
-    // 不再绝对定位压住同一行右端的时间。
+    // 底行右对齐：跑着的那条先「停止」，再「完整详情」（D429）。
     const foot = el("div", "rv-run-foot");
     if (card.running) {
       const stop = el("button", "rv-run-stop", tr("停止")) as HTMLButtonElement;
@@ -1055,9 +1092,12 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
     more.type = "button";
     more.onclick = () => actions.onDetails(card.id);
     foot.append(more);
-    row.append(foot);
-    box.append(row);
+    body.append(foot);
+
+    row.append(body);
+    tl.append(row);
   }
+  box.append(tl);
   return box;
 }
 
