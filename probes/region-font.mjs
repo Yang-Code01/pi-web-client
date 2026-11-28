@@ -145,6 +145,17 @@ async function snap(page) {
   }, REGIONS);
 }
 
+/**
+ * 五个 `[data-region]` 节点都在？缺一个就当场记一条可读的失败（带上缺了谁），
+ * 别让后面某处 `.box` / `.own` 抛 TypeError 把整个探针崩在没头没尾的地方。
+ */
+const regionsPresent = (s, label) => {
+  const missing = REGIONS.filter((id) => !s.regions[id]);
+  if (!missing.length) return true;
+  check(`${label}：五个区域节点都在`, false, `缺 ${missing.join(" / ")}（[data-region] 没挂上？）`);
+  return false;
+};
+
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: "zh-CN" });
 const page = await ctx.newPage();
@@ -195,24 +206,25 @@ await page.screenshot({ path: path.join(OUT, "2-seeded.png") });
     await boot();
     return snap(page);
   })();
+  const haveAll = regionsPresent(seeded, "2 种子态") && regionsPresent(base, "2 基线态");
   // 容差 2.5px：局域 px 会被像素吸附成整数，换算回父级坐标后最多差 1/倍率（实测 1.0–1.5）。
-  const boxOk = REGIONS.every((id) => Math.abs(seeded.regions[id].box - base.regions[id].box) < 2.5);
+  const boxOk = haveAll && REGIONS.every((id) => Math.abs(seeded.regions[id].box - base.regions[id].box) < 2.5);
   check(
     "2. 盒子不变（会话 / 正文 / 输入框 / 右栏换算回父级坐标后同一个数）",
     boxOk,
-    REGIONS.map((id) => `${id} ${seeded.regions[id].box.toFixed(1)}↔${base.regions[id].box.toFixed(1)}`).join(" · "),
+    REGIONS.map((id) => `${id} ${seeded.regions[id]?.box?.toFixed(1) ?? "—"}↔${base.regions[id]?.box?.toFixed(1) ?? "—"}`).join(" · "),
   );
   // 内容按倍率缩小：区域矩形的局域宽度 = 盒子 / 总倍率
-  const shrinkOk = REGIONS.every((id) => {
+  const shrinkOk = haveAll && REGIONS.every((id) => {
     const want = base.regions[id].local / (SEED[id] ?? 1);
     return Math.abs(seeded.regions[id].local - want) < 2.5;
   });
   check(
     "2b. 内容宽度按倍率缩小（zoom 只缩内部坐标空间）",
     shrinkOk,
-    REGIONS.map((id) => `${id} ${seeded.regions[id].local.toFixed(1)}/${(base.regions[id].local / (SEED[id] ?? 1)).toFixed(1)}`).join(" · "),
+    REGIONS.map((id) => `${id} ${seeded.regions[id]?.local?.toFixed(1) ?? "—"}/${(base.regions[id]?.local ? base.regions[id].local / (SEED[id] ?? 1) : NaN).toFixed(1)}`).join(" · "),
   );
-  const vh = REGIONS.map((id) => seeded.regions[id].vh10);
+  const vh = REGIONS.map((id) => seeded.regions[id]?.vh10 ?? NaN);
   check("2c. 区域内 --vh1 按倍率除回来（还是 10% 视口）", vh.every((v) => Math.abs(v - seeded.vh * 0.1) < 1.5), vh.map((v) => v.toFixed(1)).join(" / "));
 }
 
@@ -435,7 +447,9 @@ for (const rs of [1, 1.3]) {
 
 // 5g. 五根各管各的：每根按 10 下方向键，只有它那一块变、其余四块的盒子不动
 {
-  // 这一段跑在后面几段之后（它们各自 boot 过、面板早关了）：重新打开一次。
+  // 起点显式种成 SEED（顶栏 1.3 / 会话 0.9 / 正文 1.3 / 输入框 1.2 / 右栏 0.85），
+  // 不再依赖「上一段 boot 完之后刚好是 SEED」这种隐式前提 —— 段落顺序一调，这里就会静默漂走。
+  await boot({ regionScale: SEED });
   await openLook();
   const PAIRS = [
     ["topbar", "顶栏"],
@@ -452,8 +466,9 @@ for (const rs of [1, 1.3]) {
     await page.keyboard.press("Tab"); // blur → 落盘
     await sleep(200);
     const after = await snap(page);
-    // 起点不是 1.0：上一段把 SEED 种进去了（顶栏 1.3、会话 0.9…）。所以断言的是「自己的倍率 +0.1、
-    // 局域宽度按新倍率缩小」，不是写死的 ×1.1 —— 否则这条只有在从 100% 起步时才成立。
+    if (!regionsPresent(before, `5g ${label} 前`) || !regionsPresent(after, `5g ${label} 后`)) continue;
+    // 起点是上面种下的 SEED 那五档、不是 1.0。所以断言的是「自己的倍率 +0.1、局域宽度按新倍率缩小」，
+    // 不是写死的 ×1.1 —— 否则这条只有在从 100% 起步时才成立。
     const from = before.regions[id].own;
     const wantOwn = Math.round((from + 0.1) * 100) / 100;
     const ratio = before.regions[id].local / after.regions[id].local;
