@@ -4442,8 +4442,8 @@ export class App {
     onCommit: () => void;
     /**
      * 拖动时要不要把控制台让开（#742）。默认要。
-     * 「字号」与「设置与控制台」那两根关掉（D455）：面板自己就跟着缩放，效果就在眼前，
-     * 再把面板淡成 0.03 等于「拖一下就关掉了设置面板」，用户看不到自己在调什么。
+     * 只有「设置与控制台」那根关掉（D455）：它改的就是面板自己的框，再把面板淡成 0.03
+     * 等于「拖一下就关掉了设置面板」，看不到自己在调什么。
      */
     peek?: boolean;
   }): HTMLElement {
@@ -4673,7 +4673,7 @@ export class App {
       if (dragBox) return;
       queue(Number(range.value));
       // 纯键盘也得看得见：调值就露一下，400ms 没再动就自己回来（连按合并计时，计时器在胶囊里）。
-      // 字号 / 设置与控制台那两根不露（`peekOn = false`）：面板自己就是预览，不用再遮它。
+      // 设置与控制台那根不露（`peekOn = false`）：它改的就是面板自己的框。
       if (peekOn) showPeek(next, true);
     };
     range.addEventListener("keyup", () => { if (!dragBox) commit(); });
@@ -4970,13 +4970,11 @@ export class App {
     langPanel.append(
       this.fontSliderRow({
         label: tr("字号"),
-        hint: tr("整页一起缩放；这个面板也跟着变大，拖动时不收起，方便对照；点刻度跳档，双击轨道回 100%"),
+        hint: tr("整页一起缩放；拖动时设置面板自动让开，松手回来；点刻度跳档，双击轨道回 100%"),
         value: this.prefs.scale,
         reset: DEFAULT_PREFS.scale,
         snaps: SIZE_STOPS,
         marksAt: SIZE_MARKS,
-        // D455：面板自己就跟着缩放，效果就在眼前 —— 不再淡掉面板（那等于「拖一下就关掉了设置」）。
-        peek: false,
         onLive: (v) => {
           this.prefs = { ...this.prefs, scale: v };
           document.documentElement.style.setProperty("--ui-scale", String(v));

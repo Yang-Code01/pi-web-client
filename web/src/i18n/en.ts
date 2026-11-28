@@ -4067,8 +4067,8 @@ export const en: Dict = {
   "强调色": "Accent color",
   "改了立即生效：外观存在这个浏览器里，标签行与界面元素存在桥上": "Changes apply immediately: appearance is stored in this browser, tab row and UI elements on the bridge",
   "对话正文": "Chat transcript",
-  "整页一起缩放；这个面板也跟着变大，拖动时不收起，方便对照；点刻度跳档，双击轨道回 100%":
-    "Scales the whole page; this panel grows with it and stays open while you drag; click a mark to jump, double-click the track for 100%",
+  "整页一起缩放；拖动时设置面板自动让开，松手回来；点刻度跳档，双击轨道回 100%":
+    "Scales the whole page; the settings panel gets out of the way while you drag and comes back on release; click a mark to jump, double-click the track for 100%",
   "未开": "Off",
   "界面与推送": "UI and notifications",
   "界面元素": "UI elements",

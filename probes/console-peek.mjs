@@ -5,8 +5,9 @@
  *   1. 控制台跟着「整页字号」一起放大（D454）：它仍挂在 body 上（不在 `#app` 的 zoom 子树里），
  *      但自己吃 `zoom: var(--st-zoom)`；外框按 `--st-frame` 长大到吃满窗口，所以 2.0 下字与框都变大、
  *      那根字号滑杆仍在视口内（反证：改之前 2.0 下面板撑满整屏、轨道视觉 y ≈ 984 > 836）。
- *   2. 「字号」那根**不让开**（D455）：面板自己就是预览；阈值 / 让开 / 胶囊改用「对话正文」那根量 ——
- *      指针只挪 3px 不让开，挪 40px 才让开（单击轨道 / 点刻度不闪）。
+ *   2. 阈值：指针只挪 3px 不让开，挪 40px 才让开（单击轨道 / 点刻度不闪），量在「字号」那根上。
+ *      分区轨道同一套阈值；只有「设置与控制台」整根不让开（D455）—— 它改的就是面板自己的框，
+ *      再淡掉等于「拖一下就关掉了设置」。
  *   3. 让开：控制台淡到几乎全隐、遮罩全透且不模糊；真页面里正文那一块的视觉尺寸跟着变
  *      （证明它真的在变，不只是画了个透明层）。
  *   4. 胶囊：读数文本 + 只读细轨道的填充宽度。
@@ -361,31 +362,31 @@ await sleep(150);
 await boot({ scale: 1.25 });
 await openLook();
 
-// D455：「字号」那根不再让开 —— 面板自己就跟着缩放，效果就在眼前，再把面板淡掉等于
-// 「拖一下就关掉了设置」。所以先拿它验**不让开**，后面的阈值 / 胶囊用「对话正文」那根（真的改的是面板背后的页面）。
-const fontRail = await mustBox(page.locator(".size-rail").first(), "2 段：字号轨道");
-const fontY = fontRail.y + fontRail.height / 2;
-const fontX = fontRail.x + fontRail.width * 0.375; // 125%
-await page.mouse.move(fontX, fontY);
+// D455：只有「设置与控制台」那根不让开 —— 它改的就是面板自己的框，再淡掉等于「拖一下就关掉了设置」。
+// 先拿它验**不让开**，后面的阈值 / 胶囊仍量「字号」（那根真的改的是面板背后那片页面）。
+await page.locator(".size-rail").nth(6).scrollIntoViewIfNeeded();
+const conRail = await mustBox(page.locator(".size-rail").nth(6), "2 段：设置与控制台轨道");
+const conY = conRail.y + conRail.height / 2;
+const conX = conRail.x + conRail.width * 0.375;
+await page.mouse.move(conX, conY);
 await page.mouse.down();
-await page.mouse.move(fontX + 40, fontY, { steps: 4 });
+await page.mouse.move(conX + 40, conY, { steps: 4 });
 await sleep(250);
-const fontDrag = await peekState();
-await page.screenshot({ path: path.join(OUT, "2-font-no-peek.png") });
+const conDrag = await peekState();
+await page.screenshot({ path: path.join(OUT, "2-console-no-peek.png") });
 await page.mouse.up();
 await sleep(150);
 check(
-  "2. 拖「字号」不让开：面板一直不透明、也不露胶囊（D455）",
-  fontDrag.conOpacity > 0.99 && fontDrag.hudOpacity < 0.1 && fontDrag.backBlur !== "none",
-  `opacity ${fontDrag.conOpacity} / 胶囊 ${fontDrag.hudOpacity} / backdrop ${fontDrag.backBlur}`,
+  "2. 拖「设置与控制台」不让开：面板一直不透明、也不露胶囊（D455）",
+  conDrag.conOpacity > 0.99 && conDrag.hudOpacity < 0.1 && conDrag.backBlur !== "none",
+  `opacity ${conDrag.conOpacity} / 胶囊 ${conDrag.hudOpacity} / backdrop ${conDrag.backBlur}`,
 );
 
 await page.keyboard.press("Escape");
 await sleep(150);
 await boot({ scale: 1.25 });
 await openLook();
-// nth(3) = 对话正文（顺序：字号 / 顶栏 / 会话列表 / 对话正文 / 输入框 / 右栏面板 / 设置与控制台）。
-const railBox = await mustBox(page.locator(".size-rail").nth(3), "2/3 段：对话正文轨道");
+const railBox = await mustBox(page.locator(".size-rail").first(), "2/3 段：字号轨道");
 const startX = railBox.x + railBox.width * 0.375; // 125%
 const startY = railBox.y + railBox.height / 2;
 const restState = await peekState();
@@ -417,7 +418,7 @@ check(
   `opacity ${at40px.conOpacity} / bg ${at40px.backBg} / backdrop ${at40px.backBlur}`,
 );
 check(
-  "3. 让开时真页面真的在变（同一条消息的视觉高度 / 行数跟着分区字号走）",
+  "3. 让开时真页面真的在变（同一条消息的视觉高度 / 行数跟着字号走）",
   Math.abs(at40px.msgsH - at3px.msgsH) >= 2 || at40px.lines !== at3px.lines,
   `消息总高 ${at3px.msgsH} → ${at40px.msgsH} / 行数 ${at3px.lines} → ${at40px.lines} / 正文宽 ${at3px.chatW} → ${at40px.chatW}`,
 );
@@ -425,8 +426,8 @@ check(
 const hudPct = Number(at40px.hudText.split("·").pop()?.trim().replace("%", ""));
 const wantFill = ((hudPct / 100 - 0.8) / (2.0 - 0.8)) * 100;
 check(
-  "4. 读数胶囊：文本是「对话正文 · N%」，只读细轨道的填充按 (v-0.8)/1.2",
-  /对话正文 · \d+%$/.test(at40px.hudText) && at40px.hudOpacity > 0.9 && Math.abs(at40px.hudFill - wantFill) <= 1,
+  "4. 读数胶囊：文本是「字号 · N%」，只读细轨道的填充按 (v-0.8)/1.2",
+  /字号 · \d+%$/.test(at40px.hudText) && at40px.hudOpacity > 0.9 && Math.abs(at40px.hudFill - wantFill) <= 1,
   `${JSON.stringify(at40px.hudText)} / fill ${at40px.hudFill.toFixed(1)}% vs ${wantFill.toFixed(1)}% / opacity ${at40px.hudOpacity}`,
 );
 check(
@@ -440,7 +441,7 @@ await page.keyboard.press("Escape");
 await sleep(150);
 await boot({ scale: 1.25 });
 await openLook();
-const kRange = page.locator(".size-rail input[type=range]").nth(3);
+const kRange = page.locator(".size-rail input[type=range]").first();
 await kRange.focus();
 await page.keyboard.press("ArrowRight");
 await sleep(120);
