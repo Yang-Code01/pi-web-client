@@ -261,6 +261,18 @@ function bgElapsedText(since: number, until = Date.now()): string {
   return tr("已跑 {p1}", { p1: clock });
 }
 
+/**
+ * 子代理提示条上那颗状态词：有在跑的就说在跑，其次说失败，都没有才是「全部结束」。
+ *
+ * 顺序即优先级（在跑的 + 有失败的 → 说在跑）。写成函数而不是「标签 + dataset 两条并行三元」：
+ * 加一种状态时不用动那两串并列的 `?:`。
+ */
+function bgChipState(running: number, failed: number): { label: string; state: "running" | "failed" | "done" } {
+  if (running) return { label: tr("{p1} 个运行中", { p1: running }), state: "running" };
+  if (failed) return { label: tr("{p1} 个失败", { p1: failed }), state: "failed" };
+  return { label: tr("全部结束"), state: "done" };
+}
+
 /** 跑完之后的同一个钟：报「一共跑了多久」，而不是「结束至今」（D170 评审）。 */
 function bgTookText(ms: number): string {
   const secs = Math.max(0, Math.round(ms / 1000));
@@ -18096,13 +18108,9 @@ export class App {
     sheet.chip.hidden = !runs.length;
     sheet.meta.hidden = !runs.length;
     if (runs.length) {
-      const [label, chipState] = running
-        ? [tr("{p1} 个运行中", { p1: running }), "running"]
-        : failed
-          ? [tr("{p1} 个失败", { p1: failed }), "failed"]
-          : [tr("全部结束"), "done"];
-      if (sheet.chip.textContent !== label) sheet.chip.textContent = label;
-      sheet.chip.dataset.state = chipState;
+      const chip = bgChipState(running, failed);
+      if (sheet.chip.textContent !== chip.label) sheet.chip.textContent = chip.label;
+      sheet.chip.dataset.state = chip.state;
       const meta = tr("共 {p1} 个运行", { p1: runs.length });
       if (sheet.meta.textContent !== meta) sheet.meta.textContent = meta;
     }
