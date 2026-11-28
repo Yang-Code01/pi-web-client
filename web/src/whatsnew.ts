@@ -12,6 +12,7 @@
  * 已读在 dialog 打开的那一刻就写（D358）：这个功能的目的是**知道**，不是**确认**。所以不存在
  * 「必须点知道了才不算没看过」那套纠缠。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { createEl as el } from "./chat.ts";
 import { icon } from "./icons.ts";
 import { tr } from "./i18n/index.ts";
@@ -195,6 +196,7 @@ export function openWhatsnew(opts: WhatsnewDialogOptions): void {
 
   sheet.append(head, body, foot);
   back.append(sheet);
+  attachWindowGeom("whatsnew", { back, panel: sheet, min: [520, 380] });
 
   untrap = trapEscape(close);
   mountOverlay(back);

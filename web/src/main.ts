@@ -6,6 +6,7 @@ import "./mac.css";
 import type { Me } from "./types.ts";
 import { bootTheme } from "./theme.ts";
 import { applyLang, bootLang, errText, tr } from "./i18n/index.ts";
+import { migrateOldGeom } from "./dialoggeom.ts";
 
 // 登录页在 App 之前就画出来了，所以语言得在这时先定下来（D110）：`pi.prefs.lang`
 // 优先，没存过/非法就问浏览器。这份 `bootLang()` 与「内网通」（peer.html）共用。
@@ -14,6 +15,9 @@ applyLang(bootLang());
 document.documentElement.style.setProperty("--ui-scale", String(bootScale()));
 // 主题同理：浅色用户的登录页不该先闪一下黑底。
 bootTheme();
+// #755：终端 / 预览 / 表格 / 幻灯片那四个旧几何键搬进 `pi.dialogGeom`。在这里跑一次就够 ——
+// 窗口在 attach 时也会跑，但那几扇 dock 不一定过得去；旧键一律保留（回滚到旧构建还认得）。
+migrateOldGeom();
 
 function loginScreen(onSuccess: (me: Me) => void): void {
   const app = document.getElementById("app")!;

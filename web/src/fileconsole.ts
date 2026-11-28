@@ -1,3 +1,4 @@
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { createEl as el } from "./chat.ts";
 import { ATTACHABLE_IMAGE, fileNameOf, joinPath, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { tr } from "./i18n/index.ts";
@@ -120,6 +121,7 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
     head.append(headMain, headActions);
     shell.append(head, main, foot);
     back.append(shell);
+    attachWindowGeom("fileconsole", { back, panel: shell, min: [560, 420] });
     root = back;
   } else {
     shell.append(main);

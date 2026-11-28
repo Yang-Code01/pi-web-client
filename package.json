@@ -88,6 +88,7 @@
     "test:ws-row": "npm run build:bridge && node bridge/tests/ws-row-drift.mjs",
     "test:menuplace": "node --experimental-strip-types web/tests/menuplace-unit.mjs",
     "test:viewport": "node web/tests/viewport-units-unit.mjs",
+    "test:dialog-geom": "node --experimental-strip-types web/tests/dialog-geom-unit.mjs && node --experimental-strip-types web/tests/dialog-geom-browser.mjs",
     "test:theme": "node --experimental-strip-types --test web/tests/theme-unit.mjs",
     "test:ports": "node tools/port-guard.mjs",
     "test:defaults": "node --experimental-strip-types bridge/tests/settings-defaults.mjs",

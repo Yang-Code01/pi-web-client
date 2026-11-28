@@ -3,7 +3,7 @@
  *
  * 为什么不进 viewer 面板：viewer 固定 `min(760px, 55vw)`，一页幻灯片在里面只能缩成缩略图。
  * 所以它和表格浮窗一样是「和终端并列的一扇窗」——复用 `.sd` 那套外观，但没有遮罩、不抢焦点，
- * 几何记在 `pi.slidesGeom`。转换在桥端排队（docpdf/service.ts），这里只负责轮询状态、挂 iframe。
+ * 几何记在 `pi.dialogGeom.slides`（#755 并键；旧键只作为迁移来源保留）。转换在桥端排队（docpdf/service.ts），这里只负责轮询状态、挂 iframe。
  *
  * 打不开的情况必须说清楚：没装 PowerPoint 就明说（别让人盯着「正在生成」），
  * 页数超限 / 转换失败则给原文 + 重试 + 「用本机程序打开」。
@@ -11,9 +11,9 @@
 import { api } from "../api.ts";
 import { icon } from "../icons.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
+import { clearGeom, loadGeom, saveDockGeom } from "../dialoggeom.ts";
 import { errText, fmtNum, tr } from "../i18n/index.ts";
 
-const KEY = "pi.slidesGeom";
 const MIN_W = 420;
 const MIN_H = 300;
 /** 和 SheetPage 一致：1.5 秒问一次，最多等 190 秒（桥端转换超时 180 秒 + 一点余量）。 */
@@ -322,16 +322,9 @@ export class SlidesDialog {
     return { l: Math.max(0, (vw - w) / 2), t: Math.max(0, (vh - h) / 2), w, h };
   }
 
+  /** 几何与其它浮窗同一个键（`pi.dialogGeom`）：幻灯片浮窗是 dock，位置和大小都记。 */
   private readGeom(): Partial<FloatBox> | null {
-    try {
-      const raw = localStorage.getItem(KEY);
-      if (!raw) return null;
-      const value = JSON.parse(raw) as Partial<FloatBox>;
-      if (!value || typeof value !== "object") return null;
-      return value;
-    } catch {
-      return null;
-    }
+    return loadGeom("slides");
   }
 
   private applyGeom(): void {
@@ -348,23 +341,11 @@ export class SlidesDialog {
   }
 
   private saveGeom(): void {
-    const box = measureFloat(this.root, this.opts.scale());
-    try {
-      localStorage.setItem(
-        KEY,
-        JSON.stringify({ l: Math.round(box.l), t: Math.round(box.t), w: Math.round(box.w), h: Math.round(box.h) }),
-      );
-    } catch {
-      /* 存不下也还能用这一次 */
-    }
+    saveDockGeom("slides", measureFloat(this.root, this.opts.scale()));
   }
 
   private resetGeom(): void {
-    try {
-      localStorage.removeItem(KEY);
-    } catch {
-      /* 忘不掉也还能用这一次 */
-    }
+    clearGeom("slides");
     this.root.classList.remove("pinned");
     for (const prop of ["left", "top", "bottom", "transform", "width", "height"]) this.root.style.removeProperty(prop);
     this.applyGeom();

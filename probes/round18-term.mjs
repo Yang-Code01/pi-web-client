@@ -148,10 +148,18 @@ try {
   await page.mouse.up();
   await sleep(250);
   const after = (await dock.boundingBox()).height;
-  const savedH = Number(await page.evaluate(() => localStorage.getItem("pi.termH")));
-  log(`dock height: ${Math.round(before)} → ${Math.round(after)} | pi.termH=${savedH}`);
+  // #755：终端几何并进了 `pi.dialogGeom.term`（Q-026 那个 `pi.termH` 只作为迁移来源保留）。
+  const savedH = Number(
+    await page.evaluate(() => JSON.parse(localStorage.getItem("pi.dialogGeom") ?? "null")?.term?.h),
+  );
+  // 几何按**布局 px** 存（`saveTermGeom()` 里除过 `--ui-scale`），`boundingBox()` 量到的是**视觉** px。
+  // 外观字号默认 125%，不除这一下这条断言必然差 20%。
+  const uiScale = await page.evaluate(
+    () => Number.parseFloat(getComputedStyle(document.getElementById("app")).getPropertyValue("--ui-scale")) || 1,
+  );
+  log(`dock height: ${Math.round(before)} → ${Math.round(after)} | pi.dialogGeom.term.h=${savedH} (÷${uiScale})`);
   assert(after > before + 80, `dragging up grows the dock (${Math.round(before)} → ${Math.round(after)})`);
-  assert(Number.isFinite(savedH) && Math.abs(savedH - after) <= 2, "the height is remembered");
+  assert(Number.isFinite(savedH) && Math.abs(savedH - after / uiScale) <= 2, "the height is remembered");
   await page.screenshot({ path: path.join(OUT, "2-dragged.png") });
 
   // Dragging far past the top stops where the chat still has room — and the grip has moved up with
@@ -182,8 +190,8 @@ try {
   await page.locator(".term-grip").first().dblclick();
   await sleep(250);
   const reset = (await dock.boundingBox()).height;
-  const gone = await page.evaluate(() => localStorage.getItem("pi.termH"));
-  log("after reset:", Math.round(reset), "| pi.termH:", gone);
+  const gone = await page.evaluate(() => JSON.parse(localStorage.getItem("pi.dialogGeom") ?? "null")?.term ?? null);
+  log("after reset:", Math.round(reset), "| pi.dialogGeom.term:", JSON.stringify(gone));
   assert(gone === null, "double-click forgets the saved height");
   assert(reset < tallest - 40, `double-click returns to the default (${Math.round(tallest)} → ${Math.round(reset)})`);
   await page.screenshot({ path: path.join(OUT, "3-reset.png") });

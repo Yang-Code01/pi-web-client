@@ -81,11 +81,38 @@ ok(Boolean(cookie), "logged in");
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
 const page = await (await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: "zh-CN" })).newPage();
+/**
+ * 外观「字号」（`#app` 的 zoom，D441 之后默认 125%）。终端的几何一律按**布局 px** 存取（D93），
+ * 而 `boundingBox()` 量到的是**视觉** px —— 两边要除一次才比得上。这个探针以前按 100% 写死，
+ * 默认字号改成 1.25 之后整段几何断言都在拿两套单位对账。
+ */
+const uiScale = async () =>
+  page.evaluate(() => {
+    const raw = Number.parseFloat(getComputedStyle(document.getElementById("app")).getPropertyValue("--ui-scale"));
+    return Number.isFinite(raw) && raw > 0 ? raw : 1;
+  });
 const errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
 page.on("console", (m) => {
   // 页面先建 WS / 拉 /api/me 再被 401 挡在登录页，这条 401 是登录流程自己的，不算这次变更的错。
   if (m.type() === "error" && !m.text().includes("401 (Unauthorized)")) errors.push(m.text().slice(0, 200));
+});
+// 这个探针的几何断言是拿「视觉 px」跟「布局 px」直接对账的（写在默认字号还是 100% 的时候）。
+// 外观字号默认已经是 125%，几何换算会把每一处都挪 1/1.25 —— 这里把字号钉回 100%，让两种 px 相等；
+// 真在 125% 下验换算的是 `web/tests/dialog-geom-browser.mjs`。
+await page.addInitScript(() => {
+  try {
+    localStorage.setItem("pi.prefs", JSON.stringify({ ...(JSON.parse(localStorage.getItem("pi.prefs") ?? "{}") ?? {}), scale: 1 }));
+  } catch {
+    /* 读不到就按默认来 */
+  }
+  // 这份 dist 是刚建出来的，「服务已更新，刷新后生效」那条 toast 会压住顶栏按钮（刷新之后也会再冒一次）。
+  // 它跟终端无关，每次导航都藏掉。
+  addEventListener("DOMContentLoaded", () => {
+    const style = document.createElement("style");
+    style.textContent = ".update-bar { display: none !important; }";
+    document.head.append(style);
+  });
 });
 await page.goto(BASE, { waitUntil: "domcontentloaded" });
 if (await page.locator('input[type="password"]').count()) {
@@ -141,7 +168,8 @@ const dock = page.locator(".term-dock");
 const geom = () =>
   page.evaluate(() => {
     try {
-      return JSON.parse(localStorage.getItem("pi.termGeom") ?? "null");
+      // #755：终端几何并进了 `pi.dialogGeom`，这一条是它自己的那份。
+      return JSON.parse(localStorage.getItem("pi.dialogGeom") ?? "null")?.term ?? null;
     } catch {
       return null; // 存坏了就当没存
     }
@@ -156,7 +184,13 @@ await sleep(250);
 const h1 = (await dock.boundingBox()).height;
 const savedGrip = await geom();
 ok(h1 > h0 + 60, `拖顶边把 dialog 拉高了（${Math.round(h0)} → ${Math.round(h1)}）`);
-ok(savedGrip && Math.abs(savedGrip.h - h1) <= 2, `高度进了存储（pi.termGeom.h=${savedGrip?.h}）`);
+{
+  const s = await uiScale();
+  ok(
+    savedGrip && Math.abs(savedGrip.h - h1 / s) <= 2,
+    `高度进了存储（pi.dialogGeom.term.h=${savedGrip?.h}，视觉 ${Math.round(h1)} ÷ ${s}）`,
+  );
+}
 await grip.dblclick();
 await sleep(250);
 ok((await geom()) === null, "双击抓取带忘掉几何");
@@ -172,12 +206,22 @@ await page.mouse.move(hb.x + hb.width * 0.55 - 60, hb.y + hb.height / 2 - 80, { 
 await page.mouse.up();
 await sleep(250);
 const b1 = await dock.boundingBox();
-ok(Math.abs(b1.x - (b0.x - 60)) <= 2 && Math.abs(b1.y - (b0.y - 80)) <= 2, `拖标题栏把 dialog 拖走了（${Math.round(b0.x)},${Math.round(b0.y)} → ${Math.round(b1.x)},${Math.round(b1.y)}）`);
+// 往左上拖：x 撞到视口左缘就停在那儿（clamp 到 0 是设计），y 照常跟手。
+ok(
+  Math.abs(b1.x - Math.max(0, b0.x - 60)) <= 2 && Math.abs(b1.y - (b0.y - 80)) <= 2,
+  `拖标题栏把 dialog 拖走了（${Math.round(b0.x)},${Math.round(b0.y)} → ${Math.round(b1.x)},${Math.round(b1.y)}）`,
+);
 ok(Math.abs(b1.width - b0.width) <= 2 && Math.abs(b1.height - b0.height) <= 2, "拖动时大小不变");
 const moved = await geom();
-ok(moved && moved.l === Math.round(b1.x) && moved.t === Math.round(b1.y), `位置进了存储（l=${moved?.l} t=${moved?.t}）`);
+{
+  const s = await uiScale();
+  ok(
+    moved && Math.abs(moved.l - b1.x / s) <= 2 && Math.abs(moved.t - b1.y / s) <= 2,
+    `位置进了存储（l=${moved?.l} t=${moved?.t}，视觉 ${Math.round(b1.x)},${Math.round(b1.y)} ÷ ${s}）`,
+  );
+}
 
-const corner = page.locator(".term-resize");
+const corner = page.locator(".win-grip");
 const cb = await corner.boundingBox();
 await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
 await page.mouse.down();
@@ -189,7 +233,22 @@ log("resized:", Math.round(b1.width), "x", Math.round(b1.height), "→", Math.ro
 ok(Math.abs(b2.width - (b1.width - 300)) <= 2 && Math.abs(b2.height - (b1.height - 100)) <= 2, "右下拉小：宽和高都跟着指针变");
 ok(Math.abs(b2.x - b1.x) <= 2 && Math.abs(b2.y - b1.y) <= 2, "拉大小的时候左上角不动");
 const resized = await geom();
-ok(resized && Math.abs(resized.w - b2.width) <= 2 && Math.abs(resized.h - b2.height) <= 2, "大小进了存储");
+const scale2 = await uiScale();
+ok(
+  resized && Math.abs(resized.w - b2.width / scale2) <= 2 && Math.abs(resized.h - b2.height / scale2) <= 2,
+  `大小进了存储（${resized?.w}×${resized?.h}，视觉 ${Math.round(b2.width)}×${Math.round(b2.height)} ÷ ${scale2}）`,
+);
+{
+  // 抓手是共用的 `.win-grip`（#755）：窗口那一支由 JS 按面板 rect 摆位，终端这一支靠 CSS
+  // `.term-dock > .win-grip { right/bottom: 0 }` —— 少了那一行爪子会落在 flex 的静态位置上，
+  // 这一条就是守它的（只量尺寸变化的话看不出来）。
+  const db = await dock.boundingBox();
+  const gb = await corner.boundingBox();
+  ok(
+    Math.abs(gb.x + gb.width - (db.x + db.width)) <= 2 && Math.abs(gb.y + gb.height - (db.y + db.height)) <= 2,
+    `抓手贴在 dialog 的右下角（爪 ${Math.round(gb.x + gb.width)},${Math.round(gb.y + gb.height)} / dock ${Math.round(db.x + db.width)},${Math.round(db.y + db.height)}）`,
+  );
+}
 await page.screenshot({ path: path.join(SHOTS, "2-dragged.png") });
 
 await page.locator(".term-body").click();
@@ -251,8 +310,9 @@ ok(
 await sleep(400);
 // D93：拖走 / 拖出的位置和大小也是存在 localStorage 的，刷新回来要一模一样。
 const b3 = await page.locator(".term-dock").boundingBox();
+const scale3 = await uiScale();
 ok(
-  Math.abs(b3.x - resized.l) <= 2 && Math.abs(b3.y - resized.t) <= 2 && Math.abs(b3.width - resized.w) <= 2 && Math.abs(b3.height - resized.h) <= 2,
+  Math.abs(b3.x / scale3 - resized.l) <= 2 && Math.abs(b3.y / scale3 - resized.t) <= 2 && Math.abs(b3.width / scale3 - resized.w) <= 2 && Math.abs(b3.height / scale3 - resized.h) <= 2,
   `拖走 / 拖出的几何跨刷新还在（${Math.round(b3.x)},${Math.round(b3.y)} ${Math.round(b3.width)}×${Math.round(b3.height)}）`,
 );
 
@@ -270,7 +330,11 @@ await page.screenshot({ path: path.join(SHOTS, "3-mobile.png") });
 // --- 5. × kills it for real ----------------------------------------------------------------------
 await page.locator(".term-tab .term-tab-x").click();
 ok(await until(async () => (await page.locator(".term-dock").count()) === 0, 6000, "dialog gone"), "× 结束了那个 shell，dialog 也收走");
-ok((await termBtn.innerText()).trim() === ">_ 终端", `按钮回到没有数字的「${(await termBtn.innerText()).trim()}」`);
+{
+  // 窄屏下顶栏只画图标（`setWideLabel`），所以这里守的是「没有残留的计数」，不是那几个字。
+  const label = (await termBtn.innerText()).trim();
+  ok(!/\d/.test(label), `按钮回到没有数字的「${label}」`);
+}
 ok(!(await termBtn.getAttribute("class")).includes("term-live"), "没有 shell 了，按钮不亮");
 
 await page.screenshot({ path: path.join(SHOTS, "4-closed.png") });

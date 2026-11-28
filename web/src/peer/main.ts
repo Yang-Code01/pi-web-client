@@ -2,6 +2,7 @@ import { applyLang, bootLang, fmtDate, fmtNum, fmtRelative, fmtTime, tr } from "
 import { placeMenu } from "../menuplace.ts";
 import { renderMarkdown } from "../md.ts";
 import { markSurface } from "../modal.ts";
+import { attachWindowGeom } from "../dialoggeom.ts";
 import { RichEditor } from "../notes/editor.ts";
 import { hasRichMarkup, isRichEmpty, plainText, sanitizeRich } from "../notes/rich.ts";
 import { CSV_MAX_BYTES, readCsv } from "../sheet/csv.ts";
@@ -378,6 +379,12 @@ const layerEl = document.querySelector("#layer") as HTMLElement;
 const toastEl = document.querySelector("#toast") as HTMLElement;
 // 点遮罩不关、只轻弹（D437）：遮罩上的点击由 modal.ts 统一处理，关闭只走 ✕ / Esc。
 const picker = markSurface(document.querySelector("#picker") as HTMLElement, "window");
+// 内网通页面的选文件浮层：外壳是 `#picker`，真正的面板是里面那块 `.pbox`。
+// 找不到面板就干脆不接 —— 让 `attachWindowGeom` 退回「第一个子元素」会把尺寸写到错的节点上。
+// `#picker` 在页面加载时是 `hidden` 的：几何模块只在该看得见的时候铺尺寸 / 摆抓手，
+// `openPicker()` 里那一下 `hidden = false` 由它的 ResizeObserver 接住，不用在这里等。
+const pickerBox = picker.querySelector<HTMLElement>(".pbox");
+if (pickerBox) attachWindowGeom("peer-pick", { back: picker, panel: pickerBox, min: [520, 380] });
 const crumbsEl = document.querySelector("#crumbs") as HTMLElement;
 const placesEl = document.querySelector("#places") as HTMLUListElement;
 const rootsEl = document.querySelector("#roots") as HTMLUListElement;

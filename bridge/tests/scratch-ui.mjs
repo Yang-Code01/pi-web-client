@@ -142,6 +142,7 @@ try {
     };
   });
   await page.goto(BASE);
+  await page.addStyleTag({ content: ".update-bar { display: none !important; }" }); // 刚建的 dist 会让桥冒「服务已更新」压住顶栏，与本测试无关
   await page.waitForSelector(".app", { timeout: 20000 });
 
   // 入口在顶栏，第 7 个位置，点开就是 dialog。

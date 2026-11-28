@@ -397,6 +397,7 @@ export interface PickerOpts {
  * 默认取上次用过的那个。
  */
 export function openTrPicker(o: PickerOpts, mount: (node: HTMLElement) => void): void {
+  // dialog-geom: 不装抓手 —— alert 形的「翻译成什么」小框，几行字
   const back = markSurface(el("div", "choose-back"), "window", { enter: "alert" });
   const box = el("div", "choose tr-pick");
   box.append(el("div", "choose-title", tr("翻译成什么？用什么翻？")));
@@ -469,6 +470,8 @@ export function openSyncReview(
   onApply: () => void,
   mount: (node: HTMLElement) => void,
 ): void {
+  // dialog-geom: 不装抓手 —— alert 形的「把 N 处改动写回原文？」确认框：差异列在 `.tr-diffs` 里
+  // 自己滚，这一层只负责「确认 / 取消」，尺寸不是这一屏要解决的问题。
   const back = markSurface(el("div", "choose-back"), "window", { enter: "alert" });
   const box = el("div", "choose tr-review");
   box.append(el("div", "choose-title", tr("把 {n} 处改动写回原文？", { n: r.edits })));

@@ -4,6 +4,7 @@
  * 左边四页：概况 / 网络与 DNS / 端口与服务 / 服务；右边是当前页。
  * 读是本机 + 局域网；公网只读且数据已在桥端打码。DNS 写永远要主机桌面点 UAC。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { paintAttendance } from "./attendance.ts";
@@ -235,6 +236,7 @@ class SysPanel {
 
     consoleNode.append(head, this.banner, body, foot);
     root.append(consoleNode);
+    attachWindowGeom("sysmanage", { back: root, panel: consoleNode, min: [560, 420] });
     this.root = root;
   }
 

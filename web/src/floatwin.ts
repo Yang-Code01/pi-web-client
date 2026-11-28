@@ -21,6 +21,12 @@ export interface FloatDragOpts {
   /** 可用高度要扣掉的东西（终端下方那条 tab）；表格浮窗传 0。 */
   inset: () => number;
   save: (dock: HTMLElement) => void;
+  /**
+   * 拖动开始时要不要把「CSS 居中」改成 left/top 钉住。浮窗（终端 / 表格 / 幻灯片）要：它们能拖走，
+   * `measureFloat` 量到的值就是之后要写回去的值。窗口不要（`false`）：窗口不记位置，位置继续交给
+   * 样式表（居中窗居中、抽屉贴底）—— 钉住会把它们冻在第一次拖动时的位置上。
+   */
+  pin?: boolean;
 }
 
 export function clampNum(n: number, min: number, max: number): number {
@@ -60,7 +66,8 @@ export function dragFloat(
     if (kind === "move" && (ev.target as HTMLElement).closest("button")) return;
     ev.preventDefault();
     const s = opts.scale();
-    const box = pinFloat(dock, measureFloat(dock, s), s, opts.inset());
+    const measured = measureFloat(dock, s);
+    const box = opts.pin === false ? measured : pinFloat(dock, measured, s, opts.inset());
     const x0 = ev.clientX;
     const y0 = ev.clientY;
     const view = { vw: window.innerWidth / s, vh: window.innerHeight / s - opts.inset() };

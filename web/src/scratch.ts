@@ -10,6 +10,7 @@
  * - 上下文一路累积、只提醒不自动清：提醒线按「离 pi 自动压缩还有多远」算，不用固定百分比
  *   （32k 窗口的模型上，固定 60% 已经晚了）。
  */
+import { attachWindowGeom, type WindowGeomHandle } from "./dialoggeom.ts";
 import { createEl as el, openImage } from "./chat.ts";
 import { icon } from "./icons.ts";
 import { imageSrc, imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
@@ -141,6 +142,8 @@ function row(item: Item, src: (index: number) => string | null = () => null): HT
 export class ScratchChat {
   private readonly host: ScratchHost;
   private root: HTMLElement | null = null;
+  /** 窗口几何句柄：`open()` 时要它把记忆里的尺寸重新铺一遍（面板是 `hidden` 收起、不摘 DOM）。 */
+  private geom: WindowGeomHandle | null = null;
   private listEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
   private hintEl!: HTMLElement;
@@ -202,6 +205,9 @@ export class ScratchChat {
   open(): void {
     if (!this.root) this.build();
     this.root!.hidden = false;
+    // 面板从 `hidden` 到可见：记忆里的宽高与抓手位置要重新落一次（隐藏态下量到的 rect 全是 0，
+    // 几何模块那一刻是跳过的）。
+    this.geom?.apply();
     if (!this.escPop && this.root) this.escPop = pushEscLayer({ el: this.root, onEsc: () => this.onEscape() });
     if (!this.asked) {
       this.asked = true;
@@ -533,6 +539,8 @@ export class ScratchChat {
     sheet.append(foot);
 
     back.append(sheet);
+    // 收起只是 `hidden = true`（不摘 DOM），再打开时把记忆里的尺寸重新铺一遍、抓手重新贴角。
+    this.geom = attachWindowGeom("scratch", { back, panel: sheet, min: [480, 360] });
     // 挂 `#app` 里，不挂 `document.body`：外观「字号」是 `#app { zoom: var(--ui-scale) }`，
     // 挂在 body 上的弹层不跟它缩（D36 实测：抽屉还是 100%，与背景不同步）。
     (document.getElementById("app") ?? document.body).append(back);

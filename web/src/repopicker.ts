@@ -11,6 +11,7 @@
  * 仓库徽标来自 `/api/git/probe`：只认「它自己就是仓库根」的子目录（父仓库里的普通目录回 null），
  * 与 #392「目录与仓库」窗判断的是同一件事。
  */
+import { attachWindowGeom } from "./dialoggeom.ts";
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
@@ -135,6 +136,7 @@ export class RepoPicker {
 
     sheet.append(head, body);
     this.back.append(sheet);
+    attachWindowGeom("repo-pick", { back: this.back, panel: sheet, min: [520, 380] });
     if (opts.current) this.selected = opts.current;
   }
 
