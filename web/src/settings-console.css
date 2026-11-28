@@ -17,7 +17,10 @@
    写成 `body > :has(.st-console)` 时，任何「肚子里装着控制台」的 body 子节点都会被重置 —— 包括
    测试里那张假 `#app`（`web/tests/handoff-sheet-browser.mjs` 第 3 段就是拿它当反证的：字号 150%
    下弹层当场顶出窗口）。宿主不在 body 下的（例如测试里显式 `mount(app)`）走不到这条，那时
-   `--vh1` 本来就该是除过缩放的那一份。 */
+   `--vh1` 本来就该是除过缩放的那一份。
+   **反过来说：把 `.st-console` 塞进 `#app` 是不受支持的挂法** —— 它按视口宽读 `data-st-*`
+   折叠档位，而在 `#app` 里可用宽度只有「视口 ÷ 字号」，两套判据会打架。要挂控制台就走
+   `overlayHost()` / `overlay()`（`modal.ts`），别自己 `append`。 */
 body > :is(.st-back, .sheet-back):has(> .st-console) {
   --vh1: 1vh;
   --vw1: 1vw;

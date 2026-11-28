@@ -73,7 +73,8 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/api/dirs") return json(200, { path: "", parent: "/", dirs: [], files: [], error: "" });
   const rel = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//, "");
   const file = path.join(DIST, rel);
-  if (!path.resolve(file).startsWith(path.resolve(DIST)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+  // 前缀要比到分隔符：只写 `startsWith(DIST)` 的话 `dist-other/…` 也能通过。
+  if (!path.resolve(file).startsWith(path.resolve(DIST) + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     res.writeHead(404, { "content-type": "text/plain" }).end("nope");
     return;
   }
@@ -131,6 +132,15 @@ async function boot({ scale = 1.25 } = {}) {
   await sleep(200);
 }
 
+/** 带名字收场：打印一条 FAIL、关掉浏览器与服务，退出码 1。 */
+async function bail(label, extra) {
+  check(label, false, extra);
+  await browser.close();
+  server.close();
+  wss.close();
+  process.exit(1);
+}
+
 /**
  * 量一个元素的盒子；拿不到就**带名字** FAIL 并退出，别让后面 `box.x` 崩成 TypeError ——
  * 那种崩法只报「undefined 没有属性」，看不出是面板没开、还是轨道被推到了视口外。
@@ -138,18 +148,18 @@ async function boot({ scale = 1.25 } = {}) {
 async function mustBox(locator, label) {
   const box = await locator.boundingBox();
   if (box) return box;
-  check(`${label}：量得到`, false, "boundingBox() 返回 null（面板没开 / 元素不可见）");
-  await browser.close();
-  server.close();
-  wss.close();
-  process.exit(1);
+  await bail(`${label}：量得到`, "boundingBox() 返回 null（面板没开 / 元素不可见）");
+  throw new Error("unreachable");
 }
 
 /** 打开「外观 → 语言与字号」。 */
 async function openLook() {
   await page.locator('.icon-btn[data-act="look"]').click();
   await page.waitForSelector(".display-sheet", { timeout: 5000 });
-  await page.locator('.display-sheet .st-nav__item[data-sec="lang"]').click().catch(() => {});
+  // 不吞异常：导航项改名 / 选择器写错时，后面只会报「量不到轨道」，看不出真正原因。
+  const langNav = page.locator('.display-sheet .st-nav__item[data-sec="lang"]');
+  if (!(await langNav.count())) await bail("打开「语言与字号」：导航项在", '找不到 .st-nav__item[data-sec="lang"]');
+  await langNav.click();
   await sleep(200);
 }
 
