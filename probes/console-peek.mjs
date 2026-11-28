@@ -131,6 +131,20 @@ async function boot({ scale = 1.25 } = {}) {
   await sleep(200);
 }
 
+/**
+ * 量一个元素的盒子；拿不到就**带名字** FAIL 并退出，别让后面 `box.x` 崩成 TypeError ——
+ * 那种崩法只报「undefined 没有属性」，看不出是面板没开、还是轨道被推到了视口外。
+ */
+async function mustBox(locator, label) {
+  const box = await locator.boundingBox();
+  if (box) return box;
+  check(`${label}：量得到`, false, "boundingBox() 返回 null（面板没开 / 元素不可见）");
+  await browser.close();
+  server.close();
+  wss.close();
+  process.exit(1);
+}
+
 /** 打开「外观 → 语言与字号」。 */
 async function openLook() {
   await page.locator('.icon-btn[data-act="look"]').click();
@@ -291,7 +305,7 @@ await page.keyboard.press("Escape");
 await sleep(150);
 await boot({ scale: 1.25 });
 await openLook();
-const railBox = await page.locator(".size-rail").first().boundingBox();
+const railBox = await mustBox(page.locator(".size-rail").first(), "2/3 段：字号轨道");
 const startX = railBox.x + railBox.width * 0.375; // 125%
 const startY = railBox.y + railBox.height / 2;
 const restState = await peekState();
@@ -368,7 +382,7 @@ await sleep(150);
 await boot({ scale: 1.25 });
 await openLook();
 const beforeEsc = await geo();
-const escBox = await page.locator(".size-rail").first().boundingBox();
+const escBox = await mustBox(page.locator(".size-rail").first(), "6 段：字号轨道");
 const escY = escBox.y + escBox.height / 2;
 const escX = escBox.x + escBox.width * 0.375;
 await page.mouse.move(escX, escY);
@@ -386,7 +400,11 @@ const afterEsc = await page.evaluate(() => ({
   read: document.querySelector(".size-read")?.textContent ?? "",
   saved: JSON.parse(localStorage.getItem("pi.prefs") ?? "{}").scale,
   sheetOpen: Boolean(document.querySelector(".st-back .st-console")),
-  conOpacity: Number(getComputedStyle(document.querySelector(".st-console")).opacity),
+  // 面板要是真被 Esc 关掉了（正是这条要防的回归），这里给 -1，让断言带名字地红。
+  conOpacity: (() => {
+    const con = document.querySelector(".st-console");
+    return con ? Number(getComputedStyle(con).opacity) : -1;
+  })(),
 }));
 await page.mouse.up();
 await sleep(150);
@@ -402,7 +420,7 @@ check(
 );
 
 // ---------------------------------------------------------------- 7. 拖动中窗口失焦：自己收干净
-const blurBox = await page.locator(".size-rail").first().boundingBox();
+const blurBox = await mustBox(page.locator(".size-rail").first(), "7 段：字号轨道");
 await page.mouse.move(blurBox.x + blurBox.width * 0.375, blurBox.y + blurBox.height / 2);
 await page.mouse.down();
 await page.mouse.move(blurBox.x + blurBox.width * 0.375 + 50, blurBox.y + blurBox.height / 2, { steps: 3 });

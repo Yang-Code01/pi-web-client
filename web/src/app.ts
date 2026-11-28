@@ -1556,8 +1556,10 @@ export class App {
 
   /**
    * 把上面的判据落到 `<html data-compact>`：CSS 的 899 / 900 断点都改读这个属性。
-   * 三套控制台的 900 / 720 / 640 折叠规则也按有效宽度落 `data-console-*`（D158），
-   * 否则放大字号时原生 @media 不触发，面板内容会横向穿出。
+   * 控制台的 900 / 720 / 640 折叠规则落两组属性，**别合并**：
+   * - `data-console-*` 按有效宽度（视口 ÷ 字号）：`.sys-` / `.jc-` / 附件那几套控制台还在 `#app`
+   *   里，跟着字号缩放（D158），否则放大字号时原生 @media 不触发、面板内容会横向穿出；
+   * - `data-st-*` 按视口宽度：`.st-console` 那批已经 1:1 挂在 body 上（D449）。
    * 返回「这次真的翻了」—— 调用方拿它决定要不要重排（拖动中跨过 900 时）。
    */
   private syncCompact(): boolean {
@@ -1567,9 +1569,10 @@ export class App {
     const width = window.innerWidth;
     const root = document.documentElement;
     // 控制台原本是 @media (max-width: 900/720/640px)，保留 <= 的边界；compact 仍是 < 900。
-    root.dataset.consoleNarrow = String(this.layoutWidth() <= 900);
-    root.dataset.consoleMid = String(this.layoutWidth() <= 720);
-    root.dataset.consoleTight = String(this.layoutWidth() <= 640);
+    const layout = this.layoutWidth();
+    root.dataset.consoleNarrow = String(layout <= 900);
+    root.dataset.consoleMid = String(layout <= 720);
+    root.dataset.consoleTight = String(layout <= 640);
     // #742：`.st-console` 那批控制台已经挂在 body 上、不再跟字号缩放，所以它的折叠档位要按**视口**宽度算。
     // 还按有效宽度（视口 / 字号）算的话，2.0 字号下一块 1080px 宽的面板会被判成「窄」，整套布局白翻一次。
     // 分开两组属性：`.sys-` / `.jc-` / 附件那几套控制台仍留在 `#app` 里，继续读 `data-console-*`。
@@ -4449,12 +4452,13 @@ export class App {
       peeking?.hide();
       peeking = null;
     };
+    const readout = (v: number): { text: string; fill: number } => ({ text: `${Math.round(v * 100)}%`, fill: sizePct(v) });
     const showPeek = (v: number): void => {
       const host = peekHost();
       if (!host) return;
-      const pk = peekFor(host, SIZE_MIN, SIZE_MAX);
-      if (pk.active) pk.set(v);
-      else pk.show(o.label, v);
+      const pk = peekFor(host);
+      if (pk.active) pk.set(readout(v));
+      else pk.show(o.label, readout(v));
       peeking = pk;
     };
 
@@ -4471,7 +4475,7 @@ export class App {
       for (const m of marks.children) {
         m.classList.toggle("on", Math.abs(Number((m as HTMLElement).dataset.v) - v) < 0.001);
       }
-      peeking?.set(v);
+      peeking?.set(readout(v));
     };
 
     // 一帧只抹一次：值一变就是整块 zoom 重排，input 事件比帧还密。
@@ -4573,7 +4577,7 @@ export class App {
       rail.setPointerCapture(ev.pointerId);
       ev.preventDefault();
       window.addEventListener("keydown", onDragKey, true);
-      window.addEventListener("blur", onDragBlur);
+      window.addEventListener("blur", endDrag);
       queue(snapTo(valueAt(ev.clientX)));
     });
     rail.addEventListener("pointermove", (ev) => {
@@ -4595,7 +4599,7 @@ export class App {
       rail.classList.remove("dragging");
       read.classList.remove("dragging");
       window.removeEventListener("keydown", onDragKey, true);
-      window.removeEventListener("blur", onDragBlur);
+      window.removeEventListener("blur", endDrag);
       hidePeek();
     };
     /** 收尾（松手 / 被打断）：收干净之后值照旧落盘。 */
@@ -4615,10 +4619,6 @@ export class App {
       next = dragValue;
       o.onLive(dragValue);
       paint(dragValue);
-    };
-    /** 窗口失焦（切应用、被系统抢走指针）：把这一次收干净，别让面板停在半透明状态。 */
-    const onDragBlur = (): void => {
-      if (dragBox) endDrag();
     };
     const onDragKey = (ev: KeyboardEvent): void => {
       if (ev.key !== "Escape" || !dragBox) return;

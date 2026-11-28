@@ -9,10 +9,16 @@
   display: none !important;
 }
 
-/* #742：控制台是**量尺**，不跟着外观「字号」缩放 —— 它挂在 body 上（D449，`overlay()` 里那条分叉）。
-   `:root` 的 `--vh1` / `--vw1` 是「除过缩放」的长度，在控制台这层要回到 1:1，否则它里面任何
-   `calc(var(--vh1) * N)` 都会缩一圈（D123 那一族坑：视口单位不认 zoom）。 */
-body > :has(.st-console) {
+/* #742：控制台是**量尺**，不跟着外观「字号」缩放 —— 它挂在 body 上（D449，`overlayHost()` 那条分叉）。
+   `:root` 的 `--vh1` / `--vw1` 是「除过缩放」的长度，在控制台这一层要回到 1:1，否则它里面任何
+   `calc(var(--vh1) * N)` 都会缩一圈（D123 那一族坑：视口单位不认 zoom）。
+
+   判据必须**窄到宿主本身**（`.st-back` / `.sheet-back` 这类外壳，且控制台是它的直接子级）：
+   写成 `body > :has(.st-console)` 时，任何「肚子里装着控制台」的 body 子节点都会被重置 —— 包括
+   测试里那张假 `#app`（`web/tests/handoff-sheet-browser.mjs` 第 3 段就是拿它当反证的：字号 150%
+   下弹层当场顶出窗口）。宿主不在 body 下的（例如测试里显式 `mount(app)`）走不到这条，那时
+   `--vh1` 本来就该是除过缩放的那一份。 */
+body > :is(.st-back, .sheet-back):has(> .st-console) {
   --vh1: 1vh;
   --vw1: 1vw;
 }

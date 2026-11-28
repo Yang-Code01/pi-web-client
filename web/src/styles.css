@@ -2079,8 +2079,9 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 
 /* #742：拖动字号滑杆时「让开」—— 连遮罩一起全透，让真页面自己演示（视觉就这两条：
    控制台淡到 3%，宿主的底色与模糊去掉）。mac.css 的材质规则是
-   `html[data-ui="mac"] [data-mac-surface="window"]`（0,2,1），这里带上属性选择器把它压过去，
-   不用 !important。 */
+   `html[data-ui="mac"] [data-mac-surface="window"]`（0,2,1）；这里靠 `html[data-ui]` +
+   `[data-mac-surface]` 把特异性抬到 (0,4,2) 压过去，不用 !important。**这一条是跟 mac.css 比权重**：
+   那边再抬一级（比如加 `[data-mac-dim]`）这里会静默失效，届时把这条搬进 mac.css 跟材质规则放一起。 */
 html[data-ui] body > .st-back[data-mac-surface].peeking {
   background: transparent;
   backdrop-filter: none;

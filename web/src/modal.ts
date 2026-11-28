@@ -177,9 +177,16 @@ export function overlaysOpen(): boolean {
   );
 }
 
-/** 把浮层挂进 `#app`（拿不到才退回 body，比如单元测试里的假 DOM）。 */
+/**
+ * 浮层挂哪儿：默认进 `#app`（拿不到才退回 body，比如单元测试里的假 DOM），跟着外观「字号」缩放。
+ * 例外只有**控制台宿主**：它自己就是 `.st-console`，或直接装着 `.st-console`（`.st-back` /
+ * `.sheet-back` 这类外壳）—— 控制台是量尺，1:1 挂 body（D449）。
+ *
+ * 判据刻意只认**直接子级**：哪个普通浮层把一个 `.st-console` 当子面板嵌在深处，不该跟着它一起
+ * 脱开缩放（那种情况是「浮层里嵌了一块控制台」，不是「这个浮层就是控制台」）。
+ */
 export function overlayHost(root: HTMLElement): HTMLElement {
-  const isConsole = root.matches(".st-console") || Boolean(root.querySelector(".st-console"));
+  const isConsole = root.matches(".st-console") || Boolean(root.querySelector(":scope > .st-console"));
   return isConsole ? document.body : (document.getElementById("app") ?? document.body);
 }
 
