@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./settings-console.css";
-import { ConsolePeek, PEEK_MIN_PX, peekFor } from "./console-peek.ts";
+import { type ConsolePeek, PEEK_MIN_PX, peekFor } from "./console-peek.ts";
 import { api, githubApi, type DepPackageId, type DepsReport } from "./api.ts";
 import { icon, face, isIconName, fileIcon, type IconName } from "./icons.ts";
 import { ChatView, createEl as el } from "./chat.ts";

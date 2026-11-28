@@ -170,7 +170,6 @@ async function geo() {
     const con = back?.querySelector(".st-console");
     const rail = document.querySelector(".size-rail");
     const app = document.getElementById("app");
-    const r = con?.getBoundingClientRect();
     const rr = rail?.getBoundingClientRect();
     return {
       inApp: Boolean(app && back && app.contains(back)),
@@ -178,7 +177,6 @@ async function geo() {
       // 布局尺寸（offset）而不是 rect：入场动画的 transform 会把 rect 缩一圈。
       w: con ? con.offsetWidth : -1,
       h: con ? con.offsetHeight : -1,
-      rectW: r ? Math.round(r.width) : -1,
       railY: rr ? Math.round(rr.y) : -1,
       railBottom: rr ? Math.round(rr.bottom) : -1,
       vh: innerHeight,
@@ -245,14 +243,12 @@ const modelGeo = async () => {
   await sleep(400); // 等入场动画走完：`getBoundingClientRect()` 会把动画里的 scale 算进去
   const out = await page.evaluate(() => {
     const sheet = document.querySelector(".st-console.model-sheet");
-    const r = sheet.getBoundingClientRect();
     return {
       onBody: sheet.parentElement?.parentElement === document.body,
       inApp: Boolean(document.querySelector("#app")?.contains(sheet)),
       // offset 是布局尺寸（不含入场动画的 transform），跨字号比较用它。
       w: sheet.offsetWidth,
       h: sheet.offsetHeight,
-      rectW: Math.round(r.width),
       narrow: document.documentElement.dataset.stNarrow,
     };
   });
