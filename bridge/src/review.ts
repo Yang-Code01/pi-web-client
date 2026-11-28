@@ -637,6 +637,24 @@ export async function headStamp(
   return out;
 }
 
+/**
+ * `headStamp()` 的兜底版本：**记不上就不记**。
+ *
+ * 这条跑在评审收尾那一刻，而收尾外面套着一个 `catch`（它会把状态改写成 `failed`）：
+ * 补一条元数据时抛异常，一次**已经完成**的评审就会被重写成失败、真实结果一起丢掉。
+ * 少记一项的代价只是面板上少一颗标。
+ */
+export async function safeHeadStamp(
+  run: Pick<ReviewRun, "to">,
+  deps: { shaOf: (ref: string) => Promise<string>; branch: () => Promise<string> },
+): Promise<Partial<Pick<ReviewRun, "headSha" | "headRef">>> {
+  try {
+    return await headStamp(run, deps);
+  } catch {
+    return {};
+  }
+}
+
 /** `ref` 是不是那个会随风漂的 `HEAD`（`HEAD` / `head` 都算，写进来的是 ocr 回显的原文）。 */
 export const isHeadName = (ref: string): boolean => str(ref).toUpperCase() === "HEAD";
 
@@ -1245,7 +1263,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     // 只给 done 记：`tipTargetOf()` 对失败 / 停止的那几条本来就返回 null。
     // **读盘之前**先算完：这个 await 之后才读→写，中间不留窗口，别把别人刚标的一条盖回去。
     if (patch.status === "done") {
-      Object.assign(patch, await headStamp(run, { shaOf: (ref) => gitShaOf(root, ref), branch: () => gitBranchOf(root) }));
+      Object.assign(patch, await safeHeadStamp(run, { shaOf: (ref) => gitShaOf(root, ref), branch: () => gitBranchOf(root) }));
     }
     const state = readReviewState(root, session);
     const onDisk = state.runs.find((r) => r.id === run.id);

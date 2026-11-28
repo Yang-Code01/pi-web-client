@@ -1137,15 +1137,18 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
   }
   head.append(el("span", "rv-runs-lab", tr("评审记录")), el("span", "rv-runs-count", count));
   // 兜底：打开面板 / 切到这一页时已经核过一次，人想再确认一下就点这颗（只重核，不动 pick）。
-  const reload = el("button", "rv-runs-reload") as HTMLButtonElement;
-  reload.type = "button";
-  reload.title = tr("重新核对有没有新提交");
-  reload.setAttribute("aria-label", tr("重新核对有没有新提交"));
-  reload.append(icon("refresh", { size: 13 }));
-  // 等结果的时候灰着：每点一下都是一次绕开缓存的 `ls-remote`（#743 复审）。
-  reload.disabled = view.tipsBusy;
-  reload.onclick = () => actions.onRefreshTips();
-  head.append(reload);
+  // 没有记录时不画：那一格没有任何东西可核对，点下去只会白发一帧。
+  if (view.runs.length) {
+    const reload = el("button", "rv-runs-reload") as HTMLButtonElement;
+    reload.type = "button";
+    reload.title = tr("重新核对有没有新提交");
+    reload.setAttribute("aria-label", tr("重新核对有没有新提交"));
+    reload.append(icon("refresh", { size: 13 }));
+    // 等结果的时候灰着：每点一下都是一次绕开缓存的 `ls-remote`（#743 复审）。
+    reload.disabled = view.tipsBusy;
+    reload.onclick = () => actions.onRefreshTips();
+    head.append(reload);
+  }
   box.append(head);
   if (!view.runs.length) {
     box.append(el("div", "rv-hint rv-runs-empty", tr("上面选好范围、点「开始评审」，结果会记在这里。")));

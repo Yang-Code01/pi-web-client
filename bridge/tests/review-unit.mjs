@@ -42,6 +42,7 @@ import {
   tipTargets,
   remoteTipTargets,
   headStamp,
+  safeHeadStamp,
   localTips,
   remoteTips,
 } from "../src/review.ts";
@@ -700,6 +701,16 @@ await checkAsync("`to: HEAD` 只在**同一条分支**上比：换分支不是�
   // 分离头指针（现在没有分支名）与老记录（当时没记分支）都退回「照旧比」。
   assert.equal(tipForRun(runs[0], head, at, ""), sha);
   assert.equal(tipForRun(doneRun({ id: "b", to: "HEAD" }), head, at, "feat/b"), sha);
+});
+
+await checkAsync("补印章失败不许把已完成的评审带下水（safeHeadStamp 吞掉异常）", async () => {
+  const boom = { shaOf: async () => { throw new Error("git 挂了"); }, branch: async () => "feat/a" };
+  assert.deepEqual(await safeHeadStamp({ to: "HEAD" }, boom), {}, "记不上就不记");
+  // 正常情况照旧给值
+  assert.deepEqual(
+    await safeHeadStamp({ to: "HEAD" }, { shaOf: async () => "a".repeat(40), branch: async () => "feat/a" }),
+    { headSha: "a".repeat(40), headRef: "feat/a" },
+  );
 });
 
 check("同一个 `HEAD` 下别的分支留下的记录，不许借当前分支的 tip 说它过时", () => {
