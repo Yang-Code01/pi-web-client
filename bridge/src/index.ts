@@ -121,6 +121,7 @@ import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
 import { handleAttendance } from "./attendance.ts";
 import { handleSysmanage } from "./sysmanage.ts";
 import { handleHotdeploy } from "./hotdeploy.ts";
+import { UpdatesLan } from "./updates-lan.ts";
 
 /**
  * 热部署对话框上的「会话 N 个在跑」：只数有活进程、且这一轮没结束的（`liveRunning`）。
@@ -688,6 +689,11 @@ async function main(): Promise<void> {
   const peer = new PeerHost({ port: cfg.peerPort, entry: peerOn ? peerEntry() : null, log });
   if (peerOn) peer.start();
   else log("peer 已禁用（PI_PEER=0）");
+
+  // D441：局域网更新组。发布者每 30 分钟看一次自己检出的 `origin/main`，有新提交就往固定 id 的
+  // 只读群里推一条公告；非发布者什么也不做（只是 announce 里带个仓库标识，等被拉进组）。
+  const updates = new UpdatesLan(peer, log);
+  if (peerOn) updates.start();
 
   /**
    * Q-032: 被拒的提问必须说出理由。
@@ -1475,6 +1481,33 @@ async function main(): Promise<void> {
 
     // #266 本机管理：读本机信息；DNS 改动只有本机/局域网能发起，公网在模块里 403。
     if (await handleSysmanage(req, res, url, { publicReq, port: cfg.port, version: VERSION, log })) return;
+
+    // D441：局域网更新组。发布者开关会写 peer 的 `config.json`，所以公网一律 403。
+    if (url.pathname === "/api/updates" && req.method === "GET") {
+      if (publicReq) return json(res, 403, { error: "公网不能改本机的更新组设置" });
+      try {
+        return json(res, 200, await updates.view());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/updates/publisher" && req.method === "POST") {
+      if (publicReq) return json(res, 403, { error: "公网不能改本机的更新组设置" });
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await updates.setPublisher(body?.on === true));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/updates/check" && req.method === "POST") {
+      if (publicReq) return json(res, 403, { error: "公网不能改本机的更新组设置" });
+      try {
+        return json(res, 200, await updates.checkNow());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
 
     // 热部署：换分支 → 编译 → 换进程；写接口公网 403（模块里判）。
     if (
@@ -4833,6 +4866,7 @@ async function main(): Promise<void> {
 
   process.on("exit", () => {
     peer.stop();
+    updates.stop();
     // 有壳时 pid 文件写的是壳的 pid，脑不许动它。
     if (!linkedPath) removePidFile(cfg.port);
   });

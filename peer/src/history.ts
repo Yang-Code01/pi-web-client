@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { statePath } from "./config.ts";
+import type { AnnouncePayload } from "./announce.ts";
 import type { ThreadMeta } from "./threads.ts";
 
 /**
@@ -14,9 +15,9 @@ import type { ThreadMeta } from "./threads.ts";
  */
 export type EntryKind = "text" | "receipt" | "file" | "recall" | "note" | "react" | "pin" | "sys";
 
-/** 群里的系统灰条：谁建了群 / 改了名 / 拉了谁 / 退了群。页面按 `op` 翻译，不落中文原句。 */
+/** 群里的系统灰条：谁建了群 / 改了名 / 拉了谁 / 退了群 / 换了发布者。页面按 `op` 翻译，不落中文原句。 */
 export interface SysInfo {
-  op: "create" | "rename" | "invite" | "leave";
+  op: "create" | "rename" | "invite" | "leave" | "publisher";
   actor: string;
   names?: string[];
   name?: string;
@@ -89,6 +90,11 @@ export interface Entry {
   on?: boolean;
   /** `kind:"sys"`：群的系统灰条。 */
   sys?: SysInfo;
+  /**
+   * 更新组里的公告（D441）：仍然是 `kind:"text"`，`text` 是给旧版本看的退化正文，
+   * 这里只让认识它的页面把气泡画成卡片。
+   */
+  announce?: AnnouncePayload;
 }
 
 /** 折叠后挂在消息上的表情回应：每个表情一组，`who` 是点了它的 nodeId（按先后）。 */
@@ -153,7 +159,7 @@ export interface ThreadSummary {
   /** 未读里有人 @ 我（或 @所有人）：免打扰也照样提醒。 */
   mention: boolean;
   /** 群会话才有：成员、群主、我是不是已经退出。 */
-  group?: { members: PeerIdentity[]; owner: string; left: boolean };
+  group?: { members: PeerIdentity[]; owner: string; left: boolean; announceOnly?: boolean; publisher?: string };
 }
 
 const TAIL_BYTES = 512 * 1024;
@@ -335,7 +341,7 @@ export class History {
     meta: (nodeId: string) => ThreadMeta;
     typing: (nodeId: string) => boolean;
     pending: (nodeId: string) => boolean;
-    group?: (id: string) => { name: string; members: PeerIdentity[]; owner: string; left?: boolean } | null;
+    group?: (id: string) => { name: string; members: PeerIdentity[]; owner: string; left?: boolean; announceOnly?: boolean; publisher?: string } | null;
   }): ThreadSummary[] {
     const byId = new Map(input.online.map((peer) => [peer.nodeId, peer]));
     const byContact = new Map(input.contacts.map((contact) => [contact.nodeId, contact]));
@@ -404,7 +410,17 @@ export class History {
         typing: input.typing(nodeId),
         urgent,
         mention,
-        ...(group ? { group: { members: group.members, owner: group.owner, left: group.left === true } } : {}),
+        ...(group
+          ? {
+              group: {
+                members: group.members,
+                owner: group.owner,
+                left: group.left === true,
+                ...(group.announceOnly ? { announceOnly: true } : {}),
+                ...(group.publisher ? { publisher: group.publisher } : {}),
+              },
+            }
+          : {}),
       });
     }
     return out.sort((a, b) => Number(b.pinned) - Number(a.pinned) || (b.last?.at ?? 0) - (a.last?.at ?? 0));

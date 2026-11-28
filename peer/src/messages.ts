@@ -4,7 +4,8 @@ import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import { foldEntries, type Entry, type History, type NotePayload, type PeerIdentity, type SysInfo, type ViewEntry } from "./history.ts";
-import { GROUP_PREFIX, MAX_GROUP_MEMBERS, isGroupId, normalizeGroup, snapshot, type Group, type Groups } from "./groups.ts";
+import { GROUP_PREFIX, MAX_GROUP_MEMBERS, isGroupId, normalizeGroup, optOutIds, setOptOut, snapshot, type Group, type Groups } from "./groups.ts";
+import { normalizeAnnounce, type AnnouncePayload } from "./announce.ts";
 import { normalizeNote } from "./note.ts";
 import type { Outbox, Queued, Verdict } from "./outbox.ts";
 import type { Relations } from "./peers.ts";
@@ -201,13 +202,18 @@ export class Messages {
     text: string,
     via?: "pi",
     replyTo?: Entry["replyTo"],
-    opts: { priority?: unknown; topic?: unknown } = {},
+    opts: { priority?: unknown; topic?: unknown; announce?: unknown } = {},
   ): { ok: true; id: string; at: number; seq: number } {
     const trimmed = text.replace(/\s+$/, "");
     if (!trimmed.trim()) throw new Error("空消息");
     const bytes = Buffer.byteLength(trimmed, "utf8");
     if (bytes > MAX_TEXT_BYTES) {
       throw new Error(`太长（${Math.round(bytes / 1024)} KB，上限 32 KB）：改用文件发`);
+    }
+    const announce = opts.announce ? normalizeAnnounce(opts.announce) : null;
+    const group = isGroupId(peerId) ? this.ctx.groups.get(peerId) : null;
+    if (group?.announceOnly && group.publisher !== this.ctx.nodeId) {
+      throw new Error("这是只读的更新组：只有发布者能发消息");
     }
     const targets = this.targets(peerId);
     const at = Date.now();
@@ -223,6 +229,7 @@ export class Messages {
       ...(replyTo ? { replyTo } : {}),
       ...(priority ? { priority } : {}),
       ...(topic ? { topic } : {}),
+      ...(announce ? { announce } : {}),
     });
     this.ctx.history.append(peerId, entry);
     this.enqueue(peerId, id, "text", entry, at, targets);
@@ -433,14 +440,32 @@ export class Messages {
     return m.nickname || m.nodeId.slice(0, 8);
   }
 
-  createGroup(name: string, memberIds: string[]): Group {
+  createGroup(name: string, memberIds: string[], opts: { id?: string; announceOnly?: boolean; publisher?: string } = {}): Group {
     const others = [...new Set(memberIds)].filter((id) => id && id !== this.ctx.nodeId && !isGroupId(id));
-    if (!others.length) throw new Error("至少拉一个人");
+    // 更新组（D441）：发布者可能第一个上线，还没人可拉 —— announceOnly 允许只有自己。
+    if (!others.length && !opts.announceOnly) throw new Error("至少拉一个人");
     if (others.length + 1 > MAX_GROUP_MEMBERS) throw new Error(`一个群最多 ${MAX_GROUP_MEMBERS} 人`);
     const at = Date.now();
     const members = [this.me(), ...others.map((id) => this.identity(id))];
     const title = name.trim().slice(0, 64) || members.map((m) => this.nameOf(m)).slice(0, 3).join("、");
-    const group: Group = { id: `${GROUP_PREFIX}${uuidv7(at)}`, name: title, members, owner: this.ctx.nodeId, createdAt: at, v: 1, at };
+    const wanted = typeof opts.id === "string" ? opts.id.trim() : "";
+    if (wanted && (!isGroupId(wanted) || wanted.length > 80 || !/^[a-zA-Z0-9_-]+$/.test(wanted))) {
+      throw new Error("群 id 只能是字母、数字、下划线与短横线");
+    }
+    const id = wanted || `${GROUP_PREFIX}${uuidv7(at)}`;
+    const existing = this.ctx.groups.get(id);
+    if (existing) throw new Error("这个群已经存在了");
+    const group: Group = {
+      id,
+      name: title,
+      members,
+      owner: this.ctx.nodeId,
+      createdAt: at,
+      v: 1,
+      at,
+      ...(opts.announceOnly ? { announceOnly: true } : {}),
+      ...(opts.publisher ? { publisher: opts.publisher } : {}),
+    };
     this.ctx.groups.put(group);
     this.appendSys(group.id, this.me(), { op: "create", actor: this.nameOf(this.me()), name: title, names: members.slice(1).map((m) => this.nameOf(m)) }, at);
     this.broadcastGroup(group);
@@ -481,21 +506,46 @@ export class Messages {
     return next;
   }
 
-  /** 退群：名单里去掉自己、版本 +1，通知剩下的人；本机会话留着（能看历史），不能再发。 */
-  leaveGroup(groupId: string): Group {
+  /** 退群：名单里去掉自己、版本 +1，通知剩下的人；本机会话留着（能看历史），不能再发。 */  leaveGroup(groupId: string): Group {
     const group = this.mine(groupId);
     const members = group.members.filter((m) => m.nodeId !== this.ctx.nodeId);
     const next: Group = { ...group, members, v: group.v + 1, at: Date.now() };
     this.broadcastGroup(next);
     const left: Group = { ...next, left: true };
     this.ctx.groups.put(left);
+    // 更新组：退出是 opt-out（D441）—— 发布者下次邀请时名单里也没有我，但我这边也记一份，
+    // 免得发布者还没看到退群通知时又把我拉回去。
+    if (group.announceOnly) setOptOut(groupId, true);
     this.appendSys(groupId, this.me(), { op: "leave", actor: this.nameOf(this.me()) });
     return left;
   }
 
+  /** 重新加入更新组（D441）：清掉 opt-out，等发布者下一轮邀请把新快照送过来。 */
+  rejoinGroup(groupId: string): { ok: true } {
+    setOptOut(groupId, false);
+    return { ok: true };
+  }
+
+  /**
+   * 换机器（D441）：新发布者接管这个更新组。
+   *
+   * 新机器的本机名册里可能根本没有这个组（所以它建群时是 v=1），旧成员那边的 v 已经很大；
+   * `Groups.merge` 对「发布者换人」放行并抬版本（见那里），这里负责在已有的那份上 v+1 广播。
+   */
+  claimPublisher(groupId: string): Group {
+    const group = this.mine(groupId);
+    if (!group.announceOnly) throw new Error("这不是只读的更新组");
+    if (group.publisher === this.ctx.nodeId) return group;
+    const next: Group = { ...group, publisher: this.ctx.nodeId, v: group.v + 1, at: Date.now() };
+    this.ctx.groups.put(next);
+    this.appendSys(groupId, this.me(), { op: "publisher", actor: this.nameOf(this.me()), name: this.nameOf(this.me()) });
+    this.broadcastGroup(next);
+    return next;
+  }
+
   /** 收到新的名单：新于本机才收，差异写成灰条。 */
   private mergeGroup(raw: unknown, actor: PeerIdentity): void {
-    const changed = this.ctx.groups.merge(raw, this.ctx.nodeId);
+    const changed = this.ctx.groups.merge(raw, this.ctx.nodeId, actor.nodeId);
     if (!changed) return;
     const { before, after } = changed;
     const who = this.nameOf(actor);
@@ -506,6 +556,10 @@ export class Messages {
       return;
     }
     if (before.name !== after.name) this.appendSys(after.id, actor, { op: "rename", actor: who, name: after.name });
+    // 发布者换了机器（D441）：接受，但要让组里的人看见，不能悄悄换掉。
+    if (before.publisher !== after.publisher && after.publisher) {
+      this.appendSys(after.id, actor, { op: "publisher", actor: who, name: this.nameOf(this.identity(after.publisher)) });
+    }
     const had = new Set(before.members.map((m) => m.nodeId));
     const has = new Set(after.members.map((m) => m.nodeId));
     const added = after.members.filter((m) => !had.has(m.nodeId)).map((m) => this.nameOf(m));
@@ -525,9 +579,41 @@ export class Messages {
     if (s && s.id === groupId && s.members.some((m) => m.nodeId === claimed.nodeId)) this.mergeGroup(s, claimed);
     const group = this.ctx.groups.get(groupId);
     if (!group) return { status: 404, body: { error: "不认识这个群", retryable: false } };
+    // D441：退更新组 = 本机 opt-out。发布者那边会跳过（announce 里带着 optOut），这里再拦一道：
+    // 已经退掉的人不该因为别人还按旧名册发消息而继续收到。
+    if (optOutIds().has(groupId)) return { status: 200, body: { ok: true, ignored: true } };
     if (group.left) return { status: 200, body: { ok: true, ignored: true } };
     if (!group.members.some((m) => m.nodeId === claimed.nodeId)) return { status: 403, body: { error: "不是群成员", retryable: false } };
     return null;
+  }
+
+  /**
+   * 只读群的写门（D441）：除了发布者，文字 / 回应 / 固定 / 撤回都不收。
+   * 已读回执（`read`）与名单快照不受影响 —— 成员还是要能标记已读、接收邀请。
+   */
+  private writeGate(thread: string, claimed: PeerIdentity): InboxResult | null {
+    if (!isGroupId(thread)) return null;
+    const group = this.ctx.groups.get(thread);
+    if (!group?.announceOnly) return null;
+    if (group.publisher === claimed.nodeId) return null;
+    return { status: 403, body: { error: "只读群：只有发布者能发消息", retryable: false } };
+  }
+
+  /**
+   * 给刚进组的人补最近几条公告（D441）：原 id / 原时间单播。
+   * 对方 `recentIds` 会把重复的丢掉，所以已经收到过的人不会多出气泡。
+   */
+  replayAnnouncements(groupId: string, peerNodeId: string, limit = 3): { ok: true; sent: number } {
+    const group = this.ctx.groups.get(groupId);
+    if (!group?.announceOnly) throw new Error("不是更新组");
+    const peer = this.ctx.discovery.byId(peerNodeId);
+    if (!peer) throw new Error("这个人不在线");
+    const entries = this.ctx.history
+      .read(groupId, 500)
+      .filter((entry) => entry.kind === "text" && entry.announce)
+      .slice(-Math.max(1, limit));
+    for (const entry of entries) this.enqueue(groupId, entry.id, "text", entry, entry.at, [{ peerId: peerNodeId, addr: peer.addr, port: peer.port }]);
+    return { ok: true, sent: entries.length };
   }
 
   /** 收到名单变化（建群 / 改名 / 拉人 / 退群）。退群的人不在新名单里，所以看「旧名单里有没有他」。 */
@@ -603,6 +689,8 @@ export class Messages {
     if (check) return check;
     const where = this.controlThread(control, claimed, snap);
     if (!("thread" in where)) return where;
+    const blocked = this.writeGate(where.thread, claimed);
+    if (blocked) return blocked;
     if (this.ctx.history.recentIds(where.thread, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
     const at = Number(control?.at) || Date.now();
     const to = isGroupId(where.thread) ? where.thread : this.ctx.nodeId;
@@ -627,6 +715,8 @@ export class Messages {
       if (gate) return gate;
     }
     const thread = groupId || claimed.nodeId;
+    const blocked = this.writeGate(thread, claimed);
+    if (blocked) return blocked;
 
     const seen = this.ctx.history.recentIds(thread, 2000);
     if (seen.has(id)) return { status: 200, body: { ok: true, dup: true } };
@@ -634,6 +724,7 @@ export class Messages {
     const at = Number(message?.at) || Date.now();
     const seq = Number(message?.seq);
     const replyTo = message?.replyTo && typeof message.replyTo === "object" ? message.replyTo : undefined;
+    const announce: AnnouncePayload | null = message?.announce ? normalizeAnnounce(message.announce) : null;
     // `via` 跟着消息走：对端也要能看见「这条是 agent 代发的」，不能只在自己这边挂徽章。
     this.ctx.history.append(
       thread,
@@ -644,6 +735,7 @@ export class Messages {
         ...(replyTo ? { replyTo } : {}),
         ...(normPriority(message?.priority) ? { priority: normPriority(message?.priority) } : {}),
         ...(normTopic(message?.topic) ? { topic: normTopic(message?.topic) } : {}),
+        ...(announce ? { announce } : {}),
       }),
     );
     this.ctx.log(`收到 ${claimed.nickname || claimed.nodeId.slice(0, 8)} 的消息（${Buffer.byteLength(text, "utf8")} 字节）`);
@@ -695,6 +787,8 @@ export class Messages {
     if (check) return check;
     const where = this.controlThread(control, claimed, snap);
     if (!("thread" in where)) return where;
+    const blocked = this.writeGate(where.thread, claimed);
+    if (blocked) return blocked;
     if (this.isRecalled(where.thread, target)) return { status: 200, body: { ok: true, dup: true } };
     // 群里只认发送者本人撤回自己的消息。
     const original = this.ctx.history.find(where.thread, target);
@@ -717,6 +811,8 @@ export class Messages {
     if (check) return check;
     const where = this.controlThread(control, claimed, snap);
     if (!("thread" in where)) return where;
+    const blocked = this.writeGate(where.thread, claimed);
+    if (blocked) return blocked;
     if (this.ctx.history.recentIds(where.thread, 2000).has(id)) return { status: 200, body: { ok: true, dup: true } };
     const at = Number(control?.at) || Date.now();
     const to = isGroupId(where.thread) ? where.thread : this.ctx.nodeId;

@@ -153,6 +153,15 @@ export function createPeerServer(ctx: PeerContext): http.Server {
     version: VERSION,
     status: activity.status(),
     avatar: cfg.avatar,
+    ...(cfg.updates.repo ? { updates: { ...cfg.updates } } : {}),
+  });
+  const configView = () => ({
+    hidden: cfg.hidden,
+    pauseFiles: cfg.pauseFiles,
+    dnd: cfg.dnd,
+    inbox: cfg.inbox,
+    manual: cfg.manual,
+    updates: cfg.updates,
   });
 
   return http.createServer(async (req, res) => {
@@ -174,7 +183,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           status: activity.status(),
           idleMs: activity.idleMs(),
           online: discovery.online(),
-          config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
+          config: configView(),
         });
       }
 
@@ -207,6 +216,24 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             changed = true;
           }
         }
+        // 更新组（D441）：`repo` = 这台机器认的仓库（announce 带出去，发布者据此邀请）；
+        // `publisher` = 这台机器负责查 origin/main。两者都改了要重播，别等下一轮 10 秒。
+        if (body.updates !== undefined) {
+          const u = (body.updates ?? {}) as Record<string, unknown>;
+          if (typeof u.repo === "string") {
+            const repo = u.repo.trim().slice(0, 120);
+            if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) return json(res, 400, { error: "仓库标识要写成 owner/name" });
+            if (repo !== cfg.updates.repo) {
+              cfg.updates.repo = repo;
+              if (!repo) cfg.updates.publisher = false;
+              changed = true;
+            }
+          }
+          if (typeof u.publisher === "boolean" && u.publisher !== cfg.updates.publisher) {
+            cfg.updates.publisher = u.publisher;
+            changed = true;
+          }
+        }
         saveConfig(cfg);
         if (changed) discovery.announce();
         // 隐身→可见：立刻丢一份 announce，别等下一轮定时（10 秒里对方还看不见）。
@@ -216,7 +243,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           ok: true,
           nickname: cfg.nickname,
           avatar: cfg.avatar,
-          config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
+          config: configView(),
         });
       }
 
@@ -339,11 +366,21 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         try {
           activity.touch();
           const action = String(body?.action ?? "");
-          if (action === "create") return json(res, 200, { ok: true, group: messages.createGroup(String(body?.name ?? ""), ids) });
+          if (action === "create")
+            return json(res, 200, {
+              ok: true,
+              group: messages.createGroup(String(body?.name ?? ""), ids, {
+                ...(id ? { id } : {}),
+                ...(body?.announceOnly === true ? { announceOnly: true } : {}),
+                ...(typeof body?.publisher === "string" ? { publisher: body.publisher } : {}),
+              }),
+            });
           if (action === "rename") return json(res, 200, { ok: true, group: messages.renameGroup(id, String(body?.name ?? "")) });
           if (action === "invite") return json(res, 200, { ok: true, group: messages.inviteGroup(id, ids) });
           if (action === "leave") return json(res, 200, { ok: true, group: messages.leaveGroup(id) });
-          return json(res, 400, { error: "action 只能是 create / rename / invite / leave" });
+          if (action === "rejoin") return json(res, 200, messages.rejoinGroup(id));
+          if (action === "publisher") return json(res, 200, { ok: true, group: messages.claimPublisher(id) });
+          return json(res, 400, { error: "action 只能是 create / rename / invite / leave / rejoin / publisher" });
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });
         }
@@ -500,8 +537,22 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""), via, replyTo, {
             priority: body?.priority,
             topic: body?.topic,
+            ...(body?.announce ? { announce: body.announce } : {}),
           });
           return json(res, 200, result);
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      // 补发公告（D441）：发布者刚拉起一个成员时，把这个组里最近几条公告单播给他。
+      if (url.pathname === "/announce/replay" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          activity.touch();
+          const limit = Math.max(0, Math.min(10, Number(body?.limit ?? 3) || 3));
+          return json(res, 200, messages.replayAnnouncements(String(body?.group ?? ""), String(body?.peer ?? ""), limit));
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });
         }

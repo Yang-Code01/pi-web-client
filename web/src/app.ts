@@ -13754,6 +13754,25 @@ export class App {
     return tab;
   }
 
+  /**
+   * D441：`/?settings=tools` / `?settings=whatsnew` 这类 URL 深链 —— 内网通更新公告卡片点过来，
+   * 直接落到主界面的那一页。认不出的 tab 当没写；打开后把参数抹掉，刷新时不会又弹一次。
+   */
+  openSettingsFromUrl(): void {
+    const tab = new URLSearchParams(location.search).get("settings");
+    if (!tab) return;
+    const known: SettingsTab[] = [
+      "global", "project", "trust", "login", "passphrase", "ext", "subagents", "notify", "preview", "runtime", "changelog", "whatsnew",
+    ];
+    if (!(known as string[]).includes(tab)) return;
+    this.openSettingsSheet(tab as SettingsTab);
+    try {
+      history.replaceState(null, "", location.pathname);
+    } catch {
+      /* 背后是个不让改 URL 的壳：那就留着参数，不为这种事报错 */
+    }
+  }
+
   private openSettingsSheet(tab: SettingsTab): void {
     this.closeSheet();
     this.sheetKind = "settings";

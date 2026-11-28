@@ -30,6 +30,12 @@ export interface PeerConfig {
   group: { address: string; port: number };
   /** 手动地址兜底：`["192.168.1.5:7865"]`。组播不通时唯一的出路。 */
   manual: string[];
+  /**
+   * 更新组（D441）：`repo` 非空 = 这台机器认这份仓库，会把自己的仓库标识放进 announce，
+   * 让同仓库的发布者把自己拉进更新组；`publisher` = 这台机器负责查 `origin/main` 并播报。
+   * 同一份仓库在局域网里只应该有一台 `publisher`（换机器 = 新的打开、旧的关掉）。
+   */
+  updates: { repo: string; publisher: boolean };
 }
 
 /** `~/.pi-peer`，`PI_PEER_STATE` 可改（e2e 用它隔离两份实例）。 */
@@ -116,6 +122,10 @@ export function loadConfig(): PeerConfig {
       port: Number(process.env.PI_PEER_ANNOUNCE_PORT || group.port),
     },
     manual: Array.isArray(saved.manual) ? saved.manual.filter((s) => typeof s === "string") : [],
+    updates: {
+      repo: typeof saved.updates?.repo === "string" ? saved.updates.repo.trim().slice(0, 120) : "",
+      publisher: saved.updates?.publisher === true,
+    },
   };
 }
 

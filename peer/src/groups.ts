@@ -20,6 +20,13 @@ export interface Group {
   at: number;
   /** 我已经退出（或被移出）：会话还留着、能看历史，但不能再发。 */
   left?: boolean;
+  /**
+   * 只读群（D441）：只有 `publisher` 能往里发；成员只能看。
+   * 更新组用它，但协议里不限于更新组 —— 普通群只要发布者同意也能是只读的。
+   */
+  announceOnly?: boolean;
+  /** 只读群的发布者 nodeId；`announceOnly` 时才有意义。 */
+  publisher?: string;
 }
 
 export const GROUP_PREFIX = "grp-";
@@ -55,7 +62,43 @@ export function normalizeGroup(raw: any): Group | null {
     createdAt: Number(raw?.createdAt) || Date.now(),
     v: Number(raw?.v) || 1,
     at: Number(raw?.at) || Date.now(),
+    ...(raw?.announceOnly === true ? { announceOnly: true } : {}),
+    ...(typeof raw?.publisher === "string" && raw.publisher
+      ? { publisher: raw.publisher.slice(0, 64) }
+      : {}),
   };
+}
+
+/**
+ * 退出更新组 = opt-out（D441）：记在本机，之后收到这个组的快照也不再合并回去。
+ * 发布者会在 announce 里读到这份名单，跳过已经退出的人，不再邀请。
+ */
+let optOutCache: Set<string> | null = null;
+
+function optOutFile(): string {
+  return statePath("updates-optout.json");
+}
+
+export function optOutIds(): Set<string> {
+  if (optOutCache) return optOutCache;
+  try {
+    const raw = JSON.parse(fs.readFileSync(optOutFile(), "utf8"));
+    optOutCache = new Set((Array.isArray(raw) ? raw : []).filter((x) => typeof x === "string"));
+  } catch {
+    optOutCache = new Set();
+  }
+  return optOutCache;
+}
+
+export function setOptOut(id: string, on: boolean): void {
+  const set = optOutIds();
+  if (on) set.add(id);
+  else set.delete(id);
+  try {
+    fs.writeFileSync(optOutFile(), JSON.stringify([...set], null, 2));
+  } catch {
+    /* 落盘失败时内存里仍然是新的，下次启动会丢，但不影响这一次 */
+  }
 }
 
 /** 发出去的快照：不带本机才有的 `left`。 */
@@ -112,13 +155,32 @@ export class Groups {
   /**
    * 收到对端的快照：新于本机才收。返回 `null` = 没变化；否则返回变化前后两份（调用方据此
    * 往会话里写一行「X 改了群名」这类灰条）。
+   *
+   * `claimer` = 发送方 nodeId。只读群换发布者（D441）时它会是**新**发布者，而新机器上的 v 可能
+   * 比旧机器小（它从没进过这个组）—— 这种快照照收：版本抬到 `before.v + 1`，名册取并集，
+   * 否则「换一台机器发布」就永远推不动。其他情况仍然谁 v 大听谁的。
    */
-  merge(raw: unknown, me: string): { before: Group | null; after: Group } | null {
+  merge(raw: unknown, me: string, claimer = ""): { before: Group | null; after: Group } | null {
     const next = normalizeGroup(raw);
     if (!next) return null;
+    if (optOutIds().has(next.id)) return null;
     const before = this.get(next.id);
-    if (before && (next.v < before.v || (next.v === before.v && next.at <= before.at))) return null;
-    const after: Group = { ...next, ...(next.members.some((m) => m.nodeId === me) ? {} : { left: true }) };
+    const takeover = Boolean(
+      before && next.announceOnly === true && next.publisher && next.publisher === claimer && next.publisher !== before.publisher,
+    );
+    if (!takeover && before && (next.v < before.v || (next.v === before.v && next.at <= before.at))) return null;
+    const merged: Group = takeover && before
+      ? {
+          ...next,
+          v: before.v + 1,
+          at: Math.max(next.at, Date.now()),
+          members: [...before.members, ...next.members.filter((m) => !before.members.some((b) => b.nodeId === m.nodeId))].slice(
+            0,
+            MAX_GROUP_MEMBERS,
+          ),
+        }
+      : next;
+    const after: Group = { ...merged, ...(merged.members.some((m) => m.nodeId === me) ? {} : { left: true }) };
     this.put(after);
     return { before, after };
   }

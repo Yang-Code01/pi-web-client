@@ -8798,3 +8798,29 @@ if (stop >= 0) {
 **可改。** 想改成「组字期间仍然重画、只重画消息流」也能成立（`renderChat()` 把 `stream` 单独换掉、绕开 `compose`），代价是 `paintMain` 的结构要拆；现在的写法改一个守卫就够。`blur` 那条若确认输入法都发 `compositionend`，可以删。
 
 **代价。** 组字期间对方来信不会立刻出现在消息流里（最长到上屏为止）；组字一直停着不动超过 20 秒也会被看门狗放行一次（那一下会打断这次组字），换来的是「主区不会被一次静默结束的组字永久冻住」；贴底的「新消息」提示也不会闪。同一段时间里由快捷键 / 菜单触发的面板（搜索、话题、引用）也要等到上屏才出现（键盘触发时没有 pointerup 可等，只能等组字结束）。
+
+## D441 局域网更新组：固定只读群 + 发布者推 origin/main 新批次（用户 2026-11-28「本项目一直在持续更新中。但是已经部署过本项目的人，可能不知道某个时间点更新了。想要有个推送机制。在同一局域网部署的本项目，能在局域网里面有一个固定的更新组，这个组成员不能发送信息，每次项目有更新时，都会推送信息在里面」）
+
+**问题。** 部署过 pi-web-client 的机器各自跑一份，`main` 一直在动，但没有谁去通知它们：`bridge/src/piupdate.ts` 只查 pi CLI 的版本，`bridge/src/build-id.ts` 的 `BUILD_ID` 只有本机自己能看到，`bridge/src/git.ts` 对照 `origin/main` 的那个 ahead/behind 是评审功能、不周期跑。结果是「已经部署的人不知道某个时间点更新了」。已有的社群能力只有内网通的群（`peer/src/groups.ts`）——没有服务器、名册自签、成员都能发，没有「只读」这一档。
+
+**决定。**
+
+- **形态 = 只读群，复用群模型，不新造协议。** `Group` 加 `announceOnly?: boolean` 与 `publisher?: string`（发布者 `nodeId`）；`normalizeGroup()` 的白名单补这两个字段（不加就会在快照来回时被丢掉），`snapshot()` 只去 `left`、自动带出。组 id 固定：`grp-updates-<owner>-<name>`（repo slug 小写、非 `[a-z0-9]` 换成 `-`），`createGroup()` 增加可选显式 `id`；组名 `<repo> 更新`；`owner` = 发布者。成员看到「只读 · 自动加入」。
+- **发布者 = 设置里指定的机器。** 内网通设置页加「发布更新公告」开关（绑定当前检出的仓库路径），落 peer `config.json` 的 `updates: { repo, publisher }`，`/config` 与 `/status.config` 都要带上。换机器 = 新机器打开、旧机器关掉；同一时间只有一个发布者。
+- **成员自动入组 = 发布者主动邀请，不新增 `join`。** 新版 announce 带 `updates: { repo, publisher?, optOut? }`；发布者看到同 `repo`、未 opt-out、不在名册的在线节点就调 `inviteGroup()`，成员什么都不用发（`acceptGroup` 允许「新名册里在、旧名册里不在」的人提交快照，这是既有的跨群/入群路径）。发布者每 10 秒轮询 `/status` 时顺手做（`INVITE_MS`），首次播报时**先建组、再拉人、最后发**（公告的 `targets()` 是发的时候算的，顺序反了就只发给发布者自己）。
+- **只读 = 真拦。** 成员侧隐藏输入框与「回应 / 固定 / 转发 / 撤回」，只留已读、复制、存文件、退出；协议侧 `admitGroup()` 之后加一道门：`announceOnly && claimed.nodeId !== publisher` 时拒 text / react / pin / recall / note，`typing` 静默丢弃，`read`（已读回执）放行。只改界面不算数 —— 任何客户端都能往 WS 里塞一条 text。
+- **触发 = `origin/main` 新提交，合并成一批。** 发布者每 30 分钟（启动 30 秒后先来一次）`git fetch --quiet origin main` → `rev-parse origin/main`，与状态文件 `statePath("updates", "publisher.json")` 的 `lastCommit` 比；不同才播。内容取 `whatsnewBatches()` 里 `lastBatchTitle` **之后**的批次（CHANGELOG 本身是批次制，一天多次 push 不刷屏）；没有新批次时退回 `git log --format=%s lastCommit..origin/main`（≤20 条）。播报成功才写 `lastCommit` / `lastBatchTitle` / `lastAnnouncedAt` —— 写失败下轮重发，不丢。
+- **公告 = `kind:"text"` + 可选 payload，旧端退化成普通文本。** `Entry` 加 `announce?: { repo, commit, batches: { title, body }[], howTo: "auto" }`；`acceptText()` 校验（batches ≤6、单条 ≤4 KB、总 ≤16 KB）。这样通知、会话列表摘要、未读、离线补投、搜索全都免改。卡片 = 标题（仓库 + 日期 + 短提交）+ 按 `###` 分组的条目 + 两颗链接：「打开更新日志」新标签打开 `/?settings=whatsnew`（主界面加 URL 深链）、「怎么更新」按**接收端**热部署可用性选文案（可用 → 另给一颗「打开热部署」链到 `/?settings=tools`；不可用 → 写 `git pull && npm install && npm start`）；长正文在卡片内滚动（最高 260px），不把整页撑开。
+- **后加入补最近 3 条，原时间戳。** 发布者在 `invite` 成功后调 `replayAnnouncements(groupId, peerNodeId, 3)`：从历史里挑最近 3 条带 `announce` 的 entry，用原 id / 原 at 只入队给这一个成员（outbox 按 id 去重，已有成员不会收到）。更早不补 —— 消息只存在各端，没有服务器历史。
+- **退出 = opt-out，不是「下次又被拉回来」。** 成员退群时按组 id 写 `statePath("updates-optout.json")`，`mergeGroup()` 见到 opt-out 的组 id 直接不合并；announce 带 `optOut` 名单，发布者据此跳过邀请；设置页给「重新加入更新组」（从名单删掉 + 重新邀请）。opt-out 是「不感兴趣」，不是安全边界；协议侧只多做一道丢弃（已退出的人不再收这个组的消息，`admitGroup()` 里 200 ignored），`rejoin` 清掉名单后照常回来。
+- **发布者变更照单接受并提示。** 快照里 `publisher` 变了就接受（`merge()` 只看 `v` / `at`），`mergeGroup()` 比对前后 `publisher` 插一条 `op:"publisher"` 灰条；不做 TOFU 拒绝 —— 局域网没有账号体系，拦也拦不住伪造，误拦一次则再也收不到更新。
+- **提醒只在组内。** 未读角标 + 既有群通知（受免打扰 / 通知设置约束），不新增顶栏 chip、不新增桌面通知；卡片不做「立即更新」按钮 —— 更新会切断正在跑的会话，只给入口。
+- **广播的是提交集合，不是本机检出。** 发布者 dirty / 在别的分支都不影响播报（只读 `origin/main`）；成员点「怎么更新」读的是**成员自己**的 checkout。
+
+**为什么。** ① 复用群而不是造「更新频道」：名册、消息、未读、离线补投、成员面板都已经有且踩过坑，新增的只有 `announceOnly` 一个布尔和一条门。② 公告走 text：老版本页面不认识 `announce`，至少还能读到一段可读的正文，不至于看到一条空白气泡。③ 发布者主动邀请：协议里没有 `join`，而成员主动发任何东西都会被只读门和「发送方必须在快照名册里」同时挡住，只有发布者签发名册这一条路不会自相矛盾。④ 固定组 id + 自动加入：用户要的是「有个固定的更新组」，不依赖谁先上线、谁先升级（D248 局域网市场已经证明无服务器发布可行，但市场是拉、这里是推）。⑤ opt-out 落在成员本机：发布者不能替成员决定「你还要不要」，而成员退群后仍会被发布者的周期邀请覆盖，不记一笔就永远退不掉。
+
+**守卫。** `bridge/tests/updates-lan-unit.mjs`（`repoSlugFromRemote` 五种 remote、`groupIdFor` 归一与 80 字符上限）；`bridge/tests/peer-updates-e2e.mjs`（三个真 peer）：announce 带出仓库、只读门拒成员、公告 payload 原样到、退群后公告不进、rejoin 后能回来、换机器接管后版本抬到 `旧 v + 1`（`groups.merge()` 的 takeover 分支）；`npm run typecheck` 里的 i18n 门禁。探针 `probes/updates-group.mjs`（假 API + 真 Chromium）：成员无输入框 / 无回应固定菜单、公告渲成卡、按钮 URL 正确、150% 不横向溢出；发布者视角有输入框。手动 e2e 用 `.pi/skills/pi-web-client-test-dev` 两实例：开开关 → 造一个新提交 → 成员收到卡、发消息被拒 → 退出后不再被邀请。
+
+**可改。** 30 分钟、10 秒拉人、3 条补发都是常量（`INTERVAL_MS` / `INVITE_MS` / `replayAnnouncements(..., 3)`），改小更快、代价是更吵；只读门目前是「一律拒」，若要允许成员发一个表情回应，放开 `react` 一条即可。组名与 id 前缀也可改，但改 id 等于换组（老成员的面板里会留一个空壳群）。
+
+**代价。** 发布者离线 = 没有公告（没有服务器兜底）；成员离线超过 outbox 的 24 小时窗口会漏一条，补最近 3 条只覆盖新加入的人；发布者的 30 分钟 fetch 会在这台机器上周期打网络（失败静默重试，不打扰）；公告正文上限 16 KB，一次误把超大批次塞进来会被 `acceptText` 拒掉，发布端只能拆成两条。
