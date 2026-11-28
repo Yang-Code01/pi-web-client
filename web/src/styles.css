@@ -2989,8 +2989,12 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .dir-mkrow .dir-mkerr { padding-top: 4px; min-height: 0; }
 
 /* ---------------------------------------------------------------- model sheet: 设置控制台外壳 + 草稿确认 */
-/* D373：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。 */
-.st-console.model-sheet { width: min(1000px, 100%); height: min(760px, 100%); }
+/* D373：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。
+   D457：模型层比设置页窄、矮一档 —— 但**只覆盖基数**，尺寸算式仍由 `.st-console` 那一份算：
+   以前这里自己抄了一遍 `min(calc(1000px * …), 100%)`，`--st-frame` 的语义一改它就静默掉队。
+   也别写死 `min(1000px, 100%)`：特异性 (0,2,0) 会赢过基础规则，2.0 下被遮罩夹住看着像对的，
+   80% 时露馅（视觉 800 而不是 1000）。 */
+.st-console.model-sheet { --st-w-base: 1000px; --st-h-base: 760px; }
 /* 列表自己滚，档位条钉在滚动区外：模型一大堆时，选完不用滚回顶部才能换档。 */
 .st-console.model-sheet .st-pane { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .model-sheet .pm-body { flex: 1 1 auto; min-height: 0; padding: 18px 22px 22px; overflow-y: auto; scrollbar-gutter: stable; }

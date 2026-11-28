@@ -1,10 +1,13 @@
 /**
- * Probe: 字号滑杆拖动时把设置控制台让开（#742）。
+ * Probe: 设置控制台跟着字号缩放（D457）＋ 拖动时让开（#742 / D450）。
  *
  * 桩桥 + 真 Chromium，量的是**用户看得见的行为**，不是类名或 DOM 结构：
- *   1. 控制台 1:1：字号 1.0 与 2.0 下 `.st-console` 的矩形逐像素相同、且它不在 `#app` 的 zoom 子树里；
- *      2.0 下那根字号滑杆仍在视口内（反证：改之前 2.0 下面板撑满整屏、轨道视觉 y ≈ 984 > 836）。
- *   2. 阈值：指针只挪 3px 不让开，挪 40px 才让开（单击轨道 / 点刻度不闪）。
+ *   1. 控制台跟着「整页字号」一起放大（D457）：它仍挂在 body 上（不在 `#app` 的 zoom 子树里），
+ *      但自己吃 `zoom: var(--st-zoom)`；外框按 `--st-frame` 长大到吃满窗口，所以 2.0 下字与框都变大、
+ *      那根字号滑杆仍在视口内（反证：改之前 2.0 下面板撑满整屏、轨道视觉 y ≈ 984 > 836）。
+ *   2. 阈值：指针只挪 3px 不让开，挪 40px 才让开（单击轨道 / 点刻度不闪），量在「字号」那根上。
+ *      分区轨道同一套阈值；只有「设置与控制台」整根不让开（D458）—— 它改的就是面板自己的框，
+ *      再淡掉等于「拖一下就关掉了设置」。
  *   3. 让开：控制台淡到几乎全隐、遮罩全透且不模糊；真页面里正文那一块的视觉尺寸跟着变
  *      （证明它真的在变，不只是画了个透明层）。
  *   4. 胶囊：读数文本 + 只读细轨道的填充宽度。
@@ -113,6 +116,43 @@ await new Promise((r, reject) => {
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1200, height: 836 }, locale: "zh-CN" });
 const page = await ctx.newPage();
+// 面板可用宽 / 内容宽的量法注入一次，geo() 与 modelGeo() 都调它：
+// 两处各写一遍就是两个口径（上一版一块读 computed padding、另一块写死 40，app.ts 一改就分家）。
+await page.addInitScript(() => {
+  const hostOf = (con) => {
+    const parent = con?.parentElement ?? null;
+    if (parent && (parent.classList.contains("st-back") || parent.classList.contains("sheet-back"))) return parent;
+    return document.querySelector(".st-back, .sheet-back");
+  };
+  // 宿主 content box 的宽（视觉 px）—— 与 app.ts 的 `consoleAvail()` 同一口径：
+  // `.st-back` 的留白跟着档位变，固定用基准 20×2；`.sheet-back` 才读 computed。
+  window.__probeConsoleAvail = (con) => {
+    const host = hostOf(con);
+    if (!host || host.clientWidth <= 0) return -1;
+    if (host.classList.contains("st-back")) return host.clientWidth - 40;
+    const cs = getComputedStyle(host);
+    return host.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+  };
+  // 宿主的**真实** content box 宽（视觉 px，按 computed padding 算）。
+  // `__probeConsoleAvail()` 量的是 app 的估算口径（`.st-back` 写死 20×2），窄档留白只有 10px 时两者差 20；
+  // 探针要拿它当预期值的上限，那面得用真值，不然 2.0 档会差出 10 css px（容差 2 就假红）。
+  window.__probeHostContent = (con) => {
+    const host = hostOf(con);
+    if (!host || host.clientWidth <= 0) return -1;
+    const cs = getComputedStyle(host);
+    return Math.round((host.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)) * 10) / 10;
+  };
+  // 面板真实内容宽（css px，与 `clientWidth` / `offsetWidth` 同单位）—— 与 `paintConsoleFolds()` 同一口径：
+  // 有面板就量它自己的 `clientWidth`（zoom 子树里它就是布局 px，不用再除）。
+  window.__probeConsoleWidth = (con) => {
+    const cs = con ? getComputedStyle(con) : null;
+    const zoom = cs ? Number(cs.zoom) || 1 : 1;
+    const avail = window.__probeConsoleAvail(con);
+    if (con && con.clientWidth > 0) return { w: con.clientWidth, avail, measured: true };
+    const frame = cs ? Number(cs.getPropertyValue("--st-frame")) || 1 : 1;
+    return { w: Math.min(1080 * frame, avail) / zoom, avail, measured: false };
+  };
+});
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e.message)));
 page.on("console", (m) => {
@@ -178,12 +218,29 @@ async function geo() {
     const rail = document.querySelector(".size-rail");
     const app = document.getElementById("app");
     const rr = rail?.getBoundingClientRect();
+    const cs = con ? getComputedStyle(con) : null;
+    const zoom = cs ? Number(cs.zoom) || 1 : 1;
+    const label = con?.querySelector(".st-nav__item, .settings-name");
+    const fs = label ? parseFloat(getComputedStyle(label).fontSize) : 0;
     return {
       inApp: Boolean(app && back && app.contains(back)),
       inBody: Boolean(back && back.parentElement === document.body),
       // 布局尺寸（offset）而不是 rect：入场动画的 transform 会把 rect 缩一圈。
       w: con ? con.offsetWidth : -1,
       h: con ? con.offsetHeight : -1,
+      // D457：控制台自己带 zoom（--st-zoom），外框按 --st-frame 长大。
+      zoom: Math.round(zoom * 1000) / 1000,
+      stZoom: cs ? cs.getPropertyValue("--st-zoom").trim() : "",
+      stFrame: cs ? cs.getPropertyValue("--st-frame").trim() : "",
+      // 面板里的字：css px × zoom 才是用户看到的视觉大小。
+      textVisual: Math.round(fs * zoom * 100) / 100,
+      // 遮罩层能给的宽度 —— 共用页面里注入的 `__probeConsoleAvail()`（与 app.ts 同一口径）。
+      avail: window.__probeConsoleAvail(con),
+      // 遮罩真实 content box 宽（视觉 px）：预期值的上限用这一份（见 `__probeHostContent`）。
+      hostContent: window.__probeHostContent(con),
+      // 面板自己的内容宽（css px）：有面板时是量出来的，不是估的。
+      contentW: Math.round(window.__probeConsoleWidth(con).w * 10) / 10,
+      contentMeasured: window.__probeConsoleWidth(con).measured,
       railY: rr ? Math.round(rr.y) : -1,
       railBottom: rr ? Math.round(rr.bottom) : -1,
       vh: innerHeight,
@@ -191,11 +248,15 @@ async function geo() {
       scale: getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim(),
       // 壳的窄版仍看**有效宽度**（D158）：2.0 字号下 1200px 窗口只有 600 布局 px，必须判窄。
       compact: document.documentElement.dataset.compact,
+      // 控制台自己的折叠档位：按面板内容宽（÷ zoom）判，不是视口宽（D457）。
+      narrow: document.documentElement.dataset.stNarrow,
+      mid: document.documentElement.dataset.stMid,
+      tight: document.documentElement.dataset.stTight,
     };
   });
 }
 
-// ---------------------------------------------------------------- 1. 控制台 1:1
+// ---------------------------------------------------------------- 1. 控制台跟着字号放大（D457）
 await boot({ scale: 1 });
 await openLook();
 const at100 = await geo();
@@ -208,16 +269,32 @@ await openLook();
 const at200 = await geo();
 await page.screenshot({ path: path.join(OUT, "1-scale-200.png") });
 
+// 外框该多大：min(基数 × frame, 遮罩真实 content box)，再除以 zoom 就是 css 宽（与 `w` / `offsetWidth` 同单位）。
+// 基数按层给：设置页 1080×840、模型层 1000×760（后者以前被写死成 1080 判过，必然红）。
+const wantW = (g, base = 1080) => Math.min(base * (Number(g.stFrame) || 1), g.hostContent) / (Number(g.zoom) || 1);
 check("1. 控制台挂在 body 上、不在 #app 的 zoom 子树里", !at200.inApp && at200.inBody, JSON.stringify(at200));
 check(
-  "1b. 字号 2.0 与 1.0 的控制台矩形逐像素相同（量尺不跟着被量）",
-  Math.abs(at100.w - at200.w) <= 1 && Math.abs(at100.h - at200.h) <= 1,
-  `${at100.w}×${at100.h} → ${at200.w}×${at200.h}`,
+  "1a. 1.0 是原位不动：zoom 1、外框 1080、字没被二次缩放",
+  at100.zoom === 1 && Math.abs(at100.w - wantW(at100)) <= 1 && Math.abs(at100.textVisual - 12.5) < 0.6,
+  `${at100.w}×${at100.h} · zoom ${at100.zoom} · 字 ${at100.textVisual}px · frame ${at100.stFrame}`,
 );
 check(
-  "1e. 壳的宽窄仍按有效宽度判（控制台 1:1 不许把 data-compact 带跑）",
+  "1b. 2.0 下控制台自己缩：zoom 2、外框按 frame=max(字号,设置) 长到吃满窗口、字视觉翻倍",
+  Math.abs(at200.zoom - 2) < 0.01 &&
+    Number(at200.stFrame) === 2 &&
+    Math.abs(at200.w - wantW(at200)) <= 2 &&
+    Math.abs(at200.textVisual / at100.textVisual - 2) < 0.1,
+  `${at200.w}×${at200.h}（应 ${wantW(at200)}）· zoom ${at200.zoom} · 字 ${at200.textVisual}px vs ${at100.textVisual}px`,
+);
+check(
+  "1e. 壳的宽窄仍按有效宽度判（控制台自己的缩不放跑 data-compact）",
   at100.compact === "false" && at200.compact === "true",
   `1.0 → ${at100.compact} / 2.0 → ${at200.compact}（1200px ÷ 2 = 600 布局 px，必须判窄）`,
+);
+check(
+  "1e2. 控制台自己的折叠按面板内容宽判（÷ zoom 后 2.0 是 580px → 窄版 + 中版）",
+  at100.narrow === "false" && at100.mid === "false" && at200.narrow === "true" && at200.mid === "true",
+  `1.0 → narrow ${at100.narrow}/mid ${at100.mid} · 2.0 → narrow ${at200.narrow}/mid ${at200.mid}`,
 );
 check(
   "1c. 2.0 下那根字号滑杆仍在视口内",
@@ -225,10 +302,24 @@ check(
   `rail ${at200.railY}–${at200.railBottom} / 视口 ${at200.vh}`,
 );
 
-// ---------------------------------------------------------------- 1d. 别的控制台同样 1:1（8 个入口不止外观这一扇）
+// 1c2：外框的视觉尺寸只由 `--st-frame` 决定 —— 80% 字号下仍是 1080，不能跟着缩小。
+// （2026-11-28 真实踩过：`.st-console.display-sheet` 里多一条 `width: min(1080px, 100%)`，
+//  特异性赢过基础规则，于是 80% 下外框成了 864；2.0 下反而看不出来，被遮罩的 100% 一夹就抹平了。）
+await page.keyboard.press("Escape");
+await sleep(200);
+await boot({ scale: 0.8 });
+await openLook();
+const at80 = await geo();
+check(
+  "1c2. 0.8 字号下外框视觉尺寸不变（frame=1 时还是 1080，不是 864）",
+  Math.abs(at80.zoom - 0.8) < 0.01 && Math.abs(at80.w * at80.zoom - 1080) <= 3,
+  `css ${at80.w} × zoom ${at80.zoom} = ${Math.round(at80.w * at80.zoom)} 视觉 px`,
+);
+
+// ---------------------------------------------------------------- 1d. 别的控制台同样跟着缩（8 个入口不止外观这一扇）
 // 模型层是「另一扇 `.st-console`」：走同一条 `overlay()` 才挂得对，漏了就当场红。
-// 控制台脱开 `#app` 之后，`:root` 那两个「除过缩放」的视口变量要就地重算回 1:1，
-// 否则控制台里任何 `calc(var(--vh1) * N)` 都缩一圈（D123 那一族坑）。
+// 控制台带了自己的 zoom 之后，`:root` 那两个「除过缩放」的视口变量在它内部又要再除一道（`--st-zoom`），
+// 否则控制台里任何 `calc(var(--vh1) * N)` 都再缩一圈（D123 那一族坑）。
 const vhInside = await page.evaluate(() => {
   const con = document.querySelector(".st-console");
   const probe = document.createElement("div");
@@ -239,7 +330,7 @@ const vhInside = await page.evaluate(() => {
   return { h: Math.round(h * 100) / 100, vh: innerHeight };
 });
 check(
-  "1f. 控制台里 --vh1 仍是 10% 视口（挂 body 之后重算回 1:1）",
+  "1f. 控制台里 --vh1 仍是 10% 视口（除过 --st-zoom 之后重算对了）",
   Math.abs(vhInside.h - vhInside.vh * 0.1) < 1.5,
   `${vhInside.h}px vs ${(vhInside.vh * 0.1).toFixed(1)}px`,
 );
@@ -256,6 +347,12 @@ const modelGeo = async () => {
       // offset 是布局尺寸（不含入场动画的 transform），跨字号比较用它。
       w: sheet.offsetWidth,
       h: sheet.offsetHeight,
+      zoom: Number(getComputedStyle(sheet).zoom) || 1,
+      // 宿主 content box（`.st-back` 两侧各 20px）：与 paintConsoleFolds 同一个口径。
+      avail: window.__probeConsoleAvail(sheet),
+      hostContent: window.__probeHostContent(sheet),
+      contentW: Math.round(window.__probeConsoleWidth(sheet).w * 10) / 10,
+      stFrame: getComputedStyle(sheet).getPropertyValue("--st-frame").trim(),
       narrow: document.documentElement.dataset.stNarrow,
     };
   });
@@ -270,10 +367,26 @@ await boot({ scale: 1 });
 const model100 = await modelGeo();
 await boot({ scale: 2 });
 const model200 = await modelGeo();
+await boot({ scale: 0.8 });
+const model80 = await modelGeo();
 check(
-  "1d. 模型层也是 1:1：1.0 与 2.0 下矩形相同、没被判成窄版",
-  model100.onBody && model200.onBody && !model200.inApp && Math.abs(model100.w - model200.w) <= 1 && Math.abs(model100.h - model200.h) <= 1 && model200.narrow === "false",
-  `${model100.w}×${model100.h} → ${model200.w}×${model200.h} / narrow ${model200.narrow}`,
+  "1d. 模型层也吃同一套规则：基数是 1000×760（不是设置页的 1080）、1.0 原位、2.0 吃满窗口并判窄版",
+  model100.onBody &&
+    model200.onBody &&
+    model80.onBody &&
+    !model200.inApp &&
+    Math.abs(model100.zoom - 1) < 0.01 &&
+    Math.abs(model200.zoom - 2) < 0.01 &&
+    Math.abs(model100.w - wantW(model100, 1000)) <= 2 &&
+    Math.abs(model100.h - 760) <= 2 &&
+    Math.abs(model200.w - wantW(model200, 1000)) <= 2 &&
+    model200.narrow === "true",
+  `${model100.w}×${model100.h}（应 ${wantW(model100, 1000)}×760）→ ${model200.w}×${model200.h}（应 ${wantW(model200, 1000)}）· zoom ${model200.zoom} / narrow ${model200.narrow}`,
+);
+check(
+  "1d2. 模型层 0.8 字号下仍是 1000 视觉 px（`--st-frame` 真生效，不是被 100% 上限夹出来的巧合）",
+  Math.abs(model80.zoom - 0.8) < 0.01 && Math.abs(model80.w * model80.zoom - 1000) <= 3,
+  `css ${model80.w} × zoom ${model80.zoom} = ${Math.round(model80.w * model80.zoom)} 视觉 px`,
 );
 await page.keyboard.press("Escape");
 await sleep(200);
@@ -318,7 +431,41 @@ await page.keyboard.press("Escape");
 await sleep(150);
 await boot({ scale: 1.25 });
 await openLook();
-const railBox = await mustBox(page.locator(".size-rail").first(), "2/3 段：字号轨道");
+
+// D458：只有「设置与控制台」那根不让开 —— 它改的就是面板自己的框，再淡掉等于「拖一下就关掉了设置」。
+// 先拿它验**不让开**，后面的阈值 / 胶囊仍量「字号」（那根真的改的是面板背后那片页面）。
+// 按行内 **名字** 找，不靠 DOM 顺序也不靠整行文本子串：`.settings-label` 只装名字（+ 当前读数），
+// 行内 hint 写什么都不会误命中；以后在它前面插一根滑杆也不会悄悄量到别人身上。
+const railFor = (label) =>
+  page
+    .locator(".settings-row")
+    .filter({ has: page.locator(".settings-label", { hasText: new RegExp(`^${label}`) }) })
+    .locator(".size-rail")
+    .first();
+const conRailLoc = railFor("设置与控制台");
+await conRailLoc.scrollIntoViewIfNeeded();
+const conRail = await mustBox(conRailLoc, "2 段：设置与控制台轨道");
+const conY = conRail.y + conRail.height / 2;
+const conX = conRail.x + conRail.width * 0.375;
+await page.mouse.move(conX, conY);
+await page.mouse.down();
+await page.mouse.move(conX + 40, conY, { steps: 4 });
+await sleep(250);
+const conDrag = await peekState();
+await page.screenshot({ path: path.join(OUT, "2-console-no-peek.png") });
+await page.mouse.up();
+await sleep(150);
+check(
+  "2. 拖「设置与控制台」不让开：面板一直不透明、也不露胶囊（D458）",
+  conDrag.conOpacity > 0.99 && conDrag.hudOpacity < 0.1 && conDrag.backBlur !== "none",
+  `opacity ${conDrag.conOpacity} / 胶囊 ${conDrag.hudOpacity} / backdrop ${conDrag.backBlur}`,
+);
+
+await page.keyboard.press("Escape");
+await sleep(150);
+await boot({ scale: 1.25 });
+await openLook();
+const railBox = await mustBox(railFor("字号"), "2/3 段：字号轨道");
 const startX = railBox.x + railBox.width * 0.375; // 125%
 const startY = railBox.y + railBox.height / 2;
 const restState = await peekState();
@@ -399,7 +546,7 @@ await boot({ scale: 1.25 });
 await openLook();
 const beforeEsc = await geo();
 check("6 段前置：Esc 之前面板是开着的、不在 #app 里", beforeEsc.w > 0 && !beforeEsc.inApp, JSON.stringify({ w: beforeEsc.w, h: beforeEsc.h, inApp: beforeEsc.inApp }));
-const escBox = await mustBox(page.locator(".size-rail").first(), "6 段：字号轨道");
+const escBox = await mustBox(railFor("字号"), "6 段：字号轨道");
 const escY = escBox.y + escBox.height / 2;
 const escX = escBox.x + escBox.width * 0.375;
 await page.mouse.move(escX, escY);
@@ -437,7 +584,7 @@ check(
 );
 
 // ---------------------------------------------------------------- 7. 拖动中窗口失焦：自己收干净
-const blurBox = await mustBox(page.locator(".size-rail").first(), "7 段：字号轨道");
+const blurBox = await mustBox(railFor("字号"), "7 段：字号轨道");
 await page.mouse.move(blurBox.x + blurBox.width * 0.375, blurBox.y + blurBox.height / 2);
 await page.mouse.down();
 await page.mouse.move(blurBox.x + blurBox.width * 0.375 + 50, blurBox.y + blurBox.height / 2, { steps: 3 });
@@ -487,7 +634,7 @@ await sleep(150);
 // A（字号）只按键盘：让开起来，同时挂上 400ms 的自动收起
 await page.evaluate(() => document.querySelectorAll(".size-rail")[0].querySelector("input").focus({ preventScroll: true }));
 await page.keyboard.press("ArrowRight");
-const bBox = await mustBox(page.locator(".size-rail").nth(1), "10 段：第二根轨道");
+const bBox = await mustBox(railFor("顶栏"), "10 段：顶栏轨道");
 const by = bBox.y + bBox.height / 2;
 const bx = bBox.x + bBox.width * 0.2;
 await page.mouse.move(bx, by);
