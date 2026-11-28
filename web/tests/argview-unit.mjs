@@ -92,6 +92,14 @@ test("数组里的长文本也按 items[0].content 这种路径挑出来", () =>
   assert.deepEqual(view.blocks.map((block) => block.label), [tr("参数"), "changes[0].content"]);
 });
 
+test("挑不出来（埋得太深）的长文本不会被省略号吞掉", () => {
+  const deep = "z".repeat(120);
+  const view = toolArgsView({ questions: [{ prompt: "要不要合并" + "很长的提问".repeat(20) }], a: { b: { c: { d: { e: deep } } } } });
+  // 第一层那条挑得出来；埋在第五层的那条不在提纲里被省略，原样留在 JSON 里。
+  assert.deepEqual(view.blocks.map((block) => block.label), [tr("参数"), "questions[0].prompt"]);
+  assert.ok(view.blocks[0].text.includes(deep), "太深的长文本应当仍以原样留在结构块里");
+});
+
 test("不是 command / content 的长字段：用自己的键当标题，不上色", () => {
   const view = toolArgsView({ query: "x".repeat(80) });
   assert.deepEqual(view.blocks.map((block) => [block.label, block.grammar]), [["query", null]]);

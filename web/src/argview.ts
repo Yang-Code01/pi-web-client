@@ -156,9 +156,10 @@ function longLeaves(value: unknown, path: string, out: LongLeaf[], depth = 0): v
   for (const [key, child] of Object.entries(value)) longLeaves(child, path ? `${path}.${key}` : key, out, depth + 1);
 }
 
-/** 同样的结构，长字符串换成 `…`：结构那块只当提纲，长正文在它自己那块出现一次。 */
+/** 同样的结构，长字符串换成 `…`：结构那块只当提纲，长正文在它自己那块出现一次。
+ *  深度上限必须跟 `longLeaves()` 一致 —— 挑不出来的那些要是被省略了，就真丢了。 */
 function elideLong(value: unknown, depth = 0): unknown {
-  if (typeof value === "string") return depth > 0 && isLongText(value) ? ELIDED : value;
+  if (typeof value === "string") return depth > 0 && depth <= NESTED_DEPTH && isLongText(value) ? ELIDED : value;
   if (Array.isArray(value)) return value.map((item) => elideLong(item, depth + 1));
   if (!isRecord(value)) return value;
   return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, elideLong(child, depth + 1)]));
