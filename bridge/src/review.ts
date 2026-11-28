@@ -90,6 +90,7 @@ const num = (v: unknown): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 };
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
 /**
@@ -645,29 +646,57 @@ function writeJsonAtomic(file: string, value: unknown): void {
   fs.renameSync(tmp, file);
 }
 
+const MODES = new Set<ReviewMode>(["workspace", "range", "commit", "pr"]);
+const MARKS = new Set<ReviewMark>(["accept", "ignore", "false-positive"]);
+const PLAN_STATES = new Set<ReviewGroupPlan["state"]>(["pending", "running", "done", "failed"]);
+
+/** job 里的 opts 来自盘上，不能直接 `as ReviewJobOpts`：至少 mode/lang 得是认识的枚举值。 */
+function readJobOpts(raw: unknown): ReviewJobOpts | null {
+  if (!isRecord(raw)) return null;
+  const mode = str(raw.mode);
+  const lang = str(raw.lang);
+  if (!MODES.has(mode as ReviewMode) || !Object.prototype.hasOwnProperty.call(LANG_NAME, lang)) return null;
+  const pr = Number(raw.pr);
+  return {
+    mode: mode as ReviewMode,
+    lang: lang as ReviewLang,
+    base: str(raw.base) || undefined,
+    target: str(raw.target) || undefined,
+    commit: str(raw.commit) || undefined,
+    pr: Number.isInteger(pr) && pr > 0 ? pr : undefined,
+    model: str(raw.model) || undefined,
+    provider: str(raw.provider) || undefined,
+  };
+}
+
 function readReviewJob(file: string): ReviewJob | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as any;
-    const runId = str(raw?.runId);
-    const repo = str(raw?.repo);
-    const session = typeof raw?.session === "string" ? raw.session : null;
-    const opts = raw?.opts && typeof raw.opts === "object" ? (raw.opts as ReviewJobOpts) : null;
-    if (!runId || !repo || session === null || !opts) return null;
+    // JSON.parse 的返回类型是 any；这里先当 unknown，逐字段校验后再收窄，别把盘上的任意形状当契约。
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    if (!isRecord(raw)) return null;
+    const runId = str(raw.runId);
+    const repo = str(raw.repo);
+    const session = typeof raw.session === "string" ? raw.session : null;
+    const opts = readJobOpts(raw.opts);
+    const startedAt = str(raw.startedAt);
+    const pid = Number(raw.pid);
+    if (!runId || !repo || session === null || !opts || !startedAt) return null;
     return {
       runId,
       repo,
       session,
-      startedAt: str(raw?.startedAt),
+      startedAt,
       opts,
-      pid: Number(raw?.pid) > 0 ? Number(raw.pid) : undefined,
+      pid: Number.isInteger(pid) && pid > 0 ? pid : undefined,
     };
   } catch {
     return null;
   }
 }
 
-/** worker 启动到写回 pid 之间的窗口：这段时间没有 pid 不能当成「已经死了」。 */
-const WORKER_START_GRACE_MS = 20_000;
+/** worker 启动到写回 pid 之间的窗口：这段时间没有 pid 不能当成「已经死了」。
+ *  60 秒覆盖了换脑观察期（30s HELLO）+ 新脑启动；worker 一跑起来就会写心跳接管判断。 */
+const WORKER_START_GRACE_MS = 60_000;
 /** 心跳间隔与过期阈值。30 秒足够跨过一次脑崩溃 / 换脑，又不会让复用的 pid 一直冒充 worker。 */
 const WORKER_BEAT_MS = 5_000;
 const WORKER_BEAT_STALE_MS = 30_000;
@@ -689,12 +718,14 @@ export function reviewJobAlive(job: ReviewJob | null | undefined): boolean {
  * worker 每 5 秒写一次心跳。`startedAt` 用来对同一次评审，避免 pid 被复用时把无关进程
  * （或者上一轮的 worker）当成这条评审的执行进程。
  */
-function readReviewBeat(job: ReviewJob): { at: number; pid: number; startedAt: string } | null {
+function readBeatFile(runId: string): { at: number; pid: number; startedAt: string } | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(reviewBeatFile(job.runId), "utf8")) as any;
-    const at = Number(raw?.at);
-    const pid = Number(raw?.pid);
-    const startedAt = str(raw?.startedAt);
+    const raw = JSON.parse(fs.readFileSync(reviewBeatFile(runId), "utf8")) as unknown;
+    if (!isRecord(raw)) return null;
+    const obj = raw;
+    const at = Number(obj.at);
+    const pid = Number(obj.pid);
+    const startedAt = str(obj.startedAt);
     if (!Number.isFinite(at) || !Number.isInteger(pid) || pid <= 0 || !startedAt) return null;
     return { at, pid, startedAt };
   } catch {
@@ -709,7 +740,7 @@ function readReviewBeat(job: ReviewJob): { at: number; pid: number; startedAt: s
  */
 function reviewJobRunning(job: ReviewJob | null | undefined): boolean {
   if (!job || !reviewJobAlive(job)) return false;
-  const beat = readReviewBeat(job);
+  const beat = readBeatFile(job.runId);
   if (beat) {
     return beat.pid === Number(job.pid) && beat.startedAt === job.startedAt && Date.now() - beat.at < WORKER_BEAT_STALE_MS;
   }
@@ -727,11 +758,39 @@ function workerStarting(job: ReviewJob | null | undefined): boolean {
   return Number.isFinite(started) && Date.now() - started < WORKER_START_GRACE_MS;
 }
 
+/** 心跳能不能单独证明这条 review 还活着：job 文件读不出来（写到一半/杀软占用）时也得能查。 */
+function beatProvesLive(runId: string, startedAt = ""): boolean {
+  const beat = readBeatFile(runId);
+  if (!beat) return false;
+  if (startedAt && beat.startedAt !== startedAt) return false;
+  if (Date.now() - beat.at >= WORKER_BEAT_STALE_MS) return false;
+  try {
+    process.kill(beat.pid, 0);
+    return true;
+  } catch (err: any) {
+    return err?.code === "EPERM";
+  }
+}
+
+/** worker 已经写了心跳、job 里却还没有 pid（脑在 spawn 后写 pid 前被杀）：用心跳把 pid 补回来。 */
+function adoptBeatPid(job: ReviewJob): void {
+  if (job.pid) return;
+  const beat = readBeatFile(job.runId);
+  if (!beat || beat.startedAt !== job.startedAt || Date.now() - beat.at >= WORKER_BEAT_STALE_MS) return;
+  try {
+    process.kill(beat.pid, 0);
+    job.pid = beat.pid;
+  } catch (err: any) {
+    if (err?.code === "EPERM") job.pid = beat.pid;
+  }
+}
+
 /** 盘上那次评审的执行进程还活着吗（按 runId + startedAt + 心跳对，防 pid 复用）。 */
 function liveJobForRun(runId: string, startedAt = ""): ReviewJob | null {
   const job = readReviewJob(reviewJobFile(runId));
   if (!job) return null;
   if (startedAt && job.startedAt && job.startedAt !== startedAt) return null;
+  adoptBeatPid(job);
   if (reviewJobRunning(job) || workerStarting(job)) return job;
   return null;
 }
@@ -830,7 +889,8 @@ export function sweepStaleRuns(): number {
         if (run.status !== "running") continue;
         // 换脑时老脑退出，但评审执行进程是 detached 的：它还在跑就别把记录标成失效，
         // 新脑随后会把进度接回来（resumeReviewJobs）。只有真的没进程了才收尾。
-        if (liveJobForRun(run.id, run.startedAt)) continue;
+        // job 文件读不出来时（写到一半 / 杀软占用）心跳还能单独证明 worker 活着。
+        if (liveJobForRun(run.id, run.startedAt) || beatProvesLive(run.id, run.startedAt)) continue;
         run.status = "stale";
         run.errorCode = "bridge-restart";
         run.error = "桥重启了，这次评审没跑完";
@@ -1566,16 +1626,98 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
   }
 }
 
+/** 盘上的 plan 是分段进度，坏一条就丢一条；别把 `[{}]` 原样发给页面。 */
+function readPlan(raw: unknown): ReviewGroupPlan[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ReviewGroupPlan[] = [];
+  raw.forEach((item, i) => {
+    if (!isRecord(item)) return;
+    const state = str(item.state);
+    if (!PLAN_STATES.has(state as ReviewGroupPlan["state"])) return;
+    out.push({
+      index: num(item.index) || i + 1,
+      files: num(item.files),
+      findings: num(item.findings),
+      state: state as ReviewGroupPlan["state"],
+      startedAt: str(item.startedAt),
+      finishedAt: str(item.finishedAt),
+    });
+  });
+  return out.length || raw.length === 0 ? out : undefined;
+}
+
+/** 跑的过程中出来的意见同样逐条校验：页面会直接拿它渲染，不能把半截对象当 ReviewFinding。 */
+function readFindings(raw: unknown): ReviewFinding[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ReviewFinding[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const key = str(item.key);
+    const file = str(item.path);
+    if (!key || !file) continue;
+    const category = str(item.category);
+    const severity = str(item.severity);
+    const state = str(item.state);
+    const mark = str(item.mark);
+    out.push({
+      key,
+      path: file,
+      startLine: num(item.startLine),
+      endLine: num(item.endLine),
+      category: CATEGORIES.includes(category as Category) ? (category as Category) : "other",
+      severity: SEVERITIES.includes(severity as Severity) ? (severity as Severity) : "medium",
+      content: str(item.content),
+      existingCode: str(item.existingCode),
+      suggestionCode: str(item.suggestionCode),
+      anchored: item.anchored === true,
+      state: state === "persisting" ? "persisting" : "new",
+      mark: MARKS.has(mark as ReviewMark) ? (mark as ReviewMark) : "",
+      ...(Number.isInteger(Number(item.group)) && Number(item.group) > 0 ? { group: Number(item.group) } : {}),
+    });
+  }
+  return out.length || raw.length === 0 ? out : undefined;
+}
+
 /** 执行 worker 当前写到哪了。读不到（还没写 / 正在 rename）就当没有。 */
 function readProgressFile(job: ReviewJob): Progress | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(reviewProgressFile(job.runId), "utf8")) as any;
-    if (!raw || raw.runId !== job.runId) return null;
-    // 盘上的进度是脑广播给页面的输入：形状不对就当没读到，别把半截日志 / 非数组 plan 原样发出去。
-    if (typeof raw.status !== "string" || typeof raw.phase !== "string") return null;
-    if (raw.log !== undefined && !Array.isArray(raw.log)) return null;
-    if (raw.plan !== undefined && !Array.isArray(raw.plan)) return null;
-    return raw as Progress;
+    const raw = JSON.parse(fs.readFileSync(reviewProgressFile(job.runId), "utf8")) as unknown;
+    if (!isRecord(raw)) return null;
+    if (raw.runId !== job.runId) return null;
+    const status = str(raw.status);
+    const phase = str(raw.phase);
+    if (!["running", "done", "stopped", "failed", "stale"].includes(status)) return null;
+    if (!["preview", "fetch", "rules", "review", "done"].includes(phase)) return null;
+    // 盘上的进度是脑广播给页面的输入：逐字段归一化，别把 `tokens:"7"` / 半截 plan 原样发出去。
+    const log: ReviewLogLine[] = Array.isArray(raw.log)
+      ? raw.log
+          .filter(isRecord)
+          .map((line) => ({
+            at: num(line.at),
+            text: str(line.text),
+            ...(typeof line.group === "number" ? { group: line.group } : {}),
+          }))
+      : [];
+    const plan = readPlan(raw.plan);
+    const findings = readFindings(raw.findings);
+    return {
+      repo: str(raw.repo) || job.repo,
+      runId: job.runId,
+      status: status as ReviewRunStatus,
+      phase: phase as Progress["phase"],
+      totalFiles: num(raw.totalFiles),
+      reviewedFiles: num(raw.reviewedFiles),
+      currentFile: str(raw.currentFile),
+      tokens: num(raw.tokens),
+      startedAt: str(raw.startedAt) || job.startedAt,
+      error: str(raw.error),
+      errorCode: str(raw.errorCode),
+      group: num(raw.group),
+      groups: num(raw.groups),
+      ...(plan ? { plan } : {}),
+      ...(findings ? { findings } : {}),
+      log,
+    };
   } catch {
     return null;
   }
@@ -1657,7 +1799,7 @@ function requestCancel(job: ReviewJob): void {
   const timer = setTimeout(() => {
     // 先确认这一条还在跑：worker 正常收尾之后 pid 可能被系统复用，不能拿旧 pid 去杀别人。
     if (active.get(job.runId)?.job !== job) return;
-    if (reviewJobAlive(job)) killReviewPid(Number(job.pid));
+    if (reviewJobRunning(job)) killReviewPid(Number(job.pid));
   }, 10_000);
   timer.unref?.();
 }
@@ -1681,6 +1823,8 @@ function tickOneReview(runId: string, a: Active): void {
   if (!job.pid) {
     const fresh = readReviewJob(reviewJobFile(runId));
     if (fresh?.pid) job.pid = fresh.pid;
+    // job 还没被 worker 补写 pid 时，心跳文件本身就是证据：别把已经开始干活的 worker 判死。
+    adoptBeatPid(job);
   }
 
   const progress = readProgressFile(job);
@@ -1786,12 +1930,18 @@ function spawnReviewWorker(job: ReviewJob, ghEnv?: NodeJS.ProcessEnv): void {
   const args = entry.endsWith(".ts") ? ["--experimental-strip-types", entry, reviewJobFile(job.runId)] : [entry, reviewJobFile(job.runId)];
   ensureDir(reviewJobsDir());
   const logFd = fs.openSync(reviewLogFile(job.runId), "a");
+  // ghEnv 只该带 GH_*；但调用方要是塞了 PI_WEB_*，也不能把脑的私有 state / 测试开关带进 worker。
+  const env: NodeJS.ProcessEnv = { ...piChildEnv() };
+  for (const [key, value] of Object.entries(ghEnv ?? {})) {
+    if (key.startsWith("PI_WEB_")) continue;
+    if (value !== undefined) env[key] = value;
+  }
+  env.PI_WEB_STATE = stateDir();
   let proc: ReturnType<typeof spawn>;
   try {
     proc = spawn(process.execPath, args, {
       cwd: job.repo,
-      // `piChildEnv()` 会剥掉 PI_WEB_*（包括 PI_WEB_STATE），worker 必须知道自己在哪份 state 里干活。
-      env: { ...piChildEnv(), ...(ghEnv ?? {}), PI_WEB_STATE: stateDir() },
+      env,
       stdio: ["ignore", logFd, logFd],
       detached: true,
       windowsHide: true,
@@ -1837,7 +1987,7 @@ export function resumeReviewJobs(): number {
   for (const name of names) {
     if (!name.endsWith(".json") || name.endsWith(".progress.json")) continue;
     let job: ReviewJob | null = null;
-    let liveId = "";
+    let tracked: ReviewJob | null = null;
     try {
       job = readReviewJob(path.join(reviewJobsDir(), name));
       if (!job) {
@@ -1849,6 +1999,7 @@ export function resumeReviewJobs(): number {
         continue;
       }
       const j = job;
+      adoptBeatPid(j);
       const state = readReviewState(j.repo, j.session);
       const run = state.runs.find((r) => r.id === j.runId);
       if (
@@ -1861,7 +2012,7 @@ export function resumeReviewJobs(): number {
         reapReviewJob(j);
         continue;
       }
-      liveId = j.runId;
+      tracked = j;
       active.set(j.runId, {
         cancel: () => requestCancel(j),
         repo: j.repo,
@@ -1881,14 +2032,14 @@ export function resumeReviewJobs(): number {
       progressMap.set(j.runId, progress);
       notify.onProgress?.(j, progress);
       notify.onState?.(j);
-      live.add(liveId);
+      live.add(j.runId);
       resumed += 1;
     } catch (err) {
       // 一条 job 接不回来（状态文件读不了 / 广播炸了）只该少了这一条，不能让整个脑启动失败。
-      if (liveId) live.delete(liveId);
-      if (job) {
-        active.delete(job.runId);
-        progressMap.delete(job.runId);
+      if (tracked) {
+        live.delete(tracked.runId);
+        active.delete(tracked.runId);
+        progressMap.delete(tracked.runId);
       }
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[review] 接回评审 ${job?.runId ?? name} 失败：${message}`);
@@ -1920,11 +2071,11 @@ export async function stopAllReviews(waitMs = 3000): Promise<number> {
   if (!jobs.length) return 0;
   for (const job of jobs) requestCancel(job);
   const until = Date.now() + waitMs;
-  while (Date.now() < until && jobs.some((job) => active.get(job.runId)?.job === job && reviewJobAlive(job))) {
+  while (Date.now() < until && jobs.some((job) => active.get(job.runId)?.job === job && reviewJobRunning(job))) {
     await new Promise((r) => setTimeout(r, 100));
   }
   for (const job of jobs) {
-    if (active.get(job.runId)?.job === job && reviewJobAlive(job)) killReviewPid(Number(job.pid));
+    if (active.get(job.runId)?.job === job && reviewJobRunning(job)) killReviewPid(Number(job.pid));
     // worker 可能刚写到一半就被杀：把它那条收成「已停止」，别等下次开机再标成「桥重启」。
     const state = readReviewState(job.repo, job.session);
     const run = state.runs.find((r) => r.id === job.runId);
@@ -2057,6 +2208,13 @@ export async function runReviewJob(jobFile: string): Promise<void> {
     writeNow();
     try {
       fs.rmSync(reviewCancelFile(job.runId), { force: true });
+    } catch {
+      /* ignore */
+    }
+    // worker 正常收尾后心跳必须一起消失：否则 pid 被系统复用时，`reviewJobRunning()`
+    // 还会凭这份 30 秒内的心跳把无关进程当成评审，stopAllReviews 就可能误杀。
+    try {
+      fs.rmSync(reviewBeatFile(job.runId), { force: true });
     } catch {
       /* ignore */
     }

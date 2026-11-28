@@ -141,25 +141,28 @@ execFileSync(process.execPath, [BRAIN, "--passphrase", "test"], {
 const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
 const origins = { origin: base, "sec-fetch-site": "same-origin" };
+const hostEnv = (p) => ({
+  ...process.env,
+  PI_WEB_PORT: String(p),
+  PI_WEB_STATE: STATE,
+  PI_WEB_OPEN: "0",
+  PI_WEB_WHATS_NEW: "0",
+  PI_HOST_OBSERVE_MS: "600",
+  PI_BIN: fakePi,
+  PI_WEB_GH_JS: path.join(ROOT, "bridge", "tests", "fixtures", "fake-gh.mjs"),
+  FAKE_GH_ACCOUNTS: JSON.stringify([{ login: "Yang-Code01", active: true }]),
+  FAKE_PI_DELAY_MS: "12000",
+  PATH: `${BIN}${path.delimiter}${process.env.PATH ?? ""}`,
+});
 const logs = [];
 const host = spawn(process.execPath, [HOST], {
-  env: {
-    ...process.env,
-    PI_WEB_PORT: String(port),
-    PI_WEB_STATE: STATE,
-    PI_WEB_OPEN: "0",
-    PI_WEB_WHATS_NEW: "0",
-    PI_HOST_OBSERVE_MS: "600",
-    PI_BIN: fakePi,
-    PI_WEB_GH_JS: path.join(ROOT, "bridge", "tests", "fixtures", "fake-gh.mjs"),
-    FAKE_GH_ACCOUNTS: JSON.stringify([{ login: "Yang-Code01", active: true }]),
-    FAKE_PI_DELAY_MS: "12000",
-    PATH: `${BIN}${path.delimiter}${process.env.PATH ?? ""}`,
-  },
+  env: hostEnv(port),
   stdio: ["ignore", "pipe", "pipe"],
 });
 host.stdout.on("data", (c) => logs.push(String(c)));
 host.stderr.on("data", (c) => logs.push(String(c)));
+// spawn 失败（node 不存在 / 权限）也要进 finally 清理，不能因为没监听 error 直接把测试进程带走。
+host.on("error", (err) => logs.push(`host spawn error: ${String(err)}\n`));
 let exitCode = null;
 let exitSignal = null;
 host.on("exit", (code, signal) => {
@@ -173,8 +176,8 @@ const post = async (p, extraHeaders = {}, body = {}) => {
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 
-async function connectWs(cookie) {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { cookie } });
+async function connectWs(cookie, origin = base) {
+  const ws = new WebSocket(`${origin.replace(/^http/, "ws")}/ws`, { headers: { cookie } });
   const seen = [];
   ws.on("message", (buf) => {
     try {
@@ -212,11 +215,15 @@ const runOf = (state, runId) => state?.runs?.find((r) => r.id === runId) ?? null
 const runOnDisk = (runId) => {
   const root = path.join(STATE, "review");
   const files = [];
-  for (const name of fs.readdirSync(root)) {
-    const p = path.join(root, name);
-    if (name.endsWith(".json")) files.push(p);
-    else if (fs.statSync(p).isDirectory()) {
-      for (const inner of fs.readdirSync(p)) if (inner.endsWith(".json")) files.push(path.join(p, inner));
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const p = path.join(root, entry.name);
+    if (entry.name.endsWith(".json")) files.push(p);
+    else if (entry.isDirectory()) {
+      try {
+        for (const inner of fs.readdirSync(p)) if (inner.endsWith(".json")) files.push(path.join(p, inner));
+      } catch {
+        /* 目录正好被脑 reap 掉：跳过这一个 */
+      }
     }
   }
   for (const file of files) {
@@ -232,6 +239,9 @@ const runOnDisk = (runId) => {
 
 let workerPid = 0;
 let secondWorkerPid = 0;
+let thirdWorkerPid = 0;
+let host2 = null;
+let exit2 = null;
 try {
   await until(async () => {
     try {
@@ -317,13 +327,59 @@ try {
     return run?.status === "stopped" ? run : null;
   }, "停机把状态写回 stopped", 5000);
   assert.equal(stoppedRun.errorCode, "stopped", "主动停机要落成 stopped，不能留给下次开机 sweep");
+
+  // 6. keepReviews=1 是更新器交接：脑按换代退出，detached worker 不能被带走。
+  //    专门防「host 只等 150ms 就 killAll → 脑 SIGTERM 把评审收掉」的回归。
+  const port2 = await freePort();
+  const base2 = `http://127.0.0.1:${port2}`;
+  const origins2 = { origin: base2, "sec-fetch-site": "same-origin" };
+  host2 = spawn(process.execPath, [HOST], { env: hostEnv(port2), stdio: ["ignore", "pipe", "pipe"] });
+  host2.stdout.on("data", (c) => logs.push(String(c)));
+  host2.stderr.on("data", (c) => logs.push(String(c)));
+  host2.on("error", (err) => logs.push(`host2 spawn error: ${String(err)}\n`));
+  host2.on("exit", (code, signal) => {
+    exit2 = { code: code ?? -1, signal };
+  });
+  await until(async () => {
+    try {
+      return (await (await fetch(`${base2}/healthz`)).json()).brain?.ready;
+    } catch {
+      return false;
+    }
+  }, "第二个壳的脑就绪");
+  const login2 = await fetch(`${base2}/api/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ passphrase: "test" }),
+  });
+  assert.equal(login2.status, 200, "第二个壳也要能登进来");
+  const cookie2 = (login2.headers.get("set-cookie") ?? "").split(";")[0];
+  const page3 = await connectWs(cookie2, base2);
+  await page3.waitFor((m) => m.type === "hello", "第二个壳的 ws hello");
+  page3.ws.send(
+    JSON.stringify({ type: "review.run", dir: REPO, sessionId: session, mode: "workspace", lang: "zh", model: "fake-review" }),
+  );
+  const started3 = await page3.waitFor((m) => m.type === "review.started", "keepReviews 评审开跑");
+  thirdWorkerPid = await until(() => jobPid(started3.runId), "keepReviews 前 worker 起来");
+  assert.ok(alive(thirdWorkerPid), "第三条 worker 应该正在跑");
+  const kept = await fetch(`${base2}/api/host/stop?keepReviews=1`, {
+    method: "POST",
+    headers: origins2,
+    body: "{}",
+  });
+  assert.equal(kept.status, 200, "keepReviews 停机接口应该放行");
+  assert.equal((await kept.json()).keepReviews, true, "响应要说明这次保留评审");
+  await until(() => exit2 !== null, "第二个壳退出", 15000);
+  assert.equal(exit2.code, 0, "keepReviews 停机应该正常退出");
+  await sleep(1500);
+  assert.ok(alive(thirdWorkerPid), "keepReviews 交接不能把 detached worker 收掉");
   console.log("review-worker-e2e: ok");
 } catch (err) {
   console.error(String(err?.stack ?? err));
   console.error(`--- host 日志 ---\n${logs.join("").slice(-6000)}`);
   process.exitCode = 1;
 } finally {
-  for (const pid of [workerPid, secondWorkerPid]) {
+  for (const pid of [workerPid, secondWorkerPid, thirdWorkerPid]) {
     if (pid && alive(pid)) {
       try {
         killTree(pid);
@@ -332,9 +388,13 @@ try {
       }
     }
   }
-  if (exitCode === null) {
+  if (exitCode === null && host.pid) {
     killTree(host.pid);
     await Promise.race([new Promise((r) => host.once("exit", r)), sleep(5000)]);
+  }
+  if (host2 && exit2 === null && host2.pid) {
+    killTree(host2.pid);
+    await Promise.race([new Promise((r) => host2.once("exit", r)), sleep(5000)]);
   }
   try {
     fs.rmSync(TMP, { recursive: true, force: true });

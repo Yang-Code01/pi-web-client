@@ -575,7 +575,15 @@ check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标�
     const deadStartedAt = new Date(Date.now() + 1).toISOString();
     // 用一个不可能存活的 pid：spawn 出来的 pid 退出后可能被系统复用，会偶发把这条当成活的。
     const deadPid = 2 ** 31 - 2;
-    assert.equal(reviewJobAlive({ pid: deadPid }), false, "测试选的 deadPid 必须不在运行");
+    const deadJob = {
+      runId: "dead",
+      repo,
+      session,
+      startedAt: deadStartedAt,
+      opts: { mode: "workspace", lang: "zh" },
+      pid: deadPid,
+    };
+    assert.equal(reviewJobAlive(deadJob), false, "测试选的 deadPid 必须不在运行");
     writeReviewState(
       repo,
       { repo, runs: [run("live", startedAt), run("dead", deadStartedAt)], marks: {} },
@@ -588,7 +596,7 @@ check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标�
     assert.equal(runs.find((r) => r.id === "dead").status, "stale");
 
     // pid 活着不代表还是这个 worker：过期的 job 没有心跳，可能只是系统复用了这个 pid。
-    const reusedStartedAt = new Date(Date.now() - 60_000).toISOString();
+    const reusedStartedAt = new Date(Date.now() - 120_000).toISOString();
     writeReviewState(
       repo,
       { repo, runs: [run("live", startedAt), run("reused", reusedStartedAt)], marks: {} },
@@ -597,6 +605,105 @@ check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标�
     writeJob("reused", reusedStartedAt, process.pid);
     assert.equal(sweepStaleRuns(), 1, "pid 还活着但心跳过期，不能当成评审还在跑");
     assert.equal(readReviewState(repo, session).runs.find((r) => r.id === "reused").status, "stale");
+
+    // job 文件可能被杀软 / 半截写入挡住；这时新鲜心跳仍能证明 worker 在跑，不能收尸。
+    const beatOnlyStartedAt = new Date().toISOString();
+    writeReviewState(
+      repo,
+      { repo, runs: [run("beat-only", beatOnlyStartedAt)], marks: {} },
+      session,
+    );
+    fs.writeFileSync(reviewJobFile("beat-only"), "{ 半截");
+    fs.writeFileSync(
+      path.join(reviewJobsDir(), "beat-only.beat"),
+      JSON.stringify({ pid: process.pid, startedAt: beatOnlyStartedAt, at: Date.now() }),
+    );
+    assert.equal(sweepStaleRuns(), 0, "job 读不出来但心跳新鲜，不许标成桥重启");
+    assert.equal(readReviewState(repo, session).runs.find((r) => r.id === "beat-only").status, "running");
+
+    // opts 形状不对的 job 不是合法契约；pid 还活着也不能当成评审在跑。
+    const badOptsStartedAt = new Date().toISOString();
+    writeReviewState(
+      repo,
+      { repo, runs: [run("bad-opts", badOptsStartedAt)], marks: {} },
+      session,
+    );
+    fs.writeFileSync(
+      reviewJobFile("bad-opts"),
+      JSON.stringify({ runId: "bad-opts", repo, session, startedAt: badOptsStartedAt, opts: {}, pid: process.pid }),
+    );
+    assert.equal(sweepStaleRuns(), 1, "opts 不是认识的 contract，不能证明评审还活着");
+    assert.equal(readReviewState(repo, session).runs.find((r) => r.id === "bad-opts").status, "stale");
+  } finally {
+    process.env.PI_WEB_STATE = prev;
+  }
+});
+
+check("换脑（D441）：接回的进度逐字段归一化，别把盘上的字符串当数字广播", () => {
+  const prev = process.env.PI_WEB_STATE;
+  process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-resume-progress-"));
+  try {
+    const repo = "/Users/me/resume-progress";
+    const session = "rp";
+    const runId = "normalize";
+    const startedAt = new Date().toISOString();
+    writeReviewState(repo, { repo, runs: [{ id: runId, status: "running", findings: [], startedAt }], marks: {} }, session);
+    fs.mkdirSync(reviewJobsDir(), { recursive: true });
+    fs.writeFileSync(
+      reviewJobFile(runId),
+      JSON.stringify({ runId, repo, session, startedAt, opts: { mode: "workspace", lang: "zh" }, pid: process.pid }),
+    );
+    fs.writeFileSync(
+      path.join(reviewJobsDir(), `${runId}.progress.json`),
+      JSON.stringify({
+        repo,
+        runId,
+        status: "running",
+        phase: "review",
+        totalFiles: "8",
+        reviewedFiles: "2",
+        currentFile: "demo.txt",
+        tokens: "7",
+        startedAt,
+        error: "",
+        errorCode: "",
+        group: "1",
+        groups: "2",
+        log: [{ at: "1", text: "开始" }],
+        plan: [{ index: "1", files: "3", findings: "0", state: "done", startedAt, finishedAt: startedAt }, {}],
+        findings: [
+          {
+            key: "k1",
+            path: "demo.txt",
+            startLine: "3",
+            endLine: "4",
+            category: "bug",
+            severity: "high",
+            content: "boom",
+            existingCode: "x",
+            suggestionCode: "",
+            anchored: true,
+            state: "new",
+            mark: "accept",
+          },
+          { key: "", path: "missing-key.txt" },
+        ],
+      }),
+    );
+    assert.equal(resumeReviewJobs(), 1, "合法 job + 进度应该接回来");
+    const p = reviewProgresses(repo, session).find((x) => x.runId === runId);
+    assert.equal(p.totalFiles, 8, "字符串数字要归一成 number");
+    assert.equal(p.reviewedFiles, 2);
+    assert.equal(p.tokens, 7);
+    assert.equal(p.group, 1);
+    assert.equal(p.log[0].at, 1);
+    assert.equal(p.plan.length, 1, "坏 plan 条目要丢掉，好的留下");
+    assert.equal(p.plan[0].files, 3);
+    assert.equal(p.plan[0].state, "done");
+    assert.equal(p.findings.length, 1, "缺 key 的 finding 要丢掉");
+    assert.equal(p.findings[0].startLine, 3);
+    assert.equal(p.findings[0].severity, "high");
+    assert.equal(p.findings[0].mark, "accept");
   } finally {
     process.env.PI_WEB_STATE = prev;
   }
@@ -675,6 +782,32 @@ check("「评什么」存得下也读得回（空串照原样存，别被默认�
   const pick = { mode: "range", pr: 0, base: "main", target: "", commit: "" };
   assert.deepEqual(setPick(repo, pick, "s1").pick, pick);
   assert.deepEqual(readReviewState(repo, "s1").pick, pick);
+});
+
+check("换脑（D441）：job 还没写回 pid 时，用新鲜心跳接回评审", () => {
+  const prev = process.env.PI_WEB_STATE;
+  process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-beat-resume-"));
+  try {
+    const repo = "/Users/me/beat-resume";
+    const session = "br";
+    const runId = "beat-resume";
+    // 120 秒前开的评审，早过了 60 秒启动宽限；worker 已经写了心跳，只是 job 里的 pid 还没补上。
+    const startedAt = new Date(Date.now() - 120_000).toISOString();
+    writeReviewState(repo, { repo, runs: [{ id: runId, status: "running", findings: [], startedAt }], marks: {} }, session);
+    fs.mkdirSync(reviewJobsDir(), { recursive: true });
+    fs.writeFileSync(
+      reviewJobFile(runId),
+      JSON.stringify({ runId, repo, session, startedAt, opts: { mode: "workspace", lang: "zh" } }),
+    );
+    fs.writeFileSync(
+      path.join(reviewJobsDir(), `${runId}.beat`),
+      JSON.stringify({ pid: process.pid, startedAt, at: Date.now() }),
+    );
+    assert.equal(resumeReviewJobs(), 1, "心跳能证明 worker 还在，不能因为 job 缺 pid 就丢下它");
+    assert.equal(reviewProgresses(repo, session).length, 1);
+  } finally {
+    process.env.PI_WEB_STATE = prev;
+  }
 });
 
 if (failures) {

@@ -212,6 +212,18 @@ async function health() {
   }
 }
 
+/** 告诉旧壳「这次是换代，评审 worker 留着」，别让它走普通停机的收尾。 */
+async function askKeepReviews() {
+  try {
+    await fetch(`http://127.0.0.1:${PORT}/api/host/stop?keepReviews=1`, {
+      method: "POST",
+      signal: AbortSignal.timeout(1500),
+    });
+  } catch {
+    /* 旧壳可能还没有这个接口；后面的 kill 仍然能把它带走 */
+  }
+}
+
 /** 找出在服务这个端口的那颗 bridge：/healthz 自己报的 pid 最可靠，pid 文件兜底。 */
 async function portPid() {
   const h = await health();
@@ -601,6 +613,8 @@ async function main() {
     log(`旧 bridge 在窗口 pid ${host} 里，换完在同一扇窗口里起`);
   }
   if (oldPid) {
+    log(`让旧 bridge 保留评审 worker（pid ${oldPid}）`);
+    await askKeepReviews();
     log(`杀掉旧 bridge pid ${oldPid}`);
     // worker 自己是旧 bridge 的子进程 —— 别把自己算进去（算进去就自杀，旧桥还活着，状态卡在 running）。
     for (const kid of childrenOf(oldPid)) {

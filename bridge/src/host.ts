@@ -352,8 +352,12 @@ async function main(): Promise<void> {
       if (!hostOnly(req)) return void json(res, 403, { ok: false, code: "non-loopback" });
       if (req.method !== "POST") return void json(res, 405, { ok: false, code: "post-only" });
       if (!sameOrigin(req)) return void json(res, 403, { ok: false, code: "cross-origin" });
-      void stop("all");
-      return void json(res, 200, { ok: true, stopping: true });
+      // 更新器（bridge-update / hotdeploy）先走 keepReviews=1：它马上会起新壳，
+      // detached 评审 worker 要留给新脑接回。普通停止（页面 / SIGTERM / SIGINT）走默认值，
+      // 必须把评审收掉，否则 systemd stop 之后 worker 会一直跑到 30 分钟超时。
+      const keepReviews = url.searchParams.get("keepReviews") === "1";
+      void stop("all", !keepReviews);
+      return void json(res, 200, { ok: true, stopping: true, keepReviews });
     }
     if (url.pathname === "/api/host/deploy" && req.method === "POST") {
       if (!hostOnly(req)) return void json(res, 403, { ok: false, code: "non-loopback" });
@@ -899,8 +903,29 @@ async function main(): Promise<void> {
       }
       await closed;
     } else {
-      // 更新器发来的 SIGTERM：这是换代，不是用户停桥；只给脑 150ms 交接，worker 留着。
-      await new Promise((r) => setTimeout(r, 150));
+      // 只有更新器显式请求 `keepReviews=1` 才走到这里：它马上会起新壳，detached 评审
+      // worker 要留给新脑接回。这里用 `retire`（换代语义）而不是 shutdown：后者会
+      // sessions.shutdown()，而 150ms 后 children.killAll() 的 SIGTERM 还会让脑按「真正停桥」
+      // 把评审收掉。等脑自己退（retire 只 releaseLocks），最多 2 秒。
+      const conn = brain?.conn;
+      const closed = new Promise<void>((resolve) => {
+        if (!conn?.alive) {
+          resolve();
+          return;
+        }
+        const timer = setTimeout(resolve, 2000);
+        timer.unref();
+        conn.onClose(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      try {
+        conn?.send({ t: "retire" });
+      } catch {
+        /* 脑已经不在 */
+      }
+      await closed;
     }
     children.killAll();
     try {
@@ -923,9 +948,9 @@ async function main(): Promise<void> {
   log(`壳在 http://${listenHost}:${port}（buildId ${hostBuildId}），控制通道 ${sock}`);
   spawnBrain();
 
-  // D441：更新器 / 进程管理器用 SIGTERM 通知换代（hotdeploy、bridge-update 都是 kill -TERM），
-  // 这条路径不通知脑停机，评审 worker 才能活到新脑接回来；用户主动停（SIGINT / /api/host/stop）才通知。
-  process.on("SIGTERM", () => void stop("all", false));
+  // D441：更新器（bridge-update / hotdeploy）先 POST /api/host/stop?keepReviews=1，再杀旧壳；
+  // 那条路径保留 detached 评审 worker。普通 SIGTERM / SIGINT 是真正停桥，必须把评审收掉。
+  process.on("SIGTERM", () => void stop("all"));
   process.on("SIGINT", () => void stop("all"));
   process.on("exit", () => {
     try {

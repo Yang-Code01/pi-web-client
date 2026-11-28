@@ -4948,7 +4948,8 @@ async function main(): Promise<void> {
     fileIndex.close();
     terminals.closeAll();
     tunnel.stop();
-    // 整组停机才停评审：换脑（retire）不走这里，更新（SIGTERM）也不该把 detached worker 收掉（D441）。
+    // 整组停机才停评审：换脑（retire）不走这里；更新器会先显式请求 keepReviews=1，
+    // 只有「真正停桥」（页面停止 / SIGTERM / SIGINT）才把 detached worker 收掉（D441）。
     if (stopReviews) await stopAllReviews();
     await sessions.shutdown();
     // Closing the bridge is closing 随手问: a clean exit leaves nothing to resume.
@@ -4957,8 +4958,9 @@ async function main(): Promise<void> {
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());
-  // 更新器 / 进程管理器发来的是 SIGTERM：这是换代，不是用户停桥，评审要留着让新脑接回。
-  process.on("SIGTERM", () => void shutdown(false));
+  // 真正停桥（systemd stop / 手工 kill -TERM）：评审要收掉。
+  // 更新器要保留评审时，先显式请求 `/api/host/stop?keepReviews=1`，由壳走换代交接。
+  process.on("SIGTERM", () => void shutdown());
 }
 
 main().catch((err) => {

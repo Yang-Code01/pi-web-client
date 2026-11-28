@@ -187,6 +187,18 @@ async function health() {
   }
 }
 
+/** 告诉旧壳「这次是换代，评审 worker 留着」，别让它走普通停机的收尾。 */
+async function askKeepReviews() {
+  try {
+    await fetch(`http://127.0.0.1:${PORT}/api/host/stop?keepReviews=1`, {
+      method: "POST",
+      signal: AbortSignal.timeout(1500),
+    });
+  } catch {
+    /* 旧壳可能还没有这个接口；后面的 kill 仍然能把它带走 */
+  }
+}
+
 async function waitHealthy(ms) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -380,6 +392,7 @@ async function main() {
   log(`old bridge pid ${oldPid ?? "(none)"}，子进程 ${kids.join(",") || "none"}`);
 
   if (oldPid) {
+    await askKeepReviews();
     killPid(oldPid);
     for (let i = 0; i < 24 && alive(oldPid); i++) await sleep(250);
     if (alive(oldPid)) {
