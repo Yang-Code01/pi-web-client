@@ -1544,23 +1544,16 @@ export class App {
     // 壳的宽窄仍看**有效宽度**（视口 ÷ 字号，`compact()` 那一份判据，D158）。
     // 别顺手把这里换成 `window.innerWidth`：控制台脱开 #app（D450）之后，两套判据正是从这里开始分家的。
     const compact = this.compact();
-    const width = window.innerWidth;
     const root = document.documentElement;
     // 控制台原本是 @media (max-width: 900/720/640px)，保留 <= 的边界；compact 仍是 < 900。
     const layout = this.layoutWidth();
     root.dataset.consoleNarrow = String(layout <= 900);
     root.dataset.consoleMid = String(layout <= 720);
     root.dataset.consoleTight = String(layout <= 640);
-    // D454：`.st-console` 那一族不再 1:1 —— 它们挂着 `zoom: --st-zoom`，外框视觉宽 = min(1080 × frame, 宿主可用宽)，
-    // 所以它自己的内容宽 = 那一段 ÷ zoom。折叠档位必须按**面板的实际宽度**判：按视口算的话，
-    // 字号 2.0 下面板被撑到满窗口、内容却只剩一半，判出来是「不窄」而内部早该进 `st-mid`。
-    // 40 = `.st-back` 左右各 20px 的留白（settings-console.css 的 `padding: 20px`）。
-    const stZoom = this.prefs.scale * this.prefs.consoleScale;
-    const stFrame = Math.max(this.prefs.scale, this.prefs.consoleScale);
-    const stWidth = Math.min(1080 * stFrame, Math.max(320, width - 40)) / stZoom;
-    root.dataset.stNarrow = String(stWidth <= 900);
-    root.dataset.stMid = String(stWidth <= 720);
-    root.dataset.stTight = String(stWidth <= 640);
+    // D454：`.st-console` 那一族不再 1:1 —— 它们挂着 `zoom: --st-zoom`，外框视觉宽 = min(1080 × frame, 宿主可用宽)。
+    // 档位按**面板的实际内容宽**判（÷ zoom），否则字号 2.0 下面板被撑到满窗口、内容却只剩一半，
+    // 判出来是「不窄」而内部早该进 `st-mid`。宽度交给 `paintConsoleFolds()` 量宿主。
+    this.paintConsoleFolds();
     // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
     // 否则属性一直是 undefined，CSS 那边是在碰运气。
     const changed = root.dataset.compact !== String(compact);
@@ -1575,6 +1568,38 @@ export class App {
     if (changed) this.syncQueueTabMemory(true);
     if (this.queueTab !== previousQueueTab && this.els.queueInner) this.renderQueue();
     return changed;
+  }
+
+  /**
+   * D454：`.st-console` 的窄版档位（`data-st-*`）—— 按**面板自己的内容宽**判，不按视口。
+   * 与 `syncCompact()` 分开：拖「设置与控制台」只改面板的倍率，壳的宽窄（`compact()`）一点没动，
+   * 那里每帧跑一遍 placeNowChip / renderQueue 是白花钱（D455 的评审意见）。
+   */
+  private paintConsoleFolds(): void {
+    const root = document.documentElement;
+    const stZoom = this.prefs.scale * this.prefs.consoleScale;
+    const stFrame = Math.max(this.prefs.scale, this.prefs.consoleScale);
+    const stWidth = Math.min(1080 * stFrame, this.consoleAvail()) / (stZoom || 1);
+    root.dataset.stNarrow = String(stWidth <= 900);
+    root.dataset.stMid = String(stWidth <= 720);
+    root.dataset.stTight = String(stWidth <= 640);
+  }
+
+  /**
+   * 控制台能长到多宽（视觉 px）= 宿主 content box 的宽。
+   * 宿主是 `.st-back`（padding 20px）还是 `.sheet-back`（0 / 16 / 24px，看断点与 `.center`）由调用方
+   * 决定，所以读实际 computed padding，不写死 40：写死的话竖向滚动条一出现、或换成 `.sheet-back`
+   * 宿主，JS 估的宽与 CSS 的 `min(..., 100%)` 就对不上，档位判错。
+   * 面板还没挂上去（首帧、构造期）才退回视口估 —— 那时没有任何东西可量。
+   */
+  private consoleAvail(): number {
+    const host = document.querySelector<HTMLElement>("body > .st-back, body > .sheet-back");
+    if (host && host.clientWidth > 0) {
+      const cs = getComputedStyle(host);
+      const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      return Math.max(0, host.clientWidth - pad);
+    }
+    return Math.max(0, window.innerWidth - 40);
   }
 
   private applyQueueTabEvent(event: TabEvent): void {
@@ -4082,6 +4107,9 @@ export class App {
     // 所以必须挂 body 而不是进 `#app`（D450），否则会被 `#app` 的 zoom 再乘一遍；
     // 其余浮层照旧进 `#app`、跟着字号缩放（D123 / D441）。
     mountOverlay(node);
+    // 控制台的折叠档位按宿主实测宽判（D454）：挂上去之后 `consoleAvail()` 才量得到真实 padding，
+    // 挂之前只能退回视口估一估。
+    if (node.matches(".st-console") || node.querySelector(":scope > .st-console")) this.paintConsoleFolds();
   }
 
   /**
@@ -5044,9 +5072,10 @@ export class App {
         peek: false,
         onLive: (v) => {
           this.prefs = { ...this.prefs, consoleScale: v };
-          // 外框尺寸与折叠档位都变了：两个都要重算，只写变量的话内部还会停在旧的窄版。
+          // 只改面板自己的倍率：外框尺寸与 `data-st-*` 要重算，壳的宽窄（`compact()`）没变 ——
+          // 别调 `syncCompact()`，那会每帧白跑 placeNowChip / renderQueue。
           this.paintRegionScales();
-          this.syncCompact();
+          this.paintConsoleFolds();
         },
         onCommit: () => savePrefs(this.prefs),
       }),

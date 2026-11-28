@@ -10,11 +10,12 @@
 }
 
 /* D454：控制台不再 1:1 —— 它整块跟「字号 × 设置与控制台」缩（`--st-zoom`），外框视觉尺寸 = 1080×840 × `--st-frame`，
-   上限是宿主可用空间。两者都在 `app.ts` 的 `paintRegionScales()` 里写。
+   上限是宿主可用空间。两者都在 `app.ts` 的 `paintRegionScales()` 里写；尺寸只在下面 `.st-console`
+   那条里算一次，这里只管 zoom 与视口变量（D455 评审：两条规则抢着设 width 会静默回来）。
 
-   两个长度都得÷ `--st-zoom`：`zoom` 会把已经算好的长度再乘一遍，写 `1080px` 就变成了 1080×zoom 的视觉尺寸。
-   `100%` 不用除 —— 百分比在 zoom 子树里本来就按缩放后的坐标系解析（子元素的 100% 已经等于「父宽 ÷ zoom」）。
-   里面那两个视口变量同理：`1vh` 不认 zoom（D123），不除的话面板里任何 `calc(var(--vh1) * N)` 都会多缩一圈。
+   两个长度都得÷ `--st-zoom`；`100%` 不用除 —— 百分比在 zoom 子树里本来就按缩放后的坐标系解析
+   （子元素的 100% 已经等于「父宽 ÷ zoom」）。里面那两个视口变量同理：`1vh` 不认 zoom（D123），
+   不除的话面板里任何 `calc(var(--vh1) * N)` 都会多缩一圈。
 
    选器只认**宿主的直接子级**（跟下面 `--vh1` 复位那条同一个理由）：嵌在普通浮层深处的 `.st-console`
    拿的是它祖先的缩放，不能再乘一次。 */
@@ -23,8 +24,6 @@ body > :is(.st-back, .sheet-back) > .st-console {
   zoom: var(--st-zoom, 1);
   --vh1: calc(1vh / var(--st-zoom, 1));
   --vw1: calc(1vw / var(--st-zoom, 1));
-  width: min(calc(1080px * var(--st-frame, 1) / var(--st-zoom, 1)), 100%);
-  height: min(calc(840px * var(--st-frame, 1) / var(--st-zoom, 1)), 100%);
 }
 
 /* #742：控制台宿主（`.st-back` / `.sheet-back` 这层遮罩）本身不缩，`--vh1` / `--vw1` 在这里回到 1:1，
@@ -58,9 +57,12 @@ body > :is(.st-back, .sheet-back):has(> .st-console) {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   /* 同 .sys-console：用遮罩的 content box 做上限，别让 #app 的 zoom 把 vw/vh 再乘一次。
-     D454：这两行只是兼底 —— 挂在 body 宿主里的控制台由上面那条更具体的规则接管。*/
-  width: min(1080px, 100%);
-  height: min(840px, 100%);
+     D454：尺寸**只在这里算一次** —— `--st-frame` 跟着倍率长大、除一道 `--st-zoom` 抵消 zoom。
+     变量没写（首帧、单测里的假 DOM）时两道 var() 都回退成 1，就是原来的 1080×840。
+     别再往上面那条 `body > ... > .st-console` 里写 width/height：两条规则对同一元素设尺寸、
+     靠选择器特异性决胜，谁动手调一下顺序就静默回到 1:1。*/
+  width: min(calc(1080px * var(--st-frame, 1) / var(--st-zoom, 1)), 100%);
+  height: min(calc(840px * var(--st-frame, 1) / var(--st-zoom, 1)), 100%);
   overflow: hidden;
   color: var(--text);
   font-family: var(--sans);

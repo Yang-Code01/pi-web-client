@@ -291,7 +291,14 @@ const modelGeo = async () => {
       w: sheet.offsetWidth,
       h: sheet.offsetHeight,
       zoom: Number(getComputedStyle(sheet).zoom) || 1,
-      avail: document.querySelector(".st-back")?.clientWidth - 40,
+      // 宿主 content box（`.st-back` 两侧各 20px）：与 paintConsoleFolds 同一个口径。
+      avail: (() => {
+        const host = document.querySelector(".st-back");
+        if (!host) return innerWidth - 40;
+        const cs = getComputedStyle(host);
+        return host.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+      })(),
+      stFrame: getComputedStyle(sheet).getPropertyValue("--st-frame").trim(),
       narrow: document.documentElement.dataset.stNarrow,
     };
   });
@@ -314,7 +321,7 @@ check(
     Math.abs(model100.zoom - 1) < 0.01 &&
     Math.abs(model200.zoom - 2) < 0.01 &&
     Math.abs(model100.w - Math.min(1080, model100.avail)) <= 1 &&
-    Math.abs(model200.w - Math.min(2160, model200.avail)) <= 2 &&
+    Math.abs(model200.w - wantW(model200)) <= 2 &&
     model200.narrow === "true",
   `${model100.w}×${model100.h} zoom ${model100.zoom} → ${model200.w}×${model200.h} zoom ${model200.zoom} / narrow ${model200.narrow}`,
 );
@@ -364,8 +371,10 @@ await openLook();
 
 // D455：只有「设置与控制台」那根不让开 —— 它改的就是面板自己的框，再淡掉等于「拖一下就关掉了设置」。
 // 先拿它验**不让开**，后面的阈值 / 胶囊仍量「字号」（那根真的改的是面板背后那片页面）。
-await page.locator(".size-rail").nth(6).scrollIntoViewIfNeeded();
-const conRail = await mustBox(page.locator(".size-rail").nth(6), "2 段：设置与控制台轨道");
+// 按行内 label 文本找，不靠 DOM 顺序：以后在它前面插一根滑杆，nth(6) 会悄悄量到别人身上。
+const conRailLoc = page.locator(".settings-row").filter({ hasText: "设置与控制台" }).locator(".size-rail").first();
+await conRailLoc.scrollIntoViewIfNeeded();
+const conRail = await mustBox(conRailLoc, "2 段：设置与控制台轨道");
 const conY = conRail.y + conRail.height / 2;
 const conX = conRail.x + conRail.width * 0.375;
 await page.mouse.move(conX, conY);
