@@ -1553,7 +1553,7 @@ export class App {
     // D454：`.st-console` 那一族不再 1:1 —— 它们挂着 `zoom: --st-zoom`，外框视觉宽 = min(1080 × frame, 宿主可用宽)。
     // 档位按**面板的实际内容宽**判（÷ zoom），否则字号 2.0 下面板被撑到满窗口、内容却只剩一半，
     // 判出来是「不窄」而内部早该进 `st-mid`。宽度交给 `paintConsoleFolds()` 量宿主。
-    this.paintConsoleFolds();
+    this.paintConsoleFolds(this.sheet);
     // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
     // 否则属性一直是 undefined，CSS 那边是在碰运气。
     const changed = root.dataset.compact !== String(compact);
@@ -1575,11 +1575,11 @@ export class App {
    * 与 `syncCompact()` 分开：拖「设置与控制台」只改面板的倍率，壳的宽窄（`compact()`）一点没动，
    * 那里每帧跑一遍 placeNowChip / renderQueue 是白花钱（D455 的评审意见）。
    */
-  private paintConsoleFolds(): void {
+  private paintConsoleFolds(con?: HTMLElement | null): void {
     const root = document.documentElement;
     const stZoom = this.prefs.scale * this.prefs.consoleScale;
     const stFrame = Math.max(this.prefs.scale, this.prefs.consoleScale);
-    const stWidth = Math.min(1080 * stFrame, this.consoleAvail()) / (stZoom || 1);
+    const stWidth = Math.min(1080 * stFrame, this.consoleAvail(con)) / (stZoom || 1);
     root.dataset.stNarrow = String(stWidth <= 900);
     root.dataset.stMid = String(stWidth <= 720);
     root.dataset.stTight = String(stWidth <= 640);
@@ -1587,16 +1587,28 @@ export class App {
 
   /**
    * 控制台能长到多宽（视觉 px）= 宿主 content box 的宽。
-   * 宿主是 `.st-back`（padding 20px）还是 `.sheet-back`（0 / 16 / 24px，看断点与 `.center`）由调用方
-   * 决定，所以读实际 computed padding，不写死 40：写死的话竖向滚动条一出现、或换成 `.sheet-back`
-   * 宿主，JS 估的宽与 CSS 的 `min(..., 100%)` 就对不上，档位判错。
+   * 宿主优先从**调用方给的那扇面板**往上认（`con.parentElement`）：一个页面上可能同时挂着几扇控制台
+   * （设置、模型、交接），全局 `querySelector` 会拿别人的宿主算自己的档位。
+   *
+   * 留白分两种写法，别统一成一种：
+   * - `.st-back` 的 padding **跟着档位变**（基准 20px，窄版 10px、紧版 0）。读它就是「档位 ↔ 留白」
+   *   互相喂：宿主宽正好落在 920–940 那一小段时，两种口径各自都能自洽，档位会在同一帧里来回翻。
+   *   所以这里固定用**基准 20×2** 判，档位不参与计算，判据就成了纯函数。代价是窄版下 JS 估的比 CSS 的
+   *   `100%` 窄 20px —— 只挪断点、不会抖。
+   * - `.sheet-back`（0 / 16 / 24px，看断点与 `.center`）的留白不由 `data-st-*` 控制，读 computed 才对。
    * 面板还没挂上去（首帧、构造期）才退回视口估 —— 那时没有任何东西可量。
    */
-  private consoleAvail(): number {
-    const host = document.querySelector<HTMLElement>("body > .st-back, body > .sheet-back");
+  private consoleAvail(con?: HTMLElement | null): number {
+    const parent = con?.parentElement ?? null;
+    const host =
+      parent && (parent.classList.contains("st-back") || parent.classList.contains("sheet-back"))
+        ? parent
+        : document.querySelector<HTMLElement>("body > .st-back, body > .sheet-back");
     if (host && host.clientWidth > 0) {
       const cs = getComputedStyle(host);
-      const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      const pad = host.classList.contains("st-back")
+        ? 40
+        : (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
       return Math.max(0, host.clientWidth - pad);
     }
     return Math.max(0, window.innerWidth - 40);
@@ -4108,8 +4120,9 @@ export class App {
     // 其余浮层照旧进 `#app`、跟着字号缩放（D123 / D441）。
     mountOverlay(node);
     // 控制台的折叠档位按宿主实测宽判（D454）：挂上去之后 `consoleAvail()` 才量得到真实 padding，
-    // 挂之前只能退回视口估一估。
-    if (node.matches(".st-console") || node.querySelector(":scope > .st-console")) this.paintConsoleFolds();
+    // 挂之前只能退回视口估一估。把**这一扇**传进去，别让它去全局找宿主。
+    const con = node.matches(".st-console") ? node : node.querySelector<HTMLElement>(":scope > .st-console");
+    if (con) this.paintConsoleFolds(con);
   }
 
   /**
@@ -5006,6 +5019,10 @@ export class App {
         onLive: (v) => {
           this.prefs = { ...this.prefs, scale: v };
           document.documentElement.style.setProperty("--ui-scale", String(v));
+          // D454：控制台自己也吃 `--st-zoom = 字号 × 设置与控制台`，只写 `--ui-scale` 的话它要等到松手
+          // （`applyPrefs()`）才更新 —— 拖动中面板的缩放与下面 `paintConsoleFolds()` 判档位用的倍率
+          // 就不是同一个，档位和看到的框会脱节。这一句很便宜（六个 CSS 变量），每帧写没关系。
+          this.paintRegionScales();
           // 拖动中也要判窄版：不判的话预告是假的（1.0 拖到 2.0 的路上一直是三栏，松手才突然变一栏），
           // 而抽屉的宽度不跟着窄版变（min(560px,100%)），所以冻住的轨道盒子不会在手指底下跑。
           // 跨过 900 的那一刻三栏已经换成单列，但 pane 的 hidden 是 JS 状态，必须顺手重排，
@@ -5075,7 +5092,7 @@ export class App {
           // 只改面板自己的倍率：外框尺寸与 `data-st-*` 要重算，壳的宽窄（`compact()`）没变 ——
           // 别调 `syncCompact()`，那会每帧白跑 placeNowChip / renderQueue。
           this.paintRegionScales();
-          this.paintConsoleFolds();
+          this.paintConsoleFolds(this.sheet);
         },
         onCommit: () => savePrefs(this.prefs),
       }),

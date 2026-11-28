@@ -197,8 +197,21 @@ async function geo() {
       stFrame: cs ? cs.getPropertyValue("--st-frame").trim() : "",
       // 面板里的字：css px × zoom 才是用户看到的视觉大小。
       textVisual: Math.round(fs * zoom * 100) / 100,
-      // 遮罩层能给的宽度（`.st-back` 的 padding 20px 两侧）；外框最多长到这里。
-      avail: back ? back.clientWidth - 40 : -1,
+      // 遮罩层能给的宽度 —— 与 app.ts 的 `consoleAvail()` 同一个口径：`.st-back` 用基准 20×2
+      // （它的 padding 跟着档位变，读 computed 会「档位 ↔ 留白」互相喂），`.sheet-back` 才读 computed。
+      avail: (() => {
+        const parent = con?.parentElement ?? null;
+        const host =
+          parent && (parent.classList.contains("st-back") || parent.classList.contains("sheet-back"))
+            ? parent
+            : back;
+        if (!host || host.clientWidth <= 0) return -1;
+        const hcs = getComputedStyle(host);
+        const pad = host.classList.contains("st-back")
+          ? 40
+          : (parseFloat(hcs.paddingLeft) || 0) + (parseFloat(hcs.paddingRight) || 0);
+        return host.clientWidth - pad;
+      })(),
       railY: rr ? Math.round(rr.y) : -1,
       railBottom: rr ? Math.round(rr.bottom) : -1,
       vh: innerHeight,
