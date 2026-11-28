@@ -9,7 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { Readable, Writable } from "node:stream";
-import { askReplace, forceRequested, looksLikeBridge } from "../../scripts/preflight.mjs";
+import { askReplace, forceRequested, localBase, looksLikeBridge } from "../../scripts/preflight.mjs";
 
 /** 假 TTY：输入按行喂（喂完就 EOF），输出收成字符串。 */
 function fakeTty(lines) {
@@ -66,12 +66,19 @@ assert.equal(forceRequested([], { PI_START_FORCE: "1" }), true);
 assert.equal(forceRequested([], { PI_START_FORCE: "" }), false);
 assert.equal(forceRequested(["--port", "7865"], {}), false);
 
-// 7. 认人：命令行里带桥入口（哪份检出、正斜杠反斜杠都算），别的程序一律不算。
-assert.equal(looksLikeBridge("node C:\\repo\\bridge\\dist\\host.js"), true);
+// 7. 认人：命令行里带桥入口（哪份检出、正斜杠反斜杠都算），别的程序一律不算。assert.equal(looksLikeBridge("node C:\\repo\\bridge\\dist\\host.js"), true);
 assert.equal(looksLikeBridge("node /repo/bridge/dist/host.js"), true);
 assert.equal(looksLikeBridge('"C:\\\\Program Files\\\\node.exe" F:/wt/x/bridge/dist/index.js'), true);
 assert.equal(looksLikeBridge("node /repo/other/server.js"), false);
 assert.equal(looksLikeBridge("node /repo/bridge/dist/helper.js"), false);
 assert.equal(looksLikeBridge(""), false);
+
+// 8. 探活 / 停机打的地址跟着监听地址走：只听某个 LAN IP 时就打它（否则认不出壳、会误当旧桥硬杀），
+//    通配地址换成回环（通配不是能连的目标）。
+assert.equal(localBase("192.168.1.5", 7864), "http://192.168.1.5:7864");
+assert.equal(localBase("0.0.0.0", 7864), "http://127.0.0.1:7864");
+assert.equal(localBase("::", 7864), "http://127.0.0.1:7864");
+assert.equal(localBase(undefined, 7864), "http://127.0.0.1:7864");
+assert.equal(localBase("::1", 7864), "http://[::1]:7864");
 
 console.log("preflight-unit: ok");

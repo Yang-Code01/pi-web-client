@@ -140,6 +140,7 @@ try {
     const r = await runPreflight(port, ["--force"]);
     assert.equal(r.code, 0, `停掉之后应当放行：${r.out}`);
     assert.ok(fs.existsSync(mark), "应当先请它自己收工（/api/host/stop），而不是直接硬杀");
+    await until(async () => stub.exitCode !== null, "壳自己退掉");
     await until(async () => (await healthz(port)) === null, "桩退出、端口空出来");
     assert.equal(stub.exitCode, 0, "优雅停机应当让壳自己以 0 退出");
   }

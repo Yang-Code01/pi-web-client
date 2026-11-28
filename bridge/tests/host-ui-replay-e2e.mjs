@@ -65,7 +65,12 @@ function stats() {
   try {
     const files = fs.readdirSync(BRAINS).filter((f) => /^brain-\d+\.json$/.test(f));
     if (!files.length) return null;
-    return JSON.parse(fs.readFileSync(path.join(BRAINS, files[0]), "utf8"));
+    // 跟 host-shell-e2e 一样按 mtime 取最新的一份：两代假脑同时活着时，`files[0]` 可能拿到
+    // 上一代那份（它可能停在半路、还没写 port）。
+    const newest = files
+      .map((f) => ({ f, t: fs.statSync(path.join(BRAINS, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)[0].f;
+    return JSON.parse(fs.readFileSync(path.join(BRAINS, newest), "utf8"));
   } catch {
     return null;
   }
@@ -92,9 +97,11 @@ const get = async (url) => {
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 const brainGet = async (p) => {
-  const s = stats();
-  if (!s?.port) throw new Error("假脑还没报端口");
-  return (await fetch(`http://127.0.0.1:${s.port}${p}`)).json();
+  // 假脑在「改名覆盖」失败时会退化成直写（Windows 上正被读就会 EPERM），读的那一瞬可能撞上
+  // 半截 JSON、stats() 返回 null。那不是「没报端口」，等下一轮就好 —— 在这里当场断言失败会
+  // 变成偶发红（必须紧跟在 host-shell-e2e 后面跑才复现）。
+  const port = await until(() => stats()?.port ?? null, "假脑报了端口", 5000);
+  return (await fetch(`http://127.0.0.1:${port}${p}`)).json();
 };
 
 try {

@@ -70,7 +70,7 @@ function log(line: string): void {
  * 壳在 listen 这一刻只有 pid 文件可看 —— 够指路了：正常情况下 preflight 已经问过并停掉了旧的那份，
  * 走到这里说明是「检查完到 listen 之间被抢」或者绕过 preflight 直起了桥。
  */
-function portTaken(port: number): void {
+function explainPortTaken(port: number): void {
   const pid = readPidFile(port);
   const who = pid ? `pid 文件里记着 ${pid}` : "认不出占用者";
   console.error(
@@ -918,7 +918,7 @@ async function main(): Promise<void> {
     });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
-    portTaken(port);
+    explainPortTaken(port);
     process.exit(2);
   }
   try {

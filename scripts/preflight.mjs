@@ -135,6 +135,7 @@ export function commandLine(pid) {
 /**
  * pid 的工作目录。Windows 上拿不到（进程 API 不暴露），返回空串 —— 命令行里的入口
  * 路径已经足够看出是谁、来自哪份检出，别为了这一行去上 NativeAOT。
+ * 拿不到时由调用方写一句「看不到」，别静默省略（用户会以为那一行不该有问题）。
  */
 export function workingDir(pid) {
   if (WIN || !Number.isInteger(pid) || pid <= 0) return "";
@@ -183,10 +184,20 @@ export function listenPid(port) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+/**
+ * 探活与停机要打的地址。壳可能只听某个具体 IP（`PI_WEB_HOST`），那就打那个地址；
+ * `0.0.0.0` / `::` 这种通配地址换成回环 —— 通配不是能连的目标。
+ */
+export function localBase(host, port) {
+  const wildcard = !host || host === "0.0.0.0" || host === "::" || host === "[::]";
+  const target = wildcard ? DEFAULT_HOST : host;
+  return `http://${target.includes(":") ? `[${target}]` : target}:${port}`;
+}
+
 /** 端口上的 /healthz（壳与旧桥都会答），没有就是 null。 */
-export async function healthz(port, ms = 1500) {
+export async function healthz(port, host = DEFAULT_HOST, ms = 1500) {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(ms) });
+    const res = await fetch(`${localBase(host, port)}/healthz`, { signal: AbortSignal.timeout(ms) });
     if (!res.ok) return null;
     return await res.json().catch(() => null);
   } catch {
@@ -215,8 +226,8 @@ export async function portFree(port, host = DEFAULT_HOST) {
  * 每个候选都要过「命令行里是桥入口」这一关，对不上只当线索、不认作自己人。
  * 前面一步认出来了就不再往下问 —— 枚举（`Get-NetTCPConnection` / `lsof`）是最慢的一步。
  */
-export async function probeOwner(port) {
-  const health = await healthz(port);
+export async function probeOwner(port, host = DEFAULT_HOST) {
+  const health = await healthz(port, host);
   const tried = new Set();
   let other = null;
 
@@ -251,8 +262,8 @@ export async function probeOwner(port) {
 // ------------------------------------------------------------------ 停机
 
 /** 请壳自己收工：壳先让脑收会话、再带 pi 一起退（`npm run bridge:stop` 用的是同一条路）。 */
-async function postStop(port) {
-  const base = `http://127.0.0.1:${port}`;
+async function postStop(port, host = DEFAULT_HOST) {
+  const base = localBase(host, port);
   try {
     const res = await fetch(`${base}/api/host/stop`, {
       method: "POST",
@@ -309,7 +320,7 @@ async function waitFree(port, host, ms) {
 async function stopOwner(owner, port, host, log) {
   if (owner.shell) {
     log(`  先请它自己收工（POST /api/host/stop：壳会按顺序收脑和 pi）…`);
-    await postStop(port);
+    await postStop(port, host);
     if (await waitFree(port, host, STOP_GRACE_MS)) return true;
     log(`  ${STOP_GRACE_MS / 1000} 秒内没退干净，只好硬杀 pid ${owner.pid}。`);
   } else {
@@ -343,7 +354,7 @@ function describe(owner) {
   if (owner.from && owner.from !== "healthz") bits.push(`由 ${owner.from} 认出`);
   if (bits.length) lines.push(`  ${bits.join(" · ")}`);
   const cwd = workingDir(owner.pid);
-  if (cwd) lines.push(`  工作目录 ${cwd}`);
+  if (owner.pid) lines.push(cwd ? `  工作目录 ${cwd}` : `  工作目录 看不见（Windows 上拿不到别的进程的工作目录，看命令行里的入口路径）`);
   if (owner.cmd) lines.push(`  命令行 ${owner.cmd}`);
   if (Array.isArray(h.sessions)) {
     const running = h.sessions.filter((s) => s && s.turnActive).length;
@@ -390,24 +401,22 @@ export function forceRequested(argv = process.argv.slice(2), env = process.env) 
  * `log` 用同步写：最后 `process.exit()` 时管道里的异步写会被截断。
  */
 export async function preflight(opts = {}) {
-  const port = opts.port ?? readPort();
-  const host = opts.host ?? readHost();
+  const port = readPort();
+  const host = readHost();
   const force = opts.force ?? forceRequested();
-  const stdin = opts.stdin ?? process.stdin;
-  const stdout = opts.stdout ?? process.stdout;
-  const log =
-    opts.log ??
-    ((line) => {
-      try {
-        fs.writeSync(1, `${line}\n`);
-      } catch {
-        /* 下游关了管道（| head），别为一行日志炸掉 */
-      }
-    });
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+  const log = (line) => {
+    try {
+      fs.writeSync(1, `${line}\n`);
+    } catch {
+      /* 下游关了管道（| head），别为一行日志炸掉 */
+    }
+  };
 
   if (await portFree(port, host)) return EXIT_OK;
 
-  const owner = await probeOwner(port);
+  const owner = await probeOwner(port, host);
 
   if (!owner.ours) {
     log(`${port} 被别的程序占着，不是 pi-web-client：`);
@@ -425,11 +434,11 @@ export async function preflight(opts = {}) {
   }
 
   if (force) {
-    log(`按 --force 处理：不问了，直接停掉它再起这一份。`);
+    log(`按 --force / PI_START_FORCE=1 处理：不问了，直接停掉它再起这一份。`);
   } else if (!stdin.isTTY) {
     log(`端口被占，但这次不是交互终端，我不替你决定：`);
     log(`  自己停掉：npm run bridge:stop（或回它的终端 Ctrl-C）`);
-    log(`  让我停：加 --force，或设 PI_START_FORCE=1`);
+    log(`  让我停：PI_START_FORCE=1 npm start（npm 会把 --force 追加到链尾，链首这一步读不到它；直跑 node scripts/preflight.mjs --force 也行）`);
     return EXIT_BLOCKED;
   } else {
     const answer = await askReplace({ stdin, stdout });
