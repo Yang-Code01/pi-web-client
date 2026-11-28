@@ -7,7 +7,7 @@ import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import type { Entry, History, PeerIdentity } from "./history.ts";
-import { isGroupId } from "./groups.ts";
+import { canWriteGroup, isGroupId, type GroupGate } from "./groups.ts";
 import { uuidv7 } from "./messages.ts";
 import { imageSize, type ImageSize } from "./image.ts";
 
@@ -187,6 +187,8 @@ export class Files {
       log: (msg: string) => void;
       /** 群：成员（不含我）；不认识这个群 / 我已退出时是 `null`。 */
       groupMembers?: (groupId: string) => string[] | null;
+      /** 群是不是只读更新组、发布者是谁（D451）：收文件时也要拦非发布者。 */
+  groupAnnounceOnly?: (groupId: string) => GroupGate | null;
     },
   ) {
     for (const dir of [this.inbox(), statePath("out")]) fs.mkdirSync(dir, { recursive: true });
@@ -271,6 +273,11 @@ export class Files {
         const members = this.ctx.groupMembers?.(thread);
         if (!members) return { status: 404, body: { error: "不认识这个群（或已退出）", retryable: false } };
         if (!members.includes(from.nodeId)) return { status: 403, body: { error: "不是群成员", retryable: false } };
+        const gate = this.ctx.groupAnnounceOnly?.(thread);
+        // 成员校验已经在上一步 404 掉；这里只判写权限，规则与 messages / groups 共用（评审 #2/#21）。
+        if (gate && !canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, from.nodeId)) {
+          return { status: 403, body: { error: "只读群：只有发布者能发消息", retryable: false } };
+        }
       }
       if (this.ctx.cfg.pauseFiles) return { status: 503, body: { error: "我这边暂停收文件了", retryable: true } };
       const free = this.free();
@@ -439,6 +446,16 @@ export class Files {
 
   private async run(threadId: string, localPath: string, name: string, id: string, size: number): Promise<void> {
     const group = isGroupId(threadId);
+    if (group) {
+      const gate = this.ctx.groupAnnounceOnly?.(threadId);
+      if (gate) {
+        // 与 messages.assertWritable 的口径对齐：先看名册，再判写权限（评审 #29）。
+        if (gate.members && !gate.members.includes(this.ctx.nodeId)) throw new Error("你不在这个群的名册里");
+        if (!canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, this.ctx.nodeId)) {
+          throw new Error("这是只读的更新组：只有发布者能发文件");
+        }
+      }
+    }
     const targets = group ? (this.ctx.groupMembers?.(threadId) ?? null) : [threadId];
     if (!targets) throw new Error("不在这个群里了");
     if (!group && !this.ctx.discovery.byId(threadId)) throw new Error("这个人已经不在线了");

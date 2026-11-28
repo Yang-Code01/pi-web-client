@@ -353,6 +353,11 @@ export class App {
   private sessionReclaimTextEl: HTMLElement | null = null;
   private sessionReclaimId: string | null = null;
   private dismissedReclaimIds = new Set<string>();
+  /** 第一次 hello 到了没有：`?settings=` 深链要等首屏数据再开，不再拿固定 400ms 赌（D451、评审 #25）。 */
+  private sawHello = false;
+  private helloWait: Promise<void> | null = null;
+  private helloTimer: ReturnType<typeof setTimeout> | null = null;
+  private helloDone: (() => void) | null = null;
   private approvals: ApprovalRequest[] = [];
   /** Questions from the model waiting for an answer (PLAN-ask.md). */
   private asks: AskRequest[] = [];
@@ -2254,6 +2259,14 @@ export class App {
         break;
       }
       case "hello":
+        this.sawHello = true;
+        this.helloDone?.();
+        this.helloDone = null;
+        this.helloWait = null;
+        if (this.helloTimer) {
+          clearTimeout(this.helloTimer);
+          this.helloTimer = null;
+        }
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         // #278：旧桥不带 caps —— 缺这一项就当它不会按目录建组。
         this.bridgeCaps = Array.isArray(msg.caps) ? (msg.caps as unknown[]).filter((c): c is string => typeof c === "string") : [];
@@ -5197,10 +5210,11 @@ export class App {
 
   /**
    * 换大类 / 子类：只切显隐，不重建（重建会丢掉滑块拖到一半的手感）。停在哪个大类记进 `pi.prefs`，
-   * 每个大类上次停在哪个子类只记在这次打开的页面里。
+   * 每个大类上次停在哪个子类只记在这次打开的页面里；`persist=false` 只用于 URL 深链，
+   * 看一眼工具页、不改用户上次停留的外观页签（评审 #10）。
    */
-  private setDisplayTab(tab: Prefs["settingsTab"], sec?: string): void {
-    if (this.prefs.settingsTab !== tab) {
+  private setDisplayTab(tab: Prefs["settingsTab"], sec?: string, persist = true): void {
+    if (persist && this.prefs.settingsTab !== tab) {
       this.prefs = { ...this.prefs, settingsTab: tab };
       savePrefs(this.prefs);
     }
@@ -5208,7 +5222,8 @@ export class App {
     if (!sheet) return;
     const group = this.displayGroups().find((g) => g.tab === tab) ?? this.displayGroups()[0];
     const item = group.items.find((i) => i.sec === (sec ?? this.displaySec[tab])) ?? group.items[0];
-    this.displaySec[tab] = item.sec;
+    // 深链（persist=false）不写用户上次停留的子页签（评审 #13）。
+    if (persist) this.displaySec[tab] = item.sec;
     for (const page of sheet.querySelectorAll<HTMLElement>(".set-page")) page.hidden = page.dataset.page !== tab;
     if (tab === "conn") this.paintConnPage();
     for (const sub of sheet.querySelectorAll<HTMLElement>(`.set-page[data-page="${tab}"] .set-sub`)) sub.hidden = sub.dataset.sec !== item.sec;
@@ -13961,6 +13976,69 @@ export class App {
     if (tab === "global" || tab === "project") return "global";
     if (tab === "changelog" || tab === "whatsnew") return "changelog";
     return tab;
+  }
+
+  /** 首屏数据回来之前开设置面板会画到空数据：等到第一个 hello，最多等 5 秒（评审 #25）。 */
+  private whenHello(): Promise<void> {
+    if (this.sawHello) return Promise.resolve();
+    // 一个共享 Promise + 一个定时器；超时也 resolve 自己，后来的人重新等一份新的（评审 #25 再收口）。
+    this.helloWait ??= new Promise<void>((resolve) => {
+      this.helloDone = resolve;
+    });
+    if (!this.helloTimer) {
+      this.helloTimer = setTimeout(() => {
+        const done = this.helloDone;
+        this.helloWait = null;
+        this.helloDone = null;
+        this.helloTimer = null;
+        done?.();
+      }, 5_000);
+    }
+    const wait = this.helloWait;
+    return wait.then(() => {
+      if (this.helloTimer) {
+        clearTimeout(this.helloTimer);
+        this.helloTimer = null;
+      }
+    });
+  }
+
+  /**
+   * D451：`/?settings=tools` / `?settings=whatsnew` 这类 URL 深链 —— 内网通更新公告卡片点过来，
+   * 直接落到主界面的那一页。认不出的 tab 当没写；打开后把参数抹掉，刷新时不会又弹一次。
+   */
+  async openSettingsFromUrl(): Promise<void> {
+    const tab = new URLSearchParams(location.search).get("settings");
+    if (!tab) return;
+    const wipe = (): void => {
+      try {
+        // 只删 settings 这一个键：`?settings=whatsnew&thread=...` 还得留着别的参数（评审 #23）。
+        const url = new URL(location.href);
+        url.searchParams.delete("settings");
+        history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      } catch {
+        /* 背后是个不让改 URL 的壳：那就留着参数，不为这种事报错 */
+      }
+    };
+    await this.whenHello();
+    // 5 秒还没等到首屏：别拿空数据开面板；坏参数也不能一直挂在地址栏（评审 #37/#31）。
+    if (!this.sawHello) {
+      wipe();
+      return;
+    }
+    // 热部署不在「设置」页签里，它是外观面板的「连接与设置 → 工具」；D451 的公告卡就落在这里。
+    if (tab === "tools") {
+      this.openDisplaySheet();
+      this.setDisplayTab("conn", "tools", false);
+      wipe();
+      return;
+    }
+    if (!(SETTINGS_TABS as readonly string[]).includes(tab)) {
+      wipe();
+      return;
+    }
+    this.openSettingsSheet(tab as SettingsTab);
+    wipe();
   }
 
   private openSettingsSheet(tab: SettingsTab): void {
@@ -23424,7 +23502,8 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ...PANEL_COMMANDS.map((c): [string, string] => [c.id, tr(c.desc)]),
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "preview" | "runtime" | "changelog" | "whatsnew";
+const SETTINGS_TABS = ["global", "project", "trust", "login", "passphrase", "ext", "subagents", "notify", "preview", "runtime", "changelog", "whatsnew"] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 interface ExtPackage {
   scope: "user" | "project";
