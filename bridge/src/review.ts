@@ -702,16 +702,20 @@ const WORKER_BEAT_MS = 5_000;
 const WORKER_BEAT_STALE_MS = 30_000;
 
 /** 这个 pid 还活着吗。Windows 上 `taskkill` / `process.kill(pid, 0)` 都认这一条。 */
-export function reviewJobAlive(job: ReviewJob | null | undefined): boolean {
-  const pid = Number(job?.pid ?? 0);
+function pidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch (err: any) {
+  } catch (err) {
     // 进程存在但不属于我们（EPERM）也算活着：真正去杀的时候会再失败一次，别在这里误判成「已经没了」。
-    return err?.code === "EPERM";
+    const code = isRecord(err) ? err.code : "";
+    return code === "EPERM";
   }
+}
+
+export function reviewJobAlive(job: ReviewJob | null | undefined): boolean {
+  return pidAlive(Number(job?.pid ?? 0));
 }
 
 /**
@@ -764,12 +768,7 @@ function beatProvesLive(runId: string, startedAt = ""): boolean {
   if (!beat) return false;
   if (startedAt && beat.startedAt !== startedAt) return false;
   if (Date.now() - beat.at >= WORKER_BEAT_STALE_MS) return false;
-  try {
-    process.kill(beat.pid, 0);
-    return true;
-  } catch (err: any) {
-    return err?.code === "EPERM";
-  }
+  return pidAlive(beat.pid);
 }
 
 /** worker 已经写了心跳、job 里却还没有 pid（脑在 spawn 后写 pid 前被杀）：用心跳把 pid 补回来。 */
@@ -777,12 +776,7 @@ function adoptBeatPid(job: ReviewJob): void {
   if (job.pid) return;
   const beat = readBeatFile(job.runId);
   if (!beat || beat.startedAt !== job.startedAt || Date.now() - beat.at >= WORKER_BEAT_STALE_MS) return;
-  try {
-    process.kill(beat.pid, 0);
-    job.pid = beat.pid;
-  } catch (err: any) {
-    if (err?.code === "EPERM") job.pid = beat.pid;
-  }
+  if (pidAlive(beat.pid)) job.pid = beat.pid;
 }
 
 /** 盘上那次评审的执行进程还活着吗（按 runId + startedAt + 心跳对，防 pid 复用）。 */
@@ -825,6 +819,8 @@ interface Active {
   mode: ReviewMode;
   /** pr 模式下现在正在评的号（判重靠它）；其它模式是 0。 */
   pr: number;
+  /** 用户已经请求取消：worker 死后要收成 stopped，不能记成 worker-lost。 */
+  cancelRequested?: boolean;
   /** 独立执行进程；测试注入的 launch 没有。 */
   job?: ReviewJob;
 }
@@ -1606,7 +1602,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       prTitle: run.prTitle,
       prHead: run.prHead,
       prBase: run.prBase,
-      ...(stopped ? { error: "已停止", errorCode: "stopped" } : {}),
+      ...(stopped ? { error: "", errorCode: "stopped" } : {}),
     });
   } catch (err: any) {
     const code = String(err?.code ?? "failed");
@@ -1618,7 +1614,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       reviewedFiles: 0,
       tokens,
       skipped: preview?.skipped ?? [],
-      error: cancelled ? "已停止" : String(err?.message ?? err),
+      error: cancelled ? "" : String(err?.message ?? err),
       errorCode: cancelled ? "stopped" : code,
     });
   } finally {
@@ -1657,7 +1653,10 @@ function readFindings(raw: unknown): ReviewFinding[] | undefined {
     if (!key || !file) continue;
     const category = str(item.category);
     const severity = str(item.severity);
+    const group = Number(item.group);
     const state = str(item.state);
+    // 进度帧里只该有 new/persisting；done/dropped 是别的阶段的语义，不能冒充 new 再标一次。
+    if (state && state !== "new" && state !== "persisting") continue;
     const mark = str(item.mark);
     out.push({
       key,
@@ -1672,7 +1671,7 @@ function readFindings(raw: unknown): ReviewFinding[] | undefined {
       anchored: item.anchored === true,
       state: state === "persisting" ? "persisting" : "new",
       mark: MARKS.has(mark as ReviewMark) ? (mark as ReviewMark) : "",
-      ...(Number.isInteger(Number(item.group)) && Number(item.group) > 0 ? { group: Number(item.group) } : {}),
+      ...(Number.isInteger(group) && group > 0 ? { group } : {}),
     });
   }
   return out.length || raw.length === 0 ? out : undefined;
@@ -1796,6 +1795,8 @@ function requestCancel(job: ReviewJob): void {
   } catch {
     /* 写不下取消文件时，后面的超时强杀仍然兜底 */
   }
+  const activeJob = active.get(job.runId);
+  if (activeJob?.job === job) activeJob.cancelRequested = true;
   const timer = setTimeout(() => {
     // 先确认这一条还在跑：worker 正常收尾之后 pid 可能被系统复用，不能拿旧 pid 去杀别人。
     if (active.get(job.runId)?.job !== job) return;
@@ -1846,24 +1847,29 @@ function tickOneReview(runId: string, a: Active): void {
     return;
   }
   if (run.status === "running") {
+    // 用户已经点过停止（cancel 文件先于 worker 死亡存在）时，worker 被 10 秒兜底强杀
+    // 不能记成「进程丢失」——那是用户主动停止，前端要显示 stopped。
+    const cancelled = a.cancelRequested === true || fs.existsSync(reviewCancelFile(runId));
     // worker 写状态之前就死了（崩了 / 被系统杀了）：这条不能永远转圈。错误文案由 errorCode
     // 在前端按语言渲染，桥里不再写一份中文，否则外语界面会把它当 detail 重复拼在后面。
-    run.status = "stale";
-    run.errorCode = "worker-lost";
+    run.status = cancelled ? "stopped" : "stale";
+    run.errorCode = cancelled ? "stopped" : "worker-lost";
     run.error = "";
     run.finishedAt = new Date().toISOString();
     writeReviewState(job.repo, state, job.session);
   }
-  const last = progressMap.get(runId) ?? progress ?? freshProgress(job);
+  // worker 可能刚写完最后一帧就删了心跳；再读一次进度文件，终态的 log / findings / plan
+  // 要以 worker 的末帧为准，不能退回 ticker 上一轮读到的 running 帧。
+  const last = readProgressFile(job) ?? progressMap.get(runId) ?? progress ?? freshProgress(job);
   const final: Progress = {
     ...last,
     status: run.status,
     phase: "done",
     currentFile: "",
-    tokens: run.tokens || last.tokens,
-    reviewedFiles: run.reviewedFiles ?? last.reviewedFiles,
-    totalFiles: run.totalFiles ?? last.totalFiles,
-    error: run.error ?? "",
+    tokens: last.tokens || run.tokens,
+    reviewedFiles: last.reviewedFiles || run.reviewedFiles,
+    totalFiles: last.totalFiles || run.totalFiles,
+    error: run.errorCode === "stopped" ? "" : run.error ?? "",
     errorCode: run.errorCode ?? "",
   };
   notify.onProgress?.(job, final);
@@ -1924,18 +1930,23 @@ function markWorkerSpawnFailed(job: ReviewJob, err: unknown): void {
   notify.onState?.(job);
 }
 
+/** 只把 GitHub 身份相关的键带进子进程；别把脑的 PI_WEB_* / 测试开关顺带漏下去。 */
+function ghEnvOnly(env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (value === undefined) continue;
+    if (key.startsWith("GH_") || key.startsWith("GITHUB_")) out[key] = value;
+  }
+  return out;
+}
+
 /** 起一次 detached 执行进程。ghEnv（会话选的 GitHub 令牌）只走环境变量，不落盘。 */
 function spawnReviewWorker(job: ReviewJob, ghEnv?: NodeJS.ProcessEnv): void {
   const entry = reviewWorkerEntry();
   const args = entry.endsWith(".ts") ? ["--experimental-strip-types", entry, reviewJobFile(job.runId)] : [entry, reviewJobFile(job.runId)];
   ensureDir(reviewJobsDir());
   const logFd = fs.openSync(reviewLogFile(job.runId), "a");
-  // ghEnv 只该带 GH_*；但调用方要是塞了 PI_WEB_*，也不能把脑的私有 state / 测试开关带进 worker。
-  const env: NodeJS.ProcessEnv = { ...piChildEnv() };
-  for (const [key, value] of Object.entries(ghEnv ?? {})) {
-    if (key.startsWith("PI_WEB_")) continue;
-    if (value !== undefined) env[key] = value;
-  }
+  const env: NodeJS.ProcessEnv = { ...piChildEnv(), ...ghEnvOnly(ghEnv) };
   env.PI_WEB_STATE = stateDir();
   let proc: ReturnType<typeof spawn>;
   try {
@@ -1959,7 +1970,14 @@ function spawnReviewWorker(job: ReviewJob, ghEnv?: NodeJS.ProcessEnv): void {
   } catch {
     /* 已经关了 */
   }
-  proc.on("error", (err) => markWorkerSpawnFailed(job, err));
+  proc.on("error", (err) => {
+    try {
+      markWorkerSpawnFailed(job, err);
+    } catch (cause) {
+      // spawn 失败本身已经够糟了；这里的收尾（读/写状态、广播）再抛错不能变成进程级 unhandled。
+      console.error(`[review] 处理 worker 启动失败时又出错：${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  });
   proc.unref();
   if (proc.pid) {
     job.pid = proc.pid;
@@ -1969,6 +1987,16 @@ function spawnReviewWorker(job: ReviewJob, ghEnv?: NodeJS.ProcessEnv): void {
       /* 写不进去也不影响本代转发；只是换脑后认不回来 */
     }
   }
+}
+
+/** 文件名 → runId。临时文件（`<runId>.json.<pid>.tmp`）也要能归位，不能让它永远堆在 jobs 里。 */
+function reviewRunIdOf(name: string): string | null {
+  const tmp = /^(.*)\.\d+\.tmp$/.exec(name);
+  const base = tmp ? tmp[1] : name;
+  for (const suffix of [".progress.json", ".cancel", ".beat", ".log", ".json"]) {
+    if (base.endsWith(suffix)) return base.slice(0, -suffix.length);
+  }
+  return null;
 }
 
 /**
@@ -2020,6 +2048,7 @@ export function resumeReviewJobs(): number {
         mode: j.opts.mode ?? run.mode,
         // run.pr 是 execute 解析后的真实号（opts.pr 可能是 0 或链接里的旧号），判重以它为准。
         pr: run.pr || Number(j.opts.pr) || 0,
+        cancelRequested: fs.existsSync(reviewCancelFile(j.runId)),
         job: j,
       });
       const progress =
@@ -2048,8 +2077,8 @@ export function resumeReviewJobs(): number {
   // 没有 job 文件的进度 / 取消 / 心跳 / 日志是上一代留下的碎屑，清掉；别让下一次开机又当成活任务。
   for (const name of names) {
     if (name.endsWith(".json") && !name.endsWith(".progress.json")) continue;
-    const runId = name.replace(/\.(progress\.json|cancel|beat|log)$/, "");
-    if (live.has(runId)) continue;
+    const runId = reviewRunIdOf(name);
+    if (!runId || live.has(runId)) continue;
     try {
       fs.rmSync(path.join(reviewJobsDir(), name), { force: true });
     } catch {
@@ -2076,19 +2105,33 @@ export async function stopAllReviews(waitMs = 3000): Promise<number> {
   }
   for (const job of jobs) {
     if (active.get(job.runId)?.job === job && reviewJobRunning(job)) killReviewPid(Number(job.pid));
-    // worker 可能刚写到一半就被杀：把它那条收成「已停止」，别等下次开机再标成「桥重启」。
-    const state = readReviewState(job.repo, job.session);
-    const run = state.runs.find((r) => r.id === job.runId);
-    if (run && run.status === "running") {
-      run.status = "stopped";
-      run.finishedAt = new Date().toISOString();
-      run.error = "已停止";
-      run.errorCode = "stopped";
-      writeReviewState(job.repo, state, job.session);
-    }
     active.delete(job.runId);
     progressMap.delete(job.runId);
     reapReviewJob(job);
+  }
+  // 同一会话的多条评审共用一份 state：读一次、改一次、写一次。逐条读改写既浪费，
+  // 也给 ticker / 另一个停机流程留下后写覆盖前写的窗口。
+  const groups = new Map<string, { repo: string; session: string; jobs: ReviewJob[] }>();
+  for (const job of jobs) {
+    const key = JSON.stringify([job.repo, job.session]);
+    const group = groups.get(key);
+    if (group) group.jobs.push(job);
+    else groups.set(key, { repo: job.repo, session: job.session, jobs: [job] });
+  }
+  for (const group of groups.values()) {
+    const state = readReviewState(group.repo, group.session);
+    let changed = false;
+    for (const job of group.jobs) {
+      const run = state.runs.find((r) => r.id === job.runId);
+      if (run && run.status === "running") {
+        run.status = "stopped";
+        run.finishedAt = new Date().toISOString();
+        run.error = "";
+        run.errorCode = "stopped";
+        changed = true;
+      }
+    }
+    if (changed) writeReviewState(group.repo, state, group.session);
   }
   return jobs.length;
 }
@@ -2188,7 +2231,7 @@ export async function runReviewJob(jobFile: string): Promise<void> {
         pr: job.opts.pr,
         session: job.session,
         // 会话选的账号已经在 spawn 时注进环境；这里把它交给 gh/git 子进程。
-        ghEnv: process.env,
+        ghEnv: ghEnvOnly(process.env),
         model: job.opts.model,
         provider: job.opts.provider,
         lang: job.opts.lang,

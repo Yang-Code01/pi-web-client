@@ -393,7 +393,10 @@ async function main() {
 
   if (oldPid) {
     await askKeepReviews();
-    killPid(oldPid);
+    // 和 hotdeploy 一样：先等旧壳把 retire 做完（脑要 releaseLocks 再退出），
+    // 否则这里立刻 killPid 会让脑按 SIGTERM 的 shutdown 语义把评审 worker 收掉。
+    for (let i = 0; i < 40 && alive(oldPid); i++) await sleep(250);
+    if (alive(oldPid)) killPid(oldPid);
     for (let i = 0; i < 24 && alive(oldPid); i++) await sleep(250);
     if (alive(oldPid)) {
       finish("kill-failed", { error: `旧 bridge（pid ${oldPid}）没死；新旧进程都没有被改动。` });

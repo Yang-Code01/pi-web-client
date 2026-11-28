@@ -615,6 +615,9 @@ async function main() {
   if (oldPid) {
     log(`让旧 bridge 保留评审 worker（pid ${oldPid}）`);
     await askKeepReviews();
+    // 等旧壳把 retire 做完：它发完 retire 还要等脑 releaseLocks 再退出；立刻杀子进程会把
+    // 还在 retire 里的脑 SIGTERM 成 shutdown()，刚保住的评审 worker 又被收掉。
+    for (let i = 0; i < 40 && alive(oldPid); i += 1) await sleep(250);
     log(`杀掉旧 bridge pid ${oldPid}`);
     // worker 自己是旧 bridge 的子进程 —— 别把自己算进去（算进去就自杀，旧桥还活着，状态卡在 running）。
     for (const kid of childrenOf(oldPid)) {

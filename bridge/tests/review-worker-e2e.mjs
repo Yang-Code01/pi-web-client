@@ -30,6 +30,9 @@ const STATE = path.join(TMP, "state");
 const REPO = path.join(TMP, "repo");
 const BIN = path.join(TMP, "bin");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 慢 CI 上「换脑观察 + 老脑退出 + 新脑接管」可能超过 12 秒；给假 pi 留足时间，
+// 否则换完脑评审已经跑完、job 被 reap，接回断言会偶发失败。
+const FAKE_PI_DELAY_MS = 30_000;
 
 for (const f of [HOST, BRAIN]) {
   if (!fs.existsSync(f)) throw new Error(`缺少 ${f} —— 先 npm run build:bridge`);
@@ -123,7 +126,7 @@ fs.writeFileSync(
   [
     "process.stdin.resume();",
     'process.stdout.write(JSON.stringify({ type: "tool_execution_start", toolName: "read", args: { path: "demo.txt" } }) + "\\n");',
-    "const delay = Number(process.env.FAKE_PI_DELAY_MS || 12000);",
+    `const delay = Number(process.env.FAKE_PI_DELAY_MS || ${FAKE_PI_DELAY_MS});`,
     "setTimeout(() => {",
     '  process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: \'{"findings":[],"skipped":[]}\' }], usage: { totalTokens: 7 } } }) + "\\n");',
     "  setTimeout(() => process.exit(0), 80);",
@@ -151,7 +154,7 @@ const hostEnv = (p) => ({
   PI_BIN: fakePi,
   PI_WEB_GH_JS: path.join(ROOT, "bridge", "tests", "fixtures", "fake-gh.mjs"),
   FAKE_GH_ACCOUNTS: JSON.stringify([{ login: "Yang-Code01", active: true }]),
-  FAKE_PI_DELAY_MS: "12000",
+  FAKE_PI_DELAY_MS: String(FAKE_PI_DELAY_MS),
   PATH: `${BIN}${path.delimiter}${process.env.PATH ?? ""}`,
 });
 const logs = [];
@@ -305,7 +308,7 @@ try {
     const frames = page2.seen.filter((m) => m.type === "review.state" && m.sessionId === session);
     const run = runOf(frames.at(-1)?.state, runId);
     return run?.status === "done" ? run : null;
-  }, "评审跑完（done）", 40000);
+  }, "评审跑完（done）", 60000);
   assert.equal(done.errorCode ?? "", "", "换脑不该让评审报 bridge-restart / worker-lost");
   assert.equal(done.totalFiles, 1, "假 ocr 给了一个文件");
   await until(() => !alive(workerPid), "评审 worker 收尾退出", 10000);

@@ -4873,12 +4873,20 @@ async function main(): Promise<void> {
         });
         // 被换下的那一代：先把隧道收回来再走，不然 cloudflared 会成孤儿。
         link.on("retire", () => {
+          // 换代期间收到的 SIGTERM 不能再走 shutdown()：那会把刚交接过来的评审 worker 收掉。
+          // 如果 shutdown() 已经在跑，更不能抢它的 process.exit（会截断 stopAllReviews）。
+          if (shuttingDown) return;
+          shuttingDown = true;
           log("host: 被换下，退出");
-          tunnel.stop();
-          // **这里绝不能 sessions.shutdown()**（D407）：子进程的生死在壳手里，关一批会话就会把
-          // 正在跑的那一轮杀掉 —— 那正是「热部署打断回话」本身。把锁交出去就好。
-          sessions.releaseLocks();
-          process.exit(0);
+          try {
+            tunnel.stop();
+            // **这里绝不能 sessions.shutdown()**（D407）：子进程的生死在壳手里，关一批会话就会把
+            // 正在跑的那一轮杀掉 —— 那正是「热部署打断回话」本身。把锁交出去就好。
+            sessions.releaseLocks();
+          } finally {
+            // 收尾失败也必须退出：壳在等这条连接关掉，挂住只会把换代拖成整组重启。
+            process.exit(0);
+          }
         });
         // 新脑上来之后接管壳里还活着的会话：页面不必重新点，否则它会退回「只读预览」。
         link.on("activate", () => {
@@ -4942,7 +4950,8 @@ async function main(): Promise<void> {
     // 收尾期间壳可能已经走了：给一个上限，别让残留的脑永远挂着。
     const forceExit = setTimeout(() => {
       log("shutting down: 超时，强制退出");
-      process.exit(0);
+      // 非零退出：更新器 / 外部监控能区分「干净停机」与「收尾超时被踢」。
+      process.exit(1);
     }, 10_000);
     forceExit.unref();
     fileIndex.close();

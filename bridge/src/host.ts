@@ -906,14 +906,16 @@ async function main(): Promise<void> {
       // 只有更新器显式请求 `keepReviews=1` 才走到这里：它马上会起新壳，detached 评审
       // worker 要留给新脑接回。这里用 `retire`（换代语义）而不是 shutdown：后者会
       // sessions.shutdown()，而 150ms 后 children.killAll() 的 SIGTERM 还会让脑按「真正停桥」
-      // 把评审收掉。等脑自己退（retire 只 releaseLocks），最多 2 秒。
+      // 把评审收掉。等脑自己退（retire 只 releaseLocks）：慢机器上 releaseLocks 也可能
+      // 超过 2 秒，等太短会让随后的 SIGTERM 变成 shutdown()，把刚保住的 worker 收掉。
+      // 所以和普通停机用同一段 STOP_GRACE_MS；正常情况脑会立刻退出。
       const conn = brain?.conn;
       const closed = new Promise<void>((resolve) => {
         if (!conn?.alive) {
           resolve();
           return;
         }
-        const timer = setTimeout(resolve, 2000);
+        const timer = setTimeout(resolve, STOP_GRACE_MS);
         timer.unref();
         conn.onClose(() => {
           clearTimeout(timer);
