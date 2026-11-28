@@ -7,11 +7,20 @@
  * - id 是稳定标识，存在 `pi.prefs.theme` 里：不能翻译、不能改名；显示名走 `tr()`。
  * - 默认是 `mac-light`；旧版本存过的七套配色主题由 `migrateThemePrefs()` 按明暗与色相映射过来。
  */
-import { DEFAULT_MAC_ACCENT, MAC_ACCENTS, MAC_ACCENTS_LIGHT } from "./palette.ts";
+import { DEFAULT_MAC_ACCENT, MAC_ACCENTS, MAC_ACCENTS_LIGHT, MAC_ACCENTS_MUTED, MAC_ACCENTS_MUTED_LIGHT } from "./palette.ts";
 
 export const THEME_IDS = ["mac-light", "mac-dark", "mac-midnight"] as const;
 export type ThemeId = (typeof THEME_IDS)[number];
 export const DEFAULT_THEME: ThemeId = "mac-light";
+
+/** 强调色的第二维（D438）：同一颗色相有一档鲜艳、一档低饱和。 */
+export const ACCENT_TONES = ["vivid", "muted"] as const;
+export type AccentTone = (typeof ACCENT_TONES)[number];
+export const DEFAULT_ACCENT_TONE: AccentTone = "vivid";
+
+export function isAccentTone(v: unknown): v is AccentTone {
+  return typeof v === "string" && (ACCENT_TONES as readonly string[]).includes(v);
+}
 
 export type ThemeInfo = {
   id: ThemeId;
@@ -69,10 +78,11 @@ const LEGACY_ACCENT_MAP: Record<string, string> = {
  * - 强调色：**只有存的主题是旧配色主题时才搬** —— 那时候真正生效的是 `accent`（六色），
  *   `macAccent` 可能是很久以前用过 Mac 主题留下的残值。已经选了 Mac 主题的人则相反：
  *   `macAccent` 才是他选的，`accent` 是残值。
+ * - 饱和度（D438）：只认 `vivid` / `muted`，没存过或存错的落 `vivid`。
  * - 幂等：迁过一次之后 `theme` 已经是 Mac 三套之一，第二次不会再动。
  */
-export function migrateThemePrefs(raw: unknown): { theme: ThemeId; macAccent: string } {
-  const p = (raw && typeof raw === "object" ? raw : {}) as { theme?: unknown; accent?: unknown; macAccent?: unknown };
+export function migrateThemePrefs(raw: unknown): { theme: ThemeId; macAccent: string; accentTone: AccentTone } {
+  const p = (raw && typeof raw === "object" ? raw : {}) as { theme?: unknown; accent?: unknown; macAccent?: unknown; accentTone?: unknown };
   // 一律 hasOwn：这些都是普通对象，`in` / 取下标会让 "constructor" / "toString" 混进来。
   const legacyTheme = typeof p.theme === "string" && Object.hasOwn(LEGACY_THEME_MAP, p.theme) ? p.theme : null;
   const theme: ThemeId = isTheme(p.theme) ? p.theme : (legacyTheme ? LEGACY_THEME_MAP[legacyTheme] : undefined) ?? DEFAULT_THEME;
@@ -83,13 +93,27 @@ export function migrateThemePrefs(raw: unknown): { theme: ThemeId; macAccent: st
   // 漏掉这一支会把他们的颜色静默换成系统蓝，而且写回之后再也找不回来。
   const legacyUser = legacyTheme !== null || p.theme === undefined;
   const macAccent = (legacyUser ? legacyAccent ?? stored : stored) ?? DEFAULT_MAC_ACCENT;
-  return { theme, macAccent };
+  const accentTone = isAccentTone(p.accentTone) ? p.accentTone : DEFAULT_ACCENT_TONE;
+  return { theme, macAccent, accentTone };
 }
 
-/** 某套主题下某个强调色的实际色值（浅底用亮色模式那一档、深底用深色模式那一档）。 */
-export function accentFor(theme: ThemeId, accent: string): { accent: string; dim: string } {
-  const info = themeInfo(theme);
-  const mac = info.light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
+/**
+ * 某套主题、某一档饱和度用的八色表。
+ * 选表规则只写在这里：`accentFor()` 与单测都走它，避免同一串三元抄两遍。
+ */
+export function accentTable(theme: ThemeId, tone: AccentTone): Record<string, { accent: string; dim: string }> {
+  const light = themeInfo(theme).light;
+  const vivid = light ? MAC_ACCENTS_LIGHT : MAC_ACCENTS;
+  const muted = light ? MAC_ACCENTS_MUTED_LIGHT : MAC_ACCENTS_MUTED;
+  return tone === "muted" ? muted : vivid;
+}
+
+/**
+ * 某套主题、某一档饱和度下某个强调色的实际色值。
+ * 浅底用亮色模式那一档、深底用深色模式那一档；柔和档（D438）另有两张压过 chroma 的表。
+ */
+export function accentFor(theme: ThemeId, accent: string, tone: AccentTone): { accent: string; dim: string } {
+  const mac = accentTable(theme, tone);
   // hasOwn：认的是「表里有的 id」，不是原型链上的名字（"constructor" 之类会返回函数）。
   return Object.hasOwn(mac, accent) ? mac[accent] : mac[DEFAULT_MAC_ACCENT];
 }
@@ -104,9 +128,10 @@ function luminance(hex: string): number {
 
 /**
  * 强调色底上的字：跟 macOS 一样默认白字（蓝底白字），只有黄、橙这种亮色换深字。
+ * 柔和档必须一起取表（D438）：深色柔和黄 / 橙 / 绿已经压暗，继续用鲜艳档的深字会糊成一片。
  */
-export function accentInk(theme: ThemeId, accent: string): string {
-  return luminance(accentFor(theme, accent).accent) > 0.4 ? "#1d1d1f" : "#ffffff";
+export function accentInk(theme: ThemeId, accent: string, tone: AccentTone): string {
+  return luminance(accentFor(theme, accent, tone).accent) > 0.4 ? "#1d1d1f" : "#ffffff";
 }
 
 /**
@@ -114,16 +139,17 @@ export function accentInk(theme: ThemeId, accent: string): string {
  * （`meta[name=theme-color]`）。
  * 登录页在 App 之前画，`main.ts` 用 `bootTheme()` 先跑一次，别让浅色用户第一眼闪一下黑。
  */
-export function paintTheme(theme: ThemeId, accent: string): void {
+export function paintTheme(theme: ThemeId, accent: string, tone: AccentTone): void {
   const html = document.documentElement;
   html.dataset.theme = theme;
   // `data-ui="mac"`：mac.css 只认这一个开关（毛玻璃、圆角、动效、控件形状都挂在它下面）。
   // 外观只剩 Mac 风格，所以它恒挂 —— 留着这层是为了把 Mac 材质集中在那几个文件里，而不是在每条规则上加分支。
   html.dataset.ui = "mac";
-  const a = accentFor(theme, accent);
+  html.dataset.accentTone = tone;
+  const a = accentFor(theme, accent, tone);
   html.style.setProperty("--accent", a.accent);
   html.style.setProperty("--accent-dim", a.dim);
-  html.style.setProperty("--accent-ink", accentInk(theme, accent));
+  html.style.setProperty("--accent-ink", accentInk(theme, accent, tone));
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
   if (meta) meta.content = themeInfo(theme).demo.bg;
 }
@@ -140,8 +166,8 @@ export function bootTheme(): void {
   } catch {
     // 读不到就按默认。
   }
-  const { theme, macAccent } = migrateThemePrefs(raw);
-  paintTheme(theme, macAccent);
+  const { theme, macAccent, accentTone } = migrateThemePrefs(raw);
+  paintTheme(theme, macAccent, accentTone);
 }
 
 /**

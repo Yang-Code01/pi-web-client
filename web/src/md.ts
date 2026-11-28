@@ -11,6 +11,7 @@
 
 import { highlightFragment } from "./highlight.ts";
 import { tr } from "./i18n/index.ts";
+import { mermaidBlock } from "./mermaid-view.ts";
 
 export interface MdOptions {
   /** Rendering a whole document rather than a chat message. */
@@ -475,9 +476,11 @@ export function renderMarkdown(src: string, opts: MdOptions = {}): DocumentFragm
       if (fence[2]) pre.dataset.lang = fence[2];
       const code = document.createElement("code");
       const text = body.join("\n");
+      // 文档模式里的 ```mermaid 下面会画成图（见 frag.appendChild），先判掉，别先跑一遍高亮查询。
+      const isMermaid = doc && fence[2].toLowerCase() === "mermaid";
       // Q-031: 围栏带语言且我们认识 → 上色；否则照旧纯文本。片段由高亮器的白名单构造，不经过
       // innerHTML（本文件的规矩：agent 输出永远是文本，不当标记解）。
-      const hlFrag = fence[2] ? highlightFragment(text, fence[2]) : null;
+      const hlFrag = !isMermaid && fence[2] ? highlightFragment(text, fence[2]) : null;
       if (hlFrag === null) {
         code.textContent = text;
       } else {
@@ -486,7 +489,8 @@ export function renderMarkdown(src: string, opts: MdOptions = {}): DocumentFragm
         pre.classList.add("hl");
       }
       pre.appendChild(code);
-      frag.appendChild(pre);
+      // 文档模式（预览 .md 等）里 ```mermaid 画成图；聊天气泡里照旧是代码块。
+      frag.appendChild(isMermaid ? mermaidBlock(text, pre) : pre);
       continue;
     }
 

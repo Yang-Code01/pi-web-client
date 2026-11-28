@@ -198,7 +198,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
     const local = findAvatarFile(current);
     if (local) return local;
     const fetched = peer ? await fetchRemoteAvatar(peer.addr, peer.port, current) : null;
-    // 对端拉回来的图也走同一份 mtime 清理，否则 avatars/ 只进不出（D438 说的「留 64 张」不成立）。
+    // 对端拉回来的图也走同一份 mtime 清理，否则 avatars/ 只进不出（D442 说的「留 64 张」不成立）。
     if (fetched) pruneAvatarFiles([customAvatarHash(cfg.avatar), ...cfg.avatarHistory]);
     return fetched;
   }

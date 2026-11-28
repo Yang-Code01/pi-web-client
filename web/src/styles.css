@@ -22,6 +22,32 @@ button, input, textarea { font: inherit; color: inherit; }
 a { color: var(--accent); text-decoration: none; }
 #app { height: 100%; zoom: var(--ui-scale, 1); }
 
+/* ---------------------------------------------------------------- 分区字号（区域倍率，D441）
+   五块各自缩放：顶栏（三行）/ 会话列表 / 对话正文 / 输入框 / 右栏面板。每块在 `#app` 的全局
+   zoom 之上再叠一层 `zoom: var(--rs)`，两层相乘；JS 只往 `:root` 写那五个 `--rs-*`，不碰元素。
+
+   四条坑，新加区域照抄这里：
+   1. **zoom 不撑盒子**：根节点的占位尺寸不变，只是内部坐标空间变成 1/倍率，内容按倍率画。
+      所以栏宽（--sessions-w / --queue-w）、col-grip 换算、900px 窄版判定都不跟区域倍率走 ——
+      它们只认 `--ui-scale`/`uiScale()`。
+   2. **区域里的 `--vh1` / `--vw1` 会算小**：视口单位不认 zoom，必须在这个根节点上按倍率除一次，
+      否则区域内 `calc(var(--vh1) * N)` 会随倍率越来越小（D123 的同一族坑）。
+   3. **`position: fixed` 的后代连 left/top 与尺寸都被乘一遍**（实测 `left:100` 在 1.6×1.25 下
+      出现在视觉 200）。浮层一律不挂进区域，继续挂 `#app`（`app.ts` 的 `overlay()` 就是那么写的）。
+   4. 壳 A 把标签行挂进了顶栏里（`.topbar > .ws-tabs-row`）：父子各乘一次就是双倍，所以有一条归 1 的规则。 */
+[data-region="topbar"] { --rs: var(--rs-topbar, 1); }
+[data-region="sessions"] { --rs: var(--rs-sessions, 1); }
+[data-region="chat"] { --rs: var(--rs-chat, 1); }
+[data-region="composer"] { --rs: var(--rs-composer, 1); }
+[data-region="queue"] { --rs: var(--rs-queue, 1); }
+[data-region] {
+  zoom: var(--rs, 1);
+  --vh1: calc(1vh / var(--ui-scale, 1) / var(--rs, 1));
+  --vw1: calc(1vw / var(--ui-scale, 1) / var(--rs, 1));
+}
+/* 壳 A：标签行已经在放大的顶栏里。只归 1，`--rs` 留着 —— 上面那两行视口变量还要靠它算。 */
+.topbar > [data-region="topbar"] { zoom: 1; }
+
 /* ---------------------------------------------------------------- scrollbars
    一根细竖线：轨道透明，滑块 4px 圆头、低对比度，指上去变亮、按住变强调色。
    只用 ::-webkit-scrollbar 这套（不用 scrollbar-width/color）：标准属性一旦设置，
@@ -2658,6 +2684,11 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .md-doc pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; overflow-x: auto; font: 12px/1.55 var(--mono); }
 .md-doc pre code { background: none; padding: 0; font-size: inherit; }
 .md-doc pre.md-front { color: var(--faint); border-style: dashed; }
+/* Mermaid 图（mermaid-view.ts）：图太宽就横向滚动，不缩到看不清；失败时源码留着，下面一行红字说原因。 */
+.md-mermaid { margin: 12px 0; }
+.md-mermaid-fig { overflow-x: auto; padding: 12px; background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; text-align: center; }
+.md-mermaid-fig > svg { max-width: none; height: auto; }
+.md-mermaid-err { margin-top: 4px; color: var(--danger); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .md-doc a { color: var(--accent); }
 
 /* ------------------------------------------------------------------ 翻译对照

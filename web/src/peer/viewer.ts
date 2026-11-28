@@ -93,7 +93,7 @@ export function imageViewer(opts: ViewerOpts): { root: HTMLElement; destroy: () 
   let rot = 0;
 
   const paint = (): void => {
-    img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale}) rotate(${rot}deg)`;
+    img.style.transform = `translate(-50%, -50%) translate(${tx}px, ${ty}px) scale(${scale}) rotate(${rot}deg)`;
     pct.textContent = `${Math.round(scale * 100)}%`;
   };
   const reset = (): void => {

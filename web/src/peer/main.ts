@@ -11,6 +11,7 @@ import { bootTheme } from "../theme.ts";
 import { AVATAR_IDS, avatarUrl, customAvatarHash, randomAvatarId } from "./avatars.ts";
 import { emojiPanel, QUICK_REACTIONS, type Sticker } from "./emoji.ts";
 import { SANDBOX_TOKENS } from "./sandbox.ts";
+import { loadStash, saveStash, type StashItem } from "./stash.ts";
 import { imageViewer, type ViewerItem } from "./viewer.ts";
 
 /**
@@ -375,6 +376,93 @@ let trayHost: HTMLElement | null = null;
 let stageSeq = 0;
 /** 草稿防抖：敲一下存一下会把 threads.json 打成筛子。 */
 let draftTimer = 0;
+/**
+ * 输入法正在组字（拼音候选还没上屏）：这期间不许重画聊天区。
+ * 整块重画会把 `.peer-rich` 摘下再挂回，Chrome 会**静默**结束这次组字（连 compositionend 都不发）：
+ * 已经敲的拼音当场变成普通文字，下一次按键又重新开一次组字 —— 用户看到的就是「正在打的字被打断了」。
+ * 组字期间到来的重画攒着，compositionend（或失焦）之后补一次。
+ */
+let imeComposing = false;
+/** 组字期间被挡下来的重画：等组字结束补跑一次。 */
+let repaintAfterIme = false;
+/**
+ * 组字上屏后、补画之前要跑的一步（现在只有聊天记录搜索框用：它组字期间不搜，上屏后的文字才是查询词）。
+ * 组字开始时按「谁在组字」登记一次，上屏 / 失焦时消费掉。
+ */
+let imeCommit: (() => void) | null = null;
+/**
+ * 正在组字的那个元素。组字靠浏览器，`compositionend` / `blur` 不一定都会来（Chrome 会把组字悄悄结束），
+ * 所以还留了一个看门狗按它记账：{@link IME_STALL_MS}。
+ */
+let imeEl: HTMLElement | null = null;
+/** 看门狗：这么久没收到这个元素的任何组字 / 按键动静，就当这次组字已经没了（兜底，见 `guardIme` 里的 `arm`）。 */
+const IME_STALL_MS = 20_000;
+let imeStallTimer = 0;
+/**
+ * 组字期间 `renderMain()` 被推迟（D440），紧跟它的那一步（`searchInput.focus()`、`topicArea.focus()`…）
+ * 就会落在旧 DOM 上：要么还是 null，要么焦点给了一个马上就要被换掉的节点。这类收尾用 `afterMain()`
+ * 排队，等那次补画真做完再跑。
+ */
+const afterMainQueue: (() => void)[] = [];
+function afterMain(fn: () => void): void {
+  if (repaintAfterIme) afterMainQueue.push(fn);
+  else fn();
+}
+function drainAfterMain(): void {
+  if (!afterMainQueue.length) return;
+  for (const fn of afterMainQueue.splice(0)) fn();
+}
+
+/**
+ * 给主区里**会收输入法组字**的元素挂上「组字期间不重画」（D440）：
+ * `paintMain()` 会 `mainEl.replaceChildren()`，元素被摘下再挂回时 Chrome 会静默结束组字，
+ * 所以聊天输入框 `.peer-rich` 和聊天记录搜索框 `.searchbar input` 都得挂上 —— 只挂一个，
+ * 另一个里打拼音照样会被来信（或搜索防抖自己的重画）敲断。
+ */
+function guardIme(el: HTMLElement, onCommit?: () => void): void {
+  const arm = (): void => {
+    window.clearTimeout(imeStallTimer);
+    imeStallTimer = window.setTimeout(() => {
+      // 组字既不发 compositionend、也没失焦，还一点动静都没了：别把主区冻在那里。
+      if (imeComposing && imeEl === el) imeEnd();
+    }, IME_STALL_MS);
+  };
+  el.addEventListener("compositionstart", () => {
+    imeComposing = true;
+    imeCommit = onCommit ?? null;
+    imeEl = el;
+    arm();
+  });
+  // 还在组字 / 还在打字就把看门狗往后推：只有真没动静了才让它动手。
+  for (const type of ["compositionupdate", "keydown", "input"] as const) {
+    el.addEventListener(type, () => {
+      if (imeComposing && imeEl === el) arm();
+    });
+  }
+  el.addEventListener("compositionend", imeEnd);
+  // 拼到一半点别处：有的输入法不发 compositionend（失焦就把候选收回去了），别让主区从此不再重画。
+  el.addEventListener("blur", imeEnd);
+}
+
+function clearImeState(): void {
+  imeComposing = false;
+  imeCommit = null;
+  imeEl = null;
+  window.clearTimeout(imeStallTimer);
+}
+
+function imeEnd(): void {
+  if (!imeComposing) return;
+  const commit = imeCommit;
+  clearImeState();
+  commit?.();
+  if (!repaintAfterIme && !commit) return;
+  repaintAfterIme = false;
+  // 拼到一半直接去点按钮（比如「发送」）：这一下 mousedown 已经落在旧节点上，立刻重画会把
+  // mouseup 换到新节点、click 只落到公共祖先。等这一下点完再画（与 commitSearch 同一个理由）。
+  if (pointerHeld) whenPointerFree(renderMain);
+  else renderMain();
+}
 
 // ---------------------------------------------------------------- 小工具
 
@@ -803,7 +891,7 @@ function go(page: Page): void {
   if (S.page !== page) {
     S.page = page;
     S.query = "";
-    // D439：每次从侧栏进「我」页都从「个人资料」开始。只在这里复位 ——
+    // D443：每次从侧栏进「我」页都从「个人资料」开始。只在这里复位 ——
     // 放进 renderMe() 的话，5 秒一次的状态轮询重画会把用户正在看的分区打回去（评审 5-11）。
     if (page === "me") {
       S.meSection = "profile";
@@ -940,6 +1028,51 @@ function renderMobnav(): void {
   }
 }
 
+/**
+ * 输入法拼字（composition）期间不许重画列表：重画会把这个 input 换成新的，
+ * 拼音候选当场被掐断，只剩已经敲进去的字母。拼完（compositionend）再按最终值重画；
+ * 拼字期间别处（轮询、未读变化）要求的重画也攒到那时一起做。
+ */
+let searchComposing = false;
+/** 鼠标按着没松（document 捕获阶段记的）：拼字被「点别处」打断时要等这一下点完再重画。 */
+let pointerHeld = false;
+document.addEventListener("pointerdown", () => (pointerHeld = true), true);
+document.addEventListener("pointerup", () => (pointerHeld = false), true);
+document.addEventListener("pointercancel", () => (pointerHeld = false), true);
+
+/**
+ * 鼠标还按着的时候把一件事推到这一下点完再做（见 commitSearch）：点了哪儿就等那次 click
+ * 真的派发完，否则新画出来的节点收不到 click。
+ * 只等 `pointerup` 会漏：拖拽被中断 / 触摸被系统取消时飞过来的是 `pointercancel`，
+ * 再不行（窗口丢了焦点、两者都没来）1.5 秒后兜底跑 —— 不能把一件待做的事悬在那里。
+ */
+function whenPointerFree(run: () => void): void {
+  let done = false;
+  const fire = (): void => {
+    if (done) return;
+    done = true;
+    document.removeEventListener("pointerup", fire, true);
+    document.removeEventListener("pointercancel", fire, true);
+    window.clearTimeout(timer);
+    window.setTimeout(run, 0);
+  };
+  const timer = window.setTimeout(fire, 1500);
+  document.addEventListener("pointerup", fire, true);
+  document.addEventListener("pointercancel", fire, true);
+}
+
+/**
+ * 拼字结束后按最终值重画列表。拼到一半去点会话行时，compositionend / blur 是在 mousedown 里触发的：
+ * 这时同步重画，mouseup 落在新节点上，click 只派发到公共祖先，行上的点击收不到、得点第二下。
+ * 所以鼠标还按着就等它松开、click 派发完（pointerup 后的下一个宏任务）再画。
+ */
+function commitSearch(input: HTMLInputElement): void {
+  searchComposing = false;
+  S.query = input.value;
+  if (!pointerHeld) return renderList();
+  whenPointerFree(renderList);
+}
+
 function searchBox(placeholder: string): HTMLElement {
   const box = h("div", "search");
   const input = h("input");
@@ -947,7 +1080,16 @@ function searchBox(placeholder: string): HTMLElement {
   input.placeholder = placeholder;
   input.value = S.query;
   input.dataset.keep = "search";
-  input.addEventListener("input", () => {
+  input.addEventListener("compositionstart", () => {
+    searchComposing = true;
+  });
+  input.addEventListener("compositionend", () => commitSearch(input));
+  input.addEventListener("blur", () => {
+    // 拼到一半点走了：有的输入法不发 compositionend，别让列表永远停在「攒着」。
+    if (searchComposing) commitSearch(input);
+  });
+  input.addEventListener("input", (e) => {
+    if (searchComposing || (e as InputEvent).isComposing) return;
     S.query = input.value;
     renderList();
   });
@@ -1002,6 +1144,7 @@ function rerender(rebuild: () => void): void {
 }
 
 function renderList(): void {
+  if (searchComposing) return;
   rerender(paintList);
 }
 
@@ -1304,6 +1447,11 @@ function emptyState(icon: string, title: string, sub: string): HTMLElement {
 // ---------------------------------------------------------------- 主区
 
 function renderMain(): void {
+  // 组字期间不画（对方来消息、发送回执都会走到这里）：见 imeComposing 的注释，攒到组字结束后补一次。
+  if (imeComposing) {
+    repaintAfterIme = true;
+    return;
+  }
   // 重新画聊天会把消息列清空重排，滚到哪儿要自己记住：翻历史的时侯别把人拽回底。
   const prev = mainEl.querySelector<HTMLElement>(".stream");
   let forced = forceBottom;
@@ -1316,6 +1464,8 @@ function renderMain(): void {
     stickBottom = true;
   }
   rerender(paintMain);
+  // 刚才因为组字被推迟的收尾（focus / 选中）现在才有个新 DOM 可以落地。
+  drainAfterMain();
 }
 
 function paintMain(): void {
@@ -1509,8 +1659,11 @@ function openSearch(): void {
     });
     renderMain();
   }
-  searchInput?.focus();
-  searchInput?.select();
+  // 组字中 renderMain 被推迟（D440）：搜索条是那一刻才建出来的，等补画之后再聚焦 / 全选。
+  afterMain(() => {
+    searchInput?.focus();
+    searchInput?.select();
+  });
 }
 
 function closeSearch(): void {
@@ -1531,7 +1684,13 @@ function searchBar(t: Thread): HTMLElement {
   input.type = "search";
   input.placeholder = tr("搜索这段聊天记录");
   input.value = S.search?.q ?? "";
-  input.addEventListener("input", () => {
+  // 重画时把焦点与光标还回来（rerender 认 data-keep）：主区整块重画会把这个 input 摘下再挂回。
+  // 值不能和左栏搜索框重名，否则 querySelector 会挑中左栏那个。
+  input.dataset.keep = "find";
+  input.addEventListener("input", (ev) => {
+    // 组字期间框里是半截拼音：不搜（搜出来的全是错的），也不重画（重画会把组字掐断）。
+    // 上屏后的值由下面 guardIme 的 commit 回调补搜。
+    if (imeComposing || (ev as InputEvent).isComposing) return;
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(() => {
       if (!S.search) return;
@@ -1541,6 +1700,14 @@ function searchBar(t: Thread): HTMLElement {
       searchJump = true;
       renderMain();
     }, 160);
+  });
+  // 这个 input 也在 `mainEl.replaceChildren()` 的范围里：组字期间来信同样会把它摘下重挂，
+  // 组字被静默结束、拼音变死字。与聊天输入框同一套守卫（D440）。
+  guardIme(input, () => {
+    if (!S.search) return;
+    S.search.q = input.value;
+    S.search.at = Number.MAX_SAFE_INTEGER;
+    searchJump = true;
   });
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") {
@@ -2460,7 +2627,8 @@ function openTopic(id: string): void {
   S.topic = id;
   topicScroll = -1;
   renderMain();
-  topicArea?.focus();
+  // 组字中 renderMain 被推迟了：等补画之后新面板才存在，那时再 focus。
+  afterMain(() => topicArea?.focus());
 }
 
 function closeTopic(): void {
@@ -2845,7 +3013,7 @@ async function leaveGroup(t: Thread): Promise<void> {
 function startReply(e: Entry): void {
   S.replyTo = e;
   renderMain();
-  textInput?.focus({ preventScroll: true });
+  afterMain(() => textInput?.focus({ preventScroll: true }));
 }
 
 /** 引用 / 撤回都要重拉：撤回了之后原文要从消息流里消失，只留灰条。 */
@@ -3356,7 +3524,7 @@ function prioButton(id: string): HTMLElement {
       if (p) composePrio.set(id, p);
       else composePrio.delete(id);
       renderMain();
-      textInput?.focus();
+      afterMain(() => textInput?.focus());
     };
     openMenu(r.left, r.top - 4, [
       { label: tr("普通"), run: set(null) },
@@ -3383,6 +3551,9 @@ function composeBox(t: Thread): HTMLElement {
   // 换会话：旧编辑器在 document 上挂着 mousedown / keydown，不拆会跟着整页活着。
   composer?.destroy();
   composer = null;
+  // 换会话本身已经结束了组字：别让旧编辑器留下的「组字中」把主区永久卡住。
+  clearImeState();
+  repaintAfterIme = false;
   composeFor = t.nodeId;
   const wrap = h("div", "compose");
   replyHost = h("div", "replyhost");
@@ -3409,6 +3580,8 @@ function composeBox(t: Thread): HTMLElement {
   body.dataset.empty = isRichEmpty(ed.html()) ? "1" : "0";
   composer = ed;
   textInput = body;
+  // 组字开始 / 结束：把「组字中攒下的重画」推迟到结束之后（D335 的过滤框、搜索列表是同一套做法）。
+  guardIme(body);
 
   const bar2 = h("div", "bar2");
   const attach = iconBtn("attach", tr("发文件"), () => void openPicker(t.nodeId));
@@ -3567,8 +3740,9 @@ function stageList(id: string): Staged[] {
 function stageBlob(name: string, blob: Blob): void {
   if (!S.thread) return;
   if (blob.size > 64 * 1024 * 1024) return toast(tr("「{p1}」太大（上限 64 MB），用「+」从磁盘选", { p1: name }));
-  const thumb = blob.type.startsWith("image/") ? URL.createObjectURL(blob) : undefined;
+  const thumb = isPicName(name, blob.type) ? URL.createObjectURL(blob) : undefined;
   stageList(S.thread).push({ key: `s${++stageSeq}`, name, size: blob.size, blob, thumb });
+  persistStaged(S.thread);
   paintTray();
   textInput?.focus();
 }
@@ -3577,7 +3751,7 @@ function stagePath(file: BrowseEntry): void {
   if (!S.thread) return;
   const list = stageList(S.thread);
   if (list.some((x) => x.path === file.path)) return;
-  const pic = /^image\//.test(file.mime ?? "") || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(file.name);
+  const pic = isPicName(file.name, file.mime ?? "");
   list.push({
     key: `s${++stageSeq}`,
     name: file.name,
@@ -3585,6 +3759,7 @@ function stagePath(file: BrowseEntry): void {
     path: file.path,
     thumb: pic ? `/api/peer/fs/raw?path=${encodeURIComponent(file.path)}` : undefined,
   });
+  persistStaged(S.thread);
   paintTray();
 }
 
@@ -3596,7 +3771,58 @@ function unstage(id: string, key: string): void {
   const [gone] = list.splice(i, 1);
   if (gone?.blob && gone.thumb) URL.revokeObjectURL(gone.thumb);
   if (!list.length) staged.delete(id);
+  persistStaged(id);
   paintTray();
+}
+
+/** 暂存附件落进 IndexedDB：关掉内网通再打开，托盘里的截图还在（文字草稿走服务端 threads.json）。 */
+function persistStaged(id: string): void {
+  const list = staged.get(id) ?? [];
+  void saveStash(
+    id,
+    list.map(({ name, size, blob, path }) => ({ name, size, blob, path })),
+  );
+}
+
+function isPicName(name: string, mime = ""): boolean {
+  return /^image\//.test(mime) || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name);
+}
+
+/** 启动时把上次没发出去的附件放回托盘；缩略图地址重新生成（上次的 object URL 已经失效）。 */
+async function restoreStaged(): Promise<void> {
+  // 在启动关键路径上：这里出任何错都只能丢掉附件，不许拖垮整个页面。
+  try {
+    const saved = await loadStash();
+    for (const [peer, items] of saved) {
+      if (staged.has(peer)) continue;
+      const list: Staged[] = [];
+      for (const x of items) {
+        const item = restoredItem(x);
+        if (item) list.push(item);
+      }
+      if (list.length) staged.set(peer, list);
+    }
+  } catch {
+    /* 读坏了就当没有暂存附件 */
+  }
+}
+
+/** 一条落盘记录还原成托盘项；形状不对（老版本 / 被别处写坏）就丢掉。 */
+function restoredItem(x: unknown): Staged | null {
+  if (!x || typeof x !== "object") return null;
+  const r = x as Partial<StashItem>;
+  if (typeof r.name !== "string") return null;
+  const blob = r.blob instanceof Blob ? r.blob : undefined;
+  const path = typeof r.path === "string" && r.path ? r.path : undefined;
+  if (!blob && !path) return null;
+  let thumb: string | undefined;
+  if (blob) {
+    if (isPicName(r.name, blob.type)) thumb = URL.createObjectURL(blob);
+  } else if (path && isPicName(r.name)) {
+    thumb = `/api/peer/fs/raw?path=${encodeURIComponent(path)}`;
+  }
+  const size = typeof r.size === "number" ? r.size : (blob?.size ?? 0);
+  return { key: `s${++stageSeq}`, name: r.name, size, blob, path, thumb };
 }
 
 /** 输入框上方的附件托盘：图片是缩略图，其它是文件条；每件右上角一个 ✕。 */
@@ -4823,6 +5049,7 @@ async function boot(): Promise<void> {
     (node as HTMLInputElement).placeholder = tr(node.dataset.i18nPlaceholder ?? "");
   }
   (pickerClose as HTMLElement).append(ic("close"));
+  await restoreStaged();
   await loadStatus();
   await loadThreads();
   await loadContacts();
