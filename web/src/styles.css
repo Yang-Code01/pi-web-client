@@ -5910,6 +5910,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-scope .rv-run {
   width: 100%; padding: 7px 12px; font-size: 12.5px; border-radius: 9px;
 }
+/* 「还差什么」那条提示（全宽主按钮下面的一行脚注）：比别的 hint 再淡一档，
+   它解释的是「按钮为什么灰着」，不该跟「正在读评审状态…」这类状态提示抢同一档；
+   `.rv-hint.rv-why` 同时是 `probes/code-review.mjs` 找这句话的钩子。 */
+.rv-scope .rv-why { flex: none; opacity: 0.8; }
 .rv-scope .rv-run:disabled { cursor: default; }
 .rv-scope .rv-install { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed var(--line); border-radius: 10px; }
 .rv-scope .rv-hint { font-size: 12px; color: var(--faint); line-height: 1.5; }
