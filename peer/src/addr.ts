@@ -18,5 +18,7 @@ export function normAddr(addr: string): string {
 /** 同一个地址拼进 URL 时要的 host：IPv6 得带方括号，回环与 IPv4-mapped 先归一到 IPv4。 */
 export function hostForUrl(addr: string): string {
   const host = normAddr(addr);
+  // 正常走不到 `startsWith("[")`：normAddr 已剥一层方括号。这里防的是调用方传了双层括号，
+  // 归一后仍带括号，再包一层就成了 `[[…]]`（评审 7-14）。
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }

@@ -250,7 +250,8 @@ body.embedded .brand .nm { display: none; }
 .av.pic::before { display: none; }
 .av-img { display: block; width: 100%; height: 100%; border-radius: 50%; }
 
-/* 「我 → 头像」的选择格：窄的时候自动少几列，不写死列数。 */
+/* 头像选择格：默认按容器宽度自动排（不写死列数）；「我 → 头像」宽版用 .me-avgrid 固定 7 列，
+   窄容器（文末 @container）再回落成这里。 */
 .avgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 8px; padding: 12px 13px 4px; }
 /* 「我」页头像卡里那颗按钮：`.acts` 的 16px 上距在这里太宽（格子里已经有 padding），
    而卡片的 13px 内边距得自己补回来——`.card` 不像 `.kv` / `.avgrid` 那样给子元素加内边距。 */
@@ -840,7 +841,10 @@ body.embedded .brand .nm { display: none; }
 .me-avrow .me-big { width: 76px; height: 76px; font-size: 24px; }
 .me-avacts { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .me-note { flex-basis: 100%; font-size: 10.5px; line-height: 1.5; color: var(--faint); }
+/* 「我 → 头像」宽版固定 7 列；窄版在文末 @container 里回落成 auto-fill。 */
 .me-avgrid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; max-width: 470px; padding-top: 14px; }
+/* 分区底部的按钮行：.acts 默认的上距在卡片里偏宽，按卡片内边距对齐（评审 7-26）。 */
+.me-acts { padding: 12px 13px; }
 .me-custom {
   display: grid;
   place-items: center;
@@ -917,6 +921,8 @@ body.embedded .brand .nm { display: none; }
   .me-tab.on { border-color: var(--accent-dim); }
   .me-pane { margin-top: 6px; }
   .me-pane .card { margin-top: 10px; }
+  /* 7 列在窄面板里每格会挤到 40px 以下，回落成按宽度自动排（评审 7-28）。 */
+  .me-avgrid { grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); max-width: none; }
 }
 
 /* ------------------------------------------------------------------ 窄容器：一栏钻取 */

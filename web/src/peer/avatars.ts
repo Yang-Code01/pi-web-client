@@ -197,7 +197,8 @@ export function avatarUrl(id: string | null | undefined, key?: string | null): s
   if (builtin) return builtin;
   const hash = customAvatarHash(id);
   if (!hash || !key) return null;
-  return `/api/peer/avatar/${encodeURIComponent(key)}?v=${hash}`;
+  // 参数名跟 peer 的 `/avatar?h=` 一致，桥只做转发（评审 7-22）。
+  return `/api/peer/avatar/${encodeURIComponent(key)}?h=${hash}`;
 }
 
 /** `custom:<hash>` → hash，其余（内置 id / 空）返回空串。两侧共用同一个形状，见 peer/src/avatars.ts。 */

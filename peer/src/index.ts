@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { loadConfig, ensureNodeId, stateDir, statePath, saveConfig, PROTO, VERSION } from "./config.ts";
-import { randomAvatar, customAvatarHash } from "./avatars.ts";
+import { randomAvatar, customAvatarId, customAvatarHash } from "./avatars.ts";
 import { hasAvatarFile } from "./avatar-files.ts";
 import { Discovery } from "./discovery.ts";
 import { createPeerServer, Ignored } from "./http.ts";
@@ -22,8 +22,15 @@ const nodeId = ensureNodeId();
 // 自定义头像另查一次文件：状态目录被删 / 图被手动清掉时，别让广播里挂一个永远取不到的 hash。
 const ownAvatar = customAvatarHash(cfg.avatar);
 if (!cfg.avatar || (ownAvatar && !hasAvatarFile(ownAvatar))) {
-  if (ownAvatar) console.log(`自定义头像 ${ownAvatar} 的文件不见了，先换回一张内置的（可从「我 → 头像」重传）`);
-  cfg.avatar = randomAvatar();
+  // 当前这张的文件不见了，但「上传过的」里可能还有别的本机图：先退到最近上传的一张，
+  // 找不到才回内置随机图（评审 7-21：以前会直接跳过用户传过的所有图）。
+  const next = cfg.avatarHistory.find((h) => hasAvatarFile(h));
+  if (ownAvatar) {
+    console.log(
+      `自定义头像 ${ownAvatar} 的文件不见了，改用${next ? "最近上传的一张" : "一张内置的"}（可从「我 → 头像」重传）`,
+    );
+  }
+  cfg.avatar = next ? customAvatarId(next) : randomAvatar();
   saveConfig(cfg);
 }
 

@@ -374,11 +374,20 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       // 如果删的正是当前头像，就换到剩下的最新一张；一张不剩才随机回内置。
       if (url.pathname === "/custom-avatars/delete" && req.method === "POST") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
-        const body = (await readBody(req).catch(() => null)) as { hash?: unknown } | null;
+        let body: { hash?: unknown } | null = null;
+        try {
+          body = (await readBody(req)) as { hash?: unknown } | null;
+        } catch (err) {
+          // 只有「超过 1 MB」要单独说；不是 JSON / 传了一半仍和以前一样按「hash 不对」回 400（评审 7-7）。
+          if (err instanceof BodyTooLargeError) {
+            return json(res, 413, { error: "请求太大了" }, { connection: "close" });
+          }
+        }
         const hash = avatarHash(body?.hash);
         if (!hash) return json(res, 400, { error: "hash 不对" });
         if (!cfg.avatarHistory.includes(hash)) return json(res, 404, { error: "不在上传记录里" });
         try {
+          // 文件已经不在了（手动删过 / 被 prune 收走）也算删成功：正好把这条死记录清掉。
           deleteAvatarFile(hash);
         } catch {
           // 文件删不掉（被占用 / 没权限）就别动历史记录，否则留下一条永远删不掉的幽灵图。

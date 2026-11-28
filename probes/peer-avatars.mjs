@@ -129,7 +129,7 @@ await page.waitForSelector("#list .row", { timeout: 15000 });
 await sleep(800);
 
 const rowShot = await page.evaluate((bId) => {
-  const row = document.querySelector(`#list [data-id="${bId}"]`) ?? document.querySelector("#list .row");
+  const row = document.querySelector(`#list [data-id="${bId}"]`);
   const av = row?.querySelector(".av");
   const img = row?.querySelector(".av-img");
   const box = av?.getBoundingClientRect();
@@ -157,7 +157,7 @@ if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "chat.png") });
 // ---- 3b. 对方换脸之后，列表里不能还显示「他换之前发消息时那张」：历史消息里的
 //          `from.avatar` 是最旧的来源，不许覆盖在线表 / 通讯录。
 const oldSrc = await page.evaluate((bId) => {
-  const row = document.querySelector(`#list [data-id="${bId}"]`) ?? document.querySelector("#list .row");
+  const row = document.querySelector(`#list [data-id="${bId}"]`);
   return row?.querySelector(".av-img")?.getAttribute("src") ?? "";
 }, bSt.nodeId);
 const freshB = IDS.find((id) => id !== bSt.avatar) ?? IDS[0];
@@ -165,11 +165,14 @@ await b.post("/api/peer/config", { avatar: freshB });
 // 桥的 poll 是 5 秒一轮：固定 sleep 会跟它赛跑（偶尔 1.5 秒时缓存还是旧脸）。
 // 等到 A 的桥真的看见新头像再刷新，断言才有意义。
 let sawFresh = false;
-for (let i = 0; i < 40; i++) {
+// 桥的 poll 是 5 秒一轮，对方 announce 是 10 秒一轮：10 秒窗口正好卡在边界（偶尔差几百毫秒
+// 就红），给它 20 秒再看（评审 7-9 把原来的静默日志变成硬断言后，边界抖动藏不住了）。
+for (let i = 0; i < 80; i++) {
   const st = await a.get("/api/peer");
   if (st.status?.online?.find((p) => p.nodeId === bSt.nodeId)?.avatar === freshB) { sawFresh = true; break; }
   await sleep(250);
 }
+check("A 的桥在 20 秒内看到 B 的新头像", sawFresh, `want ${freshB}`);
 if (!sawFresh) {
   const st = await a.get("/api/peer");
   console.log("DEBUG online:", JSON.stringify((st.status?.online ?? []).map((p) => ({ id: p.nodeId, av: p.avatar, addr: p.addr }))), "want", freshB, "bId", bSt.nodeId);
@@ -180,7 +183,7 @@ await page.waitForSelector("#list .row", { timeout: 15000 });
 try {
   await page.waitForFunction(
     ({ id, prev }) => {
-      const row = document.querySelector(`#list [data-id="${id}"]`) ?? document.querySelector("#list .row");
+      const row = document.querySelector(`#list [data-id="${id}"]`);
       const src = row?.querySelector(".av-img")?.getAttribute("src") ?? "";
       return Boolean(src) && src !== prev;
     },
@@ -191,7 +194,7 @@ try {
   // 等不到就让下面的 check 给出带上下文的红，而不是抛一个光秃秃的 timeout。
 }
 const newSrc = await page.evaluate((bId) => {
-  const row = document.querySelector(`#list [data-id="${bId}"]`) ?? document.querySelector("#list .row");
+  const row = document.querySelector(`#list [data-id="${bId}"]`);
   return row?.querySelector(".av-img")?.getAttribute("src") ?? "";
 }, bSt.nodeId);
 const dbg = await a.get("/api/peer");
@@ -288,8 +291,16 @@ check("上传第二张（换了新颜色）", secondId.startsWith("custom:") && 
 // 不能只等 `.me-histpick`：第一张上传后就已存在，这个等待会立刻返回，
 // 页面还没跑完 uploadAvatar 里的 renderAll（评审 4-1）。
 await page.waitForFunction(() => document.querySelectorAll(".me-histpick").length >= 2, undefined, { timeout: 8000 });
-const hist2 = await page.evaluate(() => document.querySelectorAll(".me-histpick").length);
-check("历史变成 2 张（最近在前）", hist2 === 2, String(hist2));
+const hist2 = await page.evaluate(() =>
+  [...document.querySelectorAll(".me-histpick img")].map((i) => i.getAttribute("src") ?? ""),
+);
+const secondHash = secondId.slice("custom:".length);
+const firstHash = firstId.slice("custom:".length);
+check(
+  "历史变成 2 张，最近在前",
+  hist2.length === 2 && Boolean(hist2[0]) && hist2[0].includes(secondHash) && hist2[1]?.includes(firstHash),
+  hist2.join(" | "),
+);
 // 两张缩略图必须各自是自己那张字节：peer 的 `/avatar/<自己>` 以前无视 hash，一排图全回当前那张。
 const digests = await page.evaluate(async () => {
   const out = [];

@@ -1102,6 +1102,7 @@ function renderThreadList(): void {
 /** 会话列表的一行。 */
 function threadRow(t: Thread): HTMLElement {
   const row = h("div", `row${S.thread === t.nodeId ? " on" : ""}${t.pinned ? " pinned" : ""}`);
+  row.dataset.id = t.nodeId;
   const wrap = h("span", "avwrap");
   wrap.append(avatar(t.nickname, t.nodeId, t.online, undefined, false));
   if (t.unread > 0) wrap.append(h("i", `unread${t.muted ? " quiet" : ""}`, t.muted ? "" : badgeText(t.unread)));
@@ -3984,7 +3985,14 @@ function renderMe(): void {
     return;
   }
 
+  // 上传在飞时，内置格 / 历史缩略图 / 随机换一个 也都不能改（评审 7-25）：
+  // 否则两个 POST /avatar 并发，最后生效的取决于谁后返回，而不是用户最后一次选择。
+  let avatarUploading = false;
+  const uploadsSig = (): string => S.uploads.map((u) => `${u.id}:${u.at}`).join("|");
+  // 上次画进 pane 的那份「上传过的」签名，refresh 后没变就不重画（见 refreshUploads）。
+  let drawnUploads = "";
   const applyAvatar = async (id: string): Promise<void> => {
+    if (avatarUploading) return;
     if (await setConfig({ avatar: id })) toast(tr("头像换好了"));
   };
 
@@ -4083,6 +4091,7 @@ function renderMe(): void {
 
   // —— 头像：一颗大预览 + 内置 12 张 + 「自定义」格
   const sectionAvatar = (): HTMLElement => {
+    drawnUploads = uploadsSig();
     const wrap = h("div", "me-sec");
     wrap.append(meHead(tr("头像"), tr("内置 12 张，也可以上传自己的")));
 
@@ -4099,9 +4108,8 @@ function renderMe(): void {
     file.type = "file";
     file.accept = "image/png,image/jpeg,image/webp,image/gif";
     file.hidden = true;
-    let uploading = false;
     const busy = (on: boolean): void => {
-      uploading = on;
+      avatarUploading = on;
       uploadBtn.disabled = on;
       luck.disabled = on;
       uploadBtn.textContent = on ? tr("正在处理…") : tr("上传图片");
@@ -4109,7 +4117,7 @@ function renderMe(): void {
     // 「自定义」格也复用这个 input：上传在飞时再点它不能开第二个选择框，
     // 否则两个 POST /avatar 并发，最后生效的是谁先返回而不是用户最后一次选（评审 5-10）。
     const pick = (): void => {
-      if (uploading) return;
+      if (avatarUploading) return;
       file.click();
     };
     uploadBtn.addEventListener("click", pick);
@@ -4241,8 +4249,7 @@ function renderMe(): void {
     const wrap = h("div", "me-sec");
     wrap.append(meHead(tr("发现"), tr("同一内网里怎么互相看到")));
     const card = h("div", "card");
-    const acts = h("div", "acts");
-    acts.style.padding = "12px 13px";
+    const acts = h("div", "acts me-acts");
     const again = h("button", "btn", tr("重新广播"));
     again.type = "button";
     again.addEventListener("click", () => void refreshAll());
@@ -4266,8 +4273,7 @@ function renderMe(): void {
     const wrap = h("div", "me-sec");
     wrap.append(meHead(tr("忽略名单"), tr("不想再看到的人")));
     const card = h("div", "card");
-    const acts = h("div", "acts");
-    acts.style.padding = "12px 13px";
+    const acts = h("div", "acts me-acts");
     const clear = h("button", "btn", tr("清空忽略名单"));
     clear.type = "button";
     clear.disabled = S.ignored.length === 0;
@@ -4300,7 +4306,10 @@ function renderMe(): void {
   // 进「头像」分区时才拉上传记录，不跟着 5 秒状态轮询（评审 8-7）。
   const refreshUploads = async (): Promise<void> => {
     await loadUploads();
-    if (S.meSection === "avatar") draw();
+    if (S.meSection !== "avatar") return;
+    // 数据没变就不重画：draw() 会整块换掉 pane，正在看的滚动位置和焦点都会丢（评审 7-27）。
+    if (uploadsSig() === drawnUploads) return;
+    draw();
   };
   const goSection = (id: MeSection): void => {
     const same = S.meSection === id;

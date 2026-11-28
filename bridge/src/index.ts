@@ -373,6 +373,27 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
   });
 }
 
+/**
+ * readRaw 的请求体错误自己回响应：超限 413、传到一半断开 400。
+ * 返回 null 表示已经回过响应，调用方直接 return。
+ * 以前调用方统一 `.catch(() => null)` 再回 413「太大了」，断网 / 关页面也会被说成文件太大，
+ * 用户会照着去改文件大小（评审 7-1）。
+ */
+async function readRawOr(
+  res: http.ServerResponse,
+  req: http.IncomingMessage,
+  limit: number,
+  tooLarge: string,
+): Promise<Buffer | null> {
+  try {
+    return await readRaw(req, limit);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) json(res, 413, { error: tooLarge }, { connection: "close" });
+    else json(res, 400, { error: "上传中断了，再试一次" });
+    return null;
+  }
+}
+
 function json(res: http.ServerResponse, status: number, body: unknown, extra: Record<string, string | string[]> = {}): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...extra });
@@ -1190,8 +1211,8 @@ async function main(): Promise<void> {
     }
     // 手工上传 zip：和 /api/peer/upload 一样走原始字节，不把 64 MB 塞进 base64 的 WS 帧。
     if (url.pathname === "/api/market/publish-zip" && req.method === "POST") {
-      const raw = await readRaw(req, MAX_UPLOAD_BYTES).catch(() => null);
-      if (!raw) return json(res, 413, { error: "太大了（上限 64 MB）" });
+      const raw = await readRawOr(res, req, MAX_UPLOAD_BYTES, "太大了（上限 64 MB）");
+      if (!raw) return;
       if (!authorized(req.headers.cookie)) return json(res, 401, { error: "要登录" });
       if (isTunnelRequest(req.headers)) return json(res, 403, { error: "通过公网访问时局域网市场只能查看" });
       try {
@@ -1225,8 +1246,8 @@ async function main(): Promise<void> {
       }
     }
     if (url.pathname === "/api/peer/stickers/add" && req.method === "POST") {
-      const raw = await readRaw(req, 5 * 1024 * 1024).catch(() => null);
-      if (!raw) return json(res, 413, { error: "表情太大了（上限 5 MB）" });
+      const raw = await readRawOr(res, req, 5 * 1024 * 1024, "表情太大了（上限 5 MB）");
+      if (!raw) return;
       try {
         return json(res, 200, await peer.addSticker(url.searchParams.get("name") || "表情.png", raw));
       } catch (err) {
@@ -1265,8 +1286,8 @@ async function main(): Promise<void> {
       }
     }
     if (url.pathname === "/api/peer/upload" && req.method === "POST") {
-      const raw = await readRaw(req, MAX_UPLOAD_BYTES).catch(() => null);
-      if (!raw) return json(res, 413, { error: "太大了（上限 64 MB）" });
+      const raw = await readRawOr(res, req, MAX_UPLOAD_BYTES, "太大了（上限 64 MB）");
+      if (!raw) return;
       try {
         return json(res, 200, await peer.upload(url.searchParams.get("peer") ?? "", url.searchParams.get("name") || "粘贴的图片.png", raw));
       } catch (err) {
@@ -1315,8 +1336,13 @@ async function main(): Promise<void> {
         res.on("close", () => {
           if (!res.writableEnded) ctrl.abort();
         });
-        const upstream = await peer.avatarStream(who, url.searchParams.get("v") ?? "", ctrl.signal);
-        if (!upstream.ok) return json(res, upstream.status, { error: "取不到这张头像" });
+        // 参数名跟 peer 的 `/avatar?h=` 一致；`v` 是旧页面的写法，留着兼容。
+        const hash = url.searchParams.get("h") ?? url.searchParams.get("v") ?? "";
+        const upstream = await peer.avatarStream(who, hash, ctrl.signal);
+        // peer 说 4xx（没这张图）照原样；5xx 是 peer 自己坏了，按「连不上」统一 502（评审 7-2）。
+        if (!upstream.ok) {
+          return json(res, upstream.status >= 500 ? 502 : upstream.status, { error: "取不到这张头像" });
+        }
         const etag = upstream.headers.get("etag");
         const cache = "private, max-age=86400";
         // 内容寻址：同一个 etag 就是同一张图。浏览器带 If-None-Match 回来时直接 304，
@@ -1357,7 +1383,9 @@ async function main(): Promise<void> {
       try {
         return json(res, 200, await peer.customAvatars());
       } catch (err) {
-        return json(res, 502, { error: (err as Error).message });
+        // 和头像的上传 / 删除同一个口径：peer 的 4xx 原样回去，其余是「连不上」，别把 fetch failed 抛给页面。
+        if (err instanceof PeerRequestError) return json(res, err.status, { error: err.message });
+        return json(res, 502, { error: "内网通暂时连不上，稍后再试" });
       }
     }
     if (url.pathname === "/api/peer/custom-avatars/delete" && req.method === "POST") {
@@ -1551,8 +1579,14 @@ async function main(): Promise<void> {
       if (!sessions.locate(sid)) return fail(res, 404, "session", "找不到这个会话");
       const rawName = url.searchParams.get("name") ?? "";
       if (!rawName.trim()) return fail(res, 400, "bad_name", "文件名不能为空");
-      const raw = await readRaw(req, MAX_UPLOAD_BYTES).catch(() => null);
-      if (!raw) {
+      let raw: Buffer;
+      try {
+        raw = await readRaw(req, MAX_UPLOAD_BYTES);
+      } catch (err) {
+        if (!(err instanceof BodyTooLargeError)) {
+          log(`upload aborted ${sid.slice(0, 8)}`);
+          return json(res, 400, { error: "上传中断了，再试一次" });
+        }
         log(`upload too_large ${sid.slice(0, 8)}`);
         return fail(res, 413, "too_large", UPLOAD_TOO_LARGE);
       }
