@@ -7,9 +7,12 @@
  *   node --experimental-strip-types bridge/tests/reviewgrant-unit.mjs
  */
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-grant-"));
 
@@ -135,9 +138,22 @@ check("没授权合并不等于授权推送，反之亦然", () => {
 // ---------------------------------------------------------------- 授权本身的时效
 
 check("过期 / 没有授权：一律不放过", () => {
-  assert.equal(grantAllows(null, "git push origin feat/review-auto", "feat/review-auto", NOW), false);
-  assert.equal(grantAllows(grant({ expiresAt: NOW - 1 }), "git push origin feat/review-auto", "feat/review-auto", NOW), false);
-  assert.equal(grantAllows(grant({ expiresAt: 0 }), "gh pr merge 747", "", NOW), false);
+  // 第三格是 `{ head, cwd }`：光传分支名（`head` 实际是 undefined）会让「过期 + 分支匹配」
+  // 这条路径没被真的走到 —— 用例照样绿，但覆盖的是别的东西。
+  const ctx = { head: "feat/review-auto", cwd: REPO };
+  assert.equal(grantAllows(null, "git push origin feat/review-auto", ctx, NOW), false);
+  assert.equal(grantAllows(grant({ expiresAt: NOW - 1 }), "git push origin feat/review-auto", ctx, NOW), false);
+  assert.equal(grantAllows(grant({ expiresAt: 0 }), "gh pr merge 747", ctx, NOW), false);
+  // 同一条命令、同一份 ctx，只有「没过期」这一处不同：过期就是那道闸。
+  assert.equal(grantAllows(grant(), "git push origin feat/review-auto", ctx, NOW), true);
+});
+
+check("两边各定义的 GRANT_TTL_MS 必须一致（源码这份被闸门加载的是 ext 那份）", () => {
+  const src = path.join(here, "..", "src", "reviewgrant.ts");
+  const ext = path.join(here, "..", "ext", "grant-match.ts");
+  const read = (f) => Number(/export const GRANT_TTL_MS\s*=\s*([0-9_\s*]+);/.exec(fs.readFileSync(f, "utf8"))?.[1].replace(/[_\s]/g, "").replace(/\*\s*/g, "*").split("*").reduce((a, b) => a * Number(b), 1));
+  assert.equal(read(src), read(ext), "src 与 ext 的 GRANT_TTL_MS 漂了：改一处必须改两处");
+  assert.equal(read(src), GRANT_TTL_MS);
 });
 
 check("无关命令：不归这份授权管（照样走原来的判定）", () => {

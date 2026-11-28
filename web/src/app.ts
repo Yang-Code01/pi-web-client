@@ -2789,6 +2789,8 @@ export class App {
           this.reviewAuto = state;
           if (before !== state?.status) this.autoTakeover = false;
           this.syncAutoRoundSheet();
+          // 全屏评审浮层里画的也是这张自动评审卡：别的评审帧都刷它，这一帧不刷就会停在上一次的状态。
+          this.syncReviewSheet();
           if (this.queueTab === "review") this.renderQueue();
         }
         break;
@@ -19750,6 +19752,19 @@ export class App {
     return renderReview(this.reviewPanelInput());
   }
 
+  /**
+   * 「自动评审这颗按钮为什么开不了」：按优先级挑一句话（PR 分支对不上 > 已有一条在跑 > 缺前提）。
+   *
+   * 三分支写成方法而不是叠三元：再加一种不可开跑的理由时只加一行。
+   */
+  private autoWhy(view: { mismatch: boolean; local: string; head: string; missingWhy: string }): string {
+    if (view.mismatch) {
+      return tr("本地是 {p1}，PR 的 head 是 {p2} —— 自动评审只在你自己那条分支上跑", { p1: view.local, p2: view.head });
+    }
+    if (this.reviewAuto?.status === "running") return tr("这个会话已经有一条自动评审在跑了");
+    return view.missingWhy || "";
+  }
+
   /** 面板与「评审详情」dialog 共用同一份输入。 */
   private reviewPanelInput(): ReviewPanelInput {
     const dir = this.reviewDir();
@@ -19808,11 +19823,7 @@ export class App {
           return {
             state: this.reviewAuto,
             canStart: view.canRun && !mismatch && !running,
-            why: mismatch
-              ? tr("本地是 {p1}，PR 的 head 是 {p2} —— 自动评审只在你自己那条分支上跑", { p1: local, p2: head })
-              : running
-                ? tr("这个会话已经有一条自动评审在跑了")
-                : view.missingWhy || "",
+            why: this.autoWhy({ mismatch, local, head, missingWhy: view.missingWhy }),
             modeName: modeLabel(this.reviewAuto?.config.mode || this.reviewMode),
           };
         })(),
@@ -20182,7 +20193,12 @@ export class App {
    * 接管就把那条自动评审停在原地，进度不丢，回来还能【继续】。
    */
   private confirmAutoTakeover(after: () => void): void {
-    if (document.querySelector(".modal")) return;
+    // 已经开着一扇窗：不叠第二扇，但也不能**静默丢掉**这条消息 —— 输入框里的字还在，
+    // 人以为发出去了，其实什么都没发生（点了发送却像卡死）。说一句，让他先关窗再发。
+    if (document.querySelector(".modal")) {
+      this.flashToast(tr("先关掉上面那扇窗：这条消息还没发出去。"), true, 6000);
+      return;
+    }
     const modal = el("div", "modal hi");
     const form = el("form");
     const h = el("h2", "", tr("自动评审正在跑"));

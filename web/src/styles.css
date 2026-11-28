@@ -6534,6 +6534,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-auto-stage.now { background: var(--accent-bg); }
 .rv-auto-stage.now b, .rv-auto-stage.now .rv-auto-stage-st { color: var(--accent); }
 .rv-auto-stage.now .rv-auto-stage-bar > i { width: 40%; }
+/* 跑完的一轮（有意见、已经修过）：阶段条填满 —— 空条看起来像「还没开始」。 */
+.rv-auto-stage.done .rv-auto-stage-bar > i { width: 100%; }
 .rv-auto-sev { position: absolute; top: 5px; right: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }
 .rv-auto-sev.critical { background: var(--danger); }
 .rv-auto-sev.high { background: var(--warn); }

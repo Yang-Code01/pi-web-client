@@ -17,7 +17,9 @@ process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-auto-")
 const {
   AUTO_MARK,
   AutoRunner,
+  checksGate,
   clampRounds,
+  mergeResult,
   dismissalMarks,
   fixPrompt,
   fmtTok,
@@ -561,6 +563,32 @@ await checkAsync("停止：修复轮跑着时等它跑完再停", async () => {
   assert.equal(runner.get(S).status, "stopped");
 });
 
+await checkAsync("停止落在收尾途中（推着的时候）：修完就停，不再起一轮新评审", async () => {
+  let release = null;
+  const host = makeHost({
+    push() {
+      return new Promise((resolve) => {
+        release = () => resolve({ ok: true, note: "" });
+      });
+    },
+  });
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await reviewRound(runner, host, ["k1"]); // #1 A 有意见 → 等修
+  assert.equal(runner.get(S).wait, "fix");
+  host.state.running = false;
+  host.state.head = "s1"; // 修完并提交
+  runner.tick();
+  await flush(2); // 进 completeFix，卡在 push 上（busy 还捏着）
+  runner.stop(S); // 就在这时候按停
+  assert.equal(runner.get(S).status, "running", "收尾还没回来，先别改结论");
+  const before = host.runs.length;
+  release();
+  await flush();
+  assert.equal(runner.get(S).status, "stopped", "修完就该停");
+  assert.equal(host.runs.length, before, "不该再起一轮新评审烧 token");
+});
+
 await checkAsync("跳过：这一轮标 skipped、不产生签收", async () => {
   const host = makeHost();
   const runner = new AutoRunner(host);
@@ -685,6 +713,52 @@ check("留存预算：自动轮次不占手动记录的那 20 条", () => {
   const many = { repo: "/r", marks: {}, runs: Array.from({ length: AUTO_RUN_KEEP + 3 }, (_, i) => autos(i)) };
   trimRuns(many);
   assert.equal(many.runs.length, AUTO_RUN_KEEP);
+});
+
+// ---------------------------------------------------------------- 合并前的两道闸
+//
+// 这一层曾经整个判反：脑侧拿的是 `gitpr.ts` 的列表卡结构去读 `checks` / `merged`，
+// 两个字段在那份结构里根本不存在 —— 于是「CI 没过」被判成「没有 checks」，
+// 合成功被判成「PR 还是 CLOSED」。判定搬到这里之后，下面这些用例把它钉住。
+
+check("checks 闸：一条 checks 都没有（没接 CI）算过", () => {
+  assert.equal(checksGate([], null).ok, true);
+});
+
+check("checks 闸：有一条不是 success 就不过，并把名字说出来", () => {
+  const out = checksGate([{ name: "build", state: "success" }, { name: "test", state: "failure" }], true);
+  assert.equal(out.ok, false);
+  assert.match(out.note, /1 个 check 没过/);
+  assert.match(out.note, /test/);
+  // pending / queued 这些同样不算过：没跑完就不能合。
+  assert.equal(checksGate([{ name: "build", state: "pending" }], true).ok, false);
+});
+
+check("checks 闸：mergeable === false 直接不过；null（还在算）不预判", () => {
+  assert.equal(checksGate([], false).ok, false);
+  assert.equal(checksGate([], null).ok, true, "null 是 GitHub 还没算完，交给真合并那一步去报错");
+  assert.equal(checksGate([], true).ok, true);
+});
+
+check("checks 闸：checks 没读全时不能说「全绿」", () => {
+  assert.equal(checksGate([{ name: "build", state: "success" }], true, true).ok, false);
+});
+
+check("合并结果：merged / MERGED 才算合上，CLOSED 不算", () => {
+  assert.equal(mergeResult({ merged: true, state: "closed" }).merged, true);
+  assert.equal(mergeResult({ merged: false, state: "MERGED" }).merged, true);
+  const closed = mergeResult({ merged: false, state: "CLOSED" });
+  assert.equal(closed.merged, false);
+  assert.match(closed.note, /CLOSED/);
+});
+
+check("开跑前两个模型都要选（A 空着到不了第一轮就该拒）", () => {
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  const out = runner.start({ session: S, config: cfg({ mode: "pr", pr: 747, models: { a: { provider: "p", model: "", label: "A" }, b: { provider: "p", model: "b", label: "B" } } }) });
+  assert.equal(out.ok, false);
+  assert.equal(out.code, "no_model");
+  assert.equal(host.runs.length, 0);
 });
 
 if (failures) {

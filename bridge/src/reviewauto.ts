@@ -85,6 +85,13 @@ export interface AutoFix {
   dismissed: number;
   fixed: number;
   note: string;
+  /**
+   * 「改了没提交」那句话已经补过一次了（只补一次，第二次直接暂停）。
+   *
+   * 单独一格，不拿 `note` 兼任：`note` 也装回执里的理由 / `uncommitted` 这类码，一旦混用，
+   * 哪次回执带了 note 就会把「已经提醒过」这件事抹掉，变成无限提醒。
+   */
+  nudged?: boolean;
 }
 
 export type RoundStatus = "running" | "clean" | "findings" | "failed" | "skipped";
@@ -215,6 +222,10 @@ export function isCleanRound(r: Pick<AutoRound, "status">): boolean {
 /**
  * 「同一份 diff 上两家各签一次」：末两轮都干净、且评的是同一个 sha。
  * 交替轮值下这两轮的模型必然不同（`slotOf`），所以不用再比槽位。
+ *
+ * 「同一份 diff」只按 head sha 比，不看 base 有没有动（PR 模式下 base 前进了、merge base 变了，
+ * 这一条仍算签收）：真去核 base 只能靠每次轮询问远端，代价远大于收益 —— 两家评的都是
+ * **同一个 head 上的同一段改动**，这就够「都看过了」。
  */
 export function signedOff(rounds: readonly AutoRound[]): boolean {
   const list = rounds.filter((r) => r.status !== "running" && r.status !== "skipped");
@@ -241,6 +252,45 @@ export function fuseReason(state: Pick<AutoState, "rounds" | "config">): { code:
   const dup = repeatedKeys(state.rounds);
   if (dup.length) return { code: "repeat", keys: dup };
   return null;
+}
+
+/** 一条 check（口径与右栏 PR 详情那份一样：`state` 是 success / pending / failure…）。 */
+export interface AutoCheck {
+  name: string;
+  state: string;
+}
+
+/**
+ * 合并前的 checks 闸。
+ *
+ * 与右栏 PR 详情**同一口径**：一条检查都没有（仓库没接 CI）算过；有就一律要求 success。
+ * `mergeable === false` 直接不过；`null`（GitHub 还在算）不当「能合」也不当「不能合」——
+ * 真去合并那一步会自己报错并停下来，不在这里提前否定。
+ * `truncated` = checks 没读全（翻页中途出错 / 到页数上限）：那就不能说「全绿」。
+ *
+ * 判定写在这里（而不是脑的 `prChecks` 里），是因为它曾经拿一份**没有 `checks` 字段**的
+ * PR 结构去读：`info.checks` 恒为 `undefined`，于是「CI 没过」静默判成「没有 checks」。
+ */
+export function checksGate(checks: readonly AutoCheck[], mergeable: boolean | null, truncated = false): { ok: boolean; note: string } {
+  if (mergeable === false) return { ok: false, note: "PR 现在合不了：有冲突或者被锁住了" };
+  if (truncated) return { ok: false, note: "checks 没读全（翻页中途出错），看不出是不是全绿" };
+  const bad = checks.filter((c) => c.state !== "success");
+  if (bad.length) {
+    return { ok: false, note: `${bad.length} 个 check 没过：${bad.slice(0, 3).map((c) => `${c.name}（${c.state}）`).join("、")}` };
+  }
+  return { ok: true, note: checks.length ? `${checks.length} 个 check 全过` : "没有 checks" };
+}
+
+/**
+ * 合并到底成没成。
+ *
+ * GitHub 合完 `state` 仍是 `closed`（与「关掉没合」同一个值），所以只有 `merged` 或 `MERGED` 算合上；
+ * 别拿 `state === "CLOSED"` 当「没合」的判据，否则合成功也会被当成失败暂停（自动合并永远走不到 `merged`）。
+ */
+export function mergeResult(view: { merged: boolean; state: string }): { merged: boolean; note: string } {
+  const state = String(view?.state ?? "").toUpperCase();
+  if (view?.merged || state === "MERGED") return { merged: true, note: "" };
+  return { merged: false, note: `PR 还是 ${state || "未知"} 状态：合并那句话没有生效` };
 }
 
 /** 下一轮：还没开始就 A，否则接在最后一轮后面。 */
@@ -278,7 +328,12 @@ export function normVerdict(raw: unknown): VerdictKind | "" {
   return "";
 }
 
-/** 从一条 JSON 里挑出 verdicts 数组（容忍模型少写一层、或者键名变体）。 */
+/**
+ * 从一条 JSON 里挑出 verdicts 数组（容忍模型少写一层、或者键名变体）。
+ *
+ * 参数是 `any`：这是模型写的自由文本解析出来的 JSON，进来时形状完全未知，
+ * 只能逐层 `Array.isArray` 探。**出去**以后一律按 `Verdict` 收口，`any` 不出这个函数。
+ */
 function verdictList(raw: any): any[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -477,7 +532,11 @@ export function readAuto(session: string): AutoState | null {
   return normalizeAuto(read.value);
 }
 
-/** 老状态 / 半截写入都补齐成现在的形状：读出来不该因为少个字段就崩。 */
+/**
+ * 老状态 / 半截写入都补齐成现在的形状：读出来不该因为少个字段就崩。
+ *
+ * `raw` 是 `any`：盘上那份可能是上一个大版本写的，也可能是写到一半的文件，逐字段 `?.` 探测。
+ */
 export function normalizeAuto(raw: any): AutoState {
   const config: AutoConfig = {
     mode: ["workspace", "range", "commit", "pr"].includes(raw?.config?.mode) ? raw.config.mode : "workspace",
@@ -548,7 +607,11 @@ export function writeAuto(state: AutoState): void {
   writeJson(autoFile(state.session), state);
 }
 
-/** 盘上所有自动评审（开机接回时用）。 */
+/**
+ * 盘上所有的自动评审（换脑接回时逐个 `resume`）。
+ *
+ * 一个会话只有一份：`start()` 直接覆盖同名文件，上一次的轮次也跟着被换掉（卡片看的是新的那一次）。
+ */
 export function listAuto(): AutoState[] {
   let names: string[] = [];
   try {
@@ -566,15 +629,6 @@ export function listAuto(): AutoState[] {
     }
   }
   return out;
-}
-
-/** 同一会话只留一条：新开一条就把旧的收掉（文件保留，卡片还看得到上一次）。 */
-export function clearAuto(session: string): void {
-  try {
-    fs.rmSync(autoFile(session));
-  } catch {
-    /* 没有就没有 */
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -632,6 +686,7 @@ export class AutoRunner {
     if (!session) return { ok: false, code: "no_session", error: "没有会话：自动评审评的是它的目录", state: null };
     const cur = this.states.get(session);
     if (cur && cur.status === "running") return { ok: false, code: "busy", error: "这个会话已经有一条自动评审在跑了", state: cur };
+    if (!config.models.a.model) return { ok: false, code: "no_model", error: "第一个模型没选：交替轮值要两个", state: null };
     if (!config.models.b.model) return { ok: false, code: "no_model", error: "第二个模型没选：交替轮值要两个", state: null };
     if (!config.repo) return { ok: false, code: "not_git", error: "这个目录不是 git 仓库，没有东西可评。", state: null };
     const state: AutoState = {
@@ -923,6 +978,15 @@ export class AutoRunner {
   /** 起第 n 轮（n = 已有最大号 + 1）。 */
   private async beginRound(state: AutoState): Promise<void> {
     if (state.status !== "running") return;
+    // 「停止」落在收尾途中（推一次可能要几分钟，期间 `step()` 一直在等 busy）：
+    // 修完就停，别再起一轮新的评审去烧 token —— 那正是 stop() 的字面语义。
+    if (state.stopping) {
+      state.status = "stopped";
+      state.reason = "你按了停止";
+      state.reasonCode = "user-stopped";
+      this.finish(state);
+      return;
+    }
     const n = nextRoundNo(state.rounds);
     const slot = slotOf(n);
     const model = slot === "A" ? state.config.models.a : state.config.models.b;
@@ -1043,8 +1107,10 @@ export class AutoRunner {
     }
 
     if (!changed && dirty) {
-      // 改了没提交：再提醒一次（只提醒一次，第二轮还没提交就停下来）
-      if (!round.fix?.note) {
+      // 改了没提交：再提醒一次（只提醒一次，第二轮还没提交就停下来）。
+      // 「提醒过没有」用 `nudged` 记，不借用 `note` —— 那格装着回执的理由。
+      if (!fix.nudged) {
+        fix.nudged = true;
         fix.note = "uncommitted";
         this.save(state);
         void this.nudgeCommit(state, round);
@@ -1120,7 +1186,7 @@ export class AutoRunner {
     }
   }
 
-  /** 「改了没提交」时补一句话，不算新的一轮。 */
+  /** 「改了没提交」时补一句话，不算新的一轮（`fix.nudged` 记着已经补过）。 */
   private async nudgeCommit(state: AutoState, round: AutoRound): Promise<void> {
     const sess = this.host.session(state.session);
     if (!sess) return;

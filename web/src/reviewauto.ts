@@ -145,13 +145,18 @@ export function worstSeverity(r: Pick<AutoRoundView, "severity">): Severity | ""
   return WORST.find((s) => (counts[s] ?? 0) > 0) ?? "";
 }
 
+/** 轮次按号排好（桥给的就是这个顺序，别在两处各写一遍排序）。 */
+function byRound(a: AutoRoundView, b: AutoRoundView): number {
+  return a.n - b.n;
+}
+
 /**
- * 横向阶段条要画哪些格子：已有轮次各一格 + 下一条待评（如果还在跑）。
- * 超过 6 格就不再往后挤 —— 一次自动评审最多 10 轮，挤成一条细线谁也点不中。
+ * 横向阶段条要画哪些格子：已经跑过的轮次各一格（**不画**「下一条待评」）。
+ *
+ * 最多 6 格：上限是 30 轮（默认 10），全画出来会切成一根根细线谁也点不中。
  */
 export function stageChips(state: Pick<AutoStateView, "rounds">): AutoRoundView[] {
-  // 一次自动评审最多 10 轮，全画出来会切成一根根细线谁也点不中：只留最近 6 格。
-  return [...state.rounds].sort((a, b) => a.n - b.n).slice(-6);
+  return [...state.rounds].sort(byRound).slice(-6);
 }
 
 /** 卡片上「现在在干什么」那一句。 */
@@ -204,15 +209,26 @@ export function noteText(note: string): string {
   return hit ? tr(hit) : note; // 认不出来的（老记录 / 模型写的理由）原样给，别吞掉
 }
 
+/** 干净的一轮签收在哪一路（表驱动：加一种就加一行，别再往上叠三元）。 */
+const CLEAN_TEXT: Record<string, string> = {
+  dismissed: "判为误报 · 签收",
+  "no-changes": "没改动 · 签收",
+  "": "零意见 · 签收",
+};
+
+/** 一轮的结论（**不含** `#3 A` 抬头）：阶段条的 title 与明细行拼的是这一份。 */
+export function roundResult(r: AutoRoundView): string {
+  if (r.status === "clean") return tr(CLEAN_TEXT[r.note] ?? CLEAN_TEXT[""]);
+  if (r.status === "skipped") return `${tr("已跳过")}${r.note ? ` · ${noteText(r.note)}` : ""}`;
+  if (r.status === "failed") return `${tr("失败")}${r.note ? ` · ${noteText(r.note)}` : ""}`;
+  if (r.status === "running") return tr("正在评");
+  const fixed = r.fix ? tr("→ 已修 {p1} 个文件", { p1: String(r.fix.files) }) : "";
+  return `${tr("{p1} 条意见", { p1: String(r.findings) })} ${fixed}`.trim();
+}
+
 /** 一轮的「#3 A · 2 条意见 → 已修」。 */
 export function roundLine(r: AutoRoundView): string {
-  const head = `#${r.n} ${r.slot}`;
-  if (r.status === "clean") return `${head} · ${r.note === "dismissed" ? tr("判为误报 · 签收") : r.note === "no-changes" ? tr("没改动 · 签收") : tr("零意见 · 签收")}`;
-  if (r.status === "skipped") return `${head} · ${tr("已跳过")}${r.note ? ` · ${noteText(r.note)}` : ""}`;
-  if (r.status === "failed") return `${head} · ${tr("失败")}${r.note ? ` · ${noteText(r.note)}` : ""}`;
-  if (r.status === "running") return `${head} · ${tr("正在评")}`;
-  const fixed = r.fix ? tr("→ 已修 {p1} 个文件", { p1: String(r.fix.files) }) : "";
-  return `${head} · ${tr("{p1} 条意见", { p1: String(r.findings) })} ${fixed}`.trim();
+  return `#${r.n} ${r.slot} · ${roundResult(r)}`;
 }
 
 /** 轮次窗里「这条意见的判定」。 */
@@ -296,13 +312,13 @@ export function renderAutoPanel(input: AutoPanelInput, actions: AutoActions): HT
 
   // ---- 当前轮 / 最近一轮的明细（最多两行）
   const detail = el("div", "rv-auto-detail");
-  const recent = [...state.rounds].sort((a, b) => a.n - b.n).slice(-2);
+  const recent = [...state.rounds].sort(byRound).slice(-2);
   for (const r of recent) {
     const row = el("button", `rv-auto-row ${r.status === "running" ? "on" : ""}`) as HTMLButtonElement;
     row.type = "button";
     row.onclick = () => actions.onOpenRound(r.n);
     const line1 = el("div", "rv-auto-row1");
-    line1.append(el("span", "rv-auto-no", `#${r.n}`), el("span", `rv-auto-slot ${r.slot === "B" ? "b" : "a"}`, r.slot), el("span", "rv-auto-model", r.label || `${r.provider}/${r.model}`), el("span", "rv-auto-res", roundLine(r).split(" · ").slice(1).join(" · ")));
+    line1.append(el("span", "rv-auto-no", `#${r.n}`), el("span", `rv-auto-slot ${r.slot === "B" ? "b" : "a"}`, r.slot), el("span", "rv-auto-model", r.label || `${r.provider}/${r.model}`), el("span", "rv-auto-res", roundResult(r)));
     const line2 = el("div", "rv-auto-row2");
     if (r.sha) line2.append(el("span", "rv-auto-sha", r.sha.slice(0, 7)));
     if (r.fix && (r.fix.files || r.fix.added || r.fix.removed)) {
@@ -538,7 +554,7 @@ export class AutoSettingsSheet {
     const preview = el("div", "rv-auto-rehearse");
     preview.append(el("div", "rv-auto-cap", tr("按下开始之后会发生什么")));
     const rail = el("div", "rv-auto-rail");
-    const nodes: { text: string; tone?: string }[] = [
+    const nodes: { text: string }[] = [
       { text: tr("#1 {p1} 评", { p1: "A" }) },
       { text: tr("#2 {p1} 评", { p1: "B" }) },
       { text: tr("#3 有意见就修 → 提交") },
@@ -546,7 +562,7 @@ export class AutoSettingsSheet {
     ];
     for (const [i, node] of nodes.entries()) {
       if (i) rail.append(el("span", "ar", "→"));
-      const nd = el("span", `nd ${node.tone ?? ""}`);
+      const nd = el("span", "nd");
       nd.textContent = node.text;
       rail.append(nd);
     }
@@ -651,7 +667,9 @@ export class AutoRoundSheet {
       return span;
     };
     strip.append(fact(tr("意见"), String(findings.length || r.findings)));
-    strip.append(fact(tr("已修 / 误报 / 不改"), `${fixed} / ${fp} / ${wont || (r.status === "clean" ? r.findings : 0)}`));
+    // 三个数只数**回执里的判定**：以前「不改」为 0 时拿整轮意见数兜底，
+    // 一轮「回执全判误报」就会写成 `0 / 3 / 3`（同一条意见被数两遍，加起来比意见数还多）。
+    strip.append(fact(tr("已修 / 误报 / 不改"), `${fixed} / ${fp} / ${wont}`));
     const fx = r.fix;
     strip.append(
       (() => {

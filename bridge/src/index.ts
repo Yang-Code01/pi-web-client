@@ -88,7 +88,7 @@ import {
   type ReviewMode,
 } from "./review.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
-import { AutoRunner, type AutoHost } from "./reviewauto.ts";
+import { AutoRunner, checksGate, mergeResult, type AutoCheck, type AutoHost } from "./reviewauto.ts";
 import { writeGrant } from "./reviewgrant.ts";
 import { localRepoName } from "./gitpr.ts";
 import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
@@ -127,7 +127,7 @@ import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
-import { githubApiBase, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
+import { checksOf, githubApiBase, githubRest, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
 import { cancelGhSetup, ghSetupCached, ghSetupStatus, installGh, loginGh } from "./gh-setup.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
@@ -2829,25 +2829,69 @@ async function main(): Promise<void> {
       );
     });
 
-  /** 这个会话从 `since` 之后最后一条 assistant 消息（回执与「这一轮有没有报错」都从它读）。 */
-  const lastAssistant = (sessionId: string, since: string): { text: string; error: string } => {
+  /**
+   * 这个会话里、我们最后一次发进去的那句话之后的一条 assistant 消息（回执与「这一轮有没有报错」都读它）。
+   *
+   * 有 `anchor`（刚发进去的那句 prompt）就按它的**位置**定锚，不用时间戳：会话当时可能还在跑，
+   * 这条 prompt 是排在队尾的 followUp，上一轮那条 assistant 的 `ts` 同样比 promptAt 新 ——
+   * 只比时间会把**别人的答复**当成本轮回执。会话把 prompt 立刻落成一条 user item，按它切最准。
+   * 没给 anchor（老路径 / 测试）才退回时间戳。给了 anchor 却找不到（还没落地）就当没有，不猜。
+   */
+  const lastAssistant = (sessionId: string, since: string, anchor = ""): { text: string; error: string } => {
     const session = sessions.get(sessionId);
     if (!session) return { text: "", error: "" };
-    for (let i = session.items.length - 1; i >= 0; i--) {
+    let from = -1;
+    if (anchor) {
+      for (let i = session.items.length - 1; i >= 0; i--) {
+        const item = session.items[i];
+        if (item?.kind === "user" && String(item.text ?? "") === anchor) {
+          from = i;
+          break;
+        }
+      }
+      if (from < 0) return { text: "", error: "" };
+    }
+    for (let i = session.items.length - 1; i > from; i--) {
       const item = session.items[i];
       if (item?.kind !== "assistant") continue;
-      if (since && item.ts && item.ts < since) return { text: "", error: "" };
+      if (!anchor && since && item.ts && item.ts < since) return { text: "", error: "" };
       return { text: String(item.text ?? ""), error: String(item.errorMessage ?? "") };
     }
     return { text: "", error: "" };
   };
 
-  /** PR 详情：checks / mergeable / head 分支都从这一份拿（与面板同一个口径）。 */
-  const autoPrInfo = async (repo: string, pr: number, session: string): Promise<any | null> => {
+  /**
+   * 自动评审眼里的一个 PR：判定要用的那几格。
+   *
+   * 走 REST 的 `/repos/<repo>/pulls/<n>` + `checksOf` —— 与右栏 PR 详情**同一条通道、同一个口径**
+   * （checks 按 head sha 取 check-runs 与 commit status）。别改成 `pullRequestInfo`：那份是列表卡用的，
+   * 结构里没有 `checks` / `mergeable` / `merged`，读出来恒 `undefined`，会让「CI 没过」与「已经合了」都静默判反。
+   */
+  interface AutoPrView {
+    headRefName: string;
+    state: string;
+    merged: boolean;
+    /** `null` = GitHub 还在算（第一次问常常是 null），不是「不能合」。 */
+    mergeable: boolean | null;
+    checks: AutoCheck[];
+    checksTruncated: boolean;
+  }
+
+  const autoPrView = async (repo: string, pr: number, session: string): Promise<AutoPrView | null> => {
     try {
       const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
-      const out = await pullRequestInfo(repo, pr, { fresh: true, login: gh.login, env: gh.env, token: gh.restToken, apiBase: githubApiBase() });
-      return out?.ok ? out.info : null;
+      const ctx = { upstreamApi: githubApiBase() };
+      const raw = await githubRest(ctx, gh.restToken ?? null, `/repos/${repo}/pulls/${pr}`);
+      const headSha = String(raw?.head?.sha ?? "");
+      const found = headSha ? await checksOf(ctx, gh.restToken ?? null, repo, headSha) : { checks: [], truncated: false };
+      return {
+        headRefName: String(raw?.head?.ref ?? ""),
+        state: String(raw?.state ?? ""),
+        merged: raw?.merged === true,
+        mergeable: raw?.mergeable === null || raw?.mergeable === undefined ? null : raw.mergeable === true,
+        checks: found.checks,
+        checksTruncated: found.truncated,
+      };
     } catch {
       return null;
     }
@@ -2893,13 +2937,18 @@ async function main(): Promise<void> {
     session(id) {
       const session = sessions.get(id);
       if (!session) return null;
+      // 我们最后发进去的那句话：回执只认它之后的那条 assistant（见 `lastAssistant` 的注释）。
+      let asked = "";
       return {
         get running() {
           return session.state.running === true;
         },
-        prompt: (text: string) => session.prompt(text, undefined, undefined, "followUp"),
-        lastAssistant: (since: string) => lastAssistant(id, since).text,
-        lastError: (since: string) => lastAssistant(id, since).error,
+        prompt: (text: string) => {
+          asked = text;
+          return session.prompt(text, undefined, undefined, "followUp");
+        },
+        lastAssistant: (since: string) => lastAssistant(id, since, asked).text,
+        lastError: (since: string) => lastAssistant(id, since, asked).error,
       };
     },
     head: (cwd) => gitOut(cwd, ["rev-parse", "HEAD"]),
@@ -2920,21 +2969,14 @@ async function main(): Promise<void> {
       return out.ok ? { ok: true, note: "" } : { ok: false, note: out.err.slice(0, 400) || "git push 失败" };
     },
     async prChecks(config, session) {
-      const info = await autoPrInfo(config.repo, config.pr, session);
-      if (!info) return { ok: false, note: "拿不到这个 PR 的状态（gh 没登录 / 断网 / 号不对）" };
-      if (info.mergeable === false) return { ok: false, note: "PR 现在合不了：有冲突或者被锁住了" };
-      const checks = Array.isArray(info.checks) ? (info.checks as { name: string; state: string }[]) : [];
-      // 一个检查都没有的仓库（没接 CI）算过；有的话一律要求 success —— 与面板同一口径。
-      const bad = checks.filter((c) => c.state !== "success");
-      if (bad.length) return { ok: false, note: `${bad.length} 个 check 没过：${bad.slice(0, 3).map((c) => `${c.name}（${c.state}）`).join("、")}` };
-      return { ok: true, note: checks.length ? `${checks.length} 个 check 全过` : "没有 checks" };
+      const view = await autoPrView(config.repo, config.pr, session);
+      if (!view) return { ok: false, note: "拿不到这个 PR 的状态（gh 没登录 / 断网 / 号不对）" };
+      return checksGate(view.checks, view.mergeable, view.checksTruncated);
     },
     async prState(config, session) {
-      const info = await autoPrInfo(config.repo, config.pr, session);
-      if (!info) return { merged: false, note: "拿不到这个 PR 的状态，合没合看不出来" };
-      const state = String(info.state ?? "").toUpperCase();
-      if (info.merged || state === "MERGED") return { merged: true, note: "" };
-      return { merged: false, note: `PR 还是 ${state || "未知"} 状态：合并那句话没有生效` };
+      const view = await autoPrView(config.repo, config.pr, session);
+      if (!view) return { merged: false, note: "拿不到这个 PR 的状态，合没合看不出来" };
+      return mergeResult(view);
     },
     grant: (session, g) => {
       try {
@@ -2961,6 +3003,14 @@ async function main(): Promise<void> {
     },
     emit: (state) => broadcast({ type: "review.auto", sessionId: state.session, state }),
     log: (line) => log(line),
+  };
+
+  /** 页面那四颗按钮 → 编排器的一个动作（一张表，别再往下叠三元）。 */
+  const AUTO_ACTIONS: Record<string, ((runner: AutoRunner, session: string) => ReturnType<AutoRunner["continue"]>) | undefined> = {
+    "review.auto.stop": (runner, session) => runner.stop(session),
+    "review.auto.handover": (runner, session) => runner.handOver(session),
+    "review.auto.continue": (runner, session) => runner.continue(session),
+    "review.auto.skip": (runner, session) => runner.skip(session),
   };
 
   const autoRunner = new AutoRunner(autoHost);
@@ -4708,11 +4758,13 @@ async function main(): Promise<void> {
                 // PR 模式那道闸（D457 第 16 条）：本地当前分支必须就是 PR 的 head，否则修完推不上去。
                 if (mode === "pr") {
                   if (!pr) throw new Error("先选一个 PR：自动评审要知道合哪一个");
-                  const info = await autoPrInfo(repo, pr, session);
-                  if (!info) throw new Error(`拿不到 PR #${pr} 的状态，先确认 gh 登录了这个仓库`);
+                  const view = await autoPrView(repo, pr, session);
+                  if (!view) throw new Error(`拿不到 PR #${pr} 的状态，先确认 gh 登录了这个仓库`);
                   if (!branch || branch === "HEAD") throw new Error("当前不在任何分支上（detached HEAD），修完没有地方推");
-                  if (info.headRefName && info.headRefName !== branch) {
-                    throw new Error(`本地是 ${branch}，PR #${pr} 的 head 是 ${info.headRefName} —— 自动评审只在你自己那条分支上跑`);
+                  // 认不出 PR 的 head 就不能比：「跳过比对」等于把闸门放开到任意分支，宁可不开跑。
+                  if (!view.headRefName) throw new Error(`读不到 PR #${pr} 的 head 分支，没法确认本地这条就是要推的那条`);
+                  if (view.headRefName !== branch) {
+                    throw new Error(`本地是 ${branch}，PR #${pr} 的 head 是 ${view.headRefName} —— 自动评审只在你自己那条分支上跑`);
                   }
                 }
                 const out = autoRunner.start({
@@ -4749,15 +4801,7 @@ async function main(): Promise<void> {
           case "review.auto.skip": {
             const session = String(msg.sessionId ?? "");
             const type = String(msg.type);
-            const act = type.endsWith(".stop") ? "stop" : type.endsWith(".handover") ? "handover" : type.endsWith(".skip") ? "skip" : "continue";
-            const out =
-              act === "stop"
-                ? autoRunner.stop(session)
-                : act === "handover"
-                  ? autoRunner.handOver(session)
-                  : act === "skip"
-                    ? autoRunner.skip(session)
-                    : autoRunner.continue(session);
+            const out = AUTO_ACTIONS[type]?.(autoRunner, session) ?? autoRunner.continue(session);
             send({ type: "review.auto", sessionId: session, state: out.state, error: out.error, code: out.code });
             return;
           }

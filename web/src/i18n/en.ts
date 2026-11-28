@@ -4709,6 +4709,7 @@ export const en: Dict = {
   "这个会话已经有一条自动评审在跑了": "This session already has an auto review running",
   "自动评审 · 第 {p1} 轮 · {p2} 条意见": "Auto review · round {p1} · {p2} findings",
   "自动评审 · 合并 PR #{p1}": "Auto review · merging PR #{p1}",
+  "先关掉上面那扇窗：这条消息还没发出去。": "Close the window above first — this message has not been sent.",
   "这是只读的更新组：只有 {p1} 能发公告": "This update group is read-only: only {p1} can post",
   "重新加入": "Rejoin",
   "打开更新日志": "Open changelog",
