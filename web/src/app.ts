@@ -520,9 +520,9 @@ export class App {
   private reviewToasted = new Set<string>();
   /** `会话id|cwd`：变了就把面板状态清空（评审按会话分开）。 */
   private reviewSessionKey = "";
-  /** 当前会话的自动评审（D450）。桥按会话存一份，切会话时重新问一次。 */
+  /** 当前会话的自动评审（D457）。桥按会话存一份，切会话时重新问一次。 */
   private reviewAuto: AutoStateView | null = null;
-  /** 每个会话的自动评审状态：切会话时面板按它换卡片（「评审中 / 评审通过」徽标那一版没做，见 D450 第 20 条）。 */
+  /** 每个会话的自动评审状态：切会话时面板按它换卡片（「评审中 / 评审通过」徽标那一版没做，见 D457 第 20 条）。 */
   private reviewAutoStates = new Map<string, AutoStateView>();
   private autoSettings: AutoSettingsSheet | null = null;
   /** 同一个会话里再打开设置时接着上次填的值（刷新页面就没了，与 D409 的模型口径一致）。 */
@@ -2782,7 +2782,7 @@ export class App {
       }
       // ------------------------------------------------ 代码评审（#651）
       case "review.auto": {
-        // D450：一条自动评审的整份状态（桥每次迁移都会广播；页面只负责画）。
+        // D457：一条自动评审的整份状态（桥每次迁移都会广播；页面只负责画）。
         const sessionId = String(msg.sessionId ?? "");
         const state = (msg.state ?? null) as AutoStateView | null;
         if (state) this.reviewAutoStates.set(sessionId, state);
@@ -3795,7 +3795,7 @@ export class App {
   // ---------------------------------------------------------------- actions
   private sendPrompt(behavior: "steer" | "followUp" = "steer"): void {
     if (!this.currentId) return;
-    // 自动评审跑着时你自己发言 = 接管（D450 第 14 条）：先问一次，再决定停不停它。
+    // 自动评审跑着时你自己发言 = 接管（D457 第 14 条）：先问一次，再决定停不停它。
     if (!this.autoTakeover && this.reviewAuto && this.reviewAuto.status === "running" && this.reviewAuto.session === this.currentId) {
       this.confirmAutoTakeover(() => this.sendPrompt(behavior));
       return;
@@ -19162,7 +19162,7 @@ export class App {
     if (key === this.reviewSessionKey) return;
     this.reviewSessionKey = key;
     this.reviewState = null;
-    // D450：自动评审按会话各一条 —— 切会话时换成那个会话的那份（没跑过就是 null，卡片不出现）。
+    // D457：自动评审按会话各一条 —— 切会话时换成那个会话的那份（没跑过就是 null，卡片不出现）。
     this.reviewAuto = this.reviewAutoStates.get(this.currentId ?? "") ?? null;
     this.autoTakeover = false;
     this.autoRoundSheet?.close();
@@ -19528,7 +19528,7 @@ export class App {
       ghActions: this.ghCardActions(),
       auto: {
         panel: (() => {
-          // D450 第 16 条：PR 模式要求「本地当前分支 = PR head」—— 按钮灰着并说清是哪两条对不上。
+          // D457 第 16 条：PR 模式要求「本地当前分支 = PR head」—— 按钮灰着并说清是哪两条对不上。
           const prInfo = this.reviewPrInfo.number === Number(this.reviewPr) ? this.reviewPrInfo.info : null;
           const local = (this.git?.branch ?? "").trim();
           const head = String(prInfo?.headRefName ?? "").trim();
@@ -19788,7 +19788,7 @@ export class App {
     this.reviewSheet?.update(this.reviewPanelInput());
   }
 
-  // ---------------------------------------------------------------- 自动评审（D450）
+  // ---------------------------------------------------------------- 自动评审（D457）
 
   /** 设置 dialog（原型选的 B：上半设置、下半预演）。 */
   private openAutoSettings(): void {
@@ -19893,7 +19893,7 @@ export class App {
   }
 
   /**
-   * 自动评审跑着时你按发送（D450 第 14 条）：先问一次「接管并发送 / 取消」——
+   * 自动评审跑着时你按发送（D457 第 14 条）：先问一次「接管并发送 / 取消」——
    * 接管就把那条自动评审停在原地，进度不丢，回来还能【继续】。
    */
   private confirmAutoTakeover(after: () => void): void {

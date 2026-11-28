@@ -2751,7 +2751,7 @@ async function main(): Promise<void> {
   resumeReviewJobs();
 
   // -------------------------------------------------------------------------
-  // 自动评审（D450）：两个模型交替评，修完再评，直到同一份 diff 上两家都签收。
+  // 自动评审（D457）：两个模型交替评，修完再评，直到同一份 diff 上两家都签收。
   //
   // 编排在脑里、状态在盘上（`review/auto/<会话>.json`）：关页面、切会话、换脑都接着跑。
   // 这里只提供「外部世界长什么样」—— 起评审、读进度、跑 git、给会话发话、合并 —— 判定全在
@@ -4563,7 +4563,7 @@ async function main(): Promise<void> {
             })();
             return;
           }
-          // ------------------------------------------------------------ 自动评审（D450）
+          // ------------------------------------------------------------ 自动评审（D457）
           case "review.auto.get": {
             const session = String(msg.sessionId ?? "");
             send({ type: "review.auto", sessionId: session, state: autoRunner.read(session) });
@@ -4585,7 +4585,7 @@ async function main(): Promise<void> {
                 const { repo } = effectiveReviewDir(dir, session);
                 const branch = gitOut(dir || repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
                 const pr = Number(msg.pr) || 0;
-                // PR 模式那道闸（D450 第 16 条）：本地当前分支必须就是 PR 的 head，否则修完推不上去。
+                // PR 模式那道闸（D457 第 16 条）：本地当前分支必须就是 PR 的 head，否则修完推不上去。
                 if (mode === "pr") {
                   if (!pr) throw new Error("先选一个 PR：自动评审要知道合哪一个");
                   const info = await autoPrInfo(repo, pr, session);

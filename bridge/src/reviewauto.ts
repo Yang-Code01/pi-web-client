@@ -1,5 +1,5 @@
 /**
- * 自动评审（D450）：两个模型交替轮值，评 → 修 → 再评，直到同一份 diff 上两家都签收，
+ * 自动评审（D457）：两个模型交替轮值，评 → 修 → 再评，直到同一份 diff 上两家都签收，
  * 或者撞上熔断 / 你按停。
  *
  * 形态：**由 ticker 驱动的状态机**，不是一条长跑 async 函数。理由与 D446 同一套 ——
@@ -57,7 +57,7 @@ export interface AutoConfig extends AutoScope {
   slug: string;
   /**
    * 「工作区改动」模式的起点 sha：第一轮评的是 `git diff HEAD`，之后每轮都有提交，
-   * 所以第二轮起改按 `baseSha..HEAD` 评（D450 第 9 条），否则会「0 条意见」假签收。
+   * 所以第二轮起改按 `baseSha..HEAD` 评（D457 第 9 条），否则会「0 条意见」假签收。
    */
   baseSha: string;
   lang: ReviewLang;
@@ -132,7 +132,7 @@ export interface AutoState {
   /** 暂停 / 停止的原因（给卡片看）。`reasonCode` 给 i18n 与测试认。 */
   reason: string;
   reasonCode: string;
-  /** 按了「停止」但还在等修复轮跑完（D450 第 13 条）。 */
+  /** 按了「停止」但还在等修复轮跑完（D457 第 13 条）。 */
   stopping: boolean;
   startedAt: string;
   endedAt: string;
@@ -173,7 +173,7 @@ export interface AutoHost {
   /** PR 的 checks 绿不绿、合没合（PR 模式 + 自动合并用）。 */
   prChecks(config: AutoConfig, session: string): Promise<{ ok: boolean; note: string }>;
   prState(config: AutoConfig, session: string): Promise<{ merged: boolean; note: string }>;
-  /** 授权：运行期间只放行这一个 PR 的合并（D450 第 5 条）。 */
+  /** 授权：运行期间只放行这一个 PR 的合并（D457 第 5 条）。 */
   grant(session: string, g: { pr: number; repo: string; branch: string; slug: string } | null): void;
   /** 收尾：打标记 + 往会话上挂一条结论 + 徽标。 */
   finish(state: AutoState, text: string, marks: { repo: string; session: string; key: string; mark: ReviewMark }[]): void;
@@ -199,7 +199,7 @@ export function clampRounds(n: unknown): number {
   return Math.min(MAX_ROUNDS_CAP, v);
 }
 
-/** 第 n 轮用哪个槽：A 先，之后交替（D450 第 1 条）。 */
+/** 第 n 轮用哪个槽：A 先，之后交替（D457 第 1 条）。 */
 export function slotOf(n: number): "A" | "B" {
   return n % 2 === 1 ? "A" : "B";
 }
@@ -353,7 +353,7 @@ export function parseVerdict(text: string): { ok: boolean; verdicts: Verdict[]; 
   return { ok: false, verdicts: [], note: "" };
 }
 
-/** 回执里「这条不用改」的比例够不够把这一轮算成签收（D450 第 2 条的「误报签收」）。 */
+/** 回执里「这条不用改」的比例够不够把这一轮算成签收（D457 第 2 条的「误报签收」）。 */
 export function dismissalMarks(
   findings: readonly Pick<ReviewFinding, "key" | "path" | "startLine">[],
   verdicts: readonly Verdict[],
@@ -386,7 +386,7 @@ export function markerLine(kind: "round" | "merge", a: number, b = 0): string {
 }
 
 /**
- * 注入会话的修复提示词（D450 第 3 条）：逐条意见 + 规矩 + 最后那段固定 JSON 回执。
+ * 注入会话的修复提示词（D457 第 3 条）：逐条意见 + 规矩 + 最后那段固定 JSON 回执。
  * 开头必须是 `AUTO_MARK`：页面靠它把这段折成一张轮次卡。
  */
 export function fixPrompt(o: {
@@ -419,7 +419,7 @@ export function fixPrompt(o: {
   return lines.join("\n");
 }
 
-/** 合并那一步交给会话的那句话：只做合并，别顺手干别的（D450 第 15 条）。 */
+/** 合并那一步交给会话的那句话：只做合并，别顺手干别的（D457 第 15 条）。 */
 export function mergePrompt(o: { pr: number; rounds: number; models: string; branch: string }): string {
   return [
     markerLine("merge", o.pr),
@@ -659,7 +659,7 @@ export class AutoRunner {
     return { ok: true, code: "", error: "", state };
   }
 
-  /** 停止（D450 第 13 条）：评审立即 cancel；正在改代码的那一轮让它跑完再收。 */
+  /** 停止（D457 第 13 条）：评审立即 cancel；正在改代码的那一轮让它跑完再收。 */
   stop(session: string): AutoResult {
     const state = this.states.get(session) ?? readAuto(session);
     if (!state) return { ok: false, code: "none", error: "这个会话没有自动评审", state: null };
@@ -693,7 +693,7 @@ export class AutoRunner {
   }
 
   /**
-   * 你在会话里发言 = 接管（D450 第 14 条）：停在「已暂停」，进度保留，之后能【继续】。
+   * 你在会话里发言 = 接管（D457 第 14 条）：停在「已暂停」，进度保留，之后能【继续】。
    * 正在跑的评审立即 cancel；正在改代码的那一轮不 abort（会留半成品工作区）。
    */
   handOver(session: string): AutoResult {
@@ -769,7 +769,7 @@ export class AutoRunner {
     });
   }
 
-  /** 跳过这一轮：永不计入签收（D450 第 12 条）。 */
+  /** 跳过这一轮：永不计入签收（D457 第 12 条）。 */
   skip(session: string): AutoResult {
     const state = this.states.get(session) ?? readAuto(session);
     if (!state) return { ok: false, code: "none", error: "这个会话没有自动评审", state: null };
@@ -799,7 +799,7 @@ export class AutoRunner {
     });
   }
 
-  /** 开机接回上一代留下的自动评审（D450 第 4 条）。 */
+  /** 开机接回上一代留下的自动评审（D457 第 4 条）。 */
   resume(): number {
     let n = 0;
     for (const state of listAuto()) {
@@ -1020,9 +1020,9 @@ export class AutoRunner {
     }
 
     if (!changed && !dirty) {
-      // 什么都没动：只有**回执逐条说「不成立 / 不改」**才算签过（D450 第 2 条的误报签收）。
+      // 什么都没动：只有**回执逐条说「不成立 / 不改」**才算签过（D457 第 2 条的误报签收）。
       // 没有可用的回执就停下来问人 —— 「它没干活」与「它判过不改」在 git 上长得一样，
-      // 不能拿「没改动」当签收的证据（D450 第 3 / 12 条）。
+      // 不能拿「没改动」当签收的证据（D457 第 3 / 12 条）。
       const judged = parsed.ok ? dismissalMarks(findings, parsed.verdicts) : { all: false, marks: [] as { key: string; mark: ReviewMark }[] };
       if (!judged.all) {
         round.note = "no-evidence";

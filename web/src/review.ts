@@ -263,7 +263,7 @@ function errorText(run: ReviewRun | null, fallback: string): string {
   return (run?.error || fallback || "").trim();
 }
 
-/** 面板看的那批记录：自动评审的轮次带 `auto`，只出现在自动卡时间线上（D450 第 7 条）。 */
+/** 面板看的那批记录：自动评审的轮次带 `auto`，只出现在自动卡时间线上（D457 第 7 条）。 */
 const manualRuns = (s: ReviewState | null): ReviewRun[] => (Array.isArray(s?.runs) ? s.runs.filter((r) => !r.auto) : []);
 
 const asRun = (s: ReviewState | null): ReviewRun | null => {
@@ -634,7 +634,7 @@ export interface ReviewPanelInput {
   severityLabels: Record<Severity, string>;
   /** gh 卡的八颗动作：宿主直接给 `ghCardActions()`，面板不再自己映射一遍（评审 #33）。 */
   ghActions: GhCardActions;
-  /** 自动评审那一段（D450）：入口按钮 + 卡片，动作自带（与手动评审的动作分开）。 */
+  /** 自动评审那一段（D457）：入口按钮 + 卡片，动作自带（与手动评审的动作分开）。 */
   auto: { panel: AutoPanelInput; actions: AutoActions };
   actions: ReviewActions;
 }
@@ -940,7 +940,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
 
   root.append(form);
 
-  // ---- 自动评审（D450）：入口按钮就在「开始评审」正下方，跑起来之后这一段变成时间线卡片
+  // ---- 自动评审（D457）：入口按钮就在「开始评审」正下方，跑起来之后这一段变成时间线卡片
   root.append(renderAutoPanel(input.auto.panel, input.auto.actions));
 
   if (view.phase === "loading") root.append(el("div", "rv-hint", tr("正在读评审状态…")));

@@ -400,7 +400,7 @@ export interface ReviewRun {
   prHead: string;
   prBase: string;
   /**
-   * 这一条是**自动评审**里的一轮（D450 第 7 条）：面板下面的记录列表不画它，
+   * 这一条是**自动评审**里的一轮（D457 第 7 条）：面板下面的记录列表不画它，
    * 它只出现在自动评审卡的时间线上；`RUN_KEEP` 也单独算一份预算。
    */
   auto?: boolean;

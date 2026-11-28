@@ -531,7 +531,7 @@ export const AUTO_RUN_KEEP = 40;
  * 正点开看着的那一条截掉。
  */
 export function trimRuns(state: ReviewState): void {
-  // D450：自动评审的轮次与手动开的那几条各算一份预算 —— 一次自动评审 4–12 轮，
+  // D457：自动评审的轮次与手动开的那几条各算一份预算 —— 一次自动评审 4–12 轮，
   // 挤同一个 RUN_KEEP 会把用户手动评过的历史刷掉一半。
   const manual = state.runs.filter((r) => !r.auto);
   const auto = state.runs.filter((r) => r.auto);
@@ -604,7 +604,7 @@ export interface ReviewJobOpts {
   model?: string;
   provider?: string;
   lang: ReviewLang;
-  /** D450：这是自动评审的一轮（不画进记录列表、单独算留存预算）。 */
+  /** D457：这是自动评审的一轮（不画进记录列表、单独算留存预算）。 */
   auto?: boolean;
 }
 
@@ -1098,7 +1098,7 @@ export interface StartOptions {
   model?: string;
   provider?: string;
   lang: ReviewLang;
-  /** D450：这是自动评审的一轮（不画进记录列表，留存另算一份预算）。 */
+  /** D457：这是自动评审的一轮（不画进记录列表，留存另算一份预算）。 */
   auto?: boolean;
 }
 
