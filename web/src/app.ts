@@ -4577,6 +4577,9 @@ export class App {
       // 键盘要能接着用：preventDefault 会把焦点拦下来，鼠标拖完再按方向键就没反应了。
       // 先自己把焦点给 range，再拦浏览器那套（它算的是放大后的坐标）。
       range.focus({ preventScroll: true });
+      // 上一次要是还有没落盘的值（最典型：方向键还按着就去抓轨道，`keyup` 的 commit 还没发生），
+      // 先把它落干净再定起点 —— 否则 Esc 的「回到起点」会回到一个**界面上看着在、却从没存过**的值。
+      if (dirty) commit();
       const r = range.getBoundingClientRect();
       dragBox = { x: r.left, w: r.width };
       dragFrom = { x: ev.clientX, y: ev.clientY };
