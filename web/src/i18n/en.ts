@@ -4394,6 +4394,7 @@ export const en: Dict = {
   "代码评审": "Code review",
   "工作区改动": "Working tree",
   "评什么": "What to review",
+  "查 PR 用的账号": "Account used to look up PRs",
   "GitHub 上 open 的 PR": "An open PR on GitHub",
   "两条分支之间": "Between two branches",
   "一个提交": "A single commit",

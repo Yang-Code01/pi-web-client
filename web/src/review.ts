@@ -854,6 +854,9 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
       if (view.accounts.length || view.account) {
         const pick = el("select", "rv-acct-pick rv-ref") as HTMLSelectElement;
         pick.disabled = view.running;
+        // 这一格在 `rv-opts` 里没有可见标签（旁边是模型 chip），读屏软件只能靠 aria-label 认出它是什么；
+        // title 只给鼠标悬停，不算无障碍名称。
+        pick.setAttribute("aria-label", tr("查 PR 用的账号"));
         pick.title = view.account ? tr("现在按 {p1} 查 PR", { p1: view.account }) : tr("按会话默认的账号查 PR");
         const follow = el("option", "", view.accountUsed && !view.account ? tr("跟随工作区（{p1}）", { p1: view.accountUsed }) : tr("跟随工作区")) as HTMLOptionElement;
         follow.value = "";

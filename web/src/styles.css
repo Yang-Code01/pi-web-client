@@ -6012,6 +6012,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   padding: 4px 6px 5px; border-radius: 8px; color: var(--text);
 }
 .rv-scope .rv-run-card:hover { background: var(--mac-fill); }
+/* 失败那一条在卡片层也留一个记号（红点之外）：只靠 7px 的点，扫一眼看不出哪次挂了。 */
+.rv-scope .rv-run-card.is-fail .rv-run-target { color: var(--danger); }
 .rv-scope .rv-run-dot {
   position: absolute; left: -12px; top: 10px; width: 7px; height: 7px; border-radius: 50%;
   background: var(--line-lit);
