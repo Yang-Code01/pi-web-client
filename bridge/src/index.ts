@@ -88,7 +88,7 @@ import {
   type ReviewMode,
 } from "./review.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
-import { AUTO_MARK, AutoRunner, checksGate, mergeResult, type AutoCheck, type AutoHost } from "./reviewauto.ts";
+import { AUTO_MARK, AutoRunner, checksGate, mergeResult, type AutoHost } from "./reviewauto.ts";
 import { writeGrant } from "./reviewgrant.ts";
 import { localRepoName } from "./gitpr.ts";
 import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
@@ -127,7 +127,8 @@ import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
-import { checksOf, githubApiBase, githubRest, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
+import { githubApiBase, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
+import { readAutoPr, type AutoPrView } from "./autopr.ts";
 import { cancelGhSetup, ghSetupCached, ghSetupStatus, installGh, loginGh } from "./gh-setup.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
@@ -2865,39 +2866,16 @@ async function main(): Promise<void> {
   };
 
   /**
-   * 自动评审眼里的一个 PR：判定要用的那几格。
+   * 自动评审眼里的一个 PR（判定要用的那几格，REST + checks 在 `autopr.ts`）。
    *
-   * 走 REST 的 `/repos/<repo>/pulls/<n>` + `checksOf` —— 与右栏 PR 详情**同一条通道、同一个口径**
-   * （checks 按 head sha 取 check-runs 与 commit status）。别改成 `pullRequestInfo`：那份是列表卡用的，
-   * 结构里没有 `checks` / `mergeable` / `merged`，读出来恒 `undefined`，会让「CI 没过」与「已经合了」都静默判反。
+   * 这一层只负责桥里才做得到的两件事：按**会话的工作区**选账号（`.pi/settings.json` 里的
+   * githubAccount 跟工作区走，不跟评审仓库根走 —— 会话可能开在子目录，与 `review.auto.start`
+   * 里 git 用仓库根不是同一个口径，别「统一」掉），以及把「读不到」变成 `null`。
    */
-  interface AutoPrView {
-    headRefName: string;
-    state: string;
-    merged: boolean;
-    /** `null` = GitHub 还在算（第一次问常常是 null），不是「不能合」。 */
-    mergeable: boolean | null;
-    checks: AutoCheck[];
-    checksTruncated: boolean;
-  }
-
   const autoPrView = async (repo: string, pr: number, session: string): Promise<AutoPrView | null> => {
     try {
-      // 账号按**会话的工作区**选（`.pi/settings.json` 里的 githubAccount 跟工作区走，不跟评审仓库根走）：
-      // 这里用会话 cwd 是对的，与 `review.auto.start` 里 git 用仓库根不是同一个口径，别「统一」掉。
       const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
-      const ctx = { upstreamApi: githubApiBase() };
-      const raw = await githubRest(ctx, gh.restToken ?? null, `/repos/${repo}/pulls/${pr}`);
-      const headSha = String(raw?.head?.sha ?? "");
-      const found = headSha ? await checksOf(ctx, gh.restToken ?? null, repo, headSha) : { checks: [], truncated: false };
-      return {
-        headRefName: String(raw?.head?.ref ?? ""),
-        state: String(raw?.state ?? ""),
-        merged: raw?.merged === true,
-        mergeable: raw?.mergeable === null || raw?.mergeable === undefined ? null : raw.mergeable === true,
-        checks: found.checks,
-        checksTruncated: found.truncated,
-      };
+      return await readAutoPr({ dir: repo, pr, token: gh.restToken ?? null, apiBase: githubApiBase() });
     } catch {
       return null;
     }
