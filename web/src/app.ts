@@ -223,21 +223,31 @@ interface ExecChildState {
   pending: boolean;
 }
 
-/** 详情里的一屏：一卡片 + 它三块会变的字。 */
+/** 详情里的一屏：一卡片 + 它几块会变的字。 */
 interface BgRunNode {
   root: HTMLElement;
+  /** 状态词（运行中 / 已完成 / 失败），颜色由 `data-state` 决定。 */
   state: HTMLElement;
+  /** 「已跑 / 用了」那口钟：等宽数字，跑着的时候 1.5 秒一刷。 */
+  time: HTMLElement;
+  /** 卡片头那颗状态灯。 */
+  dot: HTMLElement;
   /** 卡片头那个名字（`agent`）。桥的 30 秒滴答会回填，不是建好就定死。 */
   agent: HTMLElement;
-  /** 任务原文那一行：同样会回填（脚本式 workflow 的孩子清单要等 `status.json` 落盘）。 */
+  /** 任务原文：同样会回填（脚本式 workflow 的孩子清单要等 `status.json` 落盘）。 */
   task: HTMLElement;
-  /** 失败原因（`r.error`）。没有就 hidden。 */
+  taskWrap: HTMLElement;
+  /** 长任务折起来时那颗「展开」；内容不到四行就 hidden。 */
+  taskToggle: HTMLButtonElement;
+  /** 失败原因（`r.error`）与它外面那只红框。没有就 hidden。 */
   err: HTMLElement;
-  /** 「过程」两个字：失败且压根没启动 runner 的卡上要跟着过程框一起藏。 */
-  labLog: HTMLElement;
+  errBox: HTMLElement;
+  /** 「过程」整段（小标题 + 日志）：失败且压根没启动 runner 的卡上要整段藏。 */
+  logSec: HTMLElement;
   log: HTMLElement;
+  /** 「最终输出」整段：没有 Return 块就整段藏。 */
+  outSec: HTMLElement;
   out: HTMLElement;
-  labOut: HTMLElement;
   /** 这个 run 有没有过程记录（桥还没接上的才 false；卡片上直说，不装成「还没有」。） */
   hasLog: boolean;
 }
@@ -249,6 +259,18 @@ function bgElapsedText(since: number, until = Date.now()): string {
   // 跑过一小时的子代理很少，但真跑到了也不能显示成 90:04。
   const clock = m < 60 ? `${m}:${s}` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
   return tr("已跑 {p1}", { p1: clock });
+}
+
+/**
+ * 子代理提示条上那颗状态词：有在跑的就说在跑，其次说失败，都没有才是「全部结束」。
+ *
+ * 顺序即优先级（在跑的 + 有失败的 → 说在跑）。写成函数而不是「标签 + dataset 两条并行三元」：
+ * 加一种状态时不用动那两串并列的 `?:`。
+ */
+function bgChipState(running: number, failed: number): { label: string; state: "running" | "failed" | "done" } {
+  if (running) return { label: tr("{p1} 个运行中", { p1: running }), state: "running" };
+  if (failed) return { label: tr("{p1} 个失败", { p1: failed }), state: "failed" };
+  return { label: tr("全部结束"), state: "done" };
 }
 
 /** 跑完之后的同一个钟：报「一共跑了多久」，而不是「结束至今」（D170 评审）。 */
@@ -587,7 +609,14 @@ export class App {
   /** D170: 输入框上方那条「子代理运行中」。`syncBgBar()` 造它，重画后要重新挂。 */
   private bgBar: HTMLElement | null = null;
   /** D170 详情弹层：正在看的那一屏，和它 1.5 秒一次的轮询。关掉就 null。 */
-  private bgSheet: { sessionId: string; body: HTMLElement; runs: Map<string, BgRunNode> } | null = null;
+  private bgSheet: {
+    sessionId: string;
+    body: HTMLElement;
+    /** 抬头那颗汇总胶囊（运行中 / 失败 / 全部结束）与它上面那行「共 N 个运行」。 */
+    chip: HTMLElement;
+    meta: HTMLElement;
+    runs: Map<string, BgRunNode>;
+  } | null = null;
   private bgTimer: number | null = null;
   /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
   private continueAt: { id: string; at: number } = { id: "", at: 0 };
@@ -18036,17 +18065,25 @@ export class App {
     this.sheetKind = "bg";
     const back = el("div", "sheet-back");
     const sheet = el("div", "sheet bg-sheet");
-    const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("子代理")));
-    const close = el("button", "btn ghost", tr("关闭"));
+    const head = el("header", "sheet-head bg-head");
+    const headMain = el("div", "bg-head-main");
+    const titleRow = el("div", "bg-head-title");
+    titleRow.append(el("h2", "sheet-title bg-title", tr("子代理")));
+    const chip = el("span", "bg-head-chip");
+    chip.hidden = true;
+    titleRow.append(chip);
+    const meta = el("div", "bg-head-meta");
+    meta.hidden = true;
+    headMain.append(titleRow, meta);
+    const close = el("button", "btn ghost bg-head-close", tr("关闭"));
     close.onclick = () => this.closeSheet();
-    head.append(close);
+    head.append(headMain, close);
     const body = el("div", "bg-sheet-body");
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
-    this.bgSheet = { sessionId: sid, body, runs: new Map() };
+    this.bgSheet = { sessionId: sid, body, chip, meta, runs: new Map() };
     const tick = () => {
       if (!this.bgSheet || this.bgSheet.sessionId !== sid) return;
       this.socket.send({ type: "bg.list", sessionId: sid });
@@ -18066,67 +18103,147 @@ export class App {
       sheet.runs.delete(id);
     }
     sheet.body.querySelector(".bg-empty")?.remove();
+    const running = runs.filter((r) => r.state === "running").length;
+    const failed = runs.filter((r) => r.state === "failed").length;
+    sheet.chip.hidden = !runs.length;
+    sheet.meta.hidden = !runs.length;
+    if (runs.length) {
+      const chip = bgChipState(running, failed);
+      if (sheet.chip.textContent !== chip.label) sheet.chip.textContent = chip.label;
+      sheet.chip.dataset.state = chip.state;
+      const meta = tr("共 {p1} 个运行", { p1: runs.length });
+      if (sheet.meta.textContent !== meta) sheet.meta.textContent = meta;
+    }
     if (!runs.length) {
       // `error` 只会在公网那只手上出现（桥不把任务原话发出去）；本地就是真的没有。
-      sheet.body.append(el("div", "bg-empty", error || tr("这个会话没有子代理在跑。")));
+      const box = el("div", "bg-empty");
+      const ic = el("div", "bg-empty-ic");
+      ic.append(icon("layers", { size: 22 }));
+      box.append(ic, el("div", "bg-empty-title", error || tr("这个会话没有子代理在跑。")));
+      if (!error) box.append(el("div", "bg-empty-hint", tr("启动子代理后，对话上方会出现可点开的提示条。")));
+      sheet.body.append(box);
       return;
     }
     for (const r of runs) {
       let node = sheet.runs.get(r.id);
       if (!node) {
-        const root = el("div", "bg-run");
+        const root = el("article", "bg-run");
         const line = el("div", "bg-run-head");
+        const dot = el("span", "bg-run-dot");
         const agentEl = el("span", "bg-run-agent", r.agent || tr("子代理"));
-        line.append(agentEl, el("span", "bg-run-state"));
-        const task = el("div", "bg-run-task", r.task || tr("（没有任务原文）"));
+        const stateEl = el("span", "bg-run-state");
+        const idEl = el("span", "bg-run-id", `#${r.id}`);
+        idEl.title = r.id;
+        const timeEl = el("span", "bg-run-time");
+        line.append(dot, agentEl, stateEl, idEl, timeEl);
+
+        const errBox = el("div", "bg-run-errbox");
+        errBox.hidden = true;
+        errBox.append(icon("alert", { size: 13 }));
         const err = el("div", "bg-run-err");
-        err.hidden = true;
-        const id = el("div", "bg-run-id", r.id);
-        const labLog = el("div", "bg-run-lab", tr("过程"));
+        errBox.append(err);
+
+        const taskWrap = el("section", "bg-sec bg-task");
+        const taskHead = el("div", "bg-sec-head");
+        taskHead.append(el("span", "bg-sec-title", tr("任务")));
+        const taskToggle = el("button", "bg-more", tr("展开")) as HTMLButtonElement;
+        taskToggle.type = "button";
+        taskToggle.hidden = true;
+        taskHead.append(taskToggle);
+        const task = el("div", "bg-run-task");
+        taskWrap.append(taskHead, task);
+        taskToggle.onclick = () => {
+          const open = taskWrap.classList.toggle("open");
+          taskToggle.textContent = open ? tr("收起") : tr("展开");
+        };
+
+        const logSec = el("section", "bg-sec");
+        const logHead = el("div", "bg-sec-head");
+        const labLog = el("span", "bg-sec-title", tr("过程"));
+        logHead.append(labLog);
         const logEl = el("pre", "bg-run-log");
-        const labOut = el("div", "bg-run-lab", tr("最终输出"));
-        labOut.hidden = true;
+        logSec.append(logHead, logEl);
+
+        const outSec = el("section", "bg-sec");
+        const outHead = el("div", "bg-sec-head");
+        outHead.append(el("span", "bg-sec-title", tr("最终输出")));
         const outEl = el("pre", "bg-run-out");
-        outEl.hidden = true;
-        root.append(line, task, err, id, labLog, logEl, labOut, outEl);
+        outSec.append(outHead, outEl);
+        outSec.hidden = true;
+
+        root.append(line, errBox, taskWrap, logSec, outSec);
         sheet.body.append(root);
         node = {
           root,
-          state: line.lastElementChild as HTMLElement,
+          state: stateEl,
+          time: timeEl,
+          dot,
           agent: agentEl,
           task,
+          taskWrap,
+          taskToggle,
           err,
-          labLog,
+          errBox,
+          logSec,
           log: logEl,
+          outSec,
           out: outEl,
-          labOut,
           hasLog: Boolean(r.hasLog),
         };
-        if (!r.hasLog) logEl.textContent = tr("桥还没接上这个 runner 的过程记录。");
+        if (!r.hasLog) {
+          logEl.dataset.empty = "1";
+          logEl.textContent = tr("桥还没接上这个 runner 的过程记录。");
+        }
         sheet.runs.set(r.id, node);
       }
       // 卡片是活的：桥在后面的 `bg.list` 里才把 agent / task 补上（脚本式 workflow 的原文要等
       // `status.json` 落盘）。只写建卡那一刻的话，回填永远看不到 —— 关弹层重开才行。
       const agentText = r.agent || tr("子代理");
       if (node.agent.textContent !== agentText) node.agent.textContent = agentText;
-      const taskText = r.task || tr("（没有任务原文）");
-      if (node.task.textContent !== taskText) node.task.textContent = taskText;
+      // 还在等 `status.json` 落盘时摆占位（原文随后会自己补上）；派活当场就失败的不摆 —— 原文不会再来，
+      // 留一行「没有任务原文」只是给红条添乱。
+      const taskText = (r.task ?? "").trim();
+      const taskPending = !taskText && r.state === "running";
+      node.taskWrap.hidden = !taskText && !taskPending;
+      const taskShown = taskText || (taskPending ? tr("（没有任务原文）") : "");
+      if (node.task.textContent !== taskShown) {
+        node.task.textContent = taskShown;
+        window.requestAnimationFrame(() => this.syncBgTaskMore(node));
+      }
       // `hasLog` 也一样：派活那一刻文件还没写出来，`bg.log` 回来时会用它决定占位文案。
       node.hasLog = Boolean(r.hasLog);
       const errText = typeof r.error === "string" ? r.error : "";
-      node.err.hidden = !errText;
+      node.errBox.hidden = !errText;
       if (errText && node.err.textContent !== errText) node.err.textContent = errText;
-      // 派活当场就失败的（没有 runner，也不会有过程）：不摆空的过程框，错误行已经说清了。
+      // 派活当场就失败的（没有 runner，也不会有过程）：不摆空的过程段，错误行已经说清了。
       const noLog = r.state === "failed" && !r.hasLog;
-      node.labLog.hidden = noLog;
-      node.log.hidden = noLog;
+      node.logSec.hidden = noLog;
       const state = r.state === "running" ? tr("运行中") : r.state === "failed" ? tr("失败") : tr("已完成");
+      if (node.state.textContent !== state) node.state.textContent = state;
+      node.state.dataset.state = r.state;
+      node.dot.dataset.state = r.state;
+      node.root.dataset.state = r.state;
       // 跑完了报总耗时（结束 − 开始）；还在跑就报「已跑多久」，两者都是「从开始起的钟」。
-      node.state.textContent =
+      const clock =
         r.state === "running"
-          ? `${state} · ${bgElapsedText(r.startedAt)}`
-          : `${state} · ${bgTookText(Math.max(0, (r.endedAt ?? Date.now()) - r.startedAt))}`;
+          ? bgElapsedText(r.startedAt)
+          : bgTookText(Math.max(0, (r.endedAt ?? Date.now()) - r.startedAt));
+      if (node.time.textContent !== clock) node.time.textContent = clock;
       this.socket.send({ type: "bg.log", sessionId: sheet.sessionId, runId: r.id });
+    }
+  }
+
+  /** 任务原文超过四行才露「展开」；折起来时量的是完整 `scrollHeight`，展开后这个判断依然成立。 */
+  private syncBgTaskMore(node: BgRunNode): void {
+    if (!node.root.isConnected) return;
+    const line = parseFloat(getComputedStyle(node.task).lineHeight) || 20;
+    const over = node.task.scrollHeight > line * 4 + 1;
+    node.taskToggle.hidden = !over;
+    if (!over) {
+      node.taskWrap.classList.remove("open");
+      node.taskToggle.textContent = tr("展开");
+    } else {
+      node.taskToggle.textContent = node.taskWrap.classList.contains("open") ? tr("收起") : tr("展开");
     }
   }
 
@@ -18135,14 +18252,16 @@ export class App {
     const node = this.bgSheet?.runs.get(runId);
     if (!node) return;
     const text = typeof log === "string" ? log : "";
-    if (node.log.textContent !== text) {
+    const logText = text || (node.hasLog ? tr("还没有活动记录。") : tr("桥还没接上这个 runner 的过程记录。"));
+    if (node.log.textContent !== logText) {
       const stick = node.log.scrollHeight - node.log.scrollTop - node.log.clientHeight < 24;
-      node.log.textContent = text || (node.hasLog ? tr("还没有活动记录。") : tr("桥还没接上这个 runner 的过程记录。"));
+      node.log.textContent = logText;
+      if (text) delete node.log.dataset.empty;
+      else node.log.dataset.empty = "1";
       if (stick) node.log.scrollTop = node.log.scrollHeight;
     }
     const done = typeof out === "string" && out.length > 0;
-    node.labOut.hidden = !done;
-    node.out.hidden = !done;
+    node.outSec.hidden = !done;
     if (done && node.out.textContent !== out) node.out.textContent = out;
   }
 
