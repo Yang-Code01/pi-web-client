@@ -348,7 +348,9 @@ export function renderAutoPanel(input: AutoPanelInput, actions: AutoActions): HT
       d.append(el("span", "add", `+${r.fix.added}`), el("span", "del", `−${r.fix.removed}`));
       line2.append(d);
     }
-    if (r.status === "running") line2.append(el("span", "", waitText(state) || tr("正在评")));
+    // 「正在评第几轮」只写给**当前轮**那一行：`waitText` 用的是 `state.cur`，
+    // 顺手套到别的 running 行（桥重启后没收口的旧轮）上会把别处的轮号写进这一行。
+    if (r.status === "running") line2.append(el("span", "", (r.n === state.cur ? waitText(state) : "") || tr("正在评")));
     if (r.note && r.status !== "clean") line2.append(el("span", "rv-auto-note", noteText(r.note)));
     if (r.status === "clean" && r.note === "dismissed") line2.append(el("span", "rv-auto-note", noteText(r.note)));
     row.append(line1, line2);

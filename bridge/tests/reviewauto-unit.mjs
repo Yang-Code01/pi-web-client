@@ -842,7 +842,7 @@ await checkAsync("接管「等合并」再来继续：不重发合并提示词",
   assert.equal(merges(), 1, "继续只是接着等结果，不能再发一遍（gh 会报错，也可能其实已经合了）");
 });
 
-check("修复那一轮记下真实提交标题（不是页面自己按模板拼的）", async () => {
+await checkAsync("修复那一轮记下真实提交标题（不是页面自己按模板拼的）", async () => {
   const host = makeHost();
   const runner = new AutoRunner(host);
   runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });

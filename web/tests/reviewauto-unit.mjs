@@ -59,8 +59,10 @@ test("阶段条：最多 6 格，取最近的几轮", () => {
   assert.equal(chips.at(-1).n, 9);
 });
 
-test("阶段条：跑完了就把整条历史给出来（还是最多 6 格）", () => {
-  const rounds = Array.from({ length: 3 }, (_, i) => round(i + 1));
+test("阶段条：不超过 6 轮时全给出来，且按轮号升序（乱序进来也一样）", () => {
+  // 与上一条（> 6 轮只留最近 6 格）钉的是两件事：这里验「不截断 + 排序」，
+  // 而且 `stageChips` 只看 rounds —— status 不参与，用 signed 只是顺手。
+  const rounds = [round(3), round(1), round(2)];
   assert.deepEqual(stageChips(state({ rounds, status: "signed" })).map((r) => r.n), [1, 2, 3]);
 });
 

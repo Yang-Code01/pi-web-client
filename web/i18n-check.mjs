@@ -142,7 +142,7 @@ function walk(file, out) {
       // 只有专有名词、没有占位符的（`"CPU"`、`"Jira"`、`"PAT"`）不收：它们本来就不用翻。
       if (!CJK.test(text) && PLACEHOLDER.test(text) && isTrKey(node)) {
         out.keys.add(text);
-        const line = sf.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+        const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
         if (!out.context.has(text)) out.context.set(text, { file: path.relative(here, file), line, src: src.split("\n")[line - 1].trim().slice(0, 200) });
       } else if (CJK.test(text)) {
         if (isTrKey(node)) {
