@@ -220,6 +220,19 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .icon-btn[aria-pressed="true"] { color: var(--faint); }
 /* D92: 顶栏那颗「终端」—— 有 shell 在跑（含收起状态）就点亮，点一下回到同一个进程。 */
 .icon-btn.term-live { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
+/* #756: 收起（「－」）≠ 关掉。收起态在字后面挂三根音柱（「正在播放」那个记号）：
+   柱子在动 = shell 还在后台跑，再点一下回到原样；关掉之后它们消失、按钮回灰。
+   不挂在图标角上 —— 圆点要贴住图标才看得出属于它，一贴就成了贴纸。 */
+.term-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 10px; margin-left: 1px; flex: none; }
+.term-bars i {
+  display: block; width: 2px; height: 10px; border-radius: 1px; background: var(--accent);
+  transform-origin: bottom; animation: term-bars-rise 1.05s ease-in-out infinite;
+}
+.term-bars i:nth-child(2) { animation-delay: 0.16s; }
+.term-bars i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes term-bars-rise { 0%, 100% { transform: scaleY(0.34); opacity: 0.55; } 50% { transform: scaleY(1); opacity: 1; } }
+/* 少动的人也要看得出「在动」，但别快得像报警器 —— 同一段起伏，放慢到 2.6s。 */
+@media (prefers-reduced-motion: reduce) { .term-bars i { animation-duration: 2.6s; } }
 .icon-btn.alert { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
 /* 记录那颗：平时灰的，有未处理条目才整颗（图标 + 悬停底）转危险色 —— 红等于「有活没干」。 */
 .icon-btn.notes-btn.has-pending { color: var(--danger); --ico-tint: var(--danger); }
@@ -1809,20 +1822,44 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .modal form { width: min(360px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 12px; }
 .modal input { padding: 12px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font-family: var(--mono); }
 
-/* D232: 长参数 / 子代理步骤详情的对话框。遮罩用 .modal（与口令框同一层，z-index 50），
-   面板自己排：标题栏一行（名字 + 耗时 + 复制 + ✕），正文等宽字体、内部滚动。 */
-.argdialog-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(760px, 100%); max-height: min(calc(var(--vh1) * 80), 720px); overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-.argdialog-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 12px; border-bottom: 1px solid var(--line); }
-.argdialog-title { overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.argdialog-meta { flex: none; color: var(--faint); font: 11px/1 var(--mono); font-variant-numeric: tabular-nums; }
-.argdialog-btn { flex: none; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--faint); font: inherit; font-size: 11px; cursor: pointer; }
-.argdialog-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+/* D232 / D460: 长参数 / 子代理步骤详情的对话框。遮罩与窗体材质由 mac.css 的
+   `[data-mac-surface="window"]` 负责（openArgsDialog 走 overlay() 打的 window 标记），这里只管窗口
+   里面怎么排：一条工具栏（工具徽章 + 标题 / 耗时 + 复制 / ✕）、一行事实胶囊、剩下都是代码纸面。
+   正文按真文本铺开（不再是一段 JSON），所以等宽字体给到 12.5px / 1.7 —— 11px 的旧尺寸读长命令太挤。 */
+.argdialog-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(720px, 100%); max-height: min(calc(var(--vh1) * 84), 760px); overflow: hidden; border-radius: 14px; }
+.argdialog-head { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 12px; border-bottom: 0.5px solid var(--mac-glass-line); }
+/* 工具徽章：一块圆角小方块，图标用强调色 —— 工具栏里的「这张纸是哪个工具摊开的」那一眼。 */
+.argdialog-glyph { flex: none; display: grid; place-items: center; width: 27px; height: 27px; border-radius: 8px; color: var(--accent); background: var(--mac-fill-2); box-shadow: inset 0 0.5px 0 var(--mac-glass-hi); }
+.argdialog-headtext { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.argdialog-title { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 600; letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; }
+.argdialog-sub { color: var(--faint); font: 11px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+.argdialog-actions { flex: none; display: flex; align-items: center; gap: 7px; }
+.argdialog-btn {
+  flex: none; height: 24px; padding: 0 10px; border: 0.5px solid var(--mac-control-line); border-radius: 7px;
+  background: var(--mac-control); color: var(--text); font: 500 11.5px/1 var(--sans); cursor: pointer;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.1);
+  transition: filter var(--dur-1) var(--mac-ease), scale 220ms var(--mac-spring);
+}
+.argdialog-btn:hover { filter: brightness(1.06); }
+.argdialog-btn:active { scale: 0.96; }
 .argdialog-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.argdialog-copy { margin-left: auto; }
-.argdialog-body { overflow: auto; padding: 12px; }
-.argdialog-label { margin-bottom: 4px; color: var(--faint); font-size: 11px; }
-.argdialog-text { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); color: var(--text); font: 11px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.argdialog-text:last-child { margin-bottom: 0; }
+.argdialog-close { width: 24px; padding: 0; display: grid; place-items: center; border-radius: 50%; color: var(--dim); }
+.argdialog-body { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: auto; padding: 12px; }
+/* 事实胶囊：path / offset / timeout 这类短字段。值再长就省略，长正文已经在下面的块里了。 */
+.argdialog-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.argdialog-fact { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; padding: 3px 8px; border-radius: 7px; border: 0.5px solid var(--mac-glass-line); background: var(--mac-fill); font: 11px/1.45 var(--mono); }
+.argdialog-fact b { flex: none; color: var(--faint); font-weight: 400; }
+.argdialog-fact span { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.argdialog-block { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.argdialog-blockhead { display: flex; align-items: baseline; gap: 8px; padding: 0 2px; }
+.argdialog-label { color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: 0.01em; }
+.argdialog-blockmeta { margin-left: auto; color: var(--faint); font: 10.5px/1.3 var(--mono); font-variant-numeric: tabular-nums; }
+/* 代码纸面：沉下去一块（--sunken）、发丝边、内阴影，跟 Markdown 的代码块是同一档底色。 */
+.argdialog-text {
+  margin: 0; padding: 10px 12px; border-radius: 10px; border: 0.5px solid var(--mac-glass-line);
+  background: var(--sunken); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: var(--text); font: 12.5px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: break-word; tab-size: 2;
+}
 
 /* ---------------------------------------------------------------- desktop */
 /* 桌面三栏。判据不是视口宽度，而是「有效宽度」= 视口 / 字号缩放：`#app` 上挂着 zoom，
@@ -2533,6 +2570,9 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 @media (max-width: 560px) {
   .icon-btn.wide { width: 28px; padding: 0; gap: 0; }
   .icon-btn.wide .lb { display: none; }
+  /* 窄成 28px 方块时字收掉了，音柱还在图标后面：15 + 8 放得下，别再给它们 2px 的缝。 */
+  .topbar .term-bars { gap: 1px; height: 7px; }
+  .topbar .term-bars i { height: 7px; }
   /* 打开会话之后这一排是九样东西（chips + 六颗按钮 + 字号），390px 差 10px 就要横向滚。
      缝收到 6、两侧 padding 收到 12，再把 chip 里的工作区名收掉（它 70px，而这一排真正要读的
      是会话名，标题那一格本来就只剩几十像素）。 */
@@ -2989,8 +3029,12 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .dir-mkrow .dir-mkerr { padding-top: 4px; min-height: 0; }
 
 /* ---------------------------------------------------------------- model sheet: 设置控制台外壳 + 草稿确认 */
-/* D373：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。 */
-.st-console.model-sheet { width: min(1000px, 100%); height: min(760px, 100%); }
+/* D373：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。
+   D457：模型层比设置页窄、矮一档 —— 但**只覆盖基数**，尺寸算式仍由 `.st-console` 那一份算：
+   以前这里自己抄了一遍 `min(calc(1000px * …), 100%)`，`--st-frame` 的语义一改它就静默掉队。
+   也别写死 `min(1000px, 100%)`：特异性 (0,2,0) 会赢过基础规则，2.0 下被遮罩夹住看着像对的，
+   80% 时露馅（视觉 800 而不是 1000）。 */
+.st-console.model-sheet { --st-w-base: 1000px; --st-h-base: 760px; }
 /* 列表自己滚，档位条钉在滚动区外：模型一大堆时，选完不用滚回顶部才能换档。 */
 .st-console.model-sheet .st-pane { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .model-sheet .pm-body { flex: 1 1 auto; min-height: 0; padding: 18px 22px 22px; overflow-y: auto; scrollbar-gutter: stable; }
@@ -3914,8 +3958,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .session-info .info-compact input:focus { outline: none; border-color: var(--accent); }
 
 /* #23 shell picker under the terminal ＋ */
-.term-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 140px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
-.term-menu-item { text-align: left; padding: 8px 8px; border: 0; background: none; color: var(--text); border-radius: 6px; font-size: 13px; cursor: pointer; }
+.term-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 140px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); overflow-y: auto; /* #756：封顶后滚到底不许把页面一起滚走（滚链） */ overscroll-behavior: contain; }
+.term-menu-item { flex: 0 0 auto; text-align: left; padding: 8px 8px; border: 0; background: none; color: var(--text); border-radius: 6px; font-size: 13px; cursor: pointer; }
 .term-menu-item:hover { background: var(--accent-bg); }
 
 /* #31 compaction / branch summary / extension message */

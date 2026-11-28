@@ -285,6 +285,33 @@ async function turn(text) {
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  if (text.startsWith("BASHARGS")) {
+    // D458: 一条带 heredoc 的长命令（真实会话里 bash 的 command 就是这个形状）。
+    // 「参数」对话框要把它按真换行铺开；老实现会把这十几个换行显示成字面的 \\n。
+    const command = [
+      "cd /Users/yangcode-/pi-web-client-wt/feat/review-auto && python3 - <<'PY'",
+      "import pathlib",
+      "en = pathlib.Path(\"web/src/i18n/en.ts\")",
+      "ja = pathlib.Path(\"web/src/i18n/ja.ts\")",
+      "a_en = '  \"自动评审 · 合并 PR #{p1}\": \"Auto review · merging PR #{p1}\",'",
+      "a_ja = '  \"自动评审 · 合并 PR #{p1}\": \"自動レビュー · PR #{p1} をマージ\",'",
+      "for p, a, n in ((en, a_en, 'x'), (ja, a_ja, 'y')):",
+      "    t = p.read_text()",
+      "    assert a in t, p",
+      "    p.write_text(t.replace(a, a + n, 1))",
+      "print(\"ok\")",
+      "PY",
+      "cd /Users/yangcode-/pi-web-client-wt/feat/review-auto && npm --prefix web run typecheck 2>&1 | grep -viE '^npm warn|^$' | tail -20",
+    ].join("\n");
+    const args = { command, cwd: "/Users/yangcode-/pi-web-client-wt/feat/review-auto", timeout: 60000, description: "把新文案补进 en/ja 并跑类型检查" };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: "call-bash-args", name: "bash", arguments: args }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: "call-bash-args", toolName: "bash", args });
+    while (!abortRequested) await sleep(100);
+    out({ type: "tool_execution_end", toolCallId: "call-bash-args", toolName: "bash", isError: false, result: "ok" });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   if (text.startsWith("BGCHILD")) {
     const runId = process.env.FAKE_PI_CHILD_RUN_ID || `del_fake_${process.pid}`;
     const root = path.join(os.tmpdir(), "acp-delegate");
