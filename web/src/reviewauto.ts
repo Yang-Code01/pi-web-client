@@ -51,6 +51,8 @@ export interface AutoFixView {
   dismissed: number;
   fixed: number;
   note: string;
+  /** 真实提交标题（桥读 `git log -1 --format=%s`）；老记录没有。 */
+  subject?: string;
 }
 
 export interface AutoRoundView {
@@ -145,6 +147,17 @@ export function worstSeverity(r: Pick<AutoRoundView, "severity">): Severity | ""
   return WORST.find((s) => (counts[s] ?? 0) > 0) ?? "";
 }
 
+/**
+ * 轮数上下限：**桥端是权威**（`bridge/src/reviewauto.ts` 的 MIN_ROUNDS / MAX_ROUNDS_CAP /
+ * DEFAULT_MAX_ROUNDS）。页面这边只能有一份，别把 2 / 30 / 10 散着写。
+ */
+const ROUNDS_MIN = 2;
+const ROUNDS_MAX = 30;
+const ROUNDS_DEFAULT = 10;
+
+/** 阶段条最多画几格（轮数上限 30，全画出来会切成一根根细线谁也点不中）。 */
+const STAGE_CHIP_MAX = 6;
+
 /** 轮次按号排好（桥给的就是这个顺序，别在两处各写一遍排序）。 */
 function byRound(a: AutoRoundView, b: AutoRoundView): number {
   return a.n - b.n;
@@ -153,10 +166,10 @@ function byRound(a: AutoRoundView, b: AutoRoundView): number {
 /**
  * 横向阶段条要画哪些格子：已经跑过的轮次各一格（**不画**「下一条待评」）。
  *
- * 最多 6 格：上限是 30 轮（默认 10），全画出来会切成一根根细线谁也点不中。
+ * 最多 `STAGE_CHIP_MAX` 格。
  */
 export function stageChips(state: Pick<AutoStateView, "rounds">): AutoRoundView[] {
-  return [...state.rounds].sort(byRound).slice(-6);
+  return [...state.rounds].sort(byRound).slice(-STAGE_CHIP_MAX);
 }
 
 /** 卡片上「现在在干什么」那一句。 */
@@ -178,11 +191,17 @@ export function statePill(state: Pick<AutoStateView, "status" | "cur" | "config"
   return { text: tr("第 {p1} / {p2} 轮", { p1: String(state.cur || 1), p2: String(max) }), tone: "run" };
 }
 
-/** 底行：花了多少、跑了多久。 */
-export function footerText(state: Pick<AutoStateView, "rounds" | "tokens" | "startedAt" | "endedAt">): string {
+/**
+ * 底行：花了多少、跑了多久。
+ *
+ * 没有 `endedAt` 时只有**还在跑 / 暂停中**才用「现在」当结束：已经停下 / 签收 / 合并的记录
+ * 若缺 `endedAt`（老状态），拿 `Date.now()` 会让用时每次重绘都往上涨。
+ */
+export function footerText(state: Pick<AutoStateView, "rounds" | "tokens" | "startedAt" | "endedAt" | "status">): string {
   const start = Date.parse(state.startedAt || "");
-  const end = Date.parse(state.endedAt || "") || Date.now();
-  const ms = Number.isFinite(start) ? Math.max(0, end - start) : 0;
+  const alive = state.status === "running" || state.status === "paused";
+  const end = Date.parse(state.endedAt || "") || (alive ? Date.now() : 0);
+  const ms = Number.isFinite(start) && end > 0 ? Math.max(0, end - start) : 0;
   const min = Math.round(ms / 60000);
   const bits = [tr("{p1} 轮", { p1: String(state.rounds.length) }), fmtTok(state.tokens)];
   if (ms > 0) bits.push(min < 1 ? tr("不到 1 分钟") : tr("{p1} 分钟", { p1: String(min) }));
@@ -344,16 +363,22 @@ export function renderAutoPanel(input: AutoPanelInput, actions: AutoActions): HT
     const box = el("div", "rv-auto-pause");
     box.append(el("div", "rv-auto-reason", state.reason || tr("停下来了，需要你看一眼")));
     const acts = el("div", "rv-auto-acts");
-    const cont = el("button", "btn primary", state.reasonCode === "stopping" ? tr("停止") : tr("继续")) as HTMLButtonElement;
+    // 「stopping」= 已经按过停止、正在等这一轮跑完：这时只需要一颗「停止」等在那里，
+    // 不能再并排摆第二颗一模一样的，也不该让「跳过这一轮」跟「正在停」打架。
+    const stopping = state.reasonCode === "stopping";
+    const cont = el("button", "btn primary", stopping ? tr("停止") : tr("继续")) as HTMLButtonElement;
     cont.type = "button";
-    cont.onclick = () => (state.reasonCode === "stopping" ? actions.onStop() : actions.onContinue());
-    const skip = el("button", "btn", tr("跳过这一轮")) as HTMLButtonElement;
-    skip.type = "button";
-    skip.onclick = () => actions.onSkip();
-    const stop = el("button", "btn ghost", tr("停止")) as HTMLButtonElement;
-    stop.type = "button";
-    stop.onclick = () => actions.onStop();
-    acts.append(cont, skip, stop);
+    cont.onclick = () => (stopping ? actions.onStop() : actions.onContinue());
+    acts.append(cont);
+    if (!stopping) {
+      const skip = el("button", "btn", tr("跳过这一轮")) as HTMLButtonElement;
+      skip.type = "button";
+      skip.onclick = () => actions.onSkip();
+      const stop = el("button", "btn ghost", tr("停止")) as HTMLButtonElement;
+      stop.type = "button";
+      stop.onclick = () => actions.onStop();
+      acts.append(skip, stop);
+    }
     box.append(acts);
     card.append(box);
   }
@@ -386,7 +411,8 @@ function pushHint(pushed: boolean, status: AutoRoundView["status"]): string {
   return "";
 }
 
-function stageClass(r: AutoRoundView, state: AutoStateView): string {
+/** 阶段条那一格的样式类（`now` / `ok` / `done` / `skip` / `bad`）：`done` 是「跑完、有意见」的那一轮。 */
+export function stageClass(r: AutoRoundView, state: Pick<AutoStateView, "cur">): string {
   if (r.status === "running") return "now";
   if (r.status === "clean") return "ok";
   if (r.status === "skipped") return "skip";
@@ -435,7 +461,7 @@ export class AutoSettingsSheet {
     const empty: AutoModelRef = { provider: "", model: "", label: "" };
     this.values = opts.last
       ? { models: { a: { ...opts.last.models.a }, b: { ...opts.last.models.b } }, maxRounds: opts.last.maxRounds, autoMerge: opts.last.autoMerge }
-      : { models: { a: opts.defaultModel ? { ...opts.defaultModel } : empty, b: { ...empty } }, maxRounds: 10, autoMerge: false };
+      : { models: { a: opts.defaultModel ? { ...opts.defaultModel } : empty, b: { ...empty } }, maxRounds: ROUNDS_DEFAULT, autoMerge: false };
 
     this.back = markSurface(el("div", "sheet-back center rv-auto-back"), "window");
     const sheet = el("section", "st-console rv-auto-sheet");
@@ -515,14 +541,14 @@ export class AutoSettingsSheet {
     const minus = el("button", "", "−") as HTMLButtonElement;
     minus.type = "button";
     minus.onclick = () => {
-      this.values.maxRounds = Math.max(2, this.values.maxRounds - 1);
+      this.values.maxRounds = Math.max(ROUNDS_MIN, this.values.maxRounds - 1);
       this.render();
     };
     const value = el("b", "", String(this.values.maxRounds));
     const plus = el("button", "", "+") as HTMLButtonElement;
     plus.type = "button";
     plus.onclick = () => {
-      this.values.maxRounds = Math.min(30, this.values.maxRounds + 1);
+      this.values.maxRounds = Math.min(ROUNDS_MAX, this.values.maxRounds + 1);
       this.render();
     };
     stepper.append(minus, value, plus, el("span", "unit", tr("轮")));
@@ -634,13 +660,15 @@ export class AutoRoundSheet {
       el("h2", "", r ? tr("{p1} 评 {p2}", { p1: r.label || `${r.provider}/${r.model}`, p2: (r.sha || "").slice(0, 7) || tr("…") }) : tr("还没有轮次")),
     );
     const right = el("div", "rv-auto-head-right");
+    // 轮号不保证连续（跳过 / 旧记录被裁）：边界按**存在的那几个号**算，别拿 `rounds.length` 当上界。
+    const nos = state.rounds.map((x) => x.n).sort((a, b) => a - b);
     const prev = el("button", "btn ghost", tr("上一轮")) as HTMLButtonElement;
     prev.type = "button";
-    prev.disabled = !r || r.n <= 1;
+    prev.disabled = !r || nos.indexOf(r.n) <= 0;
     prev.onclick = () => this.onStep?.(-1);
     const next = el("button", "btn ghost", tr("下一轮")) as HTMLButtonElement;
     next.type = "button";
-    next.disabled = !r || r.n >= state.rounds.length;
+    next.disabled = !r || nos.indexOf(r.n) < 0 || nos.indexOf(r.n) >= nos.length - 1;
     next.onclick = () => this.onStep?.(1);
     const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
     close.type = "button";
@@ -717,7 +745,8 @@ export class AutoRoundSheet {
       cbody.append(top);
       cbody.append(el("div", "rv-auto-hint", pushHint(fx.pushed, r.status)));
       const commit = el("div", "rv-auto-json");
-      commit.textContent = tr("fix(review): 按第 {p1} 轮评审意见修复", { p1: String(r.n) });
+      // 桥给了真实提交标题就显示它；老记录没有这一格时退回「约定的格式」，不要伪装成真提交。
+      commit.textContent = fx.subject || tr("约定：fix(review): 按第 {p1} 轮评审意见修复", { p1: String(r.n) });
       cbody.append(commit);
     } else {
       cbody.append(el("div", "rv-auto-hint", r.status === "clean" ? tr("这一轮没有改代码（零意见或判为误报）") : tr("还没有提交")));

@@ -107,6 +107,20 @@ function readAllow(): { patterns: string[]; mode: Mode; handoffPath: string | nu
   }
 }
 
+/**
+ * 日志里的命令摘要：抹掉 URL 里的凭据段与 GitHub 令牌。
+ *
+ * 闸门会把「放过了什么」写进 stderr（`pi` 子进程的日志），而命令里可能带着
+ * `https://x-access-token:ghp_xxx@github.com/…` —— 原样写出去等于把令牌抄进日志。
+ * 只用于日志，判定永远用完整命令（截断/改写会让判据失真）。
+ */
+function redactForLog(cmd: string): string {
+  return String(cmd ?? "")
+    .replace(/\/\/[^\s/@]*@/g, "//***@")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,})\b/g, "***")
+    .slice(0, 80);
+}
+
 function shellCommand(input: Record<string, unknown>): string {
   for (const key of ["command", "cmd", "script", "code"]) {
     const v = input[key];
@@ -322,7 +336,9 @@ export default function approvalGate(pi: any): void {
     // 判授权必须用**完整**命令：`detail` 是给审批卡看的 900 字截断，截断点之后可以藏一条
     // `; rm -rf`（评审 #1）—— 那一下就成了「前半段合法、后半段随行」。
     if (grantAllows(auto, risk.detail, { head: SHELL_TOOLS.has(lower) ? currentBranch(cwd) : "", cwd })) {
-      console.error(`[approval-gate] auto-review grant allowed: ${risk.detail.slice(0, 80)}`);
+      // 别原样回显命令：`git push https://x-access-token:ghp_…@github.com/…` 这种会把凭据
+      // 抄进 pi 子进程的 stderr（日志跟着会话落盘）。
+      console.error(`[approval-gate] auto-review grant allowed: ${redactForLog(risk.detail)}`);
       return undefined;
     }
     // Patterns are per session (PI_WEB_ALLOW_FILE) and match the whole leading word(s), never a

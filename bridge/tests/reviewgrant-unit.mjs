@@ -45,6 +45,12 @@ check("推授权的那条分支：放过", () => {
   assert.equal(allows("git push origin HEAD:refs/heads/feat/review-auto"), true);
 });
 
+check("refspec 的目标写成 HEAD：不认（说不清远端会更新成哪条分支）", () => {
+  assert.equal(allows("git push origin main:HEAD"), false);
+  assert.equal(allows("git push origin feat/review-auto:HEAD"), false);
+  assert.equal(allows("git push origin HEAD"), true, "没有 refspec 的 HEAD = 推当前分支，交给 head 去对");
+});
+
 check("裸 push：当前分支就是授权那条才放过", () => {
   assert.equal(allows("git push"), true);
   assert.equal(allows("git push origin"), true);
@@ -120,6 +126,24 @@ check("合别的号 / 别的仓库：不放过", () => {
   assert.equal(allows("gh -R other/pi-web-client pr merge 747"), false);
   assert.equal(allows("gh api -X PUT repos/other/pi-web-client/pulls/747/merge"), false);
   assert.equal(allows("gh api -X PUT repos/o/pi-web-client/pulls/747/merge -f merge_method=merge"), true);
+});
+
+check("长选项 `--repo` 也算「显式点名」（只能点名自己的仓库）", () => {
+  // 以前只认 `-R`：`--repo other/x` 被读成空仓库 → 退回「按 cwd 算」→ 借这张授权合别人的同号 PR。
+  assert.equal(allows("gh pr merge 747 --repo other/x"), false);
+  assert.equal(allows("gh pr merge 747 --repo=other/x"), false);
+  assert.equal(allows("gh pr merge 747 --repo other/pi-web-client"), false, "同名的别的仓库也是别的仓库");
+  assert.equal(allows("gh pr merge 747 --repo o/pi-web-client"), true);
+  assert.equal(allows("gh pr merge 747 --repo=o/pi-web-client"), true);
+  assert.equal(allows("gh pr merge 747 -Ro/pi-web-client"), true);
+  // 写了选项却没给值：认不出仓库，一律拒（别退回 cwd）
+  assert.equal(allows("gh pr merge 747 --repo"), false);
+});
+
+check("PR 号只认位置上的那个，不把选项的值当号", () => {
+  assert.equal(allows("gh pr merge --match-head-commit 34 747"), true, "34 是选项的值，不是 PR 号");
+  assert.equal(allows("gh pr merge 747 --match-head-commit 34"), true);
+  assert.equal(allows("gh pr merge --match-head-commit 34 748"), false);
 });
 
 check("没说号码的合并（`gh pr merge` 认当前分支）：不放过", () => {

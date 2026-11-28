@@ -88,7 +88,7 @@ import {
   type ReviewMode,
 } from "./review.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
-import { AutoRunner, checksGate, mergeResult, type AutoCheck, type AutoHost } from "./reviewauto.ts";
+import { AUTO_MARK, AutoRunner, checksGate, mergeResult, type AutoCheck, type AutoHost } from "./reviewauto.ts";
 import { writeGrant } from "./reviewgrant.ts";
 import { localRepoName } from "./gitpr.ts";
 import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
@@ -2832,29 +2832,33 @@ async function main(): Promise<void> {
   /**
    * 这个会话里、我们最后一次发进去的那句话之后的一条 assistant 消息（回执与「这一轮有没有报错」都读它）。
    *
-   * 有 `anchor`（刚发进去的那句 prompt）就按它的**位置**定锚，不用时间戳：会话当时可能还在跑，
-   * 这条 prompt 是排在队尾的 followUp，上一轮那条 assistant 的 `ts` 同样比 promptAt 新 ——
-   * 只比时间会把**别人的答复**当成本轮回执。会话把 prompt 立刻落成一条 user item，按它切最准。
-   * 没给 anchor（老路径 / 测试）才退回时间戳。给了 anchor 却找不到（还没落地）就当没有，不猜。
+   * 定锚看的是**最后一条 user 消息是不是我们发的**，不比时间戳、也不比原文：
+   * - 时间戳：会话当时可能还在跑，这条 prompt 是排队 followUp，上一轮那条 assistant 的 `ts`
+   *   同样比 promptAt 新 —— 只比时间会把**别人的答复**当成本轮回执；
+   * - 原文：会话可能对文本做过归一（trim / 展开 /skill / 去前缀），比不上一整段。
+   *
+   * 自动评审注入的每一条都以 `[pi-web:auto]` 开头（`fixPrompt` / `mergePrompt` / `nudgeCommit`），
+   * 而 prompt 会立刻落成一条 user item —— 换脑重启后它也在盘上，不依赖内存里的「刚发过什么」。
+   * 最后一条 user 消息不是我们发的 = 人插话了：那条 assistant 是回人的，不当回执（返回空 → 暂停问人）。
+   * 一条 user item 都没有（老会话 / 测试）才退回时间戳。
    */
-  const lastAssistant = (sessionId: string, since: string, anchor = ""): { text: string; error: string } => {
+  const lastAssistant = (sessionId: string, since: string): { text: string; error: string } => {
     const session = sessions.get(sessionId);
     if (!session) return { text: "", error: "" };
     let from = -1;
-    if (anchor) {
-      for (let i = session.items.length - 1; i >= 0; i--) {
-        const item = session.items[i];
-        if (item?.kind === "user" && String(item.text ?? "") === anchor) {
-          from = i;
-          break;
-        }
-      }
-      if (from < 0) return { text: "", error: "" };
+    let lastUser: { text?: string } | null = null;
+    for (let i = session.items.length - 1; i >= 0; i--) {
+      const item = session.items[i];
+      if (item?.kind !== "user") continue;
+      from = i;
+      lastUser = item;
+      break;
     }
+    if (lastUser && !String(lastUser.text ?? "").startsWith(AUTO_MARK)) return { text: "", error: "" };
     for (let i = session.items.length - 1; i > from; i--) {
       const item = session.items[i];
       if (item?.kind !== "assistant") continue;
-      if (!anchor && since && item.ts && item.ts < since) return { text: "", error: "" };
+      if (from < 0 && since && item.ts && item.ts < since) return { text: "", error: "" };
       return { text: String(item.text ?? ""), error: String(item.errorMessage ?? "") };
     }
     return { text: "", error: "" };
@@ -2937,21 +2941,18 @@ async function main(): Promise<void> {
     session(id) {
       const session = sessions.get(id);
       if (!session) return null;
-      // 我们最后发进去的那句话：回执只认它之后的那条 assistant（见 `lastAssistant` 的注释）。
-      let asked = "";
       return {
         get running() {
           return session.state.running === true;
         },
-        prompt: (text: string) => {
-          asked = text;
-          return session.prompt(text, undefined, undefined, "followUp");
-        },
-        lastAssistant: (since: string) => lastAssistant(id, since, asked).text,
-        lastError: (since: string) => lastAssistant(id, since, asked).error,
+        prompt: (text: string) => session.prompt(text, undefined, undefined, "followUp"),
+        // 回执只认「我们那句 prompt」之后的那条 assistant（见 `lastAssistant` 的注释）。
+        lastAssistant: (since: string) => lastAssistant(id, since).text,
+        lastError: (since: string) => lastAssistant(id, since).error,
       };
     },
     head: (cwd) => gitOut(cwd, ["rev-parse", "HEAD"]),
+    subject: (cwd, sha) => gitOut(cwd, ["log", "-1", "--format=%s", sha]),
     dirty: (cwd) => Boolean(gitOut(cwd, ["status", "--porcelain"])),
     diffstat(cwd, from) {
       const text = gitOut(cwd, ["diff", "--shortstat", `${from}..HEAD`]);
@@ -4801,7 +4802,14 @@ async function main(): Promise<void> {
           case "review.auto.skip": {
             const session = String(msg.sessionId ?? "");
             const type = String(msg.type);
-            const out = AUTO_ACTIONS[type]?.(autoRunner, session) ?? autoRunner.continue(session);
+            const act = AUTO_ACTIONS[type];
+            if (!act) {
+              // 表与上面那串 case 是同一份名单：哪天有人只加 case 不填表，这里要说出来，
+              // 而不是静默当成「继续」（那会把一次误点变成接着烧 token）。
+              send({ type: "review.auto", sessionId: session, state: autoRunner.read(session), error: `不认识的自动评审动作：${type}`, code: "bad_action" });
+              return;
+            }
+            const out = act(autoRunner, session);
             send({ type: "review.auto", sessionId: session, state: out.state, error: out.error, code: out.code });
             return;
           }

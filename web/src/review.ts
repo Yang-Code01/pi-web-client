@@ -298,11 +298,6 @@ function errorText(run: ReviewRun | null, fallback: string): string {
 /** 面板看的那批记录：自动评审的轮次带 `auto`，只出现在自动卡时间线上（D457 第 7 条）。 */
 const manualRuns = (s: ReviewState | null): ReviewRun[] => (Array.isArray(s?.runs) ? s.runs.filter((r) => !r.auto) : []);
 
-const asRun = (s: ReviewState | null): ReviewRun | null => {
-  const runs = manualRuns(s);
-  return runs.length ? runs[runs.length - 1] : null;
-};
-
 /** 四块「评什么」的标签与说明：面板磁贴与自动评审卡共用一份（抄两份会漂）。 */
 export function modeBoardItems(): { value: ReviewMode; label: string; hint: string; icon: IconName }[] {
   return [
@@ -380,7 +375,8 @@ export function reviewView(input: ReviewInput): ReviewView {
   const state = input.state;
   // 记录按时间正序落盘；面板从新到旧画，所以这里先翻过来，画的时候不用再想顺序。
   const allRuns = manualRuns(state);
-  const latest = asRun(state);
+  // 同一批记录只过滤一次：`asRun()` 里再 filter 一遍等于把「哪些算手动评审」写两支。
+  const latest = allRuns.length ? allRuns[allRuns.length - 1] : null;
   // 「完整详情」浮层看的那一次（D429 之后面板本身不再展开任何一次）；认不出来（记录被裁掉了 /
   // 换了会话 / 刷新后不记得了）就回落到最新那一次。
   const focused = input.focus ? allRuns.find((r) => r.id === input.focus) ?? null : null;

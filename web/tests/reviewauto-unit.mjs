@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { fmtTok, roundLine, roundStatusLabel, stageChips, statePill, verdictOf, verdictLabel, waitText, worstSeverity, footerText, noteText } =
+const { fmtTok, roundLine, roundResult, roundStatusLabel, stageChips, stageClass, statePill, verdictOf, verdictLabel, waitText, worstSeverity, footerText, noteText } =
   await import("../src/reviewauto.ts");
 
 const round = (n, over = {}) => ({
@@ -124,10 +124,38 @@ test("三种判定各有说法", () => {
   assert.equal(verdictLabel(""), "");
 });
 
+test("阶段条那一格：跑完 / 跑着 / 跳过 / 失败各一种样式", () => {
+  const st = { cur: 2 };
+  assert.equal(stageClass(round(1, { status: "findings" }), st), "done", "跑完且有意见的那一轮已经填满");
+  assert.equal(stageClass(round(2, { status: "running" }), st), "now");
+  assert.equal(stageClass(round(3, { status: "findings" }), { cur: 2 }), "done");
+  assert.equal(stageClass(round(4, { status: "clean" }), st), "ok");
+  assert.equal(stageClass(round(5, { status: "skipped" }), st), "skip");
+  assert.equal(stageClass(round(6, { status: "failed" }), st), "bad");
+});
+
+test("一轮的结论不含抬头：明细行与 title 各拼一次", () => {
+  assert.equal(roundResult(round(3, { status: "findings", findings: 2, fix: { files: 1, added: 3, removed: 1 } })), "2 条意见 → 已修 1 个文件");
+  assert.ok(!roundResult(round(3, { status: "clean" })).includes("#3"), "结论里不带 #n A 抬头");
+  assert.equal(roundLine(round(3, { status: "clean" })), "#3 A · 零意见 · 签收");
+});
+
 test("底行：轮数 + token + 用时", () => {
   const started = new Date(Date.now() - 7 * 60_000).toISOString();
-  const text = footerText({ rounds: [round(1), round(2)], tokens: 12000, startedAt: started, endedAt: "" });
+  const text = footerText({ rounds: [round(1), round(2)], tokens: 12000, startedAt: started, endedAt: "", status: "running" });
   assert.match(text, /2 轮/);
   assert.match(text, /12\.0k tok/);
   assert.match(text, /分钟/);
+});
+
+test("底行：已经停下但缺 endedAt 的记录，用时不再一直往上涨", () => {
+  const started = new Date(Date.now() - 7 * 60_000).toISOString();
+  const base = { rounds: [round(1)], tokens: 100, startedAt: started, endedAt: "" };
+  const stopped = footerText({ ...base, status: "stopped" });
+  assert.doesNotMatch(stopped, /分钟/, "拿不到结束时刻就不报用时（否则每次重绘都在涨）");
+  // 有 endedAt 就照实报
+  const withEnd = footerText({ ...base, status: "stopped", endedAt: new Date(Date.parse(started) + 3 * 60_000).toISOString() });
+  assert.match(withEnd, /3 分钟/);
+  // 还在跑 / 暂停中：用「现在」
+  assert.match(footerText({ ...base, status: "paused" }), /分钟/);
 });

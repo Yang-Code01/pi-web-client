@@ -86,13 +86,41 @@ function pushTargets(cmd: string): { ok: boolean; branches: string[] } {
     if (s.startsWith("+")) return { ok: false, branches: [] };
     // 空源 refspec（`:feat/x`）在 git 里是**删远端分支**，不是推 —— 与 `--delete` 同类，拒。
     if (s.startsWith(":")) return { ok: false, branches: [] };
-    const rhs = s.includes(":") ? s.slice(s.indexOf(":") + 1) : s;
-    if (s.includes(":") && !rhs) return { ok: false, branches: [] }; // `feat/x:` 推去空目标名，也不认
+    const hasColon = s.includes(":");
+    const rhs = hasColon ? s.slice(s.indexOf(":") + 1) : s;
+    if (hasColon && !rhs) return { ok: false, branches: [] }; // `feat/x:` 推去空目标名，也不认
     const name = rhs.replace(/^refs\/heads\//, "");
-    if (!name || name === "HEAD") continue;
+    if (!name) continue;
+    if (name === "HEAD") {
+      // 没有 refspec 的 `git push origin HEAD`：推的就是当前分支，交给传进来的 `head` 去对。
+      // 写了 refspec 却把目标写成 `HEAD`（`main:HEAD`）就不认了 —— 说不清远端那只 `HEAD`
+      // 会更新成哪条分支，也就没法确认它落在授权的那一条上。
+      if (!hasColon) continue;
+      return { ok: false, branches: [] };
+    }
     branches.push(name);
   }
   return { ok: true, branches };
+}
+
+/** 认不出仓库时用的哨兵：`grantAllows` 见到它一律拒（宁可拒，也别退回「按 cwd 算」）。 */
+const UNKNOWN_REPO = "\u0000?";
+
+/** 会吃掉后一个 token 的选项：它们的值不是 PR 号，也不是仓库。 */
+const VALUE_FLAGS = new Set(["-R", "--repo", "-b", "--body", "-F", "--body-file", "-t", "--subject", "--match-head-commit"]);
+
+/**
+ * 命令里显式写出来的仓库：`-R owner/name`、`--repo owner/name`、`--repo=owner/name`、`-Rowner/name`。
+ *
+ * **长选项也要认**：`gh pr merge 12 --repo other/x` 以前把 repo 读成空串、退回「按 cwd 算」，
+ * 于是「显式点名必须逐字对上」那道闸被绕过 —— 借这张授权去合别的仓库里的同号 PR。
+ */
+function explicitRepo(cmd: string): string {
+  const m =
+    /(?:^|\s)(?:-R|--repo)(?:=|\s+)(\S+)/.exec(cmd) ??
+    /(?:^|\s)(?:-R|--repo)(\S+)/.exec(cmd);
+  if (!m) return "";
+  return m[1].trim();
 }
 
 /**
@@ -106,12 +134,28 @@ function mergeTarget(cmd: string): { pr: number; repo: string } {
     // 路径里的 `repos/<owner>/<name>/pulls/<n>/merge`：不认的话，别人的同名 PR 也能借这张授权合。
     // 认不出路径形状时给一个永远匹配不上的 sentinel（宁可拒，也别退回「按 cwd 算」）。
     const path = /(?:^|[\s/])repos\/([^/\s]+)\/([^/\s]+)\/pulls\/(\d+)\/merge\b/i.exec(cmd);
-    return { pr: Number(api[1]) || 0, repo: path ? `${path[1]}/${path[2]}` : "\u0000?" };
+    return { pr: Number(api[1]) || 0, repo: path ? `${path[1]}/${path[2]}` : UNKNOWN_REPO };
   }
   if (!PR_MERGE.test(cmd)) return { pr: 0, repo: "" };
-  const repo = /(?:^|\s)-R\s+(\S+)/.exec(cmd)?.[1] ?? "";
+  const repo = explicitRepo(cmd);
+  // 写了 `-R` / `--repo` 却没给值（`gh pr merge 12 --repo`）：当「认不出的仓库」，别退回 cwd。
+  if (/(?:^|\s)(?:-R|--repo)\s*$/.test(cmd)) return { pr: 0, repo: UNKNOWN_REPO };
   const after = cmd.replace(PR_MERGE, "").split(/\s+/).filter(Boolean);
-  const num = after.find((t) => /^\d+$/.test(t)) ?? "";
+  // 跳掉选项的值再找 PR 号：`--match-head-commit 34 12` 里的 34 不是 PR 号
+  // （以前取第一个纯数字，取到的是它 → 号对不上就拒，方向安全但会把合法命令挡掉）。
+  let num = "";
+  for (let i = 0; i < after.length; i++) {
+    const token = after[i];
+    if (VALUE_FLAGS.has(token)) {
+      i++;
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    if (/^\d+$/.test(token)) {
+      num = token;
+      break;
+    }
+  }
   return { pr: Number(num) || 0, repo };
 }
 

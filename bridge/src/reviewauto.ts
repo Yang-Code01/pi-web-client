@@ -9,7 +9,7 @@
  *   wait = "fix"     正在等会话里的 agent 把这一轮的意见修完（agent_settled）
  *   wait = "merge"   正在等会话里的 agent 合并 PR
  *
- * 每完成一次状态迁移就整份落盘；脑开机时 `resumeAutoRuns()` 把 `running` 的那几条接回来。
+ * 每完成一次状态迁移就整份落盘；脑开机时 `AutoRunner.resume()` 把 `running` 的那几条接回来。
  * 评审 run 的进度、意见、token 都从盘上（`review.ts` 的 job/state）读，这里不另存一份。
  *
  * 这个模块**不碰** fs 之外的系统能力：起评审、读进度、跑 git、给会话发话、合并 PR、打标记
@@ -85,6 +85,8 @@ export interface AutoFix {
   dismissed: number;
   fixed: number;
   note: string;
+  /** 真实提交的标题（`git log -1 --format=%s`）：页面直接显示它，不再按模板自造一句。 */
+  subject?: string;
   /**
    * 「改了没提交」那句话已经补过一次了（只补一次，第二次直接暂停）。
    *
@@ -175,6 +177,8 @@ export interface AutoHost {
   dirty(cwd: string): boolean;
   /** 这一轮改了什么（`git diff --shortstat` 口径）。 */
   diffstat(cwd: string, from: string): { files: number; added: number; removed: number };
+  /** 某个提交的标题（`git log -1 --format=%s`）：页面「本轮改动」显示真实的那句。 */
+  subject(cwd: string, sha: string): string;
   /** 把这一轮的分支推上去（PR 模式才用；失败返回原因）。 */
   push(cwd: string, branch: string): Promise<{ ok: boolean; note: string }>;
   /** PR 的 checks 绿不绿、合没合（PR 模式 + 自动合并用）。 */
@@ -213,7 +217,7 @@ export function slotOf(n: number): "A" | "B" {
 
 /**
  * 这一批意见算不算「没意见」：0 条就是。**判为误报 / 不值得改**由修复轮的回执决定，
- * 那一路走 `isClean(round)`。
+ * 那一路走 `isCleanRound(round)`。
  */
 export function isCleanRound(r: Pick<AutoRound, "status">): boolean {
   return r.status === "clean";
@@ -383,6 +387,7 @@ export function parseVerdict(text: string): { ok: boolean; verdicts: Verdict[]; 
     }
   }
   for (const text of candidates) {
+    // `any`：这是模型自由文本里抠出来的 JSON，形状未知，逐层探（`verdictList` 才是收口的地方）
     let parsed: any;
     try {
       parsed = JSON.parse(text.trim());
@@ -415,14 +420,30 @@ export function dismissalMarks(
 ): { all: boolean; marks: { key: string; mark: ReviewMark }[] } {
   if (!findings.length) return { all: false, marks: [] };
   const marks: { key: string; mark: ReviewMark }[] = [];
+  // 一条 verdict 只能用在一处。不占位的话，同一份文件里「只写了路径」的那一条会被**每条**意见
+  // 各认一次（三条意见共用一条判定），另外两条其实没被看过，这一轮也会被算成签收。
+  const used = new Set<number>();
+  const take = (f: { path: string; startLine: number }): number => {
+    for (const [i, v] of verdicts.entries()) {
+      if (used.has(i) || !v.path || v.path !== f.path) continue;
+      // `-1` 是「整份文件」：这一条能对上文件里的任何一行
+      if (v.line && (v.line === f.startLine || v.line === -1)) return i;
+    }
+    for (const [i, v] of verdicts.entries()) {
+      if (used.has(i) || !v.path || v.path !== f.path) continue;
+      // 只写了路径、没写行号：顺序上认领一条（同一文件多条意见时对不上具体是哪条，
+      // 但只占一条，不会让一条判定给整份文件的所有意见背书）
+      if (!v.line) return i;
+    }
+    return -1;
+  };
   let handled = 0;
   for (const f of findings) {
-    const hit =
-      verdicts.find((v) => v.path && v.path === f.path && v.line && (v.line === f.startLine || v.line === -1)) ??
-      // 模型只写路径、不写行号：一条路径全算它的（同一文件多条意见时按顺序对不上，但总比全判成没处理强）
-      verdicts.find((v) => v.path && v.path === f.path && !v.line);
-    if (!hit) continue;
+    const i = take(f);
+    if (i < 0) continue;
+    used.add(i);
     handled++;
+    const hit = verdicts[i];
     if (hit.verdict === "false-positive") marks.push({ key: f.key, mark: "false-positive" });
     else if (hit.verdict === "fixed") marks.push({ key: f.key, mark: "accept" });
   }
@@ -459,7 +480,14 @@ export function fixPrompt(o: {
   for (const [i, f] of findings.entries()) {
     const head = f.anchored === false || !f.startLine ? f.path : `${f.path}:${f.startLine}`;
     lines.push(`${i + 1}. ${head} · ${f.severity} · ${f.category} — ${f.content}`);
-    if (f.existingCode) lines.push("   ```", ...String(f.existingCode).split("\n").map((l) => `   ${l}`), "   ```");
+    if (f.existingCode) {
+      const code = String(f.existingCode);
+      // 围栏要比源码里最长的一串反引号更长：源码自己带 ``` 时，三反引号会被提前闭合，
+      // 后面的源码行就跑到代码块外面，变成对 agent 的指令（prompt injection）。
+      const longest = (code.match(/`+/g) ?? []).reduce((n, run) => Math.max(n, run.length), 0);
+      const fence = "`".repeat(Math.max(3, longest + 1));
+      lines.push(`   ${fence}`, ...code.split("\n").map((l) => `   ${l}`), `   ${fence}`);
+    }
   }
   lines.push("");
   lines.push("每条都先判断是否真的成立：不成立就说明理由、跳过；成立就修掉，并说明改了什么。不要为了对齐意见而改无关代码。");
@@ -475,7 +503,7 @@ export function fixPrompt(o: {
 }
 
 /** 合并那一步交给会话的那句话：只做合并，别顺手干别的（D457 第 15 条）。 */
-export function mergePrompt(o: { pr: number; rounds: number; models: string; branch: string }): string {
+export function mergePrompt(o: { pr: number; rounds: number; models: string }): string {
   return [
     markerLine("merge", o.pr),
     `两个模型都签收了同一份 diff（${o.rounds} 轮 · ${o.models}），checks 已经全绿。`,
@@ -532,6 +560,75 @@ export function readAuto(session: string): AutoState | null {
   return normalizeAuto(read.value);
 }
 
+/** 严重度计数：只留「值是数字」的那几格（数组 / 字符串计数会让 `+ 1` 变成字符串拼接）。 */
+function normalizeSeverity(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) out[key] = n;
+  }
+  return out;
+}
+
+const MARKS: ReviewMark[] = ["accept", "ignore", "false-positive"];
+
+/** 一条「收尾时要打上去的标记」：`mark` 只认三个已知值（`finish()` 会把它直接交给桥打标）。 */
+function normalizeMark(raw: unknown): { key: string; mark: ReviewMark } | null {
+  const m = raw as { key?: unknown; mark?: unknown } | null;
+  const key = typeof m?.key === "string" ? m.key : "";
+  const mark = MARKS.includes(m?.mark as ReviewMark) ? (m?.mark as ReviewMark) : null;
+  return key && mark ? { key, mark } : null;
+}
+
+function normalizeMarks(raw: unknown): { key: string; mark: ReviewMark }[] {
+  if (!Array.isArray(raw)) return [];
+  const out: { key: string; mark: ReviewMark }[] = [];
+  for (const item of raw as unknown[]) {
+    const one = normalizeMark(item);
+    if (one) out.push(one);
+  }
+  return out;
+}
+
+function normalizeVerdicts(raw: unknown): Verdict[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Verdict[] = [];
+  for (const item of raw as unknown[]) {
+    const one = normalizeVerdict(item);
+    if (one) out.push(one);
+  }
+  return out;
+}
+
+/** 一条回执判定：`verdict` 只认三个已知值，其余按「没写」丢掉。 */
+function normalizeVerdict(raw: unknown): Verdict | null {
+  const v = raw as { path?: unknown; line?: unknown; verdict?: unknown; why?: unknown } | null;
+  const verdict = VERDICT_KINDS.includes(v?.verdict as VerdictKind) ? (v?.verdict as VerdictKind) : null;
+  const path = typeof v?.path === "string" ? v.path : "";
+  if (!verdict || !path) return null;
+  const line = Number(v?.line);
+  return { path, line: Number.isFinite(line) ? line : 0, verdict, why: String(v?.why ?? "") };
+}
+
+/** 修复那一轮：字段逐个收口（`{...raw}` 会把盘上任意键一起带进内存与页面）。 */
+function normalizeFix(raw: any): AutoFix {
+  return {
+    promptAt: String(raw?.promptAt ?? ""),
+    shaBefore: String(raw?.shaBefore ?? ""),
+    shaAfter: String(raw?.shaAfter ?? ""),
+    files: Number(raw?.files) || 0,
+    added: Number(raw?.added) || 0,
+    removed: Number(raw?.removed) || 0,
+    pushed: Boolean(raw?.pushed),
+    dismissed: Number(raw?.dismissed) || 0,
+    fixed: Number(raw?.fixed) || 0,
+    note: String(raw?.note ?? ""),
+    subject: String(raw?.subject ?? ""),
+    nudged: Boolean(raw?.nudged),
+  };
+}
+
 /**
  * 老状态 / 半截写入都补齐成现在的形状：读出来不该因为少个字段就崩。
  *
@@ -569,14 +666,14 @@ export function normalizeAuto(raw: any): AutoState {
     status: ["running", "clean", "findings", "failed", "skipped"].includes(r?.status) ? r.status : "running",
     sha: String(r?.sha ?? ""),
     findings: Number(r?.findings) || 0,
-    severity: r?.severity && typeof r.severity === "object" ? (r.severity as Record<string, number>) : {},
+    severity: normalizeSeverity(r?.severity),
     keys: Array.isArray(r?.keys) ? r.keys.map(String) : [],
     tokens: Number(r?.tokens) || 0,
     ms: Number(r?.ms) || 0,
     note: String(r?.note ?? ""),
-    marks: Array.isArray(r?.marks) ? r.marks.filter((m: any) => m && typeof m.key === "string") : [],
-    verdicts: Array.isArray(r?.verdicts) ? r.verdicts.filter((v: any) => v && typeof v.path === "string") : [],
-    ...(r?.fix ? { fix: { ...r.fix } as AutoFix } : {}),
+    marks: normalizeMarks(r?.marks),
+    verdicts: normalizeVerdicts(r?.verdicts),
+    ...(r?.fix && typeof r.fix === "object" ? { fix: normalizeFix(r.fix) } : {}),
   }));
   return {
     id: String(raw?.id ?? ""),
@@ -622,6 +719,7 @@ export function listAuto(): AutoState[] {
   const out: AutoState[] = [];
   for (const name of names) {
     try {
+      // `any`：盘上那份可能是上一个大版本 / 半截写入，形状未知（`normalizeAuto` 逐字段收口）
       const raw = readJson<any>(path.join(autoDir(), name), null);
       if (raw && typeof raw === "object" && raw.session) out.push(normalizeAuto(raw));
     } catch {
@@ -840,13 +938,11 @@ export class AutoRunner {
       state.stopping = false;
       state.reason = "";
       state.reasonCode = "";
-      if (state.wait === "merge" || state.status !== "running") {
+      if (state.wait === "merge") {
         // 停在合并那一步被跳过：算签收但没合并
-        if (state.wait === "merge") {
-          state.status = "signed";
-          this.finish(state);
-          return true;
-        }
+        state.status = "signed";
+        this.finish(state);
+        return true;
       }
       state.status = "running";
       void this.beginRound(state);
@@ -1122,6 +1218,7 @@ export class AutoRunner {
 
     // 有提交：记下改了什么，PR 模式把分支推上去
     fix.shaAfter = shaAfter;
+    fix.subject = this.host.subject(state.config.cwd, shaAfter);
     const stat = this.host.diffstat(state.config.cwd, fix.shaBefore);
     fix.files = stat.files;
     fix.added = stat.added;
@@ -1220,6 +1317,10 @@ export class AutoRunner {
   }
 
   private async beginMerge(state: AutoState): Promise<void> {
+    // 合并那句话已经发过（接管 / 暂停之后再「继续」）：不再发第二遍 —— gh 会报错，
+    // 更糟的是「它其实已经合了」时又发一次。接着等 `prState` 就够（tick 里的 `stepMerge`），
+    // 真没合上会在那里暂停并说清状态。
+    if (state.merge.at) return;
     const pr = state.config.pr;
     this.busy.add(state.session);
     try {
@@ -1241,7 +1342,6 @@ export class AutoRunner {
           pr,
           rounds: state.rounds.length,
           models: [state.config.models.a, state.config.models.b].map((m) => m.label || `${m.provider}/${m.model}`).join(" / "),
-          branch: state.config.branch,
         }),
       );
     } catch (err: any) {

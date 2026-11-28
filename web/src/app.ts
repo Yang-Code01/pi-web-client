@@ -20155,10 +20155,17 @@ export class App {
   }
 
   /** 轮次专用窗：点时间线上的某一轮打开（上一轮 / 下一轮也在同一扇窗里翻）。 */
+  /** 这条自动评审现有的轮号（升序）。轮号不保证连续：跳过 / 旧记录被裁都会留空档。 */
+  private autoRoundNos(): number[] {
+    return (this.reviewAuto?.rounds ?? []).map((r) => r.n).sort((a, b) => a - b);
+  }
+
   private openAutoRound(n: number): void {
     const state = this.reviewAuto;
     if (!state) return;
-    this.autoRoundNo = Math.min(Math.max(1, n), Math.max(1, state.rounds.length));
+    // 按**存在的那几个号**夹：以前拿 `rounds.length` 当上界，轮号一旦不连续就会切到不存在的轮。
+    const nos = this.autoRoundNos();
+    this.autoRoundNo = nos.length ? nos.find((x) => x >= n) ?? nos[nos.length - 1] : n;
     const round = state.rounds.find((r) => r.n === this.autoRoundNo) ?? null;
     const run = round ? (this.reviewState?.runs?.find((r) => r.id === round.runId) ?? null) : null;
     if (!this.autoRoundSheet) {
@@ -20166,7 +20173,12 @@ export class App {
       sheet.onClose = () => {
         if (this.autoRoundSheet === sheet) this.autoRoundSheet = null;
       };
-      sheet.onStep = (delta) => this.openAutoRound(this.autoRoundNo + delta);
+      sheet.onStep = (delta) => {
+        const nos = this.autoRoundNos();
+        const at = nos.indexOf(this.autoRoundNo);
+        const go = at < 0 ? undefined : nos[at + delta];
+        if (go !== undefined) this.openAutoRound(go);
+      };
       sheet.mount(document.getElementById("app") ?? document.body);
       this.autoRoundSheet = sheet;
     } else {
