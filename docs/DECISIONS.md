@@ -8812,7 +8812,7 @@ if (stop >= 0) {
 - **区域里的「视觉 px → 布局 px」不只要除 `--ui-scale`**：`chat.ts` 的 `layoutScale()` = 全局字号 × 正文自己的倍率，用在 `contentTopOf()` / `pinTop()` / `pin()` 三处（`scrollTop` 是布局 px，`getBoundingClientRect()` 是视觉 px）。漏掉区域那一层，正文 130% 时点缩略图跳轮次会滚过头（反证：把除数换回 `appZoom()` 后目标偏 676px），`startTop >= maxScroll - 1` 还可能把「跳得到的位置」误判成最后一屏而直接回到底部；往回翻页的锚定同样会跳。缩略图那条带子（`turns.ts`）挂在 `.chat-pane` 上、不在缩放的区域里：它自己的 px 只乘 `--ui-scale`，所以量正文视口要用「视觉高 ÷ `appZoom()`」（`measure()` 与 `frame()` 同一套），直接拿 `.chat-scroll` 的 `clientHeight`（那是它局域里的 px，两层 zoom 都除过）会让带子的高度上限按 1/倍率缩一圈。
 - **滑杆落值一律 `clampScale()`**：刻度是 `0.8 + i * 0.2` 算出来的浮点（`1.2000000000000002`），拖动是连续值。原样写进 `prefs` / `--ui-scale` 的话，读回时又会被夹成两位小数 —— 同一个档存前存后不是一个数，`range.value`（step 0.01）也会与 `--ui-scale` 差一档，方向键再按就跳。
 - **范围与默认值**：五块各自 0.8–2.0、步长 1%，与全局同款；默认全 1.0（升级上来行为零变化）；乘积不另设上限（极端 4.0 双击轨道就回去）。prefs 是 `regionScale: { topbar, sessions, chat, composer, queue }`，`readPrefs()` 逐块归一化，缺字段回 1.0。
-- **第一步只露「对话正文」一根滑杆**（排在「字号」下面、同一套控件与刻度、磁吸四档 90/100/115/130、双击轨道回 100%），其余四块的变量已经挂在节点上、固定 1.0 —— 下一轮只补控件。
+- **五根滑杆排成一组**（#734 先只放了「对话正文」一根验证机制，#739 补齐其余四根）：分组头「分区字号」+ 一行说明「各自叠在「字号」上相乘；双击轨道回 100%」，五行的顺序照界面上到下 / 左到右 —— **顶栏 / 会话列表 / 对话正文 / 输入框 / 右栏面板**；每行同一套控件与刻度、磁吸四档 90/100/115/130、双击轨道回 100%。multiplier 的乘法关系只在分组头说一次，每行的 hint 只讲「这一块是哪一块」。
 
 **为什么。** ① 区域 zoom 让「正文大、左栏紧凑」这种日常诉求第一次能表达，而实现只碰 CSS 一行、prefs 一个字段。② 乘法叠在全局之上，全局那根「整页」语义与既有的视口修正 / 窄版 / 终端几何全都不用重算，回退也简单（五项全 1.0 就是今天）。③ 用 `zoom` 而不是 `transform: scale`：后者不改布局，占位不变会溢出、滚动高度还要自己补，滚动条也不跟着缩。
 
@@ -8904,7 +8904,137 @@ if (stop >= 0) {
 
 **验证。** 只动文字：AGENTS.md / `docs/agents/running-the-bridge.md` / `GLOSSARY.md` / `.pi/skills/bridge-update/SKILL.md`（含 frontmatter description）。`rg` 复查全仓再没有把 skill 写成唯一更新路径的地方；没有代码改动，所以不跑构建与测试。
 
-## D446 完成的评审记录对着「现在的 tip」核一遍：过时只标不改结论，只比本地 ref，PR 走 `ls-remote`（#741，用户 2026-11-28「评审完成后，分支有了新提交，可能是旧的评审结果，希望加上提示」）
+
+## D446 代码评审交给 detached worker：换脑、脑崩溃、更新重启都不打断（用户 2026-11-28「热部署会导致正在执行的 code Review 被中断」＋截图）
+
+**问题。** 热部署换脑时，正在跑的评审会当场消失，记录被标成「桥重启了，这次评审没跑完」。用户看到的是：PR #728 的一条评审跑到一半，部署完成后变成没跑完；同一条 PR 只能重跑，前面的 token 与时间全白费。
+
+**证据链。** D407 已经把桥拆成壳（`bridge/dist/host.js`）与脑（`bridge/dist/index.js`），但评审的编排一直在脑里：`startReview()` 把 run 记到盘上之后，`execute()`、`active` / `progressMap`、以及每组 `runChild()` 起的 `pi` 子进程都只活在脑进程里。换脑时老脑收到 `retire`，只做 `tunnel.stop(); sessions.releaseLocks(); process.exit(0)`（`bridge/src/index.ts:4858` 附近），5 秒后壳再把老脑强杀；评审的子进程跟着一起没。新脑开机时 `sweepStaleRuns()`（`bridge/src/review.ts:635` 附近）把所有 `status === "running"` 的 run 改成 `status:"stale"`、`errorCode:"bridge-restart"`，于是页面显示「桥重启了，这次评审没跑完」。现场：2026-11-28 13:39 开始评审，13:44:48–13:45:19 热部署 `--mode brain`，`.scratch/hot-deploy/state.json` 的 step 4「构建完成，交给壳换脑」与评审中断同一分钟。
+
+**决定。**
+
+- 新增执行进程 `bridge/src/review-worker.ts`（入口 `runReviewJob()`）：一次评审从「脑里的异步函数」变成独立 detached 进程；脑只负责校验、落 run、起 worker、转发进度。worker 的入口从 `review-worker.js` 找，开发态回退 `.ts` + `--experimental-strip-types`。
+- 盘上四份文件（都在 `<state>/review/jobs/`）：`<runId>.json` 是 job（repo/session/startedAt/opts/pid），`<runId>.progress.json` 是进度（200 ms 防抖、tmp+rename 原子写），`<runId>.cancel` 是取消信号，`<runId>.beat` 是 worker 每 5 秒写一次的心跳。worker 启动时自己把 `pid` 写回 job —— 脑可能刚 spawn 就崩，这一行是「换脑后还认不认得出这条评审」的保险。
+- 会话选的 GitHub 令牌（`ghEnv`）**只走 spawn 的环境变量**，不写 job：令牌不落盘，worker 里的 `gh` / `git` 子进程从 `process.env` 拿。
+- 脑侧 500 ms ticker 读进度文件并广播；worker 不在时读 state：run 已收尾就发终态进度 + `review.state`，仍 `running` 就标 `stale` / `errorCode:"worker-lost"`（「评审进程意外退出，这次评审没跑完」），并清掉四份文件。
+- 开机顺序：`sweepStaleRuns()` 先跑，但用 `liveJobForRun()` 跳过「job 文件在、pid 还活、startedAt 对得上」的 run；job 文件读不出来时，`<runId>.beat` 只要新鲜且 pid 还活着，也照样算活（杀软占用 / 半截写入不该把评审收尸）。`broadcast` 定义之后 `setReviewNotify()` + `resumeReviewJobs()` 把上一代留下的活任务接回 `active` / `progressMap`，页面一打开就能看到进度。`review.get` 的 `progresses` 因此也是重连后的真实状态，不用等 worker 再写一帧。
+- **换脑（retire）不停评审**（这正是本决策的目的）；只有真正停桥（`/api/host/stop` 默认、SIGINT、SIGTERM）才 `await stopAllReviews()`：写 cancel、最多等 3 秒、超时用 `reviewJobRunning()`（心跳校验，防 pid 复用）杀进程树，并把仍 `running` 的记录收成 `stopped`。更新器（`hotdeploy.mjs` / bridge-update 的 `restart.mjs`）必须先 `POST /api/host/stop?keepReviews=1` 再杀旧壳 —— 这条显式路径给脑发 `retire`（不跑 `sessions.shutdown()`），和普通停机共用同一段 `STOP_GRACE_MS`（8 秒）等它自己退出，detached worker 留着让新脑靠 job 文件接回来；只有端点返回 `keepReviews:true` 时更新器才等旧壳退出（最多 15 秒）再杀它的子进程，旧壳 404 时直接杀（它不会 retire）；新壳若不等，还在 retire 里的脑会先收到 SIGTERM 而走 `shutdown()`，把刚保住的 worker 又收掉。壳这边等满 8 秒连接还在就 SIGKILL 那个脑，避免它在 `releaseLocks` 里挂住成为孤儿。
+- worker 每 5 秒写 `<runId>.beat`；`reviewJobRunning()` 用「pid 活着 + 心跳 pid/startedAt 对得上 + 30 秒内」判断它还是不是这次评审的执行进程。还没有心跳时按有没有 pid 分开：有 pid 只给 15 秒（worker 一起来就该写第一份心跳；给太久会让 SIGKILL 后的死任务在换脑时被接回），还没写回 pid 才给 60 秒启动宽限（覆盖 30 秒 HELLO + 新脑启动）。sweep、resume、取消强杀都走这个判据，不只 `process.kill(pid, 0)`。
+- **直接给脑进程发 SIGTERM 不在支持路径里**：脑把它当成真正停桥（`shutdown()`，会收掉评审）；换脑 / 更新由壳走 `keepReviews=1` 的 `retire` 交接。真正停桥要发信号给壳，或者走 `/api/host/stop`；壳的 SIGTERM/SIGINT 也是 `stop("all")`，会通知脑并等它收完评审。
+- `startReview()` 保留原校验 / quota / 同 PR 去重 / 立即返回 `runId` 的语义；新增 `launch` 注入缝（`setReviewLauncher()`），单测用它替换掉真 spawn，避免把「立刻失败的 PR fetch」跑成后台进程。
+
+**为什么。** ① 这是 D407 同类问题的漏网：会话已经交给壳持有的管道，评审这种最长可能跑 25 分钟的长任务却还挂在脑上。② 不做「换脑等评审跑完」：一次部署会被评审拖到半小时，而且脑崩溃 / 更新重启根本等不了。③ 不做「新脑自动续跑」：模型调用不是幂等的，重跑要再花一遍 token，还会把已经跑完的组重做。④ 进度 / 取消用文件而不是 IPC：worker 与新一代脑之间没有现成通道，文件是唯一跨进程代、跨平台都成立的载体；轮询而不是 `fs.watch`，因为 Windows / 网络盘会漏事件。⑤ worker 必须 detached：它是脑的子进程就还会被 `childrenOf()` / 进程树清理带走。
+
+**代价。** 换脑期间进度最多晚 500 ms；每次评审多一个常驻的 node 进程与一个 `<runId>.log`（只在排查时看）；如果用户把 host 也硬杀（不是换脑），worker 仍会跑完，但没人收尾，下次开机才会把结果接回来。取消是协作式的：worker 被系统挂住时 3 秒 / 10 秒后才会被强杀。
+
+**验证。** 新增 `bridge/tests/review-worker-e2e.mjs`（`npm run test:review-swap`）：真壳 + 真脑 + 假 `PI_BIN`（30 秒慢回答）+ 假 `ocr`，在临时仓库开一条 workspace 评审，断言 worker pid 与脑 pid 不同；`POST /api/host/deploy?action=swap` 换脑之后断言 worker 仍活、新脑 `review.get` 的 `progresses` 里有这条、最终 `status:"done"` 且 `totalFiles:1`，worker 退出后 job 文件被回收；再开第二条慢评审并 `/api/host/stop`，断言壳正常退出且 worker 被收掉；最后另起一个壳开第三条评审，`POST /api/host/stop?keepReviews=1` 后断言壳退出、脑走了换代路径、worker 仍活着（防「150ms 后 SIGTERM 把评审收掉」回归）。单测在 `bridge/tests/review-unit.mjs` 增加「live job 的 running run 不被 sweep，dead pid 的才被标 stale」「job 读不出来但心跳新鲜仍算活」「opts 形状不对不算活」「接回的进度逐字段归一化」。`npm --prefix bridge run typecheck`、`npm run build:bridge`、`npm run test:review-swap`、`npm run test:host`、`npm run test:review` 均通过。
+
+## D447 贴图之后那一下：图从输入框浮出来飞进徽标（用户 2026-11-28「粘贴的时候没有动画效果，用户不知道有没有粘成功。增加 mac 风格的动画效果。做一个原型让我选择」→ 选了 B）
+
+**症状。** ⌘V 贴一张截图，输入框右下角那颗「+N 图」徽标只是把文字从「+1 图」改成「+2 图」。没有位移、没有出现/消失、没有任何一帧变化落在视野里：视线在输入框中间打字的人完全不知道贴上了没有，只能低头去找那颗小胶囊。这条路径上原本一行动效都没有（`addImages()` 只调 `updateImageBadge()` 换文字）。
+
+**决定（四个变体里选 B，原型见 `feat/paste-flash-prototype` 分支的 `web/prototypes/paste-image-flash.html`）。**
+
+- **贴上的图先浮出来，再缩进徽标。** 76×76 的幽灵缩略图从输入框中间偏上出现，错开 90ms 叠着停一下（约 150ms），再沿一条向上的弧线缩进徽标，落地时徽标弹一下（`--mac-spring`）并**实底**闪 260ms。多张依次起飞，落地只弹一次。
+- **一次最多飞四片**（`MAX_GHOSTS`）。贴十张不该飞出十片，剩下的靠徽标上的数字 —— 这条动效回答的是「贴上没」，不是「贴了几张」。
+- **徽标的「落地」提示与飞入解耦。** `badgeLanded()` 自己就能用（弹 + 实底闪）：最后一帧落地时调它。粘贴 / 拖拽 / 选文件 / 相册四条路都经过 `addImages()`，所以四条路都既有飞行也有弹跳；`badgeLanded()` 单独可用是给「有图进来但不经过输入框」的将来留的口子。
+- **实底闪那一下交给 CSS**（`.image-badge.flash`），不用 WAAPI 插值颜色：半透明强调色叠在浅底上（`--accent-bg` 是 9% 强调色）几乎看不出变化，只有实底 + 反相字才读得出「数字又加了一张」。
+- **缓动曲线在 `pastefly.ts` 里再抄一遍字面量**：WAAPI 的 `easing` 不认 `var(--mac-spring)`，写成变量会当场抛 `TypeError: not a valid value for easing`（原型里踩过）。
+- **`prefers-reduced-motion: reduce` 整段跳过**：不飞、不弹、不闪，张数照常更新。
+- **幽灵层挂在 `#app` 里**（跟着字号缩放），坐标一律「先按视觉 px 算、再除一次 `--ui-scale`」——`getBoundingClientRect()` 是视觉 px，写进 style 的是布局 px（D123 的老坑，与 `selask.ts` 同一套写法）。落定后整层从 DOM 摘掉，`#app` 里不留常驻浮层。
+
+**为什么。** ①四个变体里只有 B 同时做到「看得见」和「看得出是哪张」：徽标弹跳（A）改的是那颗 11px 高的小胶囊，视线在输入框中间时仍然可能漏；缩略图轨（C）要把输入框撑高 46px，多图时长期占地方；玻璃浮标（D）是另一套通知样式的浮层，要额外管超时与叠放。②飞行有方向：从「贴的地方」到「记账的地方」，用户不用学就知道那颗徽标在数什么。③落地才弹，而不是起飞就弹：弹跳落在计数已经更新之后，视线被带过去时数字是对的。
+
+**代价。** ①一次贴图多一层全屏 `position: fixed` 浮层（`pointer-events: none`），飞行期间覆盖在会话区上 —— 它挡不住点击，但会短暂遮住人正在读的内容，所以限四片、700ms 内收工。②动效依赖 `getBoundingClientRect()` 量徽标：徽标被别的东西挡住 / 宽度量不到 2px 时直接不飞（宁可不飞，也不要从错误的位置飞出来）。③幽灵缩略图是 base64 data URL 再塞进 `<img>`，大截图（压完仍有几百 KB）会让这一帧多一次解码 —— 跟待发图片弹窗里那些缩略图同一份开销，没有新增内存形态。
+
+**复审（2026-11-28，PR #740 的代码评审）改掉的三处。** ①收尾从 `onfinish` 换成 `anim.finished`（`then(settle, settle)`）：动画被 cancel（飞行中 `#app` 被重建、标签页被冻结后清理）时 `onfinish` 不触发，幽灵与这一层会永远留在 DOM 里、`Promise` 也不 resolve。②徽标上重复触发时先 `cancel()` 上一条动画、清掉上一个 `.flash` 定时器 —— 连贴两次时前一个定时器会把刚挂上的 `.flash` 提前摘掉。③`EASE` 常量没人用（删掉），`SPRING` 与 `mac-base.css` 的一致性交给 `web/tests/pastefly-unit.mjs` 对账 —— 光在注释里宣称「必须一致」是不会有人发现它漂了的。
+
+**第二轮复审（同日）补的三处。** ④`flyImagesToBadge` 改吃 `PendingImage[]`、在 `reducedMotion()` 与 `MAX_GHOSTS` 裁片之后才拼 data URL —— 以前 `images.map(imageSrc)` 会替十几张 2048px 的图各拼一条几 MB 的字符串，实际只飞四片。⑤拼法收进 `images.ts` 的 `imageSrc()`：以前待发图片弹窗、随手问、贴图动效三处各手写一遍 `data:${mimeType};base64,${data}`。⑥这个 Promise 现在保证不抛也不 reject（`try/catch` 包住整个函数、`Element.animate` 缺失或拒绝关键帧时返回 null），否则 `app.ts` 那句 `void` 就等于每次贴图都留一条 unhandled rejection；顺带把「徽标上一条动画要 cancel / 上一个 `.flash` 定时器要清」这两条也在 `web/tests/pastefly-unit.mjs` 里用假 DOM 钉住了，不必等浏览器探针才发现回归。
+
+**第三轮复审（同日）补的两处。** ⑦幽灵的边长从 CSS 挪进 `pastefly.ts`（脚本写 `style.width/height`）：落点是按它的一半居中的，尺寸写两处就会在改 CSS 时让终点偏半个边长，而探针的「±8px」未必抓得住。⑧`badgeLanded` 的弹跳强度参数改名 `pop`（跟 `opts.scale` 那个字号缩放不是一回事），默认值就是唯一调用处用的 1.2 —— 原来那个 1.14 是死值。另外那个「永不 reject」的兜底从 `runFly` 的链尾挪到 `flyImagesToBadge` 一处，并且改成一行 `console.warn`：不静默吞掉，查得到来源。
+
+**验证。** `probes/paste-fly-in.mjs`（真 Chromium + 真 paste 事件 + 真几何，隔离桥）：贴两张冒两层幽灵；把动画暂停把 `currentTime` 推到首尾帧上量 —— 起点在输入框上方、终点落在徽标中心 ±8px（不靠等时钟，700ms 的飞行才不会让断言随机翻车）；落地后整层从 DOM 摘掉、徽标有弹跳动画、`.flash` 挂上且 260ms 后自己摘掉；六张只飞四片但徽标写「+6 图」；`prefers-reduced-motion` 下一片不飞也不弹；字号 125% 时幽灵布局尺寸仍是 76px、渲染成 ≈95px、终点仍在徽标中心（缩放只乘一次）。回归：`probes/image-sheet-check.mjs` 20 项（点徽标、删图、清空）全过，飞行层没挡住徽标的点击。守卫：`npm --prefix web run typecheck`。
+
+## D448 起服务前先认出端口占用者、问一句、优雅停掉再起（用户 2026-11-28「npm start 端口被占时直接报 start 失败，想先提示、问一句要不要关掉之前的服务」）
+
+**问题。** `npm start` 直接起壳，7864 被占时 `publicServer.listen()` 的 `EADDRINUSE` 是**未捕获异常**，用户看到的是一整坨堆栈加 `npm error`，完全不知道端口上是谁、该不该停它。而最常见的那类「占用者」其实就是**自己上一次起的那份**（另开的终端、选了「关窗保留」之后留在后台的那份）——用户要的只是「换成这一份」。
+
+**决定。**
+
+- **新入口 `scripts/preflight.mjs`**：既当 CLI（`node scripts/preflight.mjs`），也导出 `preflight()` 给 `scripts/start.mjs` 在 spawn 之前再调一次。`npm start` 变成 `node scripts/preflight.mjs && node scripts/bootstrap.mjs --start && npm run build && node scripts/start.mjs`，**排在 bootstrap 与 build 之前**（先问，别让用户白等一次编译）；`start:nobuild` 与直跑由 `start.mjs` 里那次调用覆盖。两次之间不是原子的，所谓堵空窗只是**把空窗缩小**（bind 试探和真正的 listen 之间仍可能被人抢走，那一步由壳的 EADDRINUSE 兜底）。
+- **认人沿用 D154 的三条线索**（`/healthz` 自报 pid → `%TEMP%/pi-web-bridge-<port>.pid` → 枚举 `Get-NetTCPConnection` / `lsof`），但每个候选都要过**「命令行是 node 起的，且入口是某个参数的结尾」**这一关（入口名从 `scripts/bridge-entry.mjs` 取）；对不上的只当线索，不认作自己人。这里不能图省事用子串匹配：`git add bridge/dist/index.js`、`type bridgedisthost.js`、`host.js.bak` 都会撞上，而默认答案恰恰是「是」——认错人就要对别人的进程 `taskkill /F`。入口名故意不比对绝对路径：占用者可能来自另一份检出（别的 worktree、另一个安装目录），那正是最该被认出来的一类。名单里也放了 `bridge/src/host.ts` / `bridge/src/index.ts` —— 开发态 `npx tsx` 直接跑源码的进程同样是「自己人」，不算进去就只能人手 taskkill。unix 上一次查不全（没 `lsof`、`ps` 挂了）只作废**那一个 pid**，不当成「整个查询失败」：部分信息一样能认出自己那份。前面一步认出来就**不再往下查**——枚举是最慢的一步。
+- **停自己那份：先优雅、等不到才硬杀。** `POST /api/host/stop`（带 `origin` + `sec-fetch-site: same-origin`，与 `npm run bridge:stop` 同一个接口：壳先让脑收会话、再带 pi 一起退），轮询端口释放**最多 10 秒**；还占着才 `taskkill /PID <pid> /F`（unix 先 SIGTERM、3 秒后 SIGKILL），再等端口真空出来**最多 5 秒**。**绝不 `/T`**（树的另一边可能连着别的会话，会把更新器自己一起带下去），也绝不直接杀 pid 当第一手段（硬杀会留下孤儿 pi 攥着会话锁）。
+- **别人的服务：只看不动。** 印 pid、版本/buildId、跑了多久、工作目录（Windows 上进程 API 不暴露，那就只印命令行里的入口路径）、命令行，然后退出 2，并给出换端口的出口。**`--force` 也不越过这条线**——`--force` 只授权「停掉本项目自己的桥」。
+- **优雅停与硬杀的等待不一样长。** `POST /api/host/stop` 三种回音分开处理：`ok` → 等满 10 秒；连不上（连回包都没有，它可能正在退）→ 也等满 10 秒；**答了但拒绝**（HTTP 403 同源校验没过 / 405 之类）→ 只再等 2 秒就去硬杀，等得久一点它也不会改主意。硬杀之后把 pid 文件里「记的还是这个 pid」的那份删掉（`removePidFile` 挂在壳的 exit 钩子上，`taskkill /F` 不走钩子，留着会骗到下一轮的 `explainPortTaken` 和更新器）。
+- **提问：TTY 才问，默认 Y**（回车=替换、`n/no`=不替换、看不懂重问、EOF 算「没回答」=不动手）。**非 TTY（CI、`npm start | tee`）不猜不杀**：印出证据、提示 `npm run bridge:stop` 或 `PI_START_FORCE=1 npm start`，退出 2。`--force` 只从 argv（`--force` / `--force=…`）与 `PI_START_FORCE` 两处认，**不认 `npm_config_force`**：那是 npm 自己的旗标（「别拦我」），CI 里顺手写的 `npm start --force` 只是想绕过 npm 的检查，把它当成「授权硬杀正在跑的桥」（底下的 pi 会话会变孤儿）语义不对；`npm start -- --force` 也到不了链首（npm 把 `--` 后面的参数追加到整条命令末尾）。`--force` **不转发给桥**（桥不认识这个参数：`start.mjs` 把 `--force` 和 `--force=…` 都滤掉）。`askReplace()` 在非 TTY 的 stdin 上直接返回 `null`（「没回答」）；readline 往坏掉的 stdout 写而抛异常时也当「问不成」——不动手、退出 2，不把异常当成同意。
+- **没有壳的旧桥**（`PI_HOST_DISABLE=1`）在 /healthz 里没有 `brain` 键、也没有停机接口：提示里先写明「只能硬杀、底下的 pi 会话可能变孤儿（界面会卡在『终端正在使用』）」，用户答 y 之后才硬杀。
+- **没法确认是谁时什么都不动。** 读不到命令行（PowerShell 超时、权限不够，`processDetails()` 返回 `null` 而不是空表）或者 `/healthz` 答了却读不懂（回包被截断、端口上是别的服务）时，既不当自己人也不当外人：印出已有证据，**连 `/api/host/stop` 都不发**（那个路径不算冷门，端口上的东西如果不是桥，这条 POST 会被当成什么指令没人预先知道），退出 2 让人自己来。Windows 上还有一半状态：进程在、但 `CommandLine` 是空串（以管理员/SYSTEM 起的桥就是这样），它进 `failed` 而不是 `lines` —— 跟「没这个进程」分开，否则一个有权限差的服务会被当成外人、连 `--force` 都不肯停。例外是「命令行认出来是本项目的桥、但 `/healthz` 读不懂」：这时只优雅停、不硬杀（读不懂就不知道它有没有壳）。`--force` 也不越过这条线——它授权的是「停掉确认过的自己那份」。
+- **探活/停机打的地址跟着监听地址走**：`localBase(host, port)` 对 `0.0.0.0` 用 `127.0.0.1`、对 `::` 用 `[::1]`（Linux 上 `bindv6only=1` 时 `::` 不收 v4 回环连接，拿 `127.0.0.1` 探会把自家的壳当成外人）。
+- **壳侧兜底**（`bridge/src/host.ts`）：`listen` 的 `error` 接住，`EADDRINUSE` 打一句人话（端口、pid 文件里记着的 pid、`node scripts/preflight.mjs` / `npm run bridge:stop` / `PI_WEB_PORT=<别的口>` 三个出口）并以 **退出码 2** 结束，不再吐堆栈（这几句用 `fs.writeSync(2, …)` 同步写，`npm start | tee` 里异步写会在 exit 前被截断）；退出前先把控制通道关掉、unix socket 文件删掉（`net.Server.close()` 不删文件，留着下一轮只能靠 `control.ts` 的 EADDRINUSE 探测兜底），这时还没有脑和子进程。走这条路说明「检查完到 listen 之间被抢」或者绕过了 preflight 直起桥。
+- **端口与监听地址的解析收成一份**：`scripts/preflight.mjs` 导出 `stateDir()` / `readPort()` / `readHost()`（`PI_WEB_PORT` → `config.json` 的 `port` → 7864；`PI_WEB_HOST` → `host` → 回环），`scripts/stop.mjs` 改为从它取——原先那边另有一份同样的规则。
+- **退出码语义**：0 = 可以继续（端口空着 / 已换成这一份）；2 = 停在这里（外人、非交互又没 `--force`、停机失败、端口仍被占）；3 = 用户明确回答「不替换」。链式 `&&` 因此会停住，不会在用户说了 n 之后又爬去起一份。
+- **范围**：只管主端口。内网通 7865 有自己的探活与退出码 2 约定（D433、D96），不并入；热部署、`npm run bridge:stop`、bridge-update 的停机路径都不动；**绝不自动换端口起**。
+
+**为什么。** ① 用户说 n 之后必须什么都不发生，所以「已有一份在跑」不能靠「继续下去再撞一次」来表达，得在链的最前面就停住。② 先问再编译：编译要几秒，问错地方就白等。③ 默认 Y：这一问的绝大多数场景是「换成我刚改的这份」，回车是最短的路；但**只对 TTY** 默认，管道与 CI 里没人能回答，默认一个 Y 等于后台杀服务。④ 先 `/api/host/stop`：壳知道怎么按顺序收脑与会话，`kill -9` 只会留下孤儿 pi。⑤ 认人必须看命令行：pid 文件会残留（`taskkill /F` 不走 exit 钩子），`/healthz` 也可能被别的服务占着同一个路径。
+
+**代价。** 每次 `npm start` 多一次「bind 试探 + （被占时）一次 PowerShell 查询」的开销（空闲路径只 bind 一次，毫秒级）。认人的三条线索（枚举 listen 的 pid、pid 文件、`/healthz` 自报的 pid）合并成一次 `processDetails()`：本机一次 `powershell -NoProfile` 冷启动实测 1.5~1.9 秒，分开问三个 pid 就是六七秒的白等，进程内的 `Get-CimInstance` 每个只要几十毫秒。Windows 上拿不到别人的工作目录，只能给命令行。`EADDRINUSE` 之外的监听失败（比如绑特权口/不存在地址的 `EACCES`、`EADDRNOTAVAIL`）打一句「没能监听 host:port（code）：message」并退出 1，同样不吐堆栈。`--force` 写着 `npm start -- --force` 时只会落到链尾的 `start.mjs`（npm 把 `--` 后面的参数追加到整条命令末尾），链首那一步读不到；要无人值守就用 `PI_START_FORCE=1 npm start`（`npm_config_force` 不算授权，理由见上）。`scripts/start.mjs` 那次 `preflight()` 包了 `try/catch`：异常按「检查失败」打一句人话、退出 1，不吐堆栈（直跑 `scripts/preflight.mjs` 的入口本来就有 `.then(ok, err)` 兜底，两条路的错误体验要对齐）。
+
+**守卫。** `npm run test:preflight`：`bridge/tests/preflight-unit.mjs` 用假 TTY 考提问的四种回答、`localBase` 五种地址、「命令行里是桥入口才算自己人」，外加一条**跨文件**检查 —— 直接读 `bridge/src/host.ts` 的源码，断言 `readPort()` / `readHost()` 的兜底字面量仍是 `preflight.mjs` 导出的 `DEFAULT_PORT` / `DEFAULT_HOST`（两个语言没法共享常量，只能有人盯着：改一边不改另一边，就是「检查放行的端口」跟「壳真监听的端口」对不上）；`bridge/tests/start-preflight.mjs` 在**进程边界**上起真实的桩（桩就落在 `<tmp>/bridge/dist/host.js`，所以认人那步是真过了一遍）：空闲放行且一声不响、自己那份走 `/api/host/stop` 优雅停、非交互没 `--force` 时只看不动、别人的服务连 `--force` 都不碰、`/healthz` 回包被截断时只优雅停不硬杀、旧桥硬杀后端口真空出来（并断言进程真的退了）、`/healthz` 报的是**别人**的 pid 时仍认得出 pid 文件里那份自己人（认人不能在前一条线索上收手），`forceRequested()` 对 `npm_config_force` 两侧都断言为「不授权」。壳侧并进 `bridge/tests/host-shell-e2e.mjs` 第 11 段：端口被占时退出码 2、有那一句人话、没有堆栈。
+
+## D449 右栏四颗页签滚起来贴顶（#744，用户 2026-11-29「希望在向下滚动的时候，这一栏固定」）
+
+**症状。** `.exec-tabs` 是 `.queue` 的第一个子元素，而 `.queue` 整块跟着 `.pane` 一起滚（`.pane` 才是滚动容器）。评审面板一长，滚到中间就看不见四颗页签，想换去看「需要你」只能一路滚回顶。
+
+**决定。**
+
+- **只固定页签这一条**，`「需要你」`页里的分区小标题照旧随内容滚：页签是导航，小标题是内容的一部分，一起贴顶会跟页签挤成两层。
+- **外面套一层 `.exec-tabs-bar`**，`position: sticky; top: 0`，负边距（`-12px -12px 0`）+ 反向内边距吃掉 `.queue` 的 12px 上 / 左右内边距：玻璃铺满整栏、内容从整条下面滑过，两侧不会漏出半行字；分段控件的灰槽仍内缩 12px，静止观感与 D444 那一版一致；那四颗按钮的选择器（`.queue .exec-tabs button` / `.exec-tabs .pip`）一个没动，探针与别处照旧能找到它们。
+- **底子恒定，不随滚动变样**：`--mac-glass-strong` + `--mac-blur` + 0.5px `--mac-glass-line`（D418 那套材质）。不加 scroll 监听、没有「滚起来才淡入分隔线」——那需要一个滚动回调加过渡，还得处理临界点抖动，换来的观感差别肉眼难辨。
+- **切页签滚回顶部**：`drawQueue()` 里记 `queueDrawnTab`，页签变了 `kept = 0`，同一页签内的重画（答一份问卷、执行进度刷新）仍保留阅读位置。手点页签与链接卡那种程序式切换都走 `renderQueue()`，所以判据放在 `drawQueue()` 而不是 `selectQueueTab()`。
+- **只挂桌面三栏**（`html:not([data-compact="true"])`）：窄版右栏铺满整屏、底部已经有页签，再贴一条在顶上只是多一层玻璃。布局那半条（负边距 + 反向内边距）不分壳，两边的净效果一样，所以窄版一像素不变。
+- **`.queue` 仍是 `display: grid`**：动手前以为 grid 里的 sticky 贴不住（包含块是它自己那一格），实测 Chromium 里能贴住（`getBoundingClientRect` 在 `scrollTop` 50 / 400 都停在 0）。改成 flex 列会连带动到 `.queue` 里别的面板，没必要。
+
+**为什么。** 页签是这一栏唯一的导航，滚走之后想换面板的成本是「一路滚回顶」，而这恰好发生在最需要换面板的时候（评审面板又长又满）。底下垫一层玻璃而不是让它透明，是因为滚到密集内容时字会从条里穿过去，不可读。
+
+**代价。** 右栏顶上多出 12px 恒定的玻璃带（内容从它下面过，不算占位）；`.exec-tabs-bar` 这个包裹层从此是探针与样式的钩子，别为了「少一层 DOM」把它合并掉。窄版与贴顶行为不同，改右栏布局时要同时想到这两套壳。
+
+**验证。** `probes/queue-tabs-sticky.mjs`（假桥 + 真 Chromium，二十张真的批准卡把右栏撑长 —— 不垫假 div，整栏重画会把垫进去的东西和滚动位置一起抹掉）：桌面三栏是 sticky、静止时玻璃已经贴住栏顶且灰槽仍内缩 12px、条宽**正好**等于 `.pane` 的内容盒、滚到底条不动且内容从条下沿穿过、条顶那一行点到的是条而不是内容、底色与毛玻璃不随滚动变、一块纯黑内容滚到条后面时条里仍是玻璃色（量像素，不解析颜色字符串）、切页签 `scrollTop` 归零、150% 字号（窗口放大到 1900 才仍是三栏）下同样贴住、窄版 `position: static` 且没有玻璃底。守卫：`npm --prefix web run typecheck`（i18n + viewport 规则）。
+
+**复审（PR #745 的代码评审）改掉的三处。** ①探针的静态文件服务把目录校验从 `startsWith(DIST)` 改成 `DIST + path.sep`：只比前缀的话 `/…/dist-evil/x` 也会通过（本机 127.0.0.1 的探针，影响有限，但这条是两行的事）。②`let page` 提到所有用到它的助手之前：它原本声明在 `openQueueRail()` / `metrics()` 后面，靠「反正调用时已经赋值」运行时才没错，提前调用会得到 TDZ 的 ReferenceError 而不是 `until` 超时。③「玻璃挡得住」改成量像素（垫一块纯黑内容再看条里那颗像素，亮度 215 vs 透明的 0），不再用正则从 `getComputedStyle().backgroundColor` 里取第 4 段 —— `color-mix()` / `rgb(0 0 0 / .6)` 这类写法会让它默认成 1、断言恒真（改动前后各用一次「把 `background` 改成 transparent」的变异验过这条真的会红）。
+
+**复审第二轮（PR #745 的第二次代码评审）。** ①`.exec-tabs-bar` 的 `-12px` / `12px` 与 `.queue` 的 padding 是三个字面量，改一个就会漂：`.queue` 现在带 `--queue-pad: 12px`，负边距写成 `calc(var(--queue-pad) * -1)`、反向内边距用同一个变量，注释也标明这层在窄版下净效果为零。②探针里补一条「切回『需要你』也在顶部」：那颗页签走的是 `drawQueue()` 末尾的兜底分支（不是提前 return 的那三个），原来只在代码里成立、探针没钉。③`server.listen` 没监听 `'error'`、`getContext` 没判 null 两条没改：前者实测是「未捕获事件 → EADDRINUSE 原文 + 退出码 1」，进程当场结束不会留下没关的 server/wss，而且全仓 75 个探针都是这一句；后者在 Chromium 里 `canvas.getContext("2d")` 不会返回 null，加判断是死代码（`probes/selection-visible.mjs` 同一套写法）。
+
+**复审第三轮（PR #745）。** ①`queueDrawnTab` 的记账从 `drawQueue()` 开头挪到 `renderQueue()` 里 `drawQueue()` 返回之后：画到一半抛异常（`renderExecPanel()` 等）不该算「这页已经画过」，否则下次同一页签重画会把半截内容的滚动位置当成阅读位置留着。②「探针用的 `data-exec-tab` 按钮上根本没有」不成立：`app.ts` 里是 `needs.dataset.execTab = "needs"`（`dataset` 到 `data-*` 的映射），探针在这个 PR 上跑绿 20 项。③`openQueueRail()` 的 `until` 抛错、而不是记一条 FAIL：不改 —— 那是「准备阶段就没到位」，消息里带 `what`（`tab bar` / `queue to overflow`）且退出码 1；硬记一条 FAIL 再往下断言，只会得到一串误导性的 FAIL。
+
+**复审第四轮（PR #745）。** ①「挡得住」那条的采样点现在**先验自己真的垫在黑块上**（`patchTop ≤ 采样点 ≤ patchBottom`），滚动量也不再猜「条的高度」，而是按黑块当前的位置补一段把它顶到栏顶：原来那个数靠「条的 margin 盒 = 条高 - 12px」成立，换个 padding 就会让黑块滑出采样点、断言恒真。顺带删掉 `Math.max(4, 12)` 这种恒等表达式。②「`.queue` 若要改成 block 会溢出被裁」不成立：block 的 auto 宽度一样先减负边距（CSS 10.3.3），实测 grid 与 block 量到的都是 `barWidth 398 === pane.clientWidth 398`、左右各 1px；注释里补了这句，免得下次有人为了「保持 grid」而不敢动它。③`probes/port.mjs` 一直存在（`freePort` 就是从那里来的，`composer-grow.mjs` 也用）。
+
+**复审第五轮（PR #745）。** `metrics()` 里的 `getComputedStyle(pane)` 是死变量（`paneInner` 改成直接读 `clientWidth` 之后没人用了），删掉。
+
+**没改的两条。** ①「`drawQueue()` 会被 `renderExecPanel` 等同步回调重入、内层改写 `queueDrawnTab`」不成立：`renderQueue()` 有重入闸（`queueDrawing` + `queueDirty`），`drawQueue()` 从不套自己，那三个面板里再叫 `renderQueue()` 只是置脏、由外层回头重画；已在 `drawQueue()` 旁边写明。②「0.5px 描边在 DPR=1 会取整成 0，`parseFloat(borderBottom) > 0` 可能假红」不成立：`border-width` 的计算值是按设备像素取整的，实测 DPR=1 与 DPR=2 都是 `1px`（不会变 0）；改成 1px 反而会跟 `mac.css` 全站的 `0.5px solid var(--mac-glass-line)` 发丝线不是一档。
+
+## D450 设置控制台是量尺：不跟着字号缩放，拖字号滑杆时它自己让开、真页面当场演示（用户 2026-11-28「调节的时候拖动百分比滚动条，但是无法立即看到修改后的效果」）
+
+**决定。**
+
+- **控制台不跟着字号缩放。** `.st-console` 那套壳（外观 / 显示面板、模型层、产物、pi 设置、仓库选择器、交办、PR、评审）统一挂 `document.body`，脱开 `#app { zoom: var(--ui-scale) }`。这是本条唯一横切到别的界面的地方，判据**只写一处**：`modal.ts` 的 `overlayHost()`（`.st-console` 在不在这个浮层里），`overlay()` 与四个自建壳的 `mount()` 都走它 —— 否则下一个做控制台的人照 `overlay()` 的老习惯挂 `#app`，就静默退回去了。挂 body 之后宿主要就地重算 `--vh1` / `--vw1`（`:root` 那两个是**除过缩放**的长度），否则控制台里任何 `calc(var(--vh1) * N)` 都缩一圈（D123 同一族坑）。
+- **壳自己的宽窄判据不许跟着改。** `data-compact`（三栏 / 单列）仍然看**有效宽度**（视口 ÷ 字号，D158）—— 控制台 1:1 只是它自己的事。这两个判据从这一条起就分家了：写「顺手把 `layoutWidth()` 换成 `innerWidth`」会把 2.0 字号下的单列悄悄变回三栏。
+- **折叠档位按视口宽度算。** 控制台 1:1 之后 `data-st-narrow` / `-mid` / `-tight` 直接由 `window.innerWidth` 得出；`.sys-` / `.jc-` / 附件那几套仍留在 `#app` 里，继续读 `data-console-*`（视口宽 / 字号）。两组属性不合并 —— 合并就等于把还跟着缩放的壳判错。
+- **拖动时让开。** 按住字号轨道、指针移动超过 **6px**（`PEEK_MIN_PX`）才让开：单击轨道跳档、点刻度数字都不闪。让开 = 宿主加 `peeking` 类，视觉只有两条 —— 控制台 `opacity: .03`，宿主底色全透、`backdrop-filter: none`。
+- **复原走同一个出口。** `pointerup` / `pointercancel` / 窗口失焦三处都收干净；松手是**下一帧就回**（没有动画），因为「松手 = 我要接着调」。
+- **读数胶囊。** 一颗只读浮层（`字号 · 132%` 加一根细轨道，填充按 `(v − 0.8) / 1.2`），挂在宿主里而不是 `.st-console` 里 —— 那个壳 `overflow: hidden`，贴底的东西会被裁掉。它是**指示器**：拖动继续用冻住的轨道盒子换算（D441 那条），视觉变化不回读几何。**胶囊、`peeking` 类和键盘那颗计时器都按宿主算（六根滑杆共用一份）**：一根一个的话，「按 A 的方向键、400ms 内去拖 B」会在 A 的计时器到点时把 B 的让开收掉（探针第 10 条；反证：退回一根一份，拖动第 700ms 时 opacity 从 0.03 弹回 1）。
+- **键盘。** 方向键 / `Home` / `End` 调值也露一下，**400ms**（`PEEK_KEY_MS`）没再动就自己回来 —— 否则纯键盘用户永远看不到效果。
+- **`Esc`。** 拖动中按 Esc 撤掉这一次（值回拖动起点、不落盘、面板不关），捕获阶段先于 `modal.ts` 的 Esc 层；不在拖动中时 Esc 照旧关面板。
+- **只给字号这六根。** 主题 / 强调色 / 饱和度 / 语言是点击式，而且主题切换要整页重刷，不做「按住预览」。
+
+**为什么。** ①界面一直在承诺「改了立即生效」，可拖动时用户看到的是**面板自己在放大**：控制台挂在 `#app` 的缩放子树里，2.0 字号下面板撑满整屏、手上那根滑杆被推出视口（实测 1200×836 窗口里轨道视觉 y ≈ 984），等于在拖一根看不见的控件；五根分区滑杆的反馈更是为零 —— 五块区域全在面板背后。②真页面是最诚实的预览：真文本、真换行、真栏宽，比任何小样都准，所以不做「面板里画一块迷你整页」。③量尺不跟着被量：控制台就是判断「多大合适」的地方，它自己跟着变，判断就没有参照。
+
+**守卫。** `probes/console-peek.mjs`（桩桥 + 真 Chromium，10 段 21 条，末尾跨段断言「页面没有 JS 异常」）：2.0 与 1.0 下控制台矩形逐像素相同、且它不在 `#app` 里；2.0 下那根滑杆仍在视口内；壳的 `data-compact` 在 2.0 下仍然是窄版；控制台里 `--vh1` 仍是 10% 视口；模型层同样 1:1；挪 3px 不让开、挪 40px 让开且遮罩全透不模糊；让开时同一条消息的视觉高度变了（证明真页面真的在变，不只是画了个透明层）；胶囊文本与细轨道填充；方向键让开 + 570ms 后自己回来；拖动中 Esc 回 1.25 且面板没关；失焦自己收；`.viewer.hi` 仍压得住搬去 body 的控制台。按压 A 之后拖 B（第 10 条）也在守「计时器按宿主一份」。四条反证各红一次：阈值改回 0 → 第 2 条红；删掉 `--vh1` / `--vw1` 重算 → 第 1f 条红（41.8px vs 83.6px）；让开时留 50% 不透明 → 第 2b / 5 / 7 条红；退回「一根滑杆一个计时器、收起只收自己」→ 第 10 条红（拖动第 700ms 时 opacity 1）。
+
+**可改。** ①6px / 400ms / 3% 都是手感值，探针只断言「3px 不动、40px 动」，中间随便调。②「钉住」（点一下保持让开、再点收回）与「让开时面板收成底部细条」是原型里做过的另外两支，这次没做。③窄屏没专门优化：按住照样能让开，但没为它调布局。
+
+**代价。** ①把字号调到 1.5 / 2.0 的人打开设置，看到的是「正常大小」的面板（与 macOS 系统设置同一种行为）—— 这是有意的，但它确实和「浮层跟着字号缩放」（D123 / D441）分叉，所以单记一条。②控制台从此不能再用 `data-console-*`：新壳要么也做成 `.st-console` + `data-st-*`，要么自己再想一套。
+
+## D451 完成的评审记录对着「现在的 tip」核一遍：过时只标不改结论，只比本地 ref，PR 走 `ls-remote`（#741，用户 2026-11-28「评审完成后，分支有了新提交，可能是旧的评审结果，希望加上提示」）
 
 **问题。** 一条**评审记录**跑完，卡片上只写「完成 · 35 条意见 · 4 分 20 秒 · 23 个文件」，**看不出它评的是哪个提交**；分支或 PR 推了新提交之后，这张卡一个字都不变，于是人会把一份已经对不上的旧结论当现状读。而且连判定的依据都不存在：`ReviewRun` 里没存被评的 sha —— `pr` 模式的 `to` 是 ref 名 `refs/pi-web/pr-N`（下次评同一个 PR 就被挪走），`prHead` 存的是分支名，`mergeBase` 只是公共祖先。
 

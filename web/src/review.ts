@@ -274,6 +274,8 @@ function errorText(run: ReviewRun | null, fallback: string): string {
   const known: Record<string, string> = {
     stopped: tr("已停止"),
     "bridge-restart": tr("桥重启了，这次评审没跑完。重跑一次就行。"),
+    "worker-lost": tr("评审进程意外退出，这次评审没跑完"),
+    worker_spawn: tr("评审进程没起来"),
     busy: tr("这个会话的评审额度满了，先停一个再开"),
     dup_pr: tr("这个会话已经在评这个 PR 了"),
     not_git: tr("这个目录不是 git 仓库，没有东西可评。"),

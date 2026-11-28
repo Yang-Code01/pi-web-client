@@ -72,7 +72,10 @@ import {
   readReviewState,
   remoteTipTargets,
   remoteTips,
+  resumeReviewJobs,
   reviewProgresses,
+  setReviewNotify,
+  stopAllReviews,
   takeSweptCount,
   MAX_RUNS_PER_SESSION,
   setPick,
@@ -2722,6 +2725,35 @@ async function main(): Promise<void> {
     }
   };
 
+  // 评审状态帧只在这里拼：review.get、换脑接回后的 onState 都发同一份，字段不会漏一个。
+  const reviewStateFrame = (repo: string, session: string, pinned: string) => ({
+    type: "review.state",
+    dir: repo,
+    pinned,
+    sessionId: session,
+    state: readReviewState(repo, session),
+    progresses: reviewProgresses(repo, session),
+    cap: MAX_RUNS_PER_SESSION,
+  });
+
+  // 评审的执行进程是独立的 detached worker（D446）：进度与收尾都从盘上读，脑只负责转发。
+  // 换脑时新脑开机在这里接回上一代留下的 job —— 正在跑的评审不中断。
+  setReviewNotify({
+    onProgress: (job, progress) =>
+      broadcast({ type: "review.progress", dir: job.repo, sessionId: job.session, runId: progress.runId, progress }),
+    onState: (job) => {
+      // 仓库可能在评审期间被删 / 被移走：转发状态不该因此把脑带崩。
+      let pinned = "";
+      try {
+        pinned = effectiveReviewDir(job.repo, job.session).pinned;
+      } catch {
+        /* 目录没了就当没钉 */
+      }
+      broadcast(reviewStateFrame(job.repo, job.session, pinned));
+    },
+  });
+  resumeReviewJobs();
+
   /**
    * GitHub 路由的 ctx。两个入口（回环工具口 / 常规路由）必须是**同一份**映射：壳拿到的 id/cwd
    * 与页面拿到的如果不是一个，就会出现「壳去问了 A 会话、面板读的却是 B」。
@@ -4253,10 +4285,11 @@ async function main(): Promise<void> {
             const session = String(msg.sessionId ?? "");
             try {
               const { repo, pinned } = effectiveReviewDir(dir, session);
-              const state = readReviewState(repo, session);
-              // #741 先画后补：第一帧就有记录本身，tips 只带**缓存里已知**的那份（读缓存、不 spawn、
-              // 不发请求）；真正的核对在下面那段异步里，算完补一帧。
-              const targets = tipTargets(state.runs);
+              // 面板要的那一份状态只从 `reviewStateFrame()` 来（D446 的接回路径也发同一份）。
+              const frame = reviewStateFrame(repo, session, pinned);
+              // #741 先画后补：第一帧就有记录本身，tips 只带**缓存里已知**的那份（读缓存、
+              // 不 spawn、不发请求）；真正的核对在下面那段异步里，算完补一帧。
+              const targets = tipTargets(frame.state.runs);
               // 远端那批必须跟补帧问的**同一批号**（`remoteTipTargets` 的去重 + 上限 3）：
               // 缓存 key 是「仓库 + 这一批号」，拿全量号去查永远命中不了 —— PR 记录一多，
               // 首帧就白白退化成空的，「已亮着的标先灭一下」这个毛病恰好出现在最长的那份列表上。
@@ -4267,22 +4300,16 @@ async function main(): Promise<void> {
                 const sha = known.heads[item.pr];
                 if (sha) remoteKnown[item.ref] = sha;
               }
+              // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
+              // `tipsAt` 用**缓存那一刻**，不是现在：拿「现在」去标注一份 60 秒前的值，
+              // 页面的「旧快照不判」那道闸就等于没有（刚跑完的那轮会被陈旧的远端 sha 误标）。
               send({
-                type: "review.state",
-                dir: repo,
-                pinned,
-                sessionId: session,
-                state,
-                // `tipsAt` 用**缓存那一刻**，不是现在：拿「现在」去标注一份 60 秒前的值，
-                // 页面的「旧快照不判」那道闸就等于没有（刚跑完的那轮会被陈旧的远端 sha 误标）。
+                ...frame,
                 tips: remoteKnown,
                 tipsAt: known.at,
-                // 首帧是同步的（拿不到分支名，`gitBranchOf` 现在是异步）。这里只可能带 PR 的
-                // 缓存 tip，没有 `HEAD` 的 key，空着不会让谁误标；补帧会带上真正的分支名。
+                // 首帧是同步的（拿不到分支名，`gitBranchOf` 是异步）。这里只可能带 PR 的缓存
+                // tip，没有 `HEAD` 的 key，空着不会让谁误标；补帧会带上真正的分支名。
                 tipsBranch: "",
-                progresses: reviewProgresses(repo, session),
-                cap: MAX_RUNS_PER_SESSION,
-                // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
                 swept: takeSweptCount(),
               });
               // 真正的核对：本地 `rev-parse`（每个 ref 一次，异步）+ PR 那半一次 `ls-remote`
@@ -4293,13 +4320,13 @@ async function main(): Promise<void> {
                 // （读状态文件 / 算账号 / 发帧都可能失败），而它失败的正确表现就是「没有标」。
                 void (async () => {
                   try {
-                    const live = readReviewState(repo, session);
-                    const liveTargets = tipTargets(live.runs);
+                    // tips 与 state 必须是**同一眼**：这期间可能有人标了一条意见、也可能刚跑完新一轮。
+                    const liveFrame = reviewStateFrame(repo, session, pinned);
+                    const liveTargets = tipTargets(liveFrame.state.runs);
                     if (!liveTargets.length) return;
                     // `gitBranchOf` 只在真有 `to: HEAD` 的记录时才跑：多一次 git 子进程就是白花。
                     const branch = liveTargets.some((item) => isHeadName(item.ref)) ? await gitBranchOf(repo) : "";
-                    // tips 与 state 必须是**同一眼**：这期间可能有人标了一条意见、也可能刚跑完新一轮。
-                    const local = await localTips(live.runs, (ref) => gitShaOf(repo, ref));
+                    const local = await localTips(liveFrame.state.runs, (ref) => gitShaOf(repo, ref));
                     let remote: { tips: Record<string, string>; at: number } = { tips: {}, at: 0 };
                     if (liveTargets.some((item) => item.pr > 0)) {
                       let env: NodeJS.ProcessEnv | undefined;
@@ -4308,24 +4335,18 @@ async function main(): Promise<void> {
                       } catch {
                         /* 没账号也要能问公开仓库：不强求 */
                       }
-                      remote = await remoteTips(live.runs, (prs) => remotePrHeads(repo, prs, { fresh, env }));
+                      remote = await remoteTips(liveFrame.state.runs, (prs) => remotePrHeads(repo, prs, { fresh, env }));
                     }
                     // 两个来源各带自己的时刻，快照取**最旧**那个：宁可少判（不知道），
                     // 不能拿一份旧值说成新的。
                     const at = remote.at ? Math.min(local.at, remote.at) : local.at;
                     broadcast({
-                      type: "review.state",
-                      dir: repo,
-                      pinned,
-                      sessionId: session,
-                      state: live,
+                      ...liveFrame,
                       tips: { ...local.tips, ...remote.tips },
                       tipsAt: at,
                       // `HEAD` 那几条的 tip 要不要采信，由页面按**每条记录自己的**分支判
                       // （同一个 `HEAD` 底下可能躺着别的分支留下来的记录，桥这边分不出来）。
                       tipsBranch: branch,
-                      progresses: reviewProgresses(repo, session),
-                      cap: MAX_RUNS_PER_SESSION,
                     });
                   } catch {
                     /* 补帧失败 = 这条没标出来，不值得惊动用户（下次打开面板再核） */
@@ -4413,7 +4434,7 @@ async function main(): Promise<void> {
             // 账号要 async 算（`gh auth token`），而这条 case 是同步的：包一层，错误照旧回给页面。
             void (async () => {
               try {
-                const { repo, pinned } = effectiveReviewDir(dir, session);
+                const { repo } = effectiveReviewDir(dir, session);
                 // 评审自己 spawn `gh` / `git`，子进程里看不到会话：把账号的令牌在这里算好带下去。
                 // 不带的话走的就是 gh 的机器 active 账号 —— 多账号机器上经常看不到目标仓库（D422）。
                 const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
@@ -4431,18 +4452,6 @@ async function main(): Promise<void> {
                   model,
                   provider,
                   lang,
-                  // D420：进度帧要带上是哪一条（runId）与哪位会话，页面才画得到各自的卡上。
-                  onProgress: (p) => broadcast({ type: "review.progress", dir: repo, sessionId: session, runId: p.runId, progress: p }),
-                  onState: () =>
-                    broadcast({
-                      type: "review.state",
-                      dir: repo,
-                      pinned,
-                      sessionId: session,
-                      state: readReviewState(repo, session),
-                      progresses: reviewProgresses(repo, session),
-                      cap: MAX_RUNS_PER_SESSION,
-                    }),
                 });
                 send({ type: "review.started", dir: repo, sessionId: session, runId: started.runId });
               } catch (err: any) {
@@ -5069,6 +5078,10 @@ async function main(): Promise<void> {
     if (!linkedPath) removePidFile(cfg.port);
   });
 
+  // 主动停桥时壳可能比脑先走：shutdown() 一旦开始，link 断开就不能再把进程直接带走。
+  // 否则 stopAllReviews() 的收尾和状态写回会被截断（用户关桥后仍可能留下 worker）。
+  let shuttingDown = false;
+
   // 有壳时脑只接受壳的转发，所以只绑回环；公网面那个口子由壳来听。
   server.listen(linkedPath ? 0 : cfg.port, linkedPath ? "127.0.0.1" : cfg.host, async () => {
     let pagePort = cfg.port;
@@ -5084,16 +5097,26 @@ async function main(): Promise<void> {
         link.on("shutdown", () => void shutdown());
         link.on("closed", () => {
           log("host: 壳断开了，脑退出");
-          process.exit(0);
+          // 主动停桥时壳先发 shutdown、再等脑断开；这时候 shutdown() 已经在收尾了，
+          // 让它把 stopAllReviews() 写完，别在这里抢着 process.exit。
+          if (!shuttingDown) process.exit(0);
         });
         // 被换下的那一代：先把隧道收回来再走，不然 cloudflared 会成孤儿。
         link.on("retire", () => {
+          // 换代期间收到的 SIGTERM 不能再走 shutdown()：那会把刚交接过来的评审 worker 收掉。
+          // 如果 shutdown() 已经在跑，更不能抢它的 process.exit（会截断 stopAllReviews）。
+          if (shuttingDown) return;
+          shuttingDown = true;
           log("host: 被换下，退出");
-          tunnel.stop();
-          // **这里绝不能 sessions.shutdown()**（D407）：子进程的生死在壳手里，关一批会话就会把
-          // 正在跑的那一轮杀掉 —— 那正是「热部署打断回话」本身。把锁交出去就好。
-          sessions.releaseLocks();
-          process.exit(0);
+          try {
+            tunnel.stop();
+            // **这里绝不能 sessions.shutdown()**（D407）：子进程的生死在壳手里，关一批会话就会把
+            // 正在跑的那一轮杀掉 —— 那正是「热部署打断回话」本身。把锁交出去就好。
+            sessions.releaseLocks();
+          } finally {
+            // 收尾失败也必须退出：壳在等这条连接关掉，挂住只会把换代拖成整组重启。
+            process.exit(0);
+          }
         });
         // 新脑上来之后接管壳里还活着的会话：页面不必重新点，否则它会退回「只读预览」。
         link.on("activate", () => {
@@ -5150,19 +5173,40 @@ async function main(): Promise<void> {
     void sessions.pinAll().then((n) => n && log(`pinned default permission on ${n} session(s)`)).catch(() => {});
   });
 
-  const shutdown = async () => {
+  const shutdown = async (stopReviews = true) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log("shutting down");
-    fileIndex.close();
-    terminals.closeAll();
-    tunnel.stop();
-    await sessions.shutdown();
-    // Closing the bridge is closing 随手问: a clean exit leaves nothing to resume.
-    resetScratchDir();
-    server.close();
-    process.exit(0);
+    // 收尾期间壳可能已经走了：给一个上限，别让残留的脑永远挂着。
+    const forceExit = setTimeout(() => {
+      log("shutting down: 超时，强制退出");
+      // 非零退出：更新器 / 外部监控能区分「干净停机」与「收尾超时被踢」。
+      process.exit(1);
+    }, 10_000);
+    forceExit.unref();
+    try {
+      fileIndex.close();
+      terminals.closeAll();
+      tunnel.stop();
+      // 整组停机才停评审：换脑（retire）不走这里；更新器会先显式请求 keepReviews=1，
+      // 只有「真正停桥」（页面停止 / SIGTERM / SIGINT）才把 detached worker 收掉（D446）。
+      if (stopReviews) await stopAllReviews();
+      await sessions.shutdown();
+      // Closing the bridge is closing 随手问: a clean exit leaves nothing to resume.
+      resetScratchDir();
+      server.close();
+      clearTimeout(forceExit);
+      process.exit(0);
+    } catch (err) {
+      // sessions.shutdown / server.close 抛错时不能把 async shutdown 变成未处理 rejection。
+      log(`shutting down: 收尾失败：${String(err)}`);
+      process.exit(1);
+    }
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown());
+  // 真正停桥（systemd stop / 手工 kill -TERM）：评审要收掉。
+  // 更新器要保留评审时，先显式请求 `/api/host/stop?keepReviews=1`，由壳走换代交接。
+  process.on("SIGTERM", () => void shutdown());
 }
 
 main().catch((err) => {

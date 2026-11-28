@@ -1564,7 +1564,10 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .tabs .pip { min-width: 16px; height: 16px; border-radius: 8px; background: var(--warn); color: var(--warn-ink); font-size: 11px; line-height: 16px; font-weight: 700; }
 
 /* ---------------------------------------------------------------- queue */
-.queue { padding: 12px 12px 20px; display: grid; gap: 0; }
+/* `--queue-pad` 只有一份：页签条的负边距要正好抵消它（见下面 `.exec-tabs-bar`），写成两个字面量
+   12 迟早会漂。`display: grid` 不是那条铺满的前提 —— 换成 block 实测也是「auto 宽度先减负边距」，
+   量到的条宽一样；改成 flex 列才要重看。 */
+.queue { --queue-pad: 12px; padding: var(--queue-pad) var(--queue-pad) 20px; display: grid; gap: 0; }
 .exec-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line-soft); margin: 0 0 12px; }
 .exec-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--faint); padding: 7px 10px; font: inherit; font-size: 13px; cursor: pointer; }
 .exec-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
@@ -1572,8 +1575,31 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
    （`white-space` 默认可换行，四个标签一起缩）。分段控件让每个标签等宽、一行，窄栏也只是字小。
    只作用于右栏这四颗（`.queue .exec-tabs`），别处的 `.tabs` 不动。 */
 .queue .exec-tabs {
-  display: flex; gap: 2px; margin: 0 0 10px; padding: 2px;
+  display: flex; gap: 2px; margin: 0; padding: 2px;
   border-bottom: 0; border-radius: 9px; background: var(--mac-fill-2);
+}
+/* 页签条贴顶（#744）：右栏滚到底也一直看得见四颗页签。桌面三栏里它用负边距吃掉 `.queue` 的
+   12px 上 / 左右内边距，内容从整条下面滑过、两侧不会漏出半行字；底子跟主题走（玻璃 + 毛玻璃 +
+   0.5px 描边，D418），且不随滚动变样 —— 不加 scroll 监听、没有淡入淡出。
+   宽度不要当它是「溢出被裁掉」：grid 项的 auto 宽度本来就按区域减掉的 margin 算，`-12px -12px`
+   正好抵掉 `.queue` 的左右内边距，条的盒子就**恰好**是 `.pane` 的内容盒（探针里量到
+   `barWidth === pane.clientWidth`），跟 `overflow-x: hidden` 无关。
+   布局那半条（负边距 + 反向内边距）不分壳：两边的净效果一样，窄版因此一像素不变，只是不贴顶、
+   也不多出这块玻璃。`.queue` 仍是 grid —— grid 里的 sticky 在 Chromium 里能贴住（实测，别为了它
+   改 display，那会连带动到别的面板）。 */
+/* 负边距抵消的是 `.queue` 的 `--queue-pad`（= 上方与左右的内边距），反向内边距把它还回来：
+   净效果为零，所以这层在窄版（只挂布局、不挂 sticky / 玻璃）下也一像素不变。改了上面那个 padding
+   就只改这一处变量，别在这里另写 12。 */
+.queue .exec-tabs-bar {
+  margin: calc(var(--queue-pad) * -1) calc(var(--queue-pad) * -1) 0;
+  padding: var(--queue-pad) var(--queue-pad) 10px;
+}
+:where(html:not([data-compact="true"])) .queue .exec-tabs-bar {
+  position: sticky; top: 0; z-index: 3;
+  background: var(--mac-glass-strong);
+  -webkit-backdrop-filter: var(--mac-blur);
+  backdrop-filter: var(--mac-blur);
+  border-bottom: 0.5px solid var(--mac-glass-line);
 }
 .queue .exec-tabs button {
   flex: 1 1 0; min-width: 0; padding: 4px 2px; font-size: 12px; font-weight: 500;
@@ -2244,6 +2270,19 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 }
 .image-badge:hover { border-color: var(--accent); background: var(--accent-bg); }
 .image-badge:active { transform: scale(0.97); }
+/* 贴图那一下的「落地」：徽标短暂变实底。`pastefly.ts` 挂 260ms 后摘掉 —— 半透明强调色叠在
+   浅底上几乎看不出变化，只有实底才读得出「数字又加了一张」（D447）。 */
+.image-badge.flash { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+/* 刚贴上的图先浮出来、再缩进徽标（D447）。这一层挂在 `#app` 里，所以里面的 px 都是布局 px；
+   宽高按 `--ui-scale` 一起缩放，字号调大时幽灵也跟着大。 */
+.paste-fly { position: fixed; inset: 0; z-index: 45; pointer-events: none; }
+.paste-fly .ghost {
+  position: absolute; left: 0; top: 0; border-radius: 14px; overflow: hidden;
+  border: 0.5px solid var(--mac-glass-line); box-shadow: var(--mac-shadow-menu);
+  will-change: transform, opacity;
+  /* 宽高由 pastefly.ts 写（落点按它的一半居中，尺寸只能有 TS 一份）。 */
+}
+.paste-fly .ghost img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .sheet.image-sheet { grid-template-rows: auto 1fr auto; }
 .image-grid {
   overflow-y: auto; padding: 16px; display: grid; align-content: start;
@@ -2851,16 +2890,16 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .art-badge.st-unknown { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-dim); }
 .art-badge.st-same { color: var(--faint); }
 /* 窄屏：状态挪到第二行，工具名隐掉 */
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr) auto; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 2; grid-row: 1; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 2; grid-row: 2; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-tools { display: none; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-bar { flex-wrap: wrap; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-bar .ns-input { flex-basis: 100%; order: 3; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr) auto; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 2; grid-row: 1; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 2; grid-row: 2; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-tools { display: none; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-bar { flex-wrap: wrap; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-bar .ns-input { flex-basis: 100%; order: 3; }
 /* 最窄：单列，控件与状态各占一行 */
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr); }
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 1; grid-row: 3; justify-content: flex-start; }
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 1; grid-row: 4; justify-self: start; }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr); }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 1; grid-row: 3; justify-content: flex-start; }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 1; grid-row: 4; justify-self: start; }
 
 /* D208 C 方案：独立 diff 弹窗（左栏换文件 + 左右对照）。 */
 .diff-sheet { height: calc(var(--vh1) * 86); max-height: calc(var(--vh1) * 88); }

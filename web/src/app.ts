@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./settings-console.css";
+import { type ConsolePeek, PEEK_MIN_PX, peekFor } from "./console-peek.ts";
 import { api, githubApi, type DepPackageId, type DepsReport } from "./api.ts";
 import { icon, face, isIconName, fileIcon, type IconName } from "./icons.ts";
 import { ChatView, createEl as el } from "./chat.ts";
@@ -19,7 +20,8 @@ import { refreshGithubCards } from "./github-cards.ts";
 import { githubFeature } from "./github-settings.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
-import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
+import { imageSrc, imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
+import { flyImagesToBadge } from "./pastefly.ts";
 import { cardPieces } from "./ask-text.ts";
 import { shouldFoldPaste } from "./paste.ts";
 import { renderMarkdown } from "./md.ts";
@@ -387,6 +389,8 @@ export class App {
   /** 正在画右栏（重入闸，见 renderQueue）。 */
   private queueDrawing = false;
   private queueDirty = false;
+  /** 现在这堆内容是哪颗页签画的：换页签就把它归零，同一页签内的重画才留阅读位置（#744）。 */
+  private queueDrawnTab: QueueTab | null = null;
   private tabMemory = createTabMemory(this.queueTab);
   private execSelectedRound: string | null = null;
   private execSelectedPlanTaskId: number | null = null;
@@ -536,8 +540,6 @@ export class App {
   /** 上一次真发出去的「评什么」（JSON）：一样的就不再发，敲字/重画不会把状态文件反复重写。 */
   private reviewPickSent = "";
   private reviewToasted = new Set<string>();
-  /** 最近一次发 `review.get` 的时刻：ocr 那一帧丢了要能自己补一次，别死等。 */
-  private reviewOcrAskedAt = 0;
   /** `会话id|cwd`：变了就把面板状态清空（评审按会话分开）。 */
   private reviewSessionKey = "";
   /** 定时补问一次：页面重连后没人触发重画时，光靠 render 里的自愈等不到下一次重画。 */
@@ -1579,18 +1581,29 @@ export class App {
 
   /**
    * 把上面的判据落到 `<html data-compact>`：CSS 的 899 / 900 断点都改读这个属性。
-   * 三套控制台的 900 / 720 / 640 折叠规则也按有效宽度落 `data-console-*`（D158），
-   * 否则放大字号时原生 @media 不触发，面板内容会横向穿出。
+   * 控制台的 900 / 720 / 640 折叠规则落两组属性，**别合并**：
+   * - `data-console-*` 按有效宽度（视口 ÷ 字号）：`.sys-` / `.jc-` / 附件那几套控制台还在 `#app`
+   *   里，跟着字号缩放（D158），否则放大字号时原生 @media 不触发、面板内容会横向穿出；
+   * - `data-st-*` 按视口宽度：`.st-console` 那批已经 1:1 挂在 body 上（D450）。
    * 返回「这次真的翻了」—— 调用方拿它决定要不要重排（拖动中跨过 900 时）。
    */
   private syncCompact(): boolean {
-    const width = this.layoutWidth();
-    const compact = width < 900;
+    // 壳的宽窄仍看**有效宽度**（视口 ÷ 字号，`compact()` 那一份判据，D158）。
+    // 别顺手把这里换成 `window.innerWidth`：控制台改成 1:1 之后，两套判据正是从这里开始分家的。
+    const compact = this.compact();
+    const width = window.innerWidth;
     const root = document.documentElement;
     // 控制台原本是 @media (max-width: 900/720/640px)，保留 <= 的边界；compact 仍是 < 900。
-    root.dataset.consoleNarrow = String(width <= 900);
-    root.dataset.consoleMid = String(width <= 720);
-    root.dataset.consoleTight = String(width <= 640);
+    const layout = this.layoutWidth();
+    root.dataset.consoleNarrow = String(layout <= 900);
+    root.dataset.consoleMid = String(layout <= 720);
+    root.dataset.consoleTight = String(layout <= 640);
+    // #742：`.st-console` 那批控制台已经挂在 body 上、不再跟字号缩放，所以它的折叠档位要按**视口**宽度算。
+    // 还按有效宽度（视口 / 字号）算的话，2.0 字号下一块 1080px 宽的面板会被判成「窄」，整套布局白翻一次。
+    // 分开两组属性：`.sys-` / `.jc-` / 附件那几套控制台仍留在 `#app` 里，继续读 `data-console-*`。
+    root.dataset.stNarrow = String(width <= 900);
+    root.dataset.stMid = String(width <= 720);
+    root.dataset.stTight = String(width <= 640);
     // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
     // 否则属性一直是 undefined，CSS 那边是在碰运气。
     const changed = root.dataset.compact !== String(compact);
@@ -2304,6 +2317,19 @@ export class App {
         // D391：深链 `#/s/<id>` 与刷新都是在快照到达之前跑 `routeFromHash()` 的 —— 那时还不知道
         // 这颗会话属于哪个工作区。快照到了补记一次（同一组同一颗只写一次，便宜）。
         this.noteLastSession();
+        // 换脑 / 重连（D446）：评审可能已经在新一代脑上继续跑，进度只在桥的盘上。
+        // 重连后没有别的地方会再发 review.get —— 不补这一下，面板会停在换脑前的最后一帧。
+        //
+        // 放在 renderAll() 之前：renderReviewPanel() 会检查 `!reviewOcr` 并挂一次 2.5 秒重试，
+        // 这样新脑的 ocr 帧丢了也有人补问。旧脑的 ocr 不能留：它会让上面的检查误以为已经收到。
+        if (this.currentId && this.reviewAsked) {
+          const reviewDir = this.reviewDir();
+          if (reviewDir) {
+            this.reviewOcr = null;
+            // force：这是新连接 / 新脑，同一目录也得再问一遍，不能沿用上一代的去重状态。
+            this.askReview(reviewDir, true);
+          }
+        }
         this.renderAll();
         // Q-021: 新会话 / 首屏恢复都可能带着另一个 cwd 进来。
         void this.refreshGit(true);
@@ -4075,7 +4101,9 @@ export class App {
    */
   private overlay(node: HTMLElement, kind: SurfaceKind = "window", opts: SurfaceOpts = {}): void {
     markSurface(node, kind, opts);
-    (document.getElementById("app") ?? document.body).append(node);
+    // 挂哪儿由 `overlayHost()` 一个判据决定：控制台（`.st-console`）是量尺，1:1 挂 body（D450），
+    // 其余浮层照旧进 `#app`、跟着字号缩放（D123 / D441）。
+    mountOverlay(node);
   }
 
   /**
@@ -4415,10 +4443,11 @@ export class App {
 
   // ---------------------------------------------------------------- appearance
   /**
-   * 「外观 → 语言与字号」里那根连续滑杆（D441）：全局「字号」与「对话正文」共用这一套控件与交互。
+   * 「外观 → 语言与字号」里那根连续滑杆（D441）：全局「字号」与五块区域字号共用这一套控件与交互。
    *
    * - 值只往外递：`onLive` 拖动中每帧一次（不回写 localStorage），`onCommit` 松手 / 落档时一次。
-   * - `snaps` 是磁吸档位，`marksAt` 是轨道上带数字那几颗（全局 0.8 起每 0.2，区域四档）。
+   * - `snaps` 是磁吸档位，`marksAt` 是轨道上带数字那几颗。六根都用同一套刻度（0.8 起每 0.2，
+   *   `SIZE_MARKS`）：只放各自那几个档位的话数字会全挤在轨道左半边；磁吸档位才分全局 / 区域两套。
    * - 键盘不吃磁吸：步长 1% 比吸附半径 1.2% 小，吸上就再也出不来。
    * - 拖动时把轨道盒子冻住：`#app` 上是整棵树的 zoom，页一放大轨道跟着变宽变位，交给浏览器
    *   按新几何算就会「手一直往右、读数却越来越迟钝」（2.0 拖不到）。
@@ -4455,6 +4484,32 @@ export class App {
     }
     rail.append(range, ticks);
 
+    // #742：拖动时把控制台让开（视觉在 console-peek.ts + settings-console.css）。
+    // 胶囊是**指示器**，不接指针 —— 拖动继续用冻住的轨道盒子换算，视觉变化不回读几何。
+    // 宿主与 `overlayHost()` / CSS 那条复位认的是同两种外壳：只写 `.st-back` 的话，
+    // 滑杆哪天落进 `.sheet-back` 那扇控制台，拖动就永远不让开、也不露胶囊。
+    const peekHost = (): HTMLElement | null => rail.closest<HTMLElement>(".st-back, .sheet-back");
+    let peeking: ConsolePeek | null = null;
+    const readout = (v: number): { text: string; fill: number } => ({ text: `${Math.round(v * 100)}%`, fill: sizePct(v) });
+    /**
+     * 收起让开。按**宿主**收，不是按这一根滑杆：胶囊与 `peeking` 类是六根共用的，
+     * 按自己那一份收会漏掉「A 的键盘读数还挂着、B 已经在拖」这种情况。
+     */
+    const hidePeek = (): void => {
+      const host = peekHost();
+      if (host) peekFor(host).hide();
+      peeking = null;
+    };
+    /** 露出来。`key` = 键盘调值那一下（自带 400ms 自动收起，计时器在 ConsolePeek 里按宿主一份）。 */
+    const showPeek = (v: number, key = false): void => {
+      const host = peekHost();
+      if (!host) return;
+      const pk = peekFor(host);
+      if (key) pk.keyPeek(o.label, readout(v));
+      else pk.show(o.label, readout(v));
+      peeking = pk;
+    };
+
     /** 把值抹到控件上（轨道填充 / 读数 / 刻度的「已过」状态 / 刻度字的高亮）。 */
     const paint = (v: number): void => {
       range.value = String(v);
@@ -4468,6 +4523,7 @@ export class App {
       for (const m of marks.children) {
         m.classList.toggle("on", Math.abs(Number((m as HTMLElement).dataset.v) - v) < 0.001);
       }
+      peeking?.set(readout(v));
     };
 
     // 一帧只抹一次：值一变就是整块 zoom 重排，input 事件比帧还密。
@@ -4475,6 +4531,8 @@ export class App {
     let next = o.value;
     // 「有没有还没落盘的值」只能另记一笔：`land` 自己就把 prefs 改掉了，拿值比永远相等。
     let dirty = false;
+    /** 上一次**真的抹到界面上**的值。`next` 可能还差一帧没落，Esc 要回的是这个。 */
+    let applied = o.value;
 
     /** 落实一个值：写 prefs（调用方的事）+ 抹控件。 */
     const land = (raw: number): void => {
@@ -4483,6 +4541,7 @@ export class App {
       // 同一个档存前存后不是一个数；`range.value`（step 0.01）也会与 `--ui-scale` 差一档，方向键再按就跳。
       const v = clampScale(raw);
       next = v;
+      applied = v;
       dirty = true;
       o.onLive(v);
       paint(v);
@@ -4536,6 +4595,13 @@ export class App {
 
     /** 拖的时候不能交给浏览器算值：按冻住那一刻的轨道盒子换算，松手才写盘。 */
     let dragBox: { x: number; w: number } | null = null;
+    /**
+     * 按下那一刻的指针位置与值：前者判「真的拖起来了没有」，后者给 Esc 取消用。
+     * 取 `applied` 而不是 `next` —— 上次 `queue()` 那帧可能还没落，`next` 已经是新值了，
+     * 拿它还原等于把「用户还没看到的一步」当成起点（那一帧再被 commit 落盘就串了）。
+     */
+    let dragFrom: { x: number; y: number } | null = null;
+    let dragValue = o.value;
     const valueAt = (clientX: number): number => {
       if (!dragBox || dragBox.w <= 0) return Number(range.value);
       const p = Math.min(1, Math.max(0, (clientX - dragBox.x) / dragBox.w));
@@ -4552,24 +4618,67 @@ export class App {
       // 键盘要能接着用：preventDefault 会把焦点拦下来，鼠标拖完再按方向键就没反应了。
       // 先自己把焦点给 range，再拦浏览器那套（它算的是放大后的坐标）。
       range.focus({ preventScroll: true });
+      // 上一次要是还有没落盘的值（最典型：方向键还按着就去抓轨道，`keyup` 的 commit 还没发生），
+      // 先把它落干净再定起点 —— 否则 Esc 的「回到起点」会回到一个**界面上看着在、却从没存过**的值。
+      if (dirty) commit();
       const r = range.getBoundingClientRect();
       dragBox = { x: r.left, w: r.width };
+      dragFrom = { x: ev.clientX, y: ev.clientY };
+      dragValue = applied;
+      hidePeek();
       rail.classList.add("dragging");
       read.classList.add("dragging");
       rail.setPointerCapture(ev.pointerId);
       ev.preventDefault();
+      window.addEventListener("keydown", onDragKey, true);
+      window.addEventListener("blur", endDrag);
       queue(snapTo(valueAt(ev.clientX)));
     });
     rail.addEventListener("pointermove", (ev) => {
       if (!dragBox) return;
       queue(snapTo(valueAt(ev.clientX)));
+      // 阈值：#742 —— 单击轨道跳档 / 点刻度数字不该闪一下，只有真的拖起来了才让开。
+      if (!peeking && dragFrom && Math.hypot(ev.clientX - dragFrom.x, ev.clientY - dragFrom.y) >= PEEK_MIN_PX) {
+        showPeek(next);
+      }
     });
-    const endDrag = (): void => {
-      if (!dragBox) return;
+    /** 收尾的共同那一半：拖动状态、两个监听、让开，一次收干净（落不落盘由调用方决定）。 */
+    const stopDrag = (): void => {
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
       dragBox = null;
+      dragFrom = null;
       rail.classList.remove("dragging");
       read.classList.remove("dragging");
+      window.removeEventListener("keydown", onDragKey, true);
+      window.removeEventListener("blur", endDrag);
+      hidePeek();
+    };
+    /** 收尾（松手 / 被打断）：收干净之后值照旧落盘。 */
+    const endDrag = (): void => {
+      if (!dragBox) return;
+      stopDrag();
       commit();
+    };
+    /**
+     * 拖动中按 Esc = 撤掉这一次拖动（#742）：值回拖动起点、不落盘、面板不关。
+     * 捕获阶段先于 `modal.ts` 的 Esc 层（那是 document 上的冒泡监听），拦下来才不会把面板关掉。
+     */
+    const cancelDrag = (): void => {
+      if (!dragBox) return;
+      stopDrag();
+      dirty = false;
+      next = dragValue;
+      o.onLive(dragValue);
+      paint(dragValue);
+    };
+    const onDragKey = (ev: KeyboardEvent): void => {
+      if (ev.key !== "Escape" || !dragBox) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      cancelDrag();
     };
     rail.addEventListener("pointerup", endDrag);
     rail.addEventListener("pointercancel", endDrag);
@@ -4578,6 +4687,8 @@ export class App {
     range.oninput = () => {
       if (dragBox) return;
       queue(Number(range.value));
+      // 纯键盘也得看得见：调值就露一下，400ms 没再动就自己回来（连按合并计时，计时器在胶囊里）。
+      showPeek(next, true);
     };
     range.addEventListener("keyup", () => { if (!dragBox) commit(); });
     range.addEventListener("blur", () => { if (!dragBox) commit(); });
@@ -4863,12 +4974,12 @@ export class App {
       ),
     );
 
-    // D441：「字号」是整页的基准，下面那块是分区倍率 —— 两层 zoom 相乘。
-    // 第一步只露「对话正文」一根：其余四块的变量已经挂在节点上（固定 1.0），下一轮补滑杆不用再动机制。
+    // D441：「字号」是整页的基准，下面那组是分区倍率 —— 两层 zoom 相乘。五块各一根，顺序照界面上
+    // 从上到下、从左到右：顶栏 → 会话列表 → 对话正文 → 输入框 → 右栏面板。
     langPanel.append(
       this.fontSliderRow({
         label: tr("字号"),
-        hint: tr("整页一起缩放；拖动或点刻度，双击轨道回 100%"),
+        hint: tr("整页一起缩放；拖动时设置面板自动让开，松手回来；点刻度跳档，双击轨道回 100%"),
         value: this.prefs.scale,
         reset: DEFAULT_PREFS.scale,
         snaps: SIZE_STOPS,
@@ -4888,22 +4999,46 @@ export class App {
           this.applyPrefs();
         },
       }),
-      this.fontSliderRow({
-        label: tr("对话正文"),
-        hint: tr("只缩放聊天记录这一块，叠在「字号」上相乘；双击轨道回 100%"),
-        value: this.prefs.regionScale.chat,
-        reset: REGION_DEFAULT_SCALE,
-        snaps: REGION_STOPS,
-        // 刻度跟全局那根同一套（80…200）：只放四个数字会全挤在轨道左半边，两行看着不像同一款。
-        marksAt: SIZE_MARKS,
-        onLive: (v) => {
-          this.prefs = { ...this.prefs, regionScale: { ...this.prefs.regionScale, chat: v } };
-          // 区域倍率只动一个 CSS 变量：不碰壳、不判窄版（栏宽与 900px 判据只认全局那根）。
-          this.paintRegionScales();
-        },
-        onCommit: () => savePrefs(this.prefs),
-      }),
     );
+
+    // 五块的分组头：叠乘关系说一次，五行各自的 hint 只讲「这一块是哪一块」，不重复念乘法。
+    // 用 stSection 而不是手拼三层 —— 小节头只有一处样式的真源。
+    langPanel.append(this.stSection(tr("分区字号"), tr("各自叠在「字号」上相乘；拖动轨道时让开看真页面；双击轨道回 100%")));
+
+    const regionLabels: Record<RegionId, string> = {
+      topbar: tr("顶栏"),
+      sessions: tr("会话列表"),
+      chat: tr("对话正文"),
+      composer: tr("输入框"),
+      queue: tr("右栏面板"),
+    };
+    const regionHints: Record<RegionId, string> = {
+      topbar: tr("顶部三行：顶栏按钮、工作区标签行、置顶会话行"),
+      sessions: tr("左栏那列会话卡片"),
+      chat: tr("聊天记录这一块"),
+      composer: tr("底部输入区（含提示行与工具行）"),
+      queue: tr("右栏的执行 / 计划等面板"),
+    };
+    for (const id of REGION_IDS) {
+      langPanel.append(
+        this.fontSliderRow({
+          label: regionLabels[id],
+          hint: regionHints[id],
+          value: this.prefs.regionScale[id],
+          reset: REGION_DEFAULT_SCALE,
+          snaps: REGION_STOPS,
+          // 刻度跟全局那根同一套（80…200），五行都照抄：只放各自那几个档位的话数字会全挤在轨道左半边，
+          // 六根滑杆看着不像同一款。
+          marksAt: SIZE_MARKS,
+          onLive: (v) => {
+            this.prefs = { ...this.prefs, regionScale: { ...this.prefs.regionScale, [id]: v } };
+            // 区域倍率只动一个 CSS 变量：不碰壳、不判窄版（栏宽与 900px 判据只认全局那根）。
+            this.paintRegionScales();
+          },
+          onCommit: () => savePrefs(this.prefs),
+        }),
+      );
+    }
 
     // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
     // 外观只剩 Mac 风格三套（D353）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
@@ -18194,6 +18329,15 @@ export class App {
     this.images.push(...images);
     this.updateImageBadge();
     this.imageSheetPaint?.();
+    // D447：贴图得看得见 —— 图从输入框浮出来飞进徽标，落地时徽标弹一下。粘贴、拖拽、选图、相册都走这里。
+    if (images.length && this.imageBadge) {
+      void flyImagesToBadge(images, {
+        badge: this.imageBadge,
+        origin: this.els.composerHost?.querySelector(".composer-input")?.getBoundingClientRect() ?? null,
+        host: () => document.getElementById("app"),
+        scale: () => this.uiScale(),
+      });
+    }
   }
 
   /**
@@ -18491,7 +18635,7 @@ export class App {
       this.images.forEach((image, index) => {
         const tile = el("div", "image-tile");
         const thumb = el("img", "image-thumb") as HTMLImageElement;
-        thumb.src = `data:${image.mimeType};base64,${image.data}`;
+        thumb.src = imageSrc(image);
         thumb.alt = tr("待发图片 {p1}", { p1: index + 1 });
         // 缩略图整块可点：看清楚再决定发不发，而不是放大缩小猜。
         const open = el("button", "image-open") as HTMLButtonElement;
@@ -19189,6 +19333,21 @@ export class App {
     if (this.queueTab === "review") this.renderQueue();
   }
 
+  /**
+   * 问一次桥的评审状态。默认按目录去重；`force` 用于重连 / 插件变更 / 重新进页签 ——
+   * 那些路径面对的是新连接或新状态，同一目录也必须重发。只在这里维护 `reviewAsked`，
+   * 别让调用方各自拼这份状态。
+   *
+   * `fresh` 交给桥（#741）：绕开「有没有新提交」那次核对的 60 秒缓存 —— 人都点了「再看一眼」，
+   * 撞缓存等于白点。
+   */
+  private askReview(dir: string, force = false, fresh = false): boolean {
+    if (!force && this.reviewAsked === dir) return false;
+    this.reviewAsked = dir;
+    this.socket.send({ type: "review.get", dir, sessionId: this.currentId, fresh });
+    return true;
+  }
+
   private loadReview(fresh = false): void {
     const dir = this.reviewDir();
     if (!dir) {
@@ -19200,11 +19359,8 @@ export class App {
       this.reviewTipsBranch = "";
       return;
     }
-    this.reviewAsked = dir;
-    this.reviewOcrAskedAt = Date.now();
-    // `fresh` 只影响「有没有新提交」那一次核对（绕开桥里的 60 秒缓存）：
-    // 顶部那颗刷新图标的意思就是「现在去看一眼」，撞上缓存等于白点。
-    this.socket.send({ type: "review.get", dir, sessionId: this.currentId, fresh });
+    // `fresh` 只影响「有没有新提交」那一次核对（绕开桥里的 60 秒缓存）。
+    this.askReview(dir, true, fresh);
     // PR 列表按**评的那个仓库**排队（钉了子仓库时它与会话目录不是一回事）。
     const ask = this.reviewPin || dir;
     if (this.reviewPrsAsked !== ask) this.loadPullRequests(ask);
@@ -19248,7 +19404,7 @@ export class App {
     picker.onClose = () => {
       if (this.reviewPicker === picker) this.reviewPicker = null;
     };
-    picker.mount(document.getElementById("app") ?? document.body);
+    picker.mount();
     this.reviewPicker = picker;
   }
 
@@ -19448,11 +19604,7 @@ export class App {
     this.loadReviewAccounts();
     // 换过会话 / 第一次进这一页：问一次桥。放在这里是因为面板可能是「记住上次页签」直接打开的，
     // 那一路不会走 selectQueueTab()。
-    if (dir && this.reviewAsked !== dir) {
-      this.reviewAsked = dir;
-      this.reviewOcrAskedAt = Date.now();
-      this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
-    } else if (dir && !this.reviewOcr && this.reviewRetryTimer === null) {
+    if (dir && !this.askReview(dir) && !this.reviewOcr && this.reviewRetryTimer === null) {
       // ocr 那一帧丢了（桥重启、页面重连、连接刚建就被打断）：面板会永远停在「正在读评审状态」。
       // 页面重连后不会有人再触发重画，所以这里挂一次定时补问，而不是等下一次 render。
       this.reviewRetryTimer = window.setTimeout(() => {
@@ -19703,7 +19855,7 @@ export class App {
         );
       },
     });
-    sheet.mount(document.getElementById("app") ?? document.body);
+    sheet.mount();
   }
 
   /** 「PR 信息」dialog：标题 / 描述 / 统计 / 文件清单 / 提交时间线（不显示 diff）。 */
@@ -19720,7 +19872,7 @@ export class App {
       sheet.onClose = () => {
         if (this.reviewPrSheet === sheet) this.reviewPrSheet = null;
       };
-      sheet.mount(document.getElementById("app") ?? document.body);
+      sheet.mount();
       this.reviewPrSheet = sheet;
     }
     const cached = this.reviewPrInfo.number === number ? this.reviewPrInfo : null;
@@ -19747,7 +19899,7 @@ export class App {
       this.reviewFocus = "";
       if (this.queueTab === "review") this.renderQueue();
     };
-    sheet.mount(document.getElementById("app") ?? document.body);
+    sheet.mount();
     this.reviewSheet = sheet;
   }
 
@@ -21120,6 +21272,9 @@ export class App {
     this.queueDrawing = true;
     try {
       this.drawQueue();
+      // 画完了才算「这页已经画过」：面板渲染途中抛异常时不该记账，否则下次同一页签重画会把半截
+      // 内容的滚动位置当成阅读位置留着（归零的判据是 `queueDrawnTab`，见 `drawQueue()`）。
+      this.queueDrawnTab = this.queueTab;
     } finally {
       this.queueDrawing = false;
     }
@@ -21131,9 +21286,17 @@ export class App {
 
   private drawQueue(): void {
     const host = this.els.queueInner;
-    // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。
-    const kept = this.els.queuePane.scrollTop;
+    // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。换页签是另一回事：
+    // 页签条贴顶之后它一直看得见（#744），切过去就该从头看 —— 接着上一页的中段只会让人接在原地。
+    // 手点页签与链接卡那种程序式切换都走 renderQueue()，所以判据放在这里而不是 selectQueueTab()。
+    // `drawQueue()` 不会被重入：面板里的同步回调再叫 `renderQueue()` 只是置 `queueDirty`（见那个
+    // 重入闸），回头由外层再画一遍，所以 `queueDrawnTab` 不会在画到一半时被改成别的页签。
+    // 这一页画完才由 `renderQueue()` 记进 `queueDrawnTab`（抛异常就不算画过），这里只读。
+    const kept = this.queueDrawnTab === this.queueTab ? this.els.queuePane.scrollTop : 0;
     host.replaceChildren();
+    // 页签条外面套一层：贴顶、铺满整栏宽度、带主题玻璃底的都是这层，分段控件（`.exec-tabs`）
+    // 仍是里面那条灰槽 —— 探针与样式都按 `.exec-tabs button` 找按钮，别把这一层合并掉。
+    const tabsBar = el("div", "exec-tabs-bar");
     const tabs = el("div", "exec-tabs");
     const needs = el("button", this.queueTab === "needs" ? "on" : "", tr("需要你")) as HTMLButtonElement;
     needs.type = "button";
@@ -21182,7 +21345,8 @@ export class App {
       review.append(pip);
     }
     tabs.append(needs, execution, browser, review);
-    host.append(tabs);
+    tabsBar.append(tabs);
+    host.append(tabsBar);
     if (this.queueTab === "exec") {
       host.append(this.renderExecPanel());
       this.els.queuePane.scrollTop = kept;
@@ -23280,7 +23444,7 @@ const regionScaleDefault = (): RegionScale => ({
   queue: REGION_DEFAULT_SCALE,
 });
 
-/** 区域滑杆的磁吸档位（**只当磁吸，不当刻度**，刻度两行共用 `SIZE_MARKS`）：100% 是默认，另三档是「缩一点 / 放大一点 / 放大很多」。 */
+/** 区域滑杆的磁吸档位（**只当磁吸，不当刻度**，刻度六行共用 `SIZE_MARKS`）：100% 是默认，另三档是「缩一点 / 放大一点 / 放大很多」。 */
 const REGION_STOPS = [0.9, 1, 1.15, 1.3];
 
 type Prefs = {
@@ -23918,8 +24082,8 @@ const SIZE_MIN = 0.8;
 const SIZE_MAX = 2;
 const SIZE_STEP = 0.01;
 const SIZE_STOPS = [0.9, 1, 1.12, DEFAULT_SCALE];
-/** 轨道上带数字的刻度：0.8 起每 0.2 一档。**两行共用这一套**（字号 + 对话正文），
- *  只放各自那几个档位的话数字全挤在轨道左半边，两行看着不像同一款；磁吸档位另算（`SIZE_STOPS` / `REGION_STOPS`）。 */
+/** 轨道上带数字的刻度：0.8 起每 0.2 一档。**六根滑杆共用这一套**（全局字号 + 五块），
+ *  只放各自那几个档位的话数字全挤在轨道左半边，六根看着不像同一款；磁吸档位另算（`SIZE_STOPS` / `REGION_STOPS`）。 */
 const SIZE_MARKS: number[] = (() => {
   const out: number[] = [];
   for (let i = 0; i * 0.2 <= SIZE_MAX - SIZE_MIN + 1e-9; i++) out.push(SIZE_MIN + i * 0.2);

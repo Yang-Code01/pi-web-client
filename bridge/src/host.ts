@@ -15,7 +15,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { statePath } from "./paths.ts";
-import { removePidFile, writePidFile } from "./pidfile.ts";
+import { readPidFile, removePidFile, writePidFile } from "./pidfile.ts";
 import { Broker } from "./host/broker.ts";
 import { Children, type SpawnSpec } from "./host/children.ts";
 import { BrainProxy } from "./host/proxy.ts";
@@ -30,6 +30,8 @@ const VERSION = "0.1.0";
 const OBSERVE_MS = Number(process.env.PI_HOST_OBSERVE_MS ?? 5000) || 5000;
 /** 脑崩了到重拉之间的间隔。 */
 const RESPAWN_MS = 1000;
+/** 主动停桥时给脑留的收尾时间：它要停评审、关会话，再把 link 关掉。 */
+const STOP_GRACE_MS = 8000;
 /** 脑连接不上 / 不 hello 的超时。 */
 const HELLO_MS = 30_000;
 
@@ -61,6 +63,34 @@ interface DeployState {
 
 function log(line: string): void {
   console.log(`[host ${new Date().toISOString().slice(11, 19)}] ${line}`);
+}
+
+/** 同步写到 fd 2：`npm start | tee` / CI 这类管道里，`console.error` 的异步写在 `process.exit`
+ * 之前往往还没落盘，那几句人话会被截断，用户只看到半截。 */
+function fail(line: string): void {
+  try {
+    fs.writeSync(2, `[host] ${line}\n`);
+  } catch {
+    console.error(`[host] ${line}`);
+  }
+}
+
+/**
+ * 端口被占时给一句人话（D448）：以前这里是未捕获的 EADDRINUSE，用户只看到一坨堆栈。
+ *
+ * 认出占用者的活主要在 `scripts/preflight.mjs`（命令行、pid 文件、枚举三条线索都在它那儿），
+ * 壳在 listen 这一刻只有 pid 文件可看 —— 够指路了：正常情况下 preflight 已经问过并停掉了旧的那份，
+ * 走到这里说明是「检查完到 listen 之间被抢」或者绕过 preflight 直起了桥。
+ */
+function explainPortTaken(port: number): void {
+  const pid = readPidFile(port);
+  const who = pid ? `pid 文件里记着 ${pid}` : "认不出占用者";
+  fail(
+    `端口 ${port} 已被占用（${who}），壳没有起来。\n` +
+      `  先看看是谁、要不要停掉它：node scripts/preflight.mjs\n` +
+      `  自己停掉：npm run bridge:stop\n` +
+      `  换个端口：PI_WEB_PORT=<别的口> npm start`,
+  );
 }
 
 function readPort(): number {
@@ -350,8 +380,12 @@ async function main(): Promise<void> {
       if (!hostOnly(req)) return void json(res, 403, { ok: false, code: "non-loopback" });
       if (req.method !== "POST") return void json(res, 405, { ok: false, code: "post-only" });
       if (!sameOrigin(req)) return void json(res, 403, { ok: false, code: "cross-origin" });
-      void stop("all");
-      return void json(res, 200, { ok: true, stopping: true });
+      // 更新器（bridge-update / hotdeploy）先走 keepReviews=1：它马上会起新壳，
+      // detached 评审 worker 要留给新脑接回。普通停止（页面 / SIGTERM / SIGINT）走默认值，
+      // 必须把评审收掉，否则 systemd stop 之后 worker 会一直跑到 30 分钟超时。
+      const keepReviews = url.searchParams.get("keepReviews") === "1";
+      void stop("all", !keepReviews);
+      return void json(res, 200, { ok: true, stopping: true, keepReviews });
     }
     if (url.pathname === "/api/host/deploy" && req.method === "POST") {
       if (!hostOnly(req)) return void json(res, 403, { ok: false, code: "non-loopback" });
@@ -867,16 +901,71 @@ async function main(): Promise<void> {
   }
 
   // ---------------------------------------------------------------- 停机
-  async function stop(scope: "all" | "group"): Promise<void> {
+  async function stop(scope: "all" | "group", tellBrain = true): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
-    log(`停机（${scope}）`);
-    try {
-      brain?.conn.send({ t: "shutdown", scope });
-    } catch {
-      /* 脑已经不在 */
+    log(`停机（${scope}${tellBrain ? "" : "，保留评审"}）`);
+    const waitBrainClose = (conn: ControlConn | null | undefined): Promise<void> =>
+      new Promise((resolve) => {
+        if (!conn?.alive) {
+          resolve();
+          return;
+        }
+        const timer = setTimeout(resolve, STOP_GRACE_MS);
+        timer.unref();
+        conn.onClose(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    if (tellBrain) {
+      // 先挂 close 监听再发 shutdown：脑可能反应很快，send 之后才注册会漏掉断开。
+      // 不等的话壳会在 300ms 后退出，脑的 link.on("closed") 立刻 process.exit，
+      // stopAllReviews() 的 3 秒收尾和状态写回都被截断，用户主动关桥也可能留下 worker。
+      // 这里的 8 秒比 stopAllReviews 的 3 秒上限长；requestCancel 里的 10 秒只是兜底
+      // 定时器，不参与等待，别把它算进停机路径。
+      // 壳可能正好在换脑（brain 已下、starting 还没 hello）：能发就发给 handshake 中的那一代，
+      // 发不出去也没关系，后面的 killAll + 壳退出会让它收尾。
+      const target = brain ?? starting;
+      const conn = target?.conn;
+      const closed = waitBrainClose(conn);
+      try {
+        conn?.send({ t: "shutdown", scope });
+      } catch {
+        /* 脑已经不在 */
+      }
+      await closed;
+      if (target && !target.exited && target.conn.alive) {
+        try {
+          process.kill(target.pid, "SIGKILL");
+        } catch {
+          /* 已经退了 */
+        }
+      }
+    } else {
+      // 只有更新器显式请求 `keepReviews=1` 才走到这里：它马上会起新壳，detached 评审
+      // worker 要留给新脑接回。这里用 `retire`（换代语义）而不是 shutdown：后者会
+      // sessions.shutdown()，而 150ms 后 children.killAll() 的 SIGTERM 还会让脑按「真正停桥」
+      // 把评审收掉。等脑自己退（retire 只 releaseLocks）：慢机器上 releaseLocks 也可能
+      // 超过 2 秒，等太短会让随后的 SIGTERM 变成 shutdown()，把刚保住的 worker 收掉。
+      // 所以和普通停机用同一段 STOP_GRACE_MS；正常情况脑会立刻退出。
+      const target = brain ?? starting;
+      const conn = target?.conn;
+      const closed = waitBrainClose(conn);
+      try {
+        conn?.send({ t: "retire" });
+      } catch {
+        /* 脑已经不在 */
+      }
+      await closed;
+      if (target && !target.exited && target.conn.alive) {
+        try {
+          process.kill(target.pid, "SIGKILL");
+        } catch {
+          /* 已经退了 */
+        }
+      }
     }
-    await new Promise((r) => setTimeout(r, 150));
     children.killAll();
     try {
       publicServer.close();
@@ -888,8 +977,59 @@ async function main(): Promise<void> {
     setTimeout(() => process.exit(0), 300).unref();
   }
 
+  /**
+   * 起飞失败时自己收摊再退。
+   *
+   * 控制通道是先起的（`serveControl` 在起飞之前），直接 `process.exit` 会把 unix socket 文件
+   * 留在盘上（`net.Server.close()` 不删文件），下一轮只能靠 `control.ts` 里的 EADDRINUSE
+   * 探测兜底去清；Windows 的命名管道虽无残留文件，也没必要让一个注定要死的壳继续接受连接。
+   * 这时还没有脑、没有子进程（`spawnBrain` 在起飞之后），不用管它们。
+   */
+  function bail(code: number): never {
+    try {
+      control.close();
+    } catch {
+      /* 已经关了 */
+    }
+    try {
+      proxy.release();
+    } catch {
+      /* 没有隧道 */
+    }
+    if (process.platform !== "win32") {
+      try {
+        fs.unlinkSync(sock);
+      } catch {
+        /* 删不掉就留着，下一轮的 controlInUse 探测会兜底 */
+      }
+    }
+    process.exit(code);
+  }
+
   // ---------------------------------------------------------------- 起飞
-  await new Promise<void>((resolve) => publicServer.listen(port, listenHost, () => resolve()));
+  // listen 的 error 必须接住：EADDRINUSE 以前是一条未捕获异常，用户看到的是整个堆栈（D448）。
+  const listenError = await new Promise<Error | null>((resolve) => {
+    const onError = (err: Error): void => {
+      publicServer.off("error", onError);
+      resolve(err);
+    };
+    publicServer.once("error", onError);
+    publicServer.listen(port, listenHost, () => {
+      publicServer.off("error", onError);
+      resolve(null);
+    });
+  });
+  if (listenError) {
+    const code = (listenError as NodeJS.ErrnoException).code;
+    if (code !== "EADDRINUSE") {
+      // 其它 listen 错误（EACCES 绑特权口、EADDRNOTAVAIL 绑不存在的地址）同样不该甩堆栈。
+      fail(`壳没能监听 ${listenHost}:${port}（${code ?? "未知错误"}）：${listenError.message}`);
+      fail(`  换一个地址/端口试试：PI_WEB_HOST=127.0.0.1 PI_WEB_PORT=<别的口> npm start`);
+      bail(1);
+    }
+    explainPortTaken(port);
+    bail(2);
+  }
   try {
     writePidFile(port);
   } catch {
@@ -898,6 +1038,8 @@ async function main(): Promise<void> {
   log(`壳在 http://${listenHost}:${port}（buildId ${hostBuildId}），控制通道 ${sock}`);
   spawnBrain();
 
+  // D446：更新器（bridge-update / hotdeploy）先 POST /api/host/stop?keepReviews=1，再杀旧壳；
+  // 那条路径保留 detached 评审 worker。普通 SIGTERM / SIGINT 是真正停桥，必须把评审收掉。
   process.on("SIGTERM", () => void stop("all"));
   process.on("SIGINT", () => void stop("all"));
   process.on("exit", () => {
