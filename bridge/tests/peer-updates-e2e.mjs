@@ -63,7 +63,7 @@ async function shutdown() {
     procs.map(
       (p) =>
         new Promise((resolve) => {
-          if (p.exitCode !== null) return resolve();
+          if (p.exitCode !== null || p.signalCode !== null) return resolve();
           const timer = setTimeout(() => {
             console.warn("[peer] 5 秒内没退出，仍继续清理");
             resolve();

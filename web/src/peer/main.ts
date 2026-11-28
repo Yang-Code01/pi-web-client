@@ -4460,6 +4460,9 @@ async function checkUpdates(): Promise<void> {
     toast(first ? tr("检查失败：{p1}", { p1: first }) : tr("检查完了"));
   } catch (err) {
     toast((err as Error).message);
+    // 请求失败也要拉一次状态：否则「上次播报 / 检查时间」会一直停在旧值（评审 #5）。
+    await loadUpdates();
+    renderAll();
   }
 }
 
@@ -4964,7 +4967,14 @@ const heartbeat = (): void => {
 };
 window.setInterval(heartbeat, 60_000);
 // 更新组的播报进度在 bridge 上，别等用户手动刷新才看到（评审 #13）。
-window.setInterval(() => void loadUpdates(), 60_000);
+window.setInterval(() => {
+  void loadUpdates().then(() => {
+    // 正在输入时不重画，免得抢走焦点/草稿；其它时候让卡片跟上播报进度（评审 #4）。
+    const el = document.activeElement as HTMLElement | null;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+    renderAll();
+  });
+}, 60_000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) heartbeat();
 });

@@ -65,9 +65,8 @@ export function normalizeGroup(raw: unknown): Group | null {
     v: Number(src.v) || 1,
     at: Number(src.at) || Date.now(),
     ...(src.announceOnly === true ? { announceOnly: true } : {}),
-    ...(typeof src.publisher === "string" && src.publisher
-      ? { publisher: String(src.publisher).slice(0, 64) }
-      : {}),
+    // publisher 参与写权限判定：形状不对就当没配，别把带空格的字符串塞进名册当幽灵成员（评审 #11）。
+    ...(typeof src.publisher === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(src.publisher) ? { publisher: src.publisher } : {}),
   };
 }
 
@@ -100,7 +99,7 @@ function optOutFileStamp(): string {
 export function optOutIds(): Set<string> {
   const now = Date.now();
   if (optOutCache && now < optOutRetryAt) return new Set(optOutCache); // 退避期间也别把可变缓存交出去（评审 #30）
-  if (optOutCache && now - optOutCheckedAt < OPT_OUT_TTL_MS) return optOutCache;
+  if (optOutCache && now - optOutCheckedAt < OPT_OUT_TTL_MS) return new Set(optOutCache);
   optOutCheckedAt = now;
   const stamp = optOutFileStamp();
   if (optOutCache && stamp === optOutStamp) return optOutCache;

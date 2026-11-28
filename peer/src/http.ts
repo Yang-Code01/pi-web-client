@@ -220,6 +220,10 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         // 更新组（D441）：`repo` = 这台机器认的仓库（announce 带出去，发布者据此邀请）；
         // `publisher` = 这台机器负责查 origin/main。两者都改了要重播，别等下一轮 10 秒。
         if (body.updates !== undefined) {
+          // 形状不对就别装作改成功了：静默忽略会让调用方以为配置已经落盘（评审 #2）。
+          if (!body.updates || typeof body.updates !== "object" || Array.isArray(body.updates)) {
+            return json(res, 400, { error: "updates 要是一个对象，可以只带 repo 或 publisher" });
+          }
           const u = (body.updates ?? {}) as Record<string, unknown>;
           // 先在局部算完、校验通过再写 cfg：否则「repo 已清空、publisher 校验失败返回 400」时
           // 内存里改了、磁盘上没 save，重启后配置又变回原样（评审 #8）。

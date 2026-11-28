@@ -449,12 +449,12 @@ export class Files {
     if (group) {
       const gate = this.ctx.groupAnnounceOnly?.(threadId);
       if (gate) {
-      // 与 messages.assertWritable 的口径对齐：先看名册，再判写权限（评审 #29）。
-      if (gate.members && !gate.members.includes(this.ctx.nodeId)) throw new Error("你不在这个群的名册里");
-      if (!canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, this.ctx.nodeId)) {
-        throw new Error("这是只读的更新组：只有发布者能发文件");
+        // 与 messages.assertWritable 的口径对齐：先看名册，再判写权限（评审 #29）。
+        if (gate.members && !gate.members.includes(this.ctx.nodeId)) throw new Error("你不在这个群的名册里");
+        if (!canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, this.ctx.nodeId)) {
+          throw new Error("这是只读的更新组：只有发布者能发文件");
+        }
       }
-    }
     }
     const targets = group ? (this.ctx.groupMembers?.(threadId) ?? null) : [threadId];
     if (!targets) throw new Error("不在这个群里了");
