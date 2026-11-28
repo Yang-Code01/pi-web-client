@@ -25,6 +25,14 @@ export function pastedFilesFrom(data: DataTransfer | null): File[] {
   return out;
 }
 
+/**
+ * 待发图片 → 能塞进 `<img src>` 的 data URL。缩略图（待发图片弹窗、随手问、贴图动效的幽灵）用的是
+ * 同一个拼法，所以只写这一处 —— 以前三处各手写一遍 `data:...;base64,...`。
+ */
+export function imageSrc(image: PendingImage): string {
+  return `data:${image.mimeType};base64,${image.data}`;
+}
+
 /** Images keep going to the model as pixels; every other file is referenced by path. */
 export function splitImages(files: File[]): { images: File[]; others: File[] } {
   const images: File[] = [];

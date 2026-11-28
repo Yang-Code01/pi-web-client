@@ -19,7 +19,7 @@
  * 3. **少动一点**。一次贴十张不该飞出十片：最多四片，剩下的靠徽标上的数字。
  *    `prefers-reduced-motion: reduce` 时整段跳过，连弹跳都不做。
  */
-import type { PendingImage } from "./images.ts";
+import { imageSrc, type PendingImage } from "./images.ts";
 
 /** `--mac-spring`（带一点回弹）。必须跟 `mac-base.css` 里那条一模一样（单测对账）。 */
 export const SPRING = "cubic-bezier(0.34, 1.42, 0.64, 1)";
@@ -55,6 +55,15 @@ export interface PasteFlyOpts {
   scale: () => number;
 }
 
+/** `Element.animate` 缺失或拒绝这组关键帧时返回 null —— 动效是加分项，不该让贴图本身出错。 */
+function animate(el: HTMLElement, keyframes: Keyframe[], options: KeyframeAnimationOptions): Animation | null {
+  try {
+    return el.animate(keyframes, options);
+  } catch {
+    return null;
+  }
+}
+
 function reducedMotion(): boolean {
   return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
@@ -64,12 +73,7 @@ function reducedMotion(): boolean {
  * 连贴两次时先收掉上一次：不 cancel 的话动画对象会一直堆到 400ms，前一个定时器还会把刚挂上的
  * `.flash` 提前摘掉（第二次落地看起来就没闪）。
  */
-const landing = new WeakMap<HTMLElement, { anim?: Animation; flash?: number }>();
-
-/** 待发图片 → 能塞进 `<img src>` 的 data URL（跟待发图片弹窗里缩略图用的是同一个）。 */
-export function imageSrc(image: PendingImage): string {
-  return `data:${image.mimeType};base64,${image.data}`;
-}
+const landing = new WeakMap<HTMLElement, { anim?: Animation | null; flash?: number }>();
 
 /**
  * 徽标「落地」提示：弹一下 + 实底闪一下。
@@ -81,7 +85,8 @@ export function badgeLanded(badge: HTMLElement, scale = 1.14): void {
   const prev = landing.get(badge) ?? {};
   prev.anim?.cancel();
   if (prev.flash !== undefined) window.clearTimeout(prev.flash);
-  const anim = badge.animate(
+  const anim = animate(
+    badge,
     [
       { transform: "scale(.62)", opacity: 0.35 },
       { transform: `scale(${scale})`, opacity: 1, offset: 0.52 },
@@ -111,9 +116,20 @@ function layer(host: HTMLElement): HTMLElement {
  * 把刚贴上的图从输入框飞进徽标。返回落地（最后一张停下）的 Promise，方便测试等它结束；
  * 不关心的话直接 `void` 掉。动画被取消时也算这一张「停下」，Promise 不会悬着。
  */
-export function flyImagesToBadge(srcs: readonly string[], opts: PasteFlyOpts): Promise<void> {
+export function flyImagesToBadge(images: readonly PendingImage[], opts: PasteFlyOpts): Promise<void> {
+  // 调用方是 `void` 掉的：这里既不能把异常抛进 `addImages()`（那会连累整条贴图路径），
+  // 也不能留下一条 unhandled rejection（那等于每次贴图都在控制台报一次错）。
+  try {
+    return runFly(images, opts);
+  } catch {
+    return Promise.resolve();
+  }
+}
+
+function runFly(images: readonly PendingImage[], opts: PasteFlyOpts): Promise<void> {
   // 先做便宜的判断，最后才读 rect：`addImages()` 刚改过 DOM，多读一次就是多一次强制同步布局。
-  if (!srcs.length || reducedMotion()) return Promise.resolve();
+  // 拼 data URL 排在 `reducedMotion()` 与裁片之后：一次贴十几张 2048px 的图，只给真要飞的几片拼。
+  if (!images.length || reducedMotion()) return Promise.resolve();
   const host = opts.host();
   const target = opts.badge.getBoundingClientRect();
   if (!host || target.width < 2) return Promise.resolve();
@@ -121,7 +137,7 @@ export function flyImagesToBadge(srcs: readonly string[], opts: PasteFlyOpts): P
   const s = opts.scale() || 1;
   const from = opts.origin ?? target;
   const layerEl = layer(host);
-  const shown = srcs.slice(0, MAX_GHOSTS);
+  const shown = images.slice(0, MAX_GHOSTS).map(imageSrc);
   const flights: Promise<void>[] = [];
 
   // 两个中心点（视觉 px → 布局 px），弧顶与扇形错位直接加布局 px（见文件头第 1 条）。
@@ -143,7 +159,8 @@ export function flyImagesToBadge(srcs: readonly string[], opts: PasteFlyOpts): P
     layerEl.append(ghost);
     const dx = i * FAN_X;
     const dy = i * FAN_Y;
-    const anim = ghost.animate(
+    const anim = animate(
+      ghost,
       [
         { transform: `translate(${startX + dx}px, ${startY + dy}px) scale(.7) rotate(-4deg)`, opacity: 0, offset: 0, easing: "cubic-bezier(.2,.9,.3,1)" },
         { transform: `translate(${startX + dx}px, ${startY + dy - HOLD_RISE}px) scale(1) rotate(-2deg)`, opacity: 1, offset: 0.22, easing: "ease-out" },
@@ -153,6 +170,12 @@ export function flyImagesToBadge(srcs: readonly string[], opts: PasteFlyOpts): P
       ],
       { duration: FLY_MS, delay: i * STAGGER_MS, fill: "forwards" },
     );
+    if (!anim) {
+      // 引擎不接这组关键帧：这一片当场收掉（整批都收掉时层也别留着）。
+      ghost.remove();
+      if (!layerEl.childElementCount) layerEl.remove();
+      return;
+    }
     flights.push(
       new Promise<void>((resolve) => {
         // `finished` 在正常结束与**被取消**两种情况下都会落定（取消时 reject 一个 AbortError）。
@@ -169,6 +192,8 @@ export function flyImagesToBadge(srcs: readonly string[], opts: PasteFlyOpts): P
     );
   });
 
-  // 落地只弹一次 —— 等最后一张（含错开延迟）停下。
-  return Promise.all(flights).then(() => badgeLanded(opts.badge, 1.2));
+  // 落地只弹一次 —— 等最后一张（含错开延迟）停下。这个 Promise 不 reject：调用方是 `void` 掉的。
+  return Promise.all(flights)
+    .then(() => badgeLanded(opts.badge, 1.2))
+    .catch(() => {});
 }

@@ -19,8 +19,8 @@ import { refreshGithubCards } from "./github-cards.ts";
 import { githubFeature } from "./github-settings.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
-import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
-import { flyImagesToBadge, imageSrc } from "./pastefly.ts";
+import { imageSrc, imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
+import { flyImagesToBadge } from "./pastefly.ts";
 import { cardPieces } from "./ask-text.ts";
 import { shouldFoldPaste } from "./paste.ts";
 import { renderMarkdown } from "./md.ts";
@@ -18158,7 +18158,7 @@ export class App {
     this.imageSheetPaint?.();
     // D446：贴图得看得见 —— 图从输入框浮出来飞进徽标，落地时徽标弹一下。粘贴、拖拽、选图、相册都走这里。
     if (images.length && this.imageBadge) {
-      void flyImagesToBadge(images.map(imageSrc), {
+      void flyImagesToBadge(images, {
         badge: this.imageBadge,
         origin: this.els.composerHost?.querySelector(".composer-input")?.getBoundingClientRect() ?? null,
         host: () => document.getElementById("app"),
@@ -18462,7 +18462,7 @@ export class App {
       this.images.forEach((image, index) => {
         const tile = el("div", "image-tile");
         const thumb = el("img", "image-thumb") as HTMLImageElement;
-        thumb.src = `data:${image.mimeType};base64,${image.data}`;
+        thumb.src = imageSrc(image);
         thumb.alt = tr("待发图片 {p1}", { p1: index + 1 });
         // 缩略图整块可点：看清楚再决定发不发，而不是放大缩小猜。
         const open = el("button", "image-open") as HTMLButtonElement;

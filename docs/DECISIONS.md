@@ -8924,4 +8924,6 @@ if (stop >= 0) {
 
 **复审（2026-11-28，PR #740 的代码评审）改掉的三处。** ①收尾从 `onfinish` 换成 `anim.finished`（`then(settle, settle)`）：动画被 cancel（飞行中 `#app` 被重建、标签页被冻结后清理）时 `onfinish` 不触发，幽灵与这一层会永远留在 DOM 里、`Promise` 也不 resolve。②徽标上重复触发时先 `cancel()` 上一条动画、清掉上一个 `.flash` 定时器 —— 连贴两次时前一个定时器会把刚挂上的 `.flash` 提前摘掉。③`EASE` 常量没人用（删掉），`SPRING` 与 `mac-base.css` 的一致性交给 `web/tests/pastefly-unit.mjs` 对账 —— 光在注释里宣称「必须一致」是不会有人发现它漂了的。
 
+**第二轮复审（同日）补的三处。** ④`flyImagesToBadge` 改吃 `PendingImage[]`、在 `reducedMotion()` 与 `MAX_GHOSTS` 裁片之后才拼 data URL —— 以前 `images.map(imageSrc)` 会替十几张 2048px 的图各拼一条几 MB 的字符串，实际只飞四片。⑤拼法收进 `images.ts` 的 `imageSrc()`：以前待发图片弹窗、随手问、贴图动效三处各手写一遍 `data:${mimeType};base64,${data}`。⑥这个 Promise 现在保证不抛也不 reject（`try/catch` 包住整个函数、`Element.animate` 缺失或拒绝关键帧时返回 null），否则 `app.ts` 那句 `void` 就等于每次贴图都留一条 unhandled rejection；顺带把「徽标上一条动画要 cancel / 上一个 `.flash` 定时器要清」这两条也在 `web/tests/pastefly-unit.mjs` 里用假 DOM 钉住了，不必等浏览器探针才发现回归。
+
 **验证。** `probes/paste-fly-in.mjs`（真 Chromium + 真 paste 事件 + 真几何，隔离桥）：贴两张冒两层幽灵；把动画暂停把 `currentTime` 推到首尾帧上量 —— 起点在输入框上方、终点落在徽标中心 ±8px（不靠等时钟，700ms 的飞行才不会让断言随机翻车）；落地后整层从 DOM 摘掉、徽标有弹跳动画、`.flash` 挂上且 260ms 后自己摘掉；六张只飞四片但徽标写「+6 图」；`prefers-reduced-motion` 下一片不飞也不弹；字号 125% 时幽灵布局尺寸仍是 76px、渲染成 ≈95px、终点仍在徽标中心（缩放只乘一次）。回归：`probes/image-sheet-check.mjs` 20 项（点徽标、删图、清空）全过，飞行层没挡住徽标的点击。守卫：`npm --prefix web run typecheck`。
