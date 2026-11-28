@@ -257,13 +257,22 @@ await openLook();
   const rows = await page.evaluate(() => {
     const sheet = document.querySelector(".display-sheet");
     const all = [...sheet.querySelectorAll(".settings-row")].filter((r) => r.querySelector(".size-ctl"));
-    return all.map((r) => ({
-      label: (r.querySelector(".settings-label")?.textContent ?? "").trim(),
-      read: (r.querySelector(".size-read")?.textContent ?? "").trim(),
-    }));
+    const head = [...sheet.querySelectorAll(".settings-group")].find((g) => (g.textContent ?? "").includes("分区字号"));
+    return {
+      rows: all.map((r) => ({
+        label: (r.querySelector(".settings-label")?.textContent ?? "").replace(/\d+%$/, "").trim(),
+        read: (r.querySelector(".size-read")?.textContent ?? "").trim(),
+      })),
+      head: head ? (head.textContent ?? "").trim() : "",
+    };
   });
-  check("5. 「语言与字号」里正好两行滑杆（全局 + 对话正文）", rows.length === 2, JSON.stringify(rows));
-  check("5b. 第二行标签是「对话正文」、读数 100%", rows[1]?.label?.includes("对话正文") && rows[1]?.read === "100%", JSON.stringify(rows[1]));
+  const wantLabels = ["字号", "顶栏", "会话列表", "对话正文", "输入框", "右栏面板"];
+  check(
+    "5. 「语言与字号」里六行滑杆：全局字号 + 五块，顺序照界面上到下 / 左到右",
+    rows.rows.length === 6 && wantLabels.every((l, i) => rows.rows[i].label === l),
+    JSON.stringify(rows.rows.map((r) => r.label)),
+  );
+  check("5b. 五块都从 100% 起步，分组头写明乘法关系", rows.rows.slice(1).every((r) => r.read === "100%") && rows.head.includes("各自叠在"), JSON.stringify({ head: rows.head, reads: rows.rows.map((r) => r.read) }));
 
   const before = await snap(page);
   const chatRow = page.locator('.display-sheet .settings-row').filter({ hasText: "对话正文" });
@@ -422,6 +431,44 @@ for (const rs of [1, 1.3]) {
     JSON.stringify({ at100, at130 }),
   );
   await page.screenshot({ path: path.join(OUT, "7-rail-130.png") });
+}
+
+// 5g. 五根各管各的：每根按 10 下方向键，只有它那一块变、其余四块的盒子不动
+{
+  // 这一段跑在后面几段之后（它们各自 boot 过、面板早关了）：重新打开一次。
+  await openLook();
+  const PAIRS = [
+    ["topbar", "顶栏"],
+    ["sessions", "会话列表"],
+    ["chat", "对话正文"],
+    ["composer", "输入框"],
+    ["queue", "右栏面板"],
+  ];
+  for (const [id, label] of PAIRS) {
+    const row = page.locator(".display-sheet .settings-row").filter({ hasText: label });
+    const before = await snap(page);
+    await row.locator('input[type="range"]').focus();
+    for (let i = 0; i < 10; i++) await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Tab"); // blur → 落盘
+    await sleep(200);
+    const after = await snap(page);
+    // 起点不是 1.0：上一段把 SEED 种进去了（顶栏 1.3、会话 0.9…）。所以断言的是「自己的倍率 +0.1、
+    // 局域宽度按新倍率缩小」，不是写死的 ×1.1 —— 否则这条只有在从 100% 起步时才成立。
+    const from = before.regions[id].own;
+    const wantOwn = Math.round((from + 0.1) * 100) / 100;
+    const ratio = before.regions[id].local / after.regions[id].local;
+    const wantRatio = wantOwn / from;
+    const stillIds = PAIRS.map(([x]) => x).filter((x) => x !== id);
+    const still = stillIds.every((x) => Math.abs(after.regions[x].box - before.regions[x].box) < 0.6);
+    check(
+      `5g. 「${label}」+10%：只有这一块变，其余四块盒子不动`,
+      Math.abs(after.regions[id].own - wantOwn) < 0.011 && Math.abs(ratio - wantRatio) < 0.02 && still,
+      `own ${from}→${after.regions[id].own}（预期 ${wantOwn}）· 局域 ×${ratio.toFixed(3)}（预期 ×${wantRatio.toFixed(3)}）· ` +
+        stillIds.map((x) => `${x} ${before.regions[x].box.toFixed(1)}→${after.regions[x].box.toFixed(1)}`).join(" · "),
+    );
+    await row.locator(".size-rail").dblclick();
+    await sleep(150);
+  }
 }
 
 check("10. 没有页面报错"

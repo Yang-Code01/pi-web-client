@@ -4824,8 +4824,8 @@ export class App {
       ),
     );
 
-    // D441：「字号」是整页的基准，下面那块是分区倍率 —— 两层 zoom 相乘。
-    // 第一步只露「对话正文」一根：其余四块的变量已经挂在节点上（固定 1.0），下一轮补滑杆不用再动机制。
+    // D441：「字号」是整页的基准，下面那组是分区倍率 —— 两层 zoom 相乘。五块各一根，顺序照界面上
+    // 从上到下、从左到右：顶栏 → 会话列表 → 对话正文 → 输入框 → 右栏面板。
     langPanel.append(
       this.fontSliderRow({
         label: tr("字号"),
@@ -4849,22 +4849,47 @@ export class App {
           this.applyPrefs();
         },
       }),
-      this.fontSliderRow({
-        label: tr("对话正文"),
-        hint: tr("只缩放聊天记录这一块，叠在「字号」上相乘；双击轨道回 100%"),
-        value: this.prefs.regionScale.chat,
-        reset: REGION_DEFAULT_SCALE,
-        snaps: REGION_STOPS,
-        // 刻度跟全局那根同一套（80…200）：只放四个数字会全挤在轨道左半边，两行看着不像同一款。
-        marksAt: SIZE_MARKS,
-        onLive: (v) => {
-          this.prefs = { ...this.prefs, regionScale: { ...this.prefs.regionScale, chat: v } };
-          // 区域倍率只动一个 CSS 变量：不碰壳、不判窄版（栏宽与 900px 判据只认全局那根）。
-          this.paintRegionScales();
-        },
-        onCommit: () => savePrefs(this.prefs),
-      }),
     );
+
+    // 五块的分组头：叠乘关系说一次，五行各自的 hint 只讲「这一块是哪一块」，不重复念乘法。
+    const regionHead = el("div", "settings-group");
+    regionHead.append(el("span", "settings-group__label", tr("分区字号")));
+    regionHead.append(el("span", "settings-group__meta", tr("各自叠在「字号」上相乘；双击轨道回 100%")));
+    langPanel.append(regionHead);
+
+    const regionLabels: Record<RegionId, string> = {
+      topbar: tr("顶栏"),
+      sessions: tr("会话列表"),
+      chat: tr("对话正文"),
+      composer: tr("输入框"),
+      queue: tr("右栏面板"),
+    };
+    const regionHints: Record<RegionId, string> = {
+      topbar: tr("顶部三行：顶栏按钮、工作区标签行、置顶会话行"),
+      sessions: tr("左栏那列会话卡片"),
+      chat: tr("聊天记录这一块"),
+      composer: tr("底部输入区（含提示行与工具行）"),
+      queue: tr("右栏的执行 / 计划等面板"),
+    };
+    for (const id of REGION_IDS) {
+      langPanel.append(
+        this.fontSliderRow({
+          label: regionLabels[id],
+          hint: regionHints[id],
+          value: this.prefs.regionScale[id],
+          reset: REGION_DEFAULT_SCALE,
+          snaps: REGION_STOPS,
+          // 刻度跟全局那根同一套（80…200）：只放四个数字会全挤在轨道左半边，两行看着不像同一款。
+          marksAt: SIZE_MARKS,
+          onLive: (v) => {
+            this.prefs = { ...this.prefs, regionScale: { ...this.prefs.regionScale, [id]: v } };
+            // 区域倍率只动一个 CSS 变量：不碰壳、不判窄版（栏宽与 900px 判据只认全局那根）。
+            this.paintRegionScales();
+          },
+          onCommit: () => savePrefs(this.prefs),
+        }),
+      );
+    }
 
     // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
     // 外观只剩 Mac 风格三套（D353）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
