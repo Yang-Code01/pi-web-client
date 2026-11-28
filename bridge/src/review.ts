@@ -1128,7 +1128,7 @@ export function clip(text: string, max = 300): string {
  *
  * **不收**只属于单次请求的瞬时故障：`ECONNRESET`（流被重置）、`EPIPE`（对端先关）、裸的
  * `ETIMEDOUT`（一次读超时）、`connection reset by peer`、`Headers Timeout` —— 这些重试一次
- * 往往就过去了，跟 429 同一类，走重试那条路（D452 二轮评审意见 1）。
+ * 往往就过去了，跟 429 同一类，走重试那条路（D452 三轮评审意见 1）。
  *
  * 也不用 `network` / `socket` / `proxy` 这类宽泛词：会命中 `Invalid connection header`
  * 这种与网络无关的 provider 报错。
