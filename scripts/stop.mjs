@@ -12,28 +12,7 @@
  * 没有壳（`PI_HOST_DISABLE=1` 起的旧桥）就没有 `/api/host/stop`：这时把话说明白，
  * 让人回终端 Ctrl-C，而不是假装停掉了。
  */
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-
-const APP = "pi-web-client";
-
-function stateDir() {
-  return path.resolve(
-    process.env.PI_WEB_STATE || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local", "share"), APP),
-  );
-}
-
-function port() {
-  if (process.env.PI_WEB_PORT) return Number(process.env.PI_WEB_PORT);
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(stateDir(), "config.json"), "utf8"));
-    if (Number(cfg.port)) return Number(cfg.port);
-  } catch {
-    /* 没配置就用默认口 */
-  }
-  return 7864;
-}
+import { readPort } from "./preflight.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -46,7 +25,9 @@ async function up(base, ms = 700) {
   }
 }
 
-const base = `http://127.0.0.1:${port()}`;
+// 端口规则与启动前的检查（`scripts/preflight.mjs`）共用一份实现：两条路要是各解析各的，
+// 「stop 说停掉了、preflight 却还在 7864 上找到一份」就会变成日常。
+const base = `http://127.0.0.1:${readPort()}`;
 const health = await up(base, 1500);
 if (!health) {
   console.log(`${base} 上没有在跑的壳 / 桥：没什么可停的。`);

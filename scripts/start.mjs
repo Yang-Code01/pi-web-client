@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { bridgeEntry } from "./bridge-entry.mjs";
+import { EXIT_OK, forceRequested, preflight } from "./preflight.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const entry = bridgeEntry(root);
@@ -18,7 +19,24 @@ if (!fs.existsSync(entry)) {
   process.exit(1);
 }
 
-const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], { cwd: root, stdio: "inherit", windowsHide: true });
+/**
+ * `--force` 是给启动前那次检查的，不是给桥的：桥不认识这个参数，转过去只会被当成未知项。
+ */
+function bridgeArgs() {
+  return process.argv.slice(2).filter((a) => a !== "--force");
+}
+
+// 起之前再查一次（D441）：`start:nobuild` 与直跑都不经过 `npm start` 链里的那一步；
+// 顺带堵住「检查完到 listen 之间被人抢了端口」这个空窗。端口空着时这一步一声不响。
+const preflightCode = await preflight({ force: forceRequested() });
+if (preflightCode !== EXIT_OK) process.exit(preflightCode);
+
+const child = spawn(process.execPath, [entry, ...bridgeArgs()], {
+  cwd: root,
+  stdio: "inherit",
+  windowsHide: true,
+});
+
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
     try {

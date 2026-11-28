@@ -8798,3 +8798,26 @@ if (stop >= 0) {
 **可改。** 想改成「组字期间仍然重画、只重画消息流」也能成立（`renderChat()` 把 `stream` 单独换掉、绕开 `compose`），代价是 `paintMain` 的结构要拆；现在的写法改一个守卫就够。`blur` 那条若确认输入法都发 `compositionend`，可以删。
 
 **代价。** 组字期间对方来信不会立刻出现在消息流里（最长到上屏为止）；组字一直停着不动超过 20 秒也会被看门狗放行一次（那一下会打断这次组字），换来的是「主区不会被一次静默结束的组字永久冻住」；贴底的「新消息」提示也不会闪。同一段时间里由快捷键 / 菜单触发的面板（搜索、话题、引用）也要等到上屏才出现（键盘触发时没有 pointerup 可等，只能等组字结束）。
+
+## D441 起服务前先认出端口占用者、问一句、优雅停掉再起（用户 2026-11-28「npm start 端口被占时直接报 start 失败，想先提示、问一句要不要关掉之前的服务」）
+
+**问题。** `npm start` 直接起壳，7864 被占时 `publicServer.listen()` 的 `EADDRINUSE` 是**未捕获异常**，用户看到的是一整坨堆栈加 `npm error`，完全不知道端口上是谁、该不该停它。而最常见的那类「占用者」其实就是**自己上一次起的那份**（另开的终端、选了「关窗保留」之后留在后台的那份）——用户要的只是「换成这一份」。
+
+**决定。**
+
+- **新入口 `scripts/preflight.mjs`**：既当 CLI（`node scripts/preflight.mjs`），也导出 `preflight()` 给 `scripts/start.mjs` 在 spawn 之前再调一次。`npm start` 变成 `node scripts/preflight.mjs && node scripts/bootstrap.mjs --start && npm run build && node scripts/start.mjs`，**排在 bootstrap 与 build 之前**（先问，别让用户白等一次编译）；`start:nobuild` 与直跑由 `start.mjs` 里那次调用覆盖，顺带堵住「检查完到 listen 之间被抢」的空窗。
+- **认人沿用 D154 的三条线索**（`/healthz` 自报 pid → `%TEMP%/pi-web-bridge-<port>.pid` → 枚举 `Get-NetTCPConnection` / `lsof`），但每个候选都要过**命令行里带 `bridge/dist/host.js` 或 `bridge/dist/index.js`** 这一关；对不上的只当线索，不认作自己人。入口名故意不比对绝对路径：占用者可能来自另一份检出（别的 worktree、另一个安装目录），那正是最该被认出来的一类。前面一步认出来就**不再往下查**——枚举是最慢的一步。
+- **停自己那份：先优雅、等不到才硬杀。** `POST /api/host/stop`（带 `origin` + `sec-fetch-site: same-origin`，与 `npm run bridge:stop` 同一个接口：壳先让脑收会话、再带 pi 一起退），轮询端口释放**最多 10 秒**；还占着才 `taskkill /PID <pid> /F`（unix 先 SIGTERM、3 秒后 SIGKILL），再等端口真空出来**最多 5 秒**。**绝不 `/T`**（树的另一边可能连着别的会话，会把更新器自己一起带下去），也绝不直接杀 pid 当第一手段（硬杀会留下孤儿 pi 攥着会话锁）。
+- **别人的服务：只看不动。** 印 pid、版本/buildId、跑了多久、工作目录（Windows 上进程 API 不暴露，那就只印命令行里的入口路径）、命令行，然后退出 2，并给出换端口的出口。**`--force` 也不越过这条线**——`--force` 只授权「停掉本项目自己的桥」。
+- **提问：TTY 才问，默认 Y**（回车=替换、`n/no`=不替换、看不懂重问、EOF 算「没回答」=不动手）。**非 TTY（CI、`npm start | tee`）不猜不杀**：印出证据、提示 `npm run bridge:stop` 或 `--force` / `PI_START_FORCE=1`，退出 2。`--force` 只从 `start.mjs` 自己的 argv 读，并且**不转发给桥**（桥不认识这个参数）。
+- **没有壳的旧桥**（`PI_HOST_DISABLE=1`）在 /healthz 里没有 `brain` 键、也没有停机接口：提示里先写明「只能硬杀、底下的 pi 会话可能变孤儿（界面会卡在『终端正在使用』）」，用户答 y 之后才硬杀。
+- **壳侧兜底**（`bridge/src/host.ts`）：`listen` 的 `error` 接住，`EADDRINUSE` 打一句人话（端口、pid 文件里记着的 pid、`node scripts/preflight.mjs` / `npm run bridge:stop` / `PI_WEB_PORT=<别的口>` 三个出口）并以 **退出码 2** 结束，不再吐堆栈。走这条路说明「检查完到 listen 之间被抢」或者绕过了 preflight 直起桥。
+- **端口与监听地址的解析收成一份**：`scripts/preflight.mjs` 导出 `stateDir()` / `readPort()` / `readHost()`（`PI_WEB_PORT` → `config.json` 的 `port` → 7864；`PI_WEB_HOST` → `host` → 回环），`scripts/stop.mjs` 改为从它取——原先那边另有一份同样的规则。
+- **退出码语义**：0 = 可以继续（端口空着 / 已换成这一份）；2 = 停在这里（外人、非交互又没 `--force`、停机失败、端口仍被占）；3 = 用户明确回答「不替换」。链式 `&&` 因此会停住，不会在用户说了 n 之后又爬去起一份。
+- **范围**：只管主端口。内网通 7865 有自己的探活与退出码 2 约定（D433、D96），不并入；热部署、`npm run bridge:stop`、bridge-update 的停机路径都不动；**绝不自动换端口起**。
+
+**为什么。** ① 用户说 n 之后必须什么都不发生，所以「已有一份在跑」不能靠「继续下去再撞一次」来表达，得在链的最前面就停住。② 先问再编译：编译要几秒，问错地方就白等。③ 默认 Y：这一问的绝大多数场景是「换成我刚改的这份」，回车是最短的路；但**只对 TTY** 默认，管道与 CI 里没人能回答，默认一个 Y 等于后台杀服务。④ 先 `/api/host/stop`：壳知道怎么按顺序收脑与会话，`kill -9` 只会留下孤儿 pi。⑤ 认人必须看命令行：pid 文件会残留（`taskkill /F` 不走 exit 钩子），`/healthz` 也可能被别的服务占着同一个路径。
+
+**代价。** 每次 `npm start` 多一次「bind 试探 + （被占时）几条 PowerShell 查询」的开销（空闲路径只 bind 一次，毫秒级）。Windows 上拿不到别人的工作目录，只能给命令行。`EADDRINUSE` 之外的监听失败（比如本机保留端口的 `EACCES`）仍走原来的堆栈。`--force` 在 `npm start -- --force` 里只会落到链尾的 `start.mjs`（npm 把额外参数追加到整条命令末尾），想让链首那一步也带上，得 `PI_START_FORCE=1 npm start` 或直接跑 `node scripts/preflight.mjs --force`。
+
+**守卫。** `npm run test:preflight`：`bridge/tests/preflight-unit.mjs` 用假 TTY 考提问的四种回答与「命令行里是桥入口才算自己人」；`bridge/tests/start-preflight.mjs` 在**进程边界**上起真实的桩（桩就落在 `<tmp>/bridge/dist/host.js`，所以认人那步是真过了一遍）：空闲放行且一声不响、自己那份走 `/api/host/stop` 优雅停、非交互没 `--force` 时只看不动、别人的服务连 `--force` 都不碰、旧桥硬杀后端口真空出来。壳侧并进 `bridge/tests/host-shell-e2e.mjs` 第 11 段：端口被占时退出码 2、有那一句人话、没有堆栈。

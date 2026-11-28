@@ -15,7 +15,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { statePath } from "./paths.ts";
-import { removePidFile, writePidFile } from "./pidfile.ts";
+import { readPidFile, removePidFile, writePidFile } from "./pidfile.ts";
 import { Broker } from "./host/broker.ts";
 import { Children, type SpawnSpec } from "./host/children.ts";
 import { BrainProxy } from "./host/proxy.ts";
@@ -61,6 +61,24 @@ interface DeployState {
 
 function log(line: string): void {
   console.log(`[host ${new Date().toISOString().slice(11, 19)}] ${line}`);
+}
+
+/**
+ * 端口被占时给一句人话（D441）：以前这里是未捕获的 EADDRINUSE，用户只看到一坨堆栈。
+ *
+ * 认出占用者的活主要在 `scripts/preflight.mjs`（命令行、pid 文件、枚举三条线索都在它那儿），
+ * 壳在 listen 这一刻只有 pid 文件可看 —— 够指路了：正常情况下 preflight 已经问过并停掉了旧的那份，
+ * 走到这里说明是「检查完到 listen 之间被抢」或者绕过 preflight 直起了桥。
+ */
+function portTaken(port: number): void {
+  const pid = readPidFile(port);
+  const who = pid ? `pid 文件里记着 ${pid}` : "认不出占用者";
+  console.error(
+    `端口 ${port} 已被占用（${who}），壳没有起来。\n` +
+      `  先看看是谁、要不要停掉它：node scripts/preflight.mjs\n` +
+      `  自己停掉：npm run bridge:stop\n` +
+      `  换个端口：PI_WEB_PORT=<别的口> npm start`,
+  );
 }
 
 function readPort(): number {
@@ -889,7 +907,20 @@ async function main(): Promise<void> {
   }
 
   // ---------------------------------------------------------------- 起飞
-  await new Promise<void>((resolve) => publicServer.listen(port, listenHost, () => resolve()));
+  // listen 的 error 必须接住：EADDRINUSE 以前是一条未捕获异常，用户看到的是整个堆栈（D441）。
+  try {
+    await new Promise<void>((resolve, reject) => {
+      publicServer.once("error", reject);
+      publicServer.listen(port, listenHost, () => {
+        publicServer.off("error", reject);
+        resolve();
+      });
+    });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
+    portTaken(port);
+    process.exit(2);
+  }
   try {
     writePidFile(port);
   } catch {
