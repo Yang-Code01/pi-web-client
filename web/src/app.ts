@@ -2,6 +2,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./settings-console.css";
+// PROTOTYPE：字号即时反馈的四种候选（?variant=）—— 与 proto-font-preview.ts 一起删
+import "./proto-font-preview.css";
+import { protoMount } from "./proto-font-preview.ts";
 import { api, githubApi, type DepPackageId, type DepsReport } from "./api.ts";
 import { icon, face, isIconName, fileIcon, type IconName } from "./icons.ts";
 import { ChatView, createEl as el } from "./chat.ts";
@@ -5007,6 +5010,11 @@ export class App {
     back.append(sheet);
     this.overlay(back);
     this.setSheet(back);
+    // PROTOTYPE：带 ?variant=A|B|C|D|T 时挂上候选；不带就完全不动（和今天一样）。
+    protoMount(back, () => {
+      this.closeSheet();
+      this.openDisplaySheet();
+    });
     this.paintSwatches();
     this.paintLookCards();
     this.setDisplayTab(this.prefs.settingsTab);

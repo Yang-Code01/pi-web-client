@@ -1,0 +1,317 @@
+/*
+ * PROTOTYPE —— 字号滑杆即时反馈的四种候选（配合 proto-font-preview.ts）。
+ * 看完跟 ts 一起删掉，别合进 main。
+ */
+
+/* 面板挂到 body 之后：这一层不在 `#app` 的 zoom 里，视口变量要按 1:1 重算一遍。 */
+.st-back.proto-noscale {
+  --vh1: 1vh;
+  --vw1: 1vw;
+}
+
+/* ---------------------------------------------------------------- 底部切换条 */
+.proto-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  z-index: 6;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 40px);
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel-3);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
+  font: 12px/1.3 var(--sans);
+  color: var(--text);
+  pointer-events: auto;
+}
+.proto-bar__arrow {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--text);
+  font: 13px/1 var(--sans);
+  cursor: pointer;
+}
+.proto-bar__arrow:hover {
+  border-color: var(--line-lit);
+}
+.proto-bar__text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.proto-bar__label {
+  font-weight: 650;
+  white-space: nowrap;
+}
+.proto-bar__hint {
+  color: var(--dim);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------- A / D：迷你整页 */
+.proto-card {
+  display: grid;
+  gap: 8px;
+  /* 六根滑杆排下来比面板高：不钉住的话拖分区那几根时预览已经滚上去了。 */
+  position: sticky;
+  top: -4px;
+  z-index: 4;
+  margin: 4px 0 2px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+}
+.proto-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.proto-card__label {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+}
+.proto-card__foot {
+  font-size: 11px;
+  color: var(--faint);
+}
+.proto-peekbtn {
+  flex: none;
+  padding: 5px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font: 11.5px/1 var(--sans);
+  cursor: pointer;
+  touch-action: none;
+}
+.proto-peekbtn:active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pm-stage {
+  position: relative;
+  height: 210px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+/* 全局「字号」乘在最外层（和 `#app { zoom: var(--ui-scale) }` 一个语义），
+   0.55 只是把整页缩到预览框里。口径一致：拖 130% 它也跟着放大 30%。 */
+.pm-page {
+  zoom: calc(var(--ui-scale, 1) * 0.55);
+  width: 1000px;
+  min-height: 285px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg);
+  font: 12px/1.45 var(--sans);
+  color: var(--text);
+}
+.pm-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel);
+}
+.pm-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.pm-title {
+  font-weight: 650;
+}
+.pm-pill {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.pm-mid {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr) 150px;
+  gap: 6px;
+  align-items: start;
+}
+.pm-side {
+  display: grid;
+  gap: 5px;
+}
+.pm-card {
+  display: grid;
+  gap: 1px;
+  padding: 5px 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.pm-card b {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.pm-card.on {
+  border-color: var(--accent);
+}
+.pm-chat {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.pm-msg {
+  padding: 6px 8px;
+  border-radius: 9px;
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+  font-size: 11.5px;
+}
+.pm-msg.user {
+  justify-self: end;
+  max-width: 82%;
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-ink);
+}
+.pm-queue {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+}
+.pm-qrow {
+  padding: 5px 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.pm-composer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pm-input {
+  flex: 1 1 auto;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--faint);
+  font-size: 11.5px;
+}
+.pm-send {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------- B / D：让开 */
+/* mac.css 的 `html[data-ui="mac"] [data-mac-surface="window"]`（0,2,1）比这里高，
+   而且是后加载的 —— 原型直接 !important，别去比权重。 */
+.st-back.proto-peek {
+  background: transparent !important;
+  backdrop-filter: none !important;
+}
+.st-back.proto-peek .st-console {
+  opacity: 0.03;
+}
+.proto-hud {
+  position: absolute;
+  left: 50%;
+  bottom: 70px;
+  z-index: 6;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-3);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  color: var(--text);
+  font: 600 13px/1 var(--mono);
+  opacity: 0;
+  pointer-events: none;
+}
+.st-back.proto-peek .proto-hud {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- C：非模态抽屉 */
+.st-back.proto-drawer {
+  place-items: stretch end;
+  padding: 0;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  pointer-events: none;
+}
+.st-back.proto-drawer .st-console {
+  pointer-events: auto;
+  width: min(520px, 46%);
+  height: 100%;
+  border-radius: 0;
+  box-shadow: -22px 0 60px rgba(0, 0, 0, 0.4);
+}
+.st-back.proto-drawer .st-head {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.st-back.proto-drawer .st-head__actions .btn {
+  white-space: nowrap;
+}
+.st-back.proto-drawer .st-tabs {
+  order: 3;
+  flex: 1 1 100%;
+}
+/* 窄到 520px，左栏那列目录得横过去（抄的是 data-console-narrow 那一套）。 */
+.st-back.proto-drawer .st-main {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.st-back.proto-drawer .st-nav {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  overflow: visible;
+  border-right: 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.st-back.proto-drawer .st-nav__item {
+  width: auto;
+  padding: 7px 11px;
+}
+.st-back.proto-drawer .st-nav__group,
+.st-back.proto-drawer .st-nav__count {
+  display: none;
+}
