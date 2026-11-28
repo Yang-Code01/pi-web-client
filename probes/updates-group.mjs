@@ -59,6 +59,13 @@ const server = http.createServer((req, res) => {
     res.end("not found");
     return;
   }
+  // 点开头的文件（`.git` / `.env` 之类）一律不给：虽然只监听 127.0.0.1，也没有理由让探针
+  // 变成一个能读 dist 下任何隐藏文件的静态服务器（评审 #10）。
+  if (path.relative(DIST, file).split(path.sep).some((seg) => seg.startsWith("."))) {
+    res.writeHead(404);
+    res.end("not found");
+    return;
+  }
   // 一次 statSync 就把「存在 / 是目录」都判了，别在 existsSync 和 statSync 之间留 TOCTOU（评审 #21）。
   let stat;
   try {
@@ -208,6 +215,9 @@ check(cardText.includes("2026-11-28 · 局域网更新组（#730）"), "卡片�
 check(cardText.includes("固定只读更新组") && cardText.includes("成员不能发消息"), "卡片有批次正文条目");
 check(cardText.includes("热部署"), "有热部署时「怎么更新」指向热部署", cardText);
 
+// 先数按钮：回归成只画一颗时，下面 `nth(1).click()` 会以 Playwright 超时收场，
+// 报错信息里看不出是哪条断言（评审 #11）。
+check((await page.locator(".an-acts .btn").count()) === 2, "成员卡片有两颗按钮（更新日志 / 热部署）");
 const openedBefore = (await page.evaluate(() => window.__opened ?? [])).length;
 await page.locator(".an-acts .btn").first().click();
 const opened = await page.evaluate(() => window.__opened ?? []);
@@ -268,6 +278,7 @@ check((await page2.locator(".compose .peer-rich").count()) === 1, "发布者有�
 check((await page2.locator(".compose.readonlybar").count()) === 0, "发布者没有只读条");
 check((await page2.locator(".an-card").count()) === 1, "发布者那边公告卡片照画");
 check((await page2.locator(".reacts").count()) === 1, "发布者那边照常画回应行");
+check((await page2.locator(".an-acts .btn").count()) === 2, "发布者卡片也有两颗按钮");
 const pubOpenedBefore = (await page2.evaluate(() => window.__opened ?? [])).length;
 await page2.locator(".an-acts .btn").first().click();
 const pubOpened = (await page2.evaluate(() => window.__opened ?? [])).slice(pubOpenedBefore);

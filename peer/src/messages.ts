@@ -460,6 +460,9 @@ export class Messages {
     const members = [this.me(), ...others.map((id) => this.identity(id))];
     // publisher 必须真的在名册里：否则这个只读群建出来没人能发（评审 #10/#19）。
     if (opts.publisher && !members.some((m) => m.nodeId === opts.publisher)) throw new Error("发布者必须是群成员");
+    // publisher 只对只读群有意义：普通群带上它会把一个早已被遗忘的 nodeId 写进每个成员的
+    // groups.json，日后有人把组改成只读，写权限就落到它头上而不是 owner（评审 #8）。
+    if (opts.publisher && !opts.announceOnly) throw new Error("publisher 只对只读群（announceOnly）有意义");
     // 形状不对不能静默丢掉：只读群的 publisher 会退到 owner，建群的脚本却以为远端是发布者（评审 #7）。
     if (opts.publisher && !/^[\w-]{1,64}$/.test(opts.publisher)) throw new Error("发布者 nodeId 不合法");
     const title = name.trim().slice(0, 64) || members.map((m) => this.nameOf(m)).slice(0, 3).join("、");
@@ -670,6 +673,8 @@ export class Messages {
     const peer = this.ctx.discovery.byId(peerNodeId);
     if (!peer) throw new Error("这个人不在线");
     // 500 条只够热闹的群；公告稀疏时最近 3 条可能落在更早的位置（评审 #8）。
+    // 注意 `history.read()` 读的是会话文件最后 512 KB：5000 只在这个尾巴里数，
+    // 比 512 KB 更早公告补不到（没有服务器、没有完整历史），这里也不会报错（评审 #9）。
     const entries = this.ctx.history
       .read(groupId, 5000)
       .filter((entry) => entry.kind === "text" && entry.announce)

@@ -143,6 +143,16 @@ function sameRepo(a: string | undefined, b: string): boolean {
 }
 
 /**
+ * 本地日期 `YYYY-MM-DD`：`toISOString()` 是 UTC，北京时间 0–8 点播报的更新会被写成前一天（评审 #4）。
+ * `at` 只为单测存在。
+ */
+export function localDay(at = Date.now()): string {
+  const d = new Date(at);
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
  * 从上次播过的批次标题切出这次要推的那几条（`batches` 新的在前）。
  * 纯函数：单测能把「基线也记了标题」这件事钉住，否则一次攒了好几批也只推最新一批（评审 #2）。
  */
@@ -334,7 +344,8 @@ export class UpdatesLan {
       const kick = (fn: () => Promise<unknown>): void => {
         const timer = setTimeout(() => {
           this.kicks = this.kicks.filter((t) => t !== timer);
-          void fn();
+          // 随手 void 掉的 promise 抛了就是 unhandled rejection：checkNow 现在会主动报错（评审 #5）。
+          void fn().catch((err) => this.setError((err as Error).message));
         }, 500);
         this.kicks.push(timer);
       };
@@ -347,6 +358,12 @@ export class UpdatesLan {
   /** 「立即检查」：手动触发一次；正在跑就等它跑完，不会静默什么都不做（评审 #1）。
    *  同一个 commit 仍然不重播（避免连点重复公告），但 `lastCheckAt` 会刷新。 */
   async checkNow(): Promise<UpdatesView> {
+    // 点了「立即检查」就得有交代：不是发布者 / 认不出仓库时以前是静默 return，
+    // 用户只拿到一份原样的 view，以为查过了（评审 #5）。这里让调用方拿到原因（HTTP 400 + 文案）。
+    const status = this.peer.view().status;
+    if (!status) throw new Error("内网通没在运行：先把局域网打开");
+    if (!this.publisherOn(status)) throw new Error("本机不是发布者：先打开「发布更新公告」");
+    if (!(await this.repoInfo())) throw new Error("认不出这个检出的仓库（没有 git remote origin）");
     await this.tick();
     return this.view();
   }
@@ -439,7 +456,7 @@ export class UpdatesLan {
 
   /** 公告正文（给旧版本 / 通知预览看的退化文本）：卡片认识 `announce` 就画卡片。 */
   private composeText(info: RepoInfo, commit: string, batches: WhatsnewBatch[], subjects: string[]): string {
-    const day = new Date().toISOString().slice(0, 10);
+    const day = localDay();
     const lines = [`${info.repo} 更新到 ${commit}（${day}）`];
     if (batches.length) {
       lines.push("");

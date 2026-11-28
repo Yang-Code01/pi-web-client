@@ -755,6 +755,8 @@ async function loadUpdates(): Promise<void> {
   try {
     S.updates = normalizeUpdates(await getJson<Partial<UpdatesView>>("/api/updates"));
     S.updatesStale = false;
+    // 成功就把上次的失败文案清掉：留着它，状态里一直挂着一句和当前不对应的错误（评审 #12）。
+    S.updatesError = "";
   } catch (err) {
     S.updates = null;
     S.updatesError = (err as Error).message;
@@ -5000,7 +5002,10 @@ const heartbeat = (): void => {
 window.setInterval(heartbeat, 60_000);
 // 更新组的播报进度在 bridge 上，别等用户手动刷新才看到（评审 #13）。
 window.setInterval(() => {
-  // 值没变就不重画：这个定时器每分钟一次，整块换 DOM 会拽掉选区、滚动和焦点（评审 #15）。
+  // 页面在后台就别拉也别画：这个定时器每分钟一次，整块换 DOM 会拽掉焦点，
+  // 而且后台失败一次会把卡片换成错误提示、等用户切回来才看见（评审 #14）。
+  if (document.hidden) return;
+  // 值没变就不重画：整块换 DOM 会拽掉选区、滚动和焦点（评审 #15）。
   const before = updatesSig(S.updates);
   void loadUpdates().then(() => {
     if (updatesSig(S.updates) === before) return;

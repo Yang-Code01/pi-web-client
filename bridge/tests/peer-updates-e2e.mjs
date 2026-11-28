@@ -26,8 +26,10 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ENTRY = path.resolve(here, "..", "..", "peer", "dist", "index.js");
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "peer-updates-"));
-const REPO = "yang-code01/pi-web-client";
-const GROUP = "grp-updates-yang-code01-pi-web-client";
+// 标识与组 id 用真链路算出来的形状（`<host>/<owner>/<name>` + sha1 后缀，评审 #6）：
+// 手写不带主机的 `owner/name` 会让这条 e2e 验的东西跟 bridge 实际发出去的不是一回事。
+const REPO = "github.com/yang-code01/pi-web-client";
+const GROUP = "grp-updates-github-com-yang-code01-pi-web-client-8f2a41";
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 if (!fs.existsSync(ENTRY)) {

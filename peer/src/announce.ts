@@ -14,7 +14,10 @@ export interface AnnounceBatch {
 }
 
 export interface AnnouncePayload {
-  /** `owner/name`：同一份仓库才进同一个更新组。 */
+  /**
+   * `<host>/<owner>/<name>`（主机小写）：同一份仓库才进同一个更新组。
+   * 主机是身份的一部分 —— `github.com/a/b` 与 `gitlab.local/a/b` 是两份仓库（评审 #7）。
+   */
   repo: string;
   /** 播报时 `origin/main` 的短提交。 */
   commit: string;
