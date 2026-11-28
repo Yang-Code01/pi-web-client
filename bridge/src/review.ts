@@ -538,12 +538,14 @@ export function trimRuns(state: ReviewState): void {
 /** 一次面板打开最多核对几个 PR：每个 PR 一次 `ls-remote` 网络往返，历史再多也不该拖住面板。 */
 export const TIP_PR_LIMIT = 3;
 
-/** 一条要核对的记录：核对谁（`ref`）与走哪条路（`pr > 0` 才要网络）。 */
+/** 一条要核对的记录：核对谁（`ref`）、走哪条路（`pr > 0` 才要网络）、以及 `HEAD` 当时在哪条分支。 */
 export interface TipTarget {
   /** `ReviewState.tips` 的键，也是记录里的 `to`：`HEAD` / `feat/x` / `refs/pi-web/pr-N`。 */
   ref: string;
   /** PR 号（0 = 本地分支：`git rev-parse` 就够，不碰网络）。 */
   pr: number;
+  /** 记录里的 `headRef`（只有 `to` 是 `HEAD` 的记录才有）：评的时候 HEAD 在哪条分支上。 */
+  headRef?: string;
 }
 
 /**
@@ -556,7 +558,7 @@ export function tipTargets(runs: readonly ReviewRun[]): TipTarget[] {
   const picked: { target: TipTarget; at: number }[] = [];
   for (const run of runs ?? []) {
     const target = tipTargetOf(run);
-    if (target) picked.push({ target, at: Date.parse(run.startedAt ?? "") || 0 });
+    if (target) picked.push({ target: { ...target, headRef: str(run.headRef) }, at: Date.parse(run.startedAt ?? "") || 0 });
   }
   picked.sort((a, b) => b.at - a.at);
   const seen = new Set<string>();
@@ -587,16 +589,50 @@ export function remoteTipTargets(targets: readonly TipTarget[]): TipTarget[] {
  *
  * 判的是**本地** ref（不是远端）：`range` 重评读的就是本地 target，所以「本地没变」= 再评一次
  * 结果一样，不该点亮那颗标（Q10）。`revParse` 认不出这个 ref（分支被删了）就不给 key。
+ *
+ * `to` 是 `HEAD` 的那几条要额外看 `currentBranch`：`HEAD` 的意思是「现在这条分支的头」，
+ * 换到别的分支之后它当然指向别处 —— 那不是「有新提交」，重评读的也是另一份代码。
+ * 所以只在**同一条分支**上比，否则当成核对不了（不给 key → 不标）。老记录没记 `headRef` 的
+ * 照旧比（它们本来也没有 `headSha`，根本走不到这里）。
  */
-export function localTips(runs: readonly ReviewRun[], revParse: (ref: string) => string): Record<string, string> {
+export function localTips(
+  runs: readonly ReviewRun[],
+  revParse: (ref: string) => string,
+  currentBranch = "",
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const item of tipTargets(runs)) {
     if (item.pr > 0) continue;
+    if (isHeadName(item.ref) && item.headRef && currentBranch && item.headRef !== currentBranch) continue;
     const sha = str(revParse(item.ref));
     if (sha) out[item.ref] = sha;
   }
   return out;
 }
+
+/**
+ * 收尾时给这条记录补的「评到了哪里」（#741）：被评的提交；`to` 是 `HEAD` 时再加「当时那条分支」。
+ *
+ * 取不到（ref 被删 / 不是仓库 / 分离头指针）就不写那一项 —— 面板宁可不说，也不编一个值。
+ * 依赖是注入的：这是本票最容易悄悄错的一处（记错了就天天误报），得能单测。
+ */
+export function headStamp(
+  run: Pick<ReviewRun, "to">,
+  deps: { shaOf: (ref: string) => string; branch: () => string },
+): Partial<Pick<ReviewRun, "headSha" | "headRef">> {
+  const ref = str(run.to);
+  const out: Partial<Pick<ReviewRun, "headSha" | "headRef">> = {};
+  const sha = ref ? str(deps.shaOf(ref)) : "";
+  if (sha) out.headSha = sha;
+  if (isHeadName(ref)) {
+    const branch = str(deps.branch());
+    if (branch) out.headRef = branch;
+  }
+  return out;
+}
+
+/** `ref` 是不是那个会随风漂的 `HEAD`（`HEAD` / `head` 都算，写进来的是 ocr 回显的原文）。 */
+const isHeadName = (ref: string): boolean => str(ref).toUpperCase() === "HEAD";
 
 /**
  * 远端那半（`pr` 模式）：一次 `ls-remote` 拿一批。「远端没答」与「远端答了但失败」都**不给 key** ——
@@ -774,7 +810,7 @@ export function gitRoot(dir: string): string {
 /**
  * 某个 ref 此刻指向哪个提交（认不出 / 不是仓库 → 空串）。
  *
- * 只读、不 fet、不动任何 ref：过时判定只能基于本地看得见的东西（#741）。
+ * 只读、不 fetch、不动任何 ref：过时判定只能基于本地看得见的东西（#741）。
  */
 export function gitShaOf(dir: string, ref: string): string {
   const name = str(ref);
@@ -787,6 +823,26 @@ export function gitShaOf(dir: string, ref: string): string {
       windowsHide: true,
     }).trim();
     return /^[0-9a-f]{7,40}$/i.test(out) ? out : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 现在 HEAD 在哪条分支上（分离头指针时给空串）。
+ *
+ * 只给「`to` 是 `HEAD` 的记录」记一份：见 `ReviewRun.headRef` 与 `localTips()`。
+ * 分离头指针时给空串是**故意**的 —— 那时没有分支名可比，退回「照旧比 sha」比编一个名字好。
+ */
+export function gitBranchOf(dir: string): string {
+  try {
+    const out = execFileSync("git", ["-C", dir, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+      windowsHide: true,
+    }).trim();
+    return out && out !== "HEAD" ? out : "";
   } catch {
     return "";
   }
@@ -1191,10 +1247,11 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     (patch as Partial<ReviewRun>).log = prevProgress?.log ?? [];
     // 分组计划同理：完成态要看「哪组出了几条」，不能只剩一个总数。
     (patch as Partial<ReviewRun>).plan = prevProgress?.plan ?? patch.plan ?? [];
-    // #741：记下「这一次评到的那个提交」，之后才说得清这份结果有没有跟上代码。
-    // 取不到（ref 已经被删 / 不是仓库）就空着，面板宁可不说也不编一个。
-    const headSha = gitShaOf(root, run.to);
-    if (headSha) (patch as Partial<ReviewRun>).headSha = headSha;
+    // #741：记下「这一次评到了哪里」（被评的提交，`HEAD` 时还有当时那条分支）。
+    // 只给 done 记：`tipTargetOf()` 对失败 / 停止的那几条本来就返回 null，记了也只是多跑一次 git。
+    if (patch.status === "done") {
+      Object.assign(patch, headStamp(run, { shaOf: (ref) => gitShaOf(root, ref), branch: () => gitBranchOf(root) }));
+    }
     if (onDisk) Object.assign(onDisk, patch);
     else state.runs.push({ ...run, ...patch });
     writeReviewState(root, state, session);

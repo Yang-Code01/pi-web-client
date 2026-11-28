@@ -12,7 +12,6 @@
  *
  * Run: npm run build && node probes/code-review.mjs
  */
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
@@ -57,6 +56,41 @@ const check = (name, ok, detail = "") => {
 fs.rmSync(ROOT, { recursive: true, force: true });
 for (const d of [STATE, STATE2, SESSIONS, WORK]) fs.mkdirSync(d, { recursive: true });
 const git = (...args) => execFileSync("git", ["-C", WORK, ...args], { encoding: "utf8", windowsHide: true });
+
+/**
+ * 这个仓库在隔离状态目录里的那份评审状态文件。
+ *
+ * 文件名是桥按「仓库 + 会话」散列出来的（`repoKey` / `sessionKey`）—— 那是它的内部实现，
+ * 探针**不去复刻**：桥一改规则，复刻出来的路径就会静默指向别处，最后由「等不到那颗标」超时来
+ * 报告，原因很难看出来。改成按文件里的 `repo` 字段找，找不到就当场说清楚。
+ */
+function stateFileFor(repo) {
+  const root = path.join(STATE, "review");
+  const norm = (dir) => {
+    try {
+      return fs.realpathSync.native(dir).replace(/[\\/]+$/, "").toLowerCase();
+    } catch {
+      return "";
+    }
+  };
+  const want = norm(repo);
+  if (!fs.existsSync(root)) return "";
+  for (const sub of fs.readdirSync(root)) {
+    const dir = path.join(root, sub);
+    if (!fs.statSync(dir).isDirectory()) continue;
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".json")) continue;
+      const full = path.join(dir, name);
+      try {
+        const rec = JSON.parse(fs.readFileSync(full, "utf8"));
+        if (norm(String(rec?.repo ?? "")) === want) return full;
+      } catch {
+        /* 不是 JSON / 不是我们要的那份 */
+      }
+    }
+  }
+  return "";
+}
 git("init", "-q");
 fs.writeFileSync(path.join(WORK, "user.ts"), "export function nameOf(user: { name: string }): string {\n  return user.name;\n}\n");
 git("add", "-A");
@@ -462,9 +496,8 @@ try {
   // 造一张卡不值得 —— 直接往桥的状态目录写一条**完成的 range 记录**（headSha = 上一个提交），
   // 再真提交一次，剩下的全是真链路：桥读盘 → `git rev-parse HEAD` → 帧 → 面板画。
   {
-    const sha = (text) => crypto.createHash("sha1").update(text).digest("hex").slice(0, 16);
-    const repoKey = sha(fs.realpathSync.native(WORK).replace(/[\\/]+$/, "").toLowerCase());
-    const file = path.join(STATE, "review", repoKey, `${sha(SID)}.json`);
+    const file = stateFileFor(WORK);
+    if (!file) throw new Error("找不到这次会话的评审状态文件：桥换了存放规则？（这条探针按文件里的 repo 字段找，不复刻散列名）");
     const before = git("rev-parse", "HEAD").trim();
     const startedAt = new Date(Date.now() - 60000).toISOString();
     fs.mkdirSync(path.dirname(file), { recursive: true });

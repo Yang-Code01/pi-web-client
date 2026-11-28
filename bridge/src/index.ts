@@ -59,6 +59,7 @@ import {
   cancelReview,
   cleanRuns,
   effectiveReviewDir,
+  gitBranchOf,
   gitRoot,
   gitShaOf,
   installOcr,
@@ -4253,7 +4254,7 @@ async function main(): Promise<void> {
               const state = readReviewState(repo, session);
               // #741：本地那半（分支 / HEAD）当场就能算，跟状态一起走；PR 那半要一次 ls-remote，
               // 算完再补一帧。先画后补：不让整份记录列表等网络。
-              const local = localTips(state.runs, (ref) => gitShaOf(repo, ref));
+              const local = localTips(state.runs, (ref) => gitShaOf(repo, ref), gitBranchOf(repo));
               send({
                 type: "review.state",
                 dir: repo,
@@ -4270,28 +4271,34 @@ async function main(): Promise<void> {
               // 没登录就是「没标」，也不报错。
               if (tipTargets(state.runs).some((item) => item.pr > 0)) {
                 const fresh = msg.fresh === true;
+                // 整段包在 try 里：这是个不 await 的后台任务，抛出去会变成未处理的 rejection
+                // （读状态文件 / 算账号 / 发帧都可能失败），而它失败的正确表现就是「没有标」。
                 void (async () => {
-                  let env: NodeJS.ProcessEnv | undefined;
                   try {
-                    env = (await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session)).env;
+                    let env: NodeJS.ProcessEnv | undefined;
+                    try {
+                      env = (await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session)).env;
+                    } catch {
+                      /* 没账号也要能问公开仓库：不强求 */
+                    }
+                    const remote = await remoteTips(state.runs, (prs) => remotePrHeads(repo, prs, { fresh, env }));
+                    if (!Object.keys(remote).length) return;
+                    // 本地那半照旧用**这一份**（不为补一帧再 rev-parse 一遍：缺 key 的语义是「不知道」，
+                    // 同一眼必须给同一个答案）；记录本身重新读一次 —— 这期间可能有人标了一条意见，
+                    // 拿开局那份快照会把那一笔盖回去。
+                    broadcast({
+                      type: "review.state",
+                      dir: repo,
+                      pinned,
+                      sessionId: session,
+                      state: readReviewState(repo, session),
+                      tips: { ...local, ...remote },
+                      progresses: reviewProgresses(repo, session),
+                      cap: MAX_RUNS_PER_SESSION,
+                    });
                   } catch {
-                    /* 没账号也要能问公开仓库：不强求 */
+                    /* 补帧失败 = 这条没标出来，不值得惊动用户（下次打开面板再核） */
                   }
-                  const remote = await remoteTips(state.runs, (prs) => remotePrHeads(repo, prs, { fresh, env }));
-                  if (!Object.keys(remote).length) return;
-                  // 本地那半照旧用**这一份**（不为补一帧再 rev-parse 一遍：缺 key 的语义是「不知道」，
-                  // 同一眼必须给同一个答案）；记录本身重新读一次 —— 这期间可能有人标了一条意见，
-                  // 拿开局那份快照会把那一笔盖回去。
-                  broadcast({
-                    type: "review.state",
-                    dir: repo,
-                    pinned,
-                    sessionId: session,
-                    state: readReviewState(repo, session),
-                    tips: { ...local, ...remote },
-                    progresses: reviewProgresses(repo, session),
-                    cap: MAX_RUNS_PER_SESSION,
-                  });
                 })();
               }
               void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));

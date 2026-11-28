@@ -19698,7 +19698,10 @@ export class App {
     if (!run) return;
     this.reviewMode = run.mode;
     if (run.mode === "pr") {
-      if (run.pr > 0) this.reviewPr = String(run.pr);
+      // 记录里没有 PR 号（老记录 / 坏数据）就别猜：沿用手上这个号等于拿**另一条** PR 去评，
+      // 而且结果会安静地写进列表里 —— 正是 #666 那道闸要防的那类错。
+      if (run.pr <= 0) return;
+      this.reviewPr = String(run.pr);
     } else if (run.mode === "range") {
       this.reviewBase = run.from || this.reviewBase;
       this.reviewTarget = run.to || "HEAD";

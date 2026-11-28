@@ -195,10 +195,18 @@ export async function remotePrHeads(dir: string, prs: number[], opts: PrQueryOpt
       if (num > 0 && /^[0-9a-f]{7,40}$/i.test(sha ?? "")) value[num] = sha;
     }
   }
-  // 面板会按「仓库 + 那一批号」组合出 key，长期开着迟早攒成一张大表：超过 64 条就整个丢掉。
-  // 它只是 60 秒的省事缓存，丢掉最多多问一次远端。
-  if (tipCache.size > 64) tipCache.clear();
-  tipCache.set(key, { at: Date.now(), value });
+  // **只缓存问成功的那次**：网络抖一下就把空结果钉 60 秒的话，用户点刷新（`fresh=false`）
+  // 只会再拿到那一份空的 —— 与「失败就当不知道，下次再问」正好相反。
+  if (out.code === 0) {
+    const now = Date.now();
+    // 先清过期条目再说上限：key 是「仓库 + 这一批号」的组合，长期开着会攒成一张大表；
+    // 它只是 60 秒的省事缓存，丢了最多多问一次远端。
+    if (tipCache.size > 32) {
+      for (const [k, v] of tipCache) if (now - v.at >= TIP_CACHE_MS) tipCache.delete(k);
+    }
+    if (tipCache.size > 64) tipCache.clear();
+    tipCache.set(key, { at: now, value });
+  }
   return value;
 }
 

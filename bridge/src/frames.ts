@@ -418,6 +418,14 @@ export interface ReviewRun {
    * 挪到新提交上 —— 除了这里，没有第二处还能说出「当时评的是什么」。
    */
   headSha?: string;
+  /**
+   * `to` 就是 `HEAD` 时，那个 `HEAD` 当时在哪条分支上（#741）。
+   *
+   * 不记这一项的话，「换个分支」会被当成「有新提交」：`HEAD` 当然指向别处了，可被评的那个
+   * 提交并没有变，而「重新评审」读的也是另一份代码。核对时只在**同一条分支**上比（见 D447）。
+   * 老记录没有这一项：那边没有 `headSha`，本来就判不了。
+   */
+  headRef?: string;
 }
 
 export interface ReviewLogLine {

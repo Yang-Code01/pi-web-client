@@ -41,6 +41,7 @@ import {
   TIP_PR_LIMIT,
   tipTargets,
   remoteTipTargets,
+  headStamp,
   localTips,
   remoteTips,
 } from "../src/review.ts";
@@ -649,6 +650,24 @@ check("localTips 拿本地 rev-parse 的结果当 tip；认不出这个 ref 就�
   const runs = [doneRun({ id: "a", to: "HEAD" }), doneRun({ id: "b", to: "feat/gone" })];
   const tips = localTips(runs, (ref) => (ref === "HEAD" ? "bbbb2222" : ""));
   assert.deepEqual(tips, { HEAD: "bbbb2222" }, "认不出的 ref 是「不知道」，不是空串");
+});
+
+check("headStamp：收尾时记被评的 sha，`HEAD` 再记当时那条分支", () => {
+  const deps = { shaOf: () => "aaaa1111", branch: () => "feat/a" };
+  assert.deepEqual(headStamp({ to: "HEAD" }, deps), { headSha: "aaaa1111", headRef: "feat/a" });
+  assert.deepEqual(headStamp({ to: "feat/x" }, deps), { headSha: "aaaa1111" }, "分支名本身就是 ref，不用记当时在哪");
+  // 分离头指针 / 认不出这个 ref：宁可少记一项，也不编一个值
+  assert.deepEqual(headStamp({ to: "HEAD" }, { shaOf: () => "aaaa1111", branch: () => "" }), { headSha: "aaaa1111" });
+  assert.deepEqual(headStamp({ to: "feat/gone" }, { shaOf: () => "", branch: () => "feat/a" }), {});
+});
+
+check("`to: HEAD` 的记录只在**同一条分支**上比：换分支不是「有新提交」", () => {
+  const runs = [doneRun({ id: "a", to: "HEAD", headRef: "feat/a" })];
+  assert.deepEqual(localTips(runs, () => "bbbb2222", "feat/a"), { HEAD: "bbbb2222" }, "同一条分支：照旧比");
+  assert.deepEqual(localTips(runs, () => "bbbb2222", "feat/b"), {}, "换到别的分支：核对不了，不标");
+  // 分离头指针（现在没有分支名）与老记录（当时没记分支）都退回「照旧比」。
+  assert.deepEqual(localTips(runs, () => "bbbb2222", ""), { HEAD: "bbbb2222" });
+  assert.deepEqual(localTips([doneRun({ id: "b", to: "HEAD" })], () => "bbbb2222", "feat/b"), { HEAD: "bbbb2222" });
 });
 
 check("localTips 不碰网络：PR 那几条留给远端那半", () => {
