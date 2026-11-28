@@ -291,6 +291,11 @@ export async function probeOwner(port, host = DEFAULT_HOST) {
     health,
     ours: Boolean(ours),
     /**
+     * /healthz 答了，但回包不是能读的 JSON（被截断、或端口上是别的服务）。这种时候不知道
+     * 它有没有壳，硬杀可能把壳连着下面的 pi 会话一起弄成孤儿。
+     */
+    unreadable: Boolean(hz) && !health,
+    /**
      * 没法确认是谁：读不到命令行，或者它答的 /healthz 读不懂。这种时候**不硬杀**，
      * 只试一次优雅停机（不是桥就没人理那个 POST）。
      */
@@ -504,6 +509,18 @@ export async function preflight(opts = {}) {
 
   log(`${port} 上已经有一份 pi-web-client 在跑：`);
   for (const line of describe(owner)) log(line);
+  if (owner.unreadable) {
+    // 认出了是本项目的桥，但它的 /healthz 没读懂：不敢断它有没有壳，也就不能硬杀。
+    log(`  它的 /healthz 没读懂（回包被截断？），不敢直接硬杀 —— 万一它是壳，硬杀会把下面的 pi 会话变成孤儿。`);
+    log(`  先请它自己收工试试（POST /api/host/stop）…`);
+    await postStop(port, host);
+    if (await waitFree(port, host, STOP_GRACE_MS)) {
+      log(`  它自己退了，端口空出来了。`);
+      return EXIT_OK;
+    }
+    log(`  它没退。自己确认一下：npm run bridge:stop；或者换一个端口：PI_WEB_PORT=<别的口> npm start`);
+    return EXIT_BLOCKED;
+  }
   if (!owner.shell) {
     log(`  它没有壳（PI_HOST_DISABLE=1 起的旧桥），停它只能硬杀 ——`);
     log(`  它下面的 pi 会话可能变成孤儿，界面上会卡在「终端正在使用」。`);

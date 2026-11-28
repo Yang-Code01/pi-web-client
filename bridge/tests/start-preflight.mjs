@@ -55,6 +55,8 @@ import fs from "node:fs";
 import http from "node:http";
 const port = Number(process.env.STUB_PORT);
 const legacy = process.env.STUB_LEGACY === "1";
+// /healthz 回一句不是 JSON 的东西：模拟回包被截断。
+const garbled = process.env.STUB_GARBLED === "1";
 const mark = process.env.STUB_STOP;
 const info = {
   ok: true,
@@ -68,7 +70,7 @@ if (!legacy) info.brain = { pid: process.pid, ready: true };
 const srv = http.createServer((req, res) => {
   if (req.url === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(info));
+    res.end(garbled ? '{"ok":tru' : JSON.stringify(info));
     return;
   }
   if (req.url === "/api/host/stop" && !legacy) {
@@ -99,6 +101,7 @@ async function startStub(kind, port) {
       STUB_PORT: String(port),
       STUB_STOP: path.join(TMP, `stop-${port}.txt`),
       STUB_LEGACY: kind === "legacy" ? "1" : "0",
+      STUB_GARBLED: kind === "garbled" ? "1" : "0",
     },
     // 桩自己崩了（端口被抢、`STUB_PORT` 非法）也要把它最后那句话带出来：
     // 否则现场只剩一句「超时：桩在 :N 上起来」，没法排查。
@@ -179,7 +182,21 @@ try {
     assert.equal(stub.exitCode, null, "桩必须还活着");
   }
 
-  // 5. 没有壳的旧桥（PI_HOST_DISABLE=1）：没有停机接口，只能硬杀；硬杀完端口要真空出来。
+  // 5. 认出来是自己那份，但 /healthz 回包读不懂（被截断）：不敢断它有没有壳，就别硬杀，
+  //    只试一次优雅停机；它自己退了才算成功。
+  {
+    const port = await freePort();
+    const stub = await startStub("garbled", port);
+    const mark = path.join(TMP, `stop-${port}.txt`);
+    const r = await runPreflight(port, ["--force"]);
+    assert.equal(r.code, 0, `优雅停成功就该放行：${r.out}`);
+    assert.match(r.out, /healthz 没读懂/, "要说清为什么不敢硬杀");
+    assert.ok(fs.existsSync(mark), "应当先请它自己收工");
+    await until(() => stub.exitCode !== null || stub.signalCode !== null, "桩自己退掉", 5000);
+    assert.equal(stub.exitCode, 0, "走的是优雅停机，不是被硬杀");
+  }
+
+  // 6. 没有壳的旧桥（PI_HOST_DISABLE=1）：没有停机接口，只能硬杀；硬杀完端口要真空出来。
   {
     const port = await freePort();
     const stub = await startStub("legacy", port);
