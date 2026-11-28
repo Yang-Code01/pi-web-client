@@ -54,16 +54,16 @@ import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, st
 import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
-import { listPullRequests, pullRequestInfo, remotePrHeads } from "./gitpr.ts";
+import { cachedPrHeads, listPullRequests, pullRequestInfo, remotePrHeads } from "./gitpr.ts";
 import {
   cancelReview,
   cleanRuns,
   effectiveReviewDir,
   gitBranchOf,
   gitRoot,
-  isHeadName,
   gitShaOf,
   installOcr,
+  isHeadName,
   isMark,
   localTips,
   markFinding,
@@ -4259,13 +4259,20 @@ async function main(): Promise<void> {
               // `gitBranchOf` 只在真有 `to: HEAD` 的记录时才跑：多一次 git 子进程就是白花。
               const branch = targets.some((item) => isHeadName(item.ref)) ? gitBranchOf(repo) : "";
               const local = localTips(state.runs, (ref) => gitShaOf(repo, ref), branch);
+              // 60 秒内问过的那批 PR 并进首帧（只读缓存）：不然重开面板时已亮着的标会先灭一下。
+              const known = cachedPrHeads(repo, targets.filter((item) => item.pr > 0).map((item) => item.pr));
+              const remoteKnown: Record<string, string> = {};
+              for (const item of targets) {
+                const sha = item.pr > 0 ? known[item.pr] : "";
+                if (sha) remoteKnown[item.ref] = sha;
+              }
               send({
                 type: "review.state",
                 dir: repo,
                 pinned,
                 sessionId: session,
                 state,
-                tips: local,
+                tips: { ...local, ...remoteKnown },
                 tipsAt: Date.now(),
                 progresses: reviewProgresses(repo, session),
                 cap: MAX_RUNS_PER_SESSION,

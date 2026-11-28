@@ -2789,8 +2789,10 @@ export class App {
         if (msg.dir) this.reviewRepo = String(msg.dir);
         this.reviewState = (msg.state ?? null) as ReviewState | null;
         this.reviewProgresses = Array.isArray(msg.progresses) ? (msg.progresses as ReviewProgress[]) : [];
-        // #741：tips 是帧的兄弟字段（不在 `state` 里）。续帧不带它时保留上一次的 ——
-        // 标意见 / 清理历史那种帧只改记录，不该把「有新提交」那颗标弄消失。
+        // #741：tips 是帧的兄弟字段（不在 `state` 里）。规则就两条：
+        // 带了就**整份替换**（桥每次给的都是那一刻的完整快照，`{}` 也算一份）；
+        // 不带（标意见 / 清理历史 / 停一条这些只改记录的帧）就保留上一次的 ——
+        // 那些帧不该把「有新提交」那颗标弄消失。
         if (msg.tips && typeof msg.tips === "object") {
           this.reviewTips = msg.tips as Record<string, string>;
           this.reviewTipsAt = Number(msg.tipsAt) || 0;

@@ -210,6 +210,20 @@ export async function remotePrHeads(dir: string, prs: number[], opts: PrQueryOpt
   return value;
 }
 
+/**
+ * 上一次问到的远端 head（**只读缓存，不发请求**）：给「先画后补」的第一帧用。
+ *
+ * 不这么做的话，重开面板 / 切回来的第一帧只有本地那半，已亮着的「有新提交」会先灭一下、
+ * 等 `ls-remote` 回来再亮 —— 正是「已显示的内容不许先清空」那条铁律要避免的闪烁。
+ * 60 秒内（`TIP_CACHE_MS`）的首帧都能直接带上远端结果，等于没有网络这一跳。
+ */
+export function cachedPrHeads(dir: string, prs: number[]): Record<number, string> {
+  const wanted = [...new Set(prs.filter((n) => Number.isFinite(n) && n > 0))].sort((a, b) => a - b);
+  if (!wanted.length) return {};
+  const hit = tipCache.get(`${dir}|${wanted.join(",")}`);
+  return hit && Date.now() - hit.at < TIP_CACHE_MS ? hit.value : {};
+}
+
 function classify(stderr: string, cmd: string, code: number | null): { code: PrListResult["code"]; error: string } {
   const text = `${stderr}`.trim();
   const first = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";

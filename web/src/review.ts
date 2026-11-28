@@ -493,13 +493,21 @@ export function reviewView(input: ReviewInput): ReviewView {
     if (la !== lb) return lb - la;
     return (Date.parse(b.startedAt ?? "") || 0) - (Date.parse(a.startedAt ?? "") || 0);
   });
-  /** 「重新评审」现在点了会不会被桥拒（提前拦：点了才报错最难堪）。 */
+  /**
+   * 「重新评审」现在点了会不会被拒（提前拦：点了才报错最难堪）。
+   *
+   * 与主按钮同一套闸：同一 PR 在跑、额度满、以及 ocr 没就绪（那时主按钮是灰的，
+   * 重评按钮没道理还能点 —— 点下去只会多一条失败的记录）。
+   */
   const rerunBlocked = (run: ReviewRun): string => {
     if (run.mode === "pr" && run.pr > 0) {
       const same = allRuns.some((r) => r.status === "running" && r.mode === "pr" && r.pr === run.pr);
       if (same) return tr("这个会话已经在评这个 PR 了");
     }
     if (atCap) return tr("已满 {p1} 个，先停一个再开", { p1: cap });
+    if (input.installing) return tr("正在装 ocr，装好再重评");
+    if (needsInstall) return tr("没装 ocr（代码评审要用）");
+    if (needsUpgrade) return tr("ocr 版本太老，需要 1.9.0 以上");
     return "";
   };
 
@@ -512,6 +520,9 @@ export function reviewView(input: ReviewInput): ReviewView {
     // 卡片上的 `tipSha`（hover / 详情那一行）也走同一个函数 —— 判据不许散成两份。
     const headSha = (run.headSha ?? "").trim();
     const tipSha = tipForRun(run, input.tips, input.tipsAt);
+    // hover 里那条 ref 的名字：`pr` 模式下 `to` 是 `refs/pi-web/pr-7` 这种内部名字，
+    // 人认的是分支名（`prHead`），没记就退回 ref 本身。
+    const refLabel = run.mode === "pr" && run.prHead ? run.prHead : shortRef(run.to);
     const outdated = isRunOutdated(run, input.tips, input.tipsAt);
     return {
       id: run.id,
@@ -535,11 +546,7 @@ export function reviewView(input: ReviewInput): ReviewView {
       // hover 要说清「评的是哪个提交、哪条分支，现在到哪个」：`pr` 模式下 `to` 是
       // `refs/pi-web/pr-7` 这种内部 ref 名，人认的是分支名（`prHead`），没记才退回 ref 名。
       outdatedNote: outdated
-        ? tr("评审基于 {p1} · {p2}，现在是 {p3}", {
-            p1: shortSha(headSha),
-            p2: run.mode === "pr" ? run.prHead || shortRef(run.to) : shortRef(run.to),
-            p3: shortSha(tipSha),
-          })
+        ? tr("评审基于 {p1} · {p2}，现在是 {p3}", { p1: shortSha(headSha), p2: refLabel, p3: shortSha(tipSha) })
         : "",
       // 灰着就说清为什么：同一个 PR 已在跑（`dup_pr`）、或会话额度满了（`busy`）——
       // 那是点了也只会吃一条报错的情形，不如提前拦下来。

@@ -404,7 +404,8 @@ test("tip 一样 / 核对不了 / 没有记录 sha：一律不标", () => {
   const unknown = reviewView({ ...base, state: { runs: [run({ headSha: "aaaa1111" })], marks: {} }, tips: {} });
   assert.equal(unknown.runs[0].outdated, false, "核对不了就是不知道，不标");
 
-  const old = reviewView({ ...base, state: { runs: [run()], marks: {} }, tips: { HEAD: "cccc3333" } });
+  // 老的（这一版之前就存在的）记录：盘上没有 headSha 这一项。
+  const old = reviewView({ ...base, state: { runs: [run({ headSha: "" })], marks: {} }, tips: { HEAD: "cccc3333" } });
   assert.equal(old.runs[0].outdated, false, "老记录没记被评 sha，反推不出来就不标");
 });
 
@@ -431,6 +432,16 @@ test("PR 那条的 hover 用分支名而不是内部 ref 名", () => {
   const note = view.runs[0].outdatedNote;
   assert.match(note, /feat\/updates-group/, note);
   assert.ok(!note.includes("refs/pi-web"), `不该把内部 ref 名摆给人看：${note}`);
+});
+
+test("ocr 没就绪 / 正在装：过时的卡上「重新评审」也灰着（与主按钮同一套闸）", () => {
+  const state = { runs: [run({ headSha: "aaaa1111" })], marks: {} };
+  const tips = { HEAD: "cccc3333" };
+  const noOcr = reviewView({ ...base, state, tips, ocr: { installed: false, version: "", tooOld: false } });
+  assert.equal(noOcr.runs[0].outdated, true);
+  assert.ok(noOcr.runs[0].rerunWhy.length > 0, "没装 ocr 时重评按钮要灰着并说明");
+  const installing = reviewView({ ...base, state, tips, installing: true });
+  assert.ok(installing.runs[0].rerunWhy.length > 0, "正在装 ocr 时也是");
 });
 
 test("同一个 PR 正在跑：标照旧，但重评按钮禁用并说清为什么", () => {

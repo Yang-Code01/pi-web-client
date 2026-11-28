@@ -4436,6 +4436,7 @@ export const en: Dict = {
   "现在到 {p1}": "Now at {p1}",
   "重新核对有没有新提交": "Re-check for new commits",
   "重新评审": "Review again",
+  "正在装 ocr，装好再重评": "Installing ocr — review again once it's ready",
   "分支 vs 主干": "Branch vs main",
   "单个提交": "Single commit",
   "提交号": "Commit",
