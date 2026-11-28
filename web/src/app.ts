@@ -4440,7 +4440,14 @@ export class App {
     marksAt: readonly number[];
     onLive: (v: number) => void;
     onCommit: () => void;
+    /**
+     * 拖动时要不要把控制台让开（#742）。默认要。
+     * 「字号」与「设置与控制台」那两根关掉（D455）：面板自己就跟着缩放，效果就在眼前，
+     * 再把面板淡成 0.03 等于「拖一下就关掉了设置面板」，用户看不到自己在调什么。
+     */
+    peek?: boolean;
   }): HTMLElement {
+    const peekOn = o.peek !== false;
     const read = el("span", "size-read");
     const rail = el("div", "size-rail");
     const range = document.createElement("input");
@@ -4616,7 +4623,7 @@ export class App {
       if (!dragBox) return;
       queue(snapTo(valueAt(ev.clientX)));
       // 阈值：#742 —— 单击轨道跳档 / 点刻度数字不该闪一下，只有真的拖起来了才让开。
-      if (!peeking && dragFrom && Math.hypot(ev.clientX - dragFrom.x, ev.clientY - dragFrom.y) >= PEEK_MIN_PX) {
+      if (peekOn && !peeking && dragFrom && Math.hypot(ev.clientX - dragFrom.x, ev.clientY - dragFrom.y) >= PEEK_MIN_PX) {
         showPeek(next);
       }
     });
@@ -4666,7 +4673,8 @@ export class App {
       if (dragBox) return;
       queue(Number(range.value));
       // 纯键盘也得看得见：调值就露一下，400ms 没再动就自己回来（连按合并计时，计时器在胶囊里）。
-      showPeek(next, true);
+      // 字号 / 设置与控制台那两根不露（`peekOn = false`）：面板自己就是预览，不用再遮它。
+      if (peekOn) showPeek(next, true);
     };
     range.addEventListener("keyup", () => { if (!dragBox) commit(); });
     range.addEventListener("blur", () => { if (!dragBox) commit(); });
@@ -4962,11 +4970,13 @@ export class App {
     langPanel.append(
       this.fontSliderRow({
         label: tr("字号"),
-        hint: tr("整页一起缩放；拖动时设置面板自动让开，松手回来；点刻度跳档，双击轨道回 100%"),
+        hint: tr("整页一起缩放；这个面板也跟着变大，拖动时不收起，方便对照；点刻度跳档，双击轨道回 100%"),
         value: this.prefs.scale,
         reset: DEFAULT_PREFS.scale,
         snaps: SIZE_STOPS,
         marksAt: SIZE_MARKS,
+        // D455：面板自己就跟着缩放，效果就在眼前 —— 不再淡掉面板（那等于「拖一下就关掉了设置」）。
+        peek: false,
         onLive: (v) => {
           this.prefs = { ...this.prefs, scale: v };
           document.documentElement.style.setProperty("--ui-scale", String(v));
@@ -5024,15 +5034,16 @@ export class App {
     }
 
     // D454：第六根 —— 设置控制台自己那层。拖它时面板**不让开**：用户要看的正是它当场长大，
-    // 让开（`console-peek`）只留给会重排整页的「字号」那根。
+    // 让开（`console-peek`）只留给改「面板背后那片页面」的五根分区轨道。
     langPanel.append(
       this.fontSliderRow({
         label: tr("设置与控制台"),
-        hint: tr("面板里的字和它自己的框一起放大（最多吃满窗口），拖动时不让开、方便对照"),
+        hint: tr("面板里的字和它自己的框一起放大（最多吃满窗口）；拖动时面板不收起，方便对照"),
         value: this.prefs.consoleScale,
         reset: REGION_DEFAULT_SCALE,
         snaps: REGION_STOPS,
         marksAt: SIZE_MARKS,
+        peek: false,
         onLive: (v) => {
           this.prefs = { ...this.prefs, consoleScale: v };
           // 外框尺寸与折叠档位都变了：两个都要重算，只写变量的话内部还会停在旧的窄版。
