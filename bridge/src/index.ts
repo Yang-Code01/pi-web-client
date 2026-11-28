@@ -54,18 +54,21 @@ import { clipboardFiles, listDirPage, listDirs, makeDir, makeFile, statFiles, st
 import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitCommitDetail, gitCommitFile, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
-import { listPullRequests, pullRequestInfo } from "./gitpr.ts";
+import { listPullRequests, pullRequestInfo, remotePrHeads } from "./gitpr.ts";
 import {
   cancelReview,
   cleanRuns,
   effectiveReviewDir,
   gitRoot,
+  gitShaOf,
   installOcr,
   isMark,
+  localTips,
   markFinding,
   ocrStatus,
   readReviewPin,
   readReviewState,
+  remoteTips,
   reviewProgresses,
   takeSweptCount,
   MAX_RUNS_PER_SESSION,
@@ -73,6 +76,7 @@ import {
   setReviewPin,
   startReview,
   sweepStaleRuns,
+  tipTargets,
   type ReviewLang,
   type ReviewMode,
 } from "./review.ts";
@@ -4246,18 +4250,47 @@ async function main(): Promise<void> {
             const session = String(msg.sessionId ?? "");
             try {
               const { repo, pinned } = effectiveReviewDir(dir, session);
+              const state = readReviewState(repo, session);
+              // #741：本地那半（分支 / HEAD）当场就能算，跟状态一起走；PR 那半要一次 ls-remote，
+              // 算完再补一帧。先画后补：不让整份记录列表等网络。
+              const local = localTips(state.runs, (ref) => gitShaOf(repo, ref));
               send({
                 type: "review.state",
                 dir: repo,
                 pinned,
                 sessionId: session,
-                state: readReviewState(repo, session),
+                state,
+                tips: local,
                 progresses: reviewProgresses(repo, session),
                 cap: MAX_RUNS_PER_SESSION,
                 // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
                 swept: takeSweptCount(),
               });
-              void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
+              // PR 那半：一次 `ls-remote`（只读、不挪本地 ref），算完再补一帧。先画后补，
+              // 不让记录列表等网络；离线 / 超时 / 没登录就是「没标」，也不报错。
+              if (tipTargets(state.runs).some((item) => item.pr > 0)) {
+                const fresh = msg.fresh === true;
+                void (async () => {
+                  let env: NodeJS.ProcessEnv | undefined;
+                  try {
+                    env = (await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session)).env;
+                  } catch {
+                    /* 没账号也要能问公开仓库：不强求 */
+                  }
+                  const remote = await remoteTips(state.runs, (prs) => remotePrHeads(repo, prs, { fresh, env }));
+                  if (!Object.keys(remote).length) return;
+                  broadcast({
+                    type: "review.state",
+                    dir: repo,
+                    pinned,
+                    sessionId: session,
+                    state: readReviewState(repo, session),
+                    tips: { ...localTips(state.runs, (ref) => gitShaOf(repo, ref)), ...remote },
+                    progresses: reviewProgresses(repo, session),
+                    cap: MAX_RUNS_PER_SESSION,
+                  });
+                })();
+              }              void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
             } catch (err: any) {
               send({ type: "review.state", dir, sessionId: session, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
             }

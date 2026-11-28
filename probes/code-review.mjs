@@ -12,6 +12,7 @@
  *
  * Run: npm run build && node probes/code-review.mjs
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
@@ -456,27 +457,119 @@ try {
     await until(async () => (await page.locator(".rv-run-card.is-live").count()) === 0, 60000, "all stopped");
   }
 
+  // ---------------------------------------------------------------- 5.6) 过时（#741）
+  // 「完成态的记录对着现在的 tip 核一遍」。真跑一次再加提交能验到，但一次三分钟的评审只为
+  // 造一张卡不值得 —— 直接往桥的状态目录写一条**完成的 range 记录**（headSha = 上一个提交），
+  // 再真提交一次，剩下的全是真链路：桥读盘 → `git rev-parse HEAD` → 帧 → 面板画。
+  {
+    const sha = (text) => crypto.createHash("sha1").update(text).digest("hex").slice(0, 16);
+    const repoKey = sha(fs.realpathSync.native(WORK).replace(/[\\/]+$/, "").toLowerCase());
+    const file = path.join(STATE, "review", repoKey, `${sha(SID)}.json`);
+    const before = git("rev-parse", "HEAD").trim();
+    const startedAt = new Date(Date.now() - 60000).toISOString();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        repo: WORK,
+        marks: {},
+        runs: [
+          {
+            id: "seeded-outdated",
+            status: "done",
+            startedAt,
+            finishedAt: new Date(Date.now() - 30000).toISOString(),
+            mode: "range",
+            from: "HEAD~1",
+            to: "HEAD",
+            mergeBase: before,
+            pr: 0,
+            prTitle: "",
+            prHead: "",
+            prBase: "",
+            model: "",
+            provider: "",
+            lang: "zh",
+            findings: [],
+            resolved: [],
+            resolvedPaths: [],
+            skipped: [],
+            reviewedFiles: 1,
+            totalFiles: 1,
+            tokens: 10,
+            error: "",
+            errorCode: "",
+            log: [],
+            plan: [],
+            headSha: before,
+          },
+        ],
+      }),
+    );
+    // 再提交一次：`HEAD` 动了，那条记录就过时了。
+    fs.writeFileSync(path.join(WORK, "stale.ts"), "export const stale = 1;\n");
+    git("add", "-A");
+    git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "more work");
+    const after = git("rev-parse", "HEAD").trim();
+    check("造出来的两次提交确实是两个 sha", before !== after, `${before.slice(0, 7)} → ${after.slice(0, 7)}`);
+
+    // 兜底那颗刷新图标：只重核 tips，不动「评什么」。
+    await page.locator(".rv-runs-reload").first().click();
+    const stale = page.locator(".rv-run-stale").first();
+    await stale.waitFor({ timeout: 20000 });
+    check("提交之后那条完成的记录长出「有新提交」", (await stale.innerText()).trim() === "有新提交", (await stale.innerText()).trim());
+    const note = await stale.getAttribute("title");
+    check("hover 里写着两头是哪两个提交", Boolean(note) && note.includes(before.slice(0, 7)) && note.includes(after.slice(0, 7)), String(note));
+    const again = page.locator(".rv-run-again").first();
+    check("过时的那条底行多一颗「重新评审」", (await again.count()) === 1, "");
+    check("「重新评审」能点（没有同 PR 在跑、额度也没满）", !(await again.isDisabled()), "");
+    // 工作区那条记录不该带标（存一次盘就变，标了永远亮着）。
+    const cardsWithChip = await page.locator(".rv-run-card", { has: page.locator(".rv-run-stale") }).count();
+    check("只有分支那条带标，工作区的不带", cardsWithChip === 1, `${cardsWithChip} 张带标`);
+
+    // 点它：按原范围再开一条（真跑），这里只验「开出去了」，随后立刻停掉。
+    await again.click();
+    await page.locator(".rv-run-card.is-live").first().waitFor({ timeout: 30000 });
+    check("「重新评审」按原范围开出了新的一条", (await page.locator(".rv-run-card").count()) >= 2, "");
+    const live = page.locator(".rv-run-card.is-live .rv-run-stop");
+    if (await live.count()) await live.first().click();
+    await until(async () => (await page.locator(".rv-run-card.is-live").count()) === 0, 60000, "rerun stopped");
+  }
+
   // ---------------------------------------------------------------- 6) PR 模式：列表拉不到也要能用
   // fixture 仓库没有 remote：`gh pr list` 这一步会失败。验收的是「说清原因 + 号输入框照样在」，
   // 真 PR 的端到端要联网与 gh 登录，探针不替环境赌这一把。
   await modeTile(page, "pr").click();
-  await page.locator(".rv-prq").waitFor({ timeout: 20000 });
-  await page.locator(".rv-prq").click();
-  await page.locator(".rv-prmenu").waitFor({ timeout: 10000 });
-  // 打开列表会顺手补拉一次，所以先等「正在拉…」过去，再断言它把原因说出来了。
-  const prHint = (
-    await until(
-      async () => {
-        const text = (await page.locator(".rv-prmenu .rv-hint").first().innerText().catch(() => "")).trim();
-        return text && !text.includes("正在拉") ? text : "";
-      },
-      20000,
-      "pr menu hint",
-    )
-  ).trim();
-  check("PR 模式：没有 remote 时列表里说清原因", /远程|gh|origin/i.test(prHint), prHint.slice(0, 50));
-  await page.locator(".rv-prq").fill("7");
-  check("PR 模式：号也能直接输，填完就能开评", await page.locator(".rv-run").first().isEnabled(), "");
+  // 这一格有两种合法的样子（D428）：gh 就绪（或存了 PAT）时是输号框；都不行时整块换成安装/登录卡。
+  // 探针所在的隔离状态目录常常读不到本机的 gh 登录态（PATH 上那只 `gh` 是壳自己的 shim，
+  // 只认它自己那台桥），所以两条路都要验，不能假定 gh 一定是好的。
+  const prReady = await page
+    .locator(".rv-prq")
+    .waitFor({ timeout: 12000 })
+    .then(() => true)
+    .catch(() => false);
+  if (prReady) {
+    await page.locator(".rv-prq").click();
+    await page.locator(".rv-prmenu").waitFor({ timeout: 10000 });
+    // 打开列表会顺手补拉一次，所以先等「正在拉…」过去，再断言它把原因说出来了。
+    const prHint = (
+      await until(
+        async () => {
+          const text = (await page.locator(".rv-prmenu .rv-hint").first().innerText().catch(() => "")).trim();
+          return text && !text.includes("正在拉") ? text : "";
+        },
+        20000,
+        "pr menu hint",
+      )
+    ).trim();
+    check("PR 模式：没有 remote 时列表里说清原因", /远程|gh|origin/i.test(prHint), prHint.slice(0, 50));
+    await page.locator(".rv-prq").fill("7");
+    check("PR 模式：号也能直接输，填完就能开评", await page.locator(".rv-run").first().isEnabled(), "");
+  } else {
+    const ghText = (await page.locator(".ghs").first().innerText().catch(() => "")).replace(/\s+/g, " ");
+    check("gh 没就绪时 PR 那一格换成安装/登录卡（D428）", /gh/.test(ghText) && /登录|装/.test(ghText), ghText.slice(0, 60));
+    check("那张卡上有一颗「重新检测」", (await page.locator(".ghs").first().locator("button", { hasText: "重新检测" }).count()) >= 1, "");
+  }
 
   // ---------------------------------------------------------------- 7) 字号 150%：面板底栏还在屏里
   await page.evaluate(() => {
@@ -490,14 +583,42 @@ try {
   const box = await page.locator(".rv-run").first().boundingBox();
   const vh = await page.evaluate(() => window.innerHeight);
   check("字号 150% 下按钮仍落在视口里", Boolean(box) && box.y + box.height <= vh, box ? `y=${Math.round(box.y)} h=${Math.round(box.height)} vh=${vh}` : "no box");
+  // #741：带标那张卡底行有两颗按钮（重新评审 / 完整详情），150% 下也得留在卡里且同一行。
+  {
+    const fit = await until(
+      () =>
+        page.evaluate(() => {
+          const card = [...document.querySelectorAll(".rv-run-card")].find((c) => c.querySelector(".rv-run-again"));
+          if (!card) return null;
+          const c = card.getBoundingClientRect();
+          const a = card.querySelector(".rv-run-again").getBoundingClientRect();
+          const m = card.querySelector(".rv-run-more").getBoundingClientRect();
+          if (!c.width || !a.width || !m.width) return null;
+          return { inside: a.right <= c.right + 1 && m.right <= c.right + 1, sameRow: Math.abs(a.top - m.top) <= 6, gap: Math.round(m.top - a.top) };
+        }),
+      15000,
+      "outdated card foot",
+    );
+    check("150% 下过时那张卡的两颗按钮都在卡里", fit.inside, JSON.stringify(fit));
+    check("150% 下它们没有折成两行", fit.sameRow, JSON.stringify(fit));
+  }
   // 刷新之后「评什么」要自己接上（存在桥那边，不再只活在内存里）。
-  await until(async () => (await page.locator(".rv-prq").count()) === 1, 15000, "pr combobox back");
-  const prAfterReload = String((await page.locator(".rv-prq").inputValue()) ?? "").replace(/^#/, "");
-  check(
-    "刷新后范围与号自己接上",
-    (await modeIs(page, "pr")) && prAfterReload === "7",
-    `${await modeTile(page, "pr").getAttribute("aria-pressed")} / ${prAfterReload}`,
-  );
+  // 上一段可能落在「gh 没就绪」那一屏，那里压根没有输号框：能验的就只剩「范围还是 PR」。
+  const prBack = await page
+    .locator(".rv-prq")
+    .waitFor({ timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
+  if (prBack) {
+    const prAfterReload = String((await page.locator(".rv-prq").inputValue()) ?? "").replace(/^#/, "");
+    check(
+      "刷新后范围与号自己接上",
+      (await modeIs(page, "pr")) && prAfterReload === "7",
+      `${await modeTile(page, "pr").getAttribute("aria-pressed")} / ${prAfterReload}`,
+    );
+  } else {
+    check("刷新后范围还是「GitHub PR」（gh 没就绪那屏没有输号框）", await modeIs(page, "pr"), await modeTile(page, "pr").getAttribute("aria-pressed"));
+  }
 } catch (err) {
   failures += 1;
   console.error("探针异常：", err?.message ?? err);

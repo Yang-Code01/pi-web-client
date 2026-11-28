@@ -530,6 +530,103 @@ export function trimRuns(state: ReviewState): void {
   if (state.runs.length > RUN_KEEP) state.runs = state.runs.slice(-RUN_KEEP);
 }
 
+// ---------------------------------------------------------------------------
+// 过时（#741）：完成态的评审记录对着「现在的 tip」核一遍
+// ---------------------------------------------------------------------------
+
+/** 一次面板打开最多核对几个 PR：每个 PR 一次 `ls-remote` 网络往返，历史再多也不该拖住面板。 */
+export const TIP_PR_LIMIT = 3;
+
+/** 一条要核对的记录：核对谁（`ref`）与走哪条路（`pr > 0` 才要网络）。 */
+export interface TipTarget {
+  /** `ReviewState.tips` 的键，也是记录里的 `to`：`HEAD` / `feat/x` / `refs/pi-web/pr-N`。 */
+  ref: string;
+  /** PR 号（0 = 本地分支：`git rev-parse` 就够，不碰网络）。 */
+  pr: number;
+}
+
+/**
+ * 该核对 tip 的记录：**完成** + 分支/PR 模式 + 记了被评的 sha。
+ *
+ * 工作区那几条（未提交改动，存一次盘就变）与单提交（钉死一个 sha）不参与；
+ * 失败 / 停止 / 被桥重启打断的也没有「评到了什么」可言。新的在前、按 ref 去重 ——
+ * 同一个分支评过两次，核对一次就够。
+ */
+export function tipTargets(runs: readonly ReviewRun[]): TipTarget[] {
+  const picked: { target: TipTarget; at: number }[] = [];
+  for (const run of runs ?? []) {
+    if (run.status !== "done") continue;
+    if (run.mode !== "range" && run.mode !== "pr") continue;
+    const sha = str(run.headSha);
+    const ref = str(run.to);
+    if (!sha || !ref) continue;
+    picked.push({ target: { ref, pr: run.mode === "pr" ? Number(run.pr) || 0 : 0 }, at: Date.parse(run.startedAt ?? "") || 0 });
+  }
+  picked.sort((a, b) => b.at - a.at);
+  const seen = new Set<string>();
+  const out: TipTarget[] = [];
+  for (const item of picked) {
+    if (seen.has(item.target.ref)) continue;
+    seen.add(item.target.ref);
+    out.push(item.target);
+  }
+  return out;
+}
+
+/** 从要核对的那批里挑出远端那批：按 PR 号去重（留最新那条的 ref），最多 `TIP_PR_LIMIT` 个。 */
+export function remoteTipTargets(targets: readonly TipTarget[]): TipTarget[] {
+  const seen = new Set<number>();
+  const out: TipTarget[] = [];
+  for (const item of targets ?? []) {
+    if (item.pr <= 0 || seen.has(item.pr)) continue;
+    seen.add(item.pr);
+    out.push(item);
+    if (out.length >= TIP_PR_LIMIT) break;
+  }
+  return out;
+}
+
+/**
+ * 本地那半：`git rev-parse` 一下就有，离线可用。
+ *
+ * 判的是**本地** ref（不是远端）：`range` 重评读的就是本地 target，所以「本地没变」= 再评一次
+ * 结果一样，不该点亮那颗标（Q10）。`revParse` 认不出这个 ref（分支被删了）就不给 key。
+ */
+export function localTips(runs: readonly ReviewRun[], revParse: (ref: string) => string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const item of tipTargets(runs)) {
+    if (item.pr > 0) continue;
+    const sha = str(revParse(item.ref));
+    if (sha) out[item.ref] = sha;
+  }
+  return out;
+}
+
+/**
+ * 远端那半（`pr` 模式）：一次 `ls-remote` 拿一批。「远端没答」与「远端答了但失败」都**不给 key** ——
+ * 缺 key 是「不知道」，空串会变成「没变」。
+ */
+export async function remoteTips(
+  runs: readonly ReviewRun[],
+  lsRemote: (prs: number[]) => Promise<Record<number, string>>,
+): Promise<Record<string, string>> {
+  const picked = remoteTipTargets(tipTargets(runs));
+  if (!picked.length) return {};
+  let answer: Record<number, string> = {};
+  try {
+    answer = (await lsRemote(picked.map((item) => item.pr))) ?? {};
+  } catch {
+    // 超时 / 没网 / 没登录：一条 key 都不给，界面就不标（宁可不说，不能说错）。
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const item of picked) {
+    const sha = str(answer[item.pr]);
+    if (sha) out[item.ref] = sha;
+  }
+  return out;
+}
+
 export function writeReviewState(repo: string, state: ReviewState, session = ""): void {
   const file = reviewStateFile(repo, session);
   ensureDir(path.dirname(file));
@@ -675,6 +772,27 @@ export function gitRoot(dir: string): string {
     return out ? path.resolve(out) : path.resolve(dir);
   } catch {
     throw new ReviewError("not_git", "这个目录不是 git 仓库，没有东西可评");
+  }
+}
+
+/**
+ * 某个 ref 此刻指向哪个提交（认不出 / 不是仓库 → 空串）。
+ *
+ * 只读、不 fet、不动任何 ref：过时判定只能基于本地看得见的东西（#741）。
+ */
+export function gitShaOf(dir: string, ref: string): string {
+  const name = str(ref);
+  if (!name) return "";
+  try {
+    const out = execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `${name}^{commit}`], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+      windowsHide: true,
+    }).trim();
+    return /^[0-9a-f]{7,40}$/i.test(out) ? out : "";
+  } catch {
+    return "";
   }
 }
 
@@ -1077,6 +1195,10 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     (patch as Partial<ReviewRun>).log = prevProgress?.log ?? [];
     // 分组计划同理：完成态要看「哪组出了几条」，不能只剩一个总数。
     (patch as Partial<ReviewRun>).plan = prevProgress?.plan ?? patch.plan ?? [];
+    // #741：记下「这一次评到的那个提交」，之后才说得清这份结果有没有跟上代码。
+    // 取不到（ref 已经被删 / 不是仓库）就空着，面板宁可不说也不编一个。
+    const headSha = gitShaOf(root, run.to);
+    if (headSha) (patch as Partial<ReviewRun>).headSha = headSha;
     if (onDisk) Object.assign(onDisk, patch);
     else state.runs.push({ ...run, ...patch });
     writeReviewState(root, state, session);

@@ -453,6 +453,14 @@ export class App {
   private reviewState: ReviewState | null = null;
   /** 在跑的那几条，一条一份（D420：按 runId 认，不再「一个会话只有一份进度」）。 */
   private reviewProgresses: ReviewProgress[] = [];
+  /**
+   * 这些 ref 现在各指向哪个提交（#741）：key 是记录里的 `to`。
+   *
+   * 桥在 `review.state` 帧里当**兄弟字段**发（不在 `state` 里 —— 那是盘上的形状）。
+   * 帧不带它的时候（标一条意见、清理历史这些）**保留上一次的**：那些帧只改 records，
+   * 不该把标弄消失。
+   */
+  private reviewTips: Record<string, string> = {};
   /** 一个会话同时最多几条（桥发来的上限）；缺省 2，跟桥上的 MAX_RUNS_PER_SESSION 对齐。 */
   private reviewCap = 2;
   private reviewOcr: ReviewOcr | null = null;
@@ -2768,6 +2776,7 @@ export class App {
           this.reviewError = errText(msg);
           this.reviewState = null;
           this.reviewProgresses = [];
+          this.reviewTips = {};
           this.reviewNotGit = msg.code === "not_git";
           if (this.queueTab === "review") this.renderQueue();
           break;
@@ -2777,6 +2786,9 @@ export class App {
         if (msg.dir) this.reviewRepo = String(msg.dir);
         this.reviewState = (msg.state ?? null) as ReviewState | null;
         this.reviewProgresses = Array.isArray(msg.progresses) ? (msg.progresses as ReviewProgress[]) : [];
+        // #741：tips 是帧的兄弟字段（不在 `state` 里）。续帧不带它时保留上一次的 ——
+        // 标意见 / 清理历史那种帧只改记录，不该把「有新提交」那颗标弄消失。
+        if (msg.tips && typeof msg.tips === "object") this.reviewTips = msg.tips as Record<string, string>;
         if (Number(msg.cap) > 0) this.reviewCap = Number(msg.cap);
         // 盘上记的「评什么」：只在本会话头一份状态到达时恢复（以后以界面为准）。
         this.applyReviewPick();
@@ -19038,6 +19050,7 @@ export class App {
     this.reviewPin = next;
     this.reviewState = null;
     this.reviewProgresses = [];
+    this.reviewTips = {};
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19081,6 +19094,7 @@ export class App {
     this.reviewSessionKey = key;
     this.reviewState = null;
     this.reviewProgresses = [];
+    this.reviewTips = {};
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19120,17 +19134,20 @@ export class App {
     this.reviewPicker?.close();
   }
 
-  private loadReview(): void {
+  private loadReview(fresh = false): void {
     const dir = this.reviewDir();
     if (!dir) {
       this.reviewError = tr("先打开一个会话：评审评的是它的目录。");
       this.reviewState = null;
       this.reviewProgresses = [];
+      this.reviewTips = {};
       return;
     }
     this.reviewAsked = dir;
     this.reviewOcrAskedAt = Date.now();
-    this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
+    // `fresh` 只影响「有没有新提交」那一次核对（绕开桥里的 60 秒缓存）：
+    // 顶部那颗刷新图标的意思就是「现在去看一眼」，撞上缓存等于白点。
+    this.socket.send({ type: "review.get", dir, sessionId: this.currentId, fresh });
     // PR 列表按**评的那个仓库**排队（钉了子仓库时它与会话目录不是一回事）。
     const ask = this.reviewPin || dir;
     if (this.reviewPrsAsked !== ask) this.loadPullRequests(ask);
@@ -19420,6 +19437,7 @@ export class App {
       repo: this.reviewRepo || this.reviewPin,
       repoPinned: Boolean(this.reviewPin),
       modelLabels: this.reviewModelLabels(),
+      tips: this.reviewTips,
     });
     const effective = this.reviewEffectiveModel();
     return {
@@ -19564,6 +19582,8 @@ export class App {
       // 装 gh / 登录 gh（D428）：卡片的动作由 `reviewPanelInput()` 直接传 `ghCardActions()`。
       // 记录卡不再是入口（D429）：点卡底那颗「完整详情」打开那一次。
       onDetails: (runId) => this.openReviewSheet(runId),
+      onRerun: (runId) => this.rerunReview(runId),
+      onRefreshTips: () => this.loadReview(true),
       onPickRepo: () => this.openRepoPicker(),
       onClearRepo: () => this.clearReviewRepo(),
     };
@@ -19665,6 +19685,29 @@ export class App {
   /** 帧到了就同步 dialog（没开着就什么都不做）。 */
   private syncReviewSheet(): void {
     this.reviewSheet?.update(this.reviewPanelInput());
+  }
+
+  /**
+   * 「重新评审」：按**那条记录自己的范围**再跑一次（#741）。
+   *
+   * 不复用面板上现在选着的那一格 —— 那张卡可能是一条旧记录，人现在在看的是别的范围。
+   * 真正开跑走 `startReview()` 同一条路：闸门、模型、错误提示全复用，不做第二个入口。
+   */
+  private rerunReview(runId: string): void {
+    const run = (this.reviewState?.runs ?? []).find((item) => item.id === runId);
+    if (!run) return;
+    this.reviewMode = run.mode;
+    if (run.mode === "pr") {
+      if (run.pr > 0) this.reviewPr = String(run.pr);
+    } else if (run.mode === "range") {
+      this.reviewBase = run.from || this.reviewBase;
+      this.reviewTarget = run.to || "HEAD";
+    }
+    // 这一下是「人自己决定的范围」：链接卡带来的「期望仓库」不再适用（与换范围同一个口径）。
+    this.clearReviewExpectRepo();
+    this.saveReviewPick();
+    this.renderQueue();
+    this.startReview();
   }
 
   private startReview(): void {

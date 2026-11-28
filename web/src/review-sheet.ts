@@ -252,6 +252,10 @@ export class ReviewSheet {
       const at = clock(Date.parse(card.when));
       if (at) metaBits.push(at);
       metaBits.push(tr("{p1} 条意见", { p1: card.count }));
+      // #741：这一眼看的是哪一次评了哪个提交。过时的那几条把「现在到哪」一并说出来 ——
+      // 面板列表只写「有新提交」四个字，要核细节的人终究会点进来。
+      if (card.headSha) metaBits.push(tr("基于 {p1}", { p1: card.headSha.slice(0, 7) }));
+      if (card.outdated && card.tipSha) metaBits.push(tr("现在到 {p1}", { p1: card.tipSha.slice(0, 7) }));
     } else {
       if (isPr && view.prHead) metaBits.push(`${view.prHead} → ${view.prBase || "main"}`);
       else if (view.mode === "range" && view.base) metaBits.push(`${view.target || "HEAD"} → ${view.base}`);

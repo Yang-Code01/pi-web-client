@@ -380,3 +380,72 @@ test("桥直接回了 error（没到状态那一层）：当失败显示", () =>
   assert.equal(view.phase, "failed");
   assert.equal(view.error, "这个目录不是 git 仓库");
 });
+
+// ---- 过时（#741）：完成态的记录对着「现在的 tip」核一遍 ----------------------
+
+test("完成 + 当前 tip 变了：标「有新提交」、给一键重评，并把两头写进 hover", () => {
+  const view = reviewView({
+    ...base,
+    state: { runs: [run({ headSha: "aaaa1111bbbb2222", prTitle: "" })], marks: {} },
+    tips: { HEAD: "cccc3333dddd4444" },
+  });
+  const card = view.runs[0];
+  assert.equal(card.outdated, true);
+  assert.equal(card.rerun, true, "过时才出现那颗「重新评审」");
+  assert.equal(card.rerunWhy, "", "能点的时候没有理由好说");
+  assert.match(card.outdatedNote, /aaaa111/, "hover 里要有评审时那个短 sha");
+  assert.match(card.outdatedNote, /cccc333/, "也要有现在那个");
+  assert.match(card.outdatedNote, /HEAD/, "还要说清是哪条 ref");
+});
+
+test("tip 一样 / 核对不了 / 没有记录 sha：一律不标", () => {
+  const same = reviewView({ ...base, state: { runs: [run({ headSha: "aaaa1111" })], marks: {} }, tips: { HEAD: "aaaa1111" } });
+  assert.equal(same.runs[0].outdated, false);
+  assert.equal(same.runs[0].rerun, false);
+
+  const unknown = reviewView({ ...base, state: { runs: [run({ headSha: "aaaa1111" })], marks: {} }, tips: {} });
+  assert.equal(unknown.runs[0].outdated, false, "核对不了就是不知道，不标");
+
+  const old = reviewView({ ...base, state: { runs: [run()], marks: {} }, tips: { HEAD: "cccc3333" } });
+  assert.equal(old.runs[0].outdated, false, "老记录没记被评 sha，反推不出来就不标");
+});
+
+test("工作区 / 单提交 / 没跑成的那几条不参与过时判定", () => {
+  const tips = { HEAD: "cccc3333", abc1234: "dddd4444" };
+  const ws = reviewView({ ...base, state: { runs: [run({ mode: "workspace", to: "HEAD", headSha: "aaaa1111" }) ], marks: {} }, tips });
+  assert.equal(ws.runs[0].outdated, false, "工作区改动存一次盘就变，标了永远亮着");
+  const cm = reviewView({ ...base, state: { runs: [run({ mode: "commit", to: "abc1234", headSha: "aaaa1111" })], marks: {} }, tips });
+  assert.equal(cm.runs[0].outdated, false, "单提交钉死一个 sha，不会过时");
+  const failed = reviewView({ ...base, state: { runs: [run({ status: "failed", headSha: "aaaa1111" })], marks: {} }, tips });
+  assert.equal(failed.runs[0].outdated, false);
+});
+
+test("同一个 PR 正在跑：标照旧，但重评按钮禁用并说清为什么", () => {
+  const done = run({ id: "done", mode: "pr", pr: 7, to: "refs/pi-web/pr-7", headSha: "aaaa1111", startedAt: "2025-01-01T00:00:00Z" });
+  const live = run({ id: "live", status: "running", mode: "pr", pr: 7, to: "refs/pi-web/pr-7", startedAt: "2025-01-02T00:00:00Z", finishedAt: "" });
+  const view = reviewView({ ...base, state: { runs: [done, live], marks: {} }, tips: { "refs/pi-web/pr-7": "cccc3333" } });
+  const card = view.runs.find((c) => c.id === "done");
+  assert.equal(card.outdated, true);
+  assert.equal(card.rerun, true);
+  assert.match(card.rerunWhy, /已经在评/, "禁用要带人话，不是点了才报错");
+});
+
+test("额度用满（两条在跑）时重评按钮也禁用", () => {
+  const done = run({ id: "done", headSha: "aaaa1111", startedAt: "2025-01-01T00:00:00Z" });
+  const a = run({ id: "a", status: "running", finishedAt: "", startedAt: "2025-01-02T00:00:00Z" });
+  const b = run({ id: "b", status: "running", finishedAt: "", startedAt: "2025-01-03T00:00:00Z", to: "feat/y" });
+  const view = reviewView({ ...base, state: { runs: [done, a, b], marks: {} }, tips: { HEAD: "cccc3333", "feat/y": "dddd4444" } });
+  const card = view.runs.find((c) => c.id === "done");
+  assert.equal(card.rerun, true);
+  assert.ok(card.rerunWhy.length > 0);
+});
+
+test("卡片上摆得出「基于哪个提交 / 现在哪个」（详情浮层要用）", () => {
+  const view = reviewView({
+    ...base,
+    state: { runs: [run({ headSha: "aaaa1111" })], marks: {} },
+    tips: { HEAD: "cccc3333" },
+  });
+  assert.equal(view.runs[0].headSha, "aaaa1111");
+  assert.equal(view.runs[0].tipSha, "cccc3333");
+});

@@ -8903,3 +8903,25 @@ if (stop >= 0) {
 **代价 / 可改。** ①日常更新多了一步人工：agent 只能提示「点一下热部署」，不能替用户完成——那颗按钮会换构建，属于用户决定。想让它能代办，得先给 `POST /api/hotdeploy/run` 一个 agent 能用的入口，那是另一条决定。②`SKILL.md` 第三节（`Start-Process`）与第五节（Windows 计划任务）在这台 macOS 上照抄跑不起来；本条只把看门狗的 Windows 限制写明，没补 launchd / detached 写法，要在这台机器上走完整流程得先补那两节。③文档仍留两条路，读者要自己判断「桥是不是死了」，判据是 `/healthz` 有没有回应（写在 `running-the-bridge.md` 开头）。
 
 **验证。** 只动文字：AGENTS.md / `docs/agents/running-the-bridge.md` / `GLOSSARY.md` / `.pi/skills/bridge-update/SKILL.md`（含 frontmatter description）。`rg` 复查全仓再没有把 skill 写成唯一更新路径的地方；没有代码改动，所以不跑构建与测试。
+
+## D446 完成的评审记录对着「现在的 tip」核一遍：过时只标不改结论，只比本地 ref，PR 走 `ls-remote`（#741，用户 2026-11-28「评审完成后，分支有了新提交，可能是旧的评审结果，希望加上提示」）
+
+**问题。** 一条**评审记录**跑完，卡片上只写「完成 · 35 条意见 · 4 分 20 秒 · 23 个文件」，**看不出它评的是哪个提交**；分支或 PR 推了新提交之后，这张卡一个字都不变，于是人会把一份已经对不上的旧结论当现状读。而且连判定的依据都不存在：`ReviewRun` 里没存被评的 sha —— `pr` 模式的 `to` 是 ref 名 `refs/pi-web/pr-N`（下次评同一个 PR 就被挪走），`prHead` 存的是分支名，`mergeBase` 只是公共祖先。
+
+**决定。**
+
+- **补一条 `ReviewRun.headSha`**：收尾时（done / stopped / failed 都记）`git rev-parse <run.to>`，拿不到就不写。**只有 `done` 参与判定**，老记录没有这一项就安静地不标（不反推 —— `refs/pi-web/pr-N` 可能早就指着别的提交了）。
+- **「现在是多少」不进 `ReviewState`**：`ReviewState` 是盘上的形状，而 tips 是「这一眼看到的事实」。它作为 `review.state` 帧的**兄弟字段** `tips` 发：`key` 是记录里的 `to`，`value` 是此刻的 sha。**缺 key = 核对不了**（ref 删了 / 离线 / `ls-remote` 超时 / 没登录），与「没变」分开；空串永远不用来表示「不知道」。帧不带 tips 时（标一条意见、清理历史）前端**保留上一次的**。
+- **判定口径**：`status === "done"` + `mode` 是 `range` 或 `pr` + 记录有 `headSha` + `tips[to]` 存在 + 两者不等。工作区（未提交改动，存一次盘就变）与单提交（钉死一个 sha）不参与；失败 / 停止 / 被桥重启打断的也不参与。
+- **`range` 只比本地 ref，不 fetch**。`range` 重评读的就是本地 target 分支，所以「本地没变」= 再评一次结果一样，不该点亮那颗标。曾经想过打开面板时 `git fetch` 比远端，放弃了：那会标出「远端更新了但你本地没 pull」的过时，而这一刻重评结果一模一样 —— 标了会骗人去点重评然后看不到任何变化。
+- **`pr` 用 `git ls-remote origin refs/pull/N/head`**，不用 `git fetch`：fetch 会把 `refs/pi-web/pr-N` 挪到新提交上，旧记录就再也说不出「当时评的是哪个提交」。`ls-remote` 只读、不下载对象、fork 来的 PR 也认。预算：**最近 3 条 + 按 PR 号去重 + 5 秒一次不重试 + 60 秒内存缓存**（面板一次打开不会因为历史多就发十几次请求）；记录区那颗刷新图标带 `fresh` 绕过缓存（人都点了「再看一眼」，撞缓存等于白点）。
+- **先画后补**：本地那半（`git rev-parse`，微秒级）跟状态帧一起走；`ls-remote` 的结果回来再补一帧。不让整份记录列表等一次网络往返。
+- **界面**：状态词旁边一颗**不可点、不可聚焦**的标「有新提交」，hover 写「评审基于 `abc1234` · `HEAD`，现在到 `def5678`」（不显示新提交数：要数就得 compare 或先 fetch，每开一次面板多一次请求）。底行「完整详情」旁**只在这一条过时时**多一颗「重新评审」，按**那条记录自己的范围**填回「评什么」再走 `startReview()` 同一路径与闸门；同一个 PR 正在跑 / 会话额度满了就**灰着 + `title` 说清**，不是点了才报错。「完整详情」浮层抬头补一行「基于 x / 现在到 y」。
+- **三态不动**：`sameScope()` 与上一轮基线的口径没改 —— 过时只是一层展示提示，不改评审结论的语义。
+- **顺手修的一处测试缝**：`npm run test:review:view` 在 node 26 上本来就跑不起来（`review.ts → gh-setup.ts → github-panel.css` 这一跳撞上 `ERR_UNKNOWN_FILE_EXTENSION`）。加 `tools/css-stub.mjs`（`--import` 一个把 `.css` 当空模块的 loader），只给单元测试用，浏览器那一份仍由 vite 处理。
+
+**为什么。** ①「结果还准不准」是评审完最常问的一句话，而它需要的唯一事实（评的是哪个提交）今天压根没存 —— 先补事实，再谈提示。②只比本地 ref 与只读 `ls-remote` 是同一条原则：**判定必须与「再评一次会读到什么」同源**，否则标出来的过时点下去没变化。③先画后补与「已显示的内容不许变暗 / 不许先清空」同一条铁律（D316）：sha 是锦上添花，不能让记录列表等网络。④「宁可不说，不能说错」：核对不到就不标、不报错、不放灰字。
+
+**代价 / 可改。** ①`range` 的 `to` 可能是 `HEAD`（`ocr preview` 原样回显 ref 名）：换个分支或提个 commit 就会点亮那颗标 —— 语义正确，只是比预期更容易亮。②旧记录会一直带着标，即使后面又评了一轮（那条新的不带）—— 这是事实，不是 bug；想「有更新一轮就隐藏旧标」是另一条决定。③`range` 模式下别人推了但你没 pull，标不会亮：要这个就得接受「点了重评没变化」或者先 pull，两个都不便宜。④缓存 60 秒 + 只查 3 条意味着刚推完的提交最多等一分钟（或点一下刷新图标）。
+
+**守卫。** `web/tests/review-unit.mjs` 新增 6 条（过时成立 / 相等 / 核对不到 / 无 `headSha` / 工作区与单提交不参与 / 同 PR 在跑与额度满时禁用 / 卡片上摆得出两个 sha），共 32 条全绿；`bridge/tests/review-unit.mjs` 新增 7 条（`tipTargets` 的过滤与去重、`remoteTipTargets` 的按号去重与上限、`localTips` 认不出就不给 key 且不碰网络、`remoteTips` 一批一次且失败不给 key），全部通过；`probes/code-review.mjs`（真桥 + 真 ocr + 真模型）新增一段：造一条完成的 range 记录 → 真提交一次 → 点刷新图标 → 标出现、hover 里两个短 sha 都在、底行多一颗「重新评审」、工作区那条不带标、点它真的开出新的一条；150% 字号下那两颗按钮仍在卡里且同一行。`npm --prefix web run typecheck`（含 i18n 三键 ×3）与 `npm --prefix bridge run typecheck` 通过。

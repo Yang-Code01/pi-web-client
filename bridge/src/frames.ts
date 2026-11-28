@@ -411,6 +411,13 @@ export interface ReviewRun {
   log: ReviewLogLine[];
   /** 分组计划（老记录没有；没有就按「一条时间线」展示）。 */
   plan?: ReviewGroupPlan[];
+  /**
+   * 这一次评到的**那个提交**（#741）：收尾时 `git rev-parse <to>` 的结果。老记录没有。
+   *
+   * 为什么要单独存：`pr` 模式的 `to` 是 ref 名 `refs/pi-web/pr-N`，下一次评同一个 PR 就把它
+   * 挪到新提交上 —— 除了这里，没有第二处还能说出「当时评的是什么」。
+   */
+  headSha?: string;
 }
 
 export interface ReviewLogLine {
@@ -420,10 +427,20 @@ export interface ReviewLogLine {
   group?: number;
 }
 
+/**
+ * 现在这些 ref 各指向哪个提交（#741）：key 是记录里的 `to`，value 是此刻的 sha。
+ *
+ * 它是「这一眼看到的事实」，不是历史 —— 所以**不放进 `ReviewState`**（那是盘上的形状），
+ * 而是作为 `review.state` 帧的兄弟字段发一次。缺某个 key = 核对不了（ref 删了 / 离线 /
+ * `ls-remote` 超时 / 没登录），不是「没变」；空串永远不用来表示「不知道」。
+ */
+export type ReviewTips = Record<string, string>;
+
 export interface ReviewState {
   repo: string;
   runs: ReviewRun[];
   marks: Record<string, ReviewMark>;
+
   /**
    * 面板上「评什么」那一格上次选的东西，按会话记住。
    *

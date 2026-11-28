@@ -160,6 +160,50 @@ function ghRun(args: string[]): { cmd: string; args: string[] } {
   return { cmd, args: [...prefix, ...args] };
 }
 
+// ---------------------------------------------------------------------------
+// 核对「这个 PR 现在到哪个提交了」（#741 的「有新提交」）
+// ---------------------------------------------------------------------------
+
+const TIP_CACHE_MS = 60_000;
+
+/** 面板等着画：5 秒一次、不重试（失败就当「不知道」，下次打开再问）。 */
+const TIP_PLAN: RoutePlan = { directMs: 5_000, proxyMs: 5_000, attempts: 1, retryMs: 0, budgetMs: 6_000 };
+
+/** key = 仓库 + 那一批号：不同批各存各的（「只查近 3 条」让 key 天然稳定）。 */
+const tipCache = new Map<string, { at: number; value: Record<number, string> }>();
+
+/**
+ * 一批 PR 现在各自的 head sha（只问远端，**不写本地 ref**）。
+ *
+ * 为什么不用 `git fetch`：那会把 `refs/pi-web/pr-N` 挪到新提交上，而旧记录靠它已经说不出
+ * 「当时评的是哪个提交」了。`ls-remote` 只读、不下载对象，fork 来的 PR 也认。
+ * 失败 / 超时 → 空对象（缺 key = 不知道），不用空串冒充「没变」。
+ */
+export async function remotePrHeads(dir: string, prs: number[], opts: PrQueryOptions = {}): Promise<Record<number, string>> {
+  const wanted = [...new Set(prs.filter((n) => Number.isFinite(n) && n > 0))].sort((a, b) => a - b);
+  if (!wanted.length) return {};
+  const key = `${dir}|${wanted.join(",")}`;
+  const hit = tipCache.get(key);
+  if (!opts.fresh && hit && Date.now() - hit.at < TIP_CACHE_MS) return hit.value;
+  const args = ["-C", dir, "ls-remote", "origin", ...wanted.map((n) => `refs/pull/${n}/head`)];
+  const out = await routed("git", args, dir, TIP_PLAN, undefined, { env: opts.env });
+  const value: Record<number, string> = {};
+  if (out.code === 0) {
+    for (const line of out.stdout.split(/\r?\n/)) {
+      const [sha, ref] = line.trim().split(/\s+/);
+      const num = Number(/^refs\/pull\/(\d+)\/head$/.exec(ref ?? "")?.[1] ?? 0);
+      if (num > 0 && /^[0-9a-f]{7,40}$/i.test(sha ?? "")) value[num] = sha;
+    }
+  }
+  tipCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+/** 测试用：清掉 tip 缓存（否则跨用例会互相干扰）。 */
+export function clearTipCache(): void {
+  tipCache.clear();
+}
+
 function classify(stderr: string, cmd: string, code: number | null): { code: PrListResult["code"]; error: string } {
   const text = `${stderr}`.trim();
   const first = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
