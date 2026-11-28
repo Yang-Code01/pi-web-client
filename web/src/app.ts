@@ -20242,14 +20242,15 @@ export class App {
   }
 
   /**
-   * 「自动评审这颗按钮为什么开不了」：按优先级挑一句话（PR 分支对不上 > 已有一条在跑 > 缺前提）。
+   * 「自动评审这颗按钮为什么开不了」：按优先级挑一句话（已有一条在跑 > 缺前提）。
    *
-   * 三分支写成方法而不是叠三元：再加一种不可开跑的理由时只加一行。
+   * 两分支写成方法而不是叠三元：再加一种不可开跑的理由时只加一行。
+   *
+   * 这里**不再**比「本地当前分支 = PR head」（D462 第 16 条，已废）：会话开在主检出上、修改一直在
+   * worktree 里做是本仓库的常态，那道闸让 PR 模式在主检出上永远开不了。改成桥那边去找（没有就建）
+   * 那条 head 分支的检出 —— 以前页面拿「分支还没读到」当「对得上」放行，也是同一个漏洞。
    */
-  private autoWhy(view: { mismatch: boolean; local: string; head: string; missingWhy: string }): string {
-    if (view.mismatch) {
-      return tr("本地是 {p1}，PR 的 head 是 {p2} —— 自动评审只在你自己那条分支上跑", { p1: view.local, p2: view.head });
-    }
+  private autoWhy(view: { missingWhy: string }): string {
     if (this.reviewAuto?.status === "running") return tr("这个会话已经有一条自动评审在跑了");
     return view.missingWhy || "";
   }
@@ -20257,21 +20258,13 @@ export class App {
   /**
    * 「自动评审现在能不能开跑、不能是为什么」：面板上那颗按钮与设置 dialog 的「开始」**同一份**。
    *
-   * dialog 开着的时候状态帧 / PR info 还会回来：分支对不上、或者已经有一条在跑了，按钮那头
-   * 灰了，dialog 这头却还能把请求发出去 —— 桥会拒，但那是把判定留给了报错。
+   * dialog 开着的时候状态帧 / PR info 还会回来：已经有一条在跑了，按钮那头灰了，dialog 这头却
+   * 还能把请求发出去 —— 桥会拒，但那是把判定留给了报错。
    */
   private autoGate(): { canStart: boolean; why: string } {
     const view = this.reviewViewNow();
-    // D462 第 16 条：PR 模式要求「本地当前分支 = PR head」—— 按钮灰着并说清是哪两条对不上。
-    const prInfo = this.reviewPrInfo.number === Number(this.reviewPr) ? this.reviewPrInfo.info : null;
-    const local = (this.git?.branch ?? "").trim();
-    const head = String(prInfo?.headRefName ?? "").trim();
-    const mismatch = this.reviewMode === "pr" && Boolean(head) && Boolean(local) && head !== local;
     const running = this.reviewAuto?.status === "running";
-    return {
-      canStart: view.canRun && !mismatch && !running,
-      why: this.autoWhy({ mismatch, local, head, missingWhy: view.missingWhy }),
-    };
+    return { canStart: view.canRun && !running, why: this.autoWhy({ missingWhy: view.missingWhy }) };
   }
 
   /** 只算评审面板那份「现在能不能开跑」的视图（`reviewView` 的其余字段这里用不上）。 */

@@ -129,6 +129,7 @@ import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { githubApiBase, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
 import { autoPrFailure, readAutoPr, type AutoPrView } from "./autopr.ts";
+import { ensureCheckout } from "./worktrees.ts";
 import { cancelGhSetup, ghSetupCached, ghSetupStatus, installGh, loginGh } from "./gh-setup.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
@@ -2946,13 +2947,23 @@ async function main(): Promise<void> {
       const removed = Number(/(\d+)\s+deletions?\(-\)/.exec(text)?.[1] ?? 0);
       return { files, added, removed };
     },
-    async push(cwd, branch) {
-      // 有 upstream 就推 upstream 那个远端；没有就 origin（第一次推就顺手建 upstream）。
-      const up = gitOut(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
-      const remote = up.includes("/") ? up.slice(0, up.indexOf("/")) : "origin";
-      const args = up ? ["push", remote, branch] : ["push", "-u", remote, branch];
-      const out = await gitRun(cwd, args);
-      return out.ok ? { ok: true, note: "" } : { ok: false, note: out.err.slice(0, 400) || "git push 失败" };
+    async remoteHead(cwd, branch) {
+      // `ls-remote --heads origin <branch>` 走网络：和 push 同一类，异步、不堵 ws 循环。
+      // 输出形如 `<sha>\trefs/heads/<branch>`；读不到（没网 / 没权限 / 分支不在）给空串。
+      const out = await new Promise<string>((resolve) => {
+        execFile(
+          "git",
+          ["ls-remote", "--heads", "origin", branch],
+          { cwd, encoding: "utf8", timeout: 60_000, windowsHide: true, maxBuffer: 1 << 20 },
+          (err, stdout) => resolve(err ? "" : String(stdout ?? "")),
+        );
+      });
+      const want = `refs/heads/${branch}`;
+      for (const line of out.split("\n")) {
+        const [sha, ref] = line.trim().split(/\s+/);
+        if (ref === want) return sha ?? "";
+      }
+      return "";
     },
     async prChecks(config, session) {
       const { view, reason } = await autoPrView(config.repo, config.pr, session);
@@ -4742,24 +4753,26 @@ async function main(): Promise<void> {
             });
             void (async () => {
               try {
-                // 评审 / 推送 / git 全部用**评的那个仓库根**（`effectiveReviewDir`：钉了别的仓库时
-                // 它与会话目录 `dir` 不是同一个）。以前 branch / baseSha / cwd 在 `dir` 非空时用的是
-                // 会话目录（可能是子目录），而 `autoPrView` 用会话 cwd —— 三处口径混在一起：
-                // 推送的 cwd 不落在 `config.repo` 里时，闸门的 `insideRepo` 会拒掉授权。
+                // 评审 / git 全部用**评的那个仓库根**（`effectiveReviewDir`：钉了别的仓库时它与
+                // 会话目录 `dir` 不是同一个）。
                 const { repo } = effectiveReviewDir(dir, session);
-                const branch = gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
                 const pr = Number(msg.pr) || 0;
-                // PR 模式那道闸（D462 第 16 条）：本地当前分支必须就是 PR 的 head，否则修完推不上去。
+                // PR 模式：被改的是**那条 head 分支的检出**，不是会话 cwd（D462 补记）。会话开在主检出上、
+                // 修改一直在 worktree 里做是本仓库的常态 —— 以前这里要求「会话目录当前分支 = PR head」，
+                // 在主检出上点就永远开不了；就算把评审仓库钉到 worktree，桥记账 / 推送盯的仍是 `repo`。
+                // 现在：已有的检出就复用，没有就按 AGENTS 的约定建一份（`ensureCheckout`，不碰主检出）。
+                let work = repo;
+                let branch = gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
                 if (mode === "pr") {
                   if (!pr) throw new Error("先选一个 PR：自动评审要知道合哪一个");
                   const { view, reason } = await autoPrView(repo, pr, session);
                   if (!view) throw new Error(`拿不到 PR #${pr} 的状态：${reason}`);
-                  if (!branch || branch === "HEAD") throw new Error("当前不在任何分支上（detached HEAD），修完没有地方推");
-                  // 认不出 PR 的 head 就不能比：「跳过比对」等于把闸门放开到任意分支，宁可不开跑。
-                  if (!view.headRefName) throw new Error(`读不到 PR #${pr} 的 head 分支，没法确认本地这条就是要推的那条`);
-                  if (view.headRefName !== branch) {
-                    throw new Error(`本地是 ${branch}，PR #${pr} 的 head 是 ${view.headRefName} —— 自动评审只在你自己那条分支上跑`);
-                  }
+                  // 认不出 PR 的 head 就不能往下走：没有分支名就找不到该改哪份检出。
+                  if (!view.headRefName) throw new Error(`读不到 PR #${pr} 的 head 分支，没法确认该改哪条分支`);
+                  const checkout = ensureCheckout(repo, view.headRefName);
+                  work = checkout.path;
+                  branch = view.headRefName;
+                  if (checkout.created) log(`auto-review: 为 ${branch} 建了一份检出 ${work}`);
                 }
                 const out = autoRunner.start({
                   session,
@@ -4773,12 +4786,14 @@ async function main(): Promise<void> {
                     maxRounds: Number(msg.maxRounds) || 0,
                     autoMerge: Boolean(msg.autoMerge),
                     repo,
-                    cwd: repo,
+                    // 修复轮落在这份检出里（PR 模式 = 那条分支的检出）；评审（ocr delegate）仍按 `repo` 的远端 ref 走。
+                    cwd: work,
                     branch,
-                    // 限时授权拿它拒掉「同名的别的仓库」（闸门那边对显式点名的仓库逐字比）
-                    slug: localRepoName(repo),
+                    // 限时授权拿它拒掉「同名的别的仓库」（闸门那边对显式点名的仓库逐字比）；
+                    // `repo` 记**被改的那份检出**，闸门的 insideRepo 对同一仓库的 worktree 也认（见 grant-match.ts）。
+                    slug: localRepoName(work),
                     // 工作区模式：记下开跑前的 HEAD，第二轮起按「起点..HEAD」评（否则提交一次就评空了）
-                    baseSha: mode === "workspace" ? gitOut(repo, ["rev-parse", "HEAD"]) : "",
+                    baseSha: mode === "workspace" ? gitOut(work, ["rev-parse", "HEAD"]) : "",
                     lang,
                   },
                 });

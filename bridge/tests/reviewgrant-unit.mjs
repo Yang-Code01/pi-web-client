@@ -263,6 +263,47 @@ check("收授权不动同一份文件里的 patterns / mode", () => {
   assert.equal(data.auto, undefined);
 });
 
+// ---------------------------------------------------------------- worktree（D462 补记）
+// 自动评审现在可能在一份 worktree 里改代码、在主检出里合并 —— 两处的 cwd 都要算「同一个仓库」，
+// 但只按路径前缀判会把 worktree 当成别的仓库（它挂在 ../<repo>-wt/ 下面）。这里用假文件系统
+// 造出真实布局（主仓 .git/ + worktree 的 .git 文件 + commondir），不 spawn git。
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-grant-wt-"));
+  const main = path.join(root, "widgets");
+  const wt = path.join(root, "widgets-wt", "feat", "review-auto");
+  const wtGit = path.join(main, ".git", "worktrees", "review-auto");
+  fs.mkdirSync(wtGit, { recursive: true });
+  fs.mkdirSync(wt, { recursive: true });
+  fs.writeFileSync(path.join(main, ".git", "HEAD"), "ref: refs/heads/main\n");
+  fs.writeFileSync(path.join(wtGit, "commondir"), "../..\n");
+  fs.writeFileSync(path.join(wtGit, "HEAD"), "ref: refs/heads/feat/review-auto\n");
+  fs.writeFileSync(path.join(wt, ".git"), `gitdir: ${wtGit}\n`);
+
+  check("worktree：授权仓库是那份 worktree 时，在 worktree 里推 → 放过", () => {
+    assert.equal(allows("git push origin feat/review-auto", "feat/review-auto", grant({ repo: wt }), wt), true);
+  });
+
+  check("worktree：合并落在主检出里也算同一个仓库（common dir 相同）", () => {
+    assert.equal(allows("gh pr merge 747 --merge", "feat/review-auto", grant({ repo: wt }), main), true);
+  });
+
+  check("worktree：反过来（授权记的是主检出、动在 worktree）也放过", () => {
+    assert.equal(allows("git push origin feat/review-auto", "feat/review-auto", grant({ repo: main }), wt), true);
+  });
+
+  check("别的仓库：哪怕目录结构一样也不算", () => {
+    const other = path.join(root, "other");
+    fs.mkdirSync(path.join(other, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(other, ".git", "HEAD"), "ref: refs/heads/main\n");
+    assert.equal(allows("git push origin feat/review-auto", "feat/review-auto", grant({ repo: wt }), other), false);
+  });
+
+  check("currentBranch：worktree 的 .git 是个文件也读得出来", () => {
+    assert.equal(currentBranch(wt), "feat/review-auto");
+    assert.equal(currentBranch(main), "main");
+  });
+}
+
 if (failures) {
   console.error(`\n${failures} 项失败`);
   process.exit(1);

@@ -4712,7 +4712,6 @@ export const en: Dict = {
   "自动评审正在跑": "Auto review is running",
   "最少 2 轮：同一份 diff 上两家各签收一次": "At least 2 rounds: both models sign off on the same diff",
   "约定：fix(review): 按第 {p1} 轮评审意见修复": "Convention: fix(review): address round {p1} findings",
-  "本地是 {p1}，PR 的 head 是 {p2} —— 自动评审只在你自己那条分支上跑": "Local branch is {p1} but the PR head is {p2} — auto review only runs on your own branch",
   "改了没提交": "Changed but not committed",
   "零改动": "No changes",
   "没有回执也没有改动": "No receipt and no changes",

@@ -430,8 +430,9 @@ function makeHost(over = {}) {
     diffstat() {
       return { files: 1, added: 3, removed: 1 };
     },
-    push() {
-      return { ok: true, note: "" };
+    async remoteHead() {
+      // 默认：远端已经指到「修完的那个提交」上（= agent 推过了）。
+      return this.state.head;
     },
     async prChecks() {
       return { ok: true, note: "" };
@@ -667,12 +668,12 @@ await checkAsync("停止：修复轮跑着时等它跑完再停", async () => {
   assert.equal(runner.get(S).status, "stopped");
 });
 
-await checkAsync("停止落在收尾途中（推着的时候）：修完就停，不再起一轮新评审", async () => {
+await checkAsync("停止落在收尾途中（核对远端的时候）：修完就停，不再起一轮新评审", async () => {
   let release = null;
   const host = makeHost({
-    push() {
+    async remoteHead() {
       return new Promise((resolve) => {
-        release = () => resolve({ ok: true, note: "" });
+        release = () => resolve("s1");
       });
     },
   });
@@ -683,7 +684,7 @@ await checkAsync("停止落在收尾途中（推着的时候）：修完就停�
   host.state.running = false;
   host.state.head = "s1"; // 修完并提交
   runner.tick();
-  await flush(2); // 进 completeFix，卡在 push 上（busy 还捏着）
+  await flush(2); // 进 completeFix，卡在核对远端上（busy 还捏着）
   runner.stop(S); // 就在这时候按停
   assert.equal(runner.get(S).status, "running", "收尾还没回来，先别改结论");
   const before = host.runs.length;
@@ -691,6 +692,58 @@ await checkAsync("停止落在收尾途中（推着的时候）：修完就停�
   await flush();
   assert.equal(runner.get(S).status, "stopped", "修完就该停");
   assert.equal(host.runs.length, before, "不该再起一轮新评审烧 token");
+});
+
+await checkAsync("推送归会话：agent 没推（远端还停在上一轮）→ 暂停 push-failed，说清两头", async () => {
+  const host = makeHost({ async remoteHead() { return "s0"; } });
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await reviewRound(runner, host, ["k1"]);
+  host.state.running = false;
+  host.state.head = "s1"; // 本地提交了
+  host.state.last = '{"verdicts":[{"path":"f0.ts","line":1,"verdict":"fixed"}]}';
+  runner.tick();
+  await flush();
+  const st = runner.get(S);
+  assert.equal(st.status, "paused");
+  assert.equal(st.reasonCode, "push-failed");
+  assert.match(st.reason, /远端 s0，本地 s1/, "两头都报出来");
+  assert.equal(st.rounds[0].fix.pushed, false);
+});
+
+await checkAsync("推送归会话：远端指到本轮提交 → 记为已推，开下一轮", async () => {
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await reviewRound(runner, host, ["k1"]);
+  host.state.running = false;
+  host.state.head = "s1";
+  host.state.last = '{"verdicts":[{"path":"f0.ts","line":1,"verdict":"fixed"}]}';
+  runner.tick();
+  await flush();
+  assert.equal(runner.get(S).rounds[0].fix.pushed, true);
+  assert.equal(host.runs.length, 2, "开了下一轮评审");
+});
+
+check("修复提示词：点名在哪份检出里改、让 agent 自己推（不再「不用 push」）", () => {
+  const config = cfg({ mode: "pr", pr: 747, cwd: "/repo-wt/feat/x", branch: "feat/x" });
+  const text = fixPrompt({
+    round: 1,
+    findings: [{ ...F("k", "a.ts", 3), severity: "high", category: "bug", content: "x", existingCode: "", suggestionCode: "", anchored: true, state: "new", mark: "" }],
+    config,
+    where: whereOf(config),
+  });
+  assert.match(text, /\/repo-wt\/feat\/x/, "要说清改动落在哪份检出里");
+  assert.match(text, /git push origin feat\/x/, "推送交给会话");
+  assert.doesNotMatch(text, /不用 push/);
+  // 非 PR 模式没有东西要推
+  const ws = fixPrompt({
+    round: 1,
+    findings: [{ ...F("k", "a.ts", 3), severity: "high", category: "bug", content: "x", existingCode: "", suggestionCode: "", anchored: true, state: "new", mark: "" }],
+    config: cfg({ mode: "workspace" }),
+    where: "",
+  });
+  assert.doesNotMatch(ws, /git push/);
 });
 
 await checkAsync("跳过：这一轮标 skipped、不产生签收", async () => {

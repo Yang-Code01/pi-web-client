@@ -47,11 +47,15 @@ export interface AutoConfig extends AutoScope {
   /** 轮数上限（熔断之一）。最小 2：双签至少要两轮。 */
   maxRounds: number;
   autoMerge: boolean;
-  /** 评审仓库根（评审跑在这里）。 */
+  /** 评审仓库根（评审跑在这里）。PR 模式开跑前会换成那条 head 分支的检出（见 `worktrees.ts`）。 */
   repo: string;
-  /** 会话 cwd（git 命令、push 都在这里跑）。 */
+  /**
+   * 被改的那份检出（git 命令都与它算）：PR 模式是**这条分支的检出**（可能是 `../<repo>-wt/<分支>`
+   * 的 worktree），其余模式就是会话的评审目录。D462 补记之前这里等于会话 cwd，agent 在 worktree
+   * 里提交、桥却在主检出里找 commit。
+   */
   cwd: string;
-  /** 开始时的本地分支（PR 模式要求它就是 PR 的 head）。 */
+  /** 要改的那条分支（PR 模式 = PR 的 head）。 */
   branch: string;
   /** 这个仓库的 `owner/name`（从 origin 认，认不出空串）：限时授权拿它拒掉同名别仓。 */
   slug: string;
@@ -186,8 +190,12 @@ export interface AutoHost {
   diffstat(cwd: string, from: string): { files: number; added: number; removed: number };
   /** 某个提交的标题（`git log -1 --format=%s`）：页面「本轮改动」显示真实的那句。 */
   subject(cwd: string, sha: string): string;
-  /** 把这一轮的分支推上去（PR 模式才用；失败返回原因）。 */
-  push(cwd: string, branch: string): Promise<{ ok: boolean; note: string }>;
+  /**
+   * 远端那条分支现在指着哪个提交（`git ls-remote --heads origin <branch>`）；读不到给空串。
+   * PR 模式靠它核对「这一轮提交真的推上去了」—— D462 第 20① 补记：推送交给会话里的 agent，
+   * 桥只核对（它就在那份检出里，没人比它更清楚该推什么）。
+   */
+  remoteHead(cwd: string, branch: string): Promise<string>;
   /** PR 的 checks 绿不绿、合没合（PR 模式 + 自动合并用）。 */
   prChecks(config: AutoConfig, session: string): Promise<{ ok: boolean; note: string }>;
   prState(config: AutoConfig, session: string): Promise<{ merged: boolean; note: string }>;
@@ -508,7 +516,16 @@ export function fixPrompt(o: {
   lines.push("自动评审的规矩（必读）：");
   lines.push("- 只改这些意见涉及的地方，不顺手重构、不改无关文件。");
   lines.push("- 改完跑一次与改动相关的检查（typecheck / 相关单测），失败了先修到过；不跑全量、不跑 e2e。");
-  lines.push(`- 把这一轮的改动提交成一个 commit，提交信息用 \`fix(review): …\`${config.mode === "pr" ? "（不用 push，自动评审负责推）" : ""}。`);
+  lines.push(`- 把这一轮的改动提交成一个 commit，提交信息用 \`fix(review): …\`。`);
+  if (config.cwd) {
+    // 修一轮必须落在**指定的那份检出**里（可能是 `../<repo>-wt/<分支>`）：不写的话 agent 会按
+    // 自己的规矩另开一份 worktree，桥在 `config.cwd` 上就看不到任何提交（D462 补记）。
+    lines.push(`- 所有改动都在 \`${config.cwd}\` 里做（那条分支的检出）。不要另开 worktree，也不要切回主检出。`);
+  }
+  if (config.mode === "pr") {
+    // 推送也归会话（桥只核对）：提交与推送是同一口气的事，中间隔一层桥只会多一类失败。
+    lines.push(`- 提交完把它推上去：\`git push origin ${config.branch}\`（自动评审只核对远端，不代推）。`);
+  }
   lines.push("- 最后**只输出一个 JSON 对象**，不要解释、不要寒暄，形状：");
   lines.push('  {"verdicts":[{"path":"相对路径","line":42,"verdict":"fixed|false-positive|wontfix","why":"一句话"}],"note":"这一轮做了什么"}');
   lines.push("- `verdict` 只能是三个值之一：`fixed`（按意见改了）/ `false-positive`（意见不成立）/ `wontfix`（成立但不该在这一轮改）。");
@@ -822,7 +839,7 @@ export class AutoRunner {
     };
     this.states.set(session, state);
     this.enteredAt.set(session, Date.now());
-    this.host.grant(session, config.autoMerge && config.mode === "pr" && config.pr ? { pr: config.pr, repo: config.repo, branch: config.branch, slug: config.slug } : null);
+    this.host.grant(session, config.autoMerge && config.mode === "pr" && config.pr ? { pr: config.pr, repo: config.cwd, branch: config.branch, slug: config.slug } : null);
     this.save(state);
     this.host.log(`auto-review start ${session.slice(0, 8)} · ${config.mode}${config.pr ? ` #${config.pr}` : ""} · max ${state.config.maxRounds}`);
     void this.beginRound(state);
@@ -914,7 +931,7 @@ export class AutoRunner {
       state.stopping = false;
       state.reason = "";
       state.reasonCode = "";
-      this.host.grant(session, state.config.autoMerge && state.config.mode === "pr" && state.config.pr ? { pr: state.config.pr, repo: state.config.repo, branch: state.config.branch, slug: state.config.slug } : null);
+      this.host.grant(session, state.config.autoMerge && state.config.mode === "pr" && state.config.pr ? { pr: state.config.pr, repo: state.config.cwd, branch: state.config.branch, slug: state.config.slug } : null);
       const round = this.roundOf(state);
       if (state.wait === "review") {
         // 上一次那一轮没跑完：同号重跑（签收要的是「这一份 diff 上」的结论，重跑不改语义）
@@ -1015,7 +1032,7 @@ export class AutoRunner {
         continue;
       }
       if (state.config.autoMerge && state.config.mode === "pr" && state.config.pr && state.status === "running") {
-        this.host.grant(state.session, { pr: state.config.pr, repo: state.config.repo, branch: state.config.branch, slug: state.config.slug });
+        this.host.grant(state.session, { pr: state.config.pr, repo: state.config.cwd, branch: state.config.branch, slug: state.config.slug });
       }
       n++;
       this.host.log(`auto-review resume ${state.session.slice(0, 8)} · wait=${state.wait || "-"} · round ${state.cur}`);
@@ -1313,19 +1330,28 @@ export class AutoRunner {
       round.verdicts = parsed.verdicts;
     }
     if (state.config.mode === "pr") {
+      // 推送由会话里的 agent 做（D462 第 20① 补记）：它就在那份检出里，commit 与 push 是同一口气；
+      // 桥只读远端核对 —— 「指望 agent 记得推」那一类失败由这次核对兜住。
       this.busy.add(state.session);
-      let push: { ok: boolean; note: string };
+      let remote = "";
       try {
-        push = await this.host.push(state.config.cwd, state.config.branch);
-      } catch (err: any) {
-        push = { ok: false, note: String(err?.message ?? err) };
+        remote = await this.host.remoteHead(state.config.cwd, state.config.branch);
+      } catch {
+        remote = "";
       } finally {
         this.busy.delete(state.session);
       }
-      fix.pushed = push.ok;
-      if (!push.ok) {
+      fix.pushed = Boolean(remote) && remote === shaAfter;
+      if (!fix.pushed) {
         this.save(state);
-        this.pause(state, "push-failed", push.note || "推送没成功");
+        // 两个都报出来：只看到其中一头时，人没法判断是「没推」还是「推了别的分支」。
+        this.pause(
+          state,
+          "push-failed",
+          remote
+            ? `这一轮的提交没推上去：远端 ${remote.slice(0, 7)}，本地 ${shaAfter.slice(0, 7)}`
+            : `读不到远端 ${state.config.branch}：这一轮的提交没有推上去`,
+        );
         return;
       }
     }
@@ -1394,7 +1420,7 @@ export class AutoRunner {
     state.wait = "merge";
     state.merge.state = "waiting";
     // 合并那句话要过审批闸：授权必须**在**（pause / finish 才收）。
-    this.host.grant(state.session, { pr, repo: state.config.repo, branch: state.config.branch, slug: state.config.slug });
+    this.host.grant(state.session, { pr, repo: state.config.cwd, branch: state.config.branch, slug: state.config.slug });
     this.save(state);
     void this.beginMerge(state);
   }

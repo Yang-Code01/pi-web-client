@@ -51,24 +51,47 @@ const REMOTE_EXEC = /(^|\s)(--receive-pack|--exec|--upload-pack)(=|\s)/;
 const BROAD = /(^|\s)(--all|--mirror|--tags|--follow-tags|--delete|--prune|-d)\b/;
 
 /**
+ * 这个目录的 git 目录：普通克隆是 `.git` 那个目录，worktree 是 `.git` 文件里指的
+ * `<主仓>/.git/worktrees/<名>`。读不到（不是仓库）给空串。
+ */
+function gitDirOf(cwd: string): string {
+  const dir = path.resolve(cwd);
+  const dotgit = path.join(dir, ".git");
+  try {
+    const st = fs.statSync(dotgit);
+    if (!st.isFile()) return dotgit;
+    const text = fs.readFileSync(dotgit, "utf8");
+    const m = /^gitdir:\s*(.+)$/m.exec(text);
+    return m ? path.resolve(dir, m[1].trim()) : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 这个目录所属仓库的 common dir（主仓的 `.git`）。普通克隆就是自己的 git 目录；worktree 的
+ * git 目录里有一份 `commondir` 指回主仓 —— 那才是「同一个仓库」的证据：`../<repo>-wt/feat/x`
+ * 不在 `<repo>` 的路径前缀里，只按前缀判一定会把它当成别的仓库。
+ */
+function commonDirOf(cwd: string): string {
+  const gitdir = gitDirOf(cwd);
+  if (!gitdir) return "";
+  try {
+    const raw = fs.readFileSync(path.join(gitdir, "commondir"), "utf8").trim();
+    if (raw) return path.resolve(gitdir, raw);
+  } catch {
+    /* 普通克隆没有 commondir：自己的 git 目录就是 common dir */
+  }
+  return gitdir;
+}
+
+/**
  * 当前分支（读 `.git/HEAD`，不 spawn git：闸门在每次工具调用里都会问一遍）。
  * worktree 的 `.git` 是一个文件（`gitdir: …`），跟着它进去读；detached HEAD 一律返回空串。
  */
 export function currentBranch(cwd: string): string {
-  const dir = path.resolve(cwd);
-  const dotgit = path.join(dir, ".git");
-  let target = dotgit;
-  try {
-    const st = fs.statSync(dotgit);
-    if (st.isFile()) {
-      const text = fs.readFileSync(dotgit, "utf8");
-      const m = /^gitdir:\s*(.+)$/m.exec(text);
-      if (!m) return "";
-      target = path.resolve(dir, m[1].trim());
-    }
-  } catch {
-    return "";
-  }
+  const target = gitDirOf(cwd);
+  if (!target) return "";
   try {
     const head = fs.readFileSync(path.join(target, "HEAD"), "utf8").trim();
     const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
@@ -179,11 +202,20 @@ function mergeTarget(cmd: string): { pr: number; repo: string } {
   return { pr: Number(num) || 0, repo };
 }
 
-/** cwd 落在授权仓库里（含子目录：`gh` / `git` 都是从 cwd 往上找那个仓库）。 */
+/**
+ * cwd 落在授权仓库里（含子目录：`gh` / `git` 都是从 cwd 往上找那个仓库），**或者**落在同一个
+ * 仓库的另一份检出里（worktree）。
+ *
+ * 后半句是 D462 补记（自动评审改在 worktree 里跑）要的：改代码在一份 worktree、合并可能在主检出，
+ * 两头都得算数。放宽的范围只到「同一个 common dir」—— 仓库的复制品仍然是别的仓库。
+ */
 function insideRepo(cwd: string, repo: string): boolean {
   if (!cwd || !repo) return false;
   const rel = path.relative(path.resolve(repo), path.resolve(cwd));
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return true;
+  const mine = commonDirOf(cwd);
+  const theirs = commonDirOf(repo);
+  return Boolean(mine) && mine === theirs;
 }
 
 /**
