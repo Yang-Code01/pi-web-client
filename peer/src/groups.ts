@@ -96,13 +96,22 @@ function optOutFileStamp(): string {
   }
 }
 
+/** 只读更新组给 files/messages 用的写权限快照（别在别处再拼一份同样的形状）。 */
+export interface GroupGate {
+  announceOnly?: boolean;
+  publisher?: string;
+  owner?: string;
+  members?: string[];
+}
+
 export function optOutIds(): Set<string> {
   const now = Date.now();
-  if (optOutCache && now < optOutRetryAt) return new Set(optOutCache); // 退避期间也别把可变缓存交出去（评审 #30）
+  // 退避期间不读盘；首次就读失败时缓存还是空的，也要快速返回（评审 #2）。
+  if (now < optOutRetryAt) return new Set(optOutCache ?? []);
   if (optOutCache && now - optOutCheckedAt < OPT_OUT_TTL_MS) return new Set(optOutCache);
   optOutCheckedAt = now;
   const stamp = optOutFileStamp();
-  if (optOutCache && stamp === optOutStamp) return optOutCache;
+  if (optOutCache && stamp === optOutStamp) return new Set(optOutCache);
   try {
     const raw = JSON.parse(fs.readFileSync(optOutFile(), "utf8"));
     optOutCache = new Set((Array.isArray(raw) ? raw : []).filter((x) => typeof x === "string"));
@@ -115,16 +124,16 @@ export function optOutIds(): Set<string> {
       // 非 ENOENT：别把空集记成「已读过」再推进 stamp，否则退避命中 stamp 后永远返回空集，
       // 权限恢复也不会重读，用户的退群名单被静默丢掉（评审 #4）。
       optOutRetryAt = now + 10_000;
-      return optOutCache ?? new Set();
+      return new Set(optOutCache ?? []);
     }
-    return optOutCache;
+    return new Set(optOutCache ?? []);
   }
   optOutStamp = stamp;
-  return optOutCache;
+  return new Set(optOutCache ?? []);
 }
 
 export function setOptOut(id: string, on: boolean): void {
-  // 复制一份再改：optOutIds() 返回的是缓存本身，不能让调用方共享同一份可变 Set（评审 #21）。
+  // 复制一份再改：optOutIds() 每次都给副本，这里仍复制一次，避免以后改回去时踩坑（评审 #21）。
   const set = new Set(optOutIds());
   if (on) set.add(id);
   else set.delete(id);

@@ -308,7 +308,8 @@ async function main() {
   else bad("重新加入没生效");
 
   // 7. 换机器：新机器先被拉进组拿到名册，再自己站出来当发布者（v+1 广播）。
-  //    只读群的 takeover 只允许「从没定过 publisher 且 claimer 是 owner」，所以不能靠伪造快照抢。
+  //    C 不是靠 takeover 抢的：先被 A 拉进组拿到当前 v，再 claimPublisher 发 v+1。
+  //    takeover 只留给「publisher 还空着、建组人自己认领」，伪造快照抢不走。
   start("pub2", C, G, { config: { updates: { repo: REPO, publisher: true } } });
   const cMe = await waitFor("新发布者起来", () => get(C, "/status"));
   await waitFor("新发布者看见成员", async () => {

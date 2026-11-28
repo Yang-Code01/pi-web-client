@@ -154,6 +154,8 @@ export class UpdatesLan {
   /** 正在跑的那一轮 tick：并发调用共享它，不再用布尔量假装跑过（评审 #1）。 */
   private ticking: Promise<void> | null = null;
   private repoCache: { at: number; info: RepoInfo | null } | null = null;
+  /** 邀请 + 补最近三条公告串行跑：定时 reconcile 与播报后的拉人共用（评审 #14）。 */
+  private inviteQueue: Promise<void> = Promise.resolve();
   private readonly peer: PeerHost;
   private readonly log: (msg: string) => void;
 
@@ -368,8 +370,6 @@ export class UpdatesLan {
     }
   }
 
-  /** 邀请 + 补最近三条公告：定时 reconcile 和播报后的拉人共用这一份（评审 #14）。 */
-  private inviteQueue: Promise<void> = Promise.resolve();
 
   private inviteAndReplay(info: RepoInfo, want: string[]): Promise<void> {
     // 定时 reconcile、播报后的拉人、开关的 kick 都会进来：排队做，

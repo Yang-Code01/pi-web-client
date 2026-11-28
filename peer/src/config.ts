@@ -127,7 +127,8 @@ export function loadConfig(): PeerConfig {
     manual: Array.isArray(saved.manual) ? saved.manual.filter((s) => typeof s === "string") : [],
     updates: {
       repo: isRepo(savedRepo) ? savedRepo : "",
-      publisher: saved.updates?.publisher === true,
+        // repo 不合法时 publisher 也跟着关：否则 announce 会带出「发布者开着、仓库为空」的矛盾状态（评审 #7）。
+        publisher: isRepo(savedRepo) && saved.updates?.publisher === true,
     },
   };
 }

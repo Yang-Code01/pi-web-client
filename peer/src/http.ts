@@ -195,55 +195,51 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const body = (await readBody(req).catch(() => null)) as Record<string, unknown> | null;
         if (!body || typeof body !== "object") return json(res, 400, { error: "bad body" });
         const wasHidden = cfg.hidden;
-        for (const key of ["hidden", "dnd", "pauseFiles"] as const) {
-          if (typeof body[key] === "boolean") cfg[key] = body[key] as boolean;
-        }
-        // D303：自己的名字也能改。上限 40（公告里塞得下），改完立刻重播一次，别等下一轮。
-        let changed = false;
-        if (typeof body.nickname === "string") {
-          const name = body.nickname.trim().replace(/\s+/g, " ").slice(0, 40);
-          if (!name) return json(res, 400, { error: "名字不能是空的" });
-          if (name !== cfg.nickname) {
-            cfg.nickname = name;
-            changed = true;
-          }
-        }
+        // 先把每一项都校验、算成 next*，最后一次性写 cfg：任何一步 400 都不能留下
+        // 「内存改了、磁盘没存」的半截状态（评审 #9）。
+        const nextNickname =
+          typeof body.nickname === "string" ? body.nickname.trim().replace(/  +/g, " ").slice(0, 40) : undefined;
+        if (nextNickname !== undefined && !nextNickname) return json(res, 400, { error: "名字不能是空的" });
         // 头像：只认名单里的 id（页面上的 12 张）。名单外的直接拒，别存一个画不出来的值。
-        if (body.avatar !== undefined) {
-          const avatar = knownAvatar(body.avatar);
-          if (!avatar) return json(res, 400, { error: "没有这张头像" });
-          if (avatar !== cfg.avatar) {
-            cfg.avatar = avatar;
-            changed = true;
-          }
-        }
+        const nextAvatar = body.avatar !== undefined ? knownAvatar(body.avatar) : undefined;
+        if (body.avatar !== undefined && !nextAvatar) return json(res, 400, { error: "没有这张头像" });
         // 更新组（D441）：`repo` = 这台机器认的仓库（announce 带出去，发布者据此邀请）；
         // `publisher` = 这台机器负责查 origin/main。两者都改了要重播，别等下一轮 10 秒。
+        let nextUpdates: { repo: string; publisher: boolean } | null = null;
         if (body.updates !== undefined) {
-          // 形状不对就别装作改成功了：静默忽略会让调用方以为配置已经落盘（评审 #2）。
+          // 形状不对就别装作改成功了（评审 #2）。
           if (!body.updates || typeof body.updates !== "object" || Array.isArray(body.updates)) {
             return json(res, 400, { error: "updates 要是一个对象，可以只带 repo 或 publisher" });
           }
-          const u = (body.updates ?? {}) as Record<string, unknown>;
-          // 先在局部算完、校验通过再写 cfg：否则「repo 已清空、publisher 校验失败返回 400」时
-          // 内存里改了、磁盘上没 save，重启后配置又变回原样（评审 #8）。
-          let nextRepo = cfg.updates.repo;
+          const u = body.updates as Record<string, unknown>;
+          let repo = cfg.updates.repo;
           if (typeof u.repo === "string") {
-            const repo = u.repo.trim();
+            repo = u.repo.trim();
             if (repo && !isRepo(repo)) return json(res, 400, { error: "仓库标识要写成 owner/name（或 group/subgroup/name）" });
-            nextRepo = repo;
           }
-          const nextPublisher = typeof u.publisher === "boolean" ? u.publisher : cfg.updates.publisher;
-          // 发布者身份要靠 announce 带出去，repo 为空时 buildUpdates 会整块丢掉：配对校验（评审 #23）。
-          if (nextPublisher && !nextRepo) return json(res, 400, { error: "先填仓库标识（owner/name）再打开发布" });
-          if (nextRepo !== cfg.updates.repo) {
-            cfg.updates.repo = nextRepo;
-            changed = true;
-          }
-          if (nextPublisher !== cfg.updates.publisher) {
-            cfg.updates.publisher = nextPublisher;
-            changed = true;
-          }
+          const publisher = typeof u.publisher === "boolean" ? u.publisher : cfg.updates.publisher;
+          if (publisher && !repo) return json(res, 400, { error: "先填仓库标识（owner/name）再打开发布" });
+          nextUpdates = { repo, publisher };
+        }
+        // 校验全过：现在才动 cfg 与落盘。
+        let changed = false;
+        for (const key of ["hidden", "dnd", "pauseFiles"] as const) {
+          if (typeof body[key] !== "boolean") continue;
+          if (cfg[key] !== body[key]) changed = true;
+          cfg[key] = body[key] as boolean;
+        }
+        if (nextNickname !== undefined && nextNickname !== cfg.nickname) {
+          cfg.nickname = nextNickname;
+          changed = true;
+        }
+        if (nextAvatar && nextAvatar !== cfg.avatar) {
+          cfg.avatar = nextAvatar;
+          changed = true;
+        }
+        if (nextUpdates) {
+          if (nextUpdates.repo !== cfg.updates.repo) changed = true;
+          if (nextUpdates.publisher !== cfg.updates.publisher) changed = true;
+          cfg.updates = nextUpdates;
         }
         saveConfig(cfg);
         if (changed) discovery.announce();
@@ -566,7 +562,8 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const body = await readBody(req).catch(() => ({}));
         try {
           activity.touch();
-          const raw = body?.limit === null || body?.limit === undefined ? REPLAY_DEFAULT : Number(body.limit);
+          // 只认 number：字符串 "5" 这种「看着能用」的输入一律走默认值（评审 #10）。
+          const raw = typeof body?.limit === "number" ? body.limit : REPLAY_DEFAULT;
           const limit = Number.isFinite(raw) ? Math.max(0, Math.min(REPLAY_MAX, raw)) : REPLAY_DEFAULT;
           return json(res, 200, messages.replayAnnouncements(String(body?.group ?? ""), String(body?.peer ?? ""), limit));
         } catch (err) {

@@ -7,7 +7,7 @@ import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import type { Entry, History, PeerIdentity } from "./history.ts";
-import { canWriteGroup, isGroupId } from "./groups.ts";
+import { canWriteGroup, isGroupId, type GroupGate } from "./groups.ts";
 import { uuidv7 } from "./messages.ts";
 import { imageSize, type ImageSize } from "./image.ts";
 
@@ -188,7 +188,7 @@ export class Files {
       /** 群：成员（不含我）；不认识这个群 / 我已退出时是 `null`。 */
       groupMembers?: (groupId: string) => string[] | null;
       /** 群是不是只读更新组、发布者是谁（D441）：收文件时也要拦非发布者。 */
-      groupAnnounceOnly?: (groupId: string) => { announceOnly?: boolean; publisher?: string; owner?: string; members?: string[] } | null;
+  groupAnnounceOnly?: (groupId: string) => GroupGate | null;
     },
   ) {
     for (const dir of [this.inbox(), statePath("out")]) fs.mkdirSync(dir, { recursive: true });

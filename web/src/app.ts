@@ -5013,7 +5013,8 @@ export class App {
     if (!sheet) return;
     const group = this.displayGroups().find((g) => g.tab === tab) ?? this.displayGroups()[0];
     const item = group.items.find((i) => i.sec === (sec ?? this.displaySec[tab])) ?? group.items[0];
-    this.displaySec[tab] = item.sec;
+    // 深链（persist=false）不写用户上次停留的子页签（评审 #13）。
+    if (persist) this.displaySec[tab] = item.sec;
     for (const page of sheet.querySelectorAll<HTMLElement>(".set-page")) page.hidden = page.dataset.page !== tab;
     if (tab === "conn") this.paintConnPage();
     for (const sub of sheet.querySelectorAll<HTMLElement>(`.set-page[data-page="${tab}"] .set-sub`)) sub.hidden = sub.dataset.sec !== item.sec;

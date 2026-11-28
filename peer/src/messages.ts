@@ -105,6 +105,8 @@ export class Messages {
   /** 对方正在输入：只放内存，进程重启就清空（一条心跳本来也只活 3 秒）。 */
   private readonly typingUntil = new Map<string, number>();
   private readonly typingSentAt = new Map<string, number>();
+  /** 补发过的公告 id：outbox 投递成功后就删了，光靠它挡不住第二次补发（评审 #11）。 */
+  private readonly replayed = new Map<string, Set<string>>();
 
   constructor(
     private readonly ctx: {
@@ -671,15 +673,20 @@ export class Messages {
       .read(groupId, 5000)
       .filter((entry) => entry.kind === "text" && entry.announce)
       .slice(-want);
+    const replayKey = `${groupId}@${peerNodeId}`;
+    const sentBefore = this.replayed.get(replayKey) ?? new Set<string>();
     let sent = 0;
     for (const entry of entries) {
+      if (sentBefore.has(entry.id)) continue;
       // outbox 按 id 去重：已经在重试队列里的那条不会再排一次，sent 也只数真正排进去的（评审 #5）。
       if (this.ctx.outbox?.has(`${entry.id}@${peerNodeId}`)) continue;
       // 入队时间必须用「现在」：outbox 按 item.at 判 24 小时过期，拿原公告时间会被立刻丢掉（评审 #3）。
       // 气泡时间仍取 payload 里的 entry.at，新成员看到的是原公告的日期。
       this.enqueue(groupId, entry.id, "text", entry, Date.now(), [{ peerId: peerNodeId, addr: peer.addr, port: peer.port }]);
+      sentBefore.add(entry.id);
       sent++;
     }
+    this.replayed.set(replayKey, sentBefore);
     return { ok: true, sent };
   }
 
@@ -792,6 +799,8 @@ export class Messages {
     const seq = Number(message?.seq);
     const replyTo = message?.replyTo && typeof message.replyTo === "object" ? message.replyTo : undefined;
     const announce: AnnouncePayload | null = message?.announce ? normalizeAnnounce(message.announce) : null;
+    // 对端说这是公告但形状不对：降级成普通文本是兼容老/坏客户端，但别一声不吭（评审 #12）。
+    if (message?.announce && !announce) this.ctx.log("收到的公告格式不对，已按普通文本落库");
     // `via` 跟着消息走：对端也要能看见「这条是 agent 代发的」，不能只在自己这边挂徽章。
     this.ctx.history.append(
       thread,
