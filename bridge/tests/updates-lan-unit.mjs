@@ -6,6 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { groupIdFor, repoSlugFromRemote } from "../src/updates-lan.ts";
+import { MAX_ANNOUNCE_BATCHES, normalizeAnnounce } from "../../peer/src/announce.ts";
 
 const cases = [
   ["git@github.com:Yang-Code01/pi-web-client.git", "Yang-Code01/pi-web-client"],
@@ -14,6 +15,9 @@ const cases = [
   ["https://github.com/Yang-Code01/pi-web-client", "Yang-Code01/pi-web-client"],
   ["https://github.com/Yang-Code01/pi-web-client/", "Yang-Code01/pi-web-client"],
   ["ssh://git@gitlab.local/Yang-Code01/pi-web-client.git", "Yang-Code01/pi-web-client"],
+  // GitLab 的多层路径照收；.git 之后是网页路径，要切掉（评审 #2）。
+  ["https://gitlab.com/group/subgroup/name", "group/subgroup/name"],
+  ["https://github.com/owner/name.git/extra", "owner/name"],
   // 带凭据的 URL：用户名密码必须被丢掉，不能进 slug、更不能进组名/announce。
   ["https://user:token@github.com/o/r.git", "o/r"],
   ["/srv/git/local.git", null],
@@ -23,10 +27,25 @@ for (const [input, want] of cases) {
   assert.equal(repoSlugFromRemote(input), want, `repoSlugFromRemote(${JSON.stringify(input)})`);
 }
 
-// 组 id：只留 [a-z0-9-]，跨机器必须算出同一个（大小学、斜杠、下划线都归一）。
+// 组 id：只留 [a-z0-9-]，跨机器必须算出同一个（大小写、斜杠、下划线都归一）。
 assert.equal(groupIdFor("Yang-Code01/pi-web-client"), "grp-updates-yang-code01-pi-web-client");
 assert.equal(groupIdFor("A_B/C.D"), "grp-updates-a-b-c-d");
 assert.equal(groupIdFor("////"), "grp-updates-repo");
 assert.ok(groupIdFor("x/".padEnd(200, "y")).length <= 80, "组 id 不超过 peer 的 80 字符上限");
+
+// normalizeAnnounce：形状不对整条拒、超限只裁不丢（评审 #12）。
+assert.equal(normalizeAnnounce(null), null);
+assert.equal(normalizeAnnounce({ repo: "no-slash", commit: "abc1234", batches: [{ title: "a", body: "" }] }), null);
+assert.equal(normalizeAnnounce({ repo: "o/r", commit: "not-hex", batches: [{ title: "a", body: "" }] }), null);
+const seven = normalizeAnnounce({
+  repo: "o/r",
+  commit: "abc1234",
+  batches: Array.from({ length: 7 }, (_, i) => ({ title: "t" + i, body: "b" })),
+});
+assert.equal(seven.batches.length, MAX_ANNOUNCE_BATCHES, "最多 6 批");
+assert.equal(seven.batches[0].title, "t0", "保住最新那批（数组是新 → 旧）");
+assert.equal(seven.batches[5].title, "t5", "丢的是最旧的");
+const long = normalizeAnnounce({ repo: "o/r", commit: "abc1234", batches: [{ title: "t", body: "字".repeat(3000) }] });
+assert.ok(Buffer.byteLength(long.batches[0].body, "utf8") <= 4096, "单批正文按 4 KB 截断");
 
 console.log("✔ updates-lan 纯函数 全部通过");

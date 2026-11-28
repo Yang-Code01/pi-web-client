@@ -4592,6 +4592,7 @@ export const en: Dict = {
   "这台机器现在会往更新组里推公告": "This machine now posts updates to the group",
   "已停止发布更新公告": "Stopped publishing update posts",
   "检查失败：{p1}": "Check failed: {p1}",
+  "bridge 太旧了：没有 /api/updates，重启一下 bridge": "This bridge is too old (no /api/updates). Restart it.",
   "检查完了": "Check finished",
   "发布者": "the publisher",
 };

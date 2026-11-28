@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { knownAvatar } from "./avatars.ts";
+import { isRepo } from "./announce.ts";
 
 export const VERSION = "0.2.0";
 /** 协议版本：announce / inbox 都带着它，将来换协议靠它挡掉旧对端。 */
@@ -107,6 +108,8 @@ function defaultNickname(): string {
 export function loadConfig(): PeerConfig {
   const saved = readJson<Partial<PeerConfig>>(statePath("config.json"), {});
   const group = saved.group ?? { address: DEFAULT_GROUP, port: DEFAULT_ANNOUNCE_PORT };
+  // 手改 config.json 写进带空格 / 冒号的 repo，会 announce 出去一个谁也匹配不上的标识（评审 #17）。
+  const savedRepo = typeof saved.updates?.repo === "string" ? saved.updates.repo.trim() : "";
   return {
     port: Number(process.env.PI_PEER_PORT || saved.port || DEFAULT_PORT),
     bind: process.env.PI_PEER_BIND || saved.bind || "0.0.0.0",
@@ -123,7 +126,7 @@ export function loadConfig(): PeerConfig {
     },
     manual: Array.isArray(saved.manual) ? saved.manual.filter((s) => typeof s === "string") : [],
     updates: {
-      repo: typeof saved.updates?.repo === "string" ? saved.updates.repo.trim().slice(0, 120) : "",
+      repo: isRepo(savedRepo) ? savedRepo : "",
       publisher: saved.updates?.publisher === true,
     },
   };

@@ -1493,7 +1493,12 @@ async function main(): Promise<void> {
     }
     if (url.pathname === "/api/updates/publisher" && req.method === "POST") {
       if (publicReq) return json(res, 403, { error: "公网不能改本机的更新组设置" });
-      const body = await readBody(req).catch(() => ({}));
+      let body: { on?: unknown };
+      try {
+        body = (await readBody(req)) as { on?: unknown };
+      } catch {
+        return json(res, 400, { error: "请求体不是合法的 JSON" });
+      }
       try {
         return json(res, 200, await updates.setPublisher(body?.on === true));
       } catch (err) {

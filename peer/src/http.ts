@@ -7,6 +7,7 @@ import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import { knownAvatar } from "./avatars.ts";
+import { isRepo } from "./announce.ts";
 import type { Discovery } from "./discovery.ts";
 import { CHUNK, SANDBOX_CSP, inlineType, isHtmlType, mimeOf, typeOf } from "./files.ts";
 import type { Files } from "./files.ts";
@@ -221,8 +222,8 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         if (body.updates !== undefined) {
           const u = (body.updates ?? {}) as Record<string, unknown>;
           if (typeof u.repo === "string") {
-            const repo = u.repo.trim().slice(0, 120);
-            if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) return json(res, 400, { error: "仓库标识要写成 owner/name" });
+            const repo = u.repo.trim();
+            if (repo && !isRepo(repo)) return json(res, 400, { error: "仓库标识要写成 owner/name（或 group/subgroup/name）" });
             if (repo !== cfg.updates.repo) {
               cfg.updates.repo = repo;
               if (!repo) cfg.updates.publisher = false;

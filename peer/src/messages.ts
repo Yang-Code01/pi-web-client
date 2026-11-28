@@ -538,6 +538,8 @@ export class Messages {
     if (!group) throw new Error("这个更新组还没同步到本机");
     if (group.announceOnly !== true) throw new Error("这不是只读的更新组");
     setOptOut(groupId, false);
+    // 本机先不显示「已退出」；发布者的下一份快照（invite 会 v+1）到了再补名册（评审 #21）。
+    this.ctx.groups.put({ ...group, left: false });
     return { ok: true };
   }
 

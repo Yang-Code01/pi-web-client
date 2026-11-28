@@ -140,11 +140,8 @@ async function udpFree(port) {
 async function pickPorts() {
   for (let base = 7881; base <= 7961; base += 10) {
     const p = base;
-    const a = base + 1;
-    const c = base + 2;
-    const g = base + 100;
-    const tcp = await Promise.all([portFree(p), portFree(a), portFree(c)]);
-    if (tcp.every(Boolean) && (await udpFree(g))) return { p, a, c, g };
+    const tcp = await Promise.all([portFree(p), portFree(base + 1), portFree(base + 2)]);
+    if (tcp.every(Boolean) && (await udpFree(base + 100))) return { p, a: base + 1, c: base + 2, g: base + 100 };
   }
   throw new Error("7881-7963 这一段端口都被占了（可能另一个 e2e 正在跑）：先关掉它再跑");
 }
@@ -300,7 +297,7 @@ async function main() {
     const data = await get(C, "/threads");
     return (data.threads ?? []).find((t) => t.nodeId === GROUP)?.group;
   }).catch(() => undefined);
-  if (joined.announceOnly === true) ok("新机器被拉进组、拿到只读快照");
+  if (joined?.announceOnly === true) ok("新机器被拉进组、拿到只读快照");
   else bad("新机器没拿到快照", joined);
 
   const claimed = await post(C, "/groups", { action: "publisher", id: GROUP });

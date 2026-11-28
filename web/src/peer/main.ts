@@ -4318,7 +4318,17 @@ function updatesCard(): HTMLElement {
   card.append(h("h3", "", tr("更新公告")));
   const u = S.updates;
   if (!u) {
-    card.append(h("div", "note", tr("读不到更新组状态（bridge 没回 /api/updates）。{p1}", { p1: S.updatesError ?? "" })));
+    // 404 是「桥太旧、根本没这条路由」，和网络断了不是一回事（评审 #22）。
+    const stale = /HTTP 404/.test(S.updatesError ?? "");
+    card.append(
+      h(
+        "div",
+        "note",
+        stale
+          ? tr("bridge 太旧了：没有 /api/updates，重启一下 bridge")
+          : tr("读不到更新组状态（bridge 没回 /api/updates）。{p1}", { p1: S.updatesError ?? "" }),
+      ),
+    );
     return card;
   }
   if (!u.available) {

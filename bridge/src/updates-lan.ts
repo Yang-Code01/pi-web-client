@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { readJsonChecked, statePath, writeJson } from "./paths.ts";
 import { whatsnewBatches, type WhatsnewBatch } from "./whatsnew.ts";
-import type { PeerGroup, PeerHost } from "./peer.ts";
+import type { PeerAnnounce, PeerGroup, PeerHost } from "./peer.ts";
 
 /**
  * D441：局域网更新组。发布者定时看自己检出里的 `origin/main`，有新提交就往「固定 id 的只读群」
@@ -29,6 +29,24 @@ const INVITE_MS = 10_000;
 /** git 命令超时：fetch 卡住时别把整个进程拖住。 */
 const GIT_TIMEOUT_MS = 20_000;
 const MAX_COMMIT_SUBJECTS = 20;
+/** 与 peer 侧 normalizeAnnounce 的整包上限对齐（评审 #5/#6）：发出去的 payload 不该被对端静默裁掉。 */
+const MAX_ANNOUNCE_BYTES = 16 * 1024;
+const MAX_ANNOUNCE_BATCH_BYTES = 4096;
+const MAX_ANNOUNCE_BATCHES = 6;
+
+/** 按 UTF-8 字节截断（中文一个字 3 字节，不能按 UTF-16 长度算）。 */
+function cutUtf8(s: string, max: number): string {
+  if (Buffer.byteLength(s, "utf8") <= max) return s;
+  let out = "";
+  let used = 0;
+  for (const ch of s) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (used + n > max) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
 
 export interface UpdatesState {
   /** 上次播报到哪个 commit（短 SHA，7 位）。 */
@@ -70,15 +88,32 @@ interface RepoInfo {
   groupName: string;
 }
 
-/** `git@host:owner/name.git`、`https://host/owner/name`、`ssh://git@host/owner/name` 都认。 */
+/**
+ * `git@host:owner/name.git`、`https://host/owner/name`、`ssh://git@host/owner/name` 都认；
+ * GitLab 那种 `group/subgroup/name` 也照收（评审 #2）—— 仓库标识允许 2 段以上，组 id 由 slug 归一。
+ */
 export function repoSlugFromRemote(url: string): string | null {
-  const s = url.trim();
-  const m =
-    /^git@([\w.-]+):([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(s) ??
-    /^ssh:\/\/git@([\w.-]+)\/([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(s) ??
-    /^https?:\/\/(?:[^@/]+@)?([\w.-]+)\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(s);
-  if (!m) return null;
-  return `${m[2]}/${m[3]}`;
+  const s = url.trim().replace(/\/+$/, "");
+  let host = "";
+  let rest = "";
+  if (s.startsWith("git@")) {
+    const i = s.indexOf(":");
+    if (i < 0) return null;
+    host = s.slice(4, i);
+    rest = s.slice(i + 1);
+  } else {
+    const m = /^(?:ssh:\/\/|https?:\/\/)(?:[^@/]+@)?([^/]+)\/(.+)$/.exec(s);
+    if (!m) return null;
+    host = m[1] ?? "";
+    rest = m[2] ?? "";
+  }
+  const segs = rest.split("/").filter(Boolean);
+  // `name.git/extra`：.git 之后是网页路径，不是仓库路径。
+  const at = segs.findIndex((x) => /\.git$/i.test(x));
+  const parts = (at >= 0 ? segs.slice(0, at + 1) : segs).map((x) => x.replace(/\.git$/i, "")).filter(Boolean);
+  if (!/^[\w.-]+$/.test(host) || parts.length < 2) return null;
+  if (!parts.every((x) => /^[\w.-]+$/.test(x))) return null;
+  return parts.join("/");
 }
 
 /** 组 id 只允许字母、数字、下划线与短横线（peer 侧会校验），所以 slug 也要归一。 */
@@ -122,10 +157,9 @@ export class UpdatesLan {
   }
 
   start(): void {
-    this.firstTimer = setTimeout(() => void this.tick(false), FIRST_CHECK_MS);
-    // 定时只做「变了才播」，force 留给「立即检查」：否则每半小时白跑一次 git show/log，
-    // 批次标题被删时还会把同一个 commit 重播（评审 #1）。
-    this.timer = setInterval(() => void this.tick(false), INTERVAL_MS);
+    this.firstTimer = setTimeout(() => void this.tick(), FIRST_CHECK_MS);
+    // 定时只做「变了才播」：commit 没变就短路，「立即检查」也不重播同一个 commit（评审 #4）。
+    this.timer = setInterval(() => void this.tick(), INTERVAL_MS);
     this.inviteTimer = setInterval(() => void this.reconcile(), INVITE_MS);
     // 一开机就把「我这份检出是哪个仓库」写进 config：**不是发布者也要写**，否则 announce 里没仓库标识，
     // 发布者就永远认不出这台机器、也不会拉它进组。写完才谈拉人。
@@ -208,14 +242,16 @@ export class UpdatesLan {
     const status = this.peer.view().status;
     const group = info ? await this.group(info.groupId).catch(() => null) : null;
     const me = status?.nodeId ?? "";
+    const publisher = status?.config.updates?.publisher === true && Boolean(status?.config.updates?.repo);
     return {
       ok: true,
       available: Boolean(info),
       repo: info?.repo ?? "",
       groupId: info?.groupId ?? "",
       groupName: info?.groupName ?? "",
-      publisher: status?.config.updates?.publisher === true && Boolean(status?.config.updates?.repo),
-      joined: Boolean(group && me && group.members.some((m) => m.nodeId === me) && !group.left),
+      publisher,
+      // 发布者刚建组、本机名册还没收到快照的那几秒，别显示成「没加入」（评审 #3）。
+      joined: publisher || Boolean(group && me && group.members.some((m) => m.nodeId === me) && !group.left),
       memberCount: group?.members.length ?? 0,
       // 没有 origin 时 info 为 null：不能让 undefined === undefined 把所有对端都算进来（评审 #3）。
       onlineCount: info ? (status?.online ?? []).filter((p) => p.updates?.repo === info.repo).length : 0,
@@ -236,9 +272,13 @@ export class UpdatesLan {
 
   /** 打开 / 关闭「这台机器发布更新公告」；打开后立刻看一次（不用等 30 分钟）。 */
   async setPublisher(on: boolean): Promise<UpdatesView> {
+    // peer 没起来时 setConfig 只会报底层请求失败，先给一句能看懂的（评审 #10）。
+    if (!this.peer.view().status) throw new Error("内网通没在运行：先把局域网打开");
     const info = await this.repoInfo();
     if (on && !info) throw new Error("这个检出没有 git remote origin，认不出是哪份仓库");
-    await this.peer.setConfig({ updates: { repo: info?.repo ?? "", publisher: on } });
+    // 关闭时保留已登记的 repo：repoInfo() 偶发失败（git 超时 / 目录被挪）不能把标识抹掉（评审 #1）。
+    const repo = info?.repo || this.peer.view().status?.config.updates?.repo || "";
+    await this.peer.setConfig({ updates: { repo, publisher: on } });
     if (on) {
       // 每个 timer 触发后从 kicks 里摘掉：反复开关不会无限增长（评审 #4）。
       const kick = (fn: () => Promise<unknown>): void => {
@@ -256,7 +296,7 @@ export class UpdatesLan {
 
   /** 「立即检查」：手动触发一次，跳过「commit 没变」的短路。 */
   async checkNow(): Promise<UpdatesView> {
-    await this.tick(true);
+    await this.tick();
     return this.view();
   }
 
@@ -334,6 +374,23 @@ export class UpdatesLan {
     return batches.slice(0, idx);
   }
 
+  /** 发出去之前按对端的上限裁一遍，别让内容被接收端静默裁掉、两端卡片不一致（评审 #6）。 */
+  private fitBatches(batches: WhatsnewBatch[], repo: string, commit: string): WhatsnewBatch[] {
+    const out = batches.slice(0, MAX_ANNOUNCE_BATCHES).map((b) => ({
+      title: cutUtf8(b.title, 160),
+      body: cutUtf8(b.body, MAX_ANNOUNCE_BATCH_BYTES),
+    }));
+    const size = (list: WhatsnewBatch[]): number =>
+      Buffer.byteLength(JSON.stringify({ repo, commit, batches: list, howTo: "auto" }), "utf8");
+    while (out.length > 1 && size(out) > MAX_ANNOUNCE_BYTES) out.pop();
+    const first = out[0];
+    if (first && size(out) > MAX_ANNOUNCE_BYTES) {
+      const room = MAX_ANNOUNCE_BYTES - size([{ ...first, body: "" }]);
+      out[0] = { ...first, body: cutUtf8(first.body, Math.max(0, room)) };
+    }
+    return out;
+  }
+
   /** 公告正文（给旧版本 / 通知预览看的退化文本）：卡片认识 `announce` 就画卡片。 */
   private composeText(info: RepoInfo, commit: string, batches: WhatsnewBatch[], subjects: string[]): string {
     const day = new Date().toISOString().slice(0, 10);
@@ -346,10 +403,10 @@ export class UpdatesLan {
       for (const s of subjects) lines.push(`· ${s}`);
     }
     lines.push("", "怎么更新：设置 → 工具 → 热部署（可用时）；否则 git pull && npm install && npm start");
-    return lines.join("\n").slice(0, 30_000);
+    return cutUtf8(lines.join("\n"), MAX_ANNOUNCE_BYTES);
   }
 
-  private async tick(force: boolean): Promise<void> {
+  private async tick(): Promise<void> {
     if (this.checking) return;
     this.checking = true;
     try {
@@ -370,13 +427,14 @@ export class UpdatesLan {
       }
       const commit = await this.git(["rev-parse", "--short=7", "origin/main"]);
       this.state.lastCheckAt = Date.now();
-      if (!force && commit === this.state.lastCommit) {
+      // 同一个 commit 无论定时还是「立即检查」都不重播：否则连点按钮会往组里重复发公告（评审 #4）。
+      if (commit === this.state.lastCommit) {
         this.state.lastError = "";
         this.save();
         return;
       }
 
-      const batches = await this.freshBatches();
+      const batches = this.fitBatches(await this.freshBatches(), info.repo, commit);
       const subjects = batches.length
         ? []
         : (await this.git(["log", `--format=%s`, `${this.state.lastCommit || "HEAD"}..origin/main`]).catch(() => ""))
@@ -411,7 +469,7 @@ export class UpdatesLan {
       if (want.length && group) await this.inviteAndReplay(info, want);
 
       const text = this.composeText(info, commit, batches, subjects);
-      const announce = { repo: info.repo, commit, batches, howTo: "auto" as const };
+      const announce: PeerAnnounce = { repo: info.repo, commit, batches, howTo: "auto" };
       await this.peer.sendText(info.groupId, text, undefined, undefined, { announce });
       this.state.lastCommit = commit;
       if (batches.length) this.state.lastBatchTitle = batches[0].title;

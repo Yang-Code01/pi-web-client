@@ -26,6 +26,13 @@ export const MAX_ANNOUNCE_BATCHES = 6;
 export const MAX_ANNOUNCE_BATCH_BYTES = 4096;
 export const MAX_ANNOUNCE_BYTES = 16 * 1024;
 
+/** 仓库标识：至少 owner/name，允许 GitLab 那种 group/subgroup/name（评审 #2）。 */
+export const REPO_RE = /^[\w.-]+(?:\/[\w.-]+)+$/;
+
+export function isRepo(raw: unknown): boolean {
+  return typeof raw === "string" && raw.length <= 160 && REPO_RE.test(raw);
+}
+
 /** 按 UTF-8 字节截断（中文一个字 3 字节，不能按字符数算）。 */
 export function truncBytes(s: string, max: number): string {
   if (Buffer.byteLength(s, "utf8") <= max) return s;
@@ -47,7 +54,7 @@ export function truncBytes(s: string, max: number): string {
 export function normalizeAnnounce(raw: unknown): AnnouncePayload | null {
   const r = raw as Partial<AnnouncePayload> | null | undefined;
   const repo = typeof r?.repo === "string" ? r.repo.trim() : "";
-  if (!repo || repo.length > 120 || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return null;
+  if (!repo || !isRepo(repo)) return null;
   const commit = typeof r?.commit === "string" ? r.commit.trim() : "";
   if (!/^[0-9a-f]{4,40}$/i.test(commit)) return null;
   const batches: AnnounceBatch[] = [];
@@ -66,9 +73,11 @@ export function normalizeAnnounce(raw: unknown): AnnouncePayload | null {
   while (batches.length > 1 && bytes(batches) > MAX_ANNOUNCE_BYTES) batches.pop();
   if (bytes(batches) > MAX_ANNOUNCE_BYTES) {
     const only = batches[0];
-    let body = only.body;
-    while (body && bytes([{ ...only, body }]) > MAX_ANNOUNCE_BYTES) body = truncBytes(body, Math.max(0, Buffer.byteLength(body, "utf8") - 512));
-    only.body = body;
+    if (only) {
+      // 一次算准剩余额度，不再按 512 字节一轮 JSON.stringify（评审 #16）。
+      const room = MAX_ANNOUNCE_BYTES - bytes([{ ...only, body: "" }]);
+      only.body = truncBytes(only.body, Math.max(0, room));
+    }
   }
   return { repo, commit, batches, howTo: "auto" };
 }

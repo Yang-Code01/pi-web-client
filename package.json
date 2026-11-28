@@ -118,7 +118,7 @@
     "test:hint": "node bridge/tests/hint-spawn.mjs",
     "test:rules": "node --experimental-strip-types web/tests/rules-unit.mjs && node --experimental-strip-types bridge/tests/rules-unit.mjs",
     "test:probes": "node web/tests/probes-unit.mjs",
-    "test:peer": "node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-history.mjs && node bridge/tests/peer-read-watermark.mjs && node bridge/tests/peer-group-e2e.mjs && node bridge/tests/peer-port-recovery.mjs",
+    "test:peer": "node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-history.mjs && node bridge/tests/peer-read-watermark.mjs && node bridge/tests/peer-group-e2e.mjs && node bridge/tests/peer-port-recovery.mjs && node --experimental-strip-types bridge/tests/updates-lan-unit.mjs && node bridge/tests/peer-updates-e2e.mjs",
     "test:updates": "node --experimental-strip-types bridge/tests/updates-lan-unit.mjs && node bridge/tests/peer-updates-e2e.mjs",
     "test:peer:ui": "node bridge/tests/peer-ui.mjs",
     "probe:bg-runs": "node probes/bg-runs.mjs",

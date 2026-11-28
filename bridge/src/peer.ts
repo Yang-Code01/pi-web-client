@@ -43,6 +43,14 @@ export interface PeerStatus {
 }
 
 /** 群里的一份快照（`/groups` 回来的那份，只声明 bridge 用得着的字段）。 */
+/** 更新公告（与 peer/src/announce.ts 的 AnnouncePayload 同形）：桥只透传，不解释（评审 #11）。 */
+export interface PeerAnnounce {
+  repo: string;
+  commit: string;
+  batches: { title: string; body: string }[];
+  howTo: "auto";
+}
+
 export interface PeerGroup {
   id: string;
   name: string;
@@ -365,7 +373,7 @@ export class PeerHost {
     text: string,
     via?: "pi",
     replyTo?: { id: string; from: string; excerpt: string },
-    extra: { priority?: string; topic?: string; announce?: unknown } = {},
+    extra: { priority?: string; topic?: string; announce?: PeerAnnounce } = {},
   ): Promise<{ ok: boolean; id: string; at: number; seq: number }> {
     const body: Record<string, unknown> = { peer, text };
     if (extra.priority) body.priority = extra.priority;
