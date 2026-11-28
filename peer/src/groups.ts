@@ -128,14 +128,16 @@ export function setOptOut(id: string, on: boolean): void {
   else set.delete(id);
   try {
     fs.writeFileSync(optOutFile(), JSON.stringify([...set], null, 2));
-  } catch {
-    /* 落盘失败时内存里仍然是新的，下次启动会丢，但不影响这一次 */
-  } finally {
-    // 我们就是刚写这份文件的人：缓存换成新 Set，stamp 跟着更新（评审 #7/#21）。
-    optOutCache = set;
-    optOutStamp = optOutFileStamp();
-    optOutCheckedAt = Date.now();
+  } catch (err) {
+    // 写失败（磁盘满 / 权限）时不能假装成功：清掉缓存，下一次 optOutIds() 读盘拿真实状态（评审 #1）。
+    optOutCache = null;
+    optOutStamp = "";
+    throw err;
   }
+  // 我们就是刚写这份文件的人：缓存换成新 Set，stamp 跟着更新（评审 #7/#21）。
+  optOutCache = set;
+  optOutStamp = optOutFileStamp();
+  optOutCheckedAt = Date.now();
 }
 
 /** 只读群里谁能写：publisher 定了就是它，没定就回退 owner（旧快照的恢复路径）。
@@ -233,12 +235,13 @@ export class Groups {
       ? (next.members.find((m) => m.nodeId === pub) ??
         before?.members.find((m) => m.nodeId === pub) ?? { nodeId: pub })
       : null;
-    const incoming: PeerIdentity[] =
-      pubIdentity &&
-      next.members.length < MAX_GROUP_MEMBERS &&
-      !next.members.some((m) => m.nodeId === pubIdentity.nodeId)
-        ? [pubIdentity, ...next.members]
-        : next.members;
+    let incoming: PeerIdentity[] = next.members;
+    if (pubIdentity && !next.members.some((m) => m.nodeId === pubIdentity.nodeId)) {
+      // 满员也要补：publisher 不在名册里会让只读群没人能写（评审 #3）。
+      // 挤掉最后一位（最近拉进来的）而不是发布者；名册本身仍受 MAX 约束。
+      const room = next.members.length >= MAX_GROUP_MEMBERS ? next.members.slice(0, MAX_GROUP_MEMBERS - 1) : next.members;
+      incoming = [pubIdentity, ...room];
+    }
     const seen = new Set<string>();
     // takeover 也只信新快照：把 before.members 拼回来会让新快照里被移出的人复活（评审 #6）。
     const members = [...incoming]

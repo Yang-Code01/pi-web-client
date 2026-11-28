@@ -704,15 +704,17 @@ async function loadStatus(): Promise<void> {
 
 /** D441：更新组状态。发布者开关在 peer 的 config 里，组与播报进度在 bridge 里。 */
 /** 旧桥 / 被裁剪的响应可能少字段：统一兜底，别让设置页 split(undefined) 崩掉（评审 #32/#36）。 */
-function normalizeUpdates(view: Partial<UpdatesView>): UpdatesView {
+function normalizeUpdates(view: Partial<UpdatesView> | null | undefined): UpdatesView {
+  // 旧桥 / 出错页可能回 null，直接展开再读字段会抛 TypeError（评审 #5）。
+  const src = view && typeof view === "object" ? view : {};
   return {
-    ...view,
+    ...src,
     ok: true,
-    lastCommit: view.lastCommit ?? "",
-    lastBatchTitle: view.lastBatchTitle ?? "",
-    lastAnnouncedAt: view.lastAnnouncedAt ?? 0,
-    lastCheckAt: view.lastCheckAt ?? 0,
-    lastError: view.lastError ?? "",
+    lastCommit: src.lastCommit ?? "",
+    lastBatchTitle: src.lastBatchTitle ?? "",
+    lastAnnouncedAt: src.lastAnnouncedAt ?? 0,
+    lastCheckAt: src.lastCheckAt ?? 0,
+    lastError: src.lastError ?? "",
   } as UpdatesView;
 }
 
@@ -2903,7 +2905,7 @@ async function rejoinUpdates(t?: Thread): Promise<void> {
     await Promise.all([t ? loadThreads() : Promise.resolve(), loadUpdates()]);
     renderAll();
     if (res.pending) toast(tr("本机还不在这个组的名单里，等发布者把你拉回去"));
-    toast(tr("已重新订阅，等发布者把你拉回更新组"));
+    else toast(tr("已重新订阅，等发布者把你拉回更新组"));
   } catch (err) {
     toast((err as Error).message);
   }

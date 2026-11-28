@@ -3,13 +3,13 @@
  *
  * 要守的是「成员到底能不能发」「公告卡片读不读得下去」：
  *  1. 成员：更新组里没有输入区（`.peer-rich`）、没有发文件按钮，底部是只读提示条。
- *  2. 成员的「更多」菜单里没有建群 / 改群名以外的写操作（退出仍在）。
- *  3. 公告卡片：仓库 + 短提交 + 批次标题 + 批次正文的条目都画出来。
- *  4. 公告卡片上的「打开更新日志」开的是 `/?settings=whatsnew`（主界面 D441 深链）。
- *  5. 消息右键只剩「复制文字」；悬停不出现回应笑脸、气泡上没有回应行。
- *  6. 发布者同一份数据：有输入区、没有只读条、卡片照画。
- *  7. 设置页「更新公告」卡：发布者看到「本机是发布者」+ 立即检查可点；成员看到「没加入」+ 重新加入。
- *  8. 字号 150%：卡片不横向溢出（`scrollWidth <= clientWidth + 1`）。
+ *  2. 公告卡片：仓库 + 短提交 + 批次标题 + 批次正文的条目都画出来。
+ *  3. 公告卡片上的「打开更新日志」开的是 `/?settings=whatsnew`（主界面 D441 深链），
+ *     「打开热部署」开的是 `/?settings=tools`（两次点击各查新增的那一条，见评审 #13）。
+ *  4. 消息右键只剩「复制文字」；悬停不出现回应笑脸、气泡上没有回应行。
+ *  5. 发布者同一份数据：有输入区、没有只读条、卡片照画、按钮同样开深链。
+ *  6. 设置页「更新公告」卡：发布者看到「本机是发布者」+ 立即检查可点；成员看到「没加入」+ 重新加入。
+ *  7. 字号 150%：卡片不横向溢出（`scrollWidth <= clientWidth + 1`）。
  *
  * 用法：npm run build:web && node probes/updates-group.mjs
  */
@@ -50,10 +50,15 @@ const server = http.createServer((req, res) => {
   try {
     rel = url.pathname === "/" || url.pathname === "/peer" ? "peer.html" : decodeURIComponent(url.pathname.slice(1));
   } catch {
-    return res.writeHead(400).end("bad path");
+    res.writeHead(400);
+    return res.end("bad path");
   }
   const file = path.resolve(DIST, rel);
-  if (!file.startsWith(DIST + path.sep)) return res.writeHead(404).end("not found");
+  if (!file.startsWith(DIST + path.sep)) {
+    res.writeHead(404);
+    res.end("not found");
+    return;
+  }
   // 一次 statSync 就把「存在 / 是目录」都判了，别在 existsSync 和 statSync 之间留 TOCTOU（评审 #21）。
   let stat;
   try {
@@ -203,12 +208,16 @@ check(cardText.includes("2026-11-28 · 局域网更新组（#730）"), "卡片�
 check(cardText.includes("固定只读更新组") && cardText.includes("成员不能发消息"), "卡片有批次正文条目");
 check(cardText.includes("热部署"), "有热部署时「怎么更新」指向热部署", cardText);
 
+const openedBefore = (await page.evaluate(() => window.__opened ?? [])).length;
 await page.locator(".an-acts .btn").first().click();
 const opened = await page.evaluate(() => window.__opened ?? []);
-check(opened.some((u) => u === "/?settings=whatsnew"), "打开更新日志指向 /?settings=whatsnew", opened);
+const newAfterLog = opened.slice(openedBefore);
+check(newAfterLog.includes("/?settings=whatsnew"), "打开更新日志指向 /?settings=whatsnew", newAfterLog);
+const toolsBefore = opened.length;
 await page.locator(".an-acts .btn").nth(1).click();
 const opened2 = await page.evaluate(() => window.__opened ?? []);
-check(opened2.some((u) => u === "/?settings=tools"), "热部署可用时有「打开热部署」→ /?settings=tools", opened2);
+const newAfterTools = opened2.slice(toolsBefore);
+check(newAfterTools.includes("/?settings=tools"), "热部署可用时有「打开热部署」→ /?settings=tools", newAfterTools);
 
 // 右键：只读群里只剩「复制文字」。
 await page.locator(".msg .bub, .msg .an-card").first().click({ button: "right" });
@@ -240,7 +249,7 @@ check(overflow <= 1, "字号 150% 卡片不横向溢出", overflow);
 // ---------------------------------------------------------------- 发布者视角
 const ctx2 = await browser.newContext({ locale: "zh-CN", viewport: { width: 1180, height: 820 } });
 const page2 = await ctx2.newPage();
-// 发布者这边也记 window.open：以后加「打开更新日志」的断言时别读到 undefined（评审 #17）。
+// 发布者这边也记 window.open，下面要验按钮真的开到深链（评审 #14）。
 await page2.addInitScript(() => {
   window.__opened = [];
   const orig = window.open;
@@ -256,6 +265,10 @@ check((await page2.locator(".compose .peer-rich").count()) === 1, "发布者有�
 check((await page2.locator(".compose.readonlybar").count()) === 0, "发布者没有只读条");
 check((await page2.locator(".an-card").count()) === 1, "发布者那边公告卡片照画");
 check((await page2.locator(".reacts").count()) === 1, "发布者那边照常画回应行");
+const pubOpenedBefore = (await page2.evaluate(() => window.__opened ?? [])).length;
+await page2.locator(".an-acts .btn").first().click();
+const pubOpened = (await page2.evaluate(() => window.__opened ?? [])).slice(pubOpenedBefore);
+check(pubOpened.includes("/?settings=whatsnew"), "发布者「打开更新日志」也开深链", pubOpened);
 await page2.getByRole("button", { name: "我" }).click();
 await page2.waitForSelector(".card", { timeout: 5000 });
 const pubText = await page2.locator("#main").innerText();

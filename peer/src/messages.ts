@@ -217,6 +217,8 @@ export class Messages {
     // 公告也只允许出现在更新组里 —— 普通会话不该冒出更新卡片（评审 #13）。
     this.assertWritable(peerId);
     const announce = opts.announce ? normalizeAnnounce(opts.announce) : null;
+    // 调用方明确要发公告却传了非法形状：不能静默退化成普通文本，否则发布者以为推了（评审 #9）。
+    if (opts.announce && !announce) throw new Error("公告格式不对，没发出去");
     if (announce && this.ctx.groups.get(peerId)?.announceOnly !== true) throw new Error("只有更新组能发公告");
     const targets = this.targets(peerId);
     const at = Date.now();
@@ -550,8 +552,9 @@ export class Messages {
   /**
    * 换机器（D441）：新发布者接管这个更新组。
    *
-   * 新机器的本机名册里可能根本没有这个组（所以它建群时是 v=1），旧成员那边的 v 已经很大；
-   * `Groups.merge` 对「发布者换人」放行并抬版本（见那里），这里负责在已有的那份上 v+1 广播。
+   * 新机器要先被拉进组（拿到旧成员那份名册），再走这里 v+1 广播；旧成员按版本接受。
+   * `Groups.merge` 的 takeover 只给「publisher 还空着、owner 认领」这一种恢复路径用（见那里），
+   * 普通成员换发布者不靠它 —— 只靠 v 更大。
    */
   claimPublisher(groupId: string): Group {
     const group = this.mine(groupId);

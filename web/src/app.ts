@@ -13771,28 +13771,25 @@ export class App {
   /** 首屏数据回来之前开设置面板会画到空数据：等到第一个 hello，最多等 5 秒（评审 #25）。 */
   private whenHello(): Promise<void> {
     if (this.sawHello) return Promise.resolve();
+    // 一个共享 Promise + 一个定时器；超时也 resolve 自己，后来的人重新等一份新的（评审 #25 再收口）。
     this.helloWait ??= new Promise<void>((resolve) => {
       this.helloDone = resolve;
     });
-    // 一帧里可能不止一个深链调用：共享同一个 helloWait，但超时后要把它清掉，
-    // 否则 hello 晚到、helloDone 又被 hello 分支置空时，后来的人只能干等 5 秒（评审 #6/#7）。
-    const wait = this.helloWait;
-    return new Promise<void>((resolve) => {
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout>;
-      const done = (): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve();
-      };
-      timer = setTimeout(() => {
-        if (this.helloWait === wait) this.helloWait = null;
-        done();
+    if (!this.helloTimer) {
+      this.helloTimer = setTimeout(() => {
+        const done = this.helloDone;
+        this.helloWait = null;
+        this.helloDone = null;
+        this.helloTimer = null;
+        done?.();
       }, 5_000);
-      // hello 到达时 hello 分支也要能清掉这个定时器，不然它会挂满 5 秒（评审 #25）。
-      this.helloTimer = timer;
-      void wait.then(done);
+    }
+    const wait = this.helloWait;
+    return wait.then(() => {
+      if (this.helloTimer) {
+        clearTimeout(this.helloTimer);
+        this.helloTimer = null;
+      }
     });
   }
 
