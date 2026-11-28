@@ -463,6 +463,9 @@ export class App {
   private reviewTips: Record<string, string> = {};
   /** 上面那张快照是什么时候拍的（桥的 `tipsAt`）：比某条记录还旧的快照不能拿来判过时。 */
   private reviewTipsAt = 0;
+  /** 「重新核对」等着结果：那颗钮先灰着（每点一下都是一次绕开缓存的 `ls-remote`）。 */
+  private reviewTipsBusy = false;
+  private reviewTipsTimer: number | null = null;
   /** 一个会话同时最多几条（桥发来的上限）；缺省 2，跟桥上的 MAX_RUNS_PER_SESSION 对齐。 */
   private reviewCap = 2;
   private reviewOcr: ReviewOcr | null = null;
@@ -19144,6 +19147,17 @@ export class App {
     this.reviewPicker?.close();
   }
 
+  /** 「重新核对」的冷却时间到了：那颗刷新钮恢复可点。 */
+  private clearReviewTipsBusy(): void {
+    if (this.reviewTipsTimer !== null) {
+      window.clearTimeout(this.reviewTipsTimer);
+      this.reviewTipsTimer = null;
+    }
+    if (!this.reviewTipsBusy) return;
+    this.reviewTipsBusy = false;
+    if (this.queueTab === "review") this.renderQueue();
+  }
+
   private loadReview(fresh = false): void {
     const dir = this.reviewDir();
     if (!dir) {
@@ -19450,6 +19464,7 @@ export class App {
       modelLabels: this.reviewModelLabels(),
       tips: this.reviewTips,
       tipsAt: this.reviewTipsAt,
+      tipsBusy: this.reviewTipsBusy,
     });
     const effective = this.reviewEffectiveModel();
     return {
@@ -19595,7 +19610,16 @@ export class App {
       // 记录卡不再是入口（D429）：点卡底那颗「完整详情」打开那一次。
       onDetails: (runId) => this.openReviewSheet(runId),
       onRerun: (runId) => this.rerunReview(runId),
-      onRefreshTips: () => this.loadReview(true),
+      onRefreshTips: () => {
+        // 连点几下就是几次 `ls-remote`（`fresh` 绕开 60 秒缓存）：点下去先灰一小会儿。
+        // 用固定时长而不是「等某一帧」——面板平常就一直在收 `review.state`（标意见、跑完、
+        // 别的页签），拿帧当解除信号的话这颗钮几乎立刻就会恢复，等于没拦。
+        this.reviewTipsBusy = true;
+        if (this.reviewTipsTimer !== null) window.clearTimeout(this.reviewTipsTimer);
+        this.reviewTipsTimer = window.setTimeout(() => this.clearReviewTipsBusy(), 1500);
+        this.renderQueue();
+        this.loadReview(true);
+      },
       onPickRepo: () => this.openRepoPicker(),
       onClearRepo: () => this.clearReviewRepo(),
     };
@@ -19708,6 +19732,7 @@ export class App {
   private rerunReview(runId: string): void {
     const run = (this.reviewState?.runs ?? []).find((item) => item.id === runId);
     if (!run) return;
+    const before = { mode: this.reviewMode, pr: this.reviewPr, base: this.reviewBase, target: this.reviewTarget };
     this.reviewMode = run.mode;
     if (run.mode === "pr") {
       // 记录里没有 PR 号（老记录 / 坏数据）就别猜：沿用手上这个号等于拿**另一条** PR 去评，
@@ -19715,33 +19740,41 @@ export class App {
       if (run.pr <= 0) return;
       this.reviewPr = String(run.pr);
     } else if (run.mode === "range") {
-      this.reviewBase = run.from || this.reviewBase;
+      this.reviewBase = run.from;
       this.reviewTarget = run.to || "HEAD";
     }
     // 这一下是「人自己决定的范围」：链接卡带来的「期望仓库」不再适用（与换范围同一个口径）。
     this.clearReviewExpectRepo();
     this.saveReviewPick();
     this.renderQueue();
-    this.startReview();
+    if (this.startReview()) return;
+    // 没开出去（桥会拒：同一 PR 在跑 / 额度满）：把「评什么」恢复成点之前的样子 ——
+    // 不然面板上那一格被这条记录静默改掉并落了盘，人下次打开会以为是自己选的。
+    this.reviewMode = before.mode;
+    this.reviewPr = before.pr;
+    this.reviewBase = before.base;
+    this.reviewTarget = before.target;
+    this.saveReviewPick();
+    this.renderQueue();
   }
 
-  private startReview(): void {
+  private startReview(): boolean {
     const dir = this.reviewDir();
-    if (!dir) return;
+    if (!dir) return false;
     const mode = this.reviewMode;
     if (mode === "commit" && !this.reviewCommit.trim()) {
       this.flashToast(tr("先填一个提交号"), true, 4000);
-      return;
+      return false;
     }
     // `#636` 是 PR 号的手感：commitish() 会拒掉它（`--commit "#636" is not a valid commit ref`），
     // 与其让 ocr 报一句看不懂的，不如当场说清该切哪个模式。
     if (mode === "commit" && /^#\s*\d+$/.test(this.reviewCommit.trim())) {
       this.flashToast(tr("提交号别带 #：要评 PR 请切到「GitHub PR」"), true, 5000);
-      return;
+      return false;
     }
     if (mode === "pr" && !this.reviewPr.trim()) {
       this.flashToast(tr("先选一个 PR（或填个号）"), true, 4000);
-      return;
+      return false;
     }
     this.reviewError = "";
     this.reviewPrMenu = false;
@@ -19772,6 +19805,7 @@ export class App {
       lang: getLang(),
     });
     this.renderQueue();
+    return true;
   }
 
   /** 一条意见 → 分支工作台的「差异」页签，选中那个文件并把命中的那段代码标出来。 */

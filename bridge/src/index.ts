@@ -4253,17 +4253,13 @@ async function main(): Promise<void> {
             try {
               const { repo, pinned } = effectiveReviewDir(dir, session);
               const state = readReviewState(repo, session);
-              // #741：本地那半（分支 / HEAD）当场就能算，跟状态一起走；PR 那半要一次 ls-remote，
-              // 算完再补一帧。先画后补：不让整份记录列表等网络。
+              // #741 先画后补：第一帧就有记录本身，tips 只带**缓存里已知**的那份（读缓存、不 spawn、
+              // 不发请求）；真正的核对在下面那段异步里，算完补一帧。
               const targets = tipTargets(state.runs);
-              // `gitBranchOf` 只在真有 `to: HEAD` 的记录时才跑：多一次 git 子进程就是白花。
-              const branch = targets.some((item) => isHeadName(item.ref)) ? gitBranchOf(repo) : "";
-              const local = localTips(state.runs, (ref) => gitShaOf(repo, ref), branch);
-              // 60 秒内问过的那批 PR 并进首帧（只读缓存）：不然重开面板时已亮着的标会先灭一下。
               const known = cachedPrHeads(repo, targets.filter((item) => item.pr > 0).map((item) => item.pr));
               const remoteKnown: Record<string, string> = {};
               for (const item of targets) {
-                const sha = item.pr > 0 ? known[item.pr] : "";
+                const sha = item.pr > 0 ? known.heads[item.pr] : "";
                 if (sha) remoteKnown[item.ref] = sha;
               }
               send({
@@ -4272,41 +4268,51 @@ async function main(): Promise<void> {
                 pinned,
                 sessionId: session,
                 state,
-                tips: { ...local, ...remoteKnown },
-                tipsAt: Date.now(),
+                // `tipsAt` 用**缓存那一刻**，不是现在：拿「现在」去标注一份 60 秒前的值，
+                // 页面的「旧快照不判」那道闸就等于没有（刚跑完的那轮会被陈旧的远端 sha 误标）。
+                tips: remoteKnown,
+                tipsAt: known.at,
                 progresses: reviewProgresses(repo, session),
                 cap: MAX_RUNS_PER_SESSION,
                 // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
                 swept: takeSweptCount(),
               });
-              // PR 那半：一次 `ls-remote`（只读、不挪本地 ref），算完再补一帧 —— 离线 / 超时 /
-              // 没登录就是「没标」，也不报错。
-              if (targets.some((item) => item.pr > 0)) {
+              // 真正的核对：本地 `rev-parse`（每个 ref 一次，异步）+ PR 那半一次 `ls-remote`
+              // （只读、不挪本地 ref）。离线 / 超时 / 没登录就是「没标」，也不报错。
+              if (targets.length) {
                 const fresh = msg.fresh === true;
-                const tipsAt = Date.now();
                 // 整段包在 try 里：这是个不 await 的后台任务，抛出去会变成未处理的 rejection
                 // （读状态文件 / 算账号 / 发帧都可能失败），而它失败的正确表现就是「没有标」。
                 void (async () => {
                   try {
-                    let env: NodeJS.ProcessEnv | undefined;
-                    try {
-                      env = (await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session)).env;
-                    } catch {
-                      /* 没账号也要能问公开仓库：不强求 */
+                    const live = readReviewState(repo, session);
+                    const liveTargets = tipTargets(live.runs);
+                    if (!liveTargets.length) return;
+                    // `gitBranchOf` 只在真有 `to: HEAD` 的记录时才跑：多一次 git 子进程就是白花。
+                    const branch = liveTargets.some((item) => isHeadName(item.ref)) ? await gitBranchOf(repo) : "";
+                    // tips 与 state 必须是**同一眼**：这期间可能有人标了一条意见、也可能刚跑完新一轮。
+                    const local = await localTips(live.runs, (ref) => gitShaOf(repo, ref), branch);
+                    let remote: { tips: Record<string, string>; at: number } = { tips: {}, at: 0 };
+                    if (liveTargets.some((item) => item.pr > 0)) {
+                      let env: NodeJS.ProcessEnv | undefined;
+                      try {
+                        env = (await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session)).env;
+                      } catch {
+                        /* 没账号也要能问公开仓库：不强求 */
+                      }
+                      remote = await remoteTips(live.runs, (prs) => remotePrHeads(repo, prs, { fresh, env }));
                     }
-                    const remote = await remoteTips(state.runs, (prs) => remotePrHeads(repo, prs, { fresh, env }));
-                    if (!Object.keys(remote).length) return;
-                    // 本地那半照旧用**这一份**（不为补一帧再 rev-parse 一遍：缺 key 的语义是「不知道」，
-                    // 同一眼必须给同一个答案）；记录本身重新读一次 —— 这期间可能有人标了一条意见，
-                    // 拿开局那份快照会把那一笔盖回去。
+                    // 两个来源各带自己的时刻，快照取**最旧**那个：宁可少判（不知道），
+                    // 不能拿一份旧值说成新的。
+                    const at = remote.at ? Math.min(local.at, remote.at) : local.at;
                     broadcast({
                       type: "review.state",
                       dir: repo,
                       pinned,
                       sessionId: session,
-                      state: readReviewState(repo, session),
-                      tips: { ...local, ...remote },
-                      tipsAt: tipsAt,
+                      state: live,
+                      tips: { ...local.tips, ...remote.tips },
+                      tipsAt: at,
                       progresses: reviewProgresses(repo, session),
                       cap: MAX_RUNS_PER_SESSION,
                     });

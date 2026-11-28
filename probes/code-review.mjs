@@ -496,6 +496,8 @@ try {
   // 造一张卡不值得 —— 直接往桥的状态目录写一条**完成的 range 记录**（headSha = 上一个提交），
   // 再真提交一次，剩下的全是真链路：桥读盘 → `git rev-parse HEAD` → 帧 → 面板画。
   {
+    // 前提：桥**每次从盘上读**状态（`readReviewState()` 没有内存缓存），所以直接改文件有效。
+    // 哪天线那边加了缓存，这一段会变成「找不到卡 / 标不出现」的空断言 —— 那时要改成走桥自己的入口。
     const file = stateFileFor(WORK);
     if (!file) throw new Error("找不到这次会话的评审状态文件：桥换了存放规则？（这条探针按文件里的 repo 字段找，不复刻散列名）");
     const before = git("rev-parse", "HEAD").trim();
@@ -639,6 +641,7 @@ try {
   check("字号 150% 下按钮仍落在视口里", Boolean(box) && box.y + box.height <= vh, box ? `y=${Math.round(box.y)} h=${Math.round(box.height)} vh=${vh}` : "no box");
   // #741：带标那张卡底行有两颗按钮（重新评审 / 完整详情），150% 下也得留在卡里且同一行。
   {
+    // 量不到就记一条 FAIL，别让 `until` 抛出把后面「刷新后范围接上」那几条一起吞掉。
     const fit = await until(
       () =>
         page.evaluate(() => {
@@ -652,9 +655,9 @@ try {
         }),
       15000,
       "outdated card foot",
-    );
-    check("150% 下过时那张卡的两颗按钮都在卡里", fit.inside, JSON.stringify(fit));
-    check("150% 下它们没有折成两行", fit.sameRow, JSON.stringify(fit));
+    ).catch(() => null);
+    check("150% 下过时那张卡的两颗按钮都在卡里", Boolean(fit?.inside), JSON.stringify(fit));
+    check("150% 下它们没有折成两行", Boolean(fit?.sameRow), JSON.stringify(fit));
   }
   // 刷新之后「评什么」要自己接上（存在桥那边，不再只活在内存里）。
   // 上一段可能落在「gh 没就绪」那一屏，那里压根没有输号框：能验的就只剩「范围还是 PR」。

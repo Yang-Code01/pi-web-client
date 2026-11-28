@@ -619,6 +619,7 @@ check("tipTargets 只核对「完成的、分支或 PR 的、记了被评 sha �
     doneRun({ id: "stopped", status: "stopped" }),
     doneRun({ id: "running", status: "running" }),
     doneRun({ id: "old", headSha: undefined }),
+    doneRun({ id: "no-from", from: "" }),
   ];
   assert.deepEqual(
     tipTargets(runs).map((t) => t.ref),
@@ -648,10 +649,14 @@ check("remoteTipTargets 按 PR 号去重、最多 3 个（留着最新的那一�
   assert.equal(picked.filter((t) => t.pr === 5).length, 1, "同一个 PR 只留一条");
 });
 
-check("localTips 拿本地 rev-parse 的结果当 tip；认不出这个 ref 就不给 key", () => {
+await checkAsync("localTips 拿本地 rev-parse 的结果当 tip；认不出这个 ref 就不给 key", async () => {
   const runs = [doneRun({ id: "a", to: "HEAD" }), doneRun({ id: "b", to: "feat/gone" })];
-  const tips = localTips(runs, (ref) => (ref === "HEAD" ? "bbbb2222" : ""));
-  assert.deepEqual(tips, { HEAD: "bbbb2222" }, "认不出的 ref 是「不知道」，不是空串");
+  const out = await localTips(runs, async (ref) => (ref === "HEAD" ? "b".repeat(40) : ""));
+  assert.deepEqual(out.tips, { HEAD: "b".repeat(40) }, "认不出的 ref 是「不知道」，不是空串");
+  assert.ok(out.at > 0, "这份值带着它的时刻");
+  // 形状不对的东西（注入的实现 / git 吐出多行）不许当成 sha 用
+  const junky = await localTips(runs, async () => `deadbeef\n${"c".repeat(40)}`);
+  assert.deepEqual(junky.tips, {});
 });
 
 check("比记录还旧的快照不拿来判：刚跑完的那一轮不该被说成「有新提交」", () => {
@@ -674,30 +679,32 @@ check("`pr` 模式却没有号的那几条：判不了，也不该长出「重�
   assert.deepEqual(tipTargets([bad]), []);
 });
 
-check("headStamp：收尾时记被评的 sha，`HEAD` 再记当时那条分支", () => {
-  const deps = { shaOf: () => "aaaa1111", branch: () => "feat/a" };
-  assert.deepEqual(headStamp({ to: "HEAD" }, deps), { headSha: "aaaa1111", headRef: "feat/a" });
-  assert.deepEqual(headStamp({ to: "feat/x" }, deps), { headSha: "aaaa1111" }, "分支名本身就是 ref，不用记当时在哪");
+await checkAsync("headStamp：收尾时记被评的 sha，`HEAD` 再记当时那条分支", async () => {
+  const deps = { shaOf: async () => "a".repeat(40), branch: async () => "feat/a" };
+  assert.deepEqual(await headStamp({ to: "HEAD" }, deps), { headSha: "a".repeat(40), headRef: "feat/a" });
+  assert.deepEqual(await headStamp({ to: "feat/x" }, deps), { headSha: "a".repeat(40) }, "分支名本身就是 ref，不用记当时在哪");
   // 分离头指针 / 认不出这个 ref：宁可少记一项，也不编一个值
-  assert.deepEqual(headStamp({ to: "HEAD" }, { shaOf: () => "aaaa1111", branch: () => "" }), { headSha: "aaaa1111" });
-  assert.deepEqual(headStamp({ to: "feat/gone" }, { shaOf: () => "", branch: () => "feat/a" }), {});
+  assert.deepEqual(await headStamp({ to: "HEAD" }, { shaOf: async () => "a".repeat(40), branch: async () => "" }), { headSha: "a".repeat(40) });
+  assert.deepEqual(await headStamp({ to: "feat/gone" }, { shaOf: async () => "", branch: async () => "feat/a" }), {});
 });
 
-check("`to: HEAD` 的记录只在**同一条分支**上比：换分支不是「有新提交」", () => {
+await checkAsync("`to: HEAD` 的记录只在**同一条分支**上比：换分支不是「有新提交」", async () => {
+  const sha = "b".repeat(40);
   const runs = [doneRun({ id: "a", to: "HEAD", headRef: "feat/a" })];
-  assert.deepEqual(localTips(runs, () => "bbbb2222", "feat/a"), { HEAD: "bbbb2222" }, "同一条分支：照旧比");
-  assert.deepEqual(localTips(runs, () => "bbbb2222", "feat/b"), {}, "换到别的分支：核对不了，不标");
+  const same = await localTips(runs, async () => sha, "feat/a");
+  assert.deepEqual(same.tips, { HEAD: sha }, "同一条分支：照旧比");
+  assert.deepEqual((await localTips(runs, async () => sha, "feat/b")).tips, {}, "换到别的分支：核对不了，不标");
   // 分离头指针（现在没有分支名）与老记录（当时没记分支）都退回「照旧比」。
-  assert.deepEqual(localTips(runs, () => "bbbb2222", ""), { HEAD: "bbbb2222" });
-  assert.deepEqual(localTips([doneRun({ id: "b", to: "HEAD" })], () => "bbbb2222", "feat/b"), { HEAD: "bbbb2222" });
+  assert.deepEqual((await localTips(runs, async () => sha, "")).tips, { HEAD: sha });
+  assert.deepEqual((await localTips([doneRun({ id: "b", to: "HEAD" })], async () => sha, "feat/b")).tips, { HEAD: sha });
 });
 
-check("localTips 不碰网络：PR 那几条留给远端那半", () => {
+await checkAsync("localTips 不碰网络：PR 那几条留给远端那半", async () => {
   let asked = 0;
   const runs = [doneRun({ id: "pr", mode: "pr", pr: 7, to: "refs/pi-web/pr-7" })];
-  localTips(runs, () => {
+  await localTips(runs, async () => {
     asked += 1;
-    return "cccc3333";
+    return "c".repeat(40);
   });
   assert.equal(asked, 0);
 });
@@ -709,22 +716,23 @@ await checkAsync("remoteTips 一次 ls-remote 拿一批；失败或抛错的那�
     doneRun({ id: "c", mode: "pr", pr: 3, to: "refs/pi-web/pr-3", startedAt: "2026-01-05T00:00:00.000Z" }),
   ];
   const calls = [];
-  const tips = await remoteTips(runs, async (prs) => {
+  const out = await remoteTips(runs, async (prs) => {
     calls.push([...prs]);
     // 2 号远端没答（PR 没了 / 超时）：不该冒充「没变」。
-    return { 1: "dddd4444" };
+    return { heads: { 1: "d".repeat(40) }, at: 1000 };
   });
-  assert.deepEqual(tips, { "refs/pi-web/pr-1": "dddd4444" });
+  assert.deepEqual(out.tips, { "refs/pi-web/pr-1": "d".repeat(40) });
+  assert.equal(out.at, 1000, "缓存那一刻要跟着走（页面的旧快照闸靠它）");
   assert.equal(calls.length, 1, "一批只发一次 ls-remote");
   assert.deepEqual([...calls[0]].sort(), [1, 2, 3], "三个号在同一次里问");
 });
 
 await checkAsync("远端整个坏掉时一条 key 都不给（超时 = 不知道，不是「没变」）", async () => {
   const runs = [doneRun({ id: "a", mode: "pr", pr: 1, to: "refs/pi-web/pr-1" })];
-  const tips = await remoteTips(runs, async () => {
+  const out = await remoteTips(runs, async () => {
     throw new Error("ls-remote 超时");
   });
-  assert.deepEqual(tips, {});
+  assert.deepEqual(out, { tips: {}, at: 0 });
 });
 
 if (failures) {

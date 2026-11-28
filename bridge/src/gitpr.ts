@@ -6,6 +6,7 @@
  * 取的时候只写 `refs/pi-web/pr-N` 与 `origin/<base>`，**不动工作区、不动当前分支**。
  */
 import { execFile, execFileSync } from "node:child_process";
+import { isCommitSha } from "./frames.ts";
 import { ghInvocation, githubRest } from "./github.ts";
 import { discoverLocalProxyCandidates, FETCH_PLAN, GH_PLAN, resolveProxyCandidates, viaRoutes, type RoutePlan } from "./netroute.ts";
 
@@ -179,12 +180,15 @@ const tipCache = new Map<string, { at: number; value: Record<number, string> }>(
  * 「当时评的是哪个提交」了。`ls-remote` 只读、不下载对象，fork 来的 PR 也认。
  * 失败 / 超时 → 空对象（缺 key = 不知道），不用空串冒充「没变」。
  */
-export async function remotePrHeads(dir: string, prs: number[], opts: PrQueryOptions = {}): Promise<Record<number, string>> {
-  const wanted = [...new Set(prs.filter((n) => Number.isFinite(n) && n > 0))].sort((a, b) => a - b);
-  if (!wanted.length) return {};
-  const key = `${dir}|${wanted.join(",")}`;
+export async function remotePrHeads(
+  dir: string,
+  prs: number[],
+  opts: PrQueryOptions = {},
+): Promise<{ heads: Record<number, string>; at: number }> {
+  const { key, wanted } = tipKey(dir, prs);
+  if (!wanted.length) return { heads: {}, at: 0 };
   const hit = tipCache.get(key);
-  if (!opts.fresh && hit && Date.now() - hit.at < TIP_CACHE_MS) return hit.value;
+  if (!opts.fresh && hit && Date.now() - hit.at < TIP_CACHE_MS) return { heads: hit.value, at: hit.at };
   const args = ["-C", dir, "ls-remote", "origin", ...wanted.map((n) => `refs/pull/${n}/head`)];
   const out = await routed("git", args, dir, TIP_PLAN, undefined, { env: opts.env });
   const value: Record<number, string> = {};
@@ -192,7 +196,7 @@ export async function remotePrHeads(dir: string, prs: number[], opts: PrQueryOpt
     for (const line of out.stdout.split(/\r?\n/)) {
       const [sha, ref] = line.trim().split(/\s+/);
       const num = Number(/^refs\/pull\/(\d+)\/head$/.exec(ref ?? "")?.[1] ?? 0);
-      if (num > 0 && /^[0-9a-f]{7,40}$/i.test(sha ?? "")) value[num] = sha;
+      if (num > 0 && isCommitSha(sha)) value[num] = sha;
     }
   }
   // **只缓存问成功的那次**：网络抖一下就把空结果钉 60 秒的话，用户点刷新（`fresh=false`）
@@ -206,8 +210,9 @@ export async function remotePrHeads(dir: string, prs: number[], opts: PrQueryOpt
     }
     if (tipCache.size > 64) tipCache.clear();
     tipCache.set(key, { at: now, value });
+    return { heads: value, at: now };
   }
-  return value;
+  return { heads: value, at: 0 };
 }
 
 /**
@@ -217,11 +222,22 @@ export async function remotePrHeads(dir: string, prs: number[], opts: PrQueryOpt
  * 等 `ls-remote` 回来再亮 —— 正是「已显示的内容不许先清空」那条铁律要避免的闪烁。
  * 60 秒内（`TIP_CACHE_MS`）的首帧都能直接带上远端结果，等于没有网络这一跳。
  */
-export function cachedPrHeads(dir: string, prs: number[]): Record<number, string> {
+export function cachedPrHeads(dir: string, prs: number[]): { heads: Record<number, string>; at: number } {
+  const { key, wanted } = tipKey(dir, prs);
+  if (!wanted.length) return { heads: {}, at: 0 };
+  const hit = tipCache.get(key);
+  if (!hit || Date.now() - hit.at >= TIP_CACHE_MS) return { heads: {}, at: 0 };
+  // `at` 要一起交出去：调用方拿它当快照时刻，拿「现在」代替就等于把缓存里的旧值说成新的。
+  return { heads: hit.value, at: hit.at };
+}
+
+/**
+ * 缓存 key 只在**这里**拼：`remotePrHeads` 写、`cachedPrHeads` 读，各拼一遍的话
+ * 一处改了分隔符 / 过滤条件，缓存就静默永远不命中（首帧拿不到远端值、补帧也永远重问）。
+ */
+function tipKey(dir: string, prs: number[]): { key: string; wanted: number[] } {
   const wanted = [...new Set(prs.filter((n) => Number.isFinite(n) && n > 0))].sort((a, b) => a - b);
-  if (!wanted.length) return {};
-  const hit = tipCache.get(`${dir}|${wanted.join(",")}`);
-  return hit && Date.now() - hit.at < TIP_CACHE_MS ? hit.value : {};
+  return { key: `${dir}|${wanted.join(",")}`, wanted };
 }
 
 function classify(stderr: string, cmd: string, code: number | null): { code: PrListResult["code"]; error: string } {

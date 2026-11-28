@@ -107,6 +107,8 @@ export interface ReviewInput {
   tips?: Record<string, string>;
   /** 那张快照是什么时候拍的（`Date.now()`，0 = 桥没给）：比这条记录还旧的快照不拿来判。 */
   tipsAt?: number;
+  /** 「重新核对」正等着结果：那颗钮先灰着，别让人连点（每一下都是一次 `ls-remote`）。 */
+  tipsBusy?: boolean;
 }
 
 /** 记录列表里的一张卡：`reviewView()` 算好文案，`renderReview()` 只负责画。 */
@@ -213,6 +215,8 @@ export interface ReviewView {
   skipped: ReviewSkip[];
   resolved: number;
   resolvedPaths: string[];
+  /** 见 `ReviewInput.tipsBusy`。 */
+  tipsBusy: boolean;
   history: number;
   /** 「完整详情」浮层看的那一次（空串 = 按最新那一次算）。 */
   focus: string;
@@ -496,8 +500,9 @@ export function reviewView(input: ReviewInput): ReviewView {
   /**
    * 「重新评审」现在点了会不会被拒（提前拦：点了才报错最难堪）。
    *
-   * 与主按钮同一套闸：同一 PR 在跑、额度满、以及 ocr 没就绪（那时主按钮是灰的，
-   * 重评按钮没道理还能点 —— 点下去只会多一条失败的记录）。
+   * 与主按钮同一套闸里**页面判得了**的那几条：同一 PR 在跑、额度满、ocr 没就绪
+   * （那时主按钮是灰的，重评按钮没道理还能点 —— 点下去只会多一条失败的记录）。
+   * 剩下的由桥裁决（`dup_pr` / `busy` / 缺范围）；真被拒了，`rerunReview()` 会把「评什么」恢复原样。
    */
   const rerunBlocked = (run: ReviewRun): string => {
     if (run.mode === "pr" && run.pr > 0) {
@@ -603,6 +608,7 @@ export function reviewView(input: ReviewInput): ReviewView {
     skipped,
     resolved: active?.resolved?.length ?? 0,
     resolvedPaths: active?.resolvedPaths ?? [],
+    tipsBusy: Boolean(input.tipsBusy),
     history: allRuns.length,
     focus: active && focused ? active.id : "",
     runs,
@@ -1127,6 +1133,8 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
   reload.title = tr("重新核对有没有新提交");
   reload.setAttribute("aria-label", tr("重新核对有没有新提交"));
   reload.append(icon("refresh", { size: 13 }));
+  // 等结果的时候灰着：每点一下都是一次绕开缓存的 `ls-remote`（#743 复审）。
+  reload.disabled = view.tipsBusy;
   reload.onclick = () => actions.onRefreshTips();
   head.append(reload);
   box.append(head);

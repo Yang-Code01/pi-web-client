@@ -437,6 +437,17 @@ export interface ReviewLogLine {
 }
 
 /**
+ * 这是不是一个完整的提交号（40 位 sha1 / 64 位 sha256）。
+ *
+ * 桥侧有三处要把「git 输出的那一行」认成提交号（本地 `rev-parse`、`ls-remote` 的每一行、
+ * 以及页面收到的 tip）：正则各写一遍，改一处漏一处，就会把带换行 / 多对象的输出当成 sha 用，
+ * 直接误报「有新提交」。所以认它只在这里认一次。
+ */
+export function isCommitSha(value: unknown): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(String(value ?? "").trim());
+}
+
+/**
  * 现在这些 ref 各指向哪个提交（#741）：key 是记录里的 `to`，value 是此刻的 sha。
  *
  * 它是「这一眼看到的事实」，不是历史 —— 所以**不放进 `ReviewState`**（那是盘上的形状），
@@ -462,6 +473,8 @@ export function tipTargetOf(run: ReviewRun): { ref: string; pr: number } | null 
   // `pr` 模式却没有号（老记录 / 坏数据）：`refs/pi-web/pr-0` 什么也指不到，判不了 ——
   // 也不能让它走「本地 ref」那条路，更不该在卡上长出一颗点了没反应的「重新评审」。
   if (run.mode === "pr" && pr <= 0) return null;
+  // `range` 却没记对照分支也一样：判得了「过时」也重评不了（「评什么」缺一半，开不了跑）。
+  if (run.mode === "range" && !String(run.from ?? "").trim()) return null;
   return { ref, pr };
 }
 
