@@ -84,8 +84,11 @@ assert.equal(looksLikeBridge("type bridge\\dist\\host.js"), false);
 //    通配地址换成回环（通配不是能连的目标）。
 assert.equal(localBase("192.168.1.5", 7864), "http://192.168.1.5:7864");
 assert.equal(localBase("0.0.0.0", 7864), "http://127.0.0.1:7864");
-assert.equal(localBase("::", 7864), "http://127.0.0.1:7864");
+// `::` 是 v6 通配：回环是 `[::1]`。Linux 上 `bindv6only=1` 时 `::1` 能连、`127.0.0.1` 连不上。
+assert.equal(localBase("::", 7864), "http://[::1]:7864");
+assert.equal(localBase("[::]", 7864), "http://[::1]:7864");
 assert.equal(localBase(undefined, 7864), "http://127.0.0.1:7864");
 assert.equal(localBase("::1", 7864), "http://[::1]:7864");
+assert.equal(localBase("fe80::1", 7864), "http://[fe80::1]:7864");
 
 console.log("preflight-unit: ok");

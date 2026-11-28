@@ -108,18 +108,19 @@ export function pidFromFile(port) {
 
 // ------------------------------------------------------------------ 认人
 
-/** 跑一段 PowerShell 拿字符串；失败就是空串，别抛。 */
+/** 跑一段 PowerShell 拿字符串。**查询本身失败**（超时、没权限、没有 powershell）返回 `null`，
+ * 跟「查到了、但是空」区分开：前者不能当「它不是本项目的桥」看。 */
 function ps(script) {
   const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
     encoding: "utf8",
     timeout: 8000,
     windowsHide: true,
   });
-  if (r.status !== 0) return "";
+  if (r.error || r.status !== 0) return null;
   return String(r.stdout ?? "").trim();
 }
 
-/** 某个 pid 的命令行（认人全靠它；拿不到就是空串）。 */
+/** 某个 pid 的命令行（认人全靠它）。进程已经没了 → `""`；查询本身失败 → `null`。 */
 export function commandLine(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return "";
   if (WIN) {
@@ -130,6 +131,7 @@ export function commandLine(pid) {
     timeout: 5000,
     windowsHide: true,
   });
+  if (r.error) return null;
   return r.status === 0 ? String(r.stdout ?? "").trim() : "";
 }
 
@@ -196,20 +198,35 @@ export function listenPid(port) {
 
 /**
  * 探活与停机要打的地址。壳可能只听某个具体 IP（`PI_WEB_HOST`），那就打那个地址；
- * `0.0.0.0` / `::` 这种通配地址换成回环 —— 通配不是能连的目标。
+ * 通配地址换成对应的回环 —— 通配不是能连的目标。`0.0.0.0` 是 v4 通配（回环 `127.0.0.1`），
+ * `::` 是 v6 通配（回环 `[::1]`）：Linux 上 `bindv6only=1` 时 `::` 不收 v4 回环连接，
+ * 拿 `127.0.0.1` 去探会永远探不到，于是把自家的壳当成外人、连 `--force` 也不肯停。
  */
 export function localBase(host, port) {
-  const wildcard = !host || host === "0.0.0.0" || host === "::" || host === "[::]";
-  const target = wildcard ? DEFAULT_HOST : host;
-  return `http://${target.includes(":") ? `[${target}]` : target}:${port}`;
+  const h = String(host ?? "");
+  const target = !h || h === "0.0.0.0" ? DEFAULT_HOST : h === "::" || h === "[::]" ? "::1" : h;
+  const authority = target.includes(":") && !target.startsWith("[") ? `[${target}]` : target;
+  return `http://${authority}:${port}`;
 }
 
-/** 端口上的 /healthz（壳与旧桥都会答），没有就是 null。 */
+/**
+ * 端口上的 /healthz（壳与旧桥都会答）。
+ * - 连不上 → `null`
+ * - 答了但不是能读的 JSON（回包被截断、端口上是别的服务）→ `{ body: null }`
+ *
+ * 这两种必须分开：后者说明端口上确实有东西在答，不能当成「它没有壳」就去硬杀。
+ */
 export async function healthz(port, host = DEFAULT_HOST, ms = 1500) {
   try {
     const res = await fetch(`${localBase(host, port)}/healthz`, { signal: AbortSignal.timeout(ms) });
-    if (!res.ok) return null;
-    return await res.json().catch(() => null);
+    if (!res.ok) return { body: null };
+    const text = await res.text();
+    try {
+      const body = JSON.parse(text);
+      return { body: body && typeof body === "object" ? body : null };
+    } catch {
+      return { body: null };
+    }
   } catch {
     return null;
   }
@@ -237,32 +254,47 @@ export async function portFree(port, host = DEFAULT_HOST) {
  * 前面一步认出来了就不再往下问 —— 枚举（`Get-NetTCPConnection` / `lsof`）是最慢的一步。
  */
 export async function probeOwner(port, host = DEFAULT_HOST) {
-  const health = await healthz(port, host);
+  const hz = await healthz(port, host);
+  const health = hz?.body ?? null;
   const tried = new Set();
   let other = null;
+  /** 端口上答了东西、或者说 pid 查不到命令行：都归到这里，**不当外人也不当自己人**。 */
+  let unverified = null;
 
   const inspect = (pid, from) => {
     if (!Number.isInteger(pid) || pid <= 0 || tried.has(pid)) return null;
     tried.add(pid);
-    // `commandLine()` 读不到就是进程已经没了（`Get-CimInstance` / `ps -p` 对不存在的 pid 返回空），
-    // 所以下面这两行就顺带过滤了「/healthz 自报的 pid 其实已经退出」的情况，不用再多 spawn 一次 ps。
     const cmd = commandLine(pid);
+    // `null` = 查询本身失败（powershell 超时 / 没权限），**不等于**「不是本项目的桥」——
+    // 别把自家那份误判成外人然后拒绝停。空串才是「进程已经没了」。
+    if (cmd === null) {
+      unverified ??= { pid, from };
+      return null;
+    }
+    if (!cmd) return null;
     if (looksLikeBridge(cmd)) return { pid, cmd, from };
-    if (!other && cmd) other = { pid, cmd, from };
+    if (!other) other = { pid, cmd, from };
     return null;
   };
 
   let ours = inspect(health?.pid, "healthz") ?? inspect(pidFromFile(port), "pidfile");
   if (!ours) ours = inspect(listenPid(port), "listen");
+  // 端口答了但读不懂（回包被截断 / 别的东西在答 /healthz）：同样不确定，别猜。
+  if (!ours && !other && !unverified && hz && !health) unverified = { pid: 0, from: "healthz" };
 
   const picked = ours ?? other;
   return {
     port,
-    pid: picked?.pid ?? 0,
+    pid: picked?.pid ?? unverified?.pid ?? 0,
     cmd: picked?.cmd ?? "",
-    from: picked?.from ?? "",
+    from: picked?.from ?? unverified?.from ?? "",
     health,
     ours: Boolean(ours),
+    /**
+     * 没法确认是谁：读不到命令行，或者它答的 /healthz 读不懂。这种时候**不硬杀**，
+     * 只试一次优雅停机（不是桥就没人理那个 POST）。
+     */
+    unverified: Boolean(unverified),
     /**
      * 有壳的桥才答 `brain` 这个键（哪怕还没脑、值是 null）。旧桥（`PI_HOST_DISABLE=1`）
      * 的 /healthz 里没有它 —— 那种没有 `/api/host/stop`，只能硬杀。
@@ -375,11 +407,29 @@ function describe(owner) {
   return lines;
 }
 
+const ASK_PROMPT = "要停掉它、换成这一份吗？[Y/n] ";
+
+/**
+ * 往输出里写提示。`process.stdout` 走同步写：提问总是紧跟一次 `process.exit()`，
+ * 管道里的异步写会被截断（`npm start | tee` 时最后一行提示会丢）。
+ */
+function writeOut(stdout, text) {
+  if (stdout === process.stdout) {
+    try {
+      fs.writeSync(1, text);
+      return;
+    } catch {
+      /* 下游关了管道（| head）*/
+    }
+  }
+  stdout.write(text);
+}
+
 /**
  * 问一句「要停掉它吗」，可注入 stdin/stdout（仓库里没有 pty，单测就拿假 TTY 喂）。
  * 回车 = 是（默认 Y）；n/no = 不替换；其它输入重问；EOF（Ctrl-D / 输入结束）算「没回答」。
  */
-export function askReplace({ stdin = process.stdin, stdout = process.stdout, question = "要停掉它、换成这一份吗？[Y/n] " } = {}) {
+export function askReplace({ stdin = process.stdin, stdout = process.stdout, question = ASK_PROMPT } = {}) {
   return new Promise((resolve) => {
     const rl = createInterface({ input: stdin, output: stdout, terminal: Boolean(stdin.isTTY) });
     let done = false;
@@ -394,9 +444,9 @@ export function askReplace({ stdin = process.stdin, stdout = process.stdout, que
       const answer = line.trim().toLowerCase();
       if (answer === "" || answer === "y" || answer === "yes") finish(true);
       else if (answer === "n" || answer === "no") finish(false);
-      else stdout.write(question);
+      else writeOut(stdout, question);
     });
-    stdout.write(question);
+    writeOut(stdout, question);
   });
 }
 
@@ -429,6 +479,20 @@ export async function preflight(opts = {}) {
   if (await portFree(port, host)) return EXIT_OK;
 
   const owner = await probeOwner(port, host);
+
+  if (!owner.ours && owner.unverified) {
+    log(`${port} 上有东西在听，但没法确认是不是本项目的桥：`);
+    for (const line of describe(owner)) log(line);
+    if (owner.pid && !owner.cmd) log(`  命令行 读不到（powershell 超时、或者权限不够）`);
+    log(`  不确定就不硬杀。先请它自己收工试试（POST /api/host/stop，不是桥就没人理它）…`);
+    await postStop(port, host);
+    if (await waitFree(port, host, STOP_GRACE_MS)) {
+      log(`  它自己退了，端口空出来了。`);
+      return EXIT_OK;
+    }
+    log(`  它没退。自己确认一下：npm run bridge:stop；或者换一个端口：PI_WEB_PORT=<别的口> npm start`);
+    return EXIT_BLOCKED;
+  }
 
   if (!owner.ours) {
     log(`${port} 被别的程序占着，不是 pi-web-client：`);

@@ -100,11 +100,20 @@ async function startStub(kind, port) {
       STUB_STOP: path.join(TMP, `stop-${port}.txt`),
       STUB_LEGACY: kind === "legacy" ? "1" : "0",
     },
-    stdio: "ignore",
+    // 桩自己崩了（端口被抢、`STUB_PORT` 非法）也要把它最后那句话带出来：
+    // 否则现场只剩一句「超时：桩在 :N 上起来」，没法排查。
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
   children.push(child);
-  await until(async () => (await healthz(port)) !== null, `桩（${kind}）在 :${port} 上起来`);
+  child.log = "";
+  child.stdout.on("data", (c) => (child.log += String(c)));
+  child.stderr.on("data", (c) => (child.log += String(c)));
+  try {
+    await until(async () => (await healthz(port)) !== null, `桩（${kind}）在 :${port} 上起来`);
+  } catch (err) {
+    throw new Error(`${err.message}\n--- 桩（${kind}）的输出 ---\n${child.log || "（一句都没说）"}`);
+  }
   return child;
 }
 
@@ -173,11 +182,13 @@ try {
   // 5. 没有壳的旧桥（PI_HOST_DISABLE=1）：没有停机接口，只能硬杀；硬杀完端口要真空出来。
   {
     const port = await freePort();
-    await startStub("legacy", port);
+    const stub = await startStub("legacy", port);
     const r = await runPreflight(port, ["--force"]);
     assert.equal(r.code, 0, `硬杀之后应当放行：${r.out}`);
     assert.match(r.out, /只能硬杀/, "要预先说明它会硬杀（可能留孤儿 pi）");
     await until(async () => (await healthz(port)) === null, "旧桥被硬杀、端口空出来");
+    // 端口空出来不等于进程真没了（它可能自己关了监听但还在跑）：硬杀要看到进程退。
+    await until(() => stub.exitCode !== null || stub.signalCode !== null, "旧桥进程被停掉", 5000);
   }
 
   console.log("start-preflight: ok");

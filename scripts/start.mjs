@@ -26,8 +26,9 @@ function bridgeArgs() {
   return process.argv.slice(2).filter((a) => a !== "--force");
 }
 
-// 起之前再查一次（D441）：`start:nobuild` 与直跑都不经过 `npm start` 链里的那一步；
-// 顺带堵住「检查完到 listen 之间被人抢了端口」这个空窗。端口空着时这一步一声不响。
+// 起之前再查一次（D441）：`start:nobuild` 与直跑都不经过 `npm start` 链里的那一步。
+// 跟链首那次不是原子的，只能把「检查完到 listen 之间被抢」的空窗缩小一点（真被抢了由壳的
+// EADDRINUSE 兜底）。端口空着时这一步一声不响。
 const preflightCode = await preflight({ force: forceRequested() });
 if (preflightCode !== EXIT_OK) process.exit(preflightCode);
 

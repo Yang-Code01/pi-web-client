@@ -922,7 +922,13 @@ async function main(): Promise<void> {
     // 失败路径也把监听器解掉：这里现在会直接退出，但将来若改成抛出去/重试，
     // 残留的 once 会把后续错误吞进一个已经 settled 的 promise。
     if (onListenError) publicServer.off("error", onListenError);
-    if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EADDRINUSE") {
+      // 其它 listen 错误（EACCES 绑特权口、EADDRNOTAVAIL 绑不存在的地址）同样不该甩堆栈。
+      console.error(`壳没能监听 ${listenHost}:${port}（${code ?? "未知错误"}）：${(err as Error).message}`);
+      console.error(`  换一个地址/端口试试：PI_WEB_HOST=127.0.0.1 PI_WEB_PORT=<别的口> npm start`);
+      process.exit(1);
+    }
     explainPortTaken(port);
     process.exit(2);
   }
