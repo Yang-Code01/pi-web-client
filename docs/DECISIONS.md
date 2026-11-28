@@ -8980,3 +8980,34 @@ if (stop >= 0) {
 **代价。** 每次 `npm start` 多一次「bind 试探 + （被占时）一次 PowerShell 查询」的开销（空闲路径只 bind 一次，毫秒级）。认人的三条线索（枚举 listen 的 pid、pid 文件、`/healthz` 自报的 pid）合并成一次 `processDetails()`：本机一次 `powershell -NoProfile` 冷启动实测 1.5~1.9 秒，分开问三个 pid 就是六七秒的白等，进程内的 `Get-CimInstance` 每个只要几十毫秒。Windows 上拿不到别人的工作目录，只能给命令行。`EADDRINUSE` 之外的监听失败（比如绑特权口/不存在地址的 `EACCES`、`EADDRNOTAVAIL`）打一句「没能监听 host:port（code）：message」并退出 1，同样不吐堆栈。`--force` 写着 `npm start -- --force` 时只会落到链尾的 `start.mjs`（npm 把 `--` 后面的参数追加到整条命令末尾），链首那一步读不到；要无人值守就用 `PI_START_FORCE=1 npm start`（`npm_config_force` 不算授权，理由见上）。`scripts/start.mjs` 那次 `preflight()` 包了 `try/catch`：异常按「检查失败」打一句人话、退出 1，不吐堆栈（直跑 `scripts/preflight.mjs` 的入口本来就有 `.then(ok, err)` 兜底，两条路的错误体验要对齐）。
 
 **守卫。** `npm run test:preflight`：`bridge/tests/preflight-unit.mjs` 用假 TTY 考提问的四种回答、`localBase` 五种地址、「命令行里是桥入口才算自己人」，外加一条**跨文件**检查 —— 直接读 `bridge/src/host.ts` 的源码，断言 `readPort()` / `readHost()` 的兜底字面量仍是 `preflight.mjs` 导出的 `DEFAULT_PORT` / `DEFAULT_HOST`（两个语言没法共享常量，只能有人盯着：改一边不改另一边，就是「检查放行的端口」跟「壳真监听的端口」对不上）；`bridge/tests/start-preflight.mjs` 在**进程边界**上起真实的桩（桩就落在 `<tmp>/bridge/dist/host.js`，所以认人那步是真过了一遍）：空闲放行且一声不响、自己那份走 `/api/host/stop` 优雅停、非交互没 `--force` 时只看不动、别人的服务连 `--force` 都不碰、`/healthz` 回包被截断时只优雅停不硬杀、旧桥硬杀后端口真空出来（并断言进程真的退了）、`/healthz` 报的是**别人**的 pid 时仍认得出 pid 文件里那份自己人（认人不能在前一条线索上收手），`forceRequested()` 对 `npm_config_force` 两侧都断言为「不授权」。壳侧并进 `bridge/tests/host-shell-e2e.mjs` 第 11 段：端口被占时退出码 2、有那一句人话、没有堆栈。
+
+## D449 右栏四颗页签滚起来贴顶（#744，用户 2026-11-29「希望在向下滚动的时候，这一栏固定」）
+
+**症状。** `.exec-tabs` 是 `.queue` 的第一个子元素，而 `.queue` 整块跟着 `.pane` 一起滚（`.pane` 才是滚动容器）。评审面板一长，滚到中间就看不见四颗页签，想换去看「需要你」只能一路滚回顶。
+
+**决定。**
+
+- **只固定页签这一条**，`「需要你」`页里的分区小标题照旧随内容滚：页签是导航，小标题是内容的一部分，一起贴顶会跟页签挤成两层。
+- **外面套一层 `.exec-tabs-bar`**，`position: sticky; top: 0`，负边距（`-12px -12px 0`）+ 反向内边距吃掉 `.queue` 的 12px 上 / 左右内边距：玻璃铺满整栏、内容从整条下面滑过，两侧不会漏出半行字；分段控件的灰槽仍内缩 12px，静止观感与 D444 那一版一致；那四颗按钮的选择器（`.queue .exec-tabs button` / `.exec-tabs .pip`）一个没动，探针与别处照旧能找到它们。
+- **底子恒定，不随滚动变样**：`--mac-glass-strong` + `--mac-blur` + 0.5px `--mac-glass-line`（D418 那套材质）。不加 scroll 监听、没有「滚起来才淡入分隔线」——那需要一个滚动回调加过渡，还得处理临界点抖动，换来的观感差别肉眼难辨。
+- **切页签滚回顶部**：`drawQueue()` 里记 `queueDrawnTab`，页签变了 `kept = 0`，同一页签内的重画（答一份问卷、执行进度刷新）仍保留阅读位置。手点页签与链接卡那种程序式切换都走 `renderQueue()`，所以判据放在 `drawQueue()` 而不是 `selectQueueTab()`。
+- **只挂桌面三栏**（`html:not([data-compact="true"])`）：窄版右栏铺满整屏、底部已经有页签，再贴一条在顶上只是多一层玻璃。布局那半条（负边距 + 反向内边距）不分壳，两边的净效果一样，所以窄版一像素不变。
+- **`.queue` 仍是 `display: grid`**：动手前以为 grid 里的 sticky 贴不住（包含块是它自己那一格），实测 Chromium 里能贴住（`getBoundingClientRect` 在 `scrollTop` 50 / 400 都停在 0）。改成 flex 列会连带动到 `.queue` 里别的面板，没必要。
+
+**为什么。** 页签是这一栏唯一的导航，滚走之后想换面板的成本是「一路滚回顶」，而这恰好发生在最需要换面板的时候（评审面板又长又满）。底下垫一层玻璃而不是让它透明，是因为滚到密集内容时字会从条里穿过去，不可读。
+
+**代价。** 右栏顶上多出 12px 恒定的玻璃带（内容从它下面过，不算占位）；`.exec-tabs-bar` 这个包裹层从此是探针与样式的钩子，别为了「少一层 DOM」把它合并掉。窄版与贴顶行为不同，改右栏布局时要同时想到这两套壳。
+
+**验证。** `probes/queue-tabs-sticky.mjs`（假桥 + 真 Chromium，二十张真的批准卡把右栏撑长 —— 不垫假 div，整栏重画会把垫进去的东西和滚动位置一起抹掉）：桌面三栏是 sticky、静止时玻璃已经贴住栏顶且灰槽仍内缩 12px、条宽**正好**等于 `.pane` 的内容盒、滚到底条不动且内容从条下沿穿过、条顶那一行点到的是条而不是内容、底色与毛玻璃不随滚动变、一块纯黑内容滚到条后面时条里仍是玻璃色（量像素，不解析颜色字符串）、切页签 `scrollTop` 归零、150% 字号（窗口放大到 1900 才仍是三栏）下同样贴住、窄版 `position: static` 且没有玻璃底。守卫：`npm --prefix web run typecheck`（i18n + viewport 规则）。
+
+**复审（PR #745 的代码评审）改掉的三处。** ①探针的静态文件服务把目录校验从 `startsWith(DIST)` 改成 `DIST + path.sep`：只比前缀的话 `/…/dist-evil/x` 也会通过（本机 127.0.0.1 的探针，影响有限，但这条是两行的事）。②`let page` 提到所有用到它的助手之前：它原本声明在 `openQueueRail()` / `metrics()` 后面，靠「反正调用时已经赋值」运行时才没错，提前调用会得到 TDZ 的 ReferenceError 而不是 `until` 超时。③「玻璃挡得住」改成量像素（垫一块纯黑内容再看条里那颗像素，亮度 215 vs 透明的 0），不再用正则从 `getComputedStyle().backgroundColor` 里取第 4 段 —— `color-mix()` / `rgb(0 0 0 / .6)` 这类写法会让它默认成 1、断言恒真（改动前后各用一次「把 `background` 改成 transparent」的变异验过这条真的会红）。
+
+**复审第二轮（PR #745 的第二次代码评审）。** ①`.exec-tabs-bar` 的 `-12px` / `12px` 与 `.queue` 的 padding 是三个字面量，改一个就会漂：`.queue` 现在带 `--queue-pad: 12px`，负边距写成 `calc(var(--queue-pad) * -1)`、反向内边距用同一个变量，注释也标明这层在窄版下净效果为零。②探针里补一条「切回『需要你』也在顶部」：那颗页签走的是 `drawQueue()` 末尾的兜底分支（不是提前 return 的那三个），原来只在代码里成立、探针没钉。③`server.listen` 没监听 `'error'`、`getContext` 没判 null 两条没改：前者实测是「未捕获事件 → EADDRINUSE 原文 + 退出码 1」，进程当场结束不会留下没关的 server/wss，而且全仓 75 个探针都是这一句；后者在 Chromium 里 `canvas.getContext("2d")` 不会返回 null，加判断是死代码（`probes/selection-visible.mjs` 同一套写法）。
+
+**复审第三轮（PR #745）。** ①`queueDrawnTab` 的记账从 `drawQueue()` 开头挪到 `renderQueue()` 里 `drawQueue()` 返回之后：画到一半抛异常（`renderExecPanel()` 等）不该算「这页已经画过」，否则下次同一页签重画会把半截内容的滚动位置当成阅读位置留着。②「探针用的 `data-exec-tab` 按钮上根本没有」不成立：`app.ts` 里是 `needs.dataset.execTab = "needs"`（`dataset` 到 `data-*` 的映射），探针在这个 PR 上跑绿 20 项。③`openQueueRail()` 的 `until` 抛错、而不是记一条 FAIL：不改 —— 那是「准备阶段就没到位」，消息里带 `what`（`tab bar` / `queue to overflow`）且退出码 1；硬记一条 FAIL 再往下断言，只会得到一串误导性的 FAIL。
+
+**复审第四轮（PR #745）。** ①「挡得住」那条的采样点现在**先验自己真的垫在黑块上**（`patchTop ≤ 采样点 ≤ patchBottom`），滚动量也不再猜「条的高度」，而是按黑块当前的位置补一段把它顶到栏顶：原来那个数靠「条的 margin 盒 = 条高 - 12px」成立，换个 padding 就会让黑块滑出采样点、断言恒真。顺带删掉 `Math.max(4, 12)` 这种恒等表达式。②「`.queue` 若要改成 block 会溢出被裁」不成立：block 的 auto 宽度一样先减负边距（CSS 10.3.3），实测 grid 与 block 量到的都是 `barWidth 398 === pane.clientWidth 398`、左右各 1px；注释里补了这句，免得下次有人为了「保持 grid」而不敢动它。③`probes/port.mjs` 一直存在（`freePort` 就是从那里来的，`composer-grow.mjs` 也用）。
+
+**复审第五轮（PR #745）。** `metrics()` 里的 `getComputedStyle(pane)` 是死变量（`paneInner` 改成直接读 `clientWidth` 之后没人用了），删掉。
+
+**没改的两条。** ①「`drawQueue()` 会被 `renderExecPanel` 等同步回调重入、内层改写 `queueDrawnTab`」不成立：`renderQueue()` 有重入闸（`queueDrawing` + `queueDirty`），`drawQueue()` 从不套自己，那三个面板里再叫 `renderQueue()` 只是置脏、由外层回头重画；已在 `drawQueue()` 旁边写明。②「0.5px 描边在 DPR=1 会取整成 0，`parseFloat(borderBottom) > 0` 可能假红」不成立：`border-width` 的计算值是按设备像素取整的，实测 DPR=1 与 DPR=2 都是 `1px`（不会变 0）；改成 1px 反而会跟 `mac.css` 全站的 `0.5px solid var(--mac-glass-line)` 发丝线不是一档。
