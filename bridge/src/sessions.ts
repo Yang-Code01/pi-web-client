@@ -54,6 +54,7 @@ import {
   type ContextSettings,
 } from "./context-policy.ts";
 import { readSettings, trustInfo } from "./pisettings.ts";
+import { reviewRunningCount } from "./review.ts";
 import { renumberCtxLog } from "./ctxlog-seq.ts";
 
 /**
@@ -303,6 +304,13 @@ export interface SessionState {
    * 「继续」按钮和左栏徽标都靠它。纯内存态：桥重启就没了（会话文件里查不到 runner 的死活）。
    */
   bg?: BgView | null;
+  /**
+   * D450: 这个会话此刻在跑几条**评审记录**（0–2，跨仓库共用额度）。评审是 detached worker（D446），
+   * 会话自己早就 settle 了，所以徽标不能只靠 `running` / `done` —— 有这一格才能说「评审中」。
+   * 0 写 `null`（不是 `undefined`）：`undefined` 过 JSON 会被整条丢掉，页面就永远清不掉徽标。
+   * 桥重启后由 `resumeReviewJobs()` 接回，所以它和「完成」一样跨重启可见。
+   */
+  review?: number | null;
   /** Launch options chosen when the session was created on the web (#28), as one line. */
   launch?: string;
 }
@@ -1046,6 +1054,18 @@ export class Session extends EventEmitter {
   /** D170 详情：这个会话的后台任务（含刚跑完的）。没接过手的会话返回空。 */
   bgList(): BgRunView[] {
     return this.bgRuns.list();
+  }
+
+  /**
+   * D450: 评审条数变了（起跑、收尾、取消收尾、换脑接回）—— 折成会话状态的一小格再广播。
+   * 与 `publishBg` 同一个口径：`touch:false`（评审在跑不算「这个会话有新动静」），
+   * 0 写显式 `null`（`undefined` 过 JSON 会被丢掉，页面的「评审中」就永远清不掉）。
+   * 没变就不发帧：ticker 每 500ms 一轮，别让它每秒推两份同样的状态。
+   */
+  setReviewCount(n: number): void {
+    const next = n > 0 ? n : null;
+    if ((this.state.review ?? null) === next) return;
+    this.setState({ review: next }, { touch: false });
   }
 
   /** #484: 交接前不再追踪这些子代理（真进程随 abort / 会话关闭走，桥只负责别再统计它们）。 */
@@ -3587,6 +3607,12 @@ export class SessionManager extends EventEmitter {
       archived: manage.archived.includes(id),
       ws: this.workspaces.groupFor(id, cwd, { anchorDay: dayKey(updatedAt), dayOf }),
     });
+    /**
+     * D450：徽标那一格「评审中」。两种会话都要填 —— 桥内存里的（接手过的）与盘上发现的。
+     * 用计算值盖掉 `state.review`：会话休眠 / 重开之后那份内存态可能停在旧值，
+     * 而 `active` 才是唯一真相。`null` 是「没有评审在跑」（不是 0，也不是不写）。
+     */
+    const review = (id: string): { review: number | null } => ({ review: reviewRunningCount(id) || null });
     /** 别人拿着这个会话吗：桥的 `.lock` 与终端的 `.tty.json` 都是按 id 存的（见下方调用处）。 */
     const lockedElsewhere = (id: string, fileId: string): boolean => {
       for (const key of new Set([id, fileId])) {
@@ -3608,6 +3634,7 @@ export class SessionManager extends EventEmitter {
         ...s.state,
         ...flag(s.state.id, s.state.cwd, s.state.updatedAt),
         ...handoffOf(s.state.id),
+        ...review(s.state.id),
         locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))),
       });
     }
@@ -3633,6 +3660,7 @@ export class SessionManager extends EventEmitter {
         ...(meta.firstUserText ? { preview: meta.firstUserText } : {}),
         ...handoffOf(id),
         ...flag(id, meta.cwd, Math.round(meta.mtime)),
+        ...review(id),
         // 锁有两种键：桥自己的 `<id>.lock`（桥 id）与 session-lock 扩展的 `<id>.tty.json`（pi 的 id）。
         // 分叉过的会话两者不同，两个都查 —— 漏了就变成“看着能写、其实终端还在写”。
         ...(lockedElsewhere(id, meta.id) ? { locked: true } : {}),

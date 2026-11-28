@@ -21,11 +21,11 @@ export interface PillSession {
 /** 状态徽标（卡片 / 管理条 / 胶囊共用的那一种）。 */
 export interface PillBadge {
   text: string;
-  cls: "wait" | "lock" | "run" | "done";
+  cls: "wait" | "lock" | "run" | "reviewing" | "done";
   title: string;
   /** 卡在用户身上（待回答 / 待确认）—— 条头的「N 个待处理」数它。 */
   pending: boolean;
-  /** 这枚徽标能点开详情（D170）：外壳给了 `onBadge` 时，小字会多一个热区。 */
+  /** 这枚徽标能点开（D170 后台 / D450 评审）：外壳给了 `onBadge` 时，小字会多一个热区。 */
   detail?: boolean;
 }
 
@@ -201,13 +201,21 @@ export class PillBar<S extends PillSession = PillSession> {
       open.type = "button";
       open.dataset.pinKey = `${c.id}:open`;
       const sub = el("small", "", c.sub);
-      // detail：小字自己是个热区（点它看详情，不切会话）。`stopPropagation` 抢在外层那颗按钮前面。
+      // detail：小字自己是个热区（点它看详情 / 去评审现场，不切会话）。`stopPropagation` 抢在外层那颗按钮前面。
       if (badges[i]?.detail && this.opts.onBadge) {
         const onBadge = this.opts.onBadge;
         sub.classList.add("pin-sub-detail");
         sub.setAttribute("role", "button");
-        sub.title = tr("点开看它跑了什么");
+        sub.tabIndex = 0;
+        sub.title = badges[i]?.title || tr("点开看它跑了什么");
         sub.onclick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          onBadge(c.id);
+        };
+        // 键盘与左栏卡片那颗走同一套（Enter / Space）：可点的东西不能只有鼠标能用。
+        sub.onkeydown = (ev) => {
+          if (ev.key !== "Enter" && ev.key !== " ") return;
           ev.preventDefault();
           ev.stopPropagation();
           onBadge(c.id);

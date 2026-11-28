@@ -9011,3 +9011,28 @@ if (stop >= 0) {
 **复审第五轮（PR #745）。** `metrics()` 里的 `getComputedStyle(pane)` 是死变量（`paneInner` 改成直接读 `clientWidth` 之后没人用了），删掉。
 
 **没改的两条。** ①「`drawQueue()` 会被 `renderExecPanel` 等同步回调重入、内层改写 `queueDrawnTab`」不成立：`renderQueue()` 有重入闸（`queueDrawing` + `queueDirty`），`drawQueue()` 从不套自己，那三个面板里再叫 `renderQueue()` 只是置脏、由外层回头重画；已在 `drawQueue()` 旁边写明。②「0.5px 描边在 DPR=1 会取整成 0，`parseFloat(borderBottom) > 0` 可能假红」不成立：`border-width` 的计算值是按设备像素取整的，实测 DPR=1 与 DPR=2 都是 `1px`（不会变 0）；改成 1px 反而会跟 `mac.css` 全站的 `0.5px solid var(--mac-glass-line)` 发丝线不是一档。
+
+## D450 评审在跑时徽标说「评审中」，会话自己在跑仍优先会话（#747，用户 2026-11-29 截图「代码评审 状态」写着完成、右栏 PR #743 那条记录还在跑）
+
+**症状。** 会话 settle 之后徽标说**完成**，而右栏代码评审里那条评审记录还标着「运行中 0/16 个文件」。评审是 detached worker（D446），换脑、更新、页面切走都不打断；这段时间会话自己一动不动，徽标就一路说着「没事了」。
+
+**决定。**
+
+- 会话状态加一格 `review?: number | null` = 这个会话此刻在跑几条**评审记录**（0–2，跨仓库共用额度）。`null` 是 0（`undefined` 过 JSON 会被整条丢掉，页面就永远清不掉「评审中」）。
+- 计数的唯一来源是评审模块的在跑集合（`reviewRunningCount()`）；在跑集合的两个入口（`trackActive` / `untrackActive`）各喊一次 `notify.onActive`，桥就改写那一格（`touch:false`，不刷左栏时间，与 D170 的「后台」同一口径），页面拿到的是单会话状态帧。只有接手过的会话有可写的状态对象，盘上发现、没接手的靠 `sessions.list()` 带上这一格 —— 而 `list()` 用**计算值**覆盖 `state.review`，否则会话休眠重开后内存里那份旧值会一直挂着。
+- 徽标判定从 `app.ts` 搬进 `web/src/session-badge.ts` 的纯函数，顺序固定为 **待回答 > 待确认 > 终端占用 > 运行中 > 后台 > 评审中 > 完成**：
+  - 「在等你」永远先说；
+  - `running` 只说「pi 进程在忙」，审批 / 问卷在等时它也常常为真，所以排后面；
+  - 后台子代理跑完 pi 会自己接着做（D170），排评审前面；
+  - 评审只压过**完成**与空位 —— 用户点明「会话在跑优先会话」。
+- 「评审中」是第二枚可点徽标（第一枚是「后台」）：切到那个会话 + 右栏切到代码评审页签。顺序必须**先换会话再换页签**（`selectQueueTab("review")` 会 `loadReview()`，读的是当前会话的目录）。左栏卡片、★ 行胶囊、会话管理、工作区浮层四处同一颗（`badgeChip()` / `PillBar.onBadge`），顶栏「当前在哪」只吃「在等你」两档，不变。
+- 自带一档颜色（`--review` / `--review-bg` / `--review-dim`，三套主题各一份），类名是 `reviewing` 而不是 `review`：`.review` 已经是评审面板那个容器（`display:flex; min-width:0`），挂在胶囊上会把胶囊挤成 2px 宽。
+
+**为什么。** 「完成」是一个会让人离开的读数；一条评审要跑几分钟、还在出意见，用户根本不知道。放桥端而不是页面临时攒，是因为刷新、换设备、热部署、桥重启（`resumeReviewJobs()` 从盘上接回）之后这一格都得在，而页面收 `review.state` 时只认当前会话的帧。
+
+**代价。** `SessionState` 多一格，每一份会话列表 / 单会话状态帧多一个字段（0 也写 `null`）。页面多一个纯函数模块。评审条数只按会话算、不区分仓库 —— 与额度口径一致，但「哪一条在哪个仓库」得去右栏看。
+
+**验证。** `node --experimental-strip-types bridge/tests/review-unit.mjs`（起 / 并跑 / 另一会话不串 / 取消不提前放开 / 起不来的收尾 / 桥重启接回 / 一样的条数只发一帧、0 发显式 `null`）；`npm run test:session-badge`（七档优先级与文案、可点性）；`probes/round9-badges.mjs`（假桥十个会话：`完成+评审` 写评审中、`运行中+评审` 写运行中、`后台+评审` 写后台、`两条评审` 写「评审中 2」；点它 / 按 Enter 都切到那个会话并停在代码评审页签）。顺带修了探针里两条过时的断言（条头那颗「N 个待处理」在 #97 之后已经不存在 → 改成数带 warn 色的胶囊；假桥对任何 subscribe 都回同一个会话 → 改成按会话回，否则切走会「又收到一份问卷」把右栏拽回「需要你」）。`npm run typecheck` 两侧通过。
+
+**发现的既有问题（不在本单范围）**：`web/tests/pillbar-unit.mjs` 与 `web/tests/review-unit.mjs` 在 Node 26 上因 `import "*.css"` 直接 `ERR_UNKNOWN_FILE_EXTENSION`，main 上一样红（`npm run test:pillbar` / `test:review:view` 两个脚本都跑不起来）。
+

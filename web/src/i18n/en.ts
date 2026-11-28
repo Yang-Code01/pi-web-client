@@ -4525,6 +4525,8 @@ export const en: Dict = {
   "都能点开看": "all open in the panel",
   "评审详情": "Review details",
   "评审中": "Reviewing",
+  "评审中 {p1}": "Reviewing {p1}",
+  "有 {p1} 条评审在跑，点开去右栏「代码评审」看进度": "{p1} review(s) running — click to watch progress in Code review",
   "评审还在跑，意见会陆续出现。": "Still reviewing; findings will appear as they come.",
   "还没跑过": "Not run yet",
   "没有匹配的 PR": "No matching pull requests",
