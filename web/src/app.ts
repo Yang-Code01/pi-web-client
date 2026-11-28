@@ -136,6 +136,7 @@ import {
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
+import { toolArgsView, type ArgBlock, type ArgFact } from "./argview.ts";
 import { ReminderCenter, type Reminder } from "./reminders.ts";
 import { appZoom, escapeTopLayer, LEAVE_MS, markSurface, mountOverlay, overlaysOpen, pushEscLayer, retireOverlay, startLeaving, type SurfaceKind, type SurfaceOpts } from "./modal.ts";
 import {
@@ -20693,11 +20694,17 @@ export class App {
       row.type = "button";
       row.title = tr("点开看 {p1} 的完整参数", { p1: active.name });
       row.setAttribute("aria-haspopup", "dialog");
-      row.onclick = () => this.openArgsDialog({
-        title: tr("{p1} 的参数", { p1: active.name }),
-        meta: this.execDuration(active.elapsedMs),
-        blocks: [{ text: full }],
-      });
+      // D460: 对话框里不再是一段 JSON，而是按参数形状拆好的正文（bash 的命令按真换行铺开）。
+      row.onclick = () => {
+        const view = toolArgsView(active.args);
+        this.openArgsDialog({
+          title: tr("{p1} 的参数", { p1: active.name }),
+          meta: this.execDuration(active.elapsedMs),
+          tool: active.name,
+          blocks: view.blocks,
+          facts: view.facts,
+        });
+      };
     }
     line.append(el("b", "", active.name), el("span", "exec-args", full));
     if (long) line.append(el("span", "exec-now-open", "⤢"));
@@ -20705,11 +20712,30 @@ export class App {
     return line;
   }
 
+  /** 「参数」窗口左上角那枚徽章：用工具自己的图标，一眼看出这是哪个工具的参数。
+   *  按「词」认，不按子串：`/read/` 会命中 spreadsheet / breadcrumbs，`/ls/` 会命中 tools。
+   *  工具名是 `web_search` / `mcp__xxx__read_file` 这种下划线拼接的，拆成词就是它自己的名字。 */
+  private argDialogIcon(tool?: string): IconName {
+    const words = new Set((tool ?? "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+    const any = (...names: string[]) => names.some((name) => words.has(name));
+    if (any("bash", "sh", "shell", "exec", "terminal", "command")) return "terminal";
+    if (any("write", "edit", "patch", "notebook")) return "pencil";
+    if (any("read", "file", "files", "glob", "ls", "cat")) return "file";
+    if (any("search", "grep", "find", "web", "fetch", "browse", "browser", "http")) return "search";
+    if (any("subagent", "agent", "task", "delegate")) return "users";
+    if (any("ask", "question", "interview")) return "bubble";
+    return "tool";
+  }
+
   /**
    * D232: 长参数 / 子代理步骤详情走一次模态对话框，读完就关。跟口令框同一层（`.modal`，z-index 50），
-   * Esc、右上角 ✕ 都关（点遮罩不关，D437）；正文可滚动，顶部给「复制」。
+   * Esc、右上角 ✕ 都关（点遮罩不关，D437）。
+   *
+   * D460 重排：窗口材质还是 `overlay()` 打的 `window` 标记（mac.css 的玻璃遮罩 + 14px 窗 + 弹簧入场），
+   * 里面改成一条工具栏（工具徽章 / 标题 / 耗时 / 复制 / ✕）+ 事实胶囊 + 代码纸面，正文按工具参数
+   * 拆块（`argview.ts`），不再是 `JSON.stringify` 的一坨。
    */
-  private openArgsDialog(opts: { title: string; meta?: string; blocks: { label?: string; text: string }[] }): void {
+  private openArgsDialog(opts: { title: string; meta?: string; tool?: string; blocks: ArgBlock[]; facts?: ArgFact[] }): void {
     this.argsDialogClose?.();
     const scrim = el("div", "modal argdialog");
     scrim.setAttribute("role", "dialog");
@@ -20717,11 +20743,17 @@ export class App {
     scrim.setAttribute("aria-label", opts.title);
     const panel = el("div", "argdialog-panel");
     const head = el("div", "argdialog-head");
-    head.append(el("strong", "argdialog-title", opts.title));
-    if (opts.meta) head.append(el("span", "argdialog-meta", opts.meta));
+    const glyph = el("span", "argdialog-glyph");
+    glyph.append(icon(this.argDialogIcon(opts.tool), { size: 15 }));
+    const headtext = el("div", "argdialog-headtext");
+    headtext.append(el("strong", "argdialog-title", opts.title));
+    if (opts.meta) headtext.append(el("span", "argdialog-sub", opts.meta));
     const copy = el("button", "argdialog-btn argdialog-copy", tr("复制")) as HTMLButtonElement;
     copy.type = "button";
     copy.onclick = () => {
+      // 「复制」拿的就是屏幕上这几块（WYSIWYG）：bash 得到命令本体、write 得到文件内容、
+      // edit 得到它那块 `- 旧 / + 新`。以前这里想改成「完整参数 JSON」，但那样 bash 又变回一坨 ——
+      // 只能有一套规矩，就是「看到什么拷什么」。
       const text = opts.blocks.map((block) => block.text).join("\n\n");
       const done = navigator.clipboard?.writeText(text);
       done?.then(() => this.flashToast(tr("已复制到剪贴板"), false, 1600), () => this.flashToast(tr("复制失败"), true, 1600));
@@ -20730,11 +20762,39 @@ export class App {
     close.append(icon("close", { size: 13 }));
     close.type = "button";
     close.setAttribute("aria-label", tr("关闭"));
-    head.append(copy, close);
+    const actions = el("div", "argdialog-actions");
+    actions.append(copy, close);
+    head.append(glyph, headtext, actions);
     const body = el("div", "argdialog-body");
+    if (opts.facts?.length) {
+      const facts = el("div", "argdialog-facts");
+      for (const fact of opts.facts) {
+        const chip = el("span", "argdialog-fact");
+        chip.append(el("b", "", fact.key), el("span", "", fact.value));
+        chip.title = `${fact.key} ${fact.value}`;
+        facts.append(chip);
+      }
+      body.append(facts);
+    }
     for (const block of opts.blocks) {
-      if (block.label) body.append(el("div", "argdialog-label", block.label));
-      body.append(el("pre", "argdialog-text", block.text));
+      const section = el("section", "argdialog-block");
+      const lines = block.text ? block.text.split("\n").length : 0;
+      if (block.label || lines > 1) {
+        const bar = el("div", "argdialog-blockhead");
+        if (block.label) bar.append(el("span", "argdialog-label", block.label));
+        if (lines > 1) bar.append(el("span", "argdialog-blockmeta", tr("{p1} 行", { p1: lines })));
+        section.append(bar);
+      }
+      const pre = el("pre", "argdialog-text");
+      const hl = block.grammar ? highlightFragment(block.text, block.grammar) : null;
+      if (hl) {
+        pre.classList.add("hl");
+        pre.append(hl);
+      } else {
+        pre.textContent = block.text;
+      }
+      section.append(pre);
+      body.append(section);
     }
     panel.append(head, body);
     scrim.append(panel);
@@ -20985,9 +21045,15 @@ export class App {
     const summary = typeof step.args === "string" ? step.args : this.execArgs(step.args);
     button.append(state, el("span", "exec-step-name", step.kind === "skill" ? tr("技能 · {p1}", { p1: step.label }) : step.label), el("span", "exec-step-args", summary));
     // D232: 步骤详情（参数 + 结果摘要）不再就地铺开，点行开对话框 —— 跟「现在」卡的长参数同一套。
-    const blocks: { label?: string; text: string }[] = [];
+    const blocks: ArgBlock[] = [];
+    const facts: ArgFact[] = [];
     if (step.note) blocks.push({ label: tr("技能说明"), text: step.note });
-    if (step.args != null && summary) blocks.push({ label: tr("参数"), text: summary });
+    if (step.args != null && summary) {
+      // D460：工具步骤的参数跟「现在」卡走同一套拆法（bash 的命令按真换行、edit 排成 diff）。
+      const view = toolArgsView(step.args);
+      for (const block of view.blocks) blocks.push({ ...block, label: block.label ?? tr("参数") });
+      facts.push(...view.facts);
+    }
     if (step.result) {
       const result = step.result.length > 1200 ? `${step.result.slice(0, 1200)}…` : step.result;
       blocks.push({ label: tr("结果摘要"), text: result });
@@ -20995,7 +21061,7 @@ export class App {
     if (blocks.length) {
       button.title = tr("点开看这一步的参数与结果");
       button.setAttribute("aria-haspopup", "dialog");
-      button.onclick = () => this.openArgsDialog({ title: step.label, meta: tr("子代理步骤"), blocks });
+      button.onclick = () => this.openArgsDialog({ title: step.label, meta: tr("子代理步骤"), tool: step.kind === "tool" ? step.label : undefined, blocks, facts });
     }
     wrap.append(button);
     return wrap;

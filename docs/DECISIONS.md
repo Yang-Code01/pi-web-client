@@ -9230,3 +9230,19 @@ if (stop >= 0) {
 **代价。** 菜单在 dock 很高时改为**向下**开，会盖住终端输出区（以前盖的是会话区）；这是「不翻出窗口」的必然结果，方向由空间决定而不是由代码写死。
 
 **验证。** `probes/term-shell-menu.mjs`（假桥四个 shell）：dock 拖到顶后开菜单 —— 上下左右都在视口内（修前 top=-146）、向下开且贴锚点、四个 item 不越出菜单、中心 `elementFromPoint` 命中菜单（修前整块在屏幕外）；双击 grip 复位到窗口底部再开 —— 不盖住 `＋`；900×360 窗口里同样在视口内、封顶时能滚到最后一项；`－` 之后 `data-term-state="min"`、三根 `.term-bars` 都在、`animation-name=term-bars-rise`、`iteration-count=infinite`、1.05s、三个不同 delay、都落在按钮框里、260ms 采样 `transform` 确实在变（`matrix(1,0,0,0.34,0,0) → matrix(1,0,0,0.715,0,0)`），按钮真的点亮（computed 从 `rgb(81,81,84)` / 透明底变成 `rgb(0,122,255)` / accent 底，这条在补 mac.css 之前是红的）；再点顶栏回到同一个 shell 且柱子消失；`关闭` 之后 `data-term-state="off"`、无柱子、无 `term-live`。`PROBE_THEME=mac-dark` 跑一遍同样全绿（暗色下 10,132,255 / `color(srgb 0.10 0.17 0.24)`）。`npm --prefix web run typecheck` 通过（含 i18n 与两条守卫）。
+
+## D460 「参数」对话框按工具参数拆块、按真换行铺开，外壳换成 mac 工具栏（用户 2026-11-29 截图「不具备可读性，重新设计一下，要有 mac 风格」）
+
+**问题。** 执行面板「现在」卡上的 bash 行点开是一个只有 `<pre>` 的窗口，正文是 `JSON.stringify(args)`：一条 13 行的 heredoc 命令被压成一堵两千多字的墙，每个换行都是字面的 `\n`，缩进也看不出来。同一份参数里其实只有 `command` 需要读全文，`cwd` / `timeout` / `description` 这三个短字段却各占一段、混在 JSON 里。
+
+**决定。**
+
+- 新增 `web/src/argview.ts`（只产出「原文 + 用什么上色」，不碰 DOM）：参数先解析（对象，或一段 JSON 字符串 —— 旧转录里两种都有）；顶层长字符串（`command` / `content` / `text`… 超过 60 字或带换行）各成一块正文，其余短字段收成顶上的一排事实胶囊；`edit` 的 `edits[]` 排成 `- 旧 / + 新` 的 diff（跟别的长字段并列，不是二选一）。塞不进一行胶囊、或里面还埋着长文本的字段排成结构提纲，那些长文本（`questions[0].prompt` 这种，往下三层）各自成块、提纲里用 `…` 占位；全都能塞进胶囊时退回整份两格缩进的 JSON。
+- 正文按**真文本**铺开并上色：命令走 highlight.js 的 bash，写文件按 `path` 猜语言，diff 用现成的 diff 语法；块头写「命令 / 内容 / 参数 / 改动」与行数。
+- 窗口外壳复用已有的一档材质：`overlay()` 打的 `window` 标记（玻璃遮罩、14px 圆角、`mac-window-in` 弹簧入场）。标题栏换成一枚工具徽章 + 标题 / 耗时 + 右侧「复制」「✕」的工具栏；正文是沉下去的一块纸面（`--sunken` + 发丝边 + 内阴影），等宽字从 11px 提到 12.5px / 1.7。子代理步骤行（`execChildStep`）用同一套拆法，块标题兜底为「参数」。
+
+**为什么是拆块而不是只给 JSON 上色。** 上色只解决「哪是键哪是值」，不解决「十三行被压成一行」；而参数里真正要读的从来是一两个字段，其余是上下文。拆块以后 `command` 用自己的语言上色、短字段退成一行，眼睛先落在命令上。
+
+**代价 / 可改。** 「长字段」靠长度阈值（60 字）与换行判断，不是一张工具表 —— 形状特别怪的工具（比如把代码塞在数组里）仍会退回 JSON，只是不如手写模板好看；改 `argview.ts` 里的阈值即可。`edit` 的 diff 是「删的排一段、加的排一段」，不是按 hunk 交错的 `git diff`，够读但不是补丁格式。特大命令没有截断 —— 对话框内部滚动，跟以前一样。焦点循环仍然写死「复制」「✕」两颗（D232 的旧约定）；正文目前没有可聚焦内容，以后加链接要同步改。
+
+**验证。** 新探针 `probes/args-dialog.mjs`（fake-pi 新场景 `BASHARGS`，一条 13 行 heredoc 命令）：量到命令按 13 行铺开、`innerText` 里没有字面 `\n`、heredoc 里的缩进保住、有 `.hljs-*` 色 span、块头是「命令 / 13 行」、`cwd` / `timeout` / `description` 成了事实胶囊、`.argdialog-body` 里没有 `{"command"`；「复制」拿到的是真换行原文；窗口是 `data-mac-surface=window` + 玻璃遮罩 + 14px 圆角 + `mac-window-in`；150% 字号下上下都不越出视口；嵌套的长文本（`questions[0].prompt`）被单独拎成一块、结构那块里只留 `…`。另加 `web/tests/argview-unit.mjs`（15 条：bash / JSON 字符串 / write / edit / 多段 edit / edit + 长字段共存 / 嵌套短对象 / 嵌套长文本挑出 / 数组里的长文本 / 顶层正文 + 嵌套长文本 / 深埋不丢 / 胶囊装不下不截断 / 非常规长字段 / 纯文本 / 事实压缩）挂进 `npm --prefix web run typecheck`。既有的 `bridge/tests/exec-panel-ui.mjs`（D232 那几条对话框断言）照旧全过。
