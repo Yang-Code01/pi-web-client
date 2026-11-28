@@ -2561,6 +2561,17 @@ async function main(): Promise<void> {
     }
   };
 
+  // 评审状态帧只在这里拼：review.get、换脑接回后的 onState 都发同一份，字段不会漏一个。
+  const reviewStateFrame = (repo: string, session: string, pinned: string) => ({
+    type: "review.state",
+    dir: repo,
+    pinned,
+    sessionId: session,
+    state: readReviewState(repo, session),
+    progresses: reviewProgresses(repo, session),
+    cap: MAX_RUNS_PER_SESSION,
+  });
+
   // 评审的执行进程是独立的 detached worker（D441）：进度与收尾都从盘上读，脑只负责转发。
   // 换脑时新脑开机在这里接回上一代留下的 job —— 正在跑的评审不中断。
   setReviewNotify({
@@ -2574,15 +2585,7 @@ async function main(): Promise<void> {
       } catch {
         /* 目录没了就当没钉 */
       }
-      broadcast({
-        type: "review.state",
-        dir: job.repo,
-        pinned,
-        sessionId: job.session,
-        state: readReviewState(job.repo, job.session),
-        progresses: reviewProgresses(job.repo, job.session),
-        cap: MAX_RUNS_PER_SESSION,
-      });
+      broadcast(reviewStateFrame(job.repo, job.session, pinned));
     },
   });
   resumeReviewJobs();
@@ -4118,17 +4121,8 @@ async function main(): Promise<void> {
             const session = String(msg.sessionId ?? "");
             try {
               const { repo, pinned } = effectiveReviewDir(dir, session);
-              send({
-                type: "review.state",
-                dir: repo,
-                pinned,
-                sessionId: session,
-                state: readReviewState(repo, session),
-                progresses: reviewProgresses(repo, session),
-                cap: MAX_RUNS_PER_SESSION,
-                // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
-                swept: takeSweptCount(),
-              });
+              // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
+              send({ ...reviewStateFrame(repo, session, pinned), swept: takeSweptCount() });
               void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
             } catch (err: any) {
               send({ type: "review.state", dir, sessionId: session, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });

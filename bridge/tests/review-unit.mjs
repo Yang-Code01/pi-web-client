@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import {
   classifyOcrFailure,
@@ -35,6 +35,7 @@ import {
   reviewProgresses,
   reviewJobFile,
   reviewJobsDir,
+  reviewJobAlive,
   sweepStaleRuns,
   startReview,
   setReviewLauncher,
@@ -570,7 +571,9 @@ check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标�
     assert.equal(readReviewState(repo, session).runs[0].status, "running");
 
     const deadStartedAt = new Date(Date.now() + 1).toISOString();
-    const deadPid = spawnSync(process.execPath, ["-e", "0"]).pid;
+    // 用一个不可能存活的 pid：spawn 出来的 pid 退出后可能被系统复用，会偶发把这条当成活的。
+    const deadPid = 2 ** 31 - 2;
+    assert.equal(reviewJobAlive({ pid: deadPid }), false, "测试选的 deadPid 必须不在运行");
     writeReviewState(
       repo,
       { repo, runs: [run("live", startedAt), run("dead", deadStartedAt)], marks: {} },
@@ -603,8 +606,11 @@ check("worker 起不来：当场收成 worker_spawn，不留在 active 里", () 
   assert.equal(run.errorCode, "worker_spawn");
   assert.match(run.error, /spawn boom/);
   assert.equal(reviewProgresses(repo, session).length, 0, "起不来就不许留在进度表里转圈");
+  assert.ok(!fs.existsSync(reviewJobFile(runId)), "起不来要把 job 文件也清掉");
 });
 
+// 裁剪只在 startReview() 加完新记录后做（trimRuns）；写盘本身不裁剪，
+// 否则标一条意见、改一次 pick 走 writeReviewState() 就会把用户正看着的那条挤掉。
 check("写盘本身不裁剪：标意见 / 改 pick 不许把正看着的那条挤掉", () => {
   const repo = "/Users/me/many";
   const runs = Array.from({ length: 21 }, (_, i) => ({ id: `r${i}`, status: "done", findings: [] }));

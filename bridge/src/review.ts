@@ -1109,21 +1109,9 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     if (o.launch) o.launch(job);
     else if (launcher) launcher(job);
     else spawnReviewWorker(job, o.ghEnv);
-  } catch (err: any) {
+  } catch (err) {
     // 进程没起来（node 不可执行 / spawn 失败）：当场收尾，别让面板一直转圈等一个不存在的 worker。
-    const failed = readReviewState(root, session);
-    const onDisk = failed.runs.find((r: ReviewRun) => r.id === runId);
-    if (onDisk) {
-      onDisk.status = "failed";
-      onDisk.finishedAt = new Date().toISOString();
-      onDisk.error = String(err?.message ?? err);
-      onDisk.errorCode = "worker_spawn";
-      writeReviewState(root, failed, session);
-    }
-    active.delete(runId);
-    progressMap.delete(runId);
-    reapReviewJob(job);
-    notify.onState?.(job);
+    markWorkerSpawnFailed(job, err);
   }
   ensureReviewTicker();
 
@@ -1543,6 +1531,10 @@ function readProgressFile(job: ReviewJob): Progress | null {
   try {
     const raw = JSON.parse(fs.readFileSync(reviewProgressFile(job.runId), "utf8")) as any;
     if (!raw || raw.runId !== job.runId) return null;
+    // 盘上的进度是脑广播给页面的输入：形状不对就当没读到，别把半截日志 / 非数组 plan 原样发出去。
+    if (typeof raw.status !== "string" || typeof raw.phase !== "string") return null;
+    if (raw.log !== undefined && !Array.isArray(raw.log)) return null;
+    if (raw.plan !== undefined && !Array.isArray(raw.plan)) return null;
     return raw as Progress;
   } catch {
     return null;
@@ -1709,7 +1701,7 @@ function markWorkerSpawnFailed(job: ReviewJob, err: unknown): void {
   if (onDisk && onDisk.status === "running") {
     onDisk.status = "failed";
     onDisk.finishedAt = new Date().toISOString();
-    onDisk.error = String((err as any)?.message ?? err);
+    onDisk.error = err instanceof Error ? err.message : String(err);
     onDisk.errorCode = "worker_spawn";
     writeReviewState(job.repo, state, job.session);
   }
@@ -1797,7 +1789,8 @@ export function resumeReviewJobs(): number {
       repo: job.repo,
       session: job.session,
       mode: job.opts.mode ?? run.mode,
-      pr: Number(job.opts.pr) || run.pr || 0,
+      // run.pr 是 execute 解析后的真实号（opts.pr 可能是 0 或链接里的旧号），判重以它为准。
+      pr: run.pr || Number(job.opts.pr) || 0,
       job,
     });
     const progress =

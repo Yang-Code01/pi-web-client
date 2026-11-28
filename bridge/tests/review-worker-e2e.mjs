@@ -210,6 +210,7 @@ const jobPid = (runId) => {
 const runOf = (state, runId) => state?.runs?.find((r) => r.id === runId) ?? null;
 
 let workerPid = 0;
+let secondWorkerPid = 0;
 try {
   await until(async () => {
     try {
@@ -283,6 +284,7 @@ try {
   page2.ws.send(JSON.stringify({ type: "review.run", dir: REPO, sessionId: session, mode: "workspace", lang: "zh", model: "fake-review" }));
   const started2 = await page2.waitFor((m) => m.type === "review.started" && m.runId !== runId, "第二条评审开跑");
   const pid2 = await until(() => jobPid(started2.runId), "第二条的 worker 起来");
+  secondWorkerPid = pid2;
   assert.ok(alive(pid2), "第二条 worker 应该正在跑");
   const stopped = await post("/api/host/stop");
   assert.equal(stopped.status, 200, "停机接口应该放行");
@@ -295,11 +297,13 @@ try {
   console.error(`--- host 日志 ---\n${logs.join("").slice(-6000)}`);
   process.exitCode = 1;
 } finally {
-  if (workerPid && alive(workerPid)) {
-    try {
-      killTree(workerPid);
-    } catch {
-      /* ignore */
+  for (const pid of [workerPid, secondWorkerPid]) {
+    if (pid && alive(pid)) {
+      try {
+        killTree(pid);
+      } catch {
+        /* ignore */
+      }
     }
   }
   if (exitCode === null) {
