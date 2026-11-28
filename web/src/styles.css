@@ -2251,9 +2251,10 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
    宽高按 `--ui-scale` 一起缩放，字号调大时幽灵也跟着大。 */
 .paste-fly { position: fixed; inset: 0; z-index: 45; pointer-events: none; }
 .paste-fly .ghost {
-  position: absolute; left: 0; top: 0; width: 76px; height: 76px; border-radius: 14px; overflow: hidden;
+  position: absolute; left: 0; top: 0; border-radius: 14px; overflow: hidden;
   border: 0.5px solid var(--mac-glass-line); box-shadow: var(--mac-shadow-menu);
   will-change: transform, opacity;
+  /* 宽高由 pastefly.ts 写（落点按它的一半居中，尺寸只能有 TS 一份）。 */
 }
 .paste-fly .ghost img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .sheet.image-sheet { grid-template-rows: auto 1fr auto; }

@@ -24,7 +24,8 @@ import { imageSrc, type PendingImage } from "./images.ts";
 /** `--mac-spring`（带一点回弹）。必须跟 `mac-base.css` 里那条一模一样（单测对账）。 */
 export const SPRING = "cubic-bezier(0.34, 1.42, 0.64, 1)";
 
-/** 幽灵缩略图的边长（布局 px）。 */
+/** 幽灵缩略图的边长（布局 px）。落点靠它的一半来居中，所以它只在这里定义 ——
+ *  尺寸是脚本 `style.width/height` 写上去的，`styles.css` 里不再另写一份 76px。 */
 const GHOST = 76;
 /** 起点在输入框顶边上方多高（布局 px）。 */
 const START_LIFT = 54;
@@ -80,7 +81,7 @@ const landing = new WeakMap<HTMLElement, { anim?: Animation | null; flash?: numb
  * 弹跳是唯一一个不依赖幽灵缩略图也能成立的信号 —— 每一批附加（粘贴 / 拖拽 / 选文件 / 相册）
  * 最后都会调它一次。
  */
-export function badgeLanded(badge: HTMLElement, scale = 1.14): void {
+export function badgeLanded(badge: HTMLElement, pop = 1.2): void {
   if (reducedMotion()) return;
   const prev = landing.get(badge) ?? {};
   prev.anim?.cancel();
@@ -89,7 +90,7 @@ export function badgeLanded(badge: HTMLElement, scale = 1.14): void {
     badge,
     [
       { transform: "scale(.62)", opacity: 0.35 },
-      { transform: `scale(${scale})`, opacity: 1, offset: 0.52 },
+      { transform: `scale(${pop})`, opacity: 1, offset: 0.52 },
       { transform: "scale(.97)", offset: 0.78 },
       { transform: "scale(1)" },
     ],
@@ -119,11 +120,18 @@ function layer(host: HTMLElement): HTMLElement {
 export function flyImagesToBadge(images: readonly PendingImage[], opts: PasteFlyOpts): Promise<void> {
   // 调用方是 `void` 掉的：这里既不能把异常抛进 `addImages()`（那会连累整条贴图路径），
   // 也不能留下一条 unhandled rejection（那等于每次贴图都在控制台报一次错）。
+  // 兜底只此一处，而且不静默 —— 真出了意外至少留一行控制台记录，查得到来源。
   try {
-    return runFly(images, opts);
-  } catch {
+    return runFly(images, opts).catch((ex) => report(ex));
+  } catch (ex) {
+    report(ex);
     return Promise.resolve();
   }
+}
+
+/** 动效坏了不该挡住贴图，但也不该无声无息。 */
+function report(ex: unknown): void {
+  console.warn("paste-fly: 动效没能跑起来", ex);
 }
 
 function runFly(images: readonly PendingImage[], opts: PasteFlyOpts): Promise<void> {
@@ -152,6 +160,8 @@ function runFly(images: readonly PendingImage[], opts: PasteFlyOpts): Promise<vo
   shown.forEach((src, i) => {
     const ghost = document.createElement("div");
     ghost.className = "ghost";
+    ghost.style.width = `${GHOST}px`;
+    ghost.style.height = `${GHOST}px`;
     const img = document.createElement("img");
     img.src = src;
     img.alt = "";
@@ -193,7 +203,5 @@ function runFly(images: readonly PendingImage[], opts: PasteFlyOpts): Promise<vo
   });
 
   // 落地只弹一次 —— 等最后一张（含错开延迟）停下。这个 Promise 不 reject：调用方是 `void` 掉的。
-  return Promise.all(flights)
-    .then(() => badgeLanded(opts.badge, 1.2))
-    .catch(() => {});
+  return Promise.all(flights).then(() => badgeLanded(opts.badge));
 }

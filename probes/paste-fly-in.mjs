@@ -154,6 +154,9 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const recordLanding = (page) =>
   page.evaluate(() => {
     window.__landed = { flash: 0, pops: 0 };
+    // 同一页只装一次：原型方法被包两遍会让计数翻倍（现在是每段开新页，但别留这个陷阱）。
+    if (window.__landedPatched) return;
+    window.__landedPatched = true;
     const badge = () => document.querySelector(".row .image-badge");
     new MutationObserver(() => {
       if (badge()?.classList.contains("flash")) window.__landed.flash++;

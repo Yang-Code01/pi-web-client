@@ -20,6 +20,16 @@ import { fileURLToPath } from "node:url";
 import { SPRING, badgeLanded, flyImagesToBadge } from "../src/pastefly.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+/** 装一个 matchMedia 桩，返回还原函数（原本没有就删掉 —— 跟 fakeDom.restore 一个语义）。 */
+const stubMatchMedia = (fn) => {
+  const real = globalThis.matchMedia;
+  globalThis.matchMedia = fn;
+  return () => {
+    if (real === undefined) delete globalThis.matchMedia;
+    else globalThis.matchMedia = real;
+  };
+};
 const CSS = fs.readFileSync(path.join(HERE, "..", "src", "mac-base.css"), "utf8");
 
 /** 取 `--name: value;` 里的 value（值本身没有分号，够用）。 */
@@ -39,6 +49,7 @@ function node(tag, dom) {
     alt: "",
     children: [],
     parent: null,
+    style: {},
     classList: {
       set: new Set(),
       add(c) {
@@ -126,7 +137,8 @@ function fakeDom({ throwOnAnimate = false } = {}) {
     else globalThis.document = realDocument;
     if (realWindow === undefined) delete globalThis.window;
     else globalThis.window = realWindow;
-    if (realMatchMedia !== undefined) globalThis.matchMedia = realMatchMedia;
+    if (realMatchMedia === undefined) delete globalThis.matchMedia;
+    else globalThis.matchMedia = realMatchMedia;
   };
   return dom;
 }
@@ -156,7 +168,7 @@ test("源列表为空：连 host 都不问（贴图之外没人该被拖进来�
 });
 
 test("prefers-reduced-motion：两个入口都不动手，也不拼 data URL", async () => {
-  globalThis.matchMedia = () => ({ matches: true });
+  const restore = stubMatchMedia(() => ({ matches: true }));
   let touched = 0;
   const badge = {
     classList: { add: () => touched++, remove: () => touched++ },
@@ -179,7 +191,7 @@ test("prefers-reduced-motion：两个入口都不动手，也不拼 data URL", a
   await flyImagesToBadge(watched, { badge, origin: null, host: () => (touched++, null), scale: () => 1 });
   assert.equal(touched, 0);
   assert.equal(mapped, 0);
-  delete globalThis.matchMedia;
+  restore();
 });
 
 // ---------------------------------------------------------------- 3. 只给要飞的几片拼图
@@ -203,6 +215,9 @@ test("六张只拼四片 data URL（MAX_GHOSTS 之后不再拼）", async () => 
     assert.equal(layer.className, "paste-fly");
     assert.equal(layer.childElementCount, 4);
     assert.equal(mapped, 8); // 4 片 × (mimeType + data)
+    // 边长只由脚本写（落点按它的一半居中）：CSS 里再写一份就会悄悄错开半个边长。
+    assert.equal(layer.children[0].style.width, "76px");
+    assert.equal(layer.children[0].style.height, "76px");
     dom.finishFlights();
     await done;
   } finally {
@@ -229,6 +244,7 @@ test("飞完一张就摘一张，最后一张落地后整层拆掉、徽标只�
     assert.equal(dom.badgeAnims().length, 1, "落地只弹一次");
     assert.ok(dom.badge.classList.contains("flash"), "实底闪挂上");
     assert.equal(dom.badgeAnims()[0].anim.keyframes[0].transform, "scale(.62)", "弹的是徽标落地那组关键帧");
+    assert.equal(dom.badgeAnims()[0].anim.keyframes[1].transform, "scale(1.2)", "默认弹到 1.2（唯一调用处的强度）");
   } finally {
     dom.restore();
   }

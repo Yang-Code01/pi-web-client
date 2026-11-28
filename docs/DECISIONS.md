@@ -8926,4 +8926,6 @@ if (stop >= 0) {
 
 **第二轮复审（同日）补的三处。** ④`flyImagesToBadge` 改吃 `PendingImage[]`、在 `reducedMotion()` 与 `MAX_GHOSTS` 裁片之后才拼 data URL —— 以前 `images.map(imageSrc)` 会替十几张 2048px 的图各拼一条几 MB 的字符串，实际只飞四片。⑤拼法收进 `images.ts` 的 `imageSrc()`：以前待发图片弹窗、随手问、贴图动效三处各手写一遍 `data:${mimeType};base64,${data}`。⑥这个 Promise 现在保证不抛也不 reject（`try/catch` 包住整个函数、`Element.animate` 缺失或拒绝关键帧时返回 null），否则 `app.ts` 那句 `void` 就等于每次贴图都留一条 unhandled rejection；顺带把「徽标上一条动画要 cancel / 上一个 `.flash` 定时器要清」这两条也在 `web/tests/pastefly-unit.mjs` 里用假 DOM 钉住了，不必等浏览器探针才发现回归。
 
+**第三轮复审（同日）补的两处。** ⑦幽灵的边长从 CSS 挪进 `pastefly.ts`（脚本写 `style.width/height`）：落点是按它的一半居中的，尺寸写两处就会在改 CSS 时让终点偏半个边长，而探针的「±8px」未必抓得住。⑧`badgeLanded` 的弹跳强度参数改名 `pop`（跟 `opts.scale` 那个字号缩放不是一回事），默认值就是唯一调用处用的 1.2 —— 原来那个 1.14 是死值。另外那个「永不 reject」的兜底从 `runFly` 的链尾挪到 `flyImagesToBadge` 一处，并且改成一行 `console.warn`：不静默吞掉，查得到来源。
+
 **验证。** `probes/paste-fly-in.mjs`（真 Chromium + 真 paste 事件 + 真几何，隔离桥）：贴两张冒两层幽灵；把动画暂停把 `currentTime` 推到首尾帧上量 —— 起点在输入框上方、终点落在徽标中心 ±8px（不靠等时钟，700ms 的飞行才不会让断言随机翻车）；落地后整层从 DOM 摘掉、徽标有弹跳动画、`.flash` 挂上且 260ms 后自己摘掉；六张只飞四片但徽标写「+6 图」；`prefers-reduced-motion` 下一片不飞也不弹；字号 125% 时幽灵布局尺寸仍是 76px、渲染成 ≈95px、终点仍在徽标中心（缩放只乘一次）。回归：`probes/image-sheet-check.mjs` 20 项（点徽标、删图、清空）全过，飞行层没挡住徽标的点击。守卫：`npm --prefix web run typecheck`。
