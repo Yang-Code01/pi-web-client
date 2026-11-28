@@ -39,6 +39,7 @@ import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
+import { sessionBadge, type SessionBadge } from "./session-badge.ts";
 import { retellState } from "./retell-state.ts";
 import { DEFAULT_MAC_ACCENT } from "./palette.ts";
 import { accentFor, DEFAULT_ACCENT_TONE, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, themeInfo, type AccentTone, type ThemeId, type ThemeInfo } from "./theme.ts";
@@ -197,26 +198,6 @@ const WS_CREATE_DIR_CAP = "ws.create.dir";
 const WS_RESOLVE_DIR_CAP = "ws.resolve.dir";
 const WS_EXEC_CHILD_CAP = "exec.child.subscribe";
 
-/** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
-type BadgeKind = "ask" | "approve" | "locked" | "run" | "bg" | "done";
-
-interface SessionBadge {
-  kind: BadgeKind;
-  text: string;
-  cls: "wait" | "lock" | "run" | "done";
-  title: string;
-  /** Blocked on the user — worth calling out in the pin strip header. */
-  pending: boolean;
-}
-
-/**
- * `running` only means "the pi process is alive": it stays true while an approval or a question is
- * waiting for the user. Anything that says "正在跑" has to look at asks/approvals first, or it will
- * report a session stuck on the user as busy.
- *
- * D162: 「完成」也显示在**当前打开的会话**上 —— 打开只是看，不再把完成抹掉。否则用户点开确认
- * 一眼，卡片就从「完成」退回时间，再也没法从列表判断这一轮到底结束了没有。
- */
 /** D170 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
 type BgRunDto = BgRunView;
 
@@ -259,43 +240,6 @@ interface BgRunNode {
   labOut: HTMLElement;
   /** 这个 run 有没有过程记录（桥还没接上的才 false；卡片上直说，不装成「还没有」。） */
   hasLog: boolean;
-}
-
-function sessionBadge(s: SessionState): SessionBadge | null {
-  if (s.asks && s.asks > 0) {
-    return {
-      kind: "ask",
-      text: s.asks > 1 ? tr("待回答 {p1}", { p1: s.asks }) : tr("待回答"),
-      cls: "wait",
-      title: tr("在等你回答问卷，这个会话停在这儿了"),
-      pending: true,
-    };
-  }
-  if (s.approvals > 0) {
-    return {
-      kind: "approve",
-      text: s.approvals > 1 ? tr("待确认 {p1}", { p1: s.approvals }) : tr("待确认"),
-      cls: "wait",
-      title: tr("在等你确认这条命令"),
-      pending: true,
-    };
-  }
-  if (s.locked) {
-    return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
-  }
-  if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
-  // D170: 会话自己 settle 了，派出去的 runner 还在跑 —— 「完成」是假的，得先把这枚亮出来。
-  if (bgBusy(s)) {
-    return {
-      kind: "bg",
-      text: s.bg?.n && s.bg.n > 1 ? tr("后台 {p1}", { p1: s.bg.n }) : tr("后台"),
-      cls: "run",
-      title: s.bg?.agent ? tr("子代理 {p1} 还在后台跑，pi 会在它回来时接着做", { p1: s.bg.agent }) : tr("子代理还在后台跑，pi 会在它回来时接着做"),
-      pending: false,
-    };
-  }
-  if (s.done) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
-  return null;
 }
 
 function bgElapsedText(since: number, until = Date.now()): string {
@@ -462,6 +406,29 @@ export class App {
   private reviewState: ReviewState | null = null;
   /** 在跑的那几条，一条一份（D420：按 runId 认，不再「一个会话只有一份进度」）。 */
   private reviewProgresses: ReviewProgress[] = [];
+  /**
+   * 这些 ref 现在各指向哪个提交（#741）：key 是记录里的 `to`。
+   *
+   * 桥在 `review.state` 帧里当**兄弟字段**发（不在 `state` 里 —— 那是盘上的形状）。
+   * 帧不带它的时候（标一条意见、清理历史这些）**保留上一次的**：那些帧只改 records，
+   * 不该把标弄消失。
+   */
+  private reviewTips: Record<string, string> = {};
+  /** 上面那张快照是什么时候拍的（桥的 `tipsAt`）：比某条记录还旧的快照不能拿来判过时。 */
+  private reviewTipsAt = 0;
+  /**
+   * 点「重新评审」之前「评什么」是什么样（#741）。
+   *
+   * 那个动作会先把这一格换成记录自己的范围再开跑；桥**异步**拒掉（`dup_pr` / `busy` 竞态、
+   * 断线）时，要把它恢复回来 —— 不然面板上那一格被一条旧记录静默改掉并落了盘。
+   * 开跑被接受（`review.started`）或已经恢复过就清掉。
+   */
+  private reviewRerunRestore: { mode: ReviewMode; pr: string; base: string; target: string } | null = null;
+  /** 那张快照拍摄时 HEAD 在哪条分支（桥的 `tipsBranch`）：`HEAD` 记录只跟同一条分支的 tip 比。 */
+  private reviewTipsBranch = "";
+  /** 「重新核对」等着结果：那颗钮先灰着（每点一下都是一次绕开缓存的 `ls-remote`）。 */
+  private reviewTipsBusy = false;
+  private reviewTipsTimer: number | null = null;
   /** 一个会话同时最多几条（桥发来的上限）；缺省 2，跟桥上的 MAX_RUNS_PER_SESSION 对齐。 */
   private reviewCap = 2;
   private reviewOcr: ReviewOcr | null = null;
@@ -1384,12 +1351,16 @@ export class App {
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
     this.pillBar = new PillBar<SessionState>(pinStrip, {
-      // D170：钉条胶囊里那行小字就是徽标本身；「后台」那枚也让它点得开（胶囊其余部分仍是打开会话）。
+      // D170：钉条胶囊里那行小字就是徽标本身；「后台」与「评审中」都点得开（胶囊其余部分仍是打开会话）。
       badge: (s) => {
         const b = this.badgeOf(s);
-        return b ? { ...b, detail: b.kind === "bg" } : null;
+        return b ? { ...b, detail: b.clickable } : null;
       },
-      onBadge: (id) => this.openBgSheet(id),
+      // 可点徽标（后台 / 评审中）与左栏卡片走同一个口：`openBadge()`。
+      onBadge: (id) => {
+        const s = this.sessions.find((x) => x.id === id) ?? (this.session?.id === id ? this.session : null);
+        if (s) this.openBadge(s);
+      },
       time: relativeTime,
       // #97：第二行不再是「置顶区」，条头那颗字也就没有意义了 —— 最左边那颗就是当前会话。
       // 空字符串仍然会留一个空 span，CSS 里 `.pin-strip-label:empty` 把它收掉。
@@ -2805,8 +2776,13 @@ export class App {
         if (msg.dir && want && String(msg.dir) !== want && String(msg.dir) !== dir) break;
         if (msg.error) {
           this.reviewError = errText(msg);
+          // 「重新评审」被桥拒了（`dup_pr` / `busy` / 别的）：把「评什么」还给点之前的样子。
+          this.restoreRerunPick();
           this.reviewState = null;
           this.reviewProgresses = [];
+          this.reviewTips = {};
+          this.reviewTipsAt = 0;
+          this.reviewTipsBranch = "";
           this.reviewNotGit = msg.code === "not_git";
           if (this.queueTab === "review") this.renderQueue();
           break;
@@ -2816,6 +2792,15 @@ export class App {
         if (msg.dir) this.reviewRepo = String(msg.dir);
         this.reviewState = (msg.state ?? null) as ReviewState | null;
         this.reviewProgresses = Array.isArray(msg.progresses) ? (msg.progresses as ReviewProgress[]) : [];
+        // #741：tips 是帧的兄弟字段（不在 `state` 里）。规则就两条：
+        // 带了就**整份替换**（桥每次给的都是那一刻的完整快照，`{}` 也算一份）；
+        // 不带（标意见 / 清理历史 / 停一条这些只改记录的帧）就保留上一次的 ——
+        // 那些帧不该把「有新提交」那颗标弄消失。
+        if (msg.tips && typeof msg.tips === "object") {
+          this.reviewTips = msg.tips as Record<string, string>;
+          this.reviewTipsAt = Number(msg.tipsAt) || 0;
+          this.reviewTipsBranch = String(msg.tipsBranch ?? "");
+        }
         if (Number(msg.cap) > 0) this.reviewCap = Number(msg.cap);
         // 盘上记的「评什么」：只在本会话头一份状态到达时恢复（以后以界面为准）。
         this.applyReviewPick();
@@ -2833,6 +2818,8 @@ export class App {
         if (String(msg.sessionId ?? "") && this.currentId && String(msg.sessionId) !== this.currentId) break;
         const id = String(msg.runId ?? "");
         if (!id) break;
+        // 这一次重评真的开出去了：不再需要恢复「评什么」。
+        this.reviewRerunRestore = null;
         this.reviewPendingRuns.add(id);
         if (this.queueTab === "review") this.renderQueue();
         this.syncReviewSheet();
@@ -3704,22 +3691,21 @@ export class App {
   }
 
   /**
-   * 徽标唯一的一颗元素。D170：「后台」那枚能点开详情（其它徽标还是纯提示），
-   * 点它不能顺带把卡片/胶囊自己的「打开这个会话」也触发，所以一律 stopPropagation。
+   * 徽标唯一的一颗元素。能点的有两枚（D170 「后台」、D453 「评审中」），其它只是读数：
+   * 点它们不能顺带把卡片 / 胶囊自己的「打开这个会话」也触发，所以一律 stopPropagation。
    */
   private badgeChip(s: SessionState): HTMLElement | null {
     const badge = this.badgeOf(s);
     if (!badge) return null;
     const chip = el("span", `badge ${badge.cls}`, badge.text);
     if (badge.title) chip.title = badge.title;
-    if (badge.kind !== "bg") return chip;
+    if (!badge.clickable) return chip;
     chip.classList.add("clickable");
     chip.setAttribute("role", "button");
     chip.tabIndex = 0;
     const open = (ev: Event) => {
       ev.stopPropagation();
-      this.closeWsPop();
-      this.openBgSheet(s.id);
+      this.openBadge(s);
     };
     chip.onclick = open;
     chip.onkeydown = (ev) => {
@@ -3731,10 +3717,23 @@ export class App {
   }
 
   /**
+   * 可点徽标去哪（D453）：目前两枚 —— 「后台」看后台任务详情、「评审中」切到那个会话 + 右栏代码评审。
+   * 左栏卡片、★ 行胶囊、管理面板、工作区浮层四处共用这一个口，别再各写一遍 kind 判断。
+   */
+  private openBadge(s: SessionState): void {
+    this.closeWsPop();
+    if (this.badgeOf(s)?.kind === "bg") this.openBgSheet(s.id);
+    else this.openReviewForSession(s.id);
+  }
+
+  /**
    * 徽标唯一入口（D156）：当前会话的待处理数以本地队列为准（`badgeSession`），别的会话读列表里
    * 那份事件累加值。左栏卡片、钉条胶囊、管理面板、顶栏那颗都走这里，省得哪一处又读到旧账。
    * 刚 `openSession`、快照还没回来时本地队列是空的（`pendingFresh` 为 false），此时退回列表里
    * 那份 —— 否则切到一个「正等着你」的会话，徽标会先闪没一拍。
+   *
+   * 判定本身（哪一档、说什么、能不能点）在 `session-badge.ts` 的纯函数里（D453，单测
+   * `web/tests/session-badge-unit.mjs`）；这里只合出那份输入。
    */
   private badgeOf(s: SessionState): SessionBadge | null {
     const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
@@ -6112,17 +6111,17 @@ export class App {
     const startLevel = pick ? (pick.level ?? "") : (this.session?.thinkingLevel ?? "");
     // 当前模型属于哪个来源：它的组默认展开，否则新开场就只看得见一组折叠标题。
     // 会话自己报着 provider 时**以它为准**：目录里可能有另一个 provider 卖同一个 id，
-    // 按 id 找回来的那个会指错来源（本机 wb2api / wb2_mac 都卖 cn:glm-5.4，D452）。
+    // 按 id 找回来的那个会指错来源（本机 wb2api / wb2_mac 都卖 cn:glm-5.4，D454）。
     const startProvider =
       (pick ? pick.provider : this.session?.provider) || this.models.find((m) => m.id === startModel)?.provider || "";
     // 起点的「身份」：会话报了 provider 就是它；没报（老桥 / 从没报过）就取目录里同 id 的那一行 ——
     // 与「使用中」高亮、`draftInfo()` 共用同一份判据。不先把这一步做出来的话：`draftProvider` 会从
     // 空串起步，「点同名同 id 的另一个来源」就被 `sameModel` 的向后兼容当成没动过，弹层不显示
-    // 「待切换」、确认直接关窗（D452 评审意见 4）。
+    // 「待切换」、确认直接关窗（D454 评审意见 4）。
     //
     // 最后那一段回退是**必须**的：会话报的 provider 可能已经不在目录里（改过名、下架、老 pi 的写法），
     // 这时还拿它去严格比，`isStart` 会一行都匹配不上 —— 没有「使用中」、`draftInfo()` 是 undefined、
-    // 连切档位都没得切（D452 二轮评审意见 1）。退回按 id 认，与改动前同档。
+    // 连切档位都没得切（D454 二轮评审意见 1）。退回按 id 认，与改动前同档。
     const startRow =
       this.models.find((m) => sameModel(m, { provider: startProvider, id: startModel })) ??
       this.models.find((m) => m.id === startModel);
@@ -6207,7 +6206,7 @@ export class App {
     });
 
     // 草稿/起点都用**严格**的 `provider + id` 比：`sameModel()` 在 provider 未知时按「同一个」算，
-    // 那是给「从目录里找会话那一行」用的；拿它判断「有没有换」会把换来源吞掉（D452 评审意见 4）。
+    // 那是给「从目录里找会话那一行」用的；拿它判断「有没有换」会把换来源吞掉（D454 评审意见 4）。
     const isDraft = (m: ModelInfo): boolean => m.id === draftModel && m.provider === draftProvider;
     const isStart = (m: ModelInfo): boolean => m.id === startId && m.provider === startProviderId;
     const draftInfo = (): ModelInfo | undefined => this.models.find(isDraft);
@@ -6499,7 +6498,7 @@ export class App {
       const { used: u, win } = used();
       const rows = [
         kvRow(tr("模型"), "model", startModel ?? "–"),
-        // 空串不是来源：老桥 / 目录里没有这一行时显示「–」，别留一格空白（D452 评审意见 5）。
+        // 空串不是来源：老桥 / 目录里没有这一行时显示「–」，别留一格空白（D454 评审意见 5）。
         kvRow(tr("来源"), "provider", m?.provider || startProviderId || "–"),
         kvRow(tr("上下文窗口"), "contextWindow", win ? `${compactSize(win)} tokens` : "–"),
         kvRow(tr("已用上下文"), "used", u != null ? `${compactSize(u)}${win ? ` · ${Math.round((u / win) * 100)}%` : ""}` : "–"),
@@ -8159,7 +8158,7 @@ export class App {
     model.textContent = name || tr("模型");
 
     // 倍率是目录塞在名字里的（`Kimi-K3 · x1.62 · 1M`）：有就露，没有（自定义 provider）就整格隐。
-    // 按 provider/id 找：目录里可能有另一个来源卖同一个 id，按 id 取会拿错一行（D452）。
+    // 按 provider/id 找：目录里可能有另一个来源卖同一个 id，按 id 取会拿错一行（D454）。
     const here = this.models.find((m) => sameModel(m, { provider: this.session?.provider, id: this.session?.model }));
     const mult = modelMultiplier(here?.name ?? "");
     multEl.textContent = mult;
@@ -10515,6 +10514,20 @@ export class App {
         // 问不到就让它一直空着：钮是亮的，真点下去由桥拒并说清楚。
         this.githubRepoAsked.delete(key);
       });
+  }
+
+  /**
+   * D453：「评审中」那枚徽标点开 —— 切到那个会话 + 右栏切到代码评审页签。
+   *
+   * 顺序不能反：`selectQueueTab("review")` 会 `loadReview()`，它拿的是**当前会话**的目录，
+   * 先换页签再换会话就等于去上一个会话的仓库里找进度。先 `openSession`（已经是当前会话就是空转），
+   * 再结算一次会话键，最后才换页签。
+   */
+  private openReviewForSession(id: string): void {
+    if (this.currentId !== id) this.openFromList(id);
+    if (this.collapsed.queue) this.togglePane("queue");
+    this.syncReviewSession();
+    this.selectQueueTab("review");
   }
 
   /**
@@ -13495,8 +13508,9 @@ export class App {
     if (archived) tag("arch", tr("已归档"));
     tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? tr("网页") : "CLI", s.origin === "web" ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话"));
     const badge = this.badgeOf(s);
-    // D170：「后台」那一枚在管理面板里也要点得开，不然同一枚徽标在左栏能点、到这里突然不能。
-    if (badge?.kind === "bg") {
+    // D170 / D453：两枚可点的徽标（后台、评审中）在管理面板里也要点得开，
+    // 不然同一枚徽标在左栏能点、到这里突然不能。
+    if (badge?.clickable) {
       const chip = this.badgeChip(s);
       if (chip) line.append(chip);
     } else if (badge) tag(badge.cls, badge.text, badge.title);
@@ -19291,6 +19305,9 @@ export class App {
     this.reviewPin = next;
     this.reviewState = null;
     this.reviewProgresses = [];
+    this.reviewTips = {};
+    this.reviewTipsAt = 0;
+    this.reviewTipsBranch = "";
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19334,6 +19351,9 @@ export class App {
     this.reviewSessionKey = key;
     this.reviewState = null;
     this.reviewProgresses = [];
+    this.reviewTips = {};
+    this.reviewTipsAt = 0;
+    this.reviewTipsBranch = "";
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19373,27 +19393,58 @@ export class App {
     this.reviewPicker?.close();
   }
 
+  /** 把「评什么」还给「重新评审」点之前的样子（没真开出去时必须做，别静默改掉人选的格）。 */
+  private restoreRerunPick(): void {
+    const before = this.reviewRerunRestore;
+    if (!before) return;
+    this.reviewRerunRestore = null;
+    this.reviewMode = before.mode;
+    this.reviewPr = before.pr;
+    this.reviewBase = before.base;
+    this.reviewTarget = before.target;
+    this.saveReviewPick();
+    if (this.queueTab === "review") this.renderQueue();
+  }
+
+  /** 「重新核对」的冷却时间到了：那颗刷新钮恢复可点。 */
+  private clearReviewTipsBusy(): void {
+    if (this.reviewTipsTimer !== null) {
+      window.clearTimeout(this.reviewTipsTimer);
+      this.reviewTipsTimer = null;
+    }
+    if (!this.reviewTipsBusy) return;
+    this.reviewTipsBusy = false;
+    if (this.queueTab === "review") this.renderQueue();
+  }
+
   /**
    * 问一次桥的评审状态。默认按目录去重；`force` 用于重连 / 插件变更 / 重新进页签 ——
    * 那些路径面对的是新连接或新状态，同一目录也必须重发。只在这里维护 `reviewAsked`，
    * 别让调用方各自拼这份状态。
+   *
+   * `fresh` 交给桥（#741）：绕开「有没有新提交」那次核对的 60 秒缓存 —— 人都点了「再看一眼」，
+   * 撞缓存等于白点。
    */
-  private askReview(dir: string, force = false): boolean {
+  private askReview(dir: string, force = false, fresh = false): boolean {
     if (!force && this.reviewAsked === dir) return false;
     this.reviewAsked = dir;
-    this.socket.send({ type: "review.get", dir, sessionId: this.currentId });
+    this.socket.send({ type: "review.get", dir, sessionId: this.currentId, fresh });
     return true;
   }
 
-  private loadReview(): void {
+  private loadReview(fresh = false): void {
     const dir = this.reviewDir();
     if (!dir) {
       this.reviewError = tr("先打开一个会话：评审评的是它的目录。");
       this.reviewState = null;
       this.reviewProgresses = [];
+      this.reviewTips = {};
+      this.reviewTipsAt = 0;
+      this.reviewTipsBranch = "";
       return;
     }
-    this.askReview(dir, true);
+    // `fresh` 只影响「有没有新提交」那一次核对（绕开桥里的 60 秒缓存）。
+    this.askReview(dir, true, fresh);
     // PR 列表按**评的那个仓库**排队（钉了子仓库时它与会话目录不是一回事）。
     const ask = this.reviewPin || dir;
     if (this.reviewPrsAsked !== ask) this.loadPullRequests(ask);
@@ -19450,7 +19501,7 @@ export class App {
    * `reviewModel` 存的是 `provider/id`；弹层与目录用 `id`，这里来回换。
    *
    * 老记录 / 老版本只存了 id（没有 `/`）：这时候不能直接 `find((m) => m.id === want)` ——
-   * 它稳定命中目录里第一个同 id 的来源（本机是 wb2api），等于把 D452 的问题从另一条路绕回来。
+   * 它稳定命中目录里第一个同 id 的来源（本机是 wb2api），等于把 D454 的问题从另一条路绕回来。
    * 先按会话自己的 provider 认，再退回目录第一个。
    */
   private reviewModelInfo(): ModelInfo | null {
@@ -19471,7 +19522,7 @@ export class App {
    *
    * 不显示 / 不记录它的话，记录卡上只能写「没记模型」—— 用户点开详情问的第一件事就是「用的什么模型」。
    * **按 provider/id 认，不只按 id**：两个 provider 可以卖同一个 id（本机 wb2api 与 wb2_mac 都卖
-   * `cn:glm-5.4`），只按 id `find()` 会把评审派到另一个来源上——那次就是掉线的远端网关（D452）。
+   * `cn:glm-5.4`），只按 id `find()` 会把评审派到另一个来源上——那次就是掉线的远端网关（D454）。
    */
   private reviewDefaultModel(): ModelInfo | null {
     const id = (this.session?.model ?? "").trim();
@@ -19690,6 +19741,10 @@ export class App {
       repo: this.reviewRepo || this.reviewPin,
       repoPinned: Boolean(this.reviewPin),
       modelLabels: this.reviewModelLabels(),
+      tips: this.reviewTips,
+      tipsAt: this.reviewTipsAt,
+      tipsBusy: this.reviewTipsBusy,
+      tipsBranch: this.reviewTipsBranch,
     });
     const effective = this.reviewEffectiveModel();
     return {
@@ -19837,6 +19892,17 @@ export class App {
       // 装 gh / 登录 gh（D428）：卡片的动作由 `reviewPanelInput()` 直接传 `ghCardActions()`。
       // 记录卡不再是入口（D429）：点卡底那颗「完整详情」打开那一次。
       onDetails: (runId) => this.openReviewSheet(runId),
+      onRerun: (runId) => this.rerunReview(runId),
+      onRefreshTips: () => {
+        // 连点几下就是几次 `ls-remote`（`fresh` 绕开 60 秒缓存）：点下去先灰一小会儿。
+        // 用固定时长而不是「等某一帧」——面板平常就一直在收 `review.state`（标意见、跑完、
+        // 别的页签），拿帧当解除信号的话这颗钮几乎立刻就会恢复，等于没拦。
+        this.reviewTipsBusy = true;
+        if (this.reviewTipsTimer !== null) window.clearTimeout(this.reviewTipsTimer);
+        this.reviewTipsTimer = window.setTimeout(() => this.clearReviewTipsBusy(), 1500);
+        this.renderQueue();
+        this.loadReview(true);
+      },
       onPickRepo: () => this.openRepoPicker(),
       onClearRepo: () => this.clearReviewRepo(),
     };
@@ -19940,23 +20006,55 @@ export class App {
     this.reviewSheet?.update(this.reviewPanelInput());
   }
 
-  private startReview(): void {
+  /**
+   * 「重新评审」：按**那条记录自己的范围**再跑一次（#741）。
+   *
+   * 不复用面板上现在选着的那一格 —— 那张卡可能是一条旧记录，人现在在看的是别的范围。
+   * 真正开跑走 `startReview()` 同一条路：闸门、模型、错误提示全复用，不做第二个入口。
+   */
+  private rerunReview(runId: string): void {
+    const run = (this.reviewState?.runs ?? []).find((item) => item.id === runId);
+    if (!run) return;
+    const before = { mode: this.reviewMode, pr: this.reviewPr, base: this.reviewBase, target: this.reviewTarget };
+    // 桥那边是异步裁决的（`dup_pr` / `busy` 都可能在这里才拒），所以那份要恢复的选择得先记住。
+    this.reviewRerunRestore = { ...before };
+    this.reviewMode = run.mode;
+    if (run.mode === "pr") {
+      // 记录里没有 PR 号（老记录 / 坏数据）就别猜：沿用手上这个号等于拿**另一条** PR 去评，
+      // 而且结果会安静地写进列表里 —— 正是 #666 那道闸要防的那类错。
+      if (run.pr <= 0) return;
+      this.reviewPr = String(run.pr);
+    } else if (run.mode === "range") {
+      this.reviewBase = run.from;
+      this.reviewTarget = run.to || "HEAD";
+    }
+    // 这一下是「人自己决定的范围」：链接卡带来的「期望仓库」不再适用（与换范围同一个口径）。
+    this.clearReviewExpectRepo();
+    this.saveReviewPick();
+    this.renderQueue();
+    if (this.startReview()) return;
+    // 页面这一侧就没开出去（缺东西 / 没目录）：当场恢复，不必等桥回话。
+    this.restoreRerunPick();
+    this.renderQueue();
+  }
+
+  private startReview(): boolean {
     const dir = this.reviewDir();
-    if (!dir) return;
+    if (!dir) return false;
     const mode = this.reviewMode;
     if (mode === "commit" && !this.reviewCommit.trim()) {
       this.flashToast(tr("先填一个提交号"), true, 4000);
-      return;
+      return false;
     }
     // `#636` 是 PR 号的手感：commitish() 会拒掉它（`--commit "#636" is not a valid commit ref`），
     // 与其让 ocr 报一句看不懂的，不如当场说清该切哪个模式。
     if (mode === "commit" && /^#\s*\d+$/.test(this.reviewCommit.trim())) {
       this.flashToast(tr("提交号别带 #：要评 PR 请切到「GitHub PR」"), true, 5000);
-      return;
+      return false;
     }
     if (mode === "pr" && !this.reviewPr.trim()) {
       this.flashToast(tr("先选一个 PR（或填个号）"), true, 4000);
-      return;
+      return false;
     }
     this.reviewError = "";
     this.reviewPrMenu = false;
@@ -19987,6 +20085,7 @@ export class App {
       lang: getLang(),
     });
     this.renderQueue();
+    return true;
   }
 
   /** 一条意见 → 分支工作台的「差异」页签，选中那个文件并把命中的那段代码标出来。 */
@@ -24677,7 +24776,7 @@ function shortModelName(name: string): string {
 /**
  * 模型的身份是 `provider/id`，不是 id。两个 provider 可以卖同一个 id —— 本机 `wb2api`（远端网关）
  * 与 `wb2_mac`（本机网关）就各有一份 `cn:glm-5.4`。只按 id `find()` 会稳定命中目录里的第一个，
- * 于是「挑的是本机那份」在确认时被换成另一个来源：评审就这么被派到掉线的网关上（D452）。
+ * 于是「挑的是本机那份」在确认时被换成另一个来源：评审就这么被派到掉线的网关上（D454）。
  *
  * 任一边 provider 为空时按「同一个」算 —— 这是**向后兼容**（老桥的 `SessionState` 没有 provider、
  * 老记录只存了 id），不是「通配任意来源」：空串只是「这边不知道」，而不是「哪边都行」。

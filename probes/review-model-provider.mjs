@@ -1,5 +1,5 @@
 /**
- * Probe D452: 两个 provider 卖同一个 model id 时，模型弹层与代码评审到底认哪一个。
+ * Probe D454: 两个 provider 卖同一个 model id 时，模型弹层与代码评审到底认哪一个。
  *
  * 为什么要有它：本机 `wb2api`（远端网关 192.168.31.36:7863）与 `wb2_mac`（127.0.0.1:7863）
  * 各有一份 `cn:glm-5.4` / `cn:deepseek-v4.1-flash`。原来是只按 id `find()`，稳定命中目录里的
@@ -189,7 +189,7 @@ try {
   check("挑 wb2_mac 的 GLM-5.4 并确认后，面板记的仍是 wb2_mac", t1 === "wb2_mac/cn:glm-5.4", `chip title = ${t1}`);
 
   // 真的点一次「开始评审」：发给桥的那一帧必须带对 provider（桥按它起子进程）。
-  // 这条是整份探针的核心，**不许 skip**：按钮灰了就说明桩没配好，探针自己该红（D452 评审意见 7）。
+  // 这条是整份探针的核心，**不许 skip**：按钮灰了就说明桩没配好，探针自己该红（D454 评审意见 7）。
   const runBtn = page.locator(".rv-run");
   check("「开始评审」可点（桩里的范围配得上）", await runBtn.isEnabled());
   if (await runBtn.isEnabled()) {
@@ -220,7 +220,7 @@ try {
 
   // ---- 会话没报 provider（老桥 / 从没报过）时：换来源仍然必须算一次切换 ----------
   // 那时弹层的起点按目录里同 id 的第一行（wb2api）认 —— 点 wb2_mac 那一行要真的能切过去，
-  // 不能被 sameModel 的向后兼容吞成「没动过」（D452 评审意见 4）。
+  // 不能被 sameModel 的向后兼容吞成「没动过」（D454 评审意见 4）。
   SESSION.provider = "";
   // 别等 networkidle：页面开着一条常驻 WS，永远不会 idle。
   await page.reload({ waitUntil: "domcontentloaded" });
@@ -251,7 +251,7 @@ try {
 
   // ---- 会话报的来源在目录里根本没有（改名 / 下架 / 老 pi 的写法）------------------
   // 这时严格比会一行都匹配不上：没有「使用中」、`draftInfo()` 为空、连档位都换不了。
-  // 起点身份必须退回按 id 认（D452 二轮评审意见 1）。
+  // 起点身份必须退回按 id 认（D454 二轮评审意见 1）。
   SESSION.provider = "wb2-legacy";
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator(".session-card").first().click();

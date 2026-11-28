@@ -5,9 +5,10 @@
  * `app.ts` 收下行），却没有一处写着「一共有哪些帧」。结果是拼错一个 case、桥发了一个页面不认的
  * 帧、页面认了一个桥从不发的帧，全靠人肉比对。这张表把「帧叫什么」收紧成编译期事实。
  *
- * 契约：**这个文件是叶子**。它只有类型和字符串常量，不 import 任何东西 —— 因为 `app.ts` 会
- * import 它，而 `app.ts` 头两行 import 了 CSS，桥上编不过；反过来桥的 `index.ts` 末行会调
- * `main()`，页面也不能 import 它。谁往这里加 import，两侧的编译就有一侧会炸。
+ * 契约：**这个文件是叶子**。它只有类型、字符串常量，和**不 import 任何东西的纯函数**（帧构造器、
+ * 以及桥和页面必须认同一个口径的判据，例如 `#741` 的 `tipTargetOf` / `isRunOutdated`）——
+ * 因为 `app.ts` 会 import 它，而 `app.ts` 头两行 import 了 CSS，桥上编不过；反过来桥的
+ * `index.ts` 末行会调 `main()`，页面也不能 import 它。谁往这里加 import，两侧的编译就有一侧会炸。
  *
  * 两个方向的类型是分开的：下行（桥 → 页面）128 个、上行（页面 → 桥）128 个，名字不重样。
  * 别合成一张表 —— `manage`、`presence` 这种双向同名、含义不同的帧会立刻把联合搞成一张假合同。
@@ -411,6 +412,21 @@ export interface ReviewRun {
   log: ReviewLogLine[];
   /** 分组计划（老记录没有；没有就按「一条时间线」展示）。 */
   plan?: ReviewGroupPlan[];
+  /**
+   * 这一次评到的**那个提交**（#741）：收尾时 `git rev-parse <to>` 的结果。老记录没有。
+   *
+   * 为什么要单独存：`pr` 模式的 `to` 是 ref 名 `refs/pi-web/pr-N`，下一次评同一个 PR 就把它
+   * 挪到新提交上 —— 除了这里，没有第二处还能说出「当时评的是什么」。
+   */
+  headSha?: string;
+  /**
+   * `to` 就是 `HEAD` 时，那个 `HEAD` 当时在哪条分支上（#741）。
+   *
+   * 不记这一项的话，「换个分支」会被当成「有新提交」：`HEAD` 当然指向别处了，可被评的那个
+   * 提交并没有变，而「重新评审」读的也是另一份代码。核对时只在**同一条分支**上比（见 D447）。
+   * 老记录没有这一项：那边没有 `headSha`，本来就判不了。
+   */
+  headRef?: string;
 }
 
 export interface ReviewLogLine {
@@ -420,10 +436,90 @@ export interface ReviewLogLine {
   group?: number;
 }
 
+/**
+ * 这是不是一个完整的提交号（40 位 sha1 / 64 位 sha256）。
+ *
+ * 桥侧有三处要把「git 输出的那一行」认成提交号（本地 `rev-parse`、`ls-remote` 的每一行、
+ * 以及页面收到的 tip）：正则各写一遍，改一处漏一处，就会把带换行 / 多对象的输出当成 sha 用，
+ * 直接误报「有新提交」。所以认它只在这里认一次。
+ */
+export function isCommitSha(value: unknown): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(String(value ?? "").trim());
+}
+
+/**
+ * 现在这些 ref 各指向哪个提交（#741）：key 是记录里的 `to`，value 是此刻的 sha。
+ *
+ * 它是「这一眼看到的事实」，不是历史 —— 所以**不放进 `ReviewState`**（那是盘上的形状），
+ * 而是作为 `review.state` 帧的兄弟字段发一次。缺某个 key = 核对不了（ref 删了 / 离线 /
+ * `ls-remote` 超时 / 没登录），不是「没变」；空串永远不用来表示「不知道」。
+ */
+export type ReviewTips = Record<string, string>;
+
+/**
+ * 这条记录该不该核对 tip、核哪个 ref（#741）：两侧共用 —— 桥靠它决定问哪些，页面靠它决定标不标。
+ *
+ * 工作区改动（存一次盘就变）与单提交（钉死一个 sha）不参与；失败 / 停止 / 被桥重启打断的
+ * 也没有「评到了什么」可言；老记录没记 `headSha` 就判不了。
+ * `pr > 0` 表示这个 ref 只在远端（要一次 `ls-remote`），否则本地 `git rev-parse` 就够。
+ */
+export function tipTargetOf(run: ReviewRun): { ref: string; pr: number } | null {
+  if (run?.status !== "done") return null;
+  if (run.mode !== "range" && run.mode !== "pr") return null;
+  const ref = String(run.to ?? "").trim();
+  const sha = String(run.headSha ?? "").trim();
+  if (!ref || !sha) return null;
+  const pr = run.mode === "pr" ? Number(run.pr) || 0 : 0;
+  // `pr` 模式却没有号（老记录 / 坏数据）：`refs/pi-web/pr-0` 什么也指不到，判不了 ——
+  // 也不能让它走「本地 ref」那条路，更不该在卡上长出一颗点了没反应的「重新评审」。
+  if (run.mode === "pr" && pr <= 0) return null;
+  // `range` 却没记对照分支也一样：判得了「过时」也重评不了（「评什么」缺一半，开不了跑）。
+  if (run.mode === "range" && !String(run.from ?? "").trim()) return null;
+  return { ref, pr };
+}
+
+/**
+ * 这条记录的「现在的 tip」——**快照比这条记录旧的时候给空串**。
+ *
+ * `tips` 是某一刻拍的一张快照，`tipsAt` 是那一刻。比这条记录收尾还早的快照不能拿来判：
+ * 那之后才跑完的那一轮，记下的 `headSha` 本来就可能比快照新 —— 拿旧快照一比，就成了
+ * 「刚跑完就说它过时」，点一下重评等于把同一份代码再评一遍（#743 复审）。
+ * 反过来（快照之后才有人推提交）只会漏报，那是安全的那一边。
+ */
+export function tipForRun(run: ReviewRun, tips: ReviewTips | undefined, tipsAt = 0, tipsBranch = ""): string {
+  const target = tipTargetOf(run);
+  if (!target) return "";
+  const finished = Date.parse(run.finishedAt ?? "") || 0;
+  if (tipsAt > 0 && finished > tipsAt) return "";
+  // `to` 是 `HEAD` 的记录只能跟**同一条分支**比：`HEAD` 的意思是「现在这条分支的头」，
+  // 换到别的分支之后它当然指向别处，那不是「有新提交」，重评读的也是另一份代码。
+  // 这条判据必须在**每条记录**上做：tips 按 ref 共享，同一个 `HEAD` 底下可能躺着好几条
+  // 别的分支留下来的记录，拿「最新那条当时在哪条分支」去代表它们，就会把那些记录误标。
+  if (isHeadTarget(run) && String(run.headRef ?? "").trim() && tipsBranch && String(run.headRef).trim() !== tipsBranch) return "";
+  return String((tips ?? {})[target.ref] ?? "").trim();
+}
+
+/** `to` 是不是那个会随风漂的 `HEAD`（`HEAD` / `head` 都算，盘上是 ocr 回显的原文）。 */
+function isHeadTarget(run: ReviewRun): boolean {
+  return String(run.to ?? "").trim().toUpperCase() === "HEAD";
+}
+
+/**
+ * 这条记录是不是已经跟不上代码了（#741）：**判得了的时候**才给 true。
+ *
+ * 没记 sha、或者 `tips` 里没有这个 ref 的（离线 / 超时 / 没登录 / 老桥 / 快照太旧）=
+ * 不知道 = false，不要拿它当「没变」用。
+ */
+export function isRunOutdated(run: ReviewRun, tips: ReviewTips | undefined, tipsAt = 0, tipsBranch = ""): boolean {
+  const tip = tipForRun(run, tips, tipsAt, tipsBranch);
+  return Boolean(tip) && tip !== String(run.headSha ?? "").trim();
+}
+
 export interface ReviewState {
   repo: string;
   runs: ReviewRun[];
   marks: Record<string, ReviewMark>;
+
   /**
    * 面板上「评什么」那一格上次选的东西，按会话记住。
    *

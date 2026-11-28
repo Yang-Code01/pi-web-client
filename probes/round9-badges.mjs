@@ -1,13 +1,16 @@
 /**
- * Probe: Q-015 — the pin strip must not call an approval-waiting session 运行中.
+ * Probe: 会话徽标这一格该说什么 —— Q-015（在等你的不许说成运行中）＋ D453（评审在跑说评审中）。
  *
- * A fake bridge serves `web/dist` and speaks just enough of the ws protocol to show one session;
+ * A fake bridge serves `web/dist` and speaks just enough of the ws protocol to show sessions;
  * nothing here needs pi to be running.
  *
- * Q-015: five pinned sessions in five different states, left pane collapsed — the strip has to say
- * 待回答 / 待确认 / 终端占用 / 运行中 / 完成, and the header has to count the two that block on the user.
+ * 十个会话，左栏收起时看 ★ 行胶囊：待回答 / 待确认 / 终端占用 / 运行中 / 完成 / 时间，
+ * 外加三种「评审在跑」的组合（完成+评审 → 评审中、运行中+评审 → 运行中、后台+评审 → 后台）
+ * 与并跑两条的「评审中 2」；两个在等你的会话要各自带 warn 色（#97 之后条头那颗字已经没有了）。
+ * D453 之后「评审中」可点：点它 / 按 Enter 都要切到那个会话并停在「代码评审」页签；
+ * 左栏卡片上那枚走的是同一个口（`openBadge()`），左栏展开后再点一次。
  *
- * Run: node probes/round6-keys.mjs   (needs `npm run build:web` first)
+ * Run: node probes/round9-badges.mjs   (needs `npm run build:web` first)
  */
 import fs from "node:fs";
 import http from "node:http";
@@ -53,6 +56,11 @@ const SESSIONS = [
   { ...base, id: "s-run", name: "真在跑", running: true, done: false, approvals: 0, asks: 0, locked: false },
   { ...base, id: "s-done", name: "已完成", running: false, done: true, approvals: 0, asks: 0, locked: false },
   { ...base, id: "s-idle", name: "空闲", running: false, done: false, approvals: 0, asks: 0, locked: false },
+  // D453：评审在跑的三组组合 —— 它只压过「完成」与空位，压不过会话自己 / 后台子代理。
+  { ...base, id: "s-review", name: "评审在跑", running: false, done: true, approvals: 0, asks: 0, locked: false, review: 1 },
+  { ...base, id: "s-review2", name: "两条评审", running: false, done: true, approvals: 0, asks: 0, locked: false, review: 2 },
+  { ...base, id: "s-run-review", name: "跑中带评审", running: true, done: false, approvals: 0, asks: 0, locked: false, review: 1 },
+  { ...base, id: "s-bg-review", name: "后台带评审", running: false, done: false, approvals: 0, asks: 0, locked: false, bg: { n: 1, since: Date.now() - 60_000 }, review: 1 },
 ];
 const SESSION = SESSIONS[0];
 const ASK = {
@@ -113,14 +121,17 @@ wss.on("connection", (ws) => {
     }
     log("client →", msg.type);
     if (msg.type === "subscribe") {
+      // D453：按点开的那个会话回帧 —— 全都回 s-ask 的话，切到别的会话会「又到了一份问卷」，
+      // 右栏被 ask-tab 的逻辑拽回「需要你」，就量不到「评审中」把右栏切到代码评审页签。
+      const s = SESSIONS.find((x) => x.id === msg.sessionId) ?? SESSION;
       ws.send(
         JSON.stringify({
           type: "session",
-          sessionId: SESSION.id,
-          state: { ...SESSION, asks: 1 },
+          sessionId: s.id,
+          state: s,
           items: [{ kind: "user", id: "u1", text: "帮我把问卷答了。" }],
           approvals: [],
-          asks: [ASK],
+          asks: s.id === SESSION.id ? [ASK] : [],
           budget: null,
         }),
       );
@@ -144,7 +155,7 @@ log("fake bridge on", BASE);
 let browser;
 try {
   browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 1180, height: 860 }, locale: "zh-CN" });
+  const context = await browser.newContext({ viewport: { width: 1560, height: 900 }, locale: "zh-CN" });
   const page = await context.newPage();
   page.on("pageerror", (e) => log("page error:", e.message, (e.stack ?? "").split(String.fromCharCode(10)).slice(0, 5).join(" | ")));
   page.on("console", (m) => log("console:", m.type(), m.text().slice(0, 160)));
@@ -159,12 +170,14 @@ try {
   const strip = page.locator(".pin-strip");
   await until(async () => (await strip.isVisible()), 5000, "pin strip visible");
 
-  const label = (await page.locator(".pin-strip-label").innerText()).trim();
-  assert(label.includes("2 个待处理"), `header counts the two blocked sessions (got "${label}")`);
-  log("header:", label);
+  // Q-015 的「条头要数出两个待处理」在 #97 之后没有那颗字了（`heading: () => ""`），
+  // 改数量本身：两颗带 warn 色的胶囊 = 两个在等你。
+  const blocked = await strip.locator(".pin-chip.wait").count();
+  assert(blocked === 2, `two sessions block on the user (got ${blocked})`);
+  log("pending chips:", blocked);
 
   const chips = strip.locator(".pin-chip:not(.pin-new)");
-  await until(async () => (await chips.count()) === 6, 5000, "six chips");
+  await until(async () => (await chips.count()) === SESSIONS.length, 5000, "one chip per session");
   const rows = await chips.evaluateAll((nodes) =>
     nodes.map((n) => ({
       name: n.querySelector(".pin-name")?.textContent?.trim(),
@@ -180,9 +193,46 @@ try {
   assert(byName["终端占用"].cls.includes("lock"), `locked chip has its own class (got ${byName["终端占用"].cls})`);
   assert(byName["真在跑"].small === "运行中", `running chip (got ${JSON.stringify(byName["真在跑"])})`);
   assert(byName["已完成"].small === "完成", `done chip (got ${JSON.stringify(byName["已完成"])})`);
-  assert(!/运行中|待回答|待确认|完成|终端占用/.test(byName["空闲"].small), `idle chip shows a time, not a state (got ${byName["空闲"].small})`);
+  assert(!/运行中|待回答|待确认|完成|终端占用|评审中/.test(byName["空闲"].small), `idle chip shows a time, not a state (got ${byName["空闲"].small})`);
+  // D453：评审自己跑的时候不能还说「完成」。
+  assert(byName["评审在跑"].small === "评审中", `review chip (got ${JSON.stringify(byName["评审在跑"])})`);
+  assert(byName["评审在跑"].cls.includes("reviewing"), `review chip has its own colour (got ${byName["评审在跑"].cls})`);
+  assert(byName["两条评审"].small === "评审中 2", `two runs say how many (got ${JSON.stringify(byName["两条评审"])})`);
+  assert(byName["跑中带评审"].small === "运行中", `session running wins over review (got ${JSON.stringify(byName["跑中带评审"])})`);
+  assert(byName["后台带评审"].small === "后台", `background subagent still leads (got ${JSON.stringify(byName["后台带评审"])})`);
   log("chips:", rows.map((r) => `${r.name}=${r.small}`).join(" | "));
   await page.screenshot({ path: path.join(OUT, "1-strip.png") });
+
+  // D453：「评审中」可点 —— 切到那个会话 + 右栏切到「代码评审」页签，且只切一次。
+  const reviewSub = strip.locator(".pin-chip", { hasText: "评审在跑" }).locator("small");
+  assert(await reviewSub.getAttribute("role") === "button", "review badge is a click target");
+  assert(await reviewSub.getAttribute("tabindex") === "0", "review badge is keyboard reachable");
+  await reviewSub.click();
+  await until(async () => page.url().includes("#/s/s-review"), 5000, "switched to the reviewing session");
+  const reviewTab = page.locator('[data-exec-tab="review"]');
+  await until(async () => (await reviewTab.getAttribute("class") ?? "").split(" ").includes("on"), 5000, "right pane on the code review tab");
+  const curChip = strip.locator(".pin-chip.cur .pin-name");
+  assert((await curChip.innerText()).trim() === "评审在跑", `exactly one session stayed selected (got ${await curChip.innerText()})`);
+  await page.screenshot({ path: path.join(OUT, "2-review-jump.png") });
+  log("review badge click →", page.url(), "tab:", await reviewTab.getAttribute("class"));
+
+  // 键盘同一套：Enter 也要能去（与左栏卡片那枚同一个手势）。
+  const otherSub = strip.locator(".pin-chip", { hasText: "两条评审" }).locator("small");
+  await otherSub.focus();
+  await otherSub.press("Enter");
+  await until(async () => page.url().includes("#/s/s-review2"), 5000, "Enter on the review badge switches session");
+  await until(async () => (await reviewTab.getAttribute("class") ?? "").split(" ").includes("on"), 5000, "Enter also lands on the code review tab");
+  log("review badge Enter →", page.url());
+
+  // 左栏卡片上那枚走的是同一个口（badgeChip → openBadge），也点一次：先把左栏展开。
+  await page.locator('[data-act="sessions"]').click();
+  const cardChip = page.locator(".session-card").filter({ hasText: "评审在跑" }).locator(".badge.reviewing");
+  await until(async () => (await cardChip.count()) === 1, 5000, "review badge on the left card");
+  assert((await cardChip.innerText()).trim() === "评审中", "card badge says 评审中");
+  await cardChip.click();
+  await until(async () => page.url().includes("#/s/s-review"), 5000, "card badge switches back to the reviewing session");
+  await until(async () => (await reviewTab.getAttribute("class") ?? "").split(" ").includes("on"), 5000, "card badge also lands on the code review tab");
+  log("card badge click →", page.url());
 
   log("ALL OK");
 } finally {

@@ -201,17 +201,16 @@ server.on("upgrade", (req, socket, head) => {
         ws.send(JSON.stringify({ type: "review.ocr", ocr: OCR }));
         ws.send(JSON.stringify({ type: "review.pinned", pinned: "" }));
         ws.send(JSON.stringify({ type: "review.prs", dir: CWD, sessionId: SID, asked: CWD, prs: [], open: 0, error: "" }));
-        ws.send(
-          JSON.stringify({
-            type: "review.state",
-            dir: CWD,
-            sessionId: SID,
-            state: STATE,
-            progresses: [PROGRESS],
-            cap: 2,
-            pinned: "",
-          }),
-        );
+        const stateFrame = JSON.stringify({
+          type: "review.state",
+          dir: CWD,
+          sessionId: SID,
+          state: STATE,
+          progresses: [PROGRESS],
+          cap: 2,
+          pinned: "",
+        });
+        ws.send(stateFrame);
       }
     });
     cast({ type: "review.started", sessionId: SID, runId: "r-new" });
@@ -248,7 +247,7 @@ try {
   await page.locator(".session-card").first().click();
   await page.locator(".rv-run-card").first().waitFor({ timeout: 15000 });
   await sleep(400);
-  
+
   const count = (sel) => page.locator(sel).count();
   /** 这条规则在**构建产物**里还在不在。已删掉的旧页签只能这样守：DOM 里查不到任何东西，断言恒真。 */
   const cssHas = (needle) =>
@@ -319,6 +318,21 @@ try {
     if (at) await page.mouse.click(at.x, at.y);
   };
   
+  // 「重新核对」：点下去先灰着（每一下都是一次绕开缓存的 `ls-remote`），回话之后才恢复。
+  // 假桥对 `fresh` 的那次回话故意慢 400ms，断言才有确定窗口。
+  {
+    ok((await count(".rv-runs-reload")) === 1, "记录区标题行有一颗「重新核对」");
+    // 面板一直按帧重画，「量坐标 → 点」之间节点会被换掉：用探针自己的坐标点击（命中测试）。
+    await clickSel(".rv-runs-reload");
+    {
+      await sleep(120);
+      ok(await page.locator(".rv-runs-reload").first().isDisabled(), "点下去先灰着（不许连点）");
+      // 冷却 1.5 秒（固定时长，不拿「某一帧回来」当解除信号 —— 面板平常就一直在收 state 帧）。
+      await sleep(1600);
+      ok(!(await page.locator(".rv-runs-reload").first().isDisabled()), "冷却之后恢复可点");
+    }
+  }
+
   // 1. 三条记录，面板里没有展开页
   ok((await count(".rv-run-card")) === 3, "三条记录画成三张卡");
   ok(!(await cssHas(".rv-focus")), "旧的内嵌展开页（.rv-focus）连样式一起删掉了");
