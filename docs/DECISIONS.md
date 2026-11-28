@@ -9194,4 +9194,4 @@ if (stop >= 0) {
 
 **取舍。** ① 两条 run 不能并排对照（要来回点）；② 窗从 760px 加宽到 900px；③ 左栏占掉 216px，正文实际宽度跟以前差不多 —— 长任务的折行位置几乎没变；④ 运行 id 从「卡片头一整行」收进抬头的小字，窄窗里直接隐藏（全 id 在 `title` 里）。
 
-**验证。** `probes/bg-runs.mjs` 改为对着两栏断言，27 项全过（含 ARIA、↑↓/Home/End、380×760 横条横滚）：开卡时右栏只有占位、`status.json` 落盘后自己补上原文与两条孩子、左栏那行也叫 reviewer、点失败那条换页、红条原文、失败页不摆空过程框、无 pageerror。截图 `.scratch/bg-runs-probe/shots/*.png`、`.scratch/bg-sheet/b3/*.png`（深/浅 1440 + 1366@150%）。
+**验证。** `probes/bg-runs.mjs` 改为对着两栏断言，34 项全过（含 ARIA、↑↓/Home/End、竖列 ←→ 不换页 / 横条 ←→ 换页、380×760 横条横滚、空态不堆叠）：开卡时右栏只有占位、`status.json` 落盘后自己补上原文与两条孩子、左栏那行也叫 reviewer、点失败那条换页、红条原文、失败页不摆空过程框、无 pageerror。截图 `.scratch/bg-runs-probe/shots/*.png`、`.scratch/bg-sheet/b3/*.png`（深/浅 1440 + 1366@150%）。

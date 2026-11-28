@@ -642,6 +642,8 @@ export class App {
     runs: Map<string, BgRunNode>;
   } | null = null;
   private bgTimer: number | null = null;
+  /** 左栏是竖列还是横条（窄窗）：跟 CSS 的容器查询对齐，键位与 aria-orientation 按它切。 */
+  private bgAxisWatch: ResizeObserver | null = null;
   /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
   private continueAt: { id: string; at: number } = { id: "", at: 0 };
   /** Skill palette state (the popover above the composer). */
@@ -6117,6 +6119,8 @@ export class App {
     // D170: 详情弹层关掉就停轮询，别让一个看不见的弹层一直读盘。
     if (this.bgTimer !== null) window.clearInterval(this.bgTimer);
     this.bgTimer = null;
+    this.bgAxisWatch?.disconnect();
+    this.bgAxisWatch = null;
     this.bgSheet = null;
     // 从齿轮设置打开的子面板：关掉之后回去。等这一轮同步代码跑完再看 ——
     // openXxx() 自己也先 closeSheet() 再建新的（重画、换页），那时 sheet 马上又有了，不算「关掉」。
@@ -18110,6 +18114,20 @@ export class App {
     const navList = el("div", "bg-nav-list");
     navList.setAttribute("role", "tablist");
     navList.setAttribute("aria-label", tr("运行列表"));
+    // 键位跟书写方向走（竖列 ↑↓、横条 ←→）：方向由 CSS 的容器查询决定，JS 只跟着量出来的结果记一笔。
+    navList.dataset.axis = "y";
+    navList.setAttribute("aria-orientation", "vertical");
+    const axisWatch = new ResizeObserver(() => {
+      // 窄窗那条规则把它从 grid 换成 flex（横向条）；竖列时是 grid。
+      const x = getComputedStyle(navList).display === "flex";
+      if ((navList.dataset.axis === "x") === x) return;
+      navList.dataset.axis = x ? "x" : "y";
+      navList.setAttribute("aria-orientation", x ? "horizontal" : "vertical");
+    });
+    axisWatch.observe(navList);
+    // 弹层关掉就别再量了（bgSheet 置空那一刻由 closeSheet 收尾）。
+    this.bgAxisWatch?.disconnect();
+    this.bgAxisWatch = axisWatch;
     nav.append(navHead, navList);
     // ↑↓ 换页、Home/End 跳首尾（tablist 的惯用键位）；点也行。
     navList.onkeydown = (e: KeyboardEvent) => {
@@ -18119,11 +18137,15 @@ export class App {
       if (e.key === "Home") next = ids[0];
       else if (e.key === "End") next = ids[ids.length - 1];
       else if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        // 宽窗左栏是竖列（只用 ↑↓），窄窗折成横向条（只用 ←→：ARIA 对横向 tablist 的推荐键位，
+        // 也是横条里的直觉）。按列表自己的书写方向认键 —— `aria-orientation` 写的是同一件事。
+        const sideways = navList.dataset.axis === "x";
+        const nextKey = sideways ? "ArrowRight" : "ArrowDown";
+        const prevKey = sideways ? "ArrowLeft" : "ArrowUp";
+        if (e.key !== nextKey && e.key !== prevKey) return;
         const at = ids.indexOf(this.bgSheet?.sel ?? "");
         // 当前选中的不在列表里（刚失效）时方向键不猜位置，交给 Home/End。
-        // 窄窗左栏是横向条，←→ 也要能换页（ARIA 对横向 tablist 的推荐键位）。
-        const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : -1;
-        if (at >= 0) next = ids[at + step];
+        if (at >= 0) next = ids[at + (e.key === nextKey ? 1 : -1)];
       } else return;
       if (!next) return;
       e.preventDefault();
@@ -18163,6 +18185,7 @@ export class App {
       node.root.remove();
       sheet.runs.delete(id);
     }
+    // 空态框每轮重建：先清掉上一轮的，不然 1.5s 一次的轮询会把它一层层堆起来。
     sheet.body.querySelector(".bg-empty")?.remove();
     const running = runs.filter((r) => r.state === "running").length;
     const failed = runs.filter((r) => r.state === "failed").length;
@@ -18346,11 +18369,16 @@ export class App {
       this.socket.send({ type: "bg.log", sessionId: sheet.sessionId, runId: r.id });
     }
     // 选中的那条没了、或者还没选过：挑一条在跑的，没有就第一条。用户手动点的选择不动。
-    // 走完上面「没有 run」的 return，这里 runs 一定非空。
+    // 选中的那条没了、或者还没选过：挑一条在跑的，没有就第一条。用户手动点的选择不动。
+    // 顺序以左栏（Map 插入序）为准，与 ↑↓/Home/End 一致：桥若把新 run 排在数组最前，Home 跳到的
+    // 「第一条」和这里自动选的得是同一条，不能一个按数组、一个按列表。
+    const listed = [...sheet.runs.keys()];
+    const order = new Map(listed.map((id, at) => [id, at]));
+    const ranked = [...runs].sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
     const want =
       sheet.sel && sheet.runs.has(sheet.sel)
         ? sheet.sel
-        : (runs.find((x) => x.state === "running") ?? runs[0]).id;
+        : (ranked.find((x) => x.state === "running") ?? ranked[0]).id;
     if (sheet.sel !== want) this.selectBgRun(want);
   }
 

@@ -192,11 +192,6 @@ try {
   check("End 跳到末条", Boolean(lastId) && lastId !== firstId, `${firstId} → ${lastId}`);
   await page.keyboard.press("Home");
   check("Home 回第一条", (await selId()) === firstId);
-  await page.keyboard.press("ArrowRight");
-  const rightId = await selId();
-  check("→ 也能换页（窄窗横向条的键位）", Boolean(rightId) && rightId !== firstId, `${firstId} → ${rightId}`);
-  await page.keyboard.press("ArrowLeft");
-  check("← 换回来", (await selId()) === firstId);
   await page.keyboard.press("Tab");
   check(
     "Tab 从 tab 走进右栏（tabpanel 可聚焦）",
@@ -226,16 +221,76 @@ try {
     "右栏抬头没被挤成三条",
     await page.locator(".bg-run:not([hidden]) .bg-run-head").evaluate((n) => n.getBoundingClientRect().height < 40),
   );
+  // 横条里 ←→ 才是换页键（ARIA 对横向 tablist 的推荐键位），↑↓ 不再认。
+  await page.waitForFunction(() => document.querySelector(".bg-nav-list")?.getAttribute("aria-orientation") === "horizontal");
+  const narrowFrom = await selId();
+  await page.locator('.bg-nav-item[aria-selected="true"]').focus();
+  await page.keyboard.press("ArrowRight");
+  const narrowRight = await selId();
+  check("窄窗横条里 → 换页", Boolean(narrowRight) && narrowRight !== narrowFrom, `${narrowFrom} → ${narrowRight}`);
+  await page.keyboard.press("ArrowLeft");
+  check("窄窗横条里 ← 换回来", (await selId()) === narrowFrom);
+  await page.keyboard.press("ArrowDown");
+  check("窄窗横条里 ↓ 不换页（那是竖列的键）", (await selId()) === narrowFrom);
   // 上一段把横条往右滚了 200px：截图前拉回起点，不然拍到的是一半被裁掉的那颗。
   await strip.evaluate((n) => (n.scrollLeft = 0));
   await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "3-narrow.png"), animations: "disabled" });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(120);
 
+  // 宽窗竖列里 ←→ 不该换页（那是横条的键位；纵向列表横向滚动时会被误触）。当前选中项是第 2 条（End 过）→ 改用 Home 后确认在第一条，再按 →
+  await page.keyboard.press("Home");
+  const wideId = await selId();
+  await page.locator('.bg-nav-item[aria-selected="true"]').focus();
+  await page.keyboard.press("ArrowRight");
+  check("宽窗竖列里 → 不换页", (await selId()) === wideId);
+  await page.keyboard.press("ArrowDown");
+  check("宽窗竖列里 ↓ 换页", (await selId()) !== wideId);
+
   // ---- 5. 回到宽窗：老占位文案不再出现在界面上（它把责任推给了桥）
   const body = await page.locator(".bg-sheet").innerText();
   check("不再断言「任务原文没传到桥」", !body.includes("任务原文没传到桥"), body.replace(/\n+/g, " | ").slice(0, 200));
   check("没有页面报错", pageErrors.length === 0, pageErrors.join(" | "));
+
+  // ---- 6. 空态不堆叠：弹层开着、它看的那个会话的 run 清空了 —— 轮询几轮，空态框始终只有一个
+  // （回归：以前每轮 `bg.list` 都再 append 一个 `.bg-empty`，开一分钟堆出 ~40 个。）
+  // 页面的 WebSocket 包了一层（web/src/ws.ts）：在页面里给 `WebSocket.prototype.send` 打补丁 ——
+  // 页面发 `bg.list` 时不发给桥，直接按页面期待的形状派发一条 `runs: []` 的回包（页面只按
+  // sessionId 路由）。这样不用改桥、也不用没 run 的会话有入口。
+  await page.evaluate(() => {
+    const w = window;
+    w.__bgEmptyRewrite = 0;
+    const orig = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data) {
+      const text = String(data);
+      let m = null;
+      try {
+        m = JSON.parse(text);
+      } catch {
+        /* 不是帧 */
+      }
+      if (!w.__bgForceEmpty || m?.type !== "bg.list") return orig.call(this, data);
+      w.__bgEmptyRewrite += 1;
+      setTimeout(() => {
+        const ev = new MessageEvent("message", { data: JSON.stringify({ type: "bg.list", sessionId: m.sessionId, runs: [] }) });
+        this.onmessage?.(ev);
+      }, 0);
+      return undefined;
+    };
+  });
+  await page.evaluate(() => {
+    window.__bgForceEmpty = true;
+  });
+  await page.locator(".bg-empty").waitFor({ timeout: 10000 });
+  await page.waitForTimeout(3300);
+  const rewrites = await page.evaluate(() => window.__bgEmptyRewrite);
+  check("期间至少跑了 2 轮轮询（不然这条断言什么都没验）", rewrites >= 2, `改写了 ${rewrites} 帧`);
+  check(
+    "空态框不随轮询堆叠",
+    (await page.locator(".bg-empty").count()) === 1,
+    `${await page.locator(".bg-empty").count()} 个`,
+  );
+  await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "4-empty.png"), animations: "disabled" });
 } finally {
   await browser?.close();
   bridge.kill();
