@@ -97,7 +97,13 @@ export function readPort() {
   return DEFAULT_PORT;
 }
 
-/** `PI_WEB_HOST` → 配置里的 `host` → 回环（壳默认只让本机连，别把口令暴露给局域网）。 */
+/**
+ * `PI_WEB_HOST` → 配置里的 `host` → 回环（壳默认只让本机连，别把口令暴露给局域网）。
+ *
+ * 返回的是**原文**，因为它的消费者是 `portFree()` 的 bind —— 壳怎么 bind，检查就怎么 bind，
+ * 检查才可能跟壳看到同一个事实。要拿它拼 URL 的（`/healthz`、`/api/host/stop`）一律走
+ * `localBase()`：通配地址、不带方括号的 v6 字面量只有它归一得了。
+ */
 export function readHost() {
   if (process.env.PI_WEB_HOST) return process.env.PI_WEB_HOST;
   const cfg = readConfig();
@@ -180,6 +186,10 @@ export function alive(pid) {
  *    `npm run x -- bridge/dist/index.js` 这些只是命令行里提到入口名，不算）；
  * ② 入口必须是**某个参数的结尾**（`host.js.bak`、`host.js.old` 不算）；
  * ③ 入口前必须是真正的参数边界（空白或引号）。
+ *
+ * 注意 ② 说的是「参数结尾」，不是「最后一个参数」：`node --enable-source-maps host.js --port 7864`
+ * 与 `node --require ./host.js x.js` 都算 —— 后一种只是预加载了我们的入口，仍是 node 跑的本仓
+ * 代码，误杀的代价极小；把它排除掉反而要白名单 node 的旗标，那才是永远跟不完的清单。
  */
 export function looksLikeBridge(cmd) {
   const argv0 = firstWord(cmd);
@@ -217,9 +227,15 @@ export function listenPid(port) {
  * `::` 是 v6 通配（回环 `[::1]`）：Linux 上 `bindv6only=1` 时 `::` 不收 v4 回环连接，
  * 拿 `127.0.0.1` 去探会永远探不到，于是把自家的壳当成外人、连 `--force` 也不肯停。
  */
+function loopbackFor(host) {
+  if (!host || host === "0.0.0.0") return DEFAULT_HOST;
+  if (host === "::" || host === "[::]") return "::1";
+  return host;
+}
+
 export function localBase(host, port) {
-  const h = String(host ?? "");
-  const target = !h || h === "0.0.0.0" ? DEFAULT_HOST : h === "::" || h === "[::]" ? "::1" : h;
+  const target = loopbackFor(String(host ?? ""));
+  // v6 字面量进 URL 必须带方括号；调用方已经带了就别再套一层。
   const authority = target.includes(":") && !target.startsWith("[") ? `[${target}]` : target;
   return `http://${authority}:${port}`;
 }
@@ -479,6 +495,13 @@ function forgetPidFile(port, pid) {
   }
 }
 
+/** 优雅停没等到的原因：三种回音对应三句不同的话，分开写比套三层三元好读。 */
+function giveUpNote(stop, pid) {
+  if (stop.status === null) return `  没连上（它可能已经在退），等不到端口释放，硬杀 pid ${pid}。`;
+  if (stop.ok) return `  ${STOP_GRACE_MS / 1000} 秒内没退干净，只好硬杀 pid ${pid}。`;
+  return `  它拒了 /api/host/stop（HTTP ${stop.status}），不再干等，硬杀 pid ${pid}。`;
+}
+
 /** 停掉「自己人」：先优雅、等不到再硬杀，最后一定要看到端口真的空出来。 */
 async function stopOwner(owner, port, host, log) {
   if (owner.shell) {
@@ -486,13 +509,7 @@ async function stopOwner(owner, port, host, log) {
     const stop = await postStop(port, host);
     // 它要是明说「不行」，等满 10 秒只是白等；没连上反而要等（它可能正在退）。
     if (await waitFree(port, host, stopGrace(stop))) return true;
-    log(
-      stop.status === null
-        ? `  没连上（它可能已经在退），等不到端口释放，硬杀 pid ${owner.pid}。`
-        : stop.ok
-          ? `  ${STOP_GRACE_MS / 1000} 秒内没退干净，只好硬杀 pid ${owner.pid}。`
-          : `  它拒了 /api/host/stop（HTTP ${stop.status}），不再干等，硬杀 pid ${owner.pid}。`,
-    );
+    log(giveUpNote(stop, owner.pid));
   } else {
     log(`  它没有壳，没有 /api/host/stop，只能硬杀 pid ${owner.pid}…`);
   }
@@ -557,6 +574,9 @@ function writeOut(stdout, text) {
  * 回车 = 是（默认 Y）；n/no = 不替换；其它输入重问；EOF（Ctrl-D / 输入结束）算「没回答」。
  */
 export function askReplace({ stdin = process.stdin, stdout = process.stdout, question = ASK_PROMPT } = {}) {
+  // 不是终端就不用问了：没人能回答，readline 只会一直等（CI 管道里那就是挂死）。
+  // 主流程自己先判过 isTTY，但这是导出函数，别人直接调也得是安全的。
+  if (!stdin.isTTY) return Promise.resolve(null);
   return new Promise((resolve) => {
     const rl = createInterface({ input: stdin, output: stdout, terminal: Boolean(stdin.isTTY) });
     let done = false;

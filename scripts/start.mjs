@@ -23,7 +23,7 @@ if (!fs.existsSync(entry)) {
  * `--force` 是给启动前那次检查的，不是给桥的：桥不认识这个参数，转过去只会被当成未知项。
  */
 function bridgeArgs() {
-  return process.argv.slice(2).filter((a) => a !== "--force");
+  return process.argv.slice(2).filter((a) => a !== "--force" && !a.startsWith("--force="));
 }
 
 // 起之前再查一次（D441）：`start:nobuild` 与直跑都不经过 `npm start` 链里的那一步。

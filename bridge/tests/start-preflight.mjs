@@ -130,20 +130,27 @@ function runPreflight(port, args = []) {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+    // 也交给 finally 统一收：前面的断言炸掉时，这一份不该留到整轮测试结束。
+    children.push(child);
     let out = "";
+    let timedOut = false;
     child.stdout.on("data", (c) => (out += String(c)));
     child.stderr.on("data", (c) => (out += String(c)));
+    const note = () => `${out}\n[preflight 跑了 ${LIMIT_MS / 1000}s 还没退，已经收掉]`;
     const timer = setTimeout(() => {
+      timedOut = true;
       try {
         child.kill();
       } catch {
         /* 已经没了 */
       }
-      resolve({ code: null, out: `${out}\n[preflight 跑了 ${LIMIT_MS / 1000}s 还没退，已经收掉]` });
+      // kill 只是发信号：它若连 SIGTERM 都不理，5 秒后强行落地，别让 Promise 永远悬着。
+      setTimeout(() => resolve({ code: null, out: note() }), 5000).unref();
     }, LIMIT_MS);
     child.on("exit", (code) => {
       clearTimeout(timer);
-      resolve({ code, out });
+      // 超时那条路也要等 exit 再返回：立刻 resolve 的话，它可能还在跑、下一例撞上同一个端口。
+      resolve({ code: timedOut ? null : code, out: timedOut ? note() : out });
     });
   });
 }

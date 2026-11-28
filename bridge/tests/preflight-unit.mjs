@@ -101,6 +101,8 @@ assert.equal(looksLikeBridge('"C:\\Program Files\\nodejs\\node.exe" F:\\wt\\feat
 // 开发态直接跑源码（tsx / --experimental-strip-types）也算自己人，否则 --force 也停不了它。
 assert.equal(looksLikeBridge("node C:/repo/node_modules/tsx/dist/cli.mjs C:/repo/bridge/src/host.ts"), true);
 assert.equal(looksLikeBridge("node --experimental-strip-types /repo/bridge/src/index.ts"), true);
+// 「入口是某个参数的结尾」，不是「最后一个参数」：node 的旗标前后都算（拿白名单排旗标只会排不完）。
+assert.equal(looksLikeBridge("node --require ./bridge/dist/host.js x.js"), true);
 
 // 8. 探活 / 停机打的地址跟着监听地址走：只听某个 LAN IP 时就打它（否则认不出壳、会误当旧桥硬杀），
 //    通配地址换成回环（通配不是能连的目标）。
@@ -112,6 +114,17 @@ assert.equal(localBase("[::]", 7864), "http://[::1]:7864");
 assert.equal(localBase(undefined, 7864), "http://127.0.0.1:7864");
 assert.equal(localBase("::1", 7864), "http://[::1]:7864");
 assert.equal(localBase("fe80::1", 7864), "http://[fe80::1]:7864");
+// 调用方已经写了方括号（`PI_WEB_HOST=[::1]` 是很自然的写法）：别再套一层。
+assert.equal(localBase("[::1]", 7864), "http://[::1]:7864");
+assert.equal(localBase("[fe80::1]", 7864), "http://[fe80::1]:7864");
+
+// 9. 非 TTY 的 stdin 不等输入（CI 管道里 readline 会一直等到 EOF）：直接当「没回答」。
+{
+  const tty = fakeTty([]);
+  tty.input.isTTY = false;
+  assert.equal(await askReplace({ stdin: tty.input, stdout: tty.output }), null);
+  assert.equal(tty.text(), "", "没人能回答时不要往管道里写提示");
+}
 
 // 9. 默认端口 / 默认地址在两边各写一份（TS 与 mjs 没法共享常量，硬要共享得上 allowJs 或另起
 //    package）。没人盯着就会一边改一边不改：preflight 放行的端口跟壳真正监听的端口对不上，
