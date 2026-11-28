@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import os from "node:os";
+import { normAddr } from "./addr.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
@@ -59,11 +60,6 @@ function why(err: unknown): string {
     cur = cur.cause as typeof cur;
   }
   return parts.join(" ← ") || "fetch failed";
-}
-
-/** `::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台机器，比较前先归一。 */
-function normAddr(addr: string): string {
-  return addr.replace(/^::ffff:/, "").replace(/^::1$/, "127.0.0.1");
 }
 
 export interface InboxResult {

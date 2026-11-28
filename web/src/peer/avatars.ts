@@ -187,10 +187,31 @@ for (const a of ART) URLS.set(a.id, `data:image/svg+xml,${encodeURIComponent(svg
 /**
  * 头像 id → 可以直接塞进 `<img src>` 的地址。未知 id（老配置、手改过、将来删掉的头像）
  * 返回 null，调用方退回「首字母 + 色相」的老样子。
+ *
+ * 自定义头像（`custom:<hash>`）的字节在对方的 peer 上，URL 需要知道是谁的：`key` 就是
+ * nodeId，桥会转给 peer 按 hash 取（本机有缓存就发缓存）。`key` 缺省时只给内置头像地址。
  */
-export function avatarUrl(id: string | null | undefined): string | null {
+export function avatarUrl(id: string | null | undefined, key?: string | null): string | null {
   if (!id) return null;
-  return URLS.get(id) ?? null;
+  const builtin = URLS.get(id);
+  if (builtin) return builtin;
+  const hash = customAvatarHash(id);
+  if (!hash || !key) return null;
+  // 参数名跟 peer 的 `/avatar?h=` 一致，桥只做转发（评审 7-22）。
+  return `/api/peer/avatar/${encodeURIComponent(key)}?h=${hash}`;
+}
+
+/**
+ * `custom:<hash>` 的 hash 长度。这是**线上格式**（announce / URL / 配置三处都按它走），
+ * 源头在 `peer/src/avatars.ts` 的 `AVATAR_HASH_LEN`；两个包不互相 import，所以这里再写一份。
+ * `web/peer-avatars-check.mjs` 会比对两边的数字，改一处没改另一处时 typecheck 直接红。
+ */
+export const AVATAR_HASH_LEN = 16;
+const CUSTOM_AVATAR_RE = new RegExp(`^custom:([0-9a-f]{${AVATAR_HASH_LEN}})$`);
+
+/** `custom:<hash>` → hash，其余（内置 id / 空）返回空串。 */
+export function customAvatarHash(id: string | null | undefined): string {
+  return CUSTOM_AVATAR_RE.exec(id ?? "")?.[1] ?? "";
 }
 
 /** 随机挑一张（可以排除当前这张，页面上「随机换一个」就不会抽到自己）。 */
