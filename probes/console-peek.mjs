@@ -319,6 +319,7 @@ const railBox = await mustBox(page.locator(".size-rail").first(), "2/3 段：字
 const startX = railBox.x + railBox.width * 0.375; // 125%
 const startY = railBox.y + railBox.height / 2;
 const restState = await peekState();
+check("2 段前置：拖动开始之前面板是不透明的（否则下面两条测的是别的东西）", restState.conOpacity > 0.99, `opacity ${restState.conOpacity}`);
 
 await page.mouse.move(startX, startY);
 await page.mouse.down();
@@ -392,6 +393,7 @@ await sleep(150);
 await boot({ scale: 1.25 });
 await openLook();
 const beforeEsc = await geo();
+check("6 段前置：Esc 之前面板是开着的、不在 #app 里", beforeEsc.w > 0 && !beforeEsc.inApp, JSON.stringify({ w: beforeEsc.w, h: beforeEsc.h, inApp: beforeEsc.inApp }));
 const escBox = await mustBox(page.locator(".size-rail").first(), "6 段：字号轨道");
 const escY = escBox.y + escBox.height / 2;
 const escX = escBox.x + escBox.width * 0.375;
@@ -469,6 +471,35 @@ check(
   layered.onTop,
   JSON.stringify(layered),
 );
+
+// ---------------------------------------------------------------- 10. 六根滑杆共用同一个让开：A 的键盘收尾不许抢走 B 的拖动
+await page.keyboard.press("Escape");
+await sleep(150);
+await boot({ scale: 1.25 });
+await openLook();
+await page.evaluate(() => document.querySelectorAll(".size-rail")[1].closest(".settings-row").scrollIntoView({ block: "center" }));
+await sleep(150);
+// A（字号）只按键盘：让开起来，同时挂上 400ms 的自动收起
+await page.evaluate(() => document.querySelectorAll(".size-rail")[0].querySelector("input").focus({ preventScroll: true }));
+await page.keyboard.press("ArrowRight");
+const bBox = await mustBox(page.locator(".size-rail").nth(1), "10 段：第二根轨道");
+const by = bBox.y + bBox.height / 2;
+const bx = bBox.x + bBox.width * 0.2;
+await page.mouse.move(bx, by);
+await page.mouse.down();
+await page.mouse.move(bx + 40, by, { steps: 4 });
+await sleep(700); // 熬过 A 的 400ms
+const shared = await peekState();
+await page.mouse.up();
+await sleep(200);
+check(
+  "10. 按 A 的方向键后立刻拖 B：A 的 400ms 自动收起不许把 B 的让开抢走",
+  shared.conOpacity < 0.05,
+  `拖动第 700ms 时 opacity ${shared.conOpacity} / 胶囊 ${JSON.stringify(shared.hudText)}`,
+);
+
+// ---------------------------------------------------------------- 11. 页面没有 JS 异常
+check("11. 页面没有 JS 异常", errors.length === 0, errors.slice(0, 3).join(" | "));
 
 await browser.close();
 server.close();

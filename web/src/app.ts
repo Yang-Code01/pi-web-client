@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./settings-console.css";
-import { ConsolePeek, PEEK_KEY_MS, PEEK_MIN_PX, peekFor } from "./console-peek.ts";
+import { ConsolePeek, PEEK_MIN_PX, peekFor } from "./console-peek.ts";
 import { api, githubApi, type DepPackageId, type DepsReport } from "./api.ts";
 import { icon, face, isIconName, fileIcon, type IconName } from "./icons.ts";
 import { ChatView, createEl as el } from "./chat.ts";
@@ -4447,17 +4447,22 @@ export class App {
     // 胶囊是**指示器**，不接指针 —— 拖动继续用冻住的轨道盒子换算，视觉变化不回读几何。
     const peekHost = (): HTMLElement | null => rail.closest<HTMLElement>(".st-back");
     let peeking: ConsolePeek | null = null;
-    let keyTimer = 0;
+    const readout = (v: number): { text: string; fill: number } => ({ text: `${Math.round(v * 100)}%`, fill: sizePct(v) });
+    /**
+     * 收起让开。按**宿主**收，不是按这一根滑杆：胶囊与 `peeking` 类是六根共用的，
+     * 按自己那一份收会漏掉「A 的键盘读数还挂着、B 已经在拖」这种情况。
+     */
     const hidePeek = (): void => {
-      peeking?.hide();
+      const host = peekHost();
+      if (host) peekFor(host).hide();
       peeking = null;
     };
-    const readout = (v: number): { text: string; fill: number } => ({ text: `${Math.round(v * 100)}%`, fill: sizePct(v) });
-    const showPeek = (v: number): void => {
+    /** 露出来。`key` = 键盘调值那一下（自带 400ms 自动收起，计时器在 ConsolePeek 里按宿主一份）。 */
+    const showPeek = (v: number, key = false): void => {
       const host = peekHost();
       if (!host) return;
       const pk = peekFor(host);
-      if (pk.active) pk.set(readout(v));
+      if (key) pk.keyPeek(o.label, readout(v));
       else pk.show(o.label, readout(v));
       peeking = pk;
     };
@@ -4567,10 +4572,6 @@ export class App {
       dragBox = { x: r.left, w: r.width };
       dragFrom = { x: ev.clientX, y: ev.clientY };
       dragValue = next;
-      if (keyTimer) {
-        clearTimeout(keyTimer);
-        keyTimer = 0;
-      }
       hidePeek();
       rail.classList.add("dragging");
       read.classList.add("dragging");
@@ -4633,13 +4634,8 @@ export class App {
     range.oninput = () => {
       if (dragBox) return;
       queue(Number(range.value));
-      // 纯键盘也得看得见：调值就露一下，400ms 没再动就自己回来（连按合并计时）。
-      showPeek(next);
-      if (keyTimer) clearTimeout(keyTimer);
-      keyTimer = window.setTimeout(() => {
-        keyTimer = 0;
-        hidePeek();
-      }, PEEK_KEY_MS);
+      // 纯键盘也得看得见：调值就露一下，400ms 没再动就自己回来（连按合并计时，计时器在胶囊里）。
+      showPeek(next, true);
     };
     range.addEventListener("keyup", () => { if (!dragBox) commit(); });
     range.addEventListener("blur", () => { if (!dragBox) commit(); });
