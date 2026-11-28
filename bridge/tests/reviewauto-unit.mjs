@@ -566,6 +566,11 @@ await checkAsync("状态机：改了没提交 → 提醒一次 → 还不提交�
   host.state.running = false;
   runner.tick();
   await flush();
+  assert.equal(runner.get(S).status, "running", "刚补完提醒还在宽限期里：等它回话，别立刻判死");
+  // 宽限期过完还是没动静（也没有新的 assistant 回话）→ 停下来问人
+  runner.get(S).rounds[0].fix.promptAt = new Date(Date.now() - 3 * 60_000).toISOString();
+  runner.tick();
+  await flush();
   assert.equal(runner.get(S).status, "paused");
   assert.equal(runner.get(S).reasonCode, "uncommitted");
 });
@@ -776,6 +781,49 @@ await checkAsync("自动合并：合并那句话是在授权还在的时候发�
   await flush();
   assert.ok(grantedAtPrompt, "合并前必须还捏着授权（否则 gh pr merge 会被闸门拦下来）");
   assert.equal(grantedAtPrompt.pr, 747);
+});
+
+await checkAsync("继续时找不到那一轮的意见：暂停并收回授权（别留着一张许可）", async () => {
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 747, autoMerge: true }) });
+  await reviewRound(runner, host, ["k1"]);
+  // 先走到「暂停且 wait 仍是 fix」：这一轮既没提交也没回执 → no-evidence
+  host.state.running = false;
+  runner.tick();
+  await flush();
+  assert.equal(runner.get(S).status, "paused");
+  assert.equal(runner.get(S).wait, "fix");
+  const run = host.runs.at(-1);
+  host.findingsByRun.delete(run.runId); // 记录被清过 / 换了仓库
+  const out = runner.continue(S);
+  assert.equal(out.ok, true);
+  await flush();
+  assert.equal(runner.get(S).status, "paused");
+  assert.equal(runner.get(S).reasonCode, "lost-findings");
+  assert.equal(host.grants.at(-1), null, "暂停必须把刚发出去的授权收回去");
+});
+
+await checkAsync("起评审的过程中按停：那条 run 要被取消（否则白烧一轮 token）", async () => {
+  let release = null;
+  const host = makeHost({
+    start({ scope, model }) {
+      const runId = `run-${this.runs.length + 1}`;
+      this.runs.push({ runId, scope, model });
+      return new Promise((resolve) => {
+        release = () => resolve({ runId, repo: "/repo" });
+      });
+    },
+  });
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await flush(2); // beginReview 卡在 start 上
+  runner.stop(S);
+  assert.equal(runner.get(S).status, "stopped");
+  release();
+  await flush();
+  assert.equal(host.cancelled.length, 1, "没人会读这条 run 了，取消掉");
+  assert.equal(runner.get(S).status, "stopped", "按停的结论不被后来的 start 回包改写");
 });
 
 await checkAsync("接管「等合并」再来继续：不重发合并提示词", async () => {

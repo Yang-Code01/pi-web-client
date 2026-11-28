@@ -182,7 +182,7 @@ export function waitText(state: Pick<AutoStateView, "wait" | "status" | "cur" | 
 
 /** 卡片抬头上那枚状态。 */
 export function statePill(state: Pick<AutoStateView, "status" | "cur" | "config">): { text: string; tone: "run" | "ok" | "warn" | "stop" } {
-  const max = state.config?.maxRounds ?? 10;
+  const max = state.config?.maxRounds || ROUNDS_DEFAULT;
   if (state.status === "signed") return { text: tr("两家已签收"), tone: "ok" };
   if (state.status === "merged") return { text: tr("已合并"), tone: "ok" };
   if (state.status === "stopped") return { text: tr("已停止"), tone: "stop" };
@@ -259,6 +259,9 @@ export function verdictOf(r: AutoRoundView | null, f: Pick<ReviewFinding, "path"
     null
   );
 }
+
+/** 意见卡上那枚判定标的样式类：三种判定三种颜色（「误报」与「不改」不能长一个样）。 */
+const VERDICT_CLASS: Record<AutoVerdict["verdict"], string> = { fixed: "fixed", "false-positive": "fp", wontfix: "wont" };
 
 export function verdictLabel(v: AutoVerdict["verdict"] | ""): string {
   if (v === "fixed") return tr("已修");
@@ -360,8 +363,8 @@ export function renderAutoPanel(input: AutoPanelInput, actions: AutoActions): HT
 
   // ---- 暂停 / 失败：原因 + 三颗按钮
   if (state.status === "paused" || state.status === "failed") {
-    const box = el("div", "rv-auto-pause");
-    box.append(el("div", "rv-auto-reason", state.reason || tr("停下来了，需要你看一眼")));
+    const pauseBox = el("div", "rv-auto-pause");
+    pauseBox.append(el("div", "rv-auto-reason", state.reason || tr("停下来了，需要你看一眼")));
     const acts = el("div", "rv-auto-acts");
     // 「stopping」= 已经按过停止、正在等这一轮跑完：这时只需要一颗「停止」等在那里，
     // 不能再并排摆第二颗一模一样的，也不该让「跳过这一轮」跟「正在停」打架。
@@ -379,8 +382,8 @@ export function renderAutoPanel(input: AutoPanelInput, actions: AutoActions): HT
       stop.onclick = () => actions.onStop();
       acts.append(skip, stop);
     }
-    box.append(acts);
-    card.append(box);
+    pauseBox.append(acts);
+    card.append(pauseBox);
   }
 
   // ---- 底行
@@ -459,9 +462,17 @@ export class AutoSettingsSheet {
   constructor(opts: AutoSettingsOpts) {
     this.opts = opts;
     const empty: AutoModelRef = { provider: "", model: "", label: "" };
-    this.values = opts.last
-      ? { models: { a: { ...opts.last.models.a }, b: { ...opts.last.models.b } }, maxRounds: opts.last.maxRounds, autoMerge: opts.last.autoMerge }
-      : { models: { a: opts.defaultModel ? { ...opts.defaultModel } : empty, b: { ...empty } }, maxRounds: ROUNDS_DEFAULT, autoMerge: false };
+    // `last` 是宿主传来的「上次用的设置」：缺 models / 缺某一路时按默认起手，别在打开 dialog 时抛。
+    const lastA = opts.last?.models?.a;
+    const lastB = opts.last?.models?.b;
+    this.values = {
+      models: {
+        a: lastA?.model ? { ...lastA } : opts.defaultModel ? { ...opts.defaultModel } : { ...empty },
+        b: lastB?.model ? { ...lastB } : { ...empty },
+      },
+      maxRounds: opts.last?.maxRounds || ROUNDS_DEFAULT,
+      autoMerge: Boolean(opts.last?.autoMerge),
+    };
 
     this.back = markSurface(el("div", "sheet-back center rv-auto-back"), "window");
     const sheet = el("section", "st-console rv-auto-sheet");
@@ -533,7 +544,7 @@ export class AutoSettingsSheet {
       row.append(who, chip);
       models.append(row);
     }
-    models.append(el("div", "rv-auto-note", tr("顺序 A → B → A → B 交替；任何改动落盘，两家签收一起作废。")));
+    models.append(el("div", "rv-auto-lede", tr("顺序 A → B → A → B 交替；任何改动落盘，两家签收一起作废。")));
 
     const limits = el("div", "rv-auto-fld");
     limits.append(el("div", "rv-auto-lab", tr("上限")));
@@ -695,9 +706,10 @@ export class AutoRoundSheet {
       return span;
     };
     strip.append(fact(tr("意见"), String(findings.length || r.findings)));
-    // 三个数只数**回执里的判定**：以前「不改」为 0 时拿整轮意见数兜底，
-    // 一轮「回执全判误报」就会写成 `0 / 3 / 3`（同一条意见被数两遍，加起来比意见数还多）。
-    strip.append(fact(tr("已修 / 误报 / 不改"), `${fixed} / ${fp} / ${wont}`));
+    // 三个数只数**回执里的判定**：①以前「不改」为 0 时拿整轮意见数兜底，一轮「回执全判误报」
+    // 会写成 `0 / 3 / 3`（同一条意见数两遍）；②没有回执的一轮回执为空，也不能写成 `0 / 0 / 0`
+    // —— 那和下面「这一轮没有回执」自相矛盾。
+    strip.append(fact(tr("已修 / 误报 / 不改"), verdicts.length ? `${fixed} / ${fp} / ${wont}` : tr("没有回执")));
     const fx = r.fix;
     strip.append(
       (() => {
@@ -727,7 +739,7 @@ export class AutoRoundSheet {
       const card = el("div", "rv-auto-finding");
       const top = el("div", "rv-auto-f-top");
       top.append(el("span", `tag ${f.severity}`, sevName(f.severity)), el("span", "path", f.anchored === false ? f.path : `${f.path}:${f.startLine}`));
-      if (v) top.append(el("span", `tag ${v.verdict === "fixed" ? "fixed" : "fp"}`, verdictLabel(v.verdict)));
+      if (v) top.append(el("span", `tag ${VERDICT_CLASS[v.verdict] ?? "fp"}`, verdictLabel(v.verdict)));
       card.append(top, el("div", "txt", f.content));
       if (v?.why) card.append(el("div", "why", `→ ${v.why}`));
       lbody.append(card);

@@ -335,7 +335,9 @@ export default function approvalGate(pi: any): void {
     // 对话框里点过那一次了。授权收得极窄（一条分支 / 一个 PR），运行一结束脑就把它删掉。
     // 判授权必须用**完整**命令：`detail` 是给审批卡看的 900 字截断，截断点之后可以藏一条
     // `; rm -rf`（评审 #1）—— 那一下就成了「前半段合法、后半段随行」。
-    if (grantAllows(auto, risk.detail, { head: SHELL_TOOLS.has(lower) ? currentBranch(cwd) : "", cwd })) {
+    // `auto &&` 不能省：没有授权时先短路，别为了一次注定失败的判定在每次 shell 调用里
+    // 多读两次文件（`currentBranch` = stat + read `.git/HEAD`）。
+    if (auto && grantAllows(auto, risk.detail, { head: SHELL_TOOLS.has(lower) ? currentBranch(cwd) : "", cwd })) {
       // 别原样回显命令：`git push https://x-access-token:ghp_…@github.com/…` 这种会把凭据
       // 抄进 pi 子进程的 stderr（日志跟着会话落盘）。
       console.error(`[approval-gate] auto-review grant allowed: ${redactForLog(risk.detail)}`);

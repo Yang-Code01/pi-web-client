@@ -146,6 +146,18 @@ check("PR 号只认位置上的那个，不把选项的值当号", () => {
   assert.equal(allows("gh pr merge --match-head-commit 34 748"), false);
 });
 
+check("绕过闸门的选项：`--admin`（跳过分支保护）不放过", () => {
+  assert.equal(allows("gh pr merge 747 --admin"), false);
+  assert.equal(allows("gh pr merge 747 --merge"), true);
+});
+
+check("把命令推到远端执行的推送选项：不放过", () => {
+  assert.equal(allows("git push --receive-pack=sh origin feat/review-auto"), false);
+  assert.equal(allows("git push --exec=sh origin feat/review-auto"), false);
+  assert.equal(allows("git push --upload-pack=/tmp/x origin feat/review-auto"), false);
+  assert.equal(allows("git push origin feat/review-auto"), true);
+});
+
 check("没说号码的合并（`gh pr merge` 认当前分支）：不放过", () => {
   assert.equal(allows("gh pr merge --merge"), false);
 });

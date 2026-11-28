@@ -42,6 +42,11 @@ const PUSH = /^\s*git\s+push\b/;
 const PR_MERGE = /^\s*gh\s+(?:-R\s+\S+\s+)?pr\s+merge\b/;
 const API_MERGE = /^\s*gh\s+api\b[^\n]*\/pulls\/(\d+)\/merge\b/;
 const FORCE = /(^|\s)(--force(-with-lease)?|-f)\b/;
+/**
+ * 会在**远端**跑一条命令的推送选项（`--receive-pack` / `--exec` / `--upload-pack`）。
+ * 它们不改「推哪条分支」，但能让这次推送顺手在远端执行程序 —— 不在「推这一条分支」的授权范围里。
+ */
+const REMOTE_EXEC = /(^|\s)(--receive-pack|--exec|--upload-pack)(=|\s)/;
 // `--prune` 会删掉远端「本地已经没有」的分支 —— 与 `--delete` 同一类，不能放过。
 const BROAD = /(^|\s)(--all|--mirror|--tags|--follow-tags|--delete|--prune|-d)\b/;
 
@@ -78,6 +83,7 @@ function pushTargets(cmd: string): { ok: boolean; branches: string[] } {
   const rest = cmd.replace(PUSH, "").trim();
   if (FORCE.test(rest)) return { ok: false, branches: [] };
   if (BROAD.test(rest)) return { ok: false, branches: [] };
+  if (REMOTE_EXEC.test(rest)) return { ok: false, branches: [] };
   const tokens = rest.split(/\s+/).filter((t) => t && !t.startsWith("-"));
   // 第一个非选项 token 是远端；之后的都是 refspec
   const branches: string[] = [];
@@ -205,6 +211,8 @@ export function grantAllows(
   }
 
   if (!grant.pr) return false;
+  // `--admin` 会绕过分支保护 / 必需的 checks 去合：授权的是「合这一个 PR」，不是「破例合」。
+  if (/(^|\s)--admin\b/.test(text)) return false;
   const merge = mergeTarget(text);
   if (!merge.pr || merge.pr !== grant.pr) return false;
   if (merge.repo) {

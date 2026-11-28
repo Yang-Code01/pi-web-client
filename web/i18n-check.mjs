@@ -82,6 +82,9 @@ function ignoredRanges(src) {
   return ranges;
 }
 
+/** 带 `{p1}` 这种占位符的键：即使没有中文也要进键集合（占位符顺序与措辞是语言相关的）。 */
+const PLACEHOLDER = /\{p\d+\}/;
+
 /** 这个字面量是不是 `tr("…")` 的键（第一个参数）。 */
 function isTrKey(node) {
   const parent = node.parent;
@@ -134,7 +137,14 @@ function walk(file, out) {
   const visit = (node) => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
       const text = node.text;
-      if (CJK.test(text)) {
+      // 纯 ASCII、但**带占位符**的键（`"{p1} · {p2}"`、`"PR #{p1} · {p2}"`）也是界面文案：
+      // 以前整段判断包在 `CJK.test()` 里，这类键根本进不了键集合，缺译文不会被发现。
+      // 只有专有名词、没有占位符的（`"CPU"`、`"Jira"`、`"PAT"`）不收：它们本来就不用翻。
+      if (!CJK.test(text) && PLACEHOLDER.test(text) && isTrKey(node)) {
+        out.keys.add(text);
+        const line = sf.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+        if (!out.context.has(text)) out.context.set(text, { file: path.relative(here, file), line, src: src.split("\n")[line - 1].trim().slice(0, 200) });
+      } else if (CJK.test(text)) {
         if (isTrKey(node)) {
           // 区间里的 tr() 仍然算键：忽略只针对「不是界面文案」的裸字面量。
           out.keys.add(text);

@@ -198,6 +198,8 @@ export interface AutoHost {
 // ---------------------------------------------------------------------------
 
 export const MIN_ROUNDS = 2;
+/** 补过「还没提交」那句提醒之后，等它回话的宽限期（过了还这样才判「改了没提交」）。 */
+export const NUDGE_GRACE_MS = 2 * 60 * 1000;
 export const MAX_ROUNDS_CAP = 30;
 export const DEFAULT_MAX_ROUNDS = 10;
 
@@ -667,7 +669,7 @@ export function normalizeAuto(raw: any): AutoState {
     sha: String(r?.sha ?? ""),
     findings: Number(r?.findings) || 0,
     severity: normalizeSeverity(r?.severity),
-    keys: Array.isArray(r?.keys) ? r.keys.map(String) : [],
+    keys: Array.isArray(r?.keys) ? r.keys.map((k: unknown) => String(k ?? "")).filter(Boolean) : [],
     tokens: Number(r?.tokens) || 0,
     ms: Number(r?.ms) || 0,
     note: String(r?.note ?? ""),
@@ -905,10 +907,9 @@ export class AutoRunner {
           round.fix = undefined;
           void this.injectFix(state, round, findings);
         } else {
-          state.status = "paused";
-          state.reason = "找不到那一轮的意见了，重开一条吧";
-          state.reasonCode = "lost-findings";
-          this.save(state);
+          // 走 pause()：它会收回刚发出去的授权、打日志、写 summary —— 手写这三行会漏掉授权，
+          // 于是「已经暂停」的会话还捏着一张 6 小时的推送 / 合并许可。
+          this.pause(state, "lost-findings", "找不到那一轮的意见了，重开一条吧");
         }
         return true;
       }
@@ -1121,6 +1122,12 @@ export class AutoRunner {
       const model = slot === "A" ? state.config.models.a : state.config.models.b;
       const out = await this.host.start({ dir: state.config.repo, scope, session: state.session, model, lang: state.config.lang });
       round.runId = out.runId;
+      // 起的过程中被按停 / 接管：状态已经不是 running 了，这条 run 没人会去读 —— 取消掉，
+      // 别让它在后台把一整轮 token 烧完（stop() 那边拿不到 runId，取消不了）。
+      if (state.status !== "running") {
+        this.host.cancel(state.config.repo, state.session, out.runId);
+        return;
+      }
       round.sha = this.host.head(state.config.cwd) || round.sha;
       this.save(state);
     } catch (err: any) {
@@ -1212,6 +1219,10 @@ export class AutoRunner {
         void this.nudgeCommit(state, round);
         return;
       }
+      // 补过提醒了：还要给它一点时间。没有新的 assistant 消息 = 那句提醒可能还排在队里
+      // （会话在跑时它是 followUp），这时候立刻判死等于把它刚排上的队作废；但也不能无限等 ——
+      // 过了宽限期还是没有动静，就按「改了没提交」停下来问人。
+      if (!text && Date.now() - Date.parse(fix.promptAt || "") < NUDGE_GRACE_MS) return;
       this.pause(state, "uncommitted", "这一轮改完没有提交（改了但没 commit）");
       return;
     }

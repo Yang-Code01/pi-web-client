@@ -3822,7 +3822,8 @@ export class App {
   private sendPrompt(behavior: "steer" | "followUp" = "steer"): void {
     if (!this.currentId) return;
     // 自动评审跑着时你自己发言 = 接管（D457 第 14 条）：先问一次，再决定停不停它。
-    if (!this.autoTakeover && this.reviewAuto && this.reviewAuto.status === "running" && this.reviewAuto.session === this.currentId) {
+    // `reviewAuto` 只装当前会话那一份（帧按 sessionId 过滤、切会话时按 id 重取），不用再比一次 session。
+    if (!this.autoTakeover && this.reviewAuto && this.reviewAuto.status === "running") {
       this.confirmAutoTakeover(() => this.sendPrompt(behavior));
       return;
     }
@@ -20086,6 +20087,17 @@ export class App {
 
   // ---------------------------------------------------------------- 自动评审（D457）
 
+  /**
+   * 「模型 A 该从哪个模型起手」：`provider/id`；没有就空串（B 一直从空开始，要人另选一个）。
+   *
+   * 可选链不能写成 `last?.models.a.provider`：`last` 在、`models` 不在时那一下会抛。
+   */
+  private autoSlotStart(slot: "a" | "b"): string {
+    const pick = slot === "a" ? this.autoSettingsLast?.models?.a : null;
+    if (!pick?.model) return "";
+    return pick.provider ? `${pick.provider}/${pick.model}` : pick.model;
+  }
+
   /** 设置 dialog（原型选的 B：上半设置、下半预演）。 */
   private openAutoSettings(): void {
     if (!this.currentId) return;
@@ -20102,7 +20114,7 @@ export class App {
       onPick: (slot) => {
         // 复用输入框那颗 chip 背后的同一个「模型与思考」弹层：挑完回到这张 dialog。
         this.openModelSheet(false, {
-          start: slot === "a" ? `${this.autoSettingsLast?.models.a.provider ?? ""}/${this.autoSettingsLast?.models.a.model ?? ""}` : "",
+          start: this.autoSlotStart(slot),
           onPick: (m) => sheet.setModel(slot, { provider: m.provider, model: m.id, label: m.name }),
         });
       },
@@ -20154,12 +20166,12 @@ export class App {
     this.renderQueue();
   }
 
-  /** 轮次专用窗：点时间线上的某一轮打开（上一轮 / 下一轮也在同一扇窗里翻）。 */
   /** 这条自动评审现有的轮号（升序）。轮号不保证连续：跳过 / 旧记录被裁都会留空档。 */
   private autoRoundNos(): number[] {
     return (this.reviewAuto?.rounds ?? []).map((r) => r.n).sort((a, b) => a - b);
   }
 
+  /** 轮次专用窗：点时间线上的某一轮打开（上一轮 / 下一轮也在同一扇窗里翻）。 */
   private openAutoRound(n: number): void {
     const state = this.reviewAuto;
     if (!state) return;
@@ -20211,15 +20223,10 @@ export class App {
       this.flashToast(tr("先关掉上面那扇窗：这条消息还没发出去。"), true, 6000);
       return;
     }
-    const modal = el("div", "modal hi");
+    const modal = el("div", "modal hi rv-auto-takeover");
     const form = el("form");
     const h = el("h2", "", tr("自动评审正在跑"));
-    h.style.margin = "0";
-    h.style.fontSize = "16px";
     const p = el("p", "", tr("你这条消息会接管这个会话：自动评审会停在当前这一轮（进度都在，之后能继续）。"));
-    p.style.color = "var(--faint)";
-    p.style.fontSize = "13px";
-    p.style.margin = "0";
     const btns = el("div", "settings-foot");
     btns.append(el("span", "spacer"));
     const cancel = el("button", "btn ghost", tr("取消"));

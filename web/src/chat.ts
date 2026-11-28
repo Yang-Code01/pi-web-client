@@ -80,15 +80,17 @@ const AUTO_MARK = "[pi-web:auto]";
 function autoMessage(text: string): { title: string; body: string } | null {
   if (!text.startsWith(AUTO_MARK)) return null;
   const rest = text.slice(AUTO_MARK.length);
+  // 抬头后面那段正文：两处（轮次 / 合并）用同一套切法，别各写一遍 slice + 去空行。
+  const after = (hit: RegExpExecArray | null): string => (hit ? rest.slice(hit[0].length).replace(/^\s*\n?/, "") : "");
   const round = /^\s*round=(\d+)\s+findings=(\d+)/.exec(rest);
   if (round) {
     return {
       title: tr("自动评审 · 第 {p1} 轮 · {p2} 条意见", { p1: round[1], p2: round[2] }),
-      body: rest.slice(round[0].length).replace(/^\s*\n?/, ""),
+      body: after(round),
     };
   }
   const merge = /^\s*merge\s+pr=(\d+)/.exec(rest);
-  if (merge) return { title: tr("自动评审 · 合并 PR #{p1}", { p1: merge[1] }), body: rest.slice(merge[0].length).replace(/^\s*\n?/, "") };
+  if (merge) return { title: tr("自动评审 · 合并 PR #{p1}", { p1: merge[1] }), body: after(merge) };
   return { title: tr("自动评审"), body: rest.trim() };
 }
 
