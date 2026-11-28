@@ -190,12 +190,16 @@ async function health() {
 /** 告诉旧壳「这次是换代，评审 worker 留着」，别让它走普通停机的收尾。 */
 async function askKeepReviews() {
   try {
-    await fetch(`http://127.0.0.1:${PORT}/api/host/stop?keepReviews=1`, {
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/host/stop?keepReviews=1`, {
       method: "POST",
       signal: AbortSignal.timeout(1500),
     });
+    if (!res.ok) return false;
+    const body = await res.json().catch(() => null);
+    return body?.keepReviews === true;
   } catch {
     /* 旧壳可能还没有这个接口；后面的 kill 仍然能把它带走 */
+    return false;
   }
 }
 
@@ -392,10 +396,12 @@ async function main() {
   log(`old bridge pid ${oldPid ?? "(none)"}，子进程 ${kids.join(",") || "none"}`);
 
   if (oldPid) {
-    await askKeepReviews();
-    // 和 hotdeploy 一样：先等旧壳把 retire 做完（脑要 releaseLocks 再退出），
-    // 否则这里立刻 killPid 会让脑按 SIGTERM 的 shutdown 语义把评审 worker 收掉。
-    for (let i = 0; i < 40 && alive(oldPid); i++) await sleep(250);
+    if (await askKeepReviews()) {
+      // 和 hotdeploy 一样：先等旧壳把 retire 做完（脑要 releaseLocks 再退出），
+      // 否则这里立刻 killPid 会让脑按 SIGTERM 的 shutdown 语义把评审 worker 收掉。
+      // 旧壳不认这个接口（404）时不会走 retire，不能白等 10 秒。
+      for (let i = 0; i < 40 && alive(oldPid); i++) await sleep(250);
+    }
     if (alive(oldPid)) killPid(oldPid);
     for (let i = 0; i < 24 && alive(oldPid); i++) await sleep(250);
     if (alive(oldPid)) {

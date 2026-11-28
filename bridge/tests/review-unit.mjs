@@ -595,15 +595,15 @@ check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标�
     assert.equal(runs.find((r) => r.id === "live").status, "running");
     assert.equal(runs.find((r) => r.id === "dead").status, "stale");
 
-    // pid 活着不代表还是这个 worker：过期的 job 没有心跳，可能只是系统复用了这个 pid。
-    const reusedStartedAt = new Date(Date.now() - 120_000).toISOString();
+    // pid 活着不代表还是这个 worker：有 pid 却没心跳，超过 15 秒的短宽限后可能只是系统复用了这个 pid。
+    const reusedStartedAt = new Date(Date.now() - 20_000).toISOString();
     writeReviewState(
       repo,
       { repo, runs: [run("live", startedAt), run("reused", reusedStartedAt)], marks: {} },
       session,
     );
     writeJob("reused", reusedStartedAt, process.pid);
-    assert.equal(sweepStaleRuns(), 1, "pid 还活着但心跳过期，不能当成评审还在跑");
+    assert.equal(sweepStaleRuns(), 1, "pid 还活着但 20 秒没心跳，不能当成评审还在跑");
     assert.equal(readReviewState(repo, session).runs.find((r) => r.id === "reused").status, "stale");
 
     // job 文件可能被杀软 / 半截写入挡住；这时新鲜心跳仍能证明 worker 在跑，不能收尸。

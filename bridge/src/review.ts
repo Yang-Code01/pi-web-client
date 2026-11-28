@@ -697,6 +697,9 @@ function readReviewJob(file: string): ReviewJob | null {
 /** worker 启动到写回 pid 之间的窗口：这段时间没有 pid 不能当成「已经死了」。
  *  60 秒覆盖了换脑观察期（30s HELLO）+ 新脑启动；worker 一跑起来就会写心跳接管判断。 */
 const WORKER_START_GRACE_MS = 60_000;
+/** 有 pid 之后 worker 该立刻写第一份心跳；只给极慢文件系统留一个很短的窗口，
+ *  不能沿用 60 秒 —— worker 被 SIGKILL 后没心跳，60 秒内会被当成还在跑。 */
+const WORKER_PID_GRACE_MS = 15_000;
 /** 心跳间隔与过期阈值。30 秒足够跨过一次脑崩溃 / 换脑，又不会让复用的 pid 一直冒充 worker。 */
 const WORKER_BEAT_MS = 5_000;
 const WORKER_BEAT_STALE_MS = 30_000;
@@ -749,7 +752,8 @@ function reviewJobRunning(job: ReviewJob | null | undefined): boolean {
     return beat.pid === Number(job.pid) && beat.startedAt === job.startedAt && Date.now() - beat.at < WORKER_BEAT_STALE_MS;
   }
   const started = Date.parse(job.startedAt);
-  return Number.isFinite(started) && Date.now() - started < WORKER_START_GRACE_MS;
+  const grace = job.pid ? WORKER_PID_GRACE_MS : WORKER_START_GRACE_MS;
+  return Number.isFinite(started) && Date.now() - started < grace;
 }
 
 /**
@@ -1209,7 +1213,8 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     // 进程没起来（node 不可执行 / spawn 失败）：当场收尾，别让面板一直转圈等一个不存在的 worker。
     markWorkerSpawnFailed(job, err);
   }
-  ensureReviewTicker();
+  // 注入 launcher 的测试没有真正的 worker，起 ticker 只会在宽限结束后把测试记录改成 stale。
+  if (!o.launch && !launcher) ensureReviewTicker();
 
   return { runId, repo: root };
 }
@@ -1312,7 +1317,8 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       error: patch.error ?? "",
       errorCode: patch.errorCode ?? "",
     });
-    progressMap.delete(runId);
+    // 生产路径的 execute 只跑在 worker 里，worker 的 progressMap 为空；脑侧由 tickOneReview
+    // 自己删。这里保留删除只会让人误以为脑里还有一份。
   };
 
   /** 起一个子进程评一组：边跑边发进度，结束时把它答的那段话交回来。 */
