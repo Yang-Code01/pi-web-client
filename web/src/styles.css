@@ -4522,6 +4522,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .bg-nav-head { padding: 5px 9px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--faint); }
 .bg-nav-head[hidden] { display: none; }
+/* tablist 本体：tab 只放这一层里，「运行 · N」那行在它外面（ARIA 只许 tab 做 tablist 的孩子）。 */
+.bg-nav-list { display: grid; align-content: start; gap: 1px; min-width: 0; min-height: 0; }
 .bg-nav-item {
   display: grid; gap: 3px; width: 100%; padding: 7px 9px;
   border: 0; border-radius: 7px; background: none; color: inherit; text-align: left; cursor: pointer;
@@ -4619,15 +4621,16 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* 占位不是日志：用正文字体与更淡的颜色，别让「桥还没接上」看起来像一条条目。 */
 .bg-run-log[data-empty] { font-family: var(--sans); font-size: 12px; color: var(--faint); }
 
-/* 窄窗（手机 / 分屏）：两栏并一栏，左栏变成顶部横向条 —— 156px 的列表在 360px 屏上没法读。 */
+/* 窄窗（手机 / 分屏）：两栏并一栏，左栏变成顶部横向条 —— 216px 的列表在 360px 屏上没法读。 */
 @container (max-width: 560px) {
   .bg-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .bg-nav {
-    display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden;
+    overflow: hidden;
     padding: 6px 8px;
     border-right: 0; border-bottom: 0.5px solid var(--line-soft);
   }
   .bg-nav-head { display: none; }
+  .bg-nav-list { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; }
   .bg-nav-item { flex: none; max-width: 190px; }
   .bg-nav-task { display: none; }
   .bg-run-top { padding: 11px 14px 10px; }

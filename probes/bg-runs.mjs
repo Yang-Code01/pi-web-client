@@ -153,7 +153,30 @@ try {
   check("失败卡不摆空的过程框", !(await failCard.locator(".bg-run-log").isVisible()));
   await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "2-failed.png"), animations: "disabled" });
 
-  // ---- 3. 老占位文案不再出现在界面上（它把责任推给了桥）
+  // ---- 3. ARIA：tablist 只装 tab，每颗 tab 都指到一页；没选中的页整页 hidden
+  const tabs = page.locator('.bg-sheet [role="tablist"] > *');
+  check(
+    "tablist 里只有 tab 子节点（计数那行不在里面）",
+    await tabs.evaluateAll((ns) => ns.length > 0 && ns.every((n) => n.getAttribute("role") === "tab")),
+    String(await tabs.count()),
+  );
+  check(
+    "每颗 tab 都 aria-controls 到自己那页",
+    await tabs.evaluateAll((ns) =>
+      ns.every((n) => {
+        const id = n.getAttribute("aria-controls");
+        return Boolean(id && document.getElementById(id));
+      }),
+    ),
+  );
+  const selId = () => page.locator('.bg-nav-item[aria-selected="true"]').getAttribute("data-id");
+  const beforeKey = await selId();
+  await page.locator('.bg-nav-item[aria-selected="true"]').focus();
+  await page.keyboard.press("ArrowUp");
+  const afterKey = await selId();
+  check("↑↓ 在左栏里换页", Boolean(afterKey) && afterKey !== beforeKey, `${beforeKey} → ${afterKey}`);
+
+  // ---- 4. 老占位文案不再出现在界面上（它把责任推给了桥）
   const body = await page.locator(".bg-sheet").innerText();
   check("不再断言「任务原文没传到桥」", !body.includes("任务原文没传到桥"), body.replace(/\n+/g, " | ").slice(0, 200));
   check("没有页面报错", pageErrors.length === 0, pageErrors.join(" | "));

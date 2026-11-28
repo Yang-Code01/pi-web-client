@@ -257,6 +257,11 @@ interface BgRunNode {
   out: HTMLElement;
   /** 这个 run 有没有过程记录（桥还没接上的才 false；页上直说，不装成「还没有」。） */
   hasLog: boolean;
+  /**
+   * 上一次可见时日志是不是贴着底。隐藏页的 `scrollHeight` 恒为 0，量不出「离底多远」，
+   * 所以藏着的这段时间不动 `scrollTop`，等页显出来按这个状态把日志补到底。
+   */
+  stick: boolean;
 }
 
 function bgElapsedText(since: number, until = Date.now()): string {
@@ -624,6 +629,8 @@ export class App {
     /** 左栏 run 列表与它上面那行「运行 · N」。 */
     nav: HTMLElement;
     navHead: HTMLElement;
+    /** `role=tablist` 本体：按 ARIA，它的子元素只能是 tab，所以「运行 · N」那行在它外面。 */
+    navList: HTMLElement;
     /** 右栏：每个 run 一页，只有选中的那页不 hidden。 */
     panes: HTMLElement;
     /** 抬头那颗汇总胶囊（运行中 / 失败 / 全部结束）与它上面那行「共 N 个运行」。 */
@@ -18097,13 +18104,14 @@ export class App {
     const body = el("div", "bg-sheet-body");
     const wrap = el("div", "bg-body");
     const nav = el("nav", "bg-nav");
-    nav.setAttribute("role", "tablist");
-    nav.setAttribute("aria-label", tr("子代理"));
     const navHead = el("div", "bg-nav-head");
     navHead.hidden = true;
-    nav.append(navHead);
+    const navList = el("div", "bg-nav-list");
+    navList.setAttribute("role", "tablist");
+    navList.setAttribute("aria-label", tr("子代理"));
+    nav.append(navHead, navList);
     // ↑↓ 在左栏里换页（tablist 的惯用键位）；点也行。
-    nav.onkeydown = (e: KeyboardEvent) => {
+    navList.onkeydown = (e: KeyboardEvent) => {
       if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
       const ids = [...(this.bgSheet?.runs.keys() ?? [])];
       const at = ids.indexOf(this.bgSheet?.sel ?? "");
@@ -18121,7 +18129,7 @@ export class App {
     back.append(sheet);
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
-    this.bgSheet = { sessionId: sid, body, wrap, nav, navHead, panes, chip, meta, sel: null, runs: new Map() };
+    this.bgSheet = { sessionId: sid, body, wrap, nav, navHead, navList, panes, chip, meta, sel: null, runs: new Map() };
     const tick = () => {
       if (!this.bgSheet || this.bgSheet.sessionId !== sid) return;
       this.socket.send({ type: "bg.list", sessionId: sid });
@@ -18183,6 +18191,7 @@ export class App {
         item.dataset.id = r.id;
         item.id = `bgtab-${r.id}`;
         item.setAttribute("role", "tab");
+        item.setAttribute("aria-controls", `bgpane-${r.id}`);
         item.tabIndex = -1;
         const itemTop = el("span", "bg-nav-top");
         const itemDot = el("span", "bg-run-dot");
@@ -18192,10 +18201,11 @@ export class App {
         const itemTask = el("span", "bg-nav-task");
         item.append(itemTop, itemTask);
         item.onclick = () => this.selectBgRun(r.id);
-        sheet.nav.append(item);
+        sheet.navList.append(item);
 
         // 右栏那一页：抬头（名字 / 状态 / 用时 / run id）吸顶，下面三块跟现在的详情一样。
         const root = el("article", "bg-run");
+        root.id = `bgpane-${r.id}`;
         root.dataset.id = r.id;
         root.setAttribute("role", "tabpanel");
         root.setAttribute("aria-labelledby", item.id);
@@ -18271,6 +18281,7 @@ export class App {
           outSec,
           out: outEl,
           hasLog: Boolean(r.hasLog),
+          stick: true,
         };
         if (!r.hasLog) {
           logEl.dataset.empty = "1";
@@ -18341,7 +18352,14 @@ export class App {
     }
     if (focus) node.item.focus();
     // 页刚显出来才量得到 scrollHeight：折行判断要等它可见之后再做。
-    window.requestAnimationFrame(() => this.syncBgTaskMore(node));
+    window.requestAnimationFrame(() => {
+      this.syncBgTaskMore(node);
+      // 藏着的时候攒下的日志要补到底：隐藏页量出来是 0，那时候算的「贴底」不算数。
+      if (node.stick) {
+        node.log.scrollTop = node.log.scrollHeight;
+        node.out.scrollTop = node.out.scrollHeight;
+      }
+    });
   }
 
   /** 任务原文超过四行才露「展开」；折起来时量的是完整 `scrollHeight`，展开后这个判断依然成立。 */
@@ -18366,11 +18384,15 @@ export class App {
     const text = typeof log === "string" ? log : "";
     const logText = text || (node.hasLog ? tr("还没有活动记录。") : tr("桥还没接上这个 runner 的过程记录。"));
     if (node.log.textContent !== logText) {
-      const stick = node.log.scrollHeight - node.log.scrollTop - node.log.clientHeight < 24;
       node.log.textContent = logText;
       if (text) delete node.log.dataset.empty;
       else node.log.dataset.empty = "1";
-      if (stick) node.log.scrollTop = node.log.scrollHeight;
+      // 隐藏页的 scrollHeight / clientHeight 都是 0，贴底判定会恒真、写 scrollTop 只会把它冲成 0，
+      // 等于把这条 run 的阅读位置往回拽；所以只在真看得见时判定与跟随，藏着的等显出来再补。
+      if (!node.root.hidden && !node.logSec.hidden) {
+        node.stick = node.log.scrollHeight - node.log.scrollTop - node.log.clientHeight < 24;
+        if (node.stick) node.log.scrollTop = node.log.scrollHeight;
+      }
     }
     const done = typeof out === "string" && out.length > 0;
     node.outSec.hidden = !done;
