@@ -50,7 +50,8 @@ export const en: Dict = {
   "关闭": "Close",
   "字号": "Text size",
   "分区字号": "Per-region text size",
-  "各自叠在「字号」上相乘；按住轨道看真页面；双击轨道回 100%": "Each multiplies onto Text size; hold a track to see the real page; double-click for 100%",
+  "各自叠在「字号」上相乘；拖动轨道时让开看真页面；双击轨道回 100%":
+    "Each multiplies onto Text size; the panel steps aside while you drag a track so you see the real page; double-click for 100%",
   "顶栏": "Top bar",
   "顶部三行：顶栏按钮、工作区标签行、置顶会话行": "All three top rows: toolbar, workspace tabs, pinned sessions",
   "左栏那列会话卡片": "The session cards in the left column",

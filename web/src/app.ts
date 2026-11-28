@@ -4445,7 +4445,9 @@ export class App {
 
     // #742：拖动时把控制台让开（视觉在 console-peek.ts + settings-console.css）。
     // 胶囊是**指示器**，不接指针 —— 拖动继续用冻住的轨道盒子换算，视觉变化不回读几何。
-    const peekHost = (): HTMLElement | null => rail.closest<HTMLElement>(".st-back");
+    // 宿主与 `overlayHost()` / CSS 那条复位认的是同两种外壳：只写 `.st-back` 的话，
+    // 滑杆哪天落进 `.sheet-back` 那扇控制台，拖动就永远不让开、也不露胶囊。
+    const peekHost = (): HTMLElement | null => rail.closest<HTMLElement>(".st-back, .sheet-back");
     let peeking: ConsolePeek | null = null;
     const readout = (v: number): { text: string; fill: number } => ({ text: `${Math.round(v * 100)}%`, fill: sizePct(v) });
     /**
@@ -4957,7 +4959,7 @@ export class App {
 
     // 五块的分组头：叠乘关系说一次，五行各自的 hint 只讲「这一块是哪一块」，不重复念乘法。
     // 用 stSection 而不是手拼三层 —— 小节头只有一处样式的真源。
-    langPanel.append(this.stSection(tr("分区字号"), tr("各自叠在「字号」上相乘；按住轨道看真页面；双击轨道回 100%")));
+    langPanel.append(this.stSection(tr("分区字号"), tr("各自叠在「字号」上相乘；拖动轨道时让开看真页面；双击轨道回 100%")));
 
     const regionLabels: Record<RegionId, string> = {
       topbar: tr("顶栏"),

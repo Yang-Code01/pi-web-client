@@ -101,7 +101,14 @@ wss.on("connection", (ws) => {
   });
   ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage, trash: [], tunnel: TUNNEL }));
 });
-await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+await new Promise((r, reject) => {
+  // 端口被占时 `listen` 不会调回调：不接住这个 error，探针会静默挂死，看不出是被谁占了。
+  server.once("error", reject);
+  server.listen(PORT, "127.0.0.1", r);
+}).catch((err) => {
+  console.log(`FAIL 桩桥起不来（端口 ${PORT}）：${err?.message ?? err}`);
+  process.exit(1);
+});
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1200, height: 836 }, locale: "zh-CN" });
@@ -347,7 +354,9 @@ check(
   Math.abs(at40px.msgsH - at3px.msgsH) >= 2 || at40px.lines !== at3px.lines,
   `消息总高 ${at3px.msgsH} → ${at40px.msgsH} / 行数 ${at3px.lines} → ${at40px.lines} / 正文宽 ${at3px.chatW} → ${at40px.chatW}`,
 );
-const wantFill = ((Number(at40px.hudText.split("·").pop()?.trim().replace("%", "")) || NaN) / 100 - 0.8) / 1.2 * 100;
+// 期望值**独立写一份**（0.8–2.0 的滑杆区间），别从代码里借 `sizePct()` —— 借来就成了同义反复。
+const hudPct = Number(at40px.hudText.split("·").pop()?.trim().replace("%", ""));
+const wantFill = ((hudPct / 100 - 0.8) / (2.0 - 0.8)) * 100;
 check(
   "4. 读数胶囊：文本是「字号 · N%」，只读细轨道的填充按 (v-0.8)/1.2",
   /字号 · \d+%$/.test(at40px.hudText) && at40px.hudOpacity > 0.9 && Math.abs(at40px.hudFill - wantFill) <= 1,
@@ -489,8 +498,8 @@ const shared = await peekState();
 await page.mouse.up();
 await sleep(200);
 check(
-  "10. 按 A 的方向键后立刻拖 B：A 的 400ms 自动收起不许把 B 的让开抢走",
-  shared.conOpacity < 0.05,
+  "10. 按 A 的方向键后立刻拖 B：让开还在，且胶囊写的是 B（不是 A 的残留）",
+  shared.conOpacity < 0.05 && shared.hudText.startsWith("顶栏"),
   `拖动第 700ms 时 opacity ${shared.conOpacity} / 胶囊 ${JSON.stringify(shared.hudText)}`,
 );
 
