@@ -8,9 +8,9 @@
  * 三步：
  *   1. 参数可能是对象，也可能是一段 JSON 字符串（历史记录里两种都有）—— 能解析就先解析；
  *   2. 顶层的长字符串（command / content / prompt…）各成一「块」正文，短字段（path / offset /
- *      timeout…）收成一行事实胶囊，不再跟正文混在一起；
- *   3. 正文按真文本铺开，并给一个语法名（命令 = bash、写文件按路径猜、edit 排成 diff）；
- *      顶层没有长字段时往下再找一层（`questions[0].prompt`），挑不出来才退回两格缩进 + JSON 上色。
+ *      timeout…）收成一行事实胶囊，不再跟正文混在一起；一行压不平的、或里面还埋着长文本的
+ *      字段排成结构提纲，那些长文本各占一块。
+ *   3. 正文按真文本铺开，并给一个语法名（命令 = bash、写文件按路径猜、edit 排成 diff）。
  */
 import { langOf } from "./highlight.ts";
 import { tr } from "./i18n/index.ts";
@@ -68,7 +68,8 @@ function prettyJson(value: unknown): string {
   }
 }
 
-function factValue(value: unknown): string {
+/** 一个值压成事实胶囊里那一行（不截断：装不下的一律不进胶囊，见 `fitsFact()`）。 */
+function flatValue(value: unknown): string {
   let text: string;
   if (typeof value === "string") text = value;
   else if (value === null || value === undefined) text = String(value);
@@ -80,14 +81,12 @@ function factValue(value: unknown): string {
       text = String(value);
     }
   }
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > FACT_MAX ? `${flat.slice(0, FACT_MAX)}…` : flat;
+  return text.replace(/\s+/g, " ").trim();
 }
 
-function factsOf(obj: Record<string, unknown>, skip: ReadonlySet<string>): ArgFact[] {
-  return Object.entries(obj)
-    .filter(([key, value]) => !skip.has(key) && value !== undefined && value !== "")
-    .map(([key, value]) => ({ key, value: factValue(value) }));
+/** 胶囊里塞得下吗？塞不下的不能只靠 160 字截断 —— 那样全文就再也读不到了（评审 #759）。 */
+function fitsFact(value: unknown): boolean {
+  return flatValue(value).length <= FACT_MAX;
 }
 
 function blockLabel(key: string): string {
@@ -179,33 +178,42 @@ export function toolArgsView(args: unknown): ToolArgsView {
       break;
     }
   }
-  const long = Object.entries(parsed).filter(([key, value]) => key !== "edits" && isLongText(value));
+  const entries = Object.entries(parsed).filter(([, value]) => value !== undefined && value !== "");
+  const long = entries.filter(([key, value]) => key !== "edits" && isLongText(value));
   const blocks: ArgBlock[] = long.map(([key, value]) => ({
     label: blockLabel(key),
     text: value as string,
     grammar: blockGrammar(key, path),
   }));
+  const used = new Set(long.map(([key]) => key));
   // edit 的 edits[]：一块一张 diff。以前它跟长字段是二选一（先早退），别的长正文只能被压成事实胶囊。
   const diff = diffBlocks(parsed);
-  if (diff) blocks.push(...diff);
-  if (blocks.length) {
-    const shown = new Set([...long.map(([key]) => key), ...(diff ? ["edits"] : [])]);
-    return { blocks, facts: factsOf(parsed, shown) };
+  if (diff) {
+    blocks.push(...diff);
+    used.add("edits");
   }
 
-  // 顶层没有正文：再往下看一两层（`questions[0].prompt` 这类）。挑出来的长文本各占一块，
-  // 结构 JSON 里用 `…` 占位 —— 不然它又会以字面 `\n` 的形式铺回来，正是 D458 要解决的那个毛病。
-  const leaves: LongLeaf[] = [];
-  longLeaves(parsed, "", leaves);
-  if (leaves.length) {
-    return {
-      blocks: [
-        { label: tr("参数"), text: prettyJson(elideLong(parsed)), grammar: "json" },
-        ...leaves.map((leaf): ArgBlock => ({ label: leaf.path, text: leaf.text })),
-      ],
-      facts: [],
-    };
+  // 其余字段：压成一行装得下、里面也没有长正文的，就当事实胶囊；其余（典型的是一坨嵌套结构，
+  // 或一行压不平的）排成结构提纲，里面埋着的长文本各占一块 —— 不能只剩一个截断的胶囊，
+  // 那样弹窗里再没有别处能读到全文，复制也拿不到。
+  const facts: ArgFact[] = [];
+  const overflow: { key: string; value: unknown; leaves: LongLeaf[] }[] = [];
+  for (const [key, value] of entries) {
+    if (used.has(key)) continue;
+    const leaves: LongLeaf[] = [];
+    longLeaves(value, key, leaves);
+    if (leaves.length || !fitsFact(value)) overflow.push({ key, value, leaves });
+    else facts.push({ key, value: flatValue(value) });
   }
-  // 真没有长正文（ask / todo / MCP 里只有短字段）：整份缩进 JSON 比拆成事实胶囊好读。
-  return { blocks: [{ label: tr("参数"), text: prettyJson(parsed), grammar: "json" }], facts: [] };
+  if (overflow.length) {
+    // 深度从「这个字段的值」起算，跟 `longLeaves()` 同一套坐标（差一层就会把挑不出来的也省略掉）。
+    const outline = Object.fromEntries(overflow.map(({ key, value }) => [key, elideLong(value)]));
+    // 结构块只当提纲：挑出去的长文本换成 `…`，正文在它自己那块出现一次。
+    blocks.push({ label: tr("参数"), text: prettyJson(outline), grammar: "json" });
+    for (const { leaves } of overflow) blocks.push(...leaves.map((leaf): ArgBlock => ({ label: leaf.path, text: leaf.text })));
+  }
+
+  // 一块正文都没有（参数很短，或全是塞得进胶囊的杂项）：整份缩进 JSON 比一行行胶囊好读。
+  if (!blocks.length) return { blocks: [{ label: tr("参数"), text: prettyJson(parsed), grammar: "json" }], facts: [] };
+  return { blocks, facts };
 }

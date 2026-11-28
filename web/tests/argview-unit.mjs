@@ -93,11 +93,11 @@ test("数组里的长文本也按 items[0].content 这种路径挑出来", () =>
 });
 
 test("挑不出来（埋得太深）的长文本不会被省略号吞掉", () => {
-  const deep = "z".repeat(120);
-  const view = toolArgsView({ questions: [{ prompt: "要不要合并" + "很长的提问".repeat(20) }], a: { b: { c: { d: { e: deep } } } } });
-  // 第一层那条挑得出来；埋在第五层的那条不在提纲里被省略，原样留在 JSON 里。
-  assert.deepEqual(view.blocks.map((block) => block.label), [tr("参数"), "questions[0].prompt"]);
-  assert.ok(view.blocks[0].text.includes(deep), "太深的长文本应当仍以原样留在结构块里");
+  const deep = "z".repeat(400);
+  const view = toolArgsView({ command, deep: { a: { b: { c: { d: deep } } } } });
+  // 深度超出上限、挑不成块的那条，至少要在结构块里原样（不省略）留着 —— 否则就是静默丢内容。
+  assert.deepEqual(view.blocks.map((block) => block.label), [tr("命令"), tr("参数")]);
+  assert.ok(view.blocks[1].text.includes(deep), "太深的长文本应当仍以原样留在结构块里");
 });
 
 test("不是 command / content 的长字段：用自己的键当标题，不上色", () => {
@@ -111,11 +111,33 @@ test("纯文本参数（不是 JSON）原样一块", () => {
   assert.equal(view.facts.length, 0);
 });
 
-test("事实胶囊里的对象压成一行；超长的截断", () => {
-  // 字符串超过 60 字本来就该进正文块，所以真正需要截断的是「对象化开之后太长」的那些。
+test("装得下的对象压成一行胶囊；装不下的排成结构提纲 + 长文本块（不截断）", () => {
   const view = toolArgsView({ command, meta: { a: 1, b: 2 }, note: { text: "y".repeat(400) } });
   const facts = Object.fromEntries(view.facts.map((fact) => [fact.key, fact.value]));
   assert.equal(facts.meta, '{"a":1,"b":2}');
-  assert.equal(facts.note.length, 161);
-  assert.ok(facts.note.endsWith("…"));
+  // 装不下的那个不再只剩 160 字截断（那样全文就没处可读了）。
+  assert.equal(facts.note, undefined);
+  assert.deepEqual(view.blocks.map((block) => block.label), [tr("命令"), tr("参数"), "note.text"]);
+  assert.ok(view.blocks[1].text.includes('"note": {\n    "text": "…"'), view.blocks[1].text);
+  assert.equal(view.blocks[2].text, "y".repeat(400));
+});
+
+test("有顶层正文时，嵌套长文本也一样挑得出来（评审 #759）", () => {
+  const nested = "埋在结构里的长文本".repeat(30);
+  const view = toolArgsView({ command, meta: { notes: [{ body: nested }] } });
+  const labels = view.blocks.map((block) => block.label);
+  assert.deepEqual(labels, [tr("命令"), tr("参数"), "meta.notes[0].body"]);
+  assert.equal(view.blocks[2].text, nested);
+  assert.ok(!view.blocks[1].text.includes(nested), "提纲里不该再重复一遍全文");
+  assert.deepEqual(view.facts, []);
+});
+
+test("短字段旁边带一坨装不下的结构：胶囊照旧，结构不会只剩截断的一行", () => {
+  const view = toolArgsView({ command, cwd: "/tmp", meta: { tools: Array.from({ length: 40 }, (_, i) => `tool-${i}`) } });
+  assert.deepEqual(view.facts, [{ key: "cwd", value: "/tmp" }]);
+  assert.deepEqual(view.blocks.map((block) => [block.label, block.grammar]), [
+    [tr("命令"), "bash"],
+    [tr("参数"), "json"],
+  ]);
+  assert.ok(view.blocks[1].text.includes("tool-39"), "结构里的每个小项都要读得到");
 });
