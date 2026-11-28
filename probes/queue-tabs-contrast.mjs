@@ -227,6 +227,50 @@ const checkTheme = async (theme, accent) => {
   await page.locator('.pane[data-region="queue"] .exec-tabs-bar').screenshot({ path: path.join(OUT, `${theme}-${accent}.png`) });
 };
 
+/**
+ * 设置台的两处同类控件 —— 「外观 / 连接与设置」的页签（`.st-tabs__btn`）与作用域分段
+ * （`.st-seg__btn`）—— 跟右栏同一套组合（D456）。`?settings=` 深链每次进来都开（打开后会把参数抹掉，
+ * 所以每一轮都是新 goto）。
+ */
+const checkConsole = async (theme, accent) => {
+  for (const [url, sel, what] of [
+    ["/?settings=tools", ".st-tabs__btn.on", "设置页签"],
+    ["/?settings=global", ".st-seg__btn.on", "作用域分段"],
+  ]) {
+    await page.goto(BASE + url, { waitUntil: "networkidle" });
+    await until(async () => (await page.locator(".st-console").count()) === 1, 10000, `console ${what}`);
+    await sleep(150);
+    const m = await page.evaluate((sel) => {
+      const btn = document.querySelector(sel);
+      if (!btn) return null;
+      const r = btn.getBoundingClientRect();
+      return {
+        text: getComputedStyle(btn).color,
+        label: btn.textContent.trim(),
+        box: { x: r.left + 3, y: r.top + 3, width: r.width - 6, height: r.height - 6 },
+      };
+    }, sel);
+    if (!m) {
+      ok(false, `${theme}/${accent}：${what}在（${sel} 找不到）`);
+      continue;
+    }
+    const vars = await page.evaluate(() => {
+      const cs = getComputedStyle(document.documentElement);
+      return { accent: cs.getPropertyValue("--accent").trim(), ink: cs.getPropertyValue("--accent-ink").trim() };
+    });
+    const bg = (await modeColor(m.box)).rgb;
+    const text = parseColor(m.text);
+    const accentRgb = parseColor(vars.accent);
+    const inkRgb = parseColor(vars.ink);
+    const r = ratio(text, bg);
+    console.log(`     ${theme}/${accent}：${what}「${m.label}」底 rgb(${bg}) 字 rgb(${text}) → ${r.toFixed(2)}:1`);
+    ok(near(bg, accentRgb), `${theme}/${accent}：${what}的选中底是强调色 rgb(${accentRgb})（量到 rgb(${bg})）`);
+    ok(near(text, inkRgb), `${theme}/${accent}：${what}的选中字是 accent-ink rgb(${inkRgb})（量到 rgb(${text})）`);
+    ok(r >= 3.0, `${theme}/${accent}：${what}的选中字读得出（${r.toFixed(2)}:1 ≥ 3.0）`);
+    await page.locator(".st-console").screenshot({ path: path.join(OUT, `${theme}-console-${sel.includes("seg") ? "seg" : "tabs"}.png`) });
+  }
+};
+
 let browser;
 try {
   browser = await chromium.launch();
@@ -244,6 +288,18 @@ try {
   // 强调色可换：黄色会走 accentInk 的「亮底换深字」那一支，两种字色都得在选中块上可读。
   await checkTheme("mac-light", "yellow");
   await checkTheme("mac-dark", "yellow");
+  // 设置台的两处同类控件（D456：它们跟右栏一起换成了强调色）：浅色 + 深色各看一遭。
+  await page.evaluate(() => {
+    const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+    localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, macAccent: "blue", accentTone: "vivid" }));
+  });
+  for (const theme of ["mac-light", "mac-dark"]) {
+    await page.evaluate((theme) => {
+      const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+      localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, theme }));
+    }, theme);
+    await checkConsole(theme, "blue");
+  }
 } finally {
   await browser?.close();
   server.close();

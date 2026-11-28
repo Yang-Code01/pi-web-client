@@ -259,7 +259,9 @@ html[data-ui="mac"] .chip:hover { border-color: var(--mac-control-line); filter:
 html[data-ui="mac"] .chip:active { scale: 0.95; }
 html[data-ui="mac"] .chip.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; box-shadow: 0 1px 4px color-mix(in srgb, var(--accent) 40%, transparent); }
 
-/* 分段控件（设置的「外观 / 连接与设置」、范围切换）：灰槽 + 白色滑块，跟 macOS 一样。 */
+/* 分段控件（设置的「外观 / 连接与设置」、范围切换）：灰槽 + 选中滑块。
+   选中滑块是**强调色实底 + 反相字**（D456），跟 `.chip.on` / `.btn.pri` 与右栏四颗页签同一套组合。
+   以前这里是 `--mac-knob`（开关圆点的白色）：深色主题下白底白字，得靠两条按主题打的补丁才不炫（D455）。 */
 html[data-ui="mac"] .st-tabs,
 html[data-ui="mac"] .st-seg {
   background: var(--mac-fill-2);
@@ -278,12 +280,10 @@ html[data-ui="mac"] .st-tabs__btn:active,
 html[data-ui="mac"] .st-seg__btn:active { scale: 0.96; }
 html[data-ui="mac"] .st-tabs__btn.on,
 html[data-ui="mac"] .st-seg__btn.on {
-  color: var(--text);
-  /* 选中滑块：主题各自的近同系灰（D455）。以前这里是 `--mac-knob` —— 那是开关圆点的白色，
-     深色主题下只有补两条覆盖才不至于白底白字，右栏那四颗页签就漏补了。 */
-  background: var(--mac-seg-knob);
+  color: var(--accent-ink);
+  background: var(--accent);
   border-color: transparent;
-  box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.04), 0 1px 4px rgba(0, 0, 0, 0.16);
+  box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.04), 0 1px 4px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 /* 设置里的勾选框 → iOS / macOS 开关。只改设置台与设置行里的，列表多选的勾选框保持勾选框。 */
