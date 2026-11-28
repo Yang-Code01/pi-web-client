@@ -337,6 +337,12 @@ try {
       const t = setTimeout(() => resolve(null), 15000);
       t.unref();
     });
+    // 它没在 15s 内退出就先收掉，再放端口：反过来做的话，它可能抢在「端口空了」的那一刻
+    // 真的 listen 成功、再把假脑起起来，`killTree` 就被拖到断言之后了。
+    if (blockedCode === null) {
+      killTree(blocked.pid);
+      blockedExited = true;
+    }
     await new Promise((r) => squatter.close(r));
     assert.equal(blockedCode, 2, `端口被占时壳应当以 2 退出：${blockedOut}`);
     assert.match(blockedOut, /已被占用/, "要给一句人话，而不是一坨 EADDRINUSE");

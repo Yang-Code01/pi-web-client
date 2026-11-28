@@ -122,6 +122,8 @@ async function startStub(kind, port) {
 
 /** 起一次 preflight。stdin 给 `ignore`：这就是 CI / `| tee` 那类非交互场景。 */
 function runPreflight(port, args = []) {
+  // 卡住（powershell 挂起、readline 等输入）时不能把整轮测试拖成永不结束的进程。
+  const LIMIT_MS = 60_000;
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [PREFLIGHT, ...args], {
       env: { ...process.env, PI_WEB_PORT: String(port), PI_WEB_STATE: STATE, PI_START_FORCE: "" },
@@ -131,7 +133,18 @@ function runPreflight(port, args = []) {
     let out = "";
     child.stdout.on("data", (c) => (out += String(c)));
     child.stderr.on("data", (c) => (out += String(c)));
-    child.on("exit", (code) => resolve({ code, out }));
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* 已经没了 */
+      }
+      resolve({ code: null, out: `${out}\n[preflight 跑了 ${LIMIT_MS / 1000}s 还没退，已经收掉]` });
+    }, LIMIT_MS);
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      resolve({ code, out });
+    });
   });
 }
 

@@ -906,31 +906,58 @@ async function main(): Promise<void> {
     setTimeout(() => process.exit(0), 300).unref();
   }
 
+  /**
+   * 起飞失败时自己收摊再退。
+   *
+   * 控制通道是先起的（`serveControl` 在起飞之前），直接 `process.exit` 会把 unix socket 文件
+   * 留在盘上（`net.Server.close()` 不删文件），下一轮只能靠 `control.ts` 里的 EADDRINUSE
+   * 探测兜底去清；Windows 的命名管道虽无残留文件，也没必要让一个注定要死的壳继续接受连接。
+   * 这时还没有脑、没有子进程（`spawnBrain` 在起飞之后），不用管它们。
+   */
+  function bail(code: number): never {
+    try {
+      control.close();
+    } catch {
+      /* 已经关了 */
+    }
+    try {
+      proxy.release();
+    } catch {
+      /* 没有隧道 */
+    }
+    if (process.platform !== "win32") {
+      try {
+        fs.unlinkSync(sock);
+      } catch {
+        /* 删不掉就留着，下一轮的 controlInUse 探测会兜底 */
+      }
+    }
+    process.exit(code);
+  }
+
   // ---------------------------------------------------------------- 起飞
   // listen 的 error 必须接住：EADDRINUSE 以前是一条未捕获异常，用户看到的是整个堆栈（D441）。
-  let onListenError: ((err: Error) => void) | undefined;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      onListenError = reject;
-      publicServer.once("error", reject);
-      publicServer.listen(port, listenHost, () => {
-        publicServer.off("error", reject);
-        resolve();
-      });
+  const listenError = await new Promise<Error | null>((resolve) => {
+    const onError = (err: Error): void => {
+      publicServer.off("error", onError);
+      resolve(err);
+    };
+    publicServer.once("error", onError);
+    publicServer.listen(port, listenHost, () => {
+      publicServer.off("error", onError);
+      resolve(null);
     });
-  } catch (err) {
-    // 失败路径也把监听器解掉：这里现在会直接退出，但将来若改成抛出去/重试，
-    // 残留的 once 会把后续错误吞进一个已经 settled 的 promise。
-    if (onListenError) publicServer.off("error", onListenError);
-    const code = (err as NodeJS.ErrnoException).code;
+  });
+  if (listenError) {
+    const code = (listenError as NodeJS.ErrnoException).code;
     if (code !== "EADDRINUSE") {
       // 其它 listen 错误（EACCES 绑特权口、EADDRNOTAVAIL 绑不存在的地址）同样不该甩堆栈。
-      console.error(`壳没能监听 ${listenHost}:${port}（${code ?? "未知错误"}）：${(err as Error).message}`);
+      console.error(`壳没能监听 ${listenHost}:${port}（${code ?? "未知错误"}）：${listenError.message}`);
       console.error(`  换一个地址/端口试试：PI_WEB_HOST=127.0.0.1 PI_WEB_PORT=<别的口> npm start`);
-      process.exit(1);
+      bail(1);
     }
     explainPortTaken(port);
-    process.exit(2);
+    bail(2);
   }
   try {
     writePidFile(port);

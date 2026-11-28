@@ -116,9 +116,9 @@ npm start     # tsc 编译 bridge + 打包 peer 与 web/dist，再跑 dist/index
 端口（默认 7864）上已经有一份在跑时，`npm start` 不会直接报 `EADDRINUSE`：它先认出占用者 ——
 如果那是本项目的桥（哪份检出都算），会问一句「要停掉它、换成这一份吗」（回车 = 是），选是就先请
 旧的自己收工（`POST /api/host/stop`，壳按顺序收脑和会话），10 秒不退才硬杀；别人的程序只把 pid 与
-命令行印出来，绝不动手。非交互场景（CI、`npm start | tee`）默认不杀，要它照做就加 `--force` 或设
-`PI_START_FORCE=1`（D441）。`npm start -- --force` 不行：npm 会把参数追加到整条链的末尾，
-链首那一步读不到它——无人值守的启动要就 `PI_START_FORCE=1 npm start`。
+命令行印出来，绝不动手。非交互场景（CI、`npm start | tee`）默认不杀，要它照做就用 `npm start --force`
+或设 `PI_START_FORCE=1`（D441）。注意 `npm start -- --force` 不管用：npm 会把 `--` 后面的参数追加到
+整条链的末尾，链首那一步读不到 —— `--force` 写成 npm 自己的 flag（`npm start --force`）才能传到。
 pull 进来的改动如果动了子包的依赖（`bridge/` `peer/` `web/` 的 `package-lock.json`），`npm start` 会在编译前拦下来，
 列出对不上的包并让你先跑 `npm install`。「本项目需要」的 pi 扩展也一样：`npm start` 先确认下表里的扩展都装了，
 缺了就列出缺哪个、让你先跑 `npm install`（D224）。这一查要跑 `pi list`（十几秒），所以只在清单、pi 或 pi 的

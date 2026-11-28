@@ -13,8 +13,8 @@
  *   - 不是交互终端（CI、`npm start | tee`）→ 不猜不杀：要么自己停，要么 `--force`。
  *
  * 本文件既是 `npm start` 链里的一步（`node scripts/preflight.mjs`），也被
- * `scripts/start.mjs` 在 spawn 之前再调一次（覆盖 `start:nobuild` 与直跑，顺带堵住
- * 「检查完到 listen 之间被人抢了端口」这个空窗）。
+ * `scripts/start.mjs` 在 spawn 之前再调一次（覆盖 `start:nobuild` 与直跑）。两次检查不是
+ * 原子的，只能把「检查完到 listen 之间被抢」的空窗缩小一点，真被抢了由壳的 EADDRINUSE 兜底。
  *
  * 端口 / 监听地址的解析与 `bridge/src/host.ts` 的 `readPort` / `readHost` 是同一套规则，
  * `scripts/stop.mjs` 也从这里取 —— 别再各写一份。
@@ -56,7 +56,18 @@ const ENTRY_NAMES = BRIDGE_ENTRY_NAMES;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 命令行里第一个词（尊重引号）：`"C:\Program Files\nodejs\node.exe" x.js` → `C:/…/node.exe`。 */
+function firstWord(cmd) {
+  const m = /^\s*(?:"([^"]*)"|'([^']*)'|(\S+))/.exec(String(cmd ?? ""));
+  const word = m?.[1] ?? m?.[2] ?? m?.[3] ?? "";
+  const flat = word.replace(/\\/g, "/");
+  return flat.slice(flat.lastIndexOf("/") + 1).toLowerCase();
+}
+
 // ------------------------------------------------------------------ 端口与状态目录
+
+/** 配置只读一次：`readPort` 与 `readHost` 各要一遍，进程活着的这段时间它不会变。 */
+let configCache;
 
 /** 状态目录：`PI_WEB_STATE` → `%LOCALAPPDATA%/pi-web-client`（非 Windows 走 XDG 风格）。 */
 export function stateDir() {
@@ -67,12 +78,14 @@ export function stateDir() {
 }
 
 function readConfig() {
+  if (configCache) return configCache;
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(stateDir(), "config.json"), "utf8"));
-    return cfg && typeof cfg === "object" ? cfg : {};
+    configCache = cfg && typeof cfg === "object" ? cfg : {};
   } catch {
-    return {};
+    configCache = {};
   }
+  return configCache;
 }
 
 /** `PI_WEB_PORT` → 状态目录 `config.json` 的 `port` → 7864。 */
@@ -162,14 +175,16 @@ export function alive(pid) {
 
 /** 命令行里带着本项目桥的入口 = 这是「我自己」起的一份（哪份检出都算）。
  *
- * 两道关，都是防「看错人就看错人地杀了它」：
- * ① 得是 node 起的（`git add bridge/dist/index.js`、`type bridge\dist\host.js` 这种命令行里
- *   恰好提到入口名的不算）；
- * ② 入口必须是**某个参数的结尾**（`host.js.bak`、`host.js.old` 不算）。
+ * 三道关，都是防「看错人就看错人地杀了它」：
+ * ① 命令行的**第一个词**得是 node（`git add bridge/dist/index.js`、`echo node …host.js`、
+ *    `npm run x -- bridge/dist/index.js` 这些只是命令行里提到入口名，不算）；
+ * ② 入口必须是**某个参数的结尾**（`host.js.bak`、`host.js.old` 不算）；
+ * ③ 入口前必须是真正的参数边界（空白或引号）。
  */
 export function looksLikeBridge(cmd) {
+  const argv0 = firstWord(cmd);
+  if (argv0 !== "node" && argv0 !== "node.exe") return false;
   const flat = ` ${String(cmd ?? "").replace(/\\/g, "/")} `;
-  if (!/\bnode(?:\.exe)?\b/i.test(flat)) return false;
   return ENTRY_NAMES.some((name) => new RegExp(`[\\s"'][^\\s"']*${escapeRe(name)}(?=$|[\\s"'])`).test(flat));
 }
 
@@ -249,38 +264,95 @@ export async function portFree(port, host = DEFAULT_HOST) {
 }
 
 /**
+ * 一次问完「谁在 listen 这个端口」和「这几个 pid 的命令行」，每行 `pid|commandLine`，
+ * 另加一行 `listen|<pid>`。
+ *
+ * 为什么合并：Windows 上一次 `powershell` 冷启动本机实测 1.5~1.9 秒，而认人最多要问三四个
+ * pid；分开问（`commandLine` / `listenPid` 各起一次）就是六七秒的白等。进程内的
+ * `Get-CimInstance` 每个只要几十毫秒，所以全塞进同一次调用。
+ *
+ * 整个查询失败（powershell 超时 / 没权限）→ `null`：**不能**当成「这些进程都不在」。
+ * 返回 `{ listen, lines }`；`lines` 里没有某个 pid 才是「进程已经不在了」。
+ */
+export function processDetails(port, pids = []) {
+  const want = [...new Set(pids.filter((n) => Number.isInteger(n) && n > 0))];
+  const lines = new Map();
+  if (WIN) {
+    const list = want.join(",");
+    const script =
+      `$wanted = @(); ` +
+      `$own = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess); ` +
+      `if ($own) { "listen|$([int]$own)"; $wanted += [int]$own }; ` +
+      (list ? `foreach ($x in '${list}'.Split(',')) { $wanted += [int]$x }; ` : "") +
+      `foreach ($w in ($wanted | Select-Object -Unique)) { ` +
+      `$p = Get-CimInstance Win32_Process -Filter "ProcessId=$w" -ErrorAction SilentlyContinue; ` +
+      `if ($p) { "$($p.ProcessId)|$($p.CommandLine)" } }`;
+    const raw = ps(script);
+    if (raw === null) return null;
+    let listen = null;
+    for (const line of raw.split(/\r?\n/)) {
+      const at = line.indexOf("|");
+      if (at <= 0) continue;
+      const head = line.slice(0, at);
+      const pid = Number(head);
+      // `listen|1234` 那一行的左半边不是 pid，先认它、从右半边取号。
+      if (head === "listen") {
+        const own = Number(line.slice(at + 1));
+        if (Number.isInteger(own) && own > 0) listen = own;
+        continue;
+      }
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      lines.set(pid, line.slice(at + 1));
+    }
+    return { listen, lines };
+  }
+  // unix：`lsof` + `ps` 都是毫秒级，一次一个反而简单。
+  const listen = listenPid(port);
+  for (const pid of [...new Set([...want, ...(listen ? [listen] : [])])]) {
+    const cmd = commandLine(pid);
+    if (cmd === null) return null;
+    if (cmd) lines.set(pid, cmd);
+  }
+  return { listen, lines };
+}
+
+/**
  * 查出占用者。顺序沿用 D154：`/healthz` 自报 pid → pid 文件 → 枚举；
  * 每个候选都要过「命令行里是桥入口」这一关，对不上只当线索、不认作自己人。
- * 前面一步认出来了就不再往下问 —— 枚举（`Get-NetTCPConnection` / `lsof`）是最慢的一步。
+ * 三条线索在同一个 `processDetails` 里一次问完（Windows 上一次 powershell 1.5s 起）。
  */
 export async function probeOwner(port, host = DEFAULT_HOST) {
   const hz = await healthz(port, host);
   const health = hz?.body ?? null;
-  const tried = new Set();
+  const fromFile = pidFromFile(port);
+  const details = processDetails(port, [health?.pid, fromFile]);
   let other = null;
-  /** 端口上答了东西、或者说 pid 查不到命令行：都归到这里，**不当外人也不当自己人**。 */
+  /** 端口上答了东西、或者压根没问成：**不当外人也不当自己人**。 */
   let unverified = null;
 
   const inspect = (pid, from) => {
-    if (!Number.isInteger(pid) || pid <= 0 || tried.has(pid)) return null;
-    tried.add(pid);
-    const cmd = commandLine(pid);
-    // `null` = 查询本身失败（powershell 超时 / 没权限），**不等于**「不是本项目的桥」——
-    // 别把自家那份误判成外人然后拒绝停。空串才是「进程已经没了」。
-    if (cmd === null) {
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    // 查询本身失败（powershell 超时 / 没权限）：不确定，**不等于**「不是本项目的桥」。
+    if (!details) {
       unverified ??= { pid, from };
       return null;
     }
-    if (!cmd) return null;
+    const cmd = details.lines.get(pid);
+    if (cmd === undefined) return null; // 进程已经没了
     if (looksLikeBridge(cmd)) return { pid, cmd, from };
     if (!other) other = { pid, cmd, from };
     return null;
   };
 
-  let ours = inspect(health?.pid, "healthz") ?? inspect(pidFromFile(port), "pidfile");
-  if (!ours) ours = inspect(listenPid(port), "listen");
-  // 端口答了但读不懂（回包被截断 / 别的东西在答 /healthz）：同样不确定，别猜。
-  if (!ours && !other && !unverified && hz && !health) unverified = { pid: 0, from: "healthz" };
+  const ours =
+    inspect(health?.pid, "healthz") ??
+    inspect(fromFile, "pidfile") ??
+    inspect(details?.listen, "listen");
+  if (!ours && !other && !unverified) {
+    // 连 listen 的 pid 都没问到，或者端口答了但读不懂：一样不确定。
+    if (!details) unverified = { pid: health?.pid ?? fromFile ?? 0, from: "listen" };
+    else if (hz && !health) unverified = { pid: 0, from: "healthz" };
+  }
 
   const picked = ours ?? other;
   return {
@@ -296,8 +368,9 @@ export async function probeOwner(port, host = DEFAULT_HOST) {
      */
     unreadable: Boolean(hz) && !health,
     /**
-     * 没法确认是谁：读不到命令行，或者它答的 /healthz 读不懂。这种时候**不硬杀**，
-     * 只试一次优雅停机（不是桥就没人理那个 POST）。
+     * 没法确认是谁（读不到命令行，或者它答的 /healthz 读不懂）。这种时候**什么都不动**：
+     * 连 `/api/host/stop` 都不发 —— 端口上的东西如果不是桥，那条 POST 会被当成什么指令，
+     * 没人事先知道。
      */
     unverified: Boolean(unverified),
     /**
@@ -455,10 +528,13 @@ export function askReplace({ stdin = process.stdin, stdout = process.stdout, que
   });
 }
 
-/** `--force` / `PI_START_FORCE=1`：非交互场景（脚本、CI）里明确授权动手。 */
+/** `--force` / `PI_START_FORCE=1` / `npm start --force`：明确授权动手（非交互场景用）。 */
 export function forceRequested(argv = process.argv.slice(2), env = process.env) {
   if (argv.includes("--force")) return true;
-  return /^(1|true|yes|y)$/i.test(String(env.PI_START_FORCE ?? "").trim());
+  const on = (v) => /^(1|true|yes|y)$/i.test(String(v ?? "").trim());
+  if (on(env.PI_START_FORCE)) return true;
+  // `npm start --force`：npm 把 `--force` 吃成自己的配置、不进脚本参数，只留这个环境变量。
+  return on(env.npm_config_force);
 }
 
 // ------------------------------------------------------------------ 主流程
@@ -489,13 +565,10 @@ export async function preflight(opts = {}) {
     log(`${port} 上有东西在听，但没法确认是不是本项目的桥：`);
     for (const line of describe(owner)) log(line);
     if (owner.pid && !owner.cmd) log(`  命令行 读不到（powershell 超时、或者权限不够）`);
-    log(`  不确定就不硬杀。先请它自己收工试试（POST /api/host/stop，不是桥就没人理它）…`);
-    await postStop(port, host);
-    if (await waitFree(port, host, STOP_GRACE_MS)) {
-      log(`  它自己退了，端口空出来了。`);
-      return EXIT_OK;
-    }
-    log(`  它没退。自己确认一下：npm run bridge:stop；或者换一个端口：PI_WEB_PORT=<别的口> npm start`);
+    // 不确定就不动手：连 `/api/host/stop` 都不发。端口上的东西如果不是桥，那条 POST 会被当成
+    // 什么指令，没人事先知道 —— 要停它得由人明确发起。
+    log(`  不确定就不动手。确认之后自己停：npm run bridge:stop`);
+    log(`  或者换一个端口起：PI_WEB_PORT=<别的口> npm start`);
     return EXIT_BLOCKED;
   }
 
@@ -531,7 +604,7 @@ export async function preflight(opts = {}) {
   } else if (!stdin.isTTY) {
     log(`端口被占，但这次不是交互终端，我不替你决定：`);
     log(`  自己停掉：npm run bridge:stop（或回它的终端 Ctrl-C）`);
-    log(`  让我停：PI_START_FORCE=1 npm start（npm 会把 --force 追加到链尾，链首这一步读不到它；直跑 node scripts/preflight.mjs --force 也行）`);
+    log(`  让我停：npm start --force（或 PI_START_FORCE=1 npm start；直跑 node scripts/preflight.mjs --force 也行）`);
     return EXIT_BLOCKED;
   } else {
     const answer = await askReplace({ stdin, stdout });
