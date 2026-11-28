@@ -12,7 +12,7 @@
  */
 import { createEl as el, openImage } from "./chat.ts";
 import { icon } from "./icons.ts";
-import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
+import { imageSrc, imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { shouldFoldPaste } from "./paste.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
@@ -873,7 +873,7 @@ export class ScratchChat {
     this.images.forEach((img, index) => {
       const box = el("div", "sc-shot");
       const thumb = el("img") as HTMLImageElement;
-      thumb.src = `data:${img.mimeType};base64,${img.data}`;
+      thumb.src = imageSrc(img);
       thumb.alt = tr("待发图片 {p1}", { p1: index + 1 });
       const del = el("button", "sc-shot-del", "×") as HTMLButtonElement;
       del.type = "button";

@@ -8928,3 +8928,29 @@ if (stop >= 0) {
 **代价。** 换脑期间进度最多晚 500 ms；每次评审多一个常驻的 node 进程与一个 `<runId>.log`（只在排查时看）；如果用户把 host 也硬杀（不是换脑），worker 仍会跑完，但没人收尾，下次开机才会把结果接回来。取消是协作式的：worker 被系统挂住时 3 秒 / 10 秒后才会被强杀。
 
 **验证。** 新增 `bridge/tests/review-worker-e2e.mjs`（`npm run test:review-swap`）：真壳 + 真脑 + 假 `PI_BIN`（30 秒慢回答）+ 假 `ocr`，在临时仓库开一条 workspace 评审，断言 worker pid 与脑 pid 不同；`POST /api/host/deploy?action=swap` 换脑之后断言 worker 仍活、新脑 `review.get` 的 `progresses` 里有这条、最终 `status:"done"` 且 `totalFiles:1`，worker 退出后 job 文件被回收；再开第二条慢评审并 `/api/host/stop`，断言壳正常退出且 worker 被收掉；最后另起一个壳开第三条评审，`POST /api/host/stop?keepReviews=1` 后断言壳退出、脑走了换代路径、worker 仍活着（防「150ms 后 SIGTERM 把评审收掉」回归）。单测在 `bridge/tests/review-unit.mjs` 增加「live job 的 running run 不被 sweep，dead pid 的才被标 stale」「job 读不出来但心跳新鲜仍算活」「opts 形状不对不算活」「接回的进度逐字段归一化」。`npm --prefix bridge run typecheck`、`npm run build:bridge`、`npm run test:review-swap`、`npm run test:host`、`npm run test:review` 均通过。
+
+## D447 贴图之后那一下：图从输入框浮出来飞进徽标（用户 2026-11-28「粘贴的时候没有动画效果，用户不知道有没有粘成功。增加 mac 风格的动画效果。做一个原型让我选择」→ 选了 B）
+
+**症状。** ⌘V 贴一张截图，输入框右下角那颗「+N 图」徽标只是把文字从「+1 图」改成「+2 图」。没有位移、没有出现/消失、没有任何一帧变化落在视野里：视线在输入框中间打字的人完全不知道贴上了没有，只能低头去找那颗小胶囊。这条路径上原本一行动效都没有（`addImages()` 只调 `updateImageBadge()` 换文字）。
+
+**决定（四个变体里选 B，原型见 `feat/paste-flash-prototype` 分支的 `web/prototypes/paste-image-flash.html`）。**
+
+- **贴上的图先浮出来，再缩进徽标。** 76×76 的幽灵缩略图从输入框中间偏上出现，错开 90ms 叠着停一下（约 150ms），再沿一条向上的弧线缩进徽标，落地时徽标弹一下（`--mac-spring`）并**实底**闪 260ms。多张依次起飞，落地只弹一次。
+- **一次最多飞四片**（`MAX_GHOSTS`）。贴十张不该飞出十片，剩下的靠徽标上的数字 —— 这条动效回答的是「贴上没」，不是「贴了几张」。
+- **徽标的「落地」提示与飞入解耦。** `badgeLanded()` 自己就能用（弹 + 实底闪）：最后一帧落地时调它。粘贴 / 拖拽 / 选文件 / 相册四条路都经过 `addImages()`，所以四条路都既有飞行也有弹跳；`badgeLanded()` 单独可用是给「有图进来但不经过输入框」的将来留的口子。
+- **实底闪那一下交给 CSS**（`.image-badge.flash`），不用 WAAPI 插值颜色：半透明强调色叠在浅底上（`--accent-bg` 是 9% 强调色）几乎看不出变化，只有实底 + 反相字才读得出「数字又加了一张」。
+- **缓动曲线在 `pastefly.ts` 里再抄一遍字面量**：WAAPI 的 `easing` 不认 `var(--mac-spring)`，写成变量会当场抛 `TypeError: not a valid value for easing`（原型里踩过）。
+- **`prefers-reduced-motion: reduce` 整段跳过**：不飞、不弹、不闪，张数照常更新。
+- **幽灵层挂在 `#app` 里**（跟着字号缩放），坐标一律「先按视觉 px 算、再除一次 `--ui-scale`」——`getBoundingClientRect()` 是视觉 px，写进 style 的是布局 px（D123 的老坑，与 `selask.ts` 同一套写法）。落定后整层从 DOM 摘掉，`#app` 里不留常驻浮层。
+
+**为什么。** ①四个变体里只有 B 同时做到「看得见」和「看得出是哪张」：徽标弹跳（A）改的是那颗 11px 高的小胶囊，视线在输入框中间时仍然可能漏；缩略图轨（C）要把输入框撑高 46px，多图时长期占地方；玻璃浮标（D）是另一套通知样式的浮层，要额外管超时与叠放。②飞行有方向：从「贴的地方」到「记账的地方」，用户不用学就知道那颗徽标在数什么。③落地才弹，而不是起飞就弹：弹跳落在计数已经更新之后，视线被带过去时数字是对的。
+
+**代价。** ①一次贴图多一层全屏 `position: fixed` 浮层（`pointer-events: none`），飞行期间覆盖在会话区上 —— 它挡不住点击，但会短暂遮住人正在读的内容，所以限四片、700ms 内收工。②动效依赖 `getBoundingClientRect()` 量徽标：徽标被别的东西挡住 / 宽度量不到 2px 时直接不飞（宁可不飞，也不要从错误的位置飞出来）。③幽灵缩略图是 base64 data URL 再塞进 `<img>`，大截图（压完仍有几百 KB）会让这一帧多一次解码 —— 跟待发图片弹窗里那些缩略图同一份开销，没有新增内存形态。
+
+**复审（2026-11-28，PR #740 的代码评审）改掉的三处。** ①收尾从 `onfinish` 换成 `anim.finished`（`then(settle, settle)`）：动画被 cancel（飞行中 `#app` 被重建、标签页被冻结后清理）时 `onfinish` 不触发，幽灵与这一层会永远留在 DOM 里、`Promise` 也不 resolve。②徽标上重复触发时先 `cancel()` 上一条动画、清掉上一个 `.flash` 定时器 —— 连贴两次时前一个定时器会把刚挂上的 `.flash` 提前摘掉。③`EASE` 常量没人用（删掉），`SPRING` 与 `mac-base.css` 的一致性交给 `web/tests/pastefly-unit.mjs` 对账 —— 光在注释里宣称「必须一致」是不会有人发现它漂了的。
+
+**第二轮复审（同日）补的三处。** ④`flyImagesToBadge` 改吃 `PendingImage[]`、在 `reducedMotion()` 与 `MAX_GHOSTS` 裁片之后才拼 data URL —— 以前 `images.map(imageSrc)` 会替十几张 2048px 的图各拼一条几 MB 的字符串，实际只飞四片。⑤拼法收进 `images.ts` 的 `imageSrc()`：以前待发图片弹窗、随手问、贴图动效三处各手写一遍 `data:${mimeType};base64,${data}`。⑥这个 Promise 现在保证不抛也不 reject（`try/catch` 包住整个函数、`Element.animate` 缺失或拒绝关键帧时返回 null），否则 `app.ts` 那句 `void` 就等于每次贴图都留一条 unhandled rejection；顺带把「徽标上一条动画要 cancel / 上一个 `.flash` 定时器要清」这两条也在 `web/tests/pastefly-unit.mjs` 里用假 DOM 钉住了，不必等浏览器探针才发现回归。
+
+**第三轮复审（同日）补的两处。** ⑦幽灵的边长从 CSS 挪进 `pastefly.ts`（脚本写 `style.width/height`）：落点是按它的一半居中的，尺寸写两处就会在改 CSS 时让终点偏半个边长，而探针的「±8px」未必抓得住。⑧`badgeLanded` 的弹跳强度参数改名 `pop`（跟 `opts.scale` 那个字号缩放不是一回事），默认值就是唯一调用处用的 1.2 —— 原来那个 1.14 是死值。另外那个「永不 reject」的兜底从 `runFly` 的链尾挪到 `flyImagesToBadge` 一处，并且改成一行 `console.warn`：不静默吞掉，查得到来源。
+
+**验证。** `probes/paste-fly-in.mjs`（真 Chromium + 真 paste 事件 + 真几何，隔离桥）：贴两张冒两层幽灵；把动画暂停把 `currentTime` 推到首尾帧上量 —— 起点在输入框上方、终点落在徽标中心 ±8px（不靠等时钟，700ms 的飞行才不会让断言随机翻车）；落地后整层从 DOM 摘掉、徽标有弹跳动画、`.flash` 挂上且 260ms 后自己摘掉；六张只飞四片但徽标写「+6 图」；`prefers-reduced-motion` 下一片不飞也不弹；字号 125% 时幽灵布局尺寸仍是 76px、渲染成 ≈95px、终点仍在徽标中心（缩放只乘一次）。回归：`probes/image-sheet-check.mjs` 20 项（点徽标、删图、清空）全过，飞行层没挡住徽标的点击。守卫：`npm --prefix web run typecheck`。
