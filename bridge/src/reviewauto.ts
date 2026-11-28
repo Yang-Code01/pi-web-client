@@ -854,7 +854,16 @@ export class AutoRunner {
         this.finish(state);
         return true;
       }
-      // wait === "fix"：让它跑完（下面 tick 里 settle 之后收）
+      // 已经暂停着（等人处理）时按停：没有「正在跑的那一轮」要等，当场收成 stopped ——
+      // 否则 status 停在 paused、tick 不跑它，`stopping` 永远没人消费。
+      if (state.status === "paused") {
+        state.status = "stopped";
+        state.reason = "你按了停止";
+        state.reasonCode = "user-stopped";
+        this.finish(state);
+        return true;
+      }
+      // wait === "fix" 且还在跑：让它跑完（下面 tick 里 settle 之后收）
       state.reason = "跑完这一轮就停";
       state.reasonCode = "stopping";
       this.save(state);
@@ -1066,14 +1075,8 @@ export class AutoRunner {
   }
 
   private stepFix(state: AutoState): void {
-    const round = this.roundOf(state);
-    if (!round || !round.fix) return;
-    const sess = this.host.session(state.session);
-    if (!sess) {
-      this.pause(state, "session-gone", "会话没在运行，修完没修完看不出来");
-      return;
-    }
-    if (sess.running) return;
+    // 「停止」先消费：修复轮没有 `fix` 记录（发提示词那一步抛了、被暂停后又按停）时下面第一步
+    // 就 return 了，`stopping` 永远没人处理 —— 状态机停在 running + wait=fix 空转，按「停止」没反馈。
     if (state.stopping) {
       state.status = "stopped";
       state.reason = "你按了停止";
@@ -1081,6 +1084,15 @@ export class AutoRunner {
       this.finish(state);
       return;
     }
+    const round = this.roundOf(state);
+    if (!round || !round.fix) return;
+    const sess = this.host.session(state.session);
+    if (!sess) {
+      this.pause(state, "session-gone", "会话没在运行，修完没修完看不出来");
+      return;
+    }
+    // 等它把这一轮改完再停（正在改的时候按停不 abort：会留半成品工作区）
+    if (sess.running) return;
     if (this.busy.has(state.session)) return; // 上一次的收尾（可能要推几分钟）还没回来
     void this.completeFix(state, round, sess);
   }

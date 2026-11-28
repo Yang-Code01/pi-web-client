@@ -4772,4 +4772,5 @@ export const en: Dict = {
   "{p1}{p2}": "{p1}{p2}",
   "⎇ {p1}{p2}": "⎇ {p1}{p2}",
   "没有回执": "No receipt",
+  "现在不能开自动评审": "Auto review cannot start right now",
 };

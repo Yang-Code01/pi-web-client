@@ -938,6 +938,45 @@ await checkAsync("接管「等合并」再来继续：不重发合并提示词",
   assert.equal(merges(), 1);
 });
 
+await checkAsync("修复轮没有 fix 记录时按「停止」：当场收成 stopped，不空转", async () => {
+  // 路径：continue 把 round.fix 清空 → injectFix 的 prompt 抛错 → 暂停；此后按停。
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await reviewRound(runner, host, ["k1"]);
+  host.state.running = false;
+  host.state.last = "";
+  runner.tick(); // 既没提交也没回执 → no-evidence 暂停，wait 仍是 fix
+  await flush();
+  assert.equal(runner.get(S).status, "paused");
+  assert.equal(runner.get(S).wait, "fix");
+  runner.get(S).rounds[0].fix = undefined;
+  const out = runner.stop(S);
+  assert.equal(out.ok, true);
+  assert.equal(runner.get(S).status, "stopped", "暂停着的修复轮按停：没有正在跑的东西要等");
+  assert.equal(runner.get(S).reasonCode, "user-stopped");
+});
+
+await checkAsync("接回一条 stopping 的修复轮但没有 fix 记录：tick 也要把它收掉", async () => {
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  const state = normalizeAuto({
+    session: S,
+    status: "running",
+    wait: "fix",
+    cur: 1,
+    stopping: true,
+    reasonCode: "stopping",
+    rounds: [{ n: 1, slot: "A", status: "findings", sha: "s1", runId: "r1", findings: 1, keys: ["k1"] }],
+    config: cfg({ mode: "pr", pr: 5 }),
+  });
+  runner["states"].set(S, state);
+  runner["enteredAt"].set(S, Date.now());
+  runner.tick();
+  await flush();
+  assert.equal(runner.get(S).status, "stopped", "以前这里一直停在 running：stopping 没人消费");
+});
+
 await checkAsync("接管落在修复轮：那一轮作废（skipped），不在时间线上留成「有意见但没修」", async () => {
   const host = makeHost();
   const runner = new AutoRunner(host);

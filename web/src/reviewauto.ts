@@ -132,12 +132,12 @@ export function roundStatusLabel(r: Pick<AutoRoundView, "status">): string {
   return tr(STATUS_LABEL[r.status] ?? r.status);
 }
 
-/** 单位也走 `tr()`：`i18n-check` 只扫中文字面量，`tok` 这种写死的英文漏翻它抓不到。 */
-const TOK_UNIT = "tok";
-
 export function fmtTok(tokens: number): string {
   const n = Number(tokens) || 0;
-  const unit = tr(TOK_UNIT);
+  // `tok` 是三处界面通用的缩写（英文 `12.0k tok`、日文界面上也这么写），故意不进词典：
+  // 它既没中文也没占位符，`i18n-check` 永远不会把它当「界面文案」收键 —— 硬塞进 en / ja
+  // 只会被报成「多余的键」。真要本地化这个单位，得先让检查器认识「纯英文单位」这一类。
+  const unit = "tok";
   if (n < 1000) return `${n} ${unit}`;
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k ${unit}`;
   return `${(n / 1_000_000).toFixed(1)}M ${unit}`;
@@ -254,14 +254,25 @@ export function roundLine(r: AutoRoundView): string {
   return `#${r.n} ${r.slot} · ${roundResult(r)}`;
 }
 
-/** 轮次窗里「这条意见的判定」。 */
-export function verdictOf(r: AutoRoundView | null, f: Pick<ReviewFinding, "path" | "startLine">): AutoVerdict | null {
+/**
+ * 这条意见对应的回执判定：先按 path + 行（`-1` = 整份文件，与桥端 `dismissalMarks` 同一个口径），
+ * 再退回只按 path。
+ *
+ * 「只写路径、没写行号」的判定**只认领一条**：同一文件多条意见时若每条都能匹配它，
+ * 第二、第三条会显示成同一个判定 —— 与桥端是同一个坑（那边是签收，这边是标）。
+ * 用过的判定记在 `used` 里：同一个 render 内只占一次。
+ */
+export function verdictOf(r: AutoRoundView | null, f: Pick<ReviewFinding, "path" | "startLine">, used = new Set<AutoVerdict>()): AutoVerdict | null {
   if (!r?.verdicts?.length) return null;
-  return (
-    r.verdicts.find((v) => v.path === f.path && v.line && v.line === f.startLine) ??
-    r.verdicts.find((v) => v.path === f.path && !v.line) ??
-    null
-  );
+  const fresh = (v: AutoVerdict): boolean => !used.has(v);
+  const exact = r.verdicts.find((v) => fresh(v) && v.path === f.path && v.line && (v.line === f.startLine || v.line === -1));
+  if (exact) {
+    used.add(exact);
+    return exact;
+  }
+  const byPath = r.verdicts.find((v) => fresh(v) && v.path === f.path && !v.line);
+  if (byPath) used.add(byPath);
+  return byPath ?? null;
 }
 
 /** 意见卡上那枚判定标的样式类：三种判定三种颜色（「误报」与「不改」不能长一个样）。 */
@@ -413,24 +424,25 @@ function stageSub(r: AutoRoundView): string {
   return (STAGE_SUB[r.status] ?? STAGE_SUB.failed)(r);
 }
 
-/**
- * 轮次窗里「这一轮推没推」那一行。
- *
- * 只要这一轮有提交（`fix.shaAfter`）就要给一句话：以前只在 `findings` 时写「只在本地」，
- * `skipped` / `failed` 的轮次带着提交却什么都不说，人看到 sha 不知道推没推。
- */
+/** 轮次窗里「这一轮推没推」那一行：只要这一轮有提交（`fix.shaAfter`）就一定给一句话，不看轮次状态。 */
 function pushHint(pushed: boolean): string {
   if (pushed) return tr("已推到远端");
   return tr("只在本地（这个范围不需要推送）");
 }
 
-/** 阶段条那一格的样式类（`now` / `ok` / `done` / `skip` / `bad`）：`done` 是「跑完、有意见」的那一轮。 */
-export function stageClass(r: AutoRoundView, state: Pick<AutoStateView, "cur">): string {
+/**
+ * 阶段条那一格的样式类：
+ *   now   正在评（评审 run 在跑）
+ *   wait  评完了、有意见，正在等会话修（当前轮）—— 不是「正在评」
+ *   done  跑完、有意见（已经不是当前轮）
+ *   ok / skip / bad  干净 / 跳过 / 失败
+ */
+export function stageClass(r: AutoRoundView, state: Pick<AutoStateView, "cur" | "status">): string {
   if (r.status === "running") return "now";
   if (r.status === "clean") return "ok";
   if (r.status === "skipped") return "skip";
   if (r.status === "failed") return "bad";
-  if (r.n === state.cur) return "now";
+  if (r.n === state.cur && state.status === "running") return "wait";
   return "done";
 }
 
@@ -746,8 +758,9 @@ export class AutoRoundSheet {
     if (!findings.length) {
       lbody.append(el("div", "rv-auto-hint", r.status === "clean" ? tr("这一轮零意见。") : tr("这一轮的意见没留下来（记录被清过 / 换了仓库）。")));
     }
+    const used = new Set<AutoVerdict>();
     for (const f of findings) {
-      const v = verdictOf(r, f);
+      const v = verdictOf(r, f, used);
       const card = el("div", "rv-auto-finding");
       const top = el("div", "rv-auto-f-top");
       top.append(el("span", `tag ${f.severity}`, sevName(f.severity)), el("span", "path", f.anchored === false ? f.path : `${f.path}:${f.startLine}`));

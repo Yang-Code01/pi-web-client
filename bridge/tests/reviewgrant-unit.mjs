@@ -7,17 +7,14 @@
  *   node --experimental-strip-types bridge/tests/reviewgrant-unit.mjs
  */
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-
 process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-grant-"));
 
 const { grantAllows, currentBranch, GRANT_TTL_MS } = await import("../ext/grant-match.ts");
-const { readGrant, writeGrant } = await import("../src/reviewgrant.ts");
+const { GRANT_TTL_MS: SRC_TTL_MS, readGrant, writeGrant } = await import("../src/reviewgrant.ts");
 
 let failures = 0;
 const check = (name, fn) => {
@@ -106,6 +103,8 @@ check("`2>&1` / `2>/dev/null` 不挡（不启动第二条命令），管道照�
 check("反斜杠续行接回去再判（不是绕过）", () => {
   assert.equal(allows("git push origin \\\n  feat/other"), false);
   assert.equal(allows("git push origin \\\n  feat/review-auto"), true);
+  // 选项后面就断行的合法写法：`^` 锚定的正则要能从接回去的那一行上认出来
+  assert.equal(allows("gh -R o/pi-web-client \\\n  pr merge 747"), true);
 });
 
 // ---------------------------------------------------------------- 合并
@@ -195,12 +194,11 @@ check("过期 / 没有授权：一律不放过", () => {
   assert.equal(grantAllows(grant(), "git push origin feat/review-auto", ctx, NOW), true);
 });
 
-check("两边各定义的 GRANT_TTL_MS 必须一致（源码这份被闸门加载的是 ext 那份）", () => {
-  const src = path.join(here, "..", "src", "reviewgrant.ts");
-  const ext = path.join(here, "..", "ext", "grant-match.ts");
-  const read = (f) => Number(/export const GRANT_TTL_MS\s*=\s*([0-9_\s*]+);/.exec(fs.readFileSync(f, "utf8"))?.[1].replace(/[_\s]/g, "").replace(/\*\s*/g, "*").split("*").reduce((a, b) => a * Number(b), 1));
-  assert.equal(read(src), read(ext), "src 与 ext 的 GRANT_TTL_MS 漂了：改一处必须改两处");
-  assert.equal(read(src), GRANT_TTL_MS);
+check("两边各定义的 GRANT_TTL_MS 必须一致（闸门在子进程里加载的是 ext 那份）", () => {
+  // 直接 import 两份常量来比：以前靠一条正则从源码文本里「算」出值，谁把常量改写成
+  // `(60 * 1000)` 或 `60_000` 就会算出 NaN，报错只说「漂了」，排查方向被带偏。
+  assert.equal(SRC_TTL_MS, GRANT_TTL_MS, "src 与 ext 的 GRANT_TTL_MS 漂了：改一处必须改两处");
+  assert.ok(Number.isFinite(SRC_TTL_MS) && SRC_TTL_MS > 0, "两边都得是正数");
 });
 
 check("无关命令：不归这份授权管（照样走原来的判定）", () => {
