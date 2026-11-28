@@ -436,6 +436,35 @@ export interface ReviewLogLine {
  */
 export type ReviewTips = Record<string, string>;
 
+/**
+ * 这条记录该不该核对 tip、核哪个 ref（#741）：两侧共用 —— 桥靠它决定问哪些，页面靠它决定标不标。
+ *
+ * 工作区改动（存一次盘就变）与单提交（钉死一个 sha）不参与；失败 / 停止 / 被桥重启打断的
+ * 也没有「评到了什么」可言；老记录没记 `headSha` 就判不了。
+ * `pr > 0` 表示这个 ref 只在远端（要一次 `ls-remote`），否则本地 `git rev-parse` 就够。
+ */
+export function tipTargetOf(run: ReviewRun): { ref: string; pr: number } | null {
+  if (run?.status !== "done") return null;
+  if (run.mode !== "range" && run.mode !== "pr") return null;
+  const ref = String(run.to ?? "").trim();
+  const sha = String(run.headSha ?? "").trim();
+  if (!ref || !sha) return null;
+  return { ref, pr: run.mode === "pr" ? Number(run.pr) || 0 : 0 };
+}
+
+/**
+ * 这条记录是不是已经跟不上代码了（#741）：**判得了的时候**才给 true。
+ *
+ * 没记 sha、或者 `tips` 里没有这个 ref 的（离线 / 超时 / 没登录 / 老桥）= 不知道 = false，
+ * 不要拿它当「没变」用。
+ */
+export function isRunOutdated(run: ReviewRun, tips: ReviewTips | undefined): boolean {
+  const target = tipTargetOf(run);
+  if (!target) return false;
+  const tip = String((tips ?? {})[target.ref] ?? "").trim();
+  return Boolean(tip) && tip !== String(run.headSha ?? "").trim();
+}
+
 export interface ReviewState {
   repo: string;
   runs: ReviewRun[];

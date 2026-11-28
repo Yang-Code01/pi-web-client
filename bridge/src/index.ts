@@ -4279,18 +4279,21 @@ async function main(): Promise<void> {
                   }
                   const remote = await remoteTips(state.runs, (prs) => remotePrHeads(repo, prs, { fresh, env }));
                   if (!Object.keys(remote).length) return;
+                  // 本地那半照旧用**这一份**算（不要为了补一帧再 rev-parse 一遍）：
+                  // 缺 key 的语义是「不知道」，这里给的必须是同一眼的结论。
                   broadcast({
                     type: "review.state",
                     dir: repo,
                     pinned,
                     sessionId: session,
-                    state: readReviewState(repo, session),
-                    tips: { ...localTips(state.runs, (ref) => gitShaOf(repo, ref)), ...remote },
+                    state,
+                    tips: { ...local, ...remote },
                     progresses: reviewProgresses(repo, session),
                     cap: MAX_RUNS_PER_SESSION,
                   });
                 })();
-              }              void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
+              }
+              void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));              void ocrStatus().then((ocr) => send({ type: "review.ocr", dir: repo, ocr }));
             } catch (err: any) {
               send({ type: "review.state", dir, sessionId: session, pinned: readReviewPin(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
             }

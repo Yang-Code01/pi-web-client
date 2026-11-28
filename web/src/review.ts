@@ -13,6 +13,7 @@ import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
 import { icon, type IconName } from "./icons.ts";
 import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
 
+import { isRunOutdated } from "./frames.ts";
 import type {
   ReviewFinding,
   ReviewGroupPlan,
@@ -138,9 +139,7 @@ export interface ReviewRunCard {
   outdated: boolean;
   /** 那颗标的 hover：评的时候基于哪个提交、现在到哪个。 */
   outdatedNote: string;
-  /** 底行那颗「重新评审」要不要出现（只在过时时）。 */
-  rerun: boolean;
-  /** 出现了但点不着时的那句人话（空 = 能点）。 */
+  /** 底行那颗「重新评审」出现了但点不着时的那句人话（空 = 能点；它只在过时时出现）。 */
   rerunWhy: string;
 }
 
@@ -302,8 +301,8 @@ export function runTarget(run: ReviewRun): string {
 /** `origin/main` → `main`（只用于显示）。 */
 const shortRef = (ref: string): string => (ref || "").trim().replace(/^origin\//, "");
 
-/** 提交号只露 7 位：整条 sha 在 hover 里也装不下，比大小也不需要。 */
-const shortSha = (sha: string): string => (sha || "").trim().slice(0, 7);
+/** 提交号只露 7 位：整条 sha 在 hover 里也装不下，比大小也不需要（浮层也用它）。 */
+export const shortSha = (sha: string): string => (sha || "").trim().slice(0, 7);
 
 /**
  * 目录的显示名：路径最后一节（`D:/work/erp/api` → `api`）。
@@ -506,15 +505,11 @@ export function reviewView(input: ReviewInput): ReviewView {
     const mine = run.status === "running" ? progressById.get(run.id) : undefined;
     const modelId = runModelId(run);
     // #741：「过时」= 完成的那一次评的提交 ≠ 这个 ref 现在指向的提交。
-    // 两个都得有：没记 sha 的老记录、没核对到 tip 的（离线 / 超时）一律不标。
+    // 判据与桥共用一份（`frames.ts` 的 `tipTargetOf` / `isRunOutdated`）：没记 sha 的老记录、
+    // 没核对到 tip 的（离线 / 超时）都在那里归成「不知道」= 不标。
     const headSha = (run.headSha ?? "").trim();
     const tipSha = ((input.tips ?? {})[run.to] ?? "").trim();
-    const outdated =
-      run.status === "done" &&
-      (run.mode === "range" || run.mode === "pr") &&
-      Boolean(headSha) &&
-      Boolean(tipSha) &&
-      tipSha !== headSha;
+    const outdated = isRunOutdated(run, input.tips);
     return {
       id: run.id,
       target: runTarget(run),
@@ -534,10 +529,15 @@ export function reviewView(input: ReviewInput): ReviewView {
       headSha,
       tipSha,
       outdated,
+      // hover 要说清「评的是哪个提交、哪条分支，现在到哪个」：`pr` 模式下 `to` 是
+      // `refs/pi-web/pr-7` 这种内部 ref 名，人认的是分支名（`prHead`），没记才退回 ref 名。
       outdatedNote: outdated
-        ? tr("评审基于 {p1} · {p2}，现在到 {p3}", { p1: shortSha(headSha), p2: shortRef(run.to), p3: shortSha(tipSha) })
+        ? tr("评审基于 {p1} · {p2}，现在是 {p3}", {
+            p1: shortSha(headSha),
+            p2: run.mode === "pr" ? run.prHead || shortRef(run.to) : shortRef(run.to),
+            p3: shortSha(tipSha),
+          })
         : "",
-      rerun: outdated,
       // 灰着就说清为什么：同一个 PR 已在跑（`dup_pr`）、或会话额度满了（`busy`）——
       // 那是点了也只会吃一条报错的情形，不如提前拦下来。
       rerunWhy: outdated ? rerunBlocked(run) : "",
@@ -1163,7 +1163,7 @@ function renderRunList(input: ReviewPanelInput): HTMLElement {
       stop.onclick = () => actions.onStopRun(card.id);
       foot.append(stop);
     }
-    if (card.rerun) {
+    if (card.outdated) {
       // #741：按**那条记录自己的范围**再评一次（不是面板上现在选着的那一格）。
       const again = el("button", "rv-run-again", tr("重新评审")) as HTMLButtonElement;
       again.type = "button";

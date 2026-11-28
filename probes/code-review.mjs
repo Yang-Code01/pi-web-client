@@ -468,44 +468,58 @@ try {
     const before = git("rev-parse", "HEAD").trim();
     const startedAt = new Date(Date.now() - 60000).toISOString();
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    // 前几段真跑出来的记录要留着：下面那条「工作区不带标」得有一张真卡可比，覆盖掉就成了空断言。
+    let prev = { repo: WORK, runs: [], marks: {} };
+    try {
+      prev = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      /* 没跑过就没有：照样能验桥这一侧 */
+    }
+    const run = (over) => ({
+      status: "done",
+      startedAt,
+      finishedAt: new Date(Date.now() - 30000).toISOString(),
+      mode: "range",
+      from: "HEAD~1",
+      to: "HEAD",
+      mergeBase: before,
+      pr: 0,
+      prTitle: "",
+      prHead: "",
+      prBase: "",
+      model: "",
+      provider: "",
+      lang: "zh",
+      findings: [],
+      resolved: [],
+      resolvedPaths: [],
+      skipped: [],
+      reviewedFiles: 1,
+      totalFiles: 1,
+      tokens: 10,
+      error: "",
+      errorCode: "",
+      log: [],
+      plan: [],
+      headSha: before,
+      ...over,
+    });
     fs.writeFileSync(
       file,
       JSON.stringify({
+        ...prev,
         repo: WORK,
-        marks: {},
+        marks: prev.marks ?? {},
         runs: [
-          {
-            id: "seeded-outdated",
-            status: "done",
-            startedAt,
-            finishedAt: new Date(Date.now() - 30000).toISOString(),
-            mode: "range",
-            from: "HEAD~1",
-            to: "HEAD",
-            mergeBase: before,
-            pr: 0,
-            prTitle: "",
-            prHead: "",
-            prBase: "",
-            model: "",
-            provider: "",
-            lang: "zh",
-            findings: [],
-            resolved: [],
-            resolvedPaths: [],
-            skipped: [],
-            reviewedFiles: 1,
-            totalFiles: 1,
-            tokens: 10,
-            error: "",
-            errorCode: "",
-            log: [],
-            plan: [],
-            headSha: before,
-          },
+          ...(Array.isArray(prev.runs) ? prev.runs : []),
+          run({ id: "seeded-outdated" }),
+          // 第二条指向一个**不存在的 ref**：桥 rev-parse 认不出 → 没有 key → 不该标。
+          // 这就是「离线 / 超时 / ref 被删」那一类「核对不到」的样子。
+          run({ id: "seeded-unknown", to: "feat/gone", from: "HEAD~1", startedAt: new Date(Date.now() - 120000).toISOString() }),
         ],
       }),
     );
+
     // 再提交一次：`HEAD` 动了，那条记录就过时了。
     fs.writeFileSync(path.join(WORK, "stale.ts"), "export const stale = 1;\n");
     git("add", "-A");
@@ -523,9 +537,16 @@ try {
     const again = page.locator(".rv-run-again").first();
     check("过时的那条底行多一颗「重新评审」", (await again.count()) === 1, "");
     check("「重新评审」能点（没有同 PR 在跑、额度也没满）", !(await again.isDisabled()), "");
-    // 工作区那条记录不该带标（存一次盘就变，标了永远亮着）。
+    // 工作区那条记录不该带标（存一次盘就变，标了永远亮着）；核对不到的那条也不该标。
     const cardsWithChip = await page.locator(".rv-run-card", { has: page.locator(".rv-run-stale") }).count();
-    check("只有分支那条带标，工作区的不带", cardsWithChip === 1, `${cardsWithChip} 张带标`);
+    const workspaceCards = await page.locator(".rv-run-card", { hasText: "工作区改动" }).count();
+    check("只有过时那条带标", cardsWithChip === 1, `${cardsWithChip} 张带标`);
+    check("工作区那条还在列表里（不是被覆盖掉的空断言）", workspaceCards >= 1, `${workspaceCards} 张工作区卡`);
+    const unknownChip = await page
+      .locator(".rv-run-card", { hasText: "feat/gone" })
+      .locator(".rv-run-stale")
+      .count();
+    check("核对不到的那条（ref 已经不在）安静地没有标", unknownChip === 0, `${unknownChip} 张`);
 
     // 点它：按原范围再开一条（真跑），这里只验「开出去了」，随后立刻停掉。
     await again.click();

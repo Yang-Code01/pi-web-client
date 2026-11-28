@@ -195,6 +195,9 @@ export async function remotePrHeads(dir: string, prs: number[], opts: PrQueryOpt
       if (num > 0 && /^[0-9a-f]{7,40}$/i.test(sha ?? "")) value[num] = sha;
     }
   }
+  // 面板会按「仓库 + 那一批号」组合出 key，长期开着迟早攒成一张大表：超过 64 条就整个丢掉。
+  // 它只是 60 秒的省事缓存，丢掉最多多问一次远端。
+  if (tipCache.size > 64) tipCache.clear();
   tipCache.set(key, { at: Date.now(), value });
   return value;
 }

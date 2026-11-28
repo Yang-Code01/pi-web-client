@@ -4431,7 +4431,7 @@ export const en: Dict = {
   "评 HEAD 之前未提交的改动。": "Reviews uncommitted changes above HEAD.",
   "评审记录": "Reviews",
   "有新提交": "New commits",
-  "评审基于 {p1} · {p2}，现在到 {p3}": "Reviewed {p1} on {p2}; now at {p3}",
+  "评审基于 {p1} · {p2}，现在是 {p3}": "Reviewed {p1} on {p2}; now at {p3}",
   "基于 {p1}": "Based on {p1}",
   "现在到 {p1}": "Now at {p1}",
   "重新核对有没有新提交": "Re-check for new commits",

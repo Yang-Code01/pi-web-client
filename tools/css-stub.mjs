@@ -5,7 +5,7 @@
  * 页面侧的模块会 `import "./xxx.css"`（vite 认得），而 `node --experimental-strip-types`
  * 不认这个后缀 —— 一碰到就 `ERR_UNKNOWN_FILE_EXTENSION`，于是任何**间接** import 到样式表的
  * 视图模块都测不了。`web/tests/review-unit.mjs` 就是这么坏的：它只要 `reviewView()`，却因为
- * `review.ts → gh-setup.ts → github-panel.css` 这一跳整份跑不起来（node 25 起不再放行）。
+ * `review.ts → gh-setup.ts → github-panel.css` 这一跳整份跑不起来（本机 node 26 实测；老一点的 node 同样认）。
  *
  * 挂法（放在 `--experimental-strip-types` 后面即可，`--import` 比入口模块先跑）：
  *

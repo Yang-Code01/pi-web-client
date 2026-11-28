@@ -18,6 +18,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { ensureDir, piChildEnv, quarantineStateFile, readJsonChecked, statePath } from "./paths.ts";
 import { resolvePi } from "./pi.ts";
 import { localRepoName, resolvePullRequest } from "./gitpr.ts";
+import { tipTargetOf } from "./frames.ts";
 import type {
   ReviewCategory,
   ReviewFinding,
@@ -546,21 +547,16 @@ export interface TipTarget {
 }
 
 /**
- * 该核对 tip 的记录：**完成** + 分支/PR 模式 + 记了被评的 sha。
+ * 该核对 tip 的记录，新的在前、按 ref 去重（同一个分支评过两次，核对一次就够）。
  *
- * 工作区那几条（未提交改动，存一次盘就变）与单提交（钉死一个 sha）不参与；
- * 失败 / 停止 / 被桥重启打断的也没有「评到了什么」可言。新的在前、按 ref 去重 ——
- * 同一个分支评过两次，核对一次就够。
+ * 「哪条记录该核」的判据在 `frames.ts` 的 `tipTargetOf()`：页面也 import 同一份，
+ * 两边不许各写一遍（判据一旦漂成两份，表现就是「桥核了、页面不标」这种静默的错）。
  */
 export function tipTargets(runs: readonly ReviewRun[]): TipTarget[] {
   const picked: { target: TipTarget; at: number }[] = [];
   for (const run of runs ?? []) {
-    if (run.status !== "done") continue;
-    if (run.mode !== "range" && run.mode !== "pr") continue;
-    const sha = str(run.headSha);
-    const ref = str(run.to);
-    if (!sha || !ref) continue;
-    picked.push({ target: { ref, pr: run.mode === "pr" ? Number(run.pr) || 0 : 0 }, at: Date.parse(run.startedAt ?? "") || 0 });
+    const target = tipTargetOf(run);
+    if (target) picked.push({ target, at: Date.parse(run.startedAt ?? "") || 0 });
   }
   picked.sort((a, b) => b.at - a.at);
   const seen = new Set<string>();
