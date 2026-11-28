@@ -61,18 +61,27 @@ async function until(fn, what, ms = 20000) {
   }
 }
 
+/** 最新一份假脑状态。`null` = 目录空 / 还没写出来（等下一轮就好）；`SPLIT_JSON` = 读到半截
+ * JSON（假脑改名覆盖失败、退化成直写，正被读就 EPERM）。两者都不是「假脑死了」，所以分开标。 */
+const SPLIT_JSON = Symbol("split-json");
+
 function stats() {
+  let files;
   try {
-    const files = fs.readdirSync(BRAINS).filter((f) => /^brain-\d+\.json$/.test(f));
-    if (!files.length) return null;
-    // 跟 host-shell-e2e 一样按 mtime 取最新的一份：两代假脑同时活着时，`files[0]` 可能拿到
-    // 上一代那份（它可能停在半路、还没写 port）。
-    const newest = files
-      .map((f) => ({ f, t: fs.statSync(path.join(BRAINS, f)).mtimeMs }))
-      .sort((a, b) => b.t - a.t)[0].f;
-    return JSON.parse(fs.readFileSync(path.join(BRAINS, newest), "utf8"));
+    files = fs.readdirSync(BRAINS).filter((f) => /^brain-\d+\.json$/.test(f));
   } catch {
     return null;
+  }
+  if (!files.length) return null;
+  // 跟 host-shell-e2e 一样按 mtime 取最新的一份：两代假脑同时活着时，`files[0]` 可能拿到
+  // 上一代那份（它可能停在半路、还没写 port）。
+  const newest = files
+    .map((f) => ({ f, t: fs.statSync(path.join(BRAINS, f)).mtimeMs }))
+    .sort((a, b) => b.t - a.t)[0].f;
+  try {
+    return JSON.parse(fs.readFileSync(path.join(BRAINS, newest), "utf8"));
+  } catch {
+    return SPLIT_JSON;
   }
 }
 
@@ -97,14 +106,17 @@ const get = async (url) => {
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 const brainGet = async (p) => {
-  // 假脑在「改名覆盖」失败时会退化成直写（Windows 上正被读就会 EPERM），读的那一瞬可能撞上
-  // 半截 JSON、stats() 返回 null。那不是「没报端口」，等下一轮就好 —— 在这里当场断言失败会
-  // 变成偶发红（必须紧跟在 host-shell-e2e 后面跑才复现）。
-  // 外层更早的时候已经等过一次「假脑报端口」了，这里等的是**另**一回事：轮询期间碰巧读到半截
-  // JSON。所以别沿用那句文案 —— 半截 JSON 和「假脑压根没起来」是两码事，报错会指错地方；
-  // 超时也别比外层的 20s 短，否则真正的失败点会被这个更早的超时盖住。
-  const port = await until(() => stats()?.port ?? null, "读假脑端口（stats() 反复读到半截 JSON）");
-  return (await fetch(`http://127.0.0.1:${port}${p}`)).json();
+  // 只对「读到半截 JSON」（上面的 `SPLIT_JSON`）重试，且只等 2 秒：半截 JSON 下一轮（80ms）
+  // 就好；真等了好几秒那说明假脑已经死了 —— 那要报「假脑没了」，不能报成含糊的「读不到端口」。
+  // 它跟外层那次「假脑报端口」等的不是一回事，所以不放进那个 20 秒的 `until` 里。
+  let state;
+  for (let i = 0; i < 25; i++) {
+    state = stats();
+    if (state !== SPLIT_JSON) break;
+    await sleep(80);
+  }
+  if (!state?.port) throw new Error("假脑的端口读不到：假脑已经退了，或者状态文件没写出来");
+  return (await fetch(`http://127.0.0.1:${state.port}${p}`)).json();
 };
 
 try {

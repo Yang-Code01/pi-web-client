@@ -72,11 +72,13 @@ function fakeTty(lines) {
 
 // 6. `--force` / `PI_START_FORCE=1`（非交互场景的明确授权）。
 assert.equal(forceRequested(["--force"], {}), true);
+assert.equal(forceRequested(["--force=1"], {}), true);
 assert.equal(forceRequested([], { PI_START_FORCE: "1" }), true);
 assert.equal(forceRequested([], { PI_START_FORCE: "" }), false);
 assert.equal(forceRequested(["--port", "7865"], {}), false);
-// `npm start --force`：npm 把这个 flag 吃成自己的配置，只留一个环境变量给脚本。
-assert.equal(forceRequested([], { npm_config_force: "true" }), true);
+// `npm start --force` 里那个 `--force` 是 **npm 自己的**旗标（“别拦我”），只留在
+// `npm_config_force` 里。它不等于「同意把在跑的桥硬杀掉」：不授权，两侧都得断言。
+assert.equal(forceRequested([], { npm_config_force: "true" }), false);
 assert.equal(forceRequested([], { npm_config_force: "false" }), false);
 
 // 7. 认人：命令行里带桥入口（哪份检出、正斜杠反斜杠都算），别的程序一律不算。
@@ -126,7 +128,7 @@ assert.equal(localBase("[fe80::1]", 7864), "http://[fe80::1]:7864");
   assert.equal(tty.text(), "", "没人能回答时不要往管道里写提示");
 }
 
-// 9. 默认端口 / 默认地址在两边各写一份（TS 与 mjs 没法共享常量，硬要共享得上 allowJs 或另起
+// 10. 默认端口 / 默认地址在两边各写一份（TS 与 mjs 没法共享常量，硬要共享得上 allowJs 或另起
 //    package）。没人盯着就会一边改一边不改：preflight 放行的端口跟壳真正监听的端口对不上，
 //    用户看到的是「检查通过、起来就 EADDRINUSE」。这里直接盯源码里的兜底字面量。
 {

@@ -12,7 +12,7 @@
  * 没有壳（`PI_HOST_DISABLE=1` 起的旧桥）就没有 `/api/host/stop`：这时把话说明白，
  * 让人回终端 Ctrl-C，而不是假装停掉了。
  */
-import { readPort } from "./preflight.mjs";
+import { localBase, readHost, readPort } from "./preflight.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -25,9 +25,10 @@ async function up(base, ms = 700) {
   }
 }
 
-// 端口规则与启动前的检查（`scripts/preflight.mjs`）共用一份实现：两条路要是各解析各的，
-// 「stop 说停掉了、preflight 却还在 7864 上找到一份」就会变成日常。
-const base = `http://127.0.0.1:${readPort()}`;
+// 端口、地址规则与启动前的检查（`scripts/preflight.mjs`）共用一份实现：两条路要是各解析各的，
+// 「stop 说没什么可停的、preflight 却还在同一个端口上找到一份」就会变成日常。
+// 通配地址（`0.0.0.0` / `::`）换成回环、v6 字面量加方括号，都由 `localBase()` 管。
+const base = localBase(readHost(), readPort());
 const health = await up(base, 1500);
 if (!health) {
   console.log(`${base} 上没有在跑的壳 / 桥：没什么可停的。`);

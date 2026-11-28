@@ -10,14 +10,16 @@
  * 每个用例都用免费的临时端口；**绝不在 7864 上跑**（那是正在服务本机的那一份）。
  */
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { freePort } from "../../tools/free-port.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const PREFLIGHT = path.join(ROOT, "scripts", "preflight.mjs");
+const START = path.join(ROOT, "scripts", "start.mjs");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "pi-preflight-"));
 const STATE = path.join(TMP, "state");
 /** 本项目的桥：路径里有 `bridge/dist/host.js`，认人那一步才会认成「自己人」。 */
@@ -58,11 +60,13 @@ const legacy = process.env.STUB_LEGACY === "1";
 // /healthz 回一句不是 JSON 的东西：模拟回包被截断。
 const garbled = process.env.STUB_GARBLED === "1";
 const mark = process.env.STUB_STOP;
+// /healthz 报的 pid 可以被 STUB_SAY_PID 改掉：模拟「回包里的 pid 是别人」（被反代答了）。
+const sayPid = Number(process.env.STUB_SAY_PID || 0);
 const info = {
   ok: true,
   version: "0.0.0-stub",
   buildId: "stub",
-  pid: process.pid,
+  pid: sayPid > 0 ? sayPid : process.pid,
   uptime: 5,
   sessions: [{ id: "s1", pid: process.pid, turnActive: true }],
 };
@@ -91,9 +95,24 @@ fs.mkdirSync(path.dirname(FOREIGN), { recursive: true });
 fs.writeFileSync(STUB, STUB_SRC);
 fs.writeFileSync(FOREIGN, STUB_SRC);
 
-const children = [];
+/** 按树收掉（Windows 上 `taskkill /T`；这里只用于测试自己的子进程，它们的树里没有别人的会话）。 */
+function killTree(pid) {
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    return;
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* 已经没了 */
+  }
+}
 
-async function startStub(kind, port) {
+const children = [];
+/** 第 8 例手工写下的 pid 文件，收尾时要拆（真桥会自己删，桩不会）。 */
+let plantedPidFile = null;
+
+async function startStub(kind, port, extra = {}) {
   const entry = kind === "foreign" ? FOREIGN : STUB;
   const child = spawn(process.execPath, [entry], {
     env: {
@@ -102,6 +121,7 @@ async function startStub(kind, port) {
       STUB_STOP: path.join(TMP, `stop-${port}.txt`),
       STUB_LEGACY: kind === "legacy" ? "1" : "0",
       STUB_GARBLED: kind === "garbled" ? "1" : "0",
+      ...extra,
     },
     // 桩自己崩了（端口被抢、`STUB_PORT` 非法）也要把它最后那句话带出来：
     // 否则现场只剩一句「超时：桩在 :N 上起来」，没法排查。
@@ -120,12 +140,21 @@ async function startStub(kind, port) {
   return child;
 }
 
-/** 起一次 preflight。stdin 给 `ignore`：这就是 CI / `| tee` 那类非交互场景。 */
-function runPreflight(port, args = []) {
+/** 起一次 preflight。stdin 给 `ignore`：这就是 CI / `| tee` 那类非交互场景。
+ * `entry` 换成 `start.mjs` 就能考它那条路（它内部那次检查传 `ask: false`）。 */
+function runPreflight(port, args = [], entry = PREFLIGHT, { fakeTty = false, limitMs = 60_000 } = {}) {
   // 卡住（powershell 挂起、readline 等输入）时不能把整轮测试拖成永不结束的进程。
-  const LIMIT_MS = 60_000;
+  const LIMIT_MS = limitMs;
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [PREFLIGHT, ...args], {
+    // 假 TTY：把 `process.stdin` 换成一个 `isTTY = true` 的空流。readline 会在它上面等输入、
+    // 永远等不到（没有底层句柄），这正是我们要的：被测的那条路要是问了，就卡到超时那一档。
+    const prelude = fakeTty
+      ? `import { PassThrough } from "node:stream"; const s = new PassThrough(); s.isTTY = true; Object.defineProperty(process, "stdin", { value: s, configurable: true }); await import(${JSON.stringify(pathToFileURL(entry).href)});`
+      : null;
+    // `--` 之后的才进 `process.argv`：不加的话 `--force` 会被 node 当成自己的选项。
+    // `-e` 模式下 node 吃掉 `argv[1]`，所以先塞一个占位的脚本名，`process.argv.slice(2)` 才与直跑一致。
+    const argv = prelude ? ["--input-type=module", "-e", prelude, "--", "start.mjs", ...args] : [entry, ...args];
+    const child = spawn(process.execPath, argv, {
       env: { ...process.env, PI_WEB_PORT: String(port), PI_WEB_STATE: STATE, PI_START_FORCE: "" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -145,7 +174,16 @@ function runPreflight(port, args = []) {
         /* 已经没了 */
       }
       // kill 只是发信号：它若连 SIGTERM 都不理，5 秒后强行落地，别让 Promise 永远悬着。
-      setTimeout(() => resolve({ code: null, out: note() }), 5000).unref();
+      // 但这一例算失败（`code: null`），后面那些「端口空了」的断言会当场红 —— 真发生了就该红，
+      // 而不是让下一例去撞一个还活着的旧进程。
+      setTimeout(() => {
+        try {
+          killTree(child.pid);
+        } catch {
+          /* 已经没了 */
+        }
+        resolve({ code: null, out: note() });
+      }, 5000).unref();
     }, LIMIT_MS);
     child.on("exit", (code) => {
       clearTimeout(timer);
@@ -228,12 +266,58 @@ try {
     await until(() => stub.exitCode !== null || stub.signalCode !== null, "旧桥进程被停掉", 5000);
   }
 
+  // 7. `scripts/start.mjs` 那条路（`start:nobuild` / 直跑）：它内部那次检查**不提问**——链首已经问过
+  //    用户了。没授权时只看不动、退出 2，并说清「这一次不再问第二遍」；有 `--force` 才动手。
+  //    stdin 给一个假 TTY（它会读 isTTY）：要是它还问，就会卡在读输入上，直到 60s 超时那一档。
+  {
+    const port = await freePort();
+    const stub = await startStub("ours", port);
+    // start.mjs 先看 bridge/dist 里有没有入口；这个 worktree 里构建过才有。
+    assert.ok(fs.existsSync(path.join(ROOT, "bridge", "dist", "host.js")), "先 npm run build:bridge");
+    const r = await runPreflight(port, [], START, { fakeTty: true });
+    assert.equal(r.code, 2, r.out);
+    assert.match(r.out, /不再问第二遍/, "要说清这一次为什么不问");
+    assert.match(r.out, /--force/, "要给出授权的办法");
+    assert.ok(await healthz(port), "没被授权时绝不许动它");
+    assert.equal(stub.exitCode, null, "桩必须还活着");
+    // 有授权就在第二次也动手：这是「检查完到 listen 之间又被抢」那条路的出口。
+    const mark = path.join(TMP, `stop-${port}.txt`);
+    // 有授权就在第二次也动手。start.mjs 动完手会接着 spawn 真的壳，这里只要看它没被退出 2 拦住、
+    // 也没在提问上卡住：拿到口令那一行就算过去了。
+    const r2 = await runPreflight(port, ["--force"], START, { fakeTty: true, limitMs: 25_000 });
+    assert.notEqual(r2.code, 2, `带 --force 不该被端口检查拦住：${r2.out}`);
+    assert.match(r2.out, /已启动/, `第二次检查之后要接着起壳：${r2.out}`);
+    assert.ok(fs.existsSync(mark), "带 --force 时第二次也走优雅停机");
+    await until(() => stub.exitCode !== null || stub.signalCode !== null, "壳自己退掉", 5000);
+  }
+
+  // 8. `/healthz` 报的不是这份桥的 pid（被反代答了、或者回包里是别人的号），pid 文件里才是它：
+  //    `/healthz` 这条线索认出来的是外人，不能就此收手 —— 要接着看 pid 文件与 listen 枚举，
+  //    否则端口上自己那份会被误判成外人，连 `--force` 都不肯动。
+  {
+    const port = await freePort();
+    const otherPort = await freePort();
+    const foreign = await startStub("foreign", otherPort);
+    const stub = await startStub("ours", port, { STUB_SAY_PID: String(foreign.pid) });
+    // 与真桥一致：pid 文件里记的是自己。
+    plantedPidFile = path.join(os.tmpdir(), `pi-web-bridge-${port}.pid`);
+    fs.writeFileSync(plantedPidFile, `${stub.pid}\n`);
+    const r = await runPreflight(port, ["--force"]);
+    assert.equal(r.code, 0, `listen 上的自己人也要认出来：${r.out}`);
+    await until(async () => (await healthz(port)) === null, "停掉之后端口空出来");
+    assert.equal(foreign.exitCode, null, "被 /healthz 指错的那个外人绝不能被碰");
+  }
+
   console.log("start-preflight: ok");
 } catch (err) {
   console.error(String(err?.stack ?? err));
   process.exitCode = 1;
 } finally {
+  if (plantedPidFile) fs.rmSync(plantedPidFile, { force: true });
   for (const child of children) {
+    // 已经退了的 pid 不能碰：那个号可能已经被系统发给了别人（`ChildProcess.kill()` 自己也会拦，
+    // 这里写明是为了读代码的人不用去查它拦不拦）。
+    if (child.exitCode !== null || child.signalCode !== null) continue;
     try {
       child.kill();
     } catch {

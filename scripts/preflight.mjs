@@ -173,11 +173,28 @@ export function alive(pid) {
   if (WIN) return ps(`if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { 'yes' }`) === "yes";
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  // 僵尸（已经退出、父进程还没 wait）在 `kill(pid, 0)` 下也算「活着」，等它就是白等满一个
+  // `STOP_KILL_WAIT_MS`，而它的端口早就放了。Linux 的 `/proc/<pid>/stat` 第 3 个字段是状态；
+  // 读不到（macOS）就照旧判活着。
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    // comm 里可能有空格和括号，从最后一个 ")" 之后开始取。
+    if (stat.slice(stat.lastIndexOf(")") + 1).trim().startsWith("Z")) return false;
+  } catch {
+    /* 没有 /proc：维持「还活着」 */
+  }
+  return true;
 }
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** 入口名的匹配式，模块加载时编一次：`ENTRY_NAMES` 是常量，没必要每次调用都重新编译。 */
+const ENTRY_RES = ENTRY_NAMES.map(
+  (name) => new RegExp(`[\\s"'][^\\s"']*${escapeRe(name)}(?=$|[\\s"'])`),
+);
 
 /** 命令行里带着本项目桥的入口 = 这是「我自己」起的一份（哪份检出都算）。
  *
@@ -195,10 +212,8 @@ export function looksLikeBridge(cmd) {
   const argv0 = firstWord(cmd);
   if (argv0 !== "node" && argv0 !== "node.exe") return false;
   const flat = ` ${String(cmd ?? "").replace(/\\/g, "/")} `;
-  return ENTRY_NAMES.some((name) => new RegExp(`[\\s"'][^\\s"']*${escapeRe(name)}(?=$|[\\s"'])`).test(flat));
+  return ENTRY_RES.some((re) => re.test(flat));
 }
-
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** 谁在 listen 这个端口（枚举兜底：/healthz 与 pid 文件都不灵时用）。 */
 export function listenPid(port) {
@@ -214,6 +229,8 @@ export function listenPid(port) {
     timeout: 5000,
     windowsHide: true,
   });
+  // 没装 lsof / 超时 → `null`（「问不到」），跟 `commandLine()` 一个口径；别当成「没人在听」。
+  if (r.error) return null;
   const first = String(r.stdout ?? "")
     .split(/\s+/)
     .find(Boolean);
@@ -295,7 +312,10 @@ export async function portFree(port, host = DEFAULT_HOST) {
  */
 export function processDetails(port, pids = []) {
   const want = [...new Set(pids.filter((n) => Number.isInteger(n) && n > 0))];
+  // `port` 会拼进 PowerShell 脚本：`readPort()` 保证是整数，但这是导出函数，别人传什么都有可能。
+  if (!Number.isInteger(port) || port <= 0) return null;
   const lines = new Map();
+  const failed = new Set();
   if (WIN) {
     const list = want.join(",");
     const script =
@@ -321,14 +341,17 @@ export function processDetails(port, pids = []) {
         continue;
       }
       if (!Number.isInteger(pid) || pid <= 0) continue;
-      lines.set(pid, line.slice(at + 1));
+      const cmd = line.slice(at + 1);
+      // 进程在、命令行却是空串（以管理员/SYSTEM 起的桥就是这样，`CommandLine` 读不到）：
+      // 这跟「没这个进程」是两件事，得当「问不到」处理，否则它会被当成外人拒绝停掉。
+      if (cmd) lines.set(pid, cmd);
+      else failed.add(pid);
     }
-    // Windows 的一次查询里没有「问不到某个 pid」这种半状态：没输出就是没这个进程。
-    return { listen, lines, failed: new Set(), listenUnknown: listen === null };
+    // 没输出才是「没这个进程」；输出为空串的已经进了 `failed`。
+    return { listen, lines, failed, listenUnknown: listen === null };
   }
   // unix：`lsof` + `ps` 都是毫秒级，一次一个反而简单。
   const listen = listenPid(port);
-  const failed = new Set();
   for (const pid of [...new Set([...want, ...(listen ? [listen] : [])])]) {
     const cmd = commandLine(pid);
     // 单个 pid 问不到不代表整个查询失败：把「谁在 listen」和已经问到的部分留着。
@@ -371,6 +394,9 @@ export async function probeOwner(port, host = DEFAULT_HOST) {
     return null;
   };
 
+  // 三条线索依次看，`inspect` 只在「是自己人」时返回对象：认出别人（`other`）或问不到
+  // （`unverified`）都返回 null，`??` 会接着问下一条 —— 所以 `/healthz` 报了别人的 pid 也
+  // 挡不住 listen 上那份自己人。
   const ours =
     inspect(health?.pid, "healthz") ??
     inspect(fromFile, "pidfile") ??
@@ -597,13 +623,15 @@ export function askReplace({ stdin = process.stdin, stdout = process.stdout, que
   });
 }
 
-/** `--force` / `PI_START_FORCE=1` / `npm start --force`：明确授权动手（非交互场景用）。 */
+/** `--force` / `PI_START_FORCE=1`：明确授权动手（非交互场景用）。 */
 export function forceRequested(argv = process.argv.slice(2), env = process.env) {
-  if (argv.includes("--force")) return true;
+  // `--force=1` 也认：`start.mjs` 会把它从转发参数里滤掉，滤了却不认就是把它静默吞掉。
+  if (argv.some((a) => a === "--force" || a.startsWith("--force="))) return true;
   const on = (v) => /^(1|true|yes|y)$/i.test(String(v ?? "").trim());
-  if (on(env.PI_START_FORCE)) return true;
-  // `npm start --force`：npm 把 `--force` 吃成自己的配置、不进脚本参数，只留这个环境变量。
-  return on(env.npm_config_force);
+  // **不看 `npm_config_force`**：那是 npm 自己的旗标（「别拦我」），用户在 CI 里写
+  // `npm start --force` 只是想绕过 npm 的检查，不等于同意把正在跑的桥硬杀掉（会把 pi 会话
+  // 变成孤儿）。要无人值守就显式写 `PI_START_FORCE=1 npm start`。
+  return on(env.PI_START_FORCE);
 }
 
 // ------------------------------------------------------------------ 主流程
@@ -611,11 +639,16 @@ export function forceRequested(argv = process.argv.slice(2), env = process.env) 
 /**
  * 端口空着就静默返回 0；被占就按上面的规则处理。
  * `log` 用同步写：最后 `process.exit()` 时管道里的异步写会被截断。
+ *
+ * `ask` 默认是「有交互终端就问」。`scripts/start.mjs` 那次传 `false`：`npm start` 链首已经问过
+ * 用户了，编译几秒之后再问第二遍是同一件事；第二次只在「检查完到 listen 之间又被抢」时才会
+ * 遇到占用者，那种情况它已经拿到授权（`--force` / `PI_START_FORCE`）或者本来就不该替用户决定。
  */
 export async function preflight(opts = {}) {
   const port = readPort();
   const host = readHost();
   const force = opts.force ?? forceRequested();
+  const ask = opts.ask ?? process.stdin.isTTY;
   const stdin = process.stdin;
   const stdout = process.stdout;
   const log = (line) => {
@@ -670,13 +703,20 @@ export async function preflight(opts = {}) {
 
   if (force) {
     log(`按 --force / PI_START_FORCE=1 处理：不问了，直接停掉它再起这一份。`);
-  } else if (!stdin.isTTY) {
-    log(`端口被占，但这次不是交互终端，我不替你决定：`);
+  } else if (!ask) {
+    log(stdin.isTTY ? `端口又被占了。这一次我不再问第二遍，也不替你决定：` : `端口被占，但这次不是交互终端，我不替你决定：`);
     log(`  自己停掉：npm run bridge:stop（或回它的终端 Ctrl-C）`);
-    log(`  让我停：npm start --force（或 PI_START_FORCE=1 npm start；直跑 node scripts/preflight.mjs --force 也行）`);
+    log(`  让我停：PI_START_FORCE=1 npm start（或直跑 node scripts/preflight.mjs --force）`);
     return EXIT_BLOCKED;
   } else {
-    const answer = await askReplace({ stdin, stdout });
+    // readline 往坏掉的 stdout 写会抛（fd 1 被关、管道那头先走了）：这是「问不成」而不是「同意」。
+    let answer;
+    try {
+      answer = await askReplace({ stdin, stdout });
+    } catch (err) {
+      log(`问不出口（${String(err?.message ?? err)}），那就什么都不动。`);
+      return EXIT_BLOCKED;
+    }
     if (answer === null) {
       log(`没有回答（输入结束了），那就什么都不动。`);
       return EXIT_BLOCKED;

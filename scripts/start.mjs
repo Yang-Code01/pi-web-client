@@ -28,8 +28,18 @@ function bridgeArgs() {
 
 // 起之前再查一次（D441）：`start:nobuild` 与直跑都不经过 `npm start` 链里的那一步。
 // 跟链首那次不是原子的，只能把「检查完到 listen 之间被抢」的空窗缩小一点（真被抢了由壳的
-// EADDRINUSE 兜底）。端口空着时这一步一声不响。
-const preflightCode = await preflight({ force: forceRequested() });
+// EADDRINUSE 兜底）。端口空着时这一步一声不响。这次**不提问**：链首已经问过用户了，编译
+// 几秒之后再问第二遍是同一件事；只有带着 `--force` 才在第二次也动手，否则照非交互的处理
+// （印证据、给出口、退出 2）。
+let preflightCode;
+try {
+  preflightCode = await preflight({ force: forceRequested(), ask: false });
+} catch (err) {
+  // 直跑 `scripts/preflight.mjs` 的入口有 `.then(ok, err)` 兜底，这条路也得有：异常不代表端口
+  // 空着，给一句人能读的话、按「失败」退出，别把整段堆栈糊在终端上。
+  console.error(`[preflight] 检查端口时出错：${String(err?.message ?? err)}`);
+  process.exit(1);
+}
 if (preflightCode !== EXIT_OK) process.exit(preflightCode);
 
 const child = spawn(process.execPath, [entry, ...bridgeArgs()], {
