@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadPlaywright } from "../tools/playwright.mjs";
+import { makePng } from "../tools/png.mjs";
 
 const [A_PORT, B_PORT, B_PEER] = process.argv.slice(2, 5).map(Number);
 const SHOTS = process.argv[5] ?? "";
@@ -85,7 +86,7 @@ await page.waitForSelector("#list .row", { timeout: 15000 });
 await sleep(800);
 
 const rowShot = await page.evaluate((bId) => {
-  const row = document.querySelector(`#list [data-id="${bId}"]`) ?? document.querySelector("#list .row");
+  const row = document.querySelector(`#list [data-id="${bId}"]`);
   const av = row?.querySelector(".av");
   const img = row?.querySelector(".av-img");
   const box = av?.getBoundingClientRect();
@@ -113,40 +114,76 @@ if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "chat.png") });
 // ---- 3b. 对方换脸之后，列表里不能还显示「他换之前发消息时那张」：历史消息里的
 //          `from.avatar` 是最旧的来源，不许覆盖在线表 / 通讯录。
 const oldSrc = await page.evaluate((bId) => {
-  const row = document.querySelector(`#list [data-id="${bId}"]`) ?? document.querySelector("#list .row");
+  const row = document.querySelector(`#list [data-id="${bId}"]`);
   return row?.querySelector(".av-img")?.getAttribute("src") ?? "";
 }, bSt.nodeId);
 const freshB = IDS.find((id) => id !== bSt.avatar) ?? IDS[0];
 await b.post("/api/peer/config", { avatar: freshB });
-await sleep(1500);
+// 桥的 poll 是 5 秒一轮：固定 sleep 会跟它赛跑（偶尔 1.5 秒时缓存还是旧脸）。
+// 等到 A 的桥真的看见新头像再刷新，断言才有意义。
+let sawFresh = false;
+// 桥的 poll 是 5 秒一轮，对方 announce 是 10 秒一轮：10 秒窗口正好卡在边界（偶尔差几百毫秒
+// 就红），给它 20 秒再看（评审 7-9 把原来的静默日志变成硬断言后，边界抖动藏不住了）。
+for (let i = 0; i < 80; i++) {
+  const st = await a.get("/api/peer");
+  if (st.status?.online?.find((p) => p.nodeId === bSt.nodeId)?.avatar === freshB) { sawFresh = true; break; }
+  await sleep(250);
+}
+check("A 的桥在 20 秒内看到 B 的新头像", sawFresh, `want ${freshB}`);
+if (!sawFresh) {
+  const st = await a.get("/api/peer");
+  console.log("DEBUG online:", JSON.stringify((st.status?.online ?? []).map((p) => ({ id: p.nodeId, av: p.avatar, addr: p.addr }))), "want", freshB, "bId", bSt.nodeId);
+}
 await page.reload();
 await page.waitForSelector("#list .row", { timeout: 15000 });
-await sleep(1200);
+// 别拿固定 sleep 赌渲染时机：等这一行的图真的换成新那张（8 秒等不到就是真回归）。
+try {
+  await page.waitForFunction(
+    ({ id, prev }) => {
+      const row = document.querySelector(`#list [data-id="${id}"]`);
+      const src = row?.querySelector(".av-img")?.getAttribute("src") ?? "";
+      return Boolean(src) && src !== prev;
+    },
+    { id: bSt.nodeId, prev: oldSrc },
+    { timeout: 8000 },
+  );
+} catch {
+  // 等不到就让下面的 check 给出带上下文的红，而不是抛一个光秃秃的 timeout。
+}
 const newSrc = await page.evaluate((bId) => {
-  const row = document.querySelector(`#list [data-id="${bId}"]`) ?? document.querySelector("#list .row");
+  const row = document.querySelector(`#list [data-id="${bId}"]`);
   return row?.querySelector(".av-img")?.getAttribute("src") ?? "";
 }, bSt.nodeId);
-check("B 换脸后 A 的列表跟着换（历史消息不反盖）", Boolean(newSrc) && newSrc !== oldSrc && Boolean(oldSrc));
+const dbg = await a.get("/api/peer");
+const dbgContact = ((await a.get("/api/peer/contacts")).contacts ?? []).find((c) => c.nodeId === bSt.nodeId)?.avatar;
+check(
+  "B 换脸后 A 的列表跟着换（历史消息不反盖）",
+  Boolean(newSrc) && newSrc !== oldSrc && Boolean(oldSrc),
+  `old=${oldSrc.length} new=${newSrc.length} same=${newSrc === oldSrc} fresh=${freshB} sawFresh=${sawFresh} online=${dbg.status?.online?.find((p) => p.nodeId === bSt.nodeId)?.avatar} contact=${dbgContact}`,
+);
 
-// ---- 4. 「我」页：12 张、当前那张被选中、点一张就换
+// ---- 4. 「我」页：默认落在个人资料（hero 是图）；头像分区 12 张、当前那张被选中、点一张就换
 await page.click('#rail button[title="我"]');
-await page.waitForSelector(".avgrid .avpick", { timeout: 10000 });
+await page.waitForSelector(".me-nav", { timeout: 10000 });
+await sleep(300);
+const heroOnLoad = await page.evaluate(() => Boolean(document.querySelector(".me-hero .me-ava .av.pic .av-img")));
+check("「我」页 hero 上是我自己的头像图", heroOnLoad);
+await page.click('.me-nav .me-tab:has-text("头像")');
+await page.waitForSelector(".me-avgrid .avpick", { timeout: 10000 });
 await sleep(500);
 const grid = await page.evaluate(() => ({
-  count: document.querySelectorAll(".avgrid .avpick").length,
-  loaded: [...document.querySelectorAll(".avgrid .avpick img")].filter((i) => i.complete && i.naturalWidth > 0).length,
-  on: document.querySelectorAll(".avgrid .avpick.on").length,
-  hero: Boolean(document.querySelector(".hero .av.pic .av-img")),
+  count: document.querySelectorAll(".me-avgrid .avpick:not(.me-custom)").length,
+  loaded: [...document.querySelectorAll(".me-avgrid .avpick:not(.me-custom) img")].filter((i) => i.complete && i.naturalWidth > 0).length,
+  on: document.querySelectorAll(".me-avgrid .avpick.on").length,
 }));
-check("「我」页有 12 张可选", grid.count === IDS.length, String(grid.count));
+check("「头像」分区有 12 张内置可选", grid.count === IDS.length, String(grid.count));
 check("12 张图都解码成功", grid.loaded === IDS.length, String(grid.loaded));
 check("当前那张被标出来（恰好一处）", grid.on === 1, String(grid.on));
-check("hero 上是我自己的头像图", grid.hero);
 if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "me.png") });
 
 // 点一张不是当前那张的
 await page.evaluate(() => {
-  const tiles = [...document.querySelectorAll(".avgrid .avpick")];
+  const tiles = [...document.querySelectorAll(".me-avgrid .avpick:not(.me-custom)")];
   tiles[tiles.findIndex((t) => !t.classList.contains("on"))].click();
 });
 await sleep(1200);
@@ -155,7 +192,10 @@ check("点了就换（配置里也换了）", afterA.avatar !== aSt.avatar && ID
 // 成功提示：它靠 setConfig() 的返回值判定，改成无条件弹的话失败了也说「换好了」。
 const toasted = await page.evaluate(() => [...document.querySelectorAll(".toast, .toasts > *")].some((n) => /头像换好了/.test(n.textContent ?? "")));
 check("换完弹了「头像换好了」", toasted);
-const heroAfter = await page.evaluate(() => Boolean(document.querySelector(".hero .av.pic .av-img")));
+// 换完停在头像分区；回个人资料看 hero 是不是也换了。
+await page.click('.me-nav .me-tab:has-text("个人资料")');
+await page.waitForSelector(".me-hero .me-ava .av-img", { timeout: 5000 });
+const heroAfter = await page.evaluate(() => Boolean(document.querySelector(".me-hero .me-ava .av.pic .av-img")));
 check("换完 hero 还是图", heroAfter);
 if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "me-after.png") });
 
@@ -169,6 +209,122 @@ for (let i = 0; i < 30; i++) {
 }
 const bRow = ((await b.get("/api/peer/contacts")).contacts ?? []).find((c) => c.nodeId === aSt.nodeId);
 check("B 那边看到 A 的新头像", bRow?.avatar === afterA.avatar, `${bRow?.avatar} vs ${afterA.avatar}`);
+
+// ---- 6. 自定义头像：上传两张 → 历史可切换 → 点头像看大图 → 删除（含删当前那张）
+await page.click('.me-nav .me-tab:has-text("头像")');
+await page.waitForSelector(".me-avrow input[type=file]", { state: "attached" });
+const upload = async (name, buf, prev = "") => {
+  await page.setInputFiles(".me-avrow input[type=file]", { name, mimeType: "image/png", buffer: buf });
+  for (let i = 0; i < 40; i++) {
+    const id = String((await a.get("/api/peer")).status?.avatar ?? "");
+    if (id.startsWith("custom:") && id !== prev) return id;
+    await sleep(250);
+  }
+  return "";
+};
+const firstId = await upload("red.png", makePng(140, 140, [230, 90, 70, 255]));
+check("上传第一张自定义头像", /^custom:[0-9a-f]{16}$/.test(firstId), firstId);
+await page.waitForSelector(".me-histpick", { timeout: 8000 });
+// 选择器只说明节点挂上了，`<img>` 的 /api/peer/avatar/... 还在下载：不等解码就量
+// complete / naturalWidth，这一项会随机变红（评审 5-9）。
+await page
+  .waitForFunction(() => {
+    const imgs = [...document.querySelectorAll(".me-histpick img")];
+    return imgs.length === 1 && imgs.every((i) => i.complete && i.naturalWidth > 0);
+  }, undefined, { timeout: 8000 })
+  .catch(() => {});
+const hist1 = await page.evaluate(() => ({
+  n: document.querySelectorAll(".me-histpick").length,
+  on: document.querySelectorAll(".me-histitem.on").length,
+  imgs: [...document.querySelectorAll(".me-histpick img")].filter((i) => i.complete && i.naturalWidth > 0).length,
+  customOn: Boolean(document.querySelector(".me-custom.on img")),
+}));
+check("「上传过的」出现 1 张且解码成功", hist1.n === 1 && hist1.imgs === 1, JSON.stringify(hist1));
+check("当前那张在历史里被标出来", hist1.on === 1);
+check("自定义格显示的是当前这张图", hist1.customOn);
+
+const secondId = await upload("blue.png", makePng(140, 140, [60, 130, 220, 255]), firstId);
+check("上传第二张（换了新颜色）", secondId.startsWith("custom:") && secondId !== firstId, `${firstId} → ${secondId}`);
+// 不能只等 `.me-histpick`：第一张上传后就已存在，这个等待会立刻返回，
+// 页面还没跑完 uploadAvatar 里的 renderAll（评审 4-1）。
+await page.waitForFunction(() => document.querySelectorAll(".me-histpick").length >= 2, undefined, { timeout: 8000 });
+const hist2 = await page.evaluate(() =>
+  [...document.querySelectorAll(".me-histpick img")].map((i) => i.getAttribute("src") ?? ""),
+);
+const secondHash = secondId.slice("custom:".length);
+const firstHash = firstId.slice("custom:".length);
+check(
+  "历史变成 2 张，最近在前",
+  hist2.length === 2 && Boolean(hist2[0]) && hist2[0].includes(secondHash) && hist2[1]?.includes(firstHash),
+  hist2.join(" | "),
+);
+// 两张缩略图必须各自是自己那张字节：peer 的 `/avatar/<自己>` 以前无视 hash，一排图全回当前那张。
+const digests = await page.evaluate(async () => {
+  const out = [];
+  for (const img of document.querySelectorAll(".me-histpick img")) {
+    const buf = await (await fetch(img.src)).arrayBuffer();
+    const d = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
+    out.push([...d.slice(0, 4)].map((b) => b.toString(16).padStart(2, "0")).join(""));
+  }
+  return out;
+});
+check("两张历史缩略图内容不同", digests.length === 2 && digests[0] !== digests[1], digests.join(" / "));
+
+// 切回第一张：点历史缩略图
+await page.evaluate(() => document.querySelectorAll(".me-histpick")[1].click());
+await sleep(1200);
+const backTo = (await a.get("/api/peer")).status?.avatar;
+check("点历史缩略图能切回上一张", backTo === firstId, `${backTo}`);
+
+// 点头像看大图：大预览、聊天里的头像都该开灯箱，Esc 关掉
+await page.click(".me-big");
+await page.waitForSelector(".iv .iv-img", { timeout: 5000 });
+await sleep(400);
+const viewer = await page.evaluate(() => {
+  const img = document.querySelector(".iv .iv-img");
+  return { open: Boolean(document.querySelector(".iv")), loaded: Boolean(img && img.complete && img.naturalWidth > 0) };
+});
+check("点大预览打开看图灯箱", viewer.open && viewer.loaded, JSON.stringify(viewer));
+if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "avatar-viewer.png") });
+await page.keyboard.press("Escape");
+await sleep(300);
+check("Esc 关掉灯箱", !(await page.evaluate(() => Boolean(document.querySelector(".iv")))));
+
+await page.click('#rail button[title="消息"]');
+await page.waitForSelector("#list .row", { timeout: 10000 });
+await page.evaluate((bId) => document.querySelector(`#list [data-id="${bId}"]`)?.click(), bSt.nodeId);
+await page.waitForSelector(".msg .av.pic", { timeout: 10000 });
+await page.click(".msg .av.pic");
+await page.waitForSelector(".iv .iv-img", { timeout: 5000 });
+const chatViewer = await page.evaluate(() => {
+  const img = document.querySelector(".iv .iv-img");
+  return { open: Boolean(document.querySelector(".iv")), loaded: Boolean(img && img.complete && img.naturalWidth > 0) };
+});
+check("聊天里的头像也能点开", chatViewer.open && chatViewer.loaded, JSON.stringify(chatViewer));
+await page.keyboard.press("Escape");
+await sleep(200);
+
+// 回「我」页继续删
+await page.click('#rail button[title="我"]');
+await page.waitForSelector('.me-nav .me-tab:has-text("头像")', { timeout: 10000 });
+await page.click('.me-nav .me-tab:has-text("头像")');
+await page.waitForSelector(".me-histitem.on .me-histdel", { timeout: 8000 });
+
+// 删当前那张：应该自动换到历史里剩下的那张，而不是掉回首字母
+await page.evaluate(() => document.querySelector(".me-histitem.on .me-histdel").click());
+await sleep(1200);
+const afterDel = (await a.get("/api/peer")).status?.avatar;
+check("删掉当前那张会换到剩下的一张", afterDel === secondId, `${afterDel}`);
+const hist3 = (await a.get("/api/peer/custom-avatars")).uploads?.length;
+check("历史里只剩 1 张", hist3 === 1, String(hist3));
+
+// 再删掉最后一张：退回内置，历史清空
+await page.evaluate(() => document.querySelector(".me-histdel").click());
+await sleep(1200);
+const finalSt = (await a.get("/api/peer")).status;
+const hist4 = (await a.get("/api/peer/custom-avatars")).uploads?.length;
+check("删完退回内置头像", IDS.includes(finalSt?.avatar), String(finalSt?.avatar));
+check("历史清空", hist4 === 0, String(hist4));
 
 check("页面没有 JS 报错", errors.length === 0, errors.slice(0, 2).join(" | "));
 
