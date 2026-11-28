@@ -2077,6 +2077,70 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
    Firefox 上就什么都看不见了。 */
 .size-rail input[type="range"]:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 2px; border-radius: 3px; }
 
+/* #742：拖动字号滑杆时「让开」—— 连遮罩一起全透，让真页面自己演示（视觉就这两条：
+   控制台淡到 3%，宿主的底色与模糊去掉）。mac.css 的材质规则是
+   `html[data-ui="mac"] [data-mac-surface="window"]`（0,2,1），这里带上属性选择器把它压过去，
+   不用 !important。 */
+html[data-ui] body > .st-back[data-mac-surface].peeking {
+  background: transparent;
+  backdrop-filter: none;
+}
+.st-back.peeking .st-console {
+  opacity: 0.03;
+}
+/* 读数胶囊：驻在宿主里（不进 .st-console —— 那个壳 overflow:hidden 会把它裁掉），
+   只读不接指针。细轨道按 (v-0.8)/1.2 填充，和真轨道同一套刻度。 */
+.peek-hud {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 168px;
+  padding: 9px 14px 10px;
+  /* 材质跟主题走（D418）：和 `.chat-jump` / `.sel-ask` / 助手气泡同一套玻璃 ——
+     写死的 `--panel` 与黑投影在三套主题里长得一样，等于没跟主题。 */
+  background: var(--mac-glass-strong, var(--panel-3));
+  -webkit-backdrop-filter: var(--mac-blur, none);
+  backdrop-filter: var(--mac-blur, none);
+  border: 0.5px solid var(--mac-glass-line, var(--line-strong));
+  border-radius: 14px;
+  box-shadow: var(--mac-shadow-menu, 0 12px 34px rgba(0, 0, 0, 0.38));
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.st-back.peeking .peek-hud {
+  opacity: 1;
+}
+.peek-hud__label {
+  font: 11.5px/1 var(--sans);
+  color: var(--dim);
+}
+.peek-hud__value {
+  justify-self: end;
+  font: 600 13px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.peek-hud__rail {
+  grid-column: 1 / -1;
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+.peek-hud__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
 /* 刻度画在输入框上面、不接指针（接了会挡住拖拽）；落进已填充段的改成深色刻痕，
    否则反白的 1px 线在亮条上只剩噪点。高矮靠类，几何不往 JS 里写。 */
 .ticks { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
@@ -2864,16 +2928,16 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .art-badge.st-unknown { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-dim); }
 .art-badge.st-same { color: var(--faint); }
 /* 窄屏：状态挪到第二行，工具名隐掉 */
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr) auto; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 2; grid-row: 1; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 2; grid-row: 2; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-tools { display: none; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-bar { flex-wrap: wrap; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-bar .ns-input { flex-basis: 100%; order: 3; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr) auto; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 2; grid-row: 1; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 2; grid-row: 2; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-tools { display: none; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-bar { flex-wrap: wrap; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-bar .ns-input { flex-basis: 100%; order: 3; }
 /* 最窄：单列，控件与状态各占一行 */
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr); }
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 1; grid-row: 3; justify-content: flex-start; }
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 1; grid-row: 4; justify-self: start; }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr); }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 1; grid-row: 3; justify-content: flex-start; }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 1; grid-row: 4; justify-self: start; }
 
 /* D208 C 方案：独立 diff 弹窗（左栏换文件 + 左右对照）。 */
 .diff-sheet { height: calc(var(--vh1) * 86); max-height: calc(var(--vh1) * 88); }

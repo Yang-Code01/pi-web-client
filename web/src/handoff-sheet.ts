@@ -7,7 +7,7 @@
  */
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
-import { markSurface, pushEscLayer } from "./modal.ts";
+import { markSurface, pushEscLayer, overlayHost } from "./modal.ts";
 
 export type HandoffTarget = "current" | "new";
 
@@ -63,7 +63,8 @@ export class HandoffSheet {
     this.back.append(sheet);
   }
 
-  mount(parent: HTMLElement): void {
+  /** 宿主默认交给 `overlayHost()`：控制台是量尺，1:1 挂 body（D449）；测试里仍可显式指定。 */
+  mount(parent: HTMLElement = overlayHost(this.back)): void {
     parent.append(this.back);
     this.popEsc = pushEscLayer({ el: this.back, onEsc: () => this.close() });
   }

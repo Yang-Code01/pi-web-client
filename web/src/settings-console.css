@@ -9,6 +9,14 @@
   display: none !important;
 }
 
+/* #742：控制台是**量尺**，不跟着外观「字号」缩放 —— 它挂在 body 上（D449，`overlay()` 里那条分叉）。
+   `:root` 的 `--vh1` / `--vw1` 是「除过缩放」的长度，在控制台这层要回到 1:1，否则它里面任何
+   `calc(var(--vh1) * N)` 都会缩一圈（D123 那一族坑：视口单位不认 zoom）。 */
+body > :has(.st-console) {
+  --vh1: 1vh;
+  --vw1: 1vw;
+}
+
 .st-back {
   position: fixed;
   inset: 0;
@@ -350,21 +358,21 @@
 
 /* ---------------------------------------------------------------- 窄屏：左栏横过去 */
 /* D158：控制台按有效宽度折叠，#app 放大字号时原生 @media 不会跟着翻（见 app.ts syncCompact）。 */
-:where(html[data-console-narrow="true"]) .st-back {
+:where(html[data-st-narrow="true"]) .st-back {
   padding: 10px;
 }
 
-:where(html[data-console-narrow="true"]) .st-console {
+:where(html[data-st-narrow="true"]) .st-console {
   width: 100%;
   height: 100%;
 }
 
-:where(html[data-console-narrow="true"]) .st-main {
+:where(html[data-st-narrow="true"]) .st-main {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-:where(html[data-console-narrow="true"]) .st-nav {
+:where(html[data-st-narrow="true"]) .st-nav {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
@@ -373,44 +381,44 @@
   border-bottom: 1px solid var(--line-soft);
 }
 
-:where(html[data-console-narrow="true"]) .st-nav__group,
-:where(html[data-console-narrow="true"]) .st-nav__count {
+:where(html[data-st-narrow="true"]) .st-nav__group,
+:where(html[data-st-narrow="true"]) .st-nav__count {
   display: none;
 }
 
-:where(html[data-console-narrow="true"]) .st-nav__item {
+:where(html[data-st-narrow="true"]) .st-nav__item {
   width: auto;
   padding: 7px 11px;
 }
 
-:where(html[data-console-narrow="true"]) .st-nav__item.on {
+:where(html[data-st-narrow="true"]) .st-nav__item.on {
   box-shadow: none;
 }
 
-:where(html[data-console-tight="true"]) .st-back {
+:where(html[data-st-tight="true"]) .st-back {
   padding: 0;
 }
 
-:where(html[data-console-tight="true"]) .st-console {
+:where(html[data-st-tight="true"]) .st-console {
   width: 100%;
   height: 100%;
   border: 0;
   border-radius: 0;
 }
 
-:where(html[data-console-tight="true"]) .st-head {
+:where(html[data-st-tight="true"]) .st-head {
   padding: 14px;
 }
 
-:where(html[data-console-tight="true"]) .st-title {
+:where(html[data-st-tight="true"]) .st-title {
   font-size: 20px;
 }
 
-:where(html[data-console-tight="true"]) .st-badges {
+:where(html[data-st-tight="true"]) .st-badges {
   display: none;
 }
 
-:where(html[data-console-tight="true"]) .st-pane {
+:where(html[data-st-tight="true"]) .st-pane {
   padding: 14px;
 }
 
@@ -557,14 +565,14 @@
   }
 }
 
-:where(html[data-console-mid="true"]) .st-cmp-head,
-:where(html[data-console-mid="true"]) .st-cmp-row {
+:where(html[data-st-mid="true"]) .st-cmp-head,
+:where(html[data-st-mid="true"]) .st-cmp-row {
   grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr) minmax(0, 1.2fr);
   gap: 6px;
   padding: 6px 8px;
 }
 
-:where(html[data-console-mid="true"]) .st-cmp-note {
+:where(html[data-st-mid="true"]) .st-cmp-note {
   font-size: 10px;
 }
 
@@ -731,7 +739,7 @@
   white-space: nowrap;
 }
 
-:where(html[data-console-narrow="true"]) .st-cards {
+:where(html[data-st-narrow="true"]) .st-cards {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -879,16 +887,16 @@
   border-color: var(--warn-dim);
 }
 
-:where(html[data-console-tight="true"]) .st-console.settings-sheet .settings-row {
+:where(html[data-st-tight="true"]) .st-console.settings-sheet .settings-row {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
-:where(html[data-console-tight="true"]) .st-console.settings-sheet .settings-row > .ns-input {
+:where(html[data-st-tight="true"]) .st-console.settings-sheet .settings-row > .ns-input {
   grid-column: 1 / -1;
   grid-row: 3;
 }
 
-:where(html[data-console-tight="true"]) .st-console.settings-sheet .settings-row > .settings-src {
+:where(html[data-st-tight="true"]) .st-console.settings-sheet .settings-row > .settings-src {
   grid-column: 2;
   grid-row: 1;
 }
@@ -1200,11 +1208,11 @@
 }
 
 /* 窄：页签挪到标题下面一行，按钮留在右上。 */
-:where(html[data-console-narrow="true"]) .st-console.display-sheet .st-head {
+:where(html[data-st-narrow="true"]) .st-console.display-sheet .st-head {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
-:where(html[data-console-narrow="true"]) .st-console.display-sheet .st-tabs {
+:where(html[data-st-narrow="true"]) .st-console.display-sheet .st-tabs {
   grid-row: 2;
   grid-column: 1 / -1;
   justify-self: start;
@@ -1291,13 +1299,13 @@
   padding: 6px;
 }
 
-:where(html[data-console-tight="true"]) .st-console.display-sheet .settings-row > .settings-ctl {
+:where(html[data-st-tight="true"]) .st-console.display-sheet .settings-row > .settings-ctl {
   grid-column: 1;
   grid-row: 3;
   justify-content: flex-start;
   margin-top: 8px;
 }
 
-:where(html[data-console-narrow="true"]) .st-console.display-sheet .st-cards {
+:where(html[data-st-narrow="true"]) .st-console.display-sheet .st-cards {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

@@ -14,7 +14,7 @@
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
-import { markSurface, pushEscLayer } from "./modal.ts";
+import { markSurface, pushEscLayer, overlayHost } from "./modal.ts";
 import { repoNameOf } from "./review.ts";
 import type { GitInfo } from "./types.ts";
 
@@ -138,7 +138,8 @@ export class RepoPicker {
     if (opts.current) this.selected = opts.current;
   }
 
-  mount(parent: HTMLElement): void {
+  /** 宿主默认交给 `overlayHost()`：控制台是量尺，1:1 挂 body（D449）；测试里仍可显式指定。 */
+  mount(parent: HTMLElement = overlayHost(this.back)): void {
     parent.append(this.back);
     this.popEsc = pushEscLayer({ el: this.back, onEsc: () => this.close() });
     void this.load(this.at);

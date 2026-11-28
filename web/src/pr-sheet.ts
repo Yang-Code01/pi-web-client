@@ -7,7 +7,7 @@
 import { createEl as el } from "./chat.ts";
 import { fmtDate, fmtRelative, tr } from "./i18n/index.ts";
 import { renderMarkdown } from "./md.ts";
-import { markSurface, pushEscLayer } from "./modal.ts";
+import { markSurface, pushEscLayer, overlayHost } from "./modal.ts";
 
 export interface PrFileInfo {
   path: string;
@@ -70,7 +70,8 @@ export class PrSheet {
     this.paint();
   }
 
-  mount(parent: HTMLElement): void {
+  /** 宿主默认交给 `overlayHost()`：控制台是量尺，1:1 挂 body（D449）；测试里仍可显式指定。 */
+  mount(parent: HTMLElement = overlayHost(this.back)): void {
     parent.append(this.back);
     this.popEsc = pushEscLayer({ el: this.back, onEsc: () => this.close() });
   }
