@@ -1484,7 +1484,7 @@ async function main(): Promise<void> {
 
     // D441：局域网更新组。发布者开关会写 peer 的 `config.json`，所以公网一律 403。
     if (url.pathname === "/api/updates" && req.method === "GET") {
-      if (publicReq) return json(res, 403, { error: "公网不能改本机的更新组设置" });
+      if (publicReq) return json(res, 403, { error: "公网不能查看本机的更新组状态" });
       try {
         return json(res, 200, await updates.view());
       } catch (err) {

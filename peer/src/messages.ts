@@ -14,6 +14,9 @@ import { covered, type Reads } from "./reads.ts";
 
 /** 单条文本上限（决定 25）：再长就让用户改发文件，协议这边硬拒 32 KB。 */
 export const MAX_TEXT_BYTES = 32 * 1024;
+/** 补发公告的默认条数与单次上限：默认值与钳制只在这里定义，http 与调用方共用。 */
+export const REPLAY_DEFAULT = 3;
+export const REPLAY_MAX = 10;
 
 /**
  * 撤回窗口 2 分钟（D299 / P3，与 QQ 单聊一致）。
@@ -606,7 +609,7 @@ export class Messages {
     if (!isGroupId(thread)) return null;
     const group = this.ctx.groups.get(thread);
     if (!group?.announceOnly) return null;
-    if (group.publisher === claimed.nodeId) return null;
+    if (group.publisher ? group.publisher === claimed.nodeId : group.owner === claimed.nodeId) return null;
     return { status: 403, body: { error: "只读群：只有发布者能发消息", retryable: false } };
   }
 
@@ -624,7 +627,7 @@ export class Messages {
    * 给刚进组的人补最近几条公告（D441）：原 id / 原时间单播。
    * 对方 `recentIds` 会把重复的丢掉，所以已经收到过的人不会多出气泡。
    */
-  replayAnnouncements(groupId: string, peerNodeId: string, limit = 3): { ok: true; sent: number } {
+  replayAnnouncements(groupId: string, peerNodeId: string, limit = REPLAY_DEFAULT): { ok: true; sent: number } {
     const group = this.ctx.groups.get(groupId);
     if (!group?.announceOnly) throw new Error("不是更新组");
     // 补发是发布者动作，目标必须是组员：回环 API 也不能拿它往任意节点塞历史（评审 #11）。

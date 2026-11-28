@@ -228,6 +228,15 @@ check(overflow <= 1, "字号 150% 卡片不横向溢出", overflow);
 // ---------------------------------------------------------------- 发布者视角
 const ctx2 = await browser.newContext({ locale: "zh-CN", viewport: { width: 1180, height: 820 } });
 const page2 = await ctx2.newPage();
+// 发布者这边也记 window.open：以后加「打开更新日志」的断言时别读到 undefined（评审 #17）。
+await page2.addInitScript(() => {
+  window.__opened = [];
+  const orig = window.open;
+  window.open = (url, ...rest) => {
+    window.__opened.push(String(url));
+    return orig.apply(window, [url, ...rest]);
+  };
+});
 await mock(page2, PUB, "发布者", true);
 await page2.goto(`${BASE}/peer.html`);
 await page2.waitForSelector(".an-card", { timeout: 15_000 });

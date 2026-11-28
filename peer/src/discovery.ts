@@ -18,6 +18,16 @@ export interface AnnounceUpdates {
 }
 
 /** announce 里的更新组身份：只收形状对的，opt-out 名单截短（D441）。 */
+/** announce 里 updates 的形状只在这里拼：packet 与 normUpdates 别各写一份（评审 #14）。 */
+function buildUpdates(repo: string, publisher: boolean, optOut: string[]): AnnounceUpdates | null {
+  if (!repo) return null;
+  return {
+    repo,
+    ...(publisher ? { publisher: true } : {}),
+    ...(optOut.length ? { optOut: optOut.slice(0, 20) } : {}),
+  };
+}
+
 function normUpdates(raw: unknown): AnnounceUpdates | null {
   const r = raw as AnnounceUpdates | null | undefined;
   const repo = typeof r?.repo === "string" ? r.repo.trim() : "";
@@ -26,11 +36,7 @@ function normUpdates(raw: unknown): AnnounceUpdates | null {
   const optOut = (Array.isArray(r?.optOut) ? r.optOut : [])
     .filter((x): x is string => typeof x === "string" && x.length <= 80 && /^[a-zA-Z0-9_-]+$/.test(x))
     .slice(0, 20);
-  return {
-    repo,
-    ...(r?.publisher === true ? { publisher: true } : {}),
-    ...(optOut.length ? { optOut } : {}),
-  };
+  return buildUpdates(repo, r?.publisher === true, optOut);
 }
 
 /** announce 里带的东西：对端据此渲染在线列表、据此把 `from` 反查成身份（决定 7/10）。 */
@@ -174,15 +180,7 @@ export class Discovery extends EventEmitter {
       version: VERSION,
       status: this.localStatus(),
       avatar: this.cfg.avatar || undefined,
-      updates: (() => {
-        if (!this.cfg.updates.repo) return undefined;
-        const out = optOutIds();
-        return {
-          repo: this.cfg.updates.repo,
-          ...(this.cfg.updates.publisher ? { publisher: true } : {}),
-          ...(out.size ? { optOut: [...out].slice(0, 20) } : {}),
-        };
-      })(),
+      updates: buildUpdates(this.cfg.updates.repo, this.cfg.updates.publisher, this.cfg.updates.repo ? [...optOutIds()] : []) ?? undefined,
     };
   }
 

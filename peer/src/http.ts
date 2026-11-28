@@ -13,7 +13,7 @@ import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
 import { MAX_STICKER_BYTES, addSticker, listStickers, removeSticker, stickerCopy, stickerPath } from "./stickers.ts";
 import { afterWatermark, type History } from "./history.ts";
-import type { Messages } from "./messages.ts";
+import { REPLAY_DEFAULT, REPLAY_MAX, type Messages } from "./messages.ts";
 import type { Relations } from "./peers.ts";
 import { MAX_MARKET_FRAME, ingest, manifestResponse, parseFrame, touchBlob } from "./market.ts";
 import type { LocalActivity } from "./presence.ts";
@@ -553,8 +553,8 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const body = await readBody(req).catch(() => ({}));
         try {
           activity.touch();
-          const raw = Number(body?.limit);
-          const limit = Number.isFinite(raw) ? Math.max(0, Math.min(10, raw)) : 3;
+          const raw = body?.limit == null ? REPLAY_DEFAULT : Number(body.limit);
+          const limit = Number.isFinite(raw) ? Math.max(0, Math.min(REPLAY_MAX, raw)) : REPLAY_DEFAULT;
           return json(res, 200, messages.replayAnnouncements(String(body?.group ?? ""), String(body?.peer ?? ""), limit));
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });

@@ -2842,7 +2842,7 @@ function announceCard(e: Entry): HTMLElement {
     card.append(batch);
   }
   // 本机有热部署入口就写那条路，没有就只好给命令行（D441）。
-  const canHot = S.updates?.hotdeploy === true;
+  const canHot = a.howTo === "auto" && S.updates?.hotdeploy === true;
   card.append(
     h("div", "an-how", canHot ? tr("怎么更新：设置 → 工具 → 热部署") : tr("怎么更新：{p1}", { p1: MANUAL_UPDATE })),
   );

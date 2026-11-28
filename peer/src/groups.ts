@@ -37,34 +37,36 @@ export function isGroupId(id: string): boolean {
 }
 
 /** 对端发来的快照：只收形状对的，名字截短，成员去重。 */
-export function normalizeGroup(raw: any): Group | null {
-  const id = typeof raw?.id === "string" ? raw.id : "";
+export function normalizeGroup(raw: unknown): Group | null {
+  const src = (raw ?? {}) as Record<string, unknown>;
+  const id = typeof src.id === "string" ? src.id : "";
   if (!isGroupId(id) || id.length > 80 || !/^[a-zA-Z0-9_-]+$/.test(id)) return null;
   const seen = new Set<string>();
   const members: PeerIdentity[] = [];
-  for (const m of Array.isArray(raw?.members) ? raw.members : []) {
-    const nodeId = typeof m?.nodeId === "string" ? m.nodeId : "";
+  for (const item of Array.isArray(src.members) ? src.members : []) {
+    const m = (item ?? {}) as Record<string, unknown>;
+    const nodeId = typeof m.nodeId === "string" ? m.nodeId : "";
     if (!nodeId || seen.has(nodeId)) continue;
     seen.add(nodeId);
     members.push({
       nodeId,
-      ...(typeof m.nickname === "string" ? { nickname: m.nickname.slice(0, 64) } : {}),
-      ...(typeof m.hostname === "string" ? { hostname: m.hostname.slice(0, 128) } : {}),
+      ...(typeof m.nickname === "string" ? { nickname: String(m.nickname).slice(0, 64) } : {}),
+      ...(typeof m.hostname === "string" ? { hostname: String(m.hostname).slice(0, 128) } : {}),
       ...(Number.isFinite(Number(m.port)) ? { port: Number(m.port) } : {}),
     });
     if (members.length >= MAX_GROUP_MEMBERS) break;
   }
   return {
     id,
-    name: String(raw?.name ?? "").trim().slice(0, 64) || "群聊",
+    name: String(src.name ?? "").trim().slice(0, 64) || "群聊",
     members,
-    owner: String(raw?.owner ?? ""),
-    createdAt: Number(raw?.createdAt) || Date.now(),
-    v: Number(raw?.v) || 1,
-    at: Number(raw?.at) || Date.now(),
-    ...(raw?.announceOnly === true ? { announceOnly: true } : {}),
-    ...(typeof raw?.publisher === "string" && raw.publisher
-      ? { publisher: raw.publisher.slice(0, 64) }
+    owner: String(src.owner ?? ""),
+    createdAt: Number(src.createdAt) || Date.now(),
+    v: Number(src.v) || 1,
+    at: Number(src.at) || Date.now(),
+    ...(src.announceOnly === true ? { announceOnly: true } : {}),
+    ...(typeof src.publisher === "string" && src.publisher
+      ? { publisher: String(src.publisher).slice(0, 64) }
       : {}),
   };
 }
@@ -76,6 +78,9 @@ export function normalizeGroup(raw: any): Group | null {
 let optOutCache: Set<string> | null = null;
 /** 上次读文件时的 mtime + 大小：手动删改 / 多实例共用 state 目录时也能看见变化（评审 #3）。 */
 let optOutStamp = "";
+/** 上一次 stat 的时间：optOutIds 挂在 merge / announce 的热路径上，别每 10 秒都同步摸盘。 */
+let optOutCheckedAt = 0;
+const OPT_OUT_TTL_MS = 1000;
 
 function optOutFile(): string {
   return statePath("updates-optout.json");
@@ -91,6 +96,9 @@ function optOutFileStamp(): string {
 }
 
 export function optOutIds(): Set<string> {
+  const now = Date.now();
+  if (optOutCache && now - optOutCheckedAt < OPT_OUT_TTL_MS) return optOutCache;
+  optOutCheckedAt = now;
   const stamp = optOutFileStamp();
   if (optOutCache && stamp === optOutStamp) return optOutCache;
   try {
@@ -114,6 +122,7 @@ export function setOptOut(id: string, on: boolean): void {
   } finally {
     // 我们就是刚写这份文件的人：stamp 跟着更新，别让下一次读盘用旧 stamp 去撞缓存（评审 #7）。
     optOutStamp = optOutFileStamp();
+    optOutCheckedAt = Date.now();
   }
 }
 
@@ -172,9 +181,10 @@ export class Groups {
    * 收到对端的快照：新于本机才收。返回 `null` = 没变化；否则返回变化前后两份（调用方据此
    * 往会话里写一行「X 改了群名」这类灰条）。
    *
-   * `claimer` = 发送方 nodeId。只读群换发布者（D441）时它会是**新**发布者，而新机器上的 v 可能
-   * 比旧机器小（它从没进过这个组）—— 这种快照照收：版本抬到 `before.v + 1`，名册取并集，
-   * 否则「换一台机器发布」就永远推不动。其他情况仍然谁 v 大听谁的。
+   * `claimer` = 发送方 nodeId。takeover 只处理一种情况：组已经开了只读、但 `publisher` 还是空的，
+   * 此时由建组人（owner）把这台机器认成发布者。已经在用的只读群换发布者**不走这里** ——
+   * 新机器先被拉进组拿到当前 v，再调 `claimPublisher()` 发 v+1 的快照，正常版本比较就能推进。
+   * 其他情况仍然谁 v 大听谁的。
    */
   merge(raw: unknown, me: string, claimer = ""): { before: Group | null; after: Group } | null {
     const next = normalizeGroup(raw);
