@@ -9212,3 +9212,21 @@ if (stop >= 0) {
 **代价 / 可改。** 拖这根时看不到背后的页面 —— 它本来也不该看，它不动页面任何内容，只动面板的框与字。想整页预览就松手后关掉面板。
 
 **守卫。** `probes/console-peek.mjs` 第 2 段：拖 `.size-rail` nth(6)（设置与控制台）40px 期间 `.st-console` opacity 必须 > 0.99、`.console-peek` 不出现，留图 `2-console-no-peek.png`；字号那根的阈值（3px / 40px）、胶囊读数（「字号 · N%」）、键盘 400ms、Esc 撤回、明细段截图全部保持原样（改前改后都量字号）。真应用同样量过：拖设置与控制台 → 面板 zoom 1.25→1.95 全程可见、胶囊不出现；拖字号 → 胶囊「字号 · 195%」、面板 0.03，松手回 1。
+
+## D459 终端 ＋ 的 shell 菜单走全站那一份落位规矩；「－」收起之后顶栏按钮亮起来并挂三根音柱（#756，用户 2026-11-28 截图「终端，选择shell 穿模」「最小化终端现在和关闭终端，表示一直，分不清区别」）
+
+**症状。** ①`＋` 的 shell 菜单自己算位置，而且是写死的一侧：`menu.style.bottom = window.innerHeight - r.top + 4`，等于「不管上面有没有地方，一律贴锚点往上弹」。dock 一拉高，锚点离窗口顶只有十几像素，菜单整块顶出视口 —— 上沿被屏幕切掉，还压在顶栏的会话标签上（截图里 pwsh / powershell / Git Bash / cmd 就这么盖着 GG_Bond、ai）。②顶栏那颗「终端」只有明暗一档差别（`term-live`），收起与关闭在深色顶栏上看着一样，用户分不清「收起来了，shell 还在跑」和「已经关了」。
+
+**决定。**
+
+- `openShellMenu()` 不再手算坐标：`document.body.append(menu)` 之后 `stickMenu(menu, anchor.getBoundingClientRect(), { gap: 6 })`（`web/src/menuplace.ts`，与 `.ctx-menu` / 工作区浮层 / `pinmenu` 同一份规矩：默认向下开、下方放不下且上方更宽敞才翻上去、左右上下夹 `MENU_EDGE = 8`、封顶后可滚）。`.term-menu` 补 `overflow-y: auto` + `overscroll-behavior: contain`（封顶后滚到底不许把页面一起滚走）、`.term-menu-item` 补 `flex: 0 0 auto`，封顶时不会被压扁、能滚到最后一个 shell。
+- `paintTermButton()` 把三态写进 `data-term-state`：`off`（没有终端）/ `open`（dock 在屏幕上）/ `min`（收起来了，shell 还活着）。`min` 时在字后面挂三根 `.term-bars` 的小柱子（2px 宽、10px 高、强调色、`@keyframes term-bars-rise` 1.05s ease-in-out infinite：`scaleY` .34↔1、透明度 .55↔1，三根错开 .16s —— 就是音乐 / 播客那个「正在播放」记号；`prefers-reduced-motion` 下放慢到 2.6s）。第一版做的是**贴在图标右下角的呼吸灯**（7px 圆点 + 光晕，2.4s），用户当场否掉（「呼吸灯太丑，重新设计一下，要mac风格」），做了四份能跑的样张让他挑，选的是音柱。圆点要贴住图标才看得出属于它，一贴就成了贴纸；音柱排在字后面、跟着基线走，深浅两套顶栏都干净。
+- title 与 aria-label 永远同一句（`aria-label = title`），跟着状态说话（「终端还在后台跑，点一下收回来」/「{p1} 个终端还在后台跑，点一下收回来」/「终端已打开，点一下回到当前标签」），三句都进了 `en.ts` / `ja.ts`。
+- `setWideLabel()` 会 `replaceChildren`，所以音柱是每次重画时重挂，不是常驻节点：关掉最后一个标签后它自然消失，不会留三根「幽灵柱」。
+- 「点亮」这件事以前在 mac 表皮里**根本没生效**：`web/src/mac.css:30` 的 `html[data-ui="mac"] .topbar .icon-btn { color: var(--dim); background: transparent; … }`（特异度 0,3,1）压过写状态色的 `.icon-btn.term-live`（0,2,0），实测最小化时 `term-live` 在 classList 里、computed 却是 `rgb(81, 81, 84)` 的字和透明底 —— 这才是用户「收起与关闭看着一样」的真根因，光加指示器不够。现在在 mac.css 里按同一个组合补回 `.term-live`（accent 字 + `--accent-bg` 底；hover 是把强调色叠进这个不透明底色，不是换成半透明强调色 —— 玻璃顶栏上那会发淡发透）与同病相怜的 `.alert`（右栏那颗的告警色，`app.ts` 里 `collapseRight` 加的，同样一直被盖掉）。
+
+**为什么。** 落位这件事全站只该有一份实现，终端菜单当年漏在外面才漏出这个 bug；修的时候不再造第二份。状态用 `data-term-state` 而不是再加一个 class，是因为探针与 CSS 都要按「三选一」取值，两个布尔会漂出四种组合。
+
+**代价。** 菜单在 dock 很高时改为**向下**开，会盖住终端输出区（以前盖的是会话区）；这是「不翻出窗口」的必然结果，方向由空间决定而不是由代码写死。
+
+**验证。** `probes/term-shell-menu.mjs`（假桥四个 shell）：dock 拖到顶后开菜单 —— 上下左右都在视口内（修前 top=-146）、向下开且贴锚点、四个 item 不越出菜单、中心 `elementFromPoint` 命中菜单（修前整块在屏幕外）；双击 grip 复位到窗口底部再开 —— 不盖住 `＋`；900×360 窗口里同样在视口内、封顶时能滚到最后一项；`－` 之后 `data-term-state="min"`、三根 `.term-bars` 都在、`animation-name=term-bars-rise`、`iteration-count=infinite`、1.05s、三个不同 delay、都落在按钮框里、260ms 采样 `transform` 确实在变（`matrix(1,0,0,0.34,0,0) → matrix(1,0,0,0.715,0,0)`），按钮真的点亮（computed 从 `rgb(81,81,84)` / 透明底变成 `rgb(0,122,255)` / accent 底，这条在补 mac.css 之前是红的）；再点顶栏回到同一个 shell 且柱子消失；`关闭` 之后 `data-term-state="off"`、无柱子、无 `term-live`。`PROBE_THEME=mac-dark` 跑一遍同样全绿（暗色下 10,132,255 / `color(srgb 0.10 0.17 0.24)`）。`npm --prefix web run typecheck` 通过（含 i18n 与两条守卫）。

@@ -220,6 +220,19 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .icon-btn[aria-pressed="true"] { color: var(--faint); }
 /* D92: 顶栏那颗「终端」—— 有 shell 在跑（含收起状态）就点亮，点一下回到同一个进程。 */
 .icon-btn.term-live { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
+/* #756: 收起（「－」）≠ 关掉。收起态在字后面挂三根音柱（「正在播放」那个记号）：
+   柱子在动 = shell 还在后台跑，再点一下回到原样；关掉之后它们消失、按钮回灰。
+   不挂在图标角上 —— 圆点要贴住图标才看得出属于它，一贴就成了贴纸。 */
+.term-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 10px; margin-left: 1px; flex: none; }
+.term-bars i {
+  display: block; width: 2px; height: 10px; border-radius: 1px; background: var(--accent);
+  transform-origin: bottom; animation: term-bars-rise 1.05s ease-in-out infinite;
+}
+.term-bars i:nth-child(2) { animation-delay: 0.16s; }
+.term-bars i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes term-bars-rise { 0%, 100% { transform: scaleY(0.34); opacity: 0.55; } 50% { transform: scaleY(1); opacity: 1; } }
+/* 少动的人也要看得出「在动」，但别快得像报警器 —— 同一段起伏，放慢到 2.6s。 */
+@media (prefers-reduced-motion: reduce) { .term-bars i { animation-duration: 2.6s; } }
 .icon-btn.alert { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
 /* 记录那颗：平时灰的，有未处理条目才整颗（图标 + 悬停底）转危险色 —— 红等于「有活没干」。 */
 .icon-btn.notes-btn.has-pending { color: var(--danger); --ico-tint: var(--danger); }
@@ -2533,6 +2546,9 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 @media (max-width: 560px) {
   .icon-btn.wide { width: 28px; padding: 0; gap: 0; }
   .icon-btn.wide .lb { display: none; }
+  /* 窄成 28px 方块时字收掉了，音柱还在图标后面：15 + 8 放得下，别再给它们 2px 的缝。 */
+  .topbar .term-bars { gap: 1px; height: 7px; }
+  .topbar .term-bars i { height: 7px; }
   /* 打开会话之后这一排是九样东西（chips + 六颗按钮 + 字号），390px 差 10px 就要横向滚。
      缝收到 6、两侧 padding 收到 12，再把 chip 里的工作区名收掉（它 70px，而这一排真正要读的
      是会话名，标题那一格本来就只剩几十像素）。 */
@@ -3918,8 +3934,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .session-info .info-compact input:focus { outline: none; border-color: var(--accent); }
 
 /* #23 shell picker under the terminal ＋ */
-.term-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 140px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
-.term-menu-item { text-align: left; padding: 8px 8px; border: 0; background: none; color: var(--text); border-radius: 6px; font-size: 13px; cursor: pointer; }
+.term-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 140px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); overflow-y: auto; /* #756：封顶后滚到底不许把页面一起滚走（滚链） */ overscroll-behavior: contain; }
+.term-menu-item { flex: 0 0 auto; text-align: left; padding: 8px 8px; border: 0; background: none; color: var(--text); border-radius: 6px; font-size: 13px; cursor: pointer; }
 .term-menu-item:hover { background: var(--accent-bg); }
 
 /* #31 compaction / branch summary / extension message */
