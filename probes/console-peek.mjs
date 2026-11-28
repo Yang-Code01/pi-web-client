@@ -116,6 +116,34 @@ await new Promise((r, reject) => {
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1200, height: 836 }, locale: "zh-CN" });
 const page = await ctx.newPage();
+// 面板可用宽 / 内容宽的量法注入一次，geo() 与 modelGeo() 都调它：
+// 两处各写一遍就是两个口径（上一版一块读 computed padding、另一块写死 40，app.ts 一改就分家）。
+await page.addInitScript(() => {
+  const hostOf = (con) => {
+    const parent = con?.parentElement ?? null;
+    if (parent && (parent.classList.contains("st-back") || parent.classList.contains("sheet-back"))) return parent;
+    return document.querySelector(".st-back, .sheet-back");
+  };
+  // 宿主 content box 的宽（视觉 px）—— 与 app.ts 的 `consoleAvail()` 同一口径：
+  // `.st-back` 的留白跟着档位变，固定用基准 20×2；`.sheet-back` 才读 computed。
+  window.__probeConsoleAvail = (con) => {
+    const host = hostOf(con);
+    if (!host || host.clientWidth <= 0) return -1;
+    if (host.classList.contains("st-back")) return host.clientWidth - 40;
+    const cs = getComputedStyle(host);
+    return host.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+  };
+  // 面板真实内容宽（css px，与 `clientWidth` / `offsetWidth` 同单位）—— 与 `paintConsoleFolds()` 同一口径：
+  // 有面板就量它自己的 `clientWidth`（zoom 子树里它就是布局 px，不用再除）。
+  window.__probeConsoleWidth = (con) => {
+    const cs = con ? getComputedStyle(con) : null;
+    const zoom = cs ? Number(cs.zoom) || 1 : 1;
+    const avail = window.__probeConsoleAvail(con);
+    if (con && con.clientWidth > 0) return { w: con.clientWidth, avail, measured: true };
+    const frame = cs ? Number(cs.getPropertyValue("--st-frame")) || 1 : 1;
+    return { w: Math.min(1080 * frame, avail) / zoom, avail, measured: false };
+  };
+});
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e.message)));
 page.on("console", (m) => {
@@ -197,21 +225,11 @@ async function geo() {
       stFrame: cs ? cs.getPropertyValue("--st-frame").trim() : "",
       // 面板里的字：css px × zoom 才是用户看到的视觉大小。
       textVisual: Math.round(fs * zoom * 100) / 100,
-      // 遮罩层能给的宽度 —— 与 app.ts 的 `consoleAvail()` 同一个口径：`.st-back` 用基准 20×2
-      // （它的 padding 跟着档位变，读 computed 会「档位 ↔ 留白」互相喂），`.sheet-back` 才读 computed。
-      avail: (() => {
-        const parent = con?.parentElement ?? null;
-        const host =
-          parent && (parent.classList.contains("st-back") || parent.classList.contains("sheet-back"))
-            ? parent
-            : back;
-        if (!host || host.clientWidth <= 0) return -1;
-        const hcs = getComputedStyle(host);
-        const pad = host.classList.contains("st-back")
-          ? 40
-          : (parseFloat(hcs.paddingLeft) || 0) + (parseFloat(hcs.paddingRight) || 0);
-        return host.clientWidth - pad;
-      })(),
+      // 遮罩层能给的宽度 —— 共用页面里注入的 `__probeConsoleAvail()`（与 app.ts 同一口径）。
+      avail: window.__probeConsoleAvail(con),
+      // 面板自己的内容宽（css px）：有面板时是量出来的，不是估的。
+      contentW: Math.round(window.__probeConsoleWidth(con).w * 10) / 10,
+      contentMeasured: window.__probeConsoleWidth(con).measured,
       railY: rr ? Math.round(rr.y) : -1,
       railBottom: rr ? Math.round(rr.bottom) : -1,
       vh: innerHeight,
@@ -240,8 +258,8 @@ await openLook();
 const at200 = await geo();
 await page.screenshot({ path: path.join(OUT, "1-scale-200.png") });
 
-// 外框该多大：min(1080 × frame, 遮罩可用宽)，再除以 zoom 就是 css 宽。
-const wantW = (g) => Math.min(1080 * (Number(g.stFrame) || 1), g.avail);
+// 外框该多大：min(1080 × frame, 遮罩可用宽)，再除以 zoom 就是 css 宽（与 `w` / `offsetWidth` 同单位）。
+const wantW = (g) => Math.min(1080 * (Number(g.stFrame) || 1), g.avail) / (Number(g.zoom) || 1);
 check("1. 控制台挂在 body 上、不在 #app 的 zoom 子树里", !at200.inApp && at200.inBody, JSON.stringify(at200));
 check(
   "1a. 1.0 是原位不动：zoom 1、外框 1080、字没被二次缩放",
@@ -270,6 +288,20 @@ check(
   "1c. 2.0 下那根字号滑杆仍在视口内",
   at200.railY > 0 && at200.railBottom <= at200.vh,
   `rail ${at200.railY}–${at200.railBottom} / 视口 ${at200.vh}`,
+);
+
+// 1c2：外框的视觉尺寸只由 `--st-frame` 决定 —— 80% 字号下仍是 1080，不能跟着缩小。
+// （2026-11-28 真实踩过：`.st-console.display-sheet` 里多一条 `width: min(1080px, 100%)`，
+//  特异性赢过基础规则，于是 80% 下外框成了 864；2.0 下反而看不出来，被遮罩的 100% 一夹就抹平了。）
+await page.keyboard.press("Escape");
+await sleep(200);
+await boot({ scale: 0.8 });
+await openLook();
+const at80 = await geo();
+check(
+  "1c2. 0.8 字号下外框视觉尺寸不变（frame=1 时还是 1080，不是 864）",
+  Math.abs(at80.zoom - 0.8) < 0.01 && Math.abs(at80.w * at80.zoom - 1080) <= 3,
+  `css ${at80.w} × zoom ${at80.zoom} = ${Math.round(at80.w * at80.zoom)} 视觉 px`,
 );
 
 // ---------------------------------------------------------------- 1d. 别的控制台同样跟着缩（8 个入口不止外观这一扇）
@@ -305,12 +337,8 @@ const modelGeo = async () => {
       h: sheet.offsetHeight,
       zoom: Number(getComputedStyle(sheet).zoom) || 1,
       // 宿主 content box（`.st-back` 两侧各 20px）：与 paintConsoleFolds 同一个口径。
-      avail: (() => {
-        const host = document.querySelector(".st-back");
-        if (!host) return innerWidth - 40;
-        const cs = getComputedStyle(host);
-        return host.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
-      })(),
+      avail: window.__probeConsoleAvail(sheet),
+      contentW: Math.round(window.__probeConsoleWidth(sheet).w * 10) / 10,
       stFrame: getComputedStyle(sheet).getPropertyValue("--st-frame").trim(),
       narrow: document.documentElement.dataset.stNarrow,
     };
@@ -384,8 +412,15 @@ await openLook();
 
 // D455：只有「设置与控制台」那根不让开 —— 它改的就是面板自己的框，再淡掉等于「拖一下就关掉了设置」。
 // 先拿它验**不让开**，后面的阈值 / 胶囊仍量「字号」（那根真的改的是面板背后那片页面）。
-// 按行内 label 文本找，不靠 DOM 顺序：以后在它前面插一根滑杆，nth(6) 会悄悄量到别人身上。
-const conRailLoc = page.locator(".settings-row").filter({ hasText: "设置与控制台" }).locator(".size-rail").first();
+// 按行内 **名字** 找，不靠 DOM 顺序也不靠整行文本子串：`.settings-label` 只装名字（+ 当前读数），
+// 行内 hint 写什么都不会误命中；以后在它前面插一根滑杆也不会悄悄量到别人身上。
+const railFor = (label) =>
+  page
+    .locator(".settings-row")
+    .filter({ has: page.locator(".settings-label", { hasText: new RegExp(`^${label}`) }) })
+    .locator(".size-rail")
+    .first();
+const conRailLoc = railFor("设置与控制台");
 await conRailLoc.scrollIntoViewIfNeeded();
 const conRail = await mustBox(conRailLoc, "2 段：设置与控制台轨道");
 const conY = conRail.y + conRail.height / 2;
@@ -408,7 +443,7 @@ await page.keyboard.press("Escape");
 await sleep(150);
 await boot({ scale: 1.25 });
 await openLook();
-const railBox = await mustBox(page.locator(".size-rail").first(), "2/3 段：字号轨道");
+const railBox = await mustBox(railFor("字号"), "2/3 段：字号轨道");
 const startX = railBox.x + railBox.width * 0.375; // 125%
 const startY = railBox.y + railBox.height / 2;
 const restState = await peekState();
@@ -489,7 +524,7 @@ await boot({ scale: 1.25 });
 await openLook();
 const beforeEsc = await geo();
 check("6 段前置：Esc 之前面板是开着的、不在 #app 里", beforeEsc.w > 0 && !beforeEsc.inApp, JSON.stringify({ w: beforeEsc.w, h: beforeEsc.h, inApp: beforeEsc.inApp }));
-const escBox = await mustBox(page.locator(".size-rail").first(), "6 段：字号轨道");
+const escBox = await mustBox(railFor("字号"), "6 段：字号轨道");
 const escY = escBox.y + escBox.height / 2;
 const escX = escBox.x + escBox.width * 0.375;
 await page.mouse.move(escX, escY);
@@ -527,7 +562,7 @@ check(
 );
 
 // ---------------------------------------------------------------- 7. 拖动中窗口失焦：自己收干净
-const blurBox = await mustBox(page.locator(".size-rail").first(), "7 段：字号轨道");
+const blurBox = await mustBox(railFor("字号"), "7 段：字号轨道");
 await page.mouse.move(blurBox.x + blurBox.width * 0.375, blurBox.y + blurBox.height / 2);
 await page.mouse.down();
 await page.mouse.move(blurBox.x + blurBox.width * 0.375 + 50, blurBox.y + blurBox.height / 2, { steps: 3 });
@@ -577,7 +612,7 @@ await sleep(150);
 // A（字号）只按键盘：让开起来，同时挂上 400ms 的自动收起
 await page.evaluate(() => document.querySelectorAll(".size-rail")[0].querySelector("input").focus({ preventScroll: true }));
 await page.keyboard.press("ArrowRight");
-const bBox = await mustBox(page.locator(".size-rail").nth(1), "10 段：第二根轨道");
+const bBox = await mustBox(railFor("顶栏"), "10 段：顶栏轨道");
 const by = bBox.y + bBox.height / 2;
 const bx = bBox.x + bBox.width * 0.2;
 await page.mouse.move(bx, by);

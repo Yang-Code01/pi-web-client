@@ -571,6 +571,8 @@ export class App {
    *  否则下一次打开的任何会话都会莫名其妙带上上一个会话的笔记。 */
   private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
+  /** `.sheet-back` 宿主留白的缓存（同一扇宿主 + 同一视口宽度有效）：拖滑杆时每帧都过这条路径。 */
+  private sheetPadCache: { host: HTMLElement; w: number; pad: number } | null = null;
   /** D321：文件搜索面板（打开时才有，关掉就置 null；`filesearch.*` 帧路由到它）。 */
   private fileSearch: FileSearchHandle | null = null;
   private modelChip: HTMLButtonElement | null = null;
@@ -1577,25 +1579,39 @@ export class App {
    */
   private paintConsoleFolds(con?: HTMLElement | null): void {
     const root = document.documentElement;
-    const stZoom = this.prefs.scale * this.prefs.consoleScale;
-    const stFrame = Math.max(this.prefs.scale, this.prefs.consoleScale);
-    const stWidth = Math.min(1080 * stFrame, this.consoleAvail(con)) / (stZoom || 1);
-    root.dataset.stNarrow = String(stWidth <= 900);
-    root.dataset.stMid = String(stWidth <= 720);
-    root.dataset.stTight = String(stWidth <= 640);
+    const { zoom, frame } = this.consoleVars();
+    const z = zoom || 1;
+    // 有面板就直接量它自己：CSS 已经把 `min(1080×frame/zoom, 100%)` 算完了，量到的是**真实内容宽**，
+    // 宿主留白怎么变（窄版 10 / 紧版 0）都自动包含在内 —— 不再靠 JS 估一个固定留白。
+    // 量不到（面板没开、构造期）才用宿主可用宽 ÷ zoom 估。
+    // 调用方可能传**面板**（`overlay()` 里是 `.st-console`）也可能传**宿主**（`syncCompact()` 里
+    // `this.sheet` 存的是 `.st-back`，见 `openDisplaySheet()`），所以先归一成那扇 `.st-console`。
+    // `clientWidth` 在 zoom 子树里返回的是**布局 px**（1400 窗口、zoom 2 实测：rect 1378 / clientWidth 688），
+    // 正好是后面那几个阈值要的单位，不要再除一道 zoom。
+    const panel = con ? (con.matches(".st-console") ? con : con.querySelector<HTMLElement>(":scope > .st-console")) : null;
+    const measured = panel && panel.clientWidth > 0 ? panel.clientWidth : null;
+    const w = measured ?? Math.min(1080 * frame, this.consoleAvail(con)) / z;
+    // 档位会反过来改变面板宽度（窄版把宿主 padding 改小、面板 `width:100%`），所以**出档要带滞回**：
+    // 同一个阈值双向判的话，面板正好长在 900±20 时会「判窄 → 留白变小 → 变宽 → 判不窄」来回翻。
+    const band = 20 / z;
+    const wasNarrow = root.dataset.stNarrow === "true";
+    const wasMid = root.dataset.stMid === "true";
+    const wasTight = root.dataset.stTight === "true";
+    root.dataset.stNarrow = String(wasNarrow ? w <= 900 + band : w <= 900);
+    root.dataset.stMid = String(wasMid ? w <= 720 + band : w <= 720);
+    root.dataset.stTight = String(wasTight ? w <= 640 + band : w <= 640);
   }
 
   /**
-   * 控制台能长到多宽（视觉 px）= 宿主 content box 的宽。
+   * 控制台能长到多宽（视觉 px）= 宿主 content box 的宽。**只在没面板可量时用**
+   * （有面板时 `paintConsoleFolds()` 直接量它自己的 `clientWidth`，那是真实内容宽）。
    * 宿主优先从**调用方给的那扇面板**往上认（`con.parentElement`）：一个页面上可能同时挂着几扇控制台
    * （设置、模型、交接），全局 `querySelector` 会拿别人的宿主算自己的档位。
    *
-   * 留白分两种写法，别统一成一种：
-   * - `.st-back` 的 padding **跟着档位变**（基准 20px，窄版 10px、紧版 0）。读它就是「档位 ↔ 留白」
-   *   互相喂：宿主宽正好落在 920–940 那一小段时，两种口径各自都能自洽，档位会在同一帧里来回翻。
-   *   所以这里固定用**基准 20×2** 判，档位不参与计算，判据就成了纯函数。代价是窄版下 JS 估的比 CSS 的
-   *   `100%` 窄 20px —— 只挪断点、不会抖。
-   * - `.sheet-back`（0 / 16 / 24px，看断点与 `.center`）的留白不由 `data-st-*` 控制，读 computed 才对。
+   * `.st-back` 的 padding **跟着档位变**（基准 20px，窄版 10px、紧版 0），所以这里固定用基准 20×2 估：
+   * 估出来会与窄版的真实宽度差 20px，但「不会抖」那件事已经交给 `paintConsoleFolds()` 的滞回了。
+   * `.sheet-back`（0 / 16 / 24px，看断点与 `.center`）的留白不由 `data-st-*` 控制，读 computed 才对 ——
+   * 读一次缓存一次（`sheetHostPad()`）：这条路径在拖滑杆时每帧都过，`getComputedStyle()` 会强制同步排版。
    * 面板还没挂上去（首帧、构造期）才退回视口估 —— 那时没有任何东西可量。
    */
   private consoleAvail(con?: HTMLElement | null): number {
@@ -1605,13 +1621,23 @@ export class App {
         ? parent
         : document.querySelector<HTMLElement>("body > .st-back, body > .sheet-back");
     if (host && host.clientWidth > 0) {
-      const cs = getComputedStyle(host);
-      const pad = host.classList.contains("st-back")
-        ? 40
-        : (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
-      return Math.max(0, host.clientWidth - pad);
+      if (host.classList.contains("st-back")) return Math.max(0, host.clientWidth - 40);
+      return Math.max(0, host.clientWidth - this.sheetHostPad(host));
     }
     return Math.max(0, window.innerWidth - 40);
+  }
+
+  /**
+   * `.sheet-back` 的左右留白（computed）：同一扇宿主、同一视口宽度只读一次。
+   * 它的 padding 只由 @media / `.center` 决定，与 `data-st-*` 无关，所以缓存安全。
+   */
+  private sheetHostPad(host: HTMLElement): number {
+    const cache = this.sheetPadCache;
+    if (cache && cache.host === host && cache.w === window.innerWidth) return cache.pad;
+    const cs = getComputedStyle(host);
+    const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    this.sheetPadCache = { host, w: window.innerWidth, pad };
+    return pad;
   }
 
   private applyQueueTabEvent(event: TabEvent): void {
@@ -4767,8 +4793,17 @@ export class App {
     // D454：控制台整块跟着两个倍率缩。`--st-zoom` 是它自己的 `zoom`（字、控件、留白一起放大）；
     // `--st-frame` 决定外框的视觉尺寸 —— 谁大跟谁：字号 200% 时面板自己撑到满窗口，
     // 不然 2.0 下还卡在 1080 会让内容只剩 540 宽（样张 B 就是掉进这个坑的）。
-    root.setProperty("--st-zoom", String(this.prefs.scale * this.prefs.consoleScale));
-    root.setProperty("--st-frame", String(Math.max(this.prefs.scale, this.prefs.consoleScale)));
+    const { zoom, frame } = this.consoleVars();
+    root.setProperty("--st-zoom", String(zoom));
+    root.setProperty("--st-frame", String(frame));
+  }
+
+  /**
+   * D454 的两个倍率只有这一个式子：CSS 变量（`paintRegionScales`）与档位计算（`paintConsoleFolds`）
+   * 都从这里拿。以前两处各写一遍 `scale * consoleScale` / `Math.max(...)`，改一处就静默脱节。
+   */
+  private consoleVars(): { zoom: number; frame: number } {
+    return { zoom: this.prefs.scale * this.prefs.consoleScale, frame: Math.max(this.prefs.scale, this.prefs.consoleScale) };
   }
 
   /**
@@ -5021,7 +5056,8 @@ export class App {
           document.documentElement.style.setProperty("--ui-scale", String(v));
           // D454：控制台自己也吃 `--st-zoom = 字号 × 设置与控制台`，只写 `--ui-scale` 的话它要等到松手
           // （`applyPrefs()`）才更新 —— 拖动中面板的缩放与下面 `paintConsoleFolds()` 判档位用的倍率
-          // 就不是同一个，档位和看到的框会脱节。这一句很便宜（六个 CSS 变量），每帧写没关系。
+          // 就不是同一个，档位和看到的框会脱节。这句很便宜：六个 CSS 变量加一次 `clientWidth` 读，
+          // 不再读 computed padding（`.st-back` 用基准值、`.sheet-back` 有缓存）。
           this.paintRegionScales();
           // 拖动中也要判窄版：不判的话预告是假的（1.0 拖到 2.0 的路上一直是三栏，松手才突然变一栏），
           // 而抽屉的宽度不跟着窄版变（min(560px,100%)），所以冻住的轨道盒子不会在手指底下跑。

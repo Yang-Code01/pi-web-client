@@ -1257,7 +1257,9 @@ body > :is(.st-back, .sheet-back)[data-mac-surface].peeking {
 .st-console.display-sheet {
   /* 列轨必须是 minmax(0,…)：隐式的 auto 列会被顶栏预览（不换行）撑到 min-content，手机宽度下整块被裁掉。 */
   grid-template-columns: minmax(0, 1fr);
-  width: min(1080px, 100%);
+  /* 尺寸不在这里再来一份（D454）：`.st-console` 的基础规则既吃 `--st-frame` 又除 `--st-zoom`，
+     这里写 `width: min(1080px, 100%)` 会因特异性更高静默赢掉它 —— 字号 80% 时面板只有 864 宽
+     （2026-11-28 实测：computed width 1080px / rect 864），倍率整体失效。 */
 }
 
 /* 标题 | 大类页签 | 按钮：页签居中，不挤标题。 */
