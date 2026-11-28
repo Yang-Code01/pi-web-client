@@ -106,8 +106,10 @@ try {
   await badge.waitFor({ timeout: 20000 });
   await badge.click();
   await page.locator(".bg-sheet").waitFor({ timeout: 10000 });
-  const card = page.locator(".bg-run").first();
+  // 两栏：左栏一行一条 run，右栏一页一条。断言都对着「当前可见的那一页」。
+  const card = page.locator(".bg-run:not([hidden])").first();
   await card.waitFor({ timeout: 10000 });
+  check("左栏列出这条 run", (await page.locator(".bg-nav-item").count()) === 1);
 
   // 刚开卡时桥只认得出「有这么一个 run」：原文要等 `status.json`（fake-pi 延迟 1.2 s 才写）。
   const early = (await card.locator(".bg-run-task").textContent()) ?? "";
@@ -115,7 +117,7 @@ try {
   const filled = await page
     .waitForFunction(
       () => {
-        const t = document.querySelector(".bg-run .bg-run-task")?.textContent ?? "";
+        const t = document.querySelector(".bg-run:not([hidden]) .bg-run-task")?.textContent ?? "";
         return t.includes("STANDARDS axis only") ? t : null;
       },
       undefined,
@@ -125,14 +127,22 @@ try {
     .catch(() => null);
   check("留在同一张卡上就自动补上原文（不重开弹层）", Boolean(filled), filled ?? "(仍是占位)");
   check("两条孩子都列出来", typeof filled === "string" && filled.includes("SPEC axis only"), filled ?? "");
-  const head = (await card.locator(".bg-run-agent").textContent()) ?? "";
+  const head = (await page.locator(".bg-run:not([hidden]) .bg-run-agent").textContent()) ?? "";
   check("卡片头跟着数据补成 reviewer", head === "reviewer", head);
-  await page.screenshot({ path: path.join(OUT, "1-script-filled.png"), animations: "disabled" });
+  const navAgent = (await page.locator(".bg-nav-item").first().locator(".bg-nav-agent").textContent()) ?? "";
+  check("左栏那一行也叫 reviewer", navAgent === "reviewer", navAgent);
+  await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "1-script-filled.png"), animations: "disabled" });
 
   // ---- 2. 前台派活失败：失败原因要出现在卡上（弹层一直开着）
   prompt("BGFAIL", "probe-fail");
-  const failCard = page.locator(".bg-run").filter({ hasText: "call_00_79ZGyKVyGhxhy8l7XsKw7723" }).first();
-  await failCard.waitFor({ timeout: 20000 });
+  // 失败那条在左栏（灯变红）：点它，右栏换页；再对着可见页断言。
+  const failItem = page.locator('.bg-nav-item[data-state="failed"]').first();
+  await failItem.waitFor({ timeout: 20000 });
+  check("失败那条进了左栏（且只一条）", (await page.locator('.bg-nav-item[data-state="failed"]').count()) === 1);
+  check("左栏至少两条 run", (await page.locator(".bg-nav-item").count()) >= 2);
+  await failItem.click();
+  const failCard = page.locator(".bg-run:not([hidden])").first();
+  check("点左栏就换到失败那一页", ((await failCard.locator(".bg-run-id").textContent()) ?? "").includes("call_00_79ZGyKVyGhxhy8l7XsKw7723"));
   const stateText = (await failCard.locator(".bg-run-state").textContent()) ?? "";
   check("失败那张卡标了「失败」", stateText.includes("失败"), stateText);
   const errText = await failCard
@@ -142,12 +152,145 @@ try {
   check("失败原因照原样出现在卡上", (errText ?? "").startsWith("The workflow script is missing."), errText ?? "(空)");
   check("失败卡不出「最终输出」（没有 Return 块）", (await failCard.locator(".bg-run-out").count()) === 0 || !(await failCard.locator(".bg-run-out").isVisible()));
   check("失败卡不摆空的过程框", !(await failCard.locator(".bg-run-log").isVisible()));
-  await page.screenshot({ path: path.join(OUT, "2-failed.png"), animations: "disabled" });
+  await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "2-failed.png"), animations: "disabled" });
 
-  // ---- 3. 老占位文案不再出现在界面上（它把责任推给了桥）
+  // ---- 3. ARIA：tablist 只装 tab，每颗 tab 都指到一页；没选中的页整页 hidden
+  const tabs = page.locator('.bg-sheet [role="tablist"] > *');
+  check(
+    "tablist 里只有 tab 子节点（计数那行不在里面）",
+    await tabs.evaluateAll((ns) => ns.length > 0 && ns.every((n) => n.getAttribute("role") === "tab")),
+    String(await tabs.count()),
+  );
+  check(
+    "每颗 tab 都 aria-controls 到自己那页",
+    await tabs.evaluateAll((ns) =>
+      ns.every((n) => {
+        const id = n.getAttribute("aria-controls");
+        return Boolean(id && document.getElementById(id));
+      }),
+    ),
+  );
+  const selId = () => page.locator('.bg-nav-item[aria-selected="true"]').getAttribute("data-id");
+  const beforeKey = await selId();
+  await page.locator('.bg-nav-item[aria-selected="true"]').focus();
+  await page.keyboard.press("ArrowUp");
+  const afterKey = await selId();
+  check("↑↓ 在左栏里换页", Boolean(afterKey) && afterKey !== beforeKey, `${beforeKey} → ${afterKey}`);
+
+  // 键盘边界：第一条上按 ↑ 不动且焦点不丢、Home/End 跳首尾、Tab 能走进右栏（长日志要能用键盘滚）。
+  await page.keyboard.press("Home");
+  const firstId = await selId();
+  await page.locator('.bg-nav-item[aria-selected="true"]').focus();
+  await page.keyboard.press("ArrowUp");
+  check("第一条上按 ↑ 不动", (await selId()) === firstId);
+  check(
+    "↑ 到头时焦点还在 tab 上",
+    await page.evaluate(() => document.activeElement?.getAttribute("role") === "tab"),
+  );
+  await page.keyboard.press("End");
+  const lastId = await selId();
+  check("End 跳到末条", Boolean(lastId) && lastId !== firstId, `${firstId} → ${lastId}`);
+  await page.keyboard.press("Home");
+  check("Home 回第一条", (await selId()) === firstId);
+  await page.keyboard.press("Tab");
+  check(
+    "Tab 从 tab 走进右栏（tabpanel 可聚焦）",
+    await page.evaluate(() => document.activeElement?.getAttribute("role") === "tabpanel"),
+  );
+
+  // ---- 4. 窄窗（380×760）：左栏折成顶部横条，横条自己横滚、不被父级裁掉（#762 评审）
+  await page.setViewportSize({ width: 380, height: 760 });
+  await page.waitForTimeout(150);
+  check(
+    "窄窗折成单栏",
+    await page
+      .locator(".bg-body")
+      .evaluate((n) => getComputedStyle(n).gridTemplateColumns.trim().split(/\s+/).length === 1),
+  );
+  const strip = page.locator(".bg-nav-list");
+  const metrics = await strip.evaluate((n) => ({ scrollWidth: n.scrollWidth, clientWidth: n.clientWidth }));
+  check("横条内容超出时能横滚", metrics.scrollWidth > metrics.clientWidth, JSON.stringify(metrics));
+  check(
+    "横条滚得动（scrollLeft 真变）",
+    await strip.evaluate((n) => {
+      n.scrollLeft = 200;
+      return n.scrollLeft > 0;
+    }),
+  );
+  check(
+    "右栏抬头没被挤成三条",
+    await page.locator(".bg-run:not([hidden]) .bg-run-head").evaluate((n) => n.getBoundingClientRect().height < 40),
+  );
+  // 横条里 ←→ 才是换页键（ARIA 对横向 tablist 的推荐键位），↑↓ 不再认。
+  await page.waitForFunction(() => document.querySelector(".bg-nav-list")?.getAttribute("aria-orientation") === "horizontal");
+  const narrowFrom = await selId();
+  await page.locator('.bg-nav-item[aria-selected="true"]').focus();
+  await page.keyboard.press("ArrowRight");
+  const narrowRight = await selId();
+  check("窄窗横条里 → 换页", Boolean(narrowRight) && narrowRight !== narrowFrom, `${narrowFrom} → ${narrowRight}`);
+  await page.keyboard.press("ArrowLeft");
+  check("窄窗横条里 ← 换回来", (await selId()) === narrowFrom);
+  await page.keyboard.press("ArrowDown");
+  check("窄窗横条里 ↓ 不换页（那是竖列的键）", (await selId()) === narrowFrom);
+  // 上一段把横条往右滚了 200px：截图前拉回起点，不然拍到的是一半被裁掉的那颗。
+  await strip.evaluate((n) => (n.scrollLeft = 0));
+  await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "3-narrow.png"), animations: "disabled" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(120);
+
+  // 宽窗竖列里 ←→ 不该换页（那是横条的键位；纵向列表横向滚动时会被误触）。当前选中项是第 2 条（End 过）→ 改用 Home 后确认在第一条，再按 →
+  await page.keyboard.press("Home");
+  const wideId = await selId();
+  await page.locator('.bg-nav-item[aria-selected="true"]').focus();
+  await page.keyboard.press("ArrowRight");
+  check("宽窗竖列里 → 不换页", (await selId()) === wideId);
+  await page.keyboard.press("ArrowDown");
+  check("宽窗竖列里 ↓ 换页", (await selId()) !== wideId);
+
+  // ---- 5. 回到宽窗：老占位文案不再出现在界面上（它把责任推给了桥）
   const body = await page.locator(".bg-sheet").innerText();
   check("不再断言「任务原文没传到桥」", !body.includes("任务原文没传到桥"), body.replace(/\n+/g, " | ").slice(0, 200));
   check("没有页面报错", pageErrors.length === 0, pageErrors.join(" | "));
+
+  // ---- 6. 空态不堆叠：弹层开着、它看的那个会话的 run 清空了 —— 轮询几轮，空态框始终只有一个
+  // （回归：以前每轮 `bg.list` 都再 append 一个 `.bg-empty`，开一分钟堆出 ~40 个。）
+  // 页面的 WebSocket 包了一层（web/src/ws.ts）：在页面里给 `WebSocket.prototype.send` 打补丁 ——
+  // 页面发 `bg.list` 时不发给桥，直接按页面期待的形状派发一条 `runs: []` 的回包（页面只按
+  // sessionId 路由）。这样不用改桥、也不用没 run 的会话有入口。
+  await page.evaluate(() => {
+    const w = window;
+    w.__bgEmptyRewrite = 0;
+    const orig = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data) {
+      const text = String(data);
+      let m = null;
+      try {
+        m = JSON.parse(text);
+      } catch {
+        /* 不是帧 */
+      }
+      if (!w.__bgForceEmpty || m?.type !== "bg.list") return orig.call(this, data);
+      w.__bgEmptyRewrite += 1;
+      setTimeout(() => {
+        const ev = new MessageEvent("message", { data: JSON.stringify({ type: "bg.list", sessionId: m.sessionId, runs: [] }) });
+        this.onmessage?.(ev);
+      }, 0);
+      return undefined;
+    };
+  });
+  await page.evaluate(() => {
+    window.__bgForceEmpty = true;
+  });
+  await page.locator(".bg-empty").waitFor({ timeout: 10000 });
+  await page.waitForTimeout(3300);
+  const rewrites = await page.evaluate(() => window.__bgEmptyRewrite);
+  check("期间至少跑了 2 轮轮询（不然这条断言什么都没验）", rewrites >= 2, `改写了 ${rewrites} 帧`);
+  check(
+    "空态框不随轮询堆叠",
+    (await page.locator(".bg-empty").count()) === 1,
+    `${await page.locator(".bg-empty").count()} 个`,
+  );
+  await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "4-empty.png"), animations: "disabled" });
 } finally {
   await browser?.close();
   bridge.kill();

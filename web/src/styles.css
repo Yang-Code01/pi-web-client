@@ -4527,12 +4527,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 
 
 /* D170 详情：点开「后台」那条提示，看 runner 在干什么。
-   mac 检查器式抬头（标题 + 状态胶囊 + 计数），下面每个 run 是扁平的一段：
-   状态灯 / agent / 状态词 / 用时一行，任务（四行封顶，可展开）、过程、最终输出各带小标题。
-   卡片之间只用一条发丝线，不再「卡片里套一个日志框」——那是信息乱的主因。 */
+   mac 检查器式排版（样张 B）：左边 run 列表始终在原地，右边只看选中的那一条 —— 内容再长
+   （任务十几行、过程几十行）也只滚右半边，不再把后面几条挤到屏幕外。
+   一条 run = 左栏一行（状态灯 + 名字 + 用时 + 任务首行）+ 右栏一页（抬头吸顶，任务/过程/输出三块）。
+   窄到 620px 以下两栏并一栏：列表变成顶部横向条，详情照旧。 */
 .sheet.bg-sheet {
   grid-template-rows: auto minmax(0, 1fr);
-  width: min(760px, calc(var(--vw1) * 94));
+  width: min(900px, calc(var(--vw1) * 96));
   max-height: min(760px, calc(var(--vh1) * 84));
 }
 .bg-head { align-items: flex-start; padding: 12px 16px 11px; }
@@ -4551,18 +4552,54 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .bg-head-meta { font-size: 10.5px; color: var(--faint); }
 .bg-head-meta[hidden] { display: none; }
 .bg-head-close { flex: none; }
-.bg-sheet-body { overflow: auto; padding: 2px 0 6px; }
 
-.bg-empty { display: grid; justify-items: center; gap: 7px; padding: 56px 24px 64px; text-align: center; }
-.bg-empty-ic {
-  display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 3px;
-  border-radius: 12px; background: var(--panel-2); color: var(--faint);
+/* 两栏壳：容器查询量的是这层（窄了才把左栏折成顶部条），滚动交给左右各自。 */
+.bg-sheet-body { display: grid; min-height: 0; overflow: hidden; container-type: inline-size; }
+.bg-body { display: grid; grid-template-columns: clamp(184px, 24%, 216px) minmax(0, 1fr); min-height: 0; }
+.bg-body[hidden] { display: none; }
+
+.bg-nav {
+  display: grid; align-content: start; gap: 1px; min-height: 0;
+  padding: 6px; overflow: auto;
+  border-right: 0.5px solid var(--line-soft);
+  background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
 }
-.bg-empty-title { max-width: 46ch; font-size: 12.5px; color: var(--dim); }
-.bg-empty-hint { max-width: 46ch; font-size: 11.5px; line-height: 1.6; color: var(--faint); }
+.bg-nav-head { padding: 5px 9px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--faint); }
+.bg-nav-head[hidden] { display: none; }
+/* tablist 本体：tab 只放这一层里，「运行 · N」那行在它外面（ARIA 只许 tab 做 tablist 的孩子）。 */
+.bg-nav-list { display: grid; align-content: start; gap: 1px; min-width: 0; min-height: 0; }
+.bg-nav-item {
+  display: grid; gap: 3px; width: 100%; padding: 7px 9px;
+  border: 0; border-radius: 7px; background: none; color: inherit; text-align: left; cursor: pointer;
+  /* 键盘换页 scrollIntoView 时给圆角留点气口，别贴着滚动区边被裁掉。 */
+  scroll-margin: 0 4px;
+}
+.bg-nav-item:hover { background: var(--panel-2); }
+.bg-nav-item[aria-selected="true"] {
+  background: var(--accent-bg);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+.bg-nav-item:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: -2px; }
+.bg-nav-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.bg-nav-agent {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 600; color: var(--text);
+}
+.bg-nav-time { flex: none; font: 10.5px/1 var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.bg-nav-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--faint); }
 
-.bg-run { display: grid; gap: 9px; padding: 14px 18px 16px; container-type: inline-size; }
-.bg-run + .bg-run { border-top: 0.5px solid var(--line-soft); }
+.bg-panes { display: grid; min-width: 0; min-height: 0; }
+.bg-panes[hidden] { display: none; }
+
+/* 右栏一页：抬头吸顶（读到过程第 40 行也知道自己看的是谁），下面整段自己滚。 */
+/* 右栏整页铺 --panel：弹层本身是玻璃材质，吸顶抬头要是半透明的就会跟正文分层。 */
+.bg-run { min-height: 0; overflow: auto; background: var(--panel); isolation: isolate; }
+.bg-run[hidden] { display: none; }
+.bg-run-top {
+  position: sticky; top: 0; z-index: 1;
+  display: grid; gap: 4px; padding: 13px 20px 11px;
+  background: var(--panel); border-bottom: 0.5px solid var(--line-soft);
+}
 .bg-run-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .bg-run-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .bg-run-dot[data-state="running"] { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
@@ -4570,15 +4607,17 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .bg-run-dot[data-state="failed"] { background: var(--danger); }
 .bg-run-agent {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 13px; font-weight: 600; color: var(--text);
+  font-size: 14px; font-weight: 600; letter-spacing: -0.01em; color: var(--text);
 }
 .bg-run-state { flex: none; font-size: 11px; font-weight: 500; color: var(--dim); }
 .bg-run-state[data-state="running"] { color: var(--accent); }
 .bg-run-state[data-state="done"] { color: var(--ok); }
 .bg-run-state[data-state="failed"] { color: var(--danger); }
-/* 运行 id 是排障用的，不是正文：小号等宽、放不下就截断（全 id 在 title 里）；卡片窄到放不下就整颗让位。 */
-.bg-run-id { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 10.5px/1 var(--mono); color: var(--faint); }
 .bg-run-time { flex: none; margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+/* 运行 id 是排障用的，不是正文：小号等宽、放不下就截断（全 id 在 title 里）。 */
+.bg-run-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bg-run-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10.5px/1.4 var(--mono); color: var(--faint); }
+.bg-run-body { display: grid; gap: 14px; padding: 13px 20px 20px; }
 
 /* 失败原因：一条内嵌的红条，别再让用户去日志里找。 */
 .bg-run-errbox {
@@ -4588,6 +4627,15 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .bg-run-errbox[hidden] { display: none; }
 .bg-run-errbox .ico { flex: none; margin-top: 1px; }
 .bg-run-err { flex: 1; min-width: 0; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 空态自己也滚：窗体高度封顶 84vh，极矮视口下上下两层 padding 会把提示挤出去。 */
+.bg-empty { display: grid; justify-items: center; align-content: safe center; gap: 7px; padding: 56px 24px 64px; overflow: auto; text-align: center; }
+.bg-empty-ic {
+  display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 3px;
+  border-radius: 12px; background: var(--panel-2); color: var(--faint);
+}
+.bg-empty-title { max-width: 46ch; font-size: 12.5px; color: var(--dim); }
+.bg-empty-hint { max-width: 46ch; font-size: 11.5px; line-height: 1.6; color: var(--faint); }
 
 .bg-sec { display: grid; gap: 5px; }
 .bg-sec[hidden] { display: none; }
@@ -4620,8 +4668,21 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* 占位不是日志：用正文字体与更淡的颜色，别让「桥还没接上」看起来像一条条目。 */
 .bg-run-log[data-empty] { font-family: var(--sans); font-size: 12px; color: var(--faint); }
 
-@container (max-width: 480px) {
-  .bg-run { padding: 13px 14px 15px; }
+/* 窄窗（手机 / 分屏）：两栏并一栏，左栏变成顶部横向条 —— 184px 的列表在 360px 屏上没法读。
+   断点 620px 而不是 560：再窄一点左栏固定宽会把右栏抬头的名字 / 状态 / 用时挤成三条。 */
+@container (max-width: 620px) {
+  .bg-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .bg-nav {
+    overflow: hidden;
+    padding: 6px 8px;
+    border-right: 0; border-bottom: 0.5px solid var(--line-soft);
+  }
+  .bg-nav-head { display: none; }
+  .bg-nav-list { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; }
+  .bg-nav-item { flex: none; max-width: 190px; }
+  .bg-nav-task { display: none; }
+  .bg-run-top { padding: 11px 14px 10px; }
+  .bg-run-body { padding: 11px 14px 16px; }
   .bg-run-id { display: none; }
 }
 
