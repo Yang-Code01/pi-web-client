@@ -54,7 +54,8 @@ export interface Announce {
   /** 头像 id（见 `avatars.ts`）。旧对端没有这个字段，页面退回首字母头像。 */
   avatar?: string;
   /**
-   * 更新组（D441）：`repo` = 这台机器认的仓库标识（`owner/name`），发布者据此邀请；
+   * 更新组（D441）：`repo` = 这台机器认的仓库标识（`<host>/<owner>/<name>`，主机参与比较 ——
+   * 不同托管站上的同名 owner/name 是两份仓库），发布者据此邀请；
    * `publisher` 只对发布者自己有意义；`optOut` 是我退出过的更新组（发布者跳过）。
    * 旧对端没有这个字段，按「不参与更新组」处理。
    */

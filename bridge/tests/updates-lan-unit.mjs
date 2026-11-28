@@ -16,24 +16,34 @@ import {
 } from "../../peer/src/announce.ts";
 
 const cases = [
-  ["git@github.com:Yang-Code01/pi-web-client.git", "Yang-Code01/pi-web-client"],
-  ["git@github.com:Yang-Code01/pi-web-client", "Yang-Code01/pi-web-client"],
-  ["https://github.com/Yang-Code01/pi-web-client.git", "Yang-Code01/pi-web-client"],
-  ["https://github.com/Yang-Code01/pi-web-client", "Yang-Code01/pi-web-client"],
-  ["https://github.com/Yang-Code01/pi-web-client/", "Yang-Code01/pi-web-client"],
-  ["ssh://git@gitlab.local/Yang-Code01/pi-web-client.git", "Yang-Code01/pi-web-client"],
+  ["git@github.com:Yang-Code01/pi-web-client.git", "github.com/Yang-Code01/pi-web-client"],
+  ["git@github.com:Yang-Code01/pi-web-client", "github.com/Yang-Code01/pi-web-client"],
+  ["https://github.com/Yang-Code01/pi-web-client.git", "github.com/Yang-Code01/pi-web-client"],
+  ["https://github.com/Yang-Code01/pi-web-client", "github.com/Yang-Code01/pi-web-client"],
+  ["https://github.com/Yang-Code01/pi-web-client/", "github.com/Yang-Code01/pi-web-client"],
+  ["ssh://git@gitlab.local/Yang-Code01/pi-web-client.git", "gitlab.local/Yang-Code01/pi-web-client"],
   // 显式端口：git@host:22:owner/name 与 ssh://git@host:22/owner/name 都要认（评审 #1）。
-  ["git@github.com:22:owner/name.git", "owner/name"],
-  ["ssh://git@github.com:22/owner/name.git", "owner/name"],
+  ["git@github.com:22:owner/name.git", "github.com/owner/name"],
+  ["ssh://git@github.com:22/owner/name.git", "github.com/owner/name"],
   // GitLab 的多层路径照收；.git 之后是网页路径，要切掉（评审 #2）。
-  ["https://gitlab.com/group/subgroup/name", "group/subgroup/name"],
-  ["https://github.com/owner/name.git/extra", "owner/name"],
-  ["git@github.com:owner/name.git/extra", "owner/name"],
+  ["https://gitlab.com/group/subgroup/name", "gitlab.com/group/subgroup/name"],
+  ["https://github.com/owner/name.git/extra", "github.com/owner/name"],
+  ["git@github.com:owner/name.git/extra", "github.com/owner/name"],
   // 带凭据的 URL：用户名密码必须被丢掉，不能进 slug、更不能进组名/announce。
-  ["https://user:token@github.com/o/r.git", "o/r"],
+  ["https://user:token@github.com/o/r.git", "github.com/o/r"],
+  // 主机大小写 / 协议 / 结尾的 .git 都不影响标识（主机按小写归一）。
+  ["https://GitHub.com/o/r", "github.com/o/r"],
   ["/srv/git/local.git", null],
   ["", null],
 ];
+// 主机是标识的一部分：不同托管站上的同名 owner/name 不能并进同一个组（评审 #1）。
+assert.notEqual(repoSlugFromRemote("https://github.com/a/b"), repoSlugFromRemote("https://gitlab.local/a/b"));
+assert.notEqual(groupIdFor(repoSlugFromRemote("https://github.com/a/b")), groupIdFor(repoSlugFromRemote("https://gitlab.local/a/b")));
+assert.equal(
+  repoSlugFromRemote("https://github.com/a/b"),
+  repoSlugFromRemote("git@github.com:a/b.git"),
+  "同一个仓库换个协议写，标识要一致",
+);
 for (const [input, want] of cases) {
   assert.equal(repoSlugFromRemote(input), want, `repoSlugFromRemote(${JSON.stringify(input)})`);
 }
@@ -42,7 +52,7 @@ assert.ok(isRepo("owner/name"));
 assert.ok(!isRepo("o/" + "n".repeat(MAX_REPO_LEN)), "超过 peer config 上限的仓库标识不合法（评审 #27）");
 
 // 组 id：只留 [a-z0-9-] + 短哈希；跨机器必须算出同一个（大小写、斜杠、下划线都归一）。
-assert.ok(groupIdFor("Yang-Code01/pi-web-client").startsWith("grp-updates-yang-code01-pi-web-client-"));
+assert.ok(groupIdFor("github.com/Yang-Code01/pi-web-client").startsWith("grp-updates-github-com-yang-code01-pi-web-client-"));
 assert.notEqual(groupIdFor("A_B/C.D"), groupIdFor("a-b/c-d"));
 // `/`、`-`、`_` 压平后同名（a-b/c、a/b-c、a/b/c）：哈希必须把它们分开（评审 #1）。
 assert.equal(new Set(["a-b/c", "a/b-c", "a/b/c"].map(groupIdFor)).size, 3);

@@ -222,7 +222,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           let repo = cfg.updates.repo;
           if (typeof u.repo === "string") {
             repo = u.repo.trim();
-            if (repo && !isRepo(repo)) return json(res, 400, { error: "仓库标识要写成 owner/name（或 group/subgroup/name）" });
+            if (repo && !isRepo(repo)) return json(res, 400, { error: "仓库标识要写成 host/owner/name（GitLab 是 host/group/subgroup/name）" });
           }
           const publisher = typeof u.publisher === "boolean" ? u.publisher : cfg.updates.publisher;
           if (publisher && !repo) return json(res, 400, { error: "先填仓库标识（owner/name）再打开发布" });

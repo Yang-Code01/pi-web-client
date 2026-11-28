@@ -12,7 +12,7 @@ import type { PeerAnnounce, PeerGroup, PeerHost, PeerStatus } from "./peer.ts";
  * D441：局域网更新组。发布者定时看自己检出里的 `origin/main`，有新提交就往「固定 id 的只读群」
  * 里推一条公告；同仓库的机器靠 announce 里的仓库标识被自动拉进这个组。
  *
- * 没有服务器、没有注册表：仓库标识就是 `owner/name`，组 id 从它派生（`grp-updates-<slug>`），
+ * 没有服务器、没有注册表：仓库标识就是 `<host>/<owner>/<name>`，组 id 从它派生（`grp-updates-<slug>`），
  * 所以两台机器各自算出同一个组 id 才算「同一个更新组」。
  *
  * 发布者只做四件事：`git fetch` → 比对上次播报的 commit → 保证组和人都在 → 发一条公告。
@@ -96,6 +96,10 @@ interface RepoInfo {
 /**
  * `git@host:owner/name.git`、`https://host/owner/name`、`ssh://git@host/owner/name` 都认；
  * GitLab 那种 `group/subgroup/name` 也照收（评审 #2）—— 仓库标识允许 2 段以上，组 id 由 slug 归一。
+ *
+ * 返回的标识**带主机**（`<host>/<owner>/<name>`，主机按小写归一）：只留 `owner/name` 时，
+ * origin 分别在 `github.com/a/b` 与 `gitlab.local/a/b` 的两台机器会算成同一份仓库、
+ * 并进同一个更新组互相播报（评审 #1）。主机是身份的一部分，不是可以丢的解析中间产物。
  */
 export function repoSlugFromRemote(url: string): string | null {
   const s = url.trim().replace(/\/+$/, "");
@@ -120,7 +124,7 @@ export function repoSlugFromRemote(url: string): string | null {
   const parts = (at >= 0 ? segs.slice(0, at + 1) : segs).map((x) => x.replace(/\.git$/i, "")).filter(Boolean);
   if (!/^[\w.-]+$/.test(host) || parts.length < 2) return null;
   if (!parts.every((x) => /^[\w.-]+$/.test(x))) return null;
-  return parts.join("/");
+  return [host.toLowerCase(), ...parts].join("/");
 }
 
 /** 组 id 只允许字母、数字、下划线与短横线（peer 侧会校验），所以 slug 也要归一。 */
@@ -321,7 +325,7 @@ export class UpdatesLan {
     const repo = info?.repo || this.peer.view().status?.config.updates?.repo || "";
     // 认不出仓库时不能把 publisher 打开（peer 会 400）；关闭时若确实没标识，就别写空串（评审 #4）。
     if (!repo) {
-      if (on) throw new Error("还没有仓库标识：先给这个检出配一个 git remote origin（owner/name）");
+      if (on) throw new Error("还没有仓库标识：先给这个检出配一个 git remote origin（host/owner/name）");
       return this.view();
     }
     await this.peer.setConfig({ updates: { repo, publisher: on } });

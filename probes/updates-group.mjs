@@ -76,7 +76,7 @@ const BASE = `http://127.0.0.1:${server.address().port}`;
 const ME = "11111111-1111-4111-8111-111111111111";
 const PUB = "22222222-2222-4222-8222-222222222222";
 const GROUP = "grp-updates-yang-code01-pi-web-client";
-const REPO_SLUG = "yang-code01/pi-web-client";
+const REPO_SLUG = "github.com/yang-code01/pi-web-client";
 const at = Date.now() - 60_000;
 
 const me = (nodeId, nickname) => ({ nodeId, nickname, hostname: "probe", port: 7865, online: [] });
