@@ -1,5 +1,5 @@
 /**
- * `web/src/pastefly.ts` 的契约（D446）：
+ * `web/src/pastefly.ts` 的契约（D447）：
  *
  *   1. 曲线必须跟 `mac-base.css` 的 `--mac-spring` 一致（WAAPI 不认 `var()`，只能抄字面量，抄了就会漂）；
  *   2. 只给真要飞的几片拼 data URL（一次贴十几张大图不该拼十几条长字符串）；

@@ -145,6 +145,17 @@ async function snap(page) {
   }, REGIONS);
 }
 
+/**
+ * 五个 `[data-region]` 节点都在？缺一个就当场记一条可读的失败（带上缺了谁），
+ * 别让后面某处 `.box` / `.own` 抛 TypeError 把整个探针崩在没头没尾的地方。
+ */
+const regionsPresent = (s, label) => {
+  const missing = REGIONS.filter((id) => !s.regions[id]);
+  if (!missing.length) return true;
+  check(`${label}：五个区域节点都在`, false, `缺 ${missing.join(" / ")}（[data-region] 没挂上？）`);
+  return false;
+};
+
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: "zh-CN" });
 const page = await ctx.newPage();
@@ -195,24 +206,25 @@ await page.screenshot({ path: path.join(OUT, "2-seeded.png") });
     await boot();
     return snap(page);
   })();
+  const haveAll = regionsPresent(seeded, "2 种子态") && regionsPresent(base, "2 基线态");
   // 容差 2.5px：局域 px 会被像素吸附成整数，换算回父级坐标后最多差 1/倍率（实测 1.0–1.5）。
-  const boxOk = REGIONS.every((id) => Math.abs(seeded.regions[id].box - base.regions[id].box) < 2.5);
+  const boxOk = haveAll && REGIONS.every((id) => Math.abs(seeded.regions[id].box - base.regions[id].box) < 2.5);
   check(
     "2. 盒子不变（会话 / 正文 / 输入框 / 右栏换算回父级坐标后同一个数）",
     boxOk,
-    REGIONS.map((id) => `${id} ${seeded.regions[id].box.toFixed(1)}↔${base.regions[id].box.toFixed(1)}`).join(" · "),
+    REGIONS.map((id) => `${id} ${seeded.regions[id]?.box?.toFixed(1) ?? "—"}↔${base.regions[id]?.box?.toFixed(1) ?? "—"}`).join(" · "),
   );
   // 内容按倍率缩小：区域矩形的局域宽度 = 盒子 / 总倍率
-  const shrinkOk = REGIONS.every((id) => {
+  const shrinkOk = haveAll && REGIONS.every((id) => {
     const want = base.regions[id].local / (SEED[id] ?? 1);
     return Math.abs(seeded.regions[id].local - want) < 2.5;
   });
   check(
     "2b. 内容宽度按倍率缩小（zoom 只缩内部坐标空间）",
     shrinkOk,
-    REGIONS.map((id) => `${id} ${seeded.regions[id].local.toFixed(1)}/${(base.regions[id].local / (SEED[id] ?? 1)).toFixed(1)}`).join(" · "),
+    REGIONS.map((id) => `${id} ${seeded.regions[id]?.local?.toFixed(1) ?? "—"}/${(base.regions[id]?.local ? base.regions[id].local / (SEED[id] ?? 1) : NaN).toFixed(1)}`).join(" · "),
   );
-  const vh = REGIONS.map((id) => seeded.regions[id].vh10);
+  const vh = REGIONS.map((id) => seeded.regions[id]?.vh10 ?? NaN);
   check("2c. 区域内 --vh1 按倍率除回来（还是 10% 视口）", vh.every((v) => Math.abs(v - seeded.vh * 0.1) < 1.5), vh.map((v) => v.toFixed(1)).join(" / "));
 }
 
@@ -253,20 +265,40 @@ const openLook = async () => {
   await sleep(150);
 };
 await openLook();
+
+/**
+ * 按「这一行的 label」找设置行。只在 `.settings-label` 子树里匹配 —— 整行 `hasText` 会被 hint 里的
+ * 同名文字带跑（顶栏那行的 hint 就写着「顶栏按钮」），命中两行时 strict 直接报错、看不出是撞了名字。
+ */
+const settingsRow = (label) =>
+  page.locator(".display-sheet .settings-row").filter({ has: page.locator(".settings-label", { hasText: label }) });
 {
   const rows = await page.evaluate(() => {
     const sheet = document.querySelector(".display-sheet");
     const all = [...sheet.querySelectorAll(".settings-row")].filter((r) => r.querySelector(".size-ctl"));
-    return all.map((r) => ({
-      label: (r.querySelector(".settings-label")?.textContent ?? "").trim(),
-      read: (r.querySelector(".size-read")?.textContent ?? "").trim(),
-    }));
+    const head = [...sheet.querySelectorAll(".settings-group")].find((g) => (g.textContent ?? "").includes("分区字号"));
+    return {
+      rows: all.map((r) => ({
+        label: (r.querySelector(".settings-label")?.textContent ?? "").replace(/\d+%$/, "").trim(),
+        read: (r.querySelector(".size-read")?.textContent ?? "").trim(),
+      })),
+      head: head ? (head.textContent ?? "").trim() : "",
+    };
   });
-  check("5. 「语言与字号」里正好两行滑杆（全局 + 对话正文）", rows.length === 2, JSON.stringify(rows));
-  check("5b. 第二行标签是「对话正文」、读数 100%", rows[1]?.label?.includes("对话正文") && rows[1]?.read === "100%", JSON.stringify(rows[1]));
+  // 顺手留一张「分组头 + 前两行」的样张：面板比一屏长，默认停在中段看不到头。
+  await page.locator(".display-sheet .settings-panel").first().evaluate((el) => { el.scrollTop = 0; el.parentElement?.scrollTo?.(0, 0); });
+  await sleep(120);
+  await page.screenshot({ path: path.join(OUT, "4-panel-top.png") });
+  const wantLabels = ["字号", "顶栏", "会话列表", "对话正文", "输入框", "右栏面板"];
+  check(
+    "5. 「语言与字号」里六行滑杆：全局字号 + 五块，顺序照界面上到下 / 左到右",
+    rows.rows.length === 6 && wantLabels.every((l, i) => rows.rows[i].label === l),
+    JSON.stringify(rows.rows.map((r) => r.label)),
+  );
+  check("5b. 五块都从 100% 起步，分组头写明乘法关系", rows.rows.slice(1).every((r) => r.read === "100%") && rows.head.includes("各自叠在"), JSON.stringify({ head: rows.head, reads: rows.rows.map((r) => r.read) }));
 
   const before = await snap(page);
-  const chatRow = page.locator('.display-sheet .settings-row').filter({ hasText: "对话正文" });
+  const chatRow = settingsRow("对话正文");
   const range = chatRow.locator('input[type="range"]');
   // 键盘按 10 下 = +10%（步长 1%，键盘不吃磁吸）
   await range.focus();
@@ -318,7 +350,7 @@ await openLook();
 // ---------------------------------------------------------------- 7. 刻度值必须夹成两位小数（不是 1.2000000000000002）
 {
   // 面板在上一步还开着。字号那根点「120」档：SIZE_MARKS 是 0.8 + i*0.2 算出来的浮点。
-  const sizeRow = page.locator(".display-sheet .settings-row").filter({ hasText: "字号" }).first();
+  const sizeRow = settingsRow("字号");
   await sizeRow.locator(".mark", { hasText: /^120$/ }).click();
   await sleep(200);
   const sizeMarked = await page.evaluate(() => ({
@@ -328,7 +360,7 @@ await openLook();
   }));
   check("7. 点 120 档存成 1.2（不是 1.2000000000000002）", sizeMarked.prefs === 1.2 && sizeMarked.uiVar === "1.2" && sizeMarked.range === "1.2", JSON.stringify(sizeMarked));
 
-  const chatRow2 = page.locator(".display-sheet .settings-row").filter({ hasText: "对话正文" });
+  const chatRow2 = settingsRow("对话正文");
   // 刻度是 80…200 每 0.2：点 120 档同样会碰到 1.2000000000000002 的浮点尾巴
   await chatRow2.locator(".mark", { hasText: /^120$/ }).click();
   await sleep(200);
@@ -422,6 +454,50 @@ for (const rs of [1, 1.3]) {
     JSON.stringify({ at100, at130 }),
   );
   await page.screenshot({ path: path.join(OUT, "7-rail-130.png") });
+}
+
+// 5g. 五根各管各的：每根按 10 下方向键，只有它那一块变、其余四块的盒子不动
+{
+  // 起点显式种成 SEED（顶栏 1.3 / 会话 0.9 / 正文 1.3 / 输入框 1.2 / 右栏 0.85），
+  // 不再依赖「上一段 boot 完之后刚好是 SEED」这种隐式前提 —— 段落顺序一调，这里就会静默漂走。
+  await boot({ regionScale: SEED });
+  await openLook();
+  const PAIRS = [
+    ["topbar", "顶栏"],
+    ["sessions", "会话列表"],
+    ["chat", "对话正文"],
+    ["composer", "输入框"],
+    ["queue", "右栏面板"],
+  ];
+  for (const [id, label] of PAIRS) {
+    const row = settingsRow(label);
+    const before = await snap(page);
+    await row.locator('input[type="range"]').focus();
+    for (let i = 0; i < 10; i++) await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Tab"); // blur → 落盘
+    await sleep(200);
+    const after = await snap(page);
+    if (!regionsPresent(before, `5g ${label} 前`) || !regionsPresent(after, `5g ${label} 后`)) continue;
+    // 起点：**这一块自己**的倍率还是 SEED 那一档（每轮末尾的 dblclick 只把自己复位成 100%，
+    // 也不影响下一轮 —— 下一轮比的是它自己的 before/after 快照）。所以断言写成「自己的倍率 +0.1、
+    // 局域宽度按新倍率缩小」，不是写死的 ×1.1 —— 否则这条只有在从 100% 起步时才成立。
+    // 其余四块在后续几轮里早已不是 SEED 了（被前面几轮的 dblclick 复位过），`still` 比的是同一轮的
+    // 前后快照，所以照样成立。
+    const from = before.regions[id].own;
+    const wantOwn = Math.round((from + 0.1) * 100) / 100;
+    const ratio = before.regions[id].local / after.regions[id].local;
+    const wantRatio = wantOwn / from;
+    const stillIds = PAIRS.map(([x]) => x).filter((x) => x !== id);
+    const still = stillIds.every((x) => Math.abs(after.regions[x].box - before.regions[x].box) < 0.6);
+    check(
+      `5g. 「${label}」+10%：只有这一块变，其余四块盒子不动`,
+      Math.abs(after.regions[id].own - wantOwn) < 0.011 && Math.abs(ratio - wantRatio) < 0.02 && still,
+      `own ${from}→${after.regions[id].own}（预期 ${wantOwn}）· 局域 ×${ratio.toFixed(3)}（预期 ×${wantRatio.toFixed(3)}）· ` +
+        stillIds.map((x) => `${x} ${before.regions[x].box.toFixed(1)}→${after.regions[x].box.toFixed(1)}`).join(" · "),
+    );
+    await row.locator(".size-rail").dblclick();
+    await sleep(150);
+  }
 }
 
 check("10. 没有页面报错"

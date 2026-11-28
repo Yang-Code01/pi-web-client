@@ -2245,9 +2245,9 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .image-badge:hover { border-color: var(--accent); background: var(--accent-bg); }
 .image-badge:active { transform: scale(0.97); }
 /* 贴图那一下的「落地」：徽标短暂变实底。`pastefly.ts` 挂 260ms 后摘掉 —— 半透明强调色叠在
-   浅底上几乎看不出变化，只有实底才读得出「数字又加了一张」（D446）。 */
+   浅底上几乎看不出变化，只有实底才读得出「数字又加了一张」（D447）。 */
 .image-badge.flash { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-/* 刚贴上的图先浮出来、再缩进徽标（D446）。这一层挂在 `#app` 里，所以里面的 px 都是布局 px；
+/* 刚贴上的图先浮出来、再缩进徽标（D447）。这一层挂在 `#app` 里，所以里面的 px 都是布局 px；
    宽高按 `--ui-scale` 一起缩放，字号调大时幽灵也跟着大。 */
 .paste-fly { position: fixed; inset: 0; z-index: 45; pointer-events: none; }
 .paste-fly .ghost {
