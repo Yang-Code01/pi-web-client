@@ -1335,6 +1335,8 @@ async function main(): Promise<void> {
           "x-content-type-options": "nosniff",
         });
         // 头像最大 512 KB，但没必要先进 Buffer 再吐一遍：直接接上上游的流。
+        // undici 的 `body` 与 `node:stream/web` 的 `ReadableStream` 是同一个东西，只是两套声明打架，
+        // `Readable.fromWeb` 只要求后者；这里断言一次，不把它当成运行时转换。
         Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream<Uint8Array>)
           .on("error", () => res.destroy())
           .pipe(res);
@@ -1363,7 +1365,10 @@ async function main(): Promise<void> {
       try {
         return json(res, 200, await peer.deleteAvatar(String(body?.hash ?? "")));
       } catch (err) {
-        return json(res, 400, { error: (err as Error).message });
+        // 和 POST 头像分支同一个口径：peer 自己给的 4xx/5xx 原样透传（比如「不在上传记录里」），
+        // 连不上 peer 才是 502 + 人话；别把 "fetch failed" 这种英文底层文案丢给设置页（评审 6-1）。
+        if (err instanceof PeerRequestError) return json(res, err.status, { error: err.message });
+        return json(res, 502, { error: "内网通暂时连不上，稍后再试" });
       }
     }
     // 选择器里的预览（D304）：本机一份文件的字节，透传 peer 的 `/fs/raw`。

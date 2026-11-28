@@ -378,7 +378,12 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const hash = avatarHash(body?.hash);
         if (!hash) return json(res, 400, { error: "hash 不对" });
         if (!cfg.avatarHistory.includes(hash)) return json(res, 404, { error: "不在上传记录里" });
-        deleteAvatarFile(hash);
+        try {
+          deleteAvatarFile(hash);
+        } catch {
+          // 文件删不掉（被占用 / 没权限）就别动历史记录，否则留下一条永远删不掉的幽灵图。
+          return json(res, 500, { error: "删不掉这张图（文件被占用或没有权限）" });
+        }
         cfg.avatarHistory = cfg.avatarHistory.filter((h) => h !== hash);
         const wasCurrent = customAvatarHash(cfg.avatar) === hash;
         if (wasCurrent) {

@@ -303,7 +303,9 @@ export class PeerHost {
     } catch {
       parsed = { error: text };
     }
-    if (!res.ok) throw new Error(parsed?.error ?? `peer 回 ${res.status}`);
+    // 上游状态得带着走：桥的转口要能区分「peer 说 404」与「peer 连不上」，
+    // 后者是 fetch 自己抛的 TypeError，不该被当成请求参数错误。
+    if (!res.ok) throw new PeerRequestError(parsed?.error ?? `peer 回 ${res.status}`, res.status);
     if (method === "POST" && opts.repoll !== false) await this.poll();
     return parsed;
   }
@@ -337,11 +339,15 @@ export class PeerHost {
     });
     const parsed = (await res.json().catch(() => ({}))) as { avatar?: string; error?: string };
     if (!res.ok) throw new PeerRequestError(parsed.error ?? `peer 回 ${res.status}`, res.status);
+    // 200 但没给头像 id：上游形状不对。别把 `{ ok: true, avatar: "" }` 当成功回给页面，
+    // 页面会拿空串去拼 URL / 写配置（评审 7-7）。
+    if (!parsed.avatar) throw new PeerRequestError("peer 没回头像，稍后再试", 502);
     // 不等这一轮 poll：peer 的 announce 是异步的，立刻 poll 也拿不到新状态，只会把上传 RT 拉长。
     // 先把返回值写进缓存（页面紧接着 GET /api/peer 要看到新头像），其余状态让后台 poll 慢慢刷。
-    if (parsed.avatar && this.status) this.status.avatar = parsed.avatar;
+    // 整体换对象而不是就地改字段：`poll()` 每次都是换对象，别让外部缓存的 status 引用看到半新半旧的状态。
+    if (this.status) this.status = { ...this.status, avatar: parsed.avatar };
     void this.poll();
-    return { ok: true, avatar: parsed.avatar ?? "" };
+    return { ok: true, avatar: parsed.avatar };
   }
 
   /**

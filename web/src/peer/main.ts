@@ -4339,8 +4339,6 @@ function renderMe(): void {
   draw();
 }
 
-
-
 async function clearIgnored(): Promise<void> {
   try {
     await postJson("/api/peer/ignored/clear");

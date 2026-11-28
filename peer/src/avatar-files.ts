@@ -227,8 +227,10 @@ export function deleteAvatarFile(hash: unknown): boolean {
     try {
       fs.unlinkSync(path.join(dir(), `${h}.${ext}`));
       removed = true;
-    } catch {
-      /* 没有这个扩展名就接着试 */
+    } catch (err) {
+      // 只有「这个扩展名没有」才是正常的；EACCES / EPERM / EBUSY 是真删失败，
+      // 吞掉会让调用方以为文件本来就不在，清掉历史记录后磁盘上还留着一张删不掉的图。
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
   }
   if (removed) forgetAvatarFile(h);
@@ -238,7 +240,12 @@ export function deleteAvatarFile(hash: unknown): boolean {
 /** 写盘中途被杀的 `.tmp-<pid>-<rand>` 留多久算垃圾（正在写的临时文件别误删）。 */
 const TMP_MAX_AGE = 60 * 60 * 1000;
 
-/** 旧缓存按 mtime 清掉，`keep` 里的 hash 永远不删（自己当前那张 + 上传记录）。 */
+/**
+ * 旧缓存按 mtime 清掉，`keep` 里的 hash 永远不删（自己当前那张 + 上传记录）。
+ *
+ * 是 soft limit：被 keep 保护的行跳过之后不补删下一行，清完目录里可能仍多于 `max`，
+ * 下一次 prune 再收（keep 最多 25 个，`max` 默认 64，不会一直涨）。
+ */
 export function pruneAvatarFiles(keep: string[] = [], max = MAX_CACHED): void {
   let names: string[];
   try {
@@ -303,11 +310,18 @@ export function fetchRemoteAvatar(addr: string, port: number, hash: string): Pro
     try {
       const url = `http://${hostForUrl(addr)}:${Math.trunc(port)}/avatar?h=${h}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        // 不读的 body 会占着这条连接直到超时 / GC；4xx/5xx 的 body 很小，直接取消（评审 6-12）。
+        await res.body?.cancel().catch(() => {});
+        return null;
+      }
       // 对端是**不可信输入**：不能先 arrayBuffer() 再判大小，几百 MB 的 body 会在
       // 2.5 秒超时前就把内存吃满。先看 content-length，再边读边数，超了立刻 cancel（评审 8-1）。
       const announced = Number(res.headers.get("content-length") ?? "");
-      if (Number.isFinite(announced) && announced > MAX_AVATAR_BYTES) return null;
+      if (Number.isFinite(announced) && announced > MAX_AVATAR_BYTES) {
+        await res.body?.cancel().catch(() => {});
+        return null;
+      }
       if (!res.body) return null;
       const reader = res.body.getReader();
       const chunks: Buffer[] = [];
