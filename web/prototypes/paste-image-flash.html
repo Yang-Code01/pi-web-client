@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="mac-light" data-ui="mac">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>原型 · 粘贴图片的动效</title>
+<!--
+  ⚠️ 一次性原型（prototype），只为回答一个问题：
+
+    「⌘V 贴一张图之后，输入框右下角那个「+N 图」徽标是哑的 —— 用户不知道自己贴没贴上。
+      加什么 Mac 风格动效，才能一眼看出「贴上了、是这张、第几张」？」
+
+  四个变体，`?variant=A|B|C|D` 切换，底部浮动条翻转（也可按 ← / →）。
+  真实用法：在这页里直接 ⌘V 贴截图 / 图片文件；没有剪贴板就点底部「模拟粘贴」。
+
+  这不是产品代码：不接线、不发消息、不持久化。选中的方案要另外写进 web/src/app.ts。
+
+    A 徽标弹跳      —— 只给现有徽标加「弹进来 + 实底闪一下 + 计数跳一下」，输入框描边同时闪一圈
+    B 缩略图飞入    —— 贴上的图先以缩略图浮在粘贴处，缩着飞进右下角徽标，落地时徽标弹一下
+    C 输入框内轨道  —— 徽标上方顶出一条缩略图轨，图自己滑进来（看得见图，不只是数字）
+    D 玻璃浮标      —— 输入框上方浮一枚半透明玻璃胶囊「已附加 2 张图」+ ⌘V 键帽，1.8s 后化掉
+
+  全部材质抄自 web/src/mac-base.css + theme-tokens.css（三套主题都跟）。
+-->
+<style>
+  /* ---------------------------------------------------------------- 主题 token（抄自 theme-tokens.css） */
+  :root {
+    --bg: #f5f5f7; --sunken: #ececef; --panel: #fff; --panel-2: #f2f2f4; --panel-3: #e8e8ed;
+    --line: #dedee3; --line-soft: #ebebef; --line-strong: #c7c7cc; --line-lit: #aeaeb2;
+    --text: #1d1d1f; --dim: #515154; --faint: #636366;
+    --accent: #007aff; --accent-bg: color-mix(in srgb, var(--accent) 9%, #fff);
+    --accent-dim: #dbeaff; --accent-ink: #fff;
+    --mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    --r: 10px;
+    --mac-ease: cubic-bezier(0.32, 0.72, 0, 1);
+    --mac-spring: cubic-bezier(0.34, 1.42, 0.64, 1);
+    --dur-1: 160ms; --dur-2: 300ms;
+    --mac-blur: saturate(180%) blur(28px);
+    --mac-blur-strong: saturate(190%) blur(44px);
+    --mac-wall:
+      radial-gradient(1100px 760px at 8% -6%, rgba(110, 168, 255, 0.5), transparent 62%),
+      radial-gradient(980px 720px at 104% 12%, rgba(255, 150, 196, 0.42), transparent 62%),
+      radial-gradient(1000px 760px at 52% 112%, rgba(140, 226, 204, 0.5), transparent 62%),
+      linear-gradient(180deg, #eef1f7, #f3eff5);
+    --mac-glass: rgba(255, 255, 255, 0.58);
+    --mac-glass-strong: rgba(252, 252, 254, 0.8);
+    --mac-glass-line: rgba(0, 0, 0, 0.09);
+    --mac-fill: rgba(0, 0, 0, 0.045);
+    --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 12px 36px rgba(0, 0, 0, 0.18);
+    --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 8px 30px rgba(40, 50, 90, 0.1);
+    color-scheme: light;
+  }
+  :root[data-theme="mac-dark"] {
+    --bg: #1c1c1e; --sunken: #161618; --panel: #232325; --panel-2: #2c2c2e; --panel-3: #343436;
+    --line: #38383a; --line-soft: #2e2e30; --line-strong: #48484a; --line-lit: #5a5a5e;
+    --text: #f5f5f7; --dim: #b8b8bd; --faint: #a1a1a6;
+    --accent-bg: color-mix(in srgb, var(--accent) 14%, #1c1c1e); --accent-ink: #04202b;
+    --mac-wall:
+      radial-gradient(1100px 760px at 6% -8%, rgba(94, 92, 230, 0.4), transparent 62%),
+      radial-gradient(980px 720px at 106% 8%, rgba(191, 90, 242, 0.26), transparent 62%),
+      radial-gradient(1000px 760px at 56% 118%, rgba(10, 132, 255, 0.26), transparent 62%),
+      linear-gradient(180deg, #131316, #18171c);
+    --mac-glass: rgba(38, 38, 42, 0.56);
+    --mac-glass-strong: rgba(36, 36, 40, 0.8);
+    --mac-glass-line: rgba(255, 255, 255, 0.1);
+    --mac-fill: rgba(255, 255, 255, 0.06);
+    --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(255, 255, 255, 0.12), 0 14px 40px rgba(0, 0, 0, 0.5);
+    --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.6), inset 0 0.5px 0 rgba(255, 255, 255, 0.08), 0 10px 34px rgba(0, 0, 0, 0.35);
+    color-scheme: dark;
+  }
+  :root[data-theme="mac-midnight"] {
+    --bg: #171c26; --sunken: #131720; --panel: #1d2330; --panel-2: #242b3a; --panel-3: #2b3343;
+    --line: #333c4e; --line-soft: #283041; --line-strong: #434d63; --line-lit: #56617a;
+    --text: #eef1f7; --dim: #b3bccc; --faint: #a3adbf;
+    --accent-bg: color-mix(in srgb, var(--accent) 14%, #171c26); --accent-ink: #04202b;
+    --mac-wall:
+      radial-gradient(1100px 760px at 4% -10%, rgba(40, 110, 230, 0.48), transparent 62%),
+      radial-gradient(980px 720px at 106% 10%, rgba(110, 80, 230, 0.32), transparent 62%),
+      radial-gradient(1000px 760px at 52% 120%, rgba(0, 170, 210, 0.24), transparent 62%),
+      linear-gradient(180deg, #0e1422, #121a2b);
+    --mac-glass: rgba(30, 38, 58, 0.55);
+    --mac-glass-strong: rgba(28, 35, 54, 0.8);
+    --mac-glass-line: rgba(170, 195, 255, 0.13);
+    --mac-fill: rgba(170, 195, 255, 0.07);
+    --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(200, 220, 255, 0.14), 0 14px 40px rgba(0, 6, 20, 0.55);
+    --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.55), inset 0 0.5px 0 rgba(200, 220, 255, 0.1), 0 10px 34px rgba(0, 6, 20, 0.4);
+    color-scheme: dark;
+  }
+
+  /* ---------------------------------------------------------------- 页面壳：一张「真实一点」的对话页 */
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font-family: var(--sans); color: var(--text); background: var(--mac-wall) fixed;
+    -webkit-font-smoothing: antialiased; overflow: hidden;
+  }
+  .chat {
+    position: fixed; inset: 14px 16px 96px; display: grid; grid-template-rows: auto 1fr auto;
+    border-radius: 14px; overflow: hidden; background: var(--mac-glass);
+    -webkit-backdrop-filter: var(--mac-blur); backdrop-filter: var(--mac-blur);
+    box-shadow: var(--mac-shadow-panel); border: 0.5px solid var(--mac-glass-line);
+  }
+  /* 顶栏 */
+  .topbar {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    border-bottom: 0.5px solid var(--mac-glass-line); background: var(--mac-glass-strong);
+  }
+  .lights { display: flex; gap: 6px; }
+  .lights i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .lights i:nth-child(1) { background: #ff5f57; }
+  .lights i:nth-child(2) { background: #febc2e; }
+  .lights i:nth-child(3) { background: #28c840; }
+  .topbar .title { font-size: 13px; font-weight: 600; margin-left: 6px; }
+  .topbar .sub { font-size: 11px; color: var(--faint); font-family: var(--mono); }
+
+  /* 对话 */
+  .msgs { overflow-y: auto; padding: 18px 20px 8px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { display: flex; gap: 10px; max-width: 86%; }
+  .msg .who {
+    flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; font-size: 11px; font-weight: 600;
+    display: grid; place-items: center; color: var(--accent-ink); background: var(--accent);
+  }
+  .msg .body {
+    font-size: 13.5px; line-height: 1.55; padding: 8px 12px; border-radius: 14px;
+    background: var(--panel); border: 0.5px solid var(--line); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg.user .body { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .msg.user .who { background: var(--panel-3); color: var(--dim); }
+  .msg .body code { font-family: var(--mono); font-size: 12px; background: var(--mac-fill); padding: 1px 4px; border-radius: 4px; }
+
+  /* 输入框 */
+  .composer { position: relative; padding: 10px 14px 12px; border-top: 0.5px solid var(--mac-glass-line); }
+  .composer .row { display: flex; align-items: flex-end; gap: 8px; }
+  .composer .box {
+    flex: 1 1 auto; min-width: 0; position: relative; border-radius: 12px; background: var(--panel);
+    border: 0.5px solid var(--line-strong); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    transition: border-color var(--dur-1) var(--mac-ease), box-shadow var(--dur-1) var(--mac-ease);
+  }
+  .composer .box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+  .composer textarea {
+    display: block; width: 100%; min-height: 46px; max-height: 160px; resize: none; border: 0; outline: 0;
+    background: transparent; color: var(--text); font: 13.5px/1.55 var(--sans); padding: 13px 14px;
+  }
+  .composer .side {
+    flex: 0 0 auto; width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+    color: var(--dim); background: var(--mac-fill); border: 0.5px solid var(--mac-glass-line);
+  }
+  .hint {
+    display: flex; align-items: center; gap: 8px; padding: 6px 2px 0; font-size: 11px; color: var(--faint);
+  }
+  .hint .k { font-family: var(--mono); }
+
+  /* 现有徽标（web/src/styles.css 的 .image-badge 同款） */
+  .image-badge {
+    flex: 0 0 auto; align-self: flex-end; position: relative; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; padding: 4px 9px; border-radius: 999px;
+    color: var(--accent); background: var(--accent-bg); border: 1px solid var(--accent-dim);
+    white-space: nowrap; transform-origin: 100% 100%;
+  }
+  .image-badge:hover { border-color: var(--accent); }
+  .image-badge[hidden] { display: none; }
+  /* A 变体：实底闪一下（半透明强调色在浅底上本来就弱，闪满才看得见） */
+  .image-badge.flash { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+  /* ---------------------------------------------------------------- C：输入框内的缩略图轨 */
+  .image-rail {
+    display: flex; gap: 6px; align-items: center; overflow: hidden; height: 0; opacity: 0;
+    transition: height var(--dur-2) var(--mac-ease), opacity var(--dur-2) var(--mac-ease),
+      margin var(--dur-2) var(--mac-ease);
+  }
+  .image-rail.open { height: 40px; opacity: 1; margin-bottom: 8px; }
+  .rail-tile {
+    position: relative; flex: 0 0 auto; width: 40px; height: 40px; border-radius: 9px; overflow: hidden;
+    border: 0.5px solid var(--mac-glass-line); box-shadow: var(--mac-shadow-panel);
+    background: var(--sunken);
+  }
+  .rail-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .rail-more {
+    flex: 0 0 auto; font-family: var(--mono); font-size: 11px; color: var(--dim); padding-left: 2px;
+  }
+
+  /* ---------------------------------------------------------------- B：飞入的幽灵缩略图 */
+  .fly-layer { position: fixed; inset: 0; pointer-events: none; z-index: 40; }
+  .fly-ghost {
+    position: absolute; left: 0; top: 0; width: 76px; height: 76px; border-radius: 14px; overflow: hidden;
+    box-shadow: var(--mac-shadow-menu); border: 0.5px solid var(--mac-glass-line);
+    will-change: transform, opacity;
+  }
+  .fly-ghost img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+  /* ---------------------------------------------------------------- D：玻璃浮标 */
+  .hud-layer { position: absolute; right: 14px; bottom: 84px; z-index: 30; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: none; }
+  .hud {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 8px; border-radius: 999px;
+    background: var(--mac-glass-strong); border: 0.5px solid var(--mac-glass-line);
+    -webkit-backdrop-filter: var(--mac-blur-strong); backdrop-filter: var(--mac-blur-strong);
+    box-shadow: var(--mac-shadow-menu); font-size: 12px; color: var(--text);
+  }
+  .hud .thumb { width: 26px; height: 26px; border-radius: 50%; overflow: hidden; flex: 0 0 auto; border: 0.5px solid var(--mac-glass-line); }
+  .hud .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .hud .txt b { font-variant-numeric: tabular-nums; }
+  .hud .kbd {
+    font-family: var(--mono); font-size: 10px; color: var(--dim); padding: 2px 6px; border-radius: 5px;
+    background: var(--mac-fill); border: 0.5px solid var(--mac-glass-line);
+  }
+
+  /* ---------------------------------------------------------------- 底部原型切换条（不属于被评的设计） */
+  .proto-bar {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 100;
+    display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 999px;
+    background: rgba(20, 20, 24, 0.82); color: #fff; border: 0.5px solid rgba(255, 255, 255, 0.16);
+    -webkit-backdrop-filter: saturate(180%) blur(18px); backdrop-filter: saturate(180%) blur(18px);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.34); font: 12px/1 var(--sans);
+    max-width: min(960px, calc(100vw - 24px)); flex-wrap: wrap; justify-content: center;
+  }
+  .proto-bar button {
+    font: inherit; color: inherit; background: rgba(255, 255, 255, 0.1); cursor: pointer;
+    border: 0.5px solid rgba(255, 255, 255, 0.14); border-radius: 999px; padding: 6px 10px;
+  }
+  .proto-bar button:hover { background: rgba(255, 255, 255, 0.2); }
+  .proto-bar .label { font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
+  .proto-bar .label b { color: #7fb6ff; }
+  .proto-bar .note {
+    font-size: 11px; color: #8d94a4; max-width: 250px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .proto-bar .sep { width: 1px; height: 18px; background: rgba(255, 255, 255, 0.18); }
+  .proto-bar .state { font-family: var(--mono); font-size: 11px; color: #a8b0c0; }
+  .proto-bar .seg { display: flex; gap: 2px; background: rgba(255, 255, 255, 0.08); border-radius: 999px; padding: 2px; }
+  .proto-bar .seg button { border: 0; background: transparent; padding: 5px 8px; }
+  .proto-bar .seg button[aria-pressed="true"] { background: rgba(255, 255, 255, 0.26); }
+  @media (max-width: 1000px) { .proto-bar .note { display: none; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="chat" id="chat">
+    <div class="topbar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <span class="title">修复粘贴图片没有反馈</span>
+      <span class="sub" id="topSub">pi-web-client · ~/pi-web-client</span>
+    </div>
+
+    <div class="msgs" id="msgs">
+      <div class="msg">
+        <span class="who">Y</span>
+        <div class="body">截图贴进输入框以后，右下角只有一个 <code>+1 图</code> 的小按钮，<br />贴没贴上完全看不出来 —— 一点动效都没有。</div>
+      </div>
+      <div class="msg user">
+        <span class="who">我</span>
+        <div class="body">加个 Mac 风格的提示吧，贴上的那一下要看得见。</div>
+      </div>
+    </div>
+
+    <div class="composer" id="composer">
+      <div class="image-rail" id="rail"></div>
+      <div class="row">
+        <div class="box">
+          <textarea id="ta" rows="1" placeholder="说点什么…（⌘V 贴图试试）"></textarea>
+        </div>
+        <div class="side" title="附加文件">＋</div>
+        <button class="image-badge" id="badge" hidden type="button">+0 图</button>
+      </div>
+      <div class="hint">
+        <span class="k" id="hintK">⌘V</span> 贴图 · 点右下角徽标看缩略图
+      </div>
+    </div>
+
+    <div class="hud-layer" id="hudLayer"></div>
+  </div>
+
+  <div class="fly-layer" id="flyLayer"></div>
+
+  <div class="proto-bar" id="bar">
+    <button id="prev" title="上一个变体（←）">←</button>
+    <span class="label" id="label"></span>
+    <span class="note" id="note"></span>
+    <button id="next" title="下一个变体（→）">→</button>
+    <span class="sep"></span>
+    <button id="sim" title="不用剪贴板，直接模拟贴一张图">模拟粘贴</button>
+    <button id="clear" title="清空待发图片">清空</button>
+    <span class="sep"></span>
+    <span class="seg" id="themeSeg">
+      <button data-theme="mac-light" aria-pressed="true">浅色</button>
+      <button data-theme="mac-dark" aria-pressed="false">深色</button>
+      <button data-theme="mac-midnight" aria-pressed="false">午夜</button>
+    </span>
+    <span class="sep"></span>
+    <span class="state" id="state">待发 0 张</span>
+  </div>
+
+<script>
+/* =====================================================================================
+ * 一次性原型：贴图动效的四个变体。选中哪个，就把它那几行搬进 web/src/app.ts。
+ * ===================================================================================== */
+
+const VARIANTS = {
+  A: { short: "徽标弹跳", name: "只动现有徽标：弹进来 + 实底闪一下；输入框描边同时闪一圈" },
+  B: { short: "缩略图飞入", name: "贴上的图先浮出来，再缩进右下角徽标「落地」" },
+  C: { short: "输入框内缩略图轨", name: "输入框顶出一条缩略图轨：看得见图本身，不只是数字" },
+  D: { short: "玻璃浮标", name: "输入框上方浮一枚玻璃胶囊「已附加 N 张图」+ ⌘V 键帽" },
+};
+
+const $ = (id) => document.getElementById(id);
+const composer = $("composer"), badge = $("badge"), rail = $("rail"), hudLayer = $("hudLayer");
+const flyLayer = $("flyLayer"), stateEl = $("state"), labelEl = $("label");
+
+const params = new URLSearchParams(location.search);
+const state = {
+  images: [],                                     // { url, w, h }
+  variant: (params.get("variant") || "A").toUpperCase(),
+};
+if (!VARIANTS[state.variant]) state.variant = "A";
+
+/* ------------------------------------------------------------------ 生成「贴进来的图」 */
+/** 真实粘贴走这里：File → dataURL。原型只需要能显示，不需要压到 2048。 */
+function filesToImages(files) {
+  return Promise.all(files.map((file) => new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => resolve({ url, w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => resolve({ url, w: 0, h: 0 });
+    img.src = url;
+  })));
+}
+
+/** 模拟粘贴：画一张带色块 + 文字的假截图，好认「是这一张」。 */
+function fakeShot(seed) {
+  const w = 720, h = 460;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const g = c.getContext("2d");
+  const hues = [[212, 96, 62], [338, 84, 66], [160, 62, 44], [32, 92, 60], [268, 72, 62]];
+  const [hh, ss, ll] = hues[seed % hues.length];
+  const grad = g.createLinearGradient(0, 0, w, h);
+  grad.addColorStop(0, `hsl(${hh} ${ss}% ${ll}%)`);
+  grad.addColorStop(1, `hsl(${(hh + 40) % 360} ${ss - 20}% ${Math.max(24, ll - 22)}%)`);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, w, h);
+  g.fillStyle = "rgba(255,255,255,.16)";
+  for (let i = 0; i < 5; i++) g.fillRect(48, 90 + i * 62, 240 + ((seed + i) % 5) * 70, 26);
+  g.fillStyle = "rgba(255,255,255,.92)";
+  g.font = "600 40px -apple-system, 'PingFang SC', sans-serif";
+  g.fillText(`截图 #${seed}`, 48, 60);
+  return c.toDataURL("image/png");
+}
+
+/* WAAPI 的 easing 不认 CSS 变量（`var(--mac-spring)` 直接抛 TypeError），所以缓动在这里再写一遍。 */
+const EASE = "cubic-bezier(0.32, 0.72, 0, 1)";     // == --mac-ease
+const SPRING = "cubic-bezier(0.34, 1.42, 0.64, 1)"; // == --mac-spring
+
+/* ------------------------------------------------------------------ 徽标：计数 + 弹跳 */
+let popAnim = null;
+function renderBadge() {
+  const n = state.images.length;
+  badge.hidden = n === 0;
+  badge.firstChild.nodeValue = `+${n} 图`;
+  stateEl.textContent = n ? `待发 ${n} 张 · 最近 ${state.images[n - 1].w}×${state.images[n - 1].h}` : "待发 0 张";
+}
+
+/** 徽标「弹进来 / 跳一下」：A、B 落地、C/D 的轻提示共用这一份。 */
+function popBadge(scale = 1.14) {
+  popAnim?.cancel();
+  popAnim = badge.animate([
+    { transform: "scale(.62)", opacity: 0.35 },
+    { transform: `scale(${scale})`, opacity: 1, offset: 0.52 },
+    { transform: "scale(.97)", offset: 0.78 },
+    { transform: "scale(1)" },
+  ], { duration: 400, easing: SPRING });
+}
+
+/** 计数跳一下（只在数字变的时候用，纯视觉）。 */
+function tickBadge() {
+  badge.animate([{ transform: "translateY(0)" }, { transform: "translateY(-3px)" }, { transform: "translateY(0)" }],
+    { duration: 220, easing: SPRING });
+}
+
+/** 「落地」提示：弹一下 + 实底闪一下。四个变体共用（半透明强调色叠在浅底上，不实底就看不出来）。 */
+function badgeLanded(scale = 1.14) {
+  popBadge(scale);
+  badge.classList.add("flash");
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => badge.classList.remove("flash"), 260);
+}
+let flashTimer = null;
+
+/** 输入框描边闪一下（这个变体的第二个信号，专治「眼睛盯着框」的人）。 */
+function flashComposer() {
+  const box = composer.querySelector(".box");
+  box.animate([
+    { boxShadow: "0 0 0 0 var(--accent)", borderColor: "var(--accent)" },
+    { boxShadow: "0 0 0 4px var(--accent-bg)", borderColor: "var(--accent)", offset: 0.35 },
+    { boxShadow: "0 0 0 0 rgba(0,0,0,0)", borderColor: "var(--line-strong)" },
+  ], { duration: 460, easing: EASE });
+}
+
+/* ------------------------------------------------------------------ A 徽标弹跳 */
+const variantA = {
+  onAttach(added) {
+    renderBadge();
+    badgeLanded(1.16);
+    // 第二个信号：整个输入框描边闪一圈 —— 眼睛盯着框里的人也能看见。
+    flashComposer();
+    if (state.images.length > added.length) tickBadge();
+  },
+  onClear() { rail.classList.remove("open"); },
+  onVariantEnter() {}, onVariantLeave() {},
+  css() {},
+};
+
+/* ------------------------------------------------------------------ B 缩略图飞入 */
+let lastPtr = null;
+document.addEventListener("pointermove", (e) => { lastPtr = { x: e.clientX, y: e.clientY }; }, { passive: true });
+
+const variantB = {
+  onAttach(added, from) {
+    renderBadge();
+    const target = badge.getBoundingClientRect();
+    added.forEach((img, i) => {
+      const ghost = document.createElement("div");
+      ghost.className = "fly-ghost";
+      ghost.innerHTML = `<img src="${img.url}" alt="">`;
+      flyLayer.append(ghost);
+      // 起点：粘贴时的指针附近（默认输入框中心偏上），一路缩到徽标中心。
+      const box = from || composer.getBoundingClientRect();
+      const sx = (box.left + box.right) / 2 + i * 14 - 38;
+      const sy = box.top - 54 + i * 12;
+      const tx = target.left + target.width / 2 - 38;
+      const ty = target.top + target.height / 2 - 38;
+      // 先飘出来停一下（.18 → .5 这段几乎是原地），再一路缩进徽标：快了就只剩一道残影。
+      const mx = sx + (tx - sx) * 0.4;
+      const my = sy + (ty - sy) * 0.4 - 18;
+      const anim = ghost.animate([
+        { transform: `translate(${sx}px, ${sy}px) scale(.7) rotate(-4deg)`, opacity: 0, offset: 0,
+          easing: "cubic-bezier(.2,.9,.3,1)" },
+        { transform: `translate(${sx}px, ${sy - 8}px) scale(1) rotate(-2deg)`, opacity: 1, offset: 0.22,
+          easing: "ease-out" },
+        { transform: `translate(${mx}px, ${my}px) scale(.94) rotate(-1deg)`, opacity: 1, offset: 0.52,
+          easing: "cubic-bezier(.45,0,.15,1)" },
+        { transform: `translate(${tx}px, ${ty}px) scale(.2)`, opacity: 0.85, offset: 0.9, easing: "ease-out" },
+        { transform: `translate(${tx}px, ${ty}px) scale(.12)`, opacity: 0, offset: 1 },
+      ], { duration: 700, delay: i * 90, fill: "forwards" });
+      anim.onfinish = () => {
+        ghost.remove();
+        // 落地的那一下：徽标弹起来并实底闪一下（只有最后一张落地才弹）。
+        if (i === added.length - 1) badgeLanded(1.2);
+      };
+    });
+    if (state.images.length > added.length) tickBadge();
+  },
+  onClear() {},
+  onVariantEnter() {}, onVariantLeave() {},
+};
+
+/* ------------------------------------------------------------------ C 输入框内缩略图轨 */
+const variantC = {
+  paintRail() {
+    rail.replaceChildren();
+    state.images.forEach((img) => {
+      const tile = document.createElement("div");
+      tile.className = "rail-tile";
+      tile.innerHTML = `<img src="${img.url}" alt="">`;
+      rail.append(tile);
+    });
+    const more = document.createElement("span");
+    more.className = "rail-more";
+    rail.classList.toggle("open", state.images.length > 0);
+  },
+  onAttach(added) {
+    renderBadge();
+    this.paintRail();
+    // 新来的图各自弹进来（错开 40ms），旧的原地不动。
+    [...rail.querySelectorAll(".rail-tile")].slice(-added.length).forEach((tile, i) => {
+      tile.animate([
+        { transform: "scale(.4) translateY(6px)", opacity: 0 },
+        { transform: "scale(1.08)", opacity: 1, offset: 0.6 },
+        { transform: "scale(1)", opacity: 1 },
+      ], { duration: 380, delay: i * 40, easing: SPRING });
+    });
+    badgeLanded(1.1);
+  },
+  onClear() { this.paintRail(); renderBadge(); },
+  onVariantEnter() { this.paintRail(); },
+  onVariantLeave() { rail.classList.remove("open"); },
+};
+
+/* ------------------------------------------------------------------ D 玻璃浮标 */
+let hudTimer = null;
+const variantD = {
+  onAttach(added) {
+    renderBadge();
+    badgeLanded(1.08);
+    const n = state.images.length;
+    const latest = state.images[n - 1];
+    const hud = document.createElement("div");
+    hud.className = "hud";
+    hud.innerHTML = `
+      <span class="thumb"><img src="${latest.url}" alt=""></span>
+      <span class="txt">已附加 <b>${n}</b> 张图</span>
+      <span class="kbd">⌘V</span>`;
+    // 只有一枚：再贴一次就换掉上一枚（不然会叠成一朿）。
+    [...hudLayer.children].forEach((el) => el.remove());
+    hudLayer.append(hud);
+    const last = hudLayer.lastElementChild;
+    // 模糊化入（macOS 通知的老套路）：blur 8 → 0、y 6 → 0，收在弹簧上。
+    last.animate([
+      { opacity: 0, transform: "translateY(8px) scale(.96)", filter: "blur(8px)" },
+      { opacity: 1, transform: "translateY(0) scale(1)", filter: "blur(0px)" },
+    ], { duration: 340, easing: SPRING });
+    // 1.8s 后化掉；期间又贴了图就重新计时，只留一枚。
+    clearTimeout(hudTimer);
+    hudTimer = setTimeout(() => {
+      [...hudLayer.children].forEach((el) => {
+        el.animate([
+          { opacity: 1, transform: "translateY(0) scale(1)", filter: "blur(0px)" },
+          { opacity: 0, transform: "translateY(4px) scale(.98)", filter: "blur(4px)" },
+        ], { duration: 260, easing: EASE, fill: "forwards" }).onfinish = () => el.remove();
+      });
+    }, 1800);
+  },
+  onClear() { [...hudLayer.children].forEach((el) => el.remove()); clearTimeout(hudTimer); },
+  onVariantEnter() {}, onVariantLeave() { [...hudLayer.children].forEach((el) => el.remove()); clearTimeout(hudTimer); },
+};
+
+const impls = { A: variantA, B: variantB, C: variantC, D: variantD };
+
+/* ------------------------------------------------------------------ 粘贴 / 清空 */
+async function attachImages(files, fromRect) {
+  const prevN = state.images.length;
+  const added = await filesToImages(files);
+  if (!added.length) return;
+  state.images.push(...added);
+  renderBadge();
+  impls[state.variant].onAttach(added, fromRect);
+  renderLabel();
+  if (prevN === 0 && state.variant === "C") rail.classList.add("open");
+}
+
+/** 模拟一次粘贴：调用方给张数。 */
+function simulatePaste(count = 1) {
+  const files = [];
+  for (let i = 0; i < count; i++) {
+    const dataUrl = fakeShot(state.images.length + i);
+    const bin = atob(dataUrl.split(",")[1]);
+    const buf = new Uint8Array(bin.length);
+    for (let j = 0; j < bin.length; j++) buf[j] = bin.charCodeAt(j);
+    files.push(new File([buf], `shot-${state.images.length + i}.png`, { type: "image/png" }));
+  }
+  const rect = lastPtr
+    ? { left: lastPtr.x, right: lastPtr.x, top: lastPtr.y, bottom: lastPtr.y }
+    : composer.getBoundingClientRect();
+  void attachImages(files, rect);
+}
+window.protoPaste = simulatePaste;   // 给截图脚本用的把手
+
+document.addEventListener("paste", (ev) => {
+  const items = [...(ev.clipboardData?.items || [])];
+  const files = items.filter((it) => it.kind === "file").map((it) => it.getAsFile()).filter(Boolean)
+    .filter((f) => f.type.startsWith("image/"));
+  if (!files.length) return;
+  ev.preventDefault();
+  const rect = lastPtr
+    ? { left: lastPtr.x, right: lastPtr.x, top: lastPtr.y, bottom: lastPtr.y }
+    : composer.getBoundingClientRect();
+  void attachImages(files, rect);
+});
+
+function clearAll() {
+  state.images = [];
+  impls[state.variant].onClear();
+  renderBadge();
+  renderLabel();
+}
+
+/* ------------------------------------------------------------------ 变体切换 */
+function setVariant(key, push = true) {
+  if (!VARIANTS[key]) return;
+  const prev = impls[state.variant];
+  prev.onVariantLeave?.();
+  state.variant = key;
+  impls[key].onVariantEnter?.();
+  // 已经贴过图就当场重放一遍：切变体本来就是为了比较那一下。
+  if (state.images.length && key !== "C") impls[key].onAttach?.([state.images[state.images.length - 1]]);
+  // C 的轨道只在 C 里出现；切走就把别人的痕迹擦干净。
+  if (key !== "C") rail.classList.remove("open");
+  if (key !== "D") { [...hudLayer.children].forEach((el) => el.remove()); clearTimeout(hudTimer); }
+  if (push) {
+    const url = new URL(location.href);
+    url.searchParams.set("variant", key);
+    history.replaceState(null, "", url);
+  }
+  renderLabel();
+}
+const order = Object.keys(VARIANTS);
+function step(delta) {
+  const i = order.indexOf(state.variant);
+  setVariant(order[(i + delta + order.length) % order.length]);
+}
+function renderLabel() {
+  labelEl.innerHTML = `<b>${state.variant}</b> ${VARIANTS[state.variant].short}`;
+  $("note").textContent = VARIANTS[state.variant].name;
+  $("note").title = VARIANTS[state.variant].name;
+  labelEl.title = "← / → 切换变体";
+}
+
+$("prev").onclick = () => step(-1);
+$("next").onclick = () => step(1);
+$("sim").onclick = () => simulatePaste(1);
+$("clear").onclick = clearAll;
+$("themeSeg").onclick = (ev) => {
+  const btn = ev.target.closest("button[data-theme]");
+  if (!btn) return;
+  document.documentElement.dataset.theme = btn.dataset.theme;
+  [...$("themeSeg").children].forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+};
+badge.onclick = () => {
+  // 原型里徽标不做缩略图弹层（那是既有功能），点一下只回放一次动效，方便反复看。
+  badgeLanded(1.12);
+};
+document.addEventListener("keydown", (ev) => {
+  const el = ev.target;
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+  if (ev.key === "ArrowLeft") { step(-1); ev.preventDefault(); }
+  if (ev.key === "ArrowRight") { step(1); ev.preventDefault(); }
+});
+
+/* 首屏：直接给出「已经贴过一张」的样子，免得空白看不出差别。 */
+renderBadge();
+setVariant(state.variant, false);
+setTimeout(() => simulatePaste(1), 380);
+</script>
+</body>
+</html>
