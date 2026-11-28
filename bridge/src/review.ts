@@ -1123,12 +1123,18 @@ export function clip(text: string, max = 300): string {
 }
 
 /**
- * 「根本没连上模型」的原话。只认网络层的错误码 / 措辞 —— **不用 network / connect / socket
- * / proxy 这类宽泛词**：它们会命中 `Invalid connection header` 这种与网络无关的 provider 报错，
- * 也会把工具超时（`timed out`）说成断网（D452 评审意见 3）。
+ * 「来源整个连不上」的原话 —— 只收**建立连接那一步**的失败：解析不到、路由不到、连接被拒、
+ * 连接超时。这几种跟评什么文件无关，下一组只会撞同一堵墙。
+ *
+ * **不收**只属于单次请求的瞬时故障：`ECONNRESET`（流被重置）、`EPIPE`（对端先关）、裸的
+ * `ETIMEDOUT`（一次读超时）、`connection reset by peer`、`Headers Timeout` —— 这些重试一次
+ * 往往就过去了，跟 429 同一类，走重试那条路（D452 二轮评审意见 1）。
+ *
+ * 也不用 `network` / `socket` / `proxy` 这类宽泛词：会命中 `Invalid connection header`
+ * 这种与网络无关的 provider 报错。
  */
 const UNREACHABLE =
-  /\b(EHOSTDOWN|EHOSTUNREACH|ECONNREFUSED|ECONNRESET|ENOTFOUND|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|EPIPE)\b|Connect Timeout|connection reset|getaddrinfo/i;
+  /\b(EHOSTDOWN|EHOSTUNREACH|ECONNREFUSED|ENOTFOUND|ENETUNREACH|EAI_AGAIN)\b|\bconnect (ETIMEDOUT|ECONNRESET|EPIPE)\b|Connect Timeout|getaddrinfo/i;
 
 /** 这条原话是不是「来源整个连不上」。既决定文案，也决定要不要继续跑剩下的组。 */
 export function unreachable(why: string): boolean {

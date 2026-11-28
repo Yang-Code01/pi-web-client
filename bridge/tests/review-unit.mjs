@@ -893,12 +893,19 @@ check("childWhy：没原话才退到沉默/退出码", () => {
   assert.equal(childWhy({ error: "", silent: false, stderr: "", code: 0, lines: 37 }), "退出码 0、输出 37 行");
 });
 
-check("unreachable：只认网络层的错误码 / 措辞", () => {
+check("unreachable：只认「连不上」，单次请求的瞬时毛病留给重试", () => {
+  // 建立连接那一步失败：跟评哪个文件无关，后面的组只会撞同一堵墙 → 收工
   assert.equal(unreachable("Connection error.: connect EHOSTDOWN 192.168.31.36:7863"), true);
   assert.equal(unreachable("Request timed out.: Connect Timeout Error (attempted address: 10.0.0.2:7863)"), true);
   assert.equal(unreachable("connect ECONNREFUSED 127.0.0.1:7863"), true);
-  assert.equal(unreachable("socket hang up: connection reset by peer"), true);
-  // 宽泛词不算：这两种都不是「来源连不上」，不该因此收工
+  assert.equal(unreachable("connect ETIMEDOUT 10.0.0.2:7863"), true, "连接超时算连不上");
+  assert.equal(unreachable("getaddrinfo ENOTFOUND wb2.invalid"), true);
+  // 单次请求的瞬时故障：重试一次常常就过去了，与 429 同一类，不该让它把后面的组一起拖死
+  assert.equal(unreachable("socket hang up: connection reset by peer"), false);
+  assert.equal(unreachable("read ECONNRESET"), false);
+  assert.equal(unreachable("write EPIPE"), false);
+  assert.equal(unreachable("Headers Timeout Error (10000ms)"), false);
+  // 宽泛词 / 无网络语义的文本也不算
   assert.equal(unreachable("Invalid connection header"), false);
   assert.equal(unreachable("tool timed out after 30s"), false);
   assert.equal(unreachable("maximum context length exceeded"), false);
