@@ -50,12 +50,21 @@ test("edit：edits 排成 diff（删的在前、加的在后），不是原样 J
   assert.deepEqual(view.facts, [{ key: "path", value: "a.txt" }]);
 });
 
+test("edit 旁边还有一个长字段：两块都留下来，不再二选一", () => {
+  const view = toolArgsView({ path: "a.ts", summary: "s".repeat(80), edits: [{ oldText: "old", newText: "new" }] });
+  assert.deepEqual(view.blocks.map((block) => [block.label, block.grammar]), [
+    ["summary", null],
+    [tr("改动"), "diff"],
+  ]);
+  assert.deepEqual(view.facts, [{ key: "path", value: "a.ts" }]);
+});
+
 test("edit：多段改动每段单独一块，标题带序号", () => {
   const view = toolArgsView({ path: "a.txt", edits: [{ oldText: "a", newText: "b" }, { oldText: "c", newText: "d" }] });
   assert.deepEqual(view.blocks.map((block) => block.label), [tr("改动 {p1}", { p1: 1 }), tr("改动 {p1}", { p1: 2 })]);
 });
 
-test("嵌套对象（ask_user_question）：没有长字段就退回两格缩进的 JSON", () => {
+test("嵌套对象里没有长文本（ask 的短问题）：整份两格缩进的 JSON", () => {
   const args = { questions: [{ id: "q1", header: "选哪个", prompt: "要不要合并", options: [{ value: "a", label: "A" }] }] };
   const view = toolArgsView(args);
   assert.equal(view.blocks.length, 1);
@@ -63,6 +72,24 @@ test("嵌套对象（ask_user_question）：没有长字段就退回两格缩进
   assert.equal(view.blocks[0].label, tr("参数"));
   assert.equal(view.blocks[0].text, JSON.stringify(args, null, 2));
   assert.deepEqual(view.facts, []);
+});
+
+test("嵌套的长文本（questions[0].prompt）单独成块，结构里只留省略号", () => {
+  const prompt = `第一行\n${"很长的提问 ".repeat(40)}`;
+  const args = { questions: [{ id: "q1", header: "选哪个", prompt, options: [{ value: "a", label: "A" }] }] };
+  const view = toolArgsView(args);
+  // 第一块是结构提纲（prompt 换成了 …），第二块是那条长文本本体（真换行，不是字面 \n）。
+  assert.deepEqual(view.blocks.map((block) => block.label), [tr("参数"), "questions[0].prompt"]);
+  assert.ok(view.blocks[0].text.includes('"prompt": "…"'), view.blocks[0].text);
+  assert.equal(view.blocks[1].text, prompt);
+  assert.ok(!view.blocks[1].text.includes("\\n"));
+  assert.equal(view.blocks[1].grammar, undefined);
+  assert.deepEqual(view.facts, []);
+});
+
+test("数组里的长文本也按 items[0].content 这种路径挑出来", () => {
+  const view = toolArgsView({ changes: [{ path: "a.ts", content: "x".repeat(200) }] });
+  assert.deepEqual(view.blocks.map((block) => block.label), [tr("参数"), "changes[0].content"]);
 });
 
 test("不是 command / content 的长字段：用自己的键当标题，不上色", () => {

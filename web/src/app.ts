@@ -20445,15 +20445,18 @@ export class App {
     return line;
   }
 
-  /** 「参数」窗口左上角那枚徽章：用工具自己的图标，一眼看出这是哪个工具的参数。 */
+  /** 「参数」窗口左上角那枚徽章：用工具自己的图标，一眼看出这是哪个工具的参数。
+   *  按「词」认，不按子串：`/read/` 会命中 spreadsheet / breadcrumbs，`/ls/` 会命中 tools。
+   *  工具名是 `web_search` / `mcp__xxx__read_file` 这种下划线拼接的，拆成词就是它自己的名字。 */
   private argDialogIcon(tool?: string): IconName {
-    const name = (tool ?? "").toLowerCase();
-    if (/bash|shell|exec|term|command/.test(name)) return "terminal";
-    if (/write|edit|patch|notebook/.test(name)) return "pencil";
-    if (/read|glob|file|ls/.test(name)) return "file";
-    if (/search|grep|find|web|fetch|browse/.test(name)) return "search";
-    if (/subagent|agent|task|delegate/.test(name)) return "users";
-    if (/ask|question|interview/.test(name)) return "bubble";
+    const words = new Set((tool ?? "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+    const any = (...names: string[]) => names.some((name) => words.has(name));
+    if (any("bash", "sh", "shell", "exec", "terminal", "command")) return "terminal";
+    if (any("write", "edit", "patch", "notebook")) return "pencil";
+    if (any("read", "file", "files", "glob", "ls", "cat")) return "file";
+    if (any("search", "grep", "find", "web", "fetch", "browse", "browser", "http")) return "search";
+    if (any("subagent", "agent", "task", "delegate")) return "users";
+    if (any("ask", "question", "interview")) return "bubble";
     return "tool";
   }
 
@@ -20481,6 +20484,9 @@ export class App {
     const copy = el("button", "argdialog-btn argdialog-copy", tr("复制")) as HTMLButtonElement;
     copy.type = "button";
     copy.onclick = () => {
+      // 「复制」拿的就是屏幕上这几块（WYSIWYG）：bash 得到命令本体、write 得到文件内容、
+      // edit 得到它那块 `- 旧 / + 新`。以前这里想改成「完整参数 JSON」，但那样 bash 又变回一坨 ——
+      // 只能有一套规矩，就是「看到什么拷什么」。
       const text = opts.blocks.map((block) => block.text).join("\n\n");
       const done = navigator.clipboard?.writeText(text);
       done?.then(() => this.flashToast(tr("已复制到剪贴板"), false, 1600), () => this.flashToast(tr("复制失败"), true, 1600));
@@ -20788,7 +20794,7 @@ export class App {
     if (blocks.length) {
       button.title = tr("点开看这一步的参数与结果");
       button.setAttribute("aria-haspopup", "dialog");
-      button.onclick = () => this.openArgsDialog({ title: step.label, meta: tr("子代理步骤"), tool: step.label, blocks, facts });
+      button.onclick = () => this.openArgsDialog({ title: step.label, meta: tr("子代理步骤"), tool: step.kind === "tool" ? step.label : undefined, blocks, facts });
     }
     wrap.append(button);
     return wrap;

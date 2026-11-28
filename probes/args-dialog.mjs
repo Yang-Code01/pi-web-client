@@ -33,8 +33,9 @@ const PORT = Number(process.env.ARGS_DIALOG_PORT ?? (await freePort()));
 const BASE = `http://127.0.0.1:${PORT}`;
 const PASS = "args-dialog-pass";
 
+// 每次重来：shots 里除了上一次的图，也可能混进子目录（逐个 rmSync 不递归会抛 EISDIR）。
+fs.rmSync(OUT, { recursive: true, force: true });
 for (const dir of [STATE, AGENT, OUT]) fs.mkdirSync(dir, { recursive: true });
-for (const file of fs.readdirSync(OUT)) fs.rmSync(path.join(OUT, file), { force: true });
 
 const log = (...args) => console.log(new Date().toISOString().slice(11, 19), ...args);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -219,9 +220,16 @@ try {
   await sleep(500);
   const jsonText = page.locator(".argdialog-text").first();
   const json = await jsonText.innerText();
-  check("nested args fall back to indented JSON", json.split("\n").length >= 6 && /^ {2}"questions"/m.test(json), JSON.stringify(json.slice(0, 120)));
-  check("JSON is coloured, not plain text", (await jsonText.locator(".hljs-attr, .hljs-string").count()) > 0);
-  check("the JSON block is labelled as arguments", (await page.locator(".argdialog-label").first().innerText()) === "参数");
+  check("the outline is indented JSON, not one line", json.split("\n").length >= 6 && /^ {2}"questions"/m.test(json), JSON.stringify(json.slice(0, 120)));
+  check("the outline is coloured, not plain text", (await jsonText.locator(".hljs-attr, .hljs-string").count()) > 0);
+  check("the outline is labelled as arguments", (await page.locator(".argdialog-label").first().innerText()) === "参数");
+  // questions[0].prompt 是埋在两层里的长文本：它要单独占一块（真换行），结构那块里只留省略号。
+  const labels = await page.locator(".argdialog-label").allInnerTexts();
+  check("a long nested string gets its own block", labels.includes("questions[0].prompt"), JSON.stringify(labels));
+  const pulled = page.locator(".argdialog-block", { hasText: "questions[0].prompt" }).locator(".argdialog-text");
+  const pulledText = await pulled.innerText();
+  check("the pulled-out text is the full original", pulledText.length > 190 && !pulledText.includes("\\n"), JSON.stringify(pulledText.slice(0, 80)));
+  check("the outline does not repeat it escaped", json.includes('"prompt": "…"'));
   await sleep(300);
   await shot("04-json.png");
   await page.keyboard.press("Escape");

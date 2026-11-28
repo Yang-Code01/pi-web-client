@@ -10,12 +10,15 @@
  *   2. 顶层的长字符串（command / content / prompt…）各成一「块」正文，短字段（path / offset /
  *      timeout…）收成一行事实胶囊，不再跟正文混在一起；
  *   3. 正文按真文本铺开，并给一个语法名（命令 = bash、写文件按路径猜、edit 排成 diff）；
- *      没有长字段的（ask_user_question / todo / MCP 那种嵌套对象）退回两格缩进 + JSON 上色。
+ *      顶层没有长字段时往下再找一层（`questions[0].prompt`），挑不出来才退回两格缩进 + JSON 上色。
  */
 import { langOf } from "./highlight.ts";
 import { tr } from "./i18n/index.ts";
 
-/** 对话框里的一块正文。`text` 永远是给「复制」的原文，`label` / `grammar` 只影响怎么画。 */
+/**
+ * 对话框里的一块正文。`text` 就是这块显示的内容，也是「复制」拿到的那份（看到什么拷什么）；
+ * `label` / `grammar` 只影响怎么画。
+ */
 export interface ArgBlock {
   label?: string;
   text: string;
@@ -90,6 +93,8 @@ function factsOf(obj: Record<string, unknown>, skip: ReadonlySet<string>): ArgFa
 function blockLabel(key: string): string {
   if (COMMAND_KEYS.has(key)) return tr("命令");
   if (key === "content" || key === "text") return tr("内容");
+  // 其余的标题就是参数自己的字段名（`prompt` / `query`…），跟事实胶囊一样刻意不翻：
+  // 它指的是接口里的这个键，翻成中文反而对不上原文。
   return key;
 }
 
@@ -122,14 +127,48 @@ function diffBlocks(obj: Record<string, unknown>): ArgBlock[] | null {
   });
 }
 
+function isLongText(value: unknown): value is string {
+  return typeof value === "string" && (value.length > LONG_ENOUGH || value.includes("\n"));
+}
+
+/** 结构 JSON 里被挑出去的长文本用这个占位：内容在它自己那块里，别在这儿再来一份转义的。 */
+const ELIDED = "…";
+/** 往下找埋着的长文本时最多钻几层：`questions[0].prompt` 是两层，再深就不值得挑了。 */
+const NESTED_DEPTH = 3;
+
+interface LongLeaf {
+  path: string;
+  text: string;
+}
+
+/** 把对象里埋着的长字符串连路径一起捞出来（顶层已经成块的不再重复捞）。 */
+function longLeaves(value: unknown, path: string, out: LongLeaf[], depth = 0): void {
+  if (depth > NESTED_DEPTH) return;
+  if (typeof value === "string") {
+    if (isLongText(value)) out.push({ path, text: value });
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => longLeaves(item, `${path}[${index}]`, out, depth + 1));
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, child] of Object.entries(value)) longLeaves(child, path ? `${path}.${key}` : key, out, depth + 1);
+}
+
+/** 同样的结构，长字符串换成 `…`：结构那块只当提纲，长正文在它自己那块出现一次。 */
+function elideLong(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") return depth > 0 && isLongText(value) ? ELIDED : value;
+  if (Array.isArray(value)) return value.map((item) => elideLong(item, depth + 1));
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, elideLong(child, depth + 1)]));
+}
+
 /** 工具参数 → 对话框里的块 + 事实。 */
 export function toolArgsView(args: unknown): ToolArgsView {
   const parsed = parsedArgs(args);
   if (typeof parsed === "string") return { blocks: [{ label: tr("参数"), text: parsed }], facts: [] };
   if (!isRecord(parsed)) return { blocks: [{ label: tr("参数"), text: prettyJson(parsed), grammar: "json" }], facts: [] };
-
-  const diff = diffBlocks(parsed);
-  if (diff) return { blocks: diff, facts: factsOf(parsed, new Set(["edits"])) };
 
   // 正文按哪个文件的语言上色：write 用 `path`，少数工具用 `file`（两个都可能是别的东西，逐个认）。
   let path: string | null = null;
@@ -139,14 +178,33 @@ export function toolArgsView(args: unknown): ToolArgsView {
       break;
     }
   }
-  const long = Object.entries(parsed).filter(([, value]) => typeof value === "string" && (value.length > LONG_ENOUGH || value.includes("\n")));
-  // 没有「一坨正文」的参数（ask / todo / MCP 的嵌套对象）：整份缩进 JSON 比拆成事实胶囊好读。
-  if (!long.length) return { blocks: [{ label: tr("参数"), text: prettyJson(parsed), grammar: "json" }], facts: [] };
-
+  const long = Object.entries(parsed).filter(([key, value]) => key !== "edits" && isLongText(value));
   const blocks: ArgBlock[] = long.map(([key, value]) => ({
     label: blockLabel(key),
     text: value as string,
     grammar: blockGrammar(key, path),
   }));
-  return { blocks, facts: factsOf(parsed, new Set(long.map(([key]) => key))) };
+  // edit 的 edits[]：一块一张 diff。以前它跟长字段是二选一（先早退），别的长正文只能被压成事实胶囊。
+  const diff = diffBlocks(parsed);
+  if (diff) blocks.push(...diff);
+  if (blocks.length) {
+    const shown = new Set([...long.map(([key]) => key), ...(diff ? ["edits"] : [])]);
+    return { blocks, facts: factsOf(parsed, shown) };
+  }
+
+  // 顶层没有正文：再往下看一两层（`questions[0].prompt` 这类）。挑出来的长文本各占一块，
+  // 结构 JSON 里用 `…` 占位 —— 不然它又会以字面 `\n` 的形式铺回来，正是 D458 要解决的那个毛病。
+  const leaves: LongLeaf[] = [];
+  longLeaves(parsed, "", leaves);
+  if (leaves.length) {
+    return {
+      blocks: [
+        { label: tr("参数"), text: prettyJson(elideLong(parsed)), grammar: "json" },
+        ...leaves.map((leaf): ArgBlock => ({ label: leaf.path, text: leaf.text })),
+      ],
+      facts: [],
+    };
+  }
+  // 真没有长正文（ask / todo / MCP 里只有短字段）：整份缩进 JSON 比拆成事实胶囊好读。
+  return { blocks: [{ label: tr("参数"), text: prettyJson(parsed), grammar: "json" }], facts: [] };
 }
