@@ -6,8 +6,9 @@
  * 1. **选中不是白底**（D455）：`--mac-knob` 是开关里那颗白圆点的颜色，深色主题下也近白（mac-dark
  *    `#f2f2f4`、mac-midnight `#f1f4fb`）。拿它当选中滑块的底时就白底配浅色字，实测 1.03:1，整颗页签
  *    等于消失。**任何**不透明近白的底都会被下面「选中块 vs 灰槽」与「选中字对比」两条拦住。
- * 2. **选中的是强调色**（D456）：底色取像素要比对得上 `--accent`、字色要比对得上 `--accent-ink`，
- *    两套主题各量一次以外，还要拿一颗会换成深字的强调色（黄）验证 accent-ink 真跟着变。
+ * 2. **右栏选中是中性抬起滑块**（D457，取代这一处的 D456）：底色取 `--mac-control` 那档中性面、
+ *    字取 `--text`，12px 也要 ≥4.5:1；同时不许再是强调色实底。设置台的页签 / 分段仍按 D456 用
+ *    强调色 + `--accent-ink`，下面 `checkConsole` 单独守。
  *
  * 底色一律用**截图取像素**（区域内最多的那个颜色），不解析 `color-mix()` / 半透明写法 —— 那些正则
  * 一旦取了默认值断言就恒真（D449 踩过）。字色用 computed：字是从抗锯齿里猜不出来的。
@@ -109,11 +110,13 @@ const openQueueRail = async () => {
   await until(async () => (await page.locator('.pane[data-region="queue"] .exec-tabs button.on').count()) === 1, 8000, "tab bar");
 };
 
-/** 截图一小块 → 区域内最多的那个颜色（CSS px 的 clip，跟 `getBoundingClientRect` 同一套）。 */
-const modeColor = async (rect) => {
+/** 截图一小块 → 区域内最多的那个颜色（CSS px 的 clip，跟 `getBoundingClientRect` 同一套）。
+ *  `exclude` 用来跳过文字的本色：滑块是渐变时没有「一片同色底」，而粗体汉字内部大片纯字的
+ *  像素反而最多，会把底色量成字色（1.00:1 的假红）。跳过字色、留下被抗锯齿打碎的渐变行。 */
+const modeColor = async (rect, exclude = null) => {
   const png = await page.screenshot({ clip: rect });
   return page.evaluate(
-    async ({ b64 }) => {
+    async ({ b64, exclude }) => {
       const img = new Image();
       img.src = `data:image/png;base64,${b64}`;
       await img.decode();
@@ -124,13 +127,16 @@ const modeColor = async (rect) => {
       g.drawImage(img, 0, 0);
       const d = g.getImageData(0, 0, c.width, c.height).data;
       const counts = new Map();
-      for (let i = 0; i < d.length; i += 4) counts.set((d[i] << 16) | (d[i + 1] << 8) | d[i + 2], (counts.get((d[i] << 16) | (d[i + 1] << 8) | d[i + 2]) ?? 0) + 1);
+      for (let i = 0; i < d.length; i += 4) {
+        if (exclude && Math.abs(d[i] - exclude[0]) <= 24 && Math.abs(d[i + 1] - exclude[1]) <= 24 && Math.abs(d[i + 2] - exclude[2]) <= 24) continue;
+        counts.set((d[i] << 16) | (d[i + 1] << 8) | d[i + 2], (counts.get((d[i] << 16) | (d[i + 1] << 8) | d[i + 2]) ?? 0) + 1);
+      }
       let mode = 0;
       let best = -1;
       for (const [k, n] of counts) if (n > best) [mode, best] = [k, n];
       return { rgb: [(mode >> 16) & 255, (mode >> 8) & 255, mode & 255], px: d.length / 4, distinct: counts.size };
     },
-    { b64: png.toString("base64") },
+    { b64: png.toString("base64"), exclude },
   );
 };
 
@@ -196,14 +202,14 @@ const checkTheme = async (theme, accent) => {
   const off = await tabMetrics('.pane[data-region="queue"] .exec-tabs button:not(.on)');
   const vars = await page.evaluate(() => {
     const cs = getComputedStyle(document.documentElement);
-    return { accent: cs.getPropertyValue("--accent").trim(), ink: cs.getPropertyValue("--accent-ink").trim() };
+    return { accent: cs.getPropertyValue("--accent").trim(), ink: cs.getPropertyValue("--accent-ink").trim(), text: cs.getPropertyValue("--text").trim() };
   });
-  const onBg = (await modeColor(on.box)).rgb;
-  const offBg = (await modeColor(off.box)).rgb;
   const onText = parseColor(on.text);
   const offText = parseColor(off.text);
+  const onBg = (await modeColor(on.box, onText)).rgb;
+  const offBg = (await modeColor(off.box, offText)).rgb;
   const accentRgb = parseColor(vars.accent);
-  const inkRgb = parseColor(vars.ink);
+  const textRgb = parseColor(vars.text);
   const onRatio = ratio(onText, onBg);
   const offRatio = ratio(offText, offBg);
   // 未选中那颗的底就是灰槽（按钮自己是透明的）—— 拿它当「灰槽色」，比另挑一格纯槽像素稳：
@@ -215,15 +221,16 @@ const checkTheme = async (theme, accent) => {
       `｜未选中「${off.label}」底 rgb(${offBg}) 字 rgb(${offText}) → ${offRatio.toFixed(2)}:1` +
       `｜选中块 vs 灰槽 → ${knobVsGroove.toFixed(2)}:1`,
   );
-  // 1) 选中的就是强调色本身，字就是 accent-ink（黄/橙这种亮色该换成深字）。
-  ok(near(onBg, accentRgb), `${theme}/${accent}：选中块的底色是强调色 rgb(${accentRgb})（量到 rgb(${onBg})）`);
-  ok(near(onText, inkRgb), `${theme}/${accent}：选中页签的字是 accent-ink rgb(${inkRgb})（量到 rgb(${onText})）`);
-  // 2) 读得清：强调色实底 + 反相字，跟 `.chip.on` / `.btn.pri` 同一套组合，按 UI 组件的 3:1 守
-  //    （WCAG 对 12px 正文要 4.5：这一组合默认蓝在 3.6–3.8，是整站既有的取舍，见 D456）。
-  ok(onRatio >= 3.0, `${theme}/${accent}：选中页签的字读得出（${onRatio.toFixed(2)}:1 ≥ 3.0）`);
+  // 1) 右栏的选中块是中性抬起面（D457），不是强调色实底（D456 只管设置台）。
+  ok(!near(onBg, accentRgb), `${theme}/${accent}：右栏选中块不是强调色（量到 rgb(${onBg})，强调色 rgb(${accentRgb})）`);
+  ok(near(onText, textRgb), `${theme}/${accent}：右栏选中页签的字是 --text rgb(${textRgb})（量到 rgb(${onText})）`);
+  // 2) 读得清：12px 字按正文的 4.5:1 守（中性滑块上做得到，不必再走 UI 组件的 3:1）。
+  ok(onRatio >= 4.5, `${theme}/${accent}：右栏选中页签的字读得出（${onRatio.toFixed(2)}:1 ≥ 4.5）`);
   ok(offRatio >= 4.5, `${theme}/${accent}：未选中页签的字看得清（${offRatio.toFixed(2)}:1 ≥ 4.5）`);
-  // 3) 选中态除了字要清，还得跟灰槽分得开 —— 否则四颗看着一样，不知道停在哪颗（1.2:1 就够肉眼分辨）。
-  ok(knobVsGroove >= 1.2, `${theme}/${accent}：选中块与灰槽区分得开（${knobVsGroove.toFixed(2)}:1 ≥ 1.2）`);
+  // 3) 选中态除了字要清，还得跟灰槽分得开 —— 否则四颗看着一样，不知道停在哪颗。浅色下
+  //    macOS 原生滑块就只有 1.18:1（白 vs 浅灰槽），剩下那点边界靠 0.5px 描边与投影；
+  //    中性滑块按 1.15 守，别拿强调色那套 1.2+ 的期望来套。
+  ok(knobVsGroove >= 1.15, `${theme}/${accent}：选中块与灰槽区分得开（${knobVsGroove.toFixed(2)}:1 ≥ 1.15）`);
   await page.locator('.pane[data-region="queue"] .exec-tabs-bar').screenshot({ path: path.join(OUT, `${theme}-${accent}.png`) });
 };
 
@@ -233,6 +240,13 @@ const checkTheme = async (theme, accent) => {
  * 所以每一轮都是新 goto）。
  */
 const checkConsole = async (theme, accent) => {
+  await page.evaluate(
+    ({ theme, accent }) => {
+      const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+      localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, theme, macAccent: accent, accentTone: "vivid" }));
+    },
+    { theme, accent },
+  );
   for (const [url, sel, what] of [
     ["/?settings=tools", ".st-tabs__btn.on", "设置页签"],
     ["/?settings=global", ".st-seg__btn.on", "作用域分段"],
@@ -288,17 +302,14 @@ try {
   // 强调色可换：黄色会走 accentInk 的「亮底换深字」那一支，两种字色都得在选中块上可读。
   await checkTheme("mac-light", "yellow");
   await checkTheme("mac-dark", "yellow");
-  // 设置台的两处同类控件（D456：它们跟右栏一起换成了强调色）：浅色 + 深色各看一遭。
-  await page.evaluate(() => {
-    const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
-    localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, macAccent: "blue", accentTone: "vivid" }));
-  });
-  for (const theme of ["mac-light", "mac-dark"]) {
-    await page.evaluate((theme) => {
-      const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
-      localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, theme }));
-    }, theme);
-    await checkConsole(theme, "blue");
+  // 右栏换中性滑块后，黄色仍然要跑：设置台还是强调色实底，黄色会走 accentInk 的「亮底换深字」那一支。
+  for (const [theme, accent] of [
+    ["mac-light", "blue"],
+    ["mac-dark", "blue"],
+    ["mac-light", "yellow"],
+    ["mac-dark", "yellow"],
+  ]) {
+    await checkConsole(theme, accent);
   }
 } finally {
   await browser?.close();

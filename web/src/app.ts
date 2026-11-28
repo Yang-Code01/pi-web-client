@@ -21099,14 +21099,9 @@ export class App {
     liveSep.dataset.bnowsep = "";
     liveSep.hidden = !model.current;
     text.append(liveSep, live);
-    const allFolded = model.cards.length > 0 && model.cards.every((card) => !this.browserExpanded(card));
-    const fold = el("button", "browser-fold", allFolded ? tr("全部展开") : tr("全部折叠")) as HTMLButtonElement;
-    fold.type = "button";
-    fold.onclick = () => {
-      for (const card of model.cards) this.browserFold.set(card.toolCallId, allFolded);
-      this.renderQueue();
-    };
-    sum.append(text, ...this.browserSumTools(model));
+    const tools = el("div", "browser-sum-tools");
+    tools.append(...this.browserSumTools(model));
+    sum.append(text, tools);
     return sum;
   }
 
@@ -21175,7 +21170,7 @@ export class App {
     commands.value = cfg.commands.join(", ");
     commands.placeholder = tr("命令关键词（例：e2e.sh）");
     commands.title = tr("shell 命令里出现其中一个就算浏览器操作：给认不出的自家执行器用，逗号分隔");
-    const actions = el("div", "browser-cfg-row");
+    const actions = el("div", "browser-cfg-row browser-cfg-actions");
     const save = el("button", "browser-cfg-save", tr("保存")) as HTMLButtonElement;
     save.type = "button";
     save.onclick = () => {
@@ -21222,6 +21217,14 @@ export class App {
     return first ? first.slice(0, 80) : tr("浏览器调用");
   }
 
+  /** 标题拆两截：名字（脚本名 / 工具名）不参与省略，动作从剩下的宽度里露出前半句。 */
+  private browserTitleParts(card: BrowserOpCard, title: string): { name: string; act: string } {
+    // 脚本卡的名字就是文件名，`browserFoldedText` 已经把它放在最前面；其余卡的名字是工具名，
+    // 而折叠文案从动作开始（「打开 … → 点击 …」），所以这里不加前缀。
+    if (card.script && title.startsWith(`${card.script} · `)) return { name: card.script, act: title.slice(card.script.length + 3) };
+    return { name: card.tool, act: title };
+  }
+
   private browserCardNode(card: BrowserOpCard): HTMLElement {
     const expanded = this.browserExpanded(card);
     const node = el("div", `browser-card ${card.state}`);
@@ -21233,6 +21236,7 @@ export class App {
 
     const head = el("div", "browser-head");
     const chev = el("button", `browser-chev${expanded ? " open" : ""}`) as HTMLButtonElement;
+    chev.append(icon("chevron", { size: 10 }));
     chev.type = "button";
     chev.setAttribute("aria-expanded", String(expanded));
     chev.setAttribute("aria-label", expanded ? tr("收起这次调用") : tr("展开这次调用"));
@@ -21242,9 +21246,12 @@ export class App {
       this.renderQueue();
     };
     const titleText = this.browserFoldedText(card);
-    const title = el("div", "browser-title", titleText);
-    // 折叠行只有一行的宽度，长链被省略号截掉；悬停看全链。
-    if (titleText) title.title = titleText;
+    const { name, act } = this.browserTitleParts(card, titleText);
+    const title = el("div", "browser-title");
+    title.append(el("span", "browser-name", name));
+    if (act) title.append(el("span", "browser-title-sep", " · "), el("span", "browser-act", act));
+    // 折叠行只有一行的宽度，长链被省略号截掉；悬停看全链（与显示的两截同文，测试按 innerText 对）。
+    title.title = act ? `${name} · ${act}` : name;
     const duration = el("span", "browser-dur", this.execDuration(card.durationMs ?? 0) || "–");
     duration.dataset.bdur = "";
     head.append(chev, title, duration);
@@ -21285,7 +21292,7 @@ export class App {
       body.append(intent);
     }
     const meta = el("div", "browser-meta");
-    meta.append(el("span", "", card.script ? `${card.tool} · ${card.script}` : card.tool));
+    meta.append(el("span", "browser-tool", card.script ? `${card.tool} · ${card.script}` : card.tool));
     if (card.subagent) meta.append(el("span", "", tr("子代理 {p1}", { p1: card.subagent })));
     meta.append(el("span", "", card.headed === null ? tr("有头无头未知") : card.headed ? tr("有头视图") : tr("无头")));
     if (card.stepSource === "output") meta.append(el("span", "browser-src", tr("步骤来自运行输出")));
