@@ -71,7 +71,7 @@ gh api -X PUT repos/Yang-Code01/pi-web-client/pulls/<n>/merge -f merge_method=me
 
 - 往 CSS 里写 `82vh`、`94vw`、`calc(100vw - 16px)` 这种，字号 125% 以上就会把弹层与它的底栏推出屏幕（D123、D263，已经复发四次）。
 - 只有 `document.body.append()` 上去、压根不在 `#app` 里的浮层可以写裸的，行尾必须标 `/* 不在 #app */`；守卫只认这个标记，**别拿它当顺手豁免** —— 浮层本来就该跟着字号缩放，请挂进 `#app`。
-- **设置控制台**（`.st-console` 那套壳）是唯一自己管缩放的外壳（D454，替换 D450 的「量尺」做法）：挂在 `body` 上、自己吃 `zoom: var(--st-zoom)`（= 字号 × 它自己的「设置与控制台」，见设置 → 语言与字号），外框视觉宽 = `min(1080px × --st-frame, 宿主可用宽)`，`--st-frame` = `max(字号, 设置与控制台)`。它的折叠档位读 `data-st-narrow/mid/tight`，判据是**面板内容宽**（外框宽 ÷ zoom），不是视口宽；宿主要把 `--vh1` / `--vw1` 再除一道 `--st-zoom`。新壳想跟着字号缩放就别做成 `.st-console`。
+- **设置控制台**（`.st-console` 那套壳）是唯一自己管缩放的外壳（D457，替换 D450 的「量尺」做法）：挂在 `body` 上、自己吃 `zoom: var(--st-zoom)`（= 字号 × 它自己的「设置与控制台」，见设置 → 语言与字号），外框视觉宽 = `min(1080px × --st-frame, 宿主可用宽)`，`--st-frame` = `max(字号, 设置与控制台)`。它的折叠档位读 `data-st-narrow/mid/tight`，判据是**面板内容宽**（外框宽 ÷ zoom），不是视口宽；宿主要把 `--vh1` / `--vw1` 再除一道 `--st-zoom`。新壳想跟着字号缩放就别做成 `.st-console`。
 - 守卫：`npm run test:viewport`（已挂在 web 的 typecheck 里）。新写/改弹层后跑一次，顺便在字号 150% 下看一眼底栏还在不在。
 - 判「窄版」用 `@container`（卡 / 面板自己的宽度），不要用 `@media`（视口宽度）：嵌在左栏右栏里的面板永远等不到 `@media` 触发（D263）。
 

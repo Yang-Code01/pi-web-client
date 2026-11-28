@@ -1,12 +1,12 @@
 /**
- * Probe: 设置控制台跟着字号缩放（D454）＋ 拖动时让开（#742 / D450）。
+ * Probe: 设置控制台跟着字号缩放（D457）＋ 拖动时让开（#742 / D450）。
  *
  * 桩桥 + 真 Chromium，量的是**用户看得见的行为**，不是类名或 DOM 结构：
- *   1. 控制台跟着「整页字号」一起放大（D454）：它仍挂在 body 上（不在 `#app` 的 zoom 子树里），
+ *   1. 控制台跟着「整页字号」一起放大（D457）：它仍挂在 body 上（不在 `#app` 的 zoom 子树里），
  *      但自己吃 `zoom: var(--st-zoom)`；外框按 `--st-frame` 长大到吃满窗口，所以 2.0 下字与框都变大、
  *      那根字号滑杆仍在视口内（反证：改之前 2.0 下面板撑满整屏、轨道视觉 y ≈ 984 > 836）。
  *   2. 阈值：指针只挪 3px 不让开，挪 40px 才让开（单击轨道 / 点刻度不闪），量在「字号」那根上。
- *      分区轨道同一套阈值；只有「设置与控制台」整根不让开（D455）—— 它改的就是面板自己的框，
+ *      分区轨道同一套阈值；只有「设置与控制台」整根不让开（D458）—— 它改的就是面板自己的框，
  *      再淡掉等于「拖一下就关掉了设置」。
  *   3. 让开：控制台淡到几乎全隐、遮罩全透且不模糊；真页面里正文那一块的视觉尺寸跟着变
  *      （证明它真的在变，不只是画了个透明层）。
@@ -228,7 +228,7 @@ async function geo() {
       // 布局尺寸（offset）而不是 rect：入场动画的 transform 会把 rect 缩一圈。
       w: con ? con.offsetWidth : -1,
       h: con ? con.offsetHeight : -1,
-      // D454：控制台自己带 zoom（--st-zoom），外框按 --st-frame 长大。
+      // D457：控制台自己带 zoom（--st-zoom），外框按 --st-frame 长大。
       zoom: Math.round(zoom * 1000) / 1000,
       stZoom: cs ? cs.getPropertyValue("--st-zoom").trim() : "",
       stFrame: cs ? cs.getPropertyValue("--st-frame").trim() : "",
@@ -248,7 +248,7 @@ async function geo() {
       scale: getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim(),
       // 壳的窄版仍看**有效宽度**（D158）：2.0 字号下 1200px 窗口只有 600 布局 px，必须判窄。
       compact: document.documentElement.dataset.compact,
-      // 控制台自己的折叠档位：按面板内容宽（÷ zoom）判，不是视口宽（D454）。
+      // 控制台自己的折叠档位：按面板内容宽（÷ zoom）判，不是视口宽（D457）。
       narrow: document.documentElement.dataset.stNarrow,
       mid: document.documentElement.dataset.stMid,
       tight: document.documentElement.dataset.stTight,
@@ -256,7 +256,7 @@ async function geo() {
   });
 }
 
-// ---------------------------------------------------------------- 1. 控制台跟着字号放大（D454）
+// ---------------------------------------------------------------- 1. 控制台跟着字号放大（D457）
 await boot({ scale: 1 });
 await openLook();
 const at100 = await geo();
@@ -432,7 +432,7 @@ await sleep(150);
 await boot({ scale: 1.25 });
 await openLook();
 
-// D455：只有「设置与控制台」那根不让开 —— 它改的就是面板自己的框，再淡掉等于「拖一下就关掉了设置」。
+// D458：只有「设置与控制台」那根不让开 —— 它改的就是面板自己的框，再淡掉等于「拖一下就关掉了设置」。
 // 先拿它验**不让开**，后面的阈值 / 胶囊仍量「字号」（那根真的改的是面板背后那片页面）。
 // 按行内 **名字** 找，不靠 DOM 顺序也不靠整行文本子串：`.settings-label` 只装名字（+ 当前读数），
 // 行内 hint 写什么都不会误命中；以后在它前面插一根滑杆也不会悄悄量到别人身上。
@@ -456,7 +456,7 @@ await page.screenshot({ path: path.join(OUT, "2-console-no-peek.png") });
 await page.mouse.up();
 await sleep(150);
 check(
-  "2. 拖「设置与控制台」不让开：面板一直不透明、也不露胶囊（D455）",
+  "2. 拖「设置与控制台」不让开：面板一直不透明、也不露胶囊（D458）",
   conDrag.conOpacity > 0.99 && conDrag.hudOpacity < 0.1 && conDrag.backBlur !== "none",
   `opacity ${conDrag.conOpacity} / 胶囊 ${conDrag.hudOpacity} / backdrop ${conDrag.backBlur}`,
 );

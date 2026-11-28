@@ -24,6 +24,9 @@
   --mac-fill-2: rgba(0, 0, 0, 0.085);
   --mac-control: linear-gradient(180deg, #ffffff, #f6f6f8);
   --mac-control-line: rgba(0, 0, 0, 0.12);
+  /* `--mac-knob` 是**开关里那颗圆点**（`.sw::after` / checkbox 的滑块），三套主题下都接近白色 ——
+     深色主题里也一样，因为轨道是灰的、圆点就该是白的。**别拿它当选中态底色**（那是 D455 的坑：
+     深色下白底配浅色字，整颗页签看不见）。分段控件 / 页签的选中态用强调色实底（D456）。 */
   --mac-knob: #ffffff;
   --mac-track: rgba(120, 120, 128, 0.24);
   --mac-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.14), 0 22px 70px rgba(30, 40, 80, 0.22), 0 4px 14px rgba(0, 0, 0, 0.08);

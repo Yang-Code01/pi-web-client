@@ -485,16 +485,18 @@ async function turn(text) {
     const activity = path.join(os.tmpdir(), "acp-delegate", "del_fake.activity");
     fs.mkdirSync(path.dirname(activity), { recursive: true });
     fs.writeFileSync(activity, "[tool] bash rg -n continueState web/src\n[tool] read bridge/src/sessions.ts\n");
+    // 任务原文默认极短；截图验「长任务折四行 + 展开」时用这个 env 塞一段长的（默认行为不变）。
+    const bgTask = process.env.FAKE_PI_BGSTART_TASK || "look at the files";
     out({ type: "message_start", message: assistant("") });
-    out({ type: "tool_execution_start", toolCallId: "call-bg", toolName: "acp_delegate", args: { agent: "researcher", task: "look at the files" } });
+    out({ type: "tool_execution_start", toolCallId: "call-bg", toolName: "acp_delegate", args: { agent: "researcher", task: bgTask } });
     out({
       type: "tool_execution_end",
       toolCallId: "call-bg",
       toolName: "acp_delegate",
       isError: false,
       result: {
-        content: [{ type: "text", text: "Delegated to **researcher** (runId `del_fake`).\nTask: look at the files\nRunning in the background at `" + path.join(os.tmpdir(), "acp-delegate") + "`.\n  Live activity is streaming to `" + activity + "`." }],
-        details: { kind: "delegate", runId: "del_fake", agent: "researcher", task: "look at the files" },
+        content: [{ type: "text", text: "Delegated to **researcher** (runId `del_fake`).\nTask: " + bgTask + "\nRunning in the background at `" + path.join(os.tmpdir(), "acp-delegate") + "`.\n  Live activity is streaming to `" + activity + "`." }],
+        details: { kind: "delegate", runId: "del_fake", agent: "researcher", task: bgTask },
       },
     });
     out({ type: "message_end", message: assistant("子代理已启动，我先合入别的分支。", { stopReason: "stop" }) });
