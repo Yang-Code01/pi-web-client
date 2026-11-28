@@ -18369,7 +18369,6 @@ export class App {
       this.socket.send({ type: "bg.log", sessionId: sheet.sessionId, runId: r.id });
     }
     // 选中的那条没了、或者还没选过：挑一条在跑的，没有就第一条。用户手动点的选择不动。
-    // 选中的那条没了、或者还没选过：挑一条在跑的，没有就第一条。用户手动点的选择不动。
     // 顺序以左栏（Map 插入序）为准，与 ↑↓/Home/End 一致：桥若把新 run 排在数组最前，Home 跳到的
     // 「第一条」和这里自动选的得是同一条，不能一个按数组、一个按列表。
     const listed = [...sheet.runs.keys()];
