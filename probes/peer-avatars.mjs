@@ -265,6 +265,14 @@ const upload = async (name, buf, prev = "") => {
 const firstId = await upload("red.png", makePng(140, 140, [230, 90, 70, 255]));
 check("上传第一张自定义头像", /^custom:[0-9a-f]{16}$/.test(firstId), firstId);
 await page.waitForSelector(".me-histpick", { timeout: 8000 });
+// 选择器只说明节点挂上了，`<img>` 的 /api/peer/avatar/... 还在下载：不等解码就量
+// complete / naturalWidth，这一项会随机变红（评审 5-9）。
+await page
+  .waitForFunction(() => {
+    const imgs = [...document.querySelectorAll(".me-histpick img")];
+    return imgs.length === 1 && imgs.every((i) => i.complete && i.naturalWidth > 0);
+  }, undefined, { timeout: 8000 })
+  .catch(() => {});
 const hist1 = await page.evaluate(() => ({
   n: document.querySelectorAll(".me-histpick").length,
   on: document.querySelectorAll(".me-histitem.on").length,

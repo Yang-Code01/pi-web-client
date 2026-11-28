@@ -332,7 +332,8 @@ export class PeerHost {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
       body: raw,
-      signal: signal ?? AbortSignal.timeout(20_000),
+      // 调用方的 signal（页面关了）与自己的超时是「与」关系：传了 signal 也不能把超时丢掉。
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
     });
     const parsed = (await res.json().catch(() => ({}))) as { avatar?: string; error?: string };
     if (!res.ok) throw new PeerRequestError(parsed.error ?? `peer 回 ${res.status}`, res.status);
@@ -350,7 +351,7 @@ export class PeerHost {
   avatarStream(nodeId: string, hash: string, signal?: AbortSignal): Promise<Response> {
     const query = hash ? `?h=${encodeURIComponent(hash)}` : "";
     return fetch(`http://127.0.0.1:${this.opts.port}/avatar/${encodeURIComponent(nodeId)}${query}`, {
-      signal: signal ?? AbortSignal.timeout(10_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
     });
   }
 

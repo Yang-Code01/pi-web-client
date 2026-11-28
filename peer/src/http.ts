@@ -313,7 +313,13 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const raw = await readRaw(req, MAX_AVATAR_BYTES).catch((err: unknown) => err);
         if (raw instanceof BodyTooLargeError) {
-          return json(res, 413, { error: "图片太大了（上限 512 KB）" }, { connection: "close" });
+          // 数字跟着 `MAX_AVATAR_BYTES` 走，改上限时不会留一句骗人的提示（评审 5-8）。
+          return json(
+            res,
+            413,
+            { error: `图片太大了（上限 ${Math.round(MAX_AVATAR_BYTES / 1024)} KB）` },
+            { connection: "close" },
+          );
         }
         if (!Buffer.isBuffer(raw)) {
           // 传一半断开（断网 / 关页面）也走失败分支，但原因不是「太大」。

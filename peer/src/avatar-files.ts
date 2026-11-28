@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { avatarHash, customAvatarId } from "./avatars.ts";
+import { AVATAR_HASH_LEN, avatarHash, customAvatarId } from "./avatars.ts";
 import { hostForUrl } from "./addr.ts";
 import { MAX_AVATAR_HISTORY, statePath } from "./config.ts";
 
@@ -68,12 +68,33 @@ function dir(): string {
 }
 
 function hashOf(buf: Buffer): string {
-  return crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16);
+  return crypto.createHash("sha256").update(buf).digest("hex").slice(0, AVATAR_HASH_LEN);
 }
 
 /** 临时文件名带上进程号 + 随机后缀：同进程里上传与对端拉取可能同时写同一个 hash。 */
 function tmpPath(file: string): string {
   return `${file}.tmp-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
+}
+
+/**
+ * 落盘一张图：先写临时名再 rename（并发的 readFile 不能读到半张图）；
+ * 写一半失败（磁盘满 / 权限）时把临时文件收掉 —— prune 只认正式文件名，
+ * 这些 `.tmp-*` 留在 avatars/ 里就成了永久的垃圾（评审 3-3）。
+ */
+function writeAvatarFile(file: string, buf: Buffer): void {
+  fs.mkdirSync(dir(), { recursive: true });
+  const tmp = tmpPath(file);
+  try {
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* 连删都删不掉就交给 pruneAvatarFiles 按年龄收 */
+    }
+    throw err;
+  }
 }
 
 const cached = new Map<string, AvatarImage>();
@@ -104,7 +125,11 @@ function avatarPath(hash: string): string | null {
 
 /**
  * 存一张上传的图。已经是同一张（hash 相同）就只刷 mtime，不重复写盘。
- * 不是支持的图片 / 超过上限返回 null，调用方回 400。
+ * 不是支持的图片返回 null，调用方回 400。
+ *
+ * 体积**不靠这里兜**：HTTP 口子的 `readRaw(req, MAX_AVATAR_BYTES)` 边读边数，超限当场
+ * 回 413，走到这里时 `buf.length` 必然 ≤ 上限。下面那个长度判断只是给将来别的调用方兜底，
+ * 不是上传链路的大小检查点（评审 5-2）。
  */
 export function saveAvatarFile(buf: Buffer): StoredAvatar | null {
   const kind = sniffImage(buf);
@@ -120,21 +145,7 @@ export function saveAvatarFile(buf: Buffer): StoredAvatar | null {
       /* 时间戳刷不上就算了，不影响这张图可用 */
     }
   } else {
-    fs.mkdirSync(dir(), { recursive: true });
-    const tmp = tmpPath(file);
-    try {
-      fs.writeFileSync(tmp, buf);
-      fs.renameSync(tmp, file);
-    } catch (err) {
-      // 写一半失败（磁盘满 / 权限）时把临时文件收掉：prune 只认正式文件名，
-      // 这些 `.tmp-*` 留在 avatars/ 里没人会再碰（评审 4-3）。
-      try {
-        fs.rmSync(tmp, { force: true });
-      } catch {
-        /* 连删都删不掉就交给下一次 prune */
-      }
-      throw err;
-    }
+    writeAvatarFile(file, buf);
   }
   cachePut({ buf, mime: kind.mime, hash });
   return { hash, id: customAvatarId(hash), mime: kind.mime, ext: kind.ext, bytes: buf.length };
@@ -224,6 +235,9 @@ export function deleteAvatarFile(hash: unknown): boolean {
   return removed;
 }
 
+/** 写盘中途被杀的 `.tmp-<pid>-<rand>` 留多久算垃圾（正在写的临时文件别误删）。 */
+const TMP_MAX_AGE = 60 * 60 * 1000;
+
 /** 旧缓存按 mtime 清掉，`keep` 里的 hash 永远不删（自己当前那张 + 上传记录）。 */
 export function pruneAvatarFiles(keep: string[] = [], max = MAX_CACHED): void {
   let names: string[];
@@ -234,12 +248,26 @@ export function pruneAvatarFiles(keep: string[] = [], max = MAX_CACHED): void {
   }
   const protect = new Set(keep.map((hash) => avatarHash(hash)).filter(Boolean));
   const rows: { file: string; hash: string; at: number }[] = [];
+  const now = Date.now();
   for (const name of names) {
-    const m = /^([0-9a-f]{16})\.(?:webp|png|jpg|gif)$/.exec(name);
-    if (!m) continue;
+    const dot = name.lastIndexOf(".");
+    const ext = dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
     const file = path.join(dir(), name);
+    // hash 长度只从 `avatarHash()` 来（`avatars.ts` 的 `AVATAR_HASH_LEN`），
+    // 这里再写一份正则的话，改长度后 prune 会静默匹配不到任何文件、旧图只进不出（评审 5-1）。
+    const hash = (AVATAR_EXTS as readonly string[]).includes(ext) && dot > 0 ? avatarHash(name.slice(0, dot)) : "";
+    if (!hash) {
+      // 不是正式文件名：只收「写盘中途被杀」留下的临时文件，其它一律别碰。
+      if (!name.includes(".tmp-")) continue;
+      try {
+        if (now - fs.statSync(file).mtimeMs > TMP_MAX_AGE) fs.rmSync(file, { force: true });
+      } catch {
+        /* 刚好被删了 */
+      }
+      continue;
+    }
     try {
-      rows.push({ file, hash: m[1], at: fs.statSync(file).mtimeMs });
+      rows.push({ file, hash, at: fs.statSync(file).mtimeMs });
     } catch {
       /* 文件刚好被删了 */
     }
@@ -303,12 +331,8 @@ export function fetchRemoteAvatar(addr: string, port: number, hash: string): Pro
       if (hashOf(buf) !== h) return null;
       const kind = sniffImage(buf);
       if (!kind) return null;
-      fs.mkdirSync(dir(), { recursive: true });
-      // 与 saveAvatarFile 一样先写临时名再 rename：并发的 readFile 不能读到半张图。
-      const file = path.join(dir(), `${h}.${kind.ext}`);
-      const tmp = tmpPath(file);
-      fs.writeFileSync(tmp, buf);
-      fs.renameSync(tmp, file);
+      // 和上传走同一条写盘路径：临时文件在失败时会被收掉（评审 3-3）。
+      writeAvatarFile(path.join(dir(), `${h}.${kind.ext}`), buf);
       const entry = { buf, mime: kind.mime, hash: h };
       cachePut(entry);
       return entry;

@@ -1286,8 +1286,13 @@ async function main(): Promise<void> {
         // 传一半断开（断网 / 关页面）不是「太大」，别让用户照着改大小。
         return json(res, 400, { error: "上传中断了，再试一次" });
       }
+      // 页面关掉 / 用户取消时别让这条到 peer 的请求自己跑完（和 /api/peer/file 一样接 res 的 close）。
+      const ctrl = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) ctrl.abort();
+      });
       try {
-        return json(res, 200, await peer.uploadAvatar(raw));
+        return json(res, 200, await peer.uploadAvatar(raw, ctrl.signal));
       } catch (err) {
         // peer 自己给的 4xx/5xx 原样透传；连不上 peer（没起、超时、连接被拒）是上游挂了，
         // 不是「请求不对」——回 502 + 一句人能看懂的，别把 "fetch failed" 甩给页面。
@@ -1305,7 +1310,12 @@ async function main(): Promise<void> {
         return json(res, 400, { error: "地址不对" });
       }
       try {
-        const upstream = await peer.avatarStream(who, url.searchParams.get("v") ?? "");
+        // `<img>` 被取消（切会话、关灯箱、关页面）时立刻 abort 上游，不等 10 秒超时。
+        const ctrl = new AbortController();
+        res.on("close", () => {
+          if (!res.writableEnded) ctrl.abort();
+        });
+        const upstream = await peer.avatarStream(who, url.searchParams.get("v") ?? "", ctrl.signal);
         if (!upstream.ok) return json(res, upstream.status, { error: "取不到这张头像" });
         const etag = upstream.headers.get("etag");
         const cache = "private, max-age=86400";
@@ -1330,6 +1340,12 @@ async function main(): Promise<void> {
           .pipe(res);
         return;
       } catch {
+        // 头已经发出去（200 写完、pipe 中途上游断）就别再 json()：writeHead 会抛
+        // ERR_HTTP_HEADERS_SENT，异常逃出 async 处理器变成 unhandledRejection（评审 5-5）。
+        if (res.headersSent || res.destroyed) {
+          res.destroy();
+          return;
+        }
         // 和 POST 分支一致：上游异常（fetch failed / aborted）不是给用户看的文案。
         return json(res, 502, { error: "内网通暂时连不上，稍后再试" });
       }

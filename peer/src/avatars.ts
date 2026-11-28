@@ -38,9 +38,11 @@ export type AvatarId = (typeof AVATAR_IDS)[number];
  * 只认小写 hex：拼出来的路径 / 文件名必须是确定的，不能靠调用方自己清洗。
  *
  * 长度只在这里写一次：`avatarHash()` / `CUSTOM_AVATAR_RE` 共用 `HASH_HEX`，
- * 改长度不用满仓库找正则（`peer/src/avatar-files.ts` 与 `http.ts` 都走 `avatarHash()`）。
+ * 改长度不用满仓库找正则（`peer/src/avatar-files.ts` 与 `http.ts` 都走 `avatarHash()`）；
+ * 落盘文件名要截几位也从 `AVATAR_HASH_LEN` 取，别在别处写 `16`。
  */
-const HASH_HEX = "[0-9a-f]{16}";
+export const AVATAR_HASH_LEN = 16;
+const HASH_HEX = `[0-9a-f]{${AVATAR_HASH_LEN}}`;
 const HASH_RE = new RegExp(`^${HASH_HEX}$`);
 export const CUSTOM_AVATAR_RE = new RegExp(`^custom:(${HASH_HEX})$`);
 

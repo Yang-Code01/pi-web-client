@@ -891,6 +891,11 @@ body.embedded .brand .nm { display: none; }
 }
 .me-histitem:hover .me-histdel,
 .me-histdel:focus-visible { opacity: 1; }
+/* 没有 hover 的设备（触屏 / 笔）：× 常显，否则它 18px 的热区压在缩略图上、永远看不见。
+   判断用**设备能力**而不是容器宽度：宽屏平板、被拉窄的触屏窗口都还是触屏（评审 5-4）。 */
+@media (hover: none), (pointer: coarse) {
+  .me-histdel { opacity: 1; }
+}
 .me-histdel:hover { color: var(--warn); background: var(--warn-bg, var(--panel-2)); }
 .me-histdel svg { width: 10px; height: 10px; }
 
@@ -912,8 +917,6 @@ body.embedded .brand .nm { display: none; }
   .me-tab.on { border-color: var(--accent-dim); }
   .me-pane { margin-top: 6px; }
   .me-pane .card { margin-top: 10px; }
-  /* 触屏没有 hover：删除按钮常驻，否则根本发现不了。 */
-  .me-histdel { opacity: 1; }
 }
 
 /* ------------------------------------------------------------------ 窄容器：一栏钻取 */

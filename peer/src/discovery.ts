@@ -277,7 +277,7 @@ export class Discovery extends EventEmitter {
 
   /**
    * 这个地址是不是我们之前从这个 nodeId 收到过包的地址之一？
-   * 比较前归一（`::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台，见 `messages.ts` 的 normAddr）。
+   * 比较前归一（`::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台，见 `addr.ts` 的 normAddr）。
    * 用在「要不要把对端自报的东西落盘」上：在线表是内存里的、30 秒就自愈，落盘的那份不是。
    */
   hasAddr(nodeId: string, addr: string): boolean {

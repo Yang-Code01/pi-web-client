@@ -803,8 +803,12 @@ function go(page: Page): void {
   if (S.page !== page) {
     S.page = page;
     S.query = "";
-    if (page === "me") S.mview = "chat";
-    else S.mview = "list";
+    // D439：每次从侧栏进「我」页都从「个人资料」开始。只在这里复位 ——
+    // 放进 renderMe() 的话，5 秒一次的状态轮询重画会把用户正在看的分区打回去（评审 5-11）。
+    if (page === "me") {
+      S.meSection = "profile";
+      S.mview = "chat";
+    } else S.mview = "list";
   }
   app.dataset.page = page;
   app.dataset.mview = S.mview;
@@ -4095,12 +4099,19 @@ function renderMe(): void {
     file.type = "file";
     file.accept = "image/png,image/jpeg,image/webp,image/gif";
     file.hidden = true;
+    let uploading = false;
     const busy = (on: boolean): void => {
+      uploading = on;
       uploadBtn.disabled = on;
       luck.disabled = on;
       uploadBtn.textContent = on ? tr("正在处理…") : tr("上传图片");
     };
-    const pick = (): void => file.click();
+    // 「自定义」格也复用这个 input：上传在飞时再点它不能开第二个选择框，
+    // 否则两个 POST /avatar 并发，最后生效的是谁先返回而不是用户最后一次选（评审 5-10）。
+    const pick = (): void => {
+      if (uploading) return;
+      file.click();
+    };
     uploadBtn.addEventListener("click", pick);
     file.addEventListener("change", () => {
       const chosen = file.files?.[0];
@@ -4292,10 +4303,14 @@ function renderMe(): void {
     if (S.meSection === "avatar") draw();
   };
   const goSection = (id: MeSection): void => {
-    if (S.meSection === id) return;
+    const same = S.meSection === id;
     S.meSection = id;
-    draw();
-    detail.scrollTop = 0;
+    if (!same) {
+      draw();
+      detail.scrollTop = 0;
+    }
+    // 点已选中的「头像」也要重拉：原来这里直接 return，刷新「上传过的」那一行就被跳过了，
+    // 历史列表可能一直停在旧数据（评审 5-11）。
     if (id === "avatar") void refreshUploads();
   };
 
