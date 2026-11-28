@@ -224,21 +224,31 @@ interface ExecChildState {
   pending: boolean;
 }
 
-/** 详情里的一屏：一卡片 + 它三块会变的字。 */
+/** 详情里的一屏：一卡片 + 它几块会变的字。 */
 interface BgRunNode {
   root: HTMLElement;
+  /** 状态词（运行中 / 已完成 / 失败），颜色由 `data-state` 决定。 */
   state: HTMLElement;
+  /** 「已跑 / 用了」那口钟：等宽数字，跑着的时候 1.5 秒一刷。 */
+  time: HTMLElement;
+  /** 卡片头那颗状态灯。 */
+  dot: HTMLElement;
   /** 卡片头那个名字（`agent`）。桥的 30 秒滴答会回填，不是建好就定死。 */
   agent: HTMLElement;
-  /** 任务原文那一行：同样会回填（脚本式 workflow 的孩子清单要等 `status.json` 落盘）。 */
+  /** 任务原文：同样会回填（脚本式 workflow 的孩子清单要等 `status.json` 落盘）。 */
   task: HTMLElement;
-  /** 失败原因（`r.error`）。没有就 hidden。 */
+  taskWrap: HTMLElement;
+  /** 长任务折起来时那颗「展开」；内容不到四行就 hidden。 */
+  taskToggle: HTMLButtonElement;
+  /** 失败原因（`r.error`）与它外面那只红框。没有就 hidden。 */
   err: HTMLElement;
-  /** 「过程」两个字：失败且压根没启动 runner 的卡上要跟着过程框一起藏。 */
-  labLog: HTMLElement;
+  errBox: HTMLElement;
+  /** 「过程」整段（小标题 + 日志）：失败且压根没启动 runner 的卡上要整段藏。 */
+  logSec: HTMLElement;
   log: HTMLElement;
+  /** 「最终输出」整段：没有 Return 块就整段藏。 */
+  outSec: HTMLElement;
   out: HTMLElement;
-  labOut: HTMLElement;
   /** 这个 run 有没有过程记录（桥还没接上的才 false；卡片上直说，不装成「还没有」。） */
   hasLog: boolean;
 }
@@ -250,6 +260,18 @@ function bgElapsedText(since: number, until = Date.now()): string {
   // 跑过一小时的子代理很少，但真跑到了也不能显示成 90:04。
   const clock = m < 60 ? `${m}:${s}` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
   return tr("已跑 {p1}", { p1: clock });
+}
+
+/**
+ * 子代理提示条上那颗状态词：有在跑的就说在跑，其次说失败，都没有才是「全部结束」。
+ *
+ * 顺序即优先级（在跑的 + 有失败的 → 说在跑）。写成函数而不是「标签 + dataset 两条并行三元」：
+ * 加一种状态时不用动那两串并列的 `?:`。
+ */
+function bgChipState(running: number, failed: number): { label: string; state: "running" | "failed" | "done" } {
+  if (running) return { label: tr("{p1} 个运行中", { p1: running }), state: "running" };
+  if (failed) return { label: tr("{p1} 个失败", { p1: failed }), state: "failed" };
+  return { label: tr("全部结束"), state: "done" };
 }
 
 /** 跑完之后的同一个钟：报「一共跑了多久」，而不是「结束至今」（D170 评审）。 */
@@ -572,6 +594,14 @@ export class App {
    *  否则下一次打开的任何会话都会莫名其妙带上上一个会话的笔记。 */
   private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
+  /** `.sheet-back` 宿主留白的缓存（同一扇宿主 + 同一视口宽度有效）：拖滑杆时每帧都过这条路径。 */
+  private sheetPadCache: { host: HTMLElement; w: number; pad: number } | null = null;
+  /** 正拖着一根轨道滑杆：这期间冻结控制台的折叠档位（`data-st-*`）。
+   *  拖字号 / 设置与控制台时面板自己就在缩放，跨过 900/720/640 就翻一次版（导航栏从一列折成
+   *  一行 chips），轨道跟着一块儿跳几百 px —— 而指针到值的换算是按下那一刻冻结的盒子，于是
+   *  滑块离手、读数跟手指下的位置对不上（2026-11-29 实测：字号拖到 150% 时轨道左边缘从 379
+   *  跳到 66，同一指针位置的读数从 52% 变 58%）。档位等松手落盘时再算一次就够了。 */
+  private foldsFrozen = false;
   /** D321：文件搜索面板（打开时才有，关掉就置 null；`filesearch.*` 帧路由到它）。 */
   private fileSearch: FileSearchHandle | null = null;
   private modelChip: HTMLButtonElement | null = null;
@@ -588,7 +618,14 @@ export class App {
   /** D170: 输入框上方那条「子代理运行中」。`syncBgBar()` 造它，重画后要重新挂。 */
   private bgBar: HTMLElement | null = null;
   /** D170 详情弹层：正在看的那一屏，和它 1.5 秒一次的轮询。关掉就 null。 */
-  private bgSheet: { sessionId: string; body: HTMLElement; runs: Map<string, BgRunNode> } | null = null;
+  private bgSheet: {
+    sessionId: string;
+    body: HTMLElement;
+    /** 抬头那颗汇总胶囊（运行中 / 失败 / 全部结束）与它上面那行「共 N 个运行」。 */
+    chip: HTMLElement;
+    meta: HTMLElement;
+    runs: Map<string, BgRunNode>;
+  } | null = null;
   private bgTimer: number | null = null;
   /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
   private continueAt: { id: string; at: number } = { id: "", at: 0 };
@@ -933,6 +970,8 @@ export class App {
   private termActive: string | null = null;
   /** D92: the dialog is on screen (not minimized). The shells themselves live in the bridge. */
   private termOpen = false;
+  /** 没有终端时顶栏按钮的 title（build() 里那句能力说明），收起/打开态改标题之后就靠它退回。 */
+  private termIdleTitle = "";
   /** D111: 两扇浮窗里最后被点 / 聚焦的那扇（`.front`）；同一时间只有一扇。 */
   private winFront: HTMLElement | null = null;
   /** D93: dialog 的位置 / 大小（布局 px），null = 还没读过 localStorage。 */
@@ -1127,8 +1166,12 @@ export class App {
     // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
     const term = this.wideBtn(TOPBAR_ICON.terminal, tr("终端"));
     term.dataset.act = "terminal";
-    term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
+    // 收起/打开两态会改写 title（说明怎么回来），关掉之后要能退回这句能力说明而不是一句光秀秀的「终端」。
+    this.termIdleTitle = term.title;
+    // aria-label 永远跟 title 一致（paintTermButton 也是这么写的）：以前这里先写了个短名「终端」，
+    // 在 `term.list` 回来之前读屏器听到的和悬停看到的不一样。
+    term.setAttribute("aria-label", term.title);
     term.onclick = () => this.openTerminal();
     this.els.term = term;
     const fs = this.wideBtn(TOPBAR_ICON.files, tr("文件管理器|顶栏按钮"));
@@ -1538,26 +1581,23 @@ export class App {
    * 控制台的 900 / 720 / 640 折叠规则落两组属性，**别合并**：
    * - `data-console-*` 按有效宽度（视口 ÷ 字号）：`.sys-` / `.jc-` / 附件那几套控制台还在 `#app`
    *   里，跟着字号缩放（D158），否则放大字号时原生 @media 不触发、面板内容会横向穿出；
-   * - `data-st-*` 按视口宽度：`.st-console` 那批已经 1:1 挂在 body 上（D450）。
+   * - `data-st-*` 按**面板自己的宽度**（`.st-console` 挂着 `zoom`，D457）。
    * 返回「这次真的翻了」—— 调用方拿它决定要不要重排（拖动中跨过 900 时）。
    */
   private syncCompact(): boolean {
     // 壳的宽窄仍看**有效宽度**（视口 ÷ 字号，`compact()` 那一份判据，D158）。
-    // 别顺手把这里换成 `window.innerWidth`：控制台改成 1:1 之后，两套判据正是从这里开始分家的。
+    // 别顺手把这里换成 `window.innerWidth`：控制台脱开 #app（D450）之后，两套判据正是从这里开始分家的。
     const compact = this.compact();
-    const width = window.innerWidth;
     const root = document.documentElement;
     // 控制台原本是 @media (max-width: 900/720/640px)，保留 <= 的边界；compact 仍是 < 900。
     const layout = this.layoutWidth();
     root.dataset.consoleNarrow = String(layout <= 900);
     root.dataset.consoleMid = String(layout <= 720);
     root.dataset.consoleTight = String(layout <= 640);
-    // #742：`.st-console` 那批控制台已经挂在 body 上、不再跟字号缩放，所以它的折叠档位要按**视口**宽度算。
-    // 还按有效宽度（视口 / 字号）算的话，2.0 字号下一块 1080px 宽的面板会被判成「窄」，整套布局白翻一次。
-    // 分开两组属性：`.sys-` / `.jc-` / 附件那几套控制台仍留在 `#app` 里，继续读 `data-console-*`。
-    root.dataset.stNarrow = String(width <= 900);
-    root.dataset.stMid = String(width <= 720);
-    root.dataset.stTight = String(width <= 640);
+    // D457：`.st-console` 那一族不再 1:1 —— 它们挂着 `zoom: --st-zoom`，外框视觉宽 = min(1080 × frame, 宿主可用宽)。
+    // 档位按**面板的实际内容宽**判（÷ zoom），否则字号 2.0 下面板被撑到满窗口、内容却只剩一半，
+    // 判出来是「不窄」而内部早该进 `st-mid`。宽度交给 `paintConsoleFolds()` 量宿主。
+    this.paintConsoleFolds(this.sheet);
     // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
     // 否则属性一直是 undefined，CSS 那边是在碰运气。
     const changed = root.dataset.compact !== String(compact);
@@ -1572,6 +1612,78 @@ export class App {
     if (changed) this.syncQueueTabMemory(true);
     if (this.queueTab !== previousQueueTab && this.els.queueInner) this.renderQueue();
     return changed;
+  }
+
+  /**
+   * D457：`.st-console` 的窄版档位（`data-st-*`）—— 按**面板自己的内容宽**判，不按视口。
+   * 与 `syncCompact()` 分开：拖「设置与控制台」只改面板的倍率，壳的宽窄（`compact()`）一点没动，
+   * 那里每帧跑一遍 placeNowChip / renderQueue 是白花钱（D458 的评审意见）。
+   */
+  private paintConsoleFolds(con?: HTMLElement | null): void {
+    // 拖动中冻结（见 `foldsFrozen`）：这一帧算出来的新档位会立刻改宿主的留白与面板宽度，
+    // 轨道于是在指针下跳位；而值是按冻住的盒子算的 —— 两边越离越远。松手后 `commit()` / `onLive()`
+    // 还会再跑一遍这里，档位那时才真的落下来。
+    if (this.foldsFrozen) return;
+    const root = document.documentElement;
+    const { zoom, frame } = this.consoleVars();
+    const z = zoom || 1;
+    // 有面板就直接量它自己：CSS 已经把 `min(1080×frame/zoom, 100%)` 算完了，量到的是**真实内容宽**，
+    // 宿主留白怎么变（窄版 10 / 紧版 0）都自动包含在内 —— 不再靠 JS 估一个固定留白。
+    // 量不到（面板没开、构造期）才用宿主可用宽 ÷ zoom 估。
+    // 调用方可能传**面板**（`overlay()` 里是 `.st-console`）也可能传**宿主**（`syncCompact()` 里
+    // `this.sheet` 存的是 `.st-back`，见 `openDisplaySheet()`），所以先归一成那扇 `.st-console`。
+    // `clientWidth` 在 zoom 子树里返回的是**布局 px**（1400 窗口、zoom 2 实测：rect 1378 / clientWidth 688），
+    // 正好是后面那几个阈值要的单位，不要再除一道 zoom。
+    const panel = con ? (con.matches(".st-console") ? con : con.querySelector<HTMLElement>(":scope > .st-console")) : null;
+    const measured = panel && panel.clientWidth > 0 ? panel.clientWidth : null;
+    const w = measured ?? Math.min(1080 * frame, this.consoleAvail(con)) / z;
+    // 档位会反过来改变面板宽度（窄版把宿主 padding 改小、面板 `width:100%`），所以**出档要带滞回**：
+    // 同一个阈值双向判的话，面板正好长在 900±20 时会「判窄 → 留白变小 → 变宽 → 判不窄」来回翻。
+    const band = 20 / z;
+    const wasNarrow = root.dataset.stNarrow === "true";
+    const wasMid = root.dataset.stMid === "true";
+    const wasTight = root.dataset.stTight === "true";
+    root.dataset.stNarrow = String(wasNarrow ? w <= 900 + band : w <= 900);
+    root.dataset.stMid = String(wasMid ? w <= 720 + band : w <= 720);
+    root.dataset.stTight = String(wasTight ? w <= 640 + band : w <= 640);
+  }
+
+  /**
+   * 控制台能长到多宽（视觉 px）= 宿主 content box 的宽。**只在没面板可量时用**
+   * （有面板时 `paintConsoleFolds()` 直接量它自己的 `clientWidth`，那是真实内容宽）。
+   * 宿主优先从**调用方给的那扇面板**往上认（`con.parentElement`）：一个页面上可能同时挂着几扇控制台
+   * （设置、模型、交接），全局 `querySelector` 会拿别人的宿主算自己的档位。
+   *
+   * `.st-back` 的 padding **跟着档位变**（基准 20px，窄版 10px、紧版 0），所以这里固定用基准 20×2 估：
+   * 估出来会与窄版的真实宽度差 20px，但「不会抖」那件事已经交给 `paintConsoleFolds()` 的滞回了。
+   * `.sheet-back`（0 / 16 / 24px，看断点与 `.center`）的留白不由 `data-st-*` 控制，读 computed 才对 ——
+   * 读一次缓存一次（`sheetHostPad()`）：这条路径在拖滑杆时每帧都过，`getComputedStyle()` 会强制同步排版。
+   * 面板还没挂上去（首帧、构造期）才退回视口估 —— 那时没有任何东西可量。
+   */
+  private consoleAvail(con?: HTMLElement | null): number {
+    const parent = con?.parentElement ?? null;
+    const host =
+      parent && (parent.classList.contains("st-back") || parent.classList.contains("sheet-back"))
+        ? parent
+        : document.querySelector<HTMLElement>("body > .st-back, body > .sheet-back");
+    if (host && host.clientWidth > 0) {
+      if (host.classList.contains("st-back")) return Math.max(0, host.clientWidth - 40);
+      return Math.max(0, host.clientWidth - this.sheetHostPad(host));
+    }
+    return Math.max(0, window.innerWidth - 40);
+  }
+
+  /**
+   * `.sheet-back` 的左右留白（computed）：同一扇宿主、同一视口宽度只读一次。
+   * 它的 padding 只由 @media / `.center` 决定，与 `data-st-*` 无关，所以缓存安全。
+   */
+  private sheetHostPad(host: HTMLElement): number {
+    const cache = this.sheetPadCache;
+    if (cache && cache.host === host && cache.w === window.innerWidth) return cache.pad;
+    const cs = getComputedStyle(host);
+    const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    this.sheetPadCache = { host, w: window.innerWidth, pad };
+    return pad;
   }
 
   private applyQueueTabEvent(event: TabEvent): void {
@@ -4075,9 +4187,14 @@ export class App {
    */
   private overlay(node: HTMLElement, kind: SurfaceKind = "window", opts: SurfaceOpts = {}): void {
     markSurface(node, kind, opts);
-    // 挂哪儿由 `overlayHost()` 一个判据决定：控制台（`.st-console`）是量尺，1:1 挂 body（D450），
+    // 挂哪儿由 `overlayHost()` 一个判据决定：控制台（`.st-console`）自己吃 `--st-zoom`（D457），
+    // 所以必须挂 body 而不是进 `#app`（D450），否则会被 `#app` 的 zoom 再乘一遍；
     // 其余浮层照旧进 `#app`、跟着字号缩放（D123 / D441）。
     mountOverlay(node);
+    // 控制台的折叠档位按宿主实测宽判（D457）：挂上去之后 `consoleAvail()` 才量得到真实 padding，
+    // 挂之前只能退回视口估一估。把**这一扇**传进去，别让它去全局找宿主。
+    const con = node.matches(".st-console") ? node : node.querySelector<HTMLElement>(":scope > .st-console");
+    if (con) this.paintConsoleFolds(con);
   }
 
   /**
@@ -4436,7 +4553,14 @@ export class App {
     marksAt: readonly number[];
     onLive: (v: number) => void;
     onCommit: () => void;
+    /**
+     * 拖动时要不要把控制台让开（#742）。默认要。
+     * 只有「设置与控制台」那根关掉（D458）：它改的就是面板自己的框，再把面板淡成 0.03
+     * 等于「拖一下就关掉了设置面板」，看不到自己在调什么。
+     */
+    peek?: boolean;
   }): HTMLElement {
+    const peekOn = o.peek !== false;
     const read = el("span", "size-read");
     const rail = el("div", "size-rail");
     const range = document.createElement("input");
@@ -4567,7 +4691,7 @@ export class App {
     row.classList.add("wide");
     row.querySelector(".settings-label")?.append(read);
 
-    /** 拖的时候不能交给浏览器算值：按冻住那一刻的轨道盒子换算，松手才写盘。 */
+    /** 拖的时候不交给浏览器算值，松手才写盘。 */
     let dragBox: { x: number; w: number } | null = null;
     /**
      * 按下那一刻的指针位置与值：前者判「真的拖起来了没有」，后者给 Esc 取消用。
@@ -4576,6 +4700,15 @@ export class App {
      */
     let dragFrom: { x: number; y: number } | null = null;
     let dragValue = o.value;
+    /**
+     * 指针 → 值：用**按下那一刻**量到的轨道盒子换算。
+     *
+     * 为什么不每帧重量一次：拖「字号」「设置与控制台」时面板自己就在缩放，轨道宽度随 zoom 变小
+     * （1400 窗口、字号 125%→195% 实测 954 → 740px），而值又反过来决定 zoom —— 每帧拿新宽度换算
+     * 就成了一条正反馈回路：同样的 55px 一步，读数从 40% 一路冲到 200%（2026-11-29 实测）。
+     * 冻结盒子换来的是约 3% 的不对称（指针在轨道 55.3% 处时读数是 58.3%），比回路稳定得多。
+     * 跨 900/720/640 那一次轨道整个跳位则由 `foldsFrozen` 挡住了。
+     */
     const valueAt = (clientX: number): number => {
       if (!dragBox || dragBox.w <= 0) return Number(range.value);
       const p = Math.min(1, Math.max(0, (clientX - dragBox.x) / dragBox.w));
@@ -4599,6 +4732,7 @@ export class App {
       dragBox = { x: r.left, w: r.width };
       dragFrom = { x: ev.clientX, y: ev.clientY };
       dragValue = applied;
+      this.foldsFrozen = true;
       hidePeek();
       rail.classList.add("dragging");
       read.classList.add("dragging");
@@ -4612,7 +4746,7 @@ export class App {
       if (!dragBox) return;
       queue(snapTo(valueAt(ev.clientX)));
       // 阈值：#742 —— 单击轨道跳档 / 点刻度数字不该闪一下，只有真的拖起来了才让开。
-      if (!peeking && dragFrom && Math.hypot(ev.clientX - dragFrom.x, ev.clientY - dragFrom.y) >= PEEK_MIN_PX) {
+      if (peekOn && !peeking && dragFrom && Math.hypot(ev.clientX - dragFrom.x, ev.clientY - dragFrom.y) >= PEEK_MIN_PX) {
         showPeek(next);
       }
     });
@@ -4624,6 +4758,7 @@ export class App {
       }
       dragBox = null;
       dragFrom = null;
+      this.foldsFrozen = false;
       rail.classList.remove("dragging");
       read.classList.remove("dragging");
       window.removeEventListener("keydown", onDragKey, true);
@@ -4662,7 +4797,8 @@ export class App {
       if (dragBox) return;
       queue(Number(range.value));
       // 纯键盘也得看得见：调值就露一下，400ms 没再动就自己回来（连按合并计时，计时器在胶囊里）。
-      showPeek(next, true);
+      // 设置与控制台那根不露（`peekOn = false`）：它改的就是面板自己的框。
+      if (peekOn) showPeek(next, true);
     };
     range.addEventListener("keyup", () => { if (!dragBox) commit(); });
     range.addEventListener("blur", () => { if (!dragBox) commit(); });
@@ -4711,6 +4847,20 @@ export class App {
   private paintRegionScales(): void {
     const root = document.documentElement.style;
     for (const id of REGION_IDS) root.setProperty(`--rs-${id}`, String(this.prefs.regionScale[id]));
+    // D457：控制台整块跟着两个倍率缩。`--st-zoom` 是它自己的 `zoom`（字、控件、留白一起放大）；
+    // `--st-frame` 决定外框的视觉尺寸 —— 谁大跟谁：字号 200% 时面板自己撑到满窗口，
+    // 不然 2.0 下还卡在 1080 会让内容只剩 540 宽（样张 B 就是掉进这个坑的）。
+    const { zoom, frame } = this.consoleVars();
+    root.setProperty("--st-zoom", String(zoom));
+    root.setProperty("--st-frame", String(frame));
+  }
+
+  /**
+   * D457 的两个倍率只有这一个式子：CSS 变量（`paintRegionScales`）与档位计算（`paintConsoleFolds`）
+   * 都从这里拿。以前两处各写一遍 `scale * consoleScale` / `Math.max(...)`，改一处就静默脱节。
+   */
+  private consoleVars(): { zoom: number; frame: number } {
+    return { zoom: this.prefs.scale * this.prefs.consoleScale, frame: Math.max(this.prefs.scale, this.prefs.consoleScale) };
   }
 
   /**
@@ -4961,6 +5111,11 @@ export class App {
         onLive: (v) => {
           this.prefs = { ...this.prefs, scale: v };
           document.documentElement.style.setProperty("--ui-scale", String(v));
+          // D457：控制台自己也吃 `--st-zoom = 字号 × 设置与控制台`，只写 `--ui-scale` 的话它要等到松手
+          // （`applyPrefs()`）才更新 —— 拖动中面板的缩放与下面 `paintConsoleFolds()` 判档位用的倍率
+          // 就不是同一个，档位和看到的框会脱节。这句很便宜：六个 CSS 变量加一次 `clientWidth` 读，
+          // 不再读 computed padding（`.st-back` 用基准值、`.sheet-back` 有缓存）。
+          this.paintRegionScales();
           // 拖动中也要判窄版：不判的话预告是假的（1.0 拖到 2.0 的路上一直是三栏，松手才突然变一栏），
           // 而抽屉的宽度不跟着窄版变（min(560px,100%)），所以冻住的轨道盒子不会在手指底下跑。
           // 跨过 900 的那一刻三栏已经换成单列，但 pane 的 hidden 是 JS 状态，必须顺手重排，
@@ -5013,6 +5168,28 @@ export class App {
         }),
       );
     }
+
+    // D457：第六根 —— 设置控制台自己那层。拖它时面板**不让开**：用户要看的正是它当场长大，
+    // 让开（`console-peek`）只留给改「面板背后那片页面」的五根分区轨道。
+    langPanel.append(
+      this.fontSliderRow({
+        label: tr("设置与控制台"),
+        hint: tr("面板里的字和它自己的框一起放大（最多吃满窗口）；拖动时面板不收起，方便对照"),
+        value: this.prefs.consoleScale,
+        reset: REGION_DEFAULT_SCALE,
+        snaps: REGION_STOPS,
+        marksAt: SIZE_MARKS,
+        peek: false,
+        onLive: (v) => {
+          this.prefs = { ...this.prefs, consoleScale: v };
+          // 只改面板自己的倍率：外框尺寸与 `data-st-*` 要重算，壳的宽窄（`compact()`）没变 ——
+          // 别调 `syncCompact()`，那会每帧白跑 placeNowChip / renderQueue。
+          this.paintRegionScales();
+          this.paintConsoleFolds(this.sheet);
+        },
+        onCommit: () => savePrefs(this.prefs),
+      }),
+    );
 
     // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
     // 外观只剩 Mac 风格三套（D353）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
@@ -18037,17 +18214,25 @@ export class App {
     this.sheetKind = "bg";
     const back = el("div", "sheet-back");
     const sheet = el("div", "sheet bg-sheet");
-    const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("子代理")));
-    const close = el("button", "btn ghost", tr("关闭"));
+    const head = el("header", "sheet-head bg-head");
+    const headMain = el("div", "bg-head-main");
+    const titleRow = el("div", "bg-head-title");
+    titleRow.append(el("h2", "sheet-title bg-title", tr("子代理")));
+    const chip = el("span", "bg-head-chip");
+    chip.hidden = true;
+    titleRow.append(chip);
+    const meta = el("div", "bg-head-meta");
+    meta.hidden = true;
+    headMain.append(titleRow, meta);
+    const close = el("button", "btn ghost bg-head-close", tr("关闭"));
     close.onclick = () => this.closeSheet();
-    head.append(close);
+    head.append(headMain, close);
     const body = el("div", "bg-sheet-body");
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
-    this.bgSheet = { sessionId: sid, body, runs: new Map() };
+    this.bgSheet = { sessionId: sid, body, chip, meta, runs: new Map() };
     const tick = () => {
       if (!this.bgSheet || this.bgSheet.sessionId !== sid) return;
       this.socket.send({ type: "bg.list", sessionId: sid });
@@ -18067,67 +18252,147 @@ export class App {
       sheet.runs.delete(id);
     }
     sheet.body.querySelector(".bg-empty")?.remove();
+    const running = runs.filter((r) => r.state === "running").length;
+    const failed = runs.filter((r) => r.state === "failed").length;
+    sheet.chip.hidden = !runs.length;
+    sheet.meta.hidden = !runs.length;
+    if (runs.length) {
+      const chip = bgChipState(running, failed);
+      if (sheet.chip.textContent !== chip.label) sheet.chip.textContent = chip.label;
+      sheet.chip.dataset.state = chip.state;
+      const meta = tr("共 {p1} 个运行", { p1: runs.length });
+      if (sheet.meta.textContent !== meta) sheet.meta.textContent = meta;
+    }
     if (!runs.length) {
       // `error` 只会在公网那只手上出现（桥不把任务原话发出去）；本地就是真的没有。
-      sheet.body.append(el("div", "bg-empty", error || tr("这个会话没有子代理在跑。")));
+      const box = el("div", "bg-empty");
+      const ic = el("div", "bg-empty-ic");
+      ic.append(icon("layers", { size: 22 }));
+      box.append(ic, el("div", "bg-empty-title", error || tr("这个会话没有子代理在跑。")));
+      if (!error) box.append(el("div", "bg-empty-hint", tr("启动子代理后，对话上方会出现可点开的提示条。")));
+      sheet.body.append(box);
       return;
     }
     for (const r of runs) {
       let node = sheet.runs.get(r.id);
       if (!node) {
-        const root = el("div", "bg-run");
+        const root = el("article", "bg-run");
         const line = el("div", "bg-run-head");
+        const dot = el("span", "bg-run-dot");
         const agentEl = el("span", "bg-run-agent", r.agent || tr("子代理"));
-        line.append(agentEl, el("span", "bg-run-state"));
-        const task = el("div", "bg-run-task", r.task || tr("（没有任务原文）"));
+        const stateEl = el("span", "bg-run-state");
+        const idEl = el("span", "bg-run-id", `#${r.id}`);
+        idEl.title = r.id;
+        const timeEl = el("span", "bg-run-time");
+        line.append(dot, agentEl, stateEl, idEl, timeEl);
+
+        const errBox = el("div", "bg-run-errbox");
+        errBox.hidden = true;
+        errBox.append(icon("alert", { size: 13 }));
         const err = el("div", "bg-run-err");
-        err.hidden = true;
-        const id = el("div", "bg-run-id", r.id);
-        const labLog = el("div", "bg-run-lab", tr("过程"));
+        errBox.append(err);
+
+        const taskWrap = el("section", "bg-sec bg-task");
+        const taskHead = el("div", "bg-sec-head");
+        taskHead.append(el("span", "bg-sec-title", tr("任务")));
+        const taskToggle = el("button", "bg-more", tr("展开")) as HTMLButtonElement;
+        taskToggle.type = "button";
+        taskToggle.hidden = true;
+        taskHead.append(taskToggle);
+        const task = el("div", "bg-run-task");
+        taskWrap.append(taskHead, task);
+        taskToggle.onclick = () => {
+          const open = taskWrap.classList.toggle("open");
+          taskToggle.textContent = open ? tr("收起") : tr("展开");
+        };
+
+        const logSec = el("section", "bg-sec");
+        const logHead = el("div", "bg-sec-head");
+        const labLog = el("span", "bg-sec-title", tr("过程"));
+        logHead.append(labLog);
         const logEl = el("pre", "bg-run-log");
-        const labOut = el("div", "bg-run-lab", tr("最终输出"));
-        labOut.hidden = true;
+        logSec.append(logHead, logEl);
+
+        const outSec = el("section", "bg-sec");
+        const outHead = el("div", "bg-sec-head");
+        outHead.append(el("span", "bg-sec-title", tr("最终输出")));
         const outEl = el("pre", "bg-run-out");
-        outEl.hidden = true;
-        root.append(line, task, err, id, labLog, logEl, labOut, outEl);
+        outSec.append(outHead, outEl);
+        outSec.hidden = true;
+
+        root.append(line, errBox, taskWrap, logSec, outSec);
         sheet.body.append(root);
         node = {
           root,
-          state: line.lastElementChild as HTMLElement,
+          state: stateEl,
+          time: timeEl,
+          dot,
           agent: agentEl,
           task,
+          taskWrap,
+          taskToggle,
           err,
-          labLog,
+          errBox,
+          logSec,
           log: logEl,
+          outSec,
           out: outEl,
-          labOut,
           hasLog: Boolean(r.hasLog),
         };
-        if (!r.hasLog) logEl.textContent = tr("桥还没接上这个 runner 的过程记录。");
+        if (!r.hasLog) {
+          logEl.dataset.empty = "1";
+          logEl.textContent = tr("桥还没接上这个 runner 的过程记录。");
+        }
         sheet.runs.set(r.id, node);
       }
       // 卡片是活的：桥在后面的 `bg.list` 里才把 agent / task 补上（脚本式 workflow 的原文要等
       // `status.json` 落盘）。只写建卡那一刻的话，回填永远看不到 —— 关弹层重开才行。
       const agentText = r.agent || tr("子代理");
       if (node.agent.textContent !== agentText) node.agent.textContent = agentText;
-      const taskText = r.task || tr("（没有任务原文）");
-      if (node.task.textContent !== taskText) node.task.textContent = taskText;
+      // 还在等 `status.json` 落盘时摆占位（原文随后会自己补上）；派活当场就失败的不摆 —— 原文不会再来，
+      // 留一行「没有任务原文」只是给红条添乱。
+      const taskText = (r.task ?? "").trim();
+      const taskPending = !taskText && r.state === "running";
+      node.taskWrap.hidden = !taskText && !taskPending;
+      const taskShown = taskText || (taskPending ? tr("（没有任务原文）") : "");
+      if (node.task.textContent !== taskShown) {
+        node.task.textContent = taskShown;
+        window.requestAnimationFrame(() => this.syncBgTaskMore(node));
+      }
       // `hasLog` 也一样：派活那一刻文件还没写出来，`bg.log` 回来时会用它决定占位文案。
       node.hasLog = Boolean(r.hasLog);
       const errText = typeof r.error === "string" ? r.error : "";
-      node.err.hidden = !errText;
+      node.errBox.hidden = !errText;
       if (errText && node.err.textContent !== errText) node.err.textContent = errText;
-      // 派活当场就失败的（没有 runner，也不会有过程）：不摆空的过程框，错误行已经说清了。
+      // 派活当场就失败的（没有 runner，也不会有过程）：不摆空的过程段，错误行已经说清了。
       const noLog = r.state === "failed" && !r.hasLog;
-      node.labLog.hidden = noLog;
-      node.log.hidden = noLog;
+      node.logSec.hidden = noLog;
       const state = r.state === "running" ? tr("运行中") : r.state === "failed" ? tr("失败") : tr("已完成");
+      if (node.state.textContent !== state) node.state.textContent = state;
+      node.state.dataset.state = r.state;
+      node.dot.dataset.state = r.state;
+      node.root.dataset.state = r.state;
       // 跑完了报总耗时（结束 − 开始）；还在跑就报「已跑多久」，两者都是「从开始起的钟」。
-      node.state.textContent =
+      const clock =
         r.state === "running"
-          ? `${state} · ${bgElapsedText(r.startedAt)}`
-          : `${state} · ${bgTookText(Math.max(0, (r.endedAt ?? Date.now()) - r.startedAt))}`;
+          ? bgElapsedText(r.startedAt)
+          : bgTookText(Math.max(0, (r.endedAt ?? Date.now()) - r.startedAt));
+      if (node.time.textContent !== clock) node.time.textContent = clock;
       this.socket.send({ type: "bg.log", sessionId: sheet.sessionId, runId: r.id });
+    }
+  }
+
+  /** 任务原文超过四行才露「展开」；折起来时量的是完整 `scrollHeight`，展开后这个判断依然成立。 */
+  private syncBgTaskMore(node: BgRunNode): void {
+    if (!node.root.isConnected) return;
+    const line = parseFloat(getComputedStyle(node.task).lineHeight) || 20;
+    const over = node.task.scrollHeight > line * 4 + 1;
+    node.taskToggle.hidden = !over;
+    if (!over) {
+      node.taskWrap.classList.remove("open");
+      node.taskToggle.textContent = tr("展开");
+    } else {
+      node.taskToggle.textContent = node.taskWrap.classList.contains("open") ? tr("收起") : tr("展开");
     }
   }
 
@@ -18136,14 +18401,16 @@ export class App {
     const node = this.bgSheet?.runs.get(runId);
     if (!node) return;
     const text = typeof log === "string" ? log : "";
-    if (node.log.textContent !== text) {
+    const logText = text || (node.hasLog ? tr("还没有活动记录。") : tr("桥还没接上这个 runner 的过程记录。"));
+    if (node.log.textContent !== logText) {
       const stick = node.log.scrollHeight - node.log.scrollTop - node.log.clientHeight < 24;
-      node.log.textContent = text || (node.hasLog ? tr("还没有活动记录。") : tr("桥还没接上这个 runner 的过程记录。"));
+      node.log.textContent = logText;
+      if (text) delete node.log.dataset.empty;
+      else node.log.dataset.empty = "1";
       if (stick) node.log.scrollTop = node.log.scrollHeight;
     }
     const done = typeof out === "string" && out.length > 0;
-    node.labOut.hidden = !done;
-    node.out.hidden = !done;
+    node.outSec.hidden = !done;
     if (done && node.out.textContent !== out) node.out.textContent = out;
   }
 
@@ -20427,7 +20694,7 @@ export class App {
       row.type = "button";
       row.title = tr("点开看 {p1} 的完整参数", { p1: active.name });
       row.setAttribute("aria-haspopup", "dialog");
-      // D458: 对话框里不再是一段 JSON，而是按参数形状拆好的正文（bash 的命令按真换行铺开）。
+      // D460: 对话框里不再是一段 JSON，而是按参数形状拆好的正文（bash 的命令按真换行铺开）。
       row.onclick = () => {
         const view = toolArgsView(active.args);
         this.openArgsDialog({
@@ -20464,7 +20731,7 @@ export class App {
    * D232: 长参数 / 子代理步骤详情走一次模态对话框，读完就关。跟口令框同一层（`.modal`，z-index 50），
    * Esc、右上角 ✕ 都关（点遮罩不关，D437）。
    *
-   * D458 重排：窗口材质还是 `overlay()` 打的 `window` 标记（mac.css 的玻璃遮罩 + 14px 窗 + 弹簧入场），
+   * D460 重排：窗口材质还是 `overlay()` 打的 `window` 标记（mac.css 的玻璃遮罩 + 14px 窗 + 弹簧入场），
    * 里面改成一条工具栏（工具徽章 / 标题 / 耗时 / 复制 / ✕）+ 事实胶囊 + 代码纸面，正文按工具参数
    * 拆块（`argview.ts`），不再是 `JSON.stringify` 的一坨。
    */
@@ -20782,7 +21049,7 @@ export class App {
     const facts: ArgFact[] = [];
     if (step.note) blocks.push({ label: tr("技能说明"), text: step.note });
     if (step.args != null && summary) {
-      // D458：工具步骤的参数跟「现在」卡走同一套拆法（bash 的命令按真换行、edit 排成 diff）。
+      // D460：工具步骤的参数跟「现在」卡走同一套拆法（bash 的命令按真换行、edit 排成 diff）。
       const view = toolArgsView(step.args);
       for (const block of view.blocks) blocks.push({ ...block, label: block.label ?? tr("参数") });
       facts.push(...view.facts);
@@ -21593,13 +21860,39 @@ export class App {
     this.paintTermButton();
   }
 
-  /** 顶栏那颗按钮的字：几个 shell 在跑就写几个，收起状态也看得到。 */
+  /**
+   * 顶栏那颗按钮的字：几个 shell 在跑就写几个，收起状态也看得到。
+   *
+   * 三种状态要一眼分得清（#756）：「没有终端」「开着」「收起来了」以前只有明暗一档差别，收起来与
+   * 关掉看着一样。现在收起态在字后面挂三根小音柱（音乐 / 播客那个「正在播放」的记号）—— 柱子在动就
+   * 说明 shell 还在跑，点一下就回来；关掉之后音柱消失，按钮回灰色。状态同时写进 `data-term-state`，
+   * CSS 与探针都按它取。
+   */
   private paintTermButton(): void {
     const btn = this.els.term;
     if (!btn) return;
     const n = this.termTabs.size;
+    const state = n === 0 ? "off" : this.termOpen ? "open" : "min";
     this.setWideLabel(btn, TOPBAR_ICON.terminal, n > 1 ? tr("终端 {p1}", { p1: n }) : tr("终端"));
     btn.classList.toggle("term-live", n > 0);
+    btn.dataset.termState = state;
+    // 不嵌套三元：三个状态三条句子，日后加状态往上加一行就行。
+    if (state === "min") {
+      btn.title = n > 1 ? tr("{p1} 个终端还在后台跑，点一下收回来", { p1: n }) : tr("终端还在后台跑，点一下收回来");
+    } else if (state === "open") {
+      btn.title = tr("终端已打开，点一下回到当前标签");
+    } else {
+      btn.title = this.termIdleTitle || tr("终端");
+    }
+    btn.setAttribute("aria-label", btn.title);
+    if (state === "min") {
+      // 三根音柱而不是一枚贴在图标角上的圆点：圆点要贴住图标才能看出属于它，一贴就成了贴纸；
+      // 音柱排在字后面、跟着基线走，深浅两套主题都干净，动静也够看得见。
+      const bars = el("span", "term-bars");
+      bars.setAttribute("aria-hidden", "true");
+      for (let i = 0; i < 3; i += 1) bars.append(el("i"));
+      btn.append(bars);
+    }
   }
 
   /** Ask the bridge for one more shell, starting in the session's cwd. */
@@ -21629,10 +21922,11 @@ export class App {
       };
       menu.append(item);
     }
-    const r = anchor.getBoundingClientRect();
-    menu.style.left = `${Math.round(r.left)}px`;
-    menu.style.bottom = `${Math.round(window.innerHeight - r.top + 4)}px`;
     document.body.append(menu);
+    // 挂上 body 之后才量得准；落位交给全站那一份规矩（#756）：下方放得下就往下开，放不下才翻上去，
+    // 两头都只剩一条缝就封顶自己滚。以前这里写死「贴着锚点往上弹」，dock 拉高一点菜单就顶出窗口，
+    // 压住顶栏、上沿还被屏幕切掉。
+    stickMenu(menu, anchor.getBoundingClientRect(), { gap: 6 });
     pushEscLayer({ el: menu, onEsc: () => menu.remove() });
     const away = (ev: MouseEvent) => {
       if (menu.contains(ev.target as Node) || ev.target === anchor) return;
@@ -23648,6 +23942,12 @@ type Prefs = {
    * 升级上来的用户第一眼完全不变。范围与全局同（0.8–2.0），乘积不另设上限。
    */
   regionScale: RegionScale;
+  /**
+   * D457：`.st-console` 那一族自己的倍率（同样叠在 `scale` 上）。以前控制台是「量尺」、刻意 1:1，
+   * 结果 2.0 字号下设置页还是 10–12.5px 的小字。现在它整块跟着缩放，外框还能撑大（见
+   * `paintRegionScales()` / settings-console.css 那条 `--st-frame`）。没存过＝1.0。
+   */
+  consoleScale: number;
 };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
@@ -23677,6 +23977,7 @@ const DEFAULT_PREFS: Prefs = {
   longCardAssistant: false,
   longCardTool: false,
   regionScale: regionScaleDefault(),
+  consoleScale: 1,
 };
 
 /** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
@@ -24338,6 +24639,14 @@ function prefScale(raw: unknown): number {
 }
 
 /**
+ * D457：控制台倍率。与分区倍率同一套夹取（0.8–2.0，两位小数），缺字段 / 脏值回 1.0。
+ */
+function prefConsoleScale(raw: unknown): number {
+  const v = Number(raw);
+  return Number.isFinite(v) && v > 0 ? clampScale(v) : 1;
+}
+
+/**
  * D441：区域倍率逐块归一化。缺字段（老版本升上来 / 手改 localStorage）一律回 1.0，
  * 不让一条脏记录把某一块弄成 0 或 NaN —— 那会让 `zoom` 失效、整块内容消失。
  */
@@ -24395,6 +24704,8 @@ function readPrefs(): Prefs {
       longCardTool: p?.longCardTool === true,
       // D441：五块区域倍率（叠在 scale 上相乘）。没存过就全 1.0。
       regionScale: prefRegionScale(p?.regionScale),
+      // D457：控制台自己那层倍率，同上。
+      consoleScale: prefConsoleScale(p?.consoleScale),
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
     if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accentTone !== next.accentTone || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);

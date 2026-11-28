@@ -1,5 +1,5 @@
 /**
- * 「参数」对话框里工具参数怎么拆（`web/src/argview.ts`，D458）。
+ * 「参数」对话框里工具参数怎么拆（`web/src/argview.ts`，D460）。
  *
  * 走的都是真实会话里见过的形状：bash 的 command 带 heredoc、write 的 content 跟着 path、
  * edit 的 edits[]{oldText,newText}、ask_user_question 那种嵌套对象、以及从转录里读回来的
