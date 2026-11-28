@@ -88,7 +88,7 @@ import {
   type ReviewMode,
 } from "./review.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
-import { AUTO_MARK, AutoRunner, checksGate, mergeResult, type AutoCheck, type AutoHost } from "./reviewauto.ts";
+import { AUTO_MARK, AutoRunner, checksGate, mergeResult, type AutoHost } from "./reviewauto.ts";
 import { writeGrant } from "./reviewgrant.ts";
 import { localRepoName } from "./gitpr.ts";
 import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
@@ -127,7 +127,8 @@ import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
-import { checksOf, githubApiBase, githubRest, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
+import { githubApiBase, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
+import { autoPrFailure, readAutoPr, type AutoPrView } from "./autopr.ts";
 import { cancelGhSetup, ghSetupCached, ghSetupStatus, installGh, loginGh } from "./gh-setup.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
@@ -2865,41 +2866,23 @@ async function main(): Promise<void> {
   };
 
   /**
-   * 自动评审眼里的一个 PR：判定要用的那几格。
+   * 自动评审眼里的一个 PR（判定要用的那几格，REST + checks 在 `autopr.ts`）。
    *
-   * 走 REST 的 `/repos/<repo>/pulls/<n>` + `checksOf` —— 与右栏 PR 详情**同一条通道、同一个口径**
-   * （checks 按 head sha 取 check-runs 与 commit status）。别改成 `pullRequestInfo`：那份是列表卡用的，
-   * 结构里没有 `checks` / `mergeable` / `merged`，读出来恒 `undefined`，会让「CI 没过」与「已经合了」都静默判反。
+   * 这一层只负责桥里才做得到的两件事：按**会话的工作区**选账号（`.pi/settings.json` 里的
+   * githubAccount 跟工作区走，不跟评审仓库根走 —— 会话可能开在子目录，与 `review.auto.start`
+   * 里 git 用仓库根不是同一个口径，别「统一」掉），以及把「读不到」翻成一句人话（`autoPrFailure`，带上「按哪个号查的」）。
    */
-  interface AutoPrView {
-    headRefName: string;
-    state: string;
-    merged: boolean;
-    /** `null` = GitHub 还在算（第一次问常常是 null），不是「不能合」。 */
-    mergeable: boolean | null;
-    checks: AutoCheck[];
-    checksTruncated: boolean;
-  }
-
-  const autoPrView = async (repo: string, pr: number, session: string): Promise<AutoPrView | null> => {
+  const autoPrView = async (repo: string, pr: number, session: string): Promise<{ view: AutoPrView | null; reason: string }> => {
+    let login = "";
     try {
-      // 账号按**会话的工作区**选（`.pi/settings.json` 里的 githubAccount 跟工作区走，不跟评审仓库根走）：
-      // 这里用会话 cwd 是对的，与 `review.auto.start` 里 git 用仓库根不是同一个口径，别「统一」掉。
       const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
-      const ctx = { upstreamApi: githubApiBase() };
-      const raw = await githubRest(ctx, gh.restToken ?? null, `/repos/${repo}/pulls/${pr}`);
-      const headSha = String(raw?.head?.sha ?? "");
-      const found = headSha ? await checksOf(ctx, gh.restToken ?? null, repo, headSha) : { checks: [], truncated: false };
-      return {
-        headRefName: String(raw?.head?.ref ?? ""),
-        state: String(raw?.state ?? ""),
-        merged: raw?.merged === true,
-        mergeable: raw?.mergeable === null || raw?.mergeable === undefined ? null : raw.mergeable === true,
-        checks: found.checks,
-        checksTruncated: found.truncated,
-      };
-    } catch {
-      return null;
+      login = gh.login;
+      return { view: await readAutoPr({ dir: repo, pr, token: gh.restToken ?? null, apiBase: githubApiBase() }), reason: "" };
+    } catch (err) {
+      // 以前这里是裸的 `catch { return null }`：404 被吞成「读不到」，页面只能猜「gh 没登录」。
+      const reason = autoPrFailure(err, login);
+      log(`auto-review: 读 PR #${pr} 失败（${repo}）：${reason}`);
+      return { view: null, reason };
     }
   };
 
@@ -2972,13 +2955,13 @@ async function main(): Promise<void> {
       return out.ok ? { ok: true, note: "" } : { ok: false, note: out.err.slice(0, 400) || "git push 失败" };
     },
     async prChecks(config, session) {
-      const view = await autoPrView(config.repo, config.pr, session);
-      if (!view) return { ok: false, note: "拿不到这个 PR 的状态（gh 没登录 / 断网 / 号不对）" };
+      const { view, reason } = await autoPrView(config.repo, config.pr, session);
+      if (!view) return { ok: false, note: `拿不到这个 PR 的状态：${reason}` };
       return checksGate(view.checks, view.mergeable, view.checksTruncated);
     },
     async prState(config, session) {
-      const view = await autoPrView(config.repo, config.pr, session);
-      if (!view) return { merged: false, note: "拿不到这个 PR 的状态，合没合看不出来" };
+      const { view, reason } = await autoPrView(config.repo, config.pr, session);
+      if (!view) return { merged: false, note: `拿不到这个 PR 的状态，合没合看不出来：${reason}` };
       return mergeResult(view);
     },
     grant: (session, g) => {
@@ -4769,8 +4752,8 @@ async function main(): Promise<void> {
                 // PR 模式那道闸（D462 第 16 条）：本地当前分支必须就是 PR 的 head，否则修完推不上去。
                 if (mode === "pr") {
                   if (!pr) throw new Error("先选一个 PR：自动评审要知道合哪一个");
-                  const view = await autoPrView(repo, pr, session);
-                  if (!view) throw new Error(`拿不到 PR #${pr} 的状态，先确认 gh 登录了这个仓库`);
+                  const { view, reason } = await autoPrView(repo, pr, session);
+                  if (!view) throw new Error(`拿不到 PR #${pr} 的状态：${reason}`);
                   if (!branch || branch === "HEAD") throw new Error("当前不在任何分支上（detached HEAD），修完没有地方推");
                   // 认不出 PR 的 head 就不能比：「跳过比对」等于把闸门放开到任意分支，宁可不开跑。
                   if (!view.headRefName) throw new Error(`读不到 PR #${pr} 的 head 分支，没法确认本地这条就是要推的那条`);
