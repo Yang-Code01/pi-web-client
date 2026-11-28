@@ -1,5 +1,5 @@
 /**
- * D441 更新组的两块纯函数：remote → `owner/name`，`owner/name` → 固定组 id。
+ * D451 更新组的两块纯函数：remote → `owner/name`，`owner/name` → 固定组 id。
  * 组 id 是跨机器对齐的唯一依据（没有服务器），所以这里把格式钉死。
  *
  * 用法：node --experimental-strip-types bridge/tests/updates-lan-unit.mjs

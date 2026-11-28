@@ -9,8 +9,11 @@
  * `focusScoped` 层（非模态浮窗：预览、表格、幻灯片）只有焦点在自己里面时才接 Esc；焦点在聊天里就
  * 放过去，聊天里的 Esc 不被抢。
  *
- * `mountOverlay` 认 `#app`：往 `document.body` 上挂就不吃 `#app` 的 `zoom`，外观「字号」调到
- * 125% 以上时同一个弹层会跟别的弹层两套尺寸（D123 / D263）。
+ * `overlayHost` / `mountOverlay` 决定「挂在哪儿」：默认认 `#app` —— 往 `document.body` 上挂就不吃
+ * `#app` 的 `zoom`，外观「字号」调到 125% 以上时同一个弹层会跟别的弹层两套尺寸（D123 / D263）。
+ * **唯一的例外是设置控制台**（`.st-console` 那套壳）：它是量尺，必须 1:1 挂在 `body` 上（D450）——
+ * 挂在 `#app` 里时把字号拖到 2.0，面板自己被放大到撑满整屏、手上那根滑杆被推出视口。
+ * 判据只此一处：新建 `.st-console` 壳的人不用记得「我要挂 body」，走 `mountOverlay` / `overlay()` 就对。
  *
  * `markSurface`：浮层在**创建处**声明自己是哪一档材质，`mac.css` 只按这个属性挑玻璃 / 圆角 / 入场。
  * 以前材质靠 CSS 里四张手抄的类名名单（遮罩 / 窗口 / 菜单 / 吐司），每加一个面板都要记得去补名字，
@@ -174,9 +177,21 @@ export function overlaysOpen(): boolean {
   );
 }
 
-/** 把浮层挂进 `#app`（拿不到才退回 body，比如单元测试里的假 DOM）。 */
+/**
+ * 浮层挂哪儿：默认进 `#app`（拿不到才退回 body，比如单元测试里的假 DOM），跟着外观「字号」缩放。
+ * 例外只有**控制台宿主**：它自己就是 `.st-console`，或直接装着 `.st-console`（`.st-back` /
+ * `.sheet-back` 这类外壳）—— 控制台是量尺，1:1 挂 body（D450）。
+ *
+ * 判据刻意只认**直接子级**：哪个普通浮层把一个 `.st-console` 当子面板嵌在深处，不该跟着它一起
+ * 脱开缩放（那种情况是「浮层里嵌了一块控制台」，不是「这个浮层就是控制台」）。
+ */
+export function overlayHost(root: HTMLElement): HTMLElement {
+  const isConsole = root.matches(".st-console") || Boolean(root.querySelector(":scope > .st-console"));
+  return isConsole ? document.body : (document.getElementById("app") ?? document.body);
+}
+
 export function mountOverlay(root: HTMLElement): void {
-  (document.getElementById("app") ?? document.body).append(root);
+  overlayHost(root).append(root);
 }
 
 /**

@@ -9,7 +9,7 @@ Since #634 (D407) it is **two** processes:
 
 `npm start` / `start:nobuild` / the watchdog / `restart.mjs` all start `host.js` (see `scripts/start.mjs`). `PI_HOST_DISABLE=1` starts `index.js` the old way — that is the escape hatch when you need to know whether a problem is in the shell or the brain.
 
-What this buys: a hot deploy swaps only the brain. Pi's pid, the pipes and the running turn survive, the page reconnects on its own. If the shell's own code changed, the deploy degrades to a group restart (the panel says so before you click).
+What this buys: a hot deploy swaps only the brain. Pi's pid, the pipes and the running turn survive, the page reconnects on its own. If the shell's own code changed, a brain swap is not enough: the panel says so before you click, the run builds, then stops and asks for a group restart (see *Restarting it*).
 
 ```bash
 curl -s http://127.0.0.1:7864/healthz   # pid = 壳; brain.pid / brain.ready = 脑
@@ -28,20 +28,23 @@ or the 「全部停止」 button in 设置 → 系统 → 运行. Both go throug
 
 ## Restarting it
 
-**Use the skill** — `.pi/skills/bridge-update/` (see `SKILL.md`). Don't hand-roll the two-step.
+Two different restarts. Pick by what has to change:
+
+- **Brain only — the normal case.** 设置 → 工具 →「热部署」, pick a branch, watch the panel. The shell keeps the port, the pipes and the running turns; the page reconnects on its own (D407). It refuses a dirty main checkout (use 「暂存后热部署」, D268) and a branch checked out in another worktree. It is an HTTP endpoint **of the bridge**, so it needs the bridge alive — there is nobody to click it when the shell is gone.
+- **Group restart — the shell's own code changed, or the bridge is dead.** `.pi/skills/bridge-update/` (see `SKILL.md`) is the only entry from outside: it fetches, builds, kills the shell and starts a new one. `--check` is also the cheap pre-flight probe.
 
 ```bash
 node .pi/skills/bridge-update/bin/restart.mjs --check --dir .   # 只判断，不 build、不杀进程
 ```
 
-If `behind: true`, write whatever is unfinished to `.scratch/bridge-update/pending.md`, start `restart.mjs` **detached** (`Start-Process node -WindowStyle Hidden -ArgumentList …`), then end your reply. Never run the full flow in the foreground: killing the bridge takes your own `pi` child with it, mid-turn.
+`--check` also compares `bridge/dist/build-id.json` with HEAD, so it answers "is 7864 serving what main says" without touching anything. If `behind: true`, write whatever is unfinished to `.scratch/bridge-update/pending.md`, start `restart.mjs` **detached** (Windows: `Start-Process node -WindowStyle Hidden -ArgumentList …`; macOS/Linux: `nohup node … &`), then end your reply. Never run the full flow in the foreground: killing the bridge takes your own `pi` child with it, mid-turn.
 
-What it does, in order — the order is the point:
+What `restart.mjs` does, in order — the order is the point:
 
 - `git fetch` + `git merge --ff-only origin/main` in the main checkout (the one sanctioned exception to "never write on main"). Dirty or diverged → `merge-failed`: **no stash, no rebase, no reset**.
 - `npm run build`. **Only if that succeeds** does it touch the running process — a broken build leaves 7864 serving the old code, so the outage is just the 1–3 s handover.
-- `taskkill /PID <bridge>` (never `/T`), then kill the bridge's own `pi` children by pid; orphans keep holding session locks and show up as “terminal in use”.
-- `Start-Process powershell -File <start-bridge.ps1>` opens a **visible** terminal window running `npm run start:nobuild`, teeing to `.scratch/bridge-update/bridge-live.log`. Closing that window stops the bridge, same as before.
+- Kill the pid `/healthz` reports — that is the **shell**, so this one cuts every session. Windows: `taskkill /PID`, never `/T` (it takes other trees with it); macOS/Linux: `kill -TERM`. Then kill the shell's own `pi` children by pid; orphans keep holding session locks and show up as “terminal in use”.
+- Start a new shell: on Windows `Start-Process powershell -File <start-bridge.ps1>` opens a **visible** terminal window running `npm run start:nobuild`, teeing to `.scratch/bridge-update/bridge-live.log` (closing that window stops the bridge); elsewhere the same script spawns `bridge/dist/host.js` detached with its output in that log.
 - Poll `/healthz` for 45 s and check the reported `buildId` matches the fresh build; write `.scratch/bridge-update/last-run.json`.
 
 `npm start` still works by hand (`node scripts/bootstrap.mjs --start && node scripts/build.mjs && node scripts/start.mjs`, ~10 s; `build:bridge` / `build:web` are the same script with `--only`). That last script picks `bridge/dist/host.js` when it exists, so what you get is shell + brain, not a bare bridge. Session transcripts live in `~/.pi/agent/sessions/`, so a mid-turn chat is cut, not lost — that is what `pending.md` and the `pendingUnread` startup check in AGENTS.md are for.

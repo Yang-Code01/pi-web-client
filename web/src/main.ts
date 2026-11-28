@@ -73,7 +73,7 @@ async function boot(): Promise<void> {
 
 async function start(me: Me): Promise<void> {
   const app = new App(me);
-  // D441：`/?settings=tools` 这类深链等首屏 hello 回来再开（openSettingsFromUrl 内部等，评审 #25）。
+  // D451：`/?settings=tools` 这类深链等首屏 hello 回来再开（openSettingsFromUrl 内部等，评审 #25）。
   // 不吞 rejection：深链失败只影响这一跳，但要能在控制台看到原因（评审 #25）。
   void app.openSettingsFromUrl().catch((err) => console.warn("深链打开设置失败", err));
   if ("serviceWorker" in navigator) {

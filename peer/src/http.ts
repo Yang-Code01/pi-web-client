@@ -5,10 +5,12 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
-import { PROTO, VERSION } from "./config.ts";
-import { knownAvatar } from "./avatars.ts";
-import { isRepo } from "./repo.ts";
+import { PROTO, VERSION, MAX_AVATAR_HISTORY } from "./config.ts";
+import { avatarHash, customAvatarHash, customAvatarId, knownAvatar, randomAvatar } from "./avatars.ts";
+import { deleteAvatarFile, findAvatarFile, fetchRemoteAvatar, hasAvatarFile, listAvatarUploads, MAX_AVATAR_BYTES, pruneAvatarFiles, saveAvatarFile } from "./avatar-files.ts";
+import type { AvatarImage } from "./avatar-files.ts";
 import { buildUpdates, type Discovery } from "./discovery.ts";
+import { isRepo } from "./repo.ts";
 import { CHUNK, SANDBOX_CSP, inlineType, isHtmlType, mimeOf, typeOf } from "./files.ts";
 import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
@@ -90,21 +92,35 @@ function isLoopback(req: http.IncomingMessage): boolean {
   return /^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(addr);
 }
 
-function json(res: http.ServerResponse, status: number, body: unknown): void {
+function json(res: http.ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}): void {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...extra });
   res.end(payload);
 }
+
+/**
+ * 请求体超过上限。和「传到一半断开」（ECONNRESET / req 的 error）区分开：
+ * 只有这一种才该回 413，别的失败得让页面提示「重试」而不是「图太大」。
+ */
+export class BodyTooLargeError extends Error {}
 
 function readBody(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
+    let tooLarge = false;
     req.on("data", (c: Buffer) => {
+      // 超限只拒一次，剩下的字节继续收下再丢掉：直接 destroy 会把 socket 一起带走，
+      // 外面那句 `json(res, 413)` 就再也写不出去了（调用方看到的是连接被重置）。
+      if (tooLarge) return;
       size += c.length;
       if (size > MAX_BODY) {
-        reject(new Error("body too large"));
-        req.destroy();
+        tooLarge = true;
+        chunks.length = 0;
+        reject(new BodyTooLargeError("body too large"));
+        // 拒绝后暂停读：既让处理器能把 413 / 400 写回去，又不会陪着攻击者把
+        // 一个无限 body 全收下（请求没读完就结束响应，Node 自己会关连接）。
+        req.pause();
         return;
       }
       chunks.push(c);
@@ -117,6 +133,11 @@ function readBody(req: http.IncomingMessage): Promise<any> {
       }
     });
     req.on("error", reject);
+    // 客户端没传完就断开时 `error` 不一定触发，但 `close` 会：没收到完整请求就关，
+    // 按「上传中断」拒掉，别让 Promise 悬着（评审 4-5）。
+    req.on("close", () => {
+      if (!req.complete) reject(new Error("request aborted"));
+    });
   });
 }
 
@@ -131,22 +152,72 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
+    let tooLarge = false;
     req.on("data", (c: Buffer) => {
+      // 同上：不 destroy，让处理器还能回 413。
+      if (tooLarge) return;
       size += c.length;
       if (size > limit) {
-        reject(new Error("body too large"));
-        req.destroy();
+        tooLarge = true;
+        chunks.length = 0;
+        reject(new BodyTooLargeError("body too large"));
+        // 同上：不再继续吞字节，响应写完由 Node 收尾。
+        req.pause();
         return;
       }
       chunks.push(c);
     });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
+    // 同上：传一半断开也走失败回调。
+    req.on("close", () => {
+      if (!req.complete) reject(new Error("request aborted"));
+    });
   });
 }
 
 export function createPeerServer(ctx: PeerContext): http.Server {
   const { cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity, groups } = ctx;
+
+  /**
+   * 按 nodeId 取头像字节：「我」直接读自己 `cfg.avatar` 对应的文件；对端先看本地缓存，
+   * 没有就按他当前广播的 hash 去他的 `/avatar` 拉一次（结果落盘，离线也能再用）。
+   * 只认他**当前**这张：旧 hash 不给，免得这个口子变成一张能无限探别人缓存的清单。
+   */
+  async function avatarFor(who: string, hash: string): Promise<AvatarImage | null> {
+    if (who === nodeId) {
+      const own = customAvatarHash(cfg.avatar);
+      // 设置页的「上传过的」会按各自的 hash 来要图，不能都回当前那张（否则一排缩略图全一样）。
+      // 只放开当前这张和上传记录，对端头像的缓存不从这个口子出。
+      // 按请求的 hash 回对应字节：桥那边对同一 URL 长缓存，回错图会被浏览器记住。
+      const wanted = hash === "" ? own : avatarHash(hash);
+      if (!wanted || (wanted !== own && !cfg.avatarHistory.includes(wanted))) return null;
+      return findAvatarFile(wanted);
+    }
+    const peer = discovery.byId(who);
+    const current = customAvatarHash(peer?.avatar || relations.get(who)?.avatar || "");
+    if (!current || (hash && hash !== current)) return null;
+    const local = findAvatarFile(current);
+    if (local) return local;
+    const fetched = peer ? await fetchRemoteAvatar(peer.addr, peer.port, current) : null;
+    // 对端拉回来的图也走同一份 mtime 清理，否则 avatars/ 只进不出（D442 说的「留 64 张」不成立）。
+    if (fetched) pruneAvatarFiles([customAvatarHash(cfg.avatar), ...cfg.avatarHistory]);
+    return fetched;
+  }
+
+  const sendImage = (res: http.ServerResponse, image: AvatarImage, cache: string): void => {
+    res.writeHead(200, {
+      "content-type": image.mime,
+      "content-length": image.buf.length,
+      "cache-control": cache,
+      // 内容寻址：ETag 就是 hash，桥转发后浏览器能做 304。
+      etag: `"${image.hash}"`,
+      "x-content-type-options": "nosniff",
+    });
+    res.end(image.buf);
+  };
+
+
   const identity = () => {
     // 与 announce 包用同一个拼装函数（评审 #6）：publisher=false 不能以显式字段发出，
     // opt-out 名单也要按 20 条截断——否则同一条机器在两条路上会带着不一样形状的 updates。
@@ -204,13 +275,19 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const wasHidden = cfg.hidden;
         // 先把每一项都校验、算成 next*，最后一次性写 cfg：任何一步 400 都不能留下
         // 「内存改了、磁盘没存」的半截状态（评审 #9）。
+        // D303：自己的名字也能改。上限 40（公告里塞得下），改完立刻重播一次，别等下一轮。
         const nextNickname =
           typeof body.nickname === "string" ? body.nickname.trim().replace(/[\s\u3000]+/g, " ").slice(0, 40) : undefined;
         if (nextNickname !== undefined && !nextNickname) return json(res, 400, { error: "名字不能是空的" });
-        // 头像：只认名单里的 id（页面上的 12 张）。名单外的直接拒，别存一个画不出来的值。
+        // 头像：名单里的 id 或合法的 `custom:<hash>`。自定义的必须本机真有这张图，
+        // 否则广播出去的是一个永远拉不到的地址，别人只能一直看首字母。
         const nextAvatar = body.avatar !== undefined ? knownAvatar(body.avatar) : undefined;
         if (body.avatar !== undefined && !nextAvatar) return json(res, 400, { error: "没有这张头像" });
-        // 更新组（D441）：`repo` = 这台机器认的仓库（announce 带出去，发布者据此邀请）；
+        if (nextAvatar) {
+          const custom = customAvatarHash(nextAvatar);
+          if (custom && !hasAvatarFile(custom)) return json(res, 400, { error: "这张头像不存在" });
+        }
+        // 更新组（D451）：`repo` = 这台机器认的仓库（announce 带出去，发布者据此邀请）；
         // `publisher` = 这台机器负责查 origin/main。两者都改了要重播，别等下一轮 10 秒。
         let nextUpdates: { repo: string; publisher: boolean } | null = null;
         if (body.updates !== undefined) {
@@ -225,7 +302,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             if (repo && !isRepo(repo)) return json(res, 400, { error: "仓库标识要写成 host/owner/name（GitLab 是 host/group/subgroup/name）" });
           }
           const publisher = typeof u.publisher === "boolean" ? u.publisher : cfg.updates.publisher;
-          if (publisher && !repo) return json(res, 400, { error: "先填仓库标识（owner/name）再打开发布" });
+          if (publisher && !repo) return json(res, 400, { error: "先填仓库标识（host/owner/name）再打开发布" });
           nextUpdates = { repo, publisher };
         }
         // 校验全过：现在才动 cfg 与落盘。
@@ -273,6 +350,106 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const cleared = ignored.size();
         ignored.clear();
         return json(res, 200, { ok: true, cleared });
+      }
+
+      // 自定义头像：POST 只回环（页面 → 桥 → 这里），GET `/avatar?h=` 对局域网开放，
+      // 对端按 hash 来取图。图是内容寻址的：同一个 hash 的字节永远一样，可以放心长缓存。
+      if (url.pathname === "/avatar" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const raw = await readRaw(req, MAX_AVATAR_BYTES).catch((err: unknown) => err);
+        if (raw instanceof BodyTooLargeError) {
+          // 数字跟着 `MAX_AVATAR_BYTES` 走，改上限时不会留一句骗人的提示（评审 5-8）。
+          return json(
+            res,
+            413,
+            { error: `图片太大了（上限 ${Math.round(MAX_AVATAR_BYTES / 1024)} KB）` },
+            { connection: "close" },
+          );
+        }
+        if (!Buffer.isBuffer(raw)) {
+          // 传一半断开（断网 / 关页面）也走失败分支，但原因不是「太大」。
+          return json(res, 400, { error: "上传中断了，再试一次" });
+        }
+        const saved = saveAvatarFile(raw);
+        if (!saved) return json(res, 400, { error: "不是支持的图片（PNG / JPEG / WebP / GIF）" });
+        const changed = cfg.avatar !== saved.id;
+        cfg.avatar = saved.id;
+        // 上传过的才进历史（对端缓存不算）。同一张重传只把它提到最前。
+        cfg.avatarHistory = [saved.hash, ...cfg.avatarHistory.filter((h) => h !== saved.hash)].slice(0, MAX_AVATAR_HISTORY);
+        saveConfig(cfg);
+        // 自己上传过的全不剔；其余按 mtime 留最近 64 张。
+        pruneAvatarFiles(cfg.avatarHistory);
+        if (changed) discovery.announce();
+        return json(res, 200, { ok: true, avatar: saved.id });
+      }
+
+      if (url.pathname === "/avatar" && req.method === "GET") {
+        // 对局域网只回「本机当前广播的那一张」：这是给对端拉我们现在这张脸用的。
+        // 其它 hash（我换下来的旧图、对端缓存在我这里的图）只能走回环的 `/avatar/<nodeId>`，
+        // 否则局域网里拿着旧 hash 就能把 avatars/ 当图库翻（评审 4-6）。
+        const own = customAvatarHash(cfg.avatar);
+        const asked = url.searchParams.get("h") ?? "";
+        const found = own && asked === own ? findAvatarFile(own) : null;
+        if (!found) return json(res, 404, { error: "没有这张图片" });
+        return sendImage(res, found, "public, max-age=31536000, immutable");
+      }
+
+      // 桥只从回环来取；对端头像由 peer 自己按 hash 拉，页面不直接连别人的 7865。
+      if (url.pathname.startsWith("/avatar/") && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        let who: string;
+        try {
+          who = decodeURIComponent(url.pathname.slice("/avatar/".length));
+        } catch {
+          return json(res, 400, { error: "地址不对" });
+        }
+        const found = await avatarFor(who, url.searchParams.get("h") ?? "");
+        if (!found) return json(res, 404, { error: "没有这张头像" });
+        return sendImage(res, found, "private, max-age=86400");
+      }
+
+      // 上传过的自定义头像（只给设置页用）：带 mtime，页面按「最近在前」画缩略图。
+      if (url.pathname === "/custom-avatars" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const uploads = listAvatarUploads(cfg.avatarHistory);
+        return json(res, 200, { ok: true, uploads, current: customAvatarHash(cfg.avatar) });
+      }
+
+      // 删掉一张上传过的图：历史里没有的 hash 不接（对端缓存不归这个口子管）。
+      // 如果删的正是当前头像，就换到剩下的最新一张；一张不剩才随机回内置。
+      if (url.pathname === "/custom-avatars/delete" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        let body: { hash?: unknown } | null = null;
+        try {
+          body = (await readBody(req)) as { hash?: unknown } | null;
+        } catch (err) {
+          // 只有「超过 1 MB」要单独说；不是 JSON / 传了一半，分别给「hash 不对」和「请求中断」。
+          if (err instanceof BodyTooLargeError) {
+            return json(res, 413, { error: "请求太大了" }, { connection: "close" });
+          }
+          // readBody 在 JSON 解析失败时抛 SyntaxError，在请求没传完就断开时抛普通 Error。
+          // 后者不是用户填错了 hash，别让页面提示「hash 不对」（评审 8-18）。
+          if (!(err instanceof SyntaxError)) return json(res, 400, { error: "请求中断了，再试一次" });
+        }
+        const hash = avatarHash(body?.hash);
+        if (!hash) return json(res, 400, { error: "hash 不对" });
+        if (!cfg.avatarHistory.includes(hash)) return json(res, 404, { error: "不在上传记录里" });
+        try {
+          // 文件已经不在了（手动删过 / 被 prune 收走）也算删成功：正好把这条死记录清掉。
+          deleteAvatarFile(hash);
+        } catch {
+          // 文件删不掉（被占用 / 没权限）就别动历史记录，否则留下一条永远删不掉的幽灵图。
+          return json(res, 500, { error: "删不掉这张图（文件被占用或没有权限）" });
+        }
+        cfg.avatarHistory = cfg.avatarHistory.filter((h) => h !== hash);
+        const wasCurrent = customAvatarHash(cfg.avatar) === hash;
+        if (wasCurrent) {
+          const next = cfg.avatarHistory.map((h) => ({ h, found: hasAvatarFile(h) })).find((row) => row.found);
+          cfg.avatar = next ? customAvatarId(next.h) : randomAvatar();
+        }
+        saveConfig(cfg);
+        if (wasCurrent) discovery.announce();
+        return json(res, 200, { ok: true, avatar: cfg.avatar, removed: hash, uploads: listAvatarUploads(cfg.avatarHistory) });
       }
 
       if (url.pathname === "/peer/hello" && req.method === "POST") {
@@ -563,7 +740,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         }
       }
 
-      // 补发公告（D441）：发布者刚拉起一个成员时，把这个组里最近几条公告单播给他。
+      // 补发公告（D451）：发布者刚拉起一个成员时，把这个组里最近几条公告单播给他。
       if (url.pathname === "/announce/replay" && req.method === "POST") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const body = await readBody(req).catch(() => ({}));

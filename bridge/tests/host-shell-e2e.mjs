@@ -130,6 +130,11 @@ const brainGet = async (p, pid) => {
 
 let exitCode = null;
 let exitSignal = null;
+/** 第 11 步那把「第二个壳」的 pid：断言失败时也得收掉，别让它留在下一轮里。 */
+let blockedPid = null;
+/** 第 11 步那个「被占时起不来的壳」：问它自己退没退（`exitCode`/`signalCode`），别手工维护布尔 ——
+ * 已经退了的 pid 不能碰：那个号可能已经被系统发给了别人。 */
+let blockedRef = null;
 host.on("exit", (code, signal) => {
   // 信号终止时 code 是 null。记成 0 会把壳崩溃当成正常停机。
   exitCode = code ?? -1;
@@ -304,6 +309,58 @@ try {
   await post("/api/host/stop");
   await until(async () => exitCode !== null, "壳退出", 8000);
   assert.equal(exitCode, 0, exitSignal ? `主动停机被信号 ${exitSignal} 终止` : "主动停机应该是 0");
+
+  // 11. 端口被占：壳不吐堆栈，给一句人话并以 2 退出（D448）。
+  {
+    const squatter = net.createServer();
+    await new Promise((r) => squatter.listen(port, "127.0.0.1", r));
+    const blocked = spawn(process.execPath, [HOST], {
+      env: {
+        ...process.env,
+        PI_WEB_PORT: String(port),
+        PI_HOST_BRAIN: BRAIN,
+        PI_FAKE_BRAIN_OUT_DIR: BRAINS,
+        PI_HOST_OBSERVE_MS: "800",
+        PI_WEB_STATE: path.join(TMP, "state-blocked"),
+        PI_WEB_OPEN: "0",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    blockedPid = blocked.pid;
+    blockedRef = blocked;
+    let blockedOut = "";
+    blocked.stdout.on("data", (c) => (blockedOut += String(c)));
+    blocked.stderr.on("data", (c) => (blockedOut += String(c)));
+    try {
+      let blockedCode = await new Promise((resolve) => {
+        blocked.on("exit", (code) => {
+          resolve(code ?? -1);
+        });
+        const t = setTimeout(() => resolve(null), 15000);
+        t.unref();
+      });
+      if (blockedCode === null) {
+        killTree(blocked.pid);
+        // 等它真的没了再放端口：killTree 只是把 taskkill 发出去，进程可能还在退；它若抢在
+        // 「端口空出来」那一刻 listen 成功，会把假脑拉起来。等到没退（until 抛错）也没关系：
+        // finally 里问的是 ChildProcess 自己的 exitCode，对还活着的它再收一次，对已经退了的
+        // 绝不碰那个 pid。
+        await until(
+          () => blocked.exitCode !== null || blocked.signalCode !== null,
+          "被端口占住的壳已经退出",
+          8000,
+        );
+      }
+      assert.equal(blockedCode, 2, `端口被占时壳应当以 2 退出：${blockedOut}`);
+      assert.match(blockedOut, /已被占用/, "要给一句人话，而不是一坨 EADDRINUSE");
+      assert.match(blockedOut, /npm run bridge:stop/, "要给出停掉旧那份的出口");
+      assert.doesNotMatch(blockedOut, /\n\s+at /, "不要再吐堆栈");
+    } finally {
+      // 端口最后才放：先放的话，那个还没退干净的壳会把假脑拉起来。
+      await new Promise((r) => squatter.close(r));
+    }
+  }
+
   console.log("host-shell-e2e: ok");
 } catch (err) {
   console.error(String(err?.stack ?? err));
@@ -320,6 +377,9 @@ try {
     killTree(host.pid);
     await Promise.race([new Promise((r) => host.once("exit", r)), sleep(5000)]);
   }
+  // 第 11 步那个「被占时起不来的壳」：正常会自己以 2 退出，卡住才按树收掉
+  // （已经退了的 pid 不能碰：那个号可能已经被系统发给了别人）。
+  if (blockedRef && blockedRef.exitCode === null && blockedRef.signalCode === null) killTree(blockedPid);
   try {
     fs.rmSync(TMP, { recursive: true, force: true });
   } catch {

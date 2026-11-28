@@ -91,7 +91,7 @@ export interface Entry {
   /** `kind:"sys"`：群的系统灰条。 */
   sys?: SysInfo;
   /**
-   * 更新组里的公告（D441）：仍然是 `kind:"text"`，`text` 是给旧版本看的退化正文，
+   * 更新组里的公告（D451）：仍然是 `kind:"text"`，`text` 是给旧版本看的退化正文，
    * 这里只让认识它的页面把气泡画成卡片。
    */
   announce?: AnnouncePayload;
@@ -131,7 +131,7 @@ export interface PendingInfo {
   error?: string;
 }
 
-/** 群会话在列表里露出的那一小份：成员、群主、我是不是已经退出（D441 加了只读与发布者）。 */
+/** 群会话在列表里露出的那一小份：成员、群主、我是不是已经退出（D451 加了只读与发布者）。 */
 export interface GroupSummary {
   name: string;
   members: PeerIdentity[];

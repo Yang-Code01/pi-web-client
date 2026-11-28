@@ -187,7 +187,7 @@ export class Files {
       log: (msg: string) => void;
       /** 群：成员（不含我）；不认识这个群 / 我已退出时是 `null`。 */
       groupMembers?: (groupId: string) => string[] | null;
-      /** 群是不是只读更新组、发布者是谁（D441）：收文件时也要拦非发布者。 */
+      /** 群是不是只读更新组、发布者是谁（D451）：收文件时也要拦非发布者。 */
   groupAnnounceOnly?: (groupId: string) => GroupGate | null;
     },
   ) {

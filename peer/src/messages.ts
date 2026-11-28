@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import os from "node:os";
+import { normAddr } from "./addr.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
@@ -63,11 +64,6 @@ function why(err: unknown): string {
     cur = cur.cause as typeof cur;
   }
   return parts.join(" ← ") || "fetch failed";
-}
-
-/** `::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台机器，比较前先归一。 */
-function normAddr(addr: string): string {
-  return addr.replace(/^::ffff:/, "").replace(/^::1$/, "127.0.0.1");
 }
 
 export interface InboxResult {
@@ -453,7 +449,7 @@ export class Messages {
 
   createGroup(name: string, memberIds: string[], opts: { id?: string; announceOnly?: boolean; publisher?: string } = {}): Group {
     const others = [...new Set(memberIds)].filter((id) => id && id !== this.ctx.nodeId && !isGroupId(id));
-    // 更新组（D441）：发布者可能第一个上线，还没人可拉 —— announceOnly 允许只有自己。
+    // 更新组（D451）：发布者可能第一个上线，还没人可拉 —— announceOnly 允许只有自己。
     if (!others.length && !opts.announceOnly) throw new Error("至少拉一个人");
     if (others.length + 1 > MAX_GROUP_MEMBERS) throw new Error(`一个群最多 ${MAX_GROUP_MEMBERS} 人`);
     const at = Date.now();
@@ -539,7 +535,7 @@ export class Messages {
     return left;
   }
 
-  /** 重新加入更新组（D441）：清掉 opt-out，等发布者下一轮邀请把新快照送过来。 */
+  /** 重新加入更新组（D451）：清掉 opt-out，等发布者下一轮邀请把新快照送过来。 */
   rejoinGroup(groupId: string): { ok: true; pending?: boolean } {
     if (!isGroupId(groupId)) throw new Error("不是合法的群 id");
     const group = this.ctx.groups.get(groupId);
@@ -556,7 +552,7 @@ export class Messages {
   }
 
   /**
-   * 换机器（D441）：新发布者接管这个更新组。
+   * 换机器（D451）：新发布者接管这个更新组。
    *
    * 新机器要先被拉进组（拿到旧成员那份名册），再走这里 v+1 广播；旧成员按版本接受。
    * `Groups.merge` 的 takeover 只给「publisher 还空着、owner 认领」这一种恢复路径用（见那里），
@@ -604,7 +600,7 @@ export class Messages {
       return;
     }
     if (before.name !== after.name) this.appendSys(after.id, actor, { op: "rename", actor: who, name: after.name });
-    // 发布者换了机器（D441）：接受，但要让组里的人看见，不能悄悄换掉。
+    // 发布者换了机器（D451）：接受，但要让组里的人看见，不能悄悄换掉。
     if (before.publisher !== after.publisher && after.publisher) {
       this.appendSys(after.id, actor, { op: "publisher", actor: who, name: this.nameOf(this.identity(after.publisher)) });
     }
@@ -627,7 +623,7 @@ export class Messages {
     if (s && s.id === groupId && s.members.some((m) => m.nodeId === claimed.nodeId)) this.mergeGroup(s, claimed);
     const group = this.ctx.groups.get(groupId);
     if (!group) return { status: 404, body: { error: "不认识这个群", retryable: false } };
-    // D441：退更新组 = 本机 opt-out。发布者那边会跳过（announce 里带着 optOut），这里再拦一道：
+    // D451：退更新组 = 本机 opt-out。发布者那边会跳过（announce 里带着 optOut），这里再拦一道：
     // 已经退掉的人不该因为别人还按旧名册发消息而继续收到。
     if (optOutIds().has(groupId)) return { status: 200, body: { ok: true, ignored: true } };
     if (group.left) return { status: 200, body: { ok: true, ignored: true } };
@@ -636,7 +632,7 @@ export class Messages {
   }
 
   /**
-   * 只读群的写门（D441）：除了发布者，文字 / 回应 / 固定 / 撤回都不收。
+   * 只读群的写门（D451）：除了发布者，文字 / 回应 / 固定 / 撤回都不收。
    * 已读回执（`read`）与名单快照不受影响 —— 成员还是要能标记已读、接收邀请。
    */
   private writeGate(thread: string, claimed: PeerIdentity): InboxResult | null {
@@ -659,7 +655,7 @@ export class Messages {
   }
 
   /**
-   * 给刚进组的人补最近几条公告（D441）：原 id / 原时间单播。
+   * 给刚进组的人补最近几条公告（D451）：原 id / 原时间单播。
    * 对方 `recentIds` 会把重复的丢掉，所以已经收到过的人不会多出气泡。
    */
   replayAnnouncements(groupId: string, peerNodeId: string, limit = REPLAY_DEFAULT): { ok: true; sent: number } {

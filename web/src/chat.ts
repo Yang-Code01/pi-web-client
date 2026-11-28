@@ -494,14 +494,22 @@ export class ChatView {
   }
 
   /**
-   * 节点首行在滚动内容里的位置（`scrollTop` 的单位）。
-   * `getBoundingClientRect()` 量到的是视觉 px，`scrollTop` 是布局 px；`#app` 上挂着
-   * `zoom: var(--ui-scale)`（外观字号），两者差一个倍数。不除的话字号 125% 时滚不到首行
-   * ——默认字号下会把首行滚过头（D123）。
+   * 视觉 px → `scrollTop`（布局 px）的除数：**全局字号 × 对话正文这块自己的区域倍率**。
+   *
+   * `getBoundingClientRect()` 量到的是视觉 px，`scrollTop` 是布局 px。
+   * `#app` 上挂着 `zoom: var(--ui-scale)`，`.chat-scroll` 上还挂着 `zoom: var(--rs-chat)`（D441）——
+   * 两层都是乘法，漏掉区域那一层就按正文的倍率滚过头：点缩略图跳轮次会越过目标，
+   * `startTop >= maxScroll - 1` 还可能被误判成「已在最后一屏」而直接回到底部。
+   * 自己的倍率从计算样式现读：换壳 / 改设置都不需要往外传一份会过期的缓存。
    */
+  private layoutScale(): number {
+    const own = Number.parseFloat(getComputedStyle(this.root).zoom);
+    return appZoom() * (Number.isFinite(own) && own > 0 ? own : 1);
+  }
+
+  /** 节点首行在滚动内容里的位置（`scrollTop` 的单位）。倍数见 `layoutScale()`。 */
   private contentTopOf(node: HTMLElement): number {
-    const scale = appZoom();
-    return (node.getBoundingClientRect().top - this.root.getBoundingClientRect().top) / scale + this.root.scrollTop;
+    return (node.getBoundingClientRect().top - this.root.getBoundingClientRect().top) / this.layoutScale() + this.root.scrollTop;
   }
 
   /** Wheel / key up: stop following and keep the follow closed while the smooth-scroll animation plays out. */
@@ -603,7 +611,8 @@ export class ChatView {
     const before = anchor.getBoundingClientRect().top;
     return () => {
       const delta = anchor!.getBoundingClientRect().top - before;
-      if (Math.abs(delta) > 0.5) this.root.scrollTop += delta;
+      // 差值同样是视觉 px，补进 `scrollTop` 前要按倍数换回布局 px（见 `layoutScale()`）。
+      if (Math.abs(delta) > 0.5) this.root.scrollTop += delta / this.layoutScale();
     };
   }
 
@@ -1052,7 +1061,7 @@ export class ChatView {
     const max = this.root.scrollHeight - this.root.clientHeight;
     const now = this.root.scrollTop;
     if (expected !== null && Math.abs(now - Math.min(max, Math.max(0, expected))) > 1) return now;
-    const want = Math.min(max, Math.max(0, now + anchor.getBoundingClientRect().top - topBefore));
+    const want = Math.min(max, Math.max(0, now + (anchor.getBoundingClientRect().top - topBefore) / this.layoutScale()));
     this.root.scrollTop = want;
     return want;
   }

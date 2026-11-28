@@ -152,6 +152,10 @@ async function pageFor(browser, base, cookie) {
   return page;
 }
 
+/** 「评什么」现在是四块磁贴（D 方案）：选中态是 `aria-pressed`，不再是 `<select>` 的 value。 */
+const modeTile = (page, mode) => page.locator(`.rv-tile.rv-mode[data-mode="${mode}"]`);
+const modeIs = async (page, mode) => (await modeTile(page, mode).getAttribute("aria-pressed")) === "true";
+
 const openReviewTab = async (page) => {
   const tab = page.locator('.exec-tabs button[data-exec-tab="review"]');
   await tab.waitFor({ timeout: 20000 });
@@ -215,11 +219,11 @@ try {
   await openReviewTab(page);
   const credit = (await page.locator(".rv-credit").first().innerText().catch(() => "")).trim();
   check("写明评审内核来自 open code review", /open code review/.test(credit), credit.replace(/\n/g, " / ").slice(0, 60));
-  check("默认范围是「GitHub PR」", (await page.locator(".rv-mode").inputValue()) === "pr", await page.locator(".rv-mode").inputValue());
+  check("默认范围是「GitHub PR」", await modeIs(page, "pr"), (await modeTile(page, "pr").getAttribute("aria-pressed")) ?? "?");
   // 先挑一个模型：记录卡上要写的是「这一次用的模型」，不挑的话只能记「没记模型」。
   await pickModel(page);
   check("挑完模型 chip 上有名字", !(await page.locator(".rv-model").first().innerText()).includes("默认模型"), (await page.locator(".rv-model").first().innerText()).trim());
-  await page.locator(".rv-mode").selectOption("workspace");
+  await modeTile(page, "workspace").click();
   await page.locator(".rv-run:not([disabled])").first().waitFor({ timeout: 30000 });
   await page.locator(".rv-run").first().click();
 
@@ -227,7 +231,7 @@ try {
   await until(async () => (await page.locator(".rv-run-card").count()) >= 1, 60000, "run card");
   if (await page.locator(".rv-run-card.is-live .rv-run-stop").count()) {
     // D420：跑着的时候这张「评什么」描述的是**下一条**，所以不再整张禁用；停止是每条记录自己的事。
-    check("评审中「评什么」不再整张锁住（它描述下一条）", !(await page.locator(".rv-mode").isDisabled()), "");
+    check("评审中「评什么」不再整张锁住（它描述下一条）", await modeTile(page, "workspace").isEnabled(), "");
     check("评审中模型 chip 也能换（只影响下一条）", !(await page.locator(".rv-model").first().isDisabled()), "");
     check("主按钮仍是「开始评审」，不再变成中断", (await page.locator(".rv-run").first().innerText()).includes("开始"), "");
     check(
@@ -455,7 +459,7 @@ try {
   // ---------------------------------------------------------------- 6) PR 模式：列表拉不到也要能用
   // fixture 仓库没有 remote：`gh pr list` 这一步会失败。验收的是「说清原因 + 号输入框照样在」，
   // 真 PR 的端到端要联网与 gh 登录，探针不替环境赌这一把。
-  await page.locator(".rv-mode").selectOption("pr");
+  await modeTile(page, "pr").click();
   await page.locator(".rv-prq").waitFor({ timeout: 20000 });
   await page.locator(".rv-prq").click();
   await page.locator(".rv-prmenu").waitFor({ timeout: 10000 });
@@ -491,8 +495,8 @@ try {
   const prAfterReload = String((await page.locator(".rv-prq").inputValue()) ?? "").replace(/^#/, "");
   check(
     "刷新后范围与号自己接上",
-    (await page.locator(".rv-mode").inputValue()) === "pr" && prAfterReload === "7",
-    `${await page.locator(".rv-mode").inputValue()} / ${prAfterReload}`,
+    (await modeIs(page, "pr")) && prAfterReload === "7",
+    `${await modeTile(page, "pr").getAttribute("aria-pressed")} / ${prAfterReload}`,
   );
 } catch (err) {
   failures += 1;

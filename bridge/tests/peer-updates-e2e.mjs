@@ -1,5 +1,5 @@
 /**
- * D441 只读更新组：peer 协议这一层的端到端（不经过 bridge 的发布者逻辑）。
+ * D451 只读更新组：peer 协议这一层的端到端（不经过 bridge 的发布者逻辑）。
  *
  * 三个真 peer 共用一个组播端口：
  *   P = 发布者（config 里 `updates.repo` + `publisher:true`）

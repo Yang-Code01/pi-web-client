@@ -1,10 +1,10 @@
 /**
- * D441 守卫：局域网固定只读更新组的界面（跑真构建产物 web/dist，API 用 page.route 假造）。
+ * D451 守卫：局域网固定只读更新组的界面（跑真构建产物 web/dist，API 用 page.route 假造）。
  *
  * 要守的是「成员到底能不能发」「公告卡片读不读得下去」：
  *  1. 成员：更新组里没有输入区（`.peer-rich`）、没有发文件按钮，底部是只读提示条。
  *  2. 公告卡片：仓库 + 短提交 + 批次标题 + 批次正文的条目都画出来。
- *  3. 公告卡片上的「打开更新日志」开的是 `/?settings=whatsnew`（主界面 D441 深链），
+ *  3. 公告卡片上的「打开更新日志」开的是 `/?settings=whatsnew`（主界面 D451 深链），
  *     「打开热部署」开的是 `/?settings=tools`（两次点击各查新增的那一条，见评审 #13）。
  *  4. 消息右键只剩「复制文字」；悬停不出现回应笑脸、气泡上没有回应行。
  *  5. 发布者同一份数据：有输入区、没有只读条、卡片照画、两颗按钮同样开深链、右键菜单不退化、150% 不溢出。
@@ -251,11 +251,14 @@ await page.evaluate(() => document.documentElement.style.removeProperty("--ui-sc
 
 // 设置页：成员 → 没加入 + 重新加入。
 await page.getByRole("button", { name: "我" }).click();
+// D443 之后「我」页是左侧分区导航：「更新公告」是其中一节，得先点进去（评审 #15 之后的页面结构）。
+await page.waitForSelector(".me-nav", { timeout: 5000 });
+await page.getByRole("button", { name: "更新公告" }).click();
 await page.waitForSelector(".card", { timeout: 5000 });
 const meText = await page.locator("#main").innerText();
 check(meText.includes("更新公告") && meText.includes("没加入"), "成员设置页显示没加入", meText.slice(0, 300));
 check(meText.includes("重新加入更新组"), "成员设置页给「重新加入更新组」");
-await page.locator("h3", { hasText: "更新公告" }).scrollIntoViewIfNeeded();
+await page.locator(".me-head", { hasText: "更新公告" }).scrollIntoViewIfNeeded();
 await page.screenshot({ path: path.join(OUT, "member-settings.png") });
 
 
@@ -305,11 +308,13 @@ check(pubOverflow >= 0 && pubOverflow <= 1, "发布者字号 150% 卡片不横�
 await page2.evaluate(() => document.documentElement.style.removeProperty("--ui-scale"));
 
 await page2.getByRole("button", { name: "我" }).click();
+await page2.waitForSelector(".me-nav", { timeout: 5000 });
+await page2.getByRole("button", { name: "更新公告" }).click();
 await page2.waitForSelector(".card", { timeout: 5000 });
 const pubText = await page2.locator("#main").innerText();
 check(pubText.includes("本机是发布者"), "发布者设置页显示「本机是发布者」", pubText.slice(0, 300));
 check((await page2.locator(".acts .btn", { hasText: "立即检查" }).isEnabled().catch(() => false)) === true, "发布者「立即检查」可点");
-await page2.locator("h3", { hasText: "更新公告" }).scrollIntoViewIfNeeded();
+await page2.locator(".me-head", { hasText: "更新公告" }).scrollIntoViewIfNeeded();
 await page2.screenshot({ path: path.join(OUT, "publisher-settings.png") });
 
 } finally {

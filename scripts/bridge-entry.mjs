@@ -8,6 +8,19 @@
 import fs from "node:fs";
 import path from "node:path";
 
+/**
+ * 入口在仓库里的相对路径。认「是不是本项目的桥」时拿它比对命令行（只看结尾，不看绝对路径）：
+ * `scripts/preflight.mjs` 也用它，别在两处各写一份。
+ */
+export const ENTRY_NAMES = [
+  "bridge/dist/host.js",
+  "bridge/dist/index.js",
+  // 开发态直接跑源码也算（`npx tsx bridge/src/host.ts`、`node --experimental-strip-types`）：
+  // 认不出来的话 `npm start` 会把它当外人，连 `--force` 都拒绝停，只能人手 taskkill。
+  "bridge/src/host.ts",
+  "bridge/src/index.ts",
+];
+
 /** 返回入口的绝对路径（选谁只看 `repo` 里构建出了什么）。 */
 export function bridgeEntry(repo) {
   const host = path.join(repo, "bridge", "dist", "host.js");

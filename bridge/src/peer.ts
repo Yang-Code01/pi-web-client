@@ -15,7 +15,7 @@ export interface PeerView {
   ips: string[];
   /** 对端自报的头像 id（见 peer/src/avatars.ts），没报就是空。 */
   avatar?: string;
-  /** 对端自报的更新组身份（D441）：认哪份仓库 / 退出过哪些组。 */
+  /** 对端自报的更新组身份（D451）：认哪份仓库 / 退出过哪些组。 */
   updates?: { repo?: string; publisher?: boolean; optOut?: string[] };
 }
 
@@ -84,6 +84,20 @@ const STABLE_MS = 60_000;
  * 占用者走了就自己重新 fork。30 秒一次，日志里不会刷屏。
  */
 const PORT_PROBE_MS = Number(process.env.PI_PEER_PORT_PROBE_MS ?? 30_000) || 30_000;
+
+/**
+ * peer 的 HTTP 错误：带上游状态码，桥原样回给页面。
+ * 上传头像那层最在意 413（太大）和 400（不是图）的区别，不能都压成 400。
+ */
+export class PeerRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "PeerRequestError";
+    this.status = status;
+  }
+}
 
 /**
  * peer 子进程的托管：fork + 退避重启 + 5 秒轮询 `/status`。
@@ -320,7 +334,9 @@ export class PeerHost {
     } catch {
       parsed = { error: text };
     }
-    if (!res.ok) throw new Error(parsed?.error ?? `peer 回 ${res.status}`);
+    // 上游状态得带着走：桥的转口要能区分「peer 说 404」与「peer 连不上」，
+    // 后者是 fetch 自己抛的 TypeError，不该被当成请求参数错误。
+    if (!res.ok) throw new PeerRequestError(parsed?.error ?? `peer 回 ${res.status}`, res.status);
     if (method === "POST" && opts.repoll !== false) await this.poll();
     return parsed;
   }
@@ -349,6 +365,50 @@ export class PeerHost {
     config: { hidden: boolean; dnd: boolean; pauseFiles: boolean; inbox: string; manual: string[]; updates?: { repo: string; publisher: boolean } };
   }> {
     return this.request("POST", "/config", patch);
+  }
+
+  /** 换自定义头像：页面已经把图裁成 192×192、转成 WebP，这里只负责把原始字节递给 peer。 */
+  async uploadAvatar(raw: Buffer, signal?: AbortSignal): Promise<{ ok: boolean; avatar: string }> {
+    const res = await fetch(`http://127.0.0.1:${this.opts.port}/avatar`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: raw,
+      // 调用方的 signal（页面关了）与自己的超时是「与」关系：传了 signal 也不能把超时丢掉。
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
+    });
+    const parsed = (await res.json().catch(() => ({}))) as { avatar?: string; error?: string };
+    if (!res.ok) throw new PeerRequestError(parsed.error ?? `peer 回 ${res.status}`, res.status);
+    // 200 但没给头像 id：上游形状不对。别把 `{ ok: true, avatar: "" }` 当成功回给页面，
+    // 页面会拿空串去拼 URL / 写配置（评审 7-7）。
+    if (!parsed.avatar) throw new PeerRequestError("peer 没回头像，稍后再试", 502);
+    // 不 await 这一轮 poll：peer 的 announce 是异步的，立刻 poll 也拿不到新状态，只会把上传 RT 拉长。
+    // 后台照常刷新，错误在 poll 内部吞掉（fetchStatus 永远 resolve、pollThreads 自带 catch）。
+    // 先把返回值写进缓存（页面紧接着 GET /api/peer 要看到新头像），其余状态让后台 poll 慢慢刷。
+    // 整体换对象而不是就地改字段：`poll()` 每次都是换对象，别让外部缓存的 status 引用看到半新半旧的状态。
+    if (this.status) this.status = { ...this.status, avatar: parsed.avatar };
+    void this.poll();
+    return { ok: true, avatar: parsed.avatar };
+  }
+
+  /**
+   * 某人的自定义头像字节。自己 → peer 读本地文件；对端 → peer 按 hash 去拉（带缓存）。
+   * 返回原始响应，由桥转给浏览器；`<img>` 每次渲染都会要一次，不重新 poll。
+   */
+  avatarStream(nodeId: string, hash: string, signal?: AbortSignal): Promise<Response> {
+    const query = hash ? `?h=${encodeURIComponent(hash)}` : "";
+    return fetch(`http://127.0.0.1:${this.opts.port}/avatar/${encodeURIComponent(nodeId)}${query}`, {
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
+    });
+  }
+
+  /** 自己上传过的头像（设置页「上传过的」一排）。只含上传记录，不含对端缓存。 */
+  customAvatars(): Promise<{ ok: boolean; uploads: unknown[]; current: string }> {
+    return this.request("GET", "/custom-avatars");
+  }
+
+  /** 删掉一张上传过的头像；删的要是当前这张，peer 会自动换到下一张。 */
+  deleteAvatar(hash: string): Promise<{ ok: boolean; avatar: string; removed: string }> {
+    return this.request("POST", "/custom-avatars/delete", { hash });
   }
 
   /** 忽略名单是通讯录自己的读口；页面拿它挡住「在线表兜底」把人加回来。 */
@@ -416,7 +476,7 @@ export class PeerHost {
     return this.request("POST", "/groups", body);
   }
 
-  /** 给刚进更新组的人补最近几条公告（D441）。 */
+  /** 给刚进更新组的人补最近几条公告（D451）。 */
   replayAnnouncements(group: string, peer: string, limit = 3): Promise<{ ok: boolean; sent: number }> {
     return this.request("POST", "/announce/replay", { group, peer, limit });
   }

@@ -1,17 +1,13 @@
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
 import os from "node:os";
+import { normAddr } from "./addr.ts";
 import { knownAvatar } from "./avatars.ts";
 import { PROTO, VERSION, type PeerConfig } from "./config.ts";
 import { optOutIds } from "./groups.ts";
 import { isRepo } from "./repo.ts";
 
-/** `::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台机器，比较前先归一（同 `messages.ts` 的 normAddr）。 */
-function normAddr(addr: string): string {
-  return addr.replace(/^::ffff:/, "").replace(/^::1$/, "127.0.0.1");
-}
-
-/** announce 里的更新组身份（D441）：两个接口共用同一形状，免得分头漂移（评审 #37）。 */
+/** announce 里的更新组身份（D451）：两个接口共用同一形状，免得分头漂移（评审 #37）。 */
 export interface AnnounceUpdates {
   repo?: string;
   publisher?: boolean;
@@ -28,7 +24,7 @@ export function buildUpdates(repo: string, publisher: boolean, optOut: string[])
   };
 }
 
-/** announce 里的更新组身份：只收形状对的，opt-out 名单截短（D441）。 */
+/** announce 里的更新组身份：只收形状对的，opt-out 名单截短（D451）。 */
 function normUpdates(raw: unknown): AnnounceUpdates | null {
   const r = raw as AnnounceUpdates | null | undefined;
   const repo = typeof r?.repo === "string" ? r.repo.trim() : "";
@@ -54,7 +50,7 @@ export interface Announce {
   /** 头像 id（见 `avatars.ts`）。旧对端没有这个字段，页面退回首字母头像。 */
   avatar?: string;
   /**
-   * 更新组（D441）：`repo` = 这台机器认的仓库标识（`<host>/<owner>/<name>`，主机参与比较 ——
+   * 更新组（D451）：`repo` = 这台机器认的仓库标识（`<host>/<owner>/<name>`，主机参与比较 ——
    * 不同托管站上的同名 owner/name 是两份仓库），发布者据此邀请；
    * `publisher` 只对发布者自己有意义；`optOut` 是我退出过的更新组（发布者跳过）。
    * 旧对端没有这个字段，按「不参与更新组」处理。
@@ -76,7 +72,7 @@ export interface SeenPeer {
   ips: string[];
   /** 对端自报的头像 id，没报就是空。 */
   avatar?: string;
-  /** 对端自报的更新组身份（D441），没报就是空。 */
+  /** 对端自报的更新组身份（D451），没报就是空。 */
   updates?: AnnounceUpdates;
 }
 
@@ -327,7 +323,7 @@ export class Discovery extends EventEmitter {
 
   /**
    * 这个地址是不是我们之前从这个 nodeId 收到过包的地址之一？
-   * 比较前归一（`::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台，见 `messages.ts` 的 normAddr）。
+   * 比较前归一（`::ffff:192.168.1.7` 与 `192.168.1.7` 是同一台，见 `addr.ts` 的 normAddr）。
    * 用在「要不要把对端自报的东西落盘」上：在线表是内存里的、30 秒就自愈，落盘的那份不是。
    */
   hasAddr(nodeId: string, addr: string): boolean {

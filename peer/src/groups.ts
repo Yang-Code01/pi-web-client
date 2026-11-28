@@ -21,7 +21,7 @@ export interface Group {
   /** 我已经退出（或被移出）：会话还留着、能看历史，但不能再发。 */
   left?: boolean;
   /**
-   * 只读群（D441）：只有 `publisher` 能往里发；成员只能看。
+   * 只读群（D451）：只有 `publisher` 能往里发；成员只能看。
    * 更新组用它，但协议里不限于更新组 —— 普通群只要发布者同意也能是只读的。
    */
   announceOnly?: boolean;
@@ -71,7 +71,7 @@ export function normalizeGroup(raw: unknown): Group | null {
 }
 
 /**
- * 退出更新组 = opt-out（D441）：记在本机，之后收到这个组的快照也不再合并回去。
+ * 退出更新组 = opt-out（D451）：记在本机，之后收到这个组的快照也不再合并回去。
  * 发布者会在 announce 里读到这份名单，跳过已经退出的人，不再邀请。
  */
 let optOutCache: Set<string> | null = null;

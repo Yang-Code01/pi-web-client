@@ -9,7 +9,7 @@ import { whatsnewBatches, type WhatsnewBatch } from "./whatsnew.ts";
 import type { PeerAnnounce, PeerGroup, PeerHost, PeerStatus } from "./peer.ts";
 
 /**
- * D441：局域网更新组。发布者定时看自己检出里的 `origin/main`，有新提交就往「固定 id 的只读群」
+ * D451：局域网更新组。发布者定时看自己检出里的 `origin/main`，有新提交就往「固定 id 的只读群」
  * 里推一条公告；同仓库的机器靠 announce 里的仓库标识被自动拉进这个组。
  *
  * 没有服务器、没有注册表：仓库标识就是 `<host>/<owner>/<name>`，组 id 从它派生（`grp-updates-<slug>`），
@@ -547,7 +547,7 @@ export class UpdatesLan {
           return;
         }
       } else if (group.announceOnly === true && group.publisher !== status.nodeId) {
-        // 换机器（D441）：新机器接管发布权，v+1 广播出去，组里会插一条「X 成为新的发布者」。
+        // 换机器（D451）：新机器接管发布权，v+1 广播出去，组里会插一条「X 成为新的发布者」。
         const claimed = await this.peer.group({ action: "publisher", id: info.groupId });
         if (claimed.group) group = claimed.group;
         // 接管失败（本机还没被拉进组）必须停下：接着发只会让成员看到
