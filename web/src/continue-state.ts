@@ -34,7 +34,7 @@ export function continueState(s: ContinueSession | null | undefined, hasUserTurn
   return "ready";
 }
 
-/** 后台子代理在跑（`n` 缺省按 0：老桥不发这个字段）。 */
-export function bgBusy(s: ContinueSession | null | undefined): boolean {
-  return Boolean(s?.bg && s.bg.n > 0);
+/** 后台子代理在跑（`n` 缺省按 0：老桥不发这个字段）。任何只关心这一格的类型都能直接传进来。 */
+export function bgBusy(s: { bg?: { n?: number } | null } | null | undefined): boolean {
+  return Boolean(s?.bg && (s.bg.n ?? 0) > 0);
 }

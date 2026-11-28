@@ -74,6 +74,7 @@ import {
   remoteTips,
   resumeReviewJobs,
   reviewProgresses,
+  reviewRunningCount,
   setReviewNotify,
   stopAllReviews,
   takeSweptCount,
@@ -2784,6 +2785,9 @@ async function main(): Promise<void> {
   setReviewNotify({
     onProgress: (job, progress) =>
       broadcast({ type: "review.progress", dir: job.repo, sessionId: job.session, runId: progress.runId, progress }),
+    // D453：「这个会话在跑几条评审」变了就改写会话状态那一格（`touch:false`，不刷左栏时间）。
+    // 只有接手过的会话有可写的状态对象；盘上发现、没接手的靠 `sessions.list()` 带上这一格。
+    onActive: (session) => sessions.get(session)?.setReviewCount(reviewRunningCount(session)),
     onState: (job) => {
       // 仓库可能在评审期间被删 / 被移走：转发状态不该因此把脑带崩。
       let pinned = "";

@@ -32,6 +32,10 @@
   --ok-bg: #eaf7ee;
   --ok-dim: #bfe6c9;
   --ok-ink: #ffffff;
+  /* D453：「评审中」徽标自己一档色（青），与「运行中」的强调蓝 / 「完成」的绿都不混。 */
+  --review: #00707f;
+  --review-bg: #e6f4f6;
+  --review-dim: #b9dde2;
   --warn: #b25000;
   --warn-bg: #fff6e5;
   --warn-dim: #f5d9a6;
@@ -80,6 +84,10 @@
   --ok-bg: #102a18;
   --ok-dim: #1f4a2c;
   --ok-ink: #04140a;
+  /* D453：「评审中」徽标自己一档色（青），与「运行中」的强调蓝 / 「完成」的绿都不混。 */
+  --review: #4fd0e0;
+  --review-bg: #0d2b31;
+  --review-dim: #1b4a54;
   --warn: #ffd60a;
   --warn-bg: #2b2508;
   --warn-dim: #4a400f;
@@ -110,6 +118,10 @@
   --ok-bg: #11291f;
   --ok-dim: #1f4733;
   --ok-ink: #04140a;
+  /* D453：「评审中」徽标自己一档色（青），与「运行中」的强调蓝 / 「完成」的绿都不混。 */
+  --review: #4fd0e0;
+  --review-bg: #102b34;
+  --review-dim: #1e4a57;
   --warn: #ffd60a;
   --warn-bg: #2a2614;
   --warn-dim: #48401b;

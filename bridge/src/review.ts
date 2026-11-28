@@ -950,6 +950,11 @@ function liveJobForRun(runId: string, startedAt = ""): ReviewJob | null {
 export interface ReviewNotify {
   onProgress?: (job: ReviewJob, progress: Progress) => void;
   onState?: (job: ReviewJob) => void;
+  /**
+   * D453：「这个会话在跑几条评审」变了（起跑、收尾、取消收尾、接回、整组停机）。
+   * 页面拿它改会话徽标（`评审中` / `评审中 2`），所以要在**每一处**增删在跑集合之后喊一次。
+   */
+  onActive?: (session: string) => void;
 }
 
 let notify: ReviewNotify = {};
@@ -986,10 +991,34 @@ interface Active {
 const active = new Map<string, Active>();
 const progressMap = new Map<string, Progress>();
 
+/**
+ * 在跑集合的唯一两个入口（D453）：额度、进度、徽标都以这份集合为准，
+ * 所以「变了几条」只在这里喊一次 `notify.onActive` —— 别在调用处各写一份判断。
+ */
+function trackActive(runId: string, item: Active): void {
+  active.set(runId, item);
+  notify.onActive?.(item.session);
+}
+
+function untrackActive(runId: string): void {
+  const removed = active.get(runId);
+  if (!removed) return;
+  active.delete(runId);
+  notify.onActive?.(removed.session);
+}
+
 /** 这个会话现在在跑的几条（跨仓库共用额度）。 */
 function runningFor(session: string): Array<[string, Active]> {
   const want = sessionKey(session);
   return [...active].filter(([, a]) => sessionKey(a.session) === want);
+}
+
+/**
+ * D453：这个会话此刻在跑几条**评审记录**（0–2）。会话徽标「评审中」读它，
+ * 快照与单会话状态帧都从这一个函数取，页面不自己从进度帧攒一份。
+ */
+export function reviewRunningCount(session: string): number {
+  return runningFor(session).length;
 }
 
 /** 某个仓库 + 会话现在在跑的那几条的进度（页面按 runId 分别画）。 */
@@ -1382,7 +1411,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
   writeJsonAtomic(reviewJobFile(runId), job);
   writeJsonAtomic(reviewProgressFile(runId), seeded);
 
-  active.set(runId, {
+  trackActive(runId, {
     cancel: () => requestCancel(job),
     repo: root,
     session,
@@ -2046,7 +2075,7 @@ function tickOneReview(runId: string, a: Active): void {
   const state = readReviewState(job.repo, job.session);
   const run = state.runs.find((r) => r.id === runId);
   if (!run) {
-    active.delete(runId);
+    untrackActive(runId);
     progressMap.delete(runId);
     reapReviewJob(job);
     return;
@@ -2080,7 +2109,7 @@ function tickOneReview(runId: string, a: Active): void {
   notify.onProgress?.(job, final);
   notify.onState?.(job);
   progressMap.delete(runId);
-  active.delete(runId);
+  untrackActive(runId);
   reapReviewJob(job);
 }
 
@@ -2129,7 +2158,7 @@ function markWorkerSpawnFailed(job: ReviewJob, err: unknown): void {
     onDisk.errorCode = "worker_spawn";
     writeReviewState(job.repo, state, job.session);
   }
-  active.delete(job.runId);
+  untrackActive(job.runId);
   progressMap.delete(job.runId);
   reapReviewJob(job);
   notify.onState?.(job);
@@ -2246,7 +2275,7 @@ export function resumeReviewJobs(): number {
         continue;
       }
       tracked = j;
-      active.set(j.runId, {
+      trackActive(j.runId, {
         cancel: () => requestCancel(j),
         repo: j.repo,
         session: j.session,
@@ -2272,7 +2301,7 @@ export function resumeReviewJobs(): number {
       // 一条 job 接不回来（状态文件读不了 / 广播炸了）只该少了这一条，不能让整个脑启动失败。
       if (tracked) {
         live.delete(tracked.runId);
-        active.delete(tracked.runId);
+        untrackActive(tracked.runId);
         progressMap.delete(tracked.runId);
       }
       const message = err instanceof Error ? err.message : String(err);
@@ -2310,7 +2339,7 @@ export async function stopAllReviews(waitMs = 3000): Promise<number> {
   }
   for (const job of jobs) {
     if (active.get(job.runId)?.job === job && reviewJobRunning(job)) killReviewPid(Number(job.pid));
-    active.delete(job.runId);
+    untrackActive(job.runId);
     progressMap.delete(job.runId);
     reapReviewJob(job);
   }

@@ -327,6 +327,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .badge.wait { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
 .badge.run { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
 .badge.done { color: var(--ok); border-color: var(--ok-dim); background: var(--ok-bg); }
+/* D453：评审是 detached worker，会话早 settle 了它还在跑 —— 自己一档青，不是「运行中」的蓝。 */
+.badge.reviewing { color: var(--review); border-color: var(--review-dim); background: var(--review-bg); }
 .new-session { display: grid; gap: 8px; padding: 8px; grid-template-columns: minmax(0, 1fr); }
 .new-session .btn { width: 100%; white-space: normal; }
 .new-sheet .ns-label { display: block; margin: 12px 0 4px; font-size: 12px; color: var(--dim); }
@@ -597,6 +599,7 @@ html[data-ui="mac"] .peer-frame { background: transparent; }
 .mgr-tag.web, .mgr-tag.pin { color: var(--accent); border-color: var(--accent-dim); }
 .mgr-tag.run, .mgr-tag.live { color: var(--ok); border-color: var(--ok-dim); }
 .mgr-tag.wait { color: var(--warn); border-color: var(--warn-dim); }
+.mgr-tag.reviewing { color: var(--review); border-color: var(--review-dim); }
 .mgr-sub { display: flex; gap: 8px; min-width: 0; font-size: 11px; color: var(--faint); }
 .mgr-cwd { flex: 0 1 auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
 .mgr-preview { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
@@ -3466,6 +3469,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .pin-chip.run small { color: var(--accent); }
 .pin-chip.lock small { color: var(--dim); }
 .pin-chip.done small { color: var(--ok); }
+/* D453：评审在跑的胶囊 —— 自己一档青（与 run 的强调蓝、done 的绿分开）。 */
+.pin-chip.reviewing { border-color: var(--review-dim); }
+.pin-chip.reviewing small { color: var(--review); }
 
 /* ---------------------------------------------------------------- 轮次缩略图（Q-028 / D265 重写）
    对话右缘一条短横组成的刻度带：一根短横 = 一轮用户输入，位置随内容滚动而高亮当前那一轮。

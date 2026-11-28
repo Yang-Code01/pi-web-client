@@ -33,6 +33,7 @@ import {
   expectRepoMismatch,
   cancelReview,
   reviewProgresses,
+  reviewRunningCount,
   reviewJobFile,
   reviewJobsDir,
   reviewJobAlive,
@@ -52,6 +53,7 @@ import {
   localTips,
   remoteTips,
 } from "../src/review.ts";
+import { Session } from "../src/sessions.ts";
 // 判据住在 frames.ts（两侧共用，叶子模块、不 import 任何东西）。
 import { isRunOutdated, tipForRun } from "../src/frames.ts";
 
@@ -543,6 +545,95 @@ check("并发（D420）：进度只按「仓库 + 会话」发给自己的会话
   assert.equal(reviewProgresses(repo, "s3").length, 0);
   cancelReview(repo, "s1");
   cancelReview(repo, "s2");
+});
+
+// ---- 徽标（D453）：这个会话现在有几条评审在跑（页面靠它说「评审中」） ----------
+
+check("会话在跑的评审条数：起一条是 1，并跑第二条是 2，别的会话不串", () => {
+  const a = bareRepo("count-a");
+  const b = bareRepo("count-b");
+  const session = "count-session";
+  assert.equal(reviewRunningCount(session), 0, "没开跑就是 0");
+  startReview({ dir: a, mode: "pr", pr: 1, session, lang: "zh" });
+  assert.equal(reviewRunningCount(session), 1);
+  startReview({ dir: b, mode: "pr", pr: 2, session, lang: "zh" });
+  assert.equal(reviewRunningCount(session), 2, "并跑两条报 2（页面上是「评审中 2」）");
+  // 额度按会话算、跨仓库共用：另一个会话自己那几条不算到这个会话头上。
+  assert.equal(reviewRunningCount("count-other"), 0);
+  // 没有会话 id 的老入口（HTTP / 手输）不与任何会话混算。
+  assert.equal(reviewRunningCount(""), 0);
+  cancelReview(a, session);
+  cancelReview(b, session);
+  // 停止只是「请求取消」：子进程还在退出的路上，额度不放开 —— 徽标也就不该先掉一格。
+  assert.equal(reviewRunningCount(session), 2);
+});
+
+check("会话在跑的评审条数：起不来的那条当场收尾，不算在跑", () => {
+  const repo = bareRepo("count-spawn");
+  const session = "count-spawn";
+  startReview({ dir: repo, mode: "workspace", session, lang: "zh" });
+  assert.equal(reviewRunningCount(session), 1);
+  setReviewLauncher(() => {
+    throw new Error("spawn boom");
+  });
+  try {
+    startReview({ dir: repo, mode: "workspace", session, lang: "zh" });
+  } finally {
+    setReviewLauncher(() => {});
+  }
+  assert.equal(reviewRunningCount(session), 1, "起不来那条收尾了，只剩前面那条");
+  cancelReview(repo, session);
+});
+
+check("会话在跑的评审条数：桥重启后接回的评审也算在跑", () => {
+  const prev = process.env.PI_WEB_STATE;
+  process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-count-resume-"));
+  try {
+    const repo = "/Users/me/count-resume";
+    const session = "cr";
+    const startedAt = new Date().toISOString();
+    writeReviewState(repo, { repo, runs: [{ id: "cr", status: "running", findings: [], startedAt }], marks: {} }, session);
+    fs.mkdirSync(reviewJobsDir(), { recursive: true });
+    fs.writeFileSync(
+      reviewJobFile("cr"),
+      JSON.stringify({ runId: "cr", repo, session, startedAt, opts: { mode: "workspace", lang: "zh" }, pid: process.pid }),
+    );
+    assert.equal(reviewRunningCount(session), 0, "接回之前内存里没有它");
+    assert.equal(resumeReviewJobs(), 1);
+    assert.equal(reviewRunningCount(session), 1, "换脑 / 桥重启之后徽标要接回「评审中」");
+  } finally {
+    process.env.PI_WEB_STATE = prev;
+  }
+});
+
+check("会话在跑的评审条数：变一次就通知一次（页面靠这一帧改徽标）", () => {
+  const seen = [];
+  setReviewNotify({ onActive: (session) => seen.push(`${session}:${reviewRunningCount(session)}`) });
+  try {
+    const repo = bareRepo("count-notify");
+    const session = "count-notify";
+    startReview({ dir: repo, mode: "workspace", session, lang: "zh" });
+    assert.deepEqual(seen, [`${session}:1`], "起跑那一刻就要带上新条数推一帧");
+    cancelReview(repo, session);
+  } finally {
+    setReviewNotify({});
+  }
+});
+
+check("会话状态那一格：0 写显式 null（不是 undefined），同样的条数不重复广播", () => {
+  // 徽标读的是桥内存里那一格（`SessionState.review`）：这一格坏了，页面要么永远清不掉「评审中」，
+  // 要么每 500ms 的 ticker 都白推一帧同样的状态。
+  const s = new Session("pi", null, { id: "review-badge-state" });
+  const seen = [];
+  s.on("state", (st) => seen.push(st.review ?? "absent"));
+  s.setReviewCount(0);
+  assert.deepEqual(seen, [], "本来就没有评审 → 从无到 0 不必广播");
+  s.setReviewCount(2);
+  s.setReviewCount(2);
+  assert.deepEqual(seen, [2], "同样的条数只发一帧");
+  s.setReviewCount(0);
+  assert.deepEqual(seen, [2, "absent"], "0 要发出来：undefined 过 JSON 会被整条丢掉，页面就永远清不掉「评审中」");
+  assert.equal(s.state.review, null, "显式 null 才是「没有评审在跑」");
 });
 
 check("并发（D420）：桥重启后 sweep 按「条」计数，不只是按文件", () => {

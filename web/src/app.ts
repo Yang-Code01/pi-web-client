@@ -39,6 +39,7 @@ import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
+import { sessionBadge, type SessionBadge } from "./session-badge.ts";
 import { retellState } from "./retell-state.ts";
 import { DEFAULT_MAC_ACCENT } from "./palette.ts";
 import { accentFor, DEFAULT_ACCENT_TONE, DEFAULT_THEME, migrateThemePrefs, paintTheme, TERM_THEMES, THEMES, themeInfo, type AccentTone, type ThemeId, type ThemeInfo } from "./theme.ts";
@@ -197,26 +198,6 @@ const WS_CREATE_DIR_CAP = "ws.create.dir";
 const WS_RESOLVE_DIR_CAP = "ws.resolve.dir";
 const WS_EXEC_CHILD_CAP = "exec.child.subscribe";
 
-/** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
-type BadgeKind = "ask" | "approve" | "locked" | "run" | "bg" | "done";
-
-interface SessionBadge {
-  kind: BadgeKind;
-  text: string;
-  cls: "wait" | "lock" | "run" | "done";
-  title: string;
-  /** Blocked on the user — worth calling out in the pin strip header. */
-  pending: boolean;
-}
-
-/**
- * `running` only means "the pi process is alive": it stays true while an approval or a question is
- * waiting for the user. Anything that says "正在跑" has to look at asks/approvals first, or it will
- * report a session stuck on the user as busy.
- *
- * D162: 「完成」也显示在**当前打开的会话**上 —— 打开只是看，不再把完成抹掉。否则用户点开确认
- * 一眼，卡片就从「完成」退回时间，再也没法从列表判断这一轮到底结束了没有。
- */
 /** D170 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
 type BgRunDto = BgRunView;
 
@@ -259,43 +240,6 @@ interface BgRunNode {
   labOut: HTMLElement;
   /** 这个 run 有没有过程记录（桥还没接上的才 false；卡片上直说，不装成「还没有」。） */
   hasLog: boolean;
-}
-
-function sessionBadge(s: SessionState): SessionBadge | null {
-  if (s.asks && s.asks > 0) {
-    return {
-      kind: "ask",
-      text: s.asks > 1 ? tr("待回答 {p1}", { p1: s.asks }) : tr("待回答"),
-      cls: "wait",
-      title: tr("在等你回答问卷，这个会话停在这儿了"),
-      pending: true,
-    };
-  }
-  if (s.approvals > 0) {
-    return {
-      kind: "approve",
-      text: s.approvals > 1 ? tr("待确认 {p1}", { p1: s.approvals }) : tr("待确认"),
-      cls: "wait",
-      title: tr("在等你确认这条命令"),
-      pending: true,
-    };
-  }
-  if (s.locked) {
-    return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
-  }
-  if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
-  // D170: 会话自己 settle 了，派出去的 runner 还在跑 —— 「完成」是假的，得先把这枚亮出来。
-  if (bgBusy(s)) {
-    return {
-      kind: "bg",
-      text: s.bg?.n && s.bg.n > 1 ? tr("后台 {p1}", { p1: s.bg.n }) : tr("后台"),
-      cls: "run",
-      title: s.bg?.agent ? tr("子代理 {p1} 还在后台跑，pi 会在它回来时接着做", { p1: s.bg.agent }) : tr("子代理还在后台跑，pi 会在它回来时接着做"),
-      pending: false,
-    };
-  }
-  if (s.done) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
-  return null;
 }
 
 function bgElapsedText(since: number, until = Date.now()): string {
@@ -1407,12 +1351,16 @@ export class App {
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
     this.pillBar = new PillBar<SessionState>(pinStrip, {
-      // D170：钉条胶囊里那行小字就是徽标本身；「后台」那枚也让它点得开（胶囊其余部分仍是打开会话）。
+      // D170：钉条胶囊里那行小字就是徽标本身；「后台」与「评审中」都点得开（胶囊其余部分仍是打开会话）。
       badge: (s) => {
         const b = this.badgeOf(s);
-        return b ? { ...b, detail: b.kind === "bg" } : null;
+        return b ? { ...b, detail: b.clickable } : null;
       },
-      onBadge: (id) => this.openBgSheet(id),
+      // 可点徽标（后台 / 评审中）与左栏卡片走同一个口：`openBadge()`。
+      onBadge: (id) => {
+        const s = this.sessions.find((x) => x.id === id) ?? (this.session?.id === id ? this.session : null);
+        if (s) this.openBadge(s);
+      },
       time: relativeTime,
       // #97：第二行不再是「置顶区」，条头那颗字也就没有意义了 —— 最左边那颗就是当前会话。
       // 空字符串仍然会留一个空 span，CSS 里 `.pin-strip-label:empty` 把它收掉。
@@ -3743,22 +3691,21 @@ export class App {
   }
 
   /**
-   * 徽标唯一的一颗元素。D170：「后台」那枚能点开详情（其它徽标还是纯提示），
-   * 点它不能顺带把卡片/胶囊自己的「打开这个会话」也触发，所以一律 stopPropagation。
+   * 徽标唯一的一颗元素。能点的有两枚（D170 「后台」、D453 「评审中」），其它只是读数：
+   * 点它们不能顺带把卡片 / 胶囊自己的「打开这个会话」也触发，所以一律 stopPropagation。
    */
   private badgeChip(s: SessionState): HTMLElement | null {
     const badge = this.badgeOf(s);
     if (!badge) return null;
     const chip = el("span", `badge ${badge.cls}`, badge.text);
     if (badge.title) chip.title = badge.title;
-    if (badge.kind !== "bg") return chip;
+    if (!badge.clickable) return chip;
     chip.classList.add("clickable");
     chip.setAttribute("role", "button");
     chip.tabIndex = 0;
     const open = (ev: Event) => {
       ev.stopPropagation();
-      this.closeWsPop();
-      this.openBgSheet(s.id);
+      this.openBadge(s);
     };
     chip.onclick = open;
     chip.onkeydown = (ev) => {
@@ -3770,10 +3717,23 @@ export class App {
   }
 
   /**
+   * 可点徽标去哪（D453）：目前两枚 —— 「后台」看后台任务详情、「评审中」切到那个会话 + 右栏代码评审。
+   * 左栏卡片、★ 行胶囊、管理面板、工作区浮层四处共用这一个口，别再各写一遍 kind 判断。
+   */
+  private openBadge(s: SessionState): void {
+    this.closeWsPop();
+    if (this.badgeOf(s)?.kind === "bg") this.openBgSheet(s.id);
+    else this.openReviewForSession(s.id);
+  }
+
+  /**
    * 徽标唯一入口（D156）：当前会话的待处理数以本地队列为准（`badgeSession`），别的会话读列表里
    * 那份事件累加值。左栏卡片、钉条胶囊、管理面板、顶栏那颗都走这里，省得哪一处又读到旧账。
    * 刚 `openSession`、快照还没回来时本地队列是空的（`pendingFresh` 为 false），此时退回列表里
    * 那份 —— 否则切到一个「正等着你」的会话，徽标会先闪没一拍。
+   *
+   * 判定本身（哪一档、说什么、能不能点）在 `session-badge.ts` 的纯函数里（D453，单测
+   * `web/tests/session-badge-unit.mjs`）；这里只合出那份输入。
    */
   private badgeOf(s: SessionState): SessionBadge | null {
     const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
@@ -10526,6 +10486,20 @@ export class App {
   }
 
   /**
+   * D453：「评审中」那枚徽标点开 —— 切到那个会话 + 右栏切到代码评审页签。
+   *
+   * 顺序不能反：`selectQueueTab("review")` 会 `loadReview()`，它拿的是**当前会话**的目录，
+   * 先换页签再换会话就等于去上一个会话的仓库里找进度。先 `openSession`（已经是当前会话就是空转），
+   * 再结算一次会话键，最后才换页签。
+   */
+  private openReviewForSession(id: string): void {
+    if (this.currentId !== id) this.openFromList(id);
+    if (this.collapsed.queue) this.togglePane("queue");
+    this.syncReviewSession();
+    this.selectQueueTab("review");
+  }
+
+  /**
    * 链接卡右缘那颗「代码评审」（#666）。只做「把号交过去」：关掉挡着的 GitHub 面板、右栏收着就
    * 展开、范围选 GitHub PR、号填好，然后切到评审页签 —— **不**自动开跑（一次几分钟、烧额度，
    * 误点的代价是钱和时间；而且同一仓库同时只允许一次评审）。
@@ -13503,8 +13477,9 @@ export class App {
     if (archived) tag("arch", tr("已归档"));
     tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? tr("网页") : "CLI", s.origin === "web" ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话"));
     const badge = this.badgeOf(s);
-    // D170：「后台」那一枚在管理面板里也要点得开，不然同一枚徽标在左栏能点、到这里突然不能。
-    if (badge?.kind === "bg") {
+    // D170 / D453：两枚可点的徽标（后台、评审中）在管理面板里也要点得开，
+    // 不然同一枚徽标在左栏能点、到这里突然不能。
+    if (badge?.clickable) {
       const chip = this.badgeChip(s);
       if (chip) line.append(chip);
     } else if (badge) tag(badge.cls, badge.text, badge.title);

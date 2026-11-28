@@ -9086,3 +9086,31 @@ if (stop >= 0) {
 **代价 / 可改。** ①`range` 的 `to` 可能是 `HEAD`（`ocr preview` 原样回显 ref 名）：提个 commit 就会点亮那颗标（这是对的），换分支不算（`headRef` 挡掉了）；分离头指针那一支仍会「换到哪亮到哪」—— 那一支没有分支名可比，只能退回比 sha。②旧记录会一直带着标，即使后面又评了一轮（那条新的不带）—— 这是事实，不是 bug；想「有更新一轮就隐藏旧标」是另一条决定。③`range` 模式下别人推了但你没 pull，标不会亮：要这个就得接受「点了重评没变化」或者先 pull，两个都不便宜。④缓存 60 秒 + 只查 3 条意味着刚推完的提交最多等一分钟（或点一下刷新图标）；那颗刷新钮点下去会灰 1.5 秒（连点就是连发 `ls-remote`，而「等某一帧回来」当解除信号等于没拦 —— 面板平常就一直在收 `review.state`）。
 
 **守卫。** `web/tests/review-unit.mjs` 新增 10 条（过时成立 / 相等 / 核对不到 / 无 `headSha` / 工作区、单提交、停止、在跑都不参与 / 同 PR 在跑与额度满时禁用 / 卡片上摆得出两个 sha / PR 那条的 hover 用分支名而不是 `refs/pi-web/pr-7`），共 37 条全绿；`bridge/tests/review-unit.mjs` 新增 9 条（`tipTargets` 的过滤与去重、`remoteTipTargets` 的按号去重与上限、`localTips` 认不出就不给 key 且不碰网络、`HEAD` 只在同一条分支上比、`headStamp` 记 sha 与当时那条分支、`remoteTips` 一批一次且失败不给 key），50 条全通过（另有「旧快照不拿来判」「`pr` 模式没有号 / range 缺对照分支的那几条不参与」「同一个 `HEAD` 下别的分支留下的记录不借当前分支的 tip」「补印章失败不许把已完成的评审带下水」四条）；`probes/code-review.mjs`（真桥 + 真 ocr + 真模型）新增一段：把一条完成的 range 记录（`headSha` = 上一个提交）**追加**进会话状态 → 真提交一次 → 点刷新图标 → 标出现、hover 里两个短 sha 都在、底行多一颗「重新评审」；工作区那条不带标、指向已删分支那条（核对不到）也不带标、点它真的开出新的一条；150% 字号下那两颗按钮仍在卡里且同一行。这一段同时把 PR 那一段改成「gh 就绪 / 不就绪」两条路：本机 PATH 上的 `gh` 是壳自己的 shim，隔离桥里读不到登录态，面板合法地换成 D428 那张安装卡 —— 以前那条守卫假定 gh 一定是好的，在这台机器上必红。`npm --prefix web run typecheck`（含 i18n 6 键 ×3）与 `npm --prefix bridge run typecheck` 通过。
+
+## D453 评审在跑时徽标说「评审中」，会话自己在跑仍优先会话（#747，用户 2026-11-29 截图「代码评审 状态」写着完成、右栏 PR #743 那条记录还在跑）
+
+**症状。** 会话 settle 之后徽标说**完成**，而右栏代码评审里那条评审记录还标着「运行中 0/16 个文件」。评审是 detached worker（D446），换脑、更新、页面切走都不打断；这段时间会话自己一动不动，徽标就一路说着「没事了」。
+
+**决定。**
+
+- 会话状态加一格 `review?: number | null` = 这个会话此刻在跑几条**评审记录**（0–2，跨仓库共用额度）。`null` 是 0（`undefined` 过 JSON 会被整条丢掉，页面就永远清不掉「评审中」）。
+- 计数的唯一来源是评审模块的在跑集合（`reviewRunningCount()`）；在跑集合的两个入口（`trackActive` / `untrackActive`）各喊一次 `notify.onActive`，桥就改写那一格（`touch:false`，不刷左栏时间，与 D170 的「后台」同一口径），页面拿到的是单会话状态帧。只有接手过的会话有可写的状态对象，盘上发现、没接手的靠 `sessions.list()` 带上这一格 —— 而 `list()` 用**计算值**覆盖 `state.review`，否则会话休眠重开后内存里那份旧值会一直挂着。
+- 徽标判定从 `app.ts` 搬进 `web/src/session-badge.ts` 的纯函数，顺序固定为 **待回答 > 待确认 > 终端占用 > 运行中 > 后台 > 评审中 > 完成**：
+  - 「在等你」永远先说；
+  - `running` 只说「pi 进程在忙」，审批 / 问卷在等时它也常常为真，所以排后面；
+  - 后台子代理跑完 pi 会自己接着做（D170），排评审前面；
+  - 评审只压过**完成**与空位 —— 用户点明「会话在跑优先会话」。
+- 「评审中」是第二枚可点徽标（第一枚是「后台」）：切到那个会话 + 右栏切到代码评审页签。顺序必须**先换会话再换页签**（`selectQueueTab("review")` 会 `loadReview()`，读的是当前会话的目录）。左栏卡片、★ 行胶囊、会话管理、工作区浮层四处同一颗（`badgeChip()` / `PillBar.onBadge`），顶栏「当前在哪」只吃「在等你」两档，不变。
+- 自带一档颜色（`--review` / `--review-bg` / `--review-dim`，三套主题各一份），类名是 `reviewing` 而不是 `review`：`.review` 已经是评审面板那个容器（`display:flex; min-width:0`），挂在胶囊上会把胶囊挤成 2px 宽。
+
+**为什么。** 「完成」是一个会让人离开的读数；一条评审要跑几分钟、还在出意见，用户根本不知道。放桥端而不是页面临时攒，是因为刷新、换设备、热部署、桥重启（`resumeReviewJobs()` 从盘上接回）之后这一格都得在，而页面收 `review.state` 时只认当前会话的帧。
+
+**代价。** `SessionState` 多一格，每一份会话列表 / 单会话状态帧多一个字段（0 也写 `null`）。页面多一个纯函数模块。评审条数只按会话算、不区分仓库 —— 与额度口径一致，但「哪一条在哪个仓库」得去右栏看。
+
+**验证。** `node --experimental-strip-types bridge/tests/review-unit.mjs`（起 / 并跑 / 另一会话不串 / 取消不提前放开 / 起不来的收尾 / 桥重启接回 / 一样的条数只发一帧、0 发显式 `null`）；`npm run test:session-badge`（七档优先级与文案、可点性）；`probes/round9-badges.mjs`（假桥十个会话：`完成+评审` 写评审中、`运行中+评审` 写运行中、`后台+评审` 写后台、`两条评审` 写「评审中 2」；点它 / 按 Enter 都切到那个会话并停在代码评审页签）。顺带修了探针里两条过时的断言（条头那颗「N 个待处理」在 #97 之后已经不存在 → 改成数带 warn 色的胶囊；假桥对任何 subscribe 都回同一个会话 → 改成按会话回，否则切走会「又收到一份问卷」把右栏拽回「需要你」）。`npm run typecheck` 两侧通过。
+
+**复审（两轴代码评审）改掉的三处。** ①会话管理那一行原来只把「后台」交给 `badgeChip()`（`kind === "bg"`），评审中会掉到不可点的 `tag()`、还落一个没有颜色的 `.mgr-tag.reviewing` —— 与「四处同一颗」自相矛盾；现在判 `badge.clickable`，并补了 `.mgr-tag.reviewing` 的颜色。②「点开去哪」原来写了两遍、极性还相反（`badgeChip` 里 `bg ? … : …`，★ 行胶囊里 `review ? … : …` 且要重新 `badgeOf` 一次），收成一个 `openBadge(s)`，四处共用。③`session-badge.ts` 的注释原来说「桥那边改名这里编译不过」，不成立（字段全可缺省，改名是静默少一档）；改写成「缺字段是静默降级」，并让单测去盯。顺带把徽标的 JSDoc 从 `BgRunDto` 头上挪回 `badgeOf()`、探针头部那行过时的「five pinned sessions / round6-keys」改对。
+
+**与 D53 的关系。** D53 把「徽标只有一份实现」钉在了 `web/src/app.ts`；本单把它原样搬进 `web/src/session-badge.ts`（判定）＋ `app.ts` 的 `badgeChip()` / `openBadge()`（画与点），D53 那条规则不变，位置改以本单为准。
+
+**发现的既有问题（不在本单范围）**：`web/tests/pillbar-unit.mjs` 与 `web/tests/review-unit.mjs` 在 Node 26 上因 `import "*.css"` 直接 `ERR_UNKNOWN_FILE_EXTENSION`，main 上一样红（`npm run test:pillbar` / `test:review:view` 两个脚本都跑不起来）。
