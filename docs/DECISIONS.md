@@ -9034,5 +9034,9 @@ if (stop >= 0) {
 
 **验证。** `node --experimental-strip-types bridge/tests/review-unit.mjs`（起 / 并跑 / 另一会话不串 / 取消不提前放开 / 起不来的收尾 / 桥重启接回 / 一样的条数只发一帧、0 发显式 `null`）；`npm run test:session-badge`（七档优先级与文案、可点性）；`probes/round9-badges.mjs`（假桥十个会话：`完成+评审` 写评审中、`运行中+评审` 写运行中、`后台+评审` 写后台、`两条评审` 写「评审中 2」；点它 / 按 Enter 都切到那个会话并停在代码评审页签）。顺带修了探针里两条过时的断言（条头那颗「N 个待处理」在 #97 之后已经不存在 → 改成数带 warn 色的胶囊；假桥对任何 subscribe 都回同一个会话 → 改成按会话回，否则切走会「又收到一份问卷」把右栏拽回「需要你」）。`npm run typecheck` 两侧通过。
 
+**复审（两轴代码评审）改掉的三处。** ①会话管理那一行原来只把「后台」交给 `badgeChip()`（`kind === "bg"`），评审中会掉到不可点的 `tag()`、还落一个没有颜色的 `.mgr-tag.reviewing` —— 与「四处同一颗」自相矛盾；现在判 `badge.clickable`，并补了 `.mgr-tag.reviewing` 的颜色。②「点开去哪」原来写了两遍、极性还相反（`badgeChip` 里 `bg ? … : …`，★ 行胶囊里 `review ? … : …` 且要重新 `badgeOf` 一次），收成一个 `openBadge(s)`，四处共用。③`session-badge.ts` 的注释原来说「桥那边改名这里编译不过」，不成立（字段全可缺省，改名是静默少一档）；改写成「缺字段是静默降级」，并让单测去盯。顺带把徽标的 JSDoc 从 `BgRunDto` 头上挪回 `badgeOf()`、探针头部那行过时的「five pinned sessions / round6-keys」改对。
+
+**与 D53 的关系。** D53 把「徽标只有一份实现」钉在了 `web/src/app.ts`；本单把它原样搬进 `web/src/session-badge.ts`（判定）＋ `app.ts` 的 `badgeChip()` / `openBadge()`（画与点），D53 那条规则不变，位置改以本单为准。
+
 **发现的既有问题（不在本单范围）**：`web/tests/pillbar-unit.mjs` 与 `web/tests/review-unit.mjs` 在 Node 26 上因 `import "*.css"` 直接 `ERR_UNKNOWN_FILE_EXTENSION`，main 上一样红（`npm run test:pillbar` / `test:review:view` 两个脚本都跑不起来）。
 

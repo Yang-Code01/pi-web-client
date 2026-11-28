@@ -33,8 +33,9 @@ export interface SessionBadge {
 }
 
 /**
- * 只借 `SessionState` 里与这一格有关的字段（名字跟着它走：桥那边改名这里编译不过），
- * 全部可缺省 —— 旧桥少发一个字段不该让徽标变样。
+ * 只借 `SessionState` 里与这一格有关的几项。全部可缺省：旧桥少发一个字段不该让徽标变样。
+ * 反过来也得记住，**缺字段时是静默降级**（少一档徽标，不会编译不过）—— 改名 / 挪字段时，
+ * 这里和 `web/tests/session-badge-unit.mjs` 要一起看到。
  */
 export interface BadgeSession {
   asks?: number;

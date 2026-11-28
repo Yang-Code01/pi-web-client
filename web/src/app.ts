@@ -197,10 +197,6 @@ const WS_CREATE_DIR_CAP = "ws.create.dir";
 const WS_RESOLVE_DIR_CAP = "ws.resolve.dir";
 const WS_EXEC_CHILD_CAP = "exec.child.subscribe";
 
-/**
- * 徽标唯一出口（D450）：判定住在 `session-badge.ts` 的纯函数里（单测 `web/tests/session-badge-unit.mjs`），
- * 这里只负责合出「当前会话要用本地队列」的那一份输入，再交给 `badgeChip()` 画。
- */
 /** D170 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
 type BgRunDto = BgRunView;
 
@@ -1331,12 +1327,10 @@ export class App {
         const b = this.badgeOf(s);
         return b ? { ...b, detail: b.clickable } : null;
       },
-      // 两枚可点徽标共用这一个出口：评审那枚去评审现场，其余（后台）开详情。
+      // 可点徽标（后台 / 评审中）与左栏卡片走同一个口：`openBadge()`。
       onBadge: (id) => {
         const s = this.sessions.find((x) => x.id === id) ?? (this.session?.id === id ? this.session : null);
-        if (!s) return;
-        if (this.badgeOf(s)?.kind === "review") this.openReviewForSession(id);
-        else this.openBgSheet(id);
+        if (s) this.openBadge(s);
       },
       time: relativeTime,
       // #97：第二行不再是「置顶区」，条头那颗字也就没有意义了 —— 最左边那颗就是当前会话。
@@ -3647,9 +3641,7 @@ export class App {
     chip.tabIndex = 0;
     const open = (ev: Event) => {
       ev.stopPropagation();
-      this.closeWsPop();
-      if (badge.kind === "bg") this.openBgSheet(s.id);
-      else this.openReviewForSession(s.id);
+      this.openBadge(s);
     };
     chip.onclick = open;
     chip.onkeydown = (ev) => {
@@ -3661,10 +3653,23 @@ export class App {
   }
 
   /**
+   * 可点徽标去哪（D450）：目前两枚 —— 「后台」看后台任务详情、「评审中」切到那个会话 + 右栏代码评审。
+   * 左栏卡片、★ 行胶囊、管理面板、工作区浮层四处共用这一个口，别再各写一遍 kind 判断。
+   */
+  private openBadge(s: SessionState): void {
+    this.closeWsPop();
+    if (this.badgeOf(s)?.kind === "bg") this.openBgSheet(s.id);
+    else this.openReviewForSession(s.id);
+  }
+
+  /**
    * 徽标唯一入口（D156）：当前会话的待处理数以本地队列为准（`badgeSession`），别的会话读列表里
    * 那份事件累加值。左栏卡片、钉条胶囊、管理面板、顶栏那颗都走这里，省得哪一处又读到旧账。
    * 刚 `openSession`、快照还没回来时本地队列是空的（`pendingFresh` 为 false），此时退回列表里
    * 那份 —— 否则切到一个「正等着你」的会话，徽标会先闪没一拍。
+   *
+   * 判定本身（哪一档、说什么、能不能点）在 `session-badge.ts` 的纯函数里（D450，单测
+   * `web/tests/session-badge-unit.mjs`）；这里只合出那份输入。
    */
   private badgeOf(s: SessionState): SessionBadge | null {
     const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
@@ -13322,8 +13327,9 @@ export class App {
     if (archived) tag("arch", tr("已归档"));
     tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? tr("网页") : "CLI", s.origin === "web" ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话"));
     const badge = this.badgeOf(s);
-    // D170：「后台」那一枚在管理面板里也要点得开，不然同一枚徽标在左栏能点、到这里突然不能。
-    if (badge?.kind === "bg") {
+    // D170 / D450：两枚可点的徽标（后台、评审中）在管理面板里也要点得开，
+    // 不然同一枚徽标在左栏能点、到这里突然不能。
+    if (badge?.clickable) {
       const chip = this.badgeChip(s);
       if (chip) line.append(chip);
     } else if (badge) tag(badge.cls, badge.text, badge.title);

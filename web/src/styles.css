@@ -599,6 +599,7 @@ html[data-ui="mac"] .peer-frame { background: transparent; }
 .mgr-tag.web, .mgr-tag.pin { color: var(--accent); border-color: var(--accent-dim); }
 .mgr-tag.run, .mgr-tag.live { color: var(--ok); border-color: var(--ok-dim); }
 .mgr-tag.wait { color: var(--warn); border-color: var(--warn-dim); }
+.mgr-tag.reviewing { color: var(--review); border-color: var(--review-dim); }
 .mgr-sub { display: flex; gap: 8px; min-width: 0; font-size: 11px; color: var(--faint); }
 .mgr-cwd { flex: 0 1 auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
 .mgr-preview { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }

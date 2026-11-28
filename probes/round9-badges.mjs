@@ -1,13 +1,16 @@
 /**
- * Probe: Q-015 — the pin strip must not call an approval-waiting session 运行中.
+ * Probe: 会话徽标这一格该说什么 —— Q-015（在等你的不许说成运行中）＋ D450（评审在跑说评审中）。
  *
- * A fake bridge serves `web/dist` and speaks just enough of the ws protocol to show one session;
+ * A fake bridge serves `web/dist` and speaks just enough of the ws protocol to show sessions;
  * nothing here needs pi to be running.
  *
- * Q-015: five pinned sessions in five different states, left pane collapsed — the strip has to say
- * 待回答 / 待确认 / 终端占用 / 运行中 / 完成, and the header has to count the two that block on the user.
+ * 十个会话，左栏收起时看 ★ 行胶囊：待回答 / 待确认 / 终端占用 / 运行中 / 完成 / 时间，
+ * 外加三种「评审在跑」的组合（完成+评审 → 评审中、运行中+评审 → 运行中、后台+评审 → 后台）
+ * 与并跑两条的「评审中 2」；两个在等你的会话要各自带 warn 色（#97 之后条头那颗字已经没有了）。
+ * D450 之后「评审中」可点：点它 / 按 Enter 都要切到那个会话并停在「代码评审」页签；
+ * 左栏卡片上那枚走的是同一个口（`openBadge()`），左栏展开后再点一次。
  *
- * Run: node probes/round6-keys.mjs   (needs `npm run build:web` first)
+ * Run: node probes/round9-badges.mjs   (needs `npm run build:web` first)
  */
 import fs from "node:fs";
 import http from "node:http";
@@ -220,6 +223,16 @@ try {
   await until(async () => page.url().includes("#/s/s-review2"), 5000, "Enter on the review badge switches session");
   await until(async () => (await reviewTab.getAttribute("class") ?? "").split(" ").includes("on"), 5000, "Enter also lands on the code review tab");
   log("review badge Enter →", page.url());
+
+  // 左栏卡片上那枚走的是同一个口（badgeChip → openBadge），也点一次：先把左栏展开。
+  await page.locator('[data-act="sessions"]').click();
+  const cardChip = page.locator(".session-card").filter({ hasText: "评审在跑" }).locator(".badge.reviewing");
+  await until(async () => (await cardChip.count()) === 1, 5000, "review badge on the left card");
+  assert((await cardChip.innerText()).trim() === "评审中", "card badge says 评审中");
+  await cardChip.click();
+  await until(async () => page.url().includes("#/s/s-review"), 5000, "card badge switches back to the reviewing session");
+  await until(async () => (await reviewTab.getAttribute("class") ?? "").split(" ").includes("on"), 5000, "card badge also lands on the code review tab");
+  log("card badge click →", page.url());
 
   log("ALL OK");
 } finally {
