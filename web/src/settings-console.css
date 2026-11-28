@@ -372,8 +372,11 @@ body > :is(.st-back, .sheet-back):has(> .st-console) {
    把特异性抬到 (0,3,2) 一次压过两处，**不挂 `data-ui`**（挂上就白多一个依赖：哪天 `data-ui`
    不写 "mac" 或干脆不写，让开就没效果了）。
    这一条是**跟 mac.css 比权重**：那边再抬一级（比如加 `[data-mac-dim]`）这里会静默失效，
-   届时把这条搬进 mac.css 跟材质规则放一起。 */
-body > .st-back[data-mac-surface].peeking {
+   届时把这条搬进 mac.css 跟材质规则放一起。
+   宿主认 `.st-back` 与 `.sheet-back` 两种 —— 和上面那条 `--vh1` 复位同一个判据（`overlayHost()`
+   认的控制台外壳就是这两种），别只在一种上写。今天只有 `.st-back` 那扇有字号滑杆，但让这两条
+   散开，改宿主类名时就会漏一处。 */
+body > :is(.st-back, .sheet-back)[data-mac-surface].peeking {
   background: transparent;
   /* 两样都清：mac.css 那层模糊写了 `-webkit-backdrop-filter`，只清标准属性时 Safari 还糊着。 */
   -webkit-backdrop-filter: none;
@@ -384,7 +387,7 @@ body > .st-back[data-mac-surface].peeking {
 }
 /* 读数胶囊：驻在宿主里（不进 .st-console —— 那个壳 overflow:hidden 会把它裁掉），
    只读不接指针。细轨道按 (v-0.8)/1.2 填充，和真轨道同一套刻度。 */
-.peek-hud {
+.console-peek {
   position: absolute;
   left: 50%;
   bottom: 20px;
@@ -407,20 +410,20 @@ body > .st-back[data-mac-surface].peeking {
   pointer-events: none;
   transform: translateX(-50%);
 }
-.st-back.peeking .peek-hud {
+.st-back.peeking .console-peek {
   opacity: 1;
 }
-.peek-hud__label {
+.console-peek__label {
   font: 11.5px/1 var(--sans);
   color: var(--dim);
 }
-.peek-hud__value {
+.console-peek__value {
   justify-self: end;
   font: 600 13px/1 var(--mono);
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
-.peek-hud__rail {
+.console-peek__rail {
   grid-column: 1 / -1;
   position: relative;
   height: 4px;
@@ -428,7 +431,7 @@ body > .st-back[data-mac-surface].peeking {
   border-radius: 999px;
   background: var(--line);
 }
-.peek-hud__fill {
+.console-peek__fill {
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: 999px;

@@ -282,8 +282,8 @@ async function peekState() {
     const back = document.querySelector(".st-back");
     const con = back?.querySelector(".st-console");
     const chat = document.querySelector('[data-region="chat"]');
-    const hud = document.querySelector(".peek-hud");
-    const fill = document.querySelector(".peek-hud__fill");
+    const hud = document.querySelector(".console-peek");
+    const fill = document.querySelector(".console-peek__fill");
     const cs = con ? getComputedStyle(con) : null;
     const bs = back ? getComputedStyle(back) : null;
     const hs = hud ? getComputedStyle(hud) : null;

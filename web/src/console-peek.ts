@@ -82,15 +82,15 @@ export class ConsolePeek {
   private ensureHud(): void {
     if (this.hud?.isConnected) return;
     const hud = document.createElement("div");
-    hud.className = "peek-hud";
+    hud.className = "console-peek";
     const label = document.createElement("span");
-    label.className = "peek-hud__label";
+    label.className = "console-peek__label";
     const value = document.createElement("span");
-    value.className = "peek-hud__value";
+    value.className = "console-peek__value";
     const rail = document.createElement("span");
-    rail.className = "peek-hud__rail";
+    rail.className = "console-peek__rail";
     const fill = document.createElement("i");
-    fill.className = "peek-hud__fill";
+    fill.className = "console-peek__fill";
     rail.append(fill);
     hud.append(label, value, rail);
     this.host.append(hud);

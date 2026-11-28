@@ -4488,6 +4488,8 @@ export class App {
     let next = o.value;
     // 「有没有还没落盘的值」只能另记一笔：`land` 自己就把 prefs 改掉了，拿值比永远相等。
     let dirty = false;
+    /** 上一次**真的抹到界面上**的值。`next` 可能还差一帧没落，Esc 要回的是这个。 */
+    let applied = o.value;
 
     /** 落实一个值：写 prefs（调用方的事）+ 抹控件。 */
     const land = (raw: number): void => {
@@ -4496,6 +4498,7 @@ export class App {
       // 同一个档存前存后不是一个数；`range.value`（step 0.01）也会与 `--ui-scale` 差一档，方向键再按就跳。
       const v = clampScale(raw);
       next = v;
+      applied = v;
       dirty = true;
       o.onLive(v);
       paint(v);
@@ -4549,7 +4552,11 @@ export class App {
 
     /** 拖的时候不能交给浏览器算值：按冻住那一刻的轨道盒子换算，松手才写盘。 */
     let dragBox: { x: number; w: number } | null = null;
-    /** 按下那一刻的指针位置与值：前者判「真的拖起来了没有」，后者给 Esc 取消用。 */
+    /**
+     * 按下那一刻的指针位置与值：前者判「真的拖起来了没有」，后者给 Esc 取消用。
+     * 取 `applied` 而不是 `next` —— 上次 `queue()` 那帧可能还没落，`next` 已经是新值了，
+     * 拿它还原等于把「用户还没看到的一步」当成起点（那一帧再被 commit 落盘就串了）。
+     */
     let dragFrom: { x: number; y: number } | null = null;
     let dragValue = o.value;
     const valueAt = (clientX: number): number => {
@@ -4571,7 +4578,7 @@ export class App {
       const r = range.getBoundingClientRect();
       dragBox = { x: r.left, w: r.width };
       dragFrom = { x: ev.clientX, y: ev.clientY };
-      dragValue = next;
+      dragValue = applied;
       hidePeek();
       rail.classList.add("dragging");
       read.classList.add("dragging");
