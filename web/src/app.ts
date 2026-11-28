@@ -4438,7 +4438,11 @@ export class App {
     let dirty = false;
 
     /** 落实一个值：写 prefs（调用方的事）+ 抹控件。 */
-    const land = (v: number): void => {
+    const land = (raw: number): void => {
+      // 夹进 0.8–2.0 并取两位小数，一个都别省：拖动出的是连续浮点，刻度是 `0.8 + i * 0.2` 算出来的
+      // （1.2000000000000002）。原样写进 prefs / `--ui-scale` 的话，刷新时 `prefScale()` 又夹回两位小数，
+      // 同一个档存前存后不是一个数；`range.value`（step 0.01）也会与 `--ui-scale` 差一档，方向键再按就跳。
+      const v = clampScale(raw);
       next = v;
       dirty = true;
       o.onLive(v);

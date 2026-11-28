@@ -33,16 +33,16 @@ const check = (name, ok, extra = "") => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const now = Date.now();
+const LONG = Array.from({ length: 14 }, (_, i) => `第 ${i + 1} 行：区域倍率叠在全局字号之上相乘，栏宽与窄版判定只认全局那一层。`).join("\n");
 const ITEMS = [
-  { id: "u0", kind: "user", images: [], ts: new Date(now - 90000).toISOString(), text: "字号想每块分开调。" },
-  {
-    id: "a0",
-    kind: "assistant",
-    thinking: "",
-    model: "probe",
-    ts: new Date(now - 60000).toISOString(),
-    text: ["五块各自缩放：顶栏、会话列表、对话正文、输入框、右栏面板。", "", "每块叠在全局字号之上相乘。"].join("\n"),
-  },
+  { id: "u0", kind: "user", images: [], ts: new Date(now - 400000).toISOString(), text: "第一轮：字号想每块分开调。" },
+  { id: "a0", kind: "assistant", thinking: "", model: "probe", ts: new Date(now - 380000).toISOString(), text: LONG },
+  { id: "u1", kind: "user", images: [], ts: new Date(now - 300000).toISOString(), text: "第二轮：点缩略图要能准准地跳回这一句。" },
+  { id: "a1", kind: "assistant", thinking: "", model: "probe", ts: new Date(now - 280000).toISOString(), text: LONG },
+  { id: "u2", kind: "user", images: [], ts: new Date(now - 200000).toISOString(), text: "第三轮：往回翻页锚定别跳。" },
+  { id: "a2", kind: "assistant", thinking: "", model: "probe", ts: new Date(now - 180000).toISOString(), text: LONG },
+  { id: "u3", kind: "user", images: [], ts: new Date(now - 100000).toISOString(), text: "第四轮：最后一轮。" },
+  { id: "a3", kind: "assistant", thinking: "", model: "probe", ts: new Date(now - 80000).toISOString(), text: LONG },
 ];
 const mk = (id, name, extra) => ({
   id, name, cwd: path.join(REPO, ".scratch/probe-work"), file: null, owned: true, origin: "web",
@@ -312,7 +312,77 @@ await openLook();
   await sleep(150);
 }
 
-check("7. 没有页面报错", errors.length === 0, errors.slice(0, 3).join(" | "));
+// ---------------------------------------------------------------- 7. 刻度值必须夹成两位小数（不是 1.2000000000000002）
+{
+  // 面板在上一步还开着。字号那根点「120」档：SIZE_MARKS 是 0.8 + i*0.2 算出来的浮点。
+  const sizeRow = page.locator(".display-sheet .settings-row").filter({ hasText: "字号" }).first();
+  await sizeRow.locator(".mark", { hasText: /^120$/ }).click();
+  await sleep(200);
+  const sizeMarked = await page.evaluate(() => ({
+    prefs: JSON.parse(localStorage.getItem("pi.prefs") ?? "{}").scale,
+    uiVar: getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim(),
+    range: document.querySelector('.display-sheet .settings-row input[type="range"]')?.value,
+  }));
+  check("7. 点 120 档存成 1.2（不是 1.2000000000000002）", sizeMarked.prefs === 1.2 && sizeMarked.uiVar === "1.2" && sizeMarked.range === "1.2", JSON.stringify(sizeMarked));
+
+  const chatRow2 = page.locator(".display-sheet .settings-row").filter({ hasText: "对话正文" });
+  // 刻度是 80…200 每 0.2：点 120 档同样会碰到 1.2000000000000002 的浮点尾巴
+  await chatRow2.locator(".mark", { hasText: /^120$/ }).click();
+  await sleep(200);
+  const chatMarked = await page.evaluate(() => ({
+    prefs: JSON.parse(localStorage.getItem("pi.prefs") ?? "{}").regionScale?.chat,
+    rsVar: getComputedStyle(document.documentElement).getPropertyValue("--rs-chat").trim(),
+    zoom: Number(getComputedStyle(document.querySelector('[data-region="chat"]')).zoom),
+  }));
+  check("7b. 区域那根点 120 档：prefs / --rs-chat / 实际 zoom 三处都是 1.2", chatMarked.prefs === 1.2 && chatMarked.rsVar === "1.2" && chatMarked.zoom === 1.2, JSON.stringify(chatMarked));
+
+  // 复位，别把 120% 带进后面的段
+  await sizeRow.locator(".size-rail").dblclick();
+  await chatRow2.locator(".size-rail").dblclick();
+  await sleep(200);
+}
+
+// ---------------------------------------------------------------- 8. 区域倍率 ≠ 100% 时点缩略图跳轮次，落点要对
+// 出问题的是 `contentTopOf()`：它以前只除全局 `--ui-scale`，正文 130% 时会按 1.3 倍滚过头，
+// 起步位置还可能 ≥ maxScroll 被误判成「已在最后一屏」而直接回到底部。
+for (const rs of [1, 1.3]) {
+  await boot({ regionScale: { ...SEED, chat: rs } });
+  const rows = page.locator(".turn-row:not(.ghost)");
+  const count = await rows.count();
+  // 照真人走一遍：先悬停那颗「轮次」命中区把带子摊开（收起态按短横算，行本身没高度），
+  // 再按展开后的行位置点第 2 轮。直接对行派发 click 会落在 0 尺寸的盒子上，什么都不会发生。
+  await page.locator(".turn-rail .turn-hit").hover();
+  await sleep(420);
+  const rowBox = await rows.nth(1).boundingBox();
+  if (!rowBox) throw new Error("第 2 轮那一行量不到位置");
+  await page.mouse.click(rowBox.x + rowBox.width / 2, rowBox.y + rowBox.height / 2);
+  // 平滑滚动 + holdFollow（900ms）走完再看
+  await sleep(1200);
+  const jump = await page.evaluate(() => {
+    const root = document.querySelector(".chat-scroll");
+    const users = [...document.querySelectorAll(".chat-scroll .msg.user")];
+    const target = users[1];
+    const ui = Number(getComputedStyle(document.documentElement).getPropertyValue("--ui-scale")) || 1;
+    const own = Number.parseFloat(getComputedStyle(root).zoom) || 1;
+    const box = root.getBoundingClientRect();
+    const r = target.getBoundingClientRect();
+    return {
+      // 目标轮的首行离视口顶部多远（换算回布局 px：代码里期望是 6px 呼吸）
+      deltaLocal: (r.top - box.top) / (ui * own),
+      scrollTop: root.scrollTop,
+      max: root.scrollHeight - root.clientHeight,
+    };
+  });
+  const landed = Math.abs(jump.deltaLocal - 6) < 6;
+  const notBottom = jump.scrollTop < jump.max - 40;
+  check(`8. 正文 ${Math.round(rs * 100)}%：点缩略图第 2 轮，目标落在视口顶部（6px 呼吸）`, landed, JSON.stringify({ deltaLocal: +jump.deltaLocal.toFixed(1), scrollTop: Math.round(jump.scrollTop), max: Math.round(jump.max) }));
+  check(`8b. 正文 ${Math.round(rs * 100)}%：没有被误判成贴底而弹回底部`, notBottom, JSON.stringify({ scrollTop: Math.round(jump.scrollTop), max: Math.round(jump.max) }));
+  check(`8c. 正文 ${Math.round(rs * 100)}%：缩略图行数对得上（4 轮都载入了）`, count >= 4, `rows=${count}`);
+  await page.screenshot({ path: path.join(OUT, `6-jump-${Math.round(rs * 100)}.png`) });
+}
+
+check("9. 没有页面报错"
+, errors.length === 0, errors.slice(0, 3).join(" | "));
 
 await ctx.close();
 await browser.close();
