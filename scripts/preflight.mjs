@@ -29,6 +29,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { ENTRY_NAMES as BRIDGE_ENTRY_NAMES } from "./bridge-entry.mjs";
 
 /** 端口被占：不继续。 */
 export const EXIT_BLOCKED = 2;
@@ -48,10 +49,10 @@ const STOP_GRACE_MS = 10_000;
 const STOP_KILL_WAIT_MS = 5_000;
 /**
  * 认「是不是本项目的桥」只看入口文件名，不看绝对路径：占用者可能来自另一份检出
- * （别的 worktree、另一个安装目录），那正是最该被认出来的一类。入口名与
- * `scripts/bridge-entry.mjs` 保持一致。
+ * （别的 worktree、另一个安装目录），那正是最该被认出来的一类。入口名从
+ * `scripts/bridge-entry.mjs` 取，别在这儿再写一份。
  */
-const ENTRY_NAMES = ["bridge/dist/host.js", "bridge/dist/index.js"];
+const ENTRY_NAMES = BRIDGE_ENTRY_NAMES;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -157,11 +158,20 @@ export function alive(pid) {
   }
 }
 
-/** 命令行里带着本项目桥的入口 = 这是「我自己」起的一份（哪份检出都算）。 */
+/** 命令行里带着本项目桥的入口 = 这是「我自己」起的一份（哪份检出都算）。
+ *
+ * 两道关，都是防「看错人就看错人地杀了它」：
+ * ① 得是 node 起的（`git add bridge/dist/index.js`、`type bridge\dist\host.js` 这种命令行里
+ *   恰好提到入口名的不算）；
+ * ② 入口必须是**某个参数的结尾**（`host.js.bak`、`host.js.old` 不算）。
+ */
 export function looksLikeBridge(cmd) {
-  const flat = String(cmd ?? "").replace(/\\/g, "/");
-  return ENTRY_NAMES.some((name) => flat.includes(name));
+  const flat = ` ${String(cmd ?? "").replace(/\\/g, "/")} `;
+  if (!/\bnode(?:\.exe)?\b/i.test(flat)) return false;
+  return ENTRY_NAMES.some((name) => new RegExp(`[\\s"'][^\\s"']*${escapeRe(name)}(?=$|[\\s"'])`).test(flat));
 }
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** 谁在 listen 这个端口（枚举兜底：/healthz 与 pid 文件都不灵时用）。 */
 export function listenPid(port) {
@@ -234,9 +244,11 @@ export async function probeOwner(port, host = DEFAULT_HOST) {
   const inspect = (pid, from) => {
     if (!Number.isInteger(pid) || pid <= 0 || tried.has(pid)) return null;
     tried.add(pid);
+    // `commandLine()` 读不到就是进程已经没了（`Get-CimInstance` / `ps -p` 对不存在的 pid 返回空），
+    // 所以下面这两行就顺带过滤了「/healthz 自报的 pid 其实已经退出」的情况，不用再多 spawn 一次 ps。
     const cmd = commandLine(pid);
     if (looksLikeBridge(cmd)) return { pid, cmd, from };
-    if (!other && alive(pid)) other = { pid, cmd, from };
+    if (!other && cmd) other = { pid, cmd, from };
     return null;
   };
 

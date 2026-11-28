@@ -132,6 +132,8 @@ let exitCode = null;
 let exitSignal = null;
 /** 第 11 步那把「第二个壳」的 pid：断言失败时也得收掉，别让它留在下一轮里。 */
 let blockedPid = null;
+/** 它自己退了就别再去 kill：pid 可能已经被系统发给别人了。 */
+let blockedExited = false;
 host.on("exit", (code, signal) => {
   // 信号终止时 code 是 null。记成 0 会把壳崩溃当成正常停机。
   exitCode = code ?? -1;
@@ -328,7 +330,10 @@ try {
     blocked.stdout.on("data", (c) => (blockedOut += String(c)));
     blocked.stderr.on("data", (c) => (blockedOut += String(c)));
     const blockedCode = await new Promise((resolve) => {
-      blocked.on("exit", (code) => resolve(code ?? -1));
+      blocked.on("exit", (code) => {
+        blockedExited = true;
+        resolve(code ?? -1);
+      });
       const t = setTimeout(() => resolve(null), 15000);
       t.unref();
     });
@@ -355,8 +360,9 @@ try {
     killTree(host.pid);
     await Promise.race([new Promise((r) => host.once("exit", r)), sleep(5000)]);
   }
-  // 第 11 步那个「被占时起不来的壳」：正常会自己以 2 退出，卡住就按树收掉。
-  if (blockedPid) killTree(blockedPid);
+  // 第 11 步那个「被占时起不来的壳」：正常会自己以 2 退出，卡住才按树收掉
+  // （已经退了的 pid 不能碰：那个号可能已经被系统发给了别人）。
+  if (!blockedExited && Number.isInteger(blockedPid) && blockedPid > 0) killTree(blockedPid);
   try {
     fs.rmSync(TMP, { recursive: true, force: true });
   } catch {

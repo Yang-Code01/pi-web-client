@@ -908,8 +908,10 @@ async function main(): Promise<void> {
 
   // ---------------------------------------------------------------- 起飞
   // listen 的 error 必须接住：EADDRINUSE 以前是一条未捕获异常，用户看到的是整个堆栈（D441）。
+  let onListenError: ((err: Error) => void) | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
+      onListenError = reject;
       publicServer.once("error", reject);
       publicServer.listen(port, listenHost, () => {
         publicServer.off("error", reject);
@@ -917,6 +919,9 @@ async function main(): Promise<void> {
       });
     });
   } catch (err) {
+    // 失败路径也把监听器解掉：这里现在会直接退出，但将来若改成抛出去/重试，
+    // 残留的 once 会把后续错误吞进一个已经 settled 的 promise。
+    if (onListenError) publicServer.off("error", onListenError);
     if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
     explainPortTaken(port);
     process.exit(2);

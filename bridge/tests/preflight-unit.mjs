@@ -66,12 +66,19 @@ assert.equal(forceRequested([], { PI_START_FORCE: "1" }), true);
 assert.equal(forceRequested([], { PI_START_FORCE: "" }), false);
 assert.equal(forceRequested(["--port", "7865"], {}), false);
 
-// 7. 认人：命令行里带桥入口（哪份检出、正斜杠反斜杠都算），别的程序一律不算。assert.equal(looksLikeBridge("node C:\\repo\\bridge\\dist\\host.js"), true);
+// 7. 认人：命令行里带桥入口（哪份检出、正斜杠反斜杠都算），别的程序一律不算。
+assert.equal(looksLikeBridge("node C:\\repo\\bridge\\dist\\host.js"), true);
 assert.equal(looksLikeBridge("node /repo/bridge/dist/host.js"), true);
 assert.equal(looksLikeBridge('"C:\\\\Program Files\\\\node.exe" F:/wt/x/bridge/dist/index.js'), true);
+assert.equal(looksLikeBridge("node --enable-source-maps /repo/bridge/dist/index.js --port 7864"), true);
 assert.equal(looksLikeBridge("node /repo/other/server.js"), false);
 assert.equal(looksLikeBridge("node /repo/bridge/dist/helper.js"), false);
 assert.equal(looksLikeBridge(""), false);
+// 只看子串会误伤：备份文件、以及「命令行里恰好提到入口名」的命令不是桥。
+assert.equal(looksLikeBridge("node /repo/bridge/dist/host.js.bak"), false);
+assert.equal(looksLikeBridge("node /repo/bridge/dist/host.js.old"), false);
+assert.equal(looksLikeBridge("git add bridge/dist/index.js"), false);
+assert.equal(looksLikeBridge("type bridge\\dist\\host.js"), false);
 
 // 8. 探活 / 停机打的地址跟着监听地址走：只听某个 LAN IP 时就打它（否则认不出壳、会误当旧桥硬杀），
 //    通配地址换成回环（通配不是能连的目标）。
