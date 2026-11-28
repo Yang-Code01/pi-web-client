@@ -4376,10 +4376,11 @@ export class App {
 
   // ---------------------------------------------------------------- appearance
   /**
-   * 「外观 → 语言与字号」里那根连续滑杆（D441）：全局「字号」与「对话正文」共用这一套控件与交互。
+   * 「外观 → 语言与字号」里那根连续滑杆（D441）：全局「字号」与五块区域字号共用这一套控件与交互。
    *
    * - 值只往外递：`onLive` 拖动中每帧一次（不回写 localStorage），`onCommit` 松手 / 落档时一次。
-   * - `snaps` 是磁吸档位，`marksAt` 是轨道上带数字那几颗（全局 0.8 起每 0.2，区域四档）。
+   * - `snaps` 是磁吸档位，`marksAt` 是轨道上带数字那几颗。六根都用同一套刻度（0.8 起每 0.2，
+   *   `SIZE_MARKS`）：只放各自那几个档位的话数字会全挤在轨道左半边；磁吸档位才分全局 / 区域两套。
    * - 键盘不吃磁吸：步长 1% 比吸附半径 1.2% 小，吸上就再也出不来。
    * - 拖动时把轨道盒子冻住：`#app` 上是整棵树的 zoom，页一放大轨道跟着变宽变位，交给浏览器
    *   按新几何算就会「手一直往右、读数却越来越迟钝」（2.0 拖不到）。
@@ -4852,10 +4853,8 @@ export class App {
     );
 
     // 五块的分组头：叠乘关系说一次，五行各自的 hint 只讲「这一块是哪一块」，不重复念乘法。
-    const regionHead = el("div", "settings-group");
-    regionHead.append(el("span", "settings-group__label", tr("分区字号")));
-    regionHead.append(el("span", "settings-group__meta", tr("各自叠在「字号」上相乘；双击轨道回 100%")));
-    langPanel.append(regionHead);
+    // 用 stSection 而不是手拼三层 —— 小节头只有一处样式的真源。
+    langPanel.append(this.stSection(tr("分区字号"), tr("各自叠在「字号」上相乘；双击轨道回 100%")));
 
     const regionLabels: Record<RegionId, string> = {
       topbar: tr("顶栏"),

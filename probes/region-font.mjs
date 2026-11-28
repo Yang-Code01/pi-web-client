@@ -278,6 +278,10 @@ await openLook();
       head: head ? (head.textContent ?? "").trim() : "",
     };
   });
+  // 顺手留一张「分组头 + 前两行」的样张：面板比一屏长，默认停在中段看不到头。
+  await page.locator(".display-sheet .settings-panel").first().evaluate((el) => { el.scrollTop = 0; el.parentElement?.scrollTo?.(0, 0); });
+  await sleep(120);
+  await page.screenshot({ path: path.join(OUT, "4-panel-top.png") });
   const wantLabels = ["字号", "顶栏", "会话列表", "对话正文", "输入框", "右栏面板"];
   check(
     "5. 「语言与字号」里六行滑杆：全局字号 + 五块，顺序照界面上到下 / 左到右",
@@ -459,7 +463,9 @@ for (const rs of [1, 1.3]) {
     ["queue", "右栏面板"],
   ];
   for (const [id, label] of PAIRS) {
-    const row = page.locator(".display-sheet .settings-row").filter({ hasText: label });
+    // 只在 `.settings-label` 子树里找：整行 `hasText` 会被 hint 里的区域名带跑
+    // （顶栏那行的 hint 就写着「顶栏按钮」），一旦别行的 hint 提到这个名字就会命中多行。
+    const row = page.locator(".display-sheet .settings-row").filter({ has: page.locator(".settings-label", { hasText: label }) });
     const before = await snap(page);
     await row.locator('input[type="range"]').focus();
     for (let i = 0; i < 10; i++) await page.keyboard.press("ArrowRight");
