@@ -106,8 +106,10 @@ try {
   await badge.waitFor({ timeout: 20000 });
   await badge.click();
   await page.locator(".bg-sheet").waitFor({ timeout: 10000 });
-  const card = page.locator(".bg-run").first();
+  // 两栏：左栏一行一条 run，右栏一页一条。断言都对着「当前可见的那一页」。
+  const card = page.locator(".bg-run:not([hidden])").first();
   await card.waitFor({ timeout: 10000 });
+  check("左栏列出这条 run", (await page.locator(".bg-nav-item").count()) === 1);
 
   // 刚开卡时桥只认得出「有这么一个 run」：原文要等 `status.json`（fake-pi 延迟 1.2 s 才写）。
   const early = (await card.locator(".bg-run-task").textContent()) ?? "";
@@ -115,7 +117,7 @@ try {
   const filled = await page
     .waitForFunction(
       () => {
-        const t = document.querySelector(".bg-run .bg-run-task")?.textContent ?? "";
+        const t = document.querySelector(".bg-run:not([hidden]) .bg-run-task")?.textContent ?? "";
         return t.includes("STANDARDS axis only") ? t : null;
       },
       undefined,
@@ -125,14 +127,21 @@ try {
     .catch(() => null);
   check("留在同一张卡上就自动补上原文（不重开弹层）", Boolean(filled), filled ?? "(仍是占位)");
   check("两条孩子都列出来", typeof filled === "string" && filled.includes("SPEC axis only"), filled ?? "");
-  const head = (await card.locator(".bg-run-agent").textContent()) ?? "";
+  const head = (await page.locator(".bg-run:not([hidden]) .bg-run-agent").textContent()) ?? "";
   check("卡片头跟着数据补成 reviewer", head === "reviewer", head);
-  await page.screenshot({ path: path.join(OUT, "1-script-filled.png"), animations: "disabled" });
+  const navAgent = (await page.locator(".bg-nav-item").first().locator(".bg-nav-agent").textContent()) ?? "";
+  check("左栏那一行也叫 reviewer", navAgent === "reviewer", navAgent);
+  await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "1-script-filled.png"), animations: "disabled" });
 
   // ---- 2. 前台派活失败：失败原因要出现在卡上（弹层一直开着）
   prompt("BGFAIL", "probe-fail");
-  const failCard = page.locator(".bg-run").filter({ hasText: "call_00_79ZGyKVyGhxhy8l7XsKw7723" }).first();
-  await failCard.waitFor({ timeout: 20000 });
+  // 失败那条在左栏（灯变红）：点它，右栏换页；再对着可见页断言。
+  const failItem = page.locator('.bg-nav-item[data-state="failed"]').first();
+  await failItem.waitFor({ timeout: 20000 });
+  check("左栏现在有两条 run", (await page.locator(".bg-nav-item").count()) === 2);
+  await failItem.click();
+  const failCard = page.locator(".bg-run:not([hidden])").first();
+  check("点左栏就换到失败那一页", ((await failCard.locator(".bg-run-id").textContent()) ?? "").includes("call_00_79ZGyKVyGhxhy8l7XsKw7723"));
   const stateText = (await failCard.locator(".bg-run-state").textContent()) ?? "";
   check("失败那张卡标了「失败」", stateText.includes("失败"), stateText);
   const errText = await failCard
@@ -142,7 +151,7 @@ try {
   check("失败原因照原样出现在卡上", (errText ?? "").startsWith("The workflow script is missing."), errText ?? "(空)");
   check("失败卡不出「最终输出」（没有 Return 块）", (await failCard.locator(".bg-run-out").count()) === 0 || !(await failCard.locator(".bg-run-out").isVisible()));
   check("失败卡不摆空的过程框", !(await failCard.locator(".bg-run-log").isVisible()));
-  await page.screenshot({ path: path.join(OUT, "2-failed.png"), animations: "disabled" });
+  await page.locator(".bg-sheet").screenshot({ path: path.join(OUT, "2-failed.png"), animations: "disabled" });
 
   // ---- 3. 老占位文案不再出现在界面上（它把责任推给了桥）
   const body = await page.locator(".bg-sheet").innerText();

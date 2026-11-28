@@ -223,16 +223,23 @@ interface ExecChildState {
   pending: boolean;
 }
 
-/** 详情里的一屏：一卡片 + 它几块会变的字。 */
+/** 详情里的一屏：左栏那一行 + 右边那一页，外加各自会变的字。 */
 interface BgRunNode {
+  /** 左栏那一行（`role=tab`）。 */
+  item: HTMLButtonElement;
+  itemAgent: HTMLElement;
+  itemTask: HTMLElement;
+  itemTime: HTMLElement;
+  itemDot: HTMLElement;
+  /** 右边那一页（`role=tabpanel`），没被选中时整页 hidden。 */
   root: HTMLElement;
   /** 状态词（运行中 / 已完成 / 失败），颜色由 `data-state` 决定。 */
   state: HTMLElement;
   /** 「已跑 / 用了」那口钟：等宽数字，跑着的时候 1.5 秒一刷。 */
   time: HTMLElement;
-  /** 卡片头那颗状态灯。 */
+  /** 页头那颗状态灯。 */
   dot: HTMLElement;
-  /** 卡片头那个名字（`agent`）。桥的 30 秒滴答会回填，不是建好就定死。 */
+  /** 页头那个名字（`agent`）。桥的 30 秒滴答会回填，不是建好就定死。 */
   agent: HTMLElement;
   /** 任务原文：同样会回填（脚本式 workflow 的孩子清单要等 `status.json` 落盘）。 */
   task: HTMLElement;
@@ -242,13 +249,13 @@ interface BgRunNode {
   /** 失败原因（`r.error`）与它外面那只红框。没有就 hidden。 */
   err: HTMLElement;
   errBox: HTMLElement;
-  /** 「过程」整段（小标题 + 日志）：失败且压根没启动 runner 的卡上要整段藏。 */
+  /** 「过程」整段（小标题 + 日志）：失败且压根没启动 runner 的页上要整段藏。 */
   logSec: HTMLElement;
   log: HTMLElement;
   /** 「最终输出」整段：没有 Return 块就整段藏。 */
   outSec: HTMLElement;
   out: HTMLElement;
-  /** 这个 run 有没有过程记录（桥还没接上的才 false；卡片上直说，不装成「还没有」。） */
+  /** 这个 run 有没有过程记录（桥还没接上的才 false；页上直说，不装成「还没有」。） */
   hasLog: boolean;
 }
 
@@ -612,9 +619,18 @@ export class App {
   private bgSheet: {
     sessionId: string;
     body: HTMLElement;
+    /** 左栏 + 右栏那整个两栏壳（没 run 的时候整块 hidden，让位给空态）。 */
+    wrap: HTMLElement;
+    /** 左栏 run 列表与它上面那行「运行 · N」。 */
+    nav: HTMLElement;
+    navHead: HTMLElement;
+    /** 右栏：每个 run 一页，只有选中的那页不 hidden。 */
+    panes: HTMLElement;
     /** 抬头那颗汇总胶囊（运行中 / 失败 / 全部结束）与它上面那行「共 N 个运行」。 */
     chip: HTMLElement;
     meta: HTMLElement;
+    /** 现在选中的 runId（左栏高亮 + 右栏显示哪一页）。 */
+    sel: string | null;
     runs: Map<string, BgRunNode>;
   } | null = null;
   private bgTimer: number | null = null;
@@ -18079,11 +18095,33 @@ export class App {
     close.onclick = () => this.closeSheet();
     head.append(headMain, close);
     const body = el("div", "bg-sheet-body");
+    const wrap = el("div", "bg-body");
+    const nav = el("nav", "bg-nav");
+    nav.setAttribute("role", "tablist");
+    nav.setAttribute("aria-label", tr("子代理"));
+    const navHead = el("div", "bg-nav-head");
+    navHead.hidden = true;
+    nav.append(navHead);
+    // ↑↓ 在左栏里换页（tablist 的惯用键位）；点也行。
+    nav.onkeydown = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      const ids = [...(this.bgSheet?.runs.keys() ?? [])];
+      const at = ids.indexOf(this.bgSheet?.sel ?? "");
+      if (at < 0) return;
+      const next = ids[at + (e.key === "ArrowDown" ? 1 : -1)];
+      if (!next) return;
+      e.preventDefault();
+      this.selectBgRun(next, true);
+    };
+    const panes = el("div", "bg-panes");
+    wrap.append(nav, panes);
+    wrap.hidden = true;
+    body.append(wrap);
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back, "window", { enter: "drawer" });
     this.setSheet(back);
-    this.bgSheet = { sessionId: sid, body, chip, meta, runs: new Map() };
+    this.bgSheet = { sessionId: sid, body, wrap, nav, navHead, panes, chip, meta, sel: null, runs: new Map() };
     const tick = () => {
       if (!this.bgSheet || this.bgSheet.sessionId !== sid) return;
       this.socket.send({ type: "bg.list", sessionId: sid });
@@ -18092,13 +18130,20 @@ export class App {
     this.bgTimer = window.setInterval(tick, 1500);
   }
 
-  /** `bg.list` 回来：按 runId 建/收卡片，再各自要一次日志尾（内容没变就不动 DOM）。 */
+  /**
+   * `bg.list` 回来：按 runId 建/收左栏那一行与右栏那一页，再各自要一次日志尾（内容没变就不动 DOM）。
+   *
+   * 一屏只看一条（左栏列表 + 右栏详情）：内容再长也只滚右半边，左栏那几行始终在原地。同一条 run 的
+   * 几块字还是活的 —— 桥在后面的 `bg.list` 里才把 agent / task 补上（脚本式 workflow 的原文要等
+   * `status.json` 落盘），只写建的那一次，回填永远看不到。
+   */
   private paintBgSheet(runs: BgRunDto[], error = ""): void {
     const sheet = this.bgSheet;
     if (!sheet) return;
     const keep = new Set(runs.map((r) => r.id));
     for (const [id, node] of sheet.runs) {
       if (keep.has(id)) continue;
+      node.item.remove();
       node.root.remove();
       sheet.runs.delete(id);
     }
@@ -18107,14 +18152,19 @@ export class App {
     const failed = runs.filter((r) => r.state === "failed").length;
     sheet.chip.hidden = !runs.length;
     sheet.meta.hidden = !runs.length;
+    sheet.wrap.hidden = !runs.length;
+    sheet.navHead.hidden = !runs.length;
     if (runs.length) {
       const chip = bgChipState(running, failed);
       if (sheet.chip.textContent !== chip.label) sheet.chip.textContent = chip.label;
       sheet.chip.dataset.state = chip.state;
       const meta = tr("共 {p1} 个运行", { p1: runs.length });
       if (sheet.meta.textContent !== meta) sheet.meta.textContent = meta;
+      const navLabel = tr("运行 · {p1}", { p1: runs.length });
+      if (sheet.navHead.textContent !== navLabel) sheet.navHead.textContent = navLabel;
     }
     if (!runs.length) {
+      sheet.sel = null;
       // `error` 只会在公网那只手上出现（桥不把任务原话发出去）；本地就是真的没有。
       const box = el("div", "bg-empty");
       const ic = el("div", "bg-empty-ic");
@@ -18127,15 +18177,41 @@ export class App {
     for (const r of runs) {
       let node = sheet.runs.get(r.id);
       if (!node) {
+        // 左栏那一行：状态灯 · 名字 · 用时 / 任务首行。一行说清「谁、活得怎么样、在干嘛」。
+        const item = el("button", "bg-nav-item") as HTMLButtonElement;
+        item.type = "button";
+        item.dataset.id = r.id;
+        item.id = `bgtab-${r.id}`;
+        item.setAttribute("role", "tab");
+        item.tabIndex = -1;
+        const itemTop = el("span", "bg-nav-top");
+        const itemDot = el("span", "bg-run-dot");
+        const itemAgent = el("span", "bg-nav-agent");
+        const itemTime = el("span", "bg-nav-time");
+        itemTop.append(itemDot, itemAgent, itemTime);
+        const itemTask = el("span", "bg-nav-task");
+        item.append(itemTop, itemTask);
+        item.onclick = () => this.selectBgRun(r.id);
+        sheet.nav.append(item);
+
+        // 右栏那一页：抬头（名字 / 状态 / 用时 / run id）吸顶，下面三块跟现在的详情一样。
         const root = el("article", "bg-run");
+        root.dataset.id = r.id;
+        root.setAttribute("role", "tabpanel");
+        root.setAttribute("aria-labelledby", item.id);
+        root.hidden = true;
+        const top = el("div", "bg-run-top");
         const line = el("div", "bg-run-head");
         const dot = el("span", "bg-run-dot");
-        const agentEl = el("span", "bg-run-agent", r.agent || tr("子代理"));
+        const agentEl = el("span", "bg-run-agent");
         const stateEl = el("span", "bg-run-state");
+        const timeEl = el("span", "bg-run-time");
+        line.append(dot, agentEl, stateEl, timeEl);
+        const metaRow = el("div", "bg-run-meta");
         const idEl = el("span", "bg-run-id", `#${r.id}`);
         idEl.title = r.id;
-        const timeEl = el("span", "bg-run-time");
-        line.append(dot, agentEl, stateEl, idEl, timeEl);
+        metaRow.append(idEl);
+        top.append(line, metaRow);
 
         const errBox = el("div", "bg-run-errbox");
         errBox.hidden = true;
@@ -18159,8 +18235,7 @@ export class App {
 
         const logSec = el("section", "bg-sec");
         const logHead = el("div", "bg-sec-head");
-        const labLog = el("span", "bg-sec-title", tr("过程"));
-        logHead.append(labLog);
+        logHead.append(el("span", "bg-sec-title", tr("过程")));
         const logEl = el("pre", "bg-run-log");
         logSec.append(logHead, logEl);
 
@@ -18171,9 +18246,16 @@ export class App {
         outSec.append(outHead, outEl);
         outSec.hidden = true;
 
-        root.append(line, errBox, taskWrap, logSec, outSec);
-        sheet.body.append(root);
+        const paneBody = el("div", "bg-run-body");
+        paneBody.append(errBox, taskWrap, logSec, outSec);
+        root.append(top, paneBody);
+        sheet.panes.append(root);
         node = {
+          item,
+          itemAgent,
+          itemTask,
+          itemTime,
+          itemDot,
           root,
           state: stateEl,
           time: timeEl,
@@ -18196,10 +18278,9 @@ export class App {
         }
         sheet.runs.set(r.id, node);
       }
-      // 卡片是活的：桥在后面的 `bg.list` 里才把 agent / task 补上（脚本式 workflow 的原文要等
-      // `status.json` 落盘）。只写建卡那一刻的话，回填永远看不到 —— 关弹层重开才行。
       const agentText = r.agent || tr("子代理");
       if (node.agent.textContent !== agentText) node.agent.textContent = agentText;
+      if (node.itemAgent.textContent !== agentText) node.itemAgent.textContent = agentText;
       // 还在等 `status.json` 落盘时摆占位（原文随后会自己补上）；派活当场就失败的不摆 —— 原文不会再来，
       // 留一行「没有任务原文」只是给红条添乱。
       const taskText = (r.task ?? "").trim();
@@ -18222,20 +18303,51 @@ export class App {
       if (node.state.textContent !== state) node.state.textContent = state;
       node.state.dataset.state = r.state;
       node.dot.dataset.state = r.state;
+      node.itemDot.dataset.state = r.state;
       node.root.dataset.state = r.state;
+      node.item.dataset.state = r.state;
       // 跑完了报总耗时（结束 − 开始）；还在跑就报「已跑多久」，两者都是「从开始起的钟」。
       const clock =
         r.state === "running"
           ? bgElapsedText(r.startedAt)
           : bgTookText(Math.max(0, (r.endedAt ?? Date.now()) - r.startedAt));
       if (node.time.textContent !== clock) node.time.textContent = clock;
+      if (node.itemTime.textContent !== clock) node.itemTime.textContent = clock;
+      // 左栏第二行：任务首行；没有原文（当场失败的）就退成状态词，别留一行空白。
+      const snippet = (taskShown.split("\n")[0] ?? "").trim() || state;
+      if (node.itemTask.textContent !== snippet) node.itemTask.textContent = snippet;
+      node.itemTask.title = taskShown || state;
       this.socket.send({ type: "bg.log", sessionId: sheet.sessionId, runId: r.id });
     }
+    // 选中的那条没了、或者还没选过：挑一条在跑的，没有就第一条。用户手动点的选择不动。
+    const want =
+      sheet.sel && sheet.runs.has(sheet.sel)
+        ? sheet.sel
+        : (runs.find((x) => x.state === "running") ?? runs[0]).id;
+    if (sheet.sel !== want) this.selectBgRun(want);
+  }
+
+  /** 左栏点哪条就只看哪页：列表的选中态与右栏的 hidden 一起动。 */
+  private selectBgRun(id: string, focus = false): void {
+    const sheet = this.bgSheet;
+    const node = sheet?.runs.get(id);
+    if (!sheet || !node) return;
+    sheet.sel = id;
+    for (const [rid, n] of sheet.runs) {
+      const on = rid === id;
+      n.item.setAttribute("aria-selected", String(on));
+      n.item.tabIndex = on ? 0 : -1;
+      n.root.hidden = !on;
+    }
+    if (focus) node.item.focus();
+    // 页刚显出来才量得到 scrollHeight：折行判断要等它可见之后再做。
+    window.requestAnimationFrame(() => this.syncBgTaskMore(node));
   }
 
   /** 任务原文超过四行才露「展开」；折起来时量的是完整 `scrollHeight`，展开后这个判断依然成立。 */
   private syncBgTaskMore(node: BgRunNode): void {
-    if (!node.root.isConnected) return;
+    // 没选中的页是 hidden，量出来恒为 0 —— 等它被选中时再量，别把「展开」提前说没了。
+    if (!node.root.isConnected || node.root.hidden) return;
     const line = parseFloat(getComputedStyle(node.task).lineHeight) || 20;
     const over = node.task.scrollHeight > line * 4 + 1;
     node.taskToggle.hidden = !over;

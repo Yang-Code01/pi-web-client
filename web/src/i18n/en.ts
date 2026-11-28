@@ -1179,6 +1179,7 @@ export const en: Dict = {
   "{p1} 个运行中": "{p1} running",
   "全部结束": "All finished",
   "共 {p1} 个运行": "{p1} runs",
+  "运行 · {p1}": "Runs · {p1}",
   "启动子代理后，对话上方会出现可点开的提示条。": "Once a subagent starts, a clickable strip appears above the conversation.",
   "已完成": "Finished",
   "最终输出": "Final answer",
