@@ -75,7 +75,8 @@ export function normalizeAnnounce(raw: unknown): AnnouncePayload | null {
       // room 按原始 UTF-8 算，bytes() 统计的是 JSON 转义后的字节：正文里引号/换行多时还会超，
       // 一轮轮往下截，直到真正落进 16 KB 硬上限（评审 #9）。
       while (bytes([only]) > MAX_ANNOUNCE_BYTES && only.body) {
-        only.body = truncBytes(only.body, Math.max(0, Buffer.byteLength(only.body, "utf8") - 256));
+        const over = bytes([only]) - MAX_ANNOUNCE_BYTES;
+        only.body = truncBytes(only.body, Math.max(0, Buffer.byteLength(only.body, "utf8") - Math.max(256, over)));
       }
     }
   }

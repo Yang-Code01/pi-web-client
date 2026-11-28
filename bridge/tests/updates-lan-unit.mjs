@@ -5,6 +5,7 @@
  * 用法：node --experimental-strip-types bridge/tests/updates-lan-unit.mjs
  */
 import assert from "node:assert/strict";
+import { isRepo, MAX_REPO_LEN } from "../../peer/src/repo.ts";
 import { ANNOUNCE_LIMITS, cutUtf8, groupIdFor, repoSlugFromRemote } from "../src/updates-lan.ts";
 import {
   MAX_ANNOUNCE_BATCHES,
@@ -21,6 +22,9 @@ const cases = [
   ["https://github.com/Yang-Code01/pi-web-client", "Yang-Code01/pi-web-client"],
   ["https://github.com/Yang-Code01/pi-web-client/", "Yang-Code01/pi-web-client"],
   ["ssh://git@gitlab.local/Yang-Code01/pi-web-client.git", "Yang-Code01/pi-web-client"],
+  // 显式端口：git@host:22:owner/name 与 ssh://git@host:22/owner/name 都要认（评审 #1）。
+  ["git@github.com:22:owner/name.git", "owner/name"],
+  ["ssh://git@github.com:22/owner/name.git", "owner/name"],
   // GitLab 的多层路径照收；.git 之后是网页路径，要切掉（评审 #2）。
   ["https://gitlab.com/group/subgroup/name", "group/subgroup/name"],
   ["https://github.com/owner/name.git/extra", "owner/name"],
@@ -33,6 +37,9 @@ const cases = [
 for (const [input, want] of cases) {
   assert.equal(repoSlugFromRemote(input), want, `repoSlugFromRemote(${JSON.stringify(input)})`);
 }
+
+assert.ok(isRepo("owner/name"));
+assert.ok(!isRepo("o/" + "n".repeat(MAX_REPO_LEN)), "超过 peer config 上限的仓库标识不合法（评审 #27）");
 
 // 组 id：只留 [a-z0-9-]，跨机器必须算出同一个（大小写、斜杠、下划线都归一）。
 assert.equal(groupIdFor("Yang-Code01/pi-web-client"), "grp-updates-yang-code01-pi-web-client");

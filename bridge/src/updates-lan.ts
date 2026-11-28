@@ -102,14 +102,16 @@ export function repoSlugFromRemote(url: string): string | null {
   let host = "";
   let rest = "";
   if (s.startsWith("git@")) {
-    const i = s.indexOf(":");
-    if (i < 0) return null;
-    host = s.slice(4, i);
-    rest = s.slice(i + 1);
+    // 显式端口是 `git@host:22:owner/name`（两个冒号）：按「主机 / 可选端口 / 路径」拆（评审 #1）。
+    const m = /^git@([^:/]+)(?::(\d+))?:(.+)$/.exec(s);
+    if (!m) return null;
+    host = m[1];
+    rest = m[3];
   } else {
     const m = /^(?:ssh:\/\/|https?:\/\/)(?:[^@/]+@)?([^/]+)\/(.+)$/.exec(s);
     if (!m) return null;
-    host = m[1] ?? "";
+    // ssh://git@host:22/owner/name：端口不进仓库标识（评审 #1）。
+    host = m[1].replace(/:\d+$/, "");
     rest = m[2] ?? "";
   }
   const segs = rest.split("/").filter(Boolean);
@@ -222,7 +224,10 @@ export class UpdatesLan {
     try {
       const { stdout } = await run("git", ["-C", ROOT, "remote", "get-url", "origin"], { timeout: 5_000, windowsHide: true });
       const repo = repoSlugFromRemote(stdout);
-      if (repo) {
+      if (repo && repo.length > 120) {
+        // peer 的 config 只收 120 字符：超长的多段路径会被静默丢掉，用户永远进不了组（评审 #27）。
+        this.setError("仓库标识太长（超过 120 字符）：换一个短一点的 remote 名字再试");
+      } else if (repo) {
         info = { repo, groupId: groupIdFor(repo), groupName: `${repo} 更新` };
       }
     } catch {
@@ -301,6 +306,11 @@ export class UpdatesLan {
     if (on && !info) throw new Error("这个检出没有 git remote origin，认不出是哪份仓库");
     // 关闭时保留已登记的 repo：repoInfo() 偶发失败（git 超时 / 目录被挪）不能把标识抹掉（评审 #1）。
     const repo = info?.repo || this.peer.view().status?.config.updates?.repo || "";
+    // 认不出仓库时不能把 publisher 打开（peer 会 400）；关闭时若确实没标识，就别写空串（评审 #4）。
+    if (!repo) {
+      if (on) throw new Error("还没有仓库标识：先给这个检出配一个 git remote origin（owner/name）");
+      return this.view();
+    }
     await this.peer.setConfig({ updates: { repo, publisher: on } });
     if (on) {
       // 每个 timer 触发后从 kicks 里摘掉：反复开关不会无限增长（评审 #4）。
@@ -359,7 +369,17 @@ export class UpdatesLan {
   }
 
   /** 邀请 + 补最近三条公告：定时 reconcile 和播报后的拉人共用这一份（评审 #14）。 */
-  private async inviteAndReplay(info: RepoInfo, want: string[]): Promise<void> {
+  private inviteQueue: Promise<void> = Promise.resolve();
+
+  private inviteAndReplay(info: RepoInfo, want: string[]): Promise<void> {
+    // 定时 reconcile、播报后的拉人、开关的 kick 都会进来：排队做，
+    // 同一批人不该被两条路径同时邀请、同时补发（评审 #5）。
+    const run = this.inviteQueue.then(() => this.inviteOnce(info, want));
+    this.inviteQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async inviteOnce(info: RepoInfo, want: string[]): Promise<void> {
     await this.peer.group({ action: "invite", id: info.groupId, members: want });
     // 补公告彼此独立：并行发，别让 N 台机器把 10 秒一轮的 reconcile 拖住（评审 #12）。
     await Promise.all(want.map((nodeId) => this.peer.replayAnnouncements(info.groupId, nodeId, 3).catch(() => null)));
@@ -482,7 +502,13 @@ export class UpdatesLan {
       } else if (group.announceOnly === true && group.publisher !== status.nodeId) {
         // 换机器（D441）：新机器接管发布权，v+1 广播出去，组里会插一条「X 成为新的发布者」。
         const claimed = await this.peer.group({ action: "publisher", id: info.groupId });
-        group = claimed.group ?? group;
+        if (claimed.group) group = claimed.group;
+        // 接管失败（本机还没被拉进组）必须停下：接着发只会让成员看到
+        // 「公告来自 A、组上的发布者却是 B」这种自相矛盾的状态（评审 #2）。
+        if (group.publisher !== status.nodeId) {
+          this.setError("接管发布权失败：本机还不是这个更新组的成员，先让对方把你拉进组");
+          return;
+        }
       }
       // 同 id 的普通群（被人为建过）不能当成更新组往里发公告 / 拉人（评审 #11）。
       if (group && group.announceOnly !== true) {

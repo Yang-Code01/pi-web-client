@@ -285,8 +285,15 @@ async function main() {
     text: `${REPO} 更新到 def5678（2026-11-28）`,
     announce: { repo: REPO, commit: "def5678", batches: [batch], howTo: "auto" },
   });
+  // 公告可能晚于 1.2 秒才到：等一段时间，并确认最后两次采样一致（评审 #21）。
   await new Promise((r) => setTimeout(r, 1200));
-  const after = await messages(A, GROUP);
+  let after = await messages(A, GROUP);
+  for (let i = 0; i < 3; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    const next = await messages(A, GROUP);
+    if (next.length === after.length) break;
+    after = next;
+  }
   if (after.length === before) ok("退群后公告不再进来（opt-out 拦住了快照）");
   else bad("退群后还收到了公告", { before, after: after.length });
 
@@ -326,10 +333,16 @@ async function main() {
     return t?.group?.publisher === cMe.nodeId ? t.group : null;
   }).catch(() => undefined);
   // `/threads` 不暴露 v，直接看成员的状态文件：换人必须把版本抬到「旧 v + 1」。
-  const memberState = JSON.parse(fs.readFileSync(path.join(ROOT, "mem", "groups.json"), "utf8"));
+  let memberState;
+  try {
+    memberState = JSON.parse(fs.readFileSync(path.join(ROOT, "mem", "groups.json"), "utf8"));
+  } catch (err) {
+    bad("读不到成员本机的 groups.json", err.message);
+    memberState = [];
+  }
   if (!Array.isArray(memberState)) {
     bad("成员本机的 groups.json 不是数组", typeof memberState);
-    return;
+    memberState = [];
   }
   const memberGroup = memberState.find((g) => g.id === GROUP);
   if (memberGroup?.v > 1 && taken?.publisher === cMe.nodeId) ok(`换发布者后版本抬到 ${memberGroup.v}（旧成员 v 更大也收）`);

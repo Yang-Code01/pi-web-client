@@ -458,6 +458,8 @@ export class Messages {
     const members = [this.me(), ...others.map((id) => this.identity(id))];
     // publisher 必须真的在名册里：否则这个只读群建出来没人能发（评审 #10/#19）。
     if (opts.publisher && !members.some((m) => m.nodeId === opts.publisher)) throw new Error("发布者必须是群成员");
+    // 形状不对不能静默丢掉：只读群的 publisher 会退到 owner，建群的脚本却以为远端是发布者（评审 #7）。
+    if (opts.publisher && !/^[\w-]{1,64}$/.test(opts.publisher)) throw new Error("发布者 nodeId 不合法");
     const title = name.trim().slice(0, 64) || members.map((m) => this.nameOf(m)).slice(0, 3).join("、");
     const wanted = typeof opts.id === "string" ? opts.id.trim() : "";
     if (wanted && (!isGroupId(wanted) || wanted.length > 80 || !/^[a-zA-Z0-9_-]+$/.test(wanted))) {
@@ -476,7 +478,7 @@ export class Messages {
       at,
       ...(opts.announceOnly ? { announceOnly: true } : {}),
       // publisher 会进快照、对端 normalizeGroup 会截到 64：本机也先按同一形状收口，别让两边值不同（评审 #15）。
-    ...(opts.publisher && /^[\w-]{1,64}$/.test(opts.publisher) ? { publisher: opts.publisher } : {}),
+    ...(opts.publisher ? { publisher: opts.publisher } : {}),
     };
     this.ctx.groups.put(group);
     this.appendSys(group.id, this.me(), { op: "create", actor: this.nameOf(this.me()), name: title, names: members.slice(1).map((m) => this.nameOf(m)) }, at);
@@ -572,7 +574,9 @@ export class Messages {
     }
     // publisher 空着时写权限回退 owner：owner 若不在名册里，回退会让一个非成员继续能写（评审 #23）。
     if (!group.publisher && !members.some((m) => m.nodeId === group.owner)) {
-      members = [this.identity(group.owner), ...members].slice(0, MAX_GROUP_MEMBERS);
+      // 满员时截断不能把刚补进来的自己挤掉（评审 #8）：owner 放最前、自己放最后。
+      const rest = members.filter((m) => m.nodeId !== this.ctx.nodeId).slice(0, MAX_GROUP_MEMBERS - 2);
+      members = [this.identity(group.owner), ...rest, this.me()].slice(0, MAX_GROUP_MEMBERS);
     }
     const next: Group = { ...group, members, publisher: this.ctx.nodeId, v: group.v + 1, at: Date.now() };
     this.ctx.groups.put(next);

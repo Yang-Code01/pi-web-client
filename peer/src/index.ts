@@ -102,7 +102,12 @@ const files = new Files({
   groupAnnounceOnly: (id) => {
     const group = groups.get(id);
     if (!group || group.left) return null;
-    return { announceOnly: group.announceOnly === true, publisher: group.publisher, owner: group.owner };
+    return {
+      announceOnly: group.announceOnly === true,
+      publisher: group.publisher,
+      owner: group.owner,
+      members: group.members.map((m) => m.nodeId),
+    };
   },
 });
 

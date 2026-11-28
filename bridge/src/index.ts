@@ -1493,6 +1493,8 @@ async function main(): Promise<void> {
     }
     if (url.pathname === "/api/updates/publisher" && req.method === "POST") {
       if (publicReq) return json(res, 403, { error: "公网不能改本机的更新组设置" });
+      // 局域网关着的时候写开关只会让前端等一个注定失败的请求（评审 #19）。
+      if (!peerOn) return json(res, 409, { error: "局域网已禁用：先在设置里打开内网通" });
       let body: { on?: unknown };
       try {
         body = (await readBody(req)) as { on?: unknown };
@@ -1508,6 +1510,7 @@ async function main(): Promise<void> {
     }
     if (url.pathname === "/api/updates/check" && req.method === "POST") {
       if (publicReq) return json(res, 403, { error: "公网不能手动触发更新检查" });
+      if (!peerOn) return json(res, 409, { error: "局域网已禁用：先在设置里打开内网通" });
       try {
         return json(res, 200, await updates.checkNow());
       } catch (err) {

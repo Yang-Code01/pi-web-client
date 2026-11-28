@@ -188,7 +188,7 @@ export class Files {
       /** 群：成员（不含我）；不认识这个群 / 我已退出时是 `null`。 */
       groupMembers?: (groupId: string) => string[] | null;
       /** 群是不是只读更新组、发布者是谁（D441）：收文件时也要拦非发布者。 */
-      groupAnnounceOnly?: (groupId: string) => { announceOnly?: boolean; publisher?: string; owner?: string } | null;
+      groupAnnounceOnly?: (groupId: string) => { announceOnly?: boolean; publisher?: string; owner?: string; members?: string[] } | null;
     },
   ) {
     for (const dir of [this.inbox(), statePath("out")]) fs.mkdirSync(dir, { recursive: true });
@@ -448,9 +448,13 @@ export class Files {
     const group = isGroupId(threadId);
     if (group) {
       const gate = this.ctx.groupAnnounceOnly?.(threadId);
-      if (gate && !canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, this.ctx.nodeId)) {
+      if (gate) {
+      // 与 messages.assertWritable 的口径对齐：先看名册，再判写权限（评审 #29）。
+      if (gate.members && !gate.members.includes(this.ctx.nodeId)) throw new Error("你不在这个群的名册里");
+      if (!canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, this.ctx.nodeId)) {
         throw new Error("这是只读的更新组：只有发布者能发文件");
       }
+    }
     }
     const targets = group ? (this.ctx.groupMembers?.(threadId) ?? null) : [threadId];
     if (!targets) throw new Error("不在这个群里了");

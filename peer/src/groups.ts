@@ -99,7 +99,7 @@ function optOutFileStamp(): string {
 
 export function optOutIds(): Set<string> {
   const now = Date.now();
-  if (optOutCache && now < optOutRetryAt) return optOutCache;
+  if (optOutCache && now < optOutRetryAt) return new Set(optOutCache); // 退避期间也别把可变缓存交出去（评审 #30）
   if (optOutCache && now - optOutCheckedAt < OPT_OUT_TTL_MS) return optOutCache;
   optOutCheckedAt = now;
   const stamp = optOutFileStamp();

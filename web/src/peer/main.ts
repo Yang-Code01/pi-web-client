@@ -704,6 +704,7 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
 async function loadStatus(): Promise<void> {
   try {
     S.view = await getJson<PeerView>("/api/peer");
+    if (S.view?.status?.nodeId) knownNodeId = S.view.status.nodeId;
   } catch {
     S.view = { enabled: false, running: false, reason: tr("拿不到状态"), status: null };
   }
@@ -723,6 +724,16 @@ function normalizeUpdates(view: Partial<UpdatesView> | null | undefined): Update
     lastAnnouncedAt: src.lastAnnouncedAt ?? 0,
     lastCheckAt: src.lastCheckAt ?? 0,
     lastError: src.lastError ?? "",
+    hotdeploy: src.hotdeploy === true,
+    peerRunning: src.peerRunning === true,
+    available: src.available === true,
+    joined: src.joined === true,
+    publisher: src.publisher === true,
+    memberCount: typeof src.memberCount === "number" ? src.memberCount : 0,
+    onlineCount: typeof src.onlineCount === "number" ? src.onlineCount : 0,
+    repo: src.repo ?? "",
+    groupId: src.groupId ?? "",
+    groupName: src.groupName ?? "",
   } as UpdatesView;
 }
 
@@ -1918,8 +1929,11 @@ function toggleEmoji(wrap: HTMLElement, peer: string): void {
 
 // ---------------------------------------------------------------- 表情回应
 
+let knownNodeId = "";
+
 function myId(): string {
-  return S.view?.status?.nodeId ?? "";
+  // 状态请求偶发失败时别把发布者当成「不知道我是谁」：记住上次拿到的 nodeId（评审 #10）。
+  return S.view?.status?.nodeId ?? knownNodeId;
 }
 
 /**
@@ -2406,7 +2420,7 @@ function entryNode(e: Entry, t: Thread, inPane = false, ro = readonlyGroup(t)): 
     } else {
       // 旧纯文本与记录转发过来的 Markdown：表格与图片不进气泡（#512）。
       body.classList.add("md");
-      body.append(renderMarkdown(text, { tables: false, imageSrc: () => null, openPath: (path) => void copyPath(path) }));
+      body.append(renderMarkdown(text, MD_OPTS));
     }
     bub.append(body);
     bub.addEventListener("click", (ev) => {
@@ -2843,7 +2857,7 @@ function leftBar(t: Thread): HTMLElement {
 }
 
 /** D441：公告卡 / 设置卡共用的一套入口与命令行（评审 #29/#30）。 */
-const ANNOUNCE_MD = { tables: false, imageSrc: () => null, openPath: (p: string) => void copyPath(p) };
+const MD_OPTS = { tables: false, imageSrc: () => null, openPath: (p: string) => void copyPath(p) };
 const UPDATE_LOG_URL = "/?settings=whatsnew";
 const UPDATE_TOOLS_URL = "/?settings=tools";
 const MANUAL_UPDATE = "git pull && npm install && npm start";
@@ -2880,14 +2894,14 @@ function announceCard(e: Entry, a: NonNullable<Entry["announce"]>): HTMLElement 
   const batches = Array.isArray(a.batches) ? a.batches : [];
   if (!batches.length && e.text) {
     const body = h("div", "an-body md");
-    body.append(renderMarkdown(e.text, ANNOUNCE_MD));
+    body.append(renderMarkdown(typeof e.text === "string" ? e.text : "", MD_OPTS));
     card.append(body);
   }
   for (const b of batches) {
     const batch = h("div", "an-batch");
     batch.append(h("div", "an-title", b.title));
     const body = h("div", "an-body md");
-    body.append(renderMarkdown(b.body, ANNOUNCE_MD));
+    body.append(renderMarkdown(typeof b.body === "string" ? b.body : "", MD_OPTS));
     batch.append(body);
     card.append(batch);
   }
@@ -2915,7 +2929,7 @@ async function rejoinUpdates(t?: Thread): Promise<void> {
     // 两个请求互不依赖，别串行等（评审 #14）。
     await Promise.all([t ? loadThreads() : Promise.resolve(), loadUpdates()]);
     renderAll();
-    if (res.pending) toast(tr("本机还不在这个组的名单里，等发布者把你拉回去"));
+    if (res?.pending) toast(tr("本机还不在这个组的名单里，等发布者把你拉回去"));
     else toast(tr("已重新订阅，等发布者把你拉回更新组"));
   } catch (err) {
     toast((err as Error).message);
@@ -4440,8 +4454,9 @@ async function setPublisher(on: boolean): Promise<void> {
 async function checkUpdates(): Promise<void> {
   try {
     S.updates = normalizeUpdates(await postJson<Partial<UpdatesView>>("/api/updates/check", {}));
-    renderAll();
+    // 先算好文案再 renderAll：渲染万一抛错，用户至少还能看到「检查失败」的原因（评审 #16）。
     const first = S.updates.lastError.split("\n").find((line) => line.trim())?.slice(0, 120);
+    renderAll();
     toast(first ? tr("检查失败：{p1}", { p1: first }) : tr("检查完了"));
   } catch (err) {
     toast((err as Error).message);
@@ -4948,6 +4963,8 @@ const heartbeat = (): void => {
   void postJson("/api/peer/presence").catch(() => {});
 };
 window.setInterval(heartbeat, 60_000);
+// 更新组的播报进度在 bridge 上，别等用户手动刷新才看到（评审 #13）。
+window.setInterval(() => void loadUpdates(), 60_000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) heartbeat();
 });
