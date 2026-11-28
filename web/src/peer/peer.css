@@ -1355,7 +1355,7 @@ body.embedded .brand .nm { display: none; }
 
 /* D441 只读更新组：公告卡片跟主题走（不写死颜色），正文按批次分组，超长自己滚。 */
 .msg.announce { max-width: min(720px, 100%); }
-.an-card { display: flex; flex-direction: column; gap: 8px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; border-top-left-radius: 4px; background: var(--panel-2); font-size: 12.5px; }
+.an-card { display: flex; flex-direction: column; gap: 8px; width: fit-content; min-width: 300px; max-width: min(560px, 100%); padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; border-top-left-radius: 4px; background: var(--panel-2); font-size: 12.5px; }
 .an-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .an-repo { font-weight: 600; }
 .an-sha { padding: 1px 5px; border-radius: 5px; background: var(--sunken); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--dim); }

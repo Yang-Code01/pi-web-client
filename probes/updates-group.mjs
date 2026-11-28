@@ -172,7 +172,7 @@ await page.goto(`${BASE}/peer.html`);
 await page.waitForSelector(".an-card", { timeout: 15_000 });
 
 check((await page.locator(".compose .peer-rich").count()) === 0, "成员没有输入区");
-check((await page.locator(".compose .readonlybar").count()) === 1, "成员底部是只读提示条");
+check((await page.locator(".compose.readonlybar").count()) === 1, "成员底部是只读提示条");
 check((await page.locator('.tools .icon-btn[title="发文件"]').count()) === 0, "成员没有「发文件」");
 
 const card = page.locator(".an-card").first();
@@ -205,6 +205,7 @@ await page.waitForSelector(".card", { timeout: 5000 });
 const meText = await page.locator("#main").innerText();
 check(meText.includes("更新公告") && meText.includes("没加入"), "成员设置页显示没加入", meText.slice(0, 300));
 check(meText.includes("重新加入更新组"), "成员设置页给「重新加入更新组」");
+await page.locator("h3", { hasText: "更新公告" }).scrollIntoViewIfNeeded();
 await page.screenshot({ path: path.join(OUT, "member-settings.png") });
 
 // 字号 150%：卡片不横向溢出。
@@ -223,7 +224,7 @@ await mock(page2, PUB, "发布者", true);
 await page2.goto(`${BASE}/peer.html`);
 await page2.waitForSelector(".an-card", { timeout: 15_000 });
 check((await page2.locator(".compose .peer-rich").count()) === 1, "发布者有输入区");
-check((await page2.locator(".compose .readonlybar").count()) === 0, "发布者没有只读条");
+check((await page2.locator(".compose.readonlybar").count()) === 0, "发布者没有只读条");
 check((await page2.locator(".an-card").count()) === 1, "发布者那边公告卡片照画");
 check((await page2.locator(".reacts").count()) === 1, "发布者那边照常画回应行");
 await page2.getByRole("button", { name: "我" }).click();
@@ -231,6 +232,7 @@ await page2.waitForSelector(".card", { timeout: 5000 });
 const pubText = await page2.locator("#main").innerText();
 check(pubText.includes("本机是发布者"), "发布者设置页显示「本机是发布者」", pubText.slice(0, 300));
 check((await page2.locator(".acts .btn", { hasText: "立即检查" }).isEnabled().catch(() => false)) === true, "发布者「立即检查」可点");
+await page2.locator("h3", { hasText: "更新公告" }).scrollIntoViewIfNeeded();
 await page2.screenshot({ path: path.join(OUT, "publisher-settings.png") });
 
 await browser.close();

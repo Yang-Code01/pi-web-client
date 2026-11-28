@@ -2816,7 +2816,7 @@ function announceCard(e: Entry): HTMLElement {
   const a = e.announce!;
   const card = h("div", "an-card");
   const head = h("div", "an-head");
-  head.append(h("span", "an-repo", a.repo), h("span", "an-sha", a.commit.slice(0, 7)), h("span", "an-day", dayLabel(e.at)));
+  head.append(h("span", "an-repo", a.repo), h("span", "an-sha", a.commit.slice(0, 7)), h("span", "an-day", fmtDate(e.at)));
   card.append(head);
   if (!a.batches.length && e.text) {
     const body = h("div", "an-body md");
@@ -4317,7 +4317,7 @@ function updatesCard(): HTMLElement {
     h("span", "k", tr("状态")),
     h("span", "v", u.publisher ? tr("本机是发布者") : u.joined ? tr("已加入（只读）· {p1} 人", { p1: String(u.memberCount) }) : tr("没加入")),
     h("span", "k", tr("上次播报")),
-    h("span", "v", u.lastCommit ? `${u.lastCommit} · ${clock(u.lastAnnouncedAt)}` : tr("还没播报过")),
+    h("span", "v", u.lastCommit ? `${u.lastCommit} · ${fmtDate(u.lastAnnouncedAt)} ${clock(u.lastAnnouncedAt)}` : tr("还没播报过")),
   );
   card.append(kv);
   card.append(
