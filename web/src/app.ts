@@ -13761,16 +13761,26 @@ export class App {
   openSettingsFromUrl(): void {
     const tab = new URLSearchParams(location.search).get("settings");
     if (!tab) return;
+    const wipe = (): void => {
+      try {
+        history.replaceState(null, "", location.pathname);
+      } catch {
+        /* 背后是个不让改 URL 的壳：那就留着参数，不为这种事报错 */
+      }
+    };
+    // 热部署不在「设置」页签里，它是外观面板的「连接与设置 → 工具」；D441 的公告卡就落在这里。
+    if (tab === "tools") {
+      this.openDisplaySheet();
+      this.setDisplayTab("conn", "tools");
+      wipe();
+      return;
+    }
     const known: SettingsTab[] = [
       "global", "project", "trust", "login", "passphrase", "ext", "subagents", "notify", "preview", "runtime", "changelog", "whatsnew",
     ];
     if (!(known as string[]).includes(tab)) return;
     this.openSettingsSheet(tab as SettingsTab);
-    try {
-      history.replaceState(null, "", location.pathname);
-    } catch {
-      /* 背后是个不让改 URL 的壳：那就留着参数，不为这种事报错 */
-    }
+    wipe();
   }
 
   private openSettingsSheet(tab: SettingsTab): void {

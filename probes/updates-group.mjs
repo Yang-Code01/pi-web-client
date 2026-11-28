@@ -185,6 +185,9 @@ check(cardText.includes("热部署"), "有热部署时「怎么更新」指向�
 await page.locator(".an-acts .btn").first().click();
 const opened = await page.evaluate(() => window.__opened ?? []);
 check(opened.some((u) => u === "/?settings=whatsnew"), "打开更新日志指向 /?settings=whatsnew", opened);
+await page.locator(".an-acts .btn").nth(1).click();
+const opened2 = await page.evaluate(() => window.__opened ?? []);
+check(opened2.some((u) => u === "/?settings=tools"), "热部署可用时有「打开热部署」→ /?settings=tools", opened2);
 
 // 右键：只读群里只剩「复制文字」。
 await page.locator(".msg .bub, .msg .an-card").first().click({ button: "right" });
