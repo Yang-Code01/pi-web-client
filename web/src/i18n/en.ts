@@ -4025,6 +4025,8 @@ export const en: Dict = {
   "开了之后手机不在局域网也能连上这条桥": "Lets your phone reach this bridge from outside the LAN",
   "强调色": "Accent color",
   "改了立即生效：外观存在这个浏览器里，标签行与界面元素存在桥上": "Changes apply immediately: appearance is stored in this browser, tab row and UI elements on the bridge",
+  "对话正文": "Chat transcript",
+  "只缩放聊天记录这一块，叠在「字号」上相乘；双击轨道回 100%": "Scales only the chat transcript, multiplied onto Text size; double-click the track for 100%",
   "整页一起缩放；拖动或点刻度，双击轨道回 100%": "Scales the whole page; drag or click a mark, double-click the track for 100%",
   "未开": "Off",
   "界面与推送": "UI and notifications",
