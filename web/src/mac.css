@@ -279,14 +279,12 @@ html[data-ui="mac"] .st-seg__btn:active { scale: 0.96; }
 html[data-ui="mac"] .st-tabs__btn.on,
 html[data-ui="mac"] .st-seg__btn.on {
   color: var(--text);
-  background: var(--mac-knob);
+  /* 选中滑块：主题各自的近同系灰（D455）。以前这里是 `--mac-knob` —— 那是开关圆点的白色，
+     深色主题下只有补两条覆盖才不至于白底白字，右栏那四颗页签就漏补了。 */
+  background: var(--mac-seg-knob);
   border-color: transparent;
   box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.04), 0 1px 4px rgba(0, 0, 0, 0.16);
 }
-html[data-ui="mac"][data-theme="mac-dark"] .st-tabs__btn.on,
-html[data-ui="mac"][data-theme="mac-dark"] .st-seg__btn.on { background: #636366; }
-html[data-ui="mac"][data-theme="mac-midnight"] .st-tabs__btn.on,
-html[data-ui="mac"][data-theme="mac-midnight"] .st-seg__btn.on { background: #4b5675; }
 
 /* 设置里的勾选框 → iOS / macOS 开关。只改设置台与设置行里的，列表多选的勾选框保持勾选框。 */
 html[data-ui="mac"] :is(.settings-row, .st-console) input[type="checkbox"] {

@@ -1610,7 +1610,9 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
   transition: background var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
 }
 .queue .exec-tabs button.on {
-  color: var(--text); border-bottom: 0; background: var(--mac-knob);
+  /* 跟设置台的分段控件同一颗滑块（D455）：用 `--mac-seg-knob`，别用 `--mac-knob` —— 后者是开关圆点的
+     白色，深色主题下也是近白，选中那颗就变成白底配浅色字（实测 1.03:1，等于看不见）。 */
+  color: var(--text); border-bottom: 0; background: var(--mac-seg-knob);
   box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.04), 0 1px 4px rgba(0, 0, 0, 0.16);
 }
 .queue .exec-tabs .pip {
