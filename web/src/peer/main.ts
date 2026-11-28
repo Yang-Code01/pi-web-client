@@ -2371,7 +2371,7 @@ let shownThread = "";
 const shownIds = new Set<string>();
 
 function entryNode(e: Entry, t: Thread, inPane = false, ro = readonlyGroup(t)): HTMLElement {
-  const mine = e.from.nodeId === S.view?.status?.nodeId;
+  const mine = e.from.nodeId === myId();
   // 撤回（P3）：原气泡换成一整行灰条，原文不再显示（文件里还在，见 D299）。
   if (e.kind === "sys") return sysTip(e);
   if (e.recalled) {
@@ -2697,7 +2697,7 @@ function topicPane(t: Thread): HTMLElement | null {
     topicScroll = atBottom ? -1 : list.scrollTop;
   });
   pane.append(head, list);
-  if (!t.group?.left) {
+  if (!t.group?.left && !readonlyGroup(t)) {
     const foot = h("div", "topic-compose");
     const send = h("button", "send", tr("回复")) as HTMLButtonElement;
     send.type = "button";
@@ -4424,7 +4424,7 @@ function updatesCard(): HTMLElement {
   check.disabled = !u.publisher;
   check.title = u.publisher ? tr("现在就 fetch 一次 origin/main") : tr("先打开上面的开关");
   acts.append(check);
-  if (!u.joined && !u.publisher) {
+  if (!u.joined) {
     const join = btnEl(tr("重新加入更新组"), "btn", () => void rejoinUpdates());
     acts.append(join);
   }

@@ -525,14 +525,13 @@ export class Messages {
   /** 退群：名单里去掉自己、版本 +1，通知剩下的人；本机会话留着（能看历史），不能再发。 */
   leaveGroup(groupId: string): Group {
     const group = this.mine(groupId);
+    // 先写 opt-out：写不进去（磁盘满 / 权限）就抛错，本机还留在组里，不会出现「退了但没记住」（评审 #11）。
+    if (group.announceOnly) setOptOut(groupId, true);
     const members = group.members.filter((m) => m.nodeId !== this.ctx.nodeId);
     const next: Group = { ...group, members, v: group.v + 1, at: Date.now() };
     this.broadcastGroup(next);
     const left: Group = { ...next, left: true };
     this.ctx.groups.put(left);
-    // 更新组：退出是 opt-out（D441）—— 发布者下次邀请时名单里也没有我，但我这边也记一份，
-    // 免得发布者还没看到退群通知时又把我拉回去。
-    if (group.announceOnly) setOptOut(groupId, true);
     this.appendSys(groupId, this.me(), { op: "leave", actor: this.nameOf(this.me()) });
     return left;
   }

@@ -41,12 +41,12 @@ for (const [input, want] of cases) {
 assert.ok(isRepo("owner/name"));
 assert.ok(!isRepo("o/" + "n".repeat(MAX_REPO_LEN)), "超过 peer config 上限的仓库标识不合法（评审 #27）");
 
-// 组 id：只留 [a-z0-9-]，跨机器必须算出同一个（大小写、斜杠、下划线都归一）。
-assert.equal(groupIdFor("Yang-Code01/pi-web-client"), "grp-updates-yang-code01-pi-web-client");
-// `_` / `.` 被压平后与只把 `/` 换掉不同：加短哈希，避免 A_B/C.D 与 a-b/c-d 撞同一个组（评审 #2）。
-assert.ok(groupIdFor("A_B/C.D").startsWith("grp-updates-a-b-c-d-"));
+// 组 id：只留 [a-z0-9-] + 短哈希；跨机器必须算出同一个（大小写、斜杠、下划线都归一）。
+assert.ok(groupIdFor("Yang-Code01/pi-web-client").startsWith("grp-updates-yang-code01-pi-web-client-"));
 assert.notEqual(groupIdFor("A_B/C.D"), groupIdFor("a-b/c-d"));
-assert.equal(groupIdFor("////"), "grp-updates-repo");
+// `/`、`-`、`_` 压平后同名（a-b/c、a/b-c、a/b/c）：哈希必须把它们分开（评审 #1）。
+assert.equal(new Set(["a-b/c", "a/b-c", "a/b/c"].map(groupIdFor)).size, 3);
+assert.ok(groupIdFor("////").startsWith("grp-updates-repo-"));
 assert.ok(groupIdFor("x/".padEnd(200, "y")).length <= 80, "组 id 不超过 peer 的 80 字符上限");
 
 // normalizeAnnounce：形状不对整条拒、超限只裁不丢（评审 #12）。

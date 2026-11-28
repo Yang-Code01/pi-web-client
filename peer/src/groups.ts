@@ -133,8 +133,15 @@ export function optOutIds(): Set<string> {
 }
 
 export function setOptOut(id: string, on: boolean): void {
-  // 复制一份再改：optOutIds() 每次都给副本，这里仍复制一次，避免以后改回去时踩坑（评审 #21）。
-  const set = new Set(optOutIds());
+  // 直接从磁盘读一份再改：缓存可能正处在 10 秒退避或 1 秒 TTL 里，拿它覆写会把别的组的记录抹掉（评审 #4）。
+  let set: Set<string>;
+  try {
+    const raw = JSON.parse(fs.readFileSync(optOutFile(), "utf8"));
+    set = new Set((Array.isArray(raw) ? raw : []).filter((x) => typeof x === "string"));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    set = new Set();
+  }
   if (on) set.add(id);
   else set.delete(id);
   try {

@@ -20,6 +20,7 @@ import { MAX_MARKET_FRAME, ingest, manifestResponse, parseFrame, touchBlob } fro
 import type { LocalActivity } from "./presence.ts";
 import type { Threads } from "./threads.ts";
 import type { Groups } from "./groups.ts";
+import { optOutIds } from "./groups.ts";
 
 export interface PeerContext {
   cfg: PeerConfig;
@@ -154,7 +155,8 @@ export function createPeerServer(ctx: PeerContext): http.Server {
     version: VERSION,
     status: activity.status(),
     avatar: cfg.avatar,
-    ...(cfg.updates.repo ? { updates: { ...cfg.updates } } : {}),
+    // hello 应答也要带 opt-out 名单：只靠手动地址单向认识的机器，看不到我们退过哪些组（评审 #9）。
+    ...(cfg.updates.repo ? { updates: { ...cfg.updates, ...(optOutIds().size ? { optOut: [...optOutIds()] } : {}) } } : {}),
   });
   const configView = () => ({
     hidden: cfg.hidden,
@@ -198,7 +200,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         // 先把每一项都校验、算成 next*，最后一次性写 cfg：任何一步 400 都不能留下
         // 「内存改了、磁盘没存」的半截状态（评审 #9）。
         const nextNickname =
-          typeof body.nickname === "string" ? body.nickname.trim().replace(/  +/g, " ").slice(0, 40) : undefined;
+          typeof body.nickname === "string" ? body.nickname.trim().replace(/[\s\u3000]+/g, " ").slice(0, 40) : undefined;
         if (nextNickname !== undefined && !nextNickname) return json(res, 400, { error: "名字不能是空的" });
         // 头像：只认名单里的 id（页面上的 12 张）。名单外的直接拒，别存一个画不出来的值。
         const nextAvatar = body.avatar !== undefined ? knownAvatar(body.avatar) : undefined;

@@ -127,15 +127,12 @@ export function repoSlugFromRemote(url: string): string | null {
 export function groupIdFor(repo: string): string {
   const canonical = repo.trim().replace(/\/+$/, "").toLowerCase();
   const flat = canonical.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  // 只把 `/` 换成 `-` 的结果与全压平不同，说明 `_` / `.` 等信息被抹掉了：
-  // 这种 slug 会撞车（A_B/C.D 与 a-b/c-d），加 6 位哈希把它们分开（评审 #2）。
-  const slashOnly = canonical.replace(/\/+/g, "-").replace(/^-+|-+$/g, "");
-  const ambiguous = flat !== slashOnly;
-  const slug = (flat || "repo").slice(0, ambiguous ? 50 : 60);
-  const suffix = ambiguous ? "-" + createHash("sha1").update(canonical).digest("hex").slice(0, 6) : "";
+  // `/`、`-`、`_` 归一后都变成 `-`，只按斜杠切会撞车（a-b/c、a/b-c、a/b/c 都是 a-b-c）：
+  // 无条件带上仓库标识的短哈希，宁可组 id 不漂亮也不能把两个项目并进同一个组（评审 #1）。
+  const slug = (flat || "repo").slice(0, 60);
+  const suffix = "-" + createHash("sha1").update(canonical).digest("hex").slice(0, 6);
   return `grp-updates-${slug}${suffix}`;
 }
-
 /** 两个 announce 里的仓库标识算不算同一份：大小写不敏感（Git 托管侧本来就按小写归一）。 */
 function sameRepo(a: string | undefined, b: string): boolean {
   return Boolean(a) && a!.toLowerCase() === b.toLowerCase();
@@ -281,7 +278,8 @@ export class UpdatesLan {
       groupName: info?.groupName ?? "",
       publisher,
       // 发布者刚建组、本机名册还没收到快照的那几秒，别显示成「没加入」（评审 #3）。
-      joined: publisher || Boolean(group && me && group.members.some((m) => m.nodeId === me) && !group.left),
+      // 发布者也可能退群：只认名册 + 未退出，发布者身份不能把 left 盖掉（评审 #2）。
+      joined: Boolean(group && me && group.members.some((m) => m.nodeId === me) && !group.left),
       memberCount: group?.members.length ?? 0,
       // 没有 origin 时 info 为 null：不能让 undefined === undefined 把所有对端都算进来（评审 #3）。
       onlineCount: info ? (status?.online ?? []).filter((p) => sameRepo(p.updates?.repo, info.repo)).length : 0,
@@ -379,10 +377,21 @@ export class UpdatesLan {
     return run;
   }
 
-  private async inviteOnce(info: RepoInfo, want: string[]): Promise<void> {
-    await this.peer.group({ action: "invite", id: info.groupId, members: want });
-    // 补公告彼此独立：并行发，别让 N 台机器把 10 秒一轮的 reconcile 拖住（评审 #12）。
-    await Promise.all(want.map((nodeId) => this.peer.replayAnnouncements(info.groupId, nodeId, 3).catch(() => null)));
+private async inviteOnce(info: RepoInfo, want: string[]): Promise<void> {
+  // peer 的 inviteGroup 一次最多 50 人：分块，单块失败也只记日志，别让本轮公告发不出去（评审 #3）。
+  const CHUNK = 20;
+  const invited: string[] = [];
+  for (let i = 0; i < want.length; i += CHUNK) {
+    const part = want.slice(i, i + CHUNK);
+    try {
+      await this.peer.group({ action: "invite", id: info.groupId, members: part });
+      invited.push(...part);
+    } catch (err) {
+      this.log(`更新组：拉人失败（${part.length} 台）：${(err as Error).message}`);
+    }
+  }
+  // 补公告彼此独立：并行发，别让 N 台机器把 10 秒一轮的 reconcile 拖住（评审 #12）。
+  await Promise.all(invited.map((nodeId) => this.peer.replayAnnouncements(info.groupId, nodeId, 3).catch(() => null)));
   }
 
   private async git(args: string[]): Promise<string> {

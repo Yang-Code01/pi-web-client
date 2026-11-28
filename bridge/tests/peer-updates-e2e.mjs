@@ -279,11 +279,10 @@ async function main() {
     bad("退群没生效", thread ? { group: thread.group } : "线程都不见了（历史应当留着）");
   }
 
-  const before = (await messages(A, GROUP)).length;
   await post(P, "/send", {
     peer: GROUP,
-    text: `${REPO} 更新到 def5678（2026-11-28）`,
-    announce: { repo: REPO, commit: "def5678", batches: [batch], howTo: "auto" },
+    text: `${REPO} 更新到 def9999（2026-11-28）`,
+    announce: { repo: REPO, commit: "def9999", batches: [batch], howTo: "auto" },
   });
   // 公告可能晚于 1.2 秒才到：等一段时间，并确认最后两次采样一致（评审 #21）。
   await new Promise((r) => setTimeout(r, 1200));
@@ -294,8 +293,8 @@ async function main() {
     if (next.length === after.length) break;
     after = next;
   }
-  if (after.length === before) ok("退群后公告不再进来（opt-out 拦住了快照）");
-  else bad("退群后还收到了公告", { before, after: after.length });
+  if (!after.some((m) => m.announce?.commit === "def9999")) ok("退群后公告不再进来（opt-out 拦住了快照）");
+  else bad("退群后还收到了公告", after.filter((m) => m.announce?.commit === "def9999"));
 
   // 6. rejoin + 邀请 = 回到组里。
   await post(A, "/groups", { action: "rejoin", id: GROUP });

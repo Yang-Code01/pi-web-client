@@ -1503,7 +1503,8 @@ async function main(): Promise<void> {
         return json(res, 400, { error: err instanceof SyntaxError ? "请求体不是合法的 JSON" : (err as Error).message });
       }
       try {
-        return json(res, 200, await updates.setPublisher(body?.on === true));
+        if (typeof body?.on !== "boolean") return json(res, 400, { error: "on 要是 true 或 false" });
+        return json(res, 200, await updates.setPublisher(body.on));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
