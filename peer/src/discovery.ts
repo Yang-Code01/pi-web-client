@@ -17,7 +17,6 @@ export interface AnnounceUpdates {
   optOut?: string[];
 }
 
-/** announce 里的更新组身份：只收形状对的，opt-out 名单截短（D441）。 */
 /** announce 里 updates 的形状只在这里拼：packet 与 normUpdates 别各写一份（评审 #14）。 */
 function buildUpdates(repo: string, publisher: boolean, optOut: string[]): AnnounceUpdates | null {
   if (!repo) return null;
@@ -28,6 +27,7 @@ function buildUpdates(repo: string, publisher: boolean, optOut: string[]): Annou
   };
 }
 
+/** announce 里的更新组身份：只收形状对的，opt-out 名单截短（D441）。 */
 function normUpdates(raw: unknown): AnnounceUpdates | null {
   const r = raw as AnnounceUpdates | null | undefined;
   const repo = typeof r?.repo === "string" ? r.repo.trim() : "";
@@ -210,7 +210,7 @@ export class Discovery extends EventEmitter {
     this.emit("change", this.online());
   }
 
-  private remember(msg: Announce, addr: string): void {
+  private remember(msg: Omit<Announce, "updates"> & { updates?: unknown }, addr: string): void {
     const known = this.seen.get(msg.nodeId);
     const ips = new Set(known?.ips ?? []);
     ips.add(addr);
@@ -229,7 +229,9 @@ export class Discovery extends EventEmitter {
       // 跟 `loadConfig()` / `noteSeen()` 一个口径——名单外的当没设，否则它会盖掉
       // 通讯录里已经校验过的头像，还一路透传到页面。
       avatar: knownAvatar(msg.avatar) || known?.avatar,
-      updates: normUpdates(msg.updates) ?? known?.updates,
+      // 对端主动清空仓库（退出更新组）时要跟着清，不能一直沿用旧值；只有完全没带这个字段
+      // 的旧端才沿用上次知道的（评审 #19）。
+      updates: msg.updates === undefined ? known?.updates : (normUpdates(msg.updates) ?? undefined),
     };
     this.seen.set(msg.nodeId, peer);
   }
@@ -251,7 +253,7 @@ export class Discovery extends EventEmitter {
         version: VERSION,
         status: msg.status,
         avatar: msg.avatar,
-        updates: normUpdates(msg.updates) ?? undefined,
+        updates: msg.updates,
       },
       addr,
     );

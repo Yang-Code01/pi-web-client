@@ -7,7 +7,7 @@ import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import type { Entry, History, PeerIdentity } from "./history.ts";
-import { isGroupId } from "./groups.ts";
+import { canWriteGroup, isGroupId } from "./groups.ts";
 import { uuidv7 } from "./messages.ts";
 import { imageSize, type ImageSize } from "./image.ts";
 
@@ -274,8 +274,8 @@ export class Files {
         if (!members) return { status: 404, body: { error: "不认识这个群（或已退出）", retryable: false } };
         if (!members.includes(from.nodeId)) return { status: 403, body: { error: "不是群成员", retryable: false } };
         const gate = this.ctx.groupAnnounceOnly?.(thread);
-        // publisher 没定（旧快照）时 owner 也能发：和 messages.assertWritable 同一条恢复路径（评审 #5/#6）。
-        const senderOk = gate?.publisher ? gate.publisher === from.nodeId : gate?.owner === from.nodeId;
+        // 和 messages / groups 共用一条规则：publisher 定没定、要不要回退 owner 都在里面（评审 #2）。
+        const senderOk = !gate || canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, from.nodeId);
         if (gate?.announceOnly && !senderOk) {
           return { status: 403, body: { error: "只读群：只有发布者能发消息", retryable: false } };
         }
@@ -449,7 +449,7 @@ export class Files {
     const group = isGroupId(threadId);
     if (group) {
       const gate = this.ctx.groupAnnounceOnly?.(threadId);
-      const senderOk = gate?.publisher ? gate.publisher === this.ctx.nodeId : gate?.owner === this.ctx.nodeId;
+      const senderOk = !gate || canWriteGroup({ announceOnly: gate.announceOnly, publisher: gate.publisher, owner: gate.owner ?? "" }, this.ctx.nodeId);
       if (gate?.announceOnly && !senderOk) throw new Error("这是只读的更新组：只有发布者能发文件");
     }
     const targets = group ? (this.ctx.groupMembers?.(threadId) ?? null) : [threadId];

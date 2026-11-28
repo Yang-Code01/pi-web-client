@@ -136,7 +136,8 @@ export interface GroupSummary {
   name: string;
   members: PeerIdentity[];
   owner: string;
-  left?: boolean;
+  /** 构造时总是填布尔值；标必填，别让调用方以为可能没有。 */
+  left: boolean;
   announceOnly?: boolean;
   publisher?: string;
 }

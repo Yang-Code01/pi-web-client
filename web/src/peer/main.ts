@@ -704,8 +704,9 @@ async function loadStatus(): Promise<void> {
 async function loadUpdates(): Promise<void> {
   try {
     S.updates = await getJson<UpdatesView>("/api/updates");
-  } catch {
+  } catch (err) {
     S.updates = null;
+    S.updatesError = (err as Error).message;
   }
 }
 
@@ -1602,7 +1603,11 @@ function renderChat(): void {
   }
   if (S.picked) stream.classList.add("picking");
   mainEl.append(stream);
-  const compose = S.picked ? pickBar() : t.group?.left ? leftBar(t) : readonly ? announceBar(t) : composeBox(t);
+  let compose: HTMLElement;
+  if (S.picked) compose = pickBar();
+  else if (t.group?.left) compose = leftBar(t);
+  else if (readonly) compose = announceBar(t);
+  else compose = composeBox(t);
   mainEl.append(compose);
   const topic = S.topic && t.group ? topicPane(t) : null;
   if (topic) mainEl.append(topic);
@@ -2341,7 +2346,7 @@ function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
   if (e.replyTo) box.append(quoteBlock(e.replyTo));
   if (e.announce) {
     // D441：公告卡片自己画正文，不再走气泡那条路（否则同一段正文会画两遍）。
-    box.append(announceCard(e));
+    box.append(announceCard(e, e.announce));
   } else if (e.kind === "note" && e.note) {
     box.append(noteCard(e, t, mine));
   } else if (e.kind === "file" && e.file && picKind(e)) {
@@ -2799,6 +2804,7 @@ function leftBar(t: Thread): HTMLElement {
 }
 
 /** D441：公告卡 / 设置卡共用的一套入口与命令行（评审 #29/#30）。 */
+const ANNOUNCE_MD = { tables: false, imageSrc: () => null, openPath: (p: string) => void copyPath(p) };
 const UPDATE_LOG_URL = "/?settings=whatsnew";
 const UPDATE_TOOLS_URL = "/?settings=tools";
 const MANUAL_UPDATE = "git pull && npm install && npm start";
@@ -2822,22 +2828,21 @@ function announceBar(t: Thread): HTMLElement {
  * D441 更新公告卡片：仓库 + 短提交 + 批次标题，正文按公日志里的分组（`###`）重画，
  * 底下两颗链接分别落到主界面的「日志」与「工具」页；不再内置「立即更新」按钮。
  */
-function announceCard(e: Entry): HTMLElement {
-  const a = e.announce!;
+function announceCard(e: Entry, a: NonNullable<Entry["announce"]>): HTMLElement {
   const card = h("div", "an-card");
   const head = h("div", "an-head");
   head.append(h("span", "an-repo", a.repo), h("span", "an-sha", a.commit.slice(0, 7)), h("span", "an-day", fmtDate(e.at)));
   card.append(head);
   if (!a.batches.length && e.text) {
     const body = h("div", "an-body md");
-    body.append(renderMarkdown(e.text, { tables: false, imageSrc: () => null, openPath: (p) => void copyPath(p) }));
+    body.append(renderMarkdown(e.text, ANNOUNCE_MD));
     card.append(body);
   }
   for (const b of a.batches) {
     const batch = h("div", "an-batch");
     batch.append(h("div", "an-title", b.title));
     const body = h("div", "an-body md");
-    body.append(renderMarkdown(b.body, { tables: false, imageSrc: () => null, openPath: (p) => void copyPath(p) }));
+    body.append(renderMarkdown(b.body, ANNOUNCE_MD));
     batch.append(body);
     card.append(batch);
   }
@@ -4329,7 +4334,7 @@ function updatesCard(): HTMLElement {
     h("span", "k", tr("状态")),
     h("span", "v", u.publisher ? tr("本机是发布者") : u.joined ? tr("已加入（只读）· {p1} 人", { p1: String(u.memberCount) }) : tr("没加入")),
     h("span", "k", tr("上次播报")),
-    h("span", "v", u.lastCommit ? `${u.lastCommit} · ${fmtDate(u.lastAnnouncedAt)} ${clock(u.lastAnnouncedAt)}` : tr("还没播报过")),
+    h("span", "v", u.lastCommit ? `${u.lastCommit.slice(0, 7)} · ${fmtDate(u.lastAnnouncedAt)} ${clock(u.lastAnnouncedAt)}` : tr("还没播报过")),
   );
   card.append(kv);
   card.append(
@@ -4376,16 +4381,11 @@ async function checkUpdates(): Promise<void> {
   try {
     S.updates = (await postJson("/api/updates/check", {})) as UpdatesView;
     renderAll();
-    const first = S.updates.lastError?.split("\n").find((line) => line.trim())?.slice(0, 120);
+    const first = S.updates.lastError.split("\n").find((line) => line.trim())?.slice(0, 120);
     toast(first ? tr("检查失败：{p1}", { p1: first }) : tr("检查完了"));
   } catch (err) {
     toast((err as Error).message);
   }
-}
-
-/** 设置页的「重新加入」：把组 id 交给同一个 rejoin。 */
-async function rejoinUpdatesGroup(): Promise<void> {
-  await rejoinUpdates();
 }
 
 function toggle(name: string, sub: string, on: boolean, run: (on: boolean) => void): HTMLElement {

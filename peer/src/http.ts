@@ -229,6 +229,8 @@ export function createPeerServer(ctx: PeerContext): http.Server {
               changed = true;
             }
           }
+          // 发布者身份要靠 announce 带出去，repo 为空时 buildUpdates 会整块丢掉：配对校验（评审 #23）。
+          if (u.publisher === true && !cfg.updates.repo) return json(res, 400, { error: "先填仓库标识（owner/name）再打开发布" });
           if (typeof u.publisher === "boolean" && u.publisher !== cfg.updates.publisher) {
             cfg.updates.publisher = u.publisher;
             changed = true;
@@ -348,7 +350,10 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             meta: (id) => threads.get(id),
             typing: (id) => messages.typing(id),
             pending: (id) => messages.pending(id),
-            group: (id) => groups.get(id),
+            group: (id) => {
+              const g = groups.get(id);
+              return g ? { ...g, left: g.left === true } : null;
+            },
           }),
         });
       }
@@ -372,9 +377,8 @@ export function createPeerServer(ctx: PeerContext): http.Server {
               group: messages.createGroup(String(body?.name ?? ""), ids, {
                 ...(id ? { id } : {}),
                 ...(body?.announceOnly === true ? { announceOnly: true } : {}),
-                ...(typeof body?.publisher === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.publisher)
-                  ? { publisher: body.publisher }
-                  : {}),
+                // nodeId 的格式不在这里收紧（内网通其它地方也没要求 UUID）；是不是成员由 createGroup 校验（评审 #24）。
+                ...(typeof body?.publisher === "string" && body.publisher ? { publisher: body.publisher } : {}),
               }),
             });
           if (action === "rename") return json(res, 200, { ok: true, group: messages.renameGroup(id, String(body?.name ?? "")) });

@@ -123,7 +123,9 @@ export class UpdatesLan {
 
   start(): void {
     this.firstTimer = setTimeout(() => void this.tick(false), FIRST_CHECK_MS);
-    this.timer = setInterval(() => void this.checkNow(), INTERVAL_MS);
+    // 定时只做「变了才播」，force 留给「立即检查」：否则每半小时白跑一次 git show/log，
+    // 批次标题被删时还会把同一个 commit 重播（评审 #1）。
+    this.timer = setInterval(() => void this.tick(false), INTERVAL_MS);
     this.inviteTimer = setInterval(() => void this.reconcile(), INVITE_MS);
     // 一开机就把「我这份检出是哪个仓库」写进 config：**不是发布者也要写**，否则 announce 里没仓库标识，
     // 发布者就永远认不出这台机器、也不会拉它进组。写完才谈拉人。

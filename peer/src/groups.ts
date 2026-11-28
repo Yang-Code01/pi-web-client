@@ -104,15 +104,17 @@ export function optOutIds(): Set<string> {
   try {
     const raw = JSON.parse(fs.readFileSync(optOutFile(), "utf8"));
     optOutCache = new Set((Array.isArray(raw) ? raw : []).filter((x) => typeof x === "string"));
-  } catch {
-    optOutCache = new Set();
+  } catch (err) {
+    // 读失败（EBUSY / 权限）不是「没人退出」：别把有效缓存清空；文件真不在才置空（评审 #20）。
+    if (!optOutCache || (err as NodeJS.ErrnoException).code === "ENOENT") optOutCache = new Set();
   }
   optOutStamp = stamp;
   return optOutCache;
 }
 
 export function setOptOut(id: string, on: boolean): void {
-  const set = optOutIds();
+  // 复制一份再改：optOutIds() 返回的是缓存本身，不能让调用方共享同一份可变 Set（评审 #21）。
+  const set = new Set(optOutIds());
   if (on) set.add(id);
   else set.delete(id);
   try {
@@ -120,10 +122,21 @@ export function setOptOut(id: string, on: boolean): void {
   } catch {
     /* 落盘失败时内存里仍然是新的，下次启动会丢，但不影响这一次 */
   } finally {
-    // 我们就是刚写这份文件的人：stamp 跟着更新，别让下一次读盘用旧 stamp 去撞缓存（评审 #7）。
+    // 我们就是刚写这份文件的人：缓存换成新 Set，stamp 跟着更新（评审 #7/#21）。
+    optOutCache = set;
     optOutStamp = optOutFileStamp();
     optOutCheckedAt = Date.now();
   }
+}
+
+/** 只读群里谁能写：publisher 定了就是它，没定就回退 owner（旧快照的恢复路径）。
+ *  这是**唯一**一份判定，messages 的写门与 files 的收/发文件都调它，别各写一遍。 */
+export function canWriteGroup(
+  group: { announceOnly?: boolean; publisher?: string; owner: string },
+  nodeId: string,
+): boolean {
+  if (group.announceOnly !== true) return true;
+  return group.publisher ? group.publisher === nodeId : group.owner === nodeId;
 }
 
 /** 发出去的快照：不带本机才有的 `left`。 */

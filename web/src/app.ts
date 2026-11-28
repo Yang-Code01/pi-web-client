@@ -2239,6 +2239,7 @@ export class App {
         this.sawHello = true;
         this.helloDone?.();
         this.helloDone = null;
+        this.helloWait = null;
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         // #278：旧桥不带 caps —— 缺这一项就当它不会按目录建组。
         this.bridgeCaps = Array.isArray(msg.caps) ? (msg.caps as unknown[]).filter((c): c is string => typeof c === "string") : [];
@@ -13768,13 +13769,23 @@ export class App {
     this.helloWait ??= new Promise<void>((resolve) => {
       this.helloDone = resolve;
     });
-    // 超时要收回自己的定时器；helloWait 只建一次，并发调用共享它（评审 #23）。
+    // 一帧里可能不止一个深链调用：共享同一个 helloWait，但超时后要把它清掉，
+    // 否则 hello 晚到、helloDone 又被 hello 分支置空时，后来的人只能干等 5 秒（评审 #6/#7）。
+    const wait = this.helloWait;
     return new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 5_000);
-      void this.helloWait!.then(() => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout>;
+      const done = (): void => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         resolve();
-      });
+      };
+      timer = setTimeout(() => {
+        if (this.helloWait === wait) this.helloWait = null;
+        done();
+      }, 5_000);
+      void wait.then(done);
     });
   }
 

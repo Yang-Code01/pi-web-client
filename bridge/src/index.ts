@@ -1501,7 +1501,7 @@ async function main(): Promise<void> {
       }
     }
     if (url.pathname === "/api/updates/check" && req.method === "POST") {
-      if (publicReq) return json(res, 403, { error: "公网不能改本机的更新组设置" });
+      if (publicReq) return json(res, 403, { error: "公网不能手动触发更新检查" });
       try {
         return json(res, 200, await updates.checkNow());
       } catch (err) {

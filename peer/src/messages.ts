@@ -4,7 +4,7 @@ import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import { foldEntries, type Entry, type History, type NotePayload, type PeerIdentity, type SysInfo, type ViewEntry } from "./history.ts";
-import { GROUP_PREFIX, MAX_GROUP_MEMBERS, isGroupId, normalizeGroup, optOutIds, setOptOut, snapshot, type Group, type Groups } from "./groups.ts";
+import { GROUP_PREFIX, MAX_GROUP_MEMBERS, canWriteGroup, isGroupId, normalizeGroup, optOutIds, setOptOut, snapshot, type Group, type Groups } from "./groups.ts";
 import { normalizeAnnounce, type AnnouncePayload } from "./announce.ts";
 import { normalizeNote } from "./note.ts";
 import type { Outbox, Queued, Verdict } from "./outbox.ts";
@@ -532,6 +532,11 @@ export class Messages {
 
   /** 重新加入更新组（D441）：清掉 opt-out，等发布者下一轮邀请把新快照送过来。 */
   rejoinGroup(groupId: string): { ok: true } {
+    if (!isGroupId(groupId)) throw new Error("不是合法的群 id");
+    const group = this.ctx.groups.get(groupId);
+    // 只允许本机确实认识、而且确实是只读更新组的群；否则任意 id 都会写进 opt-out 文件（评审 #4）。
+    if (!group) throw new Error("这个更新组还没同步到本机");
+    if (group.announceOnly !== true) throw new Error("这不是只读的更新组");
     setOptOut(groupId, false);
     return { ok: true };
   }
@@ -546,10 +551,14 @@ export class Messages {
     const group = this.mine(groupId);
     if (!group.announceOnly) throw new Error("这不是只读的更新组");
     if (group.publisher === this.ctx.nodeId) return group;
-    // 发布者必须在名册里：不在就补进来（满员时让出最后一席），否则对端 admitGroup 会 403（评审 #4）。
-    const members = group.members.some((m) => m.nodeId === this.ctx.nodeId)
-      ? group.members
-      : [...group.members.slice(0, MAX_GROUP_MEMBERS - 1), this.me()];
+    // 发布者必须在名册里：不在就补进来。满员时先保住**旧发布者**，再腾最后一席，
+    // 否则被挤掉的旧发布者收不到新快照、也不会知道自己已经不在名册里（评审 #3）。
+    let members = group.members;
+    if (!members.some((m) => m.nodeId === this.ctx.nodeId)) {
+      const kept = members.filter((m) => m.nodeId === group.publisher);
+      const others = members.filter((m) => m.nodeId !== group.publisher).slice(0, MAX_GROUP_MEMBERS - kept.length - 1);
+      members = [...kept, ...others, this.me()].slice(0, MAX_GROUP_MEMBERS);
+    }
     const next: Group = { ...group, members, publisher: this.ctx.nodeId, v: group.v + 1, at: Date.now() };
     this.ctx.groups.put(next);
     this.appendSys(groupId, this.me(), { op: "publisher", actor: this.nameOf(this.me()), name: this.nameOf(this.me()) });
@@ -609,7 +618,7 @@ export class Messages {
     if (!isGroupId(thread)) return null;
     const group = this.ctx.groups.get(thread);
     if (!group?.announceOnly) return null;
-    if (group.publisher ? group.publisher === claimed.nodeId : group.owner === claimed.nodeId) return null;
+    if (canWriteGroup(group, claimed.nodeId)) return null;
     return { status: 403, body: { error: "只读群：只有发布者能发消息", retryable: false } };
   }
 
@@ -618,8 +627,7 @@ export class Messages {
     if (!isGroupId(threadId)) return;
     const group = this.ctx.groups.get(threadId);
     if (!group?.announceOnly) return;
-    // 发布者没定（旧快照）时给 owner 一条恢复路径（评审 #6）。
-    if (group.publisher ? group.publisher === this.ctx.nodeId : group.owner === this.ctx.nodeId) return;
+    if (canWriteGroup(group, this.ctx.nodeId)) return;
     throw new Error("这是只读的更新组：只有发布者能发消息");
   }
 
@@ -642,8 +650,14 @@ export class Messages {
       .read(groupId, 5000)
       .filter((entry) => entry.kind === "text" && entry.announce)
       .slice(-want);
-    for (const entry of entries) this.enqueue(groupId, entry.id, "text", entry, entry.at, [{ peerId: peerNodeId, addr: peer.addr, port: peer.port }]);
-    return { ok: true, sent: entries.length };
+    let sent = 0;
+    for (const entry of entries) {
+      // outbox 按 id 去重：已经在重试队列里的那条不会再排一次，sent 也只数真正排进去的（评审 #5）。
+      if (this.ctx.outbox?.has(`${entry.id}@${peerNodeId}`)) continue;
+      this.enqueue(groupId, entry.id, "text", entry, entry.at, [{ peerId: peerNodeId, addr: peer.addr, port: peer.port }]);
+      sent++;
+    }
+    return { ok: true, sent };
   }
 
   /** 收到名单变化（建群 / 改名 / 拉人 / 退群）。退群的人不在新名单里，所以看「旧名单里有没有他」。 */
