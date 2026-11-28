@@ -5,9 +5,10 @@
  * `app.ts` 收下行），却没有一处写着「一共有哪些帧」。结果是拼错一个 case、桥发了一个页面不认的
  * 帧、页面认了一个桥从不发的帧，全靠人肉比对。这张表把「帧叫什么」收紧成编译期事实。
  *
- * 契约：**这个文件是叶子**。它只有类型和字符串常量，不 import 任何东西 —— 因为 `app.ts` 会
- * import 它，而 `app.ts` 头两行 import 了 CSS，桥上编不过；反过来桥的 `index.ts` 末行会调
- * `main()`，页面也不能 import 它。谁往这里加 import，两侧的编译就有一侧会炸。
+ * 契约：**这个文件是叶子**。它只有类型、字符串常量，和**不 import 任何东西的纯函数**（帧构造器、
+ * 以及桥和页面必须认同一个口径的判据，例如 `#741` 的 `tipTargetOf` / `isRunOutdated`）——
+ * 因为 `app.ts` 会 import 它，而 `app.ts` 头两行 import 了 CSS，桥上编不过；反过来桥的
+ * `index.ts` 末行会调 `main()`，页面也不能 import 它。谁往这里加 import，两侧的编译就有一侧会炸。
  *
  * 两个方向的类型是分开的：下行（桥 → 页面）128 个、上行（页面 → 桥）128 个，名字不重样。
  * 别合成一张表 —— `manage`、`presence` 这种双向同名、含义不同的帧会立刻把联合搞成一张假合同。
@@ -457,19 +458,37 @@ export function tipTargetOf(run: ReviewRun): { ref: string; pr: number } | null 
   const ref = String(run.to ?? "").trim();
   const sha = String(run.headSha ?? "").trim();
   if (!ref || !sha) return null;
-  return { ref, pr: run.mode === "pr" ? Number(run.pr) || 0 : 0 };
+  const pr = run.mode === "pr" ? Number(run.pr) || 0 : 0;
+  // `pr` 模式却没有号（老记录 / 坏数据）：`refs/pi-web/pr-0` 什么也指不到，判不了 ——
+  // 也不能让它走「本地 ref」那条路，更不该在卡上长出一颗点了没反应的「重新评审」。
+  if (run.mode === "pr" && pr <= 0) return null;
+  return { ref, pr };
+}
+
+/**
+ * 这条记录的「现在的 tip」——**快照比这条记录旧的时候给空串**。
+ *
+ * `tips` 是某一刻拍的一张快照，`tipsAt` 是那一刻。比这条记录收尾还早的快照不能拿来判：
+ * 那之后才跑完的那一轮，记下的 `headSha` 本来就可能比快照新 —— 拿旧快照一比，就成了
+ * 「刚跑完就说它过时」，点一下重评等于把同一份代码再评一遍（#743 复审）。
+ * 反过来（快照之后才有人推提交）只会漏报，那是安全的那一边。
+ */
+export function tipForRun(run: ReviewRun, tips: ReviewTips | undefined, tipsAt = 0): string {
+  const target = tipTargetOf(run);
+  if (!target) return "";
+  const finished = Date.parse(run.finishedAt ?? "") || 0;
+  if (tipsAt > 0 && finished > tipsAt) return "";
+  return String((tips ?? {})[target.ref] ?? "").trim();
 }
 
 /**
  * 这条记录是不是已经跟不上代码了（#741）：**判得了的时候**才给 true。
  *
- * 没记 sha、或者 `tips` 里没有这个 ref 的（离线 / 超时 / 没登录 / 老桥）= 不知道 = false，
- * 不要拿它当「没变」用。
+ * 没记 sha、或者 `tips` 里没有这个 ref 的（离线 / 超时 / 没登录 / 老桥 / 快照太旧）=
+ * 不知道 = false，不要拿它当「没变」用。
  */
-export function isRunOutdated(run: ReviewRun, tips: ReviewTips | undefined): boolean {
-  const target = tipTargetOf(run);
-  if (!target) return false;
-  const tip = String((tips ?? {})[target.ref] ?? "").trim();
+export function isRunOutdated(run: ReviewRun, tips: ReviewTips | undefined, tipsAt = 0): boolean {
+  const tip = tipForRun(run, tips, tipsAt);
   return Boolean(tip) && tip !== String(run.headSha ?? "").trim();
 }
 

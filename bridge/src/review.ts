@@ -632,7 +632,7 @@ export function headStamp(
 }
 
 /** `ref` 是不是那个会随风漂的 `HEAD`（`HEAD` / `head` 都算，写进来的是 ocr 回显的原文）。 */
-const isHeadName = (ref: string): boolean => str(ref).toUpperCase() === "HEAD";
+export const isHeadName = (ref: string): boolean => str(ref).toUpperCase() === "HEAD";
 
 /**
  * 远端那半（`pr` 模式）：一次 `ls-remote` 拿一批。「远端没答」与「远端答了但失败」都**不给 key** ——

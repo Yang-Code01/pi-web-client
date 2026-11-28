@@ -61,6 +61,7 @@ import {
   effectiveReviewDir,
   gitBranchOf,
   gitRoot,
+  isHeadName,
   gitShaOf,
   installOcr,
   isMark,
@@ -4254,7 +4255,10 @@ async function main(): Promise<void> {
               const state = readReviewState(repo, session);
               // #741：本地那半（分支 / HEAD）当场就能算，跟状态一起走；PR 那半要一次 ls-remote，
               // 算完再补一帧。先画后补：不让整份记录列表等网络。
-              const local = localTips(state.runs, (ref) => gitShaOf(repo, ref), gitBranchOf(repo));
+              const targets = tipTargets(state.runs);
+              // `gitBranchOf` 只在真有 `to: HEAD` 的记录时才跑：多一次 git 子进程就是白花。
+              const branch = targets.some((item) => isHeadName(item.ref)) ? gitBranchOf(repo) : "";
+              const local = localTips(state.runs, (ref) => gitShaOf(repo, ref), branch);
               send({
                 type: "review.state",
                 dir: repo,
@@ -4262,6 +4266,7 @@ async function main(): Promise<void> {
                 sessionId: session,
                 state,
                 tips: local,
+                tipsAt: Date.now(),
                 progresses: reviewProgresses(repo, session),
                 cap: MAX_RUNS_PER_SESSION,
                 // 桥重启打断过几条：只在开机后的第一次取状态时交给页面去提示一次。
@@ -4269,8 +4274,9 @@ async function main(): Promise<void> {
               });
               // PR 那半：一次 `ls-remote`（只读、不挪本地 ref），算完再补一帧 —— 离线 / 超时 /
               // 没登录就是「没标」，也不报错。
-              if (tipTargets(state.runs).some((item) => item.pr > 0)) {
+              if (targets.some((item) => item.pr > 0)) {
                 const fresh = msg.fresh === true;
+                const tipsAt = Date.now();
                 // 整段包在 try 里：这是个不 await 的后台任务，抛出去会变成未处理的 rejection
                 // （读状态文件 / 算账号 / 发帧都可能失败），而它失败的正确表现就是「没有标」。
                 void (async () => {
@@ -4293,6 +4299,7 @@ async function main(): Promise<void> {
                       sessionId: session,
                       state: readReviewState(repo, session),
                       tips: { ...local, ...remote },
+                      tipsAt: tipsAt,
                       progresses: reviewProgresses(repo, session),
                       cap: MAX_RUNS_PER_SESSION,
                     });

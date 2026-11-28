@@ -210,11 +210,6 @@ export async function remotePrHeads(dir: string, prs: number[], opts: PrQueryOpt
   return value;
 }
 
-/** 测试用：清掉 tip 缓存（否则跨用例会互相干扰）。 */
-export function clearTipCache(): void {
-  tipCache.clear();
-}
-
 function classify(stderr: string, cmd: string, code: number | null): { code: PrListResult["code"]; error: string } {
   const text = `${stderr}`.trim();
   const first = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";

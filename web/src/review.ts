@@ -13,7 +13,7 @@ import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
 import { icon, type IconName } from "./icons.ts";
 import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
 
-import { isRunOutdated } from "./frames.ts";
+import { isRunOutdated, tipForRun } from "./frames.ts";
 import type {
   ReviewFinding,
   ReviewGroupPlan,
@@ -105,6 +105,8 @@ export interface ReviewInput {
    * 与「没变」必须分开 —— 少见到一个 key 就当不知道，不标。
    */
   tips?: Record<string, string>;
+  /** 那张快照是什么时候拍的（`Date.now()`，0 = 桥没给）：比这条记录还旧的快照不拿来判。 */
+  tipsAt?: number;
 }
 
 /** 记录列表里的一张卡：`reviewView()` 算好文案，`renderReview()` 只负责画。 */
@@ -505,11 +507,12 @@ export function reviewView(input: ReviewInput): ReviewView {
     const mine = run.status === "running" ? progressById.get(run.id) : undefined;
     const modelId = runModelId(run);
     // #741：「过时」= 完成的那一次评的提交 ≠ 这个 ref 现在指向的提交。
-    // 判据与桥共用一份（`frames.ts` 的 `tipTargetOf` / `isRunOutdated`）：没记 sha 的老记录、
-    // 没核对到 tip 的（离线 / 超时）都在那里归成「不知道」= 不标。
+    // 判据与桥共用一份（`frames.ts` 的 `tipForRun` / `isRunOutdated`）：没记 sha 的老记录、
+    // 没核对到 tip 的（离线 / 超时）、以及**比这条记录还旧的快照**都在那里归成「不知道」= 不标。
+    // 卡片上的 `tipSha`（hover / 详情那一行）也走同一个函数 —— 判据不许散成两份。
     const headSha = (run.headSha ?? "").trim();
-    const tipSha = ((input.tips ?? {})[run.to] ?? "").trim();
-    const outdated = isRunOutdated(run, input.tips);
+    const tipSha = tipForRun(run, input.tips, input.tipsAt);
+    const outdated = isRunOutdated(run, input.tips, input.tipsAt);
     return {
       id: run.id,
       target: runTarget(run),

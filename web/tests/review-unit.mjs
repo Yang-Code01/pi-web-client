@@ -452,6 +452,30 @@ test("额度用满（两条在跑）时重评按钮也禁用", () => {
   assert.ok(card.rerunWhy.length > 0);
 });
 
+test("快照比这条记录还旧：不标（面板开着时刚跑完的那一轮不该说过时）", () => {
+  const state = {
+    runs: [run({ headSha: "bbbb2222", finishedAt: "2025-01-02T00:00:00Z" })],
+    marks: {},
+  };
+  // 快照是 1 号拍的，记录是 2 号跑完的：新记录记下的 sha 本来就比快照新，不能拿旧快照判。
+  const stale = reviewView({ ...base, state, tips: { HEAD: "aaaa1111" }, tipsAt: Date.parse("2025-01-01T12:00:00Z") });
+  assert.equal(stale.runs[0].outdated, false);
+  assert.equal(stale.runs[0].tipSha, "", "hover 里也不许写一个过期的「现在」");
+  // 快照是 3 号拍的：照常判
+  const fresh = reviewView({ ...base, state, tips: { HEAD: "aaaa1111" }, tipsAt: Date.parse("2025-01-03T00:00:00Z") });
+  assert.equal(fresh.runs[0].outdated, true);
+});
+
+test("pr 记录里没有号（老记录 / 坏数据）：不标，也不给重评按钮", () => {
+  const view = reviewView({
+    ...base,
+    state: { runs: [run({ mode: "pr", pr: 0, to: "refs/pi-web/pr-0", headSha: "aaaa1111" })], marks: {} },
+    tips: { "refs/pi-web/pr-0": "bbbb2222" },
+    tipsAt: Date.now(),
+  });
+  assert.equal(view.runs[0].outdated, false);
+});
+
 test("卡片上摆得出「基于哪个提交 / 现在哪个」（详情浮层要用）", () => {
   const view = reviewView({
     ...base,

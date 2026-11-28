@@ -45,6 +45,8 @@ import {
   localTips,
   remoteTips,
 } from "../src/review.ts";
+// 判据住在 frames.ts（两侧共用，叶子模块、不 import 任何东西）。
+import { isRunOutdated, tipForRun } from "../src/frames.ts";
 
 process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-"));
 
@@ -650,6 +652,26 @@ check("localTips 拿本地 rev-parse 的结果当 tip；认不出这个 ref 就�
   const runs = [doneRun({ id: "a", to: "HEAD" }), doneRun({ id: "b", to: "feat/gone" })];
   const tips = localTips(runs, (ref) => (ref === "HEAD" ? "bbbb2222" : ""));
   assert.deepEqual(tips, { HEAD: "bbbb2222" }, "认不出的 ref 是「不知道」，不是空串");
+});
+
+check("比记录还旧的快照不拿来判：刚跑完的那一轮不该被说成「有新提交」", () => {
+  const done = doneRun({ id: "a", finishedAt: "2026-01-02T00:00:00.000Z", headSha: "aaaa1111" });
+  const tips = { HEAD: "aaaa1111" };
+  const snapAt = Date.parse("2026-01-01T00:00:00.000Z"); // 快照比记录旧
+  assert.equal(tipForRun(done, tips, snapAt), "", "旧快照 -> 不知道");
+  assert.equal(isRunOutdated(done, tips, snapAt), false);
+  // 快照比记录新：照常判
+  const freshAt = Date.parse("2026-01-03T00:00:00.000Z");
+  assert.equal(tipForRun(done, tips, freshAt), "aaaa1111");
+  assert.equal(isRunOutdated(done, tips, freshAt), false, "一样就不算过时");
+  assert.equal(isRunOutdated(done, { HEAD: "bbbb2222" }, freshAt), true);
+  // 桥没给时刻（0 = 老桥）时照旧比，不因此把所有标都关掉
+  assert.equal(tipForRun(done, tips, 0), "aaaa1111");
+});
+
+check("`pr` 模式却没有号的那几条：判不了，也不该长出「重新评审」", () => {
+  const bad = doneRun({ id: "bad", mode: "pr", pr: 0, to: "refs/pi-web/pr-0" });
+  assert.deepEqual(tipTargets([bad]), []);
 });
 
 check("headStamp：收尾时记被评的 sha，`HEAD` 再记当时那条分支", () => {

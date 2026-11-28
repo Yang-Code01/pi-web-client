@@ -461,6 +461,8 @@ export class App {
    * 不该把标弄消失。
    */
   private reviewTips: Record<string, string> = {};
+  /** 上面那张快照是什么时候拍的（桥的 `tipsAt`）：比某条记录还旧的快照不能拿来判过时。 */
+  private reviewTipsAt = 0;
   /** 一个会话同时最多几条（桥发来的上限）；缺省 2，跟桥上的 MAX_RUNS_PER_SESSION 对齐。 */
   private reviewCap = 2;
   private reviewOcr: ReviewOcr | null = null;
@@ -2777,6 +2779,7 @@ export class App {
           this.reviewState = null;
           this.reviewProgresses = [];
           this.reviewTips = {};
+          this.reviewTipsAt = 0;
           this.reviewNotGit = msg.code === "not_git";
           if (this.queueTab === "review") this.renderQueue();
           break;
@@ -2788,7 +2791,10 @@ export class App {
         this.reviewProgresses = Array.isArray(msg.progresses) ? (msg.progresses as ReviewProgress[]) : [];
         // #741：tips 是帧的兄弟字段（不在 `state` 里）。续帧不带它时保留上一次的 ——
         // 标意见 / 清理历史那种帧只改记录，不该把「有新提交」那颗标弄消失。
-        if (msg.tips && typeof msg.tips === "object") this.reviewTips = msg.tips as Record<string, string>;
+        if (msg.tips && typeof msg.tips === "object") {
+          this.reviewTips = msg.tips as Record<string, string>;
+          this.reviewTipsAt = Number(msg.tipsAt) || 0;
+        }
         if (Number(msg.cap) > 0) this.reviewCap = Number(msg.cap);
         // 盘上记的「评什么」：只在本会话头一份状态到达时恢复（以后以界面为准）。
         this.applyReviewPick();
@@ -19051,6 +19057,7 @@ export class App {
     this.reviewState = null;
     this.reviewProgresses = [];
     this.reviewTips = {};
+    this.reviewTipsAt = 0;
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19095,6 +19102,7 @@ export class App {
     this.reviewState = null;
     this.reviewProgresses = [];
     this.reviewTips = {};
+    this.reviewTipsAt = 0;
     this.reviewPendingRuns.clear();
     this.reviewError = "";
     this.reviewNotGit = false;
@@ -19141,6 +19149,7 @@ export class App {
       this.reviewState = null;
       this.reviewProgresses = [];
       this.reviewTips = {};
+      this.reviewTipsAt = 0;
       return;
     }
     this.reviewAsked = dir;
@@ -19438,6 +19447,7 @@ export class App {
       repoPinned: Boolean(this.reviewPin),
       modelLabels: this.reviewModelLabels(),
       tips: this.reviewTips,
+      tipsAt: this.reviewTipsAt,
     });
     const effective = this.reviewEffectiveModel();
     return {
