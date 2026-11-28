@@ -73,8 +73,8 @@ async function boot(): Promise<void> {
 
 async function start(me: Me): Promise<void> {
   const app = new App(me);
-  // D441：`/?settings=tools` 这类深链要等首屏把会话说/设置读回来再开，否则面板画的是空数据。
-  window.setTimeout(() => app.openSettingsFromUrl(), 400);
+  // D441：`/?settings=tools` 这类深链等首屏 hello 回来再开（openSettingsFromUrl 内部等，评审 #25）。
+  void app.openSettingsFromUrl();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {
       /* push is optional */

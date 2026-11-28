@@ -351,6 +351,10 @@ export class App {
   private sessionReclaimTextEl: HTMLElement | null = null;
   private sessionReclaimId: string | null = null;
   private dismissedReclaimIds = new Set<string>();
+  /** 第一次 hello 到了没有：`?settings=` 深链要等首屏数据再开，不再拿固定 400ms 赌（D441、评审 #25）。 */
+  private sawHello = false;
+  private helloWait: Promise<void> | null = null;
+  private helloDone: (() => void) | null = null;
   private approvals: ApprovalRequest[] = [];
   /** Questions from the model waiting for an answer (PLAN-ask.md). */
   private asks: AskRequest[] = [];
@@ -2232,6 +2236,9 @@ export class App {
         break;
       }
       case "hello":
+        this.sawHello = true;
+        this.helloDone?.();
+        this.helloDone = null;
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         // #278：旧桥不带 caps —— 缺这一项就当它不会按目录建组。
         this.bridgeCaps = Array.isArray(msg.caps) ? (msg.caps as unknown[]).filter((c): c is string => typeof c === "string") : [];
@@ -13758,12 +13765,25 @@ export class App {
    * D441：`/?settings=tools` / `?settings=whatsnew` 这类 URL 深链 —— 内网通更新公告卡片点过来，
    * 直接落到主界面的那一页。认不出的 tab 当没写；打开后把参数抹掉，刷新时不会又弹一次。
    */
-  openSettingsFromUrl(): void {
+  /** 首屏数据回来之前开设置面板会画到空数据：等到第一个 hello，最多等 5 秒（评审 #25）。 */
+  private whenHello(): Promise<void> {
+    if (this.sawHello) return Promise.resolve();
+    this.helloWait ??= new Promise<void>((resolve) => {
+      this.helloDone = resolve;
+    });
+    return Promise.race([this.helloWait, new Promise<void>((resolve) => setTimeout(resolve, 5_000))]);
+  }
+
+  async openSettingsFromUrl(): Promise<void> {
     const tab = new URLSearchParams(location.search).get("settings");
     if (!tab) return;
+    await this.whenHello();
     const wipe = (): void => {
       try {
-        history.replaceState(null, "", location.pathname);
+        // 只删 settings 这一个键：`?settings=whatsnew&thread=...` 还得留着别的参数（评审 #23）。
+        const url = new URL(location.href);
+        url.searchParams.delete("settings");
+        history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
       } catch {
         /* 背后是个不让改 URL 的壳：那就留着参数，不为这种事报错 */
       }
@@ -13775,10 +13795,7 @@ export class App {
       wipe();
       return;
     }
-    const known: SettingsTab[] = [
-      "global", "project", "trust", "login", "passphrase", "ext", "subagents", "notify", "preview", "runtime", "changelog", "whatsnew",
-    ];
-    if (!(known as string[]).includes(tab)) return;
+    if (!(SETTINGS_TABS as readonly string[]).includes(tab)) return;
     this.openSettingsSheet(tab as SettingsTab);
     wipe();
   }
@@ -23187,7 +23204,8 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ...PANEL_COMMANDS.map((c): [string, string] => [c.id, tr(c.desc)]),
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "preview" | "runtime" | "changelog" | "whatsnew";
+const SETTINGS_TABS = ["global", "project", "trust", "login", "passphrase", "ext", "subagents", "notify", "preview", "runtime", "changelog", "whatsnew"] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 interface ExtPackage {
   scope: "user" | "project";

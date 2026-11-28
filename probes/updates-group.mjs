@@ -40,8 +40,8 @@ const MIME = {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   const rel = url.pathname === "/" || url.pathname === "/peer" ? "peer.html" : url.pathname.slice(1);
-  const file = path.join(DIST, rel);
-  if (!file.startsWith(DIST) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end("not found");
+  const file = path.resolve(DIST, rel);
+  if (!file.startsWith(DIST + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return res.writeHead(404).end("not found");
   res.writeHead(200, { "content-type": MIME[path.extname(file)] ?? "application/octet-stream", "cache-control": "no-store" });
   fs.createReadStream(file).pipe(res);
 });
@@ -154,6 +154,7 @@ async function mock(page, nodeId, nickname, publisher) {
 }
 
 const browser = await chromium.launch({ headless: true });
+try {
 
 // ---------------------------------------------------------------- 成员视角
 const ctx = await browser.newContext({ locale: "zh-CN", viewport: { width: 1180, height: 820 } });
@@ -209,7 +210,6 @@ await page.locator("h3", { hasText: "更新公告" }).scrollIntoViewIfNeeded();
 await page.screenshot({ path: path.join(OUT, "member-settings.png") });
 
 // 字号 150%：卡片不横向溢出。
-await page.emulateMedia({});
 await page.evaluate(() => document.documentElement.style.setProperty("--ui-scale", "1.5"));
 const overflow = await page.evaluate(() => {
   const el = document.querySelector(".an-card");
@@ -235,7 +235,10 @@ check((await page2.locator(".acts .btn", { hasText: "立即检查" }).isEnabled(
 await page2.locator("h3", { hasText: "更新公告" }).scrollIntoViewIfNeeded();
 await page2.screenshot({ path: path.join(OUT, "publisher-settings.png") });
 
-await browser.close();
-server.close();
+} finally {
+  // 探针中途抛错也要收掉 Chromium，否则 headless 进程会留在后台（评审 #20）。
+  await browser.close().catch(() => {});
+  server.close();
+}
 log(failed ? `失败 ${failed} 项` : "全部通过");
 process.exit(failed ? 1 : 0);

@@ -161,7 +161,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
     dnd: cfg.dnd,
     inbox: cfg.inbox,
     manual: cfg.manual,
-    updates: cfg.updates,
+    updates: { ...cfg.updates },
   });
 
   return http.createServer(async (req, res) => {
@@ -372,7 +372,9 @@ export function createPeerServer(ctx: PeerContext): http.Server {
               group: messages.createGroup(String(body?.name ?? ""), ids, {
                 ...(id ? { id } : {}),
                 ...(body?.announceOnly === true ? { announceOnly: true } : {}),
-                ...(typeof body?.publisher === "string" ? { publisher: body.publisher } : {}),
+                ...(typeof body?.publisher === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.publisher)
+                  ? { publisher: body.publisher }
+                  : {}),
               }),
             });
           if (action === "rename") return json(res, 200, { ok: true, group: messages.renameGroup(id, String(body?.name ?? "")) });
@@ -551,7 +553,8 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const body = await readBody(req).catch(() => ({}));
         try {
           activity.touch();
-          const limit = Math.max(0, Math.min(10, Number(body?.limit ?? 3) || 3));
+          const raw = Number(body?.limit);
+          const limit = Number.isFinite(raw) ? Math.max(0, Math.min(10, raw)) : 3;
           return json(res, 200, messages.replayAnnouncements(String(body?.group ?? ""), String(body?.peer ?? ""), limit));
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });

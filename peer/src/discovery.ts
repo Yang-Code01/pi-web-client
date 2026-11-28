@@ -10,12 +10,22 @@ function normAddr(addr: string): string {
   return addr.replace(/^::ffff:/, "").replace(/^::1$/, "127.0.0.1");
 }
 
+/** announce 里的更新组身份（D441）：两个接口共用同一形状，免得分头漂移（评审 #37）。 */
+export interface AnnounceUpdates {
+  repo?: string;
+  publisher?: boolean;
+  optOut?: string[];
+}
+
 /** announce 里的更新组身份：只收形状对的，opt-out 名单截短（D441）。 */
-function normUpdates(raw: unknown): SeenPeer["updates"] | null {
-  const r = raw as NonNullable<Announce["updates"]> | null | undefined;
+function normUpdates(raw: unknown): AnnounceUpdates | null {
+  const r = raw as AnnounceUpdates | null | undefined;
   const repo = typeof r?.repo === "string" ? r.repo.trim() : "";
   if (!repo || repo.length > 120 || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return null;
-  const optOut = (Array.isArray(r?.optOut) ? r.optOut : []).filter((x) => typeof x === "string").slice(0, 20);
+  // 名单是别人塞进来的：只留像组 id 的短串（评审 #36）。
+  const optOut = (Array.isArray(r?.optOut) ? r.optOut : [])
+    .filter((x): x is string => typeof x === "string" && x.length <= 80 && /^[a-zA-Z0-9_-]+$/.test(x))
+    .slice(0, 20);
   return {
     repo,
     ...(r?.publisher === true ? { publisher: true } : {}),
@@ -41,7 +51,7 @@ export interface Announce {
    * `publisher` 只对发布者自己有意义；`optOut` 是我退出过的更新组（发布者跳过）。
    * 旧对端没有这个字段，按「不参与更新组」处理。
    */
-  updates?: { repo?: string; publisher?: boolean; optOut?: string[] };
+  updates?: AnnounceUpdates;
 }
 
 export interface SeenPeer {
@@ -59,7 +69,7 @@ export interface SeenPeer {
   /** 对端自报的头像 id，没报就是空。 */
   avatar?: string;
   /** 对端自报的更新组身份（D441），没报就是空。 */
-  updates?: { repo?: string; publisher?: boolean; optOut?: string[] };
+  updates?: AnnounceUpdates;
 }
 
 /** 30 秒没 announce 就当离线（announce 间隔 10 秒，允许丢两包）。 */
@@ -164,13 +174,15 @@ export class Discovery extends EventEmitter {
       version: VERSION,
       status: this.localStatus(),
       avatar: this.cfg.avatar || undefined,
-      updates: this.cfg.updates.repo
-        ? {
-            repo: this.cfg.updates.repo,
-            ...(this.cfg.updates.publisher ? { publisher: true } : {}),
-            ...(optOutIds().size ? { optOut: [...optOutIds()].slice(0, 20) } : {}),
-          }
-        : undefined,
+      updates: (() => {
+        if (!this.cfg.updates.repo) return undefined;
+        const out = optOutIds();
+        return {
+          repo: this.cfg.updates.repo,
+          ...(this.cfg.updates.publisher ? { publisher: true } : {}),
+          ...(out.size ? { optOut: [...out].slice(0, 20) } : {}),
+        };
+      })(),
     };
   }
 
@@ -228,7 +240,7 @@ export class Discovery extends EventEmitter {
    * 对端把 announce 单播到 http 端口（`/peer/hello`）时也走这里：组播被交换机挡住时，
    * 手动地址那条路就靠它把对端拉进在线表。
    */
-  recordHello(msg: Pick<Announce, "nodeId" | "nickname" | "hostname" | "port"> & { status?: string; avatar?: string; updates?: Announce["updates"] }, addr: string): void {
+  recordHello(msg: Pick<Announce, "nodeId" | "nickname" | "hostname" | "port"> & { status?: string; avatar?: string; updates?: unknown }, addr: string): void {
     if (!msg.nodeId || msg.nodeId === this.nodeId) return;
     this.remember(
       {
@@ -241,7 +253,7 @@ export class Discovery extends EventEmitter {
         version: VERSION,
         status: msg.status,
         avatar: msg.avatar,
-        updates: msg.updates,
+        updates: normUpdates(msg.updates) ?? undefined,
       },
       addr,
     );

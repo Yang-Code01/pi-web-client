@@ -2315,6 +2315,7 @@ const shownIds = new Set<string>();
 
 function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
   const mine = e.from.nodeId === S.view?.status?.nodeId;
+  const ro = readonlyGroup(t);
   // 撤回（P3）：原气泡换成一整行灰条，原文不再显示（文件里还在，见 D299）。
   if (e.kind === "sys") return sysTip(e);
   if (e.recalled) {
@@ -2375,13 +2376,13 @@ function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
   if (e.via === "pi") meta.append(h("span", "pill pi", tr("pi 代发")));
   meta.append(h("span", "", clock(e.at)));
   if (mine) meta.append(...readStateMeta(e, t));
-  const rx = readonlyGroup(t) ? null : reactionRow(e, t);
+  const rx = ro ? null : reactionRow(e, t);
   if (rx) box.append(rx);
   box.append(meta);
   const thread = inPane ? null : topicSummary(e, t);
   if (thread) box.append(thread);
   msg.append(box);
-  if (!readonlyGroup(t) && e.kind !== "note") {
+  if (!ro && e.kind !== "note") {
     // 悬停出来的小笑脸：不用右键也能回应。
     const quick = iconBtn("smile", tr("回应"), (ev) => {
       const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
@@ -2409,7 +2410,7 @@ function entryNode(e: Entry, t: Thread, inPane = false): HTMLElement {
   msg.addEventListener("contextmenu", (ev) => {
     ev.preventDefault();
     if (S.picked) return;
-    messageMenu(ev.clientX, ev.clientY, e, t, mine, readonlyGroup(t));
+    messageMenu(ev.clientX, ev.clientY, e, t, mine, ro);
   });
   return msg;
 }
@@ -2795,9 +2796,16 @@ function leftBar(t: Thread): HTMLElement {
   return bar;
 }
 
+/** D441：公告卡 / 设置卡共用的一套入口与命令行（评审 #29/#30）。 */
+const UPDATE_LOG_URL = "/?settings=whatsnew";
+const UPDATE_TOOLS_URL = "/?settings=tools";
+const MANUAL_UPDATE = "git pull && npm install && npm start";
+
 /** D441：只读更新组 —— 公告只认发布者，所以本机不是发布者就没有输入框。 */
 function readonlyGroup(t: Thread): boolean {
-  return Boolean(t.group?.announceOnly && t.group.publisher !== myId());
+  const me = myId();
+  // 首屏还没拿到 nodeId、或旧快照没写 publisher 时，宁可当只读：别让成员看到输入框再被协议侧拒（评审 #28）。
+  return Boolean(t.group?.announceOnly && (!me || t.group.publisher !== me));
 }
 
 /** 只读更新组底部那条：说明为什么不能发，顺带告诉本机它已经订阅上了。 */
@@ -2832,28 +2840,30 @@ function announceCard(e: Entry): HTMLElement {
     card.append(batch);
   }
   // 本机有热部署入口就写那条路，没有就只好给命令行（D441）。
-  const canHot = S.updates?.hotdeploy !== false;
+  const canHot = S.updates?.hotdeploy === true;
   card.append(
-    h("div", "an-how", canHot ? tr("怎么更新：设置 → 工具 → 热部署") : tr("怎么更新：{p1}", { p1: "git pull && npm install && npm start" })),
+    h("div", "an-how", canHot ? tr("怎么更新：设置 → 工具 → 热部署") : tr("怎么更新：{p1}", { p1: MANUAL_UPDATE })),
   );
   const acts = h("div", "an-acts");
-  acts.append(btnEl(tr("打开更新日志"), "btn", () => window.open("/?settings=whatsnew", "_blank", "noopener")));
+  acts.append(btnEl(tr("打开更新日志"), "btn", () => window.open(UPDATE_LOG_URL, "_blank", "noopener")));
   // 热部署能在这台机器上用，才给那颗入口；文案里已经提醒过它会切断正在跑的会话（D441）。
   if (canHot) {
-    acts.append(btnEl(tr("打开热部署"), "btn", () => window.open("/?settings=tools", "_blank", "noopener")));
+    acts.append(btnEl(tr("打开热部署"), "btn", () => window.open(UPDATE_TOOLS_URL, "_blank", "noopener")));
   }
   card.append(acts);
   return card;
 }
 
 /** 重新加入更新组（D441）：清掉本机 opt-out，发布者 10 秒内会把快照重新送过来。 */
-async function rejoinUpdates(t: Thread): Promise<void> {
+async function rejoinUpdates(t?: Thread): Promise<void> {
+  const id = t?.nodeId ?? S.updates?.groupId;
+  if (!id) return;
   try {
-    await postJson("/api/peer/groups", { action: "rejoin", id: t.nodeId });
-    toast(tr("已重新订阅，等发布者把你拉回更新组"));
-    await loadThreads();
+    await postJson("/api/peer/groups", { action: "rejoin", id });
+    if (t) await loadThreads();
     await loadUpdates();
     renderAll();
+    toast(tr("已重新订阅，等发布者把你拉回更新组"));
   } catch (err) {
     toast((err as Error).message);
   }
@@ -4328,8 +4338,7 @@ function updatesCard(): HTMLElement {
       (on) => void setPublisher(on),
     ),
   );
-  const acts = h("div", "acts");
-  acts.style.padding = "0 13px 13px";
+  const acts = h("div", "acts updates-acts");
   const check = btnEl(u.publisher ? tr("立即检查") : tr("发布者才能检查"), "btn", () => void checkUpdates());
   check.disabled = !u.publisher;
   check.title = u.publisher ? tr("现在就 fetch 一次 origin/main") : tr("先打开上面的开关");
@@ -4365,24 +4374,16 @@ async function checkUpdates(): Promise<void> {
   try {
     S.updates = (await postJson("/api/updates/check", {})) as UpdatesView;
     renderAll();
-    toast(S.updates.lastError ? S.updates.lastError : tr("检查完了"));
+    const first = S.updates.lastError?.split("\n").find((line) => line.trim())?.slice(0, 120);
+    toast(first ? tr("检查失败：{p1}", { p1: first }) : tr("检查完了"));
   } catch (err) {
     toast((err as Error).message);
   }
 }
 
-/** 设置页的「重新加入」：不知道组 id 时就从 `/api/updates` 拿。 */
+/** 设置页的「重新加入」：把组 id 交给同一个 rejoin。 */
 async function rejoinUpdatesGroup(): Promise<void> {
-  const u = S.updates;
-  if (!u?.groupId) return;
-  try {
-    await postJson("/api/peer/groups", { action: "rejoin", id: u.groupId });
-    await loadUpdates();
-    renderAll();
-    toast(tr("已重新订阅，等发布者把你拉回更新组"));
-  } catch (err) {
-    toast((err as Error).message);
-  }
+  await rejoinUpdates();
 }
 
 function toggle(name: string, sub: string, on: boolean, run: (on: boolean) => void): HTMLElement {
@@ -4433,10 +4434,7 @@ async function refreshAll(): Promise<void> {
     /* 没跑起来的时候刷新也会失败，状态条已经说了 */
   }
   await loadStatus();
-  await loadUpdates();
-  await loadThreads();
-  await loadContacts();
-  await loadTransfers();
+  await Promise.all([loadUpdates(), loadThreads(), loadContacts(), loadTransfers()]);
   renderAll();
 }
 
@@ -4829,10 +4827,7 @@ async function boot(): Promise<void> {
   (pickerClose as HTMLElement).append(ic("close"));
   await restoreStaged();
   await loadStatus();
-  await loadUpdates();
-  await loadThreads();
-  await loadContacts();
-  await loadTransfers();
+  await Promise.all([loadUpdates(), loadThreads(), loadContacts(), loadTransfers()]);
   if (S.threads.length && !S.thread) S.thread = S.threads[0].nodeId;
   app.dataset.page = S.page;
   app.dataset.mview = S.mview;

@@ -14,6 +14,7 @@ const cases = [
   ["https://github.com/Yang-Code01/pi-web-client", "Yang-Code01/pi-web-client"],
   ["https://github.com/Yang-Code01/pi-web-client/", "Yang-Code01/pi-web-client"],
   ["ssh://git@gitlab.local/Yang-Code01/pi-web-client.git", "Yang-Code01/pi-web-client"],
+  // 带凭据的 URL：用户名密码必须被丢掉，不能进 slug、更不能进组名/announce。
   ["https://user:token@github.com/o/r.git", "o/r"],
   ["/srv/git/local.git", null],
   ["", null],

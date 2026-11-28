@@ -74,19 +74,32 @@ export function normalizeGroup(raw: any): Group | null {
  * 发布者会在 announce 里读到这份名单，跳过已经退出的人，不再邀请。
  */
 let optOutCache: Set<string> | null = null;
+/** 上次读文件时的 mtime + 大小：手动删改 / 多实例共用 state 目录时也能看见变化（评审 #3）。 */
+let optOutStamp = "";
 
 function optOutFile(): string {
   return statePath("updates-optout.json");
 }
 
+function optOutFileStamp(): string {
+  try {
+    const st = fs.statSync(optOutFile());
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return "";
+  }
+}
+
 export function optOutIds(): Set<string> {
-  if (optOutCache) return optOutCache;
+  const stamp = optOutFileStamp();
+  if (optOutCache && stamp === optOutStamp) return optOutCache;
   try {
     const raw = JSON.parse(fs.readFileSync(optOutFile(), "utf8"));
     optOutCache = new Set((Array.isArray(raw) ? raw : []).filter((x) => typeof x === "string"));
   } catch {
     optOutCache = new Set();
   }
+  optOutStamp = stamp;
   return optOutCache;
 }
 
@@ -165,19 +178,36 @@ export class Groups {
     if (!next) return null;
     if (optOutIds().has(next.id)) return null;
     const before = this.get(next.id);
+    // 接管只认建组的那台（owner）：名单随快照从局域网来，谁都能伪造一份「发布者是我」的快照；
+    // 放开给任意成员，等于把只读群的所有权交给任何能发群消息的人（评审 #1）。
+    // 从没进过组的新机器仍可以正常接管：先被发布者拉进组（拿到 v），再打开开关走 v+1。
     const takeover = Boolean(
-      before && next.announceOnly === true && next.publisher && next.publisher === claimer && next.publisher !== before.publisher,
+      before &&
+        next.announceOnly === true &&
+        next.publisher &&
+        next.publisher === claimer &&
+        next.publisher !== before.publisher &&
+        !before.publisher &&
+        before.owner === claimer,
     );
     if (!takeover && before && (next.v < before.v || (next.v === before.v && next.at <= before.at))) return null;
+    // 发布者必须在新名册里：旧名单满员时不能把他挤掉（评审 #2）。
+    const incoming = next.publisher && !next.members.some((m) => m.nodeId === next.publisher)
+      ? [{ nodeId: next.publisher }, ...next.members]
+      : next.members;
+    const seen = new Set<string>();
     const merged: Group = takeover && before
       ? {
           ...next,
           v: before.v + 1,
           at: Math.max(next.at, Date.now()),
-          members: [...before.members, ...next.members.filter((m) => !before.members.some((b) => b.nodeId === m.nodeId))].slice(
-            0,
-            MAX_GROUP_MEMBERS,
-          ),
+          members: [...incoming, ...before.members]
+            .filter((m) => {
+              if (seen.has(m.nodeId)) return false;
+              seen.add(m.nodeId);
+              return true;
+            })
+            .slice(0, MAX_GROUP_MEMBERS),
         }
       : next;
     const after: Group = { ...merged, ...(merged.members.some((m) => m.nodeId === me) ? {} : { left: true }) };

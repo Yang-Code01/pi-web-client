@@ -4591,6 +4591,7 @@ export const en: Dict = {
   "本机没有热部署入口，公告卡片会给 git pull && npm install && npm start。": "This machine has no hot deploy, so announcement cards show \"git pull && npm install && npm start\".",
   "这台机器现在会往更新组里推公告": "This machine now posts updates to the group",
   "已停止发布更新公告": "Stopped publishing update posts",
+  "检查失败：{p1}": "Check failed: {p1}",
   "检查完了": "Check finished",
   "发布者": "the publisher",
 };

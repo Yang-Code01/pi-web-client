@@ -8,7 +8,7 @@
  *
  * 验的是这几件事：
  *   1. announce 带得出 `updates.repo` / `publisher`（成员凭它被认出来）。
- *   2. 只读门：成员发 text / react / pin / 撤回全部 403，发布者照常。
+ *   2. 只读门：成员发 text / react / pin / 撤回全部被拒（400 或 403 + 「只读」），发布者照常。
  *   3. 公告 payload 原样到成员那边（`kind` 仍是 text，旧版本只会把它当普通消息）。
  *   4. 退群 = opt-out：快照不再合、公告不再进；`rejoin` 之后能被重新拉回来。
  *   5. 换机器：新发布者从 v=1 的快照接管，旧成员认它（v 抬到 before.v+1）。
@@ -16,7 +16,9 @@
  * 用法：npm run build:peer && node bridge/tests/peer-updates-e2e.mjs
  */
 import { spawn } from "node:child_process";
+import dgram from "node:dgram";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,17 +104,55 @@ async function waitFor(label, fn, timeout = 20_000) {
   throw new Error(`等不到「${label}」：${last instanceof Error ? last.message : JSON.stringify(last)}`);
 }
 
+/** 每组测试自己的端口：被占就让出这一段，别把「端口占用」报成功能坏了。 */
+async function portFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", () => resolve(false));
+    srv.listen(port, "127.0.0.1", () => srv.close(() => resolve(true)));
+  });
+}
+
+async function udpFree(port) {
+  return new Promise((resolve) => {
+    const sock = dgram.createSocket("udp4");
+    sock.once("error", () => {
+      try {
+        sock.close();
+      } catch {}
+      resolve(false);
+    });
+    sock.bind(port, () => {
+      try {
+        sock.close();
+      } catch {}
+      resolve(true);
+    });
+  });
+}
+
+async function pickPorts() {
+  for (let base = 7881; base <= 7961; base += 10) {
+    const p = base;
+    const a = base + 1;
+    const c = base + 2;
+    const g = base + 100;
+    const tcp = await Promise.all([portFree(p), portFree(a), portFree(c)]);
+    if (tcp.every(Boolean) && (await udpFree(g))) return { p, a, c, g };
+  }
+  throw new Error("7881-7963 这一段端口都被占了（可能另一个 e2e 正在跑）：先关掉它再跑");
+}
+
 async function messages(port, peer) {
   const data = await get(port, `/messages?peer=${encodeURIComponent(peer)}&limit=100`);
   return data.entries ?? data.messages ?? [];
 }
 
 async function main() {
-  const P = 7881;
-  const A = 7882;
-  const C = 7883;
-  start("pub", P, 7981, { config: { updates: { repo: REPO, publisher: true } } });
-  start("mem", A, 7981, { config: { updates: { repo: REPO, publisher: false } } });
+  const { p: P, a: A, c: C, g: G } = await pickPorts();
+  log(`端口：发布者 ${P} / 成员 ${A} / 新发布者 ${C} / 组播 ${G}`);
+  start("pub", P, G, { config: { updates: { repo: REPO, publisher: true } } });
+  start("mem", A, G, { config: { updates: { repo: REPO, publisher: false } } });
 
   const pMe = await waitFor("发布者起来", () => get(P, "/status"));
   const aMe = await waitFor("成员起来", () => get(A, "/status"));
@@ -144,11 +184,14 @@ async function main() {
   if (aThread.group.announceOnly === true && aThread.group.publisher === pMe.nodeId) ok("成员收到 announceOnly + publisher");
   else bad("成员那边的组字段不对", aThread.group);
 
-  // 3. 只读门：成员什么都发不了。
-  for (const [label, payload] of [
-    ["文字", { action: "send", peer: GROUP, text: "我也说一句" }],
+  // 3. 只读门：成员什么都发不了（文字 / 回应 / 固定 / 撤回各走各的接口）。
+  for (const [label, path, payload] of [
+    ["文字", "/send", { peer: GROUP, text: "我也说一句" }],
+    ["回应", "/react", { peer: GROUP, id: "x", emoji: "👍", on: true }],
+    ["固定", "/pin", { peer: GROUP, id: "x", on: true }],
+    ["撤回", "/recall", { peer: GROUP, id: "x" }],
   ]) {
-    const r = await fetch(`http://127.0.0.1:${A}/send`, {
+    const r = await fetch(`http://127.0.0.1:${A}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
@@ -177,10 +220,15 @@ async function main() {
   await post(A, "/groups", { action: "leave", id: GROUP });
   const left = await waitFor("本机标成已退出", async () => {
     const data = await get(A, "/threads");
-    return (data.threads ?? []).find((t) => t.nodeId === GROUP)?.group?.left;
-  });
-  if (left === true) ok("退群后本机标 left");
-  else bad("退群没生效", left);
+    const thread = (data.threads ?? []).find((t) => t.nodeId === GROUP);
+    return thread?.group?.left === true ? "left" : undefined;
+  }).catch(() => undefined);
+  if (left === "left") ok("退群后本机标 left");
+  else {
+    const data = await get(A, "/threads");
+    const thread = (data.threads ?? []).find((t) => t.nodeId === GROUP);
+    bad("退群没生效", thread ? { group: thread.group } : "线程都不见了（历史应当留着）");
+  }
 
   const before = (await messages(A, GROUP)).length;
   await post(P, "/send", {
@@ -203,34 +251,36 @@ async function main() {
   if (back) ok("rejoin + 邀请后重新进组");
   else bad("重新加入没生效");
 
-  // 7. 换机器：C 的本机没有这个组，从 v=1 接管；旧成员（v 更大）必须认它。
-  start("pub2", C, 7981, { config: { updates: { repo: REPO, publisher: true } } });
+  // 7. 换机器：新机器先被拉进组拿到名册，再自己站出来当发布者（v+1 广播）。
+  //    只读群的 takeover 只允许「从没定过 publisher 且 claimer 是 owner」，所以不能靠伪造快照抢。
+  start("pub2", C, G, { config: { updates: { repo: REPO, publisher: true } } });
   const cMe = await waitFor("新发布者起来", () => get(C, "/status"));
   await waitFor("新发布者看见成员", async () => {
     const st = await get(C, "/status");
     return st.online?.some((p) => p.nodeId === aMe.nodeId);
   });
-  const made = await post(C, "/groups", {
-    action: "create",
-    id: GROUP,
-    name: `${REPO} 更新`,
-    members: [aMe.nodeId],
-    announceOnly: true,
-    publisher: cMe.nodeId,
+  await post(A, "/groups", { action: "invite", id: GROUP, members: [cMe.nodeId] });
+  const joined = await waitFor("新机器拿到组快照", async () => {
+    const data = await get(C, "/threads");
+    return (data.threads ?? []).find((t) => t.nodeId === GROUP)?.group;
   });
-  if (made.group?.v === 1) ok("新机器的快照 v=1");
-  else bad("新机器建组版本不是 1", made.group?.v);
+  if (joined.announceOnly === true) ok("新机器被拉进组、拿到只读快照");
+  else bad("新机器没拿到快照", joined);
 
-  const taken = await waitFor("成员接受接管", async () => {
+  const claimed = await post(C, "/groups", { action: "publisher", id: GROUP });
+  if (claimed.group?.publisher === cMe.nodeId) ok("新机器自封发布者（v+1）");
+  else bad("新机器没能当发布者", claimed.group);
+
+  const taken = await waitFor("成员接受换发布者", async () => {
     const data = await get(A, "/threads");
     const t = (data.threads ?? []).find((x) => x.nodeId === GROUP);
     return t?.group?.publisher === cMe.nodeId ? t.group : null;
   });
-  // `/threads` 不暴露 v，直接看成员的状态文件：接管必须把版本抬到「旧 v + 1」。
+  // `/threads` 不暴露 v，直接看成员的状态文件：换人必须把版本抬到「旧 v + 1」。
   const memberState = JSON.parse(fs.readFileSync(path.join(ROOT, "mem", "groups.json"), "utf8"));
   const memberGroup = memberState.find((g) => g.id === GROUP);
-  if (memberGroup?.v > 1 && taken.publisher === cMe.nodeId) ok(`接管后版本抬到 ${memberGroup.v}（旧成员 v 更大也收）`);
-  else bad("接管后版本没抬", memberGroup?.v);
+  if (memberGroup?.v > 1 && taken?.publisher === cMe.nodeId) ok(`换发布者后版本抬到 ${memberGroup.v}（旧成员 v 更大也收）`);
+  else bad("换发布者后版本没抬", memberGroup?.v);
 
   await post(C, "/send", {
     peer: GROUP,

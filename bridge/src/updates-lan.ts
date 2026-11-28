@@ -97,6 +97,10 @@ export class UpdatesLan {
   private timer: NodeJS.Timeout | null = null;
   private firstTimer: NodeJS.Timeout | null = null;
   private inviteTimer: NodeJS.Timeout | null = null;
+  private bootTimer: NodeJS.Timeout | null = null;
+  /** `setPublisher(true)` 的两次延迟触发：stop() 时要一起清掉，否则 peer 停了还会去 fetch。 */
+  private kicks: NodeJS.Timeout[] = [];
+  private reconciling = false;
   private checking = false;
   private repoCache: { at: number; info: RepoInfo | null } | null = null;
   private readonly peer: PeerHost;
@@ -123,7 +127,7 @@ export class UpdatesLan {
     this.inviteTimer = setInterval(() => void this.reconcile(), INVITE_MS);
     // 一开机就把「我这份检出是哪个仓库」写进 config：**不是发布者也要写**，否则 announce 里没仓库标识，
     // 发布者就永远认不出这台机器、也不会拉它进组。写完才谈拉人。
-    setTimeout(() => void this.boot(), 5_000);
+    this.bootTimer = setTimeout(() => void this.boot(), 5_000);
   }
 
   /** 开机：先把仓库标识补进 config，再（如果本机是发布者）把已经在线的人拉进组。 */
@@ -140,17 +144,21 @@ export class UpdatesLan {
     try {
       const st = this.peer.view().status;
       if (!st) return;
+      const cfg = st.config.updates;
+      if (!cfg) return;
       const info = await this.repoInfo();
-      if (!info || st.config.updates.repo === info.repo) return;
-      await this.peer.setConfig({ updates: { repo: info.repo, publisher: st.config.updates.publisher } });
+      if (!info || cfg.repo === info.repo) return;
+      await this.peer.setConfig({ updates: { repo: info.repo, publisher: cfg.publisher } });
     } catch (err) {
       this.setError(`登记仓库失败：${(err as Error).message}`);
     }
   }
 
   stop(): void {
-    for (const t of [this.firstTimer, this.timer, this.inviteTimer]) if (t) clearTimeout(t);
-    this.firstTimer = this.timer = this.inviteTimer = null;
+    for (const t of [this.firstTimer, this.timer, this.inviteTimer, this.bootTimer]) if (t) clearTimeout(t);
+    for (const t of this.kicks) clearTimeout(t);
+    this.firstTimer = this.timer = this.inviteTimer = this.bootTimer = null;
+    this.kicks = [];
   }
 
   /** 这个检出对应的仓库：没有 origin / 不是 git 检出就是 null。缓存 60 秒（remote 很少变）。 */
@@ -204,7 +212,7 @@ export class UpdatesLan {
       repo: info?.repo ?? "",
       groupId: info?.groupId ?? "",
       groupName: info?.groupName ?? "",
-      publisher: status?.config.updates.publisher === true && Boolean(status?.config.updates.repo),
+      publisher: status?.config.updates?.publisher === true && Boolean(status?.config.updates?.repo),
       joined: Boolean(group && me && group.members.some((m) => m.nodeId === me) && !group.left),
       memberCount: group?.members.length ?? 0,
       onlineCount: (status?.online ?? []).filter((p) => p.updates?.repo === info?.repo).length,
@@ -229,8 +237,10 @@ export class UpdatesLan {
     if (on && !info) throw new Error("这个检出没有 git remote origin，认不出是哪份仓库");
     await this.peer.setConfig({ updates: { repo: info?.repo ?? "", publisher: on } });
     if (on) {
-      setTimeout(() => void this.checkNow(), 500);
-      setTimeout(() => void this.reconcile(), 500);
+      this.kicks.push(
+        setTimeout(() => void this.checkNow(), 500),
+        setTimeout(() => void this.reconcile(), 500),
+      );
     }
     return this.view();
   }
@@ -253,25 +263,33 @@ export class UpdatesLan {
 
   /** 把同仓库的在线机器拉进组，并给刚进来的人补最近 3 条公告。 */
   private async reconcile(): Promise<void> {
-    const status = this.peer.view().status;
-    if (!status || status.config.updates.publisher !== true) return;
-    const info = await this.repoInfo();
-    if (!info) return;
+    // 10 秒一轮，遇到慢网 / 多台机器会跨轮重叠：只让一轮在里面跑（评审 #12）。
+    if (this.reconciling) return;
+    this.reconciling = true;
     try {
-      let group = await this.group(info.groupId);
+      const status = this.peer.view().status;
+      if (!status || status.config.updates?.publisher !== true) return;
+      const info = await this.repoInfo();
+      if (!info) return;
+      const group = await this.group(info.groupId);
       if (!group) return; // 还没播报过：第一次播报时建组，不在空组里拉人
       if (group.announceOnly !== true || group.publisher !== status.nodeId) return;
       const want = this.wanted(group, info, status.nodeId);
       if (!want.length) return;
-      const res = await this.peer.group({ action: "invite", id: info.groupId, members: want });
-      if (res.group) group = res.group;
-      for (const nodeId of want) {
-        await this.peer.replayAnnouncements(info.groupId, nodeId, 3).catch(() => null);
-      }
+      await this.inviteAndReplay(info, want);
       this.log(`更新组：拉了 ${want.length} 台机器进来`);
     } catch (err) {
       this.setError(`拉人失败：${(err as Error).message}`);
+    } finally {
+      this.reconciling = false;
     }
+  }
+
+  /** 邀请 + 补最近三条公告：定时 reconcile 和播报后的拉人共用这一份（评审 #14）。 */
+  private async inviteAndReplay(info: RepoInfo, want: string[]): Promise<void> {
+    await this.peer.group({ action: "invite", id: info.groupId, members: want });
+    // 补公告彼此独立：并行发，别让 N 台机器把 10 秒一轮的 reconcile 拖住（评审 #12）。
+    await Promise.all(want.map((nodeId) => this.peer.replayAnnouncements(info.groupId, nodeId, 3).catch(() => null)));
   }
 
   private async git(args: string[]): Promise<string> {
@@ -322,7 +340,7 @@ export class UpdatesLan {
     try {
       await this.syncRepo();
       const status = this.peer.view().status;
-      if (!status || status.config.updates.publisher !== true) return;
+      if (!status || status.config.updates?.publisher !== true) return;
       const info = await this.repoInfo();
       if (!info) return;
 
@@ -369,16 +387,13 @@ export class UpdatesLan {
           publisher: status.nodeId,
         });
         group = created.group ?? null;
-      } else if (group.announceOnly && group.publisher !== status.nodeId) {
+      } else if (group.announceOnly === true && group.publisher !== status.nodeId) {
         // 换机器（D441）：新机器接管发布权，v+1 广播出去，组里会插一条「X 成为新的发布者」。
         const claimed = await this.peer.group({ action: "publisher", id: info.groupId });
         group = claimed.group ?? group;
       }
       const want = this.wanted(group, info, status.nodeId);
-      if (want.length && group) {
-        await this.peer.group({ action: "invite", id: info.groupId, members: want });
-        for (const nodeId of want) await this.peer.replayAnnouncements(info.groupId, nodeId, 3).catch(() => null);
-      }
+      if (want.length && group) await this.inviteAndReplay(info, want);
 
       const text = this.composeText(info, commit, batches, subjects);
       const announce = { repo: info.repo, commit, batches, howTo: "auto" as const };

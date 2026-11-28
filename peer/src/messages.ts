@@ -211,10 +211,7 @@ export class Messages {
       throw new Error(`太长（${Math.round(bytes / 1024)} KB，上限 32 KB）：改用文件发`);
     }
     const announce = opts.announce ? normalizeAnnounce(opts.announce) : null;
-    const group = isGroupId(peerId) ? this.ctx.groups.get(peerId) : null;
-    if (group?.announceOnly && group.publisher !== this.ctx.nodeId) {
-      throw new Error("这是只读的更新组：只有发布者能发消息");
-    }
+    this.assertWritable(peerId);
     const targets = this.targets(peerId);
     const at = Date.now();
     const id = uuidv7(at);
@@ -265,6 +262,8 @@ export class Messages {
    * 对端离线时只在本机生效 —— 不做「等他上线再告诉他撤回」：那条消息他可能早就看过了。
    */
   recall(peerId: string, id: string): { ok: true; at: number } {
+    // 先判能不能写，再判这条消息在不在：只读群里成员连「找不到」都不该问得出来。
+    this.assertWritable(peerId);
     const entry = this.ctx.history.find(peerId, id);
     if (!entry) throw new Error("找不到这条消息");
     if (entry.from.nodeId !== this.ctx.nodeId) throw new Error("只能撤回自己发的");
@@ -294,6 +293,7 @@ export class Messages {
   react(peerId: string, id: string, emoji: string, on: boolean): { ok: true; at: number } {
     const e = normEmoji(emoji);
     if (!e) throw new Error("表情不对");
+    this.assertWritable(peerId);
     const entry = this.ctx.history.find(peerId, id);
     if (!entry) throw new Error("找不到这条消息");
     if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") throw new Error("这条不能回应");
@@ -313,6 +313,7 @@ export class Messages {
    * 大家会话顶上都多一条。同一条消息最后一次 pin / unpin 说了算。
    */
   pin(peerId: string, id: string, on: boolean): { ok: true; at: number } {
+    this.assertWritable(peerId);
     const entry = this.ctx.history.find(peerId, id);
     if (!entry) throw new Error("找不到这条消息");
     if (entry.kind !== "text" && entry.kind !== "file" && entry.kind !== "note") throw new Error("这条不能固定");
@@ -506,7 +507,8 @@ export class Messages {
     return next;
   }
 
-  /** 退群：名单里去掉自己、版本 +1，通知剩下的人；本机会话留着（能看历史），不能再发。 */  leaveGroup(groupId: string): Group {
+  /** 退群：名单里去掉自己、版本 +1，通知剩下的人；本机会话留着（能看历史），不能再发。 */
+  leaveGroup(groupId: string): Group {
     const group = this.mine(groupId);
     const members = group.members.filter((m) => m.nodeId !== this.ctx.nodeId);
     const next: Group = { ...group, members, v: group.v + 1, at: Date.now() };
@@ -536,7 +538,11 @@ export class Messages {
     const group = this.mine(groupId);
     if (!group.announceOnly) throw new Error("这不是只读的更新组");
     if (group.publisher === this.ctx.nodeId) return group;
-    const next: Group = { ...group, publisher: this.ctx.nodeId, v: group.v + 1, at: Date.now() };
+    // 发布者必须在名册里：不在就补进来（满员时让出最后一席），否则对端 admitGroup 会 403（评审 #4）。
+    const members = group.members.some((m) => m.nodeId === this.ctx.nodeId)
+      ? group.members
+      : [...group.members.slice(0, MAX_GROUP_MEMBERS - 1), this.me()];
+    const next: Group = { ...group, members, publisher: this.ctx.nodeId, v: group.v + 1, at: Date.now() };
     this.ctx.groups.put(next);
     this.appendSys(groupId, this.me(), { op: "publisher", actor: this.nameOf(this.me()), name: this.nameOf(this.me()) });
     this.broadcastGroup(next);
@@ -599,6 +605,16 @@ export class Messages {
     return { status: 403, body: { error: "只读群：只有发布者能发消息", retryable: false } };
   }
 
+  /** 本机自己的写入口也要拦：只读群里成员点到的每个动作都在本地先被拒，不靠对端回 403。 */
+  private assertWritable(threadId: string): void {
+    if (!isGroupId(threadId)) return;
+    const group = this.ctx.groups.get(threadId);
+    if (!group?.announceOnly) return;
+    // 发布者没定（旧快照）时给 owner 一条恢复路径（评审 #6）。
+    if (group.publisher ? group.publisher === this.ctx.nodeId : group.owner === this.ctx.nodeId) return;
+    throw new Error("这是只读的更新组：只有发布者能发消息");
+  }
+
   /**
    * 给刚进组的人补最近几条公告（D441）：原 id / 原时间单播。
    * 对方 `recentIds` 会把重复的丢掉，所以已经收到过的人不会多出气泡。
@@ -606,12 +622,15 @@ export class Messages {
   replayAnnouncements(groupId: string, peerNodeId: string, limit = 3): { ok: true; sent: number } {
     const group = this.ctx.groups.get(groupId);
     if (!group?.announceOnly) throw new Error("不是更新组");
+    const want = Math.max(0, Math.floor(limit));
+    if (!want) return { ok: true, sent: 0 };
     const peer = this.ctx.discovery.byId(peerNodeId);
     if (!peer) throw new Error("这个人不在线");
+    // 500 条只够热闹的群；公告稀疏时最近 3 条可能落在更早的位置（评审 #8）。
     const entries = this.ctx.history
-      .read(groupId, 500)
+      .read(groupId, 5000)
       .filter((entry) => entry.kind === "text" && entry.announce)
-      .slice(-Math.max(1, limit));
+      .slice(-want);
     for (const entry of entries) this.enqueue(groupId, entry.id, "text", entry, entry.at, [{ peerId: peerNodeId, addr: peer.addr, port: peer.port }]);
     return { ok: true, sent: entries.length };
   }

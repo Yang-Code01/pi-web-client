@@ -131,6 +131,16 @@ export interface PendingInfo {
   error?: string;
 }
 
+/** 群会话在列表里露出的那一小份：成员、群主、我是不是已经退出（D441 加了只读与发布者）。 */
+export interface GroupSummary {
+  name: string;
+  members: PeerIdentity[];
+  owner: string;
+  left?: boolean;
+  announceOnly?: boolean;
+  publisher?: string;
+}
+
 export interface ThreadSummary {
   nodeId: string;
   nickname: string;
@@ -159,7 +169,7 @@ export interface ThreadSummary {
   /** 未读里有人 @ 我（或 @所有人）：免打扰也照样提醒。 */
   mention: boolean;
   /** 群会话才有：成员、群主、我是不是已经退出。 */
-  group?: { members: PeerIdentity[]; owner: string; left: boolean; announceOnly?: boolean; publisher?: string };
+  group?: GroupSummary;
 }
 
 const TAIL_BYTES = 512 * 1024;
@@ -341,7 +351,7 @@ export class History {
     meta: (nodeId: string) => ThreadMeta;
     typing: (nodeId: string) => boolean;
     pending: (nodeId: string) => boolean;
-    group?: (id: string) => { name: string; members: PeerIdentity[]; owner: string; left?: boolean; announceOnly?: boolean; publisher?: string } | null;
+    group?: (id: string) => GroupSummary | null;
   }): ThreadSummary[] {
     const byId = new Map(input.online.map((peer) => [peer.nodeId, peer]));
     const byContact = new Map(input.contacts.map((contact) => [contact.nodeId, contact]));
@@ -413,6 +423,7 @@ export class History {
         ...(group
           ? {
               group: {
+                name: group.name,
                 members: group.members,
                 owner: group.owner,
                 left: group.left === true,
