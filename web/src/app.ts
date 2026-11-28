@@ -6119,7 +6119,13 @@ export class App {
     // 与「使用中」高亮、`draftInfo()` 共用同一份判据。不先把这一步做出来的话：`draftProvider` 会从
     // 空串起步，「点同名同 id 的另一个来源」就被 `sameModel` 的向后兼容当成没动过，弹层不显示
     // 「待切换」、确认直接关窗（D452 评审意见 4）。
-    const startRow = this.models.find((m) => sameModel(m, { provider: startProvider, id: startModel }));
+    //
+    // 最后那一段回退是**必须**的：会话报的 provider 可能已经不在目录里（改过名、下架、老 pi 的写法），
+    // 这时还拿它去严格比，`isStart` 会一行都匹配不上 —— 没有「使用中」、`draftInfo()` 是 undefined、
+    // 连切档位都没得切（D452 二轮评审意见 1）。退回按 id 认，与改动前同档。
+    const startRow =
+      this.models.find((m) => sameModel(m, { provider: startProvider, id: startModel })) ??
+      this.models.find((m) => m.id === startModel);
     const startId = startRow?.id ?? startModel;
     const startProviderId = startRow?.provider ?? startProvider;
     // 默认展开是「第一眼」的事，不是「锁死」：用户把这一组折上后，下次 paint 不能再把它擑开。
@@ -6242,8 +6248,9 @@ export class App {
         // The level rides along with the model switch so the bridge applies it after pi's clamp.
         if (modelChanged && model) {
           // 换走的和换上的都记进「最近使用」：下次打开时，刚离开的那个就在顶上。
+          // 目录里没有这一行（会话的模型不在目录里）就别记：记进去也读不出来，白占一个名次。
           const prev = this.models.find(isStart);
-          rememberRecentModel(prev?.provider ?? startProviderId, prev?.id ?? startId);
+          if (prev) rememberRecentModel(prev.provider, prev.id);
           rememberRecentModel(model.provider, model.id);
           this.socket.send({ type: "setModel", sessionId, provider: model.provider, modelId: model.id, level: level || undefined });
         } else if (levelChanged) this.socket.send({ type: "setThinking", sessionId, level });

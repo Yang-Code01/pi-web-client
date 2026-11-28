@@ -83,7 +83,7 @@ if (process.platform === "win32") {
 }
 
 // ---- 假 pi：按 FAKE_PI_MODE 演三种结局，每次调用记一行到 FAKE_PI_CALLS ------------
-// 每个场景用自己的 calls 文件：三组并发/残留的 worker 不会算进别人头上。
+// 每个场景用自己的 calls 文件：上一个场景残留的 worker 不会把调用次数算进下一个头上。
 const fakePi = path.join(TMP, "fake-pi.mjs");
 fs.writeFileSync(
   fakePi,
@@ -96,8 +96,9 @@ fs.writeFileSync(
     "if (calls) fs.writeFileSync(calls, JSON.stringify(list));",
     "const mode = process.env.FAKE_PI_MODE || 'error';",
     "const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');",
-    "if (mode === 'error') {",
+    "if (mode === 'error' || mode === 'error-exit') {",
     "  out({ type: 'message_end', message: { role: 'assistant', content: [], usage: { totalTokens: 0 }, stopReason: 'error', errorMessage: 'Connection error.: connect EHOSTDOWN 192.168.31.36:7863 - Local (192.168.31.72:56888)' } });",
+    "  if (mode === 'error-exit') { process.exit(1); }",
     "} else if (mode === 'silent') {",
     "  out({ type: 'turn_start' });",
     "} else if (mode === 'split') {",
@@ -121,7 +122,8 @@ const childEnv = (mode, scenario) => ({
   PI_BIN: fakePi,
   FAKE_PI_MODE: mode,
   FAKE_PI_CALLS: path.join(TMP, `calls-${scenario}.json`),
-  FAKE_OCR_FILE_COUNT: scenario === "split" ? "9" : "1",
+  // 拆成两组要有 GROUP_FILES + 1 个文件；跟着常量算，不写死 9（改分组阈值时这条不该莫名其妙变红）。
+  FAKE_OCR_FILE_COUNT: scenario === "split" ? String(review.GROUP_FILES + 1) : "1",
   PATH: `${BIN}${path.delimiter}${process.env.PATH ?? ""}`,
 });
 
@@ -211,6 +213,21 @@ try {
     });
     check("来源连不上就不再重试：假 pi 只被起了一次", () => {
       assert.equal(calls.length, 1, `实际起了 ${calls.length} 次`);
+    });
+  });
+
+  // ---- 1b. 报错之后又以非 0 退出：原因不许缩成「退出码 N」 ---------------------------
+  await scenario("报错并非 0 退出", async () => {
+    const session = "s-error-exit";
+    const runId = start(session);
+    const { code } = await runWorker(runId, "error-exit", "error-exit");
+    check("worker 自己仍然是 0（它只是跑完了一次评审）", () => assert.equal(code, 0));
+    const run = await waitRun(session, runId);
+    check("非 0 退出也带出 provider 原话，不是「退出码 1」", () => {
+      assert.equal(run.status, "failed");
+      assert.equal(run.errorCode, "child_failed");
+      assert.match(run.error, /192\.168\.31\.36:7863/, `实际：${run.error}`);
+      assert.doesNotMatch(run.error, /退出码/, "有原话就不该只报行数/退出码");
     });
   });
 

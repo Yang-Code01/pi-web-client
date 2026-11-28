@@ -249,6 +249,21 @@ try {
   const after = await chip2.getAttribute("title");
   check("不知道来源时，换来源仍然切得过去", after === "wb2_mac/cn:deepseek-v4.1-flash", `chip title = ${after}`);
 
+  // ---- 会话报的来源在目录里根本没有（改名 / 下架 / 老 pi 的写法）------------------
+  // 这时严格比会一行都匹配不上：没有「使用中」、`draftInfo()` 为空、连档位都换不了。
+  // 起点身份必须退回按 id 认（D452 二轮评审意见 1）。
+  SESSION.provider = "wb2-legacy";
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(".session-card").first().click();
+  await page.locator(".model-chip").waitFor({ timeout: 20000 });
+  await sleep(400);
+  await page.evaluate(() => document.querySelector(".model-chip")?.click());
+  await page.locator(".model-sheet").waitFor({ timeout: 10000 });
+  const legacyMarks = await page.locator(".model-sheet .pm-row.on").evaluateAll((els) => els.map((e) => e.dataset?.provider ?? ""));
+  check("来源不在目录里时，按 id 认出目录里那一行（标「使用中」）", legacyMarks.length === 1 && legacyMarks[0] === "wb2api", `标中的行：${JSON.stringify(legacyMarks)}`);
+  const lvButtons = await page.locator(".model-sheet .st-seg .st-seg__btn").count();
+  check("来源不在目录里时，档位条仍然认得出这个模型", lvButtons > 0, `档位按钮 ${lvButtons} 个`);
+
   check("没有页面异常", errors.length === 0, errors.join(" | "));
 } finally {
   await browser.close();

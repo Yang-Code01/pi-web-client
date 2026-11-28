@@ -1101,12 +1101,26 @@ export function readChildEvent(ev: ChildEventLine | null | undefined): ChildEven
   return out;
 }
 
+/** 一次评审子进程跑下来的结果（`runChild` 交回来的就是它）。 */
+export interface ChildResult {
+  code: number | null;
+  text: string;
+  stderr: string;
+  aborted: boolean;
+  touched: Set<string>;
+  tokens: number;
+  lines: number;
+  silent: boolean;
+  /** pi 替 provider 转达的原话（`stopReason: "error"` 的 errorMessage），没有就是空串。 */
+  error: string;
+}
+
 /**
  * 「子进程一句话没答」的原因：它自己报的错最有用（`stopReason: "error"` 的 errorMessage，
  * 比如 `connect EHOSTDOWN 192.168.31.36:7863`），其次沉默超时，最后才是「退出码 0、输出 N 行」。
  * 最后那条对定位几乎没用：正常的子进程也是三四十行、也是退出码 0（D452）。
  */
-export function childWhy(res: { error?: string; silent?: boolean; stderr?: string; code?: number | null; lines?: number }): string {
+export function childWhy(res: Partial<ChildResult>): string {
   const own = String(res.error ?? "").trim();
   if (own) return own;
   if (res.silent) return "90 秒没有任何输出";
@@ -1433,7 +1447,7 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
 
   /** 起一个子进程评一组：边跑边发进度，结束时把它答的那段话交回来。 */
   const runChild = (prompt: string) =>
-    new Promise<{ code: number | null; text: string; stderr: string; aborted: boolean; touched: Set<string>; tokens: number; lines: number; silent: boolean; error: string }>((resolve) => {
+    new Promise<ChildResult>((resolve) => {
       const pi = resolvePi();
       const proc = spawn(process.execPath, [pi.cli, ...reviewArgs({ model: opts.model, provider: opts.provider })], {
         cwd: root,
@@ -1599,7 +1613,9 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
       let res = await runChild(prompt);
       if (res.aborted) break;
       if (res.code !== 0) {
-        failed = { code: res.code, stderr: res.stderr, group: i + 1 };
+        // 子进程崩了（或守卫把它杀了）也照样以它自己报的原话为先：网关掉线时它可能先吐了
+        // `EHOSTDOWN` 再非 0 退出，只报「退出码 N、stderr 首行」等于把原因丢了（D452 二轮评审意见 6）。
+        failed = { code: res.code, stderr: res.error || res.stderr, group: i + 1 };
         plan[i].state = "failed";
         plan[i].finishedAt = new Date().toISOString();
         emitPlan();
