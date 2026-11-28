@@ -2890,16 +2890,16 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .art-badge.st-unknown { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-dim); }
 .art-badge.st-same { color: var(--faint); }
 /* 窄屏：状态挪到第二行，工具名隐掉 */
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr) auto; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 2; grid-row: 1; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 2; grid-row: 2; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-tools { display: none; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-bar { flex-wrap: wrap; }
-:where(html[data-console-narrow="true"]) .st-console.art-sheet .art-bar .ns-input { flex-basis: 100%; order: 3; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr) auto; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 2; grid-row: 1; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 2; grid-row: 2; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-tools { display: none; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-bar { flex-wrap: wrap; }
+:where(html[data-st-narrow="true"]) .st-console.art-sheet .art-bar .ns-input { flex-basis: 100%; order: 3; }
 /* 最窄：单列，控件与状态各占一行 */
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr); }
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 1; grid-row: 3; justify-content: flex-start; }
-:where(html[data-console-tight="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 1; grid-row: 4; justify-self: start; }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row { grid-template-columns: minmax(0, 1fr); }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row > .settings-ctl { grid-column: 1; grid-row: 3; justify-content: flex-start; }
+:where(html[data-st-tight="true"]) .st-console.art-sheet .art-row.settings-row > .art-badge { grid-column: 1; grid-row: 4; justify-self: start; }
 
 /* D208 C 方案：独立 diff 弹窗（左栏换文件 + 左右对照）。 */
 .diff-sheet { height: calc(var(--vh1) * 86); max-height: calc(var(--vh1) * 88); }

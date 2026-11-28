@@ -50,7 +50,8 @@ export const en: Dict = {
   "关闭": "Close",
   "字号": "Text size",
   "分区字号": "Per-region text size",
-  "各自叠在「字号」上相乘；双击轨道回 100%": "Each multiplies onto Text size; double-click a track for 100%",
+  "各自叠在「字号」上相乘；拖动轨道时让开看真页面；双击轨道回 100%":
+    "Each multiplies onto Text size; the panel steps aside while you drag a track so you see the real page; double-click for 100%",
   "顶栏": "Top bar",
   "顶部三行：顶栏按钮、工作区标签行、置顶会话行": "All three top rows: toolbar, workspace tabs, pinned sessions",
   "左栏那列会话卡片": "The session cards in the left column",
@@ -4063,7 +4064,8 @@ export const en: Dict = {
   "强调色": "Accent color",
   "改了立即生效：外观存在这个浏览器里，标签行与界面元素存在桥上": "Changes apply immediately: appearance is stored in this browser, tab row and UI elements on the bridge",
   "对话正文": "Chat transcript",
-  "整页一起缩放；拖动或点刻度，双击轨道回 100%": "Scales the whole page; drag or click a mark, double-click the track for 100%",
+  "整页一起缩放；拖动时设置面板自动让开，松手回来；点刻度跳档，双击轨道回 100%":
+    "Scales the whole page; the settings panel gets out of the way while you drag and comes back on release; click a mark to jump, double-click the track for 100%",
   "未开": "Off",
   "界面与推送": "UI and notifications",
   "界面元素": "UI elements",

@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./settings-console.css";
+import { type ConsolePeek, PEEK_MIN_PX, peekFor } from "./console-peek.ts";
 import { api, githubApi, type DepPackageId, type DepsReport } from "./api.ts";
 import { icon, face, isIconName, fileIcon, type IconName } from "./icons.ts";
 import { ChatView, createEl as el } from "./chat.ts";
@@ -1557,18 +1558,29 @@ export class App {
 
   /**
    * 把上面的判据落到 `<html data-compact>`：CSS 的 899 / 900 断点都改读这个属性。
-   * 三套控制台的 900 / 720 / 640 折叠规则也按有效宽度落 `data-console-*`（D158），
-   * 否则放大字号时原生 @media 不触发，面板内容会横向穿出。
+   * 控制台的 900 / 720 / 640 折叠规则落两组属性，**别合并**：
+   * - `data-console-*` 按有效宽度（视口 ÷ 字号）：`.sys-` / `.jc-` / 附件那几套控制台还在 `#app`
+   *   里，跟着字号缩放（D158），否则放大字号时原生 @media 不触发、面板内容会横向穿出；
+   * - `data-st-*` 按视口宽度：`.st-console` 那批已经 1:1 挂在 body 上（D450）。
    * 返回「这次真的翻了」—— 调用方拿它决定要不要重排（拖动中跨过 900 时）。
    */
   private syncCompact(): boolean {
-    const width = this.layoutWidth();
-    const compact = width < 900;
+    // 壳的宽窄仍看**有效宽度**（视口 ÷ 字号，`compact()` 那一份判据，D158）。
+    // 别顺手把这里换成 `window.innerWidth`：控制台改成 1:1 之后，两套判据正是从这里开始分家的。
+    const compact = this.compact();
+    const width = window.innerWidth;
     const root = document.documentElement;
     // 控制台原本是 @media (max-width: 900/720/640px)，保留 <= 的边界；compact 仍是 < 900。
-    root.dataset.consoleNarrow = String(width <= 900);
-    root.dataset.consoleMid = String(width <= 720);
-    root.dataset.consoleTight = String(width <= 640);
+    const layout = this.layoutWidth();
+    root.dataset.consoleNarrow = String(layout <= 900);
+    root.dataset.consoleMid = String(layout <= 720);
+    root.dataset.consoleTight = String(layout <= 640);
+    // #742：`.st-console` 那批控制台已经挂在 body 上、不再跟字号缩放，所以它的折叠档位要按**视口**宽度算。
+    // 还按有效宽度（视口 / 字号）算的话，2.0 字号下一块 1080px 宽的面板会被判成「窄」，整套布局白翻一次。
+    // 分开两组属性：`.sys-` / `.jc-` / 附件那几套控制台仍留在 `#app` 里，继续读 `data-console-*`。
+    root.dataset.stNarrow = String(width <= 900);
+    root.dataset.stMid = String(width <= 720);
+    root.dataset.stTight = String(width <= 640);
     // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
     // 否则属性一直是 undefined，CSS 那边是在碰运气。
     const changed = root.dataset.compact !== String(compact);
@@ -4050,7 +4062,9 @@ export class App {
    */
   private overlay(node: HTMLElement, kind: SurfaceKind = "window", opts: SurfaceOpts = {}): void {
     markSurface(node, kind, opts);
-    (document.getElementById("app") ?? document.body).append(node);
+    // 挂哪儿由 `overlayHost()` 一个判据决定：控制台（`.st-console`）是量尺，1:1 挂 body（D450），
+    // 其余浮层照旧进 `#app`、跟着字号缩放（D123 / D441）。
+    mountOverlay(node);
   }
 
   /**
@@ -4431,6 +4445,32 @@ export class App {
     }
     rail.append(range, ticks);
 
+    // #742：拖动时把控制台让开（视觉在 console-peek.ts + settings-console.css）。
+    // 胶囊是**指示器**，不接指针 —— 拖动继续用冻住的轨道盒子换算，视觉变化不回读几何。
+    // 宿主与 `overlayHost()` / CSS 那条复位认的是同两种外壳：只写 `.st-back` 的话，
+    // 滑杆哪天落进 `.sheet-back` 那扇控制台，拖动就永远不让开、也不露胶囊。
+    const peekHost = (): HTMLElement | null => rail.closest<HTMLElement>(".st-back, .sheet-back");
+    let peeking: ConsolePeek | null = null;
+    const readout = (v: number): { text: string; fill: number } => ({ text: `${Math.round(v * 100)}%`, fill: sizePct(v) });
+    /**
+     * 收起让开。按**宿主**收，不是按这一根滑杆：胶囊与 `peeking` 类是六根共用的，
+     * 按自己那一份收会漏掉「A 的键盘读数还挂着、B 已经在拖」这种情况。
+     */
+    const hidePeek = (): void => {
+      const host = peekHost();
+      if (host) peekFor(host).hide();
+      peeking = null;
+    };
+    /** 露出来。`key` = 键盘调值那一下（自带 400ms 自动收起，计时器在 ConsolePeek 里按宿主一份）。 */
+    const showPeek = (v: number, key = false): void => {
+      const host = peekHost();
+      if (!host) return;
+      const pk = peekFor(host);
+      if (key) pk.keyPeek(o.label, readout(v));
+      else pk.show(o.label, readout(v));
+      peeking = pk;
+    };
+
     /** 把值抹到控件上（轨道填充 / 读数 / 刻度的「已过」状态 / 刻度字的高亮）。 */
     const paint = (v: number): void => {
       range.value = String(v);
@@ -4444,6 +4484,7 @@ export class App {
       for (const m of marks.children) {
         m.classList.toggle("on", Math.abs(Number((m as HTMLElement).dataset.v) - v) < 0.001);
       }
+      peeking?.set(readout(v));
     };
 
     // 一帧只抹一次：值一变就是整块 zoom 重排，input 事件比帧还密。
@@ -4451,6 +4492,8 @@ export class App {
     let next = o.value;
     // 「有没有还没落盘的值」只能另记一笔：`land` 自己就把 prefs 改掉了，拿值比永远相等。
     let dirty = false;
+    /** 上一次**真的抹到界面上**的值。`next` 可能还差一帧没落，Esc 要回的是这个。 */
+    let applied = o.value;
 
     /** 落实一个值：写 prefs（调用方的事）+ 抹控件。 */
     const land = (raw: number): void => {
@@ -4459,6 +4502,7 @@ export class App {
       // 同一个档存前存后不是一个数；`range.value`（step 0.01）也会与 `--ui-scale` 差一档，方向键再按就跳。
       const v = clampScale(raw);
       next = v;
+      applied = v;
       dirty = true;
       o.onLive(v);
       paint(v);
@@ -4512,6 +4556,13 @@ export class App {
 
     /** 拖的时候不能交给浏览器算值：按冻住那一刻的轨道盒子换算，松手才写盘。 */
     let dragBox: { x: number; w: number } | null = null;
+    /**
+     * 按下那一刻的指针位置与值：前者判「真的拖起来了没有」，后者给 Esc 取消用。
+     * 取 `applied` 而不是 `next` —— 上次 `queue()` 那帧可能还没落，`next` 已经是新值了，
+     * 拿它还原等于把「用户还没看到的一步」当成起点（那一帧再被 commit 落盘就串了）。
+     */
+    let dragFrom: { x: number; y: number } | null = null;
+    let dragValue = o.value;
     const valueAt = (clientX: number): number => {
       if (!dragBox || dragBox.w <= 0) return Number(range.value);
       const p = Math.min(1, Math.max(0, (clientX - dragBox.x) / dragBox.w));
@@ -4528,24 +4579,67 @@ export class App {
       // 键盘要能接着用：preventDefault 会把焦点拦下来，鼠标拖完再按方向键就没反应了。
       // 先自己把焦点给 range，再拦浏览器那套（它算的是放大后的坐标）。
       range.focus({ preventScroll: true });
+      // 上一次要是还有没落盘的值（最典型：方向键还按着就去抓轨道，`keyup` 的 commit 还没发生），
+      // 先把它落干净再定起点 —— 否则 Esc 的「回到起点」会回到一个**界面上看着在、却从没存过**的值。
+      if (dirty) commit();
       const r = range.getBoundingClientRect();
       dragBox = { x: r.left, w: r.width };
+      dragFrom = { x: ev.clientX, y: ev.clientY };
+      dragValue = applied;
+      hidePeek();
       rail.classList.add("dragging");
       read.classList.add("dragging");
       rail.setPointerCapture(ev.pointerId);
       ev.preventDefault();
+      window.addEventListener("keydown", onDragKey, true);
+      window.addEventListener("blur", endDrag);
       queue(snapTo(valueAt(ev.clientX)));
     });
     rail.addEventListener("pointermove", (ev) => {
       if (!dragBox) return;
       queue(snapTo(valueAt(ev.clientX)));
+      // 阈值：#742 —— 单击轨道跳档 / 点刻度数字不该闪一下，只有真的拖起来了才让开。
+      if (!peeking && dragFrom && Math.hypot(ev.clientX - dragFrom.x, ev.clientY - dragFrom.y) >= PEEK_MIN_PX) {
+        showPeek(next);
+      }
     });
-    const endDrag = (): void => {
-      if (!dragBox) return;
+    /** 收尾的共同那一半：拖动状态、两个监听、让开，一次收干净（落不落盘由调用方决定）。 */
+    const stopDrag = (): void => {
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
       dragBox = null;
+      dragFrom = null;
       rail.classList.remove("dragging");
       read.classList.remove("dragging");
+      window.removeEventListener("keydown", onDragKey, true);
+      window.removeEventListener("blur", endDrag);
+      hidePeek();
+    };
+    /** 收尾（松手 / 被打断）：收干净之后值照旧落盘。 */
+    const endDrag = (): void => {
+      if (!dragBox) return;
+      stopDrag();
       commit();
+    };
+    /**
+     * 拖动中按 Esc = 撤掉这一次拖动（#742）：值回拖动起点、不落盘、面板不关。
+     * 捕获阶段先于 `modal.ts` 的 Esc 层（那是 document 上的冒泡监听），拦下来才不会把面板关掉。
+     */
+    const cancelDrag = (): void => {
+      if (!dragBox) return;
+      stopDrag();
+      dirty = false;
+      next = dragValue;
+      o.onLive(dragValue);
+      paint(dragValue);
+    };
+    const onDragKey = (ev: KeyboardEvent): void => {
+      if (ev.key !== "Escape" || !dragBox) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      cancelDrag();
     };
     rail.addEventListener("pointerup", endDrag);
     rail.addEventListener("pointercancel", endDrag);
@@ -4554,6 +4648,8 @@ export class App {
     range.oninput = () => {
       if (dragBox) return;
       queue(Number(range.value));
+      // 纯键盘也得看得见：调值就露一下，400ms 没再动就自己回来（连按合并计时，计时器在胶囊里）。
+      showPeek(next, true);
     };
     range.addEventListener("keyup", () => { if (!dragBox) commit(); });
     range.addEventListener("blur", () => { if (!dragBox) commit(); });
@@ -4844,7 +4940,7 @@ export class App {
     langPanel.append(
       this.fontSliderRow({
         label: tr("字号"),
-        hint: tr("整页一起缩放；拖动或点刻度，双击轨道回 100%"),
+        hint: tr("整页一起缩放；拖动时设置面板自动让开，松手回来；点刻度跳档，双击轨道回 100%"),
         value: this.prefs.scale,
         reset: DEFAULT_PREFS.scale,
         snaps: SIZE_STOPS,
@@ -4868,7 +4964,7 @@ export class App {
 
     // 五块的分组头：叠乘关系说一次，五行各自的 hint 只讲「这一块是哪一块」，不重复念乘法。
     // 用 stSection 而不是手拼三层 —— 小节头只有一处样式的真源。
-    langPanel.append(this.stSection(tr("分区字号"), tr("各自叠在「字号」上相乘；双击轨道回 100%")));
+    langPanel.append(this.stSection(tr("分区字号"), tr("各自叠在「字号」上相乘；拖动轨道时让开看真页面；双击轨道回 100%")));
 
     const regionLabels: Record<RegionId, string> = {
       topbar: tr("顶栏"),
@@ -19232,7 +19328,7 @@ export class App {
     picker.onClose = () => {
       if (this.reviewPicker === picker) this.reviewPicker = null;
     };
-    picker.mount(document.getElementById("app") ?? document.body);
+    picker.mount();
     this.reviewPicker = picker;
   }
 
@@ -19668,7 +19764,7 @@ export class App {
         );
       },
     });
-    sheet.mount(document.getElementById("app") ?? document.body);
+    sheet.mount();
   }
 
   /** 「PR 信息」dialog：标题 / 描述 / 统计 / 文件清单 / 提交时间线（不显示 diff）。 */
@@ -19685,7 +19781,7 @@ export class App {
       sheet.onClose = () => {
         if (this.reviewPrSheet === sheet) this.reviewPrSheet = null;
       };
-      sheet.mount(document.getElementById("app") ?? document.body);
+      sheet.mount();
       this.reviewPrSheet = sheet;
     }
     const cached = this.reviewPrInfo.number === number ? this.reviewPrInfo : null;
@@ -19712,7 +19808,7 @@ export class App {
       this.reviewFocus = "";
       if (this.queueTab === "review") this.renderQueue();
     };
-    sheet.mount(document.getElementById("app") ?? document.body);
+    sheet.mount();
     this.reviewSheet = sheet;
   }
 
