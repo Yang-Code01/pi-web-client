@@ -4691,7 +4691,7 @@ export class App {
     reset.onclick = () => {
       // 恢复默认只恢复字号/主题/颜色/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
       // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
-      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen, themeIntroSeen: this.prefs.themeIntroSeen, settingsTab: this.prefs.settingsTab };
+      this.prefs = { ...DEFAULT_PREFS, regionScale: regionScaleDefault(), lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen, themeIntroSeen: this.prefs.themeIntroSeen, settingsTab: this.prefs.settingsTab };
       savePrefs(this.prefs);
       this.applyPrefs();
       this.openDisplaySheet();
@@ -23147,7 +23147,9 @@ const REGION_IDS: readonly RegionId[] = ["topbar", "sessions", "chat", "composer
 /** 区域倍率的默认值：1.0 = 跟原来一模一样（整页缩放仍然只由全局那根决定）。 */
 const REGION_DEFAULT_SCALE = 1;
 
-/** 五块全 100%。每次都要新拷一份：`DEFAULT_PREFS` 会被展开复用到「恢复默认」，共享嵌套对象迟早被就地改。 */
+/** 五块全 100%。**每次都要新拷一份**：`DEFAULT_PREFS` 会被展开复用到「恢复默认」/ 读不到偏好时的兜底，
+ *  那三处都显式带上 `regionScale: regionScaleDefault()` —— 光展开一个共享的嵌套对象，谁哪天就地写一下
+ *  就把模块级的 `DEFAULT_PREFS` 永久改了，而那种 bug 只在重启之后才看得见。 */
 const regionScaleDefault = (): RegionScale => ({
   topbar: REGION_DEFAULT_SCALE,
   sessions: REGION_DEFAULT_SCALE,
@@ -23156,7 +23158,7 @@ const regionScaleDefault = (): RegionScale => ({
   queue: REGION_DEFAULT_SCALE,
 });
 
-/** 区域滑杆的磁吸档位：100% 是默认，另三档是「缩一点 / 放大一点 / 放大很多」（与全局那根同一种手感）。 */
+/** 区域滑杆的磁吸档位（**只当磁吸，不当刻度**，刻度两行共用 `SIZE_MARKS`）：100% 是默认，另三档是「缩一点 / 放大一点 / 放大很多」。 */
 const REGION_STOPS = [0.9, 1, 1.15, 1.3];
 
 type Prefs = {
@@ -23794,7 +23796,8 @@ const SIZE_MIN = 0.8;
 const SIZE_MAX = 2;
 const SIZE_STEP = 0.01;
 const SIZE_STOPS = [0.9, 1, 1.12, DEFAULT_SCALE];
-/** 全局那根词轨上带数字的刻度：0.8 起每 0.2 一档（区域那根用 `REGION_STOPS` 当刻度）。 */
+/** 轨道上带数字的刻度：0.8 起每 0.2 一档。**两行共用这一套**（字号 + 对话正文），
+ *  只放各自那几个档位的话数字全挤在轨道左半边，两行看着不像同一款；磁吸档位另算（`SIZE_STOPS` / `REGION_STOPS`）。 */
 const SIZE_MARKS: number[] = (() => {
   const out: number[] = [];
   for (let i = 0; i * 0.2 <= SIZE_MAX - SIZE_MIN + 1e-9; i++) out.push(SIZE_MIN + i * 0.2);
@@ -23913,7 +23916,7 @@ export function bootScale(): number {
 function readPrefs(): Prefs {
   try {
     const raw = localStorage.getItem("pi.prefs");
-    if (!raw) return { ...DEFAULT_PREFS, lang: detectLang() };
+    if (!raw) return { ...DEFAULT_PREFS, regionScale: regionScaleDefault(), lang: detectLang() };
     const p = JSON.parse(raw);
     // 中文色名（D110 前）→ 旧六色 id，剩下的一并交给纯函数（旧主题按明暗、旧强调色按最近色）。
     const legacyName = LEGACY_ACCENTS[String(p?.accent)];
@@ -23946,7 +23949,7 @@ function readPrefs(): Prefs {
     if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accentTone !== next.accentTone || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);
     return next;
   } catch {
-    return { ...DEFAULT_PREFS, lang: detectLang() };
+    return { ...DEFAULT_PREFS, regionScale: regionScaleDefault(), lang: detectLang() };
   }
 }
 

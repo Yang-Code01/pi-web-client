@@ -44,6 +44,7 @@ const ITEMS = [
   { id: "u3", kind: "user", images: [], ts: new Date(now - 100000).toISOString(), text: "第四轮：最后一轮。" },
   { id: "a3", kind: "assistant", thinking: "", model: "probe", ts: new Date(now - 80000).toISOString(), text: LONG },
 ];
+let ITEMS_NOW = ITEMS;
 const mk = (id, name, extra) => ({
   id, name, cwd: path.join(REPO, ".scratch/probe-work"), file: null, owned: true, origin: "web",
   running: false, done: false, updatedAt: now, approvals: 0, asks: 0, locked: false, preview: "", ...extra,
@@ -92,7 +93,7 @@ wss.on("connection", (ws) => {
     }
     if (msg.type === "subscribe") {
       const s = SESSIONS.find((x) => x.id === msg.sessionId) ?? SESSIONS[0];
-      ws.send(JSON.stringify({ type: "session", sessionId: s.id, state: s, items: s.id === "s-1" ? ITEMS : [], approvals: [], asks: [], budget: null }));
+      ws.send(JSON.stringify({ type: "session", sessionId: s.id, state: s, items: s.id === "s-1" ? ITEMS_NOW : [], approvals: [], asks: [], budget: null }));
     }
   });
   ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage, trash: [], tunnel: TUNNEL }));
@@ -153,7 +154,9 @@ page.on("pageerror", (e) => errors.push(String(e.message)));
 page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
 
 /** 带种子偏好打开一次（`regionScale` 决定五块倍率；不传就完全不写这个键）。 */
-async function boot({ regionScale, layout = "a", scale = 1.25 } = {}) {
+async function boot({ regionScale, layout = "a", scale = 1.25, items } = {}) {
+  if (items) ITEMS_NOW = items;
+  else if (ITEMS_NOW !== ITEMS) ITEMS_NOW = ITEMS;
   await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
   await page.evaluate(({ regionScale, layout, scale }) => {
     const prefs = {
@@ -381,7 +384,47 @@ for (const rs of [1, 1.3]) {
   await page.screenshot({ path: path.join(OUT, `6-jump-${Math.round(rs * 100)}.png`) });
 }
 
-check("9. 没有页面报错"
+// ---------------------------------------------------------------- 9. 缩略图带子的几何不许跟着正文倍率变
+// 带子挂在 `.chat-pane` 上（只乘 `--ui-scale`），而 `.chat-scroll` 自己还挂着一层区域倍率。
+// 它以前拿 `viewport.clientHeight`（正文局域 px）当视口高，正文 130% 时高度上限就按 1/1.3 缩一圈。
+{
+  const MANY = [
+    { id: "uM0", kind: "user", images: [], ts: new Date(now - 900000).toISOString(), text: "起个头" },
+    { id: "aM0", kind: "assistant", thinking: "", model: "probe", ts: new Date(now - 890000).toISOString(), text: "好。" },
+  ];
+  for (let i = 1; i < 20; i++) {
+    MANY.push({ id: `uM${i}`, kind: "user", images: [], ts: new Date(now - 900000 + i * 2000).toISOString(), text: `第 ${i + 1} 轮` });
+    MANY.push({ id: `aM${i}`, kind: "assistant", thinking: "", model: "probe", ts: new Date(now - 899000 + i * 2000).toISOString(), text: "收到。" });
+  }
+  const railGeo = async (rs) => {
+    await boot({ regionScale: { ...SEED, chat: rs }, items: MANY });
+    await page.locator(".turn-rail .turn-hit").hover();
+    await sleep(420);
+    return page.evaluate(() => {
+      const rail = document.querySelector(".turn-rail");
+      const cs = getComputedStyle(rail);
+      const root = document.querySelector(".chat-scroll");
+      const ui = Number(getComputedStyle(document.documentElement).getPropertyValue("--ui-scale")) || 1;
+      return {
+        panel: cs.getPropertyValue("--turn-panel-h").trim(),
+        compact: cs.getPropertyValue("--turn-compact-h").trim(),
+        rows: cs.getPropertyValue("--turn-rows-h").trim(),
+        // 带子自己的坐标空间（只乘 --ui-scale）：正文视口在它这里有多高
+        viewH: Math.round(root.getBoundingClientRect().height / ui),
+      };
+    });
+  };
+  const at100 = await railGeo(1);
+  const at130 = await railGeo(1.3);
+  check(
+    "9. 正文 130% 时缩略图带子的高度 / 行高与 100% 一模一样",
+    at100.panel === at130.panel && at100.compact === at130.compact && at100.rows === at130.rows && at100.viewH === at130.viewH,
+    JSON.stringify({ at100, at130 }),
+  );
+  await page.screenshot({ path: path.join(OUT, "7-rail-130.png") });
+}
+
+check("10. 没有页面报错"
 , errors.length === 0, errors.slice(0, 3).join(" | "));
 
 await ctx.close();
