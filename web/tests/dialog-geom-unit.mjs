@@ -141,12 +141,16 @@ function calls(text) {
     let i = re.lastIndex;
     let depth = 1;
     const args = [];
+    /** **顶层**字符串实参：没嵌在 `el(…)` / `{ … }` / 子调用里的那些 —— 材质只可能在这一层。 */
+    const topStrings = [];
     while (i < text.length && depth > 0) {
       const c = text[i];
       if (c === '"' || c === "'" || c === "`") {
         let j = i + 1;
         while (j < text.length && text[j] !== c) j += text[j] === "\\" ? 2 : 1;
-        args.push(text.slice(i, j + 1));
+        const str = text.slice(i, j + 1);
+        args.push(str);
+        if (depth === 1) topStrings.push(str.slice(1, -1));
         i = j + 1;
         continue;
       }
@@ -158,7 +162,7 @@ function calls(text) {
       args.push(c);
       i += 1;
     }
-    out.push({ at: m.index, end: i, name: m[0], argText: args.join("") });
+    out.push({ at: m.index, end: i, name: m[0], argText: args.join(""), topStrings });
   }
   return out;
 }
@@ -167,13 +171,14 @@ function calls(text) {
 const KINDS = ["window", "paper", "dock", "menu", "toast"];
 
 /**
- * 调用的材质实参。不能拿「第一个 / 最后一个字符串」猜：第一个是 `el("div", …)` 的标签名，
- * 最后一个可能是选项里的 `{ enter: "alert" }`。材质一定是 `SurfaceKind` 那张表里的一个词，
- * 所以只认「实参里出现的、顶层的一个材质词」。认任意引号。
+ * 调用的材质实参 —— 只看**顶层**字符串（`calls()` 记的 `topStrings`）。
+ * 不能拿「第一个 / 最后一个字符串」猜（第一个是 `el("div", …)` 的标签名，最后一个可能是 `{ enter: "alert" }`）；
+ * 也不能在**全部**实参字符串里找材质词：`markSurface(el("div", "menu-host"), "window")` 的子调用里
+ * 先出现 `menu`，全扫就会把一扇 window 当成 menu —— 那是漏报，正是这个守卫要防的那种。
+ * 材质是 `markSurface(node, "window", …)` 的**第二个实参**、也就是顶层第一个材质词。认任意引号。
  */
 function surfaceKind(call) {
-  const strs = [...call.argText.matchAll(/(["'`])((?:[^\\"'`]|\\.)*)\1/g)].map((m) => m[2]);
-  return strs.find((v) => KINDS.includes(v)) ?? (call.name === ".overlay(" ? "window" : null);
+  return call.topStrings.find((v) => KINDS.includes(v)) ?? (call.name === ".overlay(" ? "window" : null);
 }
 
 /** `window` 材质的创建点（位置）。 */
@@ -243,6 +248,10 @@ for (const f of files) {
   ok(sites('markSurface(el("div", ")"),\n  "window"\n);\n') === 1, "实参字符串里的括号不参与配对");
   ok(sites('markSurface(el("div", `fail-toast${bad ? " bad" : ""}`), "window");') === 1, "模板串里的括号与引号不参与配对");
   ok(sites("markSurface(el('div', 'x'), 'window');") === 1, "单引号的材质也算");
+  // 子调用 / 选项里先出现别的材质词：材质只认顶层，不然这扇 window 会被当成 menu（漏报）。
+  ok(sites('markSurface(el("div", "menu-host"), "window");') === 1, "子调用里先出现 \"menu\" 不影响顶层材质是 window");
+  ok(sites('markSurface(el("div", "x"), "window", { enter: "toast" });') === 1, "选项里出现 \"toast\" 不影响顶层材质是 window");
+  ok(sites('markSurface(el("div", "window-host"), "menu");') === 0, "反过来：子调用里的 \"window\" 也不该把 menu 当成 window");
   ok(sites('markSurface(x, "menu"); // 这里只是注释里的 "window"\n') === 0, "行注释里的 \"window\" 不算材质");
   ok(sites('markSurface(x, "menu"); /* 块注释 "window" */\n') === 0, "块注释里的 \"window\" 不算材质");
   // 就近配对：同文件另一头多出来的接线，抵不掉这一处的漏接（上一版只比总数，就是这样漏过的）。

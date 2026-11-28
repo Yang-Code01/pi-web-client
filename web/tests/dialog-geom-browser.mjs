@@ -2,8 +2,12 @@
  * 守卫：窗口几何（#755）—— 每扇 `window` 浮层右下角一只抓手，拖完记住、双击复原。
  *
  * 这是这次改动唯一全新的测试缝：esbuild 把 `dialoggeom.ts` 与**真** `styles.css` 打出来，在真 Chromium
- * 里挂假窗。不碰桥、不依赖 `web/dist`，所以拖拽手感（布局 px 换算、夹回视口、`pointer-events` 层次）
- * 都在这里量得到。同目录 `dialog-geom-unit.mjs` 只管「44 个创建点有没有漏接」。
+ * 里挂假窗。不碰桥，所以拖拽手感（布局 px 换算、夹回视口、`pointer-events` 层次）都在这里量得到。
+ * 同目录 `dialog-geom-unit.mjs` 只管「创建点有没有漏接」。
+ *
+ * **只有一段（第 12 段：底栏让位）要在真 `web/dist` 上量** —— 那条规则靠特定性赢过各功能表的
+ * `padding` 简写，只有真打包产物的层叠顺序能证明。没构建就记一条 FAIL、跳过那一段，其余照跑完
+ * （不先 `readdirSync` 一个可能不存在的目录把整个文件炸掉）。要它绿：先 `npm --prefix web run build`。
  *
  * 一条硬规矩：断言的期望值全部来自**外面**（拖了多少视觉 px、视口多宽、旧键里塞了什么），
  * 不照抄模块里的算法 —— 否则它只能证明代码跟自己一致。
@@ -480,9 +484,10 @@ try {
   // 是经各自的 TS `import "./x.css"` 进来的、排在 styles.css 之后。让位那条靠特定性 (0,2,0) > (0,1,0) 赢，
   // 不靠位置 —— 这一段就是在真打包产物上证明这件事（每换一次构建都重新证明一遍）。
   {
+    // 目录不在（没构建）就记一条 FAIL 跳过这一段 —— 别让 readdirSync 把后面几十条断言一起带走。
     const distDir = here("../dist/assets");
-    const cssFile = fs.readdirSync(distDir).find((x) => /^main-.*\.css$/.test(x));
-    ok(Boolean(cssFile), `web/dist 里有主样式表${cssFile ? `（${cssFile}）` : "（先 npm --prefix web run build）"}`);
+    const cssFile = fs.existsSync(distDir) ? fs.readdirSync(distDir).find((x) => /^main-.*\.css$/.test(x)) : undefined;
+    ok(Boolean(cssFile), `web/dist 里有主样式表（真打包产物的层叠顺序才量得出让位；没有就先 npm --prefix web run build）`);
     if (cssFile) {
       const page2 = await (await browser.newContext({ locale: "zh-CN" })).newPage();
       await page2.route("http://dialog-geom.test/dist", (route) =>
