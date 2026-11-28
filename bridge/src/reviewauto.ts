@@ -373,9 +373,14 @@ export function dismissalMarks(
   return { all, marks };
 }
 
-/** 修复提示词的抬头一行（对话里的轮次卡标题就用它）。 */
-export function roundTitle(n: number, findings: number): string {
-  return `自动评审 · 第 ${n} 轮 · ${findings} 条意见`;
+/**
+ * 注入提示词的第一行：**机器可读**（`round=3 findings=2` / `merge pr=747`），
+ * 页面据此拼一张本地化的轮次卡标题 —— 桥写的中文不直接当界面文案用（`tr()` 规矩）。
+ */
+export function markerLine(kind: "round", n: number, findings: number): string;
+export function markerLine(kind: "merge", pr: number): string;
+export function markerLine(kind: "round" | "merge", a: number, b = 0): string {
+  return kind === "round" ? `${AUTO_MARK} round=${a} findings=${b}` : `${AUTO_MARK} merge pr=${a}`;
 }
 
 /**
@@ -390,7 +395,7 @@ export function fixPrompt(o: {
 }): string {
   const { round, findings, config, where } = o;
   const lines: string[] = [];
-  lines.push(`${AUTO_MARK} ${roundTitle(round, findings.length)}`);
+  lines.push(markerLine("round", round, findings.length));
   lines.push(where ? `代码评审意见（${where}）` : "代码评审意见");
   lines.push("");
   lines.push(`一共 ${findings.length} 条，逐条核实并处理：`);
@@ -415,7 +420,7 @@ export function fixPrompt(o: {
 /** 合并那一步交给会话的那句话：只做合并，别顺手干别的（D450 第 15 条）。 */
 export function mergePrompt(o: { pr: number; rounds: number; models: string; branch: string }): string {
   return [
-    `${AUTO_MARK} 自动评审已通过：合并 PR #${o.pr}`,
+    markerLine("merge", o.pr),
     `两个模型都签收了同一份 diff（${o.rounds} 轮 · ${o.models}），checks 已经全绿。`,
     `合并方式用 merge commit：\`gh pr merge ${o.pr} --merge\`。`,
     "只做合并这一件事：不要拉本地 main、不要删远端分支、不要动代码。",
@@ -624,7 +629,7 @@ export class AutoRunner {
     if (!session) return { ok: false, code: "no_session", error: "没有会话：自动评审评的是它的目录", state: null };
     const cur = this.states.get(session);
     if (cur && cur.status === "running") return { ok: false, code: "busy", error: "这个会话已经有一条自动评审在跑了", state: cur };
-    if (!config.models.b.model) return { ok: false, code: "no_model", error: "第二个模型没选：交叉轮换要两个", state: null };
+    if (!config.models.b.model) return { ok: false, code: "no_model", error: "第二个模型没选：交替轮值要两个", state: null };
     if (!config.repo) return { ok: false, code: "not_git", error: "这个目录不是 git 仓库，没有东西可评。", state: null };
     const state: AutoState = {
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -682,6 +687,33 @@ export class AutoRunner {
       state.reason = "跑完这一轮就停";
       state.reasonCode = "stopping";
       this.save(state);
+      return true;
+    });
+  }
+
+  /**
+   * 你在会话里发言 = 接管（D450 第 14 条）：停在「已暂停」，进度保留，之后能【继续】。
+   * 正在跑的评审立即 cancel；正在改代码的那一轮不 abort（会留半成品工作区）。
+   */
+  handOver(session: string): AutoResult {
+    const state = this.states.get(session) ?? readAuto(session);
+    if (!state) return { ok: false, code: "none", error: "这个会话没有自动评审", state: null };
+    return this.act(session, state, () => {
+      if (state.status !== "running") return false;
+      const round = this.roundOf(state);
+      if (state.wait === "review") {
+        // 这一轮没跑完：作废（继续时会同号重跑），别让它继续烧 token
+        if (round?.runId) this.host.cancel(state.config.repo, session, round.runId);
+        if (round) {
+          round.status = "skipped";
+          round.note = "takeover";
+          round.finishedAt = nowIso();
+        }
+      } else if (state.wait === "fix") {
+        // 修复轮交给你的话去接管：不再替它发下一条，继续时直接开下一轮
+        state.wait = "";
+      }
+      this.pause(state, "user-takeover", "你在会话里接管了，自动评审停在这里");
       return true;
     });
   }
@@ -746,7 +778,7 @@ export class AutoRunner {
       if (round && (state.wait === "review" || state.wait === "fix")) {
         if (round.runId) this.host.cancel(state.config.repo, session, round.runId);
         round.status = "skipped";
-        round.note = "你跳过了这一轮";
+        round.note = "skipped";
         round.finishedAt = nowIso();
       }
       state.stopping = false;
@@ -821,7 +853,7 @@ export class AutoRunner {
     if (state.stopping) {
       this.host.cancel(state.config.repo, state.session, round.runId);
       round.status = "skipped";
-      round.note = "你按了停止";
+      round.note = "stopped";
       round.finishedAt = nowIso();
       state.status = "stopped";
       state.reason = "你按了停止";
@@ -831,7 +863,7 @@ export class AutoRunner {
     }
     if (p.status !== "done") {
       round.status = "failed";
-      round.note = p.status === "stale" ? "桥重启了，这一轮没跑完" : p.status === "stopped" ? "评审被停掉了" : "评审失败";
+      round.note = p.status;
       round.finishedAt = nowIso();
       this.pause(state, p.status === "stale" ? "review-stale" : "review-failed", round.note);
       return;
@@ -987,10 +1019,17 @@ export class AutoRunner {
     }
 
     if (!changed && !dirty) {
-      // git 兜底（D450 第 3 条）：什么都没动 = 它判定这些意见不用改
+      // 什么都没动：只有**回执逐条说「不成立 / 不改」**才算签过（D450 第 2 条的误报签收）。
+      // 没有可用的回执就停下来问人 —— 「它没干活」与「它判过不改」在 git 上长得一样，
+      // 不能拿「没改动」当签收的证据（D450 第 3 / 12 条）。
+      const judged = parsed.ok ? dismissalMarks(findings, parsed.verdicts) : { all: false, marks: [] as { key: string; mark: ReviewMark }[] };
+      if (!judged.all) {
+        round.note = "no-evidence";
+        this.pause(state, "no-evidence", "这一轮既没有提交、也没有可用回执 —— 看不出它判了什么");
+        return;
+      }
       round.status = "clean";
-      round.note = parsed.ok ? "dismissed" : "no-changes";
-      const judged = parsed.ok ? dismissalMarks(findings, parsed.verdicts) : { all: true, marks: [] as { key: string; mark: ReviewMark }[] };
+      round.note = "dismissed";
       round.marks = judged.marks;
       round.verdicts = parsed.verdicts;
       fix.dismissed = parsed.verdicts.filter((v) => v.verdict !== "fixed").length;
@@ -1098,7 +1137,6 @@ export class AutoRunner {
 
   /** 签收：要么直接结束，要么进合并那一步。 */
   private settle(state: AutoState): void {
-    this.host.grant(state.session, null);
     const pr = state.config.mode === "pr" ? state.config.pr : 0;
     if (!state.config.autoMerge || !pr) {
       state.status = "signed";
@@ -1108,6 +1146,8 @@ export class AutoRunner {
     }
     state.wait = "merge";
     state.merge.state = "waiting";
+    // 合并那句话要过审批闸：授权必须**在**（pause / finish 才收）。
+    this.host.grant(state.session, { pr, repo: state.config.repo, branch: state.config.branch });
     this.save(state);
     void this.beginMerge(state);
   }

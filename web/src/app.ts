@@ -95,6 +95,7 @@ import { Socket } from "./ws.ts";
 import {
   fixPrompt as reviewFixPrompt,
   fixPromptMany as reviewFixManyPrompt,
+  modeLabel,
   repoFromUrl as reviewRepoFromUrl,
   type FixContext as ReviewFixContext,
   type PullRequest as ReviewPr,
@@ -521,7 +522,7 @@ export class App {
   private reviewSessionKey = "";
   /** 当前会话的自动评审（D450）。桥按会话存一份，切会话时重新问一次。 */
   private reviewAuto: AutoStateView | null = null;
-  /** 每个会话的自动评审状态：左栏 / 会话卡片上的「评审中 / 评审通过」徽标读它。 */
+  /** 每个会话的自动评审状态：切会话时面板按它换卡片（「评审中 / 评审通过」徽标那一版没做，见 D450 第 20 条）。 */
   private reviewAutoStates = new Map<string, AutoStateView>();
   private autoSettings: AutoSettingsSheet | null = null;
   /** 同一个会话里再打开设置时接着上次填的值（刷新页面就没了，与 D409 的模型口径一致）。 */
@@ -19526,11 +19527,24 @@ export class App {
       // 同一组动作直接给面板：不再在 ReviewActions 里再抄一份（评审 #33）。
       ghActions: this.ghCardActions(),
       auto: {
-        panel: {
-          state: this.reviewAuto,
-          canStart: view.canRun,
-          why: view.missingWhy || "",
-        },
+        panel: (() => {
+          // D450 第 16 条：PR 模式要求「本地当前分支 = PR head」—— 按钮灰着并说清是哪两条对不上。
+          const prInfo = this.reviewPrInfo.number === Number(this.reviewPr) ? this.reviewPrInfo.info : null;
+          const local = (this.git?.branch ?? "").trim();
+          const head = String(prInfo?.headRefName ?? "").trim();
+          const mismatch = this.reviewMode === "pr" && Boolean(head) && Boolean(local) && head !== local;
+          const running = this.reviewAuto?.status === "running";
+          return {
+            state: this.reviewAuto,
+            canStart: view.canRun && !mismatch && !running,
+            why: mismatch
+              ? tr("本地是 {p1}，PR 的 head 是 {p2} —— 自动评审只在你自己那条分支上跑", { p1: local, p2: head })
+              : running
+                ? tr("这个会话已经有一条自动评审在跑了")
+                : view.missingWhy || "",
+            modeName: modeLabel(this.reviewAuto?.config.mode || this.reviewMode),
+          };
+        })(),
         actions: {
           onSettings: () => this.openAutoSettings(),
           onStop: () => this.socket.send({ type: "review.auto.stop", sessionId: this.currentId }),
@@ -19906,7 +19920,7 @@ export class App {
     form.onsubmit = (ev) => {
       ev.preventDefault();
       this.closeModal();
-      this.socket.send({ type: "review.auto.stop", sessionId: this.currentId });
+      this.socket.send({ type: "review.auto.handover", sessionId: this.currentId });
       this.autoTakeover = true;
       after();
     };

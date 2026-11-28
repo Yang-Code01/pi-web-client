@@ -102,6 +102,8 @@ export interface AutoPanelInput {
   canStart: boolean;
   /** 不能开时写在按钮下面那句。 */
   why: string;
+  /** 这一条评的是哪种范围（`review.ts` 的 `modeLabel()`，宿主给，别在这里抄一份标签表）。 */
+  modeName: string;
 }
 
 export interface AutoActions {
@@ -147,10 +149,9 @@ export function worstSeverity(r: Pick<AutoRoundView, "severity">): Severity | ""
  * 横向阶段条要画哪些格子：已有轮次各一格 + 下一条待评（如果还在跑）。
  * 超过 6 格就不再往后挤 —— 一次自动评审最多 10 轮，挤成一条细线谁也点不中。
  */
-export function stageChips(state: Pick<AutoStateView, "rounds" | "status" | "cur">): AutoRoundView[] {
-  const list = [...state.rounds].sort((a, b) => a.n - b.n);
-  if (state.status !== "running") return list.slice(-6);
-  return list.slice(-6);
+export function stageChips(state: Pick<AutoStateView, "rounds">): AutoRoundView[] {
+  // 一次自动评审最多 10 轮，全画出来会切成一根根细线谁也点不中：只留最近 6 格。
+  return [...state.rounds].sort((a, b) => a.n - b.n).slice(-6);
 }
 
 /** 卡片上「现在在干什么」那一句。 */
@@ -183,12 +184,32 @@ export function footerText(state: Pick<AutoStateView, "rounds" | "tokens" | "sta
   return bits.join(" · ");
 }
 
+/** 轮次上那些「为什么停 / 为什么算干净」的码 → 人话（桥只写码，界面文案归页面）。 */
+const NOTE_TEXT: Record<string, string> = {
+  dismissed: "回执全判误报",
+  "no-changes": "零改动",
+  "no-evidence": "没有回执也没有改动",
+  uncommitted: "改了没提交",
+  skipped: "你跳过了这一轮",
+  // 「评审层把这一轮停掉了」与「这一轮评失败」是两件事，但都不用再细分到模型层
+  stopped: "评审被停掉了",
+  takeover: "你接管了会话",
+  stale: "桥重启了，这一轮没跑完",
+  failed: "评审失败",
+};
+
+export function noteText(note: string): string {
+  if (!note) return "";
+  const hit = NOTE_TEXT[note];
+  return hit ? tr(hit) : note; // 认不出来的（老记录 / 模型写的理由）原样给，别吞掉
+}
+
 /** 一轮的「#3 A · 2 条意见 → 已修」。 */
 export function roundLine(r: AutoRoundView): string {
   const head = `#${r.n} ${r.slot}`;
   if (r.status === "clean") return `${head} · ${r.note === "dismissed" ? tr("判为误报 · 签收") : r.note === "no-changes" ? tr("没改动 · 签收") : tr("零意见 · 签收")}`;
-  if (r.status === "skipped") return `${head} · ${tr("已跳过")}`;
-  if (r.status === "failed") return `${head} · ${tr("失败")}`;
+  if (r.status === "skipped") return `${head} · ${tr("已跳过")}${r.note ? ` · ${noteText(r.note)}` : ""}`;
+  if (r.status === "failed") return `${head} · ${tr("失败")}${r.note ? ` · ${noteText(r.note)}` : ""}`;
   if (r.status === "running") return `${head} · ${tr("正在评")}`;
   const fixed = r.fix ? tr("→ 已修 {p1} 个文件", { p1: String(r.fix.files) }) : "";
   return `${head} · ${tr("{p1} 条意见", { p1: String(r.findings) })} ${fixed}`.trim();
@@ -238,7 +259,7 @@ export function renderAutoPanel(input: AutoPanelInput, actions: AutoActions): HT
   const title = state.config.pr
     ? tr("自动评审 · PR #{p1}", { p1: String(state.config.pr) })
     : tr("自动评审 · {p1}", { p1: state.config.branch || tr("工作区改动") });
-  titleBox.append(el("b", "", title), el("i", "", state.config.mode === "pr" ? `${state.config.branch} → ${tr("主干")}` : tr("四块「评什么」里的第 {p1} 块", { p1: modeName(state.config.mode) })));
+  titleBox.append(el("b", "", title), el("i", "", state.config.mode === "pr" ? `${state.config.branch} → ${tr("主干")}` : input.modeName));
   const right = el("div", "rv-auto-right");
   right.append(el("span", `rv-auto-pill ${pill.tone}`, pill.text));
   if (state.status === "running") {
@@ -291,8 +312,8 @@ export function renderAutoPanel(input: AutoPanelInput, actions: AutoActions): HT
       line2.append(d);
     }
     if (r.status === "running") line2.append(el("span", "", waitText(state) || tr("正在评")));
-    if (r.note && r.status !== "clean") line2.append(el("span", "rv-auto-note", r.note));
-    if (r.status === "clean" && r.note === "dismissed") line2.append(el("span", "rv-auto-note", tr("回执全判误报")));
+    if (r.note && r.status !== "clean") line2.append(el("span", "rv-auto-note", noteText(r.note)));
+    if (r.status === "clean" && r.note === "dismissed") line2.append(el("span", "rv-auto-note", noteText(r.note)));
     row.append(line1, line2);
     if (r.status === "running") {
       const bar = el("div", "rv-auto-bar");
@@ -325,7 +346,6 @@ export function renderAutoPanel(input: AutoPanelInput, actions: AutoActions): HT
   // ---- 底行
   const foot = el("footer", "rv-auto-foot");
   foot.append(el("span", "", footerText(state)));
-  if (state.summary) foot.append(el("span", "rv-auto-sum", state.summary));
   card.append(foot);
   box.append(card);
   return box;
@@ -338,13 +358,6 @@ function stageClass(r: AutoRoundView, state: AutoStateView): string {
   if (r.status === "failed") return "bad";
   if (r.n === state.cur) return "now";
   return "done";
-}
-
-function modeName(mode: string): string {
-  if (mode === "range") return tr("分支 vs 主干");
-  if (mode === "commit") return tr("单个提交");
-  if (mode === "pr") return tr("GitHub PR");
-  return tr("工作区改动");
 }
 
 // ---------------------------------------------------------------------------

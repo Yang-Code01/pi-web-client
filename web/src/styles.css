@@ -6517,7 +6517,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-auto-row1 { display: flex; align-items: baseline; gap: 6px; font-size: 11.5px; min-width: 0; }
 .rv-auto-no { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
 .rv-auto-slot { font-size: 10px; font-weight: 700; padding: 0 4px; border-radius: 4px; background: var(--panel-3); color: var(--dim); }
-.rv-auto-slot.b { background: color-mix(in srgb, #a259ff 16%, var(--panel)); color: #a259ff; }
+.rv-auto-slot.b { background: color-mix(in srgb, var(--warn) 18%, var(--panel)); color: var(--warn); }
 .rv-auto-model { font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42%; }
 .rv-auto-res { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-auto-row2 { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--faint); min-width: 0; }
@@ -6536,7 +6536,6 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-auto-acts .btn { font-size: 11.5px; padding: 4px 10px; }
 
 .rv-auto-foot { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-top: 0.5px solid var(--line-soft); font-size: 10.5px; color: var(--faint); }
-.rv-auto-sum { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- 设置 dialog（变体 B） */
 .st-console.rv-auto-sheet { container-type: inline-size; display: flex; flex-direction: column; width: min(600px, 94%); max-height: calc(var(--vh1) * 88); overflow: hidden; }
@@ -6556,7 +6555,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-auto-chiprow { display: flex; align-items: center; gap: 7px; }
 .rv-auto-who { flex: none; width: 54px; display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 650; color: var(--dim); }
 .rv-auto-who .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-.rv-auto-who.b .dot { background: #a259ff; }
+.rv-auto-who.b .dot { background: var(--warn); }
 .rv-auto-mchip {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
   padding: 6px 9px; border-radius: 9px; font: inherit; font-size: 12px; text-align: left; cursor: pointer;
@@ -6586,7 +6585,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .rv-auto-sw-card .txt b { font-size: 12px; font-weight: 620; }
 .rv-auto-sw-card .txt i { font-size: 10.5px; font-style: normal; color: var(--faint); line-height: 1.45; }
 .rv-auto-sw-card .sw { flex: none; margin-left: auto; width: 36px; height: 22px; border-radius: 999px; background: var(--line-strong); position: relative; transition: background var(--dur-2) var(--ease); }
-.rv-auto-sw-card .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28); transition: transform var(--dur-2) var(--ease); }
+.rv-auto-sw-card .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--panel); box-shadow: 0 1px 3px color-mix(in srgb, #000 28%, transparent); transition: transform var(--dur-2) var(--ease); }
 .rv-auto-sw-card.on .sw { background: var(--ok); }
 .rv-auto-sw-card.on .sw::after { transform: translateX(14px); }
 

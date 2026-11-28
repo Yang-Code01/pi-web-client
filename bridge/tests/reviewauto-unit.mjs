@@ -28,7 +28,7 @@ const {
   parseVerdict,
   readAuto,
   repeatedKeys,
-  roundTitle,
+  markerLine,
   scopeForRound,
   signedOff,
   slotOf,
@@ -36,6 +36,7 @@ const {
   whereOf,
   writeAuto,
 } = await import("../src/reviewauto.ts");
+const { trimRuns, RUN_KEEP, AUTO_RUN_KEEP } = await import("../src/review.ts");
 
 let failures = 0;
 const check = (name, fn) => {
@@ -238,7 +239,9 @@ check("修复提示词：第一行带折卡标记与轮次标题", () => {
     where: whereOf(cfg({ mode: "pr", pr: 747 })),
   });
   const first = text.split("\n")[0];
-  assert.equal(first, `${AUTO_MARK} ${roundTitle(2, 1)}`);
+  // 抬头是**机器可读**的：页面自己拼一张本地化的轮次卡（桥写的中文不当界面文案用）。
+  assert.equal(first, `${AUTO_MARK} round=2 findings=1`);
+  assert.equal(markerLine("merge", 747), `${AUTO_MARK} merge pr=747`);
   assert.match(text, /a\.ts:3/);
   assert.match(text, /"verdicts"/);
   assert.match(text, /fix\(review\)/);
@@ -406,7 +409,7 @@ await checkAsync("状态机：A 有意见 → 修 → B 干净 → A 干净 → 
   assert.equal(out.ok, true);
   await reviewRound(runner, host, ["k1"]); // #1 A 挑出 1 条
   assert.equal(runner.get(S).wait, "fix");
-  assert.match(host.prompts[0], /^\[pi-web:auto\] 自动评审 · 第 1 轮 · 1 条意见/);
+  assert.match(host.prompts[0], /^\[pi-web:auto\] round=1 findings=1/);
 
   // 会话修完并提交
   host.state.running = false;
@@ -444,7 +447,7 @@ await checkAsync("状态机：误报签收（什么都没改 + 回执全判误�
   assert.equal(runner.get(S).status, "signed");
 });
 
-await checkAsync("状态机：git 兜底（没回执也没改动 = 判定不改）", async () => {
+await checkAsync("状态机：没回执 + 没改动 = 停下来问人（不能当签收）", async () => {
   const host = makeHost();
   const runner = new AutoRunner(host);
   runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
@@ -453,9 +456,23 @@ await checkAsync("状态机：git 兜底（没回执也没改动 = 判定不改�
   host.state.last = "我看了，这些都不改。";
   runner.tick();
   await flush();
-  assert.equal(runner.get(S).rounds[0].status, "clean");
-  assert.equal(runner.get(S).rounds[0].note, "no-changes");
-  assert.equal(runner.get(S).rounds[0].marks.length, 0, "没有回执就不打标记");
+  const st = runner.get(S);
+  assert.equal(st.status, "paused");
+  assert.equal(st.reasonCode, "no-evidence");
+  assert.equal(st.rounds[0].status, "findings", "没拿到证据就不能签");
+});
+
+await checkAsync("状态机：回执说「修了」但什么都没改，也算没证据", async () => {
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await reviewRound(runner, host, ["k1"]);
+  host.state.running = false;
+  host.state.last = '{"verdicts":[{"path":"f0.ts","line":1,"verdict":"fixed","why":"改了"}]}';
+  runner.tick();
+  await flush();
+  assert.equal(runner.get(S).status, "paused");
+  assert.equal(runner.get(S).reasonCode, "no-evidence");
 });
 
 await checkAsync("状态机：改了没提交 → 提醒一次 → 还不提交就暂停", async () => {
@@ -609,6 +626,51 @@ await checkAsync("会话没了：暂停，而不是自己往下跑", async () =>
   await flush();
   assert.equal(runner.get(S).status, "paused");
   assert.equal(runner.get(S).reasonCode, "session-gone");
+});
+
+await checkAsync("接管：停成「已暂停」（不是 stopped），继续能接着跑", async () => {
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await flush();
+  const out = runner.handOver(S);
+  assert.equal(out.ok, true);
+  const st = runner.get(S);
+  assert.equal(st.status, "paused");
+  assert.equal(st.reasonCode, "user-takeover");
+  assert.equal(host.cancelled.length, 1, "正在跑的那一轮立刻 cancel");
+  runner.continue(S);
+  await flush();
+  assert.equal(runner.get(S).status, "running");
+});
+
+await checkAsync("自动合并：合并那句话是在授权还在的时候发出去的", async () => {
+  const host = makeHost();
+  let grantedAtPrompt = null;
+  const prompt = host.prompts.push.bind(host.prompts);
+  host.prompts.push = (text) => {
+    grantedAtPrompt = host.grants.at(-1);
+    return prompt(text);
+  };
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 747, autoMerge: true }) });
+  await reviewRound(runner, host, []);
+  await reviewRound(runner, host, []);
+  await flush();
+  assert.ok(grantedAtPrompt, "合并前必须还捏着授权（否则 gh pr merge 会被闸门拦下来）");
+  assert.equal(grantedAtPrompt.pr, 747);
+});
+
+check("留存预算：自动轮次不占手动记录的那 20 条", () => {
+  const manual = (i) => ({ ...round(i, "clean", "s"), id: `m${i}`, auto: undefined });
+  const autos = (i) => ({ ...round(i, "clean", "s"), id: `a${i}`, auto: true });
+  const state = { repo: "/r", marks: {}, runs: [...Array.from({ length: RUN_KEEP + 5 }, (_, i) => manual(i)), ...Array.from({ length: 6 }, (_, i) => autos(i))] };
+  trimRuns(state);
+  assert.equal(state.runs.filter((r) => !r.auto).length, RUN_KEEP);
+  assert.equal(state.runs.filter((r) => r.auto).length, 6, "自动轮次自己一份预算，够留");
+  const many = { repo: "/r", marks: {}, runs: Array.from({ length: AUTO_RUN_KEEP + 3 }, (_, i) => autos(i)) };
+  trimRuns(many);
+  assert.equal(many.runs.length, AUTO_RUN_KEEP);
 });
 
 if (failures) {

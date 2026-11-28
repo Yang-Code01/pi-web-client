@@ -2774,30 +2774,17 @@ async function main(): Promise<void> {
       );
     });
 
-  /** 这个会话从 `since` 之后最后一条 assistant 文本（回执就在里面）。 */
-  const lastAssistantText = (sessionId: string, since: string): string => {
+  /** 这个会话从 `since` 之后最后一条 assistant 消息（回执与「这一轮有没有报错」都从它读）。 */
+  const lastAssistant = (sessionId: string, since: string): { text: string; error: string } => {
     const session = sessions.get(sessionId);
-    if (!session) return "";
+    if (!session) return { text: "", error: "" };
     for (let i = session.items.length - 1; i >= 0; i--) {
       const item = session.items[i];
       if (item?.kind !== "assistant") continue;
-      if (since && item.ts && item.ts < since) return "";
-      return String(item.text ?? "");
+      if (since && item.ts && item.ts < since) return { text: "", error: "" };
+      return { text: String(item.text ?? ""), error: String(item.errorMessage ?? "") };
     }
-    return "";
-  };
-
-  /** 这一轮里 agent 报的错（有的话）：「继续」要能说清为什么停的。 */
-  const lastAssistantError = (sessionId: string, since: string): string => {
-    const session = sessions.get(sessionId);
-    if (!session) return "";
-    for (let i = session.items.length - 1; i >= 0; i--) {
-      const item = session.items[i];
-      if (item?.kind !== "assistant") continue;
-      if (since && item.ts && item.ts < since) return "";
-      return String(item.errorMessage ?? "");
-    }
-    return "";
+    return { text: "", error: "" };
   };
 
   /** PR 详情：checks / mergeable / head 分支都从这一份拿（与面板同一个口径）。 */
@@ -2826,6 +2813,7 @@ async function main(): Promise<void> {
         model: model.model,
         provider: model.provider,
         lang,
+        auto: true,
       });
       return { runId: started.runId, repo: started.repo };
     },
@@ -2855,8 +2843,8 @@ async function main(): Promise<void> {
           return session.state.running === true;
         },
         prompt: (text: string) => session.prompt(text, undefined, undefined, "followUp"),
-        lastAssistant: (since: string) => lastAssistantText(id, since),
-        lastError: (since: string) => lastAssistantError(id, since),
+        lastAssistant: (since: string) => lastAssistant(id, since).text,
+        lastError: (since: string) => lastAssistant(id, since).error,
       };
     },
     head: (cwd) => gitOut(cwd, ["rev-parse", "HEAD"]),
@@ -4633,11 +4621,20 @@ async function main(): Promise<void> {
             return;
           }
           case "review.auto.stop":
+          case "review.auto.handover":
           case "review.auto.continue":
           case "review.auto.skip": {
             const session = String(msg.sessionId ?? "");
-            const act = String(msg.type).endsWith(".stop") ? "stop" : String(msg.type).endsWith(".skip") ? "skip" : "continue";
-            const out = act === "stop" ? autoRunner.stop(session) : act === "skip" ? autoRunner.skip(session) : autoRunner.continue(session);
+            const type = String(msg.type);
+            const act = type.endsWith(".stop") ? "stop" : type.endsWith(".handover") ? "handover" : type.endsWith(".skip") ? "skip" : "continue";
+            const out =
+              act === "stop"
+                ? autoRunner.stop(session)
+                : act === "handover"
+                  ? autoRunner.handOver(session)
+                  : act === "skip"
+                    ? autoRunner.skip(session)
+                    : autoRunner.continue(session);
             send({ type: "review.auto", sessionId: session, state: out.state, error: out.error, code: out.code });
             return;
           }

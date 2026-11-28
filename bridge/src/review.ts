@@ -522,6 +522,8 @@ export function setPick(repo: string, pick: ReviewPick, session = ""): ReviewSta
 
 /** 历史只留最近这么多次：一次评审的记录几 KB，全留会让状态文件长成几百 KB，而界面只画得下几条。 */
 export const RUN_KEEP = 20;
+/** 自动评审的轮次另算一份预算：够它自己回头翻几轮，又不至于无限长。 */
+export const AUTO_RUN_KEEP = 40;
 
 /**
  * 把历史截到 `RUN_KEEP` 条（新的留下）。只该在「加了一条新记录」后调（`startReview()`）。
@@ -529,7 +531,14 @@ export const RUN_KEEP = 20;
  * 正点开看着的那一条截掉。
  */
 export function trimRuns(state: ReviewState): void {
-  if (state.runs.length > RUN_KEEP) state.runs = state.runs.slice(-RUN_KEEP);
+  // D450：自动评审的轮次与手动开的那几条各算一份预算 —— 一次自动评审 4–12 轮，
+  // 挤同一个 RUN_KEEP 会把用户手动评过的历史刷掉一半。
+  const manual = state.runs.filter((r) => !r.auto);
+  const auto = state.runs.filter((r) => r.auto);
+  const keepManual = manual.slice(-RUN_KEEP);
+  const keepAuto = auto.slice(-AUTO_RUN_KEEP);
+  const keep = new Set([...keepManual, ...keepAuto]);
+  state.runs = state.runs.filter((r) => keep.has(r));
 }
 
 export function writeReviewState(repo: string, state: ReviewState, session = ""): void {
@@ -595,6 +604,8 @@ export interface ReviewJobOpts {
   model?: string;
   provider?: string;
   lang: ReviewLang;
+  /** D450：这是自动评审的一轮（不画进记录列表、单独算留存预算）。 */
+  auto?: boolean;
 }
 
 /**
@@ -1087,6 +1098,8 @@ export interface StartOptions {
   model?: string;
   provider?: string;
   lang: ReviewLang;
+  /** D450：这是自动评审的一轮（不画进记录列表，留存另算一份预算）。 */
+  auto?: boolean;
 }
 
 /**
@@ -1148,6 +1161,7 @@ export function startReview(o: StartOptions): { runId: string; repo: string } {
     status: "running",
     startedAt,
     finishedAt: "",
+    ...(o.auto ? { auto: true } : {}),
     model: o.model ?? "",
     provider: o.provider ?? "",
     lang: o.lang,

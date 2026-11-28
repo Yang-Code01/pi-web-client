@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { fmtTok, roundLine, roundStatusLabel, stageChips, statePill, verdictOf, verdictLabel, waitText, worstSeverity, footerText } =
+const { fmtTok, roundLine, roundStatusLabel, stageChips, statePill, verdictOf, verdictLabel, waitText, worstSeverity, footerText, noteText } =
   await import("../src/reviewauto.ts");
 
 const round = (n, over = {}) => ({
@@ -68,6 +68,13 @@ test("状态词：跳过 ≠ 签收", () => {
   assert.equal(roundStatusLabel({ status: "skipped" }), "已跳过");
   assert.equal(roundStatusLabel({ status: "clean" }), "零意见");
   assert.notEqual(roundStatusLabel({ status: "skipped" }), roundStatusLabel({ status: "clean" }));
+});
+
+test("轮次上的说明：桥只给码，这里翻成人话；认不出来的原样给", () => {
+  assert.equal(noteText("skipped"), "你跳过了这一轮");
+  assert.equal(noteText("stale"), "桥重启了，这一轮没跑完");
+  assert.equal(noteText(""), "");
+  assert.equal(noteText("模型写的一句理由"), "模型写的一句理由");
 });
 
 test("一轮的标题行：四种状态各说各的", () => {
