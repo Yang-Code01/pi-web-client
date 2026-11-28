@@ -131,7 +131,14 @@ export function toolArgsView(args: unknown): ToolArgsView {
   const diff = diffBlocks(parsed);
   if (diff) return { blocks: diff, facts: factsOf(parsed, new Set(["edits"])) };
 
-  const path = typeof parsed.path === "string" ? parsed.path : typeof parsed.file === "string" ? parsed.file : null;
+  // 正文按哪个文件的语言上色：write 用 `path`，少数工具用 `file`（两个都可能是别的东西，逐个认）。
+  let path: string | null = null;
+  for (const key of ["path", "file"]) {
+    if (typeof parsed[key] === "string") {
+      path = parsed[key] as string;
+      break;
+    }
+  }
   const long = Object.entries(parsed).filter(([, value]) => typeof value === "string" && (value.length > LONG_ENOUGH || value.includes("\n")));
   // 没有「一坨正文」的参数（ask / todo / MCP 的嵌套对象）：整份缩进 JSON 比拆成事实胶囊好读。
   if (!long.length) return { blocks: [{ label: tr("参数"), text: prettyJson(parsed), grammar: "json" }], facts: [] };
