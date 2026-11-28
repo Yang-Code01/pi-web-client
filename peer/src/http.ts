@@ -8,7 +8,7 @@ import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import { knownAvatar } from "./avatars.ts";
 import { isRepo } from "./repo.ts";
-import type { Discovery } from "./discovery.ts";
+import { buildUpdates, type Discovery } from "./discovery.ts";
 import { CHUNK, SANDBOX_CSP, inlineType, isHtmlType, mimeOf, typeOf } from "./files.ts";
 import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
@@ -147,17 +147,22 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
 
 export function createPeerServer(ctx: PeerContext): http.Server {
   const { cfg, nodeId, discovery, history, messages, relations, files, ignored, threads, activity, groups } = ctx;
-  const identity = () => ({
-    nodeId,
-    nickname: cfg.nickname,
-    hostname: os.hostname(),
-    port: cfg.port,
-    version: VERSION,
-    status: activity.status(),
-    avatar: cfg.avatar,
-    // hello 应答也要带 opt-out 名单：只靠手动地址单向认识的机器，看不到我们退过哪些组（评审 #9）。
-    ...(cfg.updates.repo ? { updates: { ...cfg.updates, ...(optOutIds().size ? { optOut: [...optOutIds()] } : {}) } } : {}),
-  });
+  const identity = () => {
+    // 与 announce 包用同一个拼装函数（评审 #6）：publisher=false 不能以显式字段发出，
+    // opt-out 名单也要按 20 条截断——否则同一条机器在两条路上会带着不一样形状的 updates。
+    const updates = buildUpdates(cfg.updates.repo, cfg.updates.publisher, cfg.updates.repo ? [...optOutIds()] : []);
+    return {
+      nodeId,
+      nickname: cfg.nickname,
+      hostname: os.hostname(),
+      port: cfg.port,
+      version: VERSION,
+      status: activity.status(),
+      avatar: cfg.avatar,
+      // hello 应答也要带 opt-out 名单：只靠手动地址单向认识的机器，看不到我们退过哪些组（评审 #9）。
+      ...(updates ? { updates } : {}),
+    };
+  };
   const configView = () => ({
     hidden: cfg.hidden,
     pauseFiles: cfg.pauseFiles,

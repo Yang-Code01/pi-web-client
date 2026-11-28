@@ -574,7 +574,9 @@ export class Messages {
       members = [...kept, ...others, this.me()].slice(0, MAX_GROUP_MEMBERS);
     }
     // publisher 空着时写权限回退 owner：owner 若不在名册里，回退会让一个非成员继续能写（评审 #23）。
-    if (!group.publisher && !members.some((m) => m.nodeId === group.owner)) {
+    // owner 是空串 / 形状不对（收到过坏快照）时不能往名册里补一个 nodeId:"" 的幽灵：
+    // 那种成员投不出去、也过不了 admitGroup 的成员检查（评审 #9）。
+    if (!group.publisher && group.owner && !members.some((m) => m.nodeId === group.owner)) {
       // 满员时截断不能把刚补进来的自己挤掉（评审 #8）：owner 放最前、自己放最后。
       const rest = members.filter((m) => m.nodeId !== this.ctx.nodeId).slice(0, MAX_GROUP_MEMBERS - 2);
       members = [this.identity(group.owner), ...rest, this.me()].slice(0, MAX_GROUP_MEMBERS);
@@ -686,6 +688,10 @@ export class Messages {
       sent++;
     }
     this.replayed.set(replayKey, sentBefore);
+    // 只留还在名册里的人：成员来来回回会让这个 Map 只增不减（评审 #8）。
+    // 删的是同一 groupId 下已不在名册里的 key，别的集群一条不动。
+    const live = new Set(group.members.map((m) => `${groupId}@${m.nodeId}`));
+    for (const key of this.replayed.keys()) if (key.startsWith(`${groupId}@`) && !live.has(key)) this.replayed.delete(key);
     return { ok: true, sent };
   }
 

@@ -148,8 +148,11 @@ export function setOptOut(id: string, on: boolean): void {
     fs.writeFileSync(optOutFile(), JSON.stringify([...set], null, 2));
   } catch (err) {
     // 写失败（磁盘满 / 权限）时不能假装成功：清掉缓存，下一次 optOutIds() 读盘拿真实状态（评审 #1）。
+    // 退避计时也要一起清：缓存已经没了，若还处在上一轮读失败的退避期里，
+    // optOutIds() 会直接返回空集，merge 就把用户已经退掉的更新组又合回来（评审 #4）。
     optOutCache = null;
     optOutStamp = "";
+    optOutRetryAt = 0;
     throw err;
   }
   // 我们就是刚写这份文件的人：缓存换成新 Set，stamp 跟着更新（评审 #7/#21）。

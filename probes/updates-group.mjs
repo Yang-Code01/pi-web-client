@@ -7,7 +7,7 @@
  *  3. 公告卡片上的「打开更新日志」开的是 `/?settings=whatsnew`（主界面 D441 深链），
  *     「打开热部署」开的是 `/?settings=tools`（两次点击各查新增的那一条，见评审 #13）。
  *  4. 消息右键只剩「复制文字」；悬停不出现回应笑脸、气泡上没有回应行。
- *  5. 发布者同一份数据：有输入区、没有只读条、卡片照画、按钮同样开深链。
+ *  5. 发布者同一份数据：有输入区、没有只读条、卡片照画、两颗按钮同样开深链、右键菜单不退化、150% 不溢出。
  *  6. 设置页「更新公告」卡：发布者看到「本机是发布者」+ 立即检查可点；成员看到「没加入」+ 重新加入。
  *  7. 字号 150%：卡片不横向溢出（`scrollWidth <= clientWidth + 1`）。
  *
@@ -272,6 +272,27 @@ const pubOpenedBefore = (await page2.evaluate(() => window.__opened ?? [])).leng
 await page2.locator(".an-acts .btn").first().click();
 const pubOpened = (await page2.evaluate(() => window.__opened ?? [])).slice(pubOpenedBefore);
 check(pubOpened.includes("/?settings=whatsnew"), "发布者「打开更新日志」也开深链", pubOpened);
+// 第二颗按钮只在发布者视角才是「打开热部署」：canHot 误判 / 只画一颗都会被这两行抓到（评审 #11）。
+const pubToolsBefore = (await page2.evaluate(() => window.__opened ?? [])).length;
+await page2.locator(".an-acts .btn").nth(1).click();
+const pubTools = (await page2.evaluate(() => window.__opened ?? [])).slice(pubToolsBefore);
+check(pubTools.includes("/?settings=tools"), "发布者有「打开热部署」→ /?settings=tools", pubTools);
+
+// 发布者能写：右键菜单不能退化成员那份「只剩复制文字」（评审 #11）。
+await page2.locator(".msg .bub, .msg .an-card").first().click({ button: "right" });
+const pubMenu = await page2.locator("#layer .menu > button").allInnerTexts().catch(() => []);
+check(pubMenu.length > 1 && pubMenu.some((t) => t.includes("固定")), "发布者右键菜单照常（不止复制文字）", pubMenu);
+await page2.keyboard.press("Escape");
+
+// 字号 150% 在发布者视角也不横向溢出（成员那边量过的那一次管不到这一份 DOM）（评审 #11）。
+await page2.evaluate(() => document.documentElement.style.setProperty("--ui-scale", "1.5"));
+const pubOverflow = await page2.evaluate(() => {
+  const el = document.querySelector(".an-card");
+  return el ? el.scrollWidth - el.clientWidth : -1;
+});
+check(pubOverflow >= 0 && pubOverflow <= 1, "发布者字号 150% 卡片不横向溢出", pubOverflow);
+await page2.evaluate(() => document.documentElement.style.removeProperty("--ui-scale"));
+
 await page2.getByRole("button", { name: "我" }).click();
 await page2.waitForSelector(".card", { timeout: 5000 });
 const pubText = await page2.locator("#main").innerText();

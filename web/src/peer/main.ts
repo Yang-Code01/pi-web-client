@@ -712,6 +712,10 @@ async function loadStatus(): Promise<void> {
   renderHint();
 }
 
+const asText = (v: unknown): string => (typeof v === "string" ? v : "");
+/** 非有限数（NaN / Infinity / 字符串）一律当 0：0 在卡片上就是「还没播报过」。 */
+const asTime = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
 /** 旧桥 / 被裁剪的响应可能少字段：统一兜底，别让设置页 split(undefined) 崩掉（评审 #32/#36）。 */
 function normalizeUpdates(view: Partial<UpdatesView> | null | undefined): UpdatesView {
   // 旧桥 / 出错页可能回 null，直接展开再读字段会抛 TypeError（评审 #5）。
@@ -719,11 +723,12 @@ function normalizeUpdates(view: Partial<UpdatesView> | null | undefined): Update
   return {
     ...src,
     ok: true,
-    lastCommit: src.lastCommit ?? "",
-    lastBatchTitle: src.lastBatchTitle ?? "",
-    lastAnnouncedAt: src.lastAnnouncedAt ?? 0,
-    lastCheckAt: src.lastCheckAt ?? 0,
-    lastError: src.lastError ?? "",
+    lastCommit: asText(src.lastCommit),
+    lastBatchTitle: asText(src.lastBatchTitle),
+    // 时间戳可能是字符串：直接透传下去，fmtDate / clock 会得到 Invalid Date（评审 #12）。
+    lastAnnouncedAt: asTime(src.lastAnnouncedAt),
+    lastCheckAt: asTime(src.lastCheckAt),
+    lastError: asText(src.lastError),
     hotdeploy: src.hotdeploy === true,
     peerRunning: src.peerRunning === true,
     available: src.available === true,
@@ -731,9 +736,9 @@ function normalizeUpdates(view: Partial<UpdatesView> | null | undefined): Update
     publisher: src.publisher === true,
     memberCount: typeof src.memberCount === "number" ? src.memberCount : 0,
     onlineCount: typeof src.onlineCount === "number" ? src.onlineCount : 0,
-    repo: src.repo ?? "",
-    groupId: src.groupId ?? "",
-    groupName: src.groupName ?? "",
+    repo: asText(src.repo),
+    groupId: asText(src.groupId),
+    groupName: asText(src.groupName),
   } as UpdatesView;
 }
 
@@ -4369,6 +4374,33 @@ async function clearIgnored(): Promise<void> {
   }
 }
 
+/** 卡片上「状态」那一格：发布者 / 已加入（只读）/ 没加入。别写成嵌套三元（评审 #13）。 */
+function updatesStateText(u: UpdatesView): string {
+  if (u.publisher) return tr("本机是发布者");
+  if (u.joined) return tr("已加入（只读）· {p1} 人", { p1: String(u.memberCount) });
+  return tr("没加入");
+}
+
+/** 卡片上会变的就这么几项：值没变就别重画（整块换 DOM 会拽掉选区、焦点和滚动）（评审 #15）。 */
+function updatesSig(u: UpdatesView | null): string {
+  if (!u) return "none";
+  return [
+    u.available,
+    u.publisher,
+    u.joined,
+    u.memberCount,
+    u.onlineCount,
+    u.lastCommit,
+    u.lastAnnouncedAt,
+    u.lastCheckAt,
+    u.lastError,
+    u.hotdeploy,
+    u.peerRunning,
+    u.repo,
+    u.groupName,
+  ].join("|");
+}
+
 /**
  * D441「更新公告」设置卡：发布者开关（写 peer config）、这个检出认得的仓库与组、上次播报的提交、
  * 「立即检查」与「重新加入」（退过才显）。开关在 peer 里，所以"立即检查"要等它下一轮 `/api/updates`。
@@ -4406,7 +4438,7 @@ function updatesCard(): HTMLElement {
     h("span", "k", tr("更新组")),
     h("span", "v", u.groupName),
     h("span", "k", tr("状态")),
-    h("span", "v", u.publisher ? tr("本机是发布者") : u.joined ? tr("已加入（只读）· {p1} 人", { p1: String(u.memberCount) }) : tr("没加入")),
+    h("span", "v", updatesStateText(u)),
     h("span", "k", tr("上次播报")),
     h("span", "v", u.lastCommit ? `${u.lastCommit.slice(0, 7)} · ${fmtDate(u.lastAnnouncedAt)} ${clock(u.lastAnnouncedAt)}` : tr("还没播报过")),
   );
@@ -4968,7 +5000,10 @@ const heartbeat = (): void => {
 window.setInterval(heartbeat, 60_000);
 // 更新组的播报进度在 bridge 上，别等用户手动刷新才看到（评审 #13）。
 window.setInterval(() => {
+  // 值没变就不重画：这个定时器每分钟一次，整块换 DOM 会拽掉选区、滚动和焦点（评审 #15）。
+  const before = updatesSig(S.updates);
   void loadUpdates().then(() => {
+    if (updatesSig(S.updates) === before) return;
     // 正在输入时不重画，免得抢走焦点/草稿；其它时候让卡片跟上播报进度（评审 #4）。
     const el = document.activeElement as HTMLElement | null;
     if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;

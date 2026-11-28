@@ -18,8 +18,8 @@ export interface AnnounceUpdates {
   optOut?: string[];
 }
 
-/** announce 里 updates 的形状只在这里拼：packet 与 normUpdates 别各写一份（评审 #14）。 */
-function buildUpdates(repo: string, publisher: boolean, optOut: string[]): AnnounceUpdates | null {
+/** announce 里 updates 的形状只在这里拼：packet / normUpdates / hello 应答别各写一份（评审 #14/#6）。 */
+export function buildUpdates(repo: string, publisher: boolean, optOut: string[]): AnnounceUpdates | null {
   if (!repo) return null;
   return {
     repo,

@@ -138,6 +138,19 @@ function sameRepo(a: string | undefined, b: string): boolean {
   return Boolean(a) && a!.toLowerCase() === b.toLowerCase();
 }
 
+/**
+ * 从上次播过的批次标题切出这次要推的那几条（`batches` 新的在前）。
+ * 纯函数：单测能把「基线也记了标题」这件事钉住，否则一次攒了好几批也只推最新一批（评审 #2）。
+ */
+export function batchesAfter(batches: WhatsnewBatch[], lastTitle: string): WhatsnewBatch[] {
+  if (!batches.length) return [];
+  if (!lastTitle) return batches.slice(0, 1);
+  const idx = batches.findIndex((b) => b.title === lastTitle);
+  // 上次播的那批已经不在文件里（被合并 / 删了）：只推最新一条，别把整份日志重播一遍。
+  if (idx < 0) return batches.slice(0, 1);
+  return batches.slice(0, idx);
+}
+
 export class UpdatesLan {
   private readonly stateFile = statePath("updates", "publisher.json");
   private state: UpdatesState = { lastCommit: "", lastBatchTitle: "", lastAnnouncedAt: 0, lastCheckAt: 0, lastError: "" };
@@ -368,7 +381,6 @@ export class UpdatesLan {
     }
   }
 
-
   private inviteAndReplay(info: RepoInfo, want: string[]): Promise<void> {
     // 定时 reconcile、播报后的拉人、开关的 kick 都会进来：排队做，
     // 同一批人不该被两条路径同时邀请、同时补发（评审 #5）。
@@ -377,21 +389,21 @@ export class UpdatesLan {
     return run;
   }
 
-private async inviteOnce(info: RepoInfo, want: string[]): Promise<void> {
-  // peer 的 inviteGroup 一次最多 50 人：分块，单块失败也只记日志，别让本轮公告发不出去（评审 #3）。
-  const CHUNK = 20;
-  const invited: string[] = [];
-  for (let i = 0; i < want.length; i += CHUNK) {
-    const part = want.slice(i, i + CHUNK);
-    try {
-      await this.peer.group({ action: "invite", id: info.groupId, members: part });
-      invited.push(...part);
-    } catch (err) {
-      this.log(`更新组：拉人失败（${part.length} 台）：${(err as Error).message}`);
+  private async inviteOnce(info: RepoInfo, want: string[]): Promise<void> {
+    // peer 的 inviteGroup 一次最多 50 人：分块，单块失败也只记日志，别让本轮公告发不出去（评审 #3）。
+    const CHUNK = 20;
+    const invited: string[] = [];
+    for (let i = 0; i < want.length; i += CHUNK) {
+      const part = want.slice(i, i + CHUNK);
+      try {
+        await this.peer.group({ action: "invite", id: info.groupId, members: part });
+        invited.push(...part);
+      } catch (err) {
+        this.log(`更新组：拉人失败（${part.length} 台）：${(err as Error).message}`);
+      }
     }
-  }
-  // 补公告彼此独立：并行发，别让 N 台机器把 10 秒一轮的 reconcile 拖住（评审 #12）。
-  await Promise.all(invited.map((nodeId) => this.peer.replayAnnouncements(info.groupId, nodeId, 3).catch(() => null)));
+    // 补公告彼此独立：并行发，别让 N 台机器把 10 秒一轮的 reconcile 拖住（评审 #12）。
+    await Promise.all(invited.map((nodeId) => this.peer.replayAnnouncements(info.groupId, nodeId, 3).catch(() => null)));
   }
 
   private async git(args: string[]): Promise<string> {
@@ -403,29 +415,25 @@ private async inviteOnce(info: RepoInfo, want: string[]): Promise<void> {
     return stdout.trim();
   }
 
-  /** 新批次：`lastBatchTitle` 之前的那几条（CHANGELOG 是新的在前）。 */
-  private async freshBatches(): Promise<WhatsnewBatch[]> {
-    let text = "";
+  /** origin/main 上的 CHANGELOG 批次（新的在前）；读不到就是空数组。 */
+  private async originBatches(): Promise<WhatsnewBatch[]> {
     try {
       // 读的是刚 fetch 下来的 origin/main，不是本机工作区：发布者还没 pull 时，
       // 工作区的 CHANGELOG 里根本没有新批次（评审 #2）。
-      text = await this.git(["show", "origin/main:CHANGELOG.md"]);
-    } catch {
-      // 读不到 origin/main 的 CHANGELOG 就不要退回工作区旧文件：那份可能还没有这次的新批次，
+      // 读不到也不要退回工作区旧文件：那份可能还没有这次的新批次，
       // 按 lastBatchTitle 切出来是空的，下次能读到 origin 时又会重播一遍（评审 #8）。
+      return whatsnewBatches(await this.git(["show", "origin/main:CHANGELOG.md"]));
+    } catch {
       return [];
     }
-    const batches = whatsnewBatches(text);
-    if (!batches.length) return [];
-    const last = this.state.lastBatchTitle;
-    if (!last) return batches.slice(0, 1);
-    const idx = batches.findIndex((b) => b.title === last);
-    // 上次播的那批已经不在文件里（被合并/删了）：只推最新一条，别把整份日志重播一遍。
-    if (idx < 0) return batches.slice(0, 1);
-    return batches.slice(0, idx);
   }
 
-    /** 公告正文（给旧版本 / 通知预览看的退化文本）：卡片认识 `announce` 就画卡片。 */
+  /** 新批次：`lastBatchTitle` 之前的那几条（CHANGELOG 是新的在前）。 */
+  private async freshBatches(): Promise<WhatsnewBatch[]> {
+    return batchesAfter(await this.originBatches(), this.state.lastBatchTitle);
+  }
+
+  /** 公告正文（给旧版本 / 通知预览看的退化文本）：卡片认识 `announce` 就画卡片。 */
   private composeText(info: RepoInfo, commit: string, batches: WhatsnewBatch[], subjects: string[]): string {
     const day = new Date().toISOString().slice(0, 10);
     const lines = [`${info.repo} 更新到 ${commit}（${day}）`];
@@ -469,6 +477,9 @@ private async inviteOnce(info: RepoInfo, want: string[]): Promise<void> {
       // 第一次运行只记基线，不播报：否则刚打开开关就会把「早已上线」的版本当成新更新（评审 #4）。
       if (!this.state.lastCommit) {
         this.state.lastCommit = commit;
+        // 基线也要记下当时的首批标题：否则第一次真播报时 lastBatchTitle 是空的，
+        // freshBatches() 只能走 slice(0, 1)，一次攒了好几批也只推最新那一批（评审 #2）。
+        this.state.lastBatchTitle = (await this.originBatches())[0]?.title ?? this.state.lastBatchTitle;
         this.state.lastError = "";
         this.save();
         this.log("更新组：记下基线 " + commit + "，之后有新的 origin/main 提交才播报");
@@ -508,6 +519,12 @@ private async inviteOnce(info: RepoInfo, want: string[]): Promise<void> {
           publisher: status.nodeId,
         });
         group = created.group ?? null;
+        // 建组回了 ok 却没带回快照：这个 id 本机还没确认，接着发只会发到一个不存在的组、
+        // 下一轮还会再建一次（评审 #3）。
+        if (!group) {
+          this.setError("建更新组失败：内网通没有返回这个组的快照");
+          return;
+        }
       } else if (group.announceOnly === true && group.publisher !== status.nodeId) {
         // 换机器（D441）：新机器接管发布权，v+1 广播出去，组里会插一条「X 成为新的发布者」。
         const claimed = await this.peer.group({ action: "publisher", id: info.groupId });
@@ -520,12 +537,12 @@ private async inviteOnce(info: RepoInfo, want: string[]): Promise<void> {
         }
       }
       // 同 id 的普通群（被人为建过）不能当成更新组往里发公告 / 拉人（评审 #11）。
-      if (group && group.announceOnly !== true) {
+      if (group.announceOnly !== true) {
         this.setError("更新组 id " + info.groupId + " 已被一个普通群占用：换一个仓库标识，或删掉那个群");
         return;
       }
       const want = this.wanted(group, info, status.nodeId);
-      if (want.length && group) await this.inviteAndReplay(info, want);
+      if (want.length) await this.inviteAndReplay(info, want);
 
       const text = this.composeText(info, commit, batches, subjects);
       // 没有新 CHANGELOG 批次、只走 subjects 回退时 batches 是空的：peer 的 normalizeAnnounce

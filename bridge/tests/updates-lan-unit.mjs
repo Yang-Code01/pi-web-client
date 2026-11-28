@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { isRepo, MAX_REPO_LEN } from "../../peer/src/repo.ts";
-import { ANNOUNCE_LIMITS, cutUtf8, groupIdFor, repoSlugFromRemote } from "../src/updates-lan.ts";
+import { ANNOUNCE_LIMITS, batchesAfter, cutUtf8, groupIdFor, repoSlugFromRemote } from "../src/updates-lan.ts";
 import {
   MAX_ANNOUNCE_BATCHES,
   MAX_ANNOUNCE_BATCH_BYTES,
@@ -48,6 +48,19 @@ assert.notEqual(groupIdFor("A_B/C.D"), groupIdFor("a-b/c-d"));
 assert.equal(new Set(["a-b/c", "a/b-c", "a/b/c"].map(groupIdFor)).size, 3);
 assert.ok(groupIdFor("////").startsWith("grp-updates-repo-"));
 assert.ok(groupIdFor("x/".padEnd(200, "y")).length <= 80, "组 id 不超过 peer 的 80 字符上限");
+
+// 切批次：`lastBatchTitle` 之前的新批次全都要推，不能只推最新一批（评审 #2）。
+const batchLog = [
+  { title: "t3", body: "" },
+  { title: "t2", body: "" },
+  { title: "t1", body: "" },
+  { title: "t0", body: "" },
+];
+assert.deepEqual(batchesAfter(batchLog, "t1").map((b) => b.title), ["t3", "t2"], "上次播 t1：t3/t2 两批都要发");
+assert.deepEqual(batchesAfter(batchLog, "").map((b) => b.title), ["t3"], "没记标题时只能推最新一批 —— 所以基线必须记标题");
+assert.deepEqual(batchesAfter(batchLog, "gone").map((b) => b.title), ["t3"], "上次那批已不在文件里：别重播整份日志");
+assert.deepEqual(batchesAfter([], "t1"), []);
+assert.deepEqual(batchesAfter(batchLog, "t3"), [], "同一批不重播");
 
 // normalizeAnnounce：形状不对整条拒、超限只裁不丢（评审 #12）。
 assert.equal(normalizeAnnounce(null), null);
