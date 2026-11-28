@@ -1,13 +1,16 @@
 /**
- * Probe: 右栏四颗页签（需要你 / 执行 / 浏览器 / 代码评审）在**三套主题下**都得看得清。
+ * Probe: 右栏四颗页签（需要你 / 执行 / 浏览器 / 代码评审）在**三套主题、任意强调色**下都得看得清。
  *
- * 症状：深色 / 午夜蓝下选中的那颗是**白底**，(选中的) 字跟着主题是浅色 —— 白字白底，那颗页签等于
- * 消失了。成因是选中底 `var(--mac-knob)`：那颗变量本来是给开关滑块（`.sw::after` / checkbox）用的
- * 白色小圆点，深色主题里也是近白（mac-dark `#f2f2f4`、mac-midnight `#f1f4fb`），拿它当「选中滑块」
- * 的底色时就没人反相（设置台 `.st-tabs__btn.on` 早踩过，那边按主题补了两条覆盖，右栏这四颗漏了）。
+ * 它守的是两件事，分属两个决定：
  *
- * 这里量的是浏览器里真实画出来的东西：每套主题下把选中那颗**截图取像素**，背景取区域内最多的那个
- * 颜色，再跟文字色算 WCAG 对比度；同时比一下未选中那颗、灰槽本身，确认选中态既看得清、又区分得开。
+ * 1. **选中不是白底**（D455）：`--mac-knob` 是开关里那颗白圆点的颜色，深色主题下也近白（mac-dark
+ *    `#f2f2f4`、mac-midnight `#f1f4fb`）。拿它当选中滑块的底时就白底配浅色字，实测 1.03:1，整颗页签
+ *    等于消失。**任何**不透明近白的底都会被下面「选中块 vs 灰槽」与「选中字对比」两条拦住。
+ * 2. **选中的是强调色**（D456）：底色取像素要比对得上 `--accent`、字色要比对得上 `--accent-ink`，
+ *    两套主题各量一次以外，还要拿一颗会换成深字的强调色（黄）验证 accent-ink 真跟着变。
+ *
+ * 底色一律用**截图取像素**（区域内最多的那个颜色），不解析 `color-mix()` / 半透明写法 —— 那些正则
+ * 一旦取了默认值断言就恒真（D449 踩过）。字色用 computed：字是从抗锯齿里猜不出来的。
  *
  * Run: npm --prefix web run build && node probes/queue-tabs-contrast.mjs
  */
@@ -131,9 +134,12 @@ const modeColor = async (rect) => {
   );
 };
 
-/** `rgb()` / `rgba()` / `color(srgb …)` 都可能来；只认这里真会用到的两三种，认不出就抛。 */
+/** 自定义属性里存的是 `#rrggbb`，computed 的 `color` 是 `rgb()`；两样都要认。 */
 const parseColor = (s) => {
-  const m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(s.trim());
+  const t = s.trim();
+  const hex = /^#([0-9a-f]{6})$/i.exec(t);
+  if (hex) return [0, 2, 4].map((i) => parseInt(hex[1].slice(i, i + 2), 16));
+  const m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(t);
   if (!m) throw new Error(`看不懂的颜色：${s}`);
   return [Number(m[1]), Number(m[2]), Number(m[3])];
 };
@@ -165,6 +171,62 @@ const tabMetrics = (sel) =>
   }, sel);
 
 const THEMES = ["mac-light", "mac-dark", "mac-midnight"];
+/** 三通道各差 ≤ 3 算「就是这颗色」：截图只给人眼看的像素，量化误差一两格是常态。 */
+const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 3);
+
+/** 在某个主题 + 强调色下打开右栏，量选中 / 未选中 / 灰槽三处。 */
+const checkTheme = async (theme, accent) => {
+  await page.evaluate(
+    ({ theme, accent }) => {
+      const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+      // accentTone 显式钉死：柔和档（D438）会换另一张色表，那不是这一段要测的。
+      localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, theme, macAccent: accent, accentTone: "vivid" }));
+    },
+    { theme, accent },
+  );
+  await page.reload({ waitUntil: "networkidle" });
+  await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card");
+  await page.locator(".session-card").first().click();
+  await openQueueRail();
+  const applied = await page.evaluate(() => document.documentElement.dataset.theme);
+  ok(applied === theme, `${theme}/${accent}：主题真的落到 <html>（data-theme=${applied}）`);
+  await sleep(120);
+
+  const on = await tabMetrics('.pane[data-region="queue"] .exec-tabs button.on');
+  const off = await tabMetrics('.pane[data-region="queue"] .exec-tabs button:not(.on)');
+  const vars = await page.evaluate(() => {
+    const cs = getComputedStyle(document.documentElement);
+    return { accent: cs.getPropertyValue("--accent").trim(), ink: cs.getPropertyValue("--accent-ink").trim() };
+  });
+  const onBg = (await modeColor(on.box)).rgb;
+  const offBg = (await modeColor(off.box)).rgb;
+  const onText = parseColor(on.text);
+  const offText = parseColor(off.text);
+  const accentRgb = parseColor(vars.accent);
+  const inkRgb = parseColor(vars.ink);
+  const onRatio = ratio(onText, onBg);
+  const offRatio = ratio(offText, offBg);
+  // 未选中那颗的底就是灰槽（按钮自己是透明的）—— 拿它当「灰槽色」，比另挑一格纯槽像素稳：
+  // `.exec-tabs` 只有 2px 内边距，挑进去多半正好压在选中块上（1.00:1 那种假红）。
+  const knobVsGroove = ratio(onBg, offBg);
+
+  console.log(
+    `     ${theme}/${accent}：选中「${on.label}」底 rgb(${onBg}) 字 rgb(${onText}) → ${onRatio.toFixed(2)}:1` +
+      `｜未选中「${off.label}」底 rgb(${offBg}) 字 rgb(${offText}) → ${offRatio.toFixed(2)}:1` +
+      `｜选中块 vs 灰槽 → ${knobVsGroove.toFixed(2)}:1`,
+  );
+  // 1) 选中的就是强调色本身，字就是 accent-ink（黄/橙这种亮色该换成深字）。
+  ok(near(onBg, accentRgb), `${theme}/${accent}：选中块的底色是强调色 rgb(${accentRgb})（量到 rgb(${onBg})）`);
+  ok(near(onText, inkRgb), `${theme}/${accent}：选中页签的字是 accent-ink rgb(${inkRgb})（量到 rgb(${onText})）`);
+  // 2) 读得清：强调色实底 + 反相字，跟 `.chip.on` / `.btn.pri` 同一套组合，按 UI 组件的 3:1 守
+  //    （WCAG 对 12px 正文要 4.5：这一组合默认蓝在 3.6–3.8，是整站既有的取舍，见 D456）。
+  ok(onRatio >= 3.0, `${theme}/${accent}：选中页签的字读得出（${onRatio.toFixed(2)}:1 ≥ 3.0）`);
+  ok(offRatio >= 4.5, `${theme}/${accent}：未选中页签的字看得清（${offRatio.toFixed(2)}:1 ≥ 4.5）`);
+  // 3) 选中态除了字要清，还得跟灰槽分得开 —— 否则四颗看着一样，不知道停在哪颗（1.2:1 就够肉眼分辨）。
+  ok(knobVsGroove >= 1.2, `${theme}/${accent}：选中块与灰槽区分得开（${knobVsGroove.toFixed(2)}:1 ≥ 1.2）`);
+  await page.locator('.pane[data-region="queue"] .exec-tabs-bar').screenshot({ path: path.join(OUT, `${theme}-${accent}.png`) });
+};
+
 let browser;
 try {
   browser = await chromium.launch();
@@ -178,43 +240,10 @@ try {
     localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, scale: 1 }));
   });
 
-  for (const theme of THEMES) {
-    await page.evaluate((theme) => {
-      const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
-      localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, theme }));
-    }, theme);
-    await page.reload({ waitUntil: "networkidle" });
-    await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card");
-    await page.locator(".session-card").first().click();
-    await openQueueRail();
-    const applied = await page.evaluate(() => document.documentElement.dataset.theme);
-    ok(applied === theme, `${theme}：主题真的落到 <html>（data-theme=${applied}）`);
-    await sleep(120);
-
-    const on = await tabMetrics('.pane[data-region="queue"] .exec-tabs button.on');
-    const off = await tabMetrics('.pane[data-region="queue"] .exec-tabs button:not(.on)');
-    const onBg = (await modeColor(on.box)).rgb;
-    const offBg = (await modeColor(off.box)).rgb;
-    const onText = parseColor(on.text);
-    const offText = parseColor(off.text);
-    const onRatio = ratio(onText, onBg);
-    const offRatio = ratio(offText, offBg);
-    // 未选中那颗的底就是灰槽（按钮自己是透明的）—— 拿它当「灰槽色」，比另挑一格纯槽像素稳：
-    // `.exec-tabs` 只有 2px 内边距，挑进去多半正好压在选中块上（1.00:1 那种假红）。
-    const knobVsGroove = ratio(onBg, offBg);
-
-    console.log(
-      `     ${theme}：选中「${on.label}」底 rgb(${onBg}) 字 rgb(${onText}) → ${onRatio.toFixed(2)}:1` +
-        `｜未选中「${off.label}」底 rgb(${offBg}) 字 rgb(${offText}) → ${offRatio.toFixed(2)}:1` +
-        `｜选中块 vs 灰槽 → ${knobVsGroove.toFixed(2)}:1`,
-    );
-    // 12px 小字，WCAG AA 要 4.5:1。像素量出来的底色 + 声明的字色，都是真实渲染值。
-    ok(onRatio >= 4.5, `${theme}：选中页签的字看得清（${onRatio.toFixed(2)}:1 ≥ 4.5，底 rgb(${onBg}) 字 rgb(${onText})）`);
-    ok(offRatio >= 4.5, `${theme}：未选中页签的字看得清（${offRatio.toFixed(2)}:1 ≥ 4.5）`);
-    // 选中态除了字要清，还得跟灰槽分得开 —— 否则四颗看着一样，不知道停在哪颗（1.2:1 就够肉眼分辨）。
-    ok(knobVsGroove >= 1.2, `${theme}：选中块的底色与灰槽区分得开（${knobVsGroove.toFixed(2)}:1 ≥ 1.2）`);
-    await page.locator('.pane[data-region="queue"] .exec-tabs-bar').screenshot({ path: path.join(OUT, `${theme}.png`) });
-  }
+  for (const theme of THEMES) await checkTheme(theme, "blue");
+  // 强调色可换：黄色会走 accentInk 的「亮底换深字」那一支，两种字色都得在选中块上可读。
+  await checkTheme("mac-light", "yellow");
+  await checkTheme("mac-dark", "yellow");
 } finally {
   await browser?.close();
   server.close();

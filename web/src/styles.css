@@ -1610,10 +1610,12 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
   transition: background var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
 }
 .queue .exec-tabs button.on {
-  /* 跟设置台的分段控件同一颗滑块（D455）：用 `--mac-seg-knob`，别用 `--mac-knob` —— 后者是开关圆点的
-     白色，深色主题下也是近白，选中那颗就变成白底配浅色字（实测 1.03:1，等于看不见）。 */
-  color: var(--text); border-bottom: 0; background: var(--mac-seg-knob);
-  box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.04), 0 1px 4px rgba(0, 0, 0, 0.16);
+  /* 选中 = 强调色实底 + 反相字（D456），跟 `.chip.on` / `.btn.pri` 以及设置台分段控件原生那套同一个组合。
+     以前这里跟设置台共用 `--mac-seg-knob`（灰滑块，D455）：白底那个坑已不会再犯，但选中态不够显眼。 */
+  color: var(--accent-ink); border-bottom: 0; background: var(--accent);
+  /* 选中再重一档：强调色实底上 12px 字只有 3.65:1（默认蓝，D456），加粗把辨识度补回来。 */
+  font-weight: 600;
+  box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.06), 0 1px 4px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .queue .exec-tabs .pip {
   min-width: 14px; height: 14px; margin-left: 3px; border-radius: 7px;
