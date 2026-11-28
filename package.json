@@ -46,6 +46,7 @@
     "test:preview": "node bridge/tests/preview-tool.mjs && node bridge/tests/media-raw.mjs && node --experimental-strip-types bridge/tests/media-grant-unit.mjs && node --experimental-strip-types bridge/tests/open-preview-unit.mjs",
     "test:translate": "node --experimental-strip-types bridge/tests/translate-unit.mjs && node --experimental-strip-types web/tests/translateview-unit.mjs",
     "test:review": "npm run test:gh-setup && node --experimental-strip-types bridge/tests/review-unit.mjs && node --experimental-strip-types bridge/tests/review-pin-unit.mjs && node --experimental-strip-types bridge/tests/ocr-status-unit.mjs && node --experimental-strip-types bridge/tests/netroute-unit.mjs && node --experimental-strip-types bridge/tests/gitpr-fetch-route-e2e.mjs && node --experimental-strip-types bridge/tests/review-gh-account-e2e.mjs && node --experimental-strip-types web/tests/review-pin-unit.mjs",
+    "test:review-swap": "npm run build:bridge && node bridge/tests/review-worker-e2e.mjs",
     "test:handoff-sheet": "node --experimental-strip-types web/tests/handoff-sheet-browser.mjs",
     "test:review:view": "node --experimental-strip-types web/tests/review-unit.mjs",
     "probe:review": "node probes/code-review.mjs",

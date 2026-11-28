@@ -867,14 +867,16 @@ async function main(): Promise<void> {
   }
 
   // ---------------------------------------------------------------- 停机
-  async function stop(scope: "all" | "group"): Promise<void> {
+  async function stop(scope: "all" | "group", tellBrain = true): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
-    log(`停机（${scope}）`);
-    try {
-      brain?.conn.send({ t: "shutdown", scope });
-    } catch {
-      /* 脑已经不在 */
+    log(`停机（${scope}${tellBrain ? "" : "，保留评审"}）`);
+    if (tellBrain) {
+      try {
+        brain?.conn.send({ t: "shutdown", scope });
+      } catch {
+        /* 脑已经不在 */
+      }
     }
     await new Promise((r) => setTimeout(r, 150));
     children.killAll();
@@ -898,7 +900,9 @@ async function main(): Promise<void> {
   log(`壳在 http://${listenHost}:${port}（buildId ${hostBuildId}），控制通道 ${sock}`);
   spawnBrain();
 
-  process.on("SIGTERM", () => void stop("all"));
+  // D441：更新器 / 进程管理器用 SIGTERM 通知换代（hotdeploy、bridge-update 都是 kill -TERM），
+  // 这条路径不通知脑停机，评审 worker 才能活到新脑接回来；用户主动停（SIGINT / /api/host/stop）才通知。
+  process.on("SIGTERM", () => void stop("all", false));
   process.on("SIGINT", () => void stop("all"));
   process.on("exit", () => {
     try {

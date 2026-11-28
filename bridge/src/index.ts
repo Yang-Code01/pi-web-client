@@ -66,7 +66,10 @@ import {
   ocrStatus,
   readReviewPin,
   readReviewState,
+  resumeReviewJobs,
   reviewProgresses,
+  setReviewNotify,
+  stopAllReviews,
   takeSweptCount,
   MAX_RUNS_PER_SESSION,
   setPick,
@@ -2558,6 +2561,32 @@ async function main(): Promise<void> {
     }
   };
 
+  // 评审的执行进程是独立的 detached worker（D441）：进度与收尾都从盘上读，脑只负责转发。
+  // 换脑时新脑开机在这里接回上一代留下的 job —— 正在跑的评审不中断。
+  setReviewNotify({
+    onProgress: (job, progress) =>
+      broadcast({ type: "review.progress", dir: job.repo, sessionId: job.session, runId: progress.runId, progress }),
+    onState: (job) => {
+      // 仓库可能在评审期间被删 / 被移走：转发状态不该因此把脑带崩。
+      let pinned = "";
+      try {
+        pinned = effectiveReviewDir(job.repo, job.session).pinned;
+      } catch {
+        /* 目录没了就当没钉 */
+      }
+      broadcast({
+        type: "review.state",
+        dir: job.repo,
+        pinned,
+        sessionId: job.session,
+        state: readReviewState(job.repo, job.session),
+        progresses: reviewProgresses(job.repo, job.session),
+        cap: MAX_RUNS_PER_SESSION,
+      });
+    },
+  });
+  resumeReviewJobs();
+
   /**
    * GitHub 路由的 ctx。两个入口（回环工具口 / 常规路由）必须是**同一份**映射：壳拿到的 id/cwd
    * 与页面拿到的如果不是一个，就会出现「壳去问了 A 会话、面板读的却是 B」。
@@ -4181,7 +4210,7 @@ async function main(): Promise<void> {
             // 账号要 async 算（`gh auth token`），而这条 case 是同步的：包一层，错误照旧回给页面。
             void (async () => {
               try {
-                const { repo, pinned } = effectiveReviewDir(dir, session);
+                const { repo } = effectiveReviewDir(dir, session);
                 // 评审自己 spawn `gh` / `git`，子进程里看不到会话：把账号的令牌在这里算好带下去。
                 // 不带的话走的就是 gh 的机器 active 账号 —— 多账号机器上经常看不到目标仓库（D422）。
                 const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
@@ -4199,18 +4228,6 @@ async function main(): Promise<void> {
                   model,
                   provider,
                   lang,
-                  // D420：进度帧要带上是哪一条（runId）与哪位会话，页面才画得到各自的卡上。
-                  onProgress: (p) => broadcast({ type: "review.progress", dir: repo, sessionId: session, runId: p.runId, progress: p }),
-                  onState: () =>
-                    broadcast({
-                      type: "review.state",
-                      dir: repo,
-                      pinned,
-                      sessionId: session,
-                      state: readReviewState(repo, session),
-                      progresses: reviewProgresses(repo, session),
-                      cap: MAX_RUNS_PER_SESSION,
-                    }),
                 });
                 send({ type: "review.started", dir: repo, sessionId: session, runId: started.runId });
               } catch (err: any) {
@@ -4918,19 +4935,25 @@ async function main(): Promise<void> {
     void sessions.pinAll().then((n) => n && log(`pinned default permission on ${n} session(s)`)).catch(() => {});
   });
 
-  const shutdown = async () => {
+  let shuttingDown = false;
+  const shutdown = async (stopReviews = true) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log("shutting down");
     fileIndex.close();
     terminals.closeAll();
     tunnel.stop();
+    // 整组停机才停评审：换脑（retire）不走这里，更新（SIGTERM）也不该把 detached worker 收掉（D441）。
+    if (stopReviews) await stopAllReviews();
     await sessions.shutdown();
     // Closing the bridge is closing 随手问: a clean exit leaves nothing to resume.
     resetScratchDir();
     server.close();
     process.exit(0);
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown());
+  // 更新器 / 进程管理器发来的是 SIGTERM：这是换代，不是用户停桥，评审要留着让新脑接回。
+  process.on("SIGTERM", () => void shutdown(false));
 }
 
 main().catch((err) => {

@@ -2273,6 +2273,15 @@ export class App {
         // 这颗会话属于哪个工作区。快照到了补记一次（同一组同一颗只写一次，便宜）。
         this.noteLastSession();
         this.renderAll();
+        // 换脑 / 重连（D441）：评审可能已经在新一代脑上继续跑，进度只在桥的盘上。
+        // 重连后没有别的地方会再发 review.get —— 不补这一下，面板会停在换脑前的最后一帧。
+        if (this.currentId && this.reviewAsked) {
+          const reviewDir = this.reviewDir();
+          if (reviewDir) {
+            this.reviewAsked = reviewDir;
+            this.socket.send({ type: "review.get", dir: reviewDir, sessionId: this.currentId });
+          }
+        }
         // Q-021: 新会话 / 首屏恢复都可能带着另一个 cwd 进来。
         void this.refreshGit(true);
         if (this.currentId) this.socket.send({ type: "subscribe", sessionId: this.currentId });

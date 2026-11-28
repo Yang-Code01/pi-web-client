@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
 import {
   classifyOcrFailure,
@@ -33,14 +33,19 @@ import {
   expectRepoMismatch,
   cancelReview,
   reviewProgresses,
+  reviewJobFile,
+  reviewJobsDir,
   sweepStaleRuns,
   startReview,
+  setReviewLauncher,
   setPick,
   trimRuns,
   RUN_KEEP,
 } from "../src/review.ts";
 
 process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-"));
+// 这里只考登记逻辑：真起 worker 会把「立刻失败的 PR fetch」跑成后台进程，测试看不到、也不该看。
+setReviewLauncher(() => {});
 
 let failures = 0;
 const check = (name, fn) => {
@@ -545,8 +550,62 @@ check("并发（D420）：桥重启后 sweep 按「条」计数，不只是按�
   }
 });
 
+check("换脑（D441）：执行进程还活着的 running 不许被 sweep 标成桥重启", () => {
+  const prev = process.env.PI_WEB_STATE;
+  process.env.PI_WEB_STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-review-live-sweep-"));
+  try {
+    const repo = "/Users/me/live-sweep";
+    const session = "s1";
+    const startedAt = new Date().toISOString();
+    const run = (id, at) => ({ id, status: "running", findings: [], startedAt: at });
+    writeReviewState(repo, { repo, runs: [run("live", startedAt)], marks: {} }, session);
+    fs.mkdirSync(reviewJobsDir(), { recursive: true });
+    const writeJob = (runId, at, pid) =>
+      fs.writeFileSync(
+        reviewJobFile(runId),
+        JSON.stringify({ runId, repo, session, startedAt: at, opts: { mode: "workspace", lang: "zh" }, pid }),
+      );
+    writeJob("live", startedAt, process.pid);
+    assert.equal(sweepStaleRuns(), 0, "worker 还活着，不许标成桥重启");
+    assert.equal(readReviewState(repo, session).runs[0].status, "running");
+
+    const deadStartedAt = new Date(Date.now() + 1).toISOString();
+    const deadPid = spawnSync(process.execPath, ["-e", "0"]).pid;
+    writeReviewState(
+      repo,
+      { repo, runs: [run("live", startedAt), run("dead", deadStartedAt)], marks: {} },
+      session,
+    );
+    writeJob("dead", deadStartedAt, deadPid);
+    assert.equal(sweepStaleRuns(), 1, "只收尸已经死掉的那条");
+    const runs = readReviewState(repo, session).runs;
+    assert.equal(runs.find((r) => r.id === "live").status, "running");
+    assert.equal(runs.find((r) => r.id === "dead").status, "stale");
+  } finally {
+    process.env.PI_WEB_STATE = prev;
+  }
+});
+
+check("worker 起不来：当场收成 worker_spawn，不留在 active 里", () => {
+  const repo = bareRepo("spawn-fail");
+  const session = "spawn-fail";
+  let runId = "";
+  setReviewLauncher(() => {
+    throw new Error("spawn boom");
+  });
+  try {
+    ({ runId } = startReview({ dir: repo, mode: "workspace", session, lang: "zh" }));
+  } finally {
+    setReviewLauncher(() => {});
+  }
+  const run = readReviewState(repo, session).runs.find((r) => r.id === runId);
+  assert.equal(run.status, "failed");
+  assert.equal(run.errorCode, "worker_spawn");
+  assert.match(run.error, /spawn boom/);
+  assert.equal(reviewProgresses(repo, session).length, 0, "起不来就不许留在进度表里转圈");
+});
+
 check("写盘本身不裁剪：标意见 / 改 pick 不许把正看着的那条挤掉", () => {
-  // 裁剪只在 startReview() 加完新记录后做（trimRuns）；写盘是所有改动的窄口，不能在那里截。
   const repo = "/Users/me/many";
   const runs = Array.from({ length: 21 }, (_, i) => ({ id: `r${i}`, status: "done", findings: [] }));
   writeReviewState(repo, { repo, runs, marks: {} });
