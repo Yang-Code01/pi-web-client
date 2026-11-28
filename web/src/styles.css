@@ -2244,6 +2244,18 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 }
 .image-badge:hover { border-color: var(--accent); background: var(--accent-bg); }
 .image-badge:active { transform: scale(0.97); }
+/* 贴图那一下的「落地」：徽标短暂变实底。`pastefly.ts` 挂 260ms 后摘掉 —— 半透明强调色叠在
+   浅底上几乎看不出变化，只有实底才读得出「数字又加了一张」（D446）。 */
+.image-badge.flash { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+/* 刚贴上的图先浮出来、再缩进徽标（D446）。这一层挂在 `#app` 里，所以里面的 px 都是布局 px；
+   宽高按 `--ui-scale` 一起缩放，字号调大时幽灵也跟着大。 */
+.paste-fly { position: fixed; inset: 0; z-index: 45; pointer-events: none; }
+.paste-fly .ghost {
+  position: absolute; left: 0; top: 0; width: 76px; height: 76px; border-radius: 14px; overflow: hidden;
+  border: 0.5px solid var(--mac-glass-line); box-shadow: var(--mac-shadow-menu);
+  will-change: transform, opacity;
+}
+.paste-fly .ghost img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .sheet.image-sheet { grid-template-rows: auto 1fr auto; }
 .image-grid {
   overflow-y: auto; padding: 16px; display: grid; align-content: start;

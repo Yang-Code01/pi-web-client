@@ -20,6 +20,7 @@ import { githubFeature } from "./github-settings.ts";
 import { openFileSearch, type FileSearchHandle } from "./filesearch.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
+import { flyImagesToBadge, imageSrc } from "./pastefly.ts";
 import { cardPieces } from "./ask-text.ts";
 import { shouldFoldPaste } from "./paste.ts";
 import { renderMarkdown } from "./md.ts";
@@ -18155,6 +18156,15 @@ export class App {
     this.images.push(...images);
     this.updateImageBadge();
     this.imageSheetPaint?.();
+    // D446：贴图得看得见 —— 图从输入框浮出来飞进徽标，落地时徽标弹一下。粘贴、拖拽、选图、相册都走这里。
+    if (images.length && this.imageBadge) {
+      void flyImagesToBadge(images.map(imageSrc), {
+        badge: this.imageBadge,
+        origin: this.els.composerHost?.querySelector(".composer-input")?.getBoundingClientRect() ?? null,
+        host: () => document.getElementById("app"),
+        scale: () => this.uiScale(),
+      });
+    }
   }
 
   /**
