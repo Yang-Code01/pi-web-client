@@ -8886,3 +8886,20 @@ if (stop >= 0) {
 **代价。** 控制区比旧版高约 120px（四块磁贴 vs 一个下拉），900px 高的窗口里第三条记录会落到第一屏之外 —— 记录区本来就要滚，`probes/review-cards.mjs` 的点击辅助改成「不在视口里先滚进来」。磁贴占的位置是永久的：范围以后要加第五种（比如「两个提交之间」），2×2 就不够用，得改成一行滚动或换布局。
 
 **守卫。** `probes/review-cards.mjs`（假桥 + 真 Chromium，不碰 ocr / 真模型）：三条记录画成三个节点、每张卡的「完整详情」在卡内右下角、「停止」与它同一行且不压住时间、点正文不弹浮层、开评只多一个节点、150% 字号下按钮仍在卡内。`web/tests/review-unit.mjs` 只管 `reviewView()`（这一版没动它的任何输出）。`probes/code-review.mjs`（真桥）把「默认范围」「刷新后范围自己接上」「评审中范围不再锁住」三条从 `<select>` 改读磁贴的 `aria-pressed`。
+
+## D445 文档把「热部署」定成更新 bridge 的主路径，`bridge-update` skill 降为兜底（用户问「有了热部署，skill 是不是不再需要了」2026-11-28）
+
+**问题。** 两条路都在做「把 7864 换成目标分支的构建」：设置 → 工具 →「热部署」（`bridge/src/hotdeploy.ts` + `scripts/hotdeploy.mjs`）与 `.pi/skills/bridge-update/bin/restart.mjs`。AGENTS.md 与 `docs/agents/running-the-bridge.md` 却都写「更新 bridge 用 skill」，于是日常更新默认走更粗的那条：`restart.mjs` 从 `/healthz` 拿到的是**壳**的 pid（`host.ts` 里 `pid: process.pid`），杀掉即整组重启、会话全断；热部署在 D407 之后只换脑，正在跑的那一轮照跑。现场也印证了偏差：`.scratch/bridge-update/last-run.json` 停在 2026-11-28 的 `merge-failed`（三个 lockfile 有改动），同一天 `.scratch/hot-deploy/` 还跑成了。
+
+**决定。**
+
+- **主路径 = 热部署。** AGENTS.md 的「更新 / 重启 bridge」与 `running-the-bridge.md` 的 *Restarting it* 改成：日常换构建让用户点设置 → 工具 →「热部署」（脏树走「暂存后热部署」，D268）。agent 点不了那颗按钮，所以「需要更新」= 先 `--check` 判断、再告诉用户点一下。
+- **skill 只剩四件它独占的事**，写进 `SKILL.md` 开头新增的「零、先确认这次该不该用它」：① 桥已经死了 / 端口没回应（热部署是桥上的 HTTP 端点，桥没起来没人给点）；② 壳自己的代码变了（`host.ts` 的 `needs-group-restart`，热部署只报不做，真换壳要整组重启）；③ `--check` 只读探针（不 build、不杀进程、不写 `last-run.json`）；④ 看门狗（壳崩之后唯一会把它拉回来的一层）。
+- **`pending.md` / `pendingUnread` 的交接协议不变**，但它只服务 `restart.mjs` 这条会切断会话的路；热部署的进度在 `.scratch/hot-deploy/state.json`，两边不混。
+- GLOSSARY 里「不用热部署指代 bridge-update 那个 skill」的注脚改成「那个 skill 是兜底用的」，免得它读起来还像主路径。
+
+**为什么。** ①两条路重叠的正是最常发生的那件事，而文档把更危险的一条写成默认——读者只会照文档走。②热部署的能力面是 `restart.mjs` 的超集：分支可选、进度与失败原因可见、fetch 有代理候选与限时（D375 / D376 / D377）、脏树可以显式暂存（D268）；`restart.mjs` 多出来的只有「不需要桥活着」「只读判断」「装看门狗」与整组重启。③不删 skill：删了就没有任何外部入口能把死掉的壳拉起来，看门狗也没地方装。
+
+**代价 / 可改。** ①日常更新多了一步人工：agent 只能提示「点一下热部署」，不能替用户完成——那颗按钮会换构建，属于用户决定。想让它能代办，得先给 `POST /api/hotdeploy/run` 一个 agent 能用的入口，那是另一条决定。②`SKILL.md` 第三节（`Start-Process`）与第五节（Windows 计划任务）在这台 macOS 上照抄跑不起来；本条只把看门狗的 Windows 限制写明，没补 launchd / detached 写法，要在这台机器上走完整流程得先补那两节。③文档仍留两条路，读者要自己判断「桥是不是死了」，判据是 `/healthz` 有没有回应（写在 `running-the-bridge.md` 开头）。
+
+**验证。** 只动文字：AGENTS.md / `docs/agents/running-the-bridge.md` / `GLOSSARY.md` / `.pi/skills/bridge-update/SKILL.md`（含 frontmatter description）。`rg` 复查全仓再没有把 skill 写成唯一更新路径的地方；没有代码改动，所以不跑构建与测试。
