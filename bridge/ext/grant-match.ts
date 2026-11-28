@@ -22,8 +22,14 @@ export interface AutoGrant {
   branch: string;
   /** 允许合并的 PR 号（0 = 不授权合并）。 */
   pr: number;
-  /** 评审仓库根（校验 `gh -R owner/name` 用）。 */
+  /** 评审仓库根（本地路径：合并前要求进程 cwd 落在它里面）。 */
   repo: string;
+  /**
+   * 评审仓库的 `owner/name`（从 origin 认，认不出是空串）。
+   * 命令里显式带了别的仓库（`-R owner/name` 或 `…/repos/owner/name/…`）时**必须**逐字对上；
+   * 认不出（空串）时显式指了指别的仓库就**一律拒**（fail closed，别拿同名仓库当自己）。
+   */
+  slug: string;
   /** 毫秒时间戳：过期即失效（防「跑完了忘了收」）。 */
   expiresAt: number;
 }
@@ -36,7 +42,8 @@ const PUSH = /^\s*git\s+push\b/;
 const PR_MERGE = /^\s*gh\s+(?:-R\s+\S+\s+)?pr\s+merge\b/;
 const API_MERGE = /^\s*gh\s+api\b[^\n]*\/pulls\/(\d+)\/merge\b/;
 const FORCE = /(^|\s)(--force(-with-lease)?|-f)\b/;
-const BROAD = /(^|\s)(--all|--mirror|--tags|--follow-tags|--delete|-d)\b/;
+// `--prune` 会删掉远端「本地已经没有」的分支 —— 与 `--delete` 同一类，不能放过。
+const BROAD = /(^|\s)(--all|--mirror|--tags|--follow-tags|--delete|--prune|-d)\b/;
 
 /**
  * 当前分支（读 `.git/HEAD`，不 spawn git：闸门在每次工具调用里都会问一遍）。
@@ -77,7 +84,10 @@ function pushTargets(cmd: string): { ok: boolean; branches: string[] } {
   for (const s of tokens.slice(1)) {
     // `+refspec` 就是强推（`git push origin +feat/x`）
     if (s.startsWith("+")) return { ok: false, branches: [] };
+    // 空源 refspec（`:feat/x`）在 git 里是**删远端分支**，不是推 —— 与 `--delete` 同类，拒。
+    if (s.startsWith(":")) return { ok: false, branches: [] };
     const rhs = s.includes(":") ? s.slice(s.indexOf(":") + 1) : s;
+    if (s.includes(":") && !rhs) return { ok: false, branches: [] }; // `feat/x:` 推去空目标名，也不认
     const name = rhs.replace(/^refs\/heads\//, "");
     if (!name || name === "HEAD") continue;
     branches.push(name);
@@ -85,10 +95,19 @@ function pushTargets(cmd: string): { ok: boolean; branches: string[] } {
   return { ok: true, branches };
 }
 
-/** `gh pr merge 12` / `gh -R owner/name pr merge 12 --merge` / `gh api -X PUT …/pulls/12/merge` */
+/**
+ * `gh pr merge 12` / `gh -R owner/name pr merge 12 --merge` / `gh api -X PUT repos/o/r/pulls/12/merge`
+ *
+ * `repo` 是命令里**显式写出来的**仓库（没写就是空串 = 按 cwd 那个仓库算）。
+ */
 function mergeTarget(cmd: string): { pr: number; repo: string } {
   const api = API_MERGE.exec(cmd);
-  if (api) return { pr: Number(api[1]) || 0, repo: "" };
+  if (api) {
+    // 路径里的 `repos/<owner>/<name>/pulls/<n>/merge`：不认的话，别人的同名 PR 也能借这张授权合。
+    // 认不出路径形状时给一个永远匹配不上的 sentinel（宁可拒，也别退回「按 cwd 算」）。
+    const path = /(?:^|[\s/])repos\/([^/\s]+)\/([^/\s]+)\/pulls\/(\d+)\/merge\b/i.exec(cmd);
+    return { pr: Number(api[1]) || 0, repo: path ? `${path[1]}/${path[2]}` : "\u0000?" };
+  }
   if (!PR_MERGE.test(cmd)) return { pr: 0, repo: "" };
   const repo = /(?:^|\s)-R\s+(\S+)/.exec(cmd)?.[1] ?? "";
   const after = cmd.replace(PR_MERGE, "").split(/\s+/).filter(Boolean);
@@ -96,12 +115,27 @@ function mergeTarget(cmd: string): { pr: number; repo: string } {
   return { pr: Number(num) || 0, repo };
 }
 
+/** cwd 落在授权仓库里（含子目录：`gh` / `git` 都是从 cwd 往上找那个仓库）。 */
+function insideRepo(cwd: string, repo: string): boolean {
+  if (!cwd || !repo) return false;
+  const rel = path.relative(path.resolve(repo), path.resolve(cwd));
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
 /**
- * 这次授权能不能放过这条命令。`head` 是当前分支（闸门用 `currentBranch(cwd)` 算好传进来）。
+ * 这次授权能不能放过这条命令。
+ *
+ * `cmd` 必须是**完整**命令（闸门里别把给用户看的那份 900 字截断拿来判：截断点之后藏一条
+ * `; rm -rf` 就白给了）。`ctx.head` 是当前分支、`ctx.cwd` 是工具调用的工作目录。
  *
  * 只认**单条**命令：带 `&&` / `|` / 重定向的一律不放过 —— 前面那截被授权，不代表后面那截也是。
  */
-export function grantAllows(grant: AutoGrant | null, cmd: string, head: string, now = Date.now()): boolean {
+export function grantAllows(
+  grant: AutoGrant | null,
+  cmd: string,
+  ctx: { head?: string; cwd?: string },
+  now = Date.now(),
+): boolean {
   if (!grant) return false;
   if (!grant.expiresAt || grant.expiresAt <= now) return false;
   const text = String(cmd ?? "")
@@ -113,6 +147,8 @@ export function grantAllows(grant: AutoGrant | null, cmd: string, head: string, 
     .trim();
   if (!text || COMPOUND.test(text)) return false;
 
+  const head = ctx.head ?? "";
+
   if (PUSH.test(text)) {
     if (!grant.branch) return false;
     const target = pushTargets(text);
@@ -120,16 +156,20 @@ export function grantAllows(grant: AutoGrant | null, cmd: string, head: string, 
     if (target.branches.some((b) => b !== grant.branch)) return false;
     // 没有 refspec（`git push` / `git push origin`）= 推当前分支：当前分支必须就是授权的那条。
     if (!target.branches.length && head !== grant.branch) return false;
-    return true;
+    // cwd 必须还在这个仓库里：同一条分支名在别的检出里也能存在。
+    return insideRepo(ctx.cwd ?? "", grant.repo);
   }
 
   if (!grant.pr) return false;
   const merge = mergeTarget(text);
   if (!merge.pr || merge.pr !== grant.pr) return false;
   if (merge.repo) {
-    // `-R owner/name` 与评审仓库对不上就不认（别的同名仓库里也有 12 号 PR）
-    const name = grant.repo.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
-    if (name && merge.repo !== name && !merge.repo.endsWith(`/${name}`)) return false;
+    // 显式点了名：必须与这张授权认出来的 `owner/name` **逐字**相同（`other/pi-web-client`
+    // 也是别的仓库，同号 PR 合进去就是合错东西）；认不出自己是谁时一律拒，别放宽。
+    const want = (grant.slug || "").trim().toLowerCase();
+    if (!want || merge.repo.trim().toLowerCase() !== want) return false;
+    return true;
   }
-  return true;
+  // 没点名 = 按 cwd 那个仓库算：cwd 必须还落在授权的仓库里（别处 `cd` 过去合同名号）。
+  return insideRepo(ctx.cwd ?? "", grant.repo);
 }

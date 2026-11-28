@@ -523,6 +523,20 @@ await checkAsync("状态机：同一个 key 连续两轮还在 → 原地打转"
   assert.equal(runner.get(S).reasonCode, "repeat");
 });
 
+await checkAsync("停止：已经签收 / 已合并的，点停止不改写结论", async () => {
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await reviewRound(runner, host, []);
+  await reviewRound(runner, host, []);
+  assert.equal(runner.get(S).status, "signed");
+  const before = host.finished.length;
+  const out = runner.stop(S);
+  assert.equal(out.ok, false, "终态不接这一下");
+  assert.equal(runner.get(S).status, "signed", "结论不能被「停止」覆盖");
+  assert.equal(host.finished.length, before, "也不该再走一次收尾");
+});
+
 await checkAsync("停止：评审在跑时立即 cancel 并收成 stopped", async () => {
   const host = makeHost();
   const runner = new AutoRunner(host);

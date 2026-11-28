@@ -92,6 +92,7 @@ function readAllow(): { patterns: string[]; mode: Mode; handoffPath: string | nu
             branch: String(raw.branch ?? ""),
             pr: Number(raw.pr) || 0,
             repo: String(raw.repo ?? ""),
+            slug: String(raw.slug ?? ""),
             expiresAt: Number(raw.expiresAt) || 0,
           }
         : null;
@@ -318,8 +319,10 @@ export default function approvalGate(pi: any): void {
 
     // D450：自动评审跑着的时候，「推这条分支」「合这个 PR」由它自己在做 —— 人已经在设置
     // 对话框里点过那一次了。授权收得极窄（一条分支 / 一个 PR），运行一结束脑就把它删掉。
-    if (grantAllows(auto, detail, SHELL_TOOLS.has(lower) ? currentBranch(cwd) : "")) {
-      console.error(`[approval-gate] auto-review grant allowed: ${detail.slice(0, 80)}`);
+    // 判授权必须用**完整**命令：`detail` 是给审批卡看的 900 字截断，截断点之后可以藏一条
+    // `; rm -rf`（评审 #1）—— 那一下就成了「前半段合法、后半段随行」。
+    if (grantAllows(auto, risk.detail, { head: SHELL_TOOLS.has(lower) ? currentBranch(cwd) : "", cwd })) {
+      console.error(`[approval-gate] auto-review grant allowed: ${risk.detail.slice(0, 80)}`);
       return undefined;
     }
     // Patterns are per session (PI_WEB_ALLOW_FILE) and match the whole leading word(s), never a

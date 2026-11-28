@@ -82,6 +82,7 @@ import {
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { AutoRunner, type AutoHost } from "./reviewauto.ts";
 import { writeGrant } from "./reviewgrant.ts";
+import { localRepoName } from "./gitpr.ts";
 import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
 import { RotatingLog, LogStorm, logMaxBytes, logMaxLinesPerSecond } from "./logfile.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
@@ -4608,6 +4609,8 @@ async function main(): Promise<void> {
                     repo,
                     cwd: dir || repo,
                     branch,
+                    // 限时授权拿它拒掉「同名的别的仓库」（闸门那边对显式点名的仓库逐字比）
+                    slug: localRepoName(repo || dir),
                     // 工作区模式：记下开跑前的 HEAD，第二轮起按「起点..HEAD」评（否则提交一次就评空了）
                     baseSha: mode === "workspace" ? gitOut(dir || repo, ["rev-parse", "HEAD"]) : "",
                     lang,

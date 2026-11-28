@@ -53,6 +53,8 @@ export interface AutoConfig extends AutoScope {
   cwd: string;
   /** 开始时的本地分支（PR 模式要求它就是 PR 的 head）。 */
   branch: string;
+  /** 这个仓库的 `owner/name`（从 origin 认，认不出空串）：限时授权拿它拒掉同名别仓。 */
+  slug: string;
   /**
    * 「工作区改动」模式的起点 sha：第一轮评的是 `git diff HEAD`，之后每轮都有提交，
    * 所以第二轮起改按 `baseSha..HEAD` 评（D450 第 9 条），否则会「0 条意见」假签收。
@@ -172,7 +174,7 @@ export interface AutoHost {
   prChecks(config: AutoConfig, session: string): Promise<{ ok: boolean; note: string }>;
   prState(config: AutoConfig, session: string): Promise<{ merged: boolean; note: string }>;
   /** 授权：运行期间只放行这一个 PR 的合并（D450 第 5 条）。 */
-  grant(session: string, g: { pr: number; repo: string; branch: string } | null): void;
+  grant(session: string, g: { pr: number; repo: string; branch: string; slug: string } | null): void;
   /** 收尾：打标记 + 往会话上挂一条结论 + 徽标。 */
   finish(state: AutoState, text: string, marks: { repo: string; session: string; key: string; mark: ReviewMark }[]): void;
   /** 每次状态变化都广播给页面。 */
@@ -488,6 +490,7 @@ export function normalizeAuto(raw: any): AutoState {
     repo: String(raw?.config?.repo ?? ""),
     cwd: String(raw?.config?.cwd ?? ""),
     branch: String(raw?.config?.branch ?? ""),
+    slug: String(raw?.config?.slug ?? ""),
     baseSha: String(raw?.config?.baseSha ?? ""),
     lang: ["zh", "en", "ja"].includes(raw?.config?.lang) ? raw.config.lang : "zh",
     models: {
@@ -649,7 +652,7 @@ export class AutoRunner {
       summary: "",
     };
     this.states.set(session, state);
-    this.host.grant(session, config.autoMerge && config.mode === "pr" && config.pr ? { pr: config.pr, repo: config.repo, branch: config.branch } : null);
+    this.host.grant(session, config.autoMerge && config.mode === "pr" && config.pr ? { pr: config.pr, repo: config.repo, branch: config.branch, slug: config.slug } : null);
     this.save(state);
     this.host.log(`auto-review start ${session.slice(0, 8)} · ${config.mode}${config.pr ? ` #${config.pr}` : ""} · max ${state.config.maxRounds}`);
     void this.beginRound(state);
@@ -661,11 +664,9 @@ export class AutoRunner {
     const state = this.states.get(session) ?? readAuto(session);
     if (!state) return { ok: false, code: "none", error: "这个会话没有自动评审", state: null };
     return this.act(session, state, () => {
-      if (state.status !== "running") {
-        state.status = "stopped";
-        this.finish(state);
-        return true;
-      }
+      // 终态（签收 / 已合并 / 已停 / 失败）点「停止」不该改写结论 —— 那不是停止，
+      // 是把「两家签收」覆盖成「已停止」。什么都不做，把原样交回去。
+      if (state.status !== "running" && state.status !== "paused") return false;
       state.stopping = true;
       if (state.wait === "review") {
         const round = this.roundOf(state);
@@ -728,7 +729,7 @@ export class AutoRunner {
       state.stopping = false;
       state.reason = "";
       state.reasonCode = "";
-      this.host.grant(session, state.config.autoMerge && state.config.mode === "pr" && state.config.pr ? { pr: state.config.pr, repo: state.config.repo, branch: state.config.branch } : null);
+      this.host.grant(session, state.config.autoMerge && state.config.mode === "pr" && state.config.pr ? { pr: state.config.pr, repo: state.config.repo, branch: state.config.branch, slug: state.config.slug } : null);
       const round = this.roundOf(state);
       if (state.wait === "review") {
         // 上一次那一轮没跑完：同号重跑（签收要的是「这一份 diff 上」的结论，重跑不改语义）
@@ -815,7 +816,7 @@ export class AutoRunner {
         continue;
       }
       if (state.config.autoMerge && state.config.mode === "pr" && state.config.pr && state.status === "running") {
-        this.host.grant(state.session, { pr: state.config.pr, repo: state.config.repo, branch: state.config.branch });
+        this.host.grant(state.session, { pr: state.config.pr, repo: state.config.repo, branch: state.config.branch, slug: state.config.slug });
       }
       n++;
       this.host.log(`auto-review resume ${state.session.slice(0, 8)} · wait=${state.wait || "-"} · round ${state.cur}`);
@@ -1147,7 +1148,7 @@ export class AutoRunner {
     state.wait = "merge";
     state.merge.state = "waiting";
     // 合并那句话要过审批闸：授权必须**在**（pause / finish 才收）。
-    this.host.grant(state.session, { pr, repo: state.config.repo, branch: state.config.branch });
+    this.host.grant(state.session, { pr, repo: state.config.repo, branch: state.config.branch, slug: state.config.slug });
     this.save(state);
     void this.beginMerge(state);
   }

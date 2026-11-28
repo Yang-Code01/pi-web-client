@@ -14,6 +14,8 @@ export interface AutoGrant {
   branch: string;
   pr: number;
   repo: string;
+  /** `owner/name`（从 origin 认出来的；认不出是空串 —— 闸门那边对显式点名的仓库会一律拒）。 */
+  slug: string;
   expiresAt: number;
 }
 
@@ -34,6 +36,7 @@ export function readGrant(session: string, now = Date.now()): AutoGrant | null {
       branch: String(auto.branch ?? ""),
       pr: Number(auto.pr) || 0,
       repo: String(auto.repo ?? ""),
+      slug: String(auto.slug ?? ""),
       expiresAt: Number(auto.expiresAt) || 0,
     };
     if (!grant.expiresAt || grant.expiresAt <= now) return null;

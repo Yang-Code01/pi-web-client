@@ -283,8 +283,7 @@ export function renderAutoPanel(input: AutoPanelInput, actions: AutoActions): HT
       const top = el("div", "rv-auto-stage-top");
       top.append(el("b", "", `#${r.n} ${r.slot}`), el("span", "rv-auto-stage-st", roundStatusLabel(r)));
       chip.append(top);
-      const sub = r.status === "findings" ? tr("{p1} 条意见", { p1: String(r.findings) }) : r.status === "running" ? tr("正在评") : r.status === "clean" ? tr("签收") : r.status === "skipped" ? tr("跳过") : tr("失败");
-      chip.append(el("div", "rv-auto-stage-sub", sub));
+      chip.append(el("div", "rv-auto-stage-sub", stageSub(r)));
       const bar = el("span", "rv-auto-stage-bar");
       bar.append(el("i", "", ""));
       chip.append(bar);
@@ -349,6 +348,26 @@ export function renderAutoPanel(input: AutoPanelInput, actions: AutoActions): HT
   card.append(foot);
   box.append(card);
   return box;
+}
+
+/** 阶段条副文案（表驱动：加一个状态就加一行，别再往上叠三元）。 */
+const STAGE_SUB: Record<AutoRoundView["status"], (r: AutoRoundView) => string> = {
+  findings: (r) => tr("{p1} 条意见", { p1: String(r.findings) }),
+  running: () => tr("正在评"),
+  clean: () => tr("签收"),
+  skipped: () => tr("跳过"),
+  failed: () => tr("失败"),
+};
+
+function stageSub(r: AutoRoundView): string {
+  return (STAGE_SUB[r.status] ?? STAGE_SUB.failed)(r);
+}
+
+/** 轮次窗里「这一轮推没推」那一行。 */
+function pushHint(pushed: boolean, status: AutoRoundView["status"]): string {
+  if (pushed) return tr("已推到远端");
+  if (status === "findings") return tr("只在本地（这个范围不需要推送）");
+  return "";
 }
 
 function stageClass(r: AutoRoundView, state: AutoStateView): string {
@@ -678,7 +697,7 @@ export class AutoRoundSheet {
       const top = el("div", "rv-auto-fixrow");
       top.append(el("span", "rv-auto-sha", fx.shaAfter.slice(0, 7)), el("span", "add", `+${fx.added}`), el("span", "del", `−${fx.removed}`), el("span", "dim", tr("{p1} 个文件", { p1: String(fx.files) })));
       cbody.append(top);
-      cbody.append(el("div", "rv-auto-hint", fx.pushed ? tr("已推到远端") : r.status === "findings" ? tr("只在本地（这个范围不需要推送）") : ""));
+      cbody.append(el("div", "rv-auto-hint", pushHint(fx.pushed, r.status)));
       const commit = el("div", "rv-auto-json");
       commit.textContent = tr("fix(review): 按第 {p1} 轮评审意见修复", { p1: String(r.n) });
       cbody.append(commit);

@@ -28,8 +28,10 @@ const check = (name, fn) => {
 };
 
 const NOW = 1_700_000_000_000;
-const grant = (over = {}) => ({ branch: "feat/review-auto", pr: 747, repo: "/Users/x/pi-web-client", expiresAt: NOW + 60_000, ...over });
-const allows = (cmd, head = "feat/review-auto", g = grant()) => grantAllows(g, cmd, head, NOW);
+const REPO = "/Users/x/pi-web-client";
+const SLUG = "o/pi-web-client";
+const grant = (over = {}) => ({ branch: "feat/review-auto", pr: 747, repo: REPO, slug: SLUG, expiresAt: NOW + 60_000, ...over });
+const allows = (cmd, head = "feat/review-auto", g = grant(), cwd = REPO) => grantAllows(g, cmd, { head, cwd }, NOW);
 
 // ---------------------------------------------------------------- 推送
 
@@ -75,6 +77,17 @@ check("复合命令：前面那条被授权也不放过（后面那截没人看�
   assert.equal(allows("cd /tmp && git push origin feat/review-auto"), false);
 });
 
+check("删远端分支的两种写法都挡：`:branch` 与 `--prune`", () => {
+  assert.equal(allows("git push origin :feat/review-auto"), false, "空源 refspec 是删远端分支");
+  assert.equal(allows("git push origin feat/review-auto:"), false, "空目标名同样不认");
+  assert.equal(allows("git push --prune origin"), false);
+});
+
+check("cwd 不在授权仓库里（别的检出）：不放过", () => {
+  assert.equal(allows("git push origin feat/review-auto", "feat/review-auto", grant(), "/Users/x/other"), false);
+  assert.equal(allows("git push origin feat/review-auto", "feat/review-auto", grant(), `${REPO}/web/src`), true, "子目录算同一个仓库");
+});
+
 check("`2>&1` / `2>/dev/null` 不挡（不启动第二条命令），管道照旧挡", () => {
   assert.equal(allows("git push origin feat/review-auto 2>&1"), true);
   assert.equal(allows("git push origin feat/review-auto 2>/dev/null"), true);
@@ -92,18 +105,26 @@ check("合授权的那个 PR：放过（两种写法）", () => {
   assert.equal(allows("gh pr merge 747"), true);
   assert.equal(allows("gh pr merge 747 --merge"), true);
   assert.equal(allows("gh pr merge 747 --squash --delete-branch"), true, "合并方式的选项不影响「是不是这个号」");
-  assert.equal(allows("gh api -X PUT repos/o/r/pulls/747/merge -f merge_method=merge"), true);
+  assert.equal(allows("gh api -X PUT repos/o/pi-web-client/pulls/747/merge -f merge_method=merge"), true);
 });
 
 check("合别的号 / 别的仓库：不放过", () => {
   assert.equal(allows("gh pr merge 748"), false);
-  assert.equal(allows("gh api -X PUT repos/o/r/pulls/748/merge"), false);
+  assert.equal(allows("gh api -X PUT repos/o/pi-web-client/pulls/748/merge"), false);
   assert.equal(allows("gh -R other/repo pr merge 747"), false);
-  assert.equal(allows("gh -R o/pi-web-client pr merge 747"), true, "同名仓库算对得上");
+  assert.equal(allows("gh -R o/pi-web-client pr merge 747"), true, "认出来的就是它");
+  // 评审 #6：**同名的别的仓库**也是别的仓库（同号 PR 合进去就是合错东西）
+  assert.equal(allows("gh -R other/pi-web-client pr merge 747"), false);
+  assert.equal(allows("gh api -X PUT repos/other/pi-web-client/pulls/747/merge"), false);
+  assert.equal(allows("gh api -X PUT repos/o/pi-web-client/pulls/747/merge -f merge_method=merge"), true);
 });
 
 check("没说号码的合并（`gh pr merge` 认当前分支）：不放过", () => {
   assert.equal(allows("gh pr merge --merge"), false);
+});
+
+check("认不出自己是谁（slug 空）时，显式点名别的仓库一律拒", () => {
+  assert.equal(allows("gh -R o/pi-web-client pr merge 747", "feat/review-auto", grant({ slug: "" })), false);
 });
 
 check("没授权合并不等于授权推送，反之亦然", () => {
@@ -152,10 +173,11 @@ check("currentBranch：worktree 的 .git 是文件", () => {
 
 check("写进去、读回来；收掉就没了", () => {
   const session = "sess-grant-1";
-  writeGrant(session, { branch: "feat/x", pr: 12, repo: "/repo" }, NOW);
+  writeGrant(session, { branch: "feat/x", pr: 12, repo: "/repo", slug: "o/r" }, NOW);
   const back = readGrant(session, NOW);
   assert.equal(back?.branch, "feat/x");
   assert.equal(back?.pr, 12);
+  assert.equal(back?.slug, "o/r");
   assert.equal(back?.expiresAt, NOW + GRANT_TTL_MS);
   writeGrant(session, null, NOW);
   assert.equal(readGrant(session, NOW), null);
@@ -163,7 +185,7 @@ check("写进去、读回来；收掉就没了", () => {
 
 check("过期读不出来", () => {
   const session = "sess-grant-2";
-  writeGrant(session, { branch: "feat/x", pr: 0, repo: "/repo" }, NOW);
+  writeGrant(session, { branch: "feat/x", pr: 0, repo: "/repo", slug: "o/r" }, NOW);
   assert.equal(readGrant(session, NOW + GRANT_TTL_MS + 1), null);
 });
 
@@ -172,7 +194,7 @@ check("收授权不动同一份文件里的 patterns / mode", () => {
   const file = path.join(process.env.PI_WEB_STATE, "allow", `${session}.json`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ patterns: ["tool:read"], mode: "strict" }));
-  writeGrant(session, { branch: "feat/x", pr: 3, repo: "/repo" }, NOW);
+  writeGrant(session, { branch: "feat/x", pr: 3, repo: "/repo", slug: "o/r" }, NOW);
   writeGrant(session, null, NOW);
   const data = JSON.parse(fs.readFileSync(file, "utf8"));
   assert.deepEqual(data.patterns, ["tool:read"]);
