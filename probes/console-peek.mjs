@@ -2,8 +2,9 @@
  * Probe: 字号滑杆拖动时把设置控制台让开（#742）。
  *
  * 桩桥 + 真 Chromium，量的是**用户看得见的行为**，不是类名或 DOM 结构：
- *   1. 控制台 1:1：字号 1.0 与 2.0 下 `.st-console` 的矩形逐像素相同、且它不在 `#app` 的 zoom 子树里；
- *      2.0 下那根字号滑杆仍在视口内（反证：改之前 2.0 下面板撑满整屏、轨道视觉 y ≈ 984 > 836）。
+ *   1. 控制台跟着「整页字号」一起放大（D454）：它仍挂在 body 上（不在 `#app` 的 zoom 子树里），
+ *      但自己吃 `zoom: var(--st-zoom)`；外框按 `--st-frame` 长大到吃满窗口，所以 2.0 下字与框都变大、
+ *      那根字号滑杆仍在视口内（反证：改之前 2.0 下面板撑满整屏、轨道视觉 y ≈ 984 > 836）。
  *   2. 阈值：指针只挪 3px 不让开，挪 40px 才让开（单击轨道 / 点刻度不闪）。
  *   3. 让开：控制台淡到几乎全隐、遮罩全透且不模糊；真页面里正文那一块的视觉尺寸跟着变
  *      （证明它真的在变，不只是画了个透明层）。
@@ -178,12 +179,24 @@ async function geo() {
     const rail = document.querySelector(".size-rail");
     const app = document.getElementById("app");
     const rr = rail?.getBoundingClientRect();
+    const cs = con ? getComputedStyle(con) : null;
+    const zoom = cs ? Number(cs.zoom) || 1 : 1;
+    const label = con?.querySelector(".st-nav__item, .settings-name");
+    const fs = label ? parseFloat(getComputedStyle(label).fontSize) : 0;
     return {
       inApp: Boolean(app && back && app.contains(back)),
       inBody: Boolean(back && back.parentElement === document.body),
       // 布局尺寸（offset）而不是 rect：入场动画的 transform 会把 rect 缩一圈。
       w: con ? con.offsetWidth : -1,
       h: con ? con.offsetHeight : -1,
+      // D454：控制台自己带 zoom（--st-zoom），外框按 --st-frame 长大。
+      zoom: Math.round(zoom * 1000) / 1000,
+      stZoom: cs ? cs.getPropertyValue("--st-zoom").trim() : "",
+      stFrame: cs ? cs.getPropertyValue("--st-frame").trim() : "",
+      // 面板里的字：css px × zoom 才是用户看到的视觉大小。
+      textVisual: Math.round(fs * zoom * 100) / 100,
+      // 遮罩层能给的宽度（`.st-back` 的 padding 20px 两侧）；外框最多长到这里。
+      avail: back ? back.clientWidth - 40 : -1,
       railY: rr ? Math.round(rr.y) : -1,
       railBottom: rr ? Math.round(rr.bottom) : -1,
       vh: innerHeight,
@@ -191,11 +204,15 @@ async function geo() {
       scale: getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim(),
       // 壳的窄版仍看**有效宽度**（D158）：2.0 字号下 1200px 窗口只有 600 布局 px，必须判窄。
       compact: document.documentElement.dataset.compact,
+      // 控制台自己的折叠档位：按面板内容宽（÷ zoom）判，不是视口宽（D454）。
+      narrow: document.documentElement.dataset.stNarrow,
+      mid: document.documentElement.dataset.stMid,
+      tight: document.documentElement.dataset.stTight,
     };
   });
 }
 
-// ---------------------------------------------------------------- 1. 控制台 1:1
+// ---------------------------------------------------------------- 1. 控制台跟着字号放大（D454）
 await boot({ scale: 1 });
 await openLook();
 const at100 = await geo();
@@ -208,16 +225,31 @@ await openLook();
 const at200 = await geo();
 await page.screenshot({ path: path.join(OUT, "1-scale-200.png") });
 
+// 外框该多大：min(1080 × frame, 遮罩可用宽)，再除以 zoom 就是 css 宽。
+const wantW = (g) => Math.min(1080 * (Number(g.stFrame) || 1), g.avail);
 check("1. 控制台挂在 body 上、不在 #app 的 zoom 子树里", !at200.inApp && at200.inBody, JSON.stringify(at200));
 check(
-  "1b. 字号 2.0 与 1.0 的控制台矩形逐像素相同（量尺不跟着被量）",
-  Math.abs(at100.w - at200.w) <= 1 && Math.abs(at100.h - at200.h) <= 1,
-  `${at100.w}×${at100.h} → ${at200.w}×${at200.h}`,
+  "1a. 1.0 是原位不动：zoom 1、外框 1080、字没被二次缩放",
+  at100.zoom === 1 && Math.abs(at100.w - Math.min(1080, at100.avail)) <= 1 && Math.abs(at100.textVisual - 12.5) < 0.6,
+  `${at100.w}×${at100.h} · zoom ${at100.zoom} · 字 ${at100.textVisual}px · frame ${at100.stFrame}`,
 );
 check(
-  "1e. 壳的宽窄仍按有效宽度判（控制台 1:1 不许把 data-compact 带跑）",
+  "1b. 2.0 下控制台自己缩：zoom 2、外框按 frame=max(字号,设置) 长到吃满窗口、字视觉翻倍",
+  Math.abs(at200.zoom - 2) < 0.01 &&
+    Number(at200.stFrame) === 2 &&
+    Math.abs(at200.w - wantW(at200)) <= 2 &&
+    Math.abs(at200.textVisual / at100.textVisual - 2) < 0.1,
+  `${at200.w}×${at200.h}（应 ${wantW(at200)}）· zoom ${at200.zoom} · 字 ${at200.textVisual}px vs ${at100.textVisual}px`,
+);
+check(
+  "1e. 壳的宽窄仍按有效宽度判（控制台自己的缩不放跑 data-compact）",
   at100.compact === "false" && at200.compact === "true",
   `1.0 → ${at100.compact} / 2.0 → ${at200.compact}（1200px ÷ 2 = 600 布局 px，必须判窄）`,
+);
+check(
+  "1e2. 控制台自己的折叠按面板内容宽判（÷ zoom 后 2.0 是 580px → 窄版 + 中版）",
+  at100.narrow === "false" && at100.mid === "false" && at200.narrow === "true" && at200.mid === "true",
+  `1.0 → narrow ${at100.narrow}/mid ${at100.mid} · 2.0 → narrow ${at200.narrow}/mid ${at200.mid}`,
 );
 check(
   "1c. 2.0 下那根字号滑杆仍在视口内",
@@ -225,10 +257,10 @@ check(
   `rail ${at200.railY}–${at200.railBottom} / 视口 ${at200.vh}`,
 );
 
-// ---------------------------------------------------------------- 1d. 别的控制台同样 1:1（8 个入口不止外观这一扇）
+// ---------------------------------------------------------------- 1d. 别的控制台同样跟着缩（8 个入口不止外观这一扇）
 // 模型层是「另一扇 `.st-console`」：走同一条 `overlay()` 才挂得对，漏了就当场红。
-// 控制台脱开 `#app` 之后，`:root` 那两个「除过缩放」的视口变量要就地重算回 1:1，
-// 否则控制台里任何 `calc(var(--vh1) * N)` 都缩一圈（D123 那一族坑）。
+// 控制台带了自己的 zoom 之后，`:root` 那两个「除过缩放」的视口变量在它内部又要再除一道（`--st-zoom`），
+// 否则控制台里任何 `calc(var(--vh1) * N)` 都再缩一圈（D123 那一族坑）。
 const vhInside = await page.evaluate(() => {
   const con = document.querySelector(".st-console");
   const probe = document.createElement("div");
@@ -239,7 +271,7 @@ const vhInside = await page.evaluate(() => {
   return { h: Math.round(h * 100) / 100, vh: innerHeight };
 });
 check(
-  "1f. 控制台里 --vh1 仍是 10% 视口（挂 body 之后重算回 1:1）",
+  "1f. 控制台里 --vh1 仍是 10% 视口（除过 --st-zoom 之后重算对了）",
   Math.abs(vhInside.h - vhInside.vh * 0.1) < 1.5,
   `${vhInside.h}px vs ${(vhInside.vh * 0.1).toFixed(1)}px`,
 );
@@ -256,6 +288,8 @@ const modelGeo = async () => {
       // offset 是布局尺寸（不含入场动画的 transform），跨字号比较用它。
       w: sheet.offsetWidth,
       h: sheet.offsetHeight,
+      zoom: Number(getComputedStyle(sheet).zoom) || 1,
+      avail: document.querySelector(".st-back")?.clientWidth - 40,
       narrow: document.documentElement.dataset.stNarrow,
     };
   });
@@ -271,9 +305,16 @@ const model100 = await modelGeo();
 await boot({ scale: 2 });
 const model200 = await modelGeo();
 check(
-  "1d. 模型层也是 1:1：1.0 与 2.0 下矩形相同、没被判成窄版",
-  model100.onBody && model200.onBody && !model200.inApp && Math.abs(model100.w - model200.w) <= 1 && Math.abs(model100.h - model200.h) <= 1 && model200.narrow === "false",
-  `${model100.w}×${model100.h} → ${model200.w}×${model200.h} / narrow ${model200.narrow}`,
+  "1d. 模型层也吃同一套规则：1.0 是 1080、2.0 长到吃满窗口并判窄版",
+  model100.onBody &&
+    model200.onBody &&
+    !model200.inApp &&
+    Math.abs(model100.zoom - 1) < 0.01 &&
+    Math.abs(model200.zoom - 2) < 0.01 &&
+    Math.abs(model100.w - Math.min(1080, model100.avail)) <= 1 &&
+    Math.abs(model200.w - Math.min(2160, model200.avail)) <= 2 &&
+    model200.narrow === "true",
+  `${model100.w}×${model100.h} zoom ${model100.zoom} → ${model200.w}×${model200.h} zoom ${model200.zoom} / narrow ${model200.narrow}`,
 );
 await page.keyboard.press("Escape");
 await sleep(200);

@@ -1537,12 +1537,12 @@ export class App {
    * 控制台的 900 / 720 / 640 折叠规则落两组属性，**别合并**：
    * - `data-console-*` 按有效宽度（视口 ÷ 字号）：`.sys-` / `.jc-` / 附件那几套控制台还在 `#app`
    *   里，跟着字号缩放（D158），否则放大字号时原生 @media 不触发、面板内容会横向穿出；
-   * - `data-st-*` 按视口宽度：`.st-console` 那批已经 1:1 挂在 body 上（D450）。
+   * - `data-st-*` 按**面板自己的宽度**（`.st-console` 挂着 `zoom`，D454）。
    * 返回「这次真的翻了」—— 调用方拿它决定要不要重排（拖动中跨过 900 时）。
    */
   private syncCompact(): boolean {
     // 壳的宽窄仍看**有效宽度**（视口 ÷ 字号，`compact()` 那一份判据，D158）。
-    // 别顺手把这里换成 `window.innerWidth`：控制台改成 1:1 之后，两套判据正是从这里开始分家的。
+    // 别顺手把这里换成 `window.innerWidth`：控制台脱开 #app（D450）之后，两套判据正是从这里开始分家的。
     const compact = this.compact();
     const width = window.innerWidth;
     const root = document.documentElement;
@@ -1551,12 +1551,16 @@ export class App {
     root.dataset.consoleNarrow = String(layout <= 900);
     root.dataset.consoleMid = String(layout <= 720);
     root.dataset.consoleTight = String(layout <= 640);
-    // #742：`.st-console` 那批控制台已经挂在 body 上、不再跟字号缩放，所以它的折叠档位要按**视口**宽度算。
-    // 还按有效宽度（视口 / 字号）算的话，2.0 字号下一块 1080px 宽的面板会被判成「窄」，整套布局白翻一次。
-    // 分开两组属性：`.sys-` / `.jc-` / 附件那几套控制台仍留在 `#app` 里，继续读 `data-console-*`。
-    root.dataset.stNarrow = String(width <= 900);
-    root.dataset.stMid = String(width <= 720);
-    root.dataset.stTight = String(width <= 640);
+    // D454：`.st-console` 那一族不再 1:1 —— 它们挂着 `zoom: --st-zoom`，外框视觉宽 = min(1080 × frame, 宿主可用宽)，
+    // 所以它自己的内容宽 = 那一段 ÷ zoom。折叠档位必须按**面板的实际宽度**判：按视口算的话，
+    // 字号 2.0 下面板被撑到满窗口、内容却只剩一半，判出来是「不窄」而内部早该进 `st-mid`。
+    // 40 = `.st-back` 左右各 20px 的留白（settings-console.css 的 `padding: 20px`）。
+    const stZoom = this.prefs.scale * this.prefs.consoleScale;
+    const stFrame = Math.max(this.prefs.scale, this.prefs.consoleScale);
+    const stWidth = Math.min(1080 * stFrame, Math.max(320, width - 40)) / stZoom;
+    root.dataset.stNarrow = String(stWidth <= 900);
+    root.dataset.stMid = String(stWidth <= 720);
+    root.dataset.stTight = String(stWidth <= 640);
     // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
     // 否则属性一直是 undefined，CSS 那边是在碰运气。
     const changed = root.dataset.compact !== String(compact);
@@ -4074,7 +4078,8 @@ export class App {
    */
   private overlay(node: HTMLElement, kind: SurfaceKind = "window", opts: SurfaceOpts = {}): void {
     markSurface(node, kind, opts);
-    // 挂哪儿由 `overlayHost()` 一个判据决定：控制台（`.st-console`）是量尺，1:1 挂 body（D450），
+    // 挂哪儿由 `overlayHost()` 一个判据决定：控制台（`.st-console`）自己吃 `--st-zoom`（D454），
+    // 所以必须挂 body 而不是进 `#app`（D450），否则会被 `#app` 的 zoom 再乘一遍；
     // 其余浮层照旧进 `#app`、跟着字号缩放（D123 / D441）。
     mountOverlay(node);
   }
@@ -4710,6 +4715,11 @@ export class App {
   private paintRegionScales(): void {
     const root = document.documentElement.style;
     for (const id of REGION_IDS) root.setProperty(`--rs-${id}`, String(this.prefs.regionScale[id]));
+    // D454：控制台整块跟着两个倍率缩。`--st-zoom` 是它自己的 `zoom`（字、控件、留白一起放大）；
+    // `--st-frame` 决定外框的视觉尺寸 —— 谁大跟谁：字号 200% 时面板自己撑到满窗口，
+    // 不然 2.0 下还卡在 1080 会让内容只剩 540 宽（样张 B 就是掉进这个坑的）。
+    root.setProperty("--st-zoom", String(this.prefs.scale * this.prefs.consoleScale));
+    root.setProperty("--st-frame", String(Math.max(this.prefs.scale, this.prefs.consoleScale)));
   }
 
   /**
@@ -5012,6 +5022,26 @@ export class App {
         }),
       );
     }
+
+    // D454：第六根 —— 设置控制台自己那层。拖它时面板**不让开**：用户要看的正是它当场长大，
+    // 让开（`console-peek`）只留给会重排整页的「字号」那根。
+    langPanel.append(
+      this.fontSliderRow({
+        label: tr("设置与控制台"),
+        hint: tr("面板里的字和它自己的框一起放大（最多吃满窗口），拖动时不让开、方便对照"),
+        value: this.prefs.consoleScale,
+        reset: REGION_DEFAULT_SCALE,
+        snaps: REGION_STOPS,
+        marksAt: SIZE_MARKS,
+        onLive: (v) => {
+          this.prefs = { ...this.prefs, consoleScale: v };
+          // 外框尺寸与折叠档位都变了：两个都要重算，只写变量的话内部还会停在旧的窄版。
+          this.paintRegionScales();
+          this.syncCompact();
+        },
+        onCommit: () => savePrefs(this.prefs),
+      }),
+    );
 
     // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
     // 外观只剩 Mac 风格三套（D353）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
@@ -23537,6 +23567,12 @@ type Prefs = {
    * 升级上来的用户第一眼完全不变。范围与全局同（0.8–2.0），乘积不另设上限。
    */
   regionScale: RegionScale;
+  /**
+   * D454：`.st-console` 那一族自己的倍率（同样叠在 `scale` 上）。以前控制台是「量尺」、刻意 1:1，
+   * 结果 2.0 字号下设置页还是 10–12.5px 的小字。现在它整块跟着缩放，外框还能撑大（见
+   * `paintRegionScales()` / settings-console.css 那条 `--st-frame`）。没存过＝1.0。
+   */
+  consoleScale: number;
 };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
@@ -23566,6 +23602,7 @@ const DEFAULT_PREFS: Prefs = {
   longCardAssistant: false,
   longCardTool: false,
   regionScale: regionScaleDefault(),
+  consoleScale: 1,
 };
 
 /** #484：上下文阈值的三层设置在上下文面板里（会话 > 项目 > 全局）；模型弹窗不再有 token 预算。 */
@@ -24227,6 +24264,14 @@ function prefScale(raw: unknown): number {
 }
 
 /**
+ * D454：控制台倍率。与分区倍率同一套夹取（0.8–2.0，两位小数），缺字段 / 脏值回 1.0。
+ */
+function prefConsoleScale(raw: unknown): number {
+  const v = Number(raw);
+  return Number.isFinite(v) && v > 0 ? clampScale(v) : 1;
+}
+
+/**
  * D441：区域倍率逐块归一化。缺字段（老版本升上来 / 手改 localStorage）一律回 1.0，
  * 不让一条脏记录把某一块弄成 0 或 NaN —— 那会让 `zoom` 失效、整块内容消失。
  */
@@ -24284,6 +24329,8 @@ function readPrefs(): Prefs {
       longCardTool: p?.longCardTool === true,
       // D441：五块区域倍率（叠在 scale 上相乘）。没存过就全 1.0。
       regionScale: prefRegionScale(p?.regionScale),
+      // D454：控制台自己那层倍率，同上。
+      consoleScale: prefConsoleScale(p?.consoleScale),
     };
     // 迁移过的老值当场写回：不然 `pi.prefs` 会永远停在旧 id 上，每开一次都要现算一次。
     if (p?.theme !== next.theme || p?.macAccent !== next.macAccent || p?.accentTone !== next.accentTone || p?.accent !== undefined || p?.text !== undefined) savePrefs(next);

@@ -9,17 +9,34 @@
   display: none !important;
 }
 
-/* #742：控制台是**量尺**，不跟着外观「字号」缩放 —— 它挂在 body 上（D450，`overlayHost()` 那条分叉）。
-   `:root` 的 `--vh1` / `--vw1` 是「除过缩放」的长度，在控制台这一层要回到 1:1，否则它里面任何
-   `calc(var(--vh1) * N)` 都会缩一圈（D123 那一族坑：视口单位不认 zoom）。
+/* D454：控制台不再 1:1 —— 它整块跟「字号 × 设置与控制台」缩（`--st-zoom`），外框视觉尺寸 = 1080×840 × `--st-frame`，
+   上限是宿主可用空间。两者都在 `app.ts` 的 `paintRegionScales()` 里写。
+
+   两个长度都得÷ `--st-zoom`：`zoom` 会把已经算好的长度再乘一遍，写 `1080px` 就变成了 1080×zoom 的视觉尺寸。
+   `100%` 不用除 —— 百分比在 zoom 子树里本来就按缩放后的坐标系解析（子元素的 100% 已经等于「父宽 ÷ zoom」）。
+   里面那两个视口变量同理：`1vh` 不认 zoom（D123），不除的话面板里任何 `calc(var(--vh1) * N)` 都会多缩一圈。
+
+   选器只认**宿主的直接子级**（跟下面 `--vh1` 复位那条同一个理由）：嵌在普通浮层深处的 `.st-console`
+   拿的是它祖先的缩放，不能再乘一次。 */
+body > .st-console,
+body > :is(.st-back, .sheet-back) > .st-console {
+  zoom: var(--st-zoom, 1);
+  --vh1: calc(1vh / var(--st-zoom, 1));
+  --vw1: calc(1vw / var(--st-zoom, 1));
+  width: min(calc(1080px * var(--st-frame, 1) / var(--st-zoom, 1)), 100%);
+  height: min(calc(840px * var(--st-frame, 1) / var(--st-zoom, 1)), 100%);
+}
+
+/* #742：控制台宿主（`.st-back` / `.sheet-back` 这层遮罩）本身不缩，`--vh1` / `--vw1` 在这里回到 1:1，
+   否则它里面任何 `calc(var(--vh1) * N)` 都会被 `:root` 那份「除过缩放」的值拖累（D123 那一族坑）。
 
    判据必须**窄到宿主本身**（`.st-back` / `.sheet-back` 这类外壳，且控制台是它的直接子级）：
    写成 `body > :has(.st-console)` 时，任何「肚子里装着控制台」的 body 子节点都会被重置 —— 包括
    测试里那张假 `#app`（`web/tests/handoff-sheet-browser.mjs` 第 3 段就是拿它当反证的：字号 150%
    下弹层当场顶出窗口）。宿主不在 body 下的（例如测试里显式 `mount(app)`）走不到这条，那时
    `--vh1` 本来就该是除过缩放的那一份。
-   **反过来说：把 `.st-console` 塞进 `#app` 是不受支持的挂法** —— 它按视口宽读 `data-st-*`
-   折叠档位，而在 `#app` 里可用宽度只有「视口 ÷ 字号」，两套判据会打架。要挂控制台就走
+   **反过来说：把 `.st-console` 塞进 `#app` 是不受支持的挂法** —— 它按自己的宽度读 `data-st-*`
+   折叠档位，而在 `#app` 里可用宽度又被字号除了一遍，两套判据会打架。要挂控制台就走
    `overlayHost()` / `overlay()`（`modal.ts`），别自己 `append`。 */
 body > :is(.st-back, .sheet-back):has(> .st-console) {
   --vh1: 1vh;
@@ -40,7 +57,8 @@ body > :is(.st-back, .sheet-back):has(> .st-console) {
 .st-console {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  /* 同 .sys-console：用遮罩的 content box 做上限，别让 #app 的 zoom 把 vw/vh 再乘一次。 */
+  /* 同 .sys-console：用遮罩的 content box 做上限，别让 #app 的 zoom 把 vw/vh 再乘一次。
+     D454：这两行只是兼底 —— 挂在 body 宿主里的控制台由上面那条更具体的规则接管。*/
   width: min(1080px, 100%);
   height: min(840px, 100%);
   overflow: hidden;

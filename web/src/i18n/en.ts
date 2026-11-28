@@ -59,6 +59,9 @@ export const en: Dict = {
   "底部输入区（含提示行与工具行）": "The input area at the bottom (hints and tool row included)",
   "输入框": "Composer",
   "右栏面板": "Right panel",
+  "设置与控制台": "Settings & console",
+  "面板里的字和它自己的框一起放大（最多吃满窗口），拖动时不让开、方便对照":
+    "The panel's text and its own frame grow together (up to the window); it stays put while you drag so you can compare",
   "右栏的执行 / 计划等面板": "Exec / plan and the other right-hand panels",
   "恢复默认": "Reset to defaults",
   "工作区布局": "Workspace layout",
