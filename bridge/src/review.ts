@@ -1293,6 +1293,11 @@ async function execute(ctx: ExecuteCtx): Promise<void> {
     if (patch.status === "done") note(`完成：${patch.findings?.length ?? 0} 条意见`);
     else if (patch.status === "failed") note(`失败：${patch.error || patch.errorCode || ""}`);
     else if (patch.status === "stopped") note("已停止");
+    // 完成态要清掉上一轮可能留下的 errorCode：ticker 收尾时会把 run.errorCode 原样带出去。
+    if (patch.status === "done") {
+      patch.error = "";
+      patch.errorCode = "";
+    }
     const prevProgress = ctx.getProgress?.() ?? progressMap.get(runId);
     // 进度帧一消失日志就没了 —— 记录里留一份，面板/dialog 跑完还能看时间线。
     (patch as Partial<ReviewRun>).log = prevProgress?.log ?? [];

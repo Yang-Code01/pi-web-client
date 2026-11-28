@@ -896,7 +896,10 @@ async function main(): Promise<void> {
       // stopAllReviews() 的 3 秒收尾和状态写回都被截断，用户主动关桥也可能留下 worker。
       // 这里的 8 秒比 stopAllReviews 的 3 秒上限长；requestCancel 里的 10 秒只是兜底
       // 定时器，不参与等待，别把它算进停机路径。
-      const conn = brain?.conn;
+      // 壳可能正好在换脑（brain 已下、starting 还没 hello）：能发就发给 handshake 中的那一代，
+      // 发不出去也没关系，后面的 killAll + 壳退出会让它收尾。
+      const target = brain ?? starting;
+      const conn = target?.conn;
       const closed = waitBrainClose(conn);
       try {
         conn?.send({ t: "shutdown", scope });
@@ -904,6 +907,13 @@ async function main(): Promise<void> {
         /* 脑已经不在 */
       }
       await closed;
+      if (target && !target.exited && target.conn.alive) {
+        try {
+          process.kill(target.pid, "SIGKILL");
+        } catch {
+          /* 已经退了 */
+        }
+      }
     } else {
       // 只有更新器显式请求 `keepReviews=1` 才走到这里：它马上会起新壳，detached 评审
       // worker 要留给新脑接回。这里用 `retire`（换代语义）而不是 shutdown：后者会
@@ -911,7 +921,8 @@ async function main(): Promise<void> {
       // 把评审收掉。等脑自己退（retire 只 releaseLocks）：慢机器上 releaseLocks 也可能
       // 超过 2 秒，等太短会让随后的 SIGTERM 变成 shutdown()，把刚保住的 worker 收掉。
       // 所以和普通停机用同一段 STOP_GRACE_MS；正常情况脑会立刻退出。
-      const conn = brain?.conn;
+      const target = brain ?? starting;
+      const conn = target?.conn;
       const closed = waitBrainClose(conn);
       try {
         conn?.send({ t: "retire" });
@@ -919,6 +930,13 @@ async function main(): Promise<void> {
         /* 脑已经不在 */
       }
       await closed;
+      if (target && !target.exited && target.conn.alive) {
+        try {
+          process.kill(target.pid, "SIGKILL");
+        } catch {
+          /* 已经退了 */
+        }
+      }
     }
     children.killAll();
     try {
