@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -88,6 +88,9 @@ import {
   type ReviewMode,
 } from "./review.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
+import { AUTO_MARK, AutoRunner, checksGate, mergeResult, type AutoCheck, type AutoHost } from "./reviewauto.ts";
+import { writeGrant } from "./reviewgrant.ts";
+import { localRepoName } from "./gitpr.ts";
 import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
 import { RotatingLog, LogStorm, logMaxBytes, logMaxLinesPerSecond } from "./logfile.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
@@ -124,7 +127,7 @@ import { settingsScopeFor } from "./pkgs.ts";
 import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
-import { githubApiBase, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
+import { checksOf, githubApiBase, githubRest, handleGithub, sessionGhAccount, type GithubCtx } from "./github.ts";
 import { cancelGhSetup, ghSetupCached, ghSetupStatus, installGh, loginGh } from "./gh-setup.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { REMINDER_TAG, startReminderLoop } from "./attendance-reminder.ts";
@@ -2801,6 +2804,227 @@ async function main(): Promise<void> {
   });
   resumeReviewJobs();
 
+  // -------------------------------------------------------------------------
+  // 自动评审（D462）：两个模型交替评，修完再评，直到同一份 diff 上两家都签收。
+  //
+  // 编排在脑里、状态在盘上（`review/auto/<会话>.json`）：关页面、切会话、换脑都接着跑。
+  // 这里只提供「外部世界长什么样」—— 起评审、读进度、跑 git、给会话发话、合并 —— 判定全在
+  // `reviewauto.ts` 里（那一份有单测）。
+  // -------------------------------------------------------------------------
+
+  /** 一小步 git（短、同步、不碰网络）：拿 HEAD / 工作区脏不脏 / 这一轮改了多少。 */
+  const gitOut = (cwd: string, args: string[]): string => {
+    try {
+      return execFileSync("git", args, { cwd, encoding: "utf8", timeout: 8000, windowsHide: true }).trim();
+    } catch {
+      return "";
+    }
+  };
+
+  /** 一步要走网络的 git（push）：异步，别堵住 ws 循环。 */
+  const gitRun = (cwd: string, args: string[], timeoutMs = 120_000): Promise<{ ok: boolean; err: string }> =>
+    new Promise((resolve) => {
+      execFile("git", args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 4 << 20 }, (err, _stdout, stderr) =>
+        resolve({ ok: !err, err: String(stderr || err?.message || "").trim() }),
+      );
+    });
+
+  /**
+   * 这个会话里、我们最后一次发进去的那句话之后的一条 assistant 消息（回执与「这一轮有没有报错」都读它）。
+   *
+   * 定锚看的是**最后一条 user 消息是不是我们发的**，不比时间戳、也不比原文：
+   * - 时间戳：会话当时可能还在跑，这条 prompt 是排队 followUp，上一轮那条 assistant 的 `ts`
+   *   同样比 promptAt 新 —— 只比时间会把**别人的答复**当成本轮回执；
+   * - 原文：会话可能对文本做过归一（trim / 展开 /skill / 去前缀），比不上一整段。
+   *
+   * 自动评审注入的每一条都以 `[pi-web:auto]` 开头（`fixPrompt` / `mergePrompt` / `nudgeCommit`），
+   * 而 prompt 会立刻落成一条 user item —— 换脑重启后它也在盘上，不依赖内存里的「刚发过什么」。
+   * 最后一条 user 消息不是我们发的 = 人插话了：那条 assistant 是回人的，不当回执（返回空 → 暂停问人）。
+   * 一条 user item 都没有（老会话 / 测试）才退回时间戳。
+   */
+  const lastAssistant = (sessionId: string, since: string): { text: string; error: string } => {
+    const session = sessions.get(sessionId);
+    if (!session) return { text: "", error: "" };
+    let from = -1;
+    let lastUser: { text?: string } | null = null;
+    for (let i = session.items.length - 1; i >= 0; i--) {
+      const item = session.items[i];
+      if (item?.kind !== "user") continue;
+      from = i;
+      lastUser = item;
+      break;
+    }
+    if (lastUser && !String(lastUser.text ?? "").startsWith(AUTO_MARK)) return { text: "", error: "" };
+    for (let i = session.items.length - 1; i > from; i--) {
+      const item = session.items[i];
+      if (item?.kind !== "assistant") continue;
+      if (from < 0 && since && item.ts && item.ts < since) return { text: "", error: "" };
+      return { text: String(item.text ?? ""), error: String(item.errorMessage ?? "") };
+    }
+    return { text: "", error: "" };
+  };
+
+  /**
+   * 自动评审眼里的一个 PR：判定要用的那几格。
+   *
+   * 走 REST 的 `/repos/<repo>/pulls/<n>` + `checksOf` —— 与右栏 PR 详情**同一条通道、同一个口径**
+   * （checks 按 head sha 取 check-runs 与 commit status）。别改成 `pullRequestInfo`：那份是列表卡用的，
+   * 结构里没有 `checks` / `mergeable` / `merged`，读出来恒 `undefined`，会让「CI 没过」与「已经合了」都静默判反。
+   */
+  interface AutoPrView {
+    headRefName: string;
+    state: string;
+    merged: boolean;
+    /** `null` = GitHub 还在算（第一次问常常是 null），不是「不能合」。 */
+    mergeable: boolean | null;
+    checks: AutoCheck[];
+    checksTruncated: boolean;
+  }
+
+  const autoPrView = async (repo: string, pr: number, session: string): Promise<AutoPrView | null> => {
+    try {
+      // 账号按**会话的工作区**选（`.pi/settings.json` 里的 githubAccount 跟工作区走，不跟评审仓库根走）：
+      // 这里用会话 cwd 是对的，与 `review.auto.start` 里 git 用仓库根不是同一个口径，别「统一」掉。
+      const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
+      const ctx = { upstreamApi: githubApiBase() };
+      const raw = await githubRest(ctx, gh.restToken ?? null, `/repos/${repo}/pulls/${pr}`);
+      const headSha = String(raw?.head?.sha ?? "");
+      const found = headSha ? await checksOf(ctx, gh.restToken ?? null, repo, headSha) : { checks: [], truncated: false };
+      return {
+        headRefName: String(raw?.head?.ref ?? ""),
+        state: String(raw?.state ?? ""),
+        merged: raw?.merged === true,
+        mergeable: raw?.mergeable === null || raw?.mergeable === undefined ? null : raw.mergeable === true,
+        checks: found.checks,
+        checksTruncated: found.truncated,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const autoHost: AutoHost = {
+    async start({ dir, scope, session, model, lang }) {
+      const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || dir, session);
+      const started = startReview({
+        dir,
+        mode: scope.mode,
+        base: scope.base,
+        target: scope.target,
+        commit: scope.commit,
+        pr: scope.pr,
+        session,
+        ghEnv: gh.env,
+        model: model.model,
+        provider: model.provider,
+        lang,
+        auto: true,
+      });
+      return { runId: started.runId, repo: started.repo };
+    },
+    findings(repo, session, runId) {
+      const run = readReviewState(repo, session).runs.find((r) => r.id === runId);
+      return run?.findings ?? null;
+    },
+    progress(repo, session, runId) {
+      const live = reviewProgresses(repo, session).find((p) => p.runId === runId);
+      if (live) return { status: live.status, findings: live.findings ?? readReviewState(repo, session).runs.find((r) => r.id === runId)?.findings ?? [], tokens: live.tokens };
+      const run = readReviewState(repo, session).runs.find((r) => r.id === runId);
+      if (!run) return null;
+      return { status: run.status, findings: run.findings ?? [], tokens: run.tokens };
+    },
+    cancel(repo, session, runId) {
+      try {
+        cancelReview(repo, session, runId);
+      } catch (err: any) {
+        log(`auto-review cancel failed: ${String(err?.message ?? err)}`);
+      }
+    },
+    session(id) {
+      const session = sessions.get(id);
+      if (!session) return null;
+      return {
+        get running() {
+          return session.state.running === true;
+        },
+        prompt: (text: string) => session.prompt(text, undefined, undefined, "followUp"),
+        lastReply: (since: string) => lastAssistant(id, since),
+      };
+    },
+    // 只认名册、不建对象：换脑开机时壳里的会话要过几秒才被认领进来（见 `AutoRunner.resume`）。
+    known: (id) => sessions.knownId(id),
+    head: (cwd) => gitOut(cwd, ["rev-parse", "HEAD"]),
+    subject: (cwd, sha) => gitOut(cwd, ["log", "-1", "--format=%s", sha]),
+    dirty: (cwd) => Boolean(gitOut(cwd, ["status", "--porcelain"])),
+    diffstat(cwd, from) {
+      const text = gitOut(cwd, ["diff", "--shortstat", `${from}..HEAD`]);
+      const files = Number(/(\d+)\s+files?\s+changed/.exec(text)?.[1] ?? 0);
+      const added = Number(/(\d+)\s+insertions?\(\+\)/.exec(text)?.[1] ?? 0);
+      const removed = Number(/(\d+)\s+deletions?\(-\)/.exec(text)?.[1] ?? 0);
+      return { files, added, removed };
+    },
+    async push(cwd, branch) {
+      // 有 upstream 就推 upstream 那个远端；没有就 origin（第一次推就顺手建 upstream）。
+      const up = gitOut(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+      const remote = up.includes("/") ? up.slice(0, up.indexOf("/")) : "origin";
+      const args = up ? ["push", remote, branch] : ["push", "-u", remote, branch];
+      const out = await gitRun(cwd, args);
+      return out.ok ? { ok: true, note: "" } : { ok: false, note: out.err.slice(0, 400) || "git push 失败" };
+    },
+    async prChecks(config, session) {
+      const view = await autoPrView(config.repo, config.pr, session);
+      if (!view) return { ok: false, note: "拿不到这个 PR 的状态（gh 没登录 / 断网 / 号不对）" };
+      return checksGate(view.checks, view.mergeable, view.checksTruncated);
+    },
+    async prState(config, session) {
+      const view = await autoPrView(config.repo, config.pr, session);
+      if (!view) return { merged: false, note: "拿不到这个 PR 的状态，合没合看不出来" };
+      return mergeResult(view);
+    },
+    grant: (session, g) => {
+      try {
+        writeGrant(session, g);
+      } catch (err: any) {
+        log(`auto-review grant failed: ${String(err?.message ?? err)}`);
+      }
+    },
+    finish(state, text, marks) {
+      for (const m of marks) {
+        try {
+          markFinding(m.repo, m.key, m.mark, m.session);
+        } catch {
+          /* 标记失败不该影响结论 */
+        }
+      }
+      try {
+        broadcast(reviewStateFrame(state.config.repo, state.session, readReviewPin(state.session)));
+      } catch {
+        /* 仓库没了 */
+      }
+      sessions.get(state.session)?.notice(text, state.status === "paused" || state.status === "failed" ? "warn" : "info");
+      log(`auto-review ${state.status} · ${state.session.slice(0, 8)} · ${text}`);
+    },
+    emit: (state) => broadcast({ type: "review.auto", sessionId: state.session, state }),
+    log: (line) => log(line),
+  };
+
+  /**
+   * 页面那四颗按钮 → 编排器的一个动作（一张表，别再往下叠三元）。
+   * 键是字面量联合：下面 ws 那串 case 里多写一个、这里没填，运行时说出来（以前会静默当「继续」）。
+   */
+  type AutoAction = "review.auto.stop" | "review.auto.handover" | "review.auto.continue" | "review.auto.skip";
+  const AUTO_ACTIONS: Record<AutoAction, (runner: AutoRunner, session: string) => ReturnType<AutoRunner["continue"]>> = {
+    "review.auto.stop": (runner, session) => runner.stop(session),
+    "review.auto.handover": (runner, session) => runner.handOver(session),
+    "review.auto.continue": (runner, session) => runner.continue(session),
+    "review.auto.skip": (runner, session) => runner.skip(session),
+  };
+
+  const autoRunner = new AutoRunner(autoHost);
+  setInterval(() => autoRunner.tick(), 800).unref?.();
+  const autoResumed = autoRunner.resume();
+  if (autoResumed) log(`auto-review resumed ${autoResumed} run(s)`);
+
   /**
    * GitHub 路由的 ctx。两个入口（回环工具口 / 常规路由）必须是**同一份**映射：壳拿到的 id/cwd
    * 与页面拿到的如果不是一个，就会出现「壳去问了 A 会话、面板读的却是 B」。
@@ -4514,6 +4738,90 @@ async function main(): Promise<void> {
                 });
               }
             })();
+            return;
+          }
+          // ------------------------------------------------------------ 自动评审（D462）
+          case "review.auto.get": {
+            const session = String(msg.sessionId ?? "");
+            send({ type: "review.auto", sessionId: session, state: autoRunner.read(session) });
+            return;
+          }
+          case "review.auto.start": {
+            const session = String(msg.sessionId ?? "");
+            const dir = String(msg.dir ?? "");
+            const mode = ["workspace", "range", "commit", "pr"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "pr";
+            const lang: ReviewLang = ["zh", "en", "ja"].includes(String(msg.lang)) ? (String(msg.lang) as ReviewLang) : "zh";
+            const models = msg.models ?? {};
+            const pick = (slot: "a" | "b") => ({
+              provider: String(models?.[slot]?.provider ?? ""),
+              model: String(models?.[slot]?.model ?? ""),
+              label: String(models?.[slot]?.label ?? ""),
+            });
+            void (async () => {
+              try {
+                // 评审 / 推送 / git 全部用**评的那个仓库根**（`effectiveReviewDir`：钉了别的仓库时
+                // 它与会话目录 `dir` 不是同一个）。以前 branch / baseSha / cwd 在 `dir` 非空时用的是
+                // 会话目录（可能是子目录），而 `autoPrView` 用会话 cwd —— 三处口径混在一起：
+                // 推送的 cwd 不落在 `config.repo` 里时，闸门的 `insideRepo` 会拒掉授权。
+                const { repo } = effectiveReviewDir(dir, session);
+                const branch = gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+                const pr = Number(msg.pr) || 0;
+                // PR 模式那道闸（D462 第 16 条）：本地当前分支必须就是 PR 的 head，否则修完推不上去。
+                if (mode === "pr") {
+                  if (!pr) throw new Error("先选一个 PR：自动评审要知道合哪一个");
+                  const view = await autoPrView(repo, pr, session);
+                  if (!view) throw new Error(`拿不到 PR #${pr} 的状态，先确认 gh 登录了这个仓库`);
+                  if (!branch || branch === "HEAD") throw new Error("当前不在任何分支上（detached HEAD），修完没有地方推");
+                  // 认不出 PR 的 head 就不能比：「跳过比对」等于把闸门放开到任意分支，宁可不开跑。
+                  if (!view.headRefName) throw new Error(`读不到 PR #${pr} 的 head 分支，没法确认本地这条就是要推的那条`);
+                  if (view.headRefName !== branch) {
+                    throw new Error(`本地是 ${branch}，PR #${pr} 的 head 是 ${view.headRefName} —— 自动评审只在你自己那条分支上跑`);
+                  }
+                }
+                const out = autoRunner.start({
+                  session,
+                  config: {
+                    mode,
+                    base: String(msg.base ?? ""),
+                    target: String(msg.target ?? ""),
+                    commit: String(msg.commit ?? ""),
+                    pr,
+                    models: { a: pick("a"), b: pick("b") },
+                    maxRounds: Number(msg.maxRounds) || 0,
+                    autoMerge: Boolean(msg.autoMerge),
+                    repo,
+                    cwd: repo,
+                    branch,
+                    // 限时授权拿它拒掉「同名的别的仓库」（闸门那边对显式点名的仓库逐字比）
+                    slug: localRepoName(repo),
+                    // 工作区模式：记下开跑前的 HEAD，第二轮起按「起点..HEAD」评（否则提交一次就评空了）
+                    baseSha: mode === "workspace" ? gitOut(repo, ["rev-parse", "HEAD"]) : "",
+                    lang,
+                  },
+                });
+                send({ type: "review.auto", sessionId: session, state: out.state, error: out.error, code: out.code });
+              } catch (err: any) {
+                send({ type: "review.auto", sessionId: session, state: autoRunner.read(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              }
+            })();
+            return;
+          }
+          case "review.auto.stop":
+          case "review.auto.handover":
+          case "review.auto.continue":
+          case "review.auto.skip": {
+            const session = String(msg.sessionId ?? "");
+            const type = String(msg.type);
+            // 这串 case 只会是上面四种之一；真多写了一个 case 没填表，也说出来而不是静默当「继续」。
+            const act = (AUTO_ACTIONS as Record<string, ((runner: AutoRunner, session: string) => ReturnType<AutoRunner["continue"]>) | undefined>)[type];
+            if (!act) {
+              // 表与上面那串 case 是同一份名单：哪天有人只加 case 不填表，这里要说出来，
+              // 而不是静默当成「继续」（那会把一次误点变成接着烧 token）。
+              send({ type: "review.auto", sessionId: session, state: autoRunner.read(session), error: `不认识的自动评审动作：${type}`, code: "bad_action" });
+              return;
+            }
+            const out = act(autoRunner, session);
+            send({ type: "review.auto", sessionId: session, state: out.state, error: out.error, code: out.code });
             return;
           }
           case "review.cancel": {

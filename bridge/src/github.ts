@@ -526,7 +526,7 @@ function linkPage(link: string | null): number | null {
  * - 翻到一半出错（匿名额度用完、细粒度令牌没权限）就停下：**已拿到的行照样返回**，不整路丢掉 ——
  *   但 `complete` 标成假，调用方要让用户知道这份列表缺了后半。
  */
-async function fetchAll(ctx: GithubCtx, token: string | null, apiPath: string, perPage = 100, pick: (body: any) => any[] = (body) => (Array.isArray(body) ? body : [])): Promise<FetchedList> {
+async function fetchAll(ctx: Pick<GithubCtx, "upstreamApi">, token: string | null, apiPath: string, perPage = 100, pick: (body: any) => any[] = (body) => (Array.isArray(body) ? body : [])): Promise<FetchedList> {
   const path = apiPath.split("?")[0];
   const seen = new Set<number>();
   const out: any[] = [];
@@ -627,8 +627,16 @@ function commitStatusState(state: unknown): string {
  *
  * 两个端点各要一次请求。拿不到不拖整个详情（没开 Actions 的仓库回 404、细粒度令牌没权限读都是常事）：
  * 那一路就当空的。两路都空就是「这个 PR 没有检查」，页面不画 checks 那一行。
+ *
+ * 导出给脑侧的自动评审（D462）：合并前要问「checks 绿没绿」，已经有一份现成的口径就别再写一遍 ——
+ * 那边要是自己读一份别处的 PR 结构（`gitpr.ts` 的列表卡形状里根本没有 `checks`），就会恒判「全绿」。
  */
-async function checksOf(ctx: GithubCtx, token: string | null, repo: string, headSha: string): Promise<{ checks: PullCheck[]; truncated: boolean }> {
+export async function checksOf(
+  ctx: Pick<GithubCtx, "upstreamApi">,
+  token: string | null,
+  repo: string,
+  headSha: string,
+): Promise<{ checks: PullCheck[]; truncated: boolean }> {
   if (!headSha) return { checks: [], truncated: false };
   // check-runs 的行在 `check_runs` 里、combined status 的行在 `statuses` 里：告诉 `fetchAll` 去哪个字段取行。
   const [runs, status] = await Promise.all([

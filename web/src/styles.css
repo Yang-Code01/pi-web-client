@@ -6659,3 +6659,221 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .msg .lm-card .body { background: none; border: 0; border-radius: 0; }
 /* 工具输出：卡里自己滚就够了，内层不必再滚一次（260px 那条只留给没开卡的老样子） */
 .lm-card.has-card > .lm-scroll > .out { max-height: none; overflow: visible; margin-top: 0; }
+
+/* -------------------------------------------------------------------------
+ * 自动评审（D450）：面板里的入口 + 时间线卡片、设置 dialog、轮次专用窗。
+ * 三屏都按原型选的 B：设置带预演、卡片是横向阶段条、轮次窗是摘要带 + 双栏。
+ * 尺寸一律用 --vh1 / --vw1（D123：`#app` 上有 zoom，裸 vh 会被乘第二次）。
+ * ------------------------------------------------------------------------- */
+
+.rv-auto-scope { display: flex; flex-direction: column; gap: 6px; }
+.rv-auto-open { width: 100%; }
+/* 入口按钮在「开始评审」下面：主按钮靠余量吸底，把它和它上面的说明留在同一块里 */
+.rv-scope .rv-run + .rv-auto-scope { margin-top: -2px; }
+
+.rv-auto {
+  /* 「正在跑」的进度条不反映真实进度，只是别画空条：两处（明细行 / 阶段条）共用这一格。 */
+  --auto-progress: 36%;
+  display: flex; flex-direction: column;
+  border-radius: 12px; overflow: hidden;
+  background: var(--panel);
+  box-shadow: 0 0 0 0.5px var(--mac-glass-line), var(--mac-shadow-panel);
+}
+.rv-auto-head { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-bottom: 0.5px solid var(--line-soft); }
+.rv-auto-ic {
+  flex: none; width: 22px; height: 22px; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-bg); color: var(--accent); font-size: 12px;
+}
+.rv-auto-signed .rv-auto-ic, .rv-auto-merged .rv-auto-ic { background: var(--ok-bg); color: var(--ok); }
+.rv-auto-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rv-auto-title b { font-size: 12.5px; font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-auto-title i { font-size: 10.5px; font-style: normal; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-auto-right { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
+.rv-auto-pill { font-size: 10.5px; font-weight: 620; padding: 2px 7px; border-radius: 999px; white-space: nowrap; background: var(--accent-bg); color: var(--accent); }
+.rv-auto-pill.ok { background: var(--ok-bg); color: var(--ok); }
+.rv-auto-pill.warn { background: var(--warn-bg); color: var(--warn); }
+.rv-auto-pill.stop { background: var(--panel-3); color: var(--dim); }
+.rv-auto-stop { font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: 7px; border: 0.5px solid var(--line-strong); background: var(--panel-2); color: var(--dim); cursor: pointer; }
+.rv-auto-stop:hover { color: var(--danger); border-color: var(--danger-dim); }
+
+/* 横向阶段条：每轮一格 */
+.rv-auto-stages { display: flex; gap: 4px; padding: 7px 8px 3px; }
+.rv-auto-stage {
+  flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+  padding: 5px 6px 7px; border-radius: 8px; border: 0; cursor: pointer; text-align: left;
+  background: var(--panel-2); color: var(--faint); font: inherit; position: relative;
+  transition: background var(--dur-1) var(--ease);
+}
+.rv-auto-stage:hover { background: var(--panel-3); }
+.rv-auto-stage-top { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.rv-auto-stage-top b { font-size: 11px; font-weight: 650; color: var(--dim); }
+.rv-auto-stage-st { font-size: 10px; }
+.rv-auto-stage-sub { font-size: 9.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-auto-stage-bar { display: block; height: 2.5px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.rv-auto-stage-bar > i { display: block; height: 100%; width: 0; background: var(--accent); }
+.rv-auto-stage.ok { background: var(--ok-bg); }
+.rv-auto-stage.ok b, .rv-auto-stage.ok .rv-auto-stage-st { color: var(--ok); }
+.rv-auto-stage.ok .rv-auto-stage-bar { background: var(--ok); }
+.rv-auto-stage.bad { background: var(--danger-bg); }
+.rv-auto-stage.bad b, .rv-auto-stage.bad .rv-auto-stage-st { color: var(--danger); }
+.rv-auto-stage.bad .rv-auto-stage-bar { background: var(--danger); }
+.rv-auto-stage.skip .rv-auto-stage-bar { background: var(--line-lit); }
+.rv-auto-stage.now { background: var(--accent-bg); }
+.rv-auto-stage.now b, .rv-auto-stage.now .rv-auto-stage-st { color: var(--accent); }
+.rv-auto-stage.now .rv-auto-stage-bar > i { width: var(--auto-progress, 36%); }
+/* 跑完的一轮（有意见、已经修过）：阶段条填满 —— 空条看起来像「还没开始」。 */
+.rv-auto-stage.done .rv-auto-stage-bar > i { width: 100%; }
+.rv-auto-sev { position: absolute; top: 5px; right: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }
+.rv-auto-sev.critical { background: var(--danger); }
+.rv-auto-sev.high { background: var(--warn); }
+.rv-auto-sev.medium { background: var(--accent); }
+
+/* 当前轮 / 最近一轮的明细 */
+.rv-auto-detail { display: flex; flex-direction: column; gap: 1px; padding: 3px 6px 4px; }
+.rv-auto-row {
+  display: flex; flex-direction: column; gap: 2px; padding: 5px 6px; border: 0; border-radius: 8px;
+  background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.rv-auto-row:hover { background: var(--panel-2); }
+.rv-auto-row.on { background: var(--accent-bg); }
+.rv-auto-row1 { display: flex; align-items: baseline; gap: 6px; font-size: 11.5px; min-width: 0; }
+.rv-auto-no { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+.rv-auto-slot { font-size: 10px; font-weight: 700; padding: 0 4px; border-radius: 4px; background: var(--panel-3); color: var(--dim); }
+.rv-auto-slot.b { background: color-mix(in srgb, var(--warn) 18%, var(--panel)); color: var(--warn); }
+.rv-auto-model { font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42%; }
+.rv-auto-res { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-auto-row2 { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--faint); min-width: 0; }
+.rv-auto-sha { font-family: var(--mono); }
+.rv-auto-diff { display: inline-flex; gap: 4px; font-family: var(--mono); }
+.rv-auto-diff .add { color: var(--ok); }
+.rv-auto-diff .del { color: var(--danger); }
+.rv-auto-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-auto-bar { margin-top: 3px; height: 3px; border-radius: 99px; background: var(--panel-3); overflow: hidden; }
+.rv-auto-bar > i { display: block; height: 100%; width: var(--auto-progress, 36%); border-radius: 99px; background: var(--accent); }
+
+/* 接管确认框（「你在发消息 = 接管」）：静态样式放类里，别在 app.ts 里写内联 style */
+.rv-auto-takeover h2 { margin: 0; font-size: 16px; }
+.rv-auto-takeover p { margin: 0; font-size: 13px; color: var(--faint); }
+
+/* 暂停 / 失败 */
+.rv-auto-pause { display: flex; flex-direction: column; gap: 7px; margin: 4px 8px 8px; padding: 8px 9px; border-radius: 9px; background: var(--danger-bg); box-shadow: 0 0 0 0.5px var(--danger-dim); }
+.rv-auto-reason { font-size: 11.5px; line-height: 1.5; color: var(--danger); }
+.rv-auto-acts { display: flex; gap: 6px; }
+.rv-auto-acts .btn { font-size: 11.5px; padding: 4px 10px; }
+
+.rv-auto-foot { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-top: 0.5px solid var(--line-soft); font-size: 10.5px; color: var(--faint); }
+
+/* ---- 设置 dialog（变体 B） */
+.st-console.rv-auto-sheet { container-type: inline-size; display: flex; flex-direction: column; width: min(600px, 94%); max-height: calc(var(--vh1) * 88); overflow: hidden; }
+.rv-auto-sheet-head { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px 10px; }
+.rv-auto-sheet-head h2 { margin: 2px 0 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+.rv-auto-sheet-head > div:first-child { display: flex; flex-direction: column; min-width: 0; }
+.rv-auto-sheet-head > .btn { margin-left: auto; flex: none; }
+.rv-auto-kicker { font-size: 10.5px; font-weight: 650; letter-spacing: 0.06em; color: var(--faint); text-transform: uppercase; }
+.rv-auto-sub { font-size: 12px; color: var(--dim); line-height: 1.5; }
+.rv-auto-sheet-body { padding: 0 16px 14px; display: flex; flex-direction: column; gap: 14px; overflow: auto; }
+.rv-auto-cols { display: grid; grid-template-columns: 1.05fr 0.62fr 0.9fr; gap: 14px; }
+@container (max-width: 560px) {
+  .rv-auto-cols { grid-template-columns: 1fr; }
+}
+.rv-auto-fld { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.rv-auto-lab { font-size: 11px; font-weight: 650; letter-spacing: 0.03em; color: var(--faint); }
+.rv-auto-chiprow { display: flex; align-items: center; gap: 7px; }
+.rv-auto-who { flex: none; width: 54px; display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 650; color: var(--dim); }
+.rv-auto-who .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+/* 两路的点刻意两种颜色（A = 强调色，B = 警示色）：排班表上一眼分得开谁是谁。 */
+.rv-auto-who.a .dot { background: var(--accent); }
+.rv-auto-who.b .dot { background: var(--warn); }
+.rv-auto-mchip {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+  padding: 6px 9px; border-radius: 9px; font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+  background: var(--panel); color: var(--text); border: 0.5px solid var(--line-strong);
+}
+.rv-auto-mchip:hover { border-color: var(--accent); }
+.rv-auto-mchip.empty { color: var(--faint); }
+.rv-auto-mchip > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-auto-mchip .pid { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.rv-auto-mchip .chev { color: var(--faint); font-size: 10px; }
+/* 设置 dialog 里的说明句：**多行**显示（不能沿用明细行的单行省略，长句会被截成一行）。 */
+.rv-auto-lede { font-size: 11px; color: var(--faint); line-height: 1.5; white-space: normal; }
+.rv-auto-stepper { display: flex; align-items: center; gap: 6px; }
+.rv-auto-stepper button {
+  width: 26px; height: 26px; border-radius: 7px; font: inherit; font-size: 13px; cursor: pointer;
+  border: 0.5px solid var(--line-strong); background: var(--panel); color: var(--dim);
+}
+.rv-auto-stepper b { min-width: 26px; text-align: center; font-family: var(--mono); font-size: 12.5px; }
+.rv-auto-stepper .unit { font-size: 12px; color: var(--dim); }
+.rv-auto-check { display: flex; align-items: flex-start; gap: 7px; font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+.rv-auto-check .bx { flex: none; width: 15px; height: 15px; margin-top: 1px; border-radius: 4px; background: var(--accent); color: var(--accent-ink); font-size: 10px; display: flex; align-items: center; justify-content: center; }
+.rv-auto-sw-card {
+  display: flex; align-items: center; gap: 9px; padding: 8px 9px; border-radius: 10px; cursor: pointer;
+  background: var(--panel-2); border: 0; font: inherit; text-align: left; box-shadow: 0 0 0 0.5px var(--mac-glass-line);
+}
+.rv-auto-sw-card:disabled { cursor: default; opacity: 0.66; }
+.rv-auto-sw-card .txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rv-auto-sw-card .txt b { font-size: 12px; font-weight: 620; }
+.rv-auto-sw-card .txt i { font-size: 10.5px; font-style: normal; color: var(--faint); line-height: 1.45; }
+.rv-auto-sw-card .sw { flex: none; margin-left: auto; width: 36px; height: 22px; border-radius: 999px; background: var(--line-strong); position: relative; transition: background var(--dur-2) var(--ease); }
+.rv-auto-sw-card .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--panel); box-shadow: 0 1px 3px color-mix(in srgb, #000 28%, transparent); transition: transform var(--dur-2) var(--ease); }
+.rv-auto-sw-card.on .sw { background: var(--ok); }
+.rv-auto-sw-card.on .sw::after { transform: translateX(14px); }
+
+/* 预演：下半那条「#1 A 评 → #2 B 评 → …」 */
+.rv-auto-rehearse { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 11px; background: var(--accent-bg); }
+.rv-auto-cap { font-size: 11px; font-weight: 650; color: var(--accent); letter-spacing: 0.02em; }
+.rv-auto-rail { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.rv-auto-rail .nd { font-size: 11px; padding: 3px 7px; border-radius: 7px; background: var(--panel); box-shadow: 0 0 0 0.5px var(--mac-glass-line); color: var(--dim); }
+.rv-auto-rail .ar { font-size: 10px; color: var(--faint); }
+.rv-auto-tail { font-size: 11px; color: var(--dim); line-height: 1.5; }
+.rv-auto-sheet-foot { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 0.5px solid var(--mac-glass-line); background: var(--panel-2); }
+.rv-auto-foot-note { font-size: 11px; color: var(--faint); }
+.rv-auto-foot-right { margin-left: auto; }
+
+/* ---- 轮次专用窗（变体 B：摘要带 + 双栏） */
+.st-console.rv-auto-round { container-type: inline-size; display: flex; flex-direction: column; width: min(980px, 94%); height: min(calc(var(--vh1) * 82), 820px); max-height: calc(var(--vh1) * 82); overflow: hidden; }
+.rv-auto-head-right { margin-left: auto; display: flex; gap: 6px; flex: none; }
+.rv-auto-empty { padding: 24px 16px; color: var(--faint); font-size: 12px; }
+.rv-auto-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 16px 10px; padding: 8px 10px; border-radius: 10px; background: var(--accent-bg); }
+.rv-auto-fact { display: flex; flex-direction: column; gap: 1px; }
+.rv-auto-fact b { font-size: 12px; font-weight: 650; display: flex; gap: 4px; align-items: baseline; }
+.rv-auto-fact b .add { color: var(--ok); font-family: var(--mono); font-size: 11px; }
+.rv-auto-fact b .del { color: var(--danger); font-family: var(--mono); font-size: 11px; }
+.rv-auto-fact i { font-size: 10px; font-style: normal; color: var(--faint); }
+.rv-auto-fact.mono b { font-family: var(--mono); }
+.rv-auto-round-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 10px; padding: 0 16px 14px; }
+@container (max-width: 760px) {
+  .rv-auto-round-body { grid-template-columns: 1fr; }
+}
+.rv-auto-panel { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border-radius: 11px; background: var(--panel); box-shadow: 0 0 0 0.5px var(--mac-glass-line), var(--mac-shadow-panel); }
+.rv-auto-panel.grow { flex: 1; }
+.rv-auto-ph { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 0.5px solid var(--line-soft); font-size: 11px; font-weight: 650; letter-spacing: 0.02em; color: var(--dim); }
+.rv-auto-ph .n { color: var(--faint); font-weight: 500; }
+.rv-auto-pb { padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; overflow: auto; min-height: 0; }
+.rv-auto-side { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.rv-auto-finding { display: flex; flex-direction: column; gap: 4px; padding: 7px 8px; border-radius: 9px; background: var(--panel-2); }
+.rv-auto-f-top { display: flex; align-items: center; gap: 6px; font-size: 11px; flex-wrap: wrap; }
+.rv-auto-f-top .tag { font-size: 10px; padding: 1px 5px; border-radius: 5px; font-weight: 620; }
+.rv-auto-f-top .tag.critical { background: var(--danger-bg); color: var(--danger); }
+.rv-auto-f-top .tag.high { background: var(--warn-bg); color: var(--warn); }
+.rv-auto-f-top .tag.medium { background: var(--accent-bg); color: var(--accent); }
+.rv-auto-f-top .tag.low { background: var(--panel-3); color: var(--dim); }
+.rv-auto-f-top .tag.fixed { background: var(--ok-bg); color: var(--ok); }
+.rv-auto-f-top .tag.fp { background: var(--panel-3); color: var(--dim); }
+.rv-auto-f-top .tag.wont { background: var(--warn-bg); color: var(--warn); }
+.rv-auto-f-top .path { font-family: var(--mono); font-size: 10.5px; color: var(--accent); }
+.rv-auto-finding .txt { font-size: 11.5px; color: var(--dim); line-height: 1.55; }
+.rv-auto-finding .why { font-size: 11px; color: var(--faint); line-height: 1.5; }
+.rv-auto-hint { font-size: 11px; color: var(--faint); line-height: 1.5; }
+.rv-auto-fixrow { display: flex; align-items: baseline; gap: 8px; font-size: 11px; }
+.rv-auto-fixrow .add { color: var(--ok); font-family: var(--mono); }
+.rv-auto-fixrow .del { color: var(--danger); font-family: var(--mono); }
+.rv-auto-fixrow .dim { color: var(--faint); }
+.rv-auto-json { margin: 0; padding: 7px 8px; border-radius: 8px; background: var(--sunken); font-family: var(--mono); font-size: 10px; line-height: 1.55; color: var(--dim); white-space: pre-wrap; word-break: break-word; }
+
+/* ---- 对话里的轮次卡（D450）：长提示词折成一张 */
+.msg.auto { display: flex; flex-direction: column; gap: 4px; }
+.msg.auto .who { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--faint); }
+.msg.auto .summary-card { margin: 0; }
+.msg.auto .summary-card summary { font-size: 12px; }
+.auto-turn-body { white-space: pre-wrap; font-size: 11.5px; line-height: 1.6; color: var(--dim); }

@@ -1,0 +1,917 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="mac-light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>原型 · 自动评审（三屏 · 各两个变体）</title>
+<!--
+  ⚠️ 一次性原型（prototype），只为回答三个问题：
+
+    1. 设置 dialog：模型 A / 模型 B、轮数上限、自动合并 —— 怎么摆最省一眼？
+       变体 A「两栏表单」：左排班 + 轮数，右收尾动作，底栏一句「最少 2 轮」。
+       变体 B「带预演」  ：下半再给一条预演时间线（#1 A → #2 B → #3 复评…），开始前就看出会发生什么。
+
+    2. 面板里的自动评审卡：一次跑 4–12 轮，怎么让人一眼看出「跑到哪、下一轮是谁、卡住没有」？
+       变体 A「纵向时间线」：一行一轮，与现有评审记录同一套語汇。
+       变体 B「横向阶段条」：顶上一排「评 / 修 / 评 / 修」，最近 3 轮明细，更早的折叠。
+
+    3. 轮次专用窗：一轮的「意见 / 回执 / 本轮改动」怎么摆？
+       变体 A「三栏并列」：左意见、中回执、右改动。
+       变体 B「摘要带 + 双栏」：顶上一行事实，下面左意见宽、右侧叠回执与改动。
+
+  不是产品代码：不接线、不发请求、不落盘。选中的变体要另写进 web/src/app.ts。
+  键盘：1/2/3 切屏，←/→ 切变体，T 切主题。全部材质抄自 web/src/mac-base.css + theme-tokens.css。
+-->
+<style>
+  /* ---------------------------------------------------------------- token（抄自 theme-tokens.css） */
+  :root {
+    --bg: #f5f5f7; --sunken: #ececef; --panel: #ffffff; --panel-2: #f2f2f4; --panel-3: #e8e8ed;
+    --line: #dedee3; --line-soft: #ebebef; --line-strong: #c7c7cc; --line-lit: #aeaeb2;
+    --text: #1d1d1f; --dim: #515154; --faint: #636366;
+    --accent: #007aff; --accent-bg: color-mix(in srgb, var(--accent) 9%, #fff); --accent-dim: #dbeaff; --accent-ink: #fff;
+    --ok: #248a3d; --ok-bg: #eaf7ee; --ok-dim: #bfe6c9;
+    --warn: #b25000; --warn-bg: #fff6e5; --warn-dim: #f5d9a6;
+    --danger: #d70015; --danger-bg: #fff0f1; --danger-dim: #f7c6cb;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    --r: 12px;
+    --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+    --dur-1: 140ms; --dur-2: 180ms;
+    --mac-glass: rgba(252, 252, 254, 0.72);
+    --mac-glass-strong: rgba(252, 252, 254, 0.8);
+    --mac-glass-solid: rgba(250, 250, 253, 0.96);
+    --mac-glass-line: rgba(0, 0, 0, 0.1);
+    --mac-blur: saturate(180%) blur(28px);
+    --mac-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.14), 0 22px 70px rgba(30, 40, 80, 0.22), 0 4px 14px rgba(0, 0, 0, 0.08);
+    --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 8px 30px rgba(40, 50, 90, 0.1);
+    --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 12px 36px rgba(0, 0, 0, 0.18);
+    --mac-wall:
+      radial-gradient(1100px 760px at 8% -6%, rgba(110, 168, 255, 0.5), transparent 62%),
+      radial-gradient(980px 720px at 104% 12%, rgba(255, 150, 196, 0.42), transparent 62%),
+      radial-gradient(1000px 760px at 52% 112%, rgba(140, 226, 204, 0.5), transparent 62%),
+      linear-gradient(180deg, #eef1f7, #f3eff5);
+  }
+  :root[data-theme="mac-dark"] {
+    --bg: #1c1c1e; --sunken: #161618; --panel: #232325; --panel-2: #2c2c2e; --panel-3: #343436;
+    --line: #38383a; --line-soft: #2e2e30; --line-strong: #48484a; --line-lit: #5a5a5e;
+    --text: #f5f5f7; --dim: #b8b8bd; --faint: #a1a1a6;
+    --accent-bg: color-mix(in srgb, var(--accent) 14%, #1c1c1e); --accent-dim: #123a5c; --accent-ink: #04202b;
+    --ok: #30d158; --ok-bg: #102a18; --ok-dim: #1c4a2a; --warn: #ff9f0a; --warn-bg: #2a2110; --warn-dim: #4a3a12;
+    --danger: #ff453a; --danger-bg: #2a1414; --danger-dim: #4a1d1d;
+    --mac-glass: rgba(36, 36, 40, 0.72); --mac-glass-strong: rgba(36, 36, 40, 0.8); --mac-glass-solid: rgba(40, 40, 44, 0.97);
+    --mac-glass-line: rgba(255, 255, 255, 0.1);
+    --mac-shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(255, 255, 255, 0.12), 0 26px 80px rgba(0, 0, 0, 0.55);
+    --mac-shadow-panel: 0 0 0 0.5px rgba(0, 0, 0, 0.6), inset 0 0.5px 0 rgba(255, 255, 255, 0.08), 0 10px 34px rgba(0, 0, 0, 0.35);
+    --mac-shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.7), inset 0 0.5px 0 rgba(255, 255, 255, 0.12), 0 14px 40px rgba(0, 0, 0, 0.5);
+    --mac-wall:
+      radial-gradient(1100px 760px at 8% -6%, rgba(38, 74, 130, 0.7), transparent 62%),
+      radial-gradient(980px 720px at 104% 12%, rgba(96, 40, 76, 0.6), transparent 62%),
+      radial-gradient(1000px 760px at 52% 112%, rgba(26, 74, 70, 0.55), transparent 62%),
+      linear-gradient(180deg, #101013, #15131a);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font-family: var(--sans); font-size: 13px; color: var(--text);
+    background: var(--mac-wall) fixed; background-color: var(--bg);
+    display: flex; flex-direction: column; -webkit-font-smoothing: antialiased;
+  }
+  .stage { flex: 1; min-height: 0; overflow: auto; padding: 22px 24px 84px; display: flex; justify-content: center; align-items: flex-start; }
+  .stage[data-screen="1"] { align-items: center; }
+  .hidden { display: none !important; }
+
+  /* ---------------------------------------------------------------- 顶栏（原型自己的） */
+  .topbar {
+    position: sticky; top: 0; z-index: 40; display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px; background: var(--mac-glass-strong); backdrop-filter: var(--mac-blur);
+    -webkit-backdrop-filter: var(--mac-blur); border-bottom: 0.5px solid var(--mac-glass-line);
+  }
+  .topbar .t { font-weight: 650; font-size: 12px; letter-spacing: 0.01em; margin-right: 4px; }
+  .seg { display: flex; padding: 2px; gap: 2px; border-radius: 9px; background: var(--panel-3); }
+  .seg button {
+    font: inherit; font-size: 12px; color: var(--dim); background: transparent; border: 0; border-radius: 7px;
+    padding: 4px 10px; cursor: pointer; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+  }
+  .seg button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); font-weight: 600; }
+  .topbar .spacer { flex: 1; }
+  .topbar .hint { font-size: 11px; color: var(--faint); }
+  .kbd {
+    font-family: var(--mono); font-size: 10px; padding: 1px 5px; border-radius: 5px;
+    border: 0.5px solid var(--line-strong); background: var(--panel-2); color: var(--dim);
+  }
+
+  /* ---------------------------------------------------------------- 右栏 dock（屏 2 / 3 的外壳） */
+  .dock {
+    width: 600px; max-width: 100%; border-radius: 14px; overflow: hidden;
+    background: var(--mac-glass-strong); backdrop-filter: var(--mac-blur); -webkit-backdrop-filter: var(--mac-blur);
+    box-shadow: var(--mac-shadow-window); border: 0.5px solid var(--mac-glass-line);
+    display: flex; flex-direction: column;
+  }
+  .dock-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px 0; }
+  .dock-tabs { display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--panel-3); }
+  .dock-tabs span { font-size: 11.5px; padding: 4px 9px; border-radius: 7px; color: var(--dim); }
+  .dock-tabs span.on { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+  .dock-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 9px; }
+
+  /* 评什么（缩略，告诉这张卡在什么面板里） */
+  .mini-form { display: flex; flex-direction: column; gap: 6px; }
+  .mini-lead { font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: 0.02em; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .tile {
+    display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: 9px;
+    background: var(--panel-2); border: 0.5px solid transparent; box-shadow: 0 0 0 0.5px var(--mac-glass-line);
+  }
+  .tile .t { font-size: 12px; font-weight: 600; }
+  .tile .s { font-size: 10px; color: var(--faint); }
+  .tile.on { border-color: var(--accent); background: var(--accent-bg); }
+  .tile.on .s { color: var(--accent); }
+  .mini-btn {
+    font: inherit; font-size: 12.5px; font-weight: 600; width: 100%; padding: 7px 10px; border-radius: 9px;
+    border: 0.5px solid var(--line-strong); background: var(--panel); color: var(--text); cursor: pointer;
+  }
+  .mini-btn.primary { background: var(--accent); border-color: transparent; color: var(--accent-ink); }
+  .mini-btn.ghost { background: transparent; border-color: var(--line); color: var(--dim); }
+  .mini-btn.wide { text-align: center; }
+  .mini-btn:disabled { opacity: 0.5; cursor: default; }
+
+  /* ---------------------------------------------------------------- 屏 1：设置 dialog */
+  .scrim {
+    position: fixed; inset: 0; z-index: 20; background: rgba(20, 22, 30, 0.32);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  :root[data-theme="mac-dark"] .scrim { background: rgba(0, 0, 0, 0.5); }
+  .modal {
+    width: 560px; max-width: 100%; border-radius: 16px; overflow: hidden; background: var(--mac-glass-solid);
+    backdrop-filter: var(--mac-blur); -webkit-backdrop-filter: var(--mac-blur);
+    box-shadow: var(--mac-shadow-window); border: 0.5px solid var(--mac-glass-line);
+    display: flex; flex-direction: column;
+  }
+  .modal-head { padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 3px; }
+  .modal-head .k { font-size: 10.5px; font-weight: 650; letter-spacing: 0.06em; color: var(--faint); text-transform: uppercase; }
+  .modal-head h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+  .modal-head .sub { font-size: 12px; color: var(--dim); line-height: 1.5; }
+  .modal-body { padding: 4px 16px 14px; display: flex; flex-direction: column; gap: 14px; }
+  .modal-foot {
+    display: flex; align-items: center; gap: 8px; padding: 10px 16px;
+    border-top: 0.5px solid var(--mac-glass-line); background: var(--panel-2);
+  }
+  .fld { display: flex; flex-direction: column; gap: 7px; }
+  .fld > .lab { font-size: 11px; font-weight: 650; letter-spacing: 0.03em; color: var(--faint); }
+  .fld > .note { font-size: 11px; color: var(--faint); line-height: 1.5; }
+  .chiprow { display: flex; align-items: center; gap: 8px; }
+  .chiprow .who {
+    flex: none; width: 52px; font-size: 11px; font-weight: 650; color: var(--dim);
+    display: flex; align-items: center; gap: 5px;
+  }
+  .who .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .who .dot.b { background: #a259ff; }
+  .mchip {
+    flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; padding: 6px 9px; border-radius: 9px;
+    background: var(--panel); border: 0.5px solid var(--line-strong); font-size: 12px; color: var(--text);
+  }
+  .mchip .pid { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--faint); }
+  .mchip.arrow { flex: none; width: auto; }
+  .stepper { display: flex; align-items: center; gap: 8px; }
+  .stepper .box {
+    display: flex; align-items: center; gap: 0; border-radius: 9px; overflow: hidden;
+    border: 0.5px solid var(--line-strong); background: var(--panel);
+  }
+  .stepper .box button { font: inherit; width: 28px; height: 28px; border: 0; background: transparent; color: var(--dim); cursor: pointer; }
+  .stepper .box b { min-width: 34px; text-align: center; font-family: var(--mono); font-size: 12.5px; }
+  .stepper .unit { font-size: 12px; color: var(--dim); }
+  .switchcard {
+    display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 10px;
+    background: var(--panel-2); box-shadow: 0 0 0 0.5px var(--mac-glass-line);
+  }
+  .switchcard .txt { display: flex; flex-direction: column; gap: 2px; }
+  .switchcard .txt b { font-size: 12.5px; font-weight: 620; }
+  .switchcard .txt i { font-size: 11px; color: var(--faint); font-style: normal; line-height: 1.45; }
+  .sw { flex: none; width: 40px; height: 24px; border-radius: 999px; background: var(--line-strong); position: relative; cursor: pointer; transition: background var(--dur-2) var(--ease); }
+  .sw::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); transition: transform var(--dur-2) var(--ease);
+  }
+  .sw.on { background: var(--ok); }
+  .sw.on::after { transform: translateX(16px); }
+  .checkbox { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--dim); line-height: 1.5; }
+  .checkbox .bx {
+    flex: none; width: 15px; height: 15px; margin-top: 1px; border-radius: 4px; background: var(--accent);
+    color: #fff; font-size: 10px; display: flex; align-items: center; justify-content: center;
+  }
+  .cols2 { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 16px; }
+  .hr { height: 0.5px; background: var(--mac-glass-line); }
+  .foot-note { font-size: 11px; color: var(--faint); display: flex; align-items: center; gap: 6px; }
+  .foot-note .bolt { color: var(--warn); }
+  .btn {
+    font: inherit; font-size: 12.5px; padding: 6px 13px; border-radius: 9px; cursor: pointer;
+    border: 0.5px solid var(--line-strong); background: var(--panel); color: var(--text);
+  }
+  .btn.primary { background: var(--accent); border-color: transparent; color: var(--accent-ink); font-weight: 620; }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--dim); }
+  .row-end { margin-left: auto; display: flex; gap: 6px; }
+
+  /* 预演时间线（变体 B） */
+  .rehearse { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 11px; background: var(--accent-bg); }
+  .rehearse .cap { font-size: 11px; font-weight: 650; color: var(--accent); letter-spacing: 0.02em; }
+  .rail { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .rail .nd {
+    display: flex; align-items: center; gap: 5px; font-size: 11px; padding: 3px 7px; border-radius: 7px;
+    background: var(--panel); box-shadow: 0 0 0 0.5px var(--mac-glass-line); color: var(--dim);
+  }
+  .rail .nd b { color: var(--text); font-weight: 650; }
+  .rail .nd.b b { color: #a259ff; }
+  .rail .ar { font-size: 10px; color: var(--faint); }
+  .rehearse .tail { font-size: 11px; color: var(--dim); line-height: 1.5; }
+
+  /* ---------------------------------------------------------------- 屏 2：自动评审卡 */
+  .autocard {
+    border-radius: 12px; overflow: hidden; background: var(--panel);
+    box-shadow: 0 0 0 0.5px var(--mac-glass-line), var(--mac-shadow-panel);
+    display: flex; flex-direction: column;
+  }
+  .ac-head { display: flex; align-items: center; gap: 8px; padding: 10px 11px; border-bottom: 0.5px solid var(--line-soft); }
+  .ac-head .ic {
+    flex: none; width: 24px; height: 24px; border-radius: 7px; display: flex; align-items: center; justify-content: center;
+    background: var(--accent-bg); color: var(--accent); font-size: 12px;
+  }
+  .ac-head .tt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .ac-head .tt b { font-size: 12.5px; font-weight: 650; }
+  .ac-head .tt i { font-size: 10.5px; color: var(--faint); font-style: normal; font-family: var(--mono); }
+  .ac-head .right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .pill {
+    font-size: 10.5px; font-weight: 620; padding: 2px 7px; border-radius: 999px;
+    background: var(--accent-bg); color: var(--accent); white-space: nowrap;
+  }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.stop { background: var(--panel-3); color: var(--dim); }
+  .stopbtn { font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: 7px; border: 0.5px solid var(--line-strong); background: var(--panel-2); color: var(--dim); cursor: pointer; }
+  .ac-body { padding: 8px 8px 4px; display: flex; flex-direction: column; gap: 2px; }
+
+  /* 纵向时间线（A） */
+  .tl { display: flex; flex-direction: column; }
+  .tl .r { display: grid; grid-template-columns: 18px 1fr; gap: 8px; padding: 5px 3px; border-radius: 8px; position: relative; }
+  .tl .r:hover { background: var(--panel-2); }
+  .tl .r .gut { display: flex; flex-direction: column; align-items: center; }
+  .node {
+    width: 15px; height: 15px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 8px; font-weight: 700; color: #fff; background: var(--ok); flex: none;
+  }
+  .node.run { background: var(--accent); }
+  .node.bad { background: var(--danger); }
+  .node.skip { background: var(--line-lit); }
+  .tl .r .line { flex: 1; width: 1px; background: var(--line); margin: 2px 0 -5px; }
+  .tl .r:last-child .line { display: none; }
+  .tl .main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .tl .l1 { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
+  .tl .l1 .no { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+  .tl .l1 .mm { font-weight: 620; }
+  .tl .l1 .mm.b { color: #a259ff; }
+  .tl .l1 .res { color: var(--dim); }
+  .tl .l1 .res b { color: var(--text); }
+  .tl .l2 { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--faint); }
+  .tl .l2 .sha { font-family: var(--mono); }
+  .tl .l2 .diff .add { color: var(--ok); }
+  .tl .l2 .diff .del { color: var(--danger); }
+  .tl .bar { margin-top: 3px; height: 3px; border-radius: 99px; background: var(--panel-3); overflow: hidden; }
+  .tl .bar > i { display: block; height: 100%; border-radius: 99px; background: var(--accent); }
+  .sev { display: inline-flex; gap: 4px; }
+  .sev i { font-style: normal; }
+  .sev .c { color: var(--danger); }
+  .sev .h { color: var(--warn); }
+  .sev .m { color: var(--accent); }
+  .sev .l { color: var(--faint); }
+  .paused {
+    display: flex; flex-direction: column; gap: 7px; margin: 6px 3px 8px; padding: 9px 10px; border-radius: 9px;
+    background: var(--danger-bg); box-shadow: 0 0 0 0.5px var(--danger-dim);
+  }
+  .paused .msg { font-size: 11.5px; color: var(--danger); line-height: 1.5; }
+  .paused .acts { display: flex; gap: 6px; }
+  .paused .acts .btn { font-size: 11.5px; padding: 4px 10px; }
+  .ac-foot {
+    display: flex; align-items: center; gap: 8px; padding: 8px 11px; border-top: 0.5px solid var(--line-soft);
+    font-size: 11px; color: var(--faint);
+  }
+  .ac-foot .right { margin-left: auto; }
+
+  /* 横向阶段条（B） */
+  .stages { display: flex; align-items: stretch; gap: 4px; padding: 3px; }
+  .stages .st {
+    flex: 1; display: flex; flex-direction: column; gap: 3px; padding: 5px 6px; border-radius: 8px;
+    background: var(--panel-2); font-size: 10.5px; color: var(--faint); min-width: 0;
+  }
+  .stages .st b { font-size: 11px; color: var(--dim); font-weight: 620; }
+  .stages .st .u { height: 2.5px; border-radius: 99px; background: var(--line); }
+  .stages .st.done { background: var(--ok-bg); }
+  .stages .st.done b, .stages .st.done { color: var(--ok); }
+  .stages .st.done .u { background: var(--ok); }
+  .stages .st.now { background: var(--accent-bg); }
+  .stages .st.now b, .stages .st.now { color: var(--accent); }
+  .stages .st.now .u { background: linear-gradient(90deg, var(--accent) 38%, var(--accent-dim) 38%); }
+  .more {
+    align-self: flex-start; font: inherit; font-size: 11px; color: var(--dim); background: transparent;
+    border: 0; padding: 3px 6px; border-radius: 7px; cursor: pointer;
+  }
+  .more:hover { background: var(--panel-2); }
+
+  /* 对话里的轮次卡（两种变体共用） */
+  .chatdemo { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .chatdemo .cap { font-size: 11px; font-weight: 650; color: var(--faint); letter-spacing: 0.02em; }
+  .turncard {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 11px;
+    background: var(--panel-2); box-shadow: 0 0 0 0.5px var(--mac-glass-line); font-size: 12px;
+  }
+  .turncard .ic { flex: none; width: 20px; height: 20px; border-radius: 6px; background: var(--accent-bg); color: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 11px; }
+  .turncard .tt { font-weight: 620; }
+  .turncard .sub { color: var(--faint); font-size: 11px; }
+  .turncard .chev { margin-left: auto; color: var(--faint); font-size: 10px; }
+
+  /* ---------------------------------------------------------------- 屏 3：轮次专用窗 */
+  .sheet {
+    width: 980px; max-width: 100%; border-radius: 16px; overflow: hidden; background: var(--mac-glass-solid);
+    backdrop-filter: var(--mac-blur); -webkit-backdrop-filter: var(--mac-blur);
+    box-shadow: var(--mac-shadow-window); border: 0.5px solid var(--mac-glass-line);
+    display: flex; flex-direction: column;
+  }
+  .sheet-head { display: flex; align-items: flex-start; gap: 10px; padding: 13px 16px 11px; }
+  .sheet-head .k { font-size: 10.5px; font-weight: 650; letter-spacing: 0.06em; color: var(--faint); text-transform: uppercase; }
+  .sheet-head h2 { margin: 2px 0 0; font-size: 15px; font-weight: 650; }
+  .sheet-head .meta { margin-top: 3px; font-size: 11px; color: var(--faint); display: flex; gap: 10px; flex-wrap: wrap; }
+  .sheet-head .meta .sha { font-family: var(--mono); }
+  .sheet-head .right { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .sheet-body { padding: 0 16px 14px; display: grid; gap: 10px; min-height: 0; }
+  .sheet-body.three { grid-template-columns: 1.15fr 0.95fr 0.9fr; }
+  .sheet-body.two { grid-template-columns: 1.4fr 0.9fr; }
+  .panel {
+    min-height: 280px;
+    border-radius: 11px; background: var(--panel); box-shadow: 0 0 0 0.5px var(--mac-glass-line), var(--mac-shadow-panel);
+    display: flex; flex-direction: column; overflow: hidden; min-width: 0;
+  }
+  .panel > .ph { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 0.5px solid var(--line-soft); font-size: 11px; font-weight: 650; letter-spacing: 0.02em; color: var(--dim); }
+  .panel > .ph .n { color: var(--faint); font-weight: 500; }
+  .panel > .pb { padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; overflow: auto; }
+  .finding { display: flex; flex-direction: column; gap: 4px; padding: 7px 8px; border-radius: 9px; background: var(--panel-2); }
+  .finding .top { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .finding .path { font-family: var(--mono); font-size: 10.5px; color: var(--accent); }
+  .finding .txt { font-size: 11.5px; color: var(--dim); line-height: 1.55; }
+  .tag { font-size: 10px; padding: 1px 5px; border-radius: 5px; font-weight: 620; }
+  .tag.fixed { background: var(--ok-bg); color: var(--ok); }
+  .tag.fp { background: var(--panel-3); color: var(--dim); }
+  .tag.crit { background: var(--danger-bg); color: var(--danger); }
+  .tag.high { background: var(--warn-bg); color: var(--warn); }
+  .tag.med { background: var(--accent-bg); color: var(--accent); }
+  .verdict { display: flex; flex-direction: column; gap: 3px; padding: 7px 8px; border-radius: 9px; background: var(--panel-2); }
+  .verdict .v1 { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 620; }
+  .verdict .why { font-size: 11px; color: var(--faint); line-height: 1.5; }
+  .verdict .why q { color: var(--dim); font-style: italic; }
+  .json {
+    font-family: var(--mono); font-size: 10px; color: var(--dim); background: var(--sunken); border-radius: 8px;
+    padding: 7px 8px; white-space: pre-wrap; word-break: break-word; line-height: 1.55;
+  }
+  .json .k2 { color: var(--accent); }
+  .json .s2 { color: var(--ok); }
+  .stat { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--dim); }
+  .stat .add { color: var(--ok); font-family: var(--mono); }
+  .stat .del { color: var(--danger); font-family: var(--mono); }
+  .fileline { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 0; }
+  .fileline .p { flex: 1; font-family: var(--mono); font-size: 10.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fileline .plus { color: var(--ok); font-family: var(--mono); font-size: 10px; }
+  .fileline .minus { color: var(--danger); font-family: var(--mono); font-size: 10px; }
+  .summary-strip {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 10px; border-radius: 10px;
+    background: var(--accent-bg); font-size: 11px; color: var(--dim); grid-column: 1 / -1;
+  }
+  .summary-strip b { color: var(--text); font-weight: 620; }
+  .summary-strip .sep { width: 1px; height: 12px; background: var(--mac-glass-line); }
+
+  /* ---------------------------------------------------------------- 底部选择条 */
+  .picker {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 60;
+    display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 13px;
+    background: var(--mac-glass-strong); backdrop-filter: var(--mac-blur); -webkit-backdrop-filter: var(--mac-blur);
+    box-shadow: var(--mac-shadow-menu); border: 0.5px solid var(--mac-glass-line);
+  }
+  .picker .who { font-size: 11.5px; color: var(--dim); }
+  .picker .who b { color: var(--text); }
+  .picker .seg button { padding: 3px 11px; }
+  .verdictline { font-size: 11px; color: var(--faint); max-width: 300px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="t">原型 · 自动评审</span>
+  <div class="seg" id="screens">
+    <button data-screen="1" class="on">① 设置 dialog</button>
+    <button data-screen="2">② 自动评审卡</button>
+    <button data-screen="3">③ 轮次专用窗</button>
+  </div>
+  <div class="spacer"></div>
+  <span class="hint"><span class="kbd">1</span><span class="kbd">2</span><span class="kbd">3</span> 切屏 · <span class="kbd">←</span><span class="kbd">→</span> 切变体 · <span class="kbd">S</span> 跑着/暂停/签收 · <span class="kbd">T</span> 主题</span>
+</div>
+
+<div class="stage" data-screen="1">
+
+  <!-- ============================================================ 屏 1 · 变体 A：两栏表单 -->
+  <div class="scrim" data-variant="A">
+    <div class="modal">
+      <div class="modal-head">
+        <span class="k">代码评审</span>
+        <h2>自动评审</h2>
+        <span class="sub">两个模型交替评，修完再评，直到同一份 diff 上两家都签收。</span>
+      </div>
+      <div class="modal-body">
+        <div class="cols2">
+          <div class="fld">
+            <span class="lab">模型排班</span>
+            <div class="chiprow">
+              <span class="who"><i class="dot"></i>A</span>
+              <span class="mchip">DeepSeek-V3.2 <span class="pid">deepseek</span></span>
+            </div>
+            <div class="chiprow">
+              <span class="who"><i class="dot b"></i>B</span>
+              <span class="mchip">Claude Sonnet 4.5 <span class="pid">anthropic</span></span>
+            </div>
+            <span class="note">顺序 A → B → A → B 交替；任何改动落盘，两家签收一起作废。</span>
+            <div class="stepper" style="margin-top:4px">
+              <span class="lab" style="font-size:11px;color:var(--faint)">最多</span>
+              <span class="box"><button>−</button><b>10</b><button>＋</button></span>
+              <span class="unit">轮</span>
+            </div>
+          </div>
+          <div class="fld">
+            <span class="lab">完成后</span>
+            <div class="switchcard">
+              <div class="txt"><b>自动合并 PR</b><i>checks 全绿 + mergeable 才合，用 merge commit</i></div>
+              <span class="sw"></span>
+            </div>
+            <div class="checkbox">
+              <span class="bx">✓</span>
+              <span>同一批意见连续两轮没消掉就停（熔断）</span>
+            </div>
+            <span class="note">运行期间只放行「推这条分支」「合这个 PR」，结束即收回。</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span class="foot-note"><span class="bolt">⚡</span>最少 2 轮（两家各签收一次）</span>
+        <div class="row-end">
+          <button class="btn ghost">取消</button>
+          <button class="btn primary">开始自动评审</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ 屏 1 · 变体 B：带预演 -->
+  <div class="scrim hidden" data-variant="B">
+    <div class="modal" style="width:600px">
+      <div class="modal-head">
+        <span class="k">代码评审</span>
+        <h2>自动评审</h2>
+        <span class="sub">PR #747 · 分支 feat/review-auto → main</span>
+      </div>
+      <div class="modal-body">
+        <div class="fld">
+          <span class="lab">模型排班</span>
+          <div class="chiprow">
+            <span class="who"><i class="dot"></i>A</span>
+            <span class="mchip">DeepSeek-V3.2 <span class="pid">deepseek</span></span>
+          </div>
+          <div class="chiprow">
+            <span class="who"><i class="dot b"></i>B</span>
+            <span class="mchip">Claude Sonnet 4.5 <span class="pid">anthropic</span></span>
+          </div>
+        </div>
+        <div class="hr"></div>
+        <div class="cols2">
+          <div class="fld">
+            <span class="lab">上限</span>
+            <div class="stepper">
+              <span class="box"><button>−</button><b>10</b><button>＋</button></span>
+              <span class="unit">轮</span>
+            </div>
+            <div class="checkbox">
+              <span class="bx">✓</span>
+              <span>重复意见连续两轮就停</span>
+            </div>
+          </div>
+          <div class="fld">
+            <span class="lab">完成后</span>
+            <div class="switchcard">
+              <div class="txt"><b>自动合并 PR</b><i>checks 绿 + mergeable</i></div>
+              <span class="sw"></span>
+            </div>
+          </div>
+        </div>
+        <div class="rehearse">
+          <span class="cap">按下开始之后会发生什么</span>
+          <div class="rail">
+            <span class="nd"><b>#1</b> A 评</span><span class="ar">→</span>
+            <span class="nd"><b>#2</b> <b style="color:#a259ff">B</b> 评</span><span class="ar">→</span>
+            <span class="nd"><b>#3</b> 有意见就修 → 提交</span><span class="ar">→</span>
+            <span class="nd"><b>#4</b> A 复评 …</span>
+          </div>
+          <span class="tail">末两轮必须评同一份 diff 且两家都零意见；最多 10 轮，撞线或意见重复就停下来等你。</span>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span class="foot-note"><span class="bolt">⚡</span>最少 2 轮</span>
+        <div class="row-end">
+          <button class="btn ghost">取消</button>
+          <button class="btn primary">开始自动评审</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ============================================================ 屏 2 · 自动评审卡 -->
+<div class="stage hidden" data-screen="2">
+  <div class="dock">
+    <div class="dock-head">
+      <div class="dock-tabs">
+        <span>需要你</span><span>执行</span><span>浏览器</span><span class="on">代码评审</span>
+      </div>
+    </div>
+    <div class="dock-body">
+
+      <!-- 上下文：评什么（缩略） -->
+      <div class="mini-form">
+        <div class="tiles">
+          <span class="tile"><span class="t">工作区改动</span><span class="s">未提交</span></span>
+          <span class="tile"><span class="t">分支 vs 主干</span><span class="s">HEAD ← main</span></span>
+          <span class="tile"><span class="t">单个提交</span><span class="s">选一个</span></span>
+          <span class="tile on"><span class="t">GitHub PR</span><span class="s">#747</span></span>
+        </div>
+        <button class="mini-btn primary">开始评审</button>
+        <button class="mini-btn">自动评审…</button>
+      </div>
+
+      <!-- ---------- 变体 A：纵向时间线 ---------- -->
+      <div class="autocard" data-variant="A" data-state="run">
+        <div class="ac-head">
+          <span class="ic">↻</span>
+          <span class="tt"><b>自动评审 · #747</b><i>feat/review-auto → main</i></span>
+          <span class="right">
+            <span class="pill">第 3 / 10 轮</span>
+            <button class="stopbtn">停止</button>
+          </span>
+        </div>
+        <div class="ac-body">
+          <div class="tl">
+            <div class="r">
+              <span class="gut"><span class="node">✓</span><span class="line"></span></span>
+              <span class="main">
+                <span class="l1"><span class="no">#1</span><span class="mm">A</span><span class="res"><b>3 条</b> → 已修</span></span>
+                <span class="l2"><span class="sha">4f2c1a9</span><span class="diff"><span class="add">+48</span> <span class="del">−12</span></span><span>2 分 10 秒</span><span>8.2k tok</span></span>
+              </span>
+            </div>
+            <div class="r">
+              <span class="gut"><span class="node">✓</span><span class="line"></span></span>
+              <span class="main">
+                <span class="l1"><span class="no">#2</span><span class="mm b">B</span><span class="res"><b>2 条</b> → 已修</span></span>
+                <span class="l2"><span class="sha">9d3b7e0</span><span class="diff"><span class="add">+19</span> <span class="del">−4</span></span><span>1 分 48 秒</span><span>7.1k tok</span></span>
+              </span>
+            </div>
+            <div class="r">
+              <span class="gut"><span class="node run">…</span><span class="line"></span></span>
+              <span class="main">
+                <span class="l1"><span class="no">#3</span><span class="mm">A</span><span class="res">评 9d3b7e0 的改动…</span></span>
+                <span class="l2"><span>已评 3 / 8 个文件</span><span>38 秒</span></span>
+                <span class="bar"><i style="width:38%"></i></span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="ac-foot"><span>已花 31.4k tok · 5 分 12 秒</span><span class="right">两家签收后自动结束</span></div>
+      </div>
+
+      <!-- 变体 A · 暂停态 -->
+      <div class="autocard hidden" data-variant="A" data-state="paused">
+        <div class="ac-head">
+          <span class="ic">↻</span>
+          <span class="tt"><b>自动评审 · #747</b><i>feat/review-auto → main</i></span>
+          <span class="right"><span class="pill warn">已暂停 · 第 3 轮</span><button class="stopbtn">停止</button></span>
+        </div>
+        <div class="ac-body">
+          <div class="tl">
+            <div class="r">
+              <span class="gut"><span class="node">✓</span><span class="line"></span></span>
+              <span class="main"><span class="l1"><span class="no">#1</span><span class="mm">A</span><span class="res"><b>3 条</b> → 已修</span></span>
+              <span class="l2"><span class="sha">4f2c1a9</span><span>2 分 10 秒</span></span></span>
+            </div>
+            <div class="r">
+              <span class="gut"><span class="node">✓</span><span class="line"></span></span>
+              <span class="main"><span class="l1"><span class="no">#2</span><span class="mm b">B</span><span class="res"><b>2 条</b> → 已修</span></span>
+              <span class="l2"><span class="sha">9d3b7e0</span><span>1 分 48 秒</span></span></span>
+            </div>
+            <div class="r">
+              <span class="gut"><span class="node bad">✕</span><span class="line"></span></span>
+              <span class="main"><span class="l1"><span class="no">#3</span><span class="mm">A</span><span class="res" style="color:var(--danger)">失败</span></span>
+              <span class="l2"><span>ocr 退出码 1</span><span>·</span><span>git push 被拒（远端有新提交）</span></span></span>
+            </div>
+          </div>
+          <div class="paused">
+            <span class="msg">停在 #3：评审进程退出（ocr 退出码 1）。修好之后【继续】会重跑这一步。</span>
+            <span class="acts">
+              <button class="btn primary">继续</button>
+              <button class="btn">跳过这一轮</button>
+              <button class="btn ghost">停止</button>
+            </span>
+          </div>
+        </div>
+        <div class="ac-foot"><span>跳过的那一轮不计入签收</span></div>
+      </div>
+
+      <!-- 变体 A · 签收态 -->
+      <div class="autocard hidden" data-variant="A" data-state="done">
+        <div class="ac-head">
+          <span class="ic" style="background:var(--ok-bg);color:var(--ok)">✓</span>
+          <span class="tt"><b>自动评审 · #747</b><i>feat/review-auto → main</i></span>
+          <span class="right"><span class="pill ok">两家已签收</span></span>
+        </div>
+        <div class="ac-body">
+          <div class="tl">
+            <div class="r"><span class="gut"><span class="node">✓</span><span class="line"></span></span>
+              <span class="main"><span class="l1"><span class="no">#1</span><span class="mm">A</span><span class="res"><b>3 条</b> → 已修</span></span>
+              <span class="l2"><span class="sha">4f2c1a9</span><span class="diff"><span class="add">+48</span> <span class="del">−12</span></span><span>2 分 10 秒</span><span>8.2k tok</span></span></span></div>
+            <div class="r"><span class="gut"><span class="node">✓</span><span class="line"></span></span>
+              <span class="main"><span class="l1"><span class="no">#2</span><span class="mm b">B</span><span class="res"><b>2 条</b> → 已修</span></span>
+              <span class="l2"><span class="sha">9d3b7e0</span><span class="diff"><span class="add">+19</span> <span class="del">−4</span></span><span>1 分 48 秒</span><span>7.1k tok</span></span></span></div>
+            <div class="r"><span class="gut"><span class="node">✓</span><span class="line"></span></span>
+              <span class="main"><span class="l1"><span class="no">#3</span><span class="mm">A</span><span class="res">零意见 · 签收 <b>9d3b7e0</b></span></span>
+              <span class="l2"><span>1 分 32 秒</span><span>7.8k tok</span></span></span></div>
+            <div class="r"><span class="gut"><span class="node">✓</span><span class="line"></span></span>
+              <span class="main"><span class="l1"><span class="no">#4</span><span class="mm b">B</span><span class="res">零意见 · 签收 <b>9d3b7e0</b></span></span>
+              <span class="l2"><span>1 分 40 秒</span><span>8.0k tok</span></span></span></div>
+          </div>
+        </div>
+        <div class="ac-foot"><span>4 轮 · 7 分 10 秒 · 31.4k tok · 已合并 #747（merge commit）</span><span class="right">写进会话 · 意见已打标记</span></div>
+      </div>
+
+      <!-- ---------- 变体 B：横向阶段条 ---------- -->
+      <div class="autocard hidden" data-variant="B" data-state="run">
+        <div class="ac-head">
+          <span class="ic">↻</span>
+          <span class="tt"><b>自动评审 · #747</b><i>feat/review-auto → main</i></span>
+          <span class="right"><span class="pill">第 3 / 10 轮</span><button class="stopbtn">停止</button></span>
+        </div>
+        <div class="ac-body">
+          <div class="stages">
+            <span class="st done"><b>#1 A</b><span>3 条 → 修</span><span class="u"></span></span>
+            <span class="st done"><b>#2 B</b><span>2 条 → 修</span><span class="u"></span></span>
+            <span class="st now"><b>#3 A</b><span>正在评 3 / 8</span><span class="u"></span></span>
+            <span class="st"><b>#4 B</b><span>待评</span><span class="u"></span></span>
+          </div>
+          <span class="more">▾ 更早的 2 轮明细</span>
+          <div class="tl" style="margin-top:2px">
+            <div class="r">
+              <span class="gut"><span class="node run">…</span></span>
+              <span class="main">
+                <span class="l1"><span class="no">#3</span><span class="mm">A</span><span class="res">评 9d3b7e0</span></span>
+                <span class="l2"><span>模型 deepseek/DeepSeek-V3.2</span><span>38 秒</span></span>
+                <span class="bar"><i style="width:38%"></i></span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="ac-foot"><span>已花 31.4k tok</span><span class="right">3 轮之后再量</span></div>
+      </div>
+
+      <div class="autocard hidden" data-variant="B" data-state="paused">
+        <div class="ac-head">
+          <span class="ic">↻</span>
+          <span class="tt"><b>自动评审 · #747</b><i>feat/review-auto → main</i></span>
+          <span class="right"><span class="pill warn">已暂停 · 第 3 轮</span><button class="stopbtn">停止</button></span>
+        </div>
+        <div class="ac-body">
+          <div class="stages">
+            <span class="st done"><b>#1 A</b><span>3 条 → 修</span><span class="u"></span></span>
+            <span class="st done"><b>#2 B</b><span>2 条 → 修</span><span class="u"></span></span>
+            <span class="st" style="background:var(--danger-bg);color:var(--danger)"><b style="color:var(--danger)">#3 A</b><span>失败</span><span class="u" style="background:var(--danger)"></span></span>
+            <span class="st"><b>#4 B</b><span>待评</span><span class="u"></span></span>
+          </div>
+          <div class="paused">
+            <span class="msg">停在 #3：ocr 退出码 1。</span>
+            <span class="acts"><button class="btn primary">继续</button><button class="btn">跳过这一轮</button><button class="btn ghost">停止</button></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="autocard hidden" data-variant="B" data-state="done">
+        <div class="ac-head">
+          <span class="ic" style="background:var(--ok-bg);color:var(--ok)">✓</span>
+          <span class="tt"><b>自动评审 · #747</b><i>feat/review-auto → main</i></span>
+          <span class="right"><span class="pill ok">两家已签收</span></span>
+        </div>
+        <div class="ac-body">
+          <div class="stages">
+            <span class="st done"><b>#1 A</b><span>3 条 → 修</span><span class="u"></span></span>
+            <span class="st done"><b>#2 B</b><span>2 条 → 修</span><span class="u"></span></span>
+            <span class="st done"><b>#3 A</b><span>签收</span><span class="u"></span></span>
+            <span class="st done"><b>#4 B</b><span>签收</span><span class="u"></span></span>
+          </div>
+        </div>
+        <div class="ac-foot"><span>4 轮 · 7 分 10 秒 · 31.4k tok · 已合并 #747</span></div>
+      </div>
+
+      <!-- 对话里的轮次卡（两种变体都一样） -->
+      <div class="chatdemo">
+        <span class="cap">对话里长这样（修复提示词折成一张）</span>
+        <div class="turncard">
+          <span class="ic">↻</span>
+          <span><span class="tt">自动评审 · 第 1 轮 · 3 条意见</span> <span class="sub">DeepSeek-V3.2 · 点开看全文</span></span>
+          <span class="chev">›</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ 屏 3 · 轮次专用窗 -->
+<div class="stage hidden" data-screen="3">
+
+  <!-- ---------- 变体 A：三栏并列 ---------- -->
+  <div class="sheet" data-variant="A">
+    <div class="sheet-head">
+      <div>
+        <div class="k">自动评审 · 第 2 轮</div>
+        <h2>Claude Sonnet 4.5 评 9d3b7e0</h2>
+        <div class="meta"><span class="sha">9d3b7e0</span><span>2 条意见</span><span>1 分 48 秒</span><span>7.1k tok</span><span>回执：已修</span></div>
+      </div>
+      <div class="right"><button class="stopbtn">上一轮</button><button class="stopbtn">下一轮</button><button class="btn ghost">关闭</button></div>
+    </div>
+    <div class="sheet-body three">
+      <div class="panel">
+        <div class="ph">意见 <span class="n">2 条</span></div>
+        <div class="pb">
+          <div class="finding">
+            <div class="top"><span class="tag high">高</span><span class="path">web/src/review.ts:907</span><span class="tag fixed">已修</span></div>
+            <span class="txt">主按钮在跑着时仍然可点，会被当成「开下一条」，与 D420 的额度判重相冲突。</span>
+          </div>
+          <div class="finding">
+            <div class="top"><span class="tag med">中</span><span class="path">bridge/src/review.ts:1140</span><span class="tag fp">误报</span></div>
+            <span class="txt">`startReview()` 没有校验 expectRepo；建议在入口补一次。</span>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ph">回执 <span class="n">修了 1 / 误报 1</span></div>
+        <div class="pb">
+          <div class="verdict">
+            <span class="v1"><span class="tag fixed">已修</span> web/src/review.ts:907</span>
+            <span class="why">改成跑着时禁用并写明原因；顺手补了 <q>rv-why</q> 那句话。</span>
+          </div>
+          <div class="verdict">
+            <span class="v1"><span class="tag fp">误报</span> bridge/src/review.ts:1140</span>
+            <span class="why">校验在 <q>review.run</q> 的 handler 里，`expectRepoMismatch()` 已经拦过。</span>
+          </div>
+          <div class="json"><span class="k2">"verdicts"</span>: [
+  { <span class="k2">"path"</span>: <span class="s2">"web/src/review.ts"</span>, <span class="k2">"verdict"</span>: <span class="s2">"fixed"</span> },
+  { <span class="k2">"path"</span>: <span class="s2">"bridge/src/review.ts"</span>, <span class="k2">"verdict"</span>: <span class="s2">"false-positive"</span> }
+]</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ph">本轮改动 <span class="n">2 个文件</span></div>
+        <div class="pb">
+          <div class="stat"><span class="sha" style="font-family:var(--mono)">9d3b7e0</span><span class="add">+19</span><span class="del">−4</span></div>
+          <div class="fileline"><span class="p">web/src/review.ts</span><span class="plus">+16</span><span class="minus">−4</span></div>
+          <div class="fileline"><span class="p">web/src/i18n/zh.ts</span><span class="plus">+3</span></div>
+          <div class="hr"></div>
+          <div class="stat"><span>提交信息</span></div>
+          <div class="json" style="white-space:pre-wrap">fix(review): 跑着时禁用主按钮并写明原因</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- 变体 B：摘要带 + 双栏 ---------- -->
+  <div class="sheet hidden" data-variant="B">
+    <div class="sheet-head">
+      <div>
+        <div class="k">自动评审 · 第 2 轮</div>
+        <h2>Claude Sonnet 4.5 评 9d3b7e0</h2>
+      </div>
+      <div class="right"><button class="stopbtn">上一轮</button><button class="stopbtn">下一轮</button><button class="btn ghost">关闭</button></div>
+    </div>
+    <div class="sheet-body two">
+      <div class="summary-strip">
+        <span><b>2 条</b> 意见</span><span class="sep"></span>
+        <span><b>1</b> 已修 · <b>1</b> 误报</span><span class="sep"></span>
+        <span><b>2</b> 个文件 <span class="add" style="color:var(--ok);font-family:var(--mono)">+19</span> <span style="color:var(--danger);font-family:var(--mono)">−4</span></span><span class="sep"></span>
+        <span class="sha" style="font-family:var(--mono)">9d3b7e0</span><span class="sep"></span>
+        <span>1 分 48 秒 · 7.1k tok</span>
+        <span style="margin-left:auto" class="pill ok">已修完</span>
+      </div>
+      <div class="panel">
+        <div class="ph">意见 <span class="n">2 条 · 逐条带结论</span></div>
+        <div class="pb">
+          <div class="finding">
+            <div class="top"><span class="tag high">高</span><span class="path">web/src/review.ts:907</span><span class="tag fixed">已修</span></div>
+            <span class="txt">主按钮在跑着时仍然可点，会被当成「开下一条」。</span>
+            <span class="why" style="font-size:11px;color:var(--faint)">→ 改成跑着时禁用并写明原因；补了 <q style="color:var(--dim)">rv-why</q> 那句。</span>
+          </div>
+          <div class="finding">
+            <div class="top"><span class="tag med">中</span><span class="path">bridge/src/review.ts:1140</span><span class="tag fp">误报</span></div>
+            <span class="txt">`startReview()` 没有校验 expectRepo。</span>
+            <span class="why" style="font-size:11px;color:var(--faint)">→ `expectRepoMismatch()` 已经在 handler 里拦过。</span>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;min-height:0">
+        <div class="panel">
+          <div class="ph">本轮改动</div>
+          <div class="pb">
+            <div class="fileline"><span class="p">web/src/review.ts</span><span class="plus">+16</span><span class="minus">−4</span></div>
+            <div class="fileline"><span class="p">web/src/i18n/zh.ts</span><span class="plus">+3</span></div>
+            <div class="json" style="white-space:pre-wrap">fix(review): 跑着时禁用主按钮并写明原因</div>
+          </div>
+        </div>
+        <div class="panel" style="flex:1">
+          <div class="ph">回执原文</div>
+          <div class="pb">
+            <div class="json"><span class="k2">"verdicts"</span>: [
+  { <span class="k2">"path"</span>: <span class="s2">"web/src/review.ts"</span>, <span class="k2">"verdict"</span>: <span class="s2">"fixed"</span> },
+  { <span class="k2">"path"</span>: <span class="s2">"bridge/src/review.ts"</span>, <span class="k2">"verdict"</span>: <span class="s2">"false-positive"</span> }
+]</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ============================================================ 底部选择条 -->
+<div class="picker">
+  <span class="who">当前：<b id="pk-screen">① 设置 dialog</b> · 变体 <b id="pk-variant">A</b></span>
+  <div class="seg" id="variants">
+    <button data-variant="A" class="on">A</button>
+    <button data-variant="B">B</button>
+  </div>
+  <span class="verdictline" id="pk-note"></span>
+</div>
+
+<script>
+  const NOTES = {
+    "1:A": "两栏表单：左边排班 + 轮数，右边收尾动作。最省一眼，信息密度高。",
+    "1:B": "带预演：下半多一条「#1 A → #2 B → #3 修」的时间线，开始前就看得到会发生什么。",
+    "2:A": "纵向时间线：一行一轮，与现有评审记录同一套語汇；暂停态的三颗按钮就在卡里。",
+    "2:B": "横向阶段条：顶上排「评 / 修」，最近几轮明细，更早的折叠。轮次多时省高度。",
+    "3:A": "三栏并列：意见 / 回执 / 本轮改动各一栏，一眼横向扫完。",
+    "3:B": "摘要带 + 双栏：顶上一条事实，左意见宽、右侧叠改动与回执原文。意见读起来更宽。",
+  };
+  const NAMES = { 1: "① 设置 dialog", 2: "② 自动评审卡", 3: "③ 轮次专用窗" };
+  let screen = 1, variant = "A", state = "run";
+  const STATES = ["run", "paused", "done"];
+  // `?screen=1|2|3&variant=A|B&state=run|paused|done`：截图与分享某一屏用（也方便直接发链接给人看）
+  {
+    const q = new URLSearchParams(location.search);
+    const s = Number(q.get("screen"));
+    if (s >= 1 && s <= 3) screen = s;
+    const v = (q.get("variant") ?? "").toUpperCase();
+    if (v === "A" || v === "B") variant = v;
+    const st = (q.get("state") ?? "").toLowerCase();
+    if (STATES.includes(st)) state = st;
+  }
+
+  // 一次算完所有显隐：屏 → 变体 → 状态（屏 2 的卡同时带 data-variant 与 data-state）
+  function apply() {
+    document.querySelectorAll('.stage[data-screen]').forEach((s) => s.classList.toggle("hidden", s.dataset.screen !== String(screen)));
+    document.querySelectorAll('[data-variant]').forEach((n) => {
+      if (n.classList.contains("stage")) return;
+      const byVariant = n.dataset.variant !== undefined && n.dataset.variant !== variant;
+      const byState = n.dataset.state !== undefined && n.dataset.state !== state;
+      n.classList.toggle("hidden", byVariant || byState);
+    });
+    document.querySelectorAll('#screens button').forEach((b) => b.classList.toggle("on", b.dataset.screen === String(screen)));
+    document.querySelectorAll('#variants button').forEach((b) => b.classList.toggle("on", b.dataset.variant === variant));
+    document.getElementById("pk-screen").textContent = NAMES[screen];
+    document.getElementById("pk-variant").textContent = variant;
+    document.getElementById("pk-note").textContent = (screen === 2 ? "状态「" + ({ run: "跑着", paused: "暂停", done: "签收" })[state] + "」· " : "") + (NOTES[screen + ":" + variant] || "");
+  }
+
+  document.querySelectorAll('#screens button').forEach((b) => (b.onclick = () => { screen = Number(b.dataset.screen); apply(); }));
+  document.querySelectorAll('#variants button').forEach((b) => (b.onclick = () => { variant = b.dataset.variant; apply(); }));
+
+  addEventListener("keydown", (e) => {
+    if (e.key === "1" || e.key === "2" || e.key === "3") { screen = Number(e.key); apply(); }
+    else if (e.key === "ArrowLeft") { variant = variant === "A" ? "B" : "A"; apply(); }
+    else if (e.key === "ArrowRight") { variant = variant === "A" ? "B" : "A"; apply(); }
+    else if (e.key === "s" || e.key === "S") { state = STATES[(STATES.indexOf(state) + 1) % STATES.length]; apply(); }
+    else if (e.key === "t" || e.key === "T") {
+      document.documentElement.dataset.theme = document.documentElement.dataset.theme === "mac-dark" ? "mac-light" : "mac-dark";
+    }
+  });
+
+  document.querySelectorAll('.sw').forEach((sw) => (sw.onclick = () => sw.classList.toggle("on")));
+
+  apply();
+</script>
+</body>
+</html>

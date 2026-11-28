@@ -69,6 +69,30 @@ interface SkillGroup {
  * 它必须是 ASCII：界面语言换掉的是抬头的字，「这是一条提醒」得靠一个不随语言变的东西认出来。
  */
 const REMIND_MARK = "[pi-web:remind]";
+/** 自动评审注入会话的修复提示词 / 合并指令开头就是这个标记（D462）：折成一张轮次卡。 */
+const AUTO_MARK = "[pi-web:auto]";
+
+/**
+ * 自动评审的一条注入消息（D462）：桥只写机器可读的抬头（`round=3 findings=2` /
+ * `merge pr=747`），标题由这里按界面语言拼 —— 桥写的中文不能当界面文案使。
+ * 返回值：`title` 是本地的标题，`body` 是标记后面那段正文（数据，原样给人看）。
+ */
+function autoMessage(text: string): { title: string; body: string } | null {
+  if (!text.startsWith(AUTO_MARK)) return null;
+  const rest = text.slice(AUTO_MARK.length);
+  // 抬头后面那段正文：两处（轮次 / 合并）用同一套切法，别各写一遍 slice + 去空行。
+  const after = (hit: RegExpExecArray | null): string => (hit ? rest.slice(hit[0].length).replace(/^\s*\n?/, "") : "");
+  const round = /^\s*round=(\d+)\s+findings=(\d+)/.exec(rest);
+  if (round) {
+    return {
+      title: tr("自动评审 · 第 {p1} 轮 · {p2} 条意见", { p1: round[1], p2: round[2] }),
+      body: after(round),
+    };
+  }
+  const merge = /^\s*merge\s+pr=(\d+)/.exec(rest);
+  if (merge) return { title: tr("自动评审 · 合并 PR #{p1}", { p1: merge[1] }), body: after(merge) };
+  return { title: tr("自动评审"), body: rest.trim() };
+}
 
 /** 提醒正文（去掉标记）；不是提醒就返回 null。 */
 function reminderBody(text: string): string | null {
@@ -1668,9 +1692,11 @@ export class ChatView {
 
     const reminded = item.kind === "user" ? reminderBody(item.text) : null;
     const reviewed = item.kind === "user" ? reviewBody(item.text) : null;
+    const auto = item.kind === "user" ? autoMessage(item.text) : null;
     const wrapKind = (): string => {
       if (reminded !== null) return "remind";
       if (reviewed !== null) return "review";
+      if (auto !== null) return "auto";
       return item.kind;
     };
     const wrap = el("div", `msg ${wrapKind()}`);
@@ -1683,6 +1709,21 @@ export class ChatView {
       const body = el("div", "body");
       body.textContent = reminded;
       wrap.append(head, body);
+      return wrap;
+    }
+    // 自动评审注入的修复提示词（D462）：每条几百字，冒充用户气泡会把对话冲烂 ——
+    // 收成一张「自动评审 · 第 3 轮 · 2 条意见」的卡，点开才看全文（与技能组同一套折叠语言）。
+    if (auto !== null) {
+      const head = el("div", "who");
+      head.append(icon("bolt", { size: 12 }), document.createTextNode(tr("自动评审 · {p1}", { p1: timeOf(item.ts) })));
+      const box = el("details", "summary-card auto-turn") as HTMLDetailsElement;
+      box.append(el("summary", "", auto.title));
+      const full = el("div", "body");
+      const pre = el("div", "auto-turn-body");
+      pre.textContent = auto.body;
+      full.append(pre);
+      box.append(full);
+      wrap.append(head, box);
       return wrap;
     }
     // 「⚡ 复盘」那一轮也是一条 user 消息（桥只有 prompt 通道），但它是一段写给模型的交代：

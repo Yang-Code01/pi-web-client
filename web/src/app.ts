@@ -79,6 +79,7 @@ import { BranchSheet } from "./branchsheet.ts";
 import { RepoPicker } from "./repopicker.ts";
 import { ReposSheet } from "./repossheet.ts";
 import { ReviewSheet } from "./review-sheet.ts";
+import { AutoRoundSheet, AutoSettingsSheet, type AutoSettingsValues, type AutoStateView } from "./reviewauto.ts";
 import { PrSheet, type PrInfo } from "./pr-sheet.ts";
 import { HandoffSheet } from "./handoff-sheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
@@ -96,6 +97,7 @@ import { Socket } from "./ws.ts";
 import {
   fixPrompt as reviewFixPrompt,
   fixPromptMany as reviewFixManyPrompt,
+  modeLabel,
   repoFromUrl as reviewRepoFromUrl,
   type FixContext as ReviewFixContext,
   type PullRequest as ReviewPr,
@@ -528,6 +530,17 @@ export class App {
   private reviewToasted = new Set<string>();
   /** `会话id|cwd`：变了就把面板状态清空（评审按会话分开）。 */
   private reviewSessionKey = "";
+  /** 当前会话的自动评审（D462）。桥按会话存一份，切会话时重新问一次。 */
+  private reviewAuto: AutoStateView | null = null;
+  /** 每个会话的自动评审状态：切会话时面板按它换卡片（「评审中 / 评审通过」徽标那一版没做，见 D462 第 20 条）。 */
+  private reviewAutoStates = new Map<string, AutoStateView>();
+  private autoSettings: AutoSettingsSheet | null = null;
+  /** 同一个会话里再打开设置时接着上次填的值（刷新页面就没了，与 D409 的模型口径一致）。 */
+  private autoSettingsLast: AutoSettingsValues | null = null;
+  private autoRoundSheet: AutoRoundSheet | null = null;
+  private autoRoundNo = 0;
+  /** 用户在自动评审跑着时按了发送、并在确认框里选了「接管」：这一下不再弹第二次。 */
+  private autoTakeover = false;
   /** 定时补问一次：页面重连后没人触发重画时，光靠 render 里的自愈等不到下一次重画。 */
   private reviewRetryTimer: number | null = null;
   /**
@@ -2903,6 +2916,24 @@ export class App {
         break;
       }
       // ------------------------------------------------ 代码评审（#651）
+      case "review.auto": {
+        // D462：一条自动评审的整份状态（桥每次迁移都会广播；页面只负责画）。
+        const sessionId = String(msg.sessionId ?? "");
+        const state = (msg.state ?? null) as AutoStateView | null;
+        if (state) this.reviewAutoStates.set(sessionId, state);
+        else this.reviewAutoStates.delete(sessionId);
+        if (msg.error) this.flashToast(String(msg.error), true, 8000);
+        if (sessionId === this.currentId) {
+          const before = this.reviewAuto?.status ?? "";
+          this.reviewAuto = state;
+          if (before !== state?.status) this.autoTakeover = false;
+          this.syncAutoRoundSheet();
+          // 全屏评审浮层里画的也是这张自动评审卡：别的评审帧都刷它，这一帧不刷就会停在上一次的状态。
+          this.syncReviewSheet();
+          if (this.queueTab === "review") this.renderQueue();
+        }
+        break;
+      }
       case "review.state": {
         const dir = this.reviewDir();
         // 评审按会话分开存：别的会话的帧不许动这一个（以前只按仓库分，切会话还看得到上一份）。
@@ -3929,6 +3960,12 @@ export class App {
   // ---------------------------------------------------------------- actions
   private sendPrompt(behavior: "steer" | "followUp" = "steer"): void {
     if (!this.currentId) return;
+    // 自动评审跑着时你自己发言 = 接管（D462 第 14 条）：先问一次，再决定停不停它。
+    // `reviewAuto` 只装当前会话那一份（帧按 sessionId 过滤、切会话时按 id 重取），不用再比一次 session。
+    if (!this.autoTakeover && this.reviewAuto && this.reviewAuto.status === "running") {
+      this.confirmAutoTakeover(() => this.sendPrompt(behavior));
+      return;
+    }
     const typed = this.composerText.trim();
     // #202 / D182: 粘贴块原样带走。`trim()` 会削掉块首行的缩进和末尾的空行 —— 贴一段代码时那是内容，
     // 不是排版噪音。只有「整块都是空白」才按空输入丢掉，和手打空格的规矩一致。
@@ -19820,6 +19857,11 @@ export class App {
     if (key === this.reviewSessionKey) return;
     this.reviewSessionKey = key;
     this.reviewState = null;
+    // D462：自动评审按会话各一条 —— 切会话时换成那个会话的那份（没跑过就是 null，卡片不出现）。
+    this.reviewAuto = this.reviewAutoStates.get(this.currentId ?? "") ?? null;
+    this.autoTakeover = false;
+    this.autoRoundSheet?.close();
+    this.autoRoundSheet = null;
     this.reviewProgresses = [];
     this.reviewTips = {};
     this.reviewTipsAt = 0;
@@ -19899,6 +19941,7 @@ export class App {
     if (!force && this.reviewAsked === dir) return false;
     this.reviewAsked = dir;
     this.socket.send({ type: "review.get", dir, sessionId: this.currentId, fresh });
+    this.socket.send({ type: "review.auto.get", sessionId: this.currentId });
     return true;
   }
 
@@ -20180,6 +20223,19 @@ export class App {
     return renderReview(this.reviewPanelInput());
   }
 
+  /**
+   * 「自动评审这颗按钮为什么开不了」：按优先级挑一句话（PR 分支对不上 > 已有一条在跑 > 缺前提）。
+   *
+   * 三分支写成方法而不是叠三元：再加一种不可开跑的理由时只加一行。
+   */
+  private autoWhy(view: { mismatch: boolean; local: string; head: string; missingWhy: string }): string {
+    if (view.mismatch) {
+      return tr("本地是 {p1}，PR 的 head 是 {p2} —— 自动评审只在你自己那条分支上跑", { p1: view.local, p2: view.head });
+    }
+    if (this.reviewAuto?.status === "running") return tr("这个会话已经有一条自动评审在跑了");
+    return view.missingWhy || "";
+  }
+
   /** 面板与「评审详情」dialog 共用同一份输入。 */
   private reviewPanelInput(): ReviewPanelInput {
     const dir = this.reviewDir();
@@ -20227,6 +20283,29 @@ export class App {
       severityLabels: { critical: tr("严重"), high: tr("高"), medium: tr("中"), low: tr("低") },
       // 同一组动作直接给面板：不再在 ReviewActions 里再抄一份（评审 #33）。
       ghActions: this.ghCardActions(),
+      auto: {
+        panel: (() => {
+          // D462 第 16 条：PR 模式要求「本地当前分支 = PR head」—— 按钮灰着并说清是哪两条对不上。
+          const prInfo = this.reviewPrInfo.number === Number(this.reviewPr) ? this.reviewPrInfo.info : null;
+          const local = (this.git?.branch ?? "").trim();
+          const head = String(prInfo?.headRefName ?? "").trim();
+          const mismatch = this.reviewMode === "pr" && Boolean(head) && Boolean(local) && head !== local;
+          const running = this.reviewAuto?.status === "running";
+          return {
+            state: this.reviewAuto,
+            canStart: view.canRun && !mismatch && !running,
+            why: this.autoWhy({ mismatch, local, head, missingWhy: view.missingWhy }),
+            modeName: modeLabel(this.reviewAuto?.config.mode || this.reviewMode),
+          };
+        })(),
+        actions: {
+          onSettings: () => this.openAutoSettings(),
+          onStop: () => this.socket.send({ type: "review.auto.stop", sessionId: this.currentId }),
+          onContinue: () => this.socket.send({ type: "review.auto.continue", sessionId: this.currentId }),
+          onSkip: () => this.socket.send({ type: "review.auto.skip", sessionId: this.currentId }),
+          onOpenRound: (n: number) => this.openAutoRound(n),
+        },
+      },
       actions: this.reviewActions(),
     };
   }
@@ -20474,6 +20553,169 @@ export class App {
   /** 帧到了就同步 dialog（没开着就什么都不做）。 */
   private syncReviewSheet(): void {
     this.reviewSheet?.update(this.reviewPanelInput());
+  }
+
+  // ---------------------------------------------------------------- 自动评审（D462）
+
+  /**
+   * 「模型 A 该从哪个模型起手」：`provider/id`；没有就空串（B 一直从空开始，要人另选一个）。
+   *
+   * 可选链不能写成 `last?.models.a.provider`：`last` 在、`models` 不在时那一下会抛。
+   */
+  private autoSlotStart(slot: "a" | "b"): string {
+    const pick = slot === "a" ? this.autoSettingsLast?.models?.a : null;
+    if (!pick?.model) return "";
+    return pick.provider ? `${pick.provider}/${pick.model}` : pick.model;
+  }
+
+  /** 设置 dialog（原型选的 B：上半设置、下半预演）。 */
+  private openAutoSettings(): void {
+    if (!this.currentId) return;
+    const effective = this.reviewEffectiveModel();
+    const canMerge = this.reviewMode === "pr" && Number(this.reviewPr) > 0;
+    const where = canMerge
+      ? tr("PR #{p1} · {p2}", { p1: String(Number(this.reviewPr) || 0), p2: this.reviewBranchHint() })
+      : tr("{p1} · {p2}", { p1: tr("自动评审"), p2: this.reviewScopeHint() });
+    const sheet = new AutoSettingsSheet({
+      defaultModel: effective ? { provider: effective.provider, model: effective.id, label: effective.name } : null,
+      last: this.autoSettingsLast,
+      where,
+      canMerge,
+      onPick: (slot) => {
+        // 复用输入框那颗 chip 背后的同一个「模型与思考」弹层：挑完回到这张 dialog。
+        this.openModelSheet(false, {
+          start: this.autoSlotStart(slot),
+          onPick: (m) => sheet.setModel(slot, { provider: m.provider, model: m.id, label: m.name }),
+        });
+      },
+      onStart: (values) => {
+        sheet.close();
+        this.startAutoReview(values);
+      },
+    });
+    sheet.onClose = () => {
+      if (this.autoSettings === sheet) this.autoSettings = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.autoSettings = sheet;
+  }
+
+  /** 「PR #747 · feat/x → main」那一行（只有 PR 模式才有两条分支）。 */
+  private reviewBranchHint(): string {
+    const info = this.reviewPrInfo.number === Number(this.reviewPr) ? this.reviewPrInfo.info : null;
+    if (!info) return tr("按当前分支");
+    return `${info.headRefName || "?"} → ${info.baseRefName || "?"}`;
+  }
+
+  private reviewScopeHint(): string {
+    if (this.reviewMode === "range") return `${this.reviewTarget || "HEAD"} ← ${this.reviewBase || "main"}`;
+    if (this.reviewMode === "commit") return this.reviewCommit || tr("一个提交");
+    return tr("HEAD 之前未提交的改动");
+  }
+
+  private startAutoReview(values: AutoSettingsValues): void {
+    const sessionId = this.currentId;
+    const dir = this.reviewDir();
+    if (!sessionId || !dir) return;
+    this.autoSettingsLast = values;
+    this.autoTakeover = false;
+    this.socket.send({
+      type: "review.auto.start",
+      sessionId,
+      dir,
+      mode: this.reviewMode,
+      base: this.reviewBase,
+      target: this.reviewTarget,
+      commit: this.reviewCommit.trim(),
+      pr: Number(this.reviewPr) || 0,
+      models: values.models,
+      maxRounds: values.maxRounds,
+      autoMerge: values.autoMerge,
+      lang: getLang(),
+    });
+    this.renderQueue();
+  }
+
+  /** 这条自动评审现有的轮号（升序）。轮号不保证连续：跳过 / 旧记录被裁都会留空档。 */
+  private autoRoundNos(): number[] {
+    return (this.reviewAuto?.rounds ?? []).map((r) => r.n).sort((a, b) => a - b);
+  }
+
+  /** 轮次专用窗：点时间线上的某一轮打开（上一轮 / 下一轮也在同一扇窗里翻）。 */
+  private openAutoRound(n: number): void {
+    const state = this.reviewAuto;
+    if (!state) return;
+    // 按**存在的那几个号**夹：以前拿 `rounds.length` 当上界，轮号一旦不连续就会切到不存在的轮。
+    const nos = this.autoRoundNos();
+    this.autoRoundNo = nos.length ? nos.find((x) => x >= n) ?? nos[nos.length - 1] : n;
+    const round = state.rounds.find((r) => r.n === this.autoRoundNo) ?? null;
+    const run = round ? (this.reviewState?.runs?.find((r) => r.id === round.runId) ?? null) : null;
+    if (!this.autoRoundSheet) {
+      const sheet = new AutoRoundSheet({ state, round, run });
+      sheet.onClose = () => {
+        if (this.autoRoundSheet === sheet) this.autoRoundSheet = null;
+      };
+      sheet.onStep = (delta) => {
+        const nos = this.autoRoundNos();
+        const at = nos.indexOf(this.autoRoundNo);
+        const go = at < 0 ? undefined : nos[at + delta];
+        if (go !== undefined) this.openAutoRound(go);
+      };
+      sheet.mount(document.getElementById("app") ?? document.body);
+      this.autoRoundSheet = sheet;
+    } else {
+      this.autoRoundSheet.update({ state, round, run });
+    }
+  }
+
+  /** 帧来了：浮层开着就跟着刷（意见要等评审记录回来才有，那时也会再刷一次）。 */
+  private syncAutoRoundSheet(): void {
+    if (!this.autoRoundSheet) return;
+    const state = this.reviewAuto;
+    if (!state) {
+      this.autoRoundSheet.close();
+      this.autoRoundSheet = null;
+      return;
+    }
+    const round = state.rounds.find((r) => r.n === this.autoRoundNo) ?? null;
+    const run = round ? (this.reviewState?.runs?.find((r) => r.id === round.runId) ?? null) : null;
+    this.autoRoundSheet.update({ state, round, run });
+  }
+
+  /**
+   * 自动评审跑着时你按发送（D462 第 14 条）：先问一次「接管并发送 / 取消」——
+   * 接管就把那条自动评审停在原地，进度不丢，回来还能【继续】。
+   */
+  private confirmAutoTakeover(after: () => void): void {
+    // 已经开着一扇窗：不叠第二扇，但也不能**静默丢掉**这条消息 —— 输入框里的字还在，
+    // 人以为发出去了，其实什么都没发生（点了发送却像卡死）。说一句，让他先关窗再发。
+    if (document.querySelector(".modal")) {
+      this.flashToast(tr("先关掉上面那扇窗：这条消息还没发出去。"), true, 6000);
+      return;
+    }
+    const modal = el("div", "modal hi rv-auto-takeover");
+    const form = el("form");
+    const h = el("h2", "", tr("自动评审正在跑"));
+    const p = el("p", "", tr("你这条消息会接管这个会话：自动评审会停在当前这一轮（进度都在，之后能继续）。"));
+    const btns = el("div", "settings-foot");
+    btns.append(el("span", "spacer"));
+    const cancel = el("button", "btn ghost", tr("取消"));
+    cancel.type = "button";
+    cancel.onclick = () => this.closeModal();
+    const ok = el("button", "btn primary", tr("接管并发送"));
+    ok.type = "submit";
+    btns.append(cancel, ok);
+    form.append(h, p, btns);
+    modal.append(form);
+    form.onsubmit = (ev) => {
+      ev.preventDefault();
+      this.closeModal();
+      this.socket.send({ type: "review.auto.handover", sessionId: this.currentId });
+      this.autoTakeover = true;
+      after();
+    };
+    this.overlay(modal);
+    pushEscLayer({ el: modal, onEsc: () => modal.remove() });
   }
 
   /**

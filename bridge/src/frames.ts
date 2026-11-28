@@ -122,6 +122,7 @@ export type ServerFrameType =
   | "reminder.toast"
   | "reminders"
   | "restore.result"
+  | "review.auto"
   | "review.install.done"
   | "review.install.log"
   | "review.ocr"
@@ -272,6 +273,12 @@ export type ClientFrameType =
   | "reminder.read"
   | "reminder.set"
   | "rename"
+  | "review.auto.get"
+  | "review.auto.handover"
+  | "review.auto.start"
+  | "review.auto.stop"
+  | "review.auto.continue"
+  | "review.auto.skip"
   | "review.cancel"
   | "review.clean"
   | "review.get"
@@ -393,6 +400,11 @@ export interface ReviewRun {
   prTitle: string;
   prHead: string;
   prBase: string;
+  /**
+   * 这一条是**自动评审**里的一轮（D462 第 7 条）：面板下面的记录列表不画它，
+   * 它只出现在自动评审卡的时间线上；`RUN_KEEP` 也单独算一份预算。
+   */
+  auto?: boolean;
   /** 这次用的模型（目录里的 id，例如 `cn:glm-5.4`）。 */
   model: string;
   /** 模型属于哪个 provider（老记录里没有这一项，按空串处理）。 */

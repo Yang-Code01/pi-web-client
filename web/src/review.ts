@@ -12,6 +12,7 @@ import { createEl as el } from "./chat.ts";
 import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
 import { icon, type IconName } from "./icons.ts";
 import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
+import { renderAutoPanel, type AutoActions, type AutoPanelInput } from "./reviewauto.ts";
 
 import { isRunOutdated, tipForRun } from "./frames.ts";
 import type {
@@ -294,10 +295,31 @@ function errorText(run: ReviewRun | null, fallback: string): string {
   return (run?.error || fallback || "").trim();
 }
 
-const asRun = (s: ReviewState | null): ReviewRun | null => {
-  if (!s || !Array.isArray(s.runs) || !s.runs.length) return null;
-  return s.runs[s.runs.length - 1];
-};
+/** 面板看的那批记录：自动评审的轮次带 `auto`，只出现在自动卡时间线上（D462 第 7 条）。 */
+const manualRuns = (s: ReviewState | null): ReviewRun[] => (Array.isArray(s?.runs) ? s.runs.filter((r) => !r.auto) : []);
+
+/** 四块「评什么」的标签与说明：面板磁贴与自动评审卡共用一份（抄两份会漂）。 */
+export function modeBoardItems(): { value: ReviewMode; label: string; hint: string; icon: IconName }[] {
+  return [
+    { value: "workspace", label: tr("工作区改动"), hint: tr("HEAD 之前的改动"), icon: "pencil" },
+    { value: "range", label: tr("分支 vs 主干"), hint: tr("两条分支之间"), icon: "branch" },
+    { value: "commit", label: tr("单个提交"), hint: tr("一个提交"), icon: "commit" },
+    { value: "pr", label: tr("GitHub PR"), hint: tr("GitHub 上 open 的 PR"), icon: "pr" },
+  ];
+}
+
+/**
+ * 某种范围的人话名字（自动评审卡抬头用）。
+ *
+ * 四个键、四个值，写成一张表直接查：以前每次调用都把四格磁贴整张重建（4 次 `tr()`）再 `find`。
+ * 值仍然每次走 `tr()`，切语言即时生效。
+ */
+const MODE_LABEL: Record<ReviewMode, string> = { workspace: "工作区改动", range: "分支 vs 主干", commit: "单个提交", pr: "GitHub PR" };
+
+export function modeLabel(mode: string): string {
+  const key = MODE_LABEL[mode as ReviewMode];
+  return key ? tr(key) : tr("工作区改动");
+}
 
 const durationOf = (run: ReviewRun): number | null => {
   const from = Date.parse(run.startedAt ?? "");
@@ -360,8 +382,9 @@ export function reviewView(input: ReviewInput): ReviewView {
   const ocr = input.ocr;
   const state = input.state;
   // 记录按时间正序落盘；面板从新到旧画，所以这里先翻过来，画的时候不用再想顺序。
-  const allRuns = Array.isArray(state?.runs) ? state.runs : [];
-  const latest = asRun(state);
+  const allRuns = manualRuns(state);
+  // 同一批记录只过滤一次：`asRun()` 里再 filter 一遍等于把「哪些算手动评审」写两支。
+  const latest = allRuns.length ? allRuns[allRuns.length - 1] : null;
   // 「完整详情」浮层看的那一次（D429 之后面板本身不再展开任何一次）；认不出来（记录被裁掉了 /
   // 换了会话 / 刷新后不记得了）就回落到最新那一次。
   const focused = input.focus ? allRuns.find((r) => r.id === input.focus) ?? null : null;
@@ -375,7 +398,10 @@ export function reviewView(input: ReviewInput): ReviewView {
   const marks = state?.marks ?? {};
   const running = activeRunning;
   const cap = Math.max(1, Number(input.cap) || 2);
-  const runningCount = allRuns.filter((r) => r.status === "running").length;
+  // 额度按**全部** run 算（自动轮在桥上也占名额，只是不画进列表）：只按手动那批算会给出
+  // 假的「还能开一条」，点下去才发现桥上 busy。
+  const everyRun = Array.isArray(state?.runs) ? state.runs : [];
+  const runningCount = everyRun.filter((r) => r.status === "running").length;
   const atCap = runningCount >= cap;
   const labels = input.modelLabels ?? {};
   // 「评审仓库」：可能就与会话目录重合（没钉），也可能是大文件夹底下选中的那个子仓库。
@@ -693,6 +719,11 @@ export interface ReviewPanelInput {
   severityLabels: Record<Severity, string>;
   /** gh 卡的八颗动作：宿主直接给 `ghCardActions()`，面板不再自己映射一遍（评审 #33）。 */
   ghActions: GhCardActions;
+  /**
+   * 自动评审那一段（D462）：入口按钮 + 卡片，动作自带（与手动评审的动作分开）。
+   * 可选：宿主没拼这一块（只画手动评审的调用方 / 测试）就不画那一段，面板照常出来。
+   */
+  auto?: { panel: AutoPanelInput; actions: AutoActions };
   actions: ReviewActions;
 }
 
@@ -742,12 +773,7 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   form.append(el("div", "rv-lead", tr("评什么")));
 
   const tiles = el("div", "rv-tiles");
-  const modeBoard: { value: ReviewMode; label: string; hint: string; icon: IconName }[] = [
-    { value: "workspace", label: tr("工作区改动"), hint: tr("HEAD 之前的改动"), icon: "pencil" },
-    { value: "range", label: tr("分支 vs 主干"), hint: tr("两条分支之间"), icon: "branch" },
-    { value: "commit", label: tr("单个提交"), hint: tr("一个提交"), icon: "commit" },
-    { value: "pr", label: tr("GitHub PR"), hint: tr("GitHub 上 open 的 PR"), icon: "pr" },
-  ];
+  const modeBoard = modeBoardItems();
   for (const item of modeBoard) {
     const on = view.mode === item.value;
     const tile = el("button", `rv-tile rv-mode${on ? " on" : ""}`) as HTMLButtonElement;
@@ -1001,6 +1027,10 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   }
 
   root.append(form);
+
+  // ---- 自动评审（D462）：入口按钮就在「开始评审」正下方，跑起来之后这一段变成时间线卡片
+  // 入口是新加的：没拼这一块的调用方不该因此整块面板都渲染不出来。
+  if (input.auto) root.append(renderAutoPanel(input.auto.panel, input.auto.actions));
 
   if (view.phase === "loading") root.append(el("div", "rv-hint", tr("正在读评审状态…")));
 
