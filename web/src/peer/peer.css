@@ -255,7 +255,7 @@ body.embedded .brand .nm { display: none; }
 .avgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 8px; padding: 12px 13px 4px; }
 /* 「我」页头像卡里那颗按钮：`.acts` 的 16px 上距在这里太宽（格子里已经有 padding），
    而卡片的 13px 内边距得自己补回来——`.card` 不像 `.kv` / `.avgrid` 那样给子元素加内边距。 */
-.acts.avacts { margin-top: 0; padding: 0 13px 13px; }
+.acts.avacts, .card .updates-acts { margin-top: 0; padding: 0 13px 13px; }
 .avpick { position: relative; padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; line-height: 0; }
 .avpick img { display: block; width: 100%; height: auto; aspect-ratio: 1; border-radius: 50%; }
 .avpick:hover img { filter: brightness(1.07); }
@@ -1541,6 +1541,23 @@ body.embedded .brand .nm { display: none; }
 /* 群聊 */
 .msg .b .sender { margin: 0 0 3px 2px; font-size: 11px; color: var(--dim); }
 .leftbar { display: flex; justify-content: center; color: var(--dim); font-size: 12px; }
+.readonlybar { display: flex; justify-content: center; gap: 8px; color: var(--dim); font-size: 12px; }
+
+/* D451 只读更新组：公告卡片跟主题走（不写死颜色），正文按批次分组，超长自己滚。 */
+.msg.announce { max-width: min(720px, 100%); }
+.an-card { display: flex; flex-direction: column; gap: 8px; width: fit-content; min-width: min(300px, 100%); max-width: min(560px, 100%); padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; border-top-left-radius: 4px; background: var(--panel-2); font-size: 12.5px; }
+.an-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.an-repo { font-weight: 600; }
+.an-sha { padding: 1px 5px; border-radius: 5px; background: var(--sunken); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--dim); }
+.an-day { margin-left: auto; font-size: 11px; color: var(--faint); }
+.an-batch + .an-batch { padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.an-title { margin-bottom: 4px; font-weight: 600; }
+.an-body { max-height: 260px; overflow: auto; color: var(--dim); line-height: 1.55; }
+.an-body > :first-child { margin-top: 0; }
+.an-body h1, .an-body h2, .an-body h3 { margin: 8px 0 4px; font-size: 12.5px; color: var(--text); }
+.an-body ul { margin: 4px 0; padding-left: 18px; }
+.an-how { font-size: 11.5px; color: var(--faint); }
+.an-acts { display: flex; gap: 8px; flex-wrap: wrap; }
 .group-modal .body { display: flex; flex-direction: column; gap: 8px; }
 .group-filter { width: 100%; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--sunken); outline: 0; font-size: 12.5px; }
 .group-pick { display: flex; flex-direction: column; max-height: min(360px, 50vh); overflow: auto; border: 1px solid var(--line-soft); border-radius: 8px; }
