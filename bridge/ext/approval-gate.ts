@@ -13,6 +13,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { currentBranch, grantAllows, type AutoGrant } from "./grant-match.ts";
 
 const SHELL_TOOLS = new Set(["bash", "powershell", "shell", "run_command", "execute", "exec", "terminal"]);
 const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "apply_patch", "create_file", "str_replace"]);
@@ -77,19 +78,31 @@ function readOnlyHint(pi: any, toolName: string): boolean {
 }
 
 /** `{patterns, mode, handoffPath}` per session; re-read on every call so the web button applies immediately. */
-function readAllow(): { patterns: string[]; mode: Mode; handoffPath: string | null } {
+function readAllow(): { patterns: string[]; mode: Mode; handoffPath: string | null; auto: AutoGrant | null } {
   const file = process.env.PI_WEB_ALLOW_FILE;
-  if (!file) return { patterns: [], mode: "ask", handoffPath: null };
+  if (!file) return { patterns: [], mode: "ask", handoffPath: null, auto: null };
   try {
     const data = JSON.parse(fs.readFileSync(file, "utf8"));
     const mode: Mode = ["readonly", "strict", "ask", "auto"].includes(data.mode) ? data.mode : "ask";
+    // D450：自动评审运行期间的限时授权。形状与判定都在 ./grant-match.ts（零依赖、可单测）。
+    const raw = data?.auto;
+    const auto: AutoGrant | null =
+      raw && typeof raw === "object"
+        ? {
+            branch: String(raw.branch ?? ""),
+            pr: Number(raw.pr) || 0,
+            repo: String(raw.repo ?? ""),
+            expiresAt: Number(raw.expiresAt) || 0,
+          }
+        : null;
     return {
       patterns: Array.isArray(data.patterns) ? data.patterns.map(String) : [],
       mode,
       handoffPath: typeof data.handoffPath === "string" && data.handoffPath ? data.handoffPath : null,
+      auto,
     };
   } catch {
-    return { patterns: [], mode: "ask", handoffPath: null };
+    return { patterns: [], mode: "ask", handoffPath: null, auto: null };
   }
 }
 
@@ -265,7 +278,7 @@ export default function approvalGate(pi: any): void {
     const toolName = String(event.toolName ?? "tool");
     const input = (event.input ?? {}) as Record<string, unknown>;
     const cwd = String(ctx.cwd ?? process.cwd());
-    const { patterns, mode, handoffPath } = readAllow();
+    const { patterns, mode, handoffPath, auto } = readAllow();
     const lower = toolName.toLowerCase();
     const looksOnly = READ_ONLY_TOOLS.has(lower) || ASK_TOOLS.has(lower) || readOnlyHint(pi, toolName);
 
@@ -302,6 +315,13 @@ export default function approvalGate(pi: any): void {
     if (!risk) return undefined;
 
     const detail = risk.detail.slice(0, 900);
+
+    // D450：自动评审跑着的时候，「推这条分支」「合这个 PR」由它自己在做 —— 人已经在设置
+    // 对话框里点过那一次了。授权收得极窄（一条分支 / 一个 PR），运行一结束脑就把它删掉。
+    if (grantAllows(auto, detail, SHELL_TOOLS.has(lower) ? currentBranch(cwd) : "")) {
+      console.error(`[approval-gate] auto-review grant allowed: ${detail.slice(0, 80)}`);
+      return undefined;
+    }
     // Patterns are per session (PI_WEB_ALLOW_FILE) and match the whole leading word(s), never a
     // substring; chained/redirected commands always ask, since a prefix says nothing about the rest.
     const remembered =

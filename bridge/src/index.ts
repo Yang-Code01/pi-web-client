@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -80,6 +80,8 @@ import {
   type ReviewMode,
 } from "./review.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
+import { AutoRunner, type AutoHost } from "./reviewauto.ts";
+import { writeGrant } from "./reviewgrant.ts";
 import { FileIndex, autoScanOnBoot } from "./fileindex.ts";
 import { RotatingLog, LogStorm, logMaxBytes, logMaxLinesPerSecond } from "./logfile.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
@@ -2747,6 +2749,182 @@ async function main(): Promise<void> {
   });
   resumeReviewJobs();
 
+  // -------------------------------------------------------------------------
+  // 自动评审（D450）：两个模型交替评，修完再评，直到同一份 diff 上两家都签收。
+  //
+  // 编排在脑里、状态在盘上（`review/auto/<会话>.json`）：关页面、切会话、换脑都接着跑。
+  // 这里只提供「外部世界长什么样」—— 起评审、读进度、跑 git、给会话发话、合并 —— 判定全在
+  // `reviewauto.ts` 里（那一份有单测）。
+  // -------------------------------------------------------------------------
+
+  /** 一小步 git（短、同步、不碰网络）：拿 HEAD / 工作区脏不脏 / 这一轮改了多少。 */
+  const gitOut = (cwd: string, args: string[]): string => {
+    try {
+      return execFileSync("git", args, { cwd, encoding: "utf8", timeout: 8000, windowsHide: true }).trim();
+    } catch {
+      return "";
+    }
+  };
+
+  /** 一步要走网络的 git（push）：异步，别堵住 ws 循环。 */
+  const gitRun = (cwd: string, args: string[], timeoutMs = 120_000): Promise<{ ok: boolean; err: string }> =>
+    new Promise((resolve) => {
+      execFile("git", args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 4 << 20 }, (err, _stdout, stderr) =>
+        resolve({ ok: !err, err: String(stderr || err?.message || "").trim() }),
+      );
+    });
+
+  /** 这个会话从 `since` 之后最后一条 assistant 文本（回执就在里面）。 */
+  const lastAssistantText = (sessionId: string, since: string): string => {
+    const session = sessions.get(sessionId);
+    if (!session) return "";
+    for (let i = session.items.length - 1; i >= 0; i--) {
+      const item = session.items[i];
+      if (item?.kind !== "assistant") continue;
+      if (since && item.ts && item.ts < since) return "";
+      return String(item.text ?? "");
+    }
+    return "";
+  };
+
+  /** 这一轮里 agent 报的错（有的话）：「继续」要能说清为什么停的。 */
+  const lastAssistantError = (sessionId: string, since: string): string => {
+    const session = sessions.get(sessionId);
+    if (!session) return "";
+    for (let i = session.items.length - 1; i >= 0; i--) {
+      const item = session.items[i];
+      if (item?.kind !== "assistant") continue;
+      if (since && item.ts && item.ts < since) return "";
+      return String(item.errorMessage ?? "");
+    }
+    return "";
+  };
+
+  /** PR 详情：checks / mergeable / head 分支都从这一份拿（与面板同一个口径）。 */
+  const autoPrInfo = async (repo: string, pr: number, session: string): Promise<any | null> => {
+    try {
+      const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
+      const out = await pullRequestInfo(repo, pr, { fresh: true, login: gh.login, env: gh.env, token: gh.restToken, apiBase: githubApiBase() });
+      return out?.ok ? out.info : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const autoHost: AutoHost = {
+    async start({ dir, scope, session, model, lang }) {
+      const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || dir, session);
+      const started = startReview({
+        dir,
+        mode: scope.mode,
+        base: scope.base,
+        target: scope.target,
+        commit: scope.commit,
+        pr: scope.pr,
+        session,
+        ghEnv: gh.env,
+        model: model.model,
+        provider: model.provider,
+        lang,
+      });
+      return { runId: started.runId, repo: started.repo };
+    },
+    findings(repo, session, runId) {
+      const run = readReviewState(repo, session).runs.find((r) => r.id === runId);
+      return run?.findings ?? null;
+    },
+    progress(repo, session, runId) {
+      const live = reviewProgresses(repo, session).find((p) => p.runId === runId);
+      if (live) return { status: live.status, findings: live.findings ?? readReviewState(repo, session).runs.find((r) => r.id === runId)?.findings ?? [], tokens: live.tokens };
+      const run = readReviewState(repo, session).runs.find((r) => r.id === runId);
+      if (!run) return null;
+      return { status: run.status, findings: run.findings ?? [], tokens: run.tokens };
+    },
+    cancel(repo, session, runId) {
+      try {
+        cancelReview(repo, session, runId);
+      } catch (err: any) {
+        log(`auto-review cancel failed: ${String(err?.message ?? err)}`);
+      }
+    },
+    session(id) {
+      const session = sessions.get(id);
+      if (!session) return null;
+      return {
+        get running() {
+          return session.state.running === true;
+        },
+        prompt: (text: string) => session.prompt(text, undefined, undefined, "followUp"),
+        lastAssistant: (since: string) => lastAssistantText(id, since),
+        lastError: (since: string) => lastAssistantError(id, since),
+      };
+    },
+    head: (cwd) => gitOut(cwd, ["rev-parse", "HEAD"]),
+    dirty: (cwd) => Boolean(gitOut(cwd, ["status", "--porcelain"])),
+    diffstat(cwd, from) {
+      const text = gitOut(cwd, ["diff", "--shortstat", `${from}..HEAD`]);
+      const files = Number(/(\d+)\s+files?\s+changed/.exec(text)?.[1] ?? 0);
+      const added = Number(/(\d+)\s+insertions?\(\+\)/.exec(text)?.[1] ?? 0);
+      const removed = Number(/(\d+)\s+deletions?\(-\)/.exec(text)?.[1] ?? 0);
+      return { files, added, removed };
+    },
+    async push(cwd, branch) {
+      // 有 upstream 就推 upstream 那个远端；没有就 origin（第一次推就顺手建 upstream）。
+      const up = gitOut(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+      const remote = up.includes("/") ? up.slice(0, up.indexOf("/")) : "origin";
+      const args = up ? ["push", remote, branch] : ["push", "-u", remote, branch];
+      const out = await gitRun(cwd, args);
+      return out.ok ? { ok: true, note: "" } : { ok: false, note: out.err.slice(0, 400) || "git push 失败" };
+    },
+    async prChecks(config, session) {
+      const info = await autoPrInfo(config.repo, config.pr, session);
+      if (!info) return { ok: false, note: "拿不到这个 PR 的状态（gh 没登录 / 断网 / 号不对）" };
+      if (info.mergeable === false) return { ok: false, note: "PR 现在合不了：有冲突或者被锁住了" };
+      const checks = Array.isArray(info.checks) ? (info.checks as { name: string; state: string }[]) : [];
+      // 一个检查都没有的仓库（没接 CI）算过；有的话一律要求 success —— 与面板同一口径。
+      const bad = checks.filter((c) => c.state !== "success");
+      if (bad.length) return { ok: false, note: `${bad.length} 个 check 没过：${bad.slice(0, 3).map((c) => `${c.name}（${c.state}）`).join("、")}` };
+      return { ok: true, note: checks.length ? `${checks.length} 个 check 全过` : "没有 checks" };
+    },
+    async prState(config, session) {
+      const info = await autoPrInfo(config.repo, config.pr, session);
+      if (!info) return { merged: false, note: "拿不到这个 PR 的状态，合没合看不出来" };
+      const state = String(info.state ?? "").toUpperCase();
+      if (info.merged || state === "MERGED") return { merged: true, note: "" };
+      return { merged: false, note: `PR 还是 ${state || "未知"} 状态：合并那句话没有生效` };
+    },
+    grant: (session, g) => {
+      try {
+        writeGrant(session, g);
+      } catch (err: any) {
+        log(`auto-review grant failed: ${String(err?.message ?? err)}`);
+      }
+    },
+    finish(state, text, marks) {
+      for (const m of marks) {
+        try {
+          markFinding(m.repo, m.key, m.mark, m.session);
+        } catch {
+          /* 标记失败不该影响结论 */
+        }
+      }
+      try {
+        broadcast(reviewStateFrame(state.config.repo, state.session, readReviewPin(state.session)));
+      } catch {
+        /* 仓库没了 */
+      }
+      sessions.get(state.session)?.notice(text, state.status === "paused" || state.status === "failed" ? "warn" : "info");
+      log(`auto-review ${state.status} · ${state.session.slice(0, 8)} · ${text}`);
+    },
+    emit: (state) => broadcast({ type: "review.auto", sessionId: state.session, state }),
+    log: (line) => log(line),
+  };
+
+  const autoRunner = new AutoRunner(autoHost);
+  setInterval(() => autoRunner.tick(), 800).unref?.();
+  const autoResumed = autoRunner.resume();
+  if (autoResumed) log(`auto-review resumed ${autoResumed} run(s)`);
+
   /**
    * GitHub 路由的 ctx。两个入口（回环工具口 / 常规路由）必须是**同一份**映射：壳拿到的 id/cwd
    * 与页面拿到的如果不是一个，就会出现「壳去问了 A 会话、面板读的却是 B」。
@@ -4394,6 +4572,73 @@ async function main(): Promise<void> {
                 });
               }
             })();
+            return;
+          }
+          // ------------------------------------------------------------ 自动评审（D450）
+          case "review.auto.get": {
+            const session = String(msg.sessionId ?? "");
+            send({ type: "review.auto", sessionId: session, state: autoRunner.read(session) });
+            return;
+          }
+          case "review.auto.start": {
+            const session = String(msg.sessionId ?? "");
+            const dir = String(msg.dir ?? "");
+            const mode = ["workspace", "range", "commit", "pr"].includes(String(msg.mode)) ? (String(msg.mode) as ReviewMode) : "pr";
+            const lang: ReviewLang = ["zh", "en", "ja"].includes(String(msg.lang)) ? (String(msg.lang) as ReviewLang) : "zh";
+            const models = msg.models ?? {};
+            const pick = (slot: "a" | "b") => ({
+              provider: String(models?.[slot]?.provider ?? ""),
+              model: String(models?.[slot]?.model ?? ""),
+              label: String(models?.[slot]?.label ?? ""),
+            });
+            void (async () => {
+              try {
+                const { repo } = effectiveReviewDir(dir, session);
+                const branch = gitOut(dir || repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+                const pr = Number(msg.pr) || 0;
+                // PR 模式那道闸（D450 第 16 条）：本地当前分支必须就是 PR 的 head，否则修完推不上去。
+                if (mode === "pr") {
+                  if (!pr) throw new Error("先选一个 PR：自动评审要知道合哪一个");
+                  const info = await autoPrInfo(repo, pr, session);
+                  if (!info) throw new Error(`拿不到 PR #${pr} 的状态，先确认 gh 登录了这个仓库`);
+                  if (!branch || branch === "HEAD") throw new Error("当前不在任何分支上（detached HEAD），修完没有地方推");
+                  if (info.headRefName && info.headRefName !== branch) {
+                    throw new Error(`本地是 ${branch}，PR #${pr} 的 head 是 ${info.headRefName} —— 自动评审只在你自己那条分支上跑`);
+                  }
+                }
+                const out = autoRunner.start({
+                  session,
+                  config: {
+                    mode,
+                    base: String(msg.base ?? ""),
+                    target: String(msg.target ?? ""),
+                    commit: String(msg.commit ?? ""),
+                    pr,
+                    models: { a: pick("a"), b: pick("b") },
+                    maxRounds: Number(msg.maxRounds) || 0,
+                    autoMerge: Boolean(msg.autoMerge),
+                    repo,
+                    cwd: dir || repo,
+                    branch,
+                    // 工作区模式：记下开跑前的 HEAD，第二轮起按「起点..HEAD」评（否则提交一次就评空了）
+                    baseSha: mode === "workspace" ? gitOut(dir || repo, ["rev-parse", "HEAD"]) : "",
+                    lang,
+                  },
+                });
+                send({ type: "review.auto", sessionId: session, state: out.state, error: out.error, code: out.code });
+              } catch (err: any) {
+                send({ type: "review.auto", sessionId: session, state: autoRunner.read(session), error: String(err?.message ?? err), code: String(err?.code ?? "failed") });
+              }
+            })();
+            return;
+          }
+          case "review.auto.stop":
+          case "review.auto.continue":
+          case "review.auto.skip": {
+            const session = String(msg.sessionId ?? "");
+            const act = String(msg.type).endsWith(".stop") ? "stop" : String(msg.type).endsWith(".skip") ? "skip" : "continue";
+            const out = act === "stop" ? autoRunner.stop(session) : act === "skip" ? autoRunner.skip(session) : autoRunner.continue(session);
+            send({ type: "review.auto", sessionId: session, state: out.state, error: out.error, code: out.code });
             return;
           }
           case "review.cancel": {

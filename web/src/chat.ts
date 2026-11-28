@@ -69,8 +69,16 @@ interface SkillGroup {
  * 它必须是 ASCII：界面语言换掉的是抬头的字，「这是一条提醒」得靠一个不随语言变的东西认出来。
  */
 const REMIND_MARK = "[pi-web:remind]";
+/** 自动评审注入会话的修复提示词 / 合并指令开头就是这个标记（D450）：折成一张轮次卡。 */
+const AUTO_MARK = "[pi-web:auto]";
 
 /** 提醒正文（去掉标记）；不是提醒就返回 null。 */
+/** 自动评审的一条注入消息：去掉标记后的正文（第一行当标题）。 */
+function autoRoundTitle(text: string): string | null {
+  if (!text.startsWith(AUTO_MARK)) return null;
+  return text.slice(AUTO_MARK.length).trim();
+}
+
 function reminderBody(text: string): string | null {
   if (!text.startsWith(REMIND_MARK)) return null;
   return text.slice(REMIND_MARK.length).replace(/^\s+/, "");
@@ -1668,9 +1676,11 @@ export class ChatView {
 
     const reminded = item.kind === "user" ? reminderBody(item.text) : null;
     const reviewed = item.kind === "user" ? reviewBody(item.text) : null;
+    const auto = item.kind === "user" ? autoRoundTitle(item.text) : null;
     const wrapKind = (): string => {
       if (reminded !== null) return "remind";
       if (reviewed !== null) return "review";
+      if (auto !== null) return "auto";
       return item.kind;
     };
     const wrap = el("div", `msg ${wrapKind()}`);
@@ -1683,6 +1693,24 @@ export class ChatView {
       const body = el("div", "body");
       body.textContent = reminded;
       wrap.append(head, body);
+      return wrap;
+    }
+    // 自动评审注入的修复提示词（D450）：每条几百字，冒充用户气泡会把对话冲烂 ——
+    // 收成一张「自动评审 · 第 3 轮 · 2 条意见」的卡，点开才看全文（与技能组同一套折叠语言）。
+    if (auto !== null) {
+      const [firstLine, ...rest] = auto.split("\n");
+      const head = el("div", "who");
+      head.append(icon("bolt", { size: 12 }), document.createTextNode(tr("自动评审 · {p1}", { p1: timeOf(item.ts) })));
+      const box = el("details", "summary-card auto-turn") as HTMLDetailsElement;
+      const summary = el("summary", "");
+      summary.textContent = firstLine || tr("自动评审");
+      box.append(summary);
+      const full = el("div", "body");
+      const pre = el("div", "auto-turn-body");
+      pre.textContent = rest.join("\n").trim();
+      full.append(pre);
+      box.append(full);
+      wrap.append(head, box);
       return wrap;
     }
     // 「⚡ 复盘」那一轮也是一条 user 消息（桥只有 prompt 通道），但它是一段写给模型的交代：

@@ -12,6 +12,7 @@ import { createEl as el } from "./chat.ts";
 import { fmtDate, fmtTime, tr } from "./i18n/index.ts";
 import { icon, type IconName } from "./icons.ts";
 import { renderGhCard, type GhCardActions, type GhCardData } from "./gh-setup.ts";
+import { renderAutoPanel, type AutoActions, type AutoPanelInput } from "./reviewauto.ts";
 
 import type {
   ReviewFinding,
@@ -612,6 +613,8 @@ export interface ReviewPanelInput {
   severityLabels: Record<Severity, string>;
   /** gh 卡的八颗动作：宿主直接给 `ghCardActions()`，面板不再自己映射一遍（评审 #33）。 */
   ghActions: GhCardActions;
+  /** 自动评审那一段（D450）：入口按钮 + 卡片，动作自带（与手动评审的动作分开）。 */
+  auto: { panel: AutoPanelInput; actions: AutoActions };
   actions: ReviewActions;
 }
 
@@ -920,6 +923,9 @@ export function renderReview(input: ReviewPanelInput): HTMLElement {
   }
 
   root.append(form);
+
+  // ---- 自动评审（D450）：入口按钮就在「开始评审」正下方，跑起来之后这一段变成时间线卡片
+  root.append(renderAutoPanel(input.auto.panel, input.auto.actions));
 
   if (view.phase === "loading") root.append(el("div", "rv-hint", tr("正在读评审状态…")));
 
