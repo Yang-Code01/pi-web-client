@@ -146,9 +146,20 @@ check("PR 号只认位置上的那个，不把选项的值当号", () => {
   assert.equal(allows("gh pr merge --match-head-commit 34 748"), false);
 });
 
-check("绕过闸门的选项：`--admin`（跳过分支保护）不放过", () => {
+check("绕过闸门的选项：`--admin`（跳过分支保护）/ `--auto`（交给 GitHub 自动合）不放过", () => {
   assert.equal(allows("gh pr merge 747 --admin"), false);
+  assert.equal(allows("gh pr merge 747 --auto"), false);
+  assert.equal(allows("gh pr merge 747 --auto --merge"), false);
   assert.equal(allows("gh pr merge 747 --merge"), true);
+});
+
+check("`-R` 的仓库写法：URL / `.git` 后缀也算「显式点名」，归一后再比", () => {
+  assert.equal(allows("gh -R https://github.com/o/pi-web-client pr merge 747"), true, "写的就是自己的仓库");
+  assert.equal(allows("gh -R o/pi-web-client.git pr merge 747"), true);
+  assert.equal(allows("gh -R https://github.com/other/x pr merge 747"), false);
+  // `--repo` 是前缀、不是它本身：以前 `--repofeature x` 会把 `feature` 当成仓库去比
+  // （比不上 → 拒，方向安全）；现在不把它当仓库，命令按「没点名仓库」走 cwd 那一路。
+  assert.equal(allows("gh pr merge 747 --repofeature x"), true);
 });
 
 check("把命令推到远端执行的推送选项：不放过", () => {

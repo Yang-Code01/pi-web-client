@@ -26,18 +26,25 @@ function allowFile(session: string): string {
   return statePath("allow", `${session}.json`);
 }
 
-/** 读会话 allow 文件里的那份授权（读不出来 / 过期都当没有）。 */
+/**
+ * 读会话 allow 文件里的那份授权（读不出来 / 过期都当没有）。
+ *
+ * 桥内**没有**生产调用方：闸门在 pi 子进程里读（`ext/grant-match.ts` 自己解析），这里只是写盘
+ * 那一半的对照读法，给单测与排错用。保留导出是为了 `reviewgrant-unit.mjs` 能钉住写进去的形状。
+ */
 export function readGrant(session: string, now = Date.now()): AutoGrant | null {
   try {
     const data = readJson<Record<string, unknown>>(allowFile(session), {});
-    const auto = data?.auto as any;
-    if (!auto || typeof auto !== "object") return null;
+    const auto: unknown = data?.auto;
+    // 盘上的形状不可信：逐格 `typeof` 守卫，不用 `as any` 一把放过。
+    if (!auto || typeof auto !== "object" || Array.isArray(auto)) return null;
+    const o = auto as Record<string, unknown>;
     const grant: AutoGrant = {
-      branch: String(auto.branch ?? ""),
-      pr: Number(auto.pr) || 0,
-      repo: String(auto.repo ?? ""),
-      slug: String(auto.slug ?? ""),
-      expiresAt: Number(auto.expiresAt) || 0,
+      branch: typeof o.branch === "string" ? o.branch : "",
+      pr: Number(o.pr) || 0,
+      repo: typeof o.repo === "string" ? o.repo : "",
+      slug: typeof o.slug === "string" ? o.slug : "",
+      expiresAt: Number(o.expiresAt) || 0,
     };
     if (!grant.expiresAt || grant.expiresAt <= now) return null;
     return grant;

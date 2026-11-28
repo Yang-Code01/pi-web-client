@@ -116,17 +116,26 @@ const UNKNOWN_REPO = "\u0000?";
 const VALUE_FLAGS = new Set(["-R", "--repo", "-b", "--body", "-F", "--body-file", "-t", "--subject", "--match-head-commit"]);
 
 /**
+ * `gh -R` 认的几种仓库写法归一成 `owner/name`：`https://github.com/o/r`、`o/r.git` 都是 gh 接受的，
+ * 以前逐字比必然失败 → 显式写了**正确**仓库的合法命令被拒（fail-closed，但自动合并会卡在那）。
+ */
+function normalizeRepo(raw: string): string {
+  let s = String(raw ?? "").trim().replace(/\/+$/, "");
+  s = s.replace(/^https?:\/\/[^/]+\//, "").replace(/\.git$/, "");
+  return /^[\w.-]+\/[\w.-]+$/.test(s) ? s : s;
+}
+
+/**
  * 命令里显式写出来的仓库：`-R owner/name`、`--repo owner/name`、`--repo=owner/name`、`-Rowner/name`。
  *
  * **长选项也要认**：`gh pr merge 12 --repo other/x` 以前把 repo 读成空串、退回「按 cwd 算」，
  * 于是「显式点名必须逐字对上」那道闸被绕过 —— 借这张授权去合别的仓库里的同号 PR。
  */
 function explicitRepo(cmd: string): string {
-  const m =
-    /(?:^|\s)(?:-R|--repo)(?:=|\s+)(\S+)/.exec(cmd) ??
-    /(?:^|\s)(?:-R|--repo)(\S+)/.exec(cmd);
+  // `-R` / `--repo` 后面必须紧跟值或 `=`：`--repofeature` 是别的选项，不能把 `feature` 当仓库。
+  const m = /(?:^|\s)(?:-R\s*|--repo(?:=|\s+))(\S+)/.exec(cmd) ?? /(?:^|\s)-R(\S+)/.exec(cmd);
   if (!m) return "";
-  return m[1].trim();
+  return normalizeRepo(m[1]);
 }
 
 /**
@@ -212,7 +221,8 @@ export function grantAllows(
 
   if (!grant.pr) return false;
   // `--admin` 会绕过分支保护 / 必需的 checks 去合：授权的是「合这一个 PR」，不是「破例合」。
-  if (/(^|\s)--admin\b/.test(text)) return false;
+  // `--auto` 是「等 checks 绿了由 GitHub 自己合」，合的时刻与条件都不在这张授权里 —— 同一类。
+  if (/(^|\s)(--admin|--auto)\b/.test(text)) return false;
   const merge = mergeTarget(text);
   if (!merge.pr || merge.pr !== grant.pr) return false;
   if (merge.repo) {

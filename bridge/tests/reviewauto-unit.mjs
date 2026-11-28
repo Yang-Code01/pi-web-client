@@ -24,6 +24,7 @@ const {
   fixPrompt,
   fmtTok,
   fuseReason,
+  MERGE_MIN_WAIT_MS,
   mergePrompt,
   nextRoundNo,
   normalizeAuto,
@@ -400,6 +401,9 @@ function makeHost(over = {}) {
     cancel(repo, session, runId) {
       this.cancelled.push(runId);
     },
+    known() {
+      return true;
+    },
     session() {
       const self = this;
       return {
@@ -409,11 +413,8 @@ function makeHost(over = {}) {
         async prompt(text) {
           self.prompts.push(text);
         },
-        lastAssistant() {
-          return self.state.last;
-        },
-        lastError() {
-          return self.state.err;
+        lastReply() {
+          return { text: self.state.last, error: self.state.err };
         },
       };
     },
@@ -452,6 +453,29 @@ function makeHost(over = {}) {
 }
 
 /** 走到「第 n 轮评审跑完、意见为 findings」。 */
+/** 最新那条已经起好的 run 跑完、意见是 findings（不负责等它起来）。 */
+async function finishRound(runner, host, findings, tokens = 100) {
+  const run = host.runs[host.runs.length - 1];
+  const list = findings.map((k, i) => ({
+    key: k,
+    path: `f${i}.ts`,
+    startLine: i + 1,
+    endLine: i + 1,
+    category: "bug",
+    severity: "high",
+    content: "问题",
+    existingCode: "",
+    suggestionCode: "",
+    anchored: true,
+    state: "new",
+    mark: "",
+  }));
+  host.findingsByRun.set(run.runId, list);
+  host.progressMap.set(run.runId, { status: "done", findings: list, tokens });
+  runner.tick();
+  await flush();
+}
+
 async function reviewRound(runner, host, findings, tokens = 100) {
   const roundNo = runner.get(S).rounds.length + 1;
   await flush();
@@ -720,6 +744,11 @@ await checkAsync("自动合并：签收后先查 checks，再让它合、最后�
   assert.equal(host.prompts.length, 1);
   assert.match(host.prompts[0], /gh pr merge 747/);
   host.state.running = false;
+  // 那句话刚发出去：最小等待之内先不查（followUp 可能还在队里，查了只会得到「还是 OPEN」）
+  runner.tick();
+  await flush();
+  assert.equal(runner.get(S).status, "running", "刚发出就去查只会白判一次失败");
+  runner.get(S).merge.at = new Date(Date.now() - MERGE_MIN_WAIT_MS - 1000).toISOString();
   runner.tick();
   await flush();
   assert.equal(runner.get(S).status, "merged");
@@ -739,8 +768,8 @@ await checkAsync("自动合并：checks 不绿就暂停，不硬合", async () =
   assert.equal(host.prompts.length, 0, "没有发出合并那句话");
 });
 
-await checkAsync("会话没了：暂停，而不是自己往下跑", async () => {
-  const host = makeHost({ session: () => null });
+await checkAsync("会话没了（名册里都没有）：暂停，而不是自己往下跑", async () => {
+  const host = makeHost({ session: () => null, known: () => false });
   const runner = new AutoRunner(host);
   runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
   await flush();
@@ -748,6 +777,38 @@ await checkAsync("会话没了：暂停，而不是自己往下跑", async () =>
   await flush();
   assert.equal(runner.get(S).status, "paused");
   assert.equal(runner.get(S).reasonCode, "session-gone");
+});
+
+await checkAsync("换脑接回：会话对象还没被认领（名册里有）就等一等，别判成「会话没了」", async () => {
+  // 这就是「换脑后接不回来」的根：resume() 比 activate 早，那一刻 session() 是 null。
+  let claimed = false; // 壳里的会话还没被新脑认领
+  const host = makeHost({
+    session: () => (claimed ? { running: () => false, prompt: async () => {}, lastReply: () => ({ text: "", error: "" }) } : null),
+    known: () => true, // 但名册里有它
+  });
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await flush();
+  runner.tick();
+  await flush();
+  assert.equal(runner.get(S).status, "running", "宽限期内：会话只是还没被认领，不是没了");
+
+  // 宽限过了还是没被认领：才是真的接不回来
+  runner["enteredAt"].set(S, Date.now() - 10 * 60_000);
+  runner.tick();
+  await flush();
+  assert.equal(runner.get(S).status, "paused");
+  assert.equal(runner.get(S).reasonCode, "session-gone");
+});
+
+await checkAsync("接回时名册里有、会话对象还没有：resume() 不把它判成 session-gone", async () => {
+  // `makeHost` 之外单独造：resume() 只看 `known()`，不碰 `session()`。
+  const state = normalizeAuto({ session: S, status: "running", wait: "review", cur: 1, rounds: [{ n: 1, status: "running", runId: "r1" }], config: cfg({ mode: "pr", pr: 5 }) });
+  writeAuto(state);
+  const host = makeHost({ session: () => null, known: () => true });
+  const runner = new AutoRunner(host);
+  assert.equal(runner.resume(), 1, "接回来了（以前这里就是 0：session() 是 null 当场判死）");
+  assert.equal(runner.get(S).status, "running");
 });
 
 await checkAsync("接管：停成「已暂停」（不是 stopped），继续能接着跑", async () => {
@@ -826,6 +887,34 @@ await checkAsync("起评审的过程中按停：那条 run 要被取消（否则
   assert.equal(runner.get(S).status, "stopped", "按停的结论不被后来的 start 回包改写");
 });
 
+await checkAsync("合并确认没生效之后的「继续」：重走一遍合并，不是空转", async () => {
+  let merged = false;
+  const host = makeHost({ prState: async () => ({ merged, note: merged ? "" : "PR 还是 OPEN 状态：合并那句话没有生效" }) });
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 747, autoMerge: true }) });
+  await reviewRound(runner, host, []);
+  await reviewRound(runner, host, []);
+  await flush();
+  assert.equal(runner.get(S).wait, "merge");
+  const merges = () => host.prompts.filter((p) => p.includes("gh pr merge")).length;
+  assert.equal(merges(), 1);
+  // 最小等待过了，PR 还是没合 → 暂停成 merge-failed
+  host.state.running = false;
+  runner.get(S).merge.at = new Date(Date.now() - MERGE_MIN_WAIT_MS - 1000).toISOString();
+  runner.tick();
+  await flush();
+  assert.equal(runner.get(S).reasonCode, "merge-failed");
+  // 「继续」：把「发过了」撤回、重发一遍；这次 PR 合上了
+  merged = true;
+  assert.equal(runner.continue(S).ok, true);
+  await flush();
+  assert.equal(merges(), 2, "上次确认没生效，继续就该真的再合一次，而不是立刻又失败");
+  runner.get(S).merge.at = new Date(Date.now() - MERGE_MIN_WAIT_MS - 1000).toISOString();
+  runner.tick();
+  await flush();
+  assert.equal(runner.get(S).status, "merged");
+});
+
 await checkAsync("接管「等合并」再来继续：不重发合并提示词", async () => {
   const host = makeHost();
   const runner = new AutoRunner(host);
@@ -840,6 +929,81 @@ await checkAsync("接管「等合并」再来继续：不重发合并提示词",
   assert.equal(runner.continue(S).ok, true);
   await flush();
   assert.equal(merges(), 1, "继续只是接着等结果，不能再发一遍（gh 会报错，也可能其实已经合了）");
+  // 接管后「继续」：只是把上次查到的结果忘掉，让 stepMerge 再问一次 —— 不是重发指令
+  host.state.running = false;
+  runner.get(S).merge.at = new Date(Date.now() - MERGE_MIN_WAIT_MS - 1000).toISOString();
+  runner.tick();
+  await flush();
+  assert.equal(runner.get(S).status, "merged");
+  assert.equal(merges(), 1);
+});
+
+await checkAsync("接管落在修复轮：那一轮作废（skipped），不在时间线上留成「有意见但没修」", async () => {
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await reviewRound(runner, host, ["k1"]);
+  assert.equal(runner.get(S).wait, "fix");
+  runner.handOver(S);
+  assert.equal(runner.get(S).status, "paused");
+  const r = runner.get(S).rounds[0];
+  assert.equal(r.status, "skipped", "修复轮交给了人：这一轮作废");
+  assert.equal(r.note, "takeover");
+  assert.equal(runner.get(S).wait, "", "继续时开下一轮，不再替它发修复指令");
+});
+
+await checkAsync("提交了一部分、工作区还脏：不推半成品、不开下一轮，先提醒把剩下的也提交", async () => {
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await reviewRound(runner, host, ["k1"]);
+  host.state.running = false;
+  host.state.head = "s1"; // 提交了一部分
+  host.state.dirty = true; // 还留着没提交的
+  host.state.last = '{"verdicts":[{"path":"f0.ts","line":1,"verdict":"fixed"}]}';
+  runner.tick();
+  await flush();
+  assert.equal(host.runs.length, 1, "没开下一轮");
+  assert.equal(runner.get(S).rounds[0].fix.pushed, false, "半成品不推");
+  assert.match(host.prompts.at(-1), /上一部分已经提交了/);
+  assert.equal(runner.get(S).status, "running");
+});
+
+await checkAsync("会话还在改代码时按「跳过」：不跳（评半成品 + 叠一条修复指令都要避免）", async () => {
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  runner.start({ session: S, config: cfg({ mode: "pr", pr: 5 }) });
+  await reviewRound(runner, host, ["k1"]);
+  host.state.running = true; // agent 正在改
+  const out = runner.skip(S);
+  assert.equal(out.ok, false, "现在没有可做的");
+  assert.equal(host.runs.length, 1, "没起新一轮");
+  assert.equal(host.prompts.length, 1, "没再排一条修复指令");
+});
+
+await checkAsync("轮数上限：开新轮之前也查，不会多跑一轮", async () => {
+  // 两轮都干净、但 sha 不同（第 1 轮评完 HEAD 才变）→ 不签收；到上限了也不许开第三轮。
+  // 直接造盘上状态：这种时序靠 reviewRound 的夹具凑不出来（第 2 轮是在第 1 轮收尾里同步起的）。
+  const host = makeHost();
+  const runner = new AutoRunner(host);
+  const state = normalizeAuto({
+    session: S,
+    status: "running",
+    wait: "review",
+    cur: 2,
+    rounds: [
+      { n: 1, slot: "A", status: "clean", sha: "s1", runId: "r1" },
+      { n: 2, slot: "B", status: "running", sha: "s2", runId: "r2" },
+    ],
+    config: cfg({ mode: "pr", pr: 5, maxRounds: 2 }),
+  });
+  runner["states"].set(S, state);
+  runner["enteredAt"].set(S, Date.now());
+  host.runs.push({ runId: "r2" }); // 第 2 轮的 run 是「上一代」起的，这里只需它在名册里
+  await finishRound(runner, host, []); // 第 2 轮干净，sha 是 s2 ≠ s1 → 不签收
+  assert.equal(host.runs.length, 1, "到上限了，不再起第三轮（名册里只有上一代那一条）");
+  assert.equal(runner.get(S).status, "paused");
+  assert.equal(runner.get(S).reasonCode, "max-rounds");
 });
 
 await checkAsync("修复那一轮记下真实提交标题（不是页面自己按模板拼的）", async () => {

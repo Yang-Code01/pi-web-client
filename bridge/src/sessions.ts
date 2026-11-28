@@ -3725,6 +3725,17 @@ export class SessionManager extends EventEmitter {
     return this.sessions.get(id);
   }
 
+  /**
+   * 自动评审用：这个会话归不归这个桥管（D457）。
+   *
+   * 不建会话对象、只认名册：换脑开机时 `AutoRunner.resume()` 比 `activate` 早，那一刻壳里活着的
+   * 会话还没被认领进来（`get()` 拿不到）。以前它只能 `get()`，拿不到就把每条 running 的自动评审
+   * 都判成「会话没了」——「换脑接回」实际上从来没接回来过。
+   */
+  knownId(id: string): boolean {
+    return this.known(id);
+  }
+
   /** Where a session works and logs, whether or not it is loaded. */
   locate(id: string): { cwd: string; file: string | null; startedAt?: string } | null {
     const s = this.sessions.get(id);

@@ -137,20 +137,16 @@ function walk(file, out) {
   const visit = (node) => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
       const text = node.text;
-      // 纯 ASCII、但**带占位符**的键（`"{p1} · {p2}"`、`"PR #{p1} · {p2}"`）也是界面文案：
-      // 以前整段判断包在 `CJK.test()` 里，这类键根本进不了键集合，缺译文不会被发现。
-      // 只有专有名词、没有占位符的（`"CPU"`、`"Jira"`、`"PAT"`）不收：它们本来就不用翻。
-      if (!CJK.test(text) && PLACEHOLDER.test(text) && isTrKey(node)) {
+      // 界面文案 = 含中文，**或者**纯 ASCII 但带占位符（`"{p1} · {p2}"`、`"PR #{p1} · {p2}"`：
+      // 占位符的顺序与措辞是语言相关的）。后者以前整段判断包在 `CJK.test()` 里，根本进不了
+      // 键集合，缺译文永远查不出来。只有专有名词、没有占位符的（`"CPU"`、`"Jira"`）不收。
+      if ((CJK.test(text) || PLACEHOLDER.test(text)) && isTrKey(node)) {
+        // 记键 + 记它第一次出现的出处：两种键走同一段，别各写一遍。
         out.keys.add(text);
         const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
         if (!out.context.has(text)) out.context.set(text, { file: path.relative(here, file), line, src: src.split("\n")[line - 1].trim().slice(0, 200) });
       } else if (CJK.test(text)) {
-        if (isTrKey(node)) {
-          // 区间里的 tr() 仍然算键：忽略只针对「不是界面文案」的裸字面量。
-          out.keys.add(text);
-          const line = sf.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-          if (!out.context.has(text)) out.context.set(text, { file: path.relative(here, file), line, src: src.split("\n")[line - 1].trim().slice(0, 200) });
-        } else if (isIgnored(node)) {
+        if (isIgnored(node)) {
           // 不是界面文案（给模型的指令）：不报漏翻。
         } else if (inLangNames(node)) {
           // LANGS 的标签是各自语言的原生写法（简体中文 / English / 日本語），永远不翻译。

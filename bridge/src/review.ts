@@ -534,12 +534,13 @@ export const AUTO_RUN_KEEP = 40;
 export function trimRuns(state: ReviewState): void {
   // D457：自动评审的轮次与手动开的那几条各算一份预算 —— 一次自动评审 4–12 轮，
   // 挤同一个 RUN_KEEP 会把用户手动评过的历史刷掉一半。
-  const manual = state.runs.filter((r) => !r.auto);
-  const auto = state.runs.filter((r) => r.auto);
-  const keepManual = manual.slice(-RUN_KEEP);
-  const keepAuto = auto.slice(-AUTO_RUN_KEEP);
-  const keep = new Set([...keepManual, ...keepAuto]);
-  state.runs = state.runs.filter((r) => keep.has(r));
+  // 按位置数着裁，不按对象引用：`Set` + `has(r)` 在某处对 runs 做过一次 `map`（新对象）之后会
+  // 全部落空、把整份记录清掉 —— 那种隐式依赖太脆，同一数组里顺序就是身份。
+  const manual: number[] = [];
+  const auto: number[] = [];
+  state.runs.forEach((r, i) => (r.auto ? auto : manual).push(i));
+  const keep = new Set([...manual.slice(-RUN_KEEP), ...auto.slice(-AUTO_RUN_KEEP)]);
+  state.runs = state.runs.filter((_, i) => keep.has(i));
 }
 
 // ---------------------------------------------------------------------------

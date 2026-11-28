@@ -87,6 +87,8 @@ export interface AutoFix {
   note: string;
   /** 真实提交的标题（`git log -1 --format=%s`）：页面直接显示它，不再按模板自造一句。 */
   subject?: string;
+  /** 提交了但会话没按格式回执（git 事实兜底；这种轮次不会走「误报签收」）。 */
+  noReceipt?: boolean;
   /**
    * 「改了没提交」那句话已经补过一次了（只补一次，第二次直接暂停）。
    *
@@ -169,9 +171,14 @@ export interface AutoHost {
   session(id: string): {
     running: boolean;
     prompt(text: string): Promise<void>;
-    lastAssistant(since: string): string;
-    lastError(since: string): string;
+    /** 我们最后那句 prompt 之后的那条 assistant：文本与报错**一次取回**，保证来自同一条消息。 */
+    lastReply(since: string): { text: string; error: string };
   } | null;
+  /**
+   * 这个会话归不归这个桥管（只认名册，不建对象）。与 `session()` 的区别：换脑开机时壳里活着的
+   * 会话要过几秒才被认领进来 —— 那段时间 `session()` 是 null，但会话**不是没了**。
+   */
+  known(id: string): boolean;
   head(cwd: string): string;
   /** `git status --porcelain` 有没有东西（修完没提交也算改过）。 */
   dirty(cwd: string): boolean;
@@ -200,6 +207,10 @@ export interface AutoHost {
 export const MIN_ROUNDS = 2;
 /** 补过「还没提交」那句提醒之后，等它回话的宽限期（过了还这样才判「改了没提交」）。 */
 export const NUDGE_GRACE_MS = 2 * 60 * 1000;
+/** 换脑后等壳里的会话被认领进来的宽限（`activate` 比 `resume` 晚几秒；超了才判「会话没了」）。 */
+export const SESSION_GRACE_MS = 60 * 1000;
+/** 合并那句话发出后，至少等这么久再去问 PR 状态（prompt 可能还排在会话的队里）。 */
+export const MERGE_MIN_WAIT_MS = 15 * 1000;
 export const MAX_ROUNDS_CAP = 30;
 export const DEFAULT_MAX_ROUNDS = 10;
 
@@ -627,6 +638,7 @@ function normalizeFix(raw: any): AutoFix {
     fixed: Number(raw?.fixed) || 0,
     note: String(raw?.note ?? ""),
     subject: String(raw?.subject ?? ""),
+    noReceipt: Boolean(raw?.noReceipt),
     nudged: Boolean(raw?.nudged),
   };
 }
@@ -763,6 +775,8 @@ const nowIso = (): string => new Date().toISOString();
  */
 export class AutoRunner {
   private states = new Map<string, AutoState>();
+  /** 每条自动评审「进入内存」的时刻：会话对象还没被认领时的宽限从它算。 */
+  private enteredAt = new Map<string, number>();
   /** 每个会话当前正在 await 的外部动作（起评审 / 发提示词 / 合并）：防重入。 */
   private busy = new Set<string>();
   private host: AutoHost;
@@ -807,6 +821,7 @@ export class AutoRunner {
       summary: "",
     };
     this.states.set(session, state);
+    this.enteredAt.set(session, Date.now());
     this.host.grant(session, config.autoMerge && config.mode === "pr" && config.pr ? { pr: config.pr, repo: config.repo, branch: config.branch, slug: config.slug } : null);
     this.save(state);
     this.host.log(`auto-review start ${session.slice(0, 8)} · ${config.mode}${config.pr ? ` #${config.pr}` : ""} · max ${state.config.maxRounds}`);
@@ -866,7 +881,13 @@ export class AutoRunner {
           round.finishedAt = nowIso();
         }
       } else if (state.wait === "fix") {
-        // 修复轮交给你的话去接管：不再替它发下一条，继续时直接开下一轮
+        // 修复轮交给你的话去接管：这一轮**作废**（skipped），不再替它发下一条，继续时直接开下一轮。
+        // 以前只清 wait、这一轮还停在「有意见」上 —— 时间线上它永远显示「有意见但没修」。
+        if (round) {
+          round.status = "skipped";
+          round.note = "takeover";
+          round.finishedAt = nowIso();
+        }
         state.wait = "";
       }
       this.pause(state, "user-takeover", "你在会话里接管了，自动评审停在这里");
@@ -914,6 +935,14 @@ export class AutoRunner {
         return true;
       }
       if (state.wait === "merge") {
+        // 两种暂停要分开：
+        //   • 接管 / 会话报错暂停（指令已发、结果未明）：**不重发**，只把上次查到的结果忘掉，
+        //     让 stepMerge 再去问一次 PR —— 它可能已经合了；
+        //   • 上次查完确认没合（merge-failed）：指令那一下没生效，把「发过了」撤回、从 checks
+        //     重新走一遍。不清的话 beginMerge 直接 return，用户会陷进「继续 → 立刻又失败」的空转。
+        if (state.merge.state === "failed") state.merge.at = "";
+        state.merge.state = "waiting";
+        state.merge.note = "";
         void this.beginMerge(state);
         this.save(state);
         return true;
@@ -930,8 +959,15 @@ export class AutoRunner {
     return this.act(session, state, () => {
       if (state.status !== "paused" && state.status !== "running") return false;
       const round = this.roundOf(state);
+      // 会话正在改代码时不能跳：下一轮评的是它改到一半的工作区，而且会给正在跑的会话再排一条
+      // 修复指令 —— 两条修复叠在一起。要跳，先等它改完（或者按「停止」）。
+      if (state.wait === "fix") {
+        const sess = this.host.session(session);
+        if (sess?.running) return false;
+      }
       if (round && (state.wait === "review" || state.wait === "fix")) {
-        if (round.runId) this.host.cancel(state.config.repo, session, round.runId);
+        // 评审 run 早就结束了，这里 cancel 的是「万一还没跑完」；修复轮没有 run 可取消。
+        if (round.runId && state.wait === "review") this.host.cancel(state.config.repo, session, round.runId);
         round.status = "skipped";
         round.note = "skipped";
         round.finishedAt = nowIso();
@@ -958,9 +994,11 @@ export class AutoRunner {
       if (!state.session) continue;
       if (state.status !== "running" && !(state.status === "paused" && state.reasonCode === "stopping")) continue;
       this.states.set(state.session, state);
-      // 会话没了 / 目录没了：停在原地等人，而不是自己去点一遍
-      const sess = this.host.session(state.session);
-      if (!sess || !state.config.cwd) {
+      this.enteredAt.set(state.session, Date.now());
+      // 会话没了 / 目录没了：停在原地等人，而不是自己去点一遍。
+      // 「会话没了」只看**名册**：换脑开机时壳里活着的会话要过几秒才被认领进来，那一刻
+      // `session()` 还是 null —— 以前就是在这里把每条 running 都判成了 session-gone。
+      if (!this.host.known(state.session) || !state.config.cwd) {
         state.status = "paused";
         state.reason = "会话没在运行，接不回来了";
         state.reasonCode = "session-gone";
@@ -990,6 +1028,9 @@ export class AutoRunner {
     if (this.busy.has(state.session)) return;
     const session = this.host.session(state.session);
     if (!session) {
+      // 名册里有、对象还没有：多半是换脑后壳里的会话还没被认领进来（`activate` 比 `resume` 晚几秒）。
+      // 给一段宽限让它被接回来；名册里都没有、或者等过头了，才是真的接不回来。
+      if (this.host.known(state.session) && Date.now() - this.resumedAt(state) < SESSION_GRACE_MS) return;
       this.pause(state, "session-gone", "会话没在运行，自动评审接不回来");
       return;
     }
@@ -1052,6 +1093,9 @@ export class AutoRunner {
       return;
     }
     if (sess.running) return;
+    // 那句话刚发出去时 `running` 可能还没翻上来（followUp 在队里、pi 还没开始跑）：
+    // 立刻查 PR 只会得到「还是 OPEN：合并那句话没有生效」。给一个最小等待。
+    if (Date.now() - Date.parse(state.merge.at) < MERGE_MIN_WAIT_MS) return;
     this.busy.add(state.session);
     void this.host
       .prState(state.config, state.session)
@@ -1075,6 +1119,13 @@ export class AutoRunner {
   /** 起第 n 轮（n = 已有最大号 + 1）。 */
   private async beginRound(state: AutoState): Promise<void> {
     if (state.status !== "running") return;
+    // 轮数上限在这里也要查一次：以前只在「有意见」的分支查，两轮都干净但 sha 不同时会开出
+    // 第 maxRounds+1 轮 —— 上限实际比设置的多一轮。
+    const cap = clampRounds(state.config.maxRounds);
+    if (state.rounds.filter((r) => r.status !== "skipped").length >= cap) {
+      this.pause(state, "max-rounds", `到了轮数上限（${cap} 轮）`);
+      return;
+    }
     // 「停止」落在收尾途中（推一次可能要几分钟，期间 `step()` 一直在等 busy）：
     // 修完就停，别再起一轮新的评审去烧 token —— 那正是 stop() 的字面语义。
     if (state.stopping) {
@@ -1173,8 +1224,10 @@ export class AutoRunner {
   private async completeFix(state: AutoState, round: AutoRound, sess: NonNullable<ReturnType<AutoHost["session"]>>): Promise<void> {
     const fix = round.fix;
     if (!fix) return;
-    const text = sess.lastAssistant(fix.promptAt);
-    const err = sess.lastError(fix.promptAt);
+    // 一次取回：各读一次的话，两次之间 items 被追加，文本与报错就会落在不同的消息上。
+    const reply = sess.lastReply(fix.promptAt);
+    const text = reply.text;
+    const err = reply.error;
     const parsed = parseVerdict(text);
     const findings = this.findingsFor(state, round);
     const shaAfter = this.host.head(state.config.cwd) || "";
@@ -1209,14 +1262,16 @@ export class AutoRunner {
       return;
     }
 
-    if (!changed && dirty) {
-      // 改了没提交：再提醒一次（只提醒一次，第二轮还没提交就停下来）。
+    if (dirty) {
+      // 工作区还脏着（不管有没有提交）：改了没提交，或者提交了一部分、还留着半截没提交。
+      // 两种都不能往下走 —— 推上去 / 开下一轮评的都是**不含脏改动**的 HEAD，签收后合并的
+      // 就是个不完整的修复。再提醒一次（只提醒一次，第二次还没提交就停下来）。
       // 「提醒过没有」用 `nudged` 记，不借用 `note` —— 那格装着回执的理由。
       if (!fix.nudged) {
         fix.nudged = true;
         fix.note = "uncommitted";
         this.save(state);
-        void this.nudgeCommit(state, round);
+        void this.nudgeCommit(state, round, changed);
         return;
       }
       // 补过提醒了：还要给它一点时间。没有新的 assistant 消息 = 那句提醒可能还排在队里
@@ -1237,6 +1292,9 @@ export class AutoRunner {
     fix.dismissed = parsed.verdicts.filter((v) => v.verdict !== "fixed").length;
     fix.fixed = parsed.verdicts.filter((v) => v.verdict === "fixed").length;
     if (parsed.note) fix.note = parsed.note;
+    // 提交了、但没按格式回执：git 事实兜底往下走（下一轮评的是真代码），但记一笔「无回执」——
+    // 这种轮次永远走不到「误报签收」，面板与日志都该看得出它和「回了」的区别。
+    if (!parsed.ok) fix.noReceipt = true;
     if (parsed.ok) {
       const judged = dismissalMarks(findings, parsed.verdicts);
       round.marks = judged.marks;
@@ -1295,14 +1353,16 @@ export class AutoRunner {
   }
 
   /** 「改了没提交」时补一句话，不算新的一轮（`fix.nudged` 记着已经补过）。 */
-  private async nudgeCommit(state: AutoState, round: AutoRound): Promise<void> {
+  private async nudgeCommit(state: AutoState, round: AutoRound, partly: boolean): Promise<void> {
     const sess = this.host.session(state.session);
     if (!sess) return;
     const at = nowIso();
     if (round.fix) round.fix.promptAt = at;
     this.busy.add(state.session);
+    // 「已经提交了一部分」要说清：不然 agent 以为自己已经交过差了，不知道还剩着半截。
+    const what = partly ? "还有改动没有提交（上一部分已经提交了，剩下的还没）" : "还有改动没有提交";
     try {
-      await sess.prompt(`${AUTO_MARK} 自动评审 · 第 ${round.n} 轮：还有改动没有提交\n把刚才的改动提交成一个 commit（\`fix(review): …\`），不要改代码本身。提交完就停。`);
+      await sess.prompt(`${AUTO_MARK} 自动评审 · 第 ${round.n} 轮：${what}\n把剩下的改动也提交（\`fix(review): …\`），不要改代码本身。提交完就停。`);
     } catch (err: any) {
       this.pause(state, "prompt-failed", String(err?.message ?? err));
     } finally {
@@ -1356,6 +1416,9 @@ export class AutoRunner {
         }),
       );
     } catch (err: any) {
+      // 那句话没发出去（会话刚停 / 压缩超时）：把「发过了」撤回，否则之后「继续」会以为已经发过、
+      // 永远不再重发，只能在 stepMerge 里反复查出一个「没合」。
+      state.merge.at = "";
       this.pause(state, "merge-failed", String(err?.message ?? err));
     } finally {
       this.busy.delete(state.session);
@@ -1402,6 +1465,10 @@ export class AutoRunner {
       this.host.log(`auto-review save failed: ${String(err?.message ?? err)}`);
     }
     this.host.emit(state);
+  }
+
+  private resumedAt(state: AutoState): number {
+    return this.enteredAt.get(state.session) ?? 0;
   }
 
   private roundOf(state: AutoState): AutoRound | null {

@@ -2883,6 +2883,8 @@ async function main(): Promise<void> {
 
   const autoPrView = async (repo: string, pr: number, session: string): Promise<AutoPrView | null> => {
     try {
+      // 账号按**会话的工作区**选（`.pi/settings.json` 里的 githubAccount 跟工作区走，不跟评审仓库根走）：
+      // 这里用会话 cwd 是对的，与 `review.auto.start` 里 git 用仓库根不是同一个口径，别「统一」掉。
       const gh = await sessionGhAccount(sessions.get(session)?.state.cwd || repo, session);
       const ctx = { upstreamApi: githubApiBase() };
       const raw = await githubRest(ctx, gh.restToken ?? null, `/repos/${repo}/pulls/${pr}`);
@@ -2946,11 +2948,11 @@ async function main(): Promise<void> {
           return session.state.running === true;
         },
         prompt: (text: string) => session.prompt(text, undefined, undefined, "followUp"),
-        // 回执只认「我们那句 prompt」之后的那条 assistant（见 `lastAssistant` 的注释）。
-        lastAssistant: (since: string) => lastAssistant(id, since).text,
-        lastError: (since: string) => lastAssistant(id, since).error,
+        lastReply: (since: string) => lastAssistant(id, since),
       };
     },
+    // 只认名册、不建对象：换脑开机时壳里的会话要过几秒才被认领进来（见 `AutoRunner.resume`）。
+    known: (id) => sessions.knownId(id),
     head: (cwd) => gitOut(cwd, ["rev-parse", "HEAD"]),
     subject: (cwd, sha) => gitOut(cwd, ["log", "-1", "--format=%s", sha]),
     dirty: (cwd) => Boolean(gitOut(cwd, ["status", "--porcelain"])),
@@ -3006,8 +3008,12 @@ async function main(): Promise<void> {
     log: (line) => log(line),
   };
 
-  /** 页面那四颗按钮 → 编排器的一个动作（一张表，别再往下叠三元）。 */
-  const AUTO_ACTIONS: Record<string, ((runner: AutoRunner, session: string) => ReturnType<AutoRunner["continue"]>) | undefined> = {
+  /**
+   * 页面那四颗按钮 → 编排器的一个动作（一张表，别再往下叠三元）。
+   * 键是字面量联合：下面 ws 那串 case 里多写一个、这里没填，运行时说出来（以前会静默当「继续」）。
+   */
+  type AutoAction = "review.auto.stop" | "review.auto.handover" | "review.auto.continue" | "review.auto.skip";
+  const AUTO_ACTIONS: Record<AutoAction, (runner: AutoRunner, session: string) => ReturnType<AutoRunner["continue"]>> = {
     "review.auto.stop": (runner, session) => runner.stop(session),
     "review.auto.handover": (runner, session) => runner.handOver(session),
     "review.auto.continue": (runner, session) => runner.continue(session),
@@ -4753,8 +4759,12 @@ async function main(): Promise<void> {
             });
             void (async () => {
               try {
+                // 评审 / 推送 / git 全部用**评的那个仓库根**（`effectiveReviewDir`：钉了别的仓库时
+                // 它与会话目录 `dir` 不是同一个）。以前 branch / baseSha / cwd 在 `dir` 非空时用的是
+                // 会话目录（可能是子目录），而 `autoPrView` 用会话 cwd —— 三处口径混在一起：
+                // 推送的 cwd 不落在 `config.repo` 里时，闸门的 `insideRepo` 会拒掉授权。
                 const { repo } = effectiveReviewDir(dir, session);
-                const branch = gitOut(dir || repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+                const branch = gitOut(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
                 const pr = Number(msg.pr) || 0;
                 // PR 模式那道闸（D457 第 16 条）：本地当前分支必须就是 PR 的 head，否则修完推不上去。
                 if (mode === "pr") {
@@ -4780,12 +4790,12 @@ async function main(): Promise<void> {
                     maxRounds: Number(msg.maxRounds) || 0,
                     autoMerge: Boolean(msg.autoMerge),
                     repo,
-                    cwd: dir || repo,
+                    cwd: repo,
                     branch,
                     // 限时授权拿它拒掉「同名的别的仓库」（闸门那边对显式点名的仓库逐字比）
-                    slug: localRepoName(repo || dir),
+                    slug: localRepoName(repo),
                     // 工作区模式：记下开跑前的 HEAD，第二轮起按「起点..HEAD」评（否则提交一次就评空了）
-                    baseSha: mode === "workspace" ? gitOut(dir || repo, ["rev-parse", "HEAD"]) : "",
+                    baseSha: mode === "workspace" ? gitOut(repo, ["rev-parse", "HEAD"]) : "",
                     lang,
                   },
                 });
@@ -4802,7 +4812,8 @@ async function main(): Promise<void> {
           case "review.auto.skip": {
             const session = String(msg.sessionId ?? "");
             const type = String(msg.type);
-            const act = AUTO_ACTIONS[type];
+            // 这串 case 只会是上面四种之一；真多写了一个 case 没填表，也说出来而不是静默当「继续」。
+            const act = (AUTO_ACTIONS as Record<string, ((runner: AutoRunner, session: string) => ReturnType<AutoRunner["continue"]>) | undefined>)[type];
             if (!act) {
               // 表与上面那串 case 是同一份名单：哪天有人只加 case 不填表，这里要说出来，
               // 而不是静默当成「继续」（那会把一次误点变成接着烧 token）。
