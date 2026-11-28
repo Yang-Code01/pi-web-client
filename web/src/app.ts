@@ -20967,27 +20967,26 @@ export class App {
     text.append(el("b", "", tr("共 {p1} 次", { p1: String(model.total) })));
     const spent = this.execDuration(model.totalMs);
     if (spent) text.append(sep(), el("span", "", spent));
-    // 只有一次调用时「最慢」与总数是同一个数；跑着的那一次同时又是最慢的时候，「当前」已经
-    // 是同一个数了。两种情况都别再重复一遍——挤掉的是真正在变的那几个字。
+    // 一行里放不下四组数字：最慢挂在 tooltip 上，行内只留次数、总耗时和正在跑的那一秒。
     const slowestIsCurrent = model.current !== null && model.slowestMs === model.current.ms;
-    if (model.slowestMs !== null && model.total > 1 && !slowestIsCurrent) {
-      text.append(sep(), el("span", "", tr("最慢 {p1}", { p1: this.execDuration(model.slowestMs) })));
-    }
-    const live = el("span", "browser-live", model.current ? tr("当前 {p1}", { p1: this.execDuration(model.current.ms) }) : "");
+    const slowest = model.slowestMs !== null && model.total > 1 && !slowestIsCurrent ? tr("最慢 {p1}", { p1: this.execDuration(model.slowestMs) }) : "";
+    sum.title = [tr("共 {p1} 次", { p1: String(model.total) }), spent, slowest].filter(Boolean).join(" · ");
+    const live = el("span", "browser-live", model.current ? this.execDuration(model.current.ms) : "");
     live.dataset.bnow = "";
     live.hidden = !model.current;
+    live.title = model.current ? tr("当前 {p1}", { p1: this.execDuration(model.current.ms) }) : "";
     const liveSep = sep();
     liveSep.dataset.bnowsep = "";
     liveSep.hidden = !model.current;
     text.append(liveSep, live);
     const tools = el("div", "browser-sum-tools");
     tools.append(...this.browserSumTools(model));
-    sum.append(text, tools);
+    sum.append(this.browserOnlyToggle(), text, tools);
     return sum;
   }
 
-  /** 汇总行右侧那几颗：只看主会话 / 全部折叠 / 齿轮。窄栏里要自己换行，别把汇总文字挤没。 */
-  private browserSumTools(model: BrowserOpsSummary): HTMLElement[] {
+  /** 只看主会话：过滤掉子代理里跑的浏览器调用。 */
+  private browserOnlyToggle(): HTMLElement {
     const only = el("label", "browser-only") as HTMLLabelElement;
     only.title = tr("只看主会话：过滤掉子代理里跑的浏览器调用");
     const box = el("input", "") as HTMLInputElement;
@@ -20998,6 +20997,11 @@ export class App {
       this.renderQueue();
     };
     only.append(box, el("span", "", tr("只看主会话")));
+    return only;
+  }
+
+  /** 汇总行右侧那几颗：全部折叠 / 齿轮。 */
+  private browserSumTools(model: BrowserOpsSummary): HTMLElement[] {
     const allFolded = model.cards.length > 0 && model.cards.every((card) => !this.browserExpanded(card));
     const fold = el("button", "browser-fold", allFolded ? tr("全部展开") : tr("全部折叠")) as HTMLButtonElement;
     fold.type = "button";
@@ -21014,7 +21018,7 @@ export class App {
       this.browserCfgOpen = !this.browserCfgOpen;
       this.renderQueue();
     };
-    return [only, fold, gear];
+    return [fold, gear];
   }
 
   /** 齿轮面板：四个阈值 + 一行工具名单，改完存 localStorage。 */
@@ -21129,7 +21133,7 @@ export class App {
     const titleText = this.browserFoldedText(card);
     const { name, act } = this.browserTitleParts(card, titleText);
     const title = el("div", "browser-title");
-    title.append(el("span", "browser-name", name));
+    title.append(el("span", "browser-dot"), el("span", "browser-name", name));
     if (act) title.append(el("span", "browser-title-sep", " · "), el("span", "browser-act", act));
     // 折叠行只有一行的宽度，长链被省略号截掉；悬停看全链（与显示的两截同文，测试按 innerText 对）。
     title.title = act ? `${name} · ${act}` : name;
@@ -21170,7 +21174,7 @@ export class App {
         else this.browserIntentOpen.add(card.toolCallId);
         this.renderQueue();
       };
-      body.append(intent);
+      body.append(el("div", "browser-label", tr("意图")), intent);
     }
     const meta = el("div", "browser-meta");
     meta.append(el("span", "browser-tool", card.script ? `${card.tool} · ${card.script}` : card.tool));
@@ -21178,7 +21182,6 @@ export class App {
     meta.append(el("span", "", card.headed === null ? tr("有头无头未知") : card.headed ? tr("有头视图") : tr("无头")));
     if (card.stepSource === "output") meta.append(el("span", "browser-src", tr("步骤来自运行输出")));
     else if (card.stepSource === "script") meta.append(el("span", "browser-src", tr("步骤是从脚本源码推测的")));
-    body.append(meta);
     if (card.steps.length) {
       const steps = el("ol", "browser-steps");
       for (const step of card.steps) {
@@ -21187,11 +21190,12 @@ export class App {
         if (step.kind === "check" && step.name) li.title = step.name;
         steps.append(li);
       }
-      body.append(steps);
+      body.append(el("div", "browser-label", tr("步骤")), steps);
     } else {
-      body.append(el("div", "browser-empty", tr("这次调用没有可拆的操作")));
+      body.append(el("div", "browser-label", tr("步骤")), el("div", "browser-empty", tr("这次调用没有可拆的操作")));
     }
     if (card.output.trim()) body.append(this.browserOutput(card));
+    body.append(meta);
     node.append(body);
     return node;
   }
@@ -21289,7 +21293,7 @@ export class App {
   private browserOutput(card: BrowserOpCard): HTMLElement {
     const open = this.browserOutOpen.has(card.toolCallId);
     const box = el("div", `browser-out${open ? " open" : ""}`);
-    const toggle = el("button", "browser-out-toggle", open ? tr("收起输出") : tr("展开输出")) as HTMLButtonElement;
+    const toggle = el("button", "browser-out-toggle", open ? tr("收起") : tr("显示全部")) as HTMLButtonElement;
     toggle.type = "button";
     toggle.onclick = (event) => {
       event.stopPropagation();
@@ -21317,7 +21321,8 @@ export class App {
     }
     const now = this.els.queueInner.querySelector<HTMLElement>("[data-bnow]");
     if (now) {
-      now.textContent = model.current ? tr("当前 {p1}", { p1: this.execDuration(model.current.ms) }) : "";
+      now.textContent = model.current ? this.execDuration(model.current.ms) : "";
+      now.title = model.current ? tr("当前 {p1}", { p1: this.execDuration(model.current.ms) }) : "";
       now.hidden = !model.current;
     }
     const nowSep = this.els.queueInner.querySelector<HTMLElement>("[data-bnowsep]");

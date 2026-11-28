@@ -1725,23 +1725,22 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .exec-child-step .exec-step-args { font-size: 10px; }
 @keyframes exec-flash { 0%, 45% { background-color: var(--accent-bg); } 100% { background-color: transparent; outline-color: transparent; } }
 /* ---------- 浏览器操作面板 (#503 / D457) ----------
-   右栏是 300px 上下的窄栏：这里是**一个分组列表**（macOS 的 inset grouped list）——单个圆角容器、
-   行与行之间发丝线、悬停整行高亮，而不是一叠各自描边 + 留 6px 空气缝的小卡片。整块仍用 flex 列，
-   不用多轨 grid：卡片头 / 身体 / 输出都可能被折叠掉，隐藏的行会把后面整体往前挪（AGENTS.md）。 */
-.browser-panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.browser-sum { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; color: var(--faint); font-size: 11px; }
-.browser-sum-text { min-width: 0; overflow-wrap: anywhere; }
-.browser-sum-tools { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.browser-sum-tools .browser-only { margin-right: auto; }
-.browser-sum-tools .browser-fold { margin-left: 0; }
+   窄栏（约 340px）里的 macOS 原生检查器：顶部一行筛选 + 汇总 + 工具，下面一张 inset grouped
+   列表，每行 40px 上下，展开后按「意图 / 步骤 / 输出」分段，技术元信息落到页脚。整块仍用
+   flex 列，不用多轨 grid：卡片头 / 身体 / 输出都可能被折叠掉，隐藏的行会把后面整体往前挪。 */
+.browser-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+/* 顶部一行：筛选在左、数字在中间、工具在右；窄到放不下时整项换行，不压扁文字。 */
+.browser-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 28px; min-width: 0; color: var(--faint); font-size: 11px; }
+.browser-sum-text { flex: 1 1 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .browser-sum-text b { color: var(--text); font-weight: 600; }
 .browser-sep { color: var(--line-lit); }
-.browser-live { color: var(--accent); font-variant-numeric: tabular-nums; }
+.browser-live { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.browser-live::before { content: ""; flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
 /* 右侧那几颗跟 macOS 的「显示全部」一样是裸文字按钮，不描边；悬停才给一层淡底。 */
-.browser-fold { flex: none; margin-left: auto; padding: 2px 6px; border: 0; border-radius: 5px; background: transparent; color: var(--faint); font: inherit; font-size: 10.5px; cursor: pointer; }
+.browser-fold { flex: none; margin-left: 0; padding: 2px 6px; border: 0; border-radius: 5px; background: transparent; color: var(--faint); font: inherit; font-size: 10.5px; cursor: pointer; }
 .browser-fold:hover { color: var(--text); background: var(--mac-fill); }
 .browser-fold:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.browser-only { display: flex; flex: none; align-items: center; gap: 5px; color: var(--faint); font-size: 10.5px; cursor: pointer; }
+.browser-only { display: flex; flex: none; align-items: center; gap: 6px; color: var(--faint); font-size: 11px; cursor: pointer; }
 /* 原生勾选框在 Windows 上是一颗系统蓝方块；画成 macOS 的小圆角勾选框（不是设置里那种开关）。 */
 .browser-only input {
   appearance: none; -webkit-appearance: none; display: grid; place-content: center;
@@ -1753,11 +1752,12 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .browser-only input:checked { border-color: transparent; background: var(--accent); box-shadow: none; }
 .browser-only input:checked::after { content: ""; width: 6px; height: 3px; border-left: 1.5px solid var(--accent-ink); border-bottom: 1.5px solid var(--accent-ink); transform: translateY(-1px) rotate(-45deg); }
 .browser-only input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.browser-sum-tools { display: flex; flex: none; align-items: center; gap: 2px; margin-left: auto; }
 .browser-gear { display: grid; flex: none; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--faint); font: inherit; cursor: pointer; }
 .browser-gear:hover, .browser-gear[aria-expanded="true"] { color: var(--text); background: var(--mac-fill); }
 .browser-gear:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* 齿轮面板：分组框 + macOS 输入框，保存是那颗默认按钮。 */
-.browser-cfg { display: flex; flex-direction: column; gap: 8px; padding: 9px; border: 0.5px solid var(--line); border-radius: 9px; background: var(--panel-2); }
+.browser-cfg { display: flex; flex-direction: column; gap: 10px; padding: 10px; border: 0.5px solid var(--line); border-radius: 9px; background: var(--panel-2); }
 .browser-cfg-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
 .browser-cfg-field { display: flex; align-items: center; gap: 4px; color: var(--faint); font-size: 10px; }
 .browser-cfg-field input { width: 44px; padding: 2px 5px; border: 0.5px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--text); font: inherit; font-size: 10.5px; text-align: right; }
@@ -1772,60 +1772,59 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .browser-cfg-reset:hover { color: var(--text); background: var(--mac-fill); }
 .browser-idle { flex: none; color: var(--warn); font-size: 9.5px; font-variant-numeric: tabular-nums; }
 /* 分组列表本体：一个圆角框，卡片自己不再有边框、圆角、背景。 */
-.browser-list { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 0.5px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.browser-list { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 0.5px solid var(--line); border-radius: 12px; background: var(--panel-2); }
 .browser-card { position: relative; min-width: 0; background: transparent; transition: background var(--dur-1) var(--ease); }
 .browser-card + .browser-card { border-top: 0.5px solid var(--line-soft); }
 .browser-card:hover { background: var(--mac-fill); }
-/* 状态只占最左边 2px：整行不换色，列表还是一张安静的名单。 */
-.browser-card[data-bstate="running"] { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 70%, transparent); }
-.browser-card[data-bstate="slow"] { box-shadow: inset 2px 0 0 var(--warn); }
-.browser-card[data-bstate="stuck"], .browser-card[data-bstate="failed"] { box-shadow: inset 2px 0 0 var(--danger); }
-.browser-head { display: flex; align-items: center; gap: 6px; min-height: 30px; min-width: 0; padding: 4px 8px 4px 6px; cursor: pointer; }
-.browser-chev { display: grid; flex: none; place-items: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--faint); cursor: pointer; }
+.browser-head { display: flex; align-items: center; gap: 8px; min-height: 40px; min-width: 0; padding: 6px 10px 6px 6px; cursor: pointer; }
+.browser-chev { display: grid; flex: none; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--faint); cursor: pointer; }
 .browser-chev svg { transition: transform var(--dur-2) var(--ease); }
 .browser-chev.open svg { transform: rotate(90deg); }
 .browser-chev:hover { color: var(--text); background: var(--mac-fill-2); }
 .browser-chev:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-/* 标题分两截：脚本名（或「浏览器」）是名字，后面是动作。名字不再吃掉整行，动作从省略号里
-   露出前半句，一眼能分出这次是哪张卡。 */
-.browser-title { display: block; flex: 1 1 auto; overflow: hidden; min-width: 0; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.browser-name { color: var(--text); font-weight: 600; white-space: nowrap; }
-/* 分隔符自带空格（innerText 里也必须读成 "name · 动作"，浏览器面板的 UI 测试这么断言）。 */
+/* 标题：先一颗状态点，再是名字 + 动作。名字不参与无限省略，动作从剩下的宽度里露出前半句；
+   innerText 仍读成 "name · 动作"，浏览器面板的 UI 测试按这个断言。 */
+.browser-title { display: block; flex: 1 1 auto; overflow: hidden; min-width: 0; color: var(--text); font-size: 13px; line-height: 1.35; white-space: nowrap; }
+.browser-dot { display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--line-lit); vertical-align: 1px; }
+.browser-card[data-bstate="running"] .browser-dot { background: var(--accent); }
+.browser-card[data-bstate="slow"] .browser-dot { background: var(--warn); }
+.browser-card[data-bstate="stuck"] .browser-dot, .browser-card[data-bstate="failed"] .browser-dot { background: var(--danger); }
+.browser-name { display: inline-block; overflow: hidden; max-width: 64%; color: var(--text); font-size: 13px; font-weight: 600; text-overflow: ellipsis; vertical-align: baseline; white-space: nowrap; }
+/* 分隔符自带空格（innerText 里也必须读成 "name · 动作"）。 */
 .browser-title-sep { white-space: pre; color: var(--line-lit); }
-.browser-act { color: var(--faint); white-space: nowrap; }
+.browser-act { display: inline-block; overflow: hidden; max-width: 60%; color: var(--dim); font-size: 12px; text-overflow: ellipsis; vertical-align: baseline; white-space: nowrap; }
 .browser-dur { flex: none; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
-.browser-card[data-bstate="running"] .browser-dur { color: var(--accent); font-weight: 600; }
-.browser-badge { flex: none; padding: 0 5px; border-radius: 4px; font-size: 9.5px; font-weight: 600; line-height: 16px; white-space: nowrap; }
-.browser-badge.slow { background: var(--warn-bg); color: var(--warn); }
-.browser-badge.stuck { background: var(--danger); color: var(--danger-ink); }
-.browser-badge.silent, .browser-badge.looping { background: var(--warn-bg); color: var(--warn); }
-.browser-badge.failed { background: var(--danger-bg); color: var(--danger); }
+.browser-badge { flex: none; color: var(--warn); font-size: 10px; font-weight: 500; line-height: 1.2; white-space: nowrap; }
+.browser-badge.stuck, .browser-badge.failed { color: var(--danger); }
 .browser-stop { flex: none; padding: 1px 5px; border: 0; border-radius: 4px; background: transparent; color: var(--danger); font: inherit; font-size: 10px; cursor: pointer; }
 .browser-stop:hover { background: var(--danger-bg); }
-.browser-body { display: flex; flex-direction: column; gap: 7px; min-width: 0; margin-top: 1px; padding: 7px 10px 10px 30px; border-top: 0.5px solid var(--line-soft); }
-.browser-intent { display: -webkit-box; overflow: hidden; color: var(--dim); font-size: 11.5px; line-height: 1.55; overflow-wrap: anywhere; cursor: pointer; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+/* 展开体：分段标题 + 内容，左边缩进到名字下面；技术元信息放在最后当页脚。 */
+.browser-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin-top: 0; padding: 9px 14px 14px 40px; border-top: 0.5px solid var(--line-soft); }
+.browser-label { margin-top: 6px; color: var(--faint); font-size: 9.5px; font-weight: 600; letter-spacing: 0.02em; }
+.browser-label:first-child { margin-top: 0; }
+.browser-intent { display: -webkit-box; overflow: hidden; color: var(--dim); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; cursor: pointer; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .browser-intent.open { display: block; overflow: visible; }
-.browser-meta { display: flex; flex-wrap: wrap; gap: 2px 8px; min-width: 0; color: var(--faint); font-size: 10px; line-height: 1.5; }
+.browser-meta { display: flex; flex-wrap: wrap; gap: 2px 8px; min-width: 0; margin-top: 4px; padding-top: 8px; border-top: 0.5px solid var(--line-soft); color: var(--faint); font-size: 9.5px; line-height: 1.5; }
 .browser-meta span { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }
 .browser-meta .browser-tool { font-family: var(--mono); }
-.browser-steps { display: flex; flex-direction: column; gap: 3px; min-width: 0; margin: 0; padding: 0; list-style: none; }
-.browser-steps li { display: flex; gap: 6px; min-width: 0; color: var(--text); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
-.browser-steps li::before { content: ""; flex: none; width: 3px; height: 3px; margin-top: 7px; border-radius: 50%; background: var(--line-lit); }
-.browser-steps li.act { color: var(--text); font-weight: 600; }
-.browser-steps li.act::before { background: var(--accent); }
-.browser-steps li.pass::before { content: "✓"; width: auto; height: auto; margin: 0; background: none; color: var(--ok); font-size: 9.5px; line-height: 1.8; }
-.browser-steps li.fail { color: var(--danger); }
-.browser-steps li.fail::before { content: "✗"; width: auto; height: auto; margin: 0; background: none; color: var(--danger); font-size: 9.5px; line-height: 1.8; }
 .browser-meta .browser-src { color: var(--faint); font-style: normal; }
+.browser-steps { display: flex; flex-direction: column; gap: 5px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.browser-steps li { display: flex; align-items: flex-start; gap: 8px; min-width: 0; color: var(--text); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.browser-steps li::before { content: ""; display: grid; flex: none; place-items: center; width: 14px; height: 14px; margin-top: 1px; border-radius: 0; background: radial-gradient(circle at center, var(--line-lit) 0 2.5px, transparent 3px); color: var(--faint); font-size: 10px; line-height: 1; }
+.browser-steps li.act { font-weight: 600; }
+.browser-steps li.act::before { background: radial-gradient(circle at center, var(--accent) 0 2.5px, transparent 3px); }
+.browser-steps li.pass::before { content: "✓"; background: none; color: var(--ok); }
+.browser-steps li.fail { color: var(--danger); }
+.browser-steps li.fail::before { content: "✗"; background: none; color: var(--danger); }
 .browser-empty { color: var(--faint); font-size: 11.5px; }
 .browser-out { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.browser-out-toggle { align-self: flex-start; padding: 0; border: 0; background: transparent; color: var(--dim); font: inherit; font-size: 10.5px; cursor: pointer; }
+.browser-out-toggle { align-self: flex-start; padding: 1px 0; border: 0; background: transparent; color: var(--dim); font: inherit; font-size: 11px; cursor: pointer; }
 .browser-out-toggle::before { content: "▸"; margin-right: 4px; font-size: 9px; color: var(--faint); }
 .browser-out.open .browser-out-toggle::before { content: "▾"; }
 .browser-out-toggle:hover { color: var(--text); }
 .browser-out-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* 输出是这段文字里唯一「沉下去」的东西：底色比列表暗一档（--sunken），等宽、行高松一点。 */
-.browser-out-body { display: -webkit-box; overflow: hidden; margin: 0; padding: 7px 8px; border: 0.5px solid var(--line-soft); border-radius: 6px; background: var(--sunken); color: var(--dim); font: 10.5px/1.6 var(--mono); white-space: pre-wrap; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.browser-out-body { display: -webkit-box; overflow: hidden; margin: 0; padding: 8px 10px; border: 0.5px solid var(--line-soft); border-radius: 7px; background: var(--sunken); color: var(--dim); font: 11px/1.6 var(--mono); white-space: pre-wrap; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .browser-out.open .browser-out-body { display: block; overflow: auto; max-height: calc(var(--vh1) * 30); }
 /* 空态：一行小字 + 一段说明，居中但别做成一张空卡片。 */
 .browser-panel > .exec-empty { padding: 26px 8px 2px; text-align: center; font-size: 12.5px; }

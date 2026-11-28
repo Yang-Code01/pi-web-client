@@ -215,6 +215,12 @@ for (const theme of THEMES) {
     const first = cards[0];
     const next = cards[1];
     const head = first?.querySelector(".browser-head");
+    const sum = pane.querySelector(".browser-sum");
+    const only = sum?.querySelector(".browser-only");
+    const tools = sum?.querySelector(".browser-sum-tools");
+    const center = (elm) => { const r = elm.getBoundingClientRect(); return r.top + r.height / 2; };
+    const expanded = cards.find((card) => card.querySelector(".browser-body"));
+    const body = expanded?.querySelector(".browser-body");
     return {
       overflow: pane.scrollWidth - pane.clientWidth,
       cards: cards.length,
@@ -223,6 +229,9 @@ for (const theme of THEMES) {
       gap: first && next ? Math.round(next.getBoundingClientRect().top - first.getBoundingClientRect().bottom) : -1,
       headLines: head ? (head.getBoundingClientRect().height - 12) / 19 : 0,
       headHeight: head ? head.getBoundingClientRect().height : 0,
+      sumRow: only && tools ? Math.abs(center(only) - center(tools)) : -1,
+      labels: body ? [...body.querySelectorAll(".browser-label")].map((node) => node.textContent) : [],
+      metaLast: body ? body.lastElementChild?.classList.contains("browser-meta") ?? false : false,
       // 选中页签的底：滑块是近中性的一档，不是强调色。
       onBg: getComputedStyle(document.querySelector('.pane[data-region="queue"] .exec-tabs button.on')).backgroundColor,
       onImage: getComputedStyle(document.querySelector('.pane[data-region="queue"] .exec-tabs button.on')).backgroundImage,
@@ -239,8 +248,11 @@ for (const theme of THEMES) {
   ok(/gradient/.test(geom.onImage), `${theme}：选中页签是抬起的渐变滑块，不是纯色实底（${geom.onImage.slice(0, 40)}）`);
   ok(geom.overflow <= 0, `${theme}：面板没有横向溢出（scrollWidth - clientWidth = ${geom.overflow}）`);
   ok(geom.listRadius >= 8, `${theme}：卡片组是一个大圆角容器（量到 ${geom.listRadius}px）`);
-  ok(geom.headHeight <= 40, `${theme}：卡片首行没有撑成两行（${geom.headHeight.toFixed(1)}px ≤ 40）`);
+  ok(geom.headHeight >= 38 && geom.headHeight <= 40, `${theme}：卡片首行有 40px 的呼吸（${geom.headHeight.toFixed(1)}px）`);
   ok(geom.gap <= 1, `${theme}：卡片之间不是空气缝（${geom.gap}px）`);
+  if (theme !== "150%") ok(geom.sumRow <= 2, `${theme}：汇总是一行（筛选与工具中心差 ${geom.sumRow.toFixed(1)}px）`);
+  ok(geom.labels.includes("意图") && geom.labels.includes("步骤"), `${theme}：展开体有「意图 / 步骤」分段（${geom.labels.join(" / ")}）`);
+  ok(geom.metaLast, `${theme}：技术元信息落在展开体最后（${geom.metaLast}）`);
   for (const t of geom.titles) {
     ok(t.text === t.attr, `${theme}：标题 innerText 与悬停全文一致（${JSON.stringify(t.text).slice(0, 50)} vs ${JSON.stringify(t.attr).slice(0, 50)}）`);
     ok(t.text.startsWith(`${t.name} · `) && !/[\r\n]/.test(t.text), `${theme}：标题仍是「名字 · 动作」单行（${JSON.stringify(t.text).slice(0, 50)}）`);
