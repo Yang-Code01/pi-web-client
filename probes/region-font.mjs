@@ -214,6 +214,9 @@ await page.screenshot({ path: path.join(OUT, "2-seeded.png") });
 }
 
 // ---------------------------------------------------------------- 3. 壳 A 的标签行不许双倍
+// 必须自己再种一次：上面为了量「盒子不变」的基线把它切回默认态了（`--rs-topbar` 是 1 的话，
+// 双倍不双倍都看不出来 —— 这条断言会假绿）。
+await boot({ regionScale: SEED });
 {
   const z = await page.evaluate(() => ({
     layout: document.documentElement.dataset.layout,
