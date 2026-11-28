@@ -4376,10 +4376,11 @@ export class App {
 
   // ---------------------------------------------------------------- appearance
   /**
-   * 「外观 → 语言与字号」里那根连续滑杆（D441）：全局「字号」与「对话正文」共用这一套控件与交互。
+   * 「外观 → 语言与字号」里那根连续滑杆（D441）：全局「字号」与五块区域字号共用这一套控件与交互。
    *
    * - 值只往外递：`onLive` 拖动中每帧一次（不回写 localStorage），`onCommit` 松手 / 落档时一次。
-   * - `snaps` 是磁吸档位，`marksAt` 是轨道上带数字那几颗（全局 0.8 起每 0.2，区域四档）。
+   * - `snaps` 是磁吸档位，`marksAt` 是轨道上带数字那几颗。六根都用同一套刻度（0.8 起每 0.2，
+   *   `SIZE_MARKS`）：只放各自那几个档位的话数字会全挤在轨道左半边；磁吸档位才分全局 / 区域两套。
    * - 键盘不吃磁吸：步长 1% 比吸附半径 1.2% 小，吸上就再也出不来。
    * - 拖动时把轨道盒子冻住：`#app` 上是整棵树的 zoom，页一放大轨道跟着变宽变位，交给浏览器
    *   按新几何算就会「手一直往右、读数却越来越迟钝」（2.0 拖不到）。
@@ -4824,8 +4825,8 @@ export class App {
       ),
     );
 
-    // D441：「字号」是整页的基准，下面那块是分区倍率 —— 两层 zoom 相乘。
-    // 第一步只露「对话正文」一根：其余四块的变量已经挂在节点上（固定 1.0），下一轮补滑杆不用再动机制。
+    // D441：「字号」是整页的基准，下面那组是分区倍率 —— 两层 zoom 相乘。五块各一根，顺序照界面上
+    // 从上到下、从左到右：顶栏 → 会话列表 → 对话正文 → 输入框 → 右栏面板。
     langPanel.append(
       this.fontSliderRow({
         label: tr("字号"),
@@ -4849,22 +4850,46 @@ export class App {
           this.applyPrefs();
         },
       }),
-      this.fontSliderRow({
-        label: tr("对话正文"),
-        hint: tr("只缩放聊天记录这一块，叠在「字号」上相乘；双击轨道回 100%"),
-        value: this.prefs.regionScale.chat,
-        reset: REGION_DEFAULT_SCALE,
-        snaps: REGION_STOPS,
-        // 刻度跟全局那根同一套（80…200）：只放四个数字会全挤在轨道左半边，两行看着不像同一款。
-        marksAt: SIZE_MARKS,
-        onLive: (v) => {
-          this.prefs = { ...this.prefs, regionScale: { ...this.prefs.regionScale, chat: v } };
-          // 区域倍率只动一个 CSS 变量：不碰壳、不判窄版（栏宽与 900px 判据只认全局那根）。
-          this.paintRegionScales();
-        },
-        onCommit: () => savePrefs(this.prefs),
-      }),
     );
+
+    // 五块的分组头：叠乘关系说一次，五行各自的 hint 只讲「这一块是哪一块」，不重复念乘法。
+    // 用 stSection 而不是手拼三层 —— 小节头只有一处样式的真源。
+    langPanel.append(this.stSection(tr("分区字号"), tr("各自叠在「字号」上相乘；双击轨道回 100%")));
+
+    const regionLabels: Record<RegionId, string> = {
+      topbar: tr("顶栏"),
+      sessions: tr("会话列表"),
+      chat: tr("对话正文"),
+      composer: tr("输入框"),
+      queue: tr("右栏面板"),
+    };
+    const regionHints: Record<RegionId, string> = {
+      topbar: tr("顶部三行：顶栏按钮、工作区标签行、置顶会话行"),
+      sessions: tr("左栏那列会话卡片"),
+      chat: tr("聊天记录这一块"),
+      composer: tr("底部输入区（含提示行与工具行）"),
+      queue: tr("右栏的执行 / 计划等面板"),
+    };
+    for (const id of REGION_IDS) {
+      langPanel.append(
+        this.fontSliderRow({
+          label: regionLabels[id],
+          hint: regionHints[id],
+          value: this.prefs.regionScale[id],
+          reset: REGION_DEFAULT_SCALE,
+          snaps: REGION_STOPS,
+          // 刻度跟全局那根同一套（80…200），五行都照抄：只放各自那几个档位的话数字会全挤在轨道左半边，
+          // 六根滑杆看着不像同一款。
+          marksAt: SIZE_MARKS,
+          onLive: (v) => {
+            this.prefs = { ...this.prefs, regionScale: { ...this.prefs.regionScale, [id]: v } };
+            // 区域倍率只动一个 CSS 变量：不碰壳、不判窄版（栏宽与 900px 判据只认全局那根）。
+            this.paintRegionScales();
+          },
+          onCommit: () => savePrefs(this.prefs),
+        }),
+      );
+    }
 
     // 主题：带小样的 chip。小样的强调色跟着当前选的强调色走，换强调色时这里一起重画。
     // 外观只剩 Mac 风格三套（D353）：它们写的是同一个 `prefs.theme`，点一颗立即换上。
@@ -23158,7 +23183,7 @@ const regionScaleDefault = (): RegionScale => ({
   queue: REGION_DEFAULT_SCALE,
 });
 
-/** 区域滑杆的磁吸档位（**只当磁吸，不当刻度**，刻度两行共用 `SIZE_MARKS`）：100% 是默认，另三档是「缩一点 / 放大一点 / 放大很多」。 */
+/** 区域滑杆的磁吸档位（**只当磁吸，不当刻度**，刻度六行共用 `SIZE_MARKS`）：100% 是默认，另三档是「缩一点 / 放大一点 / 放大很多」。 */
 const REGION_STOPS = [0.9, 1, 1.15, 1.3];
 
 type Prefs = {
@@ -23796,8 +23821,8 @@ const SIZE_MIN = 0.8;
 const SIZE_MAX = 2;
 const SIZE_STEP = 0.01;
 const SIZE_STOPS = [0.9, 1, 1.12, DEFAULT_SCALE];
-/** 轨道上带数字的刻度：0.8 起每 0.2 一档。**两行共用这一套**（字号 + 对话正文），
- *  只放各自那几个档位的话数字全挤在轨道左半边，两行看着不像同一款；磁吸档位另算（`SIZE_STOPS` / `REGION_STOPS`）。 */
+/** 轨道上带数字的刻度：0.8 起每 0.2 一档。**六根滑杆共用这一套**（全局字号 + 五块），
+ *  只放各自那几个档位的话数字全挤在轨道左半边，六根看着不像同一款；磁吸档位另算（`SIZE_STOPS` / `REGION_STOPS`）。 */
 const SIZE_MARKS: number[] = (() => {
   const out: number[] = [];
   for (let i = 0; i * 0.2 <= SIZE_MAX - SIZE_MIN + 1e-9; i++) out.push(SIZE_MIN + i * 0.2);
