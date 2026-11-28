@@ -1623,8 +1623,12 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
   transition: background var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
 }
 .queue .exec-tabs button.on {
-  color: var(--text); border-bottom: 0; background: var(--mac-knob);
-  box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.04), 0 1px 4px rgba(0, 0, 0, 0.16);
+  /* 选中 = 强调色实底 + 反相字（D456），跟 `.chip.on` / `.btn.pri` 与设置台的分段控件同一套组合。
+     以前这里是灰滑块（再早是开关圆点那颗白，深色下白底白字，D455）。 */
+  color: var(--accent-ink); border-bottom: 0; background: var(--accent);
+  /* 选中再重一档：强调色实底上 12px 字只有 3.65:1（默认蓝，D456），加粗把辨识度补回来。 */
+  font-weight: 600;
+  box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.06), 0 1px 4px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .queue .exec-tabs .pip {
   min-width: 14px; height: 14px; margin-left: 3px; border-radius: 7px;
@@ -3001,8 +3005,12 @@ video.md-media { background: #000; max-height: calc(var(--vh1) * 70); }
 .dir-mkrow .dir-mkerr { padding-top: 4px; min-height: 0; }
 
 /* ---------------------------------------------------------------- model sheet: 设置控制台外壳 + 草稿确认 */
-/* D373：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。 */
-.st-console.model-sheet { width: min(1000px, 100%); height: min(760px, 100%); }
+/* D373：跟设置页同一个 .st-console 骨架（左栏入口 / 右栏内容 / 底栏只在改了时出现取消+确认）。
+   D457：模型层比设置页窄、矮一档 —— 但**只覆盖基数**，尺寸算式仍由 `.st-console` 那一份算：
+   以前这里自己抄了一遍 `min(calc(1000px * …), 100%)`，`--st-frame` 的语义一改它就静默掉队。
+   也别写死 `min(1000px, 100%)`：特异性 (0,2,0) 会赢过基础规则，2.0 下被遮罩夹住看着像对的，
+   80% 时露馅（视觉 800 而不是 1000）。 */
+.st-console.model-sheet { --st-w-base: 1000px; --st-h-base: 760px; }
 /* 列表自己滚，档位条钉在滚动区外：模型一大堆时，选完不用滚回顶部才能换档。 */
 .st-console.model-sheet .st-pane { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .model-sheet .pm-body { flex: 1 1 auto; min-height: 0; padding: 18px 22px 22px; overflow-y: auto; scrollbar-gutter: stable; }
@@ -3835,6 +3843,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 @media (prefers-reduced-motion: reduce) {
   .pin-menu { animation: none; }
   .bg-bar .bg-dot { animation: none; }
+  .bg-run-dot { animation: none; }
   .turn-rail.busy .turn-tick.ghost { animation: none; }
   /* #478：新建组的两处「刚出来」提示动效也关掉（静态高亮保留）。 */
   .ws-tabs-more.fresh { animation: none; }
@@ -4493,25 +4502,105 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .update-bar-x:hover { color: var(--text); }
 
 
-/* D170 详情：点开「后台」那条提示，看 runner 在干什么。一屏一张卡片，过程贴着底长。 */
-.sheet.bg-sheet { grid-template-rows: auto minmax(0, 1fr); width: min(760px, calc(var(--vw1) * 94)); max-height: min(760px, calc(var(--vh1) * 84)); }
-.bg-sheet-body { overflow: auto; padding: 12px 16px 16px; display: grid; gap: 14px; align-content: start; }
-.bg-empty { color: var(--faint); font-size: 13px; padding: 6px 0; }
-.bg-run { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
-.bg-run-head { display: flex; align-items: baseline; gap: 10px; }
-.bg-run-agent { font-size: 13px; font-weight: 600; color: var(--text); }
-.bg-run-state { font: 11px/1 var(--mono); color: var(--accent); }
-.bg-run-task { font-size: 13px; line-height: 1.5; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
-/* 失败原因：runner 的报错原文（前台派活挂掉时它是唯一的线索）。 */
-.bg-run-err { font-size: 12.5px; line-height: 1.5; color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; }
-.bg-run-id { font: 11px/1 var(--mono); color: var(--faint); }
-.bg-run-lab { font-size: 11px; color: var(--faint); letter-spacing: 0.02em; }
+/* D170 详情：点开「后台」那条提示，看 runner 在干什么。
+   mac 检查器式抬头（标题 + 状态胶囊 + 计数），下面每个 run 是扁平的一段：
+   状态灯 / agent / 状态词 / 用时一行，任务（四行封顶，可展开）、过程、最终输出各带小标题。
+   卡片之间只用一条发丝线，不再「卡片里套一个日志框」——那是信息乱的主因。 */
+.sheet.bg-sheet {
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(760px, calc(var(--vw1) * 94));
+  max-height: min(760px, calc(var(--vh1) * 84));
+}
+.bg-head { align-items: flex-start; padding: 12px 16px 11px; }
+.bg-head-main { display: grid; gap: 2px; min-width: 0; }
+.bg-head-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bg-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.bg-head-chip {
+  flex: none; padding: 1px 7px; border-radius: 999px;
+  font-size: 10.5px; line-height: 15px; white-space: nowrap;
+  background: var(--panel-2); color: var(--faint);
+}
+.bg-head-chip[hidden] { display: none; }
+.bg-head-chip[data-state="running"] { background: var(--accent-bg); color: var(--accent); }
+.bg-head-chip[data-state="done"] { background: var(--ok-bg); color: var(--ok); }
+.bg-head-chip[data-state="failed"] { background: var(--danger-bg); color: var(--danger); }
+.bg-head-meta { font-size: 10.5px; color: var(--faint); }
+.bg-head-meta[hidden] { display: none; }
+.bg-head-close { flex: none; }
+.bg-sheet-body { overflow: auto; padding: 2px 0 6px; }
+
+.bg-empty { display: grid; justify-items: center; gap: 7px; padding: 56px 24px 64px; text-align: center; }
+.bg-empty-ic {
+  display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 3px;
+  border-radius: 12px; background: var(--panel-2); color: var(--faint);
+}
+.bg-empty-title { max-width: 46ch; font-size: 12.5px; color: var(--dim); }
+.bg-empty-hint { max-width: 46ch; font-size: 11.5px; line-height: 1.6; color: var(--faint); }
+
+.bg-run { display: grid; gap: 9px; padding: 14px 18px 16px; container-type: inline-size; }
+.bg-run + .bg-run { border-top: 0.5px solid var(--line-soft); }
+.bg-run-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bg-run-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.bg-run-dot[data-state="running"] { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.bg-run-dot[data-state="done"] { background: var(--ok); }
+.bg-run-dot[data-state="failed"] { background: var(--danger); }
+.bg-run-agent {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
+.bg-run-state { flex: none; font-size: 11px; font-weight: 500; color: var(--dim); }
+.bg-run-state[data-state="running"] { color: var(--accent); }
+.bg-run-state[data-state="done"] { color: var(--ok); }
+.bg-run-state[data-state="failed"] { color: var(--danger); }
+/* 运行 id 是排障用的，不是正文：小号等宽、放不下就截断（全 id 在 title 里）；卡片窄到放不下就整颗让位。 */
+.bg-run-id { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 10.5px/1 var(--mono); color: var(--faint); }
+.bg-run-time { flex: none; margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+
+/* 失败原因：一条内嵌的红条，别再让用户去日志里找。 */
+.bg-run-errbox {
+  display: flex; align-items: flex-start; gap: 7px; padding: 8px 10px;
+  border-radius: 8px; background: var(--danger-bg); color: var(--danger);
+}
+.bg-run-errbox[hidden] { display: none; }
+.bg-run-errbox .ico { flex: none; margin-top: 1px; }
+.bg-run-err { flex: 1; min-width: 0; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.bg-sec { display: grid; gap: 5px; }
+.bg-sec[hidden] { display: none; }
+.bg-sec-head { display: flex; align-items: center; gap: 8px; min-height: 16px; }
+.bg-sec-title { font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--faint); }
+.bg-more {
+  margin-left: auto; padding: 0; border: 0; background: none;
+  color: var(--accent); font-size: 11px; line-height: 1; cursor: pointer;
+}
+.bg-more[hidden] { display: none; }
+.bg-more:hover { text-decoration: underline; }
+
+/* 任务正文四行封顶：长任务不再把过程和输出推到屏幕外面，要读全文按「展开」。 */
+.bg-run-task {
+  font-size: 13px; line-height: 20px; color: var(--dim);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+}
+.bg-task.open .bg-run-task { display: block; overflow: visible; -webkit-line-clamp: unset; }
+
 .bg-run-log,
 .bg-run-out {
-  margin: 0; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg);
-  font: 11.5px/1.55 var(--mono); color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere;
-  max-height: min(320px, calc(var(--vh1) * 38)); overflow: auto;
+  margin: 0; padding: 9px 11px; border: 0; border-radius: 8px; background: var(--sunken);
+  box-shadow: inset 0 0 0 0.5px var(--line-soft);
+  font: 11.5px/1.6 var(--mono); color: var(--dim);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: min(300px, calc(var(--vh1) * 34)); overflow: auto;
 }
+.bg-run-out { color: var(--text); max-height: min(360px, calc(var(--vh1) * 40)); }
+/* 占位不是日志：用正文字体与更淡的颜色，别让「桥还没接上」看起来像一条条目。 */
+.bg-run-log[data-empty] { font-family: var(--sans); font-size: 12px; color: var(--faint); }
+
+@container (max-width: 480px) {
+  .bg-run { padding: 13px 14px 15px; }
+  .bg-run-id { display: none; }
+}
+
 .badge.clickable { cursor: pointer; }
 .badge.clickable:hover { border-color: var(--accent); }
 .badge.clickable:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
