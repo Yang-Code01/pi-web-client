@@ -63,6 +63,16 @@ function log(line: string): void {
   console.log(`[host ${new Date().toISOString().slice(11, 19)}] ${line}`);
 }
 
+/** 同步写到 fd 2：`npm start | tee` / CI 这类管道里，`console.error` 的异步写在 `process.exit`
+ * 之前往往还没落盘，那几句人话会被截断，用户只看到半截。 */
+function fail(line: string): void {
+  try {
+    fs.writeSync(2, `[host] ${line}\n`);
+  } catch {
+    console.error(`[host] ${line}`);
+  }
+}
+
 /**
  * 端口被占时给一句人话（D441）：以前这里是未捕获的 EADDRINUSE，用户只看到一坨堆栈。
  *
@@ -73,7 +83,7 @@ function log(line: string): void {
 function explainPortTaken(port: number): void {
   const pid = readPidFile(port);
   const who = pid ? `pid 文件里记着 ${pid}` : "认不出占用者";
-  console.error(
+  fail(
     `端口 ${port} 已被占用（${who}），壳没有起来。\n` +
       `  先看看是谁、要不要停掉它：node scripts/preflight.mjs\n` +
       `  自己停掉：npm run bridge:stop\n` +
@@ -952,8 +962,8 @@ async function main(): Promise<void> {
     const code = (listenError as NodeJS.ErrnoException).code;
     if (code !== "EADDRINUSE") {
       // 其它 listen 错误（EACCES 绑特权口、EADDRNOTAVAIL 绑不存在的地址）同样不该甩堆栈。
-      console.error(`壳没能监听 ${listenHost}:${port}（${code ?? "未知错误"}）：${listenError.message}`);
-      console.error(`  换一个地址/端口试试：PI_WEB_HOST=127.0.0.1 PI_WEB_PORT=<别的口> npm start`);
+      fail(`壳没能监听 ${listenHost}:${port}（${code ?? "未知错误"}）：${listenError.message}`);
+      fail(`  换一个地址/端口试试：PI_WEB_HOST=127.0.0.1 PI_WEB_PORT=<别的口> npm start`);
       bail(1);
     }
     explainPortTaken(port);

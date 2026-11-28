@@ -100,7 +100,10 @@ const brainGet = async (p) => {
   // 假脑在「改名覆盖」失败时会退化成直写（Windows 上正被读就会 EPERM），读的那一瞬可能撞上
   // 半截 JSON、stats() 返回 null。那不是「没报端口」，等下一轮就好 —— 在这里当场断言失败会
   // 变成偶发红（必须紧跟在 host-shell-e2e 后面跑才复现）。
-  const port = await until(() => stats()?.port ?? null, "假脑报了端口", 5000);
+  // 外层更早的时候已经等过一次「假脑报端口」了，这里等的是**另**一回事：轮询期间碰巧读到半截
+  // JSON。所以别沿用那句文案 —— 半截 JSON 和「假脑压根没起来」是两码事，报错会指错地方；
+  // 超时也别比外层的 20s 短，否则真正的失败点会被这个更早的超时盖住。
+  const port = await until(() => stats()?.port ?? null, "读假脑端口（stats() 反复读到半截 JSON）");
   return (await fetch(`http://127.0.0.1:${port}${p}`)).json();
 };
 

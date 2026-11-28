@@ -29,7 +29,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { ENTRY_NAMES as BRIDGE_ENTRY_NAMES } from "./bridge-entry.mjs";
+import { ENTRY_NAMES } from "./bridge-entry.mjs";
 
 /** 端口被占：不继续。 */
 export const EXIT_BLOCKED = 2;
@@ -40,19 +40,19 @@ export const EXIT_OK = 0;
 
 const WIN = process.platform === "win32";
 const APP = "pi-web-client";
-const DEFAULT_PORT = 7864;
-/** 跟 `bridge/src/host.ts` 的 `readHost()` 默认一致：只有本机能连。 */
-const DEFAULT_HOST = "127.0.0.1";
+/** 与 `bridge/src/host.ts` 的 `readPort()` 兜底值一致（跨语言边界各写一份，`preflight-unit` 里有人盯着）。 */
+export const DEFAULT_PORT = 7864;
+/** 跟 `bridge/src/host.ts` 的 `readHost()` 兜底值一致：只有本机能连。 */
+export const DEFAULT_HOST = "127.0.0.1";
 /** 优雅停机等端口释放的上限；超过才硬杀。 */
 const STOP_GRACE_MS = 10_000;
 /** 硬杀之后等端口真空出来的上限。 */
 const STOP_KILL_WAIT_MS = 5_000;
-/**
- * 认「是不是本项目的桥」只看入口文件名，不看绝对路径：占用者可能来自另一份检出
+/** 它明确拒了 `/api/host/stop`（HTTP 403 同源校验没过 / 405 之类）时只再等这么一会儿。 */
+const STOP_REFUSED_GRACE_MS = 2_000;
+/** 认「是不是本项目的桥」只看入口文件名，不看绝对路径：占用者可能来自另一份检出
  * （别的 worktree、另一个安装目录），那正是最该被认出来的一类。入口名从
- * `scripts/bridge-entry.mjs` 取，别在这儿再写一份。
- */
-const ENTRY_NAMES = BRIDGE_ENTRY_NAMES;
+ * `scripts/bridge-entry.mjs` 取，别在这儿再写一份。 */
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -272,7 +272,10 @@ export async function portFree(port, host = DEFAULT_HOST) {
  * `Get-CimInstance` 每个只要几十毫秒，所以全塞进同一次调用。
  *
  * 整个查询失败（powershell 超时 / 没权限）→ `null`：**不能**当成「这些进程都不在」。
- * 返回 `{ listen, lines }`；`lines` 里没有某个 pid 才是「进程已经不在了」。
+ * 返回 `{ listen, lines, failed, listenUnknown }`：
+ * - `lines` 里没有某个 pid、又不在 `failed` 里，才是「进程已经不在了」；
+ * - `failed` 是「这个 pid 问不到」（没 lsof / ps 挂了 / 权限不够）—— 不等于它不是本项目的桥；
+ * - `listenUnknown` 是「谁在 listen 这一项没问到」（端口明明忙着，却报不出 pid）。
  */
 export function processDetails(port, pids = []) {
   const want = [...new Set(pids.filter((n) => Number.isInteger(n) && n > 0))];
@@ -304,16 +307,19 @@ export function processDetails(port, pids = []) {
       if (!Number.isInteger(pid) || pid <= 0) continue;
       lines.set(pid, line.slice(at + 1));
     }
-    return { listen, lines };
+    // Windows 的一次查询里没有「问不到某个 pid」这种半状态：没输出就是没这个进程。
+    return { listen, lines, failed: new Set(), listenUnknown: listen === null };
   }
   // unix：`lsof` + `ps` 都是毫秒级，一次一个反而简单。
   const listen = listenPid(port);
+  const failed = new Set();
   for (const pid of [...new Set([...want, ...(listen ? [listen] : [])])]) {
     const cmd = commandLine(pid);
-    if (cmd === null) return null;
-    if (cmd) lines.set(pid, cmd);
+    // 单个 pid 问不到不代表整个查询失败：把「谁在 listen」和已经问到的部分留着。
+    if (cmd === null) failed.add(pid);
+    else if (cmd) lines.set(pid, cmd);
   }
-  return { listen, lines };
+  return { listen, lines, failed, listenUnknown: listen === null };
 }
 
 /**
@@ -337,6 +343,11 @@ export async function probeOwner(port, host = DEFAULT_HOST) {
       unverified ??= { pid, from };
       return null;
     }
+    // 这个 pid 的命令行问不到（没 lsof / ps 挂了）：不确定，**不等于**「它不是本项目的桥」。
+    if (details.failed.has(pid)) {
+      unverified ??= { pid, from };
+      return null;
+    }
     const cmd = details.lines.get(pid);
     if (cmd === undefined) return null; // 进程已经没了
     if (looksLikeBridge(cmd)) return { pid, cmd, from };
@@ -349,8 +360,8 @@ export async function probeOwner(port, host = DEFAULT_HOST) {
     inspect(fromFile, "pidfile") ??
     inspect(details?.listen, "listen");
   if (!ours && !other && !unverified) {
-    // 连 listen 的 pid 都没问到，或者端口答了但读不懂：一样不确定。
-    if (!details) unverified = { pid: health?.pid ?? fromFile ?? 0, from: "listen" };
+    // 连 listen 的 pid 都没问到（没 lsof / 枚举失败），或者端口答了但读不懂：一样不确定。
+    if (!details || details.listenUnknown) unverified = { pid: health?.pid ?? fromFile ?? 0, from: "listen" };
     else if (hz && !health) unverified = { pid: 0, from: "healthz" };
   }
 
@@ -383,7 +394,13 @@ export async function probeOwner(port, host = DEFAULT_HOST) {
 
 // ------------------------------------------------------------------ 停机
 
-/** 请壳自己收工：壳先让脑收会话、再带 pi 一起退（`npm run bridge:stop` 用的是同一条路）。 */
+/**
+ * 请壳自己收工：壳先让脑收会话、再带 pi 一起退（`npm run bridge:stop` 用的是同一条路）。
+ *
+ * 返回 `{ ok, status }`：`status` 为 `null` 表示**没连上**（它可能已经在退，没等回包就把端口关了）；
+ * `ok === false && status !== null` 是「它答了、但拒绝了」（同源校验没过 / 路由不对）—— 这两种
+ * 情况的等待时间不一样，所以不能折成一个布尔值。
+ */
 async function postStop(port, host = DEFAULT_HOST) {
   const base = localBase(host, port);
   try {
@@ -398,11 +415,18 @@ async function postStop(port, host = DEFAULT_HOST) {
       body: "{}",
       signal: AbortSignal.timeout(5000),
     });
-    return res.ok;
+    return { ok: res.ok, status: res.status };
   } catch {
     // 连接断掉不算失败：它可能已经在退、没等回包就把端口关了。
-    return false;
+    return { ok: false, status: null };
   }
+}
+
+/**
+ * 它明确拒了 `/api/host/stop` 时等多久：它不会因为等得久一点就改主意，但可能正在被别处停。
+ */
+function stopGrace(stop) {
+  return stop.ok || stop.status === null ? STOP_GRACE_MS : STOP_REFUSED_GRACE_MS;
 }
 
 /** 硬杀一个 pid。**绝不 `/T`**：树的另一边可能连着别的会话，会把更新器自己一起带下去。 */
@@ -438,17 +462,42 @@ async function waitFree(port, host, ms) {
   }
 }
 
+/**
+ * 硬杀之后把 pid 文件清掉。
+ *
+ * `bridge/src/pidfile.ts` 的 `removePidFile` 挂在壳自己的 exit 钩子上，`taskkill /F` 不走钩子，
+ * 于是文件里会一直记着一个已经不存在的 pid —— 下一轮的 `explainPortTaken` 和更新器
+ * （`.pi/skills/bridge-update`）都会照着它去找，找到一个空号。只删「记的还是这一个 pid」那份，
+ * 不替别人清账。
+ */
+function forgetPidFile(port, pid) {
+  if (pidFromFile(port) !== pid) return;
+  try {
+    fs.unlinkSync(pidFile(port));
+  } catch {
+    /* 删不掉就留着：下一轮认人时它指向的进程已经不在，不会被当成占用者 */
+  }
+}
+
 /** 停掉「自己人」：先优雅、等不到再硬杀，最后一定要看到端口真的空出来。 */
 async function stopOwner(owner, port, host, log) {
   if (owner.shell) {
     log(`  先请它自己收工（POST /api/host/stop：壳会按顺序收脑和 pi）…`);
-    await postStop(port, host);
-    if (await waitFree(port, host, STOP_GRACE_MS)) return true;
-    log(`  ${STOP_GRACE_MS / 1000} 秒内没退干净，只好硬杀 pid ${owner.pid}。`);
+    const stop = await postStop(port, host);
+    // 它要是明说「不行」，等满 10 秒只是白等；没连上反而要等（它可能正在退）。
+    if (await waitFree(port, host, stopGrace(stop))) return true;
+    log(
+      stop.status === null
+        ? `  没连上（它可能已经在退），等不到端口释放，硬杀 pid ${owner.pid}。`
+        : stop.ok
+          ? `  ${STOP_GRACE_MS / 1000} 秒内没退干净，只好硬杀 pid ${owner.pid}。`
+          : `  它拒了 /api/host/stop（HTTP ${stop.status}），不再干等，硬杀 pid ${owner.pid}。`,
+    );
   } else {
     log(`  它没有壳，没有 /api/host/stop，只能硬杀 pid ${owner.pid}…`);
   }
   await killPid(owner.pid);
+  forgetPidFile(port, owner.pid);
   if (await waitFree(port, host, STOP_KILL_WAIT_MS)) return true;
   log(`  硬杀之后 ${port} 还是被占着 —— 有别的东西接手了，停在这里。`);
   return false;
@@ -586,8 +635,8 @@ export async function preflight(opts = {}) {
     // 认出了是本项目的桥，但它的 /healthz 没读懂：不敢断它有没有壳，也就不能硬杀。
     log(`  它的 /healthz 没读懂（回包被截断？），不敢直接硬杀 —— 万一它是壳，硬杀会把下面的 pi 会话变成孤儿。`);
     log(`  先请它自己收工试试（POST /api/host/stop）…`);
-    await postStop(port, host);
-    if (await waitFree(port, host, STOP_GRACE_MS)) {
+    const stop = await postStop(port, host);
+    if (await waitFree(port, host, stopGrace(stop))) {
       log(`  它自己退了，端口空出来了。`);
       return EXIT_OK;
     }

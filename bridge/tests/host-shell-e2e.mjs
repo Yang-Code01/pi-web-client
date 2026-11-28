@@ -329,25 +329,35 @@ try {
     let blockedOut = "";
     blocked.stdout.on("data", (c) => (blockedOut += String(c)));
     blocked.stderr.on("data", (c) => (blockedOut += String(c)));
-    const blockedCode = await new Promise((resolve) => {
-      blocked.on("exit", (code) => {
-        blockedExited = true;
-        resolve(code ?? -1);
+    try {
+      let blockedCode = await new Promise((resolve) => {
+        blocked.on("exit", (code) => {
+          blockedExited = true;
+          resolve(code ?? -1);
+        });
+        const t = setTimeout(() => resolve(null), 15000);
+        t.unref();
       });
-      const t = setTimeout(() => resolve(null), 15000);
-      t.unref();
-    });
-    // 它没在 15s 内退出就先收掉，再放端口：反过来做的话，它可能抢在「端口空了」的那一刻
-    // 真的 listen 成功、再把假脑起起来，`killTree` 就被拖到断言之后了。
-    if (blockedCode === null) {
-      killTree(blocked.pid);
-      blockedExited = true;
+      if (blockedCode === null) {
+        killTree(blocked.pid);
+        // 等它真的没了再放端口：killTree 只是把 taskkill 发出去，进程可能还在退；它若抢在
+        // 「端口空出来」那一刻 listen 成功，会把假脑拉起来，而 `blockedExited` 一旦置真，
+        // finally 就不会再去收它了。超时也不置真：留给 finally 收。
+        await until(
+          () => blocked.exitCode !== null || blocked.signalCode !== null,
+          "被端口占住的壳已经退出",
+          8000,
+        );
+        blockedExited = true;
+      }
+      assert.equal(blockedCode, 2, `端口被占时壳应当以 2 退出：${blockedOut}`);
+      assert.match(blockedOut, /已被占用/, "要给一句人话，而不是一坨 EADDRINUSE");
+      assert.match(blockedOut, /npm run bridge:stop/, "要给出停掉旧那份的出口");
+      assert.doesNotMatch(blockedOut, /\n\s+at /, "不要再吐堆栈");
+    } finally {
+      // 端口最后才放：先放的话，那个还没退干净的壳会把假脑拉起来。
+      await new Promise((r) => squatter.close(r));
     }
-    await new Promise((r) => squatter.close(r));
-    assert.equal(blockedCode, 2, `端口被占时壳应当以 2 退出：${blockedOut}`);
-    assert.match(blockedOut, /已被占用/, "要给一句人话，而不是一坨 EADDRINUSE");
-    assert.match(blockedOut, /npm run bridge:stop/, "要给出停掉旧那份的出口");
-    assert.doesNotMatch(blockedOut, /\n\s+at /, "不要再吐堆栈");
   }
 
   console.log("host-shell-e2e: ok");

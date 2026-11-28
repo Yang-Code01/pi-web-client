@@ -8,8 +8,18 @@
  *   - 提问函数：回车=是、n=否、看不懂重问、EOF=没回答 —— 仓库里没有 pty，就注入假 TTY。
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Readable, Writable } from "node:stream";
-import { askReplace, forceRequested, localBase, looksLikeBridge } from "../../scripts/preflight.mjs";
+import {
+  DEFAULT_HOST,
+  DEFAULT_PORT,
+  askReplace,
+  forceRequested,
+  localBase,
+  looksLikeBridge,
+} from "../../scripts/preflight.mjs";
 
 /** 假 TTY：输入按行喂（喂完就 EOF），输出收成字符串。 */
 function fakeTty(lines) {
@@ -88,6 +98,9 @@ assert.equal(looksLikeBridge("npm run x -- bridge/dist/index.js"), false);
 assert.equal(looksLikeBridge("python C:/x/node bridge/dist/host.js"), false);
 assert.equal(looksLikeBridge("node.exe /repo/bridge/dist/index.js"), true);
 assert.equal(looksLikeBridge('"C:\\Program Files\\nodejs\\node.exe" F:\\wt\\feat\\x\\bridge\\dist\\host.js'), true);
+// 开发态直接跑源码（tsx / --experimental-strip-types）也算自己人，否则 --force 也停不了它。
+assert.equal(looksLikeBridge("node C:/repo/node_modules/tsx/dist/cli.mjs C:/repo/bridge/src/host.ts"), true);
+assert.equal(looksLikeBridge("node --experimental-strip-types /repo/bridge/src/index.ts"), true);
 
 // 8. 探活 / 停机打的地址跟着监听地址走：只听某个 LAN IP 时就打它（否则认不出壳、会误当旧桥硬杀），
 //    通配地址换成回环（通配不是能连的目标）。
@@ -99,5 +112,22 @@ assert.equal(localBase("[::]", 7864), "http://[::1]:7864");
 assert.equal(localBase(undefined, 7864), "http://127.0.0.1:7864");
 assert.equal(localBase("::1", 7864), "http://[::1]:7864");
 assert.equal(localBase("fe80::1", 7864), "http://[fe80::1]:7864");
+
+// 9. 默认端口 / 默认地址在两边各写一份（TS 与 mjs 没法共享常量，硬要共享得上 allowJs 或另起
+//    package）。没人盯着就会一边改一边不改：preflight 放行的端口跟壳真正监听的端口对不上，
+//    用户看到的是「检查通过、起来就 EADDRINUSE」。这里直接盯源码里的兜底字面量。
+{
+  const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const hostSrc = fs.readFileSync(path.join(REPO, "bridge/src/host.ts"), "utf8");
+  assert.match(
+    hostSrc,
+    new RegExp(`return ${DEFAULT_PORT};`),
+    `bridge/src/host.ts 的 readPort() 兜底不再是 ${DEFAULT_PORT}：两处默认端口必须一起改`,
+  );
+  assert.ok(
+    hostSrc.includes(`return "${DEFAULT_HOST}";`),
+    `bridge/src/host.ts 的 readHost() 兜底不再是 ${DEFAULT_HOST}：两处默认地址必须一起改`,
+  );
+}
 
 console.log("preflight-unit: ok");
